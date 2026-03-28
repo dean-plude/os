@@ -39,6 +39,11 @@
 #include "../arch/x86_64/cpu.h"
 #include "printf.h"
 #include "scheduler.h"
+#include "syscall.h"
+#include "../ob/ob.h"
+#include "../ps/ps.h"
+#include "../cm/cm.h"
+#include "../se/se.h"
 
 /* -----------------------------------------------------------------------
  * Banner
@@ -55,7 +60,7 @@ static void print_banner(void)
     kprintf("  ╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝\n");
     kprintf("\n");
     fb_set_colors(FB_BOOT_FG, FB_BOOT_BG);
-    kprintf("  Windows-compatible OS kernel  [Phase 1 — Boot & Foundation]\n");
+    kprintf("  Windows-compatible OS kernel  [Phase 2 — NT Kernel Personality]\n");
     kprintf("  Built: " __DATE__ " " __TIME__ "\n");
     kprintf("\n");
 }
@@ -226,15 +231,54 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
 
     /* ----------------------------------------------------------------
      * STEP 10: Wire APIC timer to scheduler
-     * Patch the IDT handler for IRQ_TIMER to call sched_tick()
-     * (the current idt.c dispatch already calls it — see below).
      * ---------------------------------------------------------------- */
     kprintf("=== Phase 1: Hardware IRQs enabled ===\n");
 
     /* ----------------------------------------------------------------
-     * STEP 11: Create demo threads to validate the scheduler
+     * STEP 11 (Phase 2): Object Manager
      * ---------------------------------------------------------------- */
-    kprintf("=== Phase 1: Creating test threads ===\n");
+    kprintf("=== Phase 2: Object Manager ===\n");
+    ObInitialize();
+
+    /* ----------------------------------------------------------------
+     * STEP 12 (Phase 2): Security Reference Monitor
+     * Must be before Process Manager (system token assigned to System process)
+     * ---------------------------------------------------------------- */
+    kprintf("=== Phase 2: Security Reference Monitor ===\n");
+    SeInitialize();
+
+    /* ----------------------------------------------------------------
+     * STEP 13 (Phase 2): Process Manager
+     * Creates System process (PID 4) and wraps the boot thread as TID 4
+     * ---------------------------------------------------------------- */
+    kprintf("=== Phase 2: Process Manager ===\n");
+    PsInitialize();
+
+    /* Assign the System token to the System process */
+    {
+        PTOKEN system_token = NULL;
+        if (NT_SUCCESS(SeCreateSystemToken(&system_token))) {
+            PsInitialSystemProcess->Token = system_token;
+            kprintf("[PS] System token assigned to System process\n");
+        }
+    }
+
+    /* ----------------------------------------------------------------
+     * STEP 14 (Phase 2): Configuration Manager (Registry)
+     * ---------------------------------------------------------------- */
+    kprintf("=== Phase 2: Configuration Manager (Registry) ===\n");
+    CmInitialize();
+
+    /* ----------------------------------------------------------------
+     * STEP 15 (Phase 2): Syscall dispatcher (INT 0x2E + SYSCALL MSR)
+     * ---------------------------------------------------------------- */
+    kprintf("=== Phase 2: Syscall Dispatcher ===\n");
+    SyscallInitialize();
+
+    /* ----------------------------------------------------------------
+     * STEP 16: Create demo threads to validate the scheduler
+     * ---------------------------------------------------------------- */
+    kprintf("=== Phase 1/2: Creating test threads ===\n");
     sched_create_thread("thread_a",  thread_a,            NULL, 8);
     sched_create_thread("thread_b",  thread_b,            NULL, 8);
     sched_create_thread("mem_test",  memory_test_thread,  NULL, 6);
@@ -242,9 +286,9 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     sched_dump();
 
     /* ----------------------------------------------------------------
-     * STEP 12: Enable interrupts — the scheduler is now live
+     * STEP 17: Enable interrupts — the scheduler is now live
      * ---------------------------------------------------------------- */
-    kprintf("\n[NovaOS] Kernel initialized. Enabling interrupts...\n");
+    kprintf("\n[NovaOS] Phase 2 initialized. Enabling interrupts...\n");
     sti();
 
     /* ----------------------------------------------------------------

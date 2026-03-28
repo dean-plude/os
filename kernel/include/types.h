@@ -37,19 +37,35 @@ typedef int32_t  NTSTATUS;
 
 /* Common NTSTATUS codes — extend as needed */
 #define STATUS_SUCCESS                   ((NTSTATUS)0x00000000)
+#define STATUS_PENDING                   ((NTSTATUS)0x00000103)
 #define STATUS_UNSUCCESSFUL              ((NTSTATUS)0xC0000001)
 #define STATUS_NOT_IMPLEMENTED           ((NTSTATUS)0xC0000002)
+#define STATUS_INVALID_INFO_CLASS        ((NTSTATUS)0xC0000003)
+#define STATUS_INVALID_HANDLE            ((NTSTATUS)0xC0000008)
 #define STATUS_INVALID_PARAMETER         ((NTSTATUS)0xC000000D)
 #define STATUS_NO_MEMORY                 ((NTSTATUS)0xC0000017)
-#define STATUS_INSUFFICIENT_RESOURCES    ((NTSTATUS)0xC000009A)
-#define STATUS_NOT_FOUND                 ((NTSTATUS)0xC0000225)
 #define STATUS_ACCESS_DENIED             ((NTSTATUS)0xC0000022)
 #define STATUS_BUFFER_TOO_SMALL          ((NTSTATUS)0xC0000023)
+#define STATUS_BUFFER_OVERFLOW           ((NTSTATUS)0x80000005)
 #define STATUS_OBJECT_NAME_NOT_FOUND     ((NTSTATUS)0xC0000034)
 #define STATUS_ALREADY_EXISTS            ((NTSTATUS)0xC0000035)
 #define STATUS_END_OF_FILE               ((NTSTATUS)0xC0000011)
-#define STATUS_INVALID_HANDLE            ((NTSTATUS)0xC0000008)
+#define STATUS_OBJECT_PATH_NOT_FOUND     ((NTSTATUS)0xC000003A)
+#define STATUS_CANNOT_DELETE             ((NTSTATUS)0xC0000121)
 #define STATUS_PRIVILEGE_NOT_HELD        ((NTSTATUS)0xC0000061)
+#define STATUS_NO_MORE_ENTRIES           ((NTSTATUS)0x8000001A)
+#define STATUS_INSUFFICIENT_RESOURCES    ((NTSTATUS)0xC000009A)
+#define STATUS_INVALID_SYSTEM_SERVICE    ((NTSTATUS)0xC000001C)
+#define STATUS_NOT_FOUND                 ((NTSTATUS)0xC0000225)
+
+/* NT type aliases */
+typedef uint8_t   UINT8;
+typedef uint16_t  UINT16;
+typedef uint32_t  UINT32;
+typedef uint64_t  UINT64;
+typedef int32_t   INT32;
+typedef int64_t   INT64;
+typedef uintptr_t ULONG_PTR;
 
 /* Physical / virtual address types */
 typedef uintptr_t   VADDR;    /* Virtual address */
