@@ -44,6 +44,7 @@
 #include "../include/types.h"
 #include "../ob/ob.h"
 #include "../ke/scheduler.h"
+#include "../mm/vma.h"
 
 /* -----------------------------------------------------------------------
  * NT_TIB — Thread Information Block (the first field of TEB)
@@ -237,8 +238,8 @@ typedef struct _EPROCESS {
     UINT64     WorkingSetSize;
     PHANDLE_TABLE ObjectTable;       /* Per-process handle table */
 
-    /* Address space */
-    void      *VadRoot;              /* VAD tree root (Phase 3) */
+    /* Address space — user VA descriptor tree (Phase 3) */
+    VMA_SPACE  VmaSpace;
 
     /* User-mode data (in the process's VA space) */
     PEB       *Peb;                  /* Virtual address in process VA space */
@@ -364,3 +365,28 @@ PHANDLE_TABLE PsGetCurrentProcessHandleTable(void);
 
 /* The System process (PID 4, like Windows). */
 extern PEPROCESS PsInitialSystemProcess;
+
+/*
+ * Create a user-mode process from a PE image buffer.
+ * Loads the image, maps it into a fresh address space, resolves imports,
+ * and creates a user-mode thread at the entry point.
+ *
+ * @PeBuffer:     Pointer to raw PE32+ image data (in kernel memory).
+ * @PeSize:       Size of the PE buffer.
+ * @ImageName:    Short name for the process (e.g. "test.exe").
+ * @ProcessOut:   Receives the EPROCESS pointer (optional).
+ * @ThreadHandle: Receives a handle to the initial thread (optional).
+ */
+NTSTATUS PsCreateUserProcess(
+    void           *PeBuffer,
+    UINT64          PeSize,
+    const char     *ImageName,
+    PEPROCESS      *ProcessOut,
+    HANDLE         *ThreadHandle);
+
+/*
+ * The user-mode thread entry trampoline.
+ * Sets up the user-mode context (iretq) and jumps to the image entry point.
+ * Called as the kernel thread entry for user-mode threads.
+ */
+void PsUserThreadEntry(void *arg);

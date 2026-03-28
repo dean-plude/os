@@ -21,11 +21,14 @@
 #include "ps.h"
 #include "../ob/ob.h"
 #include "../mm/vmm.h"
+#include "../mm/vma.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
 #include "../lib/string.h"
 #include "../include/types.h"
 #include "../arch/x86_64/cpu.h"
+#include "../arch/x86_64/gdt.h"
+#include "../ldr/ldr.h"
 
 /* -----------------------------------------------------------------------
  * Globals
@@ -163,6 +166,9 @@ NTSTATUS PsCreateSystemProcess(
         ObDereferenceObject(proc_obj);
         return s;
     }
+
+    /* Initialize the user virtual address space */
+    VmaInitSpace(&p->VmaSpace);
 
     ps_add_process(p);
 
@@ -346,6 +352,172 @@ NTSTATUS PsLookupThreadByThreadId(UINT64 Tid, PETHREAD *ThreadOut)
     (void)Tid; (void)ThreadOut;
     /* TODO: implement a global thread table in Phase 3 */
     return STATUS_NOT_FOUND;
+}
+
+/* -----------------------------------------------------------------------
+ * User-mode thread context (passed through PsUserThreadEntry)
+ * ----------------------------------------------------------------------- */
+typedef struct _USER_THREAD_CONTEXT {
+    UINT64  EntryPoint;   /* User VA of the PE entry point */
+    UINT64  StackTop;     /* User VA of the initial stack top */
+    UINT64  ImageBase;    /* User VA of the loaded image */
+} USER_THREAD_CONTEXT;
+
+/* -----------------------------------------------------------------------
+ * PsUserThreadEntry — kernel-side trampoline that transitions to ring 3
+ *
+ * We build a fake IRET frame on the current kernel stack and execute IRETQ,
+ * which atomically restores CS (user code selector), RIP, RFLAGS, SS, and RSP.
+ *
+ * Register state on ring-3 entry:
+ *   RCX = PEB address (following the x64 ABI: arg1 for Windows EXE entry)
+ *   RSP = user stack top (16-byte aligned per x64 ABI)
+ *   CS  = GDT_USER_CODE | 3
+ *   SS  = GDT_USER_DATA | 3
+ *   RFLAGS = 0x202 (IF enabled, reserved bit 1)
+ * ----------------------------------------------------------------------- */
+void PsUserThreadEntry(void *arg)
+{
+    USER_THREAD_CONTEXT *ctx = (USER_THREAD_CONTEXT *)arg;
+
+    /* Update the TSS RSP0 for this thread (kernel stack for syscall returns) */
+    PETHREAD et = PsGetCurrentThread();
+    if (et) {
+        uintptr_t kstack_top = (uintptr_t)et->Tcb.SchedulerThread.kernel_stack
+                             + et->Tcb.SchedulerThread.stack_size;
+        gdt_set_rsp0(kstack_top);
+    }
+
+    UINT64 entry_point = ctx->EntryPoint;
+    UINT64 stack_top   = ctx->StackTop;
+    kfree(ctx);  /* Free the context struct before we can't return */
+
+    kprintf("[PS] Entering user mode: RIP=0x%llx RSP=0x%llx\n",
+            (unsigned long long)entry_point,
+            (unsigned long long)stack_top);
+
+    /* Build IRETQ frame and jump to user mode:
+     *   User SS   (pushed last by IRETQ logic, so first on stack)
+     *   User RSP
+     *   RFLAGS
+     *   User CS
+     *   User RIP
+     */
+    UINT64 user_cs = GDT_USER_CODE | 3;
+    UINT64 user_ss = GDT_USER_DATA | 3;
+    UINT64 rflags  = 0x202;  /* IF=1 */
+
+    __asm__ volatile (
+        /* Align the user stack to 16 bytes (subtract 8 so that after call
+         * instruction pushes a return address it's 16-byte aligned) */
+        "sub $8, %[stk]\n\t"
+
+        /* Build the IRETQ frame on the current kernel stack */
+        "push %[ss]\n\t"        /* SS */
+        "push %[stk]\n\t"       /* RSP */
+        "push %[rfl]\n\t"       /* RFLAGS */
+        "push %[cs]\n\t"        /* CS */
+        "push %[rip]\n\t"       /* RIP */
+
+        /* Clear all GPRs (don't leak kernel pointers) */
+        "xor %%rax, %%rax\n\t"
+        "xor %%rbx, %%rbx\n\t"
+        "xor %%rcx, %%rcx\n\t"
+        "xor %%rdx, %%rdx\n\t"
+        "xor %%rsi, %%rsi\n\t"
+        "xor %%rdi, %%rdi\n\t"
+        "xor %%r8,  %%r8\n\t"
+        "xor %%r9,  %%r9\n\t"
+        "xor %%r10, %%r10\n\t"
+        "xor %%r11, %%r11\n\t"
+        "xor %%r12, %%r12\n\t"
+        "xor %%r13, %%r13\n\t"
+        "xor %%r14, %%r14\n\t"
+        "xor %%r15, %%r15\n\t"
+        "xor %%rbp, %%rbp\n\t"
+
+        "iretq\n\t"
+        :
+        : [ss]  "r"(user_ss),
+          [stk] "r"(stack_top),
+          [rfl] "r"(rflags),
+          [cs]  "r"(user_cs),
+          [rip] "r"(entry_point)
+        : "memory"
+    );
+
+    __builtin_unreachable();
+}
+
+/* -----------------------------------------------------------------------
+ * PsCreateUserProcess
+ * ----------------------------------------------------------------------- */
+NTSTATUS PsCreateUserProcess(
+    void           *PeBuffer,
+    UINT64          PeSize,
+    const char     *ImageName,
+    PEPROCESS      *ProcessOut,
+    HANDLE         *ThreadHandle)
+{
+    /* Create a new process */
+    PEPROCESS proc = NULL;
+    NTSTATUS s = PsCreateSystemProcess(&proc, ImageName, NULL);
+    if (!NT_SUCCESS(s)) return s;
+
+    /* Load the PE image */
+    LOAD_IMAGE_RESULT ldr_result;
+    __builtin_memset(&ldr_result, 0, sizeof(ldr_result));
+
+    s = LdrLoadImage(PeBuffer, PeSize, proc, &ldr_result);
+    if (!NT_SUCCESS(s)) {
+        kprintf("[PS] LdrLoadImage failed: 0x%x\n", (UINT32)s);
+        PsTerminateProcess(proc, s);
+        ObDereferenceObject(proc);
+        return s;
+    }
+
+    proc->SectionObject = NULL;  /* will be set by LdrLoadImage in Phase 4 */
+
+    kprintf("[PS] Process '%s' loaded: base=0x%llx entry=0x%llx stack=0x%llx\n",
+            ImageName,
+            (unsigned long long)ldr_result.ImageBase,
+            (unsigned long long)ldr_result.EntryPoint,
+            (unsigned long long)(ldr_result.StackBase + ldr_result.StackSize));
+
+    /* Build the user-mode thread context */
+    USER_THREAD_CONTEXT *ctx = kmalloc(sizeof(USER_THREAD_CONTEXT));
+    if (!ctx) {
+        PsTerminateProcess(proc, STATUS_NO_MEMORY);
+        ObDereferenceObject(proc);
+        return STATUS_NO_MEMORY;
+    }
+
+    ctx->EntryPoint = ldr_result.EntryPoint;
+    /* Stack grows down: initial RSP = base + size (top of stack) */
+    ctx->StackTop   = ldr_result.StackBase + ldr_result.StackSize;
+    ctx->ImageBase  = ldr_result.ImageBase;
+
+    /* Create the user thread (kernel-side) that calls PsUserThreadEntry */
+    s = PsCreateSystemThread(
+        ThreadHandle,
+        THREAD_ALL_ACCESS,
+        NULL,
+        (HANDLE)(ULONG_PTR)(-1),
+        NULL,
+        (ThreadEntry)PsUserThreadEntry,
+        ctx);
+
+    if (!NT_SUCCESS(s)) {
+        kfree(ctx);
+        PsTerminateProcess(proc, s);
+        ObDereferenceObject(proc);
+        return s;
+    }
+
+    if (ProcessOut) *ProcessOut = proc;
+    else ObDereferenceObject(proc);
+
+    return STATUS_SUCCESS;
 }
 
 /* -----------------------------------------------------------------------

@@ -152,7 +152,7 @@
 #define SYSCALL_NtQuerySystemTime                 0x0052
 #define SYSCALL_NtOpenSemaphore                   0x0053
 #define SYSCALL_NtCreateMutant                    0x0054
-#define SYSCALL_NtCreateSemaphore                 0x0055
+#define SYSCALL_NtCreateFile                      0x0055
 #define SYSCALL_NtAllocateVirtualMemoryEx         0x00C4  /* Win10 1803+ */
 
 /* -----------------------------------------------------------------------

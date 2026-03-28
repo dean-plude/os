@@ -111,6 +111,10 @@ set(KERNEL_C_SOURCES
     ps/ps.c
     cm/cm.c
     se/se.c
+    io/io.c
+    mm/vma.c
+    mm/section.c
+    ldr/ldr.c
     lib/string.c
 )
 

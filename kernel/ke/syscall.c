@@ -21,7 +21,9 @@
 #include "../ob/ob.h"
 #include "../ps/ps.h"
 #include "../cm/cm.h"
-#include "../mm/vmm.h"
+#include "../mm/vma.h"
+#include "../mm/section.h"
+#include "../io/io.h"
 
 /* -----------------------------------------------------------------------
  * MSR addresses for SYSCALL/SYSRET
@@ -257,21 +259,35 @@ static NTSTATUS sys_NtAllocateVirtualMemory(UINT64 ProcessHandle,
                                              UINT64 RegionSizePtr,
                                              UINT64 AllocationType)
 {
-    (void)ProcessHandle; (void)AllocationType;
-    /* Phase 2 stub: allocate pages and return their address */
     if (!RegionSizePtr) return STATUS_INVALID_PARAMETER;
+
+    PEPROCESS proc;
+    if ((INT64)ProcessHandle == -1) proc = PsGetCurrentProcess();
+    else {
+        void *obj;
+        NTSTATUS s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
+                                               PROCESS_ALL_ACCESS, ObpProcessType,
+                                               NULL, &obj, NULL);
+        if (!NT_SUCCESS(s)) return s;
+        proc = (PEPROCESS)obj;
+    }
+    if (!proc) return STATUS_INVALID_HANDLE;
+
+    UINT64 base = BaseAddressPtr ? *(UINT64 *)(uintptr_t)BaseAddressPtr : 0;
     UINT64 size = *(UINT64 *)(uintptr_t)RegionSizePtr;
-    if (!size) return STATUS_INVALID_PARAMETER;
+    if (!size) {
+        if ((INT64)ProcessHandle != -1) ObDereferenceObject(proc);
+        return STATUS_INVALID_PARAMETER;
+    }
 
-    UINT64 pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-    void *mem = kernel_alloc_pages((size_t)pages);
-    if (!mem) return STATUS_NO_MEMORY;
+    UINT32 protect = PAGE_READWRITE;
+    NTSTATUS s = VmaAllocate(&proc->VmaSpace, &base, &size,
+                              (UINT32)AllocationType, protect);
+    if ((INT64)ProcessHandle != -1) ObDereferenceObject(proc);
+    if (!NT_SUCCESS(s)) return s;
 
-    __builtin_memset(mem, 0, (size_t)(pages * PAGE_SIZE));
-
-    if (BaseAddressPtr)
-        *(void **)(uintptr_t)BaseAddressPtr = mem;
-    *(UINT64 *)(uintptr_t)RegionSizePtr = pages * PAGE_SIZE;
+    if (BaseAddressPtr) *(UINT64 *)(uintptr_t)BaseAddressPtr = base;
+    *(UINT64 *)(uintptr_t)RegionSizePtr = size;
     return STATUS_SUCCESS;
 }
 
@@ -281,17 +297,30 @@ static NTSTATUS sys_NtFreeVirtualMemory(UINT64 ProcessHandle,
                                          UINT64 RegionSizePtr,
                                          UINT64 FreeType)
 {
-    (void)ProcessHandle; (void)FreeType;
     if (!BaseAddressPtr) return STATUS_INVALID_PARAMETER;
 
-    void *base = *(void **)(uintptr_t)BaseAddressPtr;
-    UINT64 size = RegionSizePtr ? *(UINT64 *)(uintptr_t)RegionSizePtr : 0;
-    if (!base) return STATUS_INVALID_PARAMETER;
+    PEPROCESS proc;
+    if ((INT64)ProcessHandle == -1) proc = PsGetCurrentProcess();
+    else {
+        void *obj;
+        NTSTATUS s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
+                                               PROCESS_ALL_ACCESS, ObpProcessType,
+                                               NULL, &obj, NULL);
+        if (!NT_SUCCESS(s)) return s;
+        proc = (PEPROCESS)obj;
+    }
+    if (!proc) return STATUS_INVALID_HANDLE;
 
-    UINT64 pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-    if (!pages) pages = 1;
-    kernel_free_pages(base, (size_t)pages);
-    return STATUS_SUCCESS;
+    UINT64 base = *(UINT64 *)(uintptr_t)BaseAddressPtr;
+    UINT64 size = RegionSizePtr ? *(UINT64 *)(uintptr_t)RegionSizePtr : 0;
+
+    NTSTATUS s = VmaFree(&proc->VmaSpace, &base, &size, (UINT32)FreeType);
+    if ((INT64)ProcessHandle != -1) ObDereferenceObject(proc);
+    if (NT_SUCCESS(s)) {
+        *(UINT64 *)(uintptr_t)BaseAddressPtr = base;
+        if (RegionSizePtr) *(UINT64 *)(uintptr_t)RegionSizePtr = size;
+    }
+    return s;
 }
 
 /* --- NtOpenKey (0x0012) --- */
@@ -384,6 +413,169 @@ static NTSTATUS sys_NotImplemented(UINT64 a1, UINT64 a2,
 }
 
 /* -----------------------------------------------------------------------
+ * Phase 3 syscall handlers
+ * ----------------------------------------------------------------------- */
+
+/* --- NtCreateFile (0x0055 in Win10 1903 — actually varies) --- */
+/* NtCreateFile: 11 args, we handle via IoCreateFile with first 4 */
+static NTSTATUS sys_NtCreateFile(UINT64 FileHandlePtr, UINT64 DesiredAccess,
+                                   UINT64 ObjAttrPtr, UINT64 IoStatusPtr)
+{
+    if (!FileHandlePtr || !ObjAttrPtr) return STATUS_INVALID_PARAMETER;
+    IO_STATUS_BLOCK  isb;
+    HANDLE h = 0;
+    NTSTATUS s = IoCreateFile(&h,
+                               (ACCESS_MASK)DesiredAccess,
+                               (POBJECT_ATTRIBUTES)(uintptr_t)ObjAttrPtr,
+                               &isb, NULL, 0, 0,
+                               FILE_OPEN_IF, 0, NULL, 0);
+    if (IoStatusPtr) *(IO_STATUS_BLOCK *)(uintptr_t)IoStatusPtr = isb;
+    if (NT_SUCCESS(s)) *(HANDLE *)(uintptr_t)FileHandlePtr = h;
+    return s;
+}
+
+/* --- NtReadFile (0x0006) --- */
+static NTSTATUS sys_NtReadFile(UINT64 FileHandle, UINT64 Event,
+                                 UINT64 ApcRoutine, UINT64 ApcContext)
+{
+    /* remaining args (IoStatusBlock, Buffer, Length, ByteOffset, Key)
+     * are on user stack — Phase 3 stub only handles first 4 args */
+    (void)Event; (void)ApcRoutine; (void)ApcContext;
+    /* Cannot access user stack from here in Phase 3 without trap frame */
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+/* --- NtWriteFile (0x0008) --- */
+static NTSTATUS sys_NtWriteFile(UINT64 FileHandle, UINT64 Event,
+                                  UINT64 ApcRoutine, UINT64 ApcContext)
+{
+    (void)FileHandle; (void)Event; (void)ApcRoutine; (void)ApcContext;
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+/* --- NtQueryInformationFile (0x0011) --- */
+static NTSTATUS sys_NtQueryInformationFile(UINT64 FileHandle,
+                                             UINT64 IoStatusPtr,
+                                             UINT64 FileInfoPtr,
+                                             UINT64 Length)
+{
+    /* FileInformationClass is the 5th argument — stub to STATUS_SUCCESS */
+    IO_STATUS_BLOCK isb;
+    NTSTATUS s = IoQueryInformationFile((HANDLE)FileHandle,
+                                         &isb,
+                                         (void *)(uintptr_t)FileInfoPtr,
+                                         (UINT32)Length,
+                                         FileBasicInformation);
+    if (IoStatusPtr) *(IO_STATUS_BLOCK *)(uintptr_t)IoStatusPtr = isb;
+    return s;
+}
+
+/* --- NtCreateSection (0x004A) --- */
+static NTSTATUS sys_NtCreateSection(UINT64 SectionHandlePtr,
+                                      UINT64 DesiredAccess,
+                                      UINT64 ObjAttrPtr,
+                                      UINT64 MaximumSizePtr)
+{
+    HANDLE h = 0;
+    UINT64 maxsz = MaximumSizePtr ? *(UINT64 *)(uintptr_t)MaximumSizePtr : 0;
+    NTSTATUS s = NtCreateSection(&h,
+                                  (ACCESS_MASK)DesiredAccess,
+                                  (POBJECT_ATTRIBUTES)(uintptr_t)ObjAttrPtr,
+                                  MaximumSizePtr ? &maxsz : NULL,
+                                  PAGE_READWRITE,
+                                  SEC_COMMIT,
+                                  0);
+    if (NT_SUCCESS(s) && SectionHandlePtr)
+        *(HANDLE *)(uintptr_t)SectionHandlePtr = h;
+    return s;
+}
+
+/* --- NtMapViewOfSection (0x0028) --- */
+static NTSTATUS sys_NtMapViewOfSection(UINT64 SectionHandle,
+                                         UINT64 ProcessHandle,
+                                         UINT64 BaseAddressPtr,
+                                         UINT64 ZeroBits)
+{
+    void  *base = BaseAddressPtr ? *(void **)(uintptr_t)BaseAddressPtr : NULL;
+    UINT64 view_size = 0;
+    NTSTATUS s = NtMapViewOfSection((HANDLE)SectionHandle,
+                                     (HANDLE)ProcessHandle,
+                                     &base,
+                                     (ULONG_PTR)ZeroBits,
+                                     0, NULL, &view_size,
+                                     ViewShare, 0,
+                                     PAGE_READWRITE);
+    if (NT_SUCCESS(s) && BaseAddressPtr)
+        *(void **)(uintptr_t)BaseAddressPtr = base;
+    return s;
+}
+
+/* --- NtUnmapViewOfSection (0x002A) --- */
+static NTSTATUS sys_NtUnmapViewOfSection(UINT64 ProcessHandle,
+                                           UINT64 BaseAddress,
+                                           UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    return NtUnmapViewOfSection((HANDLE)ProcessHandle,
+                                 (void *)(uintptr_t)BaseAddress);
+}
+
+/* --- NtQueryVirtualMemory (0x0023) --- */
+static NTSTATUS sys_NtQueryVirtualMemory(UINT64 ProcessHandle,
+                                           UINT64 BaseAddress,
+                                           UINT64 MemInfoClass,
+                                           UINT64 MemInfoPtr)
+{
+    if (MemInfoClass != 0 /* MemoryBasicInformation */) return STATUS_INVALID_INFO_CLASS;
+
+    PEPROCESS proc;
+    if ((INT64)ProcessHandle == -1) proc = PsGetCurrentProcess();
+    else {
+        void *obj;
+        NTSTATUS s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
+                                               PROCESS_ALL_ACCESS, ObpProcessType,
+                                               NULL, &obj, NULL);
+        if (!NT_SUCCESS(s)) return s;
+        proc = (PEPROCESS)obj;
+    }
+    if (!proc) return STATUS_INVALID_HANDLE;
+
+    MEMORY_BASIC_INFORMATION mbi;
+    UINT64 rlen = 0;
+    NTSTATUS s = VmaQuery(&proc->VmaSpace, BaseAddress, &mbi, &rlen);
+    if (NT_SUCCESS(s) && MemInfoPtr)
+        __builtin_memcpy((void *)(uintptr_t)MemInfoPtr, &mbi, sizeof(mbi));
+    if ((INT64)ProcessHandle != -1) ObDereferenceObject(proc);
+    return s;
+}
+
+/* --- NtProtectVirtualMemory (0x0050) --- */
+static NTSTATUS sys_NtProtectVirtualMemory(UINT64 ProcessHandle,
+                                             UINT64 BaseAddrPtr,
+                                             UINT64 RegionSizePtr,
+                                             UINT64 NewProtect)
+{
+    PEPROCESS proc;
+    if ((INT64)ProcessHandle == -1) proc = PsGetCurrentProcess();
+    else {
+        void *obj;
+        NTSTATUS s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
+                                               PROCESS_ALL_ACCESS, ObpProcessType,
+                                               NULL, &obj, NULL);
+        if (!NT_SUCCESS(s)) return s;
+        proc = (PEPROCESS)obj;
+    }
+    if (!proc) return STATUS_INVALID_HANDLE;
+
+    UINT64 base = BaseAddrPtr ? *(UINT64 *)(uintptr_t)BaseAddrPtr : 0;
+    UINT64 size = RegionSizePtr ? *(UINT64 *)(uintptr_t)RegionSizePtr : 0;
+    UINT32 old  = 0;
+    NTSTATUS s = VmaProtect(&proc->VmaSpace, &base, &size, (UINT32)NewProtect, &old);
+    if ((INT64)ProcessHandle != -1) ObDereferenceObject(proc);
+    return s;
+}
+
+/* -----------------------------------------------------------------------
  * Syscall dispatch table
  * ----------------------------------------------------------------------- */
 static SYSCALL_HANDLER syscall_table[SYSCALL_MAX];
@@ -413,6 +605,17 @@ static void build_syscall_table(void)
     syscall_table[SYSCALL_NtTerminateProcess]         = sys_NtTerminateProcess;
     syscall_table[SYSCALL_NtEnumerateKey]             = (SYSCALL_HANDLER)(void *)sys_NotImplemented;
     syscall_table[SYSCALL_NtEnumerateValueKey]        = (SYSCALL_HANDLER)(void *)sys_NotImplemented;
+
+    /* Phase 3: I/O Manager + Section + VMA */
+    syscall_table[SYSCALL_NtCreateFile]               = sys_NtCreateFile;
+    syscall_table[SYSCALL_NtReadFile]                 = sys_NtReadFile;
+    syscall_table[SYSCALL_NtWriteFile]                = sys_NtWriteFile;
+    syscall_table[SYSCALL_NtQueryInformationFile]     = sys_NtQueryInformationFile;
+    syscall_table[SYSCALL_NtCreateSection]            = sys_NtCreateSection;
+    syscall_table[SYSCALL_NtMapViewOfSection]         = sys_NtMapViewOfSection;
+    syscall_table[SYSCALL_NtUnmapViewOfSection]       = sys_NtUnmapViewOfSection;
+    syscall_table[SYSCALL_NtQueryVirtualMemory]       = sys_NtQueryVirtualMemory;
+    syscall_table[SYSCALL_NtProtectVirtualMemory]     = sys_NtProtectVirtualMemory;
 }
 
 /* -----------------------------------------------------------------------

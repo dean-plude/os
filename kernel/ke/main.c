@@ -44,6 +44,10 @@
 #include "../ps/ps.h"
 #include "../cm/cm.h"
 #include "../se/se.h"
+#include "../io/io.h"
+#include "../mm/vma.h"
+#include "../mm/section.h"
+#include "../ldr/ldr.h"
 
 /* -----------------------------------------------------------------------
  * Banner
@@ -60,7 +64,7 @@ static void print_banner(void)
     kprintf("  ╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝\n");
     kprintf("\n");
     fb_set_colors(FB_BOOT_FG, FB_BOOT_BG);
-    kprintf("  Windows-compatible OS kernel  [Phase 2 — NT Kernel Personality]\n");
+    kprintf("  Windows-compatible OS kernel  [Phase 3 — PE Loader & I/O Manager]\n");
     kprintf("  Built: " __DATE__ " " __TIME__ "\n");
     kprintf("\n");
 }
@@ -274,6 +278,24 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
      * ---------------------------------------------------------------- */
     kprintf("=== Phase 2: Syscall Dispatcher ===\n");
     SyscallInitialize();
+
+    /* ----------------------------------------------------------------
+     * STEP 16 (Phase 3): I/O Manager + built-in devices
+     * ---------------------------------------------------------------- */
+    kprintf("=== Phase 3: I/O Manager ===\n");
+    IoInitialize();
+
+    /* ----------------------------------------------------------------
+     * STEP 17 (Phase 3): Section object subsystem
+     * ---------------------------------------------------------------- */
+    kprintf("=== Phase 3: Section Objects ===\n");
+    MmInitializeSections();
+
+    /* ----------------------------------------------------------------
+     * STEP 18 (Phase 3): PE32+ Loader
+     * ---------------------------------------------------------------- */
+    kprintf("=== Phase 3: PE Loader ===\n");
+    LdrInitialize();
 
     /* ----------------------------------------------------------------
      * STEP 16: Create demo threads to validate the scheduler
