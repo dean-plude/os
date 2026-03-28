@@ -1,0 +1,206 @@
+/*
+ * apic.c — Local APIC initialization
+ *
+ * Architectural notes:
+ *
+ * 1. 8259A PIC shutdown: The legacy PIC is still powered on after UEFI boot
+ *    and will generate spurious IRQs if left in an unknown state.  We remap
+ *    its vectors to 0xA0–0xAF (safely above exceptions) and then mask all
+ *    lines to prevent any PIC interrupts from reaching the CPU.
+ *
+ * 2. LAPIC enable: We write to the Spurious Interrupt Vector Register with
+ *    the software-enable bit set.  The spurious vector is set to 0xFF.
+ *
+ * 3. APIC timer calibration: The APIC timer's frequency is derived from
+ *    the internal bus clock.  We calibrate it using the PIT (8254 timer)
+ *    as a reference, then configure a periodic interrupt at ~100 Hz.
+ *    Without HPET/TSC-invariant support (Phase 3), PIT is the simplest
+ *    calibration reference.
+ */
+
+#include "apic.h"
+#include "cpu.h"
+#include "idt.h"
+#include "../../hal/serial.h"
+#include "../../ke/printf.h"
+#include "../../include/types.h"
+
+/* The LAPIC MMIO base after it's been mapped into the physmap */
+static volatile uint32_t *lapic_base;
+
+/* -----------------------------------------------------------------------
+ * LAPIC register access
+ * ----------------------------------------------------------------------- */
+
+static uint32_t lapic_read(uint32_t reg)
+{
+    return *(volatile uint32_t *)((uintptr_t)lapic_base + reg);
+}
+
+static void lapic_write(uint32_t reg, uint32_t val)
+{
+    *(volatile uint32_t *)((uintptr_t)lapic_base + reg) = val;
+}
+
+/* -----------------------------------------------------------------------
+ * Disable the legacy 8259A PIC
+ *
+ * We remap it first (so any stray IRQs don't hit exception vectors),
+ * then mask all IRQ lines, and finally send OCW1=0xFF to both PICs.
+ *
+ * This follows the standard Linux/BSD approach.
+ * ----------------------------------------------------------------------- */
+
+#define PIC1_CMD    0x20
+#define PIC1_DATA   0x21
+#define PIC2_CMD    0xA0
+#define PIC2_DATA   0xA1
+#define PIC_EOI     0x20
+
+static void pic_disable(void)
+{
+    /* Remap PIC1: ICW1 */
+    outb(PIC1_CMD, 0x11);  io_wait();
+    /* ICW2: PIC1 vectors start at 0xA0 (safe, well above exceptions) */
+    outb(PIC1_DATA, 0xA0); io_wait();
+    /* ICW3: slave at IRQ2 */
+    outb(PIC1_DATA, 0x04); io_wait();
+    /* ICW4: 8086 mode */
+    outb(PIC1_DATA, 0x01); io_wait();
+
+    /* Remap PIC2: ICW1 */
+    outb(PIC2_CMD, 0x11);  io_wait();
+    /* ICW2: PIC2 vectors start at 0xA8 */
+    outb(PIC2_DATA, 0xA8); io_wait();
+    /* ICW3: cascade identity */
+    outb(PIC2_DATA, 0x02); io_wait();
+    /* ICW4: 8086 mode */
+    outb(PIC2_DATA, 0x01); io_wait();
+
+    /* OCW1: mask all IRQs on both PICs */
+    outb(PIC1_DATA, 0xFF); io_wait();
+    outb(PIC2_DATA, 0xFF); io_wait();
+
+    kprintf("[APIC] Legacy 8259A PIC disabled\n");
+}
+
+/* -----------------------------------------------------------------------
+ * PIT (8254) — used only for APIC timer calibration
+ *
+ * We set up the PIT channel 2 (connected to the PC speaker, but we don't
+ * need sound) for a one-shot count and use it as a ~10ms reference.
+ * This avoids touching PIT channel 0 which may still be generating IRQs.
+ * ----------------------------------------------------------------------- */
+
+#define PIT_CHANNEL2   0x42
+#define PIT_COMMAND    0x43
+#define PIT_GATE2      0x61   /* Port B, bit 0 = gate, bit 1 = speaker enable */
+#define PIT_FREQUENCY  1193182   /* Hz */
+
+/* Measure APIC timer ticks in ~10ms using PIT channel 2. */
+static uint32_t calibrate_apic_timer(void)
+{
+    /* Set up channel 2 for one-shot mode (mode 0), counting from 11931 ≈ 10ms */
+    uint16_t pit_count = PIT_FREQUENCY / 100;   /* 100 Hz = 10ms per period */
+
+    /* Gate channel 2: bit 0 on, bit 1 off (no speaker) */
+    uint8_t gate = inb(PIT_GATE2);
+    outb(PIT_GATE2, (gate & 0xFC) | 0x01);
+
+    /* Channel 2, mode 0 (one-shot), binary */
+    outb(PIT_COMMAND, 0xB0);
+    outb(PIT_CHANNEL2, (uint8_t)(pit_count & 0xFF));
+    outb(PIT_CHANNEL2, (uint8_t)(pit_count >> 8));
+
+    /* Start APIC timer counting down from max */
+    lapic_write(LAPIC_TIMER_DIV,  LAPIC_TIMER_DIV_16);
+    lapic_write(LAPIC_TIMER_INIT, 0xFFFFFFFF);
+
+    /* Disable the gate, then re-enable to start counting */
+    outb(PIT_GATE2, inb(PIT_GATE2) & ~0x01);
+    outb(PIT_GATE2, inb(PIT_GATE2) | 0x01);
+
+    /* Wait for PIT channel 2 to expire (bit 5 of Port B goes high) */
+    while (!(inb(PIT_GATE2) & 0x20))
+        pause_cpu();
+
+    /* Stop APIC timer and read how far it counted in 10ms */
+    lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED);
+    uint32_t ticks_in_10ms = 0xFFFFFFFF - lapic_read(LAPIC_TIMER_CURR);
+
+    return ticks_in_10ms;
+}
+
+/* -----------------------------------------------------------------------
+ * apic_init
+ * ----------------------------------------------------------------------- */
+void apic_init(void)
+{
+    /* 1. Disable the legacy PIC */
+    pic_disable();
+
+    /* 2. Find the LAPIC base from the IA32_APIC_BASE MSR */
+    uint64_t apic_base_msr = rdmsr(MSR_IA32_APIC_BASE);
+    uint64_t lapic_phys    = apic_base_msr & UINT64_C(0xFFFFFFFFFF000);  /* bits 12-51 */
+
+    kprintf("[APIC] IA32_APIC_BASE MSR = 0x%016lx (phys=0x%lx)\n",
+            apic_base_msr, lapic_phys);
+
+    /* 3. Map into kernel virtual address space via physmap */
+    lapic_base = (volatile uint32_t *)(PHYSMAP_BASE + lapic_phys);
+
+    /* 4. Enable the APIC by writing to the Spurious Interrupt Vector Register
+     *    Bit 8 = APIC Software Enable, low byte = spurious vector (0xFF) */
+    lapic_write(LAPIC_SPURIOUS, LAPIC_SPURIOUS_ENABLE | IRQ_SPURIOUS);
+
+    /* 5. Set Task Priority Register to 0 to allow all interrupts */
+    lapic_write(LAPIC_TPR, 0);
+
+    /* 6. Clear any pending errors */
+    lapic_write(LAPIC_ESR, 0);
+    lapic_write(LAPIC_ESR, 0);
+
+    uint32_t apic_ver = lapic_read(LAPIC_VERSION);
+    kprintf("[APIC] Version=0x%x, MaxLVT=%u, APIC ID=%u\n",
+            apic_ver & 0xFF,
+            ((apic_ver >> 16) & 0xFF) + 1,
+            lapic_read(LAPIC_ID) >> 24);
+
+    /* 7. Calibrate APIC timer against PIT */
+    uint32_t ticks_10ms = calibrate_apic_timer();
+    uint32_t ticks_per_sec = ticks_10ms * 100;
+    kprintf("[APIC] Timer: %u ticks/10ms = ~%u Hz (div/16)\n",
+            ticks_10ms, ticks_per_sec);
+
+    /* 8. Set up the APIC timer for periodic interrupts at 100 Hz
+     *    (10ms period = scheduler tick rate for Phase 1) */
+    lapic_write(LAPIC_TIMER_DIV,  LAPIC_TIMER_DIV_16);
+    lapic_write(LAPIC_LVT_TIMER,  LAPIC_TIMER_PERIODIC | IRQ_TIMER);
+    lapic_write(LAPIC_TIMER_INIT, ticks_10ms);
+
+    kprintf("[APIC] Periodic timer started at 100 Hz (vector 0x%x)\n", IRQ_TIMER);
+}
+
+/* -----------------------------------------------------------------------
+ * apic_eoi — send End-of-Interrupt
+ * ----------------------------------------------------------------------- */
+void apic_eoi(void)
+{
+    lapic_write(LAPIC_EOI, 0);
+}
+
+/* -----------------------------------------------------------------------
+ * apic_timer_current
+ * ----------------------------------------------------------------------- */
+uint32_t apic_timer_current(void)
+{
+    return lapic_read(LAPIC_TIMER_CURR);
+}
+
+/* -----------------------------------------------------------------------
+ * apic_id — return this CPU's APIC ID
+ * ----------------------------------------------------------------------- */
+uint8_t apic_id(void)
+{
+    return (uint8_t)(lapic_read(LAPIC_ID) >> 24);
+}
