@@ -31,6 +31,9 @@
  *  18. VFS Layer        (VfsInitialize)
  *  19. InitRD driver    (InitrdMount)
  *
+ *  Phase 5 — Process Isolation & User-Mode Foundation
+ *  20. KPCR             (KiInitializeKpcr — GS base for per-CPU state)
+ *
  *  Enable IRQs, create test threads, enter idle loop.
  */
 
@@ -58,6 +61,7 @@
 #include "../ldr/ldr.h"
 #include "../fs/vfs.h"
 #include "../fs/initrd.h"
+#include "kpcr.h"
 
 /* -----------------------------------------------------------------------
  * Banner
@@ -74,7 +78,7 @@ static void print_banner(void)
     kprintf("  ╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝\n");
     kprintf("\n");
     fb_set_colors(FB_BOOT_FG, FB_BOOT_BG);
-    kprintf("  Windows-compatible OS kernel  [Phase 4 — VFS & InitRD]\n");
+    kprintf("  Windows-compatible OS kernel  [Phase 5 — Process Isolation]\n");
     kprintf("  Built: " __DATE__ " " __TIME__ "\n");
     kprintf("\n");
 }
@@ -282,7 +286,27 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     }
 
     /* ------------------------------------------------------------------
-     * STEP 20: Create test threads, then enable IRQs
+     * STEP 20 (Phase 5): KPCR — Kernel Processor Control Region
+     * Programs MSR_KERNEL_GS_BASE so that SWAPGS in syscall_entry.asm
+     * switches GS to the KPCR (saving user GS / TEB pointer).
+     * Also initializes KPCR.KernelRsp for the initial boot thread.
+     * ------------------------------------------------------------------ */
+    kprintf("=== Phase 5: KPCR ===\n");
+    KiInitializeKpcr();
+
+    /* Seed KPCR.KernelRsp with the idle thread's kernel stack top.
+     * The scheduler updates this on every context switch. */
+    {
+        PKPCR kpcr = KiGetCurrentKpcr();
+        Thread *idle = sched_current();
+        if (kpcr && idle && idle->kernel_stack) {
+            kpcr->KernelRsp = (UINT64)((uintptr_t)idle->kernel_stack
+                                       + idle->stack_size);
+        }
+    }
+
+    /* ------------------------------------------------------------------
+     * STEP 21: Create test threads, then enable IRQs
      * ------------------------------------------------------------------ */
     kprintf("=== Creating test threads ===\n");
     sched_create_thread("thread_a",  thread_a,           NULL, 8);
@@ -291,7 +315,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
 
     sched_dump();
 
-    kprintf("\n[NovaOS] Phase 4 initialized. Enabling interrupts...\n");
+    kprintf("\n[NovaOS] Phase 5 initialized. Enabling interrupts...\n");
     sti();
 
     kprintf("[NovaOS] Entering kernel main loop\n");

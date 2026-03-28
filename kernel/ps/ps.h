@@ -325,6 +325,18 @@ typedef struct _ETHREAD {
 #define PROCESS_PRIORITY_CLASS_ABOVE_NORMAL    6
 
 /* -----------------------------------------------------------------------
+ * User-mode virtual address layout (fixed for Phase 5; ASLR is Phase 7+)
+ *
+ * These addresses are in the user lower half (< 0x800000000000).
+ * Each occupies exactly one 4KiB page.
+ *
+ * PEB: Process Environment Block (accessed via NtQueryInformationProcess)
+ * TEB: Thread Environment Block  (GS base in ring-3, one per thread)
+ * ----------------------------------------------------------------------- */
+#define USER_PEB_VA  UINT64_C(0x00007FFFFFFF0000)   /* PEB, 4 KiB */
+#define USER_TEB_VA  UINT64_C(0x00007FFFFFFFE000)   /* TEB for first thread, 4 KiB */
+
+/* -----------------------------------------------------------------------
  * Public API
  * ----------------------------------------------------------------------- */
 
@@ -383,6 +395,16 @@ NTSTATUS PsCreateUserProcess(
     const char     *ImageName,
     PEPROCESS      *ProcessOut,
     HANDLE         *ThreadHandle);
+
+/*
+ * Allocate and map PEB and TEB pages into the process address space.
+ * Initializes TEB.NtTib.Self, TEB.ProcessEnvironmentBlock, TEB.ClientId,
+ * and basic PEB fields.
+ *
+ * Requires: Process->Pcb.DirectoryTableBase must already be set.
+ * Called from PsUserThreadEntry before entering ring-3.
+ */
+NTSTATUS PsAllocatePebTeb(PEPROCESS Process, PETHREAD Thread, UINT64 ImageBase);
 
 /*
  * The user-mode thread entry trampoline.

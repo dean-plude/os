@@ -1,6 +1,6 @@
 ; syscall_entry.asm — KiSystemCall64: SYSCALL fast-path entry
 ;
-; Entered via SYSCALL instruction from user mode.
+; Entered via SYSCALL instruction from user mode (CPL=3 → CPL=0).
 ; On entry (CPU has already done):
 ;   RCX  ← user RIP (return address for SYSRET)
 ;   R11  ← user RFLAGS
@@ -9,26 +9,30 @@
 ;   SS   ← kernel SS from MSR_STAR[47:32]+8
 ;   IF   ← 0 (cleared by MSR_SFMASK)
 ;
-; NT convention for syscall arguments:
+; NT convention for syscall arguments (ntdll syscall stub):
 ;   RAX = syscall number
 ;   R10 = arg1 (ntdll moves RCX → R10 before SYSCALL because SYSCALL clobbers RCX)
 ;   RDX = arg2
 ;   R8  = arg3
 ;   R9  = arg4
 ;
-; Our calling convention to KiSystemCallDispatch:
+; Our calling convention to KiSystemCallDispatch (System V AMD64):
 ;   RDI = num (RAX)
 ;   RSI = arg1 (R10)
 ;   RDX = arg2 (unchanged)
 ;   RCX = arg3 (R8)
 ;   R8  = arg4 (R9)
 ;
-; Stack usage: We use the kernel stack (loaded from TSS.RSP0).
-; Phase 2: We run entirely in ring 0, so RSP is already the kernel stack.
-;          We just need to align the stack and call the C dispatcher.
+; Phase 5 additions:
+;   SWAPGS on entry  — GS now points to KPCR, user GS saved in MSR_GS_BASE
+;   Save user RSP in KPCR.UserRsp
+;   Load kernel stack from KPCR.KernelRsp (or TSS.RSP0 for nested calls)
+;   SWAPGS on exit   — restores user GS (TEB pointer)
 ;
-; Note: SWAPGS would normally be used to switch GS to kernel KPCR here,
-;       but Phase 2 has no user mode, so we skip SWAPGS.
+; KPCR offsets (must match kpcr.h):
+%define KPCR_CURRENT_THREAD  0x08
+%define KPCR_USER_RSP        0x20
+%define KPCR_KERNEL_RSP      0x28
 
 bits 64
 
@@ -37,68 +41,61 @@ extern KiSystemCallDispatch
 
 KiSystemCall64:
     ; -----------------------------------------------------------------------
-    ; Phase 2: no user mode transitions yet.
-    ; RSP is already the kernel stack.  We only need to:
-    ;   1. Save the volatile registers that the ABI says we may clobber
-    ;      (caller-saved: RAX, RCX, RDX, RSI, RDI, R8-R11)
-    ;      — but since we're calling a C function, the C ABI takes care of
-    ;      the callee-saved set.  We just need to save RCX/R11 (user RIP/RFLAGS)
-    ;      so we can SYSRET later.
-    ;   2. Build the argument list for KiSystemCallDispatch.
-    ;   3. Call the C dispatcher.
-    ;   4. SYSRET.
+    ; Phase 5: user mode is live — SWAPGS to switch GS to KPCR.
     ; -----------------------------------------------------------------------
+    swapgs                  ; GS → KPCR, user GS saved in MSR_KERNEL_GS_BASE
 
-    ; Align stack to 16 bytes (SYSCALL doesn't push a return address,
-    ; so RSP is not necessarily aligned at this point).
-    ; We push an 8-byte value to make it aligned before the CALL.
+    ; Save user RSP and switch to kernel stack.
+    ; KPCR.UserRsp = user RSP so we can restore it on SYSRET.
+    mov     gs:[KPCR_USER_RSP], rsp
+
+    ; Load kernel stack.  KPCR.KernelRsp is set by the scheduler to the
+    ; top of the current thread's kernel stack.
+    mov     rsp, gs:[KPCR_KERNEL_RSP]
+
+    ; -----------------------------------------------------------------------
+    ; We are now on the kernel stack.
+    ; Push a minimal trap frame:
+    ;   [rsp+0]  = user RFLAGS (R11)
+    ;   [rsp+8]  = user RIP    (RCX)
+    ;   [rsp+16] = user RSP    (saved from KPCR)
+    ;   [rsp+24] = rbp         (saved for frame pointer chain)
+    ; -----------------------------------------------------------------------
+    push    r11                         ; user RFLAGS
+    push    rcx                         ; user RIP
+    push    gs:[KPCR_USER_RSP]          ; user RSP
     push    rbp
     mov     rbp, rsp
 
-    ; Save user RIP (RCX) and RFLAGS (R11) — needed for SYSRET
-    push    rcx         ; user RIP
-    push    r11         ; user RFLAGS
+    ; Sub 8 to keep 16-byte alignment (5 pushes total = 40 bytes, need +8)
+    sub     rsp, 8
 
-    ; Save caller-saved registers we'll clobber
-    push    rax         ; syscall number
-
-    ; Align stack: we've pushed 4×8 = 32 bytes after rbp push
-    ; RSP needs to be 16-byte aligned before CALL.  Push a dummy if needed.
-    ; Stack at this point (relative to saved rbp): 5 pushes = 40 bytes
-    ; 40 % 16 = 8 → need one more push to get to 48 → 16-aligned
-    sub     rsp, 8      ; alignment pad
-
+    ; -----------------------------------------------------------------------
     ; Build arguments for KiSystemCallDispatch(num, arg1, arg2, arg3, arg4)
-    ; System V AMD64 ABI: RDI, RSI, RDX, RCX, R8
-    mov     rdi, rax    ; num = RAX
-    mov     rsi, r10    ; arg1 = R10 (ntdll's RCX)
-    ; RDX already = arg2
-    mov     rcx, r8     ; arg3 = R8
-    mov     r8,  r9     ; arg4 = R9
+    ; -----------------------------------------------------------------------
+    mov     rdi, rax        ; num  = RAX (syscall number)
+    mov     rsi, r10        ; arg1 = R10 (ntdll moved RCX → R10)
+    ; RDX = arg2 (unchanged)
+    mov     rcx, r8         ; arg3 = R8
+    mov     r8,  r9         ; arg4 = R9
 
     call    KiSystemCallDispatch
+    ; RAX = NTSTATUS return value
 
-    ; RAX = NTSTATUS return value — pass it back to user in RAX
+    ; -----------------------------------------------------------------------
+    ; Return path
+    ; -----------------------------------------------------------------------
+    add     rsp, 8          ; remove alignment pad
+    pop     rbp
+    pop     gs:[KPCR_USER_RSP]  ; discard (already in rsp slot below)
+    pop     rcx             ; user RIP → RCX (SYSRET uses this)
+    pop     r11             ; user RFLAGS → R11 (SYSRET uses this)
 
-    ; Restore alignment pad
-    add     rsp, 8
+    ; Restore user RSP
+    mov     rsp, gs:[KPCR_USER_RSP]
 
-    ; Restore saved registers
-    pop     rax         ; discard saved syscall number; RAX has return value
-    pop     r11         ; user RFLAGS
-    pop     rcx         ; user RIP
+    ; SWAPGS restores user GS (TEB pointer)
+    swapgs
 
-    ; Save NTSTATUS into a scratch register before we restore RBP
-    ; (RAX already has the return value from KiSystemCallDispatch)
-    ; We must not clobber RAX now.
-    pop     rbp         ; restore caller's RBP (the one we pushed first)
-
-    ; Note: RSP is not restored here — it was never changed because we
-    ; stayed on the kernel stack.  For Phase 2 (kernel-only), we're done.
-
-    ; SYSRETQ returns to 64-bit user mode:
-    ;   RCX → RIP, R11 → RFLAGS, CS ← user CS, SS ← user SS
-    ; (In Phase 2, since we're ring-0-only, this returns to wherever
-    ;  the kernel called SYSCALL from — or simply falls through for
-    ;  the INT 2E path.)
+    ; SYSRETQ: RCX→RIP, R11→RFLAGS, switches to CPL=3
     sysretq

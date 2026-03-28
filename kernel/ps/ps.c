@@ -28,6 +28,9 @@
 #include "../include/types.h"
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/gdt.h"
+#include "../arch/x86_64/paging.h"
+#include "../mm/pmm.h"
+#include "../ke/kpcr.h"
 #include "../ldr/ldr.h"
 
 /* -----------------------------------------------------------------------
@@ -355,6 +358,75 @@ NTSTATUS PsLookupThreadByThreadId(UINT64 Tid, PETHREAD *ThreadOut)
 }
 
 /* -----------------------------------------------------------------------
+ * PsAllocatePebTeb — allocate and map PEB + TEB into the process's VA space
+ *
+ * Physical pages are allocated from the PMM and mapped via paging_map_in_pt()
+ * into the process's private PML4 (not the kernel's global PML4).
+ * The PEB and TEB are initialized via the physmap window.
+ * ----------------------------------------------------------------------- */
+NTSTATUS PsAllocatePebTeb(PEPROCESS proc, PETHREAD thread, UINT64 image_base)
+{
+    uintptr_t pt_phys = (uintptr_t)proc->Pcb.DirectoryTableBase;
+    if (!pt_phys) return STATUS_INVALID_PARAMETER;
+
+    /* Allocate one physical page for the PEB */
+    uintptr_t peb_pa = pmm_alloc_page();
+    if (!peb_pa) return STATUS_NO_MEMORY;
+    __builtin_memset((void *)(PHYSMAP_BASE + peb_pa), 0, PAGE_SIZE);
+
+    /* Allocate one physical page for the TEB */
+    uintptr_t teb_pa = pmm_alloc_page();
+    if (!teb_pa) {
+        pmm_free_page(peb_pa);
+        return STATUS_NO_MEMORY;
+    }
+    __builtin_memset((void *)(PHYSMAP_BASE + teb_pa), 0, PAGE_SIZE);
+
+    /* Map PEB into the process page table */
+    NTSTATUS s = paging_map_in_pt(pt_phys, USER_PEB_VA, peb_pa,
+                                   MAP_USER | MAP_WRITABLE);
+    if (!NT_SUCCESS(s)) {
+        pmm_free_page(peb_pa);
+        pmm_free_page(teb_pa);
+        return s;
+    }
+
+    /* Map TEB into the process page table */
+    s = paging_map_in_pt(pt_phys, USER_TEB_VA, teb_pa,
+                          MAP_USER | MAP_WRITABLE);
+    if (!NT_SUCCESS(s)) {
+        pmm_free_page(peb_pa);
+        pmm_free_page(teb_pa);
+        return s;
+    }
+
+    /* Initialize PEB fields via physmap */
+    PEB *peb = (PEB *)(PHYSMAP_BASE + peb_pa);
+    peb->NumberOfProcessors = 1;
+    peb->ImageBaseAddress   = (void *)(uintptr_t)image_base;
+
+    /* Initialize TEB fields via physmap.
+     * NtTib.Self must point back to the TEB (GS:[0x30] = self).
+     * TEB is accessed in user mode at USER_TEB_VA via GS segment. */
+    TEB *teb = (TEB *)(PHYSMAP_BASE + teb_pa);
+    teb->NtTib.Self                  = (NT_TIB *)(uintptr_t)USER_TEB_VA;
+    teb->ProcessEnvironmentBlock     = (struct _PEB *)(uintptr_t)USER_PEB_VA;
+    teb->ClientId.UniqueProcess      = proc->UniqueProcessId;
+    teb->ClientId.UniqueThread       = thread ? thread->UniqueThread : 0;
+
+    /* Store user-mode VAs in the kernel structures */
+    proc->Peb   = (PEB *)(uintptr_t)USER_PEB_VA;
+    thread->Teb = (TEB *)(uintptr_t)USER_TEB_VA;
+
+    kprintf("[PS] PEB=0x%llx TEB=0x%llx (PID=%lu TID=%lu)\n",
+            (unsigned long long)USER_PEB_VA,
+            (unsigned long long)USER_TEB_VA,
+            proc->UniqueProcessId,
+            thread ? thread->UniqueThread : 0ULL);
+    return STATUS_SUCCESS;
+}
+
+/* -----------------------------------------------------------------------
  * User-mode thread context (passed through PsUserThreadEntry)
  * ----------------------------------------------------------------------- */
 typedef struct _USER_THREAD_CONTEXT {
@@ -380,21 +452,52 @@ void PsUserThreadEntry(void *arg)
 {
     USER_THREAD_CONTEXT *ctx = (USER_THREAD_CONTEXT *)arg;
 
-    /* Update the TSS RSP0 for this thread (kernel stack for syscall returns) */
     PETHREAD et = PsGetCurrentThread();
+    PEPROCESS proc = et ? et->Process : NULL;
+
+    /* Update the TSS RSP0 for this thread (kernel stack for syscall returns) */
     if (et) {
         uintptr_t kstack_top = (uintptr_t)et->Tcb.SchedulerThread.kernel_stack
                              + et->Tcb.SchedulerThread.stack_size;
         gdt_set_rsp0(kstack_top);
     }
 
+    /* Phase 5: set up per-process page table and user GS (TEB).
+     * This must happen before IRETQ switches the CPU to ring-3. */
+    if (proc && proc->Pcb.DirectoryTableBase) {
+        Thread *sched_t = &et->Tcb.SchedulerThread;
+
+        /* Record the CR3 in the scheduler thread so perform_switch()
+         * reloads it on every subsequent context switch. */
+        sched_t->cr3 = proc->Pcb.DirectoryTableBase;
+
+        /* Allocate and map PEB/TEB if not already done */
+        if (!proc->Peb) {
+            NTSTATUS s = PsAllocatePebTeb(proc, et, ctx->ImageBase);
+            if (!NT_SUCCESS(s)) {
+                kprintf("[PS] PsAllocatePebTeb failed: 0x%x\n", (UINT32)s);
+            }
+        }
+
+        /* Load the process's private page table into CR3 */
+        paging_load_cr3((uintptr_t)sched_t->cr3);
+
+        /* Set MSR_GS_BASE = TEB VA so that, after SWAPGS on the first
+         * syscall entry, GS in kernel mode points to the KPCR and
+         * MSR_KERNEL_GS_BASE holds the TEB address for SYSRET. */
+        if (et->Teb) {
+            wrmsr(MSR_GS_BASE, (UINT64)(uintptr_t)et->Teb);
+        }
+    }
+
     UINT64 entry_point = ctx->EntryPoint;
     UINT64 stack_top   = ctx->StackTop;
     kfree(ctx);  /* Free the context struct before we can't return */
 
-    kprintf("[PS] Entering user mode: RIP=0x%llx RSP=0x%llx\n",
+    kprintf("[PS] Entering user mode: RIP=0x%llx RSP=0x%llx CR3=0x%llx\n",
             (unsigned long long)entry_point,
-            (unsigned long long)stack_top);
+            (unsigned long long)stack_top,
+            (unsigned long long)(proc ? proc->Pcb.DirectoryTableBase : 0ULL));
 
     /* Build IRETQ frame and jump to user mode:
      *   User SS   (pushed last by IRETQ logic, so first on stack)
@@ -477,6 +580,22 @@ NTSTATUS PsCreateUserProcess(
     }
 
     proc->SectionObject = NULL;  /* will be set by LdrLoadImage in Phase 4 */
+
+    /* Phase 5: Create a per-process page table.
+     * paging_create_process_pt() allocates a fresh PML4 that shares the
+     * kernel upper-half entries (256-511).  We then snapshot the current
+     * user-space entries (0-255) from the kernel PML4 so the process can
+     * access the PE image and stack that LdrLoadImage just mapped. */
+    uintptr_t pt_phys = paging_create_process_pt();
+    if (!pt_phys) {
+        kprintf("[PS] paging_create_process_pt failed\n");
+        PsTerminateProcess(proc, STATUS_NO_MEMORY);
+        ObDereferenceObject(proc);
+        return STATUS_NO_MEMORY;
+    }
+    paging_clone_user_mappings(pt_phys);
+    proc->Pcb.DirectoryTableBase = pt_phys;
+    kprintf("[PS] Process CR3 = 0x%llx\n", (unsigned long long)pt_phys);
 
     kprintf("[PS] Process '%s' loaded: base=0x%llx entry=0x%llx stack=0x%llx\n",
             ImageName,

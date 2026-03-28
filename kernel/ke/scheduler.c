@@ -24,9 +24,11 @@
 
 #include "scheduler.h"
 #include "printf.h"
+#include "kpcr.h"
 #include "../mm/vmm.h"
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/gdt.h"
+#include "../arch/x86_64/paging.h"
 
 /* -----------------------------------------------------------------------
  * Globals
@@ -309,7 +311,17 @@ static void perform_switch(void)
 
         /* Update TSS RSP0 to new thread's kernel stack top
          * (used when this thread returns to ring 3 in the future) */
-        gdt_set_rsp0((uintptr_t)next->kernel_stack + next->stack_size);
+        uintptr_t kstack_top = (uintptr_t)next->kernel_stack + next->stack_size;
+        gdt_set_rsp0(kstack_top);
+
+        /* Phase 5: Update KPCR.KernelRsp so syscall_entry.asm picks up the
+         * correct kernel stack when this thread makes a system call. */
+        PKPCR kpcr = KiGetCurrentKpcr();
+        if (kpcr) kpcr->KernelRsp = (UINT64)kstack_top;
+
+        /* Phase 5: Switch address space if the thread belongs to a user
+         * process with its own page table (cr3 != 0). */
+        if (next->cr3) paging_load_cr3((uintptr_t)next->cr3);
 
         sched_lock_release();
 

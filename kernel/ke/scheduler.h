@@ -79,6 +79,11 @@ typedef struct Thread {
     /* Scheduling priority (0 = lowest, 31 = highest in NT model) */
     uint8_t         priority;
 
+    /* Page table root (CR3 physical address) for this thread's process.
+     * 0 = kernel thread (no CR3 switch needed).
+     * Set before the first user-mode entry in PsUserThreadEntry. */
+    uint64_t        cr3;
+
     /* Future: pointer to owning KPROCESS */
     void           *process;
 } Thread;
