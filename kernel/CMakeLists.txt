@@ -87,6 +87,7 @@ set(KERNEL_INCLUDE_DIRS
 set(KERNEL_ASM_SOURCES
     arch/x86_64/entry.asm
     arch/x86_64/isr_stubs.asm
+    arch/x86_64/syscall_entry.asm
 )
 
 # -------------------------------------------------------------------------
@@ -105,6 +106,17 @@ set(KERNEL_C_SOURCES
     ke/main.c
     ke/printf.c
     ke/scheduler.c
+    ke/syscall.c
+    ob/ob.c
+    ps/ps.c
+    cm/cm.c
+    se/se.c
+    io/io.c
+    mm/vma.c
+    mm/section.c
+    ldr/ldr.c
+    fs/vfs.c
+    fs/initrd.c
     lib/string.c
 )
 

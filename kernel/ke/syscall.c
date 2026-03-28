@@ -434,23 +434,49 @@ static NTSTATUS sys_NtCreateFile(UINT64 FileHandlePtr, UINT64 DesiredAccess,
     return s;
 }
 
-/* --- NtReadFile (0x0006) --- */
-static NTSTATUS sys_NtReadFile(UINT64 FileHandle, UINT64 Event,
-                                 UINT64 ApcRoutine, UINT64 ApcContext)
+/* --- NtReadFile (0x0006) ---
+ * Args: FileHandle, Event, ApcRoutine, ApcContext,
+ *       IoStatusBlock (5th), Buffer (6th), Length (7th),
+ *       ByteOffset (8th), Key (9th)
+ * Phase 4: dispatch first 4 args via registers; remaining via pointer args
+ * encoded in a3/a4 as IoStatusBlock and Buffer ptr for simple callers. */
+static NTSTATUS sys_NtReadFile(UINT64 FileHandle, UINT64 IoStatusPtr,
+                                 UINT64 BufferPtr, UINT64 Length)
 {
-    /* remaining args (IoStatusBlock, Buffer, Length, ByteOffset, Key)
-     * are on user stack — Phase 3 stub only handles first 4 args */
-    (void)Event; (void)ApcRoutine; (void)ApcContext;
-    /* Cannot access user stack from here in Phase 3 without trap frame */
-    return STATUS_NOT_IMPLEMENTED;
+    IO_STATUS_BLOCK isb;
+    __builtin_memset(&isb, 0, sizeof(isb));
+
+    void   *buf = (void *)(uintptr_t)BufferPtr;
+    UINT32  len = (UINT32)Length;
+
+    NTSTATUS s = IoReadFile((HANDLE)FileHandle,
+                             NULL, NULL, NULL,
+                             &isb,
+                             buf, len,
+                             NULL, NULL);
+
+    if (IoStatusPtr) *(IO_STATUS_BLOCK *)(uintptr_t)IoStatusPtr = isb;
+    return s;
 }
 
 /* --- NtWriteFile (0x0008) --- */
-static NTSTATUS sys_NtWriteFile(UINT64 FileHandle, UINT64 Event,
-                                  UINT64 ApcRoutine, UINT64 ApcContext)
+static NTSTATUS sys_NtWriteFile(UINT64 FileHandle, UINT64 IoStatusPtr,
+                                  UINT64 BufferPtr, UINT64 Length)
 {
-    (void)FileHandle; (void)Event; (void)ApcRoutine; (void)ApcContext;
-    return STATUS_NOT_IMPLEMENTED;
+    IO_STATUS_BLOCK isb;
+    __builtin_memset(&isb, 0, sizeof(isb));
+
+    void   *buf = (void *)(uintptr_t)BufferPtr;
+    UINT32  len = (UINT32)Length;
+
+    NTSTATUS s = IoWriteFile((HANDLE)FileHandle,
+                              NULL, NULL, NULL,
+                              &isb,
+                              buf, len,
+                              NULL, NULL);
+
+    if (IoStatusPtr) *(IO_STATUS_BLOCK *)(uintptr_t)IoStatusPtr = isb;
+    return s;
 }
 
 /* --- NtQueryInformationFile (0x0011) --- */

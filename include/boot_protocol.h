@@ -19,7 +19,7 @@
 
 /* Increment BOOT_PROTOCOL_VERSION when the struct layout changes. */
 #define BOOT_MAGIC            UINT64_C(0x4E4F564100424F4F)   /* "NOVA\0BOO" */
-#define BOOT_PROTOCOL_VERSION 1
+#define BOOT_PROTOCOL_VERSION 2
 
 /* -----------------------------------------------------------------------
  * Memory map — mirrors UEFI EFI_MEMORY_DESCRIPTOR, but uses our own
@@ -95,6 +95,11 @@ typedef struct {
 
     /* Initial stack the bootloader set up for the kernel entry call */
     uint64_t         boot_stack_top;       /* Virtual address (stack grows down) */
+
+    /* Initial ramdisk (CPIO newc archive, optional)
+     * Set to 0/0 if no initrd was loaded. */
+    uint64_t         initrd_base;          /* Physical base address */
+    uint64_t         initrd_size;          /* Size in bytes */
 } BootInfo;
 
 /* Sanity check: kernel entry function signature */

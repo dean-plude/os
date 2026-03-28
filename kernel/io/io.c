@@ -25,6 +25,7 @@
 #include "../lib/string.h"
 #include "../include/types.h"
 #include "../arch/x86_64/cpu.h"
+#include "../fs/vfs.h"
 
 /* -----------------------------------------------------------------------
  * FILE_OBJECT type (registered with Object Manager)
@@ -458,8 +459,37 @@ NTSTATUS IoCreateFile(
     if (!ObjectAttributes || !ObjectAttributes->ObjectName)
         return STATUS_INVALID_PARAMETER;
 
-    /* Look up device by name */
-    PDEVICE_OBJECT dev = IoGetDeviceObjectByName(ObjectAttributes->ObjectName);
+    /* Extract path as narrow string for VFS resolution.
+     * UNICODE_STRING.Buffer is ASCII (kernel internal convention). */
+    const char *full_path = NULL;
+    if (ObjectAttributes->ObjectName->Buffer)
+        full_path = (const char *)ObjectAttributes->ObjectName->Buffer;
+
+    PDEVICE_OBJECT dev      = NULL;
+    const char    *rel_path = "";
+
+    /* First try: exact device name match (e.g. "\Device\Null") */
+    dev = IoGetDeviceObjectByName(ObjectAttributes->ObjectName);
+
+    /* Second try: VFS path resolution (e.g. "\??\C:\file.exe") */
+    if (!dev && full_path) {
+        VFS_MOUNT *mount = NULL;
+        NTSTATUS vs = VfsResolveMount(full_path, &mount, &rel_path);
+        if (NT_SUCCESS(vs) && mount) {
+            /* Convert ASCII device path to WCHAR for IoGetDeviceObjectByName */
+            WCHAR  wbuf[64];
+            UINT32 wlen = 0;
+            const char *ap = mount->DevicePath;
+            while (*ap && wlen < 63) wbuf[wlen++] = (WCHAR)(unsigned char)*ap++;
+            wbuf[wlen] = 0;
+            UNICODE_STRING dev_name_un;
+            dev_name_un.Buffer         = wbuf;
+            dev_name_un.Length         = (USHORT)(wlen * sizeof(WCHAR));
+            dev_name_un.MaximumLength  = (USHORT)((wlen + 1) * sizeof(WCHAR));
+            dev = IoGetDeviceObjectByName(&dev_name_un);
+        }
+    }
+
     if (!dev) return STATUS_OBJECT_NAME_NOT_FOUND;
 
     /* Allocate a FILE_OBJECT via the Object Manager */
@@ -484,11 +514,20 @@ NTSTATUS IoCreateFile(
     PIRP irp = IoAllocateIrp(1);
     if (!irp) { ObDereferenceObject(obj); return STATUS_NO_MEMORY; }
 
+    /* Wrap rel_path in a UNICODE_STRING for the driver */
+    UNICODE_STRING rel_name;
+    rel_name.Buffer = (void *)rel_path;
+    rel_name.Length = 0;
+    while (rel_path[rel_name.Length]) rel_name.Length++;
+    rel_name.MaximumLength = rel_name.Length + 1;
+
     PIO_STACK_LOCATION sl = IoGetCurrentIrpStackLocation(irp);
     sl->MajorFunction    = IRP_MJ_CREATE;
     sl->FileObject        = fo;
     sl->Parameters.Create.Options =
         (UINT32)(CreateDisposition << 24) | (CreateOptions & 0x00FFFFFF);
+    sl->Parameters.Create.FileObject = fo;
+    sl->Parameters.Create.FileName   = &rel_name;
 
     irp->RequestorMode = 1; /* UserMode */
 
@@ -547,6 +586,7 @@ NTSTATUS IoReadFile(
     sl->Parameters.Read.Length     = Length;
     sl->Parameters.Read.ByteOffset = ByteOffset ? *ByteOffset
                                                  : fo->CurrentByteOffset;
+    sl->Parameters.Read.FileObject = fo;
 
     s = IoCallDriver(fo->DeviceObject, irp);
     UINT64 bytes = irp->IoStatus.Information;
@@ -630,7 +670,35 @@ NTSTATUS IoQueryInformationFile(
     if (!NT_SUCCESS(s)) return s;
 
     PFILE_OBJECT fo = (PFILE_OBJECT)obj;
-    (void)fo;
+
+    /* If the file is backed by a device driver (FsContext set), dispatch
+     * IRP_MJ_QUERY_INFORMATION so the driver can supply accurate metadata. */
+    if (fo->FsContext && fo->DeviceObject) {
+        PIRP irp = IoAllocateIrp(1);
+        if (!irp) { ObDereferenceObject(obj); return STATUS_NO_MEMORY; }
+
+        irp->SystemBuffer    = FileInformation;
+        irp->SystemBufferLen = Length;
+
+        PIO_STACK_LOCATION sl = IoGetCurrentIrpStackLocation(irp);
+        sl->MajorFunction                    = IRP_MJ_QUERY_INFORMATION;
+        sl->FileObject                       = fo;
+        sl->Parameters.QueryFile.Length              = Length;
+        sl->Parameters.QueryFile.FileInformationClass = FileInformationClass;
+        sl->Parameters.QueryFile.Buffer              = FileInformation;
+        sl->Parameters.QueryFile.FileObject          = fo;
+
+        s = IoCallDriver(fo->DeviceObject, irp);
+        ULONG_PTR info_len = irp->IoStatus.Information;
+        IoFreeIrp(irp);
+
+        if (IoStatusBlock) {
+            IoStatusBlock->Status      = s;
+            IoStatusBlock->Information = info_len;
+        }
+        ObDereferenceObject(obj);
+        return s;
+    }
 
     switch (FileInformationClass) {
     case FileStandardInformation:

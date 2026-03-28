@@ -381,6 +381,18 @@ void sched_unblock(Thread *t)
 }
 
 /* -----------------------------------------------------------------------
+ * sched_enqueue_thread — public API for PS to enqueue pre-built threads
+ * ----------------------------------------------------------------------- */
+void sched_enqueue_thread(Thread *t)
+{
+    IrqState irq = irq_save();
+    sched_lock_acquire();
+    ready_enqueue(t);
+    sched_lock_release();
+    irq_restore(irq);
+}
+
+/* -----------------------------------------------------------------------
  * sched_dump
  * ----------------------------------------------------------------------- */
 void sched_dump(void)

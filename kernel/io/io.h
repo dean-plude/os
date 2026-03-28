@@ -197,26 +197,32 @@ struct _IO_STACK_LOCATION {
             USHORT          FileAttributes;
             USHORT          ShareAccess;
             UINT32          EaLength;
+            PFILE_OBJECT    FileObject;    /* Target FILE_OBJECT */
+            UNICODE_STRING *FileName;      /* Path relative to device (ASCII buf) */
         } Create;
 
         /* IRP_MJ_READ */
         struct {
-            UINT32  Length;
-            UINT32  POINTER_ALIGNMENT Key;
-            UINT64  ByteOffset;
+            UINT32       Length;
+            UINT32       POINTER_ALIGNMENT Key;
+            UINT64       ByteOffset;
+            PFILE_OBJECT FileObject;
         } Read;
 
         /* IRP_MJ_WRITE */
         struct {
-            UINT32  Length;
-            UINT32  POINTER_ALIGNMENT Key;
-            UINT64  ByteOffset;
+            UINT32       Length;
+            UINT32       POINTER_ALIGNMENT Key;
+            UINT64       ByteOffset;
+            PFILE_OBJECT FileObject;
         } Write;
 
         /* IRP_MJ_QUERY_INFORMATION / IRP_MJ_SET_INFORMATION */
         struct {
             UINT32                  Length;
             FILE_INFORMATION_CLASS  FileInformationClass;
+            void                   *Buffer;     /* Output buffer */
+            PFILE_OBJECT            FileObject;
         } QueryFile;
 
         /* IRP_MJ_DEVICE_CONTROL */
