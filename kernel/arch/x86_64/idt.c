@@ -11,7 +11,6 @@
 #include "apic.h"
 #include "../../hal/serial.h"
 #include "../../ke/printf.h"
-#include "../../ke/syscall.h"
 
 /* Assembly stub address table (defined in isr_stubs.asm) */
 extern uintptr_t isr_stub_table[IDT_ENTRIES];
@@ -232,14 +231,11 @@ void interrupt_dispatch(InterruptFrame *frame)
 
     /* ---- NT Syscall (int 0x2E) ---- */
     if (vector == VECTOR_SYSCALL) {
-        /* Dispatch via the NT syscall table.
-         * Windows NT ABI: RAX=num, RCX=arg1, RDX=arg2, R8=arg3, R9=arg4 */
-        frame->rax = (uint64_t)KiSystemCallDispatch(
-            frame->rax,
-            frame->rcx,
-            frame->rdx,
-            frame->r8,
-            frame->r9);
+        /* Phase 4 will wire up the full syscall dispatcher.
+         * For now just log and return. */
+        kprintf("[SYSCALL] int 0x2E: RAX=0x%lx from RIP=0x%lx\n",
+                frame->rax, frame->rip);
+        frame->rax = (uint64_t)-1ULL;  /* STATUS_NOT_IMPLEMENTED */
         return;
     }
 

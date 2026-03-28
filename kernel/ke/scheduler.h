@@ -141,11 +141,3 @@ void sched_unblock(Thread *t);
  * Print scheduler state to the debug console (for diagnostics).
  */
 void sched_dump(void);
-
-/*
- * Add a pre-initialized Thread to the scheduler's ready queue.
- * Used by PsCreateSystemThread to enqueue ETHREAD-embedded threads
- * that were set up directly (bypassing sched_create_thread).
- * The Thread must be fully initialized (tid, stack, context, etc.).
- */
-void sched_enqueue_thread(Thread *t);
