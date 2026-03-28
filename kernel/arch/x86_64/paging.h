@@ -76,6 +76,59 @@ typedef uint32_t MapFlags;
 void paging_init(void);
 
 /*
+ * Return the physical address of the kernel's PML4.
+ * Used by MmCreateProcessPageTable to clone the kernel mappings.
+ */
+uintptr_t paging_get_kernel_cr3(void);
+
+/*
+ * Create a new per-process PML4.
+ * Copies all upper-half (kernel) PML4 entries from the kernel page table
+ * so the new address space has the same kernel mappings.
+ * Returns the physical address of the new PML4 (suitable for CR3).
+ * Returns 0 on allocation failure.
+ */
+uintptr_t paging_create_process_pt(void);
+
+/*
+ * Map a single 4 KiB page into a specific process page table.
+ *
+ * @pt_phys — physical address of the target PML4 (from paging_create_process_pt)
+ * @va      — virtual address to map (user-space, < 0x800000000000)
+ * @pa      — physical address of the page to map
+ * @flags   — combination of MAP_* flags (MAP_USER must be set)
+ */
+NTSTATUS paging_map_in_pt(uintptr_t pt_phys, uintptr_t va,
+                            uintptr_t pa, MapFlags flags);
+
+/*
+ * Clone PML4 entries 0–255 (user lower half) from the kernel's PML4
+ * into the target process page table.
+ * Call after LdrLoadImage has mapped the user-space pages into the kernel PML4
+ * so that the process page table reflects the same user-space mappings.
+ *
+ * @pt_phys — physical address of the target PML4 (from paging_create_process_pt)
+ */
+void paging_clone_user_mappings(uintptr_t pt_phys);
+
+/*
+ * Free all user-mode page table pages in a process PML4.
+ * Only frees pages that cover the user address range (VA < PHYSMAP_BASE).
+ * The PML4 page itself is also freed.
+ * Does NOT free the mapped physical pages — caller must free them.
+ */
+void paging_destroy_process_pt(uintptr_t pt_phys);
+
+/*
+ * Load a page table into CR3 (switch address space).
+ * @pt_phys — physical address of PML4 (0 = reload kernel PML4)
+ */
+static inline void paging_load_cr3(uintptr_t pt_phys)
+{
+    __asm__ volatile("mov %0, %%cr3" : : "r"(pt_phys) : "memory");
+}
+
+/*
  * Map a virtual address range to a physical address range.
  *
  * @va    — virtual start address (page-aligned)

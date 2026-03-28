@@ -107,6 +107,7 @@ set(KERNEL_C_SOURCES
     ke/printf.c
     ke/scheduler.c
     ke/syscall.c
+    ke/kpcr.c
     ob/ob.c
     ps/ps.c
     cm/cm.c
