@@ -164,7 +164,6 @@ set(KERNEL_LINK_FLAGS
 if(IS_CLANG)
     list(APPEND KERNEL_LINK_FLAGS
         -target x86_64-unknown-none-elf
-        -fuse-ld=lld
     )
 endif()
 
