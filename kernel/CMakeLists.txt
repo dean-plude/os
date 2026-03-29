@@ -43,6 +43,7 @@ set(KERNEL_CFLAGS
     -fno-builtin
     -nostdlib
     -mno-red-zone
+    -fshort-wchar
     -mno-mmx
     -mno-sse
     -mno-sse2
