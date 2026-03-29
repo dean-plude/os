@@ -24,6 +24,7 @@
 #include "../mm/vma.h"
 #include "../mm/section.h"
 #include "../io/io.h"
+#include "../ldr/user_stubs.h"  /* KH_xxx kernel-helper numbers */
 
 /* -----------------------------------------------------------------------
  * MSR addresses for SYSCALL/SYSRET
@@ -38,23 +39,26 @@
 
 /* -----------------------------------------------------------------------
  * Syscall handler typedef
+ * Returns UINT64 so that kernel-helper handlers can return 64-bit pointers
+ * (e.g., RtlAllocateHeap returns a user-mode VA).  NT syscall handlers cast
+ * their NTSTATUS return to UINT64 (zero-extends the 32-bit code into RAX).
  * ----------------------------------------------------------------------- */
-typedef NTSTATUS (*SYSCALL_HANDLER)(UINT64 a1, UINT64 a2,
-                                     UINT64 a3, UINT64 a4);
+typedef UINT64 (*SYSCALL_HANDLER)(UINT64 a1, UINT64 a2,
+                                   UINT64 a3, UINT64 a4);
 
 /* -----------------------------------------------------------------------
  * Individual syscall handler implementations
  * ----------------------------------------------------------------------- */
 
 /* --- NtClose (0x000F) --- */
-static NTSTATUS sys_NtClose(UINT64 Handle, UINT64 a2, UINT64 a3, UINT64 a4)
+static UINT64 sys_NtClose(UINT64 Handle, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a2; (void)a3; (void)a4;
     return ObCloseHandle((HANDLE)Handle, NULL);
 }
 
 /* --- NtYieldExecution (0x0046) --- */
-static NTSTATUS sys_NtYieldExecution(UINT64 a1, UINT64 a2,
+static UINT64 sys_NtYieldExecution(UINT64 a1, UINT64 a2,
                                       UINT64 a3, UINT64 a4)
 {
     (void)a1; (void)a2; (void)a3; (void)a4;
@@ -63,7 +67,7 @@ static NTSTATUS sys_NtYieldExecution(UINT64 a1, UINT64 a2,
 }
 
 /* --- NtDelayExecution (0x0034) --- */
-static NTSTATUS sys_NtDelayExecution(UINT64 Alertable,
+static UINT64 sys_NtDelayExecution(UINT64 Alertable,
                                       UINT64 DelayIntervalPtr,
                                       UINT64 a3, UINT64 a4)
 {
@@ -74,7 +78,7 @@ static NTSTATUS sys_NtDelayExecution(UINT64 Alertable,
 }
 
 /* --- NtQuerySystemTime (0x0052) --- */
-static NTSTATUS sys_NtQuerySystemTime(UINT64 SystemTimePtr,
+static UINT64 sys_NtQuerySystemTime(UINT64 SystemTimePtr,
                                        UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a2; (void)a3; (void)a4;
@@ -87,7 +91,7 @@ static NTSTATUS sys_NtQuerySystemTime(UINT64 SystemTimePtr,
 }
 
 /* --- NtQueryPerformanceCounter (0x0031) --- */
-static NTSTATUS sys_NtQueryPerformanceCounter(UINT64 CounterPtr,
+static UINT64 sys_NtQueryPerformanceCounter(UINT64 CounterPtr,
                                                UINT64 FreqPtr,
                                                UINT64 a3, UINT64 a4)
 {
@@ -99,7 +103,7 @@ static NTSTATUS sys_NtQueryPerformanceCounter(UINT64 CounterPtr,
 }
 
 /* --- NtQuerySystemInformation (0x0036) --- */
-static NTSTATUS sys_NtQuerySystemInformation(UINT64 InfoClass,
+static UINT64 sys_NtQuerySystemInformation(UINT64 InfoClass,
                                               UINT64 InfoPtr,
                                               UINT64 InfoLen,
                                               UINT64 ReturnLenPtr)
@@ -135,7 +139,7 @@ static NTSTATUS sys_NtQuerySystemInformation(UINT64 InfoClass,
 }
 
 /* --- NtQueryInformationProcess (0x0019) --- */
-static NTSTATUS sys_NtQueryInformationProcess(UINT64 ProcessHandle,
+static UINT64 sys_NtQueryInformationProcess(UINT64 ProcessHandle,
                                                UINT64 ProcInfoClass,
                                                UINT64 ProcInfoPtr,
                                                UINT64 ProcInfoLen)
@@ -183,7 +187,7 @@ static NTSTATUS sys_NtQueryInformationProcess(UINT64 ProcessHandle,
 }
 
 /* --- NtQueryInformationThread (0x0025) --- */
-static NTSTATUS sys_NtQueryInformationThread(UINT64 ThreadHandle,
+static UINT64 sys_NtQueryInformationThread(UINT64 ThreadHandle,
                                               UINT64 ThreadInfoClass,
                                               UINT64 ThreadInfoPtr,
                                               UINT64 ThreadInfoLen)
@@ -228,7 +232,7 @@ static NTSTATUS sys_NtQueryInformationThread(UINT64 ThreadHandle,
 }
 
 /* --- NtOpenProcess (0x0026) --- */
-static NTSTATUS sys_NtOpenProcess(UINT64 ProcessHandlePtr,
+static UINT64 sys_NtOpenProcess(UINT64 ProcessHandlePtr,
                                    UINT64 DesiredAccess,
                                    UINT64 ObjAttrPtr,
                                    UINT64 ClientIdPtr)
@@ -254,7 +258,7 @@ static NTSTATUS sys_NtOpenProcess(UINT64 ProcessHandlePtr,
 }
 
 /* --- NtAllocateVirtualMemory (0x0018) --- */
-static NTSTATUS sys_NtAllocateVirtualMemory(UINT64 ProcessHandle,
+static UINT64 sys_NtAllocateVirtualMemory(UINT64 ProcessHandle,
                                              UINT64 BaseAddressPtr,
                                              UINT64 RegionSizePtr,
                                              UINT64 AllocationType)
@@ -292,7 +296,7 @@ static NTSTATUS sys_NtAllocateVirtualMemory(UINT64 ProcessHandle,
 }
 
 /* --- NtFreeVirtualMemory (0x001E) --- */
-static NTSTATUS sys_NtFreeVirtualMemory(UINT64 ProcessHandle,
+static UINT64 sys_NtFreeVirtualMemory(UINT64 ProcessHandle,
                                          UINT64 BaseAddressPtr,
                                          UINT64 RegionSizePtr,
                                          UINT64 FreeType)
@@ -324,7 +328,7 @@ static NTSTATUS sys_NtFreeVirtualMemory(UINT64 ProcessHandle,
 }
 
 /* --- NtOpenKey (0x0012) --- */
-static NTSTATUS sys_NtOpenKey(UINT64 KeyHandlePtr, UINT64 DesiredAccess,
+static UINT64 sys_NtOpenKey(UINT64 KeyHandlePtr, UINT64 DesiredAccess,
                                UINT64 ObjAttrPtr, UINT64 a4)
 {
     (void)a4;
@@ -338,7 +342,7 @@ static NTSTATUS sys_NtOpenKey(UINT64 KeyHandlePtr, UINT64 DesiredAccess,
 }
 
 /* --- NtCreateKey (0x001D) --- */
-static NTSTATUS sys_NtCreateKey(UINT64 KeyHandlePtr, UINT64 DesiredAccess,
+static UINT64 sys_NtCreateKey(UINT64 KeyHandlePtr, UINT64 DesiredAccess,
                                   UINT64 ObjAttrPtr, UINT64 TitleIndex)
 {
     if (!KeyHandlePtr || !ObjAttrPtr) return STATUS_INVALID_PARAMETER;
@@ -353,7 +357,7 @@ static NTSTATUS sys_NtCreateKey(UINT64 KeyHandlePtr, UINT64 DesiredAccess,
 }
 
 /* --- NtQueryValueKey (0x0017) --- */
-static NTSTATUS sys_NtQueryValueKey(UINT64 KeyHandle, UINT64 ValueNamePtr,
+static UINT64 sys_NtQueryValueKey(UINT64 KeyHandle, UINT64 ValueNamePtr,
                                      UINT64 InfoClass, UINT64 InfoPtr)
 {
     /* Note: InfoLen and ResultLength are on user stack (args 5/6) —
@@ -368,7 +372,7 @@ static NTSTATUS sys_NtQueryValueKey(UINT64 KeyHandle, UINT64 ValueNamePtr,
 }
 
 /* --- NtSetValueKey (0x0027) --- */
-static NTSTATUS sys_NtSetValueKey(UINT64 KeyHandle, UINT64 ValueNamePtr,
+static UINT64 sys_NtSetValueKey(UINT64 KeyHandle, UINT64 ValueNamePtr,
                                    UINT64 TitleIndex, UINT64 Type)
 {
     /* Data and DataSize are on user stack — Phase 2 stub ignores them */
@@ -381,7 +385,7 @@ static NTSTATUS sys_NtSetValueKey(UINT64 KeyHandle, UINT64 ValueNamePtr,
 }
 
 /* --- NtTerminateProcess (0x002C) --- */
-static NTSTATUS sys_NtTerminateProcess(UINT64 ProcessHandle,
+static UINT64 sys_NtTerminateProcess(UINT64 ProcessHandle,
                                         UINT64 ExitStatus,
                                         UINT64 a3, UINT64 a4)
 {
@@ -405,11 +409,269 @@ static NTSTATUS sys_NtTerminateProcess(UINT64 ProcessHandle,
 /* -----------------------------------------------------------------------
  * Not-implemented stub
  * ----------------------------------------------------------------------- */
-static NTSTATUS sys_NotImplemented(UINT64 a1, UINT64 a2,
-                                    UINT64 a3, UINT64 a4)
+static UINT64 sys_NotImplemented(UINT64 a1, UINT64 a2,
+                                  UINT64 a3, UINT64 a4)
 {
     (void)a1; (void)a2; (void)a3; (void)a4;
-    return STATUS_NOT_IMPLEMENTED;
+    return (UINT64)(UINT32)STATUS_NOT_IMPLEMENTED;
+}
+
+/* -----------------------------------------------------------------------
+ * Phase 6: NtSetInformationThread (0x000D)
+ * ----------------------------------------------------------------------- */
+static UINT64 sys_NtSetInformationThread(UINT64 ThreadHandle,
+                                          UINT64 ThreadInfoClass,
+                                          UINT64 ThreadInfoPtr,
+                                          UINT64 ThreadInfoLen)
+{
+    (void)ThreadHandle; (void)ThreadInfoPtr; (void)ThreadInfoLen;
+    /* Phase 6: accept ThreadHideFromDebugger (17) as no-op */
+    if ((UINT32)ThreadInfoClass == 17 /* ThreadHideFromDebugger */)
+        return (UINT64)(UINT32)STATUS_SUCCESS;
+    return (UINT64)(UINT32)STATUS_NOT_IMPLEMENTED;
+}
+
+/* -----------------------------------------------------------------------
+ * Phase 6: NtFlushInstructionCache (0x00CC)
+ * ----------------------------------------------------------------------- */
+static UINT64 sys_NtFlushInstructionCache(UINT64 ProcessHandle,
+                                           UINT64 BaseAddress,
+                                           UINT64 Length,
+                                           UINT64 a4)
+{
+    (void)ProcessHandle; (void)BaseAddress; (void)Length; (void)a4;
+    /* On x86-64, instruction cache is coherent — nothing to flush */
+    return (UINT64)(UINT32)STATUS_SUCCESS;
+}
+
+/* -----------------------------------------------------------------------
+ * Phase 6: NtCreateProcessEx (0x004D) — minimal stub
+ * ----------------------------------------------------------------------- */
+static UINT64 sys_NtCreateProcessEx(UINT64 ProcessHandlePtr,
+                                     UINT64 DesiredAccess,
+                                     UINT64 ObjAttrPtr,
+                                     UINT64 ParentProcessHandle)
+{
+    (void)DesiredAccess; (void)ObjAttrPtr; (void)ParentProcessHandle;
+    /* Phase 6: stub — full implementation deferred to Phase 7 */
+    if (ProcessHandlePtr)
+        *(HANDLE *)(uintptr_t)ProcessHandlePtr = 0;
+    return (UINT64)(UINT32)STATUS_NOT_IMPLEMENTED;
+}
+
+/* -----------------------------------------------------------------------
+ * Phase 6: NtCreateThread (0x004E) — minimal stub
+ * ----------------------------------------------------------------------- */
+static UINT64 sys_NtCreateThread(UINT64 ThreadHandlePtr,
+                                  UINT64 DesiredAccess,
+                                  UINT64 ObjAttrPtr,
+                                  UINT64 ProcessHandle)
+{
+    (void)DesiredAccess; (void)ObjAttrPtr; (void)ProcessHandle;
+    /* Phase 6: stub */
+    if (ThreadHandlePtr)
+        *(HANDLE *)(uintptr_t)ThreadHandlePtr = 0;
+    return (UINT64)(UINT32)STATUS_NOT_IMPLEMENTED;
+}
+
+/* -----------------------------------------------------------------------
+ * Phase 6: Kernel-helper handlers (0x01F0–0x01FF)
+ * These handle Win32/RTL operations that have no direct NT syscall number.
+ * ----------------------------------------------------------------------- */
+
+/* KH 0x01F0: RtlAllocateHeap(HeapHandle, Flags, Size) → user-mode VA */
+static UINT64 sys_KhRtlAllocateHeap(UINT64 HeapHandle, UINT64 Flags,
+                                      UINT64 Size, UINT64 a4)
+{
+    (void)HeapHandle; (void)Flags; (void)a4;
+    if (!Size) return 0;
+
+    PEPROCESS proc = PsGetCurrentProcess();
+    if (!proc) return 0;
+
+    UINT64 base = 0;
+    UINT64 alloc_size = (Size + PAGE_SIZE - 1) & ~(UINT64)(PAGE_SIZE - 1);
+    NTSTATUS s = VmaAllocate(&proc->VmaSpace, &base, &alloc_size,
+                              MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    return NT_SUCCESS(s) ? base : 0;
+}
+
+/* KH 0x01F1: RtlFreeHeap(HeapHandle, Flags, Ptr) → BOOL */
+static UINT64 sys_KhRtlFreeHeap(UINT64 HeapHandle, UINT64 Flags,
+                                  UINT64 Ptr, UINT64 a4)
+{
+    (void)HeapHandle; (void)Flags; (void)a4;
+    if (!Ptr) return 1; /* success */
+
+    PEPROCESS proc = PsGetCurrentProcess();
+    if (!proc) return 0;
+
+    UINT64 base = Ptr;
+    UINT64 size = PAGE_SIZE;
+    VmaFree(&proc->VmaSpace, &base, &size, MEM_RELEASE);
+    return 1;
+}
+
+/* KH 0x01F2: RtlReAllocateHeap(HeapHandle, Flags, Ptr, Size) → user-mode VA */
+static UINT64 sys_KhRtlReAllocateHeap(UINT64 HeapHandle, UINT64 Flags,
+                                        UINT64 Ptr, UINT64 Size)
+{
+    /* Allocate new, copy old (size unknown → copy one page), free old */
+    UINT64 nw = sys_KhRtlAllocateHeap(HeapHandle, Flags, Size, 0);
+    if (!nw) return 0;
+    if (Ptr) {
+        /* Copy min(Size, PAGE_SIZE) bytes via physmap — best effort */
+        UINT64 copy_len = Size < PAGE_SIZE ? Size : PAGE_SIZE;
+        __builtin_memcpy((void *)(uintptr_t)nw,
+                         (const void *)(uintptr_t)Ptr,
+                         (size_t)copy_len);
+        sys_KhRtlFreeHeap(HeapHandle, Flags, Ptr, 0);
+    }
+    return nw;
+}
+
+/* KH 0x01F3: GetCurrentProcessId() → UINT32 PID */
+static UINT64 sys_KhGetCurrentProcessId(UINT64 a1, UINT64 a2,
+                                          UINT64 a3, UINT64 a4)
+{
+    (void)a1; (void)a2; (void)a3; (void)a4;
+    PEPROCESS proc = PsGetCurrentProcess();
+    return proc ? proc->UniqueProcessId : 0;
+}
+
+/* KH 0x01F4: GetCurrentThreadId() → UINT32 TID */
+static UINT64 sys_KhGetCurrentThreadId(UINT64 a1, UINT64 a2,
+                                         UINT64 a3, UINT64 a4)
+{
+    (void)a1; (void)a2; (void)a3; (void)a4;
+    PETHREAD et = PsGetCurrentThread();
+    return et ? et->UniqueThread : 0;
+}
+
+/* KH 0x01F5: GetLastError() → UINT32 */
+static UINT64 sys_KhGetLastError(UINT64 a1, UINT64 a2,
+                                   UINT64 a3, UINT64 a4)
+{
+    (void)a1; (void)a2; (void)a3; (void)a4;
+    PETHREAD et = PsGetCurrentThread();
+    if (!et || !et->Teb) return 0;
+    /* TEB.LastErrorValue is at offset 0x68 — access via physmap not possible
+     * (TEB is in user VA).  Kernel tracks LastErrorValue in ETHREAD instead. */
+    return (UINT64)et->ExitStatus; /* Phase 6: repurpose ExitStatus as a placeholder */
+}
+
+/* KH 0x01F6: SetLastError(ErrorCode) */
+static UINT64 sys_KhSetLastError(UINT64 ErrorCode, UINT64 a2,
+                                   UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    /* Phase 6: silently accept — no TEB write without physmap lookup */
+    (void)ErrorCode;
+    return 0;
+}
+
+/* KH 0x01F7: DbgPrint(FormatStr, ...) */
+static UINT64 sys_KhDbgPrint(UINT64 FmtPtr, UINT64 a2,
+                               UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    if (FmtPtr)
+        kprintf("[DbgPrint] %s", (const char *)(uintptr_t)FmtPtr);
+    return 0;
+}
+
+/* KH 0x01F8: GetStdHandle(nStdHandle) → HANDLE */
+static UINT64 sys_KhGetStdHandle(UINT64 StdHandle, UINT64 a2,
+                                   UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    /* STD_INPUT_HANDLE = -10, STD_OUTPUT_HANDLE = -11, STD_ERROR_HANDLE = -12 */
+    /* Return pseudo-handles; real console I/O is Phase 8 */
+    switch ((INT32)StdHandle) {
+    case -10: return (UINT64)(INT64)-10; /* STD_INPUT  */
+    case -11: return (UINT64)(INT64)-11; /* STD_OUTPUT */
+    case -12: return (UINT64)(INT64)-12; /* STD_ERROR  */
+    default:  return (UINT64)(INT64)-1;  /* INVALID_HANDLE_VALUE */
+    }
+}
+
+/* KH 0x01F9: RtlInitUnicodeString(UNICODE_STRING*, PCWSTR) */
+static UINT64 sys_KhRtlInitUnicodeString(UINT64 DestPtr, UINT64 SrcPtr,
+                                           UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    UNICODE_STRING *us = (UNICODE_STRING *)(uintptr_t)DestPtr;
+    const WCHAR    *s  = (const WCHAR *)(uintptr_t)SrcPtr;
+    if (!us) return 0;
+    if (!s) {
+        us->Length = us->MaximumLength = 0;
+        us->Buffer = NULL;
+        return 0;
+    }
+    USHORT len = 0;
+    while (s[len]) len++;
+    us->Buffer        = (WCHAR *)(uintptr_t)SrcPtr;
+    us->Length        = (USHORT)(len * sizeof(WCHAR));
+    us->MaximumLength = (USHORT)((len + 1) * sizeof(WCHAR));
+    return 0;
+}
+
+/* KH 0x01FA: GetProcessHeap() → PEB.ProcessHeap VA */
+static UINT64 sys_KhGetProcessHeap(UINT64 a1, UINT64 a2,
+                                     UINT64 a3, UINT64 a4)
+{
+    (void)a1; (void)a2; (void)a3; (void)a4;
+    PEPROCESS proc = PsGetCurrentProcess();
+    if (!proc || !proc->Peb) return 0;
+    /* PEB.ProcessHeap is at offset 0x30 in 64-bit PEB */
+    /* We can't easily read user-mode PEB here; return USER_HEAP_VA directly */
+    return USER_HEAP_VA;
+}
+
+/* KH 0x01FB: IsDebuggerPresent() → BOOL */
+static UINT64 sys_KhIsDebuggerPresent(UINT64 a1, UINT64 a2,
+                                        UINT64 a3, UINT64 a4)
+{
+    (void)a1; (void)a2; (void)a3; (void)a4;
+    return 0; /* FALSE — no debugger */
+}
+
+/* KH 0x01FC: RtlZeroMemory(Dst, Len) */
+static UINT64 sys_KhRtlZeroMemory(UINT64 Dst, UINT64 Len,
+                                    UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    if (Dst && Len)
+        __builtin_memset((void *)(uintptr_t)Dst, 0, (size_t)Len);
+    return 0;
+}
+
+/* KH 0x01FD: RtlMoveMemory(Dst, Src, Len) */
+static UINT64 sys_KhRtlMoveMemory(UINT64 Dst, UINT64 Src,
+                                    UINT64 Len, UINT64 a4)
+{
+    (void)a4;
+    if (Dst && Src && Len)
+        __builtin_memmove((void *)(uintptr_t)Dst,
+                          (const void *)(uintptr_t)Src,
+                          (size_t)Len);
+    return 0;
+}
+
+/* KH 0x01FE: GetCurrentProcess() → (HANDLE)-1 */
+static UINT64 sys_KhGetCurrentProcess(UINT64 a1, UINT64 a2,
+                                        UINT64 a3, UINT64 a4)
+{
+    (void)a1; (void)a2; (void)a3; (void)a4;
+    return (UINT64)(INT64)-1;
+}
+
+/* KH 0x01FF: GetCurrentThread() → (HANDLE)-2 */
+static UINT64 sys_KhGetCurrentThread(UINT64 a1, UINT64 a2,
+                                       UINT64 a3, UINT64 a4)
+{
+    (void)a1; (void)a2; (void)a3; (void)a4;
+    return (UINT64)(INT64)-2;
 }
 
 /* -----------------------------------------------------------------------
@@ -418,7 +680,7 @@ static NTSTATUS sys_NotImplemented(UINT64 a1, UINT64 a2,
 
 /* --- NtCreateFile (0x0055 in Win10 1903 — actually varies) --- */
 /* NtCreateFile: 11 args, we handle via IoCreateFile with first 4 */
-static NTSTATUS sys_NtCreateFile(UINT64 FileHandlePtr, UINT64 DesiredAccess,
+static UINT64 sys_NtCreateFile(UINT64 FileHandlePtr, UINT64 DesiredAccess,
                                    UINT64 ObjAttrPtr, UINT64 IoStatusPtr)
 {
     if (!FileHandlePtr || !ObjAttrPtr) return STATUS_INVALID_PARAMETER;
@@ -440,7 +702,7 @@ static NTSTATUS sys_NtCreateFile(UINT64 FileHandlePtr, UINT64 DesiredAccess,
  *       ByteOffset (8th), Key (9th)
  * Phase 4: dispatch first 4 args via registers; remaining via pointer args
  * encoded in a3/a4 as IoStatusBlock and Buffer ptr for simple callers. */
-static NTSTATUS sys_NtReadFile(UINT64 FileHandle, UINT64 IoStatusPtr,
+static UINT64 sys_NtReadFile(UINT64 FileHandle, UINT64 IoStatusPtr,
                                  UINT64 BufferPtr, UINT64 Length)
 {
     IO_STATUS_BLOCK isb;
@@ -460,7 +722,7 @@ static NTSTATUS sys_NtReadFile(UINT64 FileHandle, UINT64 IoStatusPtr,
 }
 
 /* --- NtWriteFile (0x0008) --- */
-static NTSTATUS sys_NtWriteFile(UINT64 FileHandle, UINT64 IoStatusPtr,
+static UINT64 sys_NtWriteFile(UINT64 FileHandle, UINT64 IoStatusPtr,
                                   UINT64 BufferPtr, UINT64 Length)
 {
     IO_STATUS_BLOCK isb;
@@ -480,7 +742,7 @@ static NTSTATUS sys_NtWriteFile(UINT64 FileHandle, UINT64 IoStatusPtr,
 }
 
 /* --- NtQueryInformationFile (0x0011) --- */
-static NTSTATUS sys_NtQueryInformationFile(UINT64 FileHandle,
+static UINT64 sys_NtQueryInformationFile(UINT64 FileHandle,
                                              UINT64 IoStatusPtr,
                                              UINT64 FileInfoPtr,
                                              UINT64 Length)
@@ -497,7 +759,7 @@ static NTSTATUS sys_NtQueryInformationFile(UINT64 FileHandle,
 }
 
 /* --- NtCreateSection (0x004A) --- */
-static NTSTATUS sys_NtCreateSection(UINT64 SectionHandlePtr,
+static UINT64 sys_NtCreateSection(UINT64 SectionHandlePtr,
                                       UINT64 DesiredAccess,
                                       UINT64 ObjAttrPtr,
                                       UINT64 MaximumSizePtr)
@@ -517,7 +779,7 @@ static NTSTATUS sys_NtCreateSection(UINT64 SectionHandlePtr,
 }
 
 /* --- NtMapViewOfSection (0x0028) --- */
-static NTSTATUS sys_NtMapViewOfSection(UINT64 SectionHandle,
+static UINT64 sys_NtMapViewOfSection(UINT64 SectionHandle,
                                          UINT64 ProcessHandle,
                                          UINT64 BaseAddressPtr,
                                          UINT64 ZeroBits)
@@ -537,7 +799,7 @@ static NTSTATUS sys_NtMapViewOfSection(UINT64 SectionHandle,
 }
 
 /* --- NtUnmapViewOfSection (0x002A) --- */
-static NTSTATUS sys_NtUnmapViewOfSection(UINT64 ProcessHandle,
+static UINT64 sys_NtUnmapViewOfSection(UINT64 ProcessHandle,
                                            UINT64 BaseAddress,
                                            UINT64 a3, UINT64 a4)
 {
@@ -547,7 +809,7 @@ static NTSTATUS sys_NtUnmapViewOfSection(UINT64 ProcessHandle,
 }
 
 /* --- NtQueryVirtualMemory (0x0023) --- */
-static NTSTATUS sys_NtQueryVirtualMemory(UINT64 ProcessHandle,
+static UINT64 sys_NtQueryVirtualMemory(UINT64 ProcessHandle,
                                            UINT64 BaseAddress,
                                            UINT64 MemInfoClass,
                                            UINT64 MemInfoPtr)
@@ -576,7 +838,7 @@ static NTSTATUS sys_NtQueryVirtualMemory(UINT64 ProcessHandle,
 }
 
 /* --- NtProtectVirtualMemory (0x0050) --- */
-static NTSTATUS sys_NtProtectVirtualMemory(UINT64 ProcessHandle,
+static UINT64 sys_NtProtectVirtualMemory(UINT64 ProcessHandle,
                                              UINT64 BaseAddrPtr,
                                              UINT64 RegionSizePtr,
                                              UINT64 NewProtect)
@@ -642,15 +904,40 @@ static void build_syscall_table(void)
     syscall_table[SYSCALL_NtUnmapViewOfSection]       = sys_NtUnmapViewOfSection;
     syscall_table[SYSCALL_NtQueryVirtualMemory]       = sys_NtQueryVirtualMemory;
     syscall_table[SYSCALL_NtProtectVirtualMemory]     = sys_NtProtectVirtualMemory;
+
+    /* Phase 6: new NT syscalls */
+    syscall_table[SYSCALL_NtSetInformationThread]     = sys_NtSetInformationThread;
+    syscall_table[SYSCALL_NtFlushInstructionCache]    = sys_NtFlushInstructionCache;
+    syscall_table[SYSCALL_NtCreateProcessEx]          = sys_NtCreateProcessEx;
+    syscall_table[SYSCALL_NtCreateThread]             = sys_NtCreateThread;
+
+    /* Phase 6: kernel-helper handlers (0x01F0–0x01FF) */
+    syscall_table[KH_RtlAllocateHeap]       = sys_KhRtlAllocateHeap;
+    syscall_table[KH_RtlFreeHeap]           = sys_KhRtlFreeHeap;
+    syscall_table[KH_RtlReAllocateHeap]     = sys_KhRtlReAllocateHeap;
+    syscall_table[KH_GetCurrentProcessId]   = sys_KhGetCurrentProcessId;
+    syscall_table[KH_GetCurrentThreadId]    = sys_KhGetCurrentThreadId;
+    syscall_table[KH_GetLastError]          = sys_KhGetLastError;
+    syscall_table[KH_SetLastError]          = sys_KhSetLastError;
+    syscall_table[KH_DbgPrint]              = sys_KhDbgPrint;
+    syscall_table[KH_GetStdHandle]          = sys_KhGetStdHandle;
+    syscall_table[KH_RtlInitUnicodeString]  = sys_KhRtlInitUnicodeString;
+    syscall_table[KH_GetProcessHeap]        = sys_KhGetProcessHeap;
+    syscall_table[KH_IsDebuggerPresent]     = sys_KhIsDebuggerPresent;
+    syscall_table[KH_RtlZeroMemory]         = sys_KhRtlZeroMemory;
+    syscall_table[KH_RtlMoveMemory]         = sys_KhRtlMoveMemory;
+    syscall_table[KH_GetCurrentProcess]     = sys_KhGetCurrentProcess;
+    syscall_table[KH_GetCurrentThread]      = sys_KhGetCurrentThread;
 }
 
 /* -----------------------------------------------------------------------
  * KiSystemCallDispatch — C entry point from ASM stub
  * ----------------------------------------------------------------------- */
-NTSTATUS KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
-                               UINT64 arg3, UINT64 arg4)
+UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
+                             UINT64 arg3, UINT64 arg4)
 {
-    if (num >= SYSCALL_MAX) return STATUS_INVALID_SYSTEM_SERVICE;
+    if (num >= SYSCALL_MAX)
+        return (UINT64)(UINT32)STATUS_INVALID_SYSTEM_SERVICE;
 
     SYSCALL_HANDLER handler = syscall_table[num];
     return handler(arg1, arg2, arg3, arg4);

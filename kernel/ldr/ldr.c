@@ -24,6 +24,7 @@
  */
 
 #include "ldr.h"
+#include "user_stubs.h"
 #include "../mm/section.h"
 #include "../mm/vma.h"
 #include "../mm/vmm.h"
@@ -330,23 +331,13 @@ void LdrInitialize(void)
 }
 
 /* -----------------------------------------------------------------------
- * ldr_find_stub_export — look up a function in the stub DLL tables
+ * ldr_find_stub_export — look up a function; returns user-mode VA (Phase 6)
  * ----------------------------------------------------------------------- */
 static UINT64 ldr_find_stub_export(const char *dll_name, const char *func_name)
 {
-    for (UINT32 d = 0; d < STUB_DLL_COUNT; d++) {
-        if (ascii_icmp(stub_dlls[d].Name, dll_name) == 0) {
-            for (UINT32 i = 0; i < stub_dlls[d].ExportCount; i++) {
-                if (ascii_icmp(stub_dlls[d].Exports[i].Name, func_name) == 0)
-                    return stub_dlls[d].Exports[i].StubAddress;
-            }
-            /* DLL found but function not — return a no-op stub */
-            kprintf("[LDR] WARNING: %s!%s not found in stubs\n", dll_name, func_name);
-            return (UINT64)(uintptr_t)stub_NtYieldExecution;
-        }
-    }
-    kprintf("[LDR] WARNING: DLL '%s' not in stub table\n", dll_name);
-    return (UINT64)(uintptr_t)stub_NtYieldExecution;
+    UINT64 va = LdrGetStubVA(dll_name, func_name);
+    if (!va) va = LdrGetFallbackStubVA();
+    return va;
 }
 
 /* -----------------------------------------------------------------------
@@ -418,11 +409,10 @@ static NTSTATUS ldr_resolve_imports(UINT64 load_base, UINT64 pref_base,
             UINT64 resolved;
 
             if (thunk & (UINT64_C(1) << 63)) {
-                /* Import by ordinal */
+                /* Import by ordinal — use harmless no-op fallback */
                 UINT64 ordinal = thunk & 0xFFFF;
-                kprintf("[LDR]   ordinal #%llu\n", (unsigned long long)ordinal);
-                /* Phase 3: ordinal imports return no-op stub */
-                resolved = (UINT64)(uintptr_t)stub_NtYieldExecution;
+                kprintf("[LDR]   ordinal #%llu (stub)\n", (unsigned long long)ordinal);
+                resolved = LdrGetFallbackStubVA();
             } else {
                 /* Import by name */
                 PIMAGE_IMPORT_BY_NAME ibn =

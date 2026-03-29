@@ -335,6 +335,7 @@ typedef struct _ETHREAD {
  * ----------------------------------------------------------------------- */
 #define USER_PEB_VA  UINT64_C(0x00007FFFFFFF0000)   /* PEB, 4 KiB */
 #define USER_TEB_VA  UINT64_C(0x00007FFFFFFFE000)   /* TEB for first thread, 4 KiB */
+#define USER_HEAP_VA UINT64_C(0x00007FFFF0000000)   /* Process default heap base */
 
 /* -----------------------------------------------------------------------
  * Public API

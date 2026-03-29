@@ -154,11 +154,16 @@
 #define SYSCALL_NtCreateMutant                    0x0054
 #define SYSCALL_NtCreateFile                      0x0055
 #define SYSCALL_NtAllocateVirtualMemoryEx         0x00C4  /* Win10 1803+ */
+#define SYSCALL_NtFlushInstructionCache           0x00CC  /* Win10 1903 */
+#define SYSCALL_NtSetInformationThread            0x000D
+#define SYSCALL_NtCreateProcessEx                 0x004D
+#define SYSCALL_NtCreateThread                    0x004E
+#define SYSCALL_NtQueryInformationFile            0x0011
 
 /* -----------------------------------------------------------------------
  * Syscall table size
  * ----------------------------------------------------------------------- */
-#define SYSCALL_MAX  0x0200   /* 512 entries — covers all Win10 1903 syscalls */
+#define SYSCALL_MAX  0x0200   /* 512 entries — covers all Win10 1903 syscalls + KH helpers */
 
 /* -----------------------------------------------------------------------
  * NtQuerySystemInformation system information classes
@@ -274,10 +279,12 @@ void SyscallInitialize(void);
  * @arg3:  third argument (from R8)
  * @arg4:  fourth argument (from R9)
  *
- * Returns NTSTATUS (in RAX on return to user mode).
+ * Returns UINT64 (placed in RAX on SYSRET to user mode).
+ * NT syscall handlers return NTSTATUS zero-extended to 64 bits.
+ * Kernel-helper handlers (0x01F0-0x01FF) may return 64-bit pointers.
  */
-NTSTATUS KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
-                               UINT64 arg3, UINT64 arg4);
+UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
+                             UINT64 arg3, UINT64 arg4);
 
 /*
  * Syscall entry point (assembly, installed in MSR_LSTAR).

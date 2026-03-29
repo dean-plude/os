@@ -19,6 +19,7 @@
  */
 
 #include "ps.h"
+#include "csrss.h"
 #include "../ob/ob.h"
 #include "../mm/vmm.h"
 #include "../mm/vma.h"
@@ -32,6 +33,7 @@
 #include "../mm/pmm.h"
 #include "../ke/kpcr.h"
 #include "../ldr/ldr.h"
+#include "../ldr/user_stubs.h"
 
 /* -----------------------------------------------------------------------
  * Globals
@@ -404,6 +406,16 @@ NTSTATUS PsAllocatePebTeb(PEPROCESS proc, PETHREAD thread, UINT64 image_base)
     PEB *peb = (PEB *)(PHYSMAP_BASE + peb_pa);
     peb->NumberOfProcessors = 1;
     peb->ImageBaseAddress   = (void *)(uintptr_t)image_base;
+    /* Phase 6: OS version fields (Windows 10, build 18362 = 1903) */
+    peb->NtGlobalFlag       = 0;
+    /* ProcessHeap points to the user-mode heap base VA.
+     * The heap pages themselves are committed on demand by KH_RtlAllocateHeap. */
+    peb->ProcessHeap        = (void *)(uintptr_t)USER_HEAP_VA;
+    /* CriticalSectionTimeout: standard Windows value */
+    peb->CriticalSectionTimeout = (UINT64)0xFFFFFFFF80000000ULL;
+    peb->HeapSegmentReserve     = 0x100000;  /* 1 MiB */
+    peb->HeapSegmentCommit      = 0x002000;  /* 8 KiB */
+    peb->MaximumNumberOfHeaps   = 0x10;
 
     /* Initialize TEB fields via physmap.
      * NtTib.Self must point back to the TEB (GS:[0x30] = self).
@@ -413,6 +425,10 @@ NTSTATUS PsAllocatePebTeb(PEPROCESS proc, PETHREAD thread, UINT64 image_base)
     teb->ProcessEnvironmentBlock     = (struct _PEB *)(uintptr_t)USER_PEB_VA;
     teb->ClientId.UniqueProcess      = proc->UniqueProcessId;
     teb->ClientId.UniqueThread       = thread ? thread->UniqueThread : 0;
+    /* Stack limits will be filled in by the thread entry trampoline */
+    teb->NtTib.StackBase             = (void *)(uintptr_t)(USER_TEB_VA + PAGE_SIZE);
+    teb->NtTib.StackLimit            = (void *)(uintptr_t)(USER_TEB_VA);
+    teb->CurrentLocale               = 0x0409; /* en-US */
 
     /* Store user-mode VAs in the kernel structures */
     proc->Peb   = (PEB *)(uintptr_t)USER_PEB_VA;
@@ -594,6 +610,11 @@ NTSTATUS PsCreateUserProcess(
         return STATUS_NO_MEMORY;
     }
     paging_clone_user_mappings(pt_phys);
+
+    /* Phase 6: Map user-mode SYSCALL stub pages (ntdll/kernel32/msvcrt/user32)
+     * into the process's private page table so IAT entries work in ring-3. */
+    LdrMapUserStubPages(pt_phys);
+
     proc->Pcb.DirectoryTableBase = pt_phys;
     kprintf("[PS] Process CR3 = 0x%llx\n", (unsigned long long)pt_phys);
 
@@ -631,6 +652,24 @@ NTSTATUS PsCreateUserProcess(
         PsTerminateProcess(proc, s);
         ObDereferenceObject(proc);
         return s;
+    }
+
+    /* Phase 6: Register process with CSRSS */
+    {
+        PETHREAD init_thread = NULL;
+        if (ThreadHandle && *ThreadHandle) {
+            void *tobj = NULL;
+            if (NT_SUCCESS(ObReferenceObjectByHandle(*ThreadHandle,
+                                                     THREAD_ALL_ACCESS,
+                                                     ObpThreadType, NULL,
+                                                     &tobj, NULL))) {
+                init_thread = (PETHREAD)tobj;
+                CsrRegisterProcess(proc, init_thread);
+                ObDereferenceObject(tobj);
+            }
+        } else {
+            CsrRegisterProcess(proc, NULL);
+        }
     }
 
     if (ProcessOut) *ProcessOut = proc;

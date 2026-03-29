@@ -60,9 +60,11 @@
 #include "../mm/vma.h"
 #include "../mm/section.h"
 #include "../ldr/ldr.h"
+#include "../ldr/user_stubs.h"
 #include "../fs/vfs.h"
 #include "../fs/initrd.h"
 #include "kpcr.h"
+#include "../ps/csrss.h"
 
 /* -----------------------------------------------------------------------
  * Banner
@@ -79,7 +81,7 @@ static void print_banner(void)
     kprintf("  ╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝\n");
     kprintf("\n");
     fb_set_colors(FB_BOOT_FG, FB_BOOT_BG);
-    kprintf("  Windows-compatible OS kernel  [Phase 5 — Process Isolation]\n");
+    kprintf("  Windows-compatible OS kernel  [Phase 6 — User-Mode Foundation]\n");
     kprintf("  Built: " __DATE__ " " __TIME__ "\n");
     kprintf("\n");
 }
@@ -270,6 +272,15 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     LdrInitialize();
 
     /* ------------------------------------------------------------------
+     * STEP 17b (Phase 6): User-mode SYSCALL stub pages
+     * Allocate one physical page per stub DLL and emit x86-64 SYSCALL
+     * thunk machine code.  Must run after PMM is up and before any
+     * user-mode process is created (so LdrMapUserStubPages has pages).
+     * ------------------------------------------------------------------ */
+    kprintf("=== Phase 6: User-mode SYSCALL stubs ===\n");
+    LdrInitUserStubs();
+
+    /* ------------------------------------------------------------------
      * STEP 18 (Phase 4): Virtual File System
      * ------------------------------------------------------------------ */
     kprintf("=== Phase 4: VFS ===\n");
@@ -295,6 +306,12 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     kprintf("=== Phase 5: KPCR ===\n");
     KiInitializeKpcr();
 
+    /* ------------------------------------------------------------------
+     * STEP 20b (Phase 6): CSRSS — Client/Server Runtime SubSystem
+     * ------------------------------------------------------------------ */
+    kprintf("=== Phase 6: CSRSS bootstrap ===\n");
+    CsrInitialize();
+
     /* Seed KPCR.KernelRsp with the idle thread's kernel stack top.
      * The scheduler updates this on every context switch. */
     {
@@ -316,7 +333,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
 
     sched_dump();
 
-    kprintf("\n[NovaOS] Phase 5 initialized. Enabling interrupts...\n");
+    kprintf("\n[NovaOS] Phase 6 initialized. Enabling interrupts...\n");
     sti();
 
     kprintf("[NovaOS] Entering kernel main loop\n");

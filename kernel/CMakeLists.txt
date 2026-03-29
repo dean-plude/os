@@ -117,6 +117,8 @@ set(KERNEL_C_SOURCES
     mm/vma.c
     mm/section.c
     ldr/ldr.c
+    ldr/user_stubs.c
+    ps/csrss.c
     fs/vfs.c
     fs/initrd.c
     lib/string.c

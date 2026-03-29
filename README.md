@@ -3,7 +3,7 @@
 A clean-room, from-scratch x86_64 operating system designed to run native
 Windows executables (PE32+) without emulation.
 
-## Status: Phase 5 — Process Isolation & User-Mode Foundation
+## Status: Phase 6 — Full User-Mode Foundation
 
 **What works:**
 
@@ -56,6 +56,31 @@ Windows executables (PE32+) without emulation.
   - TEB.ClientId (PID/TID) and PEB.ImageBaseAddress set
 - User GS base (`MSR_GS_BASE`) set to TEB VA before IRETQ so SWAPGS works on first syscall
 
+### Phase 6 — Full User-Mode Foundation
+- **User-mode SYSCALL thunk pages** (`ldr/user_stubs.c`): one 4 KiB page per stub DLL
+  (ntdll, kernel32, msvcrt, user32) containing genuine ring-3 x86-64 machine code:
+  `mov r10,rcx; mov eax,N; syscall; ret` (16-byte slots)
+  - Mapped read+exec into every new process's private page table
+  - IAT entries now hold user-mode VAs — imported functions callable from ring-3
+- **Kernel-helper syscalls** (0x01F0–0x01FF): extend the NT dispatch table for Win32
+  helpers with no NT syscall number:
+  - `KH_RtlAllocateHeap/FreeHeap/ReAllocateHeap` → `VmaAllocate`/`VmaFree` on process VMA
+  - `KH_GetCurrentProcessId/ThreadId` → read from EPROCESS/ETHREAD
+  - `KH_GetLastError/SetLastError`, `KH_IsDebuggerPresent`, `KH_GetStdHandle`
+  - `KH_DbgPrint`, `KH_RtlInitUnicodeString`, `KH_RtlZeroMemory/MoveMemory`
+  - `KH_GetCurrentProcess` → `(HANDLE)-1`, `KH_GetCurrentThread` → `(HANDLE)-2`
+- **New NT syscalls**: `NtSetInformationThread`, `NtFlushInstructionCache`,
+  `NtCreateProcessEx`, `NtCreateThread` (stubs; full implementation Phase 7)
+- **`KiSystemCallDispatch` now returns `UINT64`** so kernel-helper calls can return
+  64-bit pointers (e.g., heap allocations) directly in RAX
+- **PEB improvements**: `ProcessHeap`, `NtGlobalFlag`, `CriticalSectionTimeout`,
+  `HeapSegment*`, `MaximumNumberOfHeaps`, `CurrentLocale` all initialized
+- **CSRSS bootstrap** (`ps/csrss.c`): kernel-side shim that:
+  - Runs a `csrss` kernel thread (event loop placeholder)
+  - `CsrRegisterProcess()` — logs and tracks every new user process
+  - `CsrClientCallServer()` — no-op stub returning `STATUS_SUCCESS`
+  - Prevents ntdll's `LdrpInitializeProcess` from failing on CSRSS connect
+
 ## Quick Start
 
 ```bash
@@ -80,7 +105,7 @@ cmake --build . --target run
 | 3 | I/O subsystem (IRP, PE loader, section objects) | ✅ **Done** |
 | 4 | VFS + InitRD (virtual file system, in-memory ramdisk) | ✅ **Done** |
 | 5 | Process isolation (per-process CR3, KPCR, PEB/TEB, SWAPGS) | ✅ **Done** |
-| 6 | Full user-mode (ntdll SYSCALL stubs, Win32 subsystem, CSRSS) | 🔄 Planned |
+| 6 | Full user-mode (SYSCALL thunk pages, Win32 helpers, CSRSS) | ✅ **Done** |
 | 7 | GUI (window manager, GDI, desktop shell) | 🔄 Planned |
 | 8 | Application compatibility (notepad, calc, 7-Zip) | 🔄 Planned |
 
@@ -98,12 +123,12 @@ os/
 │   ├── hal/              # Serial driver, framebuffer console
 │   ├── ke/               # Kernel executive: main, scheduler, printf, KPCR, syscall
 │   ├── ob/               # Object Manager (handles, reference counting)
-│   ├── ps/               # Process Manager (EPROCESS, ETHREAD, PEB, TEB)
+│   ├── ps/               # Process Manager (EPROCESS, ETHREAD, PEB, TEB, CSRSS)
 │   ├── se/               # Security Reference Monitor
 │   ├── cm/               # Configuration Manager (registry)
 │   ├── io/               # I/O Manager (IRP, device objects, file objects)
 │   ├── fs/               # VFS layer + InitRD CPIO driver
-│   ├── ldr/              # PE32+ loader (image sections, relocations, imports)
+│   ├── ldr/              # PE32+ loader + user-mode SYSCALL thunk generator
 │   ├── lib/              # Freestanding string/memory library
 │   └── linker.ld         # Kernel linker script
 ├── cmake/                # Cross-compilation toolchain files
@@ -117,8 +142,14 @@ os/
   offsets match Windows 10 1903 x64 so that real ntdll.dll stubs can be used unmodified.
 - **Clean-room**: no GPL code; all NT API implementations are written from scratch
   using public Microsoft documentation and reverse-engineering references.
-- **Single-CPU Phase 5**: KPCR is statically allocated for the boot CPU; SMP requires
+- **Single-CPU Phase 5/6**: KPCR is statically allocated for the boot CPU; SMP requires
   one KPCR per logical processor (Phase 7).
+- **Kernel-helper syscalls (0x01F0–0x01FF)**: reserved range at the top of the 512-entry
+  NT dispatch table; used only internally by our user-mode stub pages — not part of the
+  Windows NT ABI and invisible to real Windows binaries.
+- **CSRSS Phase 6 scope**: the kernel-side shim accepts process registrations and
+  returns STATUS_SUCCESS to all `CsrClientCallServer` calls; real LPC port objects
+  and console server come in Phase 8.
 - **Page table isolation**: each user process has its own PML4; kernel entries (256–511)
   are shared; user entries (0–255) are snapshotted at process creation.
 
