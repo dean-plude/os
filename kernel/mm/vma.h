@@ -120,6 +120,19 @@ typedef struct _MEMORY_BASIC_INFORMATION {
  * Public API
  * ----------------------------------------------------------------------- */
 
+/* Internal spinlock helpers — used by section.c to hold the VMA lock across
+ * page mapping operations that must be atomic with VMA entry insertion. */
+static inline void vma_lock(PVMA_SPACE s)
+{
+    UINT32 t = __atomic_fetch_add(&s->LockNext, 1, __ATOMIC_SEQ_CST);
+    while (__atomic_load_n(&s->LockOwner, __ATOMIC_ACQUIRE) != t)
+        __asm__ volatile("pause");
+}
+static inline void vma_unlock(PVMA_SPACE s)
+{
+    __atomic_fetch_add(&s->LockOwner, 1, __ATOMIC_RELEASE);
+}
+
 /* Initialize a new, empty VMA space. */
 void VmaInitSpace(PVMA_SPACE Space);
 

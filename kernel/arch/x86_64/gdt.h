@@ -111,3 +111,9 @@ void gdt_init(void);
  * Uses a far return to reload CS.
  */
 void gdt_reload_segments(void);
+
+/*
+ * Update the TSS RSP0 field (kernel stack for privilege level transitions).
+ * Called by the scheduler on every context switch and before IRETQ to ring-3.
+ */
+void gdt_set_rsp0(uintptr_t rsp0);

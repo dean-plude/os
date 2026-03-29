@@ -21,6 +21,7 @@ typedef uint32_t ULONG;
 typedef uint64_t ULONG64;
 typedef uint64_t ULONGLONG;
 typedef int8_t   CHAR;
+typedef int8_t   INT8;
 typedef int16_t  SHORT;
 typedef int32_t  LONG;
 typedef int64_t  LONGLONG;
@@ -63,6 +64,10 @@ typedef int32_t  NTSTATUS;
 #define STATUS_PRIVILEGE_NOT_HELD        ((NTSTATUS)0xC0000061)
 #define STATUS_CANNOT_DELETE             ((NTSTATUS)0xC0000121)
 #define STATUS_NOT_FOUND                 ((NTSTATUS)0xC0000225)
+#define STATUS_OBJECT_TYPE_MISMATCH      ((NTSTATUS)0xC0000024)
+#define STATUS_OBJECT_PATH_INVALID       ((NTSTATUS)0xC0000039)
+#define STATUS_OBJECT_NAME_COLLISION     ((NTSTATUS)0xC0000035)
+#define STATUS_OBJECT_NAME_EXISTS        ((NTSTATUS)0x40000000)
 
 /* NT type aliases — uppercase UINT */
 typedef uint8_t   UINT8;

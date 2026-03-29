@@ -120,7 +120,7 @@ static void memory_test_thread(void *arg)
     for (int i = 0; i < 16; i++) {
         ptrs[i] = kmalloc(sizes[i]);
         if (ptrs[i]) {
-            memset(ptrs[i], (int)(0xAA + i), sizes[i]);
+            __builtin_memset(ptrs[i], (int)(0xAA + i), sizes[i]);
         } else {
             kprintf("[MemTest] FAIL: kmalloc(%zu) returned NULL\n", sizes[i]);
         }

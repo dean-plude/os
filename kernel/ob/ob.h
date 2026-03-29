@@ -77,6 +77,11 @@ typedef ULONG ACCESS_MASK;
 #define DIRECTORY_ALL_ACCESS      (STANDARD_RIGHTS_REQUIRED | 0x000F)
 
 /* -----------------------------------------------------------------------
+ * WCHAR — UTF-16LE code unit (must be declared before UNICODE_STRING)
+ * ----------------------------------------------------------------------- */
+typedef uint16_t WCHAR;
+
+/* -----------------------------------------------------------------------
  * UNICODE_STRING — NT's standard string type (length + buffer, no NUL)
  * ----------------------------------------------------------------------- */
 typedef struct _UNICODE_STRING {
@@ -84,8 +89,6 @@ typedef struct _UNICODE_STRING {
     USHORT  MaximumLength;  /* Buffer capacity in bytes */
     WCHAR  *Buffer;         /* UTF-16LE character data */
 } UNICODE_STRING, *PUNICODE_STRING;
-
-typedef uint16_t WCHAR;
 
 /* Initialize a UNICODE_STRING from a compile-time UTF-16 literal.
  * Length = byte_count, MaximumLength = byte_count + 2 (includes NUL) */
