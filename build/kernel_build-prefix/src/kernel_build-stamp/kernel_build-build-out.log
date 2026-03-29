@@ -1,0 +1,9 @@
+-- Kernel compiler: clang
+-- Configuring done (0.1s)
+-- Generating done (0.3s)
+-- Build files have been written to: /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build
+[  9%] Built target asm_objects
+[ 83%] Built target kernel_objects
+[ 87%] Linking C static library libkernel_c.a
+[ 87%] Built target kernel_c_lib
+[ 90%] Linking kernel.elf

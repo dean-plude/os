@@ -74,9 +74,14 @@ typedef uint8_t   UINT8;
 typedef uint16_t  UINT16;
 typedef uint32_t  UINT32;
 typedef uint64_t  UINT64;
+typedef int8_t    INT8;
+typedef int16_t   INT16;
 typedef int32_t   INT32;
 typedef int64_t   INT64;
 typedef uintptr_t ULONG_PTR;
+
+/* Unicode / wide character */
+typedef uint16_t  WCHAR;   /* UTF-16LE code unit, matching Windows wchar_t */
 
 /* Physical / virtual address types */
 typedef uintptr_t   VADDR;    /* Virtual address */

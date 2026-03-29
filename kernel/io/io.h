@@ -33,7 +33,7 @@
 #include "../include/types.h"
 #include "../ob/ob.h"
 
-/* POINTER_ALIGNMENT — NT WDK annotation; expands to nothing in our build */
+/* POINTER_ALIGNMENT is a Windows SDK annotation macro — not needed in our kernel */
 #ifndef POINTER_ALIGNMENT
 #define POINTER_ALIGNMENT
 #endif
@@ -84,7 +84,9 @@
 #define FILE_EXECUTE            0x0020
 #define FILE_READ_ATTRIBUTES    0x0080
 #define FILE_WRITE_ATTRIBUTES   0x0100
+#ifndef FILE_ALL_ACCESS
 #define FILE_ALL_ACCESS         (STANDARD_RIGHTS_REQUIRED | 0x1FF)
+#endif
 #define FILE_GENERIC_READ       (FILE_READ_DATA | FILE_READ_ATTRIBUTES | \
                                   FILE_READ_EA | SYNCHRONIZE)
 #define FILE_GENERIC_WRITE      (FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | \

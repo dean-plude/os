@@ -451,8 +451,10 @@ void InitrdMount(void *Data, UINT64 Size)
     initrd_driver.MajorFunction[IRP_MJ_READ]                    = initrd_irp_read;
     initrd_driver.MajorFunction[IRP_MJ_QUERY_INFORMATION]       = initrd_irp_query_info;
 
-    /* Device name as proper UNICODE_STRING (UTF-16LE) */
-    static WCHAR dev_name_buf[] = L"\\Device\\InitRD";
+    /* Device name as proper UNICODE_STRING (UTF-16LE)
+     * Explicit array to avoid wchar_t width mismatch with clang */
+    static WCHAR dev_name_buf[] = {
+        '\\','D','e','v','i','c','e','\\','I','n','i','t','R','D',0};
     static UNICODE_STRING dev_name;
     dev_name.Buffer  = dev_name_buf;
     dev_name.Length  = (USHORT)(sizeof(dev_name_buf) - sizeof(WCHAR));

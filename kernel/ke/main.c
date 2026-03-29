@@ -50,6 +50,7 @@
 #include "../arch/x86_64/cpu.h"
 #include "printf.h"
 #include "scheduler.h"
+#include "../lib/string.h"
 #include "syscall.h"
 #include "../ob/ob.h"
 #include "../ps/ps.h"

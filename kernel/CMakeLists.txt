@@ -165,24 +165,31 @@ set(KERNEL_LINK_FLAGS
 if(IS_CLANG)
     list(APPEND KERNEL_LINK_FLAGS
         -target x86_64-unknown-none-elf
-        -fuse-ld=lld
     )
 endif()
 
 # Convert to string for use in custom command
 string(JOIN " " KERNEL_LINK_FLAGS_STR ${KERNEL_LINK_FLAGS})
 
-# Final link step
+# Archive C objects into a static library so the linker gets one argument
+add_library(kernel_c_lib STATIC $<TARGET_OBJECTS:kernel_objects>)
+set_target_properties(kernel_c_lib PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    OUTPUT_NAME "kernel_c"
+)
+add_dependencies(kernel_c_lib kernel_objects)
+
+# Final link step — use the archive + ASM objects
 add_custom_command(
     OUTPUT  "${CMAKE_CURRENT_BINARY_DIR}/kernel.elf"
     COMMAND ${CMAKE_C_COMPILER}
             ${KERNEL_LINK_FLAGS}
             -o "${CMAKE_CURRENT_BINARY_DIR}/kernel.elf"
             ${ASM_OBJECTS}
-            $<TARGET_OBJECTS:kernel_objects>
+            "${CMAKE_CURRENT_BINARY_DIR}/libkernel_c.a"
     DEPENDS
             ${ASM_OBJECTS}
-            kernel_objects
+            kernel_c_lib
             "${CMAKE_CURRENT_SOURCE_DIR}/linker.ld"
     COMMENT "Linking kernel.elf"
     VERBATIM
@@ -191,7 +198,7 @@ add_custom_command(
 add_custom_target(kernel_elf ALL
     DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/kernel.elf"
 )
-add_dependencies(kernel_elf asm_objects kernel_objects)
+add_dependencies(kernel_elf asm_objects kernel_c_lib)
 
 # Copy to binary dir root (parent CMake looks here)
 add_custom_command(

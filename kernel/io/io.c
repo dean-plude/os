@@ -382,10 +382,14 @@ static void io_set_device_name(DEVICE_OBJECT *dev,
     dev->DeviceName.MaximumLength = (USHORT)((chars + 1) * sizeof(WCHAR));
 }
 
-/* Static name buffers for built-in devices */
-static WCHAR io_null_name[] = L"\\Device\\Null";
-static WCHAR io_zero_name[] = L"\\Device\\Zero";
-static WCHAR io_kmsg_name[] = L"\\Device\\Kmsg";
+/* Static name buffers for built-in devices
+ * Using explicit uint16_t arrays to avoid wchar_t width issues (clang -fshort-wchar) */
+static WCHAR io_null_name[] = {
+    '\\','D','e','v','i','c','e','\\','N','u','l','l',0};
+static WCHAR io_zero_name[] = {
+    '\\','D','e','v','i','c','e','\\','Z','e','r','o',0};
+static WCHAR io_kmsg_name[] = {
+    '\\','D','e','v','i','c','e','\\','K','m','s','g',0};
 static DEVICE_OBJECT io_kmsg_device;
 
 /* -----------------------------------------------------------------------

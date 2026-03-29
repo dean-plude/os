@@ -1,0 +1,6 @@
+collect2: fatal error: cannot find ‘ld’
+compilation terminated.
+clang: error: linker (via gcc) command failed with exit code 1 (use -v to see invocation)
+make[5]: *** [CMakeFiles/kernel_elf.dir/build.make:77: kernel.elf] Error 1
+make[4]: *** [CMakeFiles/Makefile2:167: CMakeFiles/kernel_elf.dir/all] Error 2
+make[3]: *** [Makefile:91: all] Error 2
