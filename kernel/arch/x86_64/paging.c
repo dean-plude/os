@@ -222,3 +222,103 @@ void paging_init(void)
 
     kprintf("[PAGING] Virtual memory initialized\n");
 }
+
+/* -----------------------------------------------------------------------
+ * paging_get_kernel_cr3
+ * ----------------------------------------------------------------------- */
+uintptr_t paging_get_kernel_cr3(void)
+{
+    return table_phys(kernel_pml4);
+}
+
+/* -----------------------------------------------------------------------
+ * paging_clone_user_mappings
+ *
+ * Copies PML4 entries 0–255 (user lower half) from the kernel's PML4 into
+ * the target process PML4.  The entries are shared at the PML4 level; they
+ * point to the same PDPT pages as the kernel PML4.  This gives the process
+ * a snapshot of all user-space mappings that were installed via paging_map().
+ * ----------------------------------------------------------------------- */
+void paging_clone_user_mappings(uintptr_t pt_phys)
+{
+    if (!pt_phys) return;
+    pte_t *new_pml4 = pte_phys_to_virt(pt_phys);
+    for (int i = 0; i < 256; i++)
+        new_pml4[i] = kernel_pml4[i];
+}
+
+/* -----------------------------------------------------------------------
+ * paging_create_process_pt
+ *
+ * Allocates a new PML4 and copies the upper-half kernel entries
+ * (PML4 indices 256-511) so the new address space shares all kernel
+ * mappings while having its own user-mode lower half (indices 0-255).
+ * ----------------------------------------------------------------------- */
+uintptr_t paging_create_process_pt(void)
+{
+    pte_t *new_pml4 = alloc_table();
+    if (!new_pml4) return 0;
+
+    /* Copy kernel upper-half entries (canonical hole is 128-255, kernel is 256+) */
+    for (int i = 256; i < 512; i++)
+        new_pml4[i] = kernel_pml4[i];
+
+    return table_phys(new_pml4);
+}
+
+/* -----------------------------------------------------------------------
+ * paging_map_in_pt
+ *
+ * Like map_page_4k but operates on an arbitrary PML4 (identified by
+ * its physical address) rather than the kernel's PML4.
+ * ----------------------------------------------------------------------- */
+NTSTATUS paging_map_in_pt(uintptr_t pt_phys, uintptr_t va,
+                            uintptr_t pa, MapFlags flags)
+{
+    pte_t *pml4 = pte_phys_to_virt(pt_phys);
+
+    pte_t *pdpt = get_or_create_table(pml4,  PML4_IDX(va), true);
+    if (!pdpt) return STATUS_NO_MEMORY;
+
+    pte_t *pd   = get_or_create_table(pdpt,  PDPT_IDX(va), true);
+    if (!pd)   return STATUS_NO_MEMORY;
+
+    pte_t *pt   = get_or_create_table(pd,    PD_IDX(va),   true);
+    if (!pt)   return STATUS_NO_MEMORY;
+
+    pt[PT_IDX(va)] = (pa & PTE_ADDR_MASK) | map_flags_to_pte(flags);
+    /* No invlpg — we're writing into a process PT that isn't loaded */
+    return STATUS_SUCCESS;
+}
+
+/* -----------------------------------------------------------------------
+ * paging_destroy_process_pt
+ *
+ * Recursively frees all page-table pages that cover the user-mode VA range
+ * (PML4 indices 0-255, VA < 0x800000000000).
+ * The PML4 itself is also freed.
+ * Does NOT free the mapped physical data pages.
+ * ----------------------------------------------------------------------- */
+void paging_destroy_process_pt(uintptr_t pt_phys)
+{
+    if (!pt_phys) return;
+    pte_t *pml4 = pte_phys_to_virt(pt_phys);
+
+    for (int i = 0; i < 256; i++) {
+        if (!(pml4[i] & PTE_PRESENT)) continue;
+        pte_t *pdpt = pte_phys_to_virt(pml4[i] & PTE_ADDR_MASK);
+
+        for (int j = 0; j < 512; j++) {
+            if (!(pdpt[j] & PTE_PRESENT) || (pdpt[j] & PTE_HUGE)) continue;
+            pte_t *pd = pte_phys_to_virt(pdpt[j] & PTE_ADDR_MASK);
+
+            for (int k = 0; k < 512; k++) {
+                if (!(pd[k] & PTE_PRESENT) || (pd[k] & PTE_HUGE)) continue;
+                pmm_free_page(pd[k] & PTE_ADDR_MASK);  /* free PT page */
+            }
+            pmm_free_page(pdpt[j] & PTE_ADDR_MASK);   /* free PD page */
+        }
+        pmm_free_page(pml4[i] & PTE_ADDR_MASK);       /* free PDPT page */
+    }
+    pmm_free_page(pt_phys);                            /* free PML4 page */
+}
