@@ -71,23 +71,29 @@ CMakeFiles/bootloader: bootx64.efi
 bootx64.efi: main.o
 bootx64.efi: elf_loader.o
 bootx64.efi: paging.o
+bootx64.efi: console.o
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Linking bootx64.efi (MinGW)"
-	/usr/bin/x86_64-w64-mingw32-gcc /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/main.o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/elf_loader.o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/paging.o -nostdlib -Wl,-dll -Wl,--subsystem,10 -Wl,-e,efi_main -Wl,--no-seh -Wl,--enable-reloc-section -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/bootx64.efi
+	/usr/bin/x86_64-w64-mingw32-gcc /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/main.o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/elf_loader.o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/paging.o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/console.o -nostdlib -Wl,-dll -Wl,--subsystem,10 -Wl,-e,efi_main -Wl,--no-seh -Wl,--enable-reloc-section -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/bootx64.efi
+
+console.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/console.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "CC (EFI): src/console.c"
+	/usr/bin/x86_64-w64-mingw32-gcc -Wall -Wextra -Werror=implicit-function-declaration -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -std=c11 -O2 -g -DGNU_EFI_USE_MS_ABI=1 -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -c /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/console.c -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/console.o
 
 elf_loader.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/elf_loader.c
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "CC (EFI): src/elf_loader.c"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "CC (EFI): src/elf_loader.c"
 	/usr/bin/x86_64-w64-mingw32-gcc -Wall -Wextra -Werror=implicit-function-declaration -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -std=c11 -O2 -g -DGNU_EFI_USE_MS_ABI=1 -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -c /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/elf_loader.c -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/elf_loader.o
 
 main.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "CC (EFI): src/main.c"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "CC (EFI): src/main.c"
 	/usr/bin/x86_64-w64-mingw32-gcc -Wall -Wextra -Werror=implicit-function-declaration -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -std=c11 -O2 -g -DGNU_EFI_USE_MS_ABI=1 -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -c /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/main.o
 
 paging.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/paging.c
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "CC (EFI): src/paging.c"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "CC (EFI): src/paging.c"
 	/usr/bin/x86_64-w64-mingw32-gcc -Wall -Wextra -Werror=implicit-function-declaration -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -std=c11 -O2 -g -DGNU_EFI_USE_MS_ABI=1 -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -c /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/paging.c -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/paging.o
 
 bootloader: CMakeFiles/bootloader
 bootloader: bootx64.efi
+bootloader: console.o
 bootloader: elf_loader.o
 bootloader: main.o
 bootloader: paging.o

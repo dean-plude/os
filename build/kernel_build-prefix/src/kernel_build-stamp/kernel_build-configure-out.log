@@ -1,12 +1,4 @@
--- The C compiler identification is Clang 18.1.3
--- The ASM_NASM compiler identification is NASM
--- Found assembler: /usr/bin/nasm
--- Detecting C compiler ABI info
--- Detecting C compiler ABI info - done
--- Check for working C compiler: /usr/bin/clang - skipped
--- Detecting C compile features
--- Detecting C compile features - done
 -- Kernel compiler: clang
--- Configuring done (1.9s)
+-- Configuring done (0.3s)
 -- Generating done (0.2s)
 -- Build files have been written to: /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build

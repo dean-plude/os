@@ -81,6 +81,7 @@ set(BOOTLOADER_SOURCES
     src/main.c
     src/elf_loader.c
     src/paging.c
+    src/console.c
 )
 
 set(BOOTLOADER_INCLUDE_DIRS

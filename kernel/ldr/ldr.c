@@ -427,7 +427,7 @@ static NTSTATUS ldr_resolve_imports(UINT64 load_base, UINT64 pref_base,
                 /* Import by name */
                 PIMAGE_IMPORT_BY_NAME ibn =
                     (PIMAGE_IMPORT_BY_NAME)(uintptr_t)(load_base + (UINT32)thunk);
-                const char *func_name = ibn->Name;
+                const char *func_name = (const char *)ibn->Name;
                 resolved = ldr_find_stub_export(dll_name, func_name);
             }
 

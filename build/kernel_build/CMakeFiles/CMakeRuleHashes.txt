@@ -4,4 +4,4 @@
 248bde5e4b3dbf4b571df05331dd8782 asm_entry.o
 a64ddfb0c7be7b6c1f3bbb1a30155194 asm_isr_stubs.o
 d9ab7adeebc3b34b921b8358da236be4 asm_syscall_entry.o
-696b87dae6f9d264fc22bb5b5a3842f9 kernel.elf
+8b78a94fa9a4094b82cad2033ab28656 kernel.elf

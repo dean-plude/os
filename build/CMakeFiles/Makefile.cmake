@@ -45,10 +45,10 @@ set(CMAKE_MAKEFILE_PRODUCTS
   "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-update-info.txt"
   "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-patch-info.txt"
   "bootloader_build-prefix/tmp/bootloader_build-cfgcmd.txt"
-  "kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-.cmake"
-  "kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-.cmake"
-  "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure-.cmake"
-  "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build-.cmake"
+  "kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-Debug.cmake"
+  "kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-Debug.cmake"
+  "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure-Debug.cmake"
+  "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build-Debug.cmake"
   "CMakeFiles/CMakeDirectoryInformation.cmake"
   )
 

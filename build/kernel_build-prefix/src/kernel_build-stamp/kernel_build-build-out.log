@@ -1,20 +1,9 @@
-[  6%] [34m[1mNASM: arch/x86_64/entry.asm[0m
-[  6%] [34m[1mNASM: arch/x86_64/isr_stubs.asm[0m
-[ 10%] [34m[1mNASM: arch/x86_64/syscall_entry.asm[0m
-[ 16%] [32mBuilding C object CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o[0m
-[ 16%] [32mBuilding C object CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o[0m
-[ 23%] [32mBuilding C object CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o[0m
-[ 23%] [32mBuilding C object CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o[0m
-[ 26%] [32mBuilding C object CMakeFiles/kernel_objects.dir/mm/pmm.c.o[0m
-[ 26%] Built target asm_objects
-[ 30%] [32mBuilding C object CMakeFiles/kernel_objects.dir/mm/vmm.c.o[0m
-[ 33%] [32mBuilding C object CMakeFiles/kernel_objects.dir/hal/serial.c.o[0m
-[ 36%] [32mBuilding C object CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o[0m
-[ 43%] [32mBuilding C object CMakeFiles/kernel_objects.dir/ke/main.c.o[0m
-[ 43%] [32mBuilding C object CMakeFiles/kernel_objects.dir/ke/printf.c.o[0m
-[ 46%] [32mBuilding C object CMakeFiles/kernel_objects.dir/ke/scheduler.c.o[0m
-[ 50%] [32mBuilding C object CMakeFiles/kernel_objects.dir/ke/syscall.c.o[0m
-[ 56%] [32mBuilding C object CMakeFiles/kernel_objects.dir/ob/ob.c.o[0m
-[ 56%] [32mBuilding C object CMakeFiles/kernel_objects.dir/ps/ps.c.o[0m
-[ 60%] [32mBuilding C object CMakeFiles/kernel_objects.dir/cm/cm.c.o[0m
-[ 63%] [32mBuilding C object CMakeFiles/kernel_objects.dir/se/se.c.o[0m
+-- Kernel compiler: clang
+-- Configuring done (0.1s)
+-- Generating done (0.3s)
+-- Build files have been written to: /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build
+[  9%] Built target asm_objects
+[ 83%] Built target kernel_objects
+[ 87%] Linking C static library libkernel_c.a
+[ 87%] Built target kernel_c_lib
+[ 90%] Linking kernel.elf

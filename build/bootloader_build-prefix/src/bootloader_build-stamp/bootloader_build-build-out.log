@@ -1,4 +1,2 @@
-[ 50%] [34m[1mCC (EFI): src/paging.c[0m
-[ 50%] [34m[1mCC (EFI): src/main.c[0m
-[ 75%] [34m[1mCC (EFI): src/elf_loader.c[0m
-[100%] [34m[1mLinking bootx64.efi (MinGW)[0m
+Copying bootx64.efi to build root
+[100%] Built target bootloader

@@ -20,6 +20,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "../ob/ob.h"
+#include "../ps/ps.h"
 #include "../ke/printf.h"
 #include "../include/types.h"
 #include "../arch/x86_64/paging.h"
@@ -211,11 +212,11 @@ NTSTATUS NtMapViewOfSection(
             UINT32 pi = page_off + i;
             if (pi >= sec->PageCount) break;
             UINT64 va = base_va + (UINT64)i * PAGE_SIZE;
-            s = paging_map((VADDR)va, sec->Pages[pi], map_flags);
+            s = paging_map_page((VADDR)va, sec->Pages[pi], map_flags);
             if (!NT_SUCCESS(s)) {
                 /* Unmap already-mapped */
                 for (UINT32 j = 0; j < i; j++)
-                    paging_unmap((VADDR)(base_va + (UINT64)j * PAGE_SIZE));
+                    paging_unmap_page((VADDR)(base_va + (UINT64)j * PAGE_SIZE));
                 ObDereferenceObject(sec_obj);
                 return s;
             }
@@ -227,7 +228,7 @@ NTSTATUS NtMapViewOfSection(
     PVMA_ENTRY e = kzalloc(sizeof(VMA_ENTRY));
     if (!e) {
         for (UINT32 i = 0; i < pages_to_map; i++)
-            paging_unmap((VADDR)(base_va + (UINT64)i * PAGE_SIZE));
+            paging_unmap_page((VADDR)(base_va + (UINT64)i * PAGE_SIZE));
         ObDereferenceObject(sec_obj);
         return STATUS_NO_MEMORY;
     }
@@ -243,7 +244,7 @@ NTSTATUS NtMapViewOfSection(
     s = VmaMap(vma, e);
     if (!NT_SUCCESS(s)) {
         for (UINT32 i = 0; i < pages_to_map; i++)
-            paging_unmap((VADDR)(base_va + (UINT64)i * PAGE_SIZE));
+            paging_unmap_page((VADDR)(base_va + (UINT64)i * PAGE_SIZE));
         kfree(e);
         ObDereferenceObject(sec_obj);
         return s;
@@ -281,11 +282,9 @@ NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, void *BaseAddress)
     UINT64 base = (UINT64)(uintptr_t)BaseAddress;
     PVMA_SPACE vma = &proc->VmaSpace;
 
-    /* Find the entry */
-    vma_lock(vma);   /* Access internal lock directly via inline in vma.h path */
+    /* Find the entry (no explicit lock needed — VmaUnmap handles it) */
     PVMA_ENTRY e = VmaFind(vma, base);
     if (!e || e->BaseAddress != base || e->Type != VMA_TYPE_MAPPED) {
-        vma_unlock(vma);
         return STATUS_NOT_MAPPED_VIEW;
     }
 
@@ -295,9 +294,8 @@ NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, void *BaseAddress)
     /* Unmap physical pages */
     UINT32 pages = (UINT32)(region_size / PAGE_SIZE);
     for (UINT32 i = 0; i < pages; i++)
-        paging_unmap((VADDR)(base + (UINT64)i * PAGE_SIZE));
+        paging_unmap_page((VADDR)(base + (UINT64)i * PAGE_SIZE));
 
-    vma_unlock(vma);
     VmaUnmap(vma, base, region_size);
 
     if (sec_obj) ObDereferenceObject(sec_obj);
@@ -437,12 +435,12 @@ NTSTATUS MmMapImageView(PSECTION_OBJECT Section,
     /* Map all pages RW+X initially (PE loader will re-protect per section) */
     for (UINT64 i = 0; i < total_pages; i++) {
         UINT64 va = load_base + i * PAGE_SIZE;
-        NTSTATUS s = paging_map((VADDR)va, page_array[i],
+        NTSTATUS s = paging_map_page((VADDR)va, page_array[i],
                                 MAP_USER | MAP_WRITABLE);
         if (!NT_SUCCESS(s)) {
             /* Unmap already-mapped pages */
             for (UINT64 j = 0; j < i; j++)
-                paging_unmap((VADDR)(load_base + j * PAGE_SIZE));
+                paging_unmap_page((VADDR)(load_base + j * PAGE_SIZE));
             for (UINT64 j = 0; j < total_pages; j++)
                 pmm_free_page(page_array[j]);
             kfree(page_array);

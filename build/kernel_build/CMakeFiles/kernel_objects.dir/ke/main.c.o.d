@@ -27,6 +27,8 @@ CMakeFiles/kernel_objects.dir/ke/main.c.o: \
   /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../arch/x86_64/cpu.h \
   /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/printf.h \
   /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/scheduler.h \
+  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../lib/string.h \
+  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../lib/../include/types.h \
   /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/syscall.h \
   /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ob/ob.h \
   /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ob/../include/types.h \

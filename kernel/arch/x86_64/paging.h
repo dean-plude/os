@@ -97,6 +97,19 @@ NTSTATUS paging_map(uintptr_t va, uintptr_t pa, size_t size, MapFlags flags);
 void paging_unmap(uintptr_t va, size_t size);
 
 /*
+ * Single-page convenience wrappers used by vma.c / section.c.
+ * These map/unmap exactly one PAGE_SIZE page.
+ */
+static inline NTSTATUS paging_map_page(uintptr_t va, uintptr_t pa, MapFlags flags)
+{
+    return paging_map(va, pa, PAGE_SIZE, flags);
+}
+static inline void paging_unmap_page(uintptr_t va)
+{
+    paging_unmap(va, PAGE_SIZE);
+}
+
+/*
  * Translate virtual address to physical.
  * Returns 0 if not mapped.
  */

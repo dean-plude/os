@@ -83,12 +83,12 @@ CMakeFiles/bootloader_build-complete: bootloader_build-prefix/src/bootloader_bui
 
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Performing build step for 'bootloader_build'"
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build && /usr/bin/cmake -Dmake=$(MAKE) -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build-.cmake
+	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build && /usr/bin/cmake -Dmake=$(MAKE) -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build-Debug.cmake
 
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure: bootloader_build-prefix/tmp/bootloader_build-cfgcmd.txt
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-patch
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Performing configure step for 'bootloader_build'"
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build && /usr/bin/cmake -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure-.cmake
+	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build && /usr/bin/cmake -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure-Debug.cmake
 	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build && /usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure
 
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-download: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-source_dirinfo.txt

@@ -89,7 +89,7 @@ void VmaDestroySpace(PVMA_SPACE Space)
                 UINT64 va = e->BaseAddress + i * PAGE_SIZE;
                 PADDR phys = paging_virt_to_phys((VADDR)va);
                 if (phys) {
-                    paging_unmap((VADDR)va);
+                    paging_unmap_page((VADDR)va);
                     pmm_free_page(phys);
                 }
             }
@@ -197,7 +197,7 @@ static NTSTATUS vma_commit_pages(UINT64 base, UINT64 size, UINT32 protect)
             for (UINT64 j = 0; j < i; j++) {
                 UINT64 va = base + j * PAGE_SIZE;
                 PADDR p   = paging_virt_to_phys((VADDR)va);
-                if (p) { paging_unmap((VADDR)va); pmm_free_page(p); }
+                if (p) { paging_unmap_page((VADDR)va); pmm_free_page(p); }
             }
             return STATUS_NO_MEMORY;
         }
@@ -205,13 +205,13 @@ static NTSTATUS vma_commit_pages(UINT64 base, UINT64 size, UINT32 protect)
         void *kva = (void *)(PHYSMAP_BASE + phys);
         __builtin_memset(kva, 0, PAGE_SIZE);
         /* Map in user VA space */
-        NTSTATUS s = paging_map((VADDR)(base + i * PAGE_SIZE), phys, flags);
+        NTSTATUS s = paging_map_page((VADDR)(base + i * PAGE_SIZE), phys, flags);
         if (!NT_SUCCESS(s)) {
             pmm_free_page(phys);
             for (UINT64 j = 0; j < i; j++) {
                 UINT64 va = base + j * PAGE_SIZE;
                 PADDR p   = paging_virt_to_phys((VADDR)va);
-                if (p) { paging_unmap((VADDR)va); pmm_free_page(p); }
+                if (p) { paging_unmap_page((VADDR)va); pmm_free_page(p); }
             }
             return s;
         }
@@ -282,7 +282,7 @@ NTSTATUS VmaAllocate(PVMA_SPACE  Space,
             for (UINT64 i = 0; i < size / PAGE_SIZE; i++) {
                 UINT64 va = base + i * PAGE_SIZE;
                 PADDR p   = paging_virt_to_phys((VADDR)va);
-                if (p) { paging_unmap((VADDR)va); pmm_free_page(p); }
+                if (p) { paging_unmap_page((VADDR)va); pmm_free_page(p); }
             }
         }
         vma_unlock(Space);
@@ -335,7 +335,7 @@ NTSTATUS VmaFree(PVMA_SPACE  Space,
                     for (UINT64 i = 0; i < e->RegionSize / PAGE_SIZE; i++) {
                         UINT64 va = e->BaseAddress + i * PAGE_SIZE;
                         PADDR p   = paging_virt_to_phys((VADDR)va);
-                        if (p) { paging_unmap((VADDR)va); pmm_free_page(p); }
+                        if (p) { paging_unmap_page((VADDR)va); pmm_free_page(p); }
                     }
                 }
                 *pp = e->Next;
@@ -349,7 +349,7 @@ NTSTATUS VmaFree(PVMA_SPACE  Space,
                     for (UINT64 i = 0; i < pages; i++) {
                         UINT64 va = e->BaseAddress + off + i * PAGE_SIZE;
                         PADDR p   = paging_virt_to_phys((VADDR)va);
-                        if (p) { paging_unmap((VADDR)va); pmm_free_page(p); }
+                        if (p) { paging_unmap_page((VADDR)va); pmm_free_page(p); }
                     }
                     if (release_size >= e->RegionSize)
                         e->State = MEM_RESERVE;
@@ -398,8 +398,8 @@ NTSTATUS VmaProtect(PVMA_SPACE  Space,
         UINT64 va   = base + i * PAGE_SIZE;
         PADDR  phys = paging_virt_to_phys((VADDR)va);
         if (phys) {
-            paging_unmap((VADDR)va);
-            paging_map((VADDR)va, phys, flags);
+            paging_unmap_page((VADDR)va);
+            paging_map_page((VADDR)va, phys, flags);
         }
     }
 

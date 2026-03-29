@@ -143,6 +143,19 @@ asm_objects/fast:
 .PHONY : asm_objects/fast
 
 #=============================================================================
+# Target rules for targets named kernel_c_lib
+
+# Build rule for target.
+kernel_c_lib: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 kernel_c_lib
+.PHONY : kernel_c_lib
+
+# fast build rule for target.
+kernel_c_lib/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_c_lib.dir/build.make CMakeFiles/kernel_c_lib.dir/build
+.PHONY : kernel_c_lib/fast
+
+#=============================================================================
 # Target rules for targets named kernel_elf
 
 # Build rule for target.
@@ -717,6 +730,7 @@ help:
 	@echo "... rebuild_cache"
 	@echo "... asm_objects"
 	@echo "... kernel_elf"
+	@echo "... kernel_c_lib"
 	@echo "... kernel_objects"
 	@echo "... arch/x86_64/apic.o"
 	@echo "... arch/x86_64/apic.i"

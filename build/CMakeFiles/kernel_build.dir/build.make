@@ -83,12 +83,12 @@ CMakeFiles/kernel_build-complete: kernel_build-prefix/src/kernel_build-stamp/ker
 
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-build: kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Performing build step for 'kernel_build'"
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && /usr/bin/cmake -Dmake=$(MAKE) -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-.cmake
+	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && /usr/bin/cmake -Dmake=$(MAKE) -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-Debug.cmake
 
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure: kernel_build-prefix/tmp/kernel_build-cfgcmd.txt
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure: kernel_build-prefix/src/kernel_build-stamp/kernel_build-patch
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Performing configure step for 'kernel_build'"
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && /usr/bin/cmake -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-.cmake
+	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && /usr/bin/cmake -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-Debug.cmake
 	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && /usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure
 
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-download: kernel_build-prefix/src/kernel_build-stamp/kernel_build-source_dirinfo.txt
