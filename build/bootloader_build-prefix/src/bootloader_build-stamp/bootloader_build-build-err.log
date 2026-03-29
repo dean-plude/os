@@ -1,0 +1,18 @@
+/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c:423:13: warning: ‘mem_copy’ defined but not used [-Wunused-function]
+  423 | static void mem_copy(void *dst, const void *src, UINTN n)
+      |             ^~~~~~~~
+/usr/bin/x86_64-w64-mingw32-ld: /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/main.o: in function `efi_main':
+/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c:326:(.text+0x56): undefined reference to `console_init'
+/usr/bin/x86_64-w64-mingw32-ld: /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c:327:(.text+0x62): undefined reference to `console_printf'
+/usr/bin/x86_64-w64-mingw32-ld: /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c:328:(.text+0x8d): undefined reference to `console_printf'
+/usr/bin/x86_64-w64-mingw32-ld: /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/main.o: in function `open_kernel_file':
+/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c:113:(.text+0x225): undefined reference to `console_printf'
+/usr/bin/x86_64-w64-mingw32-ld: /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/main.o: in function `efi_main':
+/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c:351:(.text+0x2cf): undefined reference to `console_printf'
+/usr/bin/x86_64-w64-mingw32-ld: /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/main.o: in function `open_kernel_file':
+/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c:101:(.text+0x3d1): undefined reference to `console_printf'
+/usr/bin/x86_64-w64-mingw32-ld: /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/main.o:/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c:337: more undefined references to `console_printf' follow
+collect2: error: ld returned 1 exit status
+make[5]: *** [CMakeFiles/bootloader.dir/build.make:75: bootx64.efi] Error 1
+make[4]: *** [CMakeFiles/Makefile2:83: CMakeFiles/bootloader.dir/all] Error 2
+make[3]: *** [Makefile:91: all] Error 2

@@ -33,6 +33,11 @@
 #include "../include/types.h"
 #include "../ob/ob.h"
 
+/* POINTER_ALIGNMENT is a Windows SDK annotation macro — not needed in our kernel */
+#ifndef POINTER_ALIGNMENT
+#define POINTER_ALIGNMENT
+#endif
+
 /* -----------------------------------------------------------------------
  * IRP Major function codes (subset from wdm.h)
  * ----------------------------------------------------------------------- */

@@ -1,0 +1,9 @@
+/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/kernel_build.dir
+/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/copy_kernel.dir
+/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/bootloader_build.dir
+/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/copy_bootloader.dir
+/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/disk_image.dir
+/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/run.dir
+/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/run-debug.dir
+/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/edit_cache.dir
+/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/rebuild_cache.dir

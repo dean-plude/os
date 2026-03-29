@@ -71,9 +71,13 @@ typedef ULONG ACCESS_MASK;
 #define EVENT_ALL_ACCESS          (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x0003)
 #define MUTANT_ALL_ACCESS         (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x0001)
 #define SEMAPHORE_ALL_ACCESS      (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x0003)
+#ifndef KEY_ALL_ACCESS
 #define KEY_ALL_ACCESS            (STANDARD_RIGHTS_REQUIRED | 0x003F)
+#endif
 #define TOKEN_ALL_ACCESS          (STANDARD_RIGHTS_REQUIRED | 0x01FF)
+#ifndef FILE_ALL_ACCESS
 #define FILE_ALL_ACCESS           (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x01FF)
+#endif
 #define DIRECTORY_ALL_ACCESS      (STANDARD_RIGHTS_REQUIRED | 0x000F)
 
 /* -----------------------------------------------------------------------
@@ -84,8 +88,6 @@ typedef struct _UNICODE_STRING {
     USHORT  MaximumLength;  /* Buffer capacity in bytes */
     WCHAR  *Buffer;         /* UTF-16LE character data */
 } UNICODE_STRING, *PUNICODE_STRING;
-
-typedef uint16_t WCHAR;
 
 /* Initialize a UNICODE_STRING from a compile-time UTF-16 literal.
  * Length = byte_count, MaximumLength = byte_count + 2 (includes NUL) */

@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/bootloader_build"
+		},
+		{
+			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/bootloader_build.rule"
+		},
+		{
+			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/bootloader_build-complete.rule"
+		},
+		{
+			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build.rule"
+		},
+		{
+			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure.rule"
+		},
+		{
+			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-download.rule"
+		},
+		{
+			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-install.rule"
+		},
+		{
+			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-mkdir.rule"
+		},
+		{
+			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-patch.rule"
+		},
+		{
+			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"bootloader_build"
+		],
+		"name" : "bootloader_build"
+	}
+}

@@ -34,7 +34,7 @@
 #define MSR_CSTAR       0xC0000083   /* compat mode — unused */
 #define MSR_SFMASK      0xC0000084
 
-#define EFER_SCE        (1UL << 0)   /* SYSCALL/SYSRET enable */
+/* EFER_SCE is defined in cpu.h — no need to redefine here */
 
 /* -----------------------------------------------------------------------
  * Syscall handler typedef
@@ -450,7 +450,7 @@ static NTSTATUS sys_NtReadFile(UINT64 FileHandle, UINT64 IoStatusPtr,
     UINT32  len = (UINT32)Length;
 
     NTSTATUS s = IoReadFile((HANDLE)FileHandle,
-                             NULL, NULL, NULL,
+                             (HANDLE)0, NULL, NULL,
                              &isb,
                              buf, len,
                              NULL, NULL);
@@ -470,10 +470,10 @@ static NTSTATUS sys_NtWriteFile(UINT64 FileHandle, UINT64 IoStatusPtr,
     UINT32  len = (UINT32)Length;
 
     NTSTATUS s = IoWriteFile((HANDLE)FileHandle,
-                              NULL, NULL, NULL,
-                              &isb,
-                              buf, len,
-                              NULL, NULL);
+                             (HANDLE)0, NULL, NULL,
+                             &isb,
+                             buf, len,
+                             NULL, NULL);
 
     if (IoStatusPtr) *(IO_STATUS_BLOCK *)(uintptr_t)IoStatusPtr = isb;
     return s;

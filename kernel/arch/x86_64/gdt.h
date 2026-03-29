@@ -111,3 +111,9 @@ void gdt_init(void);
  * Uses a far return to reload CS.
  */
 void gdt_reload_segments(void);
+
+/*
+ * Update TSS.RSP0 — the kernel stack pointer used when returning from ring 3.
+ * Called on every context switch so each thread gets its own kernel stack.
+ */
+void gdt_set_rsp0(uintptr_t rsp0);
