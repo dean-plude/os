@@ -81,3 +81,21 @@ void WmSetDesktop(WmLayerFn background, WmLayerFn overlay);
 void WmComposite(void);
 
 int  WmWindowCount(void);
+
+/* -----------------------------------------------------------------------
+ * Software mouse cursor (drawn directly to the front buffer with
+ * save-under, so moving it does not require recompositing the scene).
+ * ----------------------------------------------------------------------- */
+
+/* Draw the cursor at (x,y), saving the pixels beneath it. */
+void WmCursorShow(int x, int y);
+/* Restore the pixels beneath the cursor (if currently shown). */
+void WmCursorHide(void);
+/* Hide at the old position, then show at the new (clamped) position. */
+void WmCursorMove(int x, int y);
+/* Re-show the cursor after a full WmComposite() wiped it (re-grabs the
+ * save-under from the freshly drawn scene). */
+void WmCursorReshow(void);
+
+int  WmCursorX(void);
+int  WmCursorY(void);

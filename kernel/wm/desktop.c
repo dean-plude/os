@@ -14,9 +14,13 @@
 
 #include "desktop.h"
 #include "wm.h"
+#include "input.h"
 #include "../gdi/gdi.h"
 #include "../ke/printf.h"
+#include "../ke/scheduler.h"
 #include "../lib/string.h"
+#include "../hal/ps2.h"
+#include "../hal/rtc.h"
 
 /* -----------------------------------------------------------------------
  * Palette (sampled from the design mock)
@@ -55,11 +59,22 @@
 static bool g_start_open = true;
 static bool g_ready;
 
+/* Layout rectangles captured during the last composite, used for hit-testing
+ * (the dock, the Start button within it, and the open Start menu). */
+static GdiRect L_dock, L_startbtn, L_menu;
+
+/* Live clock strings, refreshed from the RTC each minute. */
+static char g_clock_time[12] = "12:00 PM";
+static char g_clock_date[12] = "01/01/2026";
+
+static bool pt_in(GdiRect r, int x, int y)
+{
+    return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
 /* User identity shown on the Start menu bar. */
 static const char *USER_NAME  = "Dean Plude";
 static const char *USER_GREET = "Good Morning!";
-static const char *CLOCK_TIME = "12:00 PM";
-static const char *CLOCK_DATE = "05/29/2026";
 
 /* -----------------------------------------------------------------------
  * Math helpers
@@ -347,6 +362,7 @@ static void draw_start_menu(void)
     int mx = (sw - mw) / 2;
     int my = (sh - mh) / 2 - 24;
     if (my < 40) my = 40;
+    L_menu = RECT(mx, my, mw, mh);
 
     /* Two app tiles peeking above the menu top. */
     int pk_w = 84, pk_h = 96;
@@ -466,8 +482,13 @@ static void draw_dock(void)
     int clock_x = dx + dw - clock_w - 8;
     GdiVLine(clock_x - 6, dy + 10, dy + dh - 10, GDI_C(0xD0, 0x90, 0x66));
     GdiTextT(clock_x, iy + 2, "^ <))", TXT_DARK);
-    GdiTextBold(clock_x + 56, iy - 2, CLOCK_TIME, TXT_DARK);
-    GdiTextT(clock_x + 56, iy + 14, CLOCK_DATE, TXT_DARK);
+    GdiTextBold(clock_x + 56, iy - 2, g_clock_time, TXT_DARK);
+    GdiTextT(clock_x + 56, iy + 14, g_clock_date, TXT_DARK);
+
+    /* Capture geometry for hit-testing. */
+    L_dock = RECT(dx, dy, dw, dh);
+    /* Windows-logo tile is index 10 in the left[] array above. */
+    L_startbtn = RECT(dx + 14 + 10 * (icon + gap), iy, icon, icon);
 }
 
 /* -----------------------------------------------------------------------
@@ -506,8 +527,102 @@ bool DesktopAvailable(void) { return g_ready; }
 
 void DesktopToggleStart(void) { g_start_open = !g_start_open; }
 
+/* Refresh the dock clock strings from the RTC. */
+static void update_clock(void)
+{
+    RtcTime t;
+    rtc_read(&t);
+
+    int h24 = t.hour;
+    const char *ap = (h24 < 12) ? "AM" : "PM";
+    int h12 = h24 % 12; if (h12 == 0) h12 = 12;
+
+    char *p = g_clock_time;
+    if (h12 >= 10) *p++ = '0' + h12 / 10;
+    *p++ = '0' + h12 % 10;
+    *p++ = ':';
+    *p++ = '0' + t.minute / 10;
+    *p++ = '0' + t.minute % 10;
+    *p++ = ' '; *p++ = ap[0]; *p++ = ap[1]; *p = '\0';
+
+    int y = t.year;
+    char *d = g_clock_date;
+    *d++ = '0' + t.month / 10; *d++ = '0' + t.month % 10; *d++ = '/';
+    *d++ = '0' + t.day   / 10; *d++ = '0' + t.day   % 10; *d++ = '/';
+    *d++ = '0' + (y / 1000) % 10; *d++ = '0' + (y / 100) % 10;
+    *d++ = '0' + (y / 10)   % 10; *d++ = '0' +  y        % 10; *d = '\0';
+}
+
+/* Handle a left-click at screen (x,y).  Returns true if the scene changed
+ * and must be recomposited. */
+bool DesktopOnClick(int x, int y)
+{
+    if (pt_in(L_startbtn, x, y)) {        /* Start button toggles the menu */
+        g_start_open = !g_start_open;
+        return true;
+    }
+    if (g_start_open && !pt_in(L_menu, x, y)) {  /* click-away closes it */
+        g_start_open = false;
+        return true;
+    }
+    return false;
+}
+
+/* Window-manager + shell event loop (runs as the 'desktop' kernel thread).
+ * Polls PS/2, moves the cursor with save-under, recomposites on state change
+ * or once per minute for the clock. */
+void DesktopRun(void *arg)
+{
+    (void)arg;
+    if (!g_ready) return;
+
+    update_clock();
+    WmComposite();
+    WmCursorShow(GdiScreenW() / 2, GdiScreenH() / 2);
+
+    RtcTime t; rtc_read(&t);
+    int  last_min   = t.minute;
+    bool prev_left  = false;
+
+    for (;;) {
+        ps2_poll();
+
+        InputEvent ev;
+        bool changed = false;
+        while (InputPoll(&ev)) {
+            if (ev.type == INPUT_MOUSE) {
+                WmCursorMove(WmCursorX() + ev.dx, WmCursorY() + ev.dy);
+                bool left = (ev.buttons & MOUSE_LEFT) != 0;
+                if (left && !prev_left)
+                    if (DesktopOnClick(WmCursorX(), WmCursorY()))
+                        changed = true;
+                prev_left = left;
+            } else if (ev.type == INPUT_KEY) {
+                if (ev.pressed && ev.scancode == SC_ESC && g_start_open) {
+                    g_start_open = false;
+                    changed = true;
+                }
+            }
+        }
+
+        rtc_read(&t);
+        if (t.minute != last_min) {
+            last_min = t.minute;
+            update_clock();
+            changed = true;
+        }
+
+        if (changed) {
+            WmComposite();
+            WmCursorReshow();
+        }
+        sched_yield();
+    }
+}
+
 void DesktopRender(void)
 {
     if (!g_ready) return;
+    update_clock();
     WmComposite();
 }

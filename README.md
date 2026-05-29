@@ -3,7 +3,7 @@
 A clean-room, from-scratch x86_64 operating system designed to run native
 Windows executables (PE32+) without emulation.
 
-## Status: Phase 7 — GUI, Window Manager & Desktop Shell
+## Status: Phase 8 — Interactive Desktop (input, cursor, live clock)
 
 **What works:**
 
@@ -108,6 +108,22 @@ Windows executables (PE32+) without emulation.
 - Booted as **STEP 22** in `KiSystemStartup`: after the executive is up the kernel
   initializes GDI → WM → shell and renders one full desktop frame
 
+### Phase 8 — Interactive Desktop
+- **Preemptive multitasking fixed**: the APIC timer ISR now calls `sched_tick()`
+  (it was a stubbed `TODO`), so created threads actually run and are
+  time-sliced. The shell runs in its own `desktop` kernel thread.
+- **PS/2 input** (`hal/ps2.c`): polled i8042 keyboard + mouse; bytes are decoded
+  into an event queue (`wm/input.c`). Keyboard uses scancode set 1; the mouse
+  uses the 3-byte streaming packet.
+- **Software mouse cursor** (`wm/wm.c`): an arrow drawn with *save-under* so it
+  moves without recompositing the whole 2560×1600 scene.
+- **Event loop** (`DesktopRun`): polls input, drives the cursor, and recomposites
+  only on state change or once per minute. Left-click hit-tests the Start button
+  (toggles the menu) and click-away / **Esc** closes it.
+- **Live clock** (`hal/rtc.c`): the dock clock + date are read from the CMOS RTC.
+- Verified under QEMU+OVMF: cursor tracks the mouse, Esc closes the Start menu,
+  and the clock advances in real time.
+
 ## Quick Start
 
 ```bash
@@ -158,7 +174,12 @@ framebuffer (verified under OVMF at 2560×1600).
 | 5 | Process isolation (per-process CR3, KPCR, PEB/TEB, SWAPGS) | ✅ **Done** |
 | 6 | Full user-mode (SYSCALL thunk pages, Win32 helpers, CSRSS) | ✅ **Done** |
 | 7 | GUI (window manager, GDI, desktop shell) | ✅ **Done** |
-| 8 | Application compatibility (notepad, calc, 7-Zip) | 🔄 Planned |
+| 8 | Interactive desktop (PS/2 input, cursor, preemptive sched, RTC) | ✅ **Done** |
+| 9 | Prove native user-mode PE execution (loader, SEH, TEB/PEB) | 🔄 Planned |
+| 10 | Win32 GUI subsystem (win32k, user32/gdi32, real HWNDs) | 🔄 Planned |
+
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native
+Windows executables (Phases 8–15) and the chosen compatibility strategy.
 
 ## Architecture
 
@@ -171,7 +192,7 @@ os/
 ├── kernel/               # NT-style kernel (freestanding ELF64)
 │   ├── arch/x86_64/      # GDT, IDT, APIC, paging, CPU intrinsics
 │   ├── mm/               # PMM (bitmap), VMM (slab), VMA, section objects
-│   ├── hal/              # Serial driver, framebuffer console
+│   ├── hal/              # Serial, framebuffer, PS/2 input, CMOS RTC
 │   ├── ke/               # Kernel executive: main, scheduler, printf, KPCR, syscall
 │   ├── ob/               # Object Manager (handles, reference counting)
 │   ├── ps/               # Process Manager (EPROCESS, ETHREAD, PEB, TEB, CSRSS)

@@ -199,3 +199,84 @@ void WmComposite(void)
     /* 3. Overlay (taskbar, start menu) */
     if (g_overlay) g_overlay();
 }
+
+/* -----------------------------------------------------------------------
+ * Software mouse cursor
+ * ----------------------------------------------------------------------- */
+#define CUR_W 12
+#define CUR_H 19
+
+/* Classic arrow.  'X' = black outline, '.' = white fill, ' ' = transparent. */
+static const char *const g_cursor_bmp[CUR_H] = {
+    "X           ",
+    "XX          ",
+    "X.X         ",
+    "X..X        ",
+    "X...X       ",
+    "X....X      ",
+    "X.....X     ",
+    "X......X    ",
+    "X.......X   ",
+    "X........X  ",
+    "X.........X ",
+    "X......XXXXX",
+    "X...X..X    ",
+    "X..X X..X   ",
+    "X.X  X..X   ",
+    "XX    X..X  ",
+    "X     X..X  ",
+    "       X..X ",
+    "       XXXX ",
+};
+
+static int    g_cx, g_cy;
+static bool   g_cursor_shown;
+static UINT32 g_cursor_under[CUR_W * CUR_H];
+
+int WmCursorX(void) { return g_cx; }
+int WmCursorY(void) { return g_cy; }
+
+static void cursor_paint(void)
+{
+    for (int row = 0; row < CUR_H; row++) {
+        const char *line = g_cursor_bmp[row];
+        for (int col = 0; col < CUR_W; col++) {
+            char p = line[col];
+            if (p == 'X') GdiPutPixel(g_cx + col, g_cy + row, GDI_BLACK);
+            else if (p == '.') GdiPutPixel(g_cx + col, g_cy + row, GDI_WHITE);
+        }
+    }
+}
+
+void WmCursorShow(int x, int y)
+{
+    g_cx = x;
+    g_cy = y;
+    GdiBlitSave(RECT(g_cx, g_cy, CUR_W, CUR_H), g_cursor_under);
+    cursor_paint();
+    g_cursor_shown = true;
+}
+
+void WmCursorHide(void)
+{
+    if (!g_cursor_shown) return;
+    GdiBlitRestore(RECT(g_cx, g_cy, CUR_W, CUR_H), g_cursor_under);
+    g_cursor_shown = false;
+}
+
+void WmCursorMove(int x, int y)
+{
+    int sw = GdiScreenW(), sh = GdiScreenH();
+    if (x < 0) x = 0; if (x > sw - 1) x = sw - 1;
+    if (y < 0) y = 0; if (y > sh - 1) y = sh - 1;
+    WmCursorHide();
+    WmCursorShow(x, y);
+}
+
+void WmCursorReshow(void)
+{
+    /* The scene was fully redrawn, so the previous save-under is stale and
+     * the cursor was wiped.  Re-grab and redraw at the current position. */
+    g_cursor_shown = false;
+    WmCursorShow(g_cx, g_cy);
+}

@@ -12,6 +12,7 @@
 #include "../../hal/serial.h"
 #include "../../ke/printf.h"
 #include "../../ke/syscall.h"
+#include "../../ke/scheduler.h"
 
 /* Assembly stub address table (defined in isr_stubs.asm) */
 extern uintptr_t isr_stub_table[IDT_ENTRIES];
@@ -226,7 +227,10 @@ void interrupt_dispatch(InterruptFrame *frame)
     /* ---- Timer interrupt (APIC local timer, vector IRQ_TIMER) ---- */
     if (vector == IRQ_TIMER) {
         apic_eoi();
-        /* TODO Phase 1 final: call scheduler tick */
+        /* Drive preemptive scheduling: may context-switch to another
+         * thread; control returns here (on this thread's stack) before the
+         * ISR epilogue performs IRETQ. */
+        sched_tick();
         return;
     }
 

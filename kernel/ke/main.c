@@ -68,6 +68,8 @@
 #include "../gdi/gdi.h"
 #include "../wm/wm.h"
 #include "../wm/desktop.h"
+#include "../wm/input.h"
+#include "../hal/ps2.h"
 
 /* -----------------------------------------------------------------------
  * Banner
@@ -346,9 +348,12 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     if (GdiInitialize()) {
         WmInitialize();
         DesktopInitialize();
-        DesktopRender();                  /* paint wallpaper + shell */
-        kprintf_set_fb_enabled(false);    /* keep UI; logs → serial only */
-        kprintf("[NovaOS] Desktop shell rendered (%dx%d)\n",
+        /* Phase 8: input plumbing + interactive desktop event loop. */
+        InputInit();
+        ps2_init();
+        sched_create_thread("desktop", DesktopRun, NULL, 8);
+        kprintf_set_fb_enabled(false);    /* WM owns the screen; logs → serial */
+        kprintf("[NovaOS] Desktop event loop started (%dx%d)\n",
                 GdiScreenW(), GdiScreenH());
     } else {
         kprintf("[NovaOS] No framebuffer present; running headless\n");

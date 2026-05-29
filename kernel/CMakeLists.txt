@@ -109,6 +109,8 @@ set(KERNEL_C_SOURCES
     mm/vmm.c
     hal/serial.c
     hal/framebuffer.c
+    hal/rtc.c
+    hal/ps2.c
     ke/main.c
     ke/printf.c
     ke/scheduler.c
@@ -129,6 +131,7 @@ set(KERNEL_C_SOURCES
     gdi/gdi.c
     wm/wm.c
     wm/desktop.c
+    wm/input.c
     lib/string.c
 )
 

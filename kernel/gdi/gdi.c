@@ -273,6 +273,46 @@ void GdiRoundGradV(GdiRect r, int rad, GdiColor top, GdiColor bottom)
     }
 }
 
+void GdiPutPixel(int x, int y, GdiColor c)
+{
+    if (!g.ready) return;
+    put(x, y, pixof(c));
+}
+
+/* -----------------------------------------------------------------------
+ * Raw blit save / restore (cursor save-under) — native pixels, clipped.
+ * The buffer is always treated as r.w*r.h entries in row-major order; for
+ * out-of-bounds pixels we store/restore 0 so save and restore stay aligned.
+ * ----------------------------------------------------------------------- */
+void GdiBlitSave(GdiRect r, UINT32 *dst)
+{
+    if (!g.ready || !dst) return;
+    for (int row = 0; row < r.h; row++) {
+        int y = r.y + row;
+        for (int col = 0; col < r.w; col++) {
+            int x = r.x + col;
+            UINT32 v = 0;
+            if ((unsigned)x < (unsigned)g.w && (unsigned)y < (unsigned)g.h)
+                v = g.vram[(size_t)y * g.stride + x];
+            dst[row * r.w + col] = v;
+        }
+    }
+}
+
+void GdiBlitRestore(GdiRect r, const UINT32 *src)
+{
+    if (!g.ready || !src) return;
+    for (int row = 0; row < r.h; row++) {
+        int y = r.y + row;
+        if ((unsigned)y >= (unsigned)g.h) continue;
+        for (int col = 0; col < r.w; col++) {
+            int x = r.x + col;
+            if ((unsigned)x < (unsigned)g.w)
+                g.vram[(size_t)y * g.stride + x] = src[row * r.w + col];
+        }
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Text
  * ----------------------------------------------------------------------- */

@@ -79,6 +79,14 @@ void GdiVLine(int x, int y0, int y1, GdiColor c);
 
 void GdiFillCircle(int cx, int cy, int rad, GdiColor c);
 
+/* Set a single pixel (clipped). */
+void GdiPutPixel(int x, int y, GdiColor c);
+
+/* Save / restore a rectangle of *native* VRAM pixels (no color conversion),
+ * used for cursor "save-under".  The buffer must hold r.w*r.h UINT32s. */
+void GdiBlitSave   (GdiRect r, UINT32 *dst);
+void GdiBlitRestore(GdiRect r, const UINT32 *src);
+
 /* -----------------------------------------------------------------------
  * Text  (reuses the 8×16 VGA font embedded in framebuffer.c)
  * ----------------------------------------------------------------------- */
