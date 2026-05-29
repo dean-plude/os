@@ -145,14 +145,15 @@ static struct {
  * ----------------------------------------------------------------------- */
 static uint32_t fb_color_pixel(FbColor c)
 {
-    if (!fb.bgr) {
-        /* RGB → swap R and B */
-        uint32_t b = (c >> 16) & 0xFF;
-        uint32_t g = (c >>  8) & 0xFF;
-        uint32_t r = (c >>  0) & 0xFF;
-        return (b << 0) | (g << 8) | (r << 16);
-    }
-    return c;  /* BGR — already correct */
+    /* FB_COLOR packs little-endian bytes [R,G,B,0], which RGB hardware
+     * (byte0 = Red) wants as-is; BGR hardware (byte0 = Blue) needs R/B
+     * swapped. */
+    uint32_t r = (c >>  0) & 0xFF;
+    uint32_t g = (c >>  8) & 0xFF;
+    uint32_t b = (c >> 16) & 0xFF;
+    if (fb.bgr)
+        return (r << 16) | (g << 8) | b;   /* byte0 = Blue */
+    return c;                              /* byte0 = Red */
 }
 
 /* -----------------------------------------------------------------------

@@ -385,6 +385,11 @@ typedef struct {
     UINT32 HeaderSize;
     UINT32 CRC32;
     UINT32 Reserved;
+    /* Task priority services — MUST be first per the UEFI spec; omitting
+     * them shifts every later function pointer (OpenProtocol, AllocatePool,
+     * ExitBootServices, …) by 16 bytes and calls the wrong service. */
+    void *RaiseTPL;
+    void *RestoreTPL;
     /* Memory services */
     EFI_ALLOCATE_PAGES     AllocatePages;
     EFI_FREE_PAGES         FreePages;

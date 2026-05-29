@@ -103,17 +103,21 @@ static EFI_STATUS open_kernel_file(EFI_FILE_PROTOCOL **file_out,
         return status;
     }
 
-    /* Get file size via GetInfo. */
+    /* Get file size via GetInfo.  EFI_FILE_INFO ends with a variable-length
+     * FileName[], so the buffer must leave room for the name — otherwise the
+     * firmware returns EFI_BUFFER_TOO_SMALL.  A fixed oversized buffer avoids
+     * a second allocation round-trip. */
     EFI_GUID       info_guid = EFI_FILE_INFO_ID;
-    EFI_FILE_INFO  fi_buf;
-    UINTN          fi_size = sizeof(fi_buf);
-    status = file->GetInfo(file, &info_guid, &fi_size, &fi_buf);
+    UINT8          fi_storage[sizeof(EFI_FILE_INFO) + 256 * sizeof(CHAR16)];
+    EFI_FILE_INFO *fi = (EFI_FILE_INFO *)fi_storage;
+    UINTN          fi_size = sizeof(fi_storage);
+    status = file->GetInfo(file, &info_guid, &fi_size, fi);
     CHECK(status, "GetInfo(kernel)");
 
-    console_printf("Kernel file size: %u bytes\r\n", fi_buf.FileSize);
+    console_printf("Kernel file size: %u bytes\r\n", fi->FileSize);
 
     *file_out = file;
-    *size_out = (UINTN)fi_buf.FileSize;
+    *size_out = (UINTN)fi->FileSize;
     root->Close(root);
     return EFI_SUCCESS;
 }
@@ -343,11 +347,10 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(
     CHECK(status, "elf_load");
     kernel_file->Close(kernel_file);
 
-    /* The ELF entry point is the physical address of the entry function
-     * (since the ELF LMA == physical).  The virtual entry is:
-     *   virt_entry = kernel_virt + (kernel_entry - kernel_phys)
-     * We'll compute this after paging setup. */
-    UINT64 kernel_virt_entry = kernel_virt + (kernel_entry - kernel_phys);
+    /* elf_load() already returns the kernel's VIRTUAL entry point (e_entry
+     * is a VMA, adjusted for any relocation).  Adding kernel_virt again
+     * would double-count the high-half base and overflow, so use it as-is. */
+    UINT64 kernel_virt_entry = kernel_entry;
     console_printf("Kernel: phys=0x%x virt=0x%x entry_virt=0x%x size=0x%x\r\n",
                    kernel_phys, kernel_virt, kernel_virt_entry, kernel_size);
 
@@ -399,11 +402,14 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(
     bi->kernel_size          = kernel_size;
     bi->boot_stack_top       = stack_top;
 
-    /* 9. Compute virtual address of BootInfo (it's in the physmap) ---- */
-    UINT64 bi_virt = PHYSMAP_BASE + boot_info_phys;
-
+    /* 9. The kernel entry expects the PHYSICAL address of BootInfo and
+     *    derefs it through the physmap itself (PHYSMAP_BASE + phys).  All
+     *    pointers stored inside BootInfo (mem_map, framebuffer base, …) are
+     *    likewise physical, so pass the physical address here — adding
+     *    PHYSMAP_BASE now would make the kernel double-offset into a
+     *    non-canonical address and #GP. */
     /* 10. Switch to our page tables and jump to the kernel ------------ */
-    jump_to_kernel(new_cr3, stack_top, kernel_virt_entry, bi_virt);
+    jump_to_kernel(new_cr3, stack_top, kernel_virt_entry, boot_info_phys);
 }
 
 /* -----------------------------------------------------------------------

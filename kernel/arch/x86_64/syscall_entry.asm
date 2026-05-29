@@ -63,7 +63,7 @@ KiSystemCall64:
     ; -----------------------------------------------------------------------
     push    r11                         ; user RFLAGS
     push    rcx                         ; user RIP
-    push    gs:[KPCR_USER_RSP]          ; user RSP
+    push    qword gs:[KPCR_USER_RSP]    ; user RSP
     push    rbp
     mov     rbp, rsp
 
@@ -87,7 +87,7 @@ KiSystemCall64:
     ; -----------------------------------------------------------------------
     add     rsp, 8          ; remove alignment pad
     pop     rbp
-    pop     gs:[KPCR_USER_RSP]  ; discard (already in rsp slot below)
+    pop     qword gs:[KPCR_USER_RSP]  ; discard (already in rsp slot below)
     pop     rcx             ; user RIP → RCX (SYSRET uses this)
     pop     r11             ; user RFLAGS → R11 (SYSRET uses this)
 

@@ -112,7 +112,7 @@ Windows executables (PE32+) without emulation.
 
 ```bash
 # Install prerequisites
-sudo apt install cmake nasm gcc-mingw-w64-x86-64 qemu-system-x86 ovmf mtools dosfstools
+sudo apt install cmake nasm clang lld qemu-system-x86 ovmf mtools dosfstools xorriso
 
 # Build
 mkdir build && cd build
@@ -122,6 +122,30 @@ make -j$(nproc)
 # Run
 cmake --build . --target run
 ```
+
+### Bootable ISO
+
+A ready-to-boot UEFI ISO (`nova.iso`) is committed at the repository root and
+can be regenerated from a freshly built bootloader + kernel:
+
+```bash
+scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf
+```
+
+The ISO is El Torito **UEFI / no-emulation**: its EFI System Partition holds
+`\EFI\BOOT\BOOTX64.EFI` (the bootloader) and `\EFI\NOVA\kernel.elf`. Boot it in
+QEMU with OVMF firmware:
+
+```bash
+cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/OVMF_VARS.fd
+qemu-system-x86_64 -machine q35 -m 512 \
+  -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,unit=1,file=/tmp/OVMF_VARS.fd \
+  -cdrom nova.iso
+```
+
+It boots through every phase and renders the Phase 7 desktop on the GOP
+framebuffer (verified under OVMF at 2560×1600).
 
 ## Phase Roadmap
 

@@ -32,15 +32,16 @@ ENTRY(_start)
 KERNEL_VIRT_BASE = 0xFFFFFFFF80000000;
 KERNEL_PHYS_BASE = 0x0000000000200000;  /* 2 MiB physical */
 
-/* Helper macro: virtual address → physical load address */
-PHYS(addr) = (addr) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE;
+/* Virtual→physical (LMA) offset applied via AT() on each section below.
+ *   LMA = VMA - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE
+ * (Linker scripts have no function macros, so the expression is inlined.) */
 
 SECTIONS {
     /* Start at virtual 0xFFFFFFFF80200000 = VIRT_BASE + PHYS_BASE */
     . = KERNEL_VIRT_BASE + KERNEL_PHYS_BASE;
 
     /* ---- Code ---- */
-    .text ALIGN(4096) : AT(PHYS(ADDR(.text))) {
+    .text ALIGN(4096) : AT(ADDR(.text) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE) {
         __text_start = .;
         *(.text.entry)      /* Entry stub must be first */
         *(.text .text.*)
@@ -48,7 +49,7 @@ SECTIONS {
     }
 
     /* ---- Read-only data ---- */
-    .rodata ALIGN(4096) : AT(PHYS(ADDR(.rodata))) {
+    .rodata ALIGN(4096) : AT(ADDR(.rodata) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE) {
         __rodata_start = .;
         *(.rodata .rodata.*)
         *(.eh_frame_hdr)
@@ -57,32 +58,36 @@ SECTIONS {
     }
 
     /* ---- Read-write data ---- */
-    .data ALIGN(4096) : AT(PHYS(ADDR(.data))) {
+    .data ALIGN(4096) : AT(ADDR(.data) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE) {
         __data_start = .;
         *(.data .data.*)
         __data_end = .;
     }
 
     /* ---- BSS (zero-initialized) ---- */
-    .bss ALIGN(4096) : AT(PHYS(ADDR(.bss))) {
+    .bss ALIGN(4096) : AT(ADDR(.bss) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE) {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
         __bss_end = .;
-    }
 
-    /* ---- Initial kernel stack (16 KiB) ---- */
-    /* Placed immediately after BSS; grows downward from __kernel_stack_top */
-    . = ALIGN(4096);
-    __kernel_stack_bottom = .;
-    . += 0x4000;    /* 16 KiB */
-    __kernel_stack_top = .;
+        /* ---- Initial kernel stack (16 KiB) ----
+         * Kept INSIDE the .bss output section so it counts toward the
+         * segment's p_memsz.  The bootloader maps each PT_LOAD by memsz,
+         * so this guarantees the stack pages are mapped; a reservation
+         * placed after the section would be unmapped and fault on first
+         * push (grows downward from __kernel_stack_top). */
+        . = ALIGN(4096);
+        __kernel_stack_bottom = .;
+        . += 0x4000;    /* 16 KiB */
+        __kernel_stack_top = .;
+    }
 
     /* ---- Kernel end marker ---- */
     __kernel_end = .;
 
     /* Physical end address (for bootloader to know how much to load) */
-    __kernel_phys_end = PHYS(__kernel_end);
+    __kernel_phys_end = __kernel_end - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE;
 
     /* ---- Discard unwanted sections ---- */
     /DISCARD/ : {

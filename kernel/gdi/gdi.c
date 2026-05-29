@@ -24,16 +24,18 @@ static struct {
     bool    ready;
 } g;
 
-/* Convert a logical GdiColor (RGB packed) into the native VRAM pixel. */
+/* Convert a logical GdiColor into the native VRAM pixel.
+ *
+ * GdiColor == FB_COLOR(r,g,b) == (b<<16)|(g<<8)|r, i.e. little-endian
+ * bytes [R, G, B, 0].  That byte order is already what RGB hardware
+ * (PixelRedGreenBlue, byte0 = Red) expects, so it is emitted as-is.  BGR
+ * hardware (PixelBlueGreenRed, byte0 = Blue) needs Red and Blue swapped. */
 static inline UINT32 pixof(GdiColor c)
 {
-    if (g.bgr) {
-        /* native BGRX: B<<16 | G<<8 | R ; GdiColor is already that layout */
-        return (UINT32)c;
-    }
-    /* RGB framebuffer: swap R and B */
-    UINT32 r = GDI_R(c), gg = GDI_G(c), b = GDI_B(c);
-    return (b) | (gg << 8) | (r << 16);
+    UINT32 r = c & 0xFF, gg = (c >> 8) & 0xFF, b = (c >> 16) & 0xFF;
+    if (g.bgr)
+        return (r << 16) | (gg << 8) | b;   /* byte0 = Blue */
+    return (b << 16) | (gg << 8) | r;       /* byte0 = Red  (== c) */
 }
 
 static inline void put(int x, int y, UINT32 native)
@@ -42,14 +44,15 @@ static inline void put(int x, int y, UINT32 native)
     g.vram[(size_t)y * g.stride + x] = native;
 }
 
-/* Read a pixel back as a logical GdiColor (for alpha blending). */
+/* Read a pixel back as a logical GdiColor (inverse of pixof, for blending). */
 static inline GdiColor get(int x, int y)
 {
     if ((unsigned)x >= (unsigned)g.w || (unsigned)y >= (unsigned)g.h) return 0;
     UINT32 n = g.vram[(size_t)y * g.stride + x];
-    if (g.bgr) return (GdiColor)n;
-    UINT32 b = n & 0xFF, gg = (n >> 8) & 0xFF, r = (n >> 16) & 0xFF;
-    return (r) | (gg << 8) | (b << 16);
+    UINT32 c0 = n & 0xFF, c1 = (n >> 8) & 0xFF, c2 = (n >> 16) & 0xFF;
+    if (g.bgr)                              /* n = [B,G,R] → FB_COLOR */
+        return (c0 << 16) | (c1 << 8) | c2;
+    return n;                               /* n already == FB_COLOR */
 }
 
 /* -----------------------------------------------------------------------
