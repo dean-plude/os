@@ -56,6 +56,13 @@ int kvsnprintf(char *buf, size_t n, const char *fmt, __builtin_va_list ap);
 void early_printf(const char *fmt, ...);
 
 /*
+ * Enable or disable framebuffer output for kprintf.  Serial output is
+ * unaffected.  The desktop shell disables it after painting so kernel
+ * log text does not overwrite the rendered UI.
+ */
+void kprintf_set_fb_enabled(bool enabled);
+
+/*
  * Kernel assertion with descriptive panic message.
  */
 #define KASSERT(cond)  do {                                          \

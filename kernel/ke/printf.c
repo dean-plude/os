@@ -201,12 +201,23 @@ int kvsnprintf(char *buf, size_t n, const char *fmt, __builtin_va_list ap)
  * Public APIs
  * ----------------------------------------------------------------------- */
 
+/* When false, kprintf output is suppressed on the framebuffer (serial
+ * still receives everything).  The desktop shell disables it once it has
+ * painted the screen so boot-log text can't corrupt the rendered UI. */
+static bool g_fb_output = true;
+
+void kprintf_set_fb_enabled(bool enabled)
+{
+    g_fb_output = enabled;
+}
+
 void kvprintf(const char *fmt, __builtin_va_list ap)
 {
     char buf[1024];
     kvsnprintf(buf, sizeof(buf), fmt, ap);
     serial_puts(buf);
-    fb_puts(buf);
+    if (g_fb_output)
+        fb_puts(buf);
 }
 
 void kprintf(const char *fmt, ...)

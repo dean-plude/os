@@ -78,3 +78,30 @@ void fb_fill_rect(int x, int y, int w, int h, FbColor color);
  * Returns true if the framebuffer has been successfully initialized.
  */
 bool fb_available(void);
+
+/*
+ * Raw framebuffer surface — for the GDI subsystem.
+ * Exposes the underlying VRAM pointer and geometry so that GDI can
+ * write pixels directly without going through the console abstraction.
+ */
+typedef struct {
+    uint32_t *vram;     /* Kernel VA of the linear framebuffer */
+    int       width;    /* Horizontal resolution in pixels */
+    int       height;   /* Vertical resolution in pixels */
+    int       stride;   /* Pixels per scanline (may be > width) */
+    bool      bgr;      /* true = pixel_format 0 (BGR), false = RGB */
+} FbRawSurface;
+
+void fb_get_raw(FbRawSurface *out);
+
+/*
+ * Draw a null-terminated string at pixel coordinates with a solid
+ * background fill (bg).
+ */
+void fb_draw_string(int x, int y, const char *s, FbColor fg, FbColor bg);
+
+/*
+ * Draw a null-terminated string at pixel coordinates with a
+ * transparent background (only foreground pixels are written).
+ */
+void fb_draw_string_trans(int x, int y, const char *s, FbColor fg);

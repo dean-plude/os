@@ -65,6 +65,9 @@
 #include "../fs/initrd.h"
 #include "kpcr.h"
 #include "../ps/csrss.h"
+#include "../gdi/gdi.h"
+#include "../wm/wm.h"
+#include "../wm/desktop.h"
 
 /* -----------------------------------------------------------------------
  * Banner
@@ -81,7 +84,7 @@ static void print_banner(void)
     kprintf("  ╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝\n");
     kprintf("\n");
     fb_set_colors(FB_BOOT_FG, FB_BOOT_BG);
-    kprintf("  Windows-compatible OS kernel  [Phase 6 — User-Mode Foundation]\n");
+    kprintf("  Windows-compatible OS kernel  [Phase 7 — GUI & Desktop Shell]\n");
     kprintf("  Built: " __DATE__ " " __TIME__ "\n");
     kprintf("\n");
 }
@@ -333,21 +336,33 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
 
     sched_dump();
 
-    kprintf("\n[NovaOS] Phase 6 initialized. Enabling interrupts...\n");
+    /* ------------------------------------------------------------------
+     * STEP 22 (Phase 7): GUI — GDI software renderer, window manager,
+     * and the desktop shell.  Once the desktop is painted we silence
+     * framebuffer logging so kernel/thread output (which still flows to
+     * the serial console) cannot overwrite the rendered UI.
+     * ------------------------------------------------------------------ */
+    kprintf("=== Phase 7: GDI + Window Manager + Desktop Shell ===\n");
+    if (GdiInitialize()) {
+        WmInitialize();
+        DesktopInitialize();
+        DesktopRender();                  /* paint wallpaper + shell */
+        kprintf_set_fb_enabled(false);    /* keep UI; logs → serial only */
+        kprintf("[NovaOS] Desktop shell rendered (%dx%d)\n",
+                GdiScreenW(), GdiScreenH());
+    } else {
+        kprintf("[NovaOS] No framebuffer present; running headless\n");
+    }
+
+    kprintf("\n[NovaOS] Phase 7 initialized. Enabling interrupts...\n");
     sti();
 
     kprintf("[NovaOS] Entering kernel main loop\n");
 
-    uint64_t last_dump = 0;
     for (;;) {
         volatile uint64_t spin;
         for (spin = 0; spin < 50000000ULL; spin++)
             pause_cpu();
-
-        if (last_dump < 5) {
-            last_dump++;
-            sched_dump();
-        }
 
         sched_yield();
         hlt();

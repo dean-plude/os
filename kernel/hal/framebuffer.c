@@ -184,6 +184,55 @@ void fb_init(const BootFramebuffer *bfb)
 bool fb_available(void) { return fb.ready; }
 
 /* -----------------------------------------------------------------------
+ * fb_get_raw — expose raw VRAM surface to GDI subsystem
+ * ----------------------------------------------------------------------- */
+void fb_get_raw(FbRawSurface *out)
+{
+    if (!out) return;
+    out->vram   = fb.base;
+    out->width  = (int)fb.width;
+    out->height = (int)fb.height;
+    out->stride = (int)fb.stride;
+    out->bgr    = fb.bgr;
+}
+
+/* -----------------------------------------------------------------------
+ * fb_draw_string — draw string with solid background
+ * ----------------------------------------------------------------------- */
+void fb_draw_string(int x, int y, const char *s, FbColor fg, FbColor bg)
+{
+    if (!fb.ready || !s) return;
+    for (; *s; s++, x += FONT_W)
+        fb_draw_char(x, y, *s, fg, bg);
+}
+
+/* -----------------------------------------------------------------------
+ * fb_draw_string_trans — draw string, transparent background.
+ * Only foreground (set) pixels are written; the background is preserved.
+ * ----------------------------------------------------------------------- */
+void fb_draw_string_trans(int x, int y, const char *s, FbColor fg)
+{
+    if (!fb.ready || !s) return;
+    uint32_t px = fb_color_pixel(fg);
+    for (; *s; s++, x += FONT_W) {
+        unsigned char c = (unsigned char)*s;
+        if (c < 0x20 || c > 0x7E) continue;
+        const uint8_t *glyph = font8x16[c - 0x20];
+        for (int row = 0; row < FONT_H; row++) {
+            int py = y + row;
+            if (py < 0 || py >= (int)fb.height) continue;
+            uint8_t bits = glyph[row];
+            for (int col = 0; col < FONT_W; col++) {
+                if (!(bits & (0x80u >> col))) continue;
+                int px_x = x + col;
+                if (px_x < 0 || px_x >= (int)fb.width) continue;
+                fb.base[py * fb.stride + px_x] = px;
+            }
+        }
+    }
+}
+
+/* -----------------------------------------------------------------------
  * fb_fill_rect
  * ----------------------------------------------------------------------- */
 void fb_fill_rect(int x, int y, int w, int h, FbColor color)

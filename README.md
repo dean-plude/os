@@ -3,7 +3,7 @@
 A clean-room, from-scratch x86_64 operating system designed to run native
 Windows executables (PE32+) without emulation.
 
-## Status: Phase 6 — Full User-Mode Foundation
+## Status: Phase 7 — GUI, Window Manager & Desktop Shell
 
 **What works:**
 
@@ -81,6 +81,33 @@ Windows executables (PE32+) without emulation.
   - `CsrClientCallServer()` — no-op stub returning `STATUS_SUCCESS`
   - Prevents ntdll's `LdrpInitializeProcess` from failing on CSRSS connect
 
+### Phase 7 — GUI, Window Manager & Desktop Shell
+- **GDI software renderer** (`gdi/gdi.c`): a dependency-free 2D rasterizer that
+  draws straight into the GOP linear framebuffer (BGR/RGB aware, fully clipped):
+  - Solid / alpha-blended fills, vertical & horizontal gradients
+  - Rounded rectangles (solid, alpha, vertical-gradient), circles, H/V lines
+  - Color lerp, and text via the embedded 8×16 VGA font
+    (normal, bold double-strike, transparent, centered)
+- **Window manager** (`wm/wm.c`): a compositing WM over GDI:
+  - Fixed pool of `WND` windows with Z-ordering, focus, show/hide
+  - Decorated frames — title bar, accent stripe, caption glyphs, drop shadow,
+    rounded body and 1px border
+  - `WmComposite()` paints background → windows (ascending Z) → overlay
+- **Desktop shell** (`wm/desktop.c`): a Windows-11-style desktop, rendered fully
+  in software to match the design mock:
+  - Gradient wallpaper with six warm "wave" layers (integer-sine curves)
+  - Left-column desktop icons (My PC, Documents, Personal, Proyect, Files, photos)
+  - Centered **Start menu**: search box, pinned-app grid, "see all" pill, live
+    tiles (Today/calendar, weather, media, cloud storage, photos, to-do, games),
+    a "Recently used" list, and a user / power bar — with two app tiles peeking
+    above the panel
+  - Floating, rounded **taskbar/dock** with app glyphs and a clock
+- **Framebuffer raw-surface API** (`fb_get_raw`, `fb_draw_string[_trans]`): lets
+  GDI write pixels directly; `kprintf_set_fb_enabled(false)` silences the boot-log
+  text console once the desktop is painted (serial keeps every message)
+- Booted as **STEP 22** in `KiSystemStartup`: after the executive is up the kernel
+  initializes GDI → WM → shell and renders one full desktop frame
+
 ## Quick Start
 
 ```bash
@@ -106,7 +133,7 @@ cmake --build . --target run
 | 4 | VFS + InitRD (virtual file system, in-memory ramdisk) | ✅ **Done** |
 | 5 | Process isolation (per-process CR3, KPCR, PEB/TEB, SWAPGS) | ✅ **Done** |
 | 6 | Full user-mode (SYSCALL thunk pages, Win32 helpers, CSRSS) | ✅ **Done** |
-| 7 | GUI (window manager, GDI, desktop shell) | 🔄 Planned |
+| 7 | GUI (window manager, GDI, desktop shell) | ✅ **Done** |
 | 8 | Application compatibility (notepad, calc, 7-Zip) | 🔄 Planned |
 
 ## Architecture
@@ -129,6 +156,8 @@ os/
 │   ├── io/               # I/O Manager (IRP, device objects, file objects)
 │   ├── fs/               # VFS layer + InitRD CPIO driver
 │   ├── ldr/              # PE32+ loader + user-mode SYSCALL thunk generator
+│   ├── gdi/              # GDI software renderer (2D rasterizer)
+│   ├── wm/               # Window manager + desktop shell
 │   ├── lib/              # Freestanding string/memory library
 │   └── linker.ld         # Kernel linker script
 ├── cmake/                # Cross-compilation toolchain files
@@ -142,8 +171,14 @@ os/
   offsets match Windows 10 1903 x64 so that real ntdll.dll stubs can be used unmodified.
 - **Clean-room**: no GPL code; all NT API implementations are written from scratch
   using public Microsoft documentation and reverse-engineering references.
-- **Single-CPU Phase 5/6**: KPCR is statically allocated for the boot CPU; SMP requires
-  one KPCR per logical processor (Phase 7).
+- **Single-CPU (Phase 5–7)**: KPCR is statically allocated for the boot CPU; SMP
+  requires one KPCR per logical processor (later phase).
+- **Software-only GDI**: Phase 7 rendering is a pure CPU rasterizer writing the GOP
+  linear framebuffer — no GPU/2D-accel driver. It draws directly to VRAM (no back
+  buffer yet); double-buffering arrives once a second VRAM mapping exists.
+- **No image decoder yet**: application icons in the shell are rendered as rounded,
+  brand-colored tiles with short labels — a faithful stand-in until a PNG/ICO
+  decoder lands. App tiles, live tiles, and the dock are drawn from primitives.
 - **Kernel-helper syscalls (0x01F0–0x01FF)**: reserved range at the top of the 512-entry
   NT dispatch table; used only internally by our user-mode stub pages — not part of the
   Windows NT ABI and invisible to real Windows binaries.

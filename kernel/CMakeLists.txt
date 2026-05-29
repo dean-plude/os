@@ -47,6 +47,11 @@ set(KERNEL_CFLAGS
     -mno-mmx
     -mno-sse
     -mno-sse2
+    # Several executive globals (e.g. ObpFileType) are tentatively defined
+    # in more than one translation unit and merged at link time.  Modern
+    # Clang/GCC default to -fno-common, which turns that into a duplicate
+    # symbol error, so request the classic common-symbol behavior here.
+    -fcommon
     -Wall
     -Wextra
     -Wno-unused-parameter
@@ -121,6 +126,9 @@ set(KERNEL_C_SOURCES
     ps/csrss.c
     fs/vfs.c
     fs/initrd.c
+    gdi/gdi.c
+    wm/wm.c
+    wm/desktop.c
     lib/string.c
 )
 
