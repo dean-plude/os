@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os
+CMAKE_SOURCE_DIR = /home/user/os
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build
+CMAKE_BINARY_DIR = /home/user/os/build
 
 # Utility rule file for run-debug.
 
@@ -67,8 +67,8 @@ include CMakeFiles/run-debug.dir/compiler_depend.make
 include CMakeFiles/run-debug.dir/progress.make
 
 CMakeFiles/run-debug:
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Launching NovaOS in QEMU (GDB on :1234)..."
-	/mnt/c/Users/dean.plude/Documents/GitHub/os/scripts/run-qemu.sh /mnt/c/Users/dean.plude/Documents/GitHub/os/build/nova.img /usr/share/ovmf/OVMF.fd OVMF_VARS-NOTFOUND --gdb
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Launching NovaOS in QEMU (GDB on :1234)..."
+	/home/user/os/scripts/run-qemu.sh /home/user/os/build/nova.img /usr/share/ovmf/OVMF.fd OVMF_VARS-NOTFOUND --gdb
 
 run-debug: CMakeFiles/run-debug
 run-debug: CMakeFiles/run-debug.dir/build.make
@@ -83,6 +83,6 @@ CMakeFiles/run-debug.dir/clean:
 .PHONY : CMakeFiles/run-debug.dir/clean
 
 CMakeFiles/run-debug.dir/depend:
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/c/Users/dean.plude/Documents/GitHub/os /mnt/c/Users/dean.plude/Documents/GitHub/os /mnt/c/Users/dean.plude/Documents/GitHub/os/build /mnt/c/Users/dean.plude/Documents/GitHub/os/build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/run-debug.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /home/user/os/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/user/os /home/user/os /home/user/os/build /home/user/os/build /home/user/os/build/CMakeFiles/run-debug.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/run-debug.dir/depend
 

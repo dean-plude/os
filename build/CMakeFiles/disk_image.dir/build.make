@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os
+CMAKE_SOURCE_DIR = /home/user/os
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build
+CMAKE_BINARY_DIR = /home/user/os/build
 
 # Utility rule file for disk_image.
 
@@ -70,17 +70,17 @@ CMakeFiles/disk_image: nova.img
 
 nova.img: bootx64.efi
 nova.img: kernel.elf
-nova.img: /mnt/c/Users/dean.plude/Documents/GitHub/os/scripts/create-disk.sh
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Creating bootable disk image: nova.img"
-	/mnt/c/Users/dean.plude/Documents/GitHub/os/scripts/create-disk.sh /mnt/c/Users/dean.plude/Documents/GitHub/os/build/nova.img /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootx64.efi /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel.elf
+nova.img: /home/user/os/scripts/create-disk.sh
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Creating bootable disk image: nova.img"
+	/home/user/os/scripts/create-disk.sh /home/user/os/build/nova.img /home/user/os/build/bootx64.efi /home/user/os/build/kernel.elf
 
 bootx64.efi:
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Generating bootx64.efi"
-	/usr/bin/cmake -E copy /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/bootx64.efi /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootx64.efi
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Generating bootx64.efi"
+	/usr/bin/cmake -E copy /home/user/os/build/bootloader_build/bootx64.efi /home/user/os/build/bootx64.efi
 
 kernel.elf:
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Generating kernel.elf"
-	/usr/bin/cmake -E copy /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/kernel.elf /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel.elf
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Generating kernel.elf"
+	/usr/bin/cmake -E copy /home/user/os/build/kernel_build/kernel.elf /home/user/os/build/kernel.elf
 
 disk_image: CMakeFiles/disk_image
 disk_image: bootx64.efi
@@ -98,6 +98,6 @@ CMakeFiles/disk_image.dir/clean:
 .PHONY : CMakeFiles/disk_image.dir/clean
 
 CMakeFiles/disk_image.dir/depend:
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/c/Users/dean.plude/Documents/GitHub/os /mnt/c/Users/dean.plude/Documents/GitHub/os /mnt/c/Users/dean.plude/Documents/GitHub/os/build /mnt/c/Users/dean.plude/Documents/GitHub/os/build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/disk_image.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /home/user/os/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/user/os /home/user/os /home/user/os/build /home/user/os/build /home/user/os/build/CMakeFiles/disk_image.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/disk_image.dir/depend
 

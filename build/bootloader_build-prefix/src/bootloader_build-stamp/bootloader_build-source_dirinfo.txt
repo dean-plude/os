@@ -4,6 +4,6 @@
 
 method=source_dir
 command=
-source_dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader
+source_dir=/home/user/os/bootloader
 work_dir=
 

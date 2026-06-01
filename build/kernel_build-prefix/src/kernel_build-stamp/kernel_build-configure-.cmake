@@ -1,11 +1,11 @@
 
 cmake_minimum_required(VERSION 3.15)
 
-set(command "/usr/bin/cmake;-DCMAKE_BUILD_TYPE=Debug;-DCMAKE_C_COMPILER=/usr/bin/clang;-DCMAKE_ASM_NASM_COMPILER=/usr/bin/nasm;-DCMAKE_SOURCE_DIR=/mnt/c/Users/dean.plude/Documents/GitHub/os;-GUnix Makefiles;-S;/mnt/c/Users/dean.plude/Documents/GitHub/os/kernel;-B;/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build")
+set(command "/usr/bin/cmake;-DCMAKE_BUILD_TYPE=Debug;-DCMAKE_C_COMPILER=/usr/bin/clang;-DCMAKE_ASM_NASM_COMPILER=/usr/bin/nasm;-DCMAKE_SOURCE_DIR=/home/user/os;-GUnix Makefiles;-S;/home/user/os/kernel;-B;/home/user/os/build/kernel_build")
 set(log_merged "")
 set(log_output_on_failure "")
-set(stdout_log "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-out.log")
-set(stderr_log "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-err.log")
+set(stdout_log "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-out.log")
+set(stderr_log "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-err.log")
 execute_process(
   COMMAND ${command}
   RESULT_VARIABLE result
@@ -31,7 +31,7 @@ if(result)
   if (${log_merged})
     set(msg "${msg}\nSee also\n  ${stderr_log}")
   else()
-    set(msg "${msg}\nSee also\n  /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-*.log")
+    set(msg "${msg}\nSee also\n  /home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-*.log")
   endif()
   if (${log_output_on_failure})
     message(SEND_ERROR "${msg}")
@@ -50,7 +50,7 @@ if(result)
   endif()
 else()
   if(NOT "Unix Makefiles" MATCHES "Ninja")
-    set(msg "kernel_build configure command succeeded.  See also /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-*.log")
+    set(msg "kernel_build configure command succeeded.  See also /home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-*.log")
     message(STATUS "${msg}")
   endif()
 endif()

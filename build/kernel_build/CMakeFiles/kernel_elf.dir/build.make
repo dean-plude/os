@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel
+CMAKE_SOURCE_DIR = /home/user/os/kernel
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build
+CMAKE_BINARY_DIR = /home/user/os/build/kernel_build
 
 # Utility rule file for kernel_elf.
 
@@ -72,21 +72,21 @@ kernel.elf: asm_entry.o
 kernel.elf: asm_isr_stubs.o
 kernel.elf: asm_syscall_entry.o
 kernel.elf: libkernel_c.a
-kernel.elf: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/linker.ld
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Linking kernel.elf"
-	/usr/bin/clang -T /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/linker.ld -nostdlib -z max-page-size=0x1000 -target x86_64-unknown-none-elf -fuse-ld=lld -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/kernel.elf /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/asm_entry.o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/asm_isr_stubs.o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/asm_syscall_entry.o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/libkernel_c.a
+kernel.elf: /home/user/os/kernel/linker.ld
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Linking kernel.elf (ld.bfd)"
+	/usr/bin/ld.bfd -T /home/user/os/kernel/linker.ld -m elf_x86_64 --no-pie -z max-page-size=0x1000 -o /home/user/os/build/kernel_build/kernel.elf /home/user/os/build/kernel_build/asm_entry.o /home/user/os/build/kernel_build/asm_isr_stubs.o /home/user/os/build/kernel_build/asm_syscall_entry.o --whole-archive /home/user/os/build/kernel_build/libkernel_c.a --no-whole-archive
 
-asm_entry.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/entry.asm
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "NASM: arch/x86_64/entry.asm"
-	nasm -f elf64 -g -F dwarf -I /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/asm_entry.o /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/entry.asm
+asm_entry.o: /home/user/os/kernel/arch/x86_64/entry.asm
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "NASM: arch/x86_64/entry.asm"
+	nasm -f elf64 -g -F dwarf -I /home/user/os/kernel/ -o /home/user/os/build/kernel_build/asm_entry.o /home/user/os/kernel/arch/x86_64/entry.asm
 
-asm_isr_stubs.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/isr_stubs.asm
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "NASM: arch/x86_64/isr_stubs.asm"
-	nasm -f elf64 -g -F dwarf -I /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/asm_isr_stubs.o /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/isr_stubs.asm
+asm_isr_stubs.o: /home/user/os/kernel/arch/x86_64/isr_stubs.asm
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "NASM: arch/x86_64/isr_stubs.asm"
+	nasm -f elf64 -g -F dwarf -I /home/user/os/kernel/ -o /home/user/os/build/kernel_build/asm_isr_stubs.o /home/user/os/kernel/arch/x86_64/isr_stubs.asm
 
-asm_syscall_entry.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/syscall_entry.asm
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "NASM: arch/x86_64/syscall_entry.asm"
-	nasm -f elf64 -g -F dwarf -I /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/asm_syscall_entry.o /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/syscall_entry.asm
+asm_syscall_entry.o: /home/user/os/kernel/arch/x86_64/syscall_entry.asm
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "NASM: arch/x86_64/syscall_entry.asm"
+	nasm -f elf64 -g -F dwarf -I /home/user/os/kernel/ -o /home/user/os/build/kernel_build/asm_syscall_entry.o /home/user/os/kernel/arch/x86_64/syscall_entry.asm
 
 kernel_elf: CMakeFiles/kernel_elf
 kernel_elf: asm_entry.o
@@ -94,7 +94,7 @@ kernel_elf: asm_isr_stubs.o
 kernel_elf: asm_syscall_entry.o
 kernel_elf: kernel.elf
 kernel_elf: CMakeFiles/kernel_elf.dir/build.make
-	/usr/bin/cmake -E copy /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/kernel.elf /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/kernel.elf
+	/usr/bin/cmake -E copy /home/user/os/build/kernel_build/kernel.elf /home/user/os/build/kernel_build/kernel.elf
 .PHONY : kernel_elf
 
 # Rule to build all files generated by this target.
@@ -106,6 +106,6 @@ CMakeFiles/kernel_elf.dir/clean:
 .PHONY : CMakeFiles/kernel_elf.dir/clean
 
 CMakeFiles/kernel_elf.dir/depend:
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_elf.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /home/user/os/build/kernel_build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/user/os/kernel /home/user/os/kernel /home/user/os/build/kernel_build /home/user/os/build/kernel_build /home/user/os/build/kernel_build/CMakeFiles/kernel_elf.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/kernel_elf.dir/depend
 

@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os
+CMAKE_SOURCE_DIR = /home/user/os
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build
+CMAKE_BINARY_DIR = /home/user/os/build
 
 # Utility rule file for kernel_build.
 
@@ -76,47 +76,47 @@ CMakeFiles/kernel_build-complete: kernel_build-prefix/src/kernel_build-stamp/ker
 CMakeFiles/kernel_build-complete: kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure
 CMakeFiles/kernel_build-complete: kernel_build-prefix/src/kernel_build-stamp/kernel_build-build
 CMakeFiles/kernel_build-complete: kernel_build-prefix/src/kernel_build-stamp/kernel_build-install
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Completed 'kernel_build'"
-	/usr/bin/cmake -E make_directory /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/kernel_build-complete
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-done
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Completed 'kernel_build'"
+	/usr/bin/cmake -E make_directory /home/user/os/build/CMakeFiles
+	/usr/bin/cmake -E touch /home/user/os/build/CMakeFiles/kernel_build-complete
+	/usr/bin/cmake -E touch /home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-done
 
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-build: kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Performing build step for 'kernel_build'"
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && /usr/bin/cmake -Dmake=$(MAKE) -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-Debug.cmake
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Performing build step for 'kernel_build'"
+	cd /home/user/os/build/kernel_build && /usr/bin/cmake -Dmake=$(MAKE) -P /home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-.cmake
 
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure: kernel_build-prefix/tmp/kernel_build-cfgcmd.txt
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure: kernel_build-prefix/src/kernel_build-stamp/kernel_build-patch
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Performing configure step for 'kernel_build'"
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && /usr/bin/cmake -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-Debug.cmake
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && /usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Performing configure step for 'kernel_build'"
+	cd /home/user/os/build/kernel_build && /usr/bin/cmake -P /home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-.cmake
+	cd /home/user/os/build/kernel_build && /usr/bin/cmake -E touch /home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure
 
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-download: kernel_build-prefix/src/kernel_build-stamp/kernel_build-source_dirinfo.txt
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-download: kernel_build-prefix/src/kernel_build-stamp/kernel_build-mkdir
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "No download step for 'kernel_build'"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "No download step for 'kernel_build'"
 	/usr/bin/cmake -E echo_append
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-download
+	/usr/bin/cmake -E touch /home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-download
 
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-install: kernel_build-prefix/src/kernel_build-stamp/kernel_build-build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "No install step for 'kernel_build'"
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && /usr/bin/cmake -E echo_append
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "No install step for 'kernel_build'"
+	cd /home/user/os/build/kernel_build && /usr/bin/cmake -E echo_append
 
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-mkdir:
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Creating directories for 'kernel_build'"
-	/usr/bin/cmake -Dcfgdir= -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/tmp/kernel_build-mkdirs.cmake
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-mkdir
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Creating directories for 'kernel_build'"
+	/usr/bin/cmake -Dcfgdir= -P /home/user/os/build/kernel_build-prefix/tmp/kernel_build-mkdirs.cmake
+	/usr/bin/cmake -E touch /home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-mkdir
 
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-patch: kernel_build-prefix/src/kernel_build-stamp/kernel_build-patch-info.txt
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-patch: kernel_build-prefix/src/kernel_build-stamp/kernel_build-update
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "No patch step for 'kernel_build'"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "No patch step for 'kernel_build'"
 	/usr/bin/cmake -E echo_append
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-patch
+	/usr/bin/cmake -E touch /home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-patch
 
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-update: kernel_build-prefix/src/kernel_build-stamp/kernel_build-update-info.txt
 kernel_build-prefix/src/kernel_build-stamp/kernel_build-update: kernel_build-prefix/src/kernel_build-stamp/kernel_build-download
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "No update step for 'kernel_build'"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "No update step for 'kernel_build'"
 	/usr/bin/cmake -E echo_append
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-update
+	/usr/bin/cmake -E touch /home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-update
 
 kernel_build: CMakeFiles/kernel_build
 kernel_build: CMakeFiles/kernel_build-complete
@@ -139,6 +139,6 @@ CMakeFiles/kernel_build.dir/clean:
 .PHONY : CMakeFiles/kernel_build.dir/clean
 
 CMakeFiles/kernel_build.dir/depend:
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/c/Users/dean.plude/Documents/GitHub/os /mnt/c/Users/dean.plude/Documents/GitHub/os /mnt/c/Users/dean.plude/Documents/GitHub/os/build /mnt/c/Users/dean.plude/Documents/GitHub/os/build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/kernel_build.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /home/user/os/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/user/os /home/user/os /home/user/os/build /home/user/os/build /home/user/os/build/CMakeFiles/kernel_build.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/kernel_build.dir/depend
 

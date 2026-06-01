@@ -1,7 +1,6 @@
 CMakeFiles/kernel_objects.dir/hal/serial.c.o: \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/serial.c \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/serial.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/../include/types.h \
+  /home/user/os/kernel/hal/serial.c /home/user/os/kernel/hal/serial.h \
+  /home/user/os/kernel/hal/../include/types.h \
   /usr/lib/llvm-18/lib/clang/18/include/stdint.h /usr/include/stdint.h \
   /usr/lib/llvm-18/lib/clang/18/include/stddef.h \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_ptrdiff_t.h \
@@ -11,5 +10,5 @@ CMakeFiles/kernel_objects.dir/hal/serial.c.o: \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_max_align_t.h \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_offsetof.h \
   /usr/lib/llvm-18/lib/clang/18/include/stdbool.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/../arch/x86_64/cpu.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/../arch/x86_64/../../include/types.h
+  /home/user/os/kernel/hal/../arch/x86_64/cpu.h \
+  /home/user/os/kernel/hal/../arch/x86_64/../../include/types.h

@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel
+CMAKE_SOURCE_DIR = /home/user/os/kernel
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build
+CMAKE_BINARY_DIR = /home/user/os/build/kernel_build
 
 # Include any dependencies generated for this target.
 include CMakeFiles/kernel_objects.dir/depend.make
@@ -70,326 +70,452 @@ include CMakeFiles/kernel_objects.dir/progress.make
 include CMakeFiles/kernel_objects.dir/flags.make
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/gdt.c
+CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o: /home/user/os/kernel/arch/x86_64/gdt.c
 CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o -MF CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o.d -o CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/gdt.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o -MF CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o.d -o CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o -c /home/user/os/kernel/arch/x86_64/gdt.c
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/gdt.c > CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/arch/x86_64/gdt.c > CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.i
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/gdt.c -o CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/arch/x86_64/gdt.c -o CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.s
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/idt.c
+CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o: /home/user/os/kernel/arch/x86_64/idt.c
 CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o -MF CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o.d -o CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/idt.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o -MF CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o.d -o CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o -c /home/user/os/kernel/arch/x86_64/idt.c
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/idt.c > CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/arch/x86_64/idt.c > CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.i
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/idt.c -o CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/arch/x86_64/idt.c -o CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.s
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/apic.c
+CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o: /home/user/os/kernel/arch/x86_64/apic.c
 CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o -MF CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o.d -o CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/apic.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o -MF CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o.d -o CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o -c /home/user/os/kernel/arch/x86_64/apic.c
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/apic.c > CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/arch/x86_64/apic.c > CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.i
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/apic.c -o CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/arch/x86_64/apic.c -o CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.s
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/paging.c
+CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o: /home/user/os/kernel/arch/x86_64/paging.c
 CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o -MF CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o.d -o CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/paging.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o -MF CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o.d -o CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o -c /home/user/os/kernel/arch/x86_64/paging.c
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/paging.c > CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/arch/x86_64/paging.c > CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.i
 
 CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/paging.c -o CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/arch/x86_64/paging.c -o CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.s
 
 CMakeFiles/kernel_objects.dir/mm/pmm.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/mm/pmm.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/pmm.c
+CMakeFiles/kernel_objects.dir/mm/pmm.c.o: /home/user/os/kernel/mm/pmm.c
 CMakeFiles/kernel_objects.dir/mm/pmm.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building C object CMakeFiles/kernel_objects.dir/mm/pmm.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/mm/pmm.c.o -MF CMakeFiles/kernel_objects.dir/mm/pmm.c.o.d -o CMakeFiles/kernel_objects.dir/mm/pmm.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/pmm.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building C object CMakeFiles/kernel_objects.dir/mm/pmm.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/mm/pmm.c.o -MF CMakeFiles/kernel_objects.dir/mm/pmm.c.o.d -o CMakeFiles/kernel_objects.dir/mm/pmm.c.o -c /home/user/os/kernel/mm/pmm.c
 
 CMakeFiles/kernel_objects.dir/mm/pmm.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/mm/pmm.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/pmm.c > CMakeFiles/kernel_objects.dir/mm/pmm.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/mm/pmm.c > CMakeFiles/kernel_objects.dir/mm/pmm.c.i
 
 CMakeFiles/kernel_objects.dir/mm/pmm.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/mm/pmm.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/pmm.c -o CMakeFiles/kernel_objects.dir/mm/pmm.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/mm/pmm.c -o CMakeFiles/kernel_objects.dir/mm/pmm.c.s
 
 CMakeFiles/kernel_objects.dir/mm/vmm.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/mm/vmm.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/vmm.c
+CMakeFiles/kernel_objects.dir/mm/vmm.c.o: /home/user/os/kernel/mm/vmm.c
 CMakeFiles/kernel_objects.dir/mm/vmm.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building C object CMakeFiles/kernel_objects.dir/mm/vmm.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/mm/vmm.c.o -MF CMakeFiles/kernel_objects.dir/mm/vmm.c.o.d -o CMakeFiles/kernel_objects.dir/mm/vmm.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/vmm.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building C object CMakeFiles/kernel_objects.dir/mm/vmm.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/mm/vmm.c.o -MF CMakeFiles/kernel_objects.dir/mm/vmm.c.o.d -o CMakeFiles/kernel_objects.dir/mm/vmm.c.o -c /home/user/os/kernel/mm/vmm.c
 
 CMakeFiles/kernel_objects.dir/mm/vmm.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/mm/vmm.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/vmm.c > CMakeFiles/kernel_objects.dir/mm/vmm.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/mm/vmm.c > CMakeFiles/kernel_objects.dir/mm/vmm.c.i
 
 CMakeFiles/kernel_objects.dir/mm/vmm.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/mm/vmm.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/vmm.c -o CMakeFiles/kernel_objects.dir/mm/vmm.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/mm/vmm.c -o CMakeFiles/kernel_objects.dir/mm/vmm.c.s
 
 CMakeFiles/kernel_objects.dir/hal/serial.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/hal/serial.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/serial.c
+CMakeFiles/kernel_objects.dir/hal/serial.c.o: /home/user/os/kernel/hal/serial.c
 CMakeFiles/kernel_objects.dir/hal/serial.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building C object CMakeFiles/kernel_objects.dir/hal/serial.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/hal/serial.c.o -MF CMakeFiles/kernel_objects.dir/hal/serial.c.o.d -o CMakeFiles/kernel_objects.dir/hal/serial.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/serial.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building C object CMakeFiles/kernel_objects.dir/hal/serial.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/hal/serial.c.o -MF CMakeFiles/kernel_objects.dir/hal/serial.c.o.d -o CMakeFiles/kernel_objects.dir/hal/serial.c.o -c /home/user/os/kernel/hal/serial.c
 
 CMakeFiles/kernel_objects.dir/hal/serial.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/hal/serial.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/serial.c > CMakeFiles/kernel_objects.dir/hal/serial.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/hal/serial.c > CMakeFiles/kernel_objects.dir/hal/serial.c.i
 
 CMakeFiles/kernel_objects.dir/hal/serial.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/hal/serial.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/serial.c -o CMakeFiles/kernel_objects.dir/hal/serial.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/hal/serial.c -o CMakeFiles/kernel_objects.dir/hal/serial.c.s
 
 CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/framebuffer.c
+CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o: /home/user/os/kernel/hal/framebuffer.c
 CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building C object CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o -MF CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o.d -o CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/framebuffer.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building C object CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o -MF CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o.d -o CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o -c /home/user/os/kernel/hal/framebuffer.c
 
 CMakeFiles/kernel_objects.dir/hal/framebuffer.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/hal/framebuffer.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/framebuffer.c > CMakeFiles/kernel_objects.dir/hal/framebuffer.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/hal/framebuffer.c > CMakeFiles/kernel_objects.dir/hal/framebuffer.c.i
 
 CMakeFiles/kernel_objects.dir/hal/framebuffer.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/hal/framebuffer.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/framebuffer.c -o CMakeFiles/kernel_objects.dir/hal/framebuffer.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/hal/framebuffer.c -o CMakeFiles/kernel_objects.dir/hal/framebuffer.c.s
+
+CMakeFiles/kernel_objects.dir/hal/rtc.c.o: CMakeFiles/kernel_objects.dir/flags.make
+CMakeFiles/kernel_objects.dir/hal/rtc.c.o: /home/user/os/kernel/hal/rtc.c
+CMakeFiles/kernel_objects.dir/hal/rtc.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building C object CMakeFiles/kernel_objects.dir/hal/rtc.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/hal/rtc.c.o -MF CMakeFiles/kernel_objects.dir/hal/rtc.c.o.d -o CMakeFiles/kernel_objects.dir/hal/rtc.c.o -c /home/user/os/kernel/hal/rtc.c
+
+CMakeFiles/kernel_objects.dir/hal/rtc.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/hal/rtc.c.i"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/hal/rtc.c > CMakeFiles/kernel_objects.dir/hal/rtc.c.i
+
+CMakeFiles/kernel_objects.dir/hal/rtc.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/hal/rtc.c.s"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/hal/rtc.c -o CMakeFiles/kernel_objects.dir/hal/rtc.c.s
+
+CMakeFiles/kernel_objects.dir/hal/ps2.c.o: CMakeFiles/kernel_objects.dir/flags.make
+CMakeFiles/kernel_objects.dir/hal/ps2.c.o: /home/user/os/kernel/hal/ps2.c
+CMakeFiles/kernel_objects.dir/hal/ps2.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building C object CMakeFiles/kernel_objects.dir/hal/ps2.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/hal/ps2.c.o -MF CMakeFiles/kernel_objects.dir/hal/ps2.c.o.d -o CMakeFiles/kernel_objects.dir/hal/ps2.c.o -c /home/user/os/kernel/hal/ps2.c
+
+CMakeFiles/kernel_objects.dir/hal/ps2.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/hal/ps2.c.i"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/hal/ps2.c > CMakeFiles/kernel_objects.dir/hal/ps2.c.i
+
+CMakeFiles/kernel_objects.dir/hal/ps2.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/hal/ps2.c.s"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/hal/ps2.c -o CMakeFiles/kernel_objects.dir/hal/ps2.c.s
 
 CMakeFiles/kernel_objects.dir/ke/main.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/ke/main.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/main.c
+CMakeFiles/kernel_objects.dir/ke/main.c.o: /home/user/os/kernel/ke/main.c
 CMakeFiles/kernel_objects.dir/ke/main.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building C object CMakeFiles/kernel_objects.dir/ke/main.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ke/main.c.o -MF CMakeFiles/kernel_objects.dir/ke/main.c.o.d -o CMakeFiles/kernel_objects.dir/ke/main.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/main.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building C object CMakeFiles/kernel_objects.dir/ke/main.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ke/main.c.o -MF CMakeFiles/kernel_objects.dir/ke/main.c.o.d -o CMakeFiles/kernel_objects.dir/ke/main.c.o -c /home/user/os/kernel/ke/main.c
 
 CMakeFiles/kernel_objects.dir/ke/main.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/ke/main.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/main.c > CMakeFiles/kernel_objects.dir/ke/main.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/ke/main.c > CMakeFiles/kernel_objects.dir/ke/main.c.i
 
 CMakeFiles/kernel_objects.dir/ke/main.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/ke/main.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/main.c -o CMakeFiles/kernel_objects.dir/ke/main.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/ke/main.c -o CMakeFiles/kernel_objects.dir/ke/main.c.s
 
 CMakeFiles/kernel_objects.dir/ke/printf.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/ke/printf.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/printf.c
+CMakeFiles/kernel_objects.dir/ke/printf.c.o: /home/user/os/kernel/ke/printf.c
 CMakeFiles/kernel_objects.dir/ke/printf.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building C object CMakeFiles/kernel_objects.dir/ke/printf.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ke/printf.c.o -MF CMakeFiles/kernel_objects.dir/ke/printf.c.o.d -o CMakeFiles/kernel_objects.dir/ke/printf.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/printf.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building C object CMakeFiles/kernel_objects.dir/ke/printf.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ke/printf.c.o -MF CMakeFiles/kernel_objects.dir/ke/printf.c.o.d -o CMakeFiles/kernel_objects.dir/ke/printf.c.o -c /home/user/os/kernel/ke/printf.c
 
 CMakeFiles/kernel_objects.dir/ke/printf.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/ke/printf.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/printf.c > CMakeFiles/kernel_objects.dir/ke/printf.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/ke/printf.c > CMakeFiles/kernel_objects.dir/ke/printf.c.i
 
 CMakeFiles/kernel_objects.dir/ke/printf.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/ke/printf.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/printf.c -o CMakeFiles/kernel_objects.dir/ke/printf.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/ke/printf.c -o CMakeFiles/kernel_objects.dir/ke/printf.c.s
 
 CMakeFiles/kernel_objects.dir/ke/scheduler.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/ke/scheduler.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/scheduler.c
+CMakeFiles/kernel_objects.dir/ke/scheduler.c.o: /home/user/os/kernel/ke/scheduler.c
 CMakeFiles/kernel_objects.dir/ke/scheduler.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building C object CMakeFiles/kernel_objects.dir/ke/scheduler.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ke/scheduler.c.o -MF CMakeFiles/kernel_objects.dir/ke/scheduler.c.o.d -o CMakeFiles/kernel_objects.dir/ke/scheduler.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/scheduler.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building C object CMakeFiles/kernel_objects.dir/ke/scheduler.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ke/scheduler.c.o -MF CMakeFiles/kernel_objects.dir/ke/scheduler.c.o.d -o CMakeFiles/kernel_objects.dir/ke/scheduler.c.o -c /home/user/os/kernel/ke/scheduler.c
 
 CMakeFiles/kernel_objects.dir/ke/scheduler.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/ke/scheduler.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/scheduler.c > CMakeFiles/kernel_objects.dir/ke/scheduler.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/ke/scheduler.c > CMakeFiles/kernel_objects.dir/ke/scheduler.c.i
 
 CMakeFiles/kernel_objects.dir/ke/scheduler.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/ke/scheduler.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/scheduler.c -o CMakeFiles/kernel_objects.dir/ke/scheduler.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/ke/scheduler.c -o CMakeFiles/kernel_objects.dir/ke/scheduler.c.s
 
 CMakeFiles/kernel_objects.dir/ke/syscall.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/ke/syscall.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/syscall.c
+CMakeFiles/kernel_objects.dir/ke/syscall.c.o: /home/user/os/kernel/ke/syscall.c
 CMakeFiles/kernel_objects.dir/ke/syscall.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building C object CMakeFiles/kernel_objects.dir/ke/syscall.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ke/syscall.c.o -MF CMakeFiles/kernel_objects.dir/ke/syscall.c.o.d -o CMakeFiles/kernel_objects.dir/ke/syscall.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/syscall.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building C object CMakeFiles/kernel_objects.dir/ke/syscall.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ke/syscall.c.o -MF CMakeFiles/kernel_objects.dir/ke/syscall.c.o.d -o CMakeFiles/kernel_objects.dir/ke/syscall.c.o -c /home/user/os/kernel/ke/syscall.c
 
 CMakeFiles/kernel_objects.dir/ke/syscall.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/ke/syscall.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/syscall.c > CMakeFiles/kernel_objects.dir/ke/syscall.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/ke/syscall.c > CMakeFiles/kernel_objects.dir/ke/syscall.c.i
 
 CMakeFiles/kernel_objects.dir/ke/syscall.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/ke/syscall.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/syscall.c -o CMakeFiles/kernel_objects.dir/ke/syscall.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/ke/syscall.c -o CMakeFiles/kernel_objects.dir/ke/syscall.c.s
+
+CMakeFiles/kernel_objects.dir/ke/kpcr.c.o: CMakeFiles/kernel_objects.dir/flags.make
+CMakeFiles/kernel_objects.dir/ke/kpcr.c.o: /home/user/os/kernel/ke/kpcr.c
+CMakeFiles/kernel_objects.dir/ke/kpcr.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building C object CMakeFiles/kernel_objects.dir/ke/kpcr.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ke/kpcr.c.o -MF CMakeFiles/kernel_objects.dir/ke/kpcr.c.o.d -o CMakeFiles/kernel_objects.dir/ke/kpcr.c.o -c /home/user/os/kernel/ke/kpcr.c
+
+CMakeFiles/kernel_objects.dir/ke/kpcr.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/ke/kpcr.c.i"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/ke/kpcr.c > CMakeFiles/kernel_objects.dir/ke/kpcr.c.i
+
+CMakeFiles/kernel_objects.dir/ke/kpcr.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/ke/kpcr.c.s"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/ke/kpcr.c -o CMakeFiles/kernel_objects.dir/ke/kpcr.c.s
 
 CMakeFiles/kernel_objects.dir/ob/ob.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/ob/ob.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ob/ob.c
+CMakeFiles/kernel_objects.dir/ob/ob.c.o: /home/user/os/kernel/ob/ob.c
 CMakeFiles/kernel_objects.dir/ob/ob.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building C object CMakeFiles/kernel_objects.dir/ob/ob.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ob/ob.c.o -MF CMakeFiles/kernel_objects.dir/ob/ob.c.o.d -o CMakeFiles/kernel_objects.dir/ob/ob.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ob/ob.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building C object CMakeFiles/kernel_objects.dir/ob/ob.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ob/ob.c.o -MF CMakeFiles/kernel_objects.dir/ob/ob.c.o.d -o CMakeFiles/kernel_objects.dir/ob/ob.c.o -c /home/user/os/kernel/ob/ob.c
 
 CMakeFiles/kernel_objects.dir/ob/ob.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/ob/ob.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ob/ob.c > CMakeFiles/kernel_objects.dir/ob/ob.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/ob/ob.c > CMakeFiles/kernel_objects.dir/ob/ob.c.i
 
 CMakeFiles/kernel_objects.dir/ob/ob.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/ob/ob.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ob/ob.c -o CMakeFiles/kernel_objects.dir/ob/ob.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/ob/ob.c -o CMakeFiles/kernel_objects.dir/ob/ob.c.s
 
 CMakeFiles/kernel_objects.dir/ps/ps.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/ps/ps.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ps/ps.c
+CMakeFiles/kernel_objects.dir/ps/ps.c.o: /home/user/os/kernel/ps/ps.c
 CMakeFiles/kernel_objects.dir/ps/ps.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building C object CMakeFiles/kernel_objects.dir/ps/ps.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ps/ps.c.o -MF CMakeFiles/kernel_objects.dir/ps/ps.c.o.d -o CMakeFiles/kernel_objects.dir/ps/ps.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ps/ps.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building C object CMakeFiles/kernel_objects.dir/ps/ps.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ps/ps.c.o -MF CMakeFiles/kernel_objects.dir/ps/ps.c.o.d -o CMakeFiles/kernel_objects.dir/ps/ps.c.o -c /home/user/os/kernel/ps/ps.c
 
 CMakeFiles/kernel_objects.dir/ps/ps.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/ps/ps.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ps/ps.c > CMakeFiles/kernel_objects.dir/ps/ps.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/ps/ps.c > CMakeFiles/kernel_objects.dir/ps/ps.c.i
 
 CMakeFiles/kernel_objects.dir/ps/ps.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/ps/ps.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ps/ps.c -o CMakeFiles/kernel_objects.dir/ps/ps.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/ps/ps.c -o CMakeFiles/kernel_objects.dir/ps/ps.c.s
 
 CMakeFiles/kernel_objects.dir/cm/cm.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/cm/cm.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/cm/cm.c
+CMakeFiles/kernel_objects.dir/cm/cm.c.o: /home/user/os/kernel/cm/cm.c
 CMakeFiles/kernel_objects.dir/cm/cm.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building C object CMakeFiles/kernel_objects.dir/cm/cm.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/cm/cm.c.o -MF CMakeFiles/kernel_objects.dir/cm/cm.c.o.d -o CMakeFiles/kernel_objects.dir/cm/cm.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/cm/cm.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building C object CMakeFiles/kernel_objects.dir/cm/cm.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/cm/cm.c.o -MF CMakeFiles/kernel_objects.dir/cm/cm.c.o.d -o CMakeFiles/kernel_objects.dir/cm/cm.c.o -c /home/user/os/kernel/cm/cm.c
 
 CMakeFiles/kernel_objects.dir/cm/cm.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/cm/cm.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/cm/cm.c > CMakeFiles/kernel_objects.dir/cm/cm.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/cm/cm.c > CMakeFiles/kernel_objects.dir/cm/cm.c.i
 
 CMakeFiles/kernel_objects.dir/cm/cm.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/cm/cm.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/cm/cm.c -o CMakeFiles/kernel_objects.dir/cm/cm.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/cm/cm.c -o CMakeFiles/kernel_objects.dir/cm/cm.c.s
 
 CMakeFiles/kernel_objects.dir/se/se.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/se/se.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/se/se.c
+CMakeFiles/kernel_objects.dir/se/se.c.o: /home/user/os/kernel/se/se.c
 CMakeFiles/kernel_objects.dir/se/se.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building C object CMakeFiles/kernel_objects.dir/se/se.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/se/se.c.o -MF CMakeFiles/kernel_objects.dir/se/se.c.o.d -o CMakeFiles/kernel_objects.dir/se/se.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/se/se.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building C object CMakeFiles/kernel_objects.dir/se/se.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/se/se.c.o -MF CMakeFiles/kernel_objects.dir/se/se.c.o.d -o CMakeFiles/kernel_objects.dir/se/se.c.o -c /home/user/os/kernel/se/se.c
 
 CMakeFiles/kernel_objects.dir/se/se.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/se/se.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/se/se.c > CMakeFiles/kernel_objects.dir/se/se.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/se/se.c > CMakeFiles/kernel_objects.dir/se/se.c.i
 
 CMakeFiles/kernel_objects.dir/se/se.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/se/se.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/se/se.c -o CMakeFiles/kernel_objects.dir/se/se.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/se/se.c -o CMakeFiles/kernel_objects.dir/se/se.c.s
 
 CMakeFiles/kernel_objects.dir/io/io.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/io/io.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/io/io.c
+CMakeFiles/kernel_objects.dir/io/io.c.o: /home/user/os/kernel/io/io.c
 CMakeFiles/kernel_objects.dir/io/io.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building C object CMakeFiles/kernel_objects.dir/io/io.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/io/io.c.o -MF CMakeFiles/kernel_objects.dir/io/io.c.o.d -o CMakeFiles/kernel_objects.dir/io/io.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/io/io.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building C object CMakeFiles/kernel_objects.dir/io/io.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/io/io.c.o -MF CMakeFiles/kernel_objects.dir/io/io.c.o.d -o CMakeFiles/kernel_objects.dir/io/io.c.o -c /home/user/os/kernel/io/io.c
 
 CMakeFiles/kernel_objects.dir/io/io.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/io/io.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/io/io.c > CMakeFiles/kernel_objects.dir/io/io.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/io/io.c > CMakeFiles/kernel_objects.dir/io/io.c.i
 
 CMakeFiles/kernel_objects.dir/io/io.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/io/io.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/io/io.c -o CMakeFiles/kernel_objects.dir/io/io.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/io/io.c -o CMakeFiles/kernel_objects.dir/io/io.c.s
 
 CMakeFiles/kernel_objects.dir/mm/vma.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/mm/vma.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/vma.c
+CMakeFiles/kernel_objects.dir/mm/vma.c.o: /home/user/os/kernel/mm/vma.c
 CMakeFiles/kernel_objects.dir/mm/vma.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building C object CMakeFiles/kernel_objects.dir/mm/vma.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/mm/vma.c.o -MF CMakeFiles/kernel_objects.dir/mm/vma.c.o.d -o CMakeFiles/kernel_objects.dir/mm/vma.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/vma.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building C object CMakeFiles/kernel_objects.dir/mm/vma.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/mm/vma.c.o -MF CMakeFiles/kernel_objects.dir/mm/vma.c.o.d -o CMakeFiles/kernel_objects.dir/mm/vma.c.o -c /home/user/os/kernel/mm/vma.c
 
 CMakeFiles/kernel_objects.dir/mm/vma.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/mm/vma.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/vma.c > CMakeFiles/kernel_objects.dir/mm/vma.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/mm/vma.c > CMakeFiles/kernel_objects.dir/mm/vma.c.i
 
 CMakeFiles/kernel_objects.dir/mm/vma.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/mm/vma.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/vma.c -o CMakeFiles/kernel_objects.dir/mm/vma.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/mm/vma.c -o CMakeFiles/kernel_objects.dir/mm/vma.c.s
 
 CMakeFiles/kernel_objects.dir/mm/section.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/mm/section.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/section.c
+CMakeFiles/kernel_objects.dir/mm/section.c.o: /home/user/os/kernel/mm/section.c
 CMakeFiles/kernel_objects.dir/mm/section.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building C object CMakeFiles/kernel_objects.dir/mm/section.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/mm/section.c.o -MF CMakeFiles/kernel_objects.dir/mm/section.c.o.d -o CMakeFiles/kernel_objects.dir/mm/section.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/section.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building C object CMakeFiles/kernel_objects.dir/mm/section.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/mm/section.c.o -MF CMakeFiles/kernel_objects.dir/mm/section.c.o.d -o CMakeFiles/kernel_objects.dir/mm/section.c.o -c /home/user/os/kernel/mm/section.c
 
 CMakeFiles/kernel_objects.dir/mm/section.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/mm/section.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/section.c > CMakeFiles/kernel_objects.dir/mm/section.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/mm/section.c > CMakeFiles/kernel_objects.dir/mm/section.c.i
 
 CMakeFiles/kernel_objects.dir/mm/section.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/mm/section.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/mm/section.c -o CMakeFiles/kernel_objects.dir/mm/section.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/mm/section.c -o CMakeFiles/kernel_objects.dir/mm/section.c.s
 
 CMakeFiles/kernel_objects.dir/ldr/ldr.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/ldr/ldr.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ldr/ldr.c
+CMakeFiles/kernel_objects.dir/ldr/ldr.c.o: /home/user/os/kernel/ldr/ldr.c
 CMakeFiles/kernel_objects.dir/ldr/ldr.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building C object CMakeFiles/kernel_objects.dir/ldr/ldr.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ldr/ldr.c.o -MF CMakeFiles/kernel_objects.dir/ldr/ldr.c.o.d -o CMakeFiles/kernel_objects.dir/ldr/ldr.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ldr/ldr.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building C object CMakeFiles/kernel_objects.dir/ldr/ldr.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ldr/ldr.c.o -MF CMakeFiles/kernel_objects.dir/ldr/ldr.c.o.d -o CMakeFiles/kernel_objects.dir/ldr/ldr.c.o -c /home/user/os/kernel/ldr/ldr.c
 
 CMakeFiles/kernel_objects.dir/ldr/ldr.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/ldr/ldr.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ldr/ldr.c > CMakeFiles/kernel_objects.dir/ldr/ldr.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/ldr/ldr.c > CMakeFiles/kernel_objects.dir/ldr/ldr.c.i
 
 CMakeFiles/kernel_objects.dir/ldr/ldr.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/ldr/ldr.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ldr/ldr.c -o CMakeFiles/kernel_objects.dir/ldr/ldr.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/ldr/ldr.c -o CMakeFiles/kernel_objects.dir/ldr/ldr.c.s
+
+CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o: CMakeFiles/kernel_objects.dir/flags.make
+CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o: /home/user/os/kernel/ldr/user_stubs.c
+CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building C object CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o -MF CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o.d -o CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o -c /home/user/os/kernel/ldr/user_stubs.c
+
+CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.i"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/ldr/user_stubs.c > CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.i
+
+CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.s"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/ldr/user_stubs.c -o CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.s
+
+CMakeFiles/kernel_objects.dir/ps/csrss.c.o: CMakeFiles/kernel_objects.dir/flags.make
+CMakeFiles/kernel_objects.dir/ps/csrss.c.o: /home/user/os/kernel/ps/csrss.c
+CMakeFiles/kernel_objects.dir/ps/csrss.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Building C object CMakeFiles/kernel_objects.dir/ps/csrss.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/ps/csrss.c.o -MF CMakeFiles/kernel_objects.dir/ps/csrss.c.o.d -o CMakeFiles/kernel_objects.dir/ps/csrss.c.o -c /home/user/os/kernel/ps/csrss.c
+
+CMakeFiles/kernel_objects.dir/ps/csrss.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/ps/csrss.c.i"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/ps/csrss.c > CMakeFiles/kernel_objects.dir/ps/csrss.c.i
+
+CMakeFiles/kernel_objects.dir/ps/csrss.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/ps/csrss.c.s"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/ps/csrss.c -o CMakeFiles/kernel_objects.dir/ps/csrss.c.s
 
 CMakeFiles/kernel_objects.dir/fs/vfs.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/fs/vfs.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/fs/vfs.c
+CMakeFiles/kernel_objects.dir/fs/vfs.c.o: /home/user/os/kernel/fs/vfs.c
 CMakeFiles/kernel_objects.dir/fs/vfs.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building C object CMakeFiles/kernel_objects.dir/fs/vfs.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/fs/vfs.c.o -MF CMakeFiles/kernel_objects.dir/fs/vfs.c.o.d -o CMakeFiles/kernel_objects.dir/fs/vfs.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/fs/vfs.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_26) "Building C object CMakeFiles/kernel_objects.dir/fs/vfs.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/fs/vfs.c.o -MF CMakeFiles/kernel_objects.dir/fs/vfs.c.o.d -o CMakeFiles/kernel_objects.dir/fs/vfs.c.o -c /home/user/os/kernel/fs/vfs.c
 
 CMakeFiles/kernel_objects.dir/fs/vfs.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/fs/vfs.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/fs/vfs.c > CMakeFiles/kernel_objects.dir/fs/vfs.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/fs/vfs.c > CMakeFiles/kernel_objects.dir/fs/vfs.c.i
 
 CMakeFiles/kernel_objects.dir/fs/vfs.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/fs/vfs.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/fs/vfs.c -o CMakeFiles/kernel_objects.dir/fs/vfs.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/fs/vfs.c -o CMakeFiles/kernel_objects.dir/fs/vfs.c.s
 
 CMakeFiles/kernel_objects.dir/fs/initrd.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/fs/initrd.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/fs/initrd.c
+CMakeFiles/kernel_objects.dir/fs/initrd.c.o: /home/user/os/kernel/fs/initrd.c
 CMakeFiles/kernel_objects.dir/fs/initrd.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building C object CMakeFiles/kernel_objects.dir/fs/initrd.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/fs/initrd.c.o -MF CMakeFiles/kernel_objects.dir/fs/initrd.c.o.d -o CMakeFiles/kernel_objects.dir/fs/initrd.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/fs/initrd.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_27) "Building C object CMakeFiles/kernel_objects.dir/fs/initrd.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/fs/initrd.c.o -MF CMakeFiles/kernel_objects.dir/fs/initrd.c.o.d -o CMakeFiles/kernel_objects.dir/fs/initrd.c.o -c /home/user/os/kernel/fs/initrd.c
 
 CMakeFiles/kernel_objects.dir/fs/initrd.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/fs/initrd.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/fs/initrd.c > CMakeFiles/kernel_objects.dir/fs/initrd.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/fs/initrd.c > CMakeFiles/kernel_objects.dir/fs/initrd.c.i
 
 CMakeFiles/kernel_objects.dir/fs/initrd.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/fs/initrd.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/fs/initrd.c -o CMakeFiles/kernel_objects.dir/fs/initrd.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/fs/initrd.c -o CMakeFiles/kernel_objects.dir/fs/initrd.c.s
+
+CMakeFiles/kernel_objects.dir/gdi/gdi.c.o: CMakeFiles/kernel_objects.dir/flags.make
+CMakeFiles/kernel_objects.dir/gdi/gdi.c.o: /home/user/os/kernel/gdi/gdi.c
+CMakeFiles/kernel_objects.dir/gdi/gdi.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_28) "Building C object CMakeFiles/kernel_objects.dir/gdi/gdi.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/gdi/gdi.c.o -MF CMakeFiles/kernel_objects.dir/gdi/gdi.c.o.d -o CMakeFiles/kernel_objects.dir/gdi/gdi.c.o -c /home/user/os/kernel/gdi/gdi.c
+
+CMakeFiles/kernel_objects.dir/gdi/gdi.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/gdi/gdi.c.i"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/gdi/gdi.c > CMakeFiles/kernel_objects.dir/gdi/gdi.c.i
+
+CMakeFiles/kernel_objects.dir/gdi/gdi.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/gdi/gdi.c.s"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/gdi/gdi.c -o CMakeFiles/kernel_objects.dir/gdi/gdi.c.s
+
+CMakeFiles/kernel_objects.dir/wm/wm.c.o: CMakeFiles/kernel_objects.dir/flags.make
+CMakeFiles/kernel_objects.dir/wm/wm.c.o: /home/user/os/kernel/wm/wm.c
+CMakeFiles/kernel_objects.dir/wm/wm.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_29) "Building C object CMakeFiles/kernel_objects.dir/wm/wm.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/wm/wm.c.o -MF CMakeFiles/kernel_objects.dir/wm/wm.c.o.d -o CMakeFiles/kernel_objects.dir/wm/wm.c.o -c /home/user/os/kernel/wm/wm.c
+
+CMakeFiles/kernel_objects.dir/wm/wm.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/wm/wm.c.i"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/wm/wm.c > CMakeFiles/kernel_objects.dir/wm/wm.c.i
+
+CMakeFiles/kernel_objects.dir/wm/wm.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/wm/wm.c.s"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/wm/wm.c -o CMakeFiles/kernel_objects.dir/wm/wm.c.s
+
+CMakeFiles/kernel_objects.dir/wm/desktop.c.o: CMakeFiles/kernel_objects.dir/flags.make
+CMakeFiles/kernel_objects.dir/wm/desktop.c.o: /home/user/os/kernel/wm/desktop.c
+CMakeFiles/kernel_objects.dir/wm/desktop.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_30) "Building C object CMakeFiles/kernel_objects.dir/wm/desktop.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/wm/desktop.c.o -MF CMakeFiles/kernel_objects.dir/wm/desktop.c.o.d -o CMakeFiles/kernel_objects.dir/wm/desktop.c.o -c /home/user/os/kernel/wm/desktop.c
+
+CMakeFiles/kernel_objects.dir/wm/desktop.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/wm/desktop.c.i"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/wm/desktop.c > CMakeFiles/kernel_objects.dir/wm/desktop.c.i
+
+CMakeFiles/kernel_objects.dir/wm/desktop.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/wm/desktop.c.s"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/wm/desktop.c -o CMakeFiles/kernel_objects.dir/wm/desktop.c.s
+
+CMakeFiles/kernel_objects.dir/wm/input.c.o: CMakeFiles/kernel_objects.dir/flags.make
+CMakeFiles/kernel_objects.dir/wm/input.c.o: /home/user/os/kernel/wm/input.c
+CMakeFiles/kernel_objects.dir/wm/input.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_31) "Building C object CMakeFiles/kernel_objects.dir/wm/input.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/wm/input.c.o -MF CMakeFiles/kernel_objects.dir/wm/input.c.o.d -o CMakeFiles/kernel_objects.dir/wm/input.c.o -c /home/user/os/kernel/wm/input.c
+
+CMakeFiles/kernel_objects.dir/wm/input.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/wm/input.c.i"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/wm/input.c > CMakeFiles/kernel_objects.dir/wm/input.c.i
+
+CMakeFiles/kernel_objects.dir/wm/input.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/wm/input.c.s"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/wm/input.c -o CMakeFiles/kernel_objects.dir/wm/input.c.s
 
 CMakeFiles/kernel_objects.dir/lib/string.c.o: CMakeFiles/kernel_objects.dir/flags.make
-CMakeFiles/kernel_objects.dir/lib/string.c.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/lib/string.c
+CMakeFiles/kernel_objects.dir/lib/string.c.o: /home/user/os/kernel/lib/string.c
 CMakeFiles/kernel_objects.dir/lib/string.c.o: CMakeFiles/kernel_objects.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building C object CMakeFiles/kernel_objects.dir/lib/string.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/lib/string.c.o -MF CMakeFiles/kernel_objects.dir/lib/string.c.o.d -o CMakeFiles/kernel_objects.dir/lib/string.c.o -c /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/lib/string.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_32) "Building C object CMakeFiles/kernel_objects.dir/lib/string.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/kernel_objects.dir/lib/string.c.o -MF CMakeFiles/kernel_objects.dir/lib/string.c.o.d -o CMakeFiles/kernel_objects.dir/lib/string.c.o -c /home/user/os/kernel/lib/string.c
 
 CMakeFiles/kernel_objects.dir/lib/string.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/kernel_objects.dir/lib/string.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/lib/string.c > CMakeFiles/kernel_objects.dir/lib/string.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/user/os/kernel/lib/string.c > CMakeFiles/kernel_objects.dir/lib/string.c.i
 
 CMakeFiles/kernel_objects.dir/lib/string.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/kernel_objects.dir/lib/string.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/lib/string.c -o CMakeFiles/kernel_objects.dir/lib/string.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/user/os/kernel/lib/string.c -o CMakeFiles/kernel_objects.dir/lib/string.c.s
 
 kernel_objects: CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o
@@ -399,10 +525,13 @@ kernel_objects: CMakeFiles/kernel_objects.dir/mm/pmm.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/mm/vmm.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/hal/serial.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o
+kernel_objects: CMakeFiles/kernel_objects.dir/hal/rtc.c.o
+kernel_objects: CMakeFiles/kernel_objects.dir/hal/ps2.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/ke/main.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/ke/printf.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/ke/scheduler.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/ke/syscall.c.o
+kernel_objects: CMakeFiles/kernel_objects.dir/ke/kpcr.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/ob/ob.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/ps/ps.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/cm/cm.c.o
@@ -411,8 +540,14 @@ kernel_objects: CMakeFiles/kernel_objects.dir/io/io.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/mm/vma.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/mm/section.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/ldr/ldr.c.o
+kernel_objects: CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o
+kernel_objects: CMakeFiles/kernel_objects.dir/ps/csrss.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/fs/vfs.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/fs/initrd.c.o
+kernel_objects: CMakeFiles/kernel_objects.dir/gdi/gdi.c.o
+kernel_objects: CMakeFiles/kernel_objects.dir/wm/wm.c.o
+kernel_objects: CMakeFiles/kernel_objects.dir/wm/desktop.c.o
+kernel_objects: CMakeFiles/kernel_objects.dir/wm/input.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/lib/string.c.o
 kernel_objects: CMakeFiles/kernel_objects.dir/build.make
 .PHONY : kernel_objects
@@ -426,6 +561,6 @@ CMakeFiles/kernel_objects.dir/clean:
 .PHONY : CMakeFiles/kernel_objects.dir/clean
 
 CMakeFiles/kernel_objects.dir/depend:
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /home/user/os/build/kernel_build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/user/os/kernel /home/user/os/kernel /home/user/os/build/kernel_build /home/user/os/build/kernel_build /home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/kernel_objects.dir/depend
 

@@ -21,11 +21,11 @@ set(CMAKE_C_SIMULATE_VERSION "")
 
 
 
-set(CMAKE_AR "/usr/bin/ar")
+set(CMAKE_AR "/usr/bin/llvm-ar")
 set(CMAKE_C_COMPILER_AR "/usr/bin/llvm-ar-18")
-set(CMAKE_RANLIB "/usr/bin/ranlib")
+set(CMAKE_RANLIB "/usr/bin/llvm-ranlib")
 set(CMAKE_C_COMPILER_RANLIB "/usr/bin/llvm-ranlib-18")
-set(CMAKE_LINKER "/usr/bin/ld")
+set(CMAKE_LINKER "/usr/bin/ld.lld")
 set(CMAKE_MT "")
 set(CMAKE_TAPI "CMAKE_TAPI-NOTFOUND")
 set(CMAKE_COMPILER_IS_GNUCC )

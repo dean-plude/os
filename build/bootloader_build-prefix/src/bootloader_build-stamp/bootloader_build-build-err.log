@@ -1,0 +1,36 @@
+In file included from /home/user/os/bootloader/src/console.c:9:
+/home/user/os/bootloader/src/../include/efi.h:40:9: warning: 'NULL' macro redefined [-Wmacro-redefined]
+   40 | #define NULL  ((void *)0)
+      |         ^
+/usr/lib/llvm-18/lib/clang/18/include/__stddef_null.h:26:9: note: previous definition is here
+   26 | #define NULL ((void*)0)
+      |         ^
+1 warning generated.
+In file included from /home/user/os/bootloader/src/main.c:21:
+/home/user/os/bootloader/src/../include/efi.h:40:9: warning: 'NULL' macro redefined [-Wmacro-redefined]
+   40 | #define NULL  ((void *)0)
+      |         ^
+/usr/lib/llvm-18/lib/clang/18/include/__stddef_null.h:26:9: note: previous definition is here
+   26 | #define NULL ((void*)0)
+      |         ^
+/home/user/os/bootloader/src/main.c:429:13: warning: unused function 'mem_copy' [-Wunused-function]
+  429 | static void mem_copy(void *dst, const void *src, UINTN n)
+      |             ^~~~~~~~
+2 warnings generated.
+In file included from /home/user/os/bootloader/src/elf_loader.c:17:
+/home/user/os/bootloader/src/../include/efi.h:40:9: warning: 'NULL' macro redefined [-Wmacro-redefined]
+   40 | #define NULL  ((void *)0)
+      |         ^
+/usr/lib/llvm-18/lib/clang/18/include/__stddef_null.h:26:9: note: previous definition is here
+   26 | #define NULL ((void*)0)
+      |         ^
+1 warning generated.
+In file included from /home/user/os/bootloader/src/paging.c:23:
+In file included from /home/user/os/bootloader/src/paging.h:11:
+/home/user/os/bootloader/src/../include/efi.h:40:9: warning: 'NULL' macro redefined [-Wmacro-redefined]
+   40 | #define NULL  ((void *)0)
+      |         ^
+/usr/lib/llvm-18/lib/clang/18/include/__stddef_null.h:26:9: note: previous definition is here
+   26 | #define NULL ((void*)0)
+      |         ^
+1 warning generated.

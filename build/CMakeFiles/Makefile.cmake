@@ -7,14 +7,17 @@ set(CMAKE_DEPENDS_GENERATOR "Unix Makefiles")
 # The top level Makefile was generated from the following files:
 set(CMAKE_MAKEFILE_DEPENDS
   "CMakeCache.txt"
-  "/mnt/c/Users/dean.plude/Documents/GitHub/os/CMakeLists.txt"
+  "/home/user/os/CMakeLists.txt"
   "CMakeFiles/3.28.3/CMakeSystem.cmake"
   "bootloader_build-prefix/tmp/bootloader_build-mkdirs.cmake"
   "kernel_build-prefix/tmp/kernel_build-mkdirs.cmake"
+  "/usr/share/cmake-3.28/Modules/CMakeDetermineSystem.cmake"
   "/usr/share/cmake-3.28/Modules/CMakeGenericSystem.cmake"
   "/usr/share/cmake-3.28/Modules/CMakeInitializeConfigs.cmake"
+  "/usr/share/cmake-3.28/Modules/CMakeSystem.cmake.in"
   "/usr/share/cmake-3.28/Modules/CMakeSystemSpecificInformation.cmake"
   "/usr/share/cmake-3.28/Modules/CMakeSystemSpecificInitialize.cmake"
+  "/usr/share/cmake-3.28/Modules/CMakeUnixFindMake.cmake"
   "/usr/share/cmake-3.28/Modules/ExternalProject.cmake"
   "/usr/share/cmake-3.28/Modules/ExternalProject/PatchInfo.txt.in"
   "/usr/share/cmake-3.28/Modules/ExternalProject/RepositoryInfo.txt.in"
@@ -35,6 +38,7 @@ set(CMAKE_MAKEFILE_OUTPUTS
 
 # Byproducts of CMake generate step:
 set(CMAKE_MAKEFILE_PRODUCTS
+  "CMakeFiles/3.28.3/CMakeSystem.cmake"
   "kernel_build-prefix/tmp/kernel_build-mkdirs.cmake"
   "kernel_build-prefix/src/kernel_build-stamp/kernel_build-source_dirinfo.txt"
   "kernel_build-prefix/src/kernel_build-stamp/kernel_build-update-info.txt"
@@ -45,10 +49,10 @@ set(CMAKE_MAKEFILE_PRODUCTS
   "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-update-info.txt"
   "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-patch-info.txt"
   "bootloader_build-prefix/tmp/bootloader_build-cfgcmd.txt"
-  "kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-Debug.cmake"
-  "kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-Debug.cmake"
-  "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure-Debug.cmake"
-  "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build-Debug.cmake"
+  "kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure-.cmake"
+  "kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-.cmake"
+  "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure-.cmake"
+  "bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build-.cmake"
   "CMakeFiles/CMakeDirectoryInformation.cmake"
   )
 

@@ -2,34 +2,34 @@
 	"sources" : 
 	[
 		{
-			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/kernel_build"
+			"file" : "/home/user/os/build/CMakeFiles/kernel_build"
 		},
 		{
-			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/kernel_build.rule"
+			"file" : "/home/user/os/build/CMakeFiles/kernel_build.rule"
 		},
 		{
-			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/kernel_build-complete.rule"
+			"file" : "/home/user/os/build/CMakeFiles/kernel_build-complete.rule"
 		},
 		{
-			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build.rule"
+			"file" : "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build.rule"
 		},
 		{
-			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure.rule"
+			"file" : "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-configure.rule"
 		},
 		{
-			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-download.rule"
+			"file" : "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-download.rule"
 		},
 		{
-			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-install.rule"
+			"file" : "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-install.rule"
 		},
 		{
-			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-mkdir.rule"
+			"file" : "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-mkdir.rule"
 		},
 		{
-			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-patch.rule"
+			"file" : "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-patch.rule"
 		},
 		{
-			"file" : "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-update.rule"
+			"file" : "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-update.rule"
 		}
 	],
 	"target" : 

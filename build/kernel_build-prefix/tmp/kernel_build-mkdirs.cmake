@@ -4,19 +4,19 @@
 cmake_minimum_required(VERSION 3.5)
 
 file(MAKE_DIRECTORY
-  "/mnt/c/Users/dean.plude/Documents/GitHub/os/kernel"
-  "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build"
-  "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix"
-  "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/tmp"
-  "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp"
-  "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src"
-  "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp"
+  "/home/user/os/kernel"
+  "/home/user/os/build/kernel_build"
+  "/home/user/os/build/kernel_build-prefix"
+  "/home/user/os/build/kernel_build-prefix/tmp"
+  "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp"
+  "/home/user/os/build/kernel_build-prefix/src"
+  "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp"
 )
 
 set(configSubDirs )
 foreach(subDir IN LISTS configSubDirs)
-    file(MAKE_DIRECTORY "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp/${subDir}")
+    file(MAKE_DIRECTORY "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp/${subDir}")
 endforeach()
 if(cfgdir)
-  file(MAKE_DIRECTORY "/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build-prefix/src/kernel_build-stamp${cfgdir}") # cfgdir has leading slash
+  file(MAKE_DIRECTORY "/home/user/os/build/kernel_build-prefix/src/kernel_build-stamp${cfgdir}") # cfgdir has leading slash
 endif()

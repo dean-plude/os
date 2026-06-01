@@ -1,6 +1,14 @@
-collect2: fatal error: cannot find ‘ld’
-compilation terminated.
-clang: error: linker (via gcc) command failed with exit code 1 (use -v to see invocation)
-make[5]: *** [CMakeFiles/kernel_elf.dir/build.make:77: kernel.elf] Error 1
-make[4]: *** [CMakeFiles/Makefile2:167: CMakeFiles/kernel_elf.dir/all] Error 2
-make[3]: *** [Makefile:91: all] Error 2
+/home/user/os/kernel/ob/ob.c:576:58: warning: missing field 'RootDirectory' initializer [-Wmissing-field-initializers]
+  576 |     OBJECT_ATTRIBUTES attr = { sizeof(OBJECT_ATTRIBUTES) };
+      |                                                          ^
+/home/user/os/kernel/ob/ob.c:66:20: warning: unused variable 'ob_type_storage' [-Wunused-variable]
+   66 | static OBJECT_TYPE ob_type_storage[OB_TYPE_IDX_MAX];
+      |                    ^~~~~~~~~~~~~~~
+2 warnings generated.
+/home/user/os/kernel/ldr/ldr.c:305:17: warning: unused variable 'stub_dlls' [-Wunused-variable]
+  305 | static STUB_DLL stub_dlls[] = {
+      |                 ^~~~~~~~~
+1 warning generated.
+/home/user/os/kernel/arch/x86_64/syscall_entry.asm:101: warning: label alone on a line without a colon might be in error [-w+label-orphan]
+/usr/bin/ld.bfd: warning: /home/user/os/build/kernel_build/asm_syscall_entry.o: missing .note.GNU-stack section implies executable stack
+/usr/bin/ld.bfd: NOTE: This behaviour is deprecated and will be removed in a future version of the linker

@@ -1,9 +1,41 @@
--- Kernel compiler: clang
--- Configuring done (0.1s)
--- Generating done (0.3s)
--- Build files have been written to: /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build
-[  9%] Built target asm_objects
-[ 83%] Built target kernel_objects
-[ 87%] Linking C static library libkernel_c.a
-[ 87%] Built target kernel_c_lib
-[ 90%] Linking kernel.elf
+[  2%] Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o
+[  5%] Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o
+[  7%] Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o
+[ 10%] Building C object CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o
+[ 12%] Building C object CMakeFiles/kernel_objects.dir/mm/pmm.c.o
+[ 15%] Building C object CMakeFiles/kernel_objects.dir/mm/vmm.c.o
+[ 17%] Building C object CMakeFiles/kernel_objects.dir/hal/serial.c.o
+[ 20%] Building C object CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o
+[ 22%] Building C object CMakeFiles/kernel_objects.dir/hal/rtc.c.o
+[ 25%] Building C object CMakeFiles/kernel_objects.dir/hal/ps2.c.o
+[ 27%] Building C object CMakeFiles/kernel_objects.dir/ke/main.c.o
+[ 30%] Building C object CMakeFiles/kernel_objects.dir/ke/printf.c.o
+[ 32%] Building C object CMakeFiles/kernel_objects.dir/ke/scheduler.c.o
+[ 35%] Building C object CMakeFiles/kernel_objects.dir/ke/syscall.c.o
+[ 37%] Building C object CMakeFiles/kernel_objects.dir/ke/kpcr.c.o
+[ 40%] Building C object CMakeFiles/kernel_objects.dir/ob/ob.c.o
+[ 42%] Building C object CMakeFiles/kernel_objects.dir/ps/ps.c.o
+[ 45%] Building C object CMakeFiles/kernel_objects.dir/cm/cm.c.o
+[ 47%] Building C object CMakeFiles/kernel_objects.dir/se/se.c.o
+[ 50%] Building C object CMakeFiles/kernel_objects.dir/io/io.c.o
+[ 52%] Building C object CMakeFiles/kernel_objects.dir/mm/vma.c.o
+[ 55%] Building C object CMakeFiles/kernel_objects.dir/mm/section.c.o
+[ 57%] Building C object CMakeFiles/kernel_objects.dir/ldr/ldr.c.o
+[ 60%] Building C object CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o
+[ 62%] Building C object CMakeFiles/kernel_objects.dir/ps/csrss.c.o
+[ 65%] Building C object CMakeFiles/kernel_objects.dir/fs/vfs.c.o
+[ 67%] Building C object CMakeFiles/kernel_objects.dir/fs/initrd.c.o
+[ 70%] Building C object CMakeFiles/kernel_objects.dir/gdi/gdi.c.o
+[ 72%] Building C object CMakeFiles/kernel_objects.dir/wm/wm.c.o
+[ 75%] Building C object CMakeFiles/kernel_objects.dir/wm/desktop.c.o
+[ 77%] Building C object CMakeFiles/kernel_objects.dir/wm/input.c.o
+[ 80%] Building C object CMakeFiles/kernel_objects.dir/lib/string.c.o
+[ 80%] Built target kernel_objects
+[ 82%] Linking C static library libkernel_c.a
+[ 82%] Built target kernel_c_lib
+[ 85%] NASM: arch/x86_64/entry.asm
+[ 87%] NASM: arch/x86_64/isr_stubs.asm
+[ 90%] NASM: arch/x86_64/syscall_entry.asm
+[ 90%] Built target asm_objects
+[ 92%] Linking kernel.elf (ld.bfd)
+[100%] Built target kernel_elf

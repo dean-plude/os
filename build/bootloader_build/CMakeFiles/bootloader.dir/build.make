@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader
+CMAKE_SOURCE_DIR = /home/user/os/bootloader
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build
+CMAKE_BINARY_DIR = /home/user/os/build/bootloader_build
 
 # Utility rule file for bootloader.
 
@@ -68,38 +68,37 @@ include CMakeFiles/bootloader.dir/progress.make
 
 CMakeFiles/bootloader: bootx64.efi
 
-bootx64.efi: main.o
-bootx64.efi: elf_loader.o
-bootx64.efi: paging.o
-bootx64.efi: console.o
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Linking bootx64.efi (MinGW)"
-	/usr/bin/x86_64-w64-mingw32-gcc /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/main.o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/elf_loader.o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/paging.o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/console.o -nostdlib -Wl,-dll -Wl,--subsystem,10 -Wl,-e,efi_main -Wl,--no-seh -Wl,--enable-reloc-section -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/bootx64.efi
+bootx64.efi: main.obj
+bootx64.efi: elf_loader.obj
+bootx64.efi: paging.obj
+bootx64.efi: console.obj
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "lld-link: bootx64.efi"
+	/usr/bin/lld-link /subsystem:efi_application /entry:efi_main /out:"/home/user/os/build/bootloader_build/bootx64.efi" /home/user/os/build/bootloader_build/main.obj /home/user/os/build/bootloader_build/elf_loader.obj /home/user/os/build/bootloader_build/paging.obj /home/user/os/build/bootloader_build/console.obj
 
-console.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/console.c
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "CC (EFI): src/console.c"
-	/usr/bin/x86_64-w64-mingw32-gcc -Wall -Wextra -Werror=implicit-function-declaration -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -std=c11 -O2 -g -DGNU_EFI_USE_MS_ABI=1 -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -c /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/console.c -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/console.o
+console.obj: /home/user/os/bootloader/src/console.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Clang (EFI): src/console.c"
+	/usr/bin/clang -target x86_64-unknown-windows -Wall -Wextra -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone -std=c11 -O2 -g -c -I/home/user/os/bootloader/include -I/home/user/os/bootloader/include /home/user/os/bootloader/src/console.c -o /home/user/os/build/bootloader_build/console.obj
 
-elf_loader.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/elf_loader.c
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "CC (EFI): src/elf_loader.c"
-	/usr/bin/x86_64-w64-mingw32-gcc -Wall -Wextra -Werror=implicit-function-declaration -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -std=c11 -O2 -g -DGNU_EFI_USE_MS_ABI=1 -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -c /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/elf_loader.c -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/elf_loader.o
+elf_loader.obj: /home/user/os/bootloader/src/elf_loader.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Clang (EFI): src/elf_loader.c"
+	/usr/bin/clang -target x86_64-unknown-windows -Wall -Wextra -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone -std=c11 -O2 -g -c -I/home/user/os/bootloader/include -I/home/user/os/bootloader/include /home/user/os/bootloader/src/elf_loader.c -o /home/user/os/build/bootloader_build/elf_loader.obj
 
-main.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "CC (EFI): src/main.c"
-	/usr/bin/x86_64-w64-mingw32-gcc -Wall -Wextra -Werror=implicit-function-declaration -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -std=c11 -O2 -g -DGNU_EFI_USE_MS_ABI=1 -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -c /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/main.c -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/main.o
+main.obj: /home/user/os/bootloader/src/main.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Clang (EFI): src/main.c"
+	/usr/bin/clang -target x86_64-unknown-windows -Wall -Wextra -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone -std=c11 -O2 -g -c -I/home/user/os/bootloader/include -I/home/user/os/bootloader/include /home/user/os/bootloader/src/main.c -o /home/user/os/build/bootloader_build/main.obj
 
-paging.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/paging.c
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "CC (EFI): src/paging.c"
-	/usr/bin/x86_64-w64-mingw32-gcc -Wall -Wextra -Werror=implicit-function-declaration -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -std=c11 -O2 -g -DGNU_EFI_USE_MS_ABI=1 -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -I/mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/include -c /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader/src/paging.c -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/paging.o
+paging.obj: /home/user/os/bootloader/src/paging.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/bootloader_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Clang (EFI): src/paging.c"
+	/usr/bin/clang -target x86_64-unknown-windows -Wall -Wextra -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone -std=c11 -O2 -g -c -I/home/user/os/bootloader/include -I/home/user/os/bootloader/include /home/user/os/bootloader/src/paging.c -o /home/user/os/build/bootloader_build/paging.obj
 
 bootloader: CMakeFiles/bootloader
 bootloader: bootx64.efi
-bootloader: console.o
-bootloader: elf_loader.o
-bootloader: main.o
-bootloader: paging.o
+bootloader: console.obj
+bootloader: elf_loader.obj
+bootloader: main.obj
+bootloader: paging.obj
 bootloader: CMakeFiles/bootloader.dir/build.make
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold "Copying bootx64.efi to build root"
-	/usr/bin/cmake -E copy /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/bootx64.efi /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/bootx64.efi
+	/usr/bin/cmake -E copy /home/user/os/build/bootloader_build/bootx64.efi /home/user/os/build/bootloader_build/bootx64.efi
 .PHONY : bootloader
 
 # Rule to build all files generated by this target.
@@ -111,6 +110,6 @@ CMakeFiles/bootloader.dir/clean:
 .PHONY : CMakeFiles/bootloader.dir/clean
 
 CMakeFiles/bootloader.dir/depend:
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader /mnt/c/Users/dean.plude/Documents/GitHub/os/bootloader /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles/bootloader.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /home/user/os/build/bootloader_build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/user/os/bootloader /home/user/os/bootloader /home/user/os/build/bootloader_build /home/user/os/build/bootloader_build /home/user/os/build/bootloader_build/CMakeFiles/bootloader.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/bootloader.dir/depend
 

@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os
+CMAKE_SOURCE_DIR = /home/user/os
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build
+CMAKE_BINARY_DIR = /home/user/os/build
 
 # Utility rule file for bootloader_build.
 
@@ -76,47 +76,47 @@ CMakeFiles/bootloader_build-complete: bootloader_build-prefix/src/bootloader_bui
 CMakeFiles/bootloader_build-complete: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure
 CMakeFiles/bootloader_build-complete: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build
 CMakeFiles/bootloader_build-complete: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-install
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Completed 'bootloader_build'"
-	/usr/bin/cmake -E make_directory /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/bootloader_build-complete
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-done
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Completed 'bootloader_build'"
+	/usr/bin/cmake -E make_directory /home/user/os/build/CMakeFiles
+	/usr/bin/cmake -E touch /home/user/os/build/CMakeFiles/bootloader_build-complete
+	/usr/bin/cmake -E touch /home/user/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-done
 
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Performing build step for 'bootloader_build'"
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build && /usr/bin/cmake -Dmake=$(MAKE) -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build-Debug.cmake
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Performing build step for 'bootloader_build'"
+	cd /home/user/os/build/bootloader_build && /usr/bin/cmake -Dmake=$(MAKE) -P /home/user/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build-.cmake
 
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure: bootloader_build-prefix/tmp/bootloader_build-cfgcmd.txt
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-patch
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Performing configure step for 'bootloader_build'"
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build && /usr/bin/cmake -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure-Debug.cmake
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build && /usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Performing configure step for 'bootloader_build'"
+	cd /home/user/os/build/bootloader_build && /usr/bin/cmake -P /home/user/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure-.cmake
+	cd /home/user/os/build/bootloader_build && /usr/bin/cmake -E touch /home/user/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-configure
 
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-download: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-source_dirinfo.txt
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-download: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-mkdir
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "No download step for 'bootloader_build'"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "No download step for 'bootloader_build'"
 	/usr/bin/cmake -E echo_append
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-download
+	/usr/bin/cmake -E touch /home/user/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-download
 
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-install: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "No install step for 'bootloader_build'"
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build && /usr/bin/cmake -E echo_append
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "No install step for 'bootloader_build'"
+	cd /home/user/os/build/bootloader_build && /usr/bin/cmake -E echo_append
 
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-mkdir:
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Creating directories for 'bootloader_build'"
-	/usr/bin/cmake -Dcfgdir= -P /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/tmp/bootloader_build-mkdirs.cmake
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-mkdir
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Creating directories for 'bootloader_build'"
+	/usr/bin/cmake -Dcfgdir= -P /home/user/os/build/bootloader_build-prefix/tmp/bootloader_build-mkdirs.cmake
+	/usr/bin/cmake -E touch /home/user/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-mkdir
 
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-patch: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-patch-info.txt
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-patch: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-update
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "No patch step for 'bootloader_build'"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "No patch step for 'bootloader_build'"
 	/usr/bin/cmake -E echo_append
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-patch
+	/usr/bin/cmake -E touch /home/user/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-patch
 
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-update: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-update-info.txt
 bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-update: bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-download
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "No update step for 'bootloader_build'"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "No update step for 'bootloader_build'"
 	/usr/bin/cmake -E echo_append
-	/usr/bin/cmake -E touch /mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-update
+	/usr/bin/cmake -E touch /home/user/os/build/bootloader_build-prefix/src/bootloader_build-stamp/bootloader_build-update
 
 bootloader_build: CMakeFiles/bootloader_build
 bootloader_build: CMakeFiles/bootloader_build-complete
@@ -139,6 +139,6 @@ CMakeFiles/bootloader_build.dir/clean:
 .PHONY : CMakeFiles/bootloader_build.dir/clean
 
 CMakeFiles/bootloader_build.dir/depend:
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/c/Users/dean.plude/Documents/GitHub/os /mnt/c/Users/dean.plude/Documents/GitHub/os /mnt/c/Users/dean.plude/Documents/GitHub/os/build /mnt/c/Users/dean.plude/Documents/GitHub/os/build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/bootloader_build.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /home/user/os/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/user/os /home/user/os /home/user/os/build /home/user/os/build /home/user/os/build/CMakeFiles/bootloader_build.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/bootloader_build.dir/depend
 

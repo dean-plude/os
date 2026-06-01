@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel
+CMAKE_SOURCE_DIR = /home/user/os/kernel
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build
+CMAKE_BINARY_DIR = /home/user/os/build/kernel_build
 
 # Utility rule file for asm_objects.
 
@@ -70,17 +70,17 @@ CMakeFiles/asm_objects: asm_entry.o
 CMakeFiles/asm_objects: asm_isr_stubs.o
 CMakeFiles/asm_objects: asm_syscall_entry.o
 
-asm_entry.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/entry.asm
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "NASM: arch/x86_64/entry.asm"
-	nasm -f elf64 -g -F dwarf -I /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/asm_entry.o /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/entry.asm
+asm_entry.o: /home/user/os/kernel/arch/x86_64/entry.asm
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "NASM: arch/x86_64/entry.asm"
+	nasm -f elf64 -g -F dwarf -I /home/user/os/kernel/ -o /home/user/os/build/kernel_build/asm_entry.o /home/user/os/kernel/arch/x86_64/entry.asm
 
-asm_isr_stubs.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/isr_stubs.asm
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "NASM: arch/x86_64/isr_stubs.asm"
-	nasm -f elf64 -g -F dwarf -I /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/asm_isr_stubs.o /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/isr_stubs.asm
+asm_isr_stubs.o: /home/user/os/kernel/arch/x86_64/isr_stubs.asm
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "NASM: arch/x86_64/isr_stubs.asm"
+	nasm -f elf64 -g -F dwarf -I /home/user/os/kernel/ -o /home/user/os/build/kernel_build/asm_isr_stubs.o /home/user/os/kernel/arch/x86_64/isr_stubs.asm
 
-asm_syscall_entry.o: /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/syscall_entry.asm
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "NASM: arch/x86_64/syscall_entry.asm"
-	nasm -f elf64 -g -F dwarf -I /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ -o /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/asm_syscall_entry.o /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/arch/x86_64/syscall_entry.asm
+asm_syscall_entry.o: /home/user/os/kernel/arch/x86_64/syscall_entry.asm
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "NASM: arch/x86_64/syscall_entry.asm"
+	nasm -f elf64 -g -F dwarf -I /home/user/os/kernel/ -o /home/user/os/build/kernel_build/asm_syscall_entry.o /home/user/os/kernel/arch/x86_64/syscall_entry.asm
 
 asm_objects: CMakeFiles/asm_objects
 asm_objects: asm_entry.o
@@ -98,6 +98,6 @@ CMakeFiles/asm_objects.dir/clean:
 .PHONY : CMakeFiles/asm_objects.dir/clean
 
 CMakeFiles/asm_objects.dir/depend:
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/asm_objects.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /home/user/os/build/kernel_build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/user/os/kernel /home/user/os/kernel /home/user/os/build/kernel_build /home/user/os/build/kernel_build /home/user/os/build/kernel_build/CMakeFiles/asm_objects.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/asm_objects.dir/depend
 

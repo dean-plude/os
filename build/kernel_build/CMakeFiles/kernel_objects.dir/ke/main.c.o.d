@@ -1,6 +1,5 @@
-CMakeFiles/kernel_objects.dir/ke/main.c.o: \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/main.c \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../include/types.h \
+CMakeFiles/kernel_objects.dir/ke/main.c.o: /home/user/os/kernel/ke/main.c \
+  /home/user/os/kernel/ke/../include/types.h \
   /usr/lib/llvm-18/lib/clang/18/include/stdint.h /usr/include/stdint.h \
   /usr/lib/llvm-18/lib/clang/18/include/stddef.h \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_ptrdiff_t.h \
@@ -10,51 +9,62 @@ CMakeFiles/kernel_objects.dir/ke/main.c.o: \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_max_align_t.h \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_offsetof.h \
   /usr/lib/llvm-18/lib/clang/18/include/stdbool.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../../include/boot_protocol.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../hal/serial.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../hal/../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../hal/framebuffer.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../hal/../../include/boot_protocol.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../mm/pmm.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../mm/../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../mm/../../include/boot_protocol.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../mm/vmm.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../arch/x86_64/gdt.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../arch/x86_64/../../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../arch/x86_64/idt.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../arch/x86_64/apic.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../arch/x86_64/paging.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../arch/x86_64/cpu.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/printf.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/scheduler.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../lib/string.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../lib/../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/syscall.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ob/ob.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ob/../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ps/ps.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ps/../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ps/../ob/ob.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ps/../ke/scheduler.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ps/../mm/vma.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ps/../mm/../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../cm/cm.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../cm/../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../cm/../ob/ob.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../se/se.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../se/../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../se/../ob/ob.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../io/io.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../io/../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../io/../ob/ob.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../mm/vma.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../mm/section.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../mm/../ob/ob.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ldr/ldr.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ldr/../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ldr/../ps/ps.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ldr/../mm/section.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../ldr/../mm/vma.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../fs/vfs.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../fs/../include/types.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/ke/../fs/initrd.h
+  /home/user/os/kernel/ke/../../include/boot_protocol.h \
+  /home/user/os/kernel/ke/../hal/serial.h \
+  /home/user/os/kernel/ke/../hal/../include/types.h \
+  /home/user/os/kernel/ke/../hal/framebuffer.h \
+  /home/user/os/kernel/ke/../hal/../../include/boot_protocol.h \
+  /home/user/os/kernel/ke/../mm/pmm.h \
+  /home/user/os/kernel/ke/../mm/../include/types.h \
+  /home/user/os/kernel/ke/../mm/../../include/boot_protocol.h \
+  /home/user/os/kernel/ke/../mm/vmm.h \
+  /home/user/os/kernel/ke/../arch/x86_64/gdt.h \
+  /home/user/os/kernel/ke/../arch/x86_64/../../include/types.h \
+  /home/user/os/kernel/ke/../arch/x86_64/idt.h \
+  /home/user/os/kernel/ke/../arch/x86_64/apic.h \
+  /home/user/os/kernel/ke/../arch/x86_64/paging.h \
+  /home/user/os/kernel/ke/../arch/x86_64/cpu.h \
+  /home/user/os/kernel/ke/printf.h /home/user/os/kernel/ke/scheduler.h \
+  /home/user/os/kernel/ke/../lib/string.h \
+  /home/user/os/kernel/ke/../lib/../include/types.h \
+  /home/user/os/kernel/ke/syscall.h /home/user/os/kernel/ke/../ob/ob.h \
+  /home/user/os/kernel/ke/../ob/../include/types.h \
+  /home/user/os/kernel/ke/../ps/ps.h \
+  /home/user/os/kernel/ke/../ps/../include/types.h \
+  /home/user/os/kernel/ke/../ps/../ob/ob.h \
+  /home/user/os/kernel/ke/../ps/../ke/scheduler.h \
+  /home/user/os/kernel/ke/../ps/../mm/vma.h \
+  /home/user/os/kernel/ke/../ps/../mm/../include/types.h \
+  /home/user/os/kernel/ke/../cm/cm.h \
+  /home/user/os/kernel/ke/../cm/../include/types.h \
+  /home/user/os/kernel/ke/../cm/../ob/ob.h \
+  /home/user/os/kernel/ke/../se/se.h \
+  /home/user/os/kernel/ke/../se/../include/types.h \
+  /home/user/os/kernel/ke/../se/../ob/ob.h \
+  /home/user/os/kernel/ke/../io/io.h \
+  /home/user/os/kernel/ke/../io/../include/types.h \
+  /home/user/os/kernel/ke/../io/../ob/ob.h \
+  /home/user/os/kernel/ke/../mm/vma.h \
+  /home/user/os/kernel/ke/../mm/section.h \
+  /home/user/os/kernel/ke/../mm/../ob/ob.h \
+  /home/user/os/kernel/ke/../ldr/ldr.h \
+  /home/user/os/kernel/ke/../ldr/../include/types.h \
+  /home/user/os/kernel/ke/../ldr/../ps/ps.h \
+  /home/user/os/kernel/ke/../ldr/../mm/section.h \
+  /home/user/os/kernel/ke/../ldr/../mm/vma.h \
+  /home/user/os/kernel/ke/../ldr/user_stubs.h \
+  /home/user/os/kernel/ke/../fs/vfs.h \
+  /home/user/os/kernel/ke/../fs/../include/types.h \
+  /home/user/os/kernel/ke/../fs/initrd.h /home/user/os/kernel/ke/kpcr.h \
+  /home/user/os/kernel/ke/../ps/csrss.h \
+  /home/user/os/kernel/ke/../ps/../ps/ps.h \
+  /home/user/os/kernel/ke/../gdi/gdi.h \
+  /home/user/os/kernel/ke/../gdi/../include/types.h \
+  /home/user/os/kernel/ke/../gdi/../hal/framebuffer.h \
+  /home/user/os/kernel/ke/../wm/wm.h \
+  /home/user/os/kernel/ke/../wm/../include/types.h \
+  /home/user/os/kernel/ke/../wm/../gdi/gdi.h \
+  /home/user/os/kernel/ke/../wm/desktop.h \
+  /home/user/os/kernel/ke/../wm/input.h \
+  /home/user/os/kernel/ke/../hal/ps2.h \
+  /home/user/os/kernel/ke/phase9_pe.h

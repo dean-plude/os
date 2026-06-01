@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel
+CMAKE_SOURCE_DIR = /home/user/os/kernel
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build
+CMAKE_BINARY_DIR = /home/user/os/build/kernel_build
 
 # Include any dependencies generated for this target.
 include CMakeFiles/kernel_c_lib.dir/depend.make
@@ -74,29 +74,38 @@ kernel_c_lib_OBJECTS =
 
 # External object files for target kernel_c_lib
 kernel_c_lib_EXTERNAL_OBJECTS = \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/mm/pmm.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/mm/vmm.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/hal/serial.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ke/main.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ke/printf.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ke/scheduler.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ke/syscall.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ob/ob.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ps/ps.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/cm/cm.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/se/se.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/io/io.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/mm/vma.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/mm/section.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ldr/ldr.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/fs/vfs.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/fs/initrd.c.o" \
-"/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir/lib/string.c.o"
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/arch/x86_64/apic.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/arch/x86_64/paging.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/mm/pmm.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/mm/vmm.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/hal/serial.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/hal/rtc.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/hal/ps2.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ke/main.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ke/printf.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ke/scheduler.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ke/syscall.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ke/kpcr.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ob/ob.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ps/ps.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/cm/cm.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/se/se.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/io/io.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/mm/vma.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/mm/section.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ldr/ldr.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/ps/csrss.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/fs/vfs.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/fs/initrd.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/gdi/gdi.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/wm/wm.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/wm/desktop.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/wm/input.c.o" \
+"/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir/lib/string.c.o"
 
 libkernel_c.a: CMakeFiles/kernel_objects.dir/arch/x86_64/gdt.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/arch/x86_64/idt.c.o
@@ -106,10 +115,13 @@ libkernel_c.a: CMakeFiles/kernel_objects.dir/mm/pmm.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/mm/vmm.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/hal/serial.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o
+libkernel_c.a: CMakeFiles/kernel_objects.dir/hal/rtc.c.o
+libkernel_c.a: CMakeFiles/kernel_objects.dir/hal/ps2.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/ke/main.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/ke/printf.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/ke/scheduler.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/ke/syscall.c.o
+libkernel_c.a: CMakeFiles/kernel_objects.dir/ke/kpcr.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/ob/ob.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/ps/ps.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/cm/cm.c.o
@@ -118,12 +130,18 @@ libkernel_c.a: CMakeFiles/kernel_objects.dir/io/io.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/mm/vma.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/mm/section.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/ldr/ldr.c.o
+libkernel_c.a: CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o
+libkernel_c.a: CMakeFiles/kernel_objects.dir/ps/csrss.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/fs/vfs.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/fs/initrd.c.o
+libkernel_c.a: CMakeFiles/kernel_objects.dir/gdi/gdi.c.o
+libkernel_c.a: CMakeFiles/kernel_objects.dir/wm/wm.c.o
+libkernel_c.a: CMakeFiles/kernel_objects.dir/wm/desktop.c.o
+libkernel_c.a: CMakeFiles/kernel_objects.dir/wm/input.c.o
 libkernel_c.a: CMakeFiles/kernel_objects.dir/lib/string.c.o
 libkernel_c.a: CMakeFiles/kernel_c_lib.dir/build.make
 libkernel_c.a: CMakeFiles/kernel_c_lib.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Linking C static library libkernel_c.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/user/os/build/kernel_build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Linking C static library libkernel_c.a"
 	$(CMAKE_COMMAND) -P CMakeFiles/kernel_c_lib.dir/cmake_clean_target.cmake
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/kernel_c_lib.dir/link.txt --verbose=$(VERBOSE)
 
@@ -136,6 +154,6 @@ CMakeFiles/kernel_c_lib.dir/clean:
 .PHONY : CMakeFiles/kernel_c_lib.dir/clean
 
 CMakeFiles/kernel_c_lib.dir/depend:
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_c_lib.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /home/user/os/build/kernel_build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/user/os/kernel /home/user/os/kernel /home/user/os/build/kernel_build /home/user/os/build/kernel_build /home/user/os/build/kernel_build/CMakeFiles/kernel_c_lib.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/kernel_c_lib.dir/depend
 

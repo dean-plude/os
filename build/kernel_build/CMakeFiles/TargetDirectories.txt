@@ -1,6 +1,6 @@
-/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_objects.dir
-/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/asm_objects.dir
-/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_c_lib.dir
-/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/kernel_elf.dir
-/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/edit_cache.dir
-/mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles/rebuild_cache.dir
+/home/user/os/build/kernel_build/CMakeFiles/kernel_objects.dir
+/home/user/os/build/kernel_build/CMakeFiles/asm_objects.dir
+/home/user/os/build/kernel_build/CMakeFiles/kernel_c_lib.dir
+/home/user/os/build/kernel_build/CMakeFiles/kernel_elf.dir
+/home/user/os/build/kernel_build/CMakeFiles/edit_cache.dir
+/home/user/os/build/kernel_build/CMakeFiles/rebuild_cache.dir

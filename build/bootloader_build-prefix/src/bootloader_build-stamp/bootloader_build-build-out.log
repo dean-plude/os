@@ -1,2 +1,6 @@
-Copying bootx64.efi to build root
+[ 20%] Clang (EFI): src/console.c
+[ 40%] Clang (EFI): src/main.c
+[ 60%] Clang (EFI): src/elf_loader.c
+[ 80%] Clang (EFI): src/paging.c
+[100%] lld-link: bootx64.efi
 [100%] Built target bootloader

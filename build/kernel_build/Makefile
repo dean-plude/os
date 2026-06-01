@@ -57,10 +57,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel
+CMAKE_SOURCE_DIR = /home/user/os/kernel
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build
+CMAKE_BINARY_DIR = /home/user/os/build/kernel_build
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -87,9 +87,9 @@ rebuild_cache/fast: rebuild_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build//CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/kernel_build/CMakeFiles /home/user/os/build/kernel_build//CMakeFiles/progress.marks
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/kernel_build/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
@@ -336,6 +336,30 @@ fs/vfs.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/fs/vfs.c.s
 .PHONY : fs/vfs.c.s
 
+gdi/gdi.o: gdi/gdi.c.o
+.PHONY : gdi/gdi.o
+
+# target to build an object file
+gdi/gdi.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/gdi/gdi.c.o
+.PHONY : gdi/gdi.c.o
+
+gdi/gdi.i: gdi/gdi.c.i
+.PHONY : gdi/gdi.i
+
+# target to preprocess a source file
+gdi/gdi.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/gdi/gdi.c.i
+.PHONY : gdi/gdi.c.i
+
+gdi/gdi.s: gdi/gdi.c.s
+.PHONY : gdi/gdi.s
+
+# target to generate assembly for a file
+gdi/gdi.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/gdi/gdi.c.s
+.PHONY : gdi/gdi.c.s
+
 hal/framebuffer.o: hal/framebuffer.c.o
 .PHONY : hal/framebuffer.o
 
@@ -359,6 +383,54 @@ hal/framebuffer.s: hal/framebuffer.c.s
 hal/framebuffer.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/hal/framebuffer.c.s
 .PHONY : hal/framebuffer.c.s
+
+hal/ps2.o: hal/ps2.c.o
+.PHONY : hal/ps2.o
+
+# target to build an object file
+hal/ps2.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/hal/ps2.c.o
+.PHONY : hal/ps2.c.o
+
+hal/ps2.i: hal/ps2.c.i
+.PHONY : hal/ps2.i
+
+# target to preprocess a source file
+hal/ps2.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/hal/ps2.c.i
+.PHONY : hal/ps2.c.i
+
+hal/ps2.s: hal/ps2.c.s
+.PHONY : hal/ps2.s
+
+# target to generate assembly for a file
+hal/ps2.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/hal/ps2.c.s
+.PHONY : hal/ps2.c.s
+
+hal/rtc.o: hal/rtc.c.o
+.PHONY : hal/rtc.o
+
+# target to build an object file
+hal/rtc.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/hal/rtc.c.o
+.PHONY : hal/rtc.c.o
+
+hal/rtc.i: hal/rtc.c.i
+.PHONY : hal/rtc.i
+
+# target to preprocess a source file
+hal/rtc.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/hal/rtc.c.i
+.PHONY : hal/rtc.c.i
+
+hal/rtc.s: hal/rtc.c.s
+.PHONY : hal/rtc.s
+
+# target to generate assembly for a file
+hal/rtc.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/hal/rtc.c.s
+.PHONY : hal/rtc.c.s
 
 hal/serial.o: hal/serial.c.o
 .PHONY : hal/serial.o
@@ -407,6 +479,30 @@ io/io.s: io/io.c.s
 io/io.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/io/io.c.s
 .PHONY : io/io.c.s
+
+ke/kpcr.o: ke/kpcr.c.o
+.PHONY : ke/kpcr.o
+
+# target to build an object file
+ke/kpcr.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/ke/kpcr.c.o
+.PHONY : ke/kpcr.c.o
+
+ke/kpcr.i: ke/kpcr.c.i
+.PHONY : ke/kpcr.i
+
+# target to preprocess a source file
+ke/kpcr.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/ke/kpcr.c.i
+.PHONY : ke/kpcr.c.i
+
+ke/kpcr.s: ke/kpcr.c.s
+.PHONY : ke/kpcr.s
+
+# target to generate assembly for a file
+ke/kpcr.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/ke/kpcr.c.s
+.PHONY : ke/kpcr.c.s
 
 ke/main.o: ke/main.c.o
 .PHONY : ke/main.o
@@ -527,6 +623,30 @@ ldr/ldr.s: ldr/ldr.c.s
 ldr/ldr.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/ldr/ldr.c.s
 .PHONY : ldr/ldr.c.s
+
+ldr/user_stubs.o: ldr/user_stubs.c.o
+.PHONY : ldr/user_stubs.o
+
+# target to build an object file
+ldr/user_stubs.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.o
+.PHONY : ldr/user_stubs.c.o
+
+ldr/user_stubs.i: ldr/user_stubs.c.i
+.PHONY : ldr/user_stubs.i
+
+# target to preprocess a source file
+ldr/user_stubs.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.i
+.PHONY : ldr/user_stubs.c.i
+
+ldr/user_stubs.s: ldr/user_stubs.c.s
+.PHONY : ldr/user_stubs.s
+
+# target to generate assembly for a file
+ldr/user_stubs.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/ldr/user_stubs.c.s
+.PHONY : ldr/user_stubs.c.s
 
 lib/string.o: lib/string.c.o
 .PHONY : lib/string.o
@@ -672,6 +792,30 @@ ob/ob.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/ob/ob.c.s
 .PHONY : ob/ob.c.s
 
+ps/csrss.o: ps/csrss.c.o
+.PHONY : ps/csrss.o
+
+# target to build an object file
+ps/csrss.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/ps/csrss.c.o
+.PHONY : ps/csrss.c.o
+
+ps/csrss.i: ps/csrss.c.i
+.PHONY : ps/csrss.i
+
+# target to preprocess a source file
+ps/csrss.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/ps/csrss.c.i
+.PHONY : ps/csrss.c.i
+
+ps/csrss.s: ps/csrss.c.s
+.PHONY : ps/csrss.s
+
+# target to generate assembly for a file
+ps/csrss.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/ps/csrss.c.s
+.PHONY : ps/csrss.c.s
+
 ps/ps.o: ps/ps.c.o
 .PHONY : ps/ps.o
 
@@ -720,6 +864,78 @@ se/se.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/se/se.c.s
 .PHONY : se/se.c.s
 
+wm/desktop.o: wm/desktop.c.o
+.PHONY : wm/desktop.o
+
+# target to build an object file
+wm/desktop.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/wm/desktop.c.o
+.PHONY : wm/desktop.c.o
+
+wm/desktop.i: wm/desktop.c.i
+.PHONY : wm/desktop.i
+
+# target to preprocess a source file
+wm/desktop.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/wm/desktop.c.i
+.PHONY : wm/desktop.c.i
+
+wm/desktop.s: wm/desktop.c.s
+.PHONY : wm/desktop.s
+
+# target to generate assembly for a file
+wm/desktop.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/wm/desktop.c.s
+.PHONY : wm/desktop.c.s
+
+wm/input.o: wm/input.c.o
+.PHONY : wm/input.o
+
+# target to build an object file
+wm/input.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/wm/input.c.o
+.PHONY : wm/input.c.o
+
+wm/input.i: wm/input.c.i
+.PHONY : wm/input.i
+
+# target to preprocess a source file
+wm/input.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/wm/input.c.i
+.PHONY : wm/input.c.i
+
+wm/input.s: wm/input.c.s
+.PHONY : wm/input.s
+
+# target to generate assembly for a file
+wm/input.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/wm/input.c.s
+.PHONY : wm/input.c.s
+
+wm/wm.o: wm/wm.c.o
+.PHONY : wm/wm.o
+
+# target to build an object file
+wm/wm.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/wm/wm.c.o
+.PHONY : wm/wm.c.o
+
+wm/wm.i: wm/wm.c.i
+.PHONY : wm/wm.i
+
+# target to preprocess a source file
+wm/wm.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/wm/wm.c.i
+.PHONY : wm/wm.c.i
+
+wm/wm.s: wm/wm.c.s
+.PHONY : wm/wm.s
+
+# target to generate assembly for a file
+wm/wm.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_objects.dir/build.make CMakeFiles/kernel_objects.dir/wm/wm.c.s
+.PHONY : wm/wm.c.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -753,15 +969,27 @@ help:
 	@echo "... fs/vfs.o"
 	@echo "... fs/vfs.i"
 	@echo "... fs/vfs.s"
+	@echo "... gdi/gdi.o"
+	@echo "... gdi/gdi.i"
+	@echo "... gdi/gdi.s"
 	@echo "... hal/framebuffer.o"
 	@echo "... hal/framebuffer.i"
 	@echo "... hal/framebuffer.s"
+	@echo "... hal/ps2.o"
+	@echo "... hal/ps2.i"
+	@echo "... hal/ps2.s"
+	@echo "... hal/rtc.o"
+	@echo "... hal/rtc.i"
+	@echo "... hal/rtc.s"
 	@echo "... hal/serial.o"
 	@echo "... hal/serial.i"
 	@echo "... hal/serial.s"
 	@echo "... io/io.o"
 	@echo "... io/io.i"
 	@echo "... io/io.s"
+	@echo "... ke/kpcr.o"
+	@echo "... ke/kpcr.i"
+	@echo "... ke/kpcr.s"
 	@echo "... ke/main.o"
 	@echo "... ke/main.i"
 	@echo "... ke/main.s"
@@ -777,6 +1005,9 @@ help:
 	@echo "... ldr/ldr.o"
 	@echo "... ldr/ldr.i"
 	@echo "... ldr/ldr.s"
+	@echo "... ldr/user_stubs.o"
+	@echo "... ldr/user_stubs.i"
+	@echo "... ldr/user_stubs.s"
 	@echo "... lib/string.o"
 	@echo "... lib/string.i"
 	@echo "... lib/string.s"
@@ -795,12 +1026,24 @@ help:
 	@echo "... ob/ob.o"
 	@echo "... ob/ob.i"
 	@echo "... ob/ob.s"
+	@echo "... ps/csrss.o"
+	@echo "... ps/csrss.i"
+	@echo "... ps/csrss.s"
 	@echo "... ps/ps.o"
 	@echo "... ps/ps.i"
 	@echo "... ps/ps.s"
 	@echo "... se/se.o"
 	@echo "... se/se.i"
 	@echo "... se/se.s"
+	@echo "... wm/desktop.o"
+	@echo "... wm/desktop.i"
+	@echo "... wm/desktop.s"
+	@echo "... wm/input.o"
+	@echo "... wm/input.i"
+	@echo "... wm/input.s"
+	@echo "... wm/wm.o"
+	@echo "... wm/wm.i"
+	@echo "... wm/wm.s"
 .PHONY : help
 
 

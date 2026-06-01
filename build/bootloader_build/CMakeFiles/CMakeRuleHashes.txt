@@ -1,7 +1,7 @@
 # Hashes of file build rules.
-77b8227559bfde5b943cb0507a578596 CMakeFiles/bootloader
-591dca0401c4326f1ebf7171b9291250 bootx64.efi
-e927c28c54dfdd69aa252da83c87bf6d console.o
-ee8465f0210caeeff3e37dbead1ec6e0 elf_loader.o
-fd6333b050e6c12b96cbecbcbc74b44d main.o
-385738506a1af16c7c2e678f83b834df paging.o
+3920762a9f28c7bc0bfb3270d554ebab CMakeFiles/bootloader
+e37b08f6cf2917b0f7fcafba6dd836de bootx64.efi
+378c2c42fdb719d3f869074ebf9b86d2 console.obj
+da947617b2bd68ba1f9b0b271fd1dcc5 elf_loader.obj
+b795d5e5217175ad6fc296bd49679758 main.obj
+0434f6e30eb706976bd37bd3ff8b532e paging.obj

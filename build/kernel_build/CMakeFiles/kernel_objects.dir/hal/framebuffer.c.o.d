@@ -1,7 +1,7 @@
 CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o: \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/framebuffer.c \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/framebuffer.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/../include/types.h \
+  /home/user/os/kernel/hal/framebuffer.c \
+  /home/user/os/kernel/hal/framebuffer.h \
+  /home/user/os/kernel/hal/../include/types.h \
   /usr/lib/llvm-18/lib/clang/18/include/stdint.h /usr/include/stdint.h \
   /usr/lib/llvm-18/lib/clang/18/include/stddef.h \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_ptrdiff_t.h \
@@ -11,4 +11,4 @@ CMakeFiles/kernel_objects.dir/hal/framebuffer.c.o: \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_max_align_t.h \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_offsetof.h \
   /usr/lib/llvm-18/lib/clang/18/include/stdbool.h \
-  /mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/hal/../../include/boot_protocol.h
+  /home/user/os/kernel/hal/../../include/boot_protocol.h

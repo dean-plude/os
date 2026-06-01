@@ -1,10 +1,10 @@
 file(REMOVE_RECURSE
   "CMakeFiles/bootloader"
   "bootx64.efi"
-  "console.o"
-  "elf_loader.o"
-  "main.o"
-  "paging.o"
+  "console.obj"
+  "elf_loader.obj"
+  "main.obj"
+  "paging.obj"
 )
 
 # Per-language clean rules from dependency scanning.

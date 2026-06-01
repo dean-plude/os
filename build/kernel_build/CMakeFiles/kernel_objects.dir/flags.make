@@ -4,7 +4,7 @@
 # compile C with /usr/bin/clang
 C_DEFINES = 
 
-C_INCLUDES = -I/mnt/c/Users/dean.plude/Documents/GitHub/os/kernel -I/mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/include -I/mnt/c/Users/dean.plude/Documents/GitHub/os/kernel/../include
+C_INCLUDES = -I/home/user/os/kernel -I/home/user/os/kernel/include -I/home/user/os/kernel/../include
 
-C_FLAGS = -g -ffreestanding -fno-stack-protector -fno-builtin -nostdlib -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -Wall -Wextra -Wno-unused-parameter -Werror=implicit-function-declaration -std=c11 -O2 -g -target x86_64-unknown-none-elf -mcmodel=kernel
+C_FLAGS = -g -ffreestanding -fno-stack-protector -fno-builtin -nostdlib -fno-pie -mno-red-zone -fshort-wchar -mno-mmx -mno-sse -mno-sse2 -fcommon -Wall -Wextra -Wno-unused-parameter -Werror=implicit-function-declaration -std=c11 -O2 -g -target x86_64-unknown-none-elf -mcmodel=kernel
 

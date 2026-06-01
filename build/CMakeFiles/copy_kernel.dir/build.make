@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os
+CMAKE_SOURCE_DIR = /home/user/os
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build
+CMAKE_BINARY_DIR = /home/user/os/build
 
 # Utility rule file for copy_kernel.
 
@@ -69,8 +69,8 @@ include CMakeFiles/copy_kernel.dir/progress.make
 CMakeFiles/copy_kernel: kernel.elf
 
 kernel.elf:
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Generating kernel.elf"
-	/usr/bin/cmake -E copy /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel_build/kernel.elf /mnt/c/Users/dean.plude/Documents/GitHub/os/build/kernel.elf
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --blue --bold --progress-dir=/home/user/os/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Generating kernel.elf"
+	/usr/bin/cmake -E copy /home/user/os/build/kernel_build/kernel.elf /home/user/os/build/kernel.elf
 
 copy_kernel: CMakeFiles/copy_kernel
 copy_kernel: kernel.elf
@@ -86,6 +86,6 @@ CMakeFiles/copy_kernel.dir/clean:
 .PHONY : CMakeFiles/copy_kernel.dir/clean
 
 CMakeFiles/copy_kernel.dir/depend:
-	cd /mnt/c/Users/dean.plude/Documents/GitHub/os/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /mnt/c/Users/dean.plude/Documents/GitHub/os /mnt/c/Users/dean.plude/Documents/GitHub/os /mnt/c/Users/dean.plude/Documents/GitHub/os/build /mnt/c/Users/dean.plude/Documents/GitHub/os/build /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles/copy_kernel.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /home/user/os/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/user/os /home/user/os /home/user/os/build /home/user/os/build /home/user/os/build/CMakeFiles/copy_kernel.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/copy_kernel.dir/depend
 

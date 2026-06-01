@@ -54,10 +54,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os
+CMAKE_SOURCE_DIR = /home/user/os
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /mnt/c/Users/dean.plude/Documents/GitHub/os/build
+CMAKE_BINARY_DIR = /home/user/os/build
 
 #=============================================================================
 # Directory level rules for the build root directory
@@ -91,14 +91,14 @@ clean: CMakeFiles/run-debug.dir/clean
 CMakeFiles/kernel_build.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_build.dir/build.make CMakeFiles/kernel_build.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/kernel_build.dir/build.make CMakeFiles/kernel_build.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=14,15,16,17,18,19,20,21 "Built target kernel_build"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/user/os/build/CMakeFiles --progress-num=14,15,16,17,18,19,20,21 "Built target kernel_build"
 .PHONY : CMakeFiles/kernel_build.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/kernel_build.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 8
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 8
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/kernel_build.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 0
 .PHONY : CMakeFiles/kernel_build.dir/rule
 
 # Convenience name for target.
@@ -117,14 +117,14 @@ CMakeFiles/kernel_build.dir/clean:
 CMakeFiles/copy_kernel.dir/all: CMakeFiles/kernel_build.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/copy_kernel.dir/build.make CMakeFiles/copy_kernel.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/copy_kernel.dir/build.make CMakeFiles/copy_kernel.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=10 "Built target copy_kernel"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/user/os/build/CMakeFiles --progress-num=10 "Built target copy_kernel"
 .PHONY : CMakeFiles/copy_kernel.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/copy_kernel.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 9
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 9
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/copy_kernel.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 0
 .PHONY : CMakeFiles/copy_kernel.dir/rule
 
 # Convenience name for target.
@@ -143,14 +143,14 @@ CMakeFiles/copy_kernel.dir/clean:
 CMakeFiles/bootloader_build.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/bootloader_build.dir/build.make CMakeFiles/bootloader_build.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/bootloader_build.dir/build.make CMakeFiles/bootloader_build.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=1,2,3,4,5,6,7,8 "Built target bootloader_build"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/user/os/build/CMakeFiles --progress-num=1,2,3,4,5,6,7,8 "Built target bootloader_build"
 .PHONY : CMakeFiles/bootloader_build.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/bootloader_build.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 8
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 8
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/bootloader_build.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 0
 .PHONY : CMakeFiles/bootloader_build.dir/rule
 
 # Convenience name for target.
@@ -169,14 +169,14 @@ CMakeFiles/bootloader_build.dir/clean:
 CMakeFiles/copy_bootloader.dir/all: CMakeFiles/bootloader_build.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/copy_bootloader.dir/build.make CMakeFiles/copy_bootloader.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/copy_bootloader.dir/build.make CMakeFiles/copy_bootloader.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=9 "Built target copy_bootloader"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/user/os/build/CMakeFiles --progress-num=9 "Built target copy_bootloader"
 .PHONY : CMakeFiles/copy_bootloader.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/copy_bootloader.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 9
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 9
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/copy_bootloader.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 0
 .PHONY : CMakeFiles/copy_bootloader.dir/rule
 
 # Convenience name for target.
@@ -198,14 +198,14 @@ CMakeFiles/disk_image.dir/all: CMakeFiles/bootloader_build.dir/all
 CMakeFiles/disk_image.dir/all: CMakeFiles/copy_bootloader.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/disk_image.dir/build.make CMakeFiles/disk_image.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/disk_image.dir/build.make CMakeFiles/disk_image.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=11,12,13 "Built target disk_image"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/user/os/build/CMakeFiles --progress-num=11,12,13 "Built target disk_image"
 .PHONY : CMakeFiles/disk_image.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/disk_image.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 21
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 21
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/disk_image.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 0
 .PHONY : CMakeFiles/disk_image.dir/rule
 
 # Convenience name for target.
@@ -224,14 +224,14 @@ CMakeFiles/disk_image.dir/clean:
 CMakeFiles/run.dir/all: CMakeFiles/disk_image.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/run.dir/build.make CMakeFiles/run.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/run.dir/build.make CMakeFiles/run.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=22 "Built target run"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/user/os/build/CMakeFiles --progress-num=22 "Built target run"
 .PHONY : CMakeFiles/run.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/run.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 22
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 22
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/run.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 0
 .PHONY : CMakeFiles/run.dir/rule
 
 # Convenience name for target.
@@ -250,14 +250,14 @@ CMakeFiles/run.dir/clean:
 CMakeFiles/run-debug.dir/all: CMakeFiles/disk_image.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/run-debug.dir/build.make CMakeFiles/run-debug.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/run-debug.dir/build.make CMakeFiles/run-debug.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles --progress-num=23 "Built target run-debug"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/user/os/build/CMakeFiles --progress-num=23 "Built target run-debug"
 .PHONY : CMakeFiles/run-debug.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/run-debug.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 22
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 22
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/run-debug.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /mnt/c/Users/dean.plude/Documents/GitHub/os/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/user/os/build/CMakeFiles 0
 .PHONY : CMakeFiles/run-debug.dir/rule
 
 # Convenience name for target.
