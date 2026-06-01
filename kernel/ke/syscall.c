@@ -25,6 +25,8 @@
 #include "../mm/section.h"
 #include "../io/io.h"
 #include "../ldr/user_stubs.h"  /* KH_xxx kernel-helper numbers */
+#include "../hal/serial.h"
+#include "kpcr.h"
 
 /* -----------------------------------------------------------------------
  * MSR addresses for SYSCALL/SYSRET
@@ -392,8 +394,10 @@ static UINT64 sys_NtTerminateProcess(UINT64 ProcessHandle,
     (void)a3; (void)a4;
     if ((INT64)ProcessHandle == -1 || !ProcessHandle) {
         PEPROCESS p = PsGetCurrentProcess();
-        return p ? PsTerminateProcess(p, (NTSTATUS)ExitStatus)
-                 : STATUS_INVALID_HANDLE;
+        if (!p) return STATUS_INVALID_HANDLE;
+        PsTerminateProcess(p, (NTSTATUS)ExitStatus);
+        PsTerminateSystemThread((NTSTATUS)ExitStatus); /* never returns */
+        __builtin_unreachable();
     }
     void *obj;
     NTSTATUS s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
@@ -401,8 +405,13 @@ static UINT64 sys_NtTerminateProcess(UINT64 ProcessHandle,
                                             ObpProcessType, NULL,
                                             &obj, NULL);
     if (!NT_SUCCESS(s)) return s;
+    bool is_self = ((PEPROCESS)obj == PsGetCurrentProcess());
     s = PsTerminateProcess((PEPROCESS)obj, (NTSTATUS)ExitStatus);
     ObDereferenceObject(obj);
+    if (is_self) {
+        PsTerminateSystemThread((NTSTATUS)ExitStatus); /* never returns */
+        __builtin_unreachable();
+    }
     return s;
 }
 
@@ -721,23 +730,49 @@ static UINT64 sys_NtReadFile(UINT64 FileHandle, UINT64 IoStatusPtr,
     return s;
 }
 
-/* --- NtWriteFile (0x0008) --- */
-static UINT64 sys_NtWriteFile(UINT64 FileHandle, UINT64 IoStatusPtr,
-                                  UINT64 BufferPtr, UINT64 Length)
+/* --- NtWriteFile (0x0008) ---
+ * Windows x64 ABI: FileHandle=rcx(r10), Event=rdx, ApcRoutine=r8,
+ * ApcContext=r9, IoStatusBlock=stack+0x28, Buffer=stack+0x30, Length=stack+0x38 */
+static UINT64 sys_NtWriteFile(UINT64 FileHandle, UINT64 a2,
+                                  UINT64 a3, UINT64 a4)
 {
+    (void)a2; (void)a3; (void)a4;
+
+    PKPCR kpcr = KiGetCurrentKpcr();
+    UINT64 user_rsp = kpcr ? kpcr->UserRsp : 0;
+    UINT64 io_status_ptr = 0, buf_ptr = 0, length = 0;
+    if (user_rsp) {
+        UINT64 *ustk = (UINT64 *)(uintptr_t)user_rsp;
+        io_status_ptr = ustk[5];   /* [user_rsp+0x28] */
+        buf_ptr       = ustk[6];   /* [user_rsp+0x30] */
+        length        = ustk[7];   /* [user_rsp+0x38] */
+    }
+
+    INT64 fh_signed = (INT64)FileHandle;
+    if (fh_signed == -11 || fh_signed == -12) {
+        if (buf_ptr && length) {
+            UINT32 len = (UINT32)length;
+            serial_write((const char *)(uintptr_t)buf_ptr, (size_t)len);
+            kprintf("[ring3] NtWriteFile: %u bytes\n", len);
+        }
+        if (io_status_ptr) {
+            UINT64 *isb = (UINT64 *)(uintptr_t)io_status_ptr;
+            isb[0] = STATUS_SUCCESS;
+            isb[1] = length;
+        }
+        return STATUS_SUCCESS;
+    }
+
     IO_STATUS_BLOCK isb;
     __builtin_memset(&isb, 0, sizeof(isb));
-
-    void   *buf = (void *)(uintptr_t)BufferPtr;
-    UINT32  len = (UINT32)Length;
-
+    void   *buf = buf_ptr ? (void *)(uintptr_t)buf_ptr : NULL;
+    UINT32  len = (UINT32)length;
     NTSTATUS s = IoWriteFile((HANDLE)FileHandle,
                              (HANDLE)0, NULL, NULL,
                              &isb,
                              buf, len,
                              NULL, NULL);
-
-    if (IoStatusPtr) *(IO_STATUS_BLOCK *)(uintptr_t)IoStatusPtr = isb;
+    if (io_status_ptr) *(IO_STATUS_BLOCK *)(uintptr_t)io_status_ptr = isb;
     return s;
 }
 

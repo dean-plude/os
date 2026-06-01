@@ -42,6 +42,7 @@ set(KERNEL_CFLAGS
     -fno-stack-protector
     -fno-builtin
     -nostdlib
+    -fno-pie
     -mno-red-zone
     -fshort-wchar
     -mno-mmx
@@ -169,20 +170,11 @@ add_custom_target(asm_objects DEPENDS ${ASM_OBJECTS})
 # -------------------------------------------------------------------------
 
 # Build the linker flags
-set(KERNEL_LINK_FLAGS
-    -T "${CMAKE_CURRENT_SOURCE_DIR}/linker.ld"
-    -nostdlib
-    -z max-page-size=0x1000
-)
-
-if(IS_CLANG)
-    list(APPEND KERNEL_LINK_FLAGS
-        -target x86_64-unknown-none-elf
-    )
+# Find ld.bfd (prefer it over the default ld to avoid GCC collect2 PIE issues)
+find_program(LD_BFD ld.bfd)
+if(NOT LD_BFD)
+    find_program(LD_BFD ld)
 endif()
-
-# Convert to string for use in custom command
-string(JOIN " " KERNEL_LINK_FLAGS_STR ${KERNEL_LINK_FLAGS})
 
 # Archive C objects into a static library so the linker gets one argument
 add_library(kernel_c_lib STATIC $<TARGET_OBJECTS:kernel_objects>)
@@ -192,19 +184,24 @@ set_target_properties(kernel_c_lib PROPERTIES
 )
 add_dependencies(kernel_c_lib kernel_objects)
 
-# Final link step — use the archive + ASM objects
+# Final link step — call ld.bfd directly to avoid GCC collect2 adding -pie
 add_custom_command(
     OUTPUT  "${CMAKE_CURRENT_BINARY_DIR}/kernel.elf"
-    COMMAND ${CMAKE_C_COMPILER}
-            ${KERNEL_LINK_FLAGS}
+    COMMAND ${LD_BFD}
+            -T "${CMAKE_CURRENT_SOURCE_DIR}/linker.ld"
+            -m elf_x86_64
+            --no-pie
+            -z max-page-size=0x1000
             -o "${CMAKE_CURRENT_BINARY_DIR}/kernel.elf"
             ${ASM_OBJECTS}
+            --whole-archive
             "${CMAKE_CURRENT_BINARY_DIR}/libkernel_c.a"
+            --no-whole-archive
     DEPENDS
             ${ASM_OBJECTS}
             kernel_c_lib
             "${CMAKE_CURRENT_SOURCE_DIR}/linker.ld"
-    COMMENT "Linking kernel.elf"
+    COMMENT "Linking kernel.elf (ld.bfd)"
     VERBATIM
 )
 

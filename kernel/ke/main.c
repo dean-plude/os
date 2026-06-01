@@ -70,6 +70,7 @@
 #include "../wm/desktop.h"
 #include "../wm/input.h"
 #include "../hal/ps2.h"
+#include "phase9_pe.h"
 
 /* -----------------------------------------------------------------------
  * Banner
@@ -86,7 +87,7 @@ static void print_banner(void)
     kprintf("  ╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝\n");
     kprintf("\n");
     fb_set_colors(FB_BOOT_FG, FB_BOOT_BG);
-    kprintf("  Windows-compatible OS kernel  [Phase 7 — GUI & Desktop Shell]\n");
+    kprintf("  Windows-compatible OS kernel  [Phase 9 — Native PE32+ Execution]\n");
     kprintf("  Built: " __DATE__ " " __TIME__ "\n");
     kprintf("\n");
 }
@@ -159,6 +160,25 @@ static void memory_test_thread(void *arg)
             (total * PAGE_SIZE) >> 20,
             (free_pages * PAGE_SIZE) >> 20,
             (used  * PAGE_SIZE) >> 20);
+}
+
+static void phase9_thread(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < 3; i++) sched_yield();
+    kprintf("\n[Phase 9] === Starting native PE32+ execution test ===\n");
+    PEPROCESS proc = NULL;
+    HANDLE thread_handle = 0;
+    NTSTATUS s = PsCreateUserProcess(
+        (void *)g_phase9_pe, (UINT64)g_phase9_pe_size,
+        "hello.exe", &proc, &thread_handle);
+    if (NT_SUCCESS(s))
+        kprintf("[Phase 9] User process created PID=%lu handle=%p\n",
+                proc ? (unsigned long)proc->UniqueProcessId : 0UL,
+                (void *)(uintptr_t)thread_handle);
+    else
+        kprintf("[Phase 9] FAILED to create user process: 0x%08x\n", (UINT32)s);
+    if (proc) ObDereferenceObject(proc);
 }
 
 /* -----------------------------------------------------------------------
@@ -359,7 +379,13 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
         kprintf("[NovaOS] No framebuffer present; running headless\n");
     }
 
-    kprintf("\n[NovaOS] Phase 7 initialized. Enabling interrupts...\n");
+    /* ------------------------------------------------------------------
+     * STEP 23 (Phase 9): Launch a native PE32+ in ring-3
+     * ------------------------------------------------------------------ */
+    kprintf("=== Phase 9: Native PE32+ execution ===\n");
+    sched_create_thread("phase9", phase9_thread, NULL, 8);
+
+    kprintf("\n[NovaOS] Phase 9 initialized. Enabling interrupts...\n");
     sti();
 
     kprintf("[NovaOS] Entering kernel main loop\n");
