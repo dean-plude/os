@@ -216,10 +216,32 @@ void kprintf_set_fb_enabled(bool enabled)
     g_fb_output = enabled;
 }
 
+/* Last KLOG_SIZE bytes of kernel output, for the Terminal's `dmesg` */
+#define KLOG_SIZE 16384
+static char   g_klog[KLOG_SIZE];
+static size_t g_klog_total;          /* bytes ever written */
+
+static void klog_append(const char *s)
+{
+    for (; *s; s++) g_klog[g_klog_total++ % KLOG_SIZE] = *s;
+}
+
+size_t klog_read(char *out, size_t cap)
+{
+    if (!out || cap == 0) return 0;
+    size_t avail = g_klog_total < KLOG_SIZE ? g_klog_total : KLOG_SIZE;
+    size_t n = avail < cap - 1 ? avail : cap - 1;
+    size_t start = g_klog_total - n;
+    for (size_t i = 0; i < n; i++) out[i] = g_klog[(start + i) % KLOG_SIZE];
+    out[n] = '\0';
+    return n;
+}
+
 void kvprintf(const char *fmt, __builtin_va_list ap)
 {
     char buf[1024];
     kvsnprintf(buf, sizeof(buf), fmt, ap);
+    klog_append(buf);
     serial_puts(buf);
     if (g_fb_output)
         fb_puts(buf);

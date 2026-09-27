@@ -62,6 +62,10 @@ void early_printf(const char *fmt, ...);
  */
 void kprintf_set_fb_enabled(bool enabled);
 
+/* Copy the most recent kernel output (up to cap-1 bytes, NUL-terminated)
+ * into out; returns the number of bytes copied. */
+size_t klog_read(char *out, size_t cap);
+
 /*
  * Kernel assertion with descriptive panic message.
  */

@@ -64,6 +64,7 @@
 #include "probe.h"
 #include "../fs/vfs.h"
 #include "../fs/initrd.h"
+#include "../fs/ramfs.h"
 #include "kpcr.h"
 #include "../ps/csrss.h"
 #include "../gdi/gdi.h"
@@ -349,6 +350,8 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
      * the serial console) cannot overwrite the rendered UI.
      * ------------------------------------------------------------------ */
     kprintf("=== Phase 7: GDI + Window Manager + Desktop Shell ===\n");
+    RamfsInit();                          /* drive C: for the desktop apps */
+
     if (GdiInitialize()) {
         WmInitialize();
         DesktopInitialize();
