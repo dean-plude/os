@@ -46,6 +46,8 @@ typedef struct {
     bool    save;              /* wget: save the body; curl: print it */
     bool    https;
     int     redirects;
+    char    urls[8][256];      /* curl/wget: several URLs, fetched in turn */
+    int     nurls, cur;
 } Job;
 
 typedef struct {
@@ -183,8 +185,8 @@ static void cmd_help(Term *t)
         "  ipconfig            show the network configuration\n"
         "  ping <host> [-n N]  test a connection (ICMP echo)\n"
         "  nslookup <host>     look up a host name (DNS)\n"
-        "  wget <url>          download a web page to C:\\Downloads\n"
-        "  curl <url>          fetch a web page and print it\n"
+        "  wget <url> [url...] download web pages to C:\\Downloads\n"
+        "  curl <url> [url...] fetch web pages and print them\n"
         "  certutil            list trusted root certificates\n"
         "  certutil -addstore root <file>   trust a CA certificate (PEM/DER)\n"
         "  cls                 clear the screen (also: clear, Ctrl+L)\n"
@@ -473,15 +475,33 @@ static void cmd_certutil(Term *t, int argc, char **argv)
             n, n - imported, imported);
 }
 
-static void cmd_fetch(Term *t, const char *url, bool save)
+/* This URL is finished (either way): go on to the next one, if any. */
+static void fetch_next(Term *t)
 {
-    if (!url) { terr(t, save ? "Usage: wget <url>" : "Usage: curl <url>"); return; }
+    Job *j = &t->job;
+    NetRelease(j->op);
+    j->op = NULL;
+    while (++j->cur < j->nurls) {
+        j->redirects = 0;
+        tprint(t, "");
+        if (set_target(t, j->urls[j->cur])) { job_resolve(t, j->host); return; }
+    }
+    job_end(t);
+}
+
+static void cmd_fetch(Term *t, int argc, char **argv, bool save)
+{
+    if (argc < 2) { terr(t, save ? "Usage: wget <url> [url...]" : "Usage: curl <url> [url...]"); return; }
     Job *j = &t->job;
     memset(j, 0, sizeof(*j));
     j->kind = JOB_FETCH;
     j->save = save;
-    if (!set_target(t, url)) { job_end(t); return; }
-    job_resolve(t, j->host);
+    for (int i = 1; i < argc && j->nurls < 8; i++) {
+        strncpy(j->urls[j->nurls], argv[i], sizeof(j->urls[0]) - 1);
+        j->nurls++;
+    }
+    j->cur = -1;
+    fetch_next(t);
 }
 
 /* File name for a download: last path segment, else index.html */
@@ -520,7 +540,7 @@ static void fetch_done(Term *t)
     UINT32 blen;
     char loc[256];
     int status = NetHttpParse(j->op, &body, &blen, loc, sizeof(loc));
-    if (!status) { terr(t, "The server sent a response NovaOS could not read."); job_end(t); return; }
+    if (!status) { terr(t, "The server sent a response NovaOS could not read."); fetch_next(t); return; }
 
     /* status line */
     char line[96];
@@ -530,7 +550,9 @@ static void fetch_done(Term *t)
         n++;
     }
     line[n] = '\0';
-    if (j->op->tls_info[0]) tprintf(t, "Secure connection: %s", j->op->tls_info);
+    if (j->op->tls_info[0])
+        tprintf(t, "Secure connection: %s%s", j->op->tls_info,
+                j->op->reused ? "" : j->op->resumed ? " (session resumed)" : "");
     tprintf(t, "HTTP request sent, awaiting response... %s", line + (n > 9 ? 9 : 0));
 
     if (status >= 300 && status < 400 && loc[0] && j->redirects < 5) {
@@ -541,7 +563,7 @@ static void fetch_done(Term *t)
         if (loc[0] == '/') {                       /* same host */
             strncpy(j->path, loc, sizeof(j->path) - 1);
         } else if (!set_target(t, loc)) {
-            job_end(t);
+            fetch_next(t);
             return;
         }
         job_resolve(t, j->host);
@@ -564,7 +586,7 @@ static void fetch_done(Term *t)
     } else {
         print_body(t, body, blen);
     }
-    job_end(t);
+    fetch_next(t);
 }
 
 static bool term_tick(WND *w)
@@ -582,7 +604,7 @@ static bool term_tick(WND *w)
                 tprintf(t, "Ping request could not find host %s. Please check the name and try again.", j->host);
             else
                 tprintf(t, "*** Can't find %s: %s", j->host, op->error);
-            job_end(t);
+            if (j->kind == JOB_FETCH) fetch_next(t); else job_end(t);
             return true;
         }
         j->ip = op->ip;
@@ -596,10 +618,13 @@ static bool term_tick(WND *w)
             tprintf(t, "Pinging %s [%s] with 32 bytes of data:", j->host, a);
             j->phase = PH_SEND;
         } else {
-            tprintf(t, "Connecting to %s (%s):%u...", j->host, a, j->port);
             j->op = NetHttpGet(j->ip, j->port, j->host, j->path, j->https);
             j->phase = PH_FETCH;
-            if (!j->op) { terr(t, "The network is busy; try again."); job_end(t); }
+            if (!j->op) { terr(t, "The network is busy; try again."); job_end(t); return true; }
+            if (j->op->reused)
+                tprintf(t, "Reusing the open connection to %s:%u", j->host, j->port);
+            else
+                tprintf(t, "Connecting to %s (%s):%u...", j->host, a, j->port);
         }
         return true;
     }
@@ -651,7 +676,7 @@ static bool term_tick(WND *w)
         if (op->state == NET_PENDING) return false;
         if (op->state == NET_FAILED) {
             tprintf(t, "Failed: %s", op->error);
-            job_end(t);
+            fetch_next(t);
         } else {
             fetch_done(t);
         }
@@ -688,9 +713,9 @@ static void run(Term *t, char *cmdline)
     else if (is(c, "ipconfig") || is(c, "ifconfig")) cmd_ipconfig(t);
     else if (is(c, "ping"))                     cmd_ping(t, argc, argv);
     else if (is(c, "nslookup"))                 cmd_nslookup(t, a1);
-    else if (is(c, "wget"))                     cmd_fetch(t, a1, true);
+    else if (is(c, "wget"))                     cmd_fetch(t, argc, argv, true);
     else if (is(c, "certutil"))                 cmd_certutil(t, argc, argv);
-    else if (is(c, "curl"))                     cmd_fetch(t, a1, false);
+    else if (is(c, "curl"))                     cmd_fetch(t, argc, argv, false);
     else if (is(c, "cls") || is(c, "clear"))    t->count = 0;
     else if (is(c, "exit"))                     WmDestroyWindow(t->w);
     else {

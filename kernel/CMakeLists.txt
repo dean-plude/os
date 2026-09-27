@@ -81,7 +81,7 @@ set(CMAKE_ASM_NASM_FLAGS "-f elf64 -g -F dwarf")
 # -------------------------------------------------------------------------
 
 set(LWIP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lwip/src")
-set(BEARSSL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/bearssl")
+set(MBEDTLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mbedtls")
 
 set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -89,7 +89,7 @@ set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/../include"
     "${CMAKE_CURRENT_SOURCE_DIR}/net/port"      # lwIP port: lwipopts.h, arch/cc.h
     "${LWIP_DIR}/include"
-    "${BEARSSL_DIR}/inc"
+    "${MBEDTLS_DIR}/include"
 )
 
 # -------------------------------------------------------------------------
@@ -122,6 +122,8 @@ set(KERNEL_C_SOURCES
     net/net.c
     net/tls.c
     net/tls_roots.c
+    net/tls_platform.c
+    net/http.c
     ke/main.c
     ke/printf.c
     ke/scheduler.c
@@ -169,18 +171,19 @@ file(GLOB LWIP_SOURCES
 set_source_files_properties(${LWIP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 list(APPEND KERNEL_C_SOURCES ${LWIP_SOURCES})
 
-# BearSSL 0.6 (third_party/bearssl, MIT licence): TLS 1.0-1.2 and X.509.
-# Kernel build: portable constant-time code only (no SSE/AES-NI, the
-# kernel runs with SSE disabled), and no OS time or random sources -
-# net/tls.c supplies both.
-file(GLOB_RECURSE BEARSSL_SOURCES "${BEARSSL_DIR}/src/*.c")
-set_source_files_properties(${BEARSSL_SOURCES} PROPERTIES COMPILE_OPTIONS
-    "-w;-I${BEARSSL_DIR}/src;-DNOVA_BEARSSL=1;-DBR_AES_X86NI=0;-DBR_SSE2=0;-DBR_POWER8=0;-DBR_RDRAND=0;-DBR_USE_URANDOM=0;-DBR_USE_WIN32_RAND=0;-DBR_USE_UNIX_TIME=0;-DBR_USE_WIN32_TIME=0;-DBR_64=1;-DBR_INT128=1;-DBR_LE_UNALIGNED=1")
-list(APPEND KERNEL_C_SOURCES ${BEARSSL_SOURCES})
+# Mbed TLS 3.6.7 (third_party/mbedtls, Apache-2.0): TLS 1.2/1.3 and X.509.
+# Configured by net/port/mbedtls_nova_config.h (MBEDTLS_CONFIG_FILE, set
+# for every kernel source below so all users see the same configuration).
+file(GLOB MBEDTLS_SOURCES "${MBEDTLS_DIR}/library/*.c")
+set_source_files_properties(${MBEDTLS_SOURCES} PROPERTIES COMPILE_OPTIONS
+    "-w;-I${MBEDTLS_DIR}/library")
+list(APPEND KERNEL_C_SOURCES ${MBEDTLS_SOURCES})
 
 # C object library with kernel flags
 add_library(kernel_objects OBJECT ${KERNEL_C_SOURCES})
 target_compile_options(kernel_objects PRIVATE ${KERNEL_CFLAGS})
+target_compile_definitions(kernel_objects PRIVATE
+    "MBEDTLS_CONFIG_FILE=\"mbedtls_nova_config.h\"")
 target_include_directories(kernel_objects PRIVATE ${KERNEL_INCLUDE_DIRS})
 
 # ASM objects via NASM
