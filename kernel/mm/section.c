@@ -199,6 +199,16 @@ NTSTATUS NtMapViewOfSection(
         base_va = tmp_base;
     }
 
+    /* The base may come straight from the caller: refuse anything that is
+     * unaligned or not entirely in user space before touching page tables
+     * (a view mapped over kernel addresses would hand them to ring 3). */
+    if ((base_va & (PAGE_SIZE - 1)) ||
+        base_va < USER_ADDRESS_MIN || base_va >= USER_ADDRESS_MAX ||
+        view_size > USER_ADDRESS_MAX - base_va) {
+        ObDereferenceObject(sec_obj);
+        return STATUS_INVALID_PARAMETER;
+    }
+
     /* Map the physical pages */
     uint32_t map_flags = MAP_USER;
     if (Win32Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE))

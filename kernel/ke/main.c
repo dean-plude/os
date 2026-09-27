@@ -61,6 +61,7 @@
 #include "../mm/section.h"
 #include "../ldr/ldr.h"
 #include "../ldr/user_stubs.h"
+#include "probe.h"
 #include "../fs/vfs.h"
 #include "../fs/initrd.h"
 #include "kpcr.h"
@@ -331,6 +332,9 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     /* ------------------------------------------------------------------
      * STEP 21: Create test threads, then enable IRQs
      * ------------------------------------------------------------------ */
+    /* Validate user-pointer probing against a temporary user mapping */
+    KiProbeSelfTest();
+
     kprintf("=== Creating test threads ===\n");
     sched_create_thread("thread_a",  thread_a,           NULL, 8);
     sched_create_thread("thread_b",  thread_b,           NULL, 8);

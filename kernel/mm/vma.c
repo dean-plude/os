@@ -220,6 +220,10 @@ NTSTATUS VmaAllocate(PVMA_SPACE  Space,
     if (!(AllocType & (MEM_COMMIT | MEM_RESERVE)))
         return STATUS_INVALID_PARAMETER;
 
+    /* Reject sizes that cannot fit in user space before rounding, so the
+     * page round-up below cannot wrap around to a small value. */
+    if (*RegionSize > USER_ADDRESS_MAX)
+        return STATUS_INVALID_PARAMETER;
     UINT64 size = align_up_page(*RegionSize);
     bool   top_down = (AllocType & MEM_TOP_DOWN) != 0;
 
@@ -247,8 +251,9 @@ NTSTATUS VmaAllocate(PVMA_SPACE  Space,
         }
     }
 
-    /* Validate range is in user space */
-    if (base < USER_ADDRESS_MIN || base + size > USER_ADDRESS_MAX) {
+    /* Validate range is in user space (written so base + size can't wrap) */
+    if (base < USER_ADDRESS_MIN || base >= USER_ADDRESS_MAX ||
+        size > USER_ADDRESS_MAX - base) {
         vma_unlock(Space);
         return STATUS_INVALID_PARAMETER;
     }
@@ -331,6 +336,10 @@ NTSTATUS VmaFree(PVMA_SPACE  Space,
                 /* MEM_DECOMMIT: unmap pages but keep reservation */
                 if (e->State & MEM_COMMIT) {
                     UINT64 off   = base - e->BaseAddress;
+                    /* Never reach past this region: the caller's size is
+                     * untrusted and the pages beyond may be kernel pages. */
+                    if (release_size > e->RegionSize - off)
+                        release_size = e->RegionSize - off;
                     UINT64 pages = release_size / PAGE_SIZE;
                     for (UINT64 i = 0; i < pages; i++) {
                         UINT64 va = e->BaseAddress + off + i * PAGE_SIZE;
@@ -372,6 +381,14 @@ NTSTATUS VmaProtect(PVMA_SPACE  Space,
     if (!e || !(e->State & MEM_COMMIT)) {
         vma_unlock(Space);
         return STATUS_MEMORY_NOT_ALLOCATED;
+    }
+
+    /* The range must stay inside this region; otherwise an untrusted size
+     * would re-map whatever follows it (possibly kernel pages) as user. */
+    if (*RegionSize > USER_ADDRESS_MAX ||
+        size > e->BaseAddress + e->RegionSize - base) {
+        vma_unlock(Space);
+        return STATUS_CONFLICTING_ADDRESSES;
     }
 
     if (OldProtect) *OldProtect = e->Protect;
@@ -447,8 +464,15 @@ NTSTATUS VmaMap(PVMA_SPACE Space, PVMA_ENTRY Entry)
 {
     vma_lock(Space);
 
-    /* Check for overlap */
+    /* Entries may only describe user space */
     UINT64 ebase = Entry->BaseAddress;
+    if (ebase < USER_ADDRESS_MIN || ebase >= USER_ADDRESS_MAX ||
+        Entry->RegionSize > USER_ADDRESS_MAX - ebase) {
+        vma_unlock(Space);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* Check for overlap */
     UINT64 eend  = ebase + Entry->RegionSize;
     PVMA_ENTRY scan = Space->Head;
     while (scan) {

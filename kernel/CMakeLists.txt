@@ -116,6 +116,8 @@ set(KERNEL_C_SOURCES
     ke/scheduler.c
     ke/syscall.c
     ke/kpcr.c
+    ke/probe.c
+    ke/probe_test.c
     ob/ob.c
     ps/ps.c
     cm/cm.c
