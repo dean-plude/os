@@ -41,6 +41,9 @@ typedef void (*WndPaintFn)(struct WND *w);
 typedef void (*WndKeyFn)(struct WND *w, const KeyEvent *k);
 typedef void (*WndMouseFn)(struct WND *w, WmMouseMsg msg, int x, int y);
 typedef void (*WndCloseFn)(struct WND *w);
+/* Called every pass of the desktop loop; return true to request a redraw
+ * (used for work that completes asynchronously, e.g. network requests). */
+typedef bool (*WndTickFn)(struct WND *w);
 
 typedef struct WND {
     int        id;
@@ -61,6 +64,7 @@ typedef struct WND {
     WndKeyFn   on_key;       /* key pressed while focused */
     WndMouseFn on_mouse;     /* mouse in / captured by the client area */
     WndCloseFn on_close;     /* window is being destroyed: free `user` */
+    WndTickFn  on_tick;      /* optional periodic work */
     void      *user;         /* app state */
 } WND;
 
@@ -109,6 +113,8 @@ GdiRect WmWorkArea(void);
 bool WmMouseButton(int x, int y, WmMouseMsg msg);
 /* Mouse moved to (x, y): drags, hover highlights, captured client moves. */
 void WmMouseMove(int x, int y);
+/* Run every window's on_tick hook (called by the desktop loop). */
+void WmTick(void);
 /* True while a window drag or client capture is in progress. */
 bool WmMouseCaptured(void);
 /* Deliver a key press to the focused window.  Alt+F4 closes it.

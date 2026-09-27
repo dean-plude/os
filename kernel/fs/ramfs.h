@@ -16,7 +16,7 @@
 
 #define RAMFS_NAME_MAX   48
 #define RAMFS_PATH_MAX   256
-#define RAMFS_FILE_MAX   (64u * 1024u)    /* largest file contents */
+#define RAMFS_FILE_MAX   (2u * 1024u * 1024u)   /* largest file (downloads) */
 
 typedef struct RamNode {
     char            name[RAMFS_NAME_MAX];

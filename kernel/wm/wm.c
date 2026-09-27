@@ -395,6 +395,15 @@ void WmMouseMove(int x, int y)
 
 bool WmMouseCaptured(void) { return g_drag || g_capture || g_press; }
 
+void WmTick(void)
+{
+    for (int i = 0; i < WM_MAX_WINDOWS; i++) {
+        WND *w = &g_windows[i];
+        if (g_used[i] && w->on_tick && w->on_tick(w))
+            g_dirty = true;
+    }
+}
+
 bool WmKey(const KeyEvent *k)
 {
     if (!k || !k->pressed) return false;

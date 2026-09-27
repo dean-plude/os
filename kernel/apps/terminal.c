@@ -12,6 +12,8 @@
 #include "../mm/pmm.h"
 #include "../ke/printf.h"
 #include "../hal/rtc.h"
+#include "../ke/scheduler.h"
+#include "../net/net.h"
 
 #define T_COLS   160
 #define T_ROWS   400
@@ -27,6 +29,24 @@
 
 enum { K_NORMAL, K_ERROR, K_DIM };
 
+/* A network command in progress (advanced by term_tick) */
+typedef enum { JOB_NONE, JOB_PING, JOB_LOOKUP, JOB_FETCH } JobKind;
+enum { PH_RESOLVE, PH_SEND, PH_WAIT, PH_SLEEP, PH_FETCH };
+
+typedef struct {
+    JobKind kind;
+    int     phase;
+    NetOp  *op;
+    char    host[128], path[256];
+    UINT16  port;
+    UINT32  ip;
+    int     count, sent, got, rtt_min, rtt_max, rtt_sum;
+    UINT16  seq;
+    UINT64  wake;              /* ticks */
+    bool    save;              /* wget: save the body; curl: print it */
+    int     redirects;
+} Job;
+
 typedef struct {
     char     line[T_ROWS][T_COLS + 1];
     UINT8    kind[T_ROWS];
@@ -38,6 +58,7 @@ typedef struct {
     RamNode *cwd;
     char     hist[T_HIST][T_COLS];
     int      hist_n, hist_pos;
+    Job      job;
     WND     *w;
 } Term;
 
@@ -158,9 +179,14 @@ static void cmd_help(Term *t)
         "  del <name>          delete a file or empty folder (also: rm)\n"
         "  start <app> [file]  open notepad, explorer, settings, calendar\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
+        "  ipconfig            show the network configuration\n"
+        "  ping <host> [-n N]  test a connection (ICMP echo)\n"
+        "  nslookup <host>     look up a host name (DNS)\n"
+        "  wget <url>          download a web page to C:\\Downloads\n"
+        "  curl <url>          fetch a web page and print it\n"
         "  cls                 clear the screen (also: clear, Ctrl+L)\n"
         "  exit                close this window\n"
-        "Keys: Up/Down history, PgUp/PgDn scroll.");
+        "Keys: Up/Down history, PgUp/PgDn scroll, Ctrl+C cancel.");
 }
 
 static void cmd_dir(Term *t, const char *arg)
@@ -326,6 +352,281 @@ static void cmd_start(Term *t, int argc, char **argv)
     AppLaunch(id);
 }
 
+/* -----------------------------------------------------------------------
+ * Network commands
+ * ----------------------------------------------------------------------- */
+static void ip_str(UINT32 ip, char *buf) { NetFormatIp(ip, buf, 16); }
+
+static void cmd_ipconfig(Term *t)
+{
+    NetStatus st;
+    NetGetStatus(&st);
+    tprint(t, "Ethernet adapter Ethernet:\n");
+    tprintf(t, "   Description . . . . : %s", st.adapter);
+    if (!st.present) return;
+    tprintf(t, "   Physical Address. . : %02x-%02x-%02x-%02x-%02x-%02x",
+            st.mac[0], st.mac[1], st.mac[2], st.mac[3], st.mac[4], st.mac[5]);
+    if (!st.link) { tprint(t, "   Media State . . . . : Media disconnected"); return; }
+    if (!st.configured) { tprint(t, "   IPv4 Address. . . . : (waiting for DHCP)"); return; }
+    char a[16], m[16], g[16], d0[16], d1[16];
+    ip_str(st.ip, a); ip_str(st.mask, m); ip_str(st.gw, g);
+    ip_str(st.dns[0], d0); ip_str(st.dns[1], d1);
+    tprintf(t, "   IPv4 Address. . . . : %s", a);
+    tprintf(t, "   Subnet Mask . . . . : %s", m);
+    tprintf(t, "   Default Gateway . . : %s", g);
+    tprintf(t, "   DNS Servers . . . . : %s", d0);
+    if (st.dns[1]) tprintf(t, "                         %s", d1);
+}
+
+static void job_end(Term *t)
+{
+    NetRelease(t->job.op);
+    memset(&t->job, 0, sizeof(t->job));
+}
+
+static bool job_resolve(Term *t, const char *host)
+{
+    t->job.op = NetResolve(host);
+    t->job.phase = PH_RESOLVE;
+    if (!t->job.op) { terr(t, "The network is busy; try again."); job_end(t); return false; }
+    return true;
+}
+
+static void cmd_ping(Term *t, int argc, char **argv)
+{
+    if (argc < 2) { terr(t, "Usage: ping <host> [-n count]"); return; }
+    Job *j = &t->job;
+    memset(j, 0, sizeof(*j));
+    j->kind  = JOB_PING;
+    j->count = 4;
+    for (int i = 2; i + 1 < argc; i++)
+        if (!strcmp(argv[i], "-n")) {
+            int n = 0;
+            for (const char *s = argv[i + 1]; *s >= '0' && *s <= '9'; s++) n = n * 10 + (*s - '0');
+            if (n > 0 && n <= 100) j->count = n;
+        }
+    strncpy(j->host, argv[1], sizeof(j->host) - 1);
+    j->rtt_min = 1 << 30;
+    job_resolve(t, j->host);
+}
+
+static void cmd_nslookup(Term *t, const char *host)
+{
+    if (!host) { terr(t, "Usage: nslookup <host>"); return; }
+    Job *j = &t->job;
+    memset(j, 0, sizeof(*j));
+    j->kind = JOB_LOOKUP;
+    strncpy(j->host, host, sizeof(j->host) - 1);
+    NetStatus st;
+    NetGetStatus(&st);
+    char d[16];
+    ip_str(st.dns[0], d);
+    tprintf(t, "Server:  %s", d);
+    job_resolve(t, j->host);
+}
+
+static bool set_target(Term *t, const char *url)
+{
+    Job *j = &t->job;
+    bool https;
+    if (!NetParseUrl(url, j->host, sizeof(j->host), &j->port, j->path, sizeof(j->path), &https)) {
+        terr(t, "That doesn't look like a web address (try http://example.com).");
+        return false;
+    }
+    if (https) {
+        terr(t, "HTTPS isn't supported yet (secure connections come with the next update).");
+        terr(t, "Try an http:// address.");
+        return false;
+    }
+    return true;
+}
+
+static void cmd_fetch(Term *t, const char *url, bool save)
+{
+    if (!url) { terr(t, save ? "Usage: wget <url>" : "Usage: curl <url>"); return; }
+    Job *j = &t->job;
+    memset(j, 0, sizeof(*j));
+    j->kind = JOB_FETCH;
+    j->save = save;
+    if (!set_target(t, url)) { job_end(t); return; }
+    job_resolve(t, j->host);
+}
+
+/* File name for a download: last path segment, else index.html */
+static void download_name(const char *path, char *out, int cap)
+{
+    const char *seg = path, *p;
+    for (p = path; *p && *p != '?'; p++) if (*p == '/') seg = p + 1;
+    int n = 0;
+    for (const char *s = seg; s < p && n < cap - 1; s++)
+        out[n++] = (*s == ':' || *s == '\\') ? '_' : *s;
+    out[n] = '\0';
+    if (!n) ksnprintf(out, (size_t)cap, "index.html");
+}
+
+static void print_body(Term *t, const char *body, UINT32 len)
+{
+    enum { MAX_OUT = 16 * 1024 };
+    UINT32 n = len < MAX_OUT ? len : MAX_OUT;
+    char *buf = kmalloc(n + 1);
+    if (!buf) return;
+    for (UINT32 i = 0; i < n; i++) {
+        char c = body[i];
+        buf[i] = (c == '\n' || c == '\t' || (c >= ' ' && c <= '~')) ? c
+               : (c == '\r') ? ' ' : '.';
+    }
+    buf[n] = '\0';
+    tprint(t, buf);
+    kfree(buf);
+    if (len > n) tprintf(t, "... (%u more bytes; use wget to save it all)", (unsigned)(len - n));
+}
+
+static void fetch_done(Term *t)
+{
+    Job *j = &t->job;
+    const char *body;
+    UINT32 blen;
+    char loc[256];
+    int status = NetHttpParse(j->op, &body, &blen, loc, sizeof(loc));
+    if (!status) { terr(t, "The server sent a response NovaOS could not read."); job_end(t); return; }
+
+    /* status line */
+    char line[96];
+    int n = 0;
+    while (n < (int)sizeof(line) - 1 && n < (int)j->op->len && j->op->data[n] != '\r') {
+        line[n] = j->op->data[n];
+        n++;
+    }
+    line[n] = '\0';
+    tprintf(t, "HTTP request sent, awaiting response... %s", line + (n > 9 ? 9 : 0));
+
+    if (status >= 300 && status < 400 && loc[0] && j->redirects < 5) {
+        tprintf(t, "Location: %s", loc);
+        NetRelease(j->op);
+        j->op = NULL;
+        j->redirects++;
+        if (loc[0] == '/') {                       /* same host */
+            strncpy(j->path, loc, sizeof(j->path) - 1);
+        } else if (!set_target(t, loc)) {
+            job_end(t);
+            return;
+        }
+        job_resolve(t, j->host);
+        return;
+    }
+
+    if (j->save) {
+        RamNode *dir = RamfsResolve(NULL, "\\Downloads");
+        if (!dir) dir = t->cwd;
+        char name[RAMFS_NAME_MAX];
+        download_name(j->path, name, sizeof(name));
+        RamNode *f = RamfsCreate(dir, name, false);
+        if (f && RamfsWrite(f, body, blen)) {
+            char path[RAMFS_PATH_MAX];
+            RamfsPath(f, path, sizeof(path));
+            tprintf(t, "Saved %u bytes to %s", (unsigned)blen, path);
+        } else {
+            terr(t, "Could not save the file.");
+        }
+    } else {
+        print_body(t, body, blen);
+    }
+    job_end(t);
+}
+
+static bool term_tick(WND *w)
+{
+    Term *t = w->user;
+    Job *j = &t->job;
+    if (j->kind == JOB_NONE) return false;
+    NetOp *op = j->op;
+    char a[16];
+
+    if (j->phase == PH_RESOLVE) {
+        if (op->state == NET_PENDING) return false;
+        if (op->state == NET_FAILED) {
+            if (j->kind == JOB_PING)
+                tprintf(t, "Ping request could not find host %s. Please check the name and try again.", j->host);
+            else
+                tprintf(t, "*** Can't find %s: %s", j->host, op->error);
+            job_end(t);
+            return true;
+        }
+        j->ip = op->ip;
+        NetRelease(op);
+        j->op = NULL;
+        ip_str(j->ip, a);
+        if (j->kind == JOB_LOOKUP) {
+            tprintf(t, "Name:    %s\nAddress: %s", j->host, a);
+            job_end(t);
+        } else if (j->kind == JOB_PING) {
+            tprintf(t, "Pinging %s [%s] with 32 bytes of data:", j->host, a);
+            j->phase = PH_SEND;
+        } else {
+            tprintf(t, "Connecting to %s (%s):%u...", j->host, a, j->port);
+            j->op = NetHttpGet(j->ip, j->port, j->host, j->path);
+            j->phase = PH_FETCH;
+            if (!j->op) { terr(t, "The network is busy; try again."); job_end(t); }
+        }
+        return true;
+    }
+
+    if (j->kind == JOB_PING) {
+        if (j->phase == PH_SEND) {
+            j->op = NetPing(j->ip, ++j->seq);
+            j->sent++;
+            j->phase = PH_WAIT;
+            if (!j->op) { terr(t, "The network is busy; try again."); job_end(t); return true; }
+            return false;
+        }
+        if (j->phase == PH_WAIT) {
+            if (op->state == NET_PENDING) return false;
+            ip_str(j->ip, a);
+            if (op->state == NET_DONE) {
+                j->got++;
+                j->rtt_sum += op->rtt_ms;
+                if (op->rtt_ms < j->rtt_min) j->rtt_min = op->rtt_ms;
+                if (op->rtt_ms > j->rtt_max) j->rtt_max = op->rtt_ms;
+                tprintf(t, "Reply from %s: bytes=32 time%s%dms TTL=%d", a,
+                        op->rtt_ms < 10 ? "<" : "=", op->rtt_ms < 10 ? 10 : op->rtt_ms, op->ttl);
+            } else {
+                tprint(t, op->error[0] ? op->error : "Request timed out.");
+            }
+            NetRelease(op);
+            j->op = NULL;
+            if (j->sent < j->count) {
+                j->wake = sched_ticks() + 100;
+                j->phase = PH_SLEEP;
+            } else {
+                int lost = j->sent - j->got;
+                tprintf(t, "\nPing statistics for %s:", a);
+                tprintf(t, "    Packets: Sent = %d, Received = %d, Lost = %d (%d%% loss)",
+                        j->sent, j->got, lost, lost * 100 / j->sent);
+                if (j->got)
+                    tprintf(t, "Approximate round trip times in milli-seconds:\n"
+                               "    Minimum = %dms, Maximum = %dms, Average = %dms",
+                            j->rtt_min, j->rtt_max, j->rtt_sum / j->got);
+                job_end(t);
+            }
+            return true;
+        }
+        if (j->phase == PH_SLEEP && sched_ticks() >= j->wake) j->phase = PH_SEND;
+        return false;
+    }
+
+    if (j->kind == JOB_FETCH && j->phase == PH_FETCH) {
+        if (op->state == NET_PENDING) return false;
+        if (op->state == NET_FAILED) {
+            tprintf(t, "Failed: %s", op->error);
+            job_end(t);
+        } else {
+            fetch_done(t);
+        }
+        return true;
+    }
+    return false;
+}
+
 static void run(Term *t, char *cmdline)
 {
     char *argv[MAX_ARGS];
@@ -351,6 +652,11 @@ static void run(Term *t, char *cmdline)
     else if (is(c, "sysinfo") || is(c, "neofetch")) cmd_sysinfo(t);
     else if (is(c, "dmesg"))                    cmd_dmesg(t);
     else if (is(c, "start") || is(c, "open"))   cmd_start(t, argc, argv);
+    else if (is(c, "ipconfig") || is(c, "ifconfig")) cmd_ipconfig(t);
+    else if (is(c, "ping"))                     cmd_ping(t, argc, argv);
+    else if (is(c, "nslookup"))                 cmd_nslookup(t, a1);
+    else if (is(c, "wget"))                     cmd_fetch(t, a1, true);
+    else if (is(c, "curl"))                     cmd_fetch(t, a1, false);
     else if (is(c, "cls") || is(c, "clear"))    t->count = 0;
     else if (is(c, "exit"))                     WmDestroyWindow(t->w);
     else {
@@ -376,7 +682,8 @@ static void term_paint(WND *w)
     int cell = GdiMonoCellW256();
     int rows = (c.h - 2 * T_PAD) / T_LINE_H;
     if (rows < 1) rows = 1;
-    int total = t->count + 1;                          /* + prompt line */
+    /* + the prompt line, hidden while a command is running */
+    int total = t->count + (t->job.kind == JOB_NONE ? 1 : 0);
     int first = total - rows - t->scroll;
     if (first < 0) first = 0;
     int x = c.x + T_PAD, y = c.y + T_PAD;
@@ -419,6 +726,11 @@ static void remember(Term *t, const char *cmd)
 static void term_key(WND *w, const KeyEvent *k)
 {
     Term *t = w->user;
+    if (t->job.kind != JOB_NONE) {            /* a command is running */
+        bool scroll = k->extended && (k->scancode == KEY_PGUP || k->scancode == KEY_PGDN);
+        if (k->ctrl && k->ch == 'c') { tprint(t, "^C"); job_end(t); }
+        if (!scroll) return;
+    }
     if (k->ctrl && k->ch == 'l') { t->count = 0; return; }
     if (k->ctrl && k->ch == 'c') {
         char p[RAMFS_PATH_MAX + T_COLS + 8];
@@ -468,6 +780,7 @@ static void term_key(WND *w, const KeyEvent *k)
 
 static void term_close(WND *w)
 {
+    job_end((Term *)w->user);
     RamfsUnref(((Term *)w->user)->cwd);
     kfree(w->user);
     w->user = NULL;
@@ -487,6 +800,7 @@ void TerminalOpen(void)
     w->on_paint = term_paint;
     w->on_key   = term_key;
     w->on_close = term_close;
+    w->on_tick  = term_tick;
     tprint_ex(t, K_DIM, 0, "NovaOS Terminal [Version 0.9.8]");
     tprint_ex(t, K_DIM, 0, "Type 'help' to see what you can do.");
     tprint(t, "");
