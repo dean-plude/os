@@ -10,17 +10,18 @@
  *  - A TSS (Task State Segment) descriptor so the CPU knows where to
  *    find the kernel stack (RSP0) when entering ring 0 from ring 3
  *
- * Segment selector layout (matches NT conventions where possible):
+ * Segment selector layout:
  *   0x00 — Null
  *   0x08 — Kernel code (ring 0, 64-bit)
  *   0x10 — Kernel data (ring 0)
- *   0x18 — User code  (ring 3, 64-bit)    ← matches Windows selector layout
- *   0x20 — User data  (ring 3)
+ *   0x18 — User data  (ring 3)
+ *   0x20 — User code  (ring 3, 64-bit)
  *   0x28 — TSS low word  (16 bytes total — System descriptor is 16 bytes)
  *   0x30 — TSS high word
  *
- * Windows uses 0x18 for user CS and 0x20 for user DS.  This is important
- * for SYSCALL/SYSRET: STAR MSR encodes these statically.
+ * User data MUST sit directly below user code: SYSRETQ loads
+ * SS = STAR[63:48] + 8 and CS = STAR[63:48] + 16, so with STAR[63:48] =
+ * 0x10 we get SS = 0x18|3 and CS = 0x20|3.
  */
 
 #pragma once
@@ -31,8 +32,8 @@
 #define GDT_NULL          0x00
 #define GDT_KERNEL_CODE   0x08
 #define GDT_KERNEL_DATA   0x10
-#define GDT_USER_CODE     0x18   /* DPL=3: selector | 3 = 0x1B */
-#define GDT_USER_DATA     0x20   /* DPL=3: selector | 3 = 0x23 */
+#define GDT_USER_DATA     0x18   /* DPL=3: selector | 3 = 0x1B */
+#define GDT_USER_CODE     0x20   /* DPL=3: selector | 3 = 0x23 */
 #define GDT_TSS           0x28   /* 16 bytes — two consecutive slots */
 
 /* RPL (Requested Privilege Level) ORed into selectors for ring-3 use */
@@ -44,7 +45,7 @@
 #define SEL_USER_DATA   (GDT_USER_DATA | RPL_RING3)
 
 /* Number of regular 8-byte entries */
-#define GDT_ENTRY_COUNT   7   /* null + kcode + kdata + ucode + udata + tss_lo + tss_hi */
+#define GDT_ENTRY_COUNT   7   /* null + kcode + kdata + udata + ucode + tss_lo + tss_hi */
 
 /* Raw 64-bit GDT entry */
 typedef struct __packed {

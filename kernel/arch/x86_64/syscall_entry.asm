@@ -67,8 +67,8 @@ KiSystemCall64:
     push    rbp
     mov     rbp, rsp
 
-    ; Sub 8 to keep 16-byte alignment (5 pushes total = 40 bytes, need +8)
-    sub     rsp, 8
+    ; KernelRsp is 16-byte aligned and we pushed 4 qwords (32 bytes), so RSP
+    ; is already 16-byte aligned for the call — no padding needed.
 
     ; -----------------------------------------------------------------------
     ; Build arguments for KiSystemCallDispatch(num, arg1, arg2, arg3, arg4)
@@ -85,7 +85,6 @@ KiSystemCall64:
     ; -----------------------------------------------------------------------
     ; Return path
     ; -----------------------------------------------------------------------
-    add     rsp, 8          ; remove alignment pad
     pop     rbp
     pop     qword gs:[KPCR_USER_RSP]  ; discard (already in rsp slot below)
     pop     rcx             ; user RIP → RCX (SYSRET uses this)
@@ -97,5 +96,7 @@ KiSystemCall64:
     ; SWAPGS restores user GS (TEB pointer)
     swapgs
 
-    ; SYSRETQ: RCX→RIP, R11→RFLAGS, switches to CPL=3
-    sysretq
+    ; SYSRETQ: RCX→RIP, R11→RFLAGS, switches to CPL=3.
+    ; NASM spells the 64-bit form "o64 sysret" — a bare "sysretq" is
+    ; silently assembled as a label, leaving no return instruction at all.
+    o64 sysret

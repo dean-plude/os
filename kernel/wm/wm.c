@@ -188,13 +188,23 @@ void WmComposite(void)
     /* 1. Desktop background (wallpaper + icons) */
     if (g_background) g_background();
 
-    /* 2. Windows, ascending z-order (simple insertion pass). */
-    for (int pass_z = 1; pass_z < g_next_z; pass_z++) {
-        for (int i = 0; i < WM_MAX_WINDOWS; i++) {
-            if (g_used[i] && g_windows[i].z == pass_z)
-                draw_window(&g_windows[i]);
+    /* 2. Windows, ascending z-order.  Insertion-sort the live windows by z
+     * rather than scanning every z value up to g_next_z, which grows on
+     * every focus change and would make each frame slower over time. */
+    WND *order[WM_MAX_WINDOWS];
+    int  n = 0;
+    for (int i = 0; i < WM_MAX_WINDOWS; i++) {
+        if (!g_used[i]) continue;
+        WND *w = &g_windows[i];
+        int j = n++;
+        while (j > 0 && order[j - 1]->z > w->z) {
+            order[j] = order[j - 1];
+            j--;
         }
+        order[j] = w;
     }
+    for (int i = 0; i < n; i++)
+        draw_window(order[i]);
 
     /* 3. Overlay (taskbar, start menu) */
     if (g_overlay) g_overlay();
@@ -267,8 +277,10 @@ void WmCursorHide(void)
 void WmCursorMove(int x, int y)
 {
     int sw = GdiScreenW(), sh = GdiScreenH();
-    if (x < 0) x = 0; if (x > sw - 1) x = sw - 1;
-    if (y < 0) y = 0; if (y > sh - 1) y = sh - 1;
+    if (x < 0) x = 0;
+    if (x > sw - 1) x = sw - 1;
+    if (y < 0) y = 0;
+    if (y > sh - 1) y = sh - 1;
     WmCursorHide();
     WmCursorShow(x, y);
 }

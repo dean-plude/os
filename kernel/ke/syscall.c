@@ -144,28 +144,24 @@ static UINT64 sys_NtQueryInformationProcess(UINT64 ProcessHandle,
                                                UINT64 ProcInfoPtr,
                                                UINT64 ProcInfoLen)
 {
-    void *proc_obj;
+    /* ObReferenceObjectByHandle also resolves the NtCurrentProcess()
+     * pseudo-handle (-1), taking a reference we must drop on every path. */
+    void *proc_obj = NULL;
     NTSTATUS s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
                                             PROCESS_ALL_ACCESS,
                                             ObpProcessType, NULL,
                                             &proc_obj, NULL);
-    /* Allow NtCurrentProcess() pseudo-handle = -1 */
-    PEPROCESS proc = NULL;
-    if (!NT_SUCCESS(s)) {
-        if ((INT64)ProcessHandle == -1) {
-            proc = PsGetCurrentProcess();
-        } else {
-            return s;
-        }
-    } else {
-        proc = (PEPROCESS)proc_obj;
-    }
+    if (!NT_SUCCESS(s)) return s;
+    PEPROCESS proc = (PEPROCESS)proc_obj;
+    if (!proc) return STATUS_INVALID_HANDLE;
 
     switch ((UINT32)ProcInfoClass) {
     case ProcessBasicInformation: {
-        if (ProcInfoLen < sizeof(PROCESS_BASIC_INFORMATION))
-            return STATUS_BUFFER_TOO_SMALL;
-        if (!ProcInfoPtr) return STATUS_INVALID_PARAMETER;
+        if (ProcInfoLen < sizeof(PROCESS_BASIC_INFORMATION) || !ProcInfoPtr) {
+            ObDereferenceObject(proc_obj);
+            return ProcInfoPtr ? STATUS_BUFFER_TOO_SMALL
+                               : STATUS_INVALID_PARAMETER;
+        }
 
         PROCESS_BASIC_INFORMATION *pbi =
             (PROCESS_BASIC_INFORMATION *)(uintptr_t)ProcInfoPtr;
@@ -177,11 +173,11 @@ static UINT64 sys_NtQueryInformationProcess(UINT64 ProcessHandle,
         pbi->UniqueProcessId       = proc->UniqueProcessId;
         pbi->InheritedFromUniqueProcessId =
             proc->InheritedFromUniqueProcessId;
-        if (proc_obj) ObDereferenceObject(proc_obj);
+        ObDereferenceObject(proc_obj);
         return STATUS_SUCCESS;
     }
     default:
-        if (proc_obj) ObDereferenceObject(proc_obj);
+        ObDereferenceObject(proc_obj);
         return STATUS_INVALID_INFO_CLASS;
     }
 }
@@ -208,9 +204,11 @@ static UINT64 sys_NtQueryInformationThread(UINT64 ThreadHandle,
 
     switch ((UINT32)ThreadInfoClass) {
     case ThreadBasicInformation: {
-        if (ThreadInfoLen < sizeof(THREAD_BASIC_INFORMATION))
-            return STATUS_BUFFER_TOO_SMALL;
-        if (!ThreadInfoPtr) return STATUS_INVALID_PARAMETER;
+        if (ThreadInfoLen < sizeof(THREAD_BASIC_INFORMATION) || !ThreadInfoPtr) {
+            if ((INT64)ThreadHandle != -2) ObDereferenceObject((void *)et);
+            return ThreadInfoPtr ? STATUS_BUFFER_TOO_SMALL
+                                 : STATUS_INVALID_PARAMETER;
+        }
 
         THREAD_BASIC_INFORMATION *tbi =
             (THREAD_BASIC_INFORMATION *)(uintptr_t)ThreadInfoPtr;
@@ -951,37 +949,16 @@ void SyscallInitialize(void)
     build_syscall_table();
 
     /* STAR MSR:
-     *   Bits 47:32 = kernel CS (for SYSCALL: CS = STAR[47:32], SS = STAR[47:32]+8)
-     *   Bits 63:48 = user CS-16 (for SYSRET: CS = STAR[63:48]+16, SS = STAR[63:48]+8)
+     *   Bits 47:32 — SYSCALL: CS = STAR[47:32],      SS = STAR[47:32] + 8
+     *   Bits 63:48 — SYSRETQ: CS = STAR[63:48] + 16, SS = STAR[63:48] + 8
+     *                (RPL 3 is forced on both)
      *
-     * We use: kernel CS = GDT_KERNEL_CODE = 0x08, kernel SS = 0x10
-     *         user CS = GDT_USER_CODE = 0x18, user SS = GDT_USER_DATA = 0x20
-     * For SYSRET 64-bit: CS = STAR[63:48]+16, SS = STAR[63:48]+8
-     *   => STAR[63:48] = 0x18 - 16 = 0x08 — but use 0x10 so user CS = 0x18+16=0x28
-     *   Actually Windows uses: STAR[63:48] = 0x0023 (user CS = 0x33, user SS = 0x2B)
-     *   We replicate that layout:
-     *     STAR[47:32] = 0x0010  (kernel: CS=0x10 is wrong — fix: use 0x08)
-     *
-     * Correct STAR layout for our GDT:
-     *   kernel SS = kernel CS + 8 = 0x08 + 0x08 = 0x10 ✓ (GDT_KERNEL_DATA)
-     *   STAR[47:32] = GDT_KERNEL_CODE = 0x08
-     *   user CS (SYSRET 64-bit) = STAR[63:48] + 16
-     *   user SS (SYSRET)        = STAR[63:48] + 8
-     *   We want user CS = 0x18 (GDT_USER_CODE | 3 = 0x1B with RPL)
-     *           user SS = 0x20 (GDT_USER_DATA | 3 = 0x23 with RPL)
-     *   => STAR[63:48] = 0x18 - 16 = 0x08, giving user CS = 0x18, SS = 0x10 (wrong)
-     *
-     *   Windows NT GDT order: 0x08=kcode, 0x10=kdata, 0x18=ucode32, 0x20=udata, 0x28=ucode64
-     *   For SYSRET to 64-bit: CS = STAR[63:48]+16, SS = STAR[63:48]+8
-     *   We want CS=0x28|3=0x2B (user code 64-bit), SS=0x20|3=0x23 (user data)
-     *   => STAR[63:48] = 0x28 - 16 = 0x18
-     *      then SS = 0x18 + 8 = 0x20 ✓, CS = 0x18 + 16 = 0x28 ✓
-     *
-     *   But our GDT has GDT_USER_CODE=0x18, GDT_USER_DATA=0x20 (see gdt.h).
-     *   For Phase 2 (kernel-only), user mode segments don't matter yet.
-     *   Use same layout as Windows: STAR[63:48]=0x0018, STAR[47:32]=0x0008
+     * Kernel: CS = 0x08, SS = 0x10.
+     * User:   base = GDT_USER_DATA - 8 = 0x10 → SS = 0x18|3, CS = 0x20|3.
+     * See the selector layout in gdt.h.
      */
-    UINT64 star = ((UINT64)0x0018 << 48) | ((UINT64)GDT_KERNEL_CODE << 32);
+    UINT64 star = ((UINT64)(GDT_USER_DATA - 8) << 48) |
+                  ((UINT64)GDT_KERNEL_CODE << 32);
     wrmsr(MSR_STAR, star);
 
     /* LSTAR = kernel entry for 64-bit SYSCALL */

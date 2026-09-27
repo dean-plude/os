@@ -140,19 +140,13 @@ isr_common:
     ; Pass pointer to frame as first argument (RDI per System V ABI).
     mov     rdi, rsp
 
-    ; Align stack to 16 bytes before the call.
-    ; We've pushed 15 GPRs + vector + error_code + CPU frame = 15+2+5 = 22 quads.
-    ; 22 * 8 = 176 bytes. Stack was 16-aligned before the exception (by CPU),
-    ; so RSP at isr_common entry was ≡ 0 mod 16 (CPU aligns before pushing frame).
-    ; After pushing 17 more qwords (15 GPR + vector + err): 17*8=136, 136 mod 16 = 8.
-    ; We need RSP ≡ 0 mod 16 before call, so push a padding word.
-    sub     rsp, 8
+    ; Stack alignment: in 64-bit mode the CPU aligns RSP to 16 bytes before
+    ; pushing its 5-qword frame (SS, RSP, RFLAGS, CS, RIP).  On top of that
+    ; we have vector + error_code (2) and 15 GPRs: 5 + 2 + 15 = 22 qwords =
+    ; 176 bytes ≡ 0 (mod 16), so RSP is already aligned for the call.
 
     ; Call C handler
     call    interrupt_dispatch
-
-    ; Restore stack padding
-    add     rsp, 8
 
     ; Restore GPRs
     pop     r15

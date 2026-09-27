@@ -172,6 +172,8 @@ add_custom_target(asm_objects DEPENDS ${ASM_OBJECTS})
 set(KERNEL_LINK_FLAGS
     -T "${CMAKE_CURRENT_SOURCE_DIR}/linker.ld"
     -nostdlib
+    -static
+    -no-pie
     -z max-page-size=0x1000
 )
 

@@ -55,7 +55,10 @@ void KiInitializeKpcr(void)
  * ----------------------------------------------------------------------- */
 PKPCR KiGetCurrentKpcr(void)
 {
-    return (PKPCR)(uintptr_t)rdmsr(MSR_KERNEL_GS_BASE);
+    /* Not rdmsr(MSR_KERNEL_GS_BASE): inside a syscall, after SWAPGS, that
+     * MSR holds the *user* GS base (the TEB), so it would hand back a
+     * user-mode address.  With a single CPU the boot KPCR is always it. */
+    return g_boot_kpcr.Self;
 }
 
 /* -----------------------------------------------------------------------
