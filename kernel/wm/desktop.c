@@ -80,31 +80,26 @@ static const char *USER_GREET = "Good Morning!";
  * Math helpers
  * ----------------------------------------------------------------------- */
 
-/* Integer sine, Bhaskara I approximation. Returns -1000..+1000.
- * sin(t) ≈ 4·t·(180−t) / (40500 − t·(180−t))  for t in degrees [0,180]. */
-static int isin_milli(int deg)
+/* Sine with millidegree input for smooth curves.  Returns sin * 2^16.
+ * Bhaskara I approximation evaluated in 64-bit fixed point. */
+static int isin_q16(INT64 mdeg)
 {
-    deg %= 360;
-    if (deg < 0) deg += 360;
+    mdeg %= 360000;
+    if (mdeg < 0) mdeg += 360000;
     int sign = 1;
-    if (deg > 180) { deg -= 180; sign = -1; }
-    int t   = deg * (180 - deg);          /* 0 .. 8100 */
-    int den = 40500 - t;                  /* 32400 .. 40500 */
-    if (den == 0) den = 1;
-    return sign * (4 * t * 1000) / den;   /* fits comfortably in int32 */
+    if (mdeg > 180000) { mdeg -= 180000; sign = -1; }
+    INT64 t   = mdeg * (180000 - mdeg);            /* 0 .. 8.1e9 */
+    INT64 den = (INT64)40500 * 1000000 - t;
+    return sign * (int)((4 * t * 65536) / den);
 }
 
-/* Filled right-pointing triangle (media "play" glyph): vertical left
- * edge, slanted edges converging to a tip at the vertical centre. */
+/* Filled right-pointing triangle (media "play" glyph) */
 static void play_glyph(int x, int y, int size, GdiColor c)
 {
-    int half = size / 2;
-    if (half < 1) half = 1;
-    for (int row = 0; row < size; row++) {
-        int d = row < half ? half - row : row - half;
-        int w = ((half - d) * size) / half;
-        if (w > 0) GdiFillRect(RECT(x, y + row, w, 1), c);
-    }
+    GdiPoint tri[3] = {
+        GDI_PT(x, y), GDI_PT(x, y + size), GDI_PT(x + size * 7 / 8, y + size / 2),
+    };
+    GdiFillPolygon(tri, 3, c);
 }
 
 /* -----------------------------------------------------------------------
@@ -132,18 +127,23 @@ static void tile_grad(int x, int y, int w, int h, int rad,
 /* -----------------------------------------------------------------------
  * Wallpaper
  * ----------------------------------------------------------------------- */
+typedef struct { int base, amp, phase, period; } Wave;   /* logical px, degrees */
+
+/* y of the wave's top edge at x; both in 1/256 logical px */
+static int wave_curve(int x_256, void *ctx)
+{
+    const Wave *w = ctx;
+    INT64 mdeg = (INT64)w->phase * 1000 +
+                 ((INT64)x_256 * 360000) / ((INT64)w->period * 256);
+    return w->base * 256 + (int)(((INT64)w->amp * 256 * isin_q16(mdeg)) >> 16);
+}
+
 static void wave_layer(int sw, int sh, int base_pct, int amp_pct,
                        int phase, int period, GdiColor col)
 {
-    int base = (sh * base_pct) / 100;
-    int amp  = (sh * amp_pct) / 100;
-    for (int x = 0; x < sw; x++) {
-        int ang = phase + (x * 360) / (period > 0 ? period : 1);
-        int top = base + (amp * isin_milli(ang)) / 1000;
-        if (top < 0) top = 0;
-        if (top < sh)
-            GdiFillRect(RECT(x, top, 1, sh - top), col);
-    }
+    Wave w = { (sh * base_pct) / 100, (sh * amp_pct) / 100, phase,
+               period > 0 ? period : 1 };
+    GdiFillUnderCurve(RECT(0, 0, sw, sh), wave_curve, &w, col);
 }
 
 static void draw_wallpaper(void)
@@ -258,7 +258,8 @@ static void draw_pinned_grid(int x, int y, int cell, int gap)
     };
     for (int i = 0; i < 8; i++) {
         int cx = x + (i % 4) * (cell + gap);
-        int cy = y + (i / 4) * (cell + gap + 14);
+        /* row pitch = tile + caption line (2 + GDI_FONT_H) + 6px gap */
+        int cy = y + (i / 4) * (cell + 2 + GDI_FONT_H + 6);
         tile(cx, cy, cell, apps[i].bg, apps[i].l, apps[i].fg);
         GdiTextCenter(cx - 4, cy + cell + 2, cell + 8, apps[i].cap, TXT_DARK);
     }
@@ -358,7 +359,7 @@ static void draw_start_menu(void)
     int sw = GdiScreenW(), sh = GdiScreenH();
 
     int mw = 540; if (mw > sw - 60) mw = sw - 60;
-    int mh = 600; if (mh > sh - 150) mh = sh - 150;
+    int mh = 612; if (mh > sh - 150) mh = sh - 150;
     int mx = (sw - mw) / 2;
     int my = (sh - mh) / 2 - 24;
     if (my < 40) my = 40;
@@ -372,9 +373,7 @@ static void draw_start_menu(void)
               GDI_C(0xE0, 0x4A, 0xE0), GDI_C(0xF0, 0x9A, 0xD8));
 
     /* Frosted panel body with a soft drop shadow. */
-    for (int s = 10; s >= 1; s--)
-        GdiRoundAlpha(RECT(mx - s, my - s + 6, mw + 2 * s, mh + 2 * s),
-                      24, GDI_C(0, 0, 0), 6);
+    GdiDropShadow(RECT(mx, my + 6, mw, mh), 22, 18, 70);
     GdiRoundGradV(RECT(mx, my, mw, mh), 22, GLASS_LIGHT, GLASS_DARK);
 
     int pad = 18;
@@ -405,7 +404,8 @@ static void draw_start_menu(void)
     draw_pinned_grid(left_x, hy + 22, 46, 18);
 
     /* Live tiles below the grid */
-    draw_live_tiles(left_x, hy + 22 + 2 * (46 + 14) + 16, left_w);
+    /* Live tiles below the grid: two rows of 46px tiles + captions */
+    draw_live_tiles(left_x, hy + 22 + 2 * (46 + 2 + GDI_FONT_H + 6), left_w);
 
     /* Recently used list (right column) */
     draw_recent_list(right_x, hy, right_w);
@@ -464,9 +464,7 @@ static void draw_dock(void)
     int dy = sh - dh - 14;
 
     /* Floating frosted dock */
-    for (int s = 8; s >= 1; s--)
-        GdiRoundAlpha(RECT(dx - s, dy - s + 4, dw + 2 * s, dh + 2 * s),
-                      dh / 2, GDI_C(0, 0, 0), 7);
+    GdiDropShadow(RECT(dx, dy + 4, dw, dh), dh / 2, 12, 55);
     GdiRoundGradV(RECT(dx, dy, dw, dh), dh / 2,
                   GDI_C(0xF0, 0xB8, 0x7A), DOCK_TINT);
 
@@ -591,7 +589,7 @@ void DesktopRun(void *arg)
         bool changed = false;
         while (InputPoll(&ev)) {
             if (ev.type == INPUT_MOUSE) {
-                WmCursorMove(WmCursorX() + ev.dx, WmCursorY() + ev.dy);
+                WmCursorMoveBy(ev.dx, ev.dy);
                 bool left = (ev.buttons & MOUSE_LEFT) != 0;
                 if (left && !prev_left)
                     if (DesktopOnClick(WmCursorX(), WmCursorY()))
