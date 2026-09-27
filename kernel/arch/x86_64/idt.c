@@ -14,6 +14,7 @@
 #include "../../ke/syscall.h"
 #include "../../ke/scheduler.h"
 #include "../../ps/ps.h"
+#include "../../hal/ps2.h"
 
 /* Assembly stub address table (defined in isr_stubs.asm) */
 extern uintptr_t isr_stub_table[IDT_ENTRIES];
@@ -260,6 +261,9 @@ void interrupt_dispatch(InterruptFrame *frame)
     /* ---- Timer interrupt (APIC local timer, vector IRQ_TIMER) ---- */
     if (vector == IRQ_TIMER) {
         apic_eoi();
+        /* Collect keyboard/mouse input at 100 Hz (the controller runs with
+         * its own IRQs off); see ps2_poll. */
+        ps2_poll();
         /* Drive preemptive scheduling: may context-switch to another
          * thread; control returns here (on this thread's stack) before the
          * ISR epilogue performs IRETQ. */

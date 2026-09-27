@@ -29,9 +29,6 @@ void DesktopRender(void);
  * Polls PS/2 input, drives the cursor, and recomposites on change. */
 void DesktopRun(void *arg);
 
-/* Handle a left-click at screen (x,y); returns true if a recomposite is
- * needed (e.g. the Start menu opened or closed). */
-bool DesktopOnClick(int x, int y);
 
 /* Toggle the Start menu open/closed (the shell renders it open by
  * default so the boot screen matches the design mock). */

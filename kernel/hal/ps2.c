@@ -31,6 +31,7 @@
 #define CMD_WRITE_P2   0xD4   /* next byte goes to the mouse */
 
 static bool g_have_mouse;
+static volatile bool g_ready;     /* ps2_init done: polling allowed */
 
 /* ---- low-level helpers ---- */
 static void wait_input_clear(void)
@@ -95,18 +96,30 @@ bool ps2_init(void)
     flush_output();
     kprintf("[PS2] Controller ready (keyboard + %s)\n",
             g_have_mouse ? "mouse" : "no mouse");
+    g_ready = true;
     return true;
 }
 
 /* ---- decoding ---- */
 static void handle_key(UINT8 sc)
 {
+    static bool e0;          /* previous byte was the E0 extended prefix */
+    static int  e1_skip;     /* bytes left in a Pause (E1 ...) sequence */
+
+    /* Controller/keyboard responses (ACK, resend, errors) are not keys */
+    if (sc == 0xFA || sc == 0xFE || sc == 0x00 || sc == 0xFF) return;
+    if (e1_skip > 0) { e1_skip--; return; }
+    if (sc == 0xE1) { e1_skip = 5; return; }   /* Pause: not reported */
+    if (sc == 0xE0) { e0 = true; return; }
+
     InputEvent ev;
     ev.type     = INPUT_KEY;
     ev.buttons  = 0;
     ev.dx = ev.dy = 0;
     ev.pressed  = (sc & 0x80) ? 0 : 1;   /* high bit set = break (release) */
     ev.scancode = (UINT8)(sc & 0x7F);
+    ev.extended = e0 ? 1 : 0;
+    e0 = false;
     InputPost(&ev);
 }
 
@@ -131,21 +144,30 @@ static void handle_mouse_byte(UINT8 b)
     ev.type     = INPUT_MOUSE;
     ev.scancode = 0;
     ev.pressed  = 0;
+    ev.extended = 0;
     ev.buttons  = (UINT8)(flags & 0x07);   /* L|R|M */
     ev.dx       = dx;
     ev.dy       = -dy;                      /* PS/2 +y is up; screen +y down */
     InputPost(&ev);
 }
 
+/* Drain the controller.  Called from the timer interrupt (so input is
+ * collected even while the desktop thread is busy drawing a frame and the
+ * device's small buffer cannot overflow) and from the desktop loop.
+ * Interrupts are disabled while draining so the two callers never
+ * interleave in the packet/prefix decoders. */
 void ps2_poll(void)
 {
+    if (!g_ready) return;
+    IrqState irq = irq_save();
     for (int guard = 0; guard < 64; guard++) {
         UINT8 st = inb(PS2_STATUS);
-        if (!(st & ST_OBF)) return;
+        if (!(st & ST_OBF)) break;
         UINT8 data = inb(PS2_DATA);
         if (st & ST_AUX)
             handle_mouse_byte(data);
         else
             handle_key(data);
     }
+    irq_restore(irq);
 }

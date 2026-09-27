@@ -130,11 +130,18 @@ set(KERNEL_C_SOURCES
     ps/csrss.c
     fs/vfs.c
     fs/initrd.c
+    fs/ramfs.c
     gdi/gdi.c
     gdi/font_inter.c
     wm/wm.c
     wm/desktop.c
     wm/input.c
+    apps/apps.c
+    apps/terminal.c
+    apps/explorer.c
+    apps/notepad.c
+    apps/settings.c
+    apps/calendar.c
     lib/string.c
 )
 

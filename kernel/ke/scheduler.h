@@ -126,6 +126,9 @@ void sched_yield(void);
  */
 void sched_tick(void);
 
+/* Timer ticks since boot (100 Hz, i.e. 10 ms each) */
+uint64_t sched_ticks(void);
+
 /*
  * Get the currently executing thread.
  */

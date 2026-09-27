@@ -5,6 +5,8 @@
  * Instead tools/mkfont.c rasterizes the font on the build host (FreeType,
  * light hinting, 8-bit coverage) into font_inter.c, one face per style
  * and per integer display scale.  At run time glyphs are only blended.
+ * Styles: Inter Regular, Inter SemiBold ("bold"), Cascadia Mono, and a
+ * larger Inter SemiBold for headings.
  */
 
 #pragma once
@@ -26,7 +28,13 @@ typedef struct {
     const UINT8    *bits;        /* 8-bit coverage, row-major per glyph */
 } GdiFace;
 
-enum { GDI_FONT_REGULAR = 0, GDI_FONT_BOLD = 1, GDI_FONT_STYLES = 2 };
+enum {
+    GDI_FONT_REGULAR = 0,   /* Inter Regular 13px   */
+    GDI_FONT_BOLD    = 1,   /* Inter SemiBold 13px  */
+    GDI_FONT_MONO    = 2,   /* Cascadia Mono 13px   */
+    GDI_FONT_DISPLAY = 3,   /* Inter SemiBold 24px (headings) */
+    GDI_FONT_STYLES  = 4
+};
 
 /* Faces for display scales 1..GDI_MAX_SCALE, indexed [style][scale - 1] */
 #define GDI_MAX_SCALE  2

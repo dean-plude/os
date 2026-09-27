@@ -21,6 +21,7 @@
 #include "../lib/string.h"
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
+#include "../apps/apps.h"
 
 /* -----------------------------------------------------------------------
  * Palette (sampled from the design mock)
@@ -56,12 +57,11 @@
 #define C_BLENDER    GDI_C(0xE8, 0x7A, 0x22)
 #define C_BING       GDI_C(0x10, 0xA0, 0x88)
 
-static bool g_start_open = true;
+static bool g_start_open;         /* Start menu shown */
 static bool g_ready;
 
-/* Layout rectangles captured during the last composite, used for hit-testing
- * (the dock, the Start button within it, and the open Start menu). */
-static GdiRect L_dock, L_startbtn, L_menu;
+/* Layout rectangles captured during the last composite (hit-testing) */
+static GdiRect L_dock, L_menu;
 
 /* Live clock strings, refreshed from the RTC each minute. */
 static char g_clock_time[12] = "12:00 PM";
@@ -105,17 +105,6 @@ static void play_glyph(int x, int y, int size, GdiColor c)
 /* -----------------------------------------------------------------------
  * Tile helpers
  * ----------------------------------------------------------------------- */
-
-/* Rounded, solid-color app tile with a centered short label. */
-static void tile(int x, int y, int s, GdiColor bg, const char *label,
-                 GdiColor fg)
-{
-    GdiRoundRect(RECT(x, y, s, s), s / 4, bg, GDI_TRANSPARENT);
-    if (label && *label) {
-        int ty = y + (s - GDI_FONT_H) / 2;
-        GdiTextCenter(x, ty, s, label, fg);
-    }
-}
 
 /* Rounded tile with a vertical gradient (used for the peek tiles). */
 static void tile_grad(int x, int y, int w, int h, int rad,
@@ -221,47 +210,96 @@ static void draw_icon_emblem(int x, int y, IconKind k)
     }
 }
 
-static void draw_desktop_icon(int cellx, int celly, IconKind k,
-                              const char *label)
+/* -----------------------------------------------------------------------
+ * Hotspots: clickable areas recorded while drawing
+ *
+ * Background hotspots (desktop icons) persist with the cached background;
+ * overlay hotspots (dock, Start menu) are rebuilt every frame.
+ * ----------------------------------------------------------------------- */
+typedef enum {
+    ACT_NONE, ACT_APP, ACT_START, ACT_ICON, ACT_FOLDER,
+} ActKind;
+
+typedef struct { GdiRect r; ActKind kind; int arg; const char *path; } Hot;
+
+#define HOT_MAX 64
+static Hot g_hot_bg[HOT_MAX], g_hot_ov[HOT_MAX];
+static int g_hot_bg_n, g_hot_ov_n;
+
+static void hot_add(Hot *list, int *n, GdiRect r, ActKind k, int arg, const char *path)
 {
-    draw_icon_emblem(cellx + 16, celly, k);
-    GdiTextCenter(cellx, celly + 52, 80, label, TXT_LIGHT);
+    if (*n < HOT_MAX) list[(*n)++] = (Hot){ r, k, arg, path };
 }
+#define HOT_BG(r, k, a, p)  hot_add(g_hot_bg, &g_hot_bg_n, (r), (k), (a), (p))
+#define HOT_OV(r, k, a, p)  hot_add(g_hot_ov, &g_hot_ov_n, (r), (k), (a), (p))
+
+static const Hot *hot_find(const Hot *list, int n, int x, int y)
+{
+    for (int i = n - 1; i >= 0; i--)           /* later = drawn on top */
+        if (pt_in(list[i].r, x, y)) return &list[i];
+    return NULL;
+}
+
+/* -----------------------------------------------------------------------
+ * Desktop icons (left column)
+ * ----------------------------------------------------------------------- */
+static const struct {
+    IconKind    kind;
+    const char *label;
+    ActKind     act;
+    int         arg;
+    const char *path;
+} g_icons[] = {
+    { ICON_PC,      "This PC",   ACT_APP,    APP_SETTINGS, NULL },
+    { ICON_DOCS,    "Documents", ACT_FOLDER, 0, "\\Documents" },
+    { ICON_FOLDER,  "Personal",  ACT_FOLDER, 0, "\\Personal" },
+    { ICON_PROJECT, "Projects",  ACT_FOLDER, 0, "\\Projects" },
+    { ICON_DRIVE,   "Files",     ACT_FOLDER, 0, "\\" },
+    { ICON_PHOTOS,  "Pictures",  ACT_FOLDER, 0, "\\Pictures" },
+};
+#define N_ICONS ((int)(sizeof(g_icons) / sizeof(g_icons[0])))
+static int g_icon_sel = -1;
 
 static void draw_desktop_icons(void)
 {
-    int x = 28;
-    int y = 36;
-    int dy = 96;
-    draw_desktop_icon(x, y + dy * 0, ICON_PC,      "My Pc");
-    draw_desktop_icon(x, y + dy * 1, ICON_DOCS,    "Documents");
-    draw_desktop_icon(x, y + dy * 2, ICON_FOLDER,  "Personal");
-    draw_desktop_icon(x, y + dy * 3, ICON_PROJECT, "Proyect");
-    draw_desktop_icon(x, y + dy * 4, ICON_DRIVE,   "Files");
-    draw_desktop_icon(x, y + dy * 5, ICON_PHOTOS,  "");
+    g_hot_bg_n = 0;
+    for (int i = 0; i < N_ICONS; i++) {
+        int x = 28, y = 30 + i * 96;
+        GdiRect cell = RECT(x, y - 4, 80, 80);
+        if (i == g_icon_sel)
+            GdiRoundAlpha(cell, 6, GDI_WHITE, 55);
+        draw_icon_emblem(x + 16, y, g_icons[i].kind);
+        GdiTextCenter(x, y + 54, 80, g_icons[i].label, TXT_LIGHT);
+        HOT_BG(cell, ACT_ICON, i, NULL);
+    }
+}
+
+static void open_icon(int i)
+{
+    if (g_icons[i].act == ACT_APP) AppLaunch((AppId)g_icons[i].arg);
+    else AppOpenFolder(RamfsResolve(NULL, g_icons[i].path));
 }
 
 /* -----------------------------------------------------------------------
  * Start menu
  * ----------------------------------------------------------------------- */
+static const AppId g_pinned[8] = {
+    APP_TERMINAL, APP_EXPLORER, APP_NOTEPAD, APP_SETTINGS,
+    APP_CALENDAR, APP_EDGE, APP_STORE, APP_PHOTOS,
+};
+static const char *g_pinned_cap[8] = {
+    "Terminal", "Files", "Notepad", "Settings", "Calendar", "Edge", "Store", "Photos",
+};
+
 static void draw_pinned_grid(int x, int y, int cell, int gap)
 {
-    struct { GdiColor bg; const char *l; GdiColor fg; const char *cap; } apps[8] = {
-        { C_PHOTOSHOP, "Ps", GDI_C(0x3A,0xC8,0xF0), "Adobe" },
-        { C_ILLUSTR,   "Ai", GDI_C(0xF0,0x8A,0x2A), "Adobe" },
-        { C_PHOTOS,    "",   GDI_WHITE,             "Photos" },
-        { C_CLIPCHAMP, "",   GDI_WHITE,             "ClipChamp" },
-        { C_STORE,     "",   GDI_WHITE,             "Store" },
-        { C_CALENDAR,  "11", GDI_C(0xD0,0x40,0x40), "Calendar" },
-        { C_VS,        "VS", GDI_WHITE,             "VStudio" },
-        { GDI_C(0xC8,0x5A,0xE0), "", GDI_WHITE,     "Visual" },
-    };
     for (int i = 0; i < 8; i++) {
         int cx = x + (i % 4) * (cell + gap);
         /* row pitch = tile + caption line (2 + GDI_FONT_H) + 6px gap */
         int cy = y + (i / 4) * (cell + 2 + GDI_FONT_H + 6);
-        tile(cx, cy, cell, apps[i].bg, apps[i].l, apps[i].fg);
-        GdiTextCenter(cx - 4, cy + cell + 2, cell + 8, apps[i].cap, TXT_DARK);
+        AppDrawIcon(g_pinned[i], cx, cy, cell);
+        GdiTextCenter(cx - 8, cy + cell + 2, cell + 16, g_pinned_cap[i], TXT_DARK);
+        HOT_OV(RECT(cx - 6, cy - 4, cell + 12, cell + GDI_FONT_H + 8), ACT_APP, g_pinned[i], NULL);
     }
 }
 
@@ -277,6 +315,7 @@ static void draw_live_tiles(int x, int y, int w)
     GdiTextBold(x + 56, y + 8, "Today", TXT_DARK);
     GdiTextT(x + 56, y + 24, "Video call - 1:30 PM", TXT_MUTED);
     GdiTextT(x + 56, y + 38, "Birthday party - 2:00 PM", TXT_MUTED);
+    HOT_OV(RECT(x, y, w, 56), ACT_APP, APP_CALENDAR, NULL);
 
     /* Weather + media row */
     int ry = y + 64;
@@ -304,6 +343,7 @@ static void draw_live_tiles(int x, int y, int w)
     GdiRoundRect(RECT(x + 40, cy + 24, (w - 60) * 64 / 100, 8), 4,
                  C_STORE, GDI_TRANSPARENT);
     GdiTextT(x + 40, cy + 36, "640 GB / 1 TB", TXT_MUTED);
+    HOT_OV(RECT(x, cy, w, ch), ACT_APP, APP_SETTINGS, NULL);
 
     /* Photos strip */
     int py = cy + ch + 8;
@@ -316,46 +356,53 @@ static void draw_live_tiles(int x, int y, int w)
                   GDI_C(0x8A, 0xC8, 0x6A), GDI_C(0x3A, 0x8A, 0x4A));
     GdiRoundGradV(RECT(x + 30 + 2 * (w - 50) / 3, py + 22, (w - 50) / 3, 40), 4,
                   GDI_C(0xF0, 0xB0, 0x6A), GDI_C(0xC0, 0x6A, 0x3A));
+    HOT_OV(RECT(x, py, w, 70), ACT_APP, APP_PHOTOS, NULL);
 
     /* Games + to-do row */
     int gy = py + 78;
     GdiRoundRect(RECT(x, gy, 56, 56), rad, GDI_C(0x12, 0x6A, 0x3A),
                  GDI_TRANSPARENT);
     GdiTextCenter(x, gy + 20, 56, "Solit.", GDI_WHITE);
+    HOT_OV(RECT(x, gy, 56, 56), ACT_APP, APP_SOLITAIRE, NULL);
     GdiRoundRect(RECT(x + 64, gy, 56, 56), rad, C_EDGE, GDI_TRANSPARENT);
     GdiTextCenter(x + 64, gy + 20, 56, "e", GDI_WHITE);
+    HOT_OV(RECT(x + 64, gy, 56, 56), ACT_APP, APP_EDGE, NULL);
     GdiRoundRect(RECT(x + 128, gy, w - 128, 56), rad, GDI_C(0xF2, 0xDC, 0xCE),
                  GDI_TRANSPARENT);
     GdiTextBold(x + 138, gy + 6, "To do", C_EDGE);
     GdiTextT(x + 138, gy + 22, "Call mom", TXT_MUTED);
     GdiTextT(x + 138, gy + 36, "Buy milk", TXT_MUTED);
+    HOT_OV(RECT(x + 128, gy, w - 128, 56), ACT_APP, APP_TODO, NULL);
 }
 
 static void draw_recent_list(int x, int y, int w)
 {
-    struct { GdiColor c; const char *l; const char *n; } items[9] = {
-        { C_PHOTOSHOP, "Ps", "Adobe Photoshop 2025" },
-        { C_EDGE,      "e",  "Microsoft Edge" },
-        { C_PAINT,     "",   "Paint" },
-        { GDI_C(0xF2,0xD0,0x3A), "",  "Microsoft Tips" },
-        { C_PPT,       "P",  "PowerPoint" },
-        { C_SKYPE,     "S",  "Skype" },
-        { C_BLENDER,   "",   "Blender" },
-        { C_BING,      "b",  "Bing Search" },
-        { C_ILLUSTR,   "Ai", "Adobe Illustrator 2025" },
+    /* Apps you opened, newest first, then suggestions */
+    static const AppId suggest[9] = {
+        APP_PHOTOSHOP, APP_EDGE, APP_PAINT, APP_TIPS, APP_POWERPOINT,
+        APP_SKYPE, APP_BLENDER, APP_BING, APP_ILLUSTRATOR,
     };
+    AppId items[9];
+    int n = AppRecent(items, 9);
+    for (int i = 0; i < 9 && n < 9; i++) {
+        bool dup = false;
+        for (int j = 0; j < n; j++) if (items[j] == suggest[i]) dup = true;
+        if (!dup) items[n++] = suggest[i];
+    }
+
     GdiTextBold(x, y, "Recently Used", TXT_DARK);
     int iy = y + 22;
-    for (int i = 0; i < 9; i++) {
-        tile(x, iy, 26, items[i].c, items[i].l, GDI_WHITE);
-        GdiTextT(x + 36, iy + 6, items[i].n, TXT_DARK);
+    for (int i = 0; i < n; i++) {
+        AppDrawIcon(items[i], x, iy, 26);
+        GdiTextT(x + 36, iy + 6, AppGetInfo(items[i])->name, TXT_DARK);
+        HOT_OV(RECT(x - 4, iy - 3, w + 8, 32), ACT_APP, items[i], NULL);
         iy += 34;
     }
 }
 
 static void draw_start_menu(void)
 {
-    if (!g_start_open) return;
+    if (!g_start_open) { L_menu = RECT(0, 0, 0, 0); return; }
     int sw = GdiScreenW(), sh = GdiScreenH();
 
     int mw = 540; if (mw > sw - 60) mw = sw - 60;
@@ -403,7 +450,6 @@ static void draw_start_menu(void)
     /* Pinned grid */
     draw_pinned_grid(left_x, hy + 22, 46, 18);
 
-    /* Live tiles below the grid */
     /* Live tiles below the grid: two rows of 46px tiles + captions */
     draw_live_tiles(left_x, hy + 22 + 2 * (46 + 2 + GDI_FONT_H + 6), left_w);
 
@@ -417,76 +463,113 @@ static void draw_start_menu(void)
     GdiTextCenter(cx + 2, by + 11, 34, "DP", GDI_WHITE);
     GdiTextT(cx + 44, by + 6, USER_GREET, TXT_MUTED);
     GdiTextBold(cx + 44, by + 22, USER_NAME, TXT_DARK);
+    HOT_OV(RECT(cx, by, 200, 40), ACT_APP, APP_SETTINGS, NULL);
 
-    /* power / help / add icons on the right */
+    /* Quick actions on the right: settings, files, terminal */
+    static const AppId quick[3] = { APP_SETTINGS, APP_EXPLORER, APP_TERMINAL };
     int ix = mx + mw - pad - 4;
-    const char *gl[5] = { "(?)", "+", "[]", "#", "()" };
-    for (int i = 0; i < 5; i++) {
-        ix -= 30;
-        GdiRoundRect(RECT(ix, by + 12, 24, 24), 6, GDI_C(0xF4, 0xCB, 0xAE),
+    for (int i = 0; i < 3; i++) {
+        ix -= 34;
+        GdiRoundRect(RECT(ix, by + 8, 28, 28), 7, GDI_C(0xF4, 0xCB, 0xAE),
                      GDI_TRANSPARENT);
-        GdiTextCenter(ix, by + 16, 24, gl[i], TXT_DARK);
+        AppDrawIcon(quick[i], ix + 4, by + 12, 20);
+        HOT_OV(RECT(ix, by + 8, 28, 28), ACT_APP, quick[i], NULL);
     }
 }
 
 /* -----------------------------------------------------------------------
- * Taskbar / dock
+ * Dock
  * ----------------------------------------------------------------------- */
-static void draw_dock(void)
+#define DOCK_START   (-1)
+#define DOCK_SEARCH  (-2)
+static const int g_dock_items[] = {
+    DOCK_START, DOCK_SEARCH, APP_TERMINAL, APP_EXPLORER, APP_NOTEPAD,
+    APP_SETTINGS, APP_CALENDAR, APP_EDGE, APP_STORE, APP_PHOTOS, APP_XBOX,
+    APP_SKYPE,
+};
+#define N_DOCK ((int)(sizeof(g_dock_items) / sizeof(g_dock_items[0])))
+#define DOCK_ICON  36
+#define DOCK_GAP   12
+#define DOCK_CLOCK 132
+#define DOCK_H     58
+
+static int g_dock_hover = -1;
+
+static GdiRect dock_rect(void)
 {
     int sw = GdiScreenW(), sh = GdiScreenH();
-
-    struct { GdiColor c; const char *l; } left[15] = {
-        { GDI_C(0x6A,0x4A,0xC8), "DP" },
-        { C_STORE,   "" },
-        { GDI_C(0x5A,0x5A,0x64), "" },   /* settings */
-        { C_EDGE,    "e" },
-        { GDI_C(0x10,0x7C,0x10), "X" },  /* xbox */
-        { C_PHOTOS,  "" },
-        { GDI_WHITE, "11" },             /* calendar */
-        { C_SKYPE,   "S" },
-        { GDI_C(0xF6,0xCE,0x52), "" },   /* folder */
-        { GDI_C(0xE8,0xC0,0xA0), "Q" },  /* search */
-        { GDI_C(0x2A,0x8A,0xE0), "#" },  /* windows */
-        { GDI_C(0x3A,0x6A,0xE0), "=" },  /* tasks */
-        { GDI_C(0x9A,0xA2,0xB0), "U" },  /* usb */
-        { GDI_C(0x6A,0xB0,0xE0), "@" },  /* cloud */
-        { GDI_C(0xC8,0x9A,0x6A), "W" },  /* trash */
-    };
-
-    int n = 15;
-    int icon = 36, gap = 8;
-    int clock_w = 150;
-    int dw = n * (icon + gap) + clock_w + 24;
+    int dw = N_DOCK * (DOCK_ICON + DOCK_GAP) + DOCK_CLOCK + 28;
     if (dw > sw - 24) dw = sw - 24;
-    int dh = 56;
-    int dx = (sw - dw) / 2;
-    int dy = sh - dh - 14;
+    return RECT((sw - dw) / 2, sh - DOCK_H - 12, dw, DOCK_H);
+}
 
-    /* Floating frosted dock */
-    GdiDropShadow(RECT(dx, dy + 4, dw, dh), dh / 2, 12, 55);
-    GdiRoundGradV(RECT(dx, dy, dw, dh), dh / 2,
-                  GDI_C(0xF0, 0xB8, 0x7A), DOCK_TINT);
+static GdiRect dock_item_rect(int i)
+{
+    GdiRect d = dock_rect();
+    return RECT(d.x + 16 + i * (DOCK_ICON + DOCK_GAP), d.y + (DOCK_H - DOCK_ICON) / 2 - 3,
+                DOCK_ICON, DOCK_ICON);
+}
 
-    int x = dx + 14;
-    int iy = dy + (dh - icon) / 2;
-    for (int i = 0; i < n; i++) {
-        tile(x, iy, icon, left[i].c, left[i].l,
-             (left[i].c == GDI_WHITE) ? TXT_DARK : GDI_WHITE);
-        x += icon + gap;
+static void start_logo(int x, int y, int s)
+{
+    int q = (s - 3) / 2;
+    GdiColor a = GDI_C(0x2A, 0x8A, 0xE8), b = GDI_C(0x5A, 0xC8, 0xF8);
+    GdiRoundGradV(RECT(x, y, q, q), 2, b, a);
+    GdiRoundGradV(RECT(x + q + 3, y, q, q), 2, b, a);
+    GdiRoundGradV(RECT(x, y + q + 3, q, q), 2, b, a);
+    GdiRoundGradV(RECT(x + q + 3, y + q + 3, q, q), 2, b, a);
+}
+
+static void search_glyph(int x, int y, int s, GdiColor c)
+{
+    int r = s * 30 / 100, cx = x + s * 44 / 100, cy = y + s * 44 / 100;
+    GdiFillCircle(cx, cy, r, c);
+    GdiFillCircle(cx, cy, r - 2, GDI_C(0xF3, 0xC0, 0x8A));
+    GdiLine((GdiPoint){ (cx + r - 1) * 16, (cy + r - 1) * 16 },
+            (GdiPoint){ (x + s * 86 / 100) * 16, (y + s * 86 / 100) * 16 }, 40, c);
+}
+
+static void draw_dock(void)
+{
+    GdiRect d = dock_rect();
+    L_dock = d;
+
+    GdiDropShadow(RECT(d.x, d.y + 4, d.w, d.h), d.h / 2, 12, 55);
+    GdiRoundGradV(d, d.h / 2, GDI_C(0xF0, 0xB8, 0x7A), DOCK_TINT);
+
+    WND *active = WmActiveWindow();
+    for (int i = 0; i < N_DOCK; i++) {
+        GdiRect r = dock_item_rect(i);
+        int it = g_dock_items[i];
+        bool start_on = (it == DOCK_START && g_start_open);
+        if (i == g_dock_hover || start_on)
+            GdiRoundAlpha(RECT(r.x - 5, r.y - 5, r.w + 10, r.h + 10), 8, GDI_WHITE, 80);
+
+        if (it == DOCK_START)       start_logo(r.x + 7, r.y + 7, r.w - 14);
+        else if (it == DOCK_SEARCH) search_glyph(r.x + 4, r.y + 4, r.w - 8, TXT_DARK);
+        else                        AppDrawIcon((AppId)it, r.x + 2, r.y + 2, r.w - 4);
+
+        /* Running indicator: a pill under the icon, wider when focused */
+        if (it >= 0) {
+            WND *w = WmFindApp(it);
+            if (w) {
+                bool focused = (w == active);
+                int pw = focused ? 16 : 6;
+                GdiRoundRect(RECT(r.x + (r.w - pw) / 2, r.y + r.h + 5, pw, 4), 2,
+                             focused ? GDI_C(0x1A, 0x5A, 0xB8) : GDI_C(0x7A, 0x4A, 0x3A),
+                             GDI_TRANSPARENT);
+            }
+        }
+        HOT_OV(RECT(r.x - 6, d.y, r.w + 12, d.h), it == DOCK_START || it == DOCK_SEARCH
+               ? ACT_START : ACT_APP, it, NULL);
     }
 
-    /* Right side: status + clock */
-    int clock_x = dx + dw - clock_w - 8;
-    GdiVLine(clock_x - 6, dy + 10, dy + dh - 10, GDI_C(0xD0, 0x90, 0x66));
-    GdiTextT(clock_x, iy + 2, "^ <))", TXT_DARK);
-    GdiTextBold(clock_x + 56, iy - 2, g_clock_time, TXT_DARK);
-    GdiTextT(clock_x + 56, iy + 14, g_clock_date, TXT_DARK);
-
-    /* Capture geometry for hit-testing. */
-    L_dock = RECT(dx, dy, dw, dh);
-    /* Windows-logo tile is index 10 in the left[] array above. */
-    L_startbtn = RECT(dx + 14 + 10 * (icon + gap), iy, icon, icon);
+    /* Clock */
+    int clock_x = d.x + d.w - DOCK_CLOCK - 8;
+    GdiVLine(clock_x - 8, d.y + 12, d.y + d.h - 12, GDI_C(0xD0, 0x90, 0x66));
+    GdiTextBold(clock_x + 8, d.y + 12, g_clock_time, TXT_DARK);
+    GdiTextT(clock_x + 8, d.y + 30, g_clock_date, TXT_DARK);
+    HOT_OV(RECT(clock_x, d.y, DOCK_CLOCK, d.h), ACT_APP, APP_CALENDAR, NULL);
 }
 
 /* -----------------------------------------------------------------------
@@ -500,6 +583,7 @@ static void shell_background(void)
 
 static void shell_overlay(void)
 {
+    g_hot_ov_n = 0;
     draw_start_menu();
     draw_dock();
 }
@@ -515,15 +599,16 @@ void DesktopInitialize(void)
         return;
     }
     g_ready = true;
-    g_start_open = true;
+    g_start_open = false;
+    GdiRect d = dock_rect();
+    WmSetWorkArea(RECT(0, 0, GdiScreenW(), d.y - 8));
     WmSetDesktop(shell_background, shell_overlay);
-    kprintf("[SHELL] Desktop shell ready (%dx%d), Start menu open\n",
-            GdiScreenW(), GdiScreenH());
+    kprintf("[SHELL] Desktop shell ready (%dx%d)\n", GdiScreenW(), GdiScreenH());
 }
 
 bool DesktopAvailable(void) { return g_ready; }
 
-void DesktopToggleStart(void) { g_start_open = !g_start_open; }
+void DesktopToggleStart(void) { g_start_open = !g_start_open; WmInvalidate(); }
 
 /* Refresh the dock clock strings from the RTC. */
 static void update_clock(void)
@@ -534,41 +619,90 @@ static void update_clock(void)
     int h24 = t.hour;
     const char *ap = (h24 < 12) ? "AM" : "PM";
     int h12 = h24 % 12; if (h12 == 0) h12 = 12;
-
-    char *p = g_clock_time;
-    if (h12 >= 10) *p++ = '0' + h12 / 10;
-    *p++ = '0' + h12 % 10;
-    *p++ = ':';
-    *p++ = '0' + t.minute / 10;
-    *p++ = '0' + t.minute % 10;
-    *p++ = ' '; *p++ = ap[0]; *p++ = ap[1]; *p = '\0';
-
-    int y = t.year;
-    char *d = g_clock_date;
-    *d++ = '0' + t.month / 10; *d++ = '0' + t.month % 10; *d++ = '/';
-    *d++ = '0' + t.day   / 10; *d++ = '0' + t.day   % 10; *d++ = '/';
-    *d++ = '0' + (y / 1000) % 10; *d++ = '0' + (y / 100) % 10;
-    *d++ = '0' + (y / 10)   % 10; *d++ = '0' +  y        % 10; *d = '\0';
+    ksnprintf(g_clock_time, sizeof(g_clock_time), "%d:%02u %s", h12, t.minute, ap);
+    ksnprintf(g_clock_date, sizeof(g_clock_date), "%02u/%02u/%04u",
+              t.month, t.day, t.year);
 }
 
-/* Handle a left-click at screen (x,y).  Returns true if the scene changed
- * and must be recomposited. */
-bool DesktopOnClick(int x, int y)
+static void run_action(const Hot *h)
 {
-    if (pt_in(L_startbtn, x, y)) {        /* Start button toggles the menu */
-        g_start_open = !g_start_open;
-        return true;
+    switch (h->kind) {
+    case ACT_APP:    AppLaunch((AppId)h->arg); break;
+    case ACT_FOLDER: AppOpenFolder(RamfsResolve(NULL, h->path)); break;
+    default: break;
     }
-    if (g_start_open && !pt_in(L_menu, x, y)) {  /* click-away closes it */
+}
+
+/* Dock clicks: Start/Search toggle the menu; apps focus, minimize or launch */
+static void dock_click(const Hot *h)
+{
+    if (h->kind == ACT_START) { DesktopToggleStart(); return; }
+    g_start_open = false;
+    AppActivate((AppId)h->arg);
+}
+
+/* Handle a left press (or double-click) at (x, y), in stacking order:
+ * Start menu, dock, windows, then the desktop itself. */
+static void desktop_press(int x, int y, bool dbl)
+{
+    const Hot *h = hot_find(g_hot_ov, g_hot_ov_n, x, y);
+
+    if (g_start_open && pt_in(L_menu, x, y)) {
+        if (h) { g_start_open = false; run_action(h); }
+        WmInvalidate();
+        return;
+    }
+    if (pt_in(L_dock, x, y)) {
+        if (h) dock_click(h);
+        WmInvalidate();
+        return;
+    }
+    if (g_start_open) {                    /* click-away closes the menu */
         g_start_open = false;
-        return true;
+        WmInvalidate();
+        return;
     }
-    return false;
+    if (WmMouseButton(x, y, dbl ? WM_MOUSE_DBLCLK : WM_MOUSE_DOWN))
+        return;
+
+    const Hot *ic = hot_find(g_hot_bg, g_hot_bg_n, x, y);
+    int sel = ic ? ic->arg : -1;
+    if (sel != g_icon_sel) {
+        g_icon_sel = sel;
+        WmInvalidateBackground();
+    }
+    if (ic && dbl) open_icon(ic->arg);
+}
+
+static void desktop_hover(int x, int y)
+{
+    int hover = -1;
+    if (!WmMouseCaptured() && pt_in(L_dock, x, y))
+        for (int i = 0; i < N_DOCK; i++) {
+            GdiRect r = dock_item_rect(i);
+            if (pt_in(RECT(r.x - 6, L_dock.y, r.w + 12, L_dock.h), x, y)) hover = i;
+        }
+    if (hover != g_dock_hover) {
+        g_dock_hover = hover;
+        WmInvalidate();
+    }
+}
+
+static void desktop_key(const KeyEvent *k)
+{
+    if (!k->pressed) return;
+    if (k->extended && k->scancode == KEY_LWIN) { DesktopToggleStart(); return; }
+    if (g_start_open) {
+        if (k->scancode == KEY_ESC) { g_start_open = false; WmInvalidate(); }
+        return;                             /* menu has no keyboard UI yet */
+    }
+    WmKey(k);
 }
 
 /* Window-manager + shell event loop (runs as the 'desktop' kernel thread).
- * Polls PS/2, moves the cursor with save-under, recomposites on state change
- * or once per minute for the clock. */
+ * Polls PS/2, moves the cursor with save-under, routes input, and
+ * recomposites whenever something changed (or once per minute for the
+ * clock). */
 void DesktopRun(void *arg)
 {
     (void)arg;
@@ -579,27 +713,39 @@ void DesktopRun(void *arg)
     WmCursorShow(GdiScreenW() / 2, GdiScreenH() / 2);
 
     RtcTime t; rtc_read(&t);
-    int  last_min   = t.minute;
-    bool prev_left  = false;
+    int    last_min  = t.minute;
+    bool   prev_left = false;
+    UINT64 last_press = 0;
+    int    last_px = -100, last_py = -100;
 
     for (;;) {
         ps2_poll();
 
         InputEvent ev;
-        bool changed = false;
         while (InputPoll(&ev)) {
             if (ev.type == INPUT_MOUSE) {
-                WmCursorMoveBy(ev.dx, ev.dy);
+                if (ev.dx || ev.dy) {
+                    WmCursorMoveBy(ev.dx, ev.dy);
+                    WmMouseMove(WmCursorX(), WmCursorY());
+                    desktop_hover(WmCursorX(), WmCursorY());
+                }
                 bool left = (ev.buttons & MOUSE_LEFT) != 0;
-                if (left && !prev_left)
-                    if (DesktopOnClick(WmCursorX(), WmCursorY()))
-                        changed = true;
+                int  x = WmCursorX(), y = WmCursorY();
+                if (left && !prev_left) {
+                    UINT64 now = sched_ticks();
+                    bool dbl = now - last_press <= 45 &&
+                               x - last_px <= 4 && last_px - x <= 4 &&
+                               y - last_py <= 4 && last_py - y <= 4;
+                    last_press = dbl ? 0 : now;     /* no triple-click */
+                    last_px = x; last_py = y;
+                    desktop_press(x, y, dbl);
+                } else if (!left && prev_left) {
+                    WmMouseButton(x, y, WM_MOUSE_UP);
+                }
                 prev_left = left;
             } else if (ev.type == INPUT_KEY) {
-                if (ev.pressed && ev.scancode == SC_ESC && g_start_open) {
-                    g_start_open = false;
-                    changed = true;
-                }
+                KeyEvent k;
+                if (InputTranslateKey(&ev, &k)) desktop_key(&k);
             }
         }
 
@@ -607,10 +753,10 @@ void DesktopRun(void *arg)
         if (t.minute != last_min) {
             last_min = t.minute;
             update_clock();
-            changed = true;
+            WmInvalidate();
         }
 
-        if (changed) {
+        if (WmNeedsRedraw()) {
             WmComposite();
             WmCursorReshow();
         }

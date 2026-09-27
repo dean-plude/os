@@ -22,7 +22,8 @@
 #include "../ke/printf.h"
 
 #define FX            256     /* fixed-point one: 1/256 device pixel */
-#define LINE_BASELINE 12      /* baseline within the 16px logical line box */
+#define LINE_BASELINE  12     /* baseline within the 16px logical line box */
+#define LARGE_BASELINE 23     /* baseline within the 30px heading line box */
 
 /* -----------------------------------------------------------------------
  * Surface state
@@ -33,6 +34,9 @@ static struct {
     int     dw, dh;               /* device size */
     int     s;                    /* scale: device px per logical px */
     int     lw, lh;               /* logical size */
+    int     cx0, cy0, cx1, cy1;   /* clip rectangle, device px, [x0,x1) */
+    UINT32 *cache;                /* saved copy of the back buffer */
+    bool    cache_valid;
     bool    bgr, ready;
 } g;
 
@@ -63,7 +67,7 @@ static inline UINT32 blend(UINT32 d, UINT32 s, UINT32 a)
 /* Blend one device pixel into the back buffer; a = coverage 0..255 */
 static inline void plot(int x, int y, UINT32 n, int a)
 {
-    if (a <= 0 || (unsigned)x >= (unsigned)g.dw || (unsigned)y >= (unsigned)g.dh)
+    if (a <= 0 || x < g.cx0 || x >= g.cx1 || y < g.cy0 || y >= g.cy1)
         return;
     UINT32 *p = &g.buf[(size_t)y * g.bstride + x];
     *p = (a >= 255) ? n : blend(*p, n, (UINT32)a);
@@ -72,9 +76,9 @@ static inline void plot(int x, int y, UINT32 n, int a)
 /* Horizontal device span [x0, x1) at uniform coverage a */
 static void span(int y, int x0, int x1, UINT32 n, int a)
 {
-    if (a <= 0 || (unsigned)y >= (unsigned)g.dh) return;
-    x0 = imax(x0, 0);
-    x1 = imin(x1, g.dw);
+    if (a <= 0 || y < g.cy0 || y >= g.cy1) return;
+    x0 = imax(x0, g.cx0);
+    x1 = imin(x1, g.cx1);
     UINT32 *p = &g.buf[(size_t)y * g.bstride];
     if (a >= 255) for (int x = x0; x < x1; x++) p[x] = n;
     else          for (int x = x0; x < x1; x++) p[x] = blend(p[x], n, (UINT32)a);
@@ -134,12 +138,51 @@ bool GdiInitialize(void)
         g.bstride = g.vstride;
     }
 
+    g.cx0 = 0; g.cy0 = 0; g.cx1 = g.dw; g.cy1 = g.dh;
     g.ready = true;
     kprintf("[GDI] %dx%d device, scale %dx -> %dx%d logical, %s\n",
             g.dw, g.dh, g.s, g.lw, g.lh,
             g.buf != g.vram ? "double-buffered" : "direct (no back buffer)");
     return true;
 }
+
+/* -----------------------------------------------------------------------
+ * Clipping and the frame cache
+ * ----------------------------------------------------------------------- */
+void GdiSetClip(GdiRect r)
+{
+    int s = g.s;
+    g.cx0 = imax(r.x * s, 0);            g.cy0 = imax(r.y * s, 0);
+    g.cx1 = imin((r.x + r.w) * s, g.dw); g.cy1 = imin((r.y + r.h) * s, g.dh);
+    if (g.cx1 < g.cx0) g.cx1 = g.cx0;
+    if (g.cy1 < g.cy0) g.cy1 = g.cy0;
+}
+
+void GdiResetClip(void)
+{
+    g.cx0 = 0; g.cy0 = 0; g.cx1 = g.dw; g.cy1 = g.dh;
+}
+
+bool GdiCacheSave(void)
+{
+    if (!g.ready || g.buf == g.vram) return false;
+    if (!g.cache) {
+        g.cache = kmalloc((size_t)g.dw * g.dh * sizeof(UINT32));
+        if (!g.cache) return false;
+    }
+    memcpy(g.cache, g.buf, (size_t)g.dw * g.dh * sizeof(UINT32));
+    g.cache_valid = true;
+    return true;
+}
+
+bool GdiCacheRestore(void)
+{
+    if (!g.cache_valid) return false;
+    memcpy(g.buf, g.cache, (size_t)g.dw * g.dh * sizeof(UINT32));
+    return true;
+}
+
+void GdiCacheInvalidate(void) { g.cache_valid = false; }
 
 int GdiScreenW(void) { return g.ready ? g.lw : 0; }
 int GdiScreenH(void) { return g.ready ? g.lh : 0; }
@@ -209,8 +252,8 @@ void GdiGradientH(GdiRect r, GdiColor left, GdiColor right)
 {
     if (!g.ready || r.w <= 0) return;
     int s = g.s, x0 = r.x * s, w = r.w * s;
-    int xa = imax(x0, 0), xb = imin(x0 + w, g.dw);
-    int ya = imax(r.y * s, 0), yb = imin((r.y + r.h) * s, g.dh);
+    int xa = imax(x0, g.cx0), xb = imin(x0 + w, g.cx1);
+    int ya = imax(r.y * s, g.cy0), yb = imin((r.y + r.h) * s, g.cy1);
     for (int x = xa; x < xb; x++) {
         int t = ((x - x0) * 255) / (w > 1 ? w - 1 : 1);
         UINT32 n = pixof(GdiLerp(left, right, t));
@@ -447,14 +490,28 @@ void GdiFillPolygon(const GdiPoint *pts, int n, GdiColor c)
             plot(x, y, col, cov_of(poly_sd(d, n, x * FX + FX / 2, y * FX + FX / 2)));
 }
 
+void GdiLine(GdiPoint a, GdiPoint b, int width16, GdiColor c)
+{
+    /* A thin quad around the segment; endpoints in 1/16 logical px */
+    int dx = b.x - a.x, dy = b.y - a.y;
+    int len = (int)isqrt64((UINT64)((INT64)dx * dx + (INT64)dy * dy));
+    if (len == 0 || width16 <= 0) return;
+    int nx = -dy * width16 / (2 * len), ny = dx * width16 / (2 * len);
+    GdiPoint q[4] = {
+        { a.x + nx, a.y + ny }, { b.x + nx, b.y + ny },
+        { b.x - nx, b.y - ny }, { a.x - nx, a.y - ny },
+    };
+    GdiFillPolygon(q, 4, c);
+}
+
 void GdiFillUnderCurve(GdiRect r, GdiCurveFn fn, void *ctx, GdiColor c)
 {
     if (!g.ready || !fn || r.w <= 0 || r.h <= 0) return;
     int s = g.s;
     UINT32 n = pixof(c);
-    /* clamp to the screen too: the column fill below writes directly */
-    int top = imax(r.y * s, 0) * FX, bot = imin((r.y + r.h) * s, g.dh);
-    for (int x = imax(r.x * s, 0); x < imin((r.x + r.w) * s, g.dw); x++) {
+    /* clamp to the clip rect too: the column fill below writes directly */
+    int top = imax(r.y * s, g.cy0) * FX, bot = imin((r.y + r.h) * s, g.cy1);
+    for (int x = imax(r.x * s, g.cx0); x < imin((r.x + r.w) * s, g.cx1); x++) {
         int xl = (x * FX + FX / 2) / s;             /* 1/256 logical */
         int yd = fn(xl, ctx) * s;                   /* 1/256 device  */
         if (yd < top) yd = top;
@@ -499,7 +556,7 @@ static void text_draw_at(int pen, int y, const char *s, GdiColor fg, int style)
     if (!g.ready || !s) return;
     const GdiFace *f = face(style);
     UINT32 n    = pixof(fg);
-    int    base = (y + LINE_BASELINE) * g.s;
+    int    base = (y + (style == GDI_FONT_DISPLAY ? LARGE_BASELINE : LINE_BASELINE)) * g.s;
     for (; *s; s++) {
         const GdiGlyph *gl = glyph(f, (unsigned char)*s);
         int gx = ((pen + 32) >> 6) + gl->bx;
@@ -531,6 +588,42 @@ void GdiText(int x, int y, const char *s, GdiColor fg, GdiColor bg)
 {
     GdiFillRect(RECT(x, y, GdiTextW(s), GDI_FONT_H), bg);
     text_draw(x, y, s, fg, GDI_FONT_REGULAR);
+}
+
+void GdiTextLarge(int x, int y, const char *s, GdiColor fg)
+{
+    text_draw(x, y, s, fg, GDI_FONT_DISPLAY);
+}
+
+int GdiTextLargeW(const char *s)
+{
+    return g.ready ? adv_to_logical(text_adv(s, GDI_FONT_DISPLAY)) : 0;
+}
+
+void GdiTextMono(int x, int y, const char *s, GdiColor fg)
+{
+    text_draw(x, y, s, fg, GDI_FONT_MONO);
+}
+
+void GdiTextMonoN(int x, int y, const char *s, int n, GdiColor fg)
+{
+    if (!g.ready || !s || n <= 0) return;
+    char buf[256];
+    while (n > 0) {                       /* draw in chunks, keeping the grid */
+        int k = imin(n, (int)sizeof(buf) - 1);
+        memcpy(buf, s, (size_t)k);
+        buf[k] = '\0';
+        text_draw(x, y, buf, fg, GDI_FONT_MONO);
+        x += (k * GdiMonoCellW256()) / 256;
+        s += k; n -= k;
+    }
+}
+
+int GdiMonoCellW256(void)
+{
+    if (!g.ready) return 8 * 256;
+    /* 26.6 device → 1/256 logical: × 4 / scale */
+    return glyph(face(GDI_FONT_MONO), 'M')->adv * 4 / g.s;
 }
 
 void GdiTextCenter(int x, int y, int w, const char *s, GdiColor fg)

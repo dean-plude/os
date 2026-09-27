@@ -1,104 +1,148 @@
 /*
  * wm.h — NovaOS Window Manager
  *
- * Phase 7.  A minimal compositing window manager built on the GDI
- * software renderer.  It maintains a Z-ordered list of windows, draws
- * decorated frames (title bar, close/min/max buttons, client area), and
- * composites them over the desktop wallpaper.
+ * Owns top-level windows: z-order, focus, Windows 11 style frames with
+ * caption buttons, dragging, minimize/maximize/close, and routing of mouse
+ * and keyboard input to the focused window.  Applications are callbacks
+ * that run on the desktop thread (there are no user-mode GUI apps yet).
  *
- * This is a kernel-side WM — windows are described by WND structures owned
- * by the kernel.  A future Phase will expose USER32-style HWND handles to
- * user mode via the syscall layer; for now the desktop shell drives it
- * directly to render the login/desktop experience.
+ * All coordinates are logical pixels (see gdi.h).
  */
 
 #pragma once
 
 #include "../include/types.h"
 #include "../gdi/gdi.h"
+#include "input.h"
 
 #define WM_MAX_WINDOWS   32
 #define WM_TITLE_MAX     64
+#define WM_TITLEBAR_H    32
 
-/* Window style flags */
-#define WS_TITLEBAR   (1u << 0)   /* draw a title bar */
-#define WS_CLOSEBTN   (1u << 1)   /* draw close button */
-#define WS_MINMAXBTN  (1u << 2)   /* draw minimise / maximise buttons */
-#define WS_BORDER     (1u << 3)   /* draw a 1px border */
-#define WS_SHADOW     (1u << 4)   /* draw a drop shadow */
-
+/* Window styles */
+#define WS_TITLEBAR   (1u << 0)   /* title bar (drag handle) */
+#define WS_CLOSEBTN   (1u << 1)   /* close button */
+#define WS_MINMAXBTN  (1u << 2)   /* minimize / maximize buttons */
+#define WS_BORDER     (1u << 3)   /* 1px border */
+#define WS_SHADOW     (1u << 4)   /* drop shadow */
 #define WS_TOOLWINDOW (WS_TITLEBAR | WS_CLOSEBTN | WS_BORDER | WS_SHADOW)
 #define WS_OVERLAPPED (WS_TITLEBAR | WS_CLOSEBTN | WS_MINMAXBTN | WS_BORDER | WS_SHADOW)
 
-/* A paint callback renders the client area in window-local coordinates.
- * The WM has already filled the client background and set up the frame. */
+/* Mouse messages delivered to a window (client-relative coordinates) */
+typedef enum {
+    WM_MOUSE_DOWN = 1,     /* left button pressed */
+    WM_MOUSE_UP,           /* left button released */
+    WM_MOUSE_MOVE,         /* motion (while captured or hovering) */
+    WM_MOUSE_DBLCLK,       /* second press of a double click */
+} WmMouseMsg;
+
 struct WND;
 typedef void (*WndPaintFn)(struct WND *w);
+typedef void (*WndKeyFn)(struct WND *w, const KeyEvent *k);
+typedef void (*WndMouseFn)(struct WND *w, WmMouseMsg msg, int x, int y);
+typedef void (*WndCloseFn)(struct WND *w);
 
 typedef struct WND {
     int        id;
     GdiRect    frame;        /* outer rect on screen (includes title bar) */
+    GdiRect    restore;      /* frame to restore after maximize */
     char       title[WM_TITLE_MAX];
     UINT32     style;
     GdiColor   client_bg;
-    GdiColor   accent;       /* title-bar accent color */
+    GdiColor   accent;       /* colour of the small app mark in the title */
     bool       visible;
-    bool       active;       /* has focus (brighter title bar) */
+    bool       minimized;
+    bool       maximized;
+    bool       active;       /* has keyboard focus */
     int        z;            /* z-order; higher = nearer the top */
-    WndPaintFn on_paint;
-    void      *user;         /* opaque pointer for the paint callback */
+    int        app;          /* owning app id (for the dock), or -1 */
+
+    WndPaintFn on_paint;     /* draw the client area (clip is set) */
+    WndKeyFn   on_key;       /* key pressed while focused */
+    WndMouseFn on_mouse;     /* mouse in / captured by the client area */
+    WndCloseFn on_close;     /* window is being destroyed: free `user` */
+    void      *user;         /* app state */
 } WND;
 
-/* Title-bar height in pixels. */
-#define WM_TITLEBAR_H   28
-
 /* -----------------------------------------------------------------------
- * Lifecycle / API
+ * Windows
  * ----------------------------------------------------------------------- */
 void WmInitialize(void);
 
-/* Create a window.  Returns a WND* owned by the WM, or NULL if full. */
 WND *WmCreateWindow(const char *title, GdiRect frame, UINT32 style,
                     GdiColor client_bg, GdiColor accent,
                     WndPaintFn on_paint, void *user);
-
+/* Close: calls on_close, then frees the slot. */
 void WmDestroyWindow(WND *w);
 void WmShowWindow(WND *w, bool visible);
-void WmSetActive(WND *w);
+void WmSetTitle(WND *w, const char *title);
 
-/* Return the client rectangle (interior, below the title bar) in screen
- * coordinates for the given window. */
+/* Focus and raise (also restores a minimized window). */
+void WmSetActive(WND *w);
+WND *WmActiveWindow(void);
+
+void WmMinimize(WND *w);
+void WmToggleMaximize(WND *w);
+
+/* Client area in screen coordinates. */
 GdiRect WmClientRect(const WND *w);
 
-/* Composite the whole scene: desktop background callback first, then all
- * visible windows in z-order, then the taskbar/overlay callback.
- *
- * The desktop shell registers the background/overlay via WmSetDesktop(). */
+/* Topmost window belonging to app `app`, or NULL. */
+WND *WmFindApp(int app);
+int  WmWindowCount(void);
+
+/* Draws a window's app icon in its title bar (set by the app layer);
+ * windows without an app (app < 0) show a dot in their accent colour. */
+typedef void (*WmIconFn)(int app, int x, int y, int size);
+void WmSetIconPainter(WmIconFn fn);
+
+/* Area windows may occupy (the screen minus the dock). */
+void WmSetWorkArea(GdiRect r);
+GdiRect WmWorkArea(void);
+
+/* -----------------------------------------------------------------------
+ * Input routing (called by the desktop event loop)
+ * ----------------------------------------------------------------------- */
+
+/* Mouse press/release/double-click at screen (x, y).  Returns true if a
+ * window took it (the desktop should then ignore it). */
+bool WmMouseButton(int x, int y, WmMouseMsg msg);
+/* Mouse moved to (x, y): drags, hover highlights, captured client moves. */
+void WmMouseMove(int x, int y);
+/* True while a window drag or client capture is in progress. */
+bool WmMouseCaptured(void);
+/* Deliver a key press to the focused window.  Alt+F4 closes it.
+ * Returns true if a window took it. */
+bool WmKey(const KeyEvent *k);
+
+/* -----------------------------------------------------------------------
+ * Composition
+ * ----------------------------------------------------------------------- */
 typedef void (*WmLayerFn)(void);
+
+/* The desktop shell draws the background (wallpaper, icons: cached
+ * between frames) and the overlay (dock, Start menu: always on top). */
 void WmSetDesktop(WmLayerFn background, WmLayerFn overlay);
+
+/* Mark the scene as needing a redraw / the background as changed. */
+void WmInvalidate(void);
+void WmInvalidateBackground(void);
+bool WmNeedsRedraw(void);
 
 /* Render one full frame into the back buffer and present it. */
 void WmComposite(void);
-
-int  WmWindowCount(void);
 
 /* -----------------------------------------------------------------------
  * Software mouse cursor (drawn directly to the screen with save-under, so
  * moving it does not require recompositing the scene).  Coordinates are
  * logical pixels.
  * ----------------------------------------------------------------------- */
-
-/* Draw the cursor at (x,y), saving the pixels beneath it. */
 void WmCursorShow(int x, int y);
+void WmCursorHide(void);
+void WmCursorMove(int x, int y);
 /* Move by a relative mouse delta (one count = one logical pixel). */
 void WmCursorMoveBy(int dx, int dy);
-/* Restore the pixels beneath the cursor (if currently shown). */
-void WmCursorHide(void);
-/* Hide at the old position, then show at the new (clamped) position. */
-void WmCursorMove(int x, int y);
-/* Re-show the cursor after a full WmComposite() wiped it (re-grabs the
- * save-under from the freshly drawn scene). */
+/* Re-show the cursor after a new frame was presented. */
 void WmCursorReshow(void);
-
 int  WmCursorX(void);
 int  WmCursorY(void);

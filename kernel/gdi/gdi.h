@@ -52,6 +52,17 @@ int  GdiScale(void);       /* device pixels per logical pixel (1 or 2) */
 /* Copy the back buffer to the screen (whole frame). */
 void GdiPresent(void);
 
+/* Clip all drawing to a logical rectangle (e.g. a window's client area). */
+void GdiSetClip(GdiRect r);
+void GdiResetClip(void);
+
+/* Frame cache: save the back buffer (e.g. after drawing the static desktop
+ * background) and restore it at the start of the next frame instead of
+ * redrawing.  Save/Restore return false if no cache is available. */
+bool GdiCacheSave(void);
+bool GdiCacheRestore(void);
+void GdiCacheInvalidate(void);
+
 GdiColor GdiLerp(GdiColor a, GdiColor b, int t);   /* t = 0..255 */
 
 /* -----------------------------------------------------------------------
@@ -80,6 +91,11 @@ void GdiFillCircle(int cx, int cy, int rad, GdiColor c);
 /* Filled polygon, vertices in 1/16 logical pixels (see GDI_PT). */
 void GdiFillPolygon(const GdiPoint *pts, int n, GdiColor c);
 
+/* Anti-aliased line segment; endpoints and width in 1/16 logical px.
+ * Use integer arithmetic for run-time points (no floating point in the
+ * kernel): e.g. (GdiPoint){ x * 16 + 8, y * 16 + 8 } for a pixel centre. */
+void GdiLine(GdiPoint a, GdiPoint b, int width16, GdiColor c);
+
 /* Fill everything inside `r` below the curve y = fn(x): x and the result
  * are in 1/256 logical pixels.  Used for smooth wallpaper shapes. */
 typedef int (*GdiCurveFn)(int x_256, void *ctx);
@@ -98,6 +114,17 @@ void GdiTextBold  (int x, int y, const char *s, GdiColor fg);
 void GdiTextCenter(int x, int y, int w, const char *s, GdiColor fg);
 int  GdiTextW     (const char *s);      /* logical width, regular */
 int  GdiTextBoldW (const char *s);      /* logical width, bold */
+
+/* Heading text (Inter SemiBold 24px) on a 30px line box at (x, y). */
+#define GDI_LARGE_H 30
+void GdiTextLarge (int x, int y, const char *s, GdiColor fg);
+int  GdiTextLargeW(const char *s);
+
+/* Monospace text (Cascadia Mono).  Character cells are GdiMonoCellW256()
+ * 1/256-logical-pixels wide, so column c starts at x + c * cell / 256. */
+void GdiTextMono  (int x, int y, const char *s, GdiColor fg);
+void GdiTextMonoN (int x, int y, const char *s, int n, GdiColor fg);
+int  GdiMonoCellW256(void);
 
 /* -----------------------------------------------------------------------
  * Screen overlay (drawn straight to the screen, not the back buffer)

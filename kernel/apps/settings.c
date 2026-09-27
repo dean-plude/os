@@ -1,0 +1,172 @@
+/*
+ * settings.c — Settings: live system, display, storage and about pages
+ */
+
+#include "apps.h"
+#include "../lib/string.h"
+#include "../mm/vmm.h"
+#include "../mm/pmm.h"
+#include "../ke/printf.h"
+
+#define SIDE_W 200
+#define ITEM_H 36
+
+typedef struct { int page; } Settings;
+
+static const char *g_pages[] = { "System", "Display", "Storage", "About" };
+#define N_PAGES ((int)(sizeof(g_pages) / sizeof(g_pages[0])))
+
+/* A labelled row inside a card: "Label ........ value" */
+static void row(int x, int y, int w, const char *label, const char *value)
+{
+    GdiRoundRect(RECT(x, y, w, 44), 6, UI_CARD, GDI_TRANSPARENT);
+    GdiTextT(x + 16, y + 14, label, UI_TEXT);
+    GdiTextT(x + w - 16 - GdiTextW(value), y + 14, value, UI_TEXT2);
+}
+
+static void bar(int x, int y, int w, UINT64 used, UINT64 total)
+{
+    GdiRoundRect(RECT(x, y, w, 8), 4, UI_HOVER, GDI_TRANSPARENT);
+    int fw = total ? (int)((UINT64)w * used / total) : 0;
+    if (fw > 0) GdiRoundRect(RECT(x, y, fw < 8 ? 8 : fw, 8), 4, UI_ACCENT, GDI_TRANSPARENT);
+}
+
+static void ramdisk_usage(RamNode *d, UINT64 *bytes, int *files)
+{
+    for (RamNode *c = d->child; c; c = c->next) {
+        if (c->dir) ramdisk_usage(c, bytes, files);
+        else { *bytes += c->size; (*files)++; }
+    }
+}
+
+static void page_system(int x, int y, int w)
+{
+    char cpu[64], up[32], mem[48];
+    AppCpuName(cpu, sizeof(cpu));
+    AppUptime(up, sizeof(up));
+    uint64_t total, free_p, used;
+    pmm_stats(&total, &free_p, &used);
+    ksnprintf(mem, sizeof(mem), "%u MB (%u MB in use)",
+              (unsigned)(total * 4 / 1024), (unsigned)(used * 4 / 1024));
+
+    GdiRoundRect(RECT(x, y, w, 96), 8, UI_CARD, GDI_TRANSPARENT);
+    GdiRoundGradV(RECT(x + 20, y + 20, 88, 56), 6, GDI_C(0x3A, 0x8A, 0xF0), GDI_C(0x2A, 0xC8, 0xC8));
+    GdiTextLarge(x + 128, y + 20, "NOVA-PC", UI_TEXT);
+    GdiTextT(x + 128, y + 54, "NovaOS 0.9  -  Phase 8 desktop", UI_TEXT2);
+    y += 112;
+    row(x, y, w, "Processor", cpu);           y += 50;
+    row(x, y, w, "Installed memory", mem);    y += 50;
+    row(x, y, w, "System type", "64-bit operating system, x64 processor"); y += 50;
+    row(x, y, w, "Uptime", up);
+}
+
+static void page_display(int x, int y, int w)
+{
+    char res[32], scale[32], logical[32];
+    int s = GdiScale();
+    ksnprintf(res, sizeof(res), "%d x %d", GdiScreenW() * s, GdiScreenH() * s);
+    ksnprintf(scale, sizeof(scale), "%d%%%s", s * 100, s > 1 ? " (recommended)" : "");
+    ksnprintf(logical, sizeof(logical), "%d x %d", GdiScreenW(), GdiScreenH());
+    GdiTextBold(x, y, "Scale & layout", UI_TEXT);   y += 26;
+    row(x, y, w, "Display resolution", res);         y += 50;
+    row(x, y, w, "Scale", scale);                    y += 50;
+    row(x, y, w, "Desktop size (logical pixels)", logical); y += 62;
+    GdiTextBold(x, y, "Rendering", UI_TEXT);         y += 26;
+    row(x, y, w, "Anti-aliasing", "On");             y += 50;
+    row(x, y, w, "Double buffering", "On");          y += 50;
+    row(x, y, w, "Fonts", "Inter, Cascadia Mono");
+}
+
+static void page_storage(int x, int y, int w)
+{
+    uint64_t total, free_p, used;
+    pmm_stats(&total, &free_p, &used);
+    UINT64 bytes = 0;
+    int files = 0;
+    ramdisk_usage(RamfsRoot(), &bytes, &files);
+    char a[64], b[64];
+
+    GdiRoundRect(RECT(x, y, w, 92), 8, UI_CARD, GDI_TRANSPARENT);
+    GdiTextBold(x + 16, y + 14, "Memory (RAM)", UI_TEXT);
+    ksnprintf(a, sizeof(a), "%u MB used of %u MB", (unsigned)(used * 4 / 1024),
+              (unsigned)(total * 4 / 1024));
+    GdiTextT(x + 16, y + 38, a, UI_TEXT2);
+    bar(x + 16, y + 66, w - 32, used, total);
+    y += 108;
+
+    GdiRoundRect(RECT(x, y, w, 92), 8, UI_CARD, GDI_TRANSPARENT);
+    GdiTextBold(x + 16, y + 14, "Local Disk (C:)  -  RAM disk", UI_TEXT);
+    AppFormatSize(bytes, b, sizeof(b));
+    ksnprintf(a, sizeof(a), "%s in %d file%s; contents reset on reboot", b, files,
+              files == 1 ? "" : "s");
+    GdiTextT(x + 16, y + 38, a, UI_TEXT2);
+    bar(x + 16, y + 66, w - 32, bytes, bytes + 1024 * 1024);
+}
+
+static void page_about(int x, int y, int w)
+{
+    GdiTextLarge(x, y, "NovaOS", UI_TEXT);             y += 40;
+    GdiTextT(x, y, "Version 0.9.8  -  a Windows-compatible OS research project", UI_TEXT2); y += 34;
+    row(x, y, w, "Kernel", "Nova, NT-style syscalls (Win10 1903 ABI)"); y += 50;
+    row(x, y, w, "Desktop", "Kernel GDI + window manager");            y += 50;
+    row(x, y, w, "UI font", "Inter 4.1 (SIL OFL 1.1)");                 y += 50;
+    row(x, y, w, "Monospace font", "Cascadia Mono (SIL OFL 1.1)");
+}
+
+static void set_paint(WND *w)
+{
+    Settings *st = w->user;
+    GdiRect c = WmClientRect(w);
+
+    GdiFillRect(RECT(c.x, c.y, SIDE_W, c.h), UI_PANEL);
+    GdiTextLarge(c.x + 20, c.y + 16, "Settings", UI_TEXT);
+    for (int i = 0; i < N_PAGES; i++) {
+        int y = c.y + 64 + i * ITEM_H;
+        if (i == st->page) {
+            GdiRoundRect(RECT(c.x + 8, y, SIDE_W - 16, ITEM_H - 4), 4, UI_HOVER, GDI_TRANSPARENT);
+            GdiRoundRect(RECT(c.x + 8, y + 9, 3, 14), 1, UI_ACCENT, GDI_TRANSPARENT);
+        }
+        GdiTextT(c.x + 24, y + 8, g_pages[i], UI_TEXT);
+    }
+
+    int x = c.x + SIDE_W + 28, y = c.y + 20, w2 = c.w - SIDE_W - 56;
+    GdiTextLarge(x, y, g_pages[st->page], UI_TEXT);
+    y += 52;
+    switch (st->page) {
+    case 0: page_system(x, y, w2);  break;
+    case 1: page_display(x, y, w2); break;
+    case 2: page_storage(x, y, w2); break;
+    case 3: page_about(x, y, w2);   break;
+    }
+}
+
+static void set_mouse(WND *w, WmMouseMsg msg, int x, int y)
+{
+    Settings *st = w->user;
+    if (msg != WM_MOUSE_DOWN || x >= SIDE_W) return;
+    int i = (y - 64) / ITEM_H;
+    if (y >= 64 && i >= 0 && i < N_PAGES) st->page = i;
+}
+
+static void set_key(WND *w, const KeyEvent *k)
+{
+    Settings *st = w->user;
+    if (!k->extended) return;
+    if (k->scancode == KEY_UP && st->page > 0) st->page--;
+    if (k->scancode == KEY_DOWN && st->page < N_PAGES - 1) st->page++;
+}
+
+static void set_close(WND *w) { kfree(w->user); w->user = NULL; }
+
+void SettingsOpen(void)
+{
+    Settings *st = kzalloc(sizeof(Settings));
+    if (!st) return;
+    WND *w = AppCreateWindow(APP_SETTINGS, "Settings", 860, 520, UI_BG);
+    if (!w) { kfree(st); return; }
+    w->user     = st;
+    w->on_paint = set_paint;
+    w->on_mouse = set_mouse;
+    w->on_key   = set_key;
+    w->on_close = set_close;
+}
