@@ -3,7 +3,7 @@
 A clean-room, from-scratch x86_64 operating system designed to run native
 Windows executables (PE32+) without emulation.
 
-## Status: Phase 8 — Working Desktop (windows, apps, HiDPI graphics)
+## Status: Phase 8 — Working Desktop (windows, apps, HiDPI graphics, networking)
 
 **What works:**
 
@@ -147,6 +147,28 @@ Windows executables (PE32+) without emulation.
 - Not yet real: apps are kernel-side callbacks (no user-mode GUI programs),
   there is no disk, and there are no image icons.
 
+### Phase 8 (cont.) — Networking
+- **PCI** (`hal/pci.c`): bus scan through configuration mechanism #1; BAR
+  decoding (32/64-bit) and bus-master enable.
+- **Network card** (`drivers/e1000.c`): Intel e1000 (82540EM, QEMU `e1000`)
+  and e1000e (82574L, the q35 default); 32-entry RX/TX descriptor rings,
+  polled by the net thread.
+- **TCP/IP** (`net/net.c`): [lwIP 2.2.0](https://savannah.nongnu.org/projects/lwip/)
+  (BSD licence, vendored in `third_party/lwip`) running on a dedicated `net`
+  kernel thread — Ethernet/ARP, IPv4, ICMP, UDP, TCP, **DHCP** and **DNS**.
+  Apps start asynchronous operations (resolve, ping, HTTP GET) and poll them
+  from their window's tick, so the desktop never blocks on the network.
+- **Terminal tools**: `ipconfig`, `ping [-n N] host`, `nslookup host`,
+  `curl URL` (prints the response) and `wget URL` (saves to `C:\Downloads`);
+  HTTP/1.0 with up to 5 redirects; Ctrl+C cancels. **Settings → Network**
+  shows the adapter, MAC, lease, gateway and DNS servers live.
+- QEMU's default user-mode network works out of the box (guest `10.0.2.15`,
+  host reachable as `10.0.2.2`); add `-nic user,model=e1000` to test the
+  older card.
+- Not yet: HTTPS (next: BearSSL + a certificate store), IPv6, and a web
+  browser — the plan is to port **NetSurf** once user-mode programs and a C
+  library are in place.
+
 ## Quick Start
 
 ```bash
@@ -207,6 +229,8 @@ qemu-system-x86_64 -machine q35 -m 512M \
 | 6 | Full user-mode (SYSCALL thunk pages, Win32 helpers, CSRSS) | ✅ **Done** |
 | 7 | GUI (window manager, GDI, desktop shell) | ✅ **Done** |
 | 8 | Interactive desktop (PS/2 input, cursor, preemptive sched, RTC) | ✅ **Done** |
+| 8.5 | Networking (e1000/e1000e, lwIP, DHCP, DNS, HTTP tools) | ✅ **Done** |
+| 8.6 | HTTPS (BearSSL), user-mode C library, NetSurf web browser | 🔄 Next |
 | 9 | Prove native user-mode PE execution (loader, SEH, TEB/PEB) | 🔄 Planned |
 | 10 | Win32 GUI subsystem (win32k, user32/gdi32, real HWNDs) | 🔄 Planned |
 
@@ -267,7 +291,9 @@ os/
 
 ## License
 
-NovaOS is MIT licensed. No GPL code is used.
+NovaOS is MIT licensed. No GPL code is used; bundled third-party code keeps
+its own permissive licence (lwIP: BSD 3-clause; Inter and Cascadia Mono:
+SIL OFL 1.1).
 All Win32 API implementations are clean-room based on public Microsoft
 documentation, ReactOS reference, and Wine source study (but independently
 written).

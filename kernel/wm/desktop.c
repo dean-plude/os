@@ -749,6 +749,8 @@ void DesktopRun(void *arg)
             }
         }
 
+        WmTick();
+
         rtc_read(&t);
         if (t.minute != last_min) {
             last_min = t.minute;

@@ -15,15 +15,17 @@
 #define NP_BAR_H   36          /* toolbar */
 #define NP_STAT_H  26          /* status bar */
 #define NP_BG      GDI_C(0x1F, 0x1F, 0x1F)
+#define NP_MAX     (64u * 1024u)      /* editable text size */
 
 typedef struct {
-    char    *text;             /* RAMFS_FILE_MAX bytes */
+    char    *text;             /* NP_MAX bytes */
     UINT32   len;
     UINT32   caret;
     int      top;              /* first visible line */
     int      want_col;         /* column kept while moving up/down */
     bool     dirty;
     RamNode *file;             /* NULL until first save */
+    bool     readonly;         /* file larger than NP_MAX: view only */
     char     status[64];       /* transient message ("Saved") */
 } Notepad;
 
@@ -90,6 +92,10 @@ static void update_title(WND *w, Notepad *n)
 
 static void save(WND *w, Notepad *n)
 {
+    if (n->readonly) {
+        ksnprintf(n->status, sizeof(n->status), "Read-only: file is too large to edit");
+        return;
+    }
     if (!n->file) {
         RamNode *docs = RamfsResolve(NULL, "\\Documents");
         if (!docs) docs = RamfsRoot();
@@ -118,7 +124,7 @@ static void save(WND *w, Notepad *n)
  * ----------------------------------------------------------------------- */
 static void insert(Notepad *n, const char *s, UINT32 k)
 {
-    if (n->len + k > RAMFS_FILE_MAX) return;
+    if (n->readonly || n->len + k > NP_MAX) return;
     memmove(n->text + n->caret + k, n->text + n->caret, n->len - n->caret);
     memcpy(n->text + n->caret, s, k);
     n->len += k;
@@ -128,7 +134,7 @@ static void insert(Notepad *n, const char *s, UINT32 k)
 
 static void erase(Notepad *n, UINT32 at, UINT32 k)
 {
-    if (at + k > n->len) return;
+    if (n->readonly || at + k > n->len) return;
     memmove(n->text + at, n->text + at + k, n->len - at - k);
     n->len -= k;
     n->dirty = true;
@@ -254,12 +260,18 @@ void NotepadOpen(RamNode *file)
 {
     Notepad *n = kzalloc(sizeof(Notepad));
     if (!n) return;
-    n->text = kmalloc(RAMFS_FILE_MAX);
+    n->text = kmalloc(NP_MAX);
     if (!n->text) { kfree(n); return; }
     if (file && !file->dir) {
         n->file = file;
         RamfsRef(file);
         n->len = file->size;
+        if (n->len > NP_MAX) {             /* show the start, never truncate */
+            n->len = NP_MAX;
+            n->readonly = true;
+            ksnprintf(n->status, sizeof(n->status),
+                      "Too large to edit: showing the first 64 KB (read-only)");
+        }
         if (n->len) memcpy(n->text, file->data, n->len);
     }
     WND *w = AppCreateWindow(APP_NOTEPAD, "Notepad", 700, 460, NP_BG);

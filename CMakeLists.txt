@@ -87,6 +87,7 @@ ExternalProject_Add(kernel_build
         -DCMAKE_SOURCE_DIR=${CMAKE_SOURCE_DIR}
     BUILD_ALWAYS  TRUE
     INSTALL_COMMAND ""
+    BUILD_BYPRODUCTS "${CMAKE_BINARY_DIR}/kernel_build/kernel.elf"
     LOG_CONFIGURE TRUE
     LOG_BUILD     TRUE
 )
@@ -97,7 +98,9 @@ set(KERNEL_ELF "${BINARY_DIR}/kernel.elf")
 add_custom_command(
     OUTPUT  "${CMAKE_BINARY_DIR}/kernel.elf"
     COMMAND ${CMAKE_COMMAND} -E copy "${KERNEL_ELF}" "${CMAKE_BINARY_DIR}/kernel.elf"
-    DEPENDS kernel_build
+    # The file dependency (not just the target) makes the copy re-run
+    # whenever the kernel is rebuilt; a target name alone only orders it.
+    DEPENDS kernel_build "${KERNEL_ELF}"
 )
 add_custom_target(copy_kernel ALL DEPENDS "${CMAKE_BINARY_DIR}/kernel.elf")
 

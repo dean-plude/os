@@ -165,6 +165,7 @@ void RamfsInit(void)
     g_root.dir = true;
 
     seed_dir("\\", "Documents");
+    seed_dir("\\", "Downloads");
     seed_dir("\\", "Pictures");
     seed_dir("\\", "Personal");
     seed_dir("\\", "Projects");

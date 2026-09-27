@@ -80,10 +80,14 @@ set(CMAKE_ASM_NASM_FLAGS "-f elf64 -g -F dwarf")
 # Include paths (accessible to all kernel C files)
 # -------------------------------------------------------------------------
 
+set(LWIP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lwip/src")
+
 set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/net/port"      # lwIP port: lwipopts.h, arch/cc.h
+    "${LWIP_DIR}/include"
 )
 
 # -------------------------------------------------------------------------
@@ -111,6 +115,9 @@ set(KERNEL_C_SOURCES
     hal/framebuffer.c
     hal/rtc.c
     hal/ps2.c
+    hal/pci.c
+    drivers/e1000.c
+    net/net.c
     ke/main.c
     ke/printf.c
     ke/scheduler.c
@@ -148,6 +155,15 @@ set(KERNEL_C_SOURCES
 # -------------------------------------------------------------------------
 # Build
 # -------------------------------------------------------------------------
+
+# lwIP 2.2.0 (third_party/lwip, BSD licence): IPv4 core + Ethernet
+file(GLOB LWIP_SOURCES
+    "${LWIP_DIR}/core/*.c"
+    "${LWIP_DIR}/core/ipv4/*.c"
+    "${LWIP_DIR}/netif/ethernet.c"
+)
+set_source_files_properties(${LWIP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+list(APPEND KERNEL_C_SOURCES ${LWIP_SOURCES})
 
 # C object library with kernel flags
 add_library(kernel_objects OBJECT ${KERNEL_C_SOURCES})

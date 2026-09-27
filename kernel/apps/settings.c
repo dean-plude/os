@@ -7,13 +7,14 @@
 #include "../mm/vmm.h"
 #include "../mm/pmm.h"
 #include "../ke/printf.h"
+#include "../net/net.h"
 
 #define SIDE_W 200
 #define ITEM_H 36
 
-typedef struct { int page; } Settings;
+typedef struct { int page; UINT32 net_sig; } Settings;
 
-static const char *g_pages[] = { "System", "Display", "Storage", "About" };
+static const char *g_pages[] = { "System", "Display", "Storage", "Network", "About" };
 #define N_PAGES ((int)(sizeof(g_pages) / sizeof(g_pages[0])))
 
 /* A labelled row inside a card: "Label ........ value" */
@@ -103,6 +104,57 @@ static void page_storage(int x, int y, int w)
     bar(x + 16, y + 66, w - 32, bytes, bytes + 1024 * 1024);
 }
 
+static void page_network(int x, int y, int w)
+{
+    NetStatus ns;
+    NetGetStatus(&ns);
+    char mac[24], ip[20], mask[20], gw[20], dns[48], d2[20];
+
+    GdiRoundRect(RECT(x, y, w, 72), 8, UI_CARD, GDI_TRANSPARENT);
+    GdiTextBold(x + 16, y + 14, "Ethernet", UI_TEXT);
+    const char *state = !ns.present ? "No network adapter found" :
+                        !ns.link ? "Disconnected (no link)" :
+                        !ns.configured ? "Connecting (waiting for DHCP)..." : "Connected";
+    GdiColor dot = ns.configured ? GDI_C(0x2E, 0xB8, 0x5C) :
+                   ns.link ? GDI_C(0xE8, 0xA8, 0x20) : GDI_C(0xD0, 0x40, 0x40);
+    GdiRoundRect(RECT(x + 16, y + 44, 10, 10), 5, dot, GDI_TRANSPARENT);
+    GdiTextT(x + 34, y + 40, state, UI_TEXT2);
+    y += 88;
+    if (!ns.present) return;
+
+    ksnprintf(mac, sizeof(mac), "%02X-%02X-%02X-%02X-%02X-%02X", ns.mac[0], ns.mac[1],
+              ns.mac[2], ns.mac[3], ns.mac[4], ns.mac[5]);
+    row(x, y, w, "Adapter", ns.adapter);          y += 50;
+    row(x, y, w, "Physical address (MAC)", mac);  y += 50;
+    if (!ns.configured) return;
+    NetFormatIp(ns.ip, ip, sizeof(ip));
+    NetFormatIp(ns.mask, mask, sizeof(mask));
+    NetFormatIp(ns.gw, gw, sizeof(gw));
+    NetFormatIp(ns.dns[0], dns, sizeof(dns));
+    if (ns.dns[1]) {
+        NetFormatIp(ns.dns[1], d2, sizeof(d2));
+        strcat(dns, ", ");
+        strcat(dns, d2);
+    }
+    row(x, y, w, "IPv4 address (DHCP)", ip);      y += 50;
+    row(x, y, w, "Subnet mask", mask);            y += 50;
+    row(x, y, w, "Default gateway", gw);          y += 50;
+    row(x, y, w, "DNS servers", dns);
+}
+
+/* Repaint the Network page when the connection state changes */
+static bool set_tick(WND *w)
+{
+    Settings *st = w->user;
+    if (!st || st->page != 3) return false;
+    NetStatus ns;
+    NetGetStatus(&ns);
+    UINT32 sig = ns.ip ^ ns.gw ^ ns.dns[0] ^ (ns.link ? 1u : 0) ^ (ns.configured ? 2u : 0);
+    if (sig == st->net_sig) return false;
+    st->net_sig = sig;
+    return true;
+}
+
 static void page_about(int x, int y, int w)
 {
     GdiTextLarge(x, y, "NovaOS", UI_TEXT);             y += 40;
@@ -136,7 +188,8 @@ static void set_paint(WND *w)
     case 0: page_system(x, y, w2);  break;
     case 1: page_display(x, y, w2); break;
     case 2: page_storage(x, y, w2); break;
-    case 3: page_about(x, y, w2);   break;
+    case 3: page_network(x, y, w2); break;
+    case 4: page_about(x, y, w2);   break;
     }
 }
 
@@ -169,4 +222,5 @@ void SettingsOpen(void)
     w->on_mouse = set_mouse;
     w->on_key   = set_key;
     w->on_close = set_close;
+    w->on_tick  = set_tick;
 }
