@@ -226,20 +226,27 @@ void sched_init(void)
 Thread *sched_create_thread(const char *name, ThreadEntry entry,
                              void *arg, uint8_t priority)
 {
+    return sched_create_thread_ex(name, entry, arg, priority, THREAD_STACK_SIZE);
+}
+
+Thread *sched_create_thread_ex(const char *name, ThreadEntry entry,
+                                void *arg, uint8_t priority, size_t stack_size)
+{
     /* Allocate thread descriptor */
     Thread *t = kzalloc(sizeof(Thread));
     if (!t) return NULL;
 
     /* Allocate kernel stack */
-    t->kernel_stack = kernel_alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE);
+    stack_size = (stack_size + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
+    t->kernel_stack = kernel_alloc_pages(stack_size / PAGE_SIZE);
     if (!t->kernel_stack) {
         kfree(t);
         return NULL;
     }
-    t->stack_size = THREAD_STACK_SIZE;
+    t->stack_size = stack_size;
 
     /* Stack top (stack grows down) */
-    uintptr_t stack_top = (uintptr_t)t->kernel_stack + THREAD_STACK_SIZE;
+    uintptr_t stack_top = (uintptr_t)t->kernel_stack + stack_size;
 
     /* Set up the initial stack so context_switch "returns" to thread_trampoline,
      * and thread_trampoline will find entry in r12, arg in r13.

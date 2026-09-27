@@ -153,6 +153,16 @@ char *strrchr(const char *s, int c)
     return (ch == '\0') ? (char *)s : (char *)last;
 }
 
+char *strstr(const char *haystack, const char *needle)
+{
+    size_t n = strlen(needle);
+    if (!n) return (char *)haystack;
+    for (; *haystack; haystack++)
+        if (*haystack == *needle && !strncmp(haystack, needle, n))
+            return (char *)haystack;
+    return NULL;
+}
+
 char *strdup(const char *s)
 {
     size_t len = strlen(s) + 1;

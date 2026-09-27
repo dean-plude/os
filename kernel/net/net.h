@@ -50,14 +50,18 @@ typedef struct NetOp {
     int             rtt_ms;
     int             ttl;
 
-    /* HTTP: the raw response (status line + headers + body) */
+    /* HTTP: the response (status line + headers + body; a chunked body
+     * is delivered already decoded) */
     char           *data;
     UINT32          len;
+    char            tls_info[64];   /* https: "TLS 1.3, TLS_AES_128_GCM_SHA256" */
+    bool            reused;         /* sent on a kept-alive connection */
+    bool            resumed;        /* TLS session resumed (abbreviated handshake) */
 
     /* private */
-    bool            in_use, released;
+    bool            in_use, released, retried;
     UINT64          started, deadline;   /* ticks */
-    void           *pcb;
+    void           *conn;           /* http.c connection while in flight */
     UINT32          cap;
     char            request[768];
 } NetOp;
@@ -66,8 +70,12 @@ typedef struct NetOp {
 NetOp *NetResolve(const char *host);
 /* Send one ICMP echo request; completes on the reply or after 2 s. */
 NetOp *NetPing(UINT32 ip_be, UINT16 seq);
-/* HTTP/1.0 GET http://host:port/path (connection: close). */
-NetOp *NetHttpGet(UINT32 ip_be, UINT16 port, const char *host, const char *path);
+/* HTTP/1.1 GET http[s]://host:port/path.  Connections are kept alive and
+ * reused for later requests to the same server; with @https the
+ * connection uses TLS 1.2/1.3, the server's certificate must chain to a
+ * trusted root and match @host, and sessions are resumed when possible. */
+NetOp *NetHttpGet(UINT32 ip_be, UINT16 port, const char *host, const char *path,
+                  bool https);
 /* Done with an operation (safe while it is still pending). */
 void   NetRelease(NetOp *op);
 
@@ -81,3 +89,14 @@ bool   NetParseUrl(const char *url, char *host, int host_cap, UINT16 *port,
  * receives a Location header if present. */
 int    NetHttpParse(const NetOp *op, const char **body, UINT32 *body_len,
                     char *location, int loc_cap);
+
+/* -----------------------------------------------------------------------
+ * Trusted root certificates (HTTPS)
+ * ----------------------------------------------------------------------- */
+/* Number of trusted roots; *imported (may be NULL) gets the user-added count. */
+int    NetRootCount(int *imported);
+/* Name of root i (its common name); *imported set for user-added roots. */
+bool   NetRootName(int i, char *buf, int cap, bool *imported);
+/* Trust the CA certificate(s) in a PEM or DER file.  Returns the number
+ * added; 0 with *err set on failure.  Lasts until reboot. */
+int    NetImportRoots(const void *data, UINT32 len, char *err, int err_cap);

@@ -81,6 +81,7 @@ set(CMAKE_ASM_NASM_FLAGS "-f elf64 -g -F dwarf")
 # -------------------------------------------------------------------------
 
 set(LWIP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lwip/src")
+set(MBEDTLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mbedtls")
 
 set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -88,6 +89,7 @@ set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/../include"
     "${CMAKE_CURRENT_SOURCE_DIR}/net/port"      # lwIP port: lwipopts.h, arch/cc.h
     "${LWIP_DIR}/include"
+    "${MBEDTLS_DIR}/include"
 )
 
 # -------------------------------------------------------------------------
@@ -118,6 +120,10 @@ set(KERNEL_C_SOURCES
     hal/pci.c
     drivers/e1000.c
     net/net.c
+    net/tls.c
+    net/tls_roots.c
+    net/tls_platform.c
+    net/http.c
     ke/main.c
     ke/printf.c
     ke/scheduler.c
@@ -165,9 +171,19 @@ file(GLOB LWIP_SOURCES
 set_source_files_properties(${LWIP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 list(APPEND KERNEL_C_SOURCES ${LWIP_SOURCES})
 
+# Mbed TLS 3.6.7 (third_party/mbedtls, Apache-2.0): TLS 1.2/1.3 and X.509.
+# Configured by net/port/mbedtls_nova_config.h (MBEDTLS_CONFIG_FILE, set
+# for every kernel source below so all users see the same configuration).
+file(GLOB MBEDTLS_SOURCES "${MBEDTLS_DIR}/library/*.c")
+set_source_files_properties(${MBEDTLS_SOURCES} PROPERTIES COMPILE_OPTIONS
+    "-w;-I${MBEDTLS_DIR}/library")
+list(APPEND KERNEL_C_SOURCES ${MBEDTLS_SOURCES})
+
 # C object library with kernel flags
 add_library(kernel_objects OBJECT ${KERNEL_C_SOURCES})
 target_compile_options(kernel_objects PRIVATE ${KERNEL_CFLAGS})
+target_compile_definitions(kernel_objects PRIVATE
+    "MBEDTLS_CONFIG_FILE=\"mbedtls_nova_config.h\"")
 target_include_directories(kernel_objects PRIVATE ${KERNEL_INCLUDE_DIRS})
 
 # ASM objects via NASM
