@@ -1,0 +1,5 @@
+BearSSL 0.6 (https://bearssl.org), MIT licence.
+Source: Ubuntu archive bearssl_0.6+dfsg.1.orig.tar.xz (upstream 0.6; the
+Debian repack only drops the prebuilt T0Comp.exe).  Kept: src/ and inc/
+(built into the kernel), tools/ (the host "brssl" tool, used by
+scripts/gen-tls-roots.sh) and the licence.
