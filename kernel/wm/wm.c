@@ -131,13 +131,8 @@ static void draw_window(WND *w)
     GdiRect f = w->frame;
 
     /* Drop shadow */
-    if (w->style & WS_SHADOW) {
-        for (int s = 6; s >= 1; s--) {
-            int a = 10 + (6 - s) * 6;
-            GdiRoundAlpha(RECT(f.x - s, f.y - s + 3, f.w + 2 * s, f.h + 2 * s),
-                          12 + s, GDI_C(0, 0, 0), a);
-        }
-    }
+    if (w->style & WS_SHADOW)
+        GdiDropShadow(RECT(f.x, f.y + 3, f.w, f.h), 10, 12, 60);
 
     /* Client background */
     GdiRoundRect(f, 10, w->client_bg, GDI_TRANSPARENT);
@@ -208,87 +203,70 @@ void WmComposite(void)
 
     /* 3. Overlay (taskbar, start menu) */
     if (g_overlay) g_overlay();
+
+    /* 4. Show the finished frame */
+    GdiPresent();
 }
 
 /* -----------------------------------------------------------------------
  * Software mouse cursor
+ *
+ * The pointer is an anti-aliased vector arrow drawn by the GDI straight to
+ * the screen (over the presented frame) with its own save-under, so moving
+ * it never requires recompositing.  Its position is kept in DEVICE pixels
+ * so it is drawn at native resolution; WmCursorX/Y report logical ones.
  * ----------------------------------------------------------------------- */
-#define CUR_W 12
-#define CUR_H 19
+static int  g_cx, g_cy;            /* device pixels */
+static bool g_cursor_shown;
 
-/* Classic arrow.  'X' = black outline, '.' = white fill, ' ' = transparent. */
-static const char *const g_cursor_bmp[CUR_H] = {
-    "X           ",
-    "XX          ",
-    "X.X         ",
-    "X..X        ",
-    "X...X       ",
-    "X....X      ",
-    "X.....X     ",
-    "X......X    ",
-    "X.......X   ",
-    "X........X  ",
-    "X.........X ",
-    "X......XXXXX",
-    "X...X..X    ",
-    "X..X X..X   ",
-    "X.X  X..X   ",
-    "XX    X..X  ",
-    "X     X..X  ",
-    "       X..X ",
-    "       XXXX ",
-};
+int WmCursorX(void) { return g_cx / GdiScale(); }
+int WmCursorY(void) { return g_cy / GdiScale(); }
 
-static int    g_cx, g_cy;
-static bool   g_cursor_shown;
-static UINT32 g_cursor_under[CUR_W * CUR_H];
-
-int WmCursorX(void) { return g_cx; }
-int WmCursorY(void) { return g_cy; }
-
-static void cursor_paint(void)
+static void cursor_show_dev(int dx, int dy)
 {
-    for (int row = 0; row < CUR_H; row++) {
-        const char *line = g_cursor_bmp[row];
-        for (int col = 0; col < CUR_W; col++) {
-            char p = line[col];
-            if (p == 'X') GdiPutPixel(g_cx + col, g_cy + row, GDI_BLACK);
-            else if (p == '.') GdiPutPixel(g_cx + col, g_cy + row, GDI_WHITE);
-        }
-    }
+    int s = GdiScale();
+    int maxx = GdiScreenW() * s - 1, maxy = GdiScreenH() * s - 1;
+    if (dx < 0) dx = 0;
+    if (dx > maxx) dx = maxx;
+    if (dy < 0) dy = 0;
+    if (dy > maxy) dy = maxy;
+    g_cx = dx;
+    g_cy = dy;
+    GdiCursorDraw(g_cx, g_cy);
+    g_cursor_shown = true;
 }
 
 void WmCursorShow(int x, int y)
 {
-    g_cx = x;
-    g_cy = y;
-    GdiBlitSave(RECT(g_cx, g_cy, CUR_W, CUR_H), g_cursor_under);
-    cursor_paint();
-    g_cursor_shown = true;
+    int s = GdiScale();
+    cursor_show_dev(x * s, y * s);
 }
 
 void WmCursorHide(void)
 {
     if (!g_cursor_shown) return;
-    GdiBlitRestore(RECT(g_cx, g_cy, CUR_W, CUR_H), g_cursor_under);
+    GdiCursorErase(g_cx, g_cy);
     g_cursor_shown = false;
 }
 
 void WmCursorMove(int x, int y)
 {
-    int sw = GdiScreenW(), sh = GdiScreenH();
-    if (x < 0) x = 0;
-    if (x > sw - 1) x = sw - 1;
-    if (y < 0) y = 0;
-    if (y > sh - 1) y = sh - 1;
     WmCursorHide();
     WmCursorShow(x, y);
 }
 
+void WmCursorMoveBy(int dx, int dy)
+{
+    /* One mouse count moves one logical pixel, as before scaling existed */
+    int s = GdiScale();
+    WmCursorHide();
+    cursor_show_dev(g_cx + dx * s, g_cy + dy * s);
+}
+
 void WmCursorReshow(void)
 {
-    /* The scene was fully redrawn, so the previous save-under is stale and
-     * the cursor was wiped.  Re-grab and redraw at the current position. */
+    /* A new frame was presented: the pointer and its save-under are gone.
+     * Grab a fresh save-under and redraw at the current position. */
     g_cursor_shown = false;
-    WmCursorShow(g_cx, g_cy);
+    cursor_show_dev(g_cx, g_cy);
 }

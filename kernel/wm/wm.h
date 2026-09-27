@@ -77,18 +77,21 @@ GdiRect WmClientRect(const WND *w);
 typedef void (*WmLayerFn)(void);
 void WmSetDesktop(WmLayerFn background, WmLayerFn overlay);
 
-/* Render one full frame. */
+/* Render one full frame into the back buffer and present it. */
 void WmComposite(void);
 
 int  WmWindowCount(void);
 
 /* -----------------------------------------------------------------------
- * Software mouse cursor (drawn directly to the front buffer with
- * save-under, so moving it does not require recompositing the scene).
+ * Software mouse cursor (drawn directly to the screen with save-under, so
+ * moving it does not require recompositing the scene).  Coordinates are
+ * logical pixels.
  * ----------------------------------------------------------------------- */
 
 /* Draw the cursor at (x,y), saving the pixels beneath it. */
 void WmCursorShow(int x, int y);
+/* Move by a relative mouse delta (one count = one logical pixel). */
+void WmCursorMoveBy(int dx, int dy);
 /* Restore the pixels beneath the cursor (if currently shown). */
 void WmCursorHide(void);
 /* Hide at the old position, then show at the new (clamped) position. */

@@ -131,6 +131,7 @@ set(KERNEL_C_SOURCES
     fs/vfs.c
     fs/initrd.c
     gdi/gdi.c
+    gdi/font_inter.c
     wm/wm.c
     wm/desktop.c
     wm/input.c

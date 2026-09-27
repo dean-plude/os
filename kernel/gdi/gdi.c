@@ -1,58 +1,104 @@
 /*
  * gdi.c — NovaOS Graphics Device Interface (software renderer)
  *
- * Phase 7.  A small, dependency-free 2D rasterizer that writes directly
- * into the GOP linear framebuffer obtained from the HAL.  Everything is
- * clipped to the screen bounds; out-of-range coordinates are safe.
+ * Public coordinates are logical pixels; everything is rasterized at
+ * device resolution (logical × g.s).  Anti-aliasing is computed from a
+ * signed distance to each shape's edge in 1/256-pixel fixed point, so no
+ * floating point is needed (the kernel is built without SSE).
  *
- * The renderer keeps a private copy of the framebuffer surface so it does
- * not have to re-query the HAL on every primitive.  Pixels are stored in
- * the framebuffer's native channel order (BGR or RGB) which we resolve
- * once at init time.
+ * Drawing targets a back buffer in RAM.  GdiPresent() copies it to the
+ * framebuffer, so partially drawn frames are never visible and blending
+ * reads come from fast RAM rather than uncached VRAM.
+ *
+ * Blending works directly on native pixels: RGB and BGR framebuffers both
+ * keep one channel per byte, and a per-channel blend doesn't care which
+ * byte holds which channel.
  */
 
 #include "gdi.h"
+#include "font.h"
 #include "../lib/string.h"
+#include "../mm/vmm.h"
+#include "../ke/printf.h"
+
+#define FX            256     /* fixed-point one: 1/256 device pixel */
+#define LINE_BASELINE 12      /* baseline within the 16px logical line box */
 
 /* -----------------------------------------------------------------------
  * Surface state
  * ----------------------------------------------------------------------- */
 static struct {
-    UINT32 *vram;
-    int     w, h, stride;
-    bool    bgr;
-    bool    ready;
+    UINT32 *vram;  int vstride;   /* hardware framebuffer */
+    UINT32 *buf;   int bstride;   /* back buffer (== vram if none) */
+    int     dw, dh;               /* device size */
+    int     s;                    /* scale: device px per logical px */
+    int     lw, lh;               /* logical size */
+    bool    bgr, ready;
 } g;
 
-/* Convert a logical GdiColor into the native VRAM pixel.
- *
- * GdiColor == FB_COLOR(r,g,b) == (b<<16)|(g<<8)|r, i.e. little-endian
- * bytes [R, G, B, 0].  That byte order is already what RGB hardware
- * (PixelRedGreenBlue, byte0 = Red) expects, so it is emitted as-is.  BGR
- * hardware (PixelBlueGreenRed, byte0 = Blue) needs Red and Blue swapped. */
+static inline int imin(int a, int b) { return a < b ? a : b; }
+static inline int imax(int a, int b) { return a > b ? a : b; }
+static inline int iabs(int a)        { return a < 0 ? -a : a; }
+
+/* Logical GdiColor (0x00BBGGRR) → native framebuffer pixel */
 static inline UINT32 pixof(GdiColor c)
 {
     UINT32 r = c & 0xFF, gg = (c >> 8) & 0xFF, b = (c >> 16) & 0xFF;
     if (g.bgr)
         return (r << 16) | (gg << 8) | b;   /* byte0 = Blue */
-    return (b << 16) | (gg << 8) | r;       /* byte0 = Red  (== c) */
+    return (b << 16) | (gg << 8) | r;       /* byte0 = Red  */
 }
 
-static inline void put(int x, int y, UINT32 native)
+/* d + (s - d) * a / 255, per channel, on packed pixels */
+static inline UINT32 blend(UINT32 d, UINT32 s, UINT32 a)
 {
-    if ((unsigned)x >= (unsigned)g.w || (unsigned)y >= (unsigned)g.h) return;
-    g.vram[(size_t)y * g.stride + x] = native;
+    UINT32 na = 255 - a;
+    UINT32 rb = (s & 0xFF00FF) * a + (d & 0xFF00FF) * na;
+    UINT32 gg = (s & 0x00FF00) * a + (d & 0x00FF00) * na;
+    rb = ((rb + 0x800080 + ((rb >> 8) & 0xFF00FF)) >> 8) & 0xFF00FF;
+    gg = ((gg + 0x008000 + ((gg >> 8) & 0x00FF00)) >> 8) & 0x00FF00;
+    return rb | gg;
 }
 
-/* Read a pixel back as a logical GdiColor (inverse of pixof, for blending). */
-static inline GdiColor get(int x, int y)
+/* Blend one device pixel into the back buffer; a = coverage 0..255 */
+static inline void plot(int x, int y, UINT32 n, int a)
 {
-    if ((unsigned)x >= (unsigned)g.w || (unsigned)y >= (unsigned)g.h) return 0;
-    UINT32 n = g.vram[(size_t)y * g.stride + x];
-    UINT32 c0 = n & 0xFF, c1 = (n >> 8) & 0xFF, c2 = (n >> 16) & 0xFF;
-    if (g.bgr)                              /* n = [B,G,R] → FB_COLOR */
-        return (c0 << 16) | (c1 << 8) | c2;
-    return n;                               /* n already == FB_COLOR */
+    if (a <= 0 || (unsigned)x >= (unsigned)g.dw || (unsigned)y >= (unsigned)g.dh)
+        return;
+    UINT32 *p = &g.buf[(size_t)y * g.bstride + x];
+    *p = (a >= 255) ? n : blend(*p, n, (UINT32)a);
+}
+
+/* Horizontal device span [x0, x1) at uniform coverage a */
+static void span(int y, int x0, int x1, UINT32 n, int a)
+{
+    if (a <= 0 || (unsigned)y >= (unsigned)g.dh) return;
+    x0 = imax(x0, 0);
+    x1 = imin(x1, g.dw);
+    UINT32 *p = &g.buf[(size_t)y * g.bstride];
+    if (a >= 255) for (int x = x0; x < x1; x++) p[x] = n;
+    else          for (int x = x0; x < x1; x++) p[x] = blend(p[x], n, (UINT32)a);
+}
+
+/* Signed distance → coverage 0..255 (pixel-centre sampling, 1px ramp) */
+static inline int cov_of(int sd)
+{
+    int c = FX / 2 - sd;
+    if (c <= 0) return 0;
+    if (c >= FX) return 255;
+    return (c * 255) / FX;
+}
+
+static UINT32 isqrt64(UINT64 v)
+{
+    UINT64 r = 0, bit = (UINT64)1 << 62;
+    while (bit > v) bit >>= 2;
+    while (bit) {
+        if (v >= r + bit) { v -= r + bit; r = (r >> 1) + bit; }
+        else              { r >>= 1; }
+        bit >>= 2;
+    }
+    return (UINT32)r;
 }
 
 /* -----------------------------------------------------------------------
@@ -66,17 +112,47 @@ bool GdiInitialize(void)
         g.ready = false;
         return false;
     }
-    g.vram   = s.vram;
-    g.w      = s.width;
-    g.h      = s.height;
-    g.stride = s.stride;
-    g.bgr    = s.bgr;
-    g.ready  = true;
+    g.vram    = s.vram;
+    g.vstride = s.stride;
+    g.dw      = s.width;
+    g.dh      = s.height;
+    g.bgr     = s.bgr;
+
+    /* Integer scale so the logical desktop is at least 1280x800 */
+    g.s = imin(g.dw / 1280, g.dh / 800);
+    if (g.s < 1) g.s = 1;
+    if (g.s > GDI_MAX_SCALE) g.s = GDI_MAX_SCALE;
+    g.lw = g.dw / g.s;
+    g.lh = g.dh / g.s;
+
+    /* Back buffer; fall back to drawing on the framebuffer directly */
+    g.buf = kzalloc((size_t)g.dw * g.dh * sizeof(UINT32));
+    if (g.buf) {
+        g.bstride = g.dw;
+    } else {
+        g.buf     = g.vram;
+        g.bstride = g.vstride;
+    }
+
+    g.ready = true;
+    kprintf("[GDI] %dx%d device, scale %dx -> %dx%d logical, %s\n",
+            g.dw, g.dh, g.s, g.lw, g.lh,
+            g.buf != g.vram ? "double-buffered" : "direct (no back buffer)");
     return true;
 }
 
-int GdiScreenW(void) { return g.ready ? g.w : 0; }
-int GdiScreenH(void) { return g.ready ? g.h : 0; }
+int GdiScreenW(void) { return g.ready ? g.lw : 0; }
+int GdiScreenH(void) { return g.ready ? g.lh : 0; }
+int GdiScale(void)   { return g.ready ? g.s  : 1; }
+
+void GdiPresent(void)
+{
+    if (!g.ready || g.buf == g.vram) return;
+    for (int y = 0; y < g.dh; y++)
+        memcpy(g.vram + (size_t)y * g.vstride,
+               g.buf  + (size_t)y * g.bstride,
+               (size_t)g.dw * sizeof(UINT32));
+}
 
 /* -----------------------------------------------------------------------
  * Color math
@@ -87,257 +163,452 @@ GdiColor GdiLerp(GdiColor a, GdiColor b, int t)
     if (t >= 255) return b;
     int ra = GDI_R(a), ga = GDI_G(a), ba = GDI_B(a);
     int rb = GDI_R(b), gb = GDI_G(b), bb = GDI_B(b);
-    int r = ra + ((rb - ra) * t) / 255;
+    int r  = ra + ((rb - ra) * t) / 255;
     int gg = ga + ((gb - ga) * t) / 255;
     int bl = ba + ((bb - ba) * t) / 255;
     return GDI_C(r, gg, bl);
 }
 
 /* -----------------------------------------------------------------------
- * Rectangles & gradients
+ * Axis-aligned fills (edges are always on device pixel boundaries)
  * ----------------------------------------------------------------------- */
+static void dev_fill(int x0, int y0, int x1, int y1, UINT32 n, int a)
+{
+    y0 = imax(y0, 0);
+    y1 = imin(y1, g.dh);
+    for (int y = y0; y < y1; y++) span(y, x0, x1, n, a);
+}
+
 void GdiFillRect(GdiRect r, GdiColor c)
 {
     if (!g.ready) return;
-    UINT32 n = pixof(c);
-    int x0 = r.x < 0 ? 0 : r.x;
-    int y0 = r.y < 0 ? 0 : r.y;
-    int x1 = r.x + r.w; if (x1 > g.w) x1 = g.w;
-    int y1 = r.y + r.h; if (y1 > g.h) y1 = g.h;
-    for (int y = y0; y < y1; y++) {
-        UINT32 *line = g.vram + (size_t)y * g.stride;
-        for (int x = x0; x < x1; x++) line[x] = n;
-    }
+    int s = g.s;
+    dev_fill(r.x * s, r.y * s, (r.x + r.w) * s, (r.y + r.h) * s, pixof(c), 255);
+}
+
+void GdiAlphaFill(GdiRect r, GdiColor c, int alpha)
+{
+    if (!g.ready || alpha <= 0) return;
+    int s = g.s;
+    dev_fill(r.x * s, r.y * s, (r.x + r.w) * s, (r.y + r.h) * s, pixof(c),
+             imin(alpha, 255));
 }
 
 void GdiGradientV(GdiRect r, GdiColor top, GdiColor bottom)
 {
     if (!g.ready || r.h <= 0) return;
-    int y0 = r.y < 0 ? 0 : r.y;
-    int y1 = r.y + r.h; if (y1 > g.h) y1 = g.h;
-    for (int y = y0; y < y1; y++) {
-        int t = ((y - r.y) * 255) / (r.h - 1 > 0 ? r.h - 1 : 1);
-        GdiColor row = GdiLerp(top, bottom, t);
-        GdiFillRect(RECT(r.x, y, r.w, 1), row);
+    int s = g.s, y0 = r.y * s, h = r.h * s;
+    int ya = imax(y0, 0), yb = imin(y0 + h, g.dh);
+    for (int y = ya; y < yb; y++) {
+        int t = ((y - y0) * 255) / (h > 1 ? h - 1 : 1);
+        span(y, r.x * s, (r.x + r.w) * s, pixof(GdiLerp(top, bottom, t)), 255);
     }
 }
 
 void GdiGradientH(GdiRect r, GdiColor left, GdiColor right)
 {
     if (!g.ready || r.w <= 0) return;
-    int x0 = r.x < 0 ? 0 : r.x;
-    int x1 = r.x + r.w; if (x1 > g.w) x1 = g.w;
-    for (int x = x0; x < x1; x++) {
-        int t = ((x - r.x) * 255) / (r.w - 1 > 0 ? r.w - 1 : 1);
-        GdiColor col = GdiLerp(left, right, t);
-        GdiVLine(x, r.y, r.y + r.h - 1, col);
-    }
-}
-
-void GdiAlphaFill(GdiRect r, GdiColor c, int alpha)
-{
-    if (!g.ready) return;
-    if (alpha >= 255) { GdiFillRect(r, c); return; }
-    if (alpha <= 0) return;
-    int x0 = r.x < 0 ? 0 : r.x;
-    int y0 = r.y < 0 ? 0 : r.y;
-    int x1 = r.x + r.w; if (x1 > g.w) x1 = g.w;
-    int y1 = r.y + r.h; if (y1 > g.h) y1 = g.h;
-    for (int y = y0; y < y1; y++) {
-        for (int x = x0; x < x1; x++) {
-            GdiColor bg = get(x, y);
-            put(x, y, pixof(GdiLerp(bg, c, alpha)));
-        }
+    int s = g.s, x0 = r.x * s, w = r.w * s;
+    int xa = imax(x0, 0), xb = imin(x0 + w, g.dw);
+    int ya = imax(r.y * s, 0), yb = imin((r.y + r.h) * s, g.dh);
+    for (int x = xa; x < xb; x++) {
+        int t = ((x - x0) * 255) / (w > 1 ? w - 1 : 1);
+        UINT32 n = pixof(GdiLerp(left, right, t));
+        for (int y = ya; y < yb; y++) g.buf[(size_t)y * g.bstride + x] = n;
     }
 }
 
 void GdiHLine(int y, int x0, int x1, GdiColor c)
 {
-    if (!g.ready) return;
     if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
-    UINT32 n = pixof(c);
-    for (int x = x0; x <= x1; x++) put(x, y, n);
+    GdiFillRect(RECT(x0, y, x1 - x0 + 1, 1), c);
 }
 
 void GdiVLine(int x, int y0, int y1, GdiColor c)
 {
-    if (!g.ready) return;
     if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
-    UINT32 n = pixof(c);
-    for (int y = y0; y <= y1; y++) put(x, y, n);
+    GdiFillRect(RECT(x, y0, 1, y1 - y0 + 1), c);
 }
 
-void GdiFillCircle(int cx, int cy, int rad, GdiColor c)
+void GdiPutPixel(int x, int y, GdiColor c)
 {
-    if (!g.ready || rad <= 0) return;
-    UINT32 n = pixof(c);
-    int r2 = rad * rad;
-    for (int dy = -rad; dy <= rad; dy++) {
-        int dx2 = r2 - dy * dy;
-        if (dx2 < 0) continue;
-        /* integer sqrt */
-        int dx = 0; while ((dx + 1) * (dx + 1) <= dx2) dx++;
-        int y = cy + dy;
-        for (int x = cx - dx; x <= cx + dx; x++) put(x, y, n);
-    }
+    GdiFillRect(RECT(x, y, 1, 1), c);
 }
 
 /* -----------------------------------------------------------------------
  * Rounded rectangles
- *
- * We compute a per-row inset for the four corner quadrants using an
- * integer circle test, then fill / blend the resulting span.
  * ----------------------------------------------------------------------- */
+typedef struct { int x0, y0, x1, y1, r; } RBox;   /* device px, [x0,x1) */
 
-/* For a given row offset within a corner of radius `rad`, return how many
- * pixels are clipped off the edge (0 in the straight middle section). */
-static int corner_inset(int row_from_edge, int rad)
+static RBox rbox_of(GdiRect r, int rad)
 {
-    if (rad <= 0) return 0;
-    if (row_from_edge >= rad) return 0;     /* straight section */
-    int dy = rad - 1 - row_from_edge;       /* distance from corner centre */
-    int dx2 = rad * rad - dy * dy;
-    if (dx2 < 0) dx2 = 0;
-    int dx = 0; while ((dx + 1) * (dx + 1) <= dx2) dx++;
-    return rad - dx;
+    int s = g.s;
+    RBox b = { r.x * s, r.y * s, (r.x + r.w) * s, (r.y + r.h) * s, rad * s };
+    int lim = imin(b.x1 - b.x0, b.y1 - b.y0) / 2;
+    if (b.r > lim) b.r = lim;
+    if (b.r < 0)   b.r = 0;
+    return b;
+}
+
+/* Signed distance (1/256 px, negative inside) from the centre of device
+ * pixel (px, py) to the rounded box. */
+static int rbox_sd(const RBox *b, int px, int py)
+{
+    int qx = iabs((2 * px + 1) * FX - (b->x0 + b->x1) * FX) / 2
+             - ((b->x1 - b->x0) * FX / 2 - b->r * FX);
+    int qy = iabs((2 * py + 1) * FX - (b->y0 + b->y1) * FX) / 2
+             - ((b->y1 - b->y0) * FX / 2 - b->r * FX);
+    int outside;
+    if (qx > 0 && qy > 0)
+        outside = (int)isqrt64((UINT64)((INT64)qx * qx + (INT64)qy * qy));
+    else
+        outside = imax(imax(qx, qy), 0);
+    int inside = imin(imax(qx, qy), 0);
+    return outside + inside - b->r * FX;
+}
+
+/* Fill a rounded box; the colour may vary per row (vertical gradient). */
+static void rbox_fill(const RBox *b, GdiColor top, GdiColor bottom, int alpha)
+{
+    if (b->x1 <= b->x0 || b->y1 <= b->y0 || alpha <= 0) return;
+    bool   grad = (top != bottom);
+    UINT32 n    = pixof(top);
+    int    h    = b->y1 - b->y0;
+    int    ya   = imax(b->y0, 0), yb = imin(b->y1, g.dh);
+
+    for (int y = ya; y < yb; y++) {
+        if (grad)
+            n = pixof(GdiLerp(top, bottom, ((y - b->y0) * 255) / (h > 1 ? h - 1 : 1)));
+        if (y >= b->y0 + b->r && y < b->y1 - b->r) {        /* straight rows */
+            span(y, b->x0, b->x1, n, alpha);
+            continue;
+        }
+        /* Corner rows: anti-alias the two corner zones, fill between */
+        for (int x = b->x0; x < b->x0 + b->r; x++)
+            plot(x, y, n, cov_of(rbox_sd(b, x, y)) * alpha / 255);
+        for (int x = b->x1 - b->r; x < b->x1; x++)
+            plot(x, y, n, cov_of(rbox_sd(b, x, y)) * alpha / 255);
+        span(y, b->x0 + b->r, b->x1 - b->r, n, alpha);
+    }
+}
+
+/* 1-logical-pixel border: coverage(outer) − coverage(inner) */
+static void rbox_stroke(const RBox *b, GdiColor c)
+{
+    int    t     = g.s;
+    RBox   in    = { b->x0 + t, b->y0 + t, b->x1 - t, b->y1 - t, imax(b->r - t, 0) };
+    bool   hasin = in.x1 > in.x0 && in.y1 > in.y0;
+    UINT32 n     = pixof(c);
+    int    band  = b->r + t;
+    int    ya    = imax(b->y0, 0), yb = imin(b->y1, g.dh);
+
+    for (int y = ya; y < yb; y++) {
+        if (y >= b->y0 + band && y < b->y1 - band) {       /* straight sides */
+            span(y, b->x0, b->x0 + t, n, 255);
+            span(y, b->x1 - t, b->x1, n, 255);
+            continue;
+        }
+        for (int x = imax(b->x0, 0); x < imin(b->x1, g.dw); x++) {
+            int co = cov_of(rbox_sd(b, x, y));
+            int ci = hasin ? cov_of(rbox_sd(&in, x, y)) : 0;
+            plot(x, y, n, co - ci);
+        }
+    }
 }
 
 void GdiRoundRect(GdiRect r, int rad, GdiColor fill, GdiColor border)
 {
     if (!g.ready || r.w <= 0 || r.h <= 0) return;
-    if (rad * 2 > r.w) rad = r.w / 2;
-    if (rad * 2 > r.h) rad = r.h / 2;
-    bool do_fill   = (fill   != GDI_TRANSPARENT);
-    bool do_border = (border != GDI_TRANSPARENT);
-    UINT32 nf = do_fill ? pixof(fill) : 0;
-    UINT32 nb = do_border ? pixof(border) : 0;
-
-    for (int row = 0; row < r.h; row++) {
-        int from_top    = row;
-        int from_bottom = r.h - 1 - row;
-        int edge = from_top < from_bottom ? from_top : from_bottom;
-        int inset = corner_inset(edge, rad);
-        int xs = r.x + inset;
-        int xe = r.x + r.w - 1 - inset;
-        int y  = r.y + row;
-        if (do_fill)
-            for (int x = xs; x <= xe; x++) put(x, y, nf);
-        if (do_border) {
-            put(xs, y, nb);
-            put(xe, y, nb);
-            /* top & bottom edges */
-            if (edge == 0 || (inset != corner_inset(edge ? edge - 1 : 0, rad)))
-                for (int x = xs; x <= xe; x++) put(x, y, nb);
-        }
-    }
+    RBox b = rbox_of(r, rad);
+    if (fill != GDI_TRANSPARENT)   rbox_fill(&b, fill, fill, 255);
+    if (border != GDI_TRANSPARENT) rbox_stroke(&b, border);
 }
 
 void GdiRoundAlpha(GdiRect r, int rad, GdiColor c, int alpha)
 {
     if (!g.ready || r.w <= 0 || r.h <= 0) return;
-    if (alpha >= 255) { GdiRoundRect(r, rad, c, GDI_TRANSPARENT); return; }
-    if (alpha <= 0) return;
-    if (rad * 2 > r.w) rad = r.w / 2;
-    if (rad * 2 > r.h) rad = r.h / 2;
-    for (int row = 0; row < r.h; row++) {
-        int from_top    = row;
-        int from_bottom = r.h - 1 - row;
-        int edge = from_top < from_bottom ? from_top : from_bottom;
-        int inset = corner_inset(edge, rad);
-        int xs = r.x + inset;
-        int xe = r.x + r.w - 1 - inset;
-        int y  = r.y + row;
-        for (int x = xs; x <= xe; x++) {
-            GdiColor bg = get(x, y);
-            put(x, y, pixof(GdiLerp(bg, c, alpha)));
-        }
-    }
+    RBox b = rbox_of(r, rad);
+    rbox_fill(&b, c, c, imin(alpha, 255));
 }
 
 void GdiRoundGradV(GdiRect r, int rad, GdiColor top, GdiColor bottom)
 {
     if (!g.ready || r.w <= 0 || r.h <= 0) return;
-    if (rad * 2 > r.w) rad = r.w / 2;
-    if (rad * 2 > r.h) rad = r.h / 2;
-    for (int row = 0; row < r.h; row++) {
-        int from_top    = row;
-        int from_bottom = r.h - 1 - row;
-        int edge = from_top < from_bottom ? from_top : from_bottom;
-        int inset = corner_inset(edge, rad);
-        int xs = r.x + inset;
-        int xe = r.x + r.w - 1 - inset;
-        int y  = r.y + row;
-        int t = (row * 255) / (r.h - 1 > 0 ? r.h - 1 : 1);
-        UINT32 n = pixof(GdiLerp(top, bottom, t));
-        for (int x = xs; x <= xe; x++) put(x, y, n);
-    }
+    RBox b = rbox_of(r, rad);
+    rbox_fill(&b, top, bottom, 255);
 }
 
-void GdiPutPixel(int x, int y, GdiColor c)
+void GdiDropShadow(GdiRect r, int rad, int blur, int alpha)
 {
-    if (!g.ready) return;
-    put(x, y, pixof(c));
+    if (!g.ready || r.w <= 0 || r.h <= 0 || blur <= 0 || alpha <= 0) return;
+    RBox   b   = rbox_of(r, rad);
+    int    bl  = blur * g.s * FX;           /* fade distance, fixed point */
+    int    m   = blur * g.s;
+    UINT32 blk = pixof(GDI_BLACK);
+    int ya = imax(b.y0 - m, 0), yb = imin(b.y1 + m, g.dh);
+    int xa = imax(b.x0 - m, 0), xb = imin(b.x1 + m, g.dw);
+
+    for (int y = ya; y < yb; y++) {
+        for (int x = xa; x < xb; x++) {
+            int sd = rbox_sd(&b, x, y);
+            if (sd >= bl) continue;
+            int a = alpha;
+            if (sd > 0) {                        /* quadratic falloff */
+                int f = ((bl - sd) * 255) / bl;  /* 0..255 */
+                a = (alpha * f * f) / (255 * 255);
+            }
+            plot(x, y, blk, a);
+        }
+    }
 }
 
 /* -----------------------------------------------------------------------
- * Raw blit save / restore (cursor save-under) — native pixels, clipped.
- * The buffer is always treated as r.w*r.h entries in row-major order; for
- * out-of-bounds pixels we store/restore 0 so save and restore stay aligned.
+ * Circles and polygons
  * ----------------------------------------------------------------------- */
-void GdiBlitSave(GdiRect r, UINT32 *dst)
+void GdiFillCircle(int cx, int cy, int rad, GdiColor c)
 {
-    if (!g.ready || !dst) return;
-    for (int row = 0; row < r.h; row++) {
-        int y = r.y + row;
-        for (int col = 0; col < r.w; col++) {
-            int x = r.x + col;
-            UINT32 v = 0;
-            if ((unsigned)x < (unsigned)g.w && (unsigned)y < (unsigned)g.h)
-                v = g.vram[(size_t)y * g.stride + x];
-            dst[row * r.w + col] = v;
+    if (!g.ready || rad <= 0) return;
+    int s = g.s;
+    /* Centre of logical pixel (cx, cy); diameter 2*rad+1 logical px */
+    int ccx = (2 * cx + 1) * s * FX / 2, ccy = (2 * cy + 1) * s * FX / 2;
+    int R   = (2 * rad + 1) * s * FX / 2;
+    int ext = (R / FX) + 2;
+    UINT32 n = pixof(c);
+    int x0 = ccx / FX - ext, x1 = ccx / FX + ext;
+    int y0 = ccy / FX - ext, y1 = ccy / FX + ext;
+    for (int y = imax(y0, 0); y <= imin(y1, g.dh - 1); y++) {
+        for (int x = imax(x0, 0); x <= imin(x1, g.dw - 1); x++) {
+            INT64 dx = (INT64)x * FX + FX / 2 - ccx;
+            INT64 dy = (INT64)y * FX + FX / 2 - ccy;
+            int d = (int)isqrt64((UINT64)(dx * dx + dy * dy));
+            plot(x, y, n, cov_of(d - R));
         }
     }
 }
 
-void GdiBlitRestore(GdiRect r, const UINT32 *src)
+/* Signed distance (1/256 px, negative inside) from point (px,py), given
+ * in 1/256 device px, to a polygon given in the same units. */
+static int poly_sd(const GdiPoint *p, int n, int px, int py)
 {
-    if (!g.ready || !src) return;
-    for (int row = 0; row < r.h; row++) {
-        int y = r.y + row;
-        if ((unsigned)y >= (unsigned)g.h) continue;
-        for (int col = 0; col < r.w; col++) {
-            int x = r.x + col;
-            if ((unsigned)x < (unsigned)g.w)
-                g.vram[(size_t)y * g.stride + x] = src[row * r.w + col];
+    INT64 best = -1;
+    bool  in   = false;
+    for (int i = 0, j = n - 1; i < n; j = i++) {
+        INT64 ax = p[j].x, ay = p[j].y, bx = p[i].x, by = p[i].y;
+        /* crossing test for inside/outside */
+        if (((ay > py) != (by > py)) &&
+            (px < ax + (bx - ax) * (py - ay) / (by - ay)))
+            in = !in;
+        /* distance to segment */
+        INT64 ex = bx - ax, ey = by - ay;
+        INT64 wx = px - ax, wy = py - ay;
+        INT64 len2 = ex * ex + ey * ey;
+        INT64 cx = ax, cy = ay;
+        if (len2 > 0) {
+            INT64 dot = wx * ex + wy * ey;
+            if (dot >= len2)   { cx = bx; cy = by; }
+            else if (dot > 0)  { cx = ax + ex * dot / len2; cy = ay + ey * dot / len2; }
         }
+        INT64 dx = px - cx, dy = py - cy;
+        INT64 d2 = dx * dx + dy * dy;
+        if (best < 0 || d2 < best) best = d2;
+    }
+    int d = (int)isqrt64((UINT64)(best < 0 ? 0 : best));
+    return in ? -d : d;
+}
+
+#define POLY_MAX 16
+
+/* Convert 1/16 logical vertices to 1/256 device units, offset by (ox, oy)
+ * device px; returns the device bounding box. */
+static int poly_to_dev(const GdiPoint *src, int n, int ox, int oy, GdiPoint *dst,
+                       int *bx0, int *by0, int *bx1, int *by1)
+{
+    if (n > POLY_MAX) n = POLY_MAX;
+    int f = g.s * (FX / 16);
+    *bx0 = *by0 = 0x7FFFFFFF; *bx1 = *by1 = -0x7FFFFFFF;
+    for (int i = 0; i < n; i++) {
+        dst[i].x = src[i].x * f + ox * FX;
+        dst[i].y = src[i].y * f + oy * FX;
+        *bx0 = imin(*bx0, dst[i].x / FX); *bx1 = imax(*bx1, dst[i].x / FX);
+        *by0 = imin(*by0, dst[i].y / FX); *by1 = imax(*by1, dst[i].y / FX);
+    }
+    return n;
+}
+
+void GdiFillPolygon(const GdiPoint *pts, int n, GdiColor c)
+{
+    if (!g.ready || n < 3) return;
+    GdiPoint d[POLY_MAX];
+    int x0, y0, x1, y1;
+    n = poly_to_dev(pts, n, 0, 0, d, &x0, &y0, &x1, &y1);
+    UINT32 col = pixof(c);
+    for (int y = imax(y0 - 1, 0); y <= imin(y1 + 1, g.dh - 1); y++)
+        for (int x = imax(x0 - 1, 0); x <= imin(x1 + 1, g.dw - 1); x++)
+            plot(x, y, col, cov_of(poly_sd(d, n, x * FX + FX / 2, y * FX + FX / 2)));
+}
+
+void GdiFillUnderCurve(GdiRect r, GdiCurveFn fn, void *ctx, GdiColor c)
+{
+    if (!g.ready || !fn || r.w <= 0 || r.h <= 0) return;
+    int s = g.s;
+    UINT32 n = pixof(c);
+    /* clamp to the screen too: the column fill below writes directly */
+    int top = imax(r.y * s, 0) * FX, bot = imin((r.y + r.h) * s, g.dh);
+    for (int x = imax(r.x * s, 0); x < imin((r.x + r.w) * s, g.dw); x++) {
+        int xl = (x * FX + FX / 2) / s;             /* 1/256 logical */
+        int yd = fn(xl, ctx) * s;                   /* 1/256 device  */
+        if (yd < top) yd = top;
+        int yi = yd / FX;
+        if (yi >= bot) continue;
+        /* partial pixel where the curve crosses, then solid below */
+        plot(x, yi, n, ((FX - (yd % FX)) * 255) / FX);
+        UINT32 *p = &g.buf[(size_t)(yi + 1) * g.bstride + x];
+        for (int y = yi + 1; y < bot; y++, p += g.bstride) *p = n;
     }
 }
 
 /* -----------------------------------------------------------------------
  * Text
  * ----------------------------------------------------------------------- */
-int GdiTextW(const char *s) { return s ? (int)(strlen(s) * GDI_FONT_W) : 0; }
+static const GdiFace *face(int style) { return &g_gdi_faces[style][g.s - 1]; }
 
-void GdiText(int x, int y, const char *s, GdiColor fg, GdiColor bg)
+static const GdiGlyph *glyph(const GdiFace *f, unsigned char c)
 {
-    fb_draw_string(x, y, s, (FbColor)fg, (FbColor)bg);
+    if (c < f->first || c >= f->first + f->count) c = '?';
+    return &f->glyphs[c - f->first];
+}
+
+/* Advance width of a string in 26.6 device pixels */
+static int text_adv(const char *s, int style)
+{
+    if (!s) return 0;
+    const GdiFace *f = face(style);
+    int w = 0;
+    for (; *s; s++) w += glyph(f, (unsigned char)*s)->adv;
+    return w;
+}
+
+static int adv_to_logical(int adv) { return (adv + 64 * g.s - 1) / (64 * g.s); }
+
+int GdiTextW(const char *s)     { return g.ready ? adv_to_logical(text_adv(s, GDI_FONT_REGULAR)) : 0; }
+int GdiTextBoldW(const char *s) { return g.ready ? adv_to_logical(text_adv(s, GDI_FONT_BOLD)) : 0; }
+
+/* Draw starting at pen position `pen` (26.6 device px) on logical line y */
+static void text_draw_at(int pen, int y, const char *s, GdiColor fg, int style)
+{
+    if (!g.ready || !s) return;
+    const GdiFace *f = face(style);
+    UINT32 n    = pixof(fg);
+    int    base = (y + LINE_BASELINE) * g.s;
+    for (; *s; s++) {
+        const GdiGlyph *gl = glyph(f, (unsigned char)*s);
+        int gx = ((pen + 32) >> 6) + gl->bx;
+        int gy = base - gl->by;
+        const UINT8 *bm = f->bits + gl->off;
+        for (int r = 0; r < gl->h; r++)
+            for (int col = 0; col < gl->w; col++)
+                plot(gx + col, gy + r, n, bm[r * gl->w + col]);
+        pen += gl->adv;
+    }
+}
+
+static void text_draw(int x, int y, const char *s, GdiColor fg, int style)
+{
+    text_draw_at(x * g.s * 64, y, s, fg, style);
 }
 
 void GdiTextT(int x, int y, const char *s, GdiColor fg)
 {
-    fb_draw_string_trans(x, y, s, (FbColor)fg);
+    text_draw(x, y, s, fg, GDI_FONT_REGULAR);
 }
 
 void GdiTextBold(int x, int y, const char *s, GdiColor fg)
 {
-    fb_draw_string_trans(x,     y, s, (FbColor)fg);
-    fb_draw_string_trans(x + 1, y, s, (FbColor)fg);
+    text_draw(x, y, s, fg, GDI_FONT_BOLD);
+}
+
+void GdiText(int x, int y, const char *s, GdiColor fg, GdiColor bg)
+{
+    GdiFillRect(RECT(x, y, GdiTextW(s), GDI_FONT_H), bg);
+    text_draw(x, y, s, fg, GDI_FONT_REGULAR);
 }
 
 void GdiTextCenter(int x, int y, int w, const char *s, GdiColor fg)
 {
-    int tw = GdiTextW(s);
-    int tx = x + (w - tw) / 2;
-    if (tx < x) tx = x;
-    GdiTextT(tx, y, s, fg);
+    if (!g.ready || !s) return;
+    /* Centre with sub-pixel precision rather than rounding the width */
+    int adv = text_adv(s, GDI_FONT_REGULAR);
+    int off = (w * g.s * 64 - adv) / 2;
+    if (off < 0) off = 0;
+    text_draw_at(x * g.s * 64 + off, y, s, fg, GDI_FONT_REGULAR);
+}
+
+/* -----------------------------------------------------------------------
+ * Mouse pointer overlay
+ * ----------------------------------------------------------------------- */
+
+/* Arrow outline, 1/16 logical px, tip at (0,0) */
+static const GdiPoint g_arrow[] = {
+    GDI_PT(0, 0),   GDI_PT(0, 17),   GDI_PT(4, 13.2), GDI_PT(6.9, 19.6),
+    GDI_PT(9.6, 18.4), GDI_PT(6.8, 12.2), GDI_PT(12.2, 12.2),
+};
+#define ARROW_N      ((int)(sizeof(g_arrow) / sizeof(g_arrow[0])))
+#define CUR_MAX_W    64
+#define CUR_MAX_H    64
+
+static UINT32 g_under[CUR_MAX_W * CUR_MAX_H];
+static int    g_under_x, g_under_y, g_under_w, g_under_h;
+
+void GdiCursorDraw(int dx, int dy)
+{
+    if (!g.ready) return;
+    int s = g.s;
+    GdiPoint d[POLY_MAX], sh[POLY_MAX];
+    int x0, y0, x1, y1, t0, t1, t2, t3;
+    int n = poly_to_dev(g_arrow, ARROW_N, dx, dy, d, &x0, &y0, &x1, &y1);
+    poly_to_dev(g_arrow, ARROW_N, dx + s, dy + 2 * s, sh, &t0, &t1, &t2, &t3);
+
+    int soft = 2 * s * FX;                          /* shadow softness */
+    x0 -= 1; y0 -= 1; x1 += 3 * s + 1; y1 += 4 * s + 1;
+    x0 = imax(x0, 0); y0 = imax(y0, 0);
+    x1 = imin(x1, g.dw - 1); y1 = imin(y1, g.dh - 1);
+    g_under_x = x0; g_under_y = y0;
+    g_under_w = imax(imin(x1 - x0 + 1, CUR_MAX_W), 0);
+    g_under_h = imax(imin(y1 - y0 + 1, CUR_MAX_H), 0);
+
+    UINT32 black = pixof(GDI_BLACK), white = pixof(GDI_WHITE);
+    int    bw    = s * FX;                          /* outline width */
+
+    for (int j = 0; j < g_under_h; j++) {
+        int y = y0 + j;
+        UINT32 *row = g.vram + (size_t)y * g.vstride;
+        for (int i = 0; i < g_under_w; i++) {
+            int x = x0 + i;
+            UINT32 px = row[x];
+            g_under[j * CUR_MAX_W + i] = px;
+            int fx = x * FX + FX / 2, fy = y * FX + FX / 2;
+
+            int ss = poly_sd(sh, n, fx, fy);        /* soft shadow */
+            if (ss < soft) {
+                int f = ss <= 0 ? 255 : ((soft - ss) * 255) / soft;
+                px = blend(px, black, (UINT32)(70 * f / 255));
+            }
+            int sd = poly_sd(d, n, fx, fy);
+            px = blend(px, black, (UINT32)cov_of(sd));          /* outline */
+            px = blend(px, white, (UINT32)cov_of(sd + bw));     /* fill    */
+            row[x] = px;
+        }
+    }
+}
+
+void GdiCursorErase(int dx, int dy)
+{
+    (void)dx; (void)dy;
+    if (!g.ready) return;
+    for (int j = 0; j < g_under_h; j++) {
+        UINT32 *row = g.vram + (size_t)(g_under_y + j) * g.vstride + g_under_x;
+        for (int i = 0; i < g_under_w; i++)
+            row[i] = g_under[j * CUR_MAX_W + i];
+    }
+    g_under_w = g_under_h = 0;
 }
