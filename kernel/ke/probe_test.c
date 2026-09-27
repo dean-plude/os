@@ -42,7 +42,7 @@ static volatile UINT64 g_kernel_secret = UINT64_C(0x5EC12E7C0FFEE123);
 
 static UINT64 sys(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    return KiSystemCallDispatch(num, a1, a2, a3, a4);
+    return KiSystemCallDispatch(num, a1, a2, a3, a4, 0);
 }
 
 static bool is_status(UINT64 r, NTSTATUS s) { return (NTSTATUS)(UINT32)r == s; }

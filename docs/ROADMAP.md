@@ -26,10 +26,16 @@ loader semantics, and drivers they expect.
 | GDI software renderer, window manager, **static** desktop shell | ✅ |
 | **Boots from ISO under OVMF and renders the desktop (verified)** | ✅ |
 
-**Honest gaps:** the desktop is a one-shot static render (no input, no event
-loop); no real user-mode `.exe` has been proven to execute end-to-end; no
-input/storage/display/network drivers; no persistence; "apps" are drawn
-placeholders.
+**Since then (Phases 8–9):** an interactive desktop with real apps, HiDPI
+graphics, networking (lwIP, DHCP, DNS), HTTP/1.1 and HTTPS (Mbed TLS), and
+**real PE32+ `.exe` files running in ring 3** with our own `ntdll`,
+`kernel32` and `msvcrt`, launched from the Terminal with live console I/O,
+Ctrl+C, crash isolation and full memory reclamation.
+
+**Honest gaps:** programs have one thread and no SEH unwinding, TLS or DLL
+entry points; no GUI API for programs yet (`user32`/`gdi32`); no sockets for
+programs; no storage driver or persistence (drive C: is in memory); the real
+Microsoft DLLs are not loaded (Path A below is what is being built).
 
 ---
 

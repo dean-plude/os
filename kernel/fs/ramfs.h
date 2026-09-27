@@ -26,6 +26,7 @@ typedef struct RamNode {
     struct RamNode *next;         /* next sibling; dirs first, then by name */
     char           *data;         /* file contents (not NUL-terminated) */
     UINT32          size;
+    UINT32          cap;          /* bytes allocated for data (>= size) */
     int             refs;         /* holders (open windows, shell cwd) */
 } RamNode;
 
@@ -44,6 +45,12 @@ RamNode *RamfsCreate(RamNode *dir, const char *name, bool is_dir);
 
 /* Replace a file's contents.  False if too large or out of memory. */
 bool     RamfsWrite(RamNode *file, const char *data, UINT32 len);
+
+/* Write @len bytes at @off, growing the file (zero-filled) as needed.
+ * False if the result would exceed RAMFS_FILE_MAX or memory runs out. */
+bool     RamfsWriteAt(RamNode *file, UINT32 off, const void *data, UINT32 len);
+/* Set a file's length (truncate or zero-extend). */
+bool     RamfsResize(RamNode *file, UINT32 len);
 
 /* Delete a file or an empty directory.  Fails for the root and for nodes
  * that are in use (see RamfsRef). */

@@ -14,6 +14,7 @@
 #include "../hal/rtc.h"
 #include "../ke/scheduler.h"
 #include "../net/net.h"
+#include "../um/um.h"
 
 #define T_COLS   160
 #define T_ROWS   400
@@ -30,7 +31,7 @@
 enum { K_NORMAL, K_ERROR, K_DIM };
 
 /* A network command in progress (advanced by term_tick) */
-typedef enum { JOB_NONE, JOB_PING, JOB_LOOKUP, JOB_FETCH } JobKind;
+typedef enum { JOB_NONE, JOB_PING, JOB_LOOKUP, JOB_FETCH, JOB_PROC } JobKind;
 enum { PH_RESOLVE, PH_SEND, PH_WAIT, PH_SLEEP, PH_FETCH };
 
 typedef struct {
@@ -48,6 +49,10 @@ typedef struct {
     int     redirects;
     char    urls[8][256];      /* curl/wget: several URLs, fetched in turn */
     int     nurls, cur;
+    UmProcess *proc;           /* JOB_PROC: a Windows program in this console */
+    UmConsole *con;
+    bool    open_line;         /* the last line is the program's unfinished line */
+    int     col;               /* its output column (after '\r') */
 } Job;
 
 typedef struct {
@@ -188,6 +193,10 @@ static void cmd_help(Term *t)
         "  wget <url> [url...] download web pages to C:\\Downloads\n"
         "  curl <url> [url...] fetch web pages and print them\n"
         "  certutil            list trusted root certificates\n"
+        "  tasklist            list running programs\n"
+        "  taskkill /PID <n>   stop a program\n"
+        "  <program> [args]    run a Windows program (C:\\Programs: hello, mandel,\n"
+        "                      primes, guess, wc, crttest, filetest, crash, spin)\n"
         "  certutil -addstore root <file>   trust a CA certificate (PEM/DER)\n"
         "  cls                 clear the screen (also: clear, Ctrl+L)\n"
         "  exit                close this window\n"
@@ -386,6 +395,8 @@ static void cmd_ipconfig(Term *t)
 static void job_end(Term *t)
 {
     NetRelease(t->job.op);
+    if (t->job.proc) UmRelease(t->job.proc);          /* (kills it if still running) */
+    if (t->job.con) UmConsoleRelease(t->job.con);
     memset(&t->job, 0, sizeof(t->job));
 }
 
@@ -589,11 +600,31 @@ static void fetch_done(Term *t)
     fetch_next(t);
 }
 
+static void proc_output(Term *t, const char *s, int n);
+static void proc_finish(Term *t);
+
 static bool term_tick(WND *w)
 {
     Term *t = w->user;
     Job *j = &t->job;
     if (j->kind == JOB_NONE) return false;
+    if (j->kind == JOB_PROC) {
+        static char buf[4096];
+        bool changed = false;
+        for (int rounds = 0; rounds < 16; rounds++) {  /* keep the UI responsive */
+            int n = UmConsoleRead(j->con, buf, sizeof(buf));
+            if (!n) break;
+            proc_output(t, buf, n);
+            changed = true;
+        }
+        if (UmHasExited(j->proc, NULL, NULL, 0)) {
+            int n;
+            while ((n = UmConsoleRead(j->con, buf, sizeof(buf))) > 0) proc_output(t, buf, n);
+            proc_finish(t);
+            return true;
+        }
+        return changed;
+    }
     NetOp *op = j->op;
     char a[16];
 
@@ -685,8 +716,120 @@ static bool term_tick(WND *w)
     return false;
 }
 
+/* -----------------------------------------------------------------------
+ * Windows programs
+ * ----------------------------------------------------------------------- */
+
+/* Append program output: '\n' ends the line, '\r' returns to column 0,
+ * '\b' backs up; the unfinished last line stays open for more. */
+/* Write @ch at column @col of line @l (space-padding, keeping it terminated) */
+static void line_put(char *l, int col, char ch)
+{
+    int len = (int)strlen(l);
+    while (len < col) l[len++] = ' ';
+    l[col] = ch;
+    if (col >= len) l[col + 1] = '\0';
+}
+
+static void proc_output(Term *t, const char *s, int n)
+{
+    Job *j = &t->job;
+    int cols = term_cols(t);
+    for (int k = 0; k < n; k++) {
+        char c = s[k];
+        if ((c & 0xC0) == 0x80) continue;             /* UTF-8 continuation: one '?' per character */
+        if (!j->open_line) {
+            new_line(t, K_NORMAL, 0);
+            j->col = 0;
+            if (c == '\n') continue;
+            j->open_line = true;
+        }
+        if (c == '\n') { j->open_line = false; continue; }
+        if (c == '\r') { j->col = 0; continue; }
+        if (c == '\b') { if (j->col) j->col--; continue; }
+        int count = 1;
+        if (c == '\t') { c = ' '; count = 8 - j->col % 8; }
+        else if ((unsigned char)c < ' ' || (unsigned char)c >= 0x80) c = '?';
+        while (count--) {
+            if (j->col >= cols) {                      /* wrap */
+                new_line(t, K_NORMAL, 0);
+                j->col = 0;
+            }
+            line_put(t->line[t->count - 1], j->col++, c);
+        }
+    }
+    t->scroll = 0;
+}
+
+static bool start_program(Term *t, RamNode *exe, const char *cmdline)
+{
+    Job *j = &t->job;
+    memset(j, 0, sizeof(*j));
+    j->con = UmConsoleNew();
+    if (!j->con) { terr(t, "Not enough memory."); return true; }
+    char err[160];
+    j->proc = UmSpawn(exe, cmdline, t->cwd, j->con, err, sizeof(err));
+    if (!j->proc) {
+        terr(t, err);
+        job_end(t);
+        return true;
+    }
+    j->kind = JOB_PROC;
+    return true;
+}
+
+static void proc_finish(Term *t)
+{
+    Job *j = &t->job;
+    UINT32 status;
+    char why[96];
+    UmHasExited(j->proc, &status, why, sizeof(why));
+    j->open_line = false;
+    char msg[160];
+    if (why[0]) {
+        ksnprintf(msg, sizeof(msg), "%s %s", UmName(j->proc), why);
+        terr(t, msg);
+    } else if (status) {
+        ksnprintf(msg, sizeof(msg), "[exit code %d]", (int)status);
+        tprint_ex(t, K_DIM, 0, msg);
+    }
+    job_end(t);
+}
+
+static void cmd_tasklist(Term *t)
+{
+    UmProcInfo list[32];
+    int n = UmList(list, 32);
+    tprint(t, "Image Name                     PID   Mem Usage");
+    tprint(t, "========================= ======== ============");
+    tprint(t, "System                           4    (kernel)");
+    for (int i = 0; i < n; i++) {
+        char name[27];
+        int k = 0;
+        for (; list[i].name[k] && k < 25; k++) name[k] = list[i].name[k];
+        while (k < 26) name[k++] = ' ';
+        name[k] = '\0';
+        tprintf(t, "%s%8u %9u K%s", name, list[i].pid, list[i].mem_kb,
+                list[i].exited ? " (exiting)" : "");
+    }
+}
+
+static void cmd_taskkill(Term *t, int argc, char **argv)
+{
+    UINT32 pid = 0;
+    for (int i = 1; i + 1 < argc; i++)
+        if (is(argv[i], "/pid") || is(argv[i], "-pid"))
+            for (const char *d = argv[i + 1]; *d >= '0' && *d <= '9'; d++) pid = pid * 10 + (UINT32)(*d - '0');
+    if (!pid) { terr(t, "Usage: taskkill /PID <pid>"); return; }
+    if (UmKillPid(pid)) tprintf(t, "SUCCESS: Sent termination signal to the process with PID %u.", pid);
+    else tprintf(t, "ERROR: The process \"%u\" not found.", pid);
+}
+
 static void run(Term *t, char *cmdline)
 {
+    char original[T_COLS];
+    strncpy(original, cmdline, sizeof(original) - 1);
+    original[sizeof(original) - 1] = '\0';
     char *argv[MAX_ARGS];
     int argc = split_args(cmdline, argv);
     if (!argc) return;
@@ -717,9 +860,16 @@ static void run(Term *t, char *cmdline)
     else if (is(c, "certutil"))                 cmd_certutil(t, argc, argv);
     else if (is(c, "curl"))                     cmd_fetch(t, argc, argv, false);
     else if (is(c, "cls") || is(c, "clear"))    t->count = 0;
+    else if (is(c, "tasklist"))                 cmd_tasklist(t);
+    else if (is(c, "taskkill"))                 cmd_taskkill(t, argc, argv);
     else if (is(c, "exit"))                     WmDestroyWindow(t->w);
     else {
         AppId id;
+        RamNode *exe = UmFindProgram(t->cwd, c);
+        if (exe && !AppByName(c, &id)) {             /* a Windows program */
+            start_program(t, exe, original);
+            return;
+        }
         if (AppByName(c, &id)) {                     /* "notepad file.txt" */
             char *sv[3] = { "start", argv[0], argc > 1 ? argv[1] : NULL };
             cmd_start(t, argc > 1 ? 3 : 2, sv);
@@ -741,8 +891,10 @@ static void term_paint(WND *w)
     int cell = GdiMonoCellW256();
     int rows = (c.h - 2 * T_PAD) / T_LINE_H;
     if (rows < 1) rows = 1;
-    /* + the prompt line, hidden while a command is running */
-    int total = t->count + (t->job.kind == JOB_NONE ? 1 : 0);
+    /* + the prompt line (hidden while a command runs); a running program
+     * gets an input line of its own unless its last line is still open */
+    bool proc = t->job.kind == JOB_PROC;
+    int total = t->count + ((t->job.kind == JOB_NONE || (proc && !t->job.open_line)) ? 1 : 0);
     int first = total - rows - t->scroll;
     if (first < 0) first = 0;
     int x = c.x + T_PAD, y = c.y + T_PAD;
@@ -756,6 +908,16 @@ static void term_paint(WND *w)
             if (sp > n) sp = n;
             if (sp) GdiTextMonoN(x, y, l, sp, T_PROMPT);
             GdiTextMonoN(x + (sp * cell) / 256, y, l + sp, n - sp, fg);
+            if (proc && t->job.open_line && i == t->count - 1) {   /* typing after a prompt */
+                int at = t->job.col;
+                GdiTextMonoN(x + (at * cell) / 256, y, t->input, t->in_len, T_FG);
+                int cx = x + ((at + t->in_len) * cell) / 256;
+                if (w->active) GdiAlphaFill(RECT(cx, y + 1, cell / 256, 15), T_FG, 170);
+            }
+        } else if (proc) {
+            GdiTextMonoN(x, y, t->input, t->in_len, T_FG);
+            int cx = x + (t->in_len * cell) / 256;
+            if (w->active) GdiAlphaFill(RECT(cx, y + 1, cell / 256, 15), T_FG, 170);
         } else {
             char p[RAMFS_PATH_MAX + 4];
             prompt_text(t, p, sizeof(p));
@@ -785,6 +947,32 @@ static void remember(Term *t, const char *cmd)
 static void term_key(WND *w, const KeyEvent *k)
 {
     Term *t = w->user;
+    if (t->job.kind == JOB_PROC) {            /* keyboard goes to the program */
+        Job *j = &t->job;
+        if (k->ctrl && k->ch == 'c') { proc_output(t, "^C\n", 3); UmKill(j->proc, 0xC000013A); return; }
+        if (k->ctrl && k->ch == 'z') { proc_output(t, "^Z\n", 3); UmConsoleEof(j->con); return; }
+        if (k->extended) {
+            int page = (WmClientRect(w).h - 2 * T_PAD) / T_LINE_H - 1;
+            if (k->scancode == KEY_PGUP) { t->scroll += page; if (t->scroll > t->count) t->scroll = t->count; }
+            if (k->scancode == KEY_PGDN) { t->scroll -= page; if (t->scroll < 0) t->scroll = 0; }
+            return;
+        }
+        if (k->ch == '\b') { if (t->in_len) t->input[--t->in_len] = '\0'; return; }
+        if (k->ch == '\n') {
+            proc_output(t, t->input, t->in_len);       /* echo */
+            proc_output(t, "\n", 1);
+            UmConsoleWrite(j->con, t->input, t->in_len);
+            UmConsoleWrite(j->con, "\r\n", 2);
+            t->in_len = 0; t->input[0] = '\0';
+            return;
+        }
+        if (k->ch >= ' ' && k->ch <= '~' && t->in_len < T_COLS - 2) {
+            t->input[t->in_len++] = k->ch;
+            t->input[t->in_len] = '\0';
+            t->scroll = 0;
+        }
+        return;
+    }
     if (t->job.kind != JOB_NONE) {            /* a command is running */
         bool scroll = k->extended && (k->scancode == KEY_PGUP || k->scancode == KEY_PGDN);
         if (k->ctrl && k->ch == 'c') { tprint(t, "^C"); job_end(t); }

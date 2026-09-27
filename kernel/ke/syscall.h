@@ -106,7 +106,8 @@
 #define SYSCALL_NtOpenThreadToken                 0x0024
 #define SYSCALL_NtQueryInformationThread          0x0025
 #define SYSCALL_NtOpenProcess                     0x0026
-#define SYSCALL_NtSetValueKey                     0x0027
+#define SYSCALL_NtSetInformationFile              0x0027
+#define SYSCALL_NtSetValueKey                     0x0060
 #define SYSCALL_NtMapViewOfSection                0x0028
 #define SYSCALL_NtAccessCheckAndAuditAlarm        0x0029
 #define SYSCALL_NtUnmapViewOfSection              0x002A
@@ -284,7 +285,13 @@ void SyscallInitialize(void);
  * Kernel-helper handlers (0x01F0-0x01FF) may return 64-bit pointers.
  */
 UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
-                             UINT64 arg3, UINT64 arg4);
+                             UINT64 arg3, UINT64 arg4, UINT64 user_rsp);
+
+/* A system service: the first four arguments; the rest are on the user
+ * stack (sched_current()->user_rsp + 0x28 + 8*(n-5)). */
+typedef UINT64 (*SYSCALL_HANDLER)(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4);
+/* Install a handler; returns the one it replaces. */
+SYSCALL_HANDLER SyscallSetHandler(UINT32 num, SYSCALL_HANDLER h);
 
 /*
  * Syscall entry point (assembly, installed in MSR_LSTAR).

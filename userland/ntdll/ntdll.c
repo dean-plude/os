@@ -1,0 +1,283 @@
+/*
+ * ntdll.dll — NovaOS native API: system-call stubs, heap, runtime helpers
+ *
+ * Each Nt* export is the classic x64 stub: mov r10, rcx; mov eax, N;
+ * syscall; ret — numbers generated from the kernel's ke/syscall.h.
+ *
+ * The heap (Rtl*Heap) serves one process-wide heap: small blocks come
+ * from segregated free lists carved out of 1 MiB arenas committed from a
+ * 1 GiB reservation; blocks larger than 256 KiB get their own
+ * NtAllocateVirtualMemory region.  Programs are single-threaded, so the
+ * heap takes no lock.
+ */
+
+#define NOVA_BUILD_NTDLL
+#include <winternl.h>
+#include "syscall_numbers.h"
+
+/* -----------------------------------------------------------------------
+ * System-call stubs
+ * ----------------------------------------------------------------------- */
+#define STUB(name, num)                                                     \
+    __asm__(".globl " #name "\n"                                            \
+            ".section .text$" #name ",\"xr\"\n"                             \
+            #name ":\n\t"                                                   \
+            "movq %rcx, %r10\n\t"                                           \
+            "movl $" #num ", %eax\n\t"                                      \
+            "syscall\n\t"                                                   \
+            "retq\n\t"                                                      \
+            ".section .drectve,\"yn\"\n\t"                                  \
+            ".ascii \" /EXPORT:" #name "\"\n\t"                             \
+            ".text\n");
+
+#define XSTUB(name, num) STUB(name, num)
+XSTUB(NtClose,                      SYS_NtClose)
+XSTUB(NtCreateFile,                 SYS_NtCreateFile)
+XSTUB(NtOpenFile,                   SYS_NtOpenFile)
+XSTUB(NtReadFile,                   SYS_NtReadFile)
+XSTUB(NtWriteFile,                  SYS_NtWriteFile)
+XSTUB(NtQueryInformationFile,       SYS_NtQueryInformationFile)
+XSTUB(NtSetInformationFile,         SYS_NtSetInformationFile)
+XSTUB(NtQueryAttributesFile,        SYS_NtQueryAttributesFile)
+XSTUB(NtQueryDirectoryFile,         SYS_NtQueryDirectoryFile)
+XSTUB(NtQueryVolumeInformationFile, SYS_NtQueryVolumeInformationFile)
+XSTUB(NtAllocateVirtualMemory,      SYS_NtAllocateVirtualMemory)
+XSTUB(NtFreeVirtualMemory,          SYS_NtFreeVirtualMemory)
+XSTUB(NtProtectVirtualMemory,       SYS_NtProtectVirtualMemory)
+XSTUB(NtTerminateProcess,           SYS_NtTerminateProcess)
+XSTUB(NtQuerySystemTime,            SYS_NtQuerySystemTime)
+XSTUB(NtQueryPerformanceCounter,    SYS_NtQueryPerformanceCounter)
+XSTUB(NtDelayExecution,             SYS_NtDelayExecution)
+XSTUB(NtYieldExecution,             SYS_NtYieldExecution)
+
+/* -----------------------------------------------------------------------
+ * Memory/string primitives (real ntdll exports these too)
+ * ----------------------------------------------------------------------- */
+/* rep movsb/stosb: fast, and the compiler can't turn them back into calls */
+__declspec(dllexport) void *memcpy(void *d, const void *s, size_t n)
+{
+    void *r = d;
+    __asm__ volatile ("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+    return r;
+}
+
+__declspec(dllexport) void *memmove(void *d, const void *s, size_t n)
+{
+    void *r = d;
+    if ((char *)d <= (const char *)s || (char *)d >= (const char *)s + n) {
+        __asm__ volatile ("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+    } else {
+        d = (char *)d + n - 1; s = (const char *)s + n - 1;
+        __asm__ volatile ("std; rep movsb; cld" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+    }
+    return r;
+}
+
+__declspec(dllexport) void *memset(void *d, int c, size_t n)
+{
+    void *r = d;
+    __asm__ volatile ("rep stosb" : "+D"(d), "+c"(n) : "a"(c) : "memory");
+    return r;
+}
+
+__declspec(dllexport) int memcmp(const void *x, const void *y, size_t n)
+{
+    const unsigned char *a = x, *b = y;
+    for (; n; n--, a++, b++) if (*a != *b) return *a - *b;
+    return 0;
+}
+
+__declspec(dllexport) size_t strlen(const char *s)
+{
+    const char *p = s;
+    while (*p) p++;
+    return (size_t)(p - s);
+}
+
+/* -----------------------------------------------------------------------
+ * PEB, strings, errors, exit
+ * ----------------------------------------------------------------------- */
+NTSYSAPI PPEB NTAPI RtlGetCurrentPeb(void)
+{
+    PPEB peb;
+    __asm__("movq %%gs:0x60, %0" : "=r"(peb));
+    return peb;
+}
+
+NTSYSAPI VOID NTAPI RtlInitUnicodeString(PUNICODE_STRING us, const WCHAR *s)
+{
+    USHORT n = 0;
+    if (s) while (s[n]) n++;
+    us->Length = (USHORT)(n * 2);
+    us->MaximumLength = (USHORT)(s ? n * 2 + 2 : 0);
+    us->Buffer = (WCHAR *)s;
+}
+
+NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
+{
+    switch ((ULONG)s) {
+    case 0x00000000: return ERROR_SUCCESS;
+    case 0x80000005: return ERROR_MORE_DATA;
+    case 0x80000006: return ERROR_NO_MORE_FILES;
+    case 0xC0000002: return ERROR_CALL_NOT_IMPLEMENTED;
+    case 0xC0000003: case 0xC000000D: return ERROR_INVALID_PARAMETER;
+    case 0xC0000004: return ERROR_INSUFFICIENT_BUFFER;
+    case 0xC0000008: return ERROR_INVALID_HANDLE;
+    case 0xC0000011: return ERROR_HANDLE_EOF;
+    case 0xC0000017: case 0xC000009A: return ERROR_NOT_ENOUGH_MEMORY;
+    case 0xC0000018: case 0xC00000A0: return ERROR_INVALID_ADDRESS;
+    case 0xC0000022: return ERROR_ACCESS_DENIED;
+    case 0xC0000033: return ERROR_INVALID_NAME;
+    case 0xC0000034: return ERROR_FILE_NOT_FOUND;
+    case 0xC0000035: return ERROR_ALREADY_EXISTS;
+    case 0xC000003A: return ERROR_PATH_NOT_FOUND;
+    case 0xC000007F: return ERROR_DISK_FULL;
+    case 0xC00000BA: return ERROR_ACCESS_DENIED;          /* file is a directory */
+    case 0xC0000101: return ERROR_DIR_NOT_EMPTY;
+    case 0xC0000103: return ERROR_INVALID_NAME;           /* not a directory */
+    case 0xC000011F: return ERROR_TOO_MANY_OPEN_FILES;
+    case 0xC0000121: return ERROR_ACCESS_DENIED;
+    }
+    return ERROR_INVALID_FUNCTION;
+}
+
+NTSYSAPI VOID NTAPI RtlExitUserProcess(NTSTATUS status)
+{
+    NtTerminateProcess(NtCurrentProcess(), status);
+    for (;;) NtYieldExecution();
+}
+
+/* -----------------------------------------------------------------------
+ * Heap
+ * ----------------------------------------------------------------------- */
+typedef struct Block {
+    SIZE_T        size;        /* usable bytes (class size, or the large size) */
+    SIZE_T        tag;         /* HEAP_MAGIC | class, or HEAP_LARGE */
+} Block;                       /* 16 bytes: user data stays 16-byte aligned */
+
+#define HEAP_MAGIC   0x4E4F564148454150ULL     /* "NOVAHEAP" */
+#define HEAP_LARGE   0x4E4F56414C415247ULL     /* "NOVALARG" */
+#define NCLASSES     48
+#define LARGE_MIN    (256 * 1024)
+#define RESERVE_SIZE (1024ULL * 1024 * 1024)   /* 1 GiB of address space */
+#define ARENA_SIZE   (1024 * 1024)
+
+static SIZE_T  class_size[NCLASSES];
+static void   *free_list[NCLASSES];
+static char   *arena_base, *arena_cur, *arena_end, *arena_reserved_end;
+static int     heap_ready;
+
+static void heap_init(void)
+{
+    /* 16..1024 in 16-byte steps (64 would be too many): 16, 32, 48 ... then x1.25 */
+    SIZE_T s = 16;
+    for (int i = 0; i < NCLASSES; i++) {
+        class_size[i] = s;
+        s = s < 256 ? s + 16 : (s + s / 4 + 15) & ~(SIZE_T)15;
+        if (s > LARGE_MIN) s = LARGE_MIN;
+    }
+    PVOID base = 0;
+    SIZE_T size = RESERVE_SIZE;
+    if (NT_SUCCESS(NtAllocateVirtualMemory(NtCurrentProcess(), &base, 0, &size, MEM_RESERVE, PAGE_READWRITE))) {
+        arena_base = arena_cur = arena_end = base;
+        arena_reserved_end = (char *)base + size;
+    }
+    heap_ready = 1;
+    RtlGetCurrentPeb()->ProcessHeap = (PVOID)&heap_ready;
+}
+
+static int class_of(SIZE_T n)
+{
+    for (int i = 0; i < NCLASSES; i++) if (class_size[i] >= n) return i;
+    return -1;
+}
+
+static void *carve(SIZE_T bytes)
+{
+    if (arena_cur + bytes > arena_end) {
+        SIZE_T grow = bytes > ARENA_SIZE ? (bytes + ARENA_SIZE - 1) & ~(SIZE_T)(ARENA_SIZE - 1) : ARENA_SIZE;
+        if (!arena_base || arena_end + grow > arena_reserved_end) return 0;
+        PVOID at = arena_end;
+        SIZE_T sz = grow;
+        if (!NT_SUCCESS(NtAllocateVirtualMemory(NtCurrentProcess(), &at, 0, &sz, MEM_COMMIT, PAGE_READWRITE)))
+            return 0;
+        arena_end += grow;
+    }
+    void *p = arena_cur;
+    arena_cur += bytes;
+    return p;
+}
+
+NTSYSAPI PVOID NTAPI RtlGetProcessHeap(void)
+{
+    if (!heap_ready) heap_init();
+    return (PVOID)&heap_ready;
+}
+
+NTSYSAPI PVOID NTAPI RtlAllocateHeap(PVOID heap, ULONG flags, SIZE_T n)
+{
+    (void)heap;
+    if (!heap_ready) heap_init();
+    if (!n) n = 1;
+    Block *b;
+    if (n >= LARGE_MIN - sizeof(Block)) {
+        PVOID base = 0;
+        SIZE_T size = n + sizeof(Block);
+        if (!NT_SUCCESS(NtAllocateVirtualMemory(NtCurrentProcess(), &base, 0, &size,
+                                                MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)))
+            return 0;
+        b = base;
+        b->size = n;
+        b->tag = HEAP_LARGE;
+        return b + 1;                               /* fresh pages are zeroed */
+    }
+    int c = class_of(n);
+    if (free_list[c]) {
+        b = (Block *)free_list[c] - 1;
+        free_list[c] = *(void **)free_list[c];
+    } else {
+        b = carve(class_size[c] + sizeof(Block));
+        if (!b) return 0;
+    }
+    b->size = class_size[c];
+    b->tag = HEAP_MAGIC | (SIZE_T)c;
+    if (flags & HEAP_ZERO_MEMORY) memset(b + 1, 0, class_size[c]);
+    return b + 1;
+}
+
+NTSYSAPI BOOLEAN NTAPI RtlFreeHeap(PVOID heap, ULONG flags, PVOID p)
+{
+    (void)heap; (void)flags;
+    if (!p) return TRUE;
+    Block *b = (Block *)p - 1;
+    if (b->tag == HEAP_LARGE) {
+        PVOID base = b;
+        SIZE_T size = 0;
+        return NT_SUCCESS(NtFreeVirtualMemory(NtCurrentProcess(), &base, &size, MEM_RELEASE));
+    }
+    if ((b->tag & ~(SIZE_T)0xFF) != (HEAP_MAGIC & ~(SIZE_T)0xFF)) return FALSE;   /* not ours */
+    int c = (int)(b->tag & 0xFF);
+    if (c >= NCLASSES) return FALSE;
+    *(void **)p = free_list[c];
+    free_list[c] = p;
+    b->tag = 0;                                     /* catches double frees */
+    return TRUE;
+}
+
+NTSYSAPI SIZE_T NTAPI RtlSizeHeap(PVOID heap, ULONG flags, const VOID *p)
+{
+    (void)heap; (void)flags;
+    return p ? ((const Block *)p - 1)->size : (SIZE_T)-1;
+}
+
+NTSYSAPI PVOID NTAPI RtlReAllocateHeap(PVOID heap, ULONG flags, PVOID p, SIZE_T n)
+{
+    if (!p) return RtlAllocateHeap(heap, flags, n);
+    SIZE_T old = RtlSizeHeap(heap, 0, p);
+    if (n <= old && ((Block *)p - 1)->tag != HEAP_LARGE) return p;
+    PVOID q = RtlAllocateHeap(heap, flags, n);
+    if (!q) return 0;
+    memcpy(q, p, old < n ? old : n);
+    RtlFreeHeap(heap, 0, p);
+    return q;
+}

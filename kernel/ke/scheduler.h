@@ -86,6 +86,15 @@ typedef struct Thread {
 
     /* Future: pointer to owning KPROCESS */
     void           *process;
+
+    /* User-mode threads (kernel/um): owning process and the state the
+     * scheduler swaps for them.  NULL/0 for kernel threads. */
+    void           *um;             /* UmProcess */
+    uint8_t        *fpu;            /* 512-byte FXSAVE area, 16-byte aligned */
+    uint64_t        gs_base;        /* MSR_GS_BASE / MSR_KERNEL_GS_BASE */
+    uint64_t        kgs_base;
+    uint64_t        user_rsp;       /* user RSP at the last syscall (stack args) */
+    volatile bool   off_cpu;        /* DEAD and switched away: safe to free */
 } Thread;
 
 /* Default kernel stack size for new threads */
@@ -115,6 +124,12 @@ Thread *sched_create_thread(const char *name, ThreadEntry entry,
 /* Same, with a kernel stack of @stack_size bytes (rounded up to pages). */
 Thread *sched_create_thread_ex(const char *name, ThreadEntry entry,
                                void *arg, uint8_t priority, size_t stack_size);
+
+/* End the current thread (never returns).  Its stack and Thread are
+ * reclaimed later by sched_free_thread() once sched_thread_gone(). */
+void sched_exit_current(void) __attribute__((noreturn));
+bool sched_thread_gone(const Thread *t);
+void sched_free_thread(Thread *t);
 
 /*
  * Yield the current thread's remaining time slice voluntarily.
