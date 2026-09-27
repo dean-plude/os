@@ -1,1 +1,0 @@
-cmd='/usr/bin/cmake;-DCMAKE_BUILD_TYPE=Debug;-DCMAKE_C_COMPILER=/usr/bin/clang;-DCMAKE_ASM_NASM_COMPILER=/usr/bin/nasm;-DCMAKE_SOURCE_DIR=/mnt/c/Users/dean.plude/Documents/GitHub/os;-GUnix Makefiles;-S;<SOURCE_DIR><SOURCE_SUBDIR>;-B;<BINARY_DIR>'

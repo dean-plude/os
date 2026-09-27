@@ -13,6 +13,7 @@
 #include "../../ke/printf.h"
 #include "../../ke/syscall.h"
 #include "../../ke/scheduler.h"
+#include "../../ps/ps.h"
 
 /* Assembly stub address table (defined in isr_stubs.asm) */
 extern uintptr_t isr_stub_table[IDT_ENTRIES];
@@ -130,7 +131,41 @@ static void dump_frame(InterruptFrame *f)
 }
 
 /* -----------------------------------------------------------------------
- * Kernel-mode page fault handler (placeholder — VMM not yet wired in)
+ * terminate_faulting_user_thread
+ *
+ * A ring-3 thread raised an exception it cannot handle (there is no SEH
+ * dispatch yet).  Instead of halting the machine, mark its process as
+ * exited and retire the faulting thread: it never returns to user mode,
+ * and the scheduler switches to other work.  Only called for faults taken
+ * in ring 3, so the current thread is a user ETHREAD.
+ * ----------------------------------------------------------------------- */
+static void __attribute__((noreturn))
+terminate_faulting_user_thread(NTSTATUS status)
+{
+    PEPROCESS proc = PsGetCurrentProcess();
+    if (proc) PsTerminateProcess(proc, status);
+
+    Thread *t = sched_current();
+    kprintf("[IDT] Terminating faulting user thread '%s' (TID %lu), status 0x%x\n",
+            t->name, t->tid, (UINT32)status);
+    t->state = THREAD_DEAD;
+    for (;;) sched_yield();
+}
+
+/* NTSTATUS reported as the exit status for an unhandled user exception */
+static NTSTATUS exception_status(uint64_t vector)
+{
+    switch (vector) {
+    case EXC_DIVIDE_ERROR:     return STATUS_INTEGER_DIVIDE_BY_ZERO;
+    case EXC_INVALID_OPCODE:   return STATUS_ILLEGAL_INSTRUCTION;
+    case EXC_GENERAL_PROTECTION:
+    case EXC_PAGE_FAULT:       return STATUS_ACCESS_VIOLATION;
+    default:                   return STATUS_UNSUCCESSFUL;
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * Page fault handler
  * ----------------------------------------------------------------------- */
 static void handle_page_fault(InterruptFrame *f)
 {
@@ -169,9 +204,8 @@ static void handle_page_fault(InterruptFrame *f)
         cpu_halt_forever();
     }
 
-    /* TODO Phase 2+: deliver EXCEPTION_ACCESS_VIOLATION to user process */
-    kprintf("USER PAGE FAULT — process termination not yet implemented\n");
-    cpu_halt_forever();
+    /* TODO: deliver EXCEPTION_ACCESS_VIOLATION to a user SEH handler */
+    terminate_faulting_user_thread(STATUS_ACCESS_VIOLATION);
 }
 
 /* -----------------------------------------------------------------------
@@ -213,9 +247,8 @@ void interrupt_dispatch(InterruptFrame *frame)
             kprintf("Unhandled kernel exception — halting\n");
             cpu_halt_forever();
         }
-        /* TODO: signal user process */
-        cpu_halt_forever();
-        return;
+        /* TODO: dispatch to a user SEH handler */
+        terminate_faulting_user_thread(exception_status(vector));
     }
 
     /* ---- Spurious APIC interrupt ---- */

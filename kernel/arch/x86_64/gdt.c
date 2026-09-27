@@ -103,8 +103,8 @@ void gdt_init(void)
     g->entries[0] = make_null();                /* 0x00 — Null */
     g->entries[1] = make_code64(0);             /* 0x08 — Kernel code, DPL=0 */
     g->entries[2] = make_data64(0);             /* 0x10 — Kernel data, DPL=0 */
-    g->entries[3] = make_code64(3);             /* 0x18 — User code,   DPL=3 */
-    g->entries[4] = make_data64(3);             /* 0x20 — User data,   DPL=3 */
+    g->entries[3] = make_data64(3);             /* 0x18 — User data,   DPL=3 */
+    g->entries[4] = make_code64(3);             /* 0x20 — User code,   DPL=3 */
     /* Entries 5 and 6 (0x28 and 0x30) are occupied by the 16-byte TSS
      * descriptor — written separately via g->tss_descriptor below. */
     g->entries[5] = make_null();                /* placeholder — TSS low  */

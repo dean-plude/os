@@ -116,6 +116,8 @@ set(KERNEL_C_SOURCES
     ke/scheduler.c
     ke/syscall.c
     ke/kpcr.c
+    ke/probe.c
+    ke/probe_test.c
     ob/ob.c
     ps/ps.c
     cm/cm.c
@@ -172,6 +174,8 @@ add_custom_target(asm_objects DEPENDS ${ASM_OBJECTS})
 set(KERNEL_LINK_FLAGS
     -T "${CMAKE_CURRENT_SOURCE_DIR}/linker.ld"
     -nostdlib
+    -static
+    -no-pie
     -z max-page-size=0x1000
 )
 

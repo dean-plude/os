@@ -97,7 +97,13 @@ void pmm_init(const BootInfo *info)
     for (uint32_t i = 0; i < count; i++) {
         const BootMemDescriptor *d = &map[i];
         uintptr_t end = d->physical_base + d->num_pages * PAGE_SIZE;
-        if (end > highest) highest = end;
+        /* Only RAM-backed regions size the bitmap.  Firmware often reports
+         * reserved/MMIO windows near the top of the address space (e.g.
+         * ~1 TiB on OVMF), which would otherwise inflate the bitmap to tens
+         * of MiB and make total/used page stats meaningless. */
+        if (d->type != BOOT_MEM_RESERVED && d->type != BOOT_MEM_MMIO &&
+            d->type != BOOT_MEM_UNUSABLE && end > highest)
+            highest = end;
 
         if (d->type == BOOT_MEM_CONVENTIONAL) {
             total_conventional += d->num_pages * PAGE_SIZE;

@@ -1,3 +1,0 @@
-/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles/bootloader.dir
-/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles/edit_cache.dir
-/mnt/c/Users/dean.plude/Documents/GitHub/os/build/bootloader_build/CMakeFiles/rebuild_cache.dir

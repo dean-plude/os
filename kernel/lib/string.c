@@ -103,9 +103,11 @@ int strcmp(const char *a, const char *b)
 
 int strncmp(const char *a, const char *b, size_t n)
 {
-    while (n-- && *a && *a == *b) { a++; b++; }
-    if (!n) return 0;
-    return (unsigned char)*a - (unsigned char)*b;
+    for (; n; n--, a++, b++) {
+        if (*a != *b) return (unsigned char)*a - (unsigned char)*b;
+        if (!*a) return 0;
+    }
+    return 0;
 }
 
 char *strcpy(char *dst, const char *src)
@@ -148,7 +150,7 @@ char *strrchr(const char *s, int c)
         if (*s == ch) last = s;
         s++;
     }
-    return (char *)last;
+    return (ch == '\0') ? (char *)s : (char *)last;
 }
 
 char *strdup(const char *s)

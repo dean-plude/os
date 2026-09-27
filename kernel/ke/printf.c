@@ -100,8 +100,9 @@ int kvsnprintf(char *buf, size_t n, const char *fmt, __builtin_va_list ap)
         case 'i':
             if      (len == 2) d = (int64_t)__builtin_va_arg(ap, long long);
             else if (len == 1) d = (int64_t)__builtin_va_arg(ap, long);
+            else if (len == 3) d = (int64_t)__builtin_va_arg(ap, size_t);
             else               d = (int64_t)__builtin_va_arg(ap, int);
-            if (d < 0) { negative = true; u = (uint64_t)(-d); }
+            if (d < 0) { negative = true; u = 0 - (uint64_t)d; }  /* safe for INT64_MIN */
             else                          { u = (uint64_t)d; }
             num_start = format_uint(num_buf + NUM_BUF_SIZE, u, BASE_DEC, hex_lower, false);
             goto print_num;
@@ -134,12 +135,16 @@ int kvsnprintf(char *buf, size_t n, const char *fmt, __builtin_va_list ap)
 
         case 'o':
             if      (len == 2) u = (uint64_t)__builtin_va_arg(ap, unsigned long long);
+            else if (len == 1) u = (uint64_t)__builtin_va_arg(ap, unsigned long);
+            else if (len == 3) u = (uint64_t)__builtin_va_arg(ap, size_t);
             else               u = (uint64_t)__builtin_va_arg(ap, unsigned int);
             num_start = format_uint(num_buf + NUM_BUF_SIZE, u, BASE_OCT, hex_lower, false);
             goto print_num;
 
         case 'b':  /* binary — non-standard extension */
             if      (len == 2) u = (uint64_t)__builtin_va_arg(ap, unsigned long long);
+            else if (len == 1) u = (uint64_t)__builtin_va_arg(ap, unsigned long);
+            else if (len == 3) u = (uint64_t)__builtin_va_arg(ap, size_t);
             else               u = (uint64_t)__builtin_va_arg(ap, unsigned int);
             if (alt_form) { PUTC('0'); PUTC('b'); }
             num_start = format_uint(num_buf + NUM_BUF_SIZE, u, BASE_BIN, hex_lower, false);

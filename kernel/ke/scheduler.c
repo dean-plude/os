@@ -252,6 +252,10 @@ Thread *sched_create_thread(const char *name, ThreadEntry entry,
      *   context.rflags = IF (interrupts enabled)
      */
     uintptr_t *sp = (uintptr_t *)stack_top;
+    /* Dummy return slot so that after context_switch's `ret` pops the
+     * trampoline address, RSP ≡ 8 (mod 16) — the SysV ABI state on entry
+     * to a function (as if it had been reached via `call`). */
+    *--sp = 0;
     *--sp = (uintptr_t)thread_trampoline;  /* "return address" for context_switch */
 
     t->context.rsp    = (uint64_t)(uintptr_t)sp;
@@ -293,14 +297,16 @@ static void perform_switch(void)
 {
     sched_lock_acquire();
 
+    Thread *prev = current_thread;
     Thread *next = ready_dequeue();
     if (!next) {
-        /* No ready threads — run idle */
-        next = &idle_thread_obj;
+        /* No other ready thread.  Keep running the current one if it can;
+         * only fall back to the boot context when the current thread has
+         * blocked or exited (the real idle thread is normally queued). */
+        next = (prev->state == THREAD_RUNNING) ? prev : &idle_thread_obj;
     }
 
     /* If current is still running, put it back on the ready queue */
-    Thread *prev = current_thread;
     if (prev != next) {
         if (prev->state == THREAD_RUNNING) {
             ready_enqueue(prev);
@@ -311,13 +317,15 @@ static void perform_switch(void)
 
         /* Update TSS RSP0 to new thread's kernel stack top
          * (used when this thread returns to ring 3 in the future) */
-        uintptr_t kstack_top = (uintptr_t)next->kernel_stack + next->stack_size;
-        gdt_set_rsp0(kstack_top);
+        if (next->kernel_stack) {   /* boot context has no tracked stack */
+            uintptr_t kstack_top = (uintptr_t)next->kernel_stack + next->stack_size;
+            gdt_set_rsp0(kstack_top);
 
-        /* Phase 5: Update KPCR.KernelRsp so syscall_entry.asm picks up the
-         * correct kernel stack when this thread makes a system call. */
-        PKPCR kpcr = KiGetCurrentKpcr();
-        if (kpcr) kpcr->KernelRsp = (UINT64)kstack_top;
+            /* Phase 5: Update KPCR.KernelRsp so syscall_entry.asm picks up the
+             * correct kernel stack when this thread makes a system call. */
+            PKPCR kpcr = KiGetCurrentKpcr();
+            if (kpcr) kpcr->KernelRsp = (UINT64)kstack_top;
+        }
 
         /* Phase 5: Switch address space if the thread belongs to a user
          * process with its own page table (cr3 != 0). */
@@ -329,6 +337,10 @@ static void perform_switch(void)
         context_switch(&prev->context, &next->context);
         /* After return, we're running as 'next' */
     } else {
+        /* Re-selected ourselves (possibly after being made READY by
+         * sched_unblock while still on-CPU): we are running again. */
+        next->state       = THREAD_RUNNING;
+        next->ticks_slice = 0;
         sched_lock_release();
     }
 }

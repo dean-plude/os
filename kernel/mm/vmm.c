@@ -211,6 +211,11 @@ static void large_free(void *ptr)
 
     size_t total_pages = 1 + hdr->pages;
     uintptr_t pa = hdr_va - PHYSMAP_BASE;
+
+    /* Wipe the magic: otherwise a stale header left in a freed page could
+     * make kfree() treat a slab object on the following page as a large
+     * allocation and free the wrong pages. */
+    hdr->magic = 0;
     pmm_free_pages(pa, total_pages);
 }
 

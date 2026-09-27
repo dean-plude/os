@@ -25,6 +25,9 @@
 #include "../mm/section.h"
 #include "../io/io.h"
 #include "../ldr/user_stubs.h"  /* KH_xxx kernel-helper numbers */
+#include "../lib/string.h"
+#include "../mm/vmm.h"
+#include "probe.h"
 
 /* -----------------------------------------------------------------------
  * MSR addresses for SYSCALL/SYSRET
@@ -48,7 +51,33 @@ typedef UINT64 (*SYSCALL_HANDLER)(UINT64 a1, UINT64 a2,
 
 /* -----------------------------------------------------------------------
  * Individual syscall handler implementations
+ *
+ * Every pointer argument comes from ring 3 and is untrusted.  Handlers
+ * never dereference one directly: inputs are copied into kernel locals
+ * with CopyFromUser()/Capture*(), and results are copied back with
+ * CopyToUser().  A bad pointer yields STATUS_ACCESS_VIOLATION.
  * ----------------------------------------------------------------------- */
+
+#define UPTR(p)  ((void *)(uintptr_t)(p))
+
+/* Store a newly created handle in the caller's HANDLE*.  If the pointer
+ * turns out to be bad, close the handle so it does not leak. */
+static NTSTATUS return_handle(UINT64 HandlePtr, HANDLE h)
+{
+    NTSTATUS s = CopyToUser(UPTR(HandlePtr), &h, sizeof(h));
+    if (!NT_SUCCESS(s)) ObCloseHandle(h, NULL);
+    return s;
+}
+
+/* Copy an IO_STATUS_BLOCK out (if requested).  A failed copy only
+ * overrides the result when the operation itself succeeded. */
+static NTSTATUS return_iosb(UINT64 IoStatusPtr, const IO_STATUS_BLOCK *isb,
+                            NTSTATUS s)
+{
+    if (!IoStatusPtr) return s;
+    NTSTATUS cs = CopyToUser(UPTR(IoStatusPtr), isb, sizeof(*isb));
+    return (NT_SUCCESS(s) && !NT_SUCCESS(cs)) ? cs : s;
+}
 
 /* --- NtClose (0x000F) --- */
 static UINT64 sys_NtClose(UINT64 Handle, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -84,8 +113,9 @@ static UINT64 sys_NtQuerySystemTime(UINT64 SystemTimePtr,
     (void)a2; (void)a3; (void)a4;
     /* Return 0 (epoch) — Phase 3 will hook the RTC/HPET */
     if (SystemTimePtr) {
-        UINT64 *p = (UINT64 *)(uintptr_t)SystemTimePtr;
-        *p = 0;
+        UINT64 t = 0;
+        NTSTATUS s = CopyToUser(UPTR(SystemTimePtr), &t, sizeof(t));
+        if (!NT_SUCCESS(s)) return s;
     }
     return STATUS_SUCCESS;
 }
@@ -96,9 +126,13 @@ static UINT64 sys_NtQueryPerformanceCounter(UINT64 CounterPtr,
                                                UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
-    uint64_t tsc = rdtsc();
-    if (CounterPtr) *(UINT64 *)(uintptr_t)CounterPtr = tsc;
-    if (FreqPtr)    *(UINT64 *)(uintptr_t)FreqPtr    = 2000000000ULL; /* ~2GHz */
+    UINT64 tsc  = rdtsc();
+    UINT64 freq = 2000000000ULL; /* ~2GHz */
+    NTSTATUS s;
+    if (CounterPtr && !NT_SUCCESS(s = CopyToUser(UPTR(CounterPtr), &tsc, sizeof(tsc))))
+        return s;
+    if (FreqPtr && !NT_SUCCESS(s = CopyToUser(UPTR(FreqPtr), &freq, sizeof(freq))))
+        return s;
     return STATUS_SUCCESS;
 }
 
@@ -108,32 +142,39 @@ static UINT64 sys_NtQuerySystemInformation(UINT64 InfoClass,
                                               UINT64 InfoLen,
                                               UINT64 ReturnLenPtr)
 {
-    UINT32 *ReturnLength = (UINT32 *)(uintptr_t)ReturnLenPtr;
+    NTSTATUS s;
+    UINT32   retlen;
 
     switch ((UINT32)InfoClass) {
     case SystemBasicInformation: {
-        if (ReturnLength) *ReturnLength = sizeof(SYSTEM_BASIC_INFORMATION);
+        retlen = sizeof(SYSTEM_BASIC_INFORMATION);
+        if (ReturnLenPtr &&
+            !NT_SUCCESS(s = CopyToUser(UPTR(ReturnLenPtr), &retlen, sizeof(retlen))))
+            return s;
         if (InfoLen < sizeof(SYSTEM_BASIC_INFORMATION))
             return STATUS_BUFFER_TOO_SMALL;
         if (!InfoPtr) return STATUS_INVALID_PARAMETER;
 
-        SYSTEM_BASIC_INFORMATION *sbi = (SYSTEM_BASIC_INFORMATION *)(uintptr_t)InfoPtr;
-        __builtin_memset(sbi, 0, sizeof(*sbi));
-        sbi->PageSize              = (UINT32)PAGE_SIZE;
-        sbi->AllocationGranularity = 65536;  /* 64KB, same as Windows */
-        sbi->MinimumUserModeAddress = 0x10000;
-        sbi->MaximumUserModeAddress = 0x7FFFFFFFFFFEFFFF;
-        sbi->ActiveProcessorsAffinityMask = 1;
-        sbi->NumberOfProcessors    = 1;
+        SYSTEM_BASIC_INFORMATION sbi;
+        __builtin_memset(&sbi, 0, sizeof(sbi));
+        sbi.PageSize              = (UINT32)PAGE_SIZE;
+        sbi.AllocationGranularity = 65536;  /* 64KB, same as Windows */
+        sbi.MinimumUserModeAddress = 0x10000;
+        sbi.MaximumUserModeAddress = 0x7FFFFFFFFFFEFFFF;
+        sbi.ActiveProcessorsAffinityMask = 1;
+        sbi.NumberOfProcessors    = 1;
         /* PMM stats for physical page counts */
         uint64_t total_pages, free_pages, used_pages;
         extern void pmm_stats(uint64_t *, uint64_t *, uint64_t *);
         pmm_stats(&total_pages, &free_pages, &used_pages);
-        sbi->NumberOfPhysicalPages = (UINT32)total_pages;
-        return STATUS_SUCCESS;
+        sbi.NumberOfPhysicalPages = (UINT32)total_pages;
+        return CopyToUser(UPTR(InfoPtr), &sbi, sizeof(sbi));
     }
     default:
-        if (ReturnLength) *ReturnLength = 0;
+        retlen = 0;
+        if (ReturnLenPtr &&
+            !NT_SUCCESS(s = CopyToUser(UPTR(ReturnLenPtr), &retlen, sizeof(retlen))))
+            return s;
         return STATUS_INVALID_INFO_CLASS;
     }
 }
@@ -144,44 +185,39 @@ static UINT64 sys_NtQueryInformationProcess(UINT64 ProcessHandle,
                                                UINT64 ProcInfoPtr,
                                                UINT64 ProcInfoLen)
 {
-    void *proc_obj;
+    /* ObReferenceObjectByHandle also resolves the NtCurrentProcess()
+     * pseudo-handle (-1), taking a reference we must drop on every path. */
+    void *proc_obj = NULL;
     NTSTATUS s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
                                             PROCESS_ALL_ACCESS,
                                             ObpProcessType, NULL,
                                             &proc_obj, NULL);
-    /* Allow NtCurrentProcess() pseudo-handle = -1 */
-    PEPROCESS proc = NULL;
-    if (!NT_SUCCESS(s)) {
-        if ((INT64)ProcessHandle == -1) {
-            proc = PsGetCurrentProcess();
-        } else {
-            return s;
-        }
-    } else {
-        proc = (PEPROCESS)proc_obj;
-    }
+    if (!NT_SUCCESS(s)) return s;
+    PEPROCESS proc = (PEPROCESS)proc_obj;
+    if (!proc) return STATUS_INVALID_HANDLE;
 
     switch ((UINT32)ProcInfoClass) {
     case ProcessBasicInformation: {
-        if (ProcInfoLen < sizeof(PROCESS_BASIC_INFORMATION))
-            return STATUS_BUFFER_TOO_SMALL;
-        if (!ProcInfoPtr) return STATUS_INVALID_PARAMETER;
+        if (ProcInfoLen < sizeof(PROCESS_BASIC_INFORMATION) || !ProcInfoPtr) {
+            ObDereferenceObject(proc_obj);
+            return ProcInfoPtr ? STATUS_BUFFER_TOO_SMALL
+                               : STATUS_INVALID_PARAMETER;
+        }
 
-        PROCESS_BASIC_INFORMATION *pbi =
-            (PROCESS_BASIC_INFORMATION *)(uintptr_t)ProcInfoPtr;
-        __builtin_memset(pbi, 0, sizeof(*pbi));
-        pbi->ExitStatus            = proc->ExitStatus;
-        pbi->PebBaseAddress        = proc->Peb;
-        pbi->AffinityMask          = 1;
-        pbi->BasePriority          = 8;
-        pbi->UniqueProcessId       = proc->UniqueProcessId;
-        pbi->InheritedFromUniqueProcessId =
+        PROCESS_BASIC_INFORMATION pbi;
+        __builtin_memset(&pbi, 0, sizeof(pbi));
+        pbi.ExitStatus            = proc->ExitStatus;
+        pbi.PebBaseAddress        = proc->Peb;
+        pbi.AffinityMask          = 1;
+        pbi.BasePriority          = 8;
+        pbi.UniqueProcessId       = proc->UniqueProcessId;
+        pbi.InheritedFromUniqueProcessId =
             proc->InheritedFromUniqueProcessId;
-        if (proc_obj) ObDereferenceObject(proc_obj);
-        return STATUS_SUCCESS;
+        ObDereferenceObject(proc_obj);
+        return CopyToUser(UPTR(ProcInfoPtr), &pbi, sizeof(pbi));
     }
     default:
-        if (proc_obj) ObDereferenceObject(proc_obj);
+        ObDereferenceObject(proc_obj);
         return STATUS_INVALID_INFO_CLASS;
     }
 }
@@ -208,22 +244,23 @@ static UINT64 sys_NtQueryInformationThread(UINT64 ThreadHandle,
 
     switch ((UINT32)ThreadInfoClass) {
     case ThreadBasicInformation: {
-        if (ThreadInfoLen < sizeof(THREAD_BASIC_INFORMATION))
-            return STATUS_BUFFER_TOO_SMALL;
-        if (!ThreadInfoPtr) return STATUS_INVALID_PARAMETER;
+        if (ThreadInfoLen < sizeof(THREAD_BASIC_INFORMATION) || !ThreadInfoPtr) {
+            if ((INT64)ThreadHandle != -2) ObDereferenceObject((void *)et);
+            return ThreadInfoPtr ? STATUS_BUFFER_TOO_SMALL
+                                 : STATUS_INVALID_PARAMETER;
+        }
 
-        THREAD_BASIC_INFORMATION *tbi =
-            (THREAD_BASIC_INFORMATION *)(uintptr_t)ThreadInfoPtr;
-        __builtin_memset(tbi, 0, sizeof(*tbi));
-        tbi->ExitStatus          = et->ExitStatus;
-        tbi->TebBaseAddress      = et->Teb;
-        tbi->ClientId.UniqueProcess = et->Cid.UniqueProcess;
-        tbi->ClientId.UniqueThread  = et->Cid.UniqueThread;
-        tbi->AffinityMask        = 1;
-        tbi->Priority            = 8;
-        tbi->BasePriority        = 8;
+        THREAD_BASIC_INFORMATION tbi;
+        __builtin_memset(&tbi, 0, sizeof(tbi));
+        tbi.ExitStatus          = et->ExitStatus;
+        tbi.TebBaseAddress      = et->Teb;
+        tbi.ClientId.UniqueProcess = et->Cid.UniqueProcess;
+        tbi.ClientId.UniqueThread  = et->Cid.UniqueThread;
+        tbi.AffinityMask        = 1;
+        tbi.Priority            = 8;
+        tbi.BasePriority        = 8;
         if ((INT64)ThreadHandle != -2) ObDereferenceObject((void *)et);
-        return STATUS_SUCCESS;
+        return CopyToUser(UPTR(ThreadInfoPtr), &tbi, sizeof(tbi));
     }
     default:
         if ((INT64)ThreadHandle != -2) ObDereferenceObject((void *)et);
@@ -239,12 +276,13 @@ static UINT64 sys_NtOpenProcess(UINT64 ProcessHandlePtr,
 {
     (void)ObjAttrPtr;
 
-    struct { UINT64 UniqueProcess; UINT64 UniqueThread; } *cid =
-        (void *)(uintptr_t)ClientIdPtr;
-    if (!cid) return STATUS_INVALID_PARAMETER;
+    struct { UINT64 UniqueProcess; UINT64 UniqueThread; } cid;
+    if (!ClientIdPtr) return STATUS_INVALID_PARAMETER;
+    NTSTATUS s = CopyFromUser(&cid, UPTR(ClientIdPtr), sizeof(cid));
+    if (!NT_SUCCESS(s)) return s;
 
     PEPROCESS proc = NULL;
-    NTSTATUS s = PsLookupProcessByProcessId(cid->UniqueProcess, &proc);
+    s = PsLookupProcessByProcessId(cid.UniqueProcess, &proc);
     if (!NT_SUCCESS(s)) return s;
 
     HANDLE h = 0;
@@ -252,8 +290,7 @@ static UINT64 sys_NtOpenProcess(UINT64 ProcessHandlePtr,
     ObDereferenceObject(proc);   /* InsertObject added its own reference */
     if (!NT_SUCCESS(s)) return s;
 
-    if (ProcessHandlePtr)
-        *(HANDLE *)(uintptr_t)ProcessHandlePtr = h;
+    if (ProcessHandlePtr) return return_handle(ProcessHandlePtr, h);
     return STATUS_SUCCESS;
 }
 
@@ -265,34 +302,38 @@ static UINT64 sys_NtAllocateVirtualMemory(UINT64 ProcessHandle,
 {
     if (!RegionSizePtr) return STATUS_INVALID_PARAMETER;
 
+    /* Capture in/out parameters before touching the process */
+    UINT64 base = 0, size = 0;
+    NTSTATUS s;
+    if (BaseAddressPtr &&
+        !NT_SUCCESS(s = CopyFromUser(&base, UPTR(BaseAddressPtr), sizeof(base))))
+        return s;
+    if (!NT_SUCCESS(s = CopyFromUser(&size, UPTR(RegionSizePtr), sizeof(size))))
+        return s;
+    if (!size) return STATUS_INVALID_PARAMETER;
+
     PEPROCESS proc;
     if ((INT64)ProcessHandle == -1) proc = PsGetCurrentProcess();
     else {
         void *obj;
-        NTSTATUS s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
-                                               PROCESS_ALL_ACCESS, ObpProcessType,
-                                               NULL, &obj, NULL);
+        s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
+                                      PROCESS_ALL_ACCESS, ObpProcessType,
+                                      NULL, &obj, NULL);
         if (!NT_SUCCESS(s)) return s;
         proc = (PEPROCESS)obj;
     }
     if (!proc) return STATUS_INVALID_HANDLE;
 
-    UINT64 base = BaseAddressPtr ? *(UINT64 *)(uintptr_t)BaseAddressPtr : 0;
-    UINT64 size = *(UINT64 *)(uintptr_t)RegionSizePtr;
-    if (!size) {
-        if ((INT64)ProcessHandle != -1) ObDereferenceObject(proc);
-        return STATUS_INVALID_PARAMETER;
-    }
-
     UINT32 protect = PAGE_READWRITE;
-    NTSTATUS s = VmaAllocate(&proc->VmaSpace, &base, &size,
-                              (UINT32)AllocationType, protect);
+    s = VmaAllocate(&proc->VmaSpace, &base, &size,
+                    (UINT32)AllocationType, protect);
     if ((INT64)ProcessHandle != -1) ObDereferenceObject(proc);
     if (!NT_SUCCESS(s)) return s;
 
-    if (BaseAddressPtr) *(UINT64 *)(uintptr_t)BaseAddressPtr = base;
-    *(UINT64 *)(uintptr_t)RegionSizePtr = size;
-    return STATUS_SUCCESS;
+    if (BaseAddressPtr &&
+        !NT_SUCCESS(s = CopyToUser(UPTR(BaseAddressPtr), &base, sizeof(base))))
+        return s;
+    return CopyToUser(UPTR(RegionSizePtr), &size, sizeof(size));
 }
 
 /* --- NtFreeVirtualMemory (0x001E) --- */
@@ -303,28 +344,35 @@ static UINT64 sys_NtFreeVirtualMemory(UINT64 ProcessHandle,
 {
     if (!BaseAddressPtr) return STATUS_INVALID_PARAMETER;
 
+    UINT64 base = 0, size = 0;
+    NTSTATUS s;
+    if (!NT_SUCCESS(s = CopyFromUser(&base, UPTR(BaseAddressPtr), sizeof(base))))
+        return s;
+    if (RegionSizePtr &&
+        !NT_SUCCESS(s = CopyFromUser(&size, UPTR(RegionSizePtr), sizeof(size))))
+        return s;
+
     PEPROCESS proc;
     if ((INT64)ProcessHandle == -1) proc = PsGetCurrentProcess();
     else {
         void *obj;
-        NTSTATUS s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
-                                               PROCESS_ALL_ACCESS, ObpProcessType,
-                                               NULL, &obj, NULL);
+        s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
+                                      PROCESS_ALL_ACCESS, ObpProcessType,
+                                      NULL, &obj, NULL);
         if (!NT_SUCCESS(s)) return s;
         proc = (PEPROCESS)obj;
     }
     if (!proc) return STATUS_INVALID_HANDLE;
 
-    UINT64 base = *(UINT64 *)(uintptr_t)BaseAddressPtr;
-    UINT64 size = RegionSizePtr ? *(UINT64 *)(uintptr_t)RegionSizePtr : 0;
-
-    NTSTATUS s = VmaFree(&proc->VmaSpace, &base, &size, (UINT32)FreeType);
+    s = VmaFree(&proc->VmaSpace, &base, &size, (UINT32)FreeType);
     if ((INT64)ProcessHandle != -1) ObDereferenceObject(proc);
-    if (NT_SUCCESS(s)) {
-        *(UINT64 *)(uintptr_t)BaseAddressPtr = base;
-        if (RegionSizePtr) *(UINT64 *)(uintptr_t)RegionSizePtr = size;
-    }
-    return s;
+    if (!NT_SUCCESS(s)) return s;
+
+    if (!NT_SUCCESS(s = CopyToUser(UPTR(BaseAddressPtr), &base, sizeof(base))))
+        return s;
+    if (RegionSizePtr)
+        return CopyToUser(UPTR(RegionSizePtr), &size, sizeof(size));
+    return STATUS_SUCCESS;
 }
 
 /* --- NtOpenKey (0x0012) --- */
@@ -333,12 +381,16 @@ static UINT64 sys_NtOpenKey(UINT64 KeyHandlePtr, UINT64 DesiredAccess,
 {
     (void)a4;
     if (!KeyHandlePtr || !ObjAttrPtr) return STATUS_INVALID_PARAMETER;
+
+    CAPTURED_OBJECT_ATTRIBUTES coa;
+    NTSTATUS s = CaptureObjectAttributes(UPTR(ObjAttrPtr), &coa);
+    if (!NT_SUCCESS(s)) return s;
+
     HANDLE h = 0;
-    NTSTATUS s = NtOpenKey(&h, (ACCESS_MASK)DesiredAccess,
-                            (POBJECT_ATTRIBUTES)(uintptr_t)ObjAttrPtr);
-    if (NT_SUCCESS(s))
-        *(HANDLE *)(uintptr_t)KeyHandlePtr = h;
-    return s;
+    s = NtOpenKey(&h, (ACCESS_MASK)DesiredAccess, &coa.Attributes);
+    ReleaseCapturedObjectAttributes(&coa);
+    if (!NT_SUCCESS(s)) return s;
+    return return_handle(KeyHandlePtr, h);
 }
 
 /* --- NtCreateKey (0x001D) --- */
@@ -346,14 +398,18 @@ static UINT64 sys_NtCreateKey(UINT64 KeyHandlePtr, UINT64 DesiredAccess,
                                   UINT64 ObjAttrPtr, UINT64 TitleIndex)
 {
     if (!KeyHandlePtr || !ObjAttrPtr) return STATUS_INVALID_PARAMETER;
+
+    CAPTURED_OBJECT_ATTRIBUTES coa;
+    NTSTATUS s = CaptureObjectAttributes(UPTR(ObjAttrPtr), &coa);
+    if (!NT_SUCCESS(s)) return s;
+
     HANDLE h = 0;
     UINT32 disp = 0;
-    NTSTATUS s = NtCreateKey(&h, (ACCESS_MASK)DesiredAccess,
-                              (POBJECT_ATTRIBUTES)(uintptr_t)ObjAttrPtr,
-                              (UINT32)TitleIndex, NULL, 0, &disp);
-    if (NT_SUCCESS(s))
-        *(HANDLE *)(uintptr_t)KeyHandlePtr = h;
-    return s;
+    s = NtCreateKey(&h, (ACCESS_MASK)DesiredAccess, &coa.Attributes,
+                    (UINT32)TitleIndex, NULL, 0, &disp);
+    ReleaseCapturedObjectAttributes(&coa);
+    if (!NT_SUCCESS(s)) return s;
+    return return_handle(KeyHandlePtr, h);
 }
 
 /* --- NtQueryValueKey (0x0017) --- */
@@ -361,14 +417,34 @@ static UINT64 sys_NtQueryValueKey(UINT64 KeyHandle, UINT64 ValueNamePtr,
                                      UINT64 InfoClass, UINT64 InfoPtr)
 {
     /* Note: InfoLen and ResultLength are on user stack (args 5/6) —
-     * Phase 2 stub uses fixed length / ignores ResultLength */
+     * Phase 2 stub uses a fixed length and ignores ResultLength.  The
+     * result is built in a kernel buffer and only the bytes actually
+     * produced are copied back to the caller. */
+    enum { QUERY_VALUE_LEN = 4096 };
+    if (!ValueNamePtr) return STATUS_INVALID_PARAMETER;
+
+    UNICODE_STRING name;
+    NTSTATUS s = CaptureUnicodeString(UPTR(ValueNamePtr), &name);
+    if (!NT_SUCCESS(s)) return s;
+
+    void *kbuf = NULL;
+    if (InfoPtr) {
+        kbuf = kzalloc(QUERY_VALUE_LEN);
+        if (!kbuf) { ReleaseCapturedUnicodeString(&name); return STATUS_NO_MEMORY; }
+    }
+
     UINT32 resultlen = 0;
-    return NtQueryValueKey((HANDLE)KeyHandle,
-                            (UNICODE_STRING *)(uintptr_t)ValueNamePtr,
-                            (KEY_VALUE_INFORMATION_CLASS)(UINT32)InfoClass,
-                            (void *)(uintptr_t)InfoPtr,
-                            4096,
-                            &resultlen);
+    s = NtQueryValueKey((HANDLE)KeyHandle, &name,
+                        (KEY_VALUE_INFORMATION_CLASS)(UINT32)InfoClass,
+                        kbuf, QUERY_VALUE_LEN, &resultlen);
+    if (NT_SUCCESS(s) && kbuf) {
+        if (resultlen > QUERY_VALUE_LEN) resultlen = QUERY_VALUE_LEN;
+        s = CopyToUser(UPTR(InfoPtr), kbuf, resultlen);
+    }
+
+    kfree(kbuf);
+    ReleaseCapturedUnicodeString(&name);
+    return s;
 }
 
 /* --- NtSetValueKey (0x0027) --- */
@@ -377,11 +453,15 @@ static UINT64 sys_NtSetValueKey(UINT64 KeyHandle, UINT64 ValueNamePtr,
 {
     /* Data and DataSize are on user stack — Phase 2 stub ignores them */
     (void)TitleIndex;
-    return NtSetValueKey((HANDLE)KeyHandle,
-                          (UNICODE_STRING *)(uintptr_t)ValueNamePtr,
-                          0,
-                          (UINT32)Type,
-                          NULL, 0);
+    if (!ValueNamePtr) return STATUS_INVALID_PARAMETER;
+
+    UNICODE_STRING name;
+    NTSTATUS s = CaptureUnicodeString(UPTR(ValueNamePtr), &name);
+    if (!NT_SUCCESS(s)) return s;
+
+    s = NtSetValueKey((HANDLE)KeyHandle, &name, 0, (UINT32)Type, NULL, 0);
+    ReleaseCapturedUnicodeString(&name);
+    return s;
 }
 
 /* --- NtTerminateProcess (0x002C) --- */
@@ -454,8 +534,11 @@ static UINT64 sys_NtCreateProcessEx(UINT64 ProcessHandlePtr,
 {
     (void)DesiredAccess; (void)ObjAttrPtr; (void)ParentProcessHandle;
     /* Phase 6: stub — full implementation deferred to Phase 7 */
-    if (ProcessHandlePtr)
-        *(HANDLE *)(uintptr_t)ProcessHandlePtr = 0;
+    if (ProcessHandlePtr) {
+        HANDLE none = 0;
+        NTSTATUS s = CopyToUser(UPTR(ProcessHandlePtr), &none, sizeof(none));
+        if (!NT_SUCCESS(s)) return s;
+    }
     return (UINT64)(UINT32)STATUS_NOT_IMPLEMENTED;
 }
 
@@ -469,8 +552,11 @@ static UINT64 sys_NtCreateThread(UINT64 ThreadHandlePtr,
 {
     (void)DesiredAccess; (void)ObjAttrPtr; (void)ProcessHandle;
     /* Phase 6: stub */
-    if (ThreadHandlePtr)
-        *(HANDLE *)(uintptr_t)ThreadHandlePtr = 0;
+    if (ThreadHandlePtr) {
+        HANDLE none = 0;
+        NTSTATUS s = CopyToUser(UPTR(ThreadHandlePtr), &none, sizeof(none));
+        if (!NT_SUCCESS(s)) return s;
+    }
     return (UINT64)(UINT32)STATUS_NOT_IMPLEMENTED;
 }
 
@@ -520,11 +606,13 @@ static UINT64 sys_KhRtlReAllocateHeap(UINT64 HeapHandle, UINT64 Flags,
     UINT64 nw = sys_KhRtlAllocateHeap(HeapHandle, Flags, Size, 0);
     if (!nw) return 0;
     if (Ptr) {
-        /* Copy min(Size, PAGE_SIZE) bytes via physmap — best effort */
+        /* Both blocks are user memory: copy through the probed path so a
+         * forged Ptr cannot be used to read kernel memory. */
         UINT64 copy_len = Size < PAGE_SIZE ? Size : PAGE_SIZE;
-        __builtin_memcpy((void *)(uintptr_t)nw,
-                         (const void *)(uintptr_t)Ptr,
-                         (size_t)copy_len);
+        if (!NT_SUCCESS(CopyUserToUser(UPTR(nw), UPTR(Ptr), (size_t)copy_len))) {
+            sys_KhRtlFreeHeap(HeapHandle, Flags, nw, 0);
+            return 0;
+        }
         sys_KhRtlFreeHeap(HeapHandle, Flags, Ptr, 0);
     }
     return nw;
@@ -575,8 +663,12 @@ static UINT64 sys_KhDbgPrint(UINT64 FmtPtr, UINT64 a2,
                                UINT64 a3, UINT64 a4)
 {
     (void)a2; (void)a3; (void)a4;
-    if (FmtPtr)
-        kprintf("[DbgPrint] %s", (const char *)(uintptr_t)FmtPtr);
+    if (FmtPtr) {
+        /* Captured (and truncated) copy; printed via %s, never as a format */
+        char msg[256];
+        if (NT_SUCCESS(CopyStringFromUser(msg, sizeof(msg), UPTR(FmtPtr))))
+            kprintf("[DbgPrint] %s", msg);
+    }
     return 0;
 }
 
@@ -600,19 +692,19 @@ static UINT64 sys_KhRtlInitUnicodeString(UINT64 DestPtr, UINT64 SrcPtr,
                                            UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
-    UNICODE_STRING *us = (UNICODE_STRING *)(uintptr_t)DestPtr;
-    const WCHAR    *s  = (const WCHAR *)(uintptr_t)SrcPtr;
-    if (!us) return 0;
-    if (!s) {
-        us->Length = us->MaximumLength = 0;
-        us->Buffer = NULL;
-        return 0;
+    if (!DestPtr) return 0;
+
+    UNICODE_STRING us = { 0, 0, NULL };
+    if (SrcPtr) {
+        /* Largest string whose (len + 1) * 2 still fits a USHORT */
+        UINT32 len = 0;
+        if (!NT_SUCCESS(ProbeUserWideStringLength(UPTR(SrcPtr), 32766, &len)))
+            return 0;
+        us.Buffer        = (WCHAR *)(uintptr_t)SrcPtr;   /* stays a user pointer */
+        us.Length        = (USHORT)(len * sizeof(WCHAR));
+        us.MaximumLength = (USHORT)((len + 1) * sizeof(WCHAR));
     }
-    USHORT len = 0;
-    while (s[len]) len++;
-    us->Buffer        = (WCHAR *)(uintptr_t)SrcPtr;
-    us->Length        = (USHORT)(len * sizeof(WCHAR));
-    us->MaximumLength = (USHORT)((len + 1) * sizeof(WCHAR));
+    CopyToUser(UPTR(DestPtr), &us, sizeof(us));
     return 0;
 }
 
@@ -641,8 +733,7 @@ static UINT64 sys_KhRtlZeroMemory(UINT64 Dst, UINT64 Len,
                                     UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
-    if (Dst && Len)
-        __builtin_memset((void *)(uintptr_t)Dst, 0, (size_t)Len);
+    if (Dst && Len) ZeroUser(UPTR(Dst), (size_t)Len);
     return 0;
 }
 
@@ -651,10 +742,7 @@ static UINT64 sys_KhRtlMoveMemory(UINT64 Dst, UINT64 Src,
                                     UINT64 Len, UINT64 a4)
 {
     (void)a4;
-    if (Dst && Src && Len)
-        __builtin_memmove((void *)(uintptr_t)Dst,
-                          (const void *)(uintptr_t)Src,
-                          (size_t)Len);
+    if (Dst && Src && Len) CopyUserToUser(UPTR(Dst), UPTR(Src), (size_t)Len);
     return 0;
 }
 
@@ -684,15 +772,24 @@ static UINT64 sys_NtCreateFile(UINT64 FileHandlePtr, UINT64 DesiredAccess,
                                    UINT64 ObjAttrPtr, UINT64 IoStatusPtr)
 {
     if (!FileHandlePtr || !ObjAttrPtr) return STATUS_INVALID_PARAMETER;
+
+    CAPTURED_OBJECT_ATTRIBUTES coa;
+    NTSTATUS s = CaptureObjectAttributes(UPTR(ObjAttrPtr), &coa);
+    if (!NT_SUCCESS(s)) return s;
+
     IO_STATUS_BLOCK  isb;
+    __builtin_memset(&isb, 0, sizeof(isb));
     HANDLE h = 0;
-    NTSTATUS s = IoCreateFile(&h,
-                               (ACCESS_MASK)DesiredAccess,
-                               (POBJECT_ATTRIBUTES)(uintptr_t)ObjAttrPtr,
-                               &isb, NULL, 0, 0,
-                               FILE_OPEN_IF, 0, NULL, 0);
-    if (IoStatusPtr) *(IO_STATUS_BLOCK *)(uintptr_t)IoStatusPtr = isb;
-    if (NT_SUCCESS(s)) *(HANDLE *)(uintptr_t)FileHandlePtr = h;
+    s = IoCreateFile(&h,
+                     (ACCESS_MASK)DesiredAccess,
+                     &coa.Attributes,
+                     &isb, NULL, 0, 0,
+                     FILE_OPEN_IF, 0, NULL, 0);
+    ReleaseCapturedObjectAttributes(&coa);
+
+    s = return_iosb(IoStatusPtr, &isb, s);
+    if (NT_SUCCESS(s)) return return_handle(FileHandlePtr, h);
+    if (h) ObCloseHandle(h, NULL);   /* IOSB copy-out failed after create */
     return s;
 }
 
@@ -708,17 +805,32 @@ static UINT64 sys_NtReadFile(UINT64 FileHandle, UINT64 IoStatusPtr,
     IO_STATUS_BLOCK isb;
     __builtin_memset(&isb, 0, sizeof(isb));
 
-    void   *buf = (void *)(uintptr_t)BufferPtr;
-    UINT32  len = (UINT32)Length;
+    /* Read into a kernel bounce buffer, then copy out what was read.
+     * Validate the destination first so a bad buffer consumes no data. */
+    UINT32 len = (UINT32)Length;
+    if (len > USER_MAX_BOUNCE) len = USER_MAX_BOUNCE;
+    NTSTATUS s = ProbeForWrite(UPTR(BufferPtr), len, 1);
+    if (!NT_SUCCESS(s)) return s;
 
-    NTSTATUS s = IoReadFile((HANDLE)FileHandle,
-                             (HANDLE)0, NULL, NULL,
-                             &isb,
-                             buf, len,
-                             NULL, NULL);
+    void *kbuf = NULL;
+    if (len) {
+        kbuf = kmalloc(len);
+        if (!kbuf) return STATUS_NO_MEMORY;
+    }
 
-    if (IoStatusPtr) *(IO_STATUS_BLOCK *)(uintptr_t)IoStatusPtr = isb;
-    return s;
+    s = IoReadFile((HANDLE)FileHandle,
+                   (HANDLE)0, NULL, NULL,
+                   &isb,
+                   kbuf, len,
+                   NULL, NULL);
+
+    if (NT_SUCCESS(s) && kbuf) {
+        UINT64 got = isb.Information;
+        if (got > len) got = len;
+        s = CopyToUser(UPTR(BufferPtr), kbuf, (size_t)got);
+    }
+    kfree(kbuf);
+    return return_iosb(IoStatusPtr, &isb, s);
 }
 
 /* --- NtWriteFile (0x0008) --- */
@@ -728,17 +840,25 @@ static UINT64 sys_NtWriteFile(UINT64 FileHandle, UINT64 IoStatusPtr,
     IO_STATUS_BLOCK isb;
     __builtin_memset(&isb, 0, sizeof(isb));
 
-    void   *buf = (void *)(uintptr_t)BufferPtr;
-    UINT32  len = (UINT32)Length;
+    /* Copy the data into a kernel bounce buffer before the driver sees it */
+    UINT32 len = (UINT32)Length;
+    if (len > USER_MAX_BOUNCE) len = USER_MAX_BOUNCE;
 
-    NTSTATUS s = IoWriteFile((HANDLE)FileHandle,
-                             (HANDLE)0, NULL, NULL,
-                             &isb,
-                             buf, len,
-                             NULL, NULL);
+    void *kbuf = NULL;
+    if (len) {
+        kbuf = kmalloc(len);
+        if (!kbuf) return STATUS_NO_MEMORY;
+    }
+    NTSTATUS s = CopyFromUser(kbuf, UPTR(BufferPtr), len);
+    if (!NT_SUCCESS(s)) { kfree(kbuf); return s; }
 
-    if (IoStatusPtr) *(IO_STATUS_BLOCK *)(uintptr_t)IoStatusPtr = isb;
-    return s;
+    s = IoWriteFile((HANDLE)FileHandle,
+                    (HANDLE)0, NULL, NULL,
+                    &isb,
+                    kbuf, len,
+                    NULL, NULL);
+    kfree(kbuf);
+    return return_iosb(IoStatusPtr, &isb, s);
 }
 
 /* --- NtQueryInformationFile (0x0011) --- */
@@ -748,14 +868,28 @@ static UINT64 sys_NtQueryInformationFile(UINT64 FileHandle,
                                              UINT64 Length)
 {
     /* FileInformationClass is the 5th argument — stub to STATUS_SUCCESS */
+    UINT32 len = (UINT32)Length;
+    if (len > USER_MAX_BOUNCE) len = USER_MAX_BOUNCE;
+    NTSTATUS s = ProbeForWrite(UPTR(FileInfoPtr), len, 1);
+    if (!NT_SUCCESS(s)) return s;
+
+    void *kbuf = NULL;
+    if (len) {
+        kbuf = kzalloc(len);
+        if (!kbuf) return STATUS_NO_MEMORY;
+    }
+
     IO_STATUS_BLOCK isb;
-    NTSTATUS s = IoQueryInformationFile((HANDLE)FileHandle,
-                                         &isb,
-                                         (void *)(uintptr_t)FileInfoPtr,
-                                         (UINT32)Length,
-                                         FileBasicInformation);
-    if (IoStatusPtr) *(IO_STATUS_BLOCK *)(uintptr_t)IoStatusPtr = isb;
-    return s;
+    __builtin_memset(&isb, 0, sizeof(isb));
+    s = IoQueryInformationFile((HANDLE)FileHandle,
+                               &isb,
+                               kbuf,
+                               len,
+                               FileBasicInformation);
+    if (NT_SUCCESS(s) && kbuf)
+        s = CopyToUser(UPTR(FileInfoPtr), kbuf, len);
+    kfree(kbuf);
+    return return_iosb(IoStatusPtr, &isb, s);
 }
 
 /* --- NtCreateSection (0x004A) --- */
@@ -764,17 +898,27 @@ static UINT64 sys_NtCreateSection(UINT64 SectionHandlePtr,
                                       UINT64 ObjAttrPtr,
                                       UINT64 MaximumSizePtr)
 {
+    NTSTATUS s;
+    UINT64 maxsz = 0;
+    if (MaximumSizePtr &&
+        !NT_SUCCESS(s = CopyFromUser(&maxsz, UPTR(MaximumSizePtr), sizeof(maxsz))))
+        return s;
+
+    CAPTURED_OBJECT_ATTRIBUTES coa;
+    if (ObjAttrPtr && !NT_SUCCESS(s = CaptureObjectAttributes(UPTR(ObjAttrPtr), &coa)))
+        return s;
+
     HANDLE h = 0;
-    UINT64 maxsz = MaximumSizePtr ? *(UINT64 *)(uintptr_t)MaximumSizePtr : 0;
-    NTSTATUS s = NtCreateSection(&h,
-                                  (ACCESS_MASK)DesiredAccess,
-                                  (POBJECT_ATTRIBUTES)(uintptr_t)ObjAttrPtr,
-                                  MaximumSizePtr ? &maxsz : NULL,
-                                  PAGE_READWRITE,
-                                  SEC_COMMIT,
-                                  0);
+    s = NtCreateSection(&h,
+                        (ACCESS_MASK)DesiredAccess,
+                        ObjAttrPtr ? &coa.Attributes : NULL,
+                        MaximumSizePtr ? &maxsz : NULL,
+                        PAGE_READWRITE,
+                        SEC_COMMIT,
+                        0);
+    if (ObjAttrPtr) ReleaseCapturedObjectAttributes(&coa);
     if (NT_SUCCESS(s) && SectionHandlePtr)
-        *(HANDLE *)(uintptr_t)SectionHandlePtr = h;
+        return return_handle(SectionHandlePtr, h);
     return s;
 }
 
@@ -784,17 +928,25 @@ static UINT64 sys_NtMapViewOfSection(UINT64 SectionHandle,
                                          UINT64 BaseAddressPtr,
                                          UINT64 ZeroBits)
 {
-    void  *base = BaseAddressPtr ? *(void **)(uintptr_t)BaseAddressPtr : NULL;
+    NTSTATUS s;
+    void  *base = NULL;
+    if (BaseAddressPtr &&
+        !NT_SUCCESS(s = CopyFromUser(&base, UPTR(BaseAddressPtr), sizeof(base))))
+        return s;
+
     UINT64 view_size = 0;
-    NTSTATUS s = NtMapViewOfSection((HANDLE)SectionHandle,
-                                     (HANDLE)ProcessHandle,
-                                     &base,
-                                     (ULONG_PTR)ZeroBits,
-                                     0, NULL, &view_size,
-                                     ViewShare, 0,
-                                     PAGE_READWRITE);
-    if (NT_SUCCESS(s) && BaseAddressPtr)
-        *(void **)(uintptr_t)BaseAddressPtr = base;
+    s = NtMapViewOfSection((HANDLE)SectionHandle,
+                           (HANDLE)ProcessHandle,
+                           &base,
+                           (ULONG_PTR)ZeroBits,
+                           0, NULL, &view_size,
+                           ViewShare, 0,
+                           PAGE_READWRITE);
+    if (NT_SUCCESS(s) && BaseAddressPtr) {
+        s = CopyToUser(UPTR(BaseAddressPtr), &base, sizeof(base));
+        if (!NT_SUCCESS(s))   /* caller can't learn the address — undo */
+            NtUnmapViewOfSection((HANDLE)ProcessHandle, base);
+    }
     return s;
 }
 
@@ -831,9 +983,9 @@ static UINT64 sys_NtQueryVirtualMemory(UINT64 ProcessHandle,
     MEMORY_BASIC_INFORMATION mbi;
     UINT64 rlen = 0;
     NTSTATUS s = VmaQuery(&proc->VmaSpace, BaseAddress, &mbi, &rlen);
-    if (NT_SUCCESS(s) && MemInfoPtr)
-        __builtin_memcpy((void *)(uintptr_t)MemInfoPtr, &mbi, sizeof(mbi));
     if ((INT64)ProcessHandle != -1) ObDereferenceObject(proc);
+    if (NT_SUCCESS(s) && MemInfoPtr)
+        s = CopyToUser(UPTR(MemInfoPtr), &mbi, sizeof(mbi));
     return s;
 }
 
@@ -843,22 +995,29 @@ static UINT64 sys_NtProtectVirtualMemory(UINT64 ProcessHandle,
                                              UINT64 RegionSizePtr,
                                              UINT64 NewProtect)
 {
+    UINT64 base = 0, size = 0;
+    NTSTATUS s;
+    if (BaseAddrPtr &&
+        !NT_SUCCESS(s = CopyFromUser(&base, UPTR(BaseAddrPtr), sizeof(base))))
+        return s;
+    if (RegionSizePtr &&
+        !NT_SUCCESS(s = CopyFromUser(&size, UPTR(RegionSizePtr), sizeof(size))))
+        return s;
+
     PEPROCESS proc;
     if ((INT64)ProcessHandle == -1) proc = PsGetCurrentProcess();
     else {
         void *obj;
-        NTSTATUS s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
-                                               PROCESS_ALL_ACCESS, ObpProcessType,
-                                               NULL, &obj, NULL);
+        s = ObReferenceObjectByHandle((HANDLE)ProcessHandle,
+                                      PROCESS_ALL_ACCESS, ObpProcessType,
+                                      NULL, &obj, NULL);
         if (!NT_SUCCESS(s)) return s;
         proc = (PEPROCESS)obj;
     }
     if (!proc) return STATUS_INVALID_HANDLE;
 
-    UINT64 base = BaseAddrPtr ? *(UINT64 *)(uintptr_t)BaseAddrPtr : 0;
-    UINT64 size = RegionSizePtr ? *(UINT64 *)(uintptr_t)RegionSizePtr : 0;
     UINT32 old  = 0;
-    NTSTATUS s = VmaProtect(&proc->VmaSpace, &base, &size, (UINT32)NewProtect, &old);
+    s = VmaProtect(&proc->VmaSpace, &base, &size, (UINT32)NewProtect, &old);
     if ((INT64)ProcessHandle != -1) ObDereferenceObject(proc);
     return s;
 }
@@ -951,37 +1110,16 @@ void SyscallInitialize(void)
     build_syscall_table();
 
     /* STAR MSR:
-     *   Bits 47:32 = kernel CS (for SYSCALL: CS = STAR[47:32], SS = STAR[47:32]+8)
-     *   Bits 63:48 = user CS-16 (for SYSRET: CS = STAR[63:48]+16, SS = STAR[63:48]+8)
+     *   Bits 47:32 — SYSCALL: CS = STAR[47:32],      SS = STAR[47:32] + 8
+     *   Bits 63:48 — SYSRETQ: CS = STAR[63:48] + 16, SS = STAR[63:48] + 8
+     *                (RPL 3 is forced on both)
      *
-     * We use: kernel CS = GDT_KERNEL_CODE = 0x08, kernel SS = 0x10
-     *         user CS = GDT_USER_CODE = 0x18, user SS = GDT_USER_DATA = 0x20
-     * For SYSRET 64-bit: CS = STAR[63:48]+16, SS = STAR[63:48]+8
-     *   => STAR[63:48] = 0x18 - 16 = 0x08 — but use 0x10 so user CS = 0x18+16=0x28
-     *   Actually Windows uses: STAR[63:48] = 0x0023 (user CS = 0x33, user SS = 0x2B)
-     *   We replicate that layout:
-     *     STAR[47:32] = 0x0010  (kernel: CS=0x10 is wrong — fix: use 0x08)
-     *
-     * Correct STAR layout for our GDT:
-     *   kernel SS = kernel CS + 8 = 0x08 + 0x08 = 0x10 ✓ (GDT_KERNEL_DATA)
-     *   STAR[47:32] = GDT_KERNEL_CODE = 0x08
-     *   user CS (SYSRET 64-bit) = STAR[63:48] + 16
-     *   user SS (SYSRET)        = STAR[63:48] + 8
-     *   We want user CS = 0x18 (GDT_USER_CODE | 3 = 0x1B with RPL)
-     *           user SS = 0x20 (GDT_USER_DATA | 3 = 0x23 with RPL)
-     *   => STAR[63:48] = 0x18 - 16 = 0x08, giving user CS = 0x18, SS = 0x10 (wrong)
-     *
-     *   Windows NT GDT order: 0x08=kcode, 0x10=kdata, 0x18=ucode32, 0x20=udata, 0x28=ucode64
-     *   For SYSRET to 64-bit: CS = STAR[63:48]+16, SS = STAR[63:48]+8
-     *   We want CS=0x28|3=0x2B (user code 64-bit), SS=0x20|3=0x23 (user data)
-     *   => STAR[63:48] = 0x28 - 16 = 0x18
-     *      then SS = 0x18 + 8 = 0x20 ✓, CS = 0x18 + 16 = 0x28 ✓
-     *
-     *   But our GDT has GDT_USER_CODE=0x18, GDT_USER_DATA=0x20 (see gdt.h).
-     *   For Phase 2 (kernel-only), user mode segments don't matter yet.
-     *   Use same layout as Windows: STAR[63:48]=0x0018, STAR[47:32]=0x0008
+     * Kernel: CS = 0x08, SS = 0x10.
+     * User:   base = GDT_USER_DATA - 8 = 0x10 → SS = 0x18|3, CS = 0x20|3.
+     * See the selector layout in gdt.h.
      */
-    UINT64 star = ((UINT64)0x0018 << 48) | ((UINT64)GDT_KERNEL_CODE << 32);
+    UINT64 star = ((UINT64)(GDT_USER_DATA - 8) << 48) |
+                  ((UINT64)GDT_KERNEL_CODE << 32);
     wrmsr(MSR_STAR, star);
 
     /* LSTAR = kernel entry for 64-bit SYSCALL */
