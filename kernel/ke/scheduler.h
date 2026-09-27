@@ -112,6 +112,9 @@ void sched_init(void);
 typedef void (*ThreadEntry)(void *arg);
 Thread *sched_create_thread(const char *name, ThreadEntry entry,
                             void *arg, uint8_t priority);
+/* Same, with a kernel stack of @stack_size bytes (rounded up to pages). */
+Thread *sched_create_thread_ex(const char *name, ThreadEntry entry,
+                               void *arg, uint8_t priority, size_t stack_size);
 
 /*
  * Yield the current thread's remaining time slice voluntarily.

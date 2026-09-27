@@ -139,7 +139,12 @@ static void page_network(int x, int y, int w)
     row(x, y, w, "IPv4 address (DHCP)", ip);      y += 50;
     row(x, y, w, "Subnet mask", mask);            y += 50;
     row(x, y, w, "Default gateway", gw);          y += 50;
-    row(x, y, w, "DNS servers", dns);
+    row(x, y, w, "DNS servers", dns);                 y += 50;
+    char roots[48];
+    int imported, n = NetRootCount(&imported);
+    if (imported) ksnprintf(roots, sizeof(roots), "%d (%d imported)", n, imported);
+    else          ksnprintf(roots, sizeof(roots), "%d (Mozilla CA list)", n);
+    row(x, y, w, "Trusted root certificates (HTTPS)", roots);
 }
 
 /* Repaint the Network page when the connection state changes */
@@ -215,7 +220,7 @@ void SettingsOpen(void)
 {
     Settings *st = kzalloc(sizeof(Settings));
     if (!st) return;
-    WND *w = AppCreateWindow(APP_SETTINGS, "Settings", 860, 520, UI_BG);
+    WND *w = AppCreateWindow(APP_SETTINGS, "Settings", 860, 580, UI_BG);
     if (!w) { kfree(st); return; }
     w->user     = st;
     w->on_paint = set_paint;

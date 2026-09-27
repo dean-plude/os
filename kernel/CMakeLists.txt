@@ -81,6 +81,7 @@ set(CMAKE_ASM_NASM_FLAGS "-f elf64 -g -F dwarf")
 # -------------------------------------------------------------------------
 
 set(LWIP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lwip/src")
+set(BEARSSL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/bearssl")
 
 set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -88,6 +89,7 @@ set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/../include"
     "${CMAKE_CURRENT_SOURCE_DIR}/net/port"      # lwIP port: lwipopts.h, arch/cc.h
     "${LWIP_DIR}/include"
+    "${BEARSSL_DIR}/inc"
 )
 
 # -------------------------------------------------------------------------
@@ -118,6 +120,8 @@ set(KERNEL_C_SOURCES
     hal/pci.c
     drivers/e1000.c
     net/net.c
+    net/tls.c
+    net/tls_roots.c
     ke/main.c
     ke/printf.c
     ke/scheduler.c
@@ -164,6 +168,15 @@ file(GLOB LWIP_SOURCES
 )
 set_source_files_properties(${LWIP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 list(APPEND KERNEL_C_SOURCES ${LWIP_SOURCES})
+
+# BearSSL 0.6 (third_party/bearssl, MIT licence): TLS 1.0-1.2 and X.509.
+# Kernel build: portable constant-time code only (no SSE/AES-NI, the
+# kernel runs with SSE disabled), and no OS time or random sources -
+# net/tls.c supplies both.
+file(GLOB_RECURSE BEARSSL_SOURCES "${BEARSSL_DIR}/src/*.c")
+set_source_files_properties(${BEARSSL_SOURCES} PROPERTIES COMPILE_OPTIONS
+    "-w;-I${BEARSSL_DIR}/src;-DNOVA_BEARSSL=1;-DBR_AES_X86NI=0;-DBR_SSE2=0;-DBR_POWER8=0;-DBR_RDRAND=0;-DBR_USE_URANDOM=0;-DBR_USE_WIN32_RAND=0;-DBR_USE_UNIX_TIME=0;-DBR_USE_WIN32_TIME=0;-DBR_64=1;-DBR_INT128=1;-DBR_LE_UNALIGNED=1")
+list(APPEND KERNEL_C_SOURCES ${BEARSSL_SOURCES})
 
 # C object library with kernel flags
 add_library(kernel_objects OBJECT ${KERNEL_C_SOURCES})

@@ -44,6 +44,7 @@ typedef struct {
     UINT16  seq;
     UINT64  wake;              /* ticks */
     bool    save;              /* wget: save the body; curl: print it */
+    bool    https;
     int     redirects;
 } Job;
 
@@ -184,6 +185,8 @@ static void cmd_help(Term *t)
         "  nslookup <host>     look up a host name (DNS)\n"
         "  wget <url>          download a web page to C:\\Downloads\n"
         "  curl <url>          fetch a web page and print it\n"
+        "  certutil            list trusted root certificates\n"
+        "  certutil -addstore root <file>   trust a CA certificate (PEM/DER)\n"
         "  cls                 clear the screen (also: clear, Ctrl+L)\n"
         "  exit                close this window\n"
         "Keys: Up/Down history, PgUp/PgDn scroll, Ctrl+C cancel.");
@@ -428,17 +431,46 @@ static void cmd_nslookup(Term *t, const char *host)
 static bool set_target(Term *t, const char *url)
 {
     Job *j = &t->job;
-    bool https;
-    if (!NetParseUrl(url, j->host, sizeof(j->host), &j->port, j->path, sizeof(j->path), &https)) {
-        terr(t, "That doesn't look like a web address (try http://example.com).");
-        return false;
-    }
-    if (https) {
-        terr(t, "HTTPS isn't supported yet (secure connections come with the next update).");
-        terr(t, "Try an http:// address.");
+    if (!NetParseUrl(url, j->host, sizeof(j->host), &j->port, j->path, sizeof(j->path), &j->https)) {
+        terr(t, "That doesn't look like a web address (try https://example.com).");
         return false;
     }
     return true;
+}
+
+/* certutil [-store]            list trusted roots
+ * certutil -addstore root FILE  trust the CA certificate(s) in FILE */
+static void cmd_certutil(Term *t, int argc, char **argv)
+{
+    if (argc >= 2 && is(argv[1], "-addstore")) {
+        if (argc < 4 || !is(argv[2], "root")) {
+            terr(t, "Usage: certutil -addstore root <file.crt>");
+            return;
+        }
+        RamNode *f = RamfsResolve(t->cwd, argv[3]);
+        if (!f || f->dir) { terr(t, "The system cannot find the file specified."); return; }
+        char err[80];
+        int n = NetImportRoots(f->data, f->size, err, sizeof(err));
+        if (!n) { tprintf(t, "CertUtil: -addstore command FAILED: %s", err); return; }
+        tprintf(t, "Added %d certificate%s to the Trusted Root Certification Authorities store.",
+                n, n == 1 ? "" : "s");
+        tprint(t, "CertUtil: -addstore command completed successfully. (Lasts until reboot.)");
+        return;
+    }
+    if (argc >= 2 && !is(argv[1], "-store")) {
+        terr(t, "Usage: certutil [-store] | certutil -addstore root <file>");
+        return;
+    }
+    int imported, n = NetRootCount(&imported);
+    tprint(t, "Trusted Root Certification Authorities:");
+    for (int i = 0; i < n; i++) {
+        char name[72];
+        bool user;
+        if (!NetRootName(i, name, sizeof(name), &user)) break;
+        tprintf(t, "  %3d  %s%s", i + 1, name[0] ? name : "(unnamed)", user ? "  [imported]" : "");
+    }
+    tprintf(t, "%d trusted roots (%d built in from the Mozilla CA list, %d imported).",
+            n, n - imported, imported);
 }
 
 static void cmd_fetch(Term *t, const char *url, bool save)
@@ -498,6 +530,7 @@ static void fetch_done(Term *t)
         n++;
     }
     line[n] = '\0';
+    if (j->op->tls_info[0]) tprintf(t, "Secure connection: %s", j->op->tls_info);
     tprintf(t, "HTTP request sent, awaiting response... %s", line + (n > 9 ? 9 : 0));
 
     if (status >= 300 && status < 400 && loc[0] && j->redirects < 5) {
@@ -564,7 +597,7 @@ static bool term_tick(WND *w)
             j->phase = PH_SEND;
         } else {
             tprintf(t, "Connecting to %s (%s):%u...", j->host, a, j->port);
-            j->op = NetHttpGet(j->ip, j->port, j->host, j->path);
+            j->op = NetHttpGet(j->ip, j->port, j->host, j->path, j->https);
             j->phase = PH_FETCH;
             if (!j->op) { terr(t, "The network is busy; try again."); job_end(t); }
         }
@@ -656,6 +689,7 @@ static void run(Term *t, char *cmdline)
     else if (is(c, "ping"))                     cmd_ping(t, argc, argv);
     else if (is(c, "nslookup"))                 cmd_nslookup(t, a1);
     else if (is(c, "wget"))                     cmd_fetch(t, a1, true);
+    else if (is(c, "certutil"))                 cmd_certutil(t, argc, argv);
     else if (is(c, "curl"))                     cmd_fetch(t, a1, false);
     else if (is(c, "cls") || is(c, "clear"))    t->count = 0;
     else if (is(c, "exit"))                     WmDestroyWindow(t->w);
