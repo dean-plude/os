@@ -1,0 +1,7 @@
+Mbed TLS 3.6.7 (https://www.trustedfirmware.org/projects/mbed-tls/), used
+under the Apache-2.0 licence (it is dual-licensed Apache-2.0 OR
+GPL-2.0-or-later; NovaOS takes the Apache-2.0 option).
+Source: Ubuntu archive mbedtls_3.6.7.orig.tar.bz2 (the upstream release).
+Only include/ and library/ are kept.  The kernel configuration lives in
+kernel/net/port/mbedtls_nova_config.h (derived from the default
+include/mbedtls/mbedtls_config.h with scripts/config.py).
