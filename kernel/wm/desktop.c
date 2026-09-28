@@ -586,7 +586,7 @@ static void result_icon(int i, int x, int y, int s)
     case R_PROG:    AppDrawProgramIcon(g_res[i].name, x, y, s); break;
     case R_SETTING: AppDrawIcon(APP_SETTINGS, x, y, s); break;
     case R_FOLDER:  AppDrawFolderIcon(x, y, s); break;
-    case R_FILE:    AppDrawFileIcon(x, y, s); break;
+    case R_FILE:    AppDrawNodeIcon(RamfsResolve(NULL, g_res[i].sub), x, y, s); break;
     }
 }
 
@@ -645,7 +645,9 @@ static void draw_results(int x, int y, int w)
         GdiTextBold(x + 44, y + 6, buf, TXT_DARK);
         char sub[RAMFS_PATH_MAX + 16];
         if (g_res[i].kind == R_FOLDER || g_res[i].kind == R_FILE || g_res[i].kind == R_PROG)
-            ksnprintf(sub, sizeof(sub), "%s  -  %s", kind_label(g_res[i].kind), g_res[i].sub);
+            ksnprintf(sub, sizeof(sub), "%s  -  %s", g_res[i].kind == R_FILE
+                      ? AppFileTypeName(RamfsResolve(NULL, g_res[i].sub)) : kind_label(g_res[i].kind),
+                      g_res[i].sub);
         else
             ksnprintf(sub, sizeof(sub), "%s", kind_label(g_res[i].kind));
         fit_text(sub, w - 60, buf, sizeof(buf), false);
@@ -720,7 +722,7 @@ static void draw_home(int x, int y, int w, int bottom)
         } else {
             RamNode *f = files[i - na];
             if (hovered(ACT_RECENT, i - na)) GdiRoundAlpha(cell, 8, GDI_WHITE, 70);
-            if (f->dir) AppDrawFolderIcon(cx, cy + 2, 30); else AppDrawFileIcon(cx, cy + 2, 30);
+            AppDrawNodeIcon(f, cx, cy + 2, 30);
             fit_text(f->name, half - 60, name, sizeof(name), false);
             char path[RAMFS_PATH_MAX];
             RamfsPath(f->parent ? f->parent : f, path, sizeof(path));
@@ -843,7 +845,11 @@ static void dock_layout(void)
     int n = WmListWindows(wins, WM_MAX_WINDOWS);
     /* stable order: by id (creation) */
     int ids[WM_MAX_WINDOWS], k = 0;
-    for (int i = 0; i < n; i++) if (wins[i]->app < 0) ids[k++] = wins[i]->id;
+    for (int i = 0; i < n; i++) {             /* windows without a pinned dock app */
+        bool pinned = false;
+        for (int j = 0; j < N_DOCK_APPS; j++) if (wins[i]->app == (int)g_dock_apps[j]) pinned = true;
+        if (!pinned) ids[k++] = wins[i]->id;
+    }
     for (int i = 1; i < k; i++) for (int j = i; j > 0 && ids[j - 1] > ids[j]; j--) {
         int t = ids[j]; ids[j] = ids[j - 1]; ids[j - 1] = t;
     }
@@ -932,7 +938,7 @@ static void draw_dock(void)
             break;
         case DK_TASK:
             w = WmWindowById(it->arg);
-            AppDrawProgramIcon(w ? w->title : "?", r.x + 2, r.y + 2, r.w - 4);
+            if (w) AppDrawWindowIcon(w, r.x + 2, r.y + 2, r.w - 4); else AppDrawProgramIcon("?", r.x + 2, r.y + 2, r.w - 4);
             break;
         }
         /* Running indicator: a pill under the icon, wider when focused */
@@ -1031,8 +1037,7 @@ static void draw_switcher(void)
                      i == g_switch.sel ? GDI_C(0x60, 0xB8, 0xF8) : POP_LINE);
         if (i == g_switch.sel)
             GdiRoundRect(RECT(x - 2, y - 2, cw + 4, ch + 4), 10, GDI_TRANSPARENT, GDI_C(0x60, 0xB8, 0xF8));
-        if (w->app >= 0) AppDrawIcon((AppId)w->app, x + (cw - 48) / 2, y + 22, 48);
-        else             AppDrawProgramIcon(w->title, x + (cw - 48) / 2, y + 22, 48);
+        AppDrawWindowIcon(w, x + (cw - 48) / 2, y + 22, 48);
         char t[64];
         fit_text(w->title, cw - 16, t, sizeof(t), false);
         GdiTextCenter(x, y + 84, cw, t, POP_TEXT);
@@ -1097,6 +1102,7 @@ void DesktopInitialize(void)
     dock_layout();
     WmSetWorkArea(RECT(0, 0, GdiScreenW(), L_dock.y - 8));
     WmSetDesktop(shell_background, shell_overlay);
+    AppInit();
     kprintf("[SHELL] Desktop shell ready (%dx%d)\n", GdiScreenW(), GdiScreenH());
 }
 

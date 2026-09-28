@@ -303,12 +303,34 @@ Windows executables (PE32+) without emulation.
   Twilight), chosen in the new **Settings > Personalization** page.
 - The desktop's This PC, Documents, Downloads, Pictures and Projects icons
   open File Explorer at those folders; NetSurf has a desktop icon.
+- **Windows icons (.ico)** (`gdi/icon.c`, `gdi/png.c`): the kernel reads
+  .ico and .cur files, whose images may be BMP-style DIBs (1, 4, 8, 16, 24
+  or 32 bits per pixel with the AND mask) or PNG (as 256x256 Vista-style
+  icons are), and the icons in a program's resources (RT_GROUP_ICON /
+  RT_ICON in any .exe or .dll).  Drawing picks the image that best fits the
+  size at device resolution and scales it with alpha blending.  PNG is
+  decoded by a small built-in inflate + PNG decoder (every colour type, bit
+  depth and interlacing; it matches libpng on the PngSuite images).
+  A program shows its own icon (a `NAME.ico` next to `NAME.exe` wins over
+  the one in its resources) in the Start menu, search, the title bar, the
+  dock, Alt+Tab and File Explorer; Explorer also shows .ico files as
+  themselves and PNG thumbnails, with file types ("Icon", "Application",
+  "PNG image").  Programs get icons at build time from `programs/NAME.rc`
+  (compiled by `llvm-rc`): `winhello.exe` has one drawn by
+  `tools/make_icons.py`, and `netsurf.exe` carries NetSurf's own.
+- **Photos** opens .ico, .cur and .png files: the picture, and for icons
+  every image in the file (size and colour depth) in a strip, the selected
+  one enlarged pixel for pixel; Left/Right step through the folder, and on
+  its own it shows a gallery of `C:\Pictures` (which now holds a sample
+  icon and picture).  .exe files opened from Explorer run.
+- Not yet: `LoadIcon`/`DrawIcon` and `WM_SETICON` for programs (a window
+  shows its program's first icon), and animated cursors.
 
 ## Quick Start
 
 ```bash
 # Install prerequisites
-sudo apt install cmake nasm clang lld qemu-system-x86 ovmf mtools dosfstools xorriso
+sudo apt install cmake nasm clang lld llvm qemu-system-x86 ovmf mtools dosfstools xorriso
 
 # Build
 mkdir build && cd build

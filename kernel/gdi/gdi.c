@@ -301,6 +301,95 @@ void GdiBlitBGRA(GdiRect dst, const UINT32 *src, int src_stride)
     }
 }
 
+/* Blend one straight-alpha 0xAARRGGBB value at device (x, y) (in the clip) */
+static inline void put_argb(int x, int y, UINT32 a, UINT32 r, UINT32 gg, UINT32 b)
+{
+    if (!a) return;
+    UINT32 *p = &g.buf[(size_t)y * g.bstride + x];
+    UINT32 n = pixof(r | gg << 8 | b << 16);
+    *p = a >= 255 ? n : blend(*p, n, a);
+}
+
+void GdiDrawImage(GdiRect dst, const UINT32 *px, int sw, int sh)
+{
+    if (!g.ready || !px || sw <= 0 || sh <= 0 || dst.w <= 0 || dst.h <= 0) return;
+    int s = g.s, ox0 = dst.x * s, oy0 = dst.y * s, dw = dst.w * s, dh = dst.h * s;
+    int x0 = imax(ox0, g.cx0), x1 = imin(ox0 + dw, g.cx1);
+    int y0 = imax(oy0, g.cy0), y1 = imin(oy0 + dh, g.cy1);
+    bool box = sw >= dw && sh >= dh;              /* shrinking: average; else bilinear */
+
+    for (int y = y0; y < y1; y++) {
+        int oy = y - oy0;
+        for (int x = x0; x < x1; x++) {
+            int ox = x - ox0;
+            UINT64 sa = 0, sr = 0, sg = 0, sb = 0, wsum = 0;
+            if (box) {
+                int sx0 = ox * sw / dw, sx1 = ((ox + 1) * sw + dw - 1) / dw;
+                int sy0 = oy * sh / dh, sy1 = ((oy + 1) * sh + dh - 1) / dh;
+                if (sx1 > sw) sx1 = sw;
+                if (sy1 > sh) sy1 = sh;
+                for (int yy = sy0; yy < sy1; yy++)
+                    for (int xx = sx0; xx < sx1; xx++) {
+                        UINT32 v = px[(size_t)yy * sw + xx], a = v >> 24;
+                        sa += a;
+                        sr += (UINT64)(v >> 16 & 0xFF) * a;
+                        sg += (UINT64)(v >> 8 & 0xFF) * a;
+                        sb += (UINT64)(v & 0xFF) * a;
+                        wsum++;
+                    }
+                if (!wsum || !sa) continue;
+                put_argb(x, y, (UINT32)(sa / wsum), (UINT32)(sr / sa), (UINT32)(sg / sa), (UINT32)(sb / sa));
+            } else {
+                /* sample centre in source pixels, 8.8 fixed point */
+                int fx = (int)(((INT64)(2 * ox + 1) * sw * 128) / dw) - 128;
+                int fy = (int)(((INT64)(2 * oy + 1) * sh * 128) / dh) - 128;
+                if (fx < 0) fx = 0;
+                if (fy < 0) fy = 0;
+                int ix = fx >> 8, iy = fy >> 8, tx = fx & 255, ty = fy & 255;
+                for (int k = 0; k < 4; k++) {
+                    int xx = imin(ix + (k & 1), sw - 1), yy = imin(iy + (k >> 1), sh - 1);
+                    UINT32 w = (UINT32)((k & 1) ? tx : 256 - tx) * (UINT32)((k >> 1) ? ty : 256 - ty);
+                    UINT32 v = px[(size_t)yy * sw + xx];
+                    UINT64 wa = (UINT64)w * (v >> 24);
+                    sa += wa;
+                    sr += wa * (v >> 16 & 0xFF);
+                    sg += wa * (v >> 8 & 0xFF);
+                    sb += wa * (v & 0xFF);
+                }
+                if (!sa) continue;
+                put_argb(x, y, (UINT32)(sa >> 16), (UINT32)(sr / sa), (UINT32)(sg / sa), (UINT32)(sb / sa));
+            }
+        }
+    }
+}
+
+void GdiDrawImageDevice(int lx, int ly, const UINT32 *px, int w, int h)
+{
+    if (!g.ready || !px) return;
+    int ox = lx * g.s, oy = ly * g.s;
+    int x0 = imax(ox, g.cx0), x1 = imin(ox + w, g.cx1);
+    int y0 = imax(oy, g.cy0), y1 = imin(oy + h, g.cy1);
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) {
+            UINT32 v = px[(size_t)(y - oy) * w + (x - ox)];
+            put_argb(x, y, v >> 24, v >> 16 & 0xFF, v >> 8 & 0xFF, v & 0xFF);
+        }
+}
+
+void GdiDrawImageZoom(int lx, int ly, const UINT32 *px, int w, int h, int k)
+{
+    if (!g.ready || !px || k < 1) return;
+    int ox = lx * g.s, oy = ly * g.s;
+    int x0 = imax(ox, g.cx0), x1 = imin(ox + w * k, g.cx1);
+    int y0 = imax(oy, g.cy0), y1 = imin(oy + h * k, g.cy1);
+    for (int y = y0; y < y1; y++) {
+        const UINT32 *row = px + (size_t)((y - oy) / k) * w;
+        for (int x = x0; x < x1; x++) {
+            UINT32 v = row[(x - ox) / k];
+            put_argb(x, y, v >> 24, v >> 16 & 0xFF, v >> 8 & 0xFF, v & 0xFF);
+        }
+    }
+}
 
 /* -----------------------------------------------------------------------
  * Rounded rectangles

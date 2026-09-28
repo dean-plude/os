@@ -43,7 +43,7 @@ export PATH="$HOME/x-tools/x86_64-unknown-elf/bin:$PATH"
 **Option B: Clang (easier, works out of the box)**
 
 ```bash
-sudo apt install clang lld
+sudo apt install clang lld llvm   # llvm: llvm-rc compiles the programs' icon resources
 ```
 
 CMake auto-detects which is available (x86_64-elf-gcc is preferred).

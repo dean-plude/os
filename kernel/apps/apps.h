@@ -13,6 +13,7 @@
 #include "../gdi/gdi.h"
 #include "../wm/wm.h"
 #include "../fs/ramfs.h"
+#include "../gdi/icon.h"
 
 typedef enum {
     /* Built in */
@@ -58,14 +59,31 @@ int  AppRecentFiles(RamNode **out, int max);
 
 /* Open specific content */
 void AppOpenFolder(RamNode *dir);    /* File Explorer */
-void AppOpenFile(RamNode *file);     /* Notepad */
+/* By type: pictures and icons in Photos, programs run, the rest Notepad */
+void AppOpenFile(RamNode *file);
+/* "Text Document", "Icon", "Application", ... (Explorer's Type column) */
+const char *AppFileTypeName(const RamNode *f);
+
+/* Set up the app layer (title-bar icons); called by the desktop shell */
+void AppInit(void);
 
 /* Draw the app's icon in a size x size box */
 void AppDrawIcon(AppId id, int x, int y, int size);
-/* Generic icons for Windows programs, folders and documents */
+/* A Windows program's icon: NAME.ico beside NAME.exe, else the icon in the
+ * program's resources, else a generic program tile */
 void AppDrawProgramIcon(const char *name, int x, int y, int size);
+/* A window's icon: its app's, or its program's */
+void AppDrawWindowIcon(const WND *w, int x, int y, int size);
+/* A file's or folder's icon: .ico files show themselves, programs their
+ * own icon, PNG pictures a thumbnail; others a generic icon */
+void AppDrawNodeIcon(RamNode *f, int x, int y, int size);
 void AppDrawFolderIcon(int x, int y, int size);
 void AppDrawFileIcon(int x, int y, int size);
+
+/* The decoded icon of an .ico/.cur/.png/.exe/.dll file (cached; NULL if it
+ * has none), and of a program by name as for AppDrawProgramIcon */
+GdiIcon *AppFileIcon(RamNode *f);
+GdiIcon *AppProgramIcon(const char *name);
 
 /* -----------------------------------------------------------------------
  * Shared look (Windows 11 dark) and helpers for app implementations
@@ -109,4 +127,7 @@ enum { SETTINGS_SYSTEM, SETTINGS_DISPLAY, SETTINGS_PERSONALIZE, SETTINGS_STORAGE
 /* Open Settings (or focus the open window) at page @page */
 void SettingsOpenPage(int page);
 void CalendarOpen(void);
+/* Photos: view a picture or icon (every image of an .ico); NULL shows the
+ * pictures in C:\Pictures */
+void PhotosOpen(RamNode *file);
 void PlaceholderOpen(AppId id);

@@ -106,6 +106,15 @@ void GdiPutPixel(int x, int y, GdiColor c);
 /* Blit a user window bitmap (GdiColor/COLORREF pixels) into a logical rect. */
 void GdiBlitBGRA(GdiRect dst, const UINT32 *src, int src_stride);
 
+/* Draw a w x h image of straight-alpha 0xAARRGGBB pixels scaled into the
+ * logical rect @dst at device resolution (area-averaged when shrinking,
+ * bilinear when enlarging), blending by alpha. */
+void GdiDrawImage(GdiRect dst, const UINT32 *px, int w, int h);
+/* The same, unscaled: one image pixel per device pixel, at logical (x, y). */
+void GdiDrawImageDevice(int x, int y, const UINT32 *px, int w, int h);
+/* Enlarged k times, each image pixel a sharp k x k block of device pixels. */
+void GdiDrawImageZoom(int x, int y, const UINT32 *px, int w, int h, int k);
+
 /* -----------------------------------------------------------------------
  * Text — Inter, 13px on a 16px line; (x, y) is the top of the line box
  * ----------------------------------------------------------------------- */

@@ -2,8 +2,9 @@
  * explorer.c — File Explorer for the RAM disk
  *
  * Toolbar (back, up, address, new folder / new file), a sidebar of common
- * folders, and a details list.  Double-click (or Enter) opens a folder or
- * opens a file in Notepad.
+ * folders, and a details list with each file's icon (.ico files, program
+ * icons, PNG thumbnails).  Double-click (or Enter) opens a folder, or opens
+ * a file by type (Photos, the program itself, else Notepad).
  */
 
 #include "apps.h"
@@ -211,7 +212,10 @@ static void exp_paint(WND *w)
         if (idx == e->sel)
             GdiRoundRect(RECT(lx + 6, y + 1, c.w - SIDE_W - 12, ROW_H - 2), 4,
                          w->active ? UI_SELECT : UI_HOVER, GDI_TRANSPARENT);
-        if (f->dir) mini_folder(lx + 16, y + 5); else mini_file(lx + 16, y + 5);
+        if (f->dir) mini_folder(lx + 16, y + 5);
+        else if (IconDraw(AppFileIcon(f), lx + 15, y + 5, 18)) { /* its own icon */ }
+        else if (!strcmp(AppFileTypeName(f), "Application")) AppDrawProgramIcon(f->name, lx + 15, y + 5, 18);
+        else mini_file(lx + 16, y + 5);
         GdiSetClip(RECT(lr.x, lr.y, size_x - lr.x - 12, lr.h));
         GdiTextT(lx + 44, y + 6, f->name, UI_TEXT);
         GdiSetClip(lr);
@@ -220,7 +224,7 @@ static void exp_paint(WND *w)
             AppFormatSize(f->size, sz, sizeof(sz));
             GdiTextT(size_x, y + 6, sz, UI_TEXT2);
         }
-        GdiTextT(type_x, y + 6, f->dir ? "File folder" : "Text Document", UI_TEXT2);
+        GdiTextT(type_x, y + 6, AppFileTypeName(f), UI_TEXT2);
     }
     if (!n) GdiTextCenter(lr.x, lr.y + 40, lr.w, "This folder is empty.", UI_TEXT3);
     GdiSetClip(c);

@@ -10,6 +10,7 @@
 #include "../ke/scheduler.h"
 #include "../arch/x86_64/cpu.h"
 #include "../um/um.h"
+#include "../gdi/icon.h"
 
 static const AppInfo g_apps[APP_COUNT] = {
     [APP_TERMINAL]    = { "Terminal",               ">_", GDI_C(0x1E,0x1E,0x1E), true,  true  },
@@ -19,7 +20,7 @@ static const AppInfo g_apps[APP_COUNT] = {
     [APP_CALENDAR]    = { "Calendar",               "",   GDI_C(0xD0,0x40,0x40), true,  false },
     [APP_NETSURF]     = { "NetSurf",                "",   GDI_C(0x3A,0x6E,0xF0), true,  true  },
     [APP_STORE]       = { "Microsoft Store",        "S",  GDI_C(0x18,0x6A,0xD8), false, false },
-    [APP_PHOTOS]      = { "Photos",                 "P",  GDI_C(0x2E,0xA0,0x8A), false, false },
+    [APP_PHOTOS]      = { "Photos",                 "",   GDI_C(0x2E,0xA0,0x8A), true,  true  },
     [APP_XBOX]        = { "Xbox",                   "X",  GDI_C(0x10,0x7C,0x10), false, false },
     [APP_SKYPE]       = { "Skype",                  "S",  GDI_C(0x1E,0x9A,0xE0), false, false },
     [APP_PHOTOSHOP]   = { "Adobe Photoshop 2025",   "Ps", GDI_C(0x05,0x1A,0x2E), false, false },
@@ -90,6 +91,7 @@ void AppLaunch(AppId id)
     case APP_SETTINGS: SettingsOpen(); break;
     case APP_CALENDAR: CalendarOpen(); break;
     case APP_NETSURF:  netsurf_launch(); break;
+    case APP_PHOTOS:   PhotosOpen(NULL); break;
     default:           PlaceholderOpen(id); break;
     }
 }
@@ -111,6 +113,7 @@ bool AppByName(const char *name, AppId *out)
         { "settings", APP_SETTINGS }, { "control", APP_SETTINGS },
         { "calendar", APP_CALENDAR }, { "clock", APP_CALENDAR },
         { "browser",  APP_NETSURF  },    /* "netsurf" itself runs the program */
+        { "photos",   APP_PHOTOS   }, { "pictures", APP_PHOTOS },
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         const char *a = names[i].cmd, *b = name;
@@ -120,9 +123,16 @@ bool AppByName(const char *name, AppId *out)
     return false;
 }
 
-static void title_icon(int app, int x, int y, int size)
+static bool title_icon(const WND *w, int x, int y, int size)
 {
-    AppDrawIcon((AppId)app, x, y, size);
+    if (w->app < 0 && !w->program[0]) return false;
+    AppDrawWindowIcon(w, x, y, size);
+    return true;
+}
+
+void AppInit(void)
+{
+    WmSetIconPainter(title_icon);
 }
 
 /* -----------------------------------------------------------------------
@@ -161,10 +171,147 @@ void AppOpenFolder(RamNode *dir)
     ExplorerOpen(dir);
 }
 
+static bool has_ext(const char *name, const char *ext)     /* case-insensitive */
+{
+    size_t n = strlen(name), e = strlen(ext);
+    if (n < e) return false;
+    for (size_t i = 0; i < e; i++)
+        if ((name[n - e + i] | 0x20) != (ext[i] | 0x20)) return false;
+    return true;
+}
+
+typedef enum { FT_OTHER, FT_TEXT, FT_ICON, FT_PNG, FT_EXE, FT_DLL, FT_CURSOR } FileType;
+
+static FileType file_type(const RamNode *f)
+{
+    if (!f || f->dir) return FT_OTHER;
+    if (has_ext(f->name, ".ico")) return FT_ICON;
+    if (has_ext(f->name, ".cur")) return FT_CURSOR;
+    if (has_ext(f->name, ".png")) return FT_PNG;
+    if (has_ext(f->name, ".exe")) return FT_EXE;
+    if (has_ext(f->name, ".dll")) return FT_DLL;
+    if (has_ext(f->name, ".txt") || has_ext(f->name, ".md") || has_ext(f->name, ".log") ||
+        has_ext(f->name, ".ini") || has_ext(f->name, ".c") || has_ext(f->name, ".h"))
+        return FT_TEXT;
+    return FT_OTHER;
+}
+
+const char *AppFileTypeName(const RamNode *f)
+{
+    if (!f) return "";
+    if (f->dir) return "File folder";
+    switch (file_type(f)) {
+    case FT_ICON:   return "Icon";
+    case FT_CURSOR: return "Cursor";
+    case FT_PNG:    return "PNG image";
+    case FT_EXE:    return "Application";
+    case FT_DLL:    return "Application extension";
+    case FT_TEXT:   return "Text Document";
+    default:        return "File";
+    }
+}
+
 void AppOpenFile(RamNode *file)
 {
-    if (file) AppNoteRecentFile(file);
-    NotepadOpen(file);
+    if (!file) { NotepadOpen(NULL); return; }
+    AppNoteRecentFile(file);
+    switch (file_type(file)) {
+    case FT_ICON: case FT_CURSOR: case FT_PNG:
+        PhotosOpen(file);
+        break;
+    case FT_EXE:
+        AppRunProgram(file, file->name);
+        break;
+    default:
+        NotepadOpen(file);
+        break;
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * File and program icons (.ico files, icons in .exe/.dll resources, PNG
+ * thumbnails), decoded once and cached by file.  Only the desktop thread
+ * uses the cache, and program threads change files only under the desktop
+ * lock, so nothing changes under a drawing call.
+ * ----------------------------------------------------------------------- */
+#define ICON_CACHE 48
+static struct {
+    const RamNode *node;          /* compared, never dereferenced */
+    const char    *data;          /* the file's contents when decoded */
+    UINT32         size;
+    GdiIcon       *icon;          /* NULL: the file has no usable icon */
+    UINT32         used;
+} g_icache[ICON_CACHE];
+static UINT32 g_icache_clock;
+
+GdiIcon *AppFileIcon(RamNode *f)
+{
+    FileType t = file_type(f);
+    if (t != FT_ICON && t != FT_CURSOR && t != FT_PNG && t != FT_EXE && t != FT_DLL) return NULL;
+    int slot = -1, lru = 0;
+    for (int i = 0; i < ICON_CACHE; i++) {
+        if (g_icache[i].node == f) { slot = i; break; }
+        if (g_icache[i].used < g_icache[lru].used) lru = i;
+    }
+    if (slot >= 0 && g_icache[slot].data == f->data && g_icache[slot].size == f->size) {
+        g_icache[slot].used = ++g_icache_clock;
+        return g_icache[slot].icon;
+    }
+    if (slot < 0) slot = lru;                 /* evict the least recently used */
+    IconFree(g_icache[slot].icon);
+    GdiIcon *ic = NULL;
+    if (f->data && f->size) {
+        if (t == FT_PNG)                   ic = IconFromPng(f->data, f->size);
+        else if (t == FT_EXE || t == FT_DLL) ic = IconFromPe(f->data, f->size);
+        else                               ic = IconLoad(f->data, f->size);
+    }
+    g_icache[slot].node = f;
+    g_icache[slot].data = f->data;
+    g_icache[slot].size = f->size;
+    g_icache[slot].icon = ic;
+    g_icache[slot].used = ++g_icache_clock;
+    return ic;
+}
+
+/* C:\Programs\NAME\FILE or C:\Programs\FILE */
+static RamNode *program_file(const char *base, const char *ext)
+{
+    char path[RAMFS_PATH_MAX];
+    ksnprintf(path, sizeof(path), "\\Programs\\%s\\%s%s", base, base, ext);
+    RamNode *n = RamfsResolve(NULL, path);
+    if (!n) {
+        ksnprintf(path, sizeof(path), "\\Programs\\%s%s", base, ext);
+        n = RamfsResolve(NULL, path);
+    }
+    return n && !n->dir ? n : NULL;
+}
+
+GdiIcon *AppProgramIcon(const char *name)
+{
+    char base[RAMFS_NAME_MAX];
+    if (!name || !*name) return NULL;
+    strncpy(base, name, sizeof(base) - 1);
+    base[sizeof(base) - 1] = '\0';
+    size_t n = strlen(base);
+    if (n > 4 && has_ext(base, ".exe")) base[n - 4] = '\0';
+    GdiIcon *ic = AppFileIcon(program_file(base, ".ico"));   /* NAME.ico beside it */
+    if (!ic) ic = AppFileIcon(program_file(base, ".exe"));   /* else the program's own */
+    return ic;
+}
+
+void AppDrawWindowIcon(const WND *w, int x, int y, int size)
+{
+    if (w->app >= 0) { AppDrawIcon((AppId)w->app, x, y, size); return; }
+    AppDrawProgramIcon(w->program[0] ? w->program : w->title, x, y, size);
+}
+
+void AppDrawNodeIcon(RamNode *f, int x, int y, int size)
+{
+    if (!f) return;
+    if (f->dir) { AppDrawFolderIcon(x, y, size); return; }
+    if (IconDraw(AppFileIcon(f), x, y, size)) return;
+    if (file_type(f) == FT_EXE) AppDrawProgramIcon(f->name, x, y, size);
+    else                        AppDrawFileIcon(x, y, size);
 }
 
 /* -----------------------------------------------------------------------
@@ -183,6 +330,16 @@ int AppForProgram(const char *exe_name)
     return -1;
 }
 
+/* Programs in C:\Programs are found by name from anywhere; others run
+ * from their own folder */
+static bool in_programs(const RamNode *n)
+{
+    RamNode *progs = RamfsResolve(NULL, "\\Programs");
+    for (const RamNode *p = n->parent; p; p = p->parent)
+        if (p == progs) return true;
+    return false;
+}
+
 void AppRunProgram(RamNode *exe, const char *cmdline)
 {
     if (!exe) return;
@@ -190,7 +347,7 @@ void AppRunProgram(RamNode *exe, const char *cmdline)
     if (app >= 0) { AppLaunch((AppId)app); return; }
     /* In a Terminal: console programs need one, and GUI programs report
      * their exit status there */
-    TerminalRun(cmdline && *cmdline ? cmdline : exe->name, NULL);
+    TerminalRun(cmdline && *cmdline ? cmdline : exe->name, in_programs(exe) ? NULL : exe->parent);
 }
 
 WND *AppCreateWindow(AppId id, const char *title, int client_w, int client_h,
@@ -211,7 +368,6 @@ WND *AppCreateWindow(AppId id, const char *title, int client_w, int client_h,
     const AppInfo *a = AppGetInfo(id);
     UINT32 style = (id == APP_CALENDAR || !a->builtin) ? WS_TOOLWINDOW : WS_OVERLAPPED;
     if (id == APP_CALENDAR) style |= WS_MINMAXBTN;
-    WmSetIconPainter(title_icon);
     WND *wnd = WmCreateWindow(title, RECT(x, y, w, h), style, client_bg,
                               a->color, NULL, NULL);
     if (wnd) wnd->app = id;
@@ -347,6 +503,15 @@ void AppDrawIcon(AppId id, int x, int y, int s)
         GdiLine(pt(cx, cy, s, -26, -14), pt(cx, cy, s, 26, -14), s * 16 / 28, ink);  /* latitudes */
         GdiLine(pt(cx, cy, s, -26, 14), pt(cx, cy, s, 26, 14), s * 16 / 28, ink);
         break; }
+    case APP_PHOTOS: {                          /* a landscape: sky, sun, hills */
+        GdiRoundGradV(RECT(x, y, s, s), s / 5, GDI_C(0x5A, 0xC8, 0xF0), GDI_C(0x2E, 0x8C, 0xD8));
+        GdiFillCircle(x + s * 68 / 100, y + s * 32 / 100, s * 11 / 100, GDI_C(0xFF, 0xE0, 0x6A));
+        GdiPoint hill[3] = { pt(x, y, s, 8, 80), pt(x, y, s, 40, 40), pt(x, y, s, 72, 80) };
+        GdiFillPolygon(hill, 3, GDI_C(0x2E, 0xA0, 0x6A));
+        GdiPoint hill2[3] = { pt(x, y, s, 44, 80), pt(x, y, s, 66, 54), pt(x, y, s, 92, 80) };
+        GdiFillPolygon(hill2, 3, GDI_C(0x1E, 0x7A, 0x50));
+        GdiFillRect(RECT(x + s * 8 / 100, y + s * 80 / 100 - 1, s * 84 / 100, u + 1), GDI_C(0x1E, 0x7A, 0x50));
+        break; }
     default:
         letter_tile(AppGetInfo(id), x, y, s);
         break;
@@ -374,6 +539,7 @@ void AppDrawFileIcon(int x, int y, int s)
 /* A window with a coloured title strip and the program's initial */
 void AppDrawProgramIcon(const char *name, int x, int y, int s)
 {
+    if (IconDraw(AppProgramIcon(name), x, y, s)) return;
     static const GdiColor tint[] = {
         GDI_C(0x3A, 0x7B, 0xD5), GDI_C(0x2E, 0xA0, 0x6A), GDI_C(0xC8, 0x5A, 0x3A),
         GDI_C(0x8A, 0x4A, 0xC8), GDI_C(0x1E, 0x9A, 0xA8), GDI_C(0xB8, 0x8A, 0x1E),

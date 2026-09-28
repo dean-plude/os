@@ -247,6 +247,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
                             GDI_C(0xF3, 0xF3, 0xF3), GDI_C(0x00, 0x78, 0xD4), gui_paint, g);
     if (w) {
         w->app = AppForProgram(p->name);    /* e.g. netsurf.exe -> its dock icon */
+        strncpy(w->program, p->name, sizeof(w->program) - 1);   /* its icon */
         w->fixed_size = true;               /* the client bitmap has a fixed size */
         w->on_key = gui_key;
         w->key_releases = true;         /* WM_KEYUP */

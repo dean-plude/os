@@ -62,6 +62,8 @@ typedef struct WND {
                               * whose client bitmap has a fixed size) */
     int        z;            /* z-order; higher = nearer the top */
     int        app;          /* owning app id (for the dock), or -1 */
+    char       program[32];  /* program image name (e.g. "winhello.exe") for
+                              * windows of Windows programs: their icon */
 
     WndPaintFn on_paint;     /* draw the client area (clip is set) */
     WndKeyFn   on_key;       /* key pressed while focused */
@@ -113,9 +115,10 @@ WND *WmWindowAt(int x, int y, bool *caption);
 /* A window by id (NULL if it is gone). */
 WND *WmWindowById(int id);
 
-/* Draws a window's app icon in its title bar (set by the app layer);
- * windows without an app (app < 0) show a dot in their accent colour. */
-typedef void (*WmIconFn)(int app, int x, int y, int size);
+/* Draws a window's icon in its title bar (set by the app layer); returns
+ * false if the window has none, and it then shows a dot in its accent
+ * colour. */
+typedef bool (*WmIconFn)(const WND *w, int x, int y, int size);
 void WmSetIconPainter(WmIconFn fn);
 
 /* Area windows may occupy (the screen minus the dock). */

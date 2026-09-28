@@ -662,9 +662,7 @@ static void draw_window(WND *w)
 
         /* App mark + title, clipped so it never runs under the buttons */
         GdiSetClip(RECT(f.x, f.y, f.w - btns * BTN_W, WM_TITLEBAR_H));
-        if (w->app >= 0 && g_icon_fn)
-            g_icon_fn(w->app, f.x + 10, f.y + 8, 16);
-        else
+        if (!g_icon_fn || !g_icon_fn(w, f.x + 10, f.y + 8, 16))
             GdiFillCircle(f.x + 17, f.y + 15, 4, w->accent);
         GdiTextT(f.x + 34, f.y + (WM_TITLEBAR_H - GDI_FONT_H) / 2, w->title, title_fg);
         GdiResetClip();
