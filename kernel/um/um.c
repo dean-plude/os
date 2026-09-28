@@ -412,22 +412,81 @@ static RamNode *find_dll(UmProcess *p, const char *name)
     return n && !n->dir ? n : NULL;
 }
 
+/* The address of a stub for the missing import @what ("f in dll"): calls
+ * NtNovaUnimplemented(index), which reports it and ends the program.
+ * 0 when the stub page is full. */
+static UINT64 stub_for(UmProcess *p, const char *what)
+{
+    for (int i = 0; i < p->nstubs; i++)
+        if (!strcmp(p->stub_names[i], what)) return UM_STUBS_VA + (UINT64)i * UM_STUB_SIZE;
+    if (!p->stub_names) p->stub_names = kzalloc(sizeof(*p->stub_names) * UM_MAX_STUBS);
+    if (!p->stub_names || p->nstubs >= UM_MAX_STUBS) return 0;
+    strncpy(p->stub_names[p->nstubs], what, sizeof(p->stub_names[0]) - 1);
+    return UM_STUBS_VA + (UINT64)p->nstubs++ * UM_STUB_SIZE;
+}
+
+/* (Re)write the stub page: mov r10d, index; mov eax, NtNovaUnimplemented;
+ * syscall; ret.  The page is executable and read-only. */
+static bool write_stubs(UmProcess *p)
+{
+    if (!p->nstubs) return true;
+    UINT8 *pg = kzalloc(PAGE_SIZE);
+    if (!pg) return false;
+    for (int i = 0; i < p->nstubs; i++) {
+        UINT8 *s = pg + i * UM_STUB_SIZE;
+        s[0] = 0x41; s[1] = 0xBA; put_u32(s + 2, (UINT32)i);
+        s[6] = 0xB8; put_u32(s + 7, SYSCALL_NtNovaUnimplemented);
+        s[11] = 0x0F; s[12] = 0x05; s[13] = 0xC3; s[14] = 0xCC; s[15] = 0xCC;
+    }
+    bool ok = um_commit(p, UM_STUBS_VA, PAGE_SIZE, 0x04) && um_write(p, UM_STUBS_VA, pg, PAGE_SIZE) &&
+              um_commit(p, UM_STUBS_VA, PAGE_SIZE, 0x20);
+    kfree(pg);
+    return ok;
+}
+
+/* API sets: Windows programs import from virtual DLL names that stand for
+ * a system DLL (api-ms-win-crt-* is the Universal C Runtime, ucrtbase;
+ * the core sets are kernel32).  Rewrites @lname in place. */
+static void map_api_set(char *lname, int cap)
+{
+    static const struct { const char *prefix, *dll; } sets[] = {
+        { "api-ms-win-crt-",              "ucrtbase.dll" },
+        { "api-ms-win-core-synch-",       "kernel32.dll" },
+        { "api-ms-win-core-",             "kernel32.dll" },
+        { "api-ms-win-security-",         "advapi32.dll" },
+        { "api-ms-win-eventing-",         "advapi32.dll" },
+        { "api-ms-win-shell-",            "shell32.dll" },
+        { "api-ms-win-shcore-",           "shlwapi.dll" },
+        { "ext-ms-win-",                  "kernel32.dll" },
+        { "kernelbase.dll",               "kernel32.dll" },
+        { "msvcrt40.dll",                 "msvcrt.dll" },
+    };
+    for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++)
+        if (!strncmp(lname, sets[i].prefix, strlen(sets[i].prefix))) {
+            strncpy(lname, sets[i].dll, (size_t)cap - 1);
+            lname[cap - 1] = '\0';
+            return;
+        }
+}
+
 /* Load @file (or the DLL @name when file is NULL); returns the module index. */
 static int load_module(Loader *L, RamNode *file, const char *name, int depth)
 {
     UmProcess *p = L->p;
     const char *leaf = strrchr(name, '\\');
     leaf = leaf ? leaf + 1 : name;
-    char lname[32];
+    char lname[64];
     lower_copy(lname, leaf, sizeof(lname));
     if (!strchr(lname, '.') && strlen(lname) < sizeof(lname) - 4) strcat(lname, ".dll");
+    if (!file) map_api_set(lname, sizeof(lname));
+    if (strlen(lname) >= sizeof(p->modules[0].name)) return fail(L, "The DLL name %s is too long", lname);
     for (int i = 0; i < p->nmodules; i++)
         if (!strcmp(p->modules[i].name, lname)) return i;
     if (depth > 8) return fail(L, "Imports nested too deeply at %s", name);
     if (p->nmodules >= UM_MAX_MODULES) return fail(L, "Too many DLLs (at %s)", name);
 
     if (!file) {
-        file = find_dll(p, name);
+        file = find_dll(p, strchr(name, '\\') || strchr(name, ':') ? name : lname);
         if (!file) return fail(L, "The DLL %s was not found", name);
     }
     const UINT8 *f = (const UINT8 *)file->data;
@@ -515,7 +574,7 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
         UINT32 ilt = rd32(im->img + d), nm = rd32(im->img + d + 12), iat = rd32(im->img + d + 16);
         if (!nm && !iat) break;
         if (nm >= im->size) return fail(L, "%s has a corrupt import table", name);
-        char dll[32];
+        char dll[64];
         strncpy(dll, (const char *)im->img + nm, sizeof(dll) - 1);
         dll[sizeof(dll) - 1] = '\0';
         int dm = load_module(L, NULL, dll, depth + 1);
@@ -537,6 +596,10 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
                 addr = find_export(L, dm, fn, 0, 0);
                 ksnprintf(what, sizeof(what), "%s in %s", fn, dll);
             }
+            /* A function NovaOS lacks: bind a stub that reports it if the
+             * program ever calls it (many programs import functions they
+             * never use) */
+            if (!addr) addr = stub_for(p, what);
             if (!addr) return fail(L, "The procedure entry point %s could not be located", what);
             wr64(im->img + iat + 8 * k, addr);
         }
@@ -635,7 +698,7 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base)
              strstr(err, "entry point") ? 0xC0000139u /* ENTRYPOINT_NOT_FOUND */ : 0xC000007Bu /* INVALID_IMAGE_FORMAT */;
     } else {
         *base = p->modules[m].base;
-        if (!write_ldr_info(p, ninit)) st = 0xC0000017u;
+        if (!write_ldr_info(p, ninit) || !write_stubs(p)) st = 0xC0000017u;
     }
     um_unlock(&p->lock);
     DesktopUnlock();
@@ -686,9 +749,11 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
              put_ustr(pp, sz, &off, pp + 0x70, cmdline);            /* CommandLine */
         /* Environment block: NUL-separated UTF-16 strings, double NUL */
         static const char *env[] = {
-            "COMPUTERNAME=NOVA-PC", "NUMBER_OF_PROCESSORS=1", "OS=NovaOS",
-            "PATH=C:\\Programs;C:\\Windows\\System32", "PATHEXT=.EXE", "SystemRoot=C:\\Windows",
-            "TEMP=C:\\Temp", "TMP=C:\\Temp", "USERNAME=dean", "USERPROFILE=C:\\", NULL
+            "ALLUSERSPROFILE=C:\\ProgramData", "APPDATA=C:\\AppData\\Roaming", "COMPUTERNAME=NOVA-PC",
+            "HOMEDRIVE=C:", "HOMEPATH=\\", "LOCALAPPDATA=C:\\AppData\\Local", "NUMBER_OF_PROCESSORS=1", "OS=NovaOS",
+            "PATH=C:\\Programs;C:\\Windows\\System32", "PATHEXT=.EXE", "PROCESSOR_ARCHITECTURE=AMD64",
+            "ProgramData=C:\\ProgramData", "ProgramFiles=C:\\Programs", "SystemDrive=C:", "SystemRoot=C:\\Windows",
+            "TEMP=C:\\Temp", "TMP=C:\\Temp", "USERNAME=dean", "USERPROFILE=C:\\", "windir=C:\\Windows", NULL
         };
         wr64(pp + 0x80, UM_PARAMS_VA + off);
         for (int i = 0; ok && env[i]; i++) {
@@ -710,10 +775,10 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
         put_u32(peb + 0x124, 2);                            /* OSPlatformId: NT */
 
         ok = ok && um_region_add(p, UM_PEB_VA, UM_SYS_SIZE, 0x04, false) &&
-             um_commit(p, UM_PEB_VA, 0x3000 + UM_PARAMS_PAGES * PAGE_SIZE, 0x04) &&
+             um_commit(p, UM_PEB_VA, (UM_PARAMS_VA - UM_PEB_VA) + UM_PARAMS_PAGES * PAGE_SIZE, 0x04) &&
              um_write(p, UM_PEB_VA, peb, PAGE_SIZE) &&
              um_write(p, UM_PARAMS_VA, pp, sz) &&
-             write_ldr_info(p, 0);
+             write_ldr_info(p, 0) && write_stubs(p);
     }
     kfree(pp); kfree(peb);
     return ok;
@@ -866,6 +931,7 @@ static void destroy(UmProcess *p)
 {
     if (p->pml4) free_address_space(p->pml4);
     if (p->con) UmConsoleRelease(p->con);
+    kfree(p->stub_names);
     kfree(p);
 }
 
@@ -897,6 +963,12 @@ RamNode *UmFindProgram(RamNode *cwd, const char *name)
 
 UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
                    char *err, int err_cap)
+{
+    return um_spawn_ex(exe, cmdline, cwd, con, NULL, err, err_cap);
+}
+
+UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
+                       const UmHandle *std, char *err, int err_cap)
 {
     err[0] = '\0';
     UmProcess *p = kzalloc(sizeof(*p));
@@ -941,6 +1013,11 @@ UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *c
         return NULL;
     }
     for (int i = 0; i < 3; i++) p->handles[i].kind = i ? H_CON_OUT : H_CON_IN;   /* 4, 8, 12 */
+    for (int i = 0; std && i < 3; i++) {
+        if (std[i].kind != H_FILE && std[i].kind != H_CON_IN && std[i].kind != H_CON_OUT) continue;
+        p->handles[i] = std[i];
+        if (std[i].kind == H_FILE) RamfsRef(std[i].node);
+    }
 
     plock();
     int slot = -1;
@@ -989,6 +1066,7 @@ void um_exit_thread(UINT32 status)
     if (--p->live_threads == 0) {
         p->exit_status = p->kill_pending ? p->kill_status : status;
         p->exited = true;
+        if (p->exit_ob) p->exit_ob->signaled = true;
     }
     um_unlock(&p->lock);
     sched_exit_current();
@@ -1020,6 +1098,16 @@ void UmReturnToUser(void)
     while (t->suspend > 0 && !um_stopping()) sched_yield();         /* NtSuspendThread */
     if (p->kill_pending) um_exit_thread(p->kill_status);
     if (t->terminate) um_exit_thread(t->term_status);
+    t->park = 0;
+}
+
+void UmReturnToUserFrame(void *frame)
+{
+    UmThread *t = UmCurrentThread();
+    if (!t) return;
+    t->uframe = frame;
+    t->park = 2;
+    UmReturnToUser();
 }
 
 /* Describe an unhandled exception and end the process */
@@ -1125,6 +1213,7 @@ void UmPoll(void)
         if (p->released) {
             plock(); g_procs[i] = NULL; punlock();
             if (p->con) UmConsoleRelease(p->con);
+            kfree(p->stub_names);
             kfree(p);
         }
     }

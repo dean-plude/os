@@ -85,8 +85,10 @@ BOOL WINAPI GetExitCodeThread(HANDLE t, LPDWORD code)
 
 BOOL WINAPI GetExitCodeProcess(HANDLE p, LPDWORD code)
 {
-    (void)p;
-    if (code) *code = STILL_ACTIVE;                  /* only the current process exists here */
+    ULONG64 info[3];
+    NTSTATUS s = NtNovaProcessInfo(p, info);
+    if (!NT_SUCCESS(s)) { set_error(s); return FALSE; }
+    if (code) *code = (DWORD)info[1];
     return TRUE;
 }
 

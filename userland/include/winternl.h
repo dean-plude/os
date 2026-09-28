@@ -7,6 +7,7 @@ typedef LONG NTSTATUS;
 #define NT_SUCCESS(s) ((NTSTATUS)(s) >= 0)
 #define STATUS_SUCCESS            ((NTSTATUS)0x00000000)
 #define STATUS_PENDING            ((NTSTATUS)0x00000103)
+#define STATUS_OBJECT_NAME_INVALID ((NTSTATUS)0xC0000033)
 #define STATUS_BUFFER_OVERFLOW    ((NTSTATUS)0x80000005)
 #define STATUS_NO_MORE_FILES      ((NTSTATUS)0x80000006)
 #define STATUS_END_OF_FILE        ((NTSTATUS)0xC0000011)
@@ -106,7 +107,7 @@ typedef struct _NOVA_LDR_MODULE {
 } NOVA_LDR_MODULE;
 typedef struct _NOVA_LDR_INFO {
     ULONG Count, Reserved;
-    NOVA_LDR_MODULE Modules[32];
+    NOVA_LDR_MODULE Modules[64];
 } NOVA_LDR_INFO;
 #define NOVA_LDR_INFO_ADDRESS ((NOVA_LDR_INFO *)0x00007FFDF0001000ULL)
 
@@ -170,6 +171,18 @@ NTSYSAPI NTSTATUS NTAPI NtQueryVolumeInformationFile(HANDLE h, PIO_STATUS_BLOCK 
 NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemory(HANDLE p, PVOID *base, ULONG_PTR zero, PSIZE_T size, ULONG type, ULONG prot);
 NTSYSAPI NTSTATUS NTAPI NtFreeVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG type);
 NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG prot, PULONG old);
+NTSYSAPI NTSTATUS NTAPI NtQueryVirtualMemory(HANDLE p, PVOID addr, int cls, PVOID buf, SIZE_T n, PSIZE_T ret);
+NTSYSAPI NTSTATUS NTAPI NtGetContextThread(HANDLE t, PCONTEXT c);
+NTSYSAPI NTSTATUS NTAPI NtSetContextThread(HANDLE t, const CONTEXT *c);
+/* NovaOS: create a process sharing this one's console (UTF-8 full paths) */
+typedef struct { HANDLE StdHandle[3]; HANDLE Process, Thread; ULONG64 ProcessId, ThreadId; } NOVA_CREATE_PROCESS;
+NTSYSAPI NTSTATUS NTAPI NtNovaCreateProcess(const char *image, const char *cmdline, const char *dir, NOVA_CREATE_PROCESS *io);
+/* NovaOS: Out = { process id, exit code (STILL_ACTIVE while running), exited } */
+NTSYSAPI NTSTATUS NTAPI NtNovaProcessInfo(HANDLE p, ULONG64 out[3]);
+/* NovaOS: the running programs */
+typedef struct { ULONG Pid, MemoryKb, Threads, Exited; CHAR Name[32]; } NOVA_PROCESS_ENTRY;
+NTSYSAPI NTSTATUS NTAPI NtNovaProcessList(NOVA_PROCESS_ENTRY *buf, ULONG max, PULONG count);
+NTSYSAPI PVOID    NTAPI RtlPcToFileHeader(PVOID pc, PVOID *base);
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE p, NTSTATUS status);
 NTSYSAPI NTSTATUS NTAPI NtQuerySystemTime(PLARGE_INTEGER t);
 NTSYSAPI NTSTATUS NTAPI NtQueryPerformanceCounter(PLARGE_INTEGER c, PLARGE_INTEGER f);

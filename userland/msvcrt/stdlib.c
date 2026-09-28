@@ -236,21 +236,17 @@ void srand(unsigned s)   { g_rand = s; }
 /* -----------------------------------------------------------------------
  * Exit, environment
  * ----------------------------------------------------------------------- */
-static void (*g_atexit[32])(void);
-static int  g_natexit;
+int  _crt_atexit(void (*fn)(void));  /* crtstart.c: the process's exit table */
+void __nova_run_atexit(void);
+void __nova_note_args(void);
 
-int atexit(void (*fn)(void))
-{
-    if (g_natexit >= 32) return -1;
-    g_atexit[g_natexit++] = fn;
-    return 0;
-}
+int atexit(void (*fn)(void)) { return _crt_atexit(fn); }
 
 void __nova_flush_all(void);     /* stdio.c */
 
 void exit(int code)
 {
-    while (g_natexit) g_atexit[--g_natexit]();
+    __nova_run_atexit();
     __nova_flush_all();
     ExitProcess((UINT)code);
 }
@@ -331,6 +327,8 @@ int __getmainargs(int *argc, char ***argv, char ***envp, int glob, void *si)
     av[n] = 0;
     *argc = n;
     *argv = av;
-    if (envp) *envp = empty_env;
+    __nova_note_args();
+    extern char **_environ;
+    if (envp) *envp = _environ ? _environ : empty_env;
     return 0;
 }

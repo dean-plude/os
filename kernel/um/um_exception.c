@@ -256,8 +256,100 @@ static UINT64 sys_raise_exception(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     iret_to(&r);
 }
 
+/* -----------------------------------------------------------------------
+ * Another thread's registers (GetThreadContext / SetThreadContext)
+ * ----------------------------------------------------------------------- */
+#define CONTEXT_CIS 0x00100007u              /* AMD64 | CONTROL | INTEGER | SEGMENTS */
+
+/* The target, stopped: suspended and parked in the kernel.  NtSuspendThread
+ * takes effect on the thread's way back to user mode, so let it get there. */
+static UmThread *stopped_thread(UINT64 h, UmObject **ref)
+{
+    UmObject *o = um_handle_object(UmCurrent(), h, UO_THREAD);
+    if (!o) return NULL;
+    UmThread *t = (UmThread *)o;
+    if (t == UmCurrentThread() || t->suspend <= 0) { um_ob_unref(o); return NULL; }
+    for (int i = 0; i < 2000 && !t->park && !t->exited; i++) sched_yield();
+    if (!t->park || t->exited) { um_ob_unref(o); return NULL; }
+    *ref = o;
+    return t;
+}
+
+/* NtGetContextThread(HANDLE Thread, PCONTEXT) */
+static UINT64 sys_get_context_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    UmObject *o;
+    UmThread *t = stopped_thread(a1, &o);
+    if (!t) return 0xC0000001u;                                  /* STATUS_UNSUCCESSFUL */
+    Regs r;
+    memset(&r, 0, sizeof(r));
+    if (t->park == 2) {
+        const InterruptFrame *f = t->uframe;
+        r.rax = f->rax; r.rcx = f->rcx; r.rdx = f->rdx; r.rbx = f->rbx; r.rsp = f->rsp; r.rbp = f->rbp;
+        r.rsi = f->rsi; r.rdi = f->rdi; r.r8 = f->r8; r.r9 = f->r9; r.r10 = f->r10; r.r11 = f->r11;
+        r.r12 = f->r12; r.r13 = f->r13; r.r14 = f->r14; r.r15 = f->r15; r.rip = f->rip; r.rflags = f->rflags;
+    } else {
+        /* in a system call: as if the ntdll stub had just returned to its caller */
+        UINT64 sp = t->kt ? t->kt->user_rsp : 0, ret = 0;
+        CopyFromUser(&ret, (const void *)(uintptr_t)sp, 8);
+        r.rip = ret; r.rsp = sp + 8; r.rflags = 0x202;
+    }
+    um_ob_unref(o);
+    static UINT8 c[CONTEXT_SIZE];                                /* build_context: interrupts off */
+    IrqState s = irq_save();
+    build_context(c, &r);
+    put32(c + C_FLAGS, CONTEXT_CIS);                             /* not this thread's FPU state */
+    memset(c + C_FLT, 0, 512);
+    put32(c + C_MXCSR, 0x1F80);
+    UINT8 out[CONTEXT_SIZE];
+    memcpy(out, c, CONTEXT_SIZE);
+    irq_restore(s);
+    /* keep the caller's P1Home..P6Home (the first 0x30 bytes) */
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)(a2 + 0x30), out + 0x30, CONTEXT_SIZE - 0x30))
+           ? 0 : UM_STATUS_ACCESS_VIOLATION;
+}
+
+/* NtSetContextThread(HANDLE Thread, PCONTEXT): integer and control registers
+ * of a thread stopped at an interrupt */
+static UINT64 sys_set_context_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    UINT8 c[CONTEXT_SIZE];
+    if (!NT_SUCCESS(CopyFromUser(c, (const void *)(uintptr_t)a2, CONTEXT_SIZE))) return UM_STATUS_ACCESS_VIOLATION;
+    UmObject *o;
+    UmThread *t = stopped_thread(a1, &o);
+    if (!t) return 0xC0000001u;
+    if (t->park != 2) { um_ob_unref(o); return 0xC0000001u; }
+    UINT32 cflags;
+    memcpy(&cflags, c + C_FLAGS, 4);
+    Regs r;
+    UINT64 *g = &r.rax;
+    for (int i = 0; i < 16; i++) g[i] = get64(c + C_RAX + 8 * i);
+    r.rip = get64(c + C_RIP);
+    UINT32 fl;
+    memcpy(&fl, c + C_EFLAGS, 4);
+    InterruptFrame *f = t->uframe;
+    if ((cflags & 0x1) && (r.rip > USER_TOP || r.rsp > USER_TOP)) { um_ob_unref(o); return 0xC000000Du; }
+    IrqState s = irq_save();
+    if (cflags & 0x1) {                                          /* CONTEXT_CONTROL */
+        f->rip = r.rip; f->rsp = r.rsp;
+        f->rflags = (fl & USER_FLAGS) | 0x202;
+    }
+    if (cflags & 0x2) {                                          /* CONTEXT_INTEGER */
+        f->rax = r.rax; f->rcx = r.rcx; f->rdx = r.rdx; f->rbx = r.rbx; f->rbp = r.rbp;
+        f->rsi = r.rsi; f->rdi = r.rdi; f->r8 = r.r8; f->r9 = r.r9; f->r10 = r.r10; f->r11 = r.r11;
+        f->r12 = r.r12; f->r13 = r.r13; f->r14 = r.r14; f->r15 = r.r15;
+    }
+    irq_restore(s);
+    um_ob_unref(o);
+    return 0;
+}
+
 void um_exception_syscalls_init(void)
 {
+    um_install(SYSCALL_NtGetContextThread, sys_get_context_thread);
+    um_install(SYSCALL_NtSetContextThread, sys_set_context_thread);
     um_install(SYSCALL_NtContinue,       sys_continue);
     um_install(SYSCALL_NtRaiseException, sys_raise_exception);
 }

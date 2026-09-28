@@ -46,7 +46,7 @@ typedef HANDLE *PHANDLE, *LPHANDLE;
 typedef DWORD *LPDWORD, *PDWORD;
 typedef LONG  *PLONG, *LPLONG;
 typedef BOOL  *LPBOOL;
-typedef BYTE  *LPBYTE;
+typedef BYTE  *LPBYTE, *PBYTE;
 typedef ULONG_PTR *PULONG_PTR;
 typedef ULONG *PULONG;
 typedef DWORD64 *PDWORD64;
@@ -61,6 +61,11 @@ typedef union _LARGE_INTEGER {
     struct { DWORD LowPart; LONG HighPart; };
     LONGLONG QuadPart;
 } LARGE_INTEGER, *PLARGE_INTEGER;
+typedef int *LPINT, *PINT;
+typedef UINT *PUINT, *LPUINT;
+typedef struct _GUID { DWORD Data1; WORD Data2, Data3; BYTE Data4[8]; } GUID, IID, CLSID, *LPGUID, *LPIID, *LPCLSID;
+typedef const GUID *REFGUID, *REFIID, *REFCLSID, *LPCGUID;
+
 typedef union _ULARGE_INTEGER {
     struct { DWORD LowPart; DWORD HighPart; };
     ULONGLONG QuadPart;
@@ -427,6 +432,9 @@ WINBASEAPI ULONG   WINAPI RemoveVectoredExceptionHandler(PVOID h);
 WINBASEAPI VOID    WINAPI GetNativeSystemInfo(LPSYSTEM_INFO si);
 #define GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS 0x00000004
 #define GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT 0x00000002
+
+#include <winbase2.h>
+#include <winsec.h>
 
 #define CreateFile           CreateFileA
 #define DeleteFile           DeleteFileA

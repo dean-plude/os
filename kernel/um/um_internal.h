@@ -11,17 +11,21 @@
 #define UM_MAX_PROCS     32
 #define UM_MAX_HANDLES   256
 #define UM_MAX_REGIONS   256
-#define UM_MAX_MODULES   32
+#define UM_MAX_MODULES   64
 #define UM_MAX_THREADS   64
 
 /* Fixed user addresses for the per-process system areas:
- *   PEB (1 page) | loader info (2 pages) | process parameters (4 pages) |
- *   ... | TEBs (2 pages each, one slot per thread) */
+ *   PEB (1 page) | loader info (3 pages) | process parameters (4 pages) |
+ *   stubs for unimplemented imports (1 page) | ... |
+ *   TEBs (2 pages each, one slot per thread) */
 #define UM_PEB_VA        UINT64_C(0x00007FFDF0000000)
 #define UM_LDR_INFO_VA   (UM_PEB_VA + 0x1000)
-#define UM_LDR_INFO_SIZE 0x2000
-#define UM_PARAMS_VA     (UM_PEB_VA + 0x3000)
+#define UM_LDR_INFO_SIZE 0x3000
+#define UM_PARAMS_VA     (UM_PEB_VA + 0x4000)
 #define UM_PARAMS_PAGES  4
+#define UM_STUBS_VA      (UM_PEB_VA + 0x8000)
+#define UM_STUB_SIZE     16
+#define UM_MAX_STUBS     (0x1000 / UM_STUB_SIZE)
 #define UM_TEB_AREA      (UM_PEB_VA + 0x10000)
 #define UM_TEB_SIZE      0x2000
 #define UM_SYS_SIZE      (0x10000 + UM_MAX_THREADS * UM_TEB_SIZE)
@@ -47,7 +51,7 @@ void um_unlock(UmLock *l);
 /* -----------------------------------------------------------------------
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
-typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW } UmObType;
+typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -61,6 +65,7 @@ typedef struct UmObject {
     UINT32          recursion;
     bool            abandoned;
     int             sock;           /* UO_SOCKET: kernel socket index */
+    UmProcess      *proc;           /* UO_PROCESS: signaled when it has exited */
     void          (*destroy)(struct UmObject *o);   /* extra cleanup (sockets, windows) */
 } UmObject;
 
@@ -78,6 +83,11 @@ struct UmThread {
     volatile bool   exited;
     UINT32          exit_code;
     bool            in_exception;   /* delivering an exception (nested fault = fatal) */
+    /* Where the thread's user registers are while it is in the kernel, for
+     * NtGetContextThread: 0 unknown, 1 in a system call (user_rsp),
+     * 2 at an interrupt (uframe) */
+    volatile UINT8  park;
+    void           *uframe;
 };
 
 UmObject *um_ob_ref(UmObject *o);
@@ -132,6 +142,8 @@ struct UmProcess {
     UINT32      stack_reserve;  /* from the image header */
 
     void       *gui;            /* per-process window-system state (um_gui.c) */
+    char      (*stub_names)[64]; /* "dll!function" per stub at UM_STUBS_VA */
+    int         nstubs;
 
     volatile bool   exited;     /* every thread has stopped for good */
     volatile bool   kill_pending;
@@ -139,6 +151,7 @@ struct UmProcess {
     UINT32          exit_status;
     char            why[96];    /* crash/kill description */
     bool            released;   /* spawner is done with it */
+    UmObject       *exit_ob;    /* UO_PROCESS object of a program-created process (not referenced) */
     bool            reclaimed;  /* memory and handles freed */
 };
 
@@ -187,6 +200,10 @@ UINT64     um_now_100ns(void);                  /* system time (100 ns since 160
 UINT64     um_handle_new_object(UmProcess *p, UmObject *o);   /* takes a reference; 0 if full */
 UmObject  *um_handle_object(UmProcess *p, UINT64 h, UmObType type);   /* referenced; NULL if bad */
 UINT64     um_close_handle(UINT64 h);           /* NtClose for the current process */
+/* UmSpawn, with standard handles taken from the creating process (@std:
+ * three entries, kind H_FREE = the console default) */
+UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
+                       const UmHandle *std, char *err, int err_cap);
 
 /* um_thread.c: threads, synchronization objects, waits */
 void       um_thread_syscalls_init(void);

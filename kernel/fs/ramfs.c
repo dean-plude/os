@@ -134,6 +134,33 @@ bool RamfsDelete(RamNode *n)
     return true;
 }
 
+bool RamfsRename(RamNode *n, RamNode *dir, const char *name, bool replace)
+{
+    if (!n || n == &g_root || !dir || !dir->dir || !name || !*name) return false;
+    size_t len = strlen(name);
+    if (len >= RAMFS_NAME_MAX || !strcmp(name, ".") || !strcmp(name, "..")) return false;
+    for (size_t i = 0; i < len; i++)
+        if (is_sep(name[i]) || name[i] == ':') return false;
+    for (RamNode *a = dir; a; a = a->parent)
+        if (a == n) return false;                   /* into itself or a descendant */
+    RamNode *old = RamfsFind(dir, name);
+    if (old && old != n) {
+        if (!replace || old->dir || n->dir) return false;
+        if (!RamfsDelete(old)) return false;
+    }
+    RamNode **pp = &n->parent->child;               /* unlink */
+    while (*pp && *pp != n) pp = &(*pp)->next;
+    if (!*pp) return false;
+    *pp = n->next;
+    memcpy(n->name, name, len + 1);
+    n->parent = dir;
+    pp = &dir->child;                               /* insert in order */
+    while (*pp && sorts_before(*pp, n)) pp = &(*pp)->next;
+    n->next = *pp;
+    *pp = n;
+    return true;
+}
+
 RamNode *RamfsResolve(RamNode *cwd, const char *path)
 {
     RamNode *cur = cwd ? cwd : &g_root;

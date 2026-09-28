@@ -5,6 +5,12 @@ int main(int argc, char **argv, char **envp);
 
 int _fltused = 0x9875;
 
+/* std::type_info's vtable (every C++ RTTI/EH type descriptor points at it;
+ * MSVC links it from the static CRT too).  type_info objects are static
+ * data, so the deleting destructor has nothing to free. */
+static void *__cdecl type_info_delete(void *self, unsigned flags) { (void)flags; return self; }
+void *const nova_type_info_vtable[1] __asm__("??_7type_info@@6B@") = { (void *)type_info_delete };
+
 /* Static constructors (C++ globals, __attribute__((constructor))): the
  * compiler puts pointers to them in .CRT$XCU; the linker sorts the .CRT$
  * sections by name, so they land between these two markers. */

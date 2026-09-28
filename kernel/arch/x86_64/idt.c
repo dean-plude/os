@@ -316,5 +316,5 @@ void interrupt_dispatch(InterruptFrame *frame)
 {
     dispatch(frame);
     /* Returning to a user program that has been killed meanwhile? */
-    if ((frame->cs & 3) && sched_current()->um) UmReturnToUser();
+    if ((frame->cs & 3) && sched_current()->um) UmReturnToUserFrame(frame);
 }

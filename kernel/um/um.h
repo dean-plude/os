@@ -83,6 +83,8 @@ bool UmSyscallAllowed(UINT64 num);
 UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4);
 /* On every return to user mode: ends the thread if its process was killed. */
 void UmReturnToUser(void);
+/* The same from an interrupt taken in user mode (@frame: InterruptFrame) */
+void UmReturnToUserFrame(void *frame);
 /* A CPU exception in user mode (@frame: the InterruptFrame): passed on to
  * the program's exception handlers (SEH) through its stack. */
 void UmUserException(void *frame, UINT64 cr2);

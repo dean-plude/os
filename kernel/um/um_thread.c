@@ -499,6 +499,21 @@ static UINT64 sys_nova_debug_print(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return ST_SUCCESS;
 }
 
+/* NtNovaUnimplemented(index): the program called an import NovaOS does
+ * not have (the loader bound it to a stub); say which, and end it. */
+static UINT64 sys_nova_unimplemented(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    UmProcess *p = UmCurrent();
+    const char *what = p->stub_names && a1 < (UINT64)p->nstubs ? p->stub_names[a1] : "an unknown function";
+    char msg[160];
+    int n = ksnprintf(msg, sizeof(msg), "\r\n%s called %s, which NovaOS does not implement yet.\r\n", p->name, what);
+    kprintf("[UM] %s (PID %u): unimplemented %s\n", p->name, p->pid, what);
+    if (p->con) um_console_write(p->con, msg, n);
+    ksnprintf(p->why, sizeof(p->why), "unimplemented %s", what);
+    um_exit_process(0xC0000139u);                   /* STATUS_ENTRYPOINT_NOT_FOUND */
+}
+
 /* NtNovaGetRandom(PVOID Buffer, ULONG Length): bytes from the kernel's
  * entropy pool (net/tls.c), for programs' own TLS and key generation */
 static UINT64 sys_nova_get_random(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -543,4 +558,5 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtNovaLoadDll,             sys_nova_load_dll);
     um_install(SYSCALL_NtNovaDebugPrint,          sys_nova_debug_print);
     um_install(SYSCALL_NtNovaGetRandom,           sys_nova_get_random);
+    um_install(SYSCALL_NtNovaUnimplemented,       sys_nova_unimplemented);
 }

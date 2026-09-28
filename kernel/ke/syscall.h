@@ -175,6 +175,12 @@
 #define SYSCALL_NtNovaLoadDll                     0x0186  /* NovaOS: LdrLoadDll's kernel half */
 #define SYSCALL_NtNovaDebugPrint                  0x0187  /* NovaOS: OutputDebugString */
 #define SYSCALL_NtNovaGetRandom                   0x0188  /* NovaOS: RtlGenRandom (the kernel entropy pool) */
+#define SYSCALL_NtNovaUnimplemented               0x0189  /* NovaOS: a program called an import NovaOS lacks */
+#define SYSCALL_NtGetContextThread                0x018A
+#define SYSCALL_NtSetContextThread                0x018B
+#define SYSCALL_NtNovaCreateProcess               0x018C  /* NovaOS: CreateProcess's kernel half */
+#define SYSCALL_NtNovaProcessInfo                 0x018D  /* NovaOS: exit code / pid of a process handle */
+#define SYSCALL_NtNovaProcessList                 0x018E  /* NovaOS: the running programs (tasklist) */
 /* NovaOS sockets (ws2_32's kernel half) */
 #define SYSCALL_NtNovaSocket                      0x0190
 #define SYSCALL_NtNovaSockConnect                 0x0191

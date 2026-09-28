@@ -3,16 +3,19 @@
 #include <stddef.h>
 #include <stdarg.h>
 _NOVA_BEGIN
+/* 48 bytes, the size of Microsoft's FILE: programs built with other
+ * headers (MinGW) find stdout/stderr as &__iob_func()[1] and [2] */
 typedef struct _iobuf {
     void  *_handle;        /* Win32 HANDLE */
     char  *_buf;           /* buffer (NULL: unbuffered) */
+    long long _offset;     /* file offset of _buf[0] */
     int    _bufsize;
     int    _pos, _len;     /* read: next/valid bytes; write: pending bytes */
     int    _flags;
     int    _ungot;         /* ungetc character, or -1 */
-    long long _offset;     /* file offset of _buf[0] */
     int    _fd;            /* POSIX descriptor, once one is made */
 } FILE;
+_Static_assert(sizeof(FILE) == 48, "FILE must match Microsoft's layout size");
 typedef long long fpos_t;
 #define EOF       (-1)
 #define BUFSIZ    4096

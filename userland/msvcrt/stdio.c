@@ -22,7 +22,8 @@
 #define F_HASFD    0x1000      /* _fd is a descriptor naming this stream's handle */
 #define F_OWNFD    0x2000      /* from fdopen: closing the stream closes _fd */
 
-static FILE g_iob[3];
+__declspec(dllexport) FILE _iob[3];      /* stdin, stdout, stderr (msvcrt exports the array) */
+#define g_iob _iob
 static FILE *g_files[FOPEN_MAX];
 static int  g_iob_ready;
 

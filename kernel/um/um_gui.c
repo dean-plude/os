@@ -121,11 +121,40 @@ static void gui_paint(WND *w)
     }
 }
 
+/* Windows virtual-key code for a set-1 scan code (keypad keys as with
+ * Num Lock off; E0-prefixed ones in the second table) */
+static UINT32 scancode_to_vk(UINT8 sc, bool ext)
+{
+    static const UINT8 base[0x59] = {
+        0, 0x1B, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 0xBD, 0xBB, 0x08, 0x09,
+        'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 0xDB, 0xDD, 0x0D, 0x11, 'A', 'S',
+        'D', 'F', 'G', 'H', 'J', 'K', 'L', 0xBA, 0xDE, 0xC0, 0x10, 0xDC, 'Z', 'X', 'C', 'V',
+        'B', 'N', 'M', 0xBC, 0xBE, 0xBF, 0x10, 0x6A, 0x12, 0x20, 0x14, 0x70, 0x71, 0x72, 0x73, 0x74,
+        0x75, 0x76, 0x77, 0x78, 0x79, 0x90, 0x91, 0x24, 0x26, 0x21, 0x6D, 0x25, 0x0C, 0x27, 0x6B, 0x23,
+        0x28, 0x22, 0x2D, 0x2E, 0, 0, 0xE2, 0x7A, 0x7B,
+    };
+    if (ext) {
+        switch (sc) {
+        case 0x1C: return 0x0D;                             /* keypad Enter */
+        case 0x1D: return 0x11;                             /* right Ctrl */
+        case 0x35: return 0x6F;                             /* keypad / */
+        case 0x37: return 0x2C;                             /* Print Screen */
+        case 0x38: return 0x12;                             /* right Alt */
+        case 0x47: return 0x24; case 0x48: return 0x26; case 0x49: return 0x21;
+        case 0x4B: return 0x25; case 0x4D: return 0x27; case 0x4F: return 0x23;
+        case 0x50: return 0x28; case 0x51: return 0x22; case 0x52: return 0x2D; case 0x53: return 0x2E;
+        case 0x5B: return 0x5B; case 0x5C: return 0x5C; case 0x5D: return 0x5D;
+        }
+        return 0;
+    }
+    return sc < sizeof(base) ? base[sc] : 0;
+}
+
 static void gui_key(WND *w, const KeyEvent *k)
 {
     GuiWin *g = w->user;
     if (!g) return;
-    UINT32 vk = k->scancode;                                /* scancode as a rough VK */
+    UINT32 vk = scancode_to_vk(k->scancode, k->extended);
     /* lParam as in Win32: repeat count 1, scan code in bits 16-23, bit 24
      * for E0-prefixed (extended) keys, bit 29 with Alt, 30-31 on release */
     UINT64 lp = 1 | ((UINT64)k->scancode << 16) | ((UINT64)(k->extended ? 1 : 0) << 24) |

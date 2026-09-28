@@ -89,16 +89,30 @@ typedef struct tagCREATESTRUCTA {
 #define IDOK 1
 #define IDCANCEL 2
 
-/* Virtual keys (a subset; scancode-based on NovaOS) */
-#define VK_BACK 0x0E
-#define VK_TAB  0x0F
-#define VK_RETURN 0x1C
-#define VK_ESCAPE 0x01
-#define VK_SPACE 0x39
-#define VK_LEFT  0x4B
-#define VK_RIGHT 0x4D
-#define VK_UP    0x48
-#define VK_DOWN  0x50
+/* Virtual keys (Windows codes) */
+#define VK_LBUTTON 0x01
+#define VK_RBUTTON 0x02
+#define VK_BACK    0x08
+#define VK_TAB     0x09
+#define VK_RETURN  0x0D
+#define VK_SHIFT   0x10
+#define VK_CONTROL 0x11
+#define VK_MENU    0x12
+#define VK_CAPITAL 0x14
+#define VK_ESCAPE  0x1B
+#define VK_SPACE   0x20
+#define VK_PRIOR   0x21
+#define VK_NEXT    0x22
+#define VK_END     0x23
+#define VK_HOME    0x24
+#define VK_LEFT    0x25
+#define VK_UP      0x26
+#define VK_RIGHT   0x27
+#define VK_DOWN    0x28
+#define VK_INSERT  0x2D
+#define VK_DELETE  0x2E
+#define VK_F1      0x70
+#define VK_F12     0x7B
 
 /* DrawText */
 #define DT_LEFT 0x0
@@ -111,6 +125,95 @@ typedef struct tagCREATESTRUCTA {
 typedef HANDLE HINSTANCE;
 
 typedef WORD ATOM;
+typedef VOID (CALLBACK *TIMERPROC)(HWND, UINT, UINT_PTR, DWORD);
+typedef BOOL (CALLBACK *WNDENUMPROC)(HWND, LPARAM);
+typedef struct tagWNDCLASSW {
+    UINT style; WNDPROC lpfnWndProc; int cbClsExtra, cbWndExtra;
+    HINSTANCE hInstance; HICON hIcon; HCURSOR hCursor; HBRUSH hbrBackground;
+    LPCWSTR lpszMenuName, lpszClassName;
+} WNDCLASSW, *LPWNDCLASSW;
+typedef struct tagWNDCLASSEXW {
+    UINT cbSize, style; WNDPROC lpfnWndProc; int cbClsExtra, cbWndExtra;
+    HINSTANCE hInstance; HICON hIcon; HCURSOR hCursor; HBRUSH hbrBackground;
+    LPCWSTR lpszMenuName, lpszClassName; HICON hIconSm;
+} WNDCLASSEXW, *LPWNDCLASSEXW;
+#define GWLP_WNDPROC   (-4)
+#define GWLP_HINSTANCE (-6)
+#define GWLP_ID        (-12)
+#define GWL_STYLE      (-16)
+#define GWL_EXSTYLE    (-20)
+#define GWLP_USERDATA  (-21)
+#define WM_SETTEXT     0x000C
+#define WM_GETTEXT     0x000D
+#define WM_SETFOCUS    0x0007
+#define WM_KILLFOCUS   0x0008
+#define WM_SYSKEYDOWN  0x0104
+#define WM_RBUTTONUP   0x0205
+#define WM_MOUSEWHEEL  0x020A
+#define CF_TEXT        1
+#define CF_UNICODETEXT 13
+#define MB_YESNO       0x4
+#define MB_YESNOCANCEL 0x3
+#define IDYES 6
+#define IDNO  7
+#define COLOR_WINDOW   5
+#define COLOR_BTNFACE  15
+
+USERAPI ATOM     RegisterClassW(const WNDCLASSW *wc);
+USERAPI ATOM     RegisterClassExW(const WNDCLASSEXW *wc);
+USERAPI HWND     CreateWindowExW(DWORD ex, LPCWSTR cls, LPCWSTR title, DWORD style, int x, int y, int w, int h,
+                                 HWND parent, HMENU menu, HINSTANCE inst, LPVOID param);
+USERAPI BOOL     GetMessageW(LPMSG m, HWND h, UINT min, UINT max);
+USERAPI BOOL     PeekMessageW(LPMSG m, HWND h, UINT min, UINT max, UINT remove);
+USERAPI LRESULT  DispatchMessageW(const MSG *m);
+USERAPI LRESULT  DefWindowProcW(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI BOOL     PostMessageW(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI LRESULT  SendMessageW(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI LRESULT  CallWindowProcW(WNDPROC fn, HWND h, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI BOOL     SetWindowTextW(HWND h, LPCWSTR s);
+USERAPI int      GetWindowTextW(HWND h, LPWSTR s, int max);
+USERAPI int      MessageBoxW(HWND h, LPCWSTR text, LPCWSTR caption, UINT type);
+USERAPI int      DrawTextW(HDC dc, LPCWSTR s, int len, LPRECT r, UINT fmt);
+USERAPI HCURSOR  LoadCursorW(HINSTANCE inst, LPCWSTR name);
+USERAPI HICON    LoadIconW(HINSTANCE inst, LPCWSTR name);
+USERAPI int      LoadStringW(HINSTANCE inst, UINT id, LPWSTR buf, int n);
+USERAPI int      LoadStringA(HINSTANCE inst, UINT id, LPSTR buf, int n);
+USERAPI LONG_PTR GetWindowLongPtrW(HWND h, int i);
+USERAPI LONG_PTR SetWindowLongPtrW(HWND h, int i, LONG_PTR v);
+USERAPI LONG_PTR GetWindowLongPtrA(HWND h, int i);
+USERAPI LONG_PTR SetWindowLongPtrA(HWND h, int i, LONG_PTR v);
+USERAPI BOOL     IsWindow(HWND h);
+USERAPI BOOL     IsWindowVisible(HWND h);
+USERAPI HWND     GetFocus(void);
+USERAPI HWND     SetFocus(HWND h);
+USERAPI HWND     GetForegroundWindow(void);
+USERAPI SHORT    GetKeyState(int vk);
+USERAPI SHORT    GetAsyncKeyState(int vk);
+USERAPI BOOL     GetCursorPos(LPPOINT p);
+USERAPI BOOL     SetRect(LPRECT r, int l, int t, int rr, int b);
+USERAPI BOOL     PtInRect(const RECT *r, POINT p);
+USERAPI BOOL     OffsetRect(LPRECT r, int dx, int dy);
+USERAPI BOOL     IntersectRect(LPRECT d, const RECT *a, const RECT *b);
+USERAPI BOOL     UnionRect(LPRECT d, const RECT *a, const RECT *b);
+USERAPI BOOL     IsRectEmpty(const RECT *r);
+USERAPI DWORD    GetSysColor(int i);
+USERAPI HBRUSH   GetSysColorBrush(int i);
+USERAPI UINT     RegisterWindowMessageW(LPCWSTR name);
+USERAPI BOOL     PostThreadMessageW(DWORD tid, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI DWORD    MsgWaitForMultipleObjects(DWORD n, const HANDLE *hs, BOOL all, DWORD ms, DWORD wake);
+USERAPI BOOL     OpenClipboard(HWND h);
+USERAPI BOOL     CloseClipboard(void);
+USERAPI BOOL     EmptyClipboard(void);
+USERAPI HANDLE   SetClipboardData(UINT fmt, HANDLE data);
+USERAPI HANDLE   GetClipboardData(UINT fmt);
+USERAPI LPWSTR   CharUpperW(LPWSTR s);
+USERAPI LPWSTR   CharLowerW(LPWSTR s);
+USERAPI BOOL     SystemParametersInfoW(UINT action, UINT uparam, PVOID p, UINT winini);
+#ifndef NOVA_BUILD_USER32
+__declspec(dllimport) int __cdecl wsprintfA(LPSTR buf, LPCSTR fmt, ...);
+__declspec(dllimport) int __cdecl wsprintfW(LPWSTR buf, LPCWSTR fmt, ...);
+#endif
+
 
 USERAPI ATOM     RegisterClassA(const WNDCLASSA *wc);
 USERAPI ATOM     RegisterClassExA(const WNDCLASSEXA *wc);
@@ -137,7 +240,7 @@ USERAPI BOOL     GetWindowRect(HWND h, LPRECT r);
 USERAPI BOOL     InvalidateRect(HWND h, const RECT *r, BOOL erase);
 USERAPI BOOL     SetWindowTextA(HWND h, LPCSTR s);
 USERAPI int      GetWindowTextA(HWND h, LPSTR s, int max);
-USERAPI UINT_PTR SetTimer(HWND h, UINT_PTR id, UINT ms, void *fn);
+USERAPI UINT_PTR SetTimer(HWND h, UINT_PTR id, UINT ms, TIMERPROC fn);
 USERAPI BOOL     KillTimer(HWND h, UINT_PTR id);
 USERAPI int      MessageBoxA(HWND h, LPCSTR text, LPCSTR caption, UINT type);
 USERAPI int      FillRect(HDC dc, const RECT *r, HBRUSH br);

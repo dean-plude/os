@@ -56,6 +56,11 @@ bool     RamfsResize(RamNode *file, UINT32 len);
  * that are in use (see RamfsRef). */
 bool     RamfsDelete(RamNode *node);
 
+/* Move/rename @node to @name in @dir.  An existing file of that name is
+ * replaced if @replace (and not in use); directories are never replaced.
+ * False on a bad name, a clash, or moving a directory into itself. */
+bool     RamfsRename(RamNode *node, RamNode *dir, const char *name, bool replace);
+
 /* Mark a node as held (e.g. shown in a window) so it cannot be deleted
  * underneath its holder.  NULL is ignored. */
 void     RamfsRef(RamNode *node);
