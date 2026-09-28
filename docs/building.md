@@ -73,9 +73,20 @@ The build produces:
 ```
 build/
 ├── bootx64.efi     # UEFI bootloader
-├── kernel.elf      # Kernel ELF (with debug symbols)
+├── kernel.elf      # Kernel ELF (with debug symbols; carries drive C:'s system files)
 ├── kernel.sym      # Stripped symbol file
-└── nova.img        # Bootable FAT32 disk image
+└── nova.img        # Bootable FAT32 disk image (128 MiB, sparse)
+```
+
+The Windows userland (`userland/`: the system DLLs, the C runtimes, the
+sample and test programs) is compiled by `tools/build_userland.py` with
+`clang --target=x86_64-pc-windows-msvc` and `lld-link`, and embedded in the
+kernel image.  The first build also compiles the NetSurf browser; set
+`NOVA_NO_NETSURF=1` in the environment to leave it out.  To rebuild only the
+userland (for quick checks of a DLL):
+
+```bash
+NOVA_NO_NETSURF=1 python3 tools/build_userland.py /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
 ```
 
 ---
@@ -92,6 +103,39 @@ cmake --build . --target run
 ```
 
 The serial output appears on your terminal (COM1 → stdio).
+
+### Where your files are kept
+
+Drive C: lives in memory, and NovaOS saves every change to a FAT volume a
+second later (and before Restart / Shut down), restoring it at the next
+boot.  The files installed from the OS image (`C:\Windows\System32`,
+`C:\Programs`) are never saved, so a newer image always brings its own.
+It uses the first of:
+
+1. a FAT16/FAT32 volume labelled `NOVADATA` (on any SATA disk);
+2. an empty disk (all zeros at the start), which it formats as FAT32 `NOVADATA`;
+3. the boot disk itself, under `\NOVA\C`.
+
+`scripts/run-qemu.sh` attaches `build/nova-data.img` (256 MiB, created on
+first run), so your files survive rebuilds of `nova.img`.  In the Terminal,
+`vol` shows where C: is saved and `sync` saves it now.  Programs can be put
+on the disk from the host with mtools, e.g.:
+
+```bash
+mmd   -i build/nova-data.img@@1M ::/NOVA/C/Tools
+mcopy -i build/nova-data.img@@1M rg.exe ::/NOVA/C/Tools/
+```
+
+(`@@1M`: the volume starts 1 MiB in, after the partition table.)  The ISO
+boots from a CD, which is read-only: attach a disk to keep files.
+
+### Tests
+
+The self-test programs print "N passed, 0 failed": `crttest`, `filetest`,
+`sectest`, `threads`, `dlltest`, `posixtest`, `apitest` (kernel32, advapi32,
+bcrypt, shell32, shlwapi, psapi, user32/gdi32, the registry), `comtest`
+(ole32/oleaut32), `cppeh` (C++ exceptions).  `disktest write`, a restart,
+then `disktest verify` checks that drive C: survives a reboot.
 
 ---
 

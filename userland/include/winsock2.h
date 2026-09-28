@@ -210,7 +210,10 @@ WSAAPI_DECL int inet_pton(int af, const char *src, void *dst);
 WSAAPI_DECL const char *inet_ntop(int af, const void *src, char *dst, size_t size);
 WSAAPI_DECL int InetPtonW(int af, PCWSTR src, void *dst);
 WSAAPI_DECL PCWSTR InetNtopW(int af, const void *src, PWSTR dst, size_t size);
+#ifndef _NOVA_GETHOSTNAME                   /* unistd.h declares the POSIX one (msvcrt) */
+#define _NOVA_GETHOSTNAME
 WSAAPI_DECL int gethostname(char *name, int len);
+#endif
 WSAAPI_DECL int GetHostNameW(PWSTR name, int len);
 WSAAPI_DECL struct servent *getservbyname(const char *name, const char *proto);
 WSAAPI_DECL int WSAEnumProtocolsW(int *protocols, LPWSAPROTOCOL_INFOW buf, LPDWORD len);
