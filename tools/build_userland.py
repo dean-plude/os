@@ -18,7 +18,7 @@ inc_gen = os.path.join(out, 'include')
 os.makedirs(inc_gen, exist_ok=True)
 
 CFLAGS = ['--target=x86_64-pc-windows-msvc', '-O2', '-ffreestanding', '-nostdlibinc',
-          '-fno-stack-protector', '-mno-stack-arg-probe', '-fms-extensions',
+          '-fno-stack-protector', '-mno-stack-arg-probe', '-fms-extensions', '-fasync-exceptions',
           '-Wall', '-Wno-unused-function', '-Werror=implicit-function-declaration',
           '-I', os.path.join(HERE, 'include'), '-I', inc_gen]
 
@@ -27,6 +27,7 @@ DLLS = [
     ('ntdll',    [],                     0x7FFA00000000),
     ('kernel32', ['ntdll'],              0x7FFA10000000),
     ('msvcrt',   ['kernel32', 'ntdll'],  0x7FFA20000000),
+    ('testdll',  ['kernel32', 'ntdll'],  0x7FFA30000000),
 ]
 
 def run(cmd):
@@ -47,6 +48,12 @@ with open(os.path.join(inc_gen, 'syscall_numbers.h'), 'w') as f:
     for k, v in sorted(nums.items()):
         f.write(f'#define SYS_{k} {v}\n')
 
+# 1b. startup code + implicit-TLS support (needed by DLLs and programs)
+crt0 = os.path.join(out, 'crt0.obj')
+cc(os.path.join(HERE, 'crt', 'crt0.c'), crt0)
+tlssup = os.path.join(out, 'tlssup.obj')
+cc(os.path.join(HERE, 'lib', 'tlssup.c'), tlssup)
+
 # 2. system DLLs
 built = []
 for name, deps, base in DLLS:
@@ -57,15 +64,16 @@ for name, deps, base in DLLS:
             obj = os.path.join(out, f'{name}_{src[:-2]}.obj')
             cc(os.path.join(srcdir, src), obj)
             objs.append(obj)
+    if name == 'testdll':
+        objs.append(tlssup)
     dll = os.path.join(out, f'{name}.dll')
-    run(['lld-link', '/dll', '/noentry', '/nodefaultlib', f'/base:{base:#x}',
-         f'/out:{dll}', f'/implib:{os.path.join(out, name + ".lib")}'] + objs +
+    entry = ['/entry:DllMain'] if name == 'testdll' else ['/noentry']
+    run(['lld-link', '/dll', '/nodefaultlib', f'/base:{base:#x}'] + entry +
+        [f'/out:{dll}', f'/implib:{os.path.join(out, name + ".lib")}'] + objs +
         [os.path.join(out, d + '.lib') for d in deps])
     built.append((f'\\Windows\\System32\\{name}.dll', dll))
 
 # 3. startup code and programs
-crt0 = os.path.join(out, 'crt0.obj')
-cc(os.path.join(HERE, 'crt', 'crt0.c'), crt0)
 progdir = os.path.join(HERE, 'programs')
 for src in sorted(os.listdir(progdir)):
     if not src.endswith('.c'):
@@ -75,8 +83,9 @@ for src in sorted(os.listdir(progdir)):
     cc(os.path.join(progdir, src), obj)
     exe = os.path.join(out, f'{name}.exe')
     run(['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib',
-         f'/out:{exe}', crt0, obj, os.path.join(out, 'msvcrt.lib'),
-         os.path.join(out, 'kernel32.lib'), os.path.join(out, 'ntdll.lib')])
+         f'/out:{exe}', crt0, tlssup, obj, os.path.join(out, 'msvcrt.lib'),
+         os.path.join(out, 'kernel32.lib'), os.path.join(out, 'ntdll.lib'),
+         os.path.join(out, 'testdll.lib')])
     built.append((f'\\Programs\\{name}.exe', exe))
 
 # 4. embed

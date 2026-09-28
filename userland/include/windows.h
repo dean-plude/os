@@ -35,13 +35,17 @@ typedef WCHAR *LPWSTR;
 typedef const WCHAR *LPCWSTR;
 typedef void  *LPVOID, *PVOID, *HANDLE, *HMODULE, *HINSTANCE, *HLOCAL, *HGLOBAL, *FARPROC;
 typedef const void *LPCVOID;
-typedef HANDLE *PHANDLE;
+typedef HANDLE *PHANDLE, *LPHANDLE;
 typedef DWORD *LPDWORD, *PDWORD;
-typedef LONG  *PLONG;
+typedef LONG  *PLONG, *LPLONG;
 typedef BOOL  *LPBOOL;
 typedef BYTE  *LPBYTE;
 typedef ULONG_PTR *PULONG_PTR;
 typedef ULONG *PULONG;
+typedef DWORD64 *PDWORD64;
+typedef WORD *PWORD, *LPWORD;
+typedef WCHAR *PWCHAR;
+typedef long long *PLONG64, *PLONGLONG;
 typedef SIZE_T *PSIZE_T;
 typedef unsigned long long DWORDLONG;
 typedef long   HRESULT;
@@ -54,6 +58,11 @@ typedef union _ULARGE_INTEGER {
     struct { DWORD LowPart; DWORD HighPart; };
     ULONGLONG QuadPart;
 } ULARGE_INTEGER, *PULARGE_INTEGER;
+
+_NOVA_END
+#include <winnt.h>
+#include <excpt.h>
+_NOVA_BEGIN
 
 typedef struct _FILETIME { DWORD dwLowDateTime, dwHighDateTime; } FILETIME, *PFILETIME, *LPFILETIME;
 typedef struct _SYSTEMTIME {
@@ -298,6 +307,101 @@ WINBASEAPI LPSTR   WINAPI lstrcpyA(LPSTR d, LPCSTR s);
 WINBASEAPI int     WINAPI lstrcmpA(LPCSTR a, LPCSTR b);
 WINBASEAPI int     WINAPI lstrcmpiA(LPCSTR a, LPCSTR b);
 
+
+/* -----------------------------------------------------------------------
+ * Threads, synchronization, dynamic loading (kernel32)
+ * ----------------------------------------------------------------------- */
+typedef DWORD (WINAPI *LPTHREAD_START_ROUTINE)(LPVOID param);
+typedef VOID (WINAPI *PFLS_CALLBACK_FUNCTION)(PVOID);
+typedef BOOL (WINAPI *PINIT_ONCE_FN)(PINIT_ONCE, PVOID, PVOID *);
+
+#define WAIT_OBJECT_0        0x00000000
+#define WAIT_ABANDONED_0     0x00000080
+#define WAIT_ABANDONED       0x00000080
+#define WAIT_TIMEOUT         0x00000102
+#define WAIT_FAILED          0xFFFFFFFF
+#define CREATE_SUSPENDED     0x00000004
+#define STILL_ACTIVE         0x00000103
+#define TLS_OUT_OF_INDEXES   0xFFFFFFFF
+#define MAXIMUM_WAIT_OBJECTS 64
+#define EVENT_ALL_ACCESS     0x1F0003
+#define MUTEX_ALL_ACCESS     0x1F0001
+#define SEMAPHORE_ALL_ACCESS 0x1F0003
+#define SYNCHRONIZE          0x00100000
+#define INIT_ONCE_ASYNC      0x00000002
+
+WINBASEAPI HANDLE  WINAPI CreateThread(LPSECURITY_ATTRIBUTES sa, SIZE_T stack, LPTHREAD_START_ROUTINE start,
+                                       LPVOID param, DWORD flags, LPDWORD tid);
+WINBASEAPI HANDLE  WINAPI GetCurrentThread(void);
+WINBASEAPI __declspec(noreturn) VOID WINAPI ExitThread(DWORD code);
+WINBASEAPI DWORD   WINAPI ResumeThread(HANDLE t);
+WINBASEAPI DWORD   WINAPI SuspendThread(HANDLE t);
+WINBASEAPI BOOL    WINAPI TerminateThread(HANDLE t, DWORD code);
+WINBASEAPI BOOL    WINAPI GetExitCodeThread(HANDLE t, LPDWORD code);
+WINBASEAPI BOOL    WINAPI GetExitCodeProcess(HANDLE p, LPDWORD code);
+WINBASEAPI DWORD   WINAPI GetThreadId(HANDLE t);
+WINBASEAPI BOOL    WINAPI SwitchToThread(void);
+WINBASEAPI DWORD   WINAPI WaitForSingleObject(HANDLE h, DWORD ms);
+WINBASEAPI DWORD   WINAPI WaitForSingleObjectEx(HANDLE h, DWORD ms, BOOL alertable);
+WINBASEAPI DWORD   WINAPI WaitForMultipleObjects(DWORD n, const HANDLE *h, BOOL all, DWORD ms);
+WINBASEAPI DWORD   WINAPI WaitForMultipleObjectsEx(DWORD n, const HANDLE *h, BOOL all, DWORD ms, BOOL alertable);
+
+WINBASEAPI HANDLE  WINAPI CreateEventA(LPSECURITY_ATTRIBUTES sa, BOOL manual, BOOL initial, LPCSTR name);
+WINBASEAPI HANDLE  WINAPI CreateEventW(LPSECURITY_ATTRIBUTES sa, BOOL manual, BOOL initial, LPCWSTR name);
+WINBASEAPI BOOL    WINAPI SetEvent(HANDLE h);
+WINBASEAPI BOOL    WINAPI ResetEvent(HANDLE h);
+WINBASEAPI HANDLE  WINAPI CreateMutexA(LPSECURITY_ATTRIBUTES sa, BOOL owner, LPCSTR name);
+WINBASEAPI HANDLE  WINAPI CreateMutexW(LPSECURITY_ATTRIBUTES sa, BOOL owner, LPCWSTR name);
+WINBASEAPI BOOL    WINAPI ReleaseMutex(HANDLE h);
+WINBASEAPI HANDLE  WINAPI CreateSemaphoreA(LPSECURITY_ATTRIBUTES sa, LONG init, LONG max, LPCSTR name);
+WINBASEAPI HANDLE  WINAPI CreateSemaphoreW(LPSECURITY_ATTRIBUTES sa, LONG init, LONG max, LPCWSTR name);
+WINBASEAPI BOOL    WINAPI ReleaseSemaphore(HANDLE h, LONG count, LPLONG prev);
+WINBASEAPI BOOL    WINAPI DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, LPHANDLE dst, DWORD access, BOOL inherit, DWORD options);
+#define DUPLICATE_SAME_ACCESS  0x00000002
+#define DUPLICATE_CLOSE_SOURCE 0x00000001
+
+WINBASEAPI VOID    WINAPI InitializeCriticalSection(LPCRITICAL_SECTION cs);
+WINBASEAPI BOOL    WINAPI InitializeCriticalSectionAndSpinCount(LPCRITICAL_SECTION cs, DWORD spin);
+WINBASEAPI VOID    WINAPI DeleteCriticalSection(LPCRITICAL_SECTION cs);
+WINBASEAPI VOID    WINAPI EnterCriticalSection(LPCRITICAL_SECTION cs);
+WINBASEAPI VOID    WINAPI LeaveCriticalSection(LPCRITICAL_SECTION cs);
+WINBASEAPI BOOL    WINAPI TryEnterCriticalSection(LPCRITICAL_SECTION cs);
+WINBASEAPI VOID    WINAPI InitializeSRWLock(PSRWLOCK l);
+WINBASEAPI VOID    WINAPI AcquireSRWLockExclusive(PSRWLOCK l);
+WINBASEAPI VOID    WINAPI ReleaseSRWLockExclusive(PSRWLOCK l);
+WINBASEAPI VOID    WINAPI AcquireSRWLockShared(PSRWLOCK l);
+WINBASEAPI VOID    WINAPI ReleaseSRWLockShared(PSRWLOCK l);
+WINBASEAPI BOOLEAN WINAPI TryAcquireSRWLockExclusive(PSRWLOCK l);
+WINBASEAPI BOOLEAN WINAPI TryAcquireSRWLockShared(PSRWLOCK l);
+WINBASEAPI VOID    WINAPI InitializeConditionVariable(PCONDITION_VARIABLE cv);
+WINBASEAPI VOID    WINAPI WakeConditionVariable(PCONDITION_VARIABLE cv);
+WINBASEAPI VOID    WINAPI WakeAllConditionVariable(PCONDITION_VARIABLE cv);
+WINBASEAPI BOOL    WINAPI SleepConditionVariableCS(PCONDITION_VARIABLE cv, PCRITICAL_SECTION cs, DWORD ms);
+WINBASEAPI BOOL    WINAPI SleepConditionVariableSRW(PCONDITION_VARIABLE cv, PSRWLOCK l, DWORD ms, ULONG flags);
+WINBASEAPI VOID    WINAPI InitOnceInitialize(PINIT_ONCE once);
+WINBASEAPI BOOL    WINAPI InitOnceExecuteOnce(PINIT_ONCE once, PINIT_ONCE_FN fn, PVOID param, LPVOID *ctx);
+
+WINBASEAPI DWORD   WINAPI TlsAlloc(void);
+WINBASEAPI BOOL    WINAPI TlsFree(DWORD i);
+WINBASEAPI LPVOID  WINAPI TlsGetValue(DWORD i);
+WINBASEAPI BOOL    WINAPI TlsSetValue(DWORD i, LPVOID v);
+WINBASEAPI DWORD   WINAPI FlsAlloc(PFLS_CALLBACK_FUNCTION cb);
+WINBASEAPI BOOL    WINAPI FlsFree(DWORD i);
+WINBASEAPI PVOID   WINAPI FlsGetValue(DWORD i);
+WINBASEAPI BOOL    WINAPI FlsSetValue(DWORD i, PVOID v);
+
+WINBASEAPI HMODULE WINAPI LoadLibraryW(LPCWSTR name);
+WINBASEAPI HMODULE WINAPI LoadLibraryExA(LPCSTR name, HANDLE f, DWORD flags);
+WINBASEAPI BOOL    WINAPI GetModuleHandleExA(DWORD flags, LPCSTR name, HMODULE *out);
+WINBASEAPI VOID    WINAPI RaiseException(DWORD code, DWORD flags, DWORD nargs, const ULONG_PTR *args);
+WINBASEAPI LPTOP_LEVEL_EXCEPTION_FILTER WINAPI SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER f);
+WINBASEAPI LONG    WINAPI UnhandledExceptionFilter(PEXCEPTION_POINTERS info);
+WINBASEAPI PVOID   WINAPI AddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER h);
+WINBASEAPI ULONG   WINAPI RemoveVectoredExceptionHandler(PVOID h);
+WINBASEAPI VOID    WINAPI GetNativeSystemInfo(LPSYSTEM_INFO si);
+#define GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS 0x00000004
+#define GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT 0x00000002
+
 #define CreateFile           CreateFileA
 #define DeleteFile           DeleteFileA
 #define CreateDirectory      CreateDirectoryA
@@ -314,5 +418,9 @@ WINBASEAPI int     WINAPI lstrcmpiA(LPCSTR a, LPCSTR b);
 #define WriteConsole         WriteConsoleA
 #define OutputDebugString    OutputDebugStringA
 #define LoadLibrary          LoadLibraryA
+#define CreateEvent          CreateEventA
+#define CreateMutex          CreateMutexA
+#define CreateSemaphore      CreateSemaphoreA
+#define GetModuleHandleEx    GetModuleHandleExA
 
 _NOVA_END

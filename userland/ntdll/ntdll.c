@@ -49,6 +49,28 @@ XSTUB(NtQuerySystemTime,            SYS_NtQuerySystemTime)
 XSTUB(NtQueryPerformanceCounter,    SYS_NtQueryPerformanceCounter)
 XSTUB(NtDelayExecution,             SYS_NtDelayExecution)
 XSTUB(NtYieldExecution,             SYS_NtYieldExecution)
+XSTUB(NtCreateThreadEx,             SYS_NtCreateThreadEx)
+XSTUB(NtTerminateThread,            SYS_NtTerminateThread)
+XSTUB(NtResumeThread,               SYS_NtResumeThread)
+XSTUB(NtSuspendThread,              SYS_NtSuspendThread)
+XSTUB(NtQueryInformationThread,     SYS_NtQueryInformationThread)
+XSTUB(NtSetInformationThread,       SYS_NtSetInformationThread)
+XSTUB(NtQueryInformationProcess,    SYS_NtQueryInformationProcess)
+XSTUB(NtCreateEvent,                SYS_NtCreateEvent)
+XSTUB(NtSetEvent,                   SYS_NtSetEvent)
+XSTUB(NtResetEvent,                 SYS_NtResetEvent)
+XSTUB(NtClearEvent,                 SYS_NtClearEvent)
+XSTUB(NtCreateMutant,               SYS_NtCreateMutant)
+XSTUB(NtReleaseMutant,              SYS_NtReleaseMutant)
+XSTUB(NtCreateSemaphore,            SYS_NtCreateSemaphore)
+XSTUB(NtReleaseSemaphore,           SYS_NtReleaseSemaphore)
+XSTUB(NtWaitForSingleObject,        SYS_NtWaitForSingleObject)
+XSTUB(NtWaitForMultipleObjects,     SYS_NtWaitForMultipleObjects)
+XSTUB(NtDuplicateObject,            SYS_NtDuplicateObject)
+XSTUB(NtContinue,                   SYS_NtContinue)
+XSTUB(NtRaiseException,             SYS_NtRaiseException)
+XSTUB(NtNovaLoadDll,                SYS_NtNovaLoadDll)
+XSTUB(NtNovaDebugPrint,             SYS_NtNovaDebugPrint)
 
 /* -----------------------------------------------------------------------
  * Memory/string primitives (real ntdll exports these too)
@@ -143,8 +165,24 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
 
 NTSYSAPI VOID NTAPI RtlExitUserProcess(NTSTATUS status)
 {
+    extern void nova_run_process_detach(void);
+    nova_run_process_detach();
     NtTerminateProcess(NtCurrentProcess(), status);
     for (;;) NtYieldExecution();
+}
+
+NTSYSAPI VOID NTAPI RtlExitUserThread(NTSTATUS status)
+{
+    extern void nova_run_thread_detach(void);
+    nova_run_thread_detach();
+    NtTerminateThread(NtCurrentThread(), status);
+    for (;;) NtYieldExecution();
+}
+
+__declspec(dllexport) int strcmp(const char *a, const char *b)
+{
+    while (*a && *a == *b) { a++; b++; }
+    return (int)(unsigned char)*a - (int)(unsigned char)*b;
 }
 
 /* -----------------------------------------------------------------------
@@ -166,6 +204,10 @@ static SIZE_T  class_size[NCLASSES];
 static void   *free_list[NCLASSES];
 static char   *arena_base, *arena_cur, *arena_end, *arena_reserved_end;
 static int     heap_ready;
+static volatile long heap_lock;
+
+static void hlock(void) { while (__atomic_exchange_n(&heap_lock, 1, __ATOMIC_ACQUIRE)) __builtin_ia32_pause(); }
+static void hunlock(void) { __atomic_store_n(&heap_lock, 0, __ATOMIC_RELEASE); }
 
 static void heap_init(void)
 {
@@ -232,13 +274,15 @@ NTSYSAPI PVOID NTAPI RtlAllocateHeap(PVOID heap, ULONG flags, SIZE_T n)
         return b + 1;                               /* fresh pages are zeroed */
     }
     int c = class_of(n);
+    hlock();
     if (free_list[c]) {
         b = (Block *)free_list[c] - 1;
         free_list[c] = *(void **)free_list[c];
     } else {
         b = carve(class_size[c] + sizeof(Block));
-        if (!b) return 0;
     }
+    hunlock();
+    if (!b) return 0;
     b->size = class_size[c];
     b->tag = HEAP_MAGIC | (SIZE_T)c;
     if (flags & HEAP_ZERO_MEMORY) memset(b + 1, 0, class_size[c]);
@@ -258,9 +302,11 @@ NTSYSAPI BOOLEAN NTAPI RtlFreeHeap(PVOID heap, ULONG flags, PVOID p)
     if ((b->tag & ~(SIZE_T)0xFF) != (HEAP_MAGIC & ~(SIZE_T)0xFF)) return FALSE;   /* not ours */
     int c = (int)(b->tag & 0xFF);
     if (c >= NCLASSES) return FALSE;
+    hlock();
     *(void **)p = free_list[c];
     free_list[c] = p;
     b->tag = 0;                                     /* catches double frees */
+    hunlock();
     return TRUE;
 }
 

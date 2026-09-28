@@ -1117,7 +1117,7 @@ UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
     /* A program's service runs with interrupts on: it may be long (file
      * I/O) or wait (console input).  We're on this thread's kernel stack. */
     sti();
-    UINT64 r = syscall_table[num](arg1, arg2, arg3, arg4);
+    UINT64 r = UmSyscall(num, arg1, arg2, arg3, arg4);
     cli();
     UmReturnToUser();                        /* killed meanwhile? never returns */
     return r;

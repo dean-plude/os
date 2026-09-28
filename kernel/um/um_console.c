@@ -50,7 +50,7 @@ int um_console_write(UmConsole *c, const char *data, int len)
     while (done < len) {
         UINT32 used = c->out_head - c->out_tail;
         if (used == OUT_SIZE) {                         /* full: let the Terminal drain */
-            if (p && p->kill_pending) break;
+            if (p && um_stopping()) break;
             sched_yield();
             continue;
         }
@@ -105,7 +105,7 @@ int um_console_read(UmConsole *c, char *buf, int cap, UmProcess *p)
             return n;
         }
         if (c->in_eof) { c->in_eof = false; c->waiting = false; return 0; }
-        if (p && p->kill_pending) { c->waiting = false; return -1; }
+        if (p && um_stopping()) { c->waiting = false; return -1; }
         c->waiting = true;
         sched_yield();
     }

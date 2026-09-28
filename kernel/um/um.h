@@ -7,9 +7,10 @@
  * kernel loader like any other DLL; they reach the kernel through NT
  * system calls (um_syscall.c) with the real NT signatures.
  *
- * A process has one thread, a private page table (upper half shared with
- * the kernel), a handle table (files on C:, console) and a console that
- * carries its standard input/output to a Terminal window.
+ * A process has threads, a private page table (upper half shared with the
+ * kernel), a handle table (files on C:, console, synchronization objects,
+ * threads, sockets, windows) and a console that carries its standard
+ * input/output to a Terminal window.
  *
  * Lifetime: the spawner holds a reference until UmRelease(); the process
  * struct is freed once it has exited, its thread is off the CPU, and it is
@@ -49,7 +50,7 @@ UINT32      UmPid(const UmProcess *p);
 const char *UmName(const UmProcess *p);
 
 /* Process list, for tasklist: fills up to @max entries. */
-typedef struct { UINT32 pid; char name[32]; UINT32 mem_kb; bool exited; } UmProcInfo;
+typedef struct { UINT32 pid; char name[32]; UINT32 mem_kb; UINT32 threads; bool exited; } UmProcInfo;
 int  UmList(UmProcInfo *out, int max);
 /* taskkill: false if no running process has @pid. */
 bool UmKillPid(UINT32 pid);
@@ -73,8 +74,13 @@ bool       UmConsoleWantsInput(UmConsole *c);
  * ----------------------------------------------------------------------- */
 /* Only the NT services the subsystem implements are open to programs. */
 bool UmSyscallAllowed(UINT64 num);
+/* Run service @num for the current program (interrupts enabled). */
+UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4);
 /* On every return to user mode: ends the thread if its process was killed. */
 void UmReturnToUser(void);
+/* A CPU exception in user mode (@frame: the InterruptFrame): passed on to
+ * the program's exception handlers (SEH) through its stack. */
+void UmUserException(void *frame, UINT64 cr2);
 /* The current user thread raised an exception it cannot handle. */
 void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
 

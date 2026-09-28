@@ -154,12 +154,26 @@
 #define SYSCALL_NtOpenSemaphore                   0x0053
 #define SYSCALL_NtCreateMutant                    0x0054
 #define SYSCALL_NtCreateFile                      0x0055
+#define SYSCALL_NtWaitForMultipleObjects          0x005B
+#define SYSCALL_NtCreateThreadEx                  0x00BD
 #define SYSCALL_NtAllocateVirtualMemoryEx         0x00C4  /* Win10 1803+ */
 #define SYSCALL_NtFlushInstructionCache           0x00CC  /* Win10 1903 */
 #define SYSCALL_NtSetInformationThread            0x000D
 #define SYSCALL_NtCreateProcessEx                 0x004D
 #define SYSCALL_NtCreateThread                    0x004E
 #define SYSCALL_NtQueryInformationFile            0x0011
+
+/* Services for NovaOS user-mode programs whose Windows 10 1903 numbers
+ * collide with entries above: numbered from 0x0180 (ntdll is built from
+ * this header, so the stubs always match). */
+#define SYSCALL_NtTerminateThread                 0x0180
+#define SYSCALL_NtResumeThread                    0x0181
+#define SYSCALL_NtSuspendThread                   0x0182
+#define SYSCALL_NtCreateSemaphore                 0x0183
+#define SYSCALL_NtResetEvent                      0x0184
+#define SYSCALL_NtRaiseException                  0x0185
+#define SYSCALL_NtNovaLoadDll                     0x0186  /* NovaOS: LdrLoadDll's kernel half */
+#define SYSCALL_NtNovaDebugPrint                  0x0187  /* NovaOS: OutputDebugString */
 
 /* -----------------------------------------------------------------------
  * Syscall table size

@@ -68,14 +68,87 @@ typedef struct _RTL_USER_PROCESS_PARAMETERS {
     UNICODE_STRING DllPath, ImagePathName, CommandLine;
     PVOID Environment;
 } RTL_USER_PROCESS_PARAMETERS, *PRTL_USER_PROCESS_PARAMETERS;
+/* Loader data (built by ntdll at process start) */
+typedef struct _PEB_LDR_DATA {
+    ULONG Length; BOOLEAN Initialized; PVOID SsHandle;
+    LIST_ENTRY InLoadOrderModuleList, InMemoryOrderModuleList, InInitializationOrderModuleList;
+    PVOID EntryInProgress; BOOLEAN ShutdownInProgress; HANDLE ShutdownThreadId;
+} PEB_LDR_DATA, *PPEB_LDR_DATA;
+typedef struct _LDR_DATA_TABLE_ENTRY {
+    LIST_ENTRY InLoadOrderLinks, InMemoryOrderLinks, InInitializationOrderLinks;
+    PVOID DllBase, EntryPoint;
+    ULONG SizeOfImage;
+    UNICODE_STRING FullDllName, BaseDllName;
+    ULONG Flags;
+    USHORT LoadCount, TlsIndex;
+    LIST_ENTRY HashLinks;
+    ULONG TimeDateStamp;
+} LDR_DATA_TABLE_ENTRY, *PLDR_DATA_TABLE_ENTRY;
+#define LDRP_IMAGE_DLL               0x00000004
+#define LDRP_ENTRY_PROCESSED         0x00004000
+#define LDRP_DONT_CALL_FOR_THREADS   0x00040000
+#define LDRP_PROCESS_ATTACH_CALLED   0x00080000
+
 typedef struct _PEB {
     BYTE Reserved1[2]; BYTE BeingDebugged; BYTE Reserved2[5];
-    PVOID Mutant, ImageBaseAddress, Ldr;
+    PVOID Mutant, ImageBaseAddress;
+    PPEB_LDR_DATA Ldr;
     PRTL_USER_PROCESS_PARAMETERS ProcessParameters;
     PVOID SubSystemData, ProcessHeap;
 } PEB, *PPEB;
 
+/* The modules the kernel mapped, in initialization order (dependencies
+ * first); read by ntdll's loader.  NovaOS-specific, at a fixed address. */
+typedef struct _NOVA_LDR_MODULE {
+    ULONGLONG Base, Size;
+    ULONG EntryRva, Flags;          /* Flags: 1 = DLL */
+    CHAR Name[32], Path[96];
+} NOVA_LDR_MODULE;
+typedef struct _NOVA_LDR_INFO {
+    ULONG Count, Reserved;
+    NOVA_LDR_MODULE Modules[32];
+} NOVA_LDR_INFO;
+#define NOVA_LDR_INFO_ADDRESS ((NOVA_LDR_INFO *)0x00007FFDF0001000ULL)
+
+typedef struct _CLIENT_ID { HANDLE UniqueProcess, UniqueThread; } CLIENT_ID;
+typedef struct _THREAD_BASIC_INFORMATION {
+    NTSTATUS ExitStatus; PVOID TebBaseAddress; CLIENT_ID ClientId;
+    ULONG_PTR AffinityMask; LONG Priority, BasePriority;
+} THREAD_BASIC_INFORMATION;
+typedef struct _PROCESS_BASIC_INFORMATION {
+    NTSTATUS ExitStatus; PPEB PebBaseAddress; ULONG_PTR AffinityMask; LONG BasePriority;
+    ULONG_PTR UniqueProcessId, InheritedFromUniqueProcessId;
+} PROCESS_BASIC_INFORMATION;
+
+/* TEB fields NovaOS uses (x64 offsets) */
+#define TEB_EXCEPTION_LIST      0x0000
+#define TEB_STACK_BASE          0x0008
+#define TEB_STACK_LIMIT         0x0010
+#define TEB_SELF                0x0030
+#define TEB_CLIENT_ID           0x0040
+#define TEB_TLS_POINTER         0x0058      /* ThreadLocalStoragePointer (static TLS) */
+#define TEB_PEB                 0x0060
+#define TEB_LAST_ERROR          0x0068
+#define TEB_DEALLOCATION_STACK  0x1478
+#define TEB_TLS_SLOTS           0x1480      /* TlsSlots[64] */
+#define TEB_TLS_EXPANSION       0x1780      /* TlsExpansionSlots (1024 more) */
+#define TEB_FLS_DATA            0x17C8
+#define TLS_MINIMUM_AVAILABLE   64
+#define TLS_EXPANSION_SLOTS     1024
+static __inline__ BYTE *NtCurrentTebBytes(void) { BYTE *t; __asm__("movq %%gs:0x30, %0" : "=r"(t)); return t; }
+
 #define NtCurrentProcess() ((HANDLE)(LONG_PTR)-1)
+#define NtCurrentThread()  ((HANDLE)(LONG_PTR)-2)
+#define STATUS_TIMEOUT_NT          ((NTSTATUS)0x00000102)
+#define STATUS_DLL_NOT_FOUND       ((NTSTATUS)0xC0000135)
+#define STATUS_ENTRYPOINT_NOT_FOUND ((NTSTATUS)0xC0000139)
+#define STATUS_DLL_INIT_FAILED     ((NTSTATUS)0xC0000142)
+#define STATUS_PROCEDURE_NOT_FOUND ((NTSTATUS)0xC000007A)
+#define STATUS_INVALID_HANDLE      ((NTSTATUS)0xC0000008)
+#define STATUS_UNHANDLED_EXCEPTION ((NTSTATUS)0xC0000144)
+typedef enum _EVENT_TYPE { NotificationEvent, SynchronizationEvent } EVENT_TYPE;
+typedef enum _WAIT_TYPE { WaitAll, WaitAny } WAIT_TYPE;
+typedef ULONG (NTAPI *PUSER_THREAD_START_ROUTINE)(PVOID);
 
 NTSYSAPI NTSTATUS NTAPI NtClose(HANDLE h);
 NTSYSAPI NTSTATUS NTAPI NtCreateFile(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, PIO_STATUS_BLOCK io,
@@ -102,6 +175,93 @@ NTSYSAPI NTSTATUS NTAPI NtQuerySystemTime(PLARGE_INTEGER t);
 NTSYSAPI NTSTATUS NTAPI NtQueryPerformanceCounter(PLARGE_INTEGER c, PLARGE_INTEGER f);
 NTSYSAPI NTSTATUS NTAPI NtDelayExecution(BOOLEAN alertable, PLARGE_INTEGER interval);
 NTSYSAPI NTSTATUS NTAPI NtYieldExecution(void);
+
+/* Threads and synchronization */
+NTSYSAPI NTSTATUS NTAPI NtCreateThreadEx(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, HANDLE process,
+                                         PVOID start, PVOID arg, ULONG flags, SIZE_T zero_bits,
+                                         SIZE_T stack_size, SIZE_T max_stack_size, PVOID attrs);
+NTSYSAPI NTSTATUS NTAPI NtTerminateThread(HANDLE h, NTSTATUS status);
+NTSYSAPI NTSTATUS NTAPI NtResumeThread(HANDLE h, PULONG prev);
+NTSYSAPI NTSTATUS NTAPI NtSuspendThread(HANDLE h, PULONG prev);
+NTSYSAPI NTSTATUS NTAPI NtQueryInformationThread(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret);
+NTSYSAPI NTSTATUS NTAPI NtSetInformationThread(HANDLE h, ULONG cls, PVOID info, ULONG len);
+NTSYSAPI NTSTATUS NTAPI NtQueryInformationProcess(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret);
+NTSYSAPI NTSTATUS NTAPI NtCreateEvent(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, EVENT_TYPE type, BOOLEAN state);
+NTSYSAPI NTSTATUS NTAPI NtSetEvent(HANDLE h, PLONG prev);
+NTSYSAPI NTSTATUS NTAPI NtResetEvent(HANDLE h, PLONG prev);
+NTSYSAPI NTSTATUS NTAPI NtClearEvent(HANDLE h);
+NTSYSAPI NTSTATUS NTAPI NtCreateMutant(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, BOOLEAN owner);
+NTSYSAPI NTSTATUS NTAPI NtReleaseMutant(HANDLE h, PLONG prev);
+NTSYSAPI NTSTATUS NTAPI NtCreateSemaphore(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, LONG init, LONG max);
+NTSYSAPI NTSTATUS NTAPI NtReleaseSemaphore(HANDLE h, LONG count, PLONG prev);
+NTSYSAPI NTSTATUS NTAPI NtWaitForSingleObject(HANDLE h, BOOLEAN alertable, PLARGE_INTEGER timeout);
+NTSYSAPI NTSTATUS NTAPI NtWaitForMultipleObjects(ULONG n, const HANDLE *h, WAIT_TYPE type, BOOLEAN alertable,
+                                                 PLARGE_INTEGER timeout);
+NTSYSAPI NTSTATUS NTAPI NtDuplicateObject(HANDLE sp, HANDLE src, HANDLE tp, PHANDLE dst, ULONG access,
+                                          ULONG attrs, ULONG options);
+/* Exceptions */
+NTSYSAPI NTSTATUS NTAPI NtContinue(PCONTEXT ctx, BOOLEAN alert);
+NTSYSAPI NTSTATUS NTAPI NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, BOOLEAN first_chance);
+/* NovaOS */
+NTSYSAPI NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base);
+NTSYSAPI NTSTATUS NTAPI NtNovaDebugPrint(const char *s, ULONG len);
+
+/* Loader */
+NTSYSAPI NTSTATUS NTAPI LdrLoadDll(const WCHAR *path, PULONG flags, PUNICODE_STRING name, PVOID *base);
+NTSYSAPI NTSTATUS NTAPI LdrNovaLoadDllA(const char *name, PVOID *base);
+NTSYSAPI NTSTATUS NTAPI LdrGetDllHandle(const WCHAR *path, PULONG flags, PUNICODE_STRING name, PVOID *base);
+NTSYSAPI PVOID    NTAPI LdrNovaGetModuleA(const char *name);
+NTSYSAPI NTSTATUS NTAPI LdrGetProcedureAddress(PVOID base, const char *name, ULONG ordinal, PVOID *addr);
+NTSYSAPI NTSTATUS NTAPI LdrDisableThreadCalloutsForDll(PVOID base);
+NTSYSAPI PLDR_DATA_TABLE_ENTRY NTAPI LdrNovaFindEntry(PVOID address);
+NTSYSAPI VOID     NTAPI LdrNovaZeroTlsCell(ULONG index);
+NTSYSAPI __declspec(noreturn) VOID NTAPI RtlExitUserThread(NTSTATUS status);
+NTSYSAPI NTSTATUS NTAPI RtlNovaCreateThread(PUSER_THREAD_START_ROUTINE start, PVOID arg, SIZE_T stack,
+                                            BOOL suspended, PHANDLE h, PULONG tid);
+
+/* Locks */
+NTSYSAPI NTSTATUS NTAPI RtlInitializeCriticalSection(PRTL_CRITICAL_SECTION cs);
+NTSYSAPI NTSTATUS NTAPI RtlInitializeCriticalSectionAndSpinCount(PRTL_CRITICAL_SECTION cs, ULONG spin);
+NTSYSAPI NTSTATUS NTAPI RtlDeleteCriticalSection(PRTL_CRITICAL_SECTION cs);
+NTSYSAPI NTSTATUS NTAPI RtlEnterCriticalSection(PRTL_CRITICAL_SECTION cs);
+NTSYSAPI NTSTATUS NTAPI RtlLeaveCriticalSection(PRTL_CRITICAL_SECTION cs);
+NTSYSAPI BOOLEAN  NTAPI RtlTryEnterCriticalSection(PRTL_CRITICAL_SECTION cs);
+NTSYSAPI VOID     NTAPI RtlInitializeSRWLock(PRTL_SRWLOCK l);
+NTSYSAPI VOID     NTAPI RtlAcquireSRWLockExclusive(PRTL_SRWLOCK l);
+NTSYSAPI VOID     NTAPI RtlAcquireSRWLockShared(PRTL_SRWLOCK l);
+NTSYSAPI VOID     NTAPI RtlReleaseSRWLockExclusive(PRTL_SRWLOCK l);
+NTSYSAPI VOID     NTAPI RtlReleaseSRWLockShared(PRTL_SRWLOCK l);
+NTSYSAPI BOOLEAN  NTAPI RtlTryAcquireSRWLockExclusive(PRTL_SRWLOCK l);
+NTSYSAPI BOOLEAN  NTAPI RtlTryAcquireSRWLockShared(PRTL_SRWLOCK l);
+NTSYSAPI VOID     NTAPI RtlInitializeConditionVariable(PRTL_CONDITION_VARIABLE cv);
+NTSYSAPI VOID     NTAPI RtlWakeConditionVariable(PRTL_CONDITION_VARIABLE cv);
+NTSYSAPI VOID     NTAPI RtlWakeAllConditionVariable(PRTL_CONDITION_VARIABLE cv);
+NTSYSAPI NTSTATUS NTAPI RtlSleepConditionVariableCS(PRTL_CONDITION_VARIABLE cv, PRTL_CRITICAL_SECTION cs,
+                                                    PLARGE_INTEGER timeout);
+NTSYSAPI NTSTATUS NTAPI RtlSleepConditionVariableSRW(PRTL_CONDITION_VARIABLE cv, PRTL_SRWLOCK l,
+                                                     PLARGE_INTEGER timeout, ULONG flags);
+NTSYSAPI VOID     NTAPI RtlRunOnceInitialize(PRTL_RUN_ONCE once);
+NTSYSAPI NTSTATUS NTAPI RtlRunOnceBeginInitialize(PRTL_RUN_ONCE once, ULONG flags, PVOID *ctx);
+NTSYSAPI NTSTATUS NTAPI RtlRunOnceComplete(PRTL_RUN_ONCE once, ULONG flags, PVOID ctx);
+
+/* Exceptions */
+NTSYSAPI VOID     NTAPI RtlCaptureContext(PCONTEXT ctx);
+NTSYSAPI VOID     NTAPI RtlRestoreContext(PCONTEXT ctx, PEXCEPTION_RECORD rec);
+NTSYSAPI VOID     NTAPI RtlRaiseException(PEXCEPTION_RECORD rec);
+NTSYSAPI BOOLEAN  NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx);
+NTSYSAPI VOID     NTAPI RtlUnwind(PVOID frame, PVOID target_ip, PEXCEPTION_RECORD rec, PVOID retval);
+NTSYSAPI VOID     NTAPI RtlUnwindEx(PVOID frame, PVOID target_ip, PEXCEPTION_RECORD rec, PVOID retval,
+                                    PCONTEXT ctx, PUNWIND_HISTORY_TABLE history);
+NTSYSAPI PRUNTIME_FUNCTION NTAPI RtlLookupFunctionEntry(DWORD64 pc, PDWORD64 base, PUNWIND_HISTORY_TABLE history);
+NTSYSAPI PEXCEPTION_ROUTINE NTAPI RtlVirtualUnwind(ULONG type, DWORD64 base, DWORD64 pc, PRUNTIME_FUNCTION f,
+                                                   PCONTEXT ctx, PVOID *handler_data, PDWORD64 frame,
+                                                   PKNONVOLATILE_CONTEXT_POINTERS ptrs);
+NTSYSAPI PVOID    NTAPI RtlAddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER h);
+NTSYSAPI ULONG    NTAPI RtlRemoveVectoredExceptionHandler(PVOID h);
+NTSYSAPI PVOID    NTAPI RtlAddVectoredContinueHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER h);
+NTSYSAPI ULONG    NTAPI RtlRemoveVectoredContinueHandler(PVOID h);
+NTSYSAPI VOID     NTAPI RtlSetUnhandledExceptionFilter(PTOP_LEVEL_EXCEPTION_FILTER f);
+NTSYSAPI USHORT   NTAPI RtlCaptureStackBackTrace(ULONG skip, ULONG n, PVOID *frames, PULONG hash);
 
 NTSYSAPI PPEB     NTAPI RtlGetCurrentPeb(void);
 NTSYSAPI ULONG    NTAPI RtlNtStatusToDosError(NTSTATUS s);

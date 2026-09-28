@@ -270,15 +270,19 @@ WINBASEAPI LPSTR WINAPI GetCommandLineA(void)
 WINBASEAPI HMODULE WINAPI GetModuleHandleA(LPCSTR name)
 {
     if (!name) return (HMODULE)RtlGetCurrentPeb()->ImageBaseAddress;
-    SetLastError(ERROR_MOD_NOT_FOUND);
-    return 0;
+    HMODULE m = (HMODULE)LdrNovaGetModuleA(name);
+    if (!m) SetLastError(ERROR_MOD_NOT_FOUND);
+    return m;
 }
 
 WINBASEAPI HMODULE WINAPI GetModuleHandleW(LPCWSTR name)
 {
     if (!name) return (HMODULE)RtlGetCurrentPeb()->ImageBaseAddress;
-    SetLastError(ERROR_MOD_NOT_FOUND);
-    return 0;
+    char n[128];
+    int i = 0;
+    for (; i < 127 && name[i]; i++) n[i] = (char)name[i];
+    n[i] = 0;
+    return GetModuleHandleA(n);
 }
 
 WINBASEAPI DWORD WINAPI GetModuleFileNameA(HMODULE m, LPSTR buf, DWORD size)
@@ -335,14 +339,7 @@ WINBASEAPI FARPROC WINAPI GetProcAddress(HMODULE m, LPCSTR name)
     return (FARPROC)(b + rva);
 }
 
-WINBASEAPI HMODULE WINAPI LoadLibraryA(LPCSTR name)
-{
-    (void)name;
-    SetLastError(ERROR_MOD_NOT_FOUND);           /* dynamic loading: not yet */
-    return 0;
-}
-
-WINBASEAPI BOOL WINAPI FreeLibrary(HMODULE m) { (void)m; return TRUE; }
+WINBASEAPI BOOL WINAPI FreeLibrary(HMODULE m) { (void)m; return TRUE; }   /* modules stay mapped */
 
 /* Environment: the process block (UTF-16), plus variables set at run time */
 typedef struct EnvVar { struct EnvVar *next; char *name, *value; } EnvVar;

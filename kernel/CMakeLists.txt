@@ -127,6 +127,8 @@ set(KERNEL_C_SOURCES
     um/um.c
     um/um_console.c
     um/um_syscall.c
+    um/um_thread.c
+    um/um_exception.c
     ke/main.c
     ke/printf.c
     ke/scheduler.c

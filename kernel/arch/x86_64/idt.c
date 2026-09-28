@@ -224,6 +224,11 @@ static void dispatch(InterruptFrame *frame)
 
     /* ---- CPU Exceptions (0–31) ---- */
     if (vector < 32) {
+        /* A program's exception goes to its own handlers (SEH) */
+        if ((frame->cs & 3) && sched_current()->um && vector != 2 && vector != 8 && vector != 18) {
+            UmUserException(frame, vector == EXC_PAGE_FAULT ? read_cr2() : 0);
+            return;
+        }
         const char *name = (vector < 22 && exception_names[vector])
                            ? exception_names[vector]
                            : "Unknown Exception";
