@@ -106,7 +106,8 @@
 #define SYSCALL_NtOpenThreadToken                 0x0024
 #define SYSCALL_NtQueryInformationThread          0x0025
 #define SYSCALL_NtOpenProcess                     0x0026
-#define SYSCALL_NtSetValueKey                     0x0027
+#define SYSCALL_NtSetInformationFile              0x0027
+#define SYSCALL_NtSetValueKey                     0x0060
 #define SYSCALL_NtMapViewOfSection                0x0028
 #define SYSCALL_NtAccessCheckAndAuditAlarm        0x0029
 #define SYSCALL_NtUnmapViewOfSection              0x002A
@@ -153,12 +154,50 @@
 #define SYSCALL_NtOpenSemaphore                   0x0053
 #define SYSCALL_NtCreateMutant                    0x0054
 #define SYSCALL_NtCreateFile                      0x0055
+#define SYSCALL_NtWaitForMultipleObjects          0x005B
+#define SYSCALL_NtCreateThreadEx                  0x00BD
 #define SYSCALL_NtAllocateVirtualMemoryEx         0x00C4  /* Win10 1803+ */
 #define SYSCALL_NtFlushInstructionCache           0x00CC  /* Win10 1903 */
 #define SYSCALL_NtSetInformationThread            0x000D
 #define SYSCALL_NtCreateProcessEx                 0x004D
 #define SYSCALL_NtCreateThread                    0x004E
 #define SYSCALL_NtQueryInformationFile            0x0011
+
+/* Services for NovaOS user-mode programs whose Windows 10 1903 numbers
+ * collide with entries above: numbered from 0x0180 (ntdll is built from
+ * this header, so the stubs always match). */
+#define SYSCALL_NtTerminateThread                 0x0180
+#define SYSCALL_NtResumeThread                    0x0181
+#define SYSCALL_NtSuspendThread                   0x0182
+#define SYSCALL_NtCreateSemaphore                 0x0183
+#define SYSCALL_NtResetEvent                      0x0184
+#define SYSCALL_NtRaiseException                  0x0185
+#define SYSCALL_NtNovaLoadDll                     0x0186  /* NovaOS: LdrLoadDll's kernel half */
+#define SYSCALL_NtNovaDebugPrint                  0x0187  /* NovaOS: OutputDebugString */
+/* NovaOS sockets (ws2_32's kernel half) */
+#define SYSCALL_NtNovaSocket                      0x0190
+#define SYSCALL_NtNovaSockConnect                 0x0191
+#define SYSCALL_NtNovaSockSend                    0x0192
+#define SYSCALL_NtNovaSockRecv                    0x0193
+#define SYSCALL_NtNovaSockBind                    0x0194
+#define SYSCALL_NtNovaSockListen                  0x0195
+#define SYSCALL_NtNovaSockAccept                  0x0196
+#define SYSCALL_NtNovaSockCtl                     0x0197
+#define SYSCALL_NtNovaSockSendTo                  0x0198
+#define SYSCALL_NtNovaSockRecvFrom                0x0199
+#define SYSCALL_NtNovaResolve                     0x019A
+/* NovaOS GUI (user32/gdi32's kernel half) */
+#define SYSCALL_NtNovaGuiCreate                   0x01A0
+#define SYSCALL_NtNovaGuiGetMessage               0x01A1
+#define SYSCALL_NtNovaGuiInvalidate               0x01A2
+#define SYSCALL_NtNovaGuiSetText                  0x01A3
+#define SYSCALL_NtNovaGuiShow                     0x01A4
+#define SYSCALL_NtNovaGuiDestroy                  0x01A5
+#define SYSCALL_NtNovaGuiSetTimer                 0x01A6
+#define SYSCALL_NtNovaGuiKillTimer                0x01A7
+#define SYSCALL_NtNovaGuiMessageBox               0x01A8
+#define SYSCALL_NtNovaGuiScreenSize               0x01A9
+#define SYSCALL_NtNovaGuiPostMessage              0x01AA
 
 /* -----------------------------------------------------------------------
  * Syscall table size
@@ -284,7 +323,13 @@ void SyscallInitialize(void);
  * Kernel-helper handlers (0x01F0-0x01FF) may return 64-bit pointers.
  */
 UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
-                             UINT64 arg3, UINT64 arg4);
+                             UINT64 arg3, UINT64 arg4, UINT64 user_rsp);
+
+/* A system service: the first four arguments; the rest are on the user
+ * stack (sched_current()->user_rsp + 0x28 + 8*(n-5)). */
+typedef UINT64 (*SYSCALL_HANDLER)(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4);
+/* Install a handler; returns the one it replaces. */
+SYSCALL_HANDLER SyscallSetHandler(UINT32 num, SYSCALL_HANDLER h);
 
 /*
  * Syscall entry point (assembly, installed in MSR_LSTAR).

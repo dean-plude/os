@@ -93,49 +93,49 @@ static UINT64 stub_NtCreateKey(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4);
 
 /* ---- stub implementations ---- */
 static UINT64 stub_NtClose(UINT64 h, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtClose, h, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtClose, h, a2, a3, a4, 0);
 }
 static UINT64 stub_NtAllocateVirtualMemory(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtAllocateVirtualMemory, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtAllocateVirtualMemory, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtFreeVirtualMemory(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtFreeVirtualMemory, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtFreeVirtualMemory, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtQuerySystemInformation(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtQuerySystemInformation, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtQuerySystemInformation, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtQueryInformationProcess(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtQueryInformationProcess, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtQueryInformationProcess, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtTerminateProcess(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtTerminateProcess, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtTerminateProcess, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtYieldExecution(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtYieldExecution, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtYieldExecution, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtDelayExecution(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtDelayExecution, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtDelayExecution, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtCreateFile(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(0x0055 /* NtCreateFile */, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(0x0055 /* NtCreateFile */, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtReadFile(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtReadFile, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtReadFile, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtWriteFile(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtWriteFile, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtWriteFile, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtOpenKey(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtOpenKey, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtOpenKey, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtQueryValueKey(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtQueryValueKey, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtQueryValueKey, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtSetValueKey(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtSetValueKey, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtSetValueKey, a1, a2, a3, a4, 0);
 }
 static UINT64 stub_NtCreateKey(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) {
-    return (UINT64)KiSystemCallDispatch(SYSCALL_NtCreateKey, a1, a2, a3, a4);
+    return (UINT64)KiSystemCallDispatch(SYSCALL_NtCreateKey, a1, a2, a3, a4, 0);
 }
 
 /* RTL stubs — provided by kernel directly */

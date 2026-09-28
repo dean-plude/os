@@ -1,0 +1,99 @@
+/* msvcrt: setjmp/longjmp, signal, locale */
+#define NOVA_BUILD_MSVCRT
+#include <setjmp.h>
+#include <signal.h>
+#include <locale.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+/* jmp_buf: rbx rbp rdi rsi rsp r12 r13 r14 r15 rip, then xmm6-15 at +80 */
+__asm__(".globl _setjmp_nova\n"
+        ".section .text$setjmp,\"xr\"\n"
+        "_setjmp_nova:\n\t"
+        "movq %rbx, 0(%rcx)\n\t"
+        "movq %rbp, 8(%rcx)\n\t"
+        "movq %rdi, 16(%rcx)\n\t"
+        "movq %rsi, 24(%rcx)\n\t"
+        "leaq 8(%rsp), %rdx\n\t"
+        "movq %rdx, 32(%rcx)\n\t"
+        "movq %r12, 40(%rcx)\n\t"
+        "movq %r13, 48(%rcx)\n\t"
+        "movq %r14, 56(%rcx)\n\t"
+        "movq %r15, 64(%rcx)\n\t"
+        "movq (%rsp), %rdx\n\t"
+        "movq %rdx, 72(%rcx)\n\t"
+        "movdqu %xmm6, 80(%rcx)\n\t"
+        "movdqu %xmm7, 96(%rcx)\n\t"
+        "movdqu %xmm8, 112(%rcx)\n\t"
+        "movdqu %xmm9, 128(%rcx)\n\t"
+        "movdqu %xmm10, 144(%rcx)\n\t"
+        "movdqu %xmm11, 160(%rcx)\n\t"
+        "movdqu %xmm12, 176(%rcx)\n\t"
+        "movdqu %xmm13, 192(%rcx)\n\t"
+        "movdqu %xmm14, 208(%rcx)\n\t"
+        "movdqu %xmm15, 224(%rcx)\n\t"
+        "xorl %eax, %eax\n\t"
+        "retq\n\t"
+        ".globl longjmp\n"
+        "longjmp:\n\t"
+        "movl %edx, %eax\n\t"
+        "testl %eax, %eax\n\t"
+        "jnz 1f\n\t"
+        "incl %eax\n"
+        "1:\n\t"
+        "movq 0(%rcx), %rbx\n\t"
+        "movq 8(%rcx), %rbp\n\t"
+        "movq 16(%rcx), %rdi\n\t"
+        "movq 24(%rcx), %rsi\n\t"
+        "movq 40(%rcx), %r12\n\t"
+        "movq 48(%rcx), %r13\n\t"
+        "movq 56(%rcx), %r14\n\t"
+        "movq 64(%rcx), %r15\n\t"
+        "movdqu 80(%rcx), %xmm6\n\t"
+        "movdqu 96(%rcx), %xmm7\n\t"
+        "movdqu 112(%rcx), %xmm8\n\t"
+        "movdqu 128(%rcx), %xmm9\n\t"
+        "movdqu 144(%rcx), %xmm10\n\t"
+        "movdqu 160(%rcx), %xmm11\n\t"
+        "movdqu 176(%rcx), %xmm12\n\t"
+        "movdqu 192(%rcx), %xmm13\n\t"
+        "movdqu 208(%rcx), %xmm14\n\t"
+        "movdqu 224(%rcx), %xmm15\n\t"
+        "movq 32(%rcx), %rsp\n\t"
+        "jmpq *72(%rcx)\n\t"
+        ".section .drectve,\"yn\"\n\t"
+        ".ascii \" /EXPORT:_setjmp_nova /EXPORT:longjmp\"\n\t"
+        ".text\n");
+
+static __sighandler_t g_sig[32];
+
+__sighandler_t signal(int sig, __sighandler_t fn)
+{
+    if (sig <= 0 || sig >= 32) return SIG_ERR;
+    __sighandler_t old = g_sig[sig];
+    g_sig[sig] = fn;
+    return old;
+}
+
+int raise(int sig)
+{
+    if (sig <= 0 || sig >= 32) return -1;
+    __sighandler_t h = g_sig[sig];
+    if (h == SIG_IGN) return 0;
+    if (h && h != SIG_DFL) { g_sig[sig] = SIG_DFL; h(sig); return 0; }
+    if (sig == SIGABRT) abort();
+    exit(3);
+}
+
+char *setlocale(int category, const char *locale)
+{
+    (void)category;
+    if (!locale || !*locale || (locale[0] == 'C' && !locale[1])) return "C";
+    return 0;
+}
+
+struct lconv *localeconv(void)
+{
+    static struct lconv lc = { ".", "", "" };
+    return &lc;
+}

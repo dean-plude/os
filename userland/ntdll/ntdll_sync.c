@@ -1,0 +1,215 @@
+#define NOVA_BUILD_NTDLL
+/*
+ * ntdll_sync.c — critical sections, SRW locks, condition variables
+ *
+ * Critical sections use the classic NT algorithm: an interlocked LockCount
+ * for the fast, uncontended path and a lazily created auto-reset event to
+ * park a contending thread.  SRW locks are a compact reader/writer word.
+ * Condition variables use a signal counter (spurious wakeups are allowed
+ * by the contract, so callers re-check their predicate).
+ */
+
+#include <winternl.h>
+#include <winnt.h>
+
+static ULONG cur_tid(void) { return *(ULONG *)(NtCurrentTebBytes() + TEB_CLIENT_ID + 8); }
+static void  yield(void)   { NtYieldExecution(); }
+
+/* -----------------------------------------------------------------------
+ * Critical sections
+ * ----------------------------------------------------------------------- */
+NTSTATUS NTAPI RtlInitializeCriticalSectionAndSpinCount(PRTL_CRITICAL_SECTION cs, ULONG spin)
+{
+    cs->DebugInfo = 0;
+    cs->LockCount = -1;
+    cs->RecursionCount = 0;
+    cs->OwningThread = 0;
+    cs->LockSemaphore = 0;
+    cs->SpinCount = spin;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NTAPI RtlInitializeCriticalSection(PRTL_CRITICAL_SECTION cs)
+{
+    return RtlInitializeCriticalSectionAndSpinCount(cs, 0);
+}
+
+static HANDLE cs_event(PRTL_CRITICAL_SECTION cs)
+{
+    HANDLE e = cs->LockSemaphore;
+    if (e) return e;
+    HANDLE ne = 0;
+    if (!NT_SUCCESS(NtCreateEvent(&ne, 0, 0, SynchronizationEvent, FALSE))) return 0;
+    HANDLE old = InterlockedCompareExchangePointer(&cs->LockSemaphore, ne, 0);
+    if (old) { NtClose(ne); return old; }
+    return ne;
+}
+
+NTSTATUS NTAPI RtlEnterCriticalSection(PRTL_CRITICAL_SECTION cs)
+{
+    ULONG tid = cur_tid();
+    if ((ULONG)(ULONG_PTR)cs->OwningThread == tid) { cs->RecursionCount++; return STATUS_SUCCESS; }
+    if (InterlockedIncrement(&cs->LockCount) == 0) {
+        cs->OwningThread = (HANDLE)(ULONG_PTR)tid;
+        cs->RecursionCount = 1;
+        return STATUS_SUCCESS;
+    }
+    /* Contended: spin briefly, then park on the event. */
+    for (ULONG_PTR i = 0; i < cs->SpinCount; i++) {
+        if (cs->OwningThread == 0 && InterlockedCompareExchange(&cs->LockCount, 0, -1) < 0) {
+            /* raced to free — unlikely with our increment; fall through to wait */
+        }
+        YieldProcessor();
+    }
+    NtWaitForSingleObject(cs_event(cs), FALSE, 0);
+    cs->OwningThread = (HANDLE)(ULONG_PTR)tid;        /* we were handed ownership */
+    cs->RecursionCount = 1;
+    return STATUS_SUCCESS;
+}
+
+BOOLEAN NTAPI RtlTryEnterCriticalSection(PRTL_CRITICAL_SECTION cs)
+{
+    ULONG tid = cur_tid();
+    if ((ULONG)(ULONG_PTR)cs->OwningThread == tid) { cs->RecursionCount++; return TRUE; }
+    if (InterlockedCompareExchange(&cs->LockCount, 0, -1) == -1) {
+        cs->OwningThread = (HANDLE)(ULONG_PTR)tid;
+        cs->RecursionCount = 1;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+NTSTATUS NTAPI RtlLeaveCriticalSection(PRTL_CRITICAL_SECTION cs)
+{
+    if (--cs->RecursionCount > 0) return STATUS_SUCCESS;
+    cs->OwningThread = 0;
+    if (InterlockedDecrement(&cs->LockCount) >= 0) {         /* waiters remain */
+        HANDLE e = cs_event(cs);
+        if (e) NtSetEvent(e, 0);
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NTAPI RtlDeleteCriticalSection(PRTL_CRITICAL_SECTION cs)
+{
+    if (cs->LockSemaphore) NtClose(cs->LockSemaphore);
+    cs->LockSemaphore = 0;
+    cs->LockCount = -1;
+    return STATUS_SUCCESS;
+}
+
+/* -----------------------------------------------------------------------
+ * Slim reader/writer locks (bit 0: writer held; bits 1..: reader count)
+ * ----------------------------------------------------------------------- */
+static volatile LONG64 *srw(PRTL_SRWLOCK l) { return (volatile LONG64 *)&l->Ptr; }
+
+VOID NTAPI RtlInitializeSRWLock(PRTL_SRWLOCK l) { l->Ptr = 0; }
+
+VOID NTAPI RtlAcquireSRWLockExclusive(PRTL_SRWLOCK l)
+{
+    while (InterlockedCompareExchange64(srw(l), 1, 0) != 0) yield();
+}
+
+BOOLEAN NTAPI RtlTryAcquireSRWLockExclusive(PRTL_SRWLOCK l)
+{
+    return InterlockedCompareExchange64(srw(l), 1, 0) == 0;
+}
+
+VOID NTAPI RtlReleaseSRWLockExclusive(PRTL_SRWLOCK l)
+{
+    InterlockedExchange64(srw(l), 0);
+}
+
+VOID NTAPI RtlAcquireSRWLockShared(PRTL_SRWLOCK l)
+{
+    for (;;) {
+        LONG64 v = *srw(l);
+        if (!(v & 1) && InterlockedCompareExchange64(srw(l), v + 2, v) == v) return;
+        yield();
+    }
+}
+
+BOOLEAN NTAPI RtlTryAcquireSRWLockShared(PRTL_SRWLOCK l)
+{
+    LONG64 v = *srw(l);
+    return !(v & 1) && InterlockedCompareExchange64(srw(l), v + 2, v) == v;
+}
+
+VOID NTAPI RtlReleaseSRWLockShared(PRTL_SRWLOCK l)
+{
+    InterlockedExchangeAdd64(srw(l), -2);
+}
+
+/* -----------------------------------------------------------------------
+ * Condition variables (signal counter; spurious wakeups permitted)
+ * ----------------------------------------------------------------------- */
+VOID NTAPI RtlInitializeConditionVariable(PRTL_CONDITION_VARIABLE cv) { cv->Ptr = 0; }
+VOID NTAPI RtlWakeConditionVariable(PRTL_CONDITION_VARIABLE cv)    { InterlockedIncrement64((LONG64 *)&cv->Ptr); }
+VOID NTAPI RtlWakeAllConditionVariable(PRTL_CONDITION_VARIABLE cv) { InterlockedIncrement64((LONG64 *)&cv->Ptr); }
+
+static NTSTATUS cv_sleep(PRTL_CONDITION_VARIABLE cv, PLARGE_INTEGER timeout,
+                         void (*unlock)(void *), void (*lock)(void *), void *obj)
+{
+    LONG64 seen = *(volatile LONG64 *)&cv->Ptr;
+    ULONGLONG deadline = 0;
+    if (timeout) { LARGE_INTEGER c; NtQueryPerformanceCounter(&c, 0); deadline = 1; (void)c; }
+    unlock(obj);
+    NTSTATUS s = STATUS_SUCCESS;
+    ULONG spins = 0;
+    while (*(volatile LONG64 *)&cv->Ptr == seen) {
+        if (timeout && timeout->QuadPart == 0) { s = STATUS_TIMEOUT; break; }
+        if (deadline && ++spins > 5000000) { s = STATUS_TIMEOUT; break; }
+        yield();
+    }
+    lock(obj);
+    return s;
+}
+
+static void cs_unlock(void *o) { RtlLeaveCriticalSection(o); }
+static void cs_lock(void *o)   { RtlEnterCriticalSection(o); }
+static void srw_ex_unlock(void *o) { RtlReleaseSRWLockExclusive(o); }
+static void srw_ex_lock(void *o)   { RtlAcquireSRWLockExclusive(o); }
+static void srw_sh_unlock(void *o) { RtlReleaseSRWLockShared(o); }
+static void srw_sh_lock(void *o)   { RtlAcquireSRWLockShared(o); }
+
+NTSTATUS NTAPI RtlSleepConditionVariableCS(PRTL_CONDITION_VARIABLE cv, PRTL_CRITICAL_SECTION cs, PLARGE_INTEGER t)
+{
+    return cv_sleep(cv, t, cs_unlock, cs_lock, cs);
+}
+
+NTSTATUS NTAPI RtlSleepConditionVariableSRW(PRTL_CONDITION_VARIABLE cv, PRTL_SRWLOCK l, PLARGE_INTEGER t, ULONG flags)
+{
+    if (flags & CONDITION_VARIABLE_LOCKMODE_SHARED)
+        return cv_sleep(cv, t, srw_sh_unlock, srw_sh_lock, l);
+    return cv_sleep(cv, t, srw_ex_unlock, srw_ex_lock, l);
+}
+
+/* -----------------------------------------------------------------------
+ * One-time initialization (synchronous)
+ * ----------------------------------------------------------------------- */
+VOID NTAPI RtlRunOnceInitialize(PRTL_RUN_ONCE once) { once->Ptr = 0; }
+
+#define RUNONCE_RUNNING ((PVOID)1)
+#define RUNONCE_DONE    ((PVOID)2)
+
+NTSTATUS NTAPI RtlRunOnceBeginInitialize(PRTL_RUN_ONCE once, ULONG flags, PVOID *ctx)
+{
+    (void)flags;
+    for (;;) {
+        PVOID v = once->Ptr;
+        if (v == RUNONCE_DONE) { if (ctx) *ctx = 0; return STATUS_SUCCESS; }   /* already done */
+        if (v == 0) {
+            if (InterlockedCompareExchangePointer(&once->Ptr, RUNONCE_RUNNING, 0) == 0)
+                return STATUS_PENDING;                 /* we run the initializer */
+        } else {
+            yield();                                   /* another thread is running it */
+        }
+    }
+}
+
+NTSTATUS NTAPI RtlRunOnceComplete(PRTL_RUN_ONCE once, ULONG flags, PVOID ctx)
+{
+    (void)ctx;
+    once->Ptr = (flags & 4 /* INIT_ONCE_INIT_FAILED */) ? 0 : RUNONCE_DONE;
+    return STATUS_SUCCESS;
+}

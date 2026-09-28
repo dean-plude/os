@@ -124,6 +124,14 @@ set(KERNEL_C_SOURCES
     net/tls_roots.c
     net/tls_platform.c
     net/http.c
+    net/sock.c
+    um/um.c
+    um/um_console.c
+    um/um_syscall.c
+    um/um_thread.c
+    um/um_exception.c
+    um/um_socket.c
+    um/um_gui.c
     ke/main.c
     ke/printf.c
     ke/scheduler.c
@@ -178,6 +186,24 @@ file(GLOB MBEDTLS_SOURCES "${MBEDTLS_DIR}/library/*.c")
 set_source_files_properties(${MBEDTLS_SOURCES} PROPERTIES COMPILE_OPTIONS
     "-w;-I${MBEDTLS_DIR}/library")
 list(APPEND KERNEL_C_SOURCES ${MBEDTLS_SOURCES})
+
+# The Windows userland (userland/, tools/build_userland.py): system DLLs and
+# programs built with clang for x86_64-pc-windows-msvc, embedded as data and
+# installed on drive C: at boot.
+file(GLOB_RECURSE USERLAND_DEPS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.h")
+set(USERLAND_C "${CMAKE_CURRENT_BINARY_DIR}/userland_files.c")
+add_custom_command(
+    OUTPUT  "${USERLAND_C}"
+    COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/../tools/build_userland.py"
+            "${CMAKE_CURRENT_BINARY_DIR}/userland" "${USERLAND_C}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ke/syscall.h"
+    DEPENDS ${USERLAND_DEPS}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tools/build_userland.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ke/syscall.h"
+    COMMENT "Building the Windows userland (ntdll, kernel32, msvcrt, programs)")
+list(APPEND KERNEL_C_SOURCES "${USERLAND_C}")
 
 # C object library with kernel flags
 add_library(kernel_objects OBJECT ${KERNEL_C_SOURCES})

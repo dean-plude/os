@@ -12,6 +12,7 @@
  * real artwork.
  */
 
+#include "../um/um.h"
 #include "desktop.h"
 #include "wm.h"
 #include "input.h"
@@ -719,6 +720,8 @@ void DesktopRun(void *arg)
     int    last_px = -100, last_py = -100;
 
     for (;;) {
+        /* Program threads take this lock around file-system access */
+        DesktopLock();
         ps2_poll();
 
         InputEvent ev;
@@ -750,6 +753,7 @@ void DesktopRun(void *arg)
         }
 
         WmTick();
+        UmPoll();                               /* reclaim exited programs */
 
         rtc_read(&t);
         if (t.minute != last_min) {
@@ -762,6 +766,7 @@ void DesktopRun(void *arg)
             WmComposite();
             WmCursorReshow();
         }
+        DesktopUnlock();
         sched_yield();
     }
 }

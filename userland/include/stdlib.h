@@ -1,0 +1,48 @@
+#pragma once
+#include <_nova.h>
+#include <stddef.h>
+_NOVA_BEGIN
+#define EXIT_SUCCESS 0
+#define EXIT_FAILURE 1
+#define RAND_MAX     0x7FFF
+#define MB_CUR_MAX   4
+typedef struct { int quot, rem; } div_t;
+typedef struct { long quot, rem; } ldiv_t;
+_CRTIMP void  *malloc(size_t n);
+_CRTIMP void  *calloc(size_t n, size_t size);
+_CRTIMP void  *realloc(void *p, size_t n);
+_CRTIMP void   free(void *p);
+_CRTIMP size_t _msize(void *p);
+_CRTIMP int    atoi(const char *s);
+_CRTIMP long   atol(const char *s);
+_CRTIMP long long atoll(const char *s);
+_CRTIMP double atof(const char *s);
+_CRTIMP long   strtol(const char *s, char **end, int base);
+_CRTIMP unsigned long strtoul(const char *s, char **end, int base);
+_CRTIMP long long strtoll(const char *s, char **end, int base);
+_CRTIMP unsigned long long strtoull(const char *s, char **end, int base);
+_CRTIMP double strtod(const char *s, char **end);
+_CRTIMP float  strtof(const char *s, char **end);
+_CRTIMP int    abs(int x);
+_CRTIMP long   labs(long x);
+_CRTIMP long long llabs(long long x);
+_CRTIMP div_t  div(int a, int b);
+_CRTIMP ldiv_t ldiv(long a, long b);
+_CRTIMP void   qsort(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *));
+_CRTIMP void  *bsearch(const void *key, const void *base, size_t n, size_t size,
+                       int (*cmp)(const void *, const void *));
+_CRTIMP int    rand(void);
+_CRTIMP void   srand(unsigned seed);
+_CRTIMP __declspec(noreturn) void exit(int code);
+_CRTIMP __declspec(noreturn) void _exit(int code);
+_CRTIMP __declspec(noreturn) void abort(void);
+_CRTIMP int    atexit(void (*fn)(void));
+_CRTIMP char  *getenv(const char *name);
+_CRTIMP int    system(const char *cmd);
+_CRTIMP char  *_itoa(int v, char *buf, int radix);
+_CRTIMP char  *_ltoa(long v, char *buf, int radix);
+_CRTIMP char  *_ultoa(unsigned long v, char *buf, int radix);
+#define itoa _itoa
+#define min(a, b) (((a) < (b)) ? (a) : (b))
+#define max(a, b) (((a) > (b)) ? (a) : (b))
+_NOVA_END

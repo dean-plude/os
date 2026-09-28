@@ -6,6 +6,7 @@
  */
 
 #include "idt.h"
+#include "../../um/um.h"
 #include "gdt.h"
 #include "cpu.h"
 #include "apic.h"
@@ -141,8 +142,10 @@ static void dump_frame(InterruptFrame *f)
  * in ring 3, so the current thread is a user ETHREAD.
  * ----------------------------------------------------------------------- */
 static void __attribute__((noreturn))
-terminate_faulting_user_thread(NTSTATUS status)
+terminate_faulting_user_thread(NTSTATUS status, InterruptFrame *f, uint64_t addr)
 {
+    if (sched_current()->um)                  /* a kernel/um program: end it */
+        UmFault(status, f->rip, addr);
     PEPROCESS proc = PsGetCurrentProcess();
     if (proc) PsTerminateProcess(proc, status);
 
@@ -187,6 +190,9 @@ static void handle_page_fault(InterruptFrame *f)
     bool reserved  = !!(f->error_code & 8);
     bool ifetch    = !!(f->error_code & 16);
 
+    if (user && sched_current()->um)          /* program bug: no kernel dump */
+        terminate_faulting_user_thread(STATUS_ACCESS_VIOLATION, f, cr2);
+
     kprintf("\n=== PAGE FAULT ===\n");
     kprintf("  Fault address (CR2): 0x%016lx\n", cr2);
     kprintf("  Access: %s %s %s%s%s\n",
@@ -206,18 +212,23 @@ static void handle_page_fault(InterruptFrame *f)
     }
 
     /* TODO: deliver EXCEPTION_ACCESS_VIOLATION to a user SEH handler */
-    terminate_faulting_user_thread(STATUS_ACCESS_VIOLATION);
+    terminate_faulting_user_thread(STATUS_ACCESS_VIOLATION, f, cr2);
 }
 
 /* -----------------------------------------------------------------------
  * interrupt_dispatch — called from isr_common in isr_stubs.asm
  * ----------------------------------------------------------------------- */
-void interrupt_dispatch(InterruptFrame *frame)
+static void dispatch(InterruptFrame *frame)
 {
     uint64_t vector = frame->vector;
 
     /* ---- CPU Exceptions (0–31) ---- */
     if (vector < 32) {
+        /* A program's exception goes to its own handlers (SEH) */
+        if ((frame->cs & 3) && sched_current()->um && vector != 2 && vector != 8 && vector != 18) {
+            UmUserException(frame, vector == EXC_PAGE_FAULT ? read_cr2() : 0);
+            return;
+        }
         const char *name = (vector < 22 && exception_names[vector])
                            ? exception_names[vector]
                            : "Unknown Exception";
@@ -234,6 +245,9 @@ void interrupt_dispatch(InterruptFrame *frame)
             return;
         }
 
+        if ((frame->cs & 3) && sched_current()->um)
+            terminate_faulting_user_thread(exception_status(vector), frame, 0);
+
         kprintf("\n=== EXCEPTION #%lu: %s ===\n", vector, name);
         kprintf("  Error code: 0x%lx\n", frame->error_code);
         dump_frame(frame);
@@ -249,7 +263,7 @@ void interrupt_dispatch(InterruptFrame *frame)
             cpu_halt_forever();
         }
         /* TODO: dispatch to a user SEH handler */
-        terminate_faulting_user_thread(exception_status(vector));
+        terminate_faulting_user_thread(exception_status(vector), frame, 0);
     }
 
     /* ---- Spurious APIC interrupt ---- */
@@ -280,7 +294,8 @@ void interrupt_dispatch(InterruptFrame *frame)
             frame->rcx,
             frame->rdx,
             frame->r8,
-            frame->r9);
+            frame->r9,
+            frame->rsp);
         return;
     }
 
@@ -292,4 +307,14 @@ void interrupt_dispatch(InterruptFrame *frame)
     }
 
     kprintf("[IRQ] Unhandled vector %lu\n", vector);
+}
+
+/* -----------------------------------------------------------------------
+ * interrupt_dispatch — called from isr_common in isr_stubs.asm
+ * ----------------------------------------------------------------------- */
+void interrupt_dispatch(InterruptFrame *frame)
+{
+    dispatch(frame);
+    /* Returning to a user program that has been killed meanwhile? */
+    if ((frame->cs & 3) && sched_current()->um) UmReturnToUser();
 }

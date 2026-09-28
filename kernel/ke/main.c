@@ -67,6 +67,7 @@
 #include "../fs/ramfs.h"
 #include "../hal/pci.h"
 #include "../net/net.h"
+#include "../um/um.h"
 #include "kpcr.h"
 #include "../ps/csrss.h"
 #include "../gdi/gdi.h"
@@ -358,6 +359,9 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     PciInitialize();
     if (!NetInitialize())
         kprintf("[NET] No network (no supported adapter)\n");
+
+    /* Windows programs: SSE for user code, NT services, loader */
+    UmInit();
 
     if (GdiInitialize()) {
         WmInitialize();

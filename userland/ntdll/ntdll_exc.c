@@ -1,0 +1,474 @@
+#define NOVA_BUILD_NTDLL
+/*
+ * ntdll_exc.c — structured exception handling in user mode
+ *
+ * The kernel hands an exception to KiUserExceptionDispatcher with a
+ * CONTEXT and an EXCEPTION_RECORD on the stack.  RtlDispatchException runs
+ * the vectored handlers and then walks the stack with the x64 unwinder
+ * (RtlLookupFunctionEntry + RtlVirtualUnwind over the .pdata/.xdata the
+ * compiler emits), calling each frame's language handler
+ * (__C_specific_handler for __try/__except/__finally).  A handler that
+ * resolves the exception resumes through NtContinue; nothing handling it
+ * goes back to the kernel as a second-chance NtRaiseException, which ends
+ * the process with a crash report.
+ */
+
+#include <winternl.h>
+#include <winnt.h>
+
+void *memcpy(void *d, const void *s, size_t n);
+void *memset(void *d, int c, size_t n);
+
+/* -----------------------------------------------------------------------
+ * Vectored / top-level handlers
+ * ----------------------------------------------------------------------- */
+typedef struct VEH { struct VEH *next; PVECTORED_EXCEPTION_HANDLER fn; } VEH;
+static VEH *g_veh, *g_vch;
+static volatile long g_veh_lock;
+static PTOP_LEVEL_EXCEPTION_FILTER g_top_filter;
+
+static void vlock(void)   { while (__atomic_exchange_n(&g_veh_lock, 1, __ATOMIC_ACQUIRE)) __builtin_ia32_pause(); }
+static void vunlock(void) { __atomic_store_n(&g_veh_lock, 0, __ATOMIC_RELEASE); }
+
+static PVOID veh_add(VEH **list, ULONG first, PVECTORED_EXCEPTION_HANDLER fn)
+{
+    VEH *v = RtlAllocateHeap(RtlGetProcessHeap(), 0, sizeof(VEH));
+    if (!v) return 0;
+    v->fn = fn;
+    vlock();
+    if (first || !*list) { v->next = *list; *list = v; }
+    else { VEH *t = *list; while (t->next) t = t->next; t->next = 0; v->next = 0; t->next = v; }
+    vunlock();
+    return v;
+}
+
+static ULONG veh_remove(VEH **list, PVOID h)
+{
+    vlock();
+    for (VEH **pp = list; *pp; pp = &(*pp)->next)
+        if (*pp == h) { VEH *v = *pp; *pp = v->next; vunlock(); RtlFreeHeap(RtlGetProcessHeap(), 0, v); return 1; }
+    vunlock();
+    return 0;
+}
+
+PVOID NTAPI RtlAddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER h) { return veh_add(&g_veh, first, h); }
+ULONG NTAPI RtlRemoveVectoredExceptionHandler(PVOID h) { return veh_remove(&g_veh, h); }
+PVOID NTAPI RtlAddVectoredContinueHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER h) { return veh_add(&g_vch, first, h); }
+ULONG NTAPI RtlRemoveVectoredContinueHandler(PVOID h) { return veh_remove(&g_vch, h); }
+VOID  NTAPI RtlSetUnhandledExceptionFilter(PTOP_LEVEL_EXCEPTION_FILTER f) { g_top_filter = f; }
+
+static LONG run_vectored(VEH *list, PEXCEPTION_POINTERS info)
+{
+    for (VEH *v = list; v; v = v->next) {
+        LONG r = v->fn(info);
+        if (r == EXCEPTION_CONTINUE_EXECUTION) return r;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* Called by the loader's top-level __except filter (last resort) */
+LONG nova_top_level_filter(PEXCEPTION_POINTERS info)
+{
+    if (g_top_filter) return g_top_filter(info);
+    return EXCEPTION_EXECUTE_HANDLER;                /* end the process */
+}
+
+/* -----------------------------------------------------------------------
+ * x64 unwind data
+ * ----------------------------------------------------------------------- */
+typedef union { struct { BYTE CodeOffset, UnwindOp_OpInfo; }; USHORT FrameOffset; } UNWIND_CODE;
+typedef struct {
+    BYTE VersionFlags;              /* Version:3, Flags:5 */
+    BYTE SizeOfProlog;
+    BYTE CountOfCodes;
+    BYTE FrameRegOff;               /* FrameRegister:4, FrameOffset:4 */
+    UNWIND_CODE UnwindCode[1];
+} UNWIND_INFO;
+
+enum { UWOP_PUSH_NONVOL, UWOP_ALLOC_LARGE, UWOP_ALLOC_SMALL, UWOP_SET_FPREG,
+       UWOP_SAVE_NONVOL, UWOP_SAVE_NONVOL_FAR, UWOP_EPILOG, UWOP_SPARE,
+       UWOP_SAVE_XMM128, UWOP_SAVE_XMM128_FAR, UWOP_PUSH_MACHFRAME };
+
+/* &CONTEXT.Rax as an array indexed the way unwind codes number registers */
+static DWORD64 *int_reg(CONTEXT *c, int i) { return &c->Rax + i; }
+static M128A   *xmm_reg(CONTEXT *c, int i) { return &c->Xmm0 + i; }
+
+static IMAGE_NT_HEADERS *nt_of(void *base)
+{
+    IMAGE_DOS_HEADER *dos = base;
+    if (!base || dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)base + dos->e_lfanew);
+    return nt->Signature == IMAGE_NT_SIGNATURE ? nt : 0;
+}
+
+PRUNTIME_FUNCTION NTAPI RtlLookupFunctionEntry(DWORD64 pc, PDWORD64 base_out, PUNWIND_HISTORY_TABLE hist)
+{
+    (void)hist;
+    PLDR_DATA_TABLE_ENTRY e = LdrNovaFindEntry((PVOID)pc);
+    if (!e) return 0;
+    BYTE *base = e->DllBase;
+    if (base_out) *base_out = (DWORD64)base;
+    IMAGE_NT_HEADERS *nt = nt_of(base);
+    if (!nt || nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXCEPTION) return 0;
+    IMAGE_DATA_DIRECTORY *d = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    if (!d->VirtualAddress || !d->Size) return 0;
+    PRUNTIME_FUNCTION fn = (PRUNTIME_FUNCTION)(base + d->VirtualAddress);
+    DWORD rva = (DWORD)(pc - (DWORD64)base);
+    int lo = 0, hi = (int)(d->Size / sizeof(RUNTIME_FUNCTION)) - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (rva < fn[mid].BeginAddress) hi = mid - 1;
+        else if (rva >= fn[mid].EndAddress) lo = mid + 1;
+        else {
+            PRUNTIME_FUNCTION r = &fn[mid];
+            while (r->UnwindData & 1) {              /* chained info: follow to the primary */
+                r = (PRUNTIME_FUNCTION)(base + (r->UnwindData & ~1u));
+            }
+            return &fn[mid];
+        }
+    }
+    return 0;
+}
+
+/* Apply the unwind codes for the instructions already executed at @pc,
+ * updating @ctx to the caller's register state.  Returns the language
+ * handler (if any) and its data. */
+PEXCEPTION_ROUTINE NTAPI RtlVirtualUnwind(ULONG type, DWORD64 base, DWORD64 pc, PRUNTIME_FUNCTION f,
+                                          PCONTEXT ctx, PVOID *handler_data, PDWORD64 frame_out,
+                                          PKNONVOLATILE_CONTEXT_POINTERS ptrs)
+{
+    (void)type; (void)ptrs;
+    while (f->UnwindData & 1) f = (PRUNTIME_FUNCTION)(base + (f->UnwindData & ~1u));   /* chain */
+    UNWIND_INFO *ui = (UNWIND_INFO *)(base + f->UnwindData);
+    DWORD off = (DWORD)(pc - (base + f->BeginAddress));
+    DWORD64 frame_base = ctx->Rsp;
+    BYTE framereg = ui->FrameRegOff & 0xF;
+    if (framereg) frame_base = *int_reg(ctx, framereg) - (ui->FrameRegOff >> 4) * 16;
+
+    int i = 0, n = ui->CountOfCodes;
+    /* Only apply codes for prologue instructions that have executed. */
+    while (i < n) {
+        UNWIND_CODE *u = &ui->UnwindCode[i];
+        int op = u->UnwindOp_OpInfo & 0xF, info = u->UnwindOp_OpInfo >> 4;
+        int slots = 1;
+        int applied = u->CodeOffset <= off;
+        switch (op) {
+        case UWOP_PUSH_NONVOL:
+            if (applied) { *int_reg(ctx, info) = *(DWORD64 *)ctx->Rsp; ctx->Rsp += 8; }
+            break;
+        case UWOP_ALLOC_LARGE:
+            if (info == 0) { slots = 2; if (applied) ctx->Rsp += ui->UnwindCode[i + 1].FrameOffset * 8ULL; }
+            else { slots = 3; if (applied) ctx->Rsp += ui->UnwindCode[i + 1].FrameOffset | ((DWORD)ui->UnwindCode[i + 2].FrameOffset << 16); }
+            break;
+        case UWOP_ALLOC_SMALL:
+            if (applied) ctx->Rsp += info * 8ULL + 8;
+            break;
+        case UWOP_SET_FPREG:
+            if (applied) ctx->Rsp = frame_base;
+            break;
+        case UWOP_SAVE_NONVOL:
+            slots = 2;
+            if (applied) *int_reg(ctx, info) = *(DWORD64 *)(frame_base + ui->UnwindCode[i + 1].FrameOffset * 8ULL);
+            break;
+        case UWOP_SAVE_NONVOL_FAR:
+            slots = 3;
+            if (applied) { DWORD o = ui->UnwindCode[i + 1].FrameOffset | ((DWORD)ui->UnwindCode[i + 2].FrameOffset << 16);
+                           *int_reg(ctx, info) = *(DWORD64 *)(frame_base + o); }
+            break;
+        case UWOP_SAVE_XMM128:
+            slots = 2;
+            if (applied) *xmm_reg(ctx, info) = *(M128A *)(frame_base + ui->UnwindCode[i + 1].FrameOffset * 16ULL);
+            break;
+        case UWOP_SAVE_XMM128_FAR:
+            slots = 3;
+            if (applied) { DWORD o = ui->UnwindCode[i + 1].FrameOffset | ((DWORD)ui->UnwindCode[i + 2].FrameOffset << 16);
+                           *xmm_reg(ctx, info) = *(M128A *)(frame_base + o); }
+            break;
+        case UWOP_PUSH_MACHFRAME:
+            if (applied) {
+                DWORD64 sp = ctx->Rsp + (info ? 8 : 0);
+                ctx->Rip = *(DWORD64 *)(sp + 0);
+                ctx->Rsp = *(DWORD64 *)(sp + 24);
+            }
+            break;
+        default: break;
+        }
+        i += slots;
+    }
+    if (frame_out) *frame_out = frame_base;
+    /* Caller's RIP is at [RSP]; pop it. */
+    ctx->Rip = *(DWORD64 *)ctx->Rsp;
+    ctx->Rsp += 8;
+
+    BYTE flags = ui->VersionFlags >> 3;
+    if ((flags & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER))) {
+        DWORD *p = (DWORD *)&ui->UnwindCode[(n + 1) & ~1];    /* codes padded to even count */
+        DWORD handler_rva = *p;
+        if (handler_data) *handler_data = p + 1;
+        return (PEXCEPTION_ROUTINE)(base + handler_rva);
+    }
+    if (handler_data) *handler_data = 0;
+    return 0;
+}
+
+/* -----------------------------------------------------------------------
+ * Context capture / restore (for RtlUnwindEx and NtContinue)
+ * ----------------------------------------------------------------------- */
+/* RtlCaptureContext(RCX = CONTEXT*): save this call site's register state */
+__asm__(
+    ".globl RtlCaptureContext\n"
+    ".section .text$RtlCaptureContext,\"xr\"\n"
+    "RtlCaptureContext:\n\t"
+    "movl $0x10001F, 0x30(%rcx)\n\t"
+    "movq %rax, 0x78(%rcx)\n\t" "movq %rcx, 0x80(%rcx)\n\t" "movq %rdx, 0x88(%rcx)\n\t"
+    "movq %rbx, 0x90(%rcx)\n\t"
+    "leaq 8(%rsp), %rax\n\t" "movq %rax, 0x98(%rcx)\n\t"
+    "movq %rbp, 0xA0(%rcx)\n\t" "movq %rsi, 0xA8(%rcx)\n\t" "movq %rdi, 0xB0(%rcx)\n\t"
+    "movq %r8, 0xB8(%rcx)\n\t" "movq %r9, 0xC0(%rcx)\n\t" "movq %r10, 0xC8(%rcx)\n\t"
+    "movq %r11, 0xD0(%rcx)\n\t" "movq %r12, 0xD8(%rcx)\n\t" "movq %r13, 0xE0(%rcx)\n\t"
+    "movq %r14, 0xE8(%rcx)\n\t" "movq %r15, 0xF0(%rcx)\n\t"
+    "movq (%rsp), %rax\n\t" "movq %rax, 0xF8(%rcx)\n\t"
+    "pushfq\n\t" "popq %rax\n\t" "movl %eax, 0x44(%rcx)\n\t"
+    "movq 0x78(%rcx), %rax\n\t"
+    "stmxcsr 0x34(%rcx)\n\t"
+    "movdqa %xmm0, 0x1A0(%rcx)\n\t" "movdqa %xmm1, 0x1B0(%rcx)\n\t"
+    "movdqa %xmm2, 0x1C0(%rcx)\n\t" "movdqa %xmm3, 0x1D0(%rcx)\n\t"
+    "movdqa %xmm4, 0x1E0(%rcx)\n\t" "movdqa %xmm5, 0x1F0(%rcx)\n\t"
+    "movdqa %xmm6, 0x200(%rcx)\n\t" "movdqa %xmm7, 0x210(%rcx)\n\t"
+    "movdqa %xmm8, 0x220(%rcx)\n\t" "movdqa %xmm9, 0x230(%rcx)\n\t"
+    "movdqa %xmm10, 0x240(%rcx)\n\t" "movdqa %xmm11, 0x250(%rcx)\n\t"
+    "movdqa %xmm12, 0x260(%rcx)\n\t" "movdqa %xmm13, 0x270(%rcx)\n\t"
+    "movdqa %xmm14, 0x280(%rcx)\n\t" "movdqa %xmm15, 0x290(%rcx)\n\t"
+    "retq\n\t"
+    ".section .drectve,\"yn\"\n\t"
+    ".ascii \" /EXPORT:RtlCaptureContext\"\n\t"
+    ".text\n");
+
+VOID NTAPI RtlRestoreContext(PCONTEXT c, PEXCEPTION_RECORD rec)
+{
+    (void)rec;
+    NtContinue(c, FALSE);                            /* the kernel reloads and IRETs */
+}
+
+/* -----------------------------------------------------------------------
+ * Dispatch and unwind
+ * ----------------------------------------------------------------------- */
+static void set_handler_ctx(DISPATCHER_CONTEXT *dc, DWORD64 control_pc, DWORD64 base, PRUNTIME_FUNCTION f,
+                            PEXCEPTION_ROUTINE handler, PVOID hdata, DWORD64 frame, PCONTEXT ctx)
+{
+    dc->ControlPc = control_pc;
+    dc->ImageBase = base;
+    dc->FunctionEntry = f;
+    dc->EstablisherFrame = frame;
+    dc->ContextRecord = ctx;
+    dc->LanguageHandler = handler;
+    dc->HandlerData = hdata;
+    dc->ScopeIndex = 0;
+}
+
+BOOLEAN NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx)
+{
+    EXCEPTION_POINTERS ep = { rec, ctx };
+    if (run_vectored(g_veh, &ep) == EXCEPTION_CONTINUE_EXECUTION) return TRUE;
+
+    CONTEXT cur = *ctx;                              /* walked; the original stays for resume */
+    for (;;) {
+        DWORD64 base = 0, frame = 0;
+        PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cur.Rip, &base, 0);
+        if (!f) {
+            /* Leaf function: the return address is on top of the stack. */
+            if (cur.Rsp == 0 || (cur.Rsp & 7)) break;
+            cur.Rip = *(DWORD64 *)cur.Rsp;
+            cur.Rsp += 8;
+            if (!cur.Rip) break;
+            continue;
+        }
+        CONTEXT before = cur;
+        PVOID hdata = 0;
+        PEXCEPTION_ROUTINE handler = RtlVirtualUnwind(0, base, before.Rip, f, &cur, &hdata, &frame, 0);
+        if (handler) {
+            DISPATCHER_CONTEXT dc;
+            memset(&dc, 0, sizeof(dc));
+            set_handler_ctx(&dc, before.Rip, base, f, handler, hdata, frame, ctx);
+            EXCEPTION_DISPOSITION disp = handler(rec, (PVOID)frame, ctx, &dc);
+            if (disp == ExceptionContinueExecution) {
+                if (rec->ExceptionFlags & EXCEPTION_NONCONTINUABLE) return FALSE;
+                return TRUE;
+            }
+            if (disp == ExceptionNestedException || disp == ExceptionCollidedUnwind) {
+                /* Follow where the handler redirected us. */
+                continue;
+            }
+            /* ExceptionContinueSearch: keep walking */
+        }
+        if (cur.Rip == before.Rip && cur.Rsp == before.Rsp) break;   /* no progress */
+        if (!cur.Rip) break;
+    }
+    return FALSE;
+}
+
+/* RtlUnwindEx: run termination handlers from the current frame down to
+ * @target_frame, then continue at @target_ip. */
+VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD rec, PVOID retval,
+                       PCONTEXT ctx, PUNWIND_HISTORY_TABLE hist)
+{
+    (void)hist;
+    static EXCEPTION_RECORD local;
+    if (!rec) { memset(&local, 0, sizeof(local)); local.ExceptionCode = STATUS_UNWIND_CONSOLIDATE; rec = &local; }
+    rec->ExceptionFlags |= EXCEPTION_UNWINDING;
+    if (!target_frame) rec->ExceptionFlags |= EXCEPTION_EXIT_UNWIND;
+
+    CONTEXT cur = *ctx;
+    for (;;) {
+        DWORD64 base = 0, frame = 0;
+        PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cur.Rip, &base, 0);
+        if (!f) {
+            if (cur.Rsp == 0 || (cur.Rsp & 7)) break;
+            cur.Rip = *(DWORD64 *)cur.Rsp;
+            cur.Rsp += 8;
+            if (!cur.Rip) break;
+            continue;
+        }
+        CONTEXT before = cur;
+        PVOID hdata = 0;
+        PEXCEPTION_ROUTINE handler = RtlVirtualUnwind(1, base, before.Rip, f, &cur, &hdata, &frame, 0);
+        int is_target = target_frame && frame == (DWORD64)target_frame;
+        if (handler) {
+            DISPATCHER_CONTEXT dc;
+            memset(&dc, 0, sizeof(dc));
+            set_handler_ctx(&dc, before.Rip, base, f, handler, hdata, frame, &before);
+            DWORD saved = rec->ExceptionFlags;
+            if (is_target) rec->ExceptionFlags |= EXCEPTION_TARGET_UNWIND;
+            handler(rec, (PVOID)frame, &before, &dc);    /* runs __finally / __except cleanup */
+            rec->ExceptionFlags = saved;
+        }
+        if (is_target) {
+            /* Resume in the target frame with its own register state (the
+             * nonvolatile registers restored while unwinding the frames
+             * below it), at the handler's continuation address. */
+            before.Rip = (DWORD64)target_ip;
+            before.Rsp = (DWORD64)target_frame;
+            before.Rax = (DWORD64)retval;
+            NtContinue(&before, FALSE);
+        }
+        if (target_frame && frame > (DWORD64)target_frame) break;   /* passed it */
+        if (cur.Rip == before.Rip && cur.Rsp == before.Rsp) break;
+        if (!cur.Rip) break;
+    }
+    /* No target frame (exit unwind), or the target was never found. */
+    ctx->Rip = (DWORD64)target_ip;
+    ctx->Rsp = (DWORD64)target_frame;
+    ctx->Rax = (DWORD64)retval;
+    NtContinue(ctx, FALSE);
+}
+
+VOID NTAPI RtlUnwind(PVOID frame, PVOID target_ip, PEXCEPTION_RECORD rec, PVOID retval)
+{
+    CONTEXT c;
+    RtlCaptureContext(&c);
+    RtlUnwindEx(frame, target_ip, rec, retval, &c, 0);
+}
+
+/* -----------------------------------------------------------------------
+ * Raising exceptions
+ * ----------------------------------------------------------------------- */
+VOID NTAPI RtlRaiseException(PEXCEPTION_RECORD rec)
+{
+    CONTEXT c;
+    RtlCaptureContext(&c);
+    rec->ExceptionAddress = (PVOID)c.Rip;
+    NtRaiseException(rec, &c, TRUE);                 /* first chance: back through the dispatcher */
+}
+
+/* -----------------------------------------------------------------------
+ * The C/C++ language handler for __try/__except/__finally (clang & MSVC)
+ * ----------------------------------------------------------------------- */
+typedef LONG (__cdecl *FilterFn)(PEXCEPTION_POINTERS, PVOID frame);
+typedef void (__cdecl *FinallyFn)(BOOLEAN abnormal, PVOID frame);  /* clang x64: frame in RDX */
+
+__declspec(dllexport) EXCEPTION_DISPOSITION __C_specific_handler(
+    PEXCEPTION_RECORD rec, PVOID frame, PCONTEXT ctx, PDISPATCHER_CONTEXT dc)
+{
+    PSCOPE_TABLE_AMD64 scope = dc->HandlerData;
+    DWORD64 base = dc->ImageBase;
+    DWORD control = (DWORD)(dc->ControlPc - base);
+    BOOLEAN unwinding = (rec->ExceptionFlags & EXCEPTION_UNWIND) != 0;
+
+    for (DWORD i = dc->ScopeIndex; i < scope->Count; i++) {
+        DWORD begin = scope->ScopeRecord[i].BeginAddress;
+        DWORD end = scope->ScopeRecord[i].EndAddress;
+        DWORD handler = scope->ScopeRecord[i].HandlerAddress;
+        DWORD target = scope->ScopeRecord[i].JumpTarget;
+        if (control < begin || control >= end) continue;
+        if (!unwinding) {
+            if (target == 0) continue;              /* __finally: nothing on a first pass */
+            /* __except: run the filter (HandlerAddress==1: always EXECUTE_HANDLER) */
+            LONG r;
+            if (handler == 1) {
+                r = EXCEPTION_EXECUTE_HANDLER;
+            } else {
+                EXCEPTION_POINTERS ep = { rec, ctx };
+                FilterFn filter = (FilterFn)(base + handler);
+                r = filter(&ep, frame);
+            }
+            if (r == EXCEPTION_CONTINUE_EXECUTION) return ExceptionContinueExecution;
+            if (r == EXCEPTION_CONTINUE_SEARCH) continue;
+            /* EXCEPTION_EXECUTE_HANDLER: unwind to this __except body */
+            RtlUnwindEx(frame, (PVOID)(base + target), rec, (PVOID)(ULONG_PTR)rec->ExceptionCode, ctx, 0);
+            /* RtlUnwindEx does not return */
+            return ExceptionContinueExecution;
+        } else {
+            /* Unwinding: run __finally blocks in this scope */
+            if (target == 0 && handler) {
+                FinallyFn fin = (FinallyFn)(base + handler);
+                fin(TRUE, (PVOID)frame);
+            }
+        }
+    }
+    return ExceptionContinueSearch;
+}
+
+/* GS handler used by MSVC-compiled code with /GS security cookies */
+__declspec(dllexport) EXCEPTION_DISPOSITION __GSHandlerCheck(
+    PEXCEPTION_RECORD rec, PVOID frame, PCONTEXT ctx, PDISPATCHER_CONTEXT dc)
+{
+    (void)rec; (void)frame; (void)ctx; (void)dc;
+    return ExceptionContinueSearch;
+}
+
+/* -----------------------------------------------------------------------
+ * Kernel entry: an exception was raised in this thread
+ * ----------------------------------------------------------------------- */
+/* The kernel entered here with RCX = CONTEXT*, RDX = EXCEPTION_RECORD*
+ * (already on the user stack, below the interrupted frame). */
+void nova_dispatch_from_kernel(PCONTEXT ctx, PEXCEPTION_RECORD rec)
+{
+    if (RtlDispatchException(rec, ctx)) {
+        NtContinue(ctx, FALSE);                      /* handled or fixed up: resume */
+    } else {
+        run_vectored(g_vch, &(EXCEPTION_POINTERS){ rec, ctx });
+        NtRaiseException(rec, ctx, FALSE);           /* second chance → the kernel ends us */
+    }
+    for (;;) NtTerminateProcess(NtCurrentProcess(), rec->ExceptionCode);
+}
+
+/* KiUserExceptionDispatcher: kernel entry (RCX=CONTEXT*, RDX=EXCEPTION_RECORD*) */
+__asm__(
+    ".globl KiUserExceptionDispatcher\n"
+    ".section .text$KiUserExceptionDispatcher,\"xr\"\n"
+    "KiUserExceptionDispatcher:\n\t"
+    "movq %rcx, %rdi\n\t"
+    "movq %rdx, %rsi\n\t"
+    "andq $-16, %rsp\n\t"
+    "subq $32, %rsp\n\t"
+    "call nova_dispatch_from_kernel\n\t"
+    "int3\n\t"
+    ".section .drectve,\"yn\"\n\t"
+    ".ascii \" /EXPORT:KiUserExceptionDispatcher\"\n\t"
+    ".text\n");
+
+void RtlNovaInitExceptions(void)
+{
+    g_veh = g_vch = 0;
+    g_top_filter = 0;
+}

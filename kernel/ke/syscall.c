@@ -28,6 +28,7 @@
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "probe.h"
+#include "../um/um.h"
 
 /* -----------------------------------------------------------------------
  * MSR addresses for SYSCALL/SYSRET
@@ -46,8 +47,7 @@
  * (e.g., RtlAllocateHeap returns a user-mode VA).  NT syscall handlers cast
  * their NTSTATUS return to UINT64 (zero-extends the 32-bit code into RAX).
  * ----------------------------------------------------------------------- */
-typedef UINT64 (*SYSCALL_HANDLER)(UINT64 a1, UINT64 a2,
-                                   UINT64 a3, UINT64 a4);
+
 
 /* -----------------------------------------------------------------------
  * Individual syscall handler implementations
@@ -1089,17 +1089,38 @@ static void build_syscall_table(void)
     syscall_table[KH_GetCurrentThread]      = sys_KhGetCurrentThread;
 }
 
+/* Install @h for syscall @num; returns the previous handler. */
+SYSCALL_HANDLER SyscallSetHandler(UINT32 num, SYSCALL_HANDLER h)
+{
+    if (num >= SYSCALL_MAX) return NULL;
+    SYSCALL_HANDLER old = syscall_table[num];
+    syscall_table[num] = h;
+    return old;
+}
+
 /* -----------------------------------------------------------------------
  * KiSystemCallDispatch — C entry point from ASM stub
  * ----------------------------------------------------------------------- */
 UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
-                             UINT64 arg3, UINT64 arg4)
+                             UINT64 arg3, UINT64 arg4, UINT64 user_rsp)
 {
     if (num >= SYSCALL_MAX)
         return (UINT64)(UINT32)STATUS_INVALID_SYSTEM_SERVICE;
 
-    SYSCALL_HANDLER handler = syscall_table[num];
-    return handler(arg1, arg2, arg3, arg4);
+    Thread *t = sched_current();
+    t->user_rsp = user_rsp;                  /* arguments 5+ live on the user stack */
+
+    if (!t->um) return syscall_table[num](arg1, arg2, arg3, arg4);   /* in-kernel callers */
+    if (!UmSyscallAllowed(num))                /* legacy services expect Ps/Ob state */
+        return (UINT64)(UINT32)STATUS_INVALID_SYSTEM_SERVICE;
+
+    /* A program's service runs with interrupts on: it may be long (file
+     * I/O) or wait (console input).  We're on this thread's kernel stack. */
+    sti();
+    UINT64 r = UmSyscall(num, arg1, arg2, arg3, arg4);
+    cli();
+    UmReturnToUser();                        /* killed meanwhile? never returns */
+    return r;
 }
 
 /* -----------------------------------------------------------------------

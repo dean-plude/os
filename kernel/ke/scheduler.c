@@ -334,9 +334,26 @@ static void perform_switch(void)
             if (kpcr) kpcr->KernelRsp = (UINT64)kstack_top;
         }
 
-        /* Phase 5: Switch address space if the thread belongs to a user
-         * process with its own page table (cr3 != 0). */
-        if (next->cr3) paging_load_cr3((uintptr_t)next->cr3);
+        /* Address space: a user process's page table, or the kernel's for
+         * kernel threads (never keep running on a table that may be freed
+         * once its process exits). */
+        uint64_t cr3 = next->cr3 ? next->cr3 : paging_get_kernel_cr3();
+        if (read_cr3() != cr3) paging_load_cr3((uintptr_t)cr3);
+
+        /* User threads: SSE state and the two GS bases (TEB / KPCR) are
+         * per thread.  Kernel code never uses SSE or GS, so kernel threads
+         * need neither saved. */
+        if (prev->um) {
+            __asm__ volatile ("fxsave64 (%0)" : : "r"(prev->fpu) : "memory");
+            prev->gs_base  = rdmsr(MSR_IA32_GSBASE);
+            prev->kgs_base = rdmsr(MSR_IA32_KERNEL_GSBASE);
+        }
+        if (next->um) {
+            __asm__ volatile ("fxrstor64 (%0)" : : "r"(next->fpu) : "memory");
+            wrmsr(MSR_IA32_GSBASE, next->gs_base);
+            wrmsr(MSR_IA32_KERNEL_GSBASE, next->kgs_base);
+        }
+        if (prev->state == THREAD_DEAD) prev->off_cpu = true;   /* never runs again */
 
         sched_lock_release();
 
@@ -415,6 +432,28 @@ void sched_unblock(Thread *t)
     }
     sched_lock_release();
     irq_restore(irq);
+}
+
+/* -----------------------------------------------------------------------
+ * Thread exit and reclamation
+ * ----------------------------------------------------------------------- */
+void sched_exit_current(void)
+{
+    cli();
+    current_thread->state = THREAD_DEAD;
+    for (;;) sched_yield();
+}
+
+bool sched_thread_gone(const Thread *t)
+{
+    return t->state == THREAD_DEAD && t->off_cpu;
+}
+
+void sched_free_thread(Thread *t)
+{
+    if (!sched_thread_gone(t) || t == current_thread) return;
+    if (t->kernel_stack) kernel_free_pages(t->kernel_stack, t->stack_size / PAGE_SIZE);
+    kfree(t);
 }
 
 /* -----------------------------------------------------------------------

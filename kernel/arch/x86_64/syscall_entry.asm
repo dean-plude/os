@@ -66,27 +66,35 @@ KiSystemCall64:
     push    qword gs:[KPCR_USER_RSP]    ; user RSP
     push    rbp
     mov     rbp, rsp
+    ; RDI and RSI are callee-saved in the Windows x64 ABI but not in the
+    ; System V ABI our C code uses, so preserve them for the caller.
+    push    rdi
+    push    rsi
 
-    ; KernelRsp is 16-byte aligned and we pushed 4 qwords (32 bytes), so RSP
-    ; is already 16-byte aligned for the call — no padding needed.
+    ; 6 qwords pushed onto a 16-byte-aligned KernelRsp: aligned for the call.
 
     ; -----------------------------------------------------------------------
-    ; Build arguments for KiSystemCallDispatch(num, arg1, arg2, arg3, arg4)
+    ; KiSystemCallDispatch(num, arg1, arg2, arg3, arg4, user_rsp)
+    ; Arguments 5+ are on the user stack at user_rsp + 0x28 (after the
+    ; return address and the 32-byte home area), as in the Windows ABI.
     ; -----------------------------------------------------------------------
     mov     rdi, rax        ; num  = RAX (syscall number)
     mov     rsi, r10        ; arg1 = R10 (ntdll moved RCX → R10)
     ; RDX = arg2 (unchanged)
     mov     rcx, r8         ; arg3 = R8
     mov     r8,  r9         ; arg4 = R9
+    mov     r9,  [rbp + 8]  ; user RSP
 
     call    KiSystemCallDispatch
-    ; RAX = NTSTATUS return value
+    ; RAX = return value (interrupts are disabled again here)
 
     ; -----------------------------------------------------------------------
     ; Return path
     ; -----------------------------------------------------------------------
+    pop     rsi
+    pop     rdi
     pop     rbp
-    pop     qword gs:[KPCR_USER_RSP]  ; discard (already in rsp slot below)
+    pop     qword gs:[KPCR_USER_RSP]  ; user RSP → KPCR (restored below)
     pop     rcx             ; user RIP → RCX (SYSRET uses this)
     pop     r11             ; user RFLAGS → R11 (SYSRET uses this)
 

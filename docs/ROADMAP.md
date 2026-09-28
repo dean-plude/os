@@ -26,10 +26,21 @@ loader semantics, and drivers they expect.
 | GDI software renderer, window manager, **static** desktop shell | ✅ |
 | **Boots from ISO under OVMF and renders the desktop (verified)** | ✅ |
 
-**Honest gaps:** the desktop is a one-shot static render (no input, no event
-loop); no real user-mode `.exe` has been proven to execute end-to-end; no
-input/storage/display/network drivers; no persistence; "apps" are drawn
-placeholders.
+**Since then (Phases 8–9):** an interactive desktop with real apps, HiDPI
+graphics, networking (lwIP, DHCP, DNS), HTTP/1.1 and HTTPS (Mbed TLS), and
+**real PE32+ `.exe` files running in ring 3** with our own `ntdll`,
+`kernel32`, `msvcrt`, `ws2_32`, `user32` and `gdi32`.  Programs get multiple
+threads and the full synchronization set, static TLS, DllMain, structured
+exception handling (`__try`/`__except`/`__finally` with a real x64
+unwinder), Winsock sockets over lwIP, and native Win32 windows in the
+desktop's window manager — launched from the Terminal, with crash isolation
+and full memory reclamation.
+
+**Honest gaps:** the real Microsoft DLLs are not loaded (these are
+clean-room reimplementations — Path A below); there is no modal dialog
+manager or common-controls library yet; no storage driver or persistence
+(drive C: is in memory); and the NetSurf browser itself is not yet ported
+(the C library, sockets, TLS and GUI it needs are now in place).
 
 ---
 

@@ -81,6 +81,41 @@ bool RamfsWrite(RamNode *f, const char *data, UINT32 len)
     kfree(f->data);
     f->data = buf;
     f->size = len;
+    f->cap = len;
+    return true;
+}
+
+/* Grow capacity to at least @need (geometrically, so appends are cheap). */
+static bool reserve(RamNode *f, UINT32 need)
+{
+    if (need <= f->cap) return true;
+    if (need > RAMFS_FILE_MAX) return false;
+    UINT32 cap = f->cap ? f->cap : 256;
+    while (cap < need) cap = cap > RAMFS_FILE_MAX / 2 ? RAMFS_FILE_MAX : cap * 2;
+    char *nb = kmalloc(cap);
+    if (!nb) return false;
+    if (f->size) memcpy(nb, f->data, f->size);
+    kfree(f->data);
+    f->data = nb;
+    f->cap = cap;
+    return true;
+}
+
+bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
+{
+    if (!f || f->dir || off > RAMFS_FILE_MAX || len > RAMFS_FILE_MAX - off) return false;
+    if (!reserve(f, off + len)) return false;
+    if (off > f->size) memset(f->data + f->size, 0, off - f->size);
+    memcpy(f->data + off, data, len);
+    if (off + len > f->size) f->size = off + len;
+    return true;
+}
+
+bool RamfsResize(RamNode *f, UINT32 len)
+{
+    if (!f || f->dir || !reserve(f, len)) return false;
+    if (len > f->size) memset(f->data + f->size, 0, len - f->size);
+    f->size = len;
     return true;
 }
 
