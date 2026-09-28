@@ -90,21 +90,43 @@ static void ready_enqueue(Thread *t)
     ready_count++;
 }
 
+/* Threads above this priority are "foreground" (the desktop, programs, the
+ * network); the idle threads and csrss run only when none of those is ready. */
+#define BACKGROUND_PRIO 4
+
 static Thread *ready_dequeue(void)
 {
     if (!ready_head) return NULL;
     Thread *t = ready_head;
+    for (Thread *c = ready_head;;) {                /* first foreground thread in turn */
+        if (c->priority > BACKGROUND_PRIO) { t = c; break; }
+        c = c->next;
+        if (c == ready_head) break;
+    }
     if (t->next == t) {
         /* Only one element */
         ready_head = NULL;
     } else {
-        ready_head = t->next;
-        t->prev->next = ready_head;
-        ready_head->prev = t->prev;
+        t->prev->next = t->next;                    /* unlink t */
+        t->next->prev = t->prev;
+        if (ready_head == t) ready_head = t->next;
     }
     t->next = t->prev = NULL;
     ready_count--;
     return t;
+}
+
+/* True when a foreground thread other than the caller is waiting to run */
+bool sched_foreground_ready(void)
+{
+    IrqState irq = irq_save();
+    bool any = false;
+    if (ready_head) {
+        Thread *c = ready_head;
+        do { if (c->priority > BACKGROUND_PRIO) { any = true; break; } c = c->next; } while (c != ready_head);
+    }
+    irq_restore(irq);
+    return any;
 }
 
 /* -----------------------------------------------------------------------

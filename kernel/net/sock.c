@@ -16,6 +16,7 @@
 #include "../lib/string.h"
 
 #include "lwip/tcp.h"
+#include "lwip/priv/tcp_priv.h"      /* tcp_process_refused_data */
 #include "lwip/udp.h"
 #include "lwip/ip_addr.h"
 #include "lwip/pbuf.h"
@@ -102,21 +103,15 @@ static err_t tcp_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t e
     Sock *s = arg;
     if (!s) { if (p) pbuf_free(p); return ERR_OK; }
     if (err != ERR_OK) { if (p) pbuf_free(p); s->reset = true; return ERR_OK; }
+    (void)pcb;
     if (!p) { s->peer_closed = true; return ERR_OK; }        /* FIN */
-    UINT16 off = 0, taken = 0;
-    for (struct pbuf *q = p; q; q = q->next) {
-        int put = rx_put(s, (const UINT8 *)q->payload, q->len);
-        taken += (UINT16)put;
-        off += q->len;
-        if (put < q->len) break;                             /* ring full: leave rest */
-    }
-    if (taken) { tcp_recved(pcb, taken); }
-    if (taken < p->tot_len) {
-        /* Couldn't take everything; keep it — lwIP re-delivers unacked data.
-         * Report ERR_MEM so lwIP retries the remainder later. */
-        pbuf_free(p);
-        return taken ? ERR_OK : ERR_MEM;
-    }
+    /* All or nothing: when the ring cannot hold it, the data goes back to
+     * lwIP untouched (ERR_MEM keeps it as "refused" data, delivered again
+     * once the program reads; it must not be freed here).  The window is
+     * reopened only as the program reads (NetSockRecv), and TCP_WND is
+     * smaller than the ring, so this is only a safety net. */
+    if (!s->rx || RXBUF - rx_used(s) < p->tot_len) return ERR_MEM;
+    for (struct pbuf *q = p; q; q = q->next) rx_put(s, (const UINT8 *)q->payload, q->len);
     pbuf_free(p);
     return ERR_OK;
 }
@@ -286,6 +281,10 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
         UINT32 avail = rx_used(s);
         if (avail) {
             int n = rx_get(s, buf, len);
+            if (s->tcp && !s->udp) {
+                tcp_recved(s->tcp, (u16_t)n);                /* reopen the window by what was read */
+                if (s->tcp->refused_data) tcp_process_refused_data(s->tcp);
+            }
             net_unlock();
             return n;
         }

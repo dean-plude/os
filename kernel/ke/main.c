@@ -384,11 +384,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
 
     kprintf("[NovaOS] Entering kernel main loop\n");
 
-    for (;;) {
-        volatile uint64_t spin;
-        for (spin = 0; spin < 50000000ULL; spin++)
-            pause_cpu();
-
+    for (;;) {                            /* background: runs only when nothing else is ready */
         sched_yield();
         hlt();
     }

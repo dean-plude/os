@@ -136,6 +136,8 @@ void sched_free_thread(Thread *t);
  * This is equivalent to NT's NtYieldExecution().
  */
 void sched_yield(void);
+/* True when a foreground thread (priority above 4) is waiting to run. */
+bool sched_foreground_ready(void);
 
 /*
  * Called from the APIC timer interrupt (IRQ_TIMER).

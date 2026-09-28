@@ -1485,6 +1485,9 @@ void DesktopRun(void *arg)
             WmCursorReshow();
         }
         DesktopUnlock();
+        /* Nothing else to run: wait for the next tick (10 ms) instead of
+         * spinning, so an idle desktop leaves the CPU idle */
+        if (!sched_foreground_ready()) { sti(); hlt(); }
         sched_yield();
     }
 }
