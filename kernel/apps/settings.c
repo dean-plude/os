@@ -10,6 +10,7 @@
 #include "../ke/printf.h"
 #include "../net/net.h"
 #include "../wm/desktop.h"
+#include "../fs/persist.h"
 
 #define SIDE_W 200
 #define ITEM_H 36
@@ -99,12 +100,18 @@ static void page_storage(int x, int y, int w)
     y += 108;
 
     GdiRoundRect(RECT(x, y, w, 92), 8, UI_CARD, GDI_TRANSPARENT);
-    GdiTextBold(x + 16, y + 14, "Local Disk (C:)  -  RAM disk", UI_TEXT);
+    GdiTextBold(x + 16, y + 14, "Local Disk (C:)", UI_TEXT);
     AppFormatSize(bytes, b, sizeof(b));
-    ksnprintf(a, sizeof(a), "%s in %d file%s; contents reset on reboot", b, files,
-              files == 1 ? "" : "s");
+    char where[40];
+    PersistWhere(where, sizeof(where));
+    if (PersistActive())
+        ksnprintf(a, sizeof(a), "%s in %d file%s; saved to disk %s", b, files, files == 1 ? "" : "s", where);
+    else
+        ksnprintf(a, sizeof(a), "%s in %d file%s; no disk found, reset on reboot", b, files, files == 1 ? "" : "s");
     GdiTextT(x + 16, y + 38, a, UI_TEXT2);
-    bar(x + 16, y + 66, w - 32, bytes, bytes + 1024 * 1024);
+    UINT64 dfree, dtotal;
+    if (PersistSpace(&dfree, &dtotal)) bar(x + 16, y + 66, w - 32, dtotal - dfree, dtotal);   /* the disk's use */
+    else bar(x + 16, y + 66, w - 32, bytes, bytes + 1024 * 1024);
 }
 
 static void page_network(int x, int y, int w)

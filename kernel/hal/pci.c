@@ -113,3 +113,15 @@ void PciEnableDevice(const PciDevice *d)
     cmd |= (1u << 10);          /* INTx off: drivers poll (no IOAPIC routing yet) */
     PciWrite16(d->bus, d->dev, d->func, 0x04, cmd);
 }
+
+bool PciFindClass(UINT8 class_code, UINT8 subclass, UINT8 prog_if, int index, PciDevice *out)
+{
+    for (int i = 0; i < g_count; i++) {
+        const PciDevice *d = &g_devices[i];
+        if (d->class_code == class_code && d->subclass == subclass && d->prog_if == prog_if && index-- == 0) {
+            *out = *d;
+            return true;
+        }
+    }
+    return false;
+}

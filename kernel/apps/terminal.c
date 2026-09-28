@@ -15,6 +15,7 @@
 #include "../ke/scheduler.h"
 #include "../net/net.h"
 #include "../um/um.h"
+#include "../fs/persist.h"
 
 #define T_COLS   160
 #define T_ROWS   400
@@ -187,6 +188,7 @@ static void cmd_help(Term *t)
         "  del <name>          delete a file or empty folder (also: rm)\n"
         "  start <app> [file]  open notepad, explorer, settings, calendar, browser\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
+        "  vol  sync           where drive C: is saved; save it now\n"
         "  ipconfig            show the network configuration\n"
         "  ping <host> [-n N]  test a connection (ICMP echo)\n"
         "  nslookup <host>     look up a host name (DNS)\n"
@@ -264,7 +266,21 @@ static void cmd_echo(Term *t, int argc, char **argv)
     if (redirect < 0) { tprint(t, text); return; }
     if (redirect >= argc) { terr(t, "The syntax of the command is incorrect."); return; }
     RamNode *f = RamfsResolve(t->cwd, argv[redirect]);
-    if (!f) f = RamfsCreate(t->cwd, argv[redirect], false);
+    if (!f) {                                   /* a new file, maybe in another folder */
+        char dir[RAMFS_PATH_MAX];
+        strncpy(dir, argv[redirect], sizeof(dir) - 1);
+        dir[sizeof(dir) - 1] = '\0';
+        char *slash = strrchr(dir, '\\');
+        if (!slash) slash = strrchr(dir, '/');
+        RamNode *d = t->cwd;
+        const char *leaf = argv[redirect];
+        if (slash) {
+            *slash = '\0';
+            d = dir[0] ? RamfsResolve(t->cwd, dir) : RamfsRoot();
+            leaf = argv[redirect] + (slash - dir) + 1;
+        }
+        f = d ? RamfsCreate(d, leaf, false) : NULL;
+    }
     text[n++] = '\n';
     if (!f || f->dir || !RamfsWrite(f, text, (UINT32)n))
         terr(t, "Could not write the file.");
@@ -858,6 +874,15 @@ static void run(Term *t, char *cmdline)
     else if (is(c, "uptime")) { char up[32]; AppUptime(up, sizeof(up)); tprintf(t, "Up %s", up); }
     else if (is(c, "date"))                     cmd_date(t, false);
     else if (is(c, "time"))                     cmd_date(t, true);
+    else if (is(c, "vol")) {
+        char d[96];
+        PersistDescribe(d, sizeof(d));
+        tprint(t, " Volume in drive C is kept in memory and saved to:");
+        tprint(t, d);
+    } else if (is(c, "sync")) {
+        UmSaveAll();
+        tprint(t, PersistActive() ? "Drive C: and the registry are saved." : "There is no disk to save to.");
+    }
     else if (is(c, "ver"))                      tprint(t, "NovaOS [Version 0.9.8] - Phase 8 desktop");
     else if (is(c, "whoami"))                   tprint(t, "nova-pc\\dean");
     else if (is(c, "sysinfo") || is(c, "neofetch")) cmd_sysinfo(t);

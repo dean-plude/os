@@ -37,6 +37,7 @@
  *  Enable IRQs, create test threads, enter idle loop.
  */
 
+#include "../fs/persist.h"
 #include "../include/types.h"
 #include "../../include/boot_protocol.h"
 #include "../hal/serial.h"
@@ -357,6 +358,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
 
     /* Devices and networking: PCI scan, e1000 NIC, lwIP + DHCP */
     PciInitialize();
+    PersistInit();                        /* SATA disks; the volume that keeps drive C: */
     if (!NetInitialize())
         kprintf("[NET] No network (no supported adapter)\n");
 

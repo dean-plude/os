@@ -97,3 +97,6 @@ void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
  * ----------------------------------------------------------------------- */
 void DesktopLock(void);
 void DesktopUnlock(void);
+
+/* Save the registry and drive C: to disk now (before a restart or shutdown). */
+void UmSaveAll(void);

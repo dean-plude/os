@@ -24,6 +24,7 @@
  * thread has ended, or all at once through NtTerminateProcess.
  */
 
+#include "../fs/persist.h"
 #include "um_internal.h"
 #include "../ke/printf.h"
 #include "../ke/kpcr.h"
@@ -87,6 +88,7 @@ void UmInit(void)
     /* Install the system DLLs and programs on drive C: */
     int installed = 0;
     RamfsCreate(RamfsRoot(), "Temp", true);
+    RamfsSetMode(RAMFS_INSTALLING);                 /* system files: never saved to disk */
     for (int i = 0; i < g_userland_file_count; i++) {
         const UserlandFile *uf = &g_userland_files[i];
         char dir[RAMFS_PATH_MAX];
@@ -106,6 +108,7 @@ void UmInit(void)
     }
     kprintf("[UM] User-mode subsystem ready: %d system files installed (C:\\Windows\\System32, C:\\Programs)\n",
             installed);
+    PersistLoad();                                  /* the user's files (and the registry hive) from disk */
     um_registry_init();
 }
 
@@ -1196,9 +1199,16 @@ static int reap_threads(UmProcess *p)
     return left;
 }
 
+void UmSaveAll(void)
+{
+    um_registry_flush();
+    if (!PersistSync()) kprintf("[PERSIST] Saving drive C: failed\n");
+}
+
 void UmPoll(void)
 {
     um_registry_poll();
+    PersistPoll();
     for (int i = 0; i < UM_MAX_PROCS; i++) {
         UmProcess *p = g_procs[i];
         if (!p) continue;

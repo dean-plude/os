@@ -492,6 +492,14 @@ void um_registry_poll(void)
     kfree(b.p);
 }
 
+/* Write the hive now if it has unsaved changes (before a restart) */
+void um_registry_flush(void)
+{
+    if (!g_dirty) return;
+    g_dirty_ticks = 0;
+    um_registry_poll();
+}
+
 void um_registry_init(void)
 {
     g_root = kzalloc(sizeof(*g_root));

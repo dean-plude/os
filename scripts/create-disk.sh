@@ -5,7 +5,8 @@
 #
 # Creates a raw disk image with:
 #   - GPT partition table
-#   - One EFI System Partition (FAT32, 64 MiB)
+#   - One EFI System Partition (FAT32, 128 MiB; NovaOS also keeps drive C: here
+#     under \NOVA\C when no data disk is attached)
 #   - File layout:
 #       /EFI/BOOT/BOOTX64.EFI   — bootloader (auto-discovered by UEFI firmware)
 #       /EFI/NOVA/kernel.elf    — kernel ELF (loaded by bootloader)
@@ -19,7 +20,7 @@ DISK_IMG="${1:-nova.img}"
 BOOTLOADER="${2:-bootx64.efi}"
 KERNEL="${3:-kernel.elf}"
 
-DISK_SIZE_MB=64
+DISK_SIZE_MB=128
 
 # -------------------------------------------------------------------------
 # Validation
@@ -48,7 +49,8 @@ fi
 
 echo "Creating ${DISK_SIZE_MB} MiB disk image: $DISK_IMG"
 
-dd if=/dev/zero of="$DISK_IMG" bs=1M count=$DISK_SIZE_MB status=none
+rm -f "$DISK_IMG"
+truncate -s ${DISK_SIZE_MB}M "$DISK_IMG"            # sparse: only what is written takes space
 
 # Format as FAT32 with mformat (no partition table — simple ESP image)
 # UEFI can boot from a bare FAT32 image or from an image with a GPT + ESP.

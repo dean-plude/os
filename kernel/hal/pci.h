@@ -27,6 +27,9 @@ void PciInitialize(void);
 /* Find the first device with this vendor and one of `ids` (count n). */
 bool PciFind(UINT16 vendor, const UINT16 *ids, int n, PciDevice *out);
 
+/* The @index'th device (0 = first) of a class, e.g. 01/06/01 for AHCI. */
+bool PciFindClass(UINT8 class_code, UINT8 subclass, UINT8 prog_if, int index, PciDevice *out);
+
 /* Physical base address of a memory BAR (handles 64-bit BARs). */
 UINT64 PciBarAddress(const PciDevice *d, int bar);
 

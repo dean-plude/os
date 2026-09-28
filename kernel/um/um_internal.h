@@ -222,3 +222,4 @@ void       um_exception_syscalls_init(void);
 void       um_registry_init(void);
 void       um_registry_syscalls_init(void);
 void       um_registry_poll(void);   /* save the hive after changes (desktop thread) */
+void       um_registry_flush(void);  /* save the hive now if it changed */

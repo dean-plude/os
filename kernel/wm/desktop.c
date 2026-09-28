@@ -343,6 +343,7 @@ static void draw_menu(void)
 static void power_restart(void)
 {
     kprintf("[SHELL] Restarting\n");
+    UmSaveAll();
     cli();
     for (int i = 0; i < 100000; i++) {                    /* 8042: pulse the reset line */
         if (!(inb(0x64) & 2)) break;
@@ -354,6 +355,7 @@ static void power_restart(void)
 static void power_shutdown(void)
 {
     kprintf("[SHELL] Shutting down\n");
+    UmSaveAll();
     cli();
     /* ACPI S5 through the PM1a control port the common virtual machines
      * use (QEMU q35/ICH9, QEMU i440fx, Bochs, VirtualBox); real hardware

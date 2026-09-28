@@ -119,6 +119,10 @@ set(KERNEL_C_SOURCES
     hal/ps2.c
     hal/pci.c
     drivers/e1000.c
+    drivers/ahci.c
+    fs/block.c
+    fs/fat.c
+    fs/persist.c
     net/net.c
     net/tls.c
     net/tls_roots.c
