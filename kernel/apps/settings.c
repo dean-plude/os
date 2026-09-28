@@ -1,5 +1,6 @@
 /*
- * settings.c — Settings: live system, display, storage and about pages
+ * settings.c — Settings: live system, display, personalization, storage,
+ *               network and about pages
  */
 
 #include "apps.h"
@@ -8,13 +9,14 @@
 #include "../mm/pmm.h"
 #include "../ke/printf.h"
 #include "../net/net.h"
+#include "../wm/desktop.h"
 
 #define SIDE_W 200
 #define ITEM_H 36
 
 typedef struct { int page; UINT32 net_sig; } Settings;
 
-static const char *g_pages[] = { "System", "Display", "Storage", "Network", "About" };
+static const char *g_pages[] = { "System", "Display", "Personalization", "Storage", "Network", "About" };
 #define N_PAGES ((int)(sizeof(g_pages) / sizeof(g_pages[0])))
 
 /* A labelled row inside a card: "Label ........ value" */
@@ -53,7 +55,7 @@ static void page_system(int x, int y, int w)
     GdiRoundRect(RECT(x, y, w, 96), 8, UI_CARD, GDI_TRANSPARENT);
     GdiRoundGradV(RECT(x + 20, y + 20, 88, 56), 6, GDI_C(0x3A, 0x8A, 0xF0), GDI_C(0x2A, 0xC8, 0xC8));
     GdiTextLarge(x + 128, y + 20, "NOVA-PC", UI_TEXT);
-    GdiTextT(x + 128, y + 54, "NovaOS 0.9  -  Phase 8 desktop", UI_TEXT2);
+    GdiTextT(x + 128, y + 54, "NovaOS 0.9  -  Phase 9.5 desktop", UI_TEXT2);
     y += 112;
     row(x, y, w, "Processor", cpu);           y += 50;
     row(x, y, w, "Installed memory", mem);    y += 50;
@@ -151,13 +153,42 @@ static void page_network(int x, int y, int w)
 static bool set_tick(WND *w)
 {
     Settings *st = w->user;
-    if (!st || st->page != 3) return false;
+    if (!st || st->page != SETTINGS_NETWORK) return false;
     NetStatus ns;
     NetGetStatus(&ns);
     UINT32 sig = ns.ip ^ ns.gw ^ ns.dns[0] ^ (ns.link ? 1u : 0) ^ (ns.configured ? 2u : 0);
     if (sig == st->net_sig) return false;
     st->net_sig = sig;
     return true;
+}
+
+/* Personalization: one card per wallpaper theme; click to apply */
+#define THEME_CARD_H 150
+static int theme_card_w(int w)
+{
+    int n = DesktopThemeCount();
+    return (w - (n - 1) * 16) / n;
+}
+
+static void page_personalize(int x, int y, int w)
+{
+    GdiTextT(x, y, "Background and colours", UI_TEXT2);
+    y += 30;
+    int n = DesktopThemeCount(), cw = theme_card_w(w);
+    for (int i = 0; i < n; i++) {
+        int cx = x + i * (cw + 16);
+        bool sel = i == DesktopTheme();
+        GdiRoundRect(RECT(cx, y, cw, THEME_CARD_H + 40), 8, UI_CARD,
+                     sel ? UI_ACCENT : GDI_TRANSPARENT);
+        if (sel) GdiRoundRect(RECT(cx + 1, y + 1, cw - 2, THEME_CARD_H + 38), 7,
+                              GDI_TRANSPARENT, UI_ACCENT);
+        DesktopDrawThemePreview(i, RECT(cx + 8, y + 8, cw - 16, THEME_CARD_H - 16));
+        GdiTextT(cx + 12, y + THEME_CARD_H + 4, DesktopThemeName(i), UI_TEXT);
+        if (sel) GdiTextT(cx + cw - 12 - GdiTextW("Active"), y + THEME_CARD_H + 4,
+                          "Active", UI_ACCENT);
+    }
+    y += THEME_CARD_H + 60;
+    row(x, y, w, "Accent colour", "Follows the theme");
 }
 
 static void page_about(int x, int y, int w)
@@ -190,18 +221,30 @@ static void set_paint(WND *w)
     GdiTextLarge(x, y, g_pages[st->page], UI_TEXT);
     y += 52;
     switch (st->page) {
-    case 0: page_system(x, y, w2);  break;
-    case 1: page_display(x, y, w2); break;
-    case 2: page_storage(x, y, w2); break;
-    case 3: page_network(x, y, w2); break;
-    case 4: page_about(x, y, w2);   break;
+    case SETTINGS_SYSTEM:      page_system(x, y, w2);     break;
+    case SETTINGS_DISPLAY:     page_display(x, y, w2);    break;
+    case SETTINGS_PERSONALIZE: page_personalize(x, y, w2); break;
+    case SETTINGS_STORAGE:     page_storage(x, y, w2);    break;
+    case SETTINGS_NETWORK:     page_network(x, y, w2);    break;
+    case SETTINGS_ABOUT:       page_about(x, y, w2);      break;
     }
 }
 
 static void set_mouse(WND *w, WmMouseMsg msg, int x, int y)
 {
     Settings *st = w->user;
-    if (msg != WM_MOUSE_DOWN || x >= SIDE_W) return;
+    if (msg != WM_MOUSE_DOWN) return;
+    if (x >= SIDE_W) {
+        /* theme cards (layout matches set_paint + page_personalize) */
+        if (st->page != SETTINGS_PERSONALIZE) return;
+        GdiRect c = WmClientRect(w);
+        int px = SIDE_W + 28, py = 20 + 52 + 30, pw = c.w - SIDE_W - 56;
+        int cw = theme_card_w(pw);
+        if (y < py || y >= py + THEME_CARD_H + 40 || x < px) return;
+        int i = (x - px) / (cw + 16);
+        if (i < DesktopThemeCount() && (x - px) % (cw + 16) < cw) DesktopSetTheme(i);
+        return;
+    }
     int i = (y - 64) / ITEM_H;
     if (y >= 64 && i >= 0 && i < N_PAGES) st->page = i;
 }
@@ -228,4 +271,18 @@ void SettingsOpen(void)
     w->on_key   = set_key;
     w->on_close = set_close;
     w->on_tick  = set_tick;
+}
+
+void SettingsOpenPage(int page)
+{
+    WND *w = WmFindApp(APP_SETTINGS);
+    if (!w) {
+        SettingsOpen();
+        w = WmFindApp(APP_SETTINGS);
+        if (!w) return;
+    }
+    Settings *st = w->user;
+    if (st && page >= 0 && page < N_PAGES) st->page = page;
+    WmSetActive(w);
+    WmInvalidate();
 }

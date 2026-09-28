@@ -125,8 +125,73 @@ static void title_icon(int app, int x, int y, int size)
     AppDrawIcon((AppId)app, x, y, size);
 }
 
-void AppOpenFolder(RamNode *dir) { ExplorerOpen(dir); }
-void AppOpenFile(RamNode *file)  { NotepadOpen(file); }
+/* -----------------------------------------------------------------------
+ * Recent documents and folders (kept as paths: nodes may be deleted)
+ * ----------------------------------------------------------------------- */
+#define RECENT_FILES 8
+static char g_recent_files[RECENT_FILES][RAMFS_PATH_MAX];
+static int  g_recent_files_n;
+
+void AppNoteRecentFile(RamNode *node)
+{
+    if (!node || node == RamfsRoot()) return;
+    char path[RAMFS_PATH_MAX];
+    RamfsPath(node, path, sizeof(path));
+    int i = 0;
+    while (i < g_recent_files_n && strcmp(g_recent_files[i], path)) i++;
+    if (i == g_recent_files_n && g_recent_files_n < RECENT_FILES) g_recent_files_n++;
+    if (i == RECENT_FILES) i = RECENT_FILES - 1;
+    for (; i > 0; i--) memcpy(g_recent_files[i], g_recent_files[i - 1], RAMFS_PATH_MAX);
+    memcpy(g_recent_files[0], path, RAMFS_PATH_MAX);
+}
+
+int AppRecentFiles(RamNode **out, int max)
+{
+    int n = 0;
+    for (int i = 0; i < g_recent_files_n && n < max; i++) {
+        RamNode *node = RamfsResolve(NULL, g_recent_files[i]);
+        if (node) out[n++] = node;
+    }
+    return n;
+}
+
+void AppOpenFolder(RamNode *dir)
+{
+    if (dir) AppNoteRecentFile(dir);
+    ExplorerOpen(dir);
+}
+
+void AppOpenFile(RamNode *file)
+{
+    if (file) AppNoteRecentFile(file);
+    NotepadOpen(file);
+}
+
+/* -----------------------------------------------------------------------
+ * Windows programs
+ * ----------------------------------------------------------------------- */
+static bool name_is(const char *a, const char *b)       /* case-insensitive */
+{
+    while (*a && *b && (*a | 0x20) == (*b | 0x20)) { a++; b++; }
+    return !*a && !*b;
+}
+
+int AppForProgram(const char *exe_name)
+{
+    if (exe_name && (name_is(exe_name, "netsurf.exe") || name_is(exe_name, "netsurf")))
+        return APP_NETSURF;
+    return -1;
+}
+
+void AppRunProgram(RamNode *exe, const char *cmdline)
+{
+    if (!exe) return;
+    int app = AppForProgram(exe->name);
+    if (app >= 0) { AppLaunch((AppId)app); return; }
+    /* In a Terminal: console programs need one, and GUI programs report
+     * their exit status there */
+    TerminalRun(cmdline && *cmdline ? cmdline : exe->name, NULL);
+}
 
 WND *AppCreateWindow(AppId id, const char *title, int client_w, int client_h,
                      GdiColor client_bg)
@@ -286,6 +351,42 @@ void AppDrawIcon(AppId id, int x, int y, int s)
         letter_tile(AppGetInfo(id), x, y, s);
         break;
     }
+}
+
+void AppDrawFolderIcon(int x, int y, int s)
+{
+    GdiRoundRect(RECT(x + s * 8 / 100, y + s * 18 / 100, s * 40 / 100, s * 24 / 100),
+                 s / 16 + 1, GDI_C(0xE0, 0xA8, 0x2E), GDI_TRANSPARENT);
+    GdiRoundGradV(RECT(x + s * 8 / 100, y + s * 28 / 100, s * 84 / 100, s * 56 / 100),
+                  s / 12 + 1, GDI_C(0xFF, 0xD8, 0x6B), GDI_C(0xF0, 0xB0, 0x30));
+}
+
+void AppDrawFileIcon(int x, int y, int s)
+{
+    int u = s / 16 > 1 ? s / 16 : 1;
+    GdiRoundRect(RECT(x + s * 20 / 100, y + s * 8 / 100, s * 60 / 100, s * 84 / 100),
+                 s / 12 + 1, GDI_C(0xF5, 0xF5, 0xF5), GDI_C(0xB8, 0xB8, 0xB8));
+    for (int i = 0; i < 3; i++)
+        GdiFillRect(RECT(x + s * 30 / 100, y + s * 30 / 100 + i * s * 16 / 100,
+                         s * (i == 2 ? 24 : 40) / 100, u), GDI_C(0x8A, 0x8A, 0x8A));
+}
+
+/* A window with a coloured title strip and the program's initial */
+void AppDrawProgramIcon(const char *name, int x, int y, int s)
+{
+    static const GdiColor tint[] = {
+        GDI_C(0x3A, 0x7B, 0xD5), GDI_C(0x2E, 0xA0, 0x6A), GDI_C(0xC8, 0x5A, 0x3A),
+        GDI_C(0x8A, 0x4A, 0xC8), GDI_C(0x1E, 0x9A, 0xA8), GDI_C(0xB8, 0x8A, 0x1E),
+    };
+    unsigned h = 0;
+    for (const char *p = name; p && *p && *p != '.'; p++) h = h * 31 + (unsigned char)(*p | 0x20);
+    GdiColor c = tint[h % (sizeof(tint) / sizeof(tint[0]))];
+    GdiRoundRect(RECT(x + s / 16, y + s / 8, s - s / 8, s - s / 4), s / 8 + 1,
+                 GDI_C(0xF2, 0xF2, 0xF2), GDI_C(0xB0, 0xB0, 0xB0));
+    GdiRoundRect(RECT(x + s / 16, y + s / 8, s - s / 8, s / 4), s / 8 + 1, c, GDI_TRANSPARENT);
+    GdiFillRect(RECT(x + s / 16, y + s / 8 + s / 8, s - s / 8, s / 8), c);
+    char initial[2] = { name && name[0] ? (char)(name[0] & ~0x20) : '?', 0 };
+    if (s >= 20) GdiTextCenter(x, y + s / 8 + s / 4 + (s - s / 2 - GDI_FONT_H) / 2, s, initial, c);
 }
 
 /* -----------------------------------------------------------------------

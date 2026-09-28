@@ -1043,14 +1043,14 @@ static void term_close(WND *w)
     w->user = NULL;
 }
 
-void TerminalOpen(void)
+static Term *term_new(RamNode *cwd)
 {
     Term *t = kzalloc(sizeof(Term));
-    if (!t) return;
+    if (!t) return NULL;
     WND *w = AppCreateWindow(APP_TERMINAL, "Terminal", 760, 440, T_BG);
-    if (!w) { kfree(t); return; }
+    if (!w) { kfree(t); return NULL; }
     t->w   = w;
-    t->cwd = RamfsResolve(NULL, "\\Documents");
+    t->cwd = cwd && cwd->dir ? cwd : RamfsResolve(NULL, "\\Documents");
     if (!t->cwd) t->cwd = RamfsRoot();
     RamfsRef(t->cwd);
     w->user     = t;
@@ -1061,4 +1061,28 @@ void TerminalOpen(void)
     tprint_ex(t, K_DIM, 0, "NovaOS Terminal [Version 0.9.8]");
     tprint_ex(t, K_DIM, 0, "Type 'help' to see what you can do.");
     tprint(t, "");
+    return t;
+}
+
+void TerminalOpen(void)
+{
+    term_new(NULL);
+}
+
+void TerminalRun(const char *cmd, RamNode *cwd)
+{
+    Term *t = term_new(cwd);
+    if (!t || !cmd || !*cmd) return;
+    char line[T_COLS];
+    strncpy(line, cmd, sizeof(line) - 1);
+    line[sizeof(line) - 1] = '\0';
+    /* echo it after the prompt, as if typed */
+    char p[RAMFS_PATH_MAX + T_COLS + 8];
+    prompt_text(t, p, RAMFS_PATH_MAX + 4);
+    int pl = (int)strlen(p);
+    ksnprintf(p + pl, T_COLS + 4, "%s", line);
+    tprint_ex(t, K_NORMAL, pl, p);
+    remember(t, line);
+    t->hist_pos = t->hist_n;
+    run(t, line);
 }

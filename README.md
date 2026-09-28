@@ -277,6 +277,33 @@ Windows executables (PE32+) without emulation.
 - Not yet: JavaScript (NetSurf's duktape engine is left out), SVG, IPv6,
   HTTP keep-alive (one connection per request), and window resizing.
 
+### Desktop UX refresh
+- **Start menu** (`wm/desktop.c`): live search as you type (Win key, then
+  type) over the built-in apps, the programs in `C:\Programs`, Settings
+  pages ("display", "wallpaper", "wifi"...) and every file and folder on C:.
+  Up/Down pick a result, Enter opens it, Esc clears the query and then closes
+  the menu.  The home view shows pinned apps, the installed programs (click
+  to run in a Terminal), recently used apps, files and folders, and a footer
+  with Files, Settings and a power menu (Restart, Shut down).
+- **Window management** (`wm/wm.c`): drag a title bar to the left or right
+  edge to snap to half the screen, or to the top to maximize (a translucent
+  preview shows where it will land); dragging a tiled window restores its
+  size.  Resize windows from any edge or corner.  Keyboard: **Alt+Tab**
+  (Shift+Alt+Tab backwards) with a switcher, **Win+Left/Right/Up/Down**
+  (snap, maximize, restore/minimize), **Win+D** (show desktop and back),
+  **Win+E** (File Explorer), **Win+S** (search).
+- **Right-click menus** on the desktop (Terminal, File Explorer, show
+  desktop, next wallpaper, Personalize, Display settings), desktop icons
+  (Open, Open in Terminal), title bars (maximize/restore, snap, minimize,
+  close) and dock items (open or new window, close).
+- **Dock**: every window of a Windows program gets its own button with a
+  running indicator; tooltips name each item and the clock's tooltip shows
+  the full date.
+- **Themes**: three wallpapers with matching glass colours (Sunset, Ocean,
+  Twilight), chosen in the new **Settings > Personalization** page.
+- The desktop's This PC, Documents, Downloads, Pictures and Projects icons
+  open File Explorer at those folders; NetSurf has a desktop icon.
+
 ## Quick Start
 
 ```bash

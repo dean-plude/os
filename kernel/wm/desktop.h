@@ -1,14 +1,15 @@
 /*
  * desktop.h — NovaOS desktop shell (Explorer-style)
  *
- * Phase 7.  Draws the full Windows-11-style desktop experience on top of
- * the window manager:
+ * Draws the Windows-11-style desktop on top of the window manager:
  *
- *   - Gradient wallpaper with warm "wave" layers
- *   - Left-column desktop icons (My PC, Documents, Personal, ...)
- *   - A floating, rounded taskbar / dock with app glyphs and a clock
- *   - A centered Start menu: search box, pinned-app grid, live tiles,
- *     a "Recently used" list and a user / power bar
+ *   - a gradient wallpaper with "wave" layers, in a choice of themes
+ *   - desktop icons (This PC, folders, NetSurf) with right-click menus
+ *   - a floating dock: Start, search, pinned apps, a button for every
+ *     other program window, tooltips and a clock
+ *   - a Start menu with live search over apps, programs, settings and
+ *     files, pinned apps, installed programs, recent items and power
+ *   - an Alt+Tab switcher and Win-key shortcuts
  *
  * The shell registers itself with the WM as the background + overlay
  * layers, so WmComposite() produces the complete scene.
@@ -17,6 +18,7 @@
 #pragma once
 
 #include "../include/types.h"
+#include "../gdi/gdi.h"
 
 /* Initialize the shell and register its layers with the window manager.
  * Must be called after WmInitialize() and GdiInitialize(). */
@@ -29,10 +31,16 @@ void DesktopRender(void);
  * Polls PS/2 input, drives the cursor, and recomposites on change. */
 void DesktopRun(void *arg);
 
-
-/* Toggle the Start menu open/closed (the shell renders it open by
- * default so the boot screen matches the design mock). */
+/* Toggle the Start menu open/closed. */
 void DesktopToggleStart(void);
 
 /* Returns true if the shell has a usable framebuffer to draw on. */
 bool DesktopAvailable(void);
+
+/* Wallpaper / colour themes (Settings > Personalization) */
+int         DesktopThemeCount(void);
+const char *DesktopThemeName(int i);
+int         DesktopTheme(void);
+void        DesktopSetTheme(int i);
+/* A miniature of theme @i's wallpaper in @r */
+void        DesktopDrawThemePreview(int i, GdiRect r);

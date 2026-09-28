@@ -1,10 +1,10 @@
 /*
  * apps.h — built-in desktop applications and the app registry
  *
- * Apps are window callbacks running on the desktop thread (NovaOS cannot
- * run user-mode GUI programs yet).  The registry also lists the "pinned"
- * third-party apps shown in the dock and Start menu; those open a short
- * "not available yet" dialog.
+ * Apps are window callbacks running on the desktop thread; NetSurf is a
+ * Windows program in C:\Programs.  The registry also lists well-known
+ * third-party apps (for search and the "all apps" list); those open a
+ * short "not available yet" dialog.
  */
 
 #pragma once
@@ -45,6 +45,16 @@ void AppActivate(AppId id);
 int  AppRecent(AppId *out, int max);
 /* Look an app up by (case-insensitive) command name, e.g. "notepad". */
 bool AppByName(const char *name, AppId *out);
+/* The app a Windows program's windows belong to (e.g. "netsurf.exe" ->
+ * APP_NETSURF), or -1 for programs without a dock entry. */
+int  AppForProgram(const char *exe_name);
+/* Run a program found by UmFindProgram: GUI programs directly, console
+ * programs in a new Terminal window.  @cmdline includes the program name. */
+void AppRunProgram(RamNode *exe, const char *cmdline);
+
+/* Recently opened documents and folders (newest first), for the Start menu */
+void AppNoteRecentFile(RamNode *node);
+int  AppRecentFiles(RamNode **out, int max);
 
 /* Open specific content */
 void AppOpenFolder(RamNode *dir);    /* File Explorer */
@@ -52,6 +62,10 @@ void AppOpenFile(RamNode *file);     /* Notepad */
 
 /* Draw the app's icon in a size x size box */
 void AppDrawIcon(AppId id, int x, int y, int size);
+/* Generic icons for Windows programs, folders and documents */
+void AppDrawProgramIcon(const char *name, int x, int y, int size);
+void AppDrawFolderIcon(int x, int y, int size);
+void AppDrawFileIcon(int x, int y, int size);
 
 /* -----------------------------------------------------------------------
  * Shared look (Windows 11 dark) and helpers for app implementations
@@ -84,8 +98,15 @@ void AppUptime(char *buf, int cap);                     /* "1h 02m 05s" */
 
 /* Implemented by the individual apps */
 void TerminalOpen(void);
+/* A new Terminal in @cwd (NULL: Documents) that runs @cmd as if typed */
+void TerminalRun(const char *cmd, RamNode *cwd);
 void ExplorerOpen(RamNode *dir);
 void NotepadOpen(RamNode *file);
 void SettingsOpen(void);
+/* Settings pages (for SettingsOpenPage) */
+enum { SETTINGS_SYSTEM, SETTINGS_DISPLAY, SETTINGS_PERSONALIZE, SETTINGS_STORAGE,
+       SETTINGS_NETWORK, SETTINGS_ABOUT };
+/* Open Settings (or focus the open window) at page @page */
+void SettingsOpenPage(int page);
 void CalendarOpen(void);
 void PlaceholderOpen(AppId id);
