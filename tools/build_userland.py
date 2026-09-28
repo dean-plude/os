@@ -50,6 +50,8 @@ DLLS = [
     ('winmm',    ['kernel32', 'ntdll'],  0x7FFB30000000),
     ('comctl32', ['user32', 'kernel32', 'ntdll'], 0x7FFB00000000),
     ('comdlg32', ['kernel32', 'ntdll'],  0x7FFB10000000),
+    ('ole32',    ['advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
+    ('oleaut32', ['ole32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAF0000000),
 ]
 UCRT_BASE = 0x7FFA28000000
 # DLLs built from more than their own directory
@@ -152,7 +154,7 @@ for name, deps, base in DLLS:
     srcdirs = DLL_SOURCES.get(name, [name])
     objs = dll_objs(name, srcdirs)
     extra = []
-    if name in ('testdll', 'ws2_32'):
+    if name in ('testdll', 'ws2_32', 'ole32', 'oleaut32'):
         objs.append(tlssup)
     if name == 'msvcrt':
         objs += math_objs
@@ -191,7 +193,8 @@ for src in sorted(os.listdir(progdir)):
          os.path.join(out, 'kernel32.lib'), os.path.join(out, 'ntdll.lib'),
          os.path.join(out, 'ws2_32.lib'), os.path.join(out, 'user32.lib'),
          os.path.join(out, 'gdi32.lib'), os.path.join(out, 'testdll.lib'),
-         os.path.join(out, 'vcruntime140.lib'), os.path.join(out, 'advapi32.lib')])
+         os.path.join(out, 'vcruntime140.lib'), os.path.join(out, 'advapi32.lib'),
+         os.path.join(out, 'ole32.lib'), os.path.join(out, 'oleaut32.lib')])
     built.append((f'\\Programs\\{name}.exe', exe))
 
 # 3a. sample files for the user's folders (tools/make_icons.py draws the icons)

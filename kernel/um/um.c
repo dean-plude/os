@@ -453,6 +453,8 @@ static void map_api_set(char *lname, int cap)
     static const struct { const char *prefix, *dll; } sets[] = {
         { "api-ms-win-crt-",              "ucrtbase.dll" },
         { "api-ms-win-core-synch-",       "kernel32.dll" },
+        { "api-ms-win-core-com-",         "ole32.dll" },
+        { "combase.dll",                  "ole32.dll" },
         { "api-ms-win-core-",             "kernel32.dll" },
         { "api-ms-win-security-",         "advapi32.dll" },
         { "api-ms-win-eventing-",         "advapi32.dll" },
