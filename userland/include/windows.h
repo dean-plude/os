@@ -435,6 +435,7 @@ WINBASEAPI VOID    WINAPI GetNativeSystemInfo(LPSYSTEM_INFO si);
 
 #include <winbase2.h>
 #include <winsec.h>
+#include <winreg.h>
 
 #define CreateFile           CreateFileA
 #define DeleteFile           DeleteFileA

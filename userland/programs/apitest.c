@@ -166,6 +166,42 @@ int main(int argc, char **argv)
     DeleteDC(mem);
     DeleteObject(dib);
 
+    /* ---- registry ---- */
+    HKEY rk, rk2;
+    DWORD disp = 0, type = 0, dv = 0;
+    n = sizeof(buf);
+    CHECK("default key", !RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ProductName",
+                                       RRF_RT_REG_SZ, &type, buf, &n) && type == REG_SZ && n > 1);
+    RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\NovaTest");
+    CHECK("RegCreateKeyEx", !RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\NovaTest\\Sub", 0, 0, 0, KEY_ALL_ACCESS, 0, &rk, &disp) &&
+                            disp == REG_CREATED_NEW_KEY);
+    dv = 0x12345678;
+    CHECK("RegSetValueEx", !RegSetValueExA(rk, "Num", 0, REG_DWORD, (BYTE *)&dv, 4) &&
+                           !RegSetValueExW(rk, L"Str", 0, REG_SZ, (const BYTE *)L"héllo", 12));
+    dv = 0; n = 4;
+    CHECK("RegQueryValueEx", !RegQueryValueExA(rk, "num", 0, &type, (BYTE *)&dv, &n) && type == REG_DWORD && dv == 0x12345678);
+    n = sizeof(buf);
+    CHECK("RegQueryValueExA utf-8", !RegQueryValueExA(rk, "Str", 0, &type, (BYTE *)buf, &n) && !strcmp(buf, "h\xc3\xa9llo"));
+    n = 2;
+    CHECK("ERROR_MORE_DATA", RegQueryValueExW(rk, L"Str", 0, 0, (BYTE *)w, &n) == ERROR_MORE_DATA && n == 12);
+    RegCloseKey(rk);
+    CHECK("RegOpenKeyEx", !RegOpenKeyExA(HKEY_CURRENT_USER, "SOFTWARE\\novatest", 0, KEY_READ, &rk2));
+    n = sizeof(buf);
+    CHECK("RegEnumKeyEx", !RegEnumKeyExA(rk2, 0, buf, &n, 0, 0, 0, 0) && !strcmp(buf, "Sub") &&
+                          RegEnumKeyExA(rk2, 1, buf, &n, 0, 0, 0, 0) == ERROR_NO_MORE_ITEMS);
+    DWORD nsub = 0, nval = 9;
+    CHECK("RegQueryInfoKey", !RegQueryInfoKeyA(rk2, 0, 0, 0, &nsub, 0, 0, &nval, 0, 0, 0, 0) && nsub == 1 && nval == 0);
+    RegCloseKey(rk2);
+    typedef DWORD (WINAPI *shget_t)(HKEY, LPCSTR, LPCSTR, LPDWORD, LPVOID, LPDWORD);
+    shget_t shget = (shget_t)fn("shlwapi.dll", "SHGetValueA");
+    dv = 0; n = 4;
+    CHECK("SHGetValue", shget && !shget(HKEY_CURRENT_USER, "Software\\NovaTest\\Sub", "Num", &type, &dv, &n) && dv == 0x12345678);
+    typedef LSTATUS (WINAPI *regopen_t)(HKEY, LPCSTR, DWORD, REGSAM, PHKEY);
+    regopen_t adv_open = (regopen_t)fn("advapi32.dll", "RegOpenKeyExA");
+    CHECK("advapi32 forwarder", adv_open && !adv_open(HKEY_CURRENT_USER, "Software\\NovaTest\\Sub", 0, KEY_READ, &rk) && !RegCloseKey(rk));
+    CHECK("RegDeleteTree", !RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\NovaTest") &&
+                           RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\NovaTest", 0, KEY_READ, &rk) == ERROR_FILE_NOT_FOUND);
+
     printf("apitest: %d passed, %d failed\n", pass, fail);
     return fail != 0;
 }

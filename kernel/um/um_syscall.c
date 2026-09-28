@@ -1164,6 +1164,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtYieldExecution,           sys_yield);
     um_thread_syscalls_init();
     um_exception_syscalls_init();
+    um_registry_syscalls_init();
     um_socket_syscalls_init();
     um_gui_syscalls_init();
 }

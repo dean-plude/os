@@ -51,7 +51,7 @@ void um_unlock(UmLock *l);
 /* -----------------------------------------------------------------------
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
-typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS } UmObType;
+typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -66,6 +66,7 @@ typedef struct UmObject {
     bool            abandoned;
     int             sock;           /* UO_SOCKET: kernel socket index */
     UmProcess      *proc;           /* UO_PROCESS: signaled when it has exited */
+    void           *ptr;            /* UO_KEY: the registry key */
     void          (*destroy)(struct UmObject *o);   /* extra cleanup (sockets, windows) */
 } UmObject;
 
@@ -217,3 +218,7 @@ void       um_abandon_mutants(UmProcess *p, UmThread *t);
 
 /* um_exception.c: SEH delivery */
 void       um_exception_syscalls_init(void);
+/* um_registry.c */
+void       um_registry_init(void);
+void       um_registry_syscalls_init(void);
+void       um_registry_poll(void);   /* save the hive after changes (desktop thread) */

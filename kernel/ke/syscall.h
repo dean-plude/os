@@ -193,6 +193,12 @@
 #define SYSCALL_NtNovaSockSendTo                  0x0198
 #define SYSCALL_NtNovaSockRecvFrom                0x0199
 #define SYSCALL_NtNovaResolve                     0x019A
+/* Registry services Windows 10 numbers elsewhere */
+#define SYSCALL_NtDeleteKey                       0x01B0
+#define SYSCALL_NtDeleteValueKey                  0x01B1
+#define SYSCALL_NtFlushKey                        0x01B2
+#define SYSCALL_NtOpenKeyEx                       0x01B3
+#define SYSCALL_NtRenameKey                       0x01B4
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x01A0
 #define SYSCALL_NtNovaGuiGetMessage               0x01A1

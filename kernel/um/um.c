@@ -106,6 +106,7 @@ void UmInit(void)
     }
     kprintf("[UM] User-mode subsystem ready: %d system files installed (C:\\Windows\\System32, C:\\Programs)\n",
             installed);
+    um_registry_init();
 }
 
 UmThread *UmCurrentThread(void)
@@ -1195,6 +1196,7 @@ static int reap_threads(UmProcess *p)
 
 void UmPoll(void)
 {
+    um_registry_poll();
     for (int i = 0; i < UM_MAX_PROCS; i++) {
         UmProcess *p = g_procs[i];
         if (!p) continue;
