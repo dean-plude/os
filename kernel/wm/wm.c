@@ -31,10 +31,22 @@ static GdiRect    g_work;
 static WmIconFn   g_icon_fn;
 
 /* Hit-test parts */
-enum { HT_NONE, HT_CLIENT, HT_CAPTION, HT_MIN, HT_MAX, HT_CLOSE };
+enum { HT_NONE, HT_CLIENT, HT_CAPTION, HT_MIN, HT_MAX, HT_CLOSE, HT_RESIZE };
+/* Resize edges (HT_RESIZE) */
+enum { EDGE_L = 1, EDGE_R = 2, EDGE_T = 4, EDGE_B = 8 };
+#define EDGE_OUT    4               /* resize band outside the frame */
+#define EDGE_GRAB   6               /* px inside the frame that grab an edge */
+#define MIN_W       360
+#define MIN_H       220
 
 static WND *g_drag;                 /* window being dragged by its title */
 static int  g_drag_dx, g_drag_dy;   /* cursor offset from frame origin */
+static int  g_snap_zone;            /* WM_SNAP_* the drag would tile to (0: none) */
+static WND *g_resize;               /* window being resized by an edge */
+static int  g_resize_edges;
+static GdiRect g_resize_start;
+static int  g_resize_x, g_resize_y;
+static int  g_hit_edges;            /* edges under the pointer (set by hit) */
 static WND *g_capture;              /* client that received the press */
 static WND *g_press;                /* caption button being pressed */
 static int  g_press_part;
@@ -42,12 +54,12 @@ static WND *g_hover;                /* caption button under the pointer */
 static int  g_hover_part;
 
 /* Windows 11 dark palette */
-#define TITLE_ACTIVE    GDI_C(0x20, 0x20, 0x20)
-#define TITLE_INACTIVE  GDI_C(0x2B, 0x2B, 0x2B)
+/* The title bar is a step darker than toolbars (0x20) and content (0x27),
+ * with a hairline under it, so the frame reads apart from the app */
+#define TITLE_ACTIVE    GDI_C(0x1A, 0x1A, 0x1C)
+#define TITLE_INACTIVE  GDI_C(0x26, 0x26, 0x28)
 #define TEXT_ACTIVE     GDI_C(0xFF, 0xFF, 0xFF)
 #define TEXT_INACTIVE   GDI_C(0x9A, 0x9A, 0x9A)
-#define BORDER_ACTIVE   GDI_C(0x4A, 0x4A, 0x4A)
-#define BORDER_INACTIVE GDI_C(0x3A, 0x3A, 0x3A)
 #define BTN_HOVER       GDI_C(0x3A, 0x3A, 0x3A)
 #define CLOSE_HOVER     GDI_C(0xC4, 0x2B, 0x1C)
 
@@ -150,6 +162,7 @@ void WmDestroyWindow(WND *w)
     bool was_active = w->active;
     if (w->on_close) w->on_close(w);
     if (g_drag == w)    g_drag = NULL;
+    if (g_resize == w)  g_resize = NULL;
     if (g_capture == w) g_capture = NULL;
     if (g_press == w)   g_press = NULL;
     if (g_hover == w)   g_hover = NULL;
@@ -197,16 +210,84 @@ void WmMinimize(WND *w)
     g_dirty = true;
 }
 
+static bool tileable(const WND *w)
+{
+    return w && (w->style & WS_MINMAXBTN) && !w->fixed_size;
+}
+
+static void clamp_to_work(WND *w);
+
+void WmSnap(WND *w, int where)
+{
+    if (!tileable(w)) return;
+    bool tiled = w->maximized || w->snapped;
+    if (where == WM_SNAP_RESTORE) {
+        if (tiled) w->frame = w->restore;
+        w->maximized = w->snapped = false;
+        clamp_to_work(w);
+        g_dirty = true;
+        return;
+    }
+    if (!tiled) w->restore = w->frame;
+    GdiRect a = g_work;
+    if (where == WM_SNAP_MAX) {
+        w->frame = a;
+        w->maximized = true;
+        w->snapped = false;
+    } else {
+        int hw = a.w / 2;
+        w->frame = where == WM_SNAP_LEFT ? RECT(a.x, a.y, hw, a.h) : RECT(a.x + hw, a.y, a.w - hw, a.h);
+        w->snapped = true;
+        w->maximized = false;
+    }
+    g_dirty = true;
+}
+
 void WmToggleMaximize(WND *w)
 {
-    if (!w || !(w->style & WS_MINMAXBTN)) return;
-    if (w->maximized) {
-        w->frame = w->restore;
-        w->maximized = false;
+    if (!tileable(w)) return;
+    WmSnap(w, w->maximized ? WM_SNAP_RESTORE : WM_SNAP_MAX);
+}
+
+int WmListWindows(WND **out, int max)
+{
+    WND *all[WM_MAX_WINDOWS];
+    int n = 0;
+    for (int i = 0; i < WM_MAX_WINDOWS; i++) {
+        WND *w = &g_windows[i];
+        if (!g_used[i] || !w->visible) continue;
+        int j = n++;
+        while (j > 0 && all[j - 1]->z < w->z) { all[j] = all[j - 1]; j--; }
+        all[j] = w;
+    }
+    if (n > max) n = max;
+    for (int i = 0; i < n; i++) out[i] = all[i];
+    return n;
+}
+
+/* Win+D: windows minimized by the last "show desktop", by id */
+static int g_desk_ids[WM_MAX_WINDOWS];
+static int g_desk_n;
+
+void WmShowDesktopToggle(void)
+{
+    bool any = false;
+    for (int i = 0; i < WM_MAX_WINDOWS; i++) if (shown(&g_windows[i])) any = true;
+    if (any) {
+        WND *order[WM_MAX_WINDOWS];
+        int n = WmListWindows(order, WM_MAX_WINDOWS);
+        g_desk_n = 0;
+        for (int i = n - 1; i >= 0; i--) {      /* bottom first, so restore keeps the order */
+            if (!shown(order[i])) continue;
+            g_desk_ids[g_desk_n++] = order[i]->id;
+            order[i]->minimized = true;
+            order[i]->active = false;
+        }
     } else {
-        w->restore = w->frame;
-        w->frame = g_work;
-        w->maximized = true;
+        for (int k = 0; k < g_desk_n; k++)
+            for (int i = 0; i < WM_MAX_WINDOWS; i++)
+                if (g_used[i] && g_windows[i].id == g_desk_ids[k]) WmSetActive(&g_windows[i]);
+        g_desk_n = 0;
     }
     g_dirty = true;
 }
@@ -247,18 +328,24 @@ void WmSetDesktop(WmLayerFn background, WmLayerFn overlay)
 /* -----------------------------------------------------------------------
  * Hit testing
  * ----------------------------------------------------------------------- */
-static GdiRect button_rect(const WND *w, int part)
-{
-    GdiRect f = w->frame;
-    int slot = (part == HT_CLOSE) ? 1 : (part == HT_MAX) ? 2 : 3;
-    return RECT(f.x + f.w - slot * BTN_W, f.y, BTN_W, WM_TITLEBAR_H);
-}
-
 static bool has_button(const WND *w, int part)
 {
     if (!(w->style & WS_TITLEBAR)) return false;
     if (part == HT_CLOSE) return (w->style & WS_CLOSEBTN) != 0;
+    if (part == HT_MAX && w->fixed_size) return false;
     return (w->style & WS_MINMAXBTN) != 0;
+}
+
+static GdiRect button_rect(const WND *w, int part)
+{
+    GdiRect f = w->frame;
+    int slot = (part == HT_CLOSE) ? 1 : (part == HT_MAX) ? 2 : has_button(w, HT_MAX) ? 3 : 2;
+    return RECT(f.x + f.w - slot * BTN_W, f.y, BTN_W, WM_TITLEBAR_H);
+}
+
+static bool resizable(const WND *w)
+{
+    return tileable(w) && !w->maximized;
 }
 
 static WND *hit(int x, int y, int *part)
@@ -266,11 +353,29 @@ static WND *hit(int x, int y, int *part)
     WND *best = NULL;
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
         WND *w = &g_windows[i];
-        if (!shown(w) || !pt_in(w->frame, x, y)) continue;
+        if (!shown(w)) continue;
+        GdiRect f = w->frame;
+        if (resizable(w))                   /* grab band reaches outside the frame */
+            f = RECT(f.x - EDGE_OUT, f.y - EDGE_OUT, f.w + 2 * EDGE_OUT, f.h + 2 * EDGE_OUT);
+        if (!pt_in(f, x, y)) continue;
         if (!best || w->z > best->z) best = w;
     }
     *part = HT_NONE;
+    g_hit_edges = 0;
     if (!best) return NULL;
+    if (resizable(best)) {
+        GdiRect f = best->frame;
+        int e = 0;
+        if (x < f.x + EDGE_GRAB)            e |= EDGE_L;
+        if (x >= f.x + f.w - EDGE_GRAB)     e |= EDGE_R;
+        if (y < f.y + 4)                    e |= EDGE_T;
+        if (y >= f.y + f.h - EDGE_GRAB)     e |= EDGE_B;
+        if (e) {
+            g_hit_edges = e;
+            *part = HT_RESIZE;
+            return best;
+        }
+    }
     if ((best->style & WS_TITLEBAR) && y < best->frame.y + WM_TITLEBAR_H) {
         static const int btns[3] = { HT_CLOSE, HT_MAX, HT_MIN };
         for (int b = 0; b < 3; b++) {
@@ -284,6 +389,21 @@ static WND *hit(int x, int y, int *part)
         *part = HT_CLIENT;
     }
     return best;
+}
+
+WND *WmWindowAt(int x, int y, bool *caption)
+{
+    int part;
+    WND *w = hit(x, y, &part);
+    if (caption) *caption = w && part != HT_CLIENT && part != HT_RESIZE;
+    return w;
+}
+
+WND *WmWindowById(int id)
+{
+    for (int i = 0; i < WM_MAX_WINDOWS; i++)
+        if (g_used[i] && g_windows[i].id == id) return &g_windows[i];
+    return NULL;
 }
 
 /* -----------------------------------------------------------------------
@@ -310,7 +430,14 @@ static void clamp_to_work(WND *w)
 bool WmMouseButton(int x, int y, WmMouseMsg msg)
 {
     if (msg == WM_MOUSE_UP) {
-        if (g_drag) { g_drag = NULL; return true; }
+        if (g_drag) {
+            if (g_snap_zone) WmSnap(g_drag, g_snap_zone);
+            g_drag = NULL;
+            g_snap_zone = 0;
+            g_dirty = true;
+            return true;
+        }
+        if (g_resize) { g_resize = NULL; return true; }
         if (g_press) {
             int part;
             WND *w = hit(x, y, &part);
@@ -343,20 +470,29 @@ bool WmMouseButton(int x, int y, WmMouseMsg msg)
 
     switch (part) {
     case HT_CAPTION:
-        if (msg == WM_MOUSE_DBLCLK && (w->style & WS_MINMAXBTN)) {
+        if (msg == WM_MOUSE_DBLCLK && tileable(w)) {
             WmToggleMaximize(w);
             break;
         }
-        if (w->maximized) {
-            /* Pull the window out of maximize, keeping the cursor at the
-             * same relative spot along the title bar. */
+        if (w->maximized || w->snapped) {
+            /* Pull the window out of maximize/snap, keeping the cursor at
+             * the same relative spot along the title bar. */
             int rel = ((x - w->frame.x) * w->restore.w) / (w->frame.w > 0 ? w->frame.w : 1);
-            w->maximized = false;
+            w->maximized = w->snapped = false;
             w->frame = RECT(x - rel, w->frame.y, w->restore.w, w->restore.h);
         }
         g_drag    = w;
         g_drag_dx = x - w->frame.x;
         g_drag_dy = y - w->frame.y;
+        g_snap_zone = 0;
+        break;
+    case HT_RESIZE:
+        g_resize = w;
+        g_resize_edges = g_hit_edges;
+        g_resize_start = w->frame;
+        g_resize_x = x;
+        g_resize_y = y;
+        w->snapped = false;                 /* a resized tile is a normal window */
         break;
     case HT_MIN: case HT_MAX: case HT_CLOSE:
         g_press = w;
@@ -377,6 +513,37 @@ void WmMouseMove(int x, int y)
         g_drag->frame.x = x - g_drag_dx;
         g_drag->frame.y = y - g_drag_dy;
         clamp_to_work(g_drag);
+        /* Dragging to an edge offers to tile the window there */
+        int zone = 0;
+        if (tileable(g_drag)) {
+            if (y <= g_work.y + 1)                      zone = WM_SNAP_MAX;
+            else if (x <= g_work.x + 1)                 zone = WM_SNAP_LEFT;
+            else if (x >= g_work.x + g_work.w - 2)      zone = WM_SNAP_RIGHT;
+        }
+        g_snap_zone = zone;
+        g_dirty = true;
+        return;
+    }
+    if (g_resize) {
+        GdiRect f = g_resize_start;
+        int dx = x - g_resize_x, dy = y - g_resize_y;
+        if (g_resize_edges & EDGE_L) {
+            int nw = f.w - dx;
+            if (nw < MIN_W) nw = MIN_W;
+            f.x += f.w - nw;
+            f.w = nw;
+        }
+        if (g_resize_edges & EDGE_R) { f.w += dx; if (f.w < MIN_W) f.w = MIN_W; }
+        if (g_resize_edges & EDGE_T) {
+            int nh = f.h - dy;
+            if (nh < MIN_H) nh = MIN_H;
+            if (f.y + f.h - nh < g_work.y) nh = f.y + f.h - g_work.y;
+            f.y += f.h - nh;
+            f.h = nh;
+        }
+        if (g_resize_edges & EDGE_B) { f.h += dy; if (f.h < MIN_H) f.h = MIN_H; }
+        if (f.y + f.h > g_work.y + g_work.h) f.h = g_work.y + g_work.h - f.y;
+        g_resize->frame = f;
         g_dirty = true;
         return;
     }
@@ -393,7 +560,7 @@ void WmMouseMove(int x, int y)
     }
 }
 
-bool WmMouseCaptured(void) { return g_drag || g_capture || g_press; }
+bool WmMouseCaptured(void) { return g_drag || g_resize || g_capture || g_press; }
 
 void WmTick(void)
 {
@@ -489,27 +656,27 @@ static void draw_window(WND *w)
         GdiFillRect(RECT(f.x, f.y + WM_TITLEBAR_H, f.w, rad), w->client_bg);
 
         int btns = 0;
-        if (w->style & WS_CLOSEBTN)  btns++;
-        if (w->style & WS_MINMAXBTN) btns += 2;
+        if (has_button(w, HT_CLOSE)) btns++;
+        if (has_button(w, HT_MAX))   btns++;
+        if (has_button(w, HT_MIN))   btns++;
 
         /* App mark + title, clipped so it never runs under the buttons */
         GdiSetClip(RECT(f.x, f.y, f.w - btns * BTN_W, WM_TITLEBAR_H));
-        if (w->app >= 0 && g_icon_fn)
-            g_icon_fn(w->app, f.x + 10, f.y + 8, 16);
-        else
+        if (!g_icon_fn || !g_icon_fn(w, f.x + 10, f.y + 8, 16))
             GdiFillCircle(f.x + 17, f.y + 15, 4, w->accent);
         GdiTextT(f.x + 34, f.y + (WM_TITLEBAR_H - GDI_FONT_H) / 2, w->title, title_fg);
         GdiResetClip();
 
         if (w->style & WS_CLOSEBTN) draw_button(w, HT_CLOSE, title_bg, title_fg);
-        if (w->style & WS_MINMAXBTN) {
-            draw_button(w, HT_MAX, title_bg, title_fg);
-            draw_button(w, HT_MIN, title_bg, title_fg);
-        }
+        if (has_button(w, HT_MAX)) draw_button(w, HT_MAX, title_bg, title_fg);
+        if (has_button(w, HT_MIN)) draw_button(w, HT_MIN, title_bg, title_fg);
+        GdiAlphaFill(RECT(f.x, f.y + WM_TITLEBAR_H - 1, f.w, 1), GDI_WHITE, 20);   /* ~8% white */
     }
 
+    /* A light hairline edge: separates the window from dark wallpapers
+     * and from windows behind it */
     if ((w->style & WS_BORDER) && !w->maximized)
-        GdiRoundRect(f, rad, GDI_TRANSPARENT, w->active ? BORDER_ACTIVE : BORDER_INACTIVE);
+        GdiRoundBorderAlpha(f, rad, GDI_WHITE, w->active ? 40 : 24);
 
     if (w->on_paint) {
         GdiSetClip(WmClientRect(w));
@@ -547,6 +714,16 @@ void WmComposite(void)
     }
     for (int i = 0; i < n; i++)
         draw_window(order[i]);
+
+    /* Where a window being dragged to a screen edge would be tiled */
+    if (g_drag && g_snap_zone) {
+        GdiRect a = g_work, p = a;
+        if (g_snap_zone == WM_SNAP_LEFT)  p = RECT(a.x, a.y, a.w / 2, a.h);
+        if (g_snap_zone == WM_SNAP_RIGHT) p = RECT(a.x + a.w / 2, a.y, a.w - a.w / 2, a.h);
+        p = RECT(p.x + 8, p.y + 8, p.w - 16, p.h - 16);
+        GdiRoundAlpha(p, 10, GDI_C(0x9A, 0xC8, 0xF0), 70);
+        GdiRoundRect(p, 10, GDI_TRANSPARENT, GDI_C(0xC8, 0xE4, 0xFF));
+    }
 
     /* 3. Overlay (dock, Start menu) */
     GdiResetClip();

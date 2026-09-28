@@ -153,6 +153,8 @@ set(KERNEL_C_SOURCES
     fs/initrd.c
     fs/ramfs.c
     gdi/gdi.c
+    gdi/png.c
+    gdi/icon.c
     gdi/font_inter.c
     wm/wm.c
     wm/desktop.c
@@ -163,6 +165,7 @@ set(KERNEL_C_SOURCES
     apps/notepad.c
     apps/settings.c
     apps/calendar.c
+    apps/photos.c
     lib/string.c
 )
 
@@ -193,6 +196,9 @@ list(APPEND KERNEL_C_SOURCES ${MBEDTLS_SOURCES})
 file(GLOB_RECURSE USERLAND_DEPS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.rc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.ico"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.png"
     "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/netsurf/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/netsurf/*.h")
 set(USERLAND_C "${CMAKE_CURRENT_BINARY_DIR}/userland_files.c")

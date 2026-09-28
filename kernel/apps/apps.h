@@ -1,10 +1,10 @@
 /*
  * apps.h — built-in desktop applications and the app registry
  *
- * Apps are window callbacks running on the desktop thread (NovaOS cannot
- * run user-mode GUI programs yet).  The registry also lists the "pinned"
- * third-party apps shown in the dock and Start menu; those open a short
- * "not available yet" dialog.
+ * Apps are window callbacks running on the desktop thread; NetSurf is a
+ * Windows program in C:\Programs.  The registry also lists well-known
+ * third-party apps (for search and the "all apps" list); those open a
+ * short "not available yet" dialog.
  */
 
 #pragma once
@@ -13,6 +13,7 @@
 #include "../gdi/gdi.h"
 #include "../wm/wm.h"
 #include "../fs/ramfs.h"
+#include "../gdi/icon.h"
 
 typedef enum {
     /* Built in */
@@ -45,13 +46,60 @@ void AppActivate(AppId id);
 int  AppRecent(AppId *out, int max);
 /* Look an app up by (case-insensitive) command name, e.g. "notepad". */
 bool AppByName(const char *name, AppId *out);
+/* The app a Windows program's windows belong to (e.g. "netsurf.exe" ->
+ * APP_NETSURF), or -1 for programs without a dock entry. */
+int  AppForProgram(const char *exe_name);
+/* Run a program found by UmFindProgram: GUI programs directly, console
+ * programs in a new Terminal window.  @cmdline includes the program name. */
+void AppRunProgram(RamNode *exe, const char *cmdline);
+
+/* Recently opened documents and folders (newest first), for the Start menu */
+void AppNoteRecentFile(RamNode *node);
+int  AppRecentFiles(RamNode **out, int max);
 
 /* Open specific content */
 void AppOpenFolder(RamNode *dir);    /* File Explorer */
-void AppOpenFile(RamNode *file);     /* Notepad */
+/* By type: pictures and icons in Photos, programs run, the rest Notepad */
+void AppOpenFile(RamNode *file);
+/* "Text Document", "Icon", "Application", ... (Explorer's Type column) */
+const char *AppFileTypeName(const RamNode *f);
+
+/* Set up the app layer (title-bar icons); called by the desktop shell */
+void AppInit(void);
 
 /* Draw the app's icon in a size x size box */
 void AppDrawIcon(AppId id, int x, int y, int size);
+/* A Windows program's icon: NAME.ico beside NAME.exe, else the icon in the
+ * program's resources, else a generic program tile */
+void AppDrawProgramIcon(const char *name, int x, int y, int size);
+/* A window's icon: its app's, or its program's */
+void AppDrawWindowIcon(const WND *w, int x, int y, int size);
+/* A file's or folder's icon: .ico files show themselves, programs their
+ * own icon, PNG pictures a thumbnail; others a generic icon */
+void AppDrawNodeIcon(RamNode *f, int x, int y, int size);
+void AppDrawFolderIcon(int x, int y, int size);
+void AppDrawFileIcon(int x, int y, int size);
+void AppDrawPcIcon(int x, int y, int size);         /* "This PC" */
+
+/* Special folders (C:\Documents, ...) show their purpose on the folder */
+typedef enum { FOLDER_PLAIN, FOLDER_DOCUMENTS, FOLDER_DOWNLOADS, FOLDER_PICTURES,
+               FOLDER_PROJECTS } FolderKind;
+FolderKind AppFolderKind(const RamNode *dir);
+void AppDrawFolderKindIcon(FolderKind k, int x, int y, int size);
+
+/* Single-colour line glyphs (sidebars, toolbars, the tray), in the same
+ * line weight as the app icons */
+typedef enum {
+    GL_PC, GL_DOCUMENTS, GL_DOWNLOADS, GL_PICTURES, GL_PERSON, GL_CODE, GL_WINDOWS,
+    GL_FOLDER, GL_FILE, GL_PLUS, GL_SEARCH, GL_NETWORK, GL_NETWORK_OFF, GL_CHEVRON,
+    GL_BACK, GL_UP, GL_NOVA, GL_GEAR, GL_POWER,
+} Glyph;
+void AppDrawGlyph(Glyph g, int x, int y, int size, GdiColor c);
+
+/* The decoded icon of an .ico/.cur/.png/.exe/.dll file (cached; NULL if it
+ * has none), and of a program by name as for AppDrawProgramIcon */
+GdiIcon *AppFileIcon(RamNode *f);
+GdiIcon *AppProgramIcon(const char *name);
 
 /* -----------------------------------------------------------------------
  * Shared look (Windows 11 dark) and helpers for app implementations
@@ -84,8 +132,18 @@ void AppUptime(char *buf, int cap);                     /* "1h 02m 05s" */
 
 /* Implemented by the individual apps */
 void TerminalOpen(void);
+/* A new Terminal in @cwd (NULL: Documents) that runs @cmd as if typed */
+void TerminalRun(const char *cmd, RamNode *cwd);
 void ExplorerOpen(RamNode *dir);
 void NotepadOpen(RamNode *file);
 void SettingsOpen(void);
+/* Settings pages (for SettingsOpenPage) */
+enum { SETTINGS_SYSTEM, SETTINGS_DISPLAY, SETTINGS_PERSONALIZE, SETTINGS_STORAGE,
+       SETTINGS_NETWORK, SETTINGS_ABOUT };
+/* Open Settings (or focus the open window) at page @page */
+void SettingsOpenPage(int page);
 void CalendarOpen(void);
+/* Photos: view a picture or icon (every image of an .ico); NULL shows the
+ * pictures in C:\Pictures */
+void PhotosOpen(RamNode *file);
 void PlaceholderOpen(AppId id);

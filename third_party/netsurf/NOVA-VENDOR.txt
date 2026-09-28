@@ -30,6 +30,13 @@ DLL sources in userland/.  The rest of NovaOS is MIT licensed; the kernel
 image only carries netsurf.exe as a file for drive C: (like a disk image
 carries programs), and building with NOVA_NO_NETSURF=1 leaves it out.
 
+NetSurf's program icon
+----------------------
+netsurf/frontends/windows/res/NetSurf.ico is copied unmodified from the
+release's Windows frontend (the only file kept from that frontend): it is
+compiled into netsurf.exe's resources (userland/netsurf/netsurf.rc) so the
+desktop and File Explorer show NetSurf's own icon.
+
 Generated files
 ---------------
 netsurf/generated/ holds the files NetSurf's own build generates on the

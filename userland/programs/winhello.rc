@@ -1,0 +1,2 @@
+/* winhello.exe resources: the program icon (tools/make_icons.py draws it) */
+1 ICON "winhello.ico"

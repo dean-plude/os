@@ -57,8 +57,13 @@ typedef struct WND {
     bool       minimized;
     bool       maximized;
     bool       active;       /* has keyboard focus */
+    bool       snapped;      /* tiled to half the screen (restore holds the size) */
+    bool       fixed_size;   /* no resizing, snapping or maximizing (program windows
+                              * whose client bitmap has a fixed size) */
     int        z;            /* z-order; higher = nearer the top */
     int        app;          /* owning app id (for the dock), or -1 */
+    char       program[32];  /* program image name (e.g. "winhello.exe") for
+                              * windows of Windows programs: their icon */
 
     WndPaintFn on_paint;     /* draw the client area (clip is set) */
     WndKeyFn   on_key;       /* key pressed while focused */
@@ -95,10 +100,25 @@ GdiRect WmClientRect(const WND *w);
 /* Topmost window belonging to app `app`, or NULL. */
 WND *WmFindApp(int app);
 int  WmWindowCount(void);
+/* Windows (minimized ones too), topmost first; returns how many (<= max). */
+int  WmListWindows(WND **out, int max);
 
-/* Draws a window's app icon in its title bar (set by the app layer);
- * windows without an app (app < 0) show a dot in their accent colour. */
-typedef void (*WmIconFn)(int app, int x, int y, int size);
+/* Tile a window: WM_SNAP_LEFT/RIGHT (half the work area), WM_SNAP_MAX,
+ * or WM_SNAP_RESTORE (back to its normal size and place). */
+enum { WM_SNAP_RESTORE, WM_SNAP_LEFT, WM_SNAP_RIGHT, WM_SNAP_MAX };
+void WmSnap(WND *w, int where);
+/* Win+D: minimize every window, or bring back the ones it minimized. */
+void WmShowDesktopToggle(void);
+/* The topmost shown window at (x, y), or NULL; *caption tells whether the
+ * point is on its title bar (may be NULL). */
+WND *WmWindowAt(int x, int y, bool *caption);
+/* A window by id (NULL if it is gone). */
+WND *WmWindowById(int id);
+
+/* Draws a window's icon in its title bar (set by the app layer); returns
+ * false if the window has none, and it then shows a dot in its accent
+ * colour. */
+typedef bool (*WmIconFn)(const WND *w, int x, int y, int size);
 void WmSetIconPainter(WmIconFn fn);
 
 /* Area windows may occupy (the screen minus the dock). */

@@ -175,6 +175,14 @@ def resources(out):
             files.append(('\\Windows\\Fonts\\' + n, os.path.join(ROOT, 'third_party', d, n)))
     return files
 
+def llvm_rc():
+    """The resource compiler: llvm-rc, or a versioned llvm-rc-NN"""
+    import shutil
+    for v in [''] + [f'-{n}' for n in range(30, 13, -1)]:
+        if shutil.which('llvm-rc' + v):
+            return 'llvm-rc' + v
+    raise SystemExit('llvm-rc not found (install llvm: sudo apt install llvm)')
+
 def build(out, ul):
     """Build netsurf.exe into @out, linking the system DLLs' import libraries
     in @ul; returns what to install on drive C: as (path, local file)."""
@@ -202,13 +210,20 @@ def build(out, ul):
         raise SystemExit(1)
     exe = os.path.join(out, 'netsurf.exe')
     libs = [os.path.join(ul, n + '.lib') for n in ('msvcrt', 'kernel32', 'ntdll', 'ws2_32', 'user32', 'gdi32')]
+    # the program icon (NetSurf's own, from its Windows frontend)
+    res = os.path.join(out, 'netsurf.res')
+    r = subprocess.run([llvm_rc(), '/FO', res, '/I', os.path.join(TP, 'netsurf', 'frontends', 'windows', 'res'),
+                        os.path.join(GLUE, 'netsurf.rc')], capture_output=True, text=True)
+    if r.returncode:
+        sys.stderr.write(r.stdout + r.stderr)
+        raise SystemExit(1)
     rsp = os.path.join(out, 'netsurf.rsp')
     open(rsp, 'w').write('\n'.join(objs))
     # a console program like the rest of C:\Programs: started from the
     # Terminal, its log and errors appear there
     cmd = ['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib', '/stack:8388608',
            f'/out:{exe}', os.path.join(ul, 'crt0.obj'), os.path.join(ul, 'tlssup.obj'),
-           '@' + rsp] + libs
+           '@' + rsp, res] + libs
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         sys.stderr.write(r.stdout + r.stderr)

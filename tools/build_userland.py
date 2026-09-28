@@ -6,6 +6,8 @@
 Compiles, with clang --target=x86_64-pc-windows-msvc and lld-link:
   ntdll.dll, kernel32.dll, msvcrt.dll, ...  -> C:\\Windows\\System32
   crt/crt0.c (static startup code) + programs/*.c -> C:\\Programs\\*.exe
+    (with programs/NAME.rc compiled by llvm-rc: the program's icon)
+  samples/* -> C:\\Pictures
   the NetSurf browser (tools/build_netsurf.py) -> C:\\Programs\\NetSurf
 and writes GENERATED_C: every file pulled in with .incbin plus a table the
 kernel uses to install them on drive C: at boot.  Set NOVA_NO_NETSURF=1 to
@@ -90,12 +92,22 @@ for src in sorted(os.listdir(progdir)):
     obj = os.path.join(out, f'prog_{name}.obj')
     cc(os.path.join(progdir, src), obj)
     exe = os.path.join(out, f'{name}.exe')
+    res = []                                  # NAME.rc: resources (e.g. the icon)
+    rc = os.path.join(progdir, name + '.rc')
+    if os.path.exists(rc):
+        res = [os.path.join(out, f'prog_{name}.res')]
+        run([build_netsurf.llvm_rc(), '/FO', res[0], rc])
     run(['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib',
-         f'/out:{exe}', crt0, tlssup, obj, os.path.join(out, 'msvcrt.lib'),
+         f'/out:{exe}', crt0, tlssup, obj] + res + [os.path.join(out, 'msvcrt.lib'),
          os.path.join(out, 'kernel32.lib'), os.path.join(out, 'ntdll.lib'),
          os.path.join(out, 'ws2_32.lib'), os.path.join(out, 'user32.lib'),
          os.path.join(out, 'gdi32.lib'), os.path.join(out, 'testdll.lib')])
     built.append((f'\\Programs\\{name}.exe', exe))
+
+# 3a. sample files for the user's folders (tools/make_icons.py draws the icons)
+samples = os.path.join(HERE, 'samples')
+for n in sorted(os.listdir(samples)):
+    built.append((f'\\Pictures\\{n}', os.path.join(samples, n)))
 
 # 3b. the NetSurf web browser
 if os.environ.get('NOVA_NO_NETSURF') != '1':

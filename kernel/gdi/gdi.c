@@ -301,6 +301,95 @@ void GdiBlitBGRA(GdiRect dst, const UINT32 *src, int src_stride)
     }
 }
 
+/* Blend one straight-alpha 0xAARRGGBB value at device (x, y) (in the clip) */
+static inline void put_argb(int x, int y, UINT32 a, UINT32 r, UINT32 gg, UINT32 b)
+{
+    if (!a) return;
+    UINT32 *p = &g.buf[(size_t)y * g.bstride + x];
+    UINT32 n = pixof(r | gg << 8 | b << 16);
+    *p = a >= 255 ? n : blend(*p, n, a);
+}
+
+void GdiDrawImage(GdiRect dst, const UINT32 *px, int sw, int sh)
+{
+    if (!g.ready || !px || sw <= 0 || sh <= 0 || dst.w <= 0 || dst.h <= 0) return;
+    int s = g.s, ox0 = dst.x * s, oy0 = dst.y * s, dw = dst.w * s, dh = dst.h * s;
+    int x0 = imax(ox0, g.cx0), x1 = imin(ox0 + dw, g.cx1);
+    int y0 = imax(oy0, g.cy0), y1 = imin(oy0 + dh, g.cy1);
+    bool box = sw >= dw && sh >= dh;              /* shrinking: average; else bilinear */
+
+    for (int y = y0; y < y1; y++) {
+        int oy = y - oy0;
+        for (int x = x0; x < x1; x++) {
+            int ox = x - ox0;
+            UINT64 sa = 0, sr = 0, sg = 0, sb = 0, wsum = 0;
+            if (box) {
+                int sx0 = ox * sw / dw, sx1 = ((ox + 1) * sw + dw - 1) / dw;
+                int sy0 = oy * sh / dh, sy1 = ((oy + 1) * sh + dh - 1) / dh;
+                if (sx1 > sw) sx1 = sw;
+                if (sy1 > sh) sy1 = sh;
+                for (int yy = sy0; yy < sy1; yy++)
+                    for (int xx = sx0; xx < sx1; xx++) {
+                        UINT32 v = px[(size_t)yy * sw + xx], a = v >> 24;
+                        sa += a;
+                        sr += (UINT64)(v >> 16 & 0xFF) * a;
+                        sg += (UINT64)(v >> 8 & 0xFF) * a;
+                        sb += (UINT64)(v & 0xFF) * a;
+                        wsum++;
+                    }
+                if (!wsum || !sa) continue;
+                put_argb(x, y, (UINT32)(sa / wsum), (UINT32)(sr / sa), (UINT32)(sg / sa), (UINT32)(sb / sa));
+            } else {
+                /* sample centre in source pixels, 8.8 fixed point */
+                int fx = (int)(((INT64)(2 * ox + 1) * sw * 128) / dw) - 128;
+                int fy = (int)(((INT64)(2 * oy + 1) * sh * 128) / dh) - 128;
+                if (fx < 0) fx = 0;
+                if (fy < 0) fy = 0;
+                int ix = fx >> 8, iy = fy >> 8, tx = fx & 255, ty = fy & 255;
+                for (int k = 0; k < 4; k++) {
+                    int xx = imin(ix + (k & 1), sw - 1), yy = imin(iy + (k >> 1), sh - 1);
+                    UINT32 w = (UINT32)((k & 1) ? tx : 256 - tx) * (UINT32)((k >> 1) ? ty : 256 - ty);
+                    UINT32 v = px[(size_t)yy * sw + xx];
+                    UINT64 wa = (UINT64)w * (v >> 24);
+                    sa += wa;
+                    sr += wa * (v >> 16 & 0xFF);
+                    sg += wa * (v >> 8 & 0xFF);
+                    sb += wa * (v & 0xFF);
+                }
+                if (!sa) continue;
+                put_argb(x, y, (UINT32)(sa >> 16), (UINT32)(sr / sa), (UINT32)(sg / sa), (UINT32)(sb / sa));
+            }
+        }
+    }
+}
+
+void GdiDrawImageDevice(int lx, int ly, const UINT32 *px, int w, int h)
+{
+    if (!g.ready || !px) return;
+    int ox = lx * g.s, oy = ly * g.s;
+    int x0 = imax(ox, g.cx0), x1 = imin(ox + w, g.cx1);
+    int y0 = imax(oy, g.cy0), y1 = imin(oy + h, g.cy1);
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) {
+            UINT32 v = px[(size_t)(y - oy) * w + (x - ox)];
+            put_argb(x, y, v >> 24, v >> 16 & 0xFF, v >> 8 & 0xFF, v & 0xFF);
+        }
+}
+
+void GdiDrawImageZoom(int lx, int ly, const UINT32 *px, int w, int h, int k)
+{
+    if (!g.ready || !px || k < 1) return;
+    int ox = lx * g.s, oy = ly * g.s;
+    int x0 = imax(ox, g.cx0), x1 = imin(ox + w * k, g.cx1);
+    int y0 = imax(oy, g.cy0), y1 = imin(oy + h * k, g.cy1);
+    for (int y = y0; y < y1; y++) {
+        const UINT32 *row = px + (size_t)((y - oy) / k) * w;
+        for (int x = x0; x < x1; x++) {
+            UINT32 v = row[(x - ox) / k];
+            put_argb(x, y, v >> 24, v >> 16 & 0xFF, v >> 8 & 0xFF, v & 0xFF);
+        }
+    }
+}
 
 /* -----------------------------------------------------------------------
  * Rounded rectangles
@@ -396,6 +485,21 @@ void GdiRoundAlpha(GdiRect r, int rad, GdiColor c, int alpha)
     if (!g.ready || r.w <= 0 || r.h <= 0) return;
     RBox b = rbox_of(r, rad);
     rbox_fill(&b, c, c, imin(alpha, 255));
+}
+
+void GdiRoundBorderAlpha(GdiRect r, int rad, GdiColor c, int alpha)
+{
+    if (!g.ready || r.w <= 0 || r.h <= 0) return;
+    RBox b = rbox_of(r, rad);
+    UINT32 n = pixof(c);
+    int w = g.s * FX;                             /* one logical pixel wide */
+    for (int y = imax(b.y0, g.cy0); y < imin(b.y1, g.cy1); y++)
+        for (int x = imax(b.x0, g.cx0); x < imin(b.x1, g.cx1); x++) {
+            int sd = rbox_sd(&b, x, y);
+            if (sd < -w - FX) continue;           /* well inside: nothing to draw */
+            int cv = cov_of(sd) - cov_of(sd + w);
+            if (cv > 0) plot(x, y, n, cv * alpha / 255);
+        }
 }
 
 void GdiRoundGradV(GdiRect r, int rad, GdiColor top, GdiColor bottom)
@@ -549,6 +653,94 @@ void GdiFillUnderCurve(GdiRect r, GdiCurveFn fn, void *ctx, GdiColor c)
 }
 
 /* -----------------------------------------------------------------------
+ * Blur ("acrylic" backdrops, text shadows)
+ * ----------------------------------------------------------------------- */
+
+/* One box-blur pass of radius r along rows (stride 1) or columns, on
+ * packed pixels: each byte lane is a channel.  tmp holds n values. */
+static void box_pass32(UINT32 *p, int n, int step, int r, UINT32 *tmp)
+{
+    if (n <= 1 || r <= 0) return;
+    UINT32 s0 = 0, s1 = 0, s2 = 0, d = (UINT32)(2 * r + 1);
+    for (int i = 0; i < n; i++) tmp[i] = p[(size_t)i * step];
+    for (int k = -r; k <= r; k++) {
+        UINT32 v = tmp[imin(imax(k, 0), n - 1)];
+        s0 += v & 0xFF; s1 += (v >> 8) & 0xFF; s2 += (v >> 16) & 0xFF;
+    }
+    for (int i = 0; i < n; i++) {
+        p[(size_t)i * step] = (s0 / d) | (s1 / d) << 8 | (s2 / d) << 16;
+        UINT32 a = tmp[imin(i + r + 1, n - 1)], b = tmp[imax(i - r, 0)];
+        s0 += (a & 0xFF) - (b & 0xFF);
+        s1 += ((a >> 8) & 0xFF) - ((b >> 8) & 0xFF);
+        s2 += ((a >> 16) & 0xFF) - ((b >> 16) & 0xFF);
+    }
+}
+
+static void box_pass8(UINT8 *p, int n, int step, int r, UINT8 *tmp)
+{
+    if (n <= 1 || r <= 0) return;
+    UINT32 sum = 0, d = (UINT32)(2 * r + 1);
+    for (int i = 0; i < n; i++) tmp[i] = p[(size_t)i * step];
+    for (int k = -r; k <= r; k++) sum += tmp[imin(imax(k, 0), n - 1)];
+    for (int i = 0; i < n; i++) {
+        p[(size_t)i * step] = (UINT8)(sum / d);
+        sum += tmp[imin(i + r + 1, n - 1)];
+        sum -= tmp[imax(i - r, 0)];
+    }
+}
+
+/* Three box passes each way approximate a Gaussian of about 2r */
+static void blur32(UINT32 *p, int w, int h, int r, UINT32 *tmp)
+{
+    for (int it = 0; it < 3; it++) {
+        for (int y = 0; y < h; y++) box_pass32(p + (size_t)y * w, w, 1, r, tmp);
+        for (int x = 0; x < w; x++) box_pass32(p + x, h, w, r, tmp);
+    }
+}
+
+static void blur8(UINT8 *p, int w, int h, int r, UINT8 *tmp)
+{
+    for (int it = 0; it < 3; it++) {
+        for (int y = 0; y < h; y++) box_pass8(p + (size_t)y * w, w, 1, r, tmp);
+        for (int x = 0; x < w; x++) box_pass8(p + x, h, w, r, tmp);
+    }
+}
+
+void GdiBackdrop(GdiRect r, int rad, int blur, GdiColor tint, int tint_alpha)
+{
+    if (!g.ready || r.w <= 0 || r.h <= 0) return;
+    RBox b = rbox_of(r, rad);
+    int br = imax(1, blur * g.s / 3);             /* box radius per pass, device px */
+    /* the region read (a margin so edges blur against what is outside) */
+    int x0 = imax(b.x0 - 3 * br, 0), y0 = imax(b.y0 - 3 * br, 0);
+    int x1 = imin(b.x1 + 3 * br, g.dw), y1 = imin(b.y1 + 3 * br, g.dh);
+    int w = x1 - x0, h = y1 - y0;
+    if (w <= 0 || h <= 0) return;
+    UINT32 *img = kmalloc((size_t)w * h * 4);
+    UINT32 *tmp = kmalloc((size_t)imax(w, h) * 4);
+    UINT32 tn = pixof(tint);
+    if (img && tmp) {
+        for (int y = 0; y < h; y++)
+            memcpy(img + (size_t)y * w, g.buf + (size_t)(y0 + y) * g.bstride + x0, (size_t)w * 4);
+        blur32(img, w, h, br, tmp);
+    }
+    int cx0 = imax(b.x0, g.cx0), cx1 = imin(b.x1, g.cx1);
+    int cy0 = imax(b.y0, g.cy0), cy1 = imin(b.y1, g.cy1);
+    for (int y = cy0; y < cy1; y++) {
+        UINT32 *row = g.buf + (size_t)y * g.bstride;
+        for (int x = cx0; x < cx1; x++) {
+            int c = cov_of(rbox_sd(&b, x, y));
+            if (!c) continue;
+            UINT32 v = (img && tmp) ? img[(size_t)(y - y0) * w + (x - x0)] : row[x];
+            v = blend(v, tn, (UINT32)tint_alpha);
+            row[x] = c >= 255 ? v : blend(row[x], v, (UINT32)c);
+        }
+    }
+    kfree(img);
+    kfree(tmp);
+}
+
+/* -----------------------------------------------------------------------
  * Text
  * ----------------------------------------------------------------------- */
 static const GdiFace *face(int style) { return &g_gdi_faces[style][g.s - 1]; }
@@ -658,6 +850,66 @@ void GdiTextCenter(int x, int y, int w, const char *s, GdiColor fg)
     int off = (w * g.s * 64 - adv) / 2;
     if (off < 0) off = 0;
     text_draw_at(x * g.s * 64 + off, y, s, fg, GDI_FONT_REGULAR);
+}
+
+/* A soft drop shadow under text drawn at pen position @pen (26.6 device
+ * px) on line y: the glyph coverage, blurred, in black at @alpha, one
+ * logical pixel lower. */
+static void text_shadow_at(int pen, int y, const char *s, int alpha)
+{
+    if (!g.ready || !s || !*s) return;
+    const GdiFace *f = face(GDI_FONT_REGULAR);
+    int br = g.s;                                 /* blur radius per pass */
+    int pad = 3 * br + 2;
+    int ox = (pen >> 6) - pad, oy = y * g.s - pad + g.s;   /* shadow offset: 1 logical px down */
+    int w = (text_adv(s, GDI_FONT_REGULAR) >> 6) + 2 * pad + 4, h = GDI_FONT_H * g.s + 2 * pad;
+    UINT8 *m = kzalloc((size_t)w * h), *tmp = kmalloc((size_t)imax(w, h));
+    if (!m || !tmp) { kfree(m); kfree(tmp); return; }
+    int base = LINE_BASELINE * g.s + pad, pen0 = pen;
+    for (const char *c = s; *c; c++) {
+        const GdiGlyph *gl = glyph(f, (unsigned char)*c);
+        int gx = ((pen + 32) >> 6) + gl->bx - (pen0 >> 6) + pad, gy = base - gl->by;
+        const UINT8 *bm = f->bits + gl->off;
+        for (int r = 0; r < gl->h; r++)
+            for (int col = 0; col < gl->w; col++) {
+                int px = gx + col, py = gy + r;
+                if (px >= 0 && px < w && py >= 0 && py < h) {
+                    UINT8 v = bm[r * gl->w + col];
+                    if (v > m[(size_t)py * w + px]) m[(size_t)py * w + px] = v;
+                }
+            }
+        pen += gl->adv;
+    }
+    blur8(m, w, h, br, tmp);
+    UINT32 black = pixof(GDI_BLACK);
+    for (int yy = 0; yy < h; yy++)
+        for (int xx = 0; xx < w; xx++) {
+            int a = m[(size_t)yy * w + xx] * alpha / 255;
+            if (a) {
+                /* the blur spreads coverage thin: strengthen it a little */
+                a = imin(255, a * 2);
+                plot(ox + xx, oy + yy, black, a);
+            }
+        }
+    kfree(m);
+    kfree(tmp);
+}
+
+void GdiTextShadowCenter(int x, int y, int w, const char *s, GdiColor fg, int shadow)
+{
+    if (!g.ready || !s) return;
+    int adv = text_adv(s, GDI_FONT_REGULAR);
+    int off = (w * g.s * 64 - adv) / 2;
+    if (off < 0) off = 0;
+    text_shadow_at(x * g.s * 64 + off, y, s, shadow);
+    text_draw_at(x * g.s * 64 + off, y, s, fg, GDI_FONT_REGULAR);
+}
+
+void GdiTextShadow(int x, int y, const char *s, GdiColor fg, int shadow)
+{
+    if (!g.ready || !s) return;
+    text_shadow_at(x * g.s * 64, y, s, shadow);
+    text_draw_at(x * g.s * 64, y, s, fg, GDI_FONT_REGULAR);
 }
 
 /* -----------------------------------------------------------------------
