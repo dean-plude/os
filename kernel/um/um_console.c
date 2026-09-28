@@ -45,6 +45,7 @@ void UmConsoleRelease(UmConsole *c)
 /* Program → Terminal */
 int um_console_write(UmConsole *c, const char *data, int len)
 {
+    if (!c) return len;                                 /* no console: discard */
     UmProcess *p = UmCurrent();
     int done = 0;
     while (done < len) {
@@ -91,6 +92,7 @@ bool UmConsoleWantsInput(UmConsole *c)    { return c->waiting; }
 int um_console_read(UmConsole *c, char *buf, int cap, UmProcess *p)
 {
     /* Wait for a complete line (or EOF); return at most that line. */
+    if (!c) return 0;                                   /* no console: end of file */
     for (;;) {
         UINT32 head = __atomic_load_n(&c->in_head, __ATOMIC_ACQUIRE);
         UINT32 avail = head - c->in_tail;

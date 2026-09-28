@@ -185,7 +185,7 @@ static void cmd_help(Term *t)
         "  echo <text> [> f]   print text, or write it to a file\n"
         "  mkdir <name>        create a folder\n"
         "  del <name>          delete a file or empty folder (also: rm)\n"
-        "  start <app> [file]  open notepad, explorer, settings, calendar\n"
+        "  start <app> [file]  open notepad, explorer, settings, calendar, browser\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  ipconfig            show the network configuration\n"
         "  ping <host> [-n N]  test a connection (ICMP echo)\n"
@@ -197,6 +197,7 @@ static void cmd_help(Term *t)
         "  taskkill /PID <n>   stop a program\n"
         "  <program> [args]    run a Windows program (C:\\Programs: hello, mandel,\n"
         "                      primes, guess, wc, crttest, filetest, crash, spin)\n"
+        "  netsurf [url]       the NetSurf web browser (http, https)\n"
         "  certutil -addstore root <file>   trust a CA certificate (PEM/DER)\n"
         "  cls                 clear the screen (also: clear, Ctrl+L)\n"
         "  exit                close this window\n"
@@ -352,7 +353,7 @@ static void cmd_start(Term *t, int argc, char **argv)
 {
     AppId id;
     if (argc < 2 || !AppByName(argv[1], &id)) {
-        terr(t, "Usage: start notepad|explorer|settings|calendar|terminal [file]");
+        terr(t, "Usage: start notepad|explorer|settings|calendar|browser|terminal [file]");
         return;
     }
     if (argc >= 3 && (id == APP_NOTEPAD || id == APP_EXPLORER)) {
@@ -467,6 +468,15 @@ static void cmd_certutil(Term *t, int argc, char **argv)
         if (!n) { tprintf(t, "CertUtil: -addstore command FAILED: %s", err); return; }
         tprintf(t, "Added %d certificate%s to the Trusted Root Certification Authorities store.",
                 n, n == 1 ? "" : "s");
+        /* Programs with their own TLS (NetSurf) read the store's files */
+        RamNode *sys = RamfsResolve(NULL, "\\Windows\\System32");
+        RamNode *store = sys ? RamfsCreate(sys, "CertStore", true) : NULL;
+        if (store) {
+            char name[24];
+            ksnprintf(name, sizeof(name), "root%d.crt", RamfsCount(store) + 1);
+            RamNode *copy = RamfsCreate(store, name, false);
+            if (copy) RamfsWrite(copy, f->data, f->size);
+        }
         tprint(t, "CertUtil: -addstore command completed successfully. (Lasts until reboot.)");
         return;
     }

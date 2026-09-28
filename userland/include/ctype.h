@@ -15,4 +15,6 @@ _CRTIMP int iscntrl(int c);
 _CRTIMP int isblank(int c);
 _CRTIMP int toupper(int c);
 _CRTIMP int tolower(int c);
+#define isascii(c) ((unsigned)(c) < 0x80)
+#define toascii(c) ((c) & 0x7F)
 _NOVA_END

@@ -174,6 +174,7 @@
 #define SYSCALL_NtRaiseException                  0x0185
 #define SYSCALL_NtNovaLoadDll                     0x0186  /* NovaOS: LdrLoadDll's kernel half */
 #define SYSCALL_NtNovaDebugPrint                  0x0187  /* NovaOS: OutputDebugString */
+#define SYSCALL_NtNovaGetRandom                   0x0188  /* NovaOS: RtlGenRandom (the kernel entropy pool) */
 /* NovaOS sockets (ws2_32's kernel half) */
 #define SYSCALL_NtNovaSocket                      0x0190
 #define SYSCALL_NtNovaSockConnect                 0x0191

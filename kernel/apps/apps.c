@@ -9,6 +9,7 @@
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
 #include "../arch/x86_64/cpu.h"
+#include "../um/um.h"
 
 static const AppInfo g_apps[APP_COUNT] = {
     [APP_TERMINAL]    = { "Terminal",               ">_", GDI_C(0x1E,0x1E,0x1E), true,  true  },
@@ -16,7 +17,7 @@ static const AppInfo g_apps[APP_COUNT] = {
     [APP_NOTEPAD]     = { "Notepad",                "",   GDI_C(0x4A,0x7B,0xD0), true,  true  },
     [APP_SETTINGS]    = { "Settings",               "",   GDI_C(0x5A,0x5A,0x64), true,  false },
     [APP_CALENDAR]    = { "Calendar",               "",   GDI_C(0xD0,0x40,0x40), true,  false },
-    [APP_EDGE]        = { "Microsoft Edge",         "e",  GDI_C(0x1A,0x8A,0xC8), false, false },
+    [APP_NETSURF]     = { "NetSurf",                "",   GDI_C(0x3A,0x6E,0xF0), true,  true  },
     [APP_STORE]       = { "Microsoft Store",        "S",  GDI_C(0x18,0x6A,0xD8), false, false },
     [APP_PHOTOS]      = { "Photos",                 "P",  GDI_C(0x2E,0xA0,0x8A), false, false },
     [APP_XBOX]        = { "Xbox",                   "X",  GDI_C(0x10,0x7C,0x10), false, false },
@@ -63,6 +64,17 @@ int AppRecent(AppId *out, int max)
     return n;
 }
 
+/* NetSurf is a Windows program (tools/build_netsurf.py); started from the
+ * desktop it has no console and runs on its own until its window closes */
+static void netsurf_launch(void)
+{
+    RamNode *exe = RamfsResolve(NULL, "\\Programs\\NetSurf\\netsurf.exe");
+    char err[160] = "not installed";
+    UmProcess *p = exe ? UmSpawn(exe, "netsurf", exe->parent, NULL, err, sizeof(err)) : NULL;
+    if (p) UmDetach(p);
+    else   kprintf("[APPS] Cannot start NetSurf: %s\n", err);
+}
+
 void AppLaunch(AppId id)
 {
     const AppInfo *a = AppGetInfo(id);
@@ -77,6 +89,7 @@ void AppLaunch(AppId id)
     case APP_NOTEPAD:  NotepadOpen(NULL); break;
     case APP_SETTINGS: SettingsOpen(); break;
     case APP_CALENDAR: CalendarOpen(); break;
+    case APP_NETSURF:  netsurf_launch(); break;
     default:           PlaceholderOpen(id); break;
     }
 }
@@ -97,6 +110,7 @@ bool AppByName(const char *name, AppId *out)
         { "notepad",  APP_NOTEPAD  },
         { "settings", APP_SETTINGS }, { "control", APP_SETTINGS },
         { "calendar", APP_CALENDAR }, { "clock", APP_CALENDAR },
+        { "browser",  APP_NETSURF  },    /* "netsurf" itself runs the program */
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         const char *a = names[i].cmd, *b = name;
@@ -257,6 +271,17 @@ void AppDrawIcon(AppId id, int x, int y, int s)
         GdiTextCenter(x, y + s * 30 / 100 + (s * 70 / 100 - GDI_FONT_H) / 2, s, "31",
                       GDI_C(0x30, 0x30, 0x30));
         break; }
+    case APP_NETSURF: {                         /* a globe on NetSurf blue */
+        GdiRoundGradV(RECT(x, y, s, s), s / 5, GDI_C(0x4C, 0x8C, 0xF8), GDI_C(0x24, 0x52, 0xD8));
+        int cx = x + s / 2, cy = y + s / 2, r = s * 32 / 100;
+        GdiColor ink = GDI_C(0x16, 0x2A, 0x5C), sea = GDI_C(0x8C, 0xD4, 0xFF);
+        GdiFillCircle(cx, cy, r, ink);
+        GdiFillCircle(cx, cy, r - u - 1, sea);
+        GdiLine(pt(cx, cy, s, -30, 0), pt(cx, cy, s, 30, 0), s * 16 / 22, ink);      /* equator */
+        GdiLine(pt(cx, cy, s, 0, -30), pt(cx, cy, s, 0, 30), s * 16 / 22, ink);      /* meridian */
+        GdiLine(pt(cx, cy, s, -26, -14), pt(cx, cy, s, 26, -14), s * 16 / 28, ink);  /* latitudes */
+        GdiLine(pt(cx, cy, s, -26, 14), pt(cx, cy, s, 26, 14), s * 16 / 28, ink);
+        break; }
     default:
         letter_tile(AppGetInfo(id), x, y, s);
         break;
@@ -282,8 +307,8 @@ static void ph_paint(WND *w)
     AppDrawIcon(id, c.x + 24, c.y + 24, 48);
     GdiTextBold(c.x + 92, c.y + 26, AppGetInfo(id)->name, UI_TEXT);
     GdiTextT(c.x + 92, c.y + 48, "isn't available on NovaOS yet.", UI_TEXT2);
-    GdiTextT(c.x + 92, c.y + 70, "Windows apps will run once NovaOS can load", UI_TEXT3);
-    GdiTextT(c.x + 92, c.y + 88, "real .exe files in user mode.", UI_TEXT3);
+    GdiTextT(c.x + 92, c.y + 70, "NovaOS runs Windows programs from C:\\Programs,", UI_TEXT3);
+    GdiTextT(c.x + 92, c.y + 88, "but this one isn't installed.", UI_TEXT3);
     UiButton(ph_ok(w), "OK", true);
 }
 

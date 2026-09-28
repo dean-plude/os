@@ -11,6 +11,7 @@ typedef struct _iobuf {
     int    _flags;
     int    _ungot;         /* ungetc character, or -1 */
     long long _offset;     /* file offset of _buf[0] */
+    int    _fd;            /* POSIX descriptor, once one is made */
 } FILE;
 typedef long long fpos_t;
 #define EOF       (-1)
@@ -76,4 +77,9 @@ _CRTIMP int    sscanf(const char *s, const char *fmt, ...);
 _CRTIMP int    vsscanf(const char *s, const char *fmt, va_list ap);
 _CRTIMP int    vfscanf(FILE *f, const char *fmt, va_list ap);
 #define fileno _fileno
+_CRTIMP FILE  *_fdopen(int fd, const char *mode);
+#define fdopen _fdopen
+_CRTIMP FILE  *tmpfile(void);
+_CRTIMP int    vasprintf(char **out, const char *fmt, va_list ap);
+_CRTIMP int    asprintf(char **out, const char *fmt, ...);
 _NOVA_END

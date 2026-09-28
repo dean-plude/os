@@ -886,6 +886,12 @@ RamNode *UmFindProgram(RamNode *cwd, const char *name)
             if (n && !n->dir) return n;
         }
     }
+    /* programs installed in a folder of their own: C:\Programs\NAME\NAME.exe */
+    if (!path && !has_ext && strlen(name) < 64) {
+        ksnprintf(buf, sizeof(buf), "\\Programs\\%s\\%s.exe", name, name);
+        RamNode *n = RamfsResolve(NULL, buf);
+        if (n && !n->dir) return n;
+    }
     return NULL;
 }
 
@@ -1069,6 +1075,11 @@ void UmRelease(UmProcess *p)
     if (!p) return;
     if (!p->exited) UmKill(p, 1);
     p->released = true;
+}
+
+void UmDetach(UmProcess *p)
+{
+    if (p) p->released = true;          /* reclaimed by UmPoll once it exits */
 }
 
 UINT32      UmPid(const UmProcess *p)  { return p->pid; }

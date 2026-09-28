@@ -1,6 +1,7 @@
 /* winsock2.h — the Winsock 2 subset NovaOS's ws2_32.dll implements */
 #pragma once
 #include <windows.h>
+#include <errno.h>
 _NOVA_BEGIN
 
 #ifdef WS2_EXPORT
@@ -71,6 +72,7 @@ typedef UINT_PTR SOCKET;
 #define WSAEFAULT          10014
 #define WSAEINVAL          10022
 #define WSAEMFILE          10024
+#define WSAEAFNOSUPPORT    10047
 
 typedef struct in_addr { union { struct { UCHAR s_b1,s_b2,s_b3,s_b4; } S_un_b; ULONG S_addr; } S_un;
 #define s_addr S_un.S_addr
@@ -109,7 +111,10 @@ typedef struct addrinfo ADDRINFOA, *PADDRINFOA;
 
 #define FD_SETSIZE 64
 typedef struct fd_set { UINT fd_count; SOCKET fd_array[FD_SETSIZE]; } fd_set;
-struct timeval { LONG tv_sec, tv_usec; };
+#ifndef _NOVA_TIMEVAL
+#define _NOVA_TIMEVAL
+struct timeval { long tv_sec; long tv_usec; };
+#endif
 typedef unsigned int u_int;
 typedef unsigned long u_long;
 typedef unsigned short u_short;
