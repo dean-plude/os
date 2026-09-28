@@ -17,6 +17,7 @@
 typedef struct { int page; UINT32 net_sig; } Settings;
 
 static const char *g_pages[] = { "System", "Display", "Personalization", "Storage", "Network", "About" };
+static const Glyph g_page_glyphs[] = { GL_PC, GL_WINDOWS, GL_PICTURES, GL_FOLDER, GL_NETWORK, GL_NOVA };
 #define N_PAGES ((int)(sizeof(g_pages) / sizeof(g_pages[0])))
 
 /* A labelled row inside a card: "Label ........ value" */
@@ -207,6 +208,7 @@ static void set_paint(WND *w)
     GdiRect c = WmClientRect(w);
 
     GdiFillRect(RECT(c.x, c.y, SIDE_W, c.h), UI_PANEL);
+    GdiFillRect(RECT(c.x + SIDE_W - 1, c.y, 1, c.h), UI_LINE);
     GdiTextLarge(c.x + 20, c.y + 16, "Settings", UI_TEXT);
     for (int i = 0; i < N_PAGES; i++) {
         int y = c.y + 64 + i * ITEM_H;
@@ -214,7 +216,8 @@ static void set_paint(WND *w)
             GdiRoundRect(RECT(c.x + 8, y, SIDE_W - 16, ITEM_H - 4), 4, UI_HOVER, GDI_TRANSPARENT);
             GdiRoundRect(RECT(c.x + 8, y + 9, 3, 14), 1, UI_ACCENT, GDI_TRANSPARENT);
         }
-        GdiTextT(c.x + 24, y + 8, g_pages[i], UI_TEXT);
+        AppDrawGlyph(g_page_glyphs[i], c.x + 22, y + 8, 16, i == st->page ? UI_TEXT : UI_TEXT2);
+        GdiTextT(c.x + 48, y + 8, g_pages[i], i == st->page ? UI_TEXT : UI_TEXT2);
     }
 
     int x = c.x + SIDE_W + 28, y = c.y + 20, w2 = c.w - SIDE_W - 56;

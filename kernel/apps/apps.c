@@ -308,7 +308,7 @@ void AppDrawWindowIcon(const WND *w, int x, int y, int size)
 void AppDrawNodeIcon(RamNode *f, int x, int y, int size)
 {
     if (!f) return;
-    if (f->dir) { AppDrawFolderIcon(x, y, size); return; }
+    if (f->dir) { AppDrawFolderKindIcon(AppFolderKind(f), x, y, size); return; }
     if (IconDraw(AppFileIcon(f), x, y, size)) return;
     if (file_type(f) == FT_EXE) AppDrawProgramIcon(f->name, x, y, size);
     else                        AppDrawFileIcon(x, y, size);
@@ -384,8 +384,10 @@ bool UiHit(GdiRect r, int x, int y)
 
 void UiButton(GdiRect r, const char *label, bool primary)
 {
-    GdiRoundRect(r, 4, primary ? UI_ACCENT : UI_CARD,
-                 primary ? GDI_TRANSPARENT : UI_LINE);
+    /* the same flat style as Explorer's command bar: rounded, no hard
+     * outline, a faint light edge */
+    GdiRoundRect(r, 6, primary ? UI_ACCENT : UI_CARD, GDI_TRANSPARENT);
+    if (!primary) GdiRoundBorderAlpha(r, 6, GDI_WHITE, 18);
     GdiTextCenter(r.x, r.y + (r.h - GDI_FONT_H) / 2, r.w, label,
                   primary ? GDI_BLACK : UI_TEXT);
 }
@@ -442,75 +444,223 @@ static GdiPoint pt(int x, int y, int s, int px, int py)
     return (GdiPoint){ x * 16 + s * 16 * px / 100, y * 16 + s * 16 * py / 100 };
 }
 
+/* -----------------------------------------------------------------------
+ * The NovaOS icon style: one design language everywhere
+ *
+ *   - apps are rounded-square tiles (corner radius 22% of the size) with a
+ *     top-to-bottom gradient and a white line glyph;
+ *   - folders, documents and "This PC" are flat, two-tone shapes with the
+ *     same proportional corner radius;
+ *   - UI glyphs (sidebar, tray, toolbars) are single-colour line drawings.
+ * Every line is 8% of the icon size thick (at least 1.4 px), with round
+ * caps and joins, so icons of any size have the same visual weight.
+ * Shapes are given in percent of the icon size.
+ * ----------------------------------------------------------------------- */
+typedef struct { signed char x, y; } P;
+
+static int stroke_w(int s)                       /* 1/16 logical px */
+{
+    int w = s * 16 * 8 / 100;
+    return w < 22 ? 22 : w;
+}
+
+static void poly(const P *p, int n, bool closed, int x, int y, int s, GdiColor c)
+{
+    int w = stroke_w(s);
+    for (int i = 0; i + 1 < n; i++)
+        GdiLine(pt(x, y, s, p[i].x, p[i].y), pt(x, y, s, p[i + 1].x, p[i + 1].y), w, c);
+    if (closed && n > 2)
+        GdiLine(pt(x, y, s, p[n - 1].x, p[n - 1].y), pt(x, y, s, p[0].x, p[0].y), w, c);
+}
+
+/* A circle (or ellipse: rx != ry) as a closed 24-sided outline */
+static void ring(int x, int y, int s, int cx, int cy, int rx, int ry, GdiColor c)
+{
+    static const signed char cs[24] = { 100, 97, 87, 71, 50, 26, 0, -26, -50, -71, -87, -97,
+                                        -100, -97, -87, -71, -50, -26, 0, 26, 50, 71, 87, 97 };
+    int w = stroke_w(s);
+    for (int i = 0; i < 24; i++) {
+        int j = (i + 1) % 24;
+        GdiPoint a = { x * 16 + s * 16 * (cx * 100 + rx * cs[i]) / 10000,
+                       y * 16 + s * 16 * (cy * 100 + ry * cs[(i + 18) % 24]) / 10000 };
+        GdiPoint b = { x * 16 + s * 16 * (cx * 100 + rx * cs[j]) / 10000,
+                       y * 16 + s * 16 * (cy * 100 + ry * cs[(j + 18) % 24]) / 10000 };
+        GdiLine(a, b, w, c);
+    }
+}
+
+static void tile(int x, int y, int s, GdiColor top, GdiColor bot)
+{
+    GdiRoundGradV(RECT(x, y, s, s), s * 22 / 100, top, bot);
+}
+
+static GdiColor lighten(GdiColor c, int t) { return GdiLerp(c, GDI_WHITE, t); }
+
 static void letter_tile(const AppInfo *a, int x, int y, int s)
 {
-    GdiRoundRect(RECT(x, y, s, s), s / 4, a->color, GDI_TRANSPARENT);
+    tile(x, y, s, lighten(a->color, 40), a->color);
     if (a->label[0]) {
         GdiColor fg = (a->color == GDI_WHITE) ? GDI_BLACK : GDI_WHITE;
         GdiTextCenter(x, y + (s - GDI_FONT_H) / 2, s, a->label, fg);
     }
 }
 
+static const P G_FOLDER[] = { {18,30}, {18,74}, {82,74}, {82,38}, {50,38}, {43,30} };
+static const P G_PAGE[]   = { {28,16}, {28,84}, {72,84}, {72,32}, {56,16} };
+static const P G_FOLD[]   = { {56,16}, {56,32}, {72,32} };
+
+void AppDrawGlyph(Glyph g, int x, int y, int s, GdiColor c)
+{
+    switch (g) {
+    case GL_PC: {
+        static const P scr[] = { {12,20}, {88,20}, {88,66}, {12,66} };
+        static const P stand[] = { {50,66}, {50,80} }, base[] = { {32,82}, {68,82} };
+        poly(scr, 4, true, x, y, s, c); poly(stand, 2, false, x, y, s, c); poly(base, 2, false, x, y, s, c);
+        break; }
+    case GL_DOCUMENTS: case GL_FILE: {
+        static const P l1[] = { {40,52}, {60,52} }, l2[] = { {40,66}, {60,66} };
+        poly(G_PAGE, 5, true, x, y, s, c); poly(G_FOLD, 3, false, x, y, s, c);
+        if (g == GL_DOCUMENTS) { poly(l1, 2, false, x, y, s, c); poly(l2, 2, false, x, y, s, c); }
+        break; }
+    case GL_DOWNLOADS: {
+        static const P shaft[] = { {50,16}, {50,62} }, head[] = { {32,46}, {50,64}, {68,46} };
+        static const P tray[] = { {20,82}, {80,82} };
+        poly(shaft, 2, false, x, y, s, c); poly(head, 3, false, x, y, s, c); poly(tray, 2, false, x, y, s, c);
+        break; }
+    case GL_PICTURES: {
+        static const P fr[] = { {14,22}, {86,22}, {86,78}, {14,78} };
+        static const P mt[] = { {20,72}, {40,50}, {54,64}, {64,55}, {80,72} };
+        poly(fr, 4, true, x, y, s, c); poly(mt, 5, false, x, y, s, c);
+        ring(x, y, s, 66, 38, 6, 6, c);
+        break; }
+    case GL_PERSON: {
+        static const P sh[] = { {20,84}, {26,68}, {38,60}, {62,60}, {74,68}, {80,84} };
+        ring(x, y, s, 50, 34, 14, 14, c); poly(sh, 6, false, x, y, s, c);
+        break; }
+    case GL_CODE: {
+        static const P l[] = { {36,28}, {16,50}, {36,72} }, r[] = { {64,28}, {84,50}, {64,72} };
+        static const P sl[] = { {56,22}, {44,78} };
+        poly(l, 3, false, x, y, s, c); poly(r, 3, false, x, y, s, c); poly(sl, 2, false, x, y, s, c);
+        break; }
+    case GL_WINDOWS: {
+        static const P fr[] = { {14,22}, {86,22}, {86,78}, {14,78} }, bar[] = { {14,38}, {86,38} };
+        poly(fr, 4, true, x, y, s, c); poly(bar, 2, false, x, y, s, c);
+        break; }
+    case GL_FOLDER:
+        poly(G_FOLDER, 6, true, x, y, s, c);
+        break;
+    case GL_PLUS: {
+        static const P v[] = { {50,20}, {50,80} }, h[] = { {20,50}, {80,50} };
+        poly(v, 2, false, x, y, s, c); poly(h, 2, false, x, y, s, c);
+        break; }
+    case GL_SEARCH: {
+        static const P hd[] = { {62,62}, {84,84} };
+        ring(x, y, s, 44, 44, 26, 26, c); poly(hd, 2, false, x, y, s, c);
+        break; }
+    case GL_NETWORK: case GL_NETWORK_OFF: {
+        static const P eq[] = { {16,50}, {84,50} };
+        ring(x, y, s, 50, 50, 34, 34, c); ring(x, y, s, 50, 50, 15, 34, c);
+        poly(eq, 2, false, x, y, s, c);
+        if (g == GL_NETWORK_OFF) {
+            static const P sl[] = { {14,86}, {86,14} };
+            poly(sl, 2, false, x, y, s, c);
+        }
+        break; }
+    case GL_CHEVRON: {
+        static const P v[] = { {40,24}, {64,50}, {40,76} };
+        poly(v, 3, false, x, y, s, c);
+        break; }
+    case GL_BACK: {
+        static const P sh[] = { {80,50}, {22,50} }, hd[] = { {44,28}, {22,50}, {44,72} };
+        poly(sh, 2, false, x, y, s, c); poly(hd, 3, false, x, y, s, c);
+        break; }
+    case GL_UP: {
+        static const P sh[] = { {50,80}, {50,22} }, hd[] = { {28,44}, {50,22}, {72,44} };
+        poly(sh, 2, false, x, y, s, c); poly(hd, 3, false, x, y, s, c);
+        break; }
+    case GL_GEAR: {
+        static const signed char t[8][4] = { {50,10,50,22}, {78,22,70,30}, {90,50,78,50}, {78,78,70,70},
+                                             {50,90,50,78}, {22,78,30,70}, {10,50,22,50}, {22,22,30,30} };
+        ring(x, y, s, 50, 50, 28, 28, c); ring(x, y, s, 50, 50, 10, 10, c);
+        for (int i = 0; i < 8; i++) {
+            P l[2] = { { t[i][0], t[i][1] }, { t[i][2], t[i][3] } };
+            poly(l, 2, false, x, y, s, c);
+        }
+        break; }
+    case GL_POWER: {                            /* a ring open at the top, and a stroke */
+        static const signed char cs[24] = { 100, 97, 87, 71, 50, 26, 0, -26, -50, -71, -87, -97,
+                                            -100, -97, -87, -71, -50, -26, 0, 26, 50, 71, 87, 97 };
+        for (int i = 20; i < 24 + 16; i++) {    /* from 300 to 240 degrees, the long way */
+            int a = i % 24, b2 = (i + 1) % 24;
+            GdiPoint p0 = { x * 16 + s * 16 * (5000 + 34 * cs[a]) / 10000, y * 16 + s * 16 * (5400 + 34 * cs[(a + 18) % 24]) / 10000 };
+            GdiPoint p1 = { x * 16 + s * 16 * (5000 + 34 * cs[b2]) / 10000, y * 16 + s * 16 * (5400 + 34 * cs[(b2 + 18) % 24]) / 10000 };
+            GdiLine(p0, p1, stroke_w(s), c);
+        }
+        static const P st[] = { {50,10}, {50,48} };
+        poly(st, 2, false, x, y, s, c);
+        break; }
+    case GL_NOVA: {                             /* NovaOS: a four-pointed star */
+        GdiPoint st[8] = { pt(x, y, s, 50, 4), pt(x, y, s, 60, 40), pt(x, y, s, 96, 50), pt(x, y, s, 60, 60),
+                           pt(x, y, s, 50, 96), pt(x, y, s, 40, 60), pt(x, y, s, 4, 50), pt(x, y, s, 40, 40) };
+        GdiFillPolygon(st, 8, c);
+        break; }
+    }
+}
+
 void AppDrawIcon(AppId id, int x, int y, int s)
 {
-    int u = s / 16 > 1 ? s / 16 : 1;         /* line unit */
+    GdiColor w = GDI_WHITE;
     switch (id) {
-    case APP_TERMINAL:
-        GdiRoundRect(RECT(x, y, s, s), s / 5, GDI_C(0x1E, 0x1E, 0x1E), GDI_C(0x55, 0x55, 0x55));
-        GdiLine(pt(x, y, s, 26, 34), pt(x, y, s, 44, 50), s * 16 / 11, GDI_C(0xE8, 0xE8, 0xE8));
-        GdiLine(pt(x, y, s, 44, 50), pt(x, y, s, 26, 66), s * 16 / 11, GDI_C(0xE8, 0xE8, 0xE8));
-        GdiFillRect(RECT(x + s * 50 / 100, y + s * 62 / 100, s * 24 / 100, u + 1), UI_ACCENT);
-        break;
+    case APP_TERMINAL: {
+        static const P chev[] = { {28,34}, {44,50}, {28,66} }, cur[] = { {52,68}, {72,68} };
+        tile(x, y, s, GDI_C(0x4A, 0x50, 0x5E), GDI_C(0x1E, 0x21, 0x28));
+        poly(chev, 3, false, x, y, s, w);
+        poly(cur, 2, false, x, y, s, GDI_C(0x5C, 0xC8, 0xFF));
+        break; }
     case APP_EXPLORER:
-        GdiRoundRect(RECT(x + s * 8 / 100, y + s * 18 / 100, s * 40 / 100, s * 24 / 100),
-                     s / 16, GDI_C(0xE0, 0xA8, 0x2E), GDI_TRANSPARENT);
-        GdiRoundGradV(RECT(x + s * 8 / 100, y + s * 28 / 100, s * 84 / 100, s * 56 / 100),
-                      s / 12, GDI_C(0xFF, 0xD8, 0x6B), GDI_C(0xF0, 0xB0, 0x30));
+        tile(x, y, s, GDI_C(0xFF, 0xCF, 0x4D), GDI_C(0xF0, 0x98, 0x1C));
+        poly(G_FOLDER, 6, true, x, y, s, w);
         break;
-    case APP_NOTEPAD:
-        GdiRoundRect(RECT(x + s * 18 / 100, y + s * 8 / 100, s * 64 / 100, s * 84 / 100),
-                     s / 12, GDI_C(0xF5, 0xF5, 0xF5), GDI_C(0xC8, 0xC8, 0xC8));
-        for (int i = 0; i < 4; i++)
-            GdiFillRect(RECT(x + s * 28 / 100, y + s * 26 / 100 + i * s * 14 / 100,
-                             s * (i == 3 ? 26 : 44) / 100, u), GDI_C(0x4A, 0x7B, 0xD0));
-        break;
+    case APP_NOTEPAD: {
+        static const P l1[] = { {40,52}, {60,52} }, l2[] = { {40,66}, {60,66} };
+        tile(x, y, s, GDI_C(0x62, 0xA4, 0xFF), GDI_C(0x2A, 0x64, 0xE0));
+        poly(G_PAGE, 5, true, x, y, s, w); poly(G_FOLD, 3, false, x, y, s, w);
+        poly(l1, 2, false, x, y, s, w); poly(l2, 2, false, x, y, s, w);
+        break; }
     case APP_SETTINGS: {
-        GdiRoundRect(RECT(x, y, s, s), s / 5, GDI_C(0x3A, 0x3E, 0x46), GDI_TRANSPARENT);
-        GdiColor g = GDI_C(0xC8, 0xCE, 0xD6);
+        GdiColor top = GDI_C(0x8A, 0x93, 0xA4), bot = GDI_C(0x4A, 0x52, 0x62);
+        tile(x, y, s, top, bot);
         int cx = x + s / 2, cy = y + s / 2;
-        static const int dir[8][2] = { {0,-40},{28,-28},{40,0},{28,28},{0,40},{-28,28},{-40,0},{-28,-28} };
+        static const signed char dir[8][2] = { {0,-30},{21,-21},{30,0},{21,21},{0,30},{-21,21},{-30,0},{-21,-21} };
         for (int i = 0; i < 8; i++)
-            GdiLine(pt(cx, cy, s, 0, 0), pt(cx, cy, s, dir[i][0], dir[i][1]), s * 16 / 7, g);
-        GdiFillCircle(cx, cy, s * 28 / 100, g);
-        GdiFillCircle(cx, cy, s * 12 / 100, GDI_C(0x3A, 0x3E, 0x46));
+            GdiLine(pt(cx, cy, s, 0, 0), pt(cx, cy, s, dir[i][0], dir[i][1]), s * 16 * 14 / 100, w);
+        GdiFillCircle(cx, cy, s * 24 / 100, w);
+        GdiFillCircle(cx, cy, s * 10 / 100, GdiLerp(top, bot, 128));
         break; }
     case APP_CALENDAR: {
-        int r = s / 5;
-        GdiRoundRect(RECT(x, y, s, s), r, GDI_WHITE, GDI_TRANSPARENT);
-        GdiRoundRect(RECT(x, y, s, s * 30 / 100 + r), r, GDI_C(0xD0, 0x40, 0x40), GDI_TRANSPARENT);
-        GdiFillRect(RECT(x, y + s * 30 / 100, s, r), GDI_WHITE);
-        GdiTextCenter(x, y + s * 30 / 100 + (s * 70 / 100 - GDI_FONT_H) / 2, s, "31",
-                      GDI_C(0x30, 0x30, 0x30));
+        static const P body[] = { {20,26}, {80,26}, {80,80}, {20,80} }, hdr[] = { {20,42}, {80,42} };
+        static const P r1[] = { {36,18}, {36,32} }, r2[] = { {64,18}, {64,32} };
+        tile(x, y, s, GDI_C(0xFF, 0x7A, 0x6E), GDI_C(0xE0, 0x3C, 0x3C));
+        poly(body, 4, true, x, y, s, w); poly(hdr, 2, false, x, y, s, w);
+        poly(r1, 2, false, x, y, s, w); poly(r2, 2, false, x, y, s, w);
+        if (s >= 36) GdiTextCenter(x, y + s * 61 / 100 - GDI_FONT_H / 2, s, "31", w);
+        else {
+            for (int i = 0; i < 3; i++)
+                GdiFillCircle(x + s * (34 + 16 * i) / 100, y + s * 62 / 100, s > 20 ? 2 : 1, w);
+        }
         break; }
-    case APP_NETSURF: {                         /* a globe on NetSurf blue */
-        GdiRoundGradV(RECT(x, y, s, s), s / 5, GDI_C(0x4C, 0x8C, 0xF8), GDI_C(0x24, 0x52, 0xD8));
-        int cx = x + s / 2, cy = y + s / 2, r = s * 32 / 100;
-        GdiColor ink = GDI_C(0x16, 0x2A, 0x5C), sea = GDI_C(0x8C, 0xD4, 0xFF);
-        GdiFillCircle(cx, cy, r, ink);
-        GdiFillCircle(cx, cy, r - u - 1, sea);
-        GdiLine(pt(cx, cy, s, -30, 0), pt(cx, cy, s, 30, 0), s * 16 / 22, ink);      /* equator */
-        GdiLine(pt(cx, cy, s, 0, -30), pt(cx, cy, s, 0, 30), s * 16 / 22, ink);      /* meridian */
-        GdiLine(pt(cx, cy, s, -26, -14), pt(cx, cy, s, 26, -14), s * 16 / 28, ink);  /* latitudes */
-        GdiLine(pt(cx, cy, s, -26, 14), pt(cx, cy, s, 26, 14), s * 16 / 28, ink);
+    case APP_NETSURF: {
+        static const P eq[] = { {18,50}, {82,50} };
+        tile(x, y, s, GDI_C(0x5E, 0x8E, 0xFF), GDI_C(0x2A, 0x4C, 0xD6));
+        ring(x, y, s, 50, 50, 32, 32, w); ring(x, y, s, 50, 50, 14, 32, w);
+        poly(eq, 2, false, x, y, s, w);
         break; }
-    case APP_PHOTOS: {                          /* a landscape: sky, sun, hills */
-        GdiRoundGradV(RECT(x, y, s, s), s / 5, GDI_C(0x5A, 0xC8, 0xF0), GDI_C(0x2E, 0x8C, 0xD8));
-        GdiFillCircle(x + s * 68 / 100, y + s * 32 / 100, s * 11 / 100, GDI_C(0xFF, 0xE0, 0x6A));
-        GdiPoint hill[3] = { pt(x, y, s, 8, 80), pt(x, y, s, 40, 40), pt(x, y, s, 72, 80) };
-        GdiFillPolygon(hill, 3, GDI_C(0x2E, 0xA0, 0x6A));
-        GdiPoint hill2[3] = { pt(x, y, s, 44, 80), pt(x, y, s, 66, 54), pt(x, y, s, 92, 80) };
-        GdiFillPolygon(hill2, 3, GDI_C(0x1E, 0x7A, 0x50));
-        GdiFillRect(RECT(x + s * 8 / 100, y + s * 80 / 100 - 1, s * 84 / 100, u + 1), GDI_C(0x1E, 0x7A, 0x50));
+    case APP_PHOTOS: {
+        static const P mt[] = { {18,74}, {40,48}, {56,64}, {66,55}, {82,74} };
+        static const P base[] = { {18,74}, {82,74} };
+        tile(x, y, s, GDI_C(0x4F, 0xDB, 0xC8), GDI_C(0x16, 0x94, 0xA8));
+        poly(mt, 5, false, x, y, s, w); poly(base, 2, false, x, y, s, w);
+        GdiFillCircle(x + s * 66 / 100, y + s * 32 / 100, s * 8 / 100 + 1, w);
         break; }
     default:
         letter_tile(AppGetInfo(id), x, y, s);
@@ -518,28 +668,75 @@ void AppDrawIcon(AppId id, int x, int y, int s)
     }
 }
 
-void AppDrawFolderIcon(int x, int y, int s)
+/* Flat folder: a darker back with its tab, a lighter front */
+void AppDrawFolderKindIcon(FolderKind k, int x, int y, int s)
 {
-    GdiRoundRect(RECT(x + s * 8 / 100, y + s * 18 / 100, s * 40 / 100, s * 24 / 100),
-                 s / 16 + 1, GDI_C(0xE0, 0xA8, 0x2E), GDI_TRANSPARENT);
-    GdiRoundGradV(RECT(x + s * 8 / 100, y + s * 28 / 100, s * 84 / 100, s * 56 / 100),
-                  s / 12 + 1, GDI_C(0xFF, 0xD8, 0x6B), GDI_C(0xF0, 0xB0, 0x30));
+    int r = s * 8 / 100 + 1;
+    GdiRoundRect(RECT(x + s * 6 / 100, y + s * 16 / 100, s * 40 / 100, s * 24 / 100), r,
+                 GDI_C(0xE3, 0x9E, 0x21), GDI_TRANSPARENT);
+    GdiRoundRect(RECT(x + s * 6 / 100, y + s * 24 / 100, s * 88 / 100, s * 60 / 100), r,
+                 GDI_C(0xE3, 0x9E, 0x21), GDI_TRANSPARENT);
+    GdiRoundGradV(RECT(x + s * 6 / 100, y + s * 32 / 100, s * 88 / 100, s * 52 / 100), r,
+                  GDI_C(0xFF, 0xD6, 0x62), GDI_C(0xF7, 0xB9, 0x3A));
+    if (k == FOLDER_PLAIN || s < 28) return;
+    /* the folder's purpose, as a glyph on its front */
+    static const Glyph gl[] = { GL_FOLDER, GL_DOCUMENTS, GL_DOWNLOADS, GL_PICTURES, GL_CODE };
+    int e = s * 36 / 100;
+    AppDrawGlyph(gl[k], x + (s - e) / 2, y + s * 40 / 100, e, GDI_C(0xB0, 0x6E, 0x0C));
 }
 
+void AppDrawFolderIcon(int x, int y, int s) { AppDrawFolderKindIcon(FOLDER_PLAIN, x, y, s); }
+
+/* Flat document: a white page with a folded corner */
 void AppDrawFileIcon(int x, int y, int s)
 {
-    int u = s / 16 > 1 ? s / 16 : 1;
-    GdiRoundRect(RECT(x + s * 20 / 100, y + s * 8 / 100, s * 60 / 100, s * 84 / 100),
-                 s / 12 + 1, GDI_C(0xF5, 0xF5, 0xF5), GDI_C(0xB8, 0xB8, 0xB8));
-    for (int i = 0; i < 3; i++)
-        GdiFillRect(RECT(x + s * 30 / 100, y + s * 30 / 100 + i * s * 16 / 100,
-                         s * (i == 2 ? 24 : 40) / 100, u), GDI_C(0x8A, 0x8A, 0x8A));
+    GdiPoint page[5] = { pt(x, y, s, 20, 6), pt(x, y, s, 60, 6), pt(x, y, s, 80, 26),
+                         pt(x, y, s, 80, 94), pt(x, y, s, 20, 94) };
+    GdiFillPolygon(page, 5, GDI_C(0xC4, 0xCA, 0xD4));
+    int in = s >= 24 ? 16 * 1 : 8;               /* 1 px (1/2 px when tiny) border */
+    GdiPoint inner[5] = { { page[0].x + in, page[0].y + in }, { page[1].x - in / 2, page[1].y + in },
+                          { page[2].x - in, page[2].y + in / 2 }, { page[3].x - in, page[3].y - in },
+                          { page[4].x + in, page[4].y - in } };
+    GdiFillPolygon(inner, 5, GDI_C(0xFA, 0xFB, 0xFD));
+    GdiPoint fold[3] = { pt(x, y, s, 60, 6), pt(x, y, s, 60, 26), pt(x, y, s, 80, 26) };
+    GdiFillPolygon(fold, 3, GDI_C(0xDD, 0xE2, 0xEA));
+    if (s >= 20)
+        for (int i = 0; i < 3; i++)
+            GdiLine(pt(x, y, s, 32, 46 + i * 14), pt(x, y, s, i == 2 ? 56 : 68, 46 + i * 14),
+                    s * 16 * 5 / 100 < 16 ? 16 : s * 16 * 5 / 100, GDI_C(0x9A, 0xA6, 0xB8));
+}
+
+/* Flat monitor: "This PC" */
+void AppDrawPcIcon(int x, int y, int s)
+{
+    int r = s * 8 / 100 + 1;
+    GdiRoundRect(RECT(x + s * 6 / 100, y + s * 12 / 100, s * 88 / 100, s * 60 / 100), r,
+                 GDI_C(0x2A, 0x30, 0x3C), GDI_TRANSPARENT);
+    GdiRoundGradV(RECT(x + s * 10 / 100, y + s * 16 / 100, s * 80 / 100, s * 52 / 100), r > 1 ? r - 1 : 1,
+                  GDI_C(0x6C, 0xB6, 0xFF), GDI_C(0x2F, 0x6B, 0xE8));
+    GdiFillRect(RECT(x + s * 44 / 100, y + s * 72 / 100, s * 12 / 100, s * 10 / 100), GDI_C(0x8A, 0x94, 0xA6));
+    GdiRoundRect(RECT(x + s * 28 / 100, y + s * 80 / 100, s * 44 / 100, s * 7 / 100 + 1), s * 3 / 100 + 1,
+                 GDI_C(0xB4, 0xBC, 0xC8), GDI_TRANSPARENT);
+}
+
+FolderKind AppFolderKind(const RamNode *d)
+{
+    if (!d || !d->dir || !d->parent || d->parent != RamfsRoot()) return FOLDER_PLAIN;
+    static const struct { const char *name; FolderKind k; } known[] = {
+        { "Documents", FOLDER_DOCUMENTS }, { "Downloads", FOLDER_DOWNLOADS },
+        { "Pictures", FOLDER_PICTURES }, { "Projects", FOLDER_PROJECTS },
+    };
+    for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++)
+        if (name_is(d->name, known[i].name)) return known[i].k;
+    return FOLDER_PLAIN;
 }
 
 /* A window with a coloured title strip and the program's initial */
 void AppDrawProgramIcon(const char *name, int x, int y, int s)
 {
     if (IconDraw(AppProgramIcon(name), x, y, s)) return;
+    /* A program without an icon: a tile in a colour picked from its name,
+     * with its initial (or, when tiny, a window glyph) */
     static const GdiColor tint[] = {
         GDI_C(0x3A, 0x7B, 0xD5), GDI_C(0x2E, 0xA0, 0x6A), GDI_C(0xC8, 0x5A, 0x3A),
         GDI_C(0x8A, 0x4A, 0xC8), GDI_C(0x1E, 0x9A, 0xA8), GDI_C(0xB8, 0x8A, 0x1E),
@@ -547,12 +744,13 @@ void AppDrawProgramIcon(const char *name, int x, int y, int s)
     unsigned h = 0;
     for (const char *p = name; p && *p && *p != '.'; p++) h = h * 31 + (unsigned char)(*p | 0x20);
     GdiColor c = tint[h % (sizeof(tint) / sizeof(tint[0]))];
-    GdiRoundRect(RECT(x + s / 16, y + s / 8, s - s / 8, s - s / 4), s / 8 + 1,
-                 GDI_C(0xF2, 0xF2, 0xF2), GDI_C(0xB0, 0xB0, 0xB0));
-    GdiRoundRect(RECT(x + s / 16, y + s / 8, s - s / 8, s / 4), s / 8 + 1, c, GDI_TRANSPARENT);
-    GdiFillRect(RECT(x + s / 16, y + s / 8 + s / 8, s - s / 8, s / 8), c);
-    char initial[2] = { name && name[0] ? (char)(name[0] & ~0x20) : '?', 0 };
-    if (s >= 20) GdiTextCenter(x, y + s / 8 + s / 4 + (s - s / 2 - GDI_FONT_H) / 2, s, initial, c);
+    tile(x, y, s, lighten(c, 50), c);
+    if (s >= 24) {
+        char initial[2] = { name && name[0] ? (char)(name[0] & ~0x20) : '?', 0 };
+        GdiTextBold(x + (s - GdiTextBoldW(initial)) / 2, y + (s - GDI_FONT_H) / 2, initial, GDI_WHITE);
+    } else {
+        AppDrawGlyph(GL_WINDOWS, x + s / 6, y + s / 6, s - s / 3, GDI_WHITE);
+    }
 }
 
 /* -----------------------------------------------------------------------

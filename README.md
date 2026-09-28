@@ -296,13 +296,31 @@ Windows executables (PE32+) without emulation.
   desktop, next wallpaper, Personalize, Display settings), desktop icons
   (Open, Open in Terminal), title bars (maximize/restore, snap, minimize,
   close) and dock items (open or new window, close).
-- **Dock**: every window of a Windows program gets its own button with a
-  running indicator; tooltips name each item and the clock's tooltip shows
-  the full date.
-- **Themes**: three wallpapers with matching glass colours (Sunset, Ocean,
-  Twilight), chosen in the new **Settings > Personalization** page.
-- The desktop's This PC, Documents, Downloads, Pictures and Projects icons
-  open File Explorer at those folders; NetSurf has a desktop icon.
+- **Dock and tray**: the Start menu, dock and tray are neutral dark
+  frosted glass (`GdiBackdrop` blurs whatever is behind them, then tints
+  it), so they sit well on any wallpaper.  The dock holds only launchers
+  and windows, on a fixed grid (40 px targets, 28 px app tiles, 22 px
+  glyphs); every window without a pinned app gets its own button with a
+  running indicator.  The tray, a separate block at the right, shows the
+  network status (tooltip: address; click: Settings > Network) and the
+  clock (tooltip: full date; click: Calendar).
+- **Themes**: three wallpapers (Sunset, Ocean, Twilight), chosen in the new
+  **Settings > Personalization** page.
+- **One icon style**: apps are rounded-square tiles with a white line glyph;
+  folders (special ones show their purpose: Documents, Downloads, Pictures,
+  Projects), documents and This PC are flat two-tone shapes; sidebars,
+  toolbars and the tray use single-colour line glyphs; every line is 8% of
+  the icon size thick.  The Start button is NovaOS's star.
+- **Windows**: the title bar is a shade darker than toolbars, with a
+  hairline under it, and every window has a faint light edge.
+- **File Explorer**: a command bar with back/up, a clickable breadcrumb
+  path (This PC > Local Disk (C:) > Documents; long paths collapse from the
+  left) and "+ Folder" / "+ File" buttons; the sidebar has line glyphs per
+  place (now including Downloads) and is divided from the list.
+- **Desktop**: This PC, Documents, Downloads, Pictures and Projects open
+  File Explorer there; NetSurf has an icon.  The selection is a soft
+  translucent fill, and labels have a blurred drop shadow so they stay
+  readable on bright wallpaper.
 - **Windows icons (.ico)** (`gdi/icon.c`, `gdi/png.c`): the kernel reads
   .ico and .cur files, whose images may be BMP-style DIBs (1, 4, 8, 16, 24
   or 32 bits per pixel with the AND mask) or PNG (as 256x256 Vista-style

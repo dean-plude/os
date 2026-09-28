@@ -4,10 +4,11 @@
  * A software-rendered Windows-11-style desktop:
  *
  *   - wallpaper: a sky gradient with wave layers, in one of a few themes
- *     (Settings > Personalization) that also tint the Start menu and dock
+ *     (Settings > Personalization)
  *   - desktop icons; double-click opens, right-click shows a menu
- *   - the dock: Start, search, pinned apps with running indicators, a
- *     button for each other program window, tooltips, and a clock
+ *   - the dock (frosted glass): Start, search, pinned apps with running
+ *     indicators, a button for each other window, tooltips; and the tray
+ *     (network status and clock) as its own block at the right
  *   - the Start menu: type to search apps, programs, settings pages,
  *     folders and files (arrow keys + Enter); otherwise pinned apps,
  *     installed programs, recent apps and documents, and a power menu
@@ -30,6 +31,7 @@
 #include "../hal/rtc.h"
 #include "../arch/x86_64/cpu.h"
 #include "../apps/apps.h"
+#include "../net/net.h"
 
 /* -----------------------------------------------------------------------
  * Themes
@@ -38,44 +40,46 @@ typedef struct {
     const char *name;
     GdiColor sky_top, sky_mid;
     GdiColor wave[6];                  /* back to front */
-    GdiColor glass_top, glass_bot;     /* Start menu */
-    GdiColor dock_top, dock_bot;
-    GdiColor line;                     /* separators on glass */
-    GdiColor chip;                     /* small buttons on glass */
-    GdiColor select;                   /* selected / hovered rows on glass */
 } Theme;
 
 static const Theme g_themes[] = {
     { "Sunset",
       GDI_C(0x39, 0x0C, 0x3C), GDI_C(0x6E, 0x1E, 0x55),
       { GDI_C(0x86, 0x21, 0x44), GDI_C(0xA8, 0x2E, 0x3A), GDI_C(0xCB, 0x46, 0x2C),
-        GDI_C(0xE6, 0x6C, 0x22), GDI_C(0xF2, 0x9C, 0x2F), GDI_C(0xF7, 0xC8, 0x44) },
-      GDI_C(0xF4, 0xD6, 0xC4), GDI_C(0xE8, 0xB8, 0xA0),
-      GDI_C(0xF0, 0xB8, 0x7A), GDI_C(0xE8, 0xA9, 0x6B),
-      GDI_C(0xD8, 0x9A, 0x88), GDI_C(0xF8, 0xE2, 0xD4), GDI_C(0xFF, 0xF1, 0xE8) },
+        GDI_C(0xE6, 0x6C, 0x22), GDI_C(0xF2, 0x9C, 0x2F), GDI_C(0xF7, 0xC8, 0x44) } },
     { "Ocean",
       GDI_C(0x06, 0x1E, 0x3C), GDI_C(0x12, 0x4A, 0x7A),
       { GDI_C(0x16, 0x5A, 0x8C), GDI_C(0x1A, 0x72, 0xA0), GDI_C(0x20, 0x8C, 0xB0),
-        GDI_C(0x2C, 0xA6, 0xBE), GDI_C(0x5A, 0xC4, 0xCC), GDI_C(0x9C, 0xE0, 0xDA) },
-      GDI_C(0xE2, 0xEE, 0xF6), GDI_C(0xB8, 0xD4, 0xE8),
-      GDI_C(0xC8, 0xE2, 0xF0), GDI_C(0xA6, 0xCC, 0xE4),
-      GDI_C(0x9C, 0xBC, 0xD4), GDI_C(0xF0, 0xF7, 0xFC), GDI_C(0xFF, 0xFF, 0xFF) },
+        GDI_C(0x2C, 0xA6, 0xBE), GDI_C(0x5A, 0xC4, 0xCC), GDI_C(0x9C, 0xE0, 0xDA) } },
     { "Twilight",
       GDI_C(0x0C, 0x0A, 0x1E), GDI_C(0x24, 0x1C, 0x46),
       { GDI_C(0x34, 0x26, 0x62), GDI_C(0x46, 0x30, 0x7E), GDI_C(0x5A, 0x3C, 0x98),
-        GDI_C(0x72, 0x4A, 0xB0), GDI_C(0x90, 0x5E, 0xC4), GDI_C(0xB4, 0x7C, 0xD6) },
-      GDI_C(0xEA, 0xE4, 0xF6), GDI_C(0xC8, 0xBC, 0xE6),
-      GDI_C(0xD6, 0xCC, 0xEE), GDI_C(0xB4, 0xA6, 0xDC),
-      GDI_C(0xA8, 0x9A, 0xCC), GDI_C(0xF4, 0xF0, 0xFC), GDI_C(0xFF, 0xFF, 0xFF) },
+        GDI_C(0x72, 0x4A, 0xB0), GDI_C(0x90, 0x5E, 0xC4), GDI_C(0xB4, 0x7C, 0xD6) } },
 };
 #define N_THEMES ((int)(sizeof(g_themes) / sizeof(g_themes[0])))
 static int g_theme;
 #define TH (&g_themes[g_theme])
 
-#define TXT_DARK     GDI_C(0x1E, 0x14, 0x1C)
-#define TXT_MUTED    GDI_C(0x5A, 0x4A, 0x52)
-#define TXT_LIGHT    GDI_C(0xFB, 0xF6, 0xF2)
-#define ACCENT       GDI_C(0x1A, 0x5A, 0xB8)
+/* The shell's glass (Start menu, dock, tray): neutral dark acrylic that
+ * blurs whatever is behind it, so it sits well on any wallpaper */
+#define GLASS_TINT   GDI_C(0x1C, 0x1C, 0x20)
+#define GLASS_ALPHA  200
+#define GLASS_BLUR   18                 /* logical px */
+#define EDGE_ALPHA   40                 /* white hairline around glass */
+#define SH_TEXT      GDI_C(0xF3, 0xF3, 0xF5)
+#define SH_TEXT2     GDI_C(0xB0, 0xB0, 0xB8)
+#define SH_LINE      GDI_C(0x4E, 0x4E, 0x56)
+#define SH_FIELD     GDI_C(0x16, 0x16, 0x1A)
+#define SH_SELECT    GDI_C(0x40, 0x40, 0x48)
+#define HOVER_ALPHA  26                 /* white wash under the pointer */
+#define TXT_LIGHT    GDI_C(0xFF, 0xFF, 0xFF)
+#define ACCENT       UI_ACCENT
+
+static void glass(GdiRect r, int rad)
+{
+    GdiBackdrop(r, rad, GLASS_BLUR, GLASS_TINT, GLASS_ALPHA);
+    GdiRoundBorderAlpha(r, rad, GDI_WHITE, EDGE_ALPHA);
+}
 
 /* Dark popups (context menus, tooltips, Alt+Tab), as in Windows 11 */
 #define POP_BG       GDI_C(0x2B, 0x2B, 0x2B)
@@ -182,7 +186,7 @@ static void draw_wallpaper_in(const Theme *t, GdiRect r)
  * ----------------------------------------------------------------------- */
 typedef enum {
     ACT_NONE, ACT_APP, ACT_START, ACT_SEARCH, ACT_ICON, ACT_TASK, ACT_CLOCK,
-    ACT_PROG, ACT_RECENT, ACT_RESULT, ACT_POWER, ACT_MENU, ACT_SWALLOW,
+    ACT_PROG, ACT_RECENT, ACT_RESULT, ACT_POWER, ACT_MENU, ACT_SWALLOW, ACT_NET,
 } ActKind;
 
 typedef struct { GdiRect r; ActKind kind; int arg; } Hot;
@@ -233,42 +237,14 @@ static int g_icon_sel = -1;
 
 static void draw_icon_emblem(int x, int y, int i)
 {
-    /* 48x48 emblem area at (x,y) */
+    /* 48x48 emblem area at (x,y), in the shared icon style */
     switch (g_icons[i].kind) {
-    case ICON_PC:
-        GdiRoundGradV(RECT(x + 4, y + 2, 40, 28), 4,
-                      GDI_C(0x9E, 0xD8, 0xF0), GDI_C(0x3A, 0x6A, 0xC8));
-        GdiRoundRect(RECT(x + 4, y + 2, 40, 28), 4, GDI_TRANSPARENT, GDI_C(0xC8, 0xD0, 0xE0));
-        GdiFillRect(RECT(x + 18, y + 30, 12, 6), GDI_C(0x9A, 0xA2, 0xB0));
-        GdiFillRect(RECT(x + 12, y + 36, 24, 4), GDI_C(0xC0, 0xC6, 0xD2));
-        break;
-    case ICON_DOCS:
-        GdiRoundRect(RECT(x + 8, y + 2, 30, 40), 4, GDI_C(0xF2, 0xF4, 0xF8), GDI_C(0xC0, 0xC4, 0xCC));
-        for (int k = 0; k < 4; k++)
-            GdiFillRect(RECT(x + 13, y + 10 + k * 7, 20, 2), GDI_C(0x5A, 0x7A, 0xC8));
-        break;
-    case ICON_FOLDER:
-        AppDrawFolderIcon(x, y, 48);
-        GdiFillRect(RECT(x + 22, y + 22, 4, 12), GDI_C(0x2A, 0x6A, 0xC8));   /* down arrow */
-        {
-            GdiPoint tri[3] = { GDI_PT(x + 17, y + 32), GDI_PT(x + 31, y + 32), GDI_PT(x + 24, y + 39) };
-            GdiFillPolygon(tri, 3, GDI_C(0x2A, 0x6A, 0xC8));
-        }
-        break;
-    case ICON_PROJECT:
-        GdiRoundRect(RECT(x + 2, y + 2, 44, 44), 8, GDI_C(0x16, 0x12, 0x1C), GDI_TRANSPARENT);
-        for (int r = 0; r < 2; r++)
-            for (int c = 0; c < 2; c++)
-                GdiRoundRect(RECT(x + 8 + c * 18, y + 8 + r * 18, 14, 12), 2,
-                             GDI_C(0xF2, 0xC0, 0x44), GDI_TRANSPARENT);
-        break;
-    case ICON_PHOTOS:
-        GdiRoundRect(RECT(x + 4, y + 8, 22, 18), 2, GDI_C(0xF0, 0xF0, 0xF0), GDI_TRANSPARENT);
-        GdiRoundGradV(RECT(x + 12, y + 4, 28, 22), 2, GDI_C(0x6A, 0xA0, 0xE0), GDI_C(0xE0, 0x9A, 0x6A));
-        break;
-    case ICON_APP:
-        AppDrawIcon((AppId)g_icons[i].app, x + 2, y + 2, 44);
-        break;
+    case ICON_PC:      AppDrawPcIcon(x, y, 48); break;
+    case ICON_DOCS:    AppDrawFolderKindIcon(FOLDER_DOCUMENTS, x, y, 48); break;
+    case ICON_FOLDER:  AppDrawFolderKindIcon(FOLDER_DOWNLOADS, x, y, 48); break;
+    case ICON_PHOTOS:  AppDrawFolderKindIcon(FOLDER_PICTURES, x, y, 48); break;
+    case ICON_PROJECT: AppDrawFolderKindIcon(FOLDER_PROJECTS, x, y, 48); break;
+    case ICON_APP:     AppDrawIcon((AppId)g_icons[i].app, x + 3, y + 3, 42); break;
     }
 }
 
@@ -278,14 +254,10 @@ static void draw_desktop_icons(void)
     for (int i = 0; i < N_ICONS; i++) {
         int x = 20, y = 24 + i * 96;
         GdiRect cell = RECT(x, y - 6, 88, 84);
-        if (i == g_icon_sel) {
-            GdiRoundAlpha(cell, 6, GDI_WHITE, 60);
-            GdiRoundRect(cell, 6, GDI_TRANSPARENT, GDI_C(0xE8, 0xE8, 0xF0));
-        }
+        if (i == g_icon_sel) GdiRoundAlpha(cell, 6, GDI_WHITE, 38);   /* soft, no outline */
         draw_icon_emblem(x + 20, y, i);
-        /* a soft shadow keeps labels readable on any wallpaper */
-        GdiTextCenter(x + 1, y + 55, 88, g_icons[i].label, GDI_C(0x10, 0x08, 0x10));
-        GdiTextCenter(x, y + 54, 88, g_icons[i].label, TXT_LIGHT);
+        /* a soft blurred shadow keeps labels readable on any wallpaper */
+        GdiTextShadowCenter(x, y + 54, 88, g_icons[i].label, TXT_LIGHT, 205);
         HOT_BG(cell, ACT_ICON, i);
     }
 }
@@ -604,25 +576,21 @@ static const char *kind_label(ResKind k)
 /* ---- drawing ---- */
 static void section_title(int x, int y, const char *s)
 {
-    GdiTextBold(x, y, s, TXT_DARK);
+    GdiTextBold(x, y, s, SH_TEXT);
 }
 
 static void draw_search_box(GdiRect r)
 {
-    GdiRoundRect(r, r.h / 2, TH->chip, TH->line);
-    /* magnifier */
-    int cx = r.x + 20, cy = r.y + r.h / 2 - 1;
-    GdiFillCircle(cx, cy, 6, TXT_MUTED);
-    GdiFillCircle(cx, cy, 4, TH->chip);
-    GdiLine((GdiPoint){ (cx + 4) * 16, (cy + 4) * 16 }, (GdiPoint){ (cx + 8) * 16, (cy + 8) * 16 }, 32, TXT_MUTED);
+    GdiRoundRect(r, r.h / 2, SH_FIELD, SH_LINE);
+    AppDrawGlyph(GL_SEARCH, r.x + 12, r.y + (r.h - 16) / 2, 16, SH_TEXT2);
     int tx = r.x + 36, ty = r.y + (r.h - GDI_FONT_H) / 2;
     if (g_query_len) {
-        GdiTextT(tx, ty, g_query, TXT_DARK);
+        GdiTextT(tx, ty, g_query, SH_TEXT);
         int cw = GdiTextW(g_query);
         GdiFillRect(RECT(tx + cw + 1, ty - 1, 2, GDI_FONT_H + 2), ACCENT);   /* caret */
     } else {
         GdiFillRect(RECT(tx, ty - 1, 2, GDI_FONT_H + 2), ACCENT);
-        GdiTextT(tx + 6, ty, "Type to search apps, programs, settings and files", TXT_MUTED);
+        GdiTextT(tx + 6, ty, "Type to search apps, programs, settings and files", SH_TEXT2);
     }
 }
 
@@ -630,19 +598,19 @@ static void draw_results(int x, int y, int w)
 {
     if (!g_nres) {
         section_title(x, y, "No results");
-        GdiTextT(x, y + 24, "Nothing on this PC matches that name.", TXT_MUTED);
+        GdiTextT(x, y + 24, "Nothing on this PC matches that name.", SH_TEXT2);
         return;
     }
     section_title(x, y, "Best matches");
     y += 26;
     for (int i = 0; i < g_nres; i++) {
         GdiRect row = RECT(x - 8, y, w + 16, 46);
-        if (i == g_sel) GdiRoundRect(row, 8, TH->select, TH->line);
-        else if (hovered(ACT_RESULT, i)) GdiRoundAlpha(row, 8, GDI_WHITE, 70);
+        if (i == g_sel) GdiRoundRect(row, 8, SH_SELECT, SH_LINE);
+        else if (hovered(ACT_RESULT, i)) GdiRoundAlpha(row, 8, GDI_WHITE, HOVER_ALPHA);
         result_icon(i, x, y + 7, 32);
         char buf[96];
         fit_text(g_res[i].name, w - 60, buf, sizeof(buf), true);
-        GdiTextBold(x + 44, y + 6, buf, TXT_DARK);
+        GdiTextBold(x + 44, y + 6, buf, SH_TEXT);
         char sub[RAMFS_PATH_MAX + 16];
         if (g_res[i].kind == R_FOLDER || g_res[i].kind == R_FILE || g_res[i].kind == R_PROG)
             ksnprintf(sub, sizeof(sub), "%s  -  %s", g_res[i].kind == R_FILE
@@ -651,11 +619,11 @@ static void draw_results(int x, int y, int w)
         else
             ksnprintf(sub, sizeof(sub), "%s", kind_label(g_res[i].kind));
         fit_text(sub, w - 60, buf, sizeof(buf), false);
-        GdiTextT(x + 44, y + 24, buf, TXT_MUTED);
+        GdiTextT(x + 44, y + 24, buf, SH_TEXT2);
         HOT_OV(row, ACT_RESULT, i);
         y += 48;
     }
-    GdiTextT(x, y + 8, "Enter opens the highlighted item.  Up/Down to choose, Esc to clear.", TXT_MUTED);
+    GdiTextT(x, y + 8, "Enter opens the highlighted item.  Up/Down to choose, Esc to clear.", SH_TEXT2);
 }
 
 static void draw_home(int x, int y, int w, int bottom)
@@ -667,9 +635,9 @@ static void draw_home(int x, int y, int w, int bottom)
     for (int i = 0; i < N_PINNED; i++) {
         int cx = x + i * col;
         GdiRect cell = RECT(cx, y - 4, col, 78);
-        if (hovered(ACT_APP, g_pinned[i])) GdiRoundAlpha(cell, 8, GDI_WHITE, 70);
+        if (hovered(ACT_APP, g_pinned[i])) GdiRoundAlpha(cell, 8, GDI_WHITE, HOVER_ALPHA);
         AppDrawIcon(g_pinned[i], cx + (col - 44) / 2, y + 2, 44);
-        GdiTextCenter(cx, y + 52, col, g_pinned_cap[i], TXT_DARK);
+        GdiTextCenter(cx, y + 52, col, g_pinned_cap[i], SH_TEXT);
         HOT_OV(cell, ACT_APP, g_pinned[i]);
     }
     y += 96;
@@ -679,18 +647,18 @@ static void draw_home(int x, int y, int w, int bottom)
     for (int i = 0; i < g_nprogs; i++) if (!g_progs[i].hidden) shown++;
     if (shown) {
         section_title(x, y, "Programs");
-        GdiTextT(x + w - GdiTextW("from C:\\Programs"), y + 1, "from C:\\Programs", TXT_MUTED);
+        GdiTextT(x + w - GdiTextW("from C:\\Programs"), y + 1, "from C:\\Programs", SH_TEXT2);
         y += 28;
         int per_row = 6, k = 0;
         for (int i = 0; i < g_nprogs && k < 2 * per_row; i++) {
             if (g_progs[i].hidden) continue;
             int cx = x + (k % per_row) * col, cy = y + (k / per_row) * 72;
             GdiRect cell = RECT(cx, cy - 4, col, 68);
-            if (hovered(ACT_PROG, i)) GdiRoundAlpha(cell, 8, GDI_WHITE, 70);
+            if (hovered(ACT_PROG, i)) GdiRoundAlpha(cell, 8, GDI_WHITE, HOVER_ALPHA);
             AppDrawProgramIcon(g_progs[i].name, cx + (col - 36) / 2, cy + 2, 36);
             char cap[40];
             fit_text(g_progs[i].name, col - 8, cap, sizeof(cap), false);
-            GdiTextCenter(cx, cy + 42, col, cap, TXT_DARK);
+            GdiTextCenter(cx, cy + 42, col, cap, SH_TEXT);
             HOT_OV(cell, ACT_PROG, i);
             k++;
         }
@@ -704,7 +672,7 @@ static void draw_home(int x, int y, int w, int bottom)
     RamNode *files[6];
     int na = AppRecent(apps, 4), nf = AppRecentFiles(files, 6);
     if (!na && !nf) {
-        GdiTextT(x, y, "Apps, folders and documents you open will show up here.", TXT_MUTED);
+        GdiTextT(x, y, "Apps, folders and documents you open will show up here.", SH_TEXT2);
         return;
     }
     int half = w / 2, k = 0;
@@ -714,14 +682,14 @@ static void draw_home(int x, int y, int w, int bottom)
         GdiRect cell = RECT(cx - 6, cy - 4, half - 8, 42);
         char name[48], sub[RAMFS_PATH_MAX];
         if (i < na) {
-            if (hovered(ACT_APP, apps[i])) GdiRoundAlpha(cell, 8, GDI_WHITE, 70);
+            if (hovered(ACT_APP, apps[i])) GdiRoundAlpha(cell, 8, GDI_WHITE, HOVER_ALPHA);
             AppDrawIcon(apps[i], cx, cy + 2, 30);
             fit_text(AppGetInfo(apps[i])->name, half - 60, name, sizeof(name), false);
             ksnprintf(sub, sizeof(sub), "App");
             HOT_OV(cell, ACT_APP, apps[i]);
         } else {
             RamNode *f = files[i - na];
-            if (hovered(ACT_RECENT, i - na)) GdiRoundAlpha(cell, 8, GDI_WHITE, 70);
+            if (hovered(ACT_RECENT, i - na)) GdiRoundAlpha(cell, 8, GDI_WHITE, HOVER_ALPHA);
             AppDrawNodeIcon(f, cx, cy + 2, 30);
             fit_text(f->name, half - 60, name, sizeof(name), false);
             char path[RAMFS_PATH_MAX];
@@ -729,18 +697,10 @@ static void draw_home(int x, int y, int w, int bottom)
             fit_text(path, half - 60, sub, sizeof(sub), false);
             HOT_OV(cell, ACT_RECENT, i - na);
         }
-        GdiTextT(cx + 40, cy + 2, name, TXT_DARK);
-        GdiTextT(cx + 40, cy + 19, sub, TXT_MUTED);
+        GdiTextT(cx + 40, cy + 2, name, SH_TEXT);
+        GdiTextT(cx + 40, cy + 19, sub, SH_TEXT2);
         k++;
     }
-}
-
-static void power_glyph(int cx, int cy, int r, GdiColor c)
-{
-    GdiFillCircle(cx, cy, r, c);
-    GdiFillCircle(cx, cy, r - 2, TH->chip);
-    GdiFillRect(RECT(cx - 3, cy - r - 1, 6, r), TH->chip);   /* gap at the top */
-    GdiFillRect(RECT(cx - 1, cy - r - 1, 2, r + 1), c);      /* the stroke */
 }
 
 static void draw_start_menu(void)
@@ -756,8 +716,7 @@ static void draw_start_menu(void)
     L_start = RECT(mx, my, mw, mh);
 
     GdiDropShadow(RECT(mx, my + 6, mw, mh), 16, 22, 80);
-    GdiRoundGradV(L_start, 16, TH->glass_top, TH->glass_bot);
-    GdiRoundRect(L_start, 16, GDI_TRANSPARENT, TH->line);
+    glass(L_start, 16);
     HOT_OV(L_start, ACT_SWALLOW, 0);
 
     int pad = 28, cx = mx + pad, cw = mw - 2 * pad;
@@ -769,27 +728,25 @@ static void draw_start_menu(void)
 
     /* User / power bar */
     int by = my + mh - 62;
-    GdiFillRect(RECT(mx + 1, by, mw - 2, 1), TH->line);
+    GdiFillRect(RECT(mx + 1, by, mw - 2, 1), SH_LINE);
     RtcTime t;
     rtc_read(&t);
     const char *greet = t.hour < 12 ? "Good morning" : t.hour < 18 ? "Good afternoon" : "Good evening";
     GdiFillCircle(cx + 18, by + 31, 17, GDI_C(0x6A, 0x4A, 0xC8));
     GdiTextCenter(cx + 1, by + 24, 36, "DP", GDI_WHITE);
-    GdiTextT(cx + 46, by + 14, greet, TXT_MUTED);
-    GdiTextBold(cx + 46, by + 31, USER_NAME, TXT_DARK);
+    GdiTextT(cx + 46, by + 14, greet, SH_TEXT2);
+    GdiTextBold(cx + 46, by + 31, USER_NAME, SH_TEXT);
 
-    GdiRect pw = RECT(mx + mw - pad - 36, by + 13, 36, 36);
-    if (hovered(ACT_POWER, 0)) GdiRoundAlpha(pw, 8, GDI_WHITE, 90);
-    power_glyph(pw.x + 18, pw.y + 19, 9, TXT_DARK);
-    HOT_OV(pw, ACT_POWER, 0);
-    GdiRect st = RECT(pw.x - 44, by + 13, 36, 36);
-    if (hovered(ACT_APP, APP_SETTINGS)) GdiRoundAlpha(st, 8, GDI_WHITE, 90);
-    AppDrawIcon(APP_SETTINGS, st.x + 6, st.y + 6, 24);
-    HOT_OV(st, ACT_APP, APP_SETTINGS);
-    GdiRect fe = RECT(st.x - 44, by + 13, 36, 36);
-    if (hovered(ACT_APP, APP_EXPLORER)) GdiRoundAlpha(fe, 8, GDI_WHITE, 90);
-    AppDrawIcon(APP_EXPLORER, fe.x + 6, fe.y + 6, 24);
-    HOT_OV(fe, ACT_APP, APP_EXPLORER);
+    /* Files, Settings and power: line glyphs, 20px in 36px targets */
+    static const struct { Glyph g; ActKind k; int arg; } foot[] = {
+        { GL_FOLDER, ACT_APP, APP_EXPLORER }, { GL_GEAR, ACT_APP, APP_SETTINGS }, { GL_POWER, ACT_POWER, 0 },
+    };
+    for (int i = 0; i < 3; i++) {
+        GdiRect b = RECT(mx + mw - pad - 36 - (2 - i) * 44, by + 13, 36, 36);
+        if (hovered(foot[i].k, foot[i].arg)) GdiRoundAlpha(b, 8, GDI_WHITE, HOVER_ALPHA);
+        AppDrawGlyph(foot[i].g, b.x + 8, b.y + 8, 20, SH_TEXT);
+        HOT_OV(b, foot[i].k, foot[i].arg);
+    }
 }
 
 static void start_open(bool open)
@@ -816,15 +773,18 @@ static const AppId g_dock_apps[] = {
 };
 #define N_DOCK_APPS ((int)(sizeof(g_dock_apps) / sizeof(g_dock_apps[0])))
 #define MAX_TASKS   8
-#define DOCK_ICON   36
-#define DOCK_GAP    12
-#define DOCK_CLOCK  132
-#define DOCK_H      58
+#define DOCK_ITEM   40                   /* hit target */
+#define DOCK_ICON   28                   /* app tiles; line glyphs are 22 */
+#define DOCK_GLYPH  22
+#define DOCK_GAP    6
+#define DOCK_PAD    10
+#define DOCK_H      56
+#define TRAY_W      176
 
 static DockItem g_dock[2 + N_DOCK_APPS + MAX_TASKS];
 static int      g_ndock, g_ndock_fixed;
-static GdiRect  L_dock, L_clock;
-static int      g_dock_hover = -1;       /* index into g_dock, -2 = clock */
+static GdiRect  L_dock, L_tray, L_clock, L_net;
+static int      g_dock_hover = -1;       /* index into g_dock, -2 = clock, -3 = network */
 
 /* The dock's items: fixed ones, then a button per program window that
  * has no dock icon of its own */
@@ -862,35 +822,23 @@ static void dock_layout(void)
         d->tip[sizeof(d->tip) - 1] = '\0';
     }
 
+    /* The dock (launchers and windows) is centred; the tray (network,
+     * clock) is its own glass block at the right edge */
     int sw = GdiScreenW(), sh = GdiScreenH();
-    int sep = g_ndock > g_ndock_fixed ? 14 : 0;
-    int dw = g_ndock * (DOCK_ICON + DOCK_GAP) + sep + DOCK_CLOCK + 28;
-    if (dw > sw - 24) dw = sw - 24;
-    L_dock = RECT((sw - dw) / 2, sh - DOCK_H - 12, dw, DOCK_H);
+    int sep = g_ndock > g_ndock_fixed ? 13 : 0;
+    int dw = 2 * DOCK_PAD + g_ndock * DOCK_ITEM + (g_ndock - 1) * DOCK_GAP + sep;
+    int y = sh - DOCK_H - 12;
+    L_tray = RECT(sw - TRAY_W - 12, y, TRAY_W, DOCK_H);
+    int dx = (sw - dw) / 2;
+    if (dx + dw > L_tray.x - 12) dx = L_tray.x - 12 - dw;   /* narrow screens */
+    if (dx < 12) dx = 12;
+    L_dock = RECT(dx, y, dw, DOCK_H);
     for (int i = 0; i < g_ndock; i++) {
-        int x = L_dock.x + 16 + i * (DOCK_ICON + DOCK_GAP) + (i >= g_ndock_fixed ? sep : 0);
-        g_dock[i].r = RECT(x, L_dock.y + (DOCK_H - DOCK_ICON) / 2 - 3, DOCK_ICON, DOCK_ICON);
+        int x = L_dock.x + DOCK_PAD + i * (DOCK_ITEM + DOCK_GAP) + (i >= g_ndock_fixed ? sep : 0);
+        g_dock[i].r = RECT(x, y + (DOCK_H - DOCK_ITEM) / 2 - 2, DOCK_ITEM, DOCK_ITEM);
     }
-    L_clock = RECT(L_dock.x + L_dock.w - DOCK_CLOCK - 8, L_dock.y, DOCK_CLOCK, DOCK_H);
-}
-
-static void start_logo(int x, int y, int s)
-{
-    int q = (s - 3) / 2;
-    GdiColor a = GDI_C(0x2A, 0x8A, 0xE8), b = GDI_C(0x5A, 0xC8, 0xF8);
-    GdiRoundGradV(RECT(x, y, q, q), 2, b, a);
-    GdiRoundGradV(RECT(x + q + 3, y, q, q), 2, b, a);
-    GdiRoundGradV(RECT(x, y + q + 3, q, q), 2, b, a);
-    GdiRoundGradV(RECT(x + q + 3, y + q + 3, q, q), 2, b, a);
-}
-
-static void search_glyph(int x, int y, int s, GdiColor c)
-{
-    int r = s * 30 / 100, cx = x + s * 44 / 100, cy = y + s * 44 / 100;
-    GdiFillCircle(cx, cy, r, c);
-    GdiFillCircle(cx, cy, r - 2, TH->dock_top);
-    GdiLine((GdiPoint){ (cx + r - 1) * 16, (cy + r - 1) * 16 },
-            (GdiPoint){ (x + s * 86 / 100) * 16, (y + s * 86 / 100) * 16 }, 40, c);
+    L_net = RECT(L_tray.x + 6, y + 8, 40, DOCK_H - 16);
+    L_clock = RECT(L_net.x + L_net.w + 4, y + 6, L_tray.x + L_tray.w - 6 - (L_net.x + L_net.w + 4), DOCK_H - 12);
 }
 
 /* Live clock strings, refreshed from the RTC each minute. */
@@ -912,13 +860,27 @@ static void draw_tooltip(int cx, int bottom, const char *text)
     GdiTextT(x + 10, r.y + 6, buf, POP_TEXT);
 }
 
+static bool net_up(char *tip, int cap)
+{
+    NetStatus st;
+    NetGetStatus(&st);
+    if (st.configured) {
+        char ip[20];
+        NetFormatIp(st.ip, ip, sizeof(ip));
+        ksnprintf(tip, cap, "Ethernet: connected (%s)", ip);
+        return true;
+    }
+    ksnprintf(tip, cap, st.present ? (st.link ? "Ethernet: getting an address..." : "Ethernet: cable unplugged")
+                                   : "No network adapter");
+    return false;
+}
+
 static void draw_dock(void)
 {
     dock_layout();
     GdiRect d = L_dock;
-    GdiDropShadow(RECT(d.x, d.y + 4, d.w, d.h), d.h / 2, 12, 55);
-    GdiRoundGradV(d, d.h / 2, TH->dock_top, TH->dock_bot);
-    GdiRoundRect(d, d.h / 2, GDI_TRANSPARENT, TH->line);
+    GdiDropShadow(RECT(d.x, d.y + 4, d.w, d.h), 16, 14, 60);
+    glass(d, 16);
 
     WND *active = WmActiveWindow();
     for (int i = 0; i < g_ndock; i++) {
@@ -926,41 +888,50 @@ static void draw_dock(void)
         GdiRect r = it->r;
         bool lit = i == g_dock_hover || (it->kind == DK_START && g_start_open && !g_query_len) ||
                    (it->kind == DK_SEARCH && g_start_open && g_query_len);
-        if (lit) GdiRoundAlpha(RECT(r.x - 5, r.y - 5, r.w + 10, r.h + 10), 8, GDI_WHITE, 80);
+        if (lit) GdiRoundAlpha(r, 8, GDI_WHITE, HOVER_ALPHA + 8);
 
+        int io = (DOCK_ITEM - DOCK_ICON) / 2, go = (DOCK_ITEM - DOCK_GLYPH) / 2;
         WND *w = NULL;
         switch (it->kind) {
-        case DK_START:  start_logo(r.x + 7, r.y + 7, r.w - 14); break;
-        case DK_SEARCH: search_glyph(r.x + 4, r.y + 4, r.w - 8, TXT_DARK); break;
+        case DK_START:  AppDrawGlyph(GL_NOVA, r.x + go, r.y + go, DOCK_GLYPH, ACCENT); break;
+        case DK_SEARCH: AppDrawGlyph(GL_SEARCH, r.x + go + 1, r.y + go + 1, DOCK_GLYPH - 2, SH_TEXT); break;
         case DK_APP:
-            AppDrawIcon((AppId)it->arg, r.x + 2, r.y + 2, r.w - 4);
+            AppDrawIcon((AppId)it->arg, r.x + io, r.y + io, DOCK_ICON);
             w = WmFindApp(it->arg);
             break;
         case DK_TASK:
             w = WmWindowById(it->arg);
-            if (w) AppDrawWindowIcon(w, r.x + 2, r.y + 2, r.w - 4); else AppDrawProgramIcon("?", r.x + 2, r.y + 2, r.w - 4);
+            if (w) AppDrawWindowIcon(w, r.x + io, r.y + io, DOCK_ICON);
             break;
         }
         /* Running indicator: a pill under the icon, wider when focused */
         if (w) {
             bool focused = (w == active);
-            int pw = focused ? 16 : 6;
-            GdiRoundRect(RECT(r.x + (r.w - pw) / 2, r.y + r.h + 5, pw, 4), 2,
-                         focused ? ACCENT : GDI_C(0x5A, 0x4A, 0x4A), GDI_TRANSPARENT);
+            int pw = focused ? 14 : 5;
+            GdiRoundRect(RECT(r.x + (r.w - pw) / 2, r.y + r.h + 1, pw, 3), 1,
+                         focused ? ACCENT : SH_TEXT2, GDI_TRANSPARENT);
         }
         ActKind k = it->kind == DK_START ? ACT_START : it->kind == DK_SEARCH ? ACT_SEARCH :
                     it->kind == DK_APP ? ACT_APP : ACT_TASK;
-        HOT_OV(RECT(r.x - 6, d.y, r.w + 12, d.h), k, it->arg);
+        HOT_OV(RECT(r.x - DOCK_GAP / 2, d.y, r.w + DOCK_GAP, d.h), k, it->arg);
         if (i == g_ndock_fixed - 1 && g_ndock > g_ndock_fixed)
-            GdiVLine(r.x + r.w + DOCK_GAP / 2 + 7, d.y + 16, d.y + d.h - 16, TH->line);
+            GdiVLine(r.x + r.w + DOCK_GAP / 2 + 6, d.y + 14, d.y + d.h - 14, SH_LINE);
     }
 
-    /* Clock */
-    int cx = L_clock.x;
-    GdiVLine(cx - 8, d.y + 12, d.y + d.h - 12, TH->line);
-    if (g_dock_hover == -2) GdiRoundAlpha(RECT(cx - 2, d.y + 6, DOCK_CLOCK, d.h - 12), 8, GDI_WHITE, 70);
-    GdiTextBold(cx + 8, d.y + 12, g_clock_time, TXT_DARK);
-    GdiTextT(cx + 8, d.y + 30, g_clock_date, TXT_DARK);
+    /* The tray: network status and the clock */
+    GdiRect t = L_tray;
+    GdiDropShadow(RECT(t.x, t.y + 4, t.w, t.h), 16, 14, 60);
+    glass(t, 16);
+    char net_tip[64];
+    bool up = net_up(net_tip, sizeof(net_tip));
+    if (g_dock_hover == -3) GdiRoundAlpha(L_net, 8, GDI_WHITE, HOVER_ALPHA + 8);
+    AppDrawGlyph(up ? GL_NETWORK : GL_NETWORK_OFF, L_net.x + (L_net.w - 20) / 2, L_net.y + (L_net.h - 20) / 2,
+                 20, up ? SH_TEXT : SH_TEXT2);
+    HOT_OV(L_net, ACT_NET, 0);
+    if (g_dock_hover == -2) GdiRoundAlpha(L_clock, 8, GDI_WHITE, HOVER_ALPHA + 8);
+    int right = L_clock.x + L_clock.w - 10;
+    GdiTextBold(right - GdiTextBoldW(g_clock_time), L_clock.y + 5, g_clock_time, SH_TEXT);
+    GdiTextT(right - GdiTextW(g_clock_date), L_clock.y + 23, g_clock_date, SH_TEXT2);
     HOT_OV(L_clock, ACT_CLOCK, 0);
 
     /* Tooltip for the hovered item (not while its menu or Start is up) */
@@ -969,7 +940,9 @@ static void draw_dock(void)
             GdiRect r = g_dock[g_dock_hover].r;
             draw_tooltip(r.x + r.w / 2, d.y - 8, g_dock[g_dock_hover].tip);
         } else if (g_dock_hover == -2) {
-            draw_tooltip(L_clock.x + L_clock.w / 2, d.y - 8, g_clock_long);
+            draw_tooltip(L_clock.x + L_clock.w / 2, t.y - 8, g_clock_long);
+        } else if (g_dock_hover == -3) {
+            draw_tooltip(L_net.x + L_net.w / 2, t.y - 8, net_tip);
         }
     }
 }
@@ -1065,8 +1038,7 @@ void DesktopDrawThemePreview(int i, GdiRect r)
     draw_wallpaper_in(&g_themes[i], r);
     /* a tiny dock */
     int dw = r.w / 2, dh = r.h / 10 > 4 ? r.h / 10 : 4;
-    GdiRoundGradV(RECT(r.x + (r.w - dw) / 2, r.y + r.h - dh - 4, dw, dh), dh / 2,
-                  g_themes[i].dock_top, g_themes[i].dock_bot);
+    GdiRoundAlpha(RECT(r.x + (r.w - dw) / 2, r.y + r.h - dh - 4, dw, dh), dh / 2, GLASS_TINT, 200);
 }
 
 /* -----------------------------------------------------------------------
@@ -1248,7 +1220,7 @@ static void desktop_press(int x, int y, bool dbl)
         WmInvalidate();
         return;
     }
-    if (pt_in(L_dock, x, y)) {
+    if (pt_in(L_dock, x, y) || pt_in(L_tray, x, y)) {
         if (h) {
             switch (h->kind) {
             case ACT_START:  start_open(!(g_start_open && !g_query_len)); break;
@@ -1256,6 +1228,7 @@ static void desktop_press(int x, int y, bool dbl)
             case ACT_APP:    start_open(false); AppActivate((AppId)h->arg); break;
             case ACT_TASK:   start_open(false); dock_task_click(h->arg); break;
             case ACT_CLOCK:  start_open(false); AppActivate(APP_CALENDAR); break;
+            case ACT_NET:    start_open(false); SettingsOpenPage(SETTINGS_NETWORK); break;
             default: break;
             }
         }
@@ -1284,7 +1257,7 @@ static void desktop_right_press(int x, int y)
     g_menu.open = false;
     if (g_start_open && pt_in(L_start, x, y)) { WmInvalidate(); return; }
     if (g_start_open) start_open(false);
-    if (pt_in(L_dock, x, y)) {
+    if (pt_in(L_dock, x, y) || pt_in(L_tray, x, y)) {
         if (h) menu_for_dock(h, x, L_dock.y - 6);
         if (g_menu.open) g_menu.y = L_dock.y - 6 - (8 + g_menu.n * MENU_ROW + 20);
         WmInvalidate();
@@ -1314,10 +1287,11 @@ static void desktop_hover(int x, int y)
     if (!WmMouseCaptured() && pt_in(L_dock, x, y)) {
         for (int i = 0; i < g_ndock; i++) {
             GdiRect r = g_dock[i].r;
-            if (pt_in(RECT(r.x - 6, L_dock.y, r.w + 12, L_dock.h), x, y)) hover = i;
+            if (pt_in(RECT(r.x - DOCK_GAP / 2, L_dock.y, r.w + DOCK_GAP, L_dock.h), x, y)) hover = i;
         }
-        if (pt_in(L_clock, x, y)) hover = -2;
     }
+    if (!WmMouseCaptured() && pt_in(L_clock, x, y)) hover = -2;
+    if (!WmMouseCaptured() && pt_in(L_net, x, y)) hover = -3;
     const Hot *h = WmMouseCaptured() ? NULL : hot_find(g_hot_ov, g_hot_ov_n, x, y);
     ActKind hk = h ? h->kind : ACT_NONE;
     int ha = h ? h->arg : 0;

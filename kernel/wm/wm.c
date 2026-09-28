@@ -54,12 +54,12 @@ static WND *g_hover;                /* caption button under the pointer */
 static int  g_hover_part;
 
 /* Windows 11 dark palette */
-#define TITLE_ACTIVE    GDI_C(0x20, 0x20, 0x20)
-#define TITLE_INACTIVE  GDI_C(0x2B, 0x2B, 0x2B)
+/* The title bar is a step darker than toolbars (0x20) and content (0x27),
+ * with a hairline under it, so the frame reads apart from the app */
+#define TITLE_ACTIVE    GDI_C(0x1A, 0x1A, 0x1C)
+#define TITLE_INACTIVE  GDI_C(0x26, 0x26, 0x28)
 #define TEXT_ACTIVE     GDI_C(0xFF, 0xFF, 0xFF)
 #define TEXT_INACTIVE   GDI_C(0x9A, 0x9A, 0x9A)
-#define BORDER_ACTIVE   GDI_C(0x4A, 0x4A, 0x4A)
-#define BORDER_INACTIVE GDI_C(0x3A, 0x3A, 0x3A)
 #define BTN_HOVER       GDI_C(0x3A, 0x3A, 0x3A)
 #define CLOSE_HOVER     GDI_C(0xC4, 0x2B, 0x1C)
 
@@ -670,10 +670,13 @@ static void draw_window(WND *w)
         if (w->style & WS_CLOSEBTN) draw_button(w, HT_CLOSE, title_bg, title_fg);
         if (has_button(w, HT_MAX)) draw_button(w, HT_MAX, title_bg, title_fg);
         if (has_button(w, HT_MIN)) draw_button(w, HT_MIN, title_bg, title_fg);
+        GdiAlphaFill(RECT(f.x, f.y + WM_TITLEBAR_H - 1, f.w, 1), GDI_WHITE, 20);   /* ~8% white */
     }
 
+    /* A light hairline edge: separates the window from dark wallpapers
+     * and from windows behind it */
     if ((w->style & WS_BORDER) && !w->maximized)
-        GdiRoundRect(f, rad, GDI_TRANSPARENT, w->active ? BORDER_ACTIVE : BORDER_INACTIVE);
+        GdiRoundBorderAlpha(f, rad, GDI_WHITE, w->active ? 40 : 24);
 
     if (w->on_paint) {
         GdiSetClip(WmClientRect(w));

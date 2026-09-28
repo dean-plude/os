@@ -78,6 +78,13 @@ void GdiAlphaFill (GdiRect r, GdiColor c, int alpha);
 void GdiRoundRect (GdiRect r, int rad, GdiColor fill, GdiColor border);
 void GdiRoundAlpha(GdiRect r, int rad, GdiColor c, int alpha);
 void GdiRoundGradV(GdiRect r, int rad, GdiColor top, GdiColor bottom);
+/* A 1-logical-pixel border at opacity @alpha (hairlines on glass) */
+void GdiRoundBorderAlpha(GdiRect r, int rad, GdiColor c, int alpha);
+
+/* Frosted glass: blur what is already drawn under the rounded rectangle
+ * (radius about @blur logical px), then tint it with @tint at opacity
+ * @tint_alpha (0..255). */
+void GdiBackdrop(GdiRect r, int rad, int blur, GdiColor tint, int tint_alpha);
 
 /* Soft shadow around a rounded rectangle: opacity `alpha` at the edge,
  * fading to zero `blur` logical pixels outside it. */
@@ -124,6 +131,10 @@ void GdiText      (int x, int y, const char *s, GdiColor fg, GdiColor bg);
 void GdiTextT     (int x, int y, const char *s, GdiColor fg);
 void GdiTextBold  (int x, int y, const char *s, GdiColor fg);
 void GdiTextCenter(int x, int y, int w, const char *s, GdiColor fg);
+/* Text over pictures: a soft, blurred black drop shadow (opacity @shadow,
+ * 0..255) one pixel below, then the text. */
+void GdiTextShadow      (int x, int y, const char *s, GdiColor fg, int shadow);
+void GdiTextShadowCenter(int x, int y, int w, const char *s, GdiColor fg, int shadow);
 int  GdiTextW     (const char *s);      /* logical width, regular */
 int  GdiTextBoldW (const char *s);      /* logical width, bold */
 

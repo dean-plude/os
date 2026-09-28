@@ -79,6 +79,22 @@ void AppDrawWindowIcon(const WND *w, int x, int y, int size);
 void AppDrawNodeIcon(RamNode *f, int x, int y, int size);
 void AppDrawFolderIcon(int x, int y, int size);
 void AppDrawFileIcon(int x, int y, int size);
+void AppDrawPcIcon(int x, int y, int size);         /* "This PC" */
+
+/* Special folders (C:\Documents, ...) show their purpose on the folder */
+typedef enum { FOLDER_PLAIN, FOLDER_DOCUMENTS, FOLDER_DOWNLOADS, FOLDER_PICTURES,
+               FOLDER_PROJECTS } FolderKind;
+FolderKind AppFolderKind(const RamNode *dir);
+void AppDrawFolderKindIcon(FolderKind k, int x, int y, int size);
+
+/* Single-colour line glyphs (sidebars, toolbars, the tray), in the same
+ * line weight as the app icons */
+typedef enum {
+    GL_PC, GL_DOCUMENTS, GL_DOWNLOADS, GL_PICTURES, GL_PERSON, GL_CODE, GL_WINDOWS,
+    GL_FOLDER, GL_FILE, GL_PLUS, GL_SEARCH, GL_NETWORK, GL_NETWORK_OFF, GL_CHEVRON,
+    GL_BACK, GL_UP, GL_NOVA, GL_GEAR, GL_POWER,
+} Glyph;
+void AppDrawGlyph(Glyph g, int x, int y, int size, GdiColor c);
 
 /* The decoded icon of an .ico/.cur/.png/.exe/.dll file (cached; NULL if it
  * has none), and of a program by name as for AppDrawProgramIcon */

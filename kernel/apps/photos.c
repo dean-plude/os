@@ -196,8 +196,8 @@ static void ph_paint(WND *w)
             info[0] = '\0';
         GdiTextT(c.x + c.w - 100 - GdiTextW(info), c.y + 14, info, UI_TEXT2);
         GdiRect p = r_prev(c), n = r_next(c);
-        GdiRoundRect(RECT(c.x + p.x, c.y + p.y, p.w, p.h), 4, UI_CARD, UI_LINE);
-        GdiRoundRect(RECT(c.x + n.x, c.y + n.y, n.w, n.h), 4, UI_CARD, UI_LINE);
+        UiButton(RECT(c.x + p.x, c.y + p.y, p.w, p.h), "", false);
+        UiButton(RECT(c.x + n.x, c.y + n.y, n.w, n.h), "", false);
         arrow(RECT(c.x + p.x, c.y + p.y, p.w, p.h), false);
         arrow(RECT(c.x + n.x, c.y + n.y, n.w, n.h), true);
         paint_file(ph, c);
