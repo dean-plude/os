@@ -61,7 +61,7 @@ bool UmSyscallAllowed(UINT64 num)
 UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmThread *t = UmCurrentThread();
-    if (t) t->park = 1;                     /* cleared on the way out (UmReturnToUser) */
+    if (t) { t->park = 1; t->last_sys = (UINT16)num; }   /* park: cleared on the way out (UmReturnToUser) */
     return g_um[num](a1, a2, a3, a4);
 }
 
@@ -405,7 +405,7 @@ static UINT64 sys_write_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UINT32 bad = !h ? ST_INVALID_HANDLE :
                  (h->kind == H_FILE && !h->write) ? ST_ACCESS_DENIED :
                  (h->kind != H_FILE && h->kind != H_CON_OUT) ? ST_INVALID_HANDLE : 0;
-    bool file = h && h->kind == H_FILE;
+    bool file = h && h->kind == H_FILE && !bad;
     if (!file) DesktopUnlock();
     if (bad) return h ? iosb(iosb_ptr, bad, 0) : bad;
 

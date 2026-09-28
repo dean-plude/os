@@ -117,10 +117,20 @@ const char *cwd(void)
 }
 
 /* Absolute, normalized "C:\a\b" for @name; 0 on error */
+/* "\\?\C:\x", "\??\C:\x" and "\\.\C:\x" all name C:\x */
+static const char *skip_prefix(const char *name)
+{
+    if ((name[0] == '\\' || name[0] == '/') && (name[1] == '\\' || name[1] == '/' || name[1] == '?') &&
+        (name[2] == '?' || name[2] == '.') && (name[3] == '\\' || name[3] == '/'))
+        return name + 4;
+    return name;
+}
+
 int full_path(const char *name, char *out, int cap)
 {
     char tmp[MAX_PATH * 2];
     int n = 0;
+    name = skip_prefix(name);
     if (((name[0] | 0x20) >= 'a' && (name[0] | 0x20) <= 'z') && name[1] == ':') {
         tmp[n++] = (char)(name[0] & ~0x20); tmp[n++] = ':'; tmp[n++] = '\\';
         name += 2;
@@ -161,6 +171,7 @@ BOOL nt_path(const char *name, NtPath *p)
 {
     char full[MAX_PATH];
     if (!name || !*name) { SetLastError(ERROR_PATH_NOT_FOUND); return FALSE; }
+    name = skip_prefix(name);
     /* devices pass through by name */
     const char *dev = 0;
     if (ieq(name, "CONIN$") || ieq(name, "CONOUT$") || ieq(name, "CON")) dev = name;

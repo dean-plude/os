@@ -382,9 +382,14 @@ void sched_yield(void)
 /* -----------------------------------------------------------------------
  * sched_tick — called from timer interrupt handler (interrupts disabled)
  * ----------------------------------------------------------------------- */
+void DesktopWatchdog(uint64_t now);
+void UmTimerTick(uint64_t ticks);
+
 void sched_tick(void)
 {
     tick_count++;
+    DesktopWatchdog(tick_count);
+    UmTimerTick(tick_count);
     if (!current_thread) return;
 
     current_thread->ticks_total++;

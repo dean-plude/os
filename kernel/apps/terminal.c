@@ -54,6 +54,8 @@ typedef struct {
     UmConsole *con;
     bool    open_line;         /* the last line is the program's unfinished line */
     int     col;               /* its output column (after '\r') */
+    int     esc;               /* inside an escape sequence: 1 ESC, 2 CSI, 3 OSC */
+    int     esc_arg;           /* the CSI's first number */
 } Job;
 
 typedef struct {
@@ -763,6 +765,31 @@ static void proc_output(Term *t, const char *s, int n)
     int cols = term_cols(t);
     for (int k = 0; k < n; k++) {
         char c = s[k];
+        /* ANSI/VT escape sequences (colors, cursor moves) are consumed; the
+         * lines have one color each, so colors are dropped */
+        if (j->esc == 1) {
+            j->esc = c == '[' ? 2 : c == ']' ? 3 : 0;
+            j->esc_arg = 0;
+            continue;
+        }
+        if (j->esc == 2) {
+            if (c >= '0' && c <= '9') j->esc_arg = j->esc_arg * 10 + (c - '0');
+            else if ((unsigned char)c >= 0x40 && (unsigned char)c <= 0x7E) {
+                j->esc = 0;
+                if (c == 'G' && j->open_line) j->col = j->esc_arg > 0 ? j->esc_arg - 1 : 0;   /* column */
+                if (c == 'K' && j->open_line && j->esc_arg == 0) {                              /* erase to end */
+                    char *ln = t->line[t->count - 1];
+                    if ((int)strlen(ln) > j->col) ln[j->col] = '\0';
+                }
+            }
+            continue;
+        }
+        if (j->esc == 3) {                             /* OSC: to BEL or ESC \ */
+            if (c == '\a') j->esc = 0;
+            else if (c == 0x1B) j->esc = 1;
+            continue;
+        }
+        if (c == 0x1B) { j->esc = 1; continue; }
         if ((c & 0xC0) == 0x80) continue;             /* UTF-8 continuation: one '?' per character */
         if (!j->open_line) {
             new_line(t, K_NORMAL, 0);

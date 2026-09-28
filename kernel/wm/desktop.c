@@ -1391,10 +1391,37 @@ static void desktop_key(const KeyEvent *k)
  * Polls PS/2, moves the cursor with save-under, routes input, and
  * recomposites whenever something changed (or once per minute for the
  * clock). */
+/* Watchdog (called from the timer tick): when the desktop loop has not come
+ * round for 3 seconds, log where its thread is, once per stall. */
+static Thread *volatile g_desktop_kt;
+static volatile UINT64 g_desktop_beat;
+
+void DesktopWatchdog(UINT64 now)
+{
+    static UINT64 reported;
+    Thread *kt = g_desktop_kt;
+    if (!kt || now - g_desktop_beat < 300 || reported == g_desktop_beat) return;
+    reported = g_desktop_beat;
+    extern char __text_end[];
+    Thread *who[2] = { kt, DesktopLockOwner() };
+    for (int i = 0; i < 2; i++) {
+        Thread *th = who[i];
+        if (!th || (i && th == kt)) continue;
+        kprintf("[WATCHDOG] %s: '%s' (TID %llu, state %d); kernel return addresses:\n",
+                i ? "the desktop lock is held by" : "the desktop has not responded for 3 s", th->name,
+                (unsigned long long)th->tid, th->state);
+        UINT64 *sp = (UINT64 *)(uintptr_t)th->context.rsp;
+        UINT64 *top = (UINT64 *)((uintptr_t)th->kernel_stack + th->stack_size);
+        for (int n = 0; sp < top && n < 24; sp++)
+            if (*sp >= 0xffffffff80000000ull && *sp < (UINT64)(uintptr_t)__text_end) { kprintf("  %llx\n", *sp); n++; }
+    }
+}
+
 void DesktopRun(void *arg)
 {
     (void)arg;
     if (!g_ready) return;
+    g_desktop_kt = sched_current();
 
     update_clock();
     WmComposite();
@@ -1407,6 +1434,7 @@ void DesktopRun(void *arg)
     int    last_px = -100, last_py = -100;
 
     for (;;) {
+        g_desktop_beat = sched_ticks();
         /* Program threads take this lock around file-system access */
         DesktopLock();
         ps2_poll();

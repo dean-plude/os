@@ -89,6 +89,7 @@ struct UmThread {
      * 2 at an interrupt (uframe) */
     volatile UINT8  park;
     void           *uframe;
+    UINT16          last_sys;       /* the latest system call (diagnostics) */
 };
 
 UmObject *um_ob_ref(UmObject *o);

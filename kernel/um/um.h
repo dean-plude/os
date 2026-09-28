@@ -97,6 +97,11 @@ void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
  * ----------------------------------------------------------------------- */
 void DesktopLock(void);
 void DesktopUnlock(void);
+struct Thread *DesktopLockOwner(void);     /* diagnostics */
 
 /* Save the registry and drive C: to disk now (before a restart or shutdown). */
 void UmSaveAll(void);
+/* Timer tick: advances the clocks in KUSER_SHARED_DATA. */
+void UmTimerTick(UINT64 ticks);
+/* Log every program thread's state (serial), for diagnosing hangs. */
+void UmDumpAll(void);

@@ -40,6 +40,8 @@ typedef CHAR  *LPSTR;
 typedef const CHAR *LPCSTR;
 typedef WCHAR *LPWSTR;
 typedef const WCHAR *LPCWSTR;
+typedef WCHAR *PWSTR;
+typedef const WCHAR *PCWSTR;
 typedef void  *LPVOID, *PVOID, *HANDLE, *HMODULE, *HINSTANCE, *HLOCAL, *HGLOBAL, *FARPROC;
 typedef const void *LPCVOID;
 typedef HANDLE *PHANDLE, *LPHANDLE;

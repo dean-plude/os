@@ -25,6 +25,7 @@
  */
 
 #include "../fs/persist.h"
+#include "../arch/x86_64/idt.h"
 #include "um_internal.h"
 #include "../ke/printf.h"
 #include "../ke/kpcr.h"
@@ -72,6 +73,12 @@ void um_unlock(UmLock *l)
 static UmLock g_desktop;
 void DesktopLock(void)   { um_lock(&g_desktop); }
 void DesktopUnlock(void) { um_unlock(&g_desktop); }
+Thread *DesktopLockOwner(void) { return g_desktop.owner; }
+
+/* KUSER_SHARED_DATA (see below) */
+static UINT8 *g_kusd;
+static PADDR  g_kusd_pa;
+static void   kusd_init(void);
 
 /* -----------------------------------------------------------------------
  * Initialization
@@ -84,6 +91,7 @@ void UmInit(void)
     write_cr4(read_cr4() | (1u << 9) /* OSFXSR */ | (1u << 10) /* OSXMMEXCPT */);
     __asm__ volatile ("fninit");
     um_syscall_init();
+    kusd_init();
 
     /* Install the system DLLs and programs on drive C: */
     int installed = 0;
@@ -163,6 +171,7 @@ bool um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect)
     for (UINT64 a = va & ~0xFFFULL; a < va + size; a += PAGE_SIZE) {
         pte_t *e = walk(p->pml4, a, true);
         if (!e) return false;
+        if ((*e & PTE_PRESENT) && (*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* stays read-only */
         if (*e & PTE_PRESENT) {                         /* re-commit: new protection */
             *e = (*e & PTE_ADDR_MASK) | f;
             if (is_current(p)) invlpg(a);
@@ -182,6 +191,7 @@ void um_decommit(UmProcess *p, UINT64 va, UINT64 size)
     for (UINT64 a = va & ~0xFFFULL; a < va + size; a += PAGE_SIZE) {
         pte_t *e = walk(p->pml4, a, false);
         if (!e || !(*e & PTE_PRESENT)) continue;
+        if ((*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* the shared page stays */
         pmm_free_page(*e & PTE_ADDR_MASK);
         *e = 0;
         p->pages--;
@@ -214,6 +224,64 @@ bool um_write(UmProcess *p, UINT64 va, const void *src, UINT64 n) { return copy_
 bool um_read(UmProcess *p, UINT64 va, void *dst, UINT64 n)        { return copy_pages(p, va, dst, n, false); }
 
 /* Free every user page and page table, then the PML4 itself. */
+/* -----------------------------------------------------------------------
+ * KUSER_SHARED_DATA: one page, mapped read-only at 0x7FFE0000 in every
+ * program, with the clocks programs read without a system call (the Go
+ * runtime's nanotime, GetTickCount in some CRTs) and the version fields.
+ * ----------------------------------------------------------------------- */
+#define UM_KUSD_VA UINT64_C(0x7FFE0000)
+
+static void kusd_time(UINT32 off, UINT64 v)       /* KSYSTEM_TIME: High2, Low, then High1 */
+{
+    volatile UINT32 *t = (volatile UINT32 *)(g_kusd + off);
+    t[2] = (UINT32)(v >> 32);
+    __asm__ volatile ("" ::: "memory");
+    t[0] = (UINT32)v;
+    __asm__ volatile ("" ::: "memory");
+    t[1] = (UINT32)(v >> 32);
+}
+
+static void kusd_init(void)
+{
+    g_kusd = kernel_alloc_pages(1);
+    if (!g_kusd) return;
+    memset(g_kusd, 0, PAGE_SIZE);
+    g_kusd_pa = (PADDR)((uintptr_t)g_kusd - PHYSMAP_BASE);
+    *(UINT32 *)(g_kusd + 0x04) = 10u << 24;               /* TickCountMultiplier: 10 ms per tick */
+    *(UINT16 *)(g_kusd + 0x2C) = 0x8664;                  /* ImageNumberLow/High: x64 */
+    *(UINT16 *)(g_kusd + 0x2E) = 0x8664;
+    static const char root[] = "C:\\Windows";
+    for (int i = 0; root[i]; i++) *(UINT16 *)(g_kusd + 0x30 + 2 * i) = (UINT16)root[i];   /* NtSystemRoot */
+    *(UINT32 *)(g_kusd + 0x260) = 19045;                  /* NtBuildNumber */
+    *(UINT32 *)(g_kusd + 0x264) = 1;                      /* NtProductType: workstation */
+    g_kusd[0x268] = 1;                                    /* ProductTypeIsValid */
+    *(UINT32 *)(g_kusd + 0x26C) = 10;                     /* NtMajorVersion */
+    *(UINT32 *)(g_kusd + 0x270) = 0;                      /* NtMinorVersion */
+    static const int features[] = { 2, 6, 8, 10, 12, 13, 14 };   /* cmpxchg8b/16b, SSE, SSE2, SSE3, RDTSC, NX */
+    for (unsigned i = 0; i < sizeof(features) / sizeof(features[0]); i++) g_kusd[0x274 + features[i]] = 1;
+    *(UINT32 *)(g_kusd + 0x3C0) = 1;                      /* ActiveProcessorCount */
+    UmTimerTick(sched_ticks());
+}
+
+/* Called on every timer tick (interrupts off) */
+void UmTimerTick(UINT64 ticks)
+{
+    if (!g_kusd) return;
+    kusd_time(0x08, ticks * 100000ULL);                   /* InterruptTime (100 ns units) */
+    kusd_time(0x14, um_now_100ns());                      /* SystemTime */
+    kusd_time(0x320, ticks);                              /* TickCount */
+    *(volatile UINT32 *)g_kusd = (UINT32)ticks;           /* TickCountLowDeprecated */
+}
+
+static bool map_kusd(UmProcess *p)
+{
+    if (!g_kusd) return true;
+    pte_t *e = walk(p->pml4, UM_KUSD_VA, true);
+    if (!e) return false;
+    *e = g_kusd_pa | PTE_PRESENT | PTE_USER | PTE_NX;     /* read-only, shared by all */
+    return um_region_add(p, UM_KUSD_VA, PAGE_SIZE, 0x02, false);
+}
+
 static void free_address_space(UINT64 pml4)
 {
     pte_t *l4 = PT(pml4);
@@ -227,7 +295,7 @@ static void free_address_space(UINT64 pml4)
                 if (!(l2[k] & PTE_PRESENT)) continue;
                 pte_t *l1 = PT(l2[k]);
                 for (int m = 0; m < 512; m++)
-                    if (l1[m] & PTE_PRESENT) pmm_free_page(l1[m] & PTE_ADDR_MASK);
+                    if ((l1[m] & PTE_PRESENT) && (l1[m] & PTE_ADDR_MASK) != g_kusd_pa) pmm_free_page(l1[m] & PTE_ADDR_MASK);
                 pmm_free_page(l2[k] & PTE_ADDR_MASK);
             }
             pmm_free_page(l3[j] & PTE_ADDR_MASK);
@@ -465,6 +533,7 @@ static void map_api_set(char *lname, int cap)
         { "api-ms-win-shcore-",           "shlwapi.dll" },
         { "ext-ms-win-",                  "kernel32.dll" },
         { "kernelbase.dll",               "kernel32.dll" },
+        { "api-ms-win-",                  "kernel32.dll" },   /* any other set: what exists is there */
         { "msvcrt40.dll",                 "msvcrt.dll" },
     };
     for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++)
@@ -780,7 +849,7 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
         put_u16(peb + 0x120, 18362);                        /* OSBuildNumber (1903) */
         put_u32(peb + 0x124, 2);                            /* OSPlatformId: NT */
 
-        ok = ok && um_region_add(p, UM_PEB_VA, UM_SYS_SIZE, 0x04, false) &&
+        ok = ok && map_kusd(p) && um_region_add(p, UM_PEB_VA, UM_SYS_SIZE, 0x04, false) &&
              um_commit(p, UM_PEB_VA, (UM_PARAMS_VA - UM_PEB_VA) + UM_PARAMS_PAGES * PAGE_SIZE, 0x04) &&
              um_write(p, UM_PEB_VA, peb, PAGE_SIZE) &&
              um_write(p, UM_PARAMS_VA, pp, sz) &&
@@ -1101,6 +1170,11 @@ void UmReturnToUser(void)
     UmThread *t = UmCurrentThread();
     if (!t) return;
     UmProcess *p = t->proc;
+    if (g_desktop.owner == sched_current()) {                        /* never back to user mode with it */
+        kprintf("[UM] Bug: system call %03x returned holding the desktop lock\n", t->last_sys);
+        g_desktop.depth = 1;
+        um_unlock(&g_desktop);
+    }
     while (t->suspend > 0 && !um_stopping()) sched_yield();         /* NtSuspendThread */
     if (p->kill_pending) um_exit_thread(p->kill_status);
     if (t->terminate) um_exit_thread(t->term_status);
@@ -1144,9 +1218,34 @@ void UmFault(UINT32 status, UINT64 rip, UINT64 addr)
     um_exit_process(status);
 }
 
+/* Where each thread is (serial log): helps when a program will not stop */
+static void dump_threads(UmProcess *p)
+{
+    for (int i = 0; i < UM_MAX_THREADS; i++) {
+        UmThread *t = p->threads[i];
+        if (!t || t->exited) continue;
+        UINT64 rip = t->park == 2 && t->uframe ? ((InterruptFrame *)t->uframe)->rip : 0;
+        kprintf("[UM]   thread %u: %s, last system call %03x, user rip %llx\n", t->tid,
+                t->park == 1 ? "in a system call" : t->park == 2 ? "interrupted" : "running",
+                t->last_sys, (unsigned long long)rip);
+    }
+}
+
+void UmDumpAll(void)
+{
+    for (int i = 0; i < UM_MAX_PROCS; i++) {
+        UmProcess *p = g_procs[i];
+        if (!p || p->exited) continue;
+        kprintf("[UM] %s (PID %u):\n", p->name, p->pid);
+        dump_threads(p);
+    }
+}
+
 void UmKill(UmProcess *p, UINT32 status)
 {
     if (!p || p->exited) return;
+    kprintf("[UM] Stopping %s (PID %u)\n", p->name, p->pid);
+    dump_threads(p);
     IrqState s = irq_save();
     if (!p->kill_pending) {
         p->kill_status = status;

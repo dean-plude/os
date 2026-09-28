@@ -192,6 +192,13 @@ void k32_io_done(HANDLE h, OVERLAPPED *o, NTSTATUS s, DWORD bytes)
     if (queued) ReleaseSemaphore(p->h, 1, 0);
 }
 
+/* For ws2_32: finishes an overlapped operation on @h the way file I/O does
+ * (the event, then a completion packet if @h is bound to a port). */
+__declspec(dllexport) void WINAPI NovaIoComplete(HANDLE h, OVERLAPPED *o, LONG status, DWORD bytes)
+{
+    k32_io_done(h, o, status, bytes);
+}
+
 WINBASEAPI BOOL WINAPI SetFileCompletionNotificationModes(HANDLE h, UCHAR flags)
 {
     lock();

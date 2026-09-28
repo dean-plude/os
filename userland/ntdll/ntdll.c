@@ -167,6 +167,28 @@ NTSYSAPI PPEB NTAPI RtlGetCurrentPeb(void)
     return peb;
 }
 
+/* Windows 10 22H2 (build 19045), the version NovaOS reports everywhere */
+NTSYSAPI VOID NTAPI RtlGetNtVersionNumbers(ULONG *major, ULONG *minor, ULONG *build)
+{
+    if (major) *major = 10;
+    if (minor) *minor = 0;
+    if (build) *build = 0xF0000000u | 19045;       /* high nibble: a free (retail) build */
+}
+
+NTSYSAPI NTSTATUS NTAPI RtlGetVersion(PVOID info)
+{
+    ULONG *v = info;                               /* RTL_OSVERSIONINFOW(EX) */
+    ULONG size = v[0];
+    if (size < 276) return 0xC000000D;             /* STATUS_INVALID_PARAMETER */
+    for (ULONG i = 1; i < size / 4; i++) v[i] = 0;
+    v[1] = 10;                                     /* major */
+    v[2] = 0;                                      /* minor */
+    v[3] = 19045;                                  /* build */
+    v[4] = 2;                                      /* VER_PLATFORM_WIN32_NT */
+    if (size >= 284) ((UCHAR *)v)[282] = 1;        /* wProductType: VER_NT_WORKSTATION */
+    return 0;
+}
+
 NTSYSAPI VOID NTAPI RtlInitUnicodeString(PUNICODE_STRING us, const WCHAR *s)
 {
     USHORT n = 0;
