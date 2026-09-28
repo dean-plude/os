@@ -192,7 +192,9 @@ list(APPEND KERNEL_C_SOURCES ${MBEDTLS_SOURCES})
 # installed on drive C: at boot.
 file(GLOB_RECURSE USERLAND_DEPS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.h")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/netsurf/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/netsurf/*.h")
 set(USERLAND_C "${CMAKE_CURRENT_BINARY_DIR}/userland_files.c")
 add_custom_command(
     OUTPUT  "${USERLAND_C}"
@@ -201,8 +203,9 @@ add_custom_command(
             "${CMAKE_CURRENT_SOURCE_DIR}/ke/syscall.h"
     DEPENDS ${USERLAND_DEPS}
             "${CMAKE_CURRENT_SOURCE_DIR}/../tools/build_userland.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tools/build_netsurf.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/ke/syscall.h"
-    COMMENT "Building the Windows userland (ntdll, kernel32, msvcrt, programs)")
+    COMMENT "Building the Windows userland (ntdll, kernel32, msvcrt, programs, NetSurf)")
 list(APPEND KERNEL_C_SOURCES "${USERLAND_C}")
 
 # C object library with kernel flags

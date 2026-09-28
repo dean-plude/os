@@ -31,11 +31,13 @@ void UmInit(void);
 void UmPoll(void);
 
 /* Find a program by name: a path, or a bare name searched in @cwd,
- * C:\Programs and C:\Windows\System32 (".exe" added if missing). */
+ * C:\Programs and C:\Windows\System32 (".exe" added if missing), then as
+ * C:\Programs\NAME\NAME.exe. */
 RamNode   *UmFindProgram(RamNode *cwd, const char *name);
 
 /* Start @exe with command line @cmdline (UTF-8/ASCII), current directory
- * @cwd, standard handles on @con.  NULL with @err set on failure. */
+ * @cwd, standard handles on @con (NULL: output is discarded and input is
+ * at end of file).  NULL with @err set on failure. */
 UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
                    char *err, int err_cap);
 /* Ask the process to end with @status (it stops at its next kernel exit). */
@@ -45,6 +47,9 @@ void       UmKill(UmProcess *p, UINT32 status);
 bool       UmHasExited(UmProcess *p, UINT32 *status, char *why, int why_cap);
 /* The spawner is done with the process (kill it first if still running). */
 void       UmRelease(UmProcess *p);
+/* Let the process run on its own (started from the desktop, no console):
+ * it is reclaimed when it exits. */
+void       UmDetach(UmProcess *p);
 
 UINT32      UmPid(const UmProcess *p);
 const char *UmName(const UmProcess *p);

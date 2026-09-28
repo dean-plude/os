@@ -5,10 +5,28 @@ int main(int argc, char **argv, char **envp);
 
 int _fltused = 0x9875;
 
+/* Static constructors (C++ globals, __attribute__((constructor))): the
+ * compiler puts pointers to them in .CRT$XCU; the linker sorts the .CRT$
+ * sections by name, so they land between these two markers. */
+typedef void (__cdecl *_PVFV)(void);
+#pragma section(".CRT$XCA", long, read)
+#pragma section(".CRT$XCZ", long, read)
+__declspec(allocate(".CRT$XCA")) const _PVFV __xc_a[] = { 0 };
+__declspec(allocate(".CRT$XCZ")) const _PVFV __xc_z[] = { 0 };
+
+static void run_initializers(void)
+{
+    const _PVFV *p = __xc_a, *end = __xc_z;
+    __asm__("" : "+r"(p), "+r"(end));       /* distinct arrays: stop the optimizer reasoning */
+    for (; p < end; p++)
+        if (*p) (*p)();
+}
+
 void mainCRTStartup(void)
 {
     int argc = 0;
     char **argv = 0, **envp = 0;
     __getmainargs(&argc, &argv, &envp, 0, 0);
+    run_initializers();
     exit(main(argc, argv, envp));
 }

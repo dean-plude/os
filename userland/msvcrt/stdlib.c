@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <windows.h>
+#include <assert.h>
 
 /* -----------------------------------------------------------------------
  * errno

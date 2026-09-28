@@ -62,6 +62,7 @@ typedef struct WND {
 
     WndPaintFn on_paint;     /* draw the client area (clip is set) */
     WndKeyFn   on_key;       /* key pressed while focused */
+    bool       key_releases; /* on_key also gets releases (pressed = false) */
     WndMouseFn on_mouse;     /* mouse in / captured by the client area */
     WndCloseFn on_close;     /* window is being destroyed: free `user` */
     WndTickFn  on_tick;      /* optional periodic work */

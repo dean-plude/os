@@ -286,7 +286,7 @@ static void open_icon(int i)
  * ----------------------------------------------------------------------- */
 static const AppId g_pinned[8] = {
     APP_TERMINAL, APP_EXPLORER, APP_NOTEPAD, APP_SETTINGS,
-    APP_CALENDAR, APP_EDGE, APP_STORE, APP_PHOTOS,
+    APP_CALENDAR, APP_NETSURF, APP_STORE, APP_PHOTOS,
 };
 static const char *g_pinned_cap[8] = {
     "Terminal", "Files", "Notepad", "Settings", "Calendar", "Edge", "Store", "Photos",
@@ -365,9 +365,8 @@ static void draw_live_tiles(int x, int y, int w)
                  GDI_TRANSPARENT);
     GdiTextCenter(x, gy + 20, 56, "Solit.", GDI_WHITE);
     HOT_OV(RECT(x, gy, 56, 56), ACT_APP, APP_SOLITAIRE, NULL);
-    GdiRoundRect(RECT(x + 64, gy, 56, 56), rad, C_EDGE, GDI_TRANSPARENT);
-    GdiTextCenter(x + 64, gy + 20, 56, "e", GDI_WHITE);
-    HOT_OV(RECT(x + 64, gy, 56, 56), ACT_APP, APP_EDGE, NULL);
+    AppDrawIcon(APP_NETSURF, x + 64, gy, 56);
+    HOT_OV(RECT(x + 64, gy, 56, 56), ACT_APP, APP_NETSURF, NULL);
     GdiRoundRect(RECT(x + 128, gy, w - 128, 56), rad, GDI_C(0xF2, 0xDC, 0xCE),
                  GDI_TRANSPARENT);
     GdiTextBold(x + 138, gy + 6, "To do", C_EDGE);
@@ -380,7 +379,7 @@ static void draw_recent_list(int x, int y, int w)
 {
     /* Apps you opened, newest first, then suggestions */
     static const AppId suggest[9] = {
-        APP_PHOTOSHOP, APP_EDGE, APP_PAINT, APP_TIPS, APP_POWERPOINT,
+        APP_PHOTOSHOP, APP_NETSURF, APP_PAINT, APP_TIPS, APP_POWERPOINT,
         APP_SKYPE, APP_BLENDER, APP_BING, APP_ILLUSTRATOR,
     };
     AppId items[9];
@@ -485,7 +484,7 @@ static void draw_start_menu(void)
 #define DOCK_SEARCH  (-2)
 static const int g_dock_items[] = {
     DOCK_START, DOCK_SEARCH, APP_TERMINAL, APP_EXPLORER, APP_NOTEPAD,
-    APP_SETTINGS, APP_CALENDAR, APP_EDGE, APP_STORE, APP_PHOTOS, APP_XBOX,
+    APP_SETTINGS, APP_CALENDAR, APP_NETSURF, APP_STORE, APP_PHOTOS, APP_XBOX,
     APP_SKYPE,
 };
 #define N_DOCK ((int)(sizeof(g_dock_items) / sizeof(g_dock_items[0])))
@@ -691,7 +690,7 @@ static void desktop_hover(int x, int y)
 
 static void desktop_key(const KeyEvent *k)
 {
-    if (!k->pressed) return;
+    if (!k->pressed) { WmKey(k); return; }      /* releases: to windows that want them */
     if (k->extended && k->scancode == KEY_LWIN) { DesktopToggleStart(); return; }
     if (g_start_open) {
         if (k->scancode == KEY_ESC) { g_start_open = false; WmInvalidate(); }

@@ -204,7 +204,8 @@ EFI_STATUS elf_load(
     UINT64 alloc_addr = phys_base;
     status = bs->AllocatePages(AllocateAddress, EfiLoaderData, num_pages, &alloc_addr);
     if (EFI_ERROR(status)) {
-        /* Try any address as fallback — only works if kernel is position-independent */
+        /* Anywhere else will do: the kernel runs at its virtual address and
+         * learns its physical base from BootInfo */
         console_printf("ELF: AllocateAddress failed (%x), trying AnyPages\r\n",
                        (UINT64)status);
         status = bs->AllocatePages(AllocateAnyPages, EfiLoaderData, num_pages, &alloc_addr);
@@ -261,8 +262,10 @@ done:
     bs->FreePool(chunk_buf);
 
     if (!EFI_ERROR(status)) {
-        /* Adjust entry point if we moved the image */
-        *entry_out     = ehdr.e_entry + (alloc_addr - phys_base);
+        /* The entry point is virtual: paging_build() maps the kernel's
+         * virtual range onto wherever it landed, so it needs no adjustment
+         * even when the image was placed away from its link address. */
+        *entry_out     = ehdr.e_entry;
         *phys_base_out = alloc_addr;
         *virt_base_out = virt_min;
         *size_out      = total_size;

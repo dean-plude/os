@@ -14,6 +14,8 @@
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../arch/x86_64/cpu.h"
+#include "../net/net_internal.h"      /* net_lock: the net thread stirs the entropy pool */
+#include "../net/tls.h"
 
 #define ST_SUCCESS                0x00000000u
 #define ST_ABANDONED              0x00000080u
@@ -497,6 +499,27 @@ static UINT64 sys_nova_debug_print(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return ST_SUCCESS;
 }
 
+/* NtNovaGetRandom(PVOID Buffer, ULONG Length): bytes from the kernel's
+ * entropy pool (net/tls.c), for programs' own TLS and key generation */
+static UINT64 sys_nova_get_random(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    UINT8 buf[256];
+    if (a2 > 4096) return ST_INVALID_PARAMETER;
+    for (UINT64 off = 0; off < a2; off += sizeof(buf)) {
+        UINT64 n = a2 - off < sizeof(buf) ? a2 - off : sizeof(buf);
+        net_lock();
+        TlsEntropyOutput(buf, n);
+        net_unlock();
+        if (!NT_SUCCESS(CopyToUser((UINT8 *)(uintptr_t)a1 + off, buf, n))) {
+            memset(buf, 0, sizeof(buf));
+            return ST_ACCESS_VIOLATION;
+        }
+    }
+    memset(buf, 0, sizeof(buf));
+    return ST_SUCCESS;
+}
+
 void um_thread_syscalls_init(void)
 {
     um_install(SYSCALL_NtCreateEvent,             sys_create_event);
@@ -519,4 +542,5 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtDuplicateObject,         sys_duplicate_object);
     um_install(SYSCALL_NtNovaLoadDll,             sys_nova_load_dll);
     um_install(SYSCALL_NtNovaDebugPrint,          sys_nova_debug_print);
+    um_install(SYSCALL_NtNovaGetRandom,           sys_nova_get_random);
 }

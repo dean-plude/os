@@ -406,9 +406,15 @@ void WmTick(void)
 
 bool WmKey(const KeyEvent *k)
 {
-    if (!k || !k->pressed) return false;
+    if (!k) return false;
     WND *w = WmActiveWindow();
     if (!w) return false;
+    if (!k->pressed) {
+        /* only windows that track held keys (program windows) see releases */
+        if (!w->key_releases || !w->on_key) return false;
+        w->on_key(w, k);
+        return true;
+    }
     if (k->alt && !k->extended && k->scancode == KEY_F4) {
         WmDestroyWindow(w);
         return true;

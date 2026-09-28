@@ -180,6 +180,10 @@ float sqrtf(float x)          { return (float)sqrt(x); }
 float fabsf(float x)          { return (float)fabs(x); }
 float floorf(float x)         { return (float)floor(x); }
 float ceilf(float x)          { return (float)ceil(x); }
+float roundf(float x)         { return (float)round(x); }
+long  lroundf(float x)        { return (long)round(x); }
+float truncf(float x)         { return (float)trunc(x); }
+float fmodf(float x, float y) { return (float)fmod(x, y); }
 float sinf(float x)           { return (float)sin(x); }
 float cosf(float x)           { return (float)cos(x); }
 float powf(float x, float y)  { return (float)pow(x, y); }

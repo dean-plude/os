@@ -3,7 +3,7 @@
 A clean-room, from-scratch x86_64 operating system designed to run native
 Windows executables (PE32+) without emulation.
 
-## Status: Phase 9 — Windows programs in user mode (on a working desktop with networking and HTTPS)
+## Status: Phase 9.5 — a real web browser (NetSurf) running as a Windows program in user mode
 
 **What works:**
 
@@ -183,8 +183,7 @@ Windows executables (PE32+) without emulation.
   fed by RDRAND (when present), TSC jitter and packet timing.
 - **Terminal**: `curl`/`wget` take several URLs (`curl URL URL ...`) and show
   the protocol, cipher suite, reused connections and resumed sessions.
-- Not yet: IPv6, compression (`gzip`), HTTP/2, and a web browser — next is
-  user-mode programs with a C library, then a **NetSurf** port.
+- Not yet: IPv6 and HTTP/2.  (The web browser arrived in Phase 9.5.)
 
 ### Phase 9 — Windows programs (ring 3)
 - **Real PE32+ `.exe` files run in ring 3** (`kernel/um/`): each program has
@@ -237,10 +236,46 @@ Windows executables (PE32+) without emulation.
   `taskkill /PID n` list and stop programs; several run at once.
 - Sample and self-test programs live in `userland/programs/`
   (`crttest` 26/26, `filetest` 30/30, `sectest` 13/13, `threads` 37/37,
-  `dlltest` 10/10, plus `netcat` and `winhello`).
-- Not yet: loading the real Microsoft DLLs, a full modal dialog manager,
-  and the NetSurf browser port itself (the pieces it needs — a C library,
-  sockets, TLS and a GUI — are now in place).
+  `dlltest` 10/10, `posixtest` 28/28, plus `netcat` and `winhello`).
+- Not yet: loading the real Microsoft DLLs and a full modal dialog manager.
+
+### Phase 9.5 — The NetSurf web browser
+- **[NetSurf](https://www.netsurf-browser.org/) 3.11** — a real HTML/CSS
+  browser engine (libcss, libdom, hubbub) — built from source for NovaOS
+  (`tools/build_netsurf.py`, clang + lld-link for x86_64-pc-windows-msvc)
+  into `C:\Programs\NetSurf\netsurf.exe`, a Windows program that runs in
+  ring 3 on the system DLLs.  Open it from the **globe icon in the dock**
+  (or Start), or type `netsurf [url]` in the Terminal (its log then appears
+  there).  It renders HTML and CSS 2.1 (floats, tables, positioning; web
+  fonts are not loaded), PNG, JPEG, GIF and BMP images, and plain text;
+  links, forms, cookies, history, Back/Forward/Reload and error pages work.
+- **HTTP and HTTPS** (`userland/netsurf/fetch_nova.c`): NetSurf's fetcher
+  interface implemented over Winsock (`ws2_32`) with Mbed TLS 3.6 in the
+  program (TLS 1.3/1.2, SNI, ALPN, certificate verification against the
+  Mozilla roots in `res\ca-bundle.der` plus any root added with
+  `certutil -addstore root`, which the Terminal now also saves to
+  `C:\Windows\System32\CertStore`).  Each fetch runs on its own thread;
+  responses may be chunked and gzip/deflate compressed; redirects, 304,
+  401 (Basic auth), POST (url-encoded and multipart) and cookies are
+  handled.  Random numbers come from the kernel's entropy pool through a
+  new `NtNovaGetRandom` service.
+- **Display and input** (`userland/netsurf/nsfb_novaos.c`): a libnsfb
+  surface whose framebuffer *is* the window's client bitmap, so NetSurf's
+  plotters draw straight into the desktop window; keyboard (with key-up
+  events, now delivered to program windows) and mouse come from the Win32
+  message queue.
+- **Text** (`userland/netsurf/font_nova.c`): anti-aliased TrueType text
+  with sub-pixel positioning, rendered at run time by
+  [stb_truetype](https://github.com/nothings/stb) from Inter (sans-serif)
+  and DejaVu Sans Mono (monospace) in `C:\Windows\Fonts`; italic is
+  synthesized.  JPEG decoding uses stb_image (`jpeg_stb.c`).
+- **The C runtime grew a POSIX layer** for it (`userland/msvcrt/posix.c`,
+  `iconv.c`, headers in `userland/include/posix`): file descriptors with
+  `dup`/`fdopen`/`pread`/`pwrite`, `stat`, `opendir`/`scandir`,
+  `getopt_long`, `gettimeofday`, `iconv` (UTF-8/16/32, Latin-1,
+  Windows-1252), `asprintf`; `crt0` now runs static constructors.
+- Not yet: JavaScript (NetSurf's duktape engine is left out), SVG, IPv6,
+  HTTP keep-alive (one connection per request), and window resizing.
 
 ## Quick Start
 
@@ -256,6 +291,10 @@ make -j$(nproc)
 # Run
 cmake --build . --target run
 ```
+
+The first build compiles the NetSurf browser (about 800 files; later builds
+reuse the cached objects). Set `NOVA_NO_NETSURF=1` in the environment to
+leave the browser out.
 
 ### Bootable ISO
 
@@ -305,7 +344,7 @@ qemu-system-x86_64 -machine q35 -m 512M \
 | 8.5 | Networking (e1000/e1000e, lwIP, DHCP, DNS, HTTP tools) | ✅ **Done** |
 | 8.6 | HTTPS (Mbed TLS: TLS 1.3/1.2, Mozilla roots, certutil), HTTP/1.1 keep-alive | ✅ **Done** |
 | 9 | Native user-mode PE execution: loader, TEB/PEB, threads, TLS, SEH, DllMain, sockets (ws2_32), GUI (user32/gdi32) | ✅ **Done** |
-| 9.5 | NetSurf web browser (port on the new C library, sockets, TLS and GUI) | 🔄 Next |
+| 9.5 | NetSurf web browser (HTTP/HTTPS fetcher, window surface, TrueType text, POSIX C runtime) | ✅ **Done** |
 | 10 | Win32 GUI subsystem (win32k, user32/gdi32, real HWNDs) | 🔄 Planned |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native
@@ -342,7 +381,9 @@ os/
 ├── userland/             # Windows SDK subset built with clang/lld-link:
 │   │                     #   ntdll, kernel32, msvcrt, ws2_32, user32, gdi32,
 │   │                     #   crt0, tlssup, headers, sample programs
-├── tools/                # Host build tools (build_userland.py, mkfont)
+│   └── netsurf/          # NetSurf port: fetcher, window surface, fonts, JPEG
+├── third_party/          # lwIP, Mbed TLS, NetSurf + libraries, stb, fonts
+├── tools/                # Host build tools (build_userland.py, build_netsurf.py, mkfont)
 ├── cmake/                # Cross-compilation toolchain files
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh
 └── docs/                 # Architecture & build documentation
@@ -352,8 +393,10 @@ os/
 
 - **NT ABI compatibility**: syscall numbers, NTSTATUS codes, UNICODE_STRING, and structure
   offsets match Windows 10 1903 x64 so that real ntdll.dll stubs can be used unmodified.
-- **Clean-room**: no GPL code; all NT API implementations are written from scratch
-  using public Microsoft documentation and reverse-engineering references.
+- **Clean-room**: no GPL code in the operating system itself; all NT API
+  implementations are written from scratch using public Microsoft documentation
+  and reverse-engineering references.  The one GPL component is the NetSurf
+  browser, a separate program (see [License](#license)).
 - **Single-CPU (Phase 5–7)**: KPCR is statically allocated for the boot CPU; SMP
   requires one KPCR per logical processor (later phase).
 - **Software-only GDI**: Phase 7 rendering is a pure CPU rasterizer writing the GOP
@@ -373,9 +416,19 @@ os/
 
 ## License
 
-NovaOS is MIT licensed. No GPL code is used; bundled third-party code keeps
-its own permissive licence (lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; Inter
-and Cascadia Mono: SIL OFL 1.1).
+NovaOS is MIT licensed. The operating system (kernel, bootloader, system
+DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
+code keeps its own permissive licence (lwIP: BSD 3-clause; Mbed TLS:
+Apache-2.0; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu Sans Mono:
+Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT).
 All Win32 API implementations are clean-room based on public Microsoft
 documentation, ReactOS reference, and Wine source study (but independently
 written).
+
+**NetSurf** (`third_party/netsurf/netsurf`) is licensed under the **GNU GPL
+version 2**; its libraries are MIT, zlib and libpng licensed (see
+`third_party/netsurf/NOVA-VENDOR.txt`).  `netsurf.exe` — NetSurf linked with
+the NovaOS glue in `userland/netsurf` (MIT, GPL-compatible) — is a separate
+program distributed under the GPL-2.0, with its complete source in this
+repository; the kernel image merely carries it as a file for drive C:.
+Build with `NOVA_NO_NETSURF=1` for an image without it.

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <errno.h>
 #include <windows.h>
+#include "msvcrt_internal.h"
 
 #define F_READ     0x001
 #define F_WRITE    0x002
@@ -18,6 +19,8 @@
 #define F_READING  0x200       /* buffer holds read-ahead input */
 #define F_CONSOLE  0x400
 #define F_OPEN     0x800
+#define F_HASFD    0x1000      /* _fd is a descriptor naming this stream's handle */
+#define F_OWNFD    0x2000      /* from fdopen: closing the stream closes _fd */
 
 static FILE g_iob[3];
 static FILE *g_files[FOPEN_MAX];
@@ -274,7 +277,12 @@ int fclose(FILE *f)
     if (!f) return EOF;
     int r = fflush(f);
     if (f >= g_iob && f < g_iob + 3) { f->_flags = 0; return r; }
-    if (!CloseHandle(f->_handle)) r = EOF;
+    if (f->_flags & F_OWNFD) {
+        if (close(f->_fd)) r = EOF;
+    } else {
+        if (f->_flags & F_HASFD) close(f->_fd);
+        if (!CloseHandle(f->_handle)) r = EOF;
+    }
     if (f->_flags & F_OWNBUF) free(f->_buf);
     for (int i = 0; i < FOPEN_MAX; i++) if (g_files[i] == f) g_files[i] = 0;
     free(f);
@@ -331,7 +339,91 @@ int  fsetpos(FILE *f, const fpos_t *pos)      { return _fseeki64(f, *pos, SEEK_S
 int  feof(FILE *f)                            { return (f->_flags & F_EOF) != 0; }
 int  ferror(FILE *f)                          { return (f->_flags & F_ERR) != 0; }
 void clearerr(FILE *f)                        { f->_flags &= ~(F_EOF | F_ERR); }
-int  _fileno(FILE *f)                         { return f >= g_iob && f < g_iob + 3 ? (int)(f - g_iob) : 3; }
+int _fileno(FILE *f)
+{
+    if (f >= g_iob && f < g_iob + 3) return (int)(f - g_iob);
+    if (!(f->_flags & F_HASFD)) {
+        int fd = __nova_fd_new(f->_handle, 0);
+        if (fd < 0) return -1;
+        f->_fd = fd;
+        f->_flags |= F_HASFD;
+    }
+    return f->_fd;
+}
+
+static FILE *add_stream(HANDLE h, int flags)
+{
+    int slot = -1;
+    for (int i = 0; i < FOPEN_MAX; i++) if (!g_files[i]) { slot = i; break; }
+    if (slot < 0) { errno = EMFILE; return 0; }
+    FILE *f = calloc(1, sizeof(FILE));
+    if (!f) { errno = ENOMEM; return 0; }
+    f->_handle = h;
+    f->_flags = flags | F_OPEN;
+    f->_ungot = -1;
+    if (GetFileType(h) == FILE_TYPE_CHAR) f->_flags |= F_CONSOLE | F_LINEBUF;
+    g_files[slot] = f;
+    return f;
+}
+
+FILE *_fdopen(int fd, const char *mode)
+{
+    HANDLE h = __nova_fd_handle(fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    int flags = F_OWNFD;
+    int plus = strchr(mode, '+') != 0;
+    switch (mode[0]) {
+    case 'r': flags |= F_READ | (plus ? F_WRITE : 0); break;
+    case 'w': flags |= F_WRITE | (plus ? F_READ : 0); break;
+    case 'a': flags |= F_WRITE | F_APPEND | (plus ? F_READ : 0); break;
+    default:  errno = EINVAL; return 0;
+    }
+    FILE *f = add_stream(h, flags);
+    if (f) f->_fd = fd;
+    return f;
+}
+
+FILE *tmpfile(void)
+{
+    static unsigned n;
+    char name[64];
+    for (int tries = 0; tries < 100; tries++) {
+        snprintf(name, sizeof(name), "C:\\Temp\\tmp%u_%u.tmp", (unsigned)GetCurrentProcessId(), n++);
+        CreateDirectoryA("C:\\Temp", 0);
+        HANDLE h = CreateFileA(name, GENERIC_READ | GENERIC_WRITE, 0, 0, CREATE_NEW,
+                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, 0);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        FILE *f = add_stream(h, F_READ | F_WRITE);
+        if (!f) CloseHandle(h);
+        return f;
+    }
+    errno = EEXIST;
+    return 0;
+}
+
+int vasprintf(char **out, const char *fmt, va_list ap)
+{
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(0, 0, fmt, ap2);
+    va_end(ap2);
+    *out = 0;
+    if (n < 0) return -1;
+    char *s = malloc((size_t)n + 1);
+    if (!s) { errno = ENOMEM; return -1; }
+    vsnprintf(s, (size_t)n + 1, fmt, ap);
+    *out = s;
+    return n;
+}
+
+int asprintf(char **out, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vasprintf(out, fmt, ap);
+    va_end(ap);
+    return n;
+}
 
 int setvbuf(FILE *f, char *buf, int mode, size_t size)
 {

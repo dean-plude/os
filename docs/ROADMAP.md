@@ -34,13 +34,15 @@ threads and the full synchronization set, static TLS, DllMain, structured
 exception handling (`__try`/`__except`/`__finally` with a real x64
 unwinder), Winsock sockets over lwIP, and native Win32 windows in the
 desktop's window manager — launched from the Terminal, with crash isolation
-and full memory reclamation.
+and full memory reclamation.  **Phase 9.5** put all of it to work: the
+NetSurf web browser, built from source as a Windows program, browses HTTP
+and HTTPS sites (its own fetcher over Winsock + Mbed TLS) with anti-aliased
+TrueType text, on a C runtime that now has a POSIX layer.
 
 **Honest gaps:** the real Microsoft DLLs are not loaded (these are
 clean-room reimplementations — Path A below); there is no modal dialog
 manager or common-controls library yet; no storage driver or persistence
-(drive C: is in memory); and the NetSurf browser itself is not yet ported
-(the C library, sockets, TLS and GUI it needs are now in place).
+(drive C: is in memory); and the browser runs without JavaScript.
 
 ---
 

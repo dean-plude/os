@@ -125,11 +125,15 @@ static void gui_key(WND *w, const KeyEvent *k)
     GuiWin *g = w->user;
     if (!g) return;
     UINT32 vk = k->scancode;                                /* scancode as a rough VK */
+    /* lParam as in Win32: repeat count 1, scan code in bits 16-23, bit 24
+     * for E0-prefixed (extended) keys, bit 29 with Alt, 30-31 on release */
+    UINT64 lp = 1 | ((UINT64)k->scancode << 16) | ((UINT64)(k->extended ? 1 : 0) << 24) |
+                ((UINT64)(k->alt ? 1 : 0) << 29);
     if (k->pressed) {
-        enqueue(g, WM_KEYDOWN, vk, 1, 0, 0);
-        if (k->ch) enqueue(g, WM_CHAR, (UINT8)k->ch, 1, 0, 0);
+        enqueue(g, WM_KEYDOWN, vk, lp, 0, 0);
+        if (k->ch) enqueue(g, WM_CHAR, (UINT8)k->ch, lp, 0, 0);
     } else {
-        enqueue(g, WM_KEYUP, vk, 0, 0, 0);
+        enqueue(g, WM_KEYUP, vk, lp | (3ull << 30), 0, 0);
     }
 }
 
@@ -243,6 +247,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (w) {
         w->app = -1;
         w->on_key = gui_key;
+        w->key_releases = true;         /* WM_KEYUP */
         w->on_mouse = gui_mouse;
         w->on_close = gui_close;
         w->on_tick = gui_tick;
