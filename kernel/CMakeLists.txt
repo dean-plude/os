@@ -124,11 +124,13 @@ set(KERNEL_C_SOURCES
     net/tls_roots.c
     net/tls_platform.c
     net/http.c
+    net/sock.c
     um/um.c
     um/um_console.c
     um/um_syscall.c
     um/um_thread.c
     um/um_exception.c
+    um/um_socket.c
     ke/main.c
     ke/printf.c
     ke/scheduler.c

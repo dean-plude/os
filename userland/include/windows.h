@@ -21,6 +21,7 @@ typedef unsigned short     WORD, USHORT;
 typedef unsigned long      DWORD, ULONG;
 typedef long               LONG;
 typedef int                INT;
+typedef short              SHORT;
 typedef unsigned int       UINT;
 typedef long long          LONGLONG, LONG64, INT64;
 typedef unsigned long long ULONGLONG, DWORD64, ULONG64, UINT64;

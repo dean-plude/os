@@ -60,6 +60,7 @@ typedef struct UmObject {
     UmThread       *owner;          /* mutant */
     UINT32          recursion;
     bool            abandoned;
+    int             sock;           /* UO_SOCKET: kernel socket index */
     void          (*destroy)(struct UmObject *o);   /* extra cleanup (sockets, windows) */
 } UmObject;
 
@@ -189,6 +190,7 @@ UINT64     um_close_handle(UINT64 h);           /* NtClose for the current proce
 
 /* um_thread.c: threads, synchronization objects, waits */
 void       um_thread_syscalls_init(void);
+void       um_socket_syscalls_init(void);
 /* Wait until @o is signaled (acquiring it), @timeout_100ns passes (-1:
  * forever) or the process is being killed. */
 UINT32     um_wait_one(UmObject *o, INT64 timeout_100ns);

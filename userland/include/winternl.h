@@ -205,6 +205,17 @@ NTSYSAPI NTSTATUS NTAPI NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, BO
 /* NovaOS */
 NTSYSAPI NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base);
 NTSYSAPI NTSTATUS NTAPI NtNovaDebugPrint(const char *s, ULONG len);
+NTSYSAPI INT_PTR  NTAPI NtNovaSocket(ULONG type);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockConnect(INT_PTR h, ULONG ip, USHORT port);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockSend(INT_PTR h, const void *buf, ULONG len);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockRecv(INT_PTR h, void *buf, ULONG len);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockBind(INT_PTR h, ULONG ip, USHORT port);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockListen(INT_PTR h, ULONG backlog);
+NTSYSAPI INT_PTR  NTAPI NtNovaSockAccept(INT_PTR h, void *addr);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockSendTo(INT_PTR h, const void *buf, ULONG len, const void *addr);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockRecvFrom(INT_PTR h, void *buf, ULONG len, void *addr);
+NTSYSAPI LONG_PTR NTAPI NtNovaResolve(const char *name, ULONG *ip);
 
 /* Loader */
 NTSYSAPI NTSTATUS NTAPI LdrLoadDll(const WCHAR *path, PULONG flags, PUNICODE_STRING name, PVOID *base);

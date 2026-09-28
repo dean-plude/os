@@ -174,6 +174,18 @@
 #define SYSCALL_NtRaiseException                  0x0185
 #define SYSCALL_NtNovaLoadDll                     0x0186  /* NovaOS: LdrLoadDll's kernel half */
 #define SYSCALL_NtNovaDebugPrint                  0x0187  /* NovaOS: OutputDebugString */
+/* NovaOS sockets (ws2_32's kernel half) */
+#define SYSCALL_NtNovaSocket                      0x0190
+#define SYSCALL_NtNovaSockConnect                 0x0191
+#define SYSCALL_NtNovaSockSend                    0x0192
+#define SYSCALL_NtNovaSockRecv                    0x0193
+#define SYSCALL_NtNovaSockBind                    0x0194
+#define SYSCALL_NtNovaSockListen                  0x0195
+#define SYSCALL_NtNovaSockAccept                  0x0196
+#define SYSCALL_NtNovaSockCtl                     0x0197
+#define SYSCALL_NtNovaSockSendTo                  0x0198
+#define SYSCALL_NtNovaSockRecvFrom                0x0199
+#define SYSCALL_NtNovaResolve                     0x019A
 
 /* -----------------------------------------------------------------------
  * Syscall table size

@@ -27,7 +27,8 @@ DLLS = [
     ('ntdll',    [],                     0x7FFA00000000),
     ('kernel32', ['ntdll'],              0x7FFA10000000),
     ('msvcrt',   ['kernel32', 'ntdll'],  0x7FFA20000000),
-    ('testdll',  ['kernel32', 'ntdll'],  0x7FFA30000000),
+    ('ws2_32',   ['kernel32', 'ntdll'],  0x7FFA30000000),
+    ('testdll',  ['kernel32', 'ntdll'],  0x7FFA40000000),
 ]
 
 def run(cmd):
@@ -64,7 +65,7 @@ for name, deps, base in DLLS:
             obj = os.path.join(out, f'{name}_{src[:-2]}.obj')
             cc(os.path.join(srcdir, src), obj)
             objs.append(obj)
-    if name == 'testdll':
+    if name in ('testdll', 'ws2_32'):
         objs.append(tlssup)
     dll = os.path.join(out, f'{name}.dll')
     entry = ['/entry:DllMain'] if name == 'testdll' else ['/noentry']
@@ -85,7 +86,7 @@ for src in sorted(os.listdir(progdir)):
     run(['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib',
          f'/out:{exe}', crt0, tlssup, obj, os.path.join(out, 'msvcrt.lib'),
          os.path.join(out, 'kernel32.lib'), os.path.join(out, 'ntdll.lib'),
-         os.path.join(out, 'testdll.lib')])
+         os.path.join(out, 'ws2_32.lib'), os.path.join(out, 'testdll.lib')])
     built.append((f'\\Programs\\{name}.exe', exe))
 
 # 4. embed
