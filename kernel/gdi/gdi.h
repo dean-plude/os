@@ -103,6 +103,9 @@ void GdiFillUnderCurve(GdiRect r, GdiCurveFn fn, void *ctx, GdiColor c);
 
 void GdiPutPixel(int x, int y, GdiColor c);
 
+/* Blit a user window bitmap (GdiColor/COLORREF pixels) into a logical rect. */
+void GdiBlitBGRA(GdiRect dst, const UINT32 *src, int src_stride);
+
 /* -----------------------------------------------------------------------
  * Text — Inter, 13px on a 16px line; (x, y) is the top of the line box
  * ----------------------------------------------------------------------- */

@@ -216,6 +216,17 @@ NTSYSAPI LONG_PTR NTAPI NtNovaSockCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *
 NTSYSAPI LONG_PTR NTAPI NtNovaSockSendTo(INT_PTR h, const void *buf, ULONG len, const void *addr);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockRecvFrom(INT_PTR h, void *buf, ULONG len, void *addr);
 NTSYSAPI LONG_PTR NTAPI NtNovaResolve(const char *name, ULONG *ip);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiCreate(void *info);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiGetMessage(ULONG_PTR hwnd, void *msg, ULONG wait);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiInvalidate(ULONG_PTR hwnd);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiSetText(ULONG_PTR hwnd, const void *title16);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiShow(ULONG_PTR hwnd, ULONG show);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiDestroy(ULONG_PTR hwnd);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiSetTimer(ULONG_PTR hwnd, ULONG_PTR id, ULONG ms);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiKillTimer(ULONG_PTR hwnd, ULONG_PTR id);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiMessageBox(const void *text16, const void *cap16, ULONG type);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiScreenSize(ULONG *w, ULONG *h);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiPostMessage(ULONG_PTR hwnd, ULONG msg, ULONG_PTR wp, ULONG_PTR lp);
 
 /* Loader */
 NTSYSAPI NTSTATUS NTAPI LdrLoadDll(const WCHAR *path, PULONG flags, PUNICODE_STRING name, PVOID *base);

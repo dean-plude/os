@@ -1104,6 +1104,7 @@ void UmPoll(void)
         um_unlock(&p->lock);
         if (!p->exited || left) continue;
         if (!p->reclaimed) {
+            um_gui_process_gone(p);
             um_close_all_handles(p);
             free_address_space(p->pml4);
             p->pml4 = 0;

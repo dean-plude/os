@@ -21,6 +21,12 @@ typedef unsigned short     WORD, USHORT;
 typedef unsigned long      DWORD, ULONG;
 typedef long               LONG;
 typedef int                INT;
+typedef int                INT32;
+typedef unsigned int       UINT32;
+typedef short              INT16;
+typedef unsigned short     UINT16;
+typedef signed char        INT8;
+typedef unsigned char      UINT8;
 typedef short              SHORT;
 typedef unsigned int       UINT;
 typedef long long          LONGLONG, LONG64, INT64;
@@ -60,7 +66,26 @@ typedef union _ULARGE_INTEGER {
     ULONGLONG QuadPart;
 } ULARGE_INTEGER, *PULARGE_INTEGER;
 
+/* -----------------------------------------------------------------------
+ * GUI shared types, then user32/gdi32 (winuser.h / wingdi.h)
+ * ----------------------------------------------------------------------- */
+typedef struct tagPOINT { LONG x, y; } POINT, *LPPOINT, *PPOINT;
+typedef struct tagRECT { LONG left, top, right, bottom; } RECT, *LPRECT, *PRECT;
+typedef struct tagSIZE { LONG cx, cy; } SIZE, *LPSIZE, *PSIZE;
+typedef const RECT *LPCRECT;
+typedef void *HWND, *HDC, *HMENU, *HICON, *HCURSOR, *HBRUSH, *HPEN, *HFONT, *HGDIOBJ, *HBITMAP;
+typedef HICON HANDLE_ICON;
+typedef UINT_PTR WPARAM;
+typedef LONG_PTR LPARAM, LRESULT;
+typedef DWORD COLORREF;
+#define RGB(r,g,b) ((COLORREF)(((BYTE)(r))|(((WORD)((BYTE)(g)))<<8)|(((DWORD)((BYTE)(b)))<<16)))
+#define GetRValue(c) ((BYTE)(c))
+#define GetGValue(c) ((BYTE)((c)>>8))
+#define GetBValue(c) ((BYTE)((c)>>16))
+
 _NOVA_END
+#include <wingdi.h>
+#include <winuser.h>
 #include <winnt.h>
 #include <excpt.h>
 _NOVA_BEGIN

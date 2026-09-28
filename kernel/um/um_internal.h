@@ -191,6 +191,8 @@ UINT64     um_close_handle(UINT64 h);           /* NtClose for the current proce
 /* um_thread.c: threads, synchronization objects, waits */
 void       um_thread_syscalls_init(void);
 void       um_socket_syscalls_init(void);
+void       um_gui_syscalls_init(void);
+void       um_gui_process_gone(UmProcess *p);   /* destroy the process's windows */
 /* Wait until @o is signaled (acquiring it), @timeout_100ns passes (-1:
  * forever) or the process is being killed. */
 UINT32     um_wait_one(UmObject *o, INT64 timeout_100ns);

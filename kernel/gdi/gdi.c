@@ -278,6 +278,30 @@ void GdiPutPixel(int x, int y, GdiColor c)
     GdiFillRect(RECT(x, y, 1, 1), c);
 }
 
+/* Blit a source image of logical pixels (GdiColor / COLORREF format, one
+ * UINT32 per logical pixel, @src_stride pixels per row) into the logical
+ * rect @dst, scaling each logical pixel to the display scale and clipping.
+ * Used to composite a user program's window bitmap. */
+void GdiBlitBGRA(GdiRect dst, const UINT32 *src, int src_stride)
+{
+    if (!g.ready || !src) return;
+    int sc = g.s;
+    int x0 = imax(dst.x * sc, g.cx0), y0 = imax(dst.y * sc, g.cy0);
+    int x1 = imin((dst.x + dst.w) * sc, g.cx1), y1 = imin((dst.y + dst.h) * sc, g.cy1);
+    for (int y = y0; y < y1; y++) {
+        int sy = (y / sc) - dst.y;
+        if (sy < 0 || sy >= dst.h) continue;
+        const UINT32 *row = src + (size_t)sy * src_stride;
+        UINT32 *out = g.buf + (size_t)y * g.bstride;
+        for (int x = x0; x < x1; x++) {
+            int sx = (x / sc) - dst.x;
+            if (sx < 0 || sx >= dst.w) continue;
+            out[x] = pixof(row[sx]);
+        }
+    }
+}
+
+
 /* -----------------------------------------------------------------------
  * Rounded rectangles
  * ----------------------------------------------------------------------- */

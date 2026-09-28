@@ -28,6 +28,8 @@ DLLS = [
     ('kernel32', ['ntdll'],              0x7FFA10000000),
     ('msvcrt',   ['kernel32', 'ntdll'],  0x7FFA20000000),
     ('ws2_32',   ['kernel32', 'ntdll'],  0x7FFA30000000),
+    ('gdi32',    ['kernel32', 'ntdll'],  0x7FFA50000000),
+    ('user32',   ['gdi32', 'kernel32', 'ntdll'], 0x7FFA60000000),
     ('testdll',  ['kernel32', 'ntdll'],  0x7FFA40000000),
 ]
 
@@ -86,7 +88,8 @@ for src in sorted(os.listdir(progdir)):
     run(['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib',
          f'/out:{exe}', crt0, tlssup, obj, os.path.join(out, 'msvcrt.lib'),
          os.path.join(out, 'kernel32.lib'), os.path.join(out, 'ntdll.lib'),
-         os.path.join(out, 'ws2_32.lib'), os.path.join(out, 'testdll.lib')])
+         os.path.join(out, 'ws2_32.lib'), os.path.join(out, 'user32.lib'),
+         os.path.join(out, 'gdi32.lib'), os.path.join(out, 'testdll.lib')])
     built.append((f'\\Programs\\{name}.exe', exe))
 
 # 4. embed

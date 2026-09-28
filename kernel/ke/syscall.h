@@ -186,6 +186,18 @@
 #define SYSCALL_NtNovaSockSendTo                  0x0198
 #define SYSCALL_NtNovaSockRecvFrom                0x0199
 #define SYSCALL_NtNovaResolve                     0x019A
+/* NovaOS GUI (user32/gdi32's kernel half) */
+#define SYSCALL_NtNovaGuiCreate                   0x01A0
+#define SYSCALL_NtNovaGuiGetMessage               0x01A1
+#define SYSCALL_NtNovaGuiInvalidate               0x01A2
+#define SYSCALL_NtNovaGuiSetText                  0x01A3
+#define SYSCALL_NtNovaGuiShow                     0x01A4
+#define SYSCALL_NtNovaGuiDestroy                  0x01A5
+#define SYSCALL_NtNovaGuiSetTimer                 0x01A6
+#define SYSCALL_NtNovaGuiKillTimer                0x01A7
+#define SYSCALL_NtNovaGuiMessageBox               0x01A8
+#define SYSCALL_NtNovaGuiScreenSize               0x01A9
+#define SYSCALL_NtNovaGuiPostMessage              0x01AA
 
 /* -----------------------------------------------------------------------
  * Syscall table size
