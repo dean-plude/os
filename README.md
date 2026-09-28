@@ -187,40 +187,60 @@ Windows executables (PE32+) without emulation.
   user-mode programs with a C library, then a **NetSurf** port.
 
 ### Phase 9 — Windows programs (ring 3)
-- **Real PE32+ `.exe` files run in ring 3** (`kernel/um/`): each program gets
-  its own page table (kernel half shared), a 1 MB stack, a PEB/TEB and
+- **Real PE32+ `.exe` files run in ring 3** (`kernel/um/`): each program has
+  its own page table (kernel half shared), a PEB/TEB and
   `RTL_USER_PROCESS_PARAMETERS` (UTF-16 command line, environment, current
   directory, standard handles).  The loader maps the image and its DLLs from
   drive C: with relocations, imports, forwarders and per-section protections
-  (NX for data).  Every user thread has its own FPU/SSE state and GS base.
+  (NX for data); ntdll then runs each module's TLS callbacks and `DllMain`
+  in dependency order, so real DLL initialization happens.
+- **Threads and synchronization**: `NtCreateThreadEx` and a per-process
+  thread table (each thread with its own stack, TEB, FPU/SSE state and GS
+  base); kernel objects reached through handles — events (auto/manual
+  reset), mutexes (recursive, abandoned on owner exit), semaphores and
+  thread objects — with `WaitForSingleObject`/`WaitForMultipleObjects`.
+  ntdll critical sections, SRW locks, condition variables, one-time init;
+  kernel32 `CreateThread`, TLS/FLS slots and the `Interlocked*` intrinsics.
+- **Static TLS**: `__declspec(thread)` data, `_tls_index`/`_tls_used`, per
+  thread, with `TlsAlloc`/`TlsGetValue` slots.
+- **Structured exceptions (SEH)**: the kernel delivers CPU faults to ntdll's
+  `KiUserExceptionDispatcher`; ntdll implements the x64 unwinder
+  (`RtlLookupFunctionEntry`, `RtlVirtualUnwind`, `RtlUnwindEx`) and
+  `__C_specific_handler`, so `__try`/`__except`/`__finally`, vectored
+  handlers and `RaiseException` work (built with `-fasync-exceptions`, so
+  hardware faults are caught).  An unhandled fault ends the process with a
+  precise report; the rest of the system keeps running.
 - **System DLLs built from source** (`userland/`, compiled with
   `clang --target=x86_64-pc-windows-msvc` + `lld-link` by
-  `tools/build_userland.py` as part of the kernel build) and installed in
-  `C:\Windows\System32`:
-  - `ntdll.dll` — NT system-call stubs (Windows 10 1903 numbers, generated
-    from `kernel/ke/syscall.h`), `Rtl*` helpers, a segregated-free-list heap;
-  - `kernel32.dll` — files, directories (`FindFirstFile`…), console,
-    memory, environment, time, code pages; A (UTF-8) and W entry points;
-  - `msvcrt.dll` — a C runtime: `stdio` (buffered `FILE`, `printf`/`scanf`
-    families), `stdlib`, `string`, `ctype`, `math`, `time`, `setjmp`,
-    `signal`, `locale`.
-- **NT services** (`um/um_syscall.c`): `NtCreateFile`/`NtOpenFile`/
-  `NtReadFile`/`NtWriteFile`, file information and directory queries,
-  `NtAllocateVirtualMemory`/`NtFreeVirtualMemory`/`NtProtectVirtualMemory`
-  (256 MB per process), time, delays and `NtTerminateProcess`.  Programs can
-  reach only these services; every user pointer is checked.
-- **Isolation**: a crash ends only the program, with a precise report
-  (`crashed: access violation at crash.exe+0x1085 (address 0x0)`); memory
-  is fully reclaimed when a program exits.
-- **Terminal**: type a program's name (`hello`, `mandel`, `primes 2000000`,
-  `wc C:\Windows\System32\kernel32.dll`, `guess`) — output streams live,
-  keyboard input goes to the program, **Ctrl+C** stops it, **Ctrl+Z** sends
-  end of input; `tasklist` and `taskkill /PID n`.  Several Terminals can run
-  programs at the same time.
-- Sample programs live in `userland/programs/` (every `.c` there is built
-  into `C:\Programs`); `crttest`, `filetest` and `sectest` are self-tests.
-- Not yet: threads, DLL entry points and TLS, SEH unwinding, GUI programs
-  (`user32`/`gdi32`), sockets — the next steps toward the NetSurf port.
+  `tools/build_userland.py`) and installed in `C:\Windows\System32`:
+  - `ntdll.dll` — NT system-call stubs, the loader, `Rtl*` helpers, a heap;
+  - `kernel32.dll` — files, directories, console, memory, environment, time,
+    processes/threads, sync, dynamic loading; A (UTF-8) and W entry points;
+  - `msvcrt.dll` — a C runtime (`stdio`, `stdlib`, `string`, `math`, ...);
+  - `ws2_32.dll` — **Winsock 2**: `socket`/`connect`/`bind`/`listen`/
+    `accept`/`send`/`recv`/`sendto`/`recvfrom`/`select`/`gethostbyname`/
+    `getaddrinfo`, over lwIP (`kernel/net/sock.c`);
+  - `user32.dll` + `gdi32.dll` — a **Win32 GUI**: window classes,
+    `CreateWindowEx`, the `GetMessage`/`DispatchMessage` loop,
+    `DefWindowProc`, painting (`BeginPaint`, `FillRect`, `TextOut`,
+    `Rectangle`, `Ellipse`, pens/brushes), timers and mouse/keyboard input.
+    Each program window is a real window in the desktop's window manager,
+    drawn from a client bitmap the program owns (`kernel/um/um_gui.c`).
+- **NT services** (`um/um_syscall.c` and friends): files, directories, file
+  and volume information, virtual memory (256 MB per process), time, delays,
+  thread/process/synchronization objects, sockets and windows.  Programs may
+  reach only the implemented services and every user pointer is checked.
+- **Terminal**: type a program's name — console programs (`hello`, `mandel`,
+  `primes 2000000`, `wc ...`, `guess`) stream output and take input, with
+  **Ctrl+C** and **Ctrl+Z**; GUI programs (`winhello`) open their own
+  window; `netcat host path` fetches a URL over sockets.  `tasklist` and
+  `taskkill /PID n` list and stop programs; several run at once.
+- Sample and self-test programs live in `userland/programs/`
+  (`crttest` 26/26, `filetest` 30/30, `sectest` 13/13, `threads` 37/37,
+  `dlltest` 10/10, plus `netcat` and `winhello`).
+- Not yet: loading the real Microsoft DLLs, a full modal dialog manager,
+  and the NetSurf browser port itself (the pieces it needs — a C library,
+  sockets, TLS and a GUI — are now in place).
 
 ## Quick Start
 
@@ -284,8 +304,8 @@ qemu-system-x86_64 -machine q35 -m 512M \
 | 8 | Interactive desktop (PS/2 input, cursor, preemptive sched, RTC) | ✅ **Done** |
 | 8.5 | Networking (e1000/e1000e, lwIP, DHCP, DNS, HTTP tools) | ✅ **Done** |
 | 8.6 | HTTPS (Mbed TLS: TLS 1.3/1.2, Mozilla roots, certutil), HTTP/1.1 keep-alive | ✅ **Done** |
-| 9 | Native user-mode PE execution (loader, TEB/PEB, ntdll/kernel32/msvcrt, console programs) | ✅ **Done** (SEH, threads, TLS pending) |
-| 9.5 | NetSurf web browser (sockets, GUI API for programs) | 🔄 Next |
+| 9 | Native user-mode PE execution: loader, TEB/PEB, threads, TLS, SEH, DllMain, sockets (ws2_32), GUI (user32/gdi32) | ✅ **Done** |
+| 9.5 | NetSurf web browser (port on the new C library, sockets, TLS and GUI) | 🔄 Next |
 | 10 | Win32 GUI subsystem (win32k, user32/gdi32, real HWNDs) | 🔄 Planned |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native
@@ -313,12 +333,15 @@ os/
 │   ├── ldr/              # PE32+ loader + user-mode SYSCALL thunk generator
 │   ├── gdi/              # GDI software renderer (2D rasterizer)
 │   ├── wm/               # Window manager + desktop shell
-│   ├── um/               # User-mode programs: processes, PE loading, NT services, consoles
+│   ├── um/               # User-mode programs: processes, threads, PE loader, NT services,
+│   │                     #   SEH delivery, sockets, GUI windows, consoles
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── apps/             # Built-in desktop apps (Terminal, Notepad, Settings, ...)
 │   ├── lib/              # Freestanding string/memory library
 │   └── linker.ld         # Kernel linker script
-├── userland/             # Windows SDK subset: ntdll, kernel32, msvcrt, crt0, headers, programs
+├── userland/             # Windows SDK subset built with clang/lld-link:
+│   │                     #   ntdll, kernel32, msvcrt, ws2_32, user32, gdi32,
+│   │                     #   crt0, tlssup, headers, sample programs
 ├── tools/                # Host build tools (build_userland.py, mkfont)
 ├── cmake/                # Cross-compilation toolchain files
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh
