@@ -103,7 +103,7 @@ static void paint(Wnd *w, HDC dc)
     case SS_CENTER: fmt |= DT_CENTER | DT_WORDBREAK; break;
     case SS_RIGHT: fmt |= DT_RIGHT | DT_WORDBREAK; break;
     case SS_SIMPLE: fmt |= DT_SINGLELINE | DT_NOCLIP; break;
-    case SS_LEFTNOWORDWRAP: fmt |= DT_SINGLELINE; break;
+    case SS_LEFTNOWORDWRAP: break;                          /* line breaks still start lines; no wrapping */
     default: fmt |= DT_WORDBREAK; break;
     }
     if (st & SS_CENTERIMAGE) { fmt |= DT_SINGLELINE | DT_VCENTER; fmt &= ~DT_WORDBREAK; }
