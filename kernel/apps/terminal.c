@@ -382,8 +382,25 @@ static void cmd_dmesg(Term *t)
 static void cmd_start(Term *t, int argc, char **argv)
 {
     AppId id;
+    RamNode *exe = argc >= 2 && !AppByName(argv[1], &id) ? UmFindProgram(t->cwd, argv[1]) : NULL;
+    if (exe) {                                   /* a Windows program, detached from the terminal */
+        char line[512], err[160];
+        int n = 0;
+        for (int i = 1; i < argc && n < (int)sizeof(line) - 4; i++) {
+            bool q = strchr(argv[i], ' ') != NULL;
+            if (i > 1) line[n++] = ' ';
+            if (q) line[n++] = '"';
+            for (const char *s = argv[i]; *s && n < (int)sizeof(line) - 3; s++) line[n++] = *s;
+            if (q) line[n++] = '"';
+        }
+        line[n] = '\0';
+        UmProcess *p = UmSpawn(exe, line, t->cwd, NULL, err, sizeof(err));
+        if (p) UmDetach(p);
+        else terr(t, err);
+        return;
+    }
     if (argc < 2 || !AppByName(argv[1], &id)) {
-        terr(t, "Usage: start notepad|explorer|settings|calendar|browser|terminal [file]");
+        terr(t, "Usage: start notepad|explorer|settings|calendar|browser|terminal|PROGRAM [file|args]");
         return;
     }
     if (argc >= 3 && (id == APP_NOTEPAD || id == APP_EXPLORER)) {

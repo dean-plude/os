@@ -30,6 +30,15 @@ typedef struct NOVA_DC {
     int      org_x, org_y; /* viewport origin */
     int      mem;          /* a memory DC (CreateCompatibleDC) */
     struct NOVA_DC *saved; /* SaveDC stack */
+    /* Clipping, in device pixels (the origin already applied).  user32
+     * sets `vis` for a window's DC (the part of the window that shows);
+     * the program's clip region is `clip` (its bounding box). */
+    RECT     vis;
+    int      has_vis;
+    RECT     clip;
+    int      has_clip;
+    int      rop2;         /* R2_* (0: R2_COPYPEN) */
+    int      brush_style;  /* 0 solid, 1 hollow, 2 hatched, 3 pattern */
 } NOVA_DC;
 
 #define TRANSPARENT 1
@@ -47,7 +56,11 @@ typedef struct NOVA_DC {
 #define NULL_PEN     8
 #define OEM_FIXED_FONT 10
 #define ANSI_FIXED_FONT 11
+#define GDI_ERROR 0xFFFFFFFFu
+#define ANSI_VAR_FONT  12
 #define SYSTEM_FONT    13
+#define DEVICE_DEFAULT_FONT 14
+#define SYSTEM_FIXED_FONT 16
 #define DEFAULT_GUI_FONT 17
 
 #define PS_SOLID 0

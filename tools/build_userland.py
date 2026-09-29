@@ -269,6 +269,12 @@ for src in sorted(os.listdir(progdir)):
          os.path.join(out, 'ole32.lib'), os.path.join(out, 'oleaut32.lib')])
     built.append((f'\\Programs\\{name}.exe', exe))
 
+# 3a0. fonts gdi32 draws text with (C:\Windows\Fonts)
+TP = os.path.join(os.path.dirname(HERE), 'third_party')
+for src, dst in [('inter/Inter-Regular.ttf', 'inter.ttf'), ('inter/Inter-Bold.ttf', 'interbd.ttf'),
+                 ('dejavu/DejaVuSansMono.ttf', 'dejavumono.ttf'), ('dejavu/DejaVuSansMono-Bold.ttf', 'dejavumonobd.ttf')]:
+    built.append((f'\\Windows\\Fonts\\{dst}', os.path.join(TP, src)))
+
 # 3a. sample files for the user's folders (tools/make_icons.py draws the icons)
 samples = os.path.join(HERE, 'samples')
 for n in sorted(os.listdir(samples)):

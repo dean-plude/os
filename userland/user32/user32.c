@@ -1830,12 +1830,12 @@ USERAPI int GetClipboardFormatNameW(UINT fmt, LPWSTR buf, int n)
  * window system.  Dialogs and dialog-item calls fail; menus are handles
  * with no bar or popup; hooks are accepted and never called.
  * ----------------------------------------------------------------------- */
-USERAPI INT_PTR DialogBoxParamW(HINSTANCE i, LPCWSTR t, HWND p, void *fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return -1; }
-USERAPI INT_PTR DialogBoxParamA(HINSTANCE i, LPCSTR t, HWND p, void *fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return -1; }
-USERAPI INT_PTR DialogBoxIndirectParamW(HINSTANCE i, const void *t, HWND p, void *fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return -1; }
-USERAPI HWND CreateDialogParamW(HINSTANCE i, LPCWSTR t, HWND p, void *fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return 0; }
-USERAPI HWND CreateDialogParamA(HINSTANCE i, LPCSTR t, HWND p, void *fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return 0; }
-USERAPI HWND CreateDialogIndirectParamW(HINSTANCE i, const void *t, HWND p, void *fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return 0; }
+USERAPI INT_PTR DialogBoxParamW(HINSTANCE i, LPCWSTR t, HWND p, DLGPROC fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return -1; }
+USERAPI INT_PTR DialogBoxParamA(HINSTANCE i, LPCSTR t, HWND p, DLGPROC fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return -1; }
+USERAPI INT_PTR DialogBoxIndirectParamW(HINSTANCE i, const void *t, HWND p, DLGPROC fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return -1; }
+USERAPI HWND CreateDialogParamW(HINSTANCE i, LPCWSTR t, HWND p, DLGPROC fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return 0; }
+USERAPI HWND CreateDialogParamA(HINSTANCE i, LPCSTR t, HWND p, DLGPROC fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return 0; }
+USERAPI HWND CreateDialogIndirectParamW(HINSTANCE i, const void *t, HWND p, DLGPROC fn, LPARAM lp) { (void)i; (void)t; (void)p; (void)fn; (void)lp; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return 0; }
 USERAPI BOOL EndDialog(HWND h, INT_PTR r) { (void)r; return DestroyWindow(h); }
 USERAPI HWND GetDlgItem(HWND h, int id) { (void)h; (void)id; return 0; }
 USERAPI int GetDlgCtrlID(HWND h) { WInfo *wi = win_of(h); return wi ? (int)wi->id_menu : 0; }

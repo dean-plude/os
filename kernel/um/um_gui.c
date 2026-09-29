@@ -67,6 +67,7 @@
 #define GUI_HIDDEN      0x10    /* created hidden (shown by NtNovaGuiCtl) */
 #define GUI_NOCLOSE     0x20    /* no close button */
 #define GUI_HOVER       0x40    /* gets mouse moves with no button held */
+#define GUI_NOFRAME     0x80    /* no title bar or border (the program draws its own), but a normal window */
 
 /* Matches the Win32 MSG structure byte-for-byte */
 typedef struct {
@@ -424,7 +425,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     g->cw = cw; g->ch = ch;
     GdiRect wa = WmWorkArea();
     bool popup = (gc.flags & GUI_POPUP) != 0;
-    UINT32 style = popup ? WS_SHADOW :
+    UINT32 style = popup || (gc.flags & GUI_NOFRAME) ? WS_SHADOW :
                    WS_TITLEBAR | WS_BORDER | WS_SHADOW | (gc.flags & GUI_NOCLOSE ? 0 : WS_CLOSEBTN) |
                    (gc.flags & GUI_NOMINMAX ? 0 : WS_MINMAXBTN);
     GdiRect client = RECT(gc.x, gc.y, cw, ch);
@@ -473,21 +474,30 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return g->id;
 }
 
+/* Threads whose message wait was woken by another thread (NtNovaGuiCtl
+ * CTL_WAKE: user32 posted to the thread's own queue) */
+#define GUI_WAKES 32
+static UINT32 g_wake_tid[GUI_WAKES];
+
 /* NtNovaGuiGetMessage(hwnd_filter (0 = any of the calling thread's
- * windows), MSG *out, wait): 1 = got, 0 = WM_QUIT, -1 = none (only when
- * wait == 0). */
+ * windows), MSG *out, timeout: 0 = don't wait, 1 = wait forever, n >= 2 =
+ * wait up to n - 2 ms): 1 = got, 0 = WM_QUIT, -1 = none, -2 = woken by
+ * another thread. */
 static UINT64 sys_gui_getmessage(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a4;
     UmProcess *p = UmCurrent();
     UmThread *t = UmCurrentThread();
     UINT32 tid = t ? t->tid : 0;
+    UINT64 until = a3 >= 2 ? sched_ticks() + (a3 - 2 + 9) / 10 : 0;
     for (;;) {
         GuiMsg out;
-        bool got = false, quit = false;
+        bool got = false, quit = false, woken = false;
         UINT32 gen = waitq_gen(&g_guiq);
         IrqState s = spin_lock_irqsave(&g_gui_lock);
-        for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        for (int i = 0; i < GUI_WAKES; i++)
+            if (tid && g_wake_tid[i] == tid) { g_wake_tid[i] = 0; woken = true; }
+        for (int i = 0; i < GUI_MAX_WINDOWS && !woken; i++) {
             GuiWin *g = &g_win[i];
             if (!g->used || g->proc != p) continue;
             if (a1 ? g->id != (UINT32)a1 : g->tid != tid) continue;
@@ -500,6 +510,7 @@ static UINT64 sys_gui_getmessage(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             }
         }
         spin_unlock_irqrestore(&g_gui_lock, s);
+        if (woken) return (UINT64)(INT64)-2;
         if (got) {
             if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, &out, sizeof(GuiMsg)))) return (UINT64)(INT64)-1;
             return 1;
@@ -507,7 +518,10 @@ static UINT64 sys_gui_getmessage(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (quit) return 0;
         if (!a3) return (UINT64)(INT64)-1;
         if (um_stopping()) return 0;
-        waitq_wait(&g_guiq, gen, 10);           /* until a message comes (or 100 ms) */
+        UINT64 now = sched_ticks();
+        if (a3 >= 2 && now >= until) return (UINT64)(INT64)-1;
+        UINT64 nap = a3 >= 2 && until - now < 10 ? until - now : 10;
+        waitq_wait(&g_guiq, gen, (UINT32)nap);  /* until a message comes (or 100 ms) */
     }
 }
 
@@ -639,6 +653,7 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_SHOW     7
 #define CTL_PRESENT  8
 #define CTL_WORKAREA 9
+#define CTL_WAKE     10                 /* arg: a thread id of this process; its GetMessage returns -2 */
 
 static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
@@ -655,6 +670,15 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, c, sizeof(c))) ? 1 : 0;
     }
     if (a2 == CTL_PRESENT) { WmInvalidate(); return 1; }
+    if (a2 == CTL_WAKE) {
+        IrqState ws = spin_lock_irqsave(&g_gui_lock);
+        bool set = false;
+        for (int i = 0; i < GUI_WAKES && !set; i++) if (g_wake_tid[i] == (UINT32)a3) set = true;
+        for (int i = 0; i < GUI_WAKES && !set; i++) if (!g_wake_tid[i]) { g_wake_tid[i] = (UINT32)a3; set = true; }
+        spin_unlock_irqrestore(&g_gui_lock, ws);
+        waitq_wake(&g_guiq);
+        return set;
+    }
     UINT64 rv = 0;
     INT32 in[4] = { 0 };
     if (a2 == CTL_SET_RECT && !NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)a4, sizeof(in)))) return 0;

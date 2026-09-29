@@ -5,145 +5,26 @@
  * client bitmap (COLORREF pixels, from user32), or for a memory DC the
  * bitmap selected into it — a compatible bitmap (COLORREF) or a DIB
  * section (BGRA, top-down or bottom-up, as the program asked).  These
- * calls plot straight into those pixels.  Text uses an embedded 8x8 font,
- * scaled to the selected font's height (16 px by default).
+ * calls plot straight into those pixels, clipped to the DC's visible
+ * rectangle (a window's) and clip region.  Text is in text.c.
  */
 #define NOVA_BUILD_GDI32
 #include <windows.h>
 #include <winternl.h>
 
-static const unsigned char g_font[96 * 8] = {
-    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-    0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00,
-    0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00,
-    0x36,0x36,0x7F,0x36,0x7F,0x36,0x36,0x00,
-    0x0C,0x3E,0x03,0x1E,0x30,0x1F,0x0C,0x00,
-    0x00,0x63,0x33,0x18,0x0C,0x66,0x63,0x00,
-    0x1C,0x36,0x1C,0x6E,0x3B,0x33,0x6E,0x00,
-    0x06,0x06,0x03,0x00,0x00,0x00,0x00,0x00,
-    0x18,0x0C,0x06,0x06,0x06,0x0C,0x18,0x00,
-    0x06,0x0C,0x18,0x18,0x18,0x0C,0x06,0x00,
-    0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00,
-    0x00,0x0C,0x0C,0x3F,0x0C,0x0C,0x00,0x00,
-    0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x06,
-    0x00,0x00,0x00,0x3F,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x00,
-    0x60,0x30,0x18,0x0C,0x06,0x03,0x01,0x00,
-    0x3E,0x63,0x73,0x7B,0x6F,0x67,0x3E,0x00,
-    0x0C,0x0E,0x0C,0x0C,0x0C,0x0C,0x3F,0x00,
-    0x1E,0x33,0x30,0x1C,0x06,0x33,0x3F,0x00,
-    0x1E,0x33,0x30,0x1C,0x30,0x33,0x1E,0x00,
-    0x38,0x3C,0x36,0x33,0x7F,0x30,0x78,0x00,
-    0x3F,0x03,0x1F,0x30,0x30,0x33,0x1E,0x00,
-    0x1C,0x06,0x03,0x1F,0x33,0x33,0x1E,0x00,
-    0x3F,0x33,0x30,0x18,0x0C,0x0C,0x0C,0x00,
-    0x1E,0x33,0x33,0x1E,0x33,0x33,0x1E,0x00,
-    0x1E,0x33,0x33,0x3E,0x30,0x18,0x0E,0x00,
-    0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x00,
-    0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x06,
-    0x18,0x0C,0x06,0x03,0x06,0x0C,0x18,0x00,
-    0x00,0x00,0x3F,0x00,0x00,0x3F,0x00,0x00,
-    0x06,0x0C,0x18,0x30,0x18,0x0C,0x06,0x00,
-    0x1E,0x33,0x30,0x18,0x0C,0x00,0x0C,0x00,
-    0x3E,0x63,0x7B,0x7B,0x7B,0x03,0x1E,0x00,
-    0x0C,0x1E,0x33,0x33,0x3F,0x33,0x33,0x00,
-    0x3F,0x66,0x66,0x3E,0x66,0x66,0x3F,0x00,
-    0x3C,0x66,0x03,0x03,0x03,0x66,0x3C,0x00,
-    0x1F,0x36,0x66,0x66,0x66,0x36,0x1F,0x00,
-    0x7F,0x46,0x16,0x1E,0x16,0x46,0x7F,0x00,
-    0x7F,0x46,0x16,0x1E,0x16,0x06,0x0F,0x00,
-    0x3C,0x66,0x03,0x03,0x73,0x66,0x7C,0x00,
-    0x33,0x33,0x33,0x3F,0x33,0x33,0x33,0x00,
-    0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00,
-    0x78,0x30,0x30,0x30,0x33,0x33,0x1E,0x00,
-    0x67,0x66,0x36,0x1E,0x36,0x66,0x67,0x00,
-    0x0F,0x06,0x06,0x06,0x46,0x66,0x7F,0x00,
-    0x63,0x77,0x7F,0x7F,0x6B,0x63,0x63,0x00,
-    0x63,0x67,0x6F,0x7B,0x73,0x63,0x63,0x00,
-    0x1C,0x36,0x63,0x63,0x63,0x36,0x1C,0x00,
-    0x3F,0x66,0x66,0x3E,0x06,0x06,0x0F,0x00,
-    0x1E,0x33,0x33,0x33,0x3B,0x1E,0x38,0x00,
-    0x3F,0x66,0x66,0x3E,0x36,0x66,0x67,0x00,
-    0x1E,0x33,0x07,0x0E,0x38,0x33,0x1E,0x00,
-    0x3F,0x2D,0x0C,0x0C,0x0C,0x0C,0x1E,0x00,
-    0x33,0x33,0x33,0x33,0x33,0x33,0x3F,0x00,
-    0x33,0x33,0x33,0x33,0x33,0x1E,0x0C,0x00,
-    0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00,
-    0x63,0x63,0x36,0x1C,0x1C,0x36,0x63,0x00,
-    0x33,0x33,0x33,0x1E,0x0C,0x0C,0x1E,0x00,
-    0x7F,0x63,0x31,0x18,0x4C,0x66,0x7F,0x00,
-    0x1E,0x06,0x06,0x06,0x06,0x06,0x1E,0x00,
-    0x03,0x06,0x0C,0x18,0x30,0x60,0x40,0x00,
-    0x1E,0x18,0x18,0x18,0x18,0x18,0x1E,0x00,
-    0x08,0x1C,0x36,0x63,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF,
-    0x0C,0x0C,0x18,0x00,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x1E,0x30,0x3E,0x33,0x6E,0x00,
-    0x07,0x06,0x06,0x3E,0x66,0x66,0x3B,0x00,
-    0x00,0x00,0x1E,0x33,0x03,0x33,0x1E,0x00,
-    0x38,0x30,0x30,0x3E,0x33,0x33,0x6E,0x00,
-    0x00,0x00,0x1E,0x33,0x3F,0x03,0x1E,0x00,
-    0x1C,0x36,0x06,0x0F,0x06,0x06,0x0F,0x00,
-    0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x1F,
-    0x07,0x06,0x36,0x6E,0x66,0x66,0x67,0x00,
-    0x0C,0x00,0x0E,0x0C,0x0C,0x0C,0x1E,0x00,
-    0x30,0x00,0x30,0x30,0x30,0x33,0x33,0x1E,
-    0x07,0x06,0x66,0x36,0x1E,0x36,0x67,0x00,
-    0x0E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00,
-    0x00,0x00,0x33,0x7F,0x7F,0x6B,0x63,0x00,
-    0x00,0x00,0x1F,0x33,0x33,0x33,0x33,0x00,
-    0x00,0x00,0x1E,0x33,0x33,0x33,0x1E,0x00,
-    0x00,0x00,0x3B,0x66,0x66,0x3E,0x06,0x0F,
-    0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x78,
-    0x00,0x00,0x3B,0x6E,0x66,0x06,0x0F,0x00,
-    0x00,0x00,0x3E,0x03,0x1E,0x30,0x1F,0x00,
-    0x08,0x0C,0x3E,0x0C,0x0C,0x2C,0x18,0x00,
-    0x00,0x00,0x33,0x33,0x33,0x33,0x6E,0x00,
-    0x00,0x00,0x33,0x33,0x33,0x1E,0x0C,0x00,
-    0x00,0x00,0x63,0x6B,0x7F,0x7F,0x36,0x00,
-    0x00,0x00,0x63,0x36,0x1C,0x36,0x63,0x00,
-    0x00,0x00,0x33,0x33,0x33,0x3E,0x30,0x1F,
-    0x00,0x00,0x3F,0x19,0x0C,0x26,0x3F,0x00,
-    0x38,0x0C,0x0C,0x07,0x0C,0x0C,0x38,0x00,
-    0x18,0x18,0x18,0x00,0x18,0x18,0x18,0x00,
-    0x07,0x0C,0x0C,0x38,0x0C,0x0C,0x07,0x00,
-    0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,};
-#define GLYPH_W 8
-#define GLYPH_H 8
 
 void *memset(void *d, int c, size_t n);
 void *memcpy(void *d, const void *s, size_t n);
 
-static NOVA_DC *dc_of(HDC h) { return (NOVA_DC *)h; }
-
-/* -----------------------------------------------------------------------
- * GDI objects
- * ----------------------------------------------------------------------- */
-enum { K_BRUSH = 1, K_PEN, K_NULLBRUSH, K_NULLPEN, K_FONT, K_BITMAP, K_REGION };
-
-typedef struct GObj {
-    int kind;
-    COLORREF color;                 /* brush / pen (user32 reads it at offset 4) */
-    int width;
-    int used;
-    /* fonts */
-    int height, weight, italic, underline;
-    WCHAR face[32];
-    /* bitmaps */
-    int bw, bh, bpp, fmt, flip, owns;
-    DWORD *bits;
-    /* regions (a rectangle) */
-    RECT rc;
-} GObj;
+#include "gdi_int.h"
 
 #define POOL 512
-static GObj g_stock[20];
+GObj g_stock[20];
 static GObj g_pool[POOL];
-static int  g_stock_ready;
+int  g_stock_ready;
 static SRWLOCK g_lock;
 
-static void stock_init(void)
+void stock_init(void)
 {
     g_stock[WHITE_BRUSH]  = (GObj){ K_BRUSH, 0xFFFFFF, 0 };
     g_stock[LTGRAY_BRUSH] = (GObj){ K_BRUSH, 0xC0C0C0, 0 };
@@ -154,11 +35,18 @@ static void stock_init(void)
     g_stock[WHITE_PEN]    = (GObj){ K_PEN, 0xFFFFFF, 1 };
     g_stock[BLACK_PEN]    = (GObj){ K_PEN, 0x000000, 1 };
     g_stock[NULL_PEN]     = (GObj){ K_NULLPEN, 0, 0 };
-    for (int i = OEM_FIXED_FONT; i <= DEFAULT_GUI_FONT; i++) {   /* the fonts: all the built-in one */
+    for (int i = OEM_FIXED_FONT; i <= DEFAULT_GUI_FONT; i++) {   /* the stock fonts */
         g_stock[i].kind = K_FONT;
-        g_stock[i].height = 16;
         g_stock[i].weight = 400;
-        const char *f = i == DEFAULT_GUI_FONT ? "Segoe UI" : "System";
+        const char *f;
+        switch (i) {
+        case OEM_FIXED_FONT: case ANSI_FIXED_FONT: case SYSTEM_FIXED_FONT:
+            f = "Courier New"; g_stock[i].height = 16; g_stock[i].pitch = 0x31; break;   /* FIXED_PITCH | FF_MODERN */
+        case DEFAULT_GUI_FONT: case ANSI_VAR_FONT:
+            f = "MS Shell Dlg"; g_stock[i].height = -12; break;
+        default:
+            f = "System"; g_stock[i].height = 16; g_stock[i].weight = 700; break;
+        }
         for (int k = 0; f[k]; k++) g_stock[i].face[k] = (WCHAR)f[k];
     }
     g_stock_ready = 1;
@@ -171,7 +59,7 @@ GDIAPI HGDIOBJ GetStockObject(int obj)
     return (HGDIOBJ)&g_stock[obj];
 }
 
-static GObj *new_obj(int kind)
+GObj *new_obj(int kind)
 {
     AcquireSRWLockExclusive(&g_lock);
     GObj *o = 0;
@@ -187,7 +75,7 @@ static GObj *new_obj(int kind)
     return o;
 }
 
-static GObj *obj_of(HGDIOBJ h)
+GObj *obj_of(HGDIOBJ h)
 {
     GObj *o = h;
     if (!o) return 0;
@@ -220,28 +108,12 @@ GDIAPI HPEN ExtCreatePen(DWORD style, DWORD width, const LOGBRUSH *lb, DWORD n, 
 /* -----------------------------------------------------------------------
  * Pixels
  * ----------------------------------------------------------------------- */
-static inline DWORD *pixel_at(NOVA_DC *d, int x, int y)
-{
-    int row = d->flip ? d->h - 1 - y : y;
-    return d->bits + (size_t)row * d->stride + x;
-}
-
-static inline DWORD to_native(NOVA_DC *d, COLORREF c)
-{
-    c &= 0xFFFFFF;
-    return d->fmt ? 0xFF000000u | (c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16 & 0xFF) : c;
-}
-
-static inline COLORREF from_native(NOVA_DC *d, DWORD p)
-{
-    return d->fmt ? (p >> 16 & 0xFF) | (p & 0xFF00) | (p & 0xFF) << 16 : p & 0xFFFFFF;
-}
-
-static inline void put(NOVA_DC *d, int x, int y, COLORREF c)
+void put(NOVA_DC *d, int x, int y, COLORREF c)
 {
     x += d->org_x; y += d->org_y;
-    if (!d->bits || x < 0 || y < 0 || x >= d->w || y >= d->h) return;
-    *pixel_at(d, x, y) = to_native(d, c);
+    if (!d->bits || !dev_visible(d, x, y)) return;
+    DWORD *p = pixel_at(d, x, y);
+    *p = rop_apply(d, *p, to_native(d, c));
 }
 
 GDIAPI COLORREF SetPixel(HDC h, int x, int y, COLORREF c) { NOVA_DC *d = dc_of(h); if (d) put(d, x, y, c); return c; }
@@ -251,7 +123,7 @@ GDIAPI COLORREF GetPixel(HDC h, int x, int y)
     NOVA_DC *d = dc_of(h);
     if (!d) return 0xFFFFFFFF;
     x += d->org_x; y += d->org_y;
-    if (!d->bits || x < 0 || y < 0 || x >= d->w || y >= d->h) return 0xFFFFFFFF;
+    if (!d->bits || !dev_visible(d, x, y)) return 0xFFFFFFFF;
     return from_native(d, *pixel_at(d, x, y));
 }
 GDIAPI COLORREF SetTextColor(HDC h, COLORREF c) { NOVA_DC *d = dc_of(h); COLORREF o = d ? d->text_color : 0; if (d) d->text_color = c; return o; }
@@ -264,7 +136,8 @@ GDIAPI UINT     SetTextAlign(HDC h, UINT a)     { NOVA_DC *d = dc_of(h); UINT o 
 GDIAPI UINT     GetTextAlign(HDC h)             { NOVA_DC *d = dc_of(h); return d ? d->text_align : 0; }
 GDIAPI COLORREF SetDCBrushColor(HDC h, COLORREF c) { NOVA_DC *d = dc_of(h); COLORREF o = d ? d->brush_color : 0; if (d) { d->brush_color = c; d->has_brush = 1; } return o; }
 GDIAPI COLORREF SetDCPenColor(HDC h, COLORREF c)   { NOVA_DC *d = dc_of(h); COLORREF o = d ? d->pen_color : 0; if (d) { d->pen_color = c; d->has_pen = 1; } return o; }
-GDIAPI int SetROP2(HDC h, int m) { (void)h; (void)m; return 13; /* R2_COPYPEN */ }
+GDIAPI int SetROP2(HDC h, int m) { NOVA_DC *d = dc_of(h); if (!d) return 0; int o = d->rop2 ? d->rop2 : 13; d->rop2 = m == 13 ? 0 : m; return o; }
+GDIAPI int GetROP2(HDC h) { NOVA_DC *d = dc_of(h); return d && d->rop2 ? d->rop2 : 13; }
 GDIAPI int SetStretchBltMode(HDC h, int m) { (void)h; (void)m; return 1; }
 GDIAPI int SetPolyFillMode(HDC h, int m) { (void)h; (void)m; return 1; }
 GDIAPI int SetMapMode(HDC h, int m) { (void)h; (void)m; return 1; /* MM_TEXT only */ }
@@ -287,18 +160,16 @@ GDIAPI BOOL GetViewportOrgEx(HDC h, LPPOINT p) { NOVA_DC *d = dc_of(h); if (!d) 
 GDIAPI BOOL SetWindowOrgEx(HDC h, int x, int y, LPPOINT old) { return SetViewportOrgEx(h, -x, -y, old); }
 GDIAPI BOOL SetBrushOrgEx(HDC h, int x, int y, LPPOINT old) { (void)h; (void)x; (void)y; if (old) old->x = old->y = 0; return TRUE; }
 
-static void fill(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c)
+void fill(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c)
 {
     if (!d->bits) return;
-    x0 += d->org_x; x1 += d->org_x; y0 += d->org_y; y1 += d->org_y;
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > d->w) x1 = d->w;
-    if (y1 > d->h) y1 = d->h;
+    RECT r = { x0 + d->org_x, y0 + d->org_y, x1 + d->org_x, y1 + d->org_y };
+    if (!dev_clip(d, &r)) return;
     DWORD v = to_native(d, c);
-    for (int y = y0; y < y1; y++) {
+    for (int y = r.top; y < r.bottom; y++) {
         DWORD *row = pixel_at(d, 0, y);
-        for (int x = x0; x < x1; x++) row[x] = v;
+        if (d->rop2) for (int x = r.left; x < r.right; x++) row[x] = rop_apply(d, row[x], v);
+        else for (int x = r.left; x < r.right; x++) row[x] = v;
     }
 }
 
@@ -599,7 +470,7 @@ GDIAPI BOOL AlphaBlend(HDC dst, int x, int y, int w, int h, HDC src, int sx, int
         for (int i = 0; i < w; i++) {
             int sxx = sx + i * sw / w + sd->org_x, syy = sy + j * sh / h + sd->org_y;
             int tx = x + i + dd->org_x, ty = y + j + dd->org_y;
-            if (sxx < 0 || syy < 0 || sxx >= sd->w || syy >= sd->h || tx < 0 || ty < 0 || tx >= dd->w || ty >= dd->h) continue;
+            if (sxx < 0 || syy < 0 || sxx >= sd->w || syy >= sd->h || !dev_visible(dd, tx, ty)) continue;
             DWORD sp = *pixel_at(sd, sxx, syy);
             COLORREF s = from_native(sd, sp), t = from_native(dd, *pixel_at(dd, tx, ty));
             int a = bf.SourceConstantAlpha;
@@ -720,222 +591,6 @@ GDIAPI HBITMAP CreateDIBitmap(HDC h, const BITMAPINFOHEADER *bh, DWORD init, con
 }
 
 /* -----------------------------------------------------------------------
- * Fonts: the built-in 8x8 glyphs, scaled to the font's height
- * ----------------------------------------------------------------------- */
-static int font_scale(NOVA_DC *d)
-{
-    GObj *f = d ? obj_of(d->font) : 0;
-    int hgt = f ? f->height : 16;
-    if (hgt < 0) hgt = -hgt;
-    if (!hgt) hgt = 16;
-    int s = (hgt + 4) / 8;
-    return s < 1 ? 1 : s > 8 ? 8 : s;
-}
-
-GDIAPI HFONT CreateFontIndirectW(const LOGFONTW *lf)
-{
-    GObj *o = new_obj(K_FONT);
-    if (!o) return 0;
-    o->height = lf->lfHeight ? lf->lfHeight : 16;
-    o->weight = lf->lfWeight ? lf->lfWeight : 400;
-    o->italic = lf->lfItalic;
-    o->underline = lf->lfUnderline;
-    for (int i = 0; i < 31 && lf->lfFaceName[i]; i++) o->face[i] = lf->lfFaceName[i];
-    return (HFONT)o;
-}
-
-GDIAPI HFONT CreateFontIndirectA(const LOGFONTA *lf)
-{
-    LOGFONTW w;
-    memcpy(&w, lf, 28);                                     /* the numeric fields */
-    for (int i = 0; i < 32; i++) w.lfFaceName[i] = (WCHAR)(BYTE)lf->lfFaceName[i];
-    return CreateFontIndirectW(&w);
-}
-
-GDIAPI HFONT CreateFontW(int h, int w, int esc, int orient, int weight, DWORD italic, DWORD underline, DWORD strike,
-                         DWORD charset, DWORD outprec, DWORD clip, DWORD quality, DWORD pitch, LPCWSTR face)
-{
-    LOGFONTW lf;
-    memset(&lf, 0, sizeof(lf));
-    lf.lfHeight = h; lf.lfWidth = w; lf.lfEscapement = esc; lf.lfOrientation = orient; lf.lfWeight = weight;
-    lf.lfItalic = (BYTE)italic; lf.lfUnderline = (BYTE)underline; lf.lfStrikeOut = (BYTE)strike;
-    lf.lfCharSet = (BYTE)charset; lf.lfOutPrecision = (BYTE)outprec; lf.lfClipPrecision = (BYTE)clip;
-    lf.lfQuality = (BYTE)quality; lf.lfPitchAndFamily = (BYTE)pitch;
-    for (int i = 0; face && i < 31 && face[i]; i++) lf.lfFaceName[i] = face[i];
-    return CreateFontIndirectW(&lf);
-}
-
-GDIAPI HFONT CreateFontA(int h, int w, int esc, int orient, int weight, DWORD italic, DWORD underline, DWORD strike,
-                         DWORD charset, DWORD outprec, DWORD clip, DWORD quality, DWORD pitch, LPCSTR face)
-{
-    WCHAR f[32] = { 0 };
-    for (int i = 0; face && i < 31 && face[i]; i++) f[i] = (WCHAR)(BYTE)face[i];
-    return CreateFontW(h, w, esc, orient, weight, italic, underline, strike, charset, outprec, clip, quality, pitch, f);
-}
-
-static void draw_char(NOVA_DC *d, int x, int y, WCHAR ch, int scale)
-{
-    if (ch < 0x20 || ch > 0x7E) ch = '?';
-    const unsigned char *g = g_font + (ch - 0x20) * 8;
-    for (int gy = 0; gy < GLYPH_H; gy++) {
-        unsigned char bits = g[gy];
-        for (int gx = 0; gx < GLYPH_W; gx++) {
-            int on = bits & (1 << gx);
-            if (!on && d->bk_mode == TRANSPARENT) continue;
-            COLORREF c = on ? d->text_color : d->bk_color;
-            for (int sy = 0; sy < scale; sy++)
-                for (int sx = 0; sx < scale; sx++)
-                    put(d, x + gx * scale + sx, y + gy * scale + sy, c);
-        }
-    }
-}
-
-/* Where the text starts for the DC's alignment (TA_CENTER 6, TA_RIGHT 2, TA_BOTTOM 8, TA_BASELINE 24, TA_UPDATECP 1) */
-static void text_origin(NOVA_DC *d, int *x, int *y, int n, int scale)
-{
-    int w = n * GLYPH_W * scale, h = GLYPH_H * scale;
-    if (d->text_align & 1) { *x = d->cx; *y = d->cy; }
-    if ((d->text_align & 6) == 6) *x -= w / 2;
-    else if (d->text_align & 2) *x -= w;
-    if ((d->text_align & 24) == 24) *y -= h - scale;
-    else if (d->text_align & 8) *y -= h;
-    if (d->text_align & 1) d->cx += w;
-}
-
-GDIAPI BOOL TextOutW(HDC h, int x, int y, LPCWSTR s, int len)
-{
-    NOVA_DC *d = dc_of(h); if (!d || !s) return FALSE;
-    int scale = font_scale(d);
-    text_origin(d, &x, &y, len, scale);
-    for (int i = 0; i < len; i++) draw_char(d, x + i * GLYPH_W * scale, y, s[i], scale);
-    return TRUE;
-}
-
-GDIAPI BOOL TextOutA(HDC h, int x, int y, LPCSTR s, int len)
-{
-    NOVA_DC *d = dc_of(h); if (!d || !s) return FALSE;
-    int scale = font_scale(d);
-    text_origin(d, &x, &y, len, scale);
-    for (int i = 0; i < len; i++) draw_char(d, x + i * GLYPH_W * scale, y, (BYTE)s[i], scale);
-    return TRUE;
-}
-
-GDIAPI BOOL ExtTextOutW(HDC h, int x, int y, UINT opts, const RECT *rc, LPCWSTR s, UINT len, const INT *dx)
-{
-    NOVA_DC *d = dc_of(h); if (!d) return FALSE;
-    if (rc && (opts & 2 /* ETO_OPAQUE */)) fill(d, rc->left, rc->top, rc->right, rc->bottom, d->bk_color);
-    if (!s || !len) return TRUE;
-    if (!dx) return TextOutW(h, x, y, s, (int)len);
-    int scale = font_scale(d);
-    for (UINT i = 0; i < len; i++) { draw_char(d, x, y, s[i], scale); x += dx[i]; }
-    return TRUE;
-}
-
-GDIAPI BOOL ExtTextOutA(HDC h, int x, int y, UINT opts, const RECT *rc, LPCSTR s, UINT len, const INT *dx)
-{
-    WCHAR w[512];
-    UINT n = len < 512 ? len : 512;
-    for (UINT i = 0; i < n; i++) w[i] = (BYTE)s[i];
-    return ExtTextOutW(h, x, y, opts, rc, s ? w : 0, n, dx);
-}
-
-GDIAPI BOOL GetTextExtentPoint32W(HDC h, LPCWSTR s, int len, LPSIZE sz)
-{
-    (void)s;
-    int scale = font_scale(dc_of(h));
-    if (sz) { sz->cx = len * GLYPH_W * scale; sz->cy = GLYPH_H * scale; }
-    return TRUE;
-}
-
-GDIAPI BOOL GetTextExtentPoint32A(HDC h, LPCSTR s, int len, LPSIZE sz) { (void)s; return GetTextExtentPoint32W(h, 0, len, sz); }
-GDIAPI BOOL GetTextExtentPointW(HDC h, LPCWSTR s, int len, LPSIZE sz) { return GetTextExtentPoint32W(h, s, len, sz); }
-GDIAPI BOOL GetTextExtentPointA(HDC h, LPCSTR s, int len, LPSIZE sz) { return GetTextExtentPoint32A(h, s, len, sz); }
-
-GDIAPI BOOL GetTextExtentExPointW(HDC h, LPCWSTR s, int len, int max, LPINT fit, LPINT dx, LPSIZE sz)
-{
-    int cw = GLYPH_W * font_scale(dc_of(h));
-    if (fit) *fit = max < 0 ? len : (max / cw < len ? max / cw : len);
-    for (int i = 0; dx && i < len; i++) dx[i] = (i + 1) * cw;
-    return GetTextExtentPoint32W(h, s, len, sz);
-}
-
-GDIAPI BOOL GetTextMetricsW(HDC h, TEXTMETRICW *tm)
-{
-    int scale = font_scale(dc_of(h));
-    memset(tm, 0, sizeof(*tm));
-    tm->tmHeight = GLYPH_H * scale;
-    tm->tmAscent = (GLYPH_H - 1) * scale;
-    tm->tmDescent = scale;
-    tm->tmAveCharWidth = tm->tmMaxCharWidth = GLYPH_W * scale;
-    tm->tmWeight = 400;
-    tm->tmFirstChar = 0x20; tm->tmLastChar = 0x7E; tm->tmDefaultChar = '?'; tm->tmBreakChar = ' ';
-    tm->tmPitchAndFamily = 0x30;                           /* fixed pitch (bit clear), FF_MODERN */
-    tm->tmCharSet = 0;
-    tm->tmDigitizedAspectX = tm->tmDigitizedAspectY = 96;
-    return TRUE;
-}
-
-GDIAPI BOOL GetTextMetricsA(HDC h, TEXTMETRICA *tm)
-{
-    TEXTMETRICW w;
-    GetTextMetricsW(h, &w);
-    memcpy(tm, &w, 44);                                     /* the LONGs */
-    tm->tmFirstChar = 0x20; tm->tmLastChar = 0x7E; tm->tmDefaultChar = '?'; tm->tmBreakChar = ' ';
-    tm->tmItalic = w.tmItalic; tm->tmUnderlined = w.tmUnderlined; tm->tmStruckOut = w.tmStruckOut;
-    tm->tmPitchAndFamily = w.tmPitchAndFamily; tm->tmCharSet = w.tmCharSet;
-    return TRUE;
-}
-
-GDIAPI int GetTextFaceW(HDC h, int n, LPWSTR out)
-{
-    NOVA_DC *d = dc_of(h);
-    GObj *f = d ? obj_of(d->font) : 0;
-    const WCHAR sys[] = { 'S', 'y', 's', 't', 'e', 'm', 0 };
-    const WCHAR *face = f && f->face[0] ? f->face : sys;
-    int k = 0;
-    while (face[k]) k++;
-    if (!out) return k + 1;
-    int m = k < n - 1 ? k : n - 1;
-    for (int i = 0; i < m; i++) out[i] = face[i];
-    if (n > 0) out[m] = 0;
-    return m;
-}
-
-GDIAPI BOOL GetCharWidth32W(HDC h, UINT first, UINT last, LPINT out)
-{
-    int cw = GLYPH_W * font_scale(dc_of(h));
-    for (UINT c = first; c <= last; c++) out[c - first] = cw;
-    return TRUE;
-}
-
-GDIAPI BOOL GetCharABCWidthsW(HDC h, UINT first, UINT last, ABC *out)
-{
-    int cw = GLYPH_W * font_scale(dc_of(h));
-    for (UINT c = first; c <= last; c++) { out[c - first].abcA = 0; out[c - first].abcB = (UINT)cw; out[c - first].abcC = 0; }
-    return TRUE;
-}
-
-/* One font family, reported to enumeration callbacks */
-typedef int (CALLBACK *FONTENUMPROCW)(const LOGFONTW *, const TEXTMETRICW *, DWORD, LPARAM);
-GDIAPI int EnumFontFamiliesExW(HDC h, LOGFONTW *want, FONTENUMPROCW fn, LPARAM lp, DWORD flags)
-{
-    (void)want; (void)flags;
-    LOGFONTW lf;
-    memset(&lf, 0, sizeof(lf));
-    lf.lfHeight = 16; lf.lfWeight = 400; lf.lfPitchAndFamily = 0x31;
-    const char *face = "System";
-    for (int i = 0; face[i]; i++) lf.lfFaceName[i] = (WCHAR)face[i];
-    TEXTMETRICW tm;
-    GetTextMetricsW(h, &tm);
-    return fn(&lf, &tm, 1 /* RASTER_FONTTYPE */, lp);
-}
-GDIAPI int EnumFontFamiliesW(HDC h, LPCWSTR face, FONTENUMPROCW fn, LPARAM lp) { (void)face; return EnumFontFamiliesExW(h, 0, fn, lp, 0); }
-GDIAPI int EnumFontsW(HDC h, LPCWSTR face, FONTENUMPROCW fn, LPARAM lp) { (void)face; return EnumFontFamiliesExW(h, 0, fn, lp, 0); }
-GDIAPI int AddFontResourceExW(LPCWSTR f, DWORD fl, PVOID r) { (void)f; (void)fl; (void)r; return 0; }
-GDIAPI HANDLE AddFontMemResourceEx(PVOID p, DWORD n, PVOID r, DWORD *count) { (void)p; (void)n; (void)r; if (count) *count = 0; return 0; }
-GDIAPI BOOL RemoveFontMemResourceEx(HANDLE h) { (void)h; return TRUE; }
-
-/* -----------------------------------------------------------------------
  * Selecting, describing and deleting objects
  * ----------------------------------------------------------------------- */
 GDIAPI HGDIOBJ SelectObject(HDC h, HGDIOBJ obj)
@@ -950,7 +605,7 @@ GDIAPI HGDIOBJ SelectObject(HDC h, HGDIOBJ obj)
     case K_PEN:       old = d->pen ? d->pen : GetStockObject(BLACK_PEN); d->pen = o; d->pen_color = o->color; d->pen_width = o->width; d->has_pen = 1; break;
     case K_NULLPEN:   old = d->pen ? d->pen : GetStockObject(BLACK_PEN); d->pen = o; d->has_pen = 0; break;
     case K_FONT:      old = d->font ? d->font : GetStockObject(SYSTEM_FONT); d->font = o; break;
-    case K_REGION:    return (HGDIOBJ)(ULONG_PTR)2;        /* SIMPLEREGION: clipping is not applied */
+    case K_REGION:    return (HGDIOBJ)(ULONG_PTR)(ULONG)SelectClipRgn(h, (HRGN)obj);
     case K_BITMAP:
         if (!d->mem) return 0;
         old = d->bitmap;
@@ -1189,18 +844,100 @@ GDIAPI int CombineRgn(HRGN dst, HRGN a, HRGN b, int mode)
 GDIAPI BOOL SetRectRgn(HRGN h, int l, int t, int r, int b) { GObj *o = obj_of(h); if (!o) return FALSE; o->rc.left = l; o->rc.top = t; o->rc.right = r; o->rc.bottom = b; return TRUE; }
 GDIAPI BOOL PtInRegion(HRGN h, int x, int y) { GObj *o = obj_of(h); return o && x >= o->rc.left && x < o->rc.right && y >= o->rc.top && y < o->rc.bottom; }
 GDIAPI int OffsetRgn(HRGN h, int x, int y) { GObj *o = obj_of(h); if (!o) return 0; o->rc.left += x; o->rc.right += x; o->rc.top += y; o->rc.bottom += y; return 2; }
-GDIAPI int SelectClipRgn(HDC h, HRGN r) { (void)h; (void)r; return 2; }
-GDIAPI int ExtSelectClipRgn(HDC h, HRGN r, int mode) { (void)h; (void)r; (void)mode; return 2; }
-GDIAPI int IntersectClipRect(HDC h, int l, int t, int r, int b) { (void)h; (void)l; (void)t; (void)r; (void)b; return 2; }
-GDIAPI int ExcludeClipRect(HDC h, int l, int t, int r, int b) { (void)h; (void)l; (void)t; (void)r; (void)b; return 2; }
+/* The clip region is kept as its bounding box, in device pixels */
+GDIAPI int ExtSelectClipRgn(HDC h, HRGN rgn, int mode)
+{
+    NOVA_DC *d = dc_of(h);
+    if (!d) return 0;
+    GObj *o = obj_of(rgn);
+    if (!o) {                                               /* NULL: no clipping (RGN_COPY) */
+        if (mode == 5 || !rgn) d->has_clip = 0;
+        return 2;
+    }
+    RECT r = o->rc;
+    if (mode == 1 && d->has_clip) {                         /* RGN_AND */
+        if (d->clip.left > r.left) r.left = d->clip.left;
+        if (d->clip.top > r.top) r.top = d->clip.top;
+        if (d->clip.right < r.right) r.right = d->clip.right;
+        if (d->clip.bottom < r.bottom) r.bottom = d->clip.bottom;
+    } else if (mode == 2 && d->has_clip) {                  /* RGN_OR: the bounding box */
+        if (d->clip.left < r.left) r.left = d->clip.left;
+        if (d->clip.top < r.top) r.top = d->clip.top;
+        if (d->clip.right > r.right) r.right = d->clip.right;
+        if (d->clip.bottom > r.bottom) r.bottom = d->clip.bottom;
+    } else if (mode == 4 && d->has_clip) {                  /* RGN_DIFF: only whole strips come off */
+        RECT c = d->clip;
+        if (r.top <= c.top && r.bottom >= c.bottom) { if (r.left <= c.left && r.right > c.left) c.left = r.right; else if (r.right >= c.right && r.left < c.right) c.right = r.left; }
+        else if (r.left <= c.left && r.right >= c.right) { if (r.top <= c.top && r.bottom > c.top) c.top = r.bottom; else if (r.bottom >= c.bottom && r.top < c.bottom) c.bottom = r.top; }
+        r = c;
+    }
+    d->clip = r;
+    d->has_clip = 1;
+    return r.right > r.left && r.bottom > r.top ? 2 : 1;
+}
+GDIAPI int SelectClipRgn(HDC h, HRGN r) { return ExtSelectClipRgn(h, r, 5 /* RGN_COPY */); }
+GDIAPI int IntersectClipRect(HDC h, int l, int t, int r, int b)
+{
+    NOVA_DC *d = dc_of(h);
+    if (!d) return 0;
+    RECT n = { l + d->org_x, t + d->org_y, r + d->org_x, b + d->org_y };
+    if (d->has_clip) {
+        if (d->clip.left > n.left) n.left = d->clip.left;
+        if (d->clip.top > n.top) n.top = d->clip.top;
+        if (d->clip.right < n.right) n.right = d->clip.right;
+        if (d->clip.bottom < n.bottom) n.bottom = d->clip.bottom;
+    }
+    d->clip = n;
+    d->has_clip = 1;
+    return n.right > n.left && n.bottom > n.top ? 2 : 1;
+}
+GDIAPI int ExcludeClipRect(HDC h, int l, int t, int r, int b)
+{
+    NOVA_DC *d = dc_of(h);
+    if (!d) return 0;
+    if (!d->has_clip) { d->clip.left = 0; d->clip.top = 0; d->clip.right = d->w; d->clip.bottom = d->h; d->has_clip = 1; }
+    GObj tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    RECT x = { l + d->org_x, t + d->org_y, r + d->org_x, b + d->org_y };
+    RECT c = d->clip;
+    if (x.top <= c.top && x.bottom >= c.bottom) { if (x.left <= c.left && x.right > c.left) c.left = x.right; else if (x.right >= c.right && x.left < c.right) c.right = x.left; }
+    else if (x.left <= c.left && x.right >= c.right) { if (x.top <= c.top && x.bottom > c.top) c.top = x.bottom; else if (x.bottom >= c.bottom && x.top < c.bottom) c.bottom = x.top; }
+    d->clip = c;
+    return 2;
+}
+GDIAPI int OffsetClipRgn(HDC h, int x, int y)
+{
+    NOVA_DC *d = dc_of(h);
+    if (!d) return 0;
+    if (d->has_clip) { d->clip.left += x; d->clip.right += x; d->clip.top += y; d->clip.bottom += y; }
+    return 2;
+}
 GDIAPI int GetClipBox(HDC h, LPRECT r)
 {
     NOVA_DC *d = dc_of(h);
     if (!d) return 0;
-    r->left = -d->org_x; r->top = -d->org_y; r->right = d->w - d->org_x; r->bottom = d->h - d->org_y;
-    return 2;
+    RECT e = { 0, 0, d->w, d->h };
+    int k = dev_clip(d, &e);
+    r->left = e.left - d->org_x; r->top = e.top - d->org_y; r->right = e.right - d->org_x; r->bottom = e.bottom - d->org_y;
+    return k ? 2 : 1;
 }
-GDIAPI int GetClipRgn(HDC h, HRGN r) { (void)h; (void)r; return 0; }
+GDIAPI int GetClipRgn(HDC h, HRGN r)
+{
+    NOVA_DC *d = dc_of(h);
+    GObj *o = obj_of(r);
+    if (!d || !o) return -1;
+    if (!d->has_clip) return 0;
+    o->rc = d->clip;
+    return 1;
+}
+GDIAPI BOOL RectVisible(HDC h, const RECT *r)
+{
+    NOVA_DC *d = dc_of(h);
+    if (!d) return FALSE;
+    RECT e = { r->left + d->org_x, r->top + d->org_y, r->right + d->org_x, r->bottom + d->org_y };
+    return dev_clip(d, &e);
+}
+GDIAPI BOOL PtVisible(HDC h, int x, int y) { NOVA_DC *d = dc_of(h); return d && dev_visible(d, x + d->org_x, y + d->org_y); }
 GDIAPI BOOL FillRgn(HDC h, HRGN r, HBRUSH b)
 {
     NOVA_DC *d = dc_of(h);
@@ -1211,11 +948,3 @@ GDIAPI BOOL FillRgn(HDC h, HRGN r, HBRUSH b)
 }
 GDIAPI BOOL PaintRgn(HDC h, HRGN r) { NOVA_DC *d = dc_of(h); GObj *o = obj_of(r); if (!d || !o) return FALSE; fill(d, o->rc.left, o->rc.top, o->rc.right, o->rc.bottom, d->brush_color); return TRUE; }
 
-/* Exposed to user32 for FillRect/DrawText */
-__declspec(dllexport) void NovaGdiFill(HDC h, int l, int t, int r, int b, COLORREF c)
-{
-    NOVA_DC *d = dc_of(h); if (d) fill(d, l, t, r, b, c);
-}
-__declspec(dllexport) int  NovaGdiCellW(void) { return GLYPH_W * 2; }
-__declspec(dllexport) int  NovaGdiCellH(void) { return GLYPH_H * 2; }
-__declspec(dllexport) void NovaGdiChar(HDC h, int x, int y, char c) { NOVA_DC *d = dc_of(h); if (d) draw_char(d, x, y, (BYTE)c, font_scale(d)); }
