@@ -214,6 +214,47 @@ static bool collect(const FatEntry *e, void *ctx)
 
 static int g_restored;
 
+/* File times: RAM nodes keep FILETIMEs (100 ns since 1601), FAT keeps DOS
+ * date and time (2-second steps, from 1980) */
+static INT64 days_from_civil(INT64 y, unsigned m, unsigned d)
+{
+    y -= m <= 2;
+    INT64 era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (INT64)doe - 719468;              /* days since 1970-01-01 */
+}
+
+static UINT64 dos_to_filetime(UINT32 dos)
+{
+    unsigned date = dos >> 16, time = dos & 0xFFFF;
+    unsigned d = date & 31, m = (date >> 5) & 15, y = 1980 + (date >> 9);
+    if (!d || !m || m > 12) return 0;
+    INT64 secs = days_from_civil(y, m, d) * 86400 + (time >> 11) * 3600 + ((time >> 5) & 63) * 60 + (time & 31) * 2;
+    return ((UINT64)secs + UINT64_C(11644473600)) * 10000000ULL;
+}
+
+static UINT32 filetime_to_dos(UINT64 ft)
+{
+    if (!ft) return 0;
+    INT64 secs = (INT64)(ft / 10000000ULL) - INT64_C(11644473600);
+    if (secs < 315532800) return 0;                          /* before 1980 */
+    INT64 z = secs / 86400 + 719468, rem = secs % 86400;
+    INT64 era = z / 146097;
+    unsigned doe = (unsigned)(z - era * 146097);
+    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    INT64 y = (INT64)yoe + era * 400;
+    unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned mp = (5 * doy + 2) / 153;
+    unsigned d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9;
+    y += m <= 2;
+    if (y > 2107) return 0;
+    UINT32 date = (UINT32)((y - 1980) << 9 | m << 5 | d);
+    UINT32 time = (UINT32)((rem / 3600) << 11 | ((rem / 60) % 60) << 5 | (rem % 60) / 2);
+    return date << 16 | time;
+}
+
 static void load_dir(UINT32 fdir, RamNode *rdir, int depth)
 {
     if (depth > 24) return;
@@ -233,7 +274,12 @@ static void load_dir(UINT32 fdir, RamNode *rdir, int depth)
         char *buf = e->size ? kmalloc(e->size) : NULL;
         if (e->size && !buf) continue;
         RamNode *f = RamfsCreate(rdir, e->name, false);
-        if (f && FatRead(g_vol, e, buf) && RamfsWrite(f, buf, e->size)) g_restored++;
+        if (f && FatRead(g_vol, e, buf) && RamfsWrite(f, buf, e->size)) {
+            g_restored++;
+            UINT64 t = dos_to_filetime(e->wtime);
+            if (t) f->mtime = f->ctime = t;
+            f->attrs = e->attr & 0x07;                      /* read-only, hidden, system */
+        }
         kfree(buf);
     }
     kfree(l.e);
@@ -326,7 +372,10 @@ static void save_dir(RamNode *r, UINT32 fdir, bool fresh, int depth)
             else if (!FatMkdir(g_vol, fdir, c->name, &sub)) { save_error("disk full?", c); continue; }
             save_dir(c, sub, !existed, depth + 1);
         } else if (c->pflags & RAMFS_F_DIRTY) {
-            if (!(c->pflags & RAMFS_F_SEALED) && !FatWriteFile(g_vol, fdir, c->name, c->data, c->size)) {
+            FatSetStamp(filetime_to_dos(c->mtime));
+            bool ok = (c->pflags & RAMFS_F_SEALED) || FatWriteFile(g_vol, fdir, c->name, c->data, c->size);
+            FatSetStamp(0);
+            if (!ok) {
                 save_error("disk full?", c);
                 continue;
             }

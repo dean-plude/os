@@ -626,6 +626,7 @@ WINBASEAPI BOOL WINAPI SetConsoleTitleA(LPCSTR title) { (void)title; return TRUE
 WINBASEAPI BOOL WINAPI CloseHandle(HANDLE h)
 {
     if (h == NtCurrentProcess() || h == (HANDLE)(LONG_PTR)-2) return TRUE;   /* pseudo handles */
+    if (k32_close_snapshot(h)) return TRUE;                 /* tool-help snapshots (compat.c) */
     k32_forget_handle(h);                   /* file mappings, ports, timers (extra.c) */
     NTSTATUS s = NtClose(h);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
@@ -878,6 +879,7 @@ WINBASEAPI BOOL WINAPI FindClose(HANDLE h)
 {
     FindState *f = h;
     if (!f || h == INVALID_HANDLE_VALUE) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+    if (k32_find_close_stream(h)) return TRUE;              /* FindFirstStreamW (compat.c) */
     NtClose(f->dir);
     RtlFreeHeap(RtlGetProcessHeap(), 0, f);
     return TRUE;

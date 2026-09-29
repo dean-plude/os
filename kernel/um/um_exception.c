@@ -131,6 +131,8 @@ static UINT32 cpu_status(UINT64 vector, UINT64 *nparams, UINT64 *info, UINT64 er
 void UmUserException(void *frame, UINT64 cr2)
 {
     InterruptFrame *f = frame;
+    /* A committed page touched for the first time: back it and retry */
+    if (f->vector == 14 && !(f->error_code & 1) && UmDemandFault(cr2)) return;
     UmProcess *p = UmCurrent();
     UINT64 info[15] = { 0 }, nparams;
     UINT32 code = cpu_status(f->vector, &nparams, info, f->error_code, cr2);

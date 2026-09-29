@@ -109,3 +109,10 @@ void UmTimerTick(UINT64 ticks);
 void UmCpuCountChanged(void);
 /* Log every program thread's state (serial), for diagnosing hangs. */
 void UmDumpAll(void);
+
+/* A page fault at @va in the current program: back a committed page that
+ * was never touched (demand-zero).  True if the access can be retried. */
+bool UmDemandFault(UINT64 va);
+
+/* Log the failing system calls of programs named @name ("" or NULL: off) */
+void UmSetTrace(const char *name);

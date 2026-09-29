@@ -326,8 +326,14 @@ void interrupt_dispatch(InterruptFrame *frame)
     }
     /* A fault inside a user-memory copy (the page went away under it):
      * the copy returns an error instead (probe.c) */
-    if (vector == EXC_PAGE_FAULT && !(frame->cs & 3) && UserCopyFixup(frame))
-        return;
+    if (vector == EXC_PAGE_FAULT && !(frame->cs & 3)) {
+        /* the kernel touching a program's committed page for the first
+         * time (a copy to or from user memory): back it and retry */
+        uint64_t cr2 = read_cr2();
+        if (!(frame->error_code & 1) && cr2 < UINT64_C(0x00007FFFFFFF0000) && sched_current()->um && UmDemandFault(cr2))
+            return;
+        if (UserCopyFixup(frame)) return;
+    }
     /* A timer tick while this CPU is halted waiting for the kernel lock:
      * nothing to do (the clock follows the TSC, and the other CPUs keep
      * it), and switching the waiting thread out halfway would be wrong. */

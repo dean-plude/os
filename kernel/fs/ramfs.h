@@ -28,6 +28,8 @@ typedef struct RamNode {
     UINT32          cap;          /* bytes allocated for data (>= size) */
     int             refs;         /* holders (open windows, shell cwd) */
     UINT8           pflags;       /* RAMFS_F_*: origin and unsaved changes */
+    UINT32          attrs;        /* FILE_ATTRIBUTE_READONLY/HIDDEN/SYSTEM (Windows programs) */
+    UINT64          ctime, mtime; /* created, last written: 100 ns units since 1601 (UTC) */
 } RamNode;
 
 /* Change tracking, for saving drive C: to disk (fs/persist.c).  Nodes
@@ -92,3 +94,9 @@ void     RamfsUnref(RamNode *node);
 void     RamfsPath(const RamNode *node, char *buf, int cap);
 
 int      RamfsCount(const RamNode *dir);
+
+/* The clock new and written files are stamped with (100 ns since 1601);
+ * until it is set, files get no times. */
+void RamfsSetClock(UINT64 (*now)(void));
+/* Record that @n's times or attributes changed (it is saved again) */
+void RamfsMarkChanged(RamNode *n);

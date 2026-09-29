@@ -26,6 +26,8 @@ typedef struct {
     UINT32 dir_cluster;             /* where the entry lives */
     UINT32 index;                   /* entry index of its 8.3 entry */
     UINT32 first_index;             /* first entry (long-name entries included) */
+    UINT32 wtime;                   /* last written: DOS date << 16 | DOS time */
+    UINT8  attr;                    /* FAT attribute byte */
 } FatEntry;
 
 /* Find a FAT volume at @lba on @dev.  NULL if there is none. */
@@ -48,6 +50,8 @@ bool FatLookupPath(FatVol *v, const char *path, FatEntry *out);
 
 /* Read a whole file into @buf (at least e->size bytes). */
 bool FatRead(FatVol *v, const FatEntry *e, void *buf);
+/* The time the next entries written get (DOS date << 16 | time; 0: now) */
+void FatSetStamp(UINT32 dos_time);
 /* Create or replace the file @name in @dir with @len bytes of @data. */
 bool FatWriteFile(FatVol *v, UINT32 dir, const char *name, const void *data, UINT32 len);
 /* Create the directory @name in @dir (or find it); its cluster in *out. */

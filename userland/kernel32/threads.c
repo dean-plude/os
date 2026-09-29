@@ -120,43 +120,174 @@ DWORD WINAPI WaitForMultipleObjects(DWORD n, const HANDLE *h, BOOL all, DWORD ms
 }
 
 /* -----------------------------------------------------------------------
- * Events, mutexes, semaphores (named objects are not supported: name ignored)
+ * Events, mutexes, semaphores.  Named ones are shared between processes
+ * (the kernel's object namespace); creating an existing name opens it and
+ * reports ERROR_ALREADY_EXISTS.
  * ----------------------------------------------------------------------- */
-HANDLE WINAPI CreateEventA(LPSECURITY_ATTRIBUTES sa, BOOL manual, BOOL initial, LPCSTR name)
+typedef struct { UNICODE_STRING us; OBJECT_ATTRIBUTES oa; WCHAR buf[260]; } ObName;
+
+static POBJECT_ATTRIBUTES ob_name_w(ObName *n, LPCWSTR name)
 {
-    (void)sa; (void)name;
-    HANDLE h = 0;
-    NTSTATUS s = NtCreateEvent(&h, EVENT_ALL_ACCESS, 0, manual ? NotificationEvent : SynchronizationEvent, initial);
+    if (!name || !name[0]) return 0;
+    int k = 0;
+    for (; name[k] && k < 259; k++) n->buf[k] = name[k];
+    n->buf[k] = 0;
+    RtlInitUnicodeString(&n->us, n->buf);
+    memset(&n->oa, 0, sizeof(n->oa));
+    n->oa.Length = sizeof(n->oa);
+    n->oa.ObjectName = &n->us;
+    return &n->oa;
+}
+
+static POBJECT_ATTRIBUTES ob_name_a(ObName *n, LPCSTR name)
+{
+    if (!name || !name[0]) return 0;
+    WCHAR w[260];
+    MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 260);
+    w[259] = 0;
+    return ob_name_w(n, w);
+}
+
+static HANDLE created(NTSTATUS s, HANDLE h)
+{
     if (!NT_SUCCESS(s)) { set_error(s); return 0; }
+    SetLastError(s == 0x40000000 /* STATUS_OBJECT_NAME_EXISTS */ ? ERROR_ALREADY_EXISTS : 0);
     return h;
 }
+
+static HANDLE opened(NTSTATUS s, HANDLE h)
+{
+    if (!NT_SUCCESS(s)) {
+        if (s == (NTSTATUS)0xC0000034) SetLastError(ERROR_FILE_NOT_FOUND);
+        else set_error(s);
+        return 0;
+    }
+    return h;
+}
+
 HANDLE WINAPI CreateEventW(LPSECURITY_ATTRIBUTES sa, BOOL manual, BOOL initial, LPCWSTR name)
-{ (void)name; return CreateEventA(sa, manual, initial, 0); }
+{
+    (void)sa;
+    ObName n;
+    HANDLE h = 0;
+    NTSTATUS s = NtCreateEvent(&h, EVENT_ALL_ACCESS, ob_name_w(&n, name), manual ? NotificationEvent : SynchronizationEvent, initial);
+    return created(s, h);
+}
+HANDLE WINAPI CreateEventA(LPSECURITY_ATTRIBUTES sa, BOOL manual, BOOL initial, LPCSTR name)
+{
+    (void)sa;
+    ObName n;
+    HANDLE h = 0;
+    NTSTATUS s = NtCreateEvent(&h, EVENT_ALL_ACCESS, ob_name_a(&n, name), manual ? NotificationEvent : SynchronizationEvent, initial);
+    return created(s, h);
+}
+__declspec(dllexport) HANDLE WINAPI CreateEventExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access)
+{ (void)access; return CreateEventW(sa, (flags & 1) != 0, (flags & 2) != 0, name); }
+__declspec(dllexport) HANDLE WINAPI CreateEventExA(LPSECURITY_ATTRIBUTES sa, LPCSTR name, DWORD flags, DWORD access)
+{ (void)access; return CreateEventA(sa, (flags & 1) != 0, (flags & 2) != 0, name); }
+__declspec(dllexport) HANDLE WINAPI OpenEventW(DWORD access, BOOL inherit, LPCWSTR name)
+{
+    (void)access; (void)inherit;
+    ObName n;
+    HANDLE h = 0;
+    POBJECT_ATTRIBUTES oa = ob_name_w(&n, name);
+    if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    NTSTATUS st = NtOpenEvent(&h, EVENT_ALL_ACCESS, oa);
+    return opened(st, h);
+}
+__declspec(dllexport) HANDLE WINAPI OpenEventA(DWORD access, BOOL inherit, LPCSTR name)
+{
+    ObName n;
+    HANDLE h = 0;
+    (void)access; (void)inherit;
+    POBJECT_ATTRIBUTES oa = ob_name_a(&n, name);
+    if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    NTSTATUS st = NtOpenEvent(&h, EVENT_ALL_ACCESS, oa);
+    return opened(st, h);
+}
 BOOL WINAPI SetEvent(HANDLE h)   { NTSTATUS s = NtSetEvent(h, 0);   return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE); }
 BOOL WINAPI ResetEvent(HANDLE h) { NTSTATUS s = NtResetEvent(h, 0); return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE); }
 
+HANDLE WINAPI CreateMutexW(LPSECURITY_ATTRIBUTES sa, BOOL owner, LPCWSTR name)
+{
+    (void)sa;
+    ObName n;
+    HANDLE h = 0;
+    NTSTATUS st = NtCreateMutant(&h, MUTEX_ALL_ACCESS, ob_name_w(&n, name), owner);
+    return created(st, h);
+}
 HANDLE WINAPI CreateMutexA(LPSECURITY_ATTRIBUTES sa, BOOL owner, LPCSTR name)
 {
-    (void)sa; (void)name;
+    (void)sa;
+    ObName n;
     HANDLE h = 0;
-    NTSTATUS s = NtCreateMutant(&h, MUTEX_ALL_ACCESS, 0, owner);
-    if (!NT_SUCCESS(s)) { set_error(s); return 0; }
-    return h;
+    NTSTATUS st = NtCreateMutant(&h, MUTEX_ALL_ACCESS, ob_name_a(&n, name), owner);
+    return created(st, h);
 }
-HANDLE WINAPI CreateMutexW(LPSECURITY_ATTRIBUTES sa, BOOL owner, LPCWSTR name)
-{ (void)name; return CreateMutexA(sa, owner, 0); }
+__declspec(dllexport) HANDLE WINAPI CreateMutexExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access)
+{ (void)access; return CreateMutexW(sa, (flags & 1) != 0, name); }
+__declspec(dllexport) HANDLE WINAPI CreateMutexExA(LPSECURITY_ATTRIBUTES sa, LPCSTR name, DWORD flags, DWORD access)
+{ (void)access; return CreateMutexA(sa, (flags & 1) != 0, name); }
+__declspec(dllexport) HANDLE WINAPI OpenMutexW(DWORD access, BOOL inherit, LPCWSTR name)
+{
+    (void)access; (void)inherit;
+    ObName n;
+    HANDLE h = 0;
+    POBJECT_ATTRIBUTES oa = ob_name_w(&n, name);
+    if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    NTSTATUS st = NtOpenMutant(&h, MUTEX_ALL_ACCESS, oa);
+    return opened(st, h);
+}
+__declspec(dllexport) HANDLE WINAPI OpenMutexA(DWORD access, BOOL inherit, LPCSTR name)
+{
+    (void)access; (void)inherit;
+    ObName n;
+    HANDLE h = 0;
+    POBJECT_ATTRIBUTES oa = ob_name_a(&n, name);
+    if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    NTSTATUS st = NtOpenMutant(&h, MUTEX_ALL_ACCESS, oa);
+    return opened(st, h);
+}
 BOOL WINAPI ReleaseMutex(HANDLE h) { NTSTATUS s = NtReleaseMutant(h, 0); return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE); }
 
+HANDLE WINAPI CreateSemaphoreW(LPSECURITY_ATTRIBUTES sa, LONG init, LONG max, LPCWSTR name)
+{
+    (void)sa;
+    ObName n;
+    HANDLE h = 0;
+    NTSTATUS st = NtCreateSemaphore(&h, SEMAPHORE_ALL_ACCESS, ob_name_w(&n, name), init, max);
+    return created(st, h);
+}
 HANDLE WINAPI CreateSemaphoreA(LPSECURITY_ATTRIBUTES sa, LONG init, LONG max, LPCSTR name)
 {
-    (void)sa; (void)name;
+    (void)sa;
+    ObName n;
     HANDLE h = 0;
-    NTSTATUS s = NtCreateSemaphore(&h, SEMAPHORE_ALL_ACCESS, 0, init, max);
-    if (!NT_SUCCESS(s)) { set_error(s); return 0; }
-    return h;
+    NTSTATUS st = NtCreateSemaphore(&h, SEMAPHORE_ALL_ACCESS, ob_name_a(&n, name), init, max);
+    return created(st, h);
 }
-HANDLE WINAPI CreateSemaphoreW(LPSECURITY_ATTRIBUTES sa, LONG init, LONG max, LPCWSTR name)
-{ (void)name; return CreateSemaphoreA(sa, init, max, 0); }
+__declspec(dllexport) HANDLE WINAPI CreateSemaphoreExW(LPSECURITY_ATTRIBUTES sa, LONG init, LONG max, LPCWSTR name, DWORD flags, DWORD access)
+{ (void)flags; (void)access; return CreateSemaphoreW(sa, init, max, name); }
+__declspec(dllexport) HANDLE WINAPI OpenSemaphoreW(DWORD access, BOOL inherit, LPCWSTR name)
+{
+    (void)access; (void)inherit;
+    ObName n;
+    HANDLE h = 0;
+    POBJECT_ATTRIBUTES oa = ob_name_w(&n, name);
+    if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    NTSTATUS st = NtOpenSemaphore(&h, SEMAPHORE_ALL_ACCESS, oa);
+    return opened(st, h);
+}
+__declspec(dllexport) HANDLE WINAPI OpenSemaphoreA(DWORD access, BOOL inherit, LPCSTR name)
+{
+    (void)access; (void)inherit;
+    ObName n;
+    HANDLE h = 0;
+    POBJECT_ATTRIBUTES oa = ob_name_a(&n, name);
+    if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    NTSTATUS st = NtOpenSemaphore(&h, SEMAPHORE_ALL_ACCESS, oa);
+    return opened(st, h);
+}
 BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG count, LPLONG prev)
 { NTSTATUS s = NtReleaseSemaphore(h, count, prev); return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE); }
 

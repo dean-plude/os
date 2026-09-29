@@ -50,7 +50,19 @@
 #define ST_TOO_MANY_OPENED_FILES   0xC000011Fu
 #define ST_CANNOT_DELETE           0xC0000121u
 
-#define PROC_MEM_LIMIT_PAGES       (256u * 1024u * 1024u / PAGE_SIZE)   /* 256 MiB */
+/* A program may commit up to 7/8 of the machine's memory (pages are only
+ * taken when first touched, so this bounds promises, not use) */
+static UINT64 proc_commit_limit(void)
+{
+    static UINT64 limit;
+    if (!limit) {
+        uint64_t total = 0, free = 0, used = 0;
+        pmm_stats(&total, &free, &used);
+        limit = total - total / 8;
+    }
+    return limit;
+}
+#define PROC_MEM_LIMIT_PAGES proc_commit_limit()
 
 static SYSCALL_HANDLER g_um[SYSCALL_MAX];       /* the services open to programs */
 
@@ -94,6 +106,7 @@ static void um_lock_free_init(void)
         SYSCALL_NtDelayExecution, SYSCALL_NtYieldExecution,
         SYSCALL_NtWaitForSingleObject, SYSCALL_NtWaitForMultipleObjects,
         SYSCALL_NtCreateEvent, SYSCALL_NtSetEvent, SYSCALL_NtResetEvent, SYSCALL_NtClearEvent,
+        SYSCALL_NtOpenEvent, SYSCALL_NtOpenMutant, SYSCALL_NtOpenSemaphore,
         SYSCALL_NtCreateMutant, SYSCALL_NtReleaseMutant,
         SYSCALL_NtCreateSemaphore, SYSCALL_NtReleaseSemaphore,
         SYSCALL_NtSuspendThread, SYSCALL_NtResumeThread, SYSCALL_NtClose,
@@ -111,11 +124,34 @@ static void um_lock_free_init(void)
     for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) um_lock_free(list[i]);
 }
 
+/* Terminal "trace NAME": log the failing system calls of programs named
+ * NAME (a debugging aid for Windows programs that misbehave) */
+static char g_trace[32];
+static bool g_trace_all;
+void UmSetTrace(const char *name)
+{
+    int i = 0;
+    g_trace_all = false;
+    if (name && name[0] == '+') { g_trace_all = true; name++; }   /* "+NAME": every call */
+    for (; name && name[i] && i < 31; i++) g_trace[i] = name[i] >= 'A' && name[i] <= 'Z' ? (char)(name[i] + 32) : name[i];
+    g_trace[i] = 0;
+}
+
 UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmThread *t = UmCurrentThread();
     if (t) { t->park = 1; t->last_sys = (UINT16)num; }   /* park: cleared on the way out (UmReturnToUser) */
-    return g_um[num](a1, a2, a3, a4);
+    UINT64 r = g_um[num](a1, a2, a3, a4);
+    if (g_trace[0] && t && (g_trace_all || ((r & 0x80000000u) && (UINT32)r == r))) {
+        const char *n = t->proc->name;
+        int i = 0;
+        while (g_trace[i] && n[i] && (n[i] | 0x20) == (g_trace[i] | 0x20)) i++;
+        if (!g_trace[i] && (!n[i] || n[i] == '.'))
+            kprintf("[TRACE] %s: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx\n", n,
+                    (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
+                    (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r);
+    }
+    return r;
 }
 
 /* -----------------------------------------------------------------------
@@ -226,6 +262,50 @@ UmObject *um_handle_object(UmProcess *p, UINT64 hv, UmObType type)
 
 /* Read the path out of OBJECT_ATTRIBUTES (UTF-16 → ASCII, NT prefix
  * removed).  Returns the base directory for relative paths via *root. */
+/* UTF-16 (from programs) <-> UTF-8 (drive C: names) */
+static int w2u(const UINT16 *w, UINT32 n, char *out, int cap)
+{
+    int o = 0;
+    for (UINT32 i = 0; i < n; i++) {
+        UINT32 c = w[i];
+        if (c >= 0xD800 && c < 0xDC00 && i + 1 < n && w[i + 1] >= 0xDC00 && w[i + 1] < 0xE000)
+            c = 0x10000 + ((c - 0xD800) << 10) + (w[++i] - 0xDC00);
+        int need = c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+        if (o + need >= cap) break;
+        if (need == 1) out[o++] = (char)c;
+        else if (need == 2) { out[o++] = (char)(0xC0 | c >> 6); out[o++] = (char)(0x80 | (c & 0x3F)); }
+        else if (need == 3) { out[o++] = (char)(0xE0 | c >> 12); out[o++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[o++] = (char)(0x80 | (c & 0x3F)); }
+        else { out[o++] = (char)(0xF0 | c >> 18); out[o++] = (char)(0x80 | ((c >> 12) & 0x3F)); out[o++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[o++] = (char)(0x80 | (c & 0x3F)); }
+    }
+    out[o] = '\0';
+    return o;
+}
+
+/* UTF-8 -> UTF-16 into @out (little-endian bytes); returns code units */
+static UINT32 u2w(const char *s, UINT8 *out, UINT32 cap)
+{
+    UINT32 n = 0;
+    for (const unsigned char *c = (const unsigned char *)s; *c && n < cap; ) {
+        UINT32 ch = *c++;
+        if (ch >= 0xC0) {
+            int more = ch >= 0xF0 ? 3 : ch >= 0xE0 ? 2 : 1;
+            ch &= 0x3F >> more;
+            while (more-- && (*c & 0xC0) == 0x80) ch = ch << 6 | (*c++ & 0x3F);
+        }
+        if (ch >= 0x10000) {
+            if (n + 2 > cap) break;
+            UINT16 hi = (UINT16)(0xD800 + ((ch - 0x10000) >> 10)), lo = (UINT16)(0xDC00 + ((ch - 0x10000) & 0x3FF));
+            memcpy(out + 2 * n, &hi, 2); memcpy(out + 2 * n + 2, &lo, 2);
+            n += 2;
+        } else {
+            UINT16 w = (UINT16)ch;
+            memcpy(out + 2 * n, &w, 2);
+            n++;
+        }
+    }
+    return n;
+}
+
 static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode **root)
 {
     UINT64 oa[6];
@@ -239,9 +319,7 @@ static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode 
     UINT16 w[RAMFS_PATH_MAX];
     if (len > RAMFS_PATH_MAX || !NT_SUCCESS(CopyFromUser(w, (const void *)(uintptr_t)us[1], 2 * len)))
         return UM_STATUS_ACCESS_VIOLATION;
-    int n = 0;
-    for (UINT32 i = 0; i < len; i++) out[n++] = w[i] < 0x80 ? (char)w[i] : '?';
-    out[n] = '\0';
+    w2u(w, len, out, cap);
     char *s = out;
     if (!strncmp(s, "\\??\\", 4) || !strncmp(s, "\\\\?\\", 4) || !strncmp(s, "\\\\.\\", 4)) s += 4;
     if (s != out) memmove(out, s, strlen(s) + 1);
@@ -489,10 +567,16 @@ static UINT64 sys_write_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return iosb(iosb_ptr, st, done);
 }
 
+static UINT64 g_boot_time;                        /* 100 ns units since 1601, at boot */
+static UINT64 g_boot_ticks;
+
+/* FILE_BASIC_INFORMATION: creation, access, write, change times; attributes */
 static void basic_info(UINT8 *b, const RamNode *n)
 {
     memset(b, 0, 40);
-    UINT32 attr = n->dir ? 0x10 : 0x20;                        /* DIRECTORY / ARCHIVE */
+    UINT64 c = n->ctime ? n->ctime : g_boot_time, m = n->mtime ? n->mtime : c;
+    memcpy(b, &c, 8); memcpy(b + 8, &m, 8); memcpy(b + 16, &m, 8); memcpy(b + 24, &m, 8);
+    UINT32 attr = (n->dir ? 0x10 : 0x20) | (n->attrs & 0x07);  /* DIRECTORY / ARCHIVE, R/H/S */
     memcpy(b + 32, &attr, 4);
 }
 
@@ -614,8 +698,7 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
         if (!NT_SUCCESS(CopyFromUser(w, (const void *)(uintptr_t)(a3 + 20), 2 * nlen)))
             return iosb(a2, UM_STATUS_ACCESS_VIOLATION, 0);
         char path[RAMFS_PATH_MAX];
-        for (UINT32 i = 0; i < nlen; i++) path[i] = w[i] < 0x80 ? (char)w[i] : '?';
-        path[nlen] = 0;
+        w2u(w, nlen, path, sizeof(path));
         char *s = path;
         if (!strncmp(s, "\\??\\", 4)) s += 4;
         if (((s[0] | 0x20) >= 'a' && (s[0] | 0x20) <= 'z') && s[1] == ':') {
@@ -636,6 +719,20 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
         if (old && old != h->node && !(hdr[0] & 0xFF)) return iosb(a2, 0xC0000035u, 0);   /* NAME_COLLISION */
         if (!RamfsRename(h->node, dir, leaf, hdr[0] & 0xFF))
             return iosb(a2, old ? ST_ACCESS_DENIED : ST_OBJECT_NAME_INVALID, 0);
+        return iosb(a2, ST_SUCCESS, 0);
+    }
+    case 4: {                                                   /* FileBasicInformation */
+        UINT8 bi[40];
+        if (h->kind != H_FILE && h->kind != H_DIR) return iosb(a2, ST_INVALID_PARAMETER, 0);
+        if (a4 < 36 || !NT_SUCCESS(CopyFromUser(bi, (const void *)(uintptr_t)a3, 36)))
+            return iosb(a2, ST_INVALID_PARAMETER, 0);
+        INT64 ct, wt;
+        UINT32 attr;
+        memcpy(&ct, bi, 8); memcpy(&wt, bi + 16, 8); memcpy(&attr, bi + 32, 4);
+        if (ct > 0) h->node->ctime = (UINT64)ct;            /* 0: unchanged, -1: stop updating */
+        if (wt > 0) h->node->mtime = (UINT64)wt;
+        if (attr) h->node->attrs = attr & 0x07;
+        if (ct > 0 || wt > 0 || attr) RamfsMarkChanged(h->node);
         return iosb(a2, ST_SUCCESS, 0);
     }
     case 13:                                                    /* FileDispositionInformation */
@@ -703,8 +800,7 @@ static UINT64 sys_query_directory_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         if (NT_SUCCESS(CopyFromUser(us, (const void *)(uintptr_t)name_ptr, 16))) {
             UINT32 n = (UINT32)(us[0] & 0xFFFF) / 2;
             if (n && n < RAMFS_NAME_MAX && NT_SUCCESS(CopyFromUser(w, (const void *)(uintptr_t)us[1], 2 * n))) {
-                for (UINT32 i = 0; i < n; i++) pat[i] = w[i] < 0x80 ? (char)w[i] : '?';
-                pat[n] = '\0';
+                w2u(w, n, pat, sizeof(pat));
             }
         }
     }
@@ -720,14 +816,15 @@ static UINT64 sys_query_directory_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
     UINT32 nl = (UINT32)strlen(c->name), need = 64 + 2 * nl;
     UINT8 *b = kzalloc(need);
     if (!b) { DesktopUnlock(); return iosb(iosb_ptr, ST_NO_MEMORY, 0); }
+    basic_info(b + 8, c);                                   /* times, then attributes at +56 */
+    memmove(b + 56, b + 40, 4);
     UINT64 size = c->dir ? 0 : c->size;
     memcpy(b + 40, &size, 8);
     memcpy(b + 48, &size, 8);
-    UINT32 attr = c->dir ? 0x10 : 0x20;
-    memcpy(b + 56, &attr, 4);
+    nl = u2w(c->name, b + 64, nl);
+    need = 64 + 2 * nl;
     UINT32 bytes = 2 * nl;
     memcpy(b + 60, &bytes, 4);
-    for (UINT32 i = 0; i < nl; i++) { b[64 + 2 * i] = (UINT8)c->name[i]; }
     DesktopUnlock();
     if (len < need) { kfree(b); return iosb(iosb_ptr, ST_BUFFER_OVERFLOW, 0); }
     bool ok = NT_SUCCESS(CopyToUser((void *)(uintptr_t)out, b, need));
@@ -808,6 +905,7 @@ static UINT64 sys_alloc_vm_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UINT64 base, size;
     if (!get_u64(a2, &base) || !get_u64(a4, &size)) return UM_STATUS_ACCESS_VIOLATION;
     if (!size || !(type & (MEM_COMMIT | MEM_RESERVE)) || !valid_protect(prot)) return ST_INVALID_PARAMETER;
+    if (!base) type |= MEM_RESERVE;                             /* committing at no address reserves too */
     UINT64 end = (base + size + 0xFFF) & ~0xFFFULL;
 
     if (type & MEM_RESERVE) {
@@ -827,7 +925,7 @@ static UINT64 sys_alloc_vm_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (!r || base + size > r->base + r->size || r->image) return ST_MEMORY_NOT_ALLOCATED;
     }
     if (type & MEM_COMMIT) {
-        if (p->pages + size / PAGE_SIZE > PROC_MEM_LIMIT_PAGES) {
+        if (p->commit + size / PAGE_SIZE > PROC_MEM_LIMIT_PAGES) {
             if (type & MEM_RESERVE) um_region_remove(p, um_region_find(p, base));
             return ST_NO_MEMORY;
         }
@@ -1126,8 +1224,7 @@ static UINT64 sys_terminate_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 }
 
 extern long long nova_time(long long *t);         /* net/tls_platform.c: RTC as Unix time */
-static UINT64 g_boot_time;                        /* 100 ns units since 1601, at boot */
-static UINT64 g_boot_ticks, g_tsc0, g_tsc_hz;
+static UINT64 g_tsc0, g_tsc_hz;
 
 UINT64 um_now_100ns(void)
 {
@@ -1197,6 +1294,7 @@ void um_syscall_init(void)
     g_boot_time = ((UINT64)nova_time(NULL) + UINT64_C(11644473600)) * 10000000ULL;
     g_boot_ticks = sched_ticks();
     g_tsc0 = rdtsc();
+    RamfsSetClock(um_now_100ns);
     um_lock_free_init();
 
     um_install(SYSCALL_NtCreateFile,               sys_create_file);

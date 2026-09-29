@@ -1496,6 +1496,9 @@ USERAPI LPSTR CharPrevA(LPCSTR start, LPCSTR s)
     while (s > start && (*s & 0xC0) == 0x80) s--;
     return (LPSTR)s;
 }
+/* The Ex forms take a code page; every ANSI page is UTF-8 here */
+USERAPI LPSTR CharPrevExA(WORD cp, LPCSTR start, LPCSTR s, DWORD flags) { (void)cp; (void)flags; return CharPrevA(start, s); }
+USERAPI LPSTR CharNextExA(WORD cp, LPCSTR s, DWORD flags) { (void)cp; (void)flags; return CharNextA(s); }
 USERAPI BOOL IsCharAlphaW(WCHAR c) { return up(c) != low(c) || (c >= 0x4E00 && c <= 0x9FFF); }
 USERAPI BOOL IsCharAlphaNumericW(WCHAR c) { return IsCharAlphaW(c) || (c >= '0' && c <= '9'); }
 USERAPI BOOL IsCharUpperW(WCHAR c) { return low(c) != c; }

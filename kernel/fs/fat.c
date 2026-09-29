@@ -341,6 +341,8 @@ static bool dir_walk(FatVol *v, UINT32 dir, bool (*fn)(FatVol *, const FatEntry 
         fe.cluster = entry_cluster(v, e);
         if (fe.dir && fe.cluster == 0) fe.cluster = FAT_ROOT;
         fe.size = *(UINT32 *)(e + 28);
+        fe.wtime = (UINT32)*(UINT16 *)(e + 24) << 16 | *(UINT16 *)(e + 22);
+        fe.attr = e[11];
         fe.dir_cluster = dir;
         fe.index = idx;
         if (!fn(v, &fe, e, ctx)) return true;
@@ -473,12 +475,16 @@ static bool make_alias(FatVol *v, UINT32 dir, const char *name, UINT8 *sfn)
     return false;
 }
 
+static UINT32 g_stamp;
+void FatSetStamp(UINT32 dos_time) { g_stamp = dos_time; }
+
 static void stamp(UINT8 *e, bool create)
 {
     RtcTime t;
     rtc_read(&t);
     UINT16 date = (UINT16)((t.year >= 1980 ? t.year - 1980 : 0) << 9 | t.month << 5 | t.day);
     UINT16 time = (UINT16)(t.hour << 11 | t.minute << 5 | t.second / 2);
+    if (g_stamp) { date = (UINT16)(g_stamp >> 16); time = (UINT16)g_stamp; }
     if (create) {
         *(UINT16 *)(e + 14) = time;
         *(UINT16 *)(e + 16) = date;

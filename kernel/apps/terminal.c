@@ -16,6 +16,7 @@
 #include "../net/net.h"
 #include "../um/um.h"
 #include "../fs/persist.h"
+#include "../hal/serial.h"
 
 #define T_COLS   160
 #define T_ROWS   400
@@ -30,6 +31,15 @@
 #define T_PROMPT  GDI_C(0x4C, 0xC2, 0xFF)
 
 enum { K_NORMAL, K_ERROR, K_DIM };
+
+/* "serial on": copy everything the Terminal shows to the serial port, and
+ * mark the end of each command, for driving it from a test harness */
+static bool g_mirror;
+static void mirror(const char *s, int n)
+{
+    if (!g_mirror) return;
+    for (int i = 0; i < n && s[i]; i++) serial_putc(s[i]);
+}
 
 /* A network command in progress (advanced by term_tick) */
 typedef enum { JOB_NONE, JOB_PING, JOB_LOOKUP, JOB_FETCH, JOB_PROC } JobKind;
@@ -103,6 +113,8 @@ static int new_line(Term *t, int kind, int split)
 /* Print text (may contain '\n'), wrapping at the window width */
 static void tprint_ex(Term *t, int kind, int split, const char *s)
 {
+    mirror(s, (int)strlen(s));
+    mirror("\n", 1);
     int cols = term_cols(t);
     int i = new_line(t, kind, split);
     int n = 0;
@@ -411,8 +423,16 @@ static void cmd_ipconfig(Term *t)
     if (st.dns[1]) tprintf(t, "                         %s", d1);
 }
 
+static bool g_marked;          /* this command's end was marked already */
+static void done_mark(void)
+{
+    if (g_mirror && !g_marked) serial_puts("\n[TERM-DONE]\n");
+    g_marked = true;
+}
+
 static void job_end(Term *t)
 {
+    done_mark();
     NetRelease(t->job.op);
     if (t->job.proc) UmRelease(t->job.proc);          /* (kills it if still running) */
     if (t->job.con) UmConsoleRelease(t->job.con);
@@ -761,6 +781,7 @@ static void line_put(char *l, int col, char ch)
 
 static void proc_output(Term *t, const char *s, int n)
 {
+    mirror(s, n);
     Job *j = &t->job;
     int cols = term_cols(t);
     for (int k = 0; k < n; k++) {
@@ -878,7 +899,32 @@ static void cmd_taskkill(Term *t, int argc, char **argv)
     else tprintf(t, "ERROR: The process \"%u\" not found.", pid);
 }
 
+static void run_cmd(Term *t, char *cmdline);
+
 static void run(Term *t, char *cmdline)
+{
+    char *s = cmdline;
+    while (*s == ' ') s++;
+    g_marked = false;
+    if (!strncmp(s, "serial ", 7)) {                 /* serial on|off (see mirror) */
+        g_mirror = !strcmp(s + 7, "on");
+        tprint(t, g_mirror ? "Terminal output is copied to the serial port." : "Serial copy off.");
+        done_mark();
+        return;
+    }
+    if (!strncmp(s, "trace ", 6) || is(s, "trace")) {        /* trace NAME|off (see UmSetTrace) */
+        const char *n = s[5] ? s + 6 : "off";
+        UmSetTrace(is(n, "off") ? NULL : n);
+        tprintf(t, is(n, "off") ? "System call tracing off." : "Failing system calls of %s go to the serial port.", n);
+        done_mark();
+        return;
+    }
+    if (is(s, "exit")) { run_cmd(t, cmdline); return; }   /* destroys the window */
+    run_cmd(t, cmdline);
+    if (t->job.kind == JOB_NONE) done_mark();
+}
+
+static void run_cmd(Term *t, char *cmdline)
 {
     char original[T_COLS];
     strncpy(original, cmdline, sizeof(original) - 1);

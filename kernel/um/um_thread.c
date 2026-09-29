@@ -48,9 +48,94 @@ UmObject *um_ob_ref(UmObject *o)
     return o;
 }
 
+/* -----------------------------------------------------------------------
+ * The object namespace: named events, mutexes and semaphores that other
+ * processes can open ("Local\\x", "Global\\x" and "x" are one name).
+ * An entry lives as long as its object; lookups and the last release of a
+ * named object serialize on g_ns_lock so a dying object is never found.
+ * ----------------------------------------------------------------------- */
+#define NS_MAX      256
+#define NS_NAME_MAX 128
+static struct { char name[NS_NAME_MAX]; UmObject *o; } g_ns[NS_MAX];
+static KSpinLock g_ns_lock = KSPINLOCK_INIT;
+
+static void ns_remove_locked(UmObject *o)
+{
+    for (int i = 0; i < NS_MAX; i++) if (g_ns[i].o == o) { g_ns[i].o = NULL; g_ns[i].name[0] = 0; }
+}
+
+/* The name in OBJECT_ATTRIBUTES @oa_ptr (UTF-16 kept as UTF-8 bytes; empty
+ * if unnamed), without the session prefixes.  False if unreadable. */
+static bool ns_name(UINT64 oa_ptr, char *out)
+{
+    out[0] = 0;
+    if (!oa_ptr) return true;
+    UINT64 oa[6];
+    if (!NT_SUCCESS(CopyFromUser(oa, (const void *)(uintptr_t)oa_ptr, sizeof(oa)))) return false;
+    if (!oa[2]) return true;
+    UINT64 us[2];
+    if (!NT_SUCCESS(CopyFromUser(us, (const void *)(uintptr_t)oa[2], sizeof(us)))) return false;
+    UINT32 n = (UINT32)(us[0] & 0xFFFF) / 2;
+    UINT16 w[NS_NAME_MAX];
+    if (n >= NS_NAME_MAX) n = NS_NAME_MAX - 1;
+    if (n && !NT_SUCCESS(CopyFromUser(w, (const void *)(uintptr_t)us[1], 2 * n))) return false;
+    int k = 0;
+    for (UINT32 i = 0; i < n && k < NS_NAME_MAX - 3; i++) {
+        UINT32 c = w[i];
+        if (c < 0x80) out[k++] = (char)c;
+        else if (c < 0x800) { out[k++] = (char)(0xC0 | c >> 6); out[k++] = (char)(0x80 | (c & 0x3F)); }
+        else { out[k++] = (char)(0xE0 | c >> 12); out[k++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[k++] = (char)(0x80 | (c & 0x3F)); }
+    }
+    out[k] = 0;
+    static const char *const prefixes[] = { "\\BaseNamedObjects\\", "\\Sessions\\1\\BaseNamedObjects\\", "Local\\", "Global\\", "Session\\1\\" };
+    for (int again = 1; again; ) {
+        again = 0;
+        for (unsigned i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+            int pl = (int)strlen(prefixes[i]);
+            if (!strncmp(out, prefixes[i], pl)) { memmove(out, out + pl, strlen(out + pl) + 1); again = 1; }
+        }
+    }
+    return true;
+}
+
+/* A referenced object named @name, or NULL */
+static UmObject *ns_lookup(const char *name)
+{
+    UmObject *o = NULL;
+    IrqState s = spin_lock_irqsave(&g_ns_lock);
+    for (int i = 0; i < NS_MAX; i++)
+        if (g_ns[i].o && !strcmp(g_ns[i].name, name)) { o = um_ob_ref(g_ns[i].o); break; }
+    spin_unlock_irqrestore(&g_ns_lock, s);
+    return o;
+}
+
+static bool ns_add(const char *name, UmObject *o)
+{
+    bool ok = false;
+    IrqState s = spin_lock_irqsave(&g_ns_lock);
+    for (int i = 0; i < NS_MAX; i++)
+        if (!g_ns[i].o) {
+            strncpy(g_ns[i].name, name, NS_NAME_MAX - 1);
+            g_ns[i].name[NS_NAME_MAX - 1] = 0;
+            g_ns[i].o = o;
+            o->named = true;
+            ok = true;
+            break;
+        }
+    spin_unlock_irqrestore(&g_ns_lock, s);
+    return ok;
+}
+
 void um_ob_unref(UmObject *o)
 {
-    if (!o || __atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL)) return;
+    if (!o) return;
+    if (o->named) {
+        IrqState s = spin_lock_irqsave(&g_ns_lock);
+        int left = __atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL);
+        if (!left) ns_remove_locked(o);
+        spin_unlock_irqrestore(&g_ns_lock, s);
+        if (left) return;
+    } else if (__atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL)) return;
     /* The last reference may go in a service that runs without the big
      * kernel lock; the destructors (a process's, a socket's...) want it */
     bkl_acquire();
@@ -233,14 +318,56 @@ static UINT64 new_handle(UmProcess *p, UmObject *o, UINT64 handle_ptr)
  * Events, mutants, semaphores
  * ----------------------------------------------------------------------- */
 /* NtCreateEvent(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, EVENT_TYPE, BOOLEAN InitialState) */
+#define ST_OBJECT_NAME_EXISTS    0x40000000u
+#define ST_OBJECT_TYPE_MISMATCH  0xC0000024u
+#define ST_OBJECT_NAME_NOT_FOUND 0xC0000034u
+
+/* Create-or-open for a named object: 0 = create a new one (named @name
+ * if non-empty); otherwise the status to return (a handle to the existing
+ * one was made, or an error). */
+static UINT64 open_existing(const char *name, UmObType type, UINT64 handle_ptr)
+{
+    if (!name[0]) return 0;
+    UmObject *o = ns_lookup(name);
+    if (!o) return 0;
+    if (o->type != type) { um_ob_unref(o); return ST_OBJECT_TYPE_MISMATCH; }
+    UINT64 r = new_handle(UmCurrent(), o, handle_ptr);
+    return r ? r : ST_OBJECT_NAME_EXISTS;
+}
+
+static UINT64 finish_create(UmObject *o, const char *name, UINT64 handle_ptr)
+{
+    if (name[0]) ns_add(name, o);
+    return new_handle(UmCurrent(), o, handle_ptr);
+}
+
+/* NtOpenEvent / NtOpenMutant / NtOpenSemaphore(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES) */
+static UINT64 open_named(UmObType type, UINT64 handle_ptr, UINT64 oa)
+{
+    char name[NS_NAME_MAX];
+    if (!ns_name(oa, name)) return ST_ACCESS_VIOLATION;
+    if (!name[0]) return ST_INVALID_PARAMETER;
+    UmObject *o = ns_lookup(name);
+    if (!o) return ST_OBJECT_NAME_NOT_FOUND;
+    if (o->type != type) { um_ob_unref(o); return ST_OBJECT_TYPE_MISMATCH; }
+    return new_handle(UmCurrent(), o, handle_ptr);
+}
+static UINT64 sys_open_event(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)     { (void)a2; (void)a4; return open_named(UO_EVENT, a1, a3); }
+static UINT64 sys_open_mutant(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)    { (void)a2; (void)a4; return open_named(UO_MUTANT, a1, a3); }
+static UINT64 sys_open_semaphore(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a2; (void)a4; return open_named(UO_SEMAPHORE, a1, a3); }
+
 static UINT64 sys_create_event(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a2; (void)a3;
+    (void)a2;
+    char name[NS_NAME_MAX];
+    if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
+    UINT64 r = open_existing(name, UO_EVENT, a1);
+    if (r) return r;
     UmObject *o = ob_new(UO_EVENT);
     if (!o) return ST_NO_MEMORY;
     o->manual = a4 == 0;                             /* NotificationEvent */
     o->signaled = um_stack_arg(5) & 0xFF;
-    return new_handle(UmCurrent(), o, a1);
+    return finish_create(o, name, a1);
 }
 
 static UINT64 event_op(UINT64 h, UINT64 prev_ptr, int op)
@@ -263,11 +390,15 @@ static UINT64 sys_clear_event(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (voi
 /* NtCreateMutant(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, BOOLEAN InitialOwner) */
 static UINT64 sys_create_mutant(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a2; (void)a3;
+    (void)a2;
+    char name[NS_NAME_MAX];
+    if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
+    UINT64 r = open_existing(name, UO_MUTANT, a1);
+    if (r) return r;
     UmObject *o = ob_new(UO_MUTANT);
     if (!o) return ST_NO_MEMORY;
     if (a4 & 0xFF) { o->owner = UmCurrentThread(); o->recursion = 1; }
-    return new_handle(UmCurrent(), o, a1);
+    return finish_create(o, name, a1);
 }
 
 /* NtReleaseMutant(HANDLE, PLONG PreviousCount) */
@@ -292,14 +423,18 @@ static UINT64 sys_release_mutant(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 /* NtCreateSemaphore(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, LONG Initial, LONG Maximum) */
 static UINT64 sys_create_semaphore(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a2; (void)a3;
+    (void)a2;
     INT32 init = (INT32)a4, max = (INT32)um_stack_arg(5);
     if (max <= 0 || init < 0 || init > max) return ST_INVALID_PARAMETER;
+    char name[NS_NAME_MAX];
+    if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
+    UINT64 r = open_existing(name, UO_SEMAPHORE, a1);
+    if (r) return r;
     UmObject *o = ob_new(UO_SEMAPHORE);
     if (!o) return ST_NO_MEMORY;
     o->count = init;
     o->max = max;
-    return new_handle(UmCurrent(), o, a1);
+    return finish_create(o, name, a1);
 }
 
 /* NtReleaseSemaphore(HANDLE, LONG ReleaseCount, PLONG PreviousCount) */
@@ -583,6 +718,9 @@ static UINT64 sys_nova_get_random(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 void um_thread_syscalls_init(void)
 {
     um_install(SYSCALL_NtCreateEvent,             sys_create_event);
+    um_install(SYSCALL_NtOpenEvent,               sys_open_event);
+    um_install(SYSCALL_NtOpenMutant,              sys_open_mutant);
+    um_install(SYSCALL_NtOpenSemaphore,           sys_open_semaphore);
     um_install(SYSCALL_NtSetEvent,                sys_set_event);
     um_install(SYSCALL_NtResetEvent,              sys_reset_event);
     um_install(SYSCALL_NtClearEvent,              sys_clear_event);

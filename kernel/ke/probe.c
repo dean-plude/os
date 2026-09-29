@@ -58,6 +58,7 @@ static bool user_pages_ok(UINT64 addr, UINT64 len, UINT64 need)
         if (e & PTE_HUGE) { va = (va | (HUGE_PAGE_SIZE - 1)) + 1; continue; }
 
         e = table_at(e)[PT_IDX(va)];
+        if (!(e & PTE_PRESENT) && (e & PTE_LAZY)) e |= PTE_PRESENT;   /* backed on first touch */
         if ((e & need) != need) return false;
         va += PAGE_SIZE;
     }

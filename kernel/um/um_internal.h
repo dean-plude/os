@@ -64,6 +64,7 @@ typedef struct UmObject {
     UmThread       *owner;          /* mutant */
     UINT32          recursion;
     bool            abandoned;
+    bool            named;          /* in the object namespace (um_thread.c) */
     int             sock;           /* UO_SOCKET: kernel socket index */
     UmProcess      *proc;           /* UO_PROCESS: signaled when it has exited */
     void           *ptr;            /* UO_KEY: the registry key */
@@ -144,7 +145,8 @@ struct UmProcess {
     int         nmodules;
     UINT8       init_order[UM_MAX_MODULES];   /* dependencies first */
     int         ninit;
-    UINT32      pages;          /* committed user pages */
+    volatile UINT32 pages;      /* resident user pages (backed by memory) */
+    UINT32      commit;         /* committed user pages (resident or backed on first touch) */
 
     UmThread   *threads[UM_MAX_THREADS];
     int         live_threads;
@@ -185,6 +187,7 @@ void       um_region_remove(UmProcess *p, UmRegion *r);
 bool       um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect);
 void       um_decommit(UmProcess *p, UINT64 va, UINT64 size);
 bool       um_is_committed(UmProcess *p, UINT64 va);
+
 /* Copy into/out of user memory through the page tables (any process). */
 bool       um_write(UmProcess *p, UINT64 va, const void *src, UINT64 n);
 bool       um_read(UmProcess *p, UINT64 va, void *dst, UINT64 n);

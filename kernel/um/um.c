@@ -168,6 +168,9 @@ static bool is_current(UmProcess *p) { return read_cr3() == p->pml4; }
 
 /* Existing entries of @p changed: this CPU drops them from its TLB as it
  * goes (invlpg), the other CPUs running @p's threads at the end. */
+/* Committed pages are backed on first touch (demand-zero): until then the
+ * entry is not present and carries PTE_LAZY with the page's flags. */
+
 bool um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect)
 {
     UINT64 f = pte_flags(protect);
@@ -182,14 +185,38 @@ bool um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect)
             changed = true;
             continue;
         }
-        PADDR fr = pmm_alloc_page();
-        if (!fr) { ok = false; break; }
-        memset((void *)(uintptr_t)(PHYSMAP_BASE + fr), 0, PAGE_SIZE);
-        *e = fr | f;
-        p->pages++;
+        if (!(*e & PTE_LAZY)) p->commit++;
+        *e = PTE_LAZY | (f & ~PTE_PRESENT);
     }
     if (changed) smp_tlb_flush(p->pml4);
     return ok;
+}
+
+/* Back the lazily committed page at @e (another thread may race us: the
+ * entry only changes by compare-and-swap here) */
+static bool back_page(UmProcess *p, pte_t *e)
+{
+    pte_t v = __atomic_load_n(e, __ATOMIC_ACQUIRE);
+    if (v & PTE_PRESENT) return true;
+    if (!(v & PTE_LAZY)) return false;
+    PADDR fr = pmm_alloc_page();
+    if (!fr) return false;
+    memset((void *)(uintptr_t)(PHYSMAP_BASE + fr), 0, PAGE_SIZE);
+    pte_t nv = fr | (v & ~(PTE_LAZY | PTE_ADDR_MASK)) | PTE_PRESENT;
+    if (!__atomic_compare_exchange_n(e, &v, nv, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        pmm_free_page(fr);
+        return (__atomic_load_n(e, __ATOMIC_ACQUIRE) & PTE_PRESENT) != 0;
+    }
+    __atomic_add_fetch(&p->pages, 1, __ATOMIC_RELAXED);
+    return true;
+}
+
+bool UmDemandFault(UINT64 va)
+{
+    UmProcess *p = UmCurrent();
+    if (!p || va >= UINT64_C(0x00007FFFFFFF0000)) return false;
+    pte_t *e = walk(p->pml4, va, false);
+    return e && back_page(p, e);
 }
 
 /* Pages are freed only after every CPU has dropped them from its TLB: until
@@ -200,11 +227,16 @@ void um_decommit(UmProcess *p, UINT64 va, UINT64 size)
     int n = 0;
     for (UINT64 a = va & ~0xFFFULL; a < va + size; a += PAGE_SIZE) {
         pte_t *e = walk(p->pml4, a, false);
-        if (!e || !(*e & PTE_PRESENT)) continue;
+        if (!e) continue;
+        if (!(*e & PTE_PRESENT)) {
+            if (*e & PTE_LAZY) { *e = 0; p->commit--; }
+            continue;
+        }
         if ((*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* the shared page stays */
         batch[n++] = *e & PTE_ADDR_MASK;
         *e = 0;
         p->pages--;
+        p->commit--;
         if (is_current(p)) invlpg(a);
         if (n == 64) {
             smp_tlb_flush(p->pml4);
@@ -220,7 +252,7 @@ void um_decommit(UmProcess *p, UINT64 va, UINT64 size)
 bool um_is_committed(UmProcess *p, UINT64 va)
 {
     pte_t *e = walk(p->pml4, va, false);
-    return e && (*e & PTE_PRESENT);
+    return e && (*e & (PTE_PRESENT | PTE_LAZY));
 }
 
 static bool copy_pages(UmProcess *p, UINT64 va, void *buf, UINT64 n, bool to_user)
@@ -228,9 +260,18 @@ static bool copy_pages(UmProcess *p, UINT64 va, void *buf, UINT64 n, bool to_use
     UINT8 *b = buf;
     while (n) {
         pte_t *e = walk(p->pml4, va, false);
-        if (!e || !(*e & PTE_PRESENT)) return false;
         UINT64 off = va & 0xFFF, chunk = PAGE_SIZE - off;
         if (chunk > n) chunk = n;
+        if (!e) return false;
+        if (!(*e & PTE_PRESENT)) {
+            if (!(*e & PTE_LAZY)) return false;
+            if (!to_user) {                             /* never touched: reads as zeros */
+                memset(b, 0, chunk);
+                va += chunk; b += chunk; n -= chunk;
+                continue;
+            }
+            if (!back_page(p, e)) return false;
+        }
         UINT8 *k = (UINT8 *)(uintptr_t)(PHYSMAP_BASE + (*e & PTE_ADDR_MASK) + off);
         if (to_user) memcpy(k, b, chunk); else memcpy(b, k, chunk);
         va += chunk; b += chunk; n -= chunk;
@@ -1355,6 +1396,7 @@ void UmPoll(void)
             free_address_space(p->pml4);
             p->pml4 = 0;
             p->pages = 0;
+            p->commit = 0;
             p->reclaimed = true;
         }
         if (p->released) {

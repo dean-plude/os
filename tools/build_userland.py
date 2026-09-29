@@ -138,7 +138,69 @@ def flavor_obj(legacy):
     cc(src, obj)
     return obj
 
+# Windows' export ordinals for DLLs programs import from by number
+# (oleaut32's BSTR and VARIANT calls, Winsock 1, comctl32's subclassing...)
+ORDINALS = {
+    'oleaut32': {'SysAllocString': 2, 'SysReAllocString': 3, 'SysAllocStringLen': 4, 'SysReAllocStringLen': 5,
+                 'SysFreeString': 6, 'SysStringLen': 7, 'VariantInit': 8, 'VariantClear': 9, 'VariantCopy': 10,
+                 'VariantCopyInd': 11, 'VariantChangeType': 12, 'VariantTimeToDosDateTime': 13,
+                 'DosDateTimeToVariantTime': 14, 'SafeArrayCreate': 15, 'SafeArrayDestroy': 16, 'SafeArrayGetDim': 17,
+                 'SafeArrayGetElemsize': 18, 'SafeArrayGetUBound': 19, 'SafeArrayGetLBound': 20, 'SafeArrayLock': 21,
+                 'SafeArrayUnlock': 22, 'SafeArrayAccessData': 23, 'SafeArrayUnaccessData': 24,
+                 'SafeArrayGetElement': 25, 'SafeArrayPutElement': 26, 'SafeArrayCopy': 27, 'DispGetParam': 28,
+                 'DispGetIDsOfNames': 29, 'DispInvoke': 30, 'CreateDispTypeInfo': 31, 'CreateStdDispatch': 32,
+                 'RegisterActiveObject': 33, 'RevokeActiveObject': 34, 'GetActiveObject': 35,
+                 'SafeArrayAllocDescriptor': 36, 'SafeArrayAllocData': 37, 'SafeArrayDestroyDescriptor': 38,
+                 'SafeArrayDestroyData': 39, 'SafeArrayRedim': 40, 'SafeArrayAllocDescriptorEx': 41,
+                 'SafeArrayCreateEx': 42, 'SafeArrayCreateVectorEx': 43, 'SafeArraySetRecordInfo': 44,
+                 'SafeArrayGetRecordInfo': 45, 'VarParseNumFromStr': 46, 'VarNumFromParseNum': 47,
+                 'SafeArraySetIID': 57, 'SafeArrayGetIID': 67, 'SafeArrayGetVartype': 77,
+                 'VarI4FromStr': 64, 'VarR8FromStr': 84, 'VarDateFromStr': 94, 'VarBstrFromI4': 110,
+                 'VarBstrFromR8': 112, 'VarBstrFromDate': 114, 'VarBoolFromStr': 125,
+                 'DispCallFunc': 146, 'VariantChangeTypeEx': 147, 'SafeArrayPtrOfIndex': 148,
+                 'SysStringByteLen': 149, 'SysAllocStringByteLen': 150, 'LoadTypeLib': 161, 'LoadRegTypeLib': 162,
+                 'RegisterTypeLib': 163, 'QueryPathOfRegTypeLib': 164, 'LoadTypeLibEx': 183,
+                 'SystemTimeToVariantTime': 184, 'VariantTimeToSystemTime': 185, 'UnRegisterTypeLib': 186,
+                 'GetErrorInfo': 200, 'SetErrorInfo': 201, 'CreateErrorInfo': 202,
+                 'SafeArrayCreateVector': 411},
+    'ws2_32': {'accept': 1, 'bind': 2, 'closesocket': 3, 'connect': 4, 'getpeername': 5, 'getsockname': 6,
+               'getsockopt': 7, 'htonl': 8, 'htons': 9, 'ioctlsocket': 10, 'inet_addr': 11, 'inet_ntoa': 12,
+               'listen': 13, 'ntohl': 14, 'ntohs': 15, 'recv': 16, 'recvfrom': 17, 'select': 18, 'send': 19,
+               'sendto': 20, 'setsockopt': 21, 'shutdown': 22, 'socket': 23, 'gethostbyaddr': 51,
+               'gethostbyname': 52, 'getprotobyname': 53, 'getprotobynumber': 54, 'getservbyname': 55,
+               'getservbyport': 56, 'gethostname': 57, 'WSAAsyncSelect': 101, 'WSAAsyncGetHostByAddr': 102,
+               'WSAAsyncGetHostByName': 103, 'WSACancelAsyncRequest': 108, 'WSASetBlockingHook': 109,
+               'WSAUnhookBlockingHook': 110, 'WSAGetLastError': 111, 'WSASetLastError': 112,
+               'WSACancelBlockingCall': 113, 'WSAIsBlocking': 114, 'WSAStartup': 115, 'WSACleanup': 116,
+               '__WSAFDIsSet': 151},
+    'comctl32': {'MenuHelp': 2, 'ShowHideMenuCtl': 3, 'GetEffectiveClientRect': 4, 'DrawStatusTextA': 5,
+                 'CreateStatusWindowA': 6, 'CreateToolbar': 7, 'CreateMappedBitmap': 8, 'MakeDragList': 13,
+                 'LBItemFromPt': 14, 'DrawInsert': 15, 'CreateUpDownControl': 16, 'InitCommonControls': 17,
+                 'Str_SetPtrW': 236, 'DSA_Create': 320, 'DSA_Destroy': 321, 'DSA_GetItem': 322,
+                 'DSA_GetItemPtr': 323, 'DSA_InsertItem': 324, 'DSA_SetItem': 325, 'DSA_DeleteItem': 326,
+                 'DSA_DeleteAllItems': 327, 'DPA_Create': 328, 'DPA_Destroy': 329, 'DPA_Grow': 330,
+                 'DPA_Clone': 331, 'DPA_GetPtr': 332, 'DPA_GetPtrIndex': 333, 'DPA_InsertPtr': 334,
+                 'DPA_SetPtr': 335, 'DPA_DeletePtr': 336, 'DPA_DeleteAllPtrs': 337, 'DPA_Sort': 338,
+                 'DPA_Search': 339, 'DPA_CreateEx': 340, 'LoadIconMetric': 380, 'LoadIconWithScaleDown': 381,
+                 'DPA_DestroyCallback': 385, 'DSA_DestroyCallback': 386, 'SetWindowSubclass': 410,
+                 'GetWindowSubclass': 411, 'RemoveWindowSubclass': 412, 'DefSubclassProc': 413},
+    'shell32': {'SHChangeNotifyRegister': 2, 'SHChangeNotifyDeregister': 4, 'ILFindLastID': 16,
+                'ILRemoveLastID': 17, 'ILClone': 18, 'ILCloneFirst': 19, 'ILIsEqual': 21, 'ILCombine': 25,
+                'ILGetSize': 152, 'ILGetNext': 153, 'ILFree': 155, 'ILCreateFromPathW': 190,
+                'SHCreateDirectory': 165, 'IsUserAnAdmin': 680, 'SHGetImageList': 727},
+}
+
+def ordinal_exports(name, objs):
+    """/export:NAME,@N for each ordinal-table name the DLL defines"""
+    table = ORDINALS.get(name)
+    if not table:
+        return []
+    r = subprocess.run([llvm_tool('llvm-nm'), '--defined-only', '--extern-only'] + objs, capture_output=True, text=True)
+    defined = {l.split()[-1] for l in r.stdout.splitlines() if l.strip()}
+    return [f'/export:{n},@{o}' for n, o in sorted(table.items(), key=lambda x: x[1]) if n in defined]
+
 def link_dll(name, objs, deps, base, extra=()):
+    extra = list(extra) + ordinal_exports(name, objs)
     dll = os.path.join(out, f'{name}.dll')
     entry = ['/entry:DllMain'] if name == 'testdll' else ['/noentry']
     run(['lld-link', '/dll', '/nodefaultlib', f'/base:{base:#x}'] + entry +
@@ -164,6 +226,16 @@ for name, deps, base in DLLS:
         extra = ['@' + rsp]
         crt_objs, crt_extra = objs, extra
         objs = objs + [flavor_obj(1)]
+        # the old msvcrt.dll also carried the C++ runtime (7-Zip and other
+        # programs built against it import exceptions and RTTI from it)
+        rsp2 = os.path.join(out, 'msvcrt_cxx.rsp')
+        cxx = ['_CxxThrowException', '__CxxFrameHandler', '__CxxFrameHandler2', '__CxxFrameHandler3',
+               '??1type_info@@UEAA@XZ', '??_7type_info@@6B@', '_purecall', '__RTDynamicCast', '__RTtypeid',
+               '__RTCastToVoid', 'set_unexpected', 'unexpected', '__uncaught_exception', '_set_se_translator',
+               '_is_exception_typeof', '__DestructExceptionObject', '__AdjustPointer', '_local_unwind']
+        open(rsp2, 'w').write('\n'.join([f'/export:{n}=vcruntime140.{n}' for n in cxx] +
+                                        ['/export:?terminate@@YAXXZ=terminate']))
+        extra = extra + ['@' + rsp2]
     link_dll(name, objs, deps, base, extra)
     if name == 'msvcrt':
         # the Universal C Runtime: the same C runtime under its Windows 10 name

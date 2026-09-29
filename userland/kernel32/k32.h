@@ -17,3 +17,7 @@ const char *k32_module_path(HMODULE m, char *tmp);   /* tmp: MAX_PATH; 0 if not 
 /* extra.c */
 void k32_forget_handle(HANDLE h);
 void k32_io_done(HANDLE h, OVERLAPPED *o, NTSTATUS s, DWORD bytes);
+
+/* compat.c */
+BOOL k32_close_snapshot(HANDLE h);
+BOOL k32_find_close_stream(HANDLE h);

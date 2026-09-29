@@ -294,6 +294,7 @@ int system(const char *cmd)
 __declspec(dllexport) int __getmainargs(int *argc, char ***argv, char ***envp, int glob, void *si);
 int __getmainargs(int *argc, char ***argv, char ***envp, int glob, void *si)
 {
+    __iob_func();                          /* &_iob[1] users (see __set_app_type) */
     (void)glob; (void)si;
     const char *cl = GetCommandLineA();
     size_t len = strlen(cl);

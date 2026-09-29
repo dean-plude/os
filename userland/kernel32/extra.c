@@ -247,6 +247,8 @@ static void queue_apc(DWORD tid, int timer, void *fn, ULONG_PTR a, ULONG_PTR b, 
     unlock();
 }
 
+void k32_queue_user_apc(DWORD tid, PAPCFUNC fn, ULONG_PTR arg) { queue_apc(tid, 2, (void *)fn, arg, 0, 0); }
+
 static BOOL run_apcs(void)
 {
     DWORD me = GetCurrentThreadId();
@@ -258,7 +260,8 @@ static BOOL run_apcs(void)
         if (*pp) { x = *pp; *pp = x->next; }
         unlock();
         if (!x) return ran;
-        if (x->timer) ((VOID (WINAPI *)(LPVOID, DWORD, DWORD))x->fn)((LPVOID)x->a, (DWORD)x->b, (DWORD)x->c);
+        if (x->timer == 2) ((PAPCFUNC)x->fn)(x->a);            /* QueueUserAPC */
+        else if (x->timer) ((VOID (WINAPI *)(LPVOID, DWORD, DWORD))x->fn)((LPVOID)x->a, (DWORD)x->b, (DWORD)x->c);
         else ((LPOVERLAPPED_COMPLETION_ROUTINE)x->fn)((DWORD)x->a, (DWORD)x->b, (LPOVERLAPPED)x->c);
         zfree(x);
         ran = TRUE;

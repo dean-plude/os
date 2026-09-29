@@ -199,6 +199,7 @@
 #define SYSCALL_NtFlushKey                        0x01B2
 #define SYSCALL_NtOpenKeyEx                       0x01B3
 #define SYSCALL_NtRenameKey                       0x01B4
+#define SYSCALL_NtOpenMutant                      0x01B8
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x01A0
 #define SYSCALL_NtNovaGuiGetMessage               0x01A1

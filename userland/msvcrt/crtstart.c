@@ -123,6 +123,7 @@ static void init_env(void)
 
 CRTEXP int __wgetmainargs(int *argc, wchar_t ***argv, wchar_t ***envp, int glob, void *si)
 {
+    __iob_func();
     (void)glob; (void)si;
     init_args();
     init_env();
@@ -267,7 +268,10 @@ CRTEXP void _register_thread_local_exe_atexit_callback(void *cb) { (void)cb; }
  * ----------------------------------------------------------------------- */
 static int g_app_type;
 CRTEXP void _set_app_type(int t) { g_app_type = t; }
-CRTEXP void __set_app_type(int t) { g_app_type = t; }
+FILE *__iob_func(void);
+/* Programs built against the old msvcrt.dll reach stdout as &_iob[1]
+ * without calling __iob_func: set the streams up at startup */
+CRTEXP void __set_app_type(int t) { g_app_type = t; __iob_func(); }
 CRTEXP int  _query_app_type(void) { return g_app_type; }
 CRTEXP void __setusermatherr(void *fn) { (void)fn; }
 CRTEXP int  _configthreadlocale(int t) { (void)t; return 1; }       /* _DISABLE_PER_THREAD_LOCALE */
@@ -318,6 +322,10 @@ CRTEXP __declspec(noreturn) void terminate(void)
     if (g_terminate) g_terminate();
     abort();
 }
+
+/* The old CRT's filter around main: let the exception reach the
+ * unhandled-exception filter (which ends the program) */
+CRTEXP int _XcptFilter(unsigned long code, void *pointers) { (void)code; (void)pointers; return 0; /* EXCEPTION_CONTINUE_SEARCH */ }
 
 CRTEXP int *__doserrno(void) { static int e; return &e; }
 CRTEXP int _get_errno(int *v) { *v = errno; return 0; }

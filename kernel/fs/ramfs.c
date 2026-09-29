@@ -25,6 +25,9 @@ RamNode *RamfsRoot(void) { return &g_root; }
  * Change tracking (see ramfs.h)
  * ----------------------------------------------------------------------- */
 static RamfsMode g_mode = RAMFS_SEEDING;
+static UINT64 (*g_clock)(void);
+void RamfsSetClock(UINT64 (*now)(void)) { g_clock = now; }
+static void touch(RamNode *n) { if (g_clock) n->mtime = g_clock(); }
 static UINT32 g_changes;
 static void (*g_removed_hook)(const char *path);
 
@@ -61,6 +64,8 @@ static void mark_moved(RamNode *n)
     mark(n, n->dir ? (RAMFS_F_DIRTY | RAMFS_F_DIRTYDIR) : RAMFS_F_DIRTY);
     for (RamNode *c = n->child; c; c = c->next) mark_moved(c);
 }
+
+void RamfsMarkChanged(RamNode *n) { if (n && !n->dir) mark(n, RAMFS_F_DIRTY); }
 
 RamNode *RamfsFind(RamNode *dir, const char *name)
 {
@@ -103,6 +108,8 @@ RamNode *RamfsCreate(RamNode *dir, const char *name, bool is_dir)
     n->dir    = is_dir;
     n->parent = dir;
     n->pflags = g_mode == RAMFS_SEEDING ? RAMFS_F_SEED : g_mode == RAMFS_INSTALLING ? RAMFS_F_SEALED : 0;
+    touch(n);
+    n->ctime = n->mtime;
 
     RamNode **pp = &dir->child;
     while (*pp && sorts_before(*pp, n)) pp = &(*pp)->next;
@@ -127,6 +134,7 @@ bool RamfsWrite(RamNode *f, const char *data, UINT32 len)
     f->size = len;
     f->cap = len;
     mark(f, RAMFS_F_DIRTY);
+    touch(f);
     return true;
 }
 
@@ -154,6 +162,7 @@ bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
     memcpy(f->data + off, data, len);
     if (off + len > f->size) f->size = off + len;
     mark(f, RAMFS_F_DIRTY);
+    touch(f);
     return true;
 }
 
@@ -163,6 +172,7 @@ bool RamfsResize(RamNode *f, UINT32 len)
     if (len > f->size) memset(f->data + f->size, 0, len - f->size);
     f->size = len;
     mark(f, RAMFS_F_DIRTY);
+    touch(f);
     return true;
 }
 
