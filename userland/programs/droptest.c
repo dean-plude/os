@@ -189,8 +189,9 @@ int main(int argc, char **argv)
     wc.lpszClassName = L"DropTest";
     RegisterClassExW(&wc);
     static const WCHAR *const titles[] = { L"Drop target (files)", L"Drop target (OLE)", L"Drag source" };
-    int x = g_mode == 2 ? 60 : 700, y = g_mode == 2 ? 120 : 120 + (g_mode == 1 ? 300 : 0);
-    HWND h = CreateWindowExW(0, L"DropTest", titles[g_mode], WS_OVERLAPPEDWINDOW, x, y, 420, 280, NULL, NULL, wc.hInstance, NULL);
+    int x = g_mode == 2 ? 60 : 700, y = g_mode == 2 ? 120 : 120 + (g_mode == 1 ? 300 : 0), w = 420, hh = 280;
+    if (argc > 4) { x = atoi(argv[2]); y = atoi(argv[3]); w = atoi(argv[4]); }   /* droptest MODE X Y W */
+    HWND h = CreateWindowExW(0, L"DropTest", titles[g_mode], WS_OVERLAPPEDWINDOW, x, y, w, hh, NULL, NULL, wc.hInstance, NULL);
     ShowWindow(h, SW_SHOW);
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageW(&m); }
