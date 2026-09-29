@@ -274,8 +274,14 @@ Windows executables (PE32+) without emulation.
   `dup`/`fdopen`/`pread`/`pwrite`, `stat`, `opendir`/`scandir`,
   `getopt_long`, `gettimeofday`, `iconv` (UTF-8/16/32, Latin-1,
   Windows-1252), `asprintf`; `crt0` now runs static constructors.
-- Not yet: JavaScript (NetSurf's duktape engine is left out), SVG, IPv6,
-  HTTP keep-alive (one connection per request), and window resizing.
+- **JavaScript** (Duktape 2.x, NetSurf's engine, with its generated DOM
+  bindings): page scripts, external scripts, `setTimeout`/`setInterval`,
+  events (`addEventListener`, `onclick`), JSON, `Date`, and navigation from
+  script run; a failing script does not stop the page.  It is on by
+  default; `enable_javascript:0` in `C:\Programs\NetSurf\res\Choices`
+  turns it off.  Like NetSurf 3.11 on every platform, changes a script makes
+  to the page *after* it has been laid out are not redrawn yet.
+- Not yet: SVG, IPv6, and window resizing.
 
 ### Desktop UX refresh
 - **Start menu** (`wm/desktop.c`): live search as you type (Win key, then

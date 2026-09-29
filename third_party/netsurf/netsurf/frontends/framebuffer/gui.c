@@ -572,6 +572,8 @@ static nserror set_defaults(struct nsoption_s *defaults)
 #ifdef _NOVAOS
 	nsoption_setnull_charp(cookie_file, strdup(NOVA_COOKIE_FILE));
 	nsoption_setnull_charp(cookie_jar, strdup(NOVA_COOKIE_FILE));
+	/* NovaOS builds in Duktape: run page scripts unless Choices says not */
+	nsoption_set_bool(enable_javascript, true);
 #else
 	nsoption_setnull_charp(cookie_file, strdup("~/.netsurf/Cookies"));
 	nsoption_setnull_charp(cookie_jar, strdup("~/.netsurf/Cookies"));
