@@ -194,6 +194,9 @@ void       um_free_frames(PADDR *f, UINT64 n);
 bool       um_map_frames(UmProcess *p, UINT64 va, const PADDR *f, UINT64 n, UINT32 protect);
 void       um_unmap_frames(UmProcess *p, UINT64 va, UINT64 n);
 void       um_release_views(UmProcess *p);      /* drop the sections of every view (process teardown) */
+void      *um_frame_ptr(PADDR f);               /* a frame's kernel address */
+RamNode   *um_handle_file(UmProcess *p, UINT64 h);   /* the file behind a handle (under the locks), or NULL */
+void       um_flush_view_at(UmProcess *p, UINT64 va);  /* a file-backed view: write its section back */
 
 /* Copy into/out of user memory through the page tables (any process). */
 bool       um_write(UmProcess *p, UINT64 va, const void *src, UINT64 n);

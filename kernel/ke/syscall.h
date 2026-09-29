@@ -182,6 +182,7 @@
 #define SYSCALL_NtNovaProcessInfo                 0x018D  /* NovaOS: exit code / pid of a process handle */
 #define SYSCALL_NtNovaProcessList                 0x018E  /* NovaOS: the running programs (tasklist) */
 #define SYSCALL_NtNovaWatchDirectory              0x018F  /* NovaOS: FindFirstChangeNotification's kernel half */
+#define SYSCALL_NtNovaFlushView                   0x019B  /* NovaOS: FlushViewOfFile's kernel half */
 /* NovaOS sockets (ws2_32's kernel half) */
 #define SYSCALL_NtNovaSocket                      0x0190
 #define SYSCALL_NtNovaSockConnect                 0x0191

@@ -267,6 +267,8 @@ PADDR *um_alloc_frames(UINT64 n)
     return f;
 }
 
+void *um_frame_ptr(PADDR f) { return (void *)(uintptr_t)(PHYSMAP_BASE + f); }
+
 void um_free_frames(PADDR *f, UINT64 n)
 {
     if (!f) return;

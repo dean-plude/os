@@ -9,10 +9,10 @@
  *     WriteFile return: its status is stored, its event set and (unless
  *     the handle skips it) a packet queued on the bound completion port.
  *   - A completion port is a semaphore (the handle) plus a packet queue.
- *   - A file mapping is an event handle (a placeholder, so it can be
- *     closed and waited on) plus one private copy of the data: views point
- *     into it and are written back to the file when unmapped or flushed.
- *     Mappings are not shared between processes.
+ *   - A file mapping is a kernel section (shared by name between
+ *     processes); a file-backed one is a copy of the file the kernel
+ *     writes back when a view is unmapped or flushed and when the last
+ *     handle closes.
  *   - A waitable timer is an event that a helper thread sets when due.
  */
 
@@ -303,35 +303,10 @@ WINBASEAPI DWORD WINAPI SleepEx(DWORD ms, BOOL alertable)
 }
 
 /* -----------------------------------------------------------------------
- * File mapping
+ * File mapping: kernel sections. A memory-backed mapping is shared by
+ * name between processes; a file-backed one holds a copy of the file that
+ * goes back to it on flush, unmap and when the last handle closes.
  * ----------------------------------------------------------------------- */
-typedef struct Mapping {
-    struct Mapping *next;
-    HANDLE h;                       /* placeholder event */
-    HANDLE file;                    /* our duplicate, or 0 for memory */
-    ULONGLONG size;
-    DWORD protect;
-    BYTE *mem;                      /* the data, loaded at the first view */
-    int views;
-    BOOL closed;
-} Mapping;
-typedef struct View { struct View *next; BYTE *base; Mapping *m; ULONGLONG off; SIZE_T n; } View;
-static Mapping *g_maps;
-static View    *g_views;
-
-static BOOL writable(DWORD protect) { return (protect & 0xFF) == PAGE_READWRITE || (protect & 0xFF) == PAGE_EXECUTE_READWRITE; }
-
-static void free_mapping(Mapping *m)
-{
-    for (Mapping **pp = &g_maps; *pp; pp = &(*pp)->next) if (*pp == m) { *pp = m->next; break; }
-    if (m->mem) VirtualFree(m->mem, 0, MEM_RELEASE);
-    if (m->file) NtClose(m->file);
-    zfree(m);
-}
-
-/* Memory-backed mappings are kernel sections, shared by name between
- * processes; file-backed ones are loaded into the process (a private copy
- * written back on flush and unmap) */
 typedef struct { UNICODE_STRING us; OBJECT_ATTRIBUTES oa; WCHAR buf[260]; } SecName;
 
 static POBJECT_ATTRIBUTES sec_name(SecName *n, LPCWSTR name)
@@ -347,22 +322,14 @@ static POBJECT_ATTRIBUTES sec_name(SecName *n, LPCWSTR name)
     return &n->oa;
 }
 
+static BOOL writable(DWORD protect) { return (protect & 0xFF) == PAGE_READWRITE || (protect & 0xFF) == PAGE_EXECUTE_READWRITE; }
+
 WINBASEAPI HANDLE WINAPI CreateFileMappingW(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect, DWORD hi, DWORD lo, LPCWSTR name)
 {
     (void)sa;
     ULONGLONG size = (ULONGLONG)hi << 32 | lo;
-    if (!file || file == INVALID_HANDLE_VALUE) {
-        SecName n;
-        LARGE_INTEGER max;
-        max.QuadPart = (LONGLONG)size;
-        HANDLE h = 0;
-        NTSTATUS s = NtCreateSection(&h, 0xF001F /* SECTION_ALL_ACCESS */, sec_name(&n, name), &max, protect & 0xFF, 0x8000000 /* SEC_COMMIT */, 0);
-        if (!NT_SUCCESS(s)) return fail_status(s), (HANDLE)0;
-        SetLastError(s == 0x40000000 /* STATUS_OBJECT_NAME_EXISTS */ ? ERROR_ALREADY_EXISTS : 0);
-        return h;
-    }
-    HANDLE dup = 0;
-    if (file && file != INVALID_HANDLE_VALUE) {
+    if (file == INVALID_HANDLE_VALUE) file = 0;
+    if (file) {
         LARGE_INTEGER fs;
         if (!GetFileSizeEx(file, &fs)) return 0;
         if (!size) size = (ULONGLONG)fs.QuadPart;
@@ -373,21 +340,18 @@ WINBASEAPI HANDLE WINAPI CreateFileMappingW(HANDLE file, LPSECURITY_ATTRIBUTES s
             e.EndOfFile.QuadPart = (LONGLONG)size;
             if (!SetFileInformationByHandle(file, FileEndOfFileInfo, &e, sizeof(e))) return 0;
         }
-        if (!DuplicateHandle(GetCurrentProcess(), file, GetCurrentProcess(), &dup, 0, FALSE, DUPLICATE_SAME_ACCESS))
-            return 0;
     } else if (!size) {
         SetLastError(ERROR_INVALID_PARAMETER);
         return 0;
     }
-    Mapping *m = zalloc(sizeof(*m));
-    HANDLE h = m ? CreateEventW(0, TRUE, FALSE, 0) : 0;
-    if (!h) { zfree(m); if (dup) NtClose(dup); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
-    m->h = h; m->file = dup; m->size = size; m->protect = protect;
-    lock();
-    m->next = g_maps;
-    g_maps = m;
-    unlock();
-    SetLastError(0);
+    SecName n;
+    LARGE_INTEGER max;
+    max.QuadPart = (LONGLONG)size;
+    HANDLE h = 0;
+    NTSTATUS s = NtCreateSection(&h, 0xF001F /* SECTION_ALL_ACCESS */, sec_name(&n, name), &max, protect & 0xFF,
+                                 0x8000000 /* SEC_COMMIT */, file);
+    if (!NT_SUCCESS(s)) return fail_status(s), (HANDLE)0;
+    SetLastError(s == 0x40000000 /* STATUS_OBJECT_NAME_EXISTS */ ? ERROR_ALREADY_EXISTS : 0);
     return h;
 }
 
@@ -423,57 +387,21 @@ WINBASEAPI HANDLE WINAPI OpenFileMappingA(DWORD access, BOOL inherit, LPCSTR nam
     return OpenFileMappingW(access, inherit, w);
 }
 
-static BOOL load_mapping(Mapping *m)
-{
-    if (m->mem) return TRUE;
-    m->mem = VirtualAlloc(0, (SIZE_T)m->size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (!m->mem) return FALSE;
-    if (m->file) {
-        IO_STATUS_BLOCK io;
-        LARGE_INTEGER off;
-        off.QuadPart = 0;
-        NTSTATUS s = NtReadFile(m->file, 0, 0, 0, &io, m->mem, (ULONG)m->size, &off, 0);
-        if (!NT_SUCCESS(s) && s != STATUS_END_OF_FILE) {
-            VirtualFree(m->mem, 0, MEM_RELEASE);
-            m->mem = 0;
-            return fail_status(s);
-        }
-    }
-    return TRUE;
-}
-
 WINBASEAPI LPVOID WINAPI MapViewOfFileEx(HANDLE map, DWORD access, DWORD hi, DWORD lo, SIZE_T n, LPVOID base)
 {
-    ULONGLONG off = (ULONGLONG)hi << 32 | lo;
-    lock();
-    Mapping *m = g_maps;
-    while (m && (m->h != map || m->closed)) m = m->next;
-    if (!m) {                                               /* a kernel section */
-        unlock();
-        PVOID at = base;
-        SIZE_T view = n;
-        LARGE_INTEGER o;
-        o.QuadPart = (LONGLONG)off;
-        ULONG prot = (access & (FILE_MAP_WRITE | FILE_MAP_COPY)) || access == FILE_MAP_ALL_ACCESS ? PAGE_READWRITE : PAGE_READONLY;
-        NTSTATUS s = NtMapViewOfSection(map, (HANDLE)(LONG_PTR)-1, &at, 0, 0, &o, &view, 1 /* ViewShare */, 0, prot);
-        if (!NT_SUCCESS(s)) {
-            if (s == (NTSTATUS)0xC0000008 || s == (NTSTATUS)0xC0000024) SetLastError(ERROR_INVALID_HANDLE);
-            else fail_status(s);
-            return 0;
-        }
-        return at;
+    PVOID at = base;
+    SIZE_T view = n;
+    LARGE_INTEGER o;
+    o.QuadPart = (LONGLONG)((ULONGLONG)hi << 32 | lo);
+    ULONG prot = (access & (FILE_MAP_WRITE | FILE_MAP_COPY)) || access == FILE_MAP_ALL_ACCESS ? PAGE_READWRITE : PAGE_READONLY;
+    NTSTATUS s = NtMapViewOfSection(map, (HANDLE)(LONG_PTR)-1, &at, 0, 0, &o, &view, 1 /* ViewShare */, 0, prot);
+    if (!NT_SUCCESS(s)) {
+        if (s == (NTSTATUS)0xC0000008 || s == (NTSTATUS)0xC0000024) SetLastError(ERROR_INVALID_HANDLE);
+        else if (s == (NTSTATUS)0xC0000018) SetLastError(ERROR_INVALID_ADDRESS);
+        else fail_status(s);
+        return 0;
     }
-    if (base) { unlock(); SetLastError(ERROR_INVALID_ADDRESS); return 0; }   /* no fixed-address views of files */
-    if (off > m->size || (n && n > m->size - off)) { unlock(); SetLastError(ERROR_ACCESS_DENIED); return 0; }
-    if (!n) n = (SIZE_T)(m->size - off);
-    View *v = zalloc(sizeof(*v));
-    if (!v || !load_mapping(m)) { unlock(); zfree(v); if (!v) SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
-    v->base = m->mem + off; v->m = m; v->off = off; v->n = n;
-    v->next = g_views;
-    g_views = v;
-    m->views++;
-    unlock();
-    return v->base;
+    return at;
 }
 
 WINBASEAPI LPVOID WINAPI MapViewOfFile(HANDLE map, DWORD access, DWORD hi, DWORD lo, SIZE_T n)
@@ -481,56 +409,18 @@ WINBASEAPI LPVOID WINAPI MapViewOfFile(HANDLE map, DWORD access, DWORD hi, DWORD
     return MapViewOfFileEx(map, access, hi, lo, n, 0);
 }
 
-static BOOL flush_range(Mapping *m, ULONGLONG off, SIZE_T n)
-{
-    if (!m->file || !writable(m->protect) || !n) return TRUE;
-    IO_STATUS_BLOCK io;
-    LARGE_INTEGER o;
-    o.QuadPart = (LONGLONG)off;
-    NTSTATUS s = NtWriteFile(m->file, 0, 0, 0, &io, m->mem + off, (ULONG)n, &o, 0);
-    return NT_SUCCESS(s) ? TRUE : fail_status(s);
-}
-
-static View *view_at(LPCVOID p, BOOL exact)
-{
-    for (View *v = g_views; v; v = v->next)
-        if (exact ? v->base == p : ((BYTE *)p >= v->base && (BYTE *)p < v->base + v->n)) return v;
-    return 0;
-}
-
 WINBASEAPI BOOL WINAPI FlushViewOfFile(LPCVOID p, SIZE_T n)
 {
-    lock();
-    View *v = view_at(p, FALSE);
-    BOOL ok = FALSE;
-    if (v) {
-        ULONGLONG off = v->off + (ULONGLONG)((BYTE *)p - v->base);
-        SIZE_T max = v->n - (SIZE_T)((BYTE *)p - v->base);
-        ok = flush_range(v->m, off, n && n < max ? n : max);
-    } else ok = TRUE;                                       /* a section's view: memory, nothing to write */
-    unlock();
-    return ok;
+    (void)n;
+    NtNovaFlushView((PVOID)p);
+    return TRUE;
 }
 
 WINBASEAPI BOOL WINAPI UnmapViewOfFile(LPCVOID p)
 {
-    lock();
-    View **pp = &g_views;
-    while (*pp && (*pp)->base != p) pp = &(*pp)->next;
-    View *v = *pp;
-    if (!v) {
-        unlock();
-        NTSTATUS s = NtUnmapViewOfSection((HANDLE)(LONG_PTR)-1, (PVOID)p);
-        if (!NT_SUCCESS(s)) { SetLastError(ERROR_INVALID_ADDRESS); return FALSE; }
-        return TRUE;
-    }
-    *pp = v->next;
-    Mapping *m = v->m;
-    BOOL ok = flush_range(m, v->off, v->n);
-    if (--m->views == 0 && m->closed) free_mapping(m);
-    unlock();
-    zfree(v);
-    return ok;
+    NTSTATUS s = NtUnmapViewOfSection((HANDLE)(LONG_PTR)-1, (PVOID)p);
+    if (!NT_SUCCESS(s)) { SetLastError(ERROR_INVALID_ADDRESS); return FALSE; }
+    return TRUE;
 }
 
 /* -----------------------------------------------------------------------
@@ -656,12 +546,6 @@ void k32_forget_handle(HANDLE h)
             port = *pp;
             *pp = port->next;
             for (FileInfo *f = g_files; f; f = f->next) if (f->port == port) f->port = 0;
-            break;
-        }
-    for (Mapping *m = g_maps; m; m = m->next)
-        if (m->h == h && !m->closed) {
-            m->closed = TRUE;
-            if (!m->views) free_mapping(m);
             break;
         }
     for (Timer **pp = &g_timers; *pp; pp = &(*pp)->next)
