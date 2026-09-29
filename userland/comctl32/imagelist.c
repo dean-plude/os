@@ -107,8 +107,16 @@ static DWORD *bitmap_pixels(HBITMAP bm, int *w, int *h, int *has_alpha)
     HDC dc = GetDC(NULL);
     GetDIBits(dc, bm, 0, (UINT)*h, p, &bi, DIB_RGB_COLORS);
     ReleaseDC(NULL, dc);
+    /* an alpha channel counts only when it varies: all 0 or all 255 is a plain bitmap */
     *has_alpha = 0;
-    if (b.bmBitsPixel == 32) for (int i = 0; i < *w * *h; i++) if (p[i] >> 24) { *has_alpha = 1; break; }
+    if (b.bmBitsPixel == 32) {
+        int zero = 0, full = 0;
+        for (int i = 0; i < *w * *h; i++) {
+            DWORD a = p[i] >> 24;
+            if (a == 0) zero = 1; else if (a == 255) full = 1; else { *has_alpha = 1; break; }
+        }
+        if (zero && full) *has_alpha = 1;
+    }
     return p;
 }
 
@@ -133,7 +141,7 @@ static int add_strip(IL *l, HBITMAP bm, HBITMAP mask, COLORREF key, int use_key)
             for (int x = 0; x < l->cx; x++) {
                 int sx = k * l->cx + x;
                 DWORD c = sx < w && y < h ? p[(size_t)y * w + sx] : 0;
-                if (alpha) {
+                if (alpha && !(use_key && (c & 0xFFFFFF) == keyc)) {
                     int a = (int)(c >> 24);
                     if (a && a < 255) {                     /* un-premultiply */
                         int r = MIN(255, (int)((c >> 16) & 0xFF) * 255 / a), g = MIN(255, (int)((c >> 8) & 0xFF) * 255 / a), b = MIN(255, (int)(c & 0xFF) * 255 / a);

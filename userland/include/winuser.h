@@ -1320,6 +1320,8 @@ typedef struct tagDRAWTEXTPARAMS { UINT cbSize; int iTabLength, iLeftMargin, iRi
 #define SM_CYMINTRACK 35
 #define SM_CXCURSOR 13
 #define SM_CYCURSOR 14
+#define SM_CXDRAG 68
+#define SM_CYDRAG 69
 #define RDW_INVALIDATE 0x0001
 #define RDW_INTERNALPAINT 0x0002
 #define RDW_ERASE 0x0004

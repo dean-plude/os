@@ -557,7 +557,7 @@ GDIAPI int GetDIBits(HDC h, HBITMAP bmp, UINT start, UINT lines, void *bits, BIT
             COLORREF c = o->fmt ? (p >> 16 & 0xFF) | (p & 0xFF00) | (p & 0xFF) << 16 : p;
             BYTE *q = out + x * (bh->biBitCount / 8);
             q[0] = GetBValue(c); q[1] = GetGValue(c); q[2] = GetRValue(c);
-            if (bh->biBitCount == 32) q[3] = 0;
+            if (bh->biBitCount == 32) q[3] = o->fmt ? (BYTE)(p >> 24) : 0;   /* a DIB section keeps its alpha */
         }
     }
     return (int)n;

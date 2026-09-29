@@ -573,6 +573,7 @@ typedef struct tagLVKEYDOWN { NMHDR hdr; WORD wVKey; UINT flags; } NMLVKEYDOWN, 
 typedef struct tagNMLVCACHEHINT { NMHDR hdr; int iFrom, iTo; } NMLVCACHEHINT, *LPNMLVCACHEHINT;
 typedef struct tagNMLVFINDITEMW { NMHDR hdr; int iStart; LVFINDINFOW lvfi; } NMLVFINDITEMW, *LPNMLVFINDITEMW;
 typedef struct tagNMLVCUSTOMDRAW { NMCUSTOMDRAW nmcd; COLORREF clrText, clrTextBk; int iSubItem; DWORD dwItemType; COLORREF clrFace; int iIconEffect, iIconPhase, iPartId, iStateId; RECT rcText; UINT uAlign; } NMLVCUSTOMDRAW, *LPNMLVCUSTOMDRAW;
+typedef struct tagNMLVODSTATECHANGE { NMHDR hdr; int iFrom, iTo; UINT uNewState, uOldState; } NMLVODSTATECHANGE, *LPNMLVODSTATECHANGE;
 typedef int (CALLBACK *PFNLVCOMPARE)(LPARAM, LPARAM, LPARAM);
 
 /* ---- toolbar ---- */
@@ -855,6 +856,7 @@ CCAPI_ int WINAPI ImageList_Add(HIMAGELIST h, HBITMAP img, HBITMAP mask);
 CCAPI_ int WINAPI ImageList_AddMasked(HIMAGELIST h, HBITMAP img, COLORREF mask);
 CCAPI_ int WINAPI ImageList_ReplaceIcon(HIMAGELIST h, int i, HICON icon);
 CCAPI_ int WINAPI ImageList_GetImageCount(HIMAGELIST h);
+CCAPI_ BOOL WINAPI ImageList_SetImageCount(HIMAGELIST h, UINT n);
 CCAPI_ BOOL WINAPI ImageList_GetIconSize(HIMAGELIST h, int *cx, int *cy);
 CCAPI_ BOOL WINAPI ImageList_Draw(HIMAGELIST h, int i, HDC dc, int x, int y, UINT style);
 CCAPI_ BOOL WINAPI ImageList_DrawEx(HIMAGELIST h, int i, HDC dc, int x, int y, int cx, int cy, COLORREF bk, COLORREF fg, UINT style);

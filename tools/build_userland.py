@@ -49,7 +49,7 @@ DLLS = [
     ('winmm',    ['kernel32', 'ntdll'],  0x7FFB30000000),
     ('mpr',      ['kernel32'],           0x7FFB50000000),
     ('comctl32', ['user32', 'gdi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB00000000),
-    ('shell32',  ['comctl32', 'user32', 'kernel32', 'ntdll'], 0x7FFAC0000000),
+    ('shell32',  ['comctl32', 'gdi32', 'user32', 'kernel32', 'ntdll'], 0x7FFAC0000000),
     ('comdlg32', ['kernel32', 'ntdll'],  0x7FFB10000000),
     ('ole32',    ['advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
     ('oleaut32', ['ole32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAF0000000),

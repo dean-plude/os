@@ -1554,7 +1554,10 @@ USERAPI BOOL GetWindowPlacement(HWND h, WINDOWPLACEMENT *p)
     p->ptMinPosition.x = p->ptMinPosition.y = -1;
     p->ptMaxPosition.x = p->ptMaxPosition.y = -1;
     if (w->maximized && !IsRectEmpty(&w->normal)) p->rcNormalPosition = w->normal;
-    else GetWindowRect(h, &p->rcNormalPosition);
+    else {
+        GetWindowRect(h, &p->rcNormalPosition);
+        if ((w->style & WS_CHILD) && w->parent) MapWindowPoints(NULL, w->parent->h, (POINT *)&p->rcNormalPosition, 2);   /* a child's: in its parent's client area */
+    }
     return TRUE;
 }
 
