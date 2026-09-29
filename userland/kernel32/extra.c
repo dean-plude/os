@@ -369,6 +369,22 @@ WINBASEAPI HANDLE WINAPI CreateFileMappingA(HANDLE file, LPSECURITY_ATTRIBUTES s
     return CreateFileMappingW(file, sa, protect, hi, lo, 0);
 }
 
+/* Mappings are private to their process (no shared sections yet), so a
+ * named one cannot be opened from elsewhere */
+WINBASEAPI HANDLE WINAPI OpenFileMappingW(DWORD access, BOOL inherit, LPCWSTR name)
+{
+    (void)access; (void)inherit; (void)name;
+    SetLastError(ERROR_FILE_NOT_FOUND);
+    return 0;
+}
+
+WINBASEAPI HANDLE WINAPI OpenFileMappingA(DWORD access, BOOL inherit, LPCSTR name)
+{
+    (void)access; (void)inherit; (void)name;
+    SetLastError(ERROR_FILE_NOT_FOUND);
+    return 0;
+}
+
 static BOOL load_mapping(Mapping *m)
 {
     if (m->mem) return TRUE;

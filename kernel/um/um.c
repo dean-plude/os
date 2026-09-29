@@ -1216,8 +1216,11 @@ void um_exit_thread(UINT32 status)
         p->exited = true;
         if (p->exit_ob) { p->exit_ob->signaled = true; um_ob_wake(p->exit_ob); }
     }
+    bool last = p->exited && t->exit_code == status && p->live_threads == 0;
+    UINT32 code = p->exit_status;
     ob_unlock(s);
     um_unlock(&p->lock);
+    if (last) kprintf("[UM] %s (PID %u) exited with code %u (0x%x)\n", p->name, p->pid, code, code);
     sched_exit_current();
 }
 

@@ -871,3 +871,27 @@ WINADVAPI BOOL WINAPI CredWriteW(PVOID cred, DWORD flags)
 WINADVAPI BOOL WINAPI CredDeleteW(LPCWSTR target, DWORD type, DWORD flags) { (void)target; (void)type; (void)flags; SetLastError(1168); return FALSE; }
 WINADVAPI BOOL WINAPI CredEnumerateW(LPCWSTR filter, DWORD flags, DWORD *n, PVOID **creds) { (void)filter; (void)flags; *n = 0; *creds = 0; SetLastError(1168); return FALSE; }
 WINADVAPI VOID WINAPI CredFree(PVOID p) { LocalFree(p); }
+
+/* -----------------------------------------------------------------------
+ * LSA policy: NovaOS has no local security authority to change account
+ * rights in (programs ask to grant themselves privileges such as
+ * SeLockMemoryPrivilege), so opening the policy is refused like it is for
+ * a standard user.
+ * ----------------------------------------------------------------------- */
+#define STATUS_ACCESS_DENIED_ ((NTSTATUS)0xC0000022L)
+#define STATUS_INVALID_HANDLE_ ((NTSTATUS)0xC0000008L)
+typedef PVOID LSA_HANDLE, *PLSA_HANDLE;
+
+WINADVAPI NTSTATUS WINAPI LsaOpenPolicy(PVOID system, PVOID attrs, ACCESS_MASK access, PLSA_HANDLE h)
+{
+    (void)system; (void)attrs; (void)access;
+    if (h) *h = 0;
+    return STATUS_ACCESS_DENIED_;
+}
+WINADVAPI NTSTATUS WINAPI LsaClose(LSA_HANDLE h) { return h ? 0 : STATUS_INVALID_HANDLE_; }
+WINADVAPI NTSTATUS WINAPI LsaFreeMemory(PVOID p) { if (p) HeapFree(GetProcessHeap(), 0, p); return 0; }
+WINADVAPI NTSTATUS WINAPI LsaAddAccountRights(LSA_HANDLE h, PSID sid, PVOID rights, ULONG n) { (void)h; (void)sid; (void)rights; (void)n; return STATUS_INVALID_HANDLE_; }
+WINADVAPI NTSTATUS WINAPI LsaRemoveAccountRights(LSA_HANDLE h, PSID sid, BOOLEAN all, PVOID rights, ULONG n) { (void)h; (void)sid; (void)all; (void)rights; (void)n; return STATUS_INVALID_HANDLE_; }
+WINADVAPI NTSTATUS WINAPI LsaEnumerateAccountRights(LSA_HANDLE h, PSID sid, PVOID *rights, PULONG n) { (void)h; (void)sid; if (rights) *rights = 0; if (n) *n = 0; return STATUS_INVALID_HANDLE_; }
+WINADVAPI NTSTATUS WINAPI LsaQueryInformationPolicy(LSA_HANDLE h, int cls, PVOID *buf) { (void)h; (void)cls; if (buf) *buf = 0; return STATUS_INVALID_HANDLE_; }
+WINADVAPI ULONG WINAPI LsaNtStatusToWinError(NTSTATUS s) { return RtlNtStatusToDosError(s); }

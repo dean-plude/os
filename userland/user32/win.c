@@ -762,12 +762,39 @@ static void work_area(RECT *r)
     else *r = desktop()->rect;
 }
 
+/* the kernel log gets why a window was not created: the usual first sign
+ * of a program failing on a missing or unfinished control */
+static void create_failed(LPCVOID cls_arg, int wide, const char *why)
+{
+    char b[160], name[64];
+    int n = 0;
+    if ((ULONG_PTR)cls_arg < 0x10000) {
+        ULONG_PTR a = (ULONG_PTR)cls_arg;
+        name[n++] = '#';
+        char t[8]; int k = 0;
+        do { t[k++] = (char)('0' + a % 10); a /= 10; } while (a);
+        while (k) name[n++] = t[--k];
+    } else if (wide) {
+        for (const WCHAR *c = cls_arg; *c && n < 63; c++) name[n++] = *c < 128 ? (char)*c : '?';
+    } else {
+        for (const char *c = cls_arg; *c && n < 63; c++) name[n++] = *c;
+    }
+    name[n] = 0;
+    char *o = b;
+    for (const char *c = "user32: window of class "; *c; ) *o++ = *c++;
+    for (const char *c = name; *c; ) *o++ = *c++;
+    *o++ = ' ';
+    for (const char *c = why; *c && o < b + 157; ) *o++ = *c++;
+    *o++ = '\n'; *o = 0;
+    OutputDebugStringA(b);
+}
+
 static HWND create_window(DWORD ex, WClass *cls, LPCWSTR title, DWORD style, int x, int y, int cx, int cy,
                           HWND hparent, HMENU menu, HINSTANCE inst, LPVOID param, int caller_wide,
                           LPCVOID cls_arg, LPCVOID title_arg)
 {
     ensure_builtins();
-    if (!cls) { SetLastError(1407 /* ERROR_CANNOT_FIND_WND_CLASS */); return 0; }
+    if (!cls) { create_failed(cls_arg, caller_wide, "not created: no such class"); SetLastError(1407 /* ERROR_CANNOT_FIND_WND_CLASS */); return 0; }
     Wnd *parent = NULL, *owner = NULL;
     int message_only = hparent == HWND_MESSAGE;
     if (hparent && !message_only) {
@@ -853,10 +880,11 @@ static HWND create_window(DWORD ex, WClass *cls, LPCWSTR title, DWORD style, int
     w->flags |= WF_CREATED;                                 /* messages flow from here */
     int ok = (int)call_proc(w, w->proc, w->wide, h, WM_NCCREATE, 0, (LPARAM)&cs, caller_wide);
     if (!W_quiet(h)) return 0;
-    if (!ok) { DestroyWindow(h); SetLastError(ERROR_CANNOT_FIND_WND_CLASS - 1407 + 1400 + 7); return 0; }
+    if (!ok) { create_failed(cls_arg, caller_wide, "refused WM_NCCREATE"); DestroyWindow(h); SetLastError(ERROR_CANNOT_FIND_WND_CLASS - 1407 + 1400 + 7); return 0; }
     wnd_calc_client(w);
     if (!w->parent && ensure_back(w)) {}
     if (call_proc(w, w->proc, w->wide, h, WM_CREATE, 0, (LPARAM)&cs, caller_wide) == -1) {
+        create_failed(cls_arg, caller_wide, "refused WM_CREATE");
         if (W_quiet(h)) DestroyWindow(h);
         return 0;
     }
@@ -884,7 +912,8 @@ static HWND create_window(DWORD ex, WClass *cls, LPCWSTR title, DWORD style, int
 USERAPI HWND CreateWindowExW(DWORD ex, LPCWSTR cls, LPCWSTR title, DWORD style, int x, int y, int w, int h,
                              HWND parent, HMENU menu, HINSTANCE inst, LPVOID param)
 {
-    return create_window(ex, find_class_w(cls, inst), title, style, x, y, w, h, parent, menu, inst, param, 1, cls, title);
+    HWND r = create_window(ex, find_class_w(cls, inst), title, style, x, y, w, h, parent, menu, inst, param, 1, cls, title);
+    return r;
 }
 
 USERAPI HWND CreateWindowExA(DWORD ex, LPCSTR cls, LPCSTR title, DWORD style, int x, int y, int w, int h,
@@ -1534,10 +1563,12 @@ USERAPI BOOL SetWindowPlacement(HWND h, const WINDOWPLACEMENT *p)
     Wnd *w = W(h);
     if (!w || !p) return FALSE;
     const RECT *r = &p->rcNormalPosition;
-    if (r->right > r->left && r->bottom > r->top)
-        SetWindowPos(h, 0, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
-    if (p->showCmd != SW_HIDE && (w->style & WS_VISIBLE)) ShowWindow(h, (int)p->showCmd);
-    else if (p->showCmd == SW_SHOWMAXIMIZED) w->style |= WS_MAXIMIZE;
+    if (r->right > r->left && r->bottom > r->top) {
+        if (w->maximized || w->minimized) w->normal = *r;       /* where a restore goes */
+        else SetWindowPos(h, 0, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if (!W_quiet(h)) return FALSE;
+    ShowWindow(h, (int)p->showCmd);                         /* shows a hidden window too, as on Windows */
     return TRUE;
 }
 
