@@ -1057,3 +1057,123 @@ K32 BOOL WINAPI GenerateConsoleCtrlEvent(DWORD ev, DWORD group)
     (void)ev; (void)group;
     return TRUE;
 }
+
+/* -----------------------------------------------------------------------
+ * Atoms: one table for the local and the global functions (0xC000 and up;
+ * "#123" and integer atoms below 0xC000 stand for themselves)
+ * ----------------------------------------------------------------------- */
+#define MAX_ATOMS 1024
+static struct { WCHAR *name; int refs; } g_atoms[MAX_ATOMS];
+static SRWLOCK g_atom_lock;
+
+static int atom_int(LPCWSTR s, WORD *out)
+{
+    if ((ULONG_PTR)s < 0x10000) { *out = (WORD)(ULONG_PTR)s; return 1; }
+    if (s[0] != '#') return 0;
+    unsigned v = 0;
+    for (const WCHAR *p = s + 1; *p; p++) { if (*p < '0' || *p > '9') return 0; v = v * 10 + (unsigned)(*p - '0'); if (v >= 0xC000) return 0; }
+    *out = (WORD)v;
+    return 1;
+}
+
+static int atom_eq(const WCHAR *a, const WCHAR *b)
+{
+    for (;; a++, b++) {
+        WCHAR x = *a >= 'a' && *a <= 'z' ? *a - 32 : *a, y = *b >= 'a' && *b <= 'z' ? *b - 32 : *b;
+        if (x != y) return 0;
+        if (!x) return 1;
+    }
+}
+
+static WORD atom_find(LPCWSTR s, int add)
+{
+    WORD v;
+    if (atom_int(s, &v)) return v;
+    AcquireSRWLockExclusive(&g_atom_lock);
+    int free_slot = -1;
+    for (int i = 0; i < MAX_ATOMS; i++) {
+        if (!g_atoms[i].name) { if (free_slot < 0) free_slot = i; continue; }
+        if (atom_eq(g_atoms[i].name, s)) { if (add) g_atoms[i].refs++; ReleaseSRWLockExclusive(&g_atom_lock); return (WORD)(0xC000 + i); }
+    }
+    WORD r = 0;
+    if (add && free_slot >= 0) {
+        size_t n = 0;
+        while (s[n]) n++;
+        WCHAR *c = HeapAlloc(GetProcessHeap(), 0, (n + 1) * 2);
+        if (c) {
+            for (size_t i = 0; i <= n; i++) c[i] = s[i];
+            g_atoms[free_slot].name = c;
+            g_atoms[free_slot].refs = 1;
+            r = (WORD)(0xC000 + free_slot);
+        }
+    }
+    ReleaseSRWLockExclusive(&g_atom_lock);
+    if (!r) SetLastError(add ? ERROR_NOT_ENOUGH_MEMORY : ERROR_FILE_NOT_FOUND);
+    return r;
+}
+
+K32 WORD WINAPI GlobalAddAtomW(LPCWSTR s) { return atom_find(s, 1); }
+K32 WORD WINAPI GlobalFindAtomW(LPCWSTR s) { return atom_find(s, 0); }
+K32 WORD WINAPI AddAtomW(LPCWSTR s) { return atom_find(s, 1); }
+K32 WORD WINAPI FindAtomW(LPCWSTR s) { return atom_find(s, 0); }
+
+static WORD atom_a(LPCSTR s, int add)
+{
+    if ((ULONG_PTR)s < 0x10000) return atom_find((LPCWSTR)s, add);
+    WCHAR w[256];
+    MultiByteToWideChar(CP_ACP, 0, s, -1, w, 256);
+    w[255] = 0;
+    return atom_find(w, add);
+}
+
+K32 WORD WINAPI GlobalAddAtomA(LPCSTR s) { return atom_a(s, 1); }
+K32 WORD WINAPI GlobalFindAtomA(LPCSTR s) { return atom_a(s, 0); }
+K32 WORD WINAPI AddAtomA(LPCSTR s) { return atom_a(s, 1); }
+K32 WORD WINAPI FindAtomA(LPCSTR s) { return atom_a(s, 0); }
+K32 WORD WINAPI GlobalAddAtomExW(LPCWSTR s, DWORD f) { (void)f; return atom_find(s, 1); }
+
+K32 WORD WINAPI GlobalDeleteAtom(WORD a)
+{
+    if (a < 0xC000 || a >= 0xC000 + MAX_ATOMS) return 0;
+    AcquireSRWLockExclusive(&g_atom_lock);
+    int i = a - 0xC000;
+    if (g_atoms[i].name && --g_atoms[i].refs <= 0) { HeapFree(GetProcessHeap(), 0, g_atoms[i].name); g_atoms[i].name = NULL; }
+    ReleaseSRWLockExclusive(&g_atom_lock);
+    return 0;
+}
+K32 WORD WINAPI DeleteAtom(WORD a) { return GlobalDeleteAtom(a); }
+
+K32 UINT WINAPI GlobalGetAtomNameW(WORD a, LPWSTR buf, int n)
+{
+    if (!buf || n <= 0) return 0;
+    if (a < 0xC000) {
+        WCHAR tmp[8];
+        int k = 0;
+        unsigned v = a;
+        do { tmp[k++] = (WCHAR)('0' + v % 10); v /= 10; } while (v);
+        int o = 0;
+        if (o < n - 1) buf[o++] = '#';
+        while (k && o < n - 1) buf[o++] = tmp[--k];
+        buf[o] = 0;
+        return (UINT)o;
+    }
+    int i = a - 0xC000;
+    if (i >= MAX_ATOMS || !g_atoms[i].name) { SetLastError(ERROR_INVALID_HANDLE); buf[0] = 0; return 0; }
+    int o = 0;
+    for (; g_atoms[i].name[o] && o < n - 1; o++) buf[o] = g_atoms[i].name[o];
+    buf[o] = 0;
+    return (UINT)o;
+}
+K32 UINT WINAPI GetAtomNameW(WORD a, LPWSTR buf, int n) { return GlobalGetAtomNameW(a, buf, n); }
+
+K32 UINT WINAPI GlobalGetAtomNameA(WORD a, LPSTR buf, int n)
+{
+    WCHAR w[256];
+    UINT k = GlobalGetAtomNameW(a, w, 256);
+    if (!k || !buf || n <= 0) { if (buf && n > 0) buf[0] = 0; return 0; }
+    int m = WideCharToMultiByte(CP_ACP, 0, w, (int)k, buf, n - 1, NULL, NULL);
+    buf[m] = 0;
+    return (UINT)m;
+}
+K32 UINT WINAPI GetAtomNameA(WORD a, LPSTR buf, int n) { return GlobalGetAtomNameA(a, buf, n); }
+K32 BOOL WINAPI InitAtomTable(DWORD n) { (void)n; return TRUE; }

@@ -147,16 +147,16 @@ GDIAPI int SetGraphicsMode(HDC h, int m) { (void)h; (void)m; return 1; }
 GDIAPI BOOL SetViewportOrgEx(HDC h, int x, int y, LPPOINT old)
 {
     NOVA_DC *d = dc_of(h); if (!d) return FALSE;
-    if (old) { old->x = d->org_x; old->y = d->org_y; }
-    d->org_x = x; d->org_y = y;
+    if (old) { old->x = d->org_x - d->base_x; old->y = d->org_y - d->base_y; }
+    d->org_x = d->base_x + x; d->org_y = d->base_y + y;
     return TRUE;
 }
 GDIAPI BOOL OffsetViewportOrgEx(HDC h, int x, int y, LPPOINT old)
 {
     NOVA_DC *d = dc_of(h); if (!d) return FALSE;
-    return SetViewportOrgEx(h, d->org_x + x, d->org_y + y, old);
+    return SetViewportOrgEx(h, d->org_x - d->base_x + x, d->org_y - d->base_y + y, old);
 }
-GDIAPI BOOL GetViewportOrgEx(HDC h, LPPOINT p) { NOVA_DC *d = dc_of(h); if (!d) return FALSE; p->x = d->org_x; p->y = d->org_y; return TRUE; }
+GDIAPI BOOL GetViewportOrgEx(HDC h, LPPOINT p) { NOVA_DC *d = dc_of(h); if (!d) return FALSE; p->x = d->org_x - d->base_x; p->y = d->org_y - d->base_y; return TRUE; }
 GDIAPI BOOL SetWindowOrgEx(HDC h, int x, int y, LPPOINT old) { return SetViewportOrgEx(h, -x, -y, old); }
 GDIAPI BOOL SetBrushOrgEx(HDC h, int x, int y, LPPOINT old) { (void)h; (void)x; (void)y; if (old) old->x = old->y = 0; return TRUE; }
 
@@ -854,7 +854,8 @@ GDIAPI int ExtSelectClipRgn(HDC h, HRGN rgn, int mode)
         if (mode == 5 || !rgn) d->has_clip = 0;
         return 2;
     }
-    RECT r = o->rc;
+    RECT r = o->rc;                                         /* device units from the window's origin */
+    r.left += d->base_x; r.right += d->base_x; r.top += d->base_y; r.bottom += d->base_y;
     if (mode == 1 && d->has_clip) {                         /* RGN_AND */
         if (d->clip.left > r.left) r.left = d->clip.left;
         if (d->clip.top > r.top) r.top = d->clip.top;
@@ -928,6 +929,7 @@ GDIAPI int GetClipRgn(HDC h, HRGN r)
     if (!d || !o) return -1;
     if (!d->has_clip) return 0;
     o->rc = d->clip;
+    o->rc.left -= d->base_x; o->rc.right -= d->base_x; o->rc.top -= d->base_y; o->rc.bottom -= d->base_y;
     return 1;
 }
 GDIAPI BOOL RectVisible(HDC h, const RECT *r)

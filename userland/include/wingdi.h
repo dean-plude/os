@@ -39,6 +39,7 @@ typedef struct NOVA_DC {
     int      has_clip;
     int      rop2;         /* R2_* (0: R2_COPYPEN) */
     int      brush_style;  /* 0 solid, 1 hollow, 2 hatched, 3 pattern */
+    int      base_x, base_y; /* where the window's origin is in `bits` (the viewport origin is relative to it) */
 } NOVA_DC;
 
 #define TRANSPARENT 1
@@ -183,5 +184,36 @@ GDIAPI HGDIOBJ  SelectObject(HDC dc, HGDIOBJ obj);
 GDIAPI BOOL     DeleteObject(HGDIOBJ obj);
 #define TextOut TextOutA
 #define GetTextExtentPoint32 GetTextExtentPoint32A
+
+
+#define DEFAULT_CHARSET 1
+#define ANSI_CHARSET 0
+#define SYMBOL_CHARSET 2
+#define OEM_CHARSET 255
+#define CLEARTYPE_QUALITY 5
+#define ANTIALIASED_QUALITY 4
+#define DEFAULT_QUALITY 0
+#define BI_BITFIELDS 3
+#ifndef ERROR
+#define ERROR 0
+#endif
+#define NULLREGION 1
+#define SIMPLEREGION 2
+#define COMPLEXREGION 3
+#define RGN_AND 1
+#define RGN_OR 2
+#define RGN_XOR 3
+#define RGN_DIFF 4
+#define RGN_COPY 5
+#define DSTINVERT 0x00550009
+GDIAPI COLORREF GetTextColor(HDC dc);
+GDIAPI COLORREF GetBkColor(HDC dc);
+GDIAPI int      GetBkMode(HDC dc);
+GDIAPI int      IntersectClipRect(HDC dc, int l, int t, int r, int b);
+GDIAPI int      ExcludeClipRect(HDC dc, int l, int t, int r, int b);
+GDIAPI BOOL     SetRectRgn(HRGN h, int l, int t, int r, int b);
+GDIAPI int      GetRgnBox(HRGN h, LPRECT r);
+GDIAPI BOOL     GdiFlush(void);
+GDIAPI int      GetClipBox(HDC dc, LPRECT r);
 
 _NOVA_END

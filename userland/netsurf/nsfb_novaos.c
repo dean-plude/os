@@ -86,8 +86,10 @@ static int ext_key(int sc)
 
 static LRESULT __stdcall wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
-    /* the bitmap always holds the current frame: nothing to paint */
-    if (msg == WM_PAINT || msg == WM_ERASEBKGND) return 0;
+    /* the window's pixels always hold the current frame: painting only
+     * has to tell user32 they are up to date (it then shows them) */
+    if (msg == WM_PAINT) { PAINTSTRUCT ps; BeginPaint(h, &ps); EndPaint(h, &ps); return 0; }
+    if (msg == WM_ERASEBKGND) return 1;
     if (msg == WM_CLOSE) return 0;                  /* handled as a quit event */
     return DefWindowProcA(h, msg, wp, lp);
 }
@@ -249,7 +251,7 @@ static bool nova_input(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
         MSG m;
         while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) {
             if (m.message == WM_QUIT) { translate(s, &m); break; }
-            if (m.message != WM_PAINT && m.message != WM_TIMER) DispatchMessageA(&m);
+            if (m.message != WM_TIMER) DispatchMessageA(&m);
             translate(s, &m);
             if (s->npending) break;
         }

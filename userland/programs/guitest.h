@@ -1,0 +1,42 @@
+#define IDM_MAIN 100
+#define IDA_MAIN 101
+#define IDD_OPTIONS 200
+#define IDC_OPTIONS 1001
+#define IDC_MSGBOX 1002
+#define IDC_EXIT 1003
+#define IDC_ABOUT 1004
+#define IDC_TOOLBAR 1005
+#define IDC_SORTNAME 1006
+#define IDC_SORTSIZE 1007
+#define IDC_NAME 2001
+#define IDC_FORMAT 2002
+#define IDC_LEVEL 2003
+#define IDC_MODE1 2004
+#define IDC_MODE2 2005
+#define IDC_MODE3 2006
+#define IDC_ENCRYPT 2007
+#define IDC_DELETE 2008
+#define IDC_LIST 2009
+#define IDC_BTN 3001
+#define IDC_EDIT 3002
+#define IDC_LOG 3003
+
+#ifdef RC_INVOKED
+/* what the resource script needs from windows.h */
+#define IDOK 1
+#define IDCANCEL 2
+#define DS_SETFONT 0x40L
+#define DS_MODALFRAME 0x80L
+#define DS_CENTER 0x0800L
+#define WS_POPUP 0x80000000L
+#define WS_CAPTION 0x00C00000L
+#define WS_SYSMENU 0x00080000L
+#define WS_GROUP 0x00020000L
+#define WS_TABSTOP 0x00010000L
+#define WS_VSCROLL 0x00200000L
+#define WS_BORDER 0x00800000L
+#define ES_AUTOHSCROLL 0x0080L
+#define CBS_DROPDOWN 0x0002L
+#define CBS_DROPDOWNLIST 0x0003L
+#define LBS_NOTIFY 0x0001L
+#endif

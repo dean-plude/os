@@ -15,7 +15,7 @@
 
 CCAPI void WINAPI InitCommonControls(void) { }
 CCAPI BOOL WINAPI InitCommonControlsEx(const void *icc) { (void)icc; return TRUE; }
-CCAPI BOOL WINAPI _TrackMouseEvent(void *tme) { (void)tme; return TRUE; }
+CCAPI BOOL WINAPI _TrackMouseEvent(LPTRACKMOUSEEVENT tme) { return TrackMouseEvent(tme); }
 CCAPI HRESULT WINAPI LoadIconMetric(HINSTANCE h, LPCWSTR name, int metric, HICON *out) { (void)h; (void)name; (void)metric; *out = 0; return E_NOTIMPL_; }
 CCAPI HRESULT WINAPI LoadIconWithScaleDown(HINSTANCE h, LPCWSTR name, int cx, int cy, HICON *out) { (void)h; (void)name; (void)cx; (void)cy; *out = 0; return E_NOTIMPL_; }
 CCAPI BOOL WINAPI SetWindowSubclass(HWND h, void *fn, UINT_PTR id, DWORD_PTR data) { (void)h; (void)fn; (void)id; (void)data; return FALSE; }
