@@ -47,6 +47,8 @@
 /* Software bit (not present entries): a committed page of a program that
  * is backed on first touch; the entry keeps its USER/WRITE/NX flags */
 #define PTE_LAZY      UINT64_C(1 << 9)
+/* Software bit (user pages): a shared section's frame, owned by the section */
+#define PTE_SHARED    UINT64_C(1 << 10)
 
 /* Address mask (strips flag bits from PTE) */
 #define PTE_ADDR_MASK UINT64_C(0x000FFFFFFFFFF000)

@@ -180,7 +180,7 @@ bool um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect)
         if (!e) { ok = false; break; }
         if ((*e & PTE_PRESENT) && (*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* stays read-only */
         if (*e & PTE_PRESENT) {                         /* re-commit: new protection */
-            *e = (*e & PTE_ADDR_MASK) | f;
+            *e = (*e & (PTE_ADDR_MASK | PTE_SHARED)) | f;
             if (is_current(p)) invlpg(a);
             changed = true;
             continue;
@@ -228,6 +228,7 @@ void um_decommit(UmProcess *p, UINT64 va, UINT64 size)
     for (UINT64 a = va & ~0xFFFULL; a < va + size; a += PAGE_SIZE) {
         pte_t *e = walk(p->pml4, a, false);
         if (!e) continue;
+        if (*e & PTE_SHARED) continue;                  /* a section's page: unmapped with the view */
         if (!(*e & PTE_PRESENT)) {
             if (*e & PTE_LAZY) { *e = 0; p->commit--; }
             continue;
@@ -247,6 +248,53 @@ void um_decommit(UmProcess *p, UINT64 va, UINT64 size)
         smp_tlb_flush(p->pml4);
         while (n) pmm_free_page(batch[--n]);
     }
+}
+
+/* -----------------------------------------------------------------------
+ * Section frames: owned by the section object, mapped (PTE_SHARED) into
+ * every process with a view; neither decommit nor teardown frees them
+ * ----------------------------------------------------------------------- */
+PADDR *um_alloc_frames(UINT64 n)
+{
+    if (!n || n > (UINT64_C(256) << 20) / PAGE_SIZE) return NULL;
+    PADDR *f = kzalloc(sizeof(PADDR) * n);
+    if (!f) return NULL;
+    for (UINT64 i = 0; i < n; i++) {
+        f[i] = pmm_alloc_page();
+        if (!f[i]) { um_free_frames(f, i); return NULL; }
+        memset((void *)(uintptr_t)(PHYSMAP_BASE + f[i]), 0, PAGE_SIZE);
+    }
+    return f;
+}
+
+void um_free_frames(PADDR *f, UINT64 n)
+{
+    if (!f) return;
+    for (UINT64 i = 0; i < n; i++) if (f[i]) pmm_free_page(f[i]);
+    kfree(f);
+}
+
+bool um_map_frames(UmProcess *p, UINT64 va, const PADDR *f, UINT64 n, UINT32 protect)
+{
+    UINT64 flags = pte_flags(protect) | PTE_SHARED;
+    for (UINT64 i = 0; i < n; i++) {
+        pte_t *e = walk(p->pml4, va + i * PAGE_SIZE, true);
+        if (!e) { um_unmap_frames(p, va, i); return false; }
+        *e = f[i] | flags;
+    }
+    return true;
+}
+
+void um_unmap_frames(UmProcess *p, UINT64 va, UINT64 n)
+{
+    for (UINT64 i = 0; i < n; i++) {
+        UINT64 a = va + i * PAGE_SIZE;
+        pte_t *e = walk(p->pml4, a, false);
+        if (!e || !(*e & PTE_SHARED)) continue;
+        *e = 0;
+        if (is_current(p)) invlpg(a);
+    }
+    smp_tlb_flush(p->pml4);
 }
 
 bool um_is_committed(UmProcess *p, UINT64 va)
@@ -363,7 +411,8 @@ static void free_address_space(UINT64 pml4)
                 if (!(l2[k] & PTE_PRESENT)) continue;
                 pte_t *l1 = PT(l2[k]);
                 for (int m = 0; m < 512; m++)
-                    if ((l1[m] & PTE_PRESENT) && (l1[m] & PTE_ADDR_MASK) != g_kusd_pa) pmm_free_page(l1[m] & PTE_ADDR_MASK);
+                    if ((l1[m] & PTE_PRESENT) && !(l1[m] & PTE_SHARED) && (l1[m] & PTE_ADDR_MASK) != g_kusd_pa)
+                        pmm_free_page(l1[m] & PTE_ADDR_MASK);
                 pmm_free_page(l2[k] & PTE_ADDR_MASK);
             }
             pmm_free_page(l3[j] & PTE_ADDR_MASK);
@@ -412,6 +461,7 @@ UmRegion *um_region_add(UmProcess *p, UINT64 base, UINT64 size, UINT32 protect, 
     r->size = (size + 0xFFF) & ~0xFFFULL;
     r->protect = protect;
     r->image = image;
+    r->section = NULL;
     return r;
 }
 
@@ -1076,6 +1126,7 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
 static void destroy(UmProcess *p)
 {
     if (p->pml4) free_address_space(p->pml4);
+    um_release_views(p);
     if (p->con) UmConsoleRelease(p->con);
     kfree(p->stub_names);
     kfree(p);
@@ -1397,6 +1448,7 @@ void UmPoll(void)
             um_gui_process_gone(p);
             um_close_all_handles(p);
             free_address_space(p->pml4);
+            um_release_views(p);
             p->pml4 = 0;
             p->pages = 0;
             p->commit = 0;

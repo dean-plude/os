@@ -329,10 +329,38 @@ static void free_mapping(Mapping *m)
     zfree(m);
 }
 
+/* Memory-backed mappings are kernel sections, shared by name between
+ * processes; file-backed ones are loaded into the process (a private copy
+ * written back on flush and unmap) */
+typedef struct { UNICODE_STRING us; OBJECT_ATTRIBUTES oa; WCHAR buf[260]; } SecName;
+
+static POBJECT_ATTRIBUTES sec_name(SecName *n, LPCWSTR name)
+{
+    if (!name || !name[0]) return 0;
+    int k = 0;
+    for (; name[k] && k < 259; k++) n->buf[k] = name[k];
+    n->buf[k] = 0;
+    RtlInitUnicodeString(&n->us, n->buf);
+    memset(&n->oa, 0, sizeof(n->oa));
+    n->oa.Length = sizeof(n->oa);
+    n->oa.ObjectName = &n->us;
+    return &n->oa;
+}
+
 WINBASEAPI HANDLE WINAPI CreateFileMappingW(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect, DWORD hi, DWORD lo, LPCWSTR name)
 {
-    (void)sa; (void)name;
+    (void)sa;
     ULONGLONG size = (ULONGLONG)hi << 32 | lo;
+    if (!file || file == INVALID_HANDLE_VALUE) {
+        SecName n;
+        LARGE_INTEGER max;
+        max.QuadPart = (LONGLONG)size;
+        HANDLE h = 0;
+        NTSTATUS s = NtCreateSection(&h, 0xF001F /* SECTION_ALL_ACCESS */, sec_name(&n, name), &max, protect & 0xFF, 0x8000000 /* SEC_COMMIT */, 0);
+        if (!NT_SUCCESS(s)) return fail_status(s), (HANDLE)0;
+        SetLastError(s == 0x40000000 /* STATUS_OBJECT_NAME_EXISTS */ ? ERROR_ALREADY_EXISTS : 0);
+        return h;
+    }
     HANDLE dup = 0;
     if (file && file != INVALID_HANDLE_VALUE) {
         LARGE_INTEGER fs;
@@ -365,24 +393,34 @@ WINBASEAPI HANDLE WINAPI CreateFileMappingW(HANDLE file, LPSECURITY_ATTRIBUTES s
 
 WINBASEAPI HANDLE WINAPI CreateFileMappingA(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect, DWORD hi, DWORD lo, LPCSTR name)
 {
-    (void)name;
-    return CreateFileMappingW(file, sa, protect, hi, lo, 0);
+    WCHAR w[260];
+    if (name) { MultiByteToWideChar(CP_ACP, 0, name, -1, w, 260); w[259] = 0; }
+    return CreateFileMappingW(file, sa, protect, hi, lo, name ? w : 0);
 }
 
-/* Mappings are private to their process (no shared sections yet), so a
- * named one cannot be opened from elsewhere */
 WINBASEAPI HANDLE WINAPI OpenFileMappingW(DWORD access, BOOL inherit, LPCWSTR name)
 {
-    (void)access; (void)inherit; (void)name;
-    SetLastError(ERROR_FILE_NOT_FOUND);
-    return 0;
+    (void)access; (void)inherit;
+    SecName n;
+    POBJECT_ATTRIBUTES oa = sec_name(&n, name);
+    if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    HANDLE h = 0;
+    NTSTATUS s = NtOpenSection(&h, 0xF001F, oa);
+    if (!NT_SUCCESS(s)) {
+        if (s == (NTSTATUS)0xC0000034) SetLastError(ERROR_FILE_NOT_FOUND);
+        else fail_status(s);
+        return 0;
+    }
+    return h;
 }
 
 WINBASEAPI HANDLE WINAPI OpenFileMappingA(DWORD access, BOOL inherit, LPCSTR name)
 {
-    (void)access; (void)inherit; (void)name;
-    SetLastError(ERROR_FILE_NOT_FOUND);
-    return 0;
+    WCHAR w[260];
+    if (!name) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    MultiByteToWideChar(CP_ACP, 0, name, -1, w, 260);
+    w[259] = 0;
+    return OpenFileMappingW(access, inherit, w);
 }
 
 static BOOL load_mapping(Mapping *m)
@@ -406,13 +444,26 @@ static BOOL load_mapping(Mapping *m)
 
 WINBASEAPI LPVOID WINAPI MapViewOfFileEx(HANDLE map, DWORD access, DWORD hi, DWORD lo, SIZE_T n, LPVOID base)
 {
-    (void)access;
-    if (base) { SetLastError(ERROR_INVALID_ADDRESS); return 0; }   /* no fixed-address views */
     ULONGLONG off = (ULONGLONG)hi << 32 | lo;
     lock();
     Mapping *m = g_maps;
     while (m && (m->h != map || m->closed)) m = m->next;
-    if (!m) { unlock(); SetLastError(ERROR_INVALID_HANDLE); return 0; }
+    if (!m) {                                               /* a kernel section */
+        unlock();
+        PVOID at = base;
+        SIZE_T view = n;
+        LARGE_INTEGER o;
+        o.QuadPart = (LONGLONG)off;
+        ULONG prot = (access & (FILE_MAP_WRITE | FILE_MAP_COPY)) || access == FILE_MAP_ALL_ACCESS ? PAGE_READWRITE : PAGE_READONLY;
+        NTSTATUS s = NtMapViewOfSection(map, (HANDLE)(LONG_PTR)-1, &at, 0, 0, &o, &view, 1 /* ViewShare */, 0, prot);
+        if (!NT_SUCCESS(s)) {
+            if (s == (NTSTATUS)0xC0000008 || s == (NTSTATUS)0xC0000024) SetLastError(ERROR_INVALID_HANDLE);
+            else fail_status(s);
+            return 0;
+        }
+        return at;
+    }
+    if (base) { unlock(); SetLastError(ERROR_INVALID_ADDRESS); return 0; }   /* no fixed-address views of files */
     if (off > m->size || (n && n > m->size - off)) { unlock(); SetLastError(ERROR_ACCESS_DENIED); return 0; }
     if (!n) n = (SIZE_T)(m->size - off);
     View *v = zalloc(sizeof(*v));
@@ -456,7 +507,7 @@ WINBASEAPI BOOL WINAPI FlushViewOfFile(LPCVOID p, SIZE_T n)
         ULONGLONG off = v->off + (ULONGLONG)((BYTE *)p - v->base);
         SIZE_T max = v->n - (SIZE_T)((BYTE *)p - v->base);
         ok = flush_range(v->m, off, n && n < max ? n : max);
-    } else SetLastError(ERROR_INVALID_ADDRESS);
+    } else ok = TRUE;                                       /* a section's view: memory, nothing to write */
     unlock();
     return ok;
 }
@@ -467,7 +518,12 @@ WINBASEAPI BOOL WINAPI UnmapViewOfFile(LPCVOID p)
     View **pp = &g_views;
     while (*pp && (*pp)->base != p) pp = &(*pp)->next;
     View *v = *pp;
-    if (!v) { unlock(); SetLastError(ERROR_INVALID_ADDRESS); return FALSE; }
+    if (!v) {
+        unlock();
+        NTSTATUS s = NtUnmapViewOfSection((HANDLE)(LONG_PTR)-1, (PVOID)p);
+        if (!NT_SUCCESS(s)) { SetLastError(ERROR_INVALID_ADDRESS); return FALSE; }
+        return TRUE;
+    }
     *pp = v->next;
     Mapping *m = v->m;
     BOOL ok = flush_range(m, v->off, v->n);

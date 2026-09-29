@@ -922,7 +922,7 @@ static UINT64 sys_alloc_vm_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         base &= ~0xFFFULL;
         size = end - base;
         UmRegion *r = um_region_find(p, base);
-        if (!r || base + size > r->base + r->size || r->image) return ST_MEMORY_NOT_ALLOCATED;
+        if (!r || base + size > r->base + r->size || r->image || r->section) return ST_MEMORY_NOT_ALLOCATED;
     }
     if (type & MEM_COMMIT) {
         if (p->commit + size / PAGE_SIZE > PROC_MEM_LIMIT_PAGES) {
@@ -948,6 +948,7 @@ static UINT64 sys_free_vm_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!get_u64(a2, &base) || !get_u64(a3, &size)) return UM_STATUS_ACCESS_VIOLATION;
     UmRegion *r = um_region_find(p, base);
     if (!r || r->image) return ST_MEMORY_NOT_ALLOCATED;
+    if (r->section) return 0xC000001Bu;                     /* STATUS_UNABLE_TO_DELETE_SECTION: a mapped view */
     if (a4 & MEM_RELEASE) {
         if (base != r->base || size) return ST_INVALID_PARAMETER;
         size = r->size;
@@ -1026,7 +1027,7 @@ static UINT64 sys_query_vm_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         mbi.state = c ? 0x1000 : 0x2000;                        /* MEM_COMMIT / MEM_RESERVE */
         mbi.protect = c ? r->protect : 0;
         if (c && r->image) mbi.protect = 0x20;                  /* report images as EXECUTE_READ */
-        mbi.type = r->image ? 0x1000000 : 0x20000;              /* MEM_IMAGE / MEM_PRIVATE */
+        mbi.type = r->image ? 0x1000000 : r->section ? 0x40000 : 0x20000;   /* MEM_IMAGE / MEM_MAPPED / MEM_PRIVATE */
     }
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &mbi, 48))) return UM_STATUS_ACCESS_VIOLATION;
     if (ret_ptr) put_u64(ret_ptr, 48);
