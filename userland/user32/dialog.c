@@ -209,6 +209,7 @@ static HFONT make_font(const DlgHdr *h)
  * ----------------------------------------------------------------------- */
 static HWND first_tab(HWND dlg);
 
+int __cdecl wsprintfA(LPSTR buf, LPCSTR fmt, ...);
 static HWND create_dialog(HINSTANCE inst, const void *tmpl, HWND hparent, DLGPROC proc, LPARAM param, int wide, int modal)
 {
     if (!tmpl) { SetLastError(ERROR_RESOURCE_NAME_NOT_FOUND); return 0; }
@@ -298,6 +299,7 @@ static HWND create_dialog(HINSTANCE inst, const void *tmpl, HWND hparent, DLGPRO
                                  (HMENU)(ULONG_PTR)it.id, inst, (LPVOID)it.data);
         if (!W_quiet(dh)) return 0;
         if (!c) {
+            { char b[96]; wsprintfA(b, "user32: dialog control %d not created (error %u)\n", (int)it.id, (unsigned)GetLastError()); OutputDebugStringA(b); }
             if (!(hd.style & DS_NOFAILCREATE)) { DestroyWindow(dh); return 0; }
             continue;
         }

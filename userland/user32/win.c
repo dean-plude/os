@@ -205,11 +205,8 @@ static void ensure_builtins(void)
     register_builtin_classes();
 }
 
-WClass *find_class_w(LPCWSTR name, HINSTANCE inst)
+static WClass *find_class_raw(LPCWSTR name)
 {
-    (void)inst;
-    ensure_builtins();
-    if (!name) return NULL;
     WClass *sys = NULL;
     for (int i = 0; i < MAX_CLASSES; i++) {
         WClass *c = &g_class[i];
@@ -220,6 +217,35 @@ WClass *find_class_w(LPCWSTR name, HINSTANCE inst)
         if (!sys) sys = c;
     }
     return sys;
+}
+
+/* the common controls' class names: comctl32 registers them when it loads */
+static int is_comctl_class(LPCWSTR n)
+{
+    static const WCHAR *const pre[] = { L"Sys", L"msctls_", L"ToolbarWindow32", L"ReBarWindow32",
+                                        L"tooltips_class32", L"ComboBoxEx32", L"NativeFontCtl" };
+    for (unsigned i = 0; i < sizeof pre / sizeof pre[0]; i++) {
+        int k = 0;
+        while (pre[i][k] && (n[k] | 0x20) == (pre[i][k] | 0x20)) k++;
+        if (!pre[i][k]) return 1;
+    }
+    return 0;
+}
+
+WClass *find_class_w(LPCWSTR name, HINSTANCE inst)
+{
+    static int loaded_cc;
+    (void)inst;
+    ensure_builtins();
+    if (!name) return NULL;
+    WClass *c = find_class_raw(name);
+    /* a program that uses a common control without linking comctl32
+     * (Windows loads it through shell32 or the manifest): load it now */
+    if (!c && (ULONG_PTR)name >= 0x10000 && !loaded_cc && is_comctl_class(name)) {
+        loaded_cc = 1;
+        if (LoadLibraryW(L"comctl32.dll")) c = find_class_raw(name);
+    }
+    return c;
 }
 
 static WClass *find_class_a(LPCSTR name, HINSTANCE inst)

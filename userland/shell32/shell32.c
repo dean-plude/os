@@ -285,8 +285,7 @@ SHSTDAPI_(HRESULT) SHParseDisplayName(LPCWSTR name, void *bc, LPITEMIDLIST *out,
     return *out ? S_OK_ : E_OUTOFMEMORY_;
 }
 
-SHSTDAPI_(LPITEMIDLIST) SHBrowseForFolderW(void *bi) { (void)bi; return 0; }   /* no folder picker: "cancelled" */
-SHSTDAPI_(LPITEMIDLIST) SHBrowseForFolderA(void *bi) { (void)bi; return 0; }
+/* SHBrowseForFolder: browse.c */
 
 /* -----------------------------------------------------------------------
  * Command lines

@@ -509,6 +509,8 @@ WINBASEAPI HANDLE WINAPI GetStdHandle(DWORD which);
 WINBASEAPI VOID WINAPI OutputDebugStringA(LPCSTR s)
 {
     DWORD w;
+    if (!s) return;
+    NtNovaDebugPrint(s, (ULONG)strlen(s));      /* the kernel log: NovaOS's debugger */
     WriteFile(GetStdHandle(STD_ERROR_HANDLE), s, (DWORD)strlen(s), &w, 0);
 }
 
