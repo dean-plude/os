@@ -29,6 +29,7 @@
 #include "um_internal.h"
 #include "../ke/printf.h"
 #include "../ke/kpcr.h"
+#include "../ke/smp.h"
 #include "../mm/vmm.h"
 #include "../mm/pmm.h"
 #include "../lib/string.h"
@@ -165,38 +166,46 @@ static UINT64 pte_flags(UINT32 protect)
 
 static bool is_current(UmProcess *p) { return read_cr3() == p->pml4; }
 
+/* Existing entries of @p changed: this CPU drops them from its TLB as it
+ * goes (invlpg), the other CPUs running @p's threads at the end. */
 bool um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect)
 {
     UINT64 f = pte_flags(protect);
+    bool ok = true, changed = false;
     for (UINT64 a = va & ~0xFFFULL; a < va + size; a += PAGE_SIZE) {
         pte_t *e = walk(p->pml4, a, true);
-        if (!e) return false;
+        if (!e) { ok = false; break; }
         if ((*e & PTE_PRESENT) && (*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* stays read-only */
         if (*e & PTE_PRESENT) {                         /* re-commit: new protection */
             *e = (*e & PTE_ADDR_MASK) | f;
             if (is_current(p)) invlpg(a);
+            changed = true;
             continue;
         }
         PADDR fr = pmm_alloc_page();
-        if (!fr) return false;
+        if (!fr) { ok = false; break; }
         memset((void *)(uintptr_t)(PHYSMAP_BASE + fr), 0, PAGE_SIZE);
         *e = fr | f;
         p->pages++;
     }
-    return true;
+    if (changed) smp_tlb_flush(p->pml4);
+    return ok;
 }
 
 void um_decommit(UmProcess *p, UINT64 va, UINT64 size)
 {
+    bool changed = false;
     for (UINT64 a = va & ~0xFFFULL; a < va + size; a += PAGE_SIZE) {
         pte_t *e = walk(p->pml4, a, false);
         if (!e || !(*e & PTE_PRESENT)) continue;
         if ((*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* the shared page stays */
-        pmm_free_page(*e & PTE_ADDR_MASK);
+        pmm_free_page(*e & PTE_ADDR_MASK);                 /* reused only after the flush below */
         *e = 0;
         p->pages--;
         if (is_current(p)) invlpg(a);
+        changed = true;
     }
+    if (changed) smp_tlb_flush(p->pml4);
 }
 
 bool um_is_committed(UmProcess *p, UINT64 va)
@@ -259,8 +268,17 @@ static void kusd_init(void)
     *(UINT32 *)(g_kusd + 0x270) = 0;                      /* NtMinorVersion */
     static const int features[] = { 2, 6, 8, 10, 12, 13, 14 };   /* cmpxchg8b/16b, SSE, SSE2, SSE3, RDTSC, NX */
     for (unsigned i = 0; i < sizeof(features) / sizeof(features[0]); i++) g_kusd[0x274 + features[i]] = 1;
-    *(UINT32 *)(g_kusd + 0x3C0) = 1;                      /* ActiveProcessorCount */
+    UmCpuCountChanged();
     UmTimerTick(sched_ticks());
+}
+
+/* A CPU came online (smp.c) */
+void UmCpuCountChanged(void)
+{
+    if (!g_kusd) return;
+    UINT32 n = g_cpu_count;
+    *(UINT32 *)(g_kusd + 0x3C0) = n;                      /* ActiveProcessorCount */
+    *(UINT64 *)(g_kusd + 0x3C8) = n >= 64 ? ~0ULL : (1ULL << n) - 1;   /* ActiveProcessorAffinity */
 }
 
 /* Called on every timer tick (interrupts off) */
@@ -823,9 +841,11 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
              put_ustr(pp, sz, &off, pp + 0x60, image_path) &&       /* ImagePathName */
              put_ustr(pp, sz, &off, pp + 0x70, cmdline);            /* CommandLine */
         /* Environment block: NUL-separated UTF-16 strings, double NUL */
-        static const char *env[] = {
+        char ncpu[32];
+        ksnprintf(ncpu, sizeof(ncpu), "NUMBER_OF_PROCESSORS=%u", (unsigned)g_cpu_count);
+        const char *env[] = {
             "ALLUSERSPROFILE=C:\\ProgramData", "APPDATA=C:\\AppData\\Roaming", "COMPUTERNAME=NOVA-PC",
-            "HOMEDRIVE=C:", "HOMEPATH=\\", "LOCALAPPDATA=C:\\AppData\\Local", "NUMBER_OF_PROCESSORS=1", "OS=NovaOS",
+            "HOMEDRIVE=C:", "HOMEPATH=\\", "LOCALAPPDATA=C:\\AppData\\Local", ncpu, "OS=NovaOS",
             "PATH=C:\\Programs;C:\\Windows\\System32", "PATHEXT=.EXE", "PROCESSOR_ARCHITECTURE=AMD64",
             "ProgramData=C:\\ProgramData", "ProgramFiles=C:\\Programs", "SystemDrive=C:", "SystemRoot=C:\\Windows",
             "TEMP=C:\\Temp", "TMP=C:\\Temp", "USERNAME=dean", "USERPROFILE=C:\\", "windir=C:\\Windows", NULL
@@ -843,7 +863,7 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
         /* PEB */
         wr64(peb + 0x10, image_base);                       /* ImageBaseAddress */
         wr64(peb + 0x20, UM_PARAMS_VA);                     /* ProcessParameters */
-        put_u32(peb + 0xB8, 1);                             /* NumberOfProcessors */
+        put_u32(peb + 0xB8, g_cpu_count);                   /* NumberOfProcessors */
         put_u32(peb + 0x118, 10);                           /* OSMajorVersion */
         put_u32(peb + 0x11C, 0);                            /* OSMinorVersion */
         put_u16(peb + 0x120, 18362);                        /* OSBuildNumber (1903) */
@@ -872,8 +892,10 @@ static void um_thread_start(void *arg)
     if (p->kill_pending) um_exit_thread(p->kill_status);
     if (t->terminate) um_exit_thread(t->term_status);
 
-    /* Enter ring 3 at ntdll!RtlUserThreadStart(RCX = start, RDX = argument).
-     * GS base is already the TEB: this thread was created with it. */
+    /* Enter ring 3 at ntdll!RtlUserThreadStart(RCX = start, RDX = argument),
+     * leaving the kernel lock behind.  The TEB is in MSR_KERNEL_GS_BASE
+     * (this thread was created with it): SWAPGS makes it the user GS. */
+    bkl_release();
     UINT64 f[7] = {
         p->thread_start, GDT_USER_CODE | 3, 0x202,                 /* RIP, CS, RFLAGS */
         t->stack_lo + t->stack_size - 0x28, GDT_USER_DATA | 3,     /* RSP, SS */
@@ -892,6 +914,7 @@ static void um_thread_start(void *arg)
         "xor %%r8d, %%r8d\n\t"  "xor %%r9d, %%r9d\n\t"  "xor %%r10d, %%r10d\n\t"
         "xor %%r11d, %%r11d\n\t" "xor %%r12d, %%r12d\n\t" "xor %%r13d, %%r13d\n\t"
         "xor %%r14d, %%r14d\n\t" "xor %%r15d, %%r15d\n\t"
+        "swapgs\n\t"
         "iretq\n\t"
         : : "a"(f) : "memory");
     __builtin_unreachable();
@@ -980,7 +1003,6 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
         kt->cr3 = p->pml4;
         kt->fpu = fpu;
         kt->gs_base = t->teb;                              /* user GS = TEB */
-        kt->kgs_base = (UINT64)(uintptr_t)KiGetCurrentKpcr();
         t->kt = kt;
         p->threads[slot] = t;
         p->live_threads++;

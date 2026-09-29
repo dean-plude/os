@@ -26,6 +26,7 @@
 #include "../gdi/gdi.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
+#include "../ke/smp.h"
 #include "../lib/string.h"
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
@@ -1487,7 +1488,7 @@ void DesktopRun(void *arg)
         DesktopUnlock();
         /* Nothing else to run: wait for the next tick (10 ms) instead of
          * spinning, so an idle desktop leaves the CPU idle */
-        if (!sched_foreground_ready()) { sti(); hlt(); }
+        if (!sched_foreground_ready()) cpu_idle_wait();
         sched_yield();
     }
 }

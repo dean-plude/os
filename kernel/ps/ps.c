@@ -32,6 +32,7 @@
 #include "../arch/x86_64/paging.h"
 #include "../mm/pmm.h"
 #include "../ke/kpcr.h"
+#include "../ke/smp.h"
 #include "../ldr/ldr.h"
 #include "../ldr/user_stubs.h"
 
@@ -404,7 +405,7 @@ NTSTATUS PsAllocatePebTeb(PEPROCESS proc, PETHREAD thread, UINT64 image_base)
 
     /* Initialize PEB fields via physmap */
     PEB *peb = (PEB *)(PHYSMAP_BASE + peb_pa);
-    peb->NumberOfProcessors = 1;
+    peb->NumberOfProcessors = g_cpu_count;
     peb->ImageBaseAddress   = (void *)(uintptr_t)image_base;
     /* Phase 6: OS version fields (Windows 10, build 18362 = 1903) */
     peb->NtGlobalFlag       = 0;
@@ -498,11 +499,10 @@ void PsUserThreadEntry(void *arg)
         /* Load the process's private page table into CR3 */
         paging_load_cr3((uintptr_t)sched_t->cr3);
 
-        /* Set MSR_GS_BASE = TEB VA so that, after SWAPGS on the first
-         * syscall entry, GS in kernel mode points to the KPCR and
-         * MSR_KERNEL_GS_BASE holds the TEB address for SYSRET. */
+        /* The user GS (TEB) waits in MSR_KERNEL_GS_BASE; the SWAPGS just
+         * before IRETQ below makes it GS (kpcr.h). */
         if (et->Teb) {
-            wrmsr(MSR_GS_BASE, (UINT64)(uintptr_t)et->Teb);
+            wrmsr(MSR_KERNEL_GS_BASE, (UINT64)(uintptr_t)et->Teb);
         }
     }
 
@@ -514,6 +514,9 @@ void PsUserThreadEntry(void *arg)
             (unsigned long long)entry_point,
             (unsigned long long)stack_top,
             (unsigned long long)(proc ? proc->Pcb.DirectoryTableBase : 0ULL));
+
+    cli();
+    bkl_release();                        /* leaving the kernel (smp.h) */
 
     /* Build IRETQ frame and jump to user mode:
      *   User SS   (pushed last by IRETQ logic, so first on stack)
@@ -555,6 +558,7 @@ void PsUserThreadEntry(void *arg)
         "xor %%r15, %%r15\n\t"
         "xor %%rbp, %%rbp\n\t"
 
+        "swapgs\n\t"
         "iretq\n\t"
         :
         : [ss]  "r"(user_ss),

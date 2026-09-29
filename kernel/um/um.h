@@ -103,5 +103,7 @@ struct Thread *DesktopLockOwner(void);     /* diagnostics */
 void UmSaveAll(void);
 /* Timer tick: advances the clocks in KUSER_SHARED_DATA. */
 void UmTimerTick(UINT64 ticks);
+/* The number of online CPUs changed: update what programs see. */
+void UmCpuCountChanged(void);
 /* Log every program thread's state (serial), for diagnosing hangs. */
 void UmDumpAll(void);

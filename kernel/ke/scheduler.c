@@ -25,30 +25,37 @@
 #include "scheduler.h"
 #include "printf.h"
 #include "kpcr.h"
+#include "smp.h"
 #include "../mm/vmm.h"
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/gdt.h"
 #include "../arch/x86_64/paging.h"
+#include "../arch/x86_64/apic.h"
 
 /* -----------------------------------------------------------------------
  * Globals
  * ----------------------------------------------------------------------- */
 
-/* The currently running thread (per-CPU; we have one CPU in Phase 1) */
-static Thread *current_thread;
+/* The running thread and the idle thread are per CPU (KPCR).  With several
+ * CPUs, the big kernel lock (smp.h) keeps everything below to one CPU at a
+ * time; sched_lock and the interrupt masking guard against interrupts. */
+#define current_thread ((Thread *)KiGetCurrentKpcr()->CurrentThread)
+static inline Thread *cpu_idle(void) { return KiGetCurrentKpcr()->IdleThread; }
 
 /* Ready queue (circular doubly-linked list, sentineled by idle_thread) */
 static Thread *ready_head;   /* Points to the thread to run next */
 static size_t  ready_count;
 
-/* Idle thread — runs when nothing else is ready */
+/* The boot CPU's idle thread: the boot context (main.c's final loop) */
 static Thread  idle_thread_obj;
 
 /* Monotonically increasing thread ID */
 static uint64_t next_tid = 1;
 
-/* Global tick counter (incremented by sched_tick) */
+/* Global tick counter: 10 ms units of the TSC since boot, advanced by
+ * whichever CPU's timer interrupt sees it has moved on */
 static volatile uint64_t tick_count;
+static uint64_t tsc_at_boot;
 
 /* Ticks per time slice before preemption */
 #define TICKS_PER_SLICE  2   /* 2 ticks @ 100Hz = 20ms quantum */
@@ -88,6 +95,14 @@ static void ready_enqueue(Thread *t)
         ready_head->prev = t;
     }
     ready_count++;
+}
+
+/* A thread became runnable (not merely preempted or yielding): let a
+ * halted CPU pick it up */
+static void ready_wake(Thread *t)
+{
+    ready_enqueue(t);
+    smp_kick();
 }
 
 /* Threads above this priority are "foreground" (the desktop, programs, the
@@ -201,20 +216,6 @@ static void __attribute__((noreturn)) thread_trampoline(void)
 }
 
 /* -----------------------------------------------------------------------
- * Idle thread
- * ----------------------------------------------------------------------- */
-static void idle_thread_fn(void *arg)
-{
-    (void)arg;
-    for (;;) {
-        /* HLT saves power; interrupts wake us up for the next tick */
-        sti();
-        hlt();
-        cli();
-    }
-}
-
-/* -----------------------------------------------------------------------
  * sched_init
  * ----------------------------------------------------------------------- */
 void sched_init(void)
@@ -225,21 +226,40 @@ void sched_init(void)
     idle->tid      = next_tid++;
     idle->state    = THREAD_RUNNING;
     idle->priority = 0;
+    idle->idle     = true;
     __builtin_memcpy(idle->name, "idle", 5);
     /* idle's stack is the current boot stack — we don't track it */
 
-    current_thread = idle;
+    KiGetCurrentKpcr()->IdleThread    = idle;
+    KiGetCurrentKpcr()->CurrentThread = idle;
     ready_head     = NULL;
     ready_count    = 0;
+    tsc_at_boot    = rdtsc();
 
     kprintf("[SCHED] Scheduler initialized (idle TID=%lu)\n", idle->tid);
+}
 
-    /* Create the idle thread as a proper schedulable thread so the
-     * scheduler always has something to switch to */
-    Thread *idle2 = sched_create_thread("idle", idle_thread_fn, NULL, 0);
-    if (!idle2) {
-        kprintf("[SCHED] WARNING: could not create idle thread\n");
-    }
+Thread *sched_new_idle_thread(uint32_t cpu, void *stack, size_t stack_size)
+{
+    Thread *idle = kzalloc(sizeof(Thread));
+    if (!idle) return NULL;
+    idle->tid          = next_tid++;
+    idle->state        = THREAD_RUNNING;
+    idle->idle         = true;
+    idle->kernel_stack = stack;
+    idle->stack_size   = stack_size;
+    ksnprintf(idle->name, sizeof(idle->name), "idle%u", cpu);
+    return idle;
+}
+
+void sched_init_cpu(Thread *idle)
+{
+    PKPCR k = KiGetCurrentKpcr();
+    uintptr_t top = (uintptr_t)idle->kernel_stack + idle->stack_size;
+    k->IdleThread    = idle;
+    k->CurrentThread = idle;
+    k->KernelRsp     = top;
+    gdt_set_rsp0(top);
 }
 
 /* -----------------------------------------------------------------------
@@ -309,7 +329,7 @@ Thread *sched_create_thread_ex(const char *name, ThreadEntry entry,
     /* Add to ready queue */
     IrqState irq = irq_save();
     sched_lock_acquire();
-    ready_enqueue(t);
+    ready_wake(t);
     sched_lock_release();
     irq_restore(irq);
 
@@ -326,23 +346,26 @@ static void perform_switch(void)
 {
     sched_lock_acquire();
 
+    PKPCR kpcr = KiGetCurrentKpcr();
     Thread *prev = current_thread;
     Thread *next = ready_dequeue();
     if (!next) {
-        /* No other ready thread.  Keep running the current one if it can;
-         * only fall back to the boot context when the current thread has
-         * blocked or exited (the real idle thread is normally queued). */
-        next = (prev->state == THREAD_RUNNING) ? prev : &idle_thread_obj;
+        /* No other ready thread.  Keep running the current one if it can,
+         * else this CPU's idle thread. */
+        next = (prev->state == THREAD_RUNNING) ? prev : cpu_idle();
     }
 
-    /* If current is still running, put it back on the ready queue */
+    /* If current is still running, put it back on the ready queue (an
+     * idle thread only ever runs as the fallback above) */
     if (prev != next) {
         if (prev->state == THREAD_RUNNING) {
-            ready_enqueue(prev);
+            if (prev->idle) prev->state = THREAD_READY;
+            else ready_enqueue(prev);
         }
         next->state         = THREAD_RUNNING;
         next->ticks_slice   = 0;
-        current_thread      = next;
+        kpcr->CurrentThread = next;
+        kpcr->Idle          = 0;
 
         /* Update TSS RSP0 to new thread's kernel stack top
          * (used when this thread returns to ring 3 in the future) */
@@ -352,8 +375,7 @@ static void perform_switch(void)
 
             /* Phase 5: Update KPCR.KernelRsp so syscall_entry.asm picks up the
              * correct kernel stack when this thread makes a system call. */
-            PKPCR kpcr = KiGetCurrentKpcr();
-            if (kpcr) kpcr->KernelRsp = (UINT64)kstack_top;
+            kpcr->KernelRsp = (UINT64)kstack_top;
         }
 
         /* Address space: a user process's page table, or the kernel's for
@@ -362,18 +384,17 @@ static void perform_switch(void)
         uint64_t cr3 = next->cr3 ? next->cr3 : paging_get_kernel_cr3();
         if (read_cr3() != cr3) paging_load_cr3((uintptr_t)cr3);
 
-        /* User threads: SSE state and the two GS bases (TEB / KPCR) are
-         * per thread.  Kernel code never uses SSE or GS, so kernel threads
-         * need neither saved. */
+        /* User threads: SSE state and the user GS base (the TEB, kept in
+         * MSR_KERNEL_GS_BASE while in the kernel: GS itself is this CPU's
+         * KPCR) are per thread.  Kernel code never uses SSE, so kernel
+         * threads need neither saved. */
         if (prev->um) {
             __asm__ volatile ("fxsave64 (%0)" : : "r"(prev->fpu) : "memory");
-            prev->gs_base  = rdmsr(MSR_IA32_GSBASE);
-            prev->kgs_base = rdmsr(MSR_IA32_KERNEL_GSBASE);
+            prev->gs_base = rdmsr(MSR_IA32_KERNEL_GSBASE);
         }
         if (next->um) {
             __asm__ volatile ("fxrstor64 (%0)" : : "r"(next->fpu) : "memory");
-            wrmsr(MSR_IA32_GSBASE, next->gs_base);
-            wrmsr(MSR_IA32_KERNEL_GSBASE, next->kgs_base);
+            wrmsr(MSR_IA32_KERNEL_GSBASE, next->gs_base);
         }
         if (prev->state == THREAD_DEAD) prev->off_cpu = true;   /* never runs again */
 
@@ -396,6 +417,10 @@ static void perform_switch(void)
  * ----------------------------------------------------------------------- */
 void sched_yield(void)
 {
+    /* Other CPUs waiting to enter the kernel go first — unless this thread
+     * is on its way to blocking or exiting (sched_block, sched_exit_current):
+     * then it must be off this CPU before anyone could wake it. */
+    if (current_thread->state == THREAD_RUNNING) bkl_relax();
     IrqState irq = irq_save();
     perform_switch();
     irq_restore(irq);
@@ -409,12 +434,21 @@ static void wake_sleepers(void);
 void DesktopWatchdog(uint64_t now);
 void UmTimerTick(uint64_t ticks);
 
+void ps2_poll(void);
+
 void sched_tick(void)
 {
-    tick_count++;
-    DesktopWatchdog(tick_count);
-    UmTimerTick(tick_count);
-    if (g_sleepers) wake_sleepers();
+    /* Each CPU's timer runs at 100 Hz; the global tick follows the TSC, so
+     * it neither runs N times too fast nor loses time while CPU 0 waits for
+     * the kernel lock with interrupts off. */
+    uint64_t now = g_tsc_per_tick ? (rdtsc() - tsc_at_boot) / g_tsc_per_tick : tick_count + 1;
+    if (now > tick_count) {
+        tick_count = now;
+        ps2_poll();                         /* keyboard/mouse, collected at 100 Hz */
+        DesktopWatchdog(tick_count);
+        UmTimerTick(tick_count);
+        if (g_sleepers) wake_sleepers();
+    }
     if (!current_thread) return;
 
     current_thread->ticks_total++;
@@ -445,6 +479,7 @@ Thread *sched_current(void)
  * ----------------------------------------------------------------------- */
 void sched_sleep_tick(void)
 {
+    bkl_relax();
     IrqState irq = irq_save();
     sched_lock_acquire();
     current_thread->state = THREAD_WAITING;
@@ -471,7 +506,7 @@ static void wake_sleepers(void)
         if (t->wake_tick <= tick_count) {
             *pp = t->sleep_next;
             t->sleep_next = NULL;
-            if (t->state == THREAD_WAITING) ready_enqueue(t);
+            if (t->state == THREAD_WAITING) ready_wake(t);
         } else pp = &t->sleep_next;
     }
     sched_lock_release();
@@ -492,7 +527,7 @@ void sched_unblock(Thread *t)
     IrqState irq = irq_save();
     sched_lock_acquire();
     if (t->state == THREAD_WAITING) {
-        ready_enqueue(t);
+        ready_wake(t);
     }
     sched_lock_release();
     irq_restore(irq);
@@ -527,7 +562,7 @@ void sched_enqueue_thread(Thread *t)
 {
     IrqState irq = irq_save();
     sched_lock_acquire();
-    ready_enqueue(t);
+    ready_wake(t);
     sched_lock_release();
     irq_restore(irq);
 }

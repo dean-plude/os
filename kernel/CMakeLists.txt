@@ -100,6 +100,7 @@ set(KERNEL_ASM_SOURCES
     arch/x86_64/entry.asm
     arch/x86_64/isr_stubs.asm
     arch/x86_64/syscall_entry.asm
+    arch/x86_64/ap_trampoline.asm
 )
 
 # -------------------------------------------------------------------------
@@ -142,6 +143,7 @@ set(KERNEL_C_SOURCES
     ke/scheduler.c
     ke/syscall.c
     ke/kpcr.c
+    ke/smp.c
     ke/probe.c
     ke/probe_test.c
     ob/ob.c

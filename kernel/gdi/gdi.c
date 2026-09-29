@@ -511,6 +511,11 @@ void GdiRoundGradV(GdiRect r, int rad, GdiColor top, GdiColor bottom)
 
 void GdiDropShadow(GdiRect r, int rad, int blur, int alpha)
 {
+    GdiDropShadowAround(r, rad, blur, alpha, RECT(0, 0, 0, 0), 0);
+}
+
+void GdiDropShadowAround(GdiRect r, int rad, int blur, int alpha, GdiRect cover, int cover_rad)
+{
     if (!g.ready || r.w <= 0 || r.h <= 0 || blur <= 0 || alpha <= 0) return;
     RBox   b   = rbox_of(r, rad);
     int    bl  = blur * g.s * FX;           /* fade distance, fixed point */
@@ -518,9 +523,17 @@ void GdiDropShadow(GdiRect r, int rad, int blur, int alpha)
     UINT32 blk = pixof(GDI_BLACK);
     int ya = imax(b.y0 - m, 0), yb = imin(b.y1 + m, g.dh);
     int xa = imax(b.x0 - m, 0), xb = imin(b.x1 + m, g.dw);
+    /* The part of @cover certain to be covered (its rounded corners cut
+     * off), in device pixels: nothing there needs a shadow */
+    int s = g.s;
+    int hx0 = (cover.x + cover_rad) * s, hx1 = (cover.x + cover.w - cover_rad) * s;
+    int hy0 = (cover.y + cover_rad) * s, hy1 = (cover.y + cover.h - cover_rad) * s;
+    bool hole = cover.w > 0 && cover.h > 0 && hx0 < hx1 && hy0 < hy1;
 
     for (int y = ya; y < yb; y++) {
+        bool row_in_hole = hole && y >= hy0 && y < hy1;
         for (int x = xa; x < xb; x++) {
+            if (row_in_hole && x >= hx0 && x < hx1) { x = hx1 - 1; continue; }
             int sd = rbox_sd(&b, x, y);
             if (sd >= bl) continue;
             int a = alpha;

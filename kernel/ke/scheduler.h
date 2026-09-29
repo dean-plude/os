@@ -91,13 +91,13 @@ typedef struct Thread {
      * scheduler swaps for them.  NULL/0 for kernel threads. */
     void           *um;             /* UmProcess */
     uint8_t        *fpu;            /* 512-byte FXSAVE area, 16-byte aligned */
-    uint64_t        gs_base;        /* MSR_GS_BASE / MSR_KERNEL_GS_BASE */
-    uint64_t        kgs_base;
+    uint64_t        gs_base;        /* user GS (the TEB): MSR_KERNEL_GS_BASE while in the kernel */
     uint64_t        user_rsp;       /* user RSP at the last syscall (stack args) */
     volatile bool   off_cpu;        /* DEAD and switched away: safe to free */
     struct Thread  *sleep_next;     /* sched_sleep_tick list */
     uint64_t        wake_tick;
     uint32_t        wait_rounds;    /* sched_wait calls since the thread last made progress */
+    bool            idle;           /* a CPU's idle thread: never queued, runs only there */
 } Thread;
 
 /* Default kernel stack size for new threads */
@@ -109,6 +109,10 @@ typedef struct Thread {
  * Must be called after PMM and VMM are initialized.
  */
 void sched_init(void);
+/* Another CPU's idle thread, which will run on @stack (made by CPU 0) */
+Thread *sched_new_idle_thread(uint32_t cpu, void *stack, size_t stack_size);
+/* Make @idle, the calling CPU's current context, its idle thread. */
+void sched_init_cpu(Thread *idle);
 
 /*
  * Create a new kernel thread.

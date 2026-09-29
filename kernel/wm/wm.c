@@ -643,9 +643,10 @@ static void draw_window(WND *w)
     GdiColor title_bg = w->active ? TITLE_ACTIVE : TITLE_INACTIVE;
     GdiColor title_fg = w->active ? TEXT_ACTIVE  : TEXT_INACTIVE;
 
-    if ((w->style & WS_SHADOW) && !w->maximized)
-        GdiDropShadow(RECT(f.x, f.y + 3, f.w, f.h), rad,
-                      w->active ? 18 : 10, w->active ? 90 : 45);
+    if ((w->style & WS_SHADOW) && !w->maximized)       /* under the frame, drawn next */
+        GdiDropShadowAround(RECT(f.x, f.y + 3, f.w, f.h), rad,
+                            w->active ? 18 : 10, w->active ? 90 : 45,
+                            w->client_bg == GDI_TRANSPARENT ? RECT(0, 0, 0, 0) : f, rad);
 
     GdiRoundRect(f, rad, w->client_bg, GDI_TRANSPARENT);
 

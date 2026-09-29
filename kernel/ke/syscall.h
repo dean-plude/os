@@ -335,6 +335,7 @@ void SyscallInitialize(void);
  * NT syscall handlers return NTSTATUS zero-extended to 64 bits.
  * Kernel-helper handlers (0x01F0-0x01FF) may return 64-bit pointers.
  */
+void SyscallInitCpu(void);
 UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
                              UINT64 arg3, UINT64 arg4, UINT64 user_rsp);
 

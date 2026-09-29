@@ -28,6 +28,8 @@
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "probe.h"
+#include "smp.h"
+#include "kpcr.h"
 #include "../um/um.h"
 
 /* -----------------------------------------------------------------------
@@ -161,8 +163,8 @@ static UINT64 sys_NtQuerySystemInformation(UINT64 InfoClass,
         sbi.AllocationGranularity = 65536;  /* 64KB, same as Windows */
         sbi.MinimumUserModeAddress = 0x10000;
         sbi.MaximumUserModeAddress = 0x7FFFFFFFFFFEFFFF;
-        sbi.ActiveProcessorsAffinityMask = 1;
-        sbi.NumberOfProcessors    = 1;
+        sbi.ActiveProcessorsAffinityMask = (1ULL << g_cpu_count) - 1;
+        sbi.NumberOfProcessors    = (UINT8)g_cpu_count;
         /* PMM stats for physical page counts */
         uint64_t total_pages, free_pages, used_pages;
         extern void pmm_stats(uint64_t *, uint64_t *, uint64_t *);
@@ -1123,12 +1125,31 @@ UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
     return r;
 }
 
+/* SYSCALL instruction path (syscall_entry.asm): the kernel lock is taken
+ * here, on the way in from user mode, and dropped on the way back. */
+UINT64 KiSystemCallEntry(UINT64 num, UINT64 arg1, UINT64 arg2,
+                         UINT64 arg3, UINT64 arg4, UINT64 user_rsp)
+{
+    bkl_acquire();
+    UINT64 r = KiSystemCallDispatch(num, arg1, arg2, arg3, arg4, user_rsp);
+    bkl_release();
+    return r;
+}
+
 /* -----------------------------------------------------------------------
  * SyscallInitialize — set up MSRs for SYSCALL/SYSRET
  * ----------------------------------------------------------------------- */
 void SyscallInitialize(void)
 {
     build_syscall_table();
+    SyscallInitCpu();
+    kprintf("[SYSCALL] Initialized: LSTAR=%p\n", (void *)KiSystemCall64);
+    kprintf("[SYSCALL] Dispatch table: %u entries wired\n", SYSCALL_MAX);
+}
+
+/* The SYSCALL MSRs of the calling CPU */
+void SyscallInitCpu(void)
+{
 
     /* STAR MSR:
      *   Bits 47:32 — SYSCALL: CS = STAR[47:32],      SS = STAR[47:32] + 8
@@ -1155,9 +1176,4 @@ void SyscallInitialize(void)
     /* Enable SCE in EFER */
     UINT64 efer = rdmsr(MSR_EFER);
     wrmsr(MSR_EFER, efer | EFER_SCE);
-
-    kprintf("[SYSCALL] Initialized: LSTAR=%p STAR=0x%llx\n",
-            (void *)KiSystemCall64,
-            (unsigned long long)star);
-    kprintf("[SYSCALL] Dispatch table: %u entries wired\n", SYSCALL_MAX);
 }

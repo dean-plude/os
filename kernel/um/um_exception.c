@@ -19,6 +19,7 @@
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/gdt.h"
 #include "../arch/x86_64/idt.h"
+#include "../ke/smp.h"
 
 #define CONTEXT_SIZE      0x4D0
 #define RECORD_SIZE       0x98
@@ -231,6 +232,7 @@ static UINT64 sys_continue(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!load_context(buf, &r)) return 0xC000000Du;              /* INVALID_PARAMETER */
     cli();
     UmReturnToUser();                                            /* killed meanwhile? */
+    bkl_release();                                               /* back to user mode */
     iret_to(&r);
 }
 
@@ -253,6 +255,7 @@ static UINT64 sys_raise_exception(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!push_exception(UmCurrent(), &r, ctx, rec)) UmFault(code, addr, 0);
     cli();
     UmReturnToUser();
+    bkl_release();
     iret_to(&r);
 }
 

@@ -227,14 +227,16 @@ int FD_ISSET(SOCKET fd, fd_set *set)
     return 0;
 }
 
+/* Milliseconds since boot (KUSER_SHARED_DATA.TickCount, 10 ms ticks) */
+static ULONGLONG now_ms(void) { return (ULONGLONG)*(volatile ULONG *)(ULONG_PTR)0x7FFE0320 * 10; }
+
 int select(int nfds, fd_set *rd, fd_set *wr, fd_set *ex, const struct timeval *tv)
 {
     (void)nfds;
-    ULONGLONG deadline = 0;
+    ULONGLONG start = now_ms(), limit = 0;
     int forever = (tv == 0);
-    if (tv) deadline = (ULONGLONG)tv->tv_sec * 1000 + tv->tv_usec / 1000;
-    ULONGLONG waited = 0;
-    for (;;) {
+    if (tv) limit = (ULONGLONG)tv->tv_sec * 1000 + tv->tv_usec / 1000;
+    for (unsigned round = 0;; round++) {
         int ready = 0;
         fd_set r = { 0 }, w = { 0 }, e = { 0 };
         if (rd) for (UINT i = 0; i < rd->fd_count; i++) {
@@ -250,9 +252,11 @@ int select(int nfds, fd_set *rd, fd_set *wr, fd_set *ex, const struct timeval *t
                 { e.fd_array[e.fd_count++] = ex->fd_array[i]; ready++; }
         }
         if (ready) { if (rd) *rd = r; if (wr) *wr = w; if (ex) *ex = e; return ready; }
-        if (!forever && waited >= deadline) { if (rd) FD_ZERO(rd); if (wr) FD_ZERO(wr); if (ex) FD_ZERO(ex); return 0; }
-        NtYieldExecution();
-        waited += 1;                              /* coarse: one poll per yield */
+        if (!forever && now_ms() - start >= limit) { if (rd) FD_ZERO(rd); if (wr) FD_ZERO(wr); if (ex) FD_ZERO(ex); return 0; }
+        /* Nothing yet: yield a few times, then poll once per tick (spinning
+         * would keep a CPU, and the kernel, busy for nothing) */
+        if (round < 4) NtYieldExecution();
+        else { LARGE_INTEGER iv; iv.QuadPart = -10000; NtDelayExecution(FALSE, &iv); }
     }
 }
 

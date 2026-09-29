@@ -1,17 +1,18 @@
 /*
  * gdt.c — GDT and TSS initialization
  *
- * We allocate a static CpuGdt for the boot CPU.  When SMP is added
- * each CPU will get its own GDT (the TSS is per-CPU).
+ * Each CPU has its own CpuGdt (the TSS holds per-CPU stacks): a static
+ * one for the boot CPU, allocated ones for the others (gdt_init_cpu).
  */
 
 #include "gdt.h"
 #include "cpu.h"
+#include "../../ke/kpcr.h"
 
 /* Dedicated double-fault and NMI stacks (16 KiB each).
  * These are used via the IST mechanism so a stack overflow or corrupted
  * RSP can't prevent the handler from running. */
-#define EXCEPTION_STACK_SIZE 0x4000   /* 16 KiB */
+/* EXCEPTION_STACK_SIZE (16 KiB) is in gdt.h */
 
 static uint8_t __aligned(16) double_fault_stack[EXCEPTION_STACK_SIZE];
 static uint8_t __aligned(16) nmi_stack[EXCEPTION_STACK_SIZE];
@@ -97,7 +98,14 @@ static TssDescriptor make_tss_descriptor(uintptr_t tss_addr, uint16_t tss_limit)
  * ----------------------------------------------------------------------- */
 void gdt_init(void)
 {
-    CpuGdt *g = &boot_gdt;
+    gdt_init_cpu(&boot_gdt, double_fault_stack, nmi_stack, machine_check_stack, debug_stack);
+}
+
+CpuGdt *gdt_boot(void) { return &boot_gdt; }
+
+void gdt_init_cpu(CpuGdt *g, uint8_t *double_fault_stack, uint8_t *nmi_stack,
+                  uint8_t *machine_check_stack, uint8_t *debug_stack)
+{
 
     /* Segment descriptors */
     g->entries[0] = make_null();                /* 0x00 — Null */
@@ -191,5 +199,6 @@ void gdt_reload_segments(void)
  * ----------------------------------------------------------------------- */
 void gdt_set_rsp0(uintptr_t rsp0)
 {
-    boot_gdt.tss.rsp[0] = rsp0;
+    CpuGdt *g = KiGetCurrentKpcr()->Gdt;
+    g->tss.rsp[0] = rsp0;
 }

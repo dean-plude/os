@@ -37,7 +37,7 @@
 bits 64
 
 global KiSystemCall64
-extern KiSystemCallDispatch
+extern KiSystemCallEntry
 
 KiSystemCall64:
     ; -----------------------------------------------------------------------
@@ -85,7 +85,7 @@ KiSystemCall64:
     mov     r8,  r9         ; arg4 = R9
     mov     r9,  [rbp + 8]  ; user RSP
 
-    call    KiSystemCallDispatch
+    call    KiSystemCallEntry      ; takes the kernel lock around the dispatch
     ; RAX = return value (interrupts are disabled again here)
 
     ; -----------------------------------------------------------------------

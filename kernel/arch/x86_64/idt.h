@@ -116,6 +116,8 @@ typedef struct __packed {
 
 /* Initialize the IDT and load IDTR. */
 void idt_init(void);
+/* Load the IDT on the calling CPU (the other CPUs share it). */
+void idt_load(void);
 
 /*
  * C-level interrupt/exception dispatch.

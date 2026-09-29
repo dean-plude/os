@@ -110,7 +110,7 @@ QEMU_ARGS=(
     -machine q35
     -cpu qemu64,+rdtscp
     -m 256M
-    -smp 1
+    -smp 4
     -drive "if=pflash,format=raw,readonly=on,file=${OVMF_CODE}"
     -drive "format=raw,file=${DISK_IMG}"
     -serial stdio

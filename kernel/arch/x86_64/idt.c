@@ -16,6 +16,8 @@
 #include "../../ke/scheduler.h"
 #include "../../ps/ps.h"
 #include "../../hal/ps2.h"
+#include "../../ke/kpcr.h"
+#include "../../ke/smp.h"
 
 /* Assembly stub address table (defined in isr_stubs.asm) */
 extern uintptr_t isr_stub_table[IDT_ENTRIES];
@@ -77,15 +79,19 @@ void idt_init(void)
     /* NT syscall (int 0x2E) — DPL=3 so userspace can invoke it */
     set_trap_gate(VECTOR_SYSCALL,  isr_stub_table[VECTOR_SYSCALL],  0, 3);
 
-    /* Load the IDTR */
+    idt_load();
+    kprintf("[IDT] Initialized: %d gates, IDTR base=0x%016lx\n",
+            IDT_ENTRIES, (uint64_t)(uintptr_t)idt);
+}
+
+/* Load the (shared) IDT on the calling CPU */
+void idt_load(void)
+{
     Idtr idtr = {
         .limit = sizeof(idt) - 1,
         .base  = (uint64_t)(uintptr_t)idt,
     };
     __asm__ volatile ("lidt %0" : : "m"(idtr) : "memory");
-
-    kprintf("[IDT] Initialized: %d gates, IDTR base=0x%016lx\n",
-            IDT_ENTRIES, idtr.base);
 }
 
 /* -----------------------------------------------------------------------
@@ -275,10 +281,8 @@ static void dispatch(InterruptFrame *frame)
     /* ---- Timer interrupt (APIC local timer, vector IRQ_TIMER) ---- */
     if (vector == IRQ_TIMER) {
         apic_eoi();
-        /* Collect keyboard/mouse input at 100 Hz (the controller runs with
-         * its own IRQs off); see ps2_poll. */
-        ps2_poll();
-        /* Drive preemptive scheduling: may context-switch to another
+        /* Drive the clock (and keyboard/mouse polling, see sched_tick) and
+         * preemptive scheduling: may context-switch to another
          * thread; control returns here (on this thread's stack) before the
          * ISR epilogue performs IRETQ. */
         sched_tick();
@@ -314,7 +318,28 @@ static void dispatch(InterruptFrame *frame)
  * ----------------------------------------------------------------------- */
 void interrupt_dispatch(InterruptFrame *frame)
 {
+    /* IPIs need nothing the kernel lock guards: handle them without it
+     * (another CPU may hold it while it waits for us to flush). */
+    if (frame->vector == IPI_WAKE || frame->vector == IPI_TLB) {
+        smp_ipi(frame->vector);
+        return;
+    }
+    /* A timer tick while this CPU is halted waiting for the kernel lock:
+     * nothing to do (the clock follows the TSC, and the other CPUs keep
+     * it); taking the lock here would nest another wait. */
+    if (frame->vector == IRQ_TIMER && KiGetCurrentKpcr()->LockWait) {
+        apic_eoi();
+        return;
+    }
+    /* From user mode, or from an idle halt, this CPU doesn't hold the
+     * kernel lock: take it for the handler (smp.h).  If the handler
+     * switches threads, whichever thread comes back through here drops it
+     * as it leaves for where it came from. */
+    bool took = !bkl_held();
+    if (took) bkl_acquire();
+    KiGetCurrentKpcr()->Idle = 0;
     dispatch(frame);
     /* Returning to a user program that has been killed meanwhile? */
     if ((frame->cs & 3) && sched_current()->um) UmReturnToUserFrame(frame);
+    if (took) bkl_release();
 }

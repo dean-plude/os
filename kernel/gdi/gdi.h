@@ -89,6 +89,9 @@ void GdiBackdrop(GdiRect r, int rad, int blur, GdiColor tint, int tint_alpha);
 /* Soft shadow around a rounded rectangle: opacity `alpha` at the edge,
  * fading to zero `blur` logical pixels outside it. */
 void GdiDropShadow(GdiRect r, int rad, int blur, int alpha);
+/* The same, for a shadow under an opaque shape @cover (with corner radius
+ * @cover_rad) drawn next: skips what that shape will hide. */
+void GdiDropShadowAround(GdiRect r, int rad, int blur, int alpha, GdiRect cover, int cover_rad);
 
 void GdiHLine(int y, int x0, int x1, GdiColor c);
 void GdiVLine(int x, int y0, int y1, GdiColor c);

@@ -14,6 +14,16 @@
 
 static ULONG cur_tid(void) { return *(ULONG *)(NtCurrentTebBytes() + TEB_CLIENT_ID + 8); }
 static void  yield(void)   { NtYieldExecution(); }
+/* Waiting on another thread: yield the first few rounds, then sleep a tick
+ * per round (on several CPUs, spinning on yields keeps them all busy) */
+static void  backoff(ULONG *round)
+{
+    if ((*round)++ < 4) { yield(); return; }
+    LARGE_INTEGER iv; iv.QuadPart = -10000;     /* 1 ms: the next 10 ms tick */
+    NtDelayExecution(FALSE, &iv);
+}
+/* Milliseconds since boot (KUSER_SHARED_DATA.TickCount, 10 ms ticks) */
+static ULONGLONG now_ms(void) { return (ULONGLONG)*(volatile ULONG *)(ULONG_PTR)0x7FFE0320 * 10; }
 
 /* -----------------------------------------------------------------------
  * Critical sections
@@ -107,7 +117,8 @@ VOID NTAPI RtlInitializeSRWLock(PRTL_SRWLOCK l) { l->Ptr = 0; }
 
 VOID NTAPI RtlAcquireSRWLockExclusive(PRTL_SRWLOCK l)
 {
-    while (InterlockedCompareExchange64(srw(l), 1, 0) != 0) yield();
+    ULONG round = 0;
+    while (InterlockedCompareExchange64(srw(l), 1, 0) != 0) backoff(&round);
 }
 
 BOOLEAN NTAPI RtlTryAcquireSRWLockExclusive(PRTL_SRWLOCK l)
@@ -122,10 +133,10 @@ VOID NTAPI RtlReleaseSRWLockExclusive(PRTL_SRWLOCK l)
 
 VOID NTAPI RtlAcquireSRWLockShared(PRTL_SRWLOCK l)
 {
-    for (;;) {
+    for (ULONG round = 0;;) {
         LONG64 v = *srw(l);
         if (!(v & 1) && InterlockedCompareExchange64(srw(l), v + 2, v) == v) return;
-        yield();
+        backoff(&round);
     }
 }
 
@@ -151,15 +162,16 @@ static NTSTATUS cv_sleep(PRTL_CONDITION_VARIABLE cv, PLARGE_INTEGER timeout,
                          void (*unlock)(void *), void (*lock)(void *), void *obj)
 {
     LONG64 seen = *(volatile LONG64 *)&cv->Ptr;
-    ULONGLONG deadline = 0;
-    if (timeout) { LARGE_INTEGER c; NtQueryPerformanceCounter(&c, 0); deadline = 1; (void)c; }
+    /* Timeout: relative (negative, 100 ns units) is the common case; an
+     * absolute one is treated as already due */
+    ULONGLONG start = now_ms(), limit = 0;
+    if (timeout) limit = timeout->QuadPart < 0 ? (ULONGLONG)(-timeout->QuadPart) / 10000 : 0;
     unlock(obj);
     NTSTATUS s = STATUS_SUCCESS;
-    ULONG spins = 0;
+    ULONG round = 0;
     while (*(volatile LONG64 *)&cv->Ptr == seen) {
-        if (timeout && timeout->QuadPart == 0) { s = STATUS_TIMEOUT; break; }
-        if (deadline && ++spins > 5000000) { s = STATUS_TIMEOUT; break; }
-        yield();
+        if (timeout && now_ms() - start >= limit) { s = STATUS_TIMEOUT; break; }
+        backoff(&round);
     }
     lock(obj);
     return s;
@@ -195,14 +207,14 @@ VOID NTAPI RtlRunOnceInitialize(PRTL_RUN_ONCE once) { once->Ptr = 0; }
 NTSTATUS NTAPI RtlRunOnceBeginInitialize(PRTL_RUN_ONCE once, ULONG flags, PVOID *ctx)
 {
     (void)flags;
-    for (;;) {
+    for (ULONG round = 0;;) {
         PVOID v = once->Ptr;
         if (v == RUNONCE_DONE) { if (ctx) *ctx = 0; return STATUS_SUCCESS; }   /* already done */
         if (v == 0) {
             if (InterlockedCompareExchangePointer(&once->Ptr, RUNONCE_RUNNING, 0) == 0)
                 return STATUS_PENDING;                 /* we run the initializer */
         } else {
-            yield();                                   /* another thread is running it */
+            backoff(&round);                           /* another thread is running it */
         }
     }
 }

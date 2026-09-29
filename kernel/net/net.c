@@ -105,12 +105,15 @@ static err_t netif_setup(struct netif *n)
     return ERR_OK;
 }
 
-static void poll_input(void)
+/* Returns the number of frames taken in */
+static int poll_input(void)
 {
     static UINT8 buf[2048];
+    int got = 0;
     for (int budget = 32; budget > 0; budget--) {
         int n = E1000Receive(buf, sizeof(buf));
         if (n <= 0) break;
+        got++;
         UINT64 t = rdtsc();                       /* arrival timing: entropy */
         TlsStirEntropy(&t, sizeof(t));
         struct pbuf *p = pbuf_alloc(PBUF_RAW, (u16_t)n, PBUF_POOL);
@@ -118,6 +121,7 @@ static void poll_input(void)
         pbuf_take(p, buf, (u16_t)n);
         if (g_netif.input(p, &g_netif) != ERR_OK) pbuf_free(p);
     }
+    return got;
 }
 
 /* -----------------------------------------------------------------------
@@ -346,7 +350,8 @@ static void net_thread(void *arg)
             g_link = link;
             if (link) netif_set_link_up(&g_netif); else netif_set_link_down(&g_netif);
         }
-        poll_input();
+        bool busy = poll_input() > 0;
+        for (int i = 0; i < NET_OPS && !busy; i++) busy = g_ops[i].in_use;
         sys_check_timeouts();
         check_timeouts();
         http_poll();
@@ -359,7 +364,9 @@ static void net_thread(void *arg)
             announced = true;
         }
         net_unlock();
-        sched_yield();
+        /* Nothing arriving and no operation under way: poll again at the
+         * next tick instead of keeping a CPU (and the kernel lock) busy */
+        if (busy) sched_yield(); else sched_sleep_tick();
     }
 }
 

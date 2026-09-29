@@ -3,7 +3,7 @@
 A clean-room, from-scratch x86_64 operating system designed to run native
 Windows executables (PE32+) without emulation.
 
-## Status: Phase 10 — the standard Windows DLLs, a registry, COM and a disk that keeps your files
+## Status: Phase 11 — every CPU core, on top of the standard Windows DLLs, a registry, COM and a disk that keeps your files
 
 **What works:**
 
@@ -407,6 +407,34 @@ Windows executables (PE32+) without emulation.
   exception tables, type libraries, `RegNotifyChangeKeyValue` events, audio,
   and a clipboard shared between programs.
 
+### Phase 11 — Multiprocessor (SMP)
+
+- **Every CPU core runs threads** (`kernel/ke/smp.c`): the kernel finds the
+  processors in the ACPI MADT, starts each one with INIT and STARTUP IPIs
+  through a real-mode trampoline (`arch/x86_64/ap_trampoline.asm`), and gives
+  it its own KPCR (reached through GS), GDT, TSS and exception stacks, LAPIC
+  timer, and idle thread.  Up to 16 CPUs.
+- **Programs run in parallel**: threads share one ready queue and run on
+  whichever core is free.  The kernel itself is serialized by a big kernel
+  lock, taken on every way in from user mode and dropped on every way out, so
+  user-mode code runs on all cores at once while kernel code sees one CPU at
+  a time.  Waiters halt instead of spinning, and the lock is handed over at
+  the scheduler's yield points.
+- TLB shootdowns (IPIs) keep the other cores' page-table caches right when a
+  program frees or re-protects memory; halted cores are woken by IPI when a
+  thread becomes ready.  The clock follows the TSC, so it keeps time whatever
+  the cores are doing.
+- Programs see the core count: `GetSystemInfo`, the PEB,
+  `KUSER_SHARED_DATA` and `NUMBER_OF_PROCESSORS`.  `cpus.exe` runs the same
+  work on 1 thread and then on one thread per core: with `-smp 4` it reports
+  a speedup of about 3.7×.
+- Boot QEMU with `-smp 4` (or any count) to use it.  Kernel-heavy work (the
+  desktop's drawing, the network stack) still runs on one core at a time, so
+  the gain is in programs' own computing.
+- Also: window shadows skip the part their window covers (the desktop draws
+  about twice as fast), and the network thread and ntdll's lock waits sleep
+  instead of spinning.
+
 ## Quick Start
 
 ```bash
@@ -445,7 +473,7 @@ QEMU with OVMF firmware:
 
 ```bash
 cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/OVMF_VARS.fd
-qemu-system-x86_64 -machine q35 -m 512 \
+qemu-system-x86_64 -machine q35 -m 512 -smp 4 \
   -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,unit=1,file=/tmp/OVMF_VARS.fd \
   -cdrom nova.iso
@@ -458,7 +486,7 @@ On macOS with Homebrew QEMU, the UEFI firmware ships with QEMU:
 
 ```bash
 FW="$(brew --prefix qemu)/share/qemu/edk2-x86_64-code.fd"
-qemu-system-x86_64 -machine q35 -m 512M \
+qemu-system-x86_64 -machine q35 -m 512M -smp 4 \
   -drive if=pflash,format=raw,readonly=on,file="$FW" \
   -cdrom nova.iso -serial stdio
 ```
@@ -536,8 +564,9 @@ os/
   implementations are written from scratch using public Microsoft documentation
   and reverse-engineering references.  The one GPL component is the NetSurf
   browser, a separate program (see [License](#license)).
-- **Single-CPU (Phase 5–7)**: KPCR is statically allocated for the boot CPU; SMP
-  requires one KPCR per logical processor (later phase).
+- **SMP with a big kernel lock (Phase 11)**: every CPU runs threads, one KPCR
+  per CPU; the kernel runs on one CPU at a time, programs on all of them.
+  Finer-grained kernel locking can come subsystem by subsystem.
 - **Software-only GDI**: Phase 7 rendering is a pure CPU rasterizer writing the GOP
   linear framebuffer — no GPU/2D-accel driver. It draws directly to VRAM (no back
   buffer yet); double-buffering arrives once a second VRAM mapping exists.

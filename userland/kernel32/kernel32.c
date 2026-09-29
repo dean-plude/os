@@ -472,8 +472,10 @@ WINBASEAPI VOID WINAPI GetSystemInfo(LPSYSTEM_INFO si)
     si->dwPageSize = 4096;
     si->lpMinimumApplicationAddress = (LPVOID)0x10000;
     si->lpMaximumApplicationAddress = (LPVOID)0x7FFFFFFEFFFFULL;
-    si->dwActiveProcessorMask = 1;
-    si->dwNumberOfProcessors = 1;
+    DWORD n = *(volatile DWORD *)(ULONG_PTR)0x7FFE03C0;    /* KUSER_SHARED_DATA.ActiveProcessorCount */
+    if (!n) n = 1;
+    si->dwActiveProcessorMask = n >= 64 ? ~(DWORD_PTR)0 : ((DWORD_PTR)1 << n) - 1;
+    si->dwNumberOfProcessors = n;
     si->dwProcessorType = 8664;
     si->dwAllocationGranularity = 65536;
 }
