@@ -194,6 +194,7 @@ static const WCHAR *item_text(HWND h, LV *s, int i, int sub, WCHAR *buf, int cap
     if (!ownerdata(h)) {
         LItem *it = &s->it[i];
         t = sub < it->nsub ? it->sub[sub] : NULL;
+        if (!t && sub > 0) t = LPSTR_TEXTCALLBACKW;         /* a subitem never set comes from the parent */
         if (t != LPSTR_TEXTCALLBACKW) return t ? t : L"";
     }
     LVITEMW r;

@@ -439,7 +439,11 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
                               GDI_C(0xF3, 0xF3, 0xF3), GDI_C(0x00, 0x78, 0xD4), gui_paint, g, activate);
     if (w) {
         w->app = popup ? -1 : AppForProgram(p->name);   /* e.g. netsurf.exe -> its dock icon */
-        if (!popup) strncpy(w->program, p->name, sizeof(w->program) - 1);   /* its icon */
+        if (!popup) {                       /* its icon: the program's own file */
+            const char *path = p->name;
+            for (int m = 0; m < p->nmodules; m++) if (!p->modules[m].dll && p->modules[m].path[0]) { path = p->modules[m].path; break; }
+            strncpy(w->program, path, sizeof(w->program) - 1);
+        }
         w->fixed_size = !(gc.flags & GUI_RESIZABLE);
         w->paint_lock_free = true;          /* gui_paint: the program's memory, under DesktopLock */
         w->popup = popup;

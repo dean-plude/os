@@ -238,15 +238,22 @@ BOOL k32_find_close_stream(HANDLE h)
     return TRUE;
 }
 
-/* Change notifications: the handle is an event that is never signaled
- * (NovaOS does not report directory changes yet) */
+/* Change notifications: the handle is an event the kernel signals when the
+ * directory (or its subtree) changes; FindNextChangeNotification re-arms it */
 K32 HANDLE WINAPI FindFirstChangeNotificationW(LPCWSTR path, BOOL sub, DWORD filter)
 {
-    (void)sub; (void)filter;
+    (void)filter;
     DWORD a = GetFileAttributesW(path);
     if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) { SetLastError(ERROR_PATH_NOT_FOUND); return INVALID_HANDLE_VALUE; }
     HANDLE e = CreateEventW(0, TRUE, FALSE, 0);
-    return e ? e : INVALID_HANDLE_VALUE;
+    if (!e) return INVALID_HANDLE_VALUE;
+    HANDLE d = CreateFileW(path, FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0,
+                           OPEN_EXISTING, 0x02000000 /* FILE_FLAG_BACKUP_SEMANTICS */, 0);
+    if (d != INVALID_HANDLE_VALUE) {
+        NtNovaWatchDirectory(d, sub ? TRUE : FALSE, e, 0);
+        CloseHandle(d);
+    }
+    return e;
 }
 K32 HANDLE WINAPI FindFirstChangeNotificationA(LPCSTR path, BOOL sub, DWORD filter)
 {
@@ -255,7 +262,11 @@ K32 HANDLE WINAPI FindFirstChangeNotificationA(LPCSTR path, BOOL sub, DWORD filt
     return FindFirstChangeNotificationW(w, sub, filter);
 }
 K32 BOOL WINAPI FindNextChangeNotification(HANDLE h) { return ResetEvent(h); }
-K32 BOOL WINAPI FindCloseChangeNotification(HANDLE h) { return CloseHandle(h); }
+K32 BOOL WINAPI FindCloseChangeNotification(HANDLE h)
+{
+    NtNovaWatchDirectory(0, FALSE, h, 1);
+    return CloseHandle(h);
+}
 
 K32 BOOL WINAPI ReadDirectoryChangesW(HANDLE h, LPVOID buf, DWORD n, BOOL sub, DWORD filter, LPDWORD ret,
                                       LPOVERLAPPED ov, LPVOID fn)

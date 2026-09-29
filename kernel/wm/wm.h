@@ -69,7 +69,7 @@ typedef struct WND {
                               * whose client bitmap has a fixed size) */
     int        z;            /* z-order; higher = nearer the top */
     int        app;          /* owning app id (for the dock), or -1 */
-    char       program[32];  /* program image name (e.g. "winhello.exe") for
+    char       program[96];  /* program image path (e.g. "C:\\Programs\\winhello.exe") for
                               * windows of Windows programs: their icon */
     bool       popup;        /* menus, drop-downs, tooltips: no frame, not in the
                               * dock or Alt+Tab, above every normal window */

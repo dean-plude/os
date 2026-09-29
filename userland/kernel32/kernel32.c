@@ -804,6 +804,11 @@ static BOOL find_next(FindState *f, LPWIN32_FIND_DATAA fd, BOOL restart)
     FILE_DIRECTORY_INFORMATION *e = (FILE_DIRECTORY_INFORMATION *)buf;
     memset(fd, 0, sizeof(*fd));
     fd->dwFileAttributes = e->FileAttributes;
+#define FT_(dst, li) ((dst).dwLowDateTime = (DWORD)(li).QuadPart, (dst).dwHighDateTime = (DWORD)((ULONGLONG)(li).QuadPart >> 32))
+    FT_(fd->ftCreationTime, e->CreationTime);
+    FT_(fd->ftLastAccessTime, e->LastAccessTime);
+    FT_(fd->ftLastWriteTime, e->LastWriteTime);
+#undef FT_
     fd->nFileSizeLow = (DWORD)e->EndOfFile.QuadPart;
     fd->nFileSizeHigh = (DWORD)(e->EndOfFile.QuadPart >> 32);
     int n = w2u(e->FileName, (int)e->FileNameLength / 2, fd->cFileName, MAX_PATH - 1);
@@ -853,6 +858,9 @@ static void find_data_a2w(const WIN32_FIND_DATAA *a, LPWIN32_FIND_DATAW w)
 {
     memset(w, 0, sizeof(*w));
     w->dwFileAttributes = a->dwFileAttributes;
+    w->ftCreationTime = a->ftCreationTime;
+    w->ftLastAccessTime = a->ftLastAccessTime;
+    w->ftLastWriteTime = a->ftLastWriteTime;
     w->nFileSizeLow = a->nFileSizeLow;
     w->nFileSizeHigh = a->nFileSizeHigh;
     int n = u2w(a->cFileName, -1, w->cFileName, MAX_PATH - 1);

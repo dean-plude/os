@@ -290,6 +290,12 @@ GdiIcon *AppProgramIcon(const char *name)
 {
     char base[RAMFS_NAME_MAX];
     if (!name || !*name) return NULL;
+    if (strchr(name, '\\')) {                         /* a full path: the program there, else by its name */
+        RamNode *f = RamfsResolve(NULL, name);
+        GdiIcon *ic = f && !f->dir ? AppFileIcon(f) : NULL;
+        if (ic) return ic;
+        name = strrchr(name, '\\') + 1;
+    }
     strncpy(base, name, sizeof(base) - 1);
     base[sizeof(base) - 1] = '\0';
     size_t n = strlen(base);
@@ -742,11 +748,13 @@ void AppDrawProgramIcon(const char *name, int x, int y, int s)
         GDI_C(0x8A, 0x4A, 0xC8), GDI_C(0x1E, 0x9A, 0xA8), GDI_C(0xB8, 0x8A, 0x1E),
     };
     unsigned h = 0;
-    for (const char *p = name; p && *p && *p != '.'; p++) h = h * 31 + (unsigned char)(*p | 0x20);
+    const char *nm = name && strrchr(name, '\\') ? strrchr(name, '\\') + 1 : name;
+    for (const char *p = nm; p && *p && *p != '.'; p++) h = h * 31 + (unsigned char)(*p | 0x20);
     GdiColor c = tint[h % (sizeof(tint) / sizeof(tint[0]))];
     tile(x, y, s, lighten(c, 50), c);
     if (s >= 24) {
-        char initial[2] = { name && name[0] ? (char)(name[0] & ~0x20) : '?', 0 };
+        const char *base = name && strrchr(name, '\\') ? strrchr(name, '\\') + 1 : name;
+        char initial[2] = { base && base[0] ? (char)(base[0] & ~0x20) : '?', 0 };
         GdiTextBold(x + (s - GdiTextBoldW(initial)) / 2, y + (s - GDI_FONT_H) / 2, initial, GDI_WHITE);
     } else {
         AppDrawGlyph(GL_WINDOWS, x + s / 6, y + s / 6, s - s / 3, GDI_WHITE);
