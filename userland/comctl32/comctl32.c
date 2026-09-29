@@ -1,176 +1,410 @@
 /*
- * comctl32.dll — common controls.  NovaOS's window system draws its own
- * controls, so the control classes aren't registered here; what programs
- * call around them works: initialization, image lists (bookkeeping),
- * dynamic arrays (DPA/DSA), task dialogs (shown as message boxes) and
- * mouse tracking.
+ * comctl32.dll — the common controls: their classes are registered when
+ * the DLL loads (as version 6 does); subclassing, initialization, task
+ * dialogs, and the helpers the controls share
  */
+#include "cc.h"
 
-#include <windows.h>
+/* -----------------------------------------------------------------------
+ * Shared drawing
+ * ----------------------------------------------------------------------- */
+static HFONT g_font;
+HFONT cc_font(void)
+{
+    if (!g_font) g_font = CreateFontW(-12, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    return g_font;
+}
 
-#define CCAPI __declspec(dllexport)
-#define S_OK_ ((HRESULT)0)
-#define E_NOTIMPL_ ((HRESULT)0x80004001L)
-#define E_INVALIDARG_ ((HRESULT)0x80070057L)
+void cc_fill(HDC dc, const RECT *r, COLORREF c)
+{
+    COLORREF o = SetBkColor(dc, c);
+    ExtTextOutW(dc, 0, 0, ETO_OPAQUE, r, NULL, 0, NULL);
+    SetBkColor(dc, o);
+}
 
-CCAPI void WINAPI InitCommonControls(void) { }
-CCAPI BOOL WINAPI InitCommonControlsEx(const void *icc) { (void)icc; return TRUE; }
-CCAPI BOOL WINAPI _TrackMouseEvent(LPTRACKMOUSEEVENT tme) { return TrackMouseEvent(tme); }
-CCAPI HRESULT WINAPI LoadIconMetric(HINSTANCE h, LPCWSTR name, int metric, HICON *out) { (void)h; (void)name; (void)metric; *out = 0; return E_NOTIMPL_; }
-CCAPI HRESULT WINAPI LoadIconWithScaleDown(HINSTANCE h, LPCWSTR name, int cx, int cy, HICON *out) { (void)h; (void)name; (void)cx; (void)cy; *out = 0; return E_NOTIMPL_; }
-CCAPI BOOL WINAPI SetWindowSubclass(HWND h, void *fn, UINT_PTR id, DWORD_PTR data) { (void)h; (void)fn; (void)id; (void)data; return FALSE; }
-CCAPI BOOL WINAPI RemoveWindowSubclass(HWND h, void *fn, UINT_PTR id) { (void)h; (void)fn; (void)id; return TRUE; }
-CCAPI LRESULT WINAPI DefSubclassProc(HWND h, UINT msg, WPARAM w, LPARAM l) { return DefWindowProcA(h, msg, w, l); }
-CCAPI HANDLE WINAPI CreatePropertySheetPageW(const void *p) { (void)p; return 0; }
-CCAPI INT_PTR WINAPI PropertySheetW(const void *p) { (void)p; return -1; }
-CCAPI HWND WINAPI CreateStatusWindowW(LONG style, LPCWSTR text, HWND parent, UINT id) { (void)style; (void)text; (void)parent; (void)id; return 0; }
+void cc_frame(HDC dc, const RECT *r, COLORREF c)
+{
+    RECT e;
+    SetRect(&e, r->left, r->top, r->right, r->top + 1); cc_fill(dc, &e, c);
+    SetRect(&e, r->left, r->bottom - 1, r->right, r->bottom); cc_fill(dc, &e, c);
+    SetRect(&e, r->left, r->top, r->left + 1, r->bottom); cc_fill(dc, &e, c);
+    SetRect(&e, r->right - 1, r->top, r->right, r->bottom); cc_fill(dc, &e, c);
+}
 
-/* ---- task dialogs: the message and buttons in a message box ---- */
+void cc_arrow(HDC dc, const RECT *r, int dir, COLORREF c)
+{
+    int w = r->right - r->left, h = r->bottom - r->top;
+    int s = MIN(w, h) / 3;
+    if (s < 2) s = 2;
+    if (s > 5) s = 5;
+    int cx = r->left + w / 2, cy = r->top + h / 2;
+    for (int i = 0; i < s; i++) {
+        RECT l;
+        switch (dir) {
+        case 0: SetRect(&l, cx - i, cy - s / 2 + i, cx + i + 1, cy - s / 2 + i + 1); break;
+        case 1: SetRect(&l, cx - (s - 1 - i), cy - s / 2 + i, cx + (s - 1 - i) + 1, cy - s / 2 + i + 1); break;
+        case 2: SetRect(&l, cx - s / 2 + i, cy - i, cx - s / 2 + i + 1, cy + i + 1); break;
+        default: SetRect(&l, cx - s / 2 + i, cy - (s - 1 - i), cx - s / 2 + i + 1, cy + (s - 1 - i) + 1); break;
+        }
+        cc_fill(dc, &l, c);
+    }
+}
+
+int cc_text_w(HDC dc, const WCHAR *s, int n)
+{
+    if (n < 0) n = wlen(s);
+    if (!n) return 0;
+    SIZE sz;
+    GetTextExtentPoint32W(dc, s, n, &sz);
+    return sz.cx;
+}
+
+int cc_font_h(HFONT f)
+{
+    HDC dc = GetDC(NULL);
+    HGDIOBJ o = SelectObject(dc, f ? f : cc_font());
+    TEXTMETRICW tm;
+    GetTextMetricsW(dc, &tm);
+    SelectObject(dc, o);
+    ReleaseDC(NULL, dc);
+    return tm.tmHeight;
+}
+
+/* -----------------------------------------------------------------------
+ * Classes
+ * ----------------------------------------------------------------------- */
+static HINSTANCE g_inst;
+
+ATOM cc_register(LPCWSTR name, WNDPROC proc, UINT style, HBRUSH brush)
+{
+    WNDCLASSEXW wc;
+    memset(&wc, 0, sizeof(wc));
+    wc.cbSize = sizeof(wc);
+    wc.style = style | CS_GLOBALCLASS;
+    wc.lpfnWndProc = proc;
+    wc.cbWndExtra = sizeof(void *) * 2;
+    wc.hInstance = g_inst;
+    wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+    wc.hbrBackground = brush;
+    wc.lpszClassName = name;
+    return RegisterClassExW(&wc);
+}
+
+static int g_registered;
+static void register_all(void)
+{
+    if (g_registered) return;
+    g_registered = 1;
+    cc_register(PROGRESS_CLASSW, ProgressProc, CS_HREDRAW | CS_VREDRAW, 0);
+    cc_register(STATUSCLASSNAMEW, StatusProc, CS_DBLCLKS | CS_HREDRAW | CS_VREDRAW, 0);
+    cc_register(TOOLTIPS_CLASSW, TooltipProc, CS_SAVEBITS, 0);
+    cc_register(UPDOWN_CLASSW, UpDownProc, CS_HREDRAW | CS_VREDRAW, 0);
+    cc_register(TRACKBAR_CLASSW, TrackbarProc, CS_HREDRAW | CS_VREDRAW, 0);
+    cc_register(WC_TABCONTROLW, TabProc, CS_DBLCLKS | CS_HREDRAW | CS_VREDRAW, 0);
+    cc_register(WC_HEADERW, HeaderProc, CS_DBLCLKS, 0);
+    cc_register(WC_LISTVIEWW, ListViewProc, CS_DBLCLKS, 0);
+    cc_register(TOOLBARCLASSNAMEW, ToolbarProc, CS_DBLCLKS, 0);
+    cc_register(REBARCLASSNAMEW, RebarProc, CS_DBLCLKS, 0);
+    cc_register(WC_COMBOBOXEXW, ComboExProc, CS_DBLCLKS, 0);
+    cc_register(WC_TREEVIEWW, TreeViewProc, CS_DBLCLKS, 0);
+    cc_register(WC_LINK, LinkProc, CS_DBLCLKS, 0);
+}
+
+BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
+{
+    (void)reserved;
+    if (reason == DLL_PROCESS_ATTACH) { g_inst = inst; register_all(); }
+    return TRUE;
+}
+
+CC void WINAPI InitCommonControls(void) { register_all(); }
+CC BOOL WINAPI InitCommonControlsEx(const INITCOMMONCONTROLSEX *icc) { (void)icc; register_all(); return TRUE; }
+CC BOOL WINAPI _TrackMouseEvent(LPTRACKMOUSEEVENT tme) { return TrackMouseEvent(tme); }
+CC HRESULT WINAPI DllGetVersion(DWORD *info)
+{
+    if (!info || info[0] < 20) return 0x80070057L;
+    info[1] = 6; info[2] = 16; info[3] = 0; info[4] = 2;    /* 6.16, NT platform */
+    return 0;
+}
+
+CC HRESULT WINAPI LoadIconMetric(HINSTANCE h, LPCWSTR name, int metric, HICON *out)
+{
+    int s = metric ? 32 : 16;
+    *out = LoadImageW(h, name, IMAGE_ICON, s, s, 0);
+    return *out ? 0 : 0x80004005L;
+}
+
+CC HRESULT WINAPI LoadIconWithScaleDown(HINSTANCE h, LPCWSTR name, int cx, int cy, HICON *out)
+{
+    *out = LoadImageW(h, name, IMAGE_ICON, cx, cy, 0);
+    return *out ? 0 : 0x80004005L;
+}
+
+CC void WINAPI GetEffectiveClientRect(HWND h, LPRECT r, const INT *info)
+{
+    GetClientRect(h, r);
+    /* info: pairs of (menu id, control id), ended by 0; visible controls come off the rectangle */
+    for (const INT *p = info; p && p[0]; p += 2) {
+        if (!p[1]) continue;
+        HWND c = GetDlgItem(h, p[1]);
+        if (!c || !IsWindowVisible(c)) continue;
+        RECT cr;
+        GetWindowRect(c, &cr);
+        MapWindowPoints(NULL, h, (POINT *)&cr, 2);
+        SubtractRect(r, r, &cr);
+    }
+}
+
+CC void WINAPI MenuHelp(UINT msg, WPARAM wp, LPARAM lp, HMENU main, HINSTANCE inst, HWND status, UINT *ids)
+{
+    (void)msg; (void)wp; (void)lp; (void)main; (void)inst; (void)ids;
+    if (status) SendMessageW(status, SB_SIMPLE, FALSE, 0);
+}
+CC BOOL WINAPI ShowHideMenuCtl(HWND h, UINT_PTR id, LPINT info) { (void)h; (void)id; (void)info; return TRUE; }
+CC BOOL WINAPI MakeDragList(HWND h) { (void)h; return TRUE; }
+CC void WINAPI DrawInsert(HWND p, HWND lb, int item) { (void)p; (void)lb; (void)item; }
+CC int WINAPI LBItemFromPt(HWND lb, POINT pt, BOOL scroll) { (void)scroll; ScreenToClient(lb, &pt); return (int)(short)LOWORD(SendMessageW(lb, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y))); }
+CC BOOL WINAPI InitMUILanguage(LANGID l) { (void)l; return TRUE; }
+CC LANGID WINAPI GetMUILanguage(void) { return 0x0409; }
+CC void WINAPI DrawStatusTextW(HDC dc, LPCRECT r, LPCWSTR s, UINT f)
+{
+    (void)f;
+    RECT t = *r;
+    cc_fill(dc, &t, GetSysColor(COLOR_3DFACE));
+    t.left += 4;
+    int m = SetBkMode(dc, TRANSPARENT);
+    DrawTextW(dc, s ? s : L"", -1, &t, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SetBkMode(dc, m);
+}
+CC void WINAPI DrawStatusTextA(HDC dc, LPCRECT r, LPCSTR s, UINT f)
+{
+    WCHAR w[512];
+    MultiByteToWideChar(CP_ACP, 0, s ? s : "", -1, w, 512);
+    DrawStatusTextW(dc, r, w, f);
+}
+
+CC HWND WINAPI CreateStatusWindowW(LONG style, LPCWSTR text, HWND parent, UINT id)
+{
+    return CreateWindowExW(0, STATUSCLASSNAMEW, text, (DWORD)style, 0, 0, 0, 0, parent, (HMENU)(UINT_PTR)id, g_inst, NULL);
+}
+
+CC HWND WINAPI CreateStatusWindowA(LONG style, LPCSTR text, HWND parent, UINT id)
+{
+    WCHAR w[512];
+    MultiByteToWideChar(CP_ACP, 0, text ? text : "", -1, w, 512);
+    return CreateStatusWindowW(style, w, parent, id);
+}
+
+CC HWND WINAPI CreateUpDownControl(DWORD style, int x, int y, int cx, int cy, HWND parent, int id, HINSTANCE inst,
+                                   HWND buddy, int up, int low, int pos)
+{
+    (void)inst;
+    HWND h = CreateWindowExW(0, UPDOWN_CLASSW, NULL, style, x, y, cx, cy, parent, (HMENU)(INT_PTR)id, g_inst, NULL);
+    if (!h) return 0;
+    if (buddy) SendMessageW(h, UDM_SETBUDDY, (WPARAM)buddy, 0);
+    SendMessageW(h, UDM_SETRANGE32, (WPARAM)low, up);
+    SendMessageW(h, UDM_SETPOS32, 0, pos);
+    return h;
+}
+
+CC HWND WINAPI CreateToolbarEx(HWND parent, DWORD style, UINT id, int nbitmaps, HINSTANCE binst, UINT_PTR bid,
+                               LPCTBBUTTON buttons, int nbuttons, int dxb, int dyb, int dxbmp, int dybmp, UINT size)
+{
+    HWND h = CreateWindowExW(0, TOOLBARCLASSNAMEW, NULL, style, 0, 0, 100, 30, parent, (HMENU)(UINT_PTR)id, g_inst, NULL);
+    if (!h) return 0;
+    SendMessageW(h, TB_BUTTONSTRUCTSIZE, size, 0);
+    if (dxbmp && dybmp) SendMessageW(h, TB_SETBITMAPSIZE, 0, MAKELPARAM(dxbmp, dybmp));
+    if (dxb && dyb) SendMessageW(h, TB_SETBUTTONSIZE, 0, MAKELPARAM(dxb, dyb));
+    if (nbitmaps > 0) {
+        TBADDBITMAP ab = { binst, bid };
+        SendMessageW(h, TB_ADDBITMAP, (WPARAM)nbitmaps, (LPARAM)&ab);
+    }
+    if (nbuttons > 0) SendMessageW(h, TB_ADDBUTTONSW, (WPARAM)nbuttons, (LPARAM)buttons);
+    return h;
+}
+
+CC HWND WINAPI CreateToolbar(HWND parent, DWORD style, UINT id, int nbitmaps, HINSTANCE binst, UINT bid, LPCTBBUTTON buttons, int n)
+{
+    return CreateToolbarEx(parent, style, id, nbitmaps, binst, bid, buttons, n, 0, 0, 0, 0, 20);
+}
+
+CC HBITMAP WINAPI CreateMappedBitmap(HINSTANCE inst, INT_PTR id, UINT flags, void *map, int n)
+{
+    (void)flags; (void)map; (void)n;
+    return LoadBitmapW(inst, (LPCWSTR)id);
+}
+
+/* -----------------------------------------------------------------------
+ * Subclassing: a chain of procedures in front of the window's own
+ * ----------------------------------------------------------------------- */
+typedef struct { SUBCLASSPROC fn; UINT_PTR id; DWORD_PTR data; } Sub;
+typedef struct { Sub s[16]; int n; WNDPROC orig; int level; int wide; } SubInfo;
+static const WCHAR SUBPROP[] = L"NovaCC32Subclass";
+
+static LRESULT call_level(HWND h, SubInfo *si, int i, UINT msg, WPARAM wp, LPARAM lp)
+{
+    int save = si->level;
+    si->level = i;
+    LRESULT r;
+    if (i < 0) r = si->wide ? CallWindowProcW(si->orig, h, msg, wp, lp) : CallWindowProcA(si->orig, h, msg, wp, lp);
+    else r = si->s[i].fn(h, msg, wp, lp, si->s[i].id, si->s[i].data);
+    si->level = save;
+    return r;
+}
+
+static LRESULT CALLBACK subclass_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    SubInfo *si = GetPropW(h, SUBPROP);
+    if (!si) return DefWindowProcW(h, msg, wp, lp);
+    LRESULT r = call_level(h, si, si->n - 1, msg, wp, lp);
+    if (msg == WM_NCDESTROY) {
+        si = GetPropW(h, SUBPROP);
+        if (si) {
+            RemovePropW(h, SUBPROP);
+            if ((WNDPROC)GetWindowLongPtrW(h, GWLP_WNDPROC) == subclass_proc) SetWindowLongPtrW(h, GWLP_WNDPROC, (LONG_PTR)si->orig);
+            free(si);
+        }
+    }
+    return r;
+}
+
+CC BOOL WINAPI SetWindowSubclass(HWND h, SUBCLASSPROC fn, UINT_PTR id, DWORD_PTR data)
+{
+    if (!IsWindow(h) || !fn) return FALSE;
+    SubInfo *si = GetPropW(h, SUBPROP);
+    if (!si) {
+        si = calloc(1, sizeof(SubInfo));
+        if (!si) return FALSE;
+        si->wide = IsWindowUnicode(h);
+        si->orig = (WNDPROC)(si->wide ? GetWindowLongPtrW(h, GWLP_WNDPROC) : GetWindowLongPtrA(h, GWLP_WNDPROC));
+        si->level = -2;
+        SetPropW(h, SUBPROP, si);
+        if (si->wide) SetWindowLongPtrW(h, GWLP_WNDPROC, (LONG_PTR)subclass_proc);
+        else SetWindowLongPtrA(h, GWLP_WNDPROC, (LONG_PTR)subclass_proc);
+    }
+    for (int i = 0; i < si->n; i++)
+        if (si->s[i].fn == fn && si->s[i].id == id) { si->s[i].data = data; return TRUE; }
+    if (si->n >= 16) return FALSE;
+    si->s[si->n].fn = fn; si->s[si->n].id = id; si->s[si->n].data = data;
+    si->n++;
+    return TRUE;
+}
+
+CC BOOL WINAPI GetWindowSubclass(HWND h, SUBCLASSPROC fn, UINT_PTR id, DWORD_PTR *data)
+{
+    SubInfo *si = GetPropW(h, SUBPROP);
+    for (int i = 0; si && i < si->n; i++)
+        if (si->s[i].fn == fn && si->s[i].id == id) { if (data) *data = si->s[i].data; return TRUE; }
+    return FALSE;
+}
+
+CC BOOL WINAPI RemoveWindowSubclass(HWND h, SUBCLASSPROC fn, UINT_PTR id)
+{
+    SubInfo *si = GetPropW(h, SUBPROP);
+    if (!si) return FALSE;
+    for (int i = 0; i < si->n; i++) {
+        if (si->s[i].fn != fn || si->s[i].id != id) continue;
+        memmove(&si->s[i], &si->s[i + 1], sizeof(Sub) * (size_t)(si->n - i - 1));
+        si->n--;
+        if (si->level >= i) si->level--;
+        if (!si->n && si->level < -1) {
+            SetWindowLongPtrW(h, GWLP_WNDPROC, (LONG_PTR)si->orig);
+            RemovePropW(h, SUBPROP);
+            free(si);
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
+
+CC LRESULT WINAPI DefSubclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    SubInfo *si = GetPropW(h, SUBPROP);
+    if (!si) return DefWindowProcW(h, msg, wp, lp);
+    return call_level(h, si, si->level - 1, msg, wp, lp);
+}
+
+
+/* -----------------------------------------------------------------------
+ * Task dialogs: a message box with the same parts
+ * ----------------------------------------------------------------------- */
 typedef struct {
     UINT cbSize; HWND hwndParent; HINSTANCE hInstance; DWORD dwFlags, dwCommonButtons;
     LPCWSTR pszWindowTitle; LPCWSTR pszMainIcon; LPCWSTR pszMainInstruction, pszContent;
 } TASKDIALOGCONFIG_HEAD;
 
-static int show(HWND owner, LPCWSTR title, LPCWSTR main, LPCWSTR content, DWORD buttons)
+static LPCWSTR res_str(HINSTANCE inst, LPCWSTR s, WCHAR *buf, int n)
 {
-    char t[256] = "", body[2048] = "";
-    if (title && (ULONG_PTR)title > 0xFFFF) WideCharToMultiByte(CP_UTF8, 0, title, -1, t, sizeof(t), 0, 0);
+    if (!s) return NULL;
+    if ((ULONG_PTR)s < 0x10000) { LoadStringW(inst, (UINT)(ULONG_PTR)s, buf, n); return buf; }
+    return s;
+}
+
+static int show(HWND owner, HINSTANCE inst, LPCWSTR title, LPCWSTR main, LPCWSTR content, DWORD buttons, LPCWSTR icon)
+{
+    WCHAR tb[256], mb[1024], cb[2048];
+    title = res_str(inst, title, tb, 256);
+    main = res_str(inst, main, mb, 1024);
+    content = res_str(inst, content, cb, 2048);
+    int n1 = wlen(main), n2 = wlen(content);
+    WCHAR *body = malloc(2 * ((size_t)n1 + n2 + 4));
+    if (!body) return IDCANCEL;
     int o = 0;
-    if (main && (ULONG_PTR)main > 0xFFFF) o = WideCharToMultiByte(CP_UTF8, 0, main, -1, body, sizeof(body) - 4, 0, 0);
-    if (o > 0) { body[o - 1] = '\n'; body[o++] = '\n'; body[o] = 0; } else o = 0;
-    if (content && (ULONG_PTR)content > 0xFFFF) WideCharToMultiByte(CP_UTF8, 0, content, -1, body + o, (int)sizeof(body) - o, 0, 0);
-    UINT type = (buttons & 6) == 6 ? 3 /* MB_YESNOCANCEL */ : (buttons & 6) ? 4 /* MB_YESNO */ : (buttons & 8) ? 1 /* MB_OKCANCEL */ : 0;
-    int r = MessageBoxA(owner, body, t, type);
-    return r ? r : 2;
+    if (n1) { memcpy(body, main, 2 * (size_t)n1); o = n1; }
+    if (n1 && n2) { body[o++] = '\n'; body[o++] = '\n'; }
+    if (n2) { memcpy(body + o, content, 2 * (size_t)n2); o += n2; }
+    body[o] = 0;
+    /* TDCBF_OK 1, YES 2, NO 4, CANCEL 8, RETRY 0x10, CLOSE 0x20 */
+    UINT type = MB_OK;
+    if ((buttons & 6) == 6) type = (buttons & 8) ? MB_YESNOCANCEL : MB_YESNO;
+    else if ((buttons & 0x18) == 0x18) type = MB_RETRYCANCEL;
+    else if ((buttons & 9) == 9) type = MB_OKCANCEL;
+    if (icon == MAKEINTRESOURCEW(-2)) type |= MB_ICONERROR;             /* TD_ERROR_ICON */
+    else if (icon == MAKEINTRESOURCEW(-1)) type |= MB_ICONWARNING;      /* TD_WARNING_ICON */
+    else if (icon == MAKEINTRESOURCEW(-3)) type |= MB_ICONINFORMATION;  /* TD_INFORMATION_ICON */
+    int r = MessageBoxW(owner, body, title ? title : L"", type);
+    free(body);
+    return r ? r : IDCANCEL;
 }
 
-CCAPI HRESULT WINAPI TaskDialog(HWND owner, HINSTANCE inst, LPCWSTR title, LPCWSTR main, LPCWSTR content, DWORD buttons,
-                                LPCWSTR icon, int *pressed)
+CC HRESULT WINAPI TaskDialog(HWND owner, HINSTANCE inst, LPCWSTR title, LPCWSTR main, LPCWSTR content, DWORD buttons,
+                             LPCWSTR icon, int *pressed)
 {
-    (void)inst; (void)icon;
-    int r = show(owner, title, main, content, buttons);
+    int r = show(owner, inst, title, main, content, buttons, icon);
     if (pressed) *pressed = r;
-    return S_OK_;
+    return 0;
 }
 
-CCAPI HRESULT WINAPI TaskDialogIndirect(const TASKDIALOGCONFIG_HEAD *c, int *button, int *radio, BOOL *verify)
+CC HRESULT WINAPI TaskDialogIndirect(const TASKDIALOGCONFIG_HEAD *c, int *button, int *radio, BOOL *verify)
 {
-    if (!c) return E_INVALIDARG_;
-    int r = show(c->hwndParent, c->pszWindowTitle, c->pszMainInstruction, c->pszContent, c->dwCommonButtons);
+    if (!c) return 0x80070057L;
+    int r = show(c->hwndParent, c->hInstance, c->pszWindowTitle, c->pszMainInstruction, c->pszContent, c->dwCommonButtons,
+                 (c->dwFlags & 2) ? NULL : c->pszMainIcon);
     if (button) *button = r;
     if (radio) *radio = 0;
     if (verify) *verify = FALSE;
-    return S_OK_;
+    return 0;
 }
 
-/* ---- image lists: sizes and counts (images are not drawn) ---- */
-typedef struct { DWORD magic; int cx, cy, count, grow; } ImageList;
-#define IL_MAGIC 0x494D4C21u
-static ImageList *il(HANDLE h) { ImageList *l = h; return l && l->magic == IL_MAGIC ? l : 0; }
+/* -----------------------------------------------------------------------
+ * Flat scroll bars and friends: the plain ones
+ * ----------------------------------------------------------------------- */
+CC BOOL WINAPI InitializeFlatSB(HWND h) { (void)h; return TRUE; }
+CC HRESULT WINAPI UninitializeFlatSB(HWND h) { (void)h; return 0; }
+CC int WINAPI FlatSB_SetScrollInfo(HWND h, int bar, LPSCROLLINFO si, BOOL redraw) { return SetScrollInfo(h, bar, si, redraw); }
+CC BOOL WINAPI FlatSB_GetScrollInfo(HWND h, int bar, LPSCROLLINFO si) { return GetScrollInfo(h, bar, si); }
+CC int WINAPI FlatSB_SetScrollPos(HWND h, int bar, int pos, BOOL redraw) { return SetScrollPos(h, bar, pos, redraw); }
+CC int WINAPI FlatSB_GetScrollPos(HWND h, int bar) { return GetScrollPos(h, bar); }
+CC BOOL WINAPI FlatSB_ShowScrollBar(HWND h, int bar, BOOL show) { return ShowScrollBar(h, bar, show); }
+CC BOOL WINAPI FlatSB_EnableScrollBar(HWND h, int bar, UINT arrows) { return EnableScrollBar(h, (UINT)bar, arrows); }
+CC BOOL WINAPI FlatSB_SetScrollProp(HWND h, UINT i, INT_PTR v, BOOL redraw) { (void)h; (void)i; (void)v; (void)redraw; return TRUE; }
 
-CCAPI HANDLE WINAPI ImageList_Create(int cx, int cy, UINT flags, int initial, int grow)
+/* Str_SetPtrW: replace a heap string */
+CC BOOL WINAPI Str_SetPtrW(LPWSTR *p, LPCWSTR s)
 {
-    (void)flags; (void)initial;
-    ImageList *l = LocalAlloc(LMEM_ZEROINIT, sizeof(*l));
-    if (l) { l->magic = IL_MAGIC; l->cx = cx; l->cy = cy; l->grow = grow; }
-    return l;
-}
-CCAPI BOOL WINAPI ImageList_Destroy(HANDLE h) { ImageList *l = il(h); if (!l) return FALSE; l->magic = 0; LocalFree(l); return TRUE; }
-CCAPI int WINAPI ImageList_Add(HANDLE h, HBITMAP img, HBITMAP mask) { (void)img; (void)mask; ImageList *l = il(h); return l ? l->count++ : -1; }
-CCAPI int WINAPI ImageList_AddMasked(HANDLE h, HBITMAP img, COLORREF mask) { (void)img; (void)mask; ImageList *l = il(h); return l ? l->count++ : -1; }
-CCAPI int WINAPI ImageList_ReplaceIcon(HANDLE h, int i, HICON icon) { (void)icon; ImageList *l = il(h); if (!l) return -1; return i < 0 ? l->count++ : i; }
-CCAPI int WINAPI ImageList_GetImageCount(HANDLE h) { ImageList *l = il(h); return l ? l->count : 0; }
-CCAPI BOOL WINAPI ImageList_SetImageCount(HANDLE h, UINT n) { ImageList *l = il(h); if (!l) return FALSE; l->count = (int)n; return TRUE; }
-CCAPI BOOL WINAPI ImageList_Remove(HANDLE h, int i) { ImageList *l = il(h); if (!l) return FALSE; if (i < 0) l->count = 0; else if (i < l->count) l->count--; return TRUE; }
-CCAPI BOOL WINAPI ImageList_GetIconSize(HANDLE h, int *cx, int *cy) { ImageList *l = il(h); if (!l) return FALSE; *cx = l->cx; *cy = l->cy; return TRUE; }
-CCAPI BOOL WINAPI ImageList_SetIconSize(HANDLE h, int cx, int cy) { ImageList *l = il(h); if (!l) return FALSE; l->cx = cx; l->cy = cy; l->count = 0; return TRUE; }
-CCAPI BOOL WINAPI ImageList_Draw(HANDLE h, int i, HDC dc, int x, int y, UINT style) { (void)i; (void)dc; (void)x; (void)y; (void)style; return il(h) != 0; }
-CCAPI COLORREF WINAPI ImageList_SetBkColor(HANDLE h, COLORREF c) { (void)h; (void)c; return 0xFFFFFFFF; }
-CCAPI HICON WINAPI ImageList_GetIcon(HANDLE h, int i, UINT flags) { (void)h; (void)i; (void)flags; return 0; }
-
-/* ---- DSA: a growable array of fixed-size items ---- */
-typedef struct { int count, cap, size, grow; BYTE *items; } DSA;
-
-CCAPI DSA *WINAPI DSA_Create(int size, int grow)
-{
-    DSA *d = LocalAlloc(LMEM_ZEROINIT, sizeof(*d));
-    if (d) { d->size = size; d->grow = grow > 0 ? grow : 8; }
-    return d;
-}
-
-CCAPI int WINAPI DSA_InsertItem(DSA *d, int i, const void *item)
-{
-    if (!d) return -1;
-    if (i < 0 || i > d->count) i = d->count;
-    if (d->count == d->cap) {
-        int cap = d->cap + d->grow;
-        BYTE *n = d->items ? HeapReAlloc(GetProcessHeap(), 0, d->items, (SIZE_T)cap * d->size) : HeapAlloc(GetProcessHeap(), 0, (SIZE_T)cap * d->size);
-        if (!n) return -1;
-        d->items = n; d->cap = cap;
-    }
-    BYTE *at = d->items + (SIZE_T)i * d->size;
-    for (int k = (d->count - i) * d->size - 1; k >= 0; k--) at[d->size + k] = at[k];
-    for (int k = 0; k < d->size; k++) at[k] = ((const BYTE *)item)[k];
-    d->count++;
-    return i;
-}
-
-CCAPI void *WINAPI DSA_GetItemPtr(DSA *d, int i) { return d && i >= 0 && i < d->count ? d->items + (SIZE_T)i * d->size : 0; }
-CCAPI BOOL WINAPI DSA_GetItem(DSA *d, int i, void *out)
-{
-    BYTE *p = DSA_GetItemPtr(d, i);
-    if (!p) return FALSE;
-    for (int k = 0; k < d->size; k++) ((BYTE *)out)[k] = p[k];
+    WCHAR *n = s ? wdup(s) : NULL;
+    if (s && !n) return FALSE;
+    free(*p);
+    *p = n;
     return TRUE;
 }
-CCAPI BOOL WINAPI DSA_SetItem(DSA *d, int i, const void *item)
-{
-    if (!d || i < 0) return FALSE;
-    while (i >= d->count) if (DSA_InsertItem(d, d->count, item) < 0) return FALSE;
-    BYTE *p = d->items + (SIZE_T)i * d->size;
-    for (int k = 0; k < d->size; k++) p[k] = ((const BYTE *)item)[k];
-    return TRUE;
-}
-CCAPI BOOL WINAPI DSA_DeleteItem(DSA *d, int i)
-{
-    if (!d || i < 0 || i >= d->count) return FALSE;
-    BYTE *at = d->items + (SIZE_T)i * d->size;
-    for (int k = 0; k < (d->count - i - 1) * d->size; k++) at[k] = at[d->size + k];
-    d->count--;
-    return TRUE;
-}
-CCAPI BOOL WINAPI DSA_DeleteAllItems(DSA *d) { if (!d) return FALSE; d->count = 0; return TRUE; }
-CCAPI BOOL WINAPI DSA_Destroy(DSA *d) { if (!d) return TRUE; if (d->items) HeapFree(GetProcessHeap(), 0, d->items); LocalFree(d); return TRUE; }
-
-/* ---- DPA: a growable array of pointers ---- */
-CCAPI DSA *WINAPI DPA_Create(int grow) { return DSA_Create(sizeof(void *), grow); }
-CCAPI int WINAPI DPA_InsertPtr(DSA *d, int i, void *p) { return DSA_InsertItem(d, i, &p); }
-CCAPI void *WINAPI DPA_GetPtr(DSA *d, INT_PTR i) { void **p = DSA_GetItemPtr(d, (int)i); return p ? *p : 0; }
-CCAPI BOOL WINAPI DPA_SetPtr(DSA *d, int i, void *p) { return DSA_SetItem(d, i, &p); }
-CCAPI void *WINAPI DPA_DeletePtr(DSA *d, int i) { void *p = DPA_GetPtr(d, i); return DSA_DeleteItem(d, i) ? p : 0; }
-CCAPI BOOL WINAPI DPA_DeleteAllPtrs(DSA *d) { return DSA_DeleteAllItems(d); }
-CCAPI BOOL WINAPI DPA_Destroy(DSA *d) { return DSA_Destroy(d); }
-CCAPI int WINAPI DPA_GetPtrIndex(DSA *d, const void *p)
-{
-    for (int i = 0; d && i < d->count; i++) if (((void **)d->items)[i] == p) return i;
-    return -1;
-}
-typedef int (CALLBACK *PFNDACOMPARE)(void *a, void *b, LPARAM l);
-CCAPI BOOL WINAPI DPA_Sort(DSA *d, PFNDACOMPARE cmp, LPARAM l)
-{
-    if (!d) return FALSE;
-    void **v = (void **)d->items;
-    for (int i = 1; i < d->count; i++) {                   /* insertion sort: stable, lists are small */
-        void *x = v[i];
-        int j = i - 1;
-        while (j >= 0 && cmp(v[j], x, l) > 0) { v[j + 1] = v[j]; j--; }
-        v[j + 1] = x;
-    }
-    return TRUE;
-}
-typedef int (CALLBACK *PFNDAENUMCALLBACK)(void *p, void *data);
-CCAPI void WINAPI DPA_EnumCallback(DSA *d, PFNDAENUMCALLBACK fn, void *data)
-{
-    for (int i = 0; d && i < d->count; i++) if (!fn(((void **)d->items)[i], data)) break;
-}
-CCAPI void WINAPI DPA_DestroyCallback(DSA *d, PFNDAENUMCALLBACK fn, void *data) { DPA_EnumCallback(d, fn, data); DPA_Destroy(d); }

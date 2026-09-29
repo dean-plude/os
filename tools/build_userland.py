@@ -48,7 +48,7 @@ DLLS = [
     ('psapi',    ['kernel32'],           0x7FFB40000000),
     ('version',  ['kernel32', 'ntdll'],  0x7FFB20000000),
     ('winmm',    ['kernel32', 'ntdll'],  0x7FFB30000000),
-    ('comctl32', ['user32', 'kernel32', 'ntdll'], 0x7FFB00000000),
+    ('comctl32', ['user32', 'gdi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB00000000),
     ('comdlg32', ['kernel32', 'ntdll'],  0x7FFB10000000),
     ('ole32',    ['advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
     ('oleaut32', ['ole32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAF0000000),
@@ -202,7 +202,7 @@ def ordinal_exports(name, objs):
 def link_dll(name, objs, deps, base, extra=()):
     extra = list(extra) + ordinal_exports(name, objs)
     dll = os.path.join(out, f'{name}.dll')
-    entry = ['/entry:DllMain'] if name == 'testdll' else ['/noentry']
+    entry = ['/entry:DllMain'] if name in ('testdll', 'comctl32') else ['/noentry']
     run(['lld-link', '/dll', '/nodefaultlib', f'/base:{base:#x}'] + entry +
         [f'/out:{dll}', f'/implib:{os.path.join(out, name + ".lib")}'] + objs + list(extra) +
         [os.path.join(out, d + '.lib') for d in deps])
