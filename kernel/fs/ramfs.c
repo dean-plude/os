@@ -34,9 +34,12 @@ static void (*g_removed_hook)(const char *path);
 void RamfsSetMode(RamfsMode mode) { g_mode = mode; }
 UINT32 RamfsChanges(void) { return g_changes; }
 void RamfsSetRemovedHook(void (*fn)(const char *path)) { g_removed_hook = fn; }
+static void (*g_change_hook)(RamNode *dir);
+void RamfsSetChangeHook(void (*fn)(RamNode *dir)) { g_change_hook = fn; }
 
 static void mark(RamNode *n, UINT8 flags)
 {
+    if (n && g_change_hook && g_mode != RAMFS_LOADING) g_change_hook((flags & RAMFS_F_DIRTYDIR) ? n : n->parent ? n->parent : n);
     if (g_mode != RAMFS_TRACK || !n) return;
     n->pflags |= flags;
     for (RamNode *a = n->parent; a && !(a->pflags & RAMFS_F_SUB); a = a->parent) a->pflags |= RAMFS_F_SUB;

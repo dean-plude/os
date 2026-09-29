@@ -1,0 +1,52 @@
+#include "guitest.h"
+
+IDM_MAIN MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&Options...\tCtrl+O", IDC_OPTIONS
+        MENUITEM "&Message box", IDC_MSGBOX
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit", IDC_EXIT
+    END
+    POPUP "&View"
+    BEGIN
+        MENUITEM "&Toolbar", IDC_TOOLBAR, CHECKED
+        POPUP "&Sort by"
+        BEGIN
+            MENUITEM "&Name", IDC_SORTNAME
+            MENUITEM "&Size", IDC_SORTSIZE
+        END
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&About", IDC_ABOUT
+    END
+END
+
+IDA_MAIN ACCELERATORS
+BEGIN
+    "O", IDC_OPTIONS, VIRTKEY, CONTROL
+END
+
+IDD_OPTIONS DIALOGEX 0, 0, 260, 170
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Options"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "&Archive:", -1, 7, 9, 40, 8
+    EDITTEXT        IDC_NAME, 50, 7, 203, 14, ES_AUTOHSCROLL
+    LTEXT           "&Format:", -1, 7, 29, 40, 8
+    COMBOBOX        IDC_FORMAT, 50, 27, 90, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Level:", -1, 7, 47, 40, 8
+    COMBOBOX        IDC_LEVEL, 50, 45, 90, 80, CBS_DROPDOWN | WS_VSCROLL | WS_TABSTOP
+    GROUPBOX        "Mode", -1, 150, 26, 103, 48
+    AUTORADIOBUTTON "&Add and replace", IDC_MODE1, 157, 38, 90, 10, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "&Update", IDC_MODE2, 157, 50, 90, 10
+    AUTORADIOBUTTON "&Synchronize", IDC_MODE3, 157, 62, 90, 10
+    AUTOCHECKBOX    "&Encrypt file names", IDC_ENCRYPT, 7, 66, 120, 10, WS_TABSTOP
+    AUTOCHECKBOX    "&Delete files after compression", IDC_DELETE, 7, 80, 140, 10, WS_TABSTOP
+    LISTBOX         IDC_LIST, 7, 94, 246, 46, LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP | WS_BORDER
+    DEFPUSHBUTTON   "OK", IDOK, 149, 149, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 203, 149, 50, 14
+END

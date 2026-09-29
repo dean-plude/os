@@ -1260,4 +1260,675 @@ USERAPI HWND    GetParent(HWND h);
 USERAPI BOOL    CheckDlgButton(HWND h, int id, UINT st);
 USERAPI UINT    IsDlgButtonChecked(HWND h, int id);
 
+
+/* ---- more of USER: types, constants and prototypes user32 itself uses ---- */
+typedef HANDLE HACCEL;
+typedef HANDLE HHOOK;
+typedef HANDLE HWINEVENTHOOK;
+typedef LRESULT (CALLBACK *HOOKPROC)(int, WPARAM, LPARAM);
+typedef VOID (CALLBACK *WINEVENTPROC)(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD);
+typedef struct tagWINDOWINFO { DWORD cbSize; RECT rcWindow, rcClient; DWORD dwStyle, dwExStyle, dwWindowStatus; UINT cxWindowBorders, cyWindowBorders; ATOM atomWindowType; WORD wCreatorVersion; } WINDOWINFO, *PWINDOWINFO, *LPWINDOWINFO;
+typedef struct tagSCROLLBARINFO { DWORD cbSize; RECT rcScrollBar; int dxyLineButton, xyThumbTop, xyThumbBottom, reserved; DWORD rgstate[6]; } SCROLLBARINFO, *PSCROLLBARINFO, *LPSCROLLBARINFO;
+typedef struct tagMENUBARINFO { DWORD cbSize; RECT rcBar; HMENU hMenu; HWND hwndMenu; BOOL fBarFocused:1; BOOL fFocused:1; BOOL fUnused:30; } MENUBARINFO, *PMENUBARINFO, *LPMENUBARINFO;
+typedef struct tagGUITHREADINFO { DWORD cbSize, flags; HWND hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret; RECT rcCaret; } GUITHREADINFO, *PGUITHREADINFO, *LPGUITHREADINFO;
+typedef struct { UINT cbSize; HWND hwnd; DWORD dwFlags; UINT uCount; DWORD dwTimeout; } FLASHWINFO, *PFLASHWINFO;
+typedef struct { DWORD cbSize, flags; HCURSOR hCursor; POINT ptScreenPos; } CURSORINFO, *PCURSORINFO, *LPCURSORINFO;
+typedef struct tagMENUINFO { DWORD cbSize, fMask, dwStyle; UINT cyMax; HBRUSH hbrBack; DWORD dwContextHelpID; ULONG_PTR dwMenuData; } MENUINFO, *LPMENUINFO;
+typedef const MENUINFO *LPCMENUINFO;
+typedef struct tagDRAWTEXTPARAMS { UINT cbSize; int iTabLength, iLeftMargin, iRightMargin; UINT uiLengthDrawn; } DRAWTEXTPARAMS, *LPDRAWTEXTPARAMS;
+
+#define MAKEWPARAM(l, h) ((WPARAM)(DWORD)MAKELONG(l, h))
+#define MAKELPARAM(l, h) ((LPARAM)(DWORD)MAKELONG(l, h))
+#define MAKELRESULT(l, h) ((LRESULT)(DWORD)MAKELONG(l, h))
+#define DLGWINDOWEXTRA 30
+#define WM_SYSTIMER 0x0118
+#define WM_NCMOUSELEAVE 0x02A2
+#define WM_NCMBUTTONDBLCLK 0x00A9
+#define WM_QUERYOPEN 0x0013
+#define WM_QUERYNEWPALETTE 0x030F
+#define WM_QUERYDROPOBJECT 0x022B
+#define WM_DROPOBJECT 0x022A
+#define WM_PRINT 0x0317
+#define WM_NEXTDLGCTL 0x0028
+#define WM_ISACTIVEICON 0x0035
+#define WM_INPUTLANGCHANGEREQUEST 0x0050
+#define WM_GETOBJECT 0x003D
+#define WM_DEVMODECHANGE 0x001B
+#define WM_APPCOMMAND 0x0319
+#define WH_MSGFILTER (-1)
+#define WH_GETMESSAGE 3
+#define WH_CALLWNDPROC 4
+#define WH_CBT 5
+#define WH_KEYBOARD 2
+#define WH_MOUSE 7
+#define WH_KEYBOARD_LL 13
+#define WH_MOUSE_LL 14
+#define MSGF_DIALOGBOX 0
+#define MSGF_MENU 2
+#define VK_EXECUTE 0x2B
+#define VK_CANCEL 0x03
+#define UISF_HIDEFOCUS 1
+#define UISF_HIDEACCEL 2
+#define TME_QUERY 0x40000000
+#define STN_ENABLE 2
+#define STN_DISABLE 3
+#define STATE_SYSTEM_UNAVAILABLE 0x00000001
+#define STATE_SYSTEM_PRESSED 0x00000008
+#define STATE_SYSTEM_INVISIBLE 0x00008000
+#define SS_ELLIPSISMASK 0x0000C000
+#define SM_CXMINTRACK 34
+#define SM_CYMINTRACK 35
+#define SM_CXCURSOR 13
+#define SM_CYCURSOR 14
+#define SM_CXDRAG 68
+#define SM_CYDRAG 69
+#define RDW_INVALIDATE 0x0001
+#define RDW_INTERNALPAINT 0x0002
+#define RDW_ERASE 0x0004
+#define RDW_VALIDATE 0x0008
+#define RDW_NOINTERNALPAINT 0x0010
+#define RDW_NOERASE 0x0020
+#define RDW_NOCHILDREN 0x0040
+#define RDW_ALLCHILDREN 0x0080
+#define RDW_UPDATENOW 0x0100
+#define RDW_ERASENOW 0x0200
+#define RDW_FRAME 0x0400
+#define RDW_NOFRAME 0x0800
+#define QS_KEY 0x0001
+#define QS_MOUSEMOVE 0x0002
+#define QS_MOUSEBUTTON 0x0004
+#define QS_POSTMESSAGE 0x0008
+#define QS_TIMER 0x0010
+#define QS_PAINT 0x0020
+#define QS_SENDMESSAGE 0x0040
+#define QS_HOTKEY 0x0080
+#define QS_ALLPOSTMESSAGE 0x0100
+#define QS_RAWINPUT 0x0400
+#define QS_MOUSE (QS_MOUSEMOVE | QS_MOUSEBUTTON)
+#define QS_INPUT (QS_MOUSE | QS_KEY | QS_RAWINPUT)
+#define QS_ALLEVENTS (QS_INPUT | QS_POSTMESSAGE | QS_TIMER | QS_PAINT | QS_HOTKEY)
+#define QS_ALLINPUT (QS_INPUT | QS_POSTMESSAGE | QS_TIMER | QS_PAINT | QS_HOTKEY | QS_SENDMESSAGE)
+#define MWMO_WAITALL 0x0001
+#define MWMO_ALERTABLE 0x0002
+#define MWMO_INPUTAVAILABLE 0x0004
+#define OBJID_WINDOW 0
+#define OBJID_CLIENT ((LONG)0xFFFFFFFC)
+#define OBJID_VSCROLL ((LONG)0xFFFFFFFB)
+#define OBJID_HSCROLL ((LONG)0xFFFFFFFA)
+#define OBJID_MENU ((LONG)0xFFFFFFFD)
+#define NFR_ANSI 1
+#define NFR_UNICODE 2
+#define MNC_IGNORE 0
+#define MNC_CLOSE 1
+#define MNC_EXECUTE 2
+#define MNC_SELECT 3
+#define MIM_MAXHEIGHT 0x00000001
+#define MIM_BACKGROUND 0x00000002
+#define MIM_HELPID 0x00000004
+#define MIM_MENUDATA 0x00000008
+#define MIM_STYLE 0x00000010
+#define MIM_APPLYTOSUBMENUS 0x80000000
+#define MB_TYPEMASK 0x0000000F
+#define MB_ICONMASK 0x000000F0
+#define MB_DEFMASK 0x00000F00
+#define MB_MODEMASK 0x00003000
+#define MB_MISCMASK 0x0000C000
+#define MB_HELP 0x00004000
+#define IDI_HAND MAKEINTRESOURCEW(32513)
+#define IDI_QUESTION MAKEINTRESOURCEW(32514)
+#define IDI_EXCLAMATION MAKEINTRESOURCEW(32515)
+#define IDI_ASTERISK MAKEINTRESOURCEW(32516)
+#define IDI_WINLOGO MAKEINTRESOURCEW(32517)
+#define IDI_SHIELD MAKEINTRESOURCEW(32518)
+#define IDI_WARNING IDI_EXCLAMATION
+#define IDI_ERROR IDI_HAND
+#define IDI_INFORMATION IDI_ASTERISK
+#define IDC_IBEAM MAKEINTRESOURCEW(32513)
+#define IDC_WAIT MAKEINTRESOURCEW(32514)
+#define IDC_CROSS MAKEINTRESOURCEW(32515)
+#define IDC_UPARROW MAKEINTRESOURCEW(32516)
+#define IDC_SIZENWSE MAKEINTRESOURCEW(32642)
+#define IDC_SIZENESW MAKEINTRESOURCEW(32643)
+#define IDC_SIZEWE MAKEINTRESOURCEW(32644)
+#define IDC_SIZENS MAKEINTRESOURCEW(32645)
+#define IDC_SIZEALL MAKEINTRESOURCEW(32646)
+#define IDC_NO MAKEINTRESOURCEW(32648)
+#define IDC_HAND MAKEINTRESOURCEW(32649)
+#define IDC_APPSTARTING MAKEINTRESOURCEW(32650)
+#define IDC_HELP MAKEINTRESOURCEW(32651)
+#define ICON_SMALL 0
+#define ICON_BIG 1
+#define ICON_SMALL2 2
+#define HTSIZE 4
+#define GCL_CBWNDEXTRA (-18)
+#define GCL_CBCLSEXTRA (-20)
+#define GCLP_MENUNAME (-8)
+#define GCLP_HMODULE (-16)
+#define GCLP_HBRBACKGROUND (-10)
+#define GCLP_HCURSOR (-12)
+#define GCLP_HICON (-14)
+#define GCLP_WNDPROC (-24)
+#define GCLP_HICONSM (-34)
+#define GCL_STYLE (-26)
+#define GCW_ATOM (-32)
+#define EM_SHOWBALLOONTIP 0x1503
+#define EM_HIDEBALLOONTIP 0x1504
+#define EM_SETIMESTATUS 0x00D8
+#define EM_GETIMESTATUS 0x00D9
+#define EM_GETWORDBREAKPROC 0x00D1
+#define EC_LEFTMARGIN 0x0001
+#define EC_RIGHTMARGIN 0x0002
+#define EC_USEFONTINFO 0xFFFF
+#define DST_COMPLEX 0x0000
+#define DST_TEXT 0x0001
+#define DST_PREFIXTEXT 0x0002
+#define DST_ICON 0x0003
+#define DST_BITMAP 0x0004
+#define DSS_NORMAL 0x0000
+#define DSS_UNION 0x0010
+#define DSS_DISABLED 0x0020
+#define DSS_MONO 0x0080
+#define DSS_HIDEPREFIX 0x0200
+#define DSS_PREFIXONLY 0x0400
+#define DSS_RIGHT 0x8000
+#define DFCS_BUTTONRADIOIMAGE 0x0001
+#define DFCS_BUTTONRADIOMASK 0x0002
+#define DFCS_BUTTON3STATE 0x0008
+#define DFCS_SCROLLSIZEGRIP 0x0008
+#define DFCS_SCROLLSIZEGRIPRIGHT 0x0010
+#define DFCS_CAPTIONCLOSE 0x0000
+#define DFCS_CAPTIONMIN 0x0001
+#define DFCS_CAPTIONMAX 0x0002
+#define DFCS_CAPTIONRESTORE 0x0003
+#define DFCS_CAPTIONHELP 0x0004
+#define DFCS_TRANSPARENT 0x0800
+#define DFCS_HOT 0x1000
+#define DCX_WINDOW 0x00000001
+#define DCX_CACHE 0x00000002
+#define DCX_NORESETATTRS 0x00000004
+#define DCX_CLIPCHILDREN 0x00000008
+#define DCX_CLIPSIBLINGS 0x00000010
+#define DCX_PARENTCLIP 0x00000020
+#define DCX_EXCLUDERGN 0x00000040
+#define DCX_INTERSECTRGN 0x00000080
+#define DCX_LOCKWINDOWUPDATE 0x00000400
+#define CWP_ALL 0x0000
+#define CWP_SKIPINVISIBLE 0x0001
+#define CWP_SKIPDISABLED 0x0002
+#define CWP_SKIPTRANSPARENT 0x0004
+#define CURSOR_SHOWING 0x00000001
+#define CB_SETCUEBANNER 0x1703
+#define CB_GETCUEBANNER 0x1704
+#define BCM_FIRST 0x1600
+#define BCM_GETIDEALSIZE (BCM_FIRST + 0x0001)
+#define BCM_SETIMAGELIST (BCM_FIRST + 0x0002)
+#define BCM_GETIMAGELIST (BCM_FIRST + 0x0003)
+#define BCM_SETTEXTMARGIN (BCM_FIRST + 0x0004)
+#define BCM_GETTEXTMARGIN (BCM_FIRST + 0x0005)
+#define BCM_SETDROPDOWNSTATE (BCM_FIRST + 0x0006)
+#define BCM_SETSPLITINFO (BCM_FIRST + 0x0007)
+#define BCM_GETSPLITINFO (BCM_FIRST + 0x0008)
+#define BCM_SETNOTE (BCM_FIRST + 0x0009)
+#define BCM_GETNOTE (BCM_FIRST + 0x000A)
+#define BCM_GETNOTELENGTH (BCM_FIRST + 0x000B)
+#define BCM_SETSHIELD (BCM_FIRST + 0x000C)
+#define SBS_SIZEBOX 0x0008
+#define SW_SCROLLCHILDREN 0x0001
+#define SW_INVALIDATE 0x0002
+#define SW_ERASE 0x0004
+#define SW_SMOOTHSCROLL 0x0010
+#define ESB_DISABLE_LTUP 0x0001
+#define ESB_DISABLE_RTDN 0x0002
+#define LR_COPYDELETEORG 0x00000008
+#ifndef DI_DEFAULTSIZE
+#define DI_DEFAULTSIZE 0x0008
+#endif
+#ifndef COLOR_3DHILIGHT
+#define COLOR_3DHILIGHT 20
+#endif
+
+USERAPI HWND     SetCapture(HWND h);
+USERAPI BOOL     ReleaseCapture(void);
+USERAPI HWND     GetCapture(void);
+USERAPI BOOL     TrackMouseEvent(LPTRACKMOUSEEVENT t);
+USERAPI BOOL     SetRectEmpty(LPRECT r);
+USERAPI BOOL     EqualRect(const RECT *a, const RECT *b);
+USERAPI BOOL     SubtractRect(LPRECT d, const RECT *a, const RECT *b);
+USERAPI BOOL     MessageBeep(UINT type);
+USERAPI int      SetScrollInfo(HWND h, int bar, LPCSCROLLINFO si, BOOL redraw);
+USERAPI BOOL     GetScrollInfo(HWND h, int bar, LPSCROLLINFO si);
+USERAPI int      SetScrollPos(HWND h, int bar, int pos, BOOL redraw);
+USERAPI int      GetScrollPos(HWND h, int bar);
+USERAPI UINT     GetCaretBlinkTime(void);
+USERAPI BOOL     CreateCaret(HWND h, HBITMAP b, int w, int hh);
+USERAPI BOOL     DestroyCaret(void);
+USERAPI BOOL     ShowCaret(HWND h);
+USERAPI BOOL     HideCaret(HWND h);
+USERAPI BOOL     SetCaretPos(int x, int y);
+USERAPI LONG     GetDialogBaseUnits(void);
+USERAPI BOOL     DestroyMenu(HMENU h);
+USERAPI HMENU    LoadMenuW(HINSTANCE inst, LPCWSTR name);
+USERAPI BOOL     CallMsgFilterW(LPMSG m, int code);
+USERAPI BOOL     SetForegroundWindow(HWND h);
+USERAPI HWND     GetActiveWindow(void);
+USERAPI HANDLE   LoadImageW(HINSTANCE inst, LPCWSTR name, UINT type, int cx, int cy, UINT flags);
+USERAPI BOOL     AdjustWindowRectEx(LPRECT r, DWORD style, BOOL menu, DWORD ex);
+USERAPI BOOL     AdjustWindowRect(LPRECT r, DWORD style, BOOL menu);
+USERAPI int      ToUnicode(UINT vk, UINT sc, const BYTE *keys, LPWSTR out, int n, UINT flags);
+USERAPI LONG     TabbedTextOutW(HDC dc, int x, int y, LPCWSTR s, int n, int nt, const INT *tabs, int org);
+USERAPI BOOL     SetPropW(HWND h, LPCWSTR name, HANDLE data);
+USERAPI HANDLE   GetPropW(HWND h, LPCWSTR name);
+USERAPI HANDLE   RemovePropW(HWND h, LPCWSTR name);
+USERAPI HCURSOR  SetCursor(HCURSOR c);
+USERAPI BOOL     IsClipboardFormatAvailable(UINT fmt);
+USERAPI BOOL     IsCharAlphaNumericW(WCHAR c);
+USERAPI BOOL     IsCharAlphaW(WCHAR c);
+USERAPI UINT     GetDoubleClickTime(void);
+typedef BOOL (CALLBACK *DRAWSTATEPROC)(HDC, LPARAM, WPARAM, int, int);
+USERAPI BOOL     DrawStateW(HDC dc, HBRUSH br, DRAWSTATEPROC fn, LPARAM lp, WPARAM wp, int x, int y, int cx, int cy, UINT flags);
+USERAPI BOOL     DrawFrameControl(HDC dc, LPRECT rc, UINT type, UINT state);
+USERAPI BOOL     DrawEdge(HDC dc, LPRECT rc, UINT edge, UINT flags);
+USERAPI BOOL     DestroyIcon(HICON h);
+USERAPI DWORD    CharUpperBuffW(LPWSTR s, DWORD n);
+USERAPI DWORD    CharLowerBuffW(LPWSTR s, DWORD n);
+USERAPI BOOL     DrawFocusRect(HDC dc, const RECT *r);
+USERAPI BOOL     InvalidateRgn(HWND h, HRGN rgn, BOOL erase);
+USERAPI BOOL     ValidateRect(HWND h, const RECT *r);
+USERAPI BOOL     RedrawWindow(HWND h, const RECT *r, HRGN rgn, UINT flags);
+USERAPI HWND     GetWindow(HWND h, UINT cmd);
+USERAPI BOOL     IsChild(HWND p, HWND c);
+USERAPI HWND     GetAncestor(HWND h, UINT flags);
+USERAPI BOOL     IsWindowEnabled(HWND h);
+USERAPI HWND     GetNextDlgTabItem(HWND d, HWND c, BOOL prev);
+USERAPI HWND     GetNextDlgGroupItem(HWND d, HWND c, BOOL prev);
+USERAPI LRESULT  CALLBACK DefDlgProcW(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI int      MapWindowPoints(HWND from, HWND to, LPPOINT p, UINT n);
+USERAPI BOOL     OpenClipboard(HWND h);
+USERAPI HICON    LoadIconW(HINSTANCE inst, LPCWSTR name);
+USERAPI BOOL     KillTimer(HWND h, UINT_PTR id);
+USERAPI BOOL     GetWindowRect(HWND h, LPRECT r);
+USERAPI BOOL     IsDialogMessageA(HWND h, LPMSG m);
+USERAPI SHORT    GetKeyState(int vk);
+
+
+/* ---- every other function user32 exports ---- */
+typedef DWORD_PTR *PDWORD_PTR;
+USERAPI BOOL CheckRadioButton(HWND h, int first, int last, int check);
+USERAPI BOOL GetComboBoxInfo(HWND h, PCOMBOBOXINFO ci);
+USERAPI int DlgDirListComboBoxW(HWND h, LPWSTR path, int id, int st, UINT type);
+USERAPI LRESULT DefFrameProcW(HWND h, HWND client, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI LRESULT DefFrameProcA(HWND h, HWND client, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI LRESULT DefMDIChildProcW(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI LRESULT DefMDIChildProcA(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI BOOL TranslateMDISysAccel(HWND h, LPMSG m);
+USERAPI BOOL MapDialogRect(HWND h, LPRECT r);
+USERAPI HWND CreateDialogIndirectParamW(HINSTANCE inst, LPCDLGTEMPLATEW t, HWND p, DLGPROC fn, LPARAM lp);
+USERAPI HWND CreateDialogIndirectParamA(HINSTANCE inst, LPCDLGTEMPLATEA t, HWND p, DLGPROC fn, LPARAM lp);
+USERAPI HWND CreateDialogIndirectParamAorW(HINSTANCE inst, LPCDLGTEMPLATEW t, HWND p, DLGPROC fn, LPARAM lp, DWORD f);
+USERAPI HWND CreateDialogParamA(HINSTANCE inst, LPCSTR name, HWND p, DLGPROC fn, LPARAM lp);
+USERAPI INT_PTR DialogBoxIndirectParamW(HINSTANCE inst, LPCDLGTEMPLATEW t, HWND p, DLGPROC fn, LPARAM lp);
+USERAPI INT_PTR DialogBoxIndirectParamA(HINSTANCE inst, LPCDLGTEMPLATEA t, HWND p, DLGPROC fn, LPARAM lp);
+USERAPI INT_PTR DialogBoxIndirectParamAorW(HINSTANCE inst, LPCDLGTEMPLATEW t, HWND p, DLGPROC fn, LPARAM lp, DWORD f);
+USERAPI INT_PTR DialogBoxParamA(HINSTANCE inst, LPCSTR name, HWND p, DLGPROC fn, LPARAM lp);
+USERAPI LRESULT DefDlgProcA(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI LRESULT SendDlgItemMessageA(HWND h, int id, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI BOOL SetDlgItemTextA(HWND h, int id, LPCSTR s);
+USERAPI UINT GetDlgItemTextA(HWND h, int id, LPSTR s, int n);
+USERAPI BOOL SetDlgItemInt(HWND h, int id, UINT v, BOOL sign);
+USERAPI UINT GetDlgItemInt(HWND h, int id, BOOL *ok, BOOL sign);
+USERAPI int MessageBoxExW(HWND h, LPCWSTR text, LPCWSTR caption, UINT type, WORD lang);
+USERAPI int MessageBoxExA(HWND h, LPCSTR text, LPCSTR caption, UINT type, WORD lang);
+USERAPI int MessageBoxIndirectW(const MSGBOXPARAMSW *p);
+USERAPI int MessageBoxIndirectA(const void *pa);
+USERAPI int MessageBoxTimeoutW(HWND h, LPCWSTR text, LPCWSTR caption, UINT type, WORD lang, DWORD ms);
+USERAPI int MessageBoxTimeoutA(HWND h, LPCSTR text, LPCSTR caption, UINT type, WORD lang, DWORD ms);
+USERAPI BOOL SetSysColors(int n, const INT *idx, const COLORREF *c);
+USERAPI BOOL InvertRect(HDC dc, const RECT *r);
+USERAPI int DrawTextExW(HDC dc, LPWSTR s, int len, LPRECT r, UINT fmt, LPDRAWTEXTPARAMS p);
+USERAPI int DrawTextExA(HDC dc, LPSTR s, int len, LPRECT r, UINT fmt, LPDRAWTEXTPARAMS p);
+USERAPI LONG TabbedTextOutA(HDC dc, int x, int y, LPCSTR s, int n, int nt, const INT *tabs, int org);
+USERAPI DWORD GetTabbedTextExtentW(HDC dc, LPCWSTR s, int n, int nt, const INT *tabs);
+USERAPI DWORD GetTabbedTextExtentA(HDC dc, LPCSTR s, int n, int nt, const INT *tabs);
+USERAPI BOOL DrawStateA(HDC dc, HBRUSH br, DRAWSTATEPROC fn, LPARAM lp, WPARAM wp, int x, int y, int cx, int cy, UINT flags);
+USERAPI BOOL DrawCaption(HWND h, HDC dc, const RECT *r, UINT flags);
+USERAPI BOOL DrawIconEx(HDC dc, int x, int y, HICON h, int cx, int cy, UINT step, HBRUSH br, UINT flags);
+USERAPI BOOL DrawIcon(HDC dc, int x, int y, HICON h);
+USERAPI int DlgDirListW(HWND h, LPWSTR path, int lb, int st, UINT type);
+USERAPI BOOL DlgDirSelectExW(HWND h, LPWSTR s, int n, int id);
+USERAPI DWORD GetListBoxInfo(HWND h);
+USERAPI BOOL IsMenu(HMENU h);
+USERAPI BOOL InsertMenuW(HMENU h, UINT pos, UINT f, UINT_PTR id, LPCWSTR s);
+USERAPI BOOL InsertMenuA(HMENU h, UINT pos, UINT f, UINT_PTR id, LPCSTR s);
+USERAPI BOOL AppendMenuA(HMENU h, UINT f, UINT_PTR id, LPCSTR s);
+USERAPI BOOL ModifyMenuW(HMENU h, UINT pos, UINT f, UINT_PTR id, LPCWSTR s);
+USERAPI BOOL ModifyMenuA(HMENU h, UINT pos, UINT f, UINT_PTR id, LPCSTR s);
+USERAPI BOOL RemoveMenu(HMENU h, UINT pos, UINT f);
+USERAPI BOOL DeleteMenu(HMENU h, UINT pos, UINT f);
+USERAPI int GetMenuItemCount(HMENU h);
+USERAPI UINT GetMenuItemID(HMENU h, int pos);
+USERAPI HMENU GetSubMenu(HMENU h, int pos);
+USERAPI int GetMenuStringW(HMENU h, UINT pos, LPWSTR s, int n, UINT f);
+USERAPI int GetMenuStringA(HMENU h, UINT pos, LPSTR s, int n, UINT f);
+USERAPI UINT GetMenuState(HMENU h, UINT pos, UINT f);
+USERAPI DWORD CheckMenuItem(HMENU h, UINT id, UINT f);
+USERAPI BOOL EnableMenuItem(HMENU h, UINT id, UINT f);
+USERAPI BOOL CheckMenuRadioItem(HMENU h, UINT first, UINT last, UINT check, UINT f);
+USERAPI BOOL HiliteMenuItem(HWND h, HMENU m, UINT pos, UINT f);
+USERAPI BOOL SetMenuDefaultItem(HMENU h, UINT item, UINT bypos);
+USERAPI UINT GetMenuDefaultItem(HMENU h, UINT bypos, UINT flags);
+USERAPI BOOL SetMenuItemBitmaps(HMENU h, UINT pos, UINT f, HBITMAP un, HBITMAP ch);
+USERAPI LONG GetMenuCheckMarkDimensions(void);
+USERAPI BOOL GetMenuItemInfoW(HMENU h, UINT item, BOOL bypos, LPMENUITEMINFOW mi);
+USERAPI BOOL GetMenuItemInfoA(HMENU h, UINT item, BOOL bypos, LPMENUITEMINFOA mi);
+USERAPI BOOL SetMenuItemInfoW(HMENU h, UINT item, BOOL bypos, LPCMENUITEMINFOW mi);
+USERAPI BOOL SetMenuItemInfoA(HMENU h, UINT item, BOOL bypos, const MENUITEMINFOA *mi);
+USERAPI BOOL InsertMenuItemW(HMENU h, UINT item, BOOL bypos, LPCMENUITEMINFOW mi);
+USERAPI BOOL InsertMenuItemA(HMENU h, UINT item, BOOL bypos, const MENUITEMINFOA *mi);
+USERAPI BOOL SetMenuInfo(HMENU h, LPCMENUINFO mi);
+USERAPI BOOL GetMenuInfo(HMENU h, LPMENUINFO mi);
+USERAPI BOOL SetMenuContextHelpId(HMENU h, DWORD id);
+USERAPI DWORD GetMenuContextHelpId(HMENU h);
+USERAPI HMENU GetMenu(HWND h);
+USERAPI BOOL DrawMenuBar(HWND h);
+USERAPI HMENU GetSystemMenu(HWND h, BOOL revert);
+USERAPI BOOL GetMenuItemRect(HWND h, HMENU hm, UINT item, LPRECT r);
+USERAPI int MenuItemFromPoint(HWND h, HMENU hm, POINT pt);
+USERAPI BOOL GetMenuBarInfo(HWND h, LONG obj, LONG item, PMENUBARINFO mbi);
+USERAPI BOOL EndMenu(void);
+USERAPI BOOL TrackPopupMenuEx(HMENU hm, UINT flags, int x, int y, HWND h, LPTPMPARAMS p);
+USERAPI HMENU LoadMenuIndirectW(const void *tmpl);
+USERAPI HMENU LoadMenuIndirectA(const void *tmpl);
+USERAPI HMENU LoadMenuA(HINSTANCE inst, LPCSTR name);
+USERAPI HACCEL CreateAcceleratorTableW(LPACCEL a, int n);
+USERAPI HACCEL CreateAcceleratorTableA(LPACCEL a, int n);
+USERAPI BOOL DestroyAcceleratorTable(HACCEL h);
+USERAPI int CopyAcceleratorTableW(HACCEL h, LPACCEL a, int n);
+USERAPI int CopyAcceleratorTableA(HACCEL h, LPACCEL a, int n);
+USERAPI HACCEL LoadAcceleratorsW(HINSTANCE inst, LPCWSTR name);
+USERAPI HACCEL LoadAcceleratorsA(HINSTANCE inst, LPCSTR name);
+USERAPI int TranslateAcceleratorW(HWND h, HACCEL ha, LPMSG m);
+USERAPI int TranslateAcceleratorA(HWND h, HACCEL ha, LPMSG m);
+USERAPI BOOL CopyRect(LPRECT d, const RECT *s);
+USERAPI BOOL GetKeyboardState(PBYTE keys);
+USERAPI BOOL SetKeyboardState(PBYTE keys);
+USERAPI HANDLE GetKeyboardLayout(DWORD tid);
+USERAPI int GetKeyboardLayoutList(int n, HANDLE *list);
+USERAPI HANDLE LoadKeyboardLayoutW(LPCWSTR id, UINT f);
+USERAPI HANDLE ActivateKeyboardLayout(HANDLE h, UINT f);
+USERAPI BOOL GetKeyboardLayoutNameW(LPWSTR name);
+USERAPI int GetKeyboardType(int what);
+USERAPI UINT MapVirtualKeyW(UINT code, UINT type);
+USERAPI UINT MapVirtualKeyA(UINT code, UINT type);
+USERAPI UINT MapVirtualKeyExW(UINT code, UINT type, HANDLE hkl);
+USERAPI int ToUnicodeEx(UINT vk, UINT sc, const BYTE *keys, LPWSTR out, int n, UINT flags, HANDLE hkl);
+USERAPI int ToAscii(UINT vk, UINT sc, const BYTE *keys, LPWORD out, UINT flags);
+USERAPI SHORT VkKeyScanW(WCHAR c);
+USERAPI SHORT VkKeyScanA(CHAR c);
+USERAPI SHORT VkKeyScanExW(WCHAR c, HANDLE hkl);
+USERAPI int GetKeyNameTextW(LONG lp, LPWSTR buf, int n);
+USERAPI UINT SendInput(UINT n, void *inputs, int size);
+USERAPI void keybd_event(BYTE vk, BYTE sc, DWORD flags, ULONG_PTR extra);
+USERAPI void mouse_event(DWORD flags, DWORD dx, DWORD dy, DWORD data, ULONG_PTR extra);
+USERAPI BOOL BlockInput(BOOL block);
+USERAPI BOOL GetLastInputInfo(void *lii);
+USERAPI BOOL RegisterHotKey(HWND h, int id, UINT mods, UINT vk);
+USERAPI BOOL UnregisterHotKey(HWND h, int id);
+USERAPI BOOL SetDoubleClickTime(UINT ms);
+USERAPI BOOL SwapMouseButton(BOOL swap);
+USERAPI LPSTR CharUpperA(LPSTR s);
+USERAPI LPSTR CharLowerA(LPSTR s);
+USERAPI DWORD CharUpperBuffA(LPSTR s, DWORD n);
+USERAPI DWORD CharLowerBuffA(LPSTR s, DWORD n);
+USERAPI LPWSTR CharNextW(LPCWSTR s);
+USERAPI LPWSTR CharPrevW(LPCWSTR start, LPCWSTR s);
+USERAPI LPSTR CharNextA(LPCSTR s);
+USERAPI LPSTR CharPrevA(LPCSTR start, LPCSTR s);
+USERAPI LPSTR CharPrevExA(WORD cp, LPCSTR start, LPCSTR s, DWORD flags);
+USERAPI LPSTR CharNextExA(WORD cp, LPCSTR s, DWORD flags);
+USERAPI BOOL IsCharUpperW(WCHAR c);
+USERAPI BOOL IsCharLowerW(WCHAR c);
+USERAPI BOOL IsCharAlphaA(CHAR c);
+USERAPI BOOL IsCharAlphaNumericA(CHAR c);
+USERAPI BOOL IsCharUpperA(CHAR c);
+USERAPI BOOL IsCharLowerA(CHAR c);
+USERAPI BOOL CharToOemA(LPCSTR s, LPSTR d);
+USERAPI BOOL OemToCharA(LPCSTR s, LPSTR d);
+USERAPI BOOL CharToOemBuffA(LPCSTR s, LPSTR d, DWORD n);
+USERAPI BOOL OemToCharBuffA(LPCSTR s, LPSTR d, DWORD n);
+USERAPI BOOL CharToOemW(LPCWSTR s, LPSTR d);
+USERAPI BOOL OemToCharW(LPCSTR s, LPWSTR d);
+USERAPI int wvsprintfA(LPSTR buf, LPCSTR fmt, va_list ap);
+USERAPI int wvsprintfW(LPWSTR buf, LPCWSTR fmt, va_list ap);
+USERAPI int GetSystemMetricsForDpi(int index, UINT dpi);
+USERAPI BOOL SystemParametersInfoA(UINT action, UINT uparam, PVOID p, UINT winini);
+USERAPI BOOL SystemParametersInfoForDpi(UINT action, UINT uparam, PVOID p, UINT winini, UINT dpi);
+USERAPI UINT GetDpiForWindow(HWND h);
+USERAPI UINT GetDpiForSystem(void);
+USERAPI BOOL SetProcessDPIAware(void);
+USERAPI BOOL IsProcessDPIAware(void);
+USERAPI BOOL SetProcessDpiAwarenessContext(HANDLE ctx);
+USERAPI HANDLE SetThreadDpiAwarenessContext(HANDLE ctx);
+USERAPI HANDLE GetThreadDpiAwarenessContext(void);
+USERAPI HANDLE GetWindowDpiAwarenessContext(HWND h);
+USERAPI int GetAwarenessFromDpiAwarenessContext(HANDLE ctx);
+USERAPI BOOL AreDpiAwarenessContextsEqual(HANDLE a, HANDLE b);
+USERAPI BOOL IsValidDpiAwarenessContext(HANDLE ctx);
+USERAPI BOOL EnableNonClientDpiScaling(HWND h);
+USERAPI HANDLE MonitorFromWindow(HWND h, DWORD f);
+USERAPI HANDLE MonitorFromPoint(POINT p, DWORD f);
+USERAPI HANDLE MonitorFromRect(const RECT *r, DWORD f);
+USERAPI BOOL GetMonitorInfoW(HANDLE m, void *mi);
+USERAPI BOOL GetMonitorInfoA(HANDLE m, void *mi);
+USERAPI BOOL EnumDisplaySettingsW(LPCWSTR dev, DWORD mode, void *dm);
+USERAPI BOOL EnumDisplayDevicesW(LPCWSTR dev, DWORD i, void *dd, DWORD flags);
+USERAPI LONG ChangeDisplaySettingsW(void *dm, DWORD f);
+USERAPI LONG ChangeDisplaySettingsExW(LPCWSTR d, void *dm, HWND h, DWORD f, void *p);
+USERAPI int CountClipboardFormats(void);
+USERAPI UINT EnumClipboardFormats(UINT fmt);
+USERAPI HWND GetClipboardOwner(void);
+USERAPI HWND GetOpenClipboardWindow(void);
+USERAPI DWORD GetClipboardSequenceNumber(void);
+USERAPI BOOL AddClipboardFormatListener(HWND h);
+USERAPI BOOL RemoveClipboardFormatListener(HWND h);
+USERAPI int GetClipboardFormatNameW(UINT fmt, LPWSTR buf, int n);
+USERAPI int GetClipboardFormatNameA(UINT fmt, LPSTR buf, int n);
+USERAPI HANDLE GetProcessWindowStation(void);
+USERAPI HANDLE GetThreadDesktop(DWORD tid);
+USERAPI HANDLE OpenInputDesktop(DWORD f, BOOL inherit, DWORD access);
+USERAPI HANDLE OpenDesktopW(LPCWSTR name, DWORD f, BOOL inherit, DWORD access);
+USERAPI BOOL CloseDesktop(HANDLE h);
+USERAPI BOOL SwitchDesktop(HANDLE h);
+USERAPI BOOL SetThreadDesktop(HANDLE h);
+USERAPI BOOL CloseWindowStation(HANDLE h);
+USERAPI BOOL GetUserObjectInformationW(HANDLE h, int index, PVOID p, DWORD n, LPDWORD need);
+USERAPI BOOL ExitWindowsEx(UINT flags, DWORD reason);
+USERAPI BOOL LockWorkStation(void);
+USERAPI BOOL ChangeWindowMessageFilterEx(HWND h, UINT msg, DWORD action, void *cf);
+USERAPI BOOL ChangeWindowMessageFilter(UINT msg, DWORD f);
+USERAPI BOOL RegisterTouchWindow(HWND h, ULONG f);
+USERAPI HANDLE RegisterDeviceNotificationW(HANDLE r, LPVOID filter, DWORD f);
+USERAPI BOOL UnregisterDeviceNotification(HANDLE h);
+USERAPI BOOL RegisterRawInputDevices(const void *d, UINT n, UINT cb);
+USERAPI HANDLE RegisterPowerSettingNotification(HANDLE r, const GUID *g, DWORD f);
+USERAPI BOOL UnregisterPowerSettingNotification(HANDLE h);
+USERAPI BOOL GetPhysicalCursorPos(LPPOINT p);
+USERAPI BOOL SetCursorPos(int x, int y);
+USERAPI BOOL SetPhysicalCursorPos(int x, int y);
+USERAPI BOOL ClipCursor(const RECT *r);
+USERAPI BOOL GetClipCursor(LPRECT r);
+USERAPI HCURSOR GetCursor(void);
+USERAPI int ShowCursor(BOOL show);
+USERAPI BOOL GetCursorInfo(PCURSORINFO ci);
+USERAPI BOOL SetSystemCursor(HCURSOR c, DWORD id);
+USERAPI LRESULT SendMessageTimeoutW(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT f, UINT ms, PDWORD_PTR r);
+USERAPI LRESULT SendMessageTimeoutA(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT f, UINT ms, PDWORD_PTR r);
+USERAPI BOOL SendNotifyMessageW(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI BOOL SendNotifyMessageA(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI BOOL InSendMessage(void);
+USERAPI DWORD InSendMessageEx(LPVOID r);
+USERAPI BOOL ReplyMessage(LRESULT r);
+USERAPI BOOL PostThreadMessageA(DWORD tid, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI UINT_PTR SetCoalescableTimer(HWND h, UINT_PTR id, UINT ms, TIMERPROC fn, ULONG tol);
+USERAPI BOOL WaitMessage(void);
+USERAPI DWORD GetQueueStatus(UINT flags);
+USERAPI BOOL GetInputState(void);
+USERAPI LONG GetMessageTime(void);
+USERAPI DWORD GetMessagePos(void);
+USERAPI LPARAM GetMessageExtraInfo(void);
+USERAPI LPARAM SetMessageExtraInfo(LPARAM lp);
+USERAPI BOOL SetMessageQueue(int n);
+USERAPI DWORD MsgWaitForMultipleObjectsEx(DWORD n, const HANDLE *hs, DWORD ms, DWORD wake_mask, DWORD flags);
+USERAPI BOOL TranslateMessageEx(const MSG *m, UINT f);
+USERAPI LRESULT CallWindowProcA(WNDPROC fn, HWND h, UINT msg, WPARAM wp, LPARAM lp);
+USERAPI UINT RegisterWindowMessageA(LPCSTR name);
+USERAPI UINT RegisterClipboardFormatW(LPCWSTR name);
+USERAPI UINT RegisterClipboardFormatA(LPCSTR name);
+USERAPI HHOOK SetWindowsHookExW(int id, HOOKPROC fn, HINSTANCE mod, DWORD tid);
+USERAPI HHOOK SetWindowsHookExA(int id, HOOKPROC fn, HINSTANCE mod, DWORD tid);
+USERAPI HHOOK SetWindowsHookW(int id, HOOKPROC fn);
+USERAPI HHOOK SetWindowsHookA(int id, HOOKPROC fn);
+USERAPI BOOL UnhookWindowsHookEx(HHOOK h);
+USERAPI BOOL UnhookWindowsHook(int id, HOOKPROC fn);
+USERAPI LRESULT CallNextHookEx(HHOOK h, int code, WPARAM wp, LPARAM lp);
+USERAPI BOOL CallMsgFilterA(LPMSG m, int code);
+USERAPI BOOL CallMsgFilter(LPMSG m, int code);
+USERAPI HWINEVENTHOOK SetWinEventHook(DWORD a, DWORD b, HMODULE m, WINEVENTPROC fn, DWORD pid, DWORD tid, DWORD f);
+USERAPI BOOL UnhookWinEvent(HWINEVENTHOOK h);
+USERAPI void NotifyWinEvent(DWORD ev, HWND h, LONG obj, LONG child);
+USERAPI BOOL IsWinEventHookInstalled(DWORD ev);
+USERAPI BOOL AttachThreadInput(DWORD a, DWORD b, BOOL attach);
+USERAPI DWORD WaitForInputIdle(HANDLE p, DWORD ms);
+USERAPI BOOL GetGUIThreadInfo(DWORD tid, PGUITHREADINFO gi);
+USERAPI BOOL ValidateRgn(HWND h, HRGN rgn);
+USERAPI BOOL GetUpdateRect(HWND h, LPRECT r, BOOL erase);
+USERAPI int GetUpdateRgn(HWND h, HRGN rgn, BOOL erase);
+USERAPI int ExcludeUpdateRgn(HDC dc, HWND h);
+USERAPI BOOL LockWindowUpdate(HWND h);
+USERAPI HDC GetWindowDC(HWND h);
+USERAPI HDC GetDCEx(HWND h, HRGN rgn, DWORD flags);
+USERAPI HWND WindowFromDC(HDC dc);
+USERAPI int ScrollWindowEx(HWND h, int dx, int dy, const RECT *scroll, const RECT *clip, HRGN rgn, LPRECT upd, UINT flags);
+USERAPI BOOL ScrollWindow(HWND h, int dx, int dy, const RECT *r, const RECT *clip);
+USERAPI BOOL ScrollDC(HDC dc, int dx, int dy, const RECT *scroll, const RECT *clip, HRGN rgn, LPRECT upd);
+USERAPI BOOL GetCaretPos(LPPOINT p);
+USERAPI BOOL SetCaretBlinkTime(UINT ms);
+USERAPI BOOL PaintDesktop(HDC dc);
+USERAPI int LookupIconIdFromDirectoryEx(PBYTE dir, BOOL icon, int cx, int cy, UINT flags);
+USERAPI int LookupIconIdFromDirectory(PBYTE dir, BOOL icon);
+USERAPI HICON CreateIconFromResourceEx(PBYTE bits, DWORD size, BOOL icon, DWORD ver, int cx, int cy, UINT flags);
+USERAPI HICON CreateIconFromResource(PBYTE bits, DWORD size, BOOL icon, DWORD ver);
+USERAPI HCURSOR LoadCursorFromFileW(LPCWSTR f);
+USERAPI HCURSOR LoadCursorFromFileA(LPCSTR f);
+USERAPI HBITMAP LoadBitmapW(HINSTANCE inst, LPCWSTR name);
+USERAPI HBITMAP LoadBitmapA(HINSTANCE inst, LPCSTR name);
+USERAPI HANDLE LoadImageA(HINSTANCE inst, LPCSTR name, UINT type, int cx, int cy, UINT flags);
+USERAPI HICON CreateIconIndirect(PICONINFO ii);
+USERAPI HICON CreateIcon(HINSTANCE inst, int w, int h, BYTE planes, BYTE bpp, const BYTE *and, const BYTE *xor);
+USERAPI HCURSOR CreateCursor(HINSTANCE inst, int hx, int hy, int w, int h, const void *and, const void *xor);
+USERAPI BOOL GetIconInfo(HICON h, PICONINFO ii);
+USERAPI BOOL GetIconInfoExW(HICON h, void *ix);
+USERAPI HICON CopyIcon(HICON h);
+USERAPI HANDLE CopyImage(HANDLE h, UINT type, int cx, int cy, UINT flags);
+USERAPI BOOL DestroyCursor(HCURSOR h);
+USERAPI UINT PrivateExtractIconsW(LPCWSTR file, int idx, int cx, int cy, HICON *icons, UINT *ids, UINT n, UINT flags);
+USERAPI BOOL SetScrollRange(HWND h, int bar, int mn, int mx, BOOL redraw);
+USERAPI BOOL GetScrollRange(HWND h, int bar, LPINT mn, LPINT mx);
+USERAPI BOOL ShowScrollBar(HWND h, int bar, BOOL show);
+USERAPI BOOL EnableScrollBar(HWND h, UINT bar, UINT arrows);
+USERAPI BOOL GetScrollBarInfo(HWND h, LONG id, PSCROLLBARINFO sbi);
+USERAPI BOOL UnregisterClassW(LPCWSTR name, HINSTANCE inst);
+USERAPI BOOL UnregisterClassA(LPCSTR name, HINSTANCE inst);
+USERAPI BOOL GetClassInfoExW(HINSTANCE inst, LPCWSTR name, WNDCLASSEXW *wc);
+USERAPI BOOL GetClassInfoW(HINSTANCE inst, LPCWSTR name, WNDCLASSW *wc);
+USERAPI BOOL GetClassInfoExA(HINSTANCE inst, LPCSTR name, WNDCLASSEXA *wc);
+USERAPI BOOL GetClassInfoA(HINSTANCE inst, LPCSTR name, WNDCLASSA *wc);
+USERAPI int GetClassNameW(HWND h, LPWSTR buf, int n);
+USERAPI int GetClassNameA(HWND h, LPSTR buf, int n);
+USERAPI UINT RealGetWindowClassW(HWND h, LPWSTR buf, UINT n);
+USERAPI UINT RealGetWindowClassA(HWND h, LPSTR buf, UINT n);
+USERAPI ULONG_PTR GetClassLongPtrW(HWND h, int i);
+USERAPI ULONG_PTR SetClassLongPtrW(HWND h, int i, LONG_PTR v);
+USERAPI ULONG_PTR GetClassLongPtrA(HWND h, int i);
+USERAPI ULONG_PTR SetClassLongPtrA(HWND h, int i, LONG_PTR v);
+USERAPI DWORD GetClassLongW(HWND h, int i);
+USERAPI DWORD GetClassLongA(HWND h, int i);
+USERAPI DWORD SetClassLongW(HWND h, int i, LONG v);
+USERAPI DWORD SetClassLongA(HWND h, int i, LONG v);
+USERAPI WORD GetClassWord(HWND h, int i);
+USERAPI BOOL ShowWindowAsync(HWND h, int cmd);
+USERAPI BOOL ShowOwnedPopups(HWND h, BOOL show);
+USERAPI BOOL IsWindowUnicode(HWND h);
+USERAPI BOOL IsIconic(HWND h);
+USERAPI BOOL IsZoomed(HWND h);
+USERAPI HWND SetActiveWindow(HWND h);
+USERAPI BOOL BringWindowToTop(HWND h);
+USERAPI BOOL AllowSetForegroundWindow(DWORD pid);
+USERAPI BOOL LockSetForegroundWindow(UINT code);
+USERAPI void SwitchToThisWindow(HWND h, BOOL alt);
+USERAPI HWND GetShellWindow(void);
+USERAPI HWND GetTopWindow(HWND h);
+USERAPI HWND GetNextWindow(HWND h, UINT cmd);
+USERAPI HWND GetLastActivePopup(HWND h);
+USERAPI HWND SetParent(HWND h, HWND hp);
+USERAPI BOOL EnumChildWindows(HWND hp, WNDENUMPROC fn, LPARAM lp);
+USERAPI BOOL EnumWindows(WNDENUMPROC fn, LPARAM lp);
+USERAPI BOOL EnumThreadWindows(DWORD tid, WNDENUMPROC fn, LPARAM lp);
+USERAPI BOOL EnumDesktopWindows(HANDLE desk, WNDENUMPROC fn, LPARAM lp);
+USERAPI HWND FindWindowExW(HWND hp, HWND after, LPCWSTR cls, LPCWSTR title);
+USERAPI HWND FindWindowW(LPCWSTR cls, LPCWSTR title);
+USERAPI HWND FindWindowExA(HWND hp, HWND after, LPCSTR cls, LPCSTR title);
+USERAPI HWND FindWindowA(LPCSTR cls, LPCSTR title);
+USERAPI DWORD GetWindowThreadProcessId(HWND h, LPDWORD pid);
+USERAPI BOOL GetWindowInfo(HWND h, PWINDOWINFO wi);
+USERAPI BOOL AdjustWindowRectExForDpi(LPRECT r, DWORD style, BOOL menu, DWORD ex, UINT dpi);
+USERAPI HANDLE BeginDeferWindowPos(int n);
+USERAPI HANDLE DeferWindowPos(HANDLE hd, HWND h, HWND after, int x, int y, int cx, int cy, UINT f);
+USERAPI BOOL EndDeferWindowPos(HANDLE hd);
+USERAPI BOOL GetWindowPlacement(HWND h, WINDOWPLACEMENT *p);
+USERAPI BOOL SetWindowPlacement(HWND h, const WINDOWPLACEMENT *p);
+USERAPI BOOL CloseWindow(HWND h);
+USERAPI BOOL OpenIcon(HWND h);
+USERAPI HWND ChildWindowFromPointEx(HWND h, POINT pt, UINT flags);
+USERAPI HWND ChildWindowFromPoint(HWND h, POINT pt);
+USERAPI HWND RealChildWindowFromPoint(HWND h, POINT pt);
+USERAPI HWND WindowFromPoint(POINT pt);
+USERAPI HWND WindowFromPhysicalPoint(POINT pt);
+USERAPI int GetWindowTextLengthW(HWND h);
+USERAPI int GetWindowTextLengthA(HWND h);
+USERAPI int InternalGetWindowText(HWND h, LPWSTR s, int max);
+USERAPI LONG GetWindowLongW(HWND h, int i);
+USERAPI LONG GetWindowLongA(HWND h, int i);
+USERAPI LONG SetWindowLongW(HWND h, int i, LONG v);
+USERAPI LONG SetWindowLongA(HWND h, int i, LONG v);
+USERAPI WORD GetWindowWord(HWND h, int i);
+USERAPI WORD SetWindowWord(HWND h, int i, WORD v);
+USERAPI int GetDlgCtrlID(HWND h);
+USERAPI int SetDlgCtrlID(HWND h, int id);
+USERAPI BOOL SetPropA(HWND h, LPCSTR name, HANDLE data);
+USERAPI HANDLE GetPropA(HWND h, LPCSTR name);
+USERAPI HANDLE RemovePropA(HWND h, LPCSTR name);
+USERAPI BOOL FlashWindow(HWND h, BOOL invert);
+USERAPI BOOL FlashWindowEx(PFLASHWINFO fi);
+USERAPI BOOL IsHungAppWindow(HWND h);
+USERAPI BOOL SetLayeredWindowAttributes(HWND h, COLORREF key, BYTE alpha, DWORD f);
+USERAPI BOOL GetLayeredWindowAttributes(HWND h, COLORREF *key, BYTE *alpha, DWORD *f);
+USERAPI BOOL UpdateLayeredWindow(HWND h, HDC d, POINT *p, SIZE *s, HDC src, POINT *sp, COLORREF k, void *bf, DWORD f);
+USERAPI BOOL SetWindowDisplayAffinity(HWND h, DWORD a);
+USERAPI BOOL GetWindowDisplayAffinity(HWND h, DWORD *a);
+USERAPI HWND GetProgmanWindow(void);
+USERAPI BOOL SetWindowContextHelpId(HWND h, DWORD id);
+USERAPI DWORD GetWindowContextHelpId(HWND h);
+USERAPI BOOL IsWindowArranged(HWND h);
+USERAPI UINT ArrangeIconicWindows(HWND h);
+USERAPI BOOL LogicalToPhysicalPoint(HWND h, LPPOINT p);
+USERAPI BOOL PhysicalToLogicalPoint(HWND h, LPPOINT p);
+USERAPI BOOL LogicalToPhysicalPointForPerMonitorDPI(HWND h, LPPOINT p);
+USERAPI BOOL PhysicalToLogicalPointForPerMonitorDPI(HWND h, LPPOINT p);
+USERAPI BOOL GetTitleBarInfo(HWND h, void *ti);
+USERAPI BOOL DragDetect(HWND h, POINT pt);
+USERAPI BOOL AnimateWindow(HWND h, DWORD t, DWORD f);
+USERAPI int SetWindowRgn(HWND h, HRGN r, BOOL redraw);
+USERAPI int GetWindowRgn(HWND h, HRGN r);
+USERAPI int GetWindowRgnBox(HWND h, LPRECT r);
+
 _NOVA_END

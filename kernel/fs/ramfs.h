@@ -53,6 +53,9 @@ void     RamfsSetMode(RamfsMode mode);
 UINT32   RamfsChanges(void);
 /* Called with the path of a starter file (RAMFS_F_SEED) that goes away. */
 void     RamfsSetRemovedHook(void (*fn)(const char *path));
+/* Called with the directory whose entries (or files) changed, for
+ * programs watching directories (FindFirstChangeNotification). */
+void     RamfsSetChangeHook(void (*fn)(RamNode *dir));
 
 void     RamfsInit(void);
 RamNode *RamfsRoot(void);

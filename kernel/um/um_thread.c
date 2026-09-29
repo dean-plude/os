@@ -715,9 +715,141 @@ static UINT64 sys_nova_get_random(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return ST_SUCCESS;
 }
 
+/* -----------------------------------------------------------------------
+ * Sections: shared memory (backed by memory, not by a file) that any
+ * process can map by handle or by name
+ * ----------------------------------------------------------------------- */
+#define ST_UNABLE_TO_DELETE_SECTION 0xC000001Bu
+#define ST_CONFLICTING_ADDRESSES_   0xC0000018u
+#define ST_NOT_MAPPED_VIEW          0xC0000019u
+#define ST_NOT_SUPPORTED_           0xC00000BBu
+#define ST_SECTION_TOO_BIG          0xC0000040u
+
+typedef struct { UINT64 size, npages; PADDR *frames; } UmSection;
+
+static void section_destroy(UmObject *o)
+{
+    UmSection *sec = o->ptr;
+    if (!sec) return;
+    um_free_frames(sec->frames, sec->npages);
+    kfree(sec);
+    o->ptr = NULL;
+}
+
+static bool get_u64_(UINT64 ptr, UINT64 *v) { return ptr && NT_SUCCESS(CopyFromUser(v, (const void *)(uintptr_t)ptr, 8)); }
+static bool put_u64_(UINT64 ptr, UINT64 v) { return ptr && NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, &v, 8)); }
+
+/* NtCreateSection(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PLARGE_INTEGER MaximumSize,
+ *                 ULONG PageProtection, ULONG AllocationAttributes, HANDLE File) */
+static UINT64 sys_create_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2;
+    if (um_stack_arg(7)) return ST_NOT_SUPPORTED_;          /* file-backed: kernel32 maps files itself */
+    char name[NS_NAME_MAX];
+    if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
+    UINT64 r = open_existing(name, UO_SECTION, a1);
+    if (r) return r;
+    UINT64 size;
+    if (!get_u64_(a4, &size)) return ST_INVALID_PARAMETER;
+    if (!size) return ST_INVALID_PARAMETER;
+    UINT64 n = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    UmSection *sec = kzalloc(sizeof(*sec));
+    if (!sec) return ST_NO_MEMORY;
+    sec->frames = um_alloc_frames(n);
+    if (!sec->frames) { kfree(sec); return n > (UINT64_C(256) << 20) / PAGE_SIZE ? ST_SECTION_TOO_BIG : ST_NO_MEMORY; }
+    sec->size = size;
+    sec->npages = n;
+    UmObject *o = ob_new(UO_SECTION);
+    if (!o) { um_free_frames(sec->frames, n); kfree(sec); return ST_NO_MEMORY; }
+    o->ptr = sec;
+    o->destroy = section_destroy;
+    return finish_create(o, name, a1);
+}
+
+static UINT64 sys_open_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a2; (void)a4; return open_named(UO_SECTION, a1, a3); }
+
+/* NtMapViewOfSection(HANDLE Section, HANDLE Process, PVOID *Base, ULONG_PTR ZeroBits, SIZE_T CommitSize,
+ *                    PLARGE_INTEGER Offset, PSIZE_T ViewSize, InheritDisposition, AllocationType, Win32Protect) */
+static UINT64 sys_map_view(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a4;
+    UmProcess *p = UmCurrent();
+    if (a2 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_NOT_SUPPORTED_;
+    UINT64 off_ptr = um_stack_arg(6), size_ptr = um_stack_arg(7);
+    UINT32 prot = (UINT32)um_stack_arg(10);
+    UINT64 base = 0, off = 0, view = 0;
+    if (!get_u64_(a3, &base) || !get_u64_(size_ptr, &view)) return ST_ACCESS_VIOLATION;
+    if (off_ptr && !get_u64_(off_ptr, &off)) return ST_ACCESS_VIOLATION;
+    UmObject *o = um_handle_object(p, a1, UO_SECTION);
+    if (!o) return ST_INVALID_HANDLE;
+    UmSection *sec = o->ptr;
+    if (off & 0xFFF) { um_ob_unref(o); return ST_INVALID_PARAMETER; }
+    if (off >= sec->npages * PAGE_SIZE) { um_ob_unref(o); return ST_INVALID_PARAMETER; }
+    if (!view) view = sec->size - off;
+    if (off + view > sec->npages * PAGE_SIZE) { um_ob_unref(o); return ST_INVALID_PARAMETER; }
+    UINT64 npages = (view + PAGE_SIZE - 1) / PAGE_SIZE;
+    UINT64 bytes = npages * PAGE_SIZE;
+    if ((prot & 0xFF) == 0) prot = 0x04;
+    um_lock(&p->lock);
+    UINT64 r = ST_SUCCESS;
+    if (base) {
+        base &= ~0xFFFFULL;
+        if (!um_is_free(p, base, bytes)) r = ST_CONFLICTING_ADDRESSES_;
+    } else {
+        base = um_find_free(p, bytes, UM_ALLOC_MIN, UM_ALLOC_MAX);
+        if (!base) r = ST_NO_MEMORY;
+    }
+    UmRegion *reg = NULL;
+    if (r == ST_SUCCESS) {
+        reg = um_region_add(p, base, bytes, prot, false);
+        if (!reg) r = ST_NO_MEMORY;
+    }
+    if (r == ST_SUCCESS && !um_map_frames(p, base, sec->frames + off / PAGE_SIZE, npages, prot)) {
+        um_region_remove(p, reg);
+        r = ST_NO_MEMORY;
+    }
+    if (r == ST_SUCCESS) reg->section = o;                  /* the view keeps the reference */
+    um_unlock(&p->lock);
+    if (r != ST_SUCCESS) { um_ob_unref(o); return r; }
+    put_u64_(a3, base);
+    put_u64_(size_ptr, bytes);
+    return ST_SUCCESS;
+}
+
+/* NtUnmapViewOfSection(HANDLE Process, PVOID Base) */
+static UINT64 sys_unmap_view(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    UmProcess *p = UmCurrent();
+    if (a1 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_NOT_SUPPORTED_;
+    um_lock(&p->lock);
+    UmRegion *r = um_region_find(p, a2);
+    if (!r || !r->section) { um_unlock(&p->lock); return ST_NOT_MAPPED_VIEW; }
+    UmObject *o = r->section;
+    um_unmap_frames(p, r->base, r->size / PAGE_SIZE);
+    um_region_remove(p, r);
+    um_unlock(&p->lock);
+    um_ob_unref(o);
+    return ST_SUCCESS;
+}
+
+void um_release_views(UmProcess *p)
+{
+    for (int i = 0; i < p->nregions; i++) {
+        UmObject *o = p->regions[i].section;
+        if (!o) continue;
+        p->regions[i].section = NULL;
+        um_ob_unref(o);
+    }
+}
+
 void um_thread_syscalls_init(void)
 {
     um_install(SYSCALL_NtCreateEvent,             sys_create_event);
+    um_install(SYSCALL_NtCreateSection,           sys_create_section);
+    um_install(SYSCALL_NtOpenSection,             sys_open_section);
+    um_install(SYSCALL_NtMapViewOfSection,        sys_map_view);
+    um_install(SYSCALL_NtUnmapViewOfSection,      sys_unmap_view);
     um_install(SYSCALL_NtOpenEvent,               sys_open_event);
     um_install(SYSCALL_NtOpenMutant,              sys_open_mutant);
     um_install(SYSCALL_NtOpenSemaphore,           sys_open_semaphore);

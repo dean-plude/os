@@ -922,7 +922,7 @@ static UINT64 sys_alloc_vm_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         base &= ~0xFFFULL;
         size = end - base;
         UmRegion *r = um_region_find(p, base);
-        if (!r || base + size > r->base + r->size || r->image) return ST_MEMORY_NOT_ALLOCATED;
+        if (!r || base + size > r->base + r->size || r->image || r->section) return ST_MEMORY_NOT_ALLOCATED;
     }
     if (type & MEM_COMMIT) {
         if (p->commit + size / PAGE_SIZE > PROC_MEM_LIMIT_PAGES) {
@@ -948,6 +948,7 @@ static UINT64 sys_free_vm_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!get_u64(a2, &base) || !get_u64(a3, &size)) return UM_STATUS_ACCESS_VIOLATION;
     UmRegion *r = um_region_find(p, base);
     if (!r || r->image) return ST_MEMORY_NOT_ALLOCATED;
+    if (r->section) return 0xC000001Bu;                     /* STATUS_UNABLE_TO_DELETE_SECTION: a mapped view */
     if (a4 & MEM_RELEASE) {
         if (base != r->base || size) return ST_INVALID_PARAMETER;
         size = r->size;
@@ -1026,7 +1027,7 @@ static UINT64 sys_query_vm_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         mbi.state = c ? 0x1000 : 0x2000;                        /* MEM_COMMIT / MEM_RESERVE */
         mbi.protect = c ? r->protect : 0;
         if (c && r->image) mbi.protect = 0x20;                  /* report images as EXECUTE_READ */
-        mbi.type = r->image ? 0x1000000 : 0x20000;              /* MEM_IMAGE / MEM_PRIVATE */
+        mbi.type = r->image ? 0x1000000 : r->section ? 0x40000 : 0x20000;   /* MEM_IMAGE / MEM_MAPPED / MEM_PRIVATE */
     }
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &mbi, 48))) return UM_STATUS_ACCESS_VIOLATION;
     if (ret_ptr) put_u64(ret_ptr, 48);
@@ -1289,6 +1290,77 @@ void um_install(UINT32 num, SYSCALL_HANDLER h)
     g_um[num] = h;
 }
 
+/* -----------------------------------------------------------------------
+ * Directory watches: FindFirstChangeNotification's event is signaled when
+ * the watched directory (or, with subtree, anything below it) changes.
+ * A watch lasts until the program removes it or closes its event.
+ * ----------------------------------------------------------------------- */
+#define MAX_WATCHES 64
+typedef struct { RamNode *dir; bool subtree; UmObject *ev; } Watch;
+static Watch g_watch[MAX_WATCHES];
+static KSpinLock g_watch_lock = KSPINLOCK_INIT;
+
+static void fs_changed(RamNode *d)
+{
+    IrqState s = spin_lock_irqsave(&g_watch_lock);
+    for (int i = 0; i < MAX_WATCHES; i++) {
+        Watch *w = &g_watch[i];
+        if (!w->ev) continue;
+        bool hit = w->dir == d;
+        for (RamNode *a = d ? d->parent : NULL; !hit && w->subtree && a; a = a->parent) if (a == w->dir) hit = true;
+        if (!hit) continue;
+        IrqState o = ob_lock();
+        w->ev->signaled = true;
+        um_ob_wake(w->ev);
+        ob_unlock(o);
+    }
+    spin_unlock_irqrestore(&g_watch_lock, s);
+}
+
+/* Take out the watches on @ev (every one whose event only we hold if NULL) */
+static void unwatch(UmObject *ev)
+{
+    Watch gone[MAX_WATCHES];
+    int n = 0;
+    IrqState s = spin_lock_irqsave(&g_watch_lock);
+    for (int i = 0; i < MAX_WATCHES; i++) {
+        Watch *w = &g_watch[i];
+        if (!w->ev) continue;
+        if (ev ? w->ev == ev : __atomic_load_n(&w->ev->refs, __ATOMIC_ACQUIRE) <= 1) { gone[n++] = *w; w->ev = NULL; w->dir = NULL; }
+    }
+    spin_unlock_irqrestore(&g_watch_lock, s);
+    if (!n) return;
+    DesktopLock();
+    for (int i = 0; i < n; i++) RamfsUnref(gone[i].dir);
+    DesktopUnlock();
+    for (int i = 0; i < n; i++) um_ob_unref(gone[i].ev);
+}
+
+/* NtNovaWatchDirectory(HANDLE Directory, BOOLEAN Subtree, HANDLE Event, ULONG Remove) */
+static UINT64 sys_watch_dir(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    UmProcess *p = UmCurrent();
+    UmObject *ev = um_handle_object(p, a3, UO_EVENT);
+    if (!ev) return ST_INVALID_HANDLE;
+    unwatch(NULL);                                          /* forgotten watches */
+    if (a4) { unwatch(ev); um_ob_unref(ev); return ST_SUCCESS; }
+    DesktopLock();                                          /* lock order: desktop, then process */
+    um_lock(&p->lock);
+    UmHandle *hd = handle(p, a1);
+    RamNode *dir = hd && (hd->kind == H_DIR || (hd->kind == H_FILE && hd->node && hd->node->dir)) ? hd->node : NULL;
+    if (dir) RamfsRef(dir);
+    um_unlock(&p->lock);
+    DesktopUnlock();
+    if (!dir) { um_ob_unref(ev); return ST_INVALID_HANDLE; }
+    IrqState s = spin_lock_irqsave(&g_watch_lock);
+    int slot = -1;
+    for (int i = 0; i < MAX_WATCHES && slot < 0; i++) if (!g_watch[i].ev) slot = i;
+    if (slot >= 0) { g_watch[slot].dir = dir; g_watch[slot].subtree = (a2 & 0xFF) != 0; g_watch[slot].ev = ev; }
+    spin_unlock_irqrestore(&g_watch_lock, s);
+    if (slot < 0) { DesktopLock(); RamfsUnref(dir); DesktopUnlock(); um_ob_unref(ev); return ST_NO_MEMORY; }
+    return ST_SUCCESS;
+}
+
 void um_syscall_init(void)
 {
     g_boot_time = ((UINT64)nova_time(NULL) + UINT64_C(11644473600)) * 10000000ULL;
@@ -1308,6 +1380,8 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtQueryDirectoryFile,       sys_query_directory);
     um_install(SYSCALL_NtQueryVolumeInformationFile, sys_query_volume);
     um_install(SYSCALL_NtAllocateVirtualMemory,    sys_alloc_vm);
+    um_install(SYSCALL_NtNovaWatchDirectory,       sys_watch_dir);
+    RamfsSetChangeHook(fs_changed);
     um_install(SYSCALL_NtFreeVirtualMemory,        sys_free_vm);
     um_install(SYSCALL_NtProtectVirtualMemory,     sys_protect_vm);
     um_install(SYSCALL_NtQueryVirtualMemory,       sys_query_vm);

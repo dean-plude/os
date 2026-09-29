@@ -51,7 +51,7 @@ void um_unlock(UmLock *l);
 /* -----------------------------------------------------------------------
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
-typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY } UmObType;
+typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -119,6 +119,7 @@ typedef struct {
     UINT64 base, size;          /* reserved range (page aligned) */
     UINT32 protect;             /* PAGE_* of committed pages */
     bool   image;               /* part of a loaded module */
+    struct UmObject *section;   /* a view of this section (referenced), or NULL */
 } UmRegion;
 
 typedef struct {
@@ -187,6 +188,12 @@ void       um_region_remove(UmProcess *p, UmRegion *r);
 bool       um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect);
 void       um_decommit(UmProcess *p, UINT64 va, UINT64 size);
 bool       um_is_committed(UmProcess *p, UINT64 va);
+/* Shared sections: frames the section owns, mapped into processes */
+PADDR     *um_alloc_frames(UINT64 n);           /* n zeroed frames; NULL if memory is short */
+void       um_free_frames(PADDR *f, UINT64 n);
+bool       um_map_frames(UmProcess *p, UINT64 va, const PADDR *f, UINT64 n, UINT32 protect);
+void       um_unmap_frames(UmProcess *p, UINT64 va, UINT64 n);
+void       um_release_views(UmProcess *p);      /* drop the sections of every view (process teardown) */
 
 /* Copy into/out of user memory through the page tables (any process). */
 bool       um_write(UmProcess *p, UINT64 va, const void *src, UINT64 n);

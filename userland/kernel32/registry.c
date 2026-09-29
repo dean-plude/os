@@ -52,6 +52,15 @@ static LONG err(NTSTATUS s)
  * ----------------------------------------------------------------------- */
 static HANDLE g_predef[6];
 
+/* a predefined key's number (0x80000000..): on x64 Windows headers make
+ * them sign-extended (0xFFFFFFFF80000002), older code zero-extended */
+static ULONG_PTR predef_num(HKEY key)
+{
+    ULONG_PTR k = (ULONG_PTR)key;
+    if ((k >> 32) == 0xFFFFFFFFu) k &= 0xFFFFFFFFu;
+    return k;
+}
+
 static const char *predef_path(ULONG_PTR k)
 {
     switch (k) {
@@ -80,7 +89,7 @@ static NTSTATUS open_abs(const char *path, BOOL create, HANDLE *out)
 /* The kernel handle for @key (predefined ones opened on first use) */
 static NTSTATUS handle_of(HKEY key, HANDLE *out)
 {
-    ULONG_PTR k = (ULONG_PTR)key;
+    ULONG_PTR k = predef_num(key);
     if (k < 0x80000000u || k > 0x80000005u) { *out = key; return key ? 0 : (NTSTATUS)0xC0000008; }
     int i = (int)(k - 0x80000000u);
     if (!g_predef[i]) {
@@ -118,7 +127,7 @@ static NTSTATUS open_sub(HKEY parent, LPCWSTR sub, BOOL create, DWORD options, H
     return 0;
 }
 
-static BOOL is_predef(HKEY k) { return (ULONG_PTR)k >= 0x80000000u && (ULONG_PTR)k <= 0x80000005u; }
+static BOOL is_predef(HKEY k) { return predef_num(k) >= 0x80000000u && predef_num(k) <= 0x80000005u; }
 
 /* A UTF-8 name as UTF-16 (heap); *ok = FALSE on failure */
 static WCHAR *a2w(LPCSTR s)

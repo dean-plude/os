@@ -69,8 +69,11 @@ static LONG run_vectored(VEH *list, PEXCEPTION_POINTERS info)
 /* Called by the loader's top-level __except filter (last resort) */
 LONG nova_top_level_filter(PEXCEPTION_POINTERS info)
 {
-    if (g_top_filter) return g_top_filter(info);
-    return EXCEPTION_EXECUTE_HANDLER;                /* end the process */
+    LONG r = g_top_filter ? g_top_filter(info) : EXCEPTION_EXECUTE_HANDLER;
+    /* ending the process: the kernel says where it crashed (second chance) */
+    if (r == EXCEPTION_EXECUTE_HANDLER && info && info->ExceptionRecord && info->ContextRecord)
+        NtRaiseException(info->ExceptionRecord, info->ContextRecord, FALSE);
+    return r;
 }
 
 /* -----------------------------------------------------------------------

@@ -11,6 +11,7 @@
 
 #define NOVA_BUILD_SHELL32
 #include <windows.h>
+#include <commctrl.h>
 
 #define S_OK_          ((HRESULT)0)
 #define S_FALSE_       ((HRESULT)1)
@@ -285,8 +286,7 @@ SHSTDAPI_(HRESULT) SHParseDisplayName(LPCWSTR name, void *bc, LPITEMIDLIST *out,
     return *out ? S_OK_ : E_OUTOFMEMORY_;
 }
 
-SHSTDAPI_(LPITEMIDLIST) SHBrowseForFolderW(void *bi) { (void)bi; return 0; }   /* no folder picker: "cancelled" */
-SHSTDAPI_(LPITEMIDLIST) SHBrowseForFolderA(void *bi) { (void)bi; return 0; }
+/* SHBrowseForFolder: browse.c */
 
 /* -----------------------------------------------------------------------
  * Command lines
@@ -601,32 +601,64 @@ SHSTDAPI_(int) SHFileOperationA(SHFILEOPSTRUCTA *op)
  * ----------------------------------------------------------------------- */
 typedef struct { HICON hIcon; int iIcon; DWORD dwAttributes; WCHAR szDisplayName[MAX_PATH]; WCHAR szTypeName[80]; } SHFILEINFOW;
 
+HIMAGELIST sys_image_list(int small);
+int sys_icon_index(const WCHAR *path, DWORD attrs);
+
 SHSTDAPI_(DWORD_PTR) SHGetFileInfoW(LPCWSTR path, DWORD attrs, SHFILEINFOW *info, UINT n, UINT flags)
 {
     (void)n;
+    WCHAR pbuf[MAX_PATH];
+    if ((flags & 0x8 /* SHGFI_PIDL */) && path) {
+        if (!SHGetPathFromIDListW((LPCITEMIDLIST)path, pbuf)) return 0;
+        path = pbuf;
+    }
+    if (!path) return 0;
     DWORD a = attrs;
     if (!(flags & 0x10 /* SHGFI_USEFILEATTRIBUTES */)) {
         a = GetFileAttributesW(path);
         if (a == INVALID_FILE_ATTRIBUTES) return 0;
     }
-    if (!info) return 1;
-    for (unsigned i = 0; i < sizeof(*info); i++) ((BYTE *)info)[i] = 0;
-    if (flags & 0x200 /* SHGFI_DISPLAYNAME */) {
+    int small = (flags & 0x1 /* SHGFI_SMALLICON */) != 0;
+    if (info) for (unsigned i = 0; i < sizeof(*info); i++) ((BYTE *)info)[i] = 0;
+    if (info && (flags & (0x4000 /* SHGFI_SYSICONINDEX */ | 0x100 /* SHGFI_ICON */))) {
+        info->iIcon = sys_icon_index(path, a);
+        if (flags & 0x100) info->hIcon = ImageList_GetIcon(sys_image_list(small), info->iIcon, ILD_TRANSPARENT);
+    }
+    if (info && (flags & 0x200 /* SHGFI_DISPLAYNAME */)) {
         const WCHAR *name = path;
         for (const WCHAR *c = path; *c; c++) if ((*c == '\\' || *c == '/') && c[1]) name = c + 1;
         int k = 0;
         for (; name[k] && k < MAX_PATH - 1; k++) info->szDisplayName[k] = name[k];
-        if (k && info->szDisplayName[k - 1] == '\\') k--;
+        if (k && info->szDisplayName[k - 1] == '\\' && k > 3) k--;
         info->szDisplayName[k] = 0;
     }
-    if (flags & 0x400 /* SHGFI_TYPENAME */) {
+    if (info && (flags & 0x400 /* SHGFI_TYPENAME */)) {
         const char *t = (a & FILE_ATTRIBUTE_DIRECTORY) ? "File folder" : ends_with(path, ".exe") ? "Application" :
-                        ends_with(path, ".txt") ? "Text Document" : ends_with(path, ".dll") ? "Application extension" : "File";
+                        ends_with(path, ".txt") ? "Text Document" : ends_with(path, ".dll") ? "Application extension" :
+                        ends_with(path, ".7z") ? "7Z Archive" : ends_with(path, ".zip") ? "Compressed (zipped) Folder" : "File";
         u2w(t, info->szTypeName, 80);
     }
-    if (flags & 0x800 /* SHGFI_ATTRIBUTES */)
+    if (info && (flags & 0x800 /* SHGFI_ATTRIBUTES */))
         info->dwAttributes = (a & FILE_ATTRIBUTE_DIRECTORY) ? 0x20000000 | 0x80000000 : 0x40000000;   /* FOLDER|HASSUBFOLDER : FILESYSTEM */
+    if (flags & 0x4000) return (DWORD_PTR)sys_image_list(small);
     return 1;
+}
+
+typedef struct { HICON hIcon; int iIcon; DWORD dwAttributes; char szDisplayName[MAX_PATH]; char szTypeName[80]; } SHFILEINFOA;
+SHSTDAPI_(DWORD_PTR) SHGetFileInfoA(LPCSTR path, DWORD attrs, SHFILEINFOA *info, UINT n, UINT flags)
+{
+    (void)n;
+    WCHAR w[MAX_PATH];
+    LPCWSTR p = (LPCWSTR)path;
+    if (!(flags & 0x8) && path) { MultiByteToWideChar(CP_ACP, 0, path, -1, w, MAX_PATH); p = w; }
+    SHFILEINFOW wi;
+    DWORD_PTR r = SHGetFileInfoW(p, attrs, info ? &wi : NULL, sizeof(wi), flags);
+    if (r && info) {
+        info->hIcon = wi.hIcon; info->iIcon = wi.iIcon; info->dwAttributes = wi.dwAttributes;
+        WideCharToMultiByte(CP_ACP, 0, wi.szDisplayName, -1, info->szDisplayName, MAX_PATH, NULL, NULL);
+        WideCharToMultiByte(CP_ACP, 0, wi.szTypeName, -1, info->szTypeName, 80, NULL, NULL);
+    }
+    return r;
 }
 
 SHSTDAPI_(HICON) ExtractIconW(HINSTANCE h, LPCWSTR file, UINT i) { (void)h; (void)file; (void)i; return 0; }
