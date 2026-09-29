@@ -1170,6 +1170,7 @@ void UmReturnToUser(void)
     UmThread *t = UmCurrentThread();
     if (!t) return;
     UmProcess *p = t->proc;
+    sched_current()->wait_rounds = 0;
     if (g_desktop.owner == sched_current()) {                        /* never back to user mode with it */
         kprintf("[UM] Bug: system call %03x returned holding the desktop lock\n", t->last_sys);
         g_desktop.depth = 1;

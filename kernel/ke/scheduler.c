@@ -404,6 +404,8 @@ void sched_yield(void)
 /* -----------------------------------------------------------------------
  * sched_tick — called from timer interrupt handler (interrupts disabled)
  * ----------------------------------------------------------------------- */
+static Thread *g_sleepers;               /* sched_sleep_tick */
+static void wake_sleepers(void);
 void DesktopWatchdog(uint64_t now);
 void UmTimerTick(uint64_t ticks);
 
@@ -412,6 +414,7 @@ void sched_tick(void)
     tick_count++;
     DesktopWatchdog(tick_count);
     UmTimerTick(tick_count);
+    if (g_sleepers) wake_sleepers();
     if (!current_thread) return;
 
     current_thread->ticks_total++;
@@ -440,6 +443,40 @@ Thread *sched_current(void)
 /* -----------------------------------------------------------------------
  * sched_block / sched_unblock
  * ----------------------------------------------------------------------- */
+void sched_sleep_tick(void)
+{
+    IrqState irq = irq_save();
+    sched_lock_acquire();
+    current_thread->state = THREAD_WAITING;
+    current_thread->wake_tick = tick_count + 1;
+    current_thread->sleep_next = g_sleepers;
+    g_sleepers = current_thread;
+    sched_lock_release();
+    perform_switch();                               /* woken by sched_tick */
+    irq_restore(irq);
+}
+
+void sched_wait(void)
+{
+    if (current_thread->wait_rounds++ < 4) sched_yield();
+    else sched_sleep_tick();
+}
+
+/* Timer tick (interrupts off): sleepers whose tick has come are ready again */
+static void wake_sleepers(void)
+{
+    sched_lock_acquire();
+    for (Thread **pp = &g_sleepers; *pp;) {
+        Thread *t = *pp;
+        if (t->wake_tick <= tick_count) {
+            *pp = t->sleep_next;
+            t->sleep_next = NULL;
+            if (t->state == THREAD_WAITING) ready_enqueue(t);
+        } else pp = &t->sleep_next;
+    }
+    sched_lock_release();
+}
+
 void sched_block(void)
 {
     IrqState irq = irq_save();

@@ -1111,10 +1111,11 @@ static UINT64 sys_delay(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!get_u64(a2, &v)) return UM_STATUS_ACCESS_VIOLATION;
     INT64 iv = (INT64)v;
     UINT64 wait_100ns = iv < 0 ? (UINT64)(-iv) : (v > um_now_100ns() ? v - um_now_100ns() : 0);
+    if (!wait_100ns) { sched_yield(); return ST_SUCCESS; }          /* Sleep(0): just yield */
     UINT64 until = sched_ticks() + (wait_100ns + 99999) / 100000;
     do {
         if (um_stopping()) break;
-        sched_yield();
+        sched_sleep_tick();
     } while (sched_ticks() < until);
     return ST_SUCCESS;
 }

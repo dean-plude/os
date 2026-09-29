@@ -331,7 +331,7 @@ static UINT64 sys_gui_getmessage(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (quit) return 0;
         if (!a3) return (UINT64)(INT64)-1;
         if (um_stopping()) return 0;
-        sched_yield();
+        sched_wait();
     }
 }
 

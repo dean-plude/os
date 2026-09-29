@@ -95,6 +95,9 @@ typedef struct Thread {
     uint64_t        kgs_base;
     uint64_t        user_rsp;       /* user RSP at the last syscall (stack args) */
     volatile bool   off_cpu;        /* DEAD and switched away: safe to free */
+    struct Thread  *sleep_next;     /* sched_sleep_tick list */
+    uint64_t        wake_tick;
+    uint32_t        wait_rounds;    /* sched_wait calls since the thread last made progress */
 } Thread;
 
 /* Default kernel stack size for new threads */
@@ -138,6 +141,11 @@ void sched_free_thread(Thread *t);
 void sched_yield(void);
 /* True when a foreground thread (priority above 4) is waiting to run. */
 bool sched_foreground_ready(void);
+/* Sleep until the next timer tick (10 ms): for threads waiting on something. */
+void sched_sleep_tick(void);
+/* For wait loops: yield the first few rounds, then sleep a tick per round
+ * (the count restarts when the thread returns to user mode). */
+void sched_wait(void);
 
 /*
  * Called from the APIC timer interrupt (IRQ_TIMER).

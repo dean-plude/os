@@ -123,7 +123,7 @@ static UINT32 wait_objects(UmObject **o, int n, bool all, INT64 timeout_100ns)
         irq_restore(s);
         if (um_stopping()) return ST_THREAD_IS_TERMINATING;
         if (timeout_100ns == 0 || sched_ticks() >= until) return ST_TIMEOUT;
-        sched_yield();
+        sched_wait();
     }
 }
 

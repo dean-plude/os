@@ -227,7 +227,7 @@ int NetSockConnect(int sd, UINT32 ip_be, UINT16 port_be, SockCancelFn c, void *c
     UINT64 deadline = sched_ticks() + 1000;                  /* 10 s */
     while (s->connecting && !s->reset) {
         if (wait_cancel(c, ca) || sched_ticks() > deadline) return -SOCK_ETIMEDOUT;
-        sched_yield();
+        sched_wait();
     }
     if (s->reset || !s->connected) return -SOCK_ECONNREFUSED;
     s->peer_ip = ip_be; s->peer_port = port_be;
@@ -252,7 +252,7 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
             net_unlock();
             if (s->nonblock) return sent ? sent : -SOCK_EWOULDBLOCK;
             if (wait_cancel(c, ca)) return sent ? sent : -SOCK_ETIMEDOUT;
-            sched_yield();
+            sched_wait();
             continue;
         }
         int chunk = len - sent;
@@ -262,7 +262,7 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
         net_unlock();
         if (e == ERR_MEM) {
             if (s->nonblock) return sent ? sent : -SOCK_EWOULDBLOCK;
-            sched_yield();
+            sched_wait();
         } else if (e != ERR_OK) {
             return sent ? sent : -SOCK_ECONNRESET;
         }
@@ -295,7 +295,7 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
         if (!s->connected && !s->connecting) return -SOCK_ENOTCONN;
         if (s->nonblock) return -SOCK_EWOULDBLOCK;
         if (wait_cancel(c, ca)) return -SOCK_ETIMEDOUT;
-        sched_yield();
+        sched_wait();
     }
 }
 
@@ -339,7 +339,7 @@ int NetSockRecvFrom(int sd, void *buf, int len, UINT32 *ip_be, UINT16 *port_be,
         net_unlock();
         if (s->nonblock) return -SOCK_EWOULDBLOCK;
         if (wait_cancel(c, ca)) return -SOCK_ETIMEDOUT;
-        sched_yield();
+        sched_wait();
     }
 }
 
@@ -405,7 +405,7 @@ int NetSockAccept(int sd, UINT32 *ip_be, UINT16 *port_be, SockCancelFn c, void *
         net_unlock();
         if (s->nonblock) return -SOCK_EWOULDBLOCK;
         if (wait_cancel(c, ca)) return -SOCK_ETIMEDOUT;
-        sched_yield();
+        sched_wait();
     }
 }
 

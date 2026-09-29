@@ -205,7 +205,7 @@ static UINT64 sys_resolve(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UINT64 deadline = sched_ticks() + 1000;
     while (op->state == NET_PENDING) {
         if (um_stopping() || sched_ticks() > deadline) { NetRelease(op); return (UINT64)(INT64)-SOCK_ETIMEDOUT; }
-        sched_yield();
+        sched_wait();
     }
     int r;
     if (op->state == NET_DONE) {
