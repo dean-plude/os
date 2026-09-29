@@ -414,9 +414,15 @@ Windows executables (PE32+) without emulation.
   through a real-mode trampoline (`arch/x86_64/ap_trampoline.asm`), and gives
   it its own KPCR (reached through GS), GDT, TSS and exception stacks, LAPIC
   timer, and idle thread.  Up to 16 CPUs.
-- **Programs run in parallel**: threads share one ready queue and run on
-  whichever core is free, and much of the kernel runs on every core at once
-  too (below).
+- **Programs run in parallel**, and much of the kernel runs on every core at
+  once too (below).
+- **Per-core ready queues** (`ke/scheduler.c`): each core has its own run
+  queue, lock and timed-sleep list, so cores schedule without touching each
+  other.  A thread stays on the core it last ran on (warm caches); a new
+  thread starts on the core that created it, and a core with nothing to run
+  steals a ready thread from a busy one (every tick while idle, or at once
+  when it is woken).  Making a thread ready wakes its own core if that one is
+  idle, else any idle core, so the work spreads out.
 - TLB shootdowns (IPIs) keep the other cores' page-table caches right when a
   program frees or re-protects memory; halted cores are woken by IPI when a
   thread becomes ready.  The clock follows the TSC, so it keeps time whatever
@@ -424,12 +430,13 @@ Windows executables (PE32+) without emulation.
 - Programs see the core count: `GetSystemInfo`, the PEB,
   `KUSER_SHARED_DATA` and `NUMBER_OF_PROCESSORS`.  `cpus.exe` runs the same
   work on 1 thread and then on one thread per core: with `-smp 4` it reports
-  a speedup of about 3.7×.
+  a speedup of up to about 3.7× (less when the host's own cores are busy).
 - **Finer-grained kernel locking**: the big kernel lock now belongs to
   threads (it nests, and the scheduler drops it when a holder is switched
   out), and these run without it, on all cores at once, under locks of
   their own:
-  - the scheduler (a spinlock held across each switch), the timer and IPIs;
+  - the scheduler (each core's run-queue lock, held across its switches),
+    the timer and IPIs;
   - memory: the physical page allocator and the kernel heap (spinlocks), a
     program's address space (its process lock), with TLB shootdowns before
     pages are freed;
@@ -587,7 +594,7 @@ os/
   and reverse-engineering references.  The one GPL component is the NetSurf
   browser, a separate program (see [License](#license)).
 - **SMP with a shrinking big kernel lock (Phase 11)**: every CPU runs threads,
-  one KPCR per CPU.  The scheduler, memory, synchronization, sockets and the
+  one KPCR and one ready queue per CPU.  The scheduler, memory, synchronization, sockets and the
   GUI have their own locks and run on all CPUs at once; the rest of the
   kernel still runs under the big lock, one CPU at a time (see `smp.h` for
   the rules and the lock order).

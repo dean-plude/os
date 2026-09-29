@@ -99,7 +99,9 @@ typedef struct Thread {
     uint32_t        wait_rounds;    /* sched_wait calls since the thread last made progress */
     bool            idle;           /* a CPU's idle thread: never queued, runs only there */
     uint32_t        bkl_depth;      /* nested bkl_acquire calls (smp.h) */
-    bool            in_sleepers;    /* on the timed-sleep list (sched_lock) */
+    bool            in_sleepers;    /* on its CPU's timed-sleep list (run queue lock) */
+    volatile uint32_t cpu;          /* the CPU whose run queue it belongs to */
+    volatile bool   on_cpu;         /* running, or not yet fully switched out */
 } Thread;
 
 /* Default kernel stack size for new threads */

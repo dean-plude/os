@@ -14,7 +14,7 @@ static unsigned long long work(void)
 {
     /* integer work only: no system calls, no shared memory */
     unsigned long long x = 88172645463325252ULL, sum = 0;
-    for (int i = 0; i < 30000000; i++) {
+    for (int i = 0; i < 120000000; i++) {
         x ^= x << 13; x ^= x >> 7; x ^= x << 17;
         sum += x & 0xFF;
     }

@@ -37,22 +37,33 @@
  * Globals
  * ----------------------------------------------------------------------- */
 
-/* The running thread and the idle thread are per CPU (KPCR).  Everything
- * shared (the ready queue, thread states, the sleepers) is under sched_lock,
- * a spinlock: the scheduler runs on every CPU at once, without the big
- * kernel lock.
+/* Each CPU has its own run queue: the threads ready to run there and the
+ * threads sleeping with a deadline there, under the queue's spinlock.  A
+ * thread belongs to the queue of the CPU it last ran on (Thread.cpu), and
+ * that queue's lock also guards the thread's state: whoever wakes it locks
+ * its queue (lock_thread_rq).  A CPU with nothing to run takes a ready
+ * thread from another CPU's queue (steal); a thread that becomes ready
+ * kicks an idle CPU (smp_kick), which then comes looking.
  *
- * A switch holds sched_lock from choosing the next thread until that
- * thread runs (finish_switch releases it), so no other CPU can pick up the
- * outgoing thread before its registers are saved; and a thread that blocks
- * or sleeps changes its state and switches out under the same hold, so a
- * wake-up can't slip in between. */
+ * A switch holds the CPU's queue lock from choosing the next thread until
+ * that thread runs (finish_switch releases it), so no other CPU can take
+ * the outgoing thread before its registers are saved (Thread.on_cpu says
+ * when they are); and a thread that blocks or sleeps changes its state and
+ * switches out under the same hold, so a wake-up can't slip in between.
+ * The scheduler runs on every CPU at once, without the big kernel lock. */
 #define current_thread ((Thread *)KiGetCurrentKpcr()->CurrentThread)
 static inline Thread *cpu_idle(void) { return KiGetCurrentKpcr()->IdleThread; }
+static inline uint32_t this_cpu(void) { return KiGetCurrentKpcr()->CpuNumber; }
 
-/* Ready queue (circular doubly-linked list, sentineled by idle_thread) */
-static Thread *ready_head;   /* Points to the thread to run next */
-static size_t  ready_count;
+typedef struct {
+    KSpinLock  lock;
+    Thread    *head;        /* ready threads: circular list, next to run first */
+    size_t     count;
+    Thread    *sleepers;    /* sched_sleep_until with a deadline */
+} RunQueue;
+
+static RunQueue g_rq[MAX_CPUS];
+static inline RunQueue *my_rq(void) { return &g_rq[this_cpu()]; }
 
 /* The boot CPU's idle thread: the boot context (main.c's final loop) */
 static Thread  idle_thread_obj;
@@ -68,74 +79,124 @@ static uint64_t tsc_at_boot;
 /* Ticks per time slice before preemption */
 #define TICKS_PER_SLICE  2   /* 2 ticks @ 100Hz = 20ms quantum */
 
-static KSpinLock sched_lock = KSPINLOCK_INIT;
-
 /* -----------------------------------------------------------------------
- * Ready queue manipulation (assumes sched_lock held)
+ * Run queues (the queue's lock held)
  * ----------------------------------------------------------------------- */
 
-static void ready_enqueue(Thread *t)
+static void rq_enqueue(RunQueue *rq, Thread *t)
 {
     t->state = THREAD_READY;
-    if (!ready_head) {
+    if (!rq->head) {
         t->next = t;
         t->prev = t;
-        ready_head = t;
+        rq->head = t;
     } else {
-        /* Insert before ready_head (at the tail of the circular list) */
-        Thread *tail = ready_head->prev;
+        /* Insert before head (at the tail of the circular list) */
+        Thread *tail = rq->head->prev;
         tail->next     = t;
         t->prev        = tail;
-        t->next        = ready_head;
-        ready_head->prev = t;
+        t->next        = rq->head;
+        rq->head->prev = t;
     }
-    ready_count++;
+    rq->count++;
 }
 
 /* A thread became runnable (not merely preempted or yielding): let a
- * halted CPU pick it up */
-static void ready_wake(Thread *t)
+ * halted CPU run it — its own, or any idle one, which will steal it */
+static void ready_wake(RunQueue *rq, Thread *t)
 {
-    ready_enqueue(t);
-    smp_kick();
+    rq_enqueue(rq, t);
+    smp_kick(t->cpu);
 }
 
 /* Threads above this priority are "foreground" (the desktop, programs, the
  * network); the idle threads and csrss run only when none of those is ready. */
 #define BACKGROUND_PRIO 4
 
-static Thread *ready_dequeue(void)
+static Thread *rq_dequeue(RunQueue *rq)
 {
-    if (!ready_head) return NULL;
-    Thread *t = ready_head;
-    for (Thread *c = ready_head;;) {                /* first foreground thread in turn */
+    if (!rq->head) return NULL;
+    Thread *t = rq->head;
+    for (Thread *c = rq->head;;) {                  /* first foreground thread in turn */
         if (c->priority > BACKGROUND_PRIO) { t = c; break; }
         c = c->next;
-        if (c == ready_head) break;
+        if (c == rq->head) break;
     }
     if (t->next == t) {
-        /* Only one element */
-        ready_head = NULL;
+        rq->head = NULL;                            /* only one element */
     } else {
         t->prev->next = t->next;                    /* unlink t */
         t->next->prev = t->prev;
-        if (ready_head == t) ready_head = t->next;
+        if (rq->head == t) rq->head = t->next;
     }
     t->next = t->prev = NULL;
-    ready_count--;
+    rq->count--;
     return t;
 }
 
-/* True when a foreground thread other than the caller is waiting to run */
+static void rq_drop_sleeper(RunQueue *rq, Thread *t)
+{
+    for (Thread **pp = &rq->sleepers; *pp; pp = &(*pp)->sleep_next)
+        if (*pp == t) { *pp = t->sleep_next; break; }
+    t->sleep_next = NULL;
+    t->in_sleepers = false;
+}
+
+/* Lock the queue @t belongs to (it may move meanwhile: check after) */
+static RunQueue *lock_thread_rq(Thread *t, IrqState *s)
+{
+    for (;;) {
+        uint32_t c = __atomic_load_n(&t->cpu, __ATOMIC_ACQUIRE);
+        RunQueue *rq = &g_rq[c];
+        *s = spin_lock_irqsave(&rq->lock);
+        if (t->cpu == c) return rq;
+        spin_unlock_irqrestore(&rq->lock, *s);
+    }
+}
+
+/* Take a ready thread from another CPU's queue for this one (our queue's
+ * lock held: the others only by trylock, so two CPUs never wait on each
+ * other) */
+static Thread *steal(void)
+{
+    uint32_t me = this_cpu();
+    for (uint32_t n = 1; n < g_cpu_count; n++) {
+        uint32_t c = (me + n) % g_cpu_count;
+        RunQueue *v = &g_rq[c];
+        if (!__atomic_load_n(&v->head, __ATOMIC_RELAXED)) continue;
+        /* Its owner holds the lock only briefly (it may be queueing the
+         * very thread it kicked us for, and still sending the IPI): try
+         * for a while, not forever (two CPUs stealing from each other
+         * would otherwise wait on each other) */
+        bool locked = false;
+        for (int i = 0; i < 20000 && !(locked = spin_trylock(&v->lock)); i++) {
+            smp_poll_tlb();
+            pause_cpu();
+        }
+        if (!locked) continue;
+        Thread *t = rq_dequeue(v);
+        if (t) {
+            if (t->in_sleepers) rq_drop_sleeper(v, t);
+            __atomic_store_n(&t->cpu, me, __ATOMIC_RELEASE);   /* ours now */
+        }
+        spin_unlock(&v->lock);
+        if (t) return t;
+    }
+    return NULL;
+}
+
+/* True when a foreground thread other than the caller is waiting to run
+ * on this CPU */
 bool sched_foreground_ready(void)
 {
-    IrqState irq = spin_lock_irqsave(&sched_lock);
+    RunQueue *rq = my_rq();
+    IrqState irq = spin_lock_irqsave(&rq->lock);
     bool any = false;
-    if (ready_head) {
-        Thread *c = ready_head;
-        do { if (c->priority > BACKGROUND_PRIO) { any = true; break; } c = c->next; } while (c != ready_head);
+    if (rq->head) {
+        Thread *c = rq->head;
+        do { if (c->priority > BACKGROUND_PRIO) { any = true; break; } c = c->next; } while (c != rq->head);
     }
-    spin_unlock_irqrestore(&sched_lock, irq);
+    spin_unlock_irqrestore(&rq->lock, irq);
     return any;
 }
 
@@ -191,7 +252,7 @@ static void __attribute__((naked)) context_switch(
 static void finish_switch(void);
 
 /* A new thread's first instructions: complete the switch that started it
- * (it begins with interrupts off and sched_lock held), then run. */
+ * (it begins with interrupts off and its CPU's queue locked), then run. */
 void sched_thread_start(void)
 {
     finish_switch();
@@ -236,10 +297,10 @@ void sched_init(void)
     /* (the boot context takes the big kernel lock next, in main.c) */
     /* idle's stack is the current boot stack — we don't track it */
 
+    idle->cpu      = 0;
+    idle->on_cpu   = true;
     KiGetCurrentKpcr()->IdleThread    = idle;
     KiGetCurrentKpcr()->CurrentThread = idle;
-    ready_head     = NULL;
-    ready_count    = 0;
     tsc_at_boot    = rdtsc();
 
     kprintf("[SCHED] Scheduler initialized (idle TID=%lu)\n", idle->tid);
@@ -262,6 +323,8 @@ void sched_init_cpu(Thread *idle)
 {
     PKPCR k = KiGetCurrentKpcr();
     uintptr_t top = (uintptr_t)idle->kernel_stack + idle->stack_size;
+    idle->cpu        = k->CpuNumber;
+    idle->on_cpu     = true;
     k->IdleThread    = idle;
     k->CurrentThread = idle;
     k->KernelRsp     = top;
@@ -287,9 +350,12 @@ Thread *sched_create_thread_ex(const char *name, ThreadEntry entry,
 
 void sched_start_thread(Thread *t)
 {
-    IrqState irq = spin_lock_irqsave(&sched_lock);
-    ready_wake(t);
-    spin_unlock_irqrestore(&sched_lock, irq);
+    IrqState irq = irq_save();
+    t->cpu = this_cpu();                      /* starts in the creator's queue */
+    RunQueue *rq = &g_rq[t->cpu];
+    spin_lock(&rq->lock);
+    ready_wake(rq, t);
+    spin_unlock_irqrestore(&rq->lock, irq);
 }
 
 Thread *sched_new_thread(const char *name, ThreadEntry entry,
@@ -356,14 +422,18 @@ Thread *sched_new_thread(const char *name, ThreadEntry entry,
 
 /* -----------------------------------------------------------------------
  * switch_locked — pick the next thread and switch to it.  Called with
- * interrupts off and sched_lock held; returns (in the thread that called
- * it, once it runs again) with sched_lock released, interrupts still off.
+ * interrupts off and this CPU's queue locked; returns (in the thread that
+ * called it, once it runs again) with the lock released, interrupts off.
  * ----------------------------------------------------------------------- */
-static void switch_locked(void)
+static void switch_locked(RunQueue *rq)
 {
     PKPCR kpcr = KiGetCurrentKpcr();
     Thread *prev = current_thread;
-    Thread *next = ready_dequeue();
+    Thread *next = rq_dequeue(rq);
+    /* Nothing queued here, and this CPU would go idle: take work waiting
+     * on another CPU (a busy CPU doesn't: threads would bounce between
+     * CPUs) */
+    if (!next && (prev->state != THREAD_RUNNING || prev->idle)) next = steal();
     if (!next) {
         /* No other ready thread.  Keep running the current one if it can,
          * else this CPU's idle thread. */
@@ -373,7 +443,7 @@ static void switch_locked(void)
     if (prev == next) {
         next->state       = THREAD_RUNNING;
         next->ticks_slice = 0;
-        spin_unlock(&sched_lock);
+        spin_unlock(&rq->lock);
         return;
     }
 
@@ -381,8 +451,13 @@ static void switch_locked(void)
      * idle thread only ever runs as the fallback above) */
     if (prev->state == THREAD_RUNNING) {
         if (prev->idle) prev->state = THREAD_READY;
-        else ready_enqueue(prev);
+        else rq_enqueue(rq, prev);
     }
+    /* (a thread is queued only once switched out, under the lock of the
+     * queue its CPU was switching from: this never waits in practice) */
+    while (__atomic_load_n(&next->on_cpu, __ATOMIC_ACQUIRE)) pause_cpu();
+    next->on_cpu        = true;
+    next->cpu           = this_cpu();
     next->state         = THREAD_RUNNING;
     next->ticks_slice   = 0;
     kpcr->CurrentThread = next;
@@ -433,15 +508,19 @@ static void finish_switch(void)
     PKPCR kpcr = KiGetCurrentKpcr();
     Thread *prev = kpcr->PrevThread;
     kpcr->PrevThread = NULL;
-    if (prev && prev->state == THREAD_DEAD) prev->off_cpu = true;   /* its stack is free now */
-    spin_unlock(&sched_lock);
+    if (prev) {
+        if (prev->state == THREAD_DEAD) prev->off_cpu = true;   /* its stack is free now */
+        __atomic_store_n(&prev->on_cpu, false, __ATOMIC_RELEASE);   /* registers saved */
+    }
+    spin_unlock(&g_rq[kpcr->CpuNumber].lock);
     bkl_switch_in(current_thread);
 }
 
 static void perform_switch(void)
 {
-    spin_lock(&sched_lock);
-    switch_locked();
+    RunQueue *rq = my_rq();
+    spin_lock(&rq->lock);
+    switch_locked(rq);
 }
 
 /* -----------------------------------------------------------------------
@@ -461,9 +540,8 @@ void sched_yield(void)
 /* -----------------------------------------------------------------------
  * sched_tick — called from timer interrupt handler (interrupts disabled)
  * ----------------------------------------------------------------------- */
-static Thread *g_sleepers;               /* sched_sleep_tick (sched_lock) */
 static KSpinLock tick_lock = KSPINLOCK_INIT;
-static void wake_sleepers(void);
+static void wake_sleepers(RunQueue *rq);
 void DesktopWatchdog(uint64_t now);
 void UmTimerTick(uint64_t ticks);
 
@@ -481,16 +559,22 @@ void sched_tick(void)
             ps2_poll();                     /* keyboard/mouse, collected at 100 Hz */
             DesktopWatchdog(tick_count);
             UmTimerTick(tick_count);
-            if (g_sleepers) wake_sleepers();
         }
         spin_unlock(&tick_lock);
     }
+    RunQueue *rq = my_rq();                 /* each CPU wakes its own sleepers */
+    if (rq->sleepers) wake_sleepers(rq);
     if (!current_thread) return;
 
     current_thread->ticks_total++;
     current_thread->ticks_slice++;
 
-    if (current_thread->ticks_slice >= TICKS_PER_SLICE) {
+    /* An idle CPU looks for work waiting on the others at every tick */
+    bool steal_now = false;
+    if (current_thread->idle)
+        for (uint32_t c = 0; c < g_cpu_count && !steal_now; c++)
+            steal_now = __atomic_load_n(&g_rq[c].head, __ATOMIC_RELAXED) != NULL;
+    if (steal_now || current_thread->ticks_slice >= TICKS_PER_SLICE) {
         /* Time slice expired — preempt */
         perform_switch();
     }
@@ -515,20 +599,22 @@ Thread *sched_current(void)
  * ----------------------------------------------------------------------- */
 void sched_sleep_until(volatile uint32_t *flag, uint64_t deadline)
 {
-    IrqState irq = spin_lock_irqsave(&sched_lock);
+    IrqState irq = irq_save();
+    RunQueue *rq = my_rq();
+    spin_lock(&rq->lock);
     if ((flag && *flag) || tick_count >= deadline) {  /* woken already, or due */
-        spin_unlock_irqrestore(&sched_lock, irq);
+        spin_unlock_irqrestore(&rq->lock, irq);
         return;
     }
     Thread *t = current_thread;
     t->state = THREAD_WAITING;
     t->wake_tick = deadline;
     if (!t->in_sleepers) {                          /* (still there from a wake-up by sched_unblock) */
-        t->sleep_next = g_sleepers;
-        g_sleepers = t;
+        t->sleep_next = rq->sleepers;
+        rq->sleepers = t;
         t->in_sleepers = true;
     }
-    switch_locked();                                /* woken by sched_unblock or sched_tick */
+    switch_locked(rq);                              /* woken by sched_unblock or sched_tick */
     irq_restore(irq);
 }
 
@@ -544,37 +630,38 @@ void sched_wait(void)
 }
 
 /* Timer tick (interrupts off): sleepers whose tick has come are ready again */
-static void wake_sleepers(void)
+static void wake_sleepers(RunQueue *rq)
 {
-    spin_lock(&sched_lock);
-    for (Thread **pp = &g_sleepers; *pp;) {
+    spin_lock(&rq->lock);
+    for (Thread **pp = &rq->sleepers; *pp;) {
         Thread *t = *pp;
         bool due = t->wake_tick <= tick_count;
         if (due || t->state != THREAD_WAITING) {    /* due, or woken some other way */
             *pp = t->sleep_next;
             t->sleep_next = NULL;
             t->in_sleepers = false;
-            if (due && t->state == THREAD_WAITING) ready_wake(t);
+            if (due && t->state == THREAD_WAITING) ready_wake(rq, t);
         } else pp = &t->sleep_next;
     }
-    spin_unlock(&sched_lock);
+    spin_unlock(&rq->lock);
 }
 
 void sched_block(void)
 {
-    IrqState irq = spin_lock_irqsave(&sched_lock);
+    IrqState irq = irq_save();
+    RunQueue *rq = my_rq();
+    spin_lock(&rq->lock);
     current_thread->state = THREAD_WAITING;
-    switch_locked();
+    switch_locked(rq);
     irq_restore(irq);
 }
 
 void sched_unblock(Thread *t)
 {
-    IrqState irq = spin_lock_irqsave(&sched_lock);
-    if (t->state == THREAD_WAITING) {
-        ready_wake(t);
-    }
-    spin_unlock_irqrestore(&sched_lock, irq);
+    IrqState irq;
+    RunQueue *rq = lock_thread_rq(t, &irq);
+    if (t->state == THREAD_WAITING) ready_wake(rq, t);
+    spin_unlock_irqrestore(&rq->lock, irq);
 }
 
 /* -----------------------------------------------------------------------
@@ -583,9 +670,10 @@ void sched_unblock(Thread *t)
 void sched_exit_current(void)
 {
     cli();
-    spin_lock(&sched_lock);
+    RunQueue *rq = my_rq();
+    spin_lock(&rq->lock);
     current_thread->state = THREAD_DEAD;
-    switch_locked();                    /* never comes back */
+    switch_locked(rq);                  /* never comes back */
     for (;;) hlt();
 }
 
@@ -606,9 +694,7 @@ void sched_free_thread(Thread *t)
  * ----------------------------------------------------------------------- */
 void sched_enqueue_thread(Thread *t)
 {
-    IrqState irq = spin_lock_irqsave(&sched_lock);
-    ready_wake(t);
-    spin_unlock_irqrestore(&sched_lock, irq);
+    sched_start_thread(t);
 }
 
 /* -----------------------------------------------------------------------
@@ -616,17 +702,20 @@ void sched_enqueue_thread(Thread *t)
  * ----------------------------------------------------------------------- */
 void sched_dump(void)
 {
-    kprintf("[SCHED] Current: '%s' TID=%lu  ticks=%lu  ready_count=%zu\n",
-            current_thread->name, current_thread->tid,
-            tick_count, ready_count);
-
-    Thread *t = ready_head;
-    if (t) {
-        kprintf("[SCHED] Ready queue:\n");
-        do {
-            kprintf("  TID=%lu '%s' state=%d prio=%u\n",
-                    t->tid, t->name, t->state, t->priority);
-            t = t->next;
-        } while (t != ready_head);
+    kprintf("[SCHED] Current: '%s' TID=%lu  ticks=%lu\n",
+            current_thread->name, current_thread->tid, tick_count);
+    for (uint32_t c = 0; c < g_cpu_count; c++) {
+        RunQueue *rq = &g_rq[c];
+        IrqState irq = spin_lock_irqsave(&rq->lock);
+        Thread *t = rq->head;
+        if (t) {
+            kprintf("[SCHED] CPU %u ready queue (%zu):\n", c, rq->count);
+            do {
+                kprintf("  TID=%lu '%s' state=%d prio=%u\n",
+                        t->tid, t->name, t->state, t->priority);
+                t = t->next;
+            } while (t != rq->head);
+        }
+        spin_unlock_irqrestore(&rq->lock, irq);
     }
 }

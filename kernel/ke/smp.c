@@ -202,13 +202,19 @@ void smp_ipi(uint64_t vector)
     apic_eoi();
 }
 
-void smp_kick(void)
+void smp_kick(uint32_t prefer)
 {
     if (g_cpu_count < 2) return;
     PKPCR self = KiGetCurrentKpcr();
-    for (uint32_t i = 0; i < MAX_CPUS; i++) {
+    PKPCR p = prefer < MAX_CPUS ? &g_kpcr[prefer] : NULL;
+    if (p && p != self && p->Online && p->Idle) {    /* the thread's own CPU, if it is idle */
+        p->Idle = 0;
+        apic_send_ipi(p->ApicId, APIC_IPI_FIXED | IPI_WAKE);
+        return;
+    }
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {    /* a CPU halted in its idle thread: it will steal it */
         PKPCR k = &g_kpcr[i];
-        if (k == self || !k->Online || !k->Idle) continue;
+        if (k == self || !k->Online || !k->Idle || k->CurrentThread != k->IdleThread) continue;
         k->Idle = 0;                          /* one IPI per halt is enough */
         apic_send_ipi(k->ApicId, APIC_IPI_FIXED | IPI_WAKE);
         return;

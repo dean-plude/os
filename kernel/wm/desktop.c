@@ -1491,10 +1491,11 @@ void DesktopRun(void *arg)
             bkl_acquire();
         }
         DesktopUnlock();
-        /* Nothing else to run: wait for the next tick (10 ms) instead of
-         * spinning, so an idle desktop leaves the CPU idle */
-        if (!sched_foreground_ready()) cpu_idle_wait();
-        sched_yield();
+        /* Sleep until the next tick (10 ms: input is collected at the
+         * tick) instead of spinning.  Sleeping in the scheduler, not
+         * halting the CPU, leaves the CPU to its idle thread, which takes
+         * work from busy CPUs meanwhile. */
+        sched_sleep_tick();
     }
 }
 

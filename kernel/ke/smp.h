@@ -54,8 +54,9 @@ void smp_early(const BootInfo *info);
 /* Start the other CPUs (after the scheduler, syscalls and SSE are set up). */
 void smp_start(void);
 
-/* A thread became ready: wake one halted CPU to run it. */
-void smp_kick(void);
+/* A thread became ready in CPU @prefer's queue: wake that CPU if it is
+ * halted, else any halted CPU (it will take the thread from the queue). */
+void smp_kick(uint32_t prefer);
 /* Page table entries changed: other CPUs running with page table @cr3 flush
  * their TLB before this returns.  cr3 = 0: every CPU, global pages too. */
 void smp_tlb_flush(uint64_t cr3);
