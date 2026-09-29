@@ -223,7 +223,6 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     g_kpcr[0].Gdt    = gdt_boot();
     g_kpcr[0].Tss    = &gdt_boot()->tss;
     g_kpcr[0].Online = 1;
-    bkl_acquire_boot();
 
     kprintf("=== Phase 1: IDT ===\n");
     idt_init();
@@ -236,6 +235,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
      * ------------------------------------------------------------------ */
     kprintf("=== Phase 1: Scheduler ===\n");
     sched_init();
+    bkl_acquire_boot();                   /* boot runs under the big kernel lock */
 
     /* ------------------------------------------------------------------
      * STEP 10: Object Manager
@@ -392,6 +392,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
 
     kprintf("[NovaOS] Entering kernel main loop\n");
 
+    bkl_release();                        /* the idle loop needs no lock */
     for (;;) {                            /* CPU 0's idle thread: runs when nothing else is ready */
         sched_yield();
         cpu_idle_wait();

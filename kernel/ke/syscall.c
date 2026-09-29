@@ -1125,14 +1125,22 @@ UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
     return r;
 }
 
-/* SYSCALL instruction path (syscall_entry.asm): the kernel lock is taken
- * here, on the way in from user mode, and dropped on the way back. */
+/* SYSCALL instruction path (syscall_entry.asm): the big kernel lock is
+ * taken here, on the way in from user mode, and dropped on the way back —
+ * unless the service runs under its own locks (UmSyscallLockFree). */
 UINT64 KiSystemCallEntry(UINT64 num, UINT64 arg1, UINT64 arg2,
                          UINT64 arg3, UINT64 arg4, UINT64 user_rsp)
 {
-    bkl_acquire();
+    /* Programs' services with locks of their own skip the big lock */
+    bool big = !(sched_current()->um && num < SYSCALL_MAX && UmSyscallLockFree(num));
+    if (big) bkl_acquire();
     UINT64 r = KiSystemCallDispatch(num, arg1, arg2, arg3, arg4, user_rsp);
-    bkl_release();
+    if (big) bkl_release();
+    if (bkl_held()) {                                   /* never into user mode with it */
+        kprintf("[SMP] Bug: system call %03llx returns holding the kernel lock\n",
+                (unsigned long long)num);
+        bkl_leave_kernel();
+    }
     return r;
 }
 

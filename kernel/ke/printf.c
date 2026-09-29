@@ -5,6 +5,7 @@
  * We use __builtin_va_list (compiler-provided even in -ffreestanding mode).
  */
 
+#include "spinlock.h"
 #include "printf.h"
 #include "../hal/serial.h"
 #include "../hal/framebuffer.h"
@@ -221,6 +222,9 @@ void kprintf_set_fb_enabled(bool enabled)
 static char   g_klog[KLOG_SIZE];
 static size_t g_klog_total;          /* bytes ever written */
 
+/* One message at a time, from any CPU (and whole: not interleaved) */
+static KSpinLock g_print_lock = KSPINLOCK_INIT;
+
 static void klog_append(const char *s)
 {
     for (; *s; s++) g_klog[g_klog_total++ % KLOG_SIZE] = *s;
@@ -229,11 +233,13 @@ static void klog_append(const char *s)
 size_t klog_read(char *out, size_t cap)
 {
     if (!out || cap == 0) return 0;
+    IrqState irq = spin_lock_irqsave(&g_print_lock);
     size_t avail = g_klog_total < KLOG_SIZE ? g_klog_total : KLOG_SIZE;
     size_t n = avail < cap - 1 ? avail : cap - 1;
     size_t start = g_klog_total - n;
     for (size_t i = 0; i < n; i++) out[i] = g_klog[(start + i) % KLOG_SIZE];
     out[n] = '\0';
+    spin_unlock_irqrestore(&g_print_lock, irq);
     return n;
 }
 
@@ -241,10 +247,12 @@ void kvprintf(const char *fmt, __builtin_va_list ap)
 {
     char buf[1024];
     kvsnprintf(buf, sizeof(buf), fmt, ap);
+    IrqState irq = spin_lock_irqsave(&g_print_lock);
     klog_append(buf);
     serial_puts(buf);
     if (g_fb_output)
         fb_puts(buf);
+    spin_unlock_irqrestore(&g_print_lock, irq);
 }
 
 void kprintf(const char *fmt, ...)

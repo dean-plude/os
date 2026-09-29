@@ -192,20 +192,29 @@ bool um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect)
     return ok;
 }
 
+/* Pages are freed only after every CPU has dropped them from its TLB: until
+ * then another thread of the program could still write to them. */
 void um_decommit(UmProcess *p, UINT64 va, UINT64 size)
 {
-    bool changed = false;
+    PADDR batch[64];
+    int n = 0;
     for (UINT64 a = va & ~0xFFFULL; a < va + size; a += PAGE_SIZE) {
         pte_t *e = walk(p->pml4, a, false);
         if (!e || !(*e & PTE_PRESENT)) continue;
         if ((*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* the shared page stays */
-        pmm_free_page(*e & PTE_ADDR_MASK);                 /* reused only after the flush below */
+        batch[n++] = *e & PTE_ADDR_MASK;
         *e = 0;
         p->pages--;
         if (is_current(p)) invlpg(a);
-        changed = true;
+        if (n == 64) {
+            smp_tlb_flush(p->pml4);
+            while (n) pmm_free_page(batch[--n]);
+        }
     }
-    if (changed) smp_tlb_flush(p->pml4);
+    if (n) {
+        smp_tlb_flush(p->pml4);
+        while (n) pmm_free_page(batch[--n]);
+    }
 }
 
 bool um_is_committed(UmProcess *p, UINT64 va)
@@ -895,7 +904,7 @@ static void um_thread_start(void *arg)
     /* Enter ring 3 at ntdll!RtlUserThreadStart(RCX = start, RDX = argument),
      * leaving the kernel lock behind.  The TEB is in MSR_KERNEL_GS_BASE
      * (this thread was created with it): SWAPGS makes it the user GS. */
-    bkl_release();
+    bkl_leave_kernel();
     UINT64 f[7] = {
         p->thread_start, GDT_USER_CODE | 3, 0x202,                 /* RIP, CS, RFLAGS */
         t->stack_lo + t->stack_size - 0x28, GDT_USER_DATA | 3,     /* RSP, SS */
@@ -992,12 +1001,11 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
         return NULL;
     }
 
-    /* Create the scheduler thread with interrupts off so it can't run
-     * before its user-mode state is filled in. */
-    IrqState s = irq_save();
+    /* The scheduler thread is queued only once its user-mode state is
+     * filled in (another CPU may run it the moment it is). */
     char tname[THREAD_NAME_MAX];
     ksnprintf(tname, sizeof(tname), "%s:%u", p->name, t->tid);
-    Thread *kt = sched_create_thread_ex(tname, um_thread_start, t, 8, 32 * 1024);
+    Thread *kt = sched_new_thread(tname, um_thread_start, t, 8, 32 * 1024);
     if (kt) {
         kt->um = t;
         kt->cr3 = p->pml4;
@@ -1006,8 +1014,8 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
         t->kt = kt;
         p->threads[slot] = t;
         p->live_threads++;
+        sched_start_thread(kt);
     }
-    irq_restore(s);
     if (!kt) {
         um_decommit(p, t->teb, UM_TEB_SIZE);
         um_decommit(p, t->stack_lo, stack_size);
@@ -1144,6 +1152,7 @@ UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsol
  * ----------------------------------------------------------------------- */
 void um_exit_thread(UINT32 status)
 {
+    bkl_acquire();                          /* (dropped by the final switch) */
     UmThread *t = UmCurrentThread();
     UmProcess *p = t->proc;
     um_abandon_mutants(p, t);
@@ -1156,15 +1165,17 @@ void um_exit_thread(UINT32 status)
         um_region_remove(p, r);
     }
     um_decommit(p, t->teb, UM_TEB_SIZE);
-    cli();
+    IrqState s = ob_lock();
     t->exit_code = status;
     t->exited = true;
     t->ob.signaled = true;
+    um_ob_wake(&t->ob);
     if (--p->live_threads == 0) {
         p->exit_status = p->kill_pending ? p->kill_status : status;
         p->exited = true;
-        if (p->exit_ob) p->exit_ob->signaled = true;
+        if (p->exit_ob) { p->exit_ob->signaled = true; um_ob_wake(p->exit_ob); }
     }
+    ob_unlock(s);
     um_unlock(&p->lock);
     sched_exit_current();
 }
@@ -1172,12 +1183,12 @@ void um_exit_thread(UINT32 status)
 void um_exit_process(UINT32 status)
 {
     UmProcess *p = UmCurrent();
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     if (!p->kill_pending) {
         p->kill_status = status;
         p->kill_pending = true;
     }
-    irq_restore(s);
+    ob_unlock(s);
     um_exit_thread(status);
 }
 
@@ -1269,13 +1280,13 @@ void UmKill(UmProcess *p, UINT32 status)
     if (!p || p->exited) return;
     kprintf("[UM] Stopping %s (PID %u)\n", p->name, p->pid);
     dump_threads(p);
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     if (!p->kill_pending) {
         p->kill_status = status;
         ksnprintf(p->why, sizeof(p->why), "%s", status == UM_STATUS_CONTROL_C_EXIT ? "stopped (Ctrl+C)" : "terminated");
         p->kill_pending = true;
     }
-    irq_restore(s);
+    ob_unlock(s);
 }
 
 bool UmHasExited(UmProcess *p, UINT32 *status, char *why, int why_cap)

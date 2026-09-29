@@ -16,29 +16,39 @@
 #include "../arch/x86_64/paging.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
+#include "spinlock.h"
 
 void UmCpuCountChanged(void);
 
 /* -----------------------------------------------------------------------
- * Big kernel lock: a test-and-set lock.  A waiter spins a little (with
+ * Big kernel lock
+ *
+ * Held by threads, not CPUs: Thread.bkl_depth counts a thread's nested
+ * bkl_acquire calls.  The scheduler lets go of the lock when it switches a
+ * holder out and takes it back when the holder resumes, so a thread
+ * waiting for anything never keeps the other CPUs out of code that needs
+ * the lock.  Code that doesn't need it (the scheduler, the timer, the
+ * services in um_syscall.c's list, the desktop's drawing) runs on every
+ * CPU at once under its own locks.
+ *
+ * Underneath is a test-and-set lock.  A waiter spins a little (with
  * interrupts off, answering TLB flush requests: the holder may be waiting
  * for that), then halts with interrupts on until the holder, on release,
  * sends it IPI_WAKE — so waiting CPUs don't burn the time the holder needs
  * (under emulation, host CPUs).  Timer interrupts during that halt are
- * only acknowledged (KPCR.LockWait, see interrupt_dispatch), so waits never
- * nest.
- *
- * A thread keeps the lock across preemption, so kernel threads could pass
- * it among themselves on one CPU while the others wait; bkl_relax, at the
- * scheduler's voluntary switch points, hands it over first.
+ * only acknowledged (KPCR.LockWait, see interrupt_dispatch), so a waiting
+ * thread is never switched out halfway.
  * ----------------------------------------------------------------------- */
 static struct {
     volatile uint32_t locked;
     volatile uint32_t waiters;               /* CPUs halted waiting for it */
-    volatile uint32_t contenders;            /* CPUs in bkl_lock */
-    volatile int32_t  owner;                 /* CPU number, -1 when free */
+    volatile uint32_t contenders;            /* CPUs in raw_lock */
     uint32_t          next_wake;
-} g_bkl = { 0, 0, 0, -1, 0 };
+} g_bkl = { 0, 0, 0, 0 };
+
+/* TLB shootdowns, one at a time (a sender and its targets never wait for
+ * each other in a circle) */
+static KSpinLock g_tlb_lock = KSPINLOCK_INIT;
 
 static void tlb_flush_local(PKPCR k)
 {
@@ -54,22 +64,28 @@ static void tlb_flush_local(PKPCR k)
     __atomic_store_n(&k->TlbFlush, 0, __ATOMIC_RELEASE);
 }
 
-static bool bkl_try(void)
+void smp_poll_tlb(void)
+{
+    PKPCR k = KiGetCurrentKpcr();
+    if (k && k->TlbFlush) tlb_flush_local(k);
+}
+
+static bool raw_try(void)
 {
     return !__atomic_load_n(&g_bkl.locked, __ATOMIC_RELAXED) &&
            !__atomic_exchange_n(&g_bkl.locked, 1, __ATOMIC_ACQUIRE);
 }
 
-/* @may_halt: false while a CPU starts (it may not take interrupts yet) */
-static void bkl_lock(bool may_halt)
+/* Interrupts off.  @may_halt: false while a CPU starts (it may not take
+ * interrupts yet). */
+static void raw_lock(bool may_halt)
 {
     PKPCR k = KiGetCurrentKpcr();
     uint32_t bit = 1u << k->CpuNumber;
     __atomic_fetch_add(&g_bkl.contenders, 1, __ATOMIC_SEQ_CST);
     for (;;) {
         for (int i = 0; i < 1024; i++) {
-            if (bkl_try()) {
-                g_bkl.owner = (int32_t)k->CpuNumber;
+            if (raw_try()) {
                 __atomic_fetch_sub(&g_bkl.contenders, 1, __ATOMIC_SEQ_CST);
                 return;
             }
@@ -87,12 +103,8 @@ static void bkl_lock(bool may_halt)
     }
 }
 
-void bkl_acquire(void)      { bkl_lock(true); }
-void bkl_acquire_boot(void) { bkl_lock(false); }
-
-void bkl_release(void)
+static void raw_unlock(void)
 {
-    g_bkl.owner = -1;
     __atomic_store_n(&g_bkl.locked, 0, __ATOMIC_SEQ_CST);
     uint32_t w = __atomic_load_n(&g_bkl.waiters, __ATOMIC_SEQ_CST);
     if (!w) return;
@@ -107,34 +119,75 @@ void bkl_release(void)
     }
 }
 
-void bkl_relax(void)
+static Thread *me(void) { return KiGetCurrentKpcr()->CurrentThread; }
+
+void bkl_acquire(void)
 {
-    if (!__atomic_load_n(&g_bkl.contenders, __ATOMIC_SEQ_CST)) return;
     IrqState s = irq_save();
-    bkl_release();                            /* (wakes a halted waiter) */
-    /* Let a contender have it: it is spinning, or waking up to try */
-    for (int i = 0; i < 1000000 && !__atomic_load_n(&g_bkl.locked, __ATOMIC_ACQUIRE) &&
-                    __atomic_load_n(&g_bkl.contenders, __ATOMIC_ACQUIRE); i++)
-        pause_cpu();
-    bkl_acquire();
+    Thread *t = me();
+    if (t->bkl_depth++ == 0) raw_lock(true);
+    irq_restore(s);
+}
+
+void bkl_release(void)
+{
+    IrqState s = irq_save();
+    Thread *t = me();
+    if (t->bkl_depth > 0 && --t->bkl_depth == 0) raw_unlock();
+    irq_restore(s);
+}
+
+void bkl_acquire_boot(void)
+{
+    raw_lock(false);
+    me()->bkl_depth = 1;
+}
+
+void bkl_leave_kernel(void)
+{
+    IrqState s = irq_save();
+    Thread *t = me();
+    if (t->bkl_depth) { t->bkl_depth = 0; raw_unlock(); }
     irq_restore(s);
 }
 
 bool bkl_held(void)
 {
-    return g_bkl.owner == (int32_t)KiGetCurrentKpcr()->CpuNumber;
+    Thread *t = me();
+    return t && t->bkl_depth > 0;
+}
+
+/* The scheduler, with interrupts off: a holder leaving and coming back */
+void bkl_switch_out(Thread *t) { if (t->bkl_depth) raw_unlock(); }
+void bkl_switch_in(Thread *t)  { if (t->bkl_depth) raw_lock(true); }
+
+void bkl_relax(void)
+{
+    Thread *t = me();
+    if (!t->bkl_depth || !__atomic_load_n(&g_bkl.contenders, __ATOMIC_SEQ_CST)) return;
+    IrqState s = irq_save();
+    raw_unlock();                             /* (wakes a halted waiter) */
+    /* Let a contender have it: it is spinning, or waking up to try */
+    for (int i = 0; i < 1000000 && !__atomic_load_n(&g_bkl.locked, __ATOMIC_ACQUIRE) &&
+                    __atomic_load_n(&g_bkl.contenders, __ATOMIC_ACQUIRE); i++)
+        pause_cpu();
+    raw_lock(true);
+    irq_restore(s);
 }
 
 void cpu_idle_wait(void)
 {
     IrqState s = irq_save();
+    Thread *t = me();
+    uint32_t depth = t->bkl_depth;
+    t->bkl_depth = 0;                         /* an interrupt in the window takes it anew */
+    if (depth) raw_unlock();
     KiGetCurrentKpcr()->Idle = 1;
-    bkl_release();
     __asm__ volatile ("sti; hlt; cli" ::: "memory");
     /* An interrupt ended the halt (and may have moved this thread to
-     * another CPU): take the lock again on whichever CPU this is. */
-    bkl_acquire();
+     * another CPU) */
     KiGetCurrentKpcr()->Idle = 0;
+    if (depth) { raw_lock(true); t->bkl_depth = depth; }
     irq_restore(s);
 }
 
@@ -152,10 +205,10 @@ void smp_ipi(uint64_t vector)
 void smp_kick(void)
 {
     if (g_cpu_count < 2) return;
-    PKPCR me = KiGetCurrentKpcr();
+    PKPCR self = KiGetCurrentKpcr();
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         PKPCR k = &g_kpcr[i];
-        if (k == me || !k->Online || !k->Idle) continue;
+        if (k == self || !k->Online || !k->Idle) continue;
         k->Idle = 0;                          /* one IPI per halt is enough */
         apic_send_ipi(k->ApicId, APIC_IPI_FIXED | IPI_WAKE);
         return;
@@ -165,11 +218,12 @@ void smp_kick(void)
 void smp_tlb_flush(uint64_t cr3)
 {
     if (g_cpu_count < 2) return;
-    PKPCR me = KiGetCurrentKpcr();
+    IrqState s = spin_lock_irqsave(&g_tlb_lock);
+    PKPCR self = KiGetCurrentKpcr();
     uint32_t wait = 0;
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         PKPCR k = &g_kpcr[i];
-        if (k == me || !k->Online) continue;
+        if (k == self || !k->Online) continue;
         Thread *t = k->CurrentThread;
         if (cr3 && (!t || t->cr3 != cr3)) continue;   /* not in that address space */
         __atomic_store_n(&k->TlbFlush, cr3 ? 1 : 2, __ATOMIC_RELEASE);
@@ -182,6 +236,7 @@ void smp_tlb_flush(uint64_t cr3)
                 wait &= ~(1u << i);
         pause_cpu();
     }
+    spin_unlock_irqrestore(&g_tlb_lock, s);
 }
 
 /* -----------------------------------------------------------------------
@@ -308,6 +363,7 @@ static void __attribute__((noreturn)) ap_entry(uint64_t cpu)
     g_cpu_count++;
     kprintf("[SMP] CPU %u online (APIC ID %u)\n", (unsigned)cpu, (unsigned)k->ApicId);
     UmCpuCountChanged();
+    bkl_release();                            /* the idle loop needs no lock */
     for (;;) {
         sched_yield();
         cpu_idle_wait();

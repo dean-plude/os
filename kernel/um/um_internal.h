@@ -90,10 +90,19 @@ struct UmThread {
     volatile UINT8  park;
     void           *uframe;
     UINT16          last_sys;       /* the latest system call (diagnostics) */
+    /* Waiting (um_thread.c, under g_um_oblock): the objects, the waiter
+     * list link, and the flag a signaler sets to wake it */
+    UmObject      **wait_objs;
+    int             wait_n;
+    UmThread       *wait_next;
+    volatile UINT32 wake;
 };
 
 UmObject *um_ob_ref(UmObject *o);
 void      um_ob_unref(UmObject *o);
+/* @o became signaled (or acquirable): wake the threads waiting on it.
+ * Called with g_um_oblock held. */
+void      um_ob_wake(UmObject *o);
 
 typedef enum { H_FREE = 0, H_FILE, H_CON_IN, H_CON_OUT, H_DIR, H_OBJECT } UmHandleKind;
 
@@ -197,6 +206,15 @@ int        um_console_read(UmConsole *c, char *buf, int cap, UmProcess *p);
 void       um_syscall_init(void);
 void       um_close_all_handles(UmProcess *p);
 void       um_install(UINT32 num, SYSCALL_HANDLER h);
+void       um_lock_free(UINT32 num);
+
+/* Synchronization objects' state (signaled, owner, count...) and thread
+ * and process exit flags: short sections under one spinlock, so a wait's
+ * check-and-take is atomic on any CPU */
+#include "../ke/spinlock.h"
+extern KSpinLock g_um_oblock;
+static inline IrqState ob_lock(void)          { return spin_lock_irqsave(&g_um_oblock); }
+static inline void     ob_unlock(IrqState s)  { spin_unlock_irqrestore(&g_um_oblock, s); }     /* mark a service as running without the big kernel lock */
 UINT64     um_stack_arg(int n);                 /* syscall argument n >= 5 */
 UINT64     um_now_100ns(void);                  /* system time (100 ns since 1601) */
 UINT64     um_handle_new_object(UmProcess *p, UmObject *o);   /* takes a reference; 0 if full */

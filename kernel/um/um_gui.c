@@ -9,8 +9,10 @@
  * into Win32 messages and queued for the program's GetMessage loop.
  *
  * The window manager runs on the desktop thread under the desktop lock, so
- * every WM touch from a program thread takes DesktopLock first, and the WM
- * callbacks (which already hold it) enqueue messages without racing.
+ * every WM touch from a program thread takes DesktopLock first.  Message
+ * queues have a spinlock of their own (g_gui_lock), so GetMessage,
+ * PostMessage, InvalidateRect and timers never wait for a frame to be
+ * drawn.  All of these run without the big kernel lock (smp.h).
  */
 
 #include "um_internal.h"
@@ -21,6 +23,7 @@
 #include "../wm/wm.h"
 #include "../gdi/gdi.h"
 #include "../apps/apps.h"
+#include "../ke/waitq.h"
 
 /* Win32 window messages we deliver */
 #define WM_DESTROY        0x0002
@@ -70,8 +73,15 @@ typedef struct {
     struct { UINT32 id; UINT32 period; UINT64 next; bool used; } timers[GUI_TIMERS];
 } GuiWin;
 
+/* The table's slots (used, proc, id), the message queues, the quit flags
+ * and the timers are under g_gui_lock, a spinlock: a program's message
+ * loop never waits for the desktop to finish drawing a frame.  The WND
+ * side (wnd, bitmap, size, anything that reaches the window manager) is
+ * under DesktopLock.  g_guiq wakes programs waiting for messages. */
 static GuiWin g_win[GUI_MAX_WINDOWS];
 static UINT32 g_win_next = 1;
+static KSpinLock g_gui_lock = KSPINLOCK_INIT;
+static WaitQueue g_guiq = WAITQ_INIT;
 static UINT32 g_row[GUI_MAX_W];     /* blit scratch; used on the desktop thread */
 
 static GuiWin *win_of_handle(UmProcess *p, UINT64 h)
@@ -81,11 +91,20 @@ static GuiWin *win_of_handle(UmProcess *p, UINT64 h)
     return NULL;
 }
 
+/* The same, taking g_gui_lock (for callers under DesktopLock, which keeps
+ * the slot from being freed while they use it) */
+static GuiWin *win_lookup(UmProcess *p, UINT64 h)
+{
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
+    GuiWin *g = win_of_handle(p, h);
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    return g;
+}
+
 /* -----------------------------------------------------------------------
- * Message queue (enqueue: desktop thread under DesktopLock; dequeue:
- * program thread, briefly under DesktopLock)
+ * Message queue (g_gui_lock)
  * ----------------------------------------------------------------------- */
-static void enqueue(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, int y)
+static void enqueue_locked(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, int y)
 {
     if (g->head - g->tail >= GUI_QUEUE) return;             /* full: drop */
     /* Coalesce consecutive paints and mouse moves */
@@ -104,8 +123,17 @@ static void enqueue(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, int y)
     __atomic_store_n(&g->head, g->head + 1, __ATOMIC_RELEASE);
 }
 
+static void enqueue(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, int y)
+{
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
+    if (g->used) enqueue_locked(g, msg, wp, lp, x, y);
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    waitq_wake(&g_guiq);
+}
+
 /* -----------------------------------------------------------------------
- * WM callbacks (desktop thread, DesktopLock held)
+ * WM callbacks (desktop thread, DesktopLock held; the queue side takes
+ * g_gui_lock itself)
  * ----------------------------------------------------------------------- */
 static void gui_paint(WND *w)
 {
@@ -185,11 +213,16 @@ static bool gui_tick(WND *w)
     GuiWin *g = w->user;
     if (!g) return false;
     UINT64 now = sched_ticks();
+    bool any = false;
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
     for (int i = 0; i < GUI_TIMERS; i++)
         if (g->timers[i].used && now >= g->timers[i].next) {
-            enqueue(g, WM_TIMER, g->timers[i].id, 0, 0, 0);
+            enqueue_locked(g, WM_TIMER, g->timers[i].id, 0, 0, 0);
             g->timers[i].next = now + g->timers[i].period;
+            any = true;
         }
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    if (any) waitq_wake(&g_guiq);
     return false;
 }
 
@@ -243,10 +276,17 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (cw > GUI_MAX_W) cw = GUI_MAX_W; if (ch > GUI_MAX_H) ch = GUI_MAX_H;
 
     int slot = -1;
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) if (!g_win[i].used) { slot = i; break; }
-    if (slot < 0) return 0;
-    GuiWin *g = &g_win[slot];
-    memset(g, 0, sizeof(*g));
+    GuiWin *g = slot >= 0 ? &g_win[slot] : NULL;
+    if (g) {
+        memset(g, 0, sizeof(*g));
+        g->used = true;                     /* reserved; no window yet */
+        g->proc = p;
+        g->id = g_win_next++;
+    }
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    if (!g) return 0;
 
     /* Client bitmap in the program's address space */
     UINT64 va = GUI_BITMAP_VA + (UINT64)slot * GUI_BITMAP_STRIDE;
@@ -255,16 +295,15 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     bool ok = um_is_free(p, va, size) && um_region_add(p, va, size, 0x04, false) &&
               um_commit(p, va, size, 0x04);
     um_unlock(&p->lock);
-    if (!ok) return 0;
+    if (!ok) { s = spin_lock_irqsave(&g_gui_lock); g->used = false; spin_unlock_irqrestore(&g_gui_lock, s); return 0; }
 
     char title[128];
     utf16_to_ascii(p, gc.title, title, sizeof(title));
 
-    g->used = true;
-    g->proc = p;
-    g->id = g_win_next++;
+    DesktopLock();
     g->bitmap = va;
     g->cw = cw; g->ch = ch;
+    DesktopUnlock();
 
     DesktopLock();
     GdiRect wa = WmWorkArea();
@@ -278,6 +317,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         w->app = AppForProgram(p->name);    /* e.g. netsurf.exe -> its dock icon */
         strncpy(w->program, p->name, sizeof(w->program) - 1);   /* its icon */
         w->fixed_size = true;               /* the client bitmap has a fixed size */
+        w->paint_lock_free = true;          /* gui_paint: the program's memory, under DesktopLock */
         w->on_key = gui_key;
         w->key_releases = true;         /* WM_KEYUP */
         w->on_mouse = gui_mouse;
@@ -287,7 +327,11 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         WmSetActive(w);
     }
     DesktopUnlock();
-    if (!w) { um_lock(&p->lock); um_decommit(p, va, size); um_region_remove(p, um_region_find(p, va)); um_unlock(&p->lock); g->used = false; return 0; }
+    if (!w) {
+        um_lock(&p->lock); um_decommit(p, va, size); um_region_remove(p, um_region_find(p, va)); um_unlock(&p->lock);
+        s = spin_lock_irqsave(&g_gui_lock); g->used = false; spin_unlock_irqrestore(&g_gui_lock, s);
+        return 0;
+    }
 
     gc.hwnd = g->id;
     gc.bitmap = va;
@@ -295,9 +339,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     gc.cw = (UINT32)cw; gc.ch = (UINT32)ch;
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a1, &gc, sizeof(gc)))) return 0;
     /* Kick off the first paint */
-    DesktopLock();
-    if (g->wnd) enqueue(g, WM_PAINT, 0, 0, 0, 0);
-    DesktopUnlock();
+    enqueue(g, WM_PAINT, 0, 0, 0, 0);
     return g->id;
 }
 
@@ -310,7 +352,8 @@ static UINT64 sys_gui_getmessage(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     for (;;) {
         GuiMsg out;
         bool got = false, quit = false;
-        DesktopLock();
+        UINT32 gen = waitq_gen(&g_guiq);
+        IrqState s = spin_lock_irqsave(&g_gui_lock);
         for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
             GuiWin *g = &g_win[i];
             if (!g->used || g->proc != p) continue;
@@ -323,7 +366,7 @@ static UINT64 sys_gui_getmessage(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
                 break;
             }
         }
-        DesktopUnlock();
+        spin_unlock_irqrestore(&g_gui_lock, s);
         if (got) {
             if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, &out, sizeof(GuiMsg)))) return (UINT64)(INT64)-1;
             return 1;
@@ -331,7 +374,7 @@ static UINT64 sys_gui_getmessage(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (quit) return 0;
         if (!a3) return (UINT64)(INT64)-1;
         if (um_stopping()) return 0;
-        sched_wait();
+        waitq_wait(&g_guiq, gen, 10);           /* until a message comes (or 100 ms) */
     }
 }
 
@@ -339,10 +382,11 @@ static UINT64 sys_gui_invalidate(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a2; (void)a3; (void)a4;
     UmProcess *p = UmCurrent();
-    DesktopLock();
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
     GuiWin *g = win_of_handle(p, a1);
-    if (g && g->wnd) { enqueue(g, WM_PAINT, 0, 0, 0, 0); WmInvalidate(); }
-    DesktopUnlock();
+    if (g) enqueue_locked(g, WM_PAINT, 0, 0, 0, 0);
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    if (g) { WmInvalidate(); waitq_wake(&g_guiq); }
     return 0;
 }
 
@@ -353,7 +397,7 @@ static UINT64 sys_gui_settext(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     char title[128];
     utf16_to_ascii(p, a2, title, sizeof(title));
     DesktopLock();
-    GuiWin *g = win_of_handle(p, a1);
+    GuiWin *g = win_lookup(p, a1);
     if (g && g->wnd) { WmSetTitle(g->wnd, title); WmInvalidate(); }
     DesktopUnlock();
     return 0;
@@ -364,7 +408,7 @@ static UINT64 sys_gui_show(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     (void)a3; (void)a4;
     UmProcess *p = UmCurrent();
     DesktopLock();
-    GuiWin *g = win_of_handle(p, a1);
+    GuiWin *g = win_lookup(p, a1);
     if (g && g->wnd) { WmShowWindow(g->wnd, a2 != 0); if (a2) WmSetActive(g->wnd); WmInvalidate(); }
     DesktopUnlock();
     return 0;
@@ -381,7 +425,9 @@ static void destroy_window(GuiWin *g)
         if (r) { um_decommit(p, r->base, r->size); um_region_remove(p, r); }
         um_unlock(&p->lock);
     }
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
     g->used = false;
+    spin_unlock_irqrestore(&g_gui_lock, s);
 }
 
 static UINT64 sys_gui_destroy(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -389,7 +435,7 @@ static UINT64 sys_gui_destroy(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     (void)a2; (void)a3; (void)a4;
     UmProcess *p = UmCurrent();
     DesktopLock();
-    GuiWin *g = win_of_handle(p, a1);
+    GuiWin *g = win_lookup(p, a1);
     if (g) { if (g->wnd) g->wnd->user = NULL; destroy_window(g); WmInvalidate(); }
     DesktopUnlock();
     return 0;
@@ -399,7 +445,7 @@ static UINT64 sys_gui_settimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a4;
     UmProcess *p = UmCurrent();
-    DesktopLock();
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
     GuiWin *g = win_of_handle(p, a1);
     UINT64 rv = 0;
     if (g) {
@@ -416,7 +462,7 @@ static UINT64 sys_gui_settimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             rv = a2;
         }
     }
-    DesktopUnlock();
+    spin_unlock_irqrestore(&g_gui_lock, s);
     return rv;
 }
 
@@ -424,10 +470,10 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
     UmProcess *p = UmCurrent();
-    DesktopLock();
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
     GuiWin *g = win_of_handle(p, a1);
     if (g) for (int i = 0; i < GUI_TIMERS; i++) if (g->timers[i].used && g->timers[i].id == (UINT32)a2) g->timers[i].used = false;
-    DesktopUnlock();
+    spin_unlock_irqrestore(&g_gui_lock, s);
     return 1;
 }
 
@@ -451,26 +497,23 @@ static UINT64 sys_gui_messagebox(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 static UINT64 sys_gui_screensize(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
-    DesktopLock();
-    UINT32 w = GdiScreenW(), h = GdiScreenH();
-    GdiRect wa = WmWorkArea();
-    DesktopUnlock();
+    UINT32 w = GdiScreenW(), h = GdiScreenH();       /* fixed once the desktop is up */
     if (a1) CopyToUser((void *)(uintptr_t)a1, &w, 4);
     if (a2) CopyToUser((void *)(uintptr_t)a2, &h, 4);
-    (void)wa;
     return ((UINT64)h << 32) | w;
 }
 
 static UINT64 sys_gui_postmessage(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
-    DesktopLock();
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
     GuiWin *g = win_of_handle(p, a1);
     if (g) {
         if ((UINT32)a2 == WM_QUIT) g->quit = true;
-        else enqueue(g, (UINT32)a2, a3, a4, 0, 0);
+        else enqueue_locked(g, (UINT32)a2, a3, a4, 0, 0);
     }
-    DesktopUnlock();
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    if (g) waitq_wake(&g_guiq);
     return g ? 1 : 0;
 }
 
@@ -482,7 +525,9 @@ void um_gui_process_gone(UmProcess *p)
         GuiWin *g = &g_win[i];
         if (g->used && g->proc == p) {
             if (g->wnd) { g->wnd->user = NULL; WmDestroyWindow(g->wnd); g->wnd = NULL; }
+            IrqState s = spin_lock_irqsave(&g_gui_lock);
             g->used = false;
+            spin_unlock_irqrestore(&g_gui_lock, s);
         }
     }
     WmInvalidate();

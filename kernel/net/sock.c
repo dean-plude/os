@@ -116,6 +116,13 @@ static err_t tcp_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t e
     return ERR_OK;
 }
 
+static err_t tcp_sent_cb(void *arg, struct tcp_pcb *pcb, u16_t len)
+{
+    (void)arg; (void)pcb; (void)len;
+    net_wake();                    /* send buffer space for a waiting writer */
+    return ERR_OK;
+}
+
 static err_t tcp_connected_cb(void *arg, struct tcp_pcb *pcb, err_t err)
 {
     Sock *s = arg;
@@ -189,6 +196,7 @@ int NetSockTcp(void)
     tcp_arg(s->tcp, s);
     tcp_err(s->tcp, tcp_err_cb);
     tcp_recv(s->tcp, tcp_recv_cb);
+    tcp_sent(s->tcp, tcp_sent_cb);
     net_unlock();
     return i;
 }
@@ -225,9 +233,11 @@ int NetSockConnect(int sd, UINT32 ip_be, UINT16 port_be, SockCancelFn c, void *c
     if (e != ERR_OK) { s->connecting = false; return -SOCK_ENOBUFS; }
     if (s->nonblock) return -SOCK_EWOULDBLOCK;
     UINT64 deadline = sched_ticks() + 1000;                  /* 10 s */
-    while (s->connecting && !s->reset) {
+    for (;;) {
+        UINT32 ng = net_gen();
+        if (!s->connecting || s->reset) break;
         if (wait_cancel(c, ca) || sched_ticks() > deadline) return -SOCK_ETIMEDOUT;
-        sched_wait();
+        net_wait(ng);
     }
     if (s->reset || !s->connected) return -SOCK_ECONNREFUSED;
     s->peer_ip = ip_be; s->peer_port = port_be;
@@ -245,6 +255,7 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
     const UINT8 *p = buf;
     int sent = 0;
     while (sent < len) {
+        UINT32 ng = net_gen();
         net_lock();
         if (!s->tcp || s->reset) { net_unlock(); return sent ? sent : -SOCK_ECONNRESET; }
         UINT16 space = tcp_sndbuf(s->tcp);
@@ -252,7 +263,7 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
             net_unlock();
             if (s->nonblock) return sent ? sent : -SOCK_EWOULDBLOCK;
             if (wait_cancel(c, ca)) return sent ? sent : -SOCK_ETIMEDOUT;
-            sched_wait();
+            net_wait(ng);
             continue;
         }
         int chunk = len - sent;
@@ -262,7 +273,7 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
         net_unlock();
         if (e == ERR_MEM) {
             if (s->nonblock) return sent ? sent : -SOCK_EWOULDBLOCK;
-            sched_wait();
+            net_wait(ng);
         } else if (e != ERR_OK) {
             return sent ? sent : -SOCK_ECONNRESET;
         }
@@ -277,6 +288,7 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
     if (!s) return -SOCK_ENOTSOCK;
     if (len <= 0) return 0;
     for (;;) {
+        UINT32 ng = net_gen();
         net_lock();
         UINT32 avail = rx_used(s);
         if (avail) {
@@ -295,7 +307,7 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
         if (!s->connected && !s->connecting) return -SOCK_ENOTCONN;
         if (s->nonblock) return -SOCK_EWOULDBLOCK;
         if (wait_cancel(c, ca)) return -SOCK_ETIMEDOUT;
-        sched_wait();
+        net_wait(ng);
     }
 }
 
@@ -323,6 +335,7 @@ int NetSockRecvFrom(int sd, void *buf, int len, UINT32 *ip_be, UINT16 *port_be,
     Sock *s = slot(sd);
     if (!s || !s->udp) return -SOCK_ENOTSOCK;
     for (;;) {
+        UINT32 ng = net_gen();
         net_lock();
         if (rx_used(s) >= 8) {
             UINT8 hdr[8];
@@ -339,7 +352,7 @@ int NetSockRecvFrom(int sd, void *buf, int len, UINT32 *ip_be, UINT16 *port_be,
         net_unlock();
         if (s->nonblock) return -SOCK_EWOULDBLOCK;
         if (wait_cancel(c, ca)) return -SOCK_ETIMEDOUT;
-        sched_wait();
+        net_wait(ng);
     }
 }
 
@@ -380,6 +393,7 @@ int NetSockAccept(int sd, UINT32 *ip_be, UINT16 *port_be, SockCancelFn c, void *
     Sock *s = slot(sd);
     if (!s || !s->listening) return -SOCK_ENOTSOCK;
     for (;;) {
+        UINT32 ng = net_gen();
         net_lock();
         if (s->acc_tail != s->acc_head) {
             struct tcp_pcb *pcb = s->acc[s->acc_tail];
@@ -397,6 +411,7 @@ int NetSockAccept(int sd, UINT32 *ip_be, UINT16 *port_be, SockCancelFn c, void *
             tcp_arg(pcb, ns);
             tcp_err(pcb, tcp_err_cb);
             tcp_recv(pcb, tcp_recv_cb);
+            tcp_sent(pcb, tcp_sent_cb);
             if (ip_be) *ip_be = rip;
             if (port_be) *port_be = rport;
             net_unlock();
@@ -405,7 +420,7 @@ int NetSockAccept(int sd, UINT32 *ip_be, UINT16 *port_be, SockCancelFn c, void *
         net_unlock();
         if (s->nonblock) return -SOCK_EWOULDBLOCK;
         if (wait_cancel(c, ca)) return -SOCK_ETIMEDOUT;
-        sched_wait();
+        net_wait(ng);
     }
 }
 
@@ -429,6 +444,7 @@ void NetSockClose(int sd)
     if (!s->udp && s->tcp) {
         tcp_arg(s->tcp, NULL);
         tcp_recv(s->tcp, NULL);
+        tcp_sent(s->tcp, NULL);
         tcp_err(s->tcp, NULL);
         if (tcp_close(s->tcp) != ERR_OK) tcp_abort(s->tcp);
     }

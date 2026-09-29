@@ -1482,8 +1482,13 @@ void DesktopRun(void *arg)
         }
 
         if (WmNeedsRedraw()) {
+            /* Drawing needs only the desktop lock (built-in apps' painters
+             * take the big one back, see WND.paint_lock_free): the other
+             * CPUs keep entering the kernel meanwhile */
+            bkl_release();
             WmComposite();
             WmCursorReshow();
+            bkl_acquire();
         }
         DesktopUnlock();
         /* Nothing else to run: wait for the next tick (10 ms) instead of

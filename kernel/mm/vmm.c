@@ -23,6 +23,7 @@
  * a proper slab allocator (like Linux's SLUB or SLOB).
  */
 
+#include "../ke/spinlock.h"
 #include "vmm.h"
 #include "pmm.h"
 #include "../ke/printf.h"
@@ -53,22 +54,14 @@ typedef struct Slab {
 typedef struct {
     size_t  obj_size;
     Slab   *slabs;      /* Linked list of slabs (partial + empty) */
-    volatile uint32_t lock_next, lock_owner;
+    KSpinLock lock;
 } SlabCache;
 
 static SlabCache caches[SLAB_SIZES_COUNT];
 
-/* Simple spinlock (compatible with TicketLock in pmm.c) */
-static void cache_lock(SlabCache *c)
-{
-    uint32_t t = __atomic_fetch_add(&c->lock_next, 1, __ATOMIC_SEQ_CST);
-    while (__atomic_load_n(&c->lock_owner, __ATOMIC_ACQUIRE) != t)
-        pause_cpu();
-}
-static void cache_unlock(SlabCache *c)
-{
-    __atomic_fetch_add(&c->lock_owner, 1, __ATOMIC_RELEASE);
-}
+/* Each cache's spinlock (interrupts off while held) */
+static IrqState cache_lock(SlabCache *c)            { return spin_lock_irqsave(&c->lock); }
+static void     cache_unlock(SlabCache *c, IrqState s) { spin_unlock_irqrestore(&c->lock, s); }
 
 /* -----------------------------------------------------------------------
  * Slab creation
@@ -112,7 +105,7 @@ static Slab *slab_create(size_t obj_size)
 
 static void *slab_alloc(SlabCache *c)
 {
-    cache_lock(c);
+    IrqState s = cache_lock(c);
 
     /* Find a slab with free objects */
     Slab *slab = c->slabs;
@@ -122,10 +115,10 @@ static void *slab_alloc(SlabCache *c)
 
     if (!slab) {
         /* No slab with free objects — create a new one */
-        cache_unlock(c);
+        cache_unlock(c, s);
         slab = slab_create(c->obj_size);
         if (!slab) return NULL;
-        cache_lock(c);
+        s = cache_lock(c);
         slab->next = c->slabs;
         c->slabs   = slab;
     }
@@ -135,7 +128,7 @@ static void *slab_alloc(SlabCache *c)
     slab->free_list = obj->next;
     slab->free_count--;
 
-    cache_unlock(c);
+    cache_unlock(c, s);
     return (void *)obj;
 }
 
@@ -159,12 +152,12 @@ static void slab_free(void *ptr, size_t obj_size)
     }
     if (!c) return;
 
-    cache_lock(c);
+    IrqState s = cache_lock(c);
     FreeObj *obj    = (FreeObj *)ptr;
     obj->next       = slab->free_list;
     slab->free_list = obj;
     slab->free_count++;
-    cache_unlock(c);
+    cache_unlock(c, s);
 }
 
 /* -----------------------------------------------------------------------
@@ -227,8 +220,7 @@ void vmm_init(void)
     for (int i = 0; i < SLAB_SIZES_COUNT; i++) {
         caches[i].obj_size   = slab_sizes[i];
         caches[i].slabs      = NULL;
-        caches[i].lock_next  = 0;
-        caches[i].lock_owner = 0;
+        caches[i].lock       = (KSpinLock)KSPINLOCK_INIT;
     }
     kprintf("[VMM] Slab caches initialized: %d size classes (8B–2KB)\n",
             SLAB_SIZES_COUNT);

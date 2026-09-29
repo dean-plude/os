@@ -265,7 +265,8 @@ NTSTATUS PsCreateSystemThread(
     sched_t->context.r13    = (uint64_t)(uintptr_t)StartContext;
     sched_t->context.r14    = (uint64_t)(uintptr_t)et;   /* ETHREAD in r14 */
     sched_t->context.r15    = 0;
-    sched_t->context.rflags = 0x202;
+    sched_t->context.rflags = 0x002;             /* starts inside the switch: see PsThreadTrampoline */
+    sched_t->bkl_depth      = 1;
 
     /* Add to the scheduler's ready queue (the scheduler sees it as a Thread) */
     extern void sched_enqueue_thread(Thread *t);  /* defined in scheduler.c */
@@ -289,7 +290,8 @@ NTSTATUS PsCreateSystemThread(
 void __attribute__((naked, noreturn)) PsThreadTrampoline(void)
 {
     __asm__ volatile (
-        /* r12 = StartRoutine, r13 = StartContext, r14 = ETHREAD* */
+        /* r12 = StartRoutine, r13 = StartContext, r14 = ETHREAD* (callee-saved) */
+        "call sched_thread_start\n\t"
         "mov  %%r13, %%rdi\n\t"    /* arg = StartContext */
         "call *%%r12\n\t"          /* StartRoutine(StartContext) */
         /* Thread returned — terminate */
@@ -309,11 +311,8 @@ NTSTATUS PsTerminateSystemThread(NTSTATUS ExitStatus)
     if (et) {
         et->ExitStatus = ExitStatus;
         et->HasExited  = true;
-        et->Tcb.SchedulerThread.state = THREAD_DEAD;
     }
-
-    /* Yield — the scheduler will not pick this thread again (THREAD_DEAD) */
-    for (;;) sched_yield();
+    sched_exit_current();
 }
 
 /* -----------------------------------------------------------------------
@@ -516,7 +515,7 @@ void PsUserThreadEntry(void *arg)
             (unsigned long long)(proc ? proc->Pcb.DirectoryTableBase : 0ULL));
 
     cli();
-    bkl_release();                        /* leaving the kernel (smp.h) */
+    bkl_leave_kernel();                   /* leaving the kernel (smp.h) */
 
     /* Build IRETQ frame and jump to user mode:
      *   User SS   (pushed last by IRETQ logic, so first on stack)

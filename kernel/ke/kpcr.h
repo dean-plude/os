@@ -62,6 +62,7 @@ typedef struct _KPCR {
     volatile UINT32 TlbFlush;    /* +0x44 another CPU asked for a TLB flush */
     volatile UINT32 Online;      /* +0x48 running the scheduler */
     volatile UINT32 LockWait;    /* +0x4C halted waiting for the kernel lock */
+    void         *PrevThread;    /* +0x50 the thread a switch in progress left */
 } KPCR, *PKPCR;
 
 #define MAX_CPUS 16

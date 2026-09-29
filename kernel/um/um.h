@@ -79,6 +79,8 @@ bool       UmConsoleWantsInput(UmConsole *c);
  * ----------------------------------------------------------------------- */
 /* Only the NT services the subsystem implements are open to programs. */
 bool UmSyscallAllowed(UINT64 num);
+/* True for the services that run without the big kernel lock */
+bool UmSyscallLockFree(UINT64 num);
 /* Run service @num for the current program (interrupts enabled). */
 UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4);
 /* On every return to user mode: ends the thread if its process was killed. */

@@ -2,6 +2,7 @@
  * pci.c — PCI configuration space access and device discovery
  */
 
+#include "../ke/spinlock.h"
 #include "pci.h"
 #include "../arch/x86_64/cpu.h"
 #include "../ke/printf.h"
@@ -19,21 +20,25 @@ static UINT32 cfg_addr(UINT8 bus, UINT8 dev, UINT8 func, UINT8 off)
            ((UINT32)(func & 7) << 8) | (off & 0xFC);
 }
 
+/* The configuration mechanism is an address port and a data port: one
+ * access at a time, from any CPU */
+static KSpinLock g_cfg_lock = KSPINLOCK_INIT;
+
 UINT32 PciRead32(UINT8 bus, UINT8 dev, UINT8 func, UINT8 off)
 {
-    IrqState s = irq_save();
+    IrqState s = spin_lock_irqsave(&g_cfg_lock);
     outl(PCI_ADDR, cfg_addr(bus, dev, func, off));
     UINT32 v = inl(PCI_DATA);
-    irq_restore(s);
+    spin_unlock_irqrestore(&g_cfg_lock, s);
     return v;
 }
 
 void PciWrite32(UINT8 bus, UINT8 dev, UINT8 func, UINT8 off, UINT32 val)
 {
-    IrqState s = irq_save();
+    IrqState s = spin_lock_irqsave(&g_cfg_lock);
     outl(PCI_ADDR, cfg_addr(bus, dev, func, off));
     outl(PCI_DATA, val);
-    irq_restore(s);
+    spin_unlock_irqrestore(&g_cfg_lock, s);
 }
 
 UINT16 PciRead16(UINT8 bus, UINT8 dev, UINT8 func, UINT8 off)

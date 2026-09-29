@@ -66,6 +66,8 @@ typedef struct WND {
                               * windows of Windows programs: their icon */
 
     WndPaintFn on_paint;     /* draw the client area (clip is set) */
+    bool       paint_lock_free; /* on_paint needs only the desktop lock (else it
+                              * runs under the big kernel lock: smp.h) */
     WndKeyFn   on_key;       /* key pressed while focused */
     bool       key_releases; /* on_key also gets releases (pressed = false) */
     WndMouseFn on_mouse;     /* mouse in / captured by the client area */

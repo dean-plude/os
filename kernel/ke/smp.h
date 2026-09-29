@@ -1,18 +1,23 @@
 /*
  * smp.h — multiprocessor support: the other CPUs and the big kernel lock
  *
- * NovaOS runs threads on every CPU the firmware reports (ACPI MADT).  The
- * kernel itself is serialized by one lock, the big kernel lock (BKL):
+ * NovaOS runs threads on every CPU the firmware reports (ACPI MADT).
  *
- *   - a CPU holds the BKL whenever it runs kernel code;
- *   - it takes it on every way in from user mode (SYSCALL, interrupts and
- *     exceptions from ring 3) and drops it on every way back;
- *   - a context switch hands it from one thread to the next on the same CPU;
- *   - cpu_idle_wait() drops it while the CPU halts.
+ * Kernel code that has no lock of its own runs under the big kernel lock
+ * (BKL).  It belongs to threads: bkl_acquire/bkl_release nest (per-thread
+ * depth), and the scheduler drops a holder's lock when it switches the
+ * thread out and takes it back when it resumes.  System calls and
+ * interrupts from user mode take it on the way in and drop it on the way
+ * out — except those that run under finer-grained locks (smp.c has the
+ * list of what does): the scheduler, the timer and IPIs, and the services
+ * um_syscall.c marks lock-free (waits and events, memory, sockets, the GUI,
+ * time), plus the desktop's drawing.
  *
- * So kernel data structures see one CPU at a time, as before, while
- * programs' own code runs on all CPUs at once.  Code that runs without the
- * BKL: the IPI handlers below and the short entry/exit paths around it.
+ * Locking order: the BKL and the sleeping locks (UmLock: DesktopLock,
+ * process locks, net_lock) may be taken in either order, because waiting
+ * for a UmLock yields, and yielding hands over the BKL.  Spinlocks
+ * (spinlock.h) come last: nothing that sleeps or takes the BKL while one
+ * is held.
  */
 
 #pragma once
@@ -24,18 +29,23 @@
 #define IPI_WAKE  0xF0   /* leave a halt: a thread became ready, or the kernel lock is free */
 #define IPI_TLB   0xF1   /* flush the TLB (see smp_tlb_flush) */
 
-/* Big kernel lock.  Call bkl_acquire with interrupts off; it may enable
- * them while it waits (see smp.c), and returns with them off. */
+struct Thread;
+
+/* Big kernel lock (the calling thread's; nests) */
 void bkl_acquire(void);
-void bkl_acquire_boot(void);   /* the same, never enabling interrupts */
 void bkl_release(void);
-bool bkl_held(void);           /* by this CPU */
+void bkl_acquire_boot(void);   /* a starting CPU's first: never enables interrupts */
+void bkl_leave_kernel(void);   /* on the way to user mode: drop it however deep */
+bool bkl_held(void);           /* by the calling thread */
+/* The scheduler (interrupts off): @t is switched out / back in */
+void bkl_switch_out(struct Thread *t);
+void bkl_switch_in(struct Thread *t);
 /* If another CPU wants the lock, let it have it, then take it back.  Only
  * where other threads could run anyway (the scheduler's yield points). */
 void bkl_relax(void);
 
-/* Halt until the next interrupt without holding the BKL (the caller holds
- * it before and after).  For idle loops. */
+/* Halt until the next interrupt, without the BKL if the caller holds it.
+ * For idle loops. */
 void cpu_idle_wait(void);
 
 /* Early boot (after the PMM): note the RSDP and check the low pages the

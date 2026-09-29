@@ -8,6 +8,15 @@
 
 void   net_lock(void);                  /* (takes the lock) */
 void   net_unlock(void);
+
+/* Waiting for the network: read net_gen() before checking a condition,
+ * then net_wait(gen) sleeps until something changes (net_wake: data,
+ * connections, operations finishing) or 100 ms pass.  net_wait(gen, 0)
+ * returns at once if the generation moved on. */
+UINT32 net_gen(void);
+void   net_wait(UINT32 gen);
+void   net_wait_ticks(UINT32 gen, UINT64 max_ticks);
+void   net_wake(void);
 bool   net_up(void);
 
 NetOp *net_op_alloc(NetOpKind kind);

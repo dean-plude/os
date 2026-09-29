@@ -20,6 +20,7 @@
 #include "../mm/pmm.h"
 #include "../lib/string.h"
 #include "../arch/x86_64/cpu.h"
+#include "../arch/x86_64/apic.h"
 
 #define ST_SUCCESS                 0x00000000u
 #define ST_PENDING                 0x00000103u
@@ -56,6 +57,58 @@ static SYSCALL_HANDLER g_um[SYSCALL_MAX];       /* the services open to programs
 bool UmSyscallAllowed(UINT64 num)
 {
     return num < SYSCALL_MAX && g_um[num];
+}
+
+/* Services that run without the big kernel lock: everything they touch is
+ * under locks of their own (see um_lock_free_init for the list and why) */
+static bool g_um_free[SYSCALL_MAX];
+
+bool UmSyscallLockFree(UINT64 num)
+{
+    return num < SYSCALL_MAX && g_um_free[num];
+}
+
+void um_lock_free(UINT32 num)
+{
+    if (num < SYSCALL_MAX) g_um_free[num] = true;
+}
+
+/* The services that skip the big kernel lock, and what they rely on:
+ *   time and yielding:          the scheduler (sched_lock);
+ *   waits, events, mutants, semaphores, suspend counts and handle
+ *   closing:                    the handle table (process lock), object
+ *                               state (g_um_oblock), destructors take the
+ *                               big lock themselves (um_ob_unref);
+ *   virtual memory:             the process lock (regions, page tables),
+ *                               the PMM and heap spinlocks, TLB shootdowns;
+ *   sockets:                    net_lock around the network stack;
+ *   windows (NtNovaGui*):       DesktopLock (window manager and message
+ *                               queues) and the process lock.
+ * User memory is reached through CopyFromUser/CopyToUser, which survive
+ * the memory disappearing meanwhile.  Anything else (files, the registry,
+ * processes, sections, the console, the loader...) keeps the big lock. */
+static void um_lock_free_init(void)
+{
+    static const UINT32 list[] = {
+        SYSCALL_NtQuerySystemTime, SYSCALL_NtQueryPerformanceCounter,
+        SYSCALL_NtDelayExecution, SYSCALL_NtYieldExecution,
+        SYSCALL_NtWaitForSingleObject, SYSCALL_NtWaitForMultipleObjects,
+        SYSCALL_NtCreateEvent, SYSCALL_NtSetEvent, SYSCALL_NtResetEvent, SYSCALL_NtClearEvent,
+        SYSCALL_NtCreateMutant, SYSCALL_NtReleaseMutant,
+        SYSCALL_NtCreateSemaphore, SYSCALL_NtReleaseSemaphore,
+        SYSCALL_NtSuspendThread, SYSCALL_NtResumeThread, SYSCALL_NtClose,
+        SYSCALL_NtAllocateVirtualMemory, SYSCALL_NtFreeVirtualMemory,
+        SYSCALL_NtProtectVirtualMemory, SYSCALL_NtQueryVirtualMemory,
+        SYSCALL_NtNovaSocket, SYSCALL_NtNovaSockConnect, SYSCALL_NtNovaSockSend,
+        SYSCALL_NtNovaSockRecv, SYSCALL_NtNovaSockBind, SYSCALL_NtNovaSockListen,
+        SYSCALL_NtNovaSockAccept, SYSCALL_NtNovaSockCtl, SYSCALL_NtNovaSockSendTo,
+        SYSCALL_NtNovaSockRecvFrom,
+        SYSCALL_NtNovaGuiCreate, SYSCALL_NtNovaGuiGetMessage, SYSCALL_NtNovaGuiInvalidate,
+        SYSCALL_NtNovaGuiSetText, SYSCALL_NtNovaGuiShow, SYSCALL_NtNovaGuiDestroy,
+        SYSCALL_NtNovaGuiSetTimer, SYSCALL_NtNovaGuiKillTimer, SYSCALL_NtNovaGuiMessageBox,
+        SYSCALL_NtNovaGuiScreenSize, SYSCALL_NtNovaGuiPostMessage,
+    };
+    for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) um_lock_free(list[i]);
 }
 
 UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -934,10 +987,10 @@ static bool get_str(UINT64 ptr, char *out, int cap)
 /* A process created by a program: the handle holds the creator's claim */
 static void process_ob_destroy(UmObject *o)
 {
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     UmProcess *c = o->proc;
     if (c) c->exit_ob = NULL;
-    irq_restore(s);
+    ob_unlock(s);
     if (c) UmDetach(c);                                         /* reclaimed once it exits */
 }
 
@@ -996,10 +1049,10 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     o->refs = 1;
     o->proc = c;
     o->destroy = process_ob_destroy;
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     c->exit_ob = o;
     if (c->exited) o->signaled = true;
-    irq_restore(s);
+    ob_unlock(s);
     UINT64 hp = um_handle_new_object(p, o);
     UmThread *t0 = c->threads[0];
     UINT64 ht = t0 ? um_handle_new_object(p, &t0->ob) : 0;
@@ -1021,12 +1074,12 @@ static UINT64 sys_nova_process_info(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     } else {
         UmObject *o = um_handle_object(p, a1, UO_PROCESS);
         if (!o) return ST_INVALID_HANDLE;
-        IrqState s = irq_save();
+        IrqState s = ob_lock();
         UmProcess *c = o->proc;
         out[0] = c ? c->pid : 0;
         out[2] = o->signaled;
         out[1] = !c ? 0 : c->exited ? c->exit_status : 0x103;
-        irq_restore(s);
+        ob_unlock(s);
         um_ob_unref(o);
     }
     return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, out, sizeof(out))) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
@@ -1091,12 +1144,16 @@ static UINT64 sys_query_system_time(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 static UINT64 sys_query_perf_counter(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     if (!g_tsc_hz) {
-        UINT64 dt = sched_ticks() - g_boot_ticks;
-        if (dt < 50) {                              /* too early: wait for 0.5 s of ticks */
-            while (sched_ticks() - g_boot_ticks < 50) sched_yield();
-            dt = sched_ticks() - g_boot_ticks;
+        UINT64 hz = g_tsc_per_tick * 100;           /* measured against the PIT at boot */
+        if (!hz) {
+            UINT64 dt = sched_ticks() - g_boot_ticks;
+            if (dt < 50) {                          /* too early: wait for 0.5 s of ticks */
+                while (sched_ticks() - g_boot_ticks < 50) sched_yield();
+                dt = sched_ticks() - g_boot_ticks;
+            }
+            hz = (rdtsc() - g_tsc0) / dt * 100;
         }
-        g_tsc_hz = (rdtsc() - g_tsc0) / dt * 100;
+        __atomic_store_n(&g_tsc_hz, hz, __ATOMIC_RELAXED);
     }
     if (a1 && !put_u64(a1, rdtsc())) return UM_STATUS_ACCESS_VIOLATION;
     if (a2 && !put_u64(a2, g_tsc_hz)) return UM_STATUS_ACCESS_VIOLATION;
@@ -1140,6 +1197,7 @@ void um_syscall_init(void)
     g_boot_time = ((UINT64)nova_time(NULL) + UINT64_C(11644473600)) * 10000000ULL;
     g_boot_ticks = sched_ticks();
     g_tsc0 = rdtsc();
+    um_lock_free_init();
 
     um_install(SYSCALL_NtCreateFile,               sys_create_file);
     um_install(SYSCALL_NtOpenFile,                 sys_open_file);

@@ -158,8 +158,7 @@ terminate_faulting_user_thread(NTSTATUS status, InterruptFrame *f, uint64_t addr
     Thread *t = sched_current();
     kprintf("[IDT] Terminating faulting user thread '%s' (TID %lu), status 0x%x\n",
             t->name, t->tid, (UINT32)status);
-    t->state = THREAD_DEAD;
-    for (;;) sched_yield();
+    sched_exit_current();
 }
 
 /* NTSTATUS reported as the exit status for an unhandled user exception */
@@ -318,28 +317,37 @@ static void dispatch(InterruptFrame *frame)
  * ----------------------------------------------------------------------- */
 void interrupt_dispatch(InterruptFrame *frame)
 {
+    uint64_t vector = frame->vector;
     /* IPIs need nothing the kernel lock guards: handle them without it
      * (another CPU may hold it while it waits for us to flush). */
-    if (frame->vector == IPI_WAKE || frame->vector == IPI_TLB) {
-        smp_ipi(frame->vector);
+    if (vector == IPI_WAKE || vector == IPI_TLB) {
+        smp_ipi(vector);
         return;
     }
+    /* A fault inside a user-memory copy (the page went away under it):
+     * the copy returns an error instead (probe.c) */
+    if (vector == EXC_PAGE_FAULT && !(frame->cs & 3) && UserCopyFixup(frame))
+        return;
     /* A timer tick while this CPU is halted waiting for the kernel lock:
      * nothing to do (the clock follows the TSC, and the other CPUs keep
-     * it); taking the lock here would nest another wait. */
-    if (frame->vector == IRQ_TIMER && KiGetCurrentKpcr()->LockWait) {
+     * it), and switching the waiting thread out halfway would be wrong. */
+    if (vector == IRQ_TIMER && KiGetCurrentKpcr()->LockWait) {
         apic_eoi();
         return;
     }
-    /* From user mode, or from an idle halt, this CPU doesn't hold the
-     * kernel lock: take it for the handler (smp.h).  If the handler
-     * switches threads, whichever thread comes back through here drops it
-     * as it leaves for where it came from. */
-    bool took = !bkl_held();
-    if (took) bkl_acquire();
     KiGetCurrentKpcr()->Idle = 0;
+    /* The timer (the scheduler) and spurious interrupts run under their
+     * own locks; everything else under the big kernel lock (nesting if the
+     * interrupted thread holds it already).  A switch in between hands the
+     * lock over and back (smp.h). */
+    bool big = vector != IRQ_TIMER && vector != IRQ_SPURIOUS;
+    if (big) bkl_acquire();
     dispatch(frame);
     /* Returning to a user program that has been killed meanwhile? */
     if ((frame->cs & 3) && sched_current()->um) UmReturnToUserFrame(frame);
-    if (took) bkl_release();
+    if (big) bkl_release();
+    if ((frame->cs & 3) && bkl_held()) {                /* never into user mode with it */
+        kprintf("[SMP] Bug: returning to user mode holding the kernel lock (vector %lu)\n", vector);
+        bkl_leave_kernel();
+    }
 }

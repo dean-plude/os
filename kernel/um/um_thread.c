@@ -3,14 +3,15 @@
  *
  * Objects: events (manual/auto reset), mutants (recursive, abandoned when
  * the owner ends), semaphores and threads (signaled once ended).  Object
- * state changes happen with interrupts off (one CPU), so a check and the
- * acquisition that follows it are atomic.  Waiting threads yield until an
+ * state changes happen under g_um_oblock, so a check and the acquisition
+ * that follows it are atomic whatever the other CPUs do.  Waiting threads yield until an
  * object is signaled, the timeout passes or the thread is being ended.
  */
 
 #include "um_internal.h"
 #include "../ke/probe.h"
 #include "../ke/printf.h"
+#include "../ke/smp.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../arch/x86_64/cpu.h"
@@ -39,6 +40,8 @@
 /* -----------------------------------------------------------------------
  * Objects
  * ----------------------------------------------------------------------- */
+KSpinLock g_um_oblock = KSPINLOCK_INIT;
+
 UmObject *um_ob_ref(UmObject *o)
 {
     if (o) __atomic_add_fetch(&o->refs, 1, __ATOMIC_ACQ_REL);
@@ -48,8 +51,12 @@ UmObject *um_ob_ref(UmObject *o)
 void um_ob_unref(UmObject *o)
 {
     if (!o || __atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL)) return;
+    /* The last reference may go in a service that runs without the big
+     * kernel lock; the destructors (a process's, a socket's...) want it */
+    bkl_acquire();
     if (o->destroy) o->destroy(o);
     kfree(o);                                       /* UmThread: ob is its first member */
+    bkl_release();
 }
 
 static UmObject *ob_new(UmObType type)
@@ -59,7 +66,7 @@ static UmObject *ob_new(UmObType type)
     return o;
 }
 
-/* With interrupts off: can @o be acquired by @me right now? */
+/* Under g_um_oblock: can @o be acquired by @me right now? */
 static bool ob_ready(UmObject *o, UmThread *me)
 {
     switch (o->type) {
@@ -71,7 +78,7 @@ static bool ob_ready(UmObject *o, UmThread *me)
     }
 }
 
-/* With interrupts off: take @o (it is ready).  True if it was abandoned. */
+/* Under g_um_oblock: take @o (it is ready).  True if it was abandoned. */
 static bool ob_acquire(UmObject *o, UmThread *me)
 {
     switch (o->type) {
@@ -95,35 +102,71 @@ static UINT64 deadline_ticks(INT64 timeout_100ns)
     return sched_ticks() + ((UINT64)timeout_100ns + 99999) / 100000;
 }
 
-/* Wait on @n objects: any one (index returned) or all of them. */
+/* Threads waiting on objects (g_um_oblock) */
+static UmThread *g_waiters;
+
+void um_ob_wake(UmObject *o)
+{
+    for (UmThread *w = g_waiters; w; w = w->wait_next) {
+        if (w->wake) continue;
+        for (int i = 0; i < w->wait_n; i++) {
+            if (w->wait_objs[i] != o) continue;
+            w->wake = 1;
+            if (w->kt) sched_unblock(w->kt);
+            break;
+        }
+    }
+}
+
+static void waiter_unlink(UmThread *me)
+{
+    for (UmThread **pp = &g_waiters; *pp; pp = &(*pp)->wait_next)
+        if (*pp == me) { *pp = me->wait_next; break; }
+    me->wait_next = NULL;
+    me->wait_objs = NULL;
+    me->wait_n = 0;
+}
+
+/* Wait on @n objects: any one (index returned) or all of them.  The waiter
+ * sleeps on the object list until a signaler wakes it (um_ob_wake), the
+ * timeout passes, or 100 ms go by (then it looks again anyway). */
 static UINT32 wait_objects(UmObject **o, int n, bool all, INT64 timeout_100ns)
 {
     UmThread *me = UmCurrentThread();
     UINT64 until = deadline_ticks(timeout_100ns);
     for (;;) {
-        IrqState s = irq_save();
+        IrqState s = ob_lock();
         if (all) {
             bool ready = true;
             for (int i = 0; i < n && ready; i++) ready = ob_ready(o[i], me);
             if (ready) {
                 bool ab = false;
                 for (int i = 0; i < n; i++) ab |= ob_acquire(o[i], me);
-                irq_restore(s);
+                ob_unlock(s);
                 return ab ? ST_ABANDONED : ST_SUCCESS;
             }
         } else {
             for (int i = 0; i < n; i++) {
                 if (ob_ready(o[i], me)) {
                     bool ab = ob_acquire(o[i], me);
-                    irq_restore(s);
+                    ob_unlock(s);
                     return (ab ? ST_ABANDONED : ST_SUCCESS) + (UINT32)i;
                 }
             }
         }
-        irq_restore(s);
-        if (um_stopping()) return ST_THREAD_IS_TERMINATING;
-        if (timeout_100ns == 0 || sched_ticks() >= until) return ST_TIMEOUT;
-        sched_wait();
+        if (um_stopping()) { ob_unlock(s); return ST_THREAD_IS_TERMINATING; }
+        if (timeout_100ns == 0 || sched_ticks() >= until) { ob_unlock(s); return ST_TIMEOUT; }
+        me->wait_objs = o;
+        me->wait_n = n;
+        me->wake = 0;
+        me->wait_next = g_waiters;
+        g_waiters = me;
+        ob_unlock(s);
+        UINT64 nap = sched_ticks() + 10;
+        sched_sleep_until(&me->wake, until < nap ? until : nap);
+        s = ob_lock();
+        waiter_unlink(me);
+        ob_unlock(s);
     }
 }
 
@@ -138,11 +181,12 @@ void um_abandon_mutants(UmProcess *p, UmThread *t)
     for (int i = 0; i < UM_MAX_HANDLES; i++) {
         UmHandle *h = &p->handles[i];
         if (h->kind != H_OBJECT || h->obj->type != UO_MUTANT || h->obj->owner != t) continue;
-        IrqState s = irq_save();
+        IrqState s = ob_lock();
         h->obj->owner = NULL;
         h->obj->recursion = 0;
         h->obj->abandoned = true;
-        irq_restore(s);
+        um_ob_wake(h->obj);
+        ob_unlock(s);
     }
     um_unlock(&p->lock);
 }
@@ -203,10 +247,11 @@ static UINT64 event_op(UINT64 h, UINT64 prev_ptr, int op)
 {
     UmObject *o = um_handle_object(UmCurrent(), h, UO_EVENT);
     if (!o) return ST_INVALID_HANDLE;
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     UINT32 prev = o->signaled;
     o->signaled = op == 1;
-    irq_restore(s);
+    if (op == 1) um_ob_wake(o);
+    ob_unlock(s);
     um_ob_unref(o);
     return put_u32(prev_ptr, prev) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }
@@ -232,13 +277,13 @@ static UINT64 sys_release_mutant(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UmObject *o = um_handle_object(UmCurrent(), a1, UO_MUTANT);
     if (!o) return ST_INVALID_HANDLE;
     UINT32 st = ST_SUCCESS, prev = 0;
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     if (o->owner != UmCurrentThread()) st = ST_MUTANT_NOT_OWNED;
     else {
         prev = o->recursion;
-        if (--o->recursion == 0) o->owner = NULL;
+        if (--o->recursion == 0) { o->owner = NULL; um_ob_wake(o); }
     }
-    irq_restore(s);
+    ob_unlock(s);
     um_ob_unref(o);
     if (st) return st;
     return put_u32(a2, (UINT32)(1 - (INT32)prev)) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
@@ -267,11 +312,11 @@ static UINT64 sys_release_semaphore(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!o) return ST_INVALID_HANDLE;
     UINT32 st = ST_SUCCESS;
     INT32 prev;
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     prev = o->count;
     if (o->count > o->max - n) st = ST_SEMAPHORE_LIMIT;
-    else o->count += n;
-    irq_restore(s);
+    else { o->count += n; um_ob_wake(o); }
+    ob_unlock(s);
     um_ob_unref(o);
     if (st) return st;
     return put_u32(a3, (UINT32)prev) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
@@ -370,11 +415,11 @@ static UINT64 suspend_op(UINT64 h, UINT64 prev_ptr, int delta)
     UmObject *o = um_handle_object(UmCurrent(), h, UO_THREAD);
     if (!o) return ST_INVALID_HANDLE;
     UmThread *t = (UmThread *)o;
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     INT32 prev = t->suspend;
     if (delta > 0 && prev < 127) t->suspend = prev + 1;
     if (delta < 0 && prev > 0) t->suspend = prev - 1;
-    irq_restore(s);
+    ob_unlock(s);
     um_ob_unref(o);
     return put_u32(prev_ptr, (UINT32)prev) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }

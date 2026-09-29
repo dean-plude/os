@@ -8,6 +8,7 @@
  * classic 3-byte movement packet.
  */
 
+#include "../ke/spinlock.h"
 #include "ps2.h"
 #include "../arch/x86_64/cpu.h"
 #include "../ke/printf.h"
@@ -154,12 +155,14 @@ static void handle_mouse_byte(UINT8 b)
 /* Drain the controller.  Called from the timer interrupt (so input is
  * collected even while the desktop thread is busy drawing a frame and the
  * device's small buffer cannot overflow) and from the desktop loop.
- * Interrupts are disabled while draining so the two callers never
- * interleave in the packet/prefix decoders. */
+ * A spinlock keeps the callers (on any CPU) from interleaving in the
+ * packet/prefix decoders. */
+static KSpinLock g_ps2_lock = KSPINLOCK_INIT;
+
 void ps2_poll(void)
 {
     if (!g_ready) return;
-    IrqState irq = irq_save();
+    IrqState irq = spin_lock_irqsave(&g_ps2_lock);
     for (int guard = 0; guard < 64; guard++) {
         UINT8 st = inb(PS2_STATUS);
         if (!(st & ST_OBF)) break;
@@ -169,5 +172,5 @@ void ps2_poll(void)
         else
             handle_key(data);
     }
-    irq_restore(irq);
+    spin_unlock_irqrestore(&g_ps2_lock, irq);
 }

@@ -9,6 +9,7 @@
  * the same callbacks, so handshake crypto happens on the net thread.
  */
 
+#include "../ke/waitq.h"
 #include "net_internal.h"
 #include "tls.h"
 #include "../drivers/e1000.h"
@@ -76,6 +77,16 @@ void net_unlock(void)
 {
     __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
 }
+
+/* -----------------------------------------------------------------------
+ * Network waits (net_internal.h)
+ * ----------------------------------------------------------------------- */
+static WaitQueue g_netq = WAITQ_INIT;
+
+UINT32 net_gen(void)                              { return waitq_gen(&g_netq); }
+void   net_wake(void)                             { waitq_wake(&g_netq); }
+void   net_wait_ticks(UINT32 gen, UINT64 max_ticks) { waitq_wait(&g_netq, gen, max_ticks); }
+void   net_wait(UINT32 gen)                       { waitq_wait(&g_netq, gen, 10); }
 
 /* -----------------------------------------------------------------------
  * Network interface ↔ e1000
@@ -350,7 +361,8 @@ static void net_thread(void *arg)
             g_link = link;
             if (link) netif_set_link_up(&g_netif); else netif_set_link_down(&g_netif);
         }
-        bool busy = poll_input() > 0;
+        bool got = poll_input() > 0;
+        bool busy = got;
         for (int i = 0; i < NET_OPS && !busy; i++) busy = g_ops[i].in_use;
         sys_check_timeouts();
         check_timeouts();
@@ -364,9 +376,12 @@ static void net_thread(void *arg)
             announced = true;
         }
         net_unlock();
-        /* Nothing arriving and no operation under way: poll again at the
-         * next tick instead of keeping a CPU (and the kernel lock) busy */
-        if (busy) sched_yield(); else sched_sleep_tick();
+        if (busy) net_wake();               /* data, connections or operations moved on */
+        /* Nothing arriving, no operation under way and nobody waiting for
+         * the network: poll again at the next tick instead of keeping a CPU
+         * busy.  (The adapter is polled, so replies to a waiting program
+         * are picked up only as fast as this loop comes round.) */
+        if (busy || g_netq.sleepers) sched_yield(); else sched_sleep_tick();
     }
 }
 

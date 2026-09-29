@@ -125,5 +125,9 @@ void idt_load(void);
  */
 void interrupt_dispatch(InterruptFrame *frame);
 
+/* A page fault inside a user-memory copy: send the copy to its error
+ * return (probe.c).  False if the fault wasn't one of those. */
+bool UserCopyFixup(InterruptFrame *f);
+
 /* Install a custom gate (for drivers adding IRQ handlers, etc.) */
 void idt_set_gate(uint8_t vector, uintptr_t handler, uint8_t ist, uint8_t dpl);

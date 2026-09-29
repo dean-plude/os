@@ -415,11 +415,8 @@ Windows executables (PE32+) without emulation.
   it its own KPCR (reached through GS), GDT, TSS and exception stacks, LAPIC
   timer, and idle thread.  Up to 16 CPUs.
 - **Programs run in parallel**: threads share one ready queue and run on
-  whichever core is free.  The kernel itself is serialized by a big kernel
-  lock, taken on every way in from user mode and dropped on every way out, so
-  user-mode code runs on all cores at once while kernel code sees one CPU at
-  a time.  Waiters halt instead of spinning, and the lock is handed over at
-  the scheduler's yield points.
+  whichever core is free, and much of the kernel runs on every core at once
+  too (below).
 - TLB shootdowns (IPIs) keep the other cores' page-table caches right when a
   program frees or re-protects memory; halted cores are woken by IPI when a
   thread becomes ready.  The clock follows the TSC, so it keeps time whatever
@@ -428,9 +425,34 @@ Windows executables (PE32+) without emulation.
   `KUSER_SHARED_DATA` and `NUMBER_OF_PROCESSORS`.  `cpus.exe` runs the same
   work on 1 thread and then on one thread per core: with `-smp 4` it reports
   a speedup of about 3.7×.
-- Boot QEMU with `-smp 4` (or any count) to use it.  Kernel-heavy work (the
-  desktop's drawing, the network stack) still runs on one core at a time, so
-  the gain is in programs' own computing.
+- **Finer-grained kernel locking**: the big kernel lock now belongs to
+  threads (it nests, and the scheduler drops it when a holder is switched
+  out), and these run without it, on all cores at once, under locks of
+  their own:
+  - the scheduler (a spinlock held across each switch), the timer and IPIs;
+  - memory: the physical page allocator and the kernel heap (spinlocks), a
+    program's address space (its process lock), with TLB shootdowns before
+    pages are freed;
+  - waits, events, mutexes, semaphores and handle closing (the handle table
+    under the process lock, object state under one spinlock, destructors
+    taking the big lock themselves);
+  - sockets (`net_lock` around the network stack), and program windows:
+    message queues, `PostMessage`, `InvalidateRect` and timers have a
+    spinlock of their own, and the desktop draws without the big lock under
+    `DesktopLock` (the built-in apps' painters take it back);
+  - the list, and what each service relies on, is in `um_syscall.c`
+    (`um_lock_free_init`); files, the registry, process creation, the
+    console and the loader still use the big lock.
+- Waits are woken, not polled: `SetEvent`, `ReleaseSemaphore`, a thread or
+  process ending, a message arriving or network data coming in wakes the
+  waiting threads at once (wait queues, `ke/waitq.c`), and `select()` waits
+  in the kernel.  Copies to and from program memory survive the memory
+  being freed by another thread meanwhile (they fail with an access
+  violation instead of crashing the kernel).
+- `smpstress.exe` works all of this from many threads (critical sections,
+  event ping-pong, semaphores, memory, handles, and freeing memory while the
+  kernel copies into it) and checks the results.
+- Boot QEMU with `-smp 4` (or any count) to use it.
 - Also: window shadows skip the part their window covers (the desktop draws
   about twice as fast), and the network thread and ntdll's lock waits sleep
   instead of spinning.
@@ -564,9 +586,11 @@ os/
   implementations are written from scratch using public Microsoft documentation
   and reverse-engineering references.  The one GPL component is the NetSurf
   browser, a separate program (see [License](#license)).
-- **SMP with a big kernel lock (Phase 11)**: every CPU runs threads, one KPCR
-  per CPU; the kernel runs on one CPU at a time, programs on all of them.
-  Finer-grained kernel locking can come subsystem by subsystem.
+- **SMP with a shrinking big kernel lock (Phase 11)**: every CPU runs threads,
+  one KPCR per CPU.  The scheduler, memory, synchronization, sockets and the
+  GUI have their own locks and run on all CPUs at once; the rest of the
+  kernel still runs under the big lock, one CPU at a time (see `smp.h` for
+  the rules and the lock order).
 - **Software-only GDI**: Phase 7 rendering is a pure CPU rasterizer writing the GOP
   linear framebuffer — no GPU/2D-accel driver. It draws directly to VRAM (no back
   buffer yet); double-buffering arrives once a second VRAM mapping exists.

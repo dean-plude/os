@@ -11,6 +11,7 @@
  * highlights (red for close).
  */
 
+#include "../ke/smp.h"
 #include "wm.h"
 #include "../gdi/gdi.h"
 #include "../lib/string.h"
@@ -26,7 +27,11 @@ static int        g_next_z  = 1;
 static WmLayerFn  g_background;
 static WmLayerFn  g_overlay;
 static bool       g_ready;
-static bool       g_dirty = true;
+/* Redraw needed while the two differ: invalidations bump g_dirty_gen (from
+ * any thread, even while a frame is being drawn: that frame may predate
+ * them), a finished frame records the generation it started from */
+static volatile UINT32 g_dirty_gen = 1, g_drawn_gen;
+static inline void mark_dirty(void) { __atomic_add_fetch(&g_dirty_gen, 1, __ATOMIC_RELEASE); }
 static GdiRect    g_work;
 static WmIconFn   g_icon_fn;
 
@@ -81,7 +86,7 @@ void WmInitialize(void)
     g_overlay    = NULL;
     g_work  = RECT(0, 0, GdiScreenW(), GdiScreenH());
     g_ready = true;
-    g_dirty = true;
+    mark_dirty();
     kprintf("[WM] Window manager initialized (%d window slots)\n",
             WM_MAX_WINDOWS);
 }
@@ -90,9 +95,9 @@ void WmSetIconPainter(WmIconFn fn) { g_icon_fn = fn; }
 void WmSetWorkArea(GdiRect r) { g_work = r; }
 GdiRect WmWorkArea(void)      { return g_work; }
 
-void WmInvalidate(void)           { g_dirty = true; }
-void WmInvalidateBackground(void) { GdiCacheInvalidate(); g_dirty = true; }
-bool WmNeedsRedraw(void)          { return g_dirty; }
+void WmInvalidate(void)           { mark_dirty(); }
+void WmInvalidateBackground(void) { GdiCacheInvalidate(); mark_dirty(); }
+bool WmNeedsRedraw(void)          { return __atomic_load_n(&g_dirty_gen, __ATOMIC_ACQUIRE) != g_drawn_gen; }
 
 /* -----------------------------------------------------------------------
  * Window list
@@ -151,7 +156,7 @@ void WmSetTitle(WND *w, const char *title)
         strncpy(w->title, title, WM_TITLE_MAX - 1);
         w->title[WM_TITLE_MAX - 1] = '\0';
     }
-    g_dirty = true;
+    mark_dirty();
 }
 
 void WmDestroyWindow(WND *w)
@@ -172,12 +177,12 @@ void WmDestroyWindow(WND *w)
         WND *next = topmost(NULL);
         if (next) WmSetActive(next);
     }
-    g_dirty = true;
+    mark_dirty();
 }
 
 void WmShowWindow(WND *w, bool visible)
 {
-    if (w) { w->visible = visible; g_dirty = true; }
+    if (w) { w->visible = visible; mark_dirty(); }
 }
 
 void WmSetActive(WND *w)
@@ -189,7 +194,7 @@ void WmSetActive(WND *w)
     w->visible   = true;
     w->active    = true;
     w->z = g_next_z++;
-    g_dirty = true;
+    mark_dirty();
 }
 
 WND *WmActiveWindow(void)
@@ -207,7 +212,7 @@ void WmMinimize(WND *w)
     w->active    = false;
     WND *next = topmost(w);
     if (next) WmSetActive(next);
-    g_dirty = true;
+    mark_dirty();
 }
 
 static bool tileable(const WND *w)
@@ -225,7 +230,7 @@ void WmSnap(WND *w, int where)
         if (tiled) w->frame = w->restore;
         w->maximized = w->snapped = false;
         clamp_to_work(w);
-        g_dirty = true;
+        mark_dirty();
         return;
     }
     if (!tiled) w->restore = w->frame;
@@ -240,7 +245,7 @@ void WmSnap(WND *w, int where)
         w->snapped = true;
         w->maximized = false;
     }
-    g_dirty = true;
+    mark_dirty();
 }
 
 void WmToggleMaximize(WND *w)
@@ -289,7 +294,7 @@ void WmShowDesktopToggle(void)
                 if (g_used[i] && g_windows[i].id == g_desk_ids[k]) WmSetActive(&g_windows[i]);
         g_desk_n = 0;
     }
-    g_dirty = true;
+    mark_dirty();
 }
 
 GdiRect WmClientRect(const WND *w)
@@ -414,7 +419,7 @@ static void to_client(WND *w, WmMouseMsg msg, int x, int y)
     if (!w->on_mouse) return;
     GdiRect c = WmClientRect(w);
     w->on_mouse(w, msg, x - c.x, y - c.y);
-    g_dirty = true;
+    mark_dirty();
 }
 
 static void clamp_to_work(WND *w)
@@ -434,7 +439,7 @@ bool WmMouseButton(int x, int y, WmMouseMsg msg)
             if (g_snap_zone) WmSnap(g_drag, g_snap_zone);
             g_drag = NULL;
             g_snap_zone = 0;
-            g_dirty = true;
+            mark_dirty();
             return true;
         }
         if (g_resize) { g_resize = NULL; return true; }
@@ -444,7 +449,7 @@ bool WmMouseButton(int x, int y, WmMouseMsg msg)
             WND *p = g_press;
             int pp = g_press_part;
             g_press = NULL;
-            g_dirty = true;
+            mark_dirty();
             if (w == p && part == pp) {
                 if (pp == HT_CLOSE)      WmDestroyWindow(p);
                 else if (pp == HT_MAX)   WmToggleMaximize(p);
@@ -503,7 +508,7 @@ bool WmMouseButton(int x, int y, WmMouseMsg msg)
         to_client(w, msg, x, y);
         break;
     }
-    g_dirty = true;
+    mark_dirty();
     return true;
 }
 
@@ -521,7 +526,7 @@ void WmMouseMove(int x, int y)
             else if (x >= g_work.x + g_work.w - 2)      zone = WM_SNAP_RIGHT;
         }
         g_snap_zone = zone;
-        g_dirty = true;
+        mark_dirty();
         return;
     }
     if (g_resize) {
@@ -544,7 +549,7 @@ void WmMouseMove(int x, int y)
         if (g_resize_edges & EDGE_B) { f.h += dy; if (f.h < MIN_H) f.h = MIN_H; }
         if (f.y + f.h > g_work.y + g_work.h) f.h = g_work.y + g_work.h - f.y;
         g_resize->frame = f;
-        g_dirty = true;
+        mark_dirty();
         return;
     }
     if (g_capture) to_client(g_capture, WM_MOUSE_MOVE, x, y);
@@ -556,7 +561,7 @@ void WmMouseMove(int x, int y)
     if (w != g_hover || part != g_hover_part) {
         g_hover = w;
         g_hover_part = part;
-        g_dirty = true;
+        mark_dirty();
     }
 }
 
@@ -567,7 +572,7 @@ void WmTick(void)
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
         WND *w = &g_windows[i];
         if (g_used[i] && w->on_tick && w->on_tick(w))
-            g_dirty = true;
+            mark_dirty();
     }
 }
 
@@ -588,7 +593,7 @@ bool WmKey(const KeyEvent *k)
     }
     if (w->on_key) {
         w->on_key(w, k);
-        g_dirty = true;
+        mark_dirty();
     }
     return true;
 }
@@ -681,7 +686,11 @@ static void draw_window(WND *w)
 
     if (w->on_paint) {
         GdiSetClip(WmClientRect(w));
+        /* the desktop draws without the big kernel lock; the built-in apps'
+         * painters read state that other code changes under it */
+        if (!w->paint_lock_free) bkl_acquire();
         w->on_paint(w);
+        if (!w->paint_lock_free) bkl_release();
         GdiResetClip();
     }
 }
@@ -692,6 +701,7 @@ static void draw_window(WND *w)
 void WmComposite(void)
 {
     if (!g_ready) return;
+    UINT32 gen = __atomic_load_n(&g_dirty_gen, __ATOMIC_ACQUIRE);
     GdiResetClip();
 
     /* 1. Desktop background (wallpaper + icons), cached between frames */
@@ -732,7 +742,7 @@ void WmComposite(void)
 
     /* 4. Show the finished frame */
     GdiPresent();
-    g_dirty = false;
+    g_drawn_gen = gen;
 }
 
 /* -----------------------------------------------------------------------
