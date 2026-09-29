@@ -21,6 +21,52 @@ static bool is_sep(char c) { return c == '\\' || c == '/'; }
 
 RamNode *RamfsRoot(void) { return &g_root; }
 
+/* -----------------------------------------------------------------------
+ * Change tracking (see ramfs.h)
+ * ----------------------------------------------------------------------- */
+static RamfsMode g_mode = RAMFS_SEEDING;
+static UINT64 (*g_clock)(void);
+void RamfsSetClock(UINT64 (*now)(void)) { g_clock = now; }
+static void touch(RamNode *n) { if (g_clock) n->mtime = g_clock(); }
+static UINT32 g_changes;
+static void (*g_removed_hook)(const char *path);
+
+void RamfsSetMode(RamfsMode mode) { g_mode = mode; }
+UINT32 RamfsChanges(void) { return g_changes; }
+void RamfsSetRemovedHook(void (*fn)(const char *path)) { g_removed_hook = fn; }
+
+static void mark(RamNode *n, UINT8 flags)
+{
+    if (g_mode != RAMFS_TRACK || !n) return;
+    n->pflags |= flags;
+    for (RamNode *a = n->parent; a && !(a->pflags & RAMFS_F_SUB); a = a->parent) a->pflags |= RAMFS_F_SUB;
+    if (n->parent) n->parent->pflags |= RAMFS_F_SUB;
+    g_changes++;
+}
+
+/* Before @n moves or goes away: report its starter files, which then stop being ones. */
+static void report_seeds(RamNode *n)
+{
+    if (g_mode != RAMFS_TRACK) return;
+    if ((n->pflags & RAMFS_F_SEED) && g_removed_hook) {
+        char path[RAMFS_PATH_MAX];
+        RamfsPath(n, path, sizeof(path));
+        g_removed_hook(path);
+    }
+    n->pflags &= (UINT8)~RAMFS_F_SEED;
+    for (RamNode *c = n->child; c; c = c->next) report_seeds(c);
+}
+
+/* A moved subtree is new at its destination: save all of it. */
+static void mark_moved(RamNode *n)
+{
+    n->pflags &= (UINT8)~RAMFS_F_SEALED;
+    mark(n, n->dir ? (RAMFS_F_DIRTY | RAMFS_F_DIRTYDIR) : RAMFS_F_DIRTY);
+    for (RamNode *c = n->child; c; c = c->next) mark_moved(c);
+}
+
+void RamfsMarkChanged(RamNode *n) { if (n && !n->dir) mark(n, RAMFS_F_DIRTY); }
+
 RamNode *RamfsFind(RamNode *dir, const char *name)
 {
     if (!dir || !dir->dir) return NULL;
@@ -61,11 +107,16 @@ RamNode *RamfsCreate(RamNode *dir, const char *name, bool is_dir)
     memcpy(n->name, name, len + 1);
     n->dir    = is_dir;
     n->parent = dir;
+    n->pflags = g_mode == RAMFS_SEEDING ? RAMFS_F_SEED : g_mode == RAMFS_INSTALLING ? RAMFS_F_SEALED : 0;
+    touch(n);
+    n->ctime = n->mtime;
 
     RamNode **pp = &dir->child;
     while (*pp && sorts_before(*pp, n)) pp = &(*pp)->next;
     n->next = *pp;
     *pp = n;
+    mark(n, RAMFS_F_DIRTY);
+    mark(dir, RAMFS_F_DIRTYDIR);
     return n;
 }
 
@@ -82,6 +133,8 @@ bool RamfsWrite(RamNode *f, const char *data, UINT32 len)
     f->data = buf;
     f->size = len;
     f->cap = len;
+    mark(f, RAMFS_F_DIRTY);
+    touch(f);
     return true;
 }
 
@@ -108,6 +161,8 @@ bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
     if (off > f->size) memset(f->data + f->size, 0, off - f->size);
     memcpy(f->data + off, data, len);
     if (off + len > f->size) f->size = off + len;
+    mark(f, RAMFS_F_DIRTY);
+    touch(f);
     return true;
 }
 
@@ -116,6 +171,8 @@ bool RamfsResize(RamNode *f, UINT32 len)
     if (!f || f->dir || !reserve(f, len)) return false;
     if (len > f->size) memset(f->data + f->size, 0, len - f->size);
     f->size = len;
+    mark(f, RAMFS_F_DIRTY);
+    touch(f);
     return true;
 }
 
@@ -128,9 +185,42 @@ bool RamfsDelete(RamNode *n)
     RamNode **pp = &n->parent->child;
     while (*pp && *pp != n) pp = &(*pp)->next;
     if (!*pp) return false;
+    report_seeds(n);
+    mark(n->parent, RAMFS_F_DIRTYDIR);
     *pp = n->next;
     kfree(n->data);
     kfree(n);
+    return true;
+}
+
+bool RamfsRename(RamNode *n, RamNode *dir, const char *name, bool replace)
+{
+    if (!n || n == &g_root || !dir || !dir->dir || !name || !*name) return false;
+    size_t len = strlen(name);
+    if (len >= RAMFS_NAME_MAX || !strcmp(name, ".") || !strcmp(name, "..")) return false;
+    for (size_t i = 0; i < len; i++)
+        if (is_sep(name[i]) || name[i] == ':') return false;
+    for (RamNode *a = dir; a; a = a->parent)
+        if (a == n) return false;                   /* into itself or a descendant */
+    RamNode *old = RamfsFind(dir, name);
+    if (old && old != n) {
+        if (!replace || old->dir || n->dir) return false;
+        if (!RamfsDelete(old)) return false;
+    }
+    RamNode **pp = &n->parent->child;               /* unlink */
+    while (*pp && *pp != n) pp = &(*pp)->next;
+    if (!*pp) return false;
+    report_seeds(n);
+    mark(n->parent, RAMFS_F_DIRTYDIR);
+    *pp = n->next;
+    memcpy(n->name, name, len + 1);
+    n->parent = dir;
+    pp = &dir->child;                               /* insert in order */
+    while (*pp && sorts_before(*pp, n)) pp = &(*pp)->next;
+    n->next = *pp;
+    *pp = n;
+    mark(dir, RAMFS_F_DIRTYDIR);
+    mark_moved(n);
     return true;
 }
 
@@ -198,6 +288,7 @@ void RamfsInit(void)
 {
     memset(&g_root, 0, sizeof(g_root));
     g_root.dir = true;
+    g_mode = RAMFS_SEEDING;
 
     seed_dir("\\", "Documents");
     seed_dir("\\", "Downloads");
@@ -217,7 +308,8 @@ void RamfsInit(void)
         "  - Browse files in File Explorer and double-click one to open it.\n"
         "  - Edit this file in Notepad and press Ctrl+S to save.\n"
         "\n"
-        "Files live on a RAM disk, so changes last until you reboot.\n");
+        "Your files are kept on the computer's disk, so they are still\n"
+        "here after a restart (when NovaOS finds a disk it can use).\n");
     seed_file("\\Documents", "Shopping list.txt",
         "Milk\nEggs\nCoffee\nBread\n");
     seed_file("\\Personal", "Ideas.txt",

@@ -218,7 +218,7 @@ static void translate(NovaSurface *s, const MSG *m)
         break;
     case WM_KEYDOWN:
     case WM_KEYUP: {
-        int sc = (int)(m->wParam & 0x7F);
+        int sc = (int)((m->lParam >> 16) & 0x7F);            /* the scan code (wParam is the VK) */
         bool extended = (m->lParam >> 24) & 1;
         int code = extended ? ext_key(sc) : sc < 0x60 ? g_keymap[sc] : 0;
         if (code)

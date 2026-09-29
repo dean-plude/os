@@ -3,7 +3,7 @@
 A clean-room, from-scratch x86_64 operating system designed to run native
 Windows executables (PE32+) without emulation.
 
-## Status: Phase 9.5 — a real web browser (NetSurf) running as a Windows program in user mode
+## Status: Phase 11 — every CPU core, on top of the standard Windows DLLs, a registry, COM and a disk that keeps your files
 
 **What works:**
 
@@ -274,8 +274,14 @@ Windows executables (PE32+) without emulation.
   `dup`/`fdopen`/`pread`/`pwrite`, `stat`, `opendir`/`scandir`,
   `getopt_long`, `gettimeofday`, `iconv` (UTF-8/16/32, Latin-1,
   Windows-1252), `asprintf`; `crt0` now runs static constructors.
-- Not yet: JavaScript (NetSurf's duktape engine is left out), SVG, IPv6,
-  HTTP keep-alive (one connection per request), and window resizing.
+- **JavaScript** (Duktape 2.x, NetSurf's engine, with its generated DOM
+  bindings): page scripts, external scripts, `setTimeout`/`setInterval`,
+  events (`addEventListener`, `onclick`), JSON, `Date`, and navigation from
+  script run; a failing script does not stop the page.  It is on by
+  default; `enable_javascript:0` in `C:\Programs\NetSurf\res\Choices`
+  turns it off.  Like NetSurf 3.11 on every platform, changes a script makes
+  to the page *after* it has been laid out are not redrawn yet.
+- Not yet: SVG, IPv6, and window resizing.
 
 ### Desktop UX refresh
 - **Start menu** (`wm/desktop.c`): live search as you type (Win key, then
@@ -344,6 +350,120 @@ Windows executables (PE32+) without emulation.
 - Not yet: `LoadIcon`/`DrawIcon` and `WM_SETICON` for programs (a window
   shows its program's first icon), and animated cursors.
 
+### Phase 10 — Standard DLLs, registry, COM and persistent storage
+- **Unmodified Windows programs run**: stock release builds of ripgrep and
+  fd (Rust, MSVC), jq (C, MinGW) and fzf (Go) work from the Terminal:
+  searching, walking folders, filtering.  Copy an `.exe` onto the data disk
+  (see [Where your files are kept](docs/building.md#where-your-files-are-kept))
+  and type its name.
+- **The standard DLLs**, all built from source in `userland/`:
+  - `ucrtbase.dll` and the `api-ms-win-crt-*` API sets: the Universal C
+    Runtime, from the same sources as `msvcrt.dll` (with musl's libm), each
+    with its own `printf` rounding; `vcruntime140.dll` has the MSVC **C++
+    exception** machinery (`__CxxFrameHandler3`, `_CxxThrowException`,
+    RTTI) as well as `memcpy` and friends.
+  - `kernel32.dll` grew I/O completion ports, overlapped and alertable I/O,
+    file mappings, waitable timers, `WaitOnAddress`, `CreateProcess` and
+    `GetExitCodeProcess`, `FormatMessage`, NLS (`CompareString`,
+    `LCMapString`, code pages), resources, psapi, and the registry.
+  - `advapi32.dll` (tokens, SIDs, security descriptors, CryptoAPI hashes and
+    random numbers, the event log, services), `bcrypt.dll` (SHA-1/2, HMAC,
+    RNG), `shell32.dll` (known folders, `CommandLineToArgvW`,
+    `ShellExecute`), `shlwapi.dll` (paths, strings, URLs, the `SH*`
+    registry helpers), `psapi.dll`, `version.dll`, `winmm.dll`,
+    `comctl32.dll`, `comdlg32.dll`, `userenv.dll`; `ws2_32.dll` gained the
+    Winsock 2 extensions (`WSASend`/`WSARecv`, overlapped operations through
+    completion ports, `WSAEnumProtocols`, `GetAddrInfoW`...); `user32` and
+    `gdi32` cover about 400 and 120 functions (DIB sections, fonts, text).
+  - Every program also sees `KUSER_SHARED_DATA` at 0x7FFE0000 (the Go
+    runtime reads its clock there).
+- **The registry** (`kernel/um/um_registry.c`, `userland/kernel32/registry.c`):
+  real keys and values behind the `NtCreateKey`/`NtQueryValueKey` family,
+  the whole `Reg*` API (advapi32 forwards to kernel32) with the predefined
+  roots, and the usual contents (`CurrentVersion`, `CentralProcessor`,
+  environment, shell folders, time zone...).  It is saved to
+  `C:\Windows\System32\config\REGISTRY.DAT`.  `reg query|add|delete|export`
+  works as on Windows.
+- **COM** (`userland/ole32`, `userland/oleaut32`): `CoInitializeEx`,
+  `CoCreateInstance` through registered class objects or
+  `HKCR\CLSID\{...}\InprocServer32` DLLs (`DllGetClassObject`,
+  `DllCanUnloadNow`), ProgIDs, `CoTaskMem*`/`IMalloc`, GUID strings,
+  `CreateStreamOnHGlobal`; OLE Automation with BSTRs, VARIANTs and
+  `VariantChangeType`, SAFEARRAYs, dates and error info.  `testdll.dll` is
+  a sample in-process server, `regsvr32` registers it, and the SDK now has
+  `objbase.h`/`oleauto.h`.
+- **Persistent storage** (`kernel/drivers/ahci.c`, `kernel/fs/fat.c`,
+  `kernel/fs/persist.c`): an AHCI SATA driver, FAT16/FAT32 with long file
+  names (read, write, format), and drive C: saved to disk: changes are
+  written a second after they happen and restored at boot.  NovaOS uses a
+  volume labelled `NOVADATA`, formats an empty disk, or falls back to the
+  boot disk.  Settings > Storage and the Terminal's `vol`/`sync` show and
+  control it.
+- Tests: `apitest` 46/46, `comtest` 49/49, `cppeh` 17/17 and
+  `disktest write` / `verify` across a restart (150 files, passing on FAT32
+  and FAT16, with `fsck.fat` finding the volumes clean).
+- Not yet: pipes (`CreatePipe`), dialog boxes, menus and child-window
+  controls, file-open dialogs (they report "cancelled"), the MSVC FH4 C++
+  exception tables, type libraries, `RegNotifyChangeKeyValue` events, audio,
+  and a clipboard shared between programs.
+
+### Phase 11 — Multiprocessor (SMP)
+
+- **Every CPU core runs threads** (`kernel/ke/smp.c`): the kernel finds the
+  processors in the ACPI MADT, starts each one with INIT and STARTUP IPIs
+  through a real-mode trampoline (`arch/x86_64/ap_trampoline.asm`), and gives
+  it its own KPCR (reached through GS), GDT, TSS and exception stacks, LAPIC
+  timer, and idle thread.  Up to 16 CPUs.
+- **Programs run in parallel**, and much of the kernel runs on every core at
+  once too (below).
+- **Per-core ready queues** (`ke/scheduler.c`): each core has its own run
+  queue, lock and timed-sleep list, so cores schedule without touching each
+  other.  A thread stays on the core it last ran on (warm caches); a new
+  thread starts on the core that created it, and a core with nothing to run
+  steals a ready thread from a busy one (every tick while idle, or at once
+  when it is woken).  Making a thread ready wakes its own core if that one is
+  idle, else any idle core, so the work spreads out.
+- TLB shootdowns (IPIs) keep the other cores' page-table caches right when a
+  program frees or re-protects memory; halted cores are woken by IPI when a
+  thread becomes ready.  The clock follows the TSC, so it keeps time whatever
+  the cores are doing.
+- Programs see the core count: `GetSystemInfo`, the PEB,
+  `KUSER_SHARED_DATA` and `NUMBER_OF_PROCESSORS`.  `cpus.exe` runs the same
+  work on 1 thread and then on one thread per core: with `-smp 4` it reports
+  a speedup of up to about 3.7× (less when the host's own cores are busy).
+- **Finer-grained kernel locking**: the big kernel lock now belongs to
+  threads (it nests, and the scheduler drops it when a holder is switched
+  out), and these run without it, on all cores at once, under locks of
+  their own:
+  - the scheduler (each core's run-queue lock, held across its switches),
+    the timer and IPIs;
+  - memory: the physical page allocator and the kernel heap (spinlocks), a
+    program's address space (its process lock), with TLB shootdowns before
+    pages are freed;
+  - waits, events, mutexes, semaphores and handle closing (the handle table
+    under the process lock, object state under one spinlock, destructors
+    taking the big lock themselves);
+  - sockets (`net_lock` around the network stack), and program windows:
+    message queues, `PostMessage`, `InvalidateRect` and timers have a
+    spinlock of their own, and the desktop draws without the big lock under
+    `DesktopLock` (the built-in apps' painters take it back);
+  - the list, and what each service relies on, is in `um_syscall.c`
+    (`um_lock_free_init`); files, the registry, process creation, the
+    console and the loader still use the big lock.
+- Waits are woken, not polled: `SetEvent`, `ReleaseSemaphore`, a thread or
+  process ending, a message arriving or network data coming in wakes the
+  waiting threads at once (wait queues, `ke/waitq.c`), and `select()` waits
+  in the kernel.  Copies to and from program memory survive the memory
+  being freed by another thread meanwhile (they fail with an access
+  violation instead of crashing the kernel).
+- `smpstress.exe` works all of this from many threads (critical sections,
+  event ping-pong, semaphores, memory, handles, and freeing memory while the
+  kernel copies into it) and checks the results.
+- Boot QEMU with `-smp 4` (or any count) to use it.
+- Also: window shadows skip the part their window covers (the desktop draws
+  about twice as fast), and the network thread and ntdll's lock waits sleep
+  instead of spinning.
+
 ## Quick Start
 
 ```bash
@@ -358,6 +478,10 @@ make -j$(nproc)
 # Run
 cmake --build . --target run
 ```
+
+`run` attaches a second disk, `build/nova-data.img`, where NovaOS keeps
+drive C: across restarts and rebuilds (see
+[docs/building.md](docs/building.md#where-your-files-are-kept)).
 
 The first build compiles the NetSurf browser (about 800 files; later builds
 reuse the cached objects). Set `NOVA_NO_NETSURF=1` in the environment to
@@ -378,7 +502,7 @@ QEMU with OVMF firmware:
 
 ```bash
 cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/OVMF_VARS.fd
-qemu-system-x86_64 -machine q35 -m 512 \
+qemu-system-x86_64 -machine q35 -m 512 -smp 4 \
   -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,unit=1,file=/tmp/OVMF_VARS.fd \
   -cdrom nova.iso
@@ -391,7 +515,7 @@ On macOS with Homebrew QEMU, the UEFI firmware ships with QEMU:
 
 ```bash
 FW="$(brew --prefix qemu)/share/qemu/edk2-x86_64-code.fd"
-qemu-system-x86_64 -machine q35 -m 512M \
+qemu-system-x86_64 -machine q35 -m 512M -smp 4 \
   -drive if=pflash,format=raw,readonly=on,file="$FW" \
   -cdrom nova.iso -serial stdio
 ```
@@ -412,7 +536,8 @@ qemu-system-x86_64 -machine q35 -m 512M \
 | 8.6 | HTTPS (Mbed TLS: TLS 1.3/1.2, Mozilla roots, certutil), HTTP/1.1 keep-alive | ✅ **Done** |
 | 9 | Native user-mode PE execution: loader, TEB/PEB, threads, TLS, SEH, DllMain, sockets (ws2_32), GUI (user32/gdi32) | ✅ **Done** |
 | 9.5 | NetSurf web browser (HTTP/HTTPS fetcher, window surface, TrueType text, POSIX C runtime) | ✅ **Done** |
-| 10 | Win32 GUI subsystem (win32k, user32/gdi32, real HWNDs) | 🔄 Planned |
+| 10 | Standard DLLs (UCRT, C++ EH, advapi32, shell32, ...), registry, COM, AHCI + FAT persistent storage | ✅ **Done** |
+| 11 | Win32 GUI subsystem (dialogs, menus, controls, real HWNDs) | 🔄 Planned |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native
 Windows executables (Phases 8–15) and the chosen compatibility strategy.
@@ -435,7 +560,9 @@ os/
 │   ├── se/               # Security Reference Monitor
 │   ├── cm/               # Configuration Manager (registry)
 │   ├── io/               # I/O Manager (IRP, device objects, file objects)
-│   ├── fs/               # VFS layer + InitRD CPIO driver
+│   ├── fs/               # VFS, InitRD, RAM disk (C:), block devices, FAT16/32,
+│   │                     #   saving C: to disk (persist.c)
+│   ├── drivers/          # e1000/e1000e network, AHCI (SATA) disks
 │   ├── ldr/              # PE32+ loader + user-mode SYSCALL thunk generator
 │   ├── gdi/              # GDI software renderer (2D rasterizer)
 │   ├── wm/               # Window manager + desktop shell
@@ -446,10 +573,12 @@ os/
 │   ├── lib/              # Freestanding string/memory library
 │   └── linker.ld         # Kernel linker script
 ├── userland/             # Windows SDK subset built with clang/lld-link:
-│   │                     #   ntdll, kernel32, msvcrt, ws2_32, user32, gdi32,
-│   │                     #   crt0, tlssup, headers, sample programs
+│   │                     #   ntdll, kernel32, msvcrt/ucrtbase, vcruntime140,
+│   │                     #   advapi32, bcrypt, ws2_32, user32, gdi32, shell32,
+│   │                     #   shlwapi, ole32, oleaut32 and more; crt0, headers,
+│   │                     #   sample and test programs
 │   └── netsurf/          # NetSurf port: fetcher, window surface, fonts, JPEG
-├── third_party/          # lwIP, Mbed TLS, NetSurf + libraries, stb, fonts
+├── third_party/          # lwIP, Mbed TLS, musl (libm), NetSurf + libraries, stb, fonts
 ├── tools/                # Host build tools (build_userland.py, build_netsurf.py, mkfont)
 ├── cmake/                # Cross-compilation toolchain files
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh
@@ -464,8 +593,11 @@ os/
   implementations are written from scratch using public Microsoft documentation
   and reverse-engineering references.  The one GPL component is the NetSurf
   browser, a separate program (see [License](#license)).
-- **Single-CPU (Phase 5–7)**: KPCR is statically allocated for the boot CPU; SMP
-  requires one KPCR per logical processor (later phase).
+- **SMP with a shrinking big kernel lock (Phase 11)**: every CPU runs threads,
+  one KPCR and one ready queue per CPU.  The scheduler, memory, synchronization, sockets and the
+  GUI have their own locks and run on all CPUs at once; the rest of the
+  kernel still runs under the big lock, one CPU at a time (see `smp.h` for
+  the rules and the lock order).
 - **Software-only GDI**: Phase 7 rendering is a pure CPU rasterizer writing the GOP
   linear framebuffer — no GPU/2D-accel driver. It draws directly to VRAM (no back
   buffer yet); double-buffering arrives once a second VRAM mapping exists.
@@ -486,7 +618,7 @@ os/
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
 code keeps its own permissive licence (lwIP: BSD 3-clause; Mbed TLS:
-Apache-2.0; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu Sans Mono:
+Apache-2.0; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu Sans Mono:
 Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT).
 All Win32 API implementations are clean-room based on public Microsoft
 documentation, ReactOS reference, and Wine source study (but independently

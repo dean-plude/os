@@ -175,6 +175,12 @@
 #define SYSCALL_NtNovaLoadDll                     0x0186  /* NovaOS: LdrLoadDll's kernel half */
 #define SYSCALL_NtNovaDebugPrint                  0x0187  /* NovaOS: OutputDebugString */
 #define SYSCALL_NtNovaGetRandom                   0x0188  /* NovaOS: RtlGenRandom (the kernel entropy pool) */
+#define SYSCALL_NtNovaUnimplemented               0x0189  /* NovaOS: a program called an import NovaOS lacks */
+#define SYSCALL_NtGetContextThread                0x018A
+#define SYSCALL_NtSetContextThread                0x018B
+#define SYSCALL_NtNovaCreateProcess               0x018C  /* NovaOS: CreateProcess's kernel half */
+#define SYSCALL_NtNovaProcessInfo                 0x018D  /* NovaOS: exit code / pid of a process handle */
+#define SYSCALL_NtNovaProcessList                 0x018E  /* NovaOS: the running programs (tasklist) */
 /* NovaOS sockets (ws2_32's kernel half) */
 #define SYSCALL_NtNovaSocket                      0x0190
 #define SYSCALL_NtNovaSockConnect                 0x0191
@@ -187,6 +193,13 @@
 #define SYSCALL_NtNovaSockSendTo                  0x0198
 #define SYSCALL_NtNovaSockRecvFrom                0x0199
 #define SYSCALL_NtNovaResolve                     0x019A
+/* Registry services Windows 10 numbers elsewhere */
+#define SYSCALL_NtDeleteKey                       0x01B0
+#define SYSCALL_NtDeleteValueKey                  0x01B1
+#define SYSCALL_NtFlushKey                        0x01B2
+#define SYSCALL_NtOpenKeyEx                       0x01B3
+#define SYSCALL_NtRenameKey                       0x01B4
+#define SYSCALL_NtOpenMutant                      0x01B8
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x01A0
 #define SYSCALL_NtNovaGuiGetMessage               0x01A1
@@ -199,6 +212,7 @@
 #define SYSCALL_NtNovaGuiMessageBox               0x01A8
 #define SYSCALL_NtNovaGuiScreenSize               0x01A9
 #define SYSCALL_NtNovaGuiPostMessage              0x01AA
+#define SYSCALL_NtNovaGuiCtl                      0x01AB
 
 /* -----------------------------------------------------------------------
  * Syscall table size
@@ -323,6 +337,7 @@ void SyscallInitialize(void);
  * NT syscall handlers return NTSTATUS zero-extended to 64 bits.
  * Kernel-helper handlers (0x01F0-0x01FF) may return 64-bit pointers.
  */
+void SyscallInitCpu(void);
 UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
                              UINT64 arg3, UINT64 arg4, UINT64 user_rsp);
 

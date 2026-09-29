@@ -3,14 +3,15 @@
  *
  * Objects: events (manual/auto reset), mutants (recursive, abandoned when
  * the owner ends), semaphores and threads (signaled once ended).  Object
- * state changes happen with interrupts off (one CPU), so a check and the
- * acquisition that follows it are atomic.  Waiting threads yield until an
+ * state changes happen under g_um_oblock, so a check and the acquisition
+ * that follows it are atomic whatever the other CPUs do.  Waiting threads yield until an
  * object is signaled, the timeout passes or the thread is being ended.
  */
 
 #include "um_internal.h"
 #include "../ke/probe.h"
 #include "../ke/printf.h"
+#include "../ke/smp.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../arch/x86_64/cpu.h"
@@ -39,17 +40,108 @@
 /* -----------------------------------------------------------------------
  * Objects
  * ----------------------------------------------------------------------- */
+KSpinLock g_um_oblock = KSPINLOCK_INIT;
+
 UmObject *um_ob_ref(UmObject *o)
 {
     if (o) __atomic_add_fetch(&o->refs, 1, __ATOMIC_ACQ_REL);
     return o;
 }
 
+/* -----------------------------------------------------------------------
+ * The object namespace: named events, mutexes and semaphores that other
+ * processes can open ("Local\\x", "Global\\x" and "x" are one name).
+ * An entry lives as long as its object; lookups and the last release of a
+ * named object serialize on g_ns_lock so a dying object is never found.
+ * ----------------------------------------------------------------------- */
+#define NS_MAX      256
+#define NS_NAME_MAX 128
+static struct { char name[NS_NAME_MAX]; UmObject *o; } g_ns[NS_MAX];
+static KSpinLock g_ns_lock = KSPINLOCK_INIT;
+
+static void ns_remove_locked(UmObject *o)
+{
+    for (int i = 0; i < NS_MAX; i++) if (g_ns[i].o == o) { g_ns[i].o = NULL; g_ns[i].name[0] = 0; }
+}
+
+/* The name in OBJECT_ATTRIBUTES @oa_ptr (UTF-16 kept as UTF-8 bytes; empty
+ * if unnamed), without the session prefixes.  False if unreadable. */
+static bool ns_name(UINT64 oa_ptr, char *out)
+{
+    out[0] = 0;
+    if (!oa_ptr) return true;
+    UINT64 oa[6];
+    if (!NT_SUCCESS(CopyFromUser(oa, (const void *)(uintptr_t)oa_ptr, sizeof(oa)))) return false;
+    if (!oa[2]) return true;
+    UINT64 us[2];
+    if (!NT_SUCCESS(CopyFromUser(us, (const void *)(uintptr_t)oa[2], sizeof(us)))) return false;
+    UINT32 n = (UINT32)(us[0] & 0xFFFF) / 2;
+    UINT16 w[NS_NAME_MAX];
+    if (n >= NS_NAME_MAX) n = NS_NAME_MAX - 1;
+    if (n && !NT_SUCCESS(CopyFromUser(w, (const void *)(uintptr_t)us[1], 2 * n))) return false;
+    int k = 0;
+    for (UINT32 i = 0; i < n && k < NS_NAME_MAX - 3; i++) {
+        UINT32 c = w[i];
+        if (c < 0x80) out[k++] = (char)c;
+        else if (c < 0x800) { out[k++] = (char)(0xC0 | c >> 6); out[k++] = (char)(0x80 | (c & 0x3F)); }
+        else { out[k++] = (char)(0xE0 | c >> 12); out[k++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[k++] = (char)(0x80 | (c & 0x3F)); }
+    }
+    out[k] = 0;
+    static const char *const prefixes[] = { "\\BaseNamedObjects\\", "\\Sessions\\1\\BaseNamedObjects\\", "Local\\", "Global\\", "Session\\1\\" };
+    for (int again = 1; again; ) {
+        again = 0;
+        for (unsigned i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+            int pl = (int)strlen(prefixes[i]);
+            if (!strncmp(out, prefixes[i], pl)) { memmove(out, out + pl, strlen(out + pl) + 1); again = 1; }
+        }
+    }
+    return true;
+}
+
+/* A referenced object named @name, or NULL */
+static UmObject *ns_lookup(const char *name)
+{
+    UmObject *o = NULL;
+    IrqState s = spin_lock_irqsave(&g_ns_lock);
+    for (int i = 0; i < NS_MAX; i++)
+        if (g_ns[i].o && !strcmp(g_ns[i].name, name)) { o = um_ob_ref(g_ns[i].o); break; }
+    spin_unlock_irqrestore(&g_ns_lock, s);
+    return o;
+}
+
+static bool ns_add(const char *name, UmObject *o)
+{
+    bool ok = false;
+    IrqState s = spin_lock_irqsave(&g_ns_lock);
+    for (int i = 0; i < NS_MAX; i++)
+        if (!g_ns[i].o) {
+            strncpy(g_ns[i].name, name, NS_NAME_MAX - 1);
+            g_ns[i].name[NS_NAME_MAX - 1] = 0;
+            g_ns[i].o = o;
+            o->named = true;
+            ok = true;
+            break;
+        }
+    spin_unlock_irqrestore(&g_ns_lock, s);
+    return ok;
+}
+
 void um_ob_unref(UmObject *o)
 {
-    if (!o || __atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL)) return;
+    if (!o) return;
+    if (o->named) {
+        IrqState s = spin_lock_irqsave(&g_ns_lock);
+        int left = __atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL);
+        if (!left) ns_remove_locked(o);
+        spin_unlock_irqrestore(&g_ns_lock, s);
+        if (left) return;
+    } else if (__atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL)) return;
+    /* The last reference may go in a service that runs without the big
+     * kernel lock; the destructors (a process's, a socket's...) want it */
+    bkl_acquire();
     if (o->destroy) o->destroy(o);
     kfree(o);                                       /* UmThread: ob is its first member */
+    bkl_release();
 }
 
 static UmObject *ob_new(UmObType type)
@@ -59,7 +151,7 @@ static UmObject *ob_new(UmObType type)
     return o;
 }
 
-/* With interrupts off: can @o be acquired by @me right now? */
+/* Under g_um_oblock: can @o be acquired by @me right now? */
 static bool ob_ready(UmObject *o, UmThread *me)
 {
     switch (o->type) {
@@ -71,7 +163,7 @@ static bool ob_ready(UmObject *o, UmThread *me)
     }
 }
 
-/* With interrupts off: take @o (it is ready).  True if it was abandoned. */
+/* Under g_um_oblock: take @o (it is ready).  True if it was abandoned. */
 static bool ob_acquire(UmObject *o, UmThread *me)
 {
     switch (o->type) {
@@ -95,35 +187,71 @@ static UINT64 deadline_ticks(INT64 timeout_100ns)
     return sched_ticks() + ((UINT64)timeout_100ns + 99999) / 100000;
 }
 
-/* Wait on @n objects: any one (index returned) or all of them. */
+/* Threads waiting on objects (g_um_oblock) */
+static UmThread *g_waiters;
+
+void um_ob_wake(UmObject *o)
+{
+    for (UmThread *w = g_waiters; w; w = w->wait_next) {
+        if (w->wake) continue;
+        for (int i = 0; i < w->wait_n; i++) {
+            if (w->wait_objs[i] != o) continue;
+            w->wake = 1;
+            if (w->kt) sched_unblock(w->kt);
+            break;
+        }
+    }
+}
+
+static void waiter_unlink(UmThread *me)
+{
+    for (UmThread **pp = &g_waiters; *pp; pp = &(*pp)->wait_next)
+        if (*pp == me) { *pp = me->wait_next; break; }
+    me->wait_next = NULL;
+    me->wait_objs = NULL;
+    me->wait_n = 0;
+}
+
+/* Wait on @n objects: any one (index returned) or all of them.  The waiter
+ * sleeps on the object list until a signaler wakes it (um_ob_wake), the
+ * timeout passes, or 100 ms go by (then it looks again anyway). */
 static UINT32 wait_objects(UmObject **o, int n, bool all, INT64 timeout_100ns)
 {
     UmThread *me = UmCurrentThread();
     UINT64 until = deadline_ticks(timeout_100ns);
     for (;;) {
-        IrqState s = irq_save();
+        IrqState s = ob_lock();
         if (all) {
             bool ready = true;
             for (int i = 0; i < n && ready; i++) ready = ob_ready(o[i], me);
             if (ready) {
                 bool ab = false;
                 for (int i = 0; i < n; i++) ab |= ob_acquire(o[i], me);
-                irq_restore(s);
+                ob_unlock(s);
                 return ab ? ST_ABANDONED : ST_SUCCESS;
             }
         } else {
             for (int i = 0; i < n; i++) {
                 if (ob_ready(o[i], me)) {
                     bool ab = ob_acquire(o[i], me);
-                    irq_restore(s);
+                    ob_unlock(s);
                     return (ab ? ST_ABANDONED : ST_SUCCESS) + (UINT32)i;
                 }
             }
         }
-        irq_restore(s);
-        if (um_stopping()) return ST_THREAD_IS_TERMINATING;
-        if (timeout_100ns == 0 || sched_ticks() >= until) return ST_TIMEOUT;
-        sched_yield();
+        if (um_stopping()) { ob_unlock(s); return ST_THREAD_IS_TERMINATING; }
+        if (timeout_100ns == 0 || sched_ticks() >= until) { ob_unlock(s); return ST_TIMEOUT; }
+        me->wait_objs = o;
+        me->wait_n = n;
+        me->wake = 0;
+        me->wait_next = g_waiters;
+        g_waiters = me;
+        ob_unlock(s);
+        UINT64 nap = sched_ticks() + 10;
+        sched_sleep_until(&me->wake, until < nap ? until : nap);
+        s = ob_lock();
+        waiter_unlink(me);
+        ob_unlock(s);
     }
 }
 
@@ -138,11 +266,12 @@ void um_abandon_mutants(UmProcess *p, UmThread *t)
     for (int i = 0; i < UM_MAX_HANDLES; i++) {
         UmHandle *h = &p->handles[i];
         if (h->kind != H_OBJECT || h->obj->type != UO_MUTANT || h->obj->owner != t) continue;
-        IrqState s = irq_save();
+        IrqState s = ob_lock();
         h->obj->owner = NULL;
         h->obj->recursion = 0;
         h->obj->abandoned = true;
-        irq_restore(s);
+        um_ob_wake(h->obj);
+        ob_unlock(s);
     }
     um_unlock(&p->lock);
 }
@@ -189,24 +318,67 @@ static UINT64 new_handle(UmProcess *p, UmObject *o, UINT64 handle_ptr)
  * Events, mutants, semaphores
  * ----------------------------------------------------------------------- */
 /* NtCreateEvent(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, EVENT_TYPE, BOOLEAN InitialState) */
+#define ST_OBJECT_NAME_EXISTS    0x40000000u
+#define ST_OBJECT_TYPE_MISMATCH  0xC0000024u
+#define ST_OBJECT_NAME_NOT_FOUND 0xC0000034u
+
+/* Create-or-open for a named object: 0 = create a new one (named @name
+ * if non-empty); otherwise the status to return (a handle to the existing
+ * one was made, or an error). */
+static UINT64 open_existing(const char *name, UmObType type, UINT64 handle_ptr)
+{
+    if (!name[0]) return 0;
+    UmObject *o = ns_lookup(name);
+    if (!o) return 0;
+    if (o->type != type) { um_ob_unref(o); return ST_OBJECT_TYPE_MISMATCH; }
+    UINT64 r = new_handle(UmCurrent(), o, handle_ptr);
+    return r ? r : ST_OBJECT_NAME_EXISTS;
+}
+
+static UINT64 finish_create(UmObject *o, const char *name, UINT64 handle_ptr)
+{
+    if (name[0]) ns_add(name, o);
+    return new_handle(UmCurrent(), o, handle_ptr);
+}
+
+/* NtOpenEvent / NtOpenMutant / NtOpenSemaphore(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES) */
+static UINT64 open_named(UmObType type, UINT64 handle_ptr, UINT64 oa)
+{
+    char name[NS_NAME_MAX];
+    if (!ns_name(oa, name)) return ST_ACCESS_VIOLATION;
+    if (!name[0]) return ST_INVALID_PARAMETER;
+    UmObject *o = ns_lookup(name);
+    if (!o) return ST_OBJECT_NAME_NOT_FOUND;
+    if (o->type != type) { um_ob_unref(o); return ST_OBJECT_TYPE_MISMATCH; }
+    return new_handle(UmCurrent(), o, handle_ptr);
+}
+static UINT64 sys_open_event(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)     { (void)a2; (void)a4; return open_named(UO_EVENT, a1, a3); }
+static UINT64 sys_open_mutant(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)    { (void)a2; (void)a4; return open_named(UO_MUTANT, a1, a3); }
+static UINT64 sys_open_semaphore(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a2; (void)a4; return open_named(UO_SEMAPHORE, a1, a3); }
+
 static UINT64 sys_create_event(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a2; (void)a3;
+    (void)a2;
+    char name[NS_NAME_MAX];
+    if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
+    UINT64 r = open_existing(name, UO_EVENT, a1);
+    if (r) return r;
     UmObject *o = ob_new(UO_EVENT);
     if (!o) return ST_NO_MEMORY;
     o->manual = a4 == 0;                             /* NotificationEvent */
     o->signaled = um_stack_arg(5) & 0xFF;
-    return new_handle(UmCurrent(), o, a1);
+    return finish_create(o, name, a1);
 }
 
 static UINT64 event_op(UINT64 h, UINT64 prev_ptr, int op)
 {
     UmObject *o = um_handle_object(UmCurrent(), h, UO_EVENT);
     if (!o) return ST_INVALID_HANDLE;
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     UINT32 prev = o->signaled;
     o->signaled = op == 1;
-    irq_restore(s);
+    if (op == 1) um_ob_wake(o);
+    ob_unlock(s);
     um_ob_unref(o);
     return put_u32(prev_ptr, prev) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }
@@ -218,11 +390,15 @@ static UINT64 sys_clear_event(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (voi
 /* NtCreateMutant(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, BOOLEAN InitialOwner) */
 static UINT64 sys_create_mutant(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a2; (void)a3;
+    (void)a2;
+    char name[NS_NAME_MAX];
+    if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
+    UINT64 r = open_existing(name, UO_MUTANT, a1);
+    if (r) return r;
     UmObject *o = ob_new(UO_MUTANT);
     if (!o) return ST_NO_MEMORY;
     if (a4 & 0xFF) { o->owner = UmCurrentThread(); o->recursion = 1; }
-    return new_handle(UmCurrent(), o, a1);
+    return finish_create(o, name, a1);
 }
 
 /* NtReleaseMutant(HANDLE, PLONG PreviousCount) */
@@ -232,13 +408,13 @@ static UINT64 sys_release_mutant(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UmObject *o = um_handle_object(UmCurrent(), a1, UO_MUTANT);
     if (!o) return ST_INVALID_HANDLE;
     UINT32 st = ST_SUCCESS, prev = 0;
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     if (o->owner != UmCurrentThread()) st = ST_MUTANT_NOT_OWNED;
     else {
         prev = o->recursion;
-        if (--o->recursion == 0) o->owner = NULL;
+        if (--o->recursion == 0) { o->owner = NULL; um_ob_wake(o); }
     }
-    irq_restore(s);
+    ob_unlock(s);
     um_ob_unref(o);
     if (st) return st;
     return put_u32(a2, (UINT32)(1 - (INT32)prev)) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
@@ -247,14 +423,18 @@ static UINT64 sys_release_mutant(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 /* NtCreateSemaphore(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, LONG Initial, LONG Maximum) */
 static UINT64 sys_create_semaphore(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a2; (void)a3;
+    (void)a2;
     INT32 init = (INT32)a4, max = (INT32)um_stack_arg(5);
     if (max <= 0 || init < 0 || init > max) return ST_INVALID_PARAMETER;
+    char name[NS_NAME_MAX];
+    if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
+    UINT64 r = open_existing(name, UO_SEMAPHORE, a1);
+    if (r) return r;
     UmObject *o = ob_new(UO_SEMAPHORE);
     if (!o) return ST_NO_MEMORY;
     o->count = init;
     o->max = max;
-    return new_handle(UmCurrent(), o, a1);
+    return finish_create(o, name, a1);
 }
 
 /* NtReleaseSemaphore(HANDLE, LONG ReleaseCount, PLONG PreviousCount) */
@@ -267,11 +447,11 @@ static UINT64 sys_release_semaphore(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!o) return ST_INVALID_HANDLE;
     UINT32 st = ST_SUCCESS;
     INT32 prev;
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     prev = o->count;
     if (o->count > o->max - n) st = ST_SEMAPHORE_LIMIT;
-    else o->count += n;
-    irq_restore(s);
+    else { o->count += n; um_ob_wake(o); }
+    ob_unlock(s);
     um_ob_unref(o);
     if (st) return st;
     return put_u32(a3, (UINT32)prev) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
@@ -370,11 +550,11 @@ static UINT64 suspend_op(UINT64 h, UINT64 prev_ptr, int delta)
     UmObject *o = um_handle_object(UmCurrent(), h, UO_THREAD);
     if (!o) return ST_INVALID_HANDLE;
     UmThread *t = (UmThread *)o;
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     INT32 prev = t->suspend;
     if (delta > 0 && prev < 127) t->suspend = prev + 1;
     if (delta < 0 && prev > 0) t->suspend = prev - 1;
-    irq_restore(s);
+    ob_unlock(s);
     um_ob_unref(o);
     return put_u32(prev_ptr, (UINT32)prev) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }
@@ -499,6 +679,21 @@ static UINT64 sys_nova_debug_print(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return ST_SUCCESS;
 }
 
+/* NtNovaUnimplemented(index): the program called an import NovaOS does
+ * not have (the loader bound it to a stub); say which, and end it. */
+static UINT64 sys_nova_unimplemented(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    UmProcess *p = UmCurrent();
+    const char *what = p->stub_names && a1 < (UINT64)p->nstubs ? p->stub_names[a1] : "an unknown function";
+    char msg[160];
+    int n = ksnprintf(msg, sizeof(msg), "\r\n%s called %s, which NovaOS does not implement yet.\r\n", p->name, what);
+    kprintf("[UM] %s (PID %u): unimplemented %s\n", p->name, p->pid, what);
+    if (p->con) um_console_write(p->con, msg, n);
+    ksnprintf(p->why, sizeof(p->why), "unimplemented %s", what);
+    um_exit_process(0xC0000139u);                   /* STATUS_ENTRYPOINT_NOT_FOUND */
+}
+
 /* NtNovaGetRandom(PVOID Buffer, ULONG Length): bytes from the kernel's
  * entropy pool (net/tls.c), for programs' own TLS and key generation */
 static UINT64 sys_nova_get_random(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -523,6 +718,9 @@ static UINT64 sys_nova_get_random(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 void um_thread_syscalls_init(void)
 {
     um_install(SYSCALL_NtCreateEvent,             sys_create_event);
+    um_install(SYSCALL_NtOpenEvent,               sys_open_event);
+    um_install(SYSCALL_NtOpenMutant,              sys_open_mutant);
+    um_install(SYSCALL_NtOpenSemaphore,           sys_open_semaphore);
     um_install(SYSCALL_NtSetEvent,                sys_set_event);
     um_install(SYSCALL_NtResetEvent,              sys_reset_event);
     um_install(SYSCALL_NtClearEvent,              sys_clear_event);
@@ -543,4 +741,5 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtNovaLoadDll,             sys_nova_load_dll);
     um_install(SYSCALL_NtNovaDebugPrint,          sys_nova_debug_print);
     um_install(SYSCALL_NtNovaGetRandom,           sys_nova_get_random);
+    um_install(SYSCALL_NtNovaUnimplemented,       sys_nova_unimplemented);
 }

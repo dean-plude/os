@@ -11,6 +11,7 @@
  * highlights (red for close).
  */
 
+#include "../ke/smp.h"
 #include "wm.h"
 #include "../gdi/gdi.h"
 #include "../lib/string.h"
@@ -26,7 +27,12 @@ static int        g_next_z  = 1;
 static WmLayerFn  g_background;
 static WmLayerFn  g_overlay;
 static bool       g_ready;
-static bool       g_dirty = true;
+/* Redraw needed while the two differ: invalidations bump g_dirty_gen (from
+ * any thread, even while a frame is being drawn: that frame may predate
+ * them), a finished frame records the generation it started from */
+static volatile UINT32 g_dirty_gen = 1, g_drawn_gen;
+static inline void mark_dirty(void) { __atomic_add_fetch(&g_dirty_gen, 1, __ATOMIC_RELEASE); }
+static struct WND *by_id(int id);
 static GdiRect    g_work;
 static WmIconFn   g_icon_fn;
 
@@ -52,6 +58,11 @@ static WND *g_press;                /* caption button being pressed */
 static int  g_press_part;
 static WND *g_hover;                /* caption button under the pointer */
 static int  g_hover_part;
+static WND *g_grab;                 /* explicit capture (WmSetCapture) */
+static WND *g_rcapture;             /* client that received a right/middle press */
+static WND *g_hover_client;         /* hover window the pointer is over */
+static int  g_wheel;
+static UINT32 g_buttons;
 
 /* Windows 11 dark palette */
 /* The title bar is a step darker than toolbars (0x20) and content (0x27),
@@ -81,7 +92,7 @@ void WmInitialize(void)
     g_overlay    = NULL;
     g_work  = RECT(0, 0, GdiScreenW(), GdiScreenH());
     g_ready = true;
-    g_dirty = true;
+    mark_dirty();
     kprintf("[WM] Window manager initialized (%d window slots)\n",
             WM_MAX_WINDOWS);
 }
@@ -90,9 +101,9 @@ void WmSetIconPainter(WmIconFn fn) { g_icon_fn = fn; }
 void WmSetWorkArea(GdiRect r) { g_work = r; }
 GdiRect WmWorkArea(void)      { return g_work; }
 
-void WmInvalidate(void)           { g_dirty = true; }
-void WmInvalidateBackground(void) { GdiCacheInvalidate(); g_dirty = true; }
-bool WmNeedsRedraw(void)          { return g_dirty; }
+void WmInvalidate(void)           { mark_dirty(); }
+void WmInvalidateBackground(void) { GdiCacheInvalidate(); mark_dirty(); }
+bool WmNeedsRedraw(void)          { return __atomic_load_n(&g_dirty_gen, __ATOMIC_ACQUIRE) != g_drawn_gen; }
 
 /* -----------------------------------------------------------------------
  * Window list
@@ -103,13 +114,16 @@ static bool shown(const WND *w)
     return g_used[i] && w->visible && !w->minimized;
 }
 
+/* Stacking: popups above every normal window, then by z */
+static long long zkey(const WND *w) { return (w->popup ? (1LL << 40) : 0) + w->z; }
+
 /* Topmost shown window, optionally excluding one */
 static WND *topmost(const WND *except)
 {
     WND *best = NULL;
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
         WND *w = &g_windows[i];
-        if (w == except || !shown(w)) continue;
+        if (w == except || !shown(w) || w->popup) continue;
         if (!best || w->z > best->z) best = w;
     }
     return best;
@@ -118,6 +132,13 @@ static WND *topmost(const WND *except)
 WND *WmCreateWindow(const char *title, GdiRect frame, UINT32 style,
                     GdiColor client_bg, GdiColor accent,
                     WndPaintFn on_paint, void *user)
+{
+    return WmCreateWindowEx(title, frame, style, client_bg, accent, on_paint, user, true);
+}
+
+WND *WmCreateWindowEx(const char *title, GdiRect frame, UINT32 style,
+                      GdiColor client_bg, GdiColor accent,
+                      WndPaintFn on_paint, void *user, bool activate)
 {
     if (!g_ready) return NULL;
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
@@ -136,7 +157,8 @@ WND *WmCreateWindow(const char *title, GdiRect frame, UINT32 style,
         w->user      = user;
         WmSetTitle(w, title);
         g_used[i] = true;
-        WmSetActive(w);
+        if (activate) WmSetActive(w);
+        else { w->z = g_next_z++; mark_dirty(); }
         return w;
     }
     kprintf("[WM] WARNING: window pool exhausted\n");
@@ -151,7 +173,7 @@ void WmSetTitle(WND *w, const char *title)
         strncpy(w->title, title, WM_TITLE_MAX - 1);
         w->title[WM_TITLE_MAX - 1] = '\0';
     }
-    g_dirty = true;
+    mark_dirty();
 }
 
 void WmDestroyWindow(WND *w)
@@ -160,37 +182,102 @@ void WmDestroyWindow(WND *w)
     int i = (int)(w - g_windows);
     if (i < 0 || i >= WM_MAX_WINDOWS || !g_used[i]) return;
     bool was_active = w->active;
+    int owner = w->owner;
     if (w->on_close) w->on_close(w);
     if (g_drag == w)    g_drag = NULL;
     if (g_resize == w)  g_resize = NULL;
     if (g_capture == w) g_capture = NULL;
     if (g_press == w)   g_press = NULL;
     if (g_hover == w)   g_hover = NULL;
+    if (g_grab == w)    g_grab = NULL;
+    if (g_rcapture == w) g_rcapture = NULL;
+    if (g_hover_client == w) g_hover_client = NULL;
     g_used[i] = false;
     memset(w, 0, sizeof(*w));
     if (was_active) {
-        WND *next = topmost(NULL);
+        WND *o = owner ? by_id(owner) : NULL;       /* a closed dialog gives the focus back to its owner */
+        WND *next = o && shown(o) && !o->disabled ? o : topmost(NULL);
         if (next) WmSetActive(next);
     }
-    g_dirty = true;
+    mark_dirty();
 }
 
 void WmShowWindow(WND *w, bool visible)
 {
-    if (w) { w->visible = visible; g_dirty = true; }
+    if (w) { w->visible = visible; mark_dirty(); }
+}
+
+/* Raise the windows @w owns (and theirs), keeping their order */
+static void raise_owned(const WND *w, int depth)
+{
+    if (depth > 8) return;
+    for (;;) {
+        WND *low = NULL;                    /* the lowest owned one not yet above @w */
+        for (int j = 0; j < WM_MAX_WINDOWS; j++) {
+            WND *o = &g_windows[j];
+            if (!g_used[j] || o->owner != w->id || o == w || o->z > w->z) continue;
+            if (!low || o->z < low->z) low = o;
+        }
+        if (!low) return;
+        low->z = g_next_z++;
+        raise_owned(low, depth + 1);
+    }
+}
+
+static WND *by_id(int id)
+{
+    for (int i = 0; i < WM_MAX_WINDOWS; i++) if (g_used[i] && g_windows[i].id == id) return &g_windows[i];
+    return NULL;
 }
 
 void WmSetActive(WND *w)
 {
     if (!w) return;
+    if (w->popup) { w->z = g_next_z++; mark_dirty(); return; }   /* popups never take the focus */
     for (int j = 0; j < WM_MAX_WINDOWS; j++)
         if (g_used[j]) g_windows[j].active = false;
+    /* an owned window comes up with its owner(s) under it */
+    WND *chain[8];
+    int nc = 0;
+    for (WND *o = w->owner ? by_id(w->owner) : NULL; o && nc < 8; o = o->owner ? by_id(o->owner) : NULL) chain[nc++] = o;
+    while (nc) { WND *o = chain[--nc]; o->minimized = false; o->visible = true; o->z = g_next_z++; }
     w->minimized = false;
     w->visible   = true;
     w->active    = true;
     w->z = g_next_z++;
-    g_dirty = true;
+    raise_owned(w, 0);
+    mark_dirty();
 }
+
+/* The window that takes input for @w: @w itself, or while it is disabled
+ * (a modal dialog is up) the topmost enabled window it owns */
+static WND *input_target(WND *w)
+{
+    for (int depth = 0; w && w->disabled && depth < 8; depth++) {
+        WND *best = NULL;
+        for (int j = 0; j < WM_MAX_WINDOWS; j++) {
+            WND *o = &g_windows[j];
+            if (g_used[j] && o->owner == w->id && shown(o) && !o->popup && (!best || o->z > best->z)) best = o;
+        }
+        if (!best) return NULL;
+        w = best;
+    }
+    return w;
+}
+
+void WmSetFrame(WND *w, GdiRect frame)
+{
+    if (!w) return;
+    w->frame = frame;
+    if (!w->maximized && !w->snapped) w->restore = frame;
+    mark_dirty();
+}
+
+void WmSetCapture(WND *w) { g_grab = w; }
+WND *WmGetCapture(void)   { return g_grab; }
+int  WmWheelDelta(void)   { return g_wheel; }
+void WmSetButtons(UINT32 b) { g_buttons = b; }
+UINT32 WmButtons(void)    { return g_buttons; }
 
 WND *WmActiveWindow(void)
 {
@@ -200,6 +287,13 @@ WND *WmActiveWindow(void)
     return NULL;
 }
 
+void WmRequestClose(WND *w)
+{
+    if (!w) return;
+    if (w->on_close_request) { w->on_close_request(w); mark_dirty(); }
+    else WmDestroyWindow(w);
+}
+
 void WmMinimize(WND *w)
 {
     if (!w) return;
@@ -207,7 +301,7 @@ void WmMinimize(WND *w)
     w->active    = false;
     WND *next = topmost(w);
     if (next) WmSetActive(next);
-    g_dirty = true;
+    mark_dirty();
 }
 
 static bool tileable(const WND *w)
@@ -225,7 +319,7 @@ void WmSnap(WND *w, int where)
         if (tiled) w->frame = w->restore;
         w->maximized = w->snapped = false;
         clamp_to_work(w);
-        g_dirty = true;
+        mark_dirty();
         return;
     }
     if (!tiled) w->restore = w->frame;
@@ -240,7 +334,7 @@ void WmSnap(WND *w, int where)
         w->snapped = true;
         w->maximized = false;
     }
-    g_dirty = true;
+    mark_dirty();
 }
 
 void WmToggleMaximize(WND *w)
@@ -255,7 +349,7 @@ int WmListWindows(WND **out, int max)
     int n = 0;
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
         WND *w = &g_windows[i];
-        if (!g_used[i] || !w->visible) continue;
+        if (!g_used[i] || !w->visible || w->popup || w->owner) continue;   /* the dock and Alt+Tab list top windows */
         int j = n++;
         while (j > 0 && all[j - 1]->z < w->z) { all[j] = all[j - 1]; j--; }
         all[j] = w;
@@ -289,7 +383,7 @@ void WmShowDesktopToggle(void)
                 if (g_used[i] && g_windows[i].id == g_desk_ids[k]) WmSetActive(&g_windows[i]);
         g_desk_n = 0;
     }
-    g_dirty = true;
+    mark_dirty();
 }
 
 GdiRect WmClientRect(const WND *w)
@@ -358,7 +452,7 @@ static WND *hit(int x, int y, int *part)
         if (resizable(w))                   /* grab band reaches outside the frame */
             f = RECT(f.x - EDGE_OUT, f.y - EDGE_OUT, f.w + 2 * EDGE_OUT, f.h + 2 * EDGE_OUT);
         if (!pt_in(f, x, y)) continue;
-        if (!best || w->z > best->z) best = w;
+        if (!best || zkey(w) > zkey(best)) best = w;
     }
     *part = HT_NONE;
     g_hit_edges = 0;
@@ -414,7 +508,7 @@ static void to_client(WND *w, WmMouseMsg msg, int x, int y)
     if (!w->on_mouse) return;
     GdiRect c = WmClientRect(w);
     w->on_mouse(w, msg, x - c.x, y - c.y);
-    g_dirty = true;
+    mark_dirty();
 }
 
 static void clamp_to_work(WND *w)
@@ -429,12 +523,16 @@ static void clamp_to_work(WND *w)
 
 bool WmMouseButton(int x, int y, WmMouseMsg msg)
 {
+    if (g_grab) {                               /* everything to the capturing window */
+        to_client(g_grab, msg, x, y);
+        return true;
+    }
     if (msg == WM_MOUSE_UP) {
         if (g_drag) {
             if (g_snap_zone) WmSnap(g_drag, g_snap_zone);
             g_drag = NULL;
             g_snap_zone = 0;
-            g_dirty = true;
+            mark_dirty();
             return true;
         }
         if (g_resize) { g_resize = NULL; return true; }
@@ -444,9 +542,9 @@ bool WmMouseButton(int x, int y, WmMouseMsg msg)
             WND *p = g_press;
             int pp = g_press_part;
             g_press = NULL;
-            g_dirty = true;
+            mark_dirty();
             if (w == p && part == pp) {
-                if (pp == HT_CLOSE)      WmDestroyWindow(p);
+                if (pp == HT_CLOSE)      WmRequestClose(p);
                 else if (pp == HT_MAX)   WmToggleMaximize(p);
                 else if (pp == HT_MIN)   WmMinimize(p);
             }
@@ -466,7 +564,13 @@ bool WmMouseButton(int x, int y, WmMouseMsg msg)
     int part;
     WND *w = hit(x, y, &part);
     if (!w) return false;
-    if (!w->active || topmost(NULL) != w) WmSetActive(w);
+    if (w->disabled) {                          /* a modal dialog is up: bring it forward */
+        WND *t = input_target(w);
+        if (t) WmSetActive(t);
+        mark_dirty();
+        return true;
+    }
+    if (!w->no_activate && (!w->active || topmost(NULL) != w)) WmSetActive(w);
 
     switch (part) {
     case HT_CAPTION:
@@ -503,7 +607,7 @@ bool WmMouseButton(int x, int y, WmMouseMsg msg)
         to_client(w, msg, x, y);
         break;
     }
-    g_dirty = true;
+    mark_dirty();
     return true;
 }
 
@@ -521,7 +625,7 @@ void WmMouseMove(int x, int y)
             else if (x >= g_work.x + g_work.w - 2)      zone = WM_SNAP_RIGHT;
         }
         g_snap_zone = zone;
-        g_dirty = true;
+        mark_dirty();
         return;
     }
     if (g_resize) {
@@ -544,30 +648,63 @@ void WmMouseMove(int x, int y)
         if (g_resize_edges & EDGE_B) { f.h += dy; if (f.h < MIN_H) f.h = MIN_H; }
         if (f.y + f.h > g_work.y + g_work.h) f.h = g_work.y + g_work.h - f.y;
         g_resize->frame = f;
-        g_dirty = true;
+        mark_dirty();
         return;
     }
+    if (g_grab) { to_client(g_grab, WM_MOUSE_MOVE, x, y); return; }
     if (g_capture) to_client(g_capture, WM_MOUSE_MOVE, x, y);
+    else if (g_rcapture) to_client(g_rcapture, WM_MOUSE_MOVE, x, y);
 
     /* Caption-button hover highlight */
     int part;
     WND *w = hit(x, y, &part);
+    /* windows that follow the pointer (buttons light up, menus track) */
+    WND *hc = w && part == HT_CLIENT && w->hover && !w->disabled ? w : NULL;
+    if (hc != g_hover_client) {
+        if (g_hover_client && g_hover_client->on_mouse && !g_capture) g_hover_client->on_mouse(g_hover_client, WM_MOUSE_LEAVE, 0, 0);
+        g_hover_client = hc;
+    }
+    if (hc && !g_capture && !g_rcapture) to_client(hc, WM_MOUSE_MOVE, x, y);
     if (part != HT_MIN && part != HT_MAX && part != HT_CLOSE) { w = NULL; part = HT_NONE; }
     if (w != g_hover || part != g_hover_part) {
         g_hover = w;
         g_hover_part = part;
-        g_dirty = true;
+        mark_dirty();
     }
 }
 
-bool WmMouseCaptured(void) { return g_drag || g_resize || g_capture || g_press; }
+bool WmMouseCaptured(void) { return g_drag || g_resize || g_capture || g_press || g_grab || g_rcapture; }
+
+bool WmMouseOther(int x, int y, WmMouseMsg msg, int dz)
+{
+    g_wheel = dz;
+    if (g_grab) { to_client(g_grab, msg, x, y); return true; }
+    if ((msg == WM_MOUSE_RUP || msg == WM_MOUSE_MUP) && g_rcapture) {
+        WND *c = g_rcapture;
+        g_rcapture = NULL;
+        to_client(c, msg, x, y);
+        return true;
+    }
+    int part;
+    WND *w = hit(x, y, &part);
+    if (!w || part != HT_CLIENT || !w->rbutton) return false;
+    if (w->disabled) {
+        if (msg != WM_MOUSE_WHEEL) { WND *t = input_target(w); if (t) WmSetActive(t); }
+        return true;
+    }
+    if ((msg == WM_MOUSE_RDOWN || msg == WM_MOUSE_MDOWN) && !w->no_activate && (!w->active || topmost(NULL) != w))
+        WmSetActive(w);
+    if (msg == WM_MOUSE_RDOWN || msg == WM_MOUSE_MDOWN) g_rcapture = w;
+    to_client(w, msg, x, y);
+    return true;
+}
 
 void WmTick(void)
 {
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
         WND *w = &g_windows[i];
         if (g_used[i] && w->on_tick && w->on_tick(w))
-            g_dirty = true;
+            mark_dirty();
     }
 }
 
@@ -576,6 +713,7 @@ bool WmKey(const KeyEvent *k)
     if (!k) return false;
     WND *w = WmActiveWindow();
     if (!w) return false;
+    if (w->disabled) { WND *t = input_target(w); if (t && t != w) WmSetActive(t); return true; }
     if (!k->pressed) {
         /* only windows that track held keys (program windows) see releases */
         if (!w->key_releases || !w->on_key) return false;
@@ -583,12 +721,12 @@ bool WmKey(const KeyEvent *k)
         return true;
     }
     if (k->alt && !k->extended && k->scancode == KEY_F4) {
-        WmDestroyWindow(w);
+        WmRequestClose(w);
         return true;
     }
     if (w->on_key) {
         w->on_key(w, k);
-        g_dirty = true;
+        mark_dirty();
     }
     return true;
 }
@@ -639,13 +777,14 @@ static void draw_button(const WND *w, int part, GdiColor title_bg, GdiColor fg)
 static void draw_window(WND *w)
 {
     GdiRect f   = w->frame;
-    int     rad = w->maximized ? 0 : CORNER;
+    int     rad = w->maximized || w->popup ? 0 : CORNER;
     GdiColor title_bg = w->active ? TITLE_ACTIVE : TITLE_INACTIVE;
     GdiColor title_fg = w->active ? TEXT_ACTIVE  : TEXT_INACTIVE;
 
-    if ((w->style & WS_SHADOW) && !w->maximized)
-        GdiDropShadow(RECT(f.x, f.y + 3, f.w, f.h), rad,
-                      w->active ? 18 : 10, w->active ? 90 : 45);
+    if ((w->style & WS_SHADOW) && !w->maximized)       /* under the frame, drawn next */
+        GdiDropShadowAround(RECT(f.x, f.y + 3, f.w, f.h), rad,
+                            w->active ? 18 : 10, w->active ? 90 : 45,
+                            w->client_bg == GDI_TRANSPARENT ? RECT(0, 0, 0, 0) : f, rad);
 
     GdiRoundRect(f, rad, w->client_bg, GDI_TRANSPARENT);
 
@@ -680,7 +819,11 @@ static void draw_window(WND *w)
 
     if (w->on_paint) {
         GdiSetClip(WmClientRect(w));
+        /* the desktop draws without the big kernel lock; the built-in apps'
+         * painters read state that other code changes under it */
+        if (!w->paint_lock_free) bkl_acquire();
         w->on_paint(w);
+        if (!w->paint_lock_free) bkl_release();
         GdiResetClip();
     }
 }
@@ -691,6 +834,7 @@ static void draw_window(WND *w)
 void WmComposite(void)
 {
     if (!g_ready) return;
+    UINT32 gen = __atomic_load_n(&g_dirty_gen, __ATOMIC_ACQUIRE);
     GdiResetClip();
 
     /* 1. Desktop background (wallpaper + icons), cached between frames */
@@ -706,7 +850,7 @@ void WmComposite(void)
         if (!shown(&g_windows[i])) continue;
         WND *w = &g_windows[i];
         int j = n++;
-        while (j > 0 && order[j - 1]->z > w->z) {
+        while (j > 0 && zkey(order[j - 1]) > zkey(w)) {
             order[j] = order[j - 1];
             j--;
         }
@@ -731,7 +875,7 @@ void WmComposite(void)
 
     /* 4. Show the finished frame */
     GdiPresent();
-    g_dirty = false;
+    g_drawn_gen = gen;
 }
 
 /* -----------------------------------------------------------------------

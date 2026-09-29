@@ -26,6 +26,7 @@ typedef struct {
     UINT8 pressed;     /* 1 = key down, 0 = key up (INPUT_KEY) */
     UINT8 extended;    /* 1 = E0-prefixed key: arrows, Delete, Win... */
     INT32 dx, dy;      /* relative motion, +x right / +y down (INPUT_MOUSE) */
+    INT32 dz;          /* wheel: +1 per notch away from the user (INPUT_MOUSE) */
 } InputEvent;
 
 /* -----------------------------------------------------------------------
@@ -67,6 +68,8 @@ typedef struct {
 bool InputTranslateKey(const InputEvent *ev, KeyEvent *out);
 
 void InputInit(void);
+/* Modifier keys held: bit 0 Shift, 1 Ctrl, 2 Alt; bit 3 Caps Lock on */
+UINT32 InputModifiers(void);
 /* Producer (drivers). Drops the event if the queue is full. */
 void InputPost(const InputEvent *ev);
 /* Consumer (WM). Returns false if empty. */

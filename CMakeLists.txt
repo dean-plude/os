@@ -143,7 +143,7 @@ find_program(MTOOLS_MCOPY NAMES mcopy)
 
 if(DD_BIN AND MKDOSFS_BIN AND MTOOLS_MCOPY)
     set(DISK_IMG "${CMAKE_BINARY_DIR}/nova.img")
-    set(DISK_SIZE_MB 64)
+    set(DISK_SIZE_MB 128)
 
     add_custom_command(
         OUTPUT  "${DISK_IMG}"

@@ -26,26 +26,13 @@
 #include "../ke/printf.h"
 #include "../include/types.h"
 #include "../arch/x86_64/cpu.h"
+#include "../ke/spinlock.h"
 
 /* -----------------------------------------------------------------------
- * Spinlock (simple ticket lock for Phase 1 / single CPU)
+ * Lock: a spinlock (interrupts off while held); one acquire per function
  * ----------------------------------------------------------------------- */
-typedef struct {
-    volatile uint32_t next;
-    volatile uint32_t owner;
-} TicketLock;
-
-static void lock_acquire(TicketLock *l)
-{
-    uint32_t ticket = __atomic_fetch_add(&l->next, 1, __ATOMIC_SEQ_CST);
-    while (__atomic_load_n(&l->owner, __ATOMIC_ACQUIRE) != ticket)
-        pause_cpu();
-}
-
-static void lock_release(TicketLock *l)
-{
-    __atomic_fetch_add(&l->owner, 1, __ATOMIC_RELEASE);
-}
+#define lock_acquire(l) IrqState lk_irq = spin_lock_irqsave(l)
+#define lock_release(l) spin_unlock_irqrestore(l, lk_irq)
 
 /* -----------------------------------------------------------------------
  * PMM state
@@ -57,7 +44,7 @@ static struct {
     size_t    free_pages;     /* Current free page count */
     size_t    bitmap_words;   /* Number of uint64_t words in bitmap */
     uintptr_t highest_phys;   /* Highest physical address + 1 */
-    TicketLock lock;
+    KSpinLock lock;
 } pmm;
 
 /* -----------------------------------------------------------------------

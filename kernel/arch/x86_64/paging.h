@@ -44,6 +44,9 @@
 #define PTE_HUGE      UINT64_C(1 << 7)
 #define PTE_GLOBAL    UINT64_C(1 << 8)
 #define PTE_NX        UINT64_C(1ULL << 63)
+/* Software bit (not present entries): a committed page of a program that
+ * is backed on first touch; the entry keeps its USER/WRITE/NX flags */
+#define PTE_LAZY      UINT64_C(1 << 9)
 
 /* Address mask (strips flag bits from PTE) */
 #define PTE_ADDR_MASK UINT64_C(0x000FFFFFFFFFF000)

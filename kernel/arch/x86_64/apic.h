@@ -98,3 +98,17 @@ uint32_t apic_timer_current(void);
  * Return this CPU's APIC ID.
  */
 uint8_t apic_id(void);
+
+/* Enable the calling (non-boot) CPU's LAPIC and start its 100 Hz timer. */
+void apic_init_ap(void);
+
+/* Send an inter-processor interrupt: @command is the ICR low word
+ * (vector | delivery mode | level ...). */
+void apic_send_ipi(uint32_t dest_apic_id, uint32_t command);
+#define APIC_IPI_FIXED   0x4000u                /* fixed delivery, level assert */
+#define APIC_IPI_INIT    0x4500u
+#define APIC_IPI_SIPI    0x4600u                /* | start page number */
+
+/* TSC ticks per 10 ms (measured against the PIT at boot) */
+extern uint64_t g_tsc_per_tick;
+void udelay(uint64_t us);

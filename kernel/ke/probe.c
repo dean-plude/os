@@ -12,6 +12,7 @@
 #include "../mm/vmm.h"
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/paging.h"
+#include "../arch/x86_64/idt.h"
 
 #define PROBE_PAGE_1GB  (1024UL * 1024 * 1024)
 
@@ -57,6 +58,7 @@ static bool user_pages_ok(UINT64 addr, UINT64 len, UINT64 need)
         if (e & PTE_HUGE) { va = (va | (HUGE_PAGE_SIZE - 1)) + 1; continue; }
 
         e = table_at(e)[PT_IDX(va)];
+        if (!(e & PTE_PRESENT) && (e & PTE_LAZY)) e |= PTE_PRESENT;   /* backed on first touch */
         if ((e & need) != need) return false;
         va += PAGE_SIZE;
     }
@@ -80,86 +82,82 @@ static NTSTATUS probe(const void *addr, size_t len, UINT32 align, bool write)
 
 NTSTATUS ProbeForRead(const void *addr, size_t len, UINT32 align)
 {
-    IrqState irq = irq_save();
-    NTSTATUS s = probe(addr, len, align, false);
-    irq_restore(irq);
-    return s;
+    return probe(addr, len, align, false);
 }
 
 NTSTATUS ProbeForWrite(void *addr, size_t len, UINT32 align)
 {
-    IrqState irq = irq_save();
-    NTSTATUS s = probe(addr, len, align, true);
-    irq_restore(irq);
-    return s;
+    return probe(addr, len, align, true);
 }
 
 /* -----------------------------------------------------------------------
- * Copy helpers — probe and copy with interrupts off (see probe.h)
+ * Copy helpers.  The probe checks the range and the page tables; the copy
+ * itself (uaccess.asm) survives the memory going away meanwhile — another
+ * thread of the program may unmap it from another CPU — and then reports
+ * an access violation.
  * ----------------------------------------------------------------------- */
+extern int  uaccess_copy(void *dst, const void *src, size_t len);
+extern int  uaccess_zero(void *dst, size_t len);
+extern char uaccess_begin[], uaccess_end[], uaccess_fault[];
+
+bool UserCopyFixup(InterruptFrame *f)
+{
+    if (f->rip < (UINT64)(uintptr_t)uaccess_begin || f->rip >= (UINT64)(uintptr_t)uaccess_end)
+        return false;
+    f->rip = (UINT64)(uintptr_t)uaccess_fault;
+    return true;
+}
 
 NTSTATUS CopyFromUser(void *kdst, const void *usrc, size_t len)
 {
-    IrqState irq = irq_save();
     NTSTATUS s = probe(usrc, len, 1, false);
-    if (NT_SUCCESS(s) && len) memcpy(kdst, usrc, len);
-    irq_restore(irq);
+    if (NT_SUCCESS(s) && len && uaccess_copy(kdst, usrc, len)) s = STATUS_ACCESS_VIOLATION;
     return s;
 }
 
 NTSTATUS CopyToUser(void *udst, const void *ksrc, size_t len)
 {
-    IrqState irq = irq_save();
     NTSTATUS s = probe(udst, len, 1, true);
-    if (NT_SUCCESS(s) && len) memcpy(udst, ksrc, len);
-    irq_restore(irq);
+    if (NT_SUCCESS(s) && len && uaccess_copy(udst, ksrc, len)) s = STATUS_ACCESS_VIOLATION;
     return s;
 }
 
 NTSTATUS CopyUserToUser(void *udst, const void *usrc, size_t len)
 {
-    IrqState irq = irq_save();
     NTSTATUS s = probe(usrc, len, 1, false);
     if (NT_SUCCESS(s)) s = probe(udst, len, 1, true);
-    if (NT_SUCCESS(s) && len) memmove(udst, usrc, len);
-    irq_restore(irq);
+    if (NT_SUCCESS(s) && len && uaccess_copy(udst, usrc, len)) s = STATUS_ACCESS_VIOLATION;
     return s;
 }
 
 NTSTATUS ZeroUser(void *udst, size_t len)
 {
-    IrqState irq = irq_save();
     NTSTATUS s = probe(udst, len, 1, true);
-    if (NT_SUCCESS(s) && len) memset(udst, 0, len);
-    irq_restore(irq);
+    if (NT_SUCCESS(s) && len && uaccess_zero(udst, len)) s = STATUS_ACCESS_VIOLATION;
     return s;
 }
 
-/* Strings are probed one page at a time, since their length is unknown
+/* Strings are copied a page at a time, since their length is unknown
  * until the terminator is found. */
 NTSTATUS CopyStringFromUser(char *kdst, size_t cap, const char *usrc)
 {
     if (!kdst || cap == 0) return STATUS_INVALID_PARAMETER;
 
-    IrqState irq = irq_save();
     NTSTATUS s = STATUS_SUCCESS;
     size_t   n = 0;
-    UINT64   checked_end = 0;   /* end of the last page validated */
-
     while (n < cap - 1) {
         UINT64 a = (UINT64)(uintptr_t)(usrc + n);
-        if (a >= checked_end) {
-            UINT64 page = a & ~((UINT64)PAGE_SIZE - 1);
-            s = probe((const void *)(uintptr_t)page, PAGE_SIZE, 1, false);
-            if (!NT_SUCCESS(s)) break;
-            checked_end = page + PAGE_SIZE;
-        }
-        char c = usrc[n];
-        if (!c) break;
-        kdst[n++] = c;
+        size_t chunk = PAGE_SIZE - (a & (PAGE_SIZE - 1));
+        if (chunk > cap - 1 - n) chunk = cap - 1 - n;
+        s = probe(usrc + n, chunk, 1, false);
+        if (!NT_SUCCESS(s)) break;
+        if (uaccess_copy(kdst + n, usrc + n, chunk)) { s = STATUS_ACCESS_VIOLATION; break; }
+        size_t i = 0;
+        while (i < chunk && kdst[n + i]) i++;
+        n += i;
+        if (i < chunk) break;                           /* found the terminator */
     }
     kdst[n] = '\0';
-    irq_restore(irq);
     return s;
 }
 
@@ -170,22 +168,20 @@ NTSTATUS ProbeUserWideStringLength(const WCHAR *usrc, UINT32 max_chars,
     if ((UINT64)(uintptr_t)usrc & (sizeof(WCHAR) - 1))
         return STATUS_DATATYPE_MISALIGNMENT;
 
-    IrqState irq = irq_save();
-    NTSTATUS s = STATUS_INVALID_PARAMETER;   /* no NUL within max_chars */
-    UINT64   checked_end = 0;
-
-    for (UINT32 i = 0; i <= max_chars; i++) {
+    WCHAR buf[256];
+    for (UINT32 i = 0; i <= max_chars;) {
         UINT64 a = (UINT64)(uintptr_t)(usrc + i);
-        if (a >= checked_end) {
-            UINT64 page = a & ~((UINT64)PAGE_SIZE - 1);
-            NTSTATUS ps = probe((const void *)(uintptr_t)page, PAGE_SIZE, 1, false);
-            if (!NT_SUCCESS(ps)) { s = ps; break; }
-            checked_end = page + PAGE_SIZE;
-        }
-        if (!usrc[i]) { *len_out = i; s = STATUS_SUCCESS; break; }
+        UINT32 chunk = (UINT32)((PAGE_SIZE - (a & (PAGE_SIZE - 1))) / sizeof(WCHAR));
+        if (chunk > 256) chunk = 256;
+        if (chunk > max_chars + 1 - i) chunk = max_chars + 1 - i;
+        NTSTATUS ps = probe(usrc + i, chunk * sizeof(WCHAR), 1, false);
+        if (!NT_SUCCESS(ps)) return ps;
+        if (uaccess_copy(buf, usrc + i, chunk * sizeof(WCHAR))) return STATUS_ACCESS_VIOLATION;
+        for (UINT32 k = 0; k < chunk; k++)
+            if (!buf[k]) { *len_out = i + k; return STATUS_SUCCESS; }
+        i += chunk;
     }
-    irq_restore(irq);
-    return s;
+    return STATUS_INVALID_PARAMETER;                    /* no NUL within max_chars */
 }
 
 /* -----------------------------------------------------------------------

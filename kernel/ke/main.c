@@ -37,6 +37,7 @@
  *  Enable IRQs, create test threads, enter idle loop.
  */
 
+#include "../fs/persist.h"
 #include "../include/types.h"
 #include "../../include/boot_protocol.h"
 #include "../hal/serial.h"
@@ -50,6 +51,8 @@
 #include "../arch/x86_64/cpu.h"
 #include "printf.h"
 #include "scheduler.h"
+#include "kpcr.h"
+#include "smp.h"
 #include "../lib/string.h"
 #include "syscall.h"
 #include "../ob/ob.h"
@@ -200,6 +203,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
      * ------------------------------------------------------------------ */
     kprintf("=== Phase 1: Memory Manager ===\n");
     pmm_init(info);
+    smp_early(info);                      /* before the memory map can be reused */
 
     kprintf("=== Phase 1: Paging ===\n");
     paging_init();
@@ -213,6 +217,13 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     kprintf("=== Phase 1: GDT ===\n");
     gdt_init();
 
+    /* This CPU's KPCR (GS points at it from here on in kernel mode), and
+     * the big kernel lock, which kernel code holds while it runs (smp.h) */
+    KiInitializeKpcr(&g_kpcr[0], 0);
+    g_kpcr[0].Gdt    = gdt_boot();
+    g_kpcr[0].Tss    = &gdt_boot()->tss;
+    g_kpcr[0].Online = 1;
+
     kprintf("=== Phase 1: IDT ===\n");
     idt_init();
 
@@ -224,6 +235,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
      * ------------------------------------------------------------------ */
     kprintf("=== Phase 1: Scheduler ===\n");
     sched_init();
+    bkl_acquire_boot();                   /* boot runs under the big kernel lock */
 
     /* ------------------------------------------------------------------
      * STEP 10: Object Manager
@@ -308,15 +320,6 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     }
 
     /* ------------------------------------------------------------------
-     * STEP 20 (Phase 5): KPCR — Kernel Processor Control Region
-     * Programs MSR_KERNEL_GS_BASE so that SWAPGS in syscall_entry.asm
-     * switches GS to the KPCR (saving user GS / TEB pointer).
-     * Also initializes KPCR.KernelRsp for the initial boot thread.
-     * ------------------------------------------------------------------ */
-    kprintf("=== Phase 5: KPCR ===\n");
-    KiInitializeKpcr();
-
-    /* ------------------------------------------------------------------
      * STEP 20b (Phase 6): CSRSS — Client/Server Runtime SubSystem
      * ------------------------------------------------------------------ */
     kprintf("=== Phase 6: CSRSS bootstrap ===\n");
@@ -357,11 +360,18 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
 
     /* Devices and networking: PCI scan, e1000 NIC, lwIP + DHCP */
     PciInitialize();
+    PersistInit();                        /* SATA disks; the volume that keeps drive C: */
     if (!NetInitialize())
         kprintf("[NET] No network (no supported adapter)\n");
 
     /* Windows programs: SSE for user code, NT services, loader */
     UmInit();
+
+    /* The other CPUs (they copy this CPU's control registers, so after
+     * UmInit's SSE setup); they start scheduling once this CPU first lets
+     * go of the kernel lock */
+    kprintf("=== SMP ===\n");
+    smp_start();
 
     if (GdiInitialize()) {
         WmInitialize();
@@ -382,12 +392,9 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
 
     kprintf("[NovaOS] Entering kernel main loop\n");
 
-    for (;;) {
-        volatile uint64_t spin;
-        for (spin = 0; spin < 50000000ULL; spin++)
-            pause_cpu();
-
+    bkl_release();                        /* the idle loop needs no lock */
+    for (;;) {                            /* CPU 0's idle thread: runs when nothing else is ready */
         sched_yield();
-        hlt();
+        cpu_idle_wait();
     }
 }

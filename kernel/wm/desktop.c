@@ -26,6 +26,7 @@
 #include "../gdi/gdi.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
+#include "../ke/smp.h"
 #include "../lib/string.h"
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
@@ -343,6 +344,7 @@ static void draw_menu(void)
 static void power_restart(void)
 {
     kprintf("[SHELL] Restarting\n");
+    UmSaveAll();
     cli();
     for (int i = 0; i < 100000; i++) {                    /* 8042: pulse the reset line */
         if (!(inb(0x64) & 2)) break;
@@ -354,6 +356,7 @@ static void power_restart(void)
 static void power_shutdown(void)
 {
     kprintf("[SHELL] Shutting down\n");
+    UmSaveAll();
     cli();
     /* ACPI S5 through the PM1a control port the common virtual machines
      * use (QEMU q35/ICH9, QEMU i440fx, Bochs, VirtualBox); real hardware
@@ -375,9 +378,9 @@ static void run_menu_item(const MenuItem *m)
     case MA_APP:            AppLaunch((AppId)m->arg); break;
     case MA_CLOSE_APP: {
         WND *aw = WmFindApp(m->arg);
-        if (aw) WmDestroyWindow(aw);
+        if (aw) WmRequestClose(aw);
         break; }
-    case MA_WIN_CLOSE:      if (w) WmDestroyWindow(w); break;
+    case MA_WIN_CLOSE:      if (w) WmRequestClose(w); break;
     case MA_WIN_MIN:        if (w) WmMinimize(w); break;
     case MA_WIN_MAX:        if (w) { WmSetActive(w); WmSnap(w, WM_SNAP_MAX); } break;
     case MA_WIN_RESTORE:    if (w) { WmSetActive(w); WmSnap(w, WM_SNAP_RESTORE); } break;
@@ -1207,6 +1210,10 @@ static void run_action(const Hot *h)
  * menus, Start, dock, windows, then the desktop itself. */
 static void desktop_press(int x, int y, bool dbl)
 {
+    if (WmGetCapture()) {                  /* a program is tracking the mouse (its menu is open) */
+        WmMouseButton(x, y, dbl ? WM_MOUSE_DBLCLK : WM_MOUSE_DOWN);
+        return;
+    }
     const Hot *h = hot_find(g_hot_ov, g_hot_ov_n, x, y);
 
     if (g_menu.open) {
@@ -1389,10 +1396,37 @@ static void desktop_key(const KeyEvent *k)
  * Polls PS/2, moves the cursor with save-under, routes input, and
  * recomposites whenever something changed (or once per minute for the
  * clock). */
+/* Watchdog (called from the timer tick): when the desktop loop has not come
+ * round for 3 seconds, log where its thread is, once per stall. */
+static Thread *volatile g_desktop_kt;
+static volatile UINT64 g_desktop_beat;
+
+void DesktopWatchdog(UINT64 now)
+{
+    static UINT64 reported;
+    Thread *kt = g_desktop_kt;
+    if (!kt || now - g_desktop_beat < 300 || reported == g_desktop_beat) return;
+    reported = g_desktop_beat;
+    extern char __text_end[];
+    Thread *who[2] = { kt, DesktopLockOwner() };
+    for (int i = 0; i < 2; i++) {
+        Thread *th = who[i];
+        if (!th || (i && th == kt)) continue;
+        kprintf("[WATCHDOG] %s: '%s' (TID %llu, state %d); kernel return addresses:\n",
+                i ? "the desktop lock is held by" : "the desktop has not responded for 3 s", th->name,
+                (unsigned long long)th->tid, th->state);
+        UINT64 *sp = (UINT64 *)(uintptr_t)th->context.rsp;
+        UINT64 *top = (UINT64 *)((uintptr_t)th->kernel_stack + th->stack_size);
+        for (int n = 0; sp < top && n < 24; sp++)
+            if (*sp >= 0xffffffff80000000ull && *sp < (UINT64)(uintptr_t)__text_end) { kprintf("  %llx\n", *sp); n++; }
+    }
+}
+
 void DesktopRun(void *arg)
 {
     (void)arg;
     if (!g_ready) return;
+    g_desktop_kt = sched_current();
 
     update_clock();
     WmComposite();
@@ -1400,11 +1434,12 @@ void DesktopRun(void *arg)
 
     RtcTime t; rtc_read(&t);
     int    last_min  = t.minute;
-    bool   prev_left = false, prev_right = false;
+    bool   prev_left = false, prev_right = false, prev_mid = false;
     UINT64 last_press = 0;
     int    last_px = -100, last_py = -100;
 
     for (;;) {
+        g_desktop_beat = sched_ticks();
         /* Program threads take this lock around file-system access */
         DesktopLock();
         ps2_poll();
@@ -1419,7 +1454,12 @@ void DesktopRun(void *arg)
                 }
                 bool left = (ev.buttons & MOUSE_LEFT) != 0;
                 bool right = (ev.buttons & MOUSE_RIGHT) != 0;
+                bool mid = (ev.buttons & MOUSE_MIDDLE) != 0;
                 int  x = WmCursorX(), y = WmCursorY();
+                WmSetButtons(ev.buttons & 7);
+                if (ev.dz) WmMouseOther(x, y, WM_MOUSE_WHEEL, ev.dz);
+                if (mid != prev_mid) WmMouseOther(x, y, mid ? WM_MOUSE_MDOWN : WM_MOUSE_MUP, 0);
+                prev_mid = mid;
                 if (left && !prev_left) {
                     UINT64 now = sched_ticks();
                     bool dbl = now - last_press <= 45 &&
@@ -1431,7 +1471,8 @@ void DesktopRun(void *arg)
                 } else if (!left && prev_left) {
                     WmMouseButton(x, y, WM_MOUSE_UP);
                 }
-                if (right && !prev_right && !left) desktop_right_press(x, y);
+                if (right && !prev_right && !left && !WmMouseOther(x, y, WM_MOUSE_RDOWN, 0)) desktop_right_press(x, y);
+                if (!right && prev_right) WmMouseOther(x, y, WM_MOUSE_RUP, 0);
                 prev_left = left;
                 prev_right = right;
             } else if (ev.type == INPUT_KEY) {
@@ -1451,11 +1492,20 @@ void DesktopRun(void *arg)
         }
 
         if (WmNeedsRedraw()) {
+            /* Drawing needs only the desktop lock (built-in apps' painters
+             * take the big one back, see WND.paint_lock_free): the other
+             * CPUs keep entering the kernel meanwhile */
+            bkl_release();
             WmComposite();
             WmCursorReshow();
+            bkl_acquire();
         }
         DesktopUnlock();
-        sched_yield();
+        /* Sleep until the next tick (10 ms: input is collected at the
+         * tick) instead of spinning.  Sleeping in the scheduler, not
+         * halting the CPU, leaves the CPU to its idle thread, which takes
+         * work from busy CPUs meanwhile. */
+        sched_sleep_tick();
     }
 }
 

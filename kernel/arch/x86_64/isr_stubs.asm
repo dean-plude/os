@@ -119,6 +119,13 @@ ISR_NOERR i
 ; (reversed from InterruptFrame since we push low-to-high)
 ; -----------------------------------------------------------------------
 isr_common:
+    ; From ring 3 (saved CS has RPL 3): GS holds the TEB; switch it to the
+    ; KPCR (kpcr.h).  From ring 0 GS already is the KPCR.
+    test    qword [rsp+24], 3
+    jz      .from_kernel
+    swapgs
+.from_kernel:
+
     ; Save all GPRs (in order that builds InterruptFrame in reverse)
     push    rax
     push    rcx
@@ -167,6 +174,12 @@ isr_common:
 
     ; Remove vector and error code
     add     rsp, 16
+
+    ; Back to ring 3: give user mode its GS again
+    test    qword [rsp+8], 3
+    jz      .to_kernel
+    swapgs
+.to_kernel:
 
     ; Return from interrupt (restores RIP, CS, RFLAGS, and RSP/SS if ring change)
     iretq

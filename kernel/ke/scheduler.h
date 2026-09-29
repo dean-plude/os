@@ -91,10 +91,17 @@ typedef struct Thread {
      * scheduler swaps for them.  NULL/0 for kernel threads. */
     void           *um;             /* UmProcess */
     uint8_t        *fpu;            /* 512-byte FXSAVE area, 16-byte aligned */
-    uint64_t        gs_base;        /* MSR_GS_BASE / MSR_KERNEL_GS_BASE */
-    uint64_t        kgs_base;
+    uint64_t        gs_base;        /* user GS (the TEB): MSR_KERNEL_GS_BASE while in the kernel */
     uint64_t        user_rsp;       /* user RSP at the last syscall (stack args) */
     volatile bool   off_cpu;        /* DEAD and switched away: safe to free */
+    struct Thread  *sleep_next;     /* sched_sleep_tick list */
+    uint64_t        wake_tick;
+    uint32_t        wait_rounds;    /* sched_wait calls since the thread last made progress */
+    bool            idle;           /* a CPU's idle thread: never queued, runs only there */
+    uint32_t        bkl_depth;      /* nested bkl_acquire calls (smp.h) */
+    bool            in_sleepers;    /* on its CPU's timed-sleep list (run queue lock) */
+    volatile uint32_t cpu;          /* the CPU whose run queue it belongs to */
+    volatile bool   on_cpu;         /* running, or not yet fully switched out */
 } Thread;
 
 /* Default kernel stack size for new threads */
@@ -106,6 +113,13 @@ typedef struct Thread {
  * Must be called after PMM and VMM are initialized.
  */
 void sched_init(void);
+/* Another CPU's idle thread, which will run on @stack (made by CPU 0) */
+Thread *sched_new_idle_thread(uint32_t cpu, void *stack, size_t stack_size);
+/* Make @idle, the calling CPU's current context, its idle thread. */
+void sched_init_cpu(Thread *idle);
+/* First call of a thread started other than through sched_create_thread
+ * (it begins inside the switch to it; see scheduler.c). */
+void sched_thread_start(void);
 
 /*
  * Create a new kernel thread.
@@ -124,6 +138,11 @@ Thread *sched_create_thread(const char *name, ThreadEntry entry,
 /* Same, with a kernel stack of @stack_size bytes (rounded up to pages). */
 Thread *sched_create_thread_ex(const char *name, ThreadEntry entry,
                                void *arg, uint8_t priority, size_t stack_size);
+/* The same in two steps, for a thread that needs more set up before it can
+ * run (on another CPU, the moment it is queued): create it, then start it. */
+Thread *sched_new_thread(const char *name, ThreadEntry entry,
+                         void *arg, uint8_t priority, size_t stack_size);
+void sched_start_thread(Thread *t);
 
 /* End the current thread (never returns).  Its stack and Thread are
  * reclaimed later by sched_free_thread() once sched_thread_gone(). */
@@ -136,6 +155,16 @@ void sched_free_thread(Thread *t);
  * This is equivalent to NT's NtYieldExecution().
  */
 void sched_yield(void);
+/* True when a foreground thread (priority above 4) is waiting to run. */
+bool sched_foreground_ready(void);
+/* Sleep until the next timer tick (10 ms): for threads waiting on something. */
+void sched_sleep_tick(void);
+/* Sleep until *flag is set (by a waker that then calls sched_unblock) or
+ * the tick count reaches @deadline, whichever comes first. */
+void sched_sleep_until(volatile uint32_t *flag, uint64_t deadline);
+/* For wait loops: yield the first few rounds, then sleep a tick per round
+ * (the count restarts when the thread returns to user mode). */
+void sched_wait(void);
 
 /*
  * Called from the APIC timer interrupt (IRQ_TIMER).

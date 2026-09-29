@@ -16,6 +16,7 @@
 #include "../lib/string.h"
 
 #include "lwip/tcp.h"
+#include "lwip/priv/tcp_priv.h"      /* tcp_process_refused_data */
 #include "lwip/udp.h"
 #include "lwip/ip_addr.h"
 #include "lwip/pbuf.h"
@@ -102,22 +103,23 @@ static err_t tcp_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t e
     Sock *s = arg;
     if (!s) { if (p) pbuf_free(p); return ERR_OK; }
     if (err != ERR_OK) { if (p) pbuf_free(p); s->reset = true; return ERR_OK; }
+    (void)pcb;
     if (!p) { s->peer_closed = true; return ERR_OK; }        /* FIN */
-    UINT16 off = 0, taken = 0;
-    for (struct pbuf *q = p; q; q = q->next) {
-        int put = rx_put(s, (const UINT8 *)q->payload, q->len);
-        taken += (UINT16)put;
-        off += q->len;
-        if (put < q->len) break;                             /* ring full: leave rest */
-    }
-    if (taken) { tcp_recved(pcb, taken); }
-    if (taken < p->tot_len) {
-        /* Couldn't take everything; keep it — lwIP re-delivers unacked data.
-         * Report ERR_MEM so lwIP retries the remainder later. */
-        pbuf_free(p);
-        return taken ? ERR_OK : ERR_MEM;
-    }
+    /* All or nothing: when the ring cannot hold it, the data goes back to
+     * lwIP untouched (ERR_MEM keeps it as "refused" data, delivered again
+     * once the program reads; it must not be freed here).  The window is
+     * reopened only as the program reads (NetSockRecv), and TCP_WND is
+     * smaller than the ring, so this is only a safety net. */
+    if (!s->rx || RXBUF - rx_used(s) < p->tot_len) return ERR_MEM;
+    for (struct pbuf *q = p; q; q = q->next) rx_put(s, (const UINT8 *)q->payload, q->len);
     pbuf_free(p);
+    return ERR_OK;
+}
+
+static err_t tcp_sent_cb(void *arg, struct tcp_pcb *pcb, u16_t len)
+{
+    (void)arg; (void)pcb; (void)len;
+    net_wake();                    /* send buffer space for a waiting writer */
     return ERR_OK;
 }
 
@@ -194,6 +196,7 @@ int NetSockTcp(void)
     tcp_arg(s->tcp, s);
     tcp_err(s->tcp, tcp_err_cb);
     tcp_recv(s->tcp, tcp_recv_cb);
+    tcp_sent(s->tcp, tcp_sent_cb);
     net_unlock();
     return i;
 }
@@ -230,9 +233,11 @@ int NetSockConnect(int sd, UINT32 ip_be, UINT16 port_be, SockCancelFn c, void *c
     if (e != ERR_OK) { s->connecting = false; return -SOCK_ENOBUFS; }
     if (s->nonblock) return -SOCK_EWOULDBLOCK;
     UINT64 deadline = sched_ticks() + 1000;                  /* 10 s */
-    while (s->connecting && !s->reset) {
+    for (;;) {
+        UINT32 ng = net_gen();
+        if (!s->connecting || s->reset) break;
         if (wait_cancel(c, ca) || sched_ticks() > deadline) return -SOCK_ETIMEDOUT;
-        sched_yield();
+        net_wait(ng);
     }
     if (s->reset || !s->connected) return -SOCK_ECONNREFUSED;
     s->peer_ip = ip_be; s->peer_port = port_be;
@@ -250,6 +255,7 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
     const UINT8 *p = buf;
     int sent = 0;
     while (sent < len) {
+        UINT32 ng = net_gen();
         net_lock();
         if (!s->tcp || s->reset) { net_unlock(); return sent ? sent : -SOCK_ECONNRESET; }
         UINT16 space = tcp_sndbuf(s->tcp);
@@ -257,7 +263,7 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
             net_unlock();
             if (s->nonblock) return sent ? sent : -SOCK_EWOULDBLOCK;
             if (wait_cancel(c, ca)) return sent ? sent : -SOCK_ETIMEDOUT;
-            sched_yield();
+            net_wait(ng);
             continue;
         }
         int chunk = len - sent;
@@ -267,7 +273,7 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
         net_unlock();
         if (e == ERR_MEM) {
             if (s->nonblock) return sent ? sent : -SOCK_EWOULDBLOCK;
-            sched_yield();
+            net_wait(ng);
         } else if (e != ERR_OK) {
             return sent ? sent : -SOCK_ECONNRESET;
         }
@@ -282,10 +288,15 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
     if (!s) return -SOCK_ENOTSOCK;
     if (len <= 0) return 0;
     for (;;) {
+        UINT32 ng = net_gen();
         net_lock();
         UINT32 avail = rx_used(s);
         if (avail) {
             int n = rx_get(s, buf, len);
+            if (s->tcp && !s->udp) {
+                tcp_recved(s->tcp, (u16_t)n);                /* reopen the window by what was read */
+                if (s->tcp->refused_data) tcp_process_refused_data(s->tcp);
+            }
             net_unlock();
             return n;
         }
@@ -296,7 +307,7 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
         if (!s->connected && !s->connecting) return -SOCK_ENOTCONN;
         if (s->nonblock) return -SOCK_EWOULDBLOCK;
         if (wait_cancel(c, ca)) return -SOCK_ETIMEDOUT;
-        sched_yield();
+        net_wait(ng);
     }
 }
 
@@ -324,6 +335,7 @@ int NetSockRecvFrom(int sd, void *buf, int len, UINT32 *ip_be, UINT16 *port_be,
     Sock *s = slot(sd);
     if (!s || !s->udp) return -SOCK_ENOTSOCK;
     for (;;) {
+        UINT32 ng = net_gen();
         net_lock();
         if (rx_used(s) >= 8) {
             UINT8 hdr[8];
@@ -340,7 +352,7 @@ int NetSockRecvFrom(int sd, void *buf, int len, UINT32 *ip_be, UINT16 *port_be,
         net_unlock();
         if (s->nonblock) return -SOCK_EWOULDBLOCK;
         if (wait_cancel(c, ca)) return -SOCK_ETIMEDOUT;
-        sched_yield();
+        net_wait(ng);
     }
 }
 
@@ -381,6 +393,7 @@ int NetSockAccept(int sd, UINT32 *ip_be, UINT16 *port_be, SockCancelFn c, void *
     Sock *s = slot(sd);
     if (!s || !s->listening) return -SOCK_ENOTSOCK;
     for (;;) {
+        UINT32 ng = net_gen();
         net_lock();
         if (s->acc_tail != s->acc_head) {
             struct tcp_pcb *pcb = s->acc[s->acc_tail];
@@ -398,6 +411,7 @@ int NetSockAccept(int sd, UINT32 *ip_be, UINT16 *port_be, SockCancelFn c, void *
             tcp_arg(pcb, ns);
             tcp_err(pcb, tcp_err_cb);
             tcp_recv(pcb, tcp_recv_cb);
+            tcp_sent(pcb, tcp_sent_cb);
             if (ip_be) *ip_be = rip;
             if (port_be) *port_be = rport;
             net_unlock();
@@ -406,7 +420,7 @@ int NetSockAccept(int sd, UINT32 *ip_be, UINT16 *port_be, SockCancelFn c, void *
         net_unlock();
         if (s->nonblock) return -SOCK_EWOULDBLOCK;
         if (wait_cancel(c, ca)) return -SOCK_ETIMEDOUT;
-        sched_yield();
+        net_wait(ng);
     }
 }
 
@@ -430,6 +444,7 @@ void NetSockClose(int sd)
     if (!s->udp && s->tcp) {
         tcp_arg(s->tcp, NULL);
         tcp_recv(s->tcp, NULL);
+        tcp_sent(s->tcp, NULL);
         tcp_err(s->tcp, NULL);
         if (tcp_close(s->tcp) != ERR_OK) tcp_abort(s->tcp);
     }

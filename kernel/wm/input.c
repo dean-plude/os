@@ -64,6 +64,11 @@ static const char g_keymap_shift[0x3A] = {
 
 static bool g_lshift, g_rshift, g_ctrl, g_alt, g_caps;
 
+UINT32 InputModifiers(void)
+{
+    return (g_lshift || g_rshift ? 1u : 0u) | (g_ctrl ? 2u : 0u) | (g_alt ? 4u : 0u) | (g_caps ? 8u : 0u);
+}
+
 bool InputTranslateKey(const InputEvent *ev, KeyEvent *out)
 {
     if (!ev || !out || ev->type != INPUT_KEY) return false;

@@ -40,13 +40,15 @@ typedef CHAR  *LPSTR;
 typedef const CHAR *LPCSTR;
 typedef WCHAR *LPWSTR;
 typedef const WCHAR *LPCWSTR;
+typedef WCHAR *PWSTR;
+typedef const WCHAR *PCWSTR;
 typedef void  *LPVOID, *PVOID, *HANDLE, *HMODULE, *HINSTANCE, *HLOCAL, *HGLOBAL, *FARPROC;
 typedef const void *LPCVOID;
 typedef HANDLE *PHANDLE, *LPHANDLE;
 typedef DWORD *LPDWORD, *PDWORD;
 typedef LONG  *PLONG, *LPLONG;
 typedef BOOL  *LPBOOL;
-typedef BYTE  *LPBYTE;
+typedef BYTE  *LPBYTE, *PBYTE;
 typedef ULONG_PTR *PULONG_PTR;
 typedef ULONG *PULONG;
 typedef DWORD64 *PDWORD64;
@@ -61,6 +63,38 @@ typedef union _LARGE_INTEGER {
     struct { DWORD LowPart; LONG HighPart; };
     LONGLONG QuadPart;
 } LARGE_INTEGER, *PLARGE_INTEGER;
+typedef int *LPINT, *PINT;
+typedef UINT *PUINT, *LPUINT;
+typedef struct _GUID { DWORD Data1; WORD Data2, Data3; BYTE Data4[8]; } GUID, IID, CLSID, *LPGUID, *LPIID, *LPCLSID;
+#ifdef __cplusplus
+typedef const GUID &REFGUID, &REFIID, &REFCLSID;        /* C++ passes GUIDs by reference (same ABI) */
+#else
+typedef const GUID *REFGUID, *REFIID, *REFCLSID;
+#endif
+typedef const GUID *LPCGUID;
+typedef DWORD LCID;
+typedef WORD  LANGID;
+
+/* HRESULTs (winerror.h) */
+#define SUCCEEDED(hr)            (((HRESULT)(hr)) >= 0)
+#define FAILED(hr)               (((HRESULT)(hr)) < 0)
+#define MAKE_HRESULT(s, f, c)    ((HRESULT)(((unsigned long)(s) << 31) | ((unsigned long)(f) << 16) | ((unsigned long)(c))))
+#define HRESULT_FROM_WIN32(e)    ((HRESULT)(e) <= 0 ? (HRESULT)(e) : (HRESULT)(((e) & 0x0000FFFF) | 0x80070000))
+#define HRESULT_CODE(hr)         ((hr) & 0xFFFF)
+#define HRESULT_FACILITY(hr)     (((hr) >> 16) & 0x1FFF)
+#define S_OK                     ((HRESULT)0)
+#define S_FALSE                  ((HRESULT)1)
+#define E_NOTIMPL                ((HRESULT)0x80004001L)
+#define E_NOINTERFACE            ((HRESULT)0x80004002L)
+#define E_POINTER                ((HRESULT)0x80004003L)
+#define E_ABORT                  ((HRESULT)0x80004004L)
+#define E_FAIL                   ((HRESULT)0x80004005L)
+#define E_UNEXPECTED             ((HRESULT)0x8000FFFFL)
+#define E_ACCESSDENIED           ((HRESULT)0x80070005L)
+#define E_HANDLE                 ((HRESULT)0x80070006L)
+#define E_OUTOFMEMORY            ((HRESULT)0x8007000EL)
+#define E_INVALIDARG             ((HRESULT)0x80070057L)
+
 typedef union _ULARGE_INTEGER {
     struct { DWORD LowPart; DWORD HighPart; };
     ULONGLONG QuadPart;
@@ -185,6 +219,17 @@ typedef struct _STARTUPINFOA {
 #define HEAP_ZERO_MEMORY         0x00000008
 #define LMEM_ZEROINIT            0x0040
 #define GMEM_ZEROINIT            0x0040
+#define GMEM_FIXED               0x0000
+#define GMEM_MOVEABLE            0x0002
+#define LMEM_FIXED               0x0000
+#define LMEM_MOVEABLE            0x0002
+#define GPTR                     0x0040
+#define LPTR                     0x0040
+#define CopyMemory(d, s, n)      __builtin_memcpy((d), (s), (n))
+#define MoveMemory(d, s, n)      __builtin_memmove((d), (s), (n))
+#define FillMemory(d, n, c)      __builtin_memset((d), (c), (n))
+#define ZeroMemory(d, n)         __builtin_memset((d), 0, (n))
+#define SecureZeroMemory(d, n)   __builtin_memset((d), 0, (n))
 
 #define CP_ACP                   0
 #define CP_OEMCP                 1
@@ -340,6 +385,7 @@ WINBASEAPI int     WINAPI lstrcmpiA(LPCSTR a, LPCSTR b);
 typedef DWORD (WINAPI *LPTHREAD_START_ROUTINE)(LPVOID param);
 typedef VOID (WINAPI *PFLS_CALLBACK_FUNCTION)(PVOID);
 typedef BOOL (WINAPI *PINIT_ONCE_FN)(PINIT_ONCE, PVOID, PVOID *);
+typedef VOID (WINAPI *PAPCFUNC)(ULONG_PTR);
 
 #define WAIT_OBJECT_0        0x00000000
 #define WAIT_ABANDONED_0     0x00000080
@@ -427,6 +473,10 @@ WINBASEAPI ULONG   WINAPI RemoveVectoredExceptionHandler(PVOID h);
 WINBASEAPI VOID    WINAPI GetNativeSystemInfo(LPSYSTEM_INFO si);
 #define GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS 0x00000004
 #define GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT 0x00000002
+
+#include <winbase2.h>
+#include <winsec.h>
+#include <winreg.h>
 
 #define CreateFile           CreateFileA
 #define DeleteFile           DeleteFileA

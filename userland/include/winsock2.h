@@ -153,5 +153,70 @@ WSAAPI_DECL char *inet_ntoa(struct in_addr in);
 WSAAPI_DECL struct hostent *gethostbyname(const char *name);
 WSAAPI_DECL int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res);
 WSAAPI_DECL void freeaddrinfo(struct addrinfo *ai);
+WSAAPI_DECL int __WSAFDIsSet(SOCKET fd, fd_set *set);
+
+/* ---- Winsock 2 extensions (overlapped operations complete at once) ---- */
+typedef struct _WSABUF { ULONG len; CHAR *buf; } WSABUF, *LPWSABUF;
+typedef OVERLAPPED WSAOVERLAPPED, *LPWSAOVERLAPPED;
+typedef void (WINAPI *LPWSAOVERLAPPED_COMPLETION_ROUTINE)(DWORD err, DWORD bytes, LPWSAOVERLAPPED ov, DWORD flags);
+typedef HANDLE WSAEVENT;
+typedef unsigned int GROUP;
+typedef struct _WSAPROTOCOL_INFOW WSAPROTOCOL_INFOW, *LPWSAPROTOCOL_INFOW;
+typedef struct _WSAPROTOCOL_INFOA WSAPROTOCOL_INFOA, *LPWSAPROTOCOL_INFOA;
+typedef struct addrinfoW {
+    int ai_flags, ai_family, ai_socktype, ai_protocol;
+    size_t ai_addrlen;
+    PWSTR ai_canonname;
+    struct sockaddr *ai_addr;
+    struct addrinfoW *ai_next;
+} ADDRINFOW, *PADDRINFOW;
+#define WSA_INVALID_EVENT      ((WSAEVENT)0)
+#define WSA_IO_PENDING         997
+#define WSA_IO_INCOMPLETE      996
+#define WSA_WAIT_EVENT_0       0
+#define WSA_WAIT_TIMEOUT       258
+#define WSA_WAIT_FAILED        0xFFFFFFFF
+#define WSA_INFINITE           0xFFFFFFFF
+#define WSA_FLAG_OVERLAPPED    0x01
+#define WSA_FLAG_NO_HANDLE_INHERIT 0x80
+#define WSAEOPNOTSUPP          10045
+#define WSANO_DATA             11004
+#define WSAHOST_NOT_FOUND      11001
+#define SIO_GET_EXTENSION_FUNCTION_POINTER 0xC8000006
+#define SIO_KEEPALIVE_VALS     0x98000004
+#define INET_ADDRSTRLEN        16
+
+WSAAPI_DECL SOCKET WSASocketW(int af, int type, int protocol, LPWSAPROTOCOL_INFOW info, GROUP g, DWORD flags);
+WSAAPI_DECL SOCKET WSASocketA(int af, int type, int protocol, LPWSAPROTOCOL_INFOA info, GROUP g, DWORD flags);
+WSAAPI_DECL int WSASend(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD sent, DWORD flags, LPWSAOVERLAPPED ov,
+                        LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+WSAAPI_DECL int WSARecv(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD got, LPDWORD flags, LPWSAOVERLAPPED ov,
+                        LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+WSAAPI_DECL int WSASendTo(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD sent, DWORD flags, const struct sockaddr *to, int tolen,
+                          LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+WSAAPI_DECL int WSARecvFrom(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD got, LPDWORD flags, struct sockaddr *from, int *fromlen,
+                            LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+WSAAPI_DECL BOOL WSAGetOverlappedResult(SOCKET s, LPWSAOVERLAPPED ov, LPDWORD bytes, BOOL wait, LPDWORD flags);
+WSAAPI_DECL int WSAIoctl(SOCKET s, DWORD code, LPVOID in, DWORD inlen, LPVOID out, DWORD outlen, LPDWORD ret,
+                         LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+WSAAPI_DECL WSAEVENT WSACreateEvent(void);
+WSAAPI_DECL BOOL WSACloseEvent(WSAEVENT e);
+WSAAPI_DECL BOOL WSASetEvent(WSAEVENT e);
+WSAAPI_DECL BOOL WSAResetEvent(WSAEVENT e);
+WSAAPI_DECL DWORD WSAWaitForMultipleEvents(DWORD n, const WSAEVENT *events, BOOL all, DWORD ms, BOOL alertable);
+WSAAPI_DECL int GetAddrInfoW(PCWSTR node, PCWSTR service, const ADDRINFOW *hints, PADDRINFOW *res);
+WSAAPI_DECL void FreeAddrInfoW(PADDRINFOW ai);
+WSAAPI_DECL int inet_pton(int af, const char *src, void *dst);
+WSAAPI_DECL const char *inet_ntop(int af, const void *src, char *dst, size_t size);
+WSAAPI_DECL int InetPtonW(int af, PCWSTR src, void *dst);
+WSAAPI_DECL PCWSTR InetNtopW(int af, const void *src, PWSTR dst, size_t size);
+#ifndef _NOVA_GETHOSTNAME                   /* unistd.h declares the POSIX one (msvcrt) */
+#define _NOVA_GETHOSTNAME
+WSAAPI_DECL int gethostname(char *name, int len);
+#endif
+WSAAPI_DECL int GetHostNameW(PWSTR name, int len);
+WSAAPI_DECL struct servent *getservbyname(const char *name, const char *proto);
+WSAAPI_DECL int WSAEnumProtocolsW(int *protocols, LPWSAPROTOCOL_INFOW buf, LPDWORD len);
+WSAAPI_DECL int WSAEnumProtocolsA(int *protocols, LPWSAPROTOCOL_INFOA buf, LPDWORD len);
 
 _NOVA_END

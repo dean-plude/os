@@ -79,10 +79,14 @@ bool       UmConsoleWantsInput(UmConsole *c);
  * ----------------------------------------------------------------------- */
 /* Only the NT services the subsystem implements are open to programs. */
 bool UmSyscallAllowed(UINT64 num);
+/* True for the services that run without the big kernel lock */
+bool UmSyscallLockFree(UINT64 num);
 /* Run service @num for the current program (interrupts enabled). */
 UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4);
 /* On every return to user mode: ends the thread if its process was killed. */
 void UmReturnToUser(void);
+/* The same from an interrupt taken in user mode (@frame: InterruptFrame) */
+void UmReturnToUserFrame(void *frame);
 /* A CPU exception in user mode (@frame: the InterruptFrame): passed on to
  * the program's exception handlers (SEH) through its stack. */
 void UmUserException(void *frame, UINT64 cr2);
@@ -95,3 +99,20 @@ void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
  * ----------------------------------------------------------------------- */
 void DesktopLock(void);
 void DesktopUnlock(void);
+struct Thread *DesktopLockOwner(void);     /* diagnostics */
+
+/* Save the registry and drive C: to disk now (before a restart or shutdown). */
+void UmSaveAll(void);
+/* Timer tick: advances the clocks in KUSER_SHARED_DATA. */
+void UmTimerTick(UINT64 ticks);
+/* The number of online CPUs changed: update what programs see. */
+void UmCpuCountChanged(void);
+/* Log every program thread's state (serial), for diagnosing hangs. */
+void UmDumpAll(void);
+
+/* A page fault at @va in the current program: back a committed page that
+ * was never touched (demand-zero).  True if the access can be retried. */
+bool UmDemandFault(UINT64 va);
+
+/* Log the failing system calls of programs named @name ("" or NULL: off) */
+void UmSetTrace(const char *name);

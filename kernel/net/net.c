@@ -9,6 +9,7 @@
  * the same callbacks, so handshake crypto happens on the net thread.
  */
 
+#include "../ke/waitq.h"
 #include "net_internal.h"
 #include "tls.h"
 #include "../drivers/e1000.h"
@@ -78,6 +79,16 @@ void net_unlock(void)
 }
 
 /* -----------------------------------------------------------------------
+ * Network waits (net_internal.h)
+ * ----------------------------------------------------------------------- */
+static WaitQueue g_netq = WAITQ_INIT;
+
+UINT32 net_gen(void)                              { return waitq_gen(&g_netq); }
+void   net_wake(void)                             { waitq_wake(&g_netq); }
+void   net_wait_ticks(UINT32 gen, UINT64 max_ticks) { waitq_wait(&g_netq, gen, max_ticks); }
+void   net_wait(UINT32 gen)                       { waitq_wait(&g_netq, gen, 10); }
+
+/* -----------------------------------------------------------------------
  * Network interface ↔ e1000
  * ----------------------------------------------------------------------- */
 static err_t link_output(struct netif *n, struct pbuf *p)
@@ -105,12 +116,15 @@ static err_t netif_setup(struct netif *n)
     return ERR_OK;
 }
 
-static void poll_input(void)
+/* Returns the number of frames taken in */
+static int poll_input(void)
 {
     static UINT8 buf[2048];
+    int got = 0;
     for (int budget = 32; budget > 0; budget--) {
         int n = E1000Receive(buf, sizeof(buf));
         if (n <= 0) break;
+        got++;
         UINT64 t = rdtsc();                       /* arrival timing: entropy */
         TlsStirEntropy(&t, sizeof(t));
         struct pbuf *p = pbuf_alloc(PBUF_RAW, (u16_t)n, PBUF_POOL);
@@ -118,6 +132,7 @@ static void poll_input(void)
         pbuf_take(p, buf, (u16_t)n);
         if (g_netif.input(p, &g_netif) != ERR_OK) pbuf_free(p);
     }
+    return got;
 }
 
 /* -----------------------------------------------------------------------
@@ -346,7 +361,9 @@ static void net_thread(void *arg)
             g_link = link;
             if (link) netif_set_link_up(&g_netif); else netif_set_link_down(&g_netif);
         }
-        poll_input();
+        bool got = poll_input() > 0;
+        bool busy = got;
+        for (int i = 0; i < NET_OPS && !busy; i++) busy = g_ops[i].in_use;
         sys_check_timeouts();
         check_timeouts();
         http_poll();
@@ -359,7 +376,12 @@ static void net_thread(void *arg)
             announced = true;
         }
         net_unlock();
-        sched_yield();
+        if (busy) net_wake();               /* data, connections or operations moved on */
+        /* Nothing arriving, no operation under way and nobody waiting for
+         * the network: poll again at the next tick instead of keeping a CPU
+         * busy.  (The adapter is polled, so replies to a waiting program
+         * are picked up only as fast as this loop comes round.) */
+        if (busy || g_netq.sleepers) sched_yield(); else sched_sleep_tick();
     }
 }
 

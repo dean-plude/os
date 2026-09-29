@@ -45,4 +45,29 @@ _CRTIMP char  *_ultoa(unsigned long v, char *buf, int radix);
 #define itoa _itoa
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #define max(a, b) (((a) > (b)) ? (a) : (b))
+/* multibyte (UTF-8) and wide conversions */
+_CRTIMP size_t mbstowcs(wchar_t *d, const char *s, size_t n);
+_CRTIMP size_t wcstombs(char *d, const wchar_t *s, size_t n);
+_CRTIMP int    mbtowc(wchar_t *pwc, const char *s, size_t n);
+_CRTIMP int    wctomb(char *s, wchar_t wc);
+_CRTIMP int    mblen(const char *s, size_t n);
+#define MB_CUR_MAX 4
+/* Microsoft extensions */
+_CRTIMP void  *_aligned_malloc(size_t n, size_t align);
+_CRTIMP void   _aligned_free(void *p);
+_CRTIMP void  *_aligned_realloc(void *p, size_t n, size_t align);
+_CRTIMP void  *_recalloc(void *p, size_t n, size_t size);
+_CRTIMP char  *_i64toa(long long v, char *buf, int radix);
+_CRTIMP char  *_ui64toa(unsigned long long v, char *buf, int radix);
+_CRTIMP long long _strtoi64(const char *s, char **end, int base);
+_CRTIMP unsigned long long _strtoui64(const char *s, char **end, int base);
+_CRTIMP long long _atoi64(const char *s);
+_CRTIMP int    rand_s(unsigned int *v);
+_CRTIMP __declspec(noreturn) void quick_exit(int code);
+_CRTIMP int    at_quick_exit(void (*fn)(void));
+_CRTIMP int    _set_error_mode(int m);
+extern _CRTIMP int __argc;
+extern _CRTIMP char **__argv;
+extern _CRTIMP wchar_t **__wargv;
+extern _CRTIMP char **_environ;
 _NOVA_END

@@ -6,6 +6,7 @@
  * B; we normalize both to plain binary, 24-hour.
  */
 
+#include "../ke/spinlock.h"
 #include "rtc.h"
 #include "../arch/x86_64/cpu.h"
 
@@ -43,6 +44,10 @@ void rtc_read(RtcTime *out)
 {
     if (!out) return;
 
+    /* The CMOS is an index port and a data port: one reader at a time */
+    static KSpinLock lock = KSPINLOCK_INIT;
+    IrqState irq = spin_lock_irqsave(&lock);
+
     /* Wait for any in-progress update to finish, then take a coherent read. */
     while (update_in_progress()) { }
 
@@ -53,6 +58,7 @@ void rtc_read(RtcTime *out)
     UINT8 month = cmos_read(RTC_MONTH);
     UINT8 year  = cmos_read(RTC_YEAR);
     UINT8 regb  = cmos_read(RTC_STATUS_B);
+    spin_unlock_irqrestore(&lock, irq);
 
     bool bcd     = (regb & 0x04) == 0;   /* bit2 clear → BCD */
     bool hour12  = (regb & 0x02) == 0;   /* bit1 clear → 12-hour */

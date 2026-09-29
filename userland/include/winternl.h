@@ -7,6 +7,7 @@ typedef LONG NTSTATUS;
 #define NT_SUCCESS(s) ((NTSTATUS)(s) >= 0)
 #define STATUS_SUCCESS            ((NTSTATUS)0x00000000)
 #define STATUS_PENDING            ((NTSTATUS)0x00000103)
+#define STATUS_OBJECT_NAME_INVALID ((NTSTATUS)0xC0000033)
 #define STATUS_BUFFER_OVERFLOW    ((NTSTATUS)0x80000005)
 #define STATUS_NO_MORE_FILES      ((NTSTATUS)0x80000006)
 #define STATUS_END_OF_FILE        ((NTSTATUS)0xC0000011)
@@ -106,7 +107,7 @@ typedef struct _NOVA_LDR_MODULE {
 } NOVA_LDR_MODULE;
 typedef struct _NOVA_LDR_INFO {
     ULONG Count, Reserved;
-    NOVA_LDR_MODULE Modules[32];
+    NOVA_LDR_MODULE Modules[64];
 } NOVA_LDR_INFO;
 #define NOVA_LDR_INFO_ADDRESS ((NOVA_LDR_INFO *)0x00007FFDF0001000ULL)
 
@@ -170,6 +171,32 @@ NTSYSAPI NTSTATUS NTAPI NtQueryVolumeInformationFile(HANDLE h, PIO_STATUS_BLOCK 
 NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemory(HANDLE p, PVOID *base, ULONG_PTR zero, PSIZE_T size, ULONG type, ULONG prot);
 NTSYSAPI NTSTATUS NTAPI NtFreeVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG type);
 NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG prot, PULONG old);
+NTSYSAPI NTSTATUS NTAPI NtQueryVirtualMemory(HANDLE p, PVOID addr, int cls, PVOID buf, SIZE_T n, PSIZE_T ret);
+NTSYSAPI NTSTATUS NTAPI NtGetContextThread(HANDLE t, PCONTEXT c);
+NTSYSAPI NTSTATUS NTAPI NtSetContextThread(HANDLE t, const CONTEXT *c);
+/* NovaOS: create a process sharing this one's console (UTF-8 full paths) */
+typedef struct { HANDLE StdHandle[3]; HANDLE Process, Thread; ULONG64 ProcessId, ThreadId; } NOVA_CREATE_PROCESS;
+NTSYSAPI NTSTATUS NTAPI NtNovaCreateProcess(const char *image, const char *cmdline, const char *dir, NOVA_CREATE_PROCESS *io);
+/* NovaOS: Out = { process id, exit code (STILL_ACTIVE while running), exited } */
+NTSYSAPI NTSTATUS NTAPI NtNovaProcessInfo(HANDLE p, ULONG64 out[3]);
+/* NovaOS: the running programs */
+typedef struct { ULONG Pid, MemoryKb, Threads, Exited; CHAR Name[32]; } NOVA_PROCESS_ENTRY;
+NTSYSAPI NTSTATUS NTAPI NtNovaProcessList(NOVA_PROCESS_ENTRY *buf, ULONG max, PULONG count);
+/* the registry */
+NTSYSAPI NTSTATUS NTAPI NtCreateKey(PHANDLE key, ACCESS_MASK access, POBJECT_ATTRIBUTES oa, ULONG title, PUNICODE_STRING cls,
+                                    ULONG options, PULONG disposition);
+NTSYSAPI NTSTATUS NTAPI NtOpenKey(PHANDLE key, ACCESS_MASK access, POBJECT_ATTRIBUTES oa);
+NTSYSAPI NTSTATUS NTAPI NtOpenKeyEx(PHANDLE key, ACCESS_MASK access, POBJECT_ATTRIBUTES oa, ULONG options);
+NTSYSAPI NTSTATUS NTAPI NtDeleteKey(HANDLE key);
+NTSYSAPI NTSTATUS NTAPI NtSetValueKey(HANDLE key, PUNICODE_STRING name, ULONG title, ULONG type, PVOID data, ULONG size);
+NTSYSAPI NTSTATUS NTAPI NtQueryValueKey(HANDLE key, PUNICODE_STRING name, int cls, PVOID info, ULONG len, PULONG ret);
+NTSYSAPI NTSTATUS NTAPI NtEnumerateValueKey(HANDLE key, ULONG index, int cls, PVOID info, ULONG len, PULONG ret);
+NTSYSAPI NTSTATUS NTAPI NtDeleteValueKey(HANDLE key, PUNICODE_STRING name);
+NTSYSAPI NTSTATUS NTAPI NtEnumerateKey(HANDLE key, ULONG index, int cls, PVOID info, ULONG len, PULONG ret);
+NTSYSAPI NTSTATUS NTAPI NtQueryKey(HANDLE key, int cls, PVOID info, ULONG len, PULONG ret);
+NTSYSAPI NTSTATUS NTAPI NtFlushKey(HANDLE key);
+NTSYSAPI NTSTATUS NTAPI NtRenameKey(HANDLE key, PUNICODE_STRING name);
+NTSYSAPI PVOID    NTAPI RtlPcToFileHeader(PVOID pc, PVOID *base);
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE p, NTSTATUS status);
 NTSYSAPI NTSTATUS NTAPI NtQuerySystemTime(PLARGE_INTEGER t);
 NTSYSAPI NTSTATUS NTAPI NtQueryPerformanceCounter(PLARGE_INTEGER c, PLARGE_INTEGER f);
@@ -192,6 +219,9 @@ NTSYSAPI NTSTATUS NTAPI NtResetEvent(HANDLE h, PLONG prev);
 NTSYSAPI NTSTATUS NTAPI NtClearEvent(HANDLE h);
 NTSYSAPI NTSTATUS NTAPI NtCreateMutant(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, BOOLEAN owner);
 NTSYSAPI NTSTATUS NTAPI NtReleaseMutant(HANDLE h, PLONG prev);
+NTSYSAPI NTSTATUS NTAPI NtOpenEvent(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa);
+NTSYSAPI NTSTATUS NTAPI NtOpenMutant(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa);
+NTSYSAPI NTSTATUS NTAPI NtOpenSemaphore(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa);
 NTSYSAPI NTSTATUS NTAPI NtCreateSemaphore(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, LONG init, LONG max);
 NTSYSAPI NTSTATUS NTAPI NtReleaseSemaphore(HANDLE h, LONG count, PLONG prev);
 NTSYSAPI NTSTATUS NTAPI NtWaitForSingleObject(HANDLE h, BOOLEAN alertable, PLARGE_INTEGER timeout);
@@ -229,6 +259,7 @@ NTSYSAPI LONG_PTR NTAPI NtNovaGuiKillTimer(ULONG_PTR hwnd, ULONG_PTR id);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiMessageBox(const void *text16, const void *cap16, ULONG type);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiScreenSize(ULONG *w, ULONG *h);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiPostMessage(ULONG_PTR hwnd, ULONG msg, ULONG_PTR wp, ULONG_PTR lp);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiCtl(ULONG_PTR hwnd, ULONG op, ULONG_PTR arg, PVOID data);
 
 /* Loader */
 NTSYSAPI NTSTATUS NTAPI LdrLoadDll(const WCHAR *path, PULONG flags, PUNICODE_STRING name, PVOID *base);

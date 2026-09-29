@@ -1,0 +1,13 @@
+musl 1.2.5 (https://musl.libc.org/), vendored for NovaOS
+=======================================================
+
+Source: the v1.2.5 release tag.  Only the math library is kept
+(src/math, with the headers it includes from src/internal and include);
+tools/build_userland.py compiles it into msvcrt.dll and ucrtbase.dll,
+which export every public function (musl's internal helpers, whose names
+start with "__", stay private).
+
+include/bits/alltypes.h is a small NovaOS stand-in for the file musl's
+build generates.
+
+Licence: MIT (COPYRIGHT).

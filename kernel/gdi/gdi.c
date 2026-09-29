@@ -511,6 +511,11 @@ void GdiRoundGradV(GdiRect r, int rad, GdiColor top, GdiColor bottom)
 
 void GdiDropShadow(GdiRect r, int rad, int blur, int alpha)
 {
+    GdiDropShadowAround(r, rad, blur, alpha, RECT(0, 0, 0, 0), 0);
+}
+
+void GdiDropShadowAround(GdiRect r, int rad, int blur, int alpha, GdiRect cover, int cover_rad)
+{
     if (!g.ready || r.w <= 0 || r.h <= 0 || blur <= 0 || alpha <= 0) return;
     RBox   b   = rbox_of(r, rad);
     int    bl  = blur * g.s * FX;           /* fade distance, fixed point */
@@ -518,9 +523,17 @@ void GdiDropShadow(GdiRect r, int rad, int blur, int alpha)
     UINT32 blk = pixof(GDI_BLACK);
     int ya = imax(b.y0 - m, 0), yb = imin(b.y1 + m, g.dh);
     int xa = imax(b.x0 - m, 0), xb = imin(b.x1 + m, g.dw);
+    /* The part of @cover certain to be covered (its rounded corners cut
+     * off), in device pixels: nothing there needs a shadow */
+    int s = g.s;
+    int hx0 = (cover.x + cover_rad) * s, hx1 = (cover.x + cover.w - cover_rad) * s;
+    int hy0 = (cover.y + cover_rad) * s, hy1 = (cover.y + cover.h - cover_rad) * s;
+    bool hole = cover.w > 0 && cover.h > 0 && hx0 < hx1 && hy0 < hy1;
 
     for (int y = ya; y < yb; y++) {
+        bool row_in_hole = hole && y >= hy0 && y < hy1;
         for (int x = xa; x < xb; x++) {
+            if (row_in_hole && x >= hx0 && x < hx1) { x = hx1 - 1; continue; }
             int sd = rbox_sd(&b, x, y);
             if (sd >= bl) continue;
             int a = alpha;
@@ -706,6 +719,57 @@ static void blur8(UINT8 *p, int w, int h, int r, UINT8 *tmp)
     }
 }
 
+/* Blurred backdrops are cached per region: the blur is redone only when
+ * the pixels underneath have changed (a checksum tells), which matters
+ * because the dock and tray are composited on every frame. */
+#define BD_CACHE 4
+static struct {
+    int x0, y0, w, h, br;
+    UINT64 sum;
+    UINT32 *img;
+    UINT32 age;
+} g_bd[BD_CACHE];
+static UINT32 g_bd_clock;
+
+static UINT64 region_sum(int x0, int y0, int w, int h)
+{
+    UINT64 s = 1469598103934665603ull;
+    for (int y = 0; y < h; y++) {
+        const UINT32 *row = g.buf + (size_t)(y0 + y) * g.bstride + x0;
+        for (int x = 0; x < w; x++) s = (s ^ row[x]) * 1099511628211ull;
+    }
+    return s;
+}
+
+static UINT32 *blurred(int x0, int y0, int w, int h, int br)
+{
+    UINT64 sum = region_sum(x0, y0, w, h);
+    int slot = 0;
+    for (int i = 0; i < BD_CACHE; i++) {
+        if (g_bd[i].img && g_bd[i].x0 == x0 && g_bd[i].y0 == y0 && g_bd[i].w == w && g_bd[i].h == h && g_bd[i].br == br) {
+            g_bd[i].age = ++g_bd_clock;
+            if (g_bd[i].sum == sum) return g_bd[i].img;   /* unchanged: reuse */
+            slot = i;
+            goto refill;
+        }
+        if (g_bd[i].age < g_bd[slot].age) slot = i;
+    }
+    kfree(g_bd[slot].img);
+    g_bd[slot].img = kmalloc((size_t)w * h * 4);
+    if (!g_bd[slot].img) return NULL;
+    g_bd[slot].x0 = x0; g_bd[slot].y0 = y0; g_bd[slot].w = w; g_bd[slot].h = h; g_bd[slot].br = br;
+    g_bd[slot].age = ++g_bd_clock;
+refill:;
+    UINT32 *img = g_bd[slot].img, *tmp = kmalloc((size_t)imax(w, h) * 4);
+    if (!tmp) { g_bd[slot].sum = 0; return NULL; }
+    for (int y = 0; y < h; y++)
+        memcpy(img + (size_t)y * w, g.buf + (size_t)(y0 + y) * g.bstride + x0, (size_t)w * 4);
+    blur32(img, w, h, br, tmp);
+    kfree(tmp);
+    g_bd[slot].sum = sum;
+    return img;
+}
+
 void GdiBackdrop(GdiRect r, int rad, int blur, GdiColor tint, int tint_alpha)
 {
     if (!g.ready || r.w <= 0 || r.h <= 0) return;
@@ -716,14 +780,8 @@ void GdiBackdrop(GdiRect r, int rad, int blur, GdiColor tint, int tint_alpha)
     int x1 = imin(b.x1 + 3 * br, g.dw), y1 = imin(b.y1 + 3 * br, g.dh);
     int w = x1 - x0, h = y1 - y0;
     if (w <= 0 || h <= 0) return;
-    UINT32 *img = kmalloc((size_t)w * h * 4);
-    UINT32 *tmp = kmalloc((size_t)imax(w, h) * 4);
+    UINT32 *img = blurred(x0, y0, w, h, br), *tmp = img;
     UINT32 tn = pixof(tint);
-    if (img && tmp) {
-        for (int y = 0; y < h; y++)
-            memcpy(img + (size_t)y * w, g.buf + (size_t)(y0 + y) * g.bstride + x0, (size_t)w * 4);
-        blur32(img, w, h, br, tmp);
-    }
     int cx0 = imax(b.x0, g.cx0), cx1 = imin(b.x1, g.cx1);
     int cy0 = imax(b.y0, g.cy0), cy1 = imin(b.y1, g.cy1);
     for (int y = cy0; y < cy1; y++) {
@@ -736,8 +794,6 @@ void GdiBackdrop(GdiRect r, int rad, int blur, GdiColor tint, int tint_alpha)
             row[x] = c >= 255 ? v : blend(row[x], v, (UINT32)c);
         }
     }
-    kfree(img);
-    kfree(tmp);
 }
 
 /* -----------------------------------------------------------------------

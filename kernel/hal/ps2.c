@@ -8,6 +8,7 @@
  * classic 3-byte movement packet.
  */
 
+#include "../ke/spinlock.h"
 #include "ps2.h"
 #include "../arch/x86_64/cpu.h"
 #include "../ke/printf.h"
@@ -31,6 +32,7 @@
 #define CMD_WRITE_P2   0xD4   /* next byte goes to the mouse */
 
 static bool g_have_mouse;
+static int  g_packet = 3;         /* 4 with a wheel (IntelliMouse) */
 static volatile bool g_ready;     /* ps2_init done: polling allowed */
 
 /* ---- low-level helpers ---- */
@@ -90,12 +92,17 @@ bool ps2_init(void)
 
     /* Mouse: defaults + enable streaming reporting.  0xFA = ACK. */
     UINT8 a1 = mouse_cmd(0xF6);    /* set defaults */
+    /* IntelliMouse: sample rates 200, 100, 80 in a row turn on the wheel;
+     * the device then reports ID 3 and sends 4-byte packets */
+    static const UINT8 knock[3] = { 200, 100, 80 };
+    for (int i = 0; i < 3; i++) { mouse_cmd(0xF3); mouse_cmd(knock[i]); }
+    if (mouse_cmd(0xF2) == 0xFA && read_data() == 3) g_packet = 4;
     UINT8 a2 = mouse_cmd(0xF4);    /* enable data reporting */
     g_have_mouse = (a1 == 0xFA || a2 == 0xFA);
 
     flush_output();
     kprintf("[PS2] Controller ready (keyboard + %s)\n",
-            g_have_mouse ? "mouse" : "no mouse");
+            !g_have_mouse ? "no mouse" : g_packet == 4 ? "wheel mouse" : "mouse");
     g_ready = true;
     return true;
 }
@@ -115,7 +122,7 @@ static void handle_key(UINT8 sc)
     InputEvent ev;
     ev.type     = INPUT_KEY;
     ev.buttons  = 0;
-    ev.dx = ev.dy = 0;
+    ev.dx = ev.dy = ev.dz = 0;
     ev.pressed  = (sc & 0x80) ? 0 : 1;   /* high bit set = break (release) */
     ev.scancode = (UINT8)(sc & 0x7F);
     ev.extended = e0 ? 1 : 0;
@@ -125,7 +132,7 @@ static void handle_key(UINT8 sc)
 
 static void handle_mouse_byte(UINT8 b)
 {
-    static UINT8 pkt[3];
+    static UINT8 pkt[4];
     static int   idx;
 
     /* Resync: byte 0 always has bit 3 set. */
@@ -133,7 +140,7 @@ static void handle_mouse_byte(UINT8 b)
         return;
 
     pkt[idx++] = b;
-    if (idx < 3) return;
+    if (idx < g_packet) return;
     idx = 0;
 
     UINT8 flags = pkt[0];
@@ -148,18 +155,21 @@ static void handle_mouse_byte(UINT8 b)
     ev.buttons  = (UINT8)(flags & 0x07);   /* L|R|M */
     ev.dx       = dx;
     ev.dy       = -dy;                      /* PS/2 +y is up; screen +y down */
+    ev.dz       = g_packet == 4 ? -(int)(INT8)pkt[3] : 0;   /* the device counts toward the user */
     InputPost(&ev);
 }
 
 /* Drain the controller.  Called from the timer interrupt (so input is
  * collected even while the desktop thread is busy drawing a frame and the
  * device's small buffer cannot overflow) and from the desktop loop.
- * Interrupts are disabled while draining so the two callers never
- * interleave in the packet/prefix decoders. */
+ * A spinlock keeps the callers (on any CPU) from interleaving in the
+ * packet/prefix decoders. */
+static KSpinLock g_ps2_lock = KSPINLOCK_INIT;
+
 void ps2_poll(void)
 {
     if (!g_ready) return;
-    IrqState irq = irq_save();
+    IrqState irq = spin_lock_irqsave(&g_ps2_lock);
     for (int guard = 0; guard < 64; guard++) {
         UINT8 st = inb(PS2_STATUS);
         if (!(st & ST_OBF)) break;
@@ -169,5 +179,5 @@ void ps2_poll(void)
         else
             handle_key(data);
     }
-    irq_restore(irq);
+    spin_unlock_irqrestore(&g_ps2_lock, irq);
 }

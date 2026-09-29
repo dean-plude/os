@@ -24,9 +24,12 @@
  * thread has ended, or all at once through NtTerminateProcess.
  */
 
+#include "../fs/persist.h"
+#include "../arch/x86_64/idt.h"
 #include "um_internal.h"
 #include "../ke/printf.h"
 #include "../ke/kpcr.h"
+#include "../ke/smp.h"
 #include "../mm/vmm.h"
 #include "../mm/pmm.h"
 #include "../lib/string.h"
@@ -71,6 +74,12 @@ void um_unlock(UmLock *l)
 static UmLock g_desktop;
 void DesktopLock(void)   { um_lock(&g_desktop); }
 void DesktopUnlock(void) { um_unlock(&g_desktop); }
+Thread *DesktopLockOwner(void) { return g_desktop.owner; }
+
+/* KUSER_SHARED_DATA (see below) */
+static UINT8 *g_kusd;
+static PADDR  g_kusd_pa;
+static void   kusd_init(void);
 
 /* -----------------------------------------------------------------------
  * Initialization
@@ -83,10 +92,12 @@ void UmInit(void)
     write_cr4(read_cr4() | (1u << 9) /* OSFXSR */ | (1u << 10) /* OSXMMEXCPT */);
     __asm__ volatile ("fninit");
     um_syscall_init();
+    kusd_init();
 
     /* Install the system DLLs and programs on drive C: */
     int installed = 0;
     RamfsCreate(RamfsRoot(), "Temp", true);
+    RamfsSetMode(RAMFS_INSTALLING);                 /* system files: never saved to disk */
     for (int i = 0; i < g_userland_file_count; i++) {
         const UserlandFile *uf = &g_userland_files[i];
         char dir[RAMFS_PATH_MAX];
@@ -106,6 +117,8 @@ void UmInit(void)
     }
     kprintf("[UM] User-mode subsystem ready: %d system files installed (C:\\Windows\\System32, C:\\Programs)\n",
             installed);
+    PersistLoad();                                  /* the user's files (and the registry hive) from disk */
+    um_registry_init();
 }
 
 UmThread *UmCurrentThread(void)
@@ -153,42 +166,93 @@ static UINT64 pte_flags(UINT32 protect)
 
 static bool is_current(UmProcess *p) { return read_cr3() == p->pml4; }
 
+/* Existing entries of @p changed: this CPU drops them from its TLB as it
+ * goes (invlpg), the other CPUs running @p's threads at the end. */
+/* Committed pages are backed on first touch (demand-zero): until then the
+ * entry is not present and carries PTE_LAZY with the page's flags. */
+
 bool um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect)
 {
     UINT64 f = pte_flags(protect);
+    bool ok = true, changed = false;
     for (UINT64 a = va & ~0xFFFULL; a < va + size; a += PAGE_SIZE) {
         pte_t *e = walk(p->pml4, a, true);
-        if (!e) return false;
+        if (!e) { ok = false; break; }
+        if ((*e & PTE_PRESENT) && (*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* stays read-only */
         if (*e & PTE_PRESENT) {                         /* re-commit: new protection */
             *e = (*e & PTE_ADDR_MASK) | f;
             if (is_current(p)) invlpg(a);
+            changed = true;
             continue;
         }
-        PADDR fr = pmm_alloc_page();
-        if (!fr) return false;
-        memset((void *)(uintptr_t)(PHYSMAP_BASE + fr), 0, PAGE_SIZE);
-        *e = fr | f;
-        p->pages++;
+        if (!(*e & PTE_LAZY)) p->commit++;
+        *e = PTE_LAZY | (f & ~PTE_PRESENT);
     }
+    if (changed) smp_tlb_flush(p->pml4);
+    return ok;
+}
+
+/* Back the lazily committed page at @e (another thread may race us: the
+ * entry only changes by compare-and-swap here) */
+static bool back_page(UmProcess *p, pte_t *e)
+{
+    pte_t v = __atomic_load_n(e, __ATOMIC_ACQUIRE);
+    if (v & PTE_PRESENT) return true;
+    if (!(v & PTE_LAZY)) return false;
+    PADDR fr = pmm_alloc_page();
+    if (!fr) return false;
+    memset((void *)(uintptr_t)(PHYSMAP_BASE + fr), 0, PAGE_SIZE);
+    pte_t nv = fr | (v & ~(PTE_LAZY | PTE_ADDR_MASK)) | PTE_PRESENT;
+    if (!__atomic_compare_exchange_n(e, &v, nv, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        pmm_free_page(fr);
+        return (__atomic_load_n(e, __ATOMIC_ACQUIRE) & PTE_PRESENT) != 0;
+    }
+    __atomic_add_fetch(&p->pages, 1, __ATOMIC_RELAXED);
     return true;
 }
 
+bool UmDemandFault(UINT64 va)
+{
+    UmProcess *p = UmCurrent();
+    if (!p || va >= UINT64_C(0x00007FFFFFFF0000)) return false;
+    pte_t *e = walk(p->pml4, va, false);
+    return e && back_page(p, e);
+}
+
+/* Pages are freed only after every CPU has dropped them from its TLB: until
+ * then another thread of the program could still write to them. */
 void um_decommit(UmProcess *p, UINT64 va, UINT64 size)
 {
+    PADDR batch[64];
+    int n = 0;
     for (UINT64 a = va & ~0xFFFULL; a < va + size; a += PAGE_SIZE) {
         pte_t *e = walk(p->pml4, a, false);
-        if (!e || !(*e & PTE_PRESENT)) continue;
-        pmm_free_page(*e & PTE_ADDR_MASK);
+        if (!e) continue;
+        if (!(*e & PTE_PRESENT)) {
+            if (*e & PTE_LAZY) { *e = 0; p->commit--; }
+            continue;
+        }
+        if ((*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* the shared page stays */
+        batch[n++] = *e & PTE_ADDR_MASK;
         *e = 0;
         p->pages--;
+        p->commit--;
         if (is_current(p)) invlpg(a);
+        if (n == 64) {
+            smp_tlb_flush(p->pml4);
+            while (n) pmm_free_page(batch[--n]);
+        }
+    }
+    if (n) {
+        smp_tlb_flush(p->pml4);
+        while (n) pmm_free_page(batch[--n]);
     }
 }
 
 bool um_is_committed(UmProcess *p, UINT64 va)
 {
     pte_t *e = walk(p->pml4, va, false);
-    return e && (*e & PTE_PRESENT);
+    return e && (*e & (PTE_PRESENT | PTE_LAZY));
 }
 
 static bool copy_pages(UmProcess *p, UINT64 va, void *buf, UINT64 n, bool to_user)
@@ -196,9 +260,18 @@ static bool copy_pages(UmProcess *p, UINT64 va, void *buf, UINT64 n, bool to_use
     UINT8 *b = buf;
     while (n) {
         pte_t *e = walk(p->pml4, va, false);
-        if (!e || !(*e & PTE_PRESENT)) return false;
         UINT64 off = va & 0xFFF, chunk = PAGE_SIZE - off;
         if (chunk > n) chunk = n;
+        if (!e) return false;
+        if (!(*e & PTE_PRESENT)) {
+            if (!(*e & PTE_LAZY)) return false;
+            if (!to_user) {                             /* never touched: reads as zeros */
+                memset(b, 0, chunk);
+                va += chunk; b += chunk; n -= chunk;
+                continue;
+            }
+            if (!back_page(p, e)) return false;
+        }
         UINT8 *k = (UINT8 *)(uintptr_t)(PHYSMAP_BASE + (*e & PTE_ADDR_MASK) + off);
         if (to_user) memcpy(k, b, chunk); else memcpy(b, k, chunk);
         va += chunk; b += chunk; n -= chunk;
@@ -210,6 +283,73 @@ bool um_write(UmProcess *p, UINT64 va, const void *src, UINT64 n) { return copy_
 bool um_read(UmProcess *p, UINT64 va, void *dst, UINT64 n)        { return copy_pages(p, va, dst, n, false); }
 
 /* Free every user page and page table, then the PML4 itself. */
+/* -----------------------------------------------------------------------
+ * KUSER_SHARED_DATA: one page, mapped read-only at 0x7FFE0000 in every
+ * program, with the clocks programs read without a system call (the Go
+ * runtime's nanotime, GetTickCount in some CRTs) and the version fields.
+ * ----------------------------------------------------------------------- */
+#define UM_KUSD_VA UINT64_C(0x7FFE0000)
+
+static void kusd_time(UINT32 off, UINT64 v)       /* KSYSTEM_TIME: High2, Low, then High1 */
+{
+    volatile UINT32 *t = (volatile UINT32 *)(g_kusd + off);
+    t[2] = (UINT32)(v >> 32);
+    __asm__ volatile ("" ::: "memory");
+    t[0] = (UINT32)v;
+    __asm__ volatile ("" ::: "memory");
+    t[1] = (UINT32)(v >> 32);
+}
+
+static void kusd_init(void)
+{
+    g_kusd = kernel_alloc_pages(1);
+    if (!g_kusd) return;
+    memset(g_kusd, 0, PAGE_SIZE);
+    g_kusd_pa = (PADDR)((uintptr_t)g_kusd - PHYSMAP_BASE);
+    *(UINT32 *)(g_kusd + 0x04) = 10u << 24;               /* TickCountMultiplier: 10 ms per tick */
+    *(UINT16 *)(g_kusd + 0x2C) = 0x8664;                  /* ImageNumberLow/High: x64 */
+    *(UINT16 *)(g_kusd + 0x2E) = 0x8664;
+    static const char root[] = "C:\\Windows";
+    for (int i = 0; root[i]; i++) *(UINT16 *)(g_kusd + 0x30 + 2 * i) = (UINT16)root[i];   /* NtSystemRoot */
+    *(UINT32 *)(g_kusd + 0x260) = 19045;                  /* NtBuildNumber */
+    *(UINT32 *)(g_kusd + 0x264) = 1;                      /* NtProductType: workstation */
+    g_kusd[0x268] = 1;                                    /* ProductTypeIsValid */
+    *(UINT32 *)(g_kusd + 0x26C) = 10;                     /* NtMajorVersion */
+    *(UINT32 *)(g_kusd + 0x270) = 0;                      /* NtMinorVersion */
+    static const int features[] = { 2, 6, 8, 10, 12, 13, 14 };   /* cmpxchg8b/16b, SSE, SSE2, SSE3, RDTSC, NX */
+    for (unsigned i = 0; i < sizeof(features) / sizeof(features[0]); i++) g_kusd[0x274 + features[i]] = 1;
+    UmCpuCountChanged();
+    UmTimerTick(sched_ticks());
+}
+
+/* A CPU came online (smp.c) */
+void UmCpuCountChanged(void)
+{
+    if (!g_kusd) return;
+    UINT32 n = g_cpu_count;
+    *(UINT32 *)(g_kusd + 0x3C0) = n;                      /* ActiveProcessorCount */
+    *(UINT64 *)(g_kusd + 0x3C8) = n >= 64 ? ~0ULL : (1ULL << n) - 1;   /* ActiveProcessorAffinity */
+}
+
+/* Called on every timer tick (interrupts off) */
+void UmTimerTick(UINT64 ticks)
+{
+    if (!g_kusd) return;
+    kusd_time(0x08, ticks * 100000ULL);                   /* InterruptTime (100 ns units) */
+    kusd_time(0x14, um_now_100ns());                      /* SystemTime */
+    kusd_time(0x320, ticks);                              /* TickCount */
+    *(volatile UINT32 *)g_kusd = (UINT32)ticks;           /* TickCountLowDeprecated */
+}
+
+static bool map_kusd(UmProcess *p)
+{
+    if (!g_kusd) return true;
+    pte_t *e = walk(p->pml4, UM_KUSD_VA, true);
+    if (!e) return false;
+    *e = g_kusd_pa | PTE_PRESENT | PTE_USER | PTE_NX;     /* read-only, shared by all */
+    return um_region_add(p, UM_KUSD_VA, PAGE_SIZE, 0x02, false);
+}
+
 static void free_address_space(UINT64 pml4)
 {
     pte_t *l4 = PT(pml4);
@@ -223,7 +363,7 @@ static void free_address_space(UINT64 pml4)
                 if (!(l2[k] & PTE_PRESENT)) continue;
                 pte_t *l1 = PT(l2[k]);
                 for (int m = 0; m < 512; m++)
-                    if (l1[m] & PTE_PRESENT) pmm_free_page(l1[m] & PTE_ADDR_MASK);
+                    if ((l1[m] & PTE_PRESENT) && (l1[m] & PTE_ADDR_MASK) != g_kusd_pa) pmm_free_page(l1[m] & PTE_ADDR_MASK);
                 pmm_free_page(l2[k] & PTE_ADDR_MASK);
             }
             pmm_free_page(l3[j] & PTE_ADDR_MASK);
@@ -412,22 +552,84 @@ static RamNode *find_dll(UmProcess *p, const char *name)
     return n && !n->dir ? n : NULL;
 }
 
+/* The address of a stub for the missing import @what ("f in dll"): calls
+ * NtNovaUnimplemented(index), which reports it and ends the program.
+ * 0 when the stub page is full. */
+static UINT64 stub_for(UmProcess *p, const char *what)
+{
+    for (int i = 0; i < p->nstubs; i++)
+        if (!strcmp(p->stub_names[i], what)) return UM_STUBS_VA + (UINT64)i * UM_STUB_SIZE;
+    if (!p->stub_names) p->stub_names = kzalloc(sizeof(*p->stub_names) * UM_MAX_STUBS);
+    if (!p->stub_names || p->nstubs >= UM_MAX_STUBS) return 0;
+    strncpy(p->stub_names[p->nstubs], what, sizeof(p->stub_names[0]) - 1);
+    return UM_STUBS_VA + (UINT64)p->nstubs++ * UM_STUB_SIZE;
+}
+
+/* (Re)write the stub page: mov r10d, index; mov eax, NtNovaUnimplemented;
+ * syscall; ret.  The page is executable and read-only. */
+static bool write_stubs(UmProcess *p)
+{
+    if (!p->nstubs) return true;
+    UINT8 *pg = kzalloc(PAGE_SIZE);
+    if (!pg) return false;
+    for (int i = 0; i < p->nstubs; i++) {
+        UINT8 *s = pg + i * UM_STUB_SIZE;
+        s[0] = 0x41; s[1] = 0xBA; put_u32(s + 2, (UINT32)i);
+        s[6] = 0xB8; put_u32(s + 7, SYSCALL_NtNovaUnimplemented);
+        s[11] = 0x0F; s[12] = 0x05; s[13] = 0xC3; s[14] = 0xCC; s[15] = 0xCC;
+    }
+    bool ok = um_commit(p, UM_STUBS_VA, PAGE_SIZE, 0x04) && um_write(p, UM_STUBS_VA, pg, PAGE_SIZE) &&
+              um_commit(p, UM_STUBS_VA, PAGE_SIZE, 0x20);
+    kfree(pg);
+    return ok;
+}
+
+/* API sets: Windows programs import from virtual DLL names that stand for
+ * a system DLL (api-ms-win-crt-* is the Universal C Runtime, ucrtbase;
+ * the core sets are kernel32).  Rewrites @lname in place. */
+static void map_api_set(char *lname, int cap)
+{
+    static const struct { const char *prefix, *dll; } sets[] = {
+        { "api-ms-win-crt-",              "ucrtbase.dll" },
+        { "api-ms-win-core-synch-",       "kernel32.dll" },
+        { "api-ms-win-core-com-",         "ole32.dll" },
+        { "combase.dll",                  "ole32.dll" },
+        { "api-ms-win-core-",             "kernel32.dll" },
+        { "api-ms-win-security-",         "advapi32.dll" },
+        { "api-ms-win-eventing-",         "advapi32.dll" },
+        { "api-ms-win-shell-",            "shell32.dll" },
+        { "api-ms-win-shcore-",           "shlwapi.dll" },
+        { "ext-ms-win-",                  "kernel32.dll" },
+        { "kernelbase.dll",               "kernel32.dll" },
+        { "api-ms-win-",                  "kernel32.dll" },   /* any other set: what exists is there */
+        { "msvcrt40.dll",                 "msvcrt.dll" },
+    };
+    for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++)
+        if (!strncmp(lname, sets[i].prefix, strlen(sets[i].prefix))) {
+            strncpy(lname, sets[i].dll, (size_t)cap - 1);
+            lname[cap - 1] = '\0';
+            return;
+        }
+}
+
 /* Load @file (or the DLL @name when file is NULL); returns the module index. */
 static int load_module(Loader *L, RamNode *file, const char *name, int depth)
 {
     UmProcess *p = L->p;
     const char *leaf = strrchr(name, '\\');
     leaf = leaf ? leaf + 1 : name;
-    char lname[32];
+    char lname[64];
     lower_copy(lname, leaf, sizeof(lname));
     if (!strchr(lname, '.') && strlen(lname) < sizeof(lname) - 4) strcat(lname, ".dll");
+    if (!file) map_api_set(lname, sizeof(lname));
+    if (strlen(lname) >= sizeof(p->modules[0].name)) return fail(L, "The DLL name %s is too long", lname);
     for (int i = 0; i < p->nmodules; i++)
         if (!strcmp(p->modules[i].name, lname)) return i;
     if (depth > 8) return fail(L, "Imports nested too deeply at %s", name);
     if (p->nmodules >= UM_MAX_MODULES) return fail(L, "Too many DLLs (at %s)", name);
 
     if (!file) {
-        file = find_dll(p, name);
+        file = find_dll(p, strchr(name, '\\') || strchr(name, ':') ? name : lname);
         if (!file) return fail(L, "The DLL %s was not found", name);
     }
     const UINT8 *f = (const UINT8 *)file->data;
@@ -515,7 +717,7 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
         UINT32 ilt = rd32(im->img + d), nm = rd32(im->img + d + 12), iat = rd32(im->img + d + 16);
         if (!nm && !iat) break;
         if (nm >= im->size) return fail(L, "%s has a corrupt import table", name);
-        char dll[32];
+        char dll[64];
         strncpy(dll, (const char *)im->img + nm, sizeof(dll) - 1);
         dll[sizeof(dll) - 1] = '\0';
         int dm = load_module(L, NULL, dll, depth + 1);
@@ -537,6 +739,10 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
                 addr = find_export(L, dm, fn, 0, 0);
                 ksnprintf(what, sizeof(what), "%s in %s", fn, dll);
             }
+            /* A function NovaOS lacks: bind a stub that reports it if the
+             * program ever calls it (many programs import functions they
+             * never use) */
+            if (!addr) addr = stub_for(p, what);
             if (!addr) return fail(L, "The procedure entry point %s could not be located", what);
             wr64(im->img + iat + 8 * k, addr);
         }
@@ -635,7 +841,7 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base)
              strstr(err, "entry point") ? 0xC0000139u /* ENTRYPOINT_NOT_FOUND */ : 0xC000007Bu /* INVALID_IMAGE_FORMAT */;
     } else {
         *base = p->modules[m].base;
-        if (!write_ldr_info(p, ninit)) st = 0xC0000017u;
+        if (!write_ldr_info(p, ninit) || !write_stubs(p)) st = 0xC0000017u;
     }
     um_unlock(&p->lock);
     DesktopUnlock();
@@ -685,10 +891,14 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
              put_ustr(pp, sz, &off, pp + 0x60, image_path) &&       /* ImagePathName */
              put_ustr(pp, sz, &off, pp + 0x70, cmdline);            /* CommandLine */
         /* Environment block: NUL-separated UTF-16 strings, double NUL */
-        static const char *env[] = {
-            "COMPUTERNAME=NOVA-PC", "NUMBER_OF_PROCESSORS=1", "OS=NovaOS",
-            "PATH=C:\\Programs;C:\\Windows\\System32", "PATHEXT=.EXE", "SystemRoot=C:\\Windows",
-            "TEMP=C:\\Temp", "TMP=C:\\Temp", "USERNAME=dean", "USERPROFILE=C:\\", NULL
+        char ncpu[32];
+        ksnprintf(ncpu, sizeof(ncpu), "NUMBER_OF_PROCESSORS=%u", (unsigned)g_cpu_count);
+        const char *env[] = {
+            "ALLUSERSPROFILE=C:\\ProgramData", "APPDATA=C:\\AppData\\Roaming", "COMPUTERNAME=NOVA-PC",
+            "HOMEDRIVE=C:", "HOMEPATH=\\", "LOCALAPPDATA=C:\\AppData\\Local", ncpu, "OS=NovaOS",
+            "PATH=C:\\Programs;C:\\Windows\\System32", "PATHEXT=.EXE", "PROCESSOR_ARCHITECTURE=AMD64",
+            "ProgramData=C:\\ProgramData", "ProgramFiles=C:\\Programs", "SystemDrive=C:", "SystemRoot=C:\\Windows",
+            "TEMP=C:\\Temp", "TMP=C:\\Temp", "USERNAME=dean", "USERPROFILE=C:\\", "windir=C:\\Windows", NULL
         };
         wr64(pp + 0x80, UM_PARAMS_VA + off);
         for (int i = 0; ok && env[i]; i++) {
@@ -703,17 +913,17 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
         /* PEB */
         wr64(peb + 0x10, image_base);                       /* ImageBaseAddress */
         wr64(peb + 0x20, UM_PARAMS_VA);                     /* ProcessParameters */
-        put_u32(peb + 0xB8, 1);                             /* NumberOfProcessors */
+        put_u32(peb + 0xB8, g_cpu_count);                   /* NumberOfProcessors */
         put_u32(peb + 0x118, 10);                           /* OSMajorVersion */
         put_u32(peb + 0x11C, 0);                            /* OSMinorVersion */
         put_u16(peb + 0x120, 18362);                        /* OSBuildNumber (1903) */
         put_u32(peb + 0x124, 2);                            /* OSPlatformId: NT */
 
-        ok = ok && um_region_add(p, UM_PEB_VA, UM_SYS_SIZE, 0x04, false) &&
-             um_commit(p, UM_PEB_VA, 0x3000 + UM_PARAMS_PAGES * PAGE_SIZE, 0x04) &&
+        ok = ok && map_kusd(p) && um_region_add(p, UM_PEB_VA, UM_SYS_SIZE, 0x04, false) &&
+             um_commit(p, UM_PEB_VA, (UM_PARAMS_VA - UM_PEB_VA) + UM_PARAMS_PAGES * PAGE_SIZE, 0x04) &&
              um_write(p, UM_PEB_VA, peb, PAGE_SIZE) &&
              um_write(p, UM_PARAMS_VA, pp, sz) &&
-             write_ldr_info(p, 0);
+             write_ldr_info(p, 0) && write_stubs(p);
     }
     kfree(pp); kfree(peb);
     return ok;
@@ -732,8 +942,10 @@ static void um_thread_start(void *arg)
     if (p->kill_pending) um_exit_thread(p->kill_status);
     if (t->terminate) um_exit_thread(t->term_status);
 
-    /* Enter ring 3 at ntdll!RtlUserThreadStart(RCX = start, RDX = argument).
-     * GS base is already the TEB: this thread was created with it. */
+    /* Enter ring 3 at ntdll!RtlUserThreadStart(RCX = start, RDX = argument),
+     * leaving the kernel lock behind.  The TEB is in MSR_KERNEL_GS_BASE
+     * (this thread was created with it): SWAPGS makes it the user GS. */
+    bkl_leave_kernel();
     UINT64 f[7] = {
         p->thread_start, GDT_USER_CODE | 3, 0x202,                 /* RIP, CS, RFLAGS */
         t->stack_lo + t->stack_size - 0x28, GDT_USER_DATA | 3,     /* RSP, SS */
@@ -752,6 +964,7 @@ static void um_thread_start(void *arg)
         "xor %%r8d, %%r8d\n\t"  "xor %%r9d, %%r9d\n\t"  "xor %%r10d, %%r10d\n\t"
         "xor %%r11d, %%r11d\n\t" "xor %%r12d, %%r12d\n\t" "xor %%r13d, %%r13d\n\t"
         "xor %%r14d, %%r14d\n\t" "xor %%r15d, %%r15d\n\t"
+        "swapgs\n\t"
         "iretq\n\t"
         : : "a"(f) : "memory");
     __builtin_unreachable();
@@ -829,23 +1042,21 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
         return NULL;
     }
 
-    /* Create the scheduler thread with interrupts off so it can't run
-     * before its user-mode state is filled in. */
-    IrqState s = irq_save();
+    /* The scheduler thread is queued only once its user-mode state is
+     * filled in (another CPU may run it the moment it is). */
     char tname[THREAD_NAME_MAX];
     ksnprintf(tname, sizeof(tname), "%s:%u", p->name, t->tid);
-    Thread *kt = sched_create_thread_ex(tname, um_thread_start, t, 8, 32 * 1024);
+    Thread *kt = sched_new_thread(tname, um_thread_start, t, 8, 32 * 1024);
     if (kt) {
         kt->um = t;
         kt->cr3 = p->pml4;
         kt->fpu = fpu;
         kt->gs_base = t->teb;                              /* user GS = TEB */
-        kt->kgs_base = (UINT64)(uintptr_t)KiGetCurrentKpcr();
         t->kt = kt;
         p->threads[slot] = t;
         p->live_threads++;
+        sched_start_thread(kt);
     }
-    irq_restore(s);
     if (!kt) {
         um_decommit(p, t->teb, UM_TEB_SIZE);
         um_decommit(p, t->stack_lo, stack_size);
@@ -866,6 +1077,7 @@ static void destroy(UmProcess *p)
 {
     if (p->pml4) free_address_space(p->pml4);
     if (p->con) UmConsoleRelease(p->con);
+    kfree(p->stub_names);
     kfree(p);
 }
 
@@ -897,6 +1109,12 @@ RamNode *UmFindProgram(RamNode *cwd, const char *name)
 
 UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
                    char *err, int err_cap)
+{
+    return um_spawn_ex(exe, cmdline, cwd, con, NULL, err, err_cap);
+}
+
+UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
+                       const UmHandle *std, char *err, int err_cap)
 {
     err[0] = '\0';
     UmProcess *p = kzalloc(sizeof(*p));
@@ -941,6 +1159,11 @@ UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *c
         return NULL;
     }
     for (int i = 0; i < 3; i++) p->handles[i].kind = i ? H_CON_OUT : H_CON_IN;   /* 4, 8, 12 */
+    for (int i = 0; std && i < 3; i++) {
+        if (std[i].kind != H_FILE && std[i].kind != H_CON_IN && std[i].kind != H_CON_OUT) continue;
+        p->handles[i] = std[i];
+        if (std[i].kind == H_FILE) RamfsRef(std[i].node);
+    }
 
     plock();
     int slot = -1;
@@ -970,6 +1193,7 @@ UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *c
  * ----------------------------------------------------------------------- */
 void um_exit_thread(UINT32 status)
 {
+    bkl_acquire();                          /* (dropped by the final switch) */
     UmThread *t = UmCurrentThread();
     UmProcess *p = t->proc;
     um_abandon_mutants(p, t);
@@ -982,14 +1206,17 @@ void um_exit_thread(UINT32 status)
         um_region_remove(p, r);
     }
     um_decommit(p, t->teb, UM_TEB_SIZE);
-    cli();
+    IrqState s = ob_lock();
     t->exit_code = status;
     t->exited = true;
     t->ob.signaled = true;
+    um_ob_wake(&t->ob);
     if (--p->live_threads == 0) {
         p->exit_status = p->kill_pending ? p->kill_status : status;
         p->exited = true;
+        if (p->exit_ob) { p->exit_ob->signaled = true; um_ob_wake(p->exit_ob); }
     }
+    ob_unlock(s);
     um_unlock(&p->lock);
     sched_exit_current();
 }
@@ -997,12 +1224,12 @@ void um_exit_thread(UINT32 status)
 void um_exit_process(UINT32 status)
 {
     UmProcess *p = UmCurrent();
-    IrqState s = irq_save();
+    IrqState s = ob_lock();
     if (!p->kill_pending) {
         p->kill_status = status;
         p->kill_pending = true;
     }
-    irq_restore(s);
+    ob_unlock(s);
     um_exit_thread(status);
 }
 
@@ -1017,9 +1244,25 @@ void UmReturnToUser(void)
     UmThread *t = UmCurrentThread();
     if (!t) return;
     UmProcess *p = t->proc;
+    sched_current()->wait_rounds = 0;
+    if (g_desktop.owner == sched_current()) {                        /* never back to user mode with it */
+        kprintf("[UM] Bug: system call %03x returned holding the desktop lock\n", t->last_sys);
+        g_desktop.depth = 1;
+        um_unlock(&g_desktop);
+    }
     while (t->suspend > 0 && !um_stopping()) sched_yield();         /* NtSuspendThread */
     if (p->kill_pending) um_exit_thread(p->kill_status);
     if (t->terminate) um_exit_thread(t->term_status);
+    t->park = 0;
+}
+
+void UmReturnToUserFrame(void *frame)
+{
+    UmThread *t = UmCurrentThread();
+    if (!t) return;
+    t->uframe = frame;
+    t->park = 2;
+    UmReturnToUser();
 }
 
 /* Describe an unhandled exception and end the process */
@@ -1050,16 +1293,41 @@ void UmFault(UINT32 status, UINT64 rip, UINT64 addr)
     um_exit_process(status);
 }
 
+/* Where each thread is (serial log): helps when a program will not stop */
+static void dump_threads(UmProcess *p)
+{
+    for (int i = 0; i < UM_MAX_THREADS; i++) {
+        UmThread *t = p->threads[i];
+        if (!t || t->exited) continue;
+        UINT64 rip = t->park == 2 && t->uframe ? ((InterruptFrame *)t->uframe)->rip : 0;
+        kprintf("[UM]   thread %u: %s, last system call %03x, user rip %llx\n", t->tid,
+                t->park == 1 ? "in a system call" : t->park == 2 ? "interrupted" : "running",
+                t->last_sys, (unsigned long long)rip);
+    }
+}
+
+void UmDumpAll(void)
+{
+    for (int i = 0; i < UM_MAX_PROCS; i++) {
+        UmProcess *p = g_procs[i];
+        if (!p || p->exited) continue;
+        kprintf("[UM] %s (PID %u):\n", p->name, p->pid);
+        dump_threads(p);
+    }
+}
+
 void UmKill(UmProcess *p, UINT32 status)
 {
     if (!p || p->exited) return;
-    IrqState s = irq_save();
+    kprintf("[UM] Stopping %s (PID %u)\n", p->name, p->pid);
+    dump_threads(p);
+    IrqState s = ob_lock();
     if (!p->kill_pending) {
         p->kill_status = status;
         ksnprintf(p->why, sizeof(p->why), "%s", status == UM_STATUS_CONTROL_C_EXIT ? "stopped (Ctrl+C)" : "terminated");
         p->kill_pending = true;
     }
-    irq_restore(s);
+    ob_unlock(s);
 }
 
 bool UmHasExited(UmProcess *p, UINT32 *status, char *why, int why_cap)
@@ -1105,8 +1373,16 @@ static int reap_threads(UmProcess *p)
     return left;
 }
 
+void UmSaveAll(void)
+{
+    um_registry_flush();
+    if (!PersistSync()) kprintf("[PERSIST] Saving drive C: failed\n");
+}
+
 void UmPoll(void)
 {
+    um_registry_poll();
+    PersistPoll();
     for (int i = 0; i < UM_MAX_PROCS; i++) {
         UmProcess *p = g_procs[i];
         if (!p) continue;
@@ -1120,11 +1396,13 @@ void UmPoll(void)
             free_address_space(p->pml4);
             p->pml4 = 0;
             p->pages = 0;
+            p->commit = 0;
             p->reclaimed = true;
         }
         if (p->released) {
             plock(); g_procs[i] = NULL; punlock();
             if (p->con) UmConsoleRelease(p->con);
+            kfree(p->stub_names);
             kfree(p);
         }
     }

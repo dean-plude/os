@@ -25,8 +25,13 @@
 #include "../../ke/printf.h"
 #include "../../include/types.h"
 
-/* The LAPIC MMIO base after it's been mapped into the physmap */
+/* The LAPIC MMIO base after it's been mapped into the physmap (the same
+ * physical address on every CPU; each CPU sees its own LAPIC there) */
 static volatile uint32_t *lapic_base;
+
+/* Timer count for 10 ms, and TSC ticks per 10 ms, measured on the boot CPU */
+static uint32_t g_timer_10ms;
+uint64_t g_tsc_per_tick;
 
 /* -----------------------------------------------------------------------
  * LAPIC register access
@@ -119,10 +124,12 @@ static uint32_t calibrate_apic_timer(void)
     /* Disable the gate, then re-enable to start counting */
     outb(PIT_GATE2, inb(PIT_GATE2) & ~0x01);
     outb(PIT_GATE2, inb(PIT_GATE2) | 0x01);
+    uint64_t tsc0 = rdtsc();
 
     /* Wait for PIT channel 2 to expire (bit 5 of Port B goes high) */
     while (!(inb(PIT_GATE2) & 0x20))
         pause_cpu();
+    g_tsc_per_tick = rdtsc() - tsc0;          /* the TSC over the same 10 ms */
 
     /* Stop APIC timer and read how far it counted in 10ms */
     lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED);
@@ -174,11 +181,47 @@ void apic_init(void)
 
     /* 8. Set up the APIC timer for periodic interrupts at 100 Hz
      *    (10ms period = scheduler tick rate for Phase 1) */
+    g_timer_10ms = ticks_10ms;
     lapic_write(LAPIC_TIMER_DIV,  LAPIC_TIMER_DIV_16);
     lapic_write(LAPIC_LVT_TIMER,  LAPIC_TIMER_PERIODIC | IRQ_TIMER);
     lapic_write(LAPIC_TIMER_INIT, ticks_10ms);
 
-    kprintf("[APIC] Periodic timer started at 100 Hz (vector 0x%x)\n", IRQ_TIMER);
+    kprintf("[APIC] Periodic timer started at 100 Hz (vector 0x%x), TSC %llu per 10 ms\n",
+            IRQ_TIMER, (unsigned long long)g_tsc_per_tick);
+}
+
+/* -----------------------------------------------------------------------
+ * apic_init_ap — enable the calling CPU's LAPIC and its 100 Hz timer
+ * (the other CPUs reuse the boot CPU's calibration)
+ * ----------------------------------------------------------------------- */
+void apic_init_ap(void)
+{
+    lapic_write(LAPIC_SPURIOUS, LAPIC_SPURIOUS_ENABLE | IRQ_SPURIOUS);
+    lapic_write(LAPIC_TPR, 0);
+    lapic_write(LAPIC_ESR, 0);
+    lapic_write(LAPIC_ESR, 0);
+    lapic_write(LAPIC_TIMER_DIV,  LAPIC_TIMER_DIV_16);
+    lapic_write(LAPIC_LVT_TIMER,  LAPIC_TIMER_PERIODIC | IRQ_TIMER);
+    lapic_write(LAPIC_TIMER_INIT, g_timer_10ms);
+}
+
+/* -----------------------------------------------------------------------
+ * apic_send_ipi — write the ICR (destination APIC ID, command) and wait
+ * until the LAPIC has sent it
+ * ----------------------------------------------------------------------- */
+void apic_send_ipi(uint32_t dest_apic_id, uint32_t command)
+{
+    lapic_write(LAPIC_ICR_HI, dest_apic_id << 24);
+    lapic_write(LAPIC_ICR_LO, command);
+    for (int i = 0; i < 1000000 && (lapic_read(LAPIC_ICR_LO) & (1u << 12)); i++)
+        pause_cpu();                          /* delivery status: send pending */
+}
+
+/* Busy-wait @us microseconds (TSC; before or without the scheduler) */
+void udelay(uint64_t us)
+{
+    uint64_t end = rdtsc() + g_tsc_per_tick * us / 10000;
+    while (rdtsc() < end) pause_cpu();
 }
 
 /* -----------------------------------------------------------------------

@@ -32,6 +32,7 @@
 #include "../arch/x86_64/paging.h"
 #include "../mm/pmm.h"
 #include "../ke/kpcr.h"
+#include "../ke/smp.h"
 #include "../ldr/ldr.h"
 #include "../ldr/user_stubs.h"
 
@@ -264,7 +265,8 @@ NTSTATUS PsCreateSystemThread(
     sched_t->context.r13    = (uint64_t)(uintptr_t)StartContext;
     sched_t->context.r14    = (uint64_t)(uintptr_t)et;   /* ETHREAD in r14 */
     sched_t->context.r15    = 0;
-    sched_t->context.rflags = 0x202;
+    sched_t->context.rflags = 0x002;             /* starts inside the switch: see PsThreadTrampoline */
+    sched_t->bkl_depth      = 1;
 
     /* Add to the scheduler's ready queue (the scheduler sees it as a Thread) */
     extern void sched_enqueue_thread(Thread *t);  /* defined in scheduler.c */
@@ -288,7 +290,8 @@ NTSTATUS PsCreateSystemThread(
 void __attribute__((naked, noreturn)) PsThreadTrampoline(void)
 {
     __asm__ volatile (
-        /* r12 = StartRoutine, r13 = StartContext, r14 = ETHREAD* */
+        /* r12 = StartRoutine, r13 = StartContext, r14 = ETHREAD* (callee-saved) */
+        "call sched_thread_start\n\t"
         "mov  %%r13, %%rdi\n\t"    /* arg = StartContext */
         "call *%%r12\n\t"          /* StartRoutine(StartContext) */
         /* Thread returned — terminate */
@@ -308,11 +311,8 @@ NTSTATUS PsTerminateSystemThread(NTSTATUS ExitStatus)
     if (et) {
         et->ExitStatus = ExitStatus;
         et->HasExited  = true;
-        et->Tcb.SchedulerThread.state = THREAD_DEAD;
     }
-
-    /* Yield — the scheduler will not pick this thread again (THREAD_DEAD) */
-    for (;;) sched_yield();
+    sched_exit_current();
 }
 
 /* -----------------------------------------------------------------------
@@ -404,7 +404,7 @@ NTSTATUS PsAllocatePebTeb(PEPROCESS proc, PETHREAD thread, UINT64 image_base)
 
     /* Initialize PEB fields via physmap */
     PEB *peb = (PEB *)(PHYSMAP_BASE + peb_pa);
-    peb->NumberOfProcessors = 1;
+    peb->NumberOfProcessors = g_cpu_count;
     peb->ImageBaseAddress   = (void *)(uintptr_t)image_base;
     /* Phase 6: OS version fields (Windows 10, build 18362 = 1903) */
     peb->NtGlobalFlag       = 0;
@@ -498,11 +498,10 @@ void PsUserThreadEntry(void *arg)
         /* Load the process's private page table into CR3 */
         paging_load_cr3((uintptr_t)sched_t->cr3);
 
-        /* Set MSR_GS_BASE = TEB VA so that, after SWAPGS on the first
-         * syscall entry, GS in kernel mode points to the KPCR and
-         * MSR_KERNEL_GS_BASE holds the TEB address for SYSRET. */
+        /* The user GS (TEB) waits in MSR_KERNEL_GS_BASE; the SWAPGS just
+         * before IRETQ below makes it GS (kpcr.h). */
         if (et->Teb) {
-            wrmsr(MSR_GS_BASE, (UINT64)(uintptr_t)et->Teb);
+            wrmsr(MSR_KERNEL_GS_BASE, (UINT64)(uintptr_t)et->Teb);
         }
     }
 
@@ -514,6 +513,9 @@ void PsUserThreadEntry(void *arg)
             (unsigned long long)entry_point,
             (unsigned long long)stack_top,
             (unsigned long long)(proc ? proc->Pcb.DirectoryTableBase : 0ULL));
+
+    cli();
+    bkl_leave_kernel();                   /* leaving the kernel (smp.h) */
 
     /* Build IRETQ frame and jump to user mode:
      *   User SS   (pushed last by IRETQ logic, so first on stack)
@@ -555,6 +557,7 @@ void PsUserThreadEntry(void *arg)
         "xor %%r15, %%r15\n\t"
         "xor %%rbp, %%rbp\n\t"
 
+        "swapgs\n\t"
         "iretq\n\t"
         :
         : [ss]  "r"(user_ss),

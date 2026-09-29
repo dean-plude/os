@@ -106,6 +106,13 @@ typedef struct {
  * a dedicated double-fault stack (IST1).
  */
 void gdt_init(void);
+CpuGdt *gdt_boot(void);
+
+/* Build and load a GDT + TSS for the calling CPU; the four IST stacks are
+ * EXCEPTION_STACK_SIZE bytes each. */
+#define EXCEPTION_STACK_SIZE 0x4000
+void gdt_init_cpu(CpuGdt *g, uint8_t *double_fault_stack, uint8_t *nmi_stack,
+                  uint8_t *machine_check_stack, uint8_t *debug_stack);
 
 /*
  * Reload segment registers after the GDT is live.

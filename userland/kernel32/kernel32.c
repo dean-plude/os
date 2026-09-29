@@ -9,6 +9,7 @@
 
 #define NOVA_BUILD_KERNEL32
 #include <winternl.h>
+#include "k32.h"
 
 /* -----------------------------------------------------------------------
  * Helpers
@@ -30,13 +31,13 @@ static BYTE *teb(void)
 WINBASEAPI DWORD WINAPI GetLastError(void)       { return *(DWORD *)(teb() + 0x68); }
 WINBASEAPI VOID  WINAPI SetLastError(DWORD err)  { *(DWORD *)(teb() + 0x68) = err; }
 
-static BOOL fail_status(NTSTATUS s)
+BOOL fail_status(NTSTATUS s)
 {
     SetLastError(RtlNtStatusToDosError(s));
     return FALSE;
 }
 
-static int ieq(const char *a, const char *b)
+int ieq(const char *a, const char *b)
 {
     for (; *a && *b; a++, b++) {
         char x = *a, y = *b;
@@ -48,7 +49,7 @@ static int ieq(const char *a, const char *b)
 }
 
 /* UTF-16 → UTF-8 (n = -1: NUL-terminated); returns bytes written (no NUL) */
-static int w2u(const WCHAR *w, int n, char *out, int cap)
+int w2u(const WCHAR *w, int n, char *out, int cap)
 {
     int o = 0;
     for (int i = 0; n < 0 ? w[i] : i < n; i++) {
@@ -70,7 +71,7 @@ static int w2u(const WCHAR *w, int n, char *out, int cap)
 }
 
 /* UTF-8 → UTF-16 (n = -1: NUL-terminated); returns units written (no NUL) */
-static int u2w(const char *s, int n, WCHAR *out, int cap)
+int u2w(const char *s, int n, WCHAR *out, int cap)
 {
     const unsigned char *p = (const unsigned char *)s;
     int o = 0;
@@ -102,7 +103,7 @@ static int u2w(const char *s, int n, WCHAR *out, int cap)
  * ----------------------------------------------------------------------- */
 static char g_cwd[MAX_PATH];                 /* "C:\dir" (no trailing '\' except root) */
 
-static const char *cwd(void)
+const char *cwd(void)
 {
     if (!g_cwd[0]) {
         UNICODE_STRING *d = &params()->CurrentDirectory.DosPath;
@@ -116,10 +117,20 @@ static const char *cwd(void)
 }
 
 /* Absolute, normalized "C:\a\b" for @name; 0 on error */
-static int full_path(const char *name, char *out, int cap)
+/* "\\?\C:\x", "\??\C:\x" and "\\.\C:\x" all name C:\x */
+static const char *skip_prefix(const char *name)
+{
+    if ((name[0] == '\\' || name[0] == '/') && (name[1] == '\\' || name[1] == '/' || name[1] == '?') &&
+        (name[2] == '?' || name[2] == '.') && (name[3] == '\\' || name[3] == '/'))
+        return name + 4;
+    return name;
+}
+
+int full_path(const char *name, char *out, int cap)
 {
     char tmp[MAX_PATH * 2];
     int n = 0;
+    name = skip_prefix(name);
     if (((name[0] | 0x20) >= 'a' && (name[0] | 0x20) <= 'z') && name[1] == ':') {
         tmp[n++] = (char)(name[0] & ~0x20); tmp[n++] = ':'; tmp[n++] = '\\';
         name += 2;
@@ -155,12 +166,12 @@ static int full_path(const char *name, char *out, int cap)
     return o;
 }
 
-typedef struct { WCHAR buf[MAX_PATH + 8]; UNICODE_STRING us; OBJECT_ATTRIBUTES oa; } NtPath;
 
-static BOOL nt_path(const char *name, NtPath *p)
+BOOL nt_path(const char *name, NtPath *p)
 {
     char full[MAX_PATH];
     if (!name || !*name) { SetLastError(ERROR_PATH_NOT_FOUND); return FALSE; }
+    name = skip_prefix(name);
     /* devices pass through by name */
     const char *dev = 0;
     if (ieq(name, "CONIN$") || ieq(name, "CONOUT$") || ieq(name, "CON")) dev = name;
@@ -180,7 +191,7 @@ static BOOL nt_path(const char *name, NtPath *p)
     return TRUE;
 }
 
-static char *wide_to_temp(LPCWSTR w, char *buf, int cap)
+char *wide_to_temp(LPCWSTR w, char *buf, int cap)
 {
     if (!w) return 0;
     int n = w2u(w, -1, buf, cap - 1);
@@ -246,8 +257,9 @@ WINBASEAPI DWORD WINAPI GetCurrentThreadId(void)             { return *(DWORD *)
 
 WINBASEAPI BOOL WINAPI TerminateProcess(HANDLE process, UINT code)
 {
-    if (process != NtCurrentProcess()) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
-    RtlExitUserProcess((NTSTATUS)code);
+    if (process == NtCurrentProcess()) RtlExitUserProcess((NTSTATUS)code);
+    NTSTATUS s = NtTerminateProcess(process, (NTSTATUS)code);  /* one this process started */
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
 static char *g_cmdline_a;
@@ -285,30 +297,48 @@ WINBASEAPI HMODULE WINAPI GetModuleHandleW(LPCWSTR name)
     return GetModuleHandleA(n);
 }
 
+/* The full path of a loaded module (UTF-8), or 0 */
+const char *k32_module_path(HMODULE m, char *tmp)
+{
+    if (!m || m == RtlGetCurrentPeb()->ImageBaseAddress) {
+        UNICODE_STRING *p = &params()->ImagePathName;
+        int n = w2u(p->Buffer, p->Length / 2, tmp, MAX_PATH - 1);
+        tmp[n < 0 ? 0 : n] = 0;
+        return tmp;
+    }
+    NOVA_LDR_INFO *li = NOVA_LDR_INFO_ADDRESS;
+    for (ULONG i = 0; i < li->Count && i < 64; i++)
+        if ((HMODULE)(ULONG_PTR)li->Modules[i].Base == m) return li->Modules[i].Path;
+    return 0;
+}
+
 WINBASEAPI DWORD WINAPI GetModuleFileNameA(HMODULE m, LPSTR buf, DWORD size)
 {
-    if (m && m != RtlGetCurrentPeb()->ImageBaseAddress) { SetLastError(ERROR_MOD_NOT_FOUND); return 0; }
-    UNICODE_STRING *p = &params()->ImagePathName;
     char tmp[MAX_PATH];
-    int n = w2u(p->Buffer, p->Length / 2, tmp, MAX_PATH - 1);
-    if (n < 0) n = 0;
+    const char *path = k32_module_path(m, tmp);
+    if (!path) { SetLastError(ERROR_MOD_NOT_FOUND); return 0; }
+    DWORD n = (DWORD)strlen(path);
     if (!size) return 0;
-    DWORD k = (DWORD)n < size - 1 ? (DWORD)n : size - 1;
-    kmemcpy(buf, tmp, k);
+    DWORD k = n < size - 1 ? n : size - 1;
+    kmemcpy(buf, path, k);
     buf[k] = 0;
-    if ((DWORD)n >= size) SetLastError(ERROR_INSUFFICIENT_BUFFER);
+    if (n >= size) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return size; }
     return k;
 }
 
 WINBASEAPI DWORD WINAPI GetModuleFileNameW(HMODULE m, LPWSTR buf, DWORD size)
 {
-    if (m && m != RtlGetCurrentPeb()->ImageBaseAddress) { SetLastError(ERROR_MOD_NOT_FOUND); return 0; }
-    UNICODE_STRING *p = &params()->ImagePathName;
-    DWORD n = p->Length / 2;
+    char tmp[MAX_PATH];
+    WCHAR w[MAX_PATH];
+    const char *path = k32_module_path(m, tmp);
+    if (!path) { SetLastError(ERROR_MOD_NOT_FOUND); return 0; }
+    int n = u2w(path, -1, w, MAX_PATH - 1);
+    if (n < 0) n = 0;
     if (!size) return 0;
-    DWORD k = n < size - 1 ? n : size - 1;
-    kmemcpy(buf, p->Buffer, 2 * (SIZE_T)k);
+    DWORD k = (DWORD)n < size - 1 ? (DWORD)n : size - 1;
+    kmemcpy(buf, w, 2 * (SIZE_T)k);
     buf[k] = 0;
+    if ((DWORD)n >= size) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return size; }
     return k;
 }
 
@@ -335,7 +365,19 @@ WINBASEAPI FARPROC WINAPI GetProcAddress(HMODULE m, LPCSTR name)
             if (!*n && !*s) { rva = funcs[ords[i]]; break; }
         }
     }
-    if (!rva || (rva >= exp && rva < exp + exps)) { SetLastError(ERROR_PROC_NOT_FOUND); return 0; }
+    if (!rva) { SetLastError(ERROR_PROC_NOT_FOUND); return 0; }
+    if (rva >= exp && rva < exp + exps) {                   /* a forwarder: "DLL.Function" */
+        const char *fw = (const char *)b + rva, *dot = fw;
+        while (*dot && *dot != '.') dot++;
+        char dll[64];
+        int n = (int)(dot - fw);
+        if (!*dot || n > 55) { SetLastError(ERROR_PROC_NOT_FOUND); return 0; }
+        kmemcpy(dll, fw, (SIZE_T)n);
+        kmemcpy(dll + n, ".dll", 5);
+        HMODULE target = LoadLibraryA(dll);
+        if (!target) return 0;
+        return GetProcAddress(target, dot + 1);
+    }
     return (FARPROC)(b + rva);
 }
 
@@ -430,8 +472,10 @@ WINBASEAPI VOID WINAPI GetSystemInfo(LPSYSTEM_INFO si)
     si->dwPageSize = 4096;
     si->lpMinimumApplicationAddress = (LPVOID)0x10000;
     si->lpMaximumApplicationAddress = (LPVOID)0x7FFFFFFEFFFFULL;
-    si->dwActiveProcessorMask = 1;
-    si->dwNumberOfProcessors = 1;
+    DWORD n = *(volatile DWORD *)(ULONG_PTR)0x7FFE03C0;    /* KUSER_SHARED_DATA.ActiveProcessorCount */
+    if (!n) n = 1;
+    si->dwActiveProcessorMask = n >= 64 ? ~(DWORD_PTR)0 : ((DWORD_PTR)1 << n) - 1;
+    si->dwNumberOfProcessors = n;
     si->dwProcessorType = 8664;
     si->dwAllocationGranularity = 65536;
 }
@@ -492,22 +536,37 @@ WINBASEAPI BOOL WINAPI SetStdHandle(DWORD which, HANDLE h)
     return TRUE;
 }
 
+/* I/O is synchronous here; an OVERLAPPED request completes at once: its
+ * offset is used, its status and event are set, and a completion port the
+ * handle is bound to gets a packet (see k32_io_done in extra.c). */
 WINBASEAPI BOOL WINAPI WriteFile(HANDLE h, LPCVOID buf, DWORD n, LPDWORD written, LPVOID ov)
 {
-    (void)ov;
     IO_STATUS_BLOCK io;
-    NTSTATUS s = NtWriteFile(h, 0, 0, 0, &io, buf, n, 0, 0);
-    if (written) *written = NT_SUCCESS(s) ? (DWORD)io.Information : 0;
+    LARGE_INTEGER off, *po = 0;
+    OVERLAPPED *o = ov;
+    if (o) { off.QuadPart = (LONGLONG)o->Offset | (LONGLONG)o->OffsetHigh << 32; po = &off; }
+    NTSTATUS s = NtWriteFile(h, 0, 0, 0, &io, buf, n, po, 0);
+    DWORD done = NT_SUCCESS(s) ? (DWORD)io.Information : 0;
+    if (written) *written = done;
+    if (o) k32_io_done(h, o, s, done);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
 WINBASEAPI BOOL WINAPI ReadFile(HANDLE h, LPVOID buf, DWORD n, LPDWORD read, LPVOID ov)
 {
-    (void)ov;
     IO_STATUS_BLOCK io;
-    NTSTATUS s = NtReadFile(h, 0, 0, 0, &io, buf, n, 0, 0);
-    if (s == STATUS_END_OF_FILE) { if (read) *read = 0; return TRUE; }   /* Win32: EOF is success */
-    if (read) *read = NT_SUCCESS(s) ? (DWORD)io.Information : 0;
+    LARGE_INTEGER off, *po = 0;
+    OVERLAPPED *o = ov;
+    if (o) { off.QuadPart = (LONGLONG)o->Offset | (LONGLONG)o->OffsetHigh << 32; po = &off; }
+    NTSTATUS s = NtReadFile(h, 0, 0, 0, &io, buf, n, po, 0);
+    if (s == STATUS_END_OF_FILE) {
+        if (read) *read = 0;
+        if (o) { k32_io_done(h, o, s, 0); SetLastError(ERROR_HANDLE_EOF); return FALSE; }
+        return TRUE;                                        /* Win32: EOF is success */
+    }
+    DWORD done = NT_SUCCESS(s) ? (DWORD)io.Information : 0;
+    if (read) *read = done;
+    if (o) k32_io_done(h, o, s, done);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
@@ -566,6 +625,9 @@ WINBASEAPI BOOL WINAPI SetConsoleTitleA(LPCSTR title) { (void)title; return TRUE
 
 WINBASEAPI BOOL WINAPI CloseHandle(HANDLE h)
 {
+    if (h == NtCurrentProcess() || h == (HANDLE)(LONG_PTR)-2) return TRUE;   /* pseudo handles */
+    if (k32_close_snapshot(h)) return TRUE;                 /* tool-help snapshots (compat.c) */
+    k32_forget_handle(h);                   /* file mappings, ports, timers (extra.c) */
     NTSTATUS s = NtClose(h);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
@@ -817,6 +879,7 @@ WINBASEAPI BOOL WINAPI FindClose(HANDLE h)
 {
     FindState *f = h;
     if (!f || h == INVALID_HANDLE_VALUE) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+    if (k32_find_close_stream(h)) return TRUE;              /* FindFirstStreamW (compat.c) */
     NtClose(f->dir);
     RtlFreeHeap(RtlGetProcessHeap(), 0, f);
     return TRUE;

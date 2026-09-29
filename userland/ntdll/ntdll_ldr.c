@@ -44,7 +44,7 @@ typedef struct {
     LDR_DATA_TABLE_ENTRY entry;
 } Module;
 
-#define MAX_MODULES 32
+#define MAX_MODULES 64
 static Module g_mod[MAX_MODULES];
 static int    g_nmod;                  /* modules registered with ntdll */
 static int    g_ntls;                  /* static TLS slots assigned */

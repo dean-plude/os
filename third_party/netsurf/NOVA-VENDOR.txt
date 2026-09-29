@@ -43,6 +43,14 @@ netsurf/generated/ holds the files NetSurf's own build generates on the
 host (testament.h, the image-*.c resources): they were produced by running
 the upstream build for the framebuffer frontend once (testament.h with the
 build host's details replaced).
+netsurf/generated/duktape/ holds the JavaScript DOM bindings, made by
+NetSurf's nsgenbind 0.9 (from netsurf-all-3.11) with the upstream command,
+run from netsurf/generated:
+  nsgenbind -I ../content/handlers/javascript/WebIDL \
+      ../content/handlers/javascript/duktape/netsurf.bnd duktape
+(its Makefile fragment is not kept: the list of sources is in
+sources.json), plus generics.js.inc and polyfill.js.inc, the two .js files
+as C arrays (NetSurf's tools/xxd -i format).
 libdom/include/dom/bindings/hubbub/{errors,parser}.h are copies of
 libdom/bindings/hubbub/ (upstream installs them there).
 
@@ -53,6 +61,8 @@ All marked with _NOVAOS / WITH_NOVA_HTTP / FB_USE_NOVA_FONT or a comment:
 - netsurf/utils/config.h: a NovaOS block selects which POSIX features the
   C library provides (the rest use NetSurf's own fallbacks), no mmap, no
   IPv6.
+- netsurf/frontends/framebuffer/gui.c: JavaScript is enabled by default
+  (upstream's default is off).
 - netsurf/content/fetch.c: registers the NovaOS HTTP(S) fetcher
   (userland/netsurf/fetch_nova.c) and makes the curl fetcher optional.
 - netsurf/frontends/framebuffer/gui.c: window size from the desktop,

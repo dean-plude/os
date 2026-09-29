@@ -52,7 +52,7 @@ int um_console_write(UmConsole *c, const char *data, int len)
         UINT32 used = c->out_head - c->out_tail;
         if (used == OUT_SIZE) {                         /* full: let the Terminal drain */
             if (p && um_stopping()) break;
-            sched_yield();
+            sched_wait();
             continue;
         }
         UINT32 n = OUT_SIZE - used;
@@ -109,6 +109,6 @@ int um_console_read(UmConsole *c, char *buf, int cap, UmProcess *p)
         if (c->in_eof) { c->in_eof = false; c->waiting = false; return 0; }
         if (p && um_stopping()) { c->waiting = false; return -1; }
         c->waiting = true;
-        sched_yield();
+        sched_wait();
     }
 }

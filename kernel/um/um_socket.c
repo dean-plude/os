@@ -16,6 +16,7 @@
 #include "../lib/string.h"
 #include "../net/sock.h"
 #include "../net/net.h"
+#include "../net/net_internal.h"
 
 #define BOUNCE  (16 * 1024)
 
@@ -136,6 +137,15 @@ static UINT64 sys_accept(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *   2 getpeername; 3 getsockname; 4 poll (outptr gets 3 bytes r/w/e) */
 static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
+    /* 6: the network generation (select reads it before looking);
+     * 5: sleep until it moves on from arg, at most a4 ms */
+    if (a2 == 6) return net_gen();
+    if (a2 == 5) {
+        UINT64 ticks = (a4 + 9) / 10;
+        if (ticks > 10) ticks = 10;
+        net_wait_ticks((UINT32)a3, ticks ? ticks : 1);
+        return 0;
+    }
     int s = handle_sock(UmCurrent(), a1);
     if (s < 0) return (UINT64)(INT64)-SOCK_ENOTSOCK;
     UINT32 ip; UINT16 port;
@@ -203,9 +213,11 @@ static UINT64 sys_resolve(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     NetOp *op = NetResolve(name);
     if (!op) return (UINT64)(INT64)-SOCK_ENOBUFS;
     UINT64 deadline = sched_ticks() + 1000;
-    while (op->state == NET_PENDING) {
+    for (;;) {
+        UINT32 ng = net_gen();
+        if (op->state != NET_PENDING) break;
         if (um_stopping() || sched_ticks() > deadline) { NetRelease(op); return (UINT64)(INT64)-SOCK_ETIMEDOUT; }
-        sched_yield();
+        net_wait(ng);
     }
     int r;
     if (op->state == NET_DONE) {

@@ -101,6 +101,13 @@ static IMAGE_NT_HEADERS *nt_of(void *base)
     return nt->Signature == IMAGE_NT_SIGNATURE ? nt : 0;
 }
 
+PVOID NTAPI RtlPcToFileHeader(PVOID pc, PVOID *base)
+{
+    PLDR_DATA_TABLE_ENTRY e = LdrNovaFindEntry(pc);
+    *base = e ? e->DllBase : 0;
+    return *base;
+}
+
 PRUNTIME_FUNCTION NTAPI RtlLookupFunctionEntry(DWORD64 pc, PDWORD64 base_out, PUNWIND_HISTORY_TABLE hist)
 {
     (void)hist;
@@ -145,7 +152,7 @@ PEXCEPTION_ROUTINE NTAPI RtlVirtualUnwind(ULONG type, DWORD64 base, DWORD64 pc, 
     BYTE framereg = ui->FrameRegOff & 0xF;
     if (framereg) frame_base = *int_reg(ctx, framereg) - (ui->FrameRegOff >> 4) * 16;
 
-    int i = 0, n = ui->CountOfCodes;
+    int i = 0, n = ui->CountOfCodes, machframe = 0;
     /* Only apply codes for prologue instructions that have executed. */
     while (i < n) {
         UNWIND_CODE *u = &ui->UnwindCode[i];
@@ -189,6 +196,7 @@ PEXCEPTION_ROUTINE NTAPI RtlVirtualUnwind(ULONG type, DWORD64 base, DWORD64 pc, 
                 DWORD64 sp = ctx->Rsp + (info ? 8 : 0);
                 ctx->Rip = *(DWORD64 *)(sp + 0);
                 ctx->Rsp = *(DWORD64 *)(sp + 24);
+                machframe = 1;
             }
             break;
         default: break;
@@ -196,9 +204,11 @@ PEXCEPTION_ROUTINE NTAPI RtlVirtualUnwind(ULONG type, DWORD64 base, DWORD64 pc, 
         i += slots;
     }
     if (frame_out) *frame_out = frame_base;
-    /* Caller's RIP is at [RSP]; pop it. */
-    ctx->Rip = *(DWORD64 *)ctx->Rsp;
-    ctx->Rsp += 8;
+    /* Caller's RIP is at [RSP]; pop it (a machine frame already gave it). */
+    if (!machframe) {
+        ctx->Rip = *(DWORD64 *)ctx->Rsp;
+        ctx->Rsp += 8;
+    }
 
     BYTE flags = ui->VersionFlags >> 3;
     if ((flags & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER))) {
@@ -347,8 +357,7 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
              * nonvolatile registers restored while unwinding the frames
              * below it), at the handler's continuation address. */
             before.Rip = (DWORD64)target_ip;
-            before.Rsp = (DWORD64)target_frame;
-            before.Rax = (DWORD64)retval;
+            before.Rax = (DWORD64)retval;         /* Rsp: the frame's own (not the establisher frame) */
             NtContinue(&before, FALSE);
         }
         if (target_frame && frame > (DWORD64)target_frame) break;   /* passed it */

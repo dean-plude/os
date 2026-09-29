@@ -44,6 +44,24 @@ XSTUB(NtQueryVolumeInformationFile, SYS_NtQueryVolumeInformationFile)
 XSTUB(NtAllocateVirtualMemory,      SYS_NtAllocateVirtualMemory)
 XSTUB(NtFreeVirtualMemory,          SYS_NtFreeVirtualMemory)
 XSTUB(NtProtectVirtualMemory,       SYS_NtProtectVirtualMemory)
+XSTUB(NtQueryVirtualMemory,         SYS_NtQueryVirtualMemory)
+XSTUB(NtGetContextThread,           SYS_NtGetContextThread)
+XSTUB(NtSetContextThread,           SYS_NtSetContextThread)
+XSTUB(NtNovaCreateProcess,          SYS_NtNovaCreateProcess)
+XSTUB(NtNovaProcessInfo,            SYS_NtNovaProcessInfo)
+XSTUB(NtNovaProcessList,            SYS_NtNovaProcessList)
+XSTUB(NtCreateKey,                  SYS_NtCreateKey)
+XSTUB(NtOpenKey,                    SYS_NtOpenKey)
+XSTUB(NtOpenKeyEx,                  SYS_NtOpenKeyEx)
+XSTUB(NtDeleteKey,                  SYS_NtDeleteKey)
+XSTUB(NtSetValueKey,                SYS_NtSetValueKey)
+XSTUB(NtQueryValueKey,              SYS_NtQueryValueKey)
+XSTUB(NtEnumerateValueKey,          SYS_NtEnumerateValueKey)
+XSTUB(NtDeleteValueKey,             SYS_NtDeleteValueKey)
+XSTUB(NtEnumerateKey,               SYS_NtEnumerateKey)
+XSTUB(NtQueryKey,                   SYS_NtQueryKey)
+XSTUB(NtFlushKey,                   SYS_NtFlushKey)
+XSTUB(NtRenameKey,                  SYS_NtRenameKey)
 XSTUB(NtTerminateProcess,           SYS_NtTerminateProcess)
 XSTUB(NtQuerySystemTime,            SYS_NtQuerySystemTime)
 XSTUB(NtQueryPerformanceCounter,    SYS_NtQueryPerformanceCounter)
@@ -57,6 +75,9 @@ XSTUB(NtQueryInformationThread,     SYS_NtQueryInformationThread)
 XSTUB(NtSetInformationThread,       SYS_NtSetInformationThread)
 XSTUB(NtQueryInformationProcess,    SYS_NtQueryInformationProcess)
 XSTUB(NtCreateEvent,                SYS_NtCreateEvent)
+XSTUB(NtOpenEvent,                  SYS_NtOpenEvent)
+XSTUB(NtOpenMutant,                 SYS_NtOpenMutant)
+XSTUB(NtOpenSemaphore,              SYS_NtOpenSemaphore)
 XSTUB(NtSetEvent,                   SYS_NtSetEvent)
 XSTUB(NtResetEvent,                 SYS_NtResetEvent)
 XSTUB(NtClearEvent,                 SYS_NtClearEvent)
@@ -94,6 +115,7 @@ XSTUB(NtNovaGuiKillTimer,              SYS_NtNovaGuiKillTimer)
 XSTUB(NtNovaGuiMessageBox,             SYS_NtNovaGuiMessageBox)
 XSTUB(NtNovaGuiScreenSize,             SYS_NtNovaGuiScreenSize)
 XSTUB(NtNovaGuiPostMessage,            SYS_NtNovaGuiPostMessage)
+XSTUB(NtNovaGuiCtl,                    SYS_NtNovaGuiCtl)
 
 /* -----------------------------------------------------------------------
  * Memory/string primitives (real ntdll exports these too)
@@ -147,6 +169,28 @@ NTSYSAPI PPEB NTAPI RtlGetCurrentPeb(void)
     PPEB peb;
     __asm__("movq %%gs:0x60, %0" : "=r"(peb));
     return peb;
+}
+
+/* Windows 10 22H2 (build 19045), the version NovaOS reports everywhere */
+NTSYSAPI VOID NTAPI RtlGetNtVersionNumbers(ULONG *major, ULONG *minor, ULONG *build)
+{
+    if (major) *major = 10;
+    if (minor) *minor = 0;
+    if (build) *build = 0xF0000000u | 19045;       /* high nibble: a free (retail) build */
+}
+
+NTSYSAPI NTSTATUS NTAPI RtlGetVersion(PVOID info)
+{
+    ULONG *v = info;                               /* RTL_OSVERSIONINFOW(EX) */
+    ULONG size = v[0];
+    if (size < 276) return 0xC000000D;             /* STATUS_INVALID_PARAMETER */
+    for (ULONG i = 1; i < size / 4; i++) v[i] = 0;
+    v[1] = 10;                                     /* major */
+    v[2] = 0;                                      /* minor */
+    v[3] = 19045;                                  /* build */
+    v[4] = 2;                                      /* VER_PLATFORM_WIN32_NT */
+    if (size >= 284) ((UCHAR *)v)[282] = 1;        /* wProductType: VER_NT_WORKSTATION */
+    return 0;
 }
 
 NTSYSAPI VOID NTAPI RtlInitUnicodeString(PUNICODE_STRING us, const WCHAR *s)

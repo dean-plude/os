@@ -53,8 +53,9 @@ static void csrss_server_thread(void *arg)
     (void)arg;
     kprintf("[CSRSS] Server thread started (PID=server)\n");
     for (;;) {
-        /* Phase 6: nothing to do — real work happens in CsrRegisterProcess */
-        sched_yield();
+        /* Phase 6: nothing to do — real work happens in CsrRegisterProcess
+         * (sleep: nothing wakes it, so it never takes a CPU) */
+        sched_block();
     }
 }
 

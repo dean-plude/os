@@ -52,6 +52,7 @@ RESPATH = '/Programs/NetSurf/res'
 NS_DEFS = ['-Dnsframebuffer', '-Dsmall', '-DSTMTEXPR=1', '-DWITH_BMP', '-DWITH_GIF', '-DWITH_PNG',
            '-DWITH_JPEG',                   # userland/netsurf/jpeg_stb.c (stb_image)
            '-DWITH_NSPSL', '-DWITH_UTF8PROC', '-DWITH_NOVA_HTTP', '-DUTF8PROC_STATIC',
+           '-DDUK_OPT_HAVE_CUSTOM_H',        # JavaScript: Duktape (content/handlers/javascript/duktape)
            '-DNETSURF_HOMEPAGE="about:welcome"', '-DNETSURF_LOG_LEVEL=WARNING',
            '-DNETSURF_UA_FORMAT_STRING="Mozilla/5.0 (NovaOS%.0s) NetSurf/%d.%d"',
            f'-DNETSURF_FB_RESPATH="{RESPATH}"', '-DNETSURF_FB_FONTPATH=""',

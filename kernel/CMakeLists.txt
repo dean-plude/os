@@ -100,6 +100,8 @@ set(KERNEL_ASM_SOURCES
     arch/x86_64/entry.asm
     arch/x86_64/isr_stubs.asm
     arch/x86_64/syscall_entry.asm
+    arch/x86_64/ap_trampoline.asm
+    arch/x86_64/uaccess.asm
 )
 
 # -------------------------------------------------------------------------
@@ -119,6 +121,10 @@ set(KERNEL_C_SOURCES
     hal/ps2.c
     hal/pci.c
     drivers/e1000.c
+    drivers/ahci.c
+    fs/block.c
+    fs/fat.c
+    fs/persist.c
     net/net.c
     net/tls.c
     net/tls_roots.c
@@ -132,11 +138,14 @@ set(KERNEL_C_SOURCES
     um/um_exception.c
     um/um_socket.c
     um/um_gui.c
+    um/um_registry.c
     ke/main.c
     ke/printf.c
     ke/scheduler.c
     ke/syscall.c
     ke/kpcr.c
+    ke/smp.c
+    ke/waitq.c
     ke/probe.c
     ke/probe_test.c
     ob/ob.c

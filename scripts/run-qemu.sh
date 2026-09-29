@@ -110,13 +110,22 @@ QEMU_ARGS=(
     -machine q35
     -cpu qemu64,+rdtscp
     -m 256M
-    -smp 1
+    -smp 4
     -drive "if=pflash,format=raw,readonly=on,file=${OVMF_CODE}"
     -drive "format=raw,file=${DISK_IMG}"
     -serial stdio
     -vga std
     -nic none
 )
+
+# Data disk: NovaOS keeps drive C: here (it formats an empty disk on first
+# boot).  It sits beside the boot image, so rebuilding NovaOS keeps your files.
+DATA_IMG="$(dirname "$DISK_IMG")/nova-data.img"
+if [ ! -f "$DATA_IMG" ]; then
+    truncate -s 256M "$DATA_IMG"
+    echo "Created an empty 256 MiB data disk: $DATA_IMG"
+fi
+QEMU_ARGS+=( -drive "format=raw,file=${DATA_IMG}" )
 
 if [ -f "$OVMF_VARS" ]; then
     VARS_COPY="/tmp/nova_ovmf_vars_$$.fd"

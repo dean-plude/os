@@ -1,0 +1,100 @@
+/* winreg.h — the registry API (kernel32; advapi32 forwards to it) */
+#pragma once
+
+typedef void *HKEY, **PHKEY;
+typedef DWORD REGSAM;
+typedef LONG LSTATUS;
+
+#define HKEY_CLASSES_ROOT     ((HKEY)(ULONG_PTR)0x80000000)
+#define HKEY_CURRENT_USER     ((HKEY)(ULONG_PTR)0x80000001)
+#define HKEY_LOCAL_MACHINE    ((HKEY)(ULONG_PTR)0x80000002)
+#define HKEY_USERS            ((HKEY)(ULONG_PTR)0x80000003)
+#define HKEY_PERFORMANCE_DATA ((HKEY)(ULONG_PTR)0x80000004)
+#define HKEY_CURRENT_CONFIG   ((HKEY)(ULONG_PTR)0x80000005)
+
+#define REG_NONE                0
+#define REG_SZ                  1
+#define REG_EXPAND_SZ           2
+#define REG_BINARY              3
+#define REG_DWORD               4
+#define REG_DWORD_BIG_ENDIAN    5
+#define REG_LINK                6
+#define REG_MULTI_SZ            7
+#define REG_QWORD               11
+
+#define KEY_QUERY_VALUE         0x0001
+#define KEY_SET_VALUE           0x0002
+#define KEY_CREATE_SUB_KEY      0x0004
+#define KEY_ENUMERATE_SUB_KEYS  0x0008
+#define KEY_NOTIFY              0x0010
+#define KEY_WOW64_64KEY         0x0100
+#define KEY_WOW64_32KEY         0x0200
+#define KEY_READ                0x20019
+#define KEY_WRITE               0x20006
+#define KEY_ALL_ACCESS          0xF003F
+
+#define REG_OPTION_NON_VOLATILE 0
+#define REG_OPTION_VOLATILE     1
+#define REG_CREATED_NEW_KEY     1
+#define REG_OPENED_EXISTING_KEY 2
+
+#define RRF_RT_REG_NONE   0x00000001
+#define RRF_RT_REG_SZ     0x00000002
+#define RRF_RT_REG_EXPAND_SZ 0x00000004
+#define RRF_RT_REG_BINARY 0x00000008
+#define RRF_RT_REG_DWORD  0x00000010
+#define RRF_RT_REG_MULTI_SZ 0x00000020
+#define RRF_RT_REG_QWORD  0x00000040
+#define RRF_RT_ANY        0x0000FFFF
+#define RRF_NOEXPAND      0x10000000
+#define RRF_ZEROONFAILURE 0x20000000
+
+#define ERROR_NO_MORE_ITEMS 259
+#define ERROR_KEY_DELETED   1018
+#define ERROR_KEY_HAS_CHILDREN 1020
+
+WINBASEAPI LSTATUS WINAPI RegOpenKeyExW(HKEY key, LPCWSTR sub, DWORD options, REGSAM sam, PHKEY out);
+WINBASEAPI LSTATUS WINAPI RegOpenKeyExA(HKEY key, LPCSTR sub, DWORD options, REGSAM sam, PHKEY out);
+WINBASEAPI LSTATUS WINAPI RegCreateKeyExW(HKEY key, LPCWSTR sub, DWORD reserved, LPWSTR cls, DWORD options, REGSAM sam,
+                                          LPSECURITY_ATTRIBUTES sa, PHKEY out, LPDWORD disposition);
+WINBASEAPI LSTATUS WINAPI RegCreateKeyExA(HKEY key, LPCSTR sub, DWORD reserved, LPSTR cls, DWORD options, REGSAM sam,
+                                          LPSECURITY_ATTRIBUTES sa, PHKEY out, LPDWORD disposition);
+WINBASEAPI LSTATUS WINAPI RegCloseKey(HKEY key);
+WINBASEAPI LSTATUS WINAPI RegQueryValueExW(HKEY key, LPCWSTR name, LPDWORD reserved, LPDWORD type, LPBYTE data, LPDWORD n);
+WINBASEAPI LSTATUS WINAPI RegQueryValueExA(HKEY key, LPCSTR name, LPDWORD reserved, LPDWORD type, LPBYTE data, LPDWORD n);
+WINBASEAPI LSTATUS WINAPI RegSetValueExW(HKEY key, LPCWSTR name, DWORD reserved, DWORD type, const BYTE *data, DWORD n);
+WINBASEAPI LSTATUS WINAPI RegSetValueExA(HKEY key, LPCSTR name, DWORD reserved, DWORD type, const BYTE *data, DWORD n);
+WINBASEAPI LSTATUS WINAPI RegGetValueW(HKEY key, LPCWSTR sub, LPCWSTR name, DWORD flags, LPDWORD type, PVOID data, LPDWORD n);
+WINBASEAPI LSTATUS WINAPI RegGetValueA(HKEY key, LPCSTR sub, LPCSTR name, DWORD flags, LPDWORD type, PVOID data, LPDWORD n);
+WINBASEAPI LSTATUS WINAPI RegDeleteValueW(HKEY key, LPCWSTR name);
+WINBASEAPI LSTATUS WINAPI RegDeleteValueA(HKEY key, LPCSTR name);
+WINBASEAPI LSTATUS WINAPI RegDeleteKeyW(HKEY key, LPCWSTR sub);
+WINBASEAPI LSTATUS WINAPI RegDeleteKeyA(HKEY key, LPCSTR sub);
+WINBASEAPI LSTATUS WINAPI RegDeleteTreeW(HKEY key, LPCWSTR sub);
+WINBASEAPI LSTATUS WINAPI RegDeleteTreeA(HKEY key, LPCSTR sub);
+WINBASEAPI LSTATUS WINAPI RegEnumKeyExW(HKEY key, DWORD i, LPWSTR name, LPDWORD n, LPDWORD reserved, LPWSTR cls, LPDWORD ncls, PFILETIME t);
+WINBASEAPI LSTATUS WINAPI RegEnumKeyExA(HKEY key, DWORD i, LPSTR name, LPDWORD n, LPDWORD reserved, LPSTR cls, LPDWORD ncls, PFILETIME t);
+WINBASEAPI LSTATUS WINAPI RegEnumValueW(HKEY key, DWORD i, LPWSTR name, LPDWORD n, LPDWORD reserved, LPDWORD type, LPBYTE data, LPDWORD nd);
+WINBASEAPI LSTATUS WINAPI RegEnumValueA(HKEY key, DWORD i, LPSTR name, LPDWORD n, LPDWORD reserved, LPDWORD type, LPBYTE data, LPDWORD nd);
+WINBASEAPI LSTATUS WINAPI RegQueryInfoKeyW(HKEY key, LPWSTR cls, LPDWORD ncls, LPDWORD reserved, LPDWORD subkeys, LPDWORD maxsub,
+                                           LPDWORD maxcls, LPDWORD values, LPDWORD maxvname, LPDWORD maxvdata, LPDWORD sd, PFILETIME t);
+WINBASEAPI LSTATUS WINAPI RegFlushKey(HKEY key);
+WINBASEAPI LSTATUS WINAPI RegSetKeyValueW(HKEY key, LPCWSTR sub, LPCWSTR name, DWORD type, LPCVOID data, DWORD n);
+WINBASEAPI LSTATUS WINAPI RegOpenCurrentUser(REGSAM sam, PHKEY out);
+WINBASEAPI LSTATUS WINAPI RegQueryInfoKeyA(HKEY key, LPSTR cls, LPDWORD ncls, LPDWORD reserved, LPDWORD subkeys, LPDWORD maxsub,
+                                           LPDWORD maxcls, LPDWORD values, LPDWORD maxvname, LPDWORD maxvdata, LPDWORD sd, PFILETIME t);
+WINBASEAPI LSTATUS WINAPI RegOpenKeyW(HKEY key, LPCWSTR sub, PHKEY out);
+WINBASEAPI LSTATUS WINAPI RegOpenKeyA(HKEY key, LPCSTR sub, PHKEY out);
+WINBASEAPI LSTATUS WINAPI RegCreateKeyW(HKEY key, LPCWSTR sub, PHKEY out);
+WINBASEAPI LSTATUS WINAPI RegCreateKeyA(HKEY key, LPCSTR sub, PHKEY out);
+WINBASEAPI LSTATUS WINAPI RegSetKeyValueA(HKEY key, LPCSTR sub, LPCSTR name, DWORD type, LPCVOID data, DWORD n);
+WINBASEAPI LSTATUS WINAPI RegDeleteKeyValueW(HKEY key, LPCWSTR sub, LPCWSTR name);
+WINBASEAPI LSTATUS WINAPI RegQueryValueW(HKEY key, LPCWSTR sub, LPWSTR data, PLONG n);
+WINBASEAPI LSTATUS WINAPI RegSetValueW(HKEY key, LPCWSTR sub, DWORD type, LPCWSTR data, DWORD n);
+WINBASEAPI LSTATUS WINAPI RegEnumKeyW(HKEY key, DWORD i, LPWSTR name, DWORD n);
+WINBASEAPI LSTATUS WINAPI RegEnumKeyA(HKEY key, DWORD i, LPSTR name, DWORD n);
+WINBASEAPI LSTATUS WINAPI RegDeleteKeyExW(HKEY key, LPCWSTR sub, REGSAM sam, DWORD reserved);
+WINBASEAPI LSTATUS WINAPI RegDeleteKeyExA(HKEY key, LPCSTR sub, REGSAM sam, DWORD reserved);
+WINBASEAPI LSTATUS WINAPI RegCopyTreeW(HKEY from, LPCWSTR sub, HKEY to);
+WINBASEAPI LSTATUS WINAPI RegRenameKey(HKEY key, LPCWSTR sub, LPCWSTR newname);
+WINBASEAPI LSTATUS WINAPI RegNotifyChangeKeyValue(HKEY key, BOOL subtree, DWORD filter, HANDLE ev, BOOL async);

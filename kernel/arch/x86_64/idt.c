@@ -16,6 +16,8 @@
 #include "../../ke/scheduler.h"
 #include "../../ps/ps.h"
 #include "../../hal/ps2.h"
+#include "../../ke/kpcr.h"
+#include "../../ke/smp.h"
 
 /* Assembly stub address table (defined in isr_stubs.asm) */
 extern uintptr_t isr_stub_table[IDT_ENTRIES];
@@ -77,15 +79,19 @@ void idt_init(void)
     /* NT syscall (int 0x2E) — DPL=3 so userspace can invoke it */
     set_trap_gate(VECTOR_SYSCALL,  isr_stub_table[VECTOR_SYSCALL],  0, 3);
 
-    /* Load the IDTR */
+    idt_load();
+    kprintf("[IDT] Initialized: %d gates, IDTR base=0x%016lx\n",
+            IDT_ENTRIES, (uint64_t)(uintptr_t)idt);
+}
+
+/* Load the (shared) IDT on the calling CPU */
+void idt_load(void)
+{
     Idtr idtr = {
         .limit = sizeof(idt) - 1,
         .base  = (uint64_t)(uintptr_t)idt,
     };
     __asm__ volatile ("lidt %0" : : "m"(idtr) : "memory");
-
-    kprintf("[IDT] Initialized: %d gates, IDTR base=0x%016lx\n",
-            IDT_ENTRIES, idtr.base);
 }
 
 /* -----------------------------------------------------------------------
@@ -152,8 +158,7 @@ terminate_faulting_user_thread(NTSTATUS status, InterruptFrame *f, uint64_t addr
     Thread *t = sched_current();
     kprintf("[IDT] Terminating faulting user thread '%s' (TID %lu), status 0x%x\n",
             t->name, t->tid, (UINT32)status);
-    t->state = THREAD_DEAD;
-    for (;;) sched_yield();
+    sched_exit_current();
 }
 
 /* NTSTATUS reported as the exit status for an unhandled user exception */
@@ -275,10 +280,8 @@ static void dispatch(InterruptFrame *frame)
     /* ---- Timer interrupt (APIC local timer, vector IRQ_TIMER) ---- */
     if (vector == IRQ_TIMER) {
         apic_eoi();
-        /* Collect keyboard/mouse input at 100 Hz (the controller runs with
-         * its own IRQs off); see ps2_poll. */
-        ps2_poll();
-        /* Drive preemptive scheduling: may context-switch to another
+        /* Drive the clock (and keyboard/mouse polling, see sched_tick) and
+         * preemptive scheduling: may context-switch to another
          * thread; control returns here (on this thread's stack) before the
          * ISR epilogue performs IRETQ. */
         sched_tick();
@@ -314,7 +317,43 @@ static void dispatch(InterruptFrame *frame)
  * ----------------------------------------------------------------------- */
 void interrupt_dispatch(InterruptFrame *frame)
 {
+    uint64_t vector = frame->vector;
+    /* IPIs need nothing the kernel lock guards: handle them without it
+     * (another CPU may hold it while it waits for us to flush). */
+    if (vector == IPI_WAKE || vector == IPI_TLB) {
+        smp_ipi(vector);
+        return;
+    }
+    /* A fault inside a user-memory copy (the page went away under it):
+     * the copy returns an error instead (probe.c) */
+    if (vector == EXC_PAGE_FAULT && !(frame->cs & 3)) {
+        /* the kernel touching a program's committed page for the first
+         * time (a copy to or from user memory): back it and retry */
+        uint64_t cr2 = read_cr2();
+        if (!(frame->error_code & 1) && cr2 < UINT64_C(0x00007FFFFFFF0000) && sched_current()->um && UmDemandFault(cr2))
+            return;
+        if (UserCopyFixup(frame)) return;
+    }
+    /* A timer tick while this CPU is halted waiting for the kernel lock:
+     * nothing to do (the clock follows the TSC, and the other CPUs keep
+     * it), and switching the waiting thread out halfway would be wrong. */
+    if (vector == IRQ_TIMER && KiGetCurrentKpcr()->LockWait) {
+        apic_eoi();
+        return;
+    }
+    KiGetCurrentKpcr()->Idle = 0;
+    /* The timer (the scheduler) and spurious interrupts run under their
+     * own locks; everything else under the big kernel lock (nesting if the
+     * interrupted thread holds it already).  A switch in between hands the
+     * lock over and back (smp.h). */
+    bool big = vector != IRQ_TIMER && vector != IRQ_SPURIOUS;
+    if (big) bkl_acquire();
     dispatch(frame);
     /* Returning to a user program that has been killed meanwhile? */
-    if ((frame->cs & 3) && sched_current()->um) UmReturnToUser();
+    if ((frame->cs & 3) && sched_current()->um) UmReturnToUserFrame(frame);
+    if (big) bkl_release();
+    if ((frame->cs & 3) && bkl_held()) {                /* never into user mode with it */
+        kprintf("[SMP] Bug: returning to user mode holding the kernel lock (vector %lu)\n", vector);
+        bkl_leave_kernel();
+    }
 }

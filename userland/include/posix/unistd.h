@@ -34,7 +34,10 @@ _CRTIMP int     isatty(int fd);
 _CRTIMP int     ftruncate(int fd, off_t len);
 _CRTIMP int     fsync(int fd);
 _CRTIMP long    sysconf(int name);
+#ifndef _NOVA_GETHOSTNAME                   /* winsock2.h declares ws2_32's */
+#define _NOVA_GETHOSTNAME
 _CRTIMP int     gethostname(char *name, size_t len);
+#endif
 _CRTIMP uid_t   getuid(void);
 _CRTIMP uid_t   geteuid(void);
 #define _SC_PAGESIZE 30
