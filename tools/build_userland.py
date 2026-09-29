@@ -267,7 +267,8 @@ for src in sorted(os.listdir(progdir)):
          os.path.join(out, 'ws2_32.lib'), os.path.join(out, 'user32.lib'),
          os.path.join(out, 'gdi32.lib'), os.path.join(out, 'testdll.lib'),
          os.path.join(out, 'vcruntime140.lib'), os.path.join(out, 'advapi32.lib'),
-         os.path.join(out, 'ole32.lib'), os.path.join(out, 'oleaut32.lib')])
+         os.path.join(out, 'ole32.lib'), os.path.join(out, 'oleaut32.lib'),
+         os.path.join(out, 'comctl32.lib'), os.path.join(out, 'shell32.lib')])
     built.append((f'\\Programs\\{name}.exe', exe))
 
 # 3a0. fonts gdi32 draws text with (C:\Windows\Fonts)
