@@ -151,6 +151,7 @@ typedef struct tagWNDCLASSEXW {
 #define WM_RBUTTONUP   0x0205
 #define WM_MOUSEWHEEL  0x020A
 #define CF_TEXT        1
+#define CF_HDROP       15
 #define CF_UNICODETEXT 13
 #define MB_YESNO       0x4
 #define MB_YESNOCANCEL 0x3
@@ -1932,3 +1933,7 @@ USERAPI int GetWindowRgn(HWND h, HRGN r);
 USERAPI int GetWindowRgnBox(HWND h, LPRECT r);
 
 _NOVA_END
+
+/* shellapi.h: a WM_DROPFILES handle's contents */
+typedef struct _DROPFILES { DWORD pFiles; POINT pt; BOOL fNC; BOOL fWide; } DROPFILES, *LPDROPFILES;
+typedef HANDLE HDROP;

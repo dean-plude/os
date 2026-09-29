@@ -51,7 +51,7 @@ DLLS = [
     ('comctl32', ['user32', 'gdi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB00000000),
     ('shell32',  ['comctl32', 'gdi32', 'user32', 'kernel32', 'ntdll'], 0x7FFAC0000000),
     ('comdlg32', ['kernel32', 'ntdll'],  0x7FFB10000000),
-    ('ole32',    ['advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
+    ('ole32',    ['user32', 'advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
     ('oleaut32', ['ole32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAF0000000),
 ]
 UCRT_BASE = 0x7FFA28000000

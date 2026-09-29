@@ -98,6 +98,9 @@ typedef struct {
     volatile UINT32 head, tail;
     bool        quit;
     struct { UINT32 id; UINT32 period; UINT64 next; bool used; } timers[GUI_TIMERS];
+    UINT32      accept;             /* drops it takes: 1 files (WM_DROPFILES), 2 an OLE drop target */
+    void       *drop;               /* a drop delivered and not yet fetched (kmalloc) */
+    UINT32      drop_len;
 } GuiWin;
 
 /* The table's slots (used, proc, id), the message queues, the quit flags
@@ -585,8 +588,11 @@ static void destroy_window(GuiWin *g)
         um_unlock(&p->lock);
     }
     IrqState s = spin_lock_irqsave(&g_gui_lock);
+    void *drop = g->drop;
+    g->drop = NULL; g->drop_len = 0; g->accept = 0;
     g->used = false;
     spin_unlock_irqrestore(&g_gui_lock, s);
+    kfree(drop);
 }
 
 static UINT64 sys_gui_destroy(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -658,6 +664,26 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_PRESENT  8
 #define CTL_WORKAREA 9
 #define CTL_WAKE     10                 /* arg: a thread id of this process; its GetMessage returns -2 */
+/* Drag and drop between programs (hwnd may be 0 for the first two):
+ *  11 WINDOW_AT   ptr <- { screen x, y }, ptr -> { window id, pid, accept flags, 0 }
+ *                 (id 0: the desktop or one of its own apps)
+ *  12 ACCEPT_DROPS arg: the flags for this window
+ *  13 DROP        arg: the target's window id; ptr <- { x, y, effect, bytes,
+ *                 then the UTF-16 file list }: queued to the target as WM_NOVA_DROP
+ *  14 DROP_FETCH  ptr -> { x, y, effect, source pid, bytes, the list }, arg: room in bytes */
+#define CTL_WINDOW_AT    11
+#define CTL_ACCEPT_DROPS 12
+#define CTL_DROP         13
+#define CTL_DROP_FETCH   14
+#define WM_NOVA_DROP     0x03FE
+#define DROP_MAX         (64 * 1024)
+
+static GuiWin *win_by_id(UINT32 id)             /* any process's; under g_gui_lock */
+{
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++)
+        if (g_win[i].used && g_win[i].id == id) return &g_win[i];
+    return NULL;
+}
 
 static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
@@ -674,6 +700,61 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, c, sizeof(c))) ? 1 : 0;
     }
     if (a2 == CTL_PRESENT) { WmInvalidate(); return 1; }
+    if (a2 == CTL_WINDOW_AT) {
+        INT32 pt[2], out[4] = { 0, 0, 0, 0 };
+        if (!NT_SUCCESS(CopyFromUser(pt, (const void *)(uintptr_t)a4, sizeof(pt)))) return 0;
+        DesktopLock();
+        bool caption;
+        WND *w = WmWindowAt(pt[0], pt[1], &caption);
+        for (int i = 0; w && i < GUI_MAX_WINDOWS; i++) {
+            GuiWin *g = &g_win[i];
+            if (g->used && g->wnd == w && g->proc) { out[0] = (INT32)g->id; out[1] = (INT32)g->proc->pid; out[2] = (INT32)g->accept; break; }
+        }
+        DesktopUnlock();
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, out, sizeof(out))) ? 1 : 0;
+    }
+    if (a2 == CTL_ACCEPT_DROPS) {
+        IrqState s = spin_lock_irqsave(&g_gui_lock);
+        GuiWin *g = win_of_handle(p, a1);
+        if (g) g->accept = (UINT32)a3;
+        spin_unlock_irqrestore(&g_gui_lock, s);
+        return g ? 1 : 0;
+    }
+    if (a2 == CTL_DROP) {
+        INT32 hd[4];
+        if (!NT_SUCCESS(CopyFromUser(hd, (const void *)(uintptr_t)a4, sizeof(hd)))) return 0;
+        UINT32 bytes = (UINT32)hd[3];
+        if (bytes > DROP_MAX) return 0;
+        UINT32 *buf = kzalloc(20 + bytes);
+        if (!buf) return 0;
+        buf[0] = (UINT32)hd[0]; buf[1] = (UINT32)hd[1]; buf[2] = (UINT32)hd[2]; buf[3] = p->pid; buf[4] = bytes;
+        if (bytes && !NT_SUCCESS(CopyFromUser(buf + 5, (const void *)(uintptr_t)(a4 + 16), bytes))) { kfree(buf); return 0; }
+        IrqState s = spin_lock_irqsave(&g_gui_lock);
+        GuiWin *g = win_by_id((UINT32)a3);
+        void *old = NULL;
+        if (g) {
+            old = g->drop;
+            g->drop = buf; g->drop_len = 20 + bytes;
+            enqueue_locked(g, WM_NOVA_DROP, bytes, (UINT64)(UINT32)hd[2], hd[0], hd[1]);
+        }
+        spin_unlock_irqrestore(&g_gui_lock, s);
+        kfree(old);
+        if (!g) { kfree(buf); return 0; }
+        waitq_wake(&g_guiq);
+        return 1;
+    }
+    if (a2 == CTL_DROP_FETCH) {
+        IrqState s = spin_lock_irqsave(&g_gui_lock);
+        GuiWin *g = win_of_handle(p, a1);
+        void *buf = g ? g->drop : NULL;
+        UINT32 len = g ? g->drop_len : 0;
+        if (g) { g->drop = NULL; g->drop_len = 0; }
+        spin_unlock_irqrestore(&g_gui_lock, s);
+        if (!buf) return 0;
+        UINT64 r = len <= a3 && NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, buf, len)) ? len : 0;
+        kfree(buf);
+        return r;
+    }
     if (a2 == CTL_WAKE) {
         IrqState ws = spin_lock_irqsave(&g_gui_lock);
         bool set = false;
@@ -788,8 +869,11 @@ void um_gui_process_gone(UmProcess *p)
             if (g->wnd && WmGetCapture() == g->wnd) WmSetCapture(NULL);
             if (g->wnd) { g->wnd->user = NULL; WmDestroyWindow(g->wnd); g->wnd = NULL; }
             IrqState s = spin_lock_irqsave(&g_gui_lock);
+            void *drop = g->drop;
+            g->drop = NULL; g->drop_len = 0; g->accept = 0;
             g->used = false;
             spin_unlock_irqrestore(&g_gui_lock, s);
+            kfree(drop);
         }
     }
     WmInvalidate();

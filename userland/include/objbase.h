@@ -295,6 +295,122 @@ WINOLEAPI_(HRESULT) CoIncrementMTAUsage(CO_MTA_USAGE_COOKIE *cookie);
 WINOLEAPI_(HRESULT) CoDecrementMTAUsage(CO_MTA_USAGE_COOKIE cookie);
 WINOLEAPI_(DWORD)   CoGetCurrentProcess(void);
 WINOLEAPI_(HRESULT) CoWaitForMultipleHandles(DWORD flags, DWORD ms, ULONG n, LPHANDLE h, LPDWORD index);
+
+/* ---- data transfer: FORMATETC, STGMEDIUM, IDataObject; drag and drop ---- */
+typedef WORD CLIPFORMAT;
+#ifndef _NOVA_POINTL
+#define _NOVA_POINTL
+typedef struct tagPOINTL { LONG x, y; } POINTL;
+#endif
+#ifndef _NOVA_HENHMETAFILE
+#define _NOVA_HENHMETAFILE
+typedef HANDLE HENHMETAFILE;
+#endif
+typedef struct tagDVTARGETDEVICE { DWORD tdSize; WORD tdDriverNameOffset, tdDeviceNameOffset, tdPortNameOffset, tdExtDevmodeOffset; BYTE tdData[1]; } DVTARGETDEVICE;
+typedef struct tagFORMATETC { CLIPFORMAT cfFormat; DVTARGETDEVICE *ptd; DWORD dwAspect; LONG lindex; DWORD tymed; } FORMATETC, *LPFORMATETC;
+typedef struct tagSTGMEDIUM { DWORD tymed; union { HBITMAP hBitmap; void *hMetaFilePict; HENHMETAFILE hEnhMetaFile; HGLOBAL hGlobal; LPOLESTR lpszFileName; IStream *pstm; void *pstg; }; IUnknown *pUnkForRelease; } STGMEDIUM, *LPSTGMEDIUM;
+typedef struct tagSTATDATA { FORMATETC formatetc; DWORD advf; struct IAdviseSink *pAdvSink; DWORD dwConnection; } STATDATA;
+typedef struct IAdviseSink IAdviseSink;
+typedef struct IEnumSTATDATA IEnumSTATDATA;
+#define DVASPECT_CONTENT 1
+#define DVASPECT_THUMBNAIL 2
+#define DVASPECT_ICON 4
+#define DVASPECT_DOCPRINT 8
+#define TYMED_HGLOBAL 1
+#define TYMED_FILE 2
+#define TYMED_ISTREAM 4
+#define TYMED_ISTORAGE 8
+#define TYMED_GDI 16
+#define TYMED_MFPICT 32
+#define TYMED_ENHMF 64
+#define TYMED_NULL 0
+#define DATADIR_GET 1
+#define DATADIR_SET 2
+#define DV_E_FORMATETC ((HRESULT)0x80040064L)
+#define DV_E_TYMED ((HRESULT)0x80040069L)
+#define DV_E_DVASPECT ((HRESULT)0x8004006BL)
+#define DV_E_LINDEX ((HRESULT)0x80040068L)
+#define OLE_E_ADVISENOTSUPPORTED ((HRESULT)0x80040003L)
+#define DATA_S_SAMEFORMATETC ((HRESULT)0x00040130L)
+#define DROPEFFECT_NONE 0
+#define DROPEFFECT_COPY 1
+#define DROPEFFECT_MOVE 2
+#define DROPEFFECT_LINK 4
+#define DROPEFFECT_SCROLL 0x80000000
+#define DRAGDROP_S_DROP ((HRESULT)0x00040100L)
+#define DRAGDROP_S_CANCEL ((HRESULT)0x00040101L)
+#define DRAGDROP_S_USEDEFAULTCURSORS ((HRESULT)0x00040102L)
+#define DRAGDROP_E_NOTREGISTERED ((HRESULT)0x80040100L)
+#define DRAGDROP_E_ALREADYREGISTERED ((HRESULT)0x80040101L)
+#define DRAGDROP_E_INVALIDHWND ((HRESULT)0x80040102L)
+#define CLIPBRD_E_CANT_OPEN ((HRESULT)0x800401D0L)
+DEFINE_OLEGUID(IID_IDataObject,          0x0000010E, 0, 0);
+DEFINE_OLEGUID(IID_IEnumFORMATETC,       0x00000103, 0, 0);
+DEFINE_OLEGUID(IID_IDropSource,          0x00000121, 0, 0);
+DEFINE_OLEGUID(IID_IDropTarget,          0x00000122, 0, 0);
+DEFINE_OLEGUID(IID_IAdviseSink,          0x0000010F, 0, 0);
+
+#undef INTERFACE
+#define INTERFACE IEnumFORMATETC
+DECLARE_INTERFACE_(IEnumFORMATETC, IUnknown)
+{
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **out) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD(Next)(THIS_ ULONG n, FORMATETC *out, ULONG *fetched) PURE;
+    STDMETHOD(Skip)(THIS_ ULONG n) PURE;
+    STDMETHOD(Reset)(THIS) PURE;
+    STDMETHOD(Clone)(THIS_ IEnumFORMATETC **out) PURE;
+};
+#undef INTERFACE
+#define INTERFACE IDataObject
+DECLARE_INTERFACE_(IDataObject, IUnknown)
+{
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **out) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD(GetData)(THIS_ FORMATETC *fmt, STGMEDIUM *medium) PURE;
+    STDMETHOD(GetDataHere)(THIS_ FORMATETC *fmt, STGMEDIUM *medium) PURE;
+    STDMETHOD(QueryGetData)(THIS_ FORMATETC *fmt) PURE;
+    STDMETHOD(GetCanonicalFormatEtc)(THIS_ FORMATETC *in, FORMATETC *out) PURE;
+    STDMETHOD(SetData)(THIS_ FORMATETC *fmt, STGMEDIUM *medium, BOOL release) PURE;
+    STDMETHOD(EnumFormatEtc)(THIS_ DWORD dir, IEnumFORMATETC **out) PURE;
+    STDMETHOD(DAdvise)(THIS_ FORMATETC *fmt, DWORD advf, IAdviseSink *sink, DWORD *conn) PURE;
+    STDMETHOD(DUnadvise)(THIS_ DWORD conn) PURE;
+    STDMETHOD(EnumDAdvise)(THIS_ IEnumSTATDATA **out) PURE;
+};
+typedef IDataObject *LPDATAOBJECT;
+#undef INTERFACE
+#define INTERFACE IDropSource
+DECLARE_INTERFACE_(IDropSource, IUnknown)
+{
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **out) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD(QueryContinueDrag)(THIS_ BOOL escape, DWORD keys) PURE;
+    STDMETHOD(GiveFeedback)(THIS_ DWORD effect) PURE;
+};
+typedef IDropSource *LPDROPSOURCE;
+#undef INTERFACE
+#define INTERFACE IDropTarget
+DECLARE_INTERFACE_(IDropTarget, IUnknown)
+{
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **out) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD(DragEnter)(THIS_ IDataObject *data, DWORD keys, POINTL pt, DWORD *effect) PURE;
+    STDMETHOD(DragOver)(THIS_ DWORD keys, POINTL pt, DWORD *effect) PURE;
+    STDMETHOD(DragLeave)(THIS) PURE;
+    STDMETHOD(Drop)(THIS_ IDataObject *data, DWORD keys, POINTL pt, DWORD *effect) PURE;
+};
+typedef IDropTarget *LPDROPTARGET;
+#undef INTERFACE
+
+WINOLEAPI_(HRESULT) RegisterDragDrop(HWND w, IDropTarget *target);
+WINOLEAPI_(HRESULT) RevokeDragDrop(HWND w);
+WINOLEAPI_(HRESULT) DoDragDrop(IDataObject *data, IDropSource *source, DWORD ok, DWORD *effect);
+WINOLEAPI_(void)    ReleaseStgMedium(STGMEDIUM *m);
+
 WINOLEAPI_(HRESULT) OleInitialize(LPVOID reserved);
 WINOLEAPI_(void)    OleUninitialize(void);
 

@@ -740,31 +740,22 @@ WINOLEAPI_(HRESULT) GetHGlobalFromStream(LPSTREAM st, HGLOBAL *out)
 }
 
 /* ---------------------------------------------------------------------------
- * OLE odds and ends (no drag and drop or OLE clipboard in NovaOS)
+ * OLE odds and ends (drag and drop: dragdrop.c; no OLE clipboard)
  * ------------------------------------------------------------------------- */
-WINOLEAPI_(HRESULT) RegisterDragDrop(HWND w, LPVOID target) { (void)w; (void)target; return S_OK; }
-WINOLEAPI_(HRESULT) RevokeDragDrop(HWND w) { (void)w; return S_OK; }
-WINOLEAPI_(HRESULT) DoDragDrop(LPVOID obj, LPVOID src, DWORD ok, LPDWORD eff)
-{
-    (void)obj; (void)src; (void)ok;
-    if (eff) *eff = 0;
-    return (HRESULT)0x00040101L;        /* DRAGDROP_S_CANCEL */
-}
 WINOLEAPI_(HRESULT) OleSetClipboard(LPVOID obj) { (void)obj; return (HRESULT)0x800401D0L; /* CLIPBRD_E_CANT_OPEN */ }
 WINOLEAPI_(HRESULT) OleGetClipboard(LPVOID *obj) { if (obj) *obj = 0; return (HRESULT)0x800401D0L; }
 WINOLEAPI_(HRESULT) OleFlushClipboard(void) { return S_OK; }
 WINOLEAPI_(HRESULT) OleIsCurrentClipboard(LPVOID obj) { (void)obj; return S_FALSE; }
 
-typedef struct { DWORD tymed; union { HANDLE h; LPOLESTR name; IUnknown *unk; }; IUnknown *release; } STGMEDIUM_;
-WINOLEAPI_(void) ReleaseStgMedium(STGMEDIUM_ *m)
+WINOLEAPI_(void) ReleaseStgMedium(STGMEDIUM *m)
 {
     if (!m) return;
-    if (m->release) {
-        m->release->lpVtbl->Release(m->release);
+    if (m->pUnkForRelease) {
+        m->pUnkForRelease->lpVtbl->Release(m->pUnkForRelease);
     } else switch (m->tymed) {
-        case 1: GlobalFree(m->h); break;                         /* TYMED_HGLOBAL */
-        case 2: CoTaskMemFree(m->name); break;                   /* TYMED_FILE */
-        case 4: case 8: if (m->unk) m->unk->lpVtbl->Release(m->unk); break;   /* ISTREAM / ISTORAGE */
+        case 1: GlobalFree(m->hGlobal); break;                   /* TYMED_HGLOBAL */
+        case 2: CoTaskMemFree(m->lpszFileName); break;           /* TYMED_FILE */
+        case 4: case 8: if (m->pstm) ((IUnknown *)m->pstm)->lpVtbl->Release((IUnknown *)m->pstm); break;   /* ISTREAM / ISTORAGE */
         }
     m->tymed = 0;
 }
