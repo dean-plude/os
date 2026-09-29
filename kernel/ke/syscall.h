@@ -212,6 +212,7 @@
 #define SYSCALL_NtNovaGuiMessageBox               0x01A8
 #define SYSCALL_NtNovaGuiScreenSize               0x01A9
 #define SYSCALL_NtNovaGuiPostMessage              0x01AA
+#define SYSCALL_NtNovaGuiCtl                      0x01AB
 
 /* -----------------------------------------------------------------------
  * Syscall table size

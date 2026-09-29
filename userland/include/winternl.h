@@ -259,6 +259,7 @@ NTSYSAPI LONG_PTR NTAPI NtNovaGuiKillTimer(ULONG_PTR hwnd, ULONG_PTR id);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiMessageBox(const void *text16, const void *cap16, ULONG type);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiScreenSize(ULONG *w, ULONG *h);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiPostMessage(ULONG_PTR hwnd, ULONG msg, ULONG_PTR wp, ULONG_PTR lp);
+NTSYSAPI LONG_PTR NTAPI NtNovaGuiCtl(ULONG_PTR hwnd, ULONG op, ULONG_PTR arg, PVOID data);
 
 /* Loader */
 NTSYSAPI NTSTATUS NTAPI LdrLoadDll(const WCHAR *path, PULONG flags, PUNICODE_STRING name, PVOID *base);

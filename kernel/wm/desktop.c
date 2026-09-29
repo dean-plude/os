@@ -378,9 +378,9 @@ static void run_menu_item(const MenuItem *m)
     case MA_APP:            AppLaunch((AppId)m->arg); break;
     case MA_CLOSE_APP: {
         WND *aw = WmFindApp(m->arg);
-        if (aw) WmDestroyWindow(aw);
+        if (aw) WmRequestClose(aw);
         break; }
-    case MA_WIN_CLOSE:      if (w) WmDestroyWindow(w); break;
+    case MA_WIN_CLOSE:      if (w) WmRequestClose(w); break;
     case MA_WIN_MIN:        if (w) WmMinimize(w); break;
     case MA_WIN_MAX:        if (w) { WmSetActive(w); WmSnap(w, WM_SNAP_MAX); } break;
     case MA_WIN_RESTORE:    if (w) { WmSetActive(w); WmSnap(w, WM_SNAP_RESTORE); } break;
@@ -1210,6 +1210,10 @@ static void run_action(const Hot *h)
  * menus, Start, dock, windows, then the desktop itself. */
 static void desktop_press(int x, int y, bool dbl)
 {
+    if (WmGetCapture()) {                  /* a program is tracking the mouse (its menu is open) */
+        WmMouseButton(x, y, dbl ? WM_MOUSE_DBLCLK : WM_MOUSE_DOWN);
+        return;
+    }
     const Hot *h = hot_find(g_hot_ov, g_hot_ov_n, x, y);
 
     if (g_menu.open) {
@@ -1430,7 +1434,7 @@ void DesktopRun(void *arg)
 
     RtcTime t; rtc_read(&t);
     int    last_min  = t.minute;
-    bool   prev_left = false, prev_right = false;
+    bool   prev_left = false, prev_right = false, prev_mid = false;
     UINT64 last_press = 0;
     int    last_px = -100, last_py = -100;
 
@@ -1450,7 +1454,12 @@ void DesktopRun(void *arg)
                 }
                 bool left = (ev.buttons & MOUSE_LEFT) != 0;
                 bool right = (ev.buttons & MOUSE_RIGHT) != 0;
+                bool mid = (ev.buttons & MOUSE_MIDDLE) != 0;
                 int  x = WmCursorX(), y = WmCursorY();
+                WmSetButtons(ev.buttons & 7);
+                if (ev.dz) WmMouseOther(x, y, WM_MOUSE_WHEEL, ev.dz);
+                if (mid != prev_mid) WmMouseOther(x, y, mid ? WM_MOUSE_MDOWN : WM_MOUSE_MUP, 0);
+                prev_mid = mid;
                 if (left && !prev_left) {
                     UINT64 now = sched_ticks();
                     bool dbl = now - last_press <= 45 &&
@@ -1462,7 +1471,8 @@ void DesktopRun(void *arg)
                 } else if (!left && prev_left) {
                     WmMouseButton(x, y, WM_MOUSE_UP);
                 }
-                if (right && !prev_right && !left) desktop_right_press(x, y);
+                if (right && !prev_right && !left && !WmMouseOther(x, y, WM_MOUSE_RDOWN, 0)) desktop_right_press(x, y);
+                if (!right && prev_right) WmMouseOther(x, y, WM_MOUSE_RUP, 0);
                 prev_left = left;
                 prev_right = right;
             } else if (ev.type == INPUT_KEY) {

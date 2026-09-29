@@ -15,7 +15,7 @@
 #include "../gdi/gdi.h"
 #include "input.h"
 
-#define WM_MAX_WINDOWS   32
+#define WM_MAX_WINDOWS   64
 #define WM_TITLE_MAX     64
 #define WM_TITLEBAR_H    32
 
@@ -34,6 +34,13 @@ typedef enum {
     WM_MOUSE_UP,           /* left button released */
     WM_MOUSE_MOVE,         /* motion (while captured or hovering) */
     WM_MOUSE_DBLCLK,       /* second press of a double click */
+    /* windows with WND.rbutton / WND.hover set also get: */
+    WM_MOUSE_RDOWN,        /* right button */
+    WM_MOUSE_RUP,
+    WM_MOUSE_MDOWN,        /* middle button */
+    WM_MOUSE_MUP,
+    WM_MOUSE_WHEEL,        /* the wheel turned: WmWheelDelta() notches (+ = away from the user) */
+    WM_MOUSE_LEAVE,        /* the pointer left the client area (hover windows) */
 } WmMouseMsg;
 
 struct WND;
@@ -64,6 +71,15 @@ typedef struct WND {
     int        app;          /* owning app id (for the dock), or -1 */
     char       program[32];  /* program image name (e.g. "winhello.exe") for
                               * windows of Windows programs: their icon */
+    bool       popup;        /* menus, drop-downs, tooltips: no frame, not in the
+                              * dock or Alt+Tab, above every normal window */
+    bool       no_activate;  /* a click does not take the focus (menus) */
+    bool       hover;        /* on_mouse also gets moves with no button held
+                              * while the pointer is over the client area */
+    bool       rbutton;      /* on_mouse also gets right/middle buttons and the wheel */
+    bool       disabled;     /* input goes to the windows it owns (a modal dialog) */
+    int        owner;        /* id of the window this one belongs to (0: none);
+                              * it stays above its owner */
 
     WndPaintFn on_paint;     /* draw the client area (clip is set) */
     bool       paint_lock_free; /* on_paint needs only the desktop lock (else it
@@ -72,6 +88,8 @@ typedef struct WND {
     bool       key_releases; /* on_key also gets releases (pressed = false) */
     WndMouseFn on_mouse;     /* mouse in / captured by the client area */
     WndCloseFn on_close;     /* window is being destroyed: free `user` */
+    WndCloseFn on_close_request; /* if set, the close button and Alt+F4 call this
+                              * instead of closing (the owner decides) */
     WndTickFn  on_tick;      /* optional periodic work */
     void      *user;         /* app state */
 } WND;
@@ -84,6 +102,15 @@ void WmInitialize(void);
 WND *WmCreateWindow(const char *title, GdiRect frame, UINT32 style,
                     GdiColor client_bg, GdiColor accent,
                     WndPaintFn on_paint, void *user);
+/* The same, optionally without taking the focus (popups) */
+WND *WmCreateWindowEx(const char *title, GdiRect frame, UINT32 style,
+                      GdiColor client_bg, GdiColor accent,
+                      WndPaintFn on_paint, void *user, bool activate);
+/* Move/resize by the outer frame (a program asking) */
+void WmSetFrame(WND *w, GdiRect frame);
+/* Every mouse event goes to @w's on_mouse until released (NULL) */
+void WmSetCapture(WND *w);
+WND *WmGetCapture(void);
 /* Close: calls on_close, then frees the slot. */
 void WmDestroyWindow(WND *w);
 void WmShowWindow(WND *w, bool visible);
@@ -94,6 +121,8 @@ void WmSetActive(WND *w);
 WND *WmActiveWindow(void);
 
 void WmMinimize(WND *w);
+/* The close button / Alt+F4: asks on_close_request, or closes */
+void WmRequestClose(WND *w);
 void WmToggleMaximize(WND *w);
 
 /* Client area in screen coordinates. */
@@ -136,6 +165,14 @@ GdiRect WmWorkArea(void);
 bool WmMouseButton(int x, int y, WmMouseMsg msg);
 /* Mouse moved to (x, y): drags, hover highlights, captured client moves. */
 void WmMouseMove(int x, int y);
+/* Right/middle button or wheel (@msg: WM_MOUSE_R*, M*, WHEEL with @dz
+ * notches) for a window that takes them; false if none did (the desktop's
+ * own menus then). */
+bool WmMouseOther(int x, int y, WmMouseMsg msg, int dz);
+int  WmWheelDelta(void);
+/* The buttons held (bit 0 left, 1 right, 2 middle), kept by the desktop */
+void   WmSetButtons(UINT32 b);
+UINT32 WmButtons(void);
 /* Run every window's on_tick hook (called by the desktop loop). */
 void WmTick(void);
 /* True while a window drag or client capture is in progress. */

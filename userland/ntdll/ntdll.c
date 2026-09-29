@@ -115,6 +115,7 @@ XSTUB(NtNovaGuiKillTimer,              SYS_NtNovaGuiKillTimer)
 XSTUB(NtNovaGuiMessageBox,             SYS_NtNovaGuiMessageBox)
 XSTUB(NtNovaGuiScreenSize,             SYS_NtNovaGuiScreenSize)
 XSTUB(NtNovaGuiPostMessage,            SYS_NtNovaGuiPostMessage)
+XSTUB(NtNovaGuiCtl,                    SYS_NtNovaGuiCtl)
 
 /* -----------------------------------------------------------------------
  * Memory/string primitives (real ntdll exports these too)

@@ -119,7 +119,7 @@ static void um_lock_free_init(void)
         SYSCALL_NtNovaGuiCreate, SYSCALL_NtNovaGuiGetMessage, SYSCALL_NtNovaGuiInvalidate,
         SYSCALL_NtNovaGuiSetText, SYSCALL_NtNovaGuiShow, SYSCALL_NtNovaGuiDestroy,
         SYSCALL_NtNovaGuiSetTimer, SYSCALL_NtNovaGuiKillTimer, SYSCALL_NtNovaGuiMessageBox,
-        SYSCALL_NtNovaGuiScreenSize, SYSCALL_NtNovaGuiPostMessage,
+        SYSCALL_NtNovaGuiScreenSize, SYSCALL_NtNovaGuiPostMessage, SYSCALL_NtNovaGuiCtl,
     };
     for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) um_lock_free(list[i]);
 }

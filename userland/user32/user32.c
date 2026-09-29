@@ -31,6 +31,7 @@ __declspec(dllimport) void NovaGdiChar(HDC, int, int, char);
 typedef struct {
     INT32 x, y, w, h; UINT32 style; UINT64 title;
     UINT64 hwnd, bitmap; UINT32 stride, cw, ch;
+    UINT32 flags; UINT64 owner;
 } GuiCreate;
 
 #define MAX_CLASSES 64
@@ -242,8 +243,8 @@ static HWND create_window(DWORD ex, WClass *wc, const char *title, DWORD style, 
     u8_to_w(title, t16, 256);
     GuiCreate gc;
     memset(&gc, 0, sizeof(gc));
-    gc.x = (x == CW_USEDEFAULT) ? 0 : x;
-    gc.y = (y == CW_USEDEFAULT) ? 0 : y;
+    gc.x = (x == CW_USEDEFAULT || x <= 0) ? (INT32)0x80000000 : x;
+    gc.y = (y == CW_USEDEFAULT || y <= 0) ? (INT32)0x80000000 : y;
     gc.w = (w == CW_USEDEFAULT || w <= 0) ? 640 : w;
     gc.h = (h == CW_USEDEFAULT || h <= 0) ? 480 : h;
     gc.title = (UINT64)(ULONG_PTR)t16;
