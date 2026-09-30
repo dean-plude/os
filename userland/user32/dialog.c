@@ -21,7 +21,7 @@ static Dlg *dlg_of(Wnd *w) { return w && (w->flags & WF_DIALOG) ? (Dlg *)w->ctl 
 
 static DLGPROC dlg_proc(Wnd *w)
 {
-    if (!w->extra || !w->cls || w->cls->extra < DWLP_USER + 8) return NULL;
+    if (!w->extra || !w->cls || w->cls->extra < DWLP_USER + (int)sizeof(LONG_PTR)) return NULL;
     DLGPROC p;
     memcpy(&p, w->extra + DWLP_DLGPROC, sizeof(p));
     return p;
@@ -29,13 +29,13 @@ static DLGPROC dlg_proc(Wnd *w)
 
 static void set_msgresult(Wnd *w, LRESULT r)
 {
-    if (w->extra && w->cls && w->cls->extra >= DWLP_MSGRESULT + 8) memcpy(w->extra + DWLP_MSGRESULT, &r, sizeof(r));
+    if (w->extra && w->cls && w->cls->extra >= DWLP_MSGRESULT + (int)sizeof(LRESULT)) memcpy(w->extra + DWLP_MSGRESULT, &r, sizeof(r));
 }
 
 static LRESULT get_msgresult(Wnd *w)
 {
     LRESULT r = 0;
-    if (w->extra && w->cls && w->cls->extra >= DWLP_MSGRESULT + 8) memcpy(&r, w->extra + DWLP_MSGRESULT, sizeof(r));
+    if (w->extra && w->cls && w->cls->extra >= DWLP_MSGRESULT + (int)sizeof(LRESULT)) memcpy(&r, w->extra + DWLP_MSGRESULT, sizeof(r));
     return r;
 }
 
@@ -432,6 +432,9 @@ USERAPI BOOL EndDialog(HWND h, INT_PTR r)
     if (o && (o->style & WS_DISABLED)) EnableWindow(o->h, TRUE);
     ShowWindow(h, SW_HIDE);
     if (o && W_quiet(o->h) && (o->style & WS_VISIBLE)) SetForegroundWindow(o->h);
+    /* wake the modal loop: EndDialog may run inside a message sent from
+     * another thread, which GetMessage handles while it keeps waiting */
+    PostMessageW(h, WM_NULL, 0, 0);
     return TRUE;
 }
 

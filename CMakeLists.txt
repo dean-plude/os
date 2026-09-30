@@ -125,7 +125,7 @@ set(BOOTLOADER_EFI "${BINARY_DIR}/bootx64.efi")
 add_custom_command(
     OUTPUT  "${CMAKE_BINARY_DIR}/bootx64.efi"
     COMMAND ${CMAKE_COMMAND} -E copy "${BOOTLOADER_EFI}" "${CMAKE_BINARY_DIR}/bootx64.efi"
-    DEPENDS bootloader_build
+    DEPENDS bootloader_build "${BOOTLOADER_EFI}"
 )
 add_custom_target(copy_bootloader ALL DEPENDS "${CMAKE_BINARY_DIR}/bootx64.efi")
 

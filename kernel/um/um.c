@@ -27,6 +27,7 @@
 #include "../fs/persist.h"
 #include "../arch/x86_64/idt.h"
 #include "um_internal.h"
+#include "../ke/probe.h"
 #include "../ke/printf.h"
 #include "../ke/kpcr.h"
 #include "../ke/smp.h"
@@ -533,8 +534,9 @@ static bool fetch_image(Loader *L, int m)
     im->fetched = true;
     UINT32 nt = rd32(im->img + 0x3C);
     if (nt < im->size - 0x108) {
-        im->exp_rva = rd32(im->img + nt + 24 + 112);
-        im->exp_size = rd32(im->img + nt + 24 + 116);
+        UINT32 dirs = rd16(im->img + nt + 24) == 0x10B ? 96 : 112;     /* PE32 or PE32+ */
+        im->exp_rva = rd32(im->img + nt + 24 + dirs);
+        im->exp_size = rd32(im->img + nt + 24 + dirs + 4);
     }
     return true;
 }
@@ -588,18 +590,51 @@ static int fail(Loader *L, const char *fmt, const char *arg)
     return -1;
 }
 
-/* Find a DLL: a path as given, else the program's directory, then System32 */
+/* The machine a PE file is built for (0x8664, 0x014C), 0 if not a PE */
+UINT16 um_pe_machine(const RamNode *f)
+{
+    const UINT8 *d = (const UINT8 *)f->data;
+    if (!d || f->size < 0x40 || rd16(d) != 0x5A4D) return 0;
+    UINT32 nt = rd32(d + 0x3C);
+    if (nt > f->size - 6 || rd32(d + nt) != 0x00004550) return 0;
+    return rd16(d + nt + 4);
+}
+
+/* Find a DLL: a path as given, else the program's directory, then the
+ * system folder (System32, or SysWOW64 for 32-bit programs) */
+/* A 32-bit program's C:\Windows\System32\... is C:\Windows\SysWOW64\...
+ * (@path is rewritten in place) */
+void um_wow_path(UmProcess *p, char *path)
+{
+    if (!p->wow) return;
+    char *s = path;
+    if (((s[0] | 0x20) == 'c') && s[1] == ':') s += 2;
+    static const char sys[] = "\\windows\\system32";
+    for (int i = 0; sys[i]; i++) {
+        char c = s[i];
+        if (c == '/') c = '\\';
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c != sys[i]) return;
+    }
+    if (s[17] && s[17] != '\\' && s[17] != '/') return;
+    memcpy(s + 9, "SysWOW64", 8);
+}
+
 static RamNode *find_dll(UmProcess *p, const char *name)
 {
     if (strchr(name, '\\') || strchr(name, ':')) {
-        RamNode *n = RamfsResolve(p->cwd, name[1] == ':' ? name + 2 : name);
+        char path[RAMFS_PATH_MAX];
+        strncpy(path, name, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+        um_wow_path(p, path);
+        RamNode *n = RamfsResolve(p->cwd, path[1] == ':' ? path + 2 : path);
         return n && !n->dir ? n : NULL;
     }
     if (p->exe_dir) {
         RamNode *n = RamfsFind(p->exe_dir, name);
-        if (n && !n->dir) return n;
+        if (n && !n->dir && um_pe_machine(n) == (p->wow ? 0x014C : 0x8664)) return n;
     }
-    RamNode *sys = RamfsResolve(NULL, "\\Windows\\System32");
+    RamNode *sys = RamfsResolve(NULL, p->wow ? "\\Windows\\SysWOW64" : "\\Windows\\System32");
     RamNode *n = sys ? RamfsFind(sys, name) : NULL;
     return n && !n->dir ? n : NULL;
 }
@@ -610,11 +645,11 @@ static RamNode *find_dll(UmProcess *p, const char *name)
 static UINT64 stub_for(UmProcess *p, const char *what)
 {
     for (int i = 0; i < p->nstubs; i++)
-        if (!strcmp(p->stub_names[i], what)) return UM_STUBS_VA + (UINT64)i * UM_STUB_SIZE;
+        if (!strcmp(p->stub_names[i], what)) return p->lay.stubs + (UINT64)i * UM_STUB_SIZE;
     if (!p->stub_names) p->stub_names = kzalloc(sizeof(*p->stub_names) * UM_MAX_STUBS);
     if (!p->stub_names || p->nstubs >= UM_MAX_STUBS) return 0;
     strncpy(p->stub_names[p->nstubs], what, sizeof(p->stub_names[0]) - 1);
-    return UM_STUBS_VA + (UINT64)p->nstubs++ * UM_STUB_SIZE;
+    return p->lay.stubs + (UINT64)p->nstubs++ * UM_STUB_SIZE;
 }
 
 /* (Re)write the stub page: mov r10d, index; mov eax, NtNovaUnimplemented;
@@ -626,12 +661,23 @@ static bool write_stubs(UmProcess *p)
     if (!pg) return false;
     for (int i = 0; i < p->nstubs; i++) {
         UINT8 *s = pg + i * UM_STUB_SIZE;
+        if (p->wow) {
+            /* 32-bit: the argument block (see the int 0x2E path) on the
+             * stack: push 0; push index; mov edx, esp; mov eax, N; int 0x2E */
+            s[0] = 0x6A; s[1] = 0x00;
+            s[2] = 0x68; put_u32(s + 3, (UINT32)i);
+            s[7] = 0x89; s[8] = 0xE2;
+            s[9] = 0xB8; put_u32(s + 10, SYSCALL_NtNovaUnimplemented);
+            s[14] = 0xCD; s[15] = 0x2E;
+            continue;
+        }
         s[0] = 0x41; s[1] = 0xBA; put_u32(s + 2, (UINT32)i);
         s[6] = 0xB8; put_u32(s + 7, SYSCALL_NtNovaUnimplemented);
         s[11] = 0x0F; s[12] = 0x05; s[13] = 0xC3; s[14] = 0xCC; s[15] = 0xCC;
     }
-    bool ok = um_commit(p, UM_STUBS_VA, PAGE_SIZE, 0x04) && um_write(p, UM_STUBS_VA, pg, PAGE_SIZE) &&
-              um_commit(p, UM_STUBS_VA, PAGE_SIZE, 0x20);
+    UINT64 va = p->lay.stubs;
+    bool ok = um_commit(p, va, PAGE_SIZE, 0x04) && um_write(p, va, pg, PAGE_SIZE) &&
+              um_commit(p, va, PAGE_SIZE, 0x20);
     kfree(pg);
     return ok;
 }
@@ -690,16 +736,22 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
     UINT32 nt = rd32(f + 0x3C);
     if (fsz < 0x108 || nt > fsz - 0x108 || rd32(f + nt) != 0x00004550) return fail(L, "%s is not a valid PE file", name);
     const UINT8 *fh = f + nt + 4, *oh = fh + 20;
-    if (rd16(fh) != 0x8664) return fail(L, "%s is not a 64-bit (x64) program", name);
-    if (rd16(oh) != 0x20B) return fail(L, "%s is not a PE32+ image", name);
+    /* 64-bit programs load x64 modules; 32-bit ones (WoW) x86 modules */
+    UINT16 machine = rd16(fh);
+    bool pe32 = machine == 0x014C;
+    if (machine != 0x014C && machine != 0x8664) return fail(L, "%s is not an x86 or x64 program", name);
+    if (pe32 != p->wow)
+        return fail(L, pe32 ? "%s is a 32-bit (x86) module and cannot be loaded into a 64-bit program"
+                            : "%s is a 64-bit (x64) module and cannot be loaded into a 32-bit program", name);
+    if (rd16(oh) != (pe32 ? 0x10B : 0x20B)) return fail(L, "%s has an invalid optional header", name);
     UINT16 nsec = rd16(fh + 2), opt_size = rd16(fh + 16), chars = rd16(fh + 18);
-    UINT32 size = rd32(oh + 56), hdr = rd32(oh + 60), ndirs = rd32(oh + 108);
-    UINT64 pref = rd64(oh + 24);
+    UINT32 size = rd32(oh + 56), hdr = rd32(oh + 60), ndirs = rd32(oh + (pe32 ? 92 : 108));
+    UINT64 pref = pe32 ? rd32(oh + 28) : rd64(oh + 24);
     if (!size || size > 64 * 1024 * 1024 || hdr > fsz || hdr > size)
         return fail(L, "%s has an invalid image size", name);
     const UINT8 *sec = oh + opt_size;
     if ((UINT64)(sec - f) + 40ULL * nsec > fsz) return fail(L, "%s has a truncated section table", name);
-    const UINT8 *dir = oh + 112;
+    const UINT8 *dir = oh + (pe32 ? 96 : 112);
     UINT32 dirv[16] = { 0 }, dirs[16] = { 0 };
     for (UINT32 i = 0; i < ndirs && i < 16; i++) { dirv[i] = rd32(dir + 8 * i); dirs[i] = rd32(dir + 8 * i + 4); }
 
@@ -728,7 +780,7 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
             kfree(im->img); im->img = NULL;
             return fail(L, "%s cannot be relocated and its address is taken", name);
         }
-        base = um_find_free(p, im->size, UINT64_C(0x0000000180000000), UINT64_C(0x00007FF000000000));
+        base = um_find_free(p, im->size, p->lay.dll_min, p->lay.dll_max);
         if (!base) { kfree(im->img); im->img = NULL; return fail(L, "No address space left for %s", name); }
     }
     im->base = base;
@@ -743,8 +795,10 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
             for (UINT32 e = 8; e + 2 <= bsz; e += 2) {
                 UINT16 ent = rd16(im->img + off + e);
                 UINT32 at = page + (ent & 0xFFF);
-                if ((ent >> 12) == 10 && at + 8 <= im->size)
+                if ((ent >> 12) == 10 && at + 8 <= im->size)                /* DIR64 */
                     wr64(im->img + at, rd64(im->img + at) + (UINT64)delta);
+                else if ((ent >> 12) == 3 && at + 4 <= im->size)            /* HIGHLOW (x86) */
+                    put_u32(im->img + at, rd32(im->img + at) + (UINT32)delta);
             }
             off += bsz;
         }
@@ -762,7 +816,10 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
     mod->size = im->size;
     mod->entry = rd32(oh + 16);
     mod->dll = chars & 0x2000;
-    if (!mod->dll && depth == 0) p->stack_reserve = (UINT32)(rd64(oh + 72) > 0xFFFFFFFFu ? 0xFFFFFFFFu : rd64(oh + 72));
+    if (!mod->dll && depth == 0) {
+        UINT64 reserve = pe32 ? rd32(oh + 72) : rd64(oh + 72);
+        p->stack_reserve = (UINT32)(reserve > 0xFFFFFFFFu ? 0xFFFFFFFFu : reserve);
+    }
 
     /* Imports */
     for (UINT32 d = dirv[1]; d && d + 20 <= im->size; d += 20) {
@@ -775,13 +832,13 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
         int dm = load_module(L, NULL, dll, depth + 1);
         if (dm < 0) return -1;
         im = &L->img[m];
-        UINT32 t = ilt ? ilt : iat;
-        for (UINT32 k = 0; t + 8 * (k + 1) <= im->size && iat + 8 * (k + 1) <= im->size; k++) {
-            UINT64 th = rd64(im->img + t + 8 * k);
+        UINT32 t = ilt ? ilt : iat, ts = pe32 ? 4 : 8;              /* thunk size */
+        for (UINT32 k = 0; t + ts * (k + 1) <= im->size && iat + ts * (k + 1) <= im->size; k++) {
+            UINT64 th = pe32 ? rd32(im->img + t + 4 * k) : rd64(im->img + t + 8 * k);
             if (!th) break;
             UINT64 addr;
             char what[80];
-            if (th >> 63) {
+            if (pe32 ? (th >> 31) : (th >> 63)) {                     /* by ordinal */
                 addr = find_export(L, dm, NULL, (UINT32)(th & 0xFFFF), 0);
                 ksnprintf(what, sizeof(what), "#%u in %s", (unsigned)(th & 0xFFFF), dll);
             } else {
@@ -796,7 +853,8 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
              * never use) */
             if (!addr) addr = stub_for(p, what);
             if (!addr) return fail(L, "The procedure entry point %s could not be located", what);
-            wr64(im->img + iat + 8 * k, addr);
+            if (pe32) put_u32(im->img + iat + 4 * k, (UINT32)addr);
+            else      wr64(im->img + iat + 8 * k, addr);
         }
     }
 
@@ -856,10 +914,10 @@ static bool write_ldr_info(UmProcess *p, int from)
         put_u32(e + 20, m->dll ? 1 : 0);
         memcpy(e + 24, m->name, 32);
         memcpy(e + 56, m->path, 96);
-        if (!um_write(p, UM_LDR_INFO_VA + 8 + (UINT64)i * LDR_ENTRY_SIZE, e, sizeof(e))) return false;
+        if (!um_write(p, p->lay.ldr_info + 8 + (UINT64)i * LDR_ENTRY_SIZE, e, sizeof(e))) return false;
     }
     UINT32 n = (UINT32)p->ninit;
-    return um_write(p, UM_LDR_INFO_VA, &n, 4);
+    return um_write(p, p->lay.ldr_info, &n, 4);
 }
 
 /* Undo a failed runtime load: drop the modules added since @nmod. */
@@ -904,9 +962,27 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base)
 /* -----------------------------------------------------------------------
  * Process environment: PEB, RTL_USER_PROCESS_PARAMETERS
  * ----------------------------------------------------------------------- */
+/* Offsets in the PEB and RTL_USER_PROCESS_PARAMETERS: x64, and x86 for
+ * 32-bit programs (4-byte pointers) */
+typedef struct {
+    UINT32 us_buf;                              /* UNICODE_STRING.Buffer */
+    UINT32 std_in, std_out, std_err, cur_dir, dll_path, image, cmdline, env, env_size;
+    UINT32 peb_image, peb_params, peb_ncpu, peb_major, peb_minor, peb_build, peb_platform;
+} EnvLayout;
+
+static const EnvLayout g_env64 = { 8, 0x20, 0x28, 0x30, 0x38, 0x50, 0x60, 0x70, 0x80, 0x3F0,
+                                   0x10, 0x20, 0xB8, 0x118, 0x11C, 0x120, 0x124 };
+static const EnvLayout g_env32 = { 4, 0x18, 0x1C, 0x20, 0x24, 0x30, 0x38, 0x40, 0x48, 0x290,
+                                   0x08, 0x10, 0x64, 0xA4, 0xA8, 0xAC, 0xB0 };
+
+/* A pointer-sized field */
+static void put_ptr(UINT8 *b, UINT64 v, bool wow) { if (wow) put_u32(b, (UINT32)v); else wr64(b, v); }
+
 /* Append an ASCII/UTF-8 string as UTF-16 (NUL-terminated) at *off; fill
- * the UNICODE_STRING at @us.  Returns false if it doesn't fit. */
-static bool put_ustr(UINT8 *buf, UINT32 cap, UINT32 *off, UINT8 *us, const char *s)
+ * the UNICODE_STRING at @us (whose buffer pointer is at @us_buf; the
+ * parameters are at user address @va).  False if it doesn't fit. */
+static bool put_ustr(UINT8 *buf, UINT32 cap, UINT32 *off, UINT8 *us, const char *s,
+                     UINT64 va, const EnvLayout *lay, bool wow)
 {
     UINT32 n = (UINT32)strlen(s);
     if (*off + 2 * (n + 1) > cap) return false;
@@ -916,7 +992,7 @@ static bool put_ustr(UINT8 *buf, UINT32 cap, UINT32 *off, UINT8 *us, const char 
     if (us) {
         put_u16(us, (UINT16)(2 * n));
         put_u16(us + 2, (UINT16)(2 * n + 2));
-        wr64(us + 8, UM_PARAMS_VA + *off);
+        put_ptr(us + lay->us_buf, va + *off, wow);
     }
     *off += (2 * (n + 1) + 7) & ~7U;
     return true;
@@ -925,6 +1001,9 @@ static bool put_ustr(UINT8 *buf, UINT32 cap, UINT32 *off, UINT8 *us, const char 
 static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image_path,
                               const char *cmdline, const char *cwd_path)
 {
+    const EnvLayout *L = p->wow ? &g_env32 : &g_env64;
+    bool w = p->wow;
+    UINT64 pva = p->lay.params;
     UINT32 sz = UM_PARAMS_PAGES * PAGE_SIZE;
     UINT8 *pp = kzalloc(sz);
     UINT8 *peb = kzalloc(PAGE_SIZE);
@@ -935,24 +1014,28 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
         put_u32(pp + 0x00, sz);
         put_u32(pp + 0x04, sz);
         put_u32(pp + 0x08, 1);                              /* NORMALIZED */
-        wr64(pp + 0x20, 4);                                 /* StandardInput  */
-        wr64(pp + 0x28, 8);                                 /* StandardOutput */
-        wr64(pp + 0x30, 12);                                /* StandardError  */
-        ok = put_ustr(pp, sz, &off, pp + 0x38, cwd_path) &&         /* CurrentDirectory */
-             put_ustr(pp, sz, &off, pp + 0x50, "C:\\Windows\\System32") && /* DllPath */
-             put_ustr(pp, sz, &off, pp + 0x60, image_path) &&       /* ImagePathName */
-             put_ustr(pp, sz, &off, pp + 0x70, cmdline);            /* CommandLine */
+        put_ptr(pp + L->std_in, 4, w);                      /* StandardInput  */
+        put_ptr(pp + L->std_out, 8, w);                     /* StandardOutput */
+        put_ptr(pp + L->std_err, 12, w);                    /* StandardError  */
+        ok = put_ustr(pp, sz, &off, pp + L->cur_dir, cwd_path, pva, L, w) &&          /* CurrentDirectory */
+             put_ustr(pp, sz, &off, pp + L->dll_path, w ? "C:\\Windows\\SysWOW64" : "C:\\Windows\\System32",
+                      pva, L, w) &&                                                   /* DllPath */
+             put_ustr(pp, sz, &off, pp + L->image, image_path, pva, L, w) &&          /* ImagePathName */
+             put_ustr(pp, sz, &off, pp + L->cmdline, cmdline, pva, L, w);             /* CommandLine */
         /* Environment block: NUL-separated UTF-16 strings, double NUL */
         char ncpu[32];
         ksnprintf(ncpu, sizeof(ncpu), "NUMBER_OF_PROCESSORS=%u", (unsigned)g_cpu_count);
         const char *env[] = {
             "ALLUSERSPROFILE=C:\\ProgramData", "APPDATA=C:\\AppData\\Roaming", "COMPUTERNAME=NOVA-PC",
             "HOMEDRIVE=C:", "HOMEPATH=\\", "LOCALAPPDATA=C:\\AppData\\Local", ncpu, "OS=NovaOS",
-            "PATH=C:\\Programs;C:\\Windows\\System32", "PATHEXT=.EXE", "PROCESSOR_ARCHITECTURE=AMD64",
-            "ProgramData=C:\\ProgramData", "ProgramFiles=C:\\Programs", "SystemDrive=C:", "SystemRoot=C:\\Windows",
+            "PATH=C:\\Programs;C:\\Windows\\System32", "PATHEXT=.EXE",
+            w ? "PROCESSOR_ARCHITECTURE=x86" : "PROCESSOR_ARCHITECTURE=AMD64",
+            w ? "PROCESSOR_ARCHITEW6432=AMD64" : "ProgramW6432=C:\\Programs",
+            "ProgramData=C:\\ProgramData", "ProgramFiles=C:\\Programs", "ProgramFiles(x86)=C:\\Programs",
+            "SystemDrive=C:", "SystemRoot=C:\\Windows",
             "TEMP=C:\\Temp", "TMP=C:\\Temp", "USERNAME=dean", "USERPROFILE=C:\\", "windir=C:\\Windows", NULL
         };
-        wr64(pp + 0x80, UM_PARAMS_VA + off);
+        put_ptr(pp + L->env, pva + off, w);
         for (int i = 0; ok && env[i]; i++) {
             UINT32 n = (UINT32)strlen(env[i]);
             if (off + 2 * (n + 1) + 2 > sz) { ok = false; break; }
@@ -960,21 +1043,22 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
             off += 2 * (n + 1);
         }
         off += 2;                                           /* final NUL */
-        wr64(pp + 0x3F0, off);                              /* EnvironmentSize (0x3F0) */
+        put_ptr(pp + L->env_size, off, w);                  /* EnvironmentSize */
 
         /* PEB */
-        wr64(peb + 0x10, image_base);                       /* ImageBaseAddress */
-        wr64(peb + 0x20, UM_PARAMS_VA);                     /* ProcessParameters */
-        put_u32(peb + 0xB8, g_cpu_count);                   /* NumberOfProcessors */
-        put_u32(peb + 0x118, 10);                           /* OSMajorVersion */
-        put_u32(peb + 0x11C, 0);                            /* OSMinorVersion */
-        put_u16(peb + 0x120, 18362);                        /* OSBuildNumber (1903) */
-        put_u32(peb + 0x124, 2);                            /* OSPlatformId: NT */
+        put_ptr(peb + L->peb_image, image_base, w);         /* ImageBaseAddress */
+        put_ptr(peb + L->peb_params, pva, w);               /* ProcessParameters */
+        put_u32(peb + L->peb_ncpu, g_cpu_count);            /* NumberOfProcessors */
+        put_u32(peb + L->peb_major, 10);                    /* OSMajorVersion */
+        put_u32(peb + L->peb_minor, 0);                     /* OSMinorVersion */
+        put_u16(peb + L->peb_build, 18362);                 /* OSBuildNumber (1903) */
+        put_u32(peb + L->peb_platform, 2);                  /* OSPlatformId: NT */
 
-        ok = ok && map_kusd(p) && um_region_add(p, UM_PEB_VA, UM_SYS_SIZE, 0x04, false) &&
-             um_commit(p, UM_PEB_VA, (UM_PARAMS_VA - UM_PEB_VA) + UM_PARAMS_PAGES * PAGE_SIZE, 0x04) &&
-             um_write(p, UM_PEB_VA, peb, PAGE_SIZE) &&
-             um_write(p, UM_PARAMS_VA, pp, sz) &&
+        UINT64 pv = p->lay.peb;
+        ok = ok && map_kusd(p) && um_region_add(p, pv, UM_SYS_SIZE, 0x04, false) &&
+             um_commit(p, pv, (pva - pv) + UM_PARAMS_PAGES * PAGE_SIZE, 0x04) &&
+             um_write(p, pv, peb, PAGE_SIZE) &&
+             um_write(p, pva, pp, sz) &&
              write_ldr_info(p, 0) && write_stubs(p);
     }
     kfree(pp); kfree(peb);
@@ -998,10 +1082,14 @@ static void um_thread_start(void *arg)
      * leaving the kernel lock behind.  The TEB is in MSR_KERNEL_GS_BASE
      * (this thread was created with it): SWAPGS makes it the user GS. */
     bkl_leave_kernel();
+    /* 32-bit programs run in compatibility mode: the same entry, with
+     * ntdll!RtlUserThreadStart taking ECX and EDX (fastcall); FS (base:
+     * the 32-bit TEB, set on every switch to this thread) and DS/ES hold
+     * the user data selector already (gdt_reload_segments) */
     UINT64 f[7] = {
-        p->thread_start, GDT_USER_CODE | 3, 0x202,                 /* RIP, CS, RFLAGS */
-        t->stack_lo + t->stack_size - 0x28, GDT_USER_DATA | 3,     /* RSP, SS */
-        t->start, t->arg                                           /* RCX, RDX */
+        p->thread_start, p->wow ? SEL_USER_CODE32 : GDT_USER_CODE | 3, 0x202,     /* RIP, CS, RFLAGS */
+        t->stack_lo + t->stack_size - (p->wow ? 0x10 : 0x28), GDT_USER_DATA | 3,  /* RSP, SS */
+        t->start, t->arg                                                          /* RCX, RDX */
     };
     __asm__ volatile (
         "mov 40(%0), %%rcx\n\t"
@@ -1055,10 +1143,10 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
         return NULL;
     }
     t->slot = slot;
-    t->teb = UM_TEB_AREA + (UINT64)slot * UM_TEB_SIZE;
-    UINT64 lo = !p->live_threads && um_is_free(p, UM_STACK_TOP - stack_size, stack_size)
-                ? UM_STACK_TOP - stack_size
-                : um_find_free(p, stack_size, UM_ALLOC_MIN, UM_ALLOC_MAX);
+    t->teb = p->lay.teb_area + (UINT64)slot * UM_TEB_SIZE;
+    UINT64 lo = !p->live_threads && um_is_free(p, p->lay.stack_top - stack_size, stack_size)
+                ? p->lay.stack_top - stack_size
+                : um_find_free(p, stack_size, p->lay.alloc_min, p->lay.alloc_max);
     bool ok = lo && um_region_add(p, lo, stack_size, 0x04, false);
     if (ok && !um_commit(p, lo, stack_size, 0x04)) {
         um_decommit(p, lo, stack_size);
@@ -1070,14 +1158,24 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
         /* TEB */
         UINT8 *teb = kzalloc(UM_TEB_SIZE);
         ok = teb && um_commit(p, t->teb, UM_TEB_SIZE, 0x04);
-        if (ok) {
+        if (ok && p->wow) {                                        /* the x86 TEB (fs:0) */
+            put_u32(teb + 0x00, 0xFFFFFFFFu);                      /* ExceptionList: end of chain */
+            put_u32(teb + 0x04, (UINT32)(lo + stack_size));        /* StackBase */
+            put_u32(teb + 0x08, (UINT32)lo);                       /* StackLimit */
+            put_u32(teb + 0x18, (UINT32)t->teb);                   /* Self */
+            put_u32(teb + 0x20, p->pid);                           /* ClientId.UniqueProcess */
+            put_u32(teb + 0x24, t->tid);                           /* ClientId.UniqueThread */
+            put_u32(teb + 0x30, (UINT32)p->lay.peb);               /* ProcessEnvironmentBlock */
+            put_u32(teb + 0xE0C, (UINT32)lo);                      /* DeallocationStack */
+            ok = um_write(p, t->teb, teb, UM_TEB_SIZE);
+        } else if (ok) {
             wr64(teb + 0x00, UINT64_C(0xFFFFFFFFFFFFFFFF));        /* ExceptionList: none */
             wr64(teb + 0x08, lo + stack_size);                     /* StackBase */
             wr64(teb + 0x10, lo);                                  /* StackLimit */
             wr64(teb + 0x30, t->teb);                              /* Self */
             wr64(teb + 0x40, p->pid);                              /* ClientId.UniqueProcess */
             wr64(teb + 0x48, t->tid);                              /* ClientId.UniqueThread */
-            wr64(teb + 0x60, UM_PEB_VA);                           /* ProcessEnvironmentBlock */
+            wr64(teb + 0x60, p->lay.peb);                          /* ProcessEnvironmentBlock */
             wr64(teb + 0x1478, lo);                                /* DeallocationStack */
             ok = um_write(p, t->teb, teb, UM_TEB_SIZE);
         }
@@ -1104,6 +1202,7 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
         kt->cr3 = p->pml4;
         kt->fpu = fpu;
         kt->gs_base = t->teb;                              /* user GS = TEB */
+        kt->fs_base = p->wow ? t->teb : 0;                 /* 32-bit programs: fs:0 = TEB */
         t->kt = kt;
         p->threads[slot] = t;
         p->live_threads++;
@@ -1160,6 +1259,23 @@ RamNode *UmFindProgram(RamNode *cwd, const char *name)
     return NULL;
 }
 
+/* A 32-bit (WoW) or 64-bit address-space layout */
+void um_set_layout(UmProcess *p, bool wow)
+{
+    p->wow = wow;
+    UINT64 peb = wow ? UM32_PEB_VA : UM_PEB_VA;
+    p->lay.peb = peb;
+    p->lay.ldr_info = peb + 0x1000;
+    p->lay.params = peb + 0x4000;
+    p->lay.stubs = peb + 0x8000;
+    p->lay.teb_area = peb + 0x10000;
+    p->lay.stack_top = wow ? UM32_STACK_TOP : UM_STACK_TOP;
+    p->lay.alloc_min = wow ? UM32_ALLOC_MIN : UM_ALLOC_MIN;
+    p->lay.alloc_max = wow ? UM32_ALLOC_MAX : UM_ALLOC_MAX;
+    p->lay.dll_min = wow ? UM32_DLL_MIN : UM_DLL_MIN;
+    p->lay.dll_max = wow ? UM32_DLL_MAX : UM_DLL_MAX;
+}
+
 UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
                    char *err, int err_cap)
 {
@@ -1179,6 +1295,7 @@ UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsol
     p->cwd = cwd ? cwd : RamfsRoot();
     p->exe_dir = exe->parent;
     p->con = um_console_ref(con);
+    um_set_layout(p, um_pe_machine(exe) == 0x014C);
 
     /* Map the program, ntdll (every process has it) and their imports */
     Loader *L = loader_new(p, err, err_cap);
@@ -1230,7 +1347,7 @@ UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsol
     if (stack < UM_STACK_SIZE) stack = UM_STACK_SIZE;
     if (stack > 8 * 1024 * 1024) stack = 8 * 1024 * 1024;
     UINT32 st;
-    if (!um_create_thread(p, entry, UM_PEB_VA, stack, false, &st)) {
+    if (!um_create_thread(p, entry, p->lay.peb, stack, false, &st)) {
         plock(); g_procs[slot] = NULL; punlock();
         destroy(p);
         ksnprintf(err, err_cap, "Out of memory");
@@ -1312,6 +1429,12 @@ void UmReturnToUser(void)
     t->park = 0;
 }
 
+void UmNoteSyscallFrame(void *frame)
+{
+    UmThread *t = UmCurrentThread();
+    if (t) t->uframe = frame;
+}
+
 void UmReturnToUserFrame(void *frame)
 {
     UmThread *t = UmCurrentThread();
@@ -1323,6 +1446,13 @@ void UmReturnToUserFrame(void *frame)
 
 /* Describe an unhandled exception and end the process */
 void UmFault(UINT32 status, UINT64 rip, UINT64 addr)
+{
+    UmFaultAt(status, rip, addr, 0);
+}
+
+/* As UmFault; @sp (0: unknown) is the stack pointer at the fault, which
+ * names the caller when the program jumped to a bad address */
+void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
 {
     UmProcess *p = UmCurrent();
     const char *what = status == UM_STATUS_ACCESS_VIOLATION ? "access violation" :
@@ -1344,7 +1474,14 @@ void UmFault(UINT32 status, UINT64 rip, UINT64 addr)
             ksnprintf(p->why, sizeof(p->why), "crashed: %s 0x%08x at %s", what, status, where);
         else
             ksnprintf(p->why, sizeof(p->why), "crashed: %s at %s", what, where);
-        kprintf("[UM] %s (PID %u) %s\n", p->name, p->pid, p->why);
+        char caller[80] = "";
+        UINT64 ret = 0;
+        if (!mod && sp && NT_SUCCESS(CopyFromUser(&ret, (const void *)(uintptr_t)sp, p->wow ? 4 : 8))) {
+            const UmModule *cm = um_module_at(p, ret);
+            if (cm) ksnprintf(caller, sizeof(caller), " (called from %s+0x%llx)", cm->name,
+                              (unsigned long long)(ret - cm->base));
+        }
+        kprintf("[UM] %s (PID %u) %s%s\n", p->name, p->pid, p->why, caller);
     }
     um_exit_process(status);
 }

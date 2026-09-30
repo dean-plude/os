@@ -60,6 +60,71 @@ static EFI_BOOT_SERVICES *g_bs;
  * ----------------------------------------------------------------------- */
 static CHAR16 KERNEL_PATH[] = { '\\','E','F','I','\\','N','O','V','A',
                                  '\\','k','e','r','n','e','l','.','e','l','f', 0 };
+static CHAR16 LOADER_PATH[] = { '\\','E','F','I','\\','B','O','O','T',
+                                 '\\','B','O','O','T','X','6','4','.','E','F','I', 0 };
+
+/* The device we booted from, kept for detecting installation media */
+static EFI_HANDLE g_boot_device;
+
+/* Device path nodes: Type, SubType, Length (LE16), then node data */
+#define EFI_DEVICE_PATH_PROTOCOL_GUID \
+    { 0x09576e91, 0x6d3f, 0x11d2, { 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } }
+#define DP_TYPE_MEDIA    0x04
+#define DP_SUB_CDROM     0x02
+#define DP_TYPE_END      0x7F
+
+/* True when the boot device's path has a CD-ROM media node (an El Torito
+ * boot image on a CD/DVD): NovaOS is running from its installation disc */
+static BOOLEAN booted_from_cd(void)
+{
+    EFI_GUID dp_guid = EFI_DEVICE_PATH_PROTOCOL_GUID;
+    UINT8 *dp = NULL;
+    if (!g_boot_device ||
+        EFI_ERROR(g_bs->OpenProtocol(g_boot_device, &dp_guid, (VOID **)&dp, g_image_handle, NULL,
+                                     EFI_OPEN_PROTOCOL_GET_PROTOCOL)) || !dp)
+        return FALSE;
+    for (int n = 0; n < 64; n++) {
+        UINT8 type = dp[0], sub = dp[1];
+        UINT16 len = (UINT16)(dp[2] | dp[3] << 8);
+        if (type == DP_TYPE_END || len < 4) break;
+        if (type == DP_TYPE_MEDIA && sub == DP_SUB_CDROM) return TRUE;
+        dp += len;
+    }
+    return FALSE;
+}
+
+/* Read a whole file from the boot volume into EfiLoaderData pages (the
+ * kernel never reuses those); physical address and size out */
+static EFI_STATUS read_boot_file(CHAR16 *path, UINT64 *phys_out, UINT64 *size_out)
+{
+    EFI_GUID fs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs;
+    EFI_FILE_PROTOCOL *root, *file;
+    EFI_STATUS status = g_bs->OpenProtocol(g_boot_device, &fs_guid, (VOID **)&fs,
+                                           g_image_handle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
+    if (EFI_ERROR(status)) return status;
+    status = fs->OpenVolume(fs, &root);
+    if (EFI_ERROR(status)) return status;
+    status = root->Open(root, &file, path, EFI_FILE_MODE_READ, 0);
+    root->Close(root);
+    if (EFI_ERROR(status)) return status;
+    EFI_GUID info_guid = EFI_FILE_INFO_ID;
+    UINT8 fi_storage[sizeof(EFI_FILE_INFO) + 256 * sizeof(CHAR16)];
+    EFI_FILE_INFO *fi = (EFI_FILE_INFO *)fi_storage;
+    UINTN fi_size = sizeof(fi_storage);
+    status = file->GetInfo(file, &info_guid, &fi_size, fi);
+    if (EFI_ERROR(status)) { file->Close(file); return status; }
+    UINT64 size = fi->FileSize, phys = 0;
+    status = g_bs->AllocatePages(AllocateAnyPages, EfiLoaderData, (size + 4095) / 4096 + 1, &phys);
+    if (EFI_ERROR(status)) { file->Close(file); return status; }
+    UINTN got = (UINTN)size;
+    status = file->Read(file, &got, (VOID *)(UINTN)phys);
+    file->Close(file);
+    if (EFI_ERROR(status) || got != size) return EFI_ERROR(status) ? status : EFI_LOAD_ERROR;
+    *phys_out = phys;
+    *size_out = size;
+    return EFI_SUCCESS;
+}
 
 /* -----------------------------------------------------------------------
  * Open the kernel file from the ESP
@@ -82,6 +147,7 @@ static EFI_STATUS open_kernel_file(EFI_FILE_PROTOCOL **file_out,
         g_image_handle, NULL,
         EFI_OPEN_PROTOCOL_GET_PROTOCOL);
     CHECK(status, "OpenProtocol(LoadedImage)");
+    g_boot_device = loaded_image->DeviceHandle;
 
     /* Get the simple filesystem on that device. */
     status = g_bs->OpenProtocol(
@@ -359,6 +425,21 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(
     mem_zero(&fb, sizeof(fb));
     init_framebuffer(&fb);
 
+    /* 2b. Installation media: from a CD, hand the boot files to the
+     *     kernel so its installer can copy them to a disk ---------------- */
+    UINT64 boot_flags = 0, media_kernel = 0, media_kernel_size = 0, media_loader = 0, media_loader_size = 0;
+    if (booted_from_cd()) {
+        boot_flags |= BOOT_FLAG_LIVE_MEDIA;
+        if (EFI_ERROR(read_boot_file(KERNEL_PATH, &media_kernel, &media_kernel_size)) ||
+            EFI_ERROR(read_boot_file(LOADER_PATH, &media_loader, &media_loader_size))) {
+            console_printf("WARNING: could not read the installation files\r\n");
+            media_kernel = media_kernel_size = media_loader = media_loader_size = 0;
+        } else {
+            console_printf("Installation disc: kernel %u bytes, loader %u bytes\r\n",
+                           media_kernel_size, media_loader_size);
+        }
+    }
+
     /* 3. Find ACPI RSDP ----------------------------------------------- */
     UINT64 rsdp = find_rsdp();
     console_printf("RSDP physical: 0x%x\r\n", rsdp);
@@ -401,6 +482,11 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(
     bi->kernel_virtual_base  = kernel_virt;
     bi->kernel_size          = kernel_size;
     bi->boot_stack_top       = stack_top;
+    bi->boot_flags           = boot_flags;
+    bi->media_kernel_base    = media_kernel;
+    bi->media_kernel_size    = media_kernel_size;
+    bi->media_loader_base    = media_loader;
+    bi->media_loader_size    = media_loader_size;
 
     /* 9. The kernel entry expects the PHYSICAL address of BootInfo and
      *    derefs it through the physmap itself (PHYSMAP_BASE + phys).  All

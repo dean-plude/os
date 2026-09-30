@@ -18,6 +18,7 @@
 /* -----------------------------------------------------------------------
  * System-call stubs
  * ----------------------------------------------------------------------- */
+#ifdef _WIN64                 /* 32-bit programs: ntdll_wow.c */
 #define STUB(name, num)                                                     \
     __asm__(".globl " #name "\n"                                            \
             ".section .text$" #name ",\"xr\"\n"                             \
@@ -122,6 +123,7 @@ XSTUB(NtNovaGuiMessageBox,             SYS_NtNovaGuiMessageBox)
 XSTUB(NtNovaGuiScreenSize,             SYS_NtNovaGuiScreenSize)
 XSTUB(NtNovaGuiPostMessage,            SYS_NtNovaGuiPostMessage)
 XSTUB(NtNovaGuiCtl,                    SYS_NtNovaGuiCtl)
+#endif
 
 /* -----------------------------------------------------------------------
  * Memory/string primitives (real ntdll exports these too)
@@ -173,7 +175,11 @@ __declspec(dllexport) size_t strlen(const char *s)
 NTSYSAPI PPEB NTAPI RtlGetCurrentPeb(void)
 {
     PPEB peb;
+#ifdef _WIN64
     __asm__("movq %%gs:0x60, %0" : "=r"(peb));
+#else
+    __asm__("movl %%fs:0x30, %0" : "=r"(peb));
+#endif
     return peb;
 }
 
@@ -266,11 +272,15 @@ typedef struct Block {
     SIZE_T        tag;         /* HEAP_MAGIC | class, or HEAP_LARGE */
 } Block;                       /* 16 bytes: user data stays 16-byte aligned */
 
-#define HEAP_MAGIC   0x4E4F564148454150ULL     /* "NOVAHEAP" */
-#define HEAP_LARGE   0x4E4F56414C415247ULL     /* "NOVALARG" */
+#define HEAP_MAGIC   ((SIZE_T)0x4E4F564148454150ULL)   /* "NOVAHEAP" (its low half in 32-bit programs) */
+#define HEAP_LARGE   ((SIZE_T)0x4E4F56414C415247ULL)   /* "NOVALARG" */
 #define NCLASSES     48
 #define LARGE_MIN    (256 * 1024)
-#define RESERVE_SIZE (1024ULL * 1024 * 1024)   /* 1 GiB of address space */
+#ifdef _WIN64
+#define RESERVE_SIZE ((SIZE_T)1024 * 1024 * 1024)   /* 1 GiB of address space */
+#else
+#define RESERVE_SIZE ((SIZE_T)128 * 1024 * 1024)    /* 32-bit programs: 128 MiB at a time */
+#endif
 #define ARENA_SIZE   (1024 * 1024)
 
 static SIZE_T  class_size[NCLASSES];
@@ -311,7 +321,15 @@ static void *carve(SIZE_T bytes)
 {
     if (arena_cur + bytes > arena_end) {
         SIZE_T grow = bytes > ARENA_SIZE ? (bytes + ARENA_SIZE - 1) & ~(SIZE_T)(ARENA_SIZE - 1) : ARENA_SIZE;
-        if (!arena_base || arena_end + grow > arena_reserved_end) return 0;
+        if (!arena_base || arena_end + grow > arena_reserved_end) {
+            /* this reservation is used up: start another */
+            PVOID base = 0;
+            SIZE_T size = grow > RESERVE_SIZE ? grow : RESERVE_SIZE;
+            if (!NT_SUCCESS(NtAllocateVirtualMemory(NtCurrentProcess(), &base, 0, &size, MEM_RESERVE, PAGE_READWRITE)))
+                return 0;
+            arena_base = arena_cur = arena_end = base;
+            arena_reserved_end = (char *)base + size;
+        }
         PVOID at = arena_end;
         SIZE_T sz = grow;
         if (!NT_SUCCESS(NtAllocateVirtualMemory(NtCurrentProcess(), &at, 0, &sz, MEM_COMMIT, PAGE_READWRITE)))

@@ -34,3 +34,17 @@ bool PersistActive(void);
 void PersistWhere(char *buf, int cap);
 /* The volume's size and free space in bytes; false without one. */
 bool PersistSpace(UINT64 *free, UINT64 *total);
+
+/* For the installer (fs/setup.c) */
+#include "fat.h"
+/* The FAT volumes on @d (a whole-disk volume, or MBR/GPT partitions);
+ * mounted, the caller unmounts them.  *blank: the disk's first sectors are
+ * all zero. */
+int  PersistFindVolumes(BlockDev *d, FatVol **out, int max, bool *blank);
+/* The disk C: is saved to, or NULL */
+BlockDev *PersistDevice(void);
+/* Stop saving to the current volume (its disk is about to be erased) */
+void PersistDetach(void);
+/* Save C: to @vol from now on, starting with everything on it now (the
+ * files of this session move with it).  False if that first save failed. */
+bool PersistAdopt(FatVol *vol);

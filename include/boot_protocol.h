@@ -19,7 +19,7 @@
 
 /* Increment BOOT_PROTOCOL_VERSION when the struct layout changes. */
 #define BOOT_MAGIC            UINT64_C(0x4E4F564100424F4F)   /* "NOVA\0BOO" */
-#define BOOT_PROTOCOL_VERSION 2
+#define BOOT_PROTOCOL_VERSION 3
 
 /* -----------------------------------------------------------------------
  * Memory map — mirrors UEFI EFI_MEMORY_DESCRIPTOR, but uses our own
@@ -100,7 +100,19 @@ typedef struct {
      * Set to 0/0 if no initrd was loaded. */
     uint64_t         initrd_base;          /* Physical base address */
     uint64_t         initrd_size;          /* Size in bytes */
+
+    /* Version 3: installation media.  When NovaOS boots from a CD/DVD the
+     * bootloader also hands over the raw files it booted from, so the
+     * installer can copy them to a disk (both 0/0 otherwise).  They are in
+     * EfiLoaderData pages, which the kernel never reuses. */
+    uint64_t         boot_flags;           /* BOOT_FLAG_* */
+    uint64_t         media_kernel_base;    /* \EFI\NOVA\kernel.elf (physical) */
+    uint64_t         media_kernel_size;
+    uint64_t         media_loader_base;    /* \EFI\BOOT\BOOTX64.EFI (physical) */
+    uint64_t         media_loader_size;
 } BootInfo;
+
+#define BOOT_FLAG_LIVE_MEDIA  (1u << 0)    /* booted from a CD/DVD (the installation disc) */
 
 /* Sanity check: kernel entry function signature */
 typedef void (*KernelEntryFn)(const BootInfo *info);

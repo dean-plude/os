@@ -413,7 +413,8 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UINT64 va = GUI_BITMAP_VA + (UINT64)slot * GUI_BITMAP_STRIDE;
     UINT64 size = ((UINT64)maxw * maxh * 4 + 0xFFF) & ~0xFFFULL;
     um_lock(&p->lock);
-    bool ok = um_is_free(p, va, size) && um_region_add(p, va, size, 0x04, false) &&
+    if (p->wow) va = um_find_free(p, size, p->lay.alloc_min, p->lay.alloc_max);   /* below 2 GiB */
+    bool ok = va && um_is_free(p, va, size) && um_region_add(p, va, size, 0x04, false) &&
               um_commit(p, va, size, 0x04);
     um_unlock(&p->lock);
     if (!ok) { s = spin_lock_irqsave(&g_gui_lock); g->used = false; spin_unlock_irqrestore(&g_gui_lock, s); return 0; }

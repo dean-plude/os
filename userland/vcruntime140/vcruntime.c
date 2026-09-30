@@ -32,15 +32,12 @@ typedef struct { int pTypeDescriptor; DWORD numContainedBases; PMD where; DWORD 
 typedef struct { DWORD signature, attributes, numBaseClasses; int pBaseClassArray; } ClassHierarchyDescriptor;
 typedef struct { DWORD signature, offset, cdOffset; int pTypeDescriptor, pClassDescriptor, pSelf; } CompleteObjectLocator;
 
-static const CompleteObjectLocator *locator(void *obj, DWORD64 *base)
+/* The RTTI tables hold image-relative offsets (signature 1, x64) or
+ * absolute addresses (signature 0, x86): @base makes both addresses */
+static const CompleteObjectLocator *locator(void *obj, ULONG_PTR *base)
 {
     const CompleteObjectLocator *col = ((const CompleteObjectLocator **)*(void **)obj)[-1];
-    *base = col->signature ? (DWORD64)col - (DWORD)col->pSelf : 0;
-    if (!col->signature) {                          /* old-style locator: absolute pointers are not used on x64 */
-        PVOID b = 0;
-        RtlPcToFileHeader((PVOID)col, &b);
-        *base = (DWORD64)b;
-    }
+    *base = col->signature ? (ULONG_PTR)col - (DWORD)col->pSelf : 0;
     return col;
 }
 
@@ -54,7 +51,7 @@ static char *complete_object(void *obj, const CompleteObjectLocator *col)
 VCRT void *__RTCastToVoid(void *obj)
 {
     if (!obj) return 0;
-    DWORD64 base;
+    ULONG_PTR base;
     const CompleteObjectLocator *col = locator(obj, &base);
     return complete_object(obj, col);
 }
@@ -62,7 +59,7 @@ VCRT void *__RTCastToVoid(void *obj)
 VCRT void *__RTtypeid(void *obj)
 {
     if (!obj) fatal("Access violation - no RTTI data!\n", 3);   /* would be std::bad_typeid */
-    DWORD64 base;
+    ULONG_PTR base;
     const CompleteObjectLocator *col = locator(obj, &base);
     return (void *)(base + col->pTypeDescriptor);
 }
@@ -71,7 +68,7 @@ VCRT void *__RTDynamicCast(void *in, long vfdelta, void *src_type, void *target_
 {
     (void)vfdelta; (void)src_type;
     if (!in) return 0;
-    DWORD64 base;
+    ULONG_PTR base;
     const CompleteObjectLocator *col = locator(in, &base);
     char *complete = complete_object(in, col);
     const ClassHierarchyDescriptor *chd = (const ClassHierarchyDescriptor *)(base + col->pClassDescriptor);
@@ -168,8 +165,13 @@ VCRT int __std_type_info_compare(const TypeInfoData *a, const TypeInfoData *b)
 
 VCRT size_t __std_type_info_hash(const TypeInfoData *d)
 {
+#ifdef _WIN64
     size_t h = 14695981039346656037ULL;                 /* FNV-1a */
     for (const unsigned char *p = (const unsigned char *)d->decorated + 1; *p; p++) h = (h ^ *p) * 1099511628211ULL;
+#else
+    size_t h = 2166136261u;                             /* FNV-1a, 32-bit */
+    for (const unsigned char *p = (const unsigned char *)d->decorated + 1; *p; p++) h = (h ^ *p) * 16777619u;
+#endif
     return h;
 }
 
@@ -264,7 +266,14 @@ __asm__(".section .drectve,\"yn\"\n\t"
         ".text\n");
 
 /* std::type_info's vtable: every RTTI/EH type descriptor points at it */
-static void *__cdecl type_info_delete(void *self, unsigned flags)
+#ifdef _WIN64
+#define VIRTUAL __cdecl
+#define TYPE_INFO_DTOR "??1type_info@@UEAA@XZ"
+#else                                           /* x86: member functions are thiscall */
+#define VIRTUAL __thiscall
+#define TYPE_INFO_DTOR "??1type_info@@UAE@XZ"
+#endif
+static void *VIRTUAL type_info_delete(void *self, unsigned flags)
 {
     TypeInfoData *d = (TypeInfoData *)((char *)self + 8);
     vfree((void *)d->undecorated);
@@ -274,5 +283,5 @@ static void *__cdecl type_info_delete(void *self, unsigned flags)
 static void __cdecl type_info_dtor(void *self) { type_info_delete(self, 0); }
 
 __declspec(dllexport) void *const type_info_vtable[1] __asm__("??_7type_info@@6B@") = { (void *)type_info_delete };
-VCRT void __cdecl type_info_destructor(void *self) __asm__("??1type_info@@UEAA@XZ");
-VCRT void __cdecl type_info_destructor(void *self) { type_info_dtor(self); }
+VCRT void VIRTUAL type_info_destructor(void *self) __asm__(TYPE_INFO_DTOR);
+VCRT void VIRTUAL type_info_destructor(void *self) { type_info_dtor(self); }

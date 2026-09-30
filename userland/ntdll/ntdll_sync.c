@@ -12,7 +12,7 @@
 #include <winternl.h>
 #include <winnt.h>
 
-static ULONG cur_tid(void) { return *(ULONG *)(NtCurrentTebBytes() + TEB_CLIENT_ID + 8); }
+static ULONG cur_tid(void) { return *(ULONG *)(NtCurrentTebBytes() + TEB_CLIENT_ID + sizeof(HANDLE)); }
 static void  yield(void)   { NtYieldExecution(); }
 /* Waiting on another thread: yield the first few rounds, then sleep a tick
  * per round (on several CPUs, spinning on yields keeps them all busy) */
@@ -111,57 +111,59 @@ NTSTATUS NTAPI RtlDeleteCriticalSection(PRTL_CRITICAL_SECTION cs)
 /* -----------------------------------------------------------------------
  * Slim reader/writer locks (bit 0: writer held; bits 1..: reader count)
  * ----------------------------------------------------------------------- */
-static volatile LONG64 *srw(PRTL_SRWLOCK l) { return (volatile LONG64 *)&l->Ptr; }
+/* pointer-sized (8 bytes, or 4 in 32-bit programs) */
+static volatile LONG_PTR *srw(PRTL_SRWLOCK l) { return (volatile LONG_PTR *)&l->Ptr; }
+static LONG_PTR cas(volatile LONG_PTR *p, LONG_PTR v, LONG_PTR cmp) { return __sync_val_compare_and_swap(p, cmp, v); }
 
 VOID NTAPI RtlInitializeSRWLock(PRTL_SRWLOCK l) { l->Ptr = 0; }
 
 VOID NTAPI RtlAcquireSRWLockExclusive(PRTL_SRWLOCK l)
 {
     ULONG round = 0;
-    while (InterlockedCompareExchange64(srw(l), 1, 0) != 0) backoff(&round);
+    while (cas(srw(l), 1, 0) != 0) backoff(&round);
 }
 
 BOOLEAN NTAPI RtlTryAcquireSRWLockExclusive(PRTL_SRWLOCK l)
 {
-    return InterlockedCompareExchange64(srw(l), 1, 0) == 0;
+    return cas(srw(l), 1, 0) == 0;
 }
 
 VOID NTAPI RtlReleaseSRWLockExclusive(PRTL_SRWLOCK l)
 {
-    InterlockedExchange64(srw(l), 0);
+    __atomic_store_n(srw(l), 0, __ATOMIC_RELEASE);
 }
 
 VOID NTAPI RtlAcquireSRWLockShared(PRTL_SRWLOCK l)
 {
     for (ULONG round = 0;;) {
-        LONG64 v = *srw(l);
-        if (!(v & 1) && InterlockedCompareExchange64(srw(l), v + 2, v) == v) return;
+        LONG_PTR v = *srw(l);
+        if (!(v & 1) && cas(srw(l), v + 2, v) == v) return;
         backoff(&round);
     }
 }
 
 BOOLEAN NTAPI RtlTryAcquireSRWLockShared(PRTL_SRWLOCK l)
 {
-    LONG64 v = *srw(l);
-    return !(v & 1) && InterlockedCompareExchange64(srw(l), v + 2, v) == v;
+    LONG_PTR v = *srw(l);
+    return !(v & 1) && cas(srw(l), v + 2, v) == v;
 }
 
 VOID NTAPI RtlReleaseSRWLockShared(PRTL_SRWLOCK l)
 {
-    InterlockedExchangeAdd64(srw(l), -2);
+    __sync_fetch_and_sub(srw(l), 2);
 }
 
 /* -----------------------------------------------------------------------
  * Condition variables (signal counter; spurious wakeups permitted)
  * ----------------------------------------------------------------------- */
 VOID NTAPI RtlInitializeConditionVariable(PRTL_CONDITION_VARIABLE cv) { cv->Ptr = 0; }
-VOID NTAPI RtlWakeConditionVariable(PRTL_CONDITION_VARIABLE cv)    { InterlockedIncrement64((LONG64 *)&cv->Ptr); }
-VOID NTAPI RtlWakeAllConditionVariable(PRTL_CONDITION_VARIABLE cv) { InterlockedIncrement64((LONG64 *)&cv->Ptr); }
+VOID NTAPI RtlWakeConditionVariable(PRTL_CONDITION_VARIABLE cv)    { __sync_fetch_and_add((volatile LONG_PTR *)&cv->Ptr, 1); }
+VOID NTAPI RtlWakeAllConditionVariable(PRTL_CONDITION_VARIABLE cv) { __sync_fetch_and_add((volatile LONG_PTR *)&cv->Ptr, 1); }
 
 static NTSTATUS cv_sleep(PRTL_CONDITION_VARIABLE cv, PLARGE_INTEGER timeout,
                          void (*unlock)(void *), void (*lock)(void *), void *obj)
 {
-    LONG64 seen = *(volatile LONG64 *)&cv->Ptr;
+    LONG_PTR seen = *(volatile LONG_PTR *)&cv->Ptr;
     /* Timeout: relative (negative, 100 ns units) is the common case; an
      * absolute one is treated as already due */
     ULONGLONG start = now_ms(), limit = 0;
@@ -169,7 +171,7 @@ static NTSTATUS cv_sleep(PRTL_CONDITION_VARIABLE cv, PLARGE_INTEGER timeout,
     unlock(obj);
     NTSTATUS s = STATUS_SUCCESS;
     ULONG round = 0;
-    while (*(volatile LONG64 *)&cv->Ptr == seen) {
+    while (*(volatile LONG_PTR *)&cv->Ptr == seen) {
         if (timeout && now_ms() - start >= limit) { s = STATUS_TIMEOUT; break; }
         backoff(&round);
     }

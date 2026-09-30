@@ -124,6 +124,8 @@ static void um_lock_free_init(void)
     for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) um_lock_free(list[i]);
 }
 
+static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode **root);
+
 /* Terminal "trace NAME": log the failing system calls of programs named
  * NAME (a debugging aid for Windows programs that misbehave) */
 static char g_trace[32];
@@ -146,10 +148,18 @@ UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         const char *n = t->proc->name;
         int i = 0;
         while (g_trace[i] && n[i] && (n[i] | 0x20) == (g_trace[i] | 0x20)) i++;
-        if (!g_trace[i] && (!n[i] || n[i] == '.'))
-            kprintf("[TRACE] %s: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx\n", n,
+        if (!g_trace[i] && (!n[i] || n[i] == '.')) {
+            /* the file name of the calls that take one */
+            char path[RAMFS_PATH_MAX] = "";
+            RamNode *root;
+            UINT64 oa = num == SYSCALL_NtCreateFile || num == SYSCALL_NtOpenFile ? a3 :
+                        num == SYSCALL_NtQueryAttributesFile ? a1 : 0;
+            if (oa && get_path(t->proc, oa, path, sizeof(path), &root)) path[0] = 0;
+            kprintf("[TRACE] %s: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
                     (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
-                    (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r);
+                    (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r,
+                    path[0] ? " " : "", path);
+        }
     }
     return r;
 }
@@ -312,6 +322,20 @@ static UINT32 u2w(const char *s, UINT8 *out, UINT32 cap)
     return n;
 }
 
+/* File system redirection, as WoW64 does it: a 32-bit program asking for
+ * C:\Windows\System32 gets C:\Windows\SysWOW64 (its own DLLs), unless the
+ * thread turned that off (Wow64DisableWow64FsRedirection sets this word
+ * in its 32-bit TEB) */
+#define TEB32_NO_REDIRECT 0xFF8
+static void wow_redirect(UmProcess *p, char *path)
+{
+    if (!p->wow) return;
+    UmThread *t = UmCurrentThread();
+    UINT32 off = 0;
+    if (t && NT_SUCCESS(CopyFromUser(&off, (const void *)(uintptr_t)(t->teb + TEB32_NO_REDIRECT), 4)) && off) return;
+    um_wow_path(p, path);
+}
+
 static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode **root)
 {
     UINT64 oa[6];
@@ -339,6 +363,7 @@ static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode 
     if (((out[0] | 0x20) >= 'a' && (out[0] | 0x20) <= 'z') && out[1] == ':' &&
         (out[0] | 0x20) != 'c')
         return ST_OBJECT_PATH_NOT_FOUND;                /* only drive C: exists */
+    wow_redirect(p, out);
     return ST_SUCCESS;
 }
 
@@ -918,7 +943,7 @@ static UINT64 sys_alloc_vm_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         base &= ~0xFFFFULL;
         size = (end - base + 0xFFF) & ~0xFFFULL;
         if (!base) {
-            base = um_find_free(p, size, UM_ALLOC_MIN, UM_ALLOC_MAX);
+            base = um_find_free(p, size, p->lay.alloc_min, p->lay.alloc_max);
             if (!base) return ST_NO_MEMORY;
         } else if (!um_is_free(p, base, size)) {
             return ST_CONFLICTING_ADDRESSES;
@@ -1002,7 +1027,8 @@ static UINT64 sys_query_vm_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a1 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_INVALID_HANDLE;
     if (a3 != 0) return ST_INVALID_INFO_CLASS;
     if (len < 48) return ST_INFO_LENGTH_MISMATCH;
-    if (a2 >= UM_ALLOC_MAX + UINT64_C(0x2000000000)) return ST_INVALID_PARAMETER;
+    UINT64 top = p->wow ? UINT64_C(0x80000000) : UM_ALLOC_MAX + UINT64_C(0x2000000000);   /* end of user space */
+    if (a2 >= top) return ST_INVALID_PARAMETER;
     struct {
         UINT64 base, alloc_base;
         UINT32 alloc_protect; UINT16 partition, pad;
@@ -1015,7 +1041,7 @@ static UINT64 sys_query_vm_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UmRegion *r = um_region_find(p, va);
     if (!r) {
         /* free: up to the next region */
-        UINT64 next = UM_ALLOC_MAX + UINT64_C(0x2000000000);
+        UINT64 next = top;
         for (int i = 0; i < p->nregions; i++)
             if (p->regions[i].base > va && p->regions[i].base < next) next = p->regions[i].base;
         mbi.size = next - va;

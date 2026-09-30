@@ -34,6 +34,23 @@
 #define UM_THREAD_STACK  (256 * 1024)                         /* default for new threads */
 #define UM_ALLOC_MIN     UINT64_C(0x0000000010000000)   /* NtAllocateVirtualMemory */
 #define UM_ALLOC_MAX     UINT64_C(0x00007FFD00000000)
+#define UM_DLL_MIN       UINT64_C(0x0000000180000000)   /* relocated DLLs */
+#define UM_DLL_MAX       UINT64_C(0x00007FF000000000)
+
+/* 32-bit programs (WoW): the same areas, all below 2 GiB (0x7FFE0000 is
+ * KUSER_SHARED_DATA in both) */
+#define UM32_PEB_VA      UINT64_C(0x7FF00000)
+#define UM32_STACK_TOP   UINT64_C(0x7FE00000)
+#define UM32_ALLOC_MIN   UINT64_C(0x00110000)
+#define UM32_ALLOC_MAX   UINT64_C(0x7FD00000)
+#define UM32_DLL_MIN     UINT64_C(0x10000000)
+#define UM32_DLL_MAX     UINT64_C(0x7F000000)
+
+/* A process's address-space layout (64-bit, or 32-bit for WoW) */
+typedef struct {
+    UINT64 peb, ldr_info, params, stubs, teb_area;
+    UINT64 stack_top, alloc_min, alloc_max, dll_min, dll_max;
+} UmLayout;
 
 /* NTSTATUS values used here */
 #define UM_STATUS_CONTROL_C_EXIT   0xC000013Au
@@ -132,6 +149,8 @@ typedef struct {
 
 struct UmProcess {
     UINT32      pid;
+    bool        wow;            /* a 32-bit (x86) program: compatibility mode, SysWOW64 DLLs */
+    UmLayout    lay;            /* where its system areas and allocations go */
     char        name[32];
     UINT64      pml4;           /* physical address of the page table */
     RamNode    *cwd;
@@ -171,6 +190,9 @@ struct UmProcess {
 
 /* um.c */
 UmProcess *UmCurrent(void);                    /* NULL for kernel threads */
+void       um_set_layout(UmProcess *p, bool wow);   /* 64-bit or 32-bit (WoW) address layout */
+void       um_wow_path(UmProcess *p, char *path);  /* System32 -> SysWOW64 for 32-bit programs */
+UINT16     um_pe_machine(const RamNode *f);     /* 0x8664, 0x014C, or 0 if not a PE file */
 UmThread  *UmCurrentThread(void);
 UINT32     um_new_id(void);
 /* The calling thread should stop (its process or itself is being ended) */

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifdef _WIN64
 /* jmp_buf: rbx rbp rdi rsi rsp r12 r13 r14 r15 rip, then xmm6-15 at +80 */
 __asm__(".globl _setjmp_nova\n"
         ".section .text$setjmp,\"xr\"\n"
@@ -64,6 +65,60 @@ __asm__(".globl _setjmp_nova\n"
         ".section .drectve,\"yn\"\n\t"
         ".ascii \" /EXPORT:_setjmp_nova /EXPORT:longjmp\"\n\t"
         ".text\n");
+
+#else
+/* jmp_buf (Microsoft's x86 _JUMP_BUFFER): ebp ebx edi esi esp eip, the
+ * fs:[0] exception frame, a try level, the "VC20" cookie.  longjmp takes
+ * the exception frames between off the chain (their handlers run, as in
+ * an unwind) before jumping. */
+__asm__(".globl __setjmp_nova\n.globl __setjmp\n.globl __setjmp3\n"
+        ".section .text$setjmp,\"xr\"\n"
+        "__setjmp_nova:\n__setjmp:\n__setjmp3:\n\t"
+        "movl 4(%esp), %edx\n\t"
+        "movl %ebp, 0(%edx)\n\t"
+        "movl %ebx, 4(%edx)\n\t"
+        "movl %edi, 8(%edx)\n\t"
+        "movl %esi, 12(%edx)\n\t"
+        "leal 4(%esp), %eax\n\t"
+        "movl %eax, 16(%edx)\n\t"
+        "movl (%esp), %eax\n\t"
+        "movl %eax, 20(%edx)\n\t"
+        "movl %fs:0, %eax\n\t"
+        "movl %eax, 24(%edx)\n\t"
+        "movl $-1, 28(%edx)\n\t"
+        "movl $0x56433230, 32(%edx)\n\t"
+        "movl $0, 36(%edx)\n\t"
+        "xorl %eax, %eax\n\t"
+        "retl\n\t"
+        ".globl _longjmp\n"
+        "_longjmp:\n\t"
+        "movl 4(%esp), %esi\n\t"
+        "movl 8(%esp), %edi\n\t"
+        "movl 24(%esi), %eax\n\t"
+        "cmpl %fs:0, %eax\n\t"
+        "je 2f\n\t"
+        "pushl $0\n\t" "pushl $0\n\t" "pushl $0\n\t" "pushl %eax\n\t"
+        "calll *__imp__RtlUnwind@16\n\t"
+        "movl 24(%esi), %eax\n\t"
+        "movl %eax, %fs:0\n"
+        "2:\n\t"
+        "movl %edi, %eax\n\t"
+        "testl %eax, %eax\n\t"
+        "jnz 1f\n\t"
+        "incl %eax\n"
+        "1:\n\t"
+        "movl %esi, %edx\n\t"
+        "movl 0(%edx), %ebp\n\t"
+        "movl 4(%edx), %ebx\n\t"
+        "movl 8(%edx), %edi\n\t"
+        "movl 12(%edx), %esi\n\t"
+        "movl 16(%edx), %esp\n\t"
+        "jmpl *20(%edx)\n\t"
+        ".section .drectve,\"yn\"\n\t"
+        ".ascii \" /EXPORT:__setjmp_nova /EXPORT:__setjmp /EXPORT:__setjmp3 /EXPORT:_longjmp\"\n\t"
+        ".text\n");
+
+#endif
 
 static __sighandler_t g_sig[32];
 

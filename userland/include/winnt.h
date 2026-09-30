@@ -20,6 +20,8 @@ typedef struct _EXCEPTION_RECORD {
 
 typedef struct __declspec(align(16)) _M128A { ULONGLONG Low; LONGLONG High; } M128A, *PM128A;
 
+#ifdef __x86_64__
+
 typedef struct __declspec(align(16)) _XSAVE_FORMAT {
     WORD ControlWord, StatusWord;
     BYTE TagWord, Reserved1;
@@ -66,6 +68,38 @@ typedef struct __declspec(align(16)) _CONTEXT {
 #define CONTEXT_DEBUG_REGISTERS  (CONTEXT_AMD64 | 0x10L)
 #define CONTEXT_FULL             (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT)
 #define CONTEXT_ALL              (CONTEXT_FULL | CONTEXT_SEGMENTS | CONTEXT_DEBUG_REGISTERS)
+
+#else /* x86 (32-bit programs) */
+
+#define SIZE_OF_80387_REGISTERS     80
+#define MAXIMUM_SUPPORTED_EXTENSION 512
+typedef struct _FLOATING_SAVE_AREA {
+    DWORD ControlWord, StatusWord, TagWord, ErrorOffset, ErrorSelector, DataOffset, DataSelector;
+    BYTE  RegisterArea[SIZE_OF_80387_REGISTERS];
+    DWORD Spare0;                                   /* Cr0NpxState */
+} FLOATING_SAVE_AREA, *PFLOATING_SAVE_AREA;
+
+typedef struct _CONTEXT {
+    DWORD ContextFlags;
+    DWORD Dr0, Dr1, Dr2, Dr3, Dr6, Dr7;
+    FLOATING_SAVE_AREA FloatSave;
+    DWORD SegGs, SegFs, SegEs, SegDs;
+    DWORD Edi, Esi, Ebx, Edx, Ecx, Eax;
+    DWORD Ebp, Eip, SegCs, EFlags, Esp, SegSs;
+    BYTE  ExtendedRegisters[MAXIMUM_SUPPORTED_EXTENSION];   /* FXSAVE image */
+} CONTEXT, *PCONTEXT, *LPCONTEXT;
+
+#define CONTEXT_i386               0x00010000L
+#define CONTEXT_CONTROL            (CONTEXT_i386 | 0x1L)
+#define CONTEXT_INTEGER            (CONTEXT_i386 | 0x2L)
+#define CONTEXT_SEGMENTS           (CONTEXT_i386 | 0x4L)
+#define CONTEXT_FLOATING_POINT     (CONTEXT_i386 | 0x8L)
+#define CONTEXT_DEBUG_REGISTERS    (CONTEXT_i386 | 0x10L)
+#define CONTEXT_EXTENDED_REGISTERS (CONTEXT_i386 | 0x20L)
+#define CONTEXT_FULL               (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS)
+#define CONTEXT_ALL                (CONTEXT_FULL | CONTEXT_FLOATING_POINT | CONTEXT_DEBUG_REGISTERS | CONTEXT_EXTENDED_REGISTERS)
+
+#endif
 
 typedef struct _EXCEPTION_POINTERS {
     PEXCEPTION_RECORD ExceptionRecord;
@@ -139,6 +173,7 @@ typedef enum _EXCEPTION_DISPOSITION {
     ExceptionContinueExecution, ExceptionContinueSearch, ExceptionNestedException, ExceptionCollidedUnwind
 } EXCEPTION_DISPOSITION;
 
+#ifdef __x86_64__
 /* x64 unwind data (.pdata / .xdata) */
 typedef struct _RUNTIME_FUNCTION { DWORD BeginAddress, EndAddress, UnwindData; } RUNTIME_FUNCTION, *PRUNTIME_FUNCTION;
 
@@ -183,6 +218,16 @@ typedef struct _SCOPE_TABLE_AMD64 {
     struct { DWORD BeginAddress, EndAddress, HandlerAddress, JumpTarget; } ScopeRecord[1];
 } SCOPE_TABLE_AMD64, *PSCOPE_TABLE_AMD64;
 
+#else /* x86: frame-based SEH, a chain of registrations from fs:[0] */
+typedef EXCEPTION_DISPOSITION (__cdecl *PEXCEPTION_ROUTINE)(PEXCEPTION_RECORD rec, PVOID frame, PCONTEXT ctx,
+                                                            PVOID dispatcher_context);
+typedef struct _EXCEPTION_REGISTRATION_RECORD {
+    struct _EXCEPTION_REGISTRATION_RECORD *Next;
+    PEXCEPTION_ROUTINE Handler;
+} EXCEPTION_REGISTRATION_RECORD, *PEXCEPTION_REGISTRATION_RECORD;
+#define EXCEPTION_CHAIN_END ((PEXCEPTION_REGISTRATION_RECORD)-1)
+#endif
+
 typedef LONG (WINAPI *PVECTORED_EXCEPTION_HANDLER)(PEXCEPTION_POINTERS info);
 typedef LONG (WINAPI *PTOP_LEVEL_EXCEPTION_FILTER)(PEXCEPTION_POINTERS info);
 typedef PTOP_LEVEL_EXCEPTION_FILTER LPTOP_LEVEL_EXCEPTION_FILTER;
@@ -214,7 +259,28 @@ typedef struct _IMAGE_OPTIONAL_HEADER64 {
     DWORD LoaderFlags, NumberOfRvaAndSizes;
     IMAGE_DATA_DIRECTORY DataDirectory[16];
 } IMAGE_OPTIONAL_HEADER64;
-typedef struct _IMAGE_NT_HEADERS64 { DWORD Signature; IMAGE_FILE_HEADER FileHeader; IMAGE_OPTIONAL_HEADER64 OptionalHeader; } IMAGE_NT_HEADERS64, IMAGE_NT_HEADERS, *PIMAGE_NT_HEADERS;
+typedef struct _IMAGE_OPTIONAL_HEADER32 {
+    WORD Magic; BYTE MajorLinkerVersion, MinorLinkerVersion;
+    DWORD SizeOfCode, SizeOfInitializedData, SizeOfUninitializedData, AddressOfEntryPoint, BaseOfCode, BaseOfData;
+    DWORD ImageBase; DWORD SectionAlignment, FileAlignment;
+    WORD MajorOperatingSystemVersion, MinorOperatingSystemVersion, MajorImageVersion, MinorImageVersion,
+         MajorSubsystemVersion, MinorSubsystemVersion;
+    DWORD Win32VersionValue, SizeOfImage, SizeOfHeaders, CheckSum;
+    WORD Subsystem, DllCharacteristics;
+    DWORD SizeOfStackReserve, SizeOfStackCommit, SizeOfHeapReserve, SizeOfHeapCommit;
+    DWORD LoaderFlags, NumberOfRvaAndSizes;
+    IMAGE_DATA_DIRECTORY DataDirectory[16];
+} IMAGE_OPTIONAL_HEADER32;
+typedef struct _IMAGE_NT_HEADERS64 { DWORD Signature; IMAGE_FILE_HEADER FileHeader; IMAGE_OPTIONAL_HEADER64 OptionalHeader; } IMAGE_NT_HEADERS64;
+typedef struct _IMAGE_NT_HEADERS32 { DWORD Signature; IMAGE_FILE_HEADER FileHeader; IMAGE_OPTIONAL_HEADER32 OptionalHeader; } IMAGE_NT_HEADERS32;
+/* This build's own kind of image */
+#ifdef __x86_64__
+typedef IMAGE_NT_HEADERS64 IMAGE_NT_HEADERS, *PIMAGE_NT_HEADERS;
+typedef IMAGE_OPTIONAL_HEADER64 IMAGE_OPTIONAL_HEADER;
+#else
+typedef IMAGE_NT_HEADERS32 IMAGE_NT_HEADERS, *PIMAGE_NT_HEADERS;
+typedef IMAGE_OPTIONAL_HEADER32 IMAGE_OPTIONAL_HEADER;
+#endif
 #define IMAGE_DIRECTORY_ENTRY_EXPORT     0
 #define IMAGE_DIRECTORY_ENTRY_IMPORT     1
 #define IMAGE_DIRECTORY_ENTRY_EXCEPTION  3
@@ -229,7 +295,16 @@ typedef VOID (__stdcall *PIMAGE_TLS_CALLBACK)(PVOID DllHandle, DWORD Reason, PVO
 typedef struct _IMAGE_TLS_DIRECTORY64 {
     ULONGLONG StartAddressOfRawData, EndAddressOfRawData, AddressOfIndex, AddressOfCallBacks;
     DWORD SizeOfZeroFill, Characteristics;
-} IMAGE_TLS_DIRECTORY64, IMAGE_TLS_DIRECTORY, *PIMAGE_TLS_DIRECTORY;
+} IMAGE_TLS_DIRECTORY64;
+typedef struct _IMAGE_TLS_DIRECTORY32 {
+    DWORD StartAddressOfRawData, EndAddressOfRawData, AddressOfIndex, AddressOfCallBacks;
+    DWORD SizeOfZeroFill, Characteristics;
+} IMAGE_TLS_DIRECTORY32;
+#ifdef __x86_64__
+typedef IMAGE_TLS_DIRECTORY64 IMAGE_TLS_DIRECTORY, *PIMAGE_TLS_DIRECTORY;
+#else
+typedef IMAGE_TLS_DIRECTORY32 IMAGE_TLS_DIRECTORY, *PIMAGE_TLS_DIRECTORY;
+#endif
 
 #define DLL_PROCESS_ATTACH 1
 #define DLL_THREAD_ATTACH  2

@@ -419,6 +419,17 @@ static void cmd_start(Term *t, int argc, char **argv)
             return;
         }
     }
+    if (argc == 2 && !AppByName(argv[1], &id)) {  /* a document, folder or shortcut */
+        RamNode *f = RamfsResolve(t->cwd, argv[1]);
+        size_t n = strlen(argv[1]);
+        bool prog = n > 4 && (!strcmp(argv[1] + n - 4, ".exe") || !strcmp(argv[1] + n - 4, ".EXE") ||
+                              !strcmp(argv[1] + n - 4, ".com"));
+        if (f && !prog) {
+            if (f->dir) AppOpenFolder(f);
+            else AppOpenFile(f);
+            return;
+        }
+    }
     RamNode *exe = argc >= 2 && !AppByName(argv[1], &id) ? UmFindProgram(t->cwd, argv[1]) : NULL;
     if (exe) {                                   /* a Windows program, detached from the terminal */
         char line[512], err[160];

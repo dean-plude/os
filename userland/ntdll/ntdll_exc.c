@@ -76,6 +76,7 @@ LONG nova_top_level_filter(PEXCEPTION_POINTERS info)
     return r;
 }
 
+#ifdef _WIN64
 /* -----------------------------------------------------------------------
  * x64 unwind data
  * ----------------------------------------------------------------------- */
@@ -478,6 +479,10 @@ __asm__(
     ".section .drectve,\"yn\"\n\t"
     ".ascii \" /EXPORT:KiUserExceptionDispatcher\"\n\t"
     ".text\n");
+
+#else
+#include "exc_x86.h"          /* 32-bit programs: frames chained from fs:[0] */
+#endif
 
 void RtlNovaInitExceptions(void)
 {

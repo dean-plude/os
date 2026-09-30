@@ -18,6 +18,7 @@
 #include "../../hal/ps2.h"
 #include "../../ke/kpcr.h"
 #include "../../ke/smp.h"
+#include "../../ke/probe.h"
 
 /* Assembly stub address table (defined in isr_stubs.asm) */
 extern uintptr_t isr_stub_table[IDT_ENTRIES];
@@ -37,19 +38,6 @@ void idt_set_gate(uint8_t vector, uintptr_t handler, uint8_t ist, uint8_t dpl)
     g->selector    = GDT_KERNEL_CODE;
     g->ist         = ist & 0x7;
     g->type_attr   = (uint8_t)(0x80 | (dpl << 5) | IDT_TYPE_INTERRUPT);
-    g->reserved    = 0;
-}
-
-/* Trap gate (preserves IF) */
-static void set_trap_gate(uint8_t vector, uintptr_t handler, uint8_t ist, uint8_t dpl)
-{
-    IdtGate *g = &idt[vector];
-    g->offset_low  = (uint16_t)(handler & 0xFFFF);
-    g->offset_mid  = (uint16_t)((handler >> 16) & 0xFFFF);
-    g->offset_high = (uint32_t)(handler >> 32);
-    g->selector    = GDT_KERNEL_CODE;
-    g->ist         = ist & 0x7;
-    g->type_attr   = (uint8_t)(0x80 | (dpl << 5) | IDT_TYPE_TRAP);
     g->reserved    = 0;
 }
 
@@ -73,11 +61,14 @@ void idt_init(void)
     idt_set_gate(EXC_DEBUG,          isr_stub_table[EXC_DEBUG],
                  IST_DEBUG, 0);
 
-    /* Breakpoint and int3 — allow ring 3 to trigger (DPL=3) */
-    set_trap_gate(EXC_BREAKPOINT, isr_stub_table[EXC_BREAKPOINT], 0, 3);
+    /* Breakpoint and int3 — allow ring 3 to trigger (DPL=3).  Interrupt
+     * gates (IF cleared): an interrupt arriving before isr_common's swapgs
+     * would otherwise run with the program's GS as its KPCR. */
+    idt_set_gate(EXC_BREAKPOINT, isr_stub_table[EXC_BREAKPOINT], 0, 3);
 
-    /* NT syscall (int 0x2E) — DPL=3 so userspace can invoke it */
-    set_trap_gate(VECTOR_SYSCALL,  isr_stub_table[VECTOR_SYSCALL],  0, 3);
+    /* NT syscall (int 0x2E) — DPL=3 so userspace (32-bit programs) can
+     * invoke it; entered with interrupts off, like SYSCALL */
+    idt_set_gate(VECTOR_SYSCALL,  isr_stub_table[VECTOR_SYSCALL],  0, 3);
 
     idt_load();
     kprintf("[IDT] Initialized: %d gates, IDTR base=0x%016lx\n",
@@ -289,6 +280,22 @@ static void dispatch(InterruptFrame *frame)
     }
 
     /* ---- NT Syscall (int 0x2E) ---- */
+    if (vector == VECTOR_SYSCALL && (frame->cs & ~3ULL) == GDT_USER_CODE32) {
+        /* A 32-bit program (ntdll's 32-bit layer): EAX = number, EDX =
+         * a block of 64-bit arguments laid out like the 64-bit stack
+         * (1-4 in its first slots, 5+ from offset 0x28, see um_stack_arg).
+         * The result comes back in EDX:EAX. */
+        UINT64 blk = frame->rdx & 0xFFFFFFFFu, a[4] = { 0, 0, 0, 0 };
+        UmNoteSyscallFrame(frame);                  /* NtGetContextThread while in here */
+        UINT64 r;
+        if ((INT32)CopyFromUser(a, (const void *)(uintptr_t)blk, sizeof(a)) < 0)
+            r = 0xC0000005u;                        /* STATUS_ACCESS_VIOLATION */
+        else
+            r = KiSystemCallEntry(frame->rax & 0xFFFFFFFFu, a[0], a[1], a[2], a[3], blk);
+        frame->rax = r & 0xFFFFFFFFu;
+        frame->rdx = r >> 32;
+        return;
+    }
     if (vector == VECTOR_SYSCALL) {
         /* Dispatch via the NT syscall table.
          * Windows NT ABI: RAX=num, RCX=arg1, RDX=arg2, R8=arg3, R9=arg4 */
@@ -346,7 +353,9 @@ void interrupt_dispatch(InterruptFrame *frame)
      * own locks; everything else under the big kernel lock (nesting if the
      * interrupted thread holds it already).  A switch in between hands the
      * lock over and back (smp.h). */
-    bool big = vector != IRQ_TIMER && vector != IRQ_SPURIOUS;
+    /* (a 32-bit program's system call takes the lock itself, like SYSCALL) */
+    bool big = vector != IRQ_TIMER && vector != IRQ_SPURIOUS &&
+               !(vector == VECTOR_SYSCALL && (frame->cs & ~3ULL) == GDT_USER_CODE32);
     if (big) bkl_acquire();
     dispatch(frame);
     /* Returning to a user program that has been killed meanwhile? */

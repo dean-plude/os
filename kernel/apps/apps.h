@@ -22,6 +22,8 @@ typedef enum {
     APP_NETSURF,
     /* Photos, and the App Store (downloads open-source Windows programs) */
     APP_STORE, APP_PHOTOS,
+    /* The installer: puts NovaOS on a disk */
+    APP_SETUP,
     /* Placeholders for apps NovaOS cannot run yet */ APP_XBOX, APP_SKYPE, APP_PHOTOSHOP,
     APP_ILLUSTRATOR, APP_CLIPCHAMP, APP_VSTUDIO, APP_PAINT, APP_TIPS,
     APP_POWERPOINT, APP_BLENDER, APP_BING, APP_SOLITAIRE, APP_TODO,
@@ -138,6 +140,16 @@ void AppUptime(char *buf, int cap);                     /* "1h 02m 05s" */
 void TerminalOpen(void);
 /* A new Terminal in @cwd (NULL: Documents) that runs @cmd as if typed */
 void TerminalRun(const char *cmd, RamNode *cwd);
+
+/* Shortcuts (.lnk files) */
+typedef struct {
+    char target[RAMFS_PATH_MAX];    /* "C:\\Programs\\App\\app.exe" */
+    char args[256];
+    char workdir[RAMFS_PATH_MAX];
+    char description[128];
+} AppLink;
+bool     AppLinkRead(const RamNode *lnk, AppLink *out);
+RamNode *AppLinkTarget(const RamNode *lnk);          /* NULL: not a shortcut, or a missing target */
 void ExplorerOpen(RamNode *dir);
 void NotepadOpen(RamNode *file);
 void SettingsOpen(void);
@@ -153,3 +165,5 @@ void PhotosOpen(RamNode *file);
 void PlaceholderOpen(AppId id);
 /* App Store: a catalog of open-source Windows programs to download and run */
 void StoreOpen(void);
+/* Install NovaOS on a disk */
+void SetupOpen(void);

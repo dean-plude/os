@@ -1,9 +1,11 @@
 # NovaOS — Windows-Compatible Operating System
 
 A clean-room, from-scratch x86_64 operating system designed to run native
-Windows executables (PE32+) without emulation.
+Windows executables without emulation: 64-bit (x64, PE32+) programs, and
+32-bit (x86, PE32) ones, such as most setup programs, through its own
+WoW64 layer.
 
-## Status: Phase 12 — unmodified Windows programs (7-Zip), an App Store, and Windows Installer (.msi)
+## Status: Phase 13 — 32-bit Windows programs (WoW64), after unmodified 7-Zip, an App Store, Windows Installer (.msi) and a NovaOS installer
 
 **What works:**
 
@@ -554,30 +556,44 @@ changed; every fix is in NovaOS.
 The dock's **App Store** (`kernel/apps/store.c`, also `start store` in the
 Terminal) is a catalog of free and open-source Windows programs: 7-Zip,
 VLC, Firefox, Thunderbird, Notepad++, GIMP, Inkscape, Krita, Audacity,
-HandBrake, OBS Studio, LibreOffice, SumatraPDF, KeePass, qBittorrent,
-PuTTY, WinSCP, Git, Python, WinMerge and ShareX, by category, with a
-note on how far each one gets on NovaOS today.
+HandBrake, OBS Studio, LibreOffice, SumatraPDF, KeePassXC, qBittorrent,
+PuTTY, WinSCP, Git, Python, WinMerge and ShareX, plus a **Runtimes**
+category (.NET Desktop Runtime, Visual C++ Redistributable, OpenJDK,
+Mesa 3D), by category, with a note on how far each gets on NovaOS today.
 
-- **Get** downloads the program's own installer from its publisher over
-  HTTPS (following redirects, with the bytes received shown while it
-  runs) to `C:\Downloads`, using the same network operations as the
-  Terminal's `wget`.  Responses and files may now be up to 64 MB.
-- **Install** runs the downloaded installer (or **Run**, for portable
-  programs such as PuTTY and SumatraPDF); **Open** starts the program
-  once its executable exists under `C:\Programs`, and the **Installed**
-  view lists what is there.
-- 7-Zip is the one entry tested end to end (download, install, open);
-  the other installers are unchanged upstream files whose runtime needs
-  (.NET, Windows Installer, Direct3D, GTK/Qt) NovaOS does not cover yet,
-  and the note on each row says so.
-- The **Runtimes** category lists what other programs depend on: the
-  .NET Desktop Runtime, the Visual C++ Redistributable, OpenJDK (a
-  Windows Installer package) and Mesa 3D's software OpenGL.  Runtimes
-  show "Installed" instead of an Open button.
+- **64-bit packages where there are any.**  The store fetches each
+  project's official 64-bit package: a portable `.zip` or `.7z`, an
+  installer, a Windows Installer `.msi`, or, for Firefox and Thunderbird,
+  the full installer, which is a 7-Zip self-extracting archive.  Apps
+  whose only download is a 32-bit setup program (GIMP, qBittorrent,
+  WinSCP, the Visual C++ Redistributable) now install through it too,
+  since NovaOS runs 32-bit programs.
+- **Get** downloads over HTTPS (following redirects, with the bytes
+  received shown while it runs) to `C:\Downloads`, using the same network
+  operations as the Terminal's `wget`.  Files may be up to 256 MB.
+- **Install** depends on the package: archives are unpacked into
+  `C:\Programs\<App>` by the installed 7-Zip's own `7z.exe`, unchanged
+  (the store waits for it and reports its result, and asks for 7-Zip
+  first if it is missing); `.msi` packages go to NovaOS's Windows
+  Installer; installers, 64-bit or 32-bit, run.
+  **Run** starts portable programs (PuTTY, SumatraPDF) from Downloads.
+- **Open** starts the installed program from its own folder (console
+  programs such as Python and Git in a Terminal); archives with a
+  versioned top folder are found wherever the program landed.  The
+  **Installed** view lists what is there; runtimes show "Installed".
+- Tested in QEMU with stand-in packages (the sandbox this was built in
+  cannot reach the publishers): 7-Zip installed from its x64 installer;
+  a portable zip unpacked into `C:\Programs\Notepad++` and opened; a
+  7-Zip self-extracting installer unpacked like Firefox's and opened.
+  The apps themselves mostly need more of Windows than NovaOS has (the
+  note on each row).
+- Programs in a folder of their own under `C:\Programs` now start in
+  that folder when opened from the desktop (they used to be looked up
+  by name and not found).
 - The Terminal gained `copy <source> <destination>`.
-- A kernel bug this shook out: `ksnprintf` looped forever when a `%s`
-  argument had to be cut to fit the buffer, freezing the desktop on a
-  long error message.
+- A kernel bug the store shook out: `ksnprintf` looped forever when a
+  `%s` argument had to be cut to fit the buffer, freezing the desktop on
+  a long error message.
 
 ### Windows Installer (.msi packages)
 
@@ -611,10 +627,153 @@ Install button all go through it, and programs can call
   `/qb`, `/passive`, `/l*v FILE` and `PROPERTY=value` overrides, and
   shows the familiar progress window with Cancel (full UI adds the
   completion message box).  Logs also go to the kernel log (`dmesg`).
-- Not yet: the packages' own dialogs (`InstallUISequence`), shortcuts
-  (NovaOS has no `.lnk` files), services, environment variables, and
+- Not yet: the packages' own dialogs (`InstallUISequence`), the
+  `Shortcut` table, services, environment variables, and
   merge modules.  LZX decoding is written to the specification but has
   only been exercised with MSZIP cabinets so far.
+
+### Phase 13 — 32-bit Windows programs (WoW64)
+
+NovaOS runs 32-bit (x86, PE32) Windows programs next to 64-bit ones, the
+way 64-bit Windows does: the CPU runs them in compatibility mode under
+the 64-bit kernel, and they get a 32-bit copy of the whole userland in
+`C:\Windows\SysWOW64`.
+
+- **Kernel** (`kernel/um/`): a 32-bit user code segment (0x38) and a flat
+  4 GiB data segment; FS based at each thread's 32-bit TEB (switched with
+  the thread); a 32-bit address layout, everything below 2 GiB (PEB, TEBs,
+  loader list, stacks, heap and DLLs); the PE32 loader (4-byte import
+  thunks, HIGHLOW relocations); x86 PEB, TEB and process parameters; DLLs
+  looked up in SysWOW64, and file system redirection (a 32-bit program's
+  `C:\Windows\System32` is `SysWOW64`, unless it calls
+  `Wow64DisableWow64FsRedirection`).  32-bit code enters the kernel
+  through `int 0x2E` with a block of 64-bit arguments.  A crash at a bad
+  address now also names the caller in the log.
+- **The 32-bit ntdll** (`ntdll_wow.c`) turns every system call's
+  arguments into the kernel's 64-bit forms: handles sign-extended,
+  pointers zero-extended, `OBJECT_ATTRIBUTES`, `UNICODE_STRING`,
+  `IO_STATUS_BLOCK`, `CONTEXT`, `EXCEPTION_RECORD`, memory and
+  thread/process information, handle arrays and window messages
+  rebuilt in their 64-bit layout and the results copied back.
+- **x86 exceptions** (`exc_x86.h`): frames chained from `fs:[0]`,
+  `RtlUnwind`, `RtlRaiseException`, and the `__try` handlers of MSVC and
+  clang (`_except_handler3`, `_except_handler4_common`); vcruntime140
+  has x86 C++ exceptions (`__CxxFrameHandler3`, `_CxxThrowException`)
+  and RTTI with absolute addresses; msvcrt has x86 `setjmp`/`longjmp`.
+- **Build**: `tools/build_userland.py` builds the userland twice, the
+  second time with `--target=i686-pc-windows-msvc`.  Stdcall functions are
+  exported undecorated (`GetLastError`, not `_GetLastError@0`) through a
+  generated `.def`, which also caught every mismatched calling convention
+  between our DLLs at link time.  The 64-bit division helpers x86 code
+  calls are in `lib/x86rt.c`.  32-bit builds of the test programs are in
+  `C:\Programs\x86`; `NOVA_NO_WOW64=1` leaves the 32-bit pass out.
+- **Programs see WoW64**: `IsWow64Process` is TRUE, `GetSystemInfo`
+  reports an x86 machine and `GetNativeSystemInfo` the AMD64 one,
+  `GetSystemDirectory` is `SysWOW64`.
+- **Tested**: every self-test (crttest, filetest, threads/SEH, DLL/TLS,
+  posixtest, apitest, comtest, C++ exceptions, shared memory) passes as a
+  32-bit program as well as a 64-bit one; 32-bit GUI programs (winhello,
+  guitest); programs from the 32-bit MinGW toolchain (C, and C++ with
+  exceptions); 7-Zip's own 32-bit self-extractors, console and GUI,
+  unpacking an archive; and a real NSIS (Modern UI) installer going
+  through its welcome, folder, progress and finish pages, installing
+  files, its uninstaller and registry keys, and uninstalling again.
+- Pointer-size assumptions fixed on the way: TEB offsets in kernel32 and
+  ws2_32, PE data directories in `GetProcAddress` and resources,
+  `Get/SetWindowLongPtr` and the `DWLP_*` offsets, rename information,
+  SRW locks, `%p`/`%z`/`%I` in printf and scanf, `FILE` (32 bytes on x86).
+- Also fixed on the way (for 64-bit programs too): `EndDialog` called
+  from a message another thread sent now ends the modal loop (NSIS's
+  finish page); `MoveFileEx(..., MOVEFILE_DELAY_UNTIL_REBOOT)` records
+  the operation in `PendingFileRenameOperations` instead of acting at
+  once (NSIS uninstallers copy themselves to Temp and schedule that copy
+  for deletion; it used to vanish before it could run); `shfolder.dll`
+  exists (`SHGetFolderPath`, which NSIS takes from it); msvcrt exports
+  `_controlfp`, `_control87`, `__p___initenv` and friends.  The
+  Terminal's `trace` now shows the file name of file system calls.
+- Not yet: pending renames are not carried out at the next start.
+
+### Shortcuts (.lnk) and overlapping controls
+
+- **`IShellLink`** (`userland/shell32/shlink.c`): shell32's ShellLink
+  class, `CLSID_ShellLink`, registered under `HKCR\CLSID` (a bare
+  `shell32.dll`, so 32-bit and 64-bit programs each get their own), with
+  `IShellLinkW`, `IShellLinkA` and `IPersistFile`.  `Save` writes the
+  Windows `.lnk` format (MS-SHLLINK: header, LinkInfo with the target in
+  ANSI and Unicode, Unicode strings for the description, working folder,
+  arguments and icon); `Load` reads links made by Windows too.
+- **The shell uses them**: opening a `.lnk` (Explorer, the desktop, the
+  Start menu, `start` in the Terminal) runs its target with the
+  shortcut's arguments in its working folder, or opens the folder or
+  document it points to; a shortcut shows its target's icon and is
+  called "Shortcut" in Explorer.  The Terminal's `start` opens any
+  document, folder or shortcut the way the shell does.  The Start menu
+  lists the shortcuts in `C:\AppData\Roaming\Start Menu\Programs`
+  (where `$SMPROGRAMS` and `CSIDL_PROGRAMS` point) ahead of
+  `C:\Programs`, keeping "Uninstall ..."
+  entries out of the grid (search finds them), and the desktop shows
+  what is in `C:\Desktop` after its own icons, noticing new files within
+  half a second.
+- **Overlapping controls paint as on Windows**: siblings paint from the
+  top of the z-order down (the first control of a dialog first), so where
+  controls without `WS_CLIPSIBLINGS` overlap, the lower one's pixels end
+  on top.  NSIS's page header is a white static above its bold title,
+  subtitle and icon; they were hidden under it and now show, and the
+  welcome and finish pages cover the header as they should.
+- Tested with a real NSIS installer that makes a desktop shortcut (with
+  arguments) and two Start menu shortcuts: the desktop icon appears, a
+  double-click starts the 32-bit program with its arguments in its
+  folder, the Start menu lists it, and the uninstaller takes them away.
+  comtest round-trips a shortcut through `IShellLinkW`, `IPersistFile`
+  and `IShellLinkA` in both 64-bit and 32-bit builds.
+
+### Installing NovaOS on a disk
+
+The ISO is also the installation disc.  Booted from it, NovaOS runs
+live (nothing is kept after a restart) and opens **Install NovaOS**
+(`kernel/apps/setup.c`, the engine in `kernel/fs/setup.c`); an icon on
+the desktop brings it back.  On an installed system it is in the Start
+menu and `start setup` in the Terminal opens it, to copy NovaOS to
+another disk.
+
+- **Welcome, choose a disk, confirm, install, finish.**  Setup lists the
+  SATA disks with their size and what is on them, marks the one NovaOS
+  started from and the one drive C: is kept on, and asks before erasing
+  anything.  Disks under 256 MB are shown but cannot be picked.
+- **What it writes**: a GPT (protective MBR, primary and backup headers
+  and entry arrays with their CRCs) with two partitions: an EFI System
+  Partition (FAT32 `NOVA_EFI`, 128 MiB) holding `\EFI\BOOT\BOOTX64.EFI`
+  and `\EFI\NOVA\kernel.elf`, and a basic data partition (FAT32
+  `NOVADATA`, the rest of the disk) where drive C: is saved.  The copied
+  kernel is read back and compared.  UEFI firmware finds
+  `\EFI\BOOT\BOOTX64.EFI` by itself, so no boot entry is written.
+- **Where the files come from**: booted from the disc, the bootloader
+  sees a CD-ROM node in its device path and hands the kernel the two
+  boot files in memory (boot protocol v3).  On an installed system Setup
+  reads them from the disk NovaOS started from.
+- **Your session comes along**: from the disc, drive C: lives on a blank
+  disk that NovaOS formatted at boot, often the very disk being
+  installed on.  Setup stops saving there before erasing it, then
+  writes everything on C: to the new data partition and keeps saving
+  there.  A C: kept on another disk stays where it is.
+- **Restart now** reboots into the installed system (remove the disc
+  first, or pick the disk in the firmware's boot menu).
+- Tested in QEMU/OVMF: installing from the ISO onto a blank 1 GB disk,
+  booting that disk alone with a file made in the live session still in
+  Documents, and installing from the installed system onto a second
+  disk.  Both new FAT volumes pass `fsck.fat`, and the GPT's checksums
+  verify.
+- To try it:
+
+```bash
+truncate -s 1G disk.img
+cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/OVMF_VARS.fd
+qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
+  -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,unit=1,file=/tmp/OVMF_VARS.fd \
+  -drive file=disk.img,format=raw -cdrom nova.iso
+# after installing: the same command without -cdrom starts from disk.img
+```
 
 ## Quick Start
 
@@ -667,11 +826,17 @@ the machine 2 GB so downloaded installers fit in the RAM disk.  Add a
 second drive (`-drive file=disk.img,format=raw`) to keep drive C: and the
 registry between boots.
 
+The ISO is also the **installation disc**: booted from it, NovaOS runs
+live and opens Install NovaOS, which puts it on a disk (see "Installing
+NovaOS on a disk" above).  An empty disk attached to the live session is
+formatted for drive C: at boot, and Setup can install onto that same
+disk, taking the session's files along.
+
 On macOS with Homebrew QEMU, the UEFI firmware ships with QEMU:
 
 ```bash
 FW="$(brew --prefix qemu)/share/qemu/edk2-x86_64-code.fd"
-qemu-system-x86_64 -machine q35 -m 512M -smp 4 \
+qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -drive if=pflash,format=raw,readonly=on,file="$FW" \
   -cdrom nova.iso -serial stdio
 ```
@@ -694,8 +859,9 @@ qemu-system-x86_64 -machine q35 -m 512M -smp 4 \
 | 9.5 | NetSurf web browser (HTTP/HTTPS fetcher, window surface, TrueType text, POSIX C runtime) | ✅ **Done** |
 | 10 | Standard DLLs (UCRT, C++ EH, advapi32, shell32, ...), registry, COM, AHCI + FAT persistent storage | ✅ **Done** |
 | 11 | Multiprocessor: every core runs threads, per-core scheduling, fine-grained kernel locking | ✅ **Done** |
-| 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store; Windows Installer (.msi) | ✅ **Done** |
-| 13 | Pipes, `cmd.exe`, the OLE clipboard, more real programs | 🔄 Planned |
+| 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store; Windows Installer (.msi); installing NovaOS on a disk | ✅ **Done** |
+| 13 | 32-bit (x86) Windows programs (WoW64): compatibility mode, a SysWOW64 userland, x86 SEH and C++ exceptions; NSIS installers (with shortcuts) and 7-Zip's 32-bit self-extractors run | ✅ **Done** |
+| 14 | Pipes, `cmd.exe`, the OLE clipboard, more real programs | 🔄 Planned |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native
 Windows executables (Phases 8–15) and the chosen compatibility strategy.

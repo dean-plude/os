@@ -981,14 +981,17 @@ static NTSTATUS rename_handle(HANDLE h, const char *to, BOOL replace)
 {
     NtPath p;
     if (!nt_path(to, &p)) return STATUS_OBJECT_NAME_INVALID;
-    BYTE buf[24 + 2 * (MAX_PATH + 8)];
-    memset(buf, 0, 24);
-    buf[0] = (BYTE)(replace ? 1 : 0);
+    typedef struct { BOOLEAN ReplaceIfExists; HANDLE RootDirectory; ULONG FileNameLength; WCHAR FileName[1]; } RenameInfo;
+    BYTE buf[sizeof(RenameInfo) + 2 * (MAX_PATH + 8)];
+    RenameInfo *ri = (RenameInfo *)buf;
+    memset(buf, 0, sizeof(RenameInfo));
+    ri->ReplaceIfExists = (BOOLEAN)(replace ? 1 : 0);
     ULONG len = p.us.Length;
-    memcpy(buf + 16, &len, 4);
-    memcpy(buf + 20, p.buf, len);
+    ri->FileNameLength = len;
+    memcpy(ri->FileName, p.buf, len);
     IO_STATUS_BLOCK io;
-    return NtSetInformationFile(h, &io, buf, 20 + len, 10 /* FileRenameInformation */);
+    return NtSetInformationFile(h, &io, buf, (ULONG)__builtin_offsetof(RenameInfo, FileName) + len,
+                                10 /* FileRenameInformation */);
 }
 
 WINBASEAPI BOOL WINAPI SetFileInformationByHandle(HANDLE h, FILE_INFO_BY_HANDLE_CLASS c, LPVOID buf, DWORD n)
@@ -1176,9 +1179,43 @@ WINBASEAPI BOOL WINAPI CopyFileExW(LPCWSTR from, LPCWSTR to, LPVOID progress, LP
     return CopyFileW(from, to, (flags & 1) != 0);   /* COPY_FILE_FAIL_IF_EXISTS */
 }
 
+/* MOVEFILE_DELAY_UNTIL_REBOOT: as Windows, the operation is only written
+ * down, in Session Manager's PendingFileRenameOperations (pairs of
+ * "\\??\\source", "\\??\\target" or "" for a delete); installers use it
+ * for files they cannot remove while they run */
+static BOOL pending_file_op(LPCSTR from, LPCSTR to)
+{
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager", 0, 0, 0,
+                        KEY_ALL_ACCESS, 0, &k, 0)) return FALSE;
+    DWORD type = 0, n = 0;
+    RegQueryValueExW(k, L"PendingFileRenameOperations", 0, &type, 0, &n);
+    if (type != REG_MULTI_SZ) n = 0;
+    DWORD cap = n + 2 * (2 * MAX_PATH + 16) * sizeof(WCHAR);
+    WCHAR *buf = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, cap);
+    if (!buf) { RegCloseKey(k); return FALSE; }
+    if (n) RegQueryValueExW(k, L"PendingFileRenameOperations", 0, &type, (BYTE *)buf, &n);
+    DWORD w = n / sizeof(WCHAR);
+    if (w && !buf[w - 1]) w--;                       /* drop the list's final terminator */
+    const char *items[2] = { from, to };
+    for (int i = 0; i < 2; i++) {
+        if (items[i] && *items[i]) {
+            buf[w++] = '\\'; buf[w++] = '?'; buf[w++] = '?'; buf[w++] = '\\';
+            int m = MultiByteToWideChar(CP_UTF8, 0, items[i], -1, buf + w, 2 * MAX_PATH);
+            w += m > 0 ? (DWORD)m : 1;
+        } else buf[w++] = 0;
+    }
+    buf[w++] = 0;
+    LSTATUS r = RegSetValueExW(k, L"PendingFileRenameOperations", 0, REG_MULTI_SZ, (BYTE *)buf, w * sizeof(WCHAR));
+    HeapFree(GetProcessHeap(), 0, buf);
+    RegCloseKey(k);
+    return r == 0;
+}
+
 WINBASEAPI BOOL WINAPI MoveFileExA(LPCSTR from, LPCSTR to, DWORD flags)
 {
-    if (!to) return DeleteFileA(from);              /* MOVEFILE_DELAY_UNTIL_REBOOT-style delete */
+    if (flags & 4) return pending_file_op(from, to);       /* MOVEFILE_DELAY_UNTIL_REBOOT */
+    if (!to) return DeleteFileA(from);
     HANDLE h = CreateFileA(from, DELETE, 7, 0, OPEN_EXISTING, 0x02000000 /* BACKUP_SEMANTICS */, 0);
     if (h == INVALID_HANDLE_VALUE) return FALSE;
     NTSTATUS s = rename_handle(h, to, (flags & 1) != 0);
@@ -1220,10 +1257,17 @@ WINBASEAPI BOOL WINAPI SetCurrentDirectoryW(LPCWSTR path)
     return SetCurrentDirectoryA(a);
 }
 
-WINBASEAPI UINT WINAPI GetSystemDirectoryA(LPSTR buf, UINT n)  { return put_a("C:\\Windows\\System32", buf, n); }
+#ifdef _WIN64
+#define SYSTEM_DIR "C:\\Windows\\System32"
+#else
+#define SYSTEM_DIR "C:\\Windows\\SysWOW64"                  /* 32-bit programs' system folder */
+#endif
+WINBASEAPI UINT WINAPI GetSystemDirectoryA(LPSTR buf, UINT n)  { return put_a(SYSTEM_DIR, buf, n); }
 WINBASEAPI UINT WINAPI GetWindowsDirectoryA(LPSTR buf, UINT n) { return put_a("C:\\Windows", buf, n); }
 WINBASEAPI UINT WINAPI GetSystemWindowsDirectoryA(LPSTR buf, UINT n) { return put_a("C:\\Windows", buf, n); }
-WINBASEAPI UINT WINAPI GetSystemDirectoryW(LPWSTR buf, UINT n) { return put_utf8_as_w("C:\\Windows\\System32", buf, n); }
+WINBASEAPI UINT WINAPI GetSystemDirectoryW(LPWSTR buf, UINT n) { return put_utf8_as_w(SYSTEM_DIR, buf, n); }
+WINBASEAPI UINT WINAPI GetSystemWow64DirectoryA(LPSTR buf, UINT n)  { return put_a("C:\\Windows\\SysWOW64", buf, n); }
+WINBASEAPI UINT WINAPI GetSystemWow64DirectoryW(LPWSTR buf, UINT n) { return put_utf8_as_w("C:\\Windows\\SysWOW64", buf, n); }
 WINBASEAPI UINT WINAPI GetWindowsDirectoryW(LPWSTR buf, UINT n){ return put_utf8_as_w("C:\\Windows", buf, n); }
 WINBASEAPI UINT WINAPI GetSystemWindowsDirectoryW(LPWSTR buf, UINT n) { return put_utf8_as_w("C:\\Windows", buf, n); }
 
@@ -1383,8 +1427,8 @@ WINBASEAPI BOOL WINAPI GlobalMemoryStatusEx(LPMEMORYSTATUSEX ms)
     ms->ullAvailPhys = 256ULL << 20;
     ms->ullTotalPageFile = ms->ullTotalPhys;
     ms->ullAvailPageFile = ms->ullAvailPhys;
-    ms->ullTotalVirtual = 0x7FFE0000000ULL;
-    ms->ullAvailVirtual = 0x7F000000000ULL;
+    ms->ullTotalVirtual = sizeof(void *) == 4 ? 0x7FFE0000ULL : 0x7FFE0000000ULL;
+    ms->ullAvailVirtual = sizeof(void *) == 4 ? 0x70000000ULL : 0x7F000000000ULL;
     ms->ullAvailExtendedVirtual = 0;
     return TRUE;
 }
@@ -2492,8 +2536,9 @@ static const BYTE *res_root(HMODULE m, DWORD *size)
     const BYTE *b = m ? (const BYTE *)m : RtlGetCurrentPeb()->ImageBaseAddress;
     if (!b || b[0] != 'M' || b[1] != 'Z') return 0;
     const BYTE *nt = b + *(const DWORD *)(b + 0x3C);
-    DWORD rva = *(const DWORD *)(nt + 24 + 112 + 8 * 2);
-    if (size) *size = *(const DWORD *)(nt + 24 + 116 + 8 * 2);
+    DWORD dd = *(const WORD *)(nt + 24) == 0x10B ? 96 : 112;  /* PE32 / PE32+ */
+    DWORD rva = *(const DWORD *)(nt + 24 + dd + 8 * 2);
+    if (size) *size = *(const DWORD *)(nt + 24 + dd + 4 + 8 * 2);
     return rva ? b + rva : 0;
 }
 

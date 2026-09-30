@@ -55,7 +55,7 @@ static int    g_process_ready;
 static void llock(void)   { while (__atomic_exchange_n(&g_ldr_lock, 1, __ATOMIC_ACQUIRE)) __builtin_ia32_pause(); }
 static void lunlock(void) { __atomic_store_n(&g_ldr_lock, 0, __ATOMIC_RELEASE); }
 
-static BYTE *teb(void)         { BYTE *t; __asm__("movq %%gs:0x30, %0" : "=r"(t)); return t; }
+static BYTE *teb(void)         { return NtCurrentTebBytes(); }
 static void *tls_pointer(void) { return *(void **)(teb() + TEB_TLS_POINTER); }
 
 static void wcopy(WCHAR *d, const char *s, int cap)
@@ -365,18 +365,35 @@ static void thread_attach(void)
  * ----------------------------------------------------------------------- */
 extern LONG nova_top_level_filter(PEXCEPTION_POINTERS info);   /* ntdll_exc.c */
 
+#ifndef _WIN64
+DWORD nova_call_start(PVOID fn, PVOID arg) __asm__("nova_call_start");     /* exc_x86.h */
+#endif
+
 static DWORD run_start(PUSER_THREAD_START_ROUTINE start, PVOID arg)
 {
     DWORD ret = 0;
     __try {
+#ifdef _WIN64
         ret = start(arg);
+#else
+        ret = nova_call_start((PVOID)start, arg);   /* the stack survives a start routine that isn't stdcall */
+#endif
     } __except (nova_top_level_filter(GetExceptionInformation())) {
         RtlExitUserProcess(GetExceptionCode());
     }
     return ret;
 }
 
+#ifdef _WIN64
 __declspec(dllexport) void NTAPI RtlUserThreadStart(PUSER_THREAD_START_ROUTINE start, PVOID arg)
+#else
+/* 32-bit: the kernel starts threads with ECX = start, EDX = arg */
+__asm__(".text\n.globl _RtlUserThreadStart\n_RtlUserThreadStart:\n\t"
+        "pushl %edx\n\tpushl %ecx\n\tpushl $0\n\tjmp nova_thread_start32\n"
+        ".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:_RtlUserThreadStart\"\n\t.text\n");
+void NTAPI nova_thread_start32(PUSER_THREAD_START_ROUTINE start, PVOID arg) __asm__("nova_thread_start32");
+void NTAPI nova_thread_start32(PUSER_THREAD_START_ROUTINE start, PVOID arg)
+#endif
 {
     int first;
     llock();

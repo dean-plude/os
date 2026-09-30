@@ -1767,10 +1767,10 @@ static LONG_PTR set_long(HWND h, int i, LONG_PTR v, int size, int wide)
     return 0;
 }
 
-USERAPI LONG_PTR GetWindowLongPtrW(HWND h, int i) { return get_long(h, i, 8, 1); }
-USERAPI LONG_PTR GetWindowLongPtrA(HWND h, int i) { return get_long(h, i, 8, 0); }
-USERAPI LONG_PTR SetWindowLongPtrW(HWND h, int i, LONG_PTR v) { return set_long(h, i, v, 8, 1); }
-USERAPI LONG_PTR SetWindowLongPtrA(HWND h, int i, LONG_PTR v) { return set_long(h, i, v, 8, 0); }
+USERAPI LONG_PTR GetWindowLongPtrW(HWND h, int i) { return get_long(h, i, (int)sizeof(LONG_PTR), 1); }
+USERAPI LONG_PTR GetWindowLongPtrA(HWND h, int i) { return get_long(h, i, (int)sizeof(LONG_PTR), 0); }
+USERAPI LONG_PTR SetWindowLongPtrW(HWND h, int i, LONG_PTR v) { return set_long(h, i, v, (int)sizeof(LONG_PTR), 1); }
+USERAPI LONG_PTR SetWindowLongPtrA(HWND h, int i, LONG_PTR v) { return set_long(h, i, v, (int)sizeof(LONG_PTR), 0); }
 USERAPI LONG GetWindowLongW(HWND h, int i) { return (LONG)get_long(h, i, 4, 1); }
 USERAPI LONG GetWindowLongA(HWND h, int i) { return (LONG)get_long(h, i, 4, 0); }
 USERAPI LONG SetWindowLongW(HWND h, int i, LONG v) { return (LONG)set_long(h, i, (LONG_PTR)v, 4, 1); }
@@ -1919,7 +1919,7 @@ USERAPI int GetWindowRgnBox(HWND h, LPRECT r) { (void)h; (void)r; return 0; }
 static void **g_hset;
 static int g_hcap, g_hcount, g_hused;
 
-static unsigned hslot(const void *p, int cap) { ULONG_PTR v = (ULONG_PTR)p; v ^= v >> 17; v *= 0x9E3779B97F4A7C15ull; return (unsigned)(v >> 32) & (unsigned)(cap - 1); }
+static unsigned hslot(const void *p, int cap) { unsigned long long v = (ULONG_PTR)p; v ^= v >> 17; v *= 0x9E3779B97F4A7C15ull; return (unsigned)(v >> 32) & (unsigned)(cap - 1); }
 
 static void hset_put(void **set, int cap, void *p)
 {

@@ -256,11 +256,12 @@ int __nova_printf_core(PrintSink *k, const char *f, va_list ap, int flags)
             if (*f == 'h') { len = len == -1 ? -2 : -1; hlen = 1; f++; }
             else if (*f == 'l') { len++; llen = 1; f++; }
             else if (*f == 'w') { llen = 1; f++; }
-            else if (*f == 'z' || *f == 'j' || *f == 't') { len = 2; f++; }
+            else if (*f == 'j') { len = 2; f++; }
+            else if (*f == 'z' || *f == 't') { len = sizeof(size_t) == 8 ? 2 : 0; f++; }   /* pointer-sized */
             else if (*f == 'L') { f++; }
             else if (f[0] == 'I' && f[1] == '6' && f[2] == '4') { len = 2; f += 3; }
             else if (f[0] == 'I' && f[1] == '3' && f[2] == '2') { len = 0; f += 3; }
-            else if (*f == 'I') { len = 2; f++; }
+            else if (*f == 'I') { len = sizeof(size_t) == 8 ? 2 : 0; f++; }
             else break;
         }
         char c = *f;
@@ -310,7 +311,7 @@ int __nova_printf_core(PrintSink *k, const char *f, va_list ap, int flags)
         case 'd': case 'i': case 'u': case 'x': case 'X': case 'o': case 'p': case 'b': {
             uint64_t v;
             int neg = 0, base = 10;
-            if (c == 'p') { v = (uint64_t)(uintptr_t)va_arg(ap, void *); base = 16; prec = 16; }
+            if (c == 'p') { v = (uint64_t)(uintptr_t)va_arg(ap, void *); base = 16; prec = 2 * (int)sizeof(void *); }
             else if (c == 'd' || c == 'i') {
                 int64_t sv = len >= 2 ? va_arg(ap, long long) : len == 1 ? va_arg(ap, long) : va_arg(ap, int);
                 if (len == -1) sv = (short)sv; else if (len == -2) sv = (signed char)sv;

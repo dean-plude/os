@@ -354,3 +354,7 @@ SYSCALL_HANDLER SyscallSetHandler(UINT32 num, SYSCALL_HANDLER h);
  * Defined in syscall_entry.asm.
  */
 extern void KiSystemCall64(void);
+extern void KiSystemCall32(void);         /* compat-mode SYSCALL: ends the program */
+void KiCompatSyscall(UINT64 rip);
+/* A system call with the kernel lock handled as on the SYSCALL path */
+UINT64 KiSystemCallEntry(UINT64 num, UINT64 arg1, UINT64 arg2, UINT64 arg3, UINT64 arg4, UINT64 user_rsp);

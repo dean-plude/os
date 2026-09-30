@@ -19,11 +19,10 @@ WINBASEAPI LPVOID WINAPI HeapAlloc(HANDLE, DWORD, SIZE_T);
 WINBASEAPI HANDLE WINAPI GetProcessHeap(void);
 WINBASEAPI BOOL WINAPI HeapFree(HANDLE, DWORD, LPVOID);
 
-static BYTE *teb(void) { BYTE *t; __asm__("movq %%gs:0x30, %0" : "=r"(t)); return t; }
-static void set_err(int e) { *(DWORD *)(teb() + 0x68) = (DWORD)e; }
+static void set_err(int e) { *(DWORD *)(NtCurrentTebBytes() + TEB_LAST_ERROR) = (DWORD)e; }
 
-int WSAGetLastError(void) { return (int)*(DWORD *)(teb() + 0x68); }
-void WSASetLastError(int e) { set_err(e); }
+int WINAPI WSAGetLastError(void) { return (int)*(DWORD *)(NtCurrentTebBytes() + TEB_LAST_ERROR); }
+void WINAPI WSASetLastError(int e) { set_err(e); }
 
 /* Map a negated SOCK_* kernel error to a WSA error and return SOCKET_ERROR. */
 static int sock_err(long r)

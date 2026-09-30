@@ -71,6 +71,29 @@ static GdtEntry64 make_data64(uint8_t dpl)
     };
 }
 
+/* The user data segment also serves 32-bit programs, which run in
+ * compatibility mode where limits and the stack-size bit count: flat
+ * 4 GiB (G=1) with 32-bit stack operations (B=1).  64-bit mode ignores both. */
+static GdtEntry64 make_data_flat(uint8_t dpl)
+{
+    GdtEntry64 e = make_data64(dpl);
+    e.granularity = 0xCF;
+    return e;
+}
+
+/* 32-bit code (L=0, D=1), flat 4 GiB: 32-bit programs (compatibility mode) */
+static GdtEntry64 make_code32(uint8_t dpl)
+{
+    return (GdtEntry64){
+        .limit_low   = 0xFFFF,
+        .base_low    = 0,
+        .base_mid    = 0,
+        .access      = (uint8_t)(0x9A | (dpl << 5)),
+        .granularity = 0xCF,
+        .base_high   = 0,
+    };
+}
+
 static GdtEntry64 make_null(void)
 {
     return (GdtEntry64){0};
@@ -111,12 +134,13 @@ void gdt_init_cpu(CpuGdt *g, uint8_t *double_fault_stack, uint8_t *nmi_stack,
     g->entries[0] = make_null();                /* 0x00 — Null */
     g->entries[1] = make_code64(0);             /* 0x08 — Kernel code, DPL=0 */
     g->entries[2] = make_data64(0);             /* 0x10 — Kernel data, DPL=0 */
-    g->entries[3] = make_data64(3);             /* 0x18 — User data,   DPL=3 */
+    g->entries[3] = make_data_flat(3);          /* 0x18 — User data,   DPL=3 */
     g->entries[4] = make_code64(3);             /* 0x20 — User code,   DPL=3 */
     /* Entries 5 and 6 (0x28 and 0x30) are occupied by the 16-byte TSS
      * descriptor — written separately via g->tss_descriptor below. */
     g->entries[5] = make_null();                /* placeholder — TSS low  */
     g->entries[6] = make_null();                /* placeholder — TSS high */
+    g->entries[7] = make_code32(3);             /* 0x38 — User code (32-bit programs), DPL=3 */
 
     /* Initialize the TSS */
     Tss64 *tss = &g->tss;
@@ -175,17 +199,22 @@ void gdt_reload_segments(void)
         "pushq %%rax\n\t"
         "lretq\n\t"
         "1:\n\t"
-        /* Reload all data segment registers */
+        /* SS: kernel data.  DS, ES and FS hold the user data selector
+         * for good: 64-bit code ignores them, and 32-bit programs
+         * (compatibility mode) need them valid; IRET to ring 3 would
+         * clear a DPL 0 selector.  FS's base (the 32-bit TEB) is set per
+         * thread through MSR_IA32_FSBASE.  GS is zeroed: its base is the
+         * KPCR (kernel) or the TEB (64-bit programs), set by MSR. */
         "mov %1, %%ax\n\t"
+        "mov %%ax, %%ss\n\t"
+        "mov %2, %%ax\n\t"
         "mov %%ax, %%ds\n\t"
         "mov %%ax, %%es\n\t"
-        "mov %%ax, %%ss\n\t"
-        /* FS and GS are zeroed; they'll be set per-thread for TEB/PEB access */
-        "xor %%eax, %%eax\n\t"
         "mov %%ax, %%fs\n\t"
+        "xor %%eax, %%eax\n\t"
         "mov %%ax, %%gs\n\t"
         :
-        : "i"(GDT_KERNEL_CODE), "i"(GDT_KERNEL_DATA)
+        : "i"(GDT_KERNEL_CODE), "i"(GDT_KERNEL_DATA), "i"(GDT_USER_DATA | 3)
         : "rax", "memory"
     );
 }

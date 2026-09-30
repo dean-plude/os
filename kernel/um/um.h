@@ -92,6 +92,9 @@ void UmReturnToUserFrame(void *frame);
 void UmUserException(void *frame, UINT64 cr2);
 /* The current user thread raised an exception it cannot handle. */
 void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
+void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp) __attribute__((noreturn));
+/* A 32-bit program's system call (int 0x2E) keeps its registers in @frame */
+void UmNoteSyscallFrame(void *frame);
 
 /* -----------------------------------------------------------------------
  * The desktop lock: ramfs and the window system are used by the desktop

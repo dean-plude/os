@@ -307,6 +307,14 @@ static void defaults(void)
     kpath("Machine\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", false);
     kpath("Machine\\SOFTWARE\\Classes\\CLSID", false);
     kpath("Machine\\SOFTWARE\\Classes\\Interface", false);
+    /* shortcuts: shell32's ShellLink class (a bare DLL name: the 32-bit
+     * or 64-bit shell32, whichever the program is) */
+    RegKey *sl = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{00021401-0000-0000-C000-000000000046}\\InprocServer32", false);
+    if (!has_value(sl, "")) { kset_sz(sl, "", "shell32.dll", 1); kset_sz(sl, "ThreadingModel", "Both", 1); }
+    RegKey *slc = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{00021401-0000-0000-C000-000000000046}", false);
+    if (!has_value(slc, "")) kset_sz(slc, "", "Shortcut", 1);
+    RegKey *lnk = kpath("Machine\\SOFTWARE\\Classes\\.lnk", false);
+    if (!has_value(lnk, "")) kset_sz(lnk, "", "lnkfile", 1);
     RegKey *txt = kpath("Machine\\SOFTWARE\\Classes\\.txt", false);
     if (!has_value(txt, "")) { kset_sz(txt, "", "txtfile", 1); kset_sz(txt, "Content Type", "text/plain", 1); }
 

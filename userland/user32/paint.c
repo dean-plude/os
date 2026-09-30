@@ -69,15 +69,16 @@ void validate(Wnd *w, const RECT *r)
 }
 
 /* The next window of this thread that needs painting: parents before
- * children, lower siblings before higher ones */
+ * children, and siblings from the top of the z-order down, as Windows
+ * does.  Overlapping siblings without WS_CLIPSIBLINGS therefore end with
+ * the lower one's pixels: NSIS's page header is a white static on top of
+ * its title texts, which show through because they paint after it. */
 static Wnd *find_paint(Wnd *w, HWND filter, int in_filter)
 {
     if (!(w->style & WS_VISIBLE) || w->minimized) return NULL;
     if (w->h == filter) in_filter = 1;
     if (w->has_upd && in_filter) return w;
-    Wnd *last = w->child;
-    while (last && last->next) last = last->next;
-    for (Wnd *c = last; c; c = c->prev) {
+    for (Wnd *c = w->child; c; c = c->next) {
         Wnd *r = find_paint(c, filter, in_filter);
         if (r) return r;
     }
@@ -386,7 +387,8 @@ USERAPI HDC BeginPaint(HWND h, LPPAINTSTRUCT ps)
     return dc;
 }
 
-/* What a window painted may cover its children and the siblings above it */
+/* What a window painted may cover its children, and (WS_CLIPSIBLINGS:
+ * we draw without clipping, so they repaint) the siblings above it */
 static void cascade(Wnd *w, const RECT *rc)
 {
     if (IsRectEmpty(rc)) return;
@@ -398,7 +400,7 @@ static void cascade(Wnd *w, const RECT *rc)
         invalidate(c, &o, TRUE, 0);
         if (!EqualRect(&c->rect, &c->client)) invalidate_nc(c);
     }
-    if (w->parent) {
+    if (w->parent && (w->style & WS_CLIPSIBLINGS)) {
         RECT pr = *rc;                                      /* in the parent's client coordinates */
         OffsetRect(&pr, w->client.left, w->client.top);
         for (Wnd *s = w->prev; s; s = s->prev) {
