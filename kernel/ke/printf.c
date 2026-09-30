@@ -45,9 +45,11 @@ int kvsnprintf(char *buf, size_t n, const char *fmt, __builtin_va_list ap)
 {
     size_t written = 0;
 
+/* (the character is evaluated exactly once: PUTS passes *_s++) */
 #define PUTC(c) do {                          \
+    char _c = (c);                            \
     if (n > 0 && written < n - 1) {           \
-        buf[written] = (c);                   \
+        buf[written] = _c;                    \
     }                                         \
     written++;                                \
 } while (0)

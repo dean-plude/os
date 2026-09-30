@@ -3,7 +3,7 @@
 A clean-room, from-scratch x86_64 operating system designed to run native
 Windows executables (PE32+) without emulation.
 
-## Status: Phase 12 — unmodified Windows GUI programs: 7-Zip installs and runs
+## Status: Phase 12 — unmodified Windows programs (7-Zip), an App Store, and Windows Installer (.msi)
 
 **What works:**
 
@@ -549,6 +549,73 @@ changed; every fix is in NovaOS.
 - Not yet: pipes between programs and `cmd.exe`, the OLE clipboard, and
   drags from 7-Zip's own file manager onto other programs are untested.
 
+### The App Store
+
+The dock's **App Store** (`kernel/apps/store.c`, also `start store` in the
+Terminal) is a catalog of free and open-source Windows programs: 7-Zip,
+VLC, Firefox, Thunderbird, Notepad++, GIMP, Inkscape, Krita, Audacity,
+HandBrake, OBS Studio, LibreOffice, SumatraPDF, KeePass, qBittorrent,
+PuTTY, WinSCP, Git, Python, WinMerge and ShareX, by category, with a
+note on how far each one gets on NovaOS today.
+
+- **Get** downloads the program's own installer from its publisher over
+  HTTPS (following redirects, with the bytes received shown while it
+  runs) to `C:\Downloads`, using the same network operations as the
+  Terminal's `wget`.  Responses and files may now be up to 64 MB.
+- **Install** runs the downloaded installer (or **Run**, for portable
+  programs such as PuTTY and SumatraPDF); **Open** starts the program
+  once its executable exists under `C:\Programs`, and the **Installed**
+  view lists what is there.
+- 7-Zip is the one entry tested end to end (download, install, open);
+  the other installers are unchanged upstream files whose runtime needs
+  (.NET, Windows Installer, Direct3D, GTK/Qt) NovaOS does not cover yet,
+  and the note on each row says so.
+- The **Runtimes** category lists what other programs depend on: the
+  .NET Desktop Runtime, the Visual C++ Redistributable, OpenJDK (a
+  Windows Installer package) and Mesa 3D's software OpenGL.  Runtimes
+  show "Installed" instead of an Open button.
+- The Terminal gained `copy <source> <destination>`.
+- A kernel bug this shook out: `ksnprintf` looped forever when a `%s`
+  argument had to be cut to fit the buffer, freezing the desktop on a
+  long error message.
+
+### Windows Installer (.msi packages)
+
+NovaOS has its own Windows Installer: `msi.dll` (`userland/msi/`) and
+`msiexec.exe` in `C:\Windows\System32`.  Double-clicking a `.msi` in
+Explorer, `start package.msi` in the Terminal, and the App Store's
+Install button all go through it, and programs can call
+`MsiInstallProduct`, `MsiConfigureProduct`, `MsiQueryProductState`,
+`MsiGetProductInfo` and `MsiEnumProducts`.
+
+- **The package format**: the OLE compound file container (FAT, mini
+  FAT, DIFAT, the encoded stream names), the string pool and the
+  column-major table streams, and the cabinets inside (or beside) the
+  package with MSZIP (deflate) and LZX decompression, files spanning
+  data blocks and cabinets.  These readers use only the C library and
+  are tested on the host against packages built with msitools.
+- **The engine** runs `InstallExecuteSequence`: launch conditions,
+  `AppSearch`/`RegLocator`, feature and component selection (levels,
+  the Condition table, `ADDLOCAL`/`REMOVE`, component conditions),
+  Directory resolution onto NovaOS's folders (`ProgramFilesFolder` is
+  `C:\Programs`, `SystemFolder` is `C:\Windows\System32`, ...),
+  `CreateFolders`, `InstallFiles`, the Registry table (all value
+  types, `[Property]`, `[#File]` and `[$Component]` formatting),
+  `FindRelatedProducts`/`RemoveExistingProducts` through the Upgrade
+  table, and product registration under the Uninstall key with a
+  cached copy of the package in `C:\Windows\Installer`.  Custom actions
+  that set properties or directories (types 51 and 35) run; ones that
+  execute code are logged and skipped.  `msiexec /x` reverses it all,
+  on the folder chosen at install time.
+- **msiexec** takes `/i`, `/x` (a package or a `{ProductCode}`), `/qn`,
+  `/qb`, `/passive`, `/l*v FILE` and `PROPERTY=value` overrides, and
+  shows the familiar progress window with Cancel (full UI adds the
+  completion message box).  Logs also go to the kernel log (`dmesg`).
+- Not yet: the packages' own dialogs (`InstallUISequence`), shortcuts
+  (NovaOS has no `.lnk` files), services, environment variables, and
+  merge modules.  LZX decoding is written to the specification but has
+  only been exercised with MSZIP cabinets so far.
+
 ## Quick Start
 
 ```bash
@@ -587,14 +654,18 @@ QEMU with OVMF firmware:
 
 ```bash
 cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/OVMF_VARS.fd
-qemu-system-x86_64 -machine q35 -m 512 -smp 4 \
+qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,unit=1,file=/tmp/OVMF_VARS.fd \
   -cdrom nova.iso
 ```
 
 It boots through every phase to the desktop on the GOP framebuffer (verified
-under OVMF at 2560×1600).
+under OVMF at 2560×1600).  The ISO carries the whole userland (the system
+DLLs, the test programs, NetSurf, `msiexec.exe`) and the App Store; give
+the machine 2 GB so downloaded installers fit in the RAM disk.  Add a
+second drive (`-drive file=disk.img,format=raw`) to keep drive C: and the
+registry between boots.
 
 On macOS with Homebrew QEMU, the UEFI firmware ships with QEMU:
 
@@ -623,7 +694,7 @@ qemu-system-x86_64 -machine q35 -m 512M -smp 4 \
 | 9.5 | NetSurf web browser (HTTP/HTTPS fetcher, window surface, TrueType text, POSIX C runtime) | ✅ **Done** |
 | 10 | Standard DLLs (UCRT, C++ EH, advapi32, shell32, ...), registry, COM, AHCI + FAT persistent storage | ✅ **Done** |
 | 11 | Multiprocessor: every core runs threads, per-core scheduling, fine-grained kernel locking | ✅ **Done** |
-| 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs | ✅ **Done** |
+| 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store; Windows Installer (.msi) | ✅ **Done** |
 | 13 | Pipes, `cmd.exe`, the OLE clipboard, more real programs | 🔄 Planned |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native

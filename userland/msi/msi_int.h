@@ -1,0 +1,163 @@
+/*
+ * msi_int.h — Windows Installer for NovaOS: internal interfaces
+ *
+ * The package readers (compound file, database tables, cabinets) work on
+ * memory buffers and use only the C library, so they build and test on a
+ * host as well; install.c and ui.c are the Win32 part.
+ */
+#pragma once
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+/* -----------------------------------------------------------------------
+ * Compound file (OLE structured storage): the .msi container
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    const uint8_t *data;
+    size_t         size;
+    int            sector_shift;      /* 9 or 12 */
+    uint32_t       nfat;              /* FAT sectors */
+    uint32_t       dir_start, minifat_start, nminifat, difat_start, ndifat;
+    uint32_t       mini_cutoff;
+    uint32_t      *fat;               /* the whole FAT, sector -> next */
+    uint32_t       fat_entries;
+    uint32_t      *minifat;
+    uint32_t       minifat_entries;
+    uint8_t       *ministream;        /* the root entry's stream */
+    size_t         ministream_size;
+    int            nentries;          /* directory entries */
+} Cfb;
+
+bool  cfb_open(Cfb *c, const void *data, size_t size);
+void  cfb_close(Cfb *c);
+/* Directory entry i: its decoded MSI name ("!Property" for tables, the
+ * plain name for other streams); false past the end */
+bool  cfb_entry(const Cfb *c, int i, char *name, int cap, bool *is_stream);
+/* Read a stream by decoded name; malloc'd, NULL if missing */
+void *cfb_read(const Cfb *c, const char *name, size_t *size);
+
+/* -----------------------------------------------------------------------
+ * The database: string pool and tables
+ * ----------------------------------------------------------------------- */
+#define MSI_STRING   0x0800
+#define MSI_NULLABLE 0x1000
+#define MSI_KEY      0x2000
+
+typedef struct {
+    char    *name;
+    uint16_t type;
+    int      width;                   /* bytes per row in the stream */
+} MsiColumn;
+
+typedef struct {
+    char      *name;
+    int        ncols;
+    MsiColumn *cols;
+    int        nrows;
+    uint8_t   *stream;                /* column-major raw rows */
+    size_t     stream_size;
+} MsiTable;
+
+typedef struct {
+    Cfb       cfb;
+    char    **strings;                /* by id; [0] = "" */
+    int       nstrings;
+    int       strref_size;            /* 2 or 3 */
+    int       codepage;
+    MsiTable *tables;
+    int       ntables;
+} MsiDb;
+
+bool        msidb_open(MsiDb *db, const void *data, size_t size);
+void        msidb_close(MsiDb *db);
+MsiTable   *msidb_table(MsiDb *db, const char *name);
+int         msidb_col(const MsiTable *t, const char *name);       /* -1 if none */
+/* A cell as text: strings by value, integers formatted, "" for null.
+ * @buf must hold 16 bytes for integers; strings return the pool's copy. */
+const char *msidb_str(const MsiDb *db, const MsiTable *t, int row, int col, char *buf);
+/* An integer cell; @null tells null apart from 0 */
+int         msidb_int(const MsiDb *db, const MsiTable *t, int row, int col, bool *null);
+/* Row whose column @col equals @value, from @from; -1 if none */
+int         msidb_find(const MsiDb *db, const MsiTable *t, int col, const char *value, int from);
+
+/* -----------------------------------------------------------------------
+ * Cabinets
+ * ----------------------------------------------------------------------- */
+typedef struct CabFile {
+    char     name[260];
+    uint32_t size;
+    uint32_t folder_off;              /* offset in the folder's uncompressed data */
+    int      folder;                  /* index, or -1 continued from the previous cabinet */
+    bool     continued_next;          /* continues in the next cabinet */
+    uint16_t date, time, attribs;
+} CabFile;
+
+typedef struct {
+    uint32_t data_off;                /* first CFDATA */
+    uint16_t ndata;
+    uint16_t compress;                /* typeCompress */
+} CabFolder;
+
+typedef struct {
+    const uint8_t *data;
+    size_t         size;
+    int            nfolders, nfiles;
+    CabFolder     *folders;
+    CabFile       *files;
+    uint8_t        reserve_data;      /* cbCFData */
+    char           next[256];         /* next cabinet name, "" if none */
+    char           prev[256];
+} Cab;
+
+bool cab_open(Cab *c, const void *data, size_t size);
+void cab_close(Cab *c);
+
+/* Decompressing a folder in order, block by block.  The caller feeds the
+ * uncompressed bytes to files; a folder that continues in the next
+ * cabinet is resumed with cab_folder_continue(). */
+typedef struct {
+    const Cab *cab;
+    int        folder;
+    int        method;                /* 0 none, 1 MSZIP, 3 LZX */
+    uint32_t   next_data;             /* offset of the next CFDATA */
+    int        blocks_left;
+    /* decompressor state */
+    uint8_t   *window;                /* history (32 KB for MSZIP, the LZX window) */
+    uint32_t   window_size, window_pos;
+    void      *lzx;                   /* lzx.c state */
+    uint8_t   *out;                   /* one block's output (<= 32768) */
+    uint32_t   out_len;
+    char       error[96];
+} CabReader;
+
+bool     cab_reader_start(CabReader *r, const Cab *cab, int folder);
+/* Continue the same folder in the next cabinet (its first folder) */
+bool     cab_reader_continue(CabReader *r, const Cab *next);
+/* Decompress the next block into r->out (r->out_len bytes); false when the
+ * folder's blocks in this cabinet are used up or on error (r->error) */
+bool     cab_reader_next(CabReader *r);
+void     cab_reader_end(CabReader *r);
+
+/* MSZIP: inflate one block with @hist bytes of history before @out */
+int      mszip_block(const uint8_t *in, uint32_t in_len, uint8_t *window,
+                     uint32_t window_size, uint32_t *window_pos,
+                     uint8_t *out, uint32_t out_cap, char *err);
+/* LZX */
+void    *lzx_init(int window_bits, char *err);
+void     lzx_reset(void *st);
+/* Decompress one frame (block of @out_len uncompressed bytes) */
+int      lzx_block(void *st, const uint8_t *in, uint32_t in_len, uint8_t *out,
+                   uint32_t out_len, char *err);
+void     lzx_free(void *st);
+
+/* -----------------------------------------------------------------------
+ * Conditions and formatted strings (install.c supplies the property lookup)
+ * ----------------------------------------------------------------------- */
+typedef const char *(*MsiPropFn)(void *ctx, const char *name);
+/* Evaluate an MSI condition; empty condition is true */
+bool msi_condition(const char *cond, MsiPropFn prop, void *ctx);

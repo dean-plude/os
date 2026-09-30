@@ -36,7 +36,7 @@ bool NetParseIp(const char *s, UINT32 *ip_be);
 typedef enum { NET_PENDING = 0, NET_DONE = 1, NET_FAILED = -1 } NetState;
 typedef enum { NETOP_DNS, NETOP_PING, NETOP_HTTP } NetOpKind;
 
-#define NET_HTTP_MAX  (2u * 1024 * 1024)   /* largest response kept */
+#define NET_HTTP_MAX  (256u * 1024 * 1024) /* largest response kept (App Store installers) */
 
 typedef struct NetOp {
     NetOpKind       kind;

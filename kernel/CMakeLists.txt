@@ -175,6 +175,7 @@ set(KERNEL_C_SOURCES
     apps/settings.c
     apps/calendar.c
     apps/photos.c
+    apps/store.c
     lib/string.c
 )
 

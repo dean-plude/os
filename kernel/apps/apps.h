@@ -20,8 +20,9 @@ typedef enum {
     APP_TERMINAL, APP_EXPLORER, APP_NOTEPAD, APP_SETTINGS, APP_CALENDAR,
     /* A Windows program: C:\Programs\NetSurf\netsurf.exe */
     APP_NETSURF,
-    /* Placeholders for apps NovaOS cannot run yet */
-    APP_STORE, APP_PHOTOS, APP_XBOX, APP_SKYPE, APP_PHOTOSHOP,
+    /* Photos, and the App Store (downloads open-source Windows programs) */
+    APP_STORE, APP_PHOTOS,
+    /* Placeholders for apps NovaOS cannot run yet */ APP_XBOX, APP_SKYPE, APP_PHOTOSHOP,
     APP_ILLUSTRATOR, APP_CLIPCHAMP, APP_VSTUDIO, APP_PAINT, APP_TIPS,
     APP_POWERPOINT, APP_BLENDER, APP_BING, APP_SOLITAIRE, APP_TODO,
     APP_COUNT
@@ -52,6 +53,9 @@ int  AppForProgram(const char *exe_name);
 /* Run a program found by UmFindProgram: GUI programs directly, console
  * programs in a new Terminal window.  @cmdline includes the program name. */
 void AppRunProgram(RamNode *exe, const char *cmdline);
+/* Install a .msi package with Windows Installer (msiexec /i); false if
+ * msiexec.exe is missing */
+bool AppRunMsi(RamNode *msi);
 
 /* Recently opened documents and folders (newest first), for the Start menu */
 void AppNoteRecentFile(RamNode *node);
@@ -147,3 +151,5 @@ void CalendarOpen(void);
  * pictures in C:\Pictures */
 void PhotosOpen(RamNode *file);
 void PlaceholderOpen(AppId id);
+/* App Store: a catalog of open-source Windows programs to download and run */
+void StoreOpen(void);
