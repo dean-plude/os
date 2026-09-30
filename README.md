@@ -859,8 +859,25 @@ MinGit's `git.exe` (2.47) runs: `--version`, `init`, `add`, `commit`,
   `NtSetEaFile`/`NtQueryEaFile`, `QueryServiceStatusEx`,
   `SetEntriesInAcl`, and Winsock's `WSAEventSelect`/`WSAEnumNetworkEvents`
   (a helper thread watches the sockets) and `getnameinfo`.
-- Not yet: the test disk holds only MinGit's `bin` folder, so git warns
-  about its templates and finds itself only with `C:\Apps\git` on `PATH`.
+- **The whole MinGit layout**: the test disk carries MinGit unzipped as
+  it is on Windows (`C:\Apps\MinGit` with `cmd`, `etc`, `mingw64` and
+  `usr`).  Run as `C:\Apps\MinGit\cmd\git.exe` with nothing on `PATH`,
+  git finds its templates (a new repository gets its sample hooks), its
+  system `gitconfig` and its own helper programs; `checkout -b`, `merge`,
+  `gc` (`pack-objects` and `repack` as child processes), `count-objects`
+  and `fsck` work too.  That took two fixes:
+  - **File names up to 255 characters** on drive C: (they were cut at 47);
+    `gc` renames its pack to a 59-character temporary name.
+  - **Opening a process that has exited but is still held**: `OpenProcess`
+    now finds it while any handle keeps it, as on Windows, so `waitpid`
+    on a finished child gets its exit code.
+- Not yet: MinGit's shell and Unix tools (`usr\bin`: `sh.exe`, `cat`...)
+  are MSYS2 programs, built on the Cygwin runtime `msys-2.0.dll`, which
+  needs process tokens, security descriptors, object directories and more
+  of the native API.  git uses `sh` to start `git-upload-pack`, so `clone`,
+  `fetch` and `push` (even between folders on C:) stop there.  MinGit
+  ships no `less`, git's default pager, so give `log` and `config --list`
+  `--no-pager` or `-c core.pager=more`.
 
 ### Installing NovaOS on a disk
 

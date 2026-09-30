@@ -1694,7 +1694,7 @@ UmObject *um_open_process(UINT32 pid)
     plock();
     for (int i = 0; i < UM_MAX_PROCS && !r; i++) {
         UmProcess *p = g_procs[i];
-        if (!p || p->pid != pid || p->reclaimed) continue;
+        if (!p || p->pid != pid) continue;             /* exited but still held: still openable */
         IrqState s = ob_lock();
         if (p->exit_ob) r = um_ob_ref(p->exit_ob);
         else if (fresh) {
