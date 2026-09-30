@@ -200,6 +200,7 @@ static void cmd_help(Term *t)
         "  echo <text> [> f]   print text, or write it to a file\n"
         "  mkdir <name>        create a folder\n"
         "  del <name>          delete a file or empty folder (also: rm)\n"
+        "  copy <src> <dst>    copy a file (also: cp)\n"
         "  start <app> [file]  open notepad, explorer, settings, calendar, browser\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  vol  sync           where drive C: is saved; save it now\n"
@@ -316,6 +317,34 @@ static void cmd_del(Term *t, const char *arg)
     if (!RamfsDelete(n))
         terr(t, n->refs ? "It is in use (open in a window or a terminal)."
                         : "The folder is not empty.");
+}
+
+/* copy <source> <destination>: the destination may be a folder */
+static void cmd_copy(Term *t, const char *src, const char *dst)
+{
+    if (!src || !dst) { terr(t, "Usage: copy <source> <destination>"); return; }
+    RamNode *f = RamfsResolve(t->cwd, src);
+    if (!f) { terr(t, "Could not find the source file."); return; }
+    if (f->dir) { terr(t, "Folders cannot be copied."); return; }
+    RamNode *dir = RamfsResolve(t->cwd, dst);
+    const char *name = f->name;
+    if (!dir || !dir->dir) {
+        /* "folder\newname": split off the new name */
+        char path[RAMFS_PATH_MAX];
+        strncpy(path, dst, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+        char *sep = NULL;
+        for (char *p = path; *p; p++) if (*p == '\\' || *p == '/') sep = p;
+        if (sep) { *sep = '\0'; name = sep + 1; dir = RamfsResolve(t->cwd, path[0] ? path : "\\"); }
+        else     { name = dst; dir = t->cwd; }
+        if (!dir || !dir->dir || !*name) { terr(t, "The destination folder does not exist."); return; }
+    }
+    RamNode *out = RamfsFind(dir, name);
+    if (out == f) { terr(t, "The file cannot be copied onto itself."); return; }
+    if (out && out->dir) { terr(t, "A folder with that name is in the way."); return; }
+    if (!out) out = RamfsCreate(dir, name, false);
+    if (!out || !RamfsWrite(out, f->data, f->size)) { terr(t, "Could not write the copy."); return; }
+    tprint(t, "        1 file(s) copied.");
 }
 
 static void cmd_mem(Term *t)
@@ -960,6 +989,7 @@ static void run_cmd(Term *t, char *cmdline)
     else if (is(c, "echo"))                     cmd_echo(t, argc, argv);
     else if (is(c, "mkdir") || is(c, "md"))     cmd_mkdir(t, a1);
     else if (is(c, "del") || is(c, "rm") || is(c, "rmdir")) cmd_del(t, a1);
+    else if (is(c, "copy") || is(c, "cp"))      cmd_copy(t, a1, argc > 2 ? argv[2] : NULL);
     else if (is(c, "mem"))                      cmd_mem(t);
     else if (is(c, "uptime")) { char up[32]; AppUptime(up, sizeof(up)); tprintf(t, "Up %s", up); }
     else if (is(c, "date"))                     cmd_date(t, false);

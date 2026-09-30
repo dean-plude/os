@@ -19,7 +19,7 @@ static const AppInfo g_apps[APP_COUNT] = {
     [APP_SETTINGS]    = { "Settings",               "",   GDI_C(0x5A,0x5A,0x64), true,  false },
     [APP_CALENDAR]    = { "Calendar",               "",   GDI_C(0xD0,0x40,0x40), true,  false },
     [APP_NETSURF]     = { "NetSurf",                "",   GDI_C(0x3A,0x6E,0xF0), true,  true  },
-    [APP_STORE]       = { "Microsoft Store",        "S",  GDI_C(0x18,0x6A,0xD8), false, false },
+    [APP_STORE]       = { "App Store",              "",   GDI_C(0x18,0x6A,0xD8), true,  false },
     [APP_PHOTOS]      = { "Photos",                 "",   GDI_C(0x2E,0xA0,0x8A), true,  true  },
     [APP_XBOX]        = { "Xbox",                   "X",  GDI_C(0x10,0x7C,0x10), false, false },
     [APP_SKYPE]       = { "Skype",                  "S",  GDI_C(0x1E,0x9A,0xE0), false, false },
@@ -92,6 +92,7 @@ void AppLaunch(AppId id)
     case APP_CALENDAR: CalendarOpen(); break;
     case APP_NETSURF:  netsurf_launch(); break;
     case APP_PHOTOS:   PhotosOpen(NULL); break;
+    case APP_STORE:    StoreOpen(); break;
     default:           PlaceholderOpen(id); break;
     }
 }
@@ -114,6 +115,7 @@ bool AppByName(const char *name, AppId *out)
         { "calendar", APP_CALENDAR }, { "clock", APP_CALENDAR },
         { "browser",  APP_NETSURF  },    /* "netsurf" itself runs the program */
         { "photos",   APP_PHOTOS   }, { "pictures", APP_PHOTOS },
+        { "store",    APP_STORE    }, { "appstore", APP_STORE },
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         const char *a = names[i].cmd, *b = name;
@@ -667,6 +669,14 @@ void AppDrawIcon(AppId id, int x, int y, int s)
         tile(x, y, s, GDI_C(0x4F, 0xDB, 0xC8), GDI_C(0x16, 0x94, 0xA8));
         poly(mt, 5, false, x, y, s, w); poly(base, 2, false, x, y, s, w);
         GdiFillCircle(x + s * 66 / 100, y + s * 32 / 100, s * 8 / 100 + 1, w);
+        break; }
+    case APP_STORE: {
+        /* a shopping bag */
+        static const P bag[] = { {24,40}, {76,40}, {80,82}, {20,82} };
+        static const P handle[] = { {38,40}, {38,32}, {44,22}, {56,22}, {62,32}, {62,40} };
+        tile(x, y, s, GDI_C(0x4A, 0xA8, 0xFF), GDI_C(0x18, 0x6A, 0xD8));
+        poly(handle, 6, false, x, y, s, w);
+        poly(bag, 4, true, x, y, s, w);
         break; }
     default:
         letter_tile(AppGetInfo(id), x, y, s);

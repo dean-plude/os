@@ -549,6 +549,32 @@ changed; every fix is in NovaOS.
 - Not yet: pipes between programs and `cmd.exe`, the OLE clipboard, and
   drags from 7-Zip's own file manager onto other programs are untested.
 
+### The App Store
+
+The dock's **App Store** (`kernel/apps/store.c`, also `start store` in the
+Terminal) is a catalog of free and open-source Windows programs: 7-Zip,
+VLC, Firefox, Thunderbird, Notepad++, GIMP, Inkscape, Krita, Audacity,
+HandBrake, OBS Studio, LibreOffice, SumatraPDF, KeePass, qBittorrent,
+PuTTY, WinSCP, Git, Python, WinMerge and ShareX, by category, with a
+note on how far each one gets on NovaOS today.
+
+- **Get** downloads the program's own installer from its publisher over
+  HTTPS (following redirects, with the bytes received shown while it
+  runs) to `C:\Downloads`, using the same network operations as the
+  Terminal's `wget`.  Responses and files may now be up to 64 MB.
+- **Install** runs the downloaded installer (or **Run**, for portable
+  programs such as PuTTY and SumatraPDF); **Open** starts the program
+  once its executable exists under `C:\Programs`, and the **Installed**
+  view lists what is there.
+- 7-Zip is the one entry tested end to end (download, install, open);
+  the other installers are unchanged upstream files whose runtime needs
+  (.NET, Windows Installer, Direct3D, GTK/Qt) NovaOS does not cover yet,
+  and the note on each row says so.
+- The Terminal gained `copy <source> <destination>`.
+- A kernel bug this shook out: `ksnprintf` looped forever when a `%s`
+  argument had to be cut to fit the buffer, freezing the desktop on a
+  long error message.
+
 ## Quick Start
 
 ```bash
@@ -623,7 +649,7 @@ qemu-system-x86_64 -machine q35 -m 512M -smp 4 \
 | 9.5 | NetSurf web browser (HTTP/HTTPS fetcher, window surface, TrueType text, POSIX C runtime) | ✅ **Done** |
 | 10 | Standard DLLs (UCRT, C++ EH, advapi32, shell32, ...), registry, COM, AHCI + FAT persistent storage | ✅ **Done** |
 | 11 | Multiprocessor: every core runs threads, per-core scheduling, fine-grained kernel locking | ✅ **Done** |
-| 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs | ✅ **Done** |
+| 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store | ✅ **Done** |
 | 13 | Pipes, `cmd.exe`, the OLE clipboard, more real programs | 🔄 Planned |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native

@@ -405,10 +405,11 @@ static int  g_sel;                     /* selected search result */
 
 static const AppId g_pinned[] = {
     APP_TERMINAL, APP_EXPLORER, APP_NOTEPAD, APP_SETTINGS, APP_CALENDAR, APP_NETSURF,
+    APP_STORE,
 };
 #define N_PINNED ((int)(sizeof(g_pinned) / sizeof(g_pinned[0])))
 static const char *g_pinned_cap[N_PINNED] = {
-    "Terminal", "Files", "Notepad", "Settings", "Calendar", "NetSurf",
+    "Terminal", "Files", "Notepad", "Settings", "Calendar", "NetSurf", "Store",
 };
 
 /* Programs installed in C:\Programs (rescanned when the menu opens) */
@@ -773,6 +774,7 @@ typedef struct { DockKind kind; int arg; char tip[WM_TITLE_MAX]; GdiRect r; } Do
 
 static const AppId g_dock_apps[] = {
     APP_TERMINAL, APP_EXPLORER, APP_NOTEPAD, APP_SETTINGS, APP_CALENDAR, APP_NETSURF,
+    APP_STORE,
 };
 #define N_DOCK_APPS ((int)(sizeof(g_dock_apps) / sizeof(g_dock_apps[0])))
 #define MAX_TASKS   8
