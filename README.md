@@ -3,7 +3,7 @@
 A clean-room, from-scratch x86_64 operating system designed to run native
 Windows executables (PE32+) without emulation.
 
-## Status: Phase 12 — unmodified Windows GUI programs: 7-Zip installs and runs
+## Status: Phase 12 — unmodified Windows programs (7-Zip), an App Store, and Windows Installer (.msi)
 
 **What works:**
 
@@ -654,14 +654,18 @@ QEMU with OVMF firmware:
 
 ```bash
 cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/OVMF_VARS.fd
-qemu-system-x86_64 -machine q35 -m 512 -smp 4 \
+qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,unit=1,file=/tmp/OVMF_VARS.fd \
   -cdrom nova.iso
 ```
 
 It boots through every phase to the desktop on the GOP framebuffer (verified
-under OVMF at 2560×1600).
+under OVMF at 2560×1600).  The ISO carries the whole userland (the system
+DLLs, the test programs, NetSurf, `msiexec.exe`) and the App Store; give
+the machine 2 GB so downloaded installers fit in the RAM disk.  Add a
+second drive (`-drive file=disk.img,format=raw`) to keep drive C: and the
+registry between boots.
 
 On macOS with Homebrew QEMU, the UEFI firmware ships with QEMU:
 
