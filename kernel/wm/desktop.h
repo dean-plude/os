@@ -31,6 +31,9 @@ void DesktopRender(void);
  * Polls PS/2 input, drives the cursor, and recomposites on change. */
 void DesktopRun(void *arg);
 
+/* Save drive C: and restart the PC */
+void DesktopRestart(void);
+
 /* Toggle the Start menu open/closed. */
 void DesktopToggleStart(void);
 

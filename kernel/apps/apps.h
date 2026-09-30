@@ -22,6 +22,8 @@ typedef enum {
     APP_NETSURF,
     /* Photos, and the App Store (downloads open-source Windows programs) */
     APP_STORE, APP_PHOTOS,
+    /* The installer: puts NovaOS on a disk */
+    APP_SETUP,
     /* Placeholders for apps NovaOS cannot run yet */ APP_XBOX, APP_SKYPE, APP_PHOTOSHOP,
     APP_ILLUSTRATOR, APP_CLIPCHAMP, APP_VSTUDIO, APP_PAINT, APP_TIPS,
     APP_POWERPOINT, APP_BLENDER, APP_BING, APP_SOLITAIRE, APP_TODO,
@@ -153,3 +155,5 @@ void PhotosOpen(RamNode *file);
 void PlaceholderOpen(AppId id);
 /* App Store: a catalog of open-source Windows programs to download and run */
 void StoreOpen(void);
+/* Install NovaOS on a disk */
+void SetupOpen(void);

@@ -21,6 +21,7 @@
 
 #include "../um/um.h"
 #include "desktop.h"
+#include "../fs/setup.h"
 #include "wm.h"
 #include "input.h"
 #include "../gdi/gdi.h"
@@ -232,8 +233,10 @@ static const struct {
     { ICON_PHOTOS,  "Pictures",  "\\Pictures",   -1 },
     { ICON_PROJECT, "Projects",  "\\Projects",   -1 },
     { ICON_APP,     "NetSurf",   NULL,           APP_NETSURF },
+    { ICON_APP,     "Install NovaOS", NULL,      APP_SETUP },   /* last: only on the installation disc */
 };
-#define N_ICONS ((int)(sizeof(g_icons) / sizeof(g_icons[0])))
+/* the installer's icon shows when running from the installation disc */
+#define N_ICONS ((int)(sizeof(g_icons) / sizeof(g_icons[0])) - (SetupIsLive() ? 0 : 1))
 static int g_icon_sel = -1;
 
 static void draw_icon_emblem(int x, int y, int i)
@@ -352,6 +355,8 @@ static void power_restart(void)
     outb(0x64, 0xFE);
     for (;;) hlt();
 }
+
+void DesktopRestart(void) { power_restart(); }
 
 static void power_shutdown(void)
 {
@@ -1431,6 +1436,8 @@ void DesktopRun(void *arg)
     g_desktop_kt = sched_current();
 
     update_clock();
+    /* Started from the installation disc: offer to install */
+    if (SetupIsLive()) AppLaunch(APP_SETUP);
     WmComposite();
     WmCursorShow(GdiScreenW() / 2, GdiScreenH() / 2);
 

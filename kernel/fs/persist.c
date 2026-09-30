@@ -114,6 +114,15 @@ static int find_volumes(BlockDev *d, Cand *out, int max, bool *blank)
     return n;
 }
 
+int PersistFindVolumes(BlockDev *d, FatVol **out, int max, bool *blank)
+{
+    Cand c[16];
+    if (max > 16) max = 16;
+    int n = find_volumes(d, c, max, blank);
+    for (int i = 0; i < n; i++) out[i] = c[i].vol;
+    return n;
+}
+
 /* An MBR with one FAT32 (LBA) partition from 1 MiB to the end, formatted */
 static FatVol *format_blank(BlockDev *d)
 {
@@ -169,6 +178,48 @@ void PersistInit(void)
 }
 
 bool PersistActive(void) { return g_vol != NULL; }
+
+BlockDev *PersistDevice(void) { return g_vol ? FatDevice(g_vol) : NULL; }
+
+void PersistDetach(void)
+{
+    DesktopLock();
+    if (g_vol) {
+        kprintf("[PERSIST] Stopped saving to %s\n", FatDevice(g_vol)->name);
+        FatUnmount(g_vol);
+    }
+    g_vol = NULL;
+    g_root_known = false;
+    DesktopUnlock();
+}
+
+/* Everything not from the OS image is to be saved */
+static void mark_all(RamNode *n)
+{
+    if (!(n->pflags & RAMFS_F_SEALED) || n->dir)
+        n->pflags |= n->dir ? (RAMFS_F_DIRTY | RAMFS_F_DIRTYDIR | RAMFS_F_SUB) : RAMFS_F_DIRTY;
+    for (RamNode *c = n->child; c; c = c->next) {
+        mark_all(c);
+        n->pflags |= RAMFS_F_SUB;
+    }
+}
+
+bool PersistAdopt(FatVol *vol)
+{
+    DesktopLock();
+    if (g_vol && g_vol != vol) FatUnmount(g_vol);
+    g_vol = vol;
+    g_root_known = false;
+    g_loaded = true;
+    mark_all(RamfsRoot());
+    g_removed_dirty = g_removed != NULL;
+    DesktopUnlock();
+    bool ok = PersistSync();
+    char d[96];
+    PersistDescribe(d, sizeof(d));
+    kprintf("[PERSIST] Drive C: is now saved to %s%s\n", d, ok ? "" : " (the first save failed)");
+    return ok;
+}
 
 bool PersistSpace(UINT64 *free, UINT64 *total)
 {

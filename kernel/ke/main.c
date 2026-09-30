@@ -67,6 +67,7 @@
 #include "probe.h"
 #include "../fs/vfs.h"
 #include "../fs/initrd.h"
+#include "../fs/setup.h"
 #include "../fs/ramfs.h"
 #include "../hal/pci.h"
 #include "../net/net.h"
@@ -204,6 +205,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     kprintf("=== Phase 1: Memory Manager ===\n");
     pmm_init(info);
     smp_early(info);                      /* before the memory map can be reused */
+    SetupBootInfo(info);                  /* installation media (booted from the disc) */
 
     kprintf("=== Phase 1: Paging ===\n");
     paging_init();

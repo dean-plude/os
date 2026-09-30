@@ -125,6 +125,7 @@ set(KERNEL_C_SOURCES
     fs/block.c
     fs/fat.c
     fs/persist.c
+    fs/setup.c
     net/net.c
     net/tls.c
     net/tls_roots.c
@@ -176,6 +177,7 @@ set(KERNEL_C_SOURCES
     apps/calendar.c
     apps/photos.c
     apps/store.c
+    apps/setup.c
     lib/string.c
 )
 

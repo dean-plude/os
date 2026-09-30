@@ -21,6 +21,7 @@ static const AppInfo g_apps[APP_COUNT] = {
     [APP_NETSURF]     = { "NetSurf",                "",   GDI_C(0x3A,0x6E,0xF0), true,  true  },
     [APP_STORE]       = { "App Store",              "",   GDI_C(0x18,0x6A,0xD8), true,  false },
     [APP_PHOTOS]      = { "Photos",                 "",   GDI_C(0x2E,0xA0,0x8A), true,  true  },
+    [APP_SETUP]       = { "Install NovaOS",         "",   GDI_C(0x1C,0x6E,0xC8), true,  false },
     [APP_XBOX]        = { "Xbox",                   "X",  GDI_C(0x10,0x7C,0x10), false, false },
     [APP_SKYPE]       = { "Skype",                  "S",  GDI_C(0x1E,0x9A,0xE0), false, false },
     [APP_PHOTOSHOP]   = { "Adobe Photoshop 2025",   "Ps", GDI_C(0x05,0x1A,0x2E), false, false },
@@ -93,6 +94,7 @@ void AppLaunch(AppId id)
     case APP_NETSURF:  netsurf_launch(); break;
     case APP_PHOTOS:   PhotosOpen(NULL); break;
     case APP_STORE:    StoreOpen(); break;
+    case APP_SETUP:    SetupOpen(); break;
     default:           PlaceholderOpen(id); break;
     }
 }
@@ -116,6 +118,7 @@ bool AppByName(const char *name, AppId *out)
         { "browser",  APP_NETSURF  },    /* "netsurf" itself runs the program */
         { "photos",   APP_PHOTOS   }, { "pictures", APP_PHOTOS },
         { "store",    APP_STORE    }, { "appstore", APP_STORE },
+        { "setup",    APP_SETUP    }, { "installer", APP_SETUP },
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         const char *a = names[i].cmd, *b = name;
@@ -688,6 +691,16 @@ void AppDrawIcon(AppId id, int x, int y, int s)
         tile(x, y, s, GDI_C(0x4F, 0xDB, 0xC8), GDI_C(0x16, 0x94, 0xA8));
         poly(mt, 5, false, x, y, s, w); poly(base, 2, false, x, y, s, w);
         GdiFillCircle(x + s * 66 / 100, y + s * 32 / 100, s * 8 / 100 + 1, w);
+        break; }
+    case APP_SETUP: {
+        /* a disc over a drive: installing */
+        tile(x, y, s, GDI_C(0x5A, 0xA8, 0xF0), GDI_C(0x1C, 0x5E, 0xB8));
+        static const P drive[] = { {20,60}, {80,60}, {80,82}, {20,82} };
+        poly(drive, 4, true, x, y, s, w);
+        GdiFillCircle(x + s * 70 / 100, y + s * 71 / 100, s * 4 / 100 + 1, w);
+        static const P arrow[] = { {50,16}, {50,48} }, head[] = { {38,36}, {50,48}, {62,36} };
+        poly(arrow, 2, false, x, y, s, w);
+        poly(head, 3, false, x, y, s, w);
         break; }
     case APP_STORE: {
         /* a shopping bag */
