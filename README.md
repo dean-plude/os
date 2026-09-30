@@ -682,10 +682,18 @@ the 64-bit kernel, and they get a 32-bit copy of the whole userland in
   ws2_32, PE data directories in `GetProcAddress` and resources,
   `Get/SetWindowLongPtr` and the `DWLP_*` offsets, rename information,
   SRW locks, `%p`/`%z`/`%I` in printf and scanf, `FILE` (32 bytes on x86).
-- Also fixed: `EndDialog` called from a message another thread sent now
-  ends the modal loop (NSIS's finish page), `shfolder.dll` exists
-  (`SHGetFolderPath`, which NSIS takes from it), and msvcrt exports
-  `_controlfp`, `_control87`, `__p___initenv` and friends.
+- Also fixed on the way (for 64-bit programs too): `EndDialog` called
+  from a message another thread sent now ends the modal loop (NSIS's
+  finish page); `MoveFileEx(..., MOVEFILE_DELAY_UNTIL_REBOOT)` records
+  the operation in `PendingFileRenameOperations` instead of acting at
+  once (NSIS uninstallers copy themselves to Temp and schedule that copy
+  for deletion; it used to vanish before it could run); `shfolder.dll`
+  exists (`SHGetFolderPath`, which NSIS takes from it); msvcrt exports
+  `_controlfp`, `_control87`, `__p___initenv` and friends.  The
+  Terminal's `trace` now shows the file name of file system calls.
+- Not yet: the bold title lines in NSIS's white page header stay blank,
+  shortcuts (`IShellLink`) are not created, and pending renames are not
+  carried out at the next start.
 
 ### Installing NovaOS on a disk
 

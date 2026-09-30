@@ -1179,9 +1179,43 @@ WINBASEAPI BOOL WINAPI CopyFileExW(LPCWSTR from, LPCWSTR to, LPVOID progress, LP
     return CopyFileW(from, to, (flags & 1) != 0);   /* COPY_FILE_FAIL_IF_EXISTS */
 }
 
+/* MOVEFILE_DELAY_UNTIL_REBOOT: as Windows, the operation is only written
+ * down, in Session Manager's PendingFileRenameOperations (pairs of
+ * "\\??\\source", "\\??\\target" or "" for a delete); installers use it
+ * for files they cannot remove while they run */
+static BOOL pending_file_op(LPCSTR from, LPCSTR to)
+{
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager", 0, 0, 0,
+                        KEY_ALL_ACCESS, 0, &k, 0)) return FALSE;
+    DWORD type = 0, n = 0;
+    RegQueryValueExW(k, L"PendingFileRenameOperations", 0, &type, 0, &n);
+    if (type != REG_MULTI_SZ) n = 0;
+    DWORD cap = n + 2 * (2 * MAX_PATH + 16) * sizeof(WCHAR);
+    WCHAR *buf = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, cap);
+    if (!buf) { RegCloseKey(k); return FALSE; }
+    if (n) RegQueryValueExW(k, L"PendingFileRenameOperations", 0, &type, (BYTE *)buf, &n);
+    DWORD w = n / sizeof(WCHAR);
+    if (w && !buf[w - 1]) w--;                       /* drop the list's final terminator */
+    const char *items[2] = { from, to };
+    for (int i = 0; i < 2; i++) {
+        if (items[i] && *items[i]) {
+            buf[w++] = '\\'; buf[w++] = '?'; buf[w++] = '?'; buf[w++] = '\\';
+            int m = MultiByteToWideChar(CP_UTF8, 0, items[i], -1, buf + w, 2 * MAX_PATH);
+            w += m > 0 ? (DWORD)m : 1;
+        } else buf[w++] = 0;
+    }
+    buf[w++] = 0;
+    LSTATUS r = RegSetValueExW(k, L"PendingFileRenameOperations", 0, REG_MULTI_SZ, (BYTE *)buf, w * sizeof(WCHAR));
+    HeapFree(GetProcessHeap(), 0, buf);
+    RegCloseKey(k);
+    return r == 0;
+}
+
 WINBASEAPI BOOL WINAPI MoveFileExA(LPCSTR from, LPCSTR to, DWORD flags)
 {
-    if (!to) return DeleteFileA(from);              /* MOVEFILE_DELAY_UNTIL_REBOOT-style delete */
+    if (flags & 4) return pending_file_op(from, to);       /* MOVEFILE_DELAY_UNTIL_REBOOT */
+    if (!to) return DeleteFileA(from);
     HANDLE h = CreateFileA(from, DELETE, 7, 0, OPEN_EXISTING, 0x02000000 /* BACKUP_SEMANTICS */, 0);
     if (h == INVALID_HANDLE_VALUE) return FALSE;
     NTSTATUS s = rename_handle(h, to, (flags & 1) != 0);

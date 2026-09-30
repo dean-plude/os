@@ -124,6 +124,8 @@ static void um_lock_free_init(void)
     for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) um_lock_free(list[i]);
 }
 
+static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode **root);
+
 /* Terminal "trace NAME": log the failing system calls of programs named
  * NAME (a debugging aid for Windows programs that misbehave) */
 static char g_trace[32];
@@ -146,10 +148,18 @@ UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         const char *n = t->proc->name;
         int i = 0;
         while (g_trace[i] && n[i] && (n[i] | 0x20) == (g_trace[i] | 0x20)) i++;
-        if (!g_trace[i] && (!n[i] || n[i] == '.'))
-            kprintf("[TRACE] %s: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx\n", n,
+        if (!g_trace[i] && (!n[i] || n[i] == '.')) {
+            /* the file name of the calls that take one */
+            char path[RAMFS_PATH_MAX] = "";
+            RamNode *root;
+            UINT64 oa = num == SYSCALL_NtCreateFile || num == SYSCALL_NtOpenFile ? a3 :
+                        num == SYSCALL_NtQueryAttributesFile ? a1 : 0;
+            if (oa && get_path(t->proc, oa, path, sizeof(path), &root)) path[0] = 0;
+            kprintf("[TRACE] %s: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
                     (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
-                    (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r);
+                    (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r,
+                    path[0] ? " " : "", path);
+        }
     }
     return r;
 }
