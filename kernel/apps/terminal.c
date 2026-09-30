@@ -411,6 +411,14 @@ static void cmd_dmesg(Term *t)
 static void cmd_start(Term *t, int argc, char **argv)
 {
     AppId id;
+    if (argc >= 2) {                             /* a .msi package: Windows Installer */
+        size_t n = strlen(argv[1]);
+        RamNode *msi = n > 4 && !strcmp(argv[1] + n - 4, ".msi") ? RamfsResolve(t->cwd, argv[1]) : NULL;
+        if (msi && !msi->dir) {
+            if (!AppRunMsi(msi)) terr(t, "Windows Installer (msiexec.exe) is not available.");
+            return;
+        }
+    }
     RamNode *exe = argc >= 2 && !AppByName(argv[1], &id) ? UmFindProgram(t->cwd, argv[1]) : NULL;
     if (exe) {                                   /* a Windows program, detached from the terminal */
         char line[512], err[160];

@@ -53,7 +53,10 @@ DLLS = [
     ('comdlg32', ['kernel32', 'ntdll'],  0x7FFB10000000),
     ('ole32',    ['user32', 'advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
     ('oleaut32', ['ole32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAF0000000),
+    ('msi',      ['comctl32', 'shell32', 'user32', 'gdi32', 'advapi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB60000000),
 ]
+# programs that live in C:\Windows\System32 rather than C:\Programs
+SYSTEM_PROGRAMS = {'msiexec'}
 UCRT_BASE = 0x7FFA28000000
 # DLLs built from more than their own directory
 DLL_SOURCES = {
@@ -268,8 +271,10 @@ for src in sorted(os.listdir(progdir)):
          os.path.join(out, 'gdi32.lib'), os.path.join(out, 'testdll.lib'),
          os.path.join(out, 'vcruntime140.lib'), os.path.join(out, 'advapi32.lib'),
          os.path.join(out, 'ole32.lib'), os.path.join(out, 'oleaut32.lib'),
-         os.path.join(out, 'comctl32.lib'), os.path.join(out, 'shell32.lib')])
-    built.append((f'\\Programs\\{name}.exe', exe))
+         os.path.join(out, 'comctl32.lib'), os.path.join(out, 'shell32.lib'),
+         os.path.join(out, 'msi.lib')])
+    folder = '\\Windows\\System32' if name in SYSTEM_PROGRAMS else '\\Programs'
+    built.append((f'{folder}\\{name}.exe', exe))
 
 # 3a0. fonts gdi32 draws text with (C:\Windows\Fonts)
 TP = os.path.join(os.path.dirname(HERE), 'third_party')

@@ -182,7 +182,7 @@ static bool has_ext(const char *name, const char *ext)     /* case-insensitive *
     return true;
 }
 
-typedef enum { FT_OTHER, FT_TEXT, FT_ICON, FT_PNG, FT_EXE, FT_DLL, FT_CURSOR } FileType;
+typedef enum { FT_OTHER, FT_TEXT, FT_ICON, FT_PNG, FT_EXE, FT_DLL, FT_CURSOR, FT_MSI } FileType;
 
 static FileType file_type(const RamNode *f)
 {
@@ -192,6 +192,7 @@ static FileType file_type(const RamNode *f)
     if (has_ext(f->name, ".png")) return FT_PNG;
     if (has_ext(f->name, ".exe")) return FT_EXE;
     if (has_ext(f->name, ".dll")) return FT_DLL;
+    if (has_ext(f->name, ".msi")) return FT_MSI;
     if (has_ext(f->name, ".txt") || has_ext(f->name, ".md") || has_ext(f->name, ".log") ||
         has_ext(f->name, ".ini") || has_ext(f->name, ".c") || has_ext(f->name, ".h"))
         return FT_TEXT;
@@ -208,6 +209,7 @@ const char *AppFileTypeName(const RamNode *f)
     case FT_PNG:    return "PNG image";
     case FT_EXE:    return "Application";
     case FT_DLL:    return "Application extension";
+    case FT_MSI:    return "Windows Installer Package";
     case FT_TEXT:   return "Text Document";
     default:        return "File";
     }
@@ -223,6 +225,9 @@ void AppOpenFile(RamNode *file)
         break;
     case FT_EXE:
         AppRunProgram(file, file->name);
+        break;
+    case FT_MSI:
+        AppRunMsi(file);
         break;
     default:
         NotepadOpen(file);
@@ -346,6 +351,20 @@ static bool in_programs(const RamNode *n)
     for (const RamNode *p = n->parent; p; p = p->parent)
         if (p == progs) return true;
     return false;
+}
+
+/* Install a Windows Installer package: msiexec /i, on its own */
+bool AppRunMsi(RamNode *msi)
+{
+    RamNode *exe = RamfsResolve(NULL, "\\Windows\\System32\\msiexec.exe");
+    if (!exe || !msi) return false;
+    char path[RAMFS_PATH_MAX], cmd[RAMFS_PATH_MAX + 32], err[160];
+    RamfsPath(msi, path, sizeof(path));
+    ksnprintf(cmd, sizeof(cmd), "msiexec /i \"%s\"", path);
+    UmProcess *p = UmSpawn(exe, cmd, msi->parent, NULL, err, sizeof(err));
+    if (!p) { kprintf("[APPS] Cannot start Windows Installer: %s\n", err); return false; }
+    UmDetach(p);
+    return true;
 }
 
 void AppRunProgram(RamNode *exe, const char *cmdline)

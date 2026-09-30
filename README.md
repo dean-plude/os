@@ -570,10 +570,51 @@ note on how far each one gets on NovaOS today.
   the other installers are unchanged upstream files whose runtime needs
   (.NET, Windows Installer, Direct3D, GTK/Qt) NovaOS does not cover yet,
   and the note on each row says so.
+- The **Runtimes** category lists what other programs depend on: the
+  .NET Desktop Runtime, the Visual C++ Redistributable, OpenJDK (a
+  Windows Installer package) and Mesa 3D's software OpenGL.  Runtimes
+  show "Installed" instead of an Open button.
 - The Terminal gained `copy <source> <destination>`.
 - A kernel bug this shook out: `ksnprintf` looped forever when a `%s`
   argument had to be cut to fit the buffer, freezing the desktop on a
   long error message.
+
+### Windows Installer (.msi packages)
+
+NovaOS has its own Windows Installer: `msi.dll` (`userland/msi/`) and
+`msiexec.exe` in `C:\Windows\System32`.  Double-clicking a `.msi` in
+Explorer, `start package.msi` in the Terminal, and the App Store's
+Install button all go through it, and programs can call
+`MsiInstallProduct`, `MsiConfigureProduct`, `MsiQueryProductState`,
+`MsiGetProductInfo` and `MsiEnumProducts`.
+
+- **The package format**: the OLE compound file container (FAT, mini
+  FAT, DIFAT, the encoded stream names), the string pool and the
+  column-major table streams, and the cabinets inside (or beside) the
+  package with MSZIP (deflate) and LZX decompression, files spanning
+  data blocks and cabinets.  These readers use only the C library and
+  are tested on the host against packages built with msitools.
+- **The engine** runs `InstallExecuteSequence`: launch conditions,
+  `AppSearch`/`RegLocator`, feature and component selection (levels,
+  the Condition table, `ADDLOCAL`/`REMOVE`, component conditions),
+  Directory resolution onto NovaOS's folders (`ProgramFilesFolder` is
+  `C:\Programs`, `SystemFolder` is `C:\Windows\System32`, ...),
+  `CreateFolders`, `InstallFiles`, the Registry table (all value
+  types, `[Property]`, `[#File]` and `[$Component]` formatting),
+  `FindRelatedProducts`/`RemoveExistingProducts` through the Upgrade
+  table, and product registration under the Uninstall key with a
+  cached copy of the package in `C:\Windows\Installer`.  Custom actions
+  that set properties or directories (types 51 and 35) run; ones that
+  execute code are logged and skipped.  `msiexec /x` reverses it all,
+  on the folder chosen at install time.
+- **msiexec** takes `/i`, `/x` (a package or a `{ProductCode}`), `/qn`,
+  `/qb`, `/passive`, `/l*v FILE` and `PROPERTY=value` overrides, and
+  shows the familiar progress window with Cancel (full UI adds the
+  completion message box).  Logs also go to the kernel log (`dmesg`).
+- Not yet: the packages' own dialogs (`InstallUISequence`), shortcuts
+  (NovaOS has no `.lnk` files), services, environment variables, and
+  merge modules.  LZX decoding is written to the specification but has
+  only been exercised with MSZIP cabinets so far.
 
 ## Quick Start
 
@@ -649,7 +690,7 @@ qemu-system-x86_64 -machine q35 -m 512M -smp 4 \
 | 9.5 | NetSurf web browser (HTTP/HTTPS fetcher, window surface, TrueType text, POSIX C runtime) | ✅ **Done** |
 | 10 | Standard DLLs (UCRT, C++ EH, advapi32, shell32, ...), registry, COM, AHCI + FAT persistent storage | ✅ **Done** |
 | 11 | Multiprocessor: every core runs threads, per-core scheduling, fine-grained kernel locking | ✅ **Done** |
-| 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store | ✅ **Done** |
+| 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store; Windows Installer (.msi) | ✅ **Done** |
 | 13 | Pipes, `cmd.exe`, the OLE clipboard, more real programs | 🔄 Planned |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native

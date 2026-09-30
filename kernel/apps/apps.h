@@ -53,6 +53,9 @@ int  AppForProgram(const char *exe_name);
 /* Run a program found by UmFindProgram: GUI programs directly, console
  * programs in a new Terminal window.  @cmdline includes the program name. */
 void AppRunProgram(RamNode *exe, const char *cmdline);
+/* Install a .msi package with Windows Installer (msiexec /i); false if
+ * msiexec.exe is missing */
+bool AppRunMsi(RamNode *msi);
 
 /* Recently opened documents and folders (newest first), for the Start menu */
 void AppNoteRecentFile(RamNode *node);

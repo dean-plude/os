@@ -20,11 +20,19 @@
  * Catalog
  * ----------------------------------------------------------------------- */
 enum { CAT_ALL, CAT_UTILITIES, CAT_INTERNET, CAT_MEDIA, CAT_GRAPHICS, CAT_OFFICE,
-       CAT_DEVELOPER, CAT_INSTALLED, CAT_COUNT };
+       CAT_DEVELOPER, CAT_RUNTIMES, CAT_INSTALLED, CAT_COUNT };
 
 static const char *g_cat_name[CAT_COUNT] = {
     "All apps", "Utilities", "Internet", "Media", "Graphics", "Office", "Developer",
-    "Installed",
+    "Runtimes", "Installed",
+};
+
+/* What the downloaded file is */
+enum {
+    KIND_SETUP,        /* an installer (.exe or .msi): Install runs it, Open the program */
+    KIND_PORTABLE,     /* the program itself: Run it from Downloads */
+    KIND_LIBRARY,      /* a runtime: Install runs it; nothing to open afterwards */
+    KIND_ARCHIVE,      /* a .7z: Install opens it in 7-Zip, if that is installed */
 };
 
 typedef struct {
@@ -34,8 +42,10 @@ typedef struct {
     int         category;
     const char *url;           /* the installer (or portable program) */
     const char *file;          /* saved as C:\Downloads\<file> */
-    const char *exe;           /* installed program: C:\Programs\<exe> */
-    bool        portable;      /* @file is the program itself: no install step */
+    const char *exe;           /* installed: C:\Programs\<exe>, or an absolute
+                                * path starting with '\'; one path component
+                                * may end in '*' (a versioned folder) */
+    int         kind;          /* KIND_* */
     unsigned    size_mb;       /* approximate download size (0: under 1 MB) */
     const char *note;          /* NovaOS compatibility note */
     const char *label;         /* 1-3 letter tile label */
@@ -45,67 +55,80 @@ typedef struct {
 static const StoreApp g_catalog[] = {
     { "7-Zip", "Igor Pavlov", "File archiver with a high compression ratio (7z, zip, tar, ...)",
       CAT_UTILITIES, "https://www.7-zip.org/a/7z2603-x64.exe", "7z2603-x64.exe",
-      "7-Zip\\7zFM.exe", false, 2, "Tested on NovaOS", "7z", GDI_C(0x25, 0x6E, 0xB8) },
+      "7-Zip\\7zFM.exe", KIND_SETUP, 2, "Tested on NovaOS", "7z", GDI_C(0x25, 0x6E, 0xB8) },
     { "VLC media player", "VideoLAN", "Plays most video and audio files, discs and streams",
       CAT_MEDIA, "https://get.videolan.org/vlc/3.0.21/win64/vlc-3.0.21-win64.exe", "vlc-3.0.21-win64.exe",
-      "VideoLAN\\VLC\\vlc.exe", false, 42, "Needs audio and video output NovaOS does not have yet", "VLC", GDI_C(0xF0, 0x7E, 0x1A) },
+      "VideoLAN\\VLC\\vlc.exe", KIND_SETUP, 42, "Needs audio and video output NovaOS does not have yet", "VLC", GDI_C(0xF0, 0x7E, 0x1A) },
     { "Firefox", "Mozilla", "Fast, private web browser",
       CAT_INTERNET, "https://download.mozilla.org/?product=firefox-latest&os=win64&lang=en-US", "FirefoxSetup.exe",
-      "Mozilla Firefox\\firefox.exe", false, 65, "Needs the sandbox and GPU APIs NovaOS does not have yet", "Fx", GDI_C(0xE6, 0x5A, 0x1C) },
+      "Mozilla Firefox\\firefox.exe", KIND_SETUP, 65, "Needs the sandbox and GPU APIs NovaOS does not have yet", "Fx", GDI_C(0xE6, 0x5A, 0x1C) },
     { "Thunderbird", "Mozilla", "Email, calendar and chat client",
       CAT_INTERNET, "https://download.mozilla.org/?product=thunderbird-latest&os=win64&lang=en-US", "ThunderbirdSetup.exe",
-      "Mozilla Thunderbird\\thunderbird.exe", false, 70, "Same runtime as Firefox: not expected to start yet", "Tb", GDI_C(0x1D, 0x66, 0xB4) },
+      "Mozilla Thunderbird\\thunderbird.exe", KIND_SETUP, 70, "Same runtime as Firefox: not expected to start yet", "Tb", GDI_C(0x1D, 0x66, 0xB4) },
     { "Notepad++", "Don Ho", "Source code editor with syntax highlighting and plugins",
       CAT_DEVELOPER, "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.8.3/npp.8.8.3.Installer.x64.exe", "npp.8.8.3.Installer.x64.exe",
-      "Notepad++\\notepad++.exe", false, 6, "Uses Scintilla and common controls; untested", "N++", GDI_C(0x8C, 0xC0, 0x44) },
+      "Notepad++\\notepad++.exe", KIND_SETUP, 6, "Uses Scintilla and common controls; untested", "N++", GDI_C(0x8C, 0xC0, 0x44) },
     { "GIMP", "The GIMP Team", "Image editor for photo retouching, composition and authoring",
       CAT_GRAPHICS, "https://download.gimp.org/gimp/v3.0/windows/gimp-3.0.4-setup.exe", "gimp-3.0.4-setup.exe",
-      "GIMP 3\\bin\\gimp-3.0.exe", false, 260, "GTK4 application; untested", "G", GDI_C(0x5C, 0x4A, 0x36) },
+      "GIMP 3\\bin\\gimp-3.0.exe", KIND_SETUP, 260, "GTK4 application; untested", "G", GDI_C(0x5C, 0x4A, 0x36) },
     { "Inkscape", "Inkscape Project", "Vector graphics editor (SVG)",
       CAT_GRAPHICS, "https://media.inkscape.org/dl/resources/file/inkscape-1.4.2_2025-05-13_f4bb0b0-x64.exe", "inkscape-1.4.2-x64.exe",
-      "Inkscape\\bin\\inkscape.exe", false, 120, "GTK application; untested", "Ik", GDI_C(0x2A, 0x2A, 0x2A) },
+      "Inkscape\\bin\\inkscape.exe", KIND_SETUP, 120, "GTK application; untested", "Ik", GDI_C(0x2A, 0x2A, 0x2A) },
     { "Krita", "Krita Foundation", "Digital painting and illustration",
       CAT_GRAPHICS, "https://download.kde.org/stable/krita/5.2.9/krita-x64-5.2.9-setup.exe", "krita-x64-5.2.9-setup.exe",
-      "Krita (x64)\\bin\\krita.exe", false, 130, "Qt application; untested", "Kr", GDI_C(0x9C, 0x3A, 0x8A) },
+      "Krita (x64)\\bin\\krita.exe", KIND_SETUP, 130, "Qt application; untested", "Kr", GDI_C(0x9C, 0x3A, 0x8A) },
     { "Audacity", "Audacity Team", "Multi-track audio editor and recorder",
       CAT_MEDIA, "https://github.com/audacity/audacity/releases/download/Audacity-3.7.4/audacity-win-3.7.4-64bit.exe", "audacity-win-3.7.4-64bit.exe",
-      "Audacity\\Audacity.exe", false, 15, "wxWidgets application; needs audio output", "Au", GDI_C(0x1C, 0x1C, 0x60) },
+      "Audacity\\Audacity.exe", KIND_SETUP, 15, "wxWidgets application; needs audio output", "Au", GDI_C(0x1C, 0x1C, 0x60) },
     { "HandBrake", "HandBrake Team", "Video transcoder: convert video to modern formats",
       CAT_MEDIA, "https://github.com/HandBrake/HandBrake/releases/download/1.9.2/HandBrake-1.9.2-x86_64-Win_GUI.exe", "HandBrake-1.9.2-x86_64-Win_GUI.exe",
-      "HandBrake\\HandBrake.exe", false, 20, "Needs the .NET runtime, which NovaOS cannot run yet", "HB", GDI_C(0xB8, 0x3A, 0x2E) },
+      "HandBrake\\HandBrake.exe", KIND_SETUP, 20, "Needs the .NET runtime, which NovaOS cannot run yet", "HB", GDI_C(0xB8, 0x3A, 0x2E) },
     { "OBS Studio", "OBS Project", "Live streaming and screen recording",
       CAT_MEDIA, "https://github.com/obsproject/obs-studio/releases/download/31.1.2/OBS-Studio-31.1.2-Windows-Installer.exe", "OBS-Studio-31.1.2-Windows-Installer.exe",
-      "obs-studio\\bin\\64bit\\obs64.exe", false, 140, "Needs Direct3D; not expected to start yet", "OBS", GDI_C(0x30, 0x30, 0x30) },
+      "obs-studio\\bin\\64bit\\obs64.exe", KIND_SETUP, 140, "Needs Direct3D; not expected to start yet", "OBS", GDI_C(0x30, 0x30, 0x30) },
     { "LibreOffice", "The Document Foundation", "Writer, Calc, Impress: a full office suite",
       CAT_OFFICE, "https://downloadarchive.documentfoundation.org/libreoffice/old/25.2.5.2/win/x86_64/LibreOffice_25.2.5.2_Win_x86-64.msi", "LibreOffice_25.2.5.2_Win_x86-64.msi",
-      "LibreOffice\\program\\soffice.exe", false, 350, "MSI package: Windows Installer is not available on NovaOS yet", "Lo", GDI_C(0x18, 0xA3, 0x03) },
+      "LibreOffice\\program\\soffice.exe", KIND_SETUP, 350, "MSI package: Windows Installer is not available on NovaOS yet", "Lo", GDI_C(0x18, 0xA3, 0x03) },
     { "SumatraPDF", "Krzysztof Kowalczyk", "Small, fast PDF, EPUB and comic book reader",
       CAT_OFFICE, "https://www.sumatrapdfreader.org/dl/rel/3.5.2/SumatraPDF-3.5.2-64.exe", "SumatraPDF-3.5.2-64.exe",
-      NULL, true, 8, "Portable program: runs straight from Downloads", "Su", GDI_C(0xE8, 0xB0, 0x22) },
+      NULL, KIND_PORTABLE, 8, "Portable program: runs straight from Downloads", "Su", GDI_C(0xE8, 0xB0, 0x22) },
     { "KeePass", "Dominik Reichl", "Password manager with an encrypted database",
       CAT_UTILITIES, "https://sourceforge.net/projects/keepass/files/KeePass%202.x/2.58/KeePass-2.58-Setup.exe/download", "KeePass-2.58-Setup.exe",
-      "KeePass Password Safe 2\\KeePass.exe", false, 4, "Needs the .NET Framework, which NovaOS cannot run yet", "Kp", GDI_C(0x2C, 0x68, 0xB0) },
+      "KeePass Password Safe 2\\KeePass.exe", KIND_SETUP, 4, "Needs the .NET Framework, which NovaOS cannot run yet", "Kp", GDI_C(0x2C, 0x68, 0xB0) },
     { "qBittorrent", "qBittorrent project", "BitTorrent client without ads",
       CAT_INTERNET, "https://sourceforge.net/projects/qbittorrent/files/qbittorrent-win32/qbittorrent-5.1.2/qbittorrent_5.1.2_x64_setup.exe/download", "qbittorrent_5.1.2_x64_setup.exe",
-      "qBittorrent\\qbittorrent.exe", false, 40, "Qt application; untested", "qB", GDI_C(0x2E, 0x7A, 0xC8) },
+      "qBittorrent\\qbittorrent.exe", KIND_SETUP, 40, "Qt application; untested", "qB", GDI_C(0x2E, 0x7A, 0xC8) },
     { "PuTTY", "Simon Tatham", "SSH and telnet client",
       CAT_INTERNET, "https://the.earth.li/~sgtatham/putty/latest/w64/putty.exe", "putty.exe",
-      NULL, true, 2, "Portable program: runs straight from Downloads", "Pu", GDI_C(0x1F, 0x1F, 0x1F) },
+      NULL, KIND_PORTABLE, 2, "Portable program: runs straight from Downloads", "Pu", GDI_C(0x1F, 0x1F, 0x1F) },
     { "WinSCP", "Martin Prikryl", "SFTP, FTP and SCP file transfer client",
       CAT_INTERNET, "https://sourceforge.net/projects/winscp/files/WinSCP/6.5.3/WinSCP-6.5.3-Setup.exe/download", "WinSCP-6.5.3-Setup.exe",
-      "WinSCP\\WinSCP.exe", false, 12, "Untested", "Ws", GDI_C(0x2B, 0x90, 0x3C) },
+      "WinSCP\\WinSCP.exe", KIND_SETUP, 12, "Untested", "Ws", GDI_C(0x2B, 0x90, 0x3C) },
     { "Git for Windows", "Git for Windows", "The git version control system with Git Bash",
       CAT_DEVELOPER, "https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/Git-2.51.0-64-bit.exe", "Git-2.51.0-64-bit.exe",
-      "Git\\cmd\\git.exe", false, 70, "The installer needs cmd.exe features NovaOS lacks; untested", "git", GDI_C(0xF0, 0x50, 0x32) },
+      "Git\\cmd\\git.exe", KIND_SETUP, 70, "The installer needs cmd.exe features NovaOS lacks; untested", "git", GDI_C(0xF0, 0x50, 0x32) },
     { "Python", "Python Software Foundation", "The Python 3 programming language",
       CAT_DEVELOPER, "https://www.python.org/ftp/python/3.13.7/python-3.13.7-amd64.exe", "python-3.13.7-amd64.exe",
-      "Python313\\python.exe", false, 27, "The installer uses Windows Installer packages; untested", "Py", GDI_C(0x36, 0x71, 0xA6) },
+      "Python313\\python.exe", KIND_SETUP, 27, "The installer uses Windows Installer packages; untested", "Py", GDI_C(0x36, 0x71, 0xA6) },
     { "WinMerge", "WinMerge Team", "Compare and merge files and folders",
       CAT_DEVELOPER, "https://github.com/WinMerge/winmerge/releases/download/v2.16.48/WinMerge-2.16.48-x64-Setup.exe", "WinMerge-2.16.48-x64-Setup.exe",
-      "WinMerge\\WinMergeU.exe", false, 10, "Untested", "WM", GDI_C(0xE0, 0xB8, 0x30) },
+      "WinMerge\\WinMergeU.exe", KIND_SETUP, 10, "Untested", "WM", GDI_C(0xE0, 0xB8, 0x30) },
     { "ShareX", "ShareX Team", "Screen capture and file sharing",
       CAT_UTILITIES, "https://github.com/ShareX/ShareX/releases/download/v17.1.0/ShareX-17.1.0-setup.exe", "ShareX-17.1.0-setup.exe",
-      "ShareX\\ShareX.exe", false, 8, "Needs the .NET runtime, which NovaOS cannot run yet", "Sx", GDI_C(0x20, 0x90, 0x60) },
+      "ShareX\\ShareX.exe", KIND_SETUP, 8, "Needs the .NET runtime, which NovaOS cannot run yet", "Sx", GDI_C(0x20, 0x90, 0x60) },
+    /* Runtimes */
+    { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
+      CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe", "windowsdesktop-runtime-8.0-win-x64.exe",
+      "dotnet\\dotnet.exe", KIND_LIBRARY, 58, "The runtime host is untested on NovaOS", ".NET", GDI_C(0x51, 0x2B, 0xD4) },
+    { "Visual C++ Redistributable", "Microsoft", "C++ runtime DLLs (msvcp140, vcruntime140, ...) many programs need",
+      CAT_RUNTIMES, "https://aka.ms/vs/17/release/vc_redist.x64.exe", "vc_redist.x64.exe",
+      "\\Windows\\System32\\msvcp140.dll", KIND_LIBRARY, 25, "NovaOS ships its own ucrtbase and vcruntime140; this adds the rest", "VC", GDI_C(0x68, 0x21, 0x7A) },
+    { "OpenJDK 21", "Microsoft Build of OpenJDK", "Java runtime and development kit (Windows Installer package)",
+      CAT_RUNTIMES, "https://aka.ms/download-jdk/microsoft-jdk-21-windows-x64.msi", "microsoft-jdk-21-windows-x64.msi",
+      "Microsoft\\jdk-21*\\bin\\java.exe", KIND_LIBRARY, 180, "Installs through NovaOS's Windows Installer; the JVM is untested", "Jv", GDI_C(0xE7, 0x6F, 0x00) },
+    { "Mesa 3D", "Mesa / mesa-dist-win", "Software OpenGL (opengl32.dll) for programs that need 3D without a GPU driver",
+      CAT_RUNTIMES, "https://github.com/pal1000/mesa-dist-win/releases/download/24.2.4/mesa3d-24.2.4-release-msvc.7z", "mesa3d-24.2.4-release-msvc.7z",
+      NULL, KIND_ARCHIVE, 90, "A 7z archive: extract opengl32.dll beside the program that needs it", "GL", GDI_C(0x3B, 0x5B, 0xA0) },
 };
 #define N_APPS ((int)(sizeof(g_catalog) / sizeof(g_catalog[0])))
 
@@ -139,12 +162,31 @@ typedef struct {
 
 static WND *g_store;               /* the one Store window */
 
+/* The installed program's file, walking @exe from C:\Programs (or from
+ * the root for an absolute path); a component ending in '*' matches the
+ * first folder with that prefix (versioned install folders) */
 static RamNode *installed_exe(const StoreApp *a)
 {
-    char path[RAMFS_PATH_MAX];
     if (!a->exe) return NULL;
-    ksnprintf(path, sizeof(path), "\\Programs\\%s", a->exe);
-    RamNode *n = RamfsResolve(NULL, path);
+    const char *p = a->exe;
+    RamNode *n = *p == '\\' ? RamfsRoot() : RamfsResolve(NULL, "\\Programs");
+    while (*p == '\\') p++;
+    while (n && *p) {
+        char comp[RAMFS_NAME_MAX];
+        int len = 0;
+        while (*p && *p != '\\' && len < (int)sizeof(comp) - 1) comp[len++] = *p++;
+        comp[len] = '\0';
+        while (*p == '\\') p++;
+        if (len && comp[len - 1] == '*') {
+            comp[--len] = '\0';
+            RamNode *m = NULL;
+            for (RamNode *c = n->child; c && !m; c = c->next)
+                if (c->dir && !strncmp(c->name, comp, (size_t)len)) m = c;
+            n = m;
+        } else {
+            n = RamfsFind(n, comp);
+        }
+    }
     return n && !n->dir ? n : NULL;
 }
 
@@ -159,7 +201,7 @@ static RamNode *downloaded_file(const StoreApp *a)
 static bool in_category(const StoreApp *a, int cat)
 {
     if (cat == CAT_ALL) return true;
-    if (cat == CAT_INSTALLED) return installed_exe(a) || (a->portable && downloaded_file(a));
+    if (cat == CAT_INSTALLED) return installed_exe(a) || (a->kind == KIND_PORTABLE && downloaded_file(a));
     return a->category == cat;
 }
 
@@ -208,6 +250,12 @@ static void dl_start(Store *s, int i)
 {
     if (s->dl >= 0) { set_msg(s, i, "Another download is in progress"); return; }
     if (!NetAvailable()) { set_msg(s, i, "Failed: no network connection"); return; }
+    if ((UINT64)g_catalog[i].size_mb * 1024 * 1024 > NET_HTTP_MAX) {
+        char m[64];
+        ksnprintf(m, sizeof(m), "Too large for this build (limit %u MB)", (unsigned)(NET_HTTP_MAX >> 20));
+        set_msg(s, i, m);
+        return;
+    }
     s->dl = i;
     s->redirects = 0;
     s->shown = 0;
@@ -322,15 +370,55 @@ static void run_exe(Store *s, int i, RamNode *exe)
     set_msg(s, i, "");
 }
 
+static bool ends_with(const char *name, const char *ext)
+{
+    int n = (int)strlen(name), e = (int)strlen(ext);
+    if (n < e) return false;
+    for (int i = 0; i < e; i++)
+        if ((name[n - e + i] | 0x20) != (ext[i] | 0x20)) return false;
+    return true;
+}
+
+/* Run a downloaded file: installers directly, .msi packages through
+ * Windows Installer, archives in 7-Zip */
+static void run_file(Store *s, int i, RamNode *f)
+{
+    if (!f) return;
+    char path[RAMFS_PATH_MAX], cmd[RAMFS_PATH_MAX + 64], err[160];
+    RamfsPath(f, path, sizeof(path));
+    RamNode *exe = NULL;
+    if (ends_with(f->name, ".msi")) {
+        exe = RamfsResolve(NULL, "\\Windows\\System32\\msiexec.exe");
+        if (!exe) { set_msg(s, i, "Could not start: Windows Installer is missing"); return; }
+        ksnprintf(cmd, sizeof(cmd), "msiexec /i \"%s\"", path);
+    } else if (ends_with(f->name, ".7z") || ends_with(f->name, ".zip")) {
+        exe = RamfsResolve(NULL, "\\Programs\\7-Zip\\7zFM.exe");
+        if (!exe) { set_msg(s, i, "Install 7-Zip first to open this archive"); return; }
+        ksnprintf(cmd, sizeof(cmd), "7zFM \"%s\"", path);
+    } else {
+        run_exe(s, i, f);
+        return;
+    }
+    UmProcess *p = UmSpawn(exe, cmd, f->parent, NULL, err, sizeof(err));
+    if (!p) {
+        char m[64];
+        ksnprintf(m, sizeof(m), "Could not start: %s", err);
+        set_msg(s, i, m);
+        return;
+    }
+    UmDetach(p);
+    set_msg(s, i, "");
+}
+
 /* The row's button: what it says and what it does */
-typedef enum { BTN_GET, BTN_CANCEL, BTN_INSTALL, BTN_RUN, BTN_OPEN } BtnKind;
+typedef enum { BTN_GET, BTN_CANCEL, BTN_INSTALL, BTN_RUN, BTN_OPEN, BTN_NONE } BtnKind;
 
 static BtnKind row_button(const Store *s, int i)
 {
     const StoreApp *a = &g_catalog[i];
     if (s->dl == i) return BTN_CANCEL;
-    if (installed_exe(a)) return BTN_OPEN;
-    if (downloaded_file(a)) return a->portable ? BTN_RUN : BTN_INSTALL;
+    if (installed_exe(a)) return a->kind == KIND_LIBRARY ? BTN_NONE : BTN_OPEN;
+    if (downloaded_file(a)) return a->kind == KIND_PORTABLE ? BTN_RUN : BTN_INSTALL;
     return BTN_GET;
 }
 
@@ -341,8 +429,9 @@ static void press(Store *s, int i)
     case BTN_GET:     dl_start(s, i); break;
     case BTN_CANCEL:  dl_cancel(s); break;
     case BTN_INSTALL:
-    case BTN_RUN:     run_exe(s, i, downloaded_file(a)); break;
+    case BTN_RUN:     run_file(s, i, downloaded_file(a)); break;
     case BTN_OPEN:    run_exe(s, i, installed_exe(a)); break;
+    case BTN_NONE:    break;
     }
 }
 
@@ -441,12 +530,13 @@ static void store_paint(WND *w)
         bool failed = !strncmp(s->msg[i], "Failed", 6) || !strncmp(s->msg[i], "Could not", 9);
         GdiTextT(tx, y + 50, line, failed ? GDI_C(0xFF, 0x8A, 0x80) : UI_TEXT3);
         GdiSetClip(lr);
-        static const char *labels[] = { "Get", "Cancel", "Install", "Run", "Open" };
+        static const char *labels[] = { "Get", "Cancel", "Install", "Run", "Open", "" };
         BtnKind b = row_button(s, i);
         GdiRect br = r_btn(c, y - c.y);
         br.x += c.x; br.y += c.y;
         if (s->pressed == i) { br.y += 1; }
-        UiButton(br, labels[b], b == BTN_GET || b == BTN_INSTALL || b == BTN_OPEN);
+        if (b == BTN_NONE) GdiTextCenter(br.x, br.y + (br.h - GDI_FONT_H) / 2, br.w, "Installed", UI_TEXT3);
+        else UiButton(br, labels[b], b == BTN_GET || b == BTN_INSTALL || b == BTN_OPEN);
     }
     /* scrollbar */
     int total = list_height(s);
@@ -471,7 +561,7 @@ static int button_at(const Store *s, GdiRect c, int x, int y)
     int n = visible(s, idx);
     for (int k = 0; k < n; k++) {
         int ry = lr.y + 6 + k * ROW_H - s->scroll;
-        if (UiHit(r_btn(c, ry), x, y)) return idx[k];
+        if (UiHit(r_btn(c, ry), x, y)) return row_button(s, idx[k]) == BTN_NONE ? -1 : idx[k];
     }
     return -1;
 }
