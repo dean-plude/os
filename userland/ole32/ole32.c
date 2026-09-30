@@ -740,12 +740,8 @@ WINOLEAPI_(HRESULT) GetHGlobalFromStream(LPSTREAM st, HGLOBAL *out)
 }
 
 /* ---------------------------------------------------------------------------
- * OLE odds and ends (drag and drop: dragdrop.c; no OLE clipboard)
+ * OLE odds and ends (drag and drop: dragdrop.c; the clipboard: clipbrd.c)
  * ------------------------------------------------------------------------- */
-WINOLEAPI_(HRESULT) OleSetClipboard(LPVOID obj) { (void)obj; return (HRESULT)0x800401D0L; /* CLIPBRD_E_CANT_OPEN */ }
-WINOLEAPI_(HRESULT) OleGetClipboard(LPVOID *obj) { if (obj) *obj = 0; return (HRESULT)0x800401D0L; }
-WINOLEAPI_(HRESULT) OleFlushClipboard(void) { return S_OK; }
-WINOLEAPI_(HRESULT) OleIsCurrentClipboard(LPVOID obj) { (void)obj; return S_FALSE; }
 
 WINOLEAPI_(void) ReleaseStgMedium(STGMEDIUM *m)
 {

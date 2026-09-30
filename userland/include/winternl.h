@@ -190,6 +190,9 @@ NTSYSAPI NTSTATUS NTAPI NtCancelIoFile(HANDLE h, PIO_STATUS_BLOCK io);
 NTSYSAPI NTSTATUS NTAPI NtCancelIoFileEx(HANDLE h, PIO_STATUS_BLOCK req, PIO_STATUS_BLOCK io);
 NTSYSAPI NTSTATUS NTAPI NtSetInformationObject(HANDLE h, ULONG cls, PVOID info, ULONG len);
 NTSYSAPI NTSTATUS NTAPI NtQueryObject(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret);
+/* NovaOS: the system clipboard (op 0 empty, 1 set, 2 get, 3 list, 4 sequence, 5 owner) */
+typedef struct { ULONG Format; CHAR Name[60]; ULONG Size; } NOVA_CLIP_ENTRY;
+NTSYSAPI LONG_PTR NTAPI NtNovaClipboard(ULONG op, ULONG_PTR a, PVOID b, ULONG_PTR c, const char *name);
 NTSYSAPI NTSTATUS NTAPI NtReadFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io,
                                    PVOID buf, ULONG len, PLARGE_INTEGER off, PULONG key);
 NTSYSAPI NTSTATUS NTAPI NtWriteFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io,

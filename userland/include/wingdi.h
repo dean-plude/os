@@ -142,6 +142,10 @@ GDIAPI int      StretchDIBits(HDC dc, int x, int y, int w, int h, int sx, int sy
 GDIAPI int      SetDIBitsToDevice(HDC dc, int x, int y, DWORD w, DWORD h, int sx, int sy, UINT start, UINT lines,
                                   const void *bits, const BITMAPINFO *bi, UINT usage);
 GDIAPI int      GetDIBits(HDC dc, HBITMAP bmp, UINT start, UINT lines, void *bits, BITMAPINFO *bi, UINT usage);
+GDIAPI HBITMAP CreateDIBitmap(HDC h, const BITMAPINFOHEADER *bh, DWORD init, const void *bits, const BITMAPINFO *bi, UINT usage);
+#ifndef CBM_INIT
+#define CBM_INIT 4
+#endif
 GDIAPI BOOL     AlphaBlend(HDC dst, int x, int y, int w, int h, HDC src, int sx, int sy, int sw, int sh, BLENDFUNCTION bf);
 GDIAPI HFONT    CreateFontIndirectW(const LOGFONTW *lf);
 GDIAPI HFONT    CreateFontIndirectA(const LOGFONTA *lf);

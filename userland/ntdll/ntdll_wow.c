@@ -301,6 +301,11 @@ NTSTATUS NTAPI NtSetInformationObject(HANDLE h, ULONG cls, PVOID info, ULONG len
     return SC(NtSetInformationObject, H(h), U(cls), P(info), U(len));
 }
 
+LONG_PTR NTAPI NtNovaClipboard(ULONG op, ULONG_PTR a, PVOID b, ULONG_PTR c, const char *name)
+{
+    return SCP(NtNovaClipboard, U(op), op == 0 ? H(a) : U(a), P(b), U(c), P(name));
+}
+
 NTSTATUS NTAPI NtQueryObject(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret)
 {
     return SC(NtQueryObject, H(h), U(cls), P(info), U(len), P(ret));

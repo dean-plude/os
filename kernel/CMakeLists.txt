@@ -169,6 +169,7 @@ set(KERNEL_C_SOURCES
     gdi/font_inter.c
     wm/wm.c
     wm/desktop.c
+    wm/clipboard.c
     wm/input.c
     apps/apps.c
     apps/terminal.c

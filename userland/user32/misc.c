@@ -477,72 +477,245 @@ USERAPI LONG ChangeDisplaySettingsW(void *dm, DWORD f) { (void)dm; (void)f; retu
 USERAPI LONG ChangeDisplaySettingsExW(LPCWSTR d, void *dm, HWND h, DWORD f, void *p) { (void)d; (void)dm; (void)h; (void)f; (void)p; return -2; }
 
 /* -----------------------------------------------------------------------
- * Clipboard (this process's own)
+ * Clipboard: the system's (NtNovaClipboard), shared by every program
+ *
+ * SetClipboardData hands the kernel a copy of the bytes; GetClipboardData
+ * returns a global memory block this process keeps until the clipboard
+ * changes.  Formats a program registers go by name.  A bitmap (CF_BITMAP)
+ * travels as CF_DIB; a format set with a NULL handle is rendered by its
+ * owner (WM_RENDERFORMAT) when the clipboard is closed.
  * ----------------------------------------------------------------------- */
-typedef struct { UINT fmt; HANDLE data; } ClipItem;
-static ClipItem g_clip[16];
-static int g_clip_n, g_clip_open;
-static DWORD g_clip_seq = 1;
-static HWND g_clip_owner;
+enum { CB_EMPTY, CB_SET, CB_GET, CB_LIST, CB_SEQ, CB_OWNER };
+#define CF_BITMAP_ 2
+#define CF_DIB_    8
+#define WM_RENDERFORMAT_ 0x0305
 
-USERAPI BOOL OpenClipboard(HWND h) { if (g_clip_open) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; } g_clip_open = 1; (void)h; return TRUE; }
-USERAPI BOOL CloseClipboard(void) { g_clip_open = 0; return TRUE; }
-USERAPI BOOL EmptyClipboard(void)
+typedef struct { UINT fmt; HANDLE data; DWORD seq; } ClipItem;
+static ClipItem g_clip[32];
+static int g_clip_n, g_clip_open;
+static HWND g_clip_hwnd;
+static UINT g_delayed[16];
+static int g_ndelayed;
+int registered_name(UINT id, WCHAR *buf, int n);
+
+/* The name the kernel knows a registered format by (UTF-8), or NULL */
+static const char *fmt_name(UINT fmt, char *buf)
 {
-    for (int i = 0; i < g_clip_n; i++) if (g_clip[i].data) GlobalFree(g_clip[i].data);
-    g_clip_n = 0;
-    g_clip_seq++;
+    if (fmt < 0xC000) return NULL;
+    WCHAR w[64];
+    int k = registered_name(fmt, w, 64);
+    if (!k) return NULL;
+    int m = WideCharToMultiByte(CP_UTF8, 0, w, k, buf, 59, NULL, NULL);
+    buf[m > 0 ? m : 0] = 0;
+    return buf;
+}
+
+static DWORD clip_seq(void) { return (DWORD)NtNovaClipboard(CB_SEQ, 0, 0, 0, 0); }
+
+/* Forget what this process fetched from an older clipboard */
+static void drop_cache(BOOL all)
+{
+    DWORD seq = clip_seq();
+    int o = 0;
+    for (int i = 0; i < g_clip_n; i++) {
+        if (all || g_clip[i].seq != seq) {
+            if (g_clip[i].fmt == CF_BITMAP_) DeleteObject(g_clip[i].data);
+            else if (g_clip[i].data) GlobalFree(g_clip[i].data);
+        } else g_clip[o++] = g_clip[i];
+    }
+    g_clip_n = o;
+}
+
+static void cache(UINT fmt, HANDLE h)
+{
+    for (int i = 0; i < g_clip_n; i++) {
+        if (g_clip[i].fmt != fmt) continue;
+        if (g_clip[i].data != h) { if (fmt == CF_BITMAP_) DeleteObject(g_clip[i].data); else GlobalFree(g_clip[i].data); }
+        g_clip[i].data = h;
+        g_clip[i].seq = clip_seq();
+        return;
+    }
+    if (g_clip_n == 32) drop_cache(TRUE);
+    g_clip[g_clip_n].fmt = fmt;
+    g_clip[g_clip_n].data = h;
+    g_clip[g_clip_n++].seq = clip_seq();
+}
+
+/* A bitmap as a packed DIB (BITMAPINFOHEADER + 32-bit pixels) */
+static HGLOBAL bitmap_to_dib(HBITMAP bmp)
+{
+    BITMAP bm;
+    if (!GetObjectW(bmp, sizeof(bm), &bm) || bm.bmWidth <= 0 || bm.bmHeight <= 0) return 0;
+    SIZE_T px = (SIZE_T)bm.bmWidth * (SIZE_T)bm.bmHeight * 4;
+    HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPINFOHEADER) + px);
+    if (!g) return 0;
+    BITMAPINFO *bi = GlobalLock(g);
+    memset(bi, 0, sizeof(BITMAPINFOHEADER));
+    bi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi->bmiHeader.biWidth = bm.bmWidth;
+    bi->bmiHeader.biHeight = bm.bmHeight;
+    bi->bmiHeader.biPlanes = 1;
+    bi->bmiHeader.biBitCount = 32;
+    bi->bmiHeader.biCompression = BI_RGB;
+    bi->bmiHeader.biSizeImage = (DWORD)px;
+    HDC dc = GetDC(0);
+    int ok = GetDIBits(dc, bmp, 0, (UINT)bm.bmHeight, (BYTE *)bi + sizeof(BITMAPINFOHEADER), bi, DIB_RGB_COLORS);
+    ReleaseDC(0, dc);
+    GlobalUnlock(g);
+    if (!ok) { GlobalFree(g); return 0; }
+    return g;
+}
+
+static HBITMAP dib_to_bitmap(HGLOBAL g)
+{
+    BITMAPINFO *bi = GlobalLock(g);
+    if (!bi) return 0;
+    const BITMAPINFOHEADER *h = &bi->bmiHeader;
+    DWORD colors = h->biClrUsed ? h->biClrUsed : (h->biBitCount <= 8 ? 1u << h->biBitCount : 0);
+    const BYTE *bits = (const BYTE *)bi + h->biSize + colors * 4 + (h->biCompression == BI_BITFIELDS ? 12 : 0);
+    HDC dc = GetDC(0);
+    HBITMAP b = CreateDIBitmap(dc, h, CBM_INIT, bits, bi, DIB_RGB_COLORS);
+    ReleaseDC(0, dc);
+    GlobalUnlock(g);
+    return b;
+}
+
+static BOOL upload(UINT fmt, HANDLE data)
+{
+    char nb[64];
+    if (fmt == CF_BITMAP_) {                              /* goes as a DIB */
+        HGLOBAL dib = bitmap_to_dib((HBITMAP)data);
+        if (!dib) return FALSE;
+        BOOL ok = upload(CF_DIB_, dib);
+        GlobalFree(dib);
+        return ok;
+    }
+    SIZE_T n = GlobalSize(data);
+    const void *p = GlobalLock(data);
+    if (!p && n) return FALSE;
+    LONG_PTR r = NtNovaClipboard(CB_SET, fmt, (PVOID)p, n, fmt_name(fmt, nb));
+    GlobalUnlock(data);
+    return r == 0;
+}
+
+USERAPI BOOL OpenClipboard(HWND h)
+{
+    if (g_clip_open) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    g_clip_open = 1;
+    g_clip_hwnd = h;
     return TRUE;
 }
+
+USERAPI BOOL CloseClipboard(void)
+{
+    if (!g_clip_open) { SetLastError(1418 /* ERROR_CLIPBOARD_NOT_OPEN */); return FALSE; }
+    /* delayed formats: their owner renders them now (it calls SetClipboardData) */
+    int n = g_ndelayed;
+    UINT fmts[16];
+    memcpy(fmts, g_delayed, sizeof(UINT) * (size_t)n);
+    g_ndelayed = 0;
+    for (int i = 0; i < n; i++) if (g_clip_hwnd) SendMessageW(g_clip_hwnd, WM_RENDERFORMAT_, fmts[i], 0);
+    g_clip_open = 0;
+    return TRUE;
+}
+
+USERAPI BOOL EmptyClipboard(void)
+{
+    if (!g_clip_open) { SetLastError(1418); return FALSE; }
+    NtNovaClipboard(CB_EMPTY, (ULONG_PTR)g_clip_hwnd, 0, 0, 0);
+    drop_cache(TRUE);
+    g_ndelayed = 0;
+    return TRUE;
+}
+
 USERAPI HANDLE SetClipboardData(UINT fmt, HANDLE data)
 {
-    for (int i = 0; i < g_clip_n; i++) if (g_clip[i].fmt == fmt) { if (g_clip[i].data != data) GlobalFree(g_clip[i].data); g_clip[i].data = data; g_clip_seq++; return data; }
-    if (g_clip_n >= 16) return 0;
-    g_clip[g_clip_n].fmt = fmt;
-    g_clip[g_clip_n++].data = data;
-    g_clip_seq++;
+    if (!data) {                                          /* rendered later */
+        if (g_ndelayed < 16) g_delayed[g_ndelayed++] = fmt;
+        return 0;
+    }
+    if (!upload(fmt, data)) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    cache(fmt, data);                                     /* the system owns it now */
     return data;
 }
+
 USERAPI HANDLE GetClipboardData(UINT fmt)
 {
+    drop_cache(FALSE);
     for (int i = 0; i < g_clip_n; i++) if (g_clip[i].fmt == fmt) return g_clip[i].data;
-    /* CF_TEXT (1) <-> CF_UNICODETEXT (13) */
-    UINT other = fmt == 1 ? 13 : fmt == 13 ? 1 : 0;
-    for (int i = 0; other && i < g_clip_n; i++) if (g_clip[i].fmt == other && g_clip[i].data) {
-        const void *src = GlobalLock(g_clip[i].data);
-        HANDLE h;
-        if (fmt == 13) {
-            int n = MultiByteToWideChar(CP_UTF8, 0, src, -1, 0, 0);
-            h = GlobalAlloc(0, 2 * (SIZE_T)n);
-            if (h) MultiByteToWideChar(CP_UTF8, 0, src, -1, GlobalLock(h), n);
-        } else {
-            int n = WideCharToMultiByte(CP_UTF8, 0, src, -1, 0, 0, 0, 0);
-            h = GlobalAlloc(0, (SIZE_T)n);
-            if (h) WideCharToMultiByte(CP_UTF8, 0, src, -1, GlobalLock(h), n, 0, 0);
-        }
-        if (h) SetClipboardData(fmt, h);
-        return h;
+    if (fmt == CF_BITMAP_) {
+        HANDLE dib = GetClipboardData(CF_DIB_);
+        HBITMAP b = dib ? dib_to_bitmap(dib) : 0;
+        if (b) cache(fmt, b);
+        return b;
     }
-    return 0;
+    char nb[64];
+    const char *name = fmt_name(fmt, nb);
+    LONG_PTR size = NtNovaClipboard(CB_GET, fmt, 0, 0, name);
+    if (size < 0) { SetLastError(1168 /* ERROR_NOT_FOUND */); return 0; }
+    HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)size ? (SIZE_T)size : 1);
+    if (!g) return 0;
+    void *p = GlobalLock(g);
+    NtNovaClipboard(CB_GET, fmt, p, (ULONG_PTR)size, name);
+    GlobalUnlock(g);
+    cache(fmt, g);
+    return g;
 }
+
+/* The formats on the clipboard, as this process numbers them */
+static int list_formats(UINT *out, int max)
+{
+    NOVA_CLIP_ENTRY e[32];
+    LONG_PTR n = NtNovaClipboard(CB_LIST, 0, e, 32, 0);
+    int k = 0;
+    BOOL dib = FALSE;
+    for (int i = 0; i < n && k < max; i++) {
+        UINT f = e[i].Format;
+        if (f >= 0xC000) {
+            WCHAR w[64];
+            MultiByteToWideChar(CP_UTF8, 0, e[i].Name, -1, w, 64);
+            f = RegisterClipboardFormatW(w);
+        }
+        if (f == CF_DIB_) dib = TRUE;
+        out[k++] = f;
+    }
+    if (dib && k < max) out[k++] = CF_BITMAP_;
+    return k;
+}
+
 USERAPI BOOL IsClipboardFormatAvailable(UINT fmt)
 {
-    for (int i = 0; i < g_clip_n; i++) if (g_clip[i].fmt == fmt || (fmt == 1 && g_clip[i].fmt == 13) || (fmt == 13 && g_clip[i].fmt == 1)) return TRUE;
+    UINT f[40];
+    int n = list_formats(f, 40);
+    for (int i = 0; i < n; i++) if (f[i] == fmt) return TRUE;
     return FALSE;
 }
-USERAPI int CountClipboardFormats(void) { return g_clip_n; }
+USERAPI int CountClipboardFormats(void) { UINT f[40]; return list_formats(f, 40); }
 USERAPI UINT EnumClipboardFormats(UINT fmt)
 {
-    if (!fmt) return g_clip_n ? g_clip[0].fmt : 0;
-    for (int i = 0; i + 1 < g_clip_n; i++) if (g_clip[i].fmt == fmt) return g_clip[i + 1].fmt;
+    UINT f[40];
+    int n = list_formats(f, 40);
+    if (!fmt) return n ? f[0] : 0;
+    for (int i = 0; i + 1 < n; i++) if (f[i] == fmt) return f[i + 1];
+    SetLastError(0);
     return 0;
 }
-USERAPI HWND GetClipboardOwner(void) { return g_clip_owner; }
-USERAPI HWND GetOpenClipboardWindow(void) { return 0; }
-USERAPI DWORD GetClipboardSequenceNumber(void) { return g_clip_seq; }
+USERAPI int GetPriorityClipboardFormat(UINT *list, int n)
+{
+    UINT f[40];
+    int k = list_formats(f, 40);
+    if (!k) return 0;
+    for (int i = 0; i < n; i++) for (int j = 0; j < k; j++) if (list[i] == f[j]) return (int)list[i];
+    return -1;
+}
+USERAPI HWND GetClipboardOwner(void) { return (HWND)(ULONG_PTR)NtNovaClipboard(CB_OWNER, 0, 0, 0, 0); }
+USERAPI HWND GetOpenClipboardWindow(void) { return g_clip_open ? g_clip_hwnd : 0; }
+USERAPI DWORD GetClipboardSequenceNumber(void) { return clip_seq(); }
 USERAPI BOOL AddClipboardFormatListener(HWND h) { (void)h; return TRUE; }
+USERAPI HWND SetClipboardViewer(HWND h) { (void)h; return 0; }             /* (no viewer chain) */
+USERAPI BOOL ChangeClipboardChain(HWND h, HWND next) { (void)h; (void)next; return TRUE; }
+USERAPI HWND GetClipboardViewer(void) { return 0; }
 USERAPI BOOL RemoveClipboardFormatListener(HWND h) { (void)h; return TRUE; }
-int registered_name(UINT id, WCHAR *buf, int n);
 USERAPI int GetClipboardFormatNameW(UINT fmt, LPWSTR buf, int n) { return registered_name(fmt, buf, n); }
 USERAPI int GetClipboardFormatNameA(UINT fmt, LPSTR buf, int n)
 {
@@ -553,7 +726,6 @@ USERAPI int GetClipboardFormatNameA(UINT fmt, LPSTR buf, int n)
     buf[m] = 0;
     return m;
 }
-
 
 /* -----------------------------------------------------------------------
  * Window stations, desktops, session

@@ -21,6 +21,7 @@
 #include "../lib/string.h"
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/apic.h"
+#include "../wm/clipboard.h"
 
 #define ST_SUCCESS                 0x00000000u
 #define ST_PENDING                 0x00000103u
@@ -1555,6 +1556,61 @@ static UINT64 sys_query_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, v, 2)) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
 }
 
+/* -----------------------------------------------------------------------
+ * The clipboard
+ * ----------------------------------------------------------------------- */
+/* NtNovaClipboard(ULONG Op, ...):
+ *   0 EMPTY (HWND owner)
+ *   1 SET   (ULONG fmt, PVOID data, ULONG size, PCSTR name)
+ *   2 GET   (ULONG fmt, PVOID buf, ULONG cap, PCSTR name) -> the size, or -1
+ *   3 LIST  (-, ClipEntry *buf, ULONG max) -> the count
+ *   4 SEQUENCE -> the sequence number;  5 OWNER -> the owner window
+ * (a result, not a status) */
+#define CLIP_MAX_SIZE (32u * 1024 * 1024)
+
+static bool clip_name(UINT64 ptr, char *name)
+{
+    name[0] = 0;
+    return !ptr || get_str(ptr, name, CLIP_NAME_MAX);
+}
+
+static UINT64 sys_clipboard(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    char name[CLIP_NAME_MAX];
+    switch (a1) {
+    case 0: ClipEmpty(a2); return 0;
+    case 1: {
+        if (a4 > CLIP_MAX_SIZE || !clip_name(um_stack_arg(5), name)) return (UINT64)-1;
+        UINT8 *d = kmalloc(a4 ? (UINT32)a4 : 1);
+        if (!d) return (UINT64)-1;
+        if (a4 && !NT_SUCCESS(CopyFromUser(d, (const void *)(uintptr_t)a3, a4))) { kfree(d); return (UINT64)-1; }
+        return ClipPut((UINT32)a2, name, d, (UINT32)a4) ? 0 : (UINT64)-1;
+    }
+    case 2: {
+        if (!clip_name(um_stack_arg(5), name)) return (UINT64)-1;
+        int size = ClipGet((UINT32)a2, name, NULL, 0);
+        if (size < 0 || !a3) return (UINT64)(INT64)size;
+        UINT32 cap = (UINT32)a4 < (UINT32)size ? (UINT32)a4 : (UINT32)size;
+        UINT8 *d = kmalloc(size ? (UINT32)size : 1);
+        if (!d) return (UINT64)-1;
+        int got = ClipGet((UINT32)a2, name, d, (UINT32)size);
+        if (got < (int)cap) cap = got < 0 ? 0 : (UINT32)got;
+        bool ok = !cap || NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, d, cap));
+        kfree(d);
+        return ok ? (UINT64)(INT64)got : (UINT64)-1;
+    }
+    case 3: {
+        ClipEntry e[32];
+        int n = ClipList(e, a4 < 32 ? (int)a4 : 32);
+        if (n && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, e, sizeof(ClipEntry) * (UINT64)n))) return (UINT64)-1;
+        return (UINT64)n;
+    }
+    case 4: return ClipSequence();
+    case 5: return ClipOwner();
+    }
+    return (UINT64)-1;
+}
+
 void um_install(UINT32 num, SYSCALL_HANDLER h)
 {
     g_um[num] = h;
@@ -1657,6 +1713,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtCancelIoFileEx,           sys_cancel_io_ex);
     um_install(SYSCALL_NtSetInformationObject,     sys_set_info_object);
     um_install(SYSCALL_NtQueryObject,              sys_query_object);
+    um_install(SYSCALL_NtNovaClipboard,            sys_clipboard);
     RamfsSetChangeHook(fs_changed);
     um_install(SYSCALL_NtFreeVirtualMemory,        sys_free_vm);
     um_install(SYSCALL_NtProtectVirtualMemory,     sys_protect_vm);

@@ -12,6 +12,7 @@
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "../ke/printf.h"
+#include "../wm/clipboard.h"
 
 #define TB_H     48          /* command bar */
 #define SIDE_W   184
@@ -32,6 +33,7 @@ typedef struct {
     GdiRect  crumb_r[CRUMB_MAX];
     RamNode *crumb_dir[CRUMB_MAX];
     int      ncrumb;
+    char     status[80];     /* the last copy/paste, in the status bar */
 } Explorer;
 
 static const struct { const char *label; const char *path; Glyph glyph; } g_places[] = {
@@ -52,7 +54,9 @@ static GdiRect r_back(void)       { return RECT(8, 8, 32, 32); }
 static GdiRect r_up(void)         { return RECT(42, 8, 32, 32); }
 static GdiRect r_newdir(GdiRect c)  { return RECT(c.w - 196, 8, 92, 32); }
 static GdiRect r_newfile(GdiRect c) { return RECT(c.w - 98, 8, 88, 32); }
-static GdiRect r_crumbs(GdiRect c)  { return RECT(84, 8, c.w - 84 - 206, 32); }
+static GdiRect r_copy(GdiRect c)    { return RECT(c.w - 372, 8, 84, 32); }
+static GdiRect r_paste(GdiRect c)   { return RECT(c.w - 284, 8, 84, 32); }
+static GdiRect r_crumbs(GdiRect c)  { return RECT(84, 8, c.w - 84 - 382, 32); }
 static GdiRect r_list(GdiRect c) { return RECT(SIDE_W, TB_H + HDR_H, c.w - SIDE_W, c.h - TB_H - HDR_H - STATUS_H); }
 static int     rows_visible(GdiRect c) { int n = r_list(c).h / ROW_H; return n < 1 ? 1 : n; }
 
@@ -81,6 +85,7 @@ static void set_dir(WND *w, Explorer *e, RamNode *d)
     e->dir = d;
     e->sel = RamfsCount(d) ? 0 : -1;
     e->top = 0;
+    e->status[0] = 0;
     update_title(w, e);
 }
 
@@ -136,6 +141,76 @@ static void ensure_visible(Explorer *e, GdiRect c)
     if (e->sel < e->top) e->top = e->sel;
     if (e->sel >= e->top + vis) e->top = e->sel - vis + 1;
     if (e->top < 0) e->top = 0;
+}
+
+/* -----------------------------------------------------------------------
+ * Copy and paste (the system clipboard: CF_HDROP, which programs read too)
+ * ----------------------------------------------------------------------- */
+static void clip_copy(Explorer *e, bool cut)
+{
+    RamNode *f = e->sel >= 0 ? child_at(e->dir, e->sel) : NULL;
+    if (!f) return;
+    char path[RAMFS_PATH_MAX];
+    RamfsPath(f, path, sizeof(path));
+    const char *paths[1] = { path };
+    ClipSetFiles(paths, 1);
+    if (cut) {                                   /* "Preferred DropEffect": move */
+        UINT8 *eff = kzalloc(4);
+        if (eff) { eff[0] = 2; ClipPut(0xC000, "Preferred DropEffect", eff, 4); }
+    }
+    ksnprintf(e->status, sizeof(e->status), "%s \"%s\"", cut ? "Cut" : "Copied", f->name);
+}
+
+/* "name - Copy.ext", "name - Copy (2).ext"... until it is free in @dir */
+static void free_name(RamNode *dir, const char *name, char *out, int cap)
+{
+    if (!RamfsFind(dir, name)) { ksnprintf(out, (UINT32)cap, "%s", name); return; }
+    const char *dot = strrchr(name, '.');
+    int stem = dot && dot != name ? (int)(dot - name) : (int)strlen(name);
+    for (int i = 1; i < 100; i++) {
+        if (i == 1) ksnprintf(out, (UINT32)cap, "%.*s - Copy%s", stem, name, name + stem);
+        else ksnprintf(out, (UINT32)cap, "%.*s - Copy (%d)%s", stem, name, i, name + stem);
+        if (!RamfsFind(dir, out)) return;
+    }
+}
+
+static bool copy_tree(RamNode *src, RamNode *dir, const char *name)
+{
+    if (src == dir) return false;
+    for (RamNode *p = dir; p; p = p->parent) if (p == src) return false;   /* not into itself */
+    RamNode *d = RamfsCreate(dir, name, src->dir);
+    if (!d) return false;
+    if (!src->dir) return RamfsWrite(d, src->data, src->size);
+    bool ok = true;
+    for (RamNode *c = src->child; c; c = c->next) ok = copy_tree(c, d, c->name) && ok;
+    return ok;
+}
+
+static void clip_paste(Explorer *e)
+{
+    UINT8 eff[4] = { 1, 0, 0, 0 };
+    ClipGet(0xC000, "Preferred DropEffect", eff, 4);
+    bool move = eff[0] & 2;
+    int done = 0, failed = 0;
+    char path[RAMFS_PATH_MAX], name[RAMFS_NAME_MAX];
+    for (int i = 0; ClipGetFile(i, path, sizeof(path)); i++) {
+        const char *p = path;
+        if ((p[0] | 0x20) == 'c' && p[1] == ':') p += 2;
+        RamNode *src = RamfsResolve(NULL, p);
+        if (!src) { failed++; continue; }
+        if (move) {
+            if (src->parent == e->dir) { done++; continue; }
+            free_name(e->dir, src->name, name, sizeof(name));
+            if (RamfsRename(src, e->dir, name, false)) done++; else failed++;
+        } else {
+            free_name(e->dir, src->name, name, sizeof(name));
+            if (copy_tree(src, e->dir, name)) done++; else failed++;
+        }
+    }
+    if (move && done) ClipEmpty(0);                /* moved files are not there to paste again */
+    if (!done && !failed) ksnprintf(e->status, sizeof(e->status), "Nothing to paste");
+    else ksnprintf(e->status, sizeof(e->status), "%s %d item%s%s", move ? "Moved" : "Pasted", done,
+                   done == 1 ? "" : "s", failed ? " (some failed)" : "");
 }
 
 /* -----------------------------------------------------------------------
@@ -227,6 +302,8 @@ static void exp_paint(WND *w)
     cmd_button(off(r_back(), c), GL_BACK, NULL, e->back_n > 0);
     cmd_button(off(r_up(), c), GL_UP, NULL, e->dir->parent != NULL);
     draw_crumbs(e, off(r_crumbs(c), c), c);
+    cmd_button(off(r_copy(c), c), GL_FILE, "Copy", e->sel >= 0);
+    cmd_button(off(r_paste(c), c), GL_FILE, "Paste", ClipList((ClipEntry[1]){ { 0 } }, 1) > 0);
     cmd_button(off(r_newdir(c), c), GL_PLUS, "Folder", true);
     cmd_button(off(r_newfile(c), c), GL_PLUS, "File", true);
 
@@ -284,6 +361,7 @@ static void exp_paint(WND *w)
     char st[48];
     ksnprintf(st, sizeof(st), "%d item%s", n, n == 1 ? "" : "s");
     GdiTextT(c.x + SIDE_W + 12, c.y + c.h - STATUS_H + 5, st, UI_TEXT2);
+    if (e->status[0]) GdiTextT(c.x + SIDE_W + 110, c.y + c.h - STATUS_H + 5, e->status, UI_TEXT3);
 }
 
 /* -----------------------------------------------------------------------
@@ -297,6 +375,8 @@ static void exp_mouse(WND *w, WmMouseMsg msg, int x, int y)
     if (msg == WM_MOUSE_UP) {
         if (UiHit(r_back(), x, y))        go_back(w, e);
         else if (UiHit(r_up(), x, y))     navigate(w, e, e->dir->parent);
+        else if (UiHit(r_copy(c), x, y))    clip_copy(e, false);
+        else if (UiHit(r_paste(c), x, y))   clip_paste(e);
         else if (UiHit(r_newdir(c), x, y))  make_new(w, e, true);
         else if (UiHit(r_newfile(c), x, y)) make_new(w, e, false);
         else
@@ -328,6 +408,10 @@ static void exp_key(WND *w, const KeyEvent *k)
 {
     Explorer *e = w->user;
     int n = RamfsCount(e->dir);
+    if (k->ctrl && (k->ch == 'c' || k->ch == 'C')) { clip_copy(e, false); return; }
+    if (k->ctrl && (k->ch == 'x' || k->ch == 'X')) { clip_copy(e, true); return; }
+    if (k->ctrl && (k->ch == 'v' || k->ch == 'V')) { clip_paste(e); return; }
+    if (k->ctrl && (k->ch == 'a' || k->ch == 'A')) return;
     if (k->extended) {
         if (k->scancode == KEY_UP   && e->sel > 0)     e->sel--;
         if (k->scancode == KEY_DOWN && e->sel < n - 1) e->sel++;

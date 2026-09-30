@@ -207,6 +207,7 @@
 #define SYSCALL_NtCancelIoFile                    0x01C1
 #define SYSCALL_NtCancelIoFileEx                  0x01C2
 #define SYSCALL_NtSetInformationObject            0x01C3
+#define SYSCALL_NtNovaClipboard                   0x01C4  /* NovaOS: the system clipboard */
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x01A0
 #define SYSCALL_NtNovaGuiGetMessage               0x01A1
