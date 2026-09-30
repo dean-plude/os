@@ -218,6 +218,7 @@ typedef struct Apc {
     ULONG_PTR a, b, c;
 } Apc;
 static Apc *g_apcs;
+static BOOL run_apcs(void);
 
 static void queue_apc(DWORD tid, int timer, void *fn, ULONG_PTR a, ULONG_PTR b, ULONG_PTR c)
 {
@@ -229,9 +230,12 @@ static void queue_apc(DWORD tid, int timer, void *fn, ULONG_PTR a, ULONG_PTR b, 
     while (*pp) pp = &(*pp)->next;
     *pp = x;
     unlock();
+    RtlNovaSetApcRunner(run_apcs);                   /* (ntdll's NtTestAlert runs them too) */
 }
 
 void k32_queue_user_apc(DWORD tid, PAPCFUNC fn, ULONG_PTR arg) { queue_apc(tid, 2, (void *)fn, arg, 0, 0); }
+
+BOOL k32_run_apcs(void) { return run_apcs(); }
 
 static BOOL run_apcs(void)
 {
@@ -465,11 +469,23 @@ static POBJECT_ATTRIBUTES sec_name(SecName *n, LPCWSTR name)
     return &n->oa;
 }
 
+/* @oa with OBJ_INHERIT when @inherit (an unnamed section gets one) */
+static POBJECT_ATTRIBUTES sec_inherit(SecName *n, POBJECT_ATTRIBUTES oa, BOOL inherit)
+{
+    if (!inherit) return oa;
+    if (!oa) {
+        memset(&n->oa, 0, sizeof(n->oa));
+        n->oa.Length = sizeof(n->oa);
+        oa = &n->oa;
+    }
+    oa->Attributes |= OBJ_INHERIT;
+    return oa;
+}
+
 static BOOL writable(DWORD protect) { return (protect & 0xFF) == PAGE_READWRITE || (protect & 0xFF) == PAGE_EXECUTE_READWRITE; }
 
 WINBASEAPI HANDLE WINAPI CreateFileMappingW(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect, DWORD hi, DWORD lo, LPCWSTR name)
 {
-    (void)sa;
     ULONGLONG size = (ULONGLONG)hi << 32 | lo;
     if (file == INVALID_HANDLE_VALUE) file = 0;
     if (file) {
@@ -491,7 +507,7 @@ WINBASEAPI HANDLE WINAPI CreateFileMappingW(HANDLE file, LPSECURITY_ATTRIBUTES s
     LARGE_INTEGER max;
     max.QuadPart = (LONGLONG)size;
     HANDLE h = 0;
-    NTSTATUS s = NtCreateSection(&h, 0xF001F /* SECTION_ALL_ACCESS */, sec_name(&n, name), &max, protect & 0xFF,
+    NTSTATUS s = NtCreateSection(&h, 0xF001F /* SECTION_ALL_ACCESS */, sec_inherit(&n, sec_name(&n, name), sa && sa->bInheritHandle), &max, protect & 0xFF,
                                  0x8000000 /* SEC_COMMIT */, file);
     if (!NT_SUCCESS(s)) return fail_status(s), (HANDLE)0;
     SetLastError(s == 0x40000000 /* STATUS_OBJECT_NAME_EXISTS */ ? ERROR_ALREADY_EXISTS : 0);
@@ -507,10 +523,11 @@ WINBASEAPI HANDLE WINAPI CreateFileMappingA(HANDLE file, LPSECURITY_ATTRIBUTES s
 
 WINBASEAPI HANDLE WINAPI OpenFileMappingW(DWORD access, BOOL inherit, LPCWSTR name)
 {
-    (void)access; (void)inherit;
+    (void)access;
     SecName n;
     POBJECT_ATTRIBUTES oa = sec_name(&n, name);
     if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    oa = sec_inherit(&n, oa, inherit);
     HANDLE h = 0;
     NTSTATUS s = NtOpenSection(&h, 0xF001F, oa);
     if (!NT_SUCCESS(s)) {
@@ -874,7 +891,7 @@ static char *env_utf8(LPVOID env, BOOL unicode, SIZE_T *len)
 }
 
 static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE std[3], BOOL inherit,
-                           DWORD flags, LPVOID env, LPPROCESS_INFORMATION pi)
+                           DWORD flags, LPVOID env, const void *rt, WORD rt_len, LPPROCESS_INFORMATION pi)
 {
     char name[MAX_PATH], image[MAX_PATH], cwdbuf[MAX_PATH];
     if (app) {
@@ -915,6 +932,7 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
     io.Flags = (inherit ? 1 : 0) | ((flags & (DETACHED_PROCESS | CREATE_NO_WINDOW)) ? 2 : 0);
     io.Environment = envb;
     io.EnvironmentSize = env_len;
+    if (rt && rt_len) { io.RuntimeData = rt; io.RuntimeDataSize = rt_len; }
     NTSTATUS s = NtNovaCreateProcess(image, cmd ? cmd : image, dir ? cwdbuf : cwd(), &io);
     zfree(envb);
     zfree(batch);
@@ -944,7 +962,8 @@ WINBASEAPI BOOL WINAPI CreateProcessA(LPCSTR app, LPSTR cmd, LPSECURITY_ATTRIBUT
     HANDLE std[3];
     if (!app && !cmd) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     std_handles(si ? si->dwFlags : 0, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
-    return create_process(app, cmd, dir, std, inherit, flags, env, pi);
+    return create_process(app, cmd, dir, std, inherit, flags, env,
+                          si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, pi);
 }
 
 WINBASEAPI BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta, BOOL inherit,
@@ -962,7 +981,7 @@ WINBASEAPI BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIB
     HANDLE std[3];
     std_handles(si ? si->dwFlags : 0, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
     BOOL ok = create_process(app ? wide_to_temp(app, a, sizeof(a)) : 0, c, dir ? wide_to_temp(dir, d, sizeof(d)) : 0,
-                             std, inherit, flags, env, pi);
+                             std, inherit, flags, env, si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, pi);
     zfree(c);
     return ok;
 }
@@ -1021,6 +1040,8 @@ WINBASEAPI VOID WINAPI GetStartupInfoW(LPSTARTUPINFOW si)
     si->hStdInput = a.hStdInput;
     si->hStdOutput = a.hStdOutput;
     si->hStdError = a.hStdError;
+    si->cbReserved2 = a.cbReserved2;
+    si->lpReserved2 = a.lpReserved2;
 }
 
 WINBASEAPI BOOL WINAPI GetProcessAffinityMask(HANDLE p, PDWORD_PTR proc, PDWORD_PTR sys)
@@ -2385,12 +2406,26 @@ WINBASEAPI BOOL WINAPI ReadConsoleW(HANDLE h, LPVOID buf, DWORD n, LPDWORD read,
 WINBASEAPI BOOL WINAPI SetConsoleCP(UINT cp)             { (void)cp; return TRUE; }
 WINBASEAPI BOOL WINAPI SetConsoleTitleW(LPCWSTR t)       { (void)t; return TRUE; }
 WINBASEAPI DWORD WINAPI GetConsoleTitleW(LPWSTR t, DWORD n) { return put_utf8_as_w("Terminal", t, n); }
-WINBASEAPI BOOL WINAPI FlushConsoleInputBuffer(HANDLE h) { (void)h; return TRUE; }
-WINBASEAPI BOOL WINAPI GetNumberOfConsoleInputEvents(HANDLE h, LPDWORD n) { (void)h; *n = 0; return TRUE; }
+/* (console input handles only, as on Windows: callers use these to tell a console from a file) */
+static BOOL console_in(HANDLE h) { DWORD m; if (GetFileType(h) == FILE_TYPE_CHAR && GetConsoleMode(h, &m)) return TRUE; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+WINBASEAPI BOOL WINAPI FlushConsoleInputBuffer(HANDLE h) { return console_in(h); }
+WINBASEAPI BOOL WINAPI GetNumberOfConsoleInputEvents(HANDLE h, LPDWORD n) { *n = 0; return console_in(h); }
 WINBASEAPI BOOL WINAPI AllocConsole(void)                { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
 WINBASEAPI BOOL WINAPI FreeConsole(void)                 { return TRUE; }
 WINBASEAPI BOOL WINAPI AttachConsole(DWORD pid)          { (void)pid; SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
-WINBASEAPI HANDLE WINAPI GetConsoleWindow(void)          { return 0; }
+/* The Terminal window a console program shows in stands in as its console
+ * window (the same value in every program on a console; NULL without one) */
+WINBASEAPI HANDLE WINAPI GetConsoleWindow(void)
+{
+    DWORD m;
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE), in = GetStdHandle(STD_INPUT_HANDLE);
+    if (!GetConsoleMode(out, &m) && !GetConsoleMode(in, &m)) {
+        HANDLE c = CreateFileA("CONOUT$", GENERIC_READ | GENERIC_WRITE, 3, 0, OPEN_EXISTING, 0, 0);
+        if (c == INVALID_HANDLE_VALUE) return 0;
+        CloseHandle(c);
+    }
+    return (HANDLE)(ULONG_PTR)0x000C0501;
+}
 WINBASEAPI BOOL WINAPI SetConsoleCursorPosition(HANDLE h, COORD c) { (void)h; (void)c; return TRUE; }
 WINBASEAPI BOOL WINAPI GetConsoleCursorInfo(HANDLE h, LPVOID i) { (void)h; memset(i, 0, 8); ((DWORD *)i)[0] = 25; ((DWORD *)i)[1] = 1; return TRUE; }
 WINBASEAPI BOOL WINAPI SetConsoleCursorInfo(HANDLE h, LPCVOID i) { (void)h; (void)i; return TRUE; }

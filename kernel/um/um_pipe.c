@@ -889,3 +889,12 @@ void um_pipe_process_gone(UmProcess *p)
 }
 
 UINT32 um_pipe_client_pid(UmObject *o) { return ((PipeEnd *)o)->pipe->client_pid; }
+
+/* The name of the pipe an end object belongs to ("" if @o is not a pipe end) */
+void um_pipe_end_name(UmObject *o, char *buf, int cap)
+{
+    buf[0] = 0;
+    if (!o || o->type != UO_PIPE || cap < 2) return;
+    PipeEnd *e = (PipeEnd *)o;
+    if (e->pipe) { strncpy(buf, e->pipe->name, (size_t)cap - 1); buf[cap - 1] = 0; }
+}

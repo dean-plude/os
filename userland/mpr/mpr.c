@@ -50,3 +50,5 @@ MPRAPI DWORD WINAPI WNetGetLastErrorW(LPDWORD err, LPWSTR buf, DWORD n, LPWSTR p
 }
 MPRAPI DWORD WINAPI WNetConnectionDialog(HWND w, DWORD type) { (void)w; (void)type; return no_net(); }
 MPRAPI DWORD WINAPI WNetDisconnectDialog(HWND w, DWORD type) { (void)w; (void)type; return no_net(); }
+MPRAPI DWORD WINAPI WNetGetNetworkInformationW(LPCWSTR provider, void *info) { (void)provider; (void)info; return no_net(); }
+MPRAPI DWORD WINAPI WNetGetProviderNameW(DWORD type, LPWSTR name, LPDWORD size) { (void)type; (void)name; (void)size; return no_net(); }

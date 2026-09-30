@@ -740,6 +740,12 @@ USERAPI BOOL CloseDesktop(HANDLE h) { (void)h; return TRUE; }
 USERAPI BOOL SwitchDesktop(HANDLE h) { (void)h; return TRUE; }
 USERAPI BOOL SetThreadDesktop(HANDLE h) { (void)h; return TRUE; }
 USERAPI BOOL CloseWindowStation(HANDLE h) { (void)h; return TRUE; }
+/* (one window station and desktop: creating another gives the same one) */
+USERAPI HANDLE CreateWindowStationW(LPCWSTR name, DWORD f, DWORD access, LPSECURITY_ATTRIBUTES sa) { (void)name; (void)f; (void)access; (void)sa; return WINSTA; }
+USERAPI HANDLE OpenWindowStationW(LPCWSTR name, BOOL inherit, DWORD access) { (void)name; (void)inherit; (void)access; return WINSTA; }
+USERAPI BOOL SetProcessWindowStation(HANDLE h) { (void)h; return TRUE; }
+USERAPI HANDLE CreateDesktopW(LPCWSTR name, LPCWSTR dev, PVOID mode, DWORD f, DWORD access, LPSECURITY_ATTRIBUTES sa)
+{ (void)name; (void)dev; (void)mode; (void)f; (void)access; (void)sa; return DESKTOP; }
 USERAPI BOOL GetUserObjectInformationW(HANDLE h, int index, PVOID p, DWORD n, LPDWORD need)
 {
     if (index == 1) {                                       /* UOI_FLAGS: fInherit, fReserved, dwFlags */

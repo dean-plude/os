@@ -68,7 +68,8 @@ void um_unlock(UmLock *l);
 /* -----------------------------------------------------------------------
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
-typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION, UO_PIPE } UmObType;
+typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION, UO_PIPE,
+               UO_DIRECTORY, UO_SYMLINK, UO_TIMER } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -84,7 +85,10 @@ typedef struct UmObject {
     bool            named;          /* in the object namespace (um_thread.c) */
     int             sock;           /* UO_SOCKET: kernel socket index */
     UmProcess      *proc;           /* UO_PROCESS: signaled when it has exited */
-    void           *ptr;            /* UO_KEY: the registry key */
+    void           *ptr;            /* UO_KEY: the registry key; UO_DIRECTORY: its name;
+                                       UO_SYMLINK: its target (UmLinkTarget) */
+    UINT64          due;            /* UO_TIMER: the tick it fires at (0: not set) */
+    UINT32          period;         /* UO_TIMER: ticks between firings (0: once) */
     void          (*destroy)(struct UmObject *o);   /* extra cleanup (sockets, windows) */
 } UmObject;
 
@@ -132,6 +136,7 @@ typedef struct {
     bool         read, write, append, delete_on_close;
     bool         inherit;       /* passed to child processes (bInheritHandles) */
     bool         async;         /* H_FILE: opened for overlapped I/O */
+    bool         npfs;          /* H_NULL: the \Device\NamedPipe\ directory (a RootDirectory for pipe names) */
 } UmHandle;
 
 typedef struct {
@@ -151,6 +156,8 @@ typedef struct {
 
 struct UmProcess {
     UINT32      pid;
+    UINT32      parent_pid;     /* the process that started it (0: the system) */
+    UINT64      create_time;    /* 100 ns units since 1601 */
     bool        wow;            /* a 32-bit (x86) program: compatibility mode, SysWOW64 DLLs */
     UmLayout    lay;            /* where its system areas and allocations go */
     char        name[32];
@@ -206,10 +213,16 @@ void       um_exit_process(UINT32 status) __attribute__((noreturn));
 /* Address-space services (process may be the current one) */
 bool       um_is_free(UmProcess *p, UINT64 base, UINT64 size);
 UINT64     um_find_free(UmProcess *p, UINT64 size, UINT64 lo, UINT64 hi);
+UINT64     um_find_free_aligned(UmProcess *p, UINT64 size, UINT64 lo, UINT64 hi, UINT64 align);
+/* MEM_EXTENDED_PARAMETERs (user @ptr, @n of them): the address range and
+ * alignment a MemExtendedParameterAddressRequirements asks for (left as
+ * they are if none).  False if unreadable. */
+bool       um_addr_requirements(UINT64 ptr, UINT32 n, UINT64 *lo, UINT64 *hi, UINT64 *align);
 UmRegion  *um_region_add(UmProcess *p, UINT64 base, UINT64 size, UINT32 protect, bool image);
 UmRegion  *um_region_find(UmProcess *p, UINT64 va);
 void       um_region_remove(UmProcess *p, UmRegion *r);
 bool       um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect);
+bool       um_is_guard(UmProcess *p, UINT64 va);            /* a PAGE_GUARD page */
 void       um_decommit(UmProcess *p, UINT64 va, UINT64 size);
 bool       um_is_committed(UmProcess *p, UINT64 va);
 /* Shared sections: frames the section owns, mapped into processes */
@@ -256,8 +269,14 @@ UINT64     um_stack_arg(int n);                 /* syscall argument n >= 5 */
 UINT64     um_now_100ns(void);                  /* system time (100 ns since 1601) */
 UINT64     um_handle_new_object(UmProcess *p, UmObject *o);   /* takes a reference; 0 if full */
 UmObject  *um_handle_object(UmProcess *p, UINT64 h, UmObType type);   /* referenced; NULL if bad */
+/* The process a handle names (-1: @self); @ob holds a reference to drop
+ * (um_ob_unref) when it is another process.  NULL if bad or gone. */
+UmProcess *um_proc_of(UmProcess *self, UINT64 h, UmObject **ob);
 bool       um_handle_object_exists(UmProcess *p, UINT64 h);           /* any open handle */
 UmObject  *um_open_process(UINT32 pid);          /* OpenProcess: referenced, or NULL */
+UmObject  *um_open_thread(UINT32 tid);           /* OpenThread: referenced, or NULL */
+void       um_pipe_end_name(UmObject *o, char *buf, int cap); /* um_pipe.c: a pipe end's pipe name */
+void       um_object_name(UmObject *o, char *buf, int cap);   /* um_thread.c: a named object's name */
 UINT64     um_close_handle(UINT64 h);           /* NtClose for the current process */
 /* How a new process starts: standard handles (kind H_FREE = the console),
  * handles it inherits (at the same values; NULL: none) and its
@@ -269,6 +288,8 @@ typedef struct {
     const UmHandle *inherit;            /* [UM_MAX_HANDLES], or NULL */
     const char     *env;
     UINT32          env_len;
+    const UINT8    *runtime;            /* STARTUPINFO's lpReserved2 bytes (the C runtime's), or NULL */
+    UINT32          runtime_len;
 } UmSpawnOpts;
 UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
                        const UmSpawnOpts *o, char *err, int err_cap);

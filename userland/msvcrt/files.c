@@ -309,3 +309,102 @@ CRTEXP void _ftime64(struct __timeb64 *tb)
 }
 CRTEXP void _ftime(struct __timeb64 *tb) { _ftime64(tb); }
 CRTEXP int _ftime64_s(struct __timeb64 *tb) { _ftime64(tb); return 0; }
+
+/* -----------------------------------------------------------------------
+ * _findfirst / _findnext / _findclose in every layout: the attributes,
+ * three times (32- or 64-bit), the size (32- or 64-bit) and the name
+ * (char or wchar_t [260]).  The handle is the FindFirstFile one.
+ * ----------------------------------------------------------------------- */
+typedef struct { int t64, s64; } FindLayout;       /* (MSVC alignment: 8-byte fields on 8) */
+
+static void find_fill(const WIN32_FIND_DATAW *fd, void *out, FindLayout l, int wide)
+{
+    unsigned char *b = out;
+    unsigned long long size = ((unsigned long long)fd->nFileSizeHigh << 32) | fd->nFileSizeLow;
+    long long mt = ft_unix(&fd->ftLastWriteTime);
+    long long at = fd->ftLastAccessTime.dwLowDateTime || fd->ftLastAccessTime.dwHighDateTime ? ft_unix(&fd->ftLastAccessTime) : mt;
+    long long ct = fd->ftCreationTime.dwLowDateTime || fd->ftCreationTime.dwHighDateTime ? ft_unix(&fd->ftCreationTime) : mt;
+    *(unsigned *)b = fd->dwFileAttributes & 0x37;   /* _A_RDONLY, _HIDDEN, _SYSTEM, _SUBDIR, _ARCH */
+    size_t off;
+    if (l.t64) {
+        *(long long *)(b + 8) = ct; *(long long *)(b + 16) = at; *(long long *)(b + 24) = mt;
+        off = 32;
+    } else {
+        *(int *)(b + 4) = (int)ct; *(int *)(b + 8) = (int)at; *(int *)(b + 12) = (int)mt;
+        off = 16;
+    }
+    if (l.s64) { *(unsigned long long *)(b + off) = size; off += 8; }
+    else { *(unsigned *)(b + off) = (unsigned)size; off += 4; }
+    if (wide) memcpy(b + off, fd->cFileName, sizeof(fd->cFileName));
+    else WideCharToMultiByte(CP_ACP, 0, fd->cFileName, -1, (char *)(b + off), MAX_PATH, 0, 0);
+}
+
+static void find_errno(void)
+{
+    DWORD e = GetLastError();
+    errno = e == ERROR_NO_MORE_FILES || e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? ENOENT : EINVAL;
+}
+
+static intptr_t find_first(const wchar_t *spec, void *out, FindLayout l, int wide)
+{
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(spec, &fd);
+    if (h == INVALID_HANDLE_VALUE) { find_errno(); return -1; }
+    find_fill(&fd, out, l, wide);
+    return (intptr_t)h;
+}
+
+static intptr_t find_first_a(const char *spec, void *out, FindLayout l)
+{
+    wchar_t w[MAX_PATH];
+    if (!MultiByteToWideChar(CP_ACP, 0, spec, -1, w, MAX_PATH)) { errno = EINVAL; return -1; }
+    return find_first(w, out, l, 0);
+}
+
+static int find_next(intptr_t h, void *out, FindLayout l, int wide)
+{
+    WIN32_FIND_DATAW fd;
+    if (h == -1 || !FindNextFileW((HANDLE)h, &fd)) { find_errno(); return -1; }
+    find_fill(&fd, out, l, wide);
+    return 0;
+}
+
+static const FindLayout L32 = { 0, 0 }, L32I64 = { 0, 1 }, L64I32 = { 1, 0 }, L64 = { 1, 1 };
+/* msvcrt's own names: time_t is 64-bit on x64, 32-bit on x86 */
+#ifdef _WIN64
+#define LT   L64I32
+#define LTI  L64
+#else
+#define LT   L32
+#define LTI  L32I64
+#endif
+
+CRTEXP intptr_t _findfirst(const char *s, void *d)         { return find_first_a(s, d, LT); }
+CRTEXP intptr_t _findfirst32(const char *s, void *d)       { return find_first_a(s, d, L32); }
+CRTEXP intptr_t _findfirsti64(const char *s, void *d)      { return find_first_a(s, d, LTI); }
+CRTEXP intptr_t _findfirst32i64(const char *s, void *d)    { return find_first_a(s, d, L32I64); }
+CRTEXP intptr_t _findfirst64i32(const char *s, void *d)    { return find_first_a(s, d, L64I32); }
+CRTEXP intptr_t _findfirst64(const char *s, void *d)       { return find_first_a(s, d, L64); }
+CRTEXP intptr_t _wfindfirst(const wchar_t *s, void *d)     { return find_first(s, d, LT, 1); }
+CRTEXP intptr_t _wfindfirst32(const wchar_t *s, void *d)   { return find_first(s, d, L32, 1); }
+CRTEXP intptr_t _wfindfirsti64(const wchar_t *s, void *d)  { return find_first(s, d, LTI, 1); }
+CRTEXP intptr_t _wfindfirst32i64(const wchar_t *s, void *d) { return find_first(s, d, L32I64, 1); }
+CRTEXP intptr_t _wfindfirst64i32(const wchar_t *s, void *d) { return find_first(s, d, L64I32, 1); }
+CRTEXP intptr_t _wfindfirst64(const wchar_t *s, void *d)   { return find_first(s, d, L64, 1); }
+CRTEXP int _findnext(intptr_t h, void *d)                  { return find_next(h, d, LT, 0); }
+CRTEXP int _findnext32(intptr_t h, void *d)                { return find_next(h, d, L32, 0); }
+CRTEXP int _findnexti64(intptr_t h, void *d)               { return find_next(h, d, LTI, 0); }
+CRTEXP int _findnext32i64(intptr_t h, void *d)             { return find_next(h, d, L32I64, 0); }
+CRTEXP int _findnext64i32(intptr_t h, void *d)             { return find_next(h, d, L64I32, 0); }
+CRTEXP int _findnext64(intptr_t h, void *d)                { return find_next(h, d, L64, 0); }
+CRTEXP int _wfindnext(intptr_t h, void *d)                 { return find_next(h, d, LT, 1); }
+CRTEXP int _wfindnext32(intptr_t h, void *d)               { return find_next(h, d, L32, 1); }
+CRTEXP int _wfindnexti64(intptr_t h, void *d)              { return find_next(h, d, LTI, 1); }
+CRTEXP int _wfindnext32i64(intptr_t h, void *d)            { return find_next(h, d, L32I64, 1); }
+CRTEXP int _wfindnext64i32(intptr_t h, void *d)            { return find_next(h, d, L64I32, 1); }
+CRTEXP int _wfindnext64(intptr_t h, void *d)               { return find_next(h, d, L64, 1); }
+CRTEXP int _findclose(intptr_t h)
+{
+    if (h == -1 || !FindClose((HANDLE)h)) { errno = ENOENT; return -1; }
+    return 0;
+}

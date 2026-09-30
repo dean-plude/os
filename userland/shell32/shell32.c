@@ -812,3 +812,7 @@ SHSTDAPI_(HRESULT) SHGetDesktopFolder(void **out) { *out = 0; return E_NOTIMPL_;
 SHSTDAPI_(HRESULT) SHGetStockIconInfo(int id, UINT flags, void *info) { (void)id; (void)flags; (void)info; return E_NOTIMPL_; }
 SHSTDAPI_(HRESULT) SetCurrentProcessExplicitAppUserModelID(LPCWSTR id) { (void)id; return S_OK_; }
 SHSTDAPI_(HRESULT) GetCurrentProcessExplicitAppUserModelID(LPWSTR *id) { *id = 0; return E_FAIL_; }
+
+/* Shell items (IShellItem) are not available */
+SHSTDAPI_(HRESULT) SHCreateItemFromParsingName(PCWSTR path, void *bc, REFIID riid, void **out) { (void)path; (void)bc; (void)riid; if (out) *out = 0; return E_NOTIMPL; }
+SHSTDAPI_(HRESULT) SHGetKnownFolderItem(REFGUID id, DWORD flags, HANDLE token, REFIID riid, void **out) { (void)id; (void)flags; (void)token; (void)riid; if (out) *out = 0; return E_NOTIMPL; }

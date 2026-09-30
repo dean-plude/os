@@ -60,6 +60,12 @@ DLLS = [
     ('ole32',    ['user32', 'advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
     ('oleaut32', ['ole32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAF0000000),
     ('msi',      ['comctl32', 'shell32', 'user32', 'gdi32', 'advapi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB60000000),
+    ('iphlpapi', ['kernel32', 'ntdll'],           0x7FFB80000000),
+    ('netapi32', ['advapi32', 'kernel32', 'ntdll'], 0x7FFB90000000),
+    ('secur32',  ['advapi32', 'kernel32', 'ntdll'], 0x7FFBA0000000),
+    ('authz',    ['kernel32', 'ntdll'],           0x7FFBB0000000),
+    ('dnsapi',   ['kernel32', 'ntdll'],           0x7FFBC0000000),
+    ('pdh',      ['kernel32', 'ntdll'],           0x7FFBD0000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}

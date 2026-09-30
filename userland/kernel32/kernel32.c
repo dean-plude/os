@@ -96,19 +96,21 @@ int u2w(const char *s, int n, WCHAR *out, int cap)
 /* -----------------------------------------------------------------------
  * Current directory and full paths
  * ----------------------------------------------------------------------- */
-static char g_cwd[MAX_PATH];                 /* "C:\dir" (no trailing '\' except root) */
-
+/* The current directory is ntdll's (RtlSetCurrentDirectory_U), shown in
+ * the process parameters; a copy of it, "C:\dir" (no
+ * trailing '\' except the root) */
 const char *cwd(void)
 {
-    if (!g_cwd[0]) {
-        UNICODE_STRING *d = &params()->CurrentDirectory.DosPath;
-        int n = w2u(d->Buffer, d->Length / 2, g_cwd, MAX_PATH - 1);
-        if (n < 0) n = 0;
-        g_cwd[n] = 0;
-        if (n > 3 && g_cwd[n - 1] == '\\') g_cwd[n - 1] = 0;
-        if (!g_cwd[0]) { g_cwd[0] = 'C'; g_cwd[1] = ':'; g_cwd[2] = '\\'; g_cwd[3] = 0; }
-    }
-    return g_cwd;
+    static char buf[MAX_PATH];                   /* (the same for every thread) */
+    WCHAR w[MAX_PATH];
+    ULONG n = RtlGetCurrentDirectory_U(sizeof(w), w);
+    if (!n || n >= sizeof(w)) { buf[0] = 'C'; buf[1] = ':'; buf[2] = '\\'; buf[3] = 0; return buf; }
+    int k = w2u(w, (int)(n / 2), buf, MAX_PATH - 1);
+    if (k < 0) k = 0;
+    buf[k] = 0;
+    if (k > 3 && buf[k - 1] == '\\') buf[k - 1] = 0;
+    if (k == 2) { buf[2] = '\\'; buf[3] = 0; }
+    return buf;
 }
 
 /* Absolute, normalized "C:\a\b" for @name; 0 on error */
@@ -263,8 +265,13 @@ WINBASEAPI BOOL WINAPI SetCurrentDirectoryA(LPCSTR path)
     DWORD a = GetFileAttributesA(full);
     if (a == INVALID_FILE_ATTRIBUTES) return FALSE;
     if (!(a & FILE_ATTRIBUTE_DIRECTORY)) { SetLastError(ERROR_PATH_NOT_FOUND); return FALSE; }
-    kmemcpy(g_cwd, full, strlen(full) + 1);
-    return TRUE;
+    WCHAR w[MAX_PATH];
+    int n = u2w(full, -1, w, MAX_PATH - 1);
+    if (n <= 0) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
+    w[n] = 0;
+    UNICODE_STRING us = { (USHORT)(2 * n), (USHORT)(2 * n + 2), w };
+    NTSTATUS s = RtlSetCurrentDirectory_U(&us);
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
 WINBASEAPI DWORD WINAPI GetFullPathNameA(LPCSTR name, DWORD size, LPSTR buf, LPSTR *filepart)
@@ -401,7 +408,18 @@ WINBASEAPI FARPROC WINAPI GetProcAddress(HMODULE m, LPCSTR name)
             if (!*n && !*s) { rva = funcs[ords[i]]; break; }
         }
     }
-    if (!rva) { SetLastError(ERROR_PROC_NOT_FOUND); return 0; }
+    if (!rva) {
+        if ((ULONG_PTR)name >= 0x10000) {                   /* (the serial log shows what was missing) */
+            char msg[160];
+            int k = 0;
+            const char *parts[4] = { "GetProcAddress: no ", (const char *)b + *(DWORD *)(ed + 12), "!", name };
+            for (int i = 0; i < 4; i++) for (const char *c = parts[i]; *c && k < 150; c++) msg[k++] = *c;
+            msg[k++] = '\n';
+            NtNovaDebugPrint(msg, (ULONG)k);
+        }
+        SetLastError(ERROR_PROC_NOT_FOUND);
+        return 0;
+    }
     if (rva >= exp && rva < exp + exps) {                   /* a forwarder: "DLL.Function" */
         const char *fw = (const char *)b + rva, *dot = fw;
         while (*dot && *dot != '.') dot++;
@@ -596,6 +614,10 @@ WINBASEAPI VOID WINAPI GetStartupInfoA(LPSTARTUPINFOA si)
     si->hStdInput = params()->StandardInput;
     si->hStdOutput = params()->StandardOutput;
     si->hStdError = params()->StandardError;
+    if (params()->RuntimeData.Buffer && params()->RuntimeData.Length) {    /* the creator's lpReserved2 */
+        si->cbReserved2 = params()->RuntimeData.Length;
+        si->lpReserved2 = (LPBYTE)params()->RuntimeData.Buffer;
+    }
 }
 
 WINBASEAPI VOID WINAPI GetSystemInfo(LPSYSTEM_INFO si)

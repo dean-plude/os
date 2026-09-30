@@ -1240,6 +1240,18 @@ K32 BOOL WINAPI GetNumaNodeProcessorMask(UCHAR node, PULONGLONG mask)
     return TRUE;
 }
 K32 BOOL WINAPI GetNumaProcessorNode(UCHAR cpu, PUCHAR node) { (void)cpu; *node = 0; return TRUE; }
+/* PROCESSOR_NUMBER { WORD Group; BYTE Number, Reserved } -> USHORT node */
+K32 BOOL WINAPI GetNumaProcessorNodeEx(PVOID cpu, USHORT *node) { (void)cpu; *node = 0; return TRUE; }
+/* GROUP_AFFINITY { KAFFINITY Mask; WORD Group; WORD Reserved[3] } */
+K32 BOOL WINAPI GetNumaNodeProcessorMaskEx(USHORT node, PVOID aff)
+{
+    ULONGLONG m = 0;
+    if (node) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    GetNumaNodeProcessorMask(0, &m);
+    memset(aff, 0, 16);
+    *(ULONG_PTR *)aff = (ULONG_PTR)m;
+    return TRUE;
+}
 K32 BOOL WINAPI GetNumaAvailableMemoryNode(UCHAR node, PULONGLONG bytes)
 {
     MEMORYSTATUSEX m;
@@ -1275,8 +1287,8 @@ K32 BOOL WINAPI GetSystemTimeAdjustment(PDWORD adj, PDWORD inc, PBOOL disabled)
 }
 
 /* Console input records: the Terminal delivers lines, not key events */
-K32 BOOL WINAPI PeekConsoleInputW(HANDLE h, void *rec, DWORD n, LPDWORD read) { (void)h; (void)rec; (void)n; *read = 0; return TRUE; }
-K32 BOOL WINAPI PeekConsoleInputA(HANDLE h, void *rec, DWORD n, LPDWORD read) { (void)h; (void)rec; (void)n; *read = 0; return TRUE; }
+K32 BOOL WINAPI PeekConsoleInputW(HANDLE h, void *rec, DWORD n, LPDWORD read) { (void)rec; (void)n; *read = 0; DWORD e; return GetNumberOfConsoleInputEvents(h, &e); }
+K32 BOOL WINAPI PeekConsoleInputA(HANDLE h, void *rec, DWORD n, LPDWORD read) { return PeekConsoleInputW(h, rec, n, read); }
 
 /* Threads in this process only */
 K32 HANDLE WINAPI CreateRemoteThread(HANDLE p, LPSECURITY_ATTRIBUTES sa, SIZE_T stack, LPTHREAD_START_ROUTINE fn,
@@ -1291,3 +1303,415 @@ K32 HANDLE WINAPI CreateRemoteThreadEx(HANDLE p, LPSECURITY_ATTRIBUTES sa, SIZE_
     (void)attrs;
     return CreateRemoteThread(p, sa, stack, fn, arg, flags, tid);
 }
+
+/* -----------------------------------------------------------------------
+ * More of what POSIX layers (Cygwin/MSYS2) import
+ * ----------------------------------------------------------------------- */
+typedef ULONG_PTR NOVA_KAFFINITY;
+
+K32 PVOID WINAPI AddVectoredContinueHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER h) { return RtlAddVectoredContinueHandler(first, h); }
+K32 ULONG WINAPI RemoveVectoredContinueHandler(PVOID h) { return RtlRemoveVectoredContinueHandler(h); }
+
+K32 BOOL WINAPI CreateDirectoryExA(LPCSTR tmpl, LPCSTR dir, LPSECURITY_ATTRIBUTES sa) { (void)tmpl; return CreateDirectoryA(dir, sa); }
+K32 BOOL WINAPI CreateDirectoryExW(LPCWSTR tmpl, LPCWSTR dir, LPSECURITY_ATTRIBUTES sa) { (void)tmpl; return CreateDirectoryW(dir, sa); }
+
+K32 BOOL WINAPI IsBadStringPtrA(LPCSTR s, UINT_PTR max)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    for (UINT_PTR i = 0; i < max; i++) {
+        if (!(((ULONG_PTR)s + i) & 0xFFF) || !i) {
+            if (!VirtualQuery(s + i, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | 0x100 /* PAGE_GUARD */)))
+                return TRUE;
+        }
+        if (!s[i]) return FALSE;
+    }
+    return FALSE;
+}
+
+/* Other processes' memory (through a process handle) */
+K32 BOOL WINAPI ReadProcessMemory(HANDLE p, LPCVOID base, LPVOID buf, SIZE_T n, SIZE_T *done)
+{
+    SIZE_T got = 0;
+    NTSTATUS s = NtReadVirtualMemory(p, (PVOID)base, buf, n, &got);
+    if (done) *done = got;
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+K32 BOOL WINAPI WriteProcessMemory(HANDLE p, LPVOID base, LPCVOID buf, SIZE_T n, SIZE_T *done)
+{
+    SIZE_T got = 0;
+    NTSTATUS s = NtWriteVirtualMemory(p, base, (PVOID)buf, n, &got);
+    if (done) *done = got;
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+K32 SIZE_T WINAPI VirtualQueryEx(HANDLE p, LPCVOID a, PMEMORY_BASIC_INFORMATION mbi, SIZE_T n)
+{
+    SIZE_T got = 0;
+    NTSTATUS s = NtQueryVirtualMemory(p, (PVOID)a, 0, mbi, n, &got);
+    if (!NT_SUCCESS(s)) { fail_status(s); return 0; }
+    return got;
+}
+K32 BOOL WINAPI VirtualProtectEx(HANDLE p, LPVOID a, SIZE_T size, DWORD prot, LPDWORD old)
+{
+    PVOID base = a;
+    ULONG o = 0;
+    NTSTATUS s = NtProtectVirtualMemory(p, &base, &size, prot, &o);
+    if (old) *old = o;
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+K32 LPVOID WINAPI VirtualAllocEx(HANDLE p, LPVOID a, SIZE_T size, DWORD type, DWORD prot)
+{
+    PVOID base = a;
+    NTSTATUS s = NtAllocateVirtualMemory(p, &base, 0, &size, type, prot);
+    if (!NT_SUCCESS(s)) { fail_status(s); return 0; }
+    return base;
+}
+K32 BOOL WINAPI VirtualFreeEx(HANDLE p, LPVOID a, SIZE_T size, DWORD type)
+{
+    PVOID base = a;
+    NTSTATUS s = NtFreeVirtualMemory(p, &base, &size, type);
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+K32 BOOL WINAPI PrefetchVirtualMemory(HANDLE p, ULONG_PTR n, PVOID ranges, ULONG flags) { (void)p; (void)n; (void)ranges; (void)flags; return TRUE; }
+
+K32 HANDLE WINAPI OpenThread(DWORD access, BOOL inherit, DWORD tid)
+{
+    CLIENT_ID cid = { 0, (HANDLE)(ULONG_PTR)tid };
+    OBJECT_ATTRIBUTES oa = { sizeof(oa), 0, 0, inherit ? OBJ_INHERIT : 0, 0, 0 };
+    HANDLE h = 0;
+    NTSTATUS s = NtOpenThread(&h, access, &oa, &cid);
+    if (!NT_SUCCESS(s)) { fail_status(s); return 0; }
+    return h;
+}
+
+/* Working sets and processor groups: one group, nothing trimmed */
+K32 BOOL WINAPI GetProcessWorkingSetSize(HANDLE p, PSIZE_T mn, PSIZE_T mx) { (void)p; *mn = 200 * 4096; *mx = 1380 * 4096; return TRUE; }
+K32 BOOL WINAPI SetProcessWorkingSetSize(HANDLE p, SIZE_T mn, SIZE_T mx) { (void)p; (void)mn; (void)mx; return TRUE; }
+typedef struct { NOVA_KAFFINITY Mask; WORD Group, Reserved[3]; } NOVA_GROUP_AFFINITY;
+static NOVA_KAFFINITY all_cpus(void)
+{
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwNumberOfProcessors >= 8 * sizeof(NOVA_KAFFINITY) ? ~(NOVA_KAFFINITY)0 : ((NOVA_KAFFINITY)1 << si.dwNumberOfProcessors) - 1;
+}
+K32 BOOL WINAPI GetThreadGroupAffinity(HANDLE t, NOVA_GROUP_AFFINITY *a) { (void)t; memset(a, 0, sizeof(*a)); a->Mask = all_cpus(); return TRUE; }
+K32 BOOL WINAPI SetThreadGroupAffinity(HANDLE t, const NOVA_GROUP_AFFINITY *a, NOVA_GROUP_AFFINITY *prev)
+{
+    (void)t; (void)a;
+    if (prev) { memset(prev, 0, sizeof(*prev)); prev->Mask = all_cpus(); }
+    return TRUE;
+}
+K32 BOOL WINAPI GetProcessGroupAffinity(HANDLE p, USHORT *count, USHORT *groups)
+{
+    (void)p;
+    if (*count < 1) { *count = 1; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    *count = 1;
+    groups[0] = 0;
+    return TRUE;
+}
+
+/* SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX: one core per CPU in one package,
+ * NUMA node and group (RelationAll or one relation) */
+K32 BOOL WINAPI GetLogicalProcessorInformationEx(int rel, PVOID buf, PDWORD len)
+{
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    DWORD n = si.dwNumberOfProcessors;
+    enum { CORE = 0, NUMA = 1, CACHE = 2, PACKAGE = 3, GROUP = 4, ALL = 0xFFFF };
+    const DWORD proc_size = 48, numa_size = 48, group_size = 80;   /* PROCESSOR_RELATIONSHIP (1 group), NUMA_NODE, GROUP_RELATIONSHIP (1) */
+    DWORD need = 0;
+    if (rel == CORE || rel == ALL) need += n * proc_size;
+    if (rel == PACKAGE || rel == ALL) need += proc_size;
+    if (rel == NUMA || rel == ALL) need += numa_size;
+    if (rel == GROUP || rel == ALL) need += group_size;
+    if (*len < need) { *len = need; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    *len = need;
+    BYTE *p = buf;
+    memset(p, 0, need);
+    NOVA_KAFFINITY mask = all_cpus();
+    if (rel == CORE || rel == ALL)
+        for (DWORD i = 0; i < n; i++, p += proc_size) {
+            *(DWORD *)p = CORE; *(DWORD *)(p + 4) = proc_size;
+            *(WORD *)(p + 30) = 1;                                   /* GroupCount */
+            *(NOVA_KAFFINITY *)(p + 32) = (NOVA_KAFFINITY)1 << i;              /* GroupMask[0].Mask */
+        }
+    if (rel == PACKAGE || rel == ALL) {
+        *(DWORD *)p = PACKAGE; *(DWORD *)(p + 4) = proc_size;
+        *(WORD *)(p + 30) = 1;
+        *(NOVA_KAFFINITY *)(p + 32) = mask;
+        p += proc_size;
+    }
+    if (rel == NUMA || rel == ALL) {
+        *(DWORD *)p = NUMA; *(DWORD *)(p + 4) = numa_size;
+        *(NOVA_KAFFINITY *)(p + 32) = mask;                               /* GroupMask.Mask */
+        p += numa_size;
+    }
+    if (rel == GROUP || rel == ALL) {
+        *(DWORD *)p = GROUP; *(DWORD *)(p + 4) = group_size;
+        *(WORD *)(p + 8) = 1; *(WORD *)(p + 10) = 1;                 /* MaximumGroupCount, ActiveGroupCount */
+        *(BYTE *)(p + 32) = (BYTE)n; *(BYTE *)(p + 33) = (BYTE)n;    /* GroupInfo[0]: Maximum/ActiveProcessorCount */
+        *(NOVA_KAFFINITY *)(p + 72) = mask;                               /* ActiveProcessorMask */
+    }
+    return TRUE;
+}
+
+/* Devices and volumes: C: is the one volume; there are no MS-DOS devices
+ * but the drive, and no serial ports or tapes */
+K32 DWORD WINAPI QueryDosDeviceW(LPCWSTR name, LPWSTR buf, DWORD n)
+{
+    static const WCHAR c_dev[] = L"\\Device\\HarddiskVolume1";
+    const WCHAR *v = 0;
+    if (!name) {                                                     /* every name: "C:\0\0" */
+        if (n < 4) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+        buf[0] = 'C'; buf[1] = ':'; buf[2] = 0; buf[3] = 0;
+        return 4;
+    }
+    if ((name[0] == 'C' || name[0] == 'c') && name[1] == ':' && !name[2]) v = c_dev;
+    if (!v) { SetLastError(ERROR_FILE_NOT_FOUND); return 0; }
+    DWORD k = (DWORD)wlen(v);
+    if (n < k + 2) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+    memcpy(buf, v, 2 * k);
+    buf[k] = 0; buf[k + 1] = 0;
+    return k + 2;
+}
+K32 BOOL WINAPI GetVolumeNameForVolumeMountPointW(LPCWSTR mount, LPWSTR buf, DWORD n)
+{
+    static const WCHAR vol[] = L"\\\\?\\Volume{4e6f7661-0000-0000-0000-000000000001}\\";
+    if (!mount || (mount[0] != 'C' && mount[0] != 'c') || mount[1] != ':') { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    DWORD k = (DWORD)wlen(vol);
+    if (n <= k) { SetLastError(206 /* ERROR_FILENAME_EXCED_RANGE */); return FALSE; }
+    memcpy(buf, vol, 2 * (k + 1));
+    return TRUE;
+}
+K32 BOOL WINAPI GetVolumePathNamesForVolumeNameW(LPCWSTR vol, LPWSTR buf, DWORD n, PDWORD ret)
+{
+    (void)vol;
+    if (ret) *ret = 5;
+    if (n < 5) { SetLastError(ERROR_MORE_DATA); return FALSE; }
+    buf[0] = 'C'; buf[1] = ':'; buf[2] = '\\'; buf[3] = 0; buf[4] = 0;
+    return TRUE;
+}
+K32 BOOL WINAPI SetComputerNameExW(int type, LPCWSTR name) { (void)type; (void)name; SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+
+#define NO_DEVICE() do { SetLastError(ERROR_INVALID_HANDLE); return FALSE; } while (0)
+K32 BOOL WINAPI GetCommState(HANDLE h, PVOID dcb) { (void)h; (void)dcb; NO_DEVICE(); }
+K32 BOOL WINAPI SetCommState(HANDLE h, PVOID dcb) { (void)h; (void)dcb; NO_DEVICE(); }
+K32 BOOL WINAPI SetCommTimeouts(HANDLE h, PVOID t) { (void)h; (void)t; NO_DEVICE(); }
+K32 BOOL WINAPI SetCommMask(HANDLE h, DWORD m) { (void)h; (void)m; NO_DEVICE(); }
+K32 BOOL WINAPI WaitCommEvent(HANDLE h, LPDWORD m, LPOVERLAPPED o) { (void)h; (void)m; (void)o; NO_DEVICE(); }
+K32 BOOL WINAPI ClearCommError(HANDLE h, LPDWORD e, PVOID st) { (void)h; (void)e; (void)st; NO_DEVICE(); }
+K32 BOOL WINAPI ClearCommBreak(HANDLE h) { (void)h; NO_DEVICE(); }
+K32 BOOL WINAPI SetCommBreak(HANDLE h) { (void)h; NO_DEVICE(); }
+K32 BOOL WINAPI EscapeCommFunction(HANDLE h, DWORD f) { (void)h; (void)f; NO_DEVICE(); }
+K32 BOOL WINAPI GetCommModemStatus(HANDLE h, LPDWORD s) { (void)h; (void)s; NO_DEVICE(); }
+K32 BOOL WINAPI PurgeComm(HANDLE h, DWORD f) { (void)h; (void)f; NO_DEVICE(); }
+K32 BOOL WINAPI TransmitCommChar(HANDLE h, char c) { (void)h; (void)c; NO_DEVICE(); }
+K32 DWORD WINAPI GetTapeParameters(HANDLE h, DWORD op, LPDWORD n, LPVOID info) { (void)h; (void)op; (void)n; (void)info; return ERROR_INVALID_HANDLE; }
+K32 DWORD WINAPI SetTapeParameters(HANDLE h, DWORD op, LPVOID info) { (void)h; (void)op; (void)info; return ERROR_INVALID_HANDLE; }
+K32 DWORD WINAPI GetTapePosition(HANDLE h, DWORD t, LPDWORD p, LPDWORD lo, LPDWORD hi) { (void)h; (void)t; (void)p; (void)lo; (void)hi; return ERROR_INVALID_HANDLE; }
+K32 DWORD WINAPI SetTapePosition(HANDLE h, DWORD m, DWORD p, DWORD lo, DWORD hi, BOOL imm) { (void)h; (void)m; (void)p; (void)lo; (void)hi; (void)imm; return ERROR_INVALID_HANDLE; }
+K32 DWORD WINAPI GetTapeStatus(HANDLE h) { (void)h; return ERROR_INVALID_HANDLE; }
+K32 DWORD WINAPI PrepareTape(HANDLE h, DWORD op, BOOL imm) { (void)h; (void)op; (void)imm; return ERROR_INVALID_HANDLE; }
+K32 DWORD WINAPI EraseTape(HANDLE h, DWORD t, BOOL imm) { (void)h; (void)t; (void)imm; return ERROR_INVALID_HANDLE; }
+K32 DWORD WINAPI CreateTapePartition(HANDLE h, DWORD m, DWORD c, DWORD s) { (void)h; (void)m; (void)c; (void)s; return ERROR_INVALID_HANDLE; }
+K32 DWORD WINAPI WriteTapemark(HANDLE h, DWORD t, DWORD c, BOOL imm) { (void)h; (void)t; (void)c; (void)imm; return ERROR_INVALID_HANDLE; }
+
+/* Is @name a program, and what kind */
+K32 BOOL WINAPI GetBinaryTypeW(LPCWSTR name, LPDWORD type)
+{
+    HANDLE f = CreateFileW(name, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING, 0, 0);
+    if (f == INVALID_HANDLE_VALUE) return FALSE;
+    BYTE h[512];
+    DWORD got = 0;
+    BOOL ok = ReadFile(f, h, sizeof(h), &got, 0);
+    CloseHandle(f);
+    if (!ok || got < 64 || h[0] != 'M' || h[1] != 'Z') { SetLastError(193 /* ERROR_BAD_EXE_FORMAT */); return FALSE; }
+    DWORD pe = *(DWORD *)(h + 0x3C);
+    if (pe + 24 > got || h[pe] != 'P' || h[pe + 1] != 'E' || h[pe + 2] || h[pe + 3]) { *type = 1; /* SCS_DOS_BINARY */ return TRUE; }
+    WORD machine = *(WORD *)(h + pe + 4);
+    WORD chars = *(WORD *)(h + pe + 22);
+    if (chars & 0x2000) { SetLastError(193 /* ERROR_BAD_EXE_FORMAT */); return FALSE; }   /* a DLL */
+    *type = machine == 0x8664 ? 6 /* SCS_64BIT_BINARY */ : 0 /* SCS_32BIT_BINARY */;
+    return TRUE;
+}
+
+/* National language: only simple folding; IDN names pass through when ASCII */
+K32 int WINAPI FoldStringW(DWORD flags, LPCWSTR src, int n, LPWSTR dst, int cap)
+{
+    (void)flags;
+    if (n < 0) n = wlen(src) + 1;
+    if (!cap) return n;
+    if (cap < n) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+    for (int i = 0; i < n; i++) {
+        WCHAR c = src[i];
+        if (c >= 0xFF01 && c <= 0xFF5E) c = (WCHAR)(c - 0xFF01 + 0x21);   /* MAP_FOLDCZONE: fullwidth ASCII */
+        dst[i] = c;
+    }
+    return n;
+}
+static int idn_copy(LPCWSTR src, int n, LPWSTR dst, int cap)
+{
+    if (n < 0) n = wlen(src) + 1;
+    for (int i = 0; i < n; i++) if (src[i] > 0x7F) { SetLastError(ERROR_INVALID_NAME); return 0; }
+    if (!cap) return n;
+    if (cap < n) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+    memcpy(dst, src, 2 * (SIZE_T)n);
+    return n;
+}
+K32 int WINAPI IdnToAscii(DWORD flags, LPCWSTR src, int n, LPWSTR dst, int cap) { (void)flags; return idn_copy(src, n, dst, cap); }
+K32 int WINAPI IdnToUnicode(DWORD flags, LPCWSTR src, int n, LPWSTR dst, int cap) { (void)flags; return idn_copy(src, n, dst, cap); }
+K32 int WINAPI ResolveLocaleName(LPCWSTR name, LPWSTR out, int cap)
+{
+    static const WCHAR en[] = L"en-US";
+    (void)name;
+    if (!out || !cap) return 6;
+    if (cap < 6) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+    memcpy(out, en, sizeof(en));
+    return 6;
+}
+
+/* -----------------------------------------------------------------------
+ * Console: the terminal is a stream of text; input records are made from
+ * the characters typed, the screen buffer is the one the terminal shows
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    WORD EventType;
+    struct { BOOL KeyDown; WORD RepeatCount, VirtualKeyCode, VirtualScanCode; WCHAR UnicodeChar; DWORD ControlKeyState; } Key;
+} NOVA_INPUT_RECORD;
+
+K32 BOOL WINAPI ReadConsoleInputW(HANDLE h, NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD read)
+{
+    WCHAR buf[64];
+    DWORD got = 0;
+    if (n > 64) n = 64;
+    if (!n || !ReadConsoleW(h, buf, n, &got, 0)) { if (read) *read = 0; return n == 0; }
+    for (DWORD i = 0; i < got; i++) {
+        memset(&rec[i], 0, sizeof(rec[i]));
+        rec[i].EventType = 1;                                            /* KEY_EVENT */
+        rec[i].Key.KeyDown = TRUE;
+        rec[i].Key.RepeatCount = 1;
+        rec[i].Key.UnicodeChar = buf[i];
+        WCHAR c = buf[i];
+        rec[i].Key.VirtualKeyCode = c == '\r' || c == '\n' ? VK_RETURN : c == 8 ? VK_BACK : c == 27 ? VK_ESCAPE :
+                                    (c >= 'a' && c <= 'z') ? (WORD)(c - 32) : (WORD)c;
+    }
+    if (read) *read = got;
+    return TRUE;
+}
+K32 BOOL WINAPI ReadConsoleInputA(HANDLE h, NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD read)
+{
+    if (!ReadConsoleInputW(h, rec, n, read)) return FALSE;
+    for (DWORD i = 0; i < *read; i++) if (rec[i].Key.UnicodeChar > 0x7F) rec[i].Key.UnicodeChar = '?';
+    return TRUE;
+}
+K32 BOOL WINAPI WriteConsoleInputW(HANDLE h, const NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD written)
+{
+    (void)h; (void)rec;
+    if (written) *written = n;                                           /* (nothing reads them back) */
+    return TRUE;
+}
+K32 BOOL WINAPI GetNumberOfConsoleMouseButtons(LPDWORD n) { *n = 2; return TRUE; }
+K32 DWORD WINAPI GetConsoleProcessList(LPDWORD list, DWORD n)
+{
+    if (n >= 1) list[0] = GetCurrentProcessId();
+    return 1;
+}
+K32 BOOL WINAPI GetCurrentConsoleFontEx(HANDLE h, BOOL max, PVOID info)
+{
+    (void)h; (void)max;
+    BYTE *f = info;                                                      /* CONSOLE_FONT_INFOEX */
+    DWORD cb = *(DWORD *)f;
+    if (cb < 84) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    memset(f + 4, 0, cb - 4);
+    *(SHORT *)(f + 8) = 8; *(SHORT *)(f + 10) = 16;                     /* dwFontSize */
+    *(UINT *)(f + 12) = 0x36;                                            /* FontFamily: FF_MODERN | TMPF_TRUETYPE|VECTOR */
+    *(UINT *)(f + 16) = 400;                                             /* FontWeight */
+    static const WCHAR face[] = L"Consolas";
+    memcpy(f + 20, face, sizeof(face));
+    return TRUE;
+}
+K32 BOOL WINAPI SetConsoleWindowInfo(HANDLE h, BOOL abs, const SMALL_RECT *r) { (void)h; (void)abs; (void)r; return TRUE; }
+K32 BOOL WINAPI SetConsoleScreenBufferSize(HANDLE h, COORD size) { (void)h; (void)size; return TRUE; }
+K32 HANDLE WINAPI CreateConsoleScreenBuffer(DWORD access, DWORD share, const SECURITY_ATTRIBUTES *sa, DWORD flags, LPVOID data)
+{
+    (void)access; (void)share; (void)sa; (void)flags; (void)data;
+    HANDLE h = 0;                                                        /* the one screen: another handle to it */
+    DuplicateHandle(GetCurrentProcess(), GetStdHandle(STD_OUTPUT_HANDLE), GetCurrentProcess(), &h, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    return h ? h : INVALID_HANDLE_VALUE;
+}
+K32 BOOL WINAPI SetConsoleActiveScreenBuffer(HANDLE h) { (void)h; return TRUE; }
+/* Cells: written as text at the cursor's row (a stream has no cells to read back) */
+typedef struct { WCHAR Char; WORD Attributes; } NOVA_CHAR_INFO;
+K32 BOOL WINAPI WriteConsoleOutputW(HANDLE h, const NOVA_CHAR_INFO *cells, COORD size, COORD at, SMALL_RECT *region)
+{
+    (void)at;
+    for (SHORT y = region->Top; y <= region->Bottom && y - region->Top < size.Y; y++) {
+        WCHAR line[512];
+        int n = 0;
+        for (SHORT x = region->Left; x <= region->Right && x - region->Left < size.X && n < 511; x++)
+            line[n++] = cells[(y - region->Top) * size.X + (x - region->Left)].Char;
+        DWORD w;
+        WriteConsoleW(h, line, (DWORD)n, &w, 0);
+    }
+    return TRUE;
+}
+K32 BOOL WINAPI ReadConsoleOutputW(HANDLE h, NOVA_CHAR_INFO *cells, COORD size, COORD at, SMALL_RECT *region)
+{
+    (void)h; (void)at;
+    for (int i = 0; i < size.X * size.Y; i++) { cells[i].Char = ' '; cells[i].Attributes = 7; }
+    (void)region;
+    return TRUE;
+}
+K32 BOOL WINAPI ScrollConsoleScreenBufferW(HANDLE h, const SMALL_RECT *r, const SMALL_RECT *clip, COORD dest, const NOVA_CHAR_INFO *fill)
+{
+    (void)h; (void)r; (void)clip; (void)dest; (void)fill;
+    return TRUE;
+}
+K32 BOOL WINAPI ScrollConsoleScreenBufferA(HANDLE h, const SMALL_RECT *r, const SMALL_RECT *clip, COORD dest, const NOVA_CHAR_INFO *fill)
+{
+    return ScrollConsoleScreenBufferW(h, r, clip, dest, fill);
+}
+
+/* Allocation within an address range (MEM_EXTENDED_PARAMETER address requirements) */
+K32 PVOID WINAPI VirtualAlloc2(HANDLE p, PVOID base, SIZE_T size, ULONG type, ULONG prot, PVOID params, ULONG n)
+{
+    PVOID b = base;
+    NTSTATUS s = NtAllocateVirtualMemoryEx(p ? p : GetCurrentProcess(), &b, &size, type, prot, params, n);
+    if (!NT_SUCCESS(s)) { fail_status(s); return 0; }
+    return b;
+}
+K32 PVOID WINAPI VirtualAlloc2FromApp(HANDLE p, PVOID base, SIZE_T size, ULONG type, ULONG prot, PVOID params, ULONG n)
+{
+    return VirtualAlloc2(p, base, size, type, prot, params, n);
+}
+K32 PVOID WINAPI MapViewOfFile3(HANDLE sec, HANDLE p, PVOID base, ULONG64 off, SIZE_T size, ULONG type, ULONG prot,
+                                PVOID params, ULONG n)
+{
+    PVOID b = base;
+    LARGE_INTEGER o;
+    o.QuadPart = (LONGLONG)off;
+    NTSTATUS s = NtMapViewOfSectionEx(sec, p ? p : GetCurrentProcess(), &b, &o, &size, type, prot, params, n);
+    if (!NT_SUCCESS(s)) { fail_status(s); return 0; }
+    return b;
+}
+
+/* Interrupt time (100 ns units since boot) from the performance counter */
+static ULONGLONG interrupt_time(void)
+{
+    LARGE_INTEGER c, f;
+    QueryPerformanceCounter(&c);
+    QueryPerformanceFrequency(&f);
+    if (f.QuadPart <= 0) return GetTickCount64() * 10000;
+    return (ULONGLONG)c.QuadPart / (ULONGLONG)f.QuadPart * 10000000ULL +
+           (ULONGLONG)c.QuadPart % (ULONGLONG)f.QuadPart * 10000000ULL / (ULONGLONG)f.QuadPart;
+}
+K32 VOID WINAPI QueryInterruptTimePrecise(PULONGLONG t)         { *t = interrupt_time(); }
+K32 VOID WINAPI QueryUnbiasedInterruptTimePrecise(PULONGLONG t) { *t = interrupt_time(); }   /* (no sleep to leave out) */
+
+K32 HRESULT WINAPI SetThreadDescription(HANDLE t, PCWSTR d) { (void)t; (void)d; return S_OK; }
+K32 HRESULT WINAPI GetThreadDescription(HANDLE t, PWSTR *d)
+{
+    (void)t;
+    *d = LocalAlloc(LMEM_ZEROINIT, 2);
+    return *d ? S_OK : E_OUTOFMEMORY;
+}
+K32 DWORD WINAPI DiscardVirtualMemory(PVOID a, SIZE_T n) { (void)a; (void)n; return ERROR_SUCCESS; }

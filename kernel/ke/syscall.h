@@ -208,6 +208,20 @@
 #define SYSCALL_NtCancelIoFileEx                  0x01C2
 #define SYSCALL_NtSetInformationObject            0x01C3
 #define SYSCALL_NtNovaClipboard                   0x01C4  /* NovaOS: the system clipboard */
+#define SYSCALL_NtCreateDirectoryObject           0x01C5
+#define SYSCALL_NtOpenDirectoryObject             0x01C6
+#define SYSCALL_NtQueryDirectoryObject            0x01C7
+#define SYSCALL_NtCreateSymbolicLinkObject        0x01C8
+#define SYSCALL_NtOpenSymbolicLinkObject          0x01C9
+#define SYSCALL_NtQuerySymbolicLinkObject         0x01CA
+#define SYSCALL_NtCreateTimer                     0x01CB
+#define SYSCALL_NtOpenTimer                       0x01CC
+#define SYSCALL_NtSetTimer                        0x01CD
+#define SYSCALL_NtCancelTimer                     0x01CE
+#define SYSCALL_NtQueryEvent                      0x01CF
+#define SYSCALL_NtQuerySemaphore                  0x01D0
+#define SYSCALL_NtOpenThread                      0x01D1
+#define SYSCALL_NtMapViewOfSectionEx              0x01D2
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x01A0
 #define SYSCALL_NtNovaGuiGetMessage               0x01A1

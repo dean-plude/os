@@ -92,6 +92,7 @@ void UmReturnToUserFrame(void *frame);
  * the program's exception handlers (SEH) through its stack. */
 void UmUserException(void *frame, UINT64 cr2);
 /* The current user thread raised an exception it cannot handle. */
+int  UmGuardFault(UINT64 va);           /* a guard page touched: 1 handled, -1/-2 raise, 0 not one */
 void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
 void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp) __attribute__((noreturn));
 /* A 32-bit program's system call (int 0x2E) keeps its registers in @frame */

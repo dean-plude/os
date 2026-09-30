@@ -69,6 +69,8 @@ typedef struct _RTL_USER_PROCESS_PARAMETERS {
     CURDIR CurrentDirectory;
     UNICODE_STRING DllPath, ImagePathName, CommandLine;
     PVOID Environment;
+    ULONG StartingX, StartingY, CountX, CountY, CountCharsX, CountCharsY, FillAttribute, WindowFlags, ShowWindowFlags;
+    UNICODE_STRING WindowTitle, DesktopInfo, ShellInfo, RuntimeData;   /* RuntimeData: STARTUPINFO.lpReserved2 */
 } RTL_USER_PROCESS_PARAMETERS, *PRTL_USER_PROCESS_PARAMETERS;
 /* Loader data (built by ntdll at process start) */
 typedef struct _PEB_LDR_DATA {
@@ -97,6 +99,7 @@ typedef struct _PEB {
     PPEB_LDR_DATA Ldr;
     PRTL_USER_PROCESS_PARAMETERS ProcessParameters;
     PVOID SubSystemData, ProcessHeap;
+    PVOID FastPebLock;              /* the RTL_CRITICAL_SECTION guarding the current directory */
 } PEB, *PPEB;
 
 /* The modules the kernel mapped, in initialization order (dependencies
@@ -190,9 +193,18 @@ NTSYSAPI NTSTATUS NTAPI NtCancelIoFile(HANDLE h, PIO_STATUS_BLOCK io);
 NTSYSAPI NTSTATUS NTAPI NtCancelIoFileEx(HANDLE h, PIO_STATUS_BLOCK req, PIO_STATUS_BLOCK io);
 NTSYSAPI NTSTATUS NTAPI NtSetInformationObject(HANDLE h, ULONG cls, PVOID info, ULONG len);
 NTSYSAPI NTSTATUS NTAPI NtQueryObject(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret);
+/* The current directory (ntdll keeps it; ProcessParameters->CurrentDirectory shows it) */
+NTSYSAPI NTSTATUS NTAPI RtlSetCurrentDirectory_U(PUNICODE_STRING dir);
+/* User APCs: NtTestAlert runs the calling thread's (kernel32 queues them) */
+NTSYSAPI NTSTATUS NTAPI NtTestAlert(void);
+NTSYSAPI VOID     NTAPI RtlNovaSetApcRunner(BOOL (*fn)(void));
+NTSYSAPI ULONG    NTAPI RtlGetCurrentDirectory_U(ULONG len, PWSTR buf);
 /* NovaOS: the system clipboard (op 0 empty, 1 set, 2 get, 3 list, 4 sequence, 5 owner) */
 typedef struct { ULONG Format; CHAR Name[60]; ULONG Size; } NOVA_CLIP_ENTRY;
 NTSYSAPI NTSTATUS NTAPI NtOpenProcess(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, CLIENT_ID *cid);
+NTSYSAPI NTSTATUS NTAPI NtOpenThread(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, CLIENT_ID *cid);
+NTSYSAPI NTSTATUS NTAPI NtReadVirtualMemory(HANDLE p, PVOID base, PVOID buf, SIZE_T n, PSIZE_T done);
+NTSYSAPI NTSTATUS NTAPI NtWriteVirtualMemory(HANDLE p, PVOID base, PVOID buf, SIZE_T n, PSIZE_T done);
 NTSYSAPI LONG_PTR NTAPI NtNovaClipboard(ULONG op, ULONG_PTR a, PVOID b, ULONG_PTR c, const char *name);
 NTSYSAPI NTSTATUS NTAPI NtReadFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io,
                                    PVOID buf, ULONG len, PLARGE_INTEGER off, PULONG key);
@@ -206,16 +218,21 @@ NTSYSAPI NTSTATUS NTAPI NtQueryDirectoryFile(HANDLE h, HANDLE ev, PVOID apc, PVO
                                              PUNICODE_STRING name, BOOLEAN restart);
 NTSYSAPI NTSTATUS NTAPI NtQueryVolumeInformationFile(HANDLE h, PIO_STATUS_BLOCK io, PVOID info, ULONG len, ULONG cls);
 NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemory(HANDLE p, PVOID *base, ULONG_PTR zero, PSIZE_T size, ULONG type, ULONG prot);
+NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemoryEx(HANDLE p, PVOID *base, PSIZE_T size, ULONG type, ULONG prot, PVOID params, ULONG n);
+NTSYSAPI NTSTATUS NTAPI NtMapViewOfSectionEx(HANDLE sec, HANDLE p, PVOID *base, PLARGE_INTEGER off, PSIZE_T size, ULONG type,
+                                             ULONG prot, PVOID params, ULONG n);
 NTSYSAPI NTSTATUS NTAPI NtFreeVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG type);
 NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG prot, PULONG old);
 NTSYSAPI NTSTATUS NTAPI NtQueryVirtualMemory(HANDLE p, PVOID addr, int cls, PVOID buf, SIZE_T n, PSIZE_T ret);
 NTSYSAPI NTSTATUS NTAPI NtGetContextThread(HANDLE t, PCONTEXT c);
 NTSYSAPI NTSTATUS NTAPI NtSetContextThread(HANDLE t, const CONTEXT *c);
 /* NovaOS: create a process sharing this one's console (UTF-8 full paths) */
-/* Flags: 1 = inherit handles, 2 = no console; Environment: UTF-8
+/* RuntimeData: STARTUPINFO.lpReserved2 bytes for the new process (NULL: none)
+ * Flags: 1 = inherit handles, 2 = no console; Environment: UTF-8
  * "NAME=value" strings each ended by NUL, then an empty one (NULL: default) */
 typedef struct { HANDLE StdHandle[3]; HANDLE Process, Thread; ULONG64 ProcessId, ThreadId;
-                 ULONG64 Flags; const char *Environment; ULONG64 EnvironmentSize; } NOVA_CREATE_PROCESS;
+                 ULONG64 Flags; const char *Environment; ULONG64 EnvironmentSize;
+                 const void *RuntimeData; ULONG64 RuntimeDataSize; } NOVA_CREATE_PROCESS;
 NTSYSAPI NTSTATUS NTAPI NtNovaCreateProcess(const char *image, const char *cmdline, const char *dir, NOVA_CREATE_PROCESS *io);
 /* NovaOS: Out = { process id, exit code (STILL_ACTIVE while running), exited } */
 NTSYSAPI NTSTATUS NTAPI NtNovaProcessInfo(HANDLE p, ULONG64 out[3]);

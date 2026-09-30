@@ -23,6 +23,7 @@ size_t strlen(const char *s);
 int strcmp(const char *a, const char *b);
 
 extern void RtlNovaInitExceptions(void);       /* ntdll_exc.c */
+extern void RtlNovaInitProcess(void);          /* ntdll_rtl.c */
 
 /* -----------------------------------------------------------------------
  * Module registry (mirrors the kernel's list, plus per-module TLS state)
@@ -261,11 +262,13 @@ static void ldr_init_process(void)
     g_ldr.InMemoryOrderModuleList.Flink = g_ldr.InMemoryOrderModuleList.Blink = &g_ldr.InMemoryOrderModuleList;
     g_ldr.InInitializationOrderModuleList.Flink = g_ldr.InInitializationOrderModuleList.Blink = &g_ldr.InInitializationOrderModuleList;
     peb->Ldr = &g_ldr;
+    RtlNovaInitProcess();
     RtlNovaInitExceptions();
     int first = absorb_new_modules();
     setup_thread_tls();                              /* first thread's TLS before any DllMain */
     attach_new_modules(first);
     g_process_ready = 1;
+    NtTestAlert();                                   /* APCs the DLLs queued to this thread (as Windows) */
 }
 
 /* -----------------------------------------------------------------------

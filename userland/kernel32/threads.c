@@ -102,9 +102,29 @@ DWORD WINAPI GetThreadId(HANDLE t)
 /* -----------------------------------------------------------------------
  * Waits
  * ----------------------------------------------------------------------- */
+/* An alertable wait runs this thread's queued APCs (WAIT_IO_COMPLETION):
+ * those already queued, and those queued while it waits (looked for
+ * between slices of the wait) */
+BOOL k32_run_apcs(void);
+static DWORD alertable_wait(DWORD n, const HANDLE *h, BOOL all, DWORD ms)
+{
+    ULONGLONG until = ms == INFINITE ? ~0ULL : GetTickCount64() + ms;
+    for (;;) {
+        if (k32_run_apcs()) return WAIT_IO_COMPLETION;
+        ULONGLONG now = GetTickCount64();
+        DWORD slice = until == ~0ULL || until - now > 50 ? 50 : (DWORD)(until - now);
+        LARGE_INTEGER li;
+        NTSTATUS s = n == 1 ? NtWaitForSingleObject(h[0], TRUE, ms_timeout(&li, slice))
+                            : NtWaitForMultipleObjects(n, h, all ? WaitAll : WaitAny, TRUE, ms_timeout(&li, slice));
+        DWORD r = wait_status(s);
+        if (r != WAIT_TIMEOUT || GetTickCount64() >= until) return r;
+    }
+}
+
 DWORD WINAPI WaitForSingleObjectEx(HANDLE h, DWORD ms, BOOL alertable)
 {
     LARGE_INTEGER li;
+    if (alertable) return alertable_wait(1, &h, FALSE, ms);
     return wait_status(NtWaitForSingleObject(h, alertable, ms_timeout(&li, ms)));
 }
 DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms) { return WaitForSingleObjectEx(h, ms, FALSE); }
@@ -112,6 +132,7 @@ DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms) { return WaitForSingleObjec
 DWORD WINAPI WaitForMultipleObjectsEx(DWORD n, const HANDLE *h, BOOL all, DWORD ms, BOOL alertable)
 {
     LARGE_INTEGER li;
+    if (alertable) return alertable_wait(n, h, all, ms);
     return wait_status(NtWaitForMultipleObjects(n, h, all ? WaitAll : WaitAny, alertable, ms_timeout(&li, ms)));
 }
 DWORD WINAPI WaitForMultipleObjects(DWORD n, const HANDLE *h, BOOL all, DWORD ms)
@@ -148,6 +169,20 @@ static POBJECT_ATTRIBUTES ob_name_a(ObName *n, LPCSTR name)
     return ob_name_w(n, w);
 }
 
+/* @oa with OBJ_INHERIT added when @inherit (an unnamed object gets one) */
+static POBJECT_ATTRIBUTES ob_inherit(ObName *n, POBJECT_ATTRIBUTES oa, BOOL inherit)
+{
+    if (!inherit) return oa;
+    if (!oa) {
+        memset(&n->oa, 0, sizeof(n->oa));
+        n->oa.Length = sizeof(n->oa);
+        oa = &n->oa;
+    }
+    oa->Attributes |= OBJ_INHERIT;
+    return oa;
+}
+#define SA_INHERIT(sa) ((sa) && (sa)->bInheritHandle)
+
 static HANDLE created(NTSTATUS s, HANDLE h)
 {
     if (!NT_SUCCESS(s)) { set_error(s); return 0; }
@@ -167,18 +202,16 @@ static HANDLE opened(NTSTATUS s, HANDLE h)
 
 HANDLE WINAPI CreateEventW(LPSECURITY_ATTRIBUTES sa, BOOL manual, BOOL initial, LPCWSTR name)
 {
-    (void)sa;
     ObName n;
     HANDLE h = 0;
-    NTSTATUS s = NtCreateEvent(&h, EVENT_ALL_ACCESS, ob_name_w(&n, name), manual ? NotificationEvent : SynchronizationEvent, initial);
+    NTSTATUS s = NtCreateEvent(&h, EVENT_ALL_ACCESS, ob_inherit(&n, ob_name_w(&n, name), SA_INHERIT(sa)), manual ? NotificationEvent : SynchronizationEvent, initial);
     return created(s, h);
 }
 HANDLE WINAPI CreateEventA(LPSECURITY_ATTRIBUTES sa, BOOL manual, BOOL initial, LPCSTR name)
 {
-    (void)sa;
     ObName n;
     HANDLE h = 0;
-    NTSTATUS s = NtCreateEvent(&h, EVENT_ALL_ACCESS, ob_name_a(&n, name), manual ? NotificationEvent : SynchronizationEvent, initial);
+    NTSTATUS s = NtCreateEvent(&h, EVENT_ALL_ACCESS, ob_inherit(&n, ob_name_a(&n, name), SA_INHERIT(sa)), manual ? NotificationEvent : SynchronizationEvent, initial);
     return created(s, h);
 }
 __declspec(dllexport) HANDLE WINAPI CreateEventExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access)
@@ -187,11 +220,12 @@ __declspec(dllexport) HANDLE WINAPI CreateEventExA(LPSECURITY_ATTRIBUTES sa, LPC
 { (void)access; return CreateEventA(sa, (flags & 1) != 0, (flags & 2) != 0, name); }
 __declspec(dllexport) HANDLE WINAPI OpenEventW(DWORD access, BOOL inherit, LPCWSTR name)
 {
-    (void)access; (void)inherit;
+    (void)access;
     ObName n;
     HANDLE h = 0;
     POBJECT_ATTRIBUTES oa = ob_name_w(&n, name);
     if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    oa = ob_inherit(&n, oa, inherit);
     NTSTATUS st = NtOpenEvent(&h, EVENT_ALL_ACCESS, oa);
     return opened(st, h);
 }
@@ -199,9 +233,10 @@ __declspec(dllexport) HANDLE WINAPI OpenEventA(DWORD access, BOOL inherit, LPCST
 {
     ObName n;
     HANDLE h = 0;
-    (void)access; (void)inherit;
+    (void)access;
     POBJECT_ATTRIBUTES oa = ob_name_a(&n, name);
     if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    oa = ob_inherit(&n, oa, inherit);
     NTSTATUS st = NtOpenEvent(&h, EVENT_ALL_ACCESS, oa);
     return opened(st, h);
 }
@@ -210,18 +245,16 @@ BOOL WINAPI ResetEvent(HANDLE h) { NTSTATUS s = NtResetEvent(h, 0); return NT_SU
 
 HANDLE WINAPI CreateMutexW(LPSECURITY_ATTRIBUTES sa, BOOL owner, LPCWSTR name)
 {
-    (void)sa;
     ObName n;
     HANDLE h = 0;
-    NTSTATUS st = NtCreateMutant(&h, MUTEX_ALL_ACCESS, ob_name_w(&n, name), owner);
+    NTSTATUS st = NtCreateMutant(&h, MUTEX_ALL_ACCESS, ob_inherit(&n, ob_name_w(&n, name), SA_INHERIT(sa)), owner);
     return created(st, h);
 }
 HANDLE WINAPI CreateMutexA(LPSECURITY_ATTRIBUTES sa, BOOL owner, LPCSTR name)
 {
-    (void)sa;
     ObName n;
     HANDLE h = 0;
-    NTSTATUS st = NtCreateMutant(&h, MUTEX_ALL_ACCESS, ob_name_a(&n, name), owner);
+    NTSTATUS st = NtCreateMutant(&h, MUTEX_ALL_ACCESS, ob_inherit(&n, ob_name_a(&n, name), SA_INHERIT(sa)), owner);
     return created(st, h);
 }
 __declspec(dllexport) HANDLE WINAPI CreateMutexExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access)
@@ -230,21 +263,23 @@ __declspec(dllexport) HANDLE WINAPI CreateMutexExA(LPSECURITY_ATTRIBUTES sa, LPC
 { (void)access; return CreateMutexA(sa, (flags & 1) != 0, name); }
 __declspec(dllexport) HANDLE WINAPI OpenMutexW(DWORD access, BOOL inherit, LPCWSTR name)
 {
-    (void)access; (void)inherit;
+    (void)access;
     ObName n;
     HANDLE h = 0;
     POBJECT_ATTRIBUTES oa = ob_name_w(&n, name);
     if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    oa = ob_inherit(&n, oa, inherit);
     NTSTATUS st = NtOpenMutant(&h, MUTEX_ALL_ACCESS, oa);
     return opened(st, h);
 }
 __declspec(dllexport) HANDLE WINAPI OpenMutexA(DWORD access, BOOL inherit, LPCSTR name)
 {
-    (void)access; (void)inherit;
+    (void)access;
     ObName n;
     HANDLE h = 0;
     POBJECT_ATTRIBUTES oa = ob_name_a(&n, name);
     if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    oa = ob_inherit(&n, oa, inherit);
     NTSTATUS st = NtOpenMutant(&h, MUTEX_ALL_ACCESS, oa);
     return opened(st, h);
 }
@@ -252,39 +287,39 @@ BOOL WINAPI ReleaseMutex(HANDLE h) { NTSTATUS s = NtReleaseMutant(h, 0); return 
 
 HANDLE WINAPI CreateSemaphoreW(LPSECURITY_ATTRIBUTES sa, LONG init, LONG max, LPCWSTR name)
 {
-    (void)sa;
     ObName n;
     HANDLE h = 0;
-    NTSTATUS st = NtCreateSemaphore(&h, SEMAPHORE_ALL_ACCESS, ob_name_w(&n, name), init, max);
+    NTSTATUS st = NtCreateSemaphore(&h, SEMAPHORE_ALL_ACCESS, ob_inherit(&n, ob_name_w(&n, name), SA_INHERIT(sa)), init, max);
     return created(st, h);
 }
 HANDLE WINAPI CreateSemaphoreA(LPSECURITY_ATTRIBUTES sa, LONG init, LONG max, LPCSTR name)
 {
-    (void)sa;
     ObName n;
     HANDLE h = 0;
-    NTSTATUS st = NtCreateSemaphore(&h, SEMAPHORE_ALL_ACCESS, ob_name_a(&n, name), init, max);
+    NTSTATUS st = NtCreateSemaphore(&h, SEMAPHORE_ALL_ACCESS, ob_inherit(&n, ob_name_a(&n, name), SA_INHERIT(sa)), init, max);
     return created(st, h);
 }
 __declspec(dllexport) HANDLE WINAPI CreateSemaphoreExW(LPSECURITY_ATTRIBUTES sa, LONG init, LONG max, LPCWSTR name, DWORD flags, DWORD access)
 { (void)flags; (void)access; return CreateSemaphoreW(sa, init, max, name); }
 __declspec(dllexport) HANDLE WINAPI OpenSemaphoreW(DWORD access, BOOL inherit, LPCWSTR name)
 {
-    (void)access; (void)inherit;
+    (void)access;
     ObName n;
     HANDLE h = 0;
     POBJECT_ATTRIBUTES oa = ob_name_w(&n, name);
     if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    oa = ob_inherit(&n, oa, inherit);
     NTSTATUS st = NtOpenSemaphore(&h, SEMAPHORE_ALL_ACCESS, oa);
     return opened(st, h);
 }
 __declspec(dllexport) HANDLE WINAPI OpenSemaphoreA(DWORD access, BOOL inherit, LPCSTR name)
 {
-    (void)access; (void)inherit;
+    (void)access;
     ObName n;
     HANDLE h = 0;
     POBJECT_ATTRIBUTES oa = ob_name_a(&n, name);
     if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    oa = ob_inherit(&n, oa, inherit);
     NTSTATUS st = NtOpenSemaphore(&h, SEMAPHORE_ALL_ACCESS, oa);
     return opened(st, h);
 }

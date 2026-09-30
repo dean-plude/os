@@ -406,8 +406,16 @@ static DWORD WINAPI evsel_thread(void *arg)
     }
 }
 
+/* Whether @s is a socket (a pipe or file handle is not: WSAENOTSOCK) */
+static int is_socket(SOCKET s)
+{
+    BYTE st[3];
+    return NtNovaSockCtl((INT_PTR)s, 4, 0, st) == 0;
+}
+
 int WSAEventSelect(SOCKET s, WSAEVENT ev, long events)
 {
+    if (!is_socket(s)) { set_err(WSAENOTSOCK); return SOCKET_ERROR; }
     es_lock();
     int free = -1, at = -1;
     for (int i = 0; i < 64; i++) {
@@ -430,6 +438,7 @@ int WSAEventSelect(SOCKET s, WSAEVENT ev, long events)
 
 int WSAEnumNetworkEvents(SOCKET s, WSAEVENT ev, LPWSANETWORKEVENTS out)
 {
+    if (!is_socket(s)) { set_err(WSAENOTSOCK); return SOCKET_ERROR; }   /* (gnulib's poll tells pipes this way) */
     memset(out, 0, sizeof(*out));
     es_lock();
     for (int i = 0; i < 64; i++) {

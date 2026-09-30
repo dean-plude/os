@@ -310,6 +310,26 @@ NTSTATUS NTAPI NtOpenProcess(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, CLI
     return s;
 }
 
+NTSTATUS NTAPI NtOpenThread(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, CLIENT_ID *cid)
+{
+    Box hb; OAC oc;
+    U64 c[2] = { cid ? (U64)(ULONG_PTR)cid->UniqueProcess : 0, cid ? (U64)(ULONG_PTR)cid->UniqueThread : 0 };
+    NTSTATUS s = SC(NtOpenThread, HBOX(hb, h), U(access), oa_in(&oc, oa), cid ? P(c) : 0);
+    box_out(&hb);
+    return s;
+}
+
+static NTSTATUS copy_vm(ULONG num, HANDLE p, PVOID base, PVOID buf, SIZE_T n, PSIZE_T done)
+{
+    U64 got = 0;
+    U64 a[5] = { H(p), P(base), P(buf), U(n), P(&got) };
+    NTSTATUS s = (NTSTATUS)callb(num, a, 5);
+    if (done) *done = (SIZE_T)got;
+    return s;
+}
+NTSTATUS NTAPI NtReadVirtualMemory(HANDLE p, PVOID base, PVOID buf, SIZE_T n, PSIZE_T done)  { return copy_vm(SYS_NtReadVirtualMemory, p, base, buf, n, done); }
+NTSTATUS NTAPI NtWriteVirtualMemory(HANDLE p, PVOID base, PVOID buf, SIZE_T n, PSIZE_T done) { return copy_vm(SYS_NtWriteVirtualMemory, p, base, buf, n, done); }
+
 LONG_PTR NTAPI NtNovaClipboard(ULONG op, ULONG_PTR a, PVOID b, ULONG_PTR c, const char *name)
 {
     return SCP(NtNovaClipboard, U(op), op == 0 ? H(a) : U(a), P(b), U(c), P(name));
@@ -434,6 +454,20 @@ NTSTATUS NTAPI NtQueryVirtualMemory(HANDLE p, PVOID addr, int cls, PVOID buf, SI
 
 NTSTATUS NTAPI NtNovaFlushView(PVOID base) { return SC(NtNovaFlushView, P(base)); }
 
+/* The extended forms, without their address requirements (32-bit programs
+ * have one small address space anyway) */
+NTSTATUS NTAPI NtAllocateVirtualMemoryEx(HANDLE p, PVOID *base, PSIZE_T size, ULONG type, ULONG prot, PVOID params, ULONG n)
+{
+    (void)params; (void)n;
+    return NtAllocateVirtualMemory(p, base, 0, size, type, prot);
+}
+NTSTATUS NTAPI NtMapViewOfSectionEx(HANDLE sec, HANDLE p, PVOID *base, PLARGE_INTEGER off, PSIZE_T size, ULONG type,
+                                    ULONG prot, PVOID params, ULONG n)
+{
+    (void)params; (void)n;
+    return NtMapViewOfSection(sec, p, base, 0, 0, off, size, 2 /* ViewUnmap */, type, prot);
+}
+
 /* -----------------------------------------------------------------------
  * Sections
  * ----------------------------------------------------------------------- */
@@ -471,11 +505,12 @@ NTSTATUS NTAPI NtUnmapViewOfSection(HANDLE proc, PVOID base) { return SC(NtUnmap
  * ----------------------------------------------------------------------- */
 NTSTATUS NTAPI NtNovaCreateProcess(const char *image, const char *cmdline, const char *dir, NOVA_CREATE_PROCESS *io)
 {
-    U64 x[10];         /* { StdHandle[3], Process, Thread, Pid, Tid, Flags, Environment, EnvironmentSize } */
+    U64 x[12];         /* { StdHandle[3], Process, Thread, Pid, Tid, Flags, Environment, EnvironmentSize, RuntimeData, RuntimeDataSize } */
     for (int i = 0; i < 3; i++) x[i] = H(io->StdHandle[i]);
     x[3] = H(io->Process); x[4] = H(io->Thread);
     x[5] = io->ProcessId; x[6] = io->ThreadId;
     x[7] = io->Flags; x[8] = P(io->Environment); x[9] = io->EnvironmentSize;
+    x[10] = P(io->RuntimeData); x[11] = io->RuntimeDataSize;
     NTSTATUS s = SC(NtNovaCreateProcess, P(image), P(cmdline), P(dir), P(x));
     for (int i = 0; i < 3; i++) io->StdHandle[i] = (HANDLE)(ULONG_PTR)x[i];
     io->Process = (HANDLE)(ULONG_PTR)x[3]; io->Thread = (HANDLE)(ULONG_PTR)x[4];

@@ -70,10 +70,24 @@ _CRTIMP size_t  mbsrtowcs(wchar_t *d, const char **src, size_t n, mbstate_t *ps)
 _CRTIMP size_t  wcsrtombs(char *d, const wchar_t **src, size_t n, mbstate_t *ps);
 
 /* wide stdio (%s is a wide string, %S a narrow one, as in Microsoft's) */
-_CRTIMP int swprintf(wchar_t *s, size_t n, const wchar_t *fmt, ...);
-_CRTIMP int vswprintf(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap);
 _CRTIMP int _snwprintf(wchar_t *s, size_t n, const wchar_t *fmt, ...);
 _CRTIMP int _vsnwprintf(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap);
+/* msvcrt.dll's own swprintf/vswprintf take no size (the pre-ISO form that
+ * programs built for msvcrt call); the ISO forms are made from _vsnwprintf */
+static __inline int vswprintf(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap)
+{
+    int r = _vsnwprintf(s, n, fmt, ap);
+    if (n && (r < 0 || (size_t)r >= n)) { s[n - 1] = 0; return -1; }
+    return r;
+}
+static __inline int swprintf(wchar_t *s, size_t n, const wchar_t *fmt, ...)
+{
+    va_list a;
+    va_start(a, fmt);
+    int r = vswprintf(s, n, fmt, a);
+    va_end(a);
+    return r;
+}
 _CRTIMP int wprintf(const wchar_t *fmt, ...);
 _CRTIMP int vwprintf(const wchar_t *fmt, va_list ap);
 _CRTIMP int fwprintf(struct _iobuf *f, const wchar_t *fmt, ...);

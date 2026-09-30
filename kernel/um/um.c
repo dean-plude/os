@@ -175,19 +175,20 @@ static bool is_current(UmProcess *p) { return read_cr3() == p->pml4; }
 bool um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect)
 {
     UINT64 f = pte_flags(protect);
+    bool guard = protect & 0x100;                       /* PAGE_GUARD */
     bool ok = true, changed = false;
     for (UINT64 a = va & ~0xFFFULL; a < va + size; a += PAGE_SIZE) {
         pte_t *e = walk(p->pml4, a, true);
         if (!e) { ok = false; break; }
         if ((*e & PTE_PRESENT) && (*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* stays read-only */
         if (*e & PTE_PRESENT) {                         /* re-commit: new protection */
-            *e = (*e & (PTE_ADDR_MASK | PTE_SHARED)) | f;
+            *e = (*e & (PTE_ADDR_MASK | PTE_SHARED)) | (guard ? (f & ~PTE_USER) | PTE_GUARD : f);
             if (is_current(p)) invlpg(a);
             changed = true;
             continue;
         }
         if (!(*e & PTE_LAZY)) p->commit++;
-        *e = PTE_LAZY | (f & ~PTE_PRESENT);
+        *e = PTE_LAZY | (f & ~PTE_PRESENT) | (guard ? PTE_GUARD : 0);
     }
     if (changed) smp_tlb_flush(p->pml4);
     return ok;
@@ -204,6 +205,7 @@ static bool back_page(UmProcess *p, pte_t *e)
     if (!fr) return false;
     memset((void *)(uintptr_t)(PHYSMAP_BASE + fr), 0, PAGE_SIZE);
     pte_t nv = fr | (v & ~(PTE_LAZY | PTE_ADDR_MASK)) | PTE_PRESENT;
+    if (v & PTE_GUARD) nv &= ~PTE_USER;                 /* still a guard page */
     if (!__atomic_compare_exchange_n(e, &v, nv, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
         pmm_free_page(fr);
         return (__atomic_load_n(e, __ATOMIC_ACQUIRE) & PTE_PRESENT) != 0;
@@ -218,6 +220,43 @@ bool UmDemandFault(UINT64 va)
     if (!p || va >= UINT64_C(0x00007FFFFFFF0000)) return false;
     pte_t *e = walk(p->pml4, va, false);
     return e && back_page(p, e);
+}
+
+/* The program touched @va: if it is a guard page, lift the guard.  On a
+ * thread's stack (between the TEB's DeallocationStack and StackBase) the
+ * page below becomes the new guard page and StackLimit follows, as
+ * Windows grows stacks: 1.  Out of stack: -2 (STATUS_STACK_OVERFLOW).
+ * Anywhere else: -1 (STATUS_GUARD_PAGE_VIOLATION).  Not a guard page: 0. */
+int UmGuardFault(UINT64 va)
+{
+    UmProcess *p = UmCurrent();
+    UmThread *t = UmCurrentThread();
+    if (!p || !t || va >= UINT64_C(0x00007FFFFFFF0000)) return 0;
+    UINT64 page = va & ~0xFFFULL;
+    /* (interrupts are off: no locks; the entry changes only this way) */
+    pte_t *e = walk(p->pml4, va, false);
+    if (!e || !(*e & PTE_GUARD)) return 0;
+    if (!(*e & PTE_PRESENT) && !back_page(p, e)) return 0;
+    *e = (*e & ~PTE_GUARD) | PTE_USER;
+    invlpg(page);
+    /* the thread's stack, from its TEB */
+    UINT64 base = 0, dealloc = 0;
+    UINT32 w = p->wow ? 4 : 8;
+    UINT64 o_base = p->wow ? 0x4 : 0x8, o_limit = p->wow ? 0x8 : 0x10, o_dealloc = p->wow ? 0xE0C : 0x1478;
+    um_read(p, t->teb + o_base, &base, w);
+    um_read(p, t->teb + o_dealloc, &dealloc, w);
+    int res = -1;
+    if (dealloc && va >= dealloc && va < base) {
+        UINT64 below = page - PAGE_SIZE;
+        if (below >= dealloc + PAGE_SIZE) {               /* the lowest page stays reserved */
+            pte_t *b = walk(p->pml4, below, true);
+            /* read/write, as Windows grows stacks (the reservation may say PAGE_NOACCESS) */
+            if (b && !(*b & (PTE_PRESENT | PTE_LAZY))) um_commit(p, below, PAGE_SIZE, 0x04 | 0x100);
+            res = 1;
+        } else res = -2;
+        um_write(p, t->teb + o_limit, &page, w);
+    }
+    return res;
 }
 
 /* Pages are freed only after every CPU has dropped them from its TLB: until
@@ -304,6 +343,12 @@ bool um_is_committed(UmProcess *p, UINT64 va)
 {
     pte_t *e = walk(p->pml4, va, false);
     return e && (*e & (PTE_PRESENT | PTE_LAZY));
+}
+
+bool um_is_guard(UmProcess *p, UINT64 va)
+{
+    pte_t *e = walk(p->pml4, va, false);
+    return e && (*e & PTE_GUARD);
 }
 
 static bool copy_pages(UmProcess *p, UINT64 va, void *buf, UINT64 n, bool to_user)
@@ -452,6 +497,36 @@ UINT64 um_find_free(UmProcess *p, UINT64 size, UINT64 lo, UINT64 hi)
         }
         if (!next) return a;
         a = next;
+    }
+    return 0;
+}
+
+bool um_addr_requirements(UINT64 ptr, UINT32 n, UINT64 *lo, UINT64 *hi, UINT64 *align)
+{
+    for (UINT32 i = 0; i < n && i < 16; i++) {
+        UINT64 e[2];                                        /* { Type:8 | Reserved:56, Pointer } */
+        if (!NT_SUCCESS(CopyFromUser(e, (const void *)(uintptr_t)(ptr + 16 * (UINT64)i), 16))) return false;
+        if ((e[0] & 0xFF) != 1 || !e[1]) continue;          /* MemExtendedParameterAddressRequirements */
+        UINT64 req[3];                                      /* Lowest, Highest (last byte), Alignment */
+        if (!NT_SUCCESS(CopyFromUser(req, (const void *)(uintptr_t)e[1], 24))) return false;
+        if (req[0] > *lo) *lo = req[0];
+        if (req[1] && req[1] + 1 < *hi) *hi = req[1] + 1;
+        if (req[2]) *align = req[2];
+    }
+    return true;
+}
+
+/* A free range of @size at a multiple of @align (0: 64 KiB) within [lo, hi) */
+UINT64 um_find_free_aligned(UmProcess *p, UINT64 size, UINT64 lo, UINT64 hi, UINT64 align)
+{
+    if (align <= 0x10000) return um_find_free(p, size, lo, hi);
+    size = (size + 0xFFFF) & ~0xFFFFULL;
+    while (lo + size <= hi) {
+        UINT64 a = um_find_free(p, size, lo, hi);
+        if (!a) return 0;
+        UINT64 b = (a + align - 1) & ~(align - 1);
+        if (b + size <= hi && um_is_free(p, b, size)) return b;
+        lo = b > a ? b : a + 0x10000;
     }
     return 0;
 }
@@ -966,13 +1041,13 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base)
  * 32-bit programs (4-byte pointers) */
 typedef struct {
     UINT32 us_buf;                              /* UNICODE_STRING.Buffer */
-    UINT32 std_in, std_out, std_err, cur_dir, dll_path, image, cmdline, env, env_size;
+    UINT32 std_in, std_out, std_err, cur_dir, dll_path, image, cmdline, env, env_size, runtime;
     UINT32 peb_image, peb_params, peb_ncpu, peb_major, peb_minor, peb_build, peb_platform;
 } EnvLayout;
 
-static const EnvLayout g_env64 = { 8, 0x20, 0x28, 0x30, 0x38, 0x50, 0x60, 0x70, 0x80, 0x3F0,
+static const EnvLayout g_env64 = { 8, 0x20, 0x28, 0x30, 0x38, 0x50, 0x60, 0x70, 0x80, 0x3F0, 0xE0,
                                    0x10, 0x20, 0xB8, 0x118, 0x11C, 0x120, 0x124 };
-static const EnvLayout g_env32 = { 4, 0x18, 0x1C, 0x20, 0x24, 0x30, 0x38, 0x40, 0x48, 0x290,
+static const EnvLayout g_env32 = { 4, 0x18, 0x1C, 0x20, 0x24, 0x30, 0x38, 0x40, 0x48, 0x290, 0x88,
                                    0x08, 0x10, 0x64, 0xA4, 0xA8, 0xAC, 0xB0 };
 
 /* A pointer-sized field */
@@ -1031,9 +1106,19 @@ static UINT64 put_environment(UmProcess *p, const char *env, UINT32 env_len, UIN
     return ok ? va : 0;
 }
 
+/* STARTUPINFO.lpReserved2 bytes for the new process, in a region of their own */
+static UINT64 put_runtime(UmProcess *p, const UINT8 *data, UINT32 len)
+{
+    UINT64 size = ((UINT64)len + PAGE_SIZE - 1) & ~(UINT64)(PAGE_SIZE - 1);
+    UINT64 va = um_find_free(p, size, p->lay.alloc_min, p->lay.alloc_max);
+    bool ok = va && um_region_add(p, va, size, 0x04, false) && um_commit(p, va, size, 0x04) &&
+              um_write(p, va, data, len);
+    return ok ? va : 0;
+}
+
 static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image_path,
                               const char *cmdline, const char *cwd_path, const UINT64 stdv[3],
-                              const char *envp, UINT32 env_len)
+                              const char *envp, UINT32 env_len, const UINT8 *runtime, UINT32 runtime_len)
 {
     const EnvLayout *L = p->wow ? &g_env32 : &g_env64;
     bool w = p->wow;
@@ -1092,6 +1177,13 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
         if (!env_va) ok = false;
         put_ptr(pp + L->env, env_va, w);
         put_ptr(pp + L->env_size, env_bytes, w);            /* EnvironmentSize */
+        if (runtime && runtime_len) {                       /* RuntimeData: the creator's lpReserved2 */
+            UINT64 rva = put_runtime(p, runtime, runtime_len);
+            if (!rva) ok = false;
+            put_u16(pp + L->runtime, (UINT16)runtime_len);
+            put_u16(pp + L->runtime + 2, (UINT16)runtime_len);
+            put_ptr(pp + L->runtime + L->us_buf, rva, w);
+        }
 
         /* PEB */
         put_ptr(peb + L->peb_image, image_base, w);         /* ImageBaseAddress */
@@ -1348,6 +1440,8 @@ UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsol
     if (!p) { ksnprintf(err, err_cap, "Out of memory"); return NULL; }
     strncpy(p->name, exe->name, sizeof(p->name) - 1);
     p->pid = um_new_id();
+    p->parent_pid = UmCurrent() ? UmCurrent()->pid : 0;
+    p->create_time = um_now_100ns();
     p->pml4 = paging_create_process_pt();
     if (!p->pml4) { kfree(p); ksnprintf(err, err_cap, "Out of memory"); return NULL; }
     p->cwd = cwd ? cwd : RamfsRoot();
@@ -1400,7 +1494,8 @@ UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsol
         stdv[i] = (UINT64)(slot + 1) * 4;
     }
     if (!setup_environment(p, base, image_path, cmdline, cwd_path, stdv,
-                           o ? o->env : NULL, o ? o->env_len : 0)) {
+                           o ? o->env : NULL, o ? o->env_len : 0,
+                           o ? o->runtime : NULL, o ? o->runtime_len : 0)) {
         destroy(p);
         ksnprintf(err, err_cap, "Out of memory");
         return NULL;
@@ -1553,6 +1648,23 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
                               (unsigned long long)(ret - cm->base));
         }
         kprintf("[UM] %s (PID %u) %s%s\n", p->name, p->pid, p->why, caller);
+        /* the return addresses on the stack (serial log only): where it came from */
+        if (sp) {
+            int shown = 0;
+            unsigned step = p->wow ? 4 : 8;
+            int bad = 0;
+            for (unsigned i = 0; i < 4096 && shown < 24; i++) {
+                UINT64 v = 0;
+                if (!NT_SUCCESS(CopyFromUser(&v, (const void *)(uintptr_t)(sp + i * step), step))) {
+                    if (++bad > 1024) break;                /* (it may start below the stack) */
+                    continue;
+                }
+                const UmModule *cm = um_module_at(p, v);
+                if (!cm || v - cm->base < 0x1000) continue;
+                kprintf("[UM]   stack +%04x: %s+0x%llx\n", i * step, cm->name, (unsigned long long)(v - cm->base));
+                shown++;
+            }
+        }
     }
     um_exit_process(status);
 }
@@ -1567,6 +1679,22 @@ static void dump_threads(UmProcess *p)
         kprintf("[UM]   thread %u: %s, last system call %03x, user rip %llx\n", t->tid,
                 t->park == 1 ? "in a system call" : t->park == 2 ? "interrupted" : "running",
                 t->last_sys, (unsigned long long)rip);
+        for (int k = 0; k < t->wait_n && k < 4 && t->wait_objs; k++) {
+            UmObject *wo = t->wait_objs[k];
+            char nm[96];
+            um_object_name(wo, nm, sizeof(nm));
+            kprintf("[UM]     waits on object type %d%s%s%s\n", wo->type, nm[0] ? " \"" : "", nm, nm[0] ? "\"" : "");
+        }
+        /* where it came from: return addresses on its user stack */
+        UINT64 sp = t->park == 1 && t->kt ? t->kt->user_rsp : 0;
+        for (unsigned i = 0, shown = 0; sp && i < 512 && shown < 12; i++) {
+            UINT64 v = 0;
+            if (!um_read(p, sp + 8 * (UINT64)i, &v, p->wow ? 4 : 8)) break;
+            const UmModule *m = um_module_at(p, v);
+            if (!m || v - m->base < 0x1000) continue;
+            kprintf("[UM]     %s+0x%llx\n", m->name, (unsigned long long)(v - m->base));
+            shown++;
+        }
     }
 }
 
@@ -1714,6 +1842,21 @@ UmObject *um_open_process(UINT32 pid)
     return r;
 }
 
+/* OpenThread: the thread with id @tid in any process, referenced (NULL if none) */
+UmObject *um_open_thread(UINT32 tid)
+{
+    UmObject *r = NULL;
+    plock();
+    for (int i = 0; i < UM_MAX_PROCS && !r; i++) {
+        UmProcess *p = g_procs[i];
+        if (!p || p->reclaimed) continue;
+        for (int k = 0; k < UM_MAX_THREADS; k++)
+            if (p->threads[k] && p->threads[k]->tid == tid) { r = um_ob_ref(&p->threads[k]->ob); break; }
+    }
+    punlock();
+    return r;
+}
+
 int UmList(UmProcInfo *out, int max)
 {
     int n = 0;
@@ -1749,3 +1892,4 @@ bool UmKillPid(UINT32 pid)
     }
     return false;
 }
+

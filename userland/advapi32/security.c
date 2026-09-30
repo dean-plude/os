@@ -218,6 +218,8 @@ static const char *account_of(PSID sid, const char **domain, SID_NAME_USE *use)
     *domain = "BUILTIN";
     *use = SidTypeAlias;
     if (EqualSid(sid, (PSID)g_user_sid)) { *domain = "NOVAOS"; *use = SidTypeUser; return user_name(); }
+    static const BYTE domain_sid[] = { 1, 4, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 0xE8, 3, 0, 0, 0xD0, 7, 0, 0, 0xB8, 0x0B, 0, 0 };
+    if (EqualSid(sid, (PSID)domain_sid)) { *domain = "NOVAOS"; *use = SidTypeDomain; return "NOVAOS"; }
     if (EqualSid(sid, (PSID)g_admins_sid)) return "Administrators";
     if (EqualSid(sid, (PSID)g_users_sid)) return "Users";
     *domain = "";
@@ -873,25 +875,133 @@ WINADVAPI BOOL WINAPI CredEnumerateW(LPCWSTR filter, DWORD flags, DWORD *n, PVOI
 WINADVAPI VOID WINAPI CredFree(PVOID p) { LocalFree(p); }
 
 /* -----------------------------------------------------------------------
- * LSA policy: NovaOS has no local security authority to change account
- * rights in (programs ask to grant themselves privileges such as
- * SeLockMemoryPrivilege), so opening the policy is refused like it is for
- * a standard user.
+ * LSA policy: a standalone machine (workgroup WORKGROUP) whose account
+ * domain is NOVAOS (S-1-5-21-1000-2000-3000), where the user's account
+ * lives.  Account rights and private data cannot be changed.
  * ----------------------------------------------------------------------- */
 #define STATUS_ACCESS_DENIED_ ((NTSTATUS)0xC0000022L)
 #define STATUS_INVALID_HANDLE_ ((NTSTATUS)0xC0000008L)
+#define STATUS_INVALID_PARAMETER_ ((NTSTATUS)0xC000000DL)
+#define STATUS_OBJECT_NAME_NOT_FOUND_ ((NTSTATUS)0xC0000034L)
+#define STATUS_NONE_MAPPED_ ((NTSTATUS)0xC0000073L)
 typedef PVOID LSA_HANDLE, *PLSA_HANDLE;
+typedef struct { USHORT Length, MaximumLength; PWSTR Buffer; } LSA_US;
+static const BYTE g_domain_sid[] = { 1, 4, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 0xE8, 3, 0, 0, 0xD0, 7, 0, 0, 0xB8, 0x0B, 0, 0 };
+static int g_lsa_policy;                                /* what a policy handle points at */
 
 WINADVAPI NTSTATUS WINAPI LsaOpenPolicy(PVOID system, PVOID attrs, ACCESS_MASK access, PLSA_HANDLE h)
 {
-    (void)system; (void)attrs; (void)access;
-    if (h) *h = 0;
-    return STATUS_ACCESS_DENIED_;
+    (void)system; (void)attrs;
+    if (!h) return STATUS_INVALID_PARAMETER_;
+    /* reading is allowed; changing the policy is not */
+    if (access & (0x00000020 | 0x00000040 | 0x00000080 | 0x00000100 | 0x00000200 | 0x00000400 | 0x00000800 | 0x00001000)) {
+        *h = 0;
+        return STATUS_ACCESS_DENIED_;
+    }
+    *h = &g_lsa_policy;
+    return 0;
 }
 WINADVAPI NTSTATUS WINAPI LsaClose(LSA_HANDLE h) { return h ? 0 : STATUS_INVALID_HANDLE_; }
 WINADVAPI NTSTATUS WINAPI LsaFreeMemory(PVOID p) { if (p) HeapFree(GetProcessHeap(), 0, p); return 0; }
-WINADVAPI NTSTATUS WINAPI LsaAddAccountRights(LSA_HANDLE h, PSID sid, PVOID rights, ULONG n) { (void)h; (void)sid; (void)rights; (void)n; return STATUS_INVALID_HANDLE_; }
-WINADVAPI NTSTATUS WINAPI LsaRemoveAccountRights(LSA_HANDLE h, PSID sid, BOOLEAN all, PVOID rights, ULONG n) { (void)h; (void)sid; (void)all; (void)rights; (void)n; return STATUS_INVALID_HANDLE_; }
-WINADVAPI NTSTATUS WINAPI LsaEnumerateAccountRights(LSA_HANDLE h, PSID sid, PVOID *rights, PULONG n) { (void)h; (void)sid; if (rights) *rights = 0; if (n) *n = 0; return STATUS_INVALID_HANDLE_; }
-WINADVAPI NTSTATUS WINAPI LsaQueryInformationPolicy(LSA_HANDLE h, int cls, PVOID *buf) { (void)h; (void)cls; if (buf) *buf = 0; return STATUS_INVALID_HANDLE_; }
+WINADVAPI NTSTATUS WINAPI LsaAddAccountRights(LSA_HANDLE h, PSID sid, PVOID rights, ULONG n) { (void)h; (void)sid; (void)rights; (void)n; return STATUS_ACCESS_DENIED_; }
+WINADVAPI NTSTATUS WINAPI LsaRemoveAccountRights(LSA_HANDLE h, PSID sid, BOOLEAN all, PVOID rights, ULONG n) { (void)h; (void)sid; (void)all; (void)rights; (void)n; return STATUS_ACCESS_DENIED_; }
+WINADVAPI NTSTATUS WINAPI LsaEnumerateAccountRights(LSA_HANDLE h, PSID sid, PVOID *rights, PULONG n) { (void)h; (void)sid; if (rights) *rights = 0; if (n) *n = 0; return STATUS_OBJECT_NAME_NOT_FOUND_; }
+
+/* Put @s as an LSA_UNICODE_STRING at @us, its characters at *@tail */
+static void lsa_str(LSA_US *us, const char *s, BYTE **tail)
+{
+    WCHAR *w = (WCHAR *)*tail;
+    int n = s ? (int)strlen_(s) : 0;
+    for (int i = 0; i < n; i++) w[i] = (WCHAR)(BYTE)s[i];
+    w[n] = 0;
+    us->Buffer = w;
+    us->Length = (USHORT)(2 * n);
+    us->MaximumLength = (USHORT)(2 * n + 2);
+    *tail += 2 * n + 2;
+}
+
+WINADVAPI NTSTATUS WINAPI LsaQueryInformationPolicy(LSA_HANDLE h, int cls, PVOID *buf)
+{
+    if (!h || !buf) return STATUS_INVALID_HANDLE_;
+    *buf = 0;
+    BYTE *b = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 512);
+    if (!b) return (NTSTATUS)0xC0000017L;
+    BYTE *tail = b + 96;
+    switch (cls) {
+    case 3:                                             /* PolicyPrimaryDomainInformation: { Name, Sid } */
+        lsa_str((LSA_US *)b, "WORKGROUP", &tail);
+        *(PSID *)(b + sizeof(LSA_US)) = 0;              /* no domain: not a member of one */
+        break;
+    case 5: {                                           /* PolicyAccountDomainInformation: { DomainName, DomainSid } */
+        lsa_str((LSA_US *)b, "NOVAOS", &tail);
+        memcpy(tail, g_domain_sid, sizeof(g_domain_sid));
+        *(PSID *)(b + sizeof(LSA_US)) = tail;
+        break;
+    }
+    case 12: {                                          /* PolicyDnsDomainInformation */
+        /* { Name, DnsDomainName, DnsForestName, GUID DomainGuid, PSID Sid } */
+        lsa_str((LSA_US *)b, "WORKGROUP", &tail);
+        lsa_str((LSA_US *)(b + sizeof(LSA_US)), "", &tail);
+        lsa_str((LSA_US *)(b + 2 * sizeof(LSA_US)), "", &tail);
+        *(PSID *)(b + 3 * sizeof(LSA_US) + 16) = 0;
+        break;
+    }
+    default:
+        HeapFree(GetProcessHeap(), 0, b);
+        return STATUS_INVALID_PARAMETER_;
+    }
+    *buf = b;
+    return 0;
+}
+
+/* LsaLookupSids: LSA_REFERENCED_DOMAIN_LIST and LSA_TRANSLATED_NAME for each SID */
+WINADVAPI NTSTATUS WINAPI LsaLookupSids(LSA_HANDLE h, ULONG n, PSID *sids, PVOID *domains, PVOID *names)
+{
+    (void)h;
+    typedef struct { LSA_US Name; PSID Sid; } TRUST;
+    typedef struct { ULONG Entries; TRUST *Domains; } DOMLIST;
+    typedef struct { SID_NAME_USE Use; LSA_US Name; LONG DomainIndex; } NAME;
+    DOMLIST *dl = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(DOMLIST) + n * (sizeof(TRUST) + 160));
+    NAME *nm = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, n * (sizeof(NAME) + 160) + 8);
+    if (!dl || !nm) { HeapFree(GetProcessHeap(), 0, dl); HeapFree(GetProcessHeap(), 0, nm); return (NTSTATUS)0xC0000017L; }
+    dl->Domains = (TRUST *)(dl + 1);
+    BYTE *dtail = (BYTE *)(dl->Domains + n), *ntail = (BYTE *)(nm + n);
+    ULONG mapped = 0;
+    for (ULONG i = 0; i < n; i++) {
+        const char *d;
+        SID_NAME_USE u;
+        const char *name = account_of(sids[i], &d, &u);
+        nm[i].DomainIndex = -1;
+        if (!name) { nm[i].Use = 8; /* SidTypeUnknown */ continue; }
+        mapped++;
+        nm[i].Use = u;
+        lsa_str(&nm[i].Name, name, &ntail);
+        ULONG k = 0;
+        for (; k < dl->Entries; k++) {
+            const WCHAR *w = dl->Domains[k].Name.Buffer;
+            int j = 0;
+            while (d[j] && w[j] == (WCHAR)(BYTE)d[j]) j++;
+            if (!d[j] && !w[j]) break;
+        }
+        if (k == dl->Entries) {
+            lsa_str(&dl->Domains[k].Name, d, &dtail);
+            dl->Domains[k].Sid = 0;
+            dl->Entries++;
+        }
+        nm[i].DomainIndex = (LONG)k;
+    }
+    *domains = dl;
+    *names = nm;
+    return !mapped ? STATUS_NONE_MAPPED_ : mapped < n ? (NTSTATUS)0x00000107L /* SOME_NOT_MAPPED */ : 0;
+}
+
+/* Private data (stored passwords): there is none, and none can be stored */
+WINADVAPI NTSTATUS WINAPI LsaRetrievePrivateData(LSA_HANDLE h, PVOID key, PVOID *data) { (void)h; (void)key; if (data) *data = 0; return STATUS_OBJECT_NAME_NOT_FOUND_; }
+WINADVAPI NTSTATUS WINAPI LsaStorePrivateData(LSA_HANDLE h, PVOID key, PVOID data) { (void)h; (void)key; (void)data; return STATUS_ACCESS_DENIED_; }
+
+/* EFS: file encryption is not available */
+WINADVAPI BOOL WINAPI EncryptFileW(LPCWSTR name) { (void)name; SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
+WINADVAPI BOOL WINAPI DecryptFileW(LPCWSTR name, DWORD r) { (void)name; (void)r; SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
+WINADVAPI BOOL WINAPI EncryptFileA(LPCSTR name) { (void)name; SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
+WINADVAPI BOOL WINAPI DecryptFileA(LPCSTR name, DWORD r) { (void)name; (void)r; SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
 WINADVAPI ULONG WINAPI LsaNtStatusToWinError(NTSTATUS s) { return RtlNtStatusToDosError(s); }
