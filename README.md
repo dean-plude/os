@@ -554,30 +554,49 @@ changed; every fix is in NovaOS.
 The dock's **App Store** (`kernel/apps/store.c`, also `start store` in the
 Terminal) is a catalog of free and open-source Windows programs: 7-Zip,
 VLC, Firefox, Thunderbird, Notepad++, GIMP, Inkscape, Krita, Audacity,
-HandBrake, OBS Studio, LibreOffice, SumatraPDF, KeePass, qBittorrent,
-PuTTY, WinSCP, Git, Python, WinMerge and ShareX, by category, with a
-note on how far each one gets on NovaOS today.
+HandBrake, OBS Studio, LibreOffice, SumatraPDF, KeePassXC, qBittorrent,
+PuTTY, WinSCP, Git, Python, WinMerge and ShareX, plus a **Runtimes**
+category (.NET Desktop Runtime, Visual C++ Redistributable, OpenJDK,
+Mesa 3D), by category, with a note on how far each gets on NovaOS today.
 
-- **Get** downloads the program's own installer from its publisher over
-  HTTPS (following redirects, with the bytes received shown while it
-  runs) to `C:\Downloads`, using the same network operations as the
-  Terminal's `wget`.  Responses and files may now be up to 64 MB.
-- **Install** runs the downloaded installer (or **Run**, for portable
-  programs such as PuTTY and SumatraPDF); **Open** starts the program
-  once its executable exists under `C:\Programs`, and the **Installed**
-  view lists what is there.
-- 7-Zip is the one entry tested end to end (download, install, open);
-  the other installers are unchanged upstream files whose runtime needs
-  (.NET, Windows Installer, Direct3D, GTK/Qt) NovaOS does not cover yet,
-  and the note on each row says so.
-- The **Runtimes** category lists what other programs depend on: the
-  .NET Desktop Runtime, the Visual C++ Redistributable, OpenJDK (a
-  Windows Installer package) and Mesa 3D's software OpenGL.  Runtimes
-  show "Installed" instead of an Open button.
+- **64-bit packages only.**  NovaOS runs 64-bit (x64) programs, and most
+  setup programs are 32-bit even when they install a 64-bit app (NSIS,
+  Inno Setup, Mozilla's and WiX's bootstrappers).  So the store fetches
+  each project's official 64-bit package: a portable `.zip` or `.7z`, a
+  64-bit installer, a Windows Installer `.msi`, or, for Firefox and
+  Thunderbird, the full installer, which is a 7-Zip self-extracting
+  archive.  Apps that publish only a 32-bit setup program (GIMP,
+  qBittorrent, WinSCP, the Visual C++ Redistributable) are listed as
+  "32-bit only" with no download.
+- **Get** downloads over HTTPS (following redirects, with the bytes
+  received shown while it runs) to `C:\Downloads`, using the same network
+  operations as the Terminal's `wget`.  Files may be up to 256 MB.
+- **Install** depends on the package: archives are unpacked into
+  `C:\Programs\<App>` by the installed 7-Zip's own `7z.exe`, unchanged
+  (the store waits for it and reports its result, and asks for 7-Zip
+  first if it is missing); `.msi` packages go to NovaOS's Windows
+  Installer; 64-bit installers run.  A download that turns out to be a
+  32-bit program is caught before it runs, with a plain message.
+  **Run** starts portable programs (PuTTY, SumatraPDF) from Downloads.
+- **Open** starts the installed program from its own folder (console
+  programs such as Python and Git in a Terminal); archives with a
+  versioned top folder are found wherever the program landed.  The
+  **Installed** view lists what is there; runtimes show "Installed".
+- Tested in QEMU with stand-in packages (the sandbox this was built in
+  cannot reach the publishers): 7-Zip installed from its x64 installer;
+  a portable zip unpacked into `C:\Programs\Notepad++` and opened; a
+  7-Zip self-extracting installer unpacked like Firefox's and opened;
+  a 32-bit program refused with the new message.  The apps themselves
+  mostly need more of Windows than NovaOS has (the note on each row).
+- Starting a 32-bit program anywhere now says so: "is a 32-bit (x86)
+  program; NovaOS runs only 64-bit (x64) programs so far".
+- Programs in a folder of their own under `C:\Programs` now start in
+  that folder when opened from the desktop (they used to be looked up
+  by name and not found).
 - The Terminal gained `copy <source> <destination>`.
-- A kernel bug this shook out: `ksnprintf` looped forever when a `%s`
-  argument had to be cut to fit the buffer, freezing the desktop on a
-  long error message.
+- A kernel bug the store shook out: `ksnprintf` looped forever when a
+  `%s` argument had to be cut to fit the buffer, freezing the desktop on
+  a long error message.
 
 ### Windows Installer (.msi packages)
 

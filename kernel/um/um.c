@@ -690,6 +690,8 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
     UINT32 nt = rd32(f + 0x3C);
     if (fsz < 0x108 || nt > fsz - 0x108 || rd32(f + nt) != 0x00004550) return fail(L, "%s is not a valid PE file", name);
     const UINT8 *fh = f + nt + 4, *oh = fh + 20;
+    if (rd16(fh) == 0x014C)
+        return fail(L, "%s is a 32-bit (x86) program; NovaOS runs only 64-bit (x64) programs so far", name);
     if (rd16(fh) != 0x8664) return fail(L, "%s is not a 64-bit (x64) program", name);
     if (rd16(oh) != 0x20B) return fail(L, "%s is not a PE32+ image", name);
     UINT16 nsec = rd16(fh + 2), opt_size = rd16(fh + 16), chars = rd16(fh + 18);

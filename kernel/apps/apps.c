@@ -346,14 +346,12 @@ int AppForProgram(const char *exe_name)
     return -1;
 }
 
-/* Programs in C:\Programs are found by name from anywhere; others run
- * from their own folder */
+/* Programs directly in C:\Programs are found by name from anywhere;
+ * others (including ones in a folder of their own under C:\Programs, as
+ * installers and the App Store put them) run from their own folder */
 static bool in_programs(const RamNode *n)
 {
-    RamNode *progs = RamfsResolve(NULL, "\\Programs");
-    for (const RamNode *p = n->parent; p; p = p->parent)
-        if (p == progs) return true;
-    return false;
+    return n->parent && n->parent == RamfsResolve(NULL, "\\Programs");
 }
 
 /* Install a Windows Installer package: msiexec /i, on its own */
