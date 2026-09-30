@@ -28,6 +28,68 @@ static HRESULT STDMETHODCALLTYPE lf_lock(IClassFactory *This, BOOL l) { (void)Th
 static const IClassFactoryVtbl lf_vtbl = { lf_qi, lf_addref, lf_release, lf_create, lf_lock };
 static IClassFactory g_local = { &lf_vtbl };
 
+/* ---- shortcuts: shell32's ShellLink (IShellLinkW + IPersistFile), by hand-made vtables ---- */
+DEFINE_GUID(CLSID_ShellLink_T, 0x00021401, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46);
+DEFINE_GUID(IID_IShellLinkW_T, 0x000214F9, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46);
+DEFINE_GUID(IID_IShellLinkA_T, 0x000214EE, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46);
+DEFINE_GUID(IID_IPersistFile_T, 0x0000010B, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46);
+typedef HRESULT (STDMETHODCALLTYPE *QiFn)(void *, REFIID, void **);
+typedef ULONG (STDMETHODCALLTYPE *RelFn)(void *);
+typedef HRESULT (STDMETHODCALLTYPE *GetStrFn)(void *, LPWSTR, int);
+typedef HRESULT (STDMETHODCALLTYPE *SetStrFn)(void *, LPCWSTR);
+typedef HRESULT (STDMETHODCALLTYPE *GetPathFn)(void *, LPWSTR, int, void *, DWORD);
+typedef HRESULT (STDMETHODCALLTYPE *GetIconFn)(void *, LPWSTR, int, int *);
+typedef HRESULT (STDMETHODCALLTYPE *SetIconFn)(void *, LPCWSTR, int);
+typedef HRESULT (STDMETHODCALLTYPE *GetPathAFn)(void *, LPSTR, int, void *, DWORD);
+typedef HRESULT (STDMETHODCALLTYPE *PfFileFn)(void *, LPCWSTR, DWORD);
+#define VT(obj) (*(void ***)(obj))
+enum { SL_GETPATH = 3, SL_GETDESC = 6, SL_SETDESC, SL_GETDIR, SL_SETDIR, SL_GETARGS, SL_SETARGS,
+       SL_GETICON = 16, SL_SETICON, SL_SETPATH = 20, PF_LOAD = 5, PF_SAVE = 6 };
+
+static void shortcut_tests(void)
+{
+    void *sl = 0, *pf = 0;
+    HRESULT hr = CoCreateInstance(&CLSID_ShellLink_T, 0, CLSCTX_INPROC_SERVER, &IID_IShellLinkW_T, &sl);
+    CHECK("CoCreateInstance(ShellLink)", hr == S_OK && sl);
+    if (!sl) return;
+    ((SetStrFn)VT(sl)[SL_SETPATH])(sl, L"C:\\Programs\\hello.exe");
+    ((SetStrFn)VT(sl)[SL_SETARGS])(sl, L"one \"two words\"");
+    ((SetStrFn)VT(sl)[SL_SETDIR])(sl, L"C:\\Documents");
+    ((SetStrFn)VT(sl)[SL_SETDESC])(sl, L"Says hello");
+    ((SetIconFn)VT(sl)[SL_SETICON])(sl, L"C:\\Programs\\hello.exe", 2);
+    CHECK("QueryInterface(IPersistFile)", ((QiFn)VT(sl)[0])(sl, &IID_IPersistFile_T, &pf) == S_OK && pf);
+    CreateDirectoryA("C:\\Temp", 0);
+    CHECK("IPersistFile::Save", pf && ((PfFileFn)VT(pf)[PF_SAVE])(pf, L"C:\\Temp\\hello.lnk", TRUE) == S_OK);
+    if (pf) ((RelFn)VT(pf)[2])(pf);
+    ((RelFn)VT(sl)[2])(sl);
+
+    /* read it back into a new object */
+    sl = pf = 0;
+    CoCreateInstance(&CLSID_ShellLink_T, 0, CLSCTX_INPROC_SERVER, &IID_IShellLinkW_T, &sl);
+    if (sl) ((QiFn)VT(sl)[0])(sl, &IID_IPersistFile_T, &pf);
+    CHECK("IPersistFile::Load", pf && ((PfFileFn)VT(pf)[PF_LOAD])(pf, L"C:\\Temp\\hello.lnk", 0) == S_OK);
+    WCHAR b[260];
+    int idx = -1;
+    b[0] = 0; ((GetPathFn)VT(sl)[SL_GETPATH])(sl, b, 260, 0, 0);
+    CHECK("shortcut target", !wcscmp(b, L"C:\\Programs\\hello.exe"));
+    b[0] = 0; ((GetStrFn)VT(sl)[SL_GETARGS])(sl, b, 260);
+    CHECK("shortcut arguments", !wcscmp(b, L"one \"two words\""));
+    b[0] = 0; ((GetStrFn)VT(sl)[SL_GETDIR])(sl, b, 260);
+    CHECK("shortcut working folder", !wcscmp(b, L"C:\\Documents"));
+    b[0] = 0; ((GetStrFn)VT(sl)[SL_GETDESC])(sl, b, 260);
+    CHECK("shortcut description", !wcscmp(b, L"Says hello"));
+    b[0] = 0; ((GetIconFn)VT(sl)[SL_GETICON])(sl, b, 260, &idx);
+    CHECK("shortcut icon", !wcscmp(b, L"C:\\Programs\\hello.exe") && idx == 2);
+    void *sa = 0;
+    char a[260] = "";
+    CHECK("IShellLinkA", ((QiFn)VT(sl)[0])(sl, &IID_IShellLinkA_T, &sa) == S_OK && sa &&
+                         ((GetPathAFn)VT(sa)[SL_GETPATH])(sa, a, 260, 0, 0) == S_OK && !strcmp(a, "C:\\Programs\\hello.exe"));
+    if (sa) ((RelFn)VT(sa)[2])(sa);
+    if (pf) ((RelFn)VT(pf)[2])(pf);
+    if (sl) ((RelFn)VT(sl)[2])(sl);
+    DeleteFileA("C:\\Temp\\hello.lnk");
+}
+
 int main(void)
 {
     HRESULT hr = CoInitializeEx(0, COINIT_APARTMENTTHREADED);
@@ -194,6 +256,7 @@ int main(void)
                           !wcscmp(desc, L"it broke") && GetErrorInfo(0, &ei) == S_FALSE);
     SysFreeString(desc);
 
+    shortcut_tests();
     CoUninitialize();
     printf("comtest: %d passed, %d failed\n", pass, fail);
     return fail != 0;

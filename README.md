@@ -627,8 +627,8 @@ Install button all go through it, and programs can call
   `/qb`, `/passive`, `/l*v FILE` and `PROPERTY=value` overrides, and
   shows the familiar progress window with Cancel (full UI adds the
   completion message box).  Logs also go to the kernel log (`dmesg`).
-- Not yet: the packages' own dialogs (`InstallUISequence`), shortcuts
-  (NovaOS has no `.lnk` files), services, environment variables, and
+- Not yet: the packages' own dialogs (`InstallUISequence`), the
+  `Shortcut` table, services, environment variables, and
   merge modules.  LZX decoding is written to the specification but has
   only been exercised with MSZIP cabinets so far.
 
@@ -691,9 +691,41 @@ the 64-bit kernel, and they get a 32-bit copy of the whole userland in
   exists (`SHGetFolderPath`, which NSIS takes from it); msvcrt exports
   `_controlfp`, `_control87`, `__p___initenv` and friends.  The
   Terminal's `trace` now shows the file name of file system calls.
-- Not yet: the bold title lines in NSIS's white page header stay blank,
-  shortcuts (`IShellLink`) are not created, and pending renames are not
-  carried out at the next start.
+- Not yet: pending renames are not carried out at the next start.
+
+### Shortcuts (.lnk) and overlapping controls
+
+- **`IShellLink`** (`userland/shell32/shlink.c`): shell32's ShellLink
+  class, `CLSID_ShellLink`, registered under `HKCR\CLSID` (a bare
+  `shell32.dll`, so 32-bit and 64-bit programs each get their own), with
+  `IShellLinkW`, `IShellLinkA` and `IPersistFile`.  `Save` writes the
+  Windows `.lnk` format (MS-SHLLINK: header, LinkInfo with the target in
+  ANSI and Unicode, Unicode strings for the description, working folder,
+  arguments and icon); `Load` reads links made by Windows too.
+- **The shell uses them**: opening a `.lnk` (Explorer, the desktop, the
+  Start menu, `start` in the Terminal) runs its target with the
+  shortcut's arguments in its working folder, or opens the folder or
+  document it points to; a shortcut shows its target's icon and is
+  called "Shortcut" in Explorer.  The Terminal's `start` opens any
+  document, folder or shortcut the way the shell does.  The Start menu
+  lists the shortcuts in `C:\AppData\Roaming\Start Menu\Programs`
+  (where `$SMPROGRAMS` and `CSIDL_PROGRAMS` point) ahead of
+  `C:\Programs`, keeping "Uninstall ..."
+  entries out of the grid (search finds them), and the desktop shows
+  what is in `C:\Desktop` after its own icons, noticing new files within
+  half a second.
+- **Overlapping controls paint as on Windows**: siblings paint from the
+  top of the z-order down (the first control of a dialog first), so where
+  controls without `WS_CLIPSIBLINGS` overlap, the lower one's pixels end
+  on top.  NSIS's page header is a white static above its bold title,
+  subtitle and icon; they were hidden under it and now show, and the
+  welcome and finish pages cover the header as they should.
+- Tested with a real NSIS installer that makes a desktop shortcut (with
+  arguments) and two Start menu shortcuts: the desktop icon appears, a
+  double-click starts the 32-bit program with its arguments in its
+  folder, the Start menu lists it, and the uninstaller takes them away.
+  comtest round-trips a shortcut through `IShellLinkW`, `IPersistFile`
+  and `IShellLinkA` in both 64-bit and 32-bit builds.
 
 ### Installing NovaOS on a disk
 
@@ -828,8 +860,8 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 | 10 | Standard DLLs (UCRT, C++ EH, advapi32, shell32, ...), registry, COM, AHCI + FAT persistent storage | ✅ **Done** |
 | 11 | Multiprocessor: every core runs threads, per-core scheduling, fine-grained kernel locking | ✅ **Done** |
 | 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store; Windows Installer (.msi); installing NovaOS on a disk | ✅ **Done** |
-| 13 | 32-bit (x86) Windows programs (WoW64): compatibility mode, a SysWOW64 userland, x86 SEH and C++ exceptions; NSIS installers and 7-Zip's 32-bit self-extractors run | ✅ **Done** |
-| 14 | Pipes, `cmd.exe`, the OLE clipboard, shell links, more real programs | 🔄 Planned |
+| 13 | 32-bit (x86) Windows programs (WoW64): compatibility mode, a SysWOW64 userland, x86 SEH and C++ exceptions; NSIS installers (with shortcuts) and 7-Zip's 32-bit self-extractors run | ✅ **Done** |
+| 14 | Pipes, `cmd.exe`, the OLE clipboard, more real programs | 🔄 Planned |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native
 Windows executables (Phases 8–15) and the chosen compatibility strategy.

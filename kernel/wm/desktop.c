@@ -252,22 +252,79 @@ static void draw_icon_emblem(int x, int y, int i)
     }
 }
 
+/* What is in C:\\Desktop (shortcuts installers made, files saved there)
+ * follows the built-in icons, rescanned whenever the desktop is drawn */
+#define MAX_DESK_FILES 24
+static char g_dfile[MAX_DESK_FILES][RAMFS_PATH_MAX];
+static int g_ndfiles;
+
+static void scan_desktop_files(void)
+{
+    g_ndfiles = 0;
+    RamNode *d = RamfsResolve(NULL, "\\Desktop");
+    for (RamNode *c = d && d->dir ? d->child : NULL; c && g_ndfiles < MAX_DESK_FILES; c = c->next)
+        if (c->name[0] != '.' && strcmp(c->name, "desktop.ini"))
+            RamfsPath(c, g_dfile[g_ndfiles++], RAMFS_PATH_MAX);
+}
+
+static UINT64 desktop_files_signature(void)
+{
+    UINT64 sig = 1469598103934665603ULL;
+    RamNode *d = RamfsResolve(NULL, "\\Desktop");
+    for (RamNode *c = d && d->dir ? d->child : NULL; c; c = c->next) {
+        sig = (sig ^ (UINT64)(uintptr_t)c) * 1099511628211ULL;
+        for (const char *n = c->name; *n; n++) sig = (sig ^ (UINT8)*n) * 1099511628211ULL;
+    }
+    return sig;
+}
+
+static void icon_cell(int i, int *x, int *y)
+{
+    int rows = (GdiScreenH() - 24 - 120) / 96;          /* clear of the dock */
+    if (rows < 1) rows = 1;
+    *x = 20 + (i / rows) * 100;
+    *y = 24 + (i % rows) * 96;
+}
+
 static void draw_desktop_icons(void)
 {
     g_hot_bg_n = 0;
-    for (int i = 0; i < N_ICONS; i++) {
-        int x = 20, y = 24 + i * 96;
+    scan_desktop_files();
+    for (int i = 0; i < N_ICONS + g_ndfiles; i++) {
+        int x, y;
+        icon_cell(i, &x, &y);
         GdiRect cell = RECT(x, y - 6, 88, 84);
         if (i == g_icon_sel) GdiRoundAlpha(cell, 6, GDI_WHITE, 38);   /* soft, no outline */
-        draw_icon_emblem(x + 20, y, i);
+        char label[48];
+        if (i < N_ICONS) {
+            draw_icon_emblem(x + 20, y, i);
+            strncpy(label, g_icons[i].label, sizeof(label) - 1);
+            label[sizeof(label) - 1] = '\0';
+        } else {
+            RamNode *n = RamfsResolve(NULL, g_dfile[i - N_ICONS]);
+            if (!n) continue;
+            AppDrawNodeIcon(n, x + 20, y, 48);
+            char name[RAMFS_NAME_MAX];
+            strncpy(name, n->name, sizeof(name) - 1);
+            name[sizeof(name) - 1] = '\0';
+            char *dot = strrchr(name, '.');
+            if (dot && ends_with_ci(dot, ".lnk")) *dot = '\0';   /* shortcuts go by their name */
+            fit_text(name, 86, label, sizeof(label), false);
+        }
         /* a soft blurred shadow keeps labels readable on any wallpaper */
-        GdiTextShadowCenter(x, y + 54, 88, g_icons[i].label, TXT_LIGHT, 205);
+        GdiTextShadowCenter(x, y + 54, 88, label, TXT_LIGHT, 205);
         HOT_BG(cell, ACT_ICON, i);
     }
 }
 
 static void open_icon(int i)
 {
+    if (i >= N_ICONS) {
+        RamNode *n = i - N_ICONS < g_ndfiles ? RamfsResolve(NULL, g_dfile[i - N_ICONS]) : NULL;
+        if (n && n->dir) AppOpenFolder(n);
+        else if (n) AppOpenFile(n);
+        return;
+    }
     if (g_icons[i].path) AppOpenFolder(RamfsResolve(NULL, g_icons[i].path));
     else AppLaunch((AppId)g_icons[i].app);
 }
@@ -418,16 +475,43 @@ static const char *g_pinned_cap[N_PINNED] = {
 };
 
 /* Programs installed in C:\Programs (rescanned when the menu opens) */
-#define MAX_PROGS 24
-static struct { char name[32]; char path[RAMFS_PATH_MAX]; bool hidden; } g_progs[MAX_PROGS];
+#define MAX_PROGS 64
+static struct { char name[32]; char path[RAMFS_PATH_MAX]; bool hidden, link; } g_progs[MAX_PROGS];
 static int g_nprogs;
+
+/* Shortcuts installers put in the Start menu's Programs folder (and one
+ * level of folders below it) */
+#define START_MENU_PROGRAMS "\\AppData\\Roaming\\Start Menu\\Programs"
+static void scan_links(RamNode *dir, int depth)
+{
+    for (RamNode *c = dir ? dir->child : NULL; c && g_nprogs < MAX_PROGS; c = c->next) {
+        if (c->dir) { if (depth < 1) scan_links(c, depth + 1); continue; }
+        if (!ends_with_ci(c->name, ".lnk") || !AppLinkTarget(c)) continue;
+        strncpy(g_progs[g_nprogs].name, c->name, sizeof(g_progs[0].name) - 1);
+        g_progs[g_nprogs].name[sizeof(g_progs[0].name) - 1] = '\0';
+        char *dot = strrchr(g_progs[g_nprogs].name, '.');
+        if (dot && ends_with_ci(dot, ".lnk")) *dot = '\0';
+        RamfsPath(c, g_progs[g_nprogs].path, sizeof(g_progs[0].path));
+        const char *n = g_progs[g_nprogs].name;
+        g_progs[g_nprogs].link = true;
+        g_progs[g_nprogs].hidden = !strncmp(n, "Uninstall", 9) || !strncmp(n, "uninstall", 9);
+        g_nprogs++;
+    }
+}
+
+static void draw_prog_icon(int i, int x, int y, int s)
+{
+    RamNode *n = g_progs[i].link ? RamfsResolve(NULL, g_progs[i].path) : NULL;
+    if (n) AppDrawNodeIcon(n, x, y, s);
+    else AppDrawProgramIcon(g_progs[i].name, x, y, s);
+}
 
 static void scan_programs(void)
 {
     g_nprogs = 0;
+    scan_links(RamfsResolve(NULL, START_MENU_PROGRAMS), 0);  /* installed apps first */
     RamNode *pd = RamfsResolve(NULL, "\\Programs");
-    if (!pd) return;
-    for (RamNode *c = pd->child; c && g_nprogs < MAX_PROGS; c = c->next) {
+    for (RamNode *c = pd ? pd->child : NULL; c && g_nprogs < MAX_PROGS; c = c->next) {
         char exe[RAMFS_NAME_MAX + 8];
         RamNode *node = NULL;
         if (c->dir) {                                    /* C:\Programs\NAME\NAME.exe */
@@ -446,6 +530,7 @@ static void scan_programs(void)
         RamfsPath(node, g_progs[g_nprogs].path, sizeof(g_progs[0].path));
         /* self-tests and fault demos stay out of the grid (search finds them) */
         const char *n = g_progs[g_nprogs].name;
+        g_progs[g_nprogs].link = false;
         g_progs[g_nprogs].hidden = ends_with_ci(n, "test") || !strcmp(n, "crash") ||
                                    !strcmp(n, "spin") || !strcmp(n, "threads");
         g_nprogs++;
@@ -456,7 +541,8 @@ static void launch_program(int i)
 {
     if (i < 0 || i >= g_nprogs) return;
     RamNode *exe = RamfsResolve(NULL, g_progs[i].path);
-    if (exe) AppRunProgram(exe, g_progs[i].name);
+    if (exe && g_progs[i].link) AppOpenFile(exe);        /* a shortcut */
+    else if (exe) AppRunProgram(exe, g_progs[i].name);
 }
 
 /* ---- search ---- */
@@ -564,7 +650,7 @@ static void result_icon(int i, int x, int y, int s)
 {
     switch (g_res[i].kind) {
     case R_APP:     AppDrawIcon((AppId)g_res[i].arg, x, y, s); break;
-    case R_PROG:    AppDrawProgramIcon(g_res[i].name, x, y, s); break;
+    case R_PROG:    draw_prog_icon(g_res[i].arg, x, y, s); break;
     case R_SETTING: AppDrawIcon(APP_SETTINGS, x, y, s); break;
     case R_FOLDER:  AppDrawFolderIcon(x, y, s); break;
     case R_FILE:    AppDrawNodeIcon(RamfsResolve(NULL, g_res[i].sub), x, y, s); break;
@@ -656,7 +742,7 @@ static void draw_home(int x, int y, int w, int bottom)
     for (int i = 0; i < g_nprogs; i++) if (!g_progs[i].hidden) shown++;
     if (shown) {
         section_title(x, y, "Programs");
-        GdiTextT(x + w - GdiTextW("from C:\\Programs"), y + 1, "from C:\\Programs", SH_TEXT2);
+        GdiTextT(x + w - GdiTextW("installed"), y + 1, "installed", SH_TEXT2);
         y += 28;
         int per_row = 6, k = 0;
         for (int i = 0; i < g_nprogs && k < 2 * per_row; i++) {
@@ -664,7 +750,7 @@ static void draw_home(int x, int y, int w, int bottom)
             int cx = x + (k % per_row) * col, cy = y + (k / per_row) * 72;
             GdiRect cell = RECT(cx, cy - 4, col, 68);
             if (hovered(ACT_PROG, i)) GdiRoundAlpha(cell, 8, GDI_WHITE, HOVER_ALPHA);
-            AppDrawProgramIcon(g_progs[i].name, cx + (col - 36) / 2, cy + 2, 36);
+            draw_prog_icon(i, cx + (col - 36) / 2, cy + 2, 36);
             char cap[40];
             fit_text(g_progs[i].name, col - 8, cap, sizeof(cap), false);
             GdiTextCenter(cx, cy + 42, col, cap, SH_TEXT);
@@ -1123,7 +1209,7 @@ static void menu_for_icon(int i, int x, int y)
 {
     menu_begin(x, y);
     menu_add("Open", MA_OPEN_ICON, i, NULL, false);
-    if (g_icons[i].path) menu_add("Open in Terminal", MA_TERMINAL_AT, 0, g_icons[i].path, false);
+    if (i < N_ICONS && g_icons[i].path) menu_add("Open in Terminal", MA_TERMINAL_AT, 0, g_icons[i].path, false);
 }
 
 static void menu_for_desktop(int x, int y)
@@ -1447,11 +1533,19 @@ void DesktopRun(void *arg)
     UINT64 last_press = 0;
     int    last_px = -100, last_py = -100;
 
+    UINT64 last_desk_check = 0;
+    UINT64 desk_sig = 0;
     for (;;) {
         g_desktop_beat = sched_ticks();
         /* Program threads take this lock around file-system access */
         DesktopLock();
         ps2_poll();
+        /* C:\\Desktop changed (an installer made a shortcut)? redraw the icons */
+        if (g_desktop_beat - last_desk_check >= 50) {
+            last_desk_check = g_desktop_beat;
+            UINT64 sig = desktop_files_signature();
+            if (sig != desk_sig) { desk_sig = sig; WmInvalidateBackground(); }
+        }
 
         InputEvent ev;
         while (InputPoll(&ev)) {

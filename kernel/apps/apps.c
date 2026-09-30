@@ -185,7 +185,7 @@ static bool has_ext(const char *name, const char *ext)     /* case-insensitive *
     return true;
 }
 
-typedef enum { FT_OTHER, FT_TEXT, FT_ICON, FT_PNG, FT_EXE, FT_DLL, FT_CURSOR, FT_MSI } FileType;
+typedef enum { FT_OTHER, FT_TEXT, FT_ICON, FT_PNG, FT_EXE, FT_DLL, FT_CURSOR, FT_MSI, FT_LINK } FileType;
 
 static FileType file_type(const RamNode *f)
 {
@@ -196,6 +196,7 @@ static FileType file_type(const RamNode *f)
     if (has_ext(f->name, ".exe")) return FT_EXE;
     if (has_ext(f->name, ".dll")) return FT_DLL;
     if (has_ext(f->name, ".msi")) return FT_MSI;
+    if (has_ext(f->name, ".lnk")) return FT_LINK;
     if (has_ext(f->name, ".txt") || has_ext(f->name, ".md") || has_ext(f->name, ".log") ||
         has_ext(f->name, ".ini") || has_ext(f->name, ".c") || has_ext(f->name, ".h"))
         return FT_TEXT;
@@ -213,9 +214,125 @@ const char *AppFileTypeName(const RamNode *f)
     case FT_EXE:    return "Application";
     case FT_DLL:    return "Application extension";
     case FT_MSI:    return "Windows Installer Package";
+    case FT_LINK:   return "Shortcut";
     case FT_TEXT:   return "Text Document";
     default:        return "File";
     }
+}
+
+/* -----------------------------------------------------------------------
+ * Shortcuts (.lnk, the Windows format: shell32's IShellLink writes them)
+ * ----------------------------------------------------------------------- */
+static UINT32 rd32le(const UINT8 *p) { return p[0] | p[1] << 8 | p[2] << 16 | (UINT32)p[3] << 24; }
+static UINT16 rd16le(const UINT8 *p) { return (UINT16)(p[0] | p[1] << 8); }
+
+/* UTF-16 (n units, or up to a NUL if n < 0) -> UTF-8, bounded */
+static void u16_to_utf8(const UINT8 *s, int n, const UINT8 *end, char *out, int cap)
+{
+    int o = 0;
+    for (int i = 0; (n < 0 || i < n) && s + 2 <= end; i++, s += 2) {
+        UINT32 c = rd16le(s);
+        if (n < 0 && !c) break;
+        if (c >= 0xD800 && c < 0xDC00 && s + 4 <= end) {
+            UINT32 lo = rd16le(s + 2);
+            if (lo >= 0xDC00 && lo < 0xE000) { c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00); s += 2; i++; }
+        }
+        int need = c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+        if (o + need >= cap) break;
+        if (need == 1) out[o++] = (char)c;
+        else if (need == 2) { out[o++] = (char)(0xC0 | c >> 6); out[o++] = (char)(0x80 | (c & 0x3F)); }
+        else if (need == 3) { out[o++] = (char)(0xE0 | c >> 12); out[o++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[o++] = (char)(0x80 | (c & 0x3F)); }
+        else { out[o++] = (char)(0xF0 | c >> 18); out[o++] = (char)(0x80 | ((c >> 12) & 0x3F)); out[o++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[o++] = (char)(0x80 | (c & 0x3F)); }
+    }
+    out[o] = '\0';
+}
+
+static const UINT8 *lnk_string(const UINT8 *p, const UINT8 *end, bool wide, char *out, int cap)
+{
+    if (out) out[0] = '\0';
+    if (p + 2 > end) return end;
+    UINT16 n = rd16le(p);
+    p += 2;
+    UINT32 bytes = wide ? 2u * n : n;
+    if (p + bytes > end) return end;
+    if (out) {
+        if (wide) u16_to_utf8(p, n, end, out, cap);
+        else { int k = n < cap - 1 ? n : cap - 1; memcpy(out, p, (size_t)k); out[k] = '\0'; }
+    }
+    return p + bytes;
+}
+
+bool AppLinkRead(const RamNode *lnk, AppLink *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!lnk || lnk->dir || !lnk->data || lnk->size < 0x4C) return false;
+    const UINT8 *p = (const UINT8 *)lnk->data, *end = p + lnk->size;
+    static const UINT8 clsid[16] = { 0x01, 0x14, 0x02, 0, 0, 0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46 };
+    if (rd32le(p) != 0x4C || memcmp(p + 4, clsid, 16)) return false;
+    UINT32 flags = rd32le(p + 0x14);
+    p += 0x4C;
+    if ((flags & 0x01) && p + 2 <= end) p += 2 + rd16le(p);             /* LinkTargetIDList */
+    if ((flags & 0x02) && p + 0x1C <= end) {                             /* LinkInfo */
+        UINT32 li = rd32le(p), hdr = rd32le(p + 4), lf = rd32le(p + 8);
+        if (li >= 0x1C && p + li <= end && (lf & 1)) {
+            UINT32 base = rd32le(p + 0x10), suffix = rd32le(p + 0x18);
+            if (hdr >= 0x24 && rd32le(p + 0x1C) && rd32le(p + 0x1C) < li) {
+                u16_to_utf8(p + rd32le(p + 0x1C), -1, p + li, out->target, sizeof(out->target));
+            } else if (base < li) {
+                const char *b = (const char *)p + base;
+                int k = 0;
+                while (k < (int)sizeof(out->target) - 1 && (const UINT8 *)b + k < p + li && b[k]) { out->target[k] = b[k]; k++; }
+                out->target[k] = '\0';
+                if (suffix && suffix < li) {
+                    const char *x = (const char *)p + suffix;
+                    while (k < (int)sizeof(out->target) - 1 && (const UINT8 *)x < p + li && *x) out->target[k++] = *x++;
+                    out->target[k] = '\0';
+                }
+            }
+        }
+        p += li;
+    }
+    bool wide = (flags & 0x80) != 0;
+    if (flags & 0x04) p = lnk_string(p, end, wide, out->description, sizeof(out->description));
+    if (flags & 0x08) p = lnk_string(p, end, wide, NULL, 0);
+    if (flags & 0x10) p = lnk_string(p, end, wide, out->workdir, sizeof(out->workdir));
+    if (flags & 0x20) p = lnk_string(p, end, wide, out->args, sizeof(out->args));
+    return out->target[0] != '\0';
+}
+
+/* A Windows path ("C:\...") as a node on drive C: */
+static RamNode *resolve_win_path(const char *path)
+{
+    if (!path || !path[0]) return NULL;
+    if (((path[0] | 0x20) >= 'a' && (path[0] | 0x20) <= 'z') && path[1] == ':') {
+        if ((path[0] | 0x20) != 'c') return NULL;
+        path += 2;
+    }
+    return RamfsResolve(NULL, path);
+}
+
+RamNode *AppLinkTarget(const RamNode *lnk)
+{
+    AppLink l;
+    return AppLinkRead(lnk, &l) ? resolve_win_path(l.target) : NULL;
+}
+
+/* Open what a shortcut points at: a program runs with the shortcut's
+ * arguments in its working folder; a folder or document opens */
+static void open_link(RamNode *lnk)
+{
+    AppLink l;
+    if (!AppLinkRead(lnk, &l)) { NotepadOpen(lnk); return; }
+    RamNode *t = resolve_win_path(l.target);
+    if (!t) { kprintf("[APPS] %s: the shortcut's target %s is missing\n", lnk->name, l.target); return; }
+    if (t->dir) { AppOpenFolder(t); return; }
+    if (file_type(t) != FT_EXE) { AppOpenFile(t); return; }
+    int app = AppForProgram(t->name);
+    if (app >= 0) { AppLaunch((AppId)app); return; }
+    char cmd[RAMFS_PATH_MAX + sizeof(l.args) + 8];
+    ksnprintf(cmd, sizeof(cmd), "\"%s\"%s%s", l.target, l.args[0] ? " " : "", l.args);
+    RamNode *dir = resolve_win_path(l.workdir);
+    TerminalRun(cmd, dir && dir->dir ? dir : t->parent);
 }
 
 void AppOpenFile(RamNode *file)
@@ -223,6 +340,9 @@ void AppOpenFile(RamNode *file)
     if (!file) { NotepadOpen(NULL); return; }
     AppNoteRecentFile(file);
     switch (file_type(file)) {
+    case FT_LINK:
+        open_link(file);
+        break;
     case FT_ICON: case FT_CURSOR: case FT_PNG:
         PhotosOpen(file);
         break;
@@ -325,6 +445,10 @@ void AppDrawNodeIcon(RamNode *f, int x, int y, int size)
 {
     if (!f) return;
     if (f->dir) { AppDrawFolderKindIcon(AppFolderKind(f), x, y, size); return; }
+    if (file_type(f) == FT_LINK) {                       /* a shortcut looks like its target */
+        RamNode *t = AppLinkTarget(f);
+        if (t && t != f && file_type(t) != FT_LINK) { AppDrawNodeIcon(t, x, y, size); return; }
+    }
     if (IconDraw(AppFileIcon(f), x, y, size)) return;
     if (file_type(f) == FT_EXE) AppDrawProgramIcon(f->name, x, y, size);
     else                        AppDrawFileIcon(x, y, size);

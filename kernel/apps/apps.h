@@ -140,6 +140,16 @@ void AppUptime(char *buf, int cap);                     /* "1h 02m 05s" */
 void TerminalOpen(void);
 /* A new Terminal in @cwd (NULL: Documents) that runs @cmd as if typed */
 void TerminalRun(const char *cmd, RamNode *cwd);
+
+/* Shortcuts (.lnk files) */
+typedef struct {
+    char target[RAMFS_PATH_MAX];    /* "C:\\Programs\\App\\app.exe" */
+    char args[256];
+    char workdir[RAMFS_PATH_MAX];
+    char description[128];
+} AppLink;
+bool     AppLinkRead(const RamNode *lnk, AppLink *out);
+RamNode *AppLinkTarget(const RamNode *lnk);          /* NULL: not a shortcut, or a missing target */
 void ExplorerOpen(RamNode *dir);
 void NotepadOpen(RamNode *file);
 void SettingsOpen(void);
