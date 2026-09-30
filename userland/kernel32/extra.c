@@ -969,10 +969,22 @@ WINBASEAPI BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIB
 
 WINBASEAPI HANDLE WINAPI OpenProcess(DWORD access, BOOL inherit, DWORD pid)
 {
-    (void)access; (void)inherit;
-    if (pid == GetCurrentProcessId()) return GetCurrentProcess();
-    SetLastError(ERROR_INVALID_PARAMETER);
-    return 0;
+    (void)access;
+    OBJECT_ATTRIBUTES oa;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.Attributes = inherit ? OBJ_INHERIT : 0;
+    CLIENT_ID cid;
+    cid.UniqueProcess = (HANDLE)(ULONG_PTR)pid;
+    cid.UniqueThread = 0;
+    HANDLE h = 0;
+    NTSTATUS s = NtOpenProcess(&h, access, &oa, &cid);
+    if (!NT_SUCCESS(s)) {
+        if (pid == GetCurrentProcessId()) return GetCurrentProcess();   /* (this process has no exit object) */
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    return h;
 }
 
 WINBASEAPI DWORD WINAPI GetProcessId(HANDLE h)

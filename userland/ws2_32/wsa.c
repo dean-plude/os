@@ -355,3 +355,114 @@ static int enum_protocols(const int *which, BYTE *buf, LPDWORD len, BOOL wide)
 
 int WSAEnumProtocolsW(int *protocols, LPWSAPROTOCOL_INFOW buf, LPDWORD len) { return enum_protocols(protocols, (BYTE *)buf, len, TRUE); }
 int WSAEnumProtocolsA(int *protocols, LPWSAPROTOCOL_INFOA buf, LPDWORD len) { return enum_protocols(protocols, (BYTE *)buf, len, FALSE); }
+
+/* -----------------------------------------------------------------------
+ * WSAEventSelect: a helper thread looks at the registered sockets (with
+ * select) and sets their events; WSAEnumNetworkEvents reports and clears
+ * ----------------------------------------------------------------------- */
+WINBASEAPI VOID WINAPI Sleep(DWORD ms);
+
+typedef struct { SOCKET s; WSAEVENT ev; long mask, pending; int closed; } EvSel;
+static EvSel g_evsel[64];
+static volatile long g_evsel_lock, g_evsel_thread;
+
+static void es_lock(void)   { while (__atomic_exchange_n(&g_evsel_lock, 1, __ATOMIC_ACQUIRE)) Sleep(0); }
+static void es_unlock(void) { __atomic_store_n(&g_evsel_lock, 0, __ATOMIC_RELEASE); }
+
+static DWORD WINAPI evsel_thread(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        fd_set rd, wr;
+        rd.fd_count = wr.fd_count = 0;
+        es_lock();
+        for (int i = 0; i < 64; i++) {
+            if (!g_evsel[i].ev) continue;
+            if (g_evsel[i].mask & (FD_READ | FD_ACCEPT | FD_CLOSE)) rd.fd_array[rd.fd_count++] = g_evsel[i].s;
+            if (g_evsel[i].mask & (FD_WRITE | FD_CONNECT)) wr.fd_array[wr.fd_count++] = g_evsel[i].s;
+        }
+        es_unlock();
+        if (!rd.fd_count && !wr.fd_count) { Sleep(20); continue; }
+        struct timeval tv = { 0, 20000 };
+        if (select(0, &rd, &wr, 0, &tv) <= 0) { Sleep(5); continue; }
+        es_lock();
+        for (int i = 0; i < 64; i++) {
+            EvSel *e = &g_evsel[i];
+            if (!e->ev) continue;
+            long got = 0;
+            if (__WSAFDIsSet(e->s, &rd)) {
+                char c;
+                int n = recv(e->s, &c, 1, MSG_PEEK);
+                if (n == 0) { got |= FD_CLOSE; e->closed = 1; }
+                else got |= (e->mask & FD_ACCEPT) ? FD_ACCEPT : FD_READ;
+            }
+            if (__WSAFDIsSet(e->s, &wr)) got |= (e->mask & FD_CONNECT) ? FD_CONNECT : FD_WRITE;
+            got &= e->mask & ~e->pending;
+            if (e->closed) got &= ~FD_READ;
+            if (got) { e->pending |= got; SetEvent(e->ev); }
+        }
+        es_unlock();
+        Sleep(5);
+    }
+}
+
+int WSAEventSelect(SOCKET s, WSAEVENT ev, long events)
+{
+    es_lock();
+    int free = -1, at = -1;
+    for (int i = 0; i < 64; i++) {
+        if (g_evsel[i].ev && g_evsel[i].s == s) at = i;
+        if (!g_evsel[i].ev && free < 0) free = i;
+    }
+    if (at < 0) at = free;
+    if (at < 0) { es_unlock(); set_err(WSAENOBUFS); return SOCKET_ERROR; }
+    if (!ev || !events) memset(&g_evsel[at], 0, sizeof(EvSel));
+    else { g_evsel[at].s = s; g_evsel[at].ev = ev; g_evsel[at].mask = events; g_evsel[at].pending = 0; g_evsel[at].closed = 0; }
+    es_unlock();
+    u_long nb = 1;
+    ioctlsocket(s, FIONBIO, &nb);                       /* as on Windows: the socket is non-blocking now */
+    if (!__atomic_exchange_n(&g_evsel_thread, 1, __ATOMIC_ACQ_REL)) {
+        HANDLE t = CreateThread(0, 64 * 1024, (LPTHREAD_START_ROUTINE)evsel_thread, 0, 0, 0);
+        if (t) CloseHandle(t);
+    }
+    return 0;
+}
+
+int WSAEnumNetworkEvents(SOCKET s, WSAEVENT ev, LPWSANETWORKEVENTS out)
+{
+    memset(out, 0, sizeof(*out));
+    es_lock();
+    for (int i = 0; i < 64; i++) {
+        if (!g_evsel[i].ev || g_evsel[i].s != s) continue;
+        out->lNetworkEvents = g_evsel[i].pending;
+        g_evsel[i].pending = 0;
+        break;
+    }
+    es_unlock();
+    if (ev) ResetEvent(ev);
+    return 0;
+}
+
+/* getnameinfo: numeric (the names are the addresses; no reverse lookups) */
+int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, DWORD hostlen, char *serv, DWORD servlen, int flags)
+{
+    (void)flags;
+    if (!sa || (sa->sa_family != AF_INET && sa->sa_family != AF_INET6)) return WSAEAFNOSUPPORT;
+    if (sa->sa_family == AF_INET && salen < (socklen_t)sizeof(struct sockaddr_in)) return WSAEFAULT;
+    const void *addr;
+    u_short port;
+    if (sa->sa_family == AF_INET) { addr = &((const struct sockaddr_in *)sa)->sin_addr; port = ((const struct sockaddr_in *)sa)->sin_port; }
+    else { addr = (const BYTE *)sa + 8; port = *(const u_short *)((const BYTE *)sa + 2); }
+    if (host && hostlen && !inet_ntop(sa->sa_family, addr, host, hostlen)) return WSAEFAULT;
+    if (serv && servlen) {
+        char t[8];
+        unsigned p = ntohs(port), k = 0;
+        char r[8];
+        do { r[k++] = (char)('0' + p % 10); p /= 10; } while (p);
+        for (unsigned i = 0; i < k; i++) t[i] = r[k - 1 - i];
+        t[k] = 0;
+        if (k + 1 > servlen) return WSAEFAULT;
+        memcpy(serv, t, k + 1);
+    }
+    return 0;
+}

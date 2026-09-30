@@ -100,6 +100,7 @@ XSTUB(NtCancelIoFileEx,             SYS_NtCancelIoFileEx)
 XSTUB(NtSetInformationObject,       SYS_NtSetInformationObject)
 XSTUB(NtQueryObject,                SYS_NtQueryObject)
 XSTUB(NtNovaClipboard,              SYS_NtNovaClipboard)
+XSTUB(NtOpenProcess,                SYS_NtOpenProcess)
 XSTUB(NtContinue,                   SYS_NtContinue)
 XSTUB(NtRaiseException,             SYS_NtRaiseException)
 XSTUB(NtNovaLoadDll,                SYS_NtNovaLoadDll)
@@ -221,6 +222,21 @@ NTSYSAPI VOID NTAPI RtlInitUnicodeString(PUNICODE_STRING us, const WCHAR *s)
     us->Buffer = (WCHAR *)s;
 }
 
+/* Extended attributes: the file system has none */
+NTSYSAPI NTSTATUS NTAPI NtSetEaFile(HANDLE h, PIO_STATUS_BLOCK io, PVOID buf, ULONG len)
+{
+    (void)h; (void)buf; (void)len;
+    if (io) { io->Status = (NTSTATUS)0xC000004F; io->Information = 0; }
+    return (NTSTATUS)0xC000004F;                      /* STATUS_EAS_NOT_SUPPORTED */
+}
+NTSYSAPI NTSTATUS NTAPI NtQueryEaFile(HANDLE h, PIO_STATUS_BLOCK io, PVOID buf, ULONG len, BOOLEAN single, PVOID list,
+                                      ULONG list_len, PULONG index, BOOLEAN restart)
+{
+    (void)h; (void)buf; (void)len; (void)single; (void)list; (void)list_len; (void)index; (void)restart;
+    if (io) { io->Status = (NTSTATUS)0xC000004F; io->Information = 0; }
+    return (NTSTATUS)0xC000004F;
+}
+
 NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
 {
     switch ((ULONG)s) {
@@ -239,6 +255,7 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
     case 0xC000014B: return 109;                          /* ERROR_BROKEN_PIPE */
     case 0xC0000120: return 995;                          /* ERROR_OPERATION_ABORTED */
     case 0xC0000225: return 1168;                         /* ERROR_NOT_FOUND */
+    case 0xC000004F: return 282;                          /* ERROR_EAS_NOT_SUPPORTED */
     case 0xC0000135: return 126;                          /* ERROR_MOD_NOT_FOUND */
     case 0xC000007B: return 193;                          /* ERROR_BAD_EXE_FORMAT */
     case 0x80000006: return ERROR_NO_MORE_FILES;

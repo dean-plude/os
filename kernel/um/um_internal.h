@@ -257,6 +257,7 @@ UINT64     um_now_100ns(void);                  /* system time (100 ns since 160
 UINT64     um_handle_new_object(UmProcess *p, UmObject *o);   /* takes a reference; 0 if full */
 UmObject  *um_handle_object(UmProcess *p, UINT64 h, UmObType type);   /* referenced; NULL if bad */
 bool       um_handle_object_exists(UmProcess *p, UINT64 h);           /* any open handle */
+UmObject  *um_open_process(UINT32 pid);          /* OpenProcess: referenced, or NULL */
 UINT64     um_close_handle(UINT64 h);           /* NtClose for the current process */
 /* How a new process starts: standard handles (kind H_FREE = the console),
  * handles it inherits (at the same values; NULL: none) and its

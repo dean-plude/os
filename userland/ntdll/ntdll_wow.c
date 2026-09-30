@@ -301,6 +301,15 @@ NTSTATUS NTAPI NtSetInformationObject(HANDLE h, ULONG cls, PVOID info, ULONG len
     return SC(NtSetInformationObject, H(h), U(cls), P(info), U(len));
 }
 
+NTSTATUS NTAPI NtOpenProcess(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, CLIENT_ID *cid)
+{
+    Box hb; OAC oc;
+    U64 c[2] = { cid ? (U64)(ULONG_PTR)cid->UniqueProcess : 0, cid ? (U64)(ULONG_PTR)cid->UniqueThread : 0 };
+    NTSTATUS s = SC(NtOpenProcess, HBOX(hb, h), U(access), oa_in(&oc, oa), cid ? P(c) : 0);
+    box_out(&hb);
+    return s;
+}
+
 LONG_PTR NTAPI NtNovaClipboard(ULONG op, ULONG_PTR a, PVOID b, ULONG_PTR c, const char *name)
 {
     return SCP(NtNovaClipboard, U(op), op == 0 ? H(a) : U(a), P(b), U(c), P(name));

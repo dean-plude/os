@@ -52,10 +52,28 @@ static PEB_LDR_DATA g_ldr;
 static volatile long g_ldr_lock;
 static int    g_process_ready;
 
-static void llock(void)   { while (__atomic_exchange_n(&g_ldr_lock, 1, __ATOMIC_ACQUIRE)) __builtin_ia32_pause(); }
-static void lunlock(void) { __atomic_store_n(&g_ldr_lock, 0, __ATOMIC_RELEASE); }
-
 static BYTE *teb(void)         { return NtCurrentTebBytes(); }
+
+/* The loader lock: recursive, as on Windows, since a DllMain or TLS
+ * callback may itself load a library (LoadLibrary under the lock) */
+static void *volatile g_ldr_owner;
+static int g_ldr_depth;
+static void llock(void)
+{
+    void *me = teb();
+    if (g_ldr_owner == me) { g_ldr_depth++; return; }
+    for (int spins = 0; __atomic_exchange_n(&g_ldr_lock, 1, __ATOMIC_ACQUIRE); spins++) {
+        if (spins < 64) __builtin_ia32_pause(); else NtYieldExecution();
+    }
+    g_ldr_owner = me;
+    g_ldr_depth = 1;
+}
+static void lunlock(void)
+{
+    if (--g_ldr_depth) return;
+    g_ldr_owner = 0;
+    __atomic_store_n(&g_ldr_lock, 0, __ATOMIC_RELEASE);
+}
 static void *tls_pointer(void) { return *(void **)(teb() + TEB_TLS_POINTER); }
 
 static void wcopy(WCHAR *d, const char *s, int cap)
@@ -226,9 +244,9 @@ static BOOL attach_new_modules(int first)
     for (int i = first; i < g_nmod; i++) {
         Module *m = &g_mod[i];
         if (m->attached || !m->is_dll) { m->attached = TRUE; continue; }
+        m->attached = TRUE;                          /* (a nested load must not run it again) */
         run_tls_callbacks(m, DLL_PROCESS_ATTACH);
         if (!call_dllmain(m, DLL_PROCESS_ATTACH)) return FALSE;
-        m->attached = TRUE;
         m->entry.Flags |= LDRP_PROCESS_ATTACH_CALLED;
     }
     return TRUE;

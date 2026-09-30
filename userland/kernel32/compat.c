@@ -1227,3 +1227,67 @@ K32 UINT WINAPI GlobalGetAtomNameA(WORD a, LPSTR buf, int n)
 }
 K32 UINT WINAPI GetAtomNameA(WORD a, LPSTR buf, int n) { return GlobalGetAtomNameA(a, buf, n); }
 K32 BOOL WINAPI InitAtomTable(DWORD n) { (void)n; return TRUE; }
+
+/* -----------------------------------------------------------------------
+ * NUMA (one node holding every processor), volumes (one: C:), odds
+ * ----------------------------------------------------------------------- */
+K32 BOOL WINAPI GetNumaHighestNodeNumber(PULONG node) { *node = 0; return TRUE; }
+K32 BOOL WINAPI GetNumaNodeProcessorMask(UCHAR node, PULONGLONG mask)
+{
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    *mask = node ? 0 : (si.dwNumberOfProcessors >= 64 ? ~0ULL : (1ULL << si.dwNumberOfProcessors) - 1);
+    return TRUE;
+}
+K32 BOOL WINAPI GetNumaProcessorNode(UCHAR cpu, PUCHAR node) { (void)cpu; *node = 0; return TRUE; }
+K32 BOOL WINAPI GetNumaAvailableMemoryNode(UCHAR node, PULONGLONG bytes)
+{
+    MEMORYSTATUSEX m;
+    m.dwLength = sizeof(m);
+    GlobalMemoryStatusEx(&m);
+    *bytes = node ? 0 : m.ullAvailPhys;
+    return TRUE;
+}
+
+static const WCHAR g_volume[] = L"\\\\?\\Volume{4e4f5641-0000-0000-0000-000000000001}\\";
+K32 HANDLE WINAPI FindFirstVolumeW(LPWSTR name, DWORD n)
+{
+    DWORD len = sizeof(g_volume) / sizeof(WCHAR);
+    if (n < len) { SetLastError(206 /* ERROR_FILENAME_EXCED_RANGE */); return INVALID_HANDLE_VALUE; }
+    for (DWORD i = 0; i < len; i++) name[i] = g_volume[i];
+    return (HANDLE)(ULONG_PTR)0x4E56;
+}
+K32 HANDLE WINAPI FindFirstVolumeA(LPSTR name, DWORD n)
+{
+    DWORD len = sizeof(g_volume) / sizeof(WCHAR);
+    if (n < len) { SetLastError(206 /* ERROR_FILENAME_EXCED_RANGE */); return INVALID_HANDLE_VALUE; }
+    for (DWORD i = 0; i < len; i++) name[i] = (char)g_volume[i];
+    return (HANDLE)(ULONG_PTR)0x4E56;
+}
+K32 BOOL WINAPI FindNextVolumeW(HANDLE h, LPWSTR name, DWORD n) { (void)h; (void)name; (void)n; SetLastError(ERROR_NO_MORE_FILES); return FALSE; }
+K32 BOOL WINAPI FindNextVolumeA(HANDLE h, LPSTR name, DWORD n) { (void)h; (void)name; (void)n; SetLastError(ERROR_NO_MORE_FILES); return FALSE; }
+K32 BOOL WINAPI FindVolumeClose(HANDLE h) { (void)h; return TRUE; }
+
+K32 BOOL WINAPI GetSystemTimeAdjustment(PDWORD adj, PDWORD inc, PBOOL disabled)
+{
+    *adj = 156250; *inc = 156250; *disabled = TRUE;         /* 15.625 ms ticks, no adjustment */
+    return TRUE;
+}
+
+/* Console input records: the Terminal delivers lines, not key events */
+K32 BOOL WINAPI PeekConsoleInputW(HANDLE h, void *rec, DWORD n, LPDWORD read) { (void)h; (void)rec; (void)n; *read = 0; return TRUE; }
+K32 BOOL WINAPI PeekConsoleInputA(HANDLE h, void *rec, DWORD n, LPDWORD read) { (void)h; (void)rec; (void)n; *read = 0; return TRUE; }
+
+/* Threads in this process only */
+K32 HANDLE WINAPI CreateRemoteThread(HANDLE p, LPSECURITY_ATTRIBUTES sa, SIZE_T stack, LPTHREAD_START_ROUTINE fn,
+                                     LPVOID arg, DWORD flags, LPDWORD tid)
+{
+    if (p != GetCurrentProcess() && GetProcessId(p) != GetCurrentProcessId()) { SetLastError(ERROR_ACCESS_DENIED); return 0; }
+    return CreateThread(sa, stack, fn, arg, flags, tid);
+}
+K32 HANDLE WINAPI CreateRemoteThreadEx(HANDLE p, LPSECURITY_ATTRIBUTES sa, SIZE_T stack, LPTHREAD_START_ROUTINE fn,
+                                       LPVOID arg, DWORD flags, LPPROC_THREAD_ATTRIBUTE_LIST attrs, LPDWORD tid)
+{
+    (void)attrs;
+    return CreateRemoteThread(p, sa, stack, fn, arg, flags, tid);
+}

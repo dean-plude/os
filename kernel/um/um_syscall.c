@@ -1334,7 +1334,7 @@ static UINT64 sys_nova_process_info(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         UmProcess *c = o->proc;
         out[0] = c ? c->pid : 0;
         out[2] = o->signaled;
-        out[1] = !c ? 0 : c->exited ? c->exit_status : 0x103;
+        out[1] = !c ? (UINT32)o->count : c->exited ? c->exit_status : 0x103;
         ob_unlock(s);
         um_ob_unref(o);
     }
@@ -1521,6 +1521,21 @@ bool um_handle_object_exists(UmProcess *p, UINT64 hv)
     bool ok = handle(p, hv) != NULL;
     um_unlock(&p->lock);
     return ok;
+}
+
+/* NtOpenProcess(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PCLIENT_ID) */
+static UINT64 sys_open_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3;
+    UmProcess *p = UmCurrent();
+    UINT64 cid[2];
+    if (!a4 || !NT_SUCCESS(CopyFromUser(cid, (const void *)(uintptr_t)a4, sizeof(cid)))) return UM_STATUS_ACCESS_VIOLATION;
+    UmObject *o = um_open_process((UINT32)cid[0]);
+    if (!o) return ST_INVALID_PARAMETER;                       /* (as Windows: no such process) */
+    UINT64 h = um_handle_new_object(p, o);
+    um_ob_unref(o);
+    if (!h) return ST_TOO_MANY_HANDLES;
+    return put_u64(a1, h) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
 }
 
 /* NtSetInformationObject(HANDLE, ObjectHandleFlagInformation (4),
@@ -1714,6 +1729,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtSetInformationObject,     sys_set_info_object);
     um_install(SYSCALL_NtQueryObject,              sys_query_object);
     um_install(SYSCALL_NtNovaClipboard,            sys_clipboard);
+    um_install(SYSCALL_NtOpenProcess,              sys_open_process);
     RamfsSetChangeHook(fs_changed);
     um_install(SYSCALL_NtFreeVirtualMemory,        sys_free_vm);
     um_install(SYSCALL_NtProtectVirtualMemory,     sys_protect_vm);

@@ -548,8 +548,8 @@ changed; every fix is in NovaOS.
   programs are tested from a second disk image holding 7-Zip, Git, CMake,
   Ninja, Neovim, Notepad++ and others, driven by a QEMU harness that types
   Terminal commands, clicks, drags and takes screenshots.
-- Not yet: the OLE clipboard, and drags from 7-Zip's own file manager
-  onto other programs are untested.  (Pipes and `cmd.exe`: see below.)
+- Not yet: drags from 7-Zip's own file manager onto other programs are
+  untested.  (Pipes, `cmd.exe` and the clipboard: see below.)
 
 ### The App Store
 
@@ -798,10 +798,69 @@ the 64-bit kernel, and they get a 32-bit copy of the whole userland in
   routine.  `cmdtest.bat` (29 checks) covers expansion, SET /A, IF, the
   FOR forms, CALL, delayed expansion, pipes into `find` and `sort`,
   redirections and error levels.
-- Not yet: MinGit's `git.exe` loops at start-up (it did before this work
-  too); `CREATE_SUSPENDED` is ignored and `CREATE_NEW_CONSOLE` shares the
-  console; a file handed to a child has its own position (cmd.exe opens
-  redirection targets for appending so output lands in order).
+- Not yet: `CREATE_SUSPENDED` is ignored and `CREATE_NEW_CONSOLE` shares
+  the console; a file handed to a child has its own position (cmd.exe
+  opens redirection targets for appending so output lands in order).
+
+### The clipboard
+
+- **One clipboard for everything** (`kernel/wm/clipboard.c`, reached by
+  programs through `NtNovaClipboard`): each format is a copy of its
+  bytes; `CF_TEXT`/`CF_OEMTEXT` and `CF_UNICODETEXT` are converted into
+  each other on request (with `CF_LOCALE`); formats a program registers
+  travel by name, since each program numbers them differently.
+- **user32** (`OpenClipboard` ... `GetClipboardData`,
+  `EnumClipboardFormats`, `GetClipboardSequenceNumber`,
+  `GetPriorityClipboardFormat`) now uses it, so text, files (`CF_HDROP`)
+  and private formats copied in one program paste in another.
+  `CF_BITMAP` travels as a `CF_DIB` and comes back as a bitmap; a format
+  set with a NULL handle is rendered by its owner (`WM_RENDERFORMAT`) when
+  the clipboard is closed.
+- **The OLE clipboard** (`userland/ole32/clipbrd.c`): `OleSetClipboard`
+  copies a data object's formats onto it, `OleGetClipboard` gives a data
+  object that reads it (`GetData`, `QueryGetData`, `EnumFormatEtc`),
+  `OleIsCurrentClipboard`, `OleFlushClipboard`.
+- **The built-in apps**: Notepad selects (Shift with the arrows, Home,
+  End, PgUp/PgDn; mouse drags; double-click for a word; Ctrl+A) and has
+  Ctrl+C/X/V with Copy and Paste buttons.  The Terminal selects with a
+  mouse drag (double-click: a word); Ctrl+C copies while something is
+  selected (else it still interrupts), Ctrl+Shift+C always copies, and
+  Ctrl+V, Shift+Insert or a right click paste into the prompt or the
+  running program; the wheel scrolls.  File Explorer copies, cuts and
+  pastes files and folders (Ctrl+C/X/V, Copy and Paste buttons) as
+  `CF_HDROP` with a "Preferred DropEffect", so programs see them too.
+- Tests: `cliptest.exe` (23 checks, 64-bit and 32-bit, each reading back
+  in a second process): Unicode text read as `CF_TEXT` and the other way,
+  a registered format by name, `CF_HDROP` with `DragQueryFile`, a bitmap
+  as a 3x2 DIB and back, the sequence number, and the OLE clipboard.
+
+### Git
+
+MinGit's `git.exe` (2.47) runs: `--version`, `init`, `add`, `commit`,
+`log`, `status`, `diff`, output into pipes (`git log | find`) and a pager
+(`core.pager=more`).  What it needed from NovaOS:
+
+- **A recursive loader lock**: a DLL's initialisation that itself loads
+  a library (git's C runtime start-up does) spun forever on ntdll's
+  loader lock; the lock now belongs to a thread and nests, as Windows'
+  does, and a module being initialised is not initialised twice.
+- **`OpenProcess` for other programs** (`NtOpenProcess`): git waits for
+  its children by process id (`waitpid`); the handle shares the process's
+  exit object, which keeps the exit code after the process is gone.
+- **The C runtime's standard descriptors**: `dup2` onto 0-2 now moves the
+  standard handle and `stdout`/`stderr` with it, and closing the last
+  descriptor of a handle closes it even for 0-2, so a pager sees the end
+  of its input.  New: `_spawn*`/`_exec*`/`_cwait`, `_flushall`, `_umask`,
+  `_wchmod`, `_mktemp`/`_wmktemp`; `_vscprintf`, `_scprintf` and
+  `_wfreopen` are exported.
+- **The rest of its imports**: NUMA queries (`GetNumaHighestNodeNumber`,
+  `GetNumaNodeProcessorMask`...), volume enumeration, `CreateRemoteThread`
+  (this process), `PeekConsoleInput`, `GetSystemTimeAdjustment`,
+  `NtSetEaFile`/`NtQueryEaFile`, `QueryServiceStatusEx`,
+  `SetEntriesInAcl`, and Winsock's `WSAEventSelect`/`WSAEnumNetworkEvents`
+  (a helper thread watches the sockets) and `getnameinfo`.
+- Not yet: the test disk holds only MinGit's `bin` folder, so git warns
+  about its templates and finds itself only with `C:\Apps\git` on `PATH`.
 
 ### Installing NovaOS on a disk
 
@@ -937,7 +996,7 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 | 11 | Multiprocessor: every core runs threads, per-core scheduling, fine-grained kernel locking | ✅ **Done** |
 | 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store; Windows Installer (.msi); installing NovaOS on a disk | ✅ **Done** |
 | 13 | 32-bit (x86) Windows programs (WoW64): compatibility mode, a SysWOW64 userland, x86 SEH and C++ exceptions; NSIS installers (with shortcuts) and 7-Zip's 32-bit self-extractors run | ✅ **Done** |
-| 14 | Pipes (named, anonymous, overlapped), handle inheritance, `cmd.exe` with batch files, the OLE clipboard, more real programs | 🔄 In progress (pipes and `cmd.exe` done) |
+| 14 | Pipes (named, anonymous, overlapped), handle inheritance, `cmd.exe` with batch files, the system and OLE clipboard, Git | ✅ **Done** |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native
 Windows executables (Phases 8–15) and the chosen compatibility strategy.

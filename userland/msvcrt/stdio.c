@@ -53,6 +53,20 @@ static void init_std(FILE *f, DWORD which, int flags)
     }
 }
 
+/* dup2 onto descriptor 0-2: the standard stream follows (as it writes
+ * through the descriptor in Microsoft's CRT) */
+void __nova_std_changed(int fd, void *h)
+{
+    FILE *f = &__iob_func()[fd];
+    fflush(f);
+    f->_handle = h;
+    f->_flags &= ~(F_CONSOLE | F_LINEBUF);
+    if (GetFileType(h) == FILE_TYPE_CHAR) {
+        f->_flags |= F_CONSOLE;
+        if (fd == 1) f->_flags |= F_LINEBUF;
+    }
+}
+
 FILE *__iob_func(void)
 {
     if (!g_iob_ready) {

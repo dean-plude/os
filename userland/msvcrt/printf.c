@@ -406,14 +406,14 @@ int _vsnprintf(char *s, size_t n, const char *fmt, va_list ap)
 int vsprintf(char *s, const char *fmt, va_list ap)   { return vsnprintf(s, (size_t)-1 >> 1, fmt, ap); }
 int vfprintf(FILE *f, const char *fmt, va_list ap)   { return __nova_vfprintf(f, fmt, ap, 0); }
 int vprintf(const char *fmt, va_list ap)             { return vfprintf(stdout, fmt, ap); }
-int _vscprintf(const char *fmt, va_list ap)          { return vsnprintf(NULL, 0, fmt, ap); }
+__declspec(dllexport) int _vscprintf(const char *fmt, va_list ap)          { return vsnprintf(NULL, 0, fmt, ap); }
 
 int printf(const char *fmt, ...)            { va_list a; va_start(a, fmt); int r = vfprintf(stdout, fmt, a); va_end(a); return r; }
 int fprintf(FILE *f, const char *fmt, ...)  { va_list a; va_start(a, fmt); int r = vfprintf(f, fmt, a); va_end(a); return r; }
 int sprintf(char *s, const char *fmt, ...)  { va_list a; va_start(a, fmt); int r = vsprintf(s, fmt, a); va_end(a); return r; }
 int snprintf(char *s, size_t n, const char *fmt, ...)  { va_list a; va_start(a, fmt); int r = vsnprintf(s, n, fmt, a); va_end(a); return r; }
 int _snprintf(char *s, size_t n, const char *fmt, ...) { va_list a; va_start(a, fmt); int r = _vsnprintf(s, n, fmt, a); va_end(a); return r; }
-int _scprintf(const char *fmt, ...)         { va_list a; va_start(a, fmt); int r = _vscprintf(fmt, a); va_end(a); return r; }
+__declspec(dllexport) int _scprintf(const char *fmt, ...)         { va_list a; va_start(a, fmt); int r = _vscprintf(fmt, a); va_end(a); return r; }
 int sprintf_s(char *s, size_t n, const char *fmt, ...) { va_list a; va_start(a, fmt); int r = vsnprintf(s, n, fmt, a); va_end(a); return r; }
 int vsprintf_s(char *s, size_t n, const char *fmt, va_list ap) { return vsnprintf(s, n, fmt, ap); }
 int _snprintf_s(char *s, size_t n, size_t cnt, const char *fmt, ...)

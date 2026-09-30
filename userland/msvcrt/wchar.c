@@ -501,7 +501,7 @@ FILE *_wfopen(const wchar_t *name, const wchar_t *mode)
     free(n); free(m);
     return f;
 }
-FILE *_wfreopen(const wchar_t *name, const wchar_t *mode, FILE *f)
+__declspec(dllexport) FILE *_wfreopen(const wchar_t *name, const wchar_t *mode, FILE *f)
 {
     char *n = w2a(name), *m = w2a(mode);
     FILE *r = n && m ? freopen(n, m, f) : NULL;

@@ -2594,8 +2594,8 @@ int main(void)
             free(inner);
         }
         if (!keep) {
-            memmove(last, last + 1, strlen(last));
-            memmove(command, command + 1, len);
+            if (last != command) memmove(last, last + 1, strlen(last));   /* (a lone quote: only it goes) */
+            memmove(command, command + 1, strlen(command));
         }
     }
     run_line(command, &io, 0);

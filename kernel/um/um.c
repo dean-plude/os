@@ -1667,11 +1667,51 @@ void UmPoll(void)
         }
         if (p->released) {
             plock(); g_procs[i] = NULL; punlock();
+            IrqState st = ob_lock();                /* handles opened by others outlive it */
+            if (p->exit_ob) { p->exit_ob->count = (INT32)p->exit_status; p->exit_ob->proc = NULL; p->exit_ob = NULL; }
+            ob_unlock(st);
             if (p->con) UmConsoleRelease(p->con);
             kfree(p->stub_names);
             kfree(p);
         }
     }
+}
+
+/* OpenProcess: the object that is signaled when @pid exits, referenced
+ * (NULL if there is no such process).  A process a program created
+ * already has one; for others it is made here. */
+static void opened_ob_destroy(UmObject *o)
+{
+    IrqState s = ob_lock();
+    if (o->proc && o->proc->exit_ob == o) o->proc->exit_ob = NULL;
+    ob_unlock(s);
+}
+
+UmObject *um_open_process(UINT32 pid)
+{
+    UmObject *fresh = kzalloc(sizeof(UmObject));
+    UmObject *r = NULL;
+    plock();
+    for (int i = 0; i < UM_MAX_PROCS && !r; i++) {
+        UmProcess *p = g_procs[i];
+        if (!p || p->pid != pid || p->reclaimed) continue;
+        IrqState s = ob_lock();
+        if (p->exit_ob) r = um_ob_ref(p->exit_ob);
+        else if (fresh) {
+            fresh->type = UO_PROCESS;
+            fresh->refs = 1;
+            fresh->proc = p;
+            fresh->signaled = p->exited;
+            fresh->destroy = opened_ob_destroy;
+            p->exit_ob = fresh;
+            r = fresh;
+            fresh = NULL;
+        }
+        ob_unlock(s);
+    }
+    punlock();
+    kfree(fresh);
+    return r;
 }
 
 int UmList(UmProcInfo *out, int max)
