@@ -1,7 +1,9 @@
 # NovaOS — Windows-Compatible Operating System
 
 A clean-room, from-scratch x86_64 operating system designed to run native
-Windows executables (PE32+) without emulation.
+Windows executables (PE32+) without emulation.  It runs 64-bit (x64)
+Windows programs; 32-bit (x86) ones, which include most setup programs,
+are not supported yet.
 
 ## Status: Phase 12 — unmodified Windows programs (7-Zip), an App Store, Windows Installer (.msi), and a NovaOS installer
 
@@ -768,7 +770,7 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 | 10 | Standard DLLs (UCRT, C++ EH, advapi32, shell32, ...), registry, COM, AHCI + FAT persistent storage | ✅ **Done** |
 | 11 | Multiprocessor: every core runs threads, per-core scheduling, fine-grained kernel locking | ✅ **Done** |
 | 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store; Windows Installer (.msi); installing NovaOS on a disk | ✅ **Done** |
-| 13 | Pipes, `cmd.exe`, the OLE clipboard, more real programs | 🔄 Planned |
+| 13 | Pipes, `cmd.exe`, the OLE clipboard, 32-bit (x86) programs (WoW64), more real programs | 🔄 Planned |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native
 Windows executables (Phases 8–15) and the chosen compatibility strategy.
