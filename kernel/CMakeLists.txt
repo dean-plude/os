@@ -138,6 +138,7 @@ set(KERNEL_C_SOURCES
     um/um_thread.c
     um/um_exception.c
     um/um_socket.c
+    um/um_pipe.c
     um/um_gui.c
     um/um_registry.c
     ke/main.c

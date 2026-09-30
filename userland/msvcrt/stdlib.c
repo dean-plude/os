@@ -281,11 +281,34 @@ char *getenv(const char *name)
     return cache[i].value;
 }
 
+/* system(): "cmd.exe /c @cmd", waiting for it; NULL asks whether there
+ * is a command interpreter */
+HANDLE __nova_shell(const char *cmd, HANDLE in, HANDLE out, HANDLE err);
 int system(const char *cmd)
 {
-    if (!cmd) return 0;                       /* no command processor */
-    errno = ENOSYS;
-    return -1;
+    if (!cmd) {
+        char shell[MAX_PATH];
+        DWORD n = GetEnvironmentVariableA("ComSpec", shell, sizeof(shell));
+        if (!n || n >= sizeof(shell)) strcpy(shell, "C:\\Windows\\System32\\cmd.exe");
+        return GetFileAttributesA(shell) != INVALID_FILE_ATTRIBUTES;
+    }
+    fflush(0);
+    HANDLE proc = __nova_shell(cmd, GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE),
+                               GetStdHandle(STD_ERROR_HANDLE));
+    if (!proc) return -1;
+    DWORD code = (DWORD)-1;
+    WaitForSingleObject(proc, INFINITE);
+    GetExitCodeProcess(proc, &code);
+    CloseHandle(proc);
+    return (int)code;
+}
+
+__declspec(dllexport) int _wsystem(const wchar_t *cmd)
+{
+    if (!cmd) return system(0);
+    char c[4096];
+    if (wcstombs(c, cmd, sizeof(c)) == (size_t)-1) { errno = EINVAL; return -1; }
+    return system(c);
 }
 
 /* -----------------------------------------------------------------------

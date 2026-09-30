@@ -110,7 +110,7 @@ void AppActivate(AppId id)
 bool AppByName(const char *name, AppId *out)
 {
     static const struct { const char *cmd; AppId id; } names[] = {
-        { "terminal", APP_TERMINAL }, { "cmd", APP_TERMINAL },
+        { "terminal", APP_TERMINAL },            /* "cmd" runs cmd.exe */
         { "explorer", APP_EXPLORER }, { "files", APP_EXPLORER },
         { "notepad",  APP_NOTEPAD  },
         { "settings", APP_SETTINGS }, { "control", APP_SETTINGS },

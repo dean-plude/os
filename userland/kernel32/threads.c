@@ -293,8 +293,7 @@ BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG count, LPLONG prev)
 
 BOOL WINAPI DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, LPHANDLE dst, DWORD access, BOOL inherit, DWORD options)
 {
-    (void)inherit;
-    NTSTATUS s = NtDuplicateObject(sp, src, tp, dst, access, 0, options);
+    NTSTATUS s = NtDuplicateObject(sp, src, tp, dst, access, inherit ? OBJ_INHERIT : 0, options);
     return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE);
 }
 

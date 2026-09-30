@@ -13,5 +13,6 @@ _CRTIMP int       _access(const char *path, int mode);
 _CRTIMP int       _unlink(const char *path);
 _CRTIMP int       _isatty(int fd);
 _CRTIMP int       _dup(int fd);
+_CRTIMP int       _pipe(int *fds, unsigned size, int mode);
 _CRTIMP int       _dup2(int fd, int fd2);
 _NOVA_END

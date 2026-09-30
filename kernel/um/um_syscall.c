@@ -125,6 +125,7 @@ static void um_lock_free_init(void)
 }
 
 static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode **root);
+static UINT32 g_oa_attrs;               /* Attributes of the last get_path (under the big lock) */
 
 /* Terminal "trace NAME": log the failing system calls of programs named
  * NAME (a debugging aid for Windows programs that misbehave) */
@@ -184,8 +185,16 @@ static bool put_u64(UINT64 ptr, UINT64 v)
     return NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, &v, 8));
 }
 
+/* An I/O status block; bit 63 of @ptr marks the 32-bit layout (a WoW
+ * program's own block, passed through for I/O that may finish later) */
 static UINT32 iosb(UINT64 ptr, UINT32 status, UINT64 info)
 {
+    if (ptr >> 63) {
+        UINT32 b32[2] = { status, (UINT32)info };
+        ptr &= ~(UINT64_C(1) << 63);
+        if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, b32, sizeof(b32)))) return UM_STATUS_ACCESS_VIOLATION;
+        return status;
+    }
     UINT64 blk[2] = { status, info };
     if (ptr && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, blk, sizeof(blk))))
         return UM_STATUS_ACCESS_VIOLATION;
@@ -350,6 +359,8 @@ static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode 
     if (len > RAMFS_PATH_MAX || !NT_SUCCESS(CopyFromUser(w, (const void *)(uintptr_t)us[1], 2 * len)))
         return UM_STATUS_ACCESS_VIOLATION;
     w2u(w, len, out, cap);
+    g_oa_attrs = (UINT32)oa[3];
+    if (um_pipe_name(out)) { *root = p->cwd; return ST_SUCCESS; }   /* \Device\NamedPipe\X */
     char *s = out;
     if (!strncmp(s, "\\??\\", 4) || !strncmp(s, "\\\\?\\", 4) || !strncmp(s, "\\\\.\\", 4)) s += 4;
     if (s != out) memmove(out, s, strlen(s) + 1);
@@ -367,11 +378,20 @@ static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode 
     return ST_SUCCESS;
 }
 
+UINT32 um_get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, UINT32 *attrs)
+{
+    RamNode *root;
+    UINT32 st = get_path(p, oa_ptr, out, cap, &root);
+    if (attrs) *attrs = g_oa_attrs;
+    return st;
+}
+
 static bool is_console_name(const char *s, UmHandleKind *kind)
 {
     if (!strcmp(s, "CONIN$") || !strcmp(s, "conin$")) { *kind = H_CON_IN;  return true; }
     if (!strcmp(s, "CONOUT$") || !strcmp(s, "conout$") ||
         !strcmp(s, "CON") || !strcmp(s, "con")) { *kind = H_CON_OUT; return true; }
+    if (!strcmp(s, "NUL") || !strcmp(s, "nul")) { *kind = H_NULL; return true; }     /* the null device */
     return false;
 }
 
@@ -412,12 +432,26 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
     UINT32 st = get_path(p, oa_ptr, path, sizeof(path), &root);
     if (st) return iosb(iosb_ptr, st, 0);
 
+    bool inherit = g_oa_attrs & 0x2;                            /* OBJ_INHERIT */
     UmHandleKind ck;
     UmHandle *h;
+    if (um_pipe_name(path)) {                                   /* a pipe's client end */
+        UmObject *o;
+        bool rd, wr;
+        UINT32 pst = um_pipe_open(path, access, options, &o, &rd, &wr);
+        if (pst) return iosb(iosb_ptr, pst, 0);
+        um_lock(&p->lock);
+        UINT64 hv = handle_alloc(p, &h);
+        if (hv) { h->kind = H_OBJECT; h->obj = o; h->read = rd; h->write = wr; h->inherit = inherit; }
+        um_unlock(&p->lock);
+        if (!hv) { um_ob_unref(o); return iosb(iosb_ptr, ST_TOO_MANY_OPENED_FILES, 0); }
+        if (!put_u64(handle_ptr, hv)) { um_close_handle(hv); return UM_STATUS_ACCESS_VIOLATION; }
+        return iosb(iosb_ptr, ST_SUCCESS, 1);
+    }
     if (is_console_name(path, &ck)) {
         um_lock(&p->lock);
         UINT64 hv = handle_alloc(p, &h);
-        if (hv) h->kind = ck;
+        if (hv) { h->kind = ck; h->inherit = inherit; }
         um_unlock(&p->lock);
         if (!hv) return iosb(iosb_ptr, ST_TOO_MANY_OPENED_FILES, 0);
         if (!put_u64(handle_ptr, hv)) { h->kind = H_FREE; return UM_STATUS_ACCESS_VIOLATION; }
@@ -464,6 +498,8 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
     h->write = wr && !node->dir;
     h->append = append;
     h->delete_on_close = options & 0x1000;
+    h->inherit = inherit;
+    h->async = !(options & 0x30);                               /* no FILE_SYNCHRONOUS_IO_* */
     RamfsRef(node);
     um_unlock(&p->lock);
     DesktopUnlock();
@@ -506,6 +542,19 @@ UINT64 um_close_handle(UINT64 a1)
     return h ? ST_SUCCESS : ST_INVALID_HANDLE;
 }
 
+/* An I/O request's event: the request finished (at once, for files) */
+static void set_io_event(UINT64 ev)
+{
+    if (!ev) return;
+    UmObject *o = um_handle_object(UmCurrent(), ev, UO_EVENT);
+    if (!o) return;
+    IrqState s = ob_lock();
+    o->signaled = true;
+    um_ob_wake(o);
+    ob_unlock(s);
+    um_ob_unref(o);
+}
+
 /* Starting offset: ByteOffset if given (and not "current"), else pos. */
 static UINT64 start_offset(UmHandle *h, UINT64 byte_offset_ptr)
 {
@@ -524,6 +573,13 @@ static UINT64 sys_read_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UmProcess *p = UmCurrent();
     UINT64 iosb_ptr = um_stack_arg(5), buf = um_stack_arg(6);
     UINT32 len = (UINT32)um_stack_arg(7);
+    UmObject *po = um_handle_object(p, a1, UO_PIPE);
+    if (po) {
+        UINT64 info;
+        UINT32 st = um_pipe_read(po, a2, iosb_ptr, buf, len, &info);
+        um_ob_unref(po);
+        return st == ST_PENDING ? st : iosb(iosb_ptr, st, info);
+    }
     DesktopLock();                          /* keeps the handle and its file alive */
     UmHandle *h = handle(p, a1);
     if (!h) { DesktopUnlock(); return ST_INVALID_HANDLE; }
@@ -536,6 +592,7 @@ static UINT64 sys_read_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (n && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)buf, tmp, (size_t)n))) return UM_STATUS_ACCESS_VIOLATION;
         return iosb(iosb_ptr, ST_SUCCESS, (UINT64)n);
     }
+    if (h->kind == H_NULL) { DesktopUnlock(); return iosb(iosb_ptr, ST_END_OF_FILE, 0); }
     if (h->kind != H_FILE) { DesktopUnlock(); return iosb(iosb_ptr, ST_INVALID_HANDLE, 0); }
     if (!h->read) { DesktopUnlock(); return iosb(iosb_ptr, ST_ACCESS_DENIED, 0); }
 
@@ -553,6 +610,7 @@ static UINT64 sys_read_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     h->pos = off + done;
     DesktopUnlock();
+    set_io_event(a2);
     return iosb(iosb_ptr, ST_SUCCESS, done);
 }
 
@@ -562,14 +620,22 @@ static UINT64 sys_write_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UmProcess *p = UmCurrent();
     UINT64 iosb_ptr = um_stack_arg(5), buf = um_stack_arg(6);
     UINT32 len = (UINT32)um_stack_arg(7);
+    UmObject *po = um_handle_object(p, a1, UO_PIPE);
+    if (po) {
+        UINT64 info;
+        UINT32 st = um_pipe_write(po, a2, iosb_ptr, buf, len, &info);
+        um_ob_unref(po);
+        return st == ST_PENDING ? st : iosb(iosb_ptr, st, info);
+    }
     DesktopLock();                          /* files: held throughout; console: released */
     UmHandle *h = handle(p, a1);
     UINT32 bad = !h ? ST_INVALID_HANDLE :
                  (h->kind == H_FILE && !h->write) ? ST_ACCESS_DENIED :
-                 (h->kind != H_FILE && h->kind != H_CON_OUT) ? ST_INVALID_HANDLE : 0;
+                 (h->kind != H_FILE && h->kind != H_CON_OUT && h->kind != H_NULL) ? ST_INVALID_HANDLE : 0;
     bool file = h && h->kind == H_FILE && !bad;
     if (!file) DesktopUnlock();
     if (bad) return h ? iosb(iosb_ptr, bad, 0) : bad;
+    if (h->kind == H_NULL) { set_io_event(a2); return iosb(iosb_ptr, ST_SUCCESS, len); }
 
     char small[512];
     char *tmp = len <= sizeof(small) ? small : kmalloc(USER_MAX_BOUNCE);
@@ -595,6 +661,7 @@ static UINT64 sys_write_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     if (tmp != small) kfree(tmp);
     if (file) { h->pos = off + done; DesktopUnlock(); }
+    set_io_event(a2);
     return iosb(iosb_ptr, st, done);
 }
 
@@ -874,13 +941,30 @@ static UINT64 sys_query_volume_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     if (!h) return ST_INVALID_HANDLE;
     if ((UINT32)um_stack_arg(5) != 4) return iosb(a2, ST_INVALID_INFO_CLASS, 0);
     if (a4 < 8) return iosb(a2, ST_INFO_LENGTH_MISMATCH, 0);
-    UINT32 dev[2] = { (h->kind == H_CON_IN || h->kind == H_CON_OUT) ? 0x50u /* CONSOLE */ : 0x07u /* DISK */, 0 };
+    UINT32 dev[2] = { (h->kind == H_CON_IN || h->kind == H_CON_OUT) ? 0x50u /* CONSOLE */ :
+                      h->kind == H_NULL ? 0x15u /* NULL */ :
+                      (h->kind == H_OBJECT && h->obj->type == UO_PIPE) ? 0x11u /* NAMED_PIPE */ :
+                      h->kind == H_OBJECT ? 0x22u /* UNKNOWN */ : 0x07u /* DISK */, 0 };
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, dev, 8))) return UM_STATUS_ACCESS_VIOLATION;
     return iosb(a2, ST_SUCCESS, 8);
 }
 
+/* NtQueryInformationFile on a pipe */
+static UINT64 pipe_query(UmObject *po, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    UINT32 cls = (UINT32)um_stack_arg(5), len = (UINT32)a4, got = 0;
+    UINT8 b[256];
+    UINT32 st = um_pipe_query(po, cls, b, len < sizeof(b) ? len : sizeof(b), &got);
+    um_ob_unref(po);
+    if (NT_SUCCESS(st) || st == ST_BUFFER_OVERFLOW)
+        if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, got))) return UM_STATUS_ACCESS_VIOLATION;
+    return iosb(a2, st, got);
+}
+
 static UINT64 sys_query_info_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
+    UmObject *po = um_handle_object(UmCurrent(), a1, UO_PIPE);
+    if (po) return pipe_query(po, a2, a3, a4);
     DesktopLock();
     UINT64 r = sys_query_info_file_locked(a1, a2, a3, a4);
     DesktopUnlock();
@@ -889,6 +973,15 @@ static UINT64 sys_query_info_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 
 static UINT64 sys_set_info_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
+    UmObject *po = um_handle_object(UmCurrent(), a1, UO_PIPE);
+    if (po) {                                       /* FilePipeInformation: read mode, completion mode */
+        UINT32 v[2], st;
+        if ((UINT32)um_stack_arg(5) != 23) st = ST_INVALID_INFO_CLASS;
+        else if (a4 < 8 || !NT_SUCCESS(CopyFromUser(v, (const void *)(uintptr_t)a3, 8))) st = ST_INVALID_PARAMETER;
+        else st = um_pipe_set_mode(po, v[0], v[1]);
+        um_ob_unref(po);
+        return iosb(a2, st, 0);
+    }
     DesktopLock();
     UINT64 r = sys_set_info_file_locked(a1, a2, a3, a4);
     DesktopUnlock();
@@ -1128,30 +1221,40 @@ static void process_ob_destroy(UmObject *o)
 /* NtNovaCreateProcess(PCSTR Image, PCSTR CommandLine, PCSTR CurrentDirectory,
  *                     NOVA_CREATE_PROCESS *io)
  * UTF-8 strings, full paths ("C:\dir\prog.exe").  io: in: StdHandle[3]
- * (0 = the console); out: Process, Thread, ProcessId, ThreadId.  The new
- * process shares the creator's console. */
+ * (0 = the console), Flags (1: inherit handles, 2: no console),
+ * Environment + EnvironmentSize (UTF-8 "NAME=value\0...\0"; NULL: the
+ * default); out: Process, Thread, ProcessId, ThreadId.  The new process
+ * shares the creator's console. */
+#define NCP_INHERIT    1u
+#define NCP_NO_CONSOLE 2u
+#define NCP_ENV_MAX    (64 * 1024)
+
+static bool std_kind(UmHandleKind k) { return k == H_FILE || k == H_CON_IN || k == H_CON_OUT || k == H_OBJECT || k == H_NULL; }
+
 static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
     char image[RAMFS_PATH_MAX], dir[RAMFS_PATH_MAX], *cmd = NULL;
-    UINT64 io[7];
+    UINT64 io[10];
     if (!get_str(a1, image, sizeof(image)) || (a3 && !get_str(a3, dir, sizeof(dir))) ||
         !NT_SUCCESS(CopyFromUser(io, (const void *)(uintptr_t)a4, sizeof(io))))
         return UM_STATUS_ACCESS_VIOLATION;
     if (!a3) dir[0] = 0;
-    cmd = kmalloc(4096);
-    if (!cmd) return ST_NO_MEMORY;
-    if (a2 && !get_str(a2, cmd, 4096)) { kfree(cmd); return UM_STATUS_ACCESS_VIOLATION; }
-    if (!a2) strncpy(cmd, image, 4095);
-
-    UmHandle std[3];
-    memset(std, 0, sizeof(std));
-    um_lock(&p->lock);
-    for (int i = 0; i < 3; i++) {
-        UmHandle *h = io[i] ? handle(p, io[i]) : NULL;
-        if (h && (h->kind == H_FILE || h->kind == H_CON_IN || h->kind == H_CON_OUT)) std[i] = *h;
+    UINT32 flags = (UINT32)io[7];
+    char *env = NULL;
+    UINT32 env_len = (UINT32)io[9];
+    if (io[8]) {
+        if (env_len < 2 || env_len > NCP_ENV_MAX) return ST_INVALID_PARAMETER;
+        env = kmalloc(env_len);
+        if (!env) return ST_NO_MEMORY;
+        if (!NT_SUCCESS(CopyFromUser(env, (const void *)(uintptr_t)io[8], env_len))) { kfree(env); return UM_STATUS_ACCESS_VIOLATION; }
     }
-    um_unlock(&p->lock);
+    cmd = kmalloc(8192);
+    if (!cmd) { kfree(env); return ST_NO_MEMORY; }
+    if (a2 && !get_str(a2, cmd, 8192)) { kfree(cmd); kfree(env); return UM_STATUS_ACCESS_VIOLATION; }
+    if (!a2) strncpy(cmd, image, 8191);
+    UmHandle *inh = (flags & NCP_INHERIT) ? kzalloc(sizeof(UmHandle) * UM_MAX_HANDLES) : NULL;
+    if ((flags & NCP_INHERIT) && !inh) { kfree(cmd); kfree(env); return ST_NO_MEMORY; }
 
     const char *ip = image, *dp = dir;
     if ((ip[0] | 0x20) == 'c' && ip[1] == ':') ip += 2;
@@ -1161,19 +1264,40 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     UmObject *o = kzalloc(sizeof(*o));
     UmProcess *c = NULL;
     if (!o) st = ST_NO_MEMORY;
-    DesktopLock();
+    DesktopLock();                                  /* lock order: desktop, then process */
+    um_lock(&p->lock);                              /* the handles stay put while they are copied */
+    UmSpawnOpts opts;
+    UmHandle std[3];
+    memset(&opts, 0, sizeof(opts));
+    memset(std, 0, sizeof(std));
+    for (int i = 0; inh && i < UM_MAX_HANDLES; i++)
+        if (p->handles[i].inherit && p->handles[i].kind != H_FREE) inh[i] = p->handles[i];
+    for (int i = 0; i < 3; i++) {
+        UmHandle *h = io[i] ? handle(p, io[i]) : NULL;
+        if (!h || !std_kind(h->kind)) continue;
+        if (inh && inh[io[i] / 4 - 1].kind != H_FREE) opts.std_value[i] = io[i];   /* the same handle */
+        else std[i] = *h;
+    }
+    opts.std = std;
+    opts.inherit = inh;
+    opts.env = env;
+    opts.env_len = env_len;
     RamNode *exe = st ? NULL : RamfsResolve(NULL, ip);
     RamNode *cwd = dp[0] ? RamfsResolve(NULL, dp) : p->cwd;
     if (!st && (!exe || exe->dir)) st = ST_OBJECT_NAME_NOT_FOUND;
     if (!st) {
-        c = um_spawn_ex(exe, cmd, cwd && cwd->dir ? cwd : p->cwd, p->con, std, err, sizeof(err));
+        c = um_spawn_ex(exe, cmd, cwd && cwd->dir ? cwd : p->cwd, (flags & NCP_NO_CONSOLE) ? NULL : p->con,
+                        &opts, err, sizeof(err));
         if (!c) {
             kprintf("[UM] %s (PID %u): CreateProcess(%s) failed: %s\n", p->name, p->pid, image, err);
             st = strstr(err, "not found") ? 0xC0000135u : strstr(err, "memory") ? ST_NO_MEMORY : 0xC000007Bu;
         }
     }
+    um_unlock(&p->lock);
     DesktopUnlock();
     kfree(cmd);
+    kfree(env);
+    kfree(inh);
     if (st) { kfree(o); return st; }
 
     o->type = UO_PROCESS;
@@ -1317,6 +1441,120 @@ static UINT64 sys_yield(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 /* -----------------------------------------------------------------------
  * Registration
  * ----------------------------------------------------------------------- */
+/* -----------------------------------------------------------------------
+ * Pipes, cancelling, handle flags
+ * ----------------------------------------------------------------------- */
+/* NtCreateNamedPipeFile(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES,
+ *   PIO_STATUS_BLOCK, ULONG ShareAccess, ULONG CreateDisposition,
+ *   ULONG CreateOptions, ULONG NamedPipeType, ULONG ReadMode,
+ *   ULONG CompletionMode, ULONG MaximumInstances, ULONG InboundQuota,
+ *   ULONG OutboundQuota, PLARGE_INTEGER DefaultTimeout) */
+static UINT64 sys_create_named_pipe(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    UmProcess *p = UmCurrent();
+    char path[RAMFS_PATH_MAX];
+    UINT32 attrs;
+    UINT32 st = um_get_path(p, a3, path, sizeof(path), &attrs);
+    if (st) return iosb(a4, st, 0);
+    UmObject *o;
+    bool rd, wr;
+    st = um_pipe_create(path, (UINT32)a2, (UINT32)um_stack_arg(6), (UINT32)um_stack_arg(7),
+                        (UINT32)um_stack_arg(8), (UINT32)um_stack_arg(9), (UINT32)um_stack_arg(10),
+                        (UINT32)um_stack_arg(11), (UINT32)um_stack_arg(12), (UINT32)um_stack_arg(13),
+                        &o, &rd, &wr);
+    if (st) return iosb(a4, st, 0);
+    UmHandle *h;
+    um_lock(&p->lock);
+    UINT64 hv = handle_alloc(p, &h);
+    if (hv) { h->kind = H_OBJECT; h->obj = o; h->read = rd; h->write = wr; h->inherit = attrs & 0x2; }
+    um_unlock(&p->lock);
+    if (!hv) { um_ob_unref(o); return iosb(a4, ST_TOO_MANY_OPENED_FILES, 0); }
+    if (!put_u64(a1, hv)) { um_close_handle(hv); return UM_STATUS_ACCESS_VIOLATION; }
+    return iosb(a4, ST_SUCCESS, 2);                             /* FILE_CREATED */
+}
+
+/* NtFsControlFile(HANDLE, HANDLE Event, PIO_APC_ROUTINE, PVOID ApcContext,
+ *   PIO_STATUS_BLOCK, ULONG Code, PVOID In, ULONG InLength, PVOID Out,
+ *   ULONG OutLength): the named-pipe controls */
+static UINT64 sys_fs_control(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    UmProcess *p = UmCurrent();
+    UINT64 iosb_ptr = um_stack_arg(5);
+    UINT32 code = (UINT32)um_stack_arg(6);
+    UmObject *po = a1 ? um_handle_object(p, a1, UO_PIPE) : NULL;
+    if (!po && code != 0x110018u /* FSCTL_PIPE_WAIT */) {
+        if (a1 && !um_handle_object_exists(p, a1)) return ST_INVALID_HANDLE;
+        return iosb(iosb_ptr, 0xC0000010u /* STATUS_INVALID_DEVICE_REQUEST */, 0);
+    }
+    UINT64 info = 0;
+    UINT32 st = um_pipe_fsctl(po, a2, iosb_ptr, code, um_stack_arg(7), (UINT32)um_stack_arg(8),
+                              um_stack_arg(9), (UINT32)um_stack_arg(10), &info);
+    if (po) um_ob_unref(po);
+    return st == ST_PENDING ? st : iosb(iosb_ptr, st, info);
+}
+
+/* NtCancelIoFile(HANDLE, PIO_STATUS_BLOCK) */
+static UINT64 sys_cancel_io(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    UmObject *po = um_handle_object(UmCurrent(), a1, UO_PIPE);
+    UINT32 st = po ? um_pipe_cancel(po, 0) : ST_SUCCESS;
+    if (po) um_ob_unref(po);
+    return iosb(a2, st, 0);
+}
+
+/* NtCancelIoFileEx(HANDLE, PIO_STATUS_BLOCK Request, PIO_STATUS_BLOCK) */
+static UINT64 sys_cancel_io_ex(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a4;
+    UmObject *po = um_handle_object(UmCurrent(), a1, UO_PIPE);
+    UINT32 st = po ? um_pipe_cancel(po, a2) : 0xC0000225u;    /* STATUS_NOT_FOUND */
+    if (po) um_ob_unref(po);
+    return iosb(a3, st, 0);
+}
+
+bool um_handle_object_exists(UmProcess *p, UINT64 hv)
+{
+    um_lock(&p->lock);
+    bool ok = handle(p, hv) != NULL;
+    um_unlock(&p->lock);
+    return ok;
+}
+
+/* NtSetInformationObject(HANDLE, ObjectHandleFlagInformation (4),
+ *   { BOOLEAN Inherit, ProtectFromClose }, ULONG) */
+static UINT64 sys_set_info_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    UmProcess *p = UmCurrent();
+    UINT8 v[2];
+    if (a2 != 4) return ST_INVALID_INFO_CLASS;
+    if (a4 < 2) return ST_INFO_LENGTH_MISMATCH;
+    if (!NT_SUCCESS(CopyFromUser(v, (const void *)(uintptr_t)a3, 2))) return UM_STATUS_ACCESS_VIOLATION;
+    um_lock(&p->lock);
+    UmHandle *h = handle(p, a1);
+    if (h) h->inherit = v[0] != 0;
+    um_unlock(&p->lock);
+    return h ? ST_SUCCESS : ST_INVALID_HANDLE;
+}
+
+/* NtQueryObject(HANDLE, OBJECT_INFORMATION_CLASS, PVOID, ULONG, PULONG):
+ * ObjectHandleFlagInformation (4) */
+static UINT64 sys_query_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    UmProcess *p = UmCurrent();
+    UINT64 ret = um_stack_arg(5);
+    if (a2 != 4) return ST_INVALID_INFO_CLASS;
+    um_lock(&p->lock);
+    UmHandle *h = handle(p, a1);
+    UINT8 v[2] = { h && h->inherit, 0 };
+    um_unlock(&p->lock);
+    if (!h) return ST_INVALID_HANDLE;
+    if (ret) { UINT32 n = 2; if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)ret, &n, 4))) return UM_STATUS_ACCESS_VIOLATION; }
+    if (a4 < 2) return ST_INFO_LENGTH_MISMATCH;
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, v, 2)) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
+}
+
 void um_install(UINT32 num, SYSCALL_HANDLER h)
 {
     g_um[num] = h;
@@ -1413,6 +1651,12 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtQueryVolumeInformationFile, sys_query_volume);
     um_install(SYSCALL_NtAllocateVirtualMemory,    sys_alloc_vm);
     um_install(SYSCALL_NtNovaWatchDirectory,       sys_watch_dir);
+    um_install(SYSCALL_NtCreateNamedPipeFile,      sys_create_named_pipe);
+    um_install(SYSCALL_NtFsControlFile,            sys_fs_control);
+    um_install(SYSCALL_NtCancelIoFile,             sys_cancel_io);
+    um_install(SYSCALL_NtCancelIoFileEx,           sys_cancel_io_ex);
+    um_install(SYSCALL_NtSetInformationObject,     sys_set_info_object);
+    um_install(SYSCALL_NtQueryObject,              sys_query_object);
     RamfsSetChangeHook(fs_changed);
     um_install(SYSCALL_NtFreeVirtualMemory,        sys_free_vm);
     um_install(SYSCALL_NtProtectVirtualMemory,     sys_protect_vm);

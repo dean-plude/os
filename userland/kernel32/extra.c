@@ -208,22 +208,6 @@ WINBASEAPI BOOL WINAPI SetFileCompletionNotificationModes(HANDLE h, UCHAR flags)
     return f != 0;
 }
 
-WINBASEAPI BOOL WINAPI GetOverlappedResult(HANDLE h, LPOVERLAPPED ov, LPDWORD bytes, BOOL wait)
-{
-    (void)h;
-    if ((NTSTATUS)ov->Internal == STATUS_PENDING) {
-        if (!wait) { SetLastError(996 /* ERROR_IO_INCOMPLETE */); return FALSE; }
-        if (ov->hEvent) WaitForSingleObject((HANDLE)((ULONG_PTR)ov->hEvent & ~(ULONG_PTR)1), INFINITE);
-    }
-    *bytes = (DWORD)ov->InternalHigh;
-    NTSTATUS s = (NTSTATUS)ov->Internal;
-    if (s == STATUS_END_OF_FILE) { SetLastError(ERROR_HANDLE_EOF); return FALSE; }
-    return NT_SUCCESS(s) ? TRUE : fail_status(s);
-}
-
-WINBASEAPI BOOL WINAPI CancelIo(HANDLE h)                    { (void)h; return TRUE; }   /* nothing is ever pending */
-WINBASEAPI BOOL WINAPI CancelIoEx(HANDLE h, LPOVERLAPPED ov)  { (void)h; (void)ov; SetLastError(1168 /* ERROR_NOT_FOUND */); return FALSE; }
-
 /* Completion routines (ReadFileEx, WriteFileEx, timer APCs) run on the
  * issuing thread when it waits alertably (SleepEx) */
 typedef struct Apc {
@@ -268,26 +252,185 @@ static BOOL run_apcs(void)
     }
 }
 
-static BOOL io_ex(HANDLE h, LPVOID buf, DWORD n, LPOVERLAPPED ov, LPOVERLAPPED_COMPLETION_ROUTINE fn, BOOL write)
+/* -----------------------------------------------------------------------
+ * Overlapped requests the kernel leaves pending (pipes)
+ *
+ * The kernel finishes them into the OVERLAPPED (its Internal and
+ * InternalHigh are the I/O status block) and sets the event it was given.
+ * When the handle is bound to a completion port, or a completion routine
+ * waits (ReadFileEx), a helper thread watches a private event instead and
+ * then does what k32_io_done does at once for other requests.
+ * ----------------------------------------------------------------------- */
+typedef struct Watch { struct Watch *next; HANDLE ev, h; OVERLAPPED *o; void *fn; DWORD tid; } Watch;
+static Watch *g_watch;
+static HANDLE g_watch_wake;
+
+static DWORD apc_error(NTSTATUS s)
 {
-    IO_STATUS_BLOCK io;
-    LARGE_INTEGER off;
-    off.QuadPart = (LONGLONG)ov->Offset | (LONGLONG)ov->OffsetHigh << 32;
-    NTSTATUS s = write ? NtWriteFile(h, 0, 0, 0, &io, buf, n, &off, 0) : NtReadFile(h, 0, 0, 0, &io, buf, n, &off, 0);
-    DWORD done = NT_SUCCESS(s) ? (DWORD)io.Information : 0;
-    ov->Internal = (ULONG_PTR)s;
-    ov->InternalHigh = done;
-    if (!NT_SUCCESS(s) && s != STATUS_END_OF_FILE) return fail_status(s);
-    DWORD err = s == STATUS_END_OF_FILE ? ERROR_HANDLE_EOF : 0;
-    queue_apc(GetCurrentThreadId(), 0, (void *)fn, err, done, (ULONG_PTR)ov);
-    SetLastError(0);
-    return TRUE;
+    return NT_SUCCESS(s) ? 0 : s == STATUS_END_OF_FILE ? ERROR_HANDLE_EOF : RtlNtStatusToDosError(s);
 }
 
+static void watch_done(Watch *w)
+{
+    NTSTATUS s = (NTSTATUS)w->o->Internal;
+    DWORD bytes = (DWORD)w->o->InternalHigh;
+    if (w->fn) queue_apc(w->tid, 0, w->fn, apc_error(s), bytes, (ULONG_PTR)w->o);
+    else k32_io_done(w->h, w->o, s, bytes);
+    CloseHandle(w->ev);
+    zfree(w);
+}
+
+static DWORD WINAPI watcher(LPVOID arg)
+{
+    (void)arg;
+    for (;;) {
+        HANDLE hs[MAXIMUM_WAIT_OBJECTS];
+        Watch *ws[MAXIMUM_WAIT_OBJECTS];
+        DWORD n = 0;
+        hs[n++] = g_watch_wake;
+        lock();
+        for (Watch *w = g_watch; w && n < MAXIMUM_WAIT_OBJECTS; w = w->next) { ws[n] = w; hs[n++] = w->ev; }
+        unlock();
+        DWORD r = WaitForMultipleObjects(n, hs, FALSE, n == 1 ? INFINITE : 100);
+        if (r == WAIT_OBJECT_0 || r == WAIT_TIMEOUT || r >= WAIT_OBJECT_0 + n) continue;
+        Watch *w = ws[r - WAIT_OBJECT_0];
+        lock();
+        for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next) if (*pp == w) { *pp = w->next; break; }
+        unlock();
+        watch_done(w);
+    }
+}
+
+/* A private event for a request someone must finish in user mode, or 0 */
+static Watch *watch_new(HANDLE h, OVERLAPPED *o, void *fn)
+{
+    lock();
+    FileInfo *f = file_info(h, FALSE);
+    BOOL port = f && f->port && !((ULONG_PTR)o->hEvent & 1);
+    unlock();
+    if (!port && !fn) return 0;
+    Watch *w = zalloc(sizeof(*w));
+    if (!w) return 0;
+    w->ev = CreateEventW(0, TRUE, FALSE, 0);
+    if (!w->ev) { zfree(w); return 0; }
+    w->h = h; w->o = o; w->fn = fn; w->tid = GetCurrentThreadId();
+    return w;
+}
+
+static void watch_start(Watch *w)
+{
+    static LONG started;
+    if (!InterlockedCompareExchange(&started, 1, 0)) {     /* (not under the lock: CreateThread takes it) */
+        HANDLE ev = CreateEventW(0, FALSE, FALSE, 0);
+        lock();
+        g_watch_wake = ev;
+        unlock();
+        HANDLE t = CreateThread(0, 64 * 1024, watcher, 0, 0, 0);
+        if (t) CloseHandle(t);
+    }
+    while (!*(HANDLE volatile *)&g_watch_wake) Sleep(0);
+    lock();
+    w->next = g_watch;
+    g_watch = w;
+    unlock();
+    SetEvent(g_watch_wake);
+}
+
+/* Finish a request that did not stay pending */
+static void finished_now(HANDLE h, OVERLAPPED *o, Watch *w, void *fn, NTSTATUS s)
+{
+    if (w) { CloseHandle(w->ev); zfree(w); }
+    if (fn) queue_apc(GetCurrentThreadId(), 0, fn, apc_error(s), (DWORD)o->InternalHigh, (ULONG_PTR)o);
+    else k32_io_done(h, o, s, (DWORD)o->InternalHigh);
+}
+
+BOOL k32_overlapped(HANDLE h, OVERLAPPED *o, int op, PVOID buf, DWORD n, LPDWORD done, PVOID fn)
+{
+    LARGE_INTEGER off;
+    off.QuadPart = (LONGLONG)o->Offset | (LONGLONG)o->OffsetHigh << 32;
+    Watch *w = watch_new(h, o, fn);
+    HANDLE ev = w ? w->ev : (HANDLE)((ULONG_PTR)o->hEvent & ~(ULONG_PTR)1);
+    o->Internal = STATUS_PENDING;
+    o->InternalHigh = 0;
+    NTSTATUS s = op ? NtWriteFile(h, ev, 0, 0, (PIO_STATUS_BLOCK)o, buf, n, &off, 0)
+                    : NtReadFile(h, ev, 0, 0, (PIO_STATUS_BLOCK)o, buf, n, &off, 0);
+    if (done) *done = 0;
+    if (s == STATUS_PENDING) {
+        if (w) watch_start(w);
+        if (fn) { SetLastError(0); return TRUE; }          /* ReadFileEx: queued */
+        SetLastError(ERROR_IO_PENDING);
+        return FALSE;
+    }
+    o->Internal = (ULONG_PTR)s;
+    if (!NT_SUCCESS(s) && s != STATUS_END_OF_FILE && s != STATUS_BUFFER_OVERFLOW) o->InternalHigh = 0;
+    finished_now(h, o, w, fn, s);
+    if (fn) { SetLastError(0); return NT_SUCCESS(s) || s == STATUS_END_OF_FILE || s == STATUS_BUFFER_OVERFLOW; }
+    if (done) *done = (DWORD)o->InternalHigh;
+    if (s == STATUS_END_OF_FILE) { SetLastError(ERROR_HANDLE_EOF); return FALSE; }
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+
+NTSTATUS k32_overlapped_fsctl(HANDLE h, OVERLAPPED *o, ULONG code, PVOID in, DWORD in_len, PVOID out, DWORD out_len)
+{
+    Watch *w = watch_new(h, o, 0);
+    HANDLE ev = w ? w->ev : (HANDLE)((ULONG_PTR)o->hEvent & ~(ULONG_PTR)1);
+    o->Internal = STATUS_PENDING;
+    o->InternalHigh = 0;
+    NTSTATUS s = NtFsControlFile(h, ev, 0, 0, (PIO_STATUS_BLOCK)o, code, in, in_len, out, out_len);
+    if (s == STATUS_PENDING) { if (w) watch_start(w); return s; }
+    o->Internal = (ULONG_PTR)s;
+    /* ConnectNamedPipe finding its client already there completes nothing */
+    if (s == (NTSTATUS)0xC00000B2) { if (w) { CloseHandle(w->ev); zfree(w); } return s; }
+    finished_now(h, o, w, 0, s);
+    return s;
+}
+
+WINBASEAPI BOOL WINAPI GetOverlappedResultEx(HANDLE h, LPOVERLAPPED ov, LPDWORD bytes, DWORD ms, BOOL alertable)
+{
+    (void)h;
+    if ((NTSTATUS)ov->Internal == STATUS_PENDING) {
+        if (!ms) { SetLastError(996 /* ERROR_IO_INCOMPLETE */); return FALSE; }
+        HANDLE ev = (HANDLE)((ULONG_PTR)ov->hEvent & ~(ULONG_PTR)1);
+        ULONGLONG until = ms == INFINITE ? ~0ULL : GetTickCount64() + ms;
+        while ((NTSTATUS)*(volatile ULONG_PTR *)&ov->Internal == STATUS_PENDING) {
+            ULONGLONG now = GetTickCount64();
+            if (now >= until) { SetLastError(WAIT_TIMEOUT); return FALSE; }
+            DWORD step = ev ? (until - now > 0x7FFFFFFF ? 0x7FFFFFFF : (DWORD)(until - now)) : 1;
+            DWORD r = ev ? WaitForSingleObjectEx(ev, step, alertable) : SleepEx(1, alertable);
+            if (r == WAIT_IO_COMPLETION) { SetLastError(WAIT_IO_COMPLETION); return FALSE; }
+            if (ev && r == WAIT_OBJECT_0 && (NTSTATUS)ov->Internal == STATUS_PENDING) Sleep(1);
+        }
+    }
+    *bytes = (DWORD)ov->InternalHigh;
+    NTSTATUS s = (NTSTATUS)ov->Internal;
+    if (s == STATUS_END_OF_FILE) { SetLastError(ERROR_HANDLE_EOF); return FALSE; }
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+
+WINBASEAPI BOOL WINAPI GetOverlappedResult(HANDLE h, LPOVERLAPPED ov, LPDWORD bytes, BOOL wait)
+{
+    return GetOverlappedResultEx(h, ov, bytes, wait ? INFINITE : 0, FALSE);
+}
+
+WINBASEAPI BOOL WINAPI CancelIo(HANDLE h)
+{
+    IO_STATUS_BLOCK io;
+    NTSTATUS s = NtCancelIoFile(h, &io);
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+
+WINBASEAPI BOOL WINAPI CancelIoEx(HANDLE h, LPOVERLAPPED ov)
+{
+    IO_STATUS_BLOCK io;
+    NTSTATUS s = ov ? NtCancelIoFileEx(h, (PIO_STATUS_BLOCK)ov, &io) : NtCancelIoFile(h, &io);
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+
+
 WINBASEAPI BOOL WINAPI ReadFileEx(HANDLE h, LPVOID buf, DWORD n, LPOVERLAPPED ov, LPOVERLAPPED_COMPLETION_ROUTINE fn)
-{ return io_ex(h, buf, n, ov, fn, FALSE); }
+{ return k32_overlapped(h, ov, 0, buf, n, 0, (PVOID)fn); }
 WINBASEAPI BOOL WINAPI WriteFileEx(HANDLE h, LPCVOID buf, DWORD n, LPOVERLAPPED ov, LPOVERLAPPED_COMPLETION_ROUTINE fn)
-{ return io_ex(h, (LPVOID)buf, n, ov, fn, TRUE); }
+{ return k32_overlapped(h, ov, 1, (PVOID)buf, n, 0, (PVOID)fn); }
 
 WINBASEAPI DWORD WINAPI SleepEx(DWORD ms, BOOL alertable)
 {
@@ -705,7 +848,33 @@ static BOOL find_program(const char *name, char *out, int cap)
     return FALSE;
 }
 
-static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE std[3], LPPROCESS_INFORMATION pi)
+/* The environment block for a new process, as UTF-8 (heap) */
+static char *env_utf8(LPVOID env, BOOL unicode, SIZE_T *len)
+{
+    if (!env) return k32_env_block(0, len);
+    SIZE_T n = 0;
+    if (unicode) {
+        const WCHAR *w = env;
+        while (w[n] || w[n + 1]) n++;
+        n += 2;                                         /* both NULs */
+        int need = w2u(w, (int)n, 0, 0);
+        char *b = zalloc((SIZE_T)need + 2);
+        if (!b) return 0;
+        w2u(w, (int)n, b, need + 1);
+        *len = (SIZE_T)need;
+        return b;
+    }
+    const char *a = env;
+    while (a[n] || a[n + 1]) n++;
+    n += 2;
+    char *b = zalloc(n);
+    if (b) memcpy(b, a, n);
+    *len = n;
+    return b;
+}
+
+static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE std[3], BOOL inherit,
+                           DWORD flags, LPVOID env, LPPROCESS_INFORMATION pi)
 {
     char name[MAX_PATH], image[MAX_PATH], cwdbuf[MAX_PATH];
     if (app) {
@@ -723,10 +892,32 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
     }
     if (!name[0] || !find_program(name, image, MAX_PATH)) { SetLastError(ERROR_FILE_NOT_FOUND); return FALSE; }
     if (dir && !full_path(dir, cwdbuf, MAX_PATH)) { SetLastError(ERROR_DIRECTORY); return FALSE; }
+    /* a batch file runs in the command interpreter */
+    int il = (int)strlen(image);
+    char *batch = 0;
+    if (il > 4 && (ieq(image + il - 4, ".bat") || ieq(image + il - 4, ".cmd"))) {
+        const char *rest = cmd ? cmd : image;
+        SIZE_T bl = strlen(rest) + 64;
+        batch = zalloc(bl + (SIZE_T)il);
+        if (!batch) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+        const char *pre = "C:\\Windows\\System32\\cmd.exe /c ";
+        memcpy(batch, pre, strlen(pre));
+        memcpy(batch + strlen(pre), rest, strlen(rest) + 1);
+        memcpy(image, "C:\\Windows\\System32\\cmd.exe", 28);
+        cmd = batch;
+    }
+    SIZE_T env_len = 0;
+    char *envb = env_utf8(env, (flags & CREATE_UNICODE_ENVIRONMENT) != 0, &env_len);
+    if (!envb) { zfree(batch); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
     NOVA_CREATE_PROCESS io;
     memset(&io, 0, sizeof(io));
-    for (int i = 0; i < 3; i++) io.StdHandle[i] = std ? std[i] : 0;
+    for (int i = 0; i < 3; i++) io.StdHandle[i] = std[i];
+    io.Flags = (inherit ? 1 : 0) | ((flags & (DETACHED_PROCESS | CREATE_NO_WINDOW)) ? 2 : 0);
+    io.Environment = envb;
+    io.EnvironmentSize = env_len;
     NTSTATUS s = NtNovaCreateProcess(image, cmd ? cmd : image, dir ? cwdbuf : cwd(), &io);
+    zfree(envb);
+    zfree(batch);
     if (!NT_SUCCESS(s)) return fail_status(s);
     pi->hProcess = io.Process;
     pi->hThread = io.Thread;
@@ -735,21 +926,31 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
     return TRUE;
 }
 
+/* The new process's standard handles: STARTUPINFO's when it says so,
+ * else the creator's own (a console program's output goes where ours does) */
+static void std_handles(DWORD flags, HANDLE si_in, HANDLE si_out, HANDLE si_err, HANDLE std[3])
+{
+    if (flags & STARTF_USESTDHANDLES) { std[0] = si_in; std[1] = si_out; std[2] = si_err; return; }
+    std[0] = GetStdHandle(STD_INPUT_HANDLE);
+    std[1] = GetStdHandle(STD_OUTPUT_HANDLE);
+    std[2] = GetStdHandle(STD_ERROR_HANDLE);
+    for (int i = 0; i < 3; i++) if (std[i] == INVALID_HANDLE_VALUE) std[i] = 0;
+}
+
 WINBASEAPI BOOL WINAPI CreateProcessA(LPCSTR app, LPSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta, BOOL inherit,
                                       DWORD flags, LPVOID env, LPCSTR dir, LPSTARTUPINFOA si, LPPROCESS_INFORMATION pi)
 {
-    (void)pa; (void)ta; (void)inherit; (void)flags; (void)env;
-    HANDLE std[3] = { 0, 0, 0 };
-    BOOL use = si && (si->dwFlags & STARTF_USESTDHANDLES);
-    if (use) { std[0] = si->hStdInput; std[1] = si->hStdOutput; std[2] = si->hStdError; }
+    (void)pa; (void)ta;
+    HANDLE std[3];
     if (!app && !cmd) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    return create_process(app, cmd, dir, use ? std : 0, pi);
+    std_handles(si ? si->dwFlags : 0, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
+    return create_process(app, cmd, dir, std, inherit, flags, env, pi);
 }
 
 WINBASEAPI BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta, BOOL inherit,
                                       DWORD flags, LPVOID env, LPCWSTR dir, LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi)
 {
-    (void)pa; (void)ta; (void)inherit; (void)flags; (void)env;
+    (void)pa; (void)ta;
     char a[MAX_PATH * 3], d[MAX_PATH * 3], *c = 0;
     if (!app && !cmd) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     if (cmd) {
@@ -758,11 +959,10 @@ WINBASEAPI BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIB
         if (!c) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
         w2u(cmd, -1, c, n);
     }
-    HANDLE std[3] = { 0, 0, 0 };
-    BOOL use = si && (si->dwFlags & STARTF_USESTDHANDLES);
-    if (use) { std[0] = si->hStdInput; std[1] = si->hStdOutput; std[2] = si->hStdError; }
+    HANDLE std[3];
+    std_handles(si ? si->dwFlags : 0, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
     BOOL ok = create_process(app ? wide_to_temp(app, a, sizeof(a)) : 0, c, dir ? wide_to_temp(dir, d, sizeof(d)) : 0,
-                             use ? std : 0, pi);
+                             std, inherit, flags, env, pi);
     zfree(c);
     return ok;
 }
@@ -1322,8 +1522,6 @@ WINBASEAPI DWORD WINAPI GetShortPathNameW(LPCWSTR s, LPWSTR l, DWORD n) { return
 WINBASEAPI DWORD WINAPI GetLongPathNameA(LPCSTR s, LPSTR l, DWORD n)    { return put_a(s, l, n); }
 WINBASEAPI DWORD WINAPI GetShortPathNameA(LPCSTR s, LPSTR l, DWORD n)   { return put_a(s, l, n); }
 
-WINBASEAPI BOOL WINAPI GetHandleInformation(HANDLE h, LPDWORD flags) { (void)h; *flags = 0; return TRUE; }
-WINBASEAPI BOOL WINAPI SetHandleInformation(HANDLE h, DWORD mask, DWORD flags) { (void)h; (void)mask; (void)flags; return TRUE; }
 
 WINBASEAPI BOOL WINAPI GetDiskFreeSpaceExW(LPCWSTR dir, PULARGE_INTEGER avail, PULARGE_INTEGER total, PULARGE_INTEGER free)
 {
@@ -2273,34 +2471,6 @@ WINBASEAPI BOOL WINAPI QueryProcessCycleTime(HANDLE p, PULONG64 cycles) { (void)
 WINBASEAPI BOOL WINAPI QueryThreadCycleTime(HANDLE t, PULONG64 cycles)  { (void)t; *cycles = __builtin_ia32_rdtsc(); return TRUE; }
 WINBASEAPI VOID WINAPI QueryUnbiasedInterruptTime(PULONGLONG t)        { *t = GetTickCount64() * 10000; }
 WINBASEAPI VOID WINAPI QueryInterruptTime(PULONGLONG t)                { *t = GetTickCount64() * 10000; }
-
-/* -----------------------------------------------------------------------
- * Pipes: NovaOS has none yet
- * ----------------------------------------------------------------------- */
-WINBASEAPI HANDLE WINAPI CreateNamedPipeW(LPCWSTR name, DWORD mode, DWORD pmode, DWORD max, DWORD out, DWORD in, DWORD ms,
-                                          LPSECURITY_ATTRIBUTES sa)
-{
-    (void)name; (void)mode; (void)pmode; (void)max; (void)out; (void)in; (void)ms; (void)sa;
-    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
-    return INVALID_HANDLE_VALUE;
-}
-
-WINBASEAPI BOOL WINAPI CreatePipe(PHANDLE r, PHANDLE w, LPSECURITY_ATTRIBUTES sa, DWORD size)
-{
-    (void)r; (void)w; (void)sa; (void)size;
-    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
-    return FALSE;
-}
-
-WINBASEAPI BOOL WINAPI PeekNamedPipe(HANDLE h, LPVOID buf, DWORD n, LPDWORD read, LPDWORD avail, LPDWORD left)
-{
-    (void)h; (void)buf; (void)n; (void)read; (void)avail; (void)left;
-    SetLastError(ERROR_INVALID_HANDLE);
-    return FALSE;
-}
-
-WINBASEAPI BOOL WINAPI ConnectNamedPipe(HANDLE h, LPOVERLAPPED ov) { (void)h; (void)ov; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-WINBASEAPI BOOL WINAPI WaitNamedPipeW(LPCWSTR n, DWORD ms) { (void)n; (void)ms; SetLastError(ERROR_FILE_NOT_FOUND); return FALSE; }
 
 /* -----------------------------------------------------------------------
  * lstr* (the rest of them)

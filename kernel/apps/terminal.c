@@ -989,11 +989,64 @@ static void run(Term *t, char *cmdline)
     if (t->job.kind == JOB_NONE) done_mark();
 }
 
+/* Pipes, redirections and command chains (| < > & && ||) outside quotes:
+ * the line is for the command interpreter */
+static bool needs_shell(const char *s)
+{
+    bool q = false;
+    for (; *s; s++) {
+        if (*s == '"') q = !q;
+        else if (!q && (*s == '|' || *s == '<' || *s == '>' || *s == '&')) return true;
+    }
+    return false;
+}
+
+/* A batch file named by the first word (with or without .bat/.cmd) */
+static bool is_batch_name(Term *t, const char *c)
+{
+    size_t n = strlen(c);
+    if (n > 4 && (is(c + n - 4, ".bat") || is(c + n - 4, ".cmd"))) {
+        RamNode *f = RamfsResolve(t->cwd, c);
+        return f && !f->dir;
+    }
+    char buf[RAMFS_PATH_MAX];
+    for (int i = 0; i < 2; i++) {
+        ksnprintf(buf, sizeof(buf), "%s%s", c, i ? ".cmd" : ".bat");
+        RamNode *f = RamfsResolve(t->cwd, buf);
+        if (f && !f->dir) return true;
+    }
+    return false;
+}
+
+/* Run @line with "cmd.exe /d /c" in this Terminal */
+static bool run_in_cmd(Term *t, const char *line)
+{
+    RamNode *cmd = RamfsResolve(NULL, "\\Windows\\System32\\cmd.exe");
+    if (!cmd) return false;
+    char full[T_COLS + 64];
+    ksnprintf(full, sizeof(full), "cmd.exe /d /c %s", line);
+    start_program(t, cmd, full);
+    return true;
+}
+
 static void run_cmd(Term *t, char *cmdline)
 {
     char original[T_COLS];
     strncpy(original, cmdline, sizeof(original) - 1);
     original[sizeof(original) - 1] = '\0';
+    {
+        const char *s = original;
+        while (*s == ' ') s++;
+        char first[RAMFS_PATH_MAX];
+        int k = 0;
+        bool q = false;
+        for (const char *c = s; *c && (q || *c != ' ') && k < (int)sizeof(first) - 1; c++) {
+            if (*c == '"') { q = !q; continue; }
+            first[k++] = *c;
+        }
+        first[k] = '\0';
+        if ((needs_shell(s) || (k && is_batch_name(t, first))) && run_in_cmd(t, s)) return;
+    }
     char *argv[MAX_ARGS];
     int argc = split_args(cmdline, argv);
     if (!argc) return;
@@ -1123,7 +1176,12 @@ static void term_key(WND *w, const KeyEvent *k)
     Term *t = w->user;
     if (t->job.kind == JOB_PROC) {            /* keyboard goes to the program */
         Job *j = &t->job;
-        if (k->ctrl && k->ch == 'c') { proc_output(t, "^C\n", 3); UmKill(j->proc, 0xC000013A); return; }
+        if (k->ctrl && k->ch == 'c') {
+            proc_output(t, "^C\n", 3);
+            UmKill(j->proc, 0xC000013A);
+            UmKillConsole(j->con, 0xC000013A);     /* and what it started (cmd.exe's programs) */
+            return;
+        }
         if (k->ctrl && k->ch == 'z') { proc_output(t, "^Z\n", 3); UmConsoleEof(j->con); return; }
         if (k->extended) {
             int page = (WmClientRect(w).h - 2 * T_PAD) / T_LINE_H - 1;

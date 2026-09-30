@@ -59,6 +59,7 @@ typedef struct { UINT32 pid; char name[32]; UINT32 mem_kb; UINT32 threads; bool 
 int  UmList(UmProcInfo *out, int max);
 /* taskkill: false if no running process has @pid. */
 bool UmKillPid(UINT32 pid);
+void UmKillConsole(UmConsole *con, UINT32 status);   /* every program on @con */
 
 /* -----------------------------------------------------------------------
  * Consoles: one per Terminal session that runs programs

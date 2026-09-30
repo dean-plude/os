@@ -605,45 +605,83 @@ static UINT64 sys_query_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return put_u32(um_stack_arg(5), 48) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }
 
+/* A process named by a handle (-1: the caller); referenced by @ob if not
+ * the caller */
+static UmProcess *proc_of(UmProcess *self, UINT64 h, UmObject **ob)
+{
+    *ob = NULL;
+    if (h == UINT64_C(0xFFFFFFFFFFFFFFFF)) return self;
+    UmObject *o = um_handle_object(self, h, UO_PROCESS);
+    if (!o) return NULL;
+    if (!o->proc || o->proc->reclaimed) { um_ob_unref(o); return NULL; }
+    *ob = o;
+    return o->proc;
+}
+
 /* NtDuplicateObject(HANDLE SourceProcess, HANDLE Source, HANDLE TargetProcess,
- *                   PHANDLE Target, ACCESS_MASK, ULONG Attributes, ULONG Options) */
+ *                   PHANDLE Target, ACCESS_MASK, ULONG Attributes, ULONG Options)
+ * Either process may be another one (a process handle): a parent giving
+ * a child a handle, or taking one of the child's. */
 static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
-    UINT64 self = UINT64_C(0xFFFFFFFFFFFFFFFF);
-    if (a1 != self || (a3 != self && a3)) return ST_INVALID_HANDLE;
-    UINT32 options = (UINT32)um_stack_arg(7);
+    UINT32 attrs = (UINT32)um_stack_arg(6), options = (UINT32)um_stack_arg(7);
+    UmObject *sob = NULL, *tob = NULL;
+    UmProcess *sp = proc_of(p, a1, &sob);
+    if (!sp) return ST_INVALID_HANDLE;
+    UmProcess *tp = a3 ? proc_of(p, a3, &tob) : NULL;
+    if (a3 && !tp) { if (sob) um_ob_unref(sob); return ST_INVALID_HANDLE; }
     UINT64 nh = 0;
     UINT32 st = ST_SUCCESS;
-    if (a2 == UINT64_C(0xFFFFFFFFFFFFFFFE)) {                 /* GetCurrentThread() */
-        nh = um_handle_new_object(p, &UmCurrentThread()->ob);
-        if (!nh) return ST_TOO_MANY_HANDLES;
+    if (a2 == UINT64_C(0xFFFFFFFFFFFFFFFE) && sp == p) {     /* GetCurrentThread() */
+        nh = tp ? um_handle_new_object(tp, &UmCurrentThread()->ob) : 0;
+        if (tp && !nh) st = ST_TOO_MANY_HANDLES;
+    } else if (a2 == UINT64_C(0xFFFFFFFFFFFFFFFF) && sp == p && tp && tp != p) {
+        st = ST_INVALID_PARAMETER;                           /* (the caller's own process) */
     } else {
         DesktopLock();
-        um_lock(&p->lock);
-        UmHandle *src = NULL;
-        if (a2 >= 4 && !(a2 & 3) && a2 / 4 - 1 < UM_MAX_HANDLES && p->handles[a2 / 4 - 1].kind != H_FREE)
-            src = &p->handles[a2 / 4 - 1];
-        if (!src) st = ST_INVALID_HANDLE;
-        else {
-            int free = -1;
-            for (int i = 0; i < UM_MAX_HANDLES; i++) if (p->handles[i].kind == H_FREE) { free = i; break; }
-            if (free < 0) st = ST_TOO_MANY_HANDLES;
-            else {
-                UmHandle *d = &p->handles[free];
-                *d = *src;
-                if (d->kind == H_FILE || d->kind == H_DIR) RamfsRef(d->node);
-                if (d->kind == H_OBJECT) um_ob_ref(d->obj);
-                nh = (UINT64)(free + 1) * 4;
-            }
+        um_lock(&sp->lock);
+        UmHandle src;
+        bool ok = a2 >= 4 && !(a2 & 3) && a2 / 4 - 1 < UM_MAX_HANDLES && sp->handles[a2 / 4 - 1].kind != H_FREE;
+        if (ok) {
+            src = sp->handles[a2 / 4 - 1];
+            if (src.kind == H_FILE || src.kind == H_DIR) RamfsRef(src.node);
+            if (src.kind == H_OBJECT) um_ob_ref(src.obj);
         }
-        um_unlock(&p->lock);
+        um_unlock(&sp->lock);
+        if (!ok) st = ST_INVALID_HANDLE;
+        else if (tp) {
+            if (!(options & 4)) src.inherit = attrs & 2;     /* DUPLICATE_SAME_ATTRIBUTES, OBJ_INHERIT */
+            um_lock(&tp->lock);
+            int free = -1;
+            for (int i = 0; i < UM_MAX_HANDLES; i++) if (tp->handles[i].kind == H_FREE) { free = i; break; }
+            if (free >= 0) { tp->handles[free] = src; nh = (UINT64)(free + 1) * 4; }
+            um_unlock(&tp->lock);
+            if (free < 0) st = ST_TOO_MANY_HANDLES;
+        }
+        if (ok && (!tp || st)) {                             /* not placed: drop the reference */
+            if (src.kind == H_FILE || src.kind == H_DIR) RamfsUnref(src.node);
+            if (src.kind == H_OBJECT) um_ob_unref(src.obj);
+        }
         DesktopUnlock();
-        if (st) return st;
     }
-    if (options & 1) {                                         /* DUPLICATE_CLOSE_SOURCE */
-        um_close_handle(a2);
+    if (!st && (options & 1)) {                              /* DUPLICATE_CLOSE_SOURCE */
+        if (sp == p) um_close_handle(a2);
+        else {
+            DesktopLock();
+            um_lock(&sp->lock);
+            UmHandle *h = a2 >= 4 && !(a2 & 3) && a2 / 4 - 1 < UM_MAX_HANDLES ? &sp->handles[a2 / 4 - 1] : NULL;
+            UmHandle old = h ? *h : (UmHandle){ 0 };
+            if (h) memset(h, 0, sizeof(*h));
+            um_unlock(&sp->lock);
+            if (old.kind == H_FILE || old.kind == H_DIR) RamfsUnref(old.node);
+            if (old.kind == H_OBJECT) um_ob_unref(old.obj);
+            DesktopUnlock();
+        }
     }
+    if (sob) um_ob_unref(sob);
+    if (tob && tp) um_ob_unref(tob);
+    if (st) return st;
     if (a4 && !put_handle(a4, nh)) return ST_ACCESS_VIOLATION;
     return ST_SUCCESS;
 }

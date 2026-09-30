@@ -131,7 +131,10 @@ static int fill(FILE *f)
     char one;
     char *dst = f->_buf ? f->_buf : &one;
     DWORD cap = f->_buf ? (DWORD)f->_bufsize : 1, got = 0;
-    if (!ReadFile(f->_handle, dst, cap, &got, 0)) { f->_flags |= F_ERR; set_errno_from_win32(); return 0; }
+    if (!ReadFile(f->_handle, dst, cap, &got, 0)) {
+        if (GetLastError() == ERROR_BROKEN_PIPE) { f->_flags |= F_EOF; return 0; }   /* writer gone */
+        f->_flags |= F_ERR; set_errno_from_win32(); return 0;
+    }
     if (!got) { f->_flags |= F_EOF; return 0; }
     if (f->_flags & F_CONSOLE) {                         /* console lines end "\r\n" */
         DWORD o = 0;
@@ -198,7 +201,8 @@ size_t fread(void *p, size_t size, size_t n, FILE *f)
             if (f->_flags & F_WRITING) flush_write(f);
             DWORD r = 0;
             if (!ReadFile(f->_handle, d + got, (DWORD)(want - got > 0x40000000 ? 0x40000000 : want - got), &r, 0)) {
-                f->_flags |= F_ERR; break;
+                f->_flags |= GetLastError() == ERROR_BROKEN_PIPE ? F_EOF : F_ERR;
+                break;
             }
             if (!r) { f->_flags |= F_EOF; break; }
             got += r;

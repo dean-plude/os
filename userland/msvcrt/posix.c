@@ -85,6 +85,7 @@ void __nova_set_errno_win32(void)
     case ERROR_DISK_FULL:      errno = ENOSPC; break;
     case ERROR_DIR_NOT_EMPTY:  errno = ENOTEMPTY; break;
     case ERROR_INVALID_HANDLE: errno = EBADF; break;
+    case ERROR_BROKEN_PIPE: case ERROR_NO_DATA: errno = EPIPE; break;
     default:                   errno = EINVAL; break;
     }
 }
@@ -148,7 +149,11 @@ ssize_t read(int fd, void *buf, size_t n)
     OpenFile *o = fd_get(fd);
     if (!o) return -1;
     DWORD got = 0;
-    if (!ReadFile(o->h, buf, (DWORD)(n > 0x40000000 ? 0x40000000 : n), &got, 0)) { __nova_set_errno_win32(); return -1; }
+    if (!ReadFile(o->h, buf, (DWORD)(n > 0x40000000 ? 0x40000000 : n), &got, 0)) {
+        if (GetLastError() == ERROR_BROKEN_PIPE) return 0;     /* the writer is gone: end of file */
+        __nova_set_errno_win32();
+        return -1;
+    }
     return got;
 }
 int _read(int fd, void *buf, unsigned n) { return (int)read(fd, buf, n); }
@@ -562,3 +567,107 @@ int getopt(int argc, char *const argv[], const char *spec)
 {
     return getopt_long(argc, argv, spec, 0, 0);
 }
+
+/* -----------------------------------------------------------------------
+ * Pipes and child processes: _pipe, _popen, _pclose
+ * ----------------------------------------------------------------------- */
+#define O_NOINHERIT_ 0x0080
+
+__declspec(dllexport) int _pipe(int *fds, unsigned size, int mode)
+{
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), 0, !(mode & O_NOINHERIT_) };
+    HANDLE r, w;
+    if (!CreatePipe(&r, &w, &sa, size)) { __nova_set_errno_win32(); return -1; }
+    int a = __nova_fd_new(r, 1), b = a < 0 ? -1 : __nova_fd_new(w, 1);
+    if (a < 0 || b < 0) {
+        if (a >= 0) close(a); else CloseHandle(r);
+        CloseHandle(w);
+        return -1;
+    }
+    fds[0] = a;
+    fds[1] = b;
+    return 0;
+}
+
+/* The command interpreter: %ComSpec%, else cmd.exe */
+static void comspec(char *out, int cap)
+{
+    DWORD n = GetEnvironmentVariableA("ComSpec", out, (DWORD)cap);
+    if (!n || n >= (DWORD)cap) strcpy(out, "C:\\Windows\\System32\\cmd.exe");
+}
+
+/* Run "cmd.exe /c @cmd" with the given standard handles; the process
+ * handle, or 0 */
+HANDLE __nova_shell(const char *cmd, HANDLE in, HANDLE out, HANDLE err)
+{
+    char shell[MAX_PATH];
+    comspec(shell, sizeof(shell));
+    size_t n = strlen(shell) + strlen(cmd) + 16;
+    char *line = malloc(n);
+    if (!line) { errno = ENOMEM; return 0; }
+    snprintf(line, n, "\"%s\" /c %s", shell, cmd);
+    STARTUPINFOA si;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = in;
+    si.hStdOutput = out;
+    si.hStdError = err;
+    PROCESS_INFORMATION pi;
+    BOOL ok = CreateProcessA(shell, line, 0, 0, TRUE, 0, 0, 0, &si, &pi);
+    free(line);
+    if (!ok) { __nova_set_errno_win32(); if (errno == EINVAL) errno = ENOENT; return 0; }
+    CloseHandle(pi.hThread);
+    return pi.hProcess;
+}
+
+static struct { FILE *f; HANDLE proc; } g_popen[16];
+
+__declspec(dllexport) FILE *_popen(const char *cmd, const char *mode)
+{
+    int rd = mode[0] == 'r';
+    if (!rd && mode[0] != 'w') { errno = EINVAL; return 0; }
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), 0, TRUE };
+    HANDLE r, w;
+    if (!CreatePipe(&r, &w, &sa, 0)) { __nova_set_errno_win32(); return 0; }
+    HANDLE mine = rd ? r : w, theirs = rd ? w : r;
+    SetHandleInformation(mine, HANDLE_FLAG_INHERIT, 0);
+    fflush(0);
+    HANDLE proc = __nova_shell(cmd, rd ? GetStdHandle(STD_INPUT_HANDLE) : theirs,
+                               rd ? theirs : GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE));
+    CloseHandle(theirs);
+    if (!proc) { CloseHandle(mine); return 0; }
+    int fd = __nova_fd_new(mine, 1);
+    FILE *f = fd < 0 ? 0 : _fdopen(fd, rd ? "r" : "w");
+    if (!f) { if (fd >= 0) close(fd); else CloseHandle(mine); CloseHandle(proc); return 0; }
+    for (int i = 0; i < 16; i++) if (!g_popen[i].f) { g_popen[i].f = f; g_popen[i].proc = proc; return f; }
+    fclose(f);
+    CloseHandle(proc);
+    errno = EMFILE;
+    return 0;
+}
+
+__declspec(dllexport) FILE *_wpopen(const wchar_t *cmd, const wchar_t *mode)
+{
+    char c[4096], m[8];
+    if (wcstombs(c, cmd, sizeof(c)) == (size_t)-1 || wcstombs(m, mode, sizeof(m)) == (size_t)-1) { errno = EINVAL; return 0; }
+    return _popen(c, m);
+}
+
+__declspec(dllexport) int _pclose(FILE *f)
+{
+    for (int i = 0; i < 16; i++) {
+        if (g_popen[i].f != f) continue;
+        HANDLE proc = g_popen[i].proc;
+        g_popen[i].f = 0;
+        fclose(f);
+        DWORD code = (DWORD)-1;
+        WaitForSingleObject(proc, INFINITE);
+        GetExitCodeProcess(proc, &code);
+        CloseHandle(proc);
+        return (int)code;
+    }
+    errno = EINVAL;
+    return -1;
+}
+

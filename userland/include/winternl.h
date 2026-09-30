@@ -25,6 +25,7 @@ typedef struct _OBJECT_ATTRIBUTES {
 typedef struct _IO_STATUS_BLOCK { union { NTSTATUS Status; PVOID Pointer; }; ULONG_PTR Information; } IO_STATUS_BLOCK, *PIO_STATUS_BLOCK;
 
 #define OBJ_CASE_INSENSITIVE 0x40
+#define OBJ_INHERIT          0x02
 #define FILE_SUPERSEDE        0
 #define FILE_OPEN             1
 #define FILE_CREATE           2
@@ -179,6 +180,16 @@ NTSYSAPI NTSTATUS NTAPI NtCreateFile(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES
                                      ULONG options, PVOID ea, ULONG ealen);
 NTSYSAPI NTSTATUS NTAPI NtOpenFile(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, PIO_STATUS_BLOCK io,
                                    ULONG share, ULONG options);
+NTSYSAPI NTSTATUS NTAPI NtCreateNamedPipeFile(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, PIO_STATUS_BLOCK io,
+                                              ULONG share, ULONG disposition, ULONG options, ULONG type, ULONG read_mode,
+                                              ULONG completion, ULONG max_inst, ULONG in_quota, ULONG out_quota,
+                                              PLARGE_INTEGER timeout);
+NTSYSAPI NTSTATUS NTAPI NtFsControlFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG code,
+                                        PVOID in, ULONG in_len, PVOID out, ULONG out_len);
+NTSYSAPI NTSTATUS NTAPI NtCancelIoFile(HANDLE h, PIO_STATUS_BLOCK io);
+NTSYSAPI NTSTATUS NTAPI NtCancelIoFileEx(HANDLE h, PIO_STATUS_BLOCK req, PIO_STATUS_BLOCK io);
+NTSYSAPI NTSTATUS NTAPI NtSetInformationObject(HANDLE h, ULONG cls, PVOID info, ULONG len);
+NTSYSAPI NTSTATUS NTAPI NtQueryObject(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret);
 NTSYSAPI NTSTATUS NTAPI NtReadFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io,
                                    PVOID buf, ULONG len, PLARGE_INTEGER off, PULONG key);
 NTSYSAPI NTSTATUS NTAPI NtWriteFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io,
@@ -197,7 +208,10 @@ NTSYSAPI NTSTATUS NTAPI NtQueryVirtualMemory(HANDLE p, PVOID addr, int cls, PVOI
 NTSYSAPI NTSTATUS NTAPI NtGetContextThread(HANDLE t, PCONTEXT c);
 NTSYSAPI NTSTATUS NTAPI NtSetContextThread(HANDLE t, const CONTEXT *c);
 /* NovaOS: create a process sharing this one's console (UTF-8 full paths) */
-typedef struct { HANDLE StdHandle[3]; HANDLE Process, Thread; ULONG64 ProcessId, ThreadId; } NOVA_CREATE_PROCESS;
+/* Flags: 1 = inherit handles, 2 = no console; Environment: UTF-8
+ * "NAME=value" strings each ended by NUL, then an empty one (NULL: default) */
+typedef struct { HANDLE StdHandle[3]; HANDLE Process, Thread; ULONG64 ProcessId, ThreadId;
+                 ULONG64 Flags; const char *Environment; ULONG64 EnvironmentSize; } NOVA_CREATE_PROCESS;
 NTSYSAPI NTSTATUS NTAPI NtNovaCreateProcess(const char *image, const char *cmdline, const char *dir, NOVA_CREATE_PROCESS *io);
 /* NovaOS: Out = { process id, exit code (STILL_ACTIVE while running), exited } */
 NTSYSAPI NTSTATUS NTAPI NtNovaProcessInfo(HANDLE p, ULONG64 out[3]);

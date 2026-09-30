@@ -93,6 +93,12 @@ XSTUB(NtReleaseSemaphore,           SYS_NtReleaseSemaphore)
 XSTUB(NtWaitForSingleObject,        SYS_NtWaitForSingleObject)
 XSTUB(NtWaitForMultipleObjects,     SYS_NtWaitForMultipleObjects)
 XSTUB(NtDuplicateObject,            SYS_NtDuplicateObject)
+XSTUB(NtCreateNamedPipeFile,        SYS_NtCreateNamedPipeFile)
+XSTUB(NtFsControlFile,              SYS_NtFsControlFile)
+XSTUB(NtCancelIoFile,               SYS_NtCancelIoFile)
+XSTUB(NtCancelIoFileEx,             SYS_NtCancelIoFileEx)
+XSTUB(NtSetInformationObject,       SYS_NtSetInformationObject)
+XSTUB(NtQueryObject,                SYS_NtQueryObject)
 XSTUB(NtContinue,                   SYS_NtContinue)
 XSTUB(NtRaiseException,             SYS_NtRaiseException)
 XSTUB(NtNovaLoadDll,                SYS_NtNovaLoadDll)
@@ -218,7 +224,22 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
 {
     switch ((ULONG)s) {
     case 0x00000000: return ERROR_SUCCESS;
+    case 0x00000103: return 997;                          /* ERROR_IO_PENDING */
     case 0x80000005: return ERROR_MORE_DATA;
+    case 0xC0000010: return 1;                            /* ERROR_INVALID_FUNCTION */
+    case 0xC0000023: return ERROR_INSUFFICIENT_BUFFER;
+    case 0xC00000AB: case 0xC00000AC: case 0xC00000AE: return 231;   /* ERROR_PIPE_BUSY */
+    case 0xC00000AD: return 230;                          /* ERROR_BAD_PIPE */
+    case 0xC00000B0: return 233;                          /* ERROR_PIPE_NOT_CONNECTED */
+    case 0xC00000B1: case 0xC00000D9: return 232;         /* ERROR_NO_DATA */
+    case 0xC00000B2: return 535;                          /* ERROR_PIPE_CONNECTED */
+    case 0xC00000B3: return 536;                          /* ERROR_PIPE_LISTENING */
+    case 0xC00000B5: return 121;                          /* ERROR_SEM_TIMEOUT */
+    case 0xC000014B: return 109;                          /* ERROR_BROKEN_PIPE */
+    case 0xC0000120: return 995;                          /* ERROR_OPERATION_ABORTED */
+    case 0xC0000225: return 1168;                         /* ERROR_NOT_FOUND */
+    case 0xC0000135: return 126;                          /* ERROR_MOD_NOT_FOUND */
+    case 0xC000007B: return 193;                          /* ERROR_BAD_EXE_FORMAT */
     case 0x80000006: return ERROR_NO_MORE_FILES;
     case 0xC0000002: return ERROR_CALL_NOT_IMPLEMENTED;
     case 0xC0000003: case 0xC000000D: return ERROR_INVALID_PARAMETER;

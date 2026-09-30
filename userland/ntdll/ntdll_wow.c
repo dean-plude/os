@@ -40,8 +40,8 @@ static U64 callb(ULONG num, const U64 *a, int n)
     return sysc(num, b);
 }
 
-#define NARGS_(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, N, ...) N
-#define NARGS(...) NARGS_(__VA_ARGS__, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+#define NARGS_(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, N, ...) N
+#define NARGS(...) NARGS_(__VA_ARGS__, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
 #define SC(name, ...)  ((NTSTATUS)callb(SYS_##name, (const U64[]){ __VA_ARGS__ }, NARGS(__VA_ARGS__)))
 #define SC0(name)      ((NTSTATUS)callb(SYS_##name, 0, 0))
 #define SCP(name, ...) ((LONG_PTR)(LONG)callb(SYS_##name, (const U64[]){ __VA_ARGS__ }, NARGS(__VA_ARGS__)))
@@ -244,22 +244,66 @@ NTSTATUS NTAPI NtOpenFile(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, PIO_ST
     return s;
 }
 
+/* Reads, writes and file-system controls may finish after the call
+ * returns (overlapped I/O), so they get the program's own status block:
+ * bit 63 tells the kernel it is the 32-bit layout */
+#define IO32(io) ((io) ? P(io) | (1ULL << 63) : 0)
+
 NTSTATUS NTAPI NtReadFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io,
                           PVOID buf, ULONG len, PLARGE_INTEGER off, PULONG key)
 {
-    IOSB64 iob;
-    NTSTATUS s = SC(NtReadFile, H(h), H(ev), P(apc), P(ctx), io_in(&iob, io), P(buf), U(len), P(off), P(key));
-    io_out(io, &iob);
-    return s;
+    return SC(NtReadFile, H(h), H(ev), P(apc), P(ctx), IO32(io), P(buf), U(len), P(off), P(key));
 }
 
 NTSTATUS NTAPI NtWriteFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io,
                            const VOID *buf, ULONG len, PLARGE_INTEGER off, PULONG key)
 {
+    return SC(NtWriteFile, H(h), H(ev), P(apc), P(ctx), IO32(io), P(buf), U(len), P(off), P(key));
+}
+
+NTSTATUS NTAPI NtFsControlFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG code,
+                               PVOID in, ULONG in_len, PVOID out, ULONG out_len)
+{
+    return SC(NtFsControlFile, H(h), H(ev), P(apc), P(ctx), IO32(io), U(code), P(in), U(in_len), P(out), U(out_len));
+}
+
+NTSTATUS NTAPI NtCreateNamedPipeFile(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, PIO_STATUS_BLOCK io,
+                                     ULONG share, ULONG disposition, ULONG options, ULONG type, ULONG read_mode,
+                                     ULONG completion, ULONG max_inst, ULONG in_quota, ULONG out_quota,
+                                     PLARGE_INTEGER timeout)
+{
+    Box hb; OAC oc; IOSB64 iob;
+    NTSTATUS s = SC(NtCreateNamedPipeFile, HBOX(hb, h), U(access), oa_in(&oc, oa), io_in(&iob, io), U(share),
+                    U(disposition), U(options), U(type), U(read_mode), U(completion), U(max_inst), U(in_quota),
+                    U(out_quota), P(timeout));
+    box_out(&hb); io_out(io, &iob);
+    return s;
+}
+
+NTSTATUS NTAPI NtCancelIoFile(HANDLE h, PIO_STATUS_BLOCK io)
+{
     IOSB64 iob;
-    NTSTATUS s = SC(NtWriteFile, H(h), H(ev), P(apc), P(ctx), io_in(&iob, io), P(buf), U(len), P(off), P(key));
+    NTSTATUS s = SC(NtCancelIoFile, H(h), io_in(&iob, io));
     io_out(io, &iob);
     return s;
+}
+
+NTSTATUS NTAPI NtCancelIoFileEx(HANDLE h, PIO_STATUS_BLOCK req, PIO_STATUS_BLOCK io)
+{
+    IOSB64 iob;
+    NTSTATUS s = SC(NtCancelIoFileEx, H(h), IO32(req), io_in(&iob, io));
+    io_out(io, &iob);
+    return s;
+}
+
+NTSTATUS NTAPI NtSetInformationObject(HANDLE h, ULONG cls, PVOID info, ULONG len)
+{
+    return SC(NtSetInformationObject, H(h), U(cls), P(info), U(len));
+}
+
+NTSTATUS NTAPI NtQueryObject(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret)
+{
+    return SC(NtQueryObject, H(h), U(cls), P(info), U(len), P(ret));
 }
 
 NTSTATUS NTAPI NtQueryInformationFile(HANDLE h, PIO_STATUS_BLOCK io, PVOID info, ULONG len, ULONG cls)
@@ -413,10 +457,11 @@ NTSTATUS NTAPI NtUnmapViewOfSection(HANDLE proc, PVOID base) { return SC(NtUnmap
  * ----------------------------------------------------------------------- */
 NTSTATUS NTAPI NtNovaCreateProcess(const char *image, const char *cmdline, const char *dir, NOVA_CREATE_PROCESS *io)
 {
-    U64 x[7];                                        /* { StdHandle[3], Process, Thread, Pid, Tid } */
+    U64 x[10];         /* { StdHandle[3], Process, Thread, Pid, Tid, Flags, Environment, EnvironmentSize } */
     for (int i = 0; i < 3; i++) x[i] = H(io->StdHandle[i]);
     x[3] = H(io->Process); x[4] = H(io->Thread);
     x[5] = io->ProcessId; x[6] = io->ThreadId;
+    x[7] = io->Flags; x[8] = P(io->Environment); x[9] = io->EnvironmentSize;
     NTSTATUS s = SC(NtNovaCreateProcess, P(image), P(cmdline), P(dir), P(x));
     for (int i = 0; i < 3; i++) io->StdHandle[i] = (HANDLE)(ULONG_PTR)x[i];
     io->Process = (HANDLE)(ULONG_PTR)x[3]; io->Thread = (HANDLE)(ULONG_PTR)x[4];

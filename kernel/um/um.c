@@ -998,8 +998,42 @@ static bool put_ustr(UINT8 *buf, UINT32 cap, UINT32 *off, UINT8 *us, const char 
     return true;
 }
 
+/* The environment block (UTF-16) in a region of its own: @env holds
+ * UTF-8 "NAME=value" strings each ended by NUL, then an empty one */
+static UINT64 put_environment(UmProcess *p, const char *env, UINT32 env_len, UINT32 *bytes)
+{
+    UINT32 units = 1;
+    for (UINT32 i = 0; i < env_len; i++) if ((env[i] & 0xC0) != 0x80) units++;
+    UINT64 size = ((UINT64)units * 2 + 16 + PAGE_SIZE - 1) & ~(UINT64)(PAGE_SIZE - 1);
+    UINT8 *b = kzalloc(size);
+    if (!b) return 0;
+    UINT32 o = 0;
+    for (UINT32 i = 0; i < env_len; ) {                     /* UTF-8 -> UTF-16 */
+        UINT32 c = (UINT8)env[i++];
+        if (c >= 0xC0) {
+            int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1;
+            c &= 0x3F >> more;
+            while (more-- && i < env_len && ((UINT8)env[i] & 0xC0) == 0x80) c = c << 6 | ((UINT8)env[i++] & 0x3F);
+        }
+        if (c >= 0x10000) {
+            c -= 0x10000;
+            put_u16(b + o, (UINT16)(0xD800 + (c >> 10))); o += 2;
+            put_u16(b + o, (UINT16)(0xDC00 + (c & 0x3FF))); o += 2;
+        } else { put_u16(b + o, (UINT16)c); o += 2; }
+        if (o + 8 > size) break;
+    }
+    o += 2;                                                 /* the final NUL */
+    UINT64 va = um_find_free(p, size, p->lay.alloc_min, p->lay.alloc_max);
+    bool ok = va && um_region_add(p, va, size, 0x04, false) && um_commit(p, va, size, 0x04) &&
+              um_write(p, va, b, size);
+    kfree(b);
+    *bytes = o;
+    return ok ? va : 0;
+}
+
 static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image_path,
-                              const char *cmdline, const char *cwd_path)
+                              const char *cmdline, const char *cwd_path, const UINT64 stdv[3],
+                              const char *envp, UINT32 env_len)
 {
     const EnvLayout *L = p->wow ? &g_env32 : &g_env64;
     bool w = p->wow;
@@ -1014,36 +1048,50 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
         put_u32(pp + 0x00, sz);
         put_u32(pp + 0x04, sz);
         put_u32(pp + 0x08, 1);                              /* NORMALIZED */
-        put_ptr(pp + L->std_in, 4, w);                      /* StandardInput  */
-        put_ptr(pp + L->std_out, 8, w);                     /* StandardOutput */
-        put_ptr(pp + L->std_err, 12, w);                    /* StandardError  */
+        put_ptr(pp + L->std_in, stdv[0], w);                /* StandardInput  */
+        put_ptr(pp + L->std_out, stdv[1], w);               /* StandardOutput */
+        put_ptr(pp + L->std_err, stdv[2], w);               /* StandardError  */
         ok = put_ustr(pp, sz, &off, pp + L->cur_dir, cwd_path, pva, L, w) &&          /* CurrentDirectory */
              put_ustr(pp, sz, &off, pp + L->dll_path, w ? "C:\\Windows\\SysWOW64" : "C:\\Windows\\System32",
                       pva, L, w) &&                                                   /* DllPath */
              put_ustr(pp, sz, &off, pp + L->image, image_path, pva, L, w) &&          /* ImagePathName */
              put_ustr(pp, sz, &off, pp + L->cmdline, cmdline, pva, L, w);             /* CommandLine */
-        /* Environment block: NUL-separated UTF-16 strings, double NUL */
+        /* Environment block: the creator's, or the default one */
         char ncpu[32];
         ksnprintf(ncpu, sizeof(ncpu), "NUMBER_OF_PROCESSORS=%u", (unsigned)g_cpu_count);
         const char *env[] = {
             "ALLUSERSPROFILE=C:\\ProgramData", "APPDATA=C:\\AppData\\Roaming", "COMPUTERNAME=NOVA-PC",
-            "HOMEDRIVE=C:", "HOMEPATH=\\", "LOCALAPPDATA=C:\\AppData\\Local", ncpu, "OS=NovaOS",
-            "PATH=C:\\Programs;C:\\Windows\\System32", "PATHEXT=.EXE",
+            "ComSpec=C:\\Windows\\System32\\cmd.exe",
+            "HOMEDRIVE=C:", "HOMEPATH=\\", "LOCALAPPDATA=C:\\AppData\\Local", ncpu, "OS=Windows_NT",
+            "PATH=C:\\Programs;C:\\Windows\\System32;C:\\Windows", "PATHEXT=.COM;.EXE;.BAT;.CMD",
             w ? "PROCESSOR_ARCHITECTURE=x86" : "PROCESSOR_ARCHITECTURE=AMD64",
             w ? "PROCESSOR_ARCHITEW6432=AMD64" : "ProgramW6432=C:\\Programs",
             "ProgramData=C:\\ProgramData", "ProgramFiles=C:\\Programs", "ProgramFiles(x86)=C:\\Programs",
-            "SystemDrive=C:", "SystemRoot=C:\\Windows",
+            "PROMPT=$P$G", "SystemDrive=C:", "SystemRoot=C:\\Windows",
             "TEMP=C:\\Temp", "TMP=C:\\Temp", "USERNAME=dean", "USERPROFILE=C:\\", "windir=C:\\Windows", NULL
         };
-        put_ptr(pp + L->env, pva + off, w);
-        for (int i = 0; ok && env[i]; i++) {
-            UINT32 n = (UINT32)strlen(env[i]);
-            if (off + 2 * (n + 1) + 2 > sz) { ok = false; break; }
-            for (UINT32 k = 0; k < n; k++) put_u16(pp + off + 2 * k, (UINT8)env[i][k]);
-            off += 2 * (n + 1);
+        char *def = NULL;
+        if (!envp) {
+            UINT32 n = 0;
+            for (int i = 0; env[i]; i++) n += (UINT32)strlen(env[i]) + 1;
+            def = kmalloc(n + 1);
+            if (!def) ok = false;
+            else {
+                env_len = 0;
+                for (int i = 0; env[i]; i++) {
+                    UINT32 k = (UINT32)strlen(env[i]) + 1;
+                    memcpy(def + env_len, env[i], k);
+                    env_len += k;
+                }
+                envp = def;
+            }
         }
-        off += 2;                                           /* final NUL */
-        put_ptr(pp + L->env_size, off, w);                  /* EnvironmentSize */
+        UINT32 env_bytes = 0;
+        UINT64 env_va = ok ? put_environment(p, envp, env_len, &env_bytes) : 0;
+        kfree(def);
+        if (!env_va) ok = false;
+        put_ptr(pp + L->env, env_va, w);
+        put_ptr(pp + L->env_size, env_bytes, w);            /* EnvironmentSize */
 
         /* PEB */
         put_ptr(peb + L->peb_image, image_base, w);         /* ImageBaseAddress */
@@ -1224,8 +1272,18 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
 /* -----------------------------------------------------------------------
  * Spawning
  * ----------------------------------------------------------------------- */
+/* Give a new process a copy of a handle (taking its own reference) */
+static void handle_copy(UmHandle *d, const UmHandle *s)
+{
+    *d = *s;
+    if (d->kind == H_FILE || d->kind == H_DIR) RamfsRef(d->node);
+    else if (d->kind == H_OBJECT) um_ob_ref(d->obj);
+    if (d->kind == H_FILE) d->pos = s->pos;
+}
+
 static void destroy(UmProcess *p)
 {
+    um_close_all_handles(p);
     if (p->pml4) free_address_space(p->pml4);
     um_release_views(p);
     if (p->con) UmConsoleRelease(p->con);
@@ -1283,7 +1341,7 @@ UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *c
 }
 
 UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
-                       const UmHandle *std, char *err, int err_cap)
+                       const UmSpawnOpts *o, char *err, int err_cap)
 {
     err[0] = '\0';
     UmProcess *p = kzalloc(sizeof(*p));
@@ -1323,16 +1381,29 @@ UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsol
     RamfsPath(p->cwd, cwd_path, sizeof(cwd_path));
     int cl = (int)strlen(cwd_path);
     if (cl && cwd_path[cl - 1] != '\\' && cl < (int)sizeof(cwd_path) - 1) { cwd_path[cl] = '\\'; cwd_path[cl + 1] = 0; }
-    if (!setup_environment(p, base, image_path, cmdline, cwd_path)) {
+    /* Handles: the inherited ones keep their values; each standard handle
+     * is one of them, or goes in a slot of its own (the console by default) */
+    UINT64 stdv[3] = { 0, 0, 0 };
+    for (int i = 0; o && o->inherit && i < UM_MAX_HANDLES; i++)
+        if (o->inherit[i].kind != H_FREE) handle_copy(&p->handles[i], &o->inherit[i]);
+    for (int i = 0; i < 3; i++) {
+        if (o && o->std_value[i]) { stdv[i] = o->std_value[i]; continue; }
+        UmHandle h;
+        memset(&h, 0, sizeof(h));
+        if (o && o->std && o->std[i].kind != H_FREE) h = o->std[i];
+        else h.kind = i ? H_CON_OUT : H_CON_IN;
+        h.inherit = true;
+        int slot = p->handles[i].kind == H_FREE ? i : -1;
+        for (int k = 0; slot < 0 && k < UM_MAX_HANDLES; k++) if (p->handles[k].kind == H_FREE) slot = k;
+        if (slot < 0) continue;
+        handle_copy(&p->handles[slot], &h);
+        stdv[i] = (UINT64)(slot + 1) * 4;
+    }
+    if (!setup_environment(p, base, image_path, cmdline, cwd_path, stdv,
+                           o ? o->env : NULL, o ? o->env_len : 0)) {
         destroy(p);
         ksnprintf(err, err_cap, "Out of memory");
         return NULL;
-    }
-    for (int i = 0; i < 3; i++) p->handles[i].kind = i ? H_CON_OUT : H_CON_IN;   /* 4, 8, 12 */
-    for (int i = 0; std && i < 3; i++) {
-        if (std[i].kind != H_FILE && std[i].kind != H_CON_IN && std[i].kind != H_CON_OUT) continue;
-        p->handles[i] = std[i];
-        if (std[i].kind == H_FILE) RamfsRef(std[i].node);
     }
 
     plock();
@@ -1585,6 +1656,7 @@ void UmPoll(void)
         if (!p->exited || left) continue;
         if (!p->reclaimed) {
             um_gui_process_gone(p);
+            um_pipe_process_gone(p);            /* before its memory goes */
             um_close_all_handles(p);
             free_address_space(p->pml4);
             um_release_views(p);
@@ -1617,6 +1689,16 @@ int UmList(UmProcInfo *out, int max)
         n++;
     }
     return n;
+}
+
+/* Ctrl+C: every program on the console (a command interpreter and what it runs) */
+void UmKillConsole(UmConsole *con, UINT32 status)
+{
+    if (!con) return;
+    for (int i = 0; i < UM_MAX_PROCS; i++) {
+        UmProcess *p = g_procs[i];
+        if (p && p->con == con && !p->exited) UmKill(p, status);
+    }
 }
 
 bool UmKillPid(UINT32 pid)

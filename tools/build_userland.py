@@ -66,9 +66,10 @@ DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumer
 UCRT_BASE_X86 = 0x5F000000
 # 32-bit builds of these test programs go to C:\Programs\x86
 PROGRAMS_X86 = {'hello', 'crttest', 'filetest', 'threads', 'dlltest', 'apitest', 'posixtest', 'comtest',
-                'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh'}
+                'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh', 'cmd', 'pipetest',
+                'find', 'findstr', 'sort', 'more', 'timeout'}
 # programs that live in C:\Windows\System32 rather than C:\Programs
-SYSTEM_PROGRAMS = {'msiexec'}
+SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'timeout'}
 UCRT_BASE = 0x7FFA28000000
 # DLLs built from more than their own directory
 DLL_SOURCES = {
@@ -343,7 +344,8 @@ def build_pass(arch):
             (['/safeseh:no', '/machine:x86'] if arch == 'x86' else []) +
             [f'/out:{exe}'] + crt0_objs + [tlssup, obj] + res + [os.path.join(odir, l + '.lib') for l in libs])
         if arch == 'x86':
-            built.append((f'\\Programs\\x86\\{name}.exe', exe))
+            folder = '\\Windows\\SysWOW64' if name in SYSTEM_PROGRAMS else '\\Programs\\x86'
+            built.append((f'{folder}\\{name}.exe', exe))
         else:
             folder = '\\Windows\\System32' if name in SYSTEM_PROGRAMS else '\\Programs'
             built.append((f'{folder}\\{name}.exe', exe))
