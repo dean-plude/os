@@ -725,15 +725,66 @@ static UINT64 sys_nova_get_random(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define ST_NOT_SUPPORTED_           0xC00000BBu
 #define ST_SECTION_TOO_BIG          0xC0000040u
 
-typedef struct { UINT64 size, npages; PADDR *frames; } UmSection;
+typedef struct {
+    UINT64 size, npages;
+    PADDR *frames;
+    RamNode *file;                  /* file-backed: written back on unmap, flush and destruction */
+    bool writable;
+} UmSection;
+
+/* File-backed sections hold a copy of the file: it is filled at creation
+ * and written back (whole) while the file is still there. Programs that
+ * read the file through ReadFile meanwhile see the copy only once it is
+ * written back, as on a flush. */
+static void section_fill(UmSection *sec)
+{
+    DesktopLock();
+    RamNode *f = sec->file;
+    UINT64 left = f->size < sec->size ? f->size : sec->size;
+    for (UINT64 i = 0; i < sec->npages && left; i++) {
+        UINT64 n = left < PAGE_SIZE ? left : PAGE_SIZE;
+        memcpy(um_frame_ptr(sec->frames[i]), f->data + i * PAGE_SIZE, n);
+        left -= n;
+    }
+    DesktopUnlock();
+}
+
+static void section_writeback(UmSection *sec)
+{
+    if (!sec->file || !sec->writable) return;
+    DesktopLock();
+    RamNode *f = sec->file;
+    if (f->parent || f == RamfsRoot()) {                    /* not deleted meanwhile */
+        UINT64 left = sec->size;
+        for (UINT64 i = 0; i < sec->npages && left; i++) {
+            UINT64 n = left < PAGE_SIZE ? left : PAGE_SIZE;
+            if (!RamfsWriteAt(f, (UINT32)(i * PAGE_SIZE), um_frame_ptr(sec->frames[i]), (UINT32)n)) break;
+            left -= n;
+        }
+    }
+    DesktopUnlock();
+}
 
 static void section_destroy(UmObject *o)
 {
     UmSection *sec = o->ptr;
     if (!sec) return;
+    section_writeback(sec);
+    if (sec->file) { DesktopLock(); RamfsUnref(sec->file); DesktopUnlock(); }
     um_free_frames(sec->frames, sec->npages);
     kfree(sec);
     o->ptr = NULL;
+}
+
+void um_flush_view_at(UmProcess *p, UINT64 va)
+{
+    um_lock(&p->lock);
+    UmRegion *r = um_region_find(p, va);
+    UmObject *o = r && r->section ? um_ob_ref(r->section) : NULL;
+    um_unlock(&p->lock);
+    if (!o) return;
+    section_writeback(o->ptr);
+    um_ob_unref(o);
 }
 
 static bool get_u64_(UINT64 ptr, UINT64 *v) { return ptr && NT_SUCCESS(CopyFromUser(v, (const void *)(uintptr_t)ptr, 8)); }
@@ -744,23 +795,41 @@ static bool put_u64_(UINT64 ptr, UINT64 v) { return ptr && NT_SUCCESS(CopyToUser
 static UINT64 sys_create_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a2;
-    if (um_stack_arg(7)) return ST_NOT_SUPPORTED_;          /* file-backed: kernel32 maps files itself */
+    UmProcess *p = UmCurrent();
+    UINT64 fileh = um_stack_arg(7);
+    UINT32 prot = (UINT32)um_stack_arg(5);
     char name[NS_NAME_MAX];
     if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
     UINT64 r = open_existing(name, UO_SECTION, a1);
     if (r) return r;
-    UINT64 size;
-    if (!get_u64_(a4, &size)) return ST_INVALID_PARAMETER;
-    if (!size) return ST_INVALID_PARAMETER;
+    UINT64 size = 0;
+    if (a4 && !get_u64_(a4, &size)) return ST_INVALID_PARAMETER;
+    RamNode *file = NULL;
+    if (fileh) {                                            /* the file's size when none is given */
+        DesktopLock();
+        um_lock(&p->lock);
+        file = um_handle_file(p, fileh);
+        if (file) { RamfsRef(file); if (!size) size = file->size; }
+        um_unlock(&p->lock);
+        DesktopUnlock();
+        if (!file) return ST_INVALID_HANDLE;
+    }
+    if (!size) { if (file) { DesktopLock(); RamfsUnref(file); DesktopUnlock(); } return file ? 0xC000011EU /* MAPPED_FILE_SIZE_ZERO */ : ST_INVALID_PARAMETER; }
     UINT64 n = (size + PAGE_SIZE - 1) / PAGE_SIZE;
     UmSection *sec = kzalloc(sizeof(*sec));
-    if (!sec) return ST_NO_MEMORY;
-    sec->frames = um_alloc_frames(n);
-    if (!sec->frames) { kfree(sec); return n > (UINT64_C(256) << 20) / PAGE_SIZE ? ST_SECTION_TOO_BIG : ST_NO_MEMORY; }
+    if (sec) sec->frames = um_alloc_frames(n);
+    if (!sec || !sec->frames) {
+        kfree(sec);
+        if (file) { DesktopLock(); RamfsUnref(file); DesktopUnlock(); }
+        return n > (UINT64_C(256) << 20) / PAGE_SIZE ? ST_SECTION_TOO_BIG : ST_NO_MEMORY;
+    }
     sec->size = size;
     sec->npages = n;
+    sec->file = file;
+    sec->writable = (prot & 0xFF) == 0x04 || (prot & 0xFF) == 0x40;   /* READWRITE, EXECUTE_READWRITE */
+    if (file) section_fill(sec);
     UmObject *o = ob_new(UO_SECTION);
-    if (!o) { um_free_frames(sec->frames, n); kfree(sec); return ST_NO_MEMORY; }
+    if (!o) { section_destroy(&(UmObject){ .ptr = sec }); return ST_NO_MEMORY; }
     o->ptr = sec;
     o->destroy = section_destroy;
     return finish_create(o, name, a1);
@@ -829,7 +898,16 @@ static UINT64 sys_unmap_view(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     um_unmap_frames(p, r->base, r->size / PAGE_SIZE);
     um_region_remove(p, r);
     um_unlock(&p->lock);
+    section_writeback(o->ptr);
     um_ob_unref(o);
+    return ST_SUCCESS;
+}
+
+/* NtNovaFlushView(PVOID Base): a file-backed view's section goes back to its file */
+static UINT64 sys_flush_view(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    um_flush_view_at(UmCurrent(), a1);
     return ST_SUCCESS;
 }
 
@@ -850,6 +928,7 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtOpenSection,             sys_open_section);
     um_install(SYSCALL_NtMapViewOfSection,        sys_map_view);
     um_install(SYSCALL_NtUnmapViewOfSection,      sys_unmap_view);
+    um_install(SYSCALL_NtNovaFlushView,           sys_flush_view);
     um_install(SYSCALL_NtOpenEvent,               sys_open_event);
     um_install(SYSCALL_NtOpenMutant,              sys_open_mutant);
     um_install(SYSCALL_NtOpenSemaphore,           sys_open_semaphore);

@@ -51,7 +51,7 @@ DLLS = [
     ('comctl32', ['user32', 'gdi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB00000000),
     ('shell32',  ['comctl32', 'gdi32', 'user32', 'kernel32', 'ntdll'], 0x7FFAC0000000),
     ('comdlg32', ['kernel32', 'ntdll'],  0x7FFB10000000),
-    ('ole32',    ['advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
+    ('ole32',    ['user32', 'advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
     ('oleaut32', ['ole32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAF0000000),
 ]
 UCRT_BASE = 0x7FFA28000000
@@ -267,7 +267,8 @@ for src in sorted(os.listdir(progdir)):
          os.path.join(out, 'ws2_32.lib'), os.path.join(out, 'user32.lib'),
          os.path.join(out, 'gdi32.lib'), os.path.join(out, 'testdll.lib'),
          os.path.join(out, 'vcruntime140.lib'), os.path.join(out, 'advapi32.lib'),
-         os.path.join(out, 'ole32.lib'), os.path.join(out, 'oleaut32.lib')])
+         os.path.join(out, 'ole32.lib'), os.path.join(out, 'oleaut32.lib'),
+         os.path.join(out, 'comctl32.lib'), os.path.join(out, 'shell32.lib')])
     built.append((f'\\Programs\\{name}.exe', exe))
 
 # 3a0. fonts gdi32 draws text with (C:\Windows\Fonts)

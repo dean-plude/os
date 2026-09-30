@@ -673,11 +673,81 @@ SHSTDAPI_(HICON) ExtractAssociatedIconW(HINSTANCE h, LPWSTR path, WORD *i) { (vo
 /* -----------------------------------------------------------------------
  * Desktop integration that NovaOS programs don't get
  * ----------------------------------------------------------------------- */
-SHSTDAPI_(void) DragAcceptFiles(HWND h, BOOL accept) { (void)h; (void)accept; }
-SHSTDAPI_(UINT) DragQueryFileW(HANDLE drop, UINT i, LPWSTR buf, UINT n) { (void)drop; (void)i; if (buf && n) buf[0] = 0; return 0; }
-SHSTDAPI_(UINT) DragQueryFileA(HANDLE drop, UINT i, LPSTR buf, UINT n) { (void)drop; (void)i; if (buf && n) buf[0] = 0; return 0; }
-SHSTDAPI_(BOOL) DragQueryPoint(HANDLE drop, POINT *pt) { (void)drop; pt->x = pt->y = 0; return FALSE; }
-SHSTDAPI_(void) DragFinish(HANDLE drop) { (void)drop; }
+/* Files dropped on a window (WM_DROPFILES): the handle holds a DROPFILES
+ * block with the list; user32 makes it from drops other programs send */
+__declspec(dllimport) BOOL NovaAcceptDrops(HWND h, DWORD mask, BOOL on);
+
+SHSTDAPI_(void) DragAcceptFiles(HWND h, BOOL accept)
+{
+    LONG ex = GetWindowLongW(h, GWL_EXSTYLE);
+    SetWindowLongW(h, GWL_EXSTYLE, accept ? ex | WS_EX_ACCEPTFILES : ex & ~WS_EX_ACCEPTFILES);
+    NovaAcceptDrops(h, 1, accept);
+}
+
+/* the i-th file (or the count for i = -1): UTF-16 in the block, or ANSI */
+static const void *drop_file(HANDLE drop, UINT i, int *wide, UINT *count)
+{
+    const DROPFILES *d = drop ? GlobalLock(drop) : NULL;
+    if (!d) { *count = 0; return NULL; }
+    const BYTE *p = (const BYTE *)d + d->pFiles;
+    *wide = d->fWide;
+    UINT n = 0;
+    const void *found = NULL;
+    if (d->fWide) {
+        const WCHAR *w = (const WCHAR *)p;
+        while (*w) { if (n == i) found = w; n++; while (*w) w++; w++; }
+    } else {
+        const char *a = (const char *)p;
+        while (*a) { if (n == i) found = a; n++; while (*a) a++; a++; }
+    }
+    *count = n;
+    return found;
+}
+
+SHSTDAPI_(UINT) DragQueryFileW(HANDLE drop, UINT i, LPWSTR buf, UINT n)
+{
+    int wide = 1;
+    UINT count;
+    const void *f = drop_file(drop, i, &wide, &count);
+    UINT r;
+    if (i == 0xFFFFFFFF) r = count;
+    else if (!f) r = 0;
+    else if (wide) {
+        UINT len = wlen(f);
+        if (!buf || !n) r = len;
+        else { UINT k = len < n - 1 ? len : n - 1; for (UINT j = 0; j < k; j++) buf[j] = ((const WCHAR *)f)[j]; buf[k] = 0; r = k; }
+    } else {
+        int len = MultiByteToWideChar(CP_ACP, 0, f, -1, NULL, 0) - 1;
+        if (!buf || !n) r = (UINT)len;
+        else { WCHAR t[MAX_PATH]; MultiByteToWideChar(CP_ACP, 0, f, -1, t, MAX_PATH); UINT k = (UINT)len < n - 1 ? (UINT)len : n - 1; for (UINT j = 0; j < k; j++) buf[j] = t[j]; buf[k] = 0; r = k; }
+    }
+    if (drop) GlobalUnlock(drop);
+    return r;
+}
+
+SHSTDAPI_(UINT) DragQueryFileA(HANDLE drop, UINT i, LPSTR buf, UINT n)
+{
+    if (i == 0xFFFFFFFF) return DragQueryFileW(drop, i, NULL, 0);
+    WCHAR w[MAX_PATH];
+    UINT len = DragQueryFileW(drop, i, w, MAX_PATH);
+    if (!buf || !n) return len ? (UINT)WideCharToMultiByte(CP_ACP, 0, w, -1, NULL, 0, NULL, NULL) - 1 : 0;
+    if (!len && !w[0]) { buf[0] = 0; return 0; }
+    int k = WideCharToMultiByte(CP_ACP, 0, w, -1, buf, (int)n, NULL, NULL);
+    if (!k) { buf[n - 1] = 0; return n - 1; }
+    return (UINT)k - 1;
+}
+
+SHSTDAPI_(BOOL) DragQueryPoint(HANDLE drop, POINT *pt)
+{
+    const DROPFILES *d = drop ? GlobalLock(drop) : NULL;
+    if (!d) { if (pt) pt->x = pt->y = 0; return FALSE; }
+    if (pt) *pt = d->pt;
+    BOOL nc = d->fNC;
+    GlobalUnlock(drop);
+    return !nc;
+}
+
+SHSTDAPI_(void) DragFinish(HANDLE drop) { if (drop) GlobalFree(drop); }
 SHSTDAPI_(BOOL) Shell_NotifyIconW(DWORD msg, void *data) { (void)msg; (void)data; return FALSE; }   /* no tray icons */
 SHSTDAPI_(BOOL) Shell_NotifyIconA(DWORD msg, void *data) { (void)msg; (void)data; return FALSE; }
 SHSTDAPI_(void) SHChangeNotify(LONG ev, UINT flags, LPCVOID a, LPCVOID b) { (void)ev; (void)flags; (void)a; (void)b; }

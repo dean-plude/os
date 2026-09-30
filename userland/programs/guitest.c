@@ -2,12 +2,14 @@
  * accelerators, child controls, a dialog from a resource template (combo
  * boxes, radio buttons, check boxes, a list box), message boxes */
 #include <windows.h>
+#include <commctrl.h>
 #include <stdio.h>
 #include <string.h>
 #include "guitest.h"
 
 static HINSTANCE g_inst;
 static HWND g_log, g_edit;
+static INT_PTR CALLBACK page_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
 
 static void logf(const char *fmt, ...)
 {
@@ -92,6 +94,23 @@ static LRESULT CALLBACK main_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_COMMAND:
         switch (LOWORD(wp)) {
+        case IDC_PROPS: {
+            PROPSHEETPAGEW pg[2];
+            memset(pg, 0, sizeof(pg));
+            for (int i = 0; i < 2; i++) { pg[i].dwSize = sizeof(pg[i]); pg[i].hInstance = g_inst; pg[i].pszTemplate = MAKEINTRESOURCEW(i ? IDD_PAGE2 : IDD_PAGE1); pg[i].pfnDlgProc = page_proc; }
+            PROPSHEETHEADERW ph;
+            memset(&ph, 0, sizeof(ph));
+            ph.dwSize = sizeof(ph);
+            ph.dwFlags = PSH_PROPSHEETPAGE | PSH_PROPTITLE;
+            ph.hwndParent = h;
+            ph.hInstance = g_inst;
+            ph.pszCaption = L"Guitest";
+            ph.nPages = 2;
+            ph.ppsp = pg;
+            INT_PTR r = PropertySheetW(&ph);
+            logf("main: property sheet returned %d", (int)r);
+            return 0;
+        }
         case IDC_BTN: case IDC_OPTIONS: {
             INT_PTR r = DialogBoxParamW(g_inst, MAKEINTRESOURCEW(IDD_OPTIONS), h, options_proc, 0);
             logf("main: dialog returned %d", (int)r);
@@ -126,6 +145,53 @@ static LRESULT CALLBACK main_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcW(h, msg, wp, lp);
 }
 
+/* the property sheet's pages: a form and a tree of folders */
+static INT_PTR CALLBACK page_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_INITDIALOG: {
+        HWND tv = GetDlgItem(h, IDC_TREE);
+        if (tv) {
+            static const WCHAR *const roots[] = { L"Documents", L"Downloads", L"Pictures" };
+            static const WCHAR *const subs[] = { L"Reports", L"Letters", L"Archive" };
+            for (int i = 0; i < 3; i++) {
+                TVINSERTSTRUCTW ins;
+                memset(&ins, 0, sizeof(ins));
+                ins.hParent = TVI_ROOT; ins.hInsertAfter = TVI_LAST;
+                ins.item.mask = TVIF_TEXT | TVIF_PARAM; ins.item.pszText = (LPWSTR)roots[i]; ins.item.lParam = i;
+                HTREEITEM r = TreeView_InsertItem(tv, &ins);
+                for (int k = 0; k < 3; k++) {
+                    ins.hParent = r;
+                    ins.item.pszText = (LPWSTR)subs[k]; ins.item.lParam = 10 * (i + 1) + k;
+                    HTREEITEM c = TreeView_InsertItem(tv, &ins);
+                    if (k == 0) { ins.hParent = c; ins.item.pszText = L"2026"; TreeView_InsertItem(tv, &ins); }
+                }
+                if (i == 0) TreeView_Expand(tv, r, TVE_EXPAND);
+            }
+        } else SetDlgItemTextW(h, IDC_PAGETEXT, L"initial text");
+        return TRUE;
+    }
+    case WM_COMMAND:
+        if (HIWORD(wp) == EN_CHANGE || HIWORD(wp) == BN_CLICKED) { PropSheet_Changed(GetParent(h), h); logf("page: control %d changed", LOWORD(wp)); }
+        return 0;
+    case WM_NOTIFY: {
+        NMHDR *nm = (NMHDR *)lp;
+        if (nm->code == PSN_APPLY) { logf("page %s: PSN_APPLY", GetDlgItem(h, IDC_TREE) ? "folders" : "general"); SetWindowLongPtrW(h, DWLP_MSGRESULT, PSNRET_NOERROR); return TRUE; }
+        if (nm->code == PSN_SETACTIVE) { logf("page %s: PSN_SETACTIVE", GetDlgItem(h, IDC_TREE) ? "folders" : "general"); return TRUE; }
+        if (nm->code == TVN_SELCHANGEDW) {
+            NMTREEVIEWW *tv = (NMTREEVIEWW *)lp;
+            WCHAR t[64] = { 0 };
+            TVITEMW it = { TVIF_TEXT, tv->itemNew.hItem, 0, 0, t, 64, 0, 0, 0, 0 };
+            TreeView_GetItem(nm->hwndFrom, &it);
+            logf("tree: selected %ls (%d)", t, (int)tv->itemNew.lParam);
+        }
+        if (nm->code == TVN_ITEMEXPANDEDW) logf("tree: %s", ((NMTREEVIEWW *)lp)->action == TVE_EXPAND ? "expanded" : "collapsed");
+        return 0;
+    }
+    }
+    return FALSE;
+}
+
 int main(int argc, char **argv)
 {
     g_inst = GetModuleHandleW(NULL);
@@ -145,6 +211,7 @@ int main(int argc, char **argv)
     HACCEL acc = LoadAcceleratorsW(g_inst, MAKEINTRESOURCEW(IDA_MAIN));
     if (argc > 1 && !strcmp(argv[1], "dialog")) PostMessageW(h, WM_COMMAND, IDC_OPTIONS, 0);
     if (argc > 1 && !strcmp(argv[1], "msgbox")) PostMessageW(h, WM_COMMAND, IDC_MSGBOX, 0);
+    if (argc > 1 && !strcmp(argv[1], "props")) PostMessageW(h, WM_COMMAND, IDC_PROPS, 0);
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) {
         if (TranslateAcceleratorW(h, acc, &m)) continue;

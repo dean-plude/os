@@ -240,6 +240,7 @@ NTSYSAPI NTSTATUS NTAPI NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, BO
 NTSYSAPI NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base);
 NTSYSAPI NTSTATUS NTAPI NtNovaDebugPrint(const char *s, ULONG len);
 NTSYSAPI NTSTATUS NTAPI NtNovaWatchDirectory(HANDLE dir, BOOLEAN subtree, HANDLE event, ULONG remove);
+NTSYSAPI NTSTATUS NTAPI NtNovaFlushView(PVOID base);
 /* Fill buf with len (<= 4096) cryptographically random bytes from the kernel entropy pool */
 NTSYSAPI NTSTATUS NTAPI NtNovaGetRandom(void *buf, ULONG len);
 NTSYSAPI INT_PTR  NTAPI NtNovaSocket(ULONG type);

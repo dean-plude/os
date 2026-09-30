@@ -39,7 +39,8 @@ typedef struct {
 #define GUI_HOVER     0x40
 #define GUI_NOFRAME   0x80
 enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CTL_ENABLE, CTL_SHOW, CTL_PRESENT,
-       CTL_WORKAREA, CTL_WAKE };
+       CTL_WORKAREA, CTL_WAKE, CTL_WINDOW_AT, CTL_ACCEPT_DROPS, CTL_DROP, CTL_DROP_FETCH };
+#define WM_NOVA_DROP 0x03FE                     /* from the desktop: a drop from another program (drop.c) */
 #define FRAME_TITLE 32                          /* the desktop's title bar */
 #define FRAME_BORDER 1
 
@@ -104,6 +105,7 @@ struct Wnd {
     int       has_upd, erase, nc_paint, internal_paint;
     /* top-level windows: the desktop window and its bitmap */
     UINT32    kid;
+    DWORD     drop_accept;          /* CTL_ACCEPT_DROPS flags (drop.c) */
     DWORD    *front, *back;
     int       stride, maxw, maxh;
     int       bw, bh;               /* bitmap size */
@@ -258,3 +260,7 @@ HICON  load_icon_res(HINSTANCE inst, LPCWSTR name, int cx, int cy, int cursor);
 HBITMAP load_bitmap_res(HINSTANCE inst, LPCWSTR name, UINT flags);
 HICON  sys_icon(int which);          /* IDI_* */
 const void *find_res(HINSTANCE inst, LPCWSTR name, LPCWSTR type, DWORD *size);
+
+/* drop.c */
+void drop_from_kernel(Wnd *top, const MSG *km);
+Wnd *top_by_kid(UINT32 kid);

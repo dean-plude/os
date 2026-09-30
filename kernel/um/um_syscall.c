@@ -203,6 +203,12 @@ static UINT64 handle_alloc(UmProcess *p, UmHandle **out)
     return 0;
 }
 
+RamNode *um_handle_file(UmProcess *p, UINT64 h)
+{
+    UmHandle *hd = handle(p, h);
+    return hd && hd->kind == H_FILE ? hd->node : NULL;
+}
+
 static void handle_close(UmHandle *h)
 {
     if (h->kind == H_FILE || h->kind == H_DIR) {

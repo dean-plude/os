@@ -557,7 +557,7 @@ static void key_state(BYTE *keys, UINT msg, WPARAM wp)
     }
 }
 
-static Wnd *top_by_kid(UINT32 kid)
+Wnd *top_by_kid(UINT32 kid)
 {
     for (Wnd *c = W_quiet(GetDesktopWindow())->child; c; c = c->next) if (c->kid == kid) return c;
     return NULL;
@@ -710,6 +710,7 @@ static void from_kernel(const MSG *km)
         break;
     case WM_PAINT: case WM_TIMER: break;
     case WM_MOUSELEAVE: leave_check(NULL, GetTickCount()); break;
+    case WM_NOVA_DROP: drop_from_kernel(top, km); break;
     case WM_CHAR: case WM_SYSCHAR: break;                  /* TranslateMessage makes these, as on Windows */
     case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
         route_key(top, km);

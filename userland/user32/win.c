@@ -718,6 +718,7 @@ static int kernel_window(Wnd *w)
     gc.owner = o ? o->kid : 0;
     if (!NtNovaGuiCreate(&gc) || !gc.hwnd) return 0;
     w->kid = (UINT32)gc.hwnd;
+    if (w->drop_accept) NtNovaGuiCtl(w->kid, CTL_ACCEPT_DROPS, (w->drop_accept | (w->drop_accept >> 2)) & 3, NULL);
     w->front = (DWORD *)(ULONG_PTR)gc.bitmap;
     w->stride = (int)gc.stride / 4;
     w->maxw = w->stride;
