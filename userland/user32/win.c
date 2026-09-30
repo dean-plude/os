@@ -1919,7 +1919,7 @@ USERAPI int GetWindowRgnBox(HWND h, LPRECT r) { (void)h; (void)r; return 0; }
 static void **g_hset;
 static int g_hcap, g_hcount, g_hused;
 
-static unsigned hslot(const void *p, int cap) { ULONG_PTR v = (ULONG_PTR)p; v ^= v >> 17; v *= 0x9E3779B97F4A7C15ull; return (unsigned)(v >> 32) & (unsigned)(cap - 1); }
+static unsigned hslot(const void *p, int cap) { unsigned long long v = (ULONG_PTR)p; v ^= v >> 17; v *= 0x9E3779B97F4A7C15ull; return (unsigned)(v >> 32) & (unsigned)(cap - 1); }
 
 static void hset_put(void **set, int cap, void *p)
 {

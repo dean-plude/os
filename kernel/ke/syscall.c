@@ -1128,6 +1128,16 @@ UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
 /* SYSCALL instruction path (syscall_entry.asm): the big kernel lock is
  * taken here, on the way in from user mode, and dropped on the way back —
  * unless the service runs under its own locks (UmSyscallLockFree). */
+/* SYSCALL executed by 32-bit code (KiSystemCall32): an illegal instruction
+ * for a 32-bit program, which ends it */
+void KiCompatSyscall(UINT64 rip)
+{
+    bkl_acquire();
+    if (sched_current()->um) UmFault(0xC000001Du, (UINT32)rip - 2, 0);
+    kprintf("[SYSCALL] compat-mode SYSCALL outside a program at 0x%llx\n", (unsigned long long)rip);
+    for (;;) __asm__ volatile ("cli; hlt");
+}
+
 UINT64 KiSystemCallEntry(UINT64 num, UINT64 arg1, UINT64 arg2,
                          UINT64 arg3, UINT64 arg4, UINT64 user_rsp)
 {
@@ -1175,8 +1185,9 @@ void SyscallInitCpu(void)
     /* LSTAR = kernel entry for 64-bit SYSCALL */
     wrmsr(MSR_LSTAR, (UINT64)(uintptr_t)KiSystemCall64);
 
-    /* CSTAR = kernel entry for compat-mode SYSCALL (we don't support it) */
-    wrmsr(MSR_CSTAR, 0);
+    /* CSTAR = kernel entry for compat-mode SYSCALL: 32-bit programs use
+     * int 0x2E, so it ends the program (never a jump to address 0) */
+    wrmsr(MSR_CSTAR, (UINT64)(uintptr_t)KiSystemCall32);
 
     /* SFMASK = clear IF (bit 9) and DF (bit 10) on syscall entry */
     wrmsr(MSR_SFMASK, 0x300);

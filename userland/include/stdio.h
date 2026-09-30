@@ -11,11 +11,21 @@ typedef struct _iobuf {
     long long _offset;     /* file offset of _buf[0] */
     int    _bufsize;
     int    _pos, _len;     /* read: next/valid bytes; write: pending bytes */
+#ifdef __x86_64__
     int    _flags;
     int    _ungot;         /* ungetc character, or -1 */
     int    _fd;            /* POSIX descriptor, once one is made */
+#else                      /* 32 bytes in 32-bit programs */
+    int    _flags : 14;
+    int    _ungot : 10;
+    int    _fd : 8;
+#endif
 } FILE;
+#ifdef __x86_64__
 _Static_assert(sizeof(FILE) == 48, "FILE must match Microsoft's layout size");
+#else
+_Static_assert(sizeof(FILE) == 32, "FILE must match Microsoft's layout size");
+#endif
 typedef long long fpos_t;
 #define EOF       (-1)
 #define BUFSIZ    4096

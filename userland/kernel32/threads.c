@@ -10,7 +10,7 @@
 void *memset(void *d, int c, size_t n);
 size_t strlen(const char *s);
 
-static BYTE *teb(void) { BYTE *t; __asm__("movq %%gs:0x30, %0" : "=r"(t)); return t; }
+static BYTE *teb(void) { return NtCurrentTebBytes(); }
 static void set_error(NTSTATUS s) { *(DWORD *)(teb() + TEB_LAST_ERROR) = RtlNtStatusToDosError(s); }
 
 /* Relative timeout in 100 ns units (NULL = INFINITE) into a LARGE_INTEGER */
@@ -456,4 +456,9 @@ LONG WINAPI UnhandledExceptionFilter(PEXCEPTION_POINTERS info) { (void)info; ret
 PVOID WINAPI AddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER h) { return RtlAddVectoredExceptionHandler(first, h); }
 ULONG WINAPI RemoveVectoredExceptionHandler(PVOID h) { return RtlRemoveVectoredExceptionHandler(h); }
 
-VOID WINAPI GetNativeSystemInfo(LPSYSTEM_INFO si) { GetSystemInfo(si); }
+VOID WINAPI GetNativeSystemInfo(LPSYSTEM_INFO si)
+{
+    GetSystemInfo(si);
+    si->wProcessorArchitecture = 9;                          /* the machine: AMD64 */
+    si->dwProcessorType = 8664;
+}

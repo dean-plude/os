@@ -77,7 +77,8 @@ int main(int argc, char **argv)
     HMODULE mods[64];
     CHECK("EnumProcessModules", enum_mods && enum_mods(GetCurrentProcess(), mods, sizeof(mods), &n) && n >= 4 * sizeof(HMODULE));
     CHECK("GetModuleFileName(DLL)", GetModuleFileNameA(GetModuleHandleA("kernel32.dll"), buf, sizeof(buf)) &&
-                                    !strcmp(buf, "C:\\Windows\\System32\\kernel32.dll"));
+                                    !strcmp(buf, sizeof(void *) == 8 ? "C:\\Windows\\System32\\kernel32.dll"
+                                                                           : "C:\\Windows\\SysWOW64\\kernel32.dll"));
     DWORD (WINAPI *vsize)(LPCSTR, LPDWORD) = (void *)fn("version.dll", "GetFileVersionInfoSizeA");
     CHECK("no version resource", vsize && !vsize("C:\\Windows\\System32\\kernel32.dll", &n));
 

@@ -53,7 +53,8 @@ static void build_context(UINT8 *c, const Regs *r)
 {
     memset(c, 0, CONTEXT_SIZE);
     put32(c + C_FLAGS, CONTEXT_ALL);
-    put16(c + C_CS, GDT_USER_CODE | 3);
+    UmProcess *cp = UmCurrent();
+    put16(c + C_CS, cp && cp->wow ? SEL_USER_CODE32 : GDT_USER_CODE | 3);
     put16(c + C_DS, GDT_USER_DATA | 3);
     put16(c + C_ES, GDT_USER_DATA | 3);
     put16(c + C_FS, GDT_USER_DATA | 3);
@@ -146,6 +147,11 @@ void UmUserException(void *frame, UINT64 cr2)
 
     Regs r = { f->rax, f->rcx, f->rdx, f->rbx, f->rsp, f->rbp, f->rsi, f->rdi,
                f->r8, f->r9, f->r10, f->r11, f->r12, f->r13, f->r14, f->r15, addr, f->rflags };
+    if (p->wow) {                                                /* 32-bit: the upper halves mean nothing */
+        UINT64 *g = &r.rax;
+        for (int i = 0; i < 8; i++) g[i] &= 0xFFFFFFFFu;
+        r.rip &= 0xFFFFFFFFu;
+    }
     static UINT8 ctx[CONTEXT_SIZE], rec[RECORD_SIZE];            /* interrupts are off */
     build_context(ctx, &r);
     memset(rec, 0, sizeof(rec));
@@ -164,14 +170,15 @@ void UmUserException(void *frame, UINT64 cr2)
  * ----------------------------------------------------------------------- */
 /* Load @r and IRET to user mode.  Called from a system call, so GS holds
  * the KPCR: swap back to the TEB first. */
-static void __attribute__((naked, noreturn)) iret_to(const Regs *r __attribute__((unused)))
+static void __attribute__((naked, noreturn)) iret_to(const Regs *r __attribute__((unused)),
+                                                     UINT64 cs __attribute__((unused)))
 {
     __asm__ volatile (
         "cli\n\t"
         "pushq %[ss]\n\t"
         "pushq 32(%%rdi)\n\t"           /* rsp */
         "pushq 136(%%rdi)\n\t"          /* rflags */
-        "pushq %[cs]\n\t"
+        "pushq %%rsi\n\t"               /* cs: 64-bit, or 32-bit for WoW */
         "pushq 128(%%rdi)\n\t"          /* rip */
         "mov 0(%%rdi), %%rax\n\t"
         "mov 8(%%rdi), %%rcx\n\t"
@@ -190,7 +197,14 @@ static void __attribute__((naked, noreturn)) iret_to(const Regs *r __attribute__
         "mov 56(%%rdi), %%rdi\n\t"
         "swapgs\n\t"
         "iretq\n\t"
-        : : [ss] "i"(GDT_USER_DATA | 3), [cs] "i"(GDT_USER_CODE | 3));
+        : : [ss] "i"(GDT_USER_DATA | 3));
+}
+
+/* The code selector a thread of the current process runs with */
+static UINT64 user_cs(void)
+{
+    UmProcess *p = UmCurrent();
+    return p && p->wow ? SEL_USER_CODE32 : GDT_USER_CODE | 3;
 }
 
 /* Registers (and FPU state) from a user CONTEXT, made safe to IRET to */
@@ -203,6 +217,8 @@ static bool load_context(const UINT8 *c, Regs *r)
     memcpy(&fl, c + C_EFLAGS, 4);
     r->rflags = (fl & USER_FLAGS) | 0x202;
     if (r->rip > USER_TOP || r->rsp > USER_TOP) return false;    /* IRET would fault in the kernel */
+    UmProcess *cp = UmCurrent();
+    if (cp && cp->wow && (r->rip > 0xFFFFFFFFu || r->rsp > 0xFFFFFFFFu)) return false;   /* 32-bit */
 
     UINT32 cflags;
     memcpy(&cflags, c + C_FLAGS, 4);
@@ -235,7 +251,7 @@ static UINT64 sys_continue(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     cli();
     UmReturnToUser();                                            /* killed meanwhile? */
     bkl_leave_kernel();                                               /* back to user mode */
-    iret_to(&r);
+    iret_to(&r, user_cs());
 }
 
 /* NtRaiseException(PEXCEPTION_RECORD, PCONTEXT, BOOLEAN FirstChance) */
@@ -258,7 +274,7 @@ static UINT64 sys_raise_exception(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     cli();
     UmReturnToUser();
     bkl_leave_kernel();
-    iret_to(&r);
+    iret_to(&r, user_cs());
 }
 
 /* -----------------------------------------------------------------------
@@ -289,7 +305,9 @@ static UINT64 sys_get_context_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!t) return 0xC0000001u;                                  /* STATUS_UNSUCCESSFUL */
     Regs r;
     memset(&r, 0, sizeof(r));
-    if (t->park == 2) {
+    /* at an interrupt, or (32-bit programs, which enter through int 0x2E)
+     * in a system call: the registers are in the interrupt frame */
+    if (t->park == 2 || (t->proc->wow && t->uframe)) {
         const InterruptFrame *f = t->uframe;
         r.rax = f->rax; r.rcx = f->rcx; r.rdx = f->rdx; r.rbx = f->rbx; r.rsp = f->rsp; r.rbp = f->rbp;
         r.rsi = f->rsi; r.rdi = f->rdi; r.r8 = f->r8; r.r9 = f->r9; r.r10 = f->r10; r.r11 = f->r11;

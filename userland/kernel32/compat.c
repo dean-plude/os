@@ -395,8 +395,47 @@ K32 DWORD WINAPI GetCurrentProcessorNumber(void)
     return aux & 0xFFF;
 }
 K32 VOID WINAPI GetCurrentProcessorNumberEx(PVOID p) { WORD *w = p; w[0] = 0; ((BYTE *)p)[2] = (BYTE)GetCurrentProcessorNumber(); ((BYTE *)p)[3] = 0; }
-K32 BOOL WINAPI IsWow64Process(HANDLE h, PBOOL wow) { (void)h; *wow = FALSE; return TRUE; }
-K32 BOOL WINAPI IsWow64Process2(HANDLE h, USHORT *proc, USHORT *native) { (void)h; if (proc) *proc = 0; if (native) *native = 0x8664; return TRUE; }
+/* 32-bit programs run under WoW64 (as far as they can tell) */
+K32 BOOL WINAPI IsWow64Process(HANDLE h, PBOOL wow) { (void)h; *wow = sizeof(void *) == 4; return TRUE; }
+/* File system redirection (System32 -> SysWOW64 for 32-bit programs): the
+ * kernel reads this thread's switch from its 32-bit TEB */
+#define TEB32_NO_REDIRECT 0xFF8
+K32 BOOL WINAPI Wow64DisableWow64FsRedirection(PVOID *old)
+{
+#ifndef _WIN64
+    DWORD *f = (DWORD *)(NtCurrentTebBytes() + TEB32_NO_REDIRECT);
+    if (old) *old = (PVOID)(ULONG_PTR)*f;
+    *f = 1;
+#else
+    if (old) *old = 0;
+#endif
+    return TRUE;
+}
+K32 BOOL WINAPI Wow64RevertWow64FsRedirection(PVOID old)
+{
+#ifndef _WIN64
+    *(DWORD *)(NtCurrentTebBytes() + TEB32_NO_REDIRECT) = (DWORD)(ULONG_PTR)old;
+#else
+    (void)old;
+#endif
+    return TRUE;
+}
+K32 BOOLEAN WINAPI Wow64EnableWow64FsRedirection(BOOLEAN enable)
+{
+#ifndef _WIN64
+    *(DWORD *)(NtCurrentTebBytes() + TEB32_NO_REDIRECT) = !enable;
+#else
+    (void)enable;
+#endif
+    return TRUE;
+}
+K32 BOOL WINAPI IsWow64Process2(HANDLE h, USHORT *proc, USHORT *native)
+{
+    (void)h;
+    if (proc) *proc = sizeof(void *) == 4 ? 0x014C : 0;      /* IMAGE_FILE_MACHINE_I386, or not WoW64 */
+    if (native) *native = 0x8664;
+    return TRUE;
+}
 
 K32 BOOL WINAPI GetProcessIoCounters(HANDLE h, PVOID io)
 {

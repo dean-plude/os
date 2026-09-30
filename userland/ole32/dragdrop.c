@@ -17,11 +17,11 @@
 #define DROP_PROP L"OleDropTargetInterface"
 
 typedef BOOL (WINAPI *DropHook)(HWND hwnd, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes);
-__declspec(dllimport) void NovaSetDropHook(void *fn);
-__declspec(dllimport) BOOL NovaAcceptDrops(HWND h, DWORD mask, BOOL on);
-__declspec(dllimport) UINT32 NovaWindowAt(POINT pt, DWORD *pid, DWORD *flags);
-__declspec(dllimport) HWND NovaTopFromKid(UINT32 kid);
-__declspec(dllimport) BOOL NovaSendDrop(UINT32 kid, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes);
+__declspec(dllimport) void WINAPI NovaSetDropHook(void *fn);
+__declspec(dllimport) BOOL WINAPI NovaAcceptDrops(HWND h, DWORD mask, BOOL on);
+__declspec(dllimport) UINT32 WINAPI NovaWindowAt(POINT pt, DWORD *pid, DWORD *flags);
+__declspec(dllimport) HWND WINAPI NovaTopFromKid(UINT32 kid);
+__declspec(dllimport) BOOL WINAPI NovaSendDrop(UINT32 kid, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes);
 
 static BOOL WINAPI drop_hook(HWND hwnd, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes);
 

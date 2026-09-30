@@ -675,7 +675,7 @@ SHSTDAPI_(HICON) ExtractAssociatedIconW(HINSTANCE h, LPWSTR path, WORD *i) { (vo
  * ----------------------------------------------------------------------- */
 /* Files dropped on a window (WM_DROPFILES): the handle holds a DROPFILES
  * block with the list; user32 makes it from drops other programs send */
-__declspec(dllimport) BOOL NovaAcceptDrops(HWND h, DWORD mask, BOOL on);
+__declspec(dllimport) BOOL WINAPI NovaAcceptDrops(HWND h, DWORD mask, BOOL on);
 
 SHSTDAPI_(void) DragAcceptFiles(HWND h, BOOL accept)
 {

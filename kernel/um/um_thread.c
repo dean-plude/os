@@ -600,7 +600,7 @@ static UINT64 sys_query_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a1 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_INVALID_HANDLE;
     if (a2 != 0) return ST_INVALID_INFO_CLASS;                 /* ProcessBasicInformation */
     if (a4 < 48) return ST_INFO_LENGTH_MISMATCH;
-    UINT64 b[6] = { ST_STILL_ACTIVE, UM_PEB_VA, 1, 8, p->pid, 0 };
+    UINT64 b[6] = { ST_STILL_ACTIVE, p->lay.peb, 1, 8, p->pid, 0 };
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, sizeof(b)))) return ST_ACCESS_VIOLATION;
     return put_u32(um_stack_arg(5), 48) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }
@@ -865,7 +865,7 @@ static UINT64 sys_map_view(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         base &= ~0xFFFFULL;
         if (!um_is_free(p, base, bytes)) r = ST_CONFLICTING_ADDRESSES_;
     } else {
-        base = um_find_free(p, bytes, UM_ALLOC_MIN, UM_ALLOC_MAX);
+        base = um_find_free(p, bytes, p->lay.alloc_min, p->lay.alloc_max);
         if (!base) r = ST_NO_MEMORY;
     }
     UmRegion *reg = NULL;

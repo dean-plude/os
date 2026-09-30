@@ -24,10 +24,15 @@ os.makedirs(out, exist_ok=True)
 inc_gen = os.path.join(out, 'include')
 os.makedirs(inc_gen, exist_ok=True)
 
-CFLAGS = ['--target=x86_64-pc-windows-msvc', '-O2', '-ffreestanding', '-nostdlibinc',
-          '-fno-stack-protector', '-mno-stack-arg-probe', '-fms-extensions', '-fasync-exceptions',
-          '-Wall', '-Wno-unused-function', '-Werror=implicit-function-declaration',
-          '-isystem', os.path.join(HERE, 'include', 'posix'), '-I', os.path.join(HERE, 'include'), '-I', inc_gen]
+TARGETS = {'x64': 'x86_64-pc-windows-msvc', 'x86': 'i686-pc-windows-msvc'}
+COMMON_FLAGS = ['-O2', '-ffreestanding', '-nostdlibinc',
+                '-fno-stack-protector', '-mno-stack-arg-probe', '-fms-extensions', '-fasync-exceptions',
+                '-Wall', '-Wno-unused-function', '-Werror=implicit-function-declaration',
+                '-isystem', os.path.join(HERE, 'include', 'posix'), '-I', os.path.join(HERE, 'include'), '-I', inc_gen]
+ARCH = 'x64'          # the pass being built: x64 (System32), then x86 (SysWOW64, for 32-bit programs)
+def cflags():
+    extra = ['-msse2'] if ARCH == 'x86' else []
+    return ['--target=' + TARGETS[ARCH]] + extra + COMMON_FLAGS
 
 # DLL load addresses (distinct, so no relocation is needed)
 DLLS = [
@@ -55,6 +60,12 @@ DLLS = [
     ('oleaut32', ['ole32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAF0000000),
     ('msi',      ['comctl32', 'shell32', 'user32', 'gdi32', 'advapi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB60000000),
 ]
+# 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
+DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}
+UCRT_BASE_X86 = 0x5F000000
+# 32-bit builds of these test programs go to C:\Programs\x86
+PROGRAMS_X86 = {'hello', 'crttest', 'filetest', 'threads', 'dlltest', 'apitest', 'posixtest', 'comtest',
+                'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh'}
 # programs that live in C:\Windows\System32 rather than C:\Programs
 SYSTEM_PROGRAMS = {'msiexec'}
 UCRT_BASE = 0x7FFA28000000
@@ -71,7 +82,7 @@ def run(cmd):
         sys.exit(1)
 
 def cc(src, obj, extra=()):
-    run(['clang'] + CFLAGS + list(extra) + ['-c', src, '-o', obj])
+    run(['clang'] + cflags() + list(extra) + ['-c', src, '-o', obj])
 
 # 1. syscall numbers from the kernel
 nums = {}
@@ -82,24 +93,26 @@ with open(os.path.join(inc_gen, 'syscall_numbers.h'), 'w') as f:
     for k, v in sorted(nums.items()):
         f.write(f'#define SYS_{k} {v}\n')
 
-# 1b. startup code + implicit-TLS support (needed by DLLs and programs)
-crt0 = os.path.join(out, 'crt0.obj')
-cc(os.path.join(HERE, 'crt', 'crt0.c'), crt0)
-tlssup = os.path.join(out, 'tlssup.obj')
-cc(os.path.join(HERE, 'lib', 'tlssup.c'), tlssup)
-
-# 2. system DLLs
 MUSL = os.path.join(os.path.dirname(HERE), 'third_party', 'musl')
 
-def musl_math_objs():
+def llvm_tool(t):
+    import shutil
+    for v in [''] + [f'-{n}' for n in range(30, 13, -1)]:
+        if shutil.which(t + v):
+            return t + v
+    raise SystemExit(f'{t} not found (install llvm)')
+
+def musl_math_objs(odir):
     """musl's libm (third_party/musl/src/math), compiled once for the C
     runtime DLLs; returns (objects, exported names)"""
     objs, names = [], set()
     srcdir = os.path.join(MUSL, 'src', 'math')
-    flags = ['--target=x86_64-pc-windows-msvc', '-O2', '-ffreestanding', '-nostdlibinc', '-fno-builtin',
+    flags = ['--target=' + TARGETS[ARCH], '-O2', '-ffreestanding', '-nostdlibinc', '-fno-builtin',
              '-D_GNU_SOURCE', '-w', '-I', os.path.join(MUSL, 'include'), '-I', os.path.join(MUSL, 'src', 'internal'),
              '-I', os.path.join(HERE, 'include')]
-    mdir = os.path.join(out, 'musl')
+    if ARCH == 'x86':
+        flags.append('-msse2')
+    mdir = os.path.join(odir, 'musl')
     os.makedirs(mdir, exist_ok=True)
     for src in sorted(os.listdir(srcdir)):
         if src.endswith('.c'):
@@ -111,33 +124,35 @@ def musl_math_objs():
                        capture_output=True, text=True)
     for line in r.stdout.splitlines():
         parts = line.split()
-        if len(parts) == 3 and parts[1] in 'TW' and not parts[2].startswith('__'):
-            names.add(parts[2])
+        if len(parts) == 3 and parts[1] in 'TW':
+            n = undecorate(parts[2])
+            if not n.startswith('__'):
+                names.add(n)
     return objs, sorted(names)
 
-def llvm_tool(t):
-    import shutil
-    for v in [''] + [f'-{n}' for n in range(30, 13, -1)]:
-        if shutil.which(t + v):
-            return t + v
-    raise SystemExit(f'{t} not found (install llvm)')
+def undecorate(sym):
+    """a C symbol's name as exported (x86: _name, _name@N)"""
+    if ARCH == 'x86':
+        m = re.match(r'^_([A-Za-z_]\w*?)(@\d+)?$', sym)
+        return m.group(1) if m else sym
+    return sym
 
-def dll_objs(name, srcdirs):
+def dll_objs(odir, name, srcdirs):
     objs = []
     for d in srcdirs:
         srcdir = os.path.join(HERE, d)
         for src in sorted(os.listdir(srcdir)):
             if src.endswith('.c'):
-                obj = os.path.join(out, f'{name}_{d}_{src[:-2]}.obj')
+                obj = os.path.join(odir, f'{name}_{d}_{src[:-2]}.obj')
                 cc(os.path.join(srcdir, src), obj)
                 objs.append(obj)
     return objs
 
-def flavor_obj(legacy):
+def flavor_obj(odir, legacy):
     """msvcrt.dll and ucrtbase.dll share the C runtime's objects; this one
     differs: legacy msvcrt behaviour (e.g. printf rounding) or the UCRT's"""
-    src = os.path.join(out, 'crt_flavor.c')
-    obj = os.path.join(out, f'crt_flavor{legacy}.obj')
+    src = os.path.join(odir, 'crt_flavor.c')
+    obj = os.path.join(odir, f'crt_flavor{legacy}.obj')
     open(src, 'w').write('const int __nova_crt_legacy = %d;\n' % legacy)
     cc(src, obj)
     return obj
@@ -194,87 +209,149 @@ ORDINALS = {
                 'SHCreateDirectory': 165, 'IsUserAnAdmin': 680, 'SHGetImageList': 727},
 }
 
+def defined_names(objs):
+    r = subprocess.run([llvm_tool('llvm-nm'), '--defined-only', '--extern-only'] + objs, capture_output=True, text=True)
+    return {undecorate(l.split()[-1]) for l in r.stdout.splitlines() if l.strip()}
+
 def ordinal_exports(name, objs):
     """/export:NAME,@N for each ordinal-table name the DLL defines"""
     table = ORDINALS.get(name)
-    if not table:
+    if not table or ARCH == 'x86':                # x86: in the .def (x86_def)
         return []
-    r = subprocess.run([llvm_tool('llvm-nm'), '--defined-only', '--extern-only'] + objs, capture_output=True, text=True)
-    defined = {l.split()[-1] for l in r.stdout.splitlines() if l.strip()}
+    defined = defined_names(objs)
     return [f'/export:{n},@{o}' for n, o in sorted(table.items(), key=lambda x: x[1]) if n in defined]
 
-def link_dll(name, objs, deps, base, extra=()):
+def x86_def(odir, name, objs):
+    """32-bit DLLs export stdcall functions undecorated, as Windows' do:
+    a .def naming each _Name@N the objects export as plain Name (and the
+    ordinal-table names with their ordinals)"""
+    names = []
+    for o in objs:
+        r = subprocess.run([llvm_tool('llvm-readobj'), '--coff-directives', o], capture_output=True, text=True)
+        for m in re.finditer(r'/EXPORT:"?([^"\s,=]+)"?(?=[\s,]|$)', r.stdout, re.I):
+            d = re.match(r'^_([A-Za-z_]\w*)@\d+$', m.group(1))
+            if d and d.group(1) not in names:
+                names.append(d.group(1))
+    table = ORDINALS.get(name, {})
+    defined = defined_names(objs) if table else set()
+    lines = [f'  {n} @{table[n]}' if n in table and n in defined else f'  {n}' for n in names]
+    lines += [f'  {n} @{o}' for n, o in sorted(table.items(), key=lambda x: x[1]) if n in defined and n not in names]
+    path = os.path.join(odir, name + '.def')
+    open(path, 'w').write(f'LIBRARY {name}.dll\nEXPORTS\n' + '\n'.join(lines) + '\n')
+    return ['/def:' + path]
+
+def link_dll(odir, name, objs, deps, base, extra=()):
     extra = list(extra) + ordinal_exports(name, objs)
-    dll = os.path.join(out, f'{name}.dll')
+    if ARCH == 'x86':
+        extra += x86_def(odir, name, objs) + ['/safeseh:no', '/machine:x86']
+    dll = os.path.join(odir, f'{name}.dll')
     entry = ['/entry:DllMain'] if name in ('testdll', 'comctl32') else ['/noentry']
     run(['lld-link', '/dll', '/nodefaultlib', f'/base:{base:#x}'] + entry +
-        [f'/out:{dll}', f'/implib:{os.path.join(out, name + ".lib")}'] + objs + list(extra) +
-        [os.path.join(out, d + '.lib') for d in deps])
-    built.append((f'\\Windows\\System32\\{name}.dll', dll))
+        [f'/out:{dll}', f'/implib:{os.path.join(odir, name + ".lib")}', f'/map:{os.path.join(odir, name + ".map")}'] +
+        objs + list(extra) +
+        [os.path.join(odir, d + '.lib') for d in deps])
+    sysdir = 'System32' if ARCH == 'x64' else 'SysWOW64'
+    built.append((f'\\Windows\\{sysdir}\\{name}.dll', dll))
+
+CXX_FROM_VCRUNTIME = ['_CxxThrowException', '__CxxFrameHandler', '__CxxFrameHandler2', '__CxxFrameHandler3',
+                      '_purecall', '__RTDynamicCast', '__RTtypeid', '__RTCastToVoid', 'set_unexpected', 'unexpected',
+                      '__uncaught_exception', '_set_se_translator', '_is_exception_typeof',
+                      '__DestructExceptionObject', '__AdjustPointer']
+
+def build_pass(arch):
+    """the DLLs and programs for one architecture"""
+    global ARCH
+    ARCH = arch
+    odir = out if arch == 'x64' else os.path.join(out, 'x86')
+    os.makedirs(odir, exist_ok=True)
+
+    # startup code + implicit-TLS support (needed by DLLs and programs)
+    crt0 = os.path.join(odir, 'crt0.obj')
+    cc(os.path.join(HERE, 'crt', 'crt0.c'), crt0)
+    tlssup = os.path.join(odir, 'tlssup.obj')
+    cc(os.path.join(HERE, 'lib', 'tlssup.c'), tlssup)
+    common = [tlssup]
+    if arch == 'x86':                              # 64-bit division helpers the compiler calls
+        rt = os.path.join(odir, 'x86rt.obj')
+        cc(os.path.join(HERE, 'lib', 'x86rt.c'), rt)
+        common = [tlssup, rt]
+        crt0_objs = [crt0, rt]
+    else:
+        crt0_objs = [crt0]
+
+    # system DLLs
+    math_objs, math_names = musl_math_objs(odir)
+    bases = {n: b for n, _, b in DLLS} if arch == 'x64' else DLL_BASES_X86
+    for name, deps, _ in DLLS:
+        base = bases[name]
+        srcdirs = DLL_SOURCES.get(name, [name])
+        objs = dll_objs(odir, name, srcdirs)
+        extra = []
+        if name in ('testdll', 'ws2_32', 'ole32', 'oleaut32'):
+            objs.append(tlssup)
+        if arch == 'x86':
+            objs.append(rt)
+        if name == 'msvcrt':
+            objs += math_objs
+            rsp = os.path.join(odir, 'crt_exports.rsp')
+            fwd = ['/export:__C_specific_handler=ntdll.__C_specific_handler'] if arch == 'x64' else \
+                  [f'/export:{n}=ntdll.{n}' for n in ('_except_handler2', '_except_handler3', '_except_handler4_common',
+                                                      '_global_unwind2', '_local_unwind2', '_local_unwind4')]
+            open(rsp, 'w').write('\n'.join([f'/export:{n}' for n in math_names] + fwd))
+            extra = ['@' + rsp]
+            crt_objs, crt_extra = objs, extra
+            objs = objs + [flavor_obj(odir, 1)]
+            # the old msvcrt.dll also carried the C++ runtime (7-Zip and other
+            # programs built against it import exceptions and RTTI from it)
+            rsp2 = os.path.join(odir, 'msvcrt_cxx.rsp')
+            cxx = CXX_FROM_VCRUNTIME + (['??1type_info@@UEAA@XZ', '??_7type_info@@6B@', '_local_unwind']
+                                        if arch == 'x64' else ['??1type_info@@UAE@XZ', '??_7type_info@@6B@'])
+            open(rsp2, 'w').write('\n'.join([f'/export:{n}=vcruntime140.{n}' for n in cxx] +
+                                            ['/export:?terminate@@YAXXZ=terminate']))
+            extra = extra + ['@' + rsp2]
+        link_dll(odir, name, objs, deps, base, extra)
+        if name == 'msvcrt':
+            # the Universal C Runtime: the same C runtime under its Windows 10 name
+            # (programs reach it through the api-ms-win-crt-* API sets)
+            link_dll(odir, 'ucrtbase', crt_objs + [flavor_obj(odir, 0)], deps,
+                     UCRT_BASE if arch == 'x64' else UCRT_BASE_X86, crt_extra)
+
+    # programs
+    progdir = os.path.join(HERE, 'programs')
+    for src in sorted(os.listdir(progdir)):
+        if not src.endswith(('.c', '.cpp')):
+            continue
+        name = src.rsplit('.', 1)[0]
+        if arch == 'x86' and name not in PROGRAMS_X86:
+            continue
+        obj = os.path.join(odir, f'prog_{name}.obj')
+        if src.endswith('.cpp'):                  # C++ (exceptions, RTTI): vcruntime140
+            run(['clang++'] + cflags() + ['-fcxx-exceptions', '-fexceptions', '-std=c++17',
+                 '-c', os.path.join(progdir, src), '-o', obj])
+        else:
+            cc(os.path.join(progdir, src), obj)
+        exe = os.path.join(odir, f'{name}.exe')
+        res = []                                  # NAME.rc: resources (e.g. the icon)
+        rc = os.path.join(progdir, name + '.rc')
+        if os.path.exists(rc):
+            res = [os.path.join(odir, f'prog_{name}.res')]
+            run([build_netsurf.llvm_rc(), '/FO', res[0], rc])
+        libs = ['msvcrt', 'kernel32', 'ntdll', 'ws2_32', 'user32', 'gdi32', 'testdll', 'vcruntime140',
+                'advapi32', 'ole32', 'oleaut32', 'comctl32', 'shell32', 'msi']
+        run(['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib'] +
+            (['/safeseh:no', '/machine:x86'] if arch == 'x86' else []) +
+            [f'/out:{exe}'] + crt0_objs + [tlssup, obj] + res + [os.path.join(odir, l + '.lib') for l in libs])
+        if arch == 'x86':
+            built.append((f'\\Programs\\x86\\{name}.exe', exe))
+        else:
+            folder = '\\Windows\\System32' if name in SYSTEM_PROGRAMS else '\\Programs'
+            built.append((f'{folder}\\{name}.exe', exe))
 
 built = []
-math_objs, math_names = musl_math_objs()
-for name, deps, base in DLLS:
-    if name == 'ucrtbase':
-        continue                                  # linked from msvcrt's objects below
-    srcdirs = DLL_SOURCES.get(name, [name])
-    objs = dll_objs(name, srcdirs)
-    extra = []
-    if name in ('testdll', 'ws2_32', 'ole32', 'oleaut32'):
-        objs.append(tlssup)
-    if name == 'msvcrt':
-        objs += math_objs
-        rsp = os.path.join(out, 'crt_exports.rsp')
-        open(rsp, 'w').write('\n'.join([f'/export:{n}' for n in math_names] +
-                                     ['/export:__C_specific_handler=ntdll.__C_specific_handler']))
-        extra = ['@' + rsp]
-        crt_objs, crt_extra = objs, extra
-        objs = objs + [flavor_obj(1)]
-        # the old msvcrt.dll also carried the C++ runtime (7-Zip and other
-        # programs built against it import exceptions and RTTI from it)
-        rsp2 = os.path.join(out, 'msvcrt_cxx.rsp')
-        cxx = ['_CxxThrowException', '__CxxFrameHandler', '__CxxFrameHandler2', '__CxxFrameHandler3',
-               '??1type_info@@UEAA@XZ', '??_7type_info@@6B@', '_purecall', '__RTDynamicCast', '__RTtypeid',
-               '__RTCastToVoid', 'set_unexpected', 'unexpected', '__uncaught_exception', '_set_se_translator',
-               '_is_exception_typeof', '__DestructExceptionObject', '__AdjustPointer', '_local_unwind']
-        open(rsp2, 'w').write('\n'.join([f'/export:{n}=vcruntime140.{n}' for n in cxx] +
-                                        ['/export:?terminate@@YAXXZ=terminate']))
-        extra = extra + ['@' + rsp2]
-    link_dll(name, objs, deps, base, extra)
-    if name == 'msvcrt':
-        # the Universal C Runtime: the same C runtime under its Windows 10 name
-        # (programs reach it through the api-ms-win-crt-* API sets)
-        link_dll('ucrtbase', crt_objs + [flavor_obj(0)], deps, UCRT_BASE, crt_extra)
-
-# 3. startup code and programs
-progdir = os.path.join(HERE, 'programs')
-for src in sorted(os.listdir(progdir)):
-    if not src.endswith(('.c', '.cpp')):
-        continue
-    name = src.rsplit('.', 1)[0]
-    obj = os.path.join(out, f'prog_{name}.obj')
-    if src.endswith('.cpp'):                  # C++ (exceptions, RTTI): vcruntime140
-        run(['clang++'] + CFLAGS + ['-fcxx-exceptions', '-fexceptions', '-std=c++17',
-             '-c', os.path.join(progdir, src), '-o', obj])
-    else:
-        cc(os.path.join(progdir, src), obj)
-    exe = os.path.join(out, f'{name}.exe')
-    res = []                                  # NAME.rc: resources (e.g. the icon)
-    rc = os.path.join(progdir, name + '.rc')
-    if os.path.exists(rc):
-        res = [os.path.join(out, f'prog_{name}.res')]
-        run([build_netsurf.llvm_rc(), '/FO', res[0], rc])
-    run(['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib',
-         f'/out:{exe}', crt0, tlssup, obj] + res + [os.path.join(out, 'msvcrt.lib'),
-         os.path.join(out, 'kernel32.lib'), os.path.join(out, 'ntdll.lib'),
-         os.path.join(out, 'ws2_32.lib'), os.path.join(out, 'user32.lib'),
-         os.path.join(out, 'gdi32.lib'), os.path.join(out, 'testdll.lib'),
-         os.path.join(out, 'vcruntime140.lib'), os.path.join(out, 'advapi32.lib'),
-         os.path.join(out, 'ole32.lib'), os.path.join(out, 'oleaut32.lib'),
-         os.path.join(out, 'comctl32.lib'), os.path.join(out, 'shell32.lib'),
-         os.path.join(out, 'msi.lib')])
-    folder = '\\Windows\\System32' if name in SYSTEM_PROGRAMS else '\\Programs'
-    built.append((f'{folder}\\{name}.exe', exe))
+build_pass('x64')
+if os.environ.get('NOVA_NO_WOW64') != '1':
+    build_pass('x86')             # 32-bit programs: the same userland built for x86
+ARCH = 'x64'
 
 # 3a0. fonts gdi32 draws text with (C:\Windows\Fonts)
 TP = os.path.join(os.path.dirname(HERE), 'third_party')

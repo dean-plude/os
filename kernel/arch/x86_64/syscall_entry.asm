@@ -108,3 +108,25 @@ KiSystemCall64:
     ; NASM spells the 64-bit form "o64 sysret" — a bare "sysretq" is
     ; silently assembled as a label, leaving no return instruction at all.
     o64 sysret
+
+; ---------------------------------------------------------------------------
+; KiSystemCall32 — SYSCALL from compatibility mode (MSR_CSTAR)
+;
+; 32-bit programs enter the kernel through int 0x2E; a SYSCALL in 32-bit
+; code (AMD CPUs execute it, Intel ones raise #UD) is a program error.
+; Move to this thread's kernel stack like KiSystemCall64 and end the
+; program there (KiCompatSyscall does not return).
+; ---------------------------------------------------------------------------
+global KiSystemCall32
+extern KiCompatSyscall
+
+KiSystemCall32:
+    swapgs
+    mov     gs:[KPCR_USER_RSP], rsp
+    mov     rsp, gs:[KPCR_KERNEL_RSP]
+    and     rsp, -16
+    mov     rdi, rcx                    ; the 32-bit caller's return address
+    call    KiCompatSyscall
+.hang:
+    hlt
+    jmp     .hang

@@ -18,6 +18,7 @@
  * record), so an exception thrown from the catch is not caught by it.
  */
 
+#ifdef _WIN64                   /* 32-bit programs: eh_x86.h */
 #include <winternl.h>
 #include <winnt.h>
 
@@ -507,3 +508,7 @@ VCRT int _is_exception_typeof(const TypeDescriptor *type, EXCEPTION_POINTERS *ep
 
 /* __try-style helpers some compilers call */
 VCRT void _local_unwind(void *frame, void *target) { RtlUnwind(frame, target, 0, 0); }
+
+#else
+#include "eh_x86.h"
+#endif

@@ -139,7 +139,7 @@ bool cfb_open(Cfb *c, const void *data, size_t size)
     }
     const uint8_t *root = dir_entry(c, 0);
     if (!root) { cfb_close(c); return false; }
-    size_t rsize = c->sector_shift == 9 ? rd32(root + 0x78) : (size_t)rd32(root + 0x78) | ((size_t)rd32(root + 0x7C) << 32);
+    size_t rsize = c->sector_shift == 9 ? rd32(root + 0x78) : (size_t)(rd32(root + 0x78) | ((unsigned long long)rd32(root + 0x7C) << 32));
     if (rsize && rsize < c->size) {
         c->ministream = read_chain(c, rd32(root + 0x74), rsize);
         c->ministream_size = c->ministream ? rsize : 0;

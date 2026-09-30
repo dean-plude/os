@@ -57,7 +57,7 @@ static HANDLE g_predef[6];
 static ULONG_PTR predef_num(HKEY key)
 {
     ULONG_PTR k = (ULONG_PTR)key;
-    if ((k >> 32) == 0xFFFFFFFFu) k &= 0xFFFFFFFFu;
+    if (((unsigned long long)k >> 32) == 0xFFFFFFFFu) k &= 0xFFFFFFFFu;
     return k;
 }
 

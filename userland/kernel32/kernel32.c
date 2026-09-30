@@ -21,15 +21,10 @@ static void *kmemcpy(void *d, const void *s, SIZE_T n) { return memcpy(d, s, n);
 
 static PRTL_USER_PROCESS_PARAMETERS params(void) { return RtlGetCurrentPeb()->ProcessParameters; }
 
-static BYTE *teb(void)
-{
-    BYTE *t;
-    __asm__("movq %%gs:0x30, %0" : "=r"(t));
-    return t;
-}
+static BYTE *teb(void) { return NtCurrentTebBytes(); }
 
-WINBASEAPI DWORD WINAPI GetLastError(void)       { return *(DWORD *)(teb() + 0x68); }
-WINBASEAPI VOID  WINAPI SetLastError(DWORD err)  { *(DWORD *)(teb() + 0x68) = err; }
+WINBASEAPI DWORD WINAPI GetLastError(void)       { return *(DWORD *)(teb() + TEB_LAST_ERROR); }
+WINBASEAPI VOID  WINAPI SetLastError(DWORD err)  { *(DWORD *)(teb() + TEB_LAST_ERROR) = err; }
 
 BOOL fail_status(NTSTATUS s)
 {
@@ -252,8 +247,8 @@ WINBASEAPI DWORD WINAPI GetFullPathNameA(LPCSTR name, DWORD size, LPSTR buf, LPS
  * ----------------------------------------------------------------------- */
 WINBASEAPI VOID WINAPI ExitProcess(UINT code)                { RtlExitUserProcess((NTSTATUS)code); }
 WINBASEAPI HANDLE WINAPI GetCurrentProcess(void)             { return NtCurrentProcess(); }
-WINBASEAPI DWORD WINAPI GetCurrentProcessId(void)            { return *(DWORD *)(teb() + 0x40); }
-WINBASEAPI DWORD WINAPI GetCurrentThreadId(void)             { return *(DWORD *)(teb() + 0x48); }
+WINBASEAPI DWORD WINAPI GetCurrentProcessId(void)            { return *(DWORD *)(teb() + TEB_CLIENT_ID); }
+WINBASEAPI DWORD WINAPI GetCurrentThreadId(void)             { return *(DWORD *)(teb() + TEB_CLIENT_ID + sizeof(HANDLE)); }
 
 WINBASEAPI BOOL WINAPI TerminateProcess(HANDLE process, UINT code)
 {
@@ -348,7 +343,8 @@ WINBASEAPI FARPROC WINAPI GetProcAddress(HMODULE m, LPCSTR name)
     BYTE *b = (BYTE *)m;
     if (!b || b[0] != 'M' || b[1] != 'Z') { SetLastError(ERROR_INVALID_HANDLE); return 0; }
     BYTE *nt = b + *(DWORD *)(b + 0x3C);
-    DWORD exp = *(DWORD *)(nt + 24 + 112), exps = *(DWORD *)(nt + 24 + 116);
+    DWORD dd = *(WORD *)(nt + 24) == 0x10B ? 96 : 112;       /* data directories: PE32 / PE32+ */
+    DWORD exp = *(DWORD *)(nt + 24 + dd), exps = *(DWORD *)(nt + 24 + dd + 4);
     if (!exp) { SetLastError(ERROR_PROC_NOT_FOUND); return 0; }
     BYTE *ed = b + exp;
     DWORD nnames = *(DWORD *)(ed + 24);
@@ -468,15 +464,22 @@ WINBASEAPI VOID WINAPI GetStartupInfoA(LPSTARTUPINFOA si)
 WINBASEAPI VOID WINAPI GetSystemInfo(LPSYSTEM_INFO si)
 {
     memset(si, 0, sizeof(*si));
+#ifdef _WIN64
     si->wProcessorArchitecture = 9;                          /* AMD64 */
+    si->lpMaximumApplicationAddress = (LPVOID)0x7FFFFFFEFFFFULL;
+    si->dwProcessorType = 8664;
+#else                                                        /* a 32-bit program sees an x86 machine */
+    si->wProcessorArchitecture = 0;                          /* INTEL */
+    si->lpMaximumApplicationAddress = (LPVOID)0x7FFEFFFFUL;
+    si->dwProcessorType = 586;
+    si->wProcessorLevel = 6;
+#endif
     si->dwPageSize = 4096;
     si->lpMinimumApplicationAddress = (LPVOID)0x10000;
-    si->lpMaximumApplicationAddress = (LPVOID)0x7FFFFFFEFFFFULL;
     DWORD n = *(volatile DWORD *)(ULONG_PTR)0x7FFE03C0;    /* KUSER_SHARED_DATA.ActiveProcessorCount */
     if (!n) n = 1;
     si->dwActiveProcessorMask = n >= 64 ? ~(DWORD_PTR)0 : ((DWORD_PTR)1 << n) - 1;
     si->dwNumberOfProcessors = n;
-    si->dwProcessorType = 8664;
     si->dwAllocationGranularity = 65536;
 }
 

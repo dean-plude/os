@@ -91,7 +91,7 @@ typedef struct _LDR_DATA_TABLE_ENTRY {
 #define LDRP_PROCESS_ATTACH_CALLED   0x00080000
 
 typedef struct _PEB {
-    BYTE Reserved1[2]; BYTE BeingDebugged; BYTE Reserved2[5];
+    BYTE Reserved1[2]; BYTE BeingDebugged; BYTE Reserved2[1];   /* then pointer-aligned: 8 (x64) or 4 (x86) */
     PVOID Mutant, ImageBaseAddress;
     PPEB_LDR_DATA Ldr;
     PRTL_USER_PROCESS_PARAMETERS ProcessParameters;
@@ -109,7 +109,11 @@ typedef struct _NOVA_LDR_INFO {
     ULONG Count, Reserved;
     NOVA_LDR_MODULE Modules[64];
 } NOVA_LDR_INFO;
+#ifdef __x86_64__
 #define NOVA_LDR_INFO_ADDRESS ((NOVA_LDR_INFO *)0x00007FFDF0001000ULL)
+#else
+#define NOVA_LDR_INFO_ADDRESS ((NOVA_LDR_INFO *)0x7FF01000UL)       /* 32-bit programs (see the kernel's UM32_PEB_VA) */
+#endif
 
 typedef struct _CLIENT_ID { HANDLE UniqueProcess, UniqueThread; } CLIENT_ID;
 typedef struct _THREAD_BASIC_INFORMATION {
@@ -121,7 +125,8 @@ typedef struct _PROCESS_BASIC_INFORMATION {
     ULONG_PTR UniqueProcessId, InheritedFromUniqueProcessId;
 } PROCESS_BASIC_INFORMATION;
 
-/* TEB fields NovaOS uses (x64 offsets) */
+/* TEB fields NovaOS uses */
+#ifdef __x86_64__
 #define TEB_EXCEPTION_LIST      0x0000
 #define TEB_STACK_BASE          0x0008
 #define TEB_STACK_LIMIT         0x0010
@@ -137,6 +142,23 @@ typedef struct _PROCESS_BASIC_INFORMATION {
 #define TLS_MINIMUM_AVAILABLE   64
 #define TLS_EXPANSION_SLOTS     1024
 static __inline__ BYTE *NtCurrentTebBytes(void) { BYTE *t; __asm__("movq %%gs:0x30, %0" : "=r"(t)); return t; }
+#else                                       /* x86: fs:0 is the TEB */
+#define TEB_EXCEPTION_LIST      0x0000
+#define TEB_STACK_BASE          0x0004
+#define TEB_STACK_LIMIT         0x0008
+#define TEB_SELF                0x0018
+#define TEB_CLIENT_ID           0x0020
+#define TEB_TLS_POINTER         0x002C
+#define TEB_PEB                 0x0030
+#define TEB_LAST_ERROR          0x0034
+#define TEB_DEALLOCATION_STACK  0x0E0C
+#define TEB_TLS_SLOTS           0x0E10
+#define TEB_TLS_EXPANSION       0x0F94
+#define TEB_FLS_DATA            0x0FB4
+#define TLS_MINIMUM_AVAILABLE   64
+#define TLS_EXPANSION_SLOTS     1024
+static __inline__ BYTE *NtCurrentTebBytes(void) { BYTE *t; __asm__("movl %%fs:0x18, %0" : "=r"(t)); return t; }
+#endif
 
 #define NtCurrentProcess() ((HANDLE)(LONG_PTR)-1)
 #define NtCurrentThread()  ((HANDLE)(LONG_PTR)-2)
@@ -311,12 +333,14 @@ NTSYSAPI VOID     NTAPI RtlRestoreContext(PCONTEXT ctx, PEXCEPTION_RECORD rec);
 NTSYSAPI VOID     NTAPI RtlRaiseException(PEXCEPTION_RECORD rec);
 NTSYSAPI BOOLEAN  NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx);
 NTSYSAPI VOID     NTAPI RtlUnwind(PVOID frame, PVOID target_ip, PEXCEPTION_RECORD rec, PVOID retval);
+#ifdef __x86_64__
 NTSYSAPI VOID     NTAPI RtlUnwindEx(PVOID frame, PVOID target_ip, PEXCEPTION_RECORD rec, PVOID retval,
                                     PCONTEXT ctx, PUNWIND_HISTORY_TABLE history);
 NTSYSAPI PRUNTIME_FUNCTION NTAPI RtlLookupFunctionEntry(DWORD64 pc, PDWORD64 base, PUNWIND_HISTORY_TABLE history);
 NTSYSAPI PEXCEPTION_ROUTINE NTAPI RtlVirtualUnwind(ULONG type, DWORD64 base, DWORD64 pc, PRUNTIME_FUNCTION f,
                                                    PCONTEXT ctx, PVOID *handler_data, PDWORD64 frame,
                                                    PKNONVOLATILE_CONTEXT_POINTERS ptrs);
+#endif
 NTSYSAPI PVOID    NTAPI RtlAddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER h);
 NTSYSAPI ULONG    NTAPI RtlRemoveVectoredExceptionHandler(PVOID h);
 NTSYSAPI PVOID    NTAPI RtlAddVectoredContinueHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER h);

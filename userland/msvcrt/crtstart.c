@@ -518,6 +518,7 @@ CRTEXP uintptr_t __threadhandle(void) { return (uintptr_t)GetCurrentThread(); }
  * setjmp / longjmp (Microsoft's names; the frame argument is ignored:
  * longjmp restores registers without unwinding)
  * ----------------------------------------------------------------------- */
+#ifdef _WIN64                   /* (32-bit: msvcrt/misc.c) */
 __asm__(".globl _setjmp\n.globl _setjmpex\n.globl __intrinsic_setjmp\n.globl __intrinsic_setjmpex\n"
         ".section .text$setjmp2,\"xr\"\n"
         "_setjmp:\n_setjmpex:\n__intrinsic_setjmp:\n__intrinsic_setjmpex:\n\t"
@@ -525,6 +526,7 @@ __asm__(".globl _setjmp\n.globl _setjmpex\n.globl __intrinsic_setjmp\n.globl __i
 __asm__(".section .drectve\n"
         ".ascii \" -export:_setjmp -export:_setjmpex -export:__intrinsic_setjmp -export:__intrinsic_setjmpex\"\n"
         ".text\n");
+#endif
 
 /* -----------------------------------------------------------------------
  * Secure string functions

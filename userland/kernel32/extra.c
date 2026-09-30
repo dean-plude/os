@@ -981,14 +981,17 @@ static NTSTATUS rename_handle(HANDLE h, const char *to, BOOL replace)
 {
     NtPath p;
     if (!nt_path(to, &p)) return STATUS_OBJECT_NAME_INVALID;
-    BYTE buf[24 + 2 * (MAX_PATH + 8)];
-    memset(buf, 0, 24);
-    buf[0] = (BYTE)(replace ? 1 : 0);
+    typedef struct { BOOLEAN ReplaceIfExists; HANDLE RootDirectory; ULONG FileNameLength; WCHAR FileName[1]; } RenameInfo;
+    BYTE buf[sizeof(RenameInfo) + 2 * (MAX_PATH + 8)];
+    RenameInfo *ri = (RenameInfo *)buf;
+    memset(buf, 0, sizeof(RenameInfo));
+    ri->ReplaceIfExists = (BOOLEAN)(replace ? 1 : 0);
     ULONG len = p.us.Length;
-    memcpy(buf + 16, &len, 4);
-    memcpy(buf + 20, p.buf, len);
+    ri->FileNameLength = len;
+    memcpy(ri->FileName, p.buf, len);
     IO_STATUS_BLOCK io;
-    return NtSetInformationFile(h, &io, buf, 20 + len, 10 /* FileRenameInformation */);
+    return NtSetInformationFile(h, &io, buf, (ULONG)__builtin_offsetof(RenameInfo, FileName) + len,
+                                10 /* FileRenameInformation */);
 }
 
 WINBASEAPI BOOL WINAPI SetFileInformationByHandle(HANDLE h, FILE_INFO_BY_HANDLE_CLASS c, LPVOID buf, DWORD n)
@@ -1220,10 +1223,17 @@ WINBASEAPI BOOL WINAPI SetCurrentDirectoryW(LPCWSTR path)
     return SetCurrentDirectoryA(a);
 }
 
-WINBASEAPI UINT WINAPI GetSystemDirectoryA(LPSTR buf, UINT n)  { return put_a("C:\\Windows\\System32", buf, n); }
+#ifdef _WIN64
+#define SYSTEM_DIR "C:\\Windows\\System32"
+#else
+#define SYSTEM_DIR "C:\\Windows\\SysWOW64"                  /* 32-bit programs' system folder */
+#endif
+WINBASEAPI UINT WINAPI GetSystemDirectoryA(LPSTR buf, UINT n)  { return put_a(SYSTEM_DIR, buf, n); }
 WINBASEAPI UINT WINAPI GetWindowsDirectoryA(LPSTR buf, UINT n) { return put_a("C:\\Windows", buf, n); }
 WINBASEAPI UINT WINAPI GetSystemWindowsDirectoryA(LPSTR buf, UINT n) { return put_a("C:\\Windows", buf, n); }
-WINBASEAPI UINT WINAPI GetSystemDirectoryW(LPWSTR buf, UINT n) { return put_utf8_as_w("C:\\Windows\\System32", buf, n); }
+WINBASEAPI UINT WINAPI GetSystemDirectoryW(LPWSTR buf, UINT n) { return put_utf8_as_w(SYSTEM_DIR, buf, n); }
+WINBASEAPI UINT WINAPI GetSystemWow64DirectoryA(LPSTR buf, UINT n)  { return put_a("C:\\Windows\\SysWOW64", buf, n); }
+WINBASEAPI UINT WINAPI GetSystemWow64DirectoryW(LPWSTR buf, UINT n) { return put_utf8_as_w("C:\\Windows\\SysWOW64", buf, n); }
 WINBASEAPI UINT WINAPI GetWindowsDirectoryW(LPWSTR buf, UINT n){ return put_utf8_as_w("C:\\Windows", buf, n); }
 WINBASEAPI UINT WINAPI GetSystemWindowsDirectoryW(LPWSTR buf, UINT n) { return put_utf8_as_w("C:\\Windows", buf, n); }
 
@@ -1383,8 +1393,8 @@ WINBASEAPI BOOL WINAPI GlobalMemoryStatusEx(LPMEMORYSTATUSEX ms)
     ms->ullAvailPhys = 256ULL << 20;
     ms->ullTotalPageFile = ms->ullTotalPhys;
     ms->ullAvailPageFile = ms->ullAvailPhys;
-    ms->ullTotalVirtual = 0x7FFE0000000ULL;
-    ms->ullAvailVirtual = 0x7F000000000ULL;
+    ms->ullTotalVirtual = sizeof(void *) == 4 ? 0x7FFE0000ULL : 0x7FFE0000000ULL;
+    ms->ullAvailVirtual = sizeof(void *) == 4 ? 0x70000000ULL : 0x7F000000000ULL;
     ms->ullAvailExtendedVirtual = 0;
     return TRUE;
 }
@@ -2492,8 +2502,9 @@ static const BYTE *res_root(HMODULE m, DWORD *size)
     const BYTE *b = m ? (const BYTE *)m : RtlGetCurrentPeb()->ImageBaseAddress;
     if (!b || b[0] != 'M' || b[1] != 'Z') return 0;
     const BYTE *nt = b + *(const DWORD *)(b + 0x3C);
-    DWORD rva = *(const DWORD *)(nt + 24 + 112 + 8 * 2);
-    if (size) *size = *(const DWORD *)(nt + 24 + 116 + 8 * 2);
+    DWORD dd = *(const WORD *)(nt + 24) == 0x10B ? 96 : 112;  /* PE32 / PE32+ */
+    DWORD rva = *(const DWORD *)(nt + 24 + dd + 8 * 2);
+    if (size) *size = *(const DWORD *)(nt + 24 + dd + 4 + 8 * 2);
     return rva ? b + rva : 0;
 }
 

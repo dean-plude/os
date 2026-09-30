@@ -92,6 +92,7 @@ typedef struct Thread {
     void           *um;             /* UmProcess */
     uint8_t        *fpu;            /* 512-byte FXSAVE area, 16-byte aligned */
     uint64_t        gs_base;        /* user GS (the TEB): MSR_KERNEL_GS_BASE while in the kernel */
+    uint64_t        fs_base;        /* user FS: the 32-bit TEB of a 32-bit program's thread */
     uint64_t        user_rsp;       /* user RSP at the last syscall (stack args) */
     volatile bool   off_cpu;        /* DEAD and switched away: safe to free */
     struct Thread  *sleep_next;     /* sched_sleep_tick list */

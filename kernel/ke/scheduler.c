@@ -492,6 +492,7 @@ static void switch_locked(RunQueue *rq)
     if (next->um) {
         __asm__ volatile ("fxrstor64 (%0)" : : "r"(next->fpu) : "memory");
         wrmsr(MSR_IA32_KERNEL_GSBASE, next->gs_base);
+        wrmsr(MSR_IA32_FSBASE, next->fs_base);       /* 32-bit programs: fs:0 is the TEB */
     }
 
     bkl_switch_out(prev);               /* its big kernel lock waits for it */

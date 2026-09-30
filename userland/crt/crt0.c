@@ -8,7 +8,11 @@ int _fltused = 0x9875;
 /* std::type_info's vtable (every C++ RTTI/EH type descriptor points at it;
  * MSVC links it from the static CRT too).  type_info objects are static
  * data, so the deleting destructor has nothing to free. */
+#ifdef _WIN64
 static void *__cdecl type_info_delete(void *self, unsigned flags) { (void)flags; return self; }
+#else                                           /* x86 virtual functions: thiscall */
+static void *__thiscall type_info_delete(void *self, unsigned flags) { (void)flags; return self; }
+#endif
 void *const nova_type_info_vtable[1] __asm__("??_7type_info@@6B@") = { (void *)type_info_delete };
 
 /* Static constructors (C++ globals, __attribute__((constructor))): the

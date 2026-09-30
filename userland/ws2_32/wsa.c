@@ -11,6 +11,7 @@
 #define WS2_EXPORT
 #define NOVA_BUILD_KERNEL32
 #include <winsock2.h>
+#include <winternl.h>
 
 void *memcpy(void *d, const void *s, size_t n);
 void *memset(void *d, int c, size_t n);
@@ -22,8 +23,7 @@ WINBASEAPI BOOL WINAPI SetEvent(HANDLE);
 WINBASEAPI BOOL WINAPI ResetEvent(HANDLE);
 __declspec(dllimport) void WINAPI NovaIoComplete(HANDLE h, OVERLAPPED *o, LONG status, DWORD bytes);
 
-static BYTE *teb(void) { BYTE *t; __asm__("movq %%gs:0x30, %0" : "=r"(t)); return t; }
-static void set_err(int e) { *(DWORD *)(teb() + 0x68) = (DWORD)e; }
+static void set_err(int e) { *(DWORD *)(NtCurrentTebBytes() + TEB_LAST_ERROR) = (DWORD)e; }
 
 int __WSAFDIsSet(SOCKET fd, fd_set *set)
 {

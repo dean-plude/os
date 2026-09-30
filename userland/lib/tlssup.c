@@ -18,10 +18,15 @@ __declspec(allocate(".CRT$XLA")) PIMAGE_TLS_CALLBACK __xl_a = 0;
 __declspec(allocate(".CRT$XLZ")) PIMAGE_TLS_CALLBACK __xl_z = 0;
 
 #pragma section(".rdata$T", long, read)
-__declspec(allocate(".rdata$T")) const IMAGE_TLS_DIRECTORY64 _tls_used = {
-    (ULONGLONG)(ULONG_PTR)&_tls_start,
-    (ULONGLONG)(ULONG_PTR)&_tls_end,
-    (ULONGLONG)(ULONG_PTR)&_tls_index,
-    (ULONGLONG)(ULONG_PTR)(&__xl_a + 1),
+__declspec(allocate(".rdata$T")) const IMAGE_TLS_DIRECTORY _tls_used = {
+    (ULONG_PTR)&_tls_start,
+    (ULONG_PTR)&_tls_end,
+    (ULONG_PTR)&_tls_index,
+    (ULONG_PTR)(&__xl_a + 1),
     0, 0
 };
+
+#ifndef _WIN64
+/* x86 code reaches the TLS pointer array as fs:[__tls_array] */
+__asm__(".globl __tls_array\n.set __tls_array, 0x2C\n");
+#endif

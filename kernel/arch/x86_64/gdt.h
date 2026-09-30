@@ -35,6 +35,7 @@
 #define GDT_USER_DATA     0x18   /* DPL=3: selector | 3 = 0x1B */
 #define GDT_USER_CODE     0x20   /* DPL=3: selector | 3 = 0x23 */
 #define GDT_TSS           0x28   /* 16 bytes — two consecutive slots */
+#define GDT_USER_CODE32   0x38   /* DPL=3, 32-bit (compatibility mode): 0x3B, for 32-bit programs */
 
 /* RPL (Requested Privilege Level) ORed into selectors for ring-3 use */
 #define RPL_RING0  0
@@ -43,9 +44,10 @@
 /* User selectors with RPL set */
 #define SEL_USER_CODE   (GDT_USER_CODE | RPL_RING3)
 #define SEL_USER_DATA   (GDT_USER_DATA | RPL_RING3)
+#define SEL_USER_CODE32 (GDT_USER_CODE32 | RPL_RING3)
 
 /* Number of regular 8-byte entries */
-#define GDT_ENTRY_COUNT   7   /* null + kcode + kdata + udata + ucode + tss_lo + tss_hi */
+#define GDT_ENTRY_COUNT   8   /* null + kcode + kdata + udata + ucode + tss_lo + tss_hi + ucode32 */
 
 /* Raw 64-bit GDT entry */
 typedef struct __packed {
