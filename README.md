@@ -715,11 +715,17 @@ the machine 2 GB so downloaded installers fit in the RAM disk.  Add a
 second drive (`-drive file=disk.img,format=raw`) to keep drive C: and the
 registry between boots.
 
+The ISO is also the **installation disc**: booted from it, NovaOS runs
+live and opens Install NovaOS, which puts it on a disk (see "Installing
+NovaOS on a disk" above).  An empty disk attached to the live session is
+formatted for drive C: at boot, and Setup can install onto that same
+disk, taking the session's files along.
+
 On macOS with Homebrew QEMU, the UEFI firmware ships with QEMU:
 
 ```bash
 FW="$(brew --prefix qemu)/share/qemu/edk2-x86_64-code.fd"
-qemu-system-x86_64 -machine q35 -m 512M -smp 4 \
+qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -drive if=pflash,format=raw,readonly=on,file="$FW" \
   -cdrom nova.iso -serial stdio
 ```
