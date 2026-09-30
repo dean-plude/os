@@ -50,6 +50,7 @@ DLLS = [
     ('userenv',  ['kernel32', 'ntdll'],  0x7FFAB0000000),
     ('shlwapi',  ['msvcrt', 'kernel32', 'ntdll'], 0x7FFAD0000000),
     ('psapi',    ['kernel32'],           0x7FFB40000000),
+    ('shfolder', [],                     0x7FFB70000000),
     ('version',  ['kernel32', 'ntdll'],  0x7FFB20000000),
     ('winmm',    ['kernel32', 'ntdll'],  0x7FFB30000000),
     ('mpr',      ['kernel32'],           0x7FFB50000000),

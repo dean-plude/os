@@ -481,8 +481,11 @@ USERAPI BOOL     UpdateWindow(HWND h);
 #define GWL_ID        (-12)
 #define GWL_USERDATA  (-21)
 #define DWLP_MSGRESULT 0
-#define DWLP_DLGPROC  8
-#define DWLP_USER     16
+#define DWLP_DLGPROC  (DWLP_MSGRESULT + (int)sizeof(LRESULT))
+#define DWLP_USER     (DWLP_DLGPROC + (int)sizeof(DLGPROC))
+#define DWL_MSGRESULT 0
+#define DWL_DLGPROC   4
+#define DWL_USER      8
 #define GCL_STYLE     (-26)
 #define GCLP_HBRBACKGROUND (-10)
 #define GCLP_HCURSOR  (-12)

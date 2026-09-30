@@ -1,11 +1,11 @@
 # NovaOS — Windows-Compatible Operating System
 
 A clean-room, from-scratch x86_64 operating system designed to run native
-Windows executables (PE32+) without emulation.  It runs 64-bit (x64)
-Windows programs; 32-bit (x86) ones, which include most setup programs,
-are not supported yet.
+Windows executables without emulation: 64-bit (x64, PE32+) programs, and
+32-bit (x86, PE32) ones, such as most setup programs, through its own
+WoW64 layer.
 
-## Status: Phase 12 — unmodified Windows programs (7-Zip), an App Store, Windows Installer (.msi), and a NovaOS installer
+## Status: Phase 13 — 32-bit Windows programs (WoW64), after unmodified 7-Zip, an App Store, Windows Installer (.msi) and a NovaOS installer
 
 **What works:**
 
@@ -561,15 +561,13 @@ PuTTY, WinSCP, Git, Python, WinMerge and ShareX, plus a **Runtimes**
 category (.NET Desktop Runtime, Visual C++ Redistributable, OpenJDK,
 Mesa 3D), by category, with a note on how far each gets on NovaOS today.
 
-- **64-bit packages only.**  NovaOS runs 64-bit (x64) programs, and most
-  setup programs are 32-bit even when they install a 64-bit app (NSIS,
-  Inno Setup, Mozilla's and WiX's bootstrappers).  So the store fetches
-  each project's official 64-bit package: a portable `.zip` or `.7z`, a
-  64-bit installer, a Windows Installer `.msi`, or, for Firefox and
-  Thunderbird, the full installer, which is a 7-Zip self-extracting
-  archive.  Apps that publish only a 32-bit setup program (GIMP,
-  qBittorrent, WinSCP, the Visual C++ Redistributable) are listed as
-  "32-bit only" with no download.
+- **64-bit packages where there are any.**  The store fetches each
+  project's official 64-bit package: a portable `.zip` or `.7z`, an
+  installer, a Windows Installer `.msi`, or, for Firefox and Thunderbird,
+  the full installer, which is a 7-Zip self-extracting archive.  Apps
+  whose only download is a 32-bit setup program (GIMP, qBittorrent,
+  WinSCP, the Visual C++ Redistributable) now install through it too,
+  since NovaOS runs 32-bit programs.
 - **Get** downloads over HTTPS (following redirects, with the bytes
   received shown while it runs) to `C:\Downloads`, using the same network
   operations as the Terminal's `wget`.  Files may be up to 256 MB.
@@ -577,8 +575,7 @@ Mesa 3D), by category, with a note on how far each gets on NovaOS today.
   `C:\Programs\<App>` by the installed 7-Zip's own `7z.exe`, unchanged
   (the store waits for it and reports its result, and asks for 7-Zip
   first if it is missing); `.msi` packages go to NovaOS's Windows
-  Installer; 64-bit installers run.  A download that turns out to be a
-  32-bit program is caught before it runs, with a plain message.
+  Installer; installers, 64-bit or 32-bit, run.
   **Run** starts portable programs (PuTTY, SumatraPDF) from Downloads.
 - **Open** starts the installed program from its own folder (console
   programs such as Python and Git in a Terminal); archives with a
@@ -587,11 +584,9 @@ Mesa 3D), by category, with a note on how far each gets on NovaOS today.
 - Tested in QEMU with stand-in packages (the sandbox this was built in
   cannot reach the publishers): 7-Zip installed from its x64 installer;
   a portable zip unpacked into `C:\Programs\Notepad++` and opened; a
-  7-Zip self-extracting installer unpacked like Firefox's and opened;
-  a 32-bit program refused with the new message.  The apps themselves
-  mostly need more of Windows than NovaOS has (the note on each row).
-- Starting a 32-bit program anywhere now says so: "is a 32-bit (x86)
-  program; NovaOS runs only 64-bit (x64) programs so far".
+  7-Zip self-extracting installer unpacked like Firefox's and opened.
+  The apps themselves mostly need more of Windows than NovaOS has (the
+  note on each row).
 - Programs in a folder of their own under `C:\Programs` now start in
   that folder when opened from the desktop (they used to be looked up
   by name and not found).
@@ -636,6 +631,61 @@ Install button all go through it, and programs can call
   (NovaOS has no `.lnk` files), services, environment variables, and
   merge modules.  LZX decoding is written to the specification but has
   only been exercised with MSZIP cabinets so far.
+
+### Phase 13 — 32-bit Windows programs (WoW64)
+
+NovaOS runs 32-bit (x86, PE32) Windows programs next to 64-bit ones, the
+way 64-bit Windows does: the CPU runs them in compatibility mode under
+the 64-bit kernel, and they get a 32-bit copy of the whole userland in
+`C:\Windows\SysWOW64`.
+
+- **Kernel** (`kernel/um/`): a 32-bit user code segment (0x38) and a flat
+  4 GiB data segment; FS based at each thread's 32-bit TEB (switched with
+  the thread); a 32-bit address layout, everything below 2 GiB (PEB, TEBs,
+  loader list, stacks, heap and DLLs); the PE32 loader (4-byte import
+  thunks, HIGHLOW relocations); x86 PEB, TEB and process parameters; DLLs
+  looked up in SysWOW64, and file system redirection (a 32-bit program's
+  `C:\Windows\System32` is `SysWOW64`, unless it calls
+  `Wow64DisableWow64FsRedirection`).  32-bit code enters the kernel
+  through `int 0x2E` with a block of 64-bit arguments.  A crash at a bad
+  address now also names the caller in the log.
+- **The 32-bit ntdll** (`ntdll_wow.c`) turns every system call's
+  arguments into the kernel's 64-bit forms: handles sign-extended,
+  pointers zero-extended, `OBJECT_ATTRIBUTES`, `UNICODE_STRING`,
+  `IO_STATUS_BLOCK`, `CONTEXT`, `EXCEPTION_RECORD`, memory and
+  thread/process information, handle arrays and window messages
+  rebuilt in their 64-bit layout and the results copied back.
+- **x86 exceptions** (`exc_x86.h`): frames chained from `fs:[0]`,
+  `RtlUnwind`, `RtlRaiseException`, and the `__try` handlers of MSVC and
+  clang (`_except_handler3`, `_except_handler4_common`); vcruntime140
+  has x86 C++ exceptions (`__CxxFrameHandler3`, `_CxxThrowException`)
+  and RTTI with absolute addresses; msvcrt has x86 `setjmp`/`longjmp`.
+- **Build**: `tools/build_userland.py` builds the userland twice, the
+  second time with `--target=i686-pc-windows-msvc`.  Stdcall functions are
+  exported undecorated (`GetLastError`, not `_GetLastError@0`) through a
+  generated `.def`, which also caught every mismatched calling convention
+  between our DLLs at link time.  The 64-bit division helpers x86 code
+  calls are in `lib/x86rt.c`.  32-bit builds of the test programs are in
+  `C:\Programs\x86`; `NOVA_NO_WOW64=1` leaves the 32-bit pass out.
+- **Programs see WoW64**: `IsWow64Process` is TRUE, `GetSystemInfo`
+  reports an x86 machine and `GetNativeSystemInfo` the AMD64 one,
+  `GetSystemDirectory` is `SysWOW64`.
+- **Tested**: every self-test (crttest, filetest, threads/SEH, DLL/TLS,
+  posixtest, apitest, comtest, C++ exceptions, shared memory) passes as a
+  32-bit program as well as a 64-bit one; 32-bit GUI programs (winhello,
+  guitest); programs from the 32-bit MinGW toolchain (C, and C++ with
+  exceptions); 7-Zip's own 32-bit self-extractors, console and GUI,
+  unpacking an archive; and a real NSIS (Modern UI) installer going
+  through its welcome, folder, progress and finish pages, installing
+  files, its uninstaller and registry keys, and uninstalling again.
+- Pointer-size assumptions fixed on the way: TEB offsets in kernel32 and
+  ws2_32, PE data directories in `GetProcAddress` and resources,
+  `Get/SetWindowLongPtr` and the `DWLP_*` offsets, rename information,
+  SRW locks, `%p`/`%z`/`%I` in printf and scanf, `FILE` (32 bytes on x86).
+- Also fixed: `EndDialog` called from a message another thread sent now
+  ends the modal loop (NSIS's finish page), `shfolder.dll` exists
+  (`SHGetFolderPath`, which NSIS takes from it), and msvcrt exports
+  `_controlfp`, `_control87`, `__p___initenv` and friends.
 
 ### Installing NovaOS on a disk
 
@@ -770,7 +820,8 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 | 10 | Standard DLLs (UCRT, C++ EH, advapi32, shell32, ...), registry, COM, AHCI + FAT persistent storage | ✅ **Done** |
 | 11 | Multiprocessor: every core runs threads, per-core scheduling, fine-grained kernel locking | ✅ **Done** |
 | 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store; Windows Installer (.msi); installing NovaOS on a disk | ✅ **Done** |
-| 13 | Pipes, `cmd.exe`, the OLE clipboard, 32-bit (x86) programs (WoW64), more real programs | 🔄 Planned |
+| 13 | 32-bit (x86) Windows programs (WoW64): compatibility mode, a SysWOW64 userland, x86 SEH and C++ exceptions; NSIS installers and 7-Zip's 32-bit self-extractors run | ✅ **Done** |
+| 14 | Pipes, `cmd.exe`, the OLE clipboard, shell links, more real programs | 🔄 Planned |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native
 Windows executables (Phases 8–15) and the chosen compatibility strategy.

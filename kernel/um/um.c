@@ -27,6 +27,7 @@
 #include "../fs/persist.h"
 #include "../arch/x86_64/idt.h"
 #include "um_internal.h"
+#include "../ke/probe.h"
 #include "../ke/printf.h"
 #include "../ke/kpcr.h"
 #include "../ke/smp.h"
@@ -1446,6 +1447,13 @@ void UmReturnToUserFrame(void *frame)
 /* Describe an unhandled exception and end the process */
 void UmFault(UINT32 status, UINT64 rip, UINT64 addr)
 {
+    UmFaultAt(status, rip, addr, 0);
+}
+
+/* As UmFault; @sp (0: unknown) is the stack pointer at the fault, which
+ * names the caller when the program jumped to a bad address */
+void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
+{
     UmProcess *p = UmCurrent();
     const char *what = status == UM_STATUS_ACCESS_VIOLATION ? "access violation" :
                        status == 0xC0000094u ? "integer divide by zero" :
@@ -1466,7 +1474,14 @@ void UmFault(UINT32 status, UINT64 rip, UINT64 addr)
             ksnprintf(p->why, sizeof(p->why), "crashed: %s 0x%08x at %s", what, status, where);
         else
             ksnprintf(p->why, sizeof(p->why), "crashed: %s at %s", what, where);
-        kprintf("[UM] %s (PID %u) %s\n", p->name, p->pid, p->why);
+        char caller[80] = "";
+        UINT64 ret = 0;
+        if (!mod && sp && NT_SUCCESS(CopyFromUser(&ret, (const void *)(uintptr_t)sp, p->wow ? 4 : 8))) {
+            const UmModule *cm = um_module_at(p, ret);
+            if (cm) ksnprintf(caller, sizeof(caller), " (called from %s+0x%llx)", cm->name,
+                              (unsigned long long)(ret - cm->base));
+        }
+        kprintf("[UM] %s (PID %u) %s%s\n", p->name, p->pid, p->why, caller);
     }
     um_exit_process(status);
 }

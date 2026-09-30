@@ -32,7 +32,6 @@ enum {
     KIND_SETUP,        /* a 64-bit installer (.exe) or a Windows Installer package (.msi) */
     KIND_PORTABLE,     /* the 64-bit program itself: Run it from Downloads */
     KIND_ARCHIVE,      /* a .zip, .7z or 7-Zip self-extractor: 7-Zip unpacks it into C:\Programs\<dest> */
-    KIND_32BIT,        /* only a 32-bit (x86) installer is published: NovaOS cannot run it yet */
 };
 
 typedef struct {
@@ -72,7 +71,7 @@ static const StoreApp g_catalog[] = {
       "Notepad++\\**\\notepad++.exe", KIND_ARCHIVE, 7, "64-bit portable zip; untested", "N++", GDI_C(0x8C, 0xC0, 0x44) },
     { "GIMP", "The GIMP Team", "Image editor for photo retouching, composition and authoring",
       CAT_GRAPHICS, "https://download.gimp.org/gimp/v3.0/windows/gimp-3.0.4-setup.exe", "gimp-3.0.4-setup.exe", NULL,
-      NULL, KIND_32BIT, 260, "Only a 32-bit installer is published", "G", GDI_C(0x5C, 0x4A, 0x36) },
+      NULL, KIND_SETUP, 260, "32-bit installer (Inno Setup) for 64-bit GIMP; untested", "G", GDI_C(0x5C, 0x4A, 0x36) },
     { "Inkscape", "Inkscape Project", "Vector graphics editor (SVG)",
       CAT_GRAPHICS, "https://inkscape.org/release/inkscape-1.4.2/windows/64-bit/compressed-7z/dl/", "inkscape-1.4.2-x64.7z", "Inkscape",
       "Inkscape\\**\\inkscape.exe", KIND_ARCHIVE, 110, "64-bit 7z archive; GTK application, untested", "Ik", GDI_C(0x2A, 0x2A, 0x2A) },
@@ -99,13 +98,13 @@ static const StoreApp g_catalog[] = {
       "KeePassXC\\**\\KeePassXC.exe", KIND_ARCHIVE, 40, "64-bit portable zip; Qt application, untested", "Kp", GDI_C(0x2C, 0x9A, 0x4C) },
     { "qBittorrent", "qBittorrent project", "BitTorrent client without ads",
       CAT_INTERNET, "https://sourceforge.net/projects/qbittorrent/files/qbittorrent-win32/qbittorrent-5.1.2/qbittorrent_5.1.2_x64_setup.exe/download", "qbittorrent_5.1.2_x64_setup.exe", NULL,
-      NULL, KIND_32BIT, 40, "Only a 32-bit installer is published", "qB", GDI_C(0x2E, 0x7A, 0xC8) },
+      NULL, KIND_SETUP, 40, "32-bit installer (NSIS); Qt application, untested", "qB", GDI_C(0x2E, 0x7A, 0xC8) },
     { "PuTTY", "Simon Tatham", "SSH and telnet client",
       CAT_INTERNET, "https://the.earth.li/~sgtatham/putty/latest/w64/putty.exe", "putty.exe", NULL,
       NULL, KIND_PORTABLE, 2, "64-bit portable program: runs straight from Downloads", "Pu", GDI_C(0x1F, 0x1F, 0x1F) },
     { "WinSCP", "Martin Prikryl", "SFTP, FTP and SCP file transfer client",
       CAT_INTERNET, "https://sourceforge.net/projects/winscp/files/WinSCP/6.5.3/WinSCP-6.5.3-Setup.exe/download", "WinSCP-6.5.3-Setup.exe", NULL,
-      NULL, KIND_32BIT, 12, "WinSCP is a 32-bit program", "Ws", GDI_C(0x2B, 0x90, 0x3C) },
+      NULL, KIND_SETUP, 12, "32-bit program and installer (Inno Setup); untested", "Ws", GDI_C(0x2B, 0x90, 0x3C) },
     { "Git", "Git for Windows", "The git version control system (MinGit, command line)",
       CAT_DEVELOPER, GH "git-for-windows/git/releases/download/v2.51.0.windows.1/MinGit-2.51.0-64-bit.zip", "MinGit-2.51.0-64-bit.zip", "Git",
       "Git\\cmd\\git.exe", KIND_ARCHIVE, 40, "64-bit zip; needs pipes, which NovaOS lacks", "git", GDI_C(0xF0, 0x50, 0x32) },
@@ -124,7 +123,7 @@ static const StoreApp g_catalog[] = {
       "dotnet\\dotnet.exe", KIND_ARCHIVE, 60, "64-bit zip; the runtime host is untested on NovaOS", ".NET", GDI_C(0x51, 0x2B, 0xD4) },
     { "Visual C++ Redistributable", "Microsoft", "C++ runtime DLLs (msvcp140, vcruntime140, ...) many programs need",
       CAT_RUNTIMES, "https://aka.ms/vs/17/release/vc_redist.x64.exe", "vc_redist.x64.exe", NULL,
-      NULL, KIND_32BIT, 25, "Its installer is a 32-bit program; NovaOS has its own vcruntime140", "VC", GDI_C(0x68, 0x21, 0x7A) },
+      NULL, KIND_SETUP, 25, "32-bit installer; NovaOS also has its own vcruntime140", "VC", GDI_C(0x68, 0x21, 0x7A) },
     { "OpenJDK 21", "Microsoft Build of OpenJDK", "Java runtime and development kit",
       CAT_RUNTIMES, "https://aka.ms/download-jdk/microsoft-jdk-21-windows-x64.zip", "microsoft-jdk-21-windows-x64.zip", "Java",
       "Java\\**\\bin\\java.exe", KIND_ARCHIVE, 190, "64-bit zip; the JVM is untested on NovaOS", "Jv", GDI_C(0xE7, 0x6F, 0x00) },
@@ -266,7 +265,6 @@ static void dl_resolve(Store *s)
 
 static void dl_start(Store *s, int i)
 {
-    if (g_catalog[i].kind == KIND_32BIT) return;
     if (s->dl >= 0) { set_msg(s, i, "Another download is in progress"); return; }
     if (!NetAvailable()) { set_msg(s, i, "Failed: no network connection"); return; }
     if ((UINT64)g_catalog[i].size_mb * 1024 * 1024 > NET_HTTP_MAX) {
@@ -477,9 +475,8 @@ static void run_file(Store *s, int i, RamNode *f)
         else set_msg(s, i, "");
         return;
     }
-    UINT16 m = pe_machine(f);
-    if (m == 0x14C) { failed_msg(s, i, "Could not install: this download is a 32-bit program"); return; }
-    if (m != 0x8664) { failed_msg(s, i, "Could not install: this download is not a Windows program"); return; }
+    UINT16 m = pe_machine(f);                   /* 64-bit, or 32-bit (WoW64) */
+    if (m != 0x8664 && m != 0x14C) { failed_msg(s, i, "Could not install: this download is not a Windows program"); return; }
     spawn(s, i, f, f->name, f->parent);
 }
 
@@ -491,7 +488,7 @@ static bool is_runtime(const StoreApp *a) { return a->category == CAT_RUNTIMES; 
 static BtnKind row_button(const Store *s, int i)
 {
     const StoreApp *a = &g_catalog[i];
-    if (a->kind == KIND_32BIT || s->unpack_i == i) return BTN_NONE;
+    if (s->unpack_i == i) return BTN_NONE;
     if (s->dl == i) return BTN_CANCEL;
     if (installed_exe(a)) return is_runtime(a) ? BTN_NONE : BTN_OPEN;
     if (downloaded_file(a)) return a->kind == KIND_PORTABLE ? BTN_RUN : BTN_INSTALL;
@@ -501,7 +498,6 @@ static BtnKind row_button(const Store *s, int i)
 /* What stands in the button's place when there is none */
 static const char *no_button_text(const Store *s, int i)
 {
-    if (g_catalog[i].kind == KIND_32BIT) return "32-bit only";
     if (s->unpack_i == i) return "Unpacking";
     return "Installed";
 }
@@ -516,8 +512,7 @@ static void press(Store *s, int i)
     case BTN_RUN: {
         RamNode *f = downloaded_file(a);
         UINT16 m = f ? pe_machine(f) : 0;
-        if (m == 0x8664) { AppRunProgram(f, f->name); set_msg(s, i, ""); }
-        else if (m == 0x14C) failed_msg(s, i, "Could not run: this download is a 32-bit program");
+        if (m == 0x8664 || m == 0x14C) { AppRunProgram(f, f->name); set_msg(s, i, ""); }
         else if (f) failed_msg(s, i, "Could not run: this download is not a Windows program");
         break; }
     case BTN_OPEN: {                         /* console programs get a Terminal */
@@ -615,7 +610,7 @@ static void store_paint(WND *w)
             ksnprintf(line, sizeof(line), "%s", s->msg[i]);
         } else if (installed_exe(a)) {
             ksnprintf(line, sizeof(line), "Installed  -  %s", a->note);
-        } else if (a->size_mb && a->kind != KIND_32BIT) {
+        } else if (a->size_mb) {
             ksnprintf(line, sizeof(line), "%u MB  -  %s", a->size_mb, a->note);
         } else {
             ksnprintf(line, sizeof(line), "%s", a->note);

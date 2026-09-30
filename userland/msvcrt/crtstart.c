@@ -142,6 +142,8 @@ CRTEXP char   ***__p___argv(void)    { init_args(); return &__argv; }
 CRTEXP wchar_t ***__p___wargv(void)  { init_args(); return &__wargv; }
 CRTEXP char   ***__p__environ(void)  { init_env(); return &_environ; }
 CRTEXP wchar_t ***__p__wenviron(void) { init_env(); return &_wenviron; }
+CRTEXP char   ***__p___initenv(void) { init_env(); return &__initenv; }
+CRTEXP wchar_t ***__p___winitenv(void) { init_env(); return &__winitenv; }
 CRTEXP char    **__p__acmdln(void)   { init_args(); return &_acmdln; }
 CRTEXP wchar_t **__p__wcmdln(void)   { init_args(); return &_wcmdln; }
 CRTEXP char    **__p__pgmptr(void)   { init_args(); return &_pgmptr; }

@@ -39,7 +39,8 @@ static int core(Src *src, const char *f, va_list ap)
         for (;;) {
             if (*f == 'h') { len = len == -1 ? -2 : -1; f++; }
             else if (*f == 'l') { len++; f++; }
-            else if (*f == 'z' || *f == 'j' || *f == 't' || *f == 'L') { len = *f == 'L' ? 3 : 2; f++; }
+            else if (*f == 'j' || *f == 'L') { len = *f == 'L' ? 3 : 2; f++; }
+            else if (*f == 'z' || *f == 't') { len = sizeof(size_t) == 8 ? 2 : 0; f++; }   /* pointer-sized */
             else if (f[0] == 'I' && f[1] == '6' && f[2] == '4') { len = 2; f += 3; }
             else break;
         }

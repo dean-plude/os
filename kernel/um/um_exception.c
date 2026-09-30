@@ -161,7 +161,7 @@ void UmUserException(void *frame, UINT64 cr2)
     for (UINT64 i = 0; i < nparams; i++) put64(rec + 32 + 8 * i, info[i]);
 
     if (!push_exception(p, &r, ctx, rec))
-        UmFault(code, addr, nparams == 2 ? info[1] : 0);
+        UmFaultAt(code, addr, nparams == 2 ? info[1] : 0, r.rsp);
     f->rip = r.rip; f->rsp = r.rsp; f->rcx = r.rcx; f->rdx = r.rdx; f->rflags = r.rflags;
 }
 
@@ -267,7 +267,7 @@ static UINT64 sys_raise_exception(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     memcpy(&np, rec + 24, 4);
     UINT64 addr = get64(rec + 16);
     if (!(a3 & 0xFF))                                            /* unhandled: the end */
-        UmFault(code, addr, np >= 2 ? get64(rec + 40) : 0);
+        UmFaultAt(code, addr, np >= 2 ? get64(rec + 40) : 0, get64(ctx + C_RAX + 0x20));
     Regs r;
     if (!load_context(ctx, &r)) return 0xC000000Du;
     if (!push_exception(UmCurrent(), &r, ctx, rec)) UmFault(code, addr, 0);

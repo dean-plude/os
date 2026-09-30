@@ -104,10 +104,17 @@ int fegetexceptflag(fexcept_t *f, int e) { *f = (fexcept_t)fetestexcept(e); retu
 int fesetexceptflag(const fexcept_t *f, int e) { set_mxcsr((mxcsr() & ~((unsigned)e & FE_ALL)) | ((unsigned)*f & (unsigned)e & FE_ALL)); return 0; }
 
 /* Microsoft's float control API over MXCSR */
-unsigned int _clearfp(void)  { unsigned s = mxcsr() & 0x3F; set_mxcsr(mxcsr() & ~0x3Fu); __asm__ volatile("fnclex"); return s; }
-unsigned int _statusfp(void) { return mxcsr() & 0x3F; }
-unsigned int _controlfp(unsigned int newv, unsigned int mask) { (void)newv; (void)mask; return 0x0009001F; }
-int _controlfp_s(unsigned int *cur, unsigned int newv, unsigned int mask) { if (cur) *cur = _controlfp(newv, mask); return 0; }
-unsigned int _control87(unsigned int newv, unsigned int mask) { return _controlfp(newv, mask); }
-void _fpreset(void) { set_mxcsr(0x1F80); __asm__ volatile("fninit"); }
-int *__fpecode(void) { static int c; return &c; }
+__declspec(dllexport) unsigned int _clearfp(void)  { unsigned s = mxcsr() & 0x3F; set_mxcsr(mxcsr() & ~0x3Fu); __asm__ volatile("fnclex"); return s; }
+__declspec(dllexport) unsigned int _statusfp(void) { return mxcsr() & 0x3F; }
+__declspec(dllexport) unsigned int _controlfp(unsigned int newv, unsigned int mask) { (void)newv; (void)mask; return 0x0009001F; }
+__declspec(dllexport) int _controlfp_s(unsigned int *cur, unsigned int newv, unsigned int mask) { if (cur) *cur = _controlfp(newv, mask); return 0; }
+__declspec(dllexport) unsigned int _control87(unsigned int newv, unsigned int mask) { return _controlfp(newv, mask); }
+/* x86: both units' control words at once */
+__declspec(dllexport) int __control87_2(unsigned int newv, unsigned int mask, unsigned int *x87, unsigned int *sse)
+{
+    if (x87) *x87 = _controlfp(newv, mask);
+    if (sse) *sse = _controlfp(newv, mask);
+    return 1;
+}
+__declspec(dllexport) void _fpreset(void) { set_mxcsr(0x1F80); __asm__ volatile("fninit"); }
+__declspec(dllexport) int *__fpecode(void) { static int c; return &c; }
