@@ -372,6 +372,13 @@ NTSYSAPI VOID     NTAPI RtlUnwind(PVOID frame, PVOID target_ip, PEXCEPTION_RECOR
 NTSYSAPI VOID     NTAPI RtlUnwindEx(PVOID frame, PVOID target_ip, PEXCEPTION_RECORD rec, PVOID retval,
                                     PCONTEXT ctx, PUNWIND_HISTORY_TABLE history);
 NTSYSAPI PRUNTIME_FUNCTION NTAPI RtlLookupFunctionEntry(DWORD64 pc, PDWORD64 base, PUNWIND_HISTORY_TABLE history);
+NTSYSAPI BOOLEAN NTAPI RtlAddFunctionTable(PRUNTIME_FUNCTION tab, DWORD n, DWORD64 base);
+NTSYSAPI BOOLEAN NTAPI RtlDeleteFunctionTable(PRUNTIME_FUNCTION tab);
+NTSYSAPI BOOLEAN NTAPI RtlInstallFunctionTableCallback(DWORD64 id, DWORD64 base, DWORD len,
+                                                       PRUNTIME_FUNCTION (NTAPI *cb)(DWORD64, PVOID), PVOID ctx, PCWSTR dll);
+NTSYSAPI NTSTATUS NTAPI RtlAddGrowableFunctionTable(PVOID *h, PRUNTIME_FUNCTION tab, DWORD n, DWORD max, ULONG_PTR base, ULONG_PTR end);
+NTSYSAPI void NTAPI RtlGrowFunctionTable(PVOID h, DWORD n);
+NTSYSAPI void NTAPI RtlDeleteGrowableFunctionTable(PVOID h);
 NTSYSAPI PEXCEPTION_ROUTINE NTAPI RtlVirtualUnwind(ULONG type, DWORD64 base, DWORD64 pc, PRUNTIME_FUNCTION f,
                                                    PCONTEXT ctx, PVOID *handler_data, PDWORD64 frame,
                                                    PKNONVOLATILE_CONTEXT_POINTERS ptrs);

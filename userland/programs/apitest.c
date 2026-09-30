@@ -18,6 +18,20 @@ static FARPROC fn(const char *dll, const char *name)
 
 static void hex(const BYTE *b, int n, char *out) { for (int i = 0; i < n; i++) sprintf(out + 2 * i, "%02x", b[i]); }
 
+/* fibers: two switches back and forth, with data on each stack */
+typedef VOID (WINAPI *fiber_fn)(LPVOID);
+static VOID (WINAPI *g_switch)(LPVOID);
+static LPVOID g_main_fiber;
+static int g_fiber_steps;
+static VOID WINAPI fiber_proc(LPVOID p)
+{
+    volatile double x = 1.5;
+    g_fiber_steps += (int)(INT_PTR)p;
+    g_switch(g_main_fiber);
+    g_fiber_steps += x == 1.5 ? 10 : 1000;
+    g_switch(g_main_fiber);
+}
+
 static volatile LONG g_flag;
 static DWORD WINAPI waker(LPVOID p) { (void)p; Sleep(50); g_flag = 1; WakeByAddressAll((PVOID)&g_flag); return 0; }
 
@@ -202,6 +216,25 @@ int main(int argc, char **argv)
     CHECK("advapi32 forwarder", adv_open && !adv_open(HKEY_CURRENT_USER, "Software\\NovaTest\\Sub", 0, KEY_READ, &rk) && !RegCloseKey(rk));
     CHECK("RegDeleteTree", !RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\NovaTest") &&
                            RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\NovaTest", 0, KEY_READ, &rk) == ERROR_FILE_NOT_FOUND);
+
+    /* ---- fibers ---- */
+    LPVOID (WINAPI *conv)(LPVOID) = (void *)fn("kernel32.dll", "ConvertThreadToFiber");
+    LPVOID (WINAPI *mk)(SIZE_T, fiber_fn, LPVOID) = (void *)fn("kernel32.dll", "CreateFiber");
+    BOOL (WINAPI *isf)(void) = (void *)fn("kernel32.dll", "IsThreadAFiber");
+    VOID (WINAPI *del)(LPVOID) = (void *)fn("kernel32.dll", "DeleteFiber");
+    g_switch = (void *)fn("kernel32.dll", "SwitchToFiber");
+    CHECK("fiber APIs", conv && mk && isf && del && g_switch && !isf());
+    if (conv && mk && isf && del && g_switch) {
+        g_main_fiber = conv((LPVOID)7);
+        LPVOID f = mk(64 * 1024, fiber_proc, (LPVOID)3);
+        volatile int local = 99;
+        g_switch(f);
+        CHECK("SwitchToFiber", g_fiber_steps == 3 && local == 99 && isf());
+        g_switch(f);
+        CHECK("fiber resumes", g_fiber_steps == 13 && local == 99);
+        CHECK("GetFiberData", *(LPVOID *)g_main_fiber == (LPVOID)7);
+        del(f);
+    }
 
     printf("apitest: %d passed, %d failed\n", pass, fail);
     return fail != 0;

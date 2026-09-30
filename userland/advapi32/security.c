@@ -1005,3 +1005,48 @@ WINADVAPI BOOL WINAPI DecryptFileW(LPCWSTR name, DWORD r) { (void)name; (void)r;
 WINADVAPI BOOL WINAPI EncryptFileA(LPCSTR name) { (void)name; SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
 WINADVAPI BOOL WINAPI DecryptFileA(LPCSTR name, DWORD r) { (void)name; (void)r; SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
 WINADVAPI ULONG WINAPI LsaNtStatusToWinError(NTSTATUS s) { return RtlNtStatusToDosError(s); }
+
+/* AddAce: ACEs already built (@list, @n bytes) go at the end of the ACL */
+WINADVAPI BOOL WINAPI AddAce(PACL acl, DWORD rev, DWORD start, LPVOID list, DWORD n)
+{
+    (void)rev; (void)start;
+    DWORD at = acl_used(acl), count = 0;
+    if (at + n > acl->AclSize) { SetLastError(1344 /* ERROR_ALLOTTED_SPACE_EXCEEDED */); return FALSE; }
+    for (DWORD o = 0; o + sizeof(ACE_HEADER) <= n; count++) {
+        WORD sz = ((ACE_HEADER *)((BYTE *)list + o))->AceSize;
+        if (sz < sizeof(ACE_HEADER)) break;
+        o += sz;
+    }
+    memcpy((BYTE *)acl + at, list, n);
+    acl->AceCount = (WORD)(acl->AceCount + count);
+    return TRUE;
+}
+
+static BOOL a_to_w(LPCSTR a, WCHAR *w, int cap)
+{
+    if (!a) return FALSE;
+    return MultiByteToWideChar(CP_ACP, 0, a, -1, w, cap) > 0;
+}
+WINADVAPI BOOL WINAPI GetFileSecurityA(LPCSTR name, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd, DWORD n, LPDWORD need)
+{
+    WCHAR w[MAX_PATH];
+    if (!a_to_w(name, w, MAX_PATH)) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
+    return GetFileSecurityW(w, si, sd, n, need);
+}
+WINADVAPI BOOL WINAPI SetFileSecurityA(LPCSTR name, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd)
+{
+    WCHAR w[MAX_PATH];
+    if (!a_to_w(name, w, MAX_PATH)) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
+    return SetFileSecurityW(w, si, sd);
+}
+WINADVAPI BOOL WINAPI LookupAccountNameA(LPCSTR sys, LPCSTR name, PSID sid, LPDWORD ns, LPSTR dom, LPDWORD nd, PSID_NAME_USE use)
+{
+    (void)sys; (void)name;
+    DWORD len = GetLengthSid((PSID)g_user_sid);
+    if (!sid || *ns < len || !dom || *nd < 7) { *ns = len; *nd = 7; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    memcpy(sid, g_user_sid, len);
+    memcpy(dom, "NOVAOS", 7);
+    *ns = len; *nd = 6;
+    if (use) *use = SidTypeUser;
+    return TRUE;
+}

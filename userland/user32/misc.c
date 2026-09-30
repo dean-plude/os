@@ -810,3 +810,13 @@ USERAPI BOOL GetCursorInfo(PCURSORINFO ci)
     return TRUE;
 }
 USERAPI BOOL SetSystemCursor(HCURSOR c, DWORD id) { (void)c; (void)id; return TRUE; }
+USERAPI BOOL GetUserObjectInformationA(HANDLE h, int index, PVOID p, DWORD n, LPDWORD need)
+{
+    if (index != 2) return GetUserObjectInformationW(h, index, p, n, need);
+    const char *name = h == WINSTA ? "WinSta0" : "Default";          /* UOI_NAME */
+    DWORD bytes = (DWORD)strlen(name) + 1;
+    if (need) *need = bytes;
+    if (n < bytes) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    memcpy(p, name, bytes);
+    return TRUE;
+}

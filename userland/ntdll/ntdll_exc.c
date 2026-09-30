@@ -112,11 +112,94 @@ PVOID NTAPI RtlPcToFileHeader(PVOID pc, PVOID *base)
     return *base;
 }
 
+/* Function tables registered at run time for generated code (JIT
+ * compilers): RtlAddFunctionTable's sorted arrays and
+ * RtlInstallFunctionTableCallback's ranges with a callback */
+typedef PRUNTIME_FUNCTION (NTAPI *FT_CALLBACK)(DWORD64 pc, PVOID ctx);
+typedef struct { PRUNTIME_FUNCTION tab; DWORD n; DWORD64 base, lo, hi; FT_CALLBACK cb; PVOID ctx; DWORD64 id; } DynTable;
+#define MAX_DYN_TABLES 256
+static DynTable g_dyn[MAX_DYN_TABLES];
+static volatile LONG g_dyn_lock;
+static void dyn_lock(void)   { while (__atomic_exchange_n(&g_dyn_lock, 1, __ATOMIC_ACQUIRE)) __builtin_ia32_pause(); }
+static void dyn_unlock(void) { __atomic_store_n(&g_dyn_lock, 0, __ATOMIC_RELEASE); }
+
+static BOOLEAN dyn_add(DynTable t)
+{
+    dyn_lock();
+    for (int i = 0; i < MAX_DYN_TABLES; i++)
+        if (!g_dyn[i].id) { g_dyn[i] = t; dyn_unlock(); return TRUE; }
+    dyn_unlock();
+    return FALSE;
+}
+
+BOOLEAN NTAPI RtlAddFunctionTable(PRUNTIME_FUNCTION tab, DWORD n, DWORD64 base)
+{
+    if (!tab || !n) return FALSE;
+    DynTable t = { tab, n, base, base + tab[0].BeginAddress, base + tab[n - 1].EndAddress, 0, 0, (DWORD64)tab };
+    for (DWORD i = 0; i < n; i++) {                  /* (not necessarily sorted by the caller) */
+        if (base + tab[i].BeginAddress < t.lo) t.lo = base + tab[i].BeginAddress;
+        if (base + tab[i].EndAddress > t.hi) t.hi = base + tab[i].EndAddress;
+    }
+    return dyn_add(t);
+}
+
+/* @id: the table's identifier with its low 2 bits set (3), as Windows requires */
+BOOLEAN NTAPI RtlInstallFunctionTableCallback(DWORD64 id, DWORD64 base, DWORD len, FT_CALLBACK cb, PVOID ctx, PCWSTR dll)
+{
+    (void)dll;
+    if ((id & 3) != 3 || !cb) return FALSE;
+    DynTable t = { 0, 0, base, base, base + len, cb, ctx, id };
+    return dyn_add(t);
+}
+
+BOOLEAN NTAPI RtlDeleteFunctionTable(PRUNTIME_FUNCTION tab)
+{
+    dyn_lock();
+    for (int i = 0; i < MAX_DYN_TABLES; i++)
+        if (g_dyn[i].id == (DWORD64)tab) { g_dyn[i].id = 0; dyn_unlock(); return TRUE; }
+    dyn_unlock();
+    return FALSE;
+}
+
+/* NTSTATUS RtlAddGrowableFunctionTable(PVOID *handle, PRUNTIME_FUNCTION, DWORD count, DWORD max, ULONG_PTR base, ULONG_PTR end) */
+NTSTATUS NTAPI RtlAddGrowableFunctionTable(PVOID *h, PRUNTIME_FUNCTION tab, DWORD n, DWORD max, ULONG_PTR base, ULONG_PTR end)
+{
+    (void)max;
+    DynTable t = { tab, n, base, base, end, 0, 0, (DWORD64)tab };
+    if (!dyn_add(t)) return 0xC0000017;
+    *h = tab;
+    return 0;
+}
+void NTAPI RtlGrowFunctionTable(PVOID h, DWORD n)
+{
+    dyn_lock();
+    for (int i = 0; i < MAX_DYN_TABLES; i++) if (g_dyn[i].id == (DWORD64)h) g_dyn[i].n = n;
+    dyn_unlock();
+}
+void NTAPI RtlDeleteGrowableFunctionTable(PVOID h) { RtlDeleteFunctionTable(h); }
+
+static PRUNTIME_FUNCTION dyn_lookup(DWORD64 pc, PDWORD64 base_out)
+{
+    DynTable t;
+    int found = 0;
+    dyn_lock();
+    for (int i = 0; i < MAX_DYN_TABLES && !found; i++)
+        if (g_dyn[i].id && pc >= g_dyn[i].lo && pc < g_dyn[i].hi) { t = g_dyn[i]; found = 1; }
+    dyn_unlock();
+    if (!found) return 0;
+    if (base_out) *base_out = t.base;
+    if (t.cb) return t.cb(pc, t.ctx);
+    DWORD rva = (DWORD)(pc - t.base);
+    for (DWORD i = 0; i < t.n; i++)
+        if (rva >= t.tab[i].BeginAddress && rva < t.tab[i].EndAddress) return &t.tab[i];
+    return 0;
+}
+
 PRUNTIME_FUNCTION NTAPI RtlLookupFunctionEntry(DWORD64 pc, PDWORD64 base_out, PUNWIND_HISTORY_TABLE hist)
 {
     (void)hist;
     PLDR_DATA_TABLE_ENTRY e = LdrNovaFindEntry((PVOID)pc);
-    if (!e) return 0;
+    if (!e) return dyn_lookup(pc, base_out);
     BYTE *base = e->DllBase;
     if (base_out) *base_out = (DWORD64)base;
     IMAGE_NT_HEADERS *nt = nt_of(base);

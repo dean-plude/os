@@ -1135,6 +1135,9 @@ __asm__(".section .drectve,\"yn\"\n\t"
         ".ascii \" /EXPORT:RtlRestoreContext=ntdll.RtlRestoreContext\"\n\t"
         ".ascii \" /EXPORT:RtlCaptureStackBackTrace=ntdll.RtlCaptureStackBackTrace\"\n\t"
         ".ascii \" /EXPORT:RtlRaiseException=ntdll.RtlRaiseException\"\n\t"
+        ".ascii \" /EXPORT:RtlAddFunctionTable=ntdll.RtlAddFunctionTable\"\n\t"
+        ".ascii \" /EXPORT:RtlDeleteFunctionTable=ntdll.RtlDeleteFunctionTable\"\n\t"
+        ".ascii \" /EXPORT:RtlInstallFunctionTableCallback=ntdll.RtlInstallFunctionTableCallback\"\n\t"
         ".text\n");
 
 /* -----------------------------------------------------------------------

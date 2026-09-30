@@ -1715,3 +1715,94 @@ K32 HRESULT WINAPI GetThreadDescription(HANDLE t, PWSTR *d)
     return *d ? S_OK : E_OUTOFMEMORY;
 }
 K32 DWORD WINAPI DiscardVirtualMemory(PVOID a, SIZE_T n) { (void)a; (void)n; return ERROR_SUCCESS; }
+
+/* -----------------------------------------------------------------------
+ * For the Java runtime (HotSpot) and friends
+ * ----------------------------------------------------------------------- */
+K32 LPVOID WINAPI VirtualAllocExNuma(HANDLE p, LPVOID addr, SIZE_T size, DWORD type, DWORD prot, DWORD node)
+{
+    (void)node;                                     /* one NUMA node */
+    return VirtualAllocEx(p, addr, size, type, prot);
+}
+/* Physical-page (AWE) allocation needs SeLockMemoryPrivilege: not held */
+K32 BOOL WINAPI AllocateUserPhysicalPages(HANDLE p, PULONG_PTR n, PULONG_PTR pfns)
+{ (void)p; (void)n; (void)pfns; SetLastError(ERROR_PRIVILEGE_NOT_HELD); return FALSE; }
+K32 BOOL WINAPI AllocateUserPhysicalPagesNuma(HANDLE p, PULONG_PTR n, PULONG_PTR pfns, DWORD node)
+{ (void)node; return AllocateUserPhysicalPages(p, n, pfns); }
+K32 BOOL WINAPI FreeUserPhysicalPages(HANDLE p, PULONG_PTR n, PULONG_PTR pfns)
+{ (void)p; (void)n; (void)pfns; SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+K32 BOOL WINAPI MapUserPhysicalPages(PVOID va, ULONG_PTR n, PULONG_PTR pfns)
+{ (void)va; (void)n; (void)pfns; SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+
+/* RaiseFailFastException: the process ends at once with the code */
+K32 VOID WINAPI RaiseFailFastException(PEXCEPTION_RECORD rec, PCONTEXT ctx, DWORD flags)
+{
+    (void)ctx; (void)flags;
+    TerminateProcess(GetCurrentProcess(), rec ? rec->ExceptionCode : 0xC0000602 /* STATUS_FAIL_FAST_EXCEPTION */);
+}
+
+/* Geography: the United States (GEOID 244) */
+K32 LONG WINAPI GetUserGeoID(DWORD cls) { (void)cls; return 244; }
+K32 int WINAPI GetUserDefaultGeoName(LPWSTR buf, int n)
+{
+    if (!buf || n < 3) return 3;
+    buf[0] = 'U'; buf[1] = 'S'; buf[2] = 0;
+    return 3;
+}
+static const char *geo_text(LONG id, DWORD type)
+{
+    if (id != 244) return 0;
+    switch (type) {
+    case 4: return "US";                             /* GEO_ISO2 */
+    case 5: return "USA";                            /* GEO_ISO3 */
+    case 6: return "1";                              /* GEO_RFC1766... (nation) */
+    case 7: return "840";                            /* GEO_LCID / ISO_UN_NUMBER */
+    case 8: return "840";
+    case 9: return "United States";                  /* GEO_FRIENDLYNAME */
+    case 10: return "United States";                 /* GEO_OFFICIALNAME */
+    default: return 0;
+    }
+}
+K32 int WINAPI GetGeoInfoA(LONG id, DWORD type, LPSTR buf, int n, LANGID lang)
+{
+    (void)lang;
+    const char *t = geo_text(id, type);
+    if (!t) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    int need = lstrlenA(t) + 1;
+    if (!n) return need;
+    if (n < need) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+    lstrcpyA(buf, t);
+    return need;
+}
+K32 int WINAPI GetGeoInfoW(LONG id, DWORD type, LPWSTR buf, int n, LANGID lang)
+{
+    (void)lang;
+    const char *t = geo_text(id, type);
+    if (!t) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    int need = lstrlenA(t) + 1;
+    if (!n) return need;
+    if (n < need) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+    for (int i = 0; i < need; i++) buf[i] = (WCHAR)(BYTE)t[i];
+    return need;
+}
+
+/* win.ini: there is none, so every value is the default */
+K32 DWORD WINAPI GetProfileStringA(LPCSTR app, LPCSTR key, LPCSTR def, LPSTR buf, DWORD n)
+{
+    (void)app; (void)key;
+    if (!buf || !n) return 0;
+    lstrcpynA(buf, def ? def : "", (int)n);
+    return (DWORD)lstrlenA(buf);
+}
+K32 DWORD WINAPI GetProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR def, LPWSTR buf, DWORD n)
+{
+    (void)app; (void)key;
+    if (!buf || !n) return 0;
+    lstrcpynW(buf, def ? def : L"", (int)n);
+    return (DWORD)lstrlenW(buf);
+}
+K32 UINT WINAPI GetProfileIntA(LPCSTR app, LPCSTR key, INT def) { (void)app; (void)key; return (UINT)def; }
+K32 UINT WINAPI GetProfileIntW(LPCWSTR app, LPCWSTR key, INT def) { (void)app; (void)key; return (UINT)def; }
+
+/* Every process is in session 1 */
+K32 BOOL WINAPI ProcessIdToSessionId(DWORD pid, DWORD *session) { (void)pid; if (!session) return FALSE; *session = 1; return TRUE; }

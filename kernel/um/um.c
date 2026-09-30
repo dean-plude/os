@@ -695,6 +695,23 @@ void um_wow_path(UmProcess *p, char *path)
     memcpy(s + 9, "SysWOW64", 8);
 }
 
+/* Windows' KnownDLLs (and the Universal C Runtime, which Windows 10 always
+ * takes from the system): the system copy wins over one in the program's
+ * folder, so a program shipping its own ucrtbase.dll runs on NovaOS's. */
+static bool known_dll(const char *name)
+{
+    static const char *const known[] = {
+        "ntdll.dll", "kernel32.dll", "kernelbase.dll", "user32.dll", "gdi32.dll", "advapi32.dll",
+        "msvcrt.dll", "ole32.dll", "oleaut32.dll", "shell32.dll", "shlwapi.dll", "comdlg32.dll",
+        "comctl32.dll", "ws2_32.dll", "ucrtbase.dll", "combase.dll", "rpcrt4.dll", "sechost.dll",
+        "imm32.dll", "psapi.dll", "setupapi.dll", "version.dll", "winmm.dll", "bcrypt.dll",
+        "secur32.dll", "iphlpapi.dll", "mswsock.dll", "winhttp.dll", "crypt32.dll", "powrprof.dll",
+    };
+    for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++)
+        if (!strcmp(name, known[i])) return true;
+    return false;
+}
+
 static RamNode *find_dll(UmProcess *p, const char *name)
 {
     if (strchr(name, '\\') || strchr(name, ':')) {
@@ -705,12 +722,13 @@ static RamNode *find_dll(UmProcess *p, const char *name)
         RamNode *n = RamfsResolve(p->cwd, path[1] == ':' ? path + 2 : path);
         return n && !n->dir ? n : NULL;
     }
-    if (p->exe_dir) {
-        RamNode *n = RamfsFind(p->exe_dir, name);
-        if (n && !n->dir && um_pe_machine(n) == (p->wow ? 0x014C : 0x8664)) return n;
-    }
     RamNode *sys = RamfsResolve(NULL, p->wow ? "\\Windows\\SysWOW64" : "\\Windows\\System32");
     RamNode *n = sys ? RamfsFind(sys, name) : NULL;
+    if (n && !n->dir && known_dll(name)) return n;
+    if (p->exe_dir) {
+        RamNode *a = RamfsFind(p->exe_dir, name);
+        if (a && !a->dir && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
+    }
     return n && !n->dir ? n : NULL;
 }
 

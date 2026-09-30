@@ -215,6 +215,8 @@ WSAAPI_DECL WSAEVENT WSACreateEvent(void);
 typedef struct { long lNetworkEvents; int iErrorCode[FD_MAX_EVENTS]; } WSANETWORKEVENTS, *LPWSANETWORKEVENTS;
 WSAAPI_DECL int WSAEventSelect(SOCKET s, WSAEVENT ev, long events);
 WSAAPI_DECL int WSAEnumNetworkEvents(SOCKET s, WSAEVENT ev, LPWSANETWORKEVENTS out);
+WSAAPI_DECL int WSAAddressToStringA(struct sockaddr *sa, DWORD len, void *info, char *out, DWORD *outlen);
+WSAAPI_DECL int WSAAddressToStringW(struct sockaddr *sa, DWORD len, void *info, WCHAR *out, DWORD *outlen);
 #define NI_NOFQDN      0x01
 #define NI_NUMERICHOST 0x02
 #define NI_NAMEREQD    0x04

@@ -69,3 +69,12 @@ IPHLPAPI DWORD WINAPI GetExtendedUdpTable(PVOID t, PDWORD size, BOOL order, ULON
 { (void)order; (void)af; (void)cls; (void)r; return empty_table(t, size); }
 IPHLPAPI DWORD WINAPI GetBestInterface(DWORD addr, PDWORD index) { (void)addr; (void)index; return ERROR_NO_DATA_; }
 IPHLPAPI DWORD WINAPI NotifyAddrChange(PHANDLE h, LPOVERLAPPED o) { (void)h; (void)o; return ERROR_NOT_SUPPORTED; }
+
+/* Interface names and indexes: the one interface is "eth0", index 1 */
+IPHLPAPI ULONG WINAPI if_nametoindex(const char *name) { return name && !lstrcmpA(name, "eth0") ? 1 : 0; }
+IPHLPAPI char *WINAPI if_indextoname(ULONG index, char *name)
+{
+    if (index != 1 || !name) return 0;
+    lstrcpyA(name, "eth0");
+    return name;
+}

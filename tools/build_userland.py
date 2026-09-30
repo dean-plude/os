@@ -66,6 +66,9 @@ DLLS = [
     ('authz',    ['kernel32', 'ntdll'],           0x7FFBB0000000),
     ('dnsapi',   ['kernel32', 'ntdll'],           0x7FFBC0000000),
     ('pdh',      ['kernel32', 'ntdll'],           0x7FFBD0000000),
+    ('powrprof', ['kernel32', 'ntdll'],           0x7FFBE0000000),
+    ('winhttp',  ['kernel32', 'ntdll'],           0x7FFBF0000000),
+    ('mswsock',  ['ws2_32', 'kernel32', 'ntdll'], 0x7FFC00000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}

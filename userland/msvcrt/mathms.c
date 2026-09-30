@@ -8,7 +8,7 @@
 __declspec(dllexport) int _fltused = 0x9875;   /* floating point in use (the compiler references it) */
 
 double _hypot(double x, double y)     { return hypot(x, y); }
-float  _hypotf(float x, float y)      { return hypotf(x, y); }
+__declspec(dllexport) float _hypotf(float x, float y)      { return hypotf(x, y); }
 double _copysign(double x, double y)  { return copysign(x, y); }
 float  _copysignf(float x, float y)   { return copysignf(x, y); }
 double _chgsign(double x)             { return -x; }
@@ -45,16 +45,27 @@ int _fpclass(double x)
 /* ucrt's classification helpers used by <math.h> inlines */
 typedef union { double d; uint64_t u; } DU;
 typedef union { float f; uint32_t u; } FU;
-short _dclass(double x)   { return (short)fpclassify(x); }
-short _fdclass(float x)   { return (short)fpclassify(x); }
-short _ldclass(long double x) { return (short)fpclassify((double)x); }
-int   _dsign(double x)    { return signbit(x) != 0; }
-int   _fdsign(float x)    { return signbit(x) != 0; }
-int   _ldsign(long double x) { return signbit((double)x) != 0; }
-int   _dtest(double *x)   { return fpclassify(*x); }
-int   _fdtest(float *x)   { return fpclassify(*x); }
-int   _dpcomp(double x, double y) { return isunordered(x, y) ? 0 : x < y ? 1 : x == y ? 2 : 4; }
-int   _fdpcomp(float x, float y)  { return isunordered(x, y) ? 0 : x < y ? 1 : x == y ? 2 : 4; }
+/* Microsoft's FP_ values: INFINITE 1, NAN 2, NORMAL -1, SUBNORMAL -2, ZERO 0 */
+static short ms_class(int c)
+{
+    switch (c) {
+    case FP_INFINITE:  return 1;
+    case FP_NAN:       return 2;
+    case FP_NORMAL:    return -1;
+    case FP_SUBNORMAL: return -2;
+    default:           return 0;
+    }
+}
+__declspec(dllexport) short _dclass(double x)   { return ms_class(fpclassify(x)); }
+__declspec(dllexport) short _fdclass(float x)   { return ms_class(fpclassify(x)); }
+__declspec(dllexport) short _ldclass(long double x) { return ms_class(fpclassify((double)x)); }
+__declspec(dllexport) int _dsign(double x)    { return signbit(x) != 0; }
+__declspec(dllexport) int _fdsign(float x)    { return signbit(x) != 0; }
+__declspec(dllexport) int _ldsign(long double x) { return signbit((double)x) != 0; }
+__declspec(dllexport) int _dtest(double *x)   { return ms_class(fpclassify(*x)); }
+__declspec(dllexport) int _fdtest(float *x)   { return ms_class(fpclassify(*x)); }
+__declspec(dllexport) int _dpcomp(double x, double y) { return isunordered(x, y) ? 0 : x < y ? 1 : x == y ? 2 : 4; }
+__declspec(dllexport) int _fdpcomp(float x, float y)  { return isunordered(x, y) ? 0 : x < y ? 1 : x == y ? 2 : 4; }
 
 /* -----------------------------------------------------------------------
  * <fenv.h>: exceptions and rounding live in MXCSR (SSE) and the x87

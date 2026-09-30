@@ -475,3 +475,37 @@ int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, DWORD ho
     }
     return 0;
 }
+
+/* "a.b.c.d" or "a.b.c.d:port" (IPv4 only) */
+int WSAAddressToStringA(struct sockaddr *sa, DWORD len, void *info, char *out, DWORD *outlen)
+{
+    (void)info;
+    if (!sa || !outlen || len < sizeof(struct sockaddr_in) || sa->sa_family != AF_INET) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    struct sockaddr_in *in = (struct sockaddr_in *)sa;
+    char tmp[32];
+    if (!inet_ntop(AF_INET, &in->sin_addr, tmp, 16)) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    if (in->sin_port) {
+        size_t n = strlen(tmp);
+        unsigned port = ntohs(in->sin_port);
+        char d[8]; int k = 0;
+        do { d[k++] = (char)('0' + port % 10); port /= 10; } while (port);
+        tmp[n++] = ':';
+        while (k) tmp[n++] = d[--k];
+        tmp[n] = 0;
+    }
+    DWORD need = (DWORD)strlen(tmp) + 1;
+    if (!out || *outlen < need) { *outlen = need; set_err(WSAEFAULT); return SOCKET_ERROR; }
+    memcpy(out, tmp, need);
+    *outlen = need;
+    return 0;
+}
+int WSAAddressToStringW(struct sockaddr *sa, DWORD len, void *info, WCHAR *out, DWORD *outlen)
+{
+    char tmp[32];
+    DWORD n = sizeof(tmp);
+    if (!outlen || WSAAddressToStringA(sa, len, info, tmp, &n)) return SOCKET_ERROR;
+    if (!out || *outlen < n) { *outlen = n; set_err(WSAEFAULT); return SOCKET_ERROR; }
+    for (DWORD i = 0; i < n; i++) out[i] = (WCHAR)tmp[i];
+    *outlen = n;
+    return 0;
+}

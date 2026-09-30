@@ -141,32 +141,79 @@ static void register_tls(Module *m)
     if (tls->AddressOfIndex) *(ULONG *)tls->AddressOfIndex = (ULONG)m->tls_slot;   /* _tls_index */
 }
 
-/* Allocate this thread's TLS blocks and the pointer array (TEB[0x58]). */
-static int setup_thread_tls(void)
+/* Each thread's TLS pointer array (TEB[0x58]) is preceded by its length,
+ * so a DLL loaded later (LoadLibrary) grows every live thread's array with
+ * a fresh block for its slot, keeping the blocks already there — as
+ * Windows does.  The threads with arrays are listed for that. */
+#define MAX_TLS_THREADS 2048
+static BYTE *g_tls_threads[MAX_TLS_THREADS];
+
+static void *tls_template_block(int slot)
 {
-    if (!g_ntls) return 1;
-    void **arr = RtlAllocateHeap(RtlGetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)g_ntls * sizeof(void *));
-    if (!arr) return 0;
     for (int i = 0; i < g_nmod; i++) {
         Module *m = &g_mod[i];
-        if (m->tls_slot < 0) continue;
+        if (m->tls_slot != slot) continue;
         SIZE_T sz = m->tls_rawsize + m->tls_zerofill;
         BYTE *blk = RtlAllocateHeap(RtlGetProcessHeap(), HEAP_ZERO_MEMORY, sz ? sz : 1);
-        if (!blk) return 0;
-        if (m->tls_rawsize) memcpy(blk, m->tls_raw, m->tls_rawsize);
-        arr[m->tls_slot] = blk;
+        if (blk && m->tls_rawsize) memcpy(blk, m->tls_raw, m->tls_rawsize);
+        return blk;
     }
-    *(void **)(teb() + TEB_TLS_POINTER) = arr;
+    return 0;
+}
+
+/* Give the thread of @t (its TEB) a block for every slot (loader lock held) */
+static int grow_tls(BYTE *t)
+{
+    void **old = *(void ***)(t + TEB_TLS_POINTER);
+    ULONG_PTR had = old ? (ULONG_PTR)old[-1] : 0;
+    if ((int)had >= g_ntls) return 1;
+    void **arr = RtlAllocateHeap(RtlGetProcessHeap(), HEAP_ZERO_MEMORY, ((SIZE_T)g_ntls + 1) * sizeof(void *));
+    if (!arr) return 0;
+    arr++;
+    for (ULONG_PTR i = 0; i < had; i++) arr[i] = old[i];
+    for (int i = (int)had; i < g_ntls; i++) arr[i] = tls_template_block(i);
+    arr[-1] = (void *)(ULONG_PTR)g_ntls;
+    __atomic_store_n((void ***)(t + TEB_TLS_POINTER), arr, __ATOMIC_RELEASE);
+    /* (the old array is left: the thread may be reading it right now) */
     return 1;
+}
+
+/* This thread's TLS: listed, and a block for every module's slot */
+static int setup_thread_tls(void)
+{
+    llock();
+    BYTE *me = teb();
+    int listed = 0, fr = -1;
+    for (int i = 0; i < MAX_TLS_THREADS; i++) {
+        if (g_tls_threads[i] == me) { listed = 1; break; }
+        if (!g_tls_threads[i] && fr < 0) fr = i;
+    }
+    if (!listed && fr >= 0) g_tls_threads[fr] = me;
+    int ok = g_ntls ? grow_tls(me) : 1;
+    lunlock();
+    return ok;
+}
+
+/* After a LoadLibrary: every listed thread gets the new modules' blocks */
+static void grow_all_tls(void)
+{
+    for (int i = 0; i < MAX_TLS_THREADS; i++)
+        if (g_tls_threads[i]) grow_tls(g_tls_threads[i]);
 }
 
 static void free_thread_tls(void)
 {
+    llock();
+    BYTE *me = teb();
+    for (int i = 0; i < MAX_TLS_THREADS; i++) if (g_tls_threads[i] == me) g_tls_threads[i] = 0;
     void **arr = tls_pointer();
-    if (!arr) return;
-    for (int i = 0; i < g_ntls; i++) if (arr[i]) RtlFreeHeap(RtlGetProcessHeap(), 0, arr[i]);
-    RtlFreeHeap(RtlGetProcessHeap(), 0, arr);
-    *(void **)(teb() + TEB_TLS_POINTER) = 0;
+    if (arr) {
+        ULONG_PTR n = (ULONG_PTR)arr[-1];
+        for (ULONG_PTR i = 0; i < n; i++) if (arr[i]) RtlFreeHeap(RtlGetProcessHeap(), 0, arr[i]);
+        *(void **)(me + TEB_TLS_POINTER) = 0;
+        RtlFreeHeap(RtlGetProcessHeap(), 0, arr - 1);
+    }
+    lunlock();
 }
 
 /* -----------------------------------------------------------------------
@@ -283,7 +330,8 @@ NTSTATUS NTAPI LdrNovaLoadDllA(const char *name, PVOID *base)
     NTSTATUS s = NtNovaLoadDll(name, (ULONG)strlen(name), &b);
     if (NT_SUCCESS(s)) {
         int first = absorb_new_modules();
-        setup_thread_tls();                          /* refresh this thread's TLS array */
+        setup_thread_tls();
+        grow_all_tls();                              /* the new modules' TLS, in every thread */
         if (!attach_new_modules(first)) s = STATUS_DLL_INIT_FAILED;
         if (base) *base = b;
     }
