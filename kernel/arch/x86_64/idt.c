@@ -207,7 +207,8 @@ static void handle_page_fault(InterruptFrame *f)
         cpu_halt_forever();
     }
 
-    /* TODO: deliver EXCEPTION_ACCESS_VIOLATION to a user SEH handler */
+    /* (a Windows program's faults never get here: dispatch hands them to
+     * its SEH handlers, UmUserException) */
     terminate_faulting_user_thread(STATUS_ACCESS_VIOLATION, f, cr2);
 }
 

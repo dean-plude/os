@@ -5,15 +5,18 @@
  * as that user, with full access to everything.  The functions here keep
  * programs that ask questions working with truthful answers for that
  * model: tokens name the user (S-1-5-21-…-1001, member of Users and
- * Administrators, not elevated), access checks grant what is asked,
- * objects are owned by the user and have no DACL (full access), and
- * impersonation changes nothing.
+ * Administrators, not elevated), access checks evaluate the DACL they are
+ * given against that token (ntdll's NtAccessCheck), objects are owned by
+ * the user and have no DACL (full access), and impersonation changes
+ * nothing.
  */
 
 #define NOVA_BUILD_ADVAPI32
 #include <winternl.h>
 #include "advapi32.h"
 
+NTSYSAPI NTSTATUS NTAPI NtAccessCheck(PSECURITY_DESCRIPTOR sd, HANDLE token, ACCESS_MASK want, PGENERIC_MAPPING map,
+                                      PPRIVILEGE_SET privs, PULONG privs_len, PACCESS_MASK granted, NTSTATUS *status);
 void *memcpy(void *d, const void *s, size_t n);
 void *memset(void *d, int c, size_t n);
 
@@ -733,13 +736,11 @@ WINADVAPI VOID WINAPI MapGenericMask(PDWORD mask, PGENERIC_MAPPING m)
 WINADVAPI BOOL WINAPI AccessCheck(PSECURITY_DESCRIPTOR sd, HANDLE token, DWORD want, PGENERIC_MAPPING m, PPRIVILEGE_SET ps,
                                   LPDWORD psn, LPDWORD granted, LPBOOL status)
 {
-    (void)sd; (void)token;
-    if (ps && psn && *psn >= 8) ps->PrivilegeCount = 0;
-    DWORD mask = want;
-    if (m) MapGenericMask(&mask, m);
-    if (mask & 0x02000000 /* MAXIMUM_ALLOWED */) mask = m ? m->GenericAll : 0x1F01FF;
-    *granted = mask;
-    *status = TRUE;
+    NTSTATUS result;
+    NTSTATUS s = NtAccessCheck(sd, token, want, m, ps, psn, granted, &result);   /* evaluates the DACL */
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    *status = NT_SUCCESS(result);
+    if (!*status) SetLastError(ERROR_ACCESS_DENIED);
     return TRUE;
 }
 

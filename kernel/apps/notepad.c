@@ -361,6 +361,9 @@ void NotepadOpen(RamNode *file)
     if (file && !file->dir) {
         n->file = file;
         RamfsRef(file);
+        if (!RamfsLoad(file)) {            /* a file on another drive that could not be read */
+            RamfsUnref(file); kfree(n->text); kfree(n); return;
+        }
         n->len = file->size;
         if (n->len > NP_MAX) {             /* show the start, never truncate */
             n->len = NP_MAX;

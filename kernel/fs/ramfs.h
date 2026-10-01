@@ -7,6 +7,12 @@
  * Paths use '\' (or '/'), are case-insensitive, and may be absolute
  * ("C:\Documents\a.txt", "\Documents") or relative to a directory, with
  * "." and ".." components.
+ *
+ * Other drives (D:, E:, ...) are read-only volumes on disk mounted into
+ * the same tree of nodes: a drive's root has no parent, a directory's
+ * entries are read from the volume the first time something looks in it,
+ * and a file's contents when it is opened (RamfsLoad), then dropped again
+ * when nothing holds the file any more.  Nothing on them can be changed.
  */
 
 #pragma once
@@ -31,7 +37,31 @@ typedef struct RamNode {
     UINT8           pflags;       /* RAMFS_F_*: origin and unsaved changes */
     UINT32          attrs;        /* FILE_ATTRIBUTE_READONLY/HIDDEN/SYSTEM (Windows programs) */
     UINT64          ctime, mtime; /* created, last written: 100 ns units since 1601 (UTC) */
+    UINT8           xflags;       /* RAMFS_X_*: on a mounted volume */
+    char            drive;        /* a drive's root: its letter ('C' for the root of C:) */
+    UINT64          xref;         /* on a mounted volume: the node's number there */
 } RamNode;
+
+#define RAMFS_X_EXTERN   0x01     /* on a mounted (read-only) volume */
+#define RAMFS_X_LISTED   0x02     /* directory: its entries were read */
+#define RAMFS_X_LOADED   0x04     /* file: @data holds its contents */
+
+/* A mounted volume, as its file system reads it */
+typedef struct {
+    char   name[RAMFS_NAME_MAX];
+    bool   dir;
+    UINT64 ref;                   /* the entry's number on the volume */
+    UINT64 size, ctime, mtime;
+    UINT32 attrs;
+} RamfsExtEntry;
+
+typedef struct {
+    /* Calls @add for each entry of directory @ref; false on a read error */
+    bool (*list)(void *vol, UINT64 ref, bool (*add)(const RamfsExtEntry *e, void *ctx), void *ctx);
+    /* The real size of file @ref, and reading @len bytes of it from @off */
+    bool (*size)(void *vol, UINT64 ref, UINT64 *size);
+    bool (*read)(void *vol, UINT64 ref, UINT64 off, void *buf, UINT64 len);
+} RamfsSource;
 
 /* Change tracking, for saving drive C: to disk (fs/persist.c).  Nodes
  * remember where they came from and what changed since the last save;
@@ -60,6 +90,26 @@ void     RamfsSetChangeHook(void (*fn)(RamNode *dir));
 
 void     RamfsInit(void);
 RamNode *RamfsRoot(void);
+
+/* Mount the volume @vol (@total_bytes large), read by @src, as drive
+ * @letter (D-Z); its root directory is @root_ref.  NULL if the letter is taken or memory is out. */
+RamNode *RamfsMountDrive(char letter, const RamfsSource *src, void *vol, UINT64 root_ref, const char *label,
+                         UINT64 total_bytes);
+/* The root of drive @letter, or NULL */
+RamNode *RamfsDriveRoot(char letter);
+/* The drives there are: bit 0 for A:, bit 2 for C:, ... */
+UINT32   RamfsDriveMask(void);
+/* The volume label and file system name of the drive @n is on ("NTFS"),
+ * its size in bytes; false for drive C: */
+bool     RamfsDriveInfo(const RamNode *n, const char **label, const char **fs, UINT64 *total);
+/* The letter of the drive @n is on ('C', 'D', ...) */
+char     RamfsDriveLetter(const RamNode *n);
+/* Nodes on a mounted volume can't be changed */
+bool     RamfsReadOnly(const RamNode *n);
+/* Read what a node on a mounted volume needs from the disk: a directory's
+ * entries, a file's contents.  True at once for other nodes.  False on a
+ * read error, or a file too large to hold (RAMFS_FILE_MAX). */
+bool     RamfsLoad(RamNode *n);
 
 /* Resolve a path relative to `cwd` (NULL = root).  NULL if not found. */
 RamNode *RamfsResolve(RamNode *cwd, const char *path);
@@ -94,7 +144,8 @@ bool     RamfsRename(RamNode *node, RamNode *dir, const char *name, bool replace
 void     RamfsRef(RamNode *node);
 void     RamfsUnref(RamNode *node);
 
-/* Hold a file and its contents still: while pinned, @data stays where it
+/* Hold a file and its contents still (loading them, see RamfsLoad: @data
+ * is NULL if that fails): while pinned, @data stays where it
  * is and unchanged (writes and resizes fail, as Windows refuses writes to
  * a file mapped as an image), so it can be read without the lock that
  * guards the file system (the program loader does).  Pinning also refs. */

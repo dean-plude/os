@@ -38,6 +38,7 @@
  */
 
 #include "../fs/persist.h"
+#include "../fs/drives.h"
 #include "../include/types.h"
 #include "../../include/boot_protocol.h"
 #include "../hal/serial.h"
@@ -363,6 +364,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     /* Devices and networking: PCI scan, e1000 NIC, lwIP + DHCP */
     PciInitialize();
     PersistInit();                        /* SATA disks; the volume that keeps drive C: */
+    DrivesInit();                         /* their NTFS volumes: drives D:, E:, ... */
     if (!NetInitialize())
         kprintf("[NET] No network (no supported adapter)\n");
 

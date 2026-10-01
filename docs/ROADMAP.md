@@ -109,6 +109,7 @@ Everything below branches from this. Decide early.
 ## Phase 11 — Persistence: storage + filesystem
 - AHCI (SATA) and/or NVMe block driver; GPT/partition parsing.
 - FAT32 read/**write**; then **NTFS read** (most Windows content is on NTFS).
+  *NTFS read: done — NTFS volumes mount read-only as drives D:, E:, ...*
 - Cache manager (`Cc`); registry hives persisted to disk.
 
 **Exit:** files and registry survive reboot.

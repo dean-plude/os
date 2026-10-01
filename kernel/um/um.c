@@ -729,12 +729,12 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
         strncpy(path, name, sizeof(path) - 5);
         path[sizeof(path) - 5] = '\0';
         um_wow_path(p, path);
-        RamNode *n = RamfsResolve(p->cwd, path[1] == ':' ? path + 2 : path);
+        RamNode *n = RamfsResolve(p->cwd, path);
         if (!n) {
             const char *leaf = strrchr(path, '\\');
             if (!strchr(leaf ? leaf : path, '.')) {
                 strcat(path, ".dll");
-                n = RamfsResolve(p->cwd, path[1] == ':' ? path + 2 : path);
+                n = RamfsResolve(p->cwd, path);
             }
         }
         return n && !n->dir ? n : NULL;
@@ -744,11 +744,11 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
     if (n && !n->dir && known_dll(name)) return n;
     if (p->exe_dir) {
         RamNode *a = RamfsFind(p->exe_dir, name);
-        if (a && !a->dir && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
+        if (a && !a->dir && RamfsLoad(a) && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
     }
     if (dep_dir && dep_dir != p->exe_dir) {
         RamNode *a = RamfsFind(dep_dir, name);
-        if (a && !a->dir && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
+        if (a && !a->dir && RamfsLoad(a) && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
     }
     return n && !n->dir ? n : NULL;
 }
@@ -852,10 +852,11 @@ static RamNode *loader_file(Loader *L, RamNode *file, const char *name, char *pa
     DesktopLock();
     if (!file) file = find_dll(p, name, L->dep_dir);
     if (file && L->npins < UM_MAX_MODULES) {
-        RamfsPin(file);
+        RamfsPin(file);                     /* (reads it in, on a mounted volume) */
         L->pins[L->npins++] = file;
         RamfsPath(file, path, cap);
         *dir = file->parent;
+        if (!file->data && file->size) file = NULL;  /* it could not be read */
     } else file = NULL;
     DesktopUnlock();
     if (L->bkl) bkl_drop();

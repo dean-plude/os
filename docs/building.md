@@ -129,13 +129,32 @@ mcopy -i build/nova-data.img@@1M rg.exe ::/NOVA/C/Tools/
 (`@@1M`: the volume starts 1 MiB in, after the partition table.)  The ISO
 boots from a CD, which is read-only: attach a disk to keep files.
 
+### Other drives (NTFS)
+
+Every NTFS volume on an attached disk (a partition in an MBR or GPT, or a
+whole disk) becomes a drive of its own, D:, E:, ... in the order found.
+They are read-only: programs, the Terminal and File Explorer can list,
+open, copy from and run what is there, and writes fail with "the media is
+write protected".  Compressed and sparse files are read; encrypted files
+are not.  A file is read into memory when it is opened, so the largest one
+that opens is 256 MiB.  For a test disk (needs `ntfs-3g`):
+
+```bash
+scripts/make-ntfs-disk.sh build/nova-ntfs.img build
+qemu-system-x86_64 ... -drive format=raw,file=build/nova-ntfs.img
+```
+
+then run `drivetest` in the Terminal.
+
 ### Tests
 
 The self-test programs print "N passed, 0 failed": `crttest`, `filetest`,
 `sectest`, `threads`, `dlltest`, `posixtest`, `apitest` (kernel32, advapi32,
 bcrypt, shell32, shlwapi, psapi, user32/gdi32, the registry), `comtest`
-(ole32/oleaut32), `cppeh` (C++ exceptions).  `disktest write`, a restart,
-then `disktest verify` checks that drive C: survives a reboot.
+(ole32/oleaut32), `cppeh` (C++ exceptions), `acltest` (access checks
+against DACLs), `drivetest` (drive D:, with the disk from
+`scripts/make-ntfs-disk.sh`).  `disktest write`, a restart, then
+`disktest verify` checks that drive C: survives a reboot.
 
 ---
 
