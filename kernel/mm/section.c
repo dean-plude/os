@@ -44,6 +44,9 @@ static void section_delete(void *obj)
 static OBJECT_TYPE mm_section_type_storage = {
     .Name            = "Section",
     .DefaultBodySize = sizeof(SECTION_OBJECT),
+    .GenericRead     = 0x00020005,  /* READ_CONTROL | SECTION_QUERY | SECTION_MAP_READ */
+    .GenericWrite    = 0x00020002,  /* READ_CONTROL | SECTION_MAP_WRITE */
+    .GenericExecute  = 0x00020008,  /* READ_CONTROL | SECTION_MAP_EXECUTE */
     .GenericAll      = SECTION_ALL_ACCESS,
     .Operations      = { .Delete = section_delete },
 };

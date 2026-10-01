@@ -60,12 +60,37 @@ static void ps_list_unlock(void) {
     __atomic_fetch_add(&ps_proc_list_owner, 1, __ATOMIC_RELEASE);
 }
 
+/* Doubly-linked lists hold the addresses of the link fields themselves
+ * (like LIST_ENTRY): an empty list's head points at itself. */
+typedef struct _PS_LINK { struct _PS_LINK *Flink, *Blink; } PS_LINK;
+
+static void ps_link_tail(void *head, void *entry)
+{
+    PS_LINK *h = head, *e = entry;
+    e->Flink = h;
+    e->Blink = h->Blink;
+    h->Blink->Flink = e;
+    h->Blink = e;
+}
+
+static void ps_unlink(void *entry)
+{
+    PS_LINK *e = entry;
+    if (!e->Flink) return;                        /* never linked */
+    e->Blink->Flink = e->Flink;
+    e->Flink->Blink = e->Blink;
+    e->Flink = e->Blink = NULL;
+}
+
 /* -----------------------------------------------------------------------
  * Object type callbacks
  * ----------------------------------------------------------------------- */
 static void process_delete(void *obj)
 {
     PEPROCESS p = (PEPROCESS)obj;
+    ps_list_lock();
+    ps_unlink(&p->ActiveProcessLinks);
+    ps_list_unlock();
     if (p->ObjectTable) {
         ObDestroyHandleTable(p->ObjectTable);
         p->ObjectTable = NULL;
@@ -77,6 +102,10 @@ static void process_delete(void *obj)
 static void thread_delete(void *obj)
 {
     PETHREAD t = (PETHREAD)obj;
+    ps_list_lock();
+    ps_unlink(&t->Tcb.ThreadListEntry);
+    if (t->Process) t->Process->Pcb.ThreadCount--;
+    ps_list_unlock();
     kprintf("[PS] Thread TID=%lu deleted\n", t->UniqueThread);
 }
 
@@ -125,20 +154,7 @@ static UINT64 alloc_tid(void)
 static void ps_add_process(PEPROCESS p)
 {
     ps_list_lock();
-    void *head = &PsActiveProcessHead;
-    void *tail = PsActiveProcessHead.Blink;
-    if (!tail) {
-        PsActiveProcessHead.Flink = p;
-        PsActiveProcessHead.Blink = p;
-        p->ActiveProcessLinks.Flink = head;
-        p->ActiveProcessLinks.Blink = head;
-    } else {
-        PEPROCESS prev = (PEPROCESS)((char *)tail - __builtin_offsetof(EPROCESS, ActiveProcessLinks));
-        prev->ActiveProcessLinks.Flink = p;
-        p->ActiveProcessLinks.Blink = tail;
-        p->ActiveProcessLinks.Flink = head;
-        PsActiveProcessHead.Blink = p;
-    }
+    ps_link_tail(&PsActiveProcessHead, &p->ActiveProcessLinks);
     ps_list_unlock();
 }
 
@@ -165,6 +181,8 @@ NTSTATUS PsCreateSystemProcess(
     p->ExitStatus = (NTSTATUS)0x103;  /* STATUS_PENDING */
     p->HasExited  = false;
     p->Token      = Token;
+    p->Pcb.ThreadListHead.Flink = &p->Pcb.ThreadListHead;
+    p->Pcb.ThreadListHead.Blink = &p->Pcb.ThreadListHead;
 
     /* Create handle table */
     s = ObCreateHandleTable(&p->ObjectTable);
@@ -229,6 +247,11 @@ NTSTATUS PsCreateSystemThread(
     et->Cid.UniqueProcess    = proc->UniqueProcessId;
     et->Cid.UniqueThread     = et->UniqueThread;
     et->ExitStatus           = (NTSTATUS)0x103;  /* STATUS_PENDING */
+
+    ps_list_lock();
+    ps_link_tail(&proc->Pcb.ThreadListHead, &et->Tcb.ThreadListEntry);
+    proc->Pcb.ThreadCount++;
+    ps_list_unlock();
 
     /* The scheduler Thread object is at offset 0 within KTHREAD within ETHREAD.
      * We initialize it directly (bypassing sched_create_thread which allocates
@@ -322,7 +345,11 @@ NTSTATUS PsTerminateProcess(PEPROCESS Process, NTSTATUS ExitStatus)
 {
     Process->ExitStatus = ExitStatus;
     Process->HasExited  = true;
-    /* TODO Phase 3: terminate all threads in the process */
+    /* No other thread is stopped here: the processes on this list are the
+     * System process and ones whose creation failed before their thread
+     * started (PsCreateUserProcess), and a faulting thread ends itself
+     * (idt.c).  Windows programs are not EPROCESSes: the um layer ends
+     * them, every thread included (UmKill). */
     kprintf("[PS] Process '%s' PID=%lu terminated (status=0x%x)\n",
             Process->ImageFileName, Process->UniqueProcessId, (UINT32)ExitStatus);
     return STATUS_SUCCESS;
@@ -353,9 +380,23 @@ NTSTATUS PsLookupProcessByProcessId(UINT64 Pid, PEPROCESS *ProcessOut)
 
 NTSTATUS PsLookupThreadByThreadId(UINT64 Tid, PETHREAD *ThreadOut)
 {
-    /* Walk the scheduler's thread list to find TID */
-    (void)Tid; (void)ThreadOut;
-    /* TODO: implement a global thread table in Phase 3 */
+    /* Every ETHREAD is on its process's thread list (PsCreateSystemThread) */
+    ps_list_lock();
+    PS_LINK *ph = (PS_LINK *)&PsActiveProcessHead;
+    for (PS_LINK *pl = ph->Flink; pl != ph; pl = pl->Flink) {
+        PEPROCESS p = (PEPROCESS)((char *)pl - __builtin_offsetof(EPROCESS, ActiveProcessLinks));
+        PS_LINK *th = (PS_LINK *)&p->Pcb.ThreadListHead;
+        for (PS_LINK *tl = th->Flink; tl != th; tl = tl->Flink) {
+            PETHREAD t = (PETHREAD)((char *)tl - __builtin_offsetof(ETHREAD, Tcb.ThreadListEntry));
+            if (t->UniqueThread == Tid) {
+                ObReferenceObject(t);
+                *ThreadOut = t;
+                ps_list_unlock();
+                return STATUS_SUCCESS;
+            }
+        }
+    }
+    ps_list_unlock();
     return STATUS_NOT_FOUND;
 }
 
@@ -690,12 +731,18 @@ void PsInitialize(void)
     ps_process_type_storage = (OBJECT_TYPE){
         .Name            = "Process",
         .DefaultBodySize = sizeof(EPROCESS),
+        .GenericRead     = 0x00020410,  /* (Windows 10's mapping) */
+        .GenericWrite    = 0x00020BEA,
+        .GenericExecute  = 0x00121001,
         .GenericAll      = PROCESS_ALL_ACCESS,
         .Operations      = { .Delete = process_delete },
     };
     ps_thread_type_storage = (OBJECT_TYPE){
         .Name            = "Thread",
         .DefaultBodySize = sizeof(ETHREAD),
+        .GenericRead     = 0x00020048,  /* (Windows 10's mapping) */
+        .GenericWrite    = 0x00020437,
+        .GenericExecute  = 0x00121800,
         .GenericAll      = THREAD_ALL_ACCESS,
         .Operations      = { .Delete = thread_delete },
     };
