@@ -1,169 +1,138 @@
-# NovaOS — Roadmap to a Full Windows-Compatible Desktop OS
+# NovaOS — Roadmap to a Windows-Compatible Desktop OS
 
 **Goal:** a from-scratch x86-64 OS that runs **native Windows executables
-(PE32+) without emulation** — i.e. the binaries run directly on the CPU while
-NovaOS provides the NT system-call ABI, the Win32 API surface, the GUI server,
-loader semantics, and drivers they expect.
+without emulation**: the binaries run directly on the CPU while NovaOS
+provides the NT system-call ABI, the Win32 API surface, the GUI server,
+loader semantics, and the drivers they expect.
 
-> "Without emulation" means no CPU emulation (the code is already native x86-64).
-> It does **not** mean "without work": you must reproduce the Windows
-> *environment*. This is the ReactOS problem — a clean-room Windows-compatible
-> OS. Expect a multi-year arc. This document makes each step concrete and
-> independently verifiable so progress is real, not aspirational.
-
----
-
-## Where we are today (Phases 1–7, done)
-
-| Area | Status |
-|------|--------|
-| UEFI boot, PMM/VMM/paging, GDT/IDT/APIC, scheduler | ✅ |
-| NT executive skeleton: Ob, Ps, Se, Cm, Io, syscall dispatch | ✅ |
-| VMA, section objects, PE32+ loader, stub DLLs | ✅ |
-| VFS + InitRD (in-memory only) | ✅ |
-| Per-process page tables, KPCR, PEB/TEB, SWAPGS | ✅ |
-| User-mode SYSCALL thunk pages, kernel-helper syscalls, CSRSS shim | ✅ |
-| GDI software renderer, window manager, **static** desktop shell | ✅ |
-| **Boots from ISO under OVMF and renders the desktop (verified)** | ✅ |
-
-**Since then (Phases 8–9):** an interactive desktop with real apps, HiDPI
-graphics, networking (lwIP, DHCP, DNS), HTTP/1.1 and HTTPS (Mbed TLS), and
-**real PE32+ `.exe` files running in ring 3** with our own `ntdll`,
-`kernel32`, `msvcrt`, `ws2_32`, `user32` and `gdi32`.  Programs get multiple
-threads and the full synchronization set, static TLS, DllMain, structured
-exception handling (`__try`/`__except`/`__finally` with a real x64
-unwinder), Winsock sockets over lwIP, and native Win32 windows in the
-desktop's window manager — launched from the Terminal, with crash isolation
-and full memory reclamation.  **Phase 9.5** put all of it to work: the
-NetSurf web browser, built from source as a Windows program, browses HTTP
-and HTTPS sites (its own fetcher over Winsock + Mbed TLS) with anti-aliased
-TrueType text, on a C runtime that now has a POSIX layer.
-
-**Honest gaps:** the real Microsoft DLLs are not loaded (these are
-clean-room reimplementations — Path A below); there is no modal dialog
-manager or common-controls library yet; no storage driver or persistence
-(drive C: is in memory); and the browser runs without JavaScript.
+> "Without emulation" means no CPU emulation (the code is already native
+> x86-64, or x86 run in compatibility mode).  It does **not** mean "without
+> work": NovaOS has to reproduce the Windows *environment*.  This is the
+> ReactOS problem, a clean-room Windows-compatible OS, and each step below
+> is meant to be concrete and verifiable so progress is real, not
+> aspirational.
 
 ---
 
-## THE pivotal decision: how to get the Win32 API surface
+## Where we are (Phases 1–14, done)
 
-Everything below branches from this. Decide early.
+| Phase | What it delivered | Proof |
+|-------|-------------------|-------|
+| 1–6 | UEFI boot, memory, interrupts, scheduler; the NT executive (Ob, Ps, Se, Cm, Io), syscall dispatch, per-process page tables, PEB/TEB | Boots under OVMF |
+| 7–8 | Software GDI, window manager, Windows 11-style desktop; PS/2 input; built-in apps; e1000 networking, lwIP, HTTP/1.1, HTTPS (Mbed TLS) | Interactive desktop; `curl https://...` |
+| 9 | Real PE32+ programs in ring 3 on NovaOS's own `ntdll`, `kernel32`, `msvcrt`, `ws2_32`, `user32`, `gdi32`: threads, TLS, SEH, `DllMain`, sockets, windows | Self-tests; Win32 sample programs |
+| 9.5 | The NetSurf browser built from source as a Windows program | Browses HTTP and HTTPS sites with JavaScript |
+| 10 | UCRT and C++ exceptions, advapi32, shell32, COM, the registry, AHCI and FAT with drive C: saved to disk | Unmodified ripgrep, fd, jq, fzf |
+| 11 | SMP: every core runs threads, per-core run queues, fine-grained locks | `cpus.exe` ~3.7× on 4 cores |
+| 12 | A real Win32 window system in user32, comctl32, dialogs, menus, drag and drop, kernel sections; the App Store; Windows Installer; installing NovaOS on a disk | Unmodified 7-Zip installs and runs |
+| 13 | WoW64: 32-bit programs in compatibility mode with a SysWOW64 userland; `.lnk` shortcuts | NSIS installers, 7-Zip self-extractors |
+| 14 | Pipes and overlapped I/O, handle inheritance, `cmd.exe`, the shared clipboard, the MSYS2 runtime, JIT support in the loader and unwinder | MinGit (clone/fetch/push), Java 21, .NET 10, Node.js 24, Python 3.14 |
+
+The details of each phase are in [HISTORY.md](HISTORY.md).
+
+**Honest gaps:** the real Microsoft DLLs are not loaded (everything is
+NovaOS's own clean-room code); there is no GPU, 3D or audio support; drive
+C: is FAT, so there are no NTFS volumes, hard links or ACL enforcement on
+files; and most of the App Store's catalog (Qt, GTK and
+multimedia programs) does not run yet.
+
+---
+
+## The pivotal decision: how to get the Win32 API surface
 
 - **Path A — Reimplement (Wine-style).** Write our own `ntdll/kernel32/user32/
-  gdi32/…`. Clean-room, no licensing, total control; but the API surface is
-  vast and real apps break on missing edge cases.
-- **Path B — Binary compat (ReactOS-style).** Match a *specific* Windows build's
-  NT syscall ABI exactly, then load the **real Microsoft user-mode DLLs**.
-  Instant huge coverage; but brittle to version and constrained by licensing on
-  redistributing MS DLLs.
-- **Path C — Hybrid (recommended).** Reimplement clean-room while holding
-  ABI/struct compatibility so real DLLs/drivers *can* be loaded when desired.
-  This is the ReactOS strategy and the most pragmatic.
+  gdi32/…`. Clean-room, no licensing issues, total control; but the API
+  surface is vast and real apps break on missing edge cases.
+- **Path B — Binary compat (ReactOS-style).** Match a *specific* Windows
+  build's NT syscall ABI exactly, then load the **real Microsoft user-mode
+  DLLs**. Instant huge coverage; but brittle to version and constrained by
+  licensing on redistributing Microsoft DLLs.
+- **Path C — Hybrid.** Reimplement clean-room while holding ABI and
+  structure compatibility so real DLLs or drivers *can* be loaded when
+  desired.
 
-> **DECISION: Path C — Hybrid.** We build clean-room components but keep
-> structures (PEB/TEB/LDR) and syscall numbers ABI-faithful to a chosen target
-> build (**Windows 10 1903 x64**, already referenced in the codebase), so real
-> Microsoft DLLs/drivers can be loaded when we choose. ABI-conformance tests
-> (see cross-cutting) guard this invariant.
-
----
-
-## Phase 8 — Interactivity foundation
-*Make the desktop actually react.*
-
-- PS/2 keyboard + mouse drivers (i8042), IRQ1/IRQ12 via the existing APIC/IDT.
-- Input event queue + WM **event loop** (replaces one-shot `DesktopRender`).
-- Hardware/software cursor; hit-testing so Start button, dock icons, and window
-  drag/close respond.
-- Double-buffering (second VRAM mapping) + dirty-rectangle compositor.
-- Real RTC (CMOS) driver → live clock.
-
-**Exit:** click the Start menu, drag a window, move a cursor.
-
-## Phase 9 — Prove native user-mode execution *(make-or-break)*
-*One real, unmodified PE32+ runs in ring-3 and survives.*
-
-- PE loader completeness: TLS directory + callbacks, delay/bound imports,
-  forwarded exports, API-set (`api-ms-win-*`) resolution.
-- Exact `PEB`/`TEB`/`PEB_LDR_DATA`/`LDR_DATA_TABLE_ENTRY` for the target build.
-- Exception/unwind: `.pdata`/`.xdata`, `RtlVirtualUnwind`, `RtlUnwindEx`,
-  `KiUserExceptionDispatcher`; SEH + VEH.
-- User callback/APC dispatch: `KiUserApcDispatcher`, `KiUserCallbackDispatcher`,
-  `NtContinue`.
-- Real `RtlHeap`; correct `NtCreateThreadEx`.
-
-**Exit:** a hand-built Win32 console `.exe` runs to completion via real
-`NtWriteFile`. *Until this works, nothing above the kernel is real.*
-
-## Phase 10 — Win32 GUI subsystem (`win32k`-style server)
-*User apps create real windows.*
-
-- Kernel-side **win32k** owns the Phase 8 WM and exposes it via syscalls.
-- Clean-room `user32`/`gdi32`: `CreateWindowEx`, `GetMessage`/`DispatchMessage`,
-  `WM_PAINT`, device contexts, `BitBlt`, text, basic common controls.
-- Per-thread message queues, window classes, real `HWND` focus/z-order.
-
-**Exit:** a real GUI `.exe` opens a window, paints, and handles input.
-
-## Phase 11 — Persistence: storage + filesystem
-- AHCI (SATA) and/or NVMe block driver; GPT/partition parsing.
-- FAT32 read/**write**; then **NTFS read** (most Windows content is on NTFS).
-- Cache manager (`Cc`); registry hives persisted to disk.
-
-**Exit:** files and registry survive reboot.
-
-## Phase 12 — Loader & DLL ecosystem
-- Grow `kernel32`, `advapi32`, `msvcrt`/UCRT, `shell32`/`comctl32` basics.
-- **Strategic fork applies here** (A/B/C): expand clean-room DLLs, and/or load
-  real DLLs against the ABI-matched syscall table.
-- Activation contexts / SxS manifests (installers need these).
-
-**Exit:** a moderately complex off-the-shelf Win32 app launches.
-
-## Phase 13 — System integrity & services
-- Full synchronization set (events, mutexes, semaphores, cond vars, SRW locks,
-  critical sections, `NtWaitForAlertByThreadId`).
-- Services subsystem; SMSS/CSRSS/winlogon-style boot chain (if pursuing the full
-  Windows boot model).
-- Token/ACL enforcement that real security APIs query.
-
-## Phase 14 — Application-compatibility push
-- Bring up apps in difficulty order: simple Win32 sample → Notepad-class → an
-  installer-based app.
-- App-compat shims; per-app API-hit telemetry drives the backlog.
-
-## Phase 15 — Hardening & platform
-- SMP (per-CPU KPCR, IPIs, spinlock audit).
-- ACPI (full tables, shutdown/reboot, power), HPET/TSC-deadline timers.
-- PnP driver model; USB/HID, NIC, better display modes.
+> **DECISION: Path C — Hybrid.** NovaOS's components are clean-room, but
+> structures (PEB/TEB/LDR, `CONTEXT`, `KUSER_SHARED_DATA`) and syscall
+> numbers follow a chosen target build, **Windows 10 1903 x64**.  In
+> practice every DLL so far is NovaOS's own (Path A in effect), and that has
+> been enough for the programs in the README; the ABI fidelity is what lets
+> unmodified binaries, runtimes and JITs find what they expect.
 
 ---
 
-## Cross-cutting (start immediately, maintain throughout)
+## What comes next
 
-- **Automated boot CI:** the QEMU+OVMF serial-log + framebuffer-screenshot
-  harness used to validate Phase 7 should run on every commit (regression gate).
-- **Reproducible build:** `nasm + clang/lld + lld-link` toolchain is proven;
-  wire an `iso_image`/`run` CMake target around `scripts/create-iso.sh`.
-- **Debugging infra:** GDB stub over QEMU, symbolized kernel backtraces, a
-  KD-style protocol later; per-syscall tracing.
-- **ABI conformance tests:** assert PEB/TEB/struct offsets and syscall numbers
-  against the target build so Path B/C stays viable.
-- **Test corpus:** a growing set of tiny PEs exercising imports, TLS, SEH,
-  threads, and GUI — each a permanent regression test.
+Ordered by what unblocks the most real programs.  Each item ends when a
+named program or test demonstrates it.
 
-## Near-term critical path (next 3 milestones)
+### Graphics, 3D and media
+- **OpenGL**: a working `opengl32.dll` (Mesa's software renderer, or our
+  own), so programs that need 3D draw without a GPU driver.
+- Direct3D (at least enough for programs that probe it and fall back),
+  DXGI.
+- **Audio**: `winmm` wave output and WASAPI over a real sound device
+  (QEMU's Intel HDA), which VLC and Audacity need.
+- Display: GPU-backed or at least faster blits; mode changes.
+- NetSurf: SVG; redrawing pages a script changes after layout.
 
-1. **Phase 8 input + event loop** — turns the mockup into a live desktop.
-2. **Phase 9 single-PE execution** — the existential proof for the whole project.
-3. **Phase 10 first windowed app** — first time a "Windows program" runs on NovaOS.
+### Application coverage
+- Bring the App Store catalog up program by program, starting with the
+  "untested" portable ones (Notepad++, SumatraPDF, PuTTY, WinMerge), then
+  the Qt and GTK applications (KeePassXC, Krita, Inkscape), then Firefox.
+- Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the
+  `IFileDialog` interfaces (today they report "cancelled").
+- Windows Installer: custom actions that run code, the packages' own
+  dialogs (`InstallUISequence`), the `Shortcut` table, services, merge
+  modules; LZX cabinets tested against real packages.
+- COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception tables.
+- .NET globalization through ICU, not only NLS for English and invariant
+  cultures.
+- Keep the App Store's per-app compatibility notes in step with what has
+  been verified.
 
-Until milestone 2 lands, treat every higher-level feature as unproven.
+### Kernel and API compatibility
+- Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
+  with a console of its own, file handles that share their position with
+  the processes they are handed to.
+- Files: hard links, `MoveFileEx` pending renames carried out at boot,
+  `RegNotifyChangeKeyValue` change events.
+- Interactive MSYS2 `sh` sessions (only `sh -c` and scripts are tested).
+- Move files, the registry, process creation and the console off the big
+  kernel lock.
+- Security: enforce tokens and ACLs that the security APIs already model.
+
+### Storage, network and hardware
+- NTFS (read first), NVMe.
+- IPv6, HTTP/2.
+- USB (xHCI) with HID keyboards and mice, for real hardware without PS/2.
+- ACPI beyond the MADT: power management, proper shutdown and reboot on
+  real machines; HPET or TSC-deadline timers.
+- Boot and test on real hardware, not only QEMU.
+
+---
+
+## Cross-cutting (maintain throughout)
+
+- **Automated boot CI** (not done yet): the QEMU + OVMF harness that types
+  commands, clicks and takes screenshots should run on every pull request,
+  with the self-test programs as the regression gate.
+- **Reproducible build:** CMake drives `nasm`, clang/lld and `lld-link`
+  for the kernel, bootloader and Windows userland; `nova.iso` is rebuilt
+  with `scripts/create-iso.sh`.
+- **Debugging:** the GDB stub over QEMU (`run-debug`), the serial log,
+  crash reports naming the module and offset, and the Terminal's `trace
+  NAME` for a program's failing system calls.  Still wanted: symbolized
+  kernel backtraces.
+- **ABI conformance tests:** assert PEB/TEB/structure offsets and syscall
+  numbers against the target build so the hybrid path stays viable.
+- **Test corpus:** every self-test program in `userland/programs/` is a
+  permanent regression test, built for x64 and x86; `tools/pe_imports.py`
+  shows what a new program needs before it is tried.
 
 ## Reality check
 
-This is ReactOS-scale. A single contributor reaches "boots + runs simple apps"
-in this plan; "runs arbitrary commercial Windows software" is a long-horizon,
-many-person effort. The value here is a credible, ordered path where each phase
-produces something demonstrably working.
+This is ReactOS-scale.  NovaOS already runs a meaningful set of real
+command-line programs, runtimes, installers and one large GUI program
+unmodified.  "Runs arbitrary commercial Windows software" remains a
+long-horizon goal; the value of this plan is an ordered path where each
+step produces something demonstrably working.
