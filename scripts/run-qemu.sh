@@ -59,54 +59,6 @@ fi
 # -------------------------------------------------------------------------
 
 QEMU_ARGS=(
-    # Machine configuration
-    -machine q35                    # Modern PCIe chipset (supports UEFI well)
-    -cpu qemu64,+rdtscp             # x86_64 CPU with TSC
-    -m 256M                         # 256 MiB RAM (enough for Phase 1)
-    -smp 1                          # Single CPU (SMP in Phase 6)
-
-    # UEFI firmware
-    -drive "if=pflash,format=raw,readonly=on,file=${OVMF_CODE}"
-)
-
-# Add VARS drive if available (stores UEFI settings across runs)
-if [ -f "$OVMF_VARS" ]; then
-    # Copy VARS to a temporary file so we don't modify the original
-    VARS_COPY="/tmp/nova_ovmf_vars_$$.fd"
-    cp "$OVMF_VARS" "$VARS_COPY"
-    trap "rm -f '$VARS_COPY'" EXIT
-    QEMU_ARGS+=(
-        -drive "if=pflash,format=raw,file=${VARS_COPY}"
-    )
-fi
-
-QEMU_ARGS+=(
-    # Boot disk
-    -drive "format=raw,file=${DISK_IMG}"
-
-    # Display: both a window (VGA) and serial output
-    -vga std
-    -display sdl,grab-on-hover=off 2>/dev/null \
-     || true
-
-    # Serial port → stdio (primary debug channel)
-    # Kernel serial output appears here
-    -serial stdio
-    -serial null                    # COM2 (unused in Phase 1)
-
-    # No sound card (reduces QEMU noise)
-    -soundhw none 2>/dev/null || true
-
-    # No network (Phase 6)
-    -nic none
-
-    # ACPI (needed for APIC + power management)
-    -no-acpi 2>/dev/null \
-     || true
-)
-
-# Remove the broken flags that may not be supported
-QEMU_ARGS=(
     -machine q35
     -cpu qemu64,+rdtscp
     -m 256M
@@ -117,6 +69,20 @@ QEMU_ARGS=(
     -vga std
     -nic none
 )
+
+# Sound: an Intel HD Audio card.  NOVA_AUDIO picks QEMU's audio backend
+# ("pa", "pipewire", "alsa", "none", or "wav,path=out.wav" to record);
+# by default the host's sound server, else a silent card.
+if [ -z "${NOVA_AUDIO:-}" ]; then
+    RUNDIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    if [ -S "$RUNDIR/pulse/native" ] || [ -n "${PULSE_SERVER:-}" ]; then NOVA_AUDIO=pa
+    elif [ -S "$RUNDIR/pipewire-0" ]; then NOVA_AUDIO=pipewire
+    elif [ "$(uname)" = Darwin ]; then NOVA_AUDIO=coreaudio
+    else NOVA_AUDIO=none
+    fi
+fi
+QEMU_ARGS+=( -audiodev "${NOVA_AUDIO%%,*},id=snd0${NOVA_AUDIO#"${NOVA_AUDIO%%,*}"}"
+             -device intel-hda -device hda-output,audiodev=snd0 )
 
 # Data disk: NovaOS keeps drive C: here (it formats an empty disk on first
 # boot).  It sits beside the boot image, so rebuilding NovaOS keeps your files.

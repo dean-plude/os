@@ -1047,4 +1047,20 @@ USERAPI int MessageBoxIndirectA(const void *pa)
 USERAPI int MessageBoxTimeoutW(HWND h, LPCWSTR text, LPCWSTR caption, UINT type, WORD lang, DWORD ms) { (void)ms; return message_box(h, text, caption, type, lang); }
 USERAPI int MessageBoxTimeoutA(HWND h, LPCSTR text, LPCSTR caption, UINT type, WORD lang, DWORD ms) { (void)ms; return MessageBoxExA(h, text, caption, type, lang); }
 
-USERAPI BOOL MessageBeep(UINT type) { (void)type; return TRUE; }
+/* The system sound for @type, through winmm (loaded on first use) */
+USERAPI BOOL MessageBeep(UINT type)
+{
+    static BOOL (WINAPI *ps)(LPCWSTR, HMODULE, DWORD);
+    static BOOL tried;
+    if (type == 0xFFFFFFFF) return Beep(750, 150);              /* "simple beep" */
+    if (!tried) {
+        HMODULE m = LoadLibraryW(L"winmm.dll");
+        ps = m ? (void *)GetProcAddress(m, "PlaySoundW") : 0;
+        tried = TRUE;
+    }
+    if (!ps) return TRUE;
+    const WCHAR *alias = (type & 0xF0) == 0x10 ? L"SystemHand" : (type & 0xF0) == 0x20 ? L"SystemQuestion" :
+                         (type & 0xF0) == 0x30 ? L"SystemExclamation" : (type & 0xF0) == 0x40 ? L"SystemAsterisk" :
+                         L"SystemDefault";
+    return ps(alias, 0, 0x00010000 | 0x0001);                  /* SND_ALIAS | SND_ASYNC */
+}

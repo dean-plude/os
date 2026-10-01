@@ -158,6 +158,7 @@ WINBASEAPI BOOL   WINAPI SetProcessAffinityMask(HANDLE p, DWORD_PTR mask);
 WINBASEAPI BOOL   WINAPI SetProcessPriorityBoost(HANDLE p, BOOL disable);
 WINBASEAPI int    WINAPI GetThreadPriority(HANDLE t);
 WINBASEAPI BOOL   WINAPI SetThreadPriority(HANDLE t, int prio);
+WINBASEAPI BOOL   WINAPI Beep(DWORD freq, DWORD ms);
 WINBASEAPI BOOL   WINAPI SetThreadStackGuarantee(PULONG size);
 WINBASEAPI UINT   WINAPI SetErrorMode(UINT mode);
 WINBASEAPI UINT   WINAPI GetErrorMode(void);

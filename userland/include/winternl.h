@@ -312,6 +312,10 @@ NTSYSAPI LONG_PTR NTAPI NtNovaSockCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *
 NTSYSAPI LONG_PTR NTAPI NtNovaSockSendTo(INT_PTR h, const void *buf, ULONG len, const void *addr);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockRecvFrom(INT_PTR h, void *buf, ULONG len, void *addr);
 NTSYSAPI LONG_PTR NTAPI NtNovaResolve(const char *name, ULONG *ip);
+/* Sound: streams of 48 kHz s16 stereo frames (kernel/um/um_audio.c) */
+NTSYSAPI INT_PTR  NTAPI NtNovaAudioOpen(ULONG frames);
+NTSYSAPI LONG_PTR NTAPI NtNovaAudioWrite(INT_PTR h, const void *frames, ULONG n);
+NTSYSAPI LONG_PTR NTAPI NtNovaAudioCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiCreate(void *info);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiGetMessage(ULONG_PTR hwnd, void *msg, ULONG wait);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiInvalidate(ULONG_PTR hwnd);

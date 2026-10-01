@@ -122,6 +122,8 @@ set(KERNEL_C_SOURCES
     hal/pci.c
     drivers/e1000.c
     drivers/ahci.c
+    drivers/hda.c
+    drivers/audio.c
     fs/block.c
     fs/fat.c
     fs/ntfs.c
@@ -140,6 +142,7 @@ set(KERNEL_C_SOURCES
     um/um_thread.c
     um/um_exception.c
     um/um_socket.c
+    um/um_audio.c
     um/um_pipe.c
     um/um_gui.c
     um/um_registry.c

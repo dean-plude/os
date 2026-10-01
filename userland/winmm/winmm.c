@@ -1,7 +1,8 @@
 /*
  * winmm.dll — multimedia timers, and the audio/joystick/MCI entry points.
- * NovaOS has no sound or game-controller drivers: those report that no
- * devices exist (the answer programs handle), timers work.
+ * Timers work; sound output (waveOut, PlaySound) is in wave.c.  There are
+ * no recording, MIDI or game-controller drivers: those report that no
+ * devices exist (the answer programs handle).
  */
 
 #include <windows.h>
@@ -101,38 +102,17 @@ MMAPI MMRESULT WINAPI timeKillEvent(UINT id)
     return TIMERR_NOERROR;
 }
 
-/* ---- audio: no devices ---- */
-MMAPI BOOL WINAPI PlaySoundW(LPCWSTR s, HMODULE m, DWORD flags) { (void)m; (void)flags; return s == 0; }   /* stopping is fine */
-MMAPI BOOL WINAPI PlaySoundA(LPCSTR s, HMODULE m, DWORD flags)  { (void)m; (void)flags; return s == 0; }
-MMAPI BOOL WINAPI sndPlaySoundW(LPCWSTR s, UINT flags) { (void)flags; return s == 0; }
-MMAPI BOOL WINAPI sndPlaySoundA(LPCSTR s, UINT flags)  { (void)flags; return s == 0; }
-MMAPI UINT WINAPI waveOutGetNumDevs(void) { return 0; }
+/* ---- audio: playback is wave.c; no recording, MIDI or mixer devices ---- */
 MMAPI UINT WINAPI waveInGetNumDevs(void)  { return 0; }
 MMAPI UINT WINAPI midiOutGetNumDevs(void) { return 0; }
 MMAPI UINT WINAPI midiInGetNumDevs(void)  { return 0; }
 MMAPI UINT WINAPI mixerGetNumDevs(void)   { return 0; }
 MMAPI UINT WINAPI auxGetNumDevs(void)     { return 0; }
-MMAPI MMRESULT WINAPI waveOutOpen(HANDLE *h, UINT dev, const void *fmt, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
-{ (void)dev; (void)fmt; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
 MMAPI MMRESULT WINAPI waveInOpen(HANDLE *h, UINT dev, const void *fmt, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
 { (void)dev; (void)fmt; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
 MMAPI MMRESULT WINAPI midiOutOpen(HANDLE *h, UINT dev, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
 { (void)dev; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
-MMAPI MMRESULT WINAPI waveOutGetDevCapsW(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
 MMAPI MMRESULT WINAPI waveInGetDevCapsW(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
-MMAPI MMRESULT WINAPI waveOutClose(HANDLE h) { (void)h; return MMSYSERR_INVALPARAM; }
-MMAPI MMRESULT WINAPI waveOutReset(HANDLE h) { (void)h; return MMSYSERR_INVALPARAM; }
-MMAPI MMRESULT WINAPI waveOutWrite(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return MMSYSERR_INVALPARAM; }
-MMAPI MMRESULT WINAPI waveOutPrepareHeader(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return MMSYSERR_INVALPARAM; }
-MMAPI MMRESULT WINAPI waveOutUnprepareHeader(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return MMSYSERR_INVALPARAM; }
-MMAPI MMRESULT WINAPI waveOutGetVolume(HANDLE h, LPDWORD v) { (void)h; if (v) *v = 0; return MMSYSERR_NODRIVER; }
-MMAPI MMRESULT WINAPI waveOutSetVolume(HANDLE h, DWORD v) { (void)h; (void)v; return MMSYSERR_NODRIVER; }
-MMAPI MMRESULT WINAPI waveOutGetErrorTextW(MMRESULT e, LPWSTR buf, UINT n)
-{
-    const char *t = e == MMSYSERR_NODRIVER ? "There is no driver installed on your system." : "An unknown error occurred.";
-    if (buf && n) MultiByteToWideChar(CP_UTF8, 0, t, -1, buf, (int)n), buf[n - 1] = 0;
-    return 0;
-}
 
 /* ---- joysticks: none ---- */
 MMAPI UINT WINAPI joyGetNumDevs(void) { return 16; }        /* slots; each reports "unplugged" */

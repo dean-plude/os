@@ -195,6 +195,10 @@
 #define SYSCALL_NtNovaSockSendTo                  0x0198
 #define SYSCALL_NtNovaSockRecvFrom                0x0199
 #define SYSCALL_NtNovaResolve                     0x019A
+/* NovaOS sound (winmm and mmdevapi's kernel half) */
+#define SYSCALL_NtNovaAudioOpen                   0x01E0
+#define SYSCALL_NtNovaAudioWrite                  0x01E1
+#define SYSCALL_NtNovaAudioCtl                    0x01E2
 /* Registry services Windows 10 numbers elsewhere */
 #define SYSCALL_NtDeleteKey                       0x01B0
 #define SYSCALL_NtDeleteValueKey                  0x01B1

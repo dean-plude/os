@@ -70,7 +70,7 @@ void um_unlock(UmLock *l);
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
 typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION, UO_PIPE,
-               UO_DIRECTORY, UO_SYMLINK, UO_TIMER } UmObType;
+               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -85,6 +85,7 @@ typedef struct UmObject {
     bool            abandoned;
     bool            named;          /* in the object namespace (um_thread.c) */
     int             sock;           /* UO_SOCKET: kernel socket index */
+    int             audio;          /* UO_AUDIO: mixer stream (drivers/audio.c) */
     UmProcess      *proc;           /* UO_PROCESS: signaled when it has exited */
     void           *ptr;            /* UO_KEY: the registry key; UO_DIRECTORY: its name;
                                        UO_SYMLINK: its target (UmLinkTarget) */
@@ -327,6 +328,7 @@ void       um_pipe_process_gone(UmProcess *p);
 /* um_thread.c: threads, synchronization objects, waits */
 void       um_thread_syscalls_init(void);
 void       um_socket_syscalls_init(void);
+void       um_audio_syscalls_init(void);
 void       um_gui_syscalls_init(void);
 void       um_gui_process_gone(UmProcess *p);   /* destroy the process's windows */
 /* Wait until @o is signaled (acquiring it), @timeout_100ns passes (-1:

@@ -97,6 +97,7 @@ void um_lock_free(UINT32 num)
  *   virtual memory:             the process lock (regions, page tables),
  *                               the PMM and heap spinlocks, TLB shootdowns;
  *   sockets:                    net_lock around the network stack;
+ *   sound (NtNovaAudio*):       the mixer's spinlock (drivers/audio.c);
  *   windows (NtNovaGui*):       DesktopLock (window manager and message
  *                               queues) and the process lock.
  * User memory is reached through CopyFromUser/CopyToUser, which survive
@@ -119,6 +120,7 @@ static void um_lock_free_init(void)
         SYSCALL_NtNovaSockRecv, SYSCALL_NtNovaSockBind, SYSCALL_NtNovaSockListen,
         SYSCALL_NtNovaSockAccept, SYSCALL_NtNovaSockCtl, SYSCALL_NtNovaSockSendTo,
         SYSCALL_NtNovaSockRecvFrom,
+        SYSCALL_NtNovaAudioOpen, SYSCALL_NtNovaAudioWrite, SYSCALL_NtNovaAudioCtl,
         SYSCALL_NtNovaGuiCreate, SYSCALL_NtNovaGuiGetMessage, SYSCALL_NtNovaGuiInvalidate,
         SYSCALL_NtNovaGuiSetText, SYSCALL_NtNovaGuiShow, SYSCALL_NtNovaGuiDestroy,
         SYSCALL_NtNovaGuiSetTimer, SYSCALL_NtNovaGuiKillTimer, SYSCALL_NtNovaGuiMessageBox,
@@ -2190,5 +2192,6 @@ void um_syscall_init(void)
     um_exception_syscalls_init();
     um_registry_syscalls_init();
     um_socket_syscalls_init();
+    um_audio_syscalls_init();
     um_gui_syscalls_init();
 }

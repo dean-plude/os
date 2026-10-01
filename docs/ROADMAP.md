@@ -31,7 +31,8 @@ loader semantics, and the drivers they expect.
 The details of each phase are in [HISTORY.md](HISTORY.md).
 
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
-NovaOS's own clean-room code); there is no GPU, 3D or audio support; drive
+NovaOS's own clean-room code); there is no GPU or Direct3D, and sound is
+output only (no recording, MIDI, DirectSound or XAudio2); drive
 C: is FAT, so there are no hard links or ACL enforcement on files (NTFS
 disks can be read, as drives D:, E:, ...); and most of the App Store's catalog (Qt, GTK and
 multimedia programs) does not run yet.
@@ -71,8 +72,11 @@ named program or test demonstrates it.
   [OpenGL](HISTORY.md#opengl-mesa-as-the-system-opengl32dll).
 - Direct3D (at least enough for programs that probe it and fall back),
   DXGI.
-- **Audio**: `winmm` wave output and WASAPI over a real sound device
-  (QEMU's Intel HDA), which VLC and Audacity need.
+- ~~**Audio**: `winmm` wave output and WASAPI over a real sound device
+  (QEMU's Intel HDA)~~ Done; see [Sound](HISTORY.md#sound-intel-hd-audio-winmm-and-wasapi).
+  Still open: recording (`waveIn`, capture endpoints), `dsound.dll`
+  (DirectSound), XAudio2, MIDI, endpoint volume (`IAudioEndpointVolume`),
+  and testing VLC and Audacity on it.
 - Display: GPU-backed or at least faster blits; mode changes.
 - NetSurf: SVG; redrawing pages a script changes after layout.
 
