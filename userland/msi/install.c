@@ -39,7 +39,7 @@ typedef struct {
     char      error[256];
     int       result;
     bool      resolved;              /* directories resolved (CostFinalize ran) */
-    bool      removed_files, removed_registry, removed_folders;
+    bool      removed_files, removed_registry, removed_folders, removed_env;
 } Inst;
 
 static void logf(Inst *in, const char *fmt, ...)
@@ -944,6 +944,136 @@ static void action_remove_registry(Inst *in)
 }
 
 /* -----------------------------------------------------------------------
+ * Environment table: variables in the registry (the system's with '*',
+ * else the user's), which new programs start with.  A Name is prefixed by
+ * flags ('=' and '+' set on install, '-' removes on uninstall, '!' removes
+ * on install, '*' system); "[~]" in a Value stands for the current value,
+ * so "[~];X" appends X and "X;[~]" prepends it.
+ * ----------------------------------------------------------------------- */
+#define ENV_SYS_KEY  L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"
+#define ENV_USER_KEY L"Environment"
+
+typedef struct { bool sys, set, remove_on_uninstall, remove_on_install; char name[128]; } EnvFlags;
+
+static void env_flags(const char *raw, EnvFlags *f)
+{
+    memset(f, 0, sizeof(*f));
+    for (; *raw == '=' || *raw == '+' || *raw == '-' || *raw == '!' || *raw == '*'; raw++) {
+        if (*raw == '*') f->sys = true;
+        else if (*raw == '-') f->remove_on_uninstall = true;
+        else if (*raw == '!') f->remove_on_install = true;
+        else f->set = true;
+    }
+    snprintf(f->name, sizeof(f->name), "%s", raw);
+}
+
+static HKEY env_key(bool sys, bool create)
+{
+    HKEY h = 0;
+    if (create) RegCreateKeyExW(sys ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, sys ? ENV_SYS_KEY : ENV_USER_KEY,
+                                0, 0, 0, KEY_ALL_ACCESS, 0, &h, 0);
+    else RegOpenKeyExW(sys ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, sys ? ENV_SYS_KEY : ENV_USER_KEY, 0, KEY_ALL_ACCESS, &h);
+    return h;
+}
+
+static void env_read(HKEY h, const WCHAR *name, char *out, int cap)
+{
+    WCHAR w[2048];
+    DWORD n = sizeof(w) - 2, type = 0;
+    out[0] = 0;
+    if (RegQueryValueExW(h, name, 0, &type, (BYTE *)w, &n) || (type != REG_SZ && type != REG_EXPAND_SZ)) return;
+    w[n / 2] = 0;
+    to_u8(w, out, cap);
+}
+
+/* Splits a Value into what goes before and after the current one: returns
+ * false when there is no "[~]" (the value replaces the variable) */
+static bool env_parts(Inst *in, const char *raw, char *pre, char *post, int cap)
+{
+    const char *t = strstr(raw, "[~]");
+    char a[2048], b[2048];
+    if (!t) { format_str(in, raw, pre, cap); post[0] = 0; return false; }
+    snprintf(a, sizeof(a), "%.*s", (int)(t - raw), raw);
+    snprintf(b, sizeof(b), "%s", t + 3);
+    format_str(in, a, pre, cap);
+    format_str(in, b, post, cap);
+    return true;
+}
+
+static void action_write_env(Inst *in)
+{
+    MsiTable *t = msidb_table(&in->db, "Environment");
+    char b[16];
+    int n = 0;
+    for (int r = 0; t && r < t->nrows; r++) {
+        if (!comp_enabled(in, msidb_str(&in->db, t, r, 3, b))) continue;
+        EnvFlags f;
+        env_flags(msidb_str(&in->db, t, r, 1, b), &f);
+        const char *raw = msidb_str(&in->db, t, r, 2, b);
+        WCHAR wname[128];
+        to_w(f.name, wname, 128);
+        HKEY h = env_key(f.sys, true);
+        if (!h) continue;
+        if (f.remove_on_install) { RegDeleteValueW(h, wname); RegCloseKey(h); n++; continue; }
+        char cur[2048], pre[2048], post[2048], val[4096];
+        env_read(h, wname, cur, sizeof(cur));
+        if (env_parts(in, raw, pre, post, sizeof(pre))) {
+            if (!cur[0]) {                                     /* nothing to add to: drop the separator */
+                const char *p = pre, *q = post;
+                if (*q == ';') q++;
+                size_t pl = strlen(p);
+                snprintf(val, sizeof(val), "%.*s%s", (int)(pl && p[pl - 1] == ';' ? pl - 1 : pl), p, q);
+            } else if ((pre[0] && strstr(cur, pre)) || (post[0] && strstr(cur, post[0] == ';' ? post + 1 : post))) {
+                snprintf(val, sizeof(val), "%s", cur);          /* already there */
+            } else snprintf(val, sizeof(val), "%s%s%s", pre, cur, post);
+        } else snprintf(val, sizeof(val), "%s", pre);
+        WCHAR wv[4096];
+        to_w(val, wv, 4096);
+        DWORD type = strchr(val, '%') ? REG_EXPAND_SZ : REG_SZ;
+        RegSetValueExW(h, wname, 0, type, (const BYTE *)wv, (DWORD)(wcslen(wv) + 1) * 2);
+        RegCloseKey(h);
+        logf(in, "Environment: %s%s = %s", f.sys ? "(system) " : "", f.name, val);
+        n++;
+    }
+    if (n) logf(in, "Wrote %d environment variables (new programs see them)", n);
+}
+
+/* Uninstall: what was appended or prepended comes out again; a variable the
+ * package set (or one marked '-') goes */
+static void action_remove_env(Inst *in)
+{
+    MsiTable *t = msidb_table(&in->db, "Environment");
+    char b[16];
+    for (int r = 0; t && r < t->nrows; r++) {
+        if (!comp_enabled(in, msidb_str(&in->db, t, r, 3, b))) continue;
+        EnvFlags f;
+        env_flags(msidb_str(&in->db, t, r, 1, b), &f);
+        if (f.remove_on_install) continue;
+        const char *raw = msidb_str(&in->db, t, r, 2, b);
+        WCHAR wname[128];
+        to_w(f.name, wname, 128);
+        HKEY h = env_key(f.sys, false);
+        if (!h) continue;
+        char cur[2048], pre[2048], post[2048];
+        env_read(h, wname, cur, sizeof(cur));
+        if (env_parts(in, raw, pre, post, sizeof(pre)) && !f.remove_on_uninstall) {
+            char out[2048];
+            const char *piece = pre[0] ? pre : post;
+            char *at = piece[0] ? strstr(cur, piece) : 0;
+            if (!at) { RegCloseKey(h); continue; }
+            snprintf(out, sizeof(out), "%.*s%s", (int)(at - cur), cur, at + strlen(piece));
+            if (!out[0]) RegDeleteValueW(h, wname);
+            else {
+                WCHAR wv[2048];
+                to_w(out, wv, 2048);
+                RegSetValueExW(h, wname, 0, strchr(out, '%') ? REG_EXPAND_SZ : REG_SZ, (const BYTE *)wv, (DWORD)(wcslen(wv) + 1) * 2);
+            }
+        } else RegDeleteValueW(h, wname);
+        RegCloseKey(h);
+    }
+}
+
+/* -----------------------------------------------------------------------
  * Product registration (Add/Remove Programs) and the cached package
  * ----------------------------------------------------------------------- */
 static void set_sz(HKEY h, const WCHAR *name, const char *u8)
@@ -1240,12 +1370,13 @@ static bool run_action(Inst *in, const char *a)
         else if (!strcmp(a, "InstallFinalize") && in->remove) {
             /* a package whose sequence lacks the removal actions still gets cleaned up */
             if (!in->removed_registry) action_remove_registry(in);
+            if (!in->removed_env) action_remove_env(in);
             if (!in->removed_files) action_remove_files(in);
             if (!in->removed_folders) action_remove_folders(in);
             action_unregister_product(in);
         }
-        else if (!strcmp(a, "WriteEnvironmentStrings") && !in->remove && msidb_table(&in->db, "Environment"))
-            logf(in, "Environment table not applied (no persistent environment on NovaOS)");
+        else if (!strcmp(a, "WriteEnvironmentStrings") && !in->remove) action_write_env(in);
+        else if (!strcmp(a, "RemoveEnvironmentStrings") && in->remove) { action_remove_env(in); in->removed_env = true; }
         return true;
     }
     if (!strcmp(a, "CostFinalize"))      { select_features(in); resolve_directories(in); return true; }

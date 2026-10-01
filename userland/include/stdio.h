@@ -92,6 +92,11 @@ _CRTIMP int    vfscanf(FILE *f, const char *fmt, va_list ap);
 #define fileno _fileno
 _CRTIMP FILE  *_fdopen(int fd, const char *mode);
 #define fdopen _fdopen
+_CRTIMP FILE  *_popen(const char *cmd, const char *mode);
+_CRTIMP FILE  *_wpopen(const unsigned short *cmd, const unsigned short *mode);
+_CRTIMP int    _pclose(FILE *f);
+#define popen _popen
+#define pclose _pclose
 _CRTIMP FILE  *tmpfile(void);
 _CRTIMP int    vasprintf(char **out, const char *fmt, va_list ap);
 _CRTIMP int    asprintf(char **out, const char *fmt, ...);

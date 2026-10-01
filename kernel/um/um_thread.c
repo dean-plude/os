@@ -54,8 +54,8 @@ UmObject *um_ob_ref(UmObject *o)
  * An entry lives as long as its object; lookups and the last release of a
  * named object serialize on g_ns_lock so a dying object is never found.
  * ----------------------------------------------------------------------- */
-#define NS_MAX      256
-#define NS_NAME_MAX 128
+#define NS_MAX      1024
+#define NS_NAME_MAX 260
 static struct { char name[NS_NAME_MAX]; UmObject *o; } g_ns[NS_MAX];
 static KSpinLock g_ns_lock = KSPINLOCK_INIT;
 
@@ -64,8 +64,24 @@ static void ns_remove_locked(UmObject *o)
     for (int i = 0; i < NS_MAX; i++) if (g_ns[i].o == o) { g_ns[i].o = NULL; g_ns[i].name[0] = 0; }
 }
 
+/* UTF-16 -> UTF-8 into @out (cap bytes, NUL-terminated); the length */
+static int ns_utf8(const UINT16 *w, UINT32 n, char *out, int cap)
+{
+    int k = 0;
+    for (UINT32 i = 0; i < n && k < cap - 4; i++) {
+        UINT32 c = w[i];
+        if (c < 0x80) out[k++] = (char)c;
+        else if (c < 0x800) { out[k++] = (char)(0xC0 | c >> 6); out[k++] = (char)(0x80 | (c & 0x3F)); }
+        else { out[k++] = (char)(0xE0 | c >> 12); out[k++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[k++] = (char)(0x80 | (c & 0x3F)); }
+    }
+    out[k] = 0;
+    return k;
+}
+
 /* The name in OBJECT_ATTRIBUTES @oa_ptr (UTF-16 kept as UTF-8 bytes; empty
- * if unnamed), without the session prefixes.  False if unreadable. */
+ * if unnamed), without the session prefixes.  A name relative to a
+ * directory object (RootDirectory) is "directory\name".  False if
+ * unreadable or the directory handle is bad. */
 static bool ns_name(UINT64 oa_ptr, char *out)
 {
     out[0] = 0;
@@ -79,14 +95,18 @@ static bool ns_name(UINT64 oa_ptr, char *out)
     UINT16 w[NS_NAME_MAX];
     if (n >= NS_NAME_MAX) n = NS_NAME_MAX - 1;
     if (n && !NT_SUCCESS(CopyFromUser(w, (const void *)(uintptr_t)us[1], 2 * n))) return false;
-    int k = 0;
-    for (UINT32 i = 0; i < n && k < NS_NAME_MAX - 3; i++) {
-        UINT32 c = w[i];
-        if (c < 0x80) out[k++] = (char)c;
-        else if (c < 0x800) { out[k++] = (char)(0xC0 | c >> 6); out[k++] = (char)(0x80 | (c & 0x3F)); }
-        else { out[k++] = (char)(0xE0 | c >> 12); out[k++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[k++] = (char)(0x80 | (c & 0x3F)); }
+    if (oa[1]) {                                    /* relative to a directory object */
+        UmObject *d = um_handle_object(UmCurrent(), oa[1], UO_DIRECTORY);
+        if (!d) return false;
+        int k = (int)strlen((const char *)d->ptr);
+        if (k > NS_NAME_MAX - 8) k = NS_NAME_MAX - 8;
+        memcpy(out, d->ptr, (size_t)k);
+        um_ob_unref(d);
+        out[k++] = '\\';
+        ns_utf8(w, n, out + k, NS_NAME_MAX - k);
+        return true;
     }
-    out[k] = 0;
+    ns_utf8(w, n, out, NS_NAME_MAX);
     static const char *const prefixes[] = { "\\BaseNamedObjects\\", "\\Sessions\\1\\BaseNamedObjects\\", "Local\\", "Global\\", "Session\\1\\" };
     for (int again = 1; again; ) {
         again = 0;
@@ -96,6 +116,17 @@ static bool ns_name(UINT64 oa_ptr, char *out)
         }
     }
     return true;
+}
+
+/* The namespace name of @o ("" if unnamed) */
+void um_object_name(UmObject *o, char *buf, int cap)
+{
+    buf[0] = 0;
+    if (!o || !o->named || cap < 2) return;
+    IrqState s = spin_lock_irqsave(&g_ns_lock);
+    for (int i = 0; i < NS_MAX; i++)
+        if (g_ns[i].o == o) { strncpy(buf, g_ns[i].name, (size_t)cap - 1); buf[cap - 1] = 0; break; }
+    spin_unlock_irqrestore(&g_ns_lock, s);
 }
 
 /* A referenced object named @name, or NULL */
@@ -159,6 +190,13 @@ static bool ob_ready(UmObject *o, UmThread *me)
     case UO_SEMAPHORE: return o->count > 0;
     case UO_MUTANT:    return !o->owner || o->owner == me;
     case UO_THREAD:    return o->signaled;
+    case UO_TIMER:
+        if (o->due && sched_ticks() >= o->due) {            /* fired (checked lazily) */
+            o->signaled = true;
+            if (o->period) { UINT64 now = sched_ticks(); while (o->due <= now) o->due += o->period; }
+            else o->due = 0;
+        }
+        return o->signaled;
     default:           return o->signaled;
     }
 }
@@ -168,6 +206,7 @@ static bool ob_acquire(UmObject *o, UmThread *me)
 {
     switch (o->type) {
     case UO_EVENT:     if (!o->manual) o->signaled = false; break;
+    case UO_TIMER:     if (!o->manual) o->signaled = false; break;
     case UO_SEMAPHORE: o->count--; break;
     case UO_MUTANT: {
         o->owner = me;
@@ -248,6 +287,8 @@ static UINT32 wait_objects(UmObject **o, int n, bool all, INT64 timeout_100ns)
         g_waiters = me;
         ob_unlock(s);
         UINT64 nap = sched_ticks() + 10;
+        for (int i = 0; i < n; i++)                         /* a timer wakes it when due */
+            if (o[i]->type == UO_TIMER && o[i]->due && o[i]->due < nap) nap = o[i]->due;
         sched_sleep_until(&me->wake, until < nap ? until : nap);
         s = ob_lock();
         waiter_unlink(me);
@@ -605,45 +646,94 @@ static UINT64 sys_query_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return put_u32(um_stack_arg(5), 48) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }
 
+/* A process named by a handle (-1: the caller); referenced by @ob if not
+ * the caller */
+UmProcess *um_proc_of(UmProcess *self, UINT64 h, UmObject **ob)
+{
+    *ob = NULL;
+    if (h == UINT64_C(0xFFFFFFFFFFFFFFFF)) return self;
+    UmObject *o = um_handle_object(self, h, UO_PROCESS);
+    if (!o) return NULL;
+    if (!o->proc || o->proc->reclaimed) { um_ob_unref(o); return NULL; }
+    *ob = o;
+    return o->proc;
+}
+
 /* NtDuplicateObject(HANDLE SourceProcess, HANDLE Source, HANDLE TargetProcess,
- *                   PHANDLE Target, ACCESS_MASK, ULONG Attributes, ULONG Options) */
+ *                   PHANDLE Target, ACCESS_MASK, ULONG Attributes, ULONG Options)
+ * Either process may be another one (a process handle): a parent giving
+ * a child a handle, or taking one of the child's. */
 static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
-    UINT64 self = UINT64_C(0xFFFFFFFFFFFFFFFF);
-    if (a1 != self || (a3 != self && a3)) return ST_INVALID_HANDLE;
-    UINT32 options = (UINT32)um_stack_arg(7);
+    UINT32 attrs = (UINT32)um_stack_arg(6), options = (UINT32)um_stack_arg(7);
+    UmObject *sob = NULL, *tob = NULL;
+    UmProcess *sp = um_proc_of(p, a1, &sob);
+    if (!sp) return ST_INVALID_HANDLE;
+    UmProcess *tp = a3 ? um_proc_of(p, a3, &tob) : NULL;
+    if (a3 && !tp) { if (sob) um_ob_unref(sob); return ST_INVALID_HANDLE; }
     UINT64 nh = 0;
     UINT32 st = ST_SUCCESS;
-    if (a2 == UINT64_C(0xFFFFFFFFFFFFFFFE)) {                 /* GetCurrentThread() */
-        nh = um_handle_new_object(p, &UmCurrentThread()->ob);
-        if (!nh) return ST_TOO_MANY_HANDLES;
-    } else {
-        DesktopLock();
-        um_lock(&p->lock);
-        UmHandle *src = NULL;
-        if (a2 >= 4 && !(a2 & 3) && a2 / 4 - 1 < UM_MAX_HANDLES && p->handles[a2 / 4 - 1].kind != H_FREE)
-            src = &p->handles[a2 / 4 - 1];
-        if (!src) st = ST_INVALID_HANDLE;
-        else {
-            int free = -1;
-            for (int i = 0; i < UM_MAX_HANDLES; i++) if (p->handles[i].kind == H_FREE) { free = i; break; }
-            if (free < 0) st = ST_TOO_MANY_HANDLES;
-            else {
-                UmHandle *d = &p->handles[free];
-                *d = *src;
-                if (d->kind == H_FILE || d->kind == H_DIR) RamfsRef(d->node);
-                if (d->kind == H_OBJECT) um_ob_ref(d->obj);
-                nh = (UINT64)(free + 1) * 4;
+    if (a2 == UINT64_C(0xFFFFFFFFFFFFFFFE) && sp == p) {     /* GetCurrentThread() */
+        nh = tp ? um_handle_new_object(tp, &UmCurrentThread()->ob) : 0;
+        if (tp && !nh) st = ST_TOO_MANY_HANDLES;
+    } else if (a2 == UINT64_C(0xFFFFFFFFFFFFFFFF) && sp == p) {   /* GetCurrentProcess(): a real handle to it */
+        UmObject *self = um_open_process(p->pid);
+        if (!self) st = ST_INVALID_HANDLE;
+        else if (tp) {
+            nh = um_handle_new_object(tp, self);
+            if (!nh) st = ST_TOO_MANY_HANDLES;
+            else if (attrs & 2) {                            /* OBJ_INHERIT */
+                um_lock(&tp->lock);
+                tp->handles[nh / 4 - 1].inherit = true;
+                um_unlock(&tp->lock);
             }
         }
-        um_unlock(&p->lock);
+        if (self) um_ob_unref(self);
+    } else {
+        DesktopLock();
+        um_lock(&sp->lock);
+        UmHandle src;
+        bool ok = a2 >= 4 && !(a2 & 3) && a2 / 4 - 1 < UM_MAX_HANDLES && sp->handles[a2 / 4 - 1].kind != H_FREE;
+        if (ok) {
+            src = sp->handles[a2 / 4 - 1];
+            if (src.kind == H_FILE || src.kind == H_DIR) RamfsRef(src.node);
+            if (src.kind == H_OBJECT) um_ob_ref(src.obj);
+        }
+        um_unlock(&sp->lock);
+        if (!ok) st = ST_INVALID_HANDLE;
+        else if (tp) {
+            if (!(options & 4)) src.inherit = attrs & 2;     /* DUPLICATE_SAME_ATTRIBUTES, OBJ_INHERIT */
+            um_lock(&tp->lock);
+            int free = -1;
+            for (int i = 0; i < UM_MAX_HANDLES; i++) if (tp->handles[i].kind == H_FREE) { free = i; break; }
+            if (free >= 0) { tp->handles[free] = src; nh = (UINT64)(free + 1) * 4; }
+            um_unlock(&tp->lock);
+            if (free < 0) st = ST_TOO_MANY_HANDLES;
+        }
+        if (ok && (!tp || st)) {                             /* not placed: drop the reference */
+            if (src.kind == H_FILE || src.kind == H_DIR) RamfsUnref(src.node);
+            if (src.kind == H_OBJECT) um_ob_unref(src.obj);
+        }
         DesktopUnlock();
-        if (st) return st;
     }
-    if (options & 1) {                                         /* DUPLICATE_CLOSE_SOURCE */
-        um_close_handle(a2);
+    if (!st && (options & 1)) {                              /* DUPLICATE_CLOSE_SOURCE */
+        if (sp == p) um_close_handle(a2);
+        else {
+            DesktopLock();
+            um_lock(&sp->lock);
+            UmHandle *h = a2 >= 4 && !(a2 & 3) && a2 / 4 - 1 < UM_MAX_HANDLES ? &sp->handles[a2 / 4 - 1] : NULL;
+            UmHandle old = h ? *h : (UmHandle){ 0 };
+            if (h) memset(h, 0, sizeof(*h));
+            um_unlock(&sp->lock);
+            if (old.kind == H_FILE || old.kind == H_DIR) RamfsUnref(old.node);
+            if (old.kind == H_OBJECT) um_ob_unref(old.obj);
+            DesktopUnlock();
+        }
     }
+    if (sob) um_ob_unref(sob);
+    if (tob && tp) um_ob_unref(tob);
+    if (st) return st;
     if (a4 && !put_handle(a4, nh)) return ST_ACCESS_VIOLATION;
     return ST_SUCCESS;
 }
@@ -651,16 +741,16 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 /* -----------------------------------------------------------------------
  * The loader's kernel half, debug output
  * ----------------------------------------------------------------------- */
-/* NtNovaLoadDll(PCSTR Name, ULONG Length, PVOID *Base) */
+/* NtNovaLoadDll(PCSTR Name, ULONG Length, PVOID *Base, ULONG Flags): Flags are
+ * LoadLibraryEx's (AS_DATAFILE / AS_IMAGE_RESOURCE map the module as data) */
 static UINT64 sys_nova_load_dll(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a4;
     char name[RAMFS_PATH_MAX];
     if (!a2 || a2 >= sizeof(name)) return ST_INVALID_PARAMETER;
     if (!NT_SUCCESS(CopyFromUser(name, (const void *)(uintptr_t)a1, a2))) return ST_ACCESS_VIOLATION;
     name[a2] = '\0';
     UINT64 base = 0;
-    UINT32 st = um_load_dll(UmCurrent(), name, &base);
+    UINT32 st = um_load_dll(UmCurrent(), name, &base, (UINT32)a4);
     if (st) return st;
     UINT64 b = base;
     return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, &b, 8)) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
@@ -839,13 +929,31 @@ static UINT64 sys_open_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (vo
 
 /* NtMapViewOfSection(HANDLE Section, HANDLE Process, PVOID *Base, ULONG_PTR ZeroBits, SIZE_T CommitSize,
  *                    PLARGE_INTEGER Offset, PSIZE_T ViewSize, InheritDisposition, AllocationType, Win32Protect) */
+static UINT64 map_view(UINT64 a1, UINT64 a3, UINT64 off_ptr, UINT64 size_ptr, UINT32 prot, UINT64 lo, UINT64 hi, UINT64 align);
+
 static UINT64 sys_map_view(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a4;
     UmProcess *p = UmCurrent();
     if (a2 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_NOT_SUPPORTED_;
-    UINT64 off_ptr = um_stack_arg(6), size_ptr = um_stack_arg(7);
-    UINT32 prot = (UINT32)um_stack_arg(10);
+    return map_view(a1, a3, um_stack_arg(6), um_stack_arg(7), (UINT32)um_stack_arg(10), p->lay.alloc_min, p->lay.alloc_max, 0);
+}
+
+/* NtMapViewOfSectionEx(HANDLE Section, HANDLE Process, PVOID *Base, PLARGE_INTEGER Offset,
+ *                      PSIZE_T ViewSize, ULONG AllocationType, ULONG Protect,
+ *                      MEM_EXTENDED_PARAMETER *, ULONG Count): an address range too */
+static UINT64 sys_map_view_ex(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    UmProcess *p = UmCurrent();
+    if (a2 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_NOT_SUPPORTED_;
+    UINT64 lo = p->lay.alloc_min, hi = p->lay.alloc_max, align = 0;
+    if (!um_addr_requirements(um_stack_arg(8), (UINT32)um_stack_arg(9), &lo, &hi, &align)) return ST_ACCESS_VIOLATION;
+    return map_view(a1, a3, a4, um_stack_arg(5), (UINT32)um_stack_arg(7), lo, hi, align);
+}
+
+static UINT64 map_view(UINT64 a1, UINT64 a3, UINT64 off_ptr, UINT64 size_ptr, UINT32 prot, UINT64 lo, UINT64 hi, UINT64 align)
+{
+    UmProcess *p = UmCurrent();
     UINT64 base = 0, off = 0, view = 0;
     if (!get_u64_(a3, &base) || !get_u64_(size_ptr, &view)) return ST_ACCESS_VIOLATION;
     if (off_ptr && !get_u64_(off_ptr, &off)) return ST_ACCESS_VIOLATION;
@@ -865,7 +973,7 @@ static UINT64 sys_map_view(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         base &= ~0xFFFFULL;
         if (!um_is_free(p, base, bytes)) r = ST_CONFLICTING_ADDRESSES_;
     } else {
-        base = um_find_free(p, bytes, p->lay.alloc_min, p->lay.alloc_max);
+        base = um_find_free_aligned(p, bytes, lo, hi, align);
         if (!base) r = ST_NO_MEMORY;
     }
     UmRegion *reg = NULL;
@@ -921,23 +1029,335 @@ void um_release_views(UmProcess *p)
     }
 }
 
+/* -----------------------------------------------------------------------
+ * Object directories, symbolic links, timers, and querying events and
+ * semaphores.  A directory is a named object whose children are the
+ * names under it ("dir\child"); a program that creates objects relative
+ * to it (RootDirectory) and lists it, as Cygwin does, sees them there.
+ * ----------------------------------------------------------------------- */
+#define ST_MORE_ENTRIES     0x00000105u
+#define ST_NO_MORE_ENTRIES  0x8000001Au
+#define ST_BUFFER_TOO_SMALL 0xC0000023u
+
+typedef struct { UINT32 n; UINT16 w[]; } UmLinkTarget;    /* a symbolic link's target, UTF-16 */
+
+static void ptr_destroy(UmObject *o) { kfree(o->ptr); o->ptr = NULL; }
+
+/* NtCreateDirectoryObject(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES) */
+static UINT64 sys_create_directory(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a4;
+    char name[NS_NAME_MAX];
+    if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
+    UINT64 r = open_existing(name, UO_DIRECTORY, a1);
+    if (r) return r;
+    UmObject *o = ob_new(UO_DIRECTORY);
+    char *copy = kmalloc(strlen(name) + 1);
+    if (!o || !copy) { kfree(o); kfree(copy); return ST_NO_MEMORY; }
+    memcpy(copy, name, strlen(name) + 1);
+    o->ptr = copy;
+    o->destroy = ptr_destroy;
+    return finish_create(o, name, a1);
+}
+static UINT64 sys_open_directory(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a2; (void)a4; return open_named(UO_DIRECTORY, a1, a3); }
+
+static const char *ob_type_name(UmObType t)
+{
+    switch (t) {
+    case UO_EVENT: return "Event";          case UO_MUTANT: return "Mutant";
+    case UO_SEMAPHORE: return "Semaphore";  case UO_SECTION: return "Section";
+    case UO_DIRECTORY: return "Directory";  case UO_SYMLINK: return "SymbolicLink";
+    case UO_TIMER: return "Timer";          default: return "Unknown";
+    }
+}
+
+/* Put ASCII/UTF-8 @str as UTF-16 at user @at; the byte count */
+static UINT32 put_wide(UINT64 at, const char *str)
+{
+    UINT16 w[NS_NAME_MAX];
+    UINT32 n = 0;
+    for (const unsigned char *c = (const unsigned char *)str; *c && n < NS_NAME_MAX - 1; ) {
+        UINT32 cp = *c++;
+        if (cp >= 0xE0 && c[0] && c[1]) { cp = (cp & 0x0F) << 12 | (UINT32)(c[0] & 0x3F) << 6 | (c[1] & 0x3F); c += 2; }
+        else if (cp >= 0xC0 && c[0]) { cp = (cp & 0x1F) << 6 | (c[0] & 0x3F); c++; }
+        w[n++] = (UINT16)cp;
+    }
+    w[n] = 0;
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)at, w, 2 * (n + 1))) ? 2 * n : (UINT32)-1;
+}
+
+static UINT64 directory_entries(char (*names)[NS_NAME_MAX], const UmObType *types, int n, bool more,
+                                UINT64 a2, UINT64 a3, UINT32 ctx, UINT64 ctx_ptr, UINT64 ret_ptr);
+
+/* NtQueryDirectoryObject(HANDLE, PVOID Buffer, ULONG Length, BOOLEAN ReturnSingleEntry,
+ *                        BOOLEAN RestartScan, PULONG Context, PULONG ReturnLength)
+ * OBJECT_DIRECTORY_INFORMATION { UNICODE_STRING Name, TypeName } entries, a
+ * zeroed one after the last, then the strings. */
+static UINT64 sys_query_directory(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    UmObject *d = um_handle_object(UmCurrent(), a1, UO_DIRECTORY);
+    if (!d) return ST_INVALID_HANDLE;
+    bool single = a4 & 0xFF, restart = um_stack_arg(5) & 0xFF;
+    UINT64 ctx_ptr = um_stack_arg(6), ret_ptr = um_stack_arg(7);
+    UINT32 ctx = 0;
+    if (!restart && ctx_ptr && !NT_SUCCESS(CopyFromUser(&ctx, (const void *)(uintptr_t)ctx_ptr, 4))) { um_ob_unref(d); return ST_ACCESS_VIOLATION; }
+    char prefix[NS_NAME_MAX];
+    strncpy(prefix, (const char *)d->ptr, NS_NAME_MAX - 2);
+    prefix[NS_NAME_MAX - 2] = 0;
+    um_ob_unref(d);
+    size_t pl = strlen(prefix);
+    prefix[pl++] = '\\';
+    prefix[pl] = 0;
+    /* the children, in table order, from entry @ctx on */
+    char (*names)[NS_NAME_MAX] = kmalloc(64 * NS_NAME_MAX);
+    if (!names) return ST_NO_MEMORY;
+    UmObType types[64];
+    int n = 0;
+    UINT32 idx = 0;
+    bool more = false;
+    IrqState s = spin_lock_irqsave(&g_ns_lock);
+    for (int i = 0; i < NS_MAX; i++) {
+        if (!g_ns[i].o || strncmp(g_ns[i].name, prefix, pl) || strchr(g_ns[i].name + pl, '\\')) continue;
+        if (idx++ < ctx) continue;
+        if (n == 64 || (single && n == 1)) { more = true; break; }
+        strncpy(names[n], g_ns[i].name + pl, NS_NAME_MAX - 1);
+        names[n][NS_NAME_MAX - 1] = 0;
+        types[n++] = g_ns[i].o->type;
+    }
+    spin_unlock_irqrestore(&g_ns_lock, s);
+    UINT64 st = n ? directory_entries(names, types, n, more, a2, a3, ctx, ctx_ptr, ret_ptr) : ST_NO_MORE_ENTRIES;
+    kfree(names);
+    return st;
+}
+
+static UINT64 directory_entries(char (*names)[NS_NAME_MAX], const UmObType *types, int n, bool more,
+                                UINT64 a2, UINT64 a3, UINT32 ctx, UINT64 ctx_ptr, UINT64 ret_ptr)
+{
+    /* how many fit */
+    int fit = 0;
+    UINT64 need = 16 * 2;                                /* the terminating entry */
+    for (; fit < n; fit++) {
+        UINT64 add = 32 + 2 * (strlen(names[fit]) + 1) + 2 * (strlen(ob_type_name(types[fit])) + 1);
+        if (need + add > a3) break;
+        need += add;
+    }
+    if (!fit) { put_u32(ret_ptr, (UINT32)(need + 32 + 2 * NS_NAME_MAX)); return ST_BUFFER_TOO_SMALL; }
+    UINT64 str = a2 + 32 * (UINT64)(fit + 1);
+    for (int i = 0; i < fit; i++) {
+        UINT64 e[4];
+        UINT32 l = put_wide(str, names[i]);
+        if (l == (UINT32)-1) return ST_ACCESS_VIOLATION;
+        e[0] = l | (UINT64)(l + 2) << 16; e[1] = str; str += l + 2;
+        l = put_wide(str, ob_type_name(types[i]));
+        if (l == (UINT32)-1) return ST_ACCESS_VIOLATION;
+        e[2] = l | (UINT64)(l + 2) << 16; e[3] = str; str += l + 2;
+        if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)(a2 + 32 * (UINT64)i), e, 32))) return ST_ACCESS_VIOLATION;
+    }
+    UINT64 z[4] = { 0, 0, 0, 0 };
+    if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)(a2 + 32 * (UINT64)fit), z, 32))) return ST_ACCESS_VIOLATION;
+    ctx += (UINT32)fit;
+    if (ctx_ptr && !put_u32(ctx_ptr, ctx)) return ST_ACCESS_VIOLATION;
+    put_u32(ret_ptr, (UINT32)(str - a2));
+    return more || fit < n ? ST_MORE_ENTRIES : ST_SUCCESS;
+}
+
+/* NtCreateSymbolicLinkObject(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PUNICODE_STRING Target) */
+static UINT64 sys_create_symlink(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2;
+    char name[NS_NAME_MAX];
+    if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
+    UINT64 us[2];
+    if (!a4 || !NT_SUCCESS(CopyFromUser(us, (const void *)(uintptr_t)a4, 16))) return ST_ACCESS_VIOLATION;
+    UINT32 n = (UINT32)(us[0] & 0xFFFF) / 2;
+    if (n > 1024) return ST_INVALID_PARAMETER;
+    UmLinkTarget *t = kmalloc(sizeof(*t) + 2 * n + 2);
+    if (!t) return ST_NO_MEMORY;
+    t->n = n;
+    if (n && !NT_SUCCESS(CopyFromUser(t->w, (const void *)(uintptr_t)us[1], 2 * n))) { kfree(t); return ST_ACCESS_VIOLATION; }
+    if (name[0]) {
+        UmObject *old = ns_lookup(name);
+        if (old) { um_ob_unref(old); kfree(t); return 0xC0000035u; }   /* OBJECT_NAME_COLLISION */
+    }
+    UmObject *o = ob_new(UO_SYMLINK);
+    if (!o) { kfree(t); return ST_NO_MEMORY; }
+    o->ptr = t;
+    o->destroy = ptr_destroy;
+    return finish_create(o, name, a1);
+}
+static UINT64 sys_open_symlink(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a2; (void)a4; return open_named(UO_SYMLINK, a1, a3); }
+
+/* NtQuerySymbolicLinkObject(HANDLE, PUNICODE_STRING Target (in: MaximumLength, Buffer), PULONG ReturnedLength) */
+static UINT64 sys_query_symlink(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a4;
+    UmObject *o = um_handle_object(UmCurrent(), a1, UO_SYMLINK);
+    if (!o) return ST_INVALID_HANDLE;
+    UmLinkTarget *t = o->ptr;
+    UINT64 us[2];
+    UINT32 st = ST_SUCCESS;
+    if (!NT_SUCCESS(CopyFromUser(us, (const void *)(uintptr_t)a2, 16))) st = ST_ACCESS_VIOLATION;
+    else {
+        UINT32 bytes = 2 * t->n, cap = (UINT32)(us[0] >> 16) & 0xFFFF;
+        put_u32(a3, bytes);
+        if (cap < bytes) st = ST_BUFFER_TOO_SMALL;
+        else if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)us[1], t->w, bytes))) st = ST_ACCESS_VIOLATION;
+        else {
+            UINT16 len = (UINT16)bytes;
+            if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, &len, 2))) st = ST_ACCESS_VIOLATION;
+        }
+    }
+    um_ob_unref(o);
+    return st;
+}
+
+/* NtCreateTimer(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, TIMER_TYPE) */
+static UINT64 sys_create_timer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2;
+    char name[NS_NAME_MAX];
+    if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
+    UINT64 r = open_existing(name, UO_TIMER, a1);
+    if (r) return r;
+    UmObject *o = ob_new(UO_TIMER);
+    if (!o) return ST_NO_MEMORY;
+    o->manual = a4 == 0;                                    /* NotificationTimer */
+    return finish_create(o, name, a1);
+}
+static UINT64 sys_open_timer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a2; (void)a4; return open_named(UO_TIMER, a1, a3); }
+
+/* NtSetTimer(HANDLE, PLARGE_INTEGER DueTime, PTIMER_APC_ROUTINE, PVOID, BOOLEAN Resume,
+ *            LONG Period (ms), PBOOLEAN PreviousState).  (No APC routine.) */
+static UINT64 sys_set_timer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    INT64 due;
+    if (!a2 || !NT_SUCCESS(CopyFromUser(&due, (const void *)(uintptr_t)a2, 8))) return ST_ACCESS_VIOLATION;
+    INT32 period = (INT32)um_stack_arg(6);
+    UmObject *o = um_handle_object(UmCurrent(), a1, UO_TIMER);
+    if (!o) return ST_INVALID_HANDLE;
+    UINT64 rel;                                             /* 100 ns from now */
+    if (due < 0) rel = (UINT64)-due;
+    else { UINT64 now = um_now_100ns(); rel = (UINT64)due > now ? (UINT64)due - now : 0; }
+    IrqState s = ob_lock();
+    UINT8 prev = o->signaled;
+    o->signaled = false;
+    o->due = sched_ticks() + (rel + 99999) / 100000;
+    if (!rel) o->due = sched_ticks();
+    if (!o->due) o->due = 1;
+    o->period = period > 0 ? ((UINT32)period + 9) / 10 : 0;
+    if (!rel) um_ob_wake(o);
+    ob_unlock(s);
+    um_ob_unref(o);
+    UINT64 pp = um_stack_arg(7);
+    if (pp && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)pp, &prev, 1))) return ST_ACCESS_VIOLATION;
+    return ST_SUCCESS;
+}
+
+/* NtCancelTimer(HANDLE, PBOOLEAN CurrentState) */
+static UINT64 sys_cancel_timer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    UmObject *o = um_handle_object(UmCurrent(), a1, UO_TIMER);
+    if (!o) return ST_INVALID_HANDLE;
+    IrqState s = ob_lock();
+    ob_ready(o, NULL);
+    UINT8 cur = o->signaled;
+    o->due = 0;
+    o->period = 0;
+    ob_unlock(s);
+    um_ob_unref(o);
+    if (a2 && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, &cur, 1))) return ST_ACCESS_VIOLATION;
+    return ST_SUCCESS;
+}
+
+/* NtQueryTimer / NtQueryEvent / NtQuerySemaphore(HANDLE, class 0, PVOID, ULONG, PULONG) */
+static UINT64 query_object_state(UmObType type, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    if (a2 != 0) return ST_INVALID_INFO_CLASS;
+    UINT32 size = type == UO_TIMER ? 16 : 8;
+    if (a4 < size) return ST_INFO_LENGTH_MISMATCH;
+    UmObject *o = um_handle_object(UmCurrent(), a1, type);
+    if (!o) return ST_INVALID_HANDLE;
+    UINT32 b[4] = { 0, 0, 0, 0 };
+    IrqState s = ob_lock();
+    if (type == UO_TIMER) {
+        ob_ready(o, NULL);
+        UINT64 left = o->due > sched_ticks() ? (o->due - sched_ticks()) * 100000 : 0;
+        b[0] = (UINT32)left; b[1] = (UINT32)(left >> 32);
+        b[2] = o->signaled;
+    } else if (type == UO_EVENT) {
+        b[0] = o->manual ? 0 : 1;                           /* NotificationEvent / SynchronizationEvent */
+        b[1] = o->signaled;
+    } else {
+        b[0] = (UINT32)o->count;
+        b[1] = (UINT32)o->max;
+    }
+    ob_unlock(s);
+    um_ob_unref(o);
+    if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, size))) return ST_ACCESS_VIOLATION;
+    return put_u32(um_stack_arg(5), size) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
+}
+static UINT64 sys_query_timer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)     { return query_object_state(UO_TIMER, a1, a2, a3, a4); }
+static UINT64 sys_query_event(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)     { return query_object_state(UO_EVENT, a1, a2, a3, a4); }
+static UINT64 sys_query_semaphore(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { return query_object_state(UO_SEMAPHORE, a1, a2, a3, a4); }
+
+/* OBJECT_ATTRIBUTES.Attributes OBJ_INHERIT: the new handle at @handle_ptr
+ * goes to child processes created with handle inheritance */
+static UINT64 oa_inherit(UINT64 st, UINT64 handle_ptr, UINT64 oa_ptr)
+{
+    UINT64 oa[4], h;
+    if ((st & 0xC0000000u) == 0xC0000000u || !oa_ptr || !handle_ptr) return st;
+    if (!NT_SUCCESS(CopyFromUser(oa, (const void *)(uintptr_t)oa_ptr, sizeof(oa))) || !(oa[3] & 2)) return st;
+    if (!NT_SUCCESS(CopyFromUser(&h, (const void *)(uintptr_t)handle_ptr, 8))) return st;
+    UmProcess *p = UmCurrent();
+    um_lock(&p->lock);
+    if (h && h % 4 == 0 && h / 4 - 1 < UM_MAX_HANDLES && p->handles[h / 4 - 1].kind != H_FREE)
+        p->handles[h / 4 - 1].inherit = true;
+    um_unlock(&p->lock);
+    return st;
+}
+#define INHERITABLE(fn) \
+    static UINT64 fn##_oa(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { return oa_inherit(fn(a1, a2, a3, a4), a1, a3); }
+INHERITABLE(sys_create_directory) INHERITABLE(sys_open_directory)
+INHERITABLE(sys_create_symlink)   INHERITABLE(sys_open_symlink)
+INHERITABLE(sys_create_timer)     INHERITABLE(sys_open_timer)
+INHERITABLE(sys_create_event)     INHERITABLE(sys_open_event)
+INHERITABLE(sys_create_mutant)    INHERITABLE(sys_open_mutant)
+INHERITABLE(sys_create_semaphore) INHERITABLE(sys_open_semaphore)
+INHERITABLE(sys_create_section)   INHERITABLE(sys_open_section)
+
 void um_thread_syscalls_init(void)
 {
-    um_install(SYSCALL_NtCreateEvent,             sys_create_event);
-    um_install(SYSCALL_NtCreateSection,           sys_create_section);
-    um_install(SYSCALL_NtOpenSection,             sys_open_section);
+    um_install(SYSCALL_NtCreateDirectoryObject,   sys_create_directory_oa);
+    um_install(SYSCALL_NtOpenDirectoryObject,     sys_open_directory_oa);
+    um_install(SYSCALL_NtQueryDirectoryObject,    sys_query_directory);
+    um_install(SYSCALL_NtCreateSymbolicLinkObject, sys_create_symlink_oa);
+    um_install(SYSCALL_NtOpenSymbolicLinkObject,  sys_open_symlink_oa);
+    um_install(SYSCALL_NtQuerySymbolicLinkObject, sys_query_symlink);
+    um_install(SYSCALL_NtCreateTimer,             sys_create_timer_oa);
+    um_install(SYSCALL_NtOpenTimer,               sys_open_timer_oa);
+    um_install(SYSCALL_NtSetTimer,                sys_set_timer);
+    um_install(SYSCALL_NtCancelTimer,             sys_cancel_timer);
+    um_install(SYSCALL_NtQueryTimer,              sys_query_timer);
+    um_install(SYSCALL_NtQueryEvent,              sys_query_event);
+    um_install(SYSCALL_NtQuerySemaphore,          sys_query_semaphore);
+    um_install(SYSCALL_NtCreateEvent,             sys_create_event_oa);
+    um_install(SYSCALL_NtCreateSection,           sys_create_section_oa);
+    um_install(SYSCALL_NtOpenSection,             sys_open_section_oa);
     um_install(SYSCALL_NtMapViewOfSection,        sys_map_view);
+    um_install(SYSCALL_NtMapViewOfSectionEx,      sys_map_view_ex);
     um_install(SYSCALL_NtUnmapViewOfSection,      sys_unmap_view);
     um_install(SYSCALL_NtNovaFlushView,           sys_flush_view);
-    um_install(SYSCALL_NtOpenEvent,               sys_open_event);
-    um_install(SYSCALL_NtOpenMutant,              sys_open_mutant);
-    um_install(SYSCALL_NtOpenSemaphore,           sys_open_semaphore);
+    um_install(SYSCALL_NtOpenEvent,               sys_open_event_oa);
+    um_install(SYSCALL_NtOpenMutant,              sys_open_mutant_oa);
+    um_install(SYSCALL_NtOpenSemaphore,           sys_open_semaphore_oa);
     um_install(SYSCALL_NtSetEvent,                sys_set_event);
     um_install(SYSCALL_NtResetEvent,              sys_reset_event);
     um_install(SYSCALL_NtClearEvent,              sys_clear_event);
-    um_install(SYSCALL_NtCreateMutant,            sys_create_mutant);
+    um_install(SYSCALL_NtCreateMutant,            sys_create_mutant_oa);
     um_install(SYSCALL_NtReleaseMutant,           sys_release_mutant);
-    um_install(SYSCALL_NtCreateSemaphore,         sys_create_semaphore);
+    um_install(SYSCALL_NtCreateSemaphore,         sys_create_semaphore_oa);
     um_install(SYSCALL_NtReleaseSemaphore,        sys_release_semaphore);
     um_install(SYSCALL_NtWaitForSingleObject,     sys_wait_single);
     um_install(SYSCALL_NtWaitForMultipleObjects,  sys_wait_multiple);

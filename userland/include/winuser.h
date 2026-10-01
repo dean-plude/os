@@ -151,6 +151,13 @@ typedef struct tagWNDCLASSEXW {
 #define WM_RBUTTONUP   0x0205
 #define WM_MOUSEWHEEL  0x020A
 #define CF_TEXT        1
+#define CF_BITMAP      2
+#define CF_METAFILEPICT 3
+#define CF_OEMTEXT     7
+#define CF_DIB         8
+#define CF_ENHMETAFILE 14
+#define CF_LOCALE      16
+#define CF_DIBV5       17
 #define CF_HDROP       15
 #define CF_UNICODETEXT 13
 #define MB_YESNO       0x4

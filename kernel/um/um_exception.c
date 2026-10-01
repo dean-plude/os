@@ -137,13 +137,19 @@ void UmUserException(void *frame, UINT64 cr2)
     UmProcess *p = UmCurrent();
     UINT64 info[15] = { 0 }, nparams;
     UINT32 code = cpu_status(f->vector, &nparams, info, f->error_code, cr2);
+    if (f->vector == 14) {                                       /* a guard page (PAGE_GUARD) */
+        int g = UmGuardFault(cr2);
+        if (g == 1) return;                                      /* a stack grew */
+        if (g == -1) code = 0x80000001u;                         /* STATUS_GUARD_PAGE_VIOLATION */
+        if (g == -2) code = 0xC00000FDu;                         /* STATUS_STACK_OVERFLOW */
+    }
     UINT64 addr = f->vector == 3 ? f->rip - 1 : f->rip;          /* int3: report the instruction */
 
     /* Touching just below a thread's stack: a stack overflow */
     UmThread *t = UmCurrentThread();
     if (code == UM_STATUS_ACCESS_VIOLATION && nparams == 2 && cr2 < t->stack_lo && cr2 + 0x10000 >= t->stack_lo &&
         f->rsp < t->stack_lo + 0x1000)
-        UmFault(0xC00000FDu, addr, cr2);
+        UmFaultAt(0xC00000FDu, addr, cr2, f->rsp);
 
     Regs r = { f->rax, f->rcx, f->rdx, f->rbx, f->rsp, f->rbp, f->rsi, f->rdi,
                f->r8, f->r9, f->r10, f->r11, f->r12, f->r13, f->r14, f->r15, addr, f->rflags };

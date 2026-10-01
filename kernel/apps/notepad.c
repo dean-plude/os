@@ -9,6 +9,7 @@
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "../ke/printf.h"
+#include "../wm/clipboard.h"
 
 #define NP_PAD     12
 #define NP_LINE_H  18
@@ -21,6 +22,7 @@ typedef struct {
     char    *text;             /* NP_MAX bytes */
     UINT32   len;
     UINT32   caret;
+    UINT32   anchor;           /* the other end of the selection (== caret: none) */
     int      top;              /* first visible line */
     int      want_col;         /* column kept while moving up/down */
     bool     dirty;
@@ -140,6 +142,47 @@ static void erase(Notepad *n, UINT32 at, UINT32 k)
     n->dirty = true;
 }
 
+/* The selection as [a, b) */
+static bool sel_range(const Notepad *n, UINT32 *a, UINT32 *b)
+{
+    if (n->anchor > n->len) return false;
+    *a = n->anchor < n->caret ? n->anchor : n->caret;
+    *b = n->anchor < n->caret ? n->caret : n->anchor;
+    return *a != *b;
+}
+
+static void delete_selection(Notepad *n)
+{
+    UINT32 a, b;
+    if (!sel_range(n, &a, &b) || n->readonly) return;
+    erase(n, a, b - a);
+    n->caret = n->anchor = a;
+}
+
+static void copy_selection(Notepad *n, bool cut)
+{
+    UINT32 a, b;
+    if (!sel_range(n, &a, &b)) return;
+    ClipSetText(n->text + a, b - a);
+    if (cut && !n->readonly) delete_selection(n);
+    ksnprintf(n->status, sizeof(n->status), cut ? "Cut %u characters" : "Copied %u characters", b - a);
+}
+
+static void paste(Notepad *n)
+{
+    UINT32 len;
+    char *t = ClipGetText(&len);
+    if (!t) { ksnprintf(n->status, sizeof(n->status), "The clipboard has no text"); return; }
+    if (n->readonly) { kfree(t); return; }
+    delete_selection(n);
+    UINT32 o = 0;
+    for (UINT32 i = 0; i < len; i++) if (t[i] != '\r') t[o++] = t[i];    /* Windows line ends -> '\n' */
+    if (n->len + o > NP_MAX) o = NP_MAX - n->len;
+    insert(n, t, o);
+    n->anchor = n->caret;
+    kfree(t);
+}
+
 static void move_vert(Notepad *n, int dir)
 {
     int line = line_of(n, n->caret) + dir;
@@ -155,9 +198,22 @@ static void np_key(WND *w, const KeyEvent *k)
     bool was_dirty = n->dirty;
     n->status[0] = '\0';
 
-    if (k->ctrl && (k->ch == 's' || k->ch == 'S')) { save(w, n); return; }
-
     bool vertical = false;
+    if (k->ctrl && (k->ch == 's' || k->ch == 'S')) { save(w, n); return; }
+    if (k->ctrl && (k->ch == 'a' || k->ch == 'A')) { n->anchor = 0; n->caret = n->len; keep_caret_visible(w, n); return; }
+    if (k->ctrl && (k->ch == 'c' || k->ch == 'C')) { copy_selection(n, false); return; }
+    if (k->ctrl && (k->ch == 'x' || k->ch == 'X')) { copy_selection(n, true); goto done; }
+    if (k->ctrl && (k->ch == 'v' || k->ch == 'V')) { paste(n); goto done; }
+
+    UINT32 a, b;
+    bool had_sel = sel_range(n, &a, &b);
+    if (k->extended && k->scancode != KEY_DELETE) {
+        if (!k->shift && had_sel && (k->scancode == KEY_LEFT || k->scancode == KEY_RIGHT)) {
+            n->caret = n->anchor = k->scancode == KEY_LEFT ? a : b;   /* to that end of it */
+            goto done;
+        }
+        if (!k->shift || n->anchor > n->len) n->anchor = n->caret;
+    }
     if (k->extended) {
         switch (k->scancode) {
         case KEY_LEFT:   if (n->caret > 0) n->caret--; break;
@@ -168,28 +224,57 @@ static void np_key(WND *w, const KeyEvent *k)
         case KEY_END:    n->caret = line_end(n, n->caret); break;
         case KEY_PGUP:   for (int i = 0; i < visible_lines(w); i++) move_vert(n, -1); vertical = true; break;
         case KEY_PGDN:   for (int i = 0; i < visible_lines(w); i++) move_vert(n, +1); vertical = true; break;
-        case KEY_DELETE: if (n->caret < n->len) erase(n, n->caret, 1); break;
+        case KEY_DELETE:
+            if (had_sel) delete_selection(n);
+            else if (n->caret < n->len) erase(n, n->caret, 1);
+            n->anchor = n->caret;
+            break;
         }
+        if (!k->shift) n->anchor = n->caret;
     } else if (k->ch == '\b') {
-        if (n->caret > 0) { n->caret--; erase(n, n->caret, 1); }
+        if (had_sel) delete_selection(n);
+        else if (n->caret > 0) { n->caret--; erase(n, n->caret, 1); }
+        n->anchor = n->caret;
     } else if (k->ch == '\t') {
+        delete_selection(n);
         insert(n, "    ", 4);
+        n->anchor = n->caret;
     } else if (k->ch == '\n' || (k->ch >= ' ' && k->ch <= '~')) {
-        if (!k->ctrl && !k->alt) insert(n, &k->ch, 1);
+        if (!k->ctrl && !k->alt) { delete_selection(n); insert(n, &k->ch, 1); n->anchor = n->caret; }
     }
-
+done:
     if (!vertical) n->want_col = (int)(n->caret - line_start(n, n->caret));
     keep_caret_visible(w, n);
     if (n->dirty != was_dirty) update_title(w, n);
 }
 
-static GdiRect r_save(GdiRect c) { return RECT(c.x + 10, c.y + 4, 84, 28); }
+static GdiRect r_save(GdiRect c)  { return RECT(c.x + 10, c.y + 4, 84, 28); }
+static GdiRect r_copy(GdiRect c)  { return RECT(c.x + 100, c.y + 4, 70, 28); }
+static GdiRect r_paste(GdiRect c) { return RECT(c.x + 176, c.y + 4, 70, 28); }
 
 static void np_mouse(WND *w, WmMouseMsg msg, int x, int y)
 {
     Notepad *n = w->user;
     GdiRect c = WmClientRect(w);
     if (msg == WM_MOUSE_UP && UiHit(r_save(c), x + c.x, y + c.y)) { save(w, n); return; }
+    if (msg == WM_MOUSE_UP && UiHit(r_copy(c), x + c.x, y + c.y)) { n->status[0] = 0; copy_selection(n, false); return; }
+    if (msg == WM_MOUSE_UP && UiHit(r_paste(c), x + c.x, y + c.y)) {
+        bool was = n->dirty;
+        n->status[0] = 0;
+        paste(n);
+        keep_caret_visible(w, n);
+        if (n->dirty != was) update_title(w, n);
+        return;
+    }
+    if (msg == WM_MOUSE_DBLCLK && y >= NP_BAR_H) {        /* a word */
+        UINT32 p = n->caret, e = n->caret;
+        #define WORDC(ch) (((ch) >= '0' && (ch) <= '9') || (((ch) | 0x20) >= 'a' && ((ch) | 0x20) <= 'z') || (ch) == '_')
+        while (p > 0 && WORDC(n->text[p - 1])) p--;
+        while (e < n->len && WORDC(n->text[e])) e++;
+        n->anchor = p;
+        n->caret = e;
+        return;
+    }
     if (msg != WM_MOUSE_DOWN && msg != WM_MOUSE_MOVE) return;
     if (y < NP_BAR_H) return;
 
@@ -202,6 +287,7 @@ static void np_mouse(WND *w, WmMouseMsg msg, int x, int y)
     if (col < 0) col = 0;
     UINT32 s = pos_of_line(n, line), e = line_end(n, s);
     n->caret = s + (UINT32)col > e ? e : s + (UINT32)col;
+    if (msg == WM_MOUSE_DOWN && !(InputModifiers() & 1u)) n->anchor = n->caret;   /* drags extend it */
     n->want_col = (int)(n->caret - s);
 }
 
@@ -214,7 +300,9 @@ static void np_paint(WND *w)
     /* Toolbar */
     GdiFillRect(RECT(c.x, c.y, c.w, NP_BAR_H), UI_PANEL);
     UiButton(r_save(c), "Save", false);
-    GdiTextT(c.x + 108, c.y + 10, "Ctrl+S to save", UI_TEXT3);
+    UiButton(r_copy(c), "Copy", false);
+    UiButton(r_paste(c), "Paste", false);
+    GdiTextT(c.x + 262, c.y + 10, "Ctrl+S save,  Ctrl+C / X / V", UI_TEXT3);
     GdiFillRect(RECT(c.x, c.y + NP_BAR_H - 1, c.w, 1), UI_LINE);
 
     /* Text */
@@ -226,6 +314,13 @@ static void np_paint(WND *w)
     for (int l = n->top; l < n->top + vis + 1 && p <= n->len; l++) {
         UINT32 e = line_end(n, p);
         int y = ta.y + 8 + (l - n->top) * NP_LINE_H;
+        UINT32 sa, sb;
+        if (sel_range(n, &sa, &sb) && sa <= e && sb > p) {      /* the selected part of this line */
+            UINT32 f = sa > p ? sa : p, t = sb < e ? sb : e;
+            int x0 = ta.x + NP_PAD + ((int)(f - p) * cell) / 256;
+            int x1 = ta.x + NP_PAD + ((int)(t - p) * cell) / 256 + (sb > e ? cell / 512 + 3 : 0);
+            GdiAlphaFill(RECT(x0, y, x1 - x0, NP_LINE_H), UI_ACCENT, 110);
+        }
         GdiTextMonoN(ta.x + NP_PAD, y, n->text + p, (int)(e - p), UI_TEXT);
         if (l == caret_line && w->active) {
             int col = (int)(n->caret - p);
@@ -260,6 +355,7 @@ void NotepadOpen(RamNode *file)
 {
     Notepad *n = kzalloc(sizeof(Notepad));
     if (!n) return;
+    n->anchor = 0;
     n->text = kmalloc(NP_MAX);
     if (!n->text) { kfree(n); return; }
     if (file && !file->dir) {

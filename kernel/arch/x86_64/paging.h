@@ -34,21 +34,25 @@
 #include "../../include/types.h"
 
 /* Page table entry flags */
-#define PTE_PRESENT   UINT64_C(1 << 0)
-#define PTE_WRITE     UINT64_C(1 << 1)
-#define PTE_USER      UINT64_C(1 << 2)
-#define PTE_WT        UINT64_C(1 << 3)
-#define PTE_CD        UINT64_C(1 << 4)
-#define PTE_ACCESSED  UINT64_C(1 << 5)
-#define PTE_DIRTY     UINT64_C(1 << 6)
-#define PTE_HUGE      UINT64_C(1 << 7)
-#define PTE_GLOBAL    UINT64_C(1 << 8)
-#define PTE_NX        UINT64_C(1ULL << 63)
+#define PTE_PRESENT   (UINT64_C(1) << 0)
+#define PTE_WRITE     (UINT64_C(1) << 1)
+#define PTE_USER      (UINT64_C(1) << 2)
+#define PTE_WT        (UINT64_C(1) << 3)
+#define PTE_CD        (UINT64_C(1) << 4)
+#define PTE_ACCESSED  (UINT64_C(1) << 5)
+#define PTE_DIRTY     (UINT64_C(1) << 6)
+#define PTE_HUGE      (UINT64_C(1) << 7)
+#define PTE_GLOBAL    (UINT64_C(1) << 8)
+#define PTE_NX        (UINT64_C(1) << 63)
 /* Software bit (not present entries): a committed page of a program that
  * is backed on first touch; the entry keeps its USER/WRITE/NX flags */
-#define PTE_LAZY      UINT64_C(1 << 9)
+#define PTE_LAZY      (UINT64_C(1) << 9)
 /* Software bit (user pages): a shared section's frame, owned by the section */
-#define PTE_SHARED    UINT64_C(1 << 10)
+#define PTE_SHARED    (UINT64_C(1) << 10)
+/* Software bit (user pages): a guard page (PAGE_GUARD).  Not backed yet it
+ * is PTE_LAZY too; backed it is present but not USER, so the program's
+ * first touch faults, lifts the guard and is reported (or grows a stack) */
+#define PTE_GUARD     (UINT64_C(1) << 11)
 
 /* Address mask (strips flag bits from PTE) */
 #define PTE_ADDR_MASK UINT64_C(0x000FFFFFFFFFF000)

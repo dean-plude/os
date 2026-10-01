@@ -53,6 +53,20 @@ static void init_std(FILE *f, DWORD which, int flags)
     }
 }
 
+/* dup2 onto descriptor 0-2: the standard stream follows (as it writes
+ * through the descriptor in Microsoft's CRT) */
+void __nova_std_changed(int fd, void *h)
+{
+    FILE *f = &__iob_func()[fd];
+    fflush(f);
+    f->_handle = h;
+    f->_flags &= ~(F_CONSOLE | F_LINEBUF);
+    if (GetFileType(h) == FILE_TYPE_CHAR) {
+        f->_flags |= F_CONSOLE;
+        if (fd == 1) f->_flags |= F_LINEBUF;
+    }
+}
+
 FILE *__iob_func(void)
 {
     if (!g_iob_ready) {
@@ -131,7 +145,10 @@ static int fill(FILE *f)
     char one;
     char *dst = f->_buf ? f->_buf : &one;
     DWORD cap = f->_buf ? (DWORD)f->_bufsize : 1, got = 0;
-    if (!ReadFile(f->_handle, dst, cap, &got, 0)) { f->_flags |= F_ERR; set_errno_from_win32(); return 0; }
+    if (!ReadFile(f->_handle, dst, cap, &got, 0)) {
+        if (GetLastError() == ERROR_BROKEN_PIPE) { f->_flags |= F_EOF; return 0; }   /* writer gone */
+        f->_flags |= F_ERR; set_errno_from_win32(); return 0;
+    }
     if (!got) { f->_flags |= F_EOF; return 0; }
     if (f->_flags & F_CONSOLE) {                         /* console lines end "\r\n" */
         DWORD o = 0;
@@ -198,7 +215,8 @@ size_t fread(void *p, size_t size, size_t n, FILE *f)
             if (f->_flags & F_WRITING) flush_write(f);
             DWORD r = 0;
             if (!ReadFile(f->_handle, d + got, (DWORD)(want - got > 0x40000000 ? 0x40000000 : want - got), &r, 0)) {
-                f->_flags |= F_ERR; break;
+                f->_flags |= GetLastError() == ERROR_BROKEN_PIPE ? F_EOF : F_ERR;
+                break;
             }
             if (!r) { f->_flags |= F_EOF; break; }
             got += r;
@@ -471,6 +489,4 @@ void perror(const char *s)
     fputc('\n', stderr);
 }
 
-/* conio */
-int _getch(void) { return fgetc(stdin); }
-int _kbhit(void) { return 0; }
+/* conio: ucrt_extra.c */

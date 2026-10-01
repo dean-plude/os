@@ -406,14 +406,14 @@ int _vsnprintf(char *s, size_t n, const char *fmt, va_list ap)
 int vsprintf(char *s, const char *fmt, va_list ap)   { return vsnprintf(s, (size_t)-1 >> 1, fmt, ap); }
 int vfprintf(FILE *f, const char *fmt, va_list ap)   { return __nova_vfprintf(f, fmt, ap, 0); }
 int vprintf(const char *fmt, va_list ap)             { return vfprintf(stdout, fmt, ap); }
-int _vscprintf(const char *fmt, va_list ap)          { return vsnprintf(NULL, 0, fmt, ap); }
+__declspec(dllexport) int _vscprintf(const char *fmt, va_list ap)          { return vsnprintf(NULL, 0, fmt, ap); }
 
 int printf(const char *fmt, ...)            { va_list a; va_start(a, fmt); int r = vfprintf(stdout, fmt, a); va_end(a); return r; }
 int fprintf(FILE *f, const char *fmt, ...)  { va_list a; va_start(a, fmt); int r = vfprintf(f, fmt, a); va_end(a); return r; }
 int sprintf(char *s, const char *fmt, ...)  { va_list a; va_start(a, fmt); int r = vsprintf(s, fmt, a); va_end(a); return r; }
 int snprintf(char *s, size_t n, const char *fmt, ...)  { va_list a; va_start(a, fmt); int r = vsnprintf(s, n, fmt, a); va_end(a); return r; }
 int _snprintf(char *s, size_t n, const char *fmt, ...) { va_list a; va_start(a, fmt); int r = _vsnprintf(s, n, fmt, a); va_end(a); return r; }
-int _scprintf(const char *fmt, ...)         { va_list a; va_start(a, fmt); int r = _vscprintf(fmt, a); va_end(a); return r; }
+__declspec(dllexport) int _scprintf(const char *fmt, ...)         { va_list a; va_start(a, fmt); int r = _vscprintf(fmt, a); va_end(a); return r; }
 int sprintf_s(char *s, size_t n, const char *fmt, ...) { va_list a; va_start(a, fmt); int r = vsnprintf(s, n, fmt, a); va_end(a); return r; }
 int vsprintf_s(char *s, size_t n, const char *fmt, va_list ap) { return vsnprintf(s, n, fmt, ap); }
 int _snprintf_s(char *s, size_t n, size_t cnt, const char *fmt, ...)
@@ -500,12 +500,15 @@ int _vsnwprintf(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap)
     int r = __nova_vsnwprintf(s, n, fmt, ap, 0);
     return (size_t)r >= n ? -1 : r;
 }
-int vswprintf(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap)
-{
-    int r = __nova_vsnwprintf(s, n, fmt, ap, 0);
-    return (size_t)r >= n ? -1 : r;
-}
-int swprintf(wchar_t *s, size_t n, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = vswprintf(s, n, fmt, a); va_end(a); return r; }
+/* msvcrt.dll's swprintf and vswprintf (also exported as _swprintf and
+ * _vswprintf): no buffer size, as programs built for msvcrt.dll call them */
+__declspec(dllexport) int _vswprintf(wchar_t *s, const wchar_t *fmt, va_list ap) { return __nova_vsnwprintf(s, (size_t)1 << 30, fmt, ap, 0); }
+__declspec(dllexport) int _swprintf(wchar_t *s, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = _vswprintf(s, fmt, a); va_end(a); return r; }
+#ifdef _WIN64
+__asm__(".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:swprintf=_swprintf /EXPORT:vswprintf=_vswprintf\"\n\t.text\n");
+#else                                                   /* (x86 C names have a leading underscore) */
+__asm__(".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:swprintf=__swprintf /EXPORT:vswprintf=__vswprintf\"\n\t.text\n");
+#endif
 int _snwprintf(wchar_t *s, size_t n, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = _vsnwprintf(s, n, fmt, a); va_end(a); return r; }
 int vfwprintf(FILE *f, const wchar_t *fmt, va_list ap) { return __nova_vfwprintf(f, fmt, ap, 0); }
 int vwprintf(const wchar_t *fmt, va_list ap) { return vfwprintf(stdout, fmt, ap); }
@@ -513,5 +516,5 @@ int fwprintf(FILE *f, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); in
 int wprintf(const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = vfwprintf(stdout, fmt, a); va_end(a); return r; }
 int _vscwprintf(const wchar_t *fmt, va_list ap) { return __nova_vsnwprintf(NULL, 0, fmt, ap, 0); }
 int _scwprintf(const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = _vscwprintf(fmt, a); va_end(a); return r; }
-int swprintf_s(wchar_t *s, size_t n, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = vswprintf(s, n, fmt, a); va_end(a); return r; }
-int vswprintf_s(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap) { return vswprintf(s, n, fmt, ap); }
+int vswprintf_s(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap) { int r = _vsnwprintf(s, n, fmt, ap); if (n && (r < 0 || (size_t)r >= n)) { s[0] = 0; return -1; } return r; }
+int swprintf_s(wchar_t *s, size_t n, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = vswprintf_s(s, n, fmt, a); va_end(a); return r; }

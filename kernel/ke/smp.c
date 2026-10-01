@@ -151,6 +151,26 @@ void bkl_leave_kernel(void)
     irq_restore(s);
 }
 
+uint32_t bkl_drop(void)
+{
+    IrqState s = irq_save();
+    Thread *t = me();
+    uint32_t depth = t->bkl_depth;
+    if (depth) { t->bkl_depth = 0; raw_unlock(); }
+    irq_restore(s);
+    return depth;
+}
+
+void bkl_restore(uint32_t depth)
+{
+    if (!depth) return;
+    IrqState s = irq_save();
+    Thread *t = me();
+    raw_lock(true);
+    t->bkl_depth = depth;
+    irq_restore(s);
+}
+
 bool bkl_held(void)
 {
     Thread *t = me();
@@ -405,18 +425,18 @@ static bool start_ap(uint32_t cpu, uint8_t apic)
     return false;
 }
 
-void smp_start(void)
+uint32_t smp_start(void)
 {
     g_kpcr[0].ApicId = apic_id();
     uint8_t ids[64];
     uint32_t n = madt_cpus(ids, 64);
     if (n <= 1) {
         kprintf("[SMP] One CPU%s\n", n ? "" : " (no ACPI MADT)");
-        return;
+        return 1;
     }
     if (!g_low_ok) {
         kprintf("[SMP] %u CPUs, but the start-up page 0x%x is in use: using one\n", n, TRAMP_PA);
-        return;
+        return 1;
     }
 
     /* The trampoline, and a page table for it: the kernel's upper half plus
@@ -447,4 +467,5 @@ void smp_start(void)
     }
     kprintf("[SMP] %u CPUs found, %u started%s\n", n, started + 1,
             n > MAX_CPUS ? " (the rest exceed MAX_CPUS)" : "");
+    return started + 1;
 }

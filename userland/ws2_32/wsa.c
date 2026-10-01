@@ -355,3 +355,212 @@ static int enum_protocols(const int *which, BYTE *buf, LPDWORD len, BOOL wide)
 
 int WSAEnumProtocolsW(int *protocols, LPWSAPROTOCOL_INFOW buf, LPDWORD len) { return enum_protocols(protocols, (BYTE *)buf, len, TRUE); }
 int WSAEnumProtocolsA(int *protocols, LPWSAPROTOCOL_INFOA buf, LPDWORD len) { return enum_protocols(protocols, (BYTE *)buf, len, FALSE); }
+
+/* -----------------------------------------------------------------------
+ * WSAEventSelect: a helper thread looks at the registered sockets (with
+ * select) and sets their events; WSAEnumNetworkEvents reports and clears
+ * ----------------------------------------------------------------------- */
+WINBASEAPI VOID WINAPI Sleep(DWORD ms);
+
+typedef struct { SOCKET s; WSAEVENT ev; long mask, pending; int closed; } EvSel;
+static EvSel g_evsel[64];
+static volatile long g_evsel_lock, g_evsel_thread;
+
+static void es_lock(void)   { while (__atomic_exchange_n(&g_evsel_lock, 1, __ATOMIC_ACQUIRE)) Sleep(0); }
+static void es_unlock(void) { __atomic_store_n(&g_evsel_lock, 0, __ATOMIC_RELEASE); }
+
+static DWORD WINAPI evsel_thread(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        fd_set rd, wr;
+        rd.fd_count = wr.fd_count = 0;
+        es_lock();
+        for (int i = 0; i < 64; i++) {
+            if (!g_evsel[i].ev) continue;
+            if (g_evsel[i].mask & (FD_READ | FD_ACCEPT | FD_CLOSE)) rd.fd_array[rd.fd_count++] = g_evsel[i].s;
+            if (g_evsel[i].mask & (FD_WRITE | FD_CONNECT)) wr.fd_array[wr.fd_count++] = g_evsel[i].s;
+        }
+        es_unlock();
+        if (!rd.fd_count && !wr.fd_count) { Sleep(20); continue; }
+        struct timeval tv = { 0, 20000 };
+        if (select(0, &rd, &wr, 0, &tv) <= 0) { Sleep(5); continue; }
+        es_lock();
+        for (int i = 0; i < 64; i++) {
+            EvSel *e = &g_evsel[i];
+            if (!e->ev) continue;
+            long got = 0;
+            if (__WSAFDIsSet(e->s, &rd)) {
+                char c;
+                int n = recv(e->s, &c, 1, MSG_PEEK);
+                if (n == 0) { got |= FD_CLOSE; e->closed = 1; }
+                else got |= (e->mask & FD_ACCEPT) ? FD_ACCEPT : FD_READ;
+            }
+            if (__WSAFDIsSet(e->s, &wr)) got |= (e->mask & FD_CONNECT) ? FD_CONNECT : FD_WRITE;
+            got &= e->mask & ~e->pending;
+            if (e->closed) got &= ~FD_READ;
+            if (got) { e->pending |= got; SetEvent(e->ev); }
+        }
+        es_unlock();
+        Sleep(5);
+    }
+}
+
+/* Whether @s is a socket (a pipe or file handle is not: WSAENOTSOCK) */
+static int is_socket(SOCKET s)
+{
+    BYTE st[3];
+    return NtNovaSockCtl((INT_PTR)s, 4, 0, st) == 0;
+}
+
+int WSAEventSelect(SOCKET s, WSAEVENT ev, long events)
+{
+    if (!is_socket(s)) { set_err(WSAENOTSOCK); return SOCKET_ERROR; }
+    es_lock();
+    int free = -1, at = -1;
+    for (int i = 0; i < 64; i++) {
+        if (g_evsel[i].ev && g_evsel[i].s == s) at = i;
+        if (!g_evsel[i].ev && free < 0) free = i;
+    }
+    if (at < 0) at = free;
+    if (at < 0) { es_unlock(); set_err(WSAENOBUFS); return SOCKET_ERROR; }
+    if (!ev || !events) memset(&g_evsel[at], 0, sizeof(EvSel));
+    else { g_evsel[at].s = s; g_evsel[at].ev = ev; g_evsel[at].mask = events; g_evsel[at].pending = 0; g_evsel[at].closed = 0; }
+    es_unlock();
+    u_long nb = 1;
+    ioctlsocket(s, FIONBIO, &nb);                       /* as on Windows: the socket is non-blocking now */
+    if (!__atomic_exchange_n(&g_evsel_thread, 1, __ATOMIC_ACQ_REL)) {
+        HANDLE t = CreateThread(0, 64 * 1024, (LPTHREAD_START_ROUTINE)evsel_thread, 0, 0, 0);
+        if (t) CloseHandle(t);
+    }
+    return 0;
+}
+
+int WSAEnumNetworkEvents(SOCKET s, WSAEVENT ev, LPWSANETWORKEVENTS out)
+{
+    if (!is_socket(s)) { set_err(WSAENOTSOCK); return SOCKET_ERROR; }   /* (gnulib's poll tells pipes this way) */
+    memset(out, 0, sizeof(*out));
+    es_lock();
+    for (int i = 0; i < 64; i++) {
+        if (!g_evsel[i].ev || g_evsel[i].s != s) continue;
+        out->lNetworkEvents = g_evsel[i].pending;
+        g_evsel[i].pending = 0;
+        break;
+    }
+    es_unlock();
+    if (ev) ResetEvent(ev);
+    return 0;
+}
+
+/* getnameinfo: numeric (the names are the addresses; no reverse lookups) */
+int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, DWORD hostlen, char *serv, DWORD servlen, int flags)
+{
+    (void)flags;
+    if (!sa || (sa->sa_family != AF_INET && sa->sa_family != AF_INET6)) return WSAEAFNOSUPPORT;
+    if (sa->sa_family == AF_INET && salen < (socklen_t)sizeof(struct sockaddr_in)) return WSAEFAULT;
+    const void *addr;
+    u_short port;
+    if (sa->sa_family == AF_INET) { addr = &((const struct sockaddr_in *)sa)->sin_addr; port = ((const struct sockaddr_in *)sa)->sin_port; }
+    else { addr = (const BYTE *)sa + 8; port = *(const u_short *)((const BYTE *)sa + 2); }
+    if (host && hostlen && !inet_ntop(sa->sa_family, addr, host, hostlen)) return WSAEFAULT;
+    if (serv && servlen) {
+        char t[8];
+        unsigned p = ntohs(port), k = 0;
+        char r[8];
+        do { r[k++] = (char)('0' + p % 10); p /= 10; } while (p);
+        for (unsigned i = 0; i < k; i++) t[i] = r[k - 1 - i];
+        t[k] = 0;
+        if (k + 1 > servlen) return WSAEFAULT;
+        memcpy(serv, t, k + 1);
+    }
+    return 0;
+}
+
+/* "a.b.c.d" or "a.b.c.d:port" (IPv4 only) */
+int WSAAddressToStringA(struct sockaddr *sa, DWORD len, void *info, char *out, DWORD *outlen)
+{
+    (void)info;
+    if (!sa || !outlen || len < sizeof(struct sockaddr_in) || sa->sa_family != AF_INET) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    struct sockaddr_in *in = (struct sockaddr_in *)sa;
+    char tmp[32];
+    if (!inet_ntop(AF_INET, &in->sin_addr, tmp, 16)) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    if (in->sin_port) {
+        size_t n = strlen(tmp);
+        unsigned port = ntohs(in->sin_port);
+        char d[8]; int k = 0;
+        do { d[k++] = (char)('0' + port % 10); port /= 10; } while (port);
+        tmp[n++] = ':';
+        while (k) tmp[n++] = d[--k];
+        tmp[n] = 0;
+    }
+    DWORD need = (DWORD)strlen(tmp) + 1;
+    if (!out || *outlen < need) { *outlen = need; set_err(WSAEFAULT); return SOCKET_ERROR; }
+    memcpy(out, tmp, need);
+    *outlen = need;
+    return 0;
+}
+int WSAAddressToStringW(struct sockaddr *sa, DWORD len, void *info, WCHAR *out, DWORD *outlen)
+{
+    char tmp[32];
+    DWORD n = sizeof(tmp);
+    if (!outlen || WSAAddressToStringA(sa, len, info, tmp, &n)) return SOCKET_ERROR;
+    if (!out || *outlen < n) { *outlen = n; set_err(WSAEFAULT); return SOCKET_ERROR; }
+    for (DWORD i = 0; i < n; i++) out[i] = (WCHAR)tmp[i];
+    *outlen = n;
+    return 0;
+}
+
+int GetNameInfoW(const struct sockaddr *sa, socklen_t salen, WCHAR *host, DWORD hostlen, WCHAR *serv, DWORD servlen, int flags)
+{
+    char h[64], s[16];
+    int r = getnameinfo(sa, salen, host ? h : 0, host ? sizeof(h) : 0, serv ? s : 0, serv ? sizeof(s) : 0, flags);
+    if (r) return r;
+    if (host) { DWORD i = 0; for (; h[i] && i < hostlen - 1; i++) host[i] = (WCHAR)h[i]; host[i] = 0; }
+    if (serv) { DWORD i = 0; for (; s[i] && i < servlen - 1; i++) serv[i] = (WCHAR)s[i]; serv[i] = 0; }
+    return 0;
+}
+
+/* Sharing a socket with another process is not supported */
+int WSADuplicateSocketW(SOCKET s, DWORD pid, void *info)
+{
+    (void)s; (void)pid; (void)info;
+    set_err(WSAEINVAL);
+    return SOCKET_ERROR;
+}
+int WSADuplicateSocketA(SOCKET s, DWORD pid, void *info) { return WSADuplicateSocketW(s, pid, info); }
+
+/* WSAConnect: caller and callee data and QoS are not supported (ignored) */
+int WSAConnect(SOCKET s, const struct sockaddr *to, int len, void *caller, void *callee, void *sqos, void *gqos)
+{
+    (void)caller; (void)callee; (void)sqos; (void)gqos;
+    return connect(s, to, len);
+}
+
+/* "a.b.c.d[:port]" (IPv4) into a sockaddr_in */
+int WSAStringToAddressA(char *str, int family, void *info, struct sockaddr *sa, int *len)
+{
+    (void)info;
+    if (!str || !sa || !len || family != AF_INET) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    if (*len < (int)sizeof(struct sockaddr_in)) { *len = sizeof(struct sockaddr_in); set_err(WSAEFAULT); return SOCKET_ERROR; }
+    char host[32];
+    int i = 0;
+    for (; str[i] && str[i] != ':' && i < 31; i++) host[i] = str[i];
+    host[i] = 0;
+    unsigned port = 0;
+    if (str[i] == ':') for (const char *p = str + i + 1; *p >= '0' && *p <= '9'; p++) port = port * 10 + (unsigned)(*p - '0');
+    struct sockaddr_in *in = (struct sockaddr_in *)sa;
+    memset(in, 0, sizeof(*in));
+    in->sin_family = AF_INET;
+    in->sin_port = htons((u_short)port);
+    if (inet_pton(AF_INET, host, &in->sin_addr) != 1) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    *len = sizeof(struct sockaddr_in);
+    return 0;
+}
+int WSAStringToAddressW(WCHAR *str, int family, void *info, struct sockaddr *sa, int *len)
+{
+    char a[64];
+    int i = 0;
+    for (; str && str[i] && i < 63; i++) a[i] = (char)str[i];
+    a[i] = 0;
+    return WSAStringToAddressA(str ? a : 0, family, info, sa, len);
+}

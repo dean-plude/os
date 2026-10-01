@@ -147,3 +147,24 @@ WINADVAPI BOOL WINAPI IsTextUnicode(const void *buf, int n, LPINT result)
 WINADVAPI BOOL WINAPI GetCurrentHwProfileW(PVOID info) { (void)info; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return FALSE; }
 WINADVAPI BOOL WINAPI InitiateSystemShutdownExW(LPWSTR m, LPWSTR msg, DWORD t, BOOL f, BOOL r, DWORD reason)
 { (void)m; (void)msg; (void)t; (void)f; (void)r; (void)reason; SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+
+WINADVAPI BOOL WINAPI QueryServiceStatusEx(SC_HANDLE s, int level, LPBYTE buf, DWORD n, LPDWORD need)
+{
+    (void)s; (void)level; (void)buf; (void)n;
+    if (need) *need = 0;
+    SetLastError(ERROR_INVALID_HANDLE);             /* (there are no services to open) */
+    return FALSE;
+}
+
+/* SetEntriesInAcl: files carry no ACLs here, so the new ACL is an empty
+ * one the caller frees with LocalFree */
+static DWORD entries_in_acl(PACL *out)
+{
+    PACL a = LocalAlloc(LMEM_FIXED, 8);
+    if (!a) return ERROR_NOT_ENOUGH_MEMORY;
+    InitializeAcl(a, 8, 2);
+    *out = a;
+    return ERROR_SUCCESS;
+}
+WINADVAPI DWORD WINAPI SetEntriesInAclA(ULONG n, void *entries, PACL old, PACL *out) { (void)n; (void)entries; (void)old; return entries_in_acl(out); }
+WINADVAPI DWORD WINAPI SetEntriesInAclW(ULONG n, void *entries, PACL old, PACL *out) { (void)n; (void)entries; (void)old; return entries_in_acl(out); }

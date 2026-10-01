@@ -10,7 +10,7 @@
 
 #define UM_MAX_PROCS     32
 #define UM_MAX_HANDLES   256
-#define UM_MAX_REGIONS   256
+#define UM_MAX_REGIONS   8192     /* (runtimes such as CoreCLR reserve thousands of ranges) */
 #define UM_MAX_MODULES   64
 #define UM_MAX_THREADS   64
 
@@ -68,7 +68,8 @@ void um_unlock(UmLock *l);
 /* -----------------------------------------------------------------------
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
-typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION } UmObType;
+typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION, UO_PIPE,
+               UO_DIRECTORY, UO_SYMLINK, UO_TIMER } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -84,7 +85,10 @@ typedef struct UmObject {
     bool            named;          /* in the object namespace (um_thread.c) */
     int             sock;           /* UO_SOCKET: kernel socket index */
     UmProcess      *proc;           /* UO_PROCESS: signaled when it has exited */
-    void           *ptr;            /* UO_KEY: the registry key */
+    void           *ptr;            /* UO_KEY: the registry key; UO_DIRECTORY: its name;
+                                       UO_SYMLINK: its target (UmLinkTarget) */
+    UINT64          due;            /* UO_TIMER: the tick it fires at (0: not set) */
+    UINT32          period;         /* UO_TIMER: ticks between firings (0: once) */
     void          (*destroy)(struct UmObject *o);   /* extra cleanup (sockets, windows) */
 } UmObject;
 
@@ -122,7 +126,7 @@ void      um_ob_unref(UmObject *o);
  * Called with g_um_oblock held. */
 void      um_ob_wake(UmObject *o);
 
-typedef enum { H_FREE = 0, H_FILE, H_CON_IN, H_CON_OUT, H_DIR, H_OBJECT } UmHandleKind;
+typedef enum { H_FREE = 0, H_FILE, H_CON_IN, H_CON_OUT, H_DIR, H_OBJECT, H_NULL } UmHandleKind;
 
 typedef struct {
     UmHandleKind kind;
@@ -130,6 +134,9 @@ typedef struct {
     UmObject    *obj;           /* H_OBJECT */
     UINT64       pos;           /* H_FILE: current byte offset; H_DIR: next entry */
     bool         read, write, append, delete_on_close;
+    bool         inherit;       /* passed to child processes (bInheritHandles) */
+    bool         async;         /* H_FILE: opened for overlapped I/O */
+    bool         npfs;          /* H_NULL: the \Device\NamedPipe\ directory (a RootDirectory for pipe names) */
 } UmHandle;
 
 typedef struct {
@@ -140,7 +147,7 @@ typedef struct {
 } UmRegion;
 
 typedef struct {
-    char   name[32];            /* lower case, e.g. "kernel32.dll" */
+    char   name[64];            /* lower case, e.g. "kernel32.dll" */
     char   path[96];            /* full path on drive C: */
     UINT64 base, size;
     UINT32 entry;               /* entry point RVA (0: none) */
@@ -149,6 +156,8 @@ typedef struct {
 
 struct UmProcess {
     UINT32      pid;
+    UINT32      parent_pid;     /* the process that started it (0: the system) */
+    UINT64      create_time;    /* 100 ns units since 1601 */
     bool        wow;            /* a 32-bit (x86) program: compatibility mode, SysWOW64 DLLs */
     UmLayout    lay;            /* where its system areas and allocations go */
     char        name[32];
@@ -157,9 +166,11 @@ struct UmProcess {
     RamNode    *exe_dir;        /* searched for DLLs before System32 */
     UmConsole  *con;
     UmLock      lock;           /* handles, regions, modules, threads */
+    UmLock      ldr_lock;       /* one runtime DLL load at a time (taken before the desktop lock) */
+    UINT64      image_base, image_entry;   /* the program's, between um_spawn_image and _finish */
 
     UmHandle    handles[UM_MAX_HANDLES];
-    UmRegion    regions[UM_MAX_REGIONS];
+    UmRegion   *regions;        /* [UM_MAX_REGIONS], allocated with the process */
     int         nregions;
     UmModule    modules[UM_MAX_MODULES];
     int         nmodules;
@@ -204,10 +215,16 @@ void       um_exit_process(UINT32 status) __attribute__((noreturn));
 /* Address-space services (process may be the current one) */
 bool       um_is_free(UmProcess *p, UINT64 base, UINT64 size);
 UINT64     um_find_free(UmProcess *p, UINT64 size, UINT64 lo, UINT64 hi);
+UINT64     um_find_free_aligned(UmProcess *p, UINT64 size, UINT64 lo, UINT64 hi, UINT64 align);
+/* MEM_EXTENDED_PARAMETERs (user @ptr, @n of them): the address range and
+ * alignment a MemExtendedParameterAddressRequirements asks for (left as
+ * they are if none).  False if unreadable. */
+bool       um_addr_requirements(UINT64 ptr, UINT32 n, UINT64 *lo, UINT64 *hi, UINT64 *align);
 UmRegion  *um_region_add(UmProcess *p, UINT64 base, UINT64 size, UINT32 protect, bool image);
 UmRegion  *um_region_find(UmProcess *p, UINT64 va);
 void       um_region_remove(UmProcess *p, UmRegion *r);
 bool       um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect);
+bool       um_is_guard(UmProcess *p, UINT64 va);            /* a PAGE_GUARD page */
 void       um_decommit(UmProcess *p, UINT64 va, UINT64 size);
 bool       um_is_committed(UmProcess *p, UINT64 va);
 /* Shared sections: frames the section owns, mapped into processes */
@@ -228,7 +245,7 @@ UmThread  *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack
                             bool suspended, UINT32 *status);
 /* Load a DLL (and what it imports) into the running process: *base gets
  * its address; new modules are appended to the loader info page. */
-UINT32     um_load_dll(UmProcess *p, const char *name, UINT64 *base);
+UINT32     um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags);
 const UmModule *um_module_at(UmProcess *p, UINT64 va);
 
 /* um_console.c */
@@ -254,11 +271,56 @@ UINT64     um_stack_arg(int n);                 /* syscall argument n >= 5 */
 UINT64     um_now_100ns(void);                  /* system time (100 ns since 1601) */
 UINT64     um_handle_new_object(UmProcess *p, UmObject *o);   /* takes a reference; 0 if full */
 UmObject  *um_handle_object(UmProcess *p, UINT64 h, UmObType type);   /* referenced; NULL if bad */
+/* The process a handle names (-1: @self); @ob holds a reference to drop
+ * (um_ob_unref) when it is another process.  NULL if bad or gone. */
+UmProcess *um_proc_of(UmProcess *self, UINT64 h, UmObject **ob);
+bool       um_handle_object_exists(UmProcess *p, UINT64 h);           /* any open handle */
+UmObject  *um_open_process(UINT32 pid);          /* OpenProcess: referenced, or NULL */
+UmObject  *um_open_thread(UINT32 tid);           /* OpenThread: referenced, or NULL */
+void       um_pipe_end_name(UmObject *o, char *buf, int cap); /* um_pipe.c: a pipe end's pipe name */
+void       um_object_name(UmObject *o, char *buf, int cap);   /* um_thread.c: a named object's name */
 UINT64     um_close_handle(UINT64 h);           /* NtClose for the current process */
-/* UmSpawn, with standard handles taken from the creating process (@std:
- * three entries, kind H_FREE = the console default) */
+/* How a new process starts: standard handles (kind H_FREE = the console),
+ * handles it inherits (at the same values; NULL: none) and its
+ * environment (UTF-8 "NAME=value" strings, then an empty one; NULL: the
+ * default).  File nodes must be referenced by the caller's locks. */
+typedef struct {
+    const UmHandle *std;                /* [3], or NULL */
+    UINT64          std_value[3];       /* nonzero: that inherited handle is the standard one */
+    const UmHandle *inherit;            /* [UM_MAX_HANDLES], or NULL */
+    const char     *env;
+    UINT32          env_len;
+    const UINT8    *runtime;            /* STARTUPINFO's lpReserved2 bytes (the C runtime's), or NULL */
+    UINT32          runtime_len;
+} UmSpawnOpts;
 UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
-                       const UmHandle *std, char *err, int err_cap);
+                       const UmSpawnOpts *o, char *err, int err_cap);
+/* um_spawn_ex in two steps: map the images (with @yield, the desktop lock
+ * is let go meanwhile; see um.c), then finish under the caller's locks */
+UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield, char *err, int err_cap);
+UmProcess *um_spawn_finish(UmProcess *p, RamNode *exe, const char *cmdline, const UmSpawnOpts *o,
+                           char *err, int err_cap);
+/* A path from OBJECT_ATTRIBUTES (UTF-8, NT prefix removed); *attrs gets
+ * its Attributes (OBJ_INHERIT...) */
+UINT32     um_get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, UINT32 *attrs);
+
+/* um_pipe.c: named and anonymous pipes */
+const char *um_pipe_name(const char *path);   /* "\Device\NamedPipe\X" -> "X", else NULL */
+UINT32     um_pipe_create(const char *path, UINT32 access, UINT32 disposition, UINT32 options,
+                          UINT32 type, UINT32 read_mode, UINT32 completion, UINT32 max_inst,
+                          UINT32 in_quota, UINT32 out_quota, UmObject **out, bool *rd, bool *wr);
+UINT32     um_pipe_open(const char *path, UINT32 access, UINT32 options, UmObject **out, bool *rd, bool *wr);
+bool       um_pipe_anonymous(UmObject **rd_end, UmObject **wr_end);
+UINT32     um_pipe_read(UmObject *o, UINT64 event, UINT64 iosb, UINT64 buf, UINT32 len, UINT64 *info);
+UINT32     um_pipe_write(UmObject *o, UINT64 event, UINT64 iosb, UINT64 buf, UINT32 len, UINT64 *info);
+UINT32     um_pipe_fsctl(UmObject *o, UINT64 event, UINT64 iosb, UINT32 code,
+                         UINT64 in, UINT32 in_len, UINT64 out, UINT32 out_len, UINT64 *info);
+UINT32     um_pipe_query(UmObject *o, UINT32 cls, UINT8 *buf, UINT32 cap, UINT32 *len);
+UINT32     um_pipe_set_mode(UmObject *o, UINT32 read_mode, UINT32 completion);
+UINT32     um_pipe_cancel(UmObject *o, UINT64 iosb);
+bool       um_pipe_is_async(UmObject *o);
+UINT32     um_pipe_client_pid(UmObject *o);
+void       um_pipe_process_gone(UmProcess *p);
 
 /* um_thread.c: threads, synchronization objects, waits */
 void       um_thread_syscalls_init(void);
@@ -277,3 +339,5 @@ void       um_registry_init(void);
 void       um_registry_syscalls_init(void);
 void       um_registry_poll(void);   /* save the hive after changes (desktop thread) */
 void       um_registry_flush(void);  /* save the hive now if it changed */
+void       um_registry_environment(void (*cb)(void *ctx, const char *name, const char *value, bool user, bool expand),
+                                   void *ctx);

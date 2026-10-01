@@ -5,7 +5,7 @@ Windows executables without emulation: 64-bit (x64, PE32+) programs, and
 32-bit (x86, PE32) ones, such as most setup programs, through its own
 WoW64 layer.
 
-## Status: Phase 13 — 32-bit Windows programs (WoW64), after unmodified 7-Zip, an App Store, Windows Installer (.msi) and a NovaOS installer
+## Status: Phase 13 — 32-bit Windows programs (WoW64), after unmodified 7-Zip, an App Store, Windows Installer (.msi), a NovaOS installer, git, and the Java, .NET, Node.js and Python runtimes
 
 **What works:**
 
@@ -404,7 +404,7 @@ WoW64 layer.
 - Tests: `apitest` 46/46, `comtest` 49/49, `cppeh` 17/17 and
   `disktest write` / `verify` across a restart (150 files, passing on FAT32
   and FAT16, with `fsck.fat` finding the volumes clean).
-- Not yet: pipes (`CreatePipe`), dialog boxes, menus and child-window
+- Not yet: dialog boxes, menus and child-window
   controls, file-open dialogs (they report "cancelled"), the MSVC FH4 C++
   exception tables, type libraries, `RegNotifyChangeKeyValue` events, audio,
   and a clipboard shared between programs.
@@ -452,6 +452,16 @@ WoW64 layer.
   - the list, and what each service relies on, is in `um_syscall.c`
     (`um_lock_free_init`); files, the registry, process creation, the
     console and the loader still use the big lock.
+  - the program loader holds `DesktopLock` only to look a module's file
+    up: the file is then pinned (`RamfsPin`: its contents stay put, and
+    writes to it fail, as Windows refuses writes to a mapped image) and
+    copied, relocated, bound and committed without it, and without the
+    big lock (`bkl_drop`; the work touches only the heap, the page
+    allocator and the new image's address space); `LoadLibrary`
+    serializes on a per-process loader lock instead.  Programs started from the Terminal,
+    Explorer, `start` or the desktop are loaded on a worker thread
+    (`UmSpawnStart`), so starting `node.exe` (90 MB) or loading CoreCLR
+    no longer freezes the desktop for seconds.
 - Waits are woken, not polled: `SetEvent`, `ReleaseSemaphore`, a thread or
   process ending, a message arriving or network data coming in wakes the
   waiting threads at once (wait queues, `ke/waitq.c`), and `select()` waits
@@ -548,8 +558,8 @@ changed; every fix is in NovaOS.
   programs are tested from a second disk image holding 7-Zip, Git, CMake,
   Ninja, Neovim, Notepad++ and others, driven by a QEMU harness that types
   Terminal commands, clicks, drags and takes screenshots.
-- Not yet: pipes between programs and `cmd.exe`, the OLE clipboard, and
-  drags from 7-Zip's own file manager onto other programs are untested.
+- Not yet: drags from 7-Zip's own file manager onto other programs are
+  untested.  (Pipes, `cmd.exe` and the clipboard: see below.)
 
 ### The App Store
 
@@ -727,6 +737,269 @@ the 64-bit kernel, and they get a 32-bit copy of the whole userland in
   comtest round-trips a shortcut through `IShellLinkW`, `IPersistFile`
   and `IShellLinkA` in both 64-bit and 32-bit builds.
 
+### Pipes and cmd.exe
+
+- **Pipes in the kernel** (`kernel/um/um_pipe.c`): named pipes
+  (`NtCreateNamedPipeFile`, `\\.\pipe\NAME` opened with `CreateFile`) and
+  anonymous ones (`CreatePipe` makes a named pipe with a private name, as
+  Windows does).  Each direction is a ring buffer; byte and message pipes
+  (a reader in message mode gets one message per read, the rest with
+  `ERROR_MORE_DATA`), `ConnectNamedPipe`, `DisconnectNamedPipe`,
+  `WaitNamedPipe`, `PeekNamedPipe`, `TransactNamedPipe`/`CallNamedPipe`,
+  `GetNamedPipeInfo`, `Set/GetNamedPipeHandleState` (message read mode,
+  `PIPE_NOWAIT`) and instance limits.  The ends are kernel objects, so
+  closing the last handle to one is what the other side sees: a reader
+  gets what is left and then `ERROR_BROKEN_PIPE` (end of file), a writer
+  `ERROR_NO_DATA`.
+- **Overlapped I/O that really waits**: on a handle opened with
+  `FILE_FLAG_OVERLAPPED` a read, write or `ConnectNamedPipe` that cannot
+  finish stays pending (`ERROR_IO_PENDING`); whoever changes the pipe later
+  finishes it, writing the data and the status into the waiting program
+  and setting its event.  Completion ports get their packet and
+  `ReadFileEx`/`WriteFileEx` routines run at the next alertable wait
+  (through a kernel32 helper thread), `CancelIo`/`CancelIoEx` end requests
+  with `ERROR_OPERATION_ABORTED`, and `GetOverlappedResult(Ex)` waits for
+  them.  A 32-bit program's I/O status block goes to the kernel as its own
+  (32-bit layout) so it can be finished later.
+- **Handles for child processes**: handles carry an inherit flag
+  (`SECURITY_ATTRIBUTES.bInheritHandle`, `SetHandleInformation`,
+  `DuplicateHandle(..., TRUE, ...)`), and `CreateProcess(..., TRUE, ...)`
+  gives the child every inheritable handle at the same value; the
+  standard handles come from `STARTUPINFO` or, without
+  `STARTF_USESTDHANDLES`, from the parent's own (so a program's children
+  write where it writes).  `DuplicateHandle` works into and out of another
+  process.  `DETACHED_PROCESS`/`CREATE_NO_WINDOW` start without a console.
+- **The environment** is one sorted table in kernel32 that `SetEnvironmentVariable`,
+  `GetEnvironmentStrings(A/W)` and `CreateProcess` all see; a child gets
+  its parent's environment (or `lpEnvironment`, ANSI or Unicode) instead
+  of a fixed default.  `ComSpec` names cmd.exe.
+- **`NUL`** is the null device (`>nul`, `CreateFile("nul")` in any folder).
+- **C runtime**: `system()`/`_wsystem()` run `cmd.exe /c`, `_popen`/
+  `_pclose`/`_wpopen` read or write a command through a pipe, `_pipe`
+  makes one, and reading a pipe whose writer is gone is end of file.
+- **cmd.exe** (`userland/programs/cmd.c`, in System32 and SysWOW64): the
+  command interpreter, interactive or `/c`/`/k`.  Lines are expanded
+  (`%VAR%`, `%VAR:~1,2%`, `%VAR:a=b%`, `%ERRORLEVEL%`, `%CD%`, `%DATE%`,
+  `%RANDOM%`; `%0`-`%9`, `%*` and `%~dpnxfatz0` in batch files; `!VAR!`
+  with delayed expansion), then parsed: `&`, `&&`, `||`, `|`, `( )`
+  blocks, `^` escapes and redirections (`<`, `>`, `>>`, `2>`, `2>&1`,
+  `>nul`).  IF (`==`, `/i`, `not`, `EQU`...`GEQ`, `errorlevel`, `exist`,
+  `defined`) with ELSE; FOR, `/d`, `/r`, `/l` and `/f` over files,
+  strings and command output (`tokens=`, `delims=`, `skip=`, `eol=`,
+  `usebackq`).  Batch files: labels, GOTO, CALL (files and `:labels`),
+  SHIFT, SETLOCAL/ENDLOCAL (with `enabledelayedexpansion`), `exit /b`,
+  ECHO ON/OFF and `@`.  Internal commands: echo, set (`/a` arithmetic,
+  `/p` input), cd, dir (`/b`, `/s`, `/a`), type, copy, del, md, rd `/s`,
+  ren, move, pushd/popd, path, prompt, start, pause, title, ver and more.
+  Programs run with the redirected handles; each side of a pipe that is
+  not a program runs in a child cmd.exe, as on Windows.  Also new in
+  System32: `find`, `findstr` (its regular expressions), `sort`, `more`
+  and `timeout`.
+- **The Terminal hands lines to cmd.exe** when they use pipes,
+  redirections or `&&`/`||`, and when they name a `.bat`/`.cmd` file;
+  `cmd` starts it interactively.  Ctrl+C now stops every program on the
+  console, not just the first.
+- Tests: `pipetest.exe` (62 checks, 64-bit and 32-bit): anonymous pipes
+  and end of file, a 300 KB write through a 4 KB pipe, children reading
+  and writing redirected pipes, inherited handles by value, the
+  environment, `cmd /c`, a pipeline into a program, `_popen`, `system`,
+  `_pipe`, NUL, named pipes in byte and message mode, overlapped connect
+  and reads with events, cancelling, a completion port and a completion
+  routine.  `cmdtest.bat` (29 checks) covers expansion, SET /A, IF, the
+  FOR forms, CALL, delayed expansion, pipes into `find` and `sort`,
+  redirections and error levels.
+- Not yet: `CREATE_SUSPENDED` is ignored and `CREATE_NEW_CONSOLE` shares
+  the console; a file handed to a child has its own position (cmd.exe
+  opens redirection targets for appending so output lands in order).
+
+### The clipboard
+
+- **One clipboard for everything** (`kernel/wm/clipboard.c`, reached by
+  programs through `NtNovaClipboard`): each format is a copy of its
+  bytes; `CF_TEXT`/`CF_OEMTEXT` and `CF_UNICODETEXT` are converted into
+  each other on request (with `CF_LOCALE`); formats a program registers
+  travel by name, since each program numbers them differently.
+- **user32** (`OpenClipboard` ... `GetClipboardData`,
+  `EnumClipboardFormats`, `GetClipboardSequenceNumber`,
+  `GetPriorityClipboardFormat`) now uses it, so text, files (`CF_HDROP`)
+  and private formats copied in one program paste in another.
+  `CF_BITMAP` travels as a `CF_DIB` and comes back as a bitmap; a format
+  set with a NULL handle is rendered by its owner (`WM_RENDERFORMAT`) when
+  the clipboard is closed.
+- **The OLE clipboard** (`userland/ole32/clipbrd.c`): `OleSetClipboard`
+  copies a data object's formats onto it, `OleGetClipboard` gives a data
+  object that reads it (`GetData`, `QueryGetData`, `EnumFormatEtc`),
+  `OleIsCurrentClipboard`, `OleFlushClipboard`.
+- **The built-in apps**: Notepad selects (Shift with the arrows, Home,
+  End, PgUp/PgDn; mouse drags; double-click for a word; Ctrl+A) and has
+  Ctrl+C/X/V with Copy and Paste buttons.  The Terminal selects with a
+  mouse drag (double-click: a word); Ctrl+C copies while something is
+  selected (else it still interrupts), Ctrl+Shift+C always copies, and
+  Ctrl+V, Shift+Insert or a right click paste into the prompt or the
+  running program; the wheel scrolls.  File Explorer copies, cuts and
+  pastes files and folders (Ctrl+C/X/V, Copy and Paste buttons) as
+  `CF_HDROP` with a "Preferred DropEffect", so programs see them too.
+- Tests: `cliptest.exe` (23 checks, 64-bit and 32-bit, each reading back
+  in a second process): Unicode text read as `CF_TEXT` and the other way,
+  a registered format by name, `CF_HDROP` with `DragQueryFile`, a bitmap
+  as a 3x2 DIB and back, the sequence number, and the OLE clipboard.
+
+### Git
+
+MinGit's `git.exe` (2.47) runs: `--version`, `init`, `add`, `commit`,
+`log`, `status`, `diff`, output into pipes (`git log | find`) and a pager
+(`core.pager=more`).  What it needed from NovaOS:
+
+- **A recursive loader lock**: a DLL's initialisation that itself loads
+  a library (git's C runtime start-up does) spun forever on ntdll's
+  loader lock; the lock now belongs to a thread and nests, as Windows'
+  does, and a module being initialised is not initialised twice.
+- **`OpenProcess` for other programs** (`NtOpenProcess`): git waits for
+  its children by process id (`waitpid`); the handle shares the process's
+  exit object, which keeps the exit code after the process is gone.
+- **The C runtime's standard descriptors**: `dup2` onto 0-2 now moves the
+  standard handle and `stdout`/`stderr` with it, and closing the last
+  descriptor of a handle closes it even for 0-2, so a pager sees the end
+  of its input.  New: `_spawn*`/`_exec*`/`_cwait`, `_flushall`, `_umask`,
+  `_wchmod`, `_mktemp`/`_wmktemp`; `_vscprintf`, `_scprintf` and
+  `_wfreopen` are exported.
+- **The rest of its imports**: NUMA queries (`GetNumaHighestNodeNumber`,
+  `GetNumaNodeProcessorMask`...), volume enumeration, `CreateRemoteThread`
+  (this process), `PeekConsoleInput`, `GetSystemTimeAdjustment`,
+  `NtSetEaFile`/`NtQueryEaFile`, `QueryServiceStatusEx`,
+  `SetEntriesInAcl`, and Winsock's `WSAEventSelect`/`WSAEnumNetworkEvents`
+  (a helper thread watches the sockets) and `getnameinfo`.
+- **The whole MinGit layout**: the test disk carries MinGit unzipped as
+  it is on Windows (`C:\Apps\MinGit` with `cmd`, `etc`, `mingw64` and
+  `usr`).  Run as `C:\Apps\MinGit\cmd\git.exe` with nothing on `PATH`,
+  git finds its templates (a new repository gets its sample hooks), its
+  system `gitconfig` and its own helper programs; `checkout -b`, `merge`,
+  `gc` (`pack-objects` and `repack` as child processes), `count-objects`
+  and `fsck` work too.  That took two fixes:
+  - **File names up to 255 characters** on drive C: (they were cut at 47);
+    `gc` renames its pack to a 59-character temporary name.
+  - **Opening a process that has exited but is still held**: `OpenProcess`
+    now finds it while any handle keeps it, as on Windows, so `waitpid`
+    on a finished child gets its exit code.
+- Not yet: MinGit ships no `less`, git's default pager, so give `log` and
+  `config --list` `--no-pager` or `-c core.pager=more`.
+
+### The MSYS2 runtime: `sh.exe`, `clone`, `push`
+
+MinGit's shell and Unix tools (`usr\bin`: `sh.exe` is bash, `ls`, `cat`,
+`wc`...) are MSYS2 programs, built on `msys-2.0.dll`, a fork of the
+Cygwin runtime.  They run unmodified: `sh -c "..."` with pipes,
+`$(...)`, subshells, globbing and redirection, starting Windows programs
+and MSYS ones.  git starts `git-upload-pack` and `git-receive-pack`
+through `sh`, so `git clone`, `fetch` and `push` between repositories on
+C: work.  What the runtime needed from NovaOS:
+
+- **Native API breadth**: object directories and symbolic links
+  (`\BaseNamedObjects\...` with `RootDirectory`-relative names), timer
+  objects, `NtQueryEvent`/`NtQuerySemaphore`, `NtOpenThread`,
+  `NtRead/WriteVirtualMemory` of another process,
+  `NtAllocateVirtualMemoryEx` and `NtMapViewOfSectionEx` with address
+  requirements, `NtQueryObject` names (`\Device\HarddiskVolume1\...`,
+  `\Device\NamedPipe\...`), more `NtQueryInformationFile`,
+  `NtQueryDirectoryFile` and volume classes, tokens, SIDs, ACLs and
+  security descriptors, LSA policy and account queries, and the
+  `RtlGetCurrentDirectory_U` code shape the runtime searches for its
+  `FAST_CWD` pointer.
+- **Guard pages and stack growth**: `PAGE_GUARD` pages raise
+  `STATUS_GUARD_PAGE_VIOLATION` once; on a thread's stack (from the TEB)
+  the next page down becomes the guard and `StackLimit` follows, and new
+  stack pages are read/write even when the reservation says
+  `PAGE_NOACCESS`.  The runtime moves the main stack to its own area.
+- **APCs at start-up**: the runtime queues its signal thread as an APC
+  from a DLL's initialisation; ntdll now runs queued APCs once the loader
+  is done, and alertable waits run them.
+- **fork**: `STARTUPINFO.lpReserved2` reaches the child (the process
+  parameters' `RuntimeData`), inheritable handles are really inheritable
+  (`OBJ_INHERIT` and `bInheritHandle` on events, mutexes, semaphores,
+  sections, timers and directories), so the child finds its parent's
+  shared memory and rebuilds itself at the same addresses.
+- **Pipes by directory handle**: the runtime opens `\Device\NamedPipe\`
+  and creates its pipes relative to that handle.
+- **Windows' directory listings**: every directory but a drive's root
+  lists `.` and `..` first, so opening an empty directory succeeds (git
+  moves pushed objects out of an empty quarantine folder).
+- **Winsock tells sockets from pipes**: `WSAEnumNetworkEvents` and
+  `WSAEventSelect` fail with `WSAENOTSOCK` on other handles, which is how
+  git's `poll` finds out a pipe was closed.
+- Smaller pieces: C runtime `swprintf` in msvcrt's legacy form (git's
+  `git-*.exe` launchers), `_findfirst*`/`_findnext*`, console input queries
+  failing for files, `GetConsoleWindow`, new stub DLLs (`iphlpapi`,
+  `netapi32`, `secur32`, `authz`, `dnsapi`, `pdh`) and more kernel32
+  (`VirtualAlloc2`, `MapViewOfFile3`, `QueryDosDeviceW`, console buffer
+  and input calls...).
+- Not yet: hard links (drive C: behaves like FAT, so git renames), and
+  interactive `sh` sessions have not been tried; `sh -c` and scripts
+  are what is tested.
+
+### Language runtimes: Java, .NET, Node.js, Python
+
+The official Windows x64 builds of four runtimes install and run
+unmodified, from their own installers or archives:
+
+| Runtime | Package | Tested |
+|---|---|---|
+| Java (Eclipse Temurin 21) | JRE `.msi`, JDK `.zip` | `java -version`, a stress program (threads, exceptions, stack overflow, files, lambdas), `javac` compiling a program that then runs |
+| .NET 10 | runtime + host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that then passes |
+| Node.js 24 | `.msi`, `.zip` | `node -v`, `-e`, `npm -v` (`npm.cmd` through cmd), output into a pipe, a test script (crypto hashes and random bytes, fs and fs.promises, JSON, regex, exceptions, timers, environment) |
+| Python 3.14 | NuGet package (`python`) | `-c`, a test script (hashlib, JSON, regex, files, exceptions, threads, sleep, environment, subprocess) |
+
+`msiexec /i temurin-jre.msi /qn` and `msiexec /i node.msi /qn` install
+into `C:\Programs`, write their registry keys and add themselves to
+`PATH` through the MSI `Environment` table (`=`/`+`/`-`/`!`/`*` name
+flags, `[~]` for prepending or appending to the current value).  New
+processes build their environment from the registry
+(`HKLM\...\Session Manager\Environment`, then `HKCU\Environment`, user
+`Path` after the system one, `REG_EXPAND_SZ` expanded), so a new `cmd`
+finds `java` and `node`.  What it took:
+
+- **Loader**: implicit TLS for DLLs loaded later (every thread's TLS
+  array grows; HotSpot keeps `Thread::current()` there), the system UCRT
+  and API sets ahead of copies shipped next to a program (as Windows
+  10 does), dependencies looked up in the folder of the DLL importing
+  them (Python's `DLLs\`), `LOAD_LIBRARY_AS_DATAFILE`/`AS_IMAGE_RESOURCE`,
+  IL-only assemblies of the other architecture mapped as data, 64-character
+  module names, images over 64 MB (`node.exe`), full-path
+  `GetModuleHandleEx`, and 8192 memory regions per process.
+- **Code generators**: dynamic function tables (`RtlAddFunctionTable`,
+  `RtlInstallFunctionTableCallback`, growable tables) for JIT-compiled
+  code, and a fuller `RtlVirtualUnwind`: it reports where each
+  register was saved (`KNONVOLATILE_CONTEXT_POINTERS`, which the .NET
+  GC uses to update object references held in registers), finishes
+  epilogues, follows chained unwind info and returns only the requested
+  kind of handler.  `RtlCaptureStackBackTrace` walks real frames.
+- **Threads**: fibers (`CreateFiber`, `SwitchToFiber`, `ConvertThreadToFiber`;
+  the MSVC runtime asks `IsThreadAFiber`), `GetCurrentProcessorNumber`,
+  XState context calls, `GetThreadIOPendingFlag`, NUMA and
+  processor-group queries.
+- **Locales without ICU**: .NET falls back to NLS, so `GetLocaleInfoEx`
+  answers every `LOCALE_*` field for `en-US`, `en` and the invariant
+  locale; `FindNLSStringEx`, `FindStringOrdinal`, preferred-UI-language
+  calls, number and currency formatting; `LINGUISTIC_IGNORECASE` is
+  honoured.
+- **COM and WinRT**: `CoGetContextToken`/`CoGetObjectContext` return a
+  real context object, `RoInitialize`.
+- **Console and files**: console input queries succeed only for console
+  input handles (libuv and Python decide whether stdin is a console that
+  way), `*.*` matches names without an extension (Python's
+  `encodings` package search), `NtDeviceIoControlFile`, and pipes answer
+  `FileAccessInformation`/`FileModeInformation` (libuv opens a piped
+  stdout as a pipe stream).  `PATHEXT` in the registry lists `.COM;.EXE;.BAT;.CMD`.
+- **Processors in the registry**: `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\N`
+  for every CPU (`os.cpus()` in Node).
+- **New DLLs**: `crypt32` (empty certificate stores), `dbghelp`,
+  `rpcrt4` (UUIDs), `powrprof`, `winhttp`, `mswsock`, and more of
+  `iphlpapi`, `ws2_32`, `advapi32` (key-less CryptoAPI), `ole32` and the
+  UCRT (`_create_locale`, conio, `_wspawnve`...).
+- **Windows Installer**: the string pool's encoding of strings of 64 KB
+  or more (Node's licence text), which shifted every later string id.
+- Not yet: MSI custom actions still do not run, and .NET has no ICU
+  (globalization works through NLS for English and invariant cultures).
+
 ### Installing NovaOS on a disk
 
 The ISO is also the installation disc.  Booted from it, NovaOS runs
@@ -861,7 +1134,7 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 | 11 | Multiprocessor: every core runs threads, per-core scheduling, fine-grained kernel locking | ✅ **Done** |
 | 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store; Windows Installer (.msi); installing NovaOS on a disk | ✅ **Done** |
 | 13 | 32-bit (x86) Windows programs (WoW64): compatibility mode, a SysWOW64 userland, x86 SEH and C++ exceptions; NSIS installers (with shortcuts) and 7-Zip's 32-bit self-extractors run | ✅ **Done** |
-| 14 | Pipes, `cmd.exe`, the OLE clipboard, more real programs | 🔄 Planned |
+| 14 | Pipes (named, anonymous, overlapped), handle inheritance, `cmd.exe` with batch files, the system and OLE clipboard, Git | ✅ **Done** |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native
 Windows executables (Phases 8–15) and the chosen compatibility strategy.

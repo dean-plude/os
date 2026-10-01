@@ -63,7 +63,7 @@ int main(void)
         do { count++; if (!strcmp(fd.cFileName, "test.txt") && fd.nFileSizeLow == 15) found = 1; } while (FindNextFileA(fh, &fd));
         FindClose(fh);
     }
-    CHECK(found && count == 2);
+    CHECK(found && count == 4);                                 /* ".", "..", test.txt, sub */
 
     CHECK(DeleteFileA("sub\\a.dat") && RemoveDirectoryA("sub"));
     CHECK(DeleteFileA("test.txt"));

@@ -96,19 +96,21 @@ int u2w(const char *s, int n, WCHAR *out, int cap)
 /* -----------------------------------------------------------------------
  * Current directory and full paths
  * ----------------------------------------------------------------------- */
-static char g_cwd[MAX_PATH];                 /* "C:\dir" (no trailing '\' except root) */
-
+/* The current directory is ntdll's (RtlSetCurrentDirectory_U), shown in
+ * the process parameters; a copy of it, "C:\dir" (no
+ * trailing '\' except the root) */
 const char *cwd(void)
 {
-    if (!g_cwd[0]) {
-        UNICODE_STRING *d = &params()->CurrentDirectory.DosPath;
-        int n = w2u(d->Buffer, d->Length / 2, g_cwd, MAX_PATH - 1);
-        if (n < 0) n = 0;
-        g_cwd[n] = 0;
-        if (n > 3 && g_cwd[n - 1] == '\\') g_cwd[n - 1] = 0;
-        if (!g_cwd[0]) { g_cwd[0] = 'C'; g_cwd[1] = ':'; g_cwd[2] = '\\'; g_cwd[3] = 0; }
-    }
-    return g_cwd;
+    static char buf[MAX_PATH];                   /* (the same for every thread) */
+    WCHAR w[MAX_PATH];
+    ULONG n = RtlGetCurrentDirectory_U(sizeof(w), w);
+    if (!n || n >= sizeof(w)) { buf[0] = 'C'; buf[1] = ':'; buf[2] = '\\'; buf[3] = 0; return buf; }
+    int k = w2u(w, (int)(n / 2), buf, MAX_PATH - 1);
+    if (k < 0) k = 0;
+    buf[k] = 0;
+    if (k > 3 && buf[k - 1] == '\\') buf[k - 1] = 0;
+    if (k == 2) { buf[2] = '\\'; buf[3] = 0; }
+    return buf;
 }
 
 /* Absolute, normalized "C:\a\b" for @name; 0 on error */
@@ -162,14 +164,54 @@ int full_path(const char *name, char *out, int cap)
 }
 
 
+/* "\\.\pipe\NAME" (or \\?\pipe\) -> NAME, else 0 */
+const char *k32_pipe_name(const char *name)
+{
+    if (!name || name[0] != '\\' || name[1] != '\\' || (name[2] != '.' && name[2] != '?') || name[3] != '\\') return 0;
+    static const char pipe[] = "pipe\\";
+    for (int i = 0; pipe[i]; i++) {
+        char c = name[4 + i];
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c != pipe[i]) return 0;
+    }
+    return name + 9;
+}
+
+static void nt_fill(NtPath *p, int n)
+{
+    p->buf[n] = 0;
+    p->us.Buffer = p->buf;
+    p->us.Length = (USHORT)(2 * n);
+    p->us.MaximumLength = p->us.Length + 2;
+    memset(&p->oa, 0, sizeof(p->oa));
+    p->oa.Length = sizeof(p->oa);
+    p->oa.ObjectName = &p->us;
+    p->oa.Attributes = OBJ_CASE_INSENSITIVE;
+}
+
 BOOL nt_path(const char *name, NtPath *p)
 {
     char full[MAX_PATH];
     if (!name || !*name) { SetLastError(ERROR_PATH_NOT_FOUND); return FALSE; }
+    const char *pipe = k32_pipe_name(name);
+    if (pipe) {                                             /* \\.\pipe\X -> \Device\NamedPipe\X */
+        static const char dev[] = "\\Device\\NamedPipe\\";
+        int n = 0;
+        for (; dev[n]; n++) p->buf[n] = (WCHAR)dev[n];
+        int k = u2w(pipe, -1, p->buf + n, MAX_PATH - n);
+        if (k < 0) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
+        nt_fill(p, n + k);
+        return TRUE;
+    }
     name = skip_prefix(name);
     /* devices pass through by name */
     const char *dev = 0;
     if (ieq(name, "CONIN$") || ieq(name, "CONOUT$") || ieq(name, "CON")) dev = name;
+    /* NUL, in any folder and with any extension, is the null device */
+    const char *base = name;
+    for (const char *c = name; *c; c++) if (*c == '\\' || *c == '/' || *c == ':') base = c + 1;
+    if ((base[0] | 0x20) == 'n' && (base[1] | 0x20) == 'u' && (base[2] | 0x20) == 'l' && (!base[3] || base[3] == '.')) dev = "NUL";
+    if (ieq(name, "NUL:") || ieq(name, "nul:")) dev = "NUL";
     if (dev) { int k = 0; while (dev[k] && k < 16) { full[k] = dev[k]; k++; } full[k] = 0; }
     else if (!full_path(name, full, MAX_PATH)) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
     p->buf[0] = '\\'; p->buf[1] = '?'; p->buf[2] = '?'; p->buf[3] = '\\';
@@ -223,8 +265,13 @@ WINBASEAPI BOOL WINAPI SetCurrentDirectoryA(LPCSTR path)
     DWORD a = GetFileAttributesA(full);
     if (a == INVALID_FILE_ATTRIBUTES) return FALSE;
     if (!(a & FILE_ATTRIBUTE_DIRECTORY)) { SetLastError(ERROR_PATH_NOT_FOUND); return FALSE; }
-    kmemcpy(g_cwd, full, strlen(full) + 1);
-    return TRUE;
+    WCHAR w[MAX_PATH];
+    int n = u2w(full, -1, w, MAX_PATH - 1);
+    if (n <= 0) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
+    w[n] = 0;
+    UNICODE_STRING us = { (USHORT)(2 * n), (USHORT)(2 * n + 2), w };
+    NTSTATUS s = RtlSetCurrentDirectory_U(&us);
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
 WINBASEAPI DWORD WINAPI GetFullPathNameA(LPCSTR name, DWORD size, LPSTR buf, LPSTR *filepart)
@@ -285,10 +332,10 @@ WINBASEAPI HMODULE WINAPI GetModuleHandleA(LPCSTR name)
 WINBASEAPI HMODULE WINAPI GetModuleHandleW(LPCWSTR name)
 {
     if (!name) return (HMODULE)RtlGetCurrentPeb()->ImageBaseAddress;
-    char n[128];
-    int i = 0;
-    for (; i < 127 && name[i]; i++) n[i] = (char)name[i];
-    n[i] = 0;
+    char n[MAX_PATH * 3];
+    int k = w2u(name, -1, n, sizeof(n) - 1);
+    if (k < 0) { SetLastError(ERROR_MOD_NOT_FOUND); return 0; }
+    n[k] = 0;
     return GetModuleHandleA(n);
 }
 
@@ -361,7 +408,25 @@ WINBASEAPI FARPROC WINAPI GetProcAddress(HMODULE m, LPCSTR name)
             if (!*n && !*s) { rva = funcs[ords[i]]; break; }
         }
     }
-    if (!rva) { SetLastError(ERROR_PROC_NOT_FOUND); return 0; }
+    if (!rva) {
+        /* (the serial log shows what was missing, once per name: some
+         * programs ask again and again) */
+        static ULONG seen[256];
+        ULONG hsh = 5381;
+        if ((ULONG_PTR)name >= 0x10000) for (const char *c = name; *c; c++) hsh = hsh * 33 + (BYTE)*c;
+        BOOL first = (ULONG_PTR)name >= 0x10000 && seen[hsh & 255] != hsh;
+        if (first) seen[hsh & 255] = hsh;
+        if (first) {
+            char msg[160];
+            int k = 0;
+            const char *parts[4] = { "GetProcAddress: no ", (const char *)b + *(DWORD *)(ed + 12), "!", name };
+            for (int i = 0; i < 4; i++) for (const char *c = parts[i]; *c && k < 150; c++) msg[k++] = *c;
+            msg[k++] = '\n';
+            NtNovaDebugPrint(msg, (ULONG)k);
+        }
+        SetLastError(ERROR_PROC_NOT_FOUND);
+        return 0;
+    }
     if (rva >= exp && rva < exp + exps) {                   /* a forwarder: "DLL.Function" */
         const char *fw = (const char *)b + rva, *dot = fw;
         while (*dot && *dot != '.') dot++;
@@ -379,78 +444,175 @@ WINBASEAPI FARPROC WINAPI GetProcAddress(HMODULE m, LPCSTR name)
 
 WINBASEAPI BOOL WINAPI FreeLibrary(HMODULE m) { (void)m; return TRUE; }   /* modules stay mapped */
 
-/* Environment: the process block (UTF-16), plus variables set at run time */
-typedef struct EnvVar { struct EnvVar *next; char *name, *value; } EnvVar;
-static EnvVar *g_env_set;
+/* Environment: "NAME=value" strings (UTF-8), sorted by name without
+ * regard to case as Windows keeps them; filled from the process block on
+ * first use.  GetEnvironmentStrings and CreateProcess see every change. */
+static char  **g_env;
+static int     g_nenv, g_capenv, g_env_ready;
+static SRWLOCK g_env_lock;
 
-static const WCHAR *env_block(void) { return params()->Environment; }
+static void env_lock(void)   { RtlAcquireSRWLockExclusive(&g_env_lock); }
+static void env_unlock(void) { RtlReleaseSRWLockExclusive(&g_env_lock); }
+
+/* Length of the name in "NAME=value" (a leading '=' belongs to the name) */
+static int env_name_len(const char *e)
+{
+    int n = 1;
+    while (e[n] && e[n] != '=') n++;
+    return e[0] ? n : 0;
+}
+
+static int env_cmp(const char *a, int an, const char *b, int bn)
+{
+    for (int i = 0; i < an && i < bn; i++) {
+        char x = a[i], y = b[i];
+        if (x >= 'a' && x <= 'z') x -= 32;
+        if (y >= 'a' && y <= 'z') y -= 32;
+        if (x != y) return (unsigned char)x - (unsigned char)y;
+    }
+    return an - bn;
+}
+
+/* Index of @name, or -(insertion point) - 1 */
+static int env_find(const char *name, int nl)
+{
+    int lo = 0, hi = g_nenv - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        int c = env_cmp(g_env[mid], env_name_len(g_env[mid]), name, nl);
+        if (!c) return mid;
+        if (c < 0) lo = mid + 1; else hi = mid - 1;
+    }
+    return -lo - 1;
+}
+
+static BOOL env_put(const char *name, int nl, const char *value)
+{
+    int i = env_find(name, nl);
+    PVOID heap = RtlGetProcessHeap();
+    if (!value) {                                           /* remove */
+        if (i < 0) return TRUE;
+        RtlFreeHeap(heap, 0, g_env[i]);
+        for (int k = i; k < g_nenv - 1; k++) g_env[k] = g_env[k + 1];
+        g_nenv--;
+        return TRUE;
+    }
+    SIZE_T vl = strlen(value);
+    char *e = RtlAllocateHeap(heap, 0, (SIZE_T)nl + vl + 2);
+    if (!e) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    kmemcpy(e, name, (SIZE_T)nl);
+    e[nl] = '=';
+    kmemcpy(e + nl + 1, value, vl + 1);
+    if (i >= 0) { RtlFreeHeap(heap, 0, g_env[i]); g_env[i] = e; return TRUE; }
+    i = -i - 1;
+    if (g_nenv == g_capenv) {
+        int cap = g_capenv ? g_capenv * 2 : 64;
+        char **n = RtlAllocateHeap(heap, 0, sizeof(char *) * (SIZE_T)cap);
+        if (!n) { RtlFreeHeap(heap, 0, e); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+        if (g_env) { kmemcpy(n, g_env, sizeof(char *) * (SIZE_T)g_nenv); RtlFreeHeap(heap, 0, g_env); }
+        g_env = n;
+        g_capenv = cap;
+    }
+    for (int k = g_nenv; k > i; k--) g_env[k] = g_env[k - 1];
+    g_env[i] = e;
+    g_nenv++;
+    return TRUE;
+}
+
+static void env_init(void)                                  /* under the lock */
+{
+    if (g_env_ready) return;
+    g_env_ready = 1;
+    const WCHAR *w = params()->Environment;
+    char tmp[8192];
+    for (; w && *w; ) {
+        int len = 0;
+        while (w[len]) len++;
+        int n = w2u(w, len, tmp, sizeof(tmp) - 1);
+        if (n > 0) {
+            tmp[n] = 0;
+            int nl = env_name_len(tmp);
+            if (tmp[nl] == '=') env_put(tmp, nl, tmp + nl + 1);
+        }
+        w += len + 1;
+    }
+}
 
 WINBASEAPI DWORD WINAPI GetEnvironmentVariableA(LPCSTR name, LPSTR buf, DWORD size)
 {
-    const char *val = 0;
-    char tmp[1024];
-    for (EnvVar *e = g_env_set; e; e = e->next) if (ieq(e->name, name)) { val = e->value; break; }
-    if (!val) {
-        for (const WCHAR *w = env_block(); w && *w; ) {
-            int len = 0;
-            while (w[len]) len++;
-            int n = w2u(w, len, tmp, sizeof(tmp) - 1);
-            if (n > 0) {
-                tmp[n] = 0;
-                char *eq = tmp + 1;
-                while (*eq && *eq != '=') eq++;
-                if (*eq) { *eq = 0; if (ieq(tmp, name)) { val = eq + 1; break; } }
-            }
-            w += len + 1;
-        }
-    }
-    if (!val || !*val) { SetLastError(ERROR_ENVVAR_NOT_FOUND); return 0; }
-    DWORD n = (DWORD)strlen(val);
-    if (size <= n) return n + 1;
-    kmemcpy(buf, val, (SIZE_T)n + 1);
-    return n;
+    if (!name) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    env_lock();
+    env_init();
+    int i = env_find(name, (int)strlen(name));
+    const char *val = i >= 0 ? g_env[i] + env_name_len(g_env[i]) + 1 : 0;
+    DWORD n = val ? (DWORD)strlen(val) : 0;
+    DWORD r;
+    if (!val) { SetLastError(ERROR_ENVVAR_NOT_FOUND); r = 0; }
+    else if (!buf || size <= n) r = n + 1;
+    else { kmemcpy(buf, val, (SIZE_T)n + 1); r = n; }
+    env_unlock();
+    return r;
 }
 
 WINBASEAPI DWORD WINAPI GetEnvironmentVariableW(LPCWSTR name, LPWSTR buf, DWORD size)
 {
-    char n[256], v[1024];
+    char n[256];
     if (!wide_to_temp(name, n, sizeof(n))) return 0;
-    DWORD r = GetEnvironmentVariableA(n, v, sizeof(v));
-    if (!r || r >= sizeof(v)) return r;
+    DWORD need = GetEnvironmentVariableA(n, 0, 0);
+    if (!need) return 0;
+    char *v = RtlAllocateHeap(RtlGetProcessHeap(), 0, need + 1);
+    if (!v) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    DWORD r = GetEnvironmentVariableA(n, v, need + 1);
+    v[r < need + 1 ? r : need] = 0;
     int w = u2w(v, -1, 0, 0);
-    if ((int)size <= w) return (DWORD)w + 1;
-    u2w(v, -1, buf, (int)size);
-    buf[w] = 0;
-    return (DWORD)w;
+    if (!buf || (int)size <= w) r = (DWORD)w + 1;
+    else { u2w(v, -1, buf, (int)size); buf[w] = 0; r = (DWORD)w; }
+    RtlFreeHeap(RtlGetProcessHeap(), 0, v);
+    return r;
 }
 
 WINBASEAPI BOOL WINAPI SetEnvironmentVariableA(LPCSTR name, LPCSTR value)
 {
-    PVOID h = RtlGetProcessHeap();
-    for (EnvVar *e = g_env_set; e; e = e->next) {
-        if (ieq(e->name, name)) {
-            SIZE_T n = value ? strlen(value) : 0;
-            char *v = RtlAllocateHeap(h, 0, n + 1);
-            if (!v) return FALSE;
-            kmemcpy(v, value ? value : "", n + 1);
-            RtlFreeHeap(h, 0, e->value);
-            e->value = v;
-            return TRUE;
-        }
-    }
-    EnvVar *e = RtlAllocateHeap(h, 0, sizeof(*e));
-    SIZE_T nl = strlen(name), vl = value ? strlen(value) : 0;
-    if (!e || !(e->name = RtlAllocateHeap(h, 0, nl + 1)) || !(e->value = RtlAllocateHeap(h, 0, vl + 1)))
-        return FALSE;
-    kmemcpy(e->name, name, nl + 1);
-    kmemcpy(e->value, value ? value : "", vl + 1);
-    e->next = g_env_set;
-    g_env_set = e;
-    return TRUE;
+    if (!name || !*name || name[env_name_len(name)] == '=') { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    env_lock();
+    env_init();
+    BOOL ok = env_put(name, (int)strlen(name), value);
+    env_unlock();
+    return ok;
 }
 
-WINBASEAPI LPWSTR WINAPI GetEnvironmentStringsW(void) { return (LPWSTR)env_block(); }
-WINBASEAPI BOOL   WINAPI FreeEnvironmentStringsW(LPWSTR env) { (void)env; return TRUE; }
+/* The environment as one block: UTF-8 (@wide 0) or UTF-16 strings, each
+ * ended by NUL, then an empty one.  *bytes gets its size. */
+void *k32_env_block(int wide, SIZE_T *bytes)
+{
+    env_lock();
+    env_init();
+    SIZE_T n = 1;
+    for (int i = 0; i < g_nenv; i++) n += (wide ? (SIZE_T)u2w(g_env[i], -1, 0, 0) : strlen(g_env[i])) + 1;
+    SIZE_T unit = wide ? 2 : 1;
+    char *b = RtlAllocateHeap(RtlGetProcessHeap(), 0, n * unit + 2);
+    if (b) {
+        SIZE_T o = 0;
+        for (int i = 0; i < g_nenv; i++) {
+            if (wide) {
+                int k = u2w(g_env[i], -1, (WCHAR *)b + o, (int)(n - o));
+                ((WCHAR *)b)[o + (SIZE_T)k] = 0;
+                o += (SIZE_T)k + 1;
+            } else { SIZE_T l = strlen(g_env[i]) + 1; kmemcpy(b + o, g_env[i], l); o += l; }
+        }
+        if (wide) ((WCHAR *)b)[o] = 0; else b[o] = 0;
+        if (bytes) *bytes = (o + 1) * unit;
+    }
+    env_unlock();
+    if (!b) SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+    return b;
+}
+
+WINBASEAPI LPWSTR WINAPI GetEnvironmentStringsW(void) { return k32_env_block(1, 0); }
+WINBASEAPI LPSTR  WINAPI GetEnvironmentStringsA(void) { return k32_env_block(0, 0); }
+WINBASEAPI LPSTR  WINAPI GetEnvironmentStrings(void)  { return k32_env_block(0, 0); }
+WINBASEAPI BOOL   WINAPI FreeEnvironmentStringsW(LPWSTR env) { if (env) RtlFreeHeap(RtlGetProcessHeap(), 0, env); return TRUE; }
+WINBASEAPI BOOL   WINAPI FreeEnvironmentStringsA(LPSTR env)  { if (env) RtlFreeHeap(RtlGetProcessHeap(), 0, env); return TRUE; }
 
 WINBASEAPI VOID WINAPI GetStartupInfoA(LPSTARTUPINFOA si)
 {
@@ -459,6 +621,10 @@ WINBASEAPI VOID WINAPI GetStartupInfoA(LPSTARTUPINFOA si)
     si->hStdInput = params()->StandardInput;
     si->hStdOutput = params()->StandardOutput;
     si->hStdError = params()->StandardError;
+    if (params()->RuntimeData.Buffer && params()->RuntimeData.Length) {    /* the creator's lpReserved2 */
+        si->cbReserved2 = params()->RuntimeData.Length;
+        si->lpReserved2 = (LPBYTE)params()->RuntimeData.Buffer;
+    }
 }
 
 WINBASEAPI VOID WINAPI GetSystemInfo(LPSYSTEM_INFO si)
@@ -511,10 +677,8 @@ WINBASEAPI HANDLE WINAPI GetStdHandle(DWORD which);
 
 WINBASEAPI VOID WINAPI OutputDebugStringA(LPCSTR s)
 {
-    DWORD w;
     if (!s) return;
-    NtNovaDebugPrint(s, (ULONG)strlen(s));      /* the kernel log: NovaOS's debugger */
-    WriteFile(GetStdHandle(STD_ERROR_HANDLE), s, (DWORD)strlen(s), &w, 0);
+    NtNovaDebugPrint(s, (ULONG)strlen(s));      /* the kernel log: NovaOS's debugger (not the console) */
 }
 
 /* -----------------------------------------------------------------------
@@ -541,37 +705,42 @@ WINBASEAPI BOOL WINAPI SetStdHandle(DWORD which, HANDLE h)
     return TRUE;
 }
 
-/* I/O is synchronous here; an OVERLAPPED request completes at once: its
- * offset is used, its status and event are set, and a completion port the
- * handle is bound to gets a packet (see k32_io_done in extra.c). */
+/* I/O without an OVERLAPPED waits for the result, even on a handle opened
+ * for overlapped I/O (the kernel then finishes it later, into @io).  With
+ * one, see k32_overlapped (extra.c): a pipe read may be left pending. */
+static NTSTATUS wait_io(NTSTATUS s, volatile IO_STATUS_BLOCK *io)
+{
+    if (s != STATUS_PENDING) return s;
+    while (io->Status == STATUS_PENDING) Sleep(1);
+    return io->Status;
+}
+
 WINBASEAPI BOOL WINAPI WriteFile(HANDLE h, LPCVOID buf, DWORD n, LPDWORD written, LPVOID ov)
 {
+    if (ov) return k32_overlapped(h, ov, 1, (PVOID)buf, n, written, 0);
     IO_STATUS_BLOCK io;
-    LARGE_INTEGER off, *po = 0;
-    OVERLAPPED *o = ov;
-    if (o) { off.QuadPart = (LONGLONG)o->Offset | (LONGLONG)o->OffsetHigh << 32; po = &off; }
-    NTSTATUS s = NtWriteFile(h, 0, 0, 0, &io, buf, n, po, 0);
+    io.Status = STATUS_PENDING;
+    io.Information = 0;
+    NTSTATUS s = wait_io(NtWriteFile(h, 0, 0, 0, &io, buf, n, 0, 0), &io);
     DWORD done = NT_SUCCESS(s) ? (DWORD)io.Information : 0;
     if (written) *written = done;
-    if (o) k32_io_done(h, o, s, done);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
 WINBASEAPI BOOL WINAPI ReadFile(HANDLE h, LPVOID buf, DWORD n, LPDWORD read, LPVOID ov)
 {
+    if (ov) return k32_overlapped(h, ov, 0, buf, n, read, 0);
     IO_STATUS_BLOCK io;
-    LARGE_INTEGER off, *po = 0;
-    OVERLAPPED *o = ov;
-    if (o) { off.QuadPart = (LONGLONG)o->Offset | (LONGLONG)o->OffsetHigh << 32; po = &off; }
-    NTSTATUS s = NtReadFile(h, 0, 0, 0, &io, buf, n, po, 0);
+    io.Status = STATUS_PENDING;
+    io.Information = 0;
+    NTSTATUS s = wait_io(NtReadFile(h, 0, 0, 0, &io, buf, n, 0, 0), &io);
     if (s == STATUS_END_OF_FILE) {
         if (read) *read = 0;
-        if (o) { k32_io_done(h, o, s, 0); SetLastError(ERROR_HANDLE_EOF); return FALSE; }
         return TRUE;                                        /* Win32: EOF is success */
     }
-    DWORD done = NT_SUCCESS(s) ? (DWORD)io.Information : 0;
+    /* a message longer than the buffer: the part that fits, ERROR_MORE_DATA */
+    DWORD done = NT_SUCCESS(s) || s == STATUS_BUFFER_OVERFLOW ? (DWORD)io.Information : 0;
     if (read) *read = done;
-    if (o) k32_io_done(h, o, s, done);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
@@ -612,17 +781,26 @@ WINBASEAPI DWORD WINAPI GetFileType(HANDLE h)
         SetLastError(ERROR_INVALID_HANDLE);
         return FILE_TYPE_UNKNOWN;
     }
-    return d.DeviceType == 0x50 ? FILE_TYPE_CHAR : FILE_TYPE_DISK;
+    return d.DeviceType == 0x50 || d.DeviceType == 0x15 ? FILE_TYPE_CHAR : d.DeviceType == 0x11 ? FILE_TYPE_PIPE :
+           d.DeviceType == 0x22 ? FILE_TYPE_UNKNOWN : FILE_TYPE_DISK;
+}
+
+/* A console handle (not NUL, which is a character device too) */
+static BOOL is_console(HANDLE h)
+{
+    IO_STATUS_BLOCK io;
+    FILE_FS_DEVICE_INFORMATION d;
+    return NT_SUCCESS(NtQueryVolumeInformationFile(h, &io, &d, sizeof(d), FileFsDeviceInformation)) && d.DeviceType == 0x50;
 }
 
 WINBASEAPI BOOL WINAPI GetConsoleMode(HANDLE h, LPDWORD mode)
 {
-    if (GetFileType(h) != FILE_TYPE_CHAR) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+    if (!is_console(h)) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
     *mode = 0x7;                                            /* processed, line input, echo */
     return TRUE;
 }
 
-WINBASEAPI BOOL WINAPI SetConsoleMode(HANDLE h, DWORD mode) { (void)mode; return GetFileType(h) == FILE_TYPE_CHAR; }
+WINBASEAPI BOOL WINAPI SetConsoleMode(HANDLE h, DWORD mode) { (void)mode; return is_console(h); }
 WINBASEAPI UINT WINAPI GetConsoleCP(void)             { return CP_UTF8; }
 WINBASEAPI UINT WINAPI GetConsoleOutputCP(void)       { return CP_UTF8; }
 WINBASEAPI BOOL WINAPI SetConsoleOutputCP(UINT cp)    { (void)cp; return TRUE; }
@@ -643,12 +821,14 @@ WINBASEAPI BOOL WINAPI CloseHandle(HANDLE h)
 WINBASEAPI HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES sa,
                                      DWORD disposition, DWORD flags, HANDLE templ)
 {
-    (void)sa; (void)templ;
+    (void)templ;
     NtPath p;
     if (!nt_path(name, &p)) return INVALID_HANDLE_VALUE;
+    if (sa && sa->bInheritHandle) p.oa.Attributes |= OBJ_INHERIT;
     static const ULONG disp[6] = { 0, FILE_CREATE, FILE_OVERWRITE_IF, FILE_OPEN, FILE_OPEN_IF, FILE_OVERWRITE };
     if (disposition < 1 || disposition > 5) { SetLastError(ERROR_INVALID_PARAMETER); return INVALID_HANDLE_VALUE; }
     ULONG opts = FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT;
+    if (flags & FILE_FLAG_OVERLAPPED) opts &= ~FILE_SYNCHRONOUS_IO_NONALERT;
     if (flags & FILE_FLAG_DELETE_ON_CLOSE) opts |= FILE_DELETE_ON_CLOSE;
     if (flags & 0x02000000) opts &= ~FILE_NON_DIRECTORY_FILE;  /* FILE_FLAG_BACKUP_SEMANTICS */
     HANDLE h;

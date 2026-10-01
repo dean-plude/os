@@ -60,15 +60,28 @@ DLLS = [
     ('ole32',    ['user32', 'advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
     ('oleaut32', ['ole32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAF0000000),
     ('msi',      ['comctl32', 'shell32', 'user32', 'gdi32', 'advapi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB60000000),
+    ('iphlpapi', ['kernel32', 'ntdll'],           0x7FFB80000000),
+    ('netapi32', ['advapi32', 'kernel32', 'ntdll'], 0x7FFB90000000),
+    ('secur32',  ['advapi32', 'kernel32', 'ntdll'], 0x7FFBA0000000),
+    ('authz',    ['kernel32', 'ntdll'],           0x7FFBB0000000),
+    ('dnsapi',   ['kernel32', 'ntdll'],           0x7FFBC0000000),
+    ('pdh',      ['kernel32', 'ntdll'],           0x7FFBD0000000),
+    ('powrprof', ['kernel32', 'ntdll'],           0x7FFBE0000000),
+    ('winhttp',  ['kernel32', 'ntdll'],           0x7FFBF0000000),
+    ('mswsock',  ['ws2_32', 'kernel32', 'ntdll'], 0x7FFC00000000),
+    ('crypt32',  ['kernel32', 'ntdll'],           0x7FFC10000000),
+    ('dbghelp',  ['kernel32', 'ntdll'],           0x7FFC20000000),
+    ('rpcrt4',   ['kernel32', 'ntdll'],           0x7FFC30000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}
 UCRT_BASE_X86 = 0x5F000000
 # 32-bit builds of these test programs go to C:\Programs\x86
 PROGRAMS_X86 = {'hello', 'crttest', 'filetest', 'threads', 'dlltest', 'apitest', 'posixtest', 'comtest',
-                'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh'}
+                'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh', 'cmd', 'pipetest',
+                'find', 'findstr', 'sort', 'more', 'timeout', 'cliptest'}
 # programs that live in C:\Windows\System32 rather than C:\Programs
-SYSTEM_PROGRAMS = {'msiexec'}
+SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'timeout'}
 UCRT_BASE = 0x7FFA28000000
 # DLLs built from more than their own directory
 DLL_SOURCES = {
@@ -343,7 +356,8 @@ def build_pass(arch):
             (['/safeseh:no', '/machine:x86'] if arch == 'x86' else []) +
             [f'/out:{exe}'] + crt0_objs + [tlssup, obj] + res + [os.path.join(odir, l + '.lib') for l in libs])
         if arch == 'x86':
-            built.append((f'\\Programs\\x86\\{name}.exe', exe))
+            folder = '\\Windows\\SysWOW64' if name in SYSTEM_PROGRAMS else '\\Programs\\x86'
+            built.append((f'{folder}\\{name}.exe', exe))
         else:
             folder = '\\Windows\\System32' if name in SYSTEM_PROGRAMS else '\\Programs'
             built.append((f'{folder}\\{name}.exe', exe))

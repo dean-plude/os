@@ -23,6 +23,7 @@ size_t strlen(const char *s);
 int strcmp(const char *a, const char *b);
 
 extern void RtlNovaInitExceptions(void);       /* ntdll_exc.c */
+extern void RtlNovaInitProcess(void);          /* ntdll_rtl.c */
 
 /* -----------------------------------------------------------------------
  * Module registry (mirrors the kernel's list, plus per-module TLS state)
@@ -39,8 +40,8 @@ typedef struct {
     int         tls_slot;             /* static TLS index, or -1 */
     const BYTE *tls_raw;              /* template */
     SIZE_T      tls_rawsize, tls_zerofill;
-    char        name[32];
-    WCHAR       wname[32], wpath[96];
+    char        name[64];
+    WCHAR       wname[64], wpath[96];
     LDR_DATA_TABLE_ENTRY entry;
 } Module;
 
@@ -52,10 +53,28 @@ static PEB_LDR_DATA g_ldr;
 static volatile long g_ldr_lock;
 static int    g_process_ready;
 
-static void llock(void)   { while (__atomic_exchange_n(&g_ldr_lock, 1, __ATOMIC_ACQUIRE)) __builtin_ia32_pause(); }
-static void lunlock(void) { __atomic_store_n(&g_ldr_lock, 0, __ATOMIC_RELEASE); }
-
 static BYTE *teb(void)         { return NtCurrentTebBytes(); }
+
+/* The loader lock: recursive, as on Windows, since a DllMain or TLS
+ * callback may itself load a library (LoadLibrary under the lock) */
+static void *volatile g_ldr_owner;
+static int g_ldr_depth;
+static void llock(void)
+{
+    void *me = teb();
+    if (g_ldr_owner == me) { g_ldr_depth++; return; }
+    for (int spins = 0; __atomic_exchange_n(&g_ldr_lock, 1, __ATOMIC_ACQUIRE); spins++) {
+        if (spins < 64) __builtin_ia32_pause(); else NtYieldExecution();
+    }
+    g_ldr_owner = me;
+    g_ldr_depth = 1;
+}
+static void lunlock(void)
+{
+    if (--g_ldr_depth) return;
+    g_ldr_owner = 0;
+    __atomic_store_n(&g_ldr_lock, 0, __ATOMIC_RELEASE);
+}
 static void *tls_pointer(void) { return *(void **)(teb() + TEB_TLS_POINTER); }
 
 static void wcopy(WCHAR *d, const char *s, int cap)
@@ -80,8 +99,28 @@ static IMAGE_DATA_DIRECTORY *dir_of(void *base, int which)
     return &nt->OptionalHeader.DataDirectory[which];
 }
 
+/* A path names a module by its full path; a bare name by its file name */
+static int path_eq(const WCHAR *a, const char *b)
+{
+    for (;; a++, b++) {
+        unsigned x = *a, y = (unsigned char)*b;
+        if (x == '/') x = '\\';
+        if (y == '/') y = '\\';
+        if (x >= 'A' && x <= 'Z') x += 32;
+        if (y >= 'A' && y <= 'Z') y += 32;
+        if (x != y) return 0;
+        if (!x) return 1;
+    }
+}
+
 PVOID LdrNovaGetModuleA(const char *name)
 {
+    int has_dir = 0;
+    for (const char *c = name; *c; c++) if (*c == '\\' || *c == '/') has_dir = 1;
+    if (has_dir) {
+        for (int i = 0; i < g_nmod; i++) if (path_eq(g_mod[i].wpath, name)) return g_mod[i].base;
+        return 0;
+    }
     for (int i = 0; i < g_nmod; i++) {
         const char *a = g_mod[i].name, *b = name;
         int eq = 1;
@@ -122,32 +161,79 @@ static void register_tls(Module *m)
     if (tls->AddressOfIndex) *(ULONG *)tls->AddressOfIndex = (ULONG)m->tls_slot;   /* _tls_index */
 }
 
-/* Allocate this thread's TLS blocks and the pointer array (TEB[0x58]). */
-static int setup_thread_tls(void)
+/* Each thread's TLS pointer array (TEB[0x58]) is preceded by its length,
+ * so a DLL loaded later (LoadLibrary) grows every live thread's array with
+ * a fresh block for its slot, keeping the blocks already there — as
+ * Windows does.  The threads with arrays are listed for that. */
+#define MAX_TLS_THREADS 2048
+static BYTE *g_tls_threads[MAX_TLS_THREADS];
+
+static void *tls_template_block(int slot)
 {
-    if (!g_ntls) return 1;
-    void **arr = RtlAllocateHeap(RtlGetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)g_ntls * sizeof(void *));
-    if (!arr) return 0;
     for (int i = 0; i < g_nmod; i++) {
         Module *m = &g_mod[i];
-        if (m->tls_slot < 0) continue;
+        if (m->tls_slot != slot) continue;
         SIZE_T sz = m->tls_rawsize + m->tls_zerofill;
         BYTE *blk = RtlAllocateHeap(RtlGetProcessHeap(), HEAP_ZERO_MEMORY, sz ? sz : 1);
-        if (!blk) return 0;
-        if (m->tls_rawsize) memcpy(blk, m->tls_raw, m->tls_rawsize);
-        arr[m->tls_slot] = blk;
+        if (blk && m->tls_rawsize) memcpy(blk, m->tls_raw, m->tls_rawsize);
+        return blk;
     }
-    *(void **)(teb() + TEB_TLS_POINTER) = arr;
+    return 0;
+}
+
+/* Give the thread of @t (its TEB) a block for every slot (loader lock held) */
+static int grow_tls(BYTE *t)
+{
+    void **old = *(void ***)(t + TEB_TLS_POINTER);
+    ULONG_PTR had = old ? (ULONG_PTR)old[-1] : 0;
+    if ((int)had >= g_ntls) return 1;
+    void **arr = RtlAllocateHeap(RtlGetProcessHeap(), HEAP_ZERO_MEMORY, ((SIZE_T)g_ntls + 1) * sizeof(void *));
+    if (!arr) return 0;
+    arr++;
+    for (ULONG_PTR i = 0; i < had; i++) arr[i] = old[i];
+    for (int i = (int)had; i < g_ntls; i++) arr[i] = tls_template_block(i);
+    arr[-1] = (void *)(ULONG_PTR)g_ntls;
+    __atomic_store_n((void ***)(t + TEB_TLS_POINTER), arr, __ATOMIC_RELEASE);
+    /* (the old array is left: the thread may be reading it right now) */
     return 1;
+}
+
+/* This thread's TLS: listed, and a block for every module's slot */
+static int setup_thread_tls(void)
+{
+    llock();
+    BYTE *me = teb();
+    int listed = 0, fr = -1;
+    for (int i = 0; i < MAX_TLS_THREADS; i++) {
+        if (g_tls_threads[i] == me) { listed = 1; break; }
+        if (!g_tls_threads[i] && fr < 0) fr = i;
+    }
+    if (!listed && fr >= 0) g_tls_threads[fr] = me;
+    int ok = g_ntls ? grow_tls(me) : 1;
+    lunlock();
+    return ok;
+}
+
+/* After a LoadLibrary: every listed thread gets the new modules' blocks */
+static void grow_all_tls(void)
+{
+    for (int i = 0; i < MAX_TLS_THREADS; i++)
+        if (g_tls_threads[i]) grow_tls(g_tls_threads[i]);
 }
 
 static void free_thread_tls(void)
 {
+    llock();
+    BYTE *me = teb();
+    for (int i = 0; i < MAX_TLS_THREADS; i++) if (g_tls_threads[i] == me) g_tls_threads[i] = 0;
     void **arr = tls_pointer();
-    if (!arr) return;
-    for (int i = 0; i < g_ntls; i++) if (arr[i]) RtlFreeHeap(RtlGetProcessHeap(), 0, arr[i]);
-    RtlFreeHeap(RtlGetProcessHeap(), 0, arr);
-    *(void **)(teb() + TEB_TLS_POINTER) = 0;
+    if (arr) {
+        ULONG_PTR n = (ULONG_PTR)arr[-1];
+        for (ULONG_PTR i = 0; i < n; i++) if (arr[i]) RtlFreeHeap(RtlGetProcessHeap(), 0, arr[i]);
+        *(void **)(me + TEB_TLS_POINTER) = 0;
+        RtlFreeHeap(RtlGetProcessHeap(), 0, arr - 1);
+    }
+    lunlock();
 }
 
 /* -----------------------------------------------------------------------
@@ -196,8 +282,8 @@ static int absorb_new_modules(void)
         m->entry_rva = k->EntryRva;
         m->is_dll = (k->Flags & 1) != 0;
         m->tls_slot = -1;
-        for (int j = 0; j < 31 && k->Name[j]; j++) m->name[j] = k->Name[j];
-        wcopy(m->wname, k->Name, 32);
+        for (int j = 0; j < 63 && k->Name[j]; j++) m->name[j] = k->Name[j];
+        wcopy(m->wname, k->Name, 64);
         wcopy(m->wpath, k->Path, 96);
         LDR_DATA_TABLE_ENTRY *e = &m->entry;
         e->DllBase = m->base;
@@ -226,9 +312,9 @@ static BOOL attach_new_modules(int first)
     for (int i = first; i < g_nmod; i++) {
         Module *m = &g_mod[i];
         if (m->attached || !m->is_dll) { m->attached = TRUE; continue; }
+        m->attached = TRUE;                          /* (a nested load must not run it again) */
         run_tls_callbacks(m, DLL_PROCESS_ATTACH);
         if (!call_dllmain(m, DLL_PROCESS_ATTACH)) return FALSE;
-        m->attached = TRUE;
         m->entry.Flags |= LDRP_PROCESS_ATTACH_CALLED;
     }
     return TRUE;
@@ -243,26 +329,33 @@ static void ldr_init_process(void)
     g_ldr.InMemoryOrderModuleList.Flink = g_ldr.InMemoryOrderModuleList.Blink = &g_ldr.InMemoryOrderModuleList;
     g_ldr.InInitializationOrderModuleList.Flink = g_ldr.InInitializationOrderModuleList.Blink = &g_ldr.InInitializationOrderModuleList;
     peb->Ldr = &g_ldr;
+    RtlNovaInitProcess();
     RtlNovaInitExceptions();
     int first = absorb_new_modules();
     setup_thread_tls();                              /* first thread's TLS before any DllMain */
     attach_new_modules(first);
     g_process_ready = 1;
+    NtTestAlert();                                   /* APCs the DLLs queued to this thread (as Windows) */
 }
 
 /* -----------------------------------------------------------------------
  * Dynamic loading
  * ----------------------------------------------------------------------- */
-NTSTATUS NTAPI LdrNovaLoadDllA(const char *name, PVOID *base)
+NTSTATUS NTAPI LdrNovaLoadDllA(const char *name, PVOID *base) { return LdrNovaLoadDllExA(name, 0, base); }
+
+/* @flags: LoadLibraryEx's (the kernel maps AS_DATAFILE / AS_IMAGE_RESOURCE
+ * modules as data) */
+NTSTATUS NTAPI LdrNovaLoadDllExA(const char *name, ULONG flags, PVOID *base)
 {
     llock();
     void *existing = LdrNovaGetModuleA(name);
     if (existing) { lunlock(); if (base) *base = existing; return STATUS_SUCCESS; }
     PVOID b = 0;
-    NTSTATUS s = NtNovaLoadDll(name, (ULONG)strlen(name), &b);
+    NTSTATUS s = NtNovaLoadDll(name, (ULONG)strlen(name), &b, flags);
     if (NT_SUCCESS(s)) {
         int first = absorb_new_modules();
-        setup_thread_tls();                          /* refresh this thread's TLS array */
+        setup_thread_tls();
+        grow_all_tls();                              /* the new modules' TLS, in every thread */
         if (!attach_new_modules(first)) s = STATUS_DLL_INIT_FAILED;
         if (base) *base = b;
     }

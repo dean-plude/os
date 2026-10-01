@@ -52,6 +52,7 @@ typedef struct {
 #define KEY_END        0x4F   /* extended */
 #define KEY_DOWN       0x50   /* extended */
 #define KEY_PGDN       0x51   /* extended */
+#define KEY_INSERT     0x52   /* extended */
 #define KEY_DELETE     0x53   /* extended */
 #define KEY_LWIN       0x5B   /* extended */
 

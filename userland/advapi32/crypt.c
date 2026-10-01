@@ -139,3 +139,63 @@ WINADVAPI BOOL WINAPI CryptDuplicateHash(HCRYPTHASH x, DWORD *r, DWORD f, HCRYPT
     *out = (HCRYPTHASH)d;
     return TRUE;
 }
+
+/* -----------------------------------------------------------------------
+ * Keys: the providers here hash and give random bytes; they hold no keys,
+ * so key and signature operations fail as for a container without one
+ * ----------------------------------------------------------------------- */
+#define NTE_NO_KEY_      0x8009000DL
+#define NTE_BAD_KEY_     0x80090003L
+#define NTE_BAD_TYPE_    0x8009000AL
+#define NTE_NO_MORE_ITEMS_ 0x80090018L    /* ERROR_NO_MORE_ITEMS for enumerations: 259 */
+WINADVAPI BOOL WINAPI CryptGetUserKey(HCRYPTPROV p, DWORD spec, HCRYPTKEY *k) { (void)p; (void)spec; if (k) *k = 0; SetLastError(NTE_NO_KEY_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptGenKey(HCRYPTPROV p, DWORD alg, DWORD flags, HCRYPTKEY *k) { (void)p; (void)alg; (void)flags; if (k) *k = 0; SetLastError(NTE_BAD_TYPE_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptImportKey(HCRYPTPROV p, const BYTE *d, DWORD n, HCRYPTKEY pub, DWORD flags, HCRYPTKEY *k)
+{ (void)p; (void)d; (void)n; (void)pub; (void)flags; if (k) *k = 0; SetLastError(NTE_BAD_TYPE_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptExportKey(HCRYPTKEY k, HCRYPTKEY e, DWORD t, DWORD f, BYTE *d, DWORD *n) { (void)k; (void)e; (void)t; (void)f; (void)d; (void)n; SetLastError(NTE_BAD_KEY_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptDestroyKey(HCRYPTKEY k) { (void)k; SetLastError(NTE_BAD_KEY_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptEncrypt(HCRYPTKEY k, HCRYPTHASH h, BOOL fin, DWORD f, BYTE *d, DWORD *n, DWORD len)
+{ (void)k; (void)h; (void)fin; (void)f; (void)d; (void)n; (void)len; SetLastError(NTE_BAD_KEY_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptDecrypt(HCRYPTKEY k, HCRYPTHASH h, BOOL fin, DWORD f, BYTE *d, DWORD *n)
+{ (void)k; (void)h; (void)fin; (void)f; (void)d; (void)n; SetLastError(NTE_BAD_KEY_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptGetKeyParam(HCRYPTKEY k, DWORD p, BYTE *d, DWORD *n, DWORD f) { (void)k; (void)p; (void)d; (void)n; (void)f; SetLastError(NTE_BAD_KEY_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptSetKeyParam(HCRYPTKEY k, DWORD p, const BYTE *d, DWORD f) { (void)k; (void)p; (void)d; (void)f; SetLastError(NTE_BAD_KEY_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptSetHashParam(HCRYPTHASH h, DWORD p, const BYTE *d, DWORD f) { (void)h; (void)p; (void)d; (void)f; SetLastError(NTE_BAD_TYPE_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptSignHashW(HCRYPTHASH h, DWORD spec, LPCWSTR desc, DWORD f, BYTE *sig, DWORD *n)
+{ (void)h; (void)spec; (void)desc; (void)f; (void)sig; (void)n; SetLastError(NTE_NO_KEY_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptSignHashA(HCRYPTHASH h, DWORD spec, LPCSTR desc, DWORD f, BYTE *sig, DWORD *n)
+{ (void)h; (void)spec; (void)desc; (void)f; (void)sig; (void)n; SetLastError(NTE_NO_KEY_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptVerifySignatureA(HCRYPTHASH h, const BYTE *sig, DWORD n, HCRYPTKEY k, LPCSTR desc, DWORD f)
+{ (void)h; (void)sig; (void)n; (void)k; (void)desc; (void)f; SetLastError(NTE_BAD_KEY_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptVerifySignatureW(HCRYPTHASH h, const BYTE *sig, DWORD n, HCRYPTKEY k, LPCWSTR desc, DWORD f)
+{ (void)h; (void)sig; (void)n; (void)k; (void)desc; (void)f; SetLastError(NTE_BAD_KEY_); return FALSE; }
+WINADVAPI BOOL WINAPI CryptGetProvParam(HCRYPTPROV p, DWORD param, BYTE *d, DWORD *n, DWORD f)
+{
+    (void)p; (void)f;
+    if (param == 2 /* PP_ENUMCONTAINERS */) { SetLastError(259 /* ERROR_NO_MORE_ITEMS */); return FALSE; }
+    if (param == 4 /* PP_NAME */) {
+        static const char name[] = "Microsoft Enhanced RSA and AES Cryptographic Provider";
+        if (!n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+        if (!d) { *n = sizeof(name); return TRUE; }
+        if (*n < sizeof(name)) { *n = sizeof(name); SetLastError(ERROR_MORE_DATA); return FALSE; }
+        CopyMemory(d, name, sizeof(name));
+        *n = sizeof(name);
+        return TRUE;
+    }
+    SetLastError(NTE_BAD_TYPE_);
+    return FALSE;
+}
+/* One provider: the enhanced RSA/AES one (type PROV_RSA_AES, 24) */
+WINADVAPI BOOL WINAPI CryptEnumProvidersW(DWORD i, DWORD *r, DWORD f, DWORD *type, LPWSTR name, DWORD *n)
+{
+    (void)r; (void)f;
+    static const WCHAR pn[] = L"Microsoft Enhanced RSA and AES Cryptographic Provider";
+    if (i) { SetLastError(259); return FALSE; }
+    if (type) *type = 24;
+    if (!n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!name) { *n = sizeof(pn); return TRUE; }
+    if (*n < sizeof(pn)) { *n = sizeof(pn); SetLastError(ERROR_MORE_DATA); return FALSE; }
+    CopyMemory(name, pn, sizeof(pn));
+    *n = sizeof(pn);
+    return TRUE;
+}

@@ -200,6 +200,37 @@ WSAAPI_DECL BOOL WSAGetOverlappedResult(SOCKET s, LPWSAOVERLAPPED ov, LPDWORD by
 WSAAPI_DECL int WSAIoctl(SOCKET s, DWORD code, LPVOID in, DWORD inlen, LPVOID out, DWORD outlen, LPDWORD ret,
                          LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
 WSAAPI_DECL WSAEVENT WSACreateEvent(void);
+#ifndef FD_READ
+#define FD_READ     0x01
+#define FD_WRITE    0x02
+#define FD_OOB      0x04
+#define FD_ACCEPT   0x08
+#define FD_CONNECT  0x10
+#define FD_CLOSE    0x20
+#define FD_MAX_EVENTS 10
+#endif
+#ifndef MSG_PEEK
+#define MSG_PEEK    0x2
+#endif
+typedef struct { long lNetworkEvents; int iErrorCode[FD_MAX_EVENTS]; } WSANETWORKEVENTS, *LPWSANETWORKEVENTS;
+WSAAPI_DECL int WSAEventSelect(SOCKET s, WSAEVENT ev, long events);
+WSAAPI_DECL int WSAEnumNetworkEvents(SOCKET s, WSAEVENT ev, LPWSANETWORKEVENTS out);
+WSAAPI_DECL int WSAAddressToStringA(struct sockaddr *sa, DWORD len, void *info, char *out, DWORD *outlen);
+WSAAPI_DECL int WSAAddressToStringW(struct sockaddr *sa, DWORD len, void *info, WCHAR *out, DWORD *outlen);
+#define NI_NOFQDN      0x01
+#define NI_NUMERICHOST 0x02
+#define NI_NAMEREQD    0x04
+#define NI_NUMERICSERV 0x08
+#define NI_DGRAM       0x10
+#define NI_MAXHOST     1025
+#define NI_MAXSERV     32
+WSAAPI_DECL int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, DWORD hostlen, char *serv, DWORD servlen, int flags);
+WSAAPI_DECL int GetNameInfoW(const struct sockaddr *sa, socklen_t salen, WCHAR *host, DWORD hostlen, WCHAR *serv, DWORD servlen, int flags);
+WSAAPI_DECL int WSADuplicateSocketW(SOCKET s, DWORD pid, void *info);
+WSAAPI_DECL int WSADuplicateSocketA(SOCKET s, DWORD pid, void *info);
+WSAAPI_DECL int WSAConnect(SOCKET s, const struct sockaddr *to, int len, void *caller, void *callee, void *sqos, void *gqos);
+WSAAPI_DECL int WSAStringToAddressA(char *str, int family, void *info, struct sockaddr *sa, int *len);
+WSAAPI_DECL int WSAStringToAddressW(WCHAR *str, int family, void *info, struct sockaddr *sa, int *len);
 WSAAPI_DECL BOOL WSACloseEvent(WSAEVENT e);
 WSAAPI_DECL BOOL WSASetEvent(WSAEVENT e);
 WSAAPI_DECL BOOL WSAResetEvent(WSAEVENT e);

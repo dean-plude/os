@@ -16,6 +16,8 @@
 #include <sys/time.h>
 #include <windows.h>
 #include "msvcrt_internal.h"
+#include <wchar.h>
+WINBASEAPI DWORD WINAPI SearchPathA(LPCSTR path, LPCSTR name, LPCSTR ext, DWORD n, LPSTR buf, LPSTR *file);
 
 /* -----------------------------------------------------------------------
  * Descriptor table
@@ -30,12 +32,13 @@ typedef struct {
 } OpenFile;
 
 static OpenFile *g_fd[MAX_FD];
+static OpenFile g_std_fd[3];                   /* 0-2 before anything replaces them */
 
 static OpenFile *fd_get(int fd)
 {
     if (fd < 0 || fd >= MAX_FD) { errno = EBADF; return 0; }
     if (!g_fd[fd] && fd < 3) {
-        static OpenFile std[3];
+        OpenFile *std = g_std_fd;
         std[fd].h = GetStdHandle(fd == 0 ? STD_INPUT_HANDLE : fd == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
         std[fd].refs = 1;
         g_fd[fd] = &std[fd];
@@ -85,6 +88,7 @@ void __nova_set_errno_win32(void)
     case ERROR_DISK_FULL:      errno = ENOSPC; break;
     case ERROR_DIR_NOT_EMPTY:  errno = ENOTEMPTY; break;
     case ERROR_INVALID_HANDLE: errno = EBADF; break;
+    case ERROR_BROKEN_PIPE: case ERROR_NO_DATA: errno = EPIPE; break;
     default:                   errno = EINVAL; break;
     }
 }
@@ -115,9 +119,9 @@ int close(int fd)
     OpenFile *o = fd_get(fd);
     if (!o) return -1;
     g_fd[fd] = 0;
-    if (--o->refs == 0 && fd >= 3) {
+    if (--o->refs == 0) {                       /* the last descriptor: the handle goes */
         if (o->owns) CloseHandle(o->h);
-        free(o);
+        if (o < g_std_fd || o >= g_std_fd + 3) free(o);
     }
     return 0;
 }
@@ -136,9 +140,14 @@ int dup2(int fd, int fd2)
     if (!o) return -1;
     if (fd2 < 0 || fd2 >= MAX_FD) { errno = EBADF; return -1; }
     if (fd == fd2) return fd2;
-    if (g_fd[fd2]) close(fd2);
+    if (g_fd[fd2] || fd2 < 3) { if (fd_get(fd2)) close(fd2); }
     g_fd[fd2] = o;
     o->refs++;
+    if (fd2 < 3) {                              /* as Windows' CRT: the standard handle follows */
+        extern void __nova_std_changed(int fd, void *h);
+        SetStdHandle(fd2 == 0 ? STD_INPUT_HANDLE : fd2 == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE, o->h);
+        __nova_std_changed(fd2, o->h);
+    }
     return fd2;
 }
 int _dup2(int fd, int fd2) { return dup2(fd, fd2); }
@@ -148,7 +157,11 @@ ssize_t read(int fd, void *buf, size_t n)
     OpenFile *o = fd_get(fd);
     if (!o) return -1;
     DWORD got = 0;
-    if (!ReadFile(o->h, buf, (DWORD)(n > 0x40000000 ? 0x40000000 : n), &got, 0)) { __nova_set_errno_win32(); return -1; }
+    if (!ReadFile(o->h, buf, (DWORD)(n > 0x40000000 ? 0x40000000 : n), &got, 0)) {
+        if (GetLastError() == ERROR_BROKEN_PIPE) return 0;     /* the writer is gone: end of file */
+        __nova_set_errno_win32();
+        return -1;
+    }
     return got;
 }
 int _read(int fd, void *buf, unsigned n) { return (int)read(fd, buf, n); }
@@ -561,4 +574,277 @@ int getopt_long(int argc, char *const argv[], const char *spec, const struct opt
 int getopt(int argc, char *const argv[], const char *spec)
 {
     return getopt_long(argc, argv, spec, 0, 0);
+}
+
+/* -----------------------------------------------------------------------
+ * Pipes and child processes: _pipe, _popen, _pclose
+ * ----------------------------------------------------------------------- */
+#define O_NOINHERIT_ 0x0080
+
+__declspec(dllexport) int _pipe(int *fds, unsigned size, int mode)
+{
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), 0, !(mode & O_NOINHERIT_) };
+    HANDLE r, w;
+    if (!CreatePipe(&r, &w, &sa, size)) { __nova_set_errno_win32(); return -1; }
+    int a = __nova_fd_new(r, 1), b = a < 0 ? -1 : __nova_fd_new(w, 1);
+    if (a < 0 || b < 0) {
+        if (a >= 0) close(a); else CloseHandle(r);
+        CloseHandle(w);
+        return -1;
+    }
+    fds[0] = a;
+    fds[1] = b;
+    return 0;
+}
+
+/* The command interpreter: %ComSpec%, else cmd.exe */
+static void comspec(char *out, int cap)
+{
+    DWORD n = GetEnvironmentVariableA("ComSpec", out, (DWORD)cap);
+    if (!n || n >= (DWORD)cap) strcpy(out, "C:\\Windows\\System32\\cmd.exe");
+}
+
+/* Run "cmd.exe /c @cmd" with the given standard handles; the process
+ * handle, or 0 */
+HANDLE __nova_shell(const char *cmd, HANDLE in, HANDLE out, HANDLE err)
+{
+    char shell[MAX_PATH];
+    comspec(shell, sizeof(shell));
+    size_t n = strlen(shell) + strlen(cmd) + 16;
+    char *line = malloc(n);
+    if (!line) { errno = ENOMEM; return 0; }
+    snprintf(line, n, "\"%s\" /c %s", shell, cmd);
+    STARTUPINFOA si;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = in;
+    si.hStdOutput = out;
+    si.hStdError = err;
+    PROCESS_INFORMATION pi;
+    BOOL ok = CreateProcessA(shell, line, 0, 0, TRUE, 0, 0, 0, &si, &pi);
+    free(line);
+    if (!ok) { __nova_set_errno_win32(); if (errno == EINVAL) errno = ENOENT; return 0; }
+    CloseHandle(pi.hThread);
+    return pi.hProcess;
+}
+
+static struct { FILE *f; HANDLE proc; } g_popen[16];
+
+__declspec(dllexport) FILE *_popen(const char *cmd, const char *mode)
+{
+    int rd = mode[0] == 'r';
+    if (!rd && mode[0] != 'w') { errno = EINVAL; return 0; }
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), 0, TRUE };
+    HANDLE r, w;
+    if (!CreatePipe(&r, &w, &sa, 0)) { __nova_set_errno_win32(); return 0; }
+    HANDLE mine = rd ? r : w, theirs = rd ? w : r;
+    SetHandleInformation(mine, HANDLE_FLAG_INHERIT, 0);
+    fflush(0);
+    HANDLE proc = __nova_shell(cmd, rd ? GetStdHandle(STD_INPUT_HANDLE) : theirs,
+                               rd ? theirs : GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE));
+    CloseHandle(theirs);
+    if (!proc) { CloseHandle(mine); return 0; }
+    int fd = __nova_fd_new(mine, 1);
+    FILE *f = fd < 0 ? 0 : _fdopen(fd, rd ? "r" : "w");
+    if (!f) { if (fd >= 0) close(fd); else CloseHandle(mine); CloseHandle(proc); return 0; }
+    for (int i = 0; i < 16; i++) if (!g_popen[i].f) { g_popen[i].f = f; g_popen[i].proc = proc; return f; }
+    fclose(f);
+    CloseHandle(proc);
+    errno = EMFILE;
+    return 0;
+}
+
+__declspec(dllexport) FILE *_wpopen(const wchar_t *cmd, const wchar_t *mode)
+{
+    char c[4096], m[8];
+    if (wcstombs(c, cmd, sizeof(c)) == (size_t)-1 || wcstombs(m, mode, sizeof(m)) == (size_t)-1) { errno = EINVAL; return 0; }
+    return _popen(c, m);
+}
+
+__declspec(dllexport) int _pclose(FILE *f)
+{
+    for (int i = 0; i < 16; i++) {
+        if (g_popen[i].f != f) continue;
+        HANDLE proc = g_popen[i].proc;
+        g_popen[i].f = 0;
+        fclose(f);
+        DWORD code = (DWORD)-1;
+        WaitForSingleObject(proc, INFINITE);
+        GetExitCodeProcess(proc, &code);
+        CloseHandle(proc);
+        return (int)code;
+    }
+    errno = EINVAL;
+    return -1;
+}
+
+
+/* -----------------------------------------------------------------------
+ * _spawn* / _exec*: a new process (CreateProcess); _P_OVERLAY and the
+ * _exec functions wait for it and exit with its code, as Windows' CRT does
+ * ----------------------------------------------------------------------- */
+#define P_WAIT_    0
+#define P_NOWAIT_  1
+#define P_OVERLAY_ 2
+#define P_NOWAITO_ 3
+#define P_DETACH_  4
+
+/* One argument, quoted the way CommandLineToArgv reads it back */
+static void quote_arg(char *out, size_t *o, size_t cap, const char *a)
+{
+    int need = !*a || strpbrk(a, " \t\"") != 0;
+    if (need && *o < cap) out[(*o)++] = '"';
+    for (const char *p = a; *p; p++) {
+        size_t bs = 0;
+        while (*p == '\\') { bs++; p++; }
+        if (!*p) { for (size_t i = 0; i < (need ? bs * 2 : bs) && *o < cap; i++) out[(*o)++] = '\\'; break; }
+        if (*p == '"') { for (size_t i = 0; i < bs * 2 + 1 && *o < cap; i++) out[(*o)++] = '\\'; }
+        else for (size_t i = 0; i < bs && *o < cap; i++) out[(*o)++] = '\\';
+        if (*o < cap) out[(*o)++] = *p;
+    }
+    if (need && *o < cap) out[(*o)++] = '"';
+}
+
+static intptr_t spawn_common(int mode, const char *path, const char *const *argv, const char *const *envp, int search)
+{
+    char image[MAX_PATH];
+    if (search && !strpbrk(path, "\\/:")) {
+        char *file;
+        if (!SearchPathA(0, path, ".exe", MAX_PATH, image, &file)) { errno = ENOENT; return -1; }
+    } else {
+        snprintf(image, sizeof(image), "%s", path);
+        if (GetFileAttributesA(image) == INVALID_FILE_ATTRIBUTES && !strchr(strrchr(image, '\\') ? strrchr(image, '\\') : image, '.'))
+            strncat(image, ".exe", sizeof(image) - strlen(image) - 1);
+    }
+    size_t cap = 32768, o = 0;
+    char *cl = malloc(cap);
+    if (!cl) { errno = ENOMEM; return -1; }
+    for (int i = 0; argv && argv[i]; i++) {
+        if (i && o < cap) cl[o++] = ' ';
+        quote_arg(cl, &o, cap - 1, argv[i]);
+    }
+    cl[o] = 0;
+    char *env = 0;
+    if (envp) {                                        /* NAME=value\0...\0 */
+        size_t n = 1;
+        for (int i = 0; envp[i]; i++) n += strlen(envp[i]) + 1;
+        env = malloc(n);
+        if (env) {
+            size_t k = 0;
+            for (int i = 0; envp[i]; i++) { size_t l = strlen(envp[i]) + 1; memcpy(env + k, envp[i], l); k += l; }
+            env[k] = 0;
+        }
+    }
+    STARTUPINFOA si;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi;
+    fflush(0);
+    BOOL ok = CreateProcessA(image, cl, 0, 0, TRUE, mode == P_DETACH_ ? DETACHED_PROCESS : 0, env, 0, &si, &pi);
+    free(cl);
+    free(env);
+    if (!ok) { __nova_set_errno_win32(); if (errno == EINVAL) errno = ENOENT; return -1; }
+    CloseHandle(pi.hThread);
+    if (mode == P_NOWAIT_ || mode == P_NOWAITO_) return (intptr_t)pi.hProcess;
+    if (mode == P_DETACH_) { CloseHandle(pi.hProcess); return 0; }
+    DWORD code = 0;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    if (mode == P_OVERLAY_) ExitProcess(code);      /* _exec: this program "becomes" the other */
+    return (intptr_t)code;
+}
+
+#define ARGS_FROM(first, list)                                                   \
+    const char *av[64]; int ac = 0; va_list list; va_start(list, first);        \
+    for (const char *a = first; a && ac < 63; a = va_arg(list, const char *)) av[ac++] = a; \
+    av[ac] = 0;
+
+__declspec(dllexport) intptr_t _spawnv(int m, const char *p, const char *const *a)   { return spawn_common(m, p, a, 0, 0); }
+__declspec(dllexport) intptr_t _spawnvp(int m, const char *p, const char *const *a)  { return spawn_common(m, p, a, 0, 1); }
+__declspec(dllexport) intptr_t _spawnve(int m, const char *p, const char *const *a, const char *const *e)  { return spawn_common(m, p, a, e, 0); }
+__declspec(dllexport) intptr_t _spawnvpe(int m, const char *p, const char *const *a, const char *const *e) { return spawn_common(m, p, a, e, 1); }
+__declspec(dllexport) intptr_t _spawnl(int m, const char *p, const char *a0, ...)  { ARGS_FROM(a0, ap) va_end(ap); return spawn_common(m, p, av, 0, 0); }
+__declspec(dllexport) intptr_t _spawnlp(int m, const char *p, const char *a0, ...) { ARGS_FROM(a0, ap) va_end(ap); return spawn_common(m, p, av, 0, 1); }
+__declspec(dllexport) intptr_t _execv(const char *p, const char *const *a)   { return spawn_common(P_OVERLAY_, p, a, 0, 0); }
+__declspec(dllexport) intptr_t _execvp(const char *p, const char *const *a)  { return spawn_common(P_OVERLAY_, p, a, 0, 1); }
+__declspec(dllexport) intptr_t _execve(const char *p, const char *const *a, const char *const *e)  { return spawn_common(P_OVERLAY_, p, a, e, 0); }
+__declspec(dllexport) intptr_t _execvpe(const char *p, const char *const *a, const char *const *e) { return spawn_common(P_OVERLAY_, p, a, e, 1); }
+__declspec(dllexport) intptr_t _execl(const char *p, const char *a0, ...)  { ARGS_FROM(a0, ap) va_end(ap); return spawn_common(P_OVERLAY_, p, av, 0, 0); }
+__declspec(dllexport) intptr_t _execlp(const char *p, const char *a0, ...) { ARGS_FROM(a0, ap) va_end(ap); return spawn_common(P_OVERLAY_, p, av, 0, 1); }
+__declspec(dllexport) intptr_t _cwait(int *status, intptr_t proc, int action)
+{
+    (void)action;
+    DWORD code = 0;
+    if (WaitForSingleObject((HANDLE)proc, INFINITE) != WAIT_OBJECT_0) { errno = ECHILD; return -1; }
+    GetExitCodeProcess((HANDLE)proc, &code);
+    CloseHandle((HANDLE)proc);
+    if (status) *status = (int)code;
+    return proc;
+}
+
+/* -----------------------------------------------------------------------
+ * Odds and ends
+ * ----------------------------------------------------------------------- */
+__declspec(dllexport) int _flushall(void)
+{
+    fflush(0);
+    return 0;
+}
+
+static int g_umask = 022;
+__declspec(dllexport) int _umask(int m) { int old = g_umask; g_umask = m & 0777; return old; }
+__declspec(dllexport) int _umask_s(int m, int *old) { if (old) *old = g_umask; g_umask = m & 0777; return 0; }
+
+__declspec(dllexport) int _wchmod(const wchar_t *path, int mode)
+{
+    char a[MAX_PATH * 3];
+    if (wcstombs(a, path, sizeof(a)) == (size_t)-1) { errno = EINVAL; return -1; }
+    return chmod(a, (mode_t)mode);
+}
+
+/* _mktemp: the X's (six at the end) become a letter and the process id */
+static int mktemp_fill(char *t, size_t n, int (*exists)(const char *, void *), void *ctx)
+{
+    if (n < 6) { errno = EINVAL; return -1; }
+    char *x = t + n - 6;
+    for (int i = 0; i < 6; i++) if (x[i] != 'X') { errno = EINVAL; return -1; }
+    unsigned pid = (unsigned)GetCurrentProcessId();
+    for (int k = 0; k < 5; k++) { x[5 - k] = (char)('0' + pid % 10); pid /= 10; }
+    for (char c = 'a'; c <= 'z'; c++) {
+        x[0] = c;
+        if (!exists(t, ctx)) return 0;
+    }
+    errno = EEXIST;
+    return -1;
+}
+static int exists_a(const char *t, void *ctx) { (void)ctx; return GetFileAttributesA(t) != INVALID_FILE_ATTRIBUTES; }
+__declspec(dllexport) char *_mktemp(char *t) { return mktemp_fill(t, strlen(t), exists_a, 0) ? 0 : t; }
+__declspec(dllexport) int _mktemp_s(char *t, size_t n) { (void)n; return _mktemp(t) ? 0 : errno; }
+
+static int exists_w(const char *t, void *ctx)
+{
+    (void)t;
+    return GetFileAttributesW((const wchar_t *)ctx) != INVALID_FILE_ATTRIBUTES;
+}
+__declspec(dllexport) wchar_t *_wmktemp(wchar_t *t)
+{
+    size_t n = wcslen(t);
+    char a[MAX_PATH];
+    if (n >= MAX_PATH) { errno = EINVAL; return 0; }
+    for (size_t i = 0; i <= n; i++) a[i] = (char)t[i];
+    /* fill the narrow copy, checking the wide name each time */
+    char *x = a + n - 6;
+    if (n < 6) { errno = EINVAL; return 0; }
+    for (int i = 0; i < 6; i++) if (x[i] != 'X') { errno = EINVAL; return 0; }
+    unsigned pid = (unsigned)GetCurrentProcessId();
+    for (int k = 0; k < 5; k++) { x[5 - k] = (char)('0' + pid % 10); pid /= 10; }
+    for (char c = 'a'; c <= 'z'; c++) {
+        x[0] = c;
+        for (size_t i = n - 6; i < n; i++) t[i] = (wchar_t)a[i];
+        if (!exists_w(a, t)) return t;
+    }
+    errno = EEXIST;
+    return 0;
 }

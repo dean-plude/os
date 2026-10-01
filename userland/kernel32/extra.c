@@ -208,22 +208,6 @@ WINBASEAPI BOOL WINAPI SetFileCompletionNotificationModes(HANDLE h, UCHAR flags)
     return f != 0;
 }
 
-WINBASEAPI BOOL WINAPI GetOverlappedResult(HANDLE h, LPOVERLAPPED ov, LPDWORD bytes, BOOL wait)
-{
-    (void)h;
-    if ((NTSTATUS)ov->Internal == STATUS_PENDING) {
-        if (!wait) { SetLastError(996 /* ERROR_IO_INCOMPLETE */); return FALSE; }
-        if (ov->hEvent) WaitForSingleObject((HANDLE)((ULONG_PTR)ov->hEvent & ~(ULONG_PTR)1), INFINITE);
-    }
-    *bytes = (DWORD)ov->InternalHigh;
-    NTSTATUS s = (NTSTATUS)ov->Internal;
-    if (s == STATUS_END_OF_FILE) { SetLastError(ERROR_HANDLE_EOF); return FALSE; }
-    return NT_SUCCESS(s) ? TRUE : fail_status(s);
-}
-
-WINBASEAPI BOOL WINAPI CancelIo(HANDLE h)                    { (void)h; return TRUE; }   /* nothing is ever pending */
-WINBASEAPI BOOL WINAPI CancelIoEx(HANDLE h, LPOVERLAPPED ov)  { (void)h; (void)ov; SetLastError(1168 /* ERROR_NOT_FOUND */); return FALSE; }
-
 /* Completion routines (ReadFileEx, WriteFileEx, timer APCs) run on the
  * issuing thread when it waits alertably (SleepEx) */
 typedef struct Apc {
@@ -234,6 +218,7 @@ typedef struct Apc {
     ULONG_PTR a, b, c;
 } Apc;
 static Apc *g_apcs;
+static BOOL run_apcs(void);
 
 static void queue_apc(DWORD tid, int timer, void *fn, ULONG_PTR a, ULONG_PTR b, ULONG_PTR c)
 {
@@ -245,9 +230,12 @@ static void queue_apc(DWORD tid, int timer, void *fn, ULONG_PTR a, ULONG_PTR b, 
     while (*pp) pp = &(*pp)->next;
     *pp = x;
     unlock();
+    RtlNovaSetApcRunner(run_apcs);                   /* (ntdll's NtTestAlert runs them too) */
 }
 
 void k32_queue_user_apc(DWORD tid, PAPCFUNC fn, ULONG_PTR arg) { queue_apc(tid, 2, (void *)fn, arg, 0, 0); }
+
+BOOL k32_run_apcs(void) { return run_apcs(); }
 
 static BOOL run_apcs(void)
 {
@@ -268,26 +256,185 @@ static BOOL run_apcs(void)
     }
 }
 
-static BOOL io_ex(HANDLE h, LPVOID buf, DWORD n, LPOVERLAPPED ov, LPOVERLAPPED_COMPLETION_ROUTINE fn, BOOL write)
+/* -----------------------------------------------------------------------
+ * Overlapped requests the kernel leaves pending (pipes)
+ *
+ * The kernel finishes them into the OVERLAPPED (its Internal and
+ * InternalHigh are the I/O status block) and sets the event it was given.
+ * When the handle is bound to a completion port, or a completion routine
+ * waits (ReadFileEx), a helper thread watches a private event instead and
+ * then does what k32_io_done does at once for other requests.
+ * ----------------------------------------------------------------------- */
+typedef struct Watch { struct Watch *next; HANDLE ev, h; OVERLAPPED *o; void *fn; DWORD tid; } Watch;
+static Watch *g_watch;
+static HANDLE g_watch_wake;
+
+static DWORD apc_error(NTSTATUS s)
 {
-    IO_STATUS_BLOCK io;
-    LARGE_INTEGER off;
-    off.QuadPart = (LONGLONG)ov->Offset | (LONGLONG)ov->OffsetHigh << 32;
-    NTSTATUS s = write ? NtWriteFile(h, 0, 0, 0, &io, buf, n, &off, 0) : NtReadFile(h, 0, 0, 0, &io, buf, n, &off, 0);
-    DWORD done = NT_SUCCESS(s) ? (DWORD)io.Information : 0;
-    ov->Internal = (ULONG_PTR)s;
-    ov->InternalHigh = done;
-    if (!NT_SUCCESS(s) && s != STATUS_END_OF_FILE) return fail_status(s);
-    DWORD err = s == STATUS_END_OF_FILE ? ERROR_HANDLE_EOF : 0;
-    queue_apc(GetCurrentThreadId(), 0, (void *)fn, err, done, (ULONG_PTR)ov);
-    SetLastError(0);
-    return TRUE;
+    return NT_SUCCESS(s) ? 0 : s == STATUS_END_OF_FILE ? ERROR_HANDLE_EOF : RtlNtStatusToDosError(s);
 }
 
+static void watch_done(Watch *w)
+{
+    NTSTATUS s = (NTSTATUS)w->o->Internal;
+    DWORD bytes = (DWORD)w->o->InternalHigh;
+    if (w->fn) queue_apc(w->tid, 0, w->fn, apc_error(s), bytes, (ULONG_PTR)w->o);
+    else k32_io_done(w->h, w->o, s, bytes);
+    CloseHandle(w->ev);
+    zfree(w);
+}
+
+static DWORD WINAPI watcher(LPVOID arg)
+{
+    (void)arg;
+    for (;;) {
+        HANDLE hs[MAXIMUM_WAIT_OBJECTS];
+        Watch *ws[MAXIMUM_WAIT_OBJECTS];
+        DWORD n = 0;
+        hs[n++] = g_watch_wake;
+        lock();
+        for (Watch *w = g_watch; w && n < MAXIMUM_WAIT_OBJECTS; w = w->next) { ws[n] = w; hs[n++] = w->ev; }
+        unlock();
+        DWORD r = WaitForMultipleObjects(n, hs, FALSE, n == 1 ? INFINITE : 100);
+        if (r == WAIT_OBJECT_0 || r == WAIT_TIMEOUT || r >= WAIT_OBJECT_0 + n) continue;
+        Watch *w = ws[r - WAIT_OBJECT_0];
+        lock();
+        for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next) if (*pp == w) { *pp = w->next; break; }
+        unlock();
+        watch_done(w);
+    }
+}
+
+/* A private event for a request someone must finish in user mode, or 0 */
+static Watch *watch_new(HANDLE h, OVERLAPPED *o, void *fn)
+{
+    lock();
+    FileInfo *f = file_info(h, FALSE);
+    BOOL port = f && f->port && !((ULONG_PTR)o->hEvent & 1);
+    unlock();
+    if (!port && !fn) return 0;
+    Watch *w = zalloc(sizeof(*w));
+    if (!w) return 0;
+    w->ev = CreateEventW(0, TRUE, FALSE, 0);
+    if (!w->ev) { zfree(w); return 0; }
+    w->h = h; w->o = o; w->fn = fn; w->tid = GetCurrentThreadId();
+    return w;
+}
+
+static void watch_start(Watch *w)
+{
+    static LONG started;
+    if (!InterlockedCompareExchange(&started, 1, 0)) {     /* (not under the lock: CreateThread takes it) */
+        HANDLE ev = CreateEventW(0, FALSE, FALSE, 0);
+        lock();
+        g_watch_wake = ev;
+        unlock();
+        HANDLE t = CreateThread(0, 64 * 1024, watcher, 0, 0, 0);
+        if (t) CloseHandle(t);
+    }
+    while (!*(HANDLE volatile *)&g_watch_wake) Sleep(0);
+    lock();
+    w->next = g_watch;
+    g_watch = w;
+    unlock();
+    SetEvent(g_watch_wake);
+}
+
+/* Finish a request that did not stay pending */
+static void finished_now(HANDLE h, OVERLAPPED *o, Watch *w, void *fn, NTSTATUS s)
+{
+    if (w) { CloseHandle(w->ev); zfree(w); }
+    if (fn) queue_apc(GetCurrentThreadId(), 0, fn, apc_error(s), (DWORD)o->InternalHigh, (ULONG_PTR)o);
+    else k32_io_done(h, o, s, (DWORD)o->InternalHigh);
+}
+
+BOOL k32_overlapped(HANDLE h, OVERLAPPED *o, int op, PVOID buf, DWORD n, LPDWORD done, PVOID fn)
+{
+    LARGE_INTEGER off;
+    off.QuadPart = (LONGLONG)o->Offset | (LONGLONG)o->OffsetHigh << 32;
+    Watch *w = watch_new(h, o, fn);
+    HANDLE ev = w ? w->ev : (HANDLE)((ULONG_PTR)o->hEvent & ~(ULONG_PTR)1);
+    o->Internal = STATUS_PENDING;
+    o->InternalHigh = 0;
+    NTSTATUS s = op ? NtWriteFile(h, ev, 0, 0, (PIO_STATUS_BLOCK)o, buf, n, &off, 0)
+                    : NtReadFile(h, ev, 0, 0, (PIO_STATUS_BLOCK)o, buf, n, &off, 0);
+    if (done) *done = 0;
+    if (s == STATUS_PENDING) {
+        if (w) watch_start(w);
+        if (fn) { SetLastError(0); return TRUE; }          /* ReadFileEx: queued */
+        SetLastError(ERROR_IO_PENDING);
+        return FALSE;
+    }
+    o->Internal = (ULONG_PTR)s;
+    if (!NT_SUCCESS(s) && s != STATUS_END_OF_FILE && s != STATUS_BUFFER_OVERFLOW) o->InternalHigh = 0;
+    finished_now(h, o, w, fn, s);
+    if (fn) { SetLastError(0); return NT_SUCCESS(s) || s == STATUS_END_OF_FILE || s == STATUS_BUFFER_OVERFLOW; }
+    if (done) *done = (DWORD)o->InternalHigh;
+    if (s == STATUS_END_OF_FILE) { SetLastError(ERROR_HANDLE_EOF); return FALSE; }
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+
+NTSTATUS k32_overlapped_fsctl(HANDLE h, OVERLAPPED *o, ULONG code, PVOID in, DWORD in_len, PVOID out, DWORD out_len)
+{
+    Watch *w = watch_new(h, o, 0);
+    HANDLE ev = w ? w->ev : (HANDLE)((ULONG_PTR)o->hEvent & ~(ULONG_PTR)1);
+    o->Internal = STATUS_PENDING;
+    o->InternalHigh = 0;
+    NTSTATUS s = NtFsControlFile(h, ev, 0, 0, (PIO_STATUS_BLOCK)o, code, in, in_len, out, out_len);
+    if (s == STATUS_PENDING) { if (w) watch_start(w); return s; }
+    o->Internal = (ULONG_PTR)s;
+    /* ConnectNamedPipe finding its client already there completes nothing */
+    if (s == (NTSTATUS)0xC00000B2) { if (w) { CloseHandle(w->ev); zfree(w); } return s; }
+    finished_now(h, o, w, 0, s);
+    return s;
+}
+
+WINBASEAPI BOOL WINAPI GetOverlappedResultEx(HANDLE h, LPOVERLAPPED ov, LPDWORD bytes, DWORD ms, BOOL alertable)
+{
+    (void)h;
+    if ((NTSTATUS)ov->Internal == STATUS_PENDING) {
+        if (!ms) { SetLastError(996 /* ERROR_IO_INCOMPLETE */); return FALSE; }
+        HANDLE ev = (HANDLE)((ULONG_PTR)ov->hEvent & ~(ULONG_PTR)1);
+        ULONGLONG until = ms == INFINITE ? ~0ULL : GetTickCount64() + ms;
+        while ((NTSTATUS)*(volatile ULONG_PTR *)&ov->Internal == STATUS_PENDING) {
+            ULONGLONG now = GetTickCount64();
+            if (now >= until) { SetLastError(WAIT_TIMEOUT); return FALSE; }
+            DWORD step = ev ? (until - now > 0x7FFFFFFF ? 0x7FFFFFFF : (DWORD)(until - now)) : 1;
+            DWORD r = ev ? WaitForSingleObjectEx(ev, step, alertable) : SleepEx(1, alertable);
+            if (r == WAIT_IO_COMPLETION) { SetLastError(WAIT_IO_COMPLETION); return FALSE; }
+            if (ev && r == WAIT_OBJECT_0 && (NTSTATUS)ov->Internal == STATUS_PENDING) Sleep(1);
+        }
+    }
+    *bytes = (DWORD)ov->InternalHigh;
+    NTSTATUS s = (NTSTATUS)ov->Internal;
+    if (s == STATUS_END_OF_FILE) { SetLastError(ERROR_HANDLE_EOF); return FALSE; }
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+
+WINBASEAPI BOOL WINAPI GetOverlappedResult(HANDLE h, LPOVERLAPPED ov, LPDWORD bytes, BOOL wait)
+{
+    return GetOverlappedResultEx(h, ov, bytes, wait ? INFINITE : 0, FALSE);
+}
+
+WINBASEAPI BOOL WINAPI CancelIo(HANDLE h)
+{
+    IO_STATUS_BLOCK io;
+    NTSTATUS s = NtCancelIoFile(h, &io);
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+
+WINBASEAPI BOOL WINAPI CancelIoEx(HANDLE h, LPOVERLAPPED ov)
+{
+    IO_STATUS_BLOCK io;
+    NTSTATUS s = ov ? NtCancelIoFileEx(h, (PIO_STATUS_BLOCK)ov, &io) : NtCancelIoFile(h, &io);
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+
+
 WINBASEAPI BOOL WINAPI ReadFileEx(HANDLE h, LPVOID buf, DWORD n, LPOVERLAPPED ov, LPOVERLAPPED_COMPLETION_ROUTINE fn)
-{ return io_ex(h, buf, n, ov, fn, FALSE); }
+{ return k32_overlapped(h, ov, 0, buf, n, 0, (PVOID)fn); }
 WINBASEAPI BOOL WINAPI WriteFileEx(HANDLE h, LPCVOID buf, DWORD n, LPOVERLAPPED ov, LPOVERLAPPED_COMPLETION_ROUTINE fn)
-{ return io_ex(h, (LPVOID)buf, n, ov, fn, TRUE); }
+{ return k32_overlapped(h, ov, 1, (PVOID)buf, n, 0, (PVOID)fn); }
 
 WINBASEAPI DWORD WINAPI SleepEx(DWORD ms, BOOL alertable)
 {
@@ -322,11 +469,23 @@ static POBJECT_ATTRIBUTES sec_name(SecName *n, LPCWSTR name)
     return &n->oa;
 }
 
+/* @oa with OBJ_INHERIT when @inherit (an unnamed section gets one) */
+static POBJECT_ATTRIBUTES sec_inherit(SecName *n, POBJECT_ATTRIBUTES oa, BOOL inherit)
+{
+    if (!inherit) return oa;
+    if (!oa) {
+        memset(&n->oa, 0, sizeof(n->oa));
+        n->oa.Length = sizeof(n->oa);
+        oa = &n->oa;
+    }
+    oa->Attributes |= OBJ_INHERIT;
+    return oa;
+}
+
 static BOOL writable(DWORD protect) { return (protect & 0xFF) == PAGE_READWRITE || (protect & 0xFF) == PAGE_EXECUTE_READWRITE; }
 
 WINBASEAPI HANDLE WINAPI CreateFileMappingW(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect, DWORD hi, DWORD lo, LPCWSTR name)
 {
-    (void)sa;
     ULONGLONG size = (ULONGLONG)hi << 32 | lo;
     if (file == INVALID_HANDLE_VALUE) file = 0;
     if (file) {
@@ -348,7 +507,7 @@ WINBASEAPI HANDLE WINAPI CreateFileMappingW(HANDLE file, LPSECURITY_ATTRIBUTES s
     LARGE_INTEGER max;
     max.QuadPart = (LONGLONG)size;
     HANDLE h = 0;
-    NTSTATUS s = NtCreateSection(&h, 0xF001F /* SECTION_ALL_ACCESS */, sec_name(&n, name), &max, protect & 0xFF,
+    NTSTATUS s = NtCreateSection(&h, 0xF001F /* SECTION_ALL_ACCESS */, sec_inherit(&n, sec_name(&n, name), sa && sa->bInheritHandle), &max, protect & 0xFF,
                                  0x8000000 /* SEC_COMMIT */, file);
     if (!NT_SUCCESS(s)) return fail_status(s), (HANDLE)0;
     SetLastError(s == 0x40000000 /* STATUS_OBJECT_NAME_EXISTS */ ? ERROR_ALREADY_EXISTS : 0);
@@ -364,10 +523,11 @@ WINBASEAPI HANDLE WINAPI CreateFileMappingA(HANDLE file, LPSECURITY_ATTRIBUTES s
 
 WINBASEAPI HANDLE WINAPI OpenFileMappingW(DWORD access, BOOL inherit, LPCWSTR name)
 {
-    (void)access; (void)inherit;
+    (void)access;
     SecName n;
     POBJECT_ATTRIBUTES oa = sec_name(&n, name);
     if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    oa = sec_inherit(&n, oa, inherit);
     HANDLE h = 0;
     NTSTATUS s = NtOpenSection(&h, 0xF001F, oa);
     if (!NT_SUCCESS(s)) {
@@ -705,7 +865,33 @@ static BOOL find_program(const char *name, char *out, int cap)
     return FALSE;
 }
 
-static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE std[3], LPPROCESS_INFORMATION pi)
+/* The environment block for a new process, as UTF-8 (heap) */
+static char *env_utf8(LPVOID env, BOOL unicode, SIZE_T *len)
+{
+    if (!env) return k32_env_block(0, len);
+    SIZE_T n = 0;
+    if (unicode) {
+        const WCHAR *w = env;
+        while (w[n] || w[n + 1]) n++;
+        n += 2;                                         /* both NULs */
+        int need = w2u(w, (int)n, 0, 0);
+        char *b = zalloc((SIZE_T)need + 2);
+        if (!b) return 0;
+        w2u(w, (int)n, b, need + 1);
+        *len = (SIZE_T)need;
+        return b;
+    }
+    const char *a = env;
+    while (a[n] || a[n + 1]) n++;
+    n += 2;
+    char *b = zalloc(n);
+    if (b) memcpy(b, a, n);
+    *len = n;
+    return b;
+}
+
+static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE std[3], BOOL inherit,
+                           DWORD flags, LPVOID env, const void *rt, WORD rt_len, LPPROCESS_INFORMATION pi)
 {
     char name[MAX_PATH], image[MAX_PATH], cwdbuf[MAX_PATH];
     if (app) {
@@ -723,10 +909,33 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
     }
     if (!name[0] || !find_program(name, image, MAX_PATH)) { SetLastError(ERROR_FILE_NOT_FOUND); return FALSE; }
     if (dir && !full_path(dir, cwdbuf, MAX_PATH)) { SetLastError(ERROR_DIRECTORY); return FALSE; }
+    /* a batch file runs in the command interpreter */
+    int il = (int)strlen(image);
+    char *batch = 0;
+    if (il > 4 && (ieq(image + il - 4, ".bat") || ieq(image + il - 4, ".cmd"))) {
+        const char *rest = cmd ? cmd : image;
+        SIZE_T bl = strlen(rest) + 64;
+        batch = zalloc(bl + (SIZE_T)il);
+        if (!batch) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+        const char *pre = "C:\\Windows\\System32\\cmd.exe /c ";
+        memcpy(batch, pre, strlen(pre));
+        memcpy(batch + strlen(pre), rest, strlen(rest) + 1);
+        memcpy(image, "C:\\Windows\\System32\\cmd.exe", 28);
+        cmd = batch;
+    }
+    SIZE_T env_len = 0;
+    char *envb = env_utf8(env, (flags & CREATE_UNICODE_ENVIRONMENT) != 0, &env_len);
+    if (!envb) { zfree(batch); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
     NOVA_CREATE_PROCESS io;
     memset(&io, 0, sizeof(io));
-    for (int i = 0; i < 3; i++) io.StdHandle[i] = std ? std[i] : 0;
+    for (int i = 0; i < 3; i++) io.StdHandle[i] = std[i];
+    io.Flags = (inherit ? 1 : 0) | ((flags & (DETACHED_PROCESS | CREATE_NO_WINDOW)) ? 2 : 0);
+    io.Environment = envb;
+    io.EnvironmentSize = env_len;
+    if (rt && rt_len) { io.RuntimeData = rt; io.RuntimeDataSize = rt_len; }
     NTSTATUS s = NtNovaCreateProcess(image, cmd ? cmd : image, dir ? cwdbuf : cwd(), &io);
+    zfree(envb);
+    zfree(batch);
     if (!NT_SUCCESS(s)) return fail_status(s);
     pi->hProcess = io.Process;
     pi->hThread = io.Thread;
@@ -735,21 +944,32 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
     return TRUE;
 }
 
+/* The new process's standard handles: STARTUPINFO's when it says so,
+ * else the creator's own (a console program's output goes where ours does) */
+static void std_handles(DWORD flags, HANDLE si_in, HANDLE si_out, HANDLE si_err, HANDLE std[3])
+{
+    if (flags & STARTF_USESTDHANDLES) { std[0] = si_in; std[1] = si_out; std[2] = si_err; return; }
+    std[0] = GetStdHandle(STD_INPUT_HANDLE);
+    std[1] = GetStdHandle(STD_OUTPUT_HANDLE);
+    std[2] = GetStdHandle(STD_ERROR_HANDLE);
+    for (int i = 0; i < 3; i++) if (std[i] == INVALID_HANDLE_VALUE) std[i] = 0;
+}
+
 WINBASEAPI BOOL WINAPI CreateProcessA(LPCSTR app, LPSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta, BOOL inherit,
                                       DWORD flags, LPVOID env, LPCSTR dir, LPSTARTUPINFOA si, LPPROCESS_INFORMATION pi)
 {
-    (void)pa; (void)ta; (void)inherit; (void)flags; (void)env;
-    HANDLE std[3] = { 0, 0, 0 };
-    BOOL use = si && (si->dwFlags & STARTF_USESTDHANDLES);
-    if (use) { std[0] = si->hStdInput; std[1] = si->hStdOutput; std[2] = si->hStdError; }
+    (void)pa; (void)ta;
+    HANDLE std[3];
     if (!app && !cmd) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    return create_process(app, cmd, dir, use ? std : 0, pi);
+    std_handles(si ? si->dwFlags : 0, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
+    return create_process(app, cmd, dir, std, inherit, flags, env,
+                          si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, pi);
 }
 
 WINBASEAPI BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta, BOOL inherit,
                                       DWORD flags, LPVOID env, LPCWSTR dir, LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi)
 {
-    (void)pa; (void)ta; (void)inherit; (void)flags; (void)env;
+    (void)pa; (void)ta;
     char a[MAX_PATH * 3], d[MAX_PATH * 3], *c = 0;
     if (!app && !cmd) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     if (cmd) {
@@ -758,21 +978,32 @@ WINBASEAPI BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIB
         if (!c) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
         w2u(cmd, -1, c, n);
     }
-    HANDLE std[3] = { 0, 0, 0 };
-    BOOL use = si && (si->dwFlags & STARTF_USESTDHANDLES);
-    if (use) { std[0] = si->hStdInput; std[1] = si->hStdOutput; std[2] = si->hStdError; }
+    HANDLE std[3];
+    std_handles(si ? si->dwFlags : 0, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
     BOOL ok = create_process(app ? wide_to_temp(app, a, sizeof(a)) : 0, c, dir ? wide_to_temp(dir, d, sizeof(d)) : 0,
-                             use ? std : 0, pi);
+                             std, inherit, flags, env, si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, pi);
     zfree(c);
     return ok;
 }
 
 WINBASEAPI HANDLE WINAPI OpenProcess(DWORD access, BOOL inherit, DWORD pid)
 {
-    (void)access; (void)inherit;
-    if (pid == GetCurrentProcessId()) return GetCurrentProcess();
-    SetLastError(ERROR_INVALID_PARAMETER);
-    return 0;
+    (void)access;
+    OBJECT_ATTRIBUTES oa;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.Attributes = inherit ? OBJ_INHERIT : 0;
+    CLIENT_ID cid;
+    cid.UniqueProcess = (HANDLE)(ULONG_PTR)pid;
+    cid.UniqueThread = 0;
+    HANDLE h = 0;
+    NTSTATUS s = NtOpenProcess(&h, access, &oa, &cid);
+    if (!NT_SUCCESS(s)) {
+        if (pid == GetCurrentProcessId()) return GetCurrentProcess();   /* (this process has no exit object) */
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    return h;
 }
 
 WINBASEAPI DWORD WINAPI GetProcessId(HANDLE h)
@@ -809,6 +1040,8 @@ WINBASEAPI VOID WINAPI GetStartupInfoW(LPSTARTUPINFOW si)
     si->hStdInput = a.hStdInput;
     si->hStdOutput = a.hStdOutput;
     si->hStdError = a.hStdError;
+    si->cbReserved2 = a.cbReserved2;
+    si->lpReserved2 = a.lpReserved2;
 }
 
 WINBASEAPI BOOL WINAPI GetProcessAffinityMask(HANDLE p, PDWORD_PTR proc, PDWORD_PTR sys)
@@ -902,6 +1135,9 @@ __asm__(".section .drectve,\"yn\"\n\t"
         ".ascii \" /EXPORT:RtlRestoreContext=ntdll.RtlRestoreContext\"\n\t"
         ".ascii \" /EXPORT:RtlCaptureStackBackTrace=ntdll.RtlCaptureStackBackTrace\"\n\t"
         ".ascii \" /EXPORT:RtlRaiseException=ntdll.RtlRaiseException\"\n\t"
+        ".ascii \" /EXPORT:RtlAddFunctionTable=ntdll.RtlAddFunctionTable\"\n\t"
+        ".ascii \" /EXPORT:RtlDeleteFunctionTable=ntdll.RtlDeleteFunctionTable\"\n\t"
+        ".ascii \" /EXPORT:RtlInstallFunctionTableCallback=ntdll.RtlInstallFunctionTableCallback\"\n\t"
         ".text\n");
 
 /* -----------------------------------------------------------------------
@@ -1322,8 +1558,6 @@ WINBASEAPI DWORD WINAPI GetShortPathNameW(LPCWSTR s, LPWSTR l, DWORD n) { return
 WINBASEAPI DWORD WINAPI GetLongPathNameA(LPCSTR s, LPSTR l, DWORD n)    { return put_a(s, l, n); }
 WINBASEAPI DWORD WINAPI GetShortPathNameA(LPCSTR s, LPSTR l, DWORD n)   { return put_a(s, l, n); }
 
-WINBASEAPI BOOL WINAPI GetHandleInformation(HANDLE h, LPDWORD flags) { (void)h; *flags = 0; return TRUE; }
-WINBASEAPI BOOL WINAPI SetHandleInformation(HANDLE h, DWORD mask, DWORD flags) { (void)h; (void)mask; (void)flags; return TRUE; }
 
 WINBASEAPI BOOL WINAPI GetDiskFreeSpaceExW(LPCWSTR dir, PULARGE_INTEGER avail, PULARGE_INTEGER total, PULARGE_INTEGER free)
 {
@@ -1386,8 +1620,10 @@ WINBASEAPI VOID  WINAPI SetFileApisToOEM(void)  { }
  * ----------------------------------------------------------------------- */
 WINBASEAPI HMODULE WINAPI LoadLibraryExW(LPCWSTR name, HANDLE f, DWORD flags)
 {
-    (void)f; (void)flags;
-    return LoadLibraryW(name);
+    char n[MAX_PATH * 3];
+    if (!name) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    if (!WideCharToMultiByte(CP_UTF8, 0, name, -1, n, sizeof(n), 0, 0)) { SetLastError(ERROR_FILENAME_EXCED_RANGE); return 0; }
+    return LoadLibraryExA(n, f, flags);
 }
 
 WINBASEAPI BOOL WINAPI GetModuleHandleExW(DWORD flags, LPCWSTR name, HMODULE *out)
@@ -1397,7 +1633,7 @@ WINBASEAPI BOOL WINAPI GetModuleHandleExW(DWORD flags, LPCWSTR name, HMODULE *ou
         RtlPcToFileHeader((PVOID)name, &base);
         *out = base;
     } else {
-        *out = GetModuleHandleW(name);
+        *out = GetModuleHandleW(name);               /* (PIN, UNCHANGED_REFCOUNT: modules stay loaded) */
     }
     if (!*out) { SetLastError(ERROR_MOD_NOT_FOUND); return FALSE; }
     return TRUE;
@@ -1839,6 +2075,8 @@ WCHAR k32_lower(WCHAR c)
     return c;
 }
 
+#define LING_IGNORECASE 0x10                                /* LINGUISTIC_IGNORECASE */
+
 static int compare(const WCHAR *a, int na, const WCHAR *b, int nb, BOOL fold)
 {
     if (na < 0) na = wlen(a);
@@ -1858,7 +2096,7 @@ WINBASEAPI int WINAPI CompareStringOrdinal(LPCWSTR a, int na, LPCWSTR b, int nb,
 WINBASEAPI int WINAPI CompareStringEx(LPCWSTR loc, DWORD flags, LPCWSTR a, int na, LPCWSTR b, int nb, LPVOID v, LPVOID r, LONG_PTR p)
 {
     (void)loc; (void)v; (void)r; (void)p;
-    return compare(a, na, b, nb, (flags & (NORM_IGNORECASE | 0x10000000 /* LINGUISTIC_IGNORECASE */)) != 0);
+    return compare(a, na, b, nb, (flags & (NORM_IGNORECASE | LING_IGNORECASE)) != 0);
 }
 
 WINBASEAPI int WINAPI CompareStringW(DWORD lcid, DWORD flags, LPCWSTR a, int na, LPCWSTR b, int nb)
@@ -1882,6 +2120,50 @@ WINBASEAPI int WINAPI CompareStringA(DWORD lcid, DWORD flags, LPCSTR a, int na, 
     return r;
 }
 
+/* Find @value in @src: from the start or end, or only as a prefix or suffix
+ * (FIND_* flags), optionally ignoring case.  Returns the index, or -1. */
+static int find_str(const WCHAR *src, int ns, const WCHAR *val, int nv, DWORD flags, BOOL fold, int *found)
+{
+    if (ns < 0) ns = wlen(src);
+    if (nv < 0) nv = wlen(val);
+    int first = 0, last = ns - nv;
+    if (flags & 0x00100000) last = first;                   /* FIND_STARTSWITH */
+    if (flags & 0x00200000) first = last;                   /* FIND_ENDSWITH */
+    BOOL back = (flags & (0x00800000 | 0x00200000)) != 0;   /* FIND_FROMEND */
+    for (int k = 0; k <= last - first; k++) {
+        int i = back ? last - k : first + k;
+        if (i < 0) break;
+        int j = 0;
+        for (; j < nv; j++) {
+            WCHAR x = fold ? k32_upper(src[i + j]) : src[i + j], y = fold ? k32_upper(val[j]) : val[j];
+            if (x != y) break;
+        }
+        if (j == nv) { if (found) *found = nv; return i; }
+    }
+    SetLastError(ERROR_SUCCESS);
+    return -1;
+}
+
+WINBASEAPI int WINAPI FindNLSStringEx(LPCWSTR loc, DWORD flags, LPCWSTR src, int ns, LPCWSTR val, int nv,
+                                      LPINT found, LPVOID ver, LPVOID r, LPARAM h)
+{
+    (void)loc; (void)ver; (void)r; (void)h;
+    if (!src || !val || ns < -1 || nv < -1) { SetLastError(ERROR_INVALID_PARAMETER); return -1; }
+    return find_str(src, ns, val, nv, flags, (flags & (NORM_IGNORECASE | LING_IGNORECASE)) != 0, found);
+}
+
+WINBASEAPI int WINAPI FindNLSString(LCID lcid, DWORD flags, LPCWSTR src, int ns, LPCWSTR val, int nv, LPINT found)
+{
+    (void)lcid;
+    return FindNLSStringEx(0, flags, src, ns, val, nv, found, 0, 0, 0);
+}
+
+WINBASEAPI int WINAPI FindStringOrdinal(DWORD flags, LPCWSTR src, int ns, LPCWSTR val, int nv, BOOL ignore_case)
+{
+    if (!src || !val) { SetLastError(ERROR_INVALID_PARAMETER); return -1; }
+    return find_str(src, ns, val, nv, flags, ignore_case, 0);
+}
+
 WINBASEAPI int WINAPI LCMapStringEx(LPCWSTR loc, DWORD flags, LPCWSTR s, int n, LPWSTR out, int cap, LPVOID v, LPVOID r, LONG_PTR p)
 {
     (void)loc; (void)v; (void)r; (void)p;
@@ -1891,7 +2173,7 @@ WINBASEAPI int WINAPI LCMapStringEx(LPCWSTR loc, DWORD flags, LPCWSTR s, int n, 
         if (!cap) return need;
         if (cap < need) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
         BYTE *o = (BYTE *)out;
-        for (int i = 0; i < len; i++) { WCHAR c = (flags & NORM_IGNORECASE) ? k32_upper(s[i]) : s[i]; o[2 * i] = (BYTE)(c >> 8); o[2 * i + 1] = (BYTE)c; }
+        for (int i = 0; i < len; i++) { WCHAR c = (flags & (NORM_IGNORECASE | LING_IGNORECASE)) ? k32_upper(s[i]) : s[i]; o[2 * i] = (BYTE)(c >> 8); o[2 * i + 1] = (BYTE)c; }
         o[2 * len] = 0;
         return need;
     }
@@ -1998,87 +2280,166 @@ WINBASEAPI WORD  WINAPI GetSystemDefaultLangID(void)   { return 0x409; }
 WINBASEAPI WORD  WINAPI GetUserDefaultUILanguage(void) { return 0x409; }
 WINBASEAPI WORD  WINAPI GetSystemDefaultUILanguage(void) { return 0x409; }
 WINBASEAPI BOOL  WINAPI IsValidLocale(DWORD lcid, DWORD f) { (void)f; return lcid == 0x409 || lcid == 0x400 || lcid == 0x800 || lcid == 0x7F; }
-WINBASEAPI BOOL  WINAPI IsValidLocaleName(LPCWSTR n)   { return !n || !n[0] || compare(n, -1, (const WCHAR *)L"en-US", -1, TRUE) == CSTR_EQUAL; }
-WINBASEAPI DWORD WINAPI LocaleNameToLCID(LPCWSTR n, DWORD f) { (void)n; (void)f; return 0x409; }
+#define LOC_UNKNOWN_ 3
+static int locale_of(LPCWSTR loc);
+WINBASEAPI BOOL  WINAPI IsValidLocaleName(LPCWSTR n)   { return locale_of(n) != LOC_UNKNOWN_; }
+WINBASEAPI DWORD WINAPI LocaleNameToLCID(LPCWSTR n, DWORD f)
+{
+    (void)f;
+    switch (locale_of(n)) {
+    case 0: return 0x409;
+    case 1: return 0x09;
+    case 2: return 0x7F;
+    default: SetLastError(ERROR_INVALID_PARAMETER); return 0;
+    }
+}
 WINBASEAPI int   WINAPI LCIDToLocaleName(DWORD lcid, LPWSTR n, int cap, DWORD f) { (void)lcid; (void)f; return cap ? (int)put_utf8_as_w("en-US", n, (DWORD)cap) + 1 : 6; }
 WINBASEAPI int   WINAPI GetUserDefaultLocaleName(LPWSTR n, int cap)   { return (int)put_utf8_as_w("en-US", n, (DWORD)cap) + 1; }
 WINBASEAPI int   WINAPI GetSystemDefaultLocaleName(LPWSTR n, int cap) { return (int)put_utf8_as_w("en-US", n, (DWORD)cap) + 1; }
 
-static const char *locale_value(DWORD type)
+/* Locales: English (United States), its neutral parent "en", and the
+ * invariant locale "" (what .NET's CultureInfo.InvariantCulture asks for);
+ * any other name is unknown (ERROR_INVALID_PARAMETER) */
+enum { LOC_EN_US, LOC_EN, LOC_INVARIANT, LOC_UNKNOWN };
+static int locale_of(LPCWSTR loc)
 {
-    switch (type & 0xFFFF) {
-    case 0x01: return "0409";                   /* LOCALE_ILANGUAGE */
-    case 0x02: return "English (United States)";/* LOCALE_SLANGUAGE */
-    case 0x03: return "ENU";                    /* LOCALE_SABBREVLANGNAME */
-    case 0x04: return "English";                /* LOCALE_SNATIVELANGNAME */
-    case 0x05: return "1";                      /* LOCALE_ICOUNTRY */
-    case 0x06: return "United States";          /* LOCALE_SCOUNTRY */
-    case 0x07: return "USA";                    /* LOCALE_SABBREVCTRYNAME */
-    case 0x0B: return "65001";                  /* LOCALE_IDEFAULTCODEPAGE */
-    case 0x0C: return ",";                      /* LOCALE_SLIST */
-    case 0x0D: return "1";                      /* LOCALE_IMEASURE */
-    case 0x0E: return ".";                      /* LOCALE_SDECIMAL */
-    case 0x0F: return ",";                      /* LOCALE_STHOUSAND */
-    case 0x10: return "3;0";                    /* LOCALE_SGROUPING */
-    case 0x11: return "2";                      /* LOCALE_IDIGITS */
-    case 0x12: return "1";                      /* LOCALE_ILZERO */
-    case 0x14: return "$";                      /* LOCALE_SCURRENCY */
-    case 0x15: return "USD";                    /* LOCALE_SINTLSYMBOL */
-    case 0x16: return ".";                      /* LOCALE_SMONDECIMALSEP */
-    case 0x17: return ",";                      /* LOCALE_SMONTHOUSANDSEP */
-    case 0x18: return "3;0";                    /* LOCALE_SMONGROUPING */
-    case 0x1D: return "/";                      /* LOCALE_SDATE */
-    case 0x1E: return ":";                      /* LOCALE_STIME */
-    case 0x1F: return "M/d/yyyy";               /* LOCALE_SSHORTDATE */
-    case 0x20: return "dddd, MMMM d, yyyy";     /* LOCALE_SLONGDATE */
-    case 0x28: return "AM";                     /* LOCALE_S1159 */
-    case 0x29: return "PM";                     /* LOCALE_S2359 */
-    case 0x59: return "en";                     /* LOCALE_SISO639LANGNAME */
-    case 0x5A: return "US";                     /* LOCALE_SISO3166CTRYNAME */
-    case 0x5C: return "en-US";                  /* LOCALE_SNAME */
-    case 0x1001: return "English";              /* LOCALE_SENGLANGUAGENAME */
-    case 0x1002: return "United States";        /* LOCALE_SENGCOUNTRY */
-    case 0x1003: return "h:mm:ss tt";           /* LOCALE_STIMEFORMAT */
-    case 0x1004: return "65001";                /* LOCALE_IDEFAULTANSICODEPAGE */
-    case 0x1009: return "0";                    /* LOCALE_IFIRSTDAYOFWEEK: Monday=0 ... US uses 6 */
-    case 0x100C: return "1";                    /* LOCALE_IFIRSTWEEKOFYEAR */
-    case 0x0024: return "-";                    /* LOCALE_SNEGATIVESIGN? (0x51) */
-    case 0x0050: return "";                     /* LOCALE_SPOSITIVESIGN */
-    case 0x0051: return "-";                    /* LOCALE_SNEGATIVESIGN */
-    case 0x0067: return "en-US";                /* LOCALE_SPARENT? */
-    case 0x0068: return "en-US";                /* LOCALE_SENGLISHDISPLAYNAME-ish */
-    case 0x0073: return "English (United States)"; /* LOCALE_SENGLISHDISPLAYNAME */
+    static const WCHAR sysdef[] = L"!x-sys-default-locale";
+    if (!loc) return LOC_EN_US;                                  /* LOCALE_NAME_USER_DEFAULT */
+    if (!loc[0]) return LOC_INVARIANT;
+    if (compare(loc, -1, sysdef, -1, TRUE) == CSTR_EQUAL) return LOC_EN_US;
+    if (compare(loc, -1, (const WCHAR *)L"en-US", -1, TRUE) == CSTR_EQUAL) return LOC_EN_US;
+    if (compare(loc, -1, (const WCHAR *)L"en_US", -1, TRUE) == CSTR_EQUAL) return LOC_EN_US;
+    if (compare(loc, -1, (const WCHAR *)L"en", -1, TRUE) == CSTR_EQUAL) return LOC_EN;
+    return LOC_UNKNOWN;
+}
+
+static const char *locale_value(int loc, DWORD type)
+{
+    DWORD t = type & 0xFFFF;
+    BOOL inv = loc == LOC_INVARIANT, neutral = loc == LOC_EN;
+    switch (t) {                                                 /* what differs by locale */
+    case 0x01: return inv ? "007F" : neutral ? "0009" : "0409";  /* LOCALE_ILANGUAGE */
+    case 0x02: case 0x72: return inv ? "Invariant Language (Invariant Country)" : neutral ? "English" : "English (United States)";
+    case 0x73: return inv ? "Invariant Language (Invariant Country)" : neutral ? "English" : "English (United States)";
+    case 0x5C: return inv ? "" : neutral ? "en" : "en-US";       /* LOCALE_SNAME */
+    case 0x6D: return neutral || inv ? "" : "en";                /* LOCALE_SPARENT */
+    case 0x71: return neutral ? "1" : "0";                       /* LOCALE_INEUTRAL */
+    case 0x5A: return inv ? "IV" : neutral ? "" : "US";          /* LOCALE_SISO3166CTRYNAME */
+    case 0x68: return inv ? "IVC" : neutral ? "" : "USA";        /* LOCALE_SISO3166CTRYNAME2 */
+    case 0x59: return inv ? "iv" : "en";                         /* LOCALE_SISO639LANGNAME */
+    case 0x67: return inv ? "ivl" : "eng";                       /* LOCALE_SISO639LANGNAME2 */
+    case 0x06: case 0x08: case 0x1002: return inv ? "Invariant Country" : neutral ? "" : "United States";
+    case 0x5B: return inv ? "39070" : "244";                     /* LOCALE_IGEOID */
+    case 0x14: return inv ? "\xC2\xA4" : "$";                    /* LOCALE_SCURRENCY */
+    case 0x15: return inv ? "XDR" : "USD";                       /* LOCALE_SINTLSYMBOL */
+    case 0x1007: return inv ? "International Monetary Fund" : "US Dollar";   /* LOCALE_SENGCURRNAME */
+    case 0x1008: return inv ? "International Monetary Fund" : "US Dollar";   /* LOCALE_SNATIVECURRNAME */
+    case 0x1F: return inv ? "MM/dd/yyyy" : "M/d/yyyy";           /* LOCALE_SSHORTDATE */
+    case 0x20: return inv ? "dddd, dd MMMM yyyy" : "dddd, MMMM d, yyyy";      /* LOCALE_SLONGDATE */
+    case 0x1003: return inv ? "HH:mm:ss" : "h:mm:ss tt";         /* LOCALE_STIMEFORMAT */
+    case 0x79: return inv ? "HH:mm" : "h:mm tt";                 /* LOCALE_SSHORTTIME */
+    case 0x23: return inv ? "1" : "0";                           /* LOCALE_ITIME (24-hour) */
+    case 0x100C: return inv ? "0" : "6";                         /* LOCALE_IFIRSTDAYOFWEEK: Monday 0 ... Sunday 6 */
+    case 0x0D: return inv ? "0" : "1";                           /* LOCALE_IMEASURE: metric 0, US 1 */
+    case 0x100A: return inv ? "9" : "1";                         /* LOCALE_IPAPERSIZE: A4 9, letter 1 */
     }
-    if ((type & 0xFFFF) >= 0x2A && (type & 0xFFFF) <= 0x30) {       /* LOCALE_SDAYNAME1..7 */
+    switch (t) {                                                 /* the same for all three */
+    case 0x03: return "ENU";                                     /* LOCALE_SABBREVLANGNAME */
+    case 0x04: case 0x1001: case 0x6F: return "English";         /* native / English / localized language name */
+    case 0x05: return "1";                                       /* LOCALE_ICOUNTRY */
+    case 0x07: return "USA";                                     /* LOCALE_SABBREVCTRYNAME */
+    case 0x0B: return "437";                                     /* LOCALE_IDEFAULTCODEPAGE (OEM) */
+    case 0x1004: return "1252";                                  /* LOCALE_IDEFAULTANSICODEPAGE */
+    case 0x1011: return "10000";                                 /* LOCALE_IDEFAULTMACCODEPAGE */
+    case 0x1012: return "037";                                   /* LOCALE_IDEFAULTEBCDICCODEPAGE */
+    case 0x0C: return ",";                                       /* LOCALE_SLIST */
+    case 0x0E: return ".";                                       /* LOCALE_SDECIMAL */
+    case 0x0F: return ",";                                       /* LOCALE_STHOUSAND */
+    case 0x10: return "3;0";                                     /* LOCALE_SGROUPING */
+    case 0x11: return "2";                                       /* LOCALE_IDIGITS */
+    case 0x12: return "1";                                       /* LOCALE_ILZERO */
+    case 0x13: return "0123456789";                              /* LOCALE_SNATIVEDIGITS */
+    case 0x16: return ".";                                       /* LOCALE_SMONDECIMALSEP */
+    case 0x17: return ",";                                       /* LOCALE_SMONTHOUSANDSEP */
+    case 0x18: return "3;0";                                     /* LOCALE_SMONGROUPING */
+    case 0x19: return "2";                                       /* LOCALE_ICURRDIGITS */
+    case 0x1A: return "2";                                       /* LOCALE_IINTLCURRDIGITS */
+    case 0x1B: return "0";                                       /* LOCALE_ICURRENCY: $1.1 */
+    case 0x1C: return "1";                                       /* LOCALE_INEGCURR: -$1.1 */
+    case 0x1D: return "/";                                       /* LOCALE_SDATE */
+    case 0x1E: return ":";                                       /* LOCALE_STIME */
+    case 0x21: return "0";                                       /* LOCALE_IDATE: M-D-Y */
+    case 0x22: return "0";                                       /* LOCALE_ILDATE */
+    case 0x24: return "1";                                       /* LOCALE_ICENTURY */
+    case 0x25: return "0";                                       /* LOCALE_ITLZERO */
+    case 0x26: return "0";                                       /* LOCALE_IDAYLZERO */
+    case 0x27: return "0";                                       /* LOCALE_IMONLZERO */
+    case 0x28: return "AM";                                      /* LOCALE_S1159 */
+    case 0x29: return "PM";                                      /* LOCALE_S2359 */
+    case 0x50: return "";                                        /* LOCALE_SPOSITIVESIGN */
+    case 0x51: return "-";                                       /* LOCALE_SNEGATIVESIGN */
+    case 0x52: return "3";                                       /* LOCALE_IPOSSIGNPOSN */
+    case 0x53: return "0";                                       /* LOCALE_INEGSIGNPOSN */
+    case 0x5D: return "h:mm:ss";                                 /* LOCALE_SDURATION */
+    case 0x69: return "NaN";                                     /* LOCALE_SNAN */
+    case 0x6A: return "Infinity";                                /* LOCALE_SPOSINFINITY */
+    case 0x6B: return "-Infinity";                               /* LOCALE_SNEGINFINITY */
+    case 0x6C: return "Latn;";                                   /* LOCALE_SSCRIPTS */
+    case 0x6E: return "en-US";                                   /* LOCALE_SCONSOLEFALLBACKNAME */
+    case 0x70: return "0";                                       /* LOCALE_IREADINGLAYOUT: left to right */
+    case 0x74: return "1";                                       /* LOCALE_INEGATIVEPERCENT: -n % */
+    case 0x75: return "1";                                       /* LOCALE_IPOSITIVEPERCENT: n % */
+    case 0x76: return "%";                                       /* LOCALE_SPERCENT */
+    case 0x77: return "\xE2\x80\xB0";                            /* LOCALE_SPERMILLE */
+    case 0x78: return "MMMM d";                                  /* LOCALE_SMONTHDAY */
+    case 0x7A: return "ENU";                                     /* LOCALE_SOPENTYPELANGUAGETAG */
+    case 0x7B: return "";                                        /* LOCALE_SSORTLOCALE */
+    case 0x1006: return "MMMM yyyy";                             /* LOCALE_SYEARMONTH */
+    case 0x1009: return "1";                                     /* LOCALE_ICALENDARTYPE: Gregorian */
+    case 0x100B: return "0";                                     /* LOCALE_IOPTIONALCALENDAR */
+    case 0x100D: return "0";                                     /* LOCALE_IFIRSTWEEKOFYEAR */
+    case 0x100E: case 0x100F: return "";                         /* LOCALE_SMONTHNAME13, ABBREV13 */
+    case 0x1010: return "1";                                     /* LOCALE_INEGNUMBER: -1.1 */
+    case 0x1014: return "1";                                     /* LOCALE_IDIGITSUBSTITUTION: none */
+    case 0x1016: return "en-US";                                 /* LOCALE_SNATIVELANGUAGE... (unused) */
+    }
+    if (t >= 0x2A && t <= 0x30) {                                /* LOCALE_SDAYNAME1..7 (Monday first) */
         static const char *d[] = { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
-        return d[(type & 0xFFFF) - 0x2A];
+        return d[t - 0x2A];
     }
-    if ((type & 0xFFFF) >= 0x31 && (type & 0xFFFF) <= 0x37) {
+    if (t >= 0x31 && t <= 0x37) {
         static const char *d[] = { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
-        return d[(type & 0xFFFF) - 0x31];
+        return d[t - 0x31];
     }
-    if ((type & 0xFFFF) >= 0x38 && (type & 0xFFFF) <= 0x43) {
+    if (t >= 0x60 && t <= 0x66) {                                /* LOCALE_SSHORTESTDAYNAME1..7 */
+        static const char *d[] = { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
+        return d[t - 0x60];
+    }
+    if (t >= 0x38 && t <= 0x43) {
         static const char *m[] = { "January", "February", "March", "April", "May", "June", "July", "August",
                                    "September", "October", "November", "December" };
-        return m[(type & 0xFFFF) - 0x38];
+        return m[t - 0x38];
     }
-    if ((type & 0xFFFF) >= 0x44 && (type & 0xFFFF) <= 0x4F) {
+    if (t >= 0x44 && t <= 0x4F) {
         static const char *m[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-        return m[(type & 0xFFFF) - 0x44];
+        return m[t - 0x44];
     }
     return 0;
 }
 
-WINBASEAPI int WINAPI GetLocaleInfoEx(LPCWSTR loc, DWORD type, LPWSTR buf, int n)
+WINBASEAPI int WINAPI GetLocaleInfoEx(LPCWSTR name, DWORD type, LPWSTR buf, int n)
 {
-    (void)loc;
-    const char *v = locale_value(type);
+    int loc = locale_of(name);
+    if (loc == LOC_UNKNOWN) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    const char *v = locale_value(loc, type);
     if (!v) { SetLastError(1004 /* ERROR_INVALID_FLAGS */); return 0; }
     if (type & 0x20000000) {                                 /* LOCALE_RETURN_NUMBER */
         DWORD num = 0;
-        for (const char *c = v; *c >= '0' && *c <= '9'; c++) num = num * 10 + (DWORD)(*c - '0');
-        if ((type & 0xFFFF) == 0x01) num = 0x409;
-        if (n < 2) { if (!n) return 2; SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+        DWORD t = type & 0xFFFF;
+        if (t == 0x01) num = loc == LOC_INVARIANT ? 0x7F : loc == LOC_EN ? 0x09 : 0x409;   /* (hex) */
+        else for (const char *c = v; *c >= '0' && *c <= '9'; c++) num = num * 10 + (DWORD)(*c - '0');
+        if (!n) return 2;
+        if (n < 2) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
         memcpy(buf, &num, 4);
         return 2;
     }
@@ -2091,12 +2452,18 @@ WINBASEAPI int WINAPI GetLocaleInfoEx(LPCWSTR loc, DWORD type, LPWSTR buf, int n
     return k + 1;
 }
 
-WINBASEAPI int WINAPI GetLocaleInfoW(DWORD lcid, DWORD type, LPWSTR buf, int n) { (void)lcid; return GetLocaleInfoEx(0, type, buf, n); }
+static LPCWSTR lcid_name(DWORD lcid)
+{
+    if (lcid == 0x7F) return (const WCHAR *)L"";
+    if (lcid == 0x09) return (const WCHAR *)L"en";
+    return 0;                                                    /* 0x409, the defaults: en-US */
+}
+WINBASEAPI int WINAPI GetLocaleInfoW(DWORD lcid, DWORD type, LPWSTR buf, int n) { return GetLocaleInfoEx(lcid_name(lcid), type, buf, n); }
 
 WINBASEAPI int WINAPI GetLocaleInfoA(DWORD lcid, DWORD type, LPSTR buf, int n)
 {
-    (void)lcid;
-    const char *v = locale_value(type);
+    LPCWSTR nm = lcid_name(lcid);
+    const char *v = locale_value(locale_of(nm), type);
     if (!v) { SetLastError(1004); return 0; }
     int k = (int)strlen(v);
     if (!n) return k + 1;
@@ -2175,12 +2542,41 @@ WINBASEAPI BOOL WINAPI ReadConsoleW(HANDLE h, LPVOID buf, DWORD n, LPDWORD read,
 WINBASEAPI BOOL WINAPI SetConsoleCP(UINT cp)             { (void)cp; return TRUE; }
 WINBASEAPI BOOL WINAPI SetConsoleTitleW(LPCWSTR t)       { (void)t; return TRUE; }
 WINBASEAPI DWORD WINAPI GetConsoleTitleW(LPWSTR t, DWORD n) { return put_utf8_as_w("Terminal", t, n); }
-WINBASEAPI BOOL WINAPI FlushConsoleInputBuffer(HANDLE h) { (void)h; return TRUE; }
-WINBASEAPI BOOL WINAPI GetNumberOfConsoleInputEvents(HANDLE h, LPDWORD n) { (void)h; *n = 0; return TRUE; }
+/* (console input handles only, as on Windows: callers use these to tell a console from a file) */
+/* A console input handle (not an output one, nor a file): what programs
+ * test with GetNumberOfConsoleInputEvents to tell the two apart */
+static BOOL console_in(HANDLE h)
+{
+    DWORD m;
+    if (GetFileType(h) == FILE_TYPE_CHAR && GetConsoleMode(h, &m)) {
+        union { UNICODE_STRING us; BYTE b[256]; } name;
+        ULONG got = 0;
+        if (NT_SUCCESS(NtQueryObject(h, 1 /* ObjectNameInformation */, &name, sizeof(name), &got)) && name.us.Buffer) {
+            int n = name.us.Length / 2;
+            if (n >= 5 && name.us.Buffer[n - 5] == 'I' && name.us.Buffer[n - 1] == 't') return TRUE;   /* ...\Input */
+        }
+    }
+    SetLastError(ERROR_INVALID_HANDLE);
+    return FALSE;
+}
+WINBASEAPI BOOL WINAPI FlushConsoleInputBuffer(HANDLE h) { return console_in(h); }
+WINBASEAPI BOOL WINAPI GetNumberOfConsoleInputEvents(HANDLE h, LPDWORD n) { *n = 0; return console_in(h); }
 WINBASEAPI BOOL WINAPI AllocConsole(void)                { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
 WINBASEAPI BOOL WINAPI FreeConsole(void)                 { return TRUE; }
 WINBASEAPI BOOL WINAPI AttachConsole(DWORD pid)          { (void)pid; SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
-WINBASEAPI HANDLE WINAPI GetConsoleWindow(void)          { return 0; }
+/* The Terminal window a console program shows in stands in as its console
+ * window (the same value in every program on a console; NULL without one) */
+WINBASEAPI HANDLE WINAPI GetConsoleWindow(void)
+{
+    DWORD m;
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE), in = GetStdHandle(STD_INPUT_HANDLE);
+    if (!GetConsoleMode(out, &m) && !GetConsoleMode(in, &m)) {
+        HANDLE c = CreateFileA("CONOUT$", GENERIC_READ | GENERIC_WRITE, 3, 0, OPEN_EXISTING, 0, 0);
+        if (c == INVALID_HANDLE_VALUE) return 0;
+        CloseHandle(c);
+    }
+    return (HANDLE)(ULONG_PTR)0x000C0501;
+}
 WINBASEAPI BOOL WINAPI SetConsoleCursorPosition(HANDLE h, COORD c) { (void)h; (void)c; return TRUE; }
 WINBASEAPI BOOL WINAPI GetConsoleCursorInfo(HANDLE h, LPVOID i) { (void)h; memset(i, 0, 8); ((DWORD *)i)[0] = 25; ((DWORD *)i)[1] = 1; return TRUE; }
 WINBASEAPI BOOL WINAPI SetConsoleCursorInfo(HANDLE h, LPCVOID i) { (void)h; (void)i; return TRUE; }
@@ -2273,34 +2669,6 @@ WINBASEAPI BOOL WINAPI QueryProcessCycleTime(HANDLE p, PULONG64 cycles) { (void)
 WINBASEAPI BOOL WINAPI QueryThreadCycleTime(HANDLE t, PULONG64 cycles)  { (void)t; *cycles = __builtin_ia32_rdtsc(); return TRUE; }
 WINBASEAPI VOID WINAPI QueryUnbiasedInterruptTime(PULONGLONG t)        { *t = GetTickCount64() * 10000; }
 WINBASEAPI VOID WINAPI QueryInterruptTime(PULONGLONG t)                { *t = GetTickCount64() * 10000; }
-
-/* -----------------------------------------------------------------------
- * Pipes: NovaOS has none yet
- * ----------------------------------------------------------------------- */
-WINBASEAPI HANDLE WINAPI CreateNamedPipeW(LPCWSTR name, DWORD mode, DWORD pmode, DWORD max, DWORD out, DWORD in, DWORD ms,
-                                          LPSECURITY_ATTRIBUTES sa)
-{
-    (void)name; (void)mode; (void)pmode; (void)max; (void)out; (void)in; (void)ms; (void)sa;
-    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
-    return INVALID_HANDLE_VALUE;
-}
-
-WINBASEAPI BOOL WINAPI CreatePipe(PHANDLE r, PHANDLE w, LPSECURITY_ATTRIBUTES sa, DWORD size)
-{
-    (void)r; (void)w; (void)sa; (void)size;
-    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
-    return FALSE;
-}
-
-WINBASEAPI BOOL WINAPI PeekNamedPipe(HANDLE h, LPVOID buf, DWORD n, LPDWORD read, LPDWORD avail, LPDWORD left)
-{
-    (void)h; (void)buf; (void)n; (void)read; (void)avail; (void)left;
-    SetLastError(ERROR_INVALID_HANDLE);
-    return FALSE;
-}
-
-WINBASEAPI BOOL WINAPI ConnectNamedPipe(HANDLE h, LPOVERLAPPED ov) { (void)h; (void)ov; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-WINBASEAPI BOOL WINAPI WaitNamedPipeW(LPCWSTR n, DWORD ms) { (void)n; (void)ms; SetLastError(ERROR_FILE_NOT_FOUND); return FALSE; }
 
 /* -----------------------------------------------------------------------
  * lstr* (the rest of them)

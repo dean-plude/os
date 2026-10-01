@@ -65,7 +65,8 @@ int main(void)
     CHECK(d && seen == 2 && closedir(d) == 0);
     struct dirent **list = NULL;
     int n = scandir("\\Temp\\ptest", &list, NULL, alphasort);
-    CHECK(n == 2 && !strcmp(list[0]->d_name, "a.txt") && !strcmp(list[1]->d_name, "b.txt"));
+    CHECK(n == 4 && !strcmp(list[0]->d_name, ".") && !strcmp(list[1]->d_name, "..") &&
+          !strcmp(list[2]->d_name, "a.txt") && !strcmp(list[3]->d_name, "b.txt"));
     while (n > 0) free(list[--n]);
     free(list);
     CHECK(unlink("\\Temp\\ptest\\a.txt") == 0 && unlink("\\Temp\\ptest\\b.txt") == 0);

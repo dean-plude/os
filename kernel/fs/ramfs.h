@@ -13,7 +13,7 @@
 
 #include "../include/types.h"
 
-#define RAMFS_NAME_MAX   48
+#define RAMFS_NAME_MAX   256       /* a path component, as on Windows (255 + NUL) */
 #define RAMFS_PATH_MAX   256
 #define RAMFS_FILE_MAX   (256u * 1024u * 1024u) /* largest file (netsurf.exe, downloaded installers) */
 
@@ -27,6 +27,7 @@ typedef struct RamNode {
     UINT32          size;
     UINT32          cap;          /* bytes allocated for data (>= size) */
     int             refs;         /* holders (open windows, shell cwd) */
+    int             pins;         /* readers of data outside the lock (RamfsPin) */
     UINT8           pflags;       /* RAMFS_F_*: origin and unsaved changes */
     UINT32          attrs;        /* FILE_ATTRIBUTE_READONLY/HIDDEN/SYSTEM (Windows programs) */
     UINT64          ctime, mtime; /* created, last written: 100 ns units since 1601 (UTC) */
@@ -92,6 +93,13 @@ bool     RamfsRename(RamNode *node, RamNode *dir, const char *name, bool replace
  * underneath its holder.  NULL is ignored. */
 void     RamfsRef(RamNode *node);
 void     RamfsUnref(RamNode *node);
+
+/* Hold a file and its contents still: while pinned, @data stays where it
+ * is and unchanged (writes and resizes fail, as Windows refuses writes to
+ * a file mapped as an image), so it can be read without the lock that
+ * guards the file system (the program loader does).  Pinning also refs. */
+void     RamfsPin(RamNode *file);
+void     RamfsUnpin(RamNode *file);
 
 /* Absolute path, e.g. "C:\Documents\a.txt" (root is "C:\"). */
 void     RamfsPath(const RamNode *node, char *buf, int cap);

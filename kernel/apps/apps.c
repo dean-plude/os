@@ -71,10 +71,8 @@ int AppRecent(AppId *out, int max)
 static void netsurf_launch(void)
 {
     RamNode *exe = RamfsResolve(NULL, "\\Programs\\NetSurf\\netsurf.exe");
-    char err[160] = "not installed";
-    UmProcess *p = exe ? UmSpawn(exe, "netsurf", exe->parent, NULL, err, sizeof(err)) : NULL;
-    if (p) UmDetach(p);
-    else   kprintf("[APPS] Cannot start NetSurf: %s\n", err);
+    if (!exe || !UmSpawnDetached(exe, "netsurf", exe->parent))
+        kprintf("[APPS] Cannot start NetSurf: %s\n", exe ? "out of memory" : "not installed");
 }
 
 void AppLaunch(AppId id)
@@ -110,7 +108,7 @@ void AppActivate(AppId id)
 bool AppByName(const char *name, AppId *out)
 {
     static const struct { const char *cmd; AppId id; } names[] = {
-        { "terminal", APP_TERMINAL }, { "cmd", APP_TERMINAL },
+        { "terminal", APP_TERMINAL },            /* "cmd" runs cmd.exe */
         { "explorer", APP_EXPLORER }, { "files", APP_EXPLORER },
         { "notepad",  APP_NOTEPAD  },
         { "settings", APP_SETTINGS }, { "control", APP_SETTINGS },
@@ -483,13 +481,10 @@ bool AppRunMsi(RamNode *msi)
 {
     RamNode *exe = RamfsResolve(NULL, "\\Windows\\System32\\msiexec.exe");
     if (!exe || !msi) return false;
-    char path[RAMFS_PATH_MAX], cmd[RAMFS_PATH_MAX + 32], err[160];
+    char path[RAMFS_PATH_MAX], cmd[RAMFS_PATH_MAX + 32];
     RamfsPath(msi, path, sizeof(path));
     ksnprintf(cmd, sizeof(cmd), "msiexec /i \"%s\"", path);
-    UmProcess *p = UmSpawn(exe, cmd, msi->parent, NULL, err, sizeof(err));
-    if (!p) { kprintf("[APPS] Cannot start Windows Installer: %s\n", err); return false; }
-    UmDetach(p);
-    return true;
+    return UmSpawnDetached(exe, cmd, msi->parent);
 }
 
 void AppRunProgram(RamNode *exe, const char *cmdline)

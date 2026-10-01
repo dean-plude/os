@@ -25,6 +25,7 @@ typedef struct _OBJECT_ATTRIBUTES {
 typedef struct _IO_STATUS_BLOCK { union { NTSTATUS Status; PVOID Pointer; }; ULONG_PTR Information; } IO_STATUS_BLOCK, *PIO_STATUS_BLOCK;
 
 #define OBJ_CASE_INSENSITIVE 0x40
+#define OBJ_INHERIT          0x02
 #define FILE_SUPERSEDE        0
 #define FILE_OPEN             1
 #define FILE_CREATE           2
@@ -68,6 +69,8 @@ typedef struct _RTL_USER_PROCESS_PARAMETERS {
     CURDIR CurrentDirectory;
     UNICODE_STRING DllPath, ImagePathName, CommandLine;
     PVOID Environment;
+    ULONG StartingX, StartingY, CountX, CountY, CountCharsX, CountCharsY, FillAttribute, WindowFlags, ShowWindowFlags;
+    UNICODE_STRING WindowTitle, DesktopInfo, ShellInfo, RuntimeData;   /* RuntimeData: STARTUPINFO.lpReserved2 */
 } RTL_USER_PROCESS_PARAMETERS, *PRTL_USER_PROCESS_PARAMETERS;
 /* Loader data (built by ntdll at process start) */
 typedef struct _PEB_LDR_DATA {
@@ -96,6 +99,7 @@ typedef struct _PEB {
     PPEB_LDR_DATA Ldr;
     PRTL_USER_PROCESS_PARAMETERS ProcessParameters;
     PVOID SubSystemData, ProcessHeap;
+    PVOID FastPebLock;              /* the RTL_CRITICAL_SECTION guarding the current directory */
 } PEB, *PPEB;
 
 /* The modules the kernel mapped, in initialization order (dependencies
@@ -103,7 +107,7 @@ typedef struct _PEB {
 typedef struct _NOVA_LDR_MODULE {
     ULONGLONG Base, Size;
     ULONG EntryRva, Flags;          /* Flags: 1 = DLL */
-    CHAR Name[32], Path[96];
+    CHAR Name[64], Path[96];
 } NOVA_LDR_MODULE;
 typedef struct _NOVA_LDR_INFO {
     ULONG Count, Reserved;
@@ -179,6 +183,29 @@ NTSYSAPI NTSTATUS NTAPI NtCreateFile(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES
                                      ULONG options, PVOID ea, ULONG ealen);
 NTSYSAPI NTSTATUS NTAPI NtOpenFile(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, PIO_STATUS_BLOCK io,
                                    ULONG share, ULONG options);
+NTSYSAPI NTSTATUS NTAPI NtCreateNamedPipeFile(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, PIO_STATUS_BLOCK io,
+                                              ULONG share, ULONG disposition, ULONG options, ULONG type, ULONG read_mode,
+                                              ULONG completion, ULONG max_inst, ULONG in_quota, ULONG out_quota,
+                                              PLARGE_INTEGER timeout);
+NTSYSAPI NTSTATUS NTAPI NtFsControlFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG code,
+                                        PVOID in, ULONG in_len, PVOID out, ULONG out_len);
+NTSYSAPI NTSTATUS NTAPI NtCancelIoFile(HANDLE h, PIO_STATUS_BLOCK io);
+NTSYSAPI NTSTATUS NTAPI NtCancelIoFileEx(HANDLE h, PIO_STATUS_BLOCK req, PIO_STATUS_BLOCK io);
+NTSYSAPI NTSTATUS NTAPI NtSetInformationObject(HANDLE h, ULONG cls, PVOID info, ULONG len);
+NTSYSAPI NTSTATUS NTAPI NtQueryObject(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret);
+/* The current directory (ntdll keeps it; ProcessParameters->CurrentDirectory shows it) */
+NTSYSAPI NTSTATUS NTAPI RtlSetCurrentDirectory_U(PUNICODE_STRING dir);
+/* User APCs: NtTestAlert runs the calling thread's (kernel32 queues them) */
+NTSYSAPI NTSTATUS NTAPI NtTestAlert(void);
+NTSYSAPI VOID     NTAPI RtlNovaSetApcRunner(BOOL (*fn)(void));
+NTSYSAPI ULONG    NTAPI RtlGetCurrentDirectory_U(ULONG len, PWSTR buf);
+/* NovaOS: the system clipboard (op 0 empty, 1 set, 2 get, 3 list, 4 sequence, 5 owner) */
+typedef struct { ULONG Format; CHAR Name[60]; ULONG Size; } NOVA_CLIP_ENTRY;
+NTSYSAPI NTSTATUS NTAPI NtOpenProcess(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, CLIENT_ID *cid);
+NTSYSAPI NTSTATUS NTAPI NtOpenThread(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, CLIENT_ID *cid);
+NTSYSAPI NTSTATUS NTAPI NtReadVirtualMemory(HANDLE p, PVOID base, PVOID buf, SIZE_T n, PSIZE_T done);
+NTSYSAPI NTSTATUS NTAPI NtWriteVirtualMemory(HANDLE p, PVOID base, PVOID buf, SIZE_T n, PSIZE_T done);
+NTSYSAPI LONG_PTR NTAPI NtNovaClipboard(ULONG op, ULONG_PTR a, PVOID b, ULONG_PTR c, const char *name);
 NTSYSAPI NTSTATUS NTAPI NtReadFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io,
                                    PVOID buf, ULONG len, PLARGE_INTEGER off, PULONG key);
 NTSYSAPI NTSTATUS NTAPI NtWriteFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io,
@@ -191,13 +218,21 @@ NTSYSAPI NTSTATUS NTAPI NtQueryDirectoryFile(HANDLE h, HANDLE ev, PVOID apc, PVO
                                              PUNICODE_STRING name, BOOLEAN restart);
 NTSYSAPI NTSTATUS NTAPI NtQueryVolumeInformationFile(HANDLE h, PIO_STATUS_BLOCK io, PVOID info, ULONG len, ULONG cls);
 NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemory(HANDLE p, PVOID *base, ULONG_PTR zero, PSIZE_T size, ULONG type, ULONG prot);
+NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemoryEx(HANDLE p, PVOID *base, PSIZE_T size, ULONG type, ULONG prot, PVOID params, ULONG n);
+NTSYSAPI NTSTATUS NTAPI NtMapViewOfSectionEx(HANDLE sec, HANDLE p, PVOID *base, PLARGE_INTEGER off, PSIZE_T size, ULONG type,
+                                             ULONG prot, PVOID params, ULONG n);
 NTSYSAPI NTSTATUS NTAPI NtFreeVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG type);
 NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG prot, PULONG old);
 NTSYSAPI NTSTATUS NTAPI NtQueryVirtualMemory(HANDLE p, PVOID addr, int cls, PVOID buf, SIZE_T n, PSIZE_T ret);
 NTSYSAPI NTSTATUS NTAPI NtGetContextThread(HANDLE t, PCONTEXT c);
 NTSYSAPI NTSTATUS NTAPI NtSetContextThread(HANDLE t, const CONTEXT *c);
 /* NovaOS: create a process sharing this one's console (UTF-8 full paths) */
-typedef struct { HANDLE StdHandle[3]; HANDLE Process, Thread; ULONG64 ProcessId, ThreadId; } NOVA_CREATE_PROCESS;
+/* RuntimeData: STARTUPINFO.lpReserved2 bytes for the new process (NULL: none)
+ * Flags: 1 = inherit handles, 2 = no console; Environment: UTF-8
+ * "NAME=value" strings each ended by NUL, then an empty one (NULL: default) */
+typedef struct { HANDLE StdHandle[3]; HANDLE Process, Thread; ULONG64 ProcessId, ThreadId;
+                 ULONG64 Flags; const char *Environment; ULONG64 EnvironmentSize;
+                 const void *RuntimeData; ULONG64 RuntimeDataSize; } NOVA_CREATE_PROCESS;
 NTSYSAPI NTSTATUS NTAPI NtNovaCreateProcess(const char *image, const char *cmdline, const char *dir, NOVA_CREATE_PROCESS *io);
 /* NovaOS: Out = { process id, exit code (STILL_ACTIVE while running), exited } */
 NTSYSAPI NTSTATUS NTAPI NtNovaProcessInfo(HANDLE p, ULONG64 out[3]);
@@ -259,7 +294,7 @@ NTSYSAPI NTSTATUS NTAPI NtDuplicateObject(HANDLE sp, HANDLE src, HANDLE tp, PHAN
 NTSYSAPI NTSTATUS NTAPI NtContinue(PCONTEXT ctx, BOOLEAN alert);
 NTSYSAPI NTSTATUS NTAPI NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, BOOLEAN first_chance);
 /* NovaOS */
-NTSYSAPI NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base);
+NTSYSAPI NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base, ULONG flags);
 NTSYSAPI NTSTATUS NTAPI NtNovaDebugPrint(const char *s, ULONG len);
 NTSYSAPI NTSTATUS NTAPI NtNovaWatchDirectory(HANDLE dir, BOOLEAN subtree, HANDLE event, ULONG remove);
 NTSYSAPI NTSTATUS NTAPI NtNovaFlushView(PVOID base);
@@ -292,6 +327,7 @@ NTSYSAPI LONG_PTR NTAPI NtNovaGuiCtl(ULONG_PTR hwnd, ULONG op, ULONG_PTR arg, PV
 /* Loader */
 NTSYSAPI NTSTATUS NTAPI LdrLoadDll(const WCHAR *path, PULONG flags, PUNICODE_STRING name, PVOID *base);
 NTSYSAPI NTSTATUS NTAPI LdrNovaLoadDllA(const char *name, PVOID *base);
+NTSYSAPI NTSTATUS NTAPI LdrNovaLoadDllExA(const char *name, ULONG flags, PVOID *base);
 NTSYSAPI NTSTATUS NTAPI LdrGetDllHandle(const WCHAR *path, PULONG flags, PUNICODE_STRING name, PVOID *base);
 NTSYSAPI PVOID    NTAPI LdrNovaGetModuleA(const char *name);
 NTSYSAPI NTSTATUS NTAPI LdrGetProcedureAddress(PVOID base, const char *name, ULONG ordinal, PVOID *addr);
@@ -337,6 +373,13 @@ NTSYSAPI VOID     NTAPI RtlUnwind(PVOID frame, PVOID target_ip, PEXCEPTION_RECOR
 NTSYSAPI VOID     NTAPI RtlUnwindEx(PVOID frame, PVOID target_ip, PEXCEPTION_RECORD rec, PVOID retval,
                                     PCONTEXT ctx, PUNWIND_HISTORY_TABLE history);
 NTSYSAPI PRUNTIME_FUNCTION NTAPI RtlLookupFunctionEntry(DWORD64 pc, PDWORD64 base, PUNWIND_HISTORY_TABLE history);
+NTSYSAPI BOOLEAN NTAPI RtlAddFunctionTable(PRUNTIME_FUNCTION tab, DWORD n, DWORD64 base);
+NTSYSAPI BOOLEAN NTAPI RtlDeleteFunctionTable(PRUNTIME_FUNCTION tab);
+NTSYSAPI BOOLEAN NTAPI RtlInstallFunctionTableCallback(DWORD64 id, DWORD64 base, DWORD len,
+                                                       PRUNTIME_FUNCTION (NTAPI *cb)(DWORD64, PVOID), PVOID ctx, PCWSTR dll);
+NTSYSAPI NTSTATUS NTAPI RtlAddGrowableFunctionTable(PVOID *h, PRUNTIME_FUNCTION tab, DWORD n, DWORD max, ULONG_PTR base, ULONG_PTR end);
+NTSYSAPI void NTAPI RtlGrowFunctionTable(PVOID h, DWORD n);
+NTSYSAPI void NTAPI RtlDeleteGrowableFunctionTable(PVOID h);
 NTSYSAPI PEXCEPTION_ROUTINE NTAPI RtlVirtualUnwind(ULONG type, DWORD64 base, DWORD64 pc, PRUNTIME_FUNCTION f,
                                                    PCONTEXT ctx, PVOID *handler_data, PDWORD64 frame,
                                                    PKNONVOLATILE_CONTEXT_POINTERS ptrs);

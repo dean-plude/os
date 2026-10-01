@@ -410,6 +410,10 @@ WINOLEAPI_(HRESULT) RegisterDragDrop(HWND w, IDropTarget *target);
 WINOLEAPI_(HRESULT) RevokeDragDrop(HWND w);
 WINOLEAPI_(HRESULT) DoDragDrop(IDataObject *data, IDropSource *source, DWORD ok, DWORD *effect);
 WINOLEAPI_(void)    ReleaseStgMedium(STGMEDIUM *m);
+WINOLEAPI_(HRESULT) OleSetClipboard(IDataObject *obj);
+WINOLEAPI_(HRESULT) OleGetClipboard(IDataObject **obj);
+WINOLEAPI_(HRESULT) OleFlushClipboard(void);
+WINOLEAPI_(HRESULT) OleIsCurrentClipboard(IDataObject *obj);
 
 WINOLEAPI_(HRESULT) OleInitialize(LPVOID reserved);
 WINOLEAPI_(void)    OleUninitialize(void);

@@ -40,6 +40,18 @@ RamNode   *UmFindProgram(RamNode *cwd, const char *name);
  * at end of file).  NULL with @err set on failure. */
 UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
                    char *err, int err_cap);
+/* UmSpawn without waiting (from the desktop thread, under the desktop
+ * lock): the program is mapped on a worker thread.  Poll with UmSpawnPoll
+ * until it returns true (then *proc is the process, or NULL with @err set;
+ * the job is gone); UmSpawnAbandon gives up on it (the process is ended
+ * if it started).  NULL if out of memory. */
+typedef struct UmSpawnJob UmSpawnJob;
+UmSpawnJob *UmSpawnStart(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con);
+bool        UmSpawnPoll(UmSpawnJob *j, UmProcess **proc, char *err, int err_cap);
+void        UmSpawnAbandon(UmSpawnJob *j);
+/* Start a program to run on its own (UmSpawn + UmDetach) without waiting
+ * for it to load; a failure is logged.  False if out of memory. */
+bool        UmSpawnDetached(RamNode *exe, const char *cmdline, RamNode *cwd);
 /* Ask the process to end with @status (it stops at its next kernel exit). */
 void       UmKill(UmProcess *p, UINT32 status);
 /* True once the process has exited; *status gets its exit code and
@@ -59,6 +71,7 @@ typedef struct { UINT32 pid; char name[32]; UINT32 mem_kb; UINT32 threads; bool 
 int  UmList(UmProcInfo *out, int max);
 /* taskkill: false if no running process has @pid. */
 bool UmKillPid(UINT32 pid);
+void UmKillConsole(UmConsole *con, UINT32 status);   /* every program on @con */
 
 /* -----------------------------------------------------------------------
  * Consoles: one per Terminal session that runs programs
@@ -91,6 +104,8 @@ void UmReturnToUserFrame(void *frame);
  * the program's exception handlers (SEH) through its stack. */
 void UmUserException(void *frame, UINT64 cr2);
 /* The current user thread raised an exception it cannot handle. */
+int  UmGuardFault(UINT64 va);           /* a guard page touched: 1 handled, -1/-2 raise, 0 not one */
+void um_registry_add_cpus(UINT32 n);         /* the processor keys, for the CPUs started */
 void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
 void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp) __attribute__((noreturn));
 /* A 32-bit program's system call (int 0x2E) keeps its registers in @frame */

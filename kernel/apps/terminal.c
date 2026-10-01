@@ -6,6 +6,7 @@
  * the desktop thread.
  */
 
+#include "../wm/clipboard.h"
 #include "apps.h"
 #include "../lib/string.h"
 #include "../mm/vmm.h"
@@ -61,6 +62,7 @@ typedef struct {
     char    urls[8][256];      /* curl/wget: several URLs, fetched in turn */
     int     nurls, cur;
     UmProcess *proc;           /* JOB_PROC: a Windows program in this console */
+    UmSpawnJob *starting;      /* JOB_PROC: being loaded (proc is NULL until then) */
     UmConsole *con;
     bool    open_line;         /* the last line is the program's unfinished line */
     int     col;               /* its output column (after '\r') */
@@ -81,6 +83,9 @@ typedef struct {
     int      hist_n, hist_pos;
     Job      job;
     WND     *w;
+    /* a selection (mouse drag): lines of the whole buffer, the prompt line last */
+    bool     selecting, has_sel;
+    int      sel_l0, sel_c0, sel_l1, sel_c1;
 } Term;
 
 /* -----------------------------------------------------------------------
@@ -432,7 +437,7 @@ static void cmd_start(Term *t, int argc, char **argv)
     }
     RamNode *exe = argc >= 2 && !AppByName(argv[1], &id) ? UmFindProgram(t->cwd, argv[1]) : NULL;
     if (exe) {                                   /* a Windows program, detached from the terminal */
-        char line[512], err[160];
+        char line[512];
         int n = 0;
         for (int i = 1; i < argc && n < (int)sizeof(line) - 4; i++) {
             bool q = strchr(argv[i], ' ') != NULL;
@@ -442,9 +447,7 @@ static void cmd_start(Term *t, int argc, char **argv)
             if (q) line[n++] = '"';
         }
         line[n] = '\0';
-        UmProcess *p = UmSpawn(exe, line, t->cwd, NULL, err, sizeof(err));
-        if (p) UmDetach(p);
-        else terr(t, err);
+        if (!UmSpawnDetached(exe, line, t->cwd)) terr(t, "Not enough memory.");
         return;
     }
     if (argc < 2 || !AppByName(argv[1], &id)) {
@@ -500,6 +503,7 @@ static void job_end(Term *t)
     done_mark();
     NetRelease(t->job.op);
     if (t->job.proc) UmRelease(t->job.proc);          /* (kills it if still running) */
+    UmSpawnAbandon(t->job.starting);
     if (t->job.con) UmConsoleRelease(t->job.con);
     memset(&t->job, 0, sizeof(t->job));
 }
@@ -724,6 +728,14 @@ static bool term_tick(WND *w)
     if (j->kind == JOB_PROC) {
         static char buf[4096];
         bool changed = false;
+        if (j->starting) {                             /* still loading (on a worker thread) */
+            char err[160];
+            UmProcess *p;
+            if (!UmSpawnPoll(j->starting, &p, err, sizeof(err))) return false;
+            j->starting = NULL;
+            if (!p) { terr(t, err); job_end(t); return true; }
+            j->proc = p;
+        }
         for (int rounds = 0; rounds < 16; rounds++) {  /* keep the UI responsive */
             int n = UmConsoleRead(j->con, buf, sizeof(buf));
             if (!n) break;
@@ -906,10 +918,11 @@ static bool start_program(Term *t, RamNode *exe, const char *cmdline)
     memset(j, 0, sizeof(*j));
     j->con = UmConsoleNew();
     if (!j->con) { terr(t, "Not enough memory."); return true; }
-    char err[160];
-    j->proc = UmSpawn(exe, cmdline, t->cwd, j->con, err, sizeof(err));
-    if (!j->proc) {
-        terr(t, err);
+    /* mapped on a worker thread, so a large program does not hold up the
+     * desktop; term_tick picks the process up */
+    j->starting = UmSpawnStart(exe, cmdline, t->cwd, j->con);
+    if (!j->starting) {
+        terr(t, "Not enough memory.");
         job_end(t);
         return true;
     }
@@ -989,11 +1002,64 @@ static void run(Term *t, char *cmdline)
     if (t->job.kind == JOB_NONE) done_mark();
 }
 
+/* Pipes, redirections and command chains (| < > & && ||) outside quotes:
+ * the line is for the command interpreter */
+static bool needs_shell(const char *s)
+{
+    bool q = false;
+    for (; *s; s++) {
+        if (*s == '"') q = !q;
+        else if (!q && (*s == '|' || *s == '<' || *s == '>' || *s == '&')) return true;
+    }
+    return false;
+}
+
+/* A batch file named by the first word (with or without .bat/.cmd) */
+static bool is_batch_name(Term *t, const char *c)
+{
+    size_t n = strlen(c);
+    if (n > 4 && (is(c + n - 4, ".bat") || is(c + n - 4, ".cmd"))) {
+        RamNode *f = RamfsResolve(t->cwd, c);
+        return f && !f->dir;
+    }
+    char buf[RAMFS_PATH_MAX];
+    for (int i = 0; i < 2; i++) {
+        ksnprintf(buf, sizeof(buf), "%s%s", c, i ? ".cmd" : ".bat");
+        RamNode *f = RamfsResolve(t->cwd, buf);
+        if (f && !f->dir) return true;
+    }
+    return false;
+}
+
+/* Run @line with "cmd.exe /d /c" in this Terminal */
+static bool run_in_cmd(Term *t, const char *line)
+{
+    RamNode *cmd = RamfsResolve(NULL, "\\Windows\\System32\\cmd.exe");
+    if (!cmd) return false;
+    char full[T_COLS + 64];
+    ksnprintf(full, sizeof(full), "cmd.exe /d /c %s", line);
+    start_program(t, cmd, full);
+    return true;
+}
+
 static void run_cmd(Term *t, char *cmdline)
 {
     char original[T_COLS];
     strncpy(original, cmdline, sizeof(original) - 1);
     original[sizeof(original) - 1] = '\0';
+    {
+        const char *s = original;
+        while (*s == ' ') s++;
+        char first[RAMFS_PATH_MAX];
+        int k = 0;
+        bool q = false;
+        for (const char *c = s; *c && (q || *c != ' ') && k < (int)sizeof(first) - 1; c++) {
+            if (*c == '"') { q = !q; continue; }
+            first[k++] = *c;
+        }
+        first[k] = '\0';
+        if ((needs_shell(s) || (k && is_batch_name(t, first))) && run_in_cmd(t, s)) return;
+    }
     char *argv[MAX_ARGS];
     int argc = split_args(cmdline, argv);
     if (!argc) return;
@@ -1058,6 +1124,149 @@ static void run_cmd(Term *t, char *cmdline)
 /* -----------------------------------------------------------------------
  * Window callbacks
  * ----------------------------------------------------------------------- */
+/* The lines on screen: the first one's index and how many fit */
+static int term_total(Term *t)
+{
+    bool proc = t->job.kind == JOB_PROC;
+    return t->count + ((t->job.kind == JOB_NONE || (proc && !t->job.open_line)) ? 1 : 0);
+}
+
+static int term_first(Term *t, int *rows)
+{
+    GdiRect c = WmClientRect(t->w);
+    int r = (c.h - 2 * T_PAD) / T_LINE_H;
+    if (r < 1) r = 1;
+    int first = term_total(t) - r - t->scroll;
+    if (rows) *rows = r;
+    return first < 0 ? 0 : first;
+}
+
+static void prompt_text(Term *t, char *out, int cap);
+
+/* The text of buffer line @i as shown (the prompt line with what is typed) */
+static void line_text(Term *t, int i, char *out, int cap)
+{
+    out[0] = '\0';
+    if (i < t->count) {
+        ksnprintf(out, (UINT32)cap, "%s", t->line[i]);
+        if (t->job.kind == JOB_PROC && t->job.open_line && i == t->count - 1) {
+            int n = (int)strlen(out);
+            while (n < t->job.col && n < cap - 1) out[n++] = ' ';
+            ksnprintf(out + n, (UINT32)(cap - n), "%s", t->input);
+        }
+    } else if (t->job.kind == JOB_PROC) ksnprintf(out, (UINT32)cap, "%s", t->input);
+    else {
+        prompt_text(t, out, cap);
+        int n = (int)strlen(out);
+        ksnprintf(out + n, (UINT32)(cap - n), "%s", t->input);
+    }
+}
+
+/* The selection in order: (l0, c0) up to (l1, c1), the end excluded */
+static bool sel_ordered(Term *t, int *l0, int *c0, int *l1, int *c1)
+{
+    if (!t->has_sel) return false;
+    bool fwd = t->sel_l0 < t->sel_l1 || (t->sel_l0 == t->sel_l1 && t->sel_c0 <= t->sel_c1);
+    *l0 = fwd ? t->sel_l0 : t->sel_l1; *c0 = fwd ? t->sel_c0 : t->sel_c1;
+    *l1 = fwd ? t->sel_l1 : t->sel_l0; *c1 = fwd ? t->sel_c1 : t->sel_c0;
+    return *l0 != *l1 || *c0 != *c1;
+}
+
+/* Put the selected text on the clipboard (lines end with CR LF) */
+static bool copy_selection(Term *t)
+{
+    int l0, c0, l1, c1;
+    if (!sel_ordered(t, &l0, &c0, &l1, &c1)) return false;
+    int cap = (l1 - l0 + 1) * (T_COLS + RAMFS_PATH_MAX + 4) + 1;
+    char *buf = kmalloc((UINT32)cap);
+    if (!buf) return false;
+    int o = 0;
+    char line[T_COLS + RAMFS_PATH_MAX + 8];
+    for (int i = l0; i <= l1; i++) {
+        line_text(t, i, line, sizeof(line));
+        int n = (int)strlen(line);
+        int a = i == l0 ? c0 : 0, b = i == l1 ? c1 : n;
+        if (a > n) a = n;
+        if (b > n) b = n;
+        if (i == l1 && b == n && c1 > n && l1 > l0) {}       /* (to the end of the line) */
+        if (b > a) { memcpy(buf + o, line + a, (size_t)(b - a)); o += b - a; }
+        if (i < l1) { buf[o++] = '\r'; buf[o++] = '\n'; }
+    }
+    ClipSetText(buf, (UINT32)o);
+    kfree(buf);
+    return true;
+}
+
+static void term_key(WND *w, const KeyEvent *k);
+
+/* Paste: the text goes through the keyboard path (a line end is Enter) */
+static void paste(Term *t)
+{
+    UINT32 len;
+    char *s = ClipGetText(&len);
+    if (!s) return;
+    WND *w = t->w;
+    int id = w->id;
+    for (UINT32 i = 0; i < len; i++) {
+        char c = s[i];
+        if (c == '\r') continue;
+        if (c == '\t') c = ' ';
+        if (c != '\n' && (c < ' ' || c > '~')) continue;
+        KeyEvent k;
+        memset(&k, 0, sizeof(k));
+        k.pressed = true;
+        k.ch = c;
+        term_key(w, &k);
+        if (WmWindowById(id) != w) break;          /* "exit" closed it */
+    }
+    kfree(s);
+}
+
+static void term_mouse(WND *w, WmMouseMsg msg, int x, int y)
+{
+    Term *t = w->user;
+    if (msg == WM_MOUSE_RUP) {                     /* right click: paste (or copy a selection) */
+        if (t->has_sel && copy_selection(t)) t->has_sel = false;
+        else paste(t);
+        return;
+    }
+    if (msg == WM_MOUSE_WHEEL) {
+        t->scroll += WmWheelDelta() * 3;
+        if (t->scroll > t->count) t->scroll = t->count;
+        if (t->scroll < 0) t->scroll = 0;
+        return;
+    }
+    int cell = GdiMonoCellW256();
+    int line = term_first(t, NULL) + (y - T_PAD) / T_LINE_H;
+    int col = ((x - T_PAD) * 256 + cell / 2) / cell;
+    if (line < 0) line = 0;
+    if (line >= term_total(t)) line = term_total(t) - 1;
+    if (col < 0) col = 0;
+    if (msg == WM_MOUSE_DOWN) {
+        t->selecting = true;
+        t->has_sel = true;
+        t->sel_l0 = t->sel_l1 = line;
+        t->sel_c0 = t->sel_c1 = col;
+    } else if (msg == WM_MOUSE_MOVE && t->selecting) {
+        t->sel_l1 = line;
+        t->sel_c1 = col;
+    } else if (msg == WM_MOUSE_UP) {
+        t->selecting = false;
+        int a, b, c, d;
+        if (!sel_ordered(t, &a, &b, &c, &d)) t->has_sel = false;
+    } else if (msg == WM_MOUSE_DBLCLK) {           /* a word */
+        char text[T_COLS + RAMFS_PATH_MAX + 8];
+        line_text(t, line, text, sizeof(text));
+        int n = (int)strlen(text), a = col < n ? col : n, b = a;
+        while (a > 0 && text[a - 1] != ' ') a--;
+        while (b < n && text[b] != ' ') b++;
+        t->has_sel = b > a;
+        t->sel_l0 = t->sel_l1 = line;
+        t->sel_c0 = a;
+        t->sel_c1 = b;
+    }
+}
+
 static void term_paint(WND *w)
 {
     Term *t = w->user;
@@ -1073,7 +1282,17 @@ static void term_paint(WND *w)
     if (first < 0) first = 0;
     int x = c.x + T_PAD, y = c.y + T_PAD;
 
+    int s0, sc0, s1, sc1;
+    bool sel = sel_ordered(t, &s0, &sc0, &s1, &sc1);
     for (int i = first; i < total && i < first + rows; i++, y += T_LINE_H) {
+        if (sel && i >= s0 && i <= s1) {           /* the selected cells */
+            int a = i == s0 ? sc0 : 0, b = i == s1 ? sc1 : T_COLS;
+            char text[T_COLS + RAMFS_PATH_MAX + 8];
+            line_text(t, i, text, sizeof(text));
+            int n = (int)strlen(text);
+            if (i != s1 || b > n) b = n + (i != s1 ? 1 : 0);
+            if (b > a) GdiAlphaFill(RECT(x + (a * cell) / 256, y, ((b - a) * cell) / 256, T_LINE_H), T_PROMPT, 90);
+        }
         if (i < t->count) {
             const char *l = t->line[i];
             int sp = t->split[i];
@@ -1121,9 +1340,24 @@ static void remember(Term *t, const char *cmd)
 static void term_key(WND *w, const KeyEvent *k)
 {
     Term *t = w->user;
+    /* Ctrl+Shift+C copies; Ctrl+C copies too while something is selected
+     * (else it interrupts); Ctrl+V / Ctrl+Shift+V / Shift+Insert paste */
+    if (k->ctrl && (k->ch == 'c' || k->ch == 'C') && (k->shift || t->has_sel)) {
+        if (copy_selection(t)) t->has_sel = false;
+        return;
+    }
+    if ((k->ctrl && (k->ch == 'v' || k->ch == 'V')) ||
+        (k->shift && k->extended && k->scancode == KEY_INSERT)) { t->has_sel = false; paste(t); return; }
+    if (k->ch || (k->extended && k->scancode != KEY_PGUP && k->scancode != KEY_PGDN)) t->has_sel = false;
     if (t->job.kind == JOB_PROC) {            /* keyboard goes to the program */
         Job *j = &t->job;
-        if (k->ctrl && k->ch == 'c') { proc_output(t, "^C\n", 3); UmKill(j->proc, 0xC000013A); return; }
+        if (k->ctrl && k->ch == 'c') {
+            proc_output(t, "^C\n", 3);
+            if (!j->proc) { job_end(t); return; }      /* still starting: give up on it */
+            UmKill(j->proc, 0xC000013A);
+            UmKillConsole(j->con, 0xC000013A);     /* and what it started (cmd.exe's programs) */
+            return;
+        }
         if (k->ctrl && k->ch == 'z') { proc_output(t, "^Z\n", 3); UmConsoleEof(j->con); return; }
         if (k->extended) {
             int page = (WmClientRect(w).h - 2 * T_PAD) / T_LINE_H - 1;
@@ -1220,6 +1454,8 @@ static Term *term_new(RamNode *cwd)
     w->user     = t;
     w->on_paint = term_paint;
     w->on_key   = term_key;
+    w->on_mouse = term_mouse;
+    w->rbutton  = true;                        /* right click pastes, the wheel scrolls */
     w->on_close = term_close;
     w->on_tick  = term_tick;
     tprint_ex(t, K_DIM, 0, "NovaOS Terminal [Version 0.9.8]");
