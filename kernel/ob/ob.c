@@ -152,6 +152,7 @@ static NTSTATUS dir_insert(POBJECT_DIRECTORY dir,
     entry->Name.Length        = copy_len;
     entry->Name.MaximumLength = sizeof(entry->NameBuf);
     entry->Object             = object;
+    entry->Directory          = dir;
 
     entry->HashNext            = dir->HashBuckets[bucket];
     dir->HashBuckets[bucket]   = entry;
@@ -162,6 +163,23 @@ static NTSTATUS dir_insert(POBJECT_DIRECTORY dir,
     BODY_TO_OBJECT_HEADER(object)->NameEntry = entry;
 
     return STATUS_SUCCESS;
+}
+
+/* Unlink a named object's entry from its directory and free it. */
+static void dir_remove(POBJECT_DIRECTORY_ENTRY entry)
+{
+    /* (every bucket: a name cut to OBJ_NAME_MAX hashes differently) */
+    POBJECT_DIRECTORY dir = entry->Directory;
+    for (UINT32 b = 0; b < OBJ_DIRECTORY_HASH_BUCKETS; b++) {
+        for (POBJECT_DIRECTORY_ENTRY *pp = &dir->HashBuckets[b]; *pp; pp = &(*pp)->HashNext) {
+            if (*pp == entry) {
+                *pp = entry->HashNext;
+                dir->TotalEntries--;
+                kfree(entry);
+                return;
+            }
+        }
+    }
 }
 
 /* Look up an object in a directory by name. */
@@ -338,12 +356,19 @@ NTSTATUS ObInsertObject(
 
     POBJECT_HEADER hdr = BODY_TO_OBJECT_HEADER(Object);
 
-    /* Map GENERIC_* bits via the type's generic mapping */
+    /* Map GENERIC_* bits via the type's generic mapping (a type that
+     * leaves a mapping out keeps that generic bit as it is) */
     ACCESS_MASK access = DesiredAccess;
-    if (access & GENERIC_ALL) {
-        access = (access & ~GENERIC_ALL) | hdr->Type->GenericAll;
-    }
-    /* TODO: full generic mapping for GENERIC_READ/WRITE/EXECUTE */
+    const POBJECT_TYPE ty = hdr->Type;
+    const struct { ACCESS_MASK bit; ULONG map; } gm[] = {
+        { GENERIC_READ,    ty->GenericRead    },
+        { GENERIC_WRITE,   ty->GenericWrite   },
+        { GENERIC_EXECUTE, ty->GenericExecute },
+        { GENERIC_ALL,     ty->GenericAll     },
+    };
+    for (unsigned i = 0; i < sizeof(gm) / sizeof(gm[0]); i++)
+        if ((access & gm[i].bit) && gm[i].map)
+            access = (access & ~gm[i].bit) | gm[i].map;
 
     __atomic_fetch_add(&hdr->HandleCount,  1, __ATOMIC_SEQ_CST);
     __atomic_fetch_add(&hdr->PointerCount, 1, __ATOMIC_SEQ_CST);
@@ -446,9 +471,7 @@ void ObDereferenceObject(void *Object)
             hdr->Type->Operations.Delete(Object);
         }
         /* Remove from namespace if named */
-        if (hdr->NameEntry) {
-            /* TODO: remove from directory hash chain */
-        }
+        if (hdr->NameEntry) dir_remove(hdr->NameEntry);
         __atomic_fetch_sub(&hdr->Type->TotalNumberOfObjects, 1, __ATOMIC_RELAXED);
         ob_free_object(Object);
     }
@@ -600,6 +623,9 @@ static void directory_delete(void *obj) { (void)obj; }
 static OBJECT_TYPE ob_directory_type_storage = {
     .Name            = "Directory",
     .DefaultBodySize = sizeof(OBJECT_DIRECTORY),
+    .GenericRead     = 0x00020003,  /* READ_CONTROL | DIRECTORY_QUERY | DIRECTORY_TRAVERSE */
+    .GenericWrite    = 0x0002000C,  /* READ_CONTROL | DIRECTORY_CREATE_OBJECT/SUBDIRECTORY */
+    .GenericExecute  = 0x00020003,
     .GenericAll      = DIRECTORY_ALL_ACCESS,
     .Operations      = { .Delete = directory_delete },
 };

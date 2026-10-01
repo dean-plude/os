@@ -53,6 +53,9 @@ static void file_object_delete(void *obj)
 static OBJECT_TYPE io_file_type_storage = {
     .Name            = "File",
     .DefaultBodySize = sizeof(FILE_OBJECT),
+    .GenericRead     = 0x00120089,  /* FILE_GENERIC_READ */
+    .GenericWrite    = 0x00120116,  /* FILE_GENERIC_WRITE */
+    .GenericExecute  = 0x001200A0,  /* FILE_GENERIC_EXECUTE */
     .GenericAll      = FILE_ALL_ACCESS,
     .Operations      = { .Delete = file_object_delete },
 };
