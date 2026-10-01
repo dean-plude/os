@@ -5,7 +5,7 @@ Windows executables without emulation: 64-bit (x64, PE32+) programs, and
 32-bit (x86, PE32) ones, such as most setup programs, through its own
 WoW64 layer.
 
-## Status: Phase 13 — 32-bit Windows programs (WoW64), after unmodified 7-Zip, an App Store, Windows Installer (.msi), a NovaOS installer, git, and the Java, .NET, Node.js and Python runtimes
+## Status: Phase 13 — 32-bit Windows programs (WoW64), after unmodified 7-Zip, an App Store, Windows Installer (.msi), a NovaOS installer, git, the Java, .NET, Node.js and Python runtimes, and OpenGL through Mesa
 
 **What works:**
 
@@ -638,8 +638,8 @@ Install button all go through it, and programs can call
   shows the familiar progress window with Cancel (full UI adds the
   completion message box).  Logs also go to the kernel log (`dmesg`).
 - Not yet: the packages' own dialogs (`InstallUISequence`), the
-  `Shortcut` table, services, environment variables, and
-  merge modules.  LZX decoding is written to the specification but has
+  `Shortcut` table, services and merge modules (environment variables
+  are done: see the language runtimes below).  LZX decoding is written to the specification but has
   only been exercised with MSZIP cabinets so far.
 
 ### Phase 13 — 32-bit Windows programs (WoW64)
@@ -1000,6 +1000,43 @@ finds `java` and `node`.  What it took:
 - Not yet: MSI custom actions still do not run, and .NET has no ICU
   (globalization works through NLS for English and invariant cultures).
 
+### OpenGL: Mesa as the system `opengl32.dll`
+
+Programs that draw with OpenGL get OpenGL 4.5 rendered on the CPU by
+Mesa's llvmpipe, the same approach Wine takes: an existing open-source
+DLL ships as an OS component, and the programs are not changed.  The
+App Store's **Mesa 3D** (Runtimes) installs the
+[mesa-dist-win](https://github.com/pal1000/mesa-dist-win) 24.2.4 build:
+7-Zip unpacks just `opengl32.dll`, `libgallium_wgl.dll` and
+`libglapi.dll`, 64-bit into `C:\Windows\System32` and 32-bit into
+`C:\Windows\SysWOW64`, so every program that imports `opengl32.dll`
+finds them.
+
+- **WGL in gdi32** (`userland/gdi32/wgl.c`): `ChoosePixelFormat`,
+  `DescribePixelFormat`, `GetPixelFormat`, `SetPixelFormat` and
+  `SwapBuffers` load `opengl32.dll` on first use and call its `wgl*`
+  functions, as on Windows.  GDI remembers each window's pixel format
+  (set once), and a per-thread guard answers Mesa's own calls back into
+  these from what GDI knows.
+- **Presenting frames**: Mesa shows each frame with `StretchDIBits`.  An
+  unscaled 32-bit blit now copies rows directly, and user32's
+  `NovaFlushDC` puts the change on screen, since GL programs draw
+  through a DC they keep for the window's life instead of painting in
+  `WM_PAINT`.
+- **x86 `SLIST_HEADER`** is 8 bytes, as on Windows (it was the 16-byte
+  x64 layout, which 32-bit Mesa's aligned stores faulted on).
+- Also `RtlGetLastNtStatus`, `HeapWalk`/`HeapLock`/`HeapUnlock` and
+  `EnumDisplaySettingsA`.
+- Tested in QEMU with `tools/gltest/gltest.c` built with MinGW, 64-bit
+  and 32-bit, after installing Mesa from the App Store: vendor, renderer
+  and version strings, clearing, immediate-mode drawing, a GLSL shader,
+  pixel read-back, then animated frames with `SwapBuffers` (14/14 checks,
+  about 48 frames per second in a 320x240 window under QEMU without KVM).  Mesa
+  also tries its Zink (Vulkan) and D3D12 drivers first and logs that
+  `vulkan-1.dll` and `d3d12.dll` are missing; it then uses llvmpipe.
+- Next: Direct3D on top of this (WineD3D to OpenGL, or DXVK on Mesa's
+  lavapipe Vulkan).
+
 ### Installing NovaOS on a disk
 
 The ISO is also the installation disc.  Booted from it, NovaOS runs
@@ -1135,6 +1172,7 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 | 12 | Win32 GUI subsystem (real HWNDs, controls, menus, dialogs, comctl32, drag and drop); unmodified 7-Zip installs and runs; the App Store; Windows Installer (.msi); installing NovaOS on a disk | ✅ **Done** |
 | 13 | 32-bit (x86) Windows programs (WoW64): compatibility mode, a SysWOW64 userland, x86 SEH and C++ exceptions; NSIS installers (with shortcuts) and 7-Zip's 32-bit self-extractors run | ✅ **Done** |
 | 14 | Pipes (named, anonymous, overlapped), handle inheritance, `cmd.exe` with batch files, the system and OLE clipboard, Git | ✅ **Done** |
+| 15 | 3D graphics: OpenGL 4.5 through Mesa llvmpipe (done); Direct3D next | 🚧 **In progress** |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan toward running native
 Windows executables (Phases 8–15) and the chosen compatibility strategy.
