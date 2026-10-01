@@ -6,6 +6,7 @@
 #include "pci.h"
 #include "../arch/x86_64/cpu.h"
 #include "../ke/printf.h"
+#include "../arch/x86_64/paging.h"
 
 #define PCI_ADDR  0xCF8
 #define PCI_DATA  0xCFC
@@ -109,6 +110,54 @@ UINT64 PciBarAddress(const PciDevice *d, int bar)
     if (((lo >> 1) & 3) == 2)                      /* 64-bit BAR */
         addr |= (UINT64)PciRead32(d->bus, d->dev, d->func, (UINT8)(off + 4)) << 32;
     return addr;
+}
+
+/* Size of a memory BAR: write all ones, see which address bits stick */
+static UINT64 bar_size(const PciDevice *d, int bar)
+{
+    UINT8 off = (UINT8)(0x10 + bar * 4);
+    bool is64 = ((PciRead32(d->bus, d->dev, d->func, off) >> 1) & 3) == 2;
+    UINT16 cmd = PciRead16(d->bus, d->dev, d->func, 0x04);
+    PciWrite16(d->bus, d->dev, d->func, 0x04, (UINT16)(cmd & ~2u));   /* decoding off meanwhile */
+    UINT32 lo = PciRead32(d->bus, d->dev, d->func, off), hi = 0;
+    PciWrite32(d->bus, d->dev, d->func, off, 0xFFFFFFFFu);
+    UINT64 mask = PciRead32(d->bus, d->dev, d->func, off) & ~0xFull;
+    PciWrite32(d->bus, d->dev, d->func, off, lo);
+    if (is64) {
+        hi = PciRead32(d->bus, d->dev, d->func, (UINT8)(off + 4));
+        PciWrite32(d->bus, d->dev, d->func, (UINT8)(off + 4), 0xFFFFFFFFu);
+        mask |= (UINT64)PciRead32(d->bus, d->dev, d->func, (UINT8)(off + 4)) << 32;
+        PciWrite32(d->bus, d->dev, d->func, (UINT8)(off + 4), hi);
+    } else {
+        mask |= 0xFFFFFFFF00000000ull;
+    }
+    PciWrite16(d->bus, d->dev, d->func, 0x04, cmd);
+    return mask ? ~mask + 1 : 0;
+}
+
+#define PHYSMAP_SIZE (64ull << 30)
+/* MMIO window: after the physmap, in the same top-level page table entry,
+ * which every address space shares (paging_create_process_pt) */
+static UINT64 g_mmio_next = PHYSMAP_BASE + (256ull << 30);
+static KSpinLock g_mmio_lock = KSPINLOCK_INIT;
+
+volatile void *PciMapBar(const PciDevice *d, int bar)
+{
+    UINT64 pa = PciBarAddress(d, bar);
+    if (!pa) return NULL;
+    UINT64 size = bar_size(d, bar);
+    if (size < PAGE_SIZE) size = PAGE_SIZE;
+    if (pa + size <= PHYSMAP_SIZE) return (volatile void *)(uintptr_t)(PHYSMAP_BASE + pa);
+    IrqState s = spin_lock_irqsave(&g_mmio_lock);
+    UINT64 va = g_mmio_next;
+    g_mmio_next += (size + PAGE_SIZE - 1) & ~(UINT64)(PAGE_SIZE - 1);
+    spin_unlock_irqrestore(&g_mmio_lock, s);
+    if (!NT_SUCCESS(paging_map((uintptr_t)va, (uintptr_t)pa, (size_t)size,
+                               MAP_WRITABLE | MAP_NO_CACHE | MAP_NO_EXEC))) {
+        kprintf("[PCI] cannot map BAR%d at %llx\n", bar, (unsigned long long)pa);
+        return NULL;
+    }
+    return (volatile void *)(uintptr_t)va;
 }
 
 void PciEnableDevice(const PciDevice *d)

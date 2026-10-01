@@ -71,6 +71,7 @@
 #include "../fs/setup.h"
 #include "../fs/ramfs.h"
 #include "../hal/pci.h"
+#include "../drivers/xhci.h"
 #include "../hal/acpi.h"
 #include "../net/net.h"
 #include "../um/um.h"
@@ -386,6 +387,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
         /* Phase 8: input plumbing + interactive desktop event loop. */
         InputInit();
         ps2_init();
+        XhciInit();                       /* USB keyboards and mice */
         sched_create_thread("desktop", DesktopRun, NULL, 8);
         kprintf_set_fb_enabled(false);    /* WM owns the screen; logs → serial */
         kprintf("[NovaOS] Desktop event loop started (%dx%d)\n",

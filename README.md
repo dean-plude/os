@@ -83,8 +83,9 @@ every part, phase by phase.
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.
 - **Drivers**: AHCI SATA disks, FAT16/FAT32, GPT; Intel e1000/e1000e
-  network cards; PS/2 keyboard and mouse; CMOS clock; the UEFI framebuffer;
-  ACPI power-off, reset and power button from the FADT and `\_S5`.
+  network cards; PS/2 and USB (xHCI) keyboards and mice; CMOS clock; the
+  UEFI framebuffer; ACPI power-off, reset and power button from the FADT
+  and `\_S5`.
 - **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
   TLS with the Mozilla root store.
 - **Windows userland** (`userland/`): about 35 system DLLs written from
@@ -219,7 +220,7 @@ os/
 │   ├── um/               # Windows programs: processes, threads, loader, NT services,
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
-│   ├── drivers/          # AHCI (SATA), e1000/e1000e
+│   ├── drivers/          # AHCI (SATA), e1000/e1000e, xHCI USB + HID
 │   ├── hal/              # Serial, framebuffer, PCI, PS/2, CMOS clock
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding

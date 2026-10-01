@@ -1,0 +1,20 @@
+/*
+ * xhci.h — USB 3 (xHCI) host controller driver
+ *
+ * Brings up every xHCI controller, enumerates the devices on its root
+ * ports and binds HID boot-protocol keyboards and mice (usbhid.h), which
+ * feed the same input queue as the PS/2 driver.  Like the other drivers
+ * it is polled: device interrupts stay off and XhciPoll(), called from the
+ * timer tick, drains the event rings.  Devices plugged in later are
+ * enumerated by a small kernel thread.
+ */
+
+#pragma once
+
+#include "../include/types.h"
+
+/* Probe every controller and attach what is plugged in; returns the number
+ * of HID devices bound.  Needs InputInit() first. */
+int  XhciInit(void);
+/* Drain the event rings (timer tick, any CPU). */
+void XhciPoll(void);

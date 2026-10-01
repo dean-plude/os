@@ -547,6 +547,7 @@ void DesktopWatchdog(uint64_t now);
 void UmTimerTick(uint64_t ticks);
 
 void ps2_poll(void);
+void XhciPoll(void);
 
 void sched_tick(void)
 {
@@ -558,6 +559,7 @@ void sched_tick(void)
         if (now > tick_count) {
             tick_count = now;
             ps2_poll();                     /* keyboard/mouse, collected at 100 Hz */
+            XhciPoll();                     /* (USB ones too) */
             DesktopWatchdog(tick_count);
             UmTimerTick(tick_count);
         }

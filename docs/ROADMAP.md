@@ -108,7 +108,9 @@ named program or test demonstrates it.
 - ~~NTFS read~~ Done: NTFS volumes mount read-only as drives D:, E:, ...;
   NTFS write, NVMe.
 - IPv6, HTTP/2.
-- USB (xHCI) with HID keyboards and mice, for real hardware without PS/2.
+- ~~USB (xHCI) with HID keyboards and mice~~ Done: boot-protocol keyboards
+  and mice on xHCI root ports, with hot-plug.  Still to do: USB hubs, absolute pointers
+  (tablets, touch screens), report-protocol HID, mass storage.
 - ACPI beyond the MADT: ~~shutdown and reboot~~ Done: power-off (S5),
   reset and the fixed power button from the FADT and `\_S5`, without an AML
   interpreter.  Still to do: sleep (S3), batteries and lid, control-method
