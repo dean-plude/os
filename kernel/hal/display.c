@@ -126,8 +126,13 @@ static bool bochs_probe(const BootFramebuffer *boot)
                 (unsigned long long)bar0, (unsigned long long)boot->base);
         return false;
     }
+    if (bar0 + boot->size > PHYSMAP_SIZE) return false;     /* outside the physmap */
+    /* The register BAR may sit above the physmap (firmware places 64-bit
+     * BARs high): then use the I/O ports, which -vga std also decodes */
     UINT64 bar2 = PciBarAddress(&pci, 2);
+    if (bar2 + 0x1000 > PHYSMAP_SIZE) bar2 = 0;
     d.mmio = bar2 != 0 && pci.vendor == 0x1234;
+    if (!d.mmio && pci.subclass != 0x00) return false;      /* bochs-display: MMIO only */
     d.regs = d.mmio ? (volatile UINT16 *)(PHYSMAP_BASE + bar2 + VBE_MMIO_OFFSET) : NULL;
     bool is_vga = pci.class_code == 0x03 && pci.subclass == 0x00;
 
