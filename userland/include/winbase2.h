@@ -159,6 +159,15 @@ WINBASEAPI BOOL   WINAPI SetProcessPriorityBoost(HANDLE p, BOOL disable);
 WINBASEAPI int    WINAPI GetThreadPriority(HANDLE t);
 WINBASEAPI BOOL   WINAPI SetThreadPriority(HANDLE t, int prio);
 WINBASEAPI BOOL   WINAPI Beep(DWORD freq, DWORD ms);
+typedef struct _SYSTEM_POWER_STATUS {
+    BYTE  ACLineStatus;              /* 0 offline, 1 online, 255 unknown */
+    BYTE  BatteryFlag;               /* 1 high, 2 low, 4 critical, 8 charging, 128 none, 255 unknown */
+    BYTE  BatteryLifePercent;        /* 0-100, 255 unknown */
+    BYTE  SystemStatusFlag;          /* 1: battery saver on */
+    DWORD BatteryLifeTime;           /* seconds, (DWORD)-1 unknown */
+    DWORD BatteryFullLifeTime;
+} SYSTEM_POWER_STATUS, *LPSYSTEM_POWER_STATUS;
+WINBASEAPI BOOL   WINAPI GetSystemPowerStatus(LPSYSTEM_POWER_STATUS status);
 WINBASEAPI BOOL   WINAPI SetThreadStackGuarantee(PULONG size);
 WINBASEAPI UINT   WINAPI SetErrorMode(UINT mode);
 WINBASEAPI UINT   WINAPI GetErrorMode(void);

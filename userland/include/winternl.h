@@ -258,6 +258,8 @@ NTSYSAPI NTSTATUS NTAPI NtShutdownSystem(ULONG action);
  * sleep returns once the machine is awake again */
 NTSYSAPI NTSTATUS NTAPI NtSetSystemPowerState(ULONG action, ULONG min_state, ULONG flags);
 NTSYSAPI NTSTATUS NTAPI NtInitiatePowerAction(ULONG action, ULONG min_state, ULONG flags, BOOLEAN async);
+/* POWER_INFORMATION_LEVEL 5 (SystemBatteryState): SYSTEM_BATTERY_STATE */
+NTSYSAPI NTSTATUS NTAPI NtPowerInformation(ULONG level, PVOID in, ULONG inlen, PVOID out, ULONG outlen);
 NTSYSAPI NTSTATUS NTAPI NtRenameKey(HANDLE key, PUNICODE_STRING name);
 NTSYSAPI PVOID    NTAPI RtlPcToFileHeader(PVOID pc, PVOID *base);
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE p, NTSTATUS status);

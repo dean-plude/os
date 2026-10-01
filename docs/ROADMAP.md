@@ -115,12 +115,13 @@ named program or test demonstrates it.
 - ~~USB (xHCI) with HID keyboards and mice~~ Done: boot-protocol keyboards
   and mice on xHCI root ports, with hot-plug.  Still to do: USB hubs, absolute pointers
   (tablets, touch screens), report-protocol HID, mass storage.
-- ACPI beyond the MADT: ~~shutdown, reboot, sleep~~ Done: power-off (S5),
-  sleep (S3), reset and the fixed power button from the FADT, `\_S5` and
-  `\_S3`, without an AML interpreter.  Still to do: batteries and lid,
-  control-method power buttons, `_PTS`/`_WAK` (these need AML; ACPICA or
-  LAI would also give PCI interrupt routing); display modes after S3 on
-  adapters other than the Bochs/QEMU one; HPET or TSC-deadline timers.
+- ACPI beyond the MADT: ~~shutdown, reboot, sleep, batteries~~ Done:
+  power-off (S5), sleep (S3), reset and the fixed power button from the
+  FADT; the AML interpreter (uACPI) for batteries, AC adapters,
+  control-method power buttons and `_PTS`/`_WAK`.  Still to do: the lid
+  switch, thermal zones, wake devices (USB keyboards), a real SCI
+  interrupt and PCI interrupt routing from `_PRT`; display modes after S3
+  on adapters other than the Bochs/QEMU one; HPET or TSC-deadline timers.
 - Boot and test on real hardware, not only QEMU.
 
 ---

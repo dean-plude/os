@@ -23,6 +23,7 @@
 #include "../arch/x86_64/apic.h"
 #include "../wm/clipboard.h"
 #include "../wm/desktop.h"
+#include "../hal/aml.h"
 
 #define ST_SUCCESS                 0x00000000u
 #define ST_PENDING                 0x00000103u
@@ -34,6 +35,7 @@
 #define ST_INVALID_HANDLE          0xC0000008u
 #define ST_INVALID_PARAMETER       0xC000000Du
 #define ST_NOT_SUPPORTED           0xC00000BBu
+#define ST_BUFFER_TOO_SMALL        0xC0000023u
 #define ST_END_OF_FILE             0xC0000011u
 #define ST_NO_MEMORY               0xC0000017u
 #define ST_CONFLICTING_ADDRESSES   0xC0000018u
@@ -1778,6 +1780,37 @@ static UINT64 sys_power_action(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
 }
 
+/* NtPowerInformation(POWER_INFORMATION_LEVEL, PVOID In, ULONG InLength,
+ * PVOID Out, ULONG OutLength): SystemBatteryState (5) from the ACPI
+ * batteries and AC adapters.  powrprof answers the other levels itself. */
+static UINT64 sys_power_information(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3;
+    if ((UINT32)a1 != 5) return ST_NOT_IMPLEMENTED;
+    struct __attribute__((packed)) {
+        UINT8  ac_online, present, charging, discharging, spare[3], tag;
+        UINT32 max, remaining;
+        INT32  rate;
+        UINT32 estimated, alert1, alert2;
+    } out = { 0 };
+    if (!a4) return ST_INVALID_PARAMETER;
+    if ((UINT32)um_stack_arg(5) < sizeof(out)) return ST_BUFFER_TOO_SMALL;
+    AmlBatteryState b;
+    AmlGetBatteryState(&b);
+    out.ac_online = b.ac_online;
+    out.present = b.battery_present;
+    out.charging = b.charging;
+    out.discharging = b.discharging;
+    out.tag = b.battery_present ? 1 : 0;
+    out.max = b.max_capacity;
+    out.remaining = b.remaining_capacity;
+    out.rate = b.rate;
+    out.estimated = b.estimated_time;
+    out.alert1 = b.alert_low;
+    out.alert2 = b.alert_warning;
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &out, sizeof(out))) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
+}
+
 static UINT64 sys_query_system_time(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     return put_u64(a1, um_now_100ns()) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
@@ -2232,6 +2265,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtShutdownSystem,           sys_shutdown_system);
     um_install(SYSCALL_NtSetSystemPowerState,      sys_power_action);
     um_install(SYSCALL_NtInitiatePowerAction,      sys_power_action);
+    um_install(SYSCALL_NtPowerInformation,         sys_power_information);
     um_install(SYSCALL_NtQueryPerformanceCounter,  sys_query_perf_counter);
     um_install(SYSCALL_NtDelayExecution,           sys_delay);
     um_install(SYSCALL_NtYieldExecution,           sys_yield);

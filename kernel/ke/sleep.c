@@ -31,6 +31,7 @@
 #include "../arch/x86_64/apic.h"
 #include "../arch/x86_64/gdt.h"
 #include "../hal/acpi.h"
+#include "../hal/aml.h"
 #include "../hal/pci.h"
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
@@ -266,6 +267,7 @@ bool SleepEnter(void)
 {
     if (!SleepSupported()) return false;
 
+    AmlPrepareSleep();                   /* \_PTS; only wake GPEs stay on */
     /* Devices: what only the driver knows */
     FbSuspend();
     PciSaveAll();
@@ -306,6 +308,7 @@ bool SleepEnter(void)
         bkl_restore(bkl);
         if (frozen < others) kprintf("[SLEEP] %u of %u CPUs stopped: not sleeping\n", frozen, others);
         else kprintf("[SLEEP] The machine didn't enter S3\n");
+        AmlWake();
         return false;
     }
     if (g_cpus_lost) kprintf("[SLEEP] %u CPU(s) didn't come back\n", g_cpus_lost);
@@ -327,5 +330,6 @@ bool SleepEnter(void)
     kprintf("[SLEEP] Woke up after %llu s\n", (unsigned long long)(asleep / 10000000ULL));
     irq_restore(irq);
     bkl_restore(bkl);
+    AmlWake();                           /* \_WAK; the runtime GPEs again */
     return true;
 }

@@ -8,11 +8,12 @@
  * be read without an AML interpreter.  Reset uses the FADT's reset
  * register when the firmware says it works.  The power button is the
  * fixed-feature one (PWRBTN_STS in the PM1 status register), which the
- * desktop polls; machines that only expose a control-method button need
- * AML to report it, which NovaOS can't run.
+ * desktop polls; once the AML interpreter (aml.c) is running it handles
+ * the events, control-method buttons included.
  */
 
 #include "acpi.h"
+#include "aml.h"
 #include "pci.h"
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/apic.h"
@@ -397,8 +398,11 @@ void AcpiReset(void)
     for (;;) hlt();
 }
 
+UINT64 AcpiRsdpAddress(void) { return g_rsdp; }
+
 bool AcpiPowerButtonPressed(void)
 {
+    if (AmlReady()) return AmlPowerButtonPressed();   /* the interpreter handles the events */
     if (!g_button) return false;
     if (!(gas_read(&g_pm1a_evt, 16) & PM1_STS_PWRBTN)) return false;
     gas_write(&g_pm1a_evt, 16, PM1_STS_PWRBTN);                 /* write 1 to clear */

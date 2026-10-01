@@ -147,18 +147,26 @@ volatile void *PciMapBar(const PciDevice *d, int bar)
     UINT64 pa = PciBarAddress(d, bar);
     if (!pa) return NULL;
     UINT64 size = bar_size(d, bar);
+    volatile void *va = PciMapPhysical(pa, size);
+    if (!va) kprintf("[PCI] cannot map BAR%d at %llx\n", bar, (unsigned long long)pa);
+    return va;
+}
+
+volatile void *PciMapPhysical(UINT64 pa, UINT64 size)
+{
     if (size < PAGE_SIZE) size = PAGE_SIZE;
     if (pa + size <= PHYSMAP_SIZE) return (volatile void *)(uintptr_t)(PHYSMAP_BASE + pa);
+    UINT64 off = pa & (PAGE_SIZE - 1);
+    pa -= off;
+    size = (size + off + PAGE_SIZE - 1) & ~(UINT64)(PAGE_SIZE - 1);
     IrqState s = spin_lock_irqsave(&g_mmio_lock);
     UINT64 va = g_mmio_next;
-    g_mmio_next += (size + PAGE_SIZE - 1) & ~(UINT64)(PAGE_SIZE - 1);
+    g_mmio_next += size;
     spin_unlock_irqrestore(&g_mmio_lock, s);
     if (!NT_SUCCESS(paging_map((uintptr_t)va, (uintptr_t)pa, (size_t)size,
-                               MAP_WRITABLE | MAP_NO_CACHE | MAP_NO_EXEC))) {
-        kprintf("[PCI] cannot map BAR%d at %llx\n", bar, (unsigned long long)pa);
+                               MAP_WRITABLE | MAP_NO_CACHE | MAP_NO_EXEC)))
         return NULL;
-    }
-    return (volatile void *)(uintptr_t)va;
+    return (volatile void *)(uintptr_t)(va + off);
 }
 
 void PciEnableDevice(const PciDevice *d)

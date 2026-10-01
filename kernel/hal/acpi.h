@@ -1,8 +1,8 @@
 /*
  * acpi.h — ACPI tables and fixed-hardware power control
  *
- * NovaOS has no AML interpreter.  It reads what power-off, reset and the
- * power button need straight from the tables: the FADT's PM1 blocks and
+ * Power-off, reset and the power button work without the AML interpreter
+ * (aml.h), which loads later: they read straight from the tables: the FADT's PM1 blocks and
  * reset register, and the \_S5 package's sleep-type values, which the
  * DSDT (or an SSDT) declares as plain data that can be found without
  * running any AML.
@@ -15,6 +15,9 @@
 /* Remember where the RSDP is (boot information), then read the FADT and
  * \_S5 and switch the chipset into ACPI mode.  Call once, after paging. */
 void AcpiInitialize(UINT64 rsdp_physical);
+
+/* The RSDP's physical address (0 if the firmware gave none) */
+UINT64 AcpiRsdpAddress(void);
 
 /* The first table with this 4-character signature (XSDT, else RSDT), or
  * NULL.  The table starts with the standard 36-byte header. */
@@ -39,5 +42,7 @@ void AcpiResume(void);
  * the 8042, then a triple fault.  Never returns. */
 void AcpiReset(void) __attribute__((noreturn));
 
-/* Was the (fixed-feature) power button pressed since the last call? */
+/* Was the power button pressed since the last call?  The fixed-feature
+ * one, read here until the AML interpreter (aml.h) takes over the events;
+ * then also control-method buttons. */
 bool AcpiPowerButtonPressed(void);

@@ -732,6 +732,8 @@ NTSTATUS NTAPI NtSetSystemPowerState(ULONG action, ULONG min_state, ULONG flags)
 { return SC(NtSetSystemPowerState, U(action), U(min_state), U(flags)); }
 NTSTATUS NTAPI NtInitiatePowerAction(ULONG action, ULONG min_state, ULONG flags, BOOLEAN async)
 { return SC(NtInitiatePowerAction, U(action), U(min_state), U(flags), U(async)); }
+NTSTATUS NTAPI NtPowerInformation(ULONG level, PVOID in, ULONG inlen, PVOID out, ULONG outlen)
+{ return SC(NtPowerInformation, U(level), P(in), U(inlen), P(out), U(outlen)); }
 
 NTSTATUS NTAPI NtSetValueKey(HANDLE key, PUNICODE_STRING name, ULONG title, ULONG type, PVOID data, ULONG size)
 {
