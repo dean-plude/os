@@ -15,6 +15,8 @@
 /* Find the controller and a codec output path, start the DMA ring
  * (silent).  False when there is no HD Audio device. */
 bool        HdaInit(void);
+/* After waking from S3: set the controller and codecs up again */
+void        HdaResume(void);
 const char *HdaName(void);
 /* The DMA ring: @size bytes of interleaved s16 stereo frames */
 INT16      *HdaRing(UINT32 *size);

@@ -584,6 +584,44 @@ static bool wait_sts(UINT32 bits, bool set)
     return false;
 }
 
+static int      g_slots;
+static UINT64  *g_erst;
+
+/* Halt, reset and program the controller: device contexts, the command
+ * ring and the event ring (allocated already), then run.  Boot and wake. */
+static bool controller_program(void)
+{
+    bios_handoff();
+    wr32(g_op, OP_USBCMD, rd32(g_op, OP_USBCMD) & ~CMD_RS);
+    if (!wait_sts(STS_HCH, true)) return false;
+    wr32(g_op, OP_USBCMD, CMD_HCRST);
+    for (int spins = SPIN_LONG; spins > 0 && (rd32(g_op, OP_USBCMD) & CMD_HCRST); spins--)
+        pause_cpu();
+    if (!wait_sts(STS_CNR, false)) {
+        kprintf("[USB] controller did not come out of reset\n");
+        return false;
+    }
+
+    wr32(g_op, OP_CONFIG, (UINT32)g_slots);
+    wr64(g_op, OP_DCBAAP, phys(g_dcbaa));
+
+    memset((void *)g_cmd.trbs, 0, PAGE_SIZE);
+    g_cmd.enq = 0;
+    g_cmd.cycle = 1;
+    wr64(g_op, OP_CRCR, phys(g_cmd.trbs) | 1);
+
+    memset((void *)g_evt, 0, PAGE_SIZE);
+    g_evt_deq = 0;
+    g_evt_ccs = 1;
+    wr32(g_rt, IR_ERSTSZ, 1);
+    wr64(g_rt, IR_ERDP, phys(g_evt));
+    wr64(g_rt, IR_ERSTBA, phys(g_erst));
+    wr32(g_rt, IR_IMAN, 1);                                  /* clear pending; interrupts stay off */
+
+    wr32(g_op, OP_USBCMD, CMD_RS);
+    return wait_sts(STS_HCH, false);
+}
+
 static bool controller_start(const PciDevice *pci)
 {
     g_cap = PciMapBar(pci, 0);
@@ -596,21 +634,8 @@ static bool controller_start(const PciDevice *pci)
     g_ctx = (rd32(g_cap, CAP_HCCPARAMS1) & (1u << 2)) ? 64 : 32;
     g_ports = (int)(hcs1 >> 24);
     if (g_ports > MAX_PORTS) g_ports = MAX_PORTS;
-    int slots = (int)(hcs1 & 0xFF);
-    if (slots > 255) slots = 255;
-
-    bios_handoff();
-    wr32(g_op, OP_USBCMD, rd32(g_op, OP_USBCMD) & ~CMD_RS);
-    if (!wait_sts(STS_HCH, true)) return false;
-    wr32(g_op, OP_USBCMD, CMD_HCRST);
-    for (int spins = SPIN_LONG; spins > 0 && (rd32(g_op, OP_USBCMD) & CMD_HCRST); spins--)
-        pause_cpu();
-    if (!wait_sts(STS_CNR, false)) {
-        kprintf("[USB] controller did not come out of reset\n");
-        return false;
-    }
-
-    wr32(g_op, OP_CONFIG, (UINT32)slots);
+    g_slots = (int)(hcs1 & 0xFF);
+    if (g_slots > 255) g_slots = 255;
 
     /* Device context base array, with the scratchpad array in slot 0 */
     g_dcbaa = alloc_zero(1);
@@ -626,30 +651,28 @@ static bool controller_start(const PciDevice *pci)
         }
         g_dcbaa[0] = phys(arr);
     }
-    wr64(g_op, OP_DCBAAP, phys(g_dcbaa));
 
     if (!ring_init(&g_cmd)) return false;
-    wr64(g_op, OP_CRCR, phys(g_cmd.trbs) | 1);
 
     /* One-segment event ring */
-    UINT64 *erst = alloc_zero(1);
+    g_erst = alloc_zero(1);
     g_evt = alloc_zero(1);
-    if (!erst || !g_evt) return false;
-    erst[0] = phys(g_evt);
-    erst[1] = RING_TRBS;
-    g_evt_deq = 0;
-    g_evt_ccs = 1;
-    wr32(g_rt, IR_ERSTSZ, 1);
-    wr64(g_rt, IR_ERDP, phys(g_evt));
-    wr64(g_rt, IR_ERSTBA, phys(erst));
-    wr32(g_rt, IR_IMAN, 1);                                  /* clear pending; interrupts stay off */
+    if (!g_erst || !g_evt) return false;
+    g_erst[0] = phys(g_evt);
+    g_erst[1] = RING_TRBS;
 
-    wr32(g_op, OP_USBCMD, CMD_RS);
-    if (!wait_sts(STS_HCH, false)) return false;
-
+    if (!controller_program()) return false;
     kprintf("[USB] xHCI %02x:%02x.%d: %d ports, %d slots, %d-byte contexts\n",
-            pci->bus, pci->dev, pci->func, g_ports, slots, g_ctx);
+            pci->bus, pci->dev, pci->func, g_ports, g_slots, g_ctx);
     return true;
+}
+
+static void power_ports(void)
+{
+    for (int p = 1; p <= g_ports; p++) {
+        UINT32 sc = rd32(g_op, OP_PORTSC(p));
+        if (!(sc & PORT_PP)) wr32(g_op, OP_PORTSC(p), (sc & PORT_PRESERVE) | PORT_PP);
+    }
 }
 
 int XhciInit(void)
@@ -665,10 +688,7 @@ int XhciInit(void)
     }
 
     /* Power the ports and let devices connect */
-    for (int p = 1; p <= g_ports; p++) {
-        UINT32 sc = rd32(g_op, OP_PORTSC(p));
-        if (!(sc & PORT_PP)) wr32(g_op, OP_PORTSC(p), (sc & PORT_PRESERVE) | PORT_PP);
-    }
+    power_ports();
     for (int spins = 2000000; spins > 0; spins--) pause_cpu();
 
     int bound = 0;
@@ -684,4 +704,31 @@ int XhciInit(void)
     sched_create_thread("usb", usb_thread, NULL, 8);
     kprintf("[USB] %d HID device(s) ready\n", bound);
     return bound;
+}
+
+/* After S3 the controller has lost its state, and the devices theirs: start
+ * it again, forget the devices and let the hot-plug thread enumerate what
+ * is plugged in (interrupts are off here; enumeration waits). */
+void XhciResume(void)
+{
+    if (!g_ready) return;
+    g_ready = false;
+    IrqState s = spin_lock_irqsave(&g_evt_lock);
+    for (int i = 0; i < MAX_DEVS; i++) {
+        UsbDev *d = &g_devs[i];
+        if (!d->used) continue;
+        if (d->kind == 1) UsbHidKeyboardGone(&d->kbd);
+        if (d->slot) { g_by_slot[d->slot] = NULL; g_dcbaa[d->slot] = 0; }
+        d->kind = 0;
+        d->used = false;
+    }
+    spin_unlock_irqrestore(&g_evt_lock, s);
+    if (!controller_program()) {
+        kprintf("[USB] xHCI controller didn't restart after sleep\n");
+        return;
+    }
+    power_ports();
+    for (int p = 1; p <= g_ports; p++) g_port_pending[p] = true;
+    g_port_changed = 1;
+    g_ready = true;
 }

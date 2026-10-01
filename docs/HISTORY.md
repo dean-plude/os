@@ -1309,9 +1309,12 @@ build machine, and DXVK is the faster, more complete path anyway.
   into what it was doing.
 - **Devices** set up again: AHCI disks, e1000 network, PS/2 keyboard and
   mouse (with scancode translation forced on), the Bochs/QEMU display
-  mode, xHCI USB devices and HD Audio.  The wall clock moves on by what the
-  CMOS clock measured.
+  mode, xHCI USB (the controller restarts and the keyboards and mice are
+  enumerated again) and HD Audio (codec paths and the output stream).  The
+  wall clock moves on by what the CMOS clock measured.
 - `sleeptest.exe` sleeps and then checks the clock, threads and files.
-  Tested in QEMU (OVMF, q35) with 1, 2 and 4 CPUs, three sleeps in a row.
-- Not yet: `_PTS`/`_WAK` and wake devices (these need AML), display modes
+  Tested in QEMU (OVMF, q35) with 1, 2 and 4 CPUs, three sleeps in a row,
+  and with a USB keyboard and mouse and HD Audio attached.
+- Not yet: `_PTS`/`_WAK` and wake devices such as USB keyboards (these
+  need AML), display modes
   on adapters other than the Bochs/QEMU one.

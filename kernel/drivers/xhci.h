@@ -18,3 +18,5 @@
 int  XhciInit(void);
 /* Drain the event rings (timer tick, any CPU). */
 void XhciPoll(void);
+/* After waking from S3: restart the controller and enumerate again */
+void XhciResume(void);

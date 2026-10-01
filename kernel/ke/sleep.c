@@ -37,6 +37,8 @@
 #include "../hal/framebuffer.h"
 #include "../drivers/ahci.h"
 #include "../drivers/e1000.h"
+#include "../drivers/hda.h"
+#include "../drivers/xhci.h"
 #include "../lib/string.h"
 
 void UmClockAdvance(UINT64 delta_100ns);
@@ -312,6 +314,8 @@ bool SleepEnter(void)
     AcpiResume();
     AhciResume();
     E1000Resume();
+    XhciResume();
+    HdaResume();
     ps2_resume();
     FbResume();
     /* The wall clock follows the tick count; add what the ticks missed
