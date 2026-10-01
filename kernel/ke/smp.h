@@ -36,7 +36,11 @@ void bkl_acquire(void);
 void bkl_release(void);
 void bkl_acquire_boot(void);   /* a starting CPU's first: never enables interrupts */
 void bkl_leave_kernel(void);   /* on the way to user mode: drop it however deep */
-bool bkl_held(void);           /* by the calling thread */
+bool bkl_held(void);
+/* Long work that needs no big lock (the program loader's copying): let go
+ * of it however deep, then take it back to that depth. */
+uint32_t bkl_drop(void);
+void     bkl_restore(uint32_t depth);           /* by the calling thread */
 /* The scheduler (interrupts off): @t is switched out / back in */
 void bkl_switch_out(struct Thread *t);
 void bkl_switch_in(struct Thread *t);

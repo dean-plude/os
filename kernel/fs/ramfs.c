@@ -125,7 +125,7 @@ RamNode *RamfsCreate(RamNode *dir, const char *name, bool is_dir)
 
 bool RamfsWrite(RamNode *f, const char *data, UINT32 len)
 {
-    if (!f || f->dir || len > RAMFS_FILE_MAX) return false;
+    if (!f || f->dir || f->pins || len > RAMFS_FILE_MAX) return false;
     char *buf = NULL;
     if (len) {
         buf = kmalloc(len);
@@ -159,7 +159,7 @@ static bool reserve(RamNode *f, UINT32 need)
 
 bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
 {
-    if (!f || f->dir || off > RAMFS_FILE_MAX || len > RAMFS_FILE_MAX - off) return false;
+    if (!f || f->dir || f->pins || off > RAMFS_FILE_MAX || len > RAMFS_FILE_MAX - off) return false;
     if (!reserve(f, off + len)) return false;
     if (off > f->size) memset(f->data + f->size, 0, off - f->size);
     memcpy(f->data + off, data, len);
@@ -171,7 +171,7 @@ bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
 
 bool RamfsResize(RamNode *f, UINT32 len)
 {
-    if (!f || f->dir || !reserve(f, len)) return false;
+    if (!f || f->dir || f->pins || !reserve(f, len)) return false;
     if (len > f->size) memset(f->data + f->size, 0, len - f->size);
     f->size = len;
     mark(f, RAMFS_F_DIRTY);
@@ -181,6 +181,8 @@ bool RamfsResize(RamNode *f, UINT32 len)
 
 void RamfsRef(RamNode *n)   { if (n) n->refs++; }
 void RamfsUnref(RamNode *n) { if (n && n->refs > 0) n->refs--; }
+void RamfsPin(RamNode *f)   { if (f) { f->refs++; f->pins++; } }
+void RamfsUnpin(RamNode *f) { if (f && f->pins > 0) { f->pins--; RamfsUnref(f); } }
 
 bool RamfsDelete(RamNode *n)
 {

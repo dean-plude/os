@@ -151,6 +151,26 @@ void bkl_leave_kernel(void)
     irq_restore(s);
 }
 
+uint32_t bkl_drop(void)
+{
+    IrqState s = irq_save();
+    Thread *t = me();
+    uint32_t depth = t->bkl_depth;
+    if (depth) { t->bkl_depth = 0; raw_unlock(); }
+    irq_restore(s);
+    return depth;
+}
+
+void bkl_restore(uint32_t depth)
+{
+    if (!depth) return;
+    IrqState s = irq_save();
+    Thread *t = me();
+    raw_lock(true);
+    t->bkl_depth = depth;
+    irq_restore(s);
+}
+
 bool bkl_held(void)
 {
     Thread *t = me();

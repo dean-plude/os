@@ -452,6 +452,16 @@ WoW64 layer.
   - the list, and what each service relies on, is in `um_syscall.c`
     (`um_lock_free_init`); files, the registry, process creation, the
     console and the loader still use the big lock.
+  - the program loader holds `DesktopLock` only to look a module's file
+    up: the file is then pinned (`RamfsPin`: its contents stay put, and
+    writes to it fail, as Windows refuses writes to a mapped image) and
+    copied, relocated, bound and committed without it, and without the
+    big lock (`bkl_drop`; the work touches only the heap, the page
+    allocator and the new image's address space); `LoadLibrary`
+    serializes on a per-process loader lock instead.  Programs started from the Terminal,
+    Explorer, `start` or the desktop are loaded on a worker thread
+    (`UmSpawnStart`), so starting `node.exe` (90 MB) or loading CoreCLR
+    no longer freezes the desktop for seconds.
 - Waits are woken, not polled: `SetEvent`, `ReleaseSemaphore`, a thread or
   process ending, a message arriving or network data coming in wakes the
   waiting threads at once (wait queues, `ke/waitq.c`), and `select()` waits

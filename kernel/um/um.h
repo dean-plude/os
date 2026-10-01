@@ -40,6 +40,18 @@ RamNode   *UmFindProgram(RamNode *cwd, const char *name);
  * at end of file).  NULL with @err set on failure. */
 UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
                    char *err, int err_cap);
+/* UmSpawn without waiting (from the desktop thread, under the desktop
+ * lock): the program is mapped on a worker thread.  Poll with UmSpawnPoll
+ * until it returns true (then *proc is the process, or NULL with @err set;
+ * the job is gone); UmSpawnAbandon gives up on it (the process is ended
+ * if it started).  NULL if out of memory. */
+typedef struct UmSpawnJob UmSpawnJob;
+UmSpawnJob *UmSpawnStart(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con);
+bool        UmSpawnPoll(UmSpawnJob *j, UmProcess **proc, char *err, int err_cap);
+void        UmSpawnAbandon(UmSpawnJob *j);
+/* Start a program to run on its own (UmSpawn + UmDetach) without waiting
+ * for it to load; a failure is logged.  False if out of memory. */
+bool        UmSpawnDetached(RamNode *exe, const char *cmdline, RamNode *cwd);
 /* Ask the process to end with @status (it stops at its next kernel exit). */
 void       UmKill(UmProcess *p, UINT32 status);
 /* True once the process has exited; *status gets its exit code and

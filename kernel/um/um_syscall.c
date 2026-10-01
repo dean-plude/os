@@ -1546,6 +1546,23 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     UmProcess *c = NULL;
     if (!o) st = ST_NO_MEMORY;
     DesktopLock();                                  /* lock order: desktop, then process */
+    RamNode *exe = st ? NULL : RamfsResolve(NULL, ip);
+    RamNode *cwd = dp[0] ? RamfsResolve(NULL, dp) : p->cwd;
+    if (!cwd || !cwd->dir) cwd = p->cwd;
+    if (!st && (!exe || exe->dir)) st = ST_OBJECT_NAME_NOT_FOUND;
+    /* Map the images first, letting go of the desktop lock meanwhile (the
+     * program stays pinned, the folder referenced) */
+    bool pinned = false;
+    if (!st) {
+        RamfsPin(exe);
+        RamfsRef(cwd);
+        pinned = true;
+        c = um_spawn_image(exe, cwd, (flags & NCP_NO_CONSOLE) ? NULL : p->con, true, err, sizeof(err));
+        if (!c) {
+            kprintf("[UM] %s (PID %u): CreateProcess(%s) failed: %s\n", p->name, p->pid, image, err);
+            st = strstr(err, "not found") ? 0xC0000135u : strstr(err, "memory") ? ST_NO_MEMORY : 0xC000007Bu;
+        }
+    }
     um_lock(&p->lock);                              /* the handles stay put while they are copied */
     UmSpawnOpts opts;
     UmHandle std[3];
@@ -1565,18 +1582,15 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     opts.env_len = env_len;
     opts.runtime = rt;
     opts.runtime_len = rt ? rt_len : 0;
-    RamNode *exe = st ? NULL : RamfsResolve(NULL, ip);
-    RamNode *cwd = dp[0] ? RamfsResolve(NULL, dp) : p->cwd;
-    if (!st && (!exe || exe->dir)) st = ST_OBJECT_NAME_NOT_FOUND;
     if (!st) {
-        c = um_spawn_ex(exe, cmd, cwd && cwd->dir ? cwd : p->cwd, (flags & NCP_NO_CONSOLE) ? NULL : p->con,
-                        &opts, err, sizeof(err));
+        c = um_spawn_finish(c, exe, cmd, &opts, err, sizeof(err));
         if (!c) {
             kprintf("[UM] %s (PID %u): CreateProcess(%s) failed: %s\n", p->name, p->pid, image, err);
-            st = strstr(err, "not found") ? 0xC0000135u : strstr(err, "memory") ? ST_NO_MEMORY : 0xC000007Bu;
+            st = strstr(err, "memory") ? ST_NO_MEMORY : 0xC000007Bu;
         }
     }
     um_unlock(&p->lock);
+    if (pinned) { RamfsUnpin(exe); RamfsUnref(cwd); }
     DesktopUnlock();
     kfree(cmd);
     kfree(env);

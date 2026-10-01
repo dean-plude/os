@@ -27,6 +27,7 @@
 #include "../fs/persist.h"
 #include "../arch/x86_64/idt.h"
 #include "um_internal.h"
+#include "../ke/scheduler.h"
 #include "../ke/probe.h"
 #include "../ke/printf.h"
 #include "../ke/kpcr.h"
@@ -575,6 +576,10 @@ typedef struct {
     int        err_cap;
     bool       data;                /* LoadLibraryEx(LOAD_LIBRARY_AS_DATAFILE / AS_IMAGE_RESOURCE) */
     RamNode   *dep_dir;             /* the folder of the module whose imports are being loaded */
+    bool       plock;               /* runs under p->lock (a running process): dropped for file lookups */
+    UINT32     bkl;                 /* the big lock's depth, let go of while loading (0: not) */
+    RamNode   *pins[UM_MAX_MODULES];/* the files being loaded, pinned until the loader is done */
+    int        npins;
 } Loader;
 
 static UINT16 rd16(const UINT8 *b) { return (UINT16)(b[0] | b[1] << 8); }
@@ -833,6 +838,31 @@ static bool il_only(const UINT8 *f, UINT32 fsz, const UINT8 *sec, int nsec, UINT
 }
 
 /* Load @file (or the DLL @name when file is NULL); returns the module index. */
+/* Find a module's file (or take @file) and pin it, so its contents can be
+ * read without the desktop lock; its path and folder come along.  The
+ * loader holds the desktop lock only for this, so a large image does not
+ * stall the desktop while it is copied, relocated and bound.  Lock order is
+ * desktop, then process: a runtime load lets go of p->lock meanwhile (the
+ * process's loader lock keeps other loads out). */
+static RamNode *loader_file(Loader *L, RamNode *file, const char *name, char *path, int cap, RamNode **dir)
+{
+    UmProcess *p = L->p;
+    if (L->plock) um_unlock(&p->lock);
+    bkl_restore(L->bkl);                    /* the file system still wants it */
+    DesktopLock();
+    if (!file) file = find_dll(p, name, L->dep_dir);
+    if (file && L->npins < UM_MAX_MODULES) {
+        RamfsPin(file);
+        L->pins[L->npins++] = file;
+        RamfsPath(file, path, cap);
+        *dir = file->parent;
+    } else file = NULL;
+    DesktopUnlock();
+    if (L->bkl) bkl_drop();
+    if (L->plock) um_lock(&p->lock);
+    return file;
+}
+
 static int load_module(Loader *L, RamNode *file, const char *name, int depth)
 {
     UmProcess *p = L->p;
@@ -848,10 +878,10 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
     if (depth > 8) return fail(L, "Imports nested too deeply at %s", name);
     if (p->nmodules >= UM_MAX_MODULES) return fail(L, "Too many DLLs (at %s)", name);
 
-    if (!file) {
-        file = find_dll(p, strchr(name, '\\') || strchr(name, ':') ? name : lname, L->dep_dir);
-        if (!file) return fail(L, "The DLL %s was not found", name);
-    }
+    char fpath[sizeof(p->modules[0].path)];
+    RamNode *fdir = NULL;
+    file = loader_file(L, file, strchr(name, '\\') || strchr(name, ':') ? name : lname, fpath, sizeof(fpath), &fdir);
+    if (!file) return fail(L, "The DLL %s was not found", name);
     const UINT8 *f = (const UINT8 *)file->data;
     UINT32 fsz = file->size;
     if (fsz < 0x40 || rd16(f) != 0x5A4D) return fail(L, "%s is not a Windows program (no MZ header)", name);
@@ -937,10 +967,10 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
         kfree(im->img); im->img = NULL;
         return fail(L, "Too many memory regions loading %s", name);
     }
-    UmModule *mod = &p->modules[p->nmodules++];
+    UmModule *mod = &p->modules[p->nmodules];   /* counted once filled in (others read it) */
     memset(mod, 0, sizeof(*mod));
     strncpy(mod->name, lname, sizeof(mod->name) - 1);
-    RamfsPath(file, mod->path, sizeof(mod->path));
+    memcpy(mod->path, fpath, sizeof(mod->path));
     mod->base = base;
     mod->size = im->size;
     mod->entry = data ? 0 : rd32(oh + 16);
@@ -949,10 +979,11 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
         UINT64 reserve = pe32 ? rd32(oh + 72) : rd64(oh + 72);
         p->stack_reserve = (UINT32)(reserve > 0xFFFFFFFFu ? 0xFFFFFFFFu : reserve);
     }
+    __atomic_store_n(&p->nmodules, p->nmodules + 1, __ATOMIC_RELEASE);
 
     /* Imports (found in this module's folder too) */
     RamNode *outer_dir = L->dep_dir;
-    L->dep_dir = file->parent;
+    L->dep_dir = fdir;
     for (UINT32 d = data ? 0 : dirv[1]; d && d + 20 <= im->size; d += 20) {
         UINT32 ilt = rd32(im->img + d), nm = rd32(im->img + d + 12), iat = rd32(im->img + d + 16);
         if (!nm && !iat) break;
@@ -1016,6 +1047,11 @@ static Loader *loader_new(UmProcess *p, char *err, int err_cap)
 static void loader_free(Loader *L)
 {
     for (int i = 0; i < UM_MAX_MODULES; i++) kfree(L->img[i].img);
+    if (L->npins) {
+        DesktopLock();
+        for (int i = 0; i < L->npins; i++) RamfsUnpin(L->pins[i]);
+        DesktopUnlock();
+    }
     kfree(L);
 }
 
@@ -1072,10 +1108,14 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags)
     Loader *L = loader_new(p, err, sizeof(err));
     if (!L) return 0xC0000017u;
     L->data = (flags & 0x62) != 0;          /* LOAD_LIBRARY_AS_DATAFILE(_EXCLUSIVE), AS_IMAGE_RESOURCE */
-    DesktopLock();
+    L->plock = true;                        /* (not the desktop lock: see loader_file) */
+    um_lock(&p->ldr_lock);
     um_lock(&p->lock);
     int nmod = p->nmodules, ninit = p->ninit;
+    L->bkl = bkl_drop();                    /* copying a large image needs no big lock */
     int m = load_module(L, NULL, name, 1);
+    bkl_restore(L->bkl);
+    L->bkl = 0;
     UINT32 st = 0;
     if (m < 0) {
         kprintf("[UM] %s (PID %u): LoadLibrary(%s) failed: %s\n", p->name, p->pid, name, err);
@@ -1087,8 +1127,8 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags)
         if (!write_ldr_info(p, ninit) || !write_stubs(p)) st = 0xC0000017u;
     }
     um_unlock(&p->lock);
-    DesktopUnlock();
     loader_free(L);
+    um_unlock(&p->ldr_lock);
     return st;
 }
 
@@ -1584,6 +1624,16 @@ UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *c
 UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
                        const UmSpawnOpts *o, char *err, int err_cap)
 {
+    UmProcess *p = um_spawn_image(exe, cwd, con, false, err, err_cap);
+    return p ? um_spawn_finish(p, exe, cmdline, o, err, err_cap) : NULL;
+}
+
+/* A new process with its program and DLLs mapped (not yet running).
+ * @yield: the caller holds the desktop lock once and no process lock, and
+ * keeps @exe pinned and @cwd referenced; the lock is let go while the
+ * images load, so a large program does not stall the desktop. */
+UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield, char *err, int err_cap)
+{
     err[0] = '\0';
     UmProcess *p = kzalloc(sizeof(*p));
     if (!p) { ksnprintf(err, err_cap, "Out of memory"); return NULL; }
@@ -1602,6 +1652,8 @@ UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsol
     /* Map the program, ntdll (every process has it) and their imports */
     Loader *L = loader_new(p, err, err_cap);
     if (!L) { destroy(p); ksnprintf(err, err_cap, "Out of memory"); return NULL; }
+    if (yield) DesktopUnlock();              /* (the loader takes it for file lookups) */
+    L->bkl = bkl_drop();                     /* nor the big lock: the process is ours alone */
     int nt = load_module(L, NULL, "ntdll.dll", 1);
     int m = nt < 0 ? -1 : load_module(L, exe, exe->name, 0);
     UINT64 base = 0, entry = 0;
@@ -1611,7 +1663,10 @@ UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsol
         p->thread_start = find_export(L, nt, "RtlUserThreadStart", 0, 0);
         p->exc_dispatcher = find_export(L, nt, "KiUserExceptionDispatcher", 0, 0);
     }
+    bkl_restore(L->bkl);
+    L->bkl = 0;
     loader_free(L);
+    if (yield) DesktopLock();
     if (m < 0) { destroy(p); return NULL; }
     if (!entry || p->modules[m].dll) {
         destroy(p);
@@ -1619,6 +1674,17 @@ UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsol
         return NULL;
     }
     if (!p->thread_start) { destroy(p); ksnprintf(err, err_cap, "ntdll.dll is missing RtlUserThreadStart"); return NULL; }
+    p->image_base = base;
+    p->image_entry = entry;
+    return p;
+}
+
+/* Finish a process from um_spawn_image: environment, handles, first thread
+ * (under the caller's locks, as um_spawn_ex) */
+UmProcess *um_spawn_finish(UmProcess *p, RamNode *exe, const char *cmdline, const UmSpawnOpts *o,
+                           char *err, int err_cap)
+{
+    UINT64 base = p->image_base, entry = p->image_entry;
 
     char image_path[RAMFS_PATH_MAX], cwd_path[RAMFS_PATH_MAX];
     RamfsPath(exe, image_path, sizeof(image_path));
@@ -1885,6 +1951,107 @@ void UmRelease(UmProcess *p)
     if (!p) return;
     if (!p->exited) UmKill(p, 1);
     p->released = true;
+}
+
+/* -----------------------------------------------------------------------
+ * Starting a program without holding up the desktop: the images are
+ * mapped on a worker thread (which lets go of the desktop lock while it
+ * copies), and the desktop polls for the result.  All fields change under
+ * the desktop lock.
+ * ----------------------------------------------------------------------- */
+struct UmSpawnJob {
+    RamNode   *exe, *cwd;
+    UmConsole *con;
+    char      *cmdline;
+    UmProcess *proc;
+    char       err[160];
+    bool       done, abandoned, detached;
+};
+
+static void spawn_free(UmSpawnJob *j)
+{
+    RamfsUnpin(j->exe);
+    RamfsUnref(j->cwd);
+    UmConsoleRelease(j->con);
+    kfree(j->cmdline);
+    kfree(j);
+}
+
+/* Called with the desktop lock held once */
+static void spawn_run(UmSpawnJob *j, bool yield)
+{
+    UmProcess *p = um_spawn_image(j->exe, j->cwd, j->con, yield, j->err, sizeof(j->err));
+    if (p) p = um_spawn_finish(p, j->exe, j->cmdline, NULL, j->err, sizeof(j->err));
+    j->proc = p;
+    j->done = true;
+}
+
+static void spawn_thread(void *arg)
+{
+    UmSpawnJob *j = arg;
+    DesktopLock();
+    spawn_run(j, true);
+    if (j->detached) {                      /* runs on its own */
+        if (j->proc) UmDetach(j->proc);
+        else kprintf("[UM] Cannot start %s: %s\n", j->exe->name, j->err);
+        spawn_free(j);
+    } else if (j->abandoned) {              /* nobody is waiting any more */
+        UmRelease(j->proc);
+        spawn_free(j);
+    }
+    DesktopUnlock();
+}
+
+static UmSpawnJob *spawn_start(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con, bool detached)
+{
+    UmSpawnJob *j = kzalloc(sizeof(*j));
+    if (!j) return NULL;
+    j->cmdline = kmalloc(strlen(cmdline) + 1);
+    if (!j->cmdline) { kfree(j); return NULL; }
+    strcpy(j->cmdline, cmdline);
+    j->exe = exe;
+    j->cwd = cwd ? cwd : RamfsRoot();
+    j->con = um_console_ref(con);
+    j->detached = detached;
+    RamfsPin(exe);
+    RamfsRef(j->cwd);
+    if (!sched_create_thread_ex("spawn", spawn_thread, j, 8, 64 * 1024)) {
+        DesktopLock();                      /* no thread: start it here */
+        spawn_run(j, false);
+        DesktopUnlock();
+        if (detached) {
+            if (j->proc) UmDetach(j->proc);
+            spawn_free(j);
+            return (UmSpawnJob *)1;         /* (UmSpawnDetached only tests it) */
+        }
+    }
+    return j;
+}
+
+UmSpawnJob *UmSpawnStart(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con)
+{
+    return spawn_start(exe, cmdline, cwd, con, false);
+}
+
+bool UmSpawnDetached(RamNode *exe, const char *cmdline, RamNode *cwd)
+{
+    return spawn_start(exe, cmdline, cwd, NULL, true) != NULL;
+}
+
+bool UmSpawnPoll(UmSpawnJob *j, UmProcess **proc, char *err, int err_cap)
+{
+    if (!j->done) return false;
+    *proc = j->proc;
+    if (err) { strncpy(err, j->err, (size_t)err_cap - 1); err[err_cap - 1] = '\0'; }
+    spawn_free(j);
+    return true;
+}
+
+void UmSpawnAbandon(UmSpawnJob *j)
+{
+    if (!j) return;
+    if (j->done) { UmRelease(j->proc); spawn_free(j); }
+    else j->abandoned = true;
 }
 
 void UmDetach(UmProcess *p)

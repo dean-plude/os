@@ -62,6 +62,7 @@ typedef struct {
     char    urls[8][256];      /* curl/wget: several URLs, fetched in turn */
     int     nurls, cur;
     UmProcess *proc;           /* JOB_PROC: a Windows program in this console */
+    UmSpawnJob *starting;      /* JOB_PROC: being loaded (proc is NULL until then) */
     UmConsole *con;
     bool    open_line;         /* the last line is the program's unfinished line */
     int     col;               /* its output column (after '\r') */
@@ -436,7 +437,7 @@ static void cmd_start(Term *t, int argc, char **argv)
     }
     RamNode *exe = argc >= 2 && !AppByName(argv[1], &id) ? UmFindProgram(t->cwd, argv[1]) : NULL;
     if (exe) {                                   /* a Windows program, detached from the terminal */
-        char line[512], err[160];
+        char line[512];
         int n = 0;
         for (int i = 1; i < argc && n < (int)sizeof(line) - 4; i++) {
             bool q = strchr(argv[i], ' ') != NULL;
@@ -446,9 +447,7 @@ static void cmd_start(Term *t, int argc, char **argv)
             if (q) line[n++] = '"';
         }
         line[n] = '\0';
-        UmProcess *p = UmSpawn(exe, line, t->cwd, NULL, err, sizeof(err));
-        if (p) UmDetach(p);
-        else terr(t, err);
+        if (!UmSpawnDetached(exe, line, t->cwd)) terr(t, "Not enough memory.");
         return;
     }
     if (argc < 2 || !AppByName(argv[1], &id)) {
@@ -504,6 +503,7 @@ static void job_end(Term *t)
     done_mark();
     NetRelease(t->job.op);
     if (t->job.proc) UmRelease(t->job.proc);          /* (kills it if still running) */
+    UmSpawnAbandon(t->job.starting);
     if (t->job.con) UmConsoleRelease(t->job.con);
     memset(&t->job, 0, sizeof(t->job));
 }
@@ -728,6 +728,14 @@ static bool term_tick(WND *w)
     if (j->kind == JOB_PROC) {
         static char buf[4096];
         bool changed = false;
+        if (j->starting) {                             /* still loading (on a worker thread) */
+            char err[160];
+            UmProcess *p;
+            if (!UmSpawnPoll(j->starting, &p, err, sizeof(err))) return false;
+            j->starting = NULL;
+            if (!p) { terr(t, err); job_end(t); return true; }
+            j->proc = p;
+        }
         for (int rounds = 0; rounds < 16; rounds++) {  /* keep the UI responsive */
             int n = UmConsoleRead(j->con, buf, sizeof(buf));
             if (!n) break;
@@ -910,10 +918,11 @@ static bool start_program(Term *t, RamNode *exe, const char *cmdline)
     memset(j, 0, sizeof(*j));
     j->con = UmConsoleNew();
     if (!j->con) { terr(t, "Not enough memory."); return true; }
-    char err[160];
-    j->proc = UmSpawn(exe, cmdline, t->cwd, j->con, err, sizeof(err));
-    if (!j->proc) {
-        terr(t, err);
+    /* mapped on a worker thread, so a large program does not hold up the
+     * desktop; term_tick picks the process up */
+    j->starting = UmSpawnStart(exe, cmdline, t->cwd, j->con);
+    if (!j->starting) {
+        terr(t, "Not enough memory.");
         job_end(t);
         return true;
     }
@@ -1344,6 +1353,7 @@ static void term_key(WND *w, const KeyEvent *k)
         Job *j = &t->job;
         if (k->ctrl && k->ch == 'c') {
             proc_output(t, "^C\n", 3);
+            if (!j->proc) { job_end(t); return; }      /* still starting: give up on it */
             UmKill(j->proc, 0xC000013A);
             UmKillConsole(j->con, 0xC000013A);     /* and what it started (cmd.exe's programs) */
             return;

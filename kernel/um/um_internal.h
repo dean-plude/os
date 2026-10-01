@@ -166,6 +166,8 @@ struct UmProcess {
     RamNode    *exe_dir;        /* searched for DLLs before System32 */
     UmConsole  *con;
     UmLock      lock;           /* handles, regions, modules, threads */
+    UmLock      ldr_lock;       /* one runtime DLL load at a time (taken before the desktop lock) */
+    UINT64      image_base, image_entry;   /* the program's, between um_spawn_image and _finish */
 
     UmHandle    handles[UM_MAX_HANDLES];
     UmRegion   *regions;        /* [UM_MAX_REGIONS], allocated with the process */
@@ -293,6 +295,11 @@ typedef struct {
 } UmSpawnOpts;
 UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
                        const UmSpawnOpts *o, char *err, int err_cap);
+/* um_spawn_ex in two steps: map the images (with @yield, the desktop lock
+ * is let go meanwhile; see um.c), then finish under the caller's locks */
+UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield, char *err, int err_cap);
+UmProcess *um_spawn_finish(UmProcess *p, RamNode *exe, const char *cmdline, const UmSpawnOpts *o,
+                           char *err, int err_cap);
 /* A path from OBJECT_ATTRIBUTES (UTF-8, NT prefix removed); *attrs gets
  * its Attributes (OBJ_INHERIT...) */
 UINT32     um_get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, UINT32 *attrs);
