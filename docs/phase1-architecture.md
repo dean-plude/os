@@ -1,5 +1,12 @@
 # NovaOS — Phase 1 Architecture Document
 
+> **Historical document.**  This describes the kernel as Phase 1 left it:
+> the boot flow and address-space layout are still accurate, but much else
+> has changed since (SMP with per-core run queues, a 32-bit user code
+> segment for WoW64, the user-mode loader in `kernel/um/`).  For the
+> current system see the [README](../README.md),
+> [HISTORY.md](HISTORY.md) and [building.md](building.md).
+
 ## Overview
 
 Phase 1 implements the foundational layer: UEFI boot, physical and virtual
@@ -283,16 +290,18 @@ gdb build/kernel.elf \
 
 ## Known Limitations (Phase 1)
 
-| Component | Status | Phase |
-|-----------|--------|-------|
-| Object Manager | Not implemented | 2 |
-| NT Syscall dispatcher | Stub only | 2 |
-| Registry | Not implemented | 2 |
-| IRP-based I/O | Not implemented | 3 |
-| NTFS driver | Not implemented | 3 |
-| PE loader | Not implemented | 4 |
-| Win32 API (kernel32, ntdll) | Not implemented | 4 |
-| Window Manager / GDI | Not implemented | 5 |
-| Winsock / TCP stack | Not implemented | 6 |
-| SMP (multi-core) | Single CPU only | 6 |
-| 32-bit WoW64 | Not planned | — |
+Everything Phase 1 left out has since been built, except NTFS:
+
+| Component | At Phase 1 | Landed in |
+|-----------|------------|-----------|
+| Object Manager | Not implemented | Phase 2 |
+| NT syscall dispatcher | Stub only | Phase 2 (table), Phase 9 (real services) |
+| Registry | Not implemented | Phase 2 (bootstrap), Phase 10 (real, saved to disk) |
+| IRP-based I/O | Not implemented | Phase 3 |
+| NTFS driver | Not implemented | Not yet (drive C: is FAT; see [ROADMAP.md](ROADMAP.md)) |
+| PE loader | Not implemented | Phase 3, ring 3 in Phase 9 |
+| Win32 API (kernel32, ntdll) | Not implemented | Phase 9 onward |
+| Window Manager / GDI | Not implemented | Phase 7, Win32 window system in Phase 12 |
+| Winsock / TCP stack | Not implemented | Phase 8 (lwIP), Phase 9 (ws2_32) |
+| SMP (multi-core) | Single CPU only | Phase 11 |
+| 32-bit WoW64 | Not planned | Phase 13 |
