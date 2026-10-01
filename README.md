@@ -284,6 +284,8 @@ os/
 
 - [docs/building.md](docs/building.md): building, running, the data disk,
   tests, debugging.
+- [docs/macos.md](docs/macos.md): running and building on a Mac (Apple
+  Silicon and Intel).
 - [docs/ROADMAP.md](docs/ROADMAP.md): the compatibility strategy and what
   comes next.
 - [docs/HISTORY.md](docs/HISTORY.md): what every phase added, in detail.

@@ -3,7 +3,7 @@
 ## Prerequisites
 
 The build host is Linux (Ubuntu/Debian here); on Windows use WSL2 or a
-Linux VM.
+Linux VM.  On a Mac, see [macos.md](macos.md).
 
 ```bash
 sudo apt update
