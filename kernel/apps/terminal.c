@@ -231,6 +231,7 @@ static void cmd_dir(Term *t, const char *arg)
     RamNode *d = arg ? RamfsResolve(t->cwd, arg) : t->cwd;
     if (!d) { terr(t, "The system cannot find the path specified."); return; }
     if (!d->dir) { d = d->parent; }
+    if (!RamfsLoad(d)) { terr(t, "The disk could not be read."); return; }
     char path[RAMFS_PATH_MAX];
     RamfsPath(d, path, sizeof(path));
     tprintf(t, " Directory of %s\n", path);
@@ -265,10 +266,13 @@ static void cmd_type(Term *t, const char *arg)
     if (!arg) { terr(t, "The syntax of the command is incorrect."); return; }
     RamNode *f = RamfsResolve(t->cwd, arg);
     if (!f || f->dir) { terr(t, "The system cannot find the file specified."); return; }
+    RamfsRef(f);                            /* (a file on another drive is read in meanwhile) */
+    if (!RamfsLoad(f)) { RamfsUnref(f); terr(t, "The file could not be read."); return; }
     char *buf = kmalloc(f->size + 1);
-    if (!buf) { terr(t, "Not enough memory."); return; }
+    if (!buf) { RamfsUnref(f); terr(t, "Not enough memory."); return; }
     memcpy(buf, f->data, f->size);
     buf[f->size] = '\0';
+    RamfsUnref(f);
     tprint(t, buf);
     kfree(buf);
 }
@@ -348,7 +352,10 @@ static void cmd_copy(Term *t, const char *src, const char *dst)
     if (out == f) { terr(t, "The file cannot be copied onto itself."); return; }
     if (out && out->dir) { terr(t, "A folder with that name is in the way."); return; }
     if (!out) out = RamfsCreate(dir, name, false);
-    if (!out || !RamfsWrite(out, f->data, f->size)) { terr(t, "Could not write the copy."); return; }
+    RamfsRef(f);                            /* (a file on another drive is read in meanwhile) */
+    bool ok = out && RamfsLoad(f) && RamfsWrite(out, f->data, f->size);
+    RamfsUnref(f);
+    if (!ok) { terr(t, "Could not write the copy."); return; }
     tprint(t, "        1 file(s) copied.");
 }
 
@@ -569,7 +576,7 @@ static void cmd_certutil(Term *t, int argc, char **argv)
             return;
         }
         RamNode *f = RamfsResolve(t->cwd, argv[3]);
-        if (!f || f->dir) { terr(t, "The system cannot find the file specified."); return; }
+        if (!f || f->dir || RamfsReadOnly(f)) { terr(t, "The system cannot find the file specified."); return; }
         char err[80];
         int n = NetImportRoots(f->data, f->size, err, sizeof(err));
         if (!n) { tprintf(t, "CertUtil: -addstore command FAILED: %s", err); return; }

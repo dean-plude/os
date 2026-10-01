@@ -31,6 +31,7 @@ VOID NTAPI RtlInitUnicodeString(PUNICODE_STRING s, PCWSTR w);
 #define ST_SUCCESS               ((NTSTATUS)0x00000000)
 #define ST_BUFFER_TOO_SMALL      ((NTSTATUS)0xC0000023)
 #define ST_INVALID_PARAMETER     ((NTSTATUS)0xC000000D)
+#define ST_ACCESS_DENIED         ((NTSTATUS)0xC0000022)
 #define ST_INVALID_INFO_CLASS    ((NTSTATUS)0xC0000003)
 #define ST_INFO_LENGTH_MISMATCH  ((NTSTATUS)0xC0000004)
 #define ST_NO_TOKEN              ((NTSTATUS)0xC000007C)
@@ -561,22 +562,74 @@ NTSYSAPI NTSTATUS NTAPI NtPrivilegeCheck(HANDLE t, PPRIVILEGE_SET set, PBOOLEAN 
     return ST_SUCCESS;
 }
 
+/* Whether the token holds @sid: its user and enabled groups, and for deny
+ * ACEs also the groups only used for denying (Administrators: not elevated) */
+static BOOL token_holds(PSID sid, BOOL deny)
+{
+    const BYTE *on[] = { g_user_sid, g_everyone_sid, g_users_sid, g_interactive_sid, g_auth_users_sid, g_logon_sid };
+    for (unsigned i = 0; i < sizeof(on) / sizeof(on[0]); i++)
+        if (RtlEqualSid(sid, (PSID)on[i])) return TRUE;
+    return deny && RtlEqualSid(sid, (PSID)g_admins_sid);
+}
+
+static ACCESS_MASK map_generic(ACCESS_MASK m, PGENERIC_MAPPING map)
+{
+    if (!map) return m & 0x10000000u ? 0x001FFFFFu | (m & 0x0FFFFFFFu) : m;   /* GENERIC_ALL: every right */
+    if (m & 0x80000000u) m |= map->GenericRead;
+    if (m & 0x40000000u) m |= map->GenericWrite;
+    if (m & 0x20000000u) m |= map->GenericExecute;
+    if (m & 0x10000000u) m |= map->GenericAll;
+    return m & 0x0FFFFFFFu;
+}
+
+/* The DACL decides, as on Windows: no DACL grants everything, an empty one
+ * nothing; the ACEs are taken in order, and each whose SID the token holds
+ * grants its rights unless an earlier one denied them, or denies its
+ * rights unless an earlier one granted them.  The owner always may read
+ * and change the DACL.  MAXIMUM_ALLOWED asks for whatever is granted. */
 NTSYSAPI NTSTATUS NTAPI NtAccessCheck(PSECURITY_DESCRIPTOR sd, HANDLE token, ACCESS_MASK want, PGENERIC_MAPPING map,
                                       PPRIVILEGE_SET privs, PULONG privs_len, PACCESS_MASK granted, PNTSTATUS status)
 {
-    (void)sd; (void)token;
-    ACCESS_MASK m = want;
-    if (m & 0x02000000) m = (m & ~0x02000000u) | 0x10000000;           /* MAXIMUM_ALLOWED */
-    if (map) {
-        if (m & 0x80000000u) m |= map->GenericRead;
-        if (m & 0x40000000u) m |= map->GenericWrite;
-        if (m & 0x20000000u) m |= map->GenericExecute;
-        if (m & 0x10000000u) m |= map->GenericAll;
-        m &= 0x0FFFFFFFu;
-    }
+    (void)token;
+    if (!sd || !granted || !status) return ST_INVALID_PARAMETER;
     if (privs && privs_len && *privs_len >= sizeof(PRIVILEGE_SET)) privs->PrivilegeCount = 0;
-    *granted = m;
-    *status = ST_SUCCESS;
+    BOOL max = (want & 0x02000000u) != 0;
+    ACCESS_MASK m = map_generic(want & ~0x03000000u, map);              /* (ACCESS_SYSTEM_SECURITY: not checked) */
+    ACCESS_MASK all = map ? map->GenericAll : 0x001FFFFFu;
+
+    BOOLEAN present = FALSE, def;
+    PACL dacl = 0;
+    RtlGetDaclSecurityDescriptor(sd, &present, &dacl, &def);
+    if (!present || !dacl) {
+        *granted = max ? all | m : m;
+        *status = ST_SUCCESS;
+        return ST_SUCCESS;
+    }
+    ACCESS_MASK allowed = 0, denied = 0;
+    PSID owner = 0;
+    RtlGetOwnerSecurityDescriptor(sd, &owner, &def);
+    if (owner && token_holds(owner, FALSE)) allowed = 0x00060000u;      /* READ_CONTROL | WRITE_DAC */
+    const BYTE *p = (const BYTE *)(dacl + 1), *end = (const BYTE *)dacl + dacl->AclSize;
+    for (USHORT i = 0; i < dacl->AceCount; i++) {
+        const ACE_HEADER *h = (const ACE_HEADER *)p;
+        if (p + sizeof(ACE_HEADER) > end || h->AceSize < 16 || p + h->AceSize > end) break;
+        p += h->AceSize;
+        if (h->AceFlags & 0x08) continue;                               /* INHERIT_ONLY_ACE: for children */
+        if (h->AceType > 1) continue;                                   /* not ACCESS_ALLOWED / ACCESS_DENIED */
+        const ACCESS_ALLOWED_ACE *ace = (const ACCESS_ALLOWED_ACE *)h;
+        PSID sid = (PSID)&ace->SidStart;
+        if (8u + 4u * ((const BYTE *)sid)[1] > h->AceSize - 8u || !token_holds(sid, h->AceType == 1)) continue;
+        ACCESS_MASK am = map_generic(ace->Mask, map);
+        if (h->AceType == 0) allowed |= am & ~denied;
+        else denied |= am & ~allowed;
+    }
+    if (m & ~allowed) {
+        *granted = 0;
+        *status = ST_ACCESS_DENIED;
+    } else {
+        *granted = max ? allowed | m : m;
+        *status = max && !*granted ? ST_ACCESS_DENIED : ST_SUCCESS;
+    }
     return ST_SUCCESS;
 }
 

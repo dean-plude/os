@@ -32,8 +32,8 @@ The details of each phase are in [HISTORY.md](HISTORY.md).
 
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
 NovaOS's own clean-room code); there is no GPU, 3D or audio support; drive
-C: is FAT, so there are no NTFS volumes, hard links or ACL enforcement on
-files; and most of the App Store's catalog (Qt, GTK and
+C: is FAT, so there are no hard links or ACL enforcement on files (NTFS
+disks can be read, as drives D:, E:, ...); and most of the App Store's catalog (Qt, GTK and
 multimedia programs) does not run yet.
 
 ---
@@ -100,10 +100,12 @@ named program or test demonstrates it.
 - Interactive MSYS2 `sh` sessions (only `sh -c` and scripts are tested).
 - Move files, the registry, process creation and the console off the big
   kernel lock.
-- Security: enforce tokens and ACLs that the security APIs already model.
+- Security: enforce tokens and ACLs on objects (`AccessCheck` already
+  evaluates the DACLs it is given).
 
 ### Storage, network and hardware
-- NTFS (read first), NVMe.
+- ~~NTFS read~~ Done: NTFS volumes mount read-only as drives D:, E:, ...;
+  NTFS write, NVMe.
 - IPv6, HTTP/2.
 - USB (xHCI) with HID keyboards and mice, for real hardware without PS/2.
 - ACPI beyond the MADT: power management, proper shutdown and reboot on

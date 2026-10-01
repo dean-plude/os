@@ -124,6 +124,8 @@ set(KERNEL_C_SOURCES
     drivers/ahci.c
     fs/block.c
     fs/fat.c
+    fs/ntfs.c
+    fs/drives.c
     fs/persist.c
     fs/setup.c
     net/net.c

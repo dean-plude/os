@@ -639,6 +639,17 @@ static UINT64 sys_query_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
     if (a1 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_INVALID_HANDLE;
+    if (a2 == 23) {                                            /* ProcessDeviceMap: the drive letters */
+        if (a4 < 36) return ST_INFO_LENGTH_MISMATCH;
+        UINT8 b[36];
+        memset(b, 0, sizeof(b));
+        UINT32 map = RamfsDriveMask();
+        memcpy(b, &map, 4);
+        for (int i = 0; i < 26; i++) if (map & (1u << i)) b[4 + i] = 3;   /* DRIVE_FIXED */
+        if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, sizeof(b)))) return ST_ACCESS_VIOLATION;
+        UINT64 ret = um_stack_arg(5);
+        return !ret || put_u32(ret, 36) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
+    }
     if (a2 != 0) return ST_INVALID_INFO_CLASS;                 /* ProcessBasicInformation */
     if (a4 < 48) return ST_INFO_LENGTH_MISMATCH;
     UINT64 b[6] = { ST_STILL_ACTIVE, p->lay.peb, 1, 8, p->pid, 0 };

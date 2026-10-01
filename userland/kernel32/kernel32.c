@@ -131,8 +131,8 @@ int full_path(const char *name, char *out, int cap)
     if (((name[0] | 0x20) >= 'a' && (name[0] | 0x20) <= 'z') && name[1] == ':') {
         tmp[n++] = (char)(name[0] & ~0x20); tmp[n++] = ':'; tmp[n++] = '\\';
         name += 2;
-    } else if (name[0] == '\\' || name[0] == '/') {
-        tmp[n++] = 'C'; tmp[n++] = ':'; tmp[n++] = '\\';
+    } else if (name[0] == '\\' || name[0] == '/') {         /* rooted: on the current directory's drive */
+        tmp[n++] = cwd()[0]; tmp[n++] = ':'; tmp[n++] = '\\';
     } else {
         const char *c = cwd();
         while (*c && n < (int)sizeof(tmp) - 2) tmp[n++] = *c++;

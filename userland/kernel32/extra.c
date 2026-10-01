@@ -1573,9 +1573,49 @@ WINBASEAPI DWORD WINAPI GetLongPathNameA(LPCSTR s, LPSTR l, DWORD n)    { return
 WINBASEAPI DWORD WINAPI GetShortPathNameA(LPCSTR s, LPSTR l, DWORD n)   { return put_a(s, l, n); }
 
 
+/* The drives there are (bit 2: C:), from the kernel's device map */
+static DWORD drive_map(void)
+{
+    BYTE b[36];
+    return NT_SUCCESS(NtQueryInformationProcess(GetCurrentProcess(), 23 /* ProcessDeviceMap */, b, sizeof(b), 0))
+           ? *(DWORD *)b : 1u << 2;
+}
+
+/* The drive letter a root path ("D:\", "d:"; none: the current
+ * directory's) names, 0 for none or C: */
+static WCHAR other_drive(LPCWSTR root)
+{
+    WCHAR c;
+    if (!root) c = (WCHAR)(cwd()[0] & ~0x20);
+    else if (root[0] && root[1] == ':') c = root[0] & ~0x20;
+    else return 0;
+    return c >= 'A' && c <= 'Z' && c != 'C' ? c : 0;
+}
+
+/* FS_INFORMATION_CLASS @cls of drive @letter's volume (D:, ...: read-only volumes on disk) */
+static BOOL volume_query(WCHAR letter, ULONG cls, void *buf, ULONG len)
+{
+    WCHAR path[] = { letter, ':', '\\', 0 };
+    HANDLE h = CreateFileW(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0x02000000 /* FILE_FLAG_BACKUP_SEMANTICS */, 0);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    IO_STATUS_BLOCK io;
+    NTSTATUS st = NtQueryVolumeInformationFile(h, &io, buf, len, cls);
+    CloseHandle(h);
+    if (!NT_SUCCESS(st)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return TRUE;
+}
+
 WINBASEAPI BOOL WINAPI GetDiskFreeSpaceExW(LPCWSTR dir, PULARGE_INTEGER avail, PULARGE_INTEGER total, PULARGE_INTEGER free)
 {
-    (void)dir;
+    WCHAR d = other_drive(dir);
+    if (d) {                                /* FileFsSizeInformation: read-only, so none free */
+        LONGLONG sz[3];
+        if (!volume_query(d, 3, sz, 24)) return FALSE;
+        if (avail) avail->QuadPart = 0;
+        if (free) free->QuadPart = 0;
+        if (total) total->QuadPart = (ULONGLONG)sz[0] * (ULONG)(sz[2] >> 32) * (ULONG)sz[2];
+        return TRUE;
+    }
     MEMORYSTATUSEX ms;
     ms.dwLength = sizeof(ms);
     ULONGLONG f = GlobalMemoryStatusEx(&ms) ? ms.ullAvailPhys : 256ULL << 20;   /* drive C: lives in RAM */
@@ -1585,16 +1625,41 @@ WINBASEAPI BOOL WINAPI GetDiskFreeSpaceExW(LPCWSTR dir, PULARGE_INTEGER avail, P
     return TRUE;
 }
 
+/* A short ANSI root path ("D:\") as UTF-16 */
+static LPCWSTR root_w(LPCSTR root, WCHAR *w)
+{
+    if (!root) return 0;
+    int i = 0;
+    for (; i < 3 && root[i]; i++) w[i] = (BYTE)root[i];
+    w[i] = 0;
+    return w;
+}
+
 WINBASEAPI BOOL WINAPI GetDiskFreeSpaceExA(LPCSTR dir, PULARGE_INTEGER avail, PULARGE_INTEGER total, PULARGE_INTEGER free)
 {
-    (void)dir;
-    return GetDiskFreeSpaceExW(0, avail, total, free);
+    WCHAR w[4];
+    return GetDiskFreeSpaceExW(root_w(dir, w), avail, total, free);
 }
 
 WINBASEAPI BOOL WINAPI GetVolumeInformationW(LPCWSTR root, LPWSTR name, DWORD nn, LPDWORD serial, LPDWORD maxlen, LPDWORD flags,
                                              LPWSTR fs, DWORD nfs)
 {
-    (void)root;
+    WCHAR d = other_drive(root);
+    if (d) {
+        BYTE vi[18 + 2 * 34], ai[12 + 2 * 16];
+        memset(vi, 0, sizeof(vi));
+        memset(ai, 0, sizeof(ai));
+        if (!volume_query(d, 1, vi, sizeof(vi)) || !volume_query(d, 5, ai, sizeof(ai))) return FALSE;
+        ULONG vl = *(ULONG *)(vi + 12) / 2, al = *(ULONG *)(ai + 8) / 2;
+        if (vl > 34) vl = 34;
+        if (al > 16) al = 16;
+        if (name && nn && put_w((const WCHAR *)(vi + 18), (int)vl, name, nn) > vl) return FALSE;
+        if (serial) *serial = *(DWORD *)(vi + 8);
+        if (maxlen) *maxlen = *(DWORD *)(ai + 4);
+        if (flags) *flags = *(DWORD *)ai;
+        if (fs && nfs && put_w((const WCHAR *)(ai + 12), (int)al, fs, nfs) > al) return FALSE;
+        return TRUE;
+    }
     if (name && nn) put_utf8_as_w("NovaOS", name, nn);
     if (serial) *serial = VOLUME_SERIAL;
     if (maxlen) *maxlen = 47;
@@ -1606,25 +1671,37 @@ WINBASEAPI BOOL WINAPI GetVolumeInformationW(LPCWSTR root, LPWSTR name, DWORD nn
 WINBASEAPI BOOL WINAPI GetVolumeInformationA(LPCSTR root, LPSTR name, DWORD nn, LPDWORD serial, LPDWORD maxlen, LPDWORD flags,
                                              LPSTR fs, DWORD nfs)
 {
-    (void)root;
-    if (name && nn) put_a("NovaOS", name, nn);
-    if (fs && nfs) put_a("RAMFS", fs, nfs);
-    return GetVolumeInformationW(0, 0, 0, serial, maxlen, flags, 0, 0);
+    WCHAR w[4], wn[64], wf[32];
+    if (!GetVolumeInformationW(root_w(root, w), wn, 64, serial, maxlen, flags, wf, 32)) return FALSE;
+    if (name && nn && !WideCharToMultiByte(CP_ACP, 0, wn, -1, name, (int)nn, 0, 0)) return FALSE;
+    if (fs && nfs && !WideCharToMultiByte(CP_ACP, 0, wf, -1, fs, (int)nfs, 0, 0)) return FALSE;
+    return TRUE;
 }
 
-WINBASEAPI BOOL WINAPI GetVolumePathNameW(LPCWSTR name, LPWSTR out, DWORD n) { (void)name; return put_utf8_as_w("C:\\", out, n) < n; }
+WINBASEAPI BOOL WINAPI GetVolumePathNameW(LPCWSTR name, LPWSTR out, DWORD n)
+{
+    WCHAR root[] = { 'C', ':', '\\', 0 };
+    if (other_drive(name) && (drive_map() & (1u << (other_drive(name) - 'A')))) root[0] = other_drive(name);
+    return put_w(root, 3, out, n) < n;
+}
 
 WINBASEAPI UINT WINAPI GetDriveTypeW(LPCWSTR root)
 {
-    return !root || ((root[0] | 0x20) == 'c' && root[1] == ':') ? 3 /* DRIVE_FIXED */ : 1 /* DRIVE_NO_ROOT_DIR */;
+    if (!root) return 3;                    /* DRIVE_FIXED: the current directory's */
+    if (root[0] && root[1] == ':') {
+        WCHAR c = root[0] & ~0x20;
+        if (c >= 'A' && c <= 'Z' && (drive_map() & (1u << (c - 'A')))) return 3;
+    }
+    return 1;                               /* DRIVE_NO_ROOT_DIR */
 }
 
 WINBASEAPI UINT WINAPI GetDriveTypeA(LPCSTR root)
 {
-    return !root || ((root[0] | 0x20) == 'c' && root[1] == ':') ? 3 : 1;
+    WCHAR w[4];
+    return GetDriveTypeW(root_w(root, w));
 }
 
-WINBASEAPI DWORD WINAPI GetLogicalDrives(void) { return 1u << 2; }
+WINBASEAPI DWORD WINAPI GetLogicalDrives(void) { return drive_map(); }
 WINBASEAPI BOOL  WINAPI AreFileApisANSI(void)   { return TRUE; }
 WINBASEAPI VOID  WINAPI SetFileApisToANSI(void) { }
 WINBASEAPI VOID  WINAPI SetFileApisToOEM(void)  { }

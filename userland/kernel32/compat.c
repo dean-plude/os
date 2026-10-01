@@ -107,23 +107,32 @@ K32 BOOL WINAPI GetDiskFreeSpaceW(LPCWSTR root, LPDWORD spc, LPDWORD bps, LPDWOR
 
 K32 BOOL WINAPI GetDiskFreeSpaceA(LPCSTR root, LPDWORD spc, LPDWORD bps, LPDWORD fc, LPDWORD tc)
 {
-    (void)root;
-    return GetDiskFreeSpaceW(0, spc, bps, fc, tc);
+    WCHAR w[4] = { 0 };
+    for (int i = 0; root && i < 3 && root[i]; i++) w[i] = (BYTE)root[i];
+    return GetDiskFreeSpaceW(root ? w : 0, spc, bps, fc, tc);
 }
 
+/* "C:\", "D:\", ... each NUL-terminated, then a NUL; the length without that last NUL */
 K32 DWORD WINAPI GetLogicalDriveStringsW(DWORD n, LPWSTR buf)
 {
-    static const WCHAR drives[] = { 'C', ':', '\\', 0, 0 };
-    if (n < 5) return 5;
-    memcpy(buf, drives, sizeof(drives));
-    return 4;
+    DWORD map = GetLogicalDrives(), need = 0;
+    for (int i = 0; i < 26; i++) if (map & (1u << i)) need += 4;
+    if (n < need + 1) return need + 1;
+    for (int i = 0; i < 26; i++)
+        if (map & (1u << i)) { *buf++ = (WCHAR)('A' + i); *buf++ = ':'; *buf++ = '\\'; *buf++ = 0; }
+    *buf = 0;
+    return need;
 }
 
 K32 DWORD WINAPI GetLogicalDriveStringsA(DWORD n, LPSTR buf)
 {
-    if (n < 5) return 5;
-    memcpy(buf, "C:\\\0", 5);
-    return 4;
+    DWORD map = GetLogicalDrives(), need = 0;
+    for (int i = 0; i < 26; i++) if (map & (1u << i)) need += 4;
+    if (n < need + 1) return need + 1;
+    for (int i = 0; i < 26; i++)
+        if (map & (1u << i)) { *buf++ = (char)('A' + i); *buf++ = ':'; *buf++ = '\\'; *buf++ = 0; }
+    *buf = 0;
+    return need;
 }
 
 K32 DWORD WINAPI GetCompressedFileSizeW(LPCWSTR name, LPDWORD high)

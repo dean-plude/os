@@ -45,7 +45,7 @@ static GdiRect r_next(GdiRect c)   { return RECT(c.w - 44, 8, 34, 28); }
 
 static void set_file(WND *w, Photos *ph, RamNode *f)
 {
-    if (f) RamfsRef(f);
+    if (f) { RamfsRef(f); RamfsLoad(f); }       /* (an image on another drive is read in) */
     RamfsUnref(ph->file);
     ph->file = f;
     ph->sel = -1;                               /* choose the largest on paint */
