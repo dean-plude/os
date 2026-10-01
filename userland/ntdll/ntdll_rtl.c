@@ -1350,3 +1350,13 @@ NTSYSAPI USHORT NTAPI RtlCaptureStackBackTrace(ULONG skip, ULONG count, PVOID *f
     if (hash) *hash = sum;
     return n;
 }
+
+/* The last NTSTATUS a failing call recorded (TEB LastStatusValue) */
+NTSYSAPI NTSTATUS NTAPI RtlGetLastNtStatus(void)
+{
+#ifdef _WIN64
+    return *(NTSTATUS *)(NtCurrentTebBytes() + 0x1250);
+#else
+    return *(NTSTATUS *)(NtCurrentTebBytes() + 0xBF4);
+#endif
+}

@@ -767,15 +767,29 @@ static volatile LONG g_slist_lock;
 static void sl_lock(void)   { while (__atomic_exchange_n(&g_slist_lock, 1, __ATOMIC_ACQUIRE)) __builtin_ia32_pause(); }
 static void sl_unlock(void) { __atomic_store_n(&g_slist_lock, 0, __ATOMIC_RELEASE); }
 
-WINBASEAPI VOID WINAPI InitializeSListHead(PSLIST_HEADER h) { h->Alignment = 0; h->Region = 0; }
+/* The list's first entry, and its depth and sequence (x64: Alignment and
+ * the low and high bits of Region; x86: one 8-byte header) */
+#ifdef _WIN64
+#define SL_FIRST(h)      ((PSLIST_ENTRY)(h)->Alignment)
+#define SL_SET_FIRST(h, e) ((h)->Alignment = (ULONGLONG)(e))
+#define SL_DEPTH(h)      ((USHORT)((h)->Region & 0xFFFF))
+#define SL_BUMP(h, d)    ((h)->Region = (((h)->Region + (d)) & 0xFFFF) | (((h)->Region + 0x10000) & ~0xFFFFULL))
+#else
+#define SL_FIRST(h)      ((h)->Next.Next)
+#define SL_SET_FIRST(h, e) ((h)->Next.Next = (e))
+#define SL_DEPTH(h)      ((h)->Depth)
+#define SL_BUMP(h, d)    ((h)->Depth += (d), (h)->Sequence++)
+#endif
+
+WINBASEAPI VOID WINAPI InitializeSListHead(PSLIST_HEADER h) { memset(h, 0, sizeof(*h)); }
 
 WINBASEAPI PSLIST_ENTRY WINAPI InterlockedPushEntrySList(PSLIST_HEADER h, PSLIST_ENTRY e)
 {
     sl_lock();
-    PSLIST_ENTRY old = (PSLIST_ENTRY)h->Alignment;
+    PSLIST_ENTRY old = SL_FIRST(h);
     e->Next = old;
-    h->Alignment = (ULONGLONG)e;
-    h->Region = ((h->Region & 0xFFFF) + 1) | ((h->Region + 0x10000) & ~0xFFFFULL);   /* depth | sequence */
+    SL_SET_FIRST(h, e);
+    SL_BUMP(h, 1);
     sl_unlock();
     return old;
 }
@@ -783,10 +797,10 @@ WINBASEAPI PSLIST_ENTRY WINAPI InterlockedPushEntrySList(PSLIST_HEADER h, PSLIST
 WINBASEAPI PSLIST_ENTRY WINAPI InterlockedPopEntrySList(PSLIST_HEADER h)
 {
     sl_lock();
-    PSLIST_ENTRY e = (PSLIST_ENTRY)h->Alignment;
+    PSLIST_ENTRY e = SL_FIRST(h);
     if (e) {
-        h->Alignment = (ULONGLONG)e->Next;
-        h->Region = ((h->Region & 0xFFFF) - 1) | ((h->Region + 0x10000) & ~0xFFFFULL);
+        SL_SET_FIRST(h, e->Next);
+        SL_BUMP(h, -1);
     }
     sl_unlock();
     return e;
@@ -795,14 +809,14 @@ WINBASEAPI PSLIST_ENTRY WINAPI InterlockedPopEntrySList(PSLIST_HEADER h)
 WINBASEAPI PSLIST_ENTRY WINAPI InterlockedFlushSList(PSLIST_HEADER h)
 {
     sl_lock();
-    PSLIST_ENTRY e = (PSLIST_ENTRY)h->Alignment;
-    h->Alignment = 0;
-    h->Region &= ~0xFFFFULL;
+    PSLIST_ENTRY e = SL_FIRST(h);
+    SL_SET_FIRST(h, NULL);
+    SL_BUMP(h, -(int)SL_DEPTH(h));
     sl_unlock();
     return e;
 }
 
-WINBASEAPI USHORT WINAPI QueryDepthSList(PSLIST_HEADER h) { return (USHORT)(h->Region & 0xFFFF); }
+WINBASEAPI USHORT WINAPI QueryDepthSList(PSLIST_HEADER h) { return SL_DEPTH(h); }
 
 /* -----------------------------------------------------------------------
  * Processes

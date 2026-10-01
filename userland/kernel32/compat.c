@@ -2205,3 +2205,13 @@ K32 BOOL WINAPI GetProductInfo(DWORD major, DWORD minor, DWORD sp_major, DWORD s
     *type = 0x30;                                   /* PRODUCT_PROFESSIONAL */
     return TRUE;
 }
+
+/* Walking a heap's blocks: NovaOS's heap does not list them */
+K32 BOOL WINAPI HeapWalk(HANDLE heap, LPVOID entry)
+{
+    (void)heap; (void)entry;
+    SetLastError(259 /* ERROR_NO_MORE_ITEMS */);
+    return FALSE;
+}
+K32 BOOL WINAPI HeapLock(HANDLE heap)   { (void)heap; return TRUE; }
+K32 BOOL WINAPI HeapUnlock(HANDLE heap) { (void)heap; return TRUE; }

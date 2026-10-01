@@ -505,12 +505,61 @@ static COLORREF dib_pixel(const BITMAPINFO *bi, const BYTE *bits, int x, int y)
     return 0;
 }
 
+/* A window's DC drawn into outside painting (a GL frame through a
+ * long-lived DC): have user32 show the change now */
+static void flush_window(NOVA_DC *d, int x, int y, int w, int h)
+{
+    static void (WINAPI *flush)(HDC, const RECT *);
+    static int looked;
+    if (d->mem || !d->hwnd) return;
+    if (!looked) {
+        HMODULE u = GetModuleHandleA("user32.dll");
+        if (u) flush = (void *)GetProcAddress(u, "NovaFlushDC");
+        looked = 1;
+    }
+    RECT r = { x, y, x + w, y + h };
+    if (flush) flush((HDC)d, &r);
+}
+
+/* An unscaled 32-bit DIB copied straight into the DC (presenting frames) */
+static int blit_dib32(NOVA_DC *d, int x, int y, int w, int h, int sx, int sy, const void *bits, const BITMAPINFO *bi)
+{
+    const BITMAPINFOHEADER *bh = &bi->bmiHeader;
+    int bw = bh->biWidth, bht = bh->biHeight < 0 ? -bh->biHeight : bh->biHeight;
+    RECT r = { x + d->org_x, y + d->org_y, x + d->org_x + w, y + d->org_y + h };
+    if (!dev_clip(d, &r)) return 1;
+    for (int ty = r.top; ty < r.bottom; ty++) {
+        int syy = sy + (ty - (y + d->org_y));
+        if (syy < 0 || syy >= bht) continue;
+        int row = bh->biHeight > 0 ? bht - 1 - syy : syy;
+        const DWORD *src = (const DWORD *)bits + (size_t)row * bw;
+        DWORD *dst = pixel_at(d, 0, ty);
+        int tx0 = r.left, tx1 = r.right, sx0 = sx + (tx0 - (x + d->org_x));
+        if (sx0 < 0) { tx0 -= sx0; sx0 = 0; }
+        if (sx0 + (tx1 - tx0) > bw) tx1 = tx0 + (bw - sx0);
+        if (d->fmt) memcpy(dst + tx0, src + sx0, (size_t)(tx1 - tx0) * 4);
+        else
+            for (int tx = tx0, k = sx0; tx < tx1; tx++, k++) {
+                DWORD p = src[k];                                   /* 0x00RRGGBB -> COLORREF */
+                dst[tx] = (p >> 16 & 0xFF) | (p & 0xFF00) | (p & 0xFF) << 16;
+            }
+    }
+    return 1;
+}
+
 GDIAPI int StretchDIBits(HDC h, int x, int y, int w, int hh, int sx, int sy, int sw, int sh, const void *bits,
                          const BITMAPINFO *bi, UINT usage, DWORD rop)
 {
-    (void)usage; (void)rop;
+    (void)usage;
     NOVA_DC *d = dc_of(h);
     if (!d || !bits || !w || !hh || !sw || !sh) return 0;
+    const BITMAPINFOHEADER *bih = &bi->bmiHeader;
+    if (w > 0 && hh > 0 && w == sw && hh == sh && bih->biBitCount == 32 && rop == SRCCOPY && !d->rop2 &&
+        (bih->biCompression == BI_RGB || bih->biCompression == 3 /* BI_BITFIELDS, the usual masks */) && d->bits) {
+        blit_dib32(d, x, y, w, hh, sx, sy, bits, bi);
+        flush_window(d, x, y, w, hh);
+        return hh;
+    }
     int bh = bi->bmiHeader.biHeight < 0 ? -bi->bmiHeader.biHeight : bi->bmiHeader.biHeight;
     for (int j = 0; j < (hh < 0 ? -hh : hh); j++) {
         int syy = sy + j * sh / (hh < 0 ? -hh : hh);

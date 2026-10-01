@@ -109,7 +109,14 @@ typedef struct _DYNAMIC_TIME_ZONE_INFORMATION {
 #define TIME_ZONE_ID_UNKNOWN 0
 
 typedef struct _SLIST_ENTRY { struct _SLIST_ENTRY *Next; } SLIST_ENTRY, *PSLIST_ENTRY;
+#ifdef _WIN64
 typedef union __attribute__((aligned(16))) _SLIST_HEADER { struct { ULONGLONG Alignment, Region; }; } SLIST_HEADER, *PSLIST_HEADER;
+#else   /* 8 bytes on x86: the first entry, then depth and sequence */
+typedef union __attribute__((aligned(8))) _SLIST_HEADER {
+    ULONGLONG Alignment;
+    struct { SLIST_ENTRY Next; USHORT Depth; USHORT Sequence; };
+} SLIST_HEADER, *PSLIST_HEADER;
+#endif
 
 
 /* completion ports, overlapped I/O */
