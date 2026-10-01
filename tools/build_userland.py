@@ -79,6 +79,9 @@ DLLS = [
     ('sensapi',  ['ws2_32', 'kernel32', 'ntdll'], 0x7FFC80000000),
     ('wininet',  ['kernel32', 'ntdll'],           0x7FFC90000000),
     ('msimg32',  ['gdi32', 'kernel32', 'ntdll'],  0x7FFCA0000000),
+    ('cfgmgr32', ['advapi32', 'kernel32', 'ntdll'], 0x7FFCB0000000),
+    ('dxgi',     ['kernel32', 'ntdll'],           0x7FFCC0000000),
+    ('vulkan-1', ['advapi32', 'kernel32', 'ntdll'], 0x7FFCD0000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}

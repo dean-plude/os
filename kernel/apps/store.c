@@ -52,7 +52,9 @@ typedef struct {
     GdiColor    color;         /* tile colour */
     const char *system;        /* KIND_ARCHIVE: only these files (space-separated) are
                                 * unpacked, and they go into the system folders:
-                                * x64\... to System32, x86\... to SysWOW64 */
+                                * from an x86 or x32 folder to SysWOW64, others to
+                                * System32; "path>name" renames.  Vulkan driver
+                                * manifests (*_icd.*.json) among them are registered */
 } StoreApp;
 
 #define GH "https://github.com/"
@@ -130,12 +132,22 @@ static const StoreApp g_catalog[] = {
     { "OpenJDK 21", "Microsoft Build of OpenJDK", "Java runtime and development kit",
       CAT_RUNTIMES, "https://aka.ms/download-jdk/microsoft-jdk-21-windows-x64.zip", "microsoft-jdk-21-windows-x64.zip", "Java",
       "Java\\**\\bin\\java.exe", KIND_ARCHIVE, 190, "64-bit zip; Java (Temurin 21) runs on NovaOS; this build is untested", "Jv", GDI_C(0xE7, 0x6F, 0x00) },
-    { "Mesa 3D", "Mesa / mesa-dist-win", "Software OpenGL (opengl32.dll) for programs that need 3D without a GPU driver",
+    { "Mesa 3D", "Mesa / mesa-dist-win", "Software OpenGL and Vulkan for programs that need 3D without a GPU driver",
       CAT_RUNTIMES, GH "pal1000/mesa-dist-win/releases/download/24.2.4/mesa3d-24.2.4-release-msvc.7z", "mesa3d-24.2.4-release-msvc.7z", "Mesa3D",
       "\\Windows\\System32\\opengl32.dll", KIND_ARCHIVE, 90,
-      "The system OpenGL: OpenGL 4.5 drawn on the CPU (llvmpipe), for 64- and 32-bit programs", "GL", GDI_C(0x3B, 0x5B, 0xA0),
-      "x64\\opengl32.dll x64\\libgallium_wgl.dll x64\\libglapi.dll "
-      "x86\\opengl32.dll x86\\libgallium_wgl.dll x86\\libglapi.dll" },
+      "The system OpenGL 4.5 and Vulkan 1.3, drawn on the CPU (llvmpipe, lavapipe), for 64- and 32-bit programs",
+      "GL", GDI_C(0x3B, 0x5B, 0xA0),
+      "x64\\opengl32.dll x64\\libgallium_wgl.dll x64\\libglapi.dll x64\\vulkan_lvp.dll x64\\lvp_icd.x86_64.json "
+      "x86\\opengl32.dll x86\\libgallium_wgl.dll x86\\libglapi.dll x86\\vulkan_lvp.dll x86\\lvp_icd.x86.json" },
+    { "DXVK", "Philip Rebohle / DXVK", "Direct3D 8, 9, 10 and 11 on Vulkan, for games and 3D programs",
+      CAT_RUNTIMES, GH "doitsujin/dxvk/releases/download/v2.5.3/dxvk-2.5.3.tar.gz", "dxvk-2.5.3.tar.gz", "DXVK",
+      "\\Windows\\System32\\d3d11.dll", KIND_ARCHIVE, 10,
+      "The system Direct3D 8-11 for 64- and 32-bit programs, drawn on the CPU through Mesa's Vulkan: get Mesa 3D first",
+      "DX", GDI_C(0x10, 0x7C, 0x10),
+      "dxvk-2.5.3\\x64\\d3d8.dll dxvk-2.5.3\\x64\\d3d9.dll dxvk-2.5.3\\x64\\d3d10core.dll dxvk-2.5.3\\x64\\d3d11.dll "
+      "dxvk-2.5.3\\x64\\dxgi.dll>dxgi_dxvk.dll "
+      "dxvk-2.5.3\\x32\\d3d8.dll dxvk-2.5.3\\x32\\d3d9.dll dxvk-2.5.3\\x32\\d3d10core.dll dxvk-2.5.3\\x32\\d3d11.dll "
+      "dxvk-2.5.3\\x32\\dxgi.dll>dxgi_dxvk.dll" },
 };
 #undef GH
 #define N_APPS ((int)(sizeof(g_catalog) / sizeof(g_catalog[0])))
@@ -163,6 +175,8 @@ typedef struct {
     /* 7-Zip unpacking an archive */
     UmProcess *unpack;
     int     unpack_i;              /* catalog index, or -1 */
+    char    tar[RAMFS_PATH_MAX];   /* a .tar.gz's .tar: unpacked next, then deleted */
+    bool    tar_layer;             /* 7-Zip is taking the .gz layer off */
 } Store;
 
 #define SIDE_W   180
@@ -429,10 +443,27 @@ static void unpack(Store *s, int i, RamNode *f)
     if (s->unpack) { set_msg(s, i, "Another download is being unpacked"); return; }
     RamNode *z = RamfsResolve(NULL, "\\Programs\\7-Zip\\7z.exe");
     if (!z) { failed_msg(s, i, "Could not unpack: get 7-Zip first (Utilities)"); return; }
-    char path[RAMFS_PATH_MAX], cmd[2 * RAMFS_PATH_MAX + 64], err[160];
+    char path[RAMFS_PATH_MAX], cmd[2 * RAMFS_PATH_MAX + 640], err[160];
     RamfsPath(f, path, sizeof(path));
-    ksnprintf(cmd, sizeof(cmd), "7z x \"%s\" \"-oC:\\Programs\\%s\" -y%s%s", path, a->dest,
-              a->system ? " " : "", a->system ? a->system : "");
+    s->tar_layer = ends_with(f->name, ".tar.gz") || ends_with(f->name, ".tgz");
+    if (s->tar_layer) {
+        /* 7-Zip takes one layer at a time: the .tar beside the download first */
+        char dir[RAMFS_PATH_MAX];
+        RamfsPath(f->parent, dir, sizeof(dir));
+        ksnprintf(cmd, sizeof(cmd), "7z x \"%s\" \"-o%s\" -y", path, dir);
+        ksnprintf(s->tar, sizeof(s->tar), "%s\\%s", dir + 2, f->name);
+        int n = (int)strlen(s->tar);                        /* x.tar.gz -> x.tar, x.tgz -> x.tar */
+        if (ends_with(s->tar, ".tgz")) strcpy(s->tar + n - 2, "ar");
+        else s->tar[n - 3] = '\0';
+    } else {
+        int n = ksnprintf(cmd, sizeof(cmd), "7z x \"%s\" \"-oC:\\Programs\\%s\" -y", path, a->dest);
+        for (const char *c = a->system; c && *c && n < (int)sizeof(cmd) - 2; ) {   /* the files, less any ">name" */
+            if (*c == '>') { while (*c && *c != ' ') c++; continue; }
+            if (c == a->system) cmd[n++] = ' ';
+            cmd[n++] = *c++;
+        }
+        cmd[n] = '\0';
+    }
     UmProcess *p = UmSpawn(z, cmd, f->parent, NULL, err, sizeof(err));
     if (!p) {
         char m[96];
@@ -449,25 +480,41 @@ static void unpack(Store *s, int i, RamNode *f)
  * and SysWOW64 (x86\...), replacing older copies, as an installer would */
 static void move_system_files(const StoreApp *a)
 {
-    char list[256];
+    char list[512];
     strncpy(list, a->system, sizeof(list) - 1);
     list[sizeof(list) - 1] = '\0';
     for (char *f = list, *next; f && *f; f = next) {
         next = strchr(f, ' ');
         if (next) *next++ = '\0';
+        char *as = strchr(f, '>');                          /* "path>name": installed as name */
+        if (as) *as++ = '\0';
         char path[RAMFS_PATH_MAX];
         ksnprintf(path, sizeof(path), "\\Programs\\%s\\%s", a->dest, f);
         RamNode *n = RamfsResolve(NULL, path);
         const char *leaf = strrchr(f, '\\');
-        RamNode *dir = RamfsResolve(NULL, !strncmp(f, "x86\\", 4) ? "\\Windows\\SysWOW64" : "\\Windows\\System32");
+        bool x86 = !strncmp(f, "x86\\", 4) || !strncmp(f, "x32\\", 4) || strstr(f, "\\x86\\") || strstr(f, "\\x32\\");
+        const char *sys = x86 ? "\\Windows\\SysWOW64" : "\\Windows\\System32";
+        RamNode *dir = RamfsResolve(NULL, sys);
         if (!n || n->dir || !leaf || !dir) continue;
-        if (!RamfsRename(n, dir, leaf + 1, true))
+        const char *name = as ? as : leaf + 1;
+        if (!RamfsRename(n, dir, name, true)) {
             kprintf("[STORE] Could not move %s into the system folder\n", path);
+            continue;
+        }
+        if (strstr(name, "_icd.") && ends_with(name, ".json")) {   /* a Vulkan driver, as its installer registers it */
+            char reg[RAMFS_PATH_MAX];
+            ksnprintf(reg, sizeof(reg), "C:%s\\%s", sys, name);
+            um_registry_set_dword("Machine\\SOFTWARE\\Khronos\\Vulkan\\Drivers", reg, 0);
+        }
     }
     RamNode *top = RamfsResolve(NULL, "\\Programs");
     RamNode *d = top ? RamfsFind(top, a->dest) : NULL;     /* the emptied folders */
     for (RamNode *c = d ? d->child : NULL, *nx; c; c = nx) {
         nx = c->next;
+        for (RamNode *g = c->dir ? c->child : NULL, *gn; g; g = gn) {
+            gn = g->next;
+            if (g->dir && !g->child) RamfsDelete(g);
+        }
         if (c->dir && !c->child) RamfsDelete(c);
     }
     if (d && !d->child) RamfsDelete(d);
@@ -485,6 +532,21 @@ static bool unpack_tick(Store *s)
     int i = s->unpack_i;
     s->unpack_i = -1;
     const StoreApp *a = &g_catalog[i];
+    if (s->tar_layer) {                                     /* the .gz layer is off: now the .tar */
+        RamNode *t = status == 0 ? RamfsResolve(NULL, s->tar) : NULL;
+        if (t && !t->dir) {
+            unpack(s, i, t);
+            if (s->unpack) return true;
+            RamfsDelete(t);
+            s->tar[0] = '\0';
+            return true;                                    /* unpack() said why */
+        }
+    } else if (s->tar[0]) {
+        RamNode *t = RamfsResolve(NULL, s->tar);
+        if (t && !t->dir) RamfsDelete(t);
+    }
+    s->tar_layer = false;
+    s->tar[0] = '\0';
     if (a->system && status == 0) move_system_files(a);
     if (installed_exe(a) || (!a->exe && status == 0)) {
         char m[96];

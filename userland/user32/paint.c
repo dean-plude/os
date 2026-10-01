@@ -361,7 +361,7 @@ USERAPI void NovaFlushDC(HDC dc, const RECT *r)
     NOVA_DC *d = (NOVA_DC *)dc;
     if (!d || d == &g_screen_dc || !r) return;
     Wnd *w = W_quiet(d->hwnd);
-    if (!w) return;
+    if (!w || w->paint_dc == dc) return;                  /* EndPaint presents */
     RECT x = { r->left + d->org_x, r->top + d->org_y, r->right + d->org_x, r->bottom + d->org_y };
     if (d->has_vis) clip_to(&x, &d->vis);
     if (IsRectEmpty(&x)) return;
@@ -399,6 +399,7 @@ USERAPI HDC BeginPaint(HWND h, LPPAINTSTRUCT ps)
     IntersectClipRect(dc, rc.left, rc.top, rc.right, rc.bottom);
     ps->hdc = dc;
     ps->rcPaint = rc;
+    w->paint_dc = dc;
     if (erase) ps->fErase = !send_msg(w, WM_ERASEBKGND, (WPARAM)dc, 0);
     return dc;
 }
@@ -433,6 +434,7 @@ static void cascade(Wnd *w, const RECT *rc)
 USERAPI BOOL EndPaint(HWND h, const PAINTSTRUCT *ps)
 {
     Wnd *w = W_quiet(h);
+    if (w && ps && w->paint_dc == ps->hdc) w->paint_dc = 0;
     if (ps) release_dc(ps->hdc);
     if (!w) return TRUE;
     if (ps) cascade(w, &ps->rcPaint);
