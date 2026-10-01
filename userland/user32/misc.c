@@ -461,6 +461,23 @@ USERAPI BOOL EnumDisplaySettingsW(LPCWSTR dev, DWORD mode, void *dm)
     *(DWORD *)(b + 184) = 60;                               /* dmDisplayFrequency */
     return TRUE;
 }
+USERAPI BOOL EnumDisplaySettingsA(LPCSTR dev, DWORD mode, void *dm)
+{
+    (void)dev;
+    BYTE *b = dm;                                           /* DEVMODEA: dmSize at 36 */
+    WORD size = *(WORD *)(b + 36), extra = *(WORD *)(b + 38);
+    BYTE w[220 + 64];
+    memset(w, 0, sizeof(w));
+    *(WORD *)(w + 68) = 220;
+    if (!EnumDisplaySettingsW(NULL, mode, w)) return FALSE;
+    memset(b, 0, (size_t)size + extra);
+    memcpy(b, "NovaOS Display", 15);
+    *(WORD *)(b + 36) = size;
+    *(DWORD *)(b + 40) = *(DWORD *)(w + 72);                /* dmFields */
+    for (int i = 0; i < 5; i++)                             /* dmBitsPerPel .. dmDisplayFrequency */
+        if (104 + 4 * i + 4 <= size) *(DWORD *)(b + 104 + 4 * i) = *(DWORD *)(w + 168 + 4 * i);
+    return TRUE;
+}
 USERAPI BOOL EnumDisplayDevicesW(LPCWSTR dev, DWORD i, void *dd, DWORD flags)
 {
     (void)dev; (void)flags;
