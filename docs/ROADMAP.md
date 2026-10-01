@@ -66,8 +66,9 @@ Ordered by what unblocks the most real programs.  Each item ends when a
 named program or test demonstrates it.
 
 ### Graphics, 3D and media
-- **OpenGL**: a working `opengl32.dll` (Mesa's software renderer, or our
-  own), so programs that need 3D draw without a GPU driver.
+- ~~**OpenGL**: a working `opengl32.dll`~~ Done: Mesa's llvmpipe from the
+  App Store is the system `opengl32.dll` (OpenGL 4.5, 64- and 32-bit); see
+  [OpenGL](HISTORY.md#opengl-mesa-as-the-system-opengl32dll).
 - Direct3D (at least enough for programs that probe it and fall back),
   DXGI.
 - **Audio**: `winmm` wave output and WASAPI over a real sound device

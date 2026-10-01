@@ -50,6 +50,9 @@ typedef struct {
     const char *note;          /* NovaOS compatibility note */
     const char *label;         /* 1-3 letter tile label */
     GdiColor    color;         /* tile colour */
+    const char *system;        /* KIND_ARCHIVE: only these files (space-separated) are
+                                * unpacked, and they go into the system folders:
+                                * x64\... to System32, x86\... to SysWOW64 */
 } StoreApp;
 
 #define GH "https://github.com/"
@@ -107,10 +110,10 @@ static const StoreApp g_catalog[] = {
       NULL, KIND_SETUP, 12, "32-bit program and installer (Inno Setup); untested", "Ws", GDI_C(0x2B, 0x90, 0x3C) },
     { "Git", "Git for Windows", "The git version control system (MinGit, command line)",
       CAT_DEVELOPER, GH "git-for-windows/git/releases/download/v2.51.0.windows.1/MinGit-2.51.0-64-bit.zip", "MinGit-2.51.0-64-bit.zip", "Git",
-      "Git\\cmd\\git.exe", KIND_ARCHIVE, 40, "64-bit zip; needs pipes, which NovaOS lacks", "git", GDI_C(0xF0, 0x50, 0x32) },
+      "Git\\cmd\\git.exe", KIND_ARCHIVE, 40, "64-bit zip; git, its bash and clone/fetch/push run on NovaOS", "git", GDI_C(0xF0, 0x50, 0x32) },
     { "Python", "Python Software Foundation", "The Python 3 programming language (embeddable)",
       CAT_DEVELOPER, "https://www.python.org/ftp/python/3.13.7/python-3.13.7-embed-amd64.zip", "python-3.13.7-embed-amd64.zip", "Python",
-      "Python\\python.exe", KIND_ARCHIVE, 11, "64-bit zip; opens in a Terminal; untested", "Py", GDI_C(0x36, 0x71, 0xA6) },
+      "Python\\python.exe", KIND_ARCHIVE, 11, "64-bit zip; opens in a Terminal; Python runs on NovaOS", "Py", GDI_C(0x36, 0x71, 0xA6) },
     { "WinMerge", "WinMerge Team", "Compare and merge files and folders",
       CAT_DEVELOPER, GH "WinMerge/winmerge/releases/download/v2.16.48/winmerge-2.16.48-x64-exe.zip", "winmerge-2.16.48-x64-exe.zip", "WinMerge",
       "WinMerge\\**\\WinMergeU.exe", KIND_ARCHIVE, 12, "64-bit portable zip; untested", "WM", GDI_C(0xE0, 0xB8, 0x30) },
@@ -120,16 +123,19 @@ static const StoreApp g_catalog[] = {
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",
-      "dotnet\\dotnet.exe", KIND_ARCHIVE, 60, "64-bit zip; the runtime host is untested on NovaOS", ".NET", GDI_C(0x51, 0x2B, 0xD4) },
+      "dotnet\\dotnet.exe", KIND_ARCHIVE, 60, "64-bit zip; .NET console programs run; desktop (WinForms/WPF) apps are untested", ".NET", GDI_C(0x51, 0x2B, 0xD4) },
     { "Visual C++ Redistributable", "Microsoft", "C++ runtime DLLs (msvcp140, vcruntime140, ...) many programs need",
       CAT_RUNTIMES, "https://aka.ms/vs/17/release/vc_redist.x64.exe", "vc_redist.x64.exe", NULL,
       NULL, KIND_SETUP, 25, "32-bit installer; NovaOS also has its own vcruntime140", "VC", GDI_C(0x68, 0x21, 0x7A) },
     { "OpenJDK 21", "Microsoft Build of OpenJDK", "Java runtime and development kit",
       CAT_RUNTIMES, "https://aka.ms/download-jdk/microsoft-jdk-21-windows-x64.zip", "microsoft-jdk-21-windows-x64.zip", "Java",
-      "Java\\**\\bin\\java.exe", KIND_ARCHIVE, 190, "64-bit zip; the JVM is untested on NovaOS", "Jv", GDI_C(0xE7, 0x6F, 0x00) },
+      "Java\\**\\bin\\java.exe", KIND_ARCHIVE, 190, "64-bit zip; Java (Temurin 21) runs on NovaOS; this build is untested", "Jv", GDI_C(0xE7, 0x6F, 0x00) },
     { "Mesa 3D", "Mesa / mesa-dist-win", "Software OpenGL (opengl32.dll) for programs that need 3D without a GPU driver",
       CAT_RUNTIMES, GH "pal1000/mesa-dist-win/releases/download/24.2.4/mesa3d-24.2.4-release-msvc.7z", "mesa3d-24.2.4-release-msvc.7z", "Mesa3D",
-      "Mesa3D\\x64\\opengl32.dll", KIND_ARCHIVE, 90, "Copy x64\\opengl32.dll beside the program that needs it", "GL", GDI_C(0x3B, 0x5B, 0xA0) },
+      "\\Windows\\System32\\opengl32.dll", KIND_ARCHIVE, 90,
+      "The system OpenGL: OpenGL 4.5 drawn on the CPU (llvmpipe), for 64- and 32-bit programs", "GL", GDI_C(0x3B, 0x5B, 0xA0),
+      "x64\\opengl32.dll x64\\libgallium_wgl.dll x64\\libglapi.dll "
+      "x86\\opengl32.dll x86\\libgallium_wgl.dll x86\\libglapi.dll" },
 };
 #undef GH
 #define N_APPS ((int)(sizeof(g_catalog) / sizeof(g_catalog[0])))
@@ -425,7 +431,8 @@ static void unpack(Store *s, int i, RamNode *f)
     if (!z) { failed_msg(s, i, "Could not unpack: get 7-Zip first (Utilities)"); return; }
     char path[RAMFS_PATH_MAX], cmd[2 * RAMFS_PATH_MAX + 64], err[160];
     RamfsPath(f, path, sizeof(path));
-    ksnprintf(cmd, sizeof(cmd), "7z x \"%s\" \"-oC:\\Programs\\%s\" -y", path, a->dest);
+    ksnprintf(cmd, sizeof(cmd), "7z x \"%s\" \"-oC:\\Programs\\%s\" -y%s%s", path, a->dest,
+              a->system ? " " : "", a->system ? a->system : "");
     UmProcess *p = UmSpawn(z, cmd, f->parent, NULL, err, sizeof(err));
     if (!p) {
         char m[96];
@@ -436,6 +443,34 @@ static void unpack(Store *s, int i, RamNode *f)
     s->unpack = p;
     s->unpack_i = i;
     set_msg(s, i, "Unpacking with 7-Zip...");
+}
+
+/* An archive of system files unpacked: move them into System32 (x64\...)
+ * and SysWOW64 (x86\...), replacing older copies, as an installer would */
+static void move_system_files(const StoreApp *a)
+{
+    char list[256];
+    strncpy(list, a->system, sizeof(list) - 1);
+    list[sizeof(list) - 1] = '\0';
+    for (char *f = list, *next; f && *f; f = next) {
+        next = strchr(f, ' ');
+        if (next) *next++ = '\0';
+        char path[RAMFS_PATH_MAX];
+        ksnprintf(path, sizeof(path), "\\Programs\\%s\\%s", a->dest, f);
+        RamNode *n = RamfsResolve(NULL, path);
+        const char *leaf = strrchr(f, '\\');
+        RamNode *dir = RamfsResolve(NULL, !strncmp(f, "x86\\", 4) ? "\\Windows\\SysWOW64" : "\\Windows\\System32");
+        if (!n || n->dir || !leaf || !dir) continue;
+        if (!RamfsRename(n, dir, leaf + 1, true))
+            kprintf("[STORE] Could not move %s into the system folder\n", path);
+    }
+    RamNode *top = RamfsResolve(NULL, "\\Programs");
+    RamNode *d = top ? RamfsFind(top, a->dest) : NULL;     /* the emptied folders */
+    for (RamNode *c = d ? d->child : NULL, *nx; c; c = nx) {
+        nx = c->next;
+        if (c->dir && !c->child) RamfsDelete(c);
+    }
+    if (d && !d->child) RamfsDelete(d);
 }
 
 /* A running unpack finished: did it produce the program? */
@@ -450,9 +485,11 @@ static bool unpack_tick(Store *s)
     int i = s->unpack_i;
     s->unpack_i = -1;
     const StoreApp *a = &g_catalog[i];
+    if (a->system && status == 0) move_system_files(a);
     if (installed_exe(a) || (!a->exe && status == 0)) {
         char m[96];
-        ksnprintf(m, sizeof(m), "Installed in C:\\Programs\\%s", a->dest);
+        if (a->system) ksnprintf(m, sizeof(m), "Installed in C:\\Windows\\System32");
+        else           ksnprintf(m, sizeof(m), "Installed in C:\\Programs\\%s", a->dest);
         set_msg(s, i, m);
     } else {
         char m[96];

@@ -354,6 +354,22 @@ USERAPI int ReleaseDC(HWND h, HDC dc)
     return 1;
 }
 
+/* gdi32's: @r (logical units) of a window's DC changed outside painting
+ * (a frame from OpenGL through a DC the program keeps): show it now */
+USERAPI void NovaFlushDC(HDC dc, const RECT *r)
+{
+    NOVA_DC *d = (NOVA_DC *)dc;
+    if (!d || d == &g_screen_dc || !r) return;
+    Wnd *w = W_quiet(d->hwnd);
+    if (!w) return;
+    RECT x = { r->left + d->org_x, r->top + d->org_y, r->right + d->org_x, r->bottom + d->org_y };
+    if (d->has_vis) clip_to(&x, &d->vis);
+    if (IsRectEmpty(&x)) return;
+    Wnd *t = top_of(w);
+    mark_dirty(t, &x);
+    present(t);
+}
+
 USERAPI HWND WindowFromDC(HDC dc)
 {
     NOVA_DC *d = (NOVA_DC *)dc;

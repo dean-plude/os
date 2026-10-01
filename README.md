@@ -10,7 +10,8 @@ NovaOS's own WoW64 layer, as on 64-bit Windows.
 **Status:** Phases 1–14 are done.  NovaOS boots on UEFI machines (tested in
 QEMU with OVMF), uses every CPU core, keeps its files on a SATA disk, and
 runs unmodified Windows programs: 7-Zip, Git, NSIS installers, `.msi`
-packages, and the Java, .NET, Node.js and Python runtimes.  It can install
+packages, the Java, .NET, Node.js and Python runtimes, and OpenGL programs
+through Mesa.  It can install
 itself on a disk from its live ISO.
 
 - [What runs today](#what-runs-today)
@@ -41,6 +42,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes. |
 | **Node.js 24** | `.msi`, `.zip` | `node -v`, `-e`, `npm -v`, a crypto/fs/JSON/timers test script. |
 | **Python 3.14** | NuGet package | `-c`, a hashlib/JSON/regex/threads/subprocess test script. |
+| **Mesa 3D 24.2.4** (mesa-dist-win) | `opengl32.dll` (llvmpipe), x64 and x86, from the App Store | OpenGL 4.5: `tools/gltest` (pixel formats, immediate mode, GLSL, read-back, animated `SwapBuffers`) passes as a 64-bit and a 32-bit program. |
 | **ripgrep, fd, jq, fzf** | Rust (MSVC), C (MinGW), Go | Searching, walking folders, filtering, from the Terminal. |
 
 ### Built in
@@ -63,7 +65,7 @@ The dock's App Store downloads the official 64-bit packages of 21 open-source
 programs (Firefox, VLC, LibreOffice, GIMP, Notepad++, PuTTY…) and four
 runtimes, and installs them with 7-Zip, NovaOS's Windows Installer or the
 program's own setup.  Most of those programs still need more of Windows than
-NovaOS has (audio, Direct3D/OpenGL, more of the GUI); the ones in the table
+NovaOS has (audio, Direct3D, more of the GUI); the ones in the table
 above are the ones verified.  See [the App Store](docs/HISTORY.md#the-app-store).
 
 ## What is inside
@@ -167,7 +169,8 @@ There is no CI yet; testing is done in QEMU.
   (not in this repository), driven by a QEMU harness that types, clicks and takes screenshots.
 - **On the host**: `tools/pe_imports.py PROGRAM.exe` lists the imports a
   Windows program needs that NovaOS's DLLs lack; `tools/msitest/` exercises
-  the Windows Installer's package readers.
+  the Windows Installer's package readers.  `tools/gltest/` is an OpenGL
+  test program, built with MinGW, for checking Mesa on NovaOS.
 - **Debugging**: the serial log (COM1) has every kernel message; the
   Terminal's `dmesg` shows it, and `trace NAME` logs a program's failing
   system calls.
@@ -192,8 +195,9 @@ See [docs/building.md#tests](docs/building.md#tests) for how to run them.
 | 12 | Win32 GUI subsystem; unmodified 7-Zip; App Store; Windows Installer; installing NovaOS | ✅ Done |
 | 13 | 32-bit programs (WoW64); NSIS installers; `.lnk` shortcuts | ✅ Done |
 | 14 | Pipes, `cmd.exe`, shared clipboard, Git and MSYS2, the Java/.NET/Node.js/Python runtimes | ✅ Done |
+| 15 | 3D graphics: OpenGL 4.5 through Mesa llvmpipe (done); Direct3D next | 🚧 In progress |
 
-What comes next (graphics and OpenGL, audio, broader app coverage, the
+What comes next (Direct3D, audio, broader app coverage, the
 remaining kernel and API gaps, storage and hardware) is in
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
