@@ -2206,6 +2206,15 @@ K32 BOOL WINAPI GetThreadIOPendingFlag(HANDLE thread, PBOOL pending)
     return TRUE;
 }
 
+/* The edition: NovaOS answers as Windows 10 Pro */
+K32 BOOL WINAPI GetProductInfo(DWORD major, DWORD minor, DWORD sp_major, DWORD sp_minor, PDWORD type)
+{
+    (void)major; (void)minor; (void)sp_major; (void)sp_minor;
+    if (!type) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    *type = 0x30;                                   /* PRODUCT_PROFESSIONAL */
+    return TRUE;
+}
+
 /* Walking a heap's blocks: NovaOS's heap does not list them */
 K32 BOOL WINAPI HeapWalk(HANDLE heap, LPVOID entry)
 {

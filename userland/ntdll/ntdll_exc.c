@@ -570,6 +570,13 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
             rec->ExceptionFlags = saved;
         }
         if (is_target) {
+            /* A consolidating unwind (MSVC's C++ catch): the callback in
+             * ExceptionInformation[0] runs the catch block, here on the
+             * stack below the target frame (the thrown object lives there),
+             * and returns where the target frame continues. */
+            if (rec->ExceptionCode == STATUS_UNWIND_CONSOLIDATE && rec->NumberParameters >= 1 &&
+                rec->ExceptionInformation[0])
+                target_ip = ((PVOID (*)(PEXCEPTION_RECORD))rec->ExceptionInformation[0])(rec);
             /* Resume in the target frame with its own register state (the
              * nonvolatile registers restored while unwinding the frames
              * below it), at the handler's continuation address. */

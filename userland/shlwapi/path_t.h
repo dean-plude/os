@@ -12,6 +12,8 @@ static void F(move_)(T *d, const T *s) { int n = F(len_)(s); for (int i = 0; i <
 
 /* ---- classification ---- */
 LWSTDAPI_(BOOL) F(PathIsUNC)(const T *p) { return p && p[0] == '\\' && p[1] == '\\' && p[2] != '?'; }
+/* A network path: a UNC one (NovaOS maps no network drives) */
+LWSTDAPI_(BOOL) F(PathIsNetworkPath)(const T *p) { return F(PathIsUNC)(p); }
 
 LWSTDAPI_(BOOL) F(PathIsRelative)(const T *p)
 {

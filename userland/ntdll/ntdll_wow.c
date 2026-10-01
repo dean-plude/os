@@ -702,6 +702,8 @@ NTSTATUS NTAPI NtDuplicateObject(HANDLE sp, HANDLE src, HANDLE tp, PHANDLE dst, 
     return s;
 }
 
+NTSTATUS NTAPI NtCompareObjects(HANDLE a, HANDLE b) { return SC(NtCompareObjects, H(a), H(b)); }
+
 /* -----------------------------------------------------------------------
  * Registry
  * ----------------------------------------------------------------------- */
