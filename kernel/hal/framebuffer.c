@@ -198,6 +198,21 @@ void fb_get_raw(FbRawSurface *out)
     out->bgr    = fb.bgr;
 }
 
+void fb_set_surface(uint64_t phys, uint32_t width, uint32_t height,
+                    uint32_t stride, bool bgr)
+{
+    if (!fb.ready) return;
+    fb.base   = (uint32_t *)(PHYSMAP_BASE + phys);
+    fb.width  = width;
+    fb.height = height;
+    fb.stride = stride;
+    fb.bgr    = bgr;
+    fb.cols   = (int)(width  / FONT_W);
+    fb.rows   = (int)(height / FONT_H);
+    if (fb.cursor_col >= fb.cols) fb.cursor_col = 0;
+    if (fb.cursor_row >= fb.rows) fb.cursor_row = fb.rows - 1;
+}
+
 /* -----------------------------------------------------------------------
  * fb_draw_string — draw string with solid background
  * ----------------------------------------------------------------------- */

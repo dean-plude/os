@@ -95,6 +95,13 @@ typedef struct {
 void fb_get_raw(FbRawSurface *out);
 
 /*
+ * Move the console to another surface (the display driver: a mode change
+ * or a page flip).  Keeps the text cursor in range; draws nothing.
+ */
+void fb_set_surface(uint64_t phys, uint32_t width, uint32_t height,
+                    uint32_t stride, bool bgr);
+
+/*
  * Draw a null-terminated string at pixel coordinates with a solid
  * background fill (bg).
  */

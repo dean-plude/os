@@ -41,6 +41,11 @@ void DesktopRestart(void);
 enum { POWER_NONE, POWER_SHUTDOWN, POWER_RESTART, POWER_SLEEP };
 bool DesktopPowerRequest(int what);
 
+/* Switch the screen to @w x @h (a mode the display driver lists) and lay
+ * the desktop and its windows out again.  False: the mode is not
+ * supported (nothing changed).  Takes the desktop lock. */
+bool DesktopSetDisplayMode(int w, int h);
+
 /* Toggle the Start menu open/closed. */
 void DesktopToggleStart(void);
 

@@ -124,6 +124,7 @@ set(KERNEL_C_SOURCES
     hal/pci.c
     hal/acpi.c
     hal/aml.c
+    hal/display.c
     drivers/e1000.c
     drivers/ahci.c
     drivers/hda.c

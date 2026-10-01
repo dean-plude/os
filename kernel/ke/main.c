@@ -43,6 +43,7 @@
 #include "../../include/boot_protocol.h"
 #include "../hal/serial.h"
 #include "../hal/framebuffer.h"
+#include "../hal/display.h"
 #include "../mm/pmm.h"
 #include "../mm/vmm.h"
 #include "../arch/x86_64/gdt.h"
@@ -202,6 +203,8 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
      * STEP 2: Framebuffer
      * ------------------------------------------------------------------ */
     fb_init(&info->framebuffer);
+    static BootFramebuffer boot_fb;       /* for the display driver, after the boot data is reused */
+    boot_fb = info->framebuffer;
     print_banner();
 
     /* ------------------------------------------------------------------
@@ -370,6 +373,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     PciInitialize();
     AcpiInitialize(rsdp);                 /* power-off, reset, the power button; MADT for SMP */
     AmlInitialize();                      /* the AML interpreter (a thread): batteries, buttons */
+    DisplayInit(&boot_fb);               /* display adapter: modes, page flipping */
     PersistInit();                        /* SATA disks; the volume that keeps drive C: */
     DrivesInit();                         /* their NTFS volumes: drives D:, E:, ... */
     if (!NetInitialize())

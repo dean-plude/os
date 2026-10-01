@@ -84,9 +84,10 @@ every part, phase by phase.
   1903 numbers.
 - **Drivers**: AHCI SATA disks, FAT16/FAT32, GPT; Intel e1000/e1000e
   network cards; Intel High Definition Audio (output) with a kernel mixer;
-  PS/2 and USB (xHCI) keyboards and mice; CMOS clock; the UEFI framebuffer;
-  ACPI power-off, reset, power buttons, sleep (S3), batteries and AC
-  adapters (AML interpreted by uACPI).
+  PS/2 and USB (xHCI) keyboards and mice; CMOS clock; a Bochs/QEMU VBE
+  display driver (resolutions switched at run time, page flipping) with the
+  UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
+  sleep (S3), batteries and AC adapters (AML interpreted by uACPI).
 - **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
   TLS with the Mozilla root store.
 - **Windows userland** (`userland/`): about 35 system DLLs written from
@@ -166,7 +167,7 @@ There is no CI yet; testing is done in QEMU.
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
   `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `cliptest`, `smpstress`.  `soundtest`
+  `cppeh`, `shmtest`, `pipetest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
   `tools/novarun.py --wav out.wav` records what NovaOS plays and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
@@ -227,7 +228,7 @@ os/
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
 │   ├── drivers/          # AHCI (SATA), e1000/e1000e, xHCI USB + HID
-│   ├── hal/              # Serial, framebuffer, PCI, PS/2, CMOS clock, ACPI (uACPI host)
+│   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
 │   ├── wm/               # Window manager, desktop shell, input, clipboard
@@ -263,9 +264,12 @@ os/
 - **The window system lives in the program**: `user32` keeps each program's
   window tree; the kernel's window manager composites only top-level
   windows, drawn from bitmaps the programs own.
-- **Software rendering**: GDI is a CPU rasterizer writing the UEFI
-  framebuffer, double-buffered, at integer HiDPI scale.  There is no GPU
-  driver.
+- **Software rendering**: GDI is a CPU rasterizer drawing into a back
+  buffer in RAM at integer HiDPI scale.  On QEMU's standard VGA (and
+  Bochs, VirtualBox's VBoxVGA) a VBE "DISPI" driver sets the resolution at
+  run time (Settings > Display, `ChangeDisplaySettings`) and flips between
+  two pages of video memory when both fit; elsewhere frames are copied to
+  the UEFI framebuffer in the boot mode.  There is no 3D GPU driver.
 - **Drive C: in memory, saved to FAT**: the RAM disk is saved to a FAT32
   volume a second after each change and restored at boot.  System files
   come from the kernel image, so a new build always brings its own.

@@ -44,13 +44,19 @@ typedef struct { int x, y; } GdiPoint;
  * Lifecycle and surface
  * ----------------------------------------------------------------------- */
 bool GdiInitialize(void);
+/* The display mode changed: re-read the surface, resize the back buffer
+ * (its contents are lost: redraw everything). */
+bool GdiDisplayChanged(void);
 
 int  GdiScreenW(void);     /* logical size */
 int  GdiScreenH(void);
 int  GdiScale(void);       /* device pixels per logical pixel (1 or 2) */
 
-/* Copy the back buffer to the screen (whole frame). */
+/* Copy the back buffer to the screen (whole frame).  With page flipping
+ * it lands on the page off screen: anything drawn straight to the screen
+ * after it (the pointer) goes there too, and GdiFlip() shows the page. */
 void GdiPresent(void);
+void GdiFlip(void);
 
 /* Clip all drawing to a logical rectangle (e.g. a window's client area). */
 void GdiSetClip(GdiRect r);
