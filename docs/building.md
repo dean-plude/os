@@ -132,6 +132,13 @@ QEMU's default user-mode network (an e1000e on q35) works out of the box;
 add `-nic user,model=e1000` to test the older card.  `-smp N` sets the core
 count (up to 16).
 
+For sound add `-device intel-hda -device hda-output` (or `hda-duplex`);
+`-audiodev wav,id=snd0,path=out.wav,out.frequency=48000` with
+`-device hda-output,audiodev=snd0` records it instead of playing it.
+`cmake --build . --target run` adds the card, playing through the host's
+PulseAudio or PipeWire when it finds one; set `NOVA_AUDIO` (`pa`,
+`pipewire`, `alsa`, `none`, `wav,path=out.wav`) to pick QEMU's backend.
+
 ### Where your files are kept
 
 Drive C: lives in memory, and NovaOS saves every change to a FAT volume a
@@ -204,6 +211,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
 | `acltest` | Access checks against DACLs (`AccessCheck`) |
 | `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
+| `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
 
 Interactive ones: `winhello` and `guitest` (windows, menus, dialogs,
@@ -217,6 +225,17 @@ and test scripts such as `cmdtest.bat` for `cmd.exe`, are tested from a
 second disk image holding them (not in this repository), driven by a QEMU harness
 that types Terminal commands, clicks, drags and takes screenshots.  Copy a
 program onto the data disk as above and run it from the Terminal.
+
+### Sound
+
+`soundtest` plays sine tones through each path.  To check what came out,
+record it and measure it:
+
+```bash
+python3 tools/novarun.py --wav /tmp/out.wav 'C:\Programs\soundtest.exe tone 440 1000' \
+    'C:\Programs\soundtest.exe wasapi 523 800'
+python3 tools/wavcheck.py /tmp/out.wav     # each tone: start, length, level, pitch
+```
 
 ### On the host
 

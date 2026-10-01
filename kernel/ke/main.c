@@ -82,6 +82,7 @@
 #include "../wm/desktop.h"
 #include "../wm/input.h"
 #include "../hal/ps2.h"
+#include "../drivers/audio.h"
 
 /* -----------------------------------------------------------------------
  * Banner
@@ -371,6 +372,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     DrivesInit();                         /* their NTFS volumes: drives D:, E:, ... */
     if (!NetInitialize())
         kprintf("[NET] No network (no supported adapter)\n");
+    AudioInit();                          /* HD Audio and the system mixer */
 
     /* Windows programs: SSE for user code, NT services, loader */
     UmInit();

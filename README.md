@@ -67,7 +67,7 @@ The dock's App Store downloads the official 64-bit packages of 21 open-source
 programs (Firefox, VLC, LibreOffice, GIMP, Notepad++, PuTTY…) and five
 runtimes, and installs them with 7-Zip, NovaOS's Windows Installer or the
 program's own setup.  Most of those programs still need more of Windows than
-NovaOS has (audio, more of the GUI); the ones in the table
+NovaOS has (more of the GUI); the ones in the table
 above are the ones verified.  See [the App Store](docs/HISTORY.md#the-app-store).
 
 ## What is inside
@@ -83,9 +83,9 @@ every part, phase by phase.
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.
 - **Drivers**: AHCI SATA disks, FAT16/FAT32, GPT; Intel e1000/e1000e
-  network cards; PS/2 and USB (xHCI) keyboards and mice; CMOS clock; the
-  UEFI framebuffer; ACPI power-off, reset and power button from the FADT
-  and `\_S5`.
+  network cards; Intel High Definition Audio (output) with a kernel mixer;
+  PS/2 and USB (xHCI) keyboards and mice; CMOS clock; the UEFI framebuffer;
+  ACPI power-off, reset and power button from the FADT and `\_S5`.
 - **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
   TLS with the Mozilla root store.
 - **Windows userland** (`userland/`): about 35 system DLLs written from
@@ -94,7 +94,8 @@ every part, phase by phase.
   the `api-ms-win-crt-*` API sets, `vcruntime140` (C++ exceptions),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs),
   `comctl32`, `shell32`, `ole32`/`oleaut32` (COM), `advapi32`, `ws2_32`,
-  `msi`, and more.
+  `winmm` and `mmdevapi` (sound: `waveOut`, `PlaySound`, WASAPI), `msi`,
+  and more.
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions; registry saved to disk;
   COM in-process servers; drag and drop; a shared clipboard; `.lnk`
@@ -164,7 +165,10 @@ There is no CI yet; testing is done in QEMU.
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
   `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `cliptest`, `smpstress`.  `disktest
+  `cppeh`, `shmtest`, `pipetest`, `cliptest`, `smpstress`.  `soundtest`
+  plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
+  `tools/novarun.py --wav out.wav` records what NovaOS plays and
+  `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
   write`, a restart and `disktest verify` check that drive C: survives a
   reboot.
 - **GUI and interactive checks**: `winhello`, `guitest`, `droptest`, `cpus`
@@ -201,8 +205,9 @@ See [docs/building.md#tests](docs/building.md#tests) for how to run them.
 | 13 | 32-bit programs (WoW64); NSIS installers; `.lnk` shortcuts | ✅ Done |
 | 14 | Pipes, `cmd.exe`, shared clipboard, Git and MSYS2, the Java/.NET/Node.js/Python runtimes | ✅ Done |
 | 15 | 3D graphics on the CPU: OpenGL 4.5 (Mesa llvmpipe), Vulkan 1.3 (lavapipe), Direct3D 8–11 (DXVK) | ✅ Done |
+| 16 | Sound: Intel HD Audio, a kernel mixer, `waveOut`/`PlaySound`/`Beep`, WASAPI | ✅ Done |
 
-What comes next (audio, broader app coverage, the
+What comes next (DirectSound and XAudio2, broader app coverage, the
 remaining kernel and API gaps, storage and hardware) is in
 [docs/ROADMAP.md](docs/ROADMAP.md).
 

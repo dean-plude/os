@@ -346,6 +346,9 @@ static void defaults(void)
     if (!has_value(sl, "")) { kset_sz(sl, "", "shell32.dll", 1); kset_sz(sl, "ThreadingModel", "Both", 1); }
     RegKey *slc = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{00021401-0000-0000-C000-000000000046}", false);
     if (!has_value(slc, "")) kset_sz(slc, "", "Shortcut", 1);
+    /* the audio endpoints (mmdevapi's MMDeviceEnumerator) */
+    RegKey *mmd = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{BCDE0395-E52F-467C-8E3D-C4579291692E}\\InprocServer32", false);
+    if (!has_value(mmd, "")) { kset_sz(mmd, "", "mmdevapi.dll", 1); kset_sz(mmd, "ThreadingModel", "Both", 1); }
     RegKey *lnk = kpath("Machine\\SOFTWARE\\Classes\\.lnk", false);
     if (!has_value(lnk, "")) kset_sz(lnk, "", "lnkfile", 1);
     RegKey *txt = kpath("Machine\\SOFTWARE\\Classes\\.txt", false);
