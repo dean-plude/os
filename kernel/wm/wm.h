@@ -210,5 +210,10 @@ void WmCursorMove(int x, int y);
 void WmCursorMoveBy(int dx, int dy);
 /* Re-show the cursor after a new frame was presented. */
 void WmCursorReshow(void);
+
+/* The display mode changed (GdiDisplayChanged done, work area set): refit
+ * the windows and the pointer.  @old_w/@old_h/@old_s: the old logical
+ * size and scale. */
+void WmDisplayChanged(int old_w, int old_h, int old_s);
 int  WmCursorX(void);
 int  WmCursorY(void);

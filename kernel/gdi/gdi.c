@@ -20,6 +20,7 @@
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "../ke/printf.h"
+#include "../hal/display.h"
 
 #define FX            256     /* fixed-point one: 1/256 device pixel */
 #define LINE_BASELINE  12     /* baseline within the 16px logical line box */
@@ -37,6 +38,7 @@ static struct {
     int     cx0, cy0, cx1, cy1;   /* clip rectangle, device px, [x0,x1) */
     UINT32 *cache;                /* saved copy of the back buffer */
     bool    cache_valid;
+    bool    direct;               /* no back buffer: drawing goes to vram */
     bool    bgr, ready;
 } g;
 
@@ -108,7 +110,8 @@ static UINT32 isqrt64(UINT64 v)
 /* -----------------------------------------------------------------------
  * Lifecycle
  * ----------------------------------------------------------------------- */
-bool GdiInitialize(void)
+/* (Re)read the screen surface: at boot, and after a display mode change */
+static bool gdi_setup(void)
 {
     FbRawSurface s;
     fb_get_raw(&s);
@@ -116,6 +119,7 @@ bool GdiInitialize(void)
         g.ready = false;
         return false;
     }
+    bool resized = s.width != g.dw || s.height != g.dh;
     g.vram    = s.vram;
     g.vstride = s.stride;
     g.dw      = s.width;
@@ -130,21 +134,32 @@ bool GdiInitialize(void)
     g.lh = g.dh / g.s;
 
     /* Back buffer; fall back to drawing on the framebuffer directly */
-    g.buf = kzalloc((size_t)g.dw * g.dh * sizeof(UINT32));
-    if (g.buf) {
-        g.bstride = g.dw;
-    } else {
+    if (resized || g.direct) {
+        if (g.buf && !g.direct) kfree(g.buf);
+        kfree(g.cache);
+        g.cache = NULL;
+        g.buf = kzalloc((size_t)g.dw * g.dh * sizeof(UINT32));
+        g.direct = g.buf == NULL;
+    }
+    if (g.direct) {
         g.buf     = g.vram;
         g.bstride = g.vstride;
+    } else {
+        g.bstride = g.dw;
     }
+    g.cache_valid = false;
 
     g.cx0 = 0; g.cy0 = 0; g.cx1 = g.dw; g.cy1 = g.dh;
     g.ready = true;
     kprintf("[GDI] %dx%d device, scale %dx -> %dx%d logical, %s\n",
             g.dw, g.dh, g.s, g.lw, g.lh,
-            g.buf != g.vram ? "double-buffered" : "direct (no back buffer)");
+            g.direct ? "direct (no back buffer)" :
+            DisplayCanFlip() ? "double-buffered, page flipping" : "double-buffered");
     return true;
 }
+
+bool GdiInitialize(void) { return gdi_setup(); }
+bool GdiDisplayChanged(void) { return gdi_setup(); }
 
 /* -----------------------------------------------------------------------
  * Clipping and the frame cache
@@ -165,7 +180,7 @@ void GdiResetClip(void)
 
 bool GdiCacheSave(void)
 {
-    if (!g.ready || g.buf == g.vram) return false;
+    if (!g.ready || g.direct) return false;
     if (!g.cache) {
         g.cache = kmalloc((size_t)g.dw * g.dh * sizeof(UINT32));
         if (!g.cache) return false;
@@ -190,11 +205,21 @@ int GdiScale(void)   { return g.ready ? g.s  : 1; }
 
 void GdiPresent(void)
 {
-    if (!g.ready || g.buf == g.vram) return;
+    if (!g.ready || g.direct) return;
+    /* With page flipping the frame goes to the page off screen, which is
+     * also where the pointer is drawn next; GdiFlip() shows both at once */
+    UINT32 *back = DisplayBackPage();
+    if (back) g.vram = back;
     for (int y = 0; y < g.dh; y++)
         memcpy(g.vram + (size_t)y * g.vstride,
                g.buf  + (size_t)y * g.bstride,
                (size_t)g.dw * sizeof(UINT32));
+}
+
+void GdiFlip(void)
+{
+    if (!g.ready || g.direct || !DisplayCanFlip()) return;
+    DisplayFlip();                        /* g.vram is now the page on screen */
 }
 
 /* -----------------------------------------------------------------------

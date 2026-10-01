@@ -21,6 +21,7 @@
 
 #include "../um/um.h"
 #include "desktop.h"
+#include "../hal/display.h"
 #include "../fs/setup.h"
 #include "wm.h"
 #include "input.h"
@@ -1209,6 +1210,35 @@ void DesktopInitialize(void)
 
 bool DesktopAvailable(void) { return g_ready; }
 
+bool DesktopSetDisplayMode(int w, int h)
+{
+    if (!g_ready) return false;
+    DesktopLock();
+    DisplayMode cur = DisplayCurrentMode();
+    if (cur.w == w && cur.h == h) { DesktopUnlock(); return true; }
+    int ow = GdiScreenW(), oh = GdiScreenH(), os = GdiScale();
+    WmCursorHide();
+    bool ok = DisplaySetMode(w, h);
+    if (!GdiDisplayChanged()) {               /* cannot happen: the old mode is back */
+        DesktopUnlock();
+        return false;
+    }
+    /* Lay the shell out for the new size, then refit the windows into it */
+    g_start_open = false;
+    dock_layout();
+    WmSetWorkArea(RECT(0, 0, GdiScreenW(), L_dock.y - 8));
+    WmDisplayChanged(ow, oh, os);
+    WmInvalidateBackground();
+    DesktopUnlock();
+    if (ok) {
+        DisplayMode m = DisplayCurrentMode();
+        UmGuiDisplayChanged(m.w, m.h);        /* WM_DISPLAYCHANGE to programs */
+    }
+    kprintf("[SHELL] Display mode %dx%d %s (desktop %dx%d)\n", w, h, ok ? "set" : "refused",
+            GdiScreenW(), GdiScreenH());
+    return ok;
+}
+
 void DesktopToggleStart(void) { start_open(!g_start_open); }
 
 /* Refresh the dock clock strings from the RTC. */
@@ -1632,8 +1662,7 @@ void DesktopRun(void *arg)
              * take the big one back, see WND.paint_lock_free): the other
              * CPUs keep entering the kernel meanwhile */
             bkl_release();
-            WmComposite();
-            WmCursorReshow();
+            WmComposite();              /* redraws the pointer too */
             bkl_acquire();
         }
         DesktopUnlock();

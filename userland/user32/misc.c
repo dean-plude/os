@@ -445,39 +445,6 @@ USERAPI BOOL EnumDisplayMonitors(HDC dc, const RECT *clip, MONITORENUMPROC fn, L
     fn(THE_MONITOR, dc, &r, lp);
     return TRUE;
 }
-USERAPI BOOL EnumDisplaySettingsW(LPCWSTR dev, DWORD mode, void *dm)
-{
-    (void)dev;
-    if (mode != (DWORD)-1 && mode != (DWORD)-2 && mode != 0) return FALSE;
-    BYTE *b = dm;                                           /* DEVMODEW: dmSize at 68; fields after the name */
-    WORD size = *(WORD *)(b + 68), extra = *(WORD *)(b + 70);
-    memset(b, 0, (size_t)size + extra);
-    *(WORD *)(b + 68) = size;
-    u8_to_w("NovaOS Display", (WCHAR *)b, 32);
-    *(DWORD *)(b + 72) = 0x00580000;                        /* dmFields: BITSPERPEL | PELSWIDTH | PELSHEIGHT | DISPLAYFREQUENCY */
-    *(DWORD *)(b + 168) = 32;                               /* dmBitsPerPel */
-    *(DWORD *)(b + 172) = (DWORD)GetSystemMetrics(0);       /* dmPelsWidth */
-    *(DWORD *)(b + 176) = (DWORD)GetSystemMetrics(1);       /* dmPelsHeight */
-    *(DWORD *)(b + 184) = 60;                               /* dmDisplayFrequency */
-    return TRUE;
-}
-USERAPI BOOL EnumDisplaySettingsA(LPCSTR dev, DWORD mode, void *dm)
-{
-    (void)dev;
-    BYTE *b = dm;                                           /* DEVMODEA: dmSize at 36 */
-    WORD size = *(WORD *)(b + 36), extra = *(WORD *)(b + 38);
-    BYTE w[220 + 64];
-    memset(w, 0, sizeof(w));
-    *(WORD *)(w + 68) = 220;
-    if (!EnumDisplaySettingsW(NULL, mode, w)) return FALSE;
-    memset(b, 0, (size_t)size + extra);
-    memcpy(b, "NovaOS Display", 15);
-    *(WORD *)(b + 36) = size;
-    *(DWORD *)(b + 40) = *(DWORD *)(w + 72);                /* dmFields */
-    for (int i = 0; i < 5; i++)                             /* dmBitsPerPel .. dmDisplayFrequency */
-        if (104 + 4 * i + 4 <= size) *(DWORD *)(b + 104 + 4 * i) = *(DWORD *)(w + 168 + 4 * i);
-    return TRUE;
-}
 USERAPI BOOL EnumDisplayDevicesW(LPCWSTR dev, DWORD i, void *dd, DWORD flags)
 {
     (void)dev; (void)flags;
@@ -524,8 +491,6 @@ USERAPI LONG QueryDisplayConfig(UINT32 flags, UINT32 *npaths, void *paths, UINT3
 USERAPI LONG DisplayConfigGetDeviceInfo(void *req) { (void)req; return ERROR_NOT_SUPPORTED_; }
 USERAPI LONG DisplayConfigSetDeviceInfo(void *req) { (void)req; return ERROR_NOT_SUPPORTED_; }
 
-USERAPI LONG ChangeDisplaySettingsW(void *dm, DWORD f) { (void)dm; (void)f; return -2; /* DISP_CHANGE_BADMODE */ }
-USERAPI LONG ChangeDisplaySettingsExW(LPCWSTR d, void *dm, HWND h, DWORD f, void *p) { (void)d; (void)dm; (void)h; (void)f; (void)p; return -2; }
 
 /* -----------------------------------------------------------------------
  * Clipboard: the system's (NtNovaClipboard), shared by every program

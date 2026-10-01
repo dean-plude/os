@@ -1731,9 +1731,56 @@ USERAPI HANDLE MonitorFromRect(const RECT *r, DWORD f);
 USERAPI BOOL GetMonitorInfoW(HANDLE m, void *mi);
 USERAPI BOOL GetMonitorInfoA(HANDLE m, void *mi);
 USERAPI BOOL EnumDisplaySettingsW(LPCWSTR dev, DWORD mode, void *dm);
+USERAPI BOOL EnumDisplaySettingsA(LPCSTR dev, DWORD mode, void *dm);
+USERAPI BOOL EnumDisplaySettingsExW(LPCWSTR dev, DWORD mode, void *dm, DWORD flags);
+USERAPI BOOL EnumDisplaySettingsExA(LPCSTR dev, DWORD mode, void *dm, DWORD flags);
 USERAPI BOOL EnumDisplayDevicesW(LPCWSTR dev, DWORD i, void *dd, DWORD flags);
 USERAPI LONG ChangeDisplaySettingsW(void *dm, DWORD f);
 USERAPI LONG ChangeDisplaySettingsExW(LPCWSTR d, void *dm, HWND h, DWORD f, void *p);
+USERAPI LONG ChangeDisplaySettingsA(void *dm, DWORD f);
+USERAPI LONG ChangeDisplaySettingsExA(LPCSTR d, void *dm, HWND h, DWORD f, void *p);
+typedef struct {
+    WCHAR dmDeviceName[32];
+    WORD  dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+    DWORD dmFields;
+    struct { LONG x, y; } dmPosition;
+    DWORD dmDisplayOrientation, dmDisplayFixedOutput;
+    short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+    WCHAR dmFormName[32];
+    WORD  dmLogPixels;
+    DWORD dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+    DWORD dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2,
+          dmPanningWidth, dmPanningHeight;
+} DEVMODEW, *PDEVMODEW, *LPDEVMODEW;
+typedef struct {
+    BYTE  dmDeviceName[32];
+    WORD  dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+    DWORD dmFields;
+    struct { LONG x, y; } dmPosition;
+    DWORD dmDisplayOrientation, dmDisplayFixedOutput;
+    short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+    BYTE  dmFormName[32];
+    WORD  dmLogPixels;
+    DWORD dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+    DWORD dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2,
+          dmPanningWidth, dmPanningHeight;
+} DEVMODEA, *PDEVMODEA, *LPDEVMODEA;
+#define DM_BITSPERPEL          0x00040000
+#define DM_PELSWIDTH           0x00080000
+#define DM_PELSHEIGHT          0x00100000
+#define DM_DISPLAYFLAGS        0x00200000
+#define DM_DISPLAYFREQUENCY    0x00400000
+#define ENUM_CURRENT_SETTINGS  ((DWORD)-1)
+#define ENUM_REGISTRY_SETTINGS ((DWORD)-2)
+#define CDS_UPDATEREGISTRY     0x00000001
+#define CDS_TEST               0x00000002
+#define CDS_FULLSCREEN         0x00000004
+#define DISP_CHANGE_SUCCESSFUL 0
+#define DISP_CHANGE_FAILED     (-1)
+#define DISP_CHANGE_BADMODE    (-2)
+#ifndef WM_DISPLAYCHANGE
+#define WM_DISPLAYCHANGE       0x007E
+#endif
 USERAPI int CountClipboardFormats(void);
 USERAPI UINT EnumClipboardFormats(UINT fmt);
 USERAPI HWND GetClipboardOwner(void);
