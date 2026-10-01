@@ -29,6 +29,8 @@ typedef struct UmConsole UmConsole;
 void UmInit(void);
 /* Reclaim exited processes (call regularly from the desktop loop). */
 void UmPoll(void);
+/* The display mode changed: WM_DISPLAYCHANGE to every program window */
+void UmGuiDisplayChanged(int w, int h);
 
 /* Find a program by name: a path, or a bare name searched in @cwd,
  * C:\Programs and C:\Windows\System32 (".exe" added if missing), then as

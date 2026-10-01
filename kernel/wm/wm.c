@@ -831,6 +831,8 @@ static void draw_window(WND *w)
 /* -----------------------------------------------------------------------
  * Compositor
  * ----------------------------------------------------------------------- */
+static void cursor_after_present(void);
+
 void WmComposite(void)
 {
     if (!g_ready) return;
@@ -873,8 +875,10 @@ void WmComposite(void)
     GdiResetClip();
     if (g_overlay) g_overlay();
 
-    /* 4. Show the finished frame */
+    /* 4. Show the finished frame, with the pointer drawn over it */
     GdiPresent();
+    cursor_after_present();
+    GdiFlip();
     g_drawn_gen = gen;
 }
 
@@ -888,6 +892,7 @@ void WmComposite(void)
  * ----------------------------------------------------------------------- */
 static int  g_cx, g_cy;            /* device pixels */
 static bool g_cursor_shown;
+static bool g_cursor_started;      /* shown once: every frame redraws it */
 
 int WmCursorX(void) { return g_cx / GdiScale(); }
 int WmCursorY(void) { return g_cy / GdiScale(); }
@@ -904,6 +909,7 @@ static void cursor_show_dev(int dx, int dy)
     g_cy = dy;
     GdiCursorDraw(g_cx, g_cy);
     g_cursor_shown = true;
+    g_cursor_started = true;
 }
 
 void WmCursorShow(int x, int y)
@@ -939,4 +945,46 @@ void WmCursorReshow(void)
      * Grab a fresh save-under and redraw at the current position. */
     g_cursor_shown = false;
     cursor_show_dev(g_cx, g_cy);
+}
+
+/* WmComposite: the frame is on the surface the pointer is drawn on (with
+ * page flipping, the page about to be shown) */
+static void cursor_after_present(void)
+{
+    if (g_cursor_started) WmCursorReshow();
+}
+
+/* -----------------------------------------------------------------------
+ * Display mode changes
+ * ----------------------------------------------------------------------- */
+void WmDisplayChanged(int old_w, int old_h, int old_s)
+{
+    /* The pointer keeps its place in proportion; its save-under belonged
+     * to the old surface */
+    int nw = GdiScreenW(), nh = GdiScreenH(), s = GdiScale();
+    if (old_w > 0 && old_h > 0 && old_s > 0) {
+        g_cx = (int)((INT64)(g_cx / old_s) * nw / old_w) * s;
+        g_cy = (int)((INT64)(g_cy / old_s) * nh / old_h) * s;
+    }
+    if (g_cx > nw * s - 1) g_cx = nw * s - 1;
+    if (g_cy > nh * s - 1) g_cy = nh * s - 1;
+    g_cursor_shown = false;
+
+    /* Windows: maximized ones fill the new work area, tiled ones go back
+     * to their own size, and everything is kept on screen */
+    for (int i = 0; i < WM_MAX_WINDOWS; i++) {
+        if (!g_used[i]) continue;
+        WND *w = &g_windows[i];
+        if (w->maximized) { w->frame = g_work; continue; }
+        if (w->snapped) { w->frame = w->restore; w->snapped = false; }
+        if (!w->fixed_size && !w->popup) {
+            if (w->frame.w > g_work.w) w->frame.w = g_work.w;
+            if (w->frame.h > g_work.h) w->frame.h = g_work.h;
+        }
+        if (w->frame.x + w->frame.w > nw) w->frame.x = nw - w->frame.w;
+        if (w->frame.x < 0) w->frame.x = 0;
+        if (!w->popup) clamp_to_work(w);
+    }
+    GdiCacheInvalidate();
+    mark_dirty();
 }

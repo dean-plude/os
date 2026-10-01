@@ -11,6 +11,7 @@
 #include "../net/net.h"
 #include "../wm/desktop.h"
 #include "../fs/persist.h"
+#include "../hal/display.h"
 
 #define SIDE_W 200
 #define ITEM_H 36
@@ -65,21 +66,48 @@ static void page_system(int x, int y, int w)
     row(x, y, w, "Uptime", up);
 }
 
+/* Display page: the resolution buttons (chips) sit MODES_DY below the
+ * page's top; set_mouse finds them with the same numbers */
+#define CHIP_W   116
+#define CHIP_H   32
+#define CHIP_GAP 8
+#define MODES_DY (26 + 50 + 50 + 26)
+
+static int chip_cols(int w)
+{
+    int n = (w + CHIP_GAP) / (CHIP_W + CHIP_GAP);
+    return n < 1 ? 1 : n;
+}
+
 static void page_display(int x, int y, int w)
 {
-    char res[32], scale[32], logical[32];
+    char res[32], scale[48], s1[32];
     int s = GdiScale();
-    ksnprintf(res, sizeof(res), "%d x %d", GdiScreenW() * s, GdiScreenH() * s);
-    ksnprintf(scale, sizeof(scale), "%d%%%s", s * 100, s > 1 ? " (recommended)" : "");
-    ksnprintf(logical, sizeof(logical), "%d x %d", GdiScreenW(), GdiScreenH());
+    DisplayMode cur = DisplayCurrentMode();
+    ksnprintf(res, sizeof(res), "%d x %d", cur.w, cur.h);
+    ksnprintf(scale, sizeof(scale), "%d%% (desktop %d x %d)", s * 100, GdiScreenW(), GdiScreenH());
+    int top = y;
     GdiTextBold(x, y, "Scale & layout", UI_TEXT);   y += 26;
     row(x, y, w, "Display resolution", res);         y += 50;
     row(x, y, w, "Scale", scale);                    y += 50;
-    row(x, y, w, "Desktop size (logical pixels)", logical); y += 62;
-    GdiTextBold(x, y, "Rendering", UI_TEXT);         y += 26;
-    row(x, y, w, "Anti-aliasing", "On");             y += 50;
-    row(x, y, w, "Double buffering", "On");          y += 50;
-    row(x, y, w, "Fonts", "Inter, Cascadia Mono");
+
+    GdiTextBold(x, top + MODES_DY - 26, "Resolution", UI_TEXT);
+    y = top + MODES_DY;
+    int cols = chip_cols(w), n = DisplayModeCount();
+    for (int i = 0; i < n; i++) {
+        DisplayMode m;
+        DisplayModeAt(i, &m);
+        int cx = x + (i % cols) * (CHIP_W + CHIP_GAP), cy = y + (i / cols) * (CHIP_H + CHIP_GAP);
+        bool on = m.w == cur.w && m.h == cur.h;
+        GdiRoundRect(RECT(cx, cy, CHIP_W, CHIP_H), 6, on ? UI_ACCENT : UI_CARD, GDI_TRANSPARENT);
+        ksnprintf(s1, sizeof(s1), "%d x %d", m.w, m.h);
+        GdiTextCenter(cx, cy + 8, CHIP_W, s1, on ? GDI_WHITE : UI_TEXT);
+    }
+    y += ((n + cols - 1) / cols) * (CHIP_H + CHIP_GAP) + 18;
+
+    GdiTextBold(x, y, "Display adapter", UI_TEXT);   y += 26;
+    row(x, y, w, "Driver", DisplayDriverName());     y += 50;
+    row(x, y, w, "Presentation", DisplayCanFlip() ? "Back buffer, page flipping" : "Back buffer, copied to the screen");
 }
 
 static void page_storage(int x, int y, int w)
@@ -245,9 +273,22 @@ static void set_mouse(WND *w, WmMouseMsg msg, int x, int y)
     Settings *st = w->user;
     if (msg != WM_MOUSE_DOWN) return;
     if (x >= SIDE_W) {
+        GdiRect c = WmClientRect(w);
+        if (st->page == SETTINGS_DISPLAY) {
+            /* resolution chips (layout matches set_paint + page_display) */
+            int px = SIDE_W + 28, py = 20 + 52 + MODES_DY, pw = c.w - SIDE_W - 56;
+            int cols = chip_cols(pw);
+            if (x < px || y < py) return;
+            int col = (x - px) / (CHIP_W + CHIP_GAP), r = (y - py) / (CHIP_H + CHIP_GAP);
+            if (col >= cols || (x - px) % (CHIP_W + CHIP_GAP) >= CHIP_W ||
+                (y - py) % (CHIP_H + CHIP_GAP) >= CHIP_H) return;
+            DisplayMode m;
+            if (!DisplayModeAt(r * cols + col, &m)) return;
+            if (DesktopSetDisplayMode(m.w, m.h)) DisplaySetDefaultMode(m.w, m.h);
+            return;
+        }
         /* theme cards (layout matches set_paint + page_personalize) */
         if (st->page != SETTINGS_PERSONALIZE) return;
-        GdiRect c = WmClientRect(w);
         int px = SIDE_W + 28, py = 20 + 52 + 30, pw = c.w - SIDE_W - 56;
         int cw = theme_card_w(pw);
         if (y < py || y >= py + THEME_CARD_H + 40 || x < px) return;

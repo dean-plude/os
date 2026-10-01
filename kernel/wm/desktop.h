@@ -38,6 +38,11 @@ void DesktopRestart(void);
  * and does it (NtShutdownSystem, ExitWindowsEx) */
 void DesktopPowerRequest(bool restart);
 
+/* Switch the screen to @w x @h (a mode the display driver lists) and lay
+ * the desktop and its windows out again.  False: the mode is not
+ * supported (nothing changed).  Takes the desktop lock. */
+bool DesktopSetDisplayMode(int w, int h);
+
 /* Toggle the Start menu open/closed. */
 void DesktopToggleStart(void);
 

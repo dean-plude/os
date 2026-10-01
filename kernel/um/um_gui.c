@@ -24,6 +24,8 @@
 #include "../gdi/gdi.h"
 #include "../apps/apps.h"
 #include "../ke/waitq.h"
+#include "../wm/desktop.h"
+#include "../hal/display.h"
 
 /* Win32 window messages we deliver */
 #define WM_DESTROY        0x0002
@@ -671,12 +673,67 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *  12 ACCEPT_DROPS arg: the flags for this window
  *  13 DROP        arg: the target's window id; ptr <- { x, y, effect, bytes,
  *                 then the UTF-16 file list }: queued to the target as WM_NOVA_DROP
- *  14 DROP_FETCH  ptr -> { x, y, effect, source pid, bytes, the list }, arg: room in bytes */
+ *  14 DROP_FETCH  ptr -> { x, y, effect, source pid, bytes, the list }, arg: room in bytes
+ * Display modes (hwnd may be 0):
+ *  15 DISPLAY_MODE  arg: a mode index (0 = largest), -1 the current mode,
+ *                   -2 the default (the user's) mode; ptr -> { width, height,
+ *                   bits per pixel, frequency }.  0: no such mode
+ *  16 SET_DISPLAY   ptr <- { width, height, CDS_* flags } (0 x 0: the default
+ *                   mode); returns a DISP_CHANGE_* code */
 #define CTL_WINDOW_AT    11
 #define CTL_ACCEPT_DROPS 12
 #define CTL_DROP         13
 #define CTL_DROP_FETCH   14
+#define CTL_DISPLAY_MODE 15
+#define CTL_SET_DISPLAY  16
 #define WM_NOVA_DROP     0x03FE
+#define WM_DISPLAYCHANGE 0x007E
+#define CDS_UPDATEREGISTRY 0x01
+#define CDS_TEST           0x02
+#define CDS_FULLSCREEN     0x04
+#define DISP_CHANGE_SUCCESSFUL 0
+#define DISP_CHANGE_FAILED     (-1)
+#define DISP_CHANGE_BADMODE    (-2)
+
+/* The process whose CDS_FULLSCREEN mode is on: the default mode comes back
+ * when it ends */
+static UmProcess *g_fullscreen_proc;
+
+static UINT64 display_mode_info(UINT64 which, UINT64 ptr)
+{
+    DisplayMode m;
+    INT32 i = (INT32)which;              /* WOW64 passes 32 bits */
+    if (i == -1) m = DisplayCurrentMode();
+    else if (i == -2) m = DisplayDefaultMode();
+    else if (!DisplayModeAt((int)i, &m)) return 0;
+    UINT32 out[4] = { (UINT32)m.w, (UINT32)m.h, 32, 60 };
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, out, sizeof(out))) ? 1 : 0;
+}
+
+static UINT64 display_set(UmProcess *p, UINT64 ptr)
+{
+    INT32 in[3];
+    if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+    UINT32 flags = (UINT32)in[2];
+    bool reset = in[0] == 0 && in[1] == 0;
+    DisplayMode m = reset ? DisplayDefaultMode() : (DisplayMode){ in[0], in[1] };
+    if (!DisplayModeSupported(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_BADMODE;
+    if (flags & CDS_TEST) return DISP_CHANGE_SUCCESSFUL;
+    if (!DesktopSetDisplayMode(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+    if (flags & CDS_UPDATEREGISTRY) DisplaySetDefaultMode(m.w, m.h);
+    g_fullscreen_proc = !reset && (flags & CDS_FULLSCREEN) && !(flags & CDS_UPDATEREGISTRY) ? p : NULL;
+    return DISP_CHANGE_SUCCESSFUL;
+}
+
+void UmGuiDisplayChanged(int w, int h)
+{
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++)
+        if (g_win[i].used && g_win[i].proc)
+            enqueue_locked(&g_win[i], WM_DISPLAYCHANGE, 32, packxy(w, h), 0, 0);
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    waitq_wake(&g_guiq);
+}
 #define DROP_MAX         (64 * 1024)
 
 static GuiWin *win_by_id(UINT32 id)             /* any process's; under g_gui_lock */
@@ -701,6 +758,8 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, c, sizeof(c))) ? 1 : 0;
     }
     if (a2 == CTL_PRESENT) { WmInvalidate(); return 1; }
+    if (a2 == CTL_DISPLAY_MODE) return display_mode_info(a3, a4);
+    if (a2 == CTL_SET_DISPLAY) return display_set(p, a4);
     if (a2 == CTL_WINDOW_AT) {
         INT32 pt[2], out[4] = { 0, 0, 0, 0 };
         if (!NT_SUCCESS(CopyFromUser(pt, (const void *)(uintptr_t)a4, sizeof(pt)))) return 0;
@@ -878,6 +937,11 @@ void um_gui_process_gone(UmProcess *p)
         }
     }
     WmInvalidate();
+    if (g_fullscreen_proc == p) {             /* its full-screen mode ends with it */
+        g_fullscreen_proc = NULL;
+        DisplayMode m = DisplayDefaultMode();
+        DesktopSetDisplayMode(m.w, m.h);
+    }
     DesktopUnlock();
 }
 
