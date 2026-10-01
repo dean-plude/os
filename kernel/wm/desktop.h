@@ -34,9 +34,12 @@ void DesktopRun(void *arg);
 /* Save drive C: and restart the PC */
 void DesktopRestart(void);
 
-/* Shut down or restart from any thread: the desktop loop saves drive C:
- * and does it (NtShutdownSystem, ExitWindowsEx) */
-void DesktopPowerRequest(bool restart);
+/* Shut down, restart or sleep from any thread: the desktop loop saves
+ * drive C: and does it (NtShutdownSystem, ExitWindowsEx, SetSuspendState).
+ * POWER_SLEEP waits until the machine is awake again and returns whether
+ * it slept; the others return at once. */
+enum { POWER_NONE, POWER_SHUTDOWN, POWER_RESTART, POWER_SLEEP };
+bool DesktopPowerRequest(int what);
 
 /* Toggle the Start menu open/closed. */
 void DesktopToggleStart(void);

@@ -14,6 +14,7 @@
 #include "../../ke/printf.h"
 #include "../../ke/syscall.h"
 #include "../../ke/scheduler.h"
+#include "../../ke/sleep.h"
 #include "../../ps/ps.h"
 #include "../../hal/ps2.h"
 #include "../../ke/kpcr.h"
@@ -334,6 +335,10 @@ void interrupt_dispatch(InterruptFrame *frame)
      * (another CPU may hold it while it waits for us to flush). */
     if (vector == IPI_WAKE || vector == IPI_TLB) {
         smp_ipi(vector);
+        return;
+    }
+    if (vector == EXC_NMI && SleepFreezing()) {   /* the machine is going to sleep */
+        SleepFreezeCpu();
         return;
     }
     /* A fault inside a user-memory copy (the page went away under it):

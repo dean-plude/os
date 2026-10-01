@@ -13,6 +13,7 @@
 #define E1000_MTU_FRAME  1518     /* largest Ethernet frame we send/receive */
 
 bool        E1000Init(void);
+void        E1000Resume(void);    /* after S3 */
 bool        E1000Present(void);
 const char *E1000Name(void);
 void        E1000Mac(UINT8 mac[6]);

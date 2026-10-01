@@ -155,6 +155,7 @@ set(KERNEL_C_SOURCES
     ke/syscall.c
     ke/kpcr.c
     ke/smp.c
+    ke/sleep.c
     ke/waitq.c
     ke/probe.c
     ke/probe_test.c

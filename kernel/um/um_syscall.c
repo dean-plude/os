@@ -33,6 +33,7 @@
 #define ST_INFO_LENGTH_MISMATCH    0xC0000004u
 #define ST_INVALID_HANDLE          0xC0000008u
 #define ST_INVALID_PARAMETER       0xC000000Du
+#define ST_NOT_SUPPORTED           0xC00000BBu
 #define ST_END_OF_FILE             0xC0000011u
 #define ST_NO_MEMORY               0xC0000017u
 #define ST_CONFLICTING_ADDRESSES   0xC0000018u
@@ -1735,6 +1736,13 @@ UINT64 um_now_100ns(void)
     return g_boot_time + (sched_ticks() - g_boot_ticks) * 100000ULL;
 }
 
+/* After S3: the tick count stood still while the machine slept; the
+ * wall clock moves on by the time the CMOS clock measured */
+void UmClockAdvance(UINT64 delta_100ns)
+{
+    g_boot_time += delta_100ns;
+}
+
 /* NtShutdownSystem(SHUTDOWN_ACTION Action): ShutdownNoReboot (0) and
  * ShutdownPowerOff (2) power off, ShutdownReboot (1) restarts.  The
  * desktop loop saves drive C: and does it, so this returns. */
@@ -1743,8 +1751,31 @@ static UINT64 sys_shutdown_system(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     (void)a2; (void)a3; (void)a4;
     if ((UINT32)a1 > 2) return ST_INVALID_PARAMETER;
     kprintf("[UM] NtShutdownSystem(%s)\n", (UINT32)a1 == 1 ? "reboot" : "power off");
-    DesktopPowerRequest((UINT32)a1 == 1);
+    DesktopPowerRequest((UINT32)a1 == 1 ? POWER_RESTART : POWER_SHUTDOWN);
     return ST_SUCCESS;
+}
+
+/* NtSetSystemPowerState(POWER_ACTION, SYSTEM_POWER_STATE MinState, ULONG
+ * Flags) and NtInitiatePowerAction(POWER_ACTION, MinState, Flags, BOOLEAN
+ * Asynchronous): sleep (S3) returns once the machine is awake again */
+static UINT64 sys_power_action(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    switch ((UINT32)a1) {
+    case 2:                                      /* PowerActionSleep */
+        kprintf("[UM] Sleep requested\n");
+        return DesktopPowerRequest(POWER_SLEEP) ? ST_SUCCESS : ST_NOT_SUPPORTED;
+    case 4: case 6:                              /* PowerActionShutdown, ShutdownOff */
+        DesktopPowerRequest(POWER_SHUTDOWN);
+        return ST_SUCCESS;
+    case 5:                                      /* PowerActionShutdownReset */
+        DesktopPowerRequest(POWER_RESTART);
+        return ST_SUCCESS;
+    case 3:                                      /* PowerActionHibernate: no hibernation file */
+        return ST_NOT_SUPPORTED;
+    default:
+        return ST_INVALID_PARAMETER;
+    }
 }
 
 static UINT64 sys_query_system_time(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -2199,6 +2230,8 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtNovaProcessList,          sys_nova_process_list);
     um_install(SYSCALL_NtQuerySystemTime,          sys_query_system_time);
     um_install(SYSCALL_NtShutdownSystem,           sys_shutdown_system);
+    um_install(SYSCALL_NtSetSystemPowerState,      sys_power_action);
+    um_install(SYSCALL_NtInitiatePowerAction,      sys_power_action);
     um_install(SYSCALL_NtQueryPerformanceCounter,  sys_query_perf_counter);
     um_install(SYSCALL_NtDelayExecution,           sys_delay);
     um_install(SYSCALL_NtYieldExecution,           sys_yield);

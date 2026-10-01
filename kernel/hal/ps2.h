@@ -15,6 +15,7 @@
 /* Probe + initialize the controller, keyboard and mouse. Returns true if a
  * usable controller was found. */
 bool ps2_init(void);
+void ps2_resume(void);           /* after S3 */
 
 /* Drain all currently-available bytes from the controller, decoding them
  * into InputEvents posted to the input queue. Call frequently. */

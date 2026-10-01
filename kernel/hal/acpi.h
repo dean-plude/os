@@ -23,6 +23,18 @@ const void *AcpiFindTable(const char *sig);
 /* Enter S5 (soft off).  Returns only if the hardware didn't power off. */
 void AcpiPowerOff(void);
 
+/* Is S3 (suspend to RAM) possible: an \_S3 package and a FACS? */
+bool AcpiSleepSupported(void);
+
+/* Enter S3 with the firmware waking vectors: @real_vector (real mode,
+ * below 1 MiB) and @pm32_vector (32-bit protected mode, which ACPI 2.0+
+ * firmware prefers).  Returns false if the machine didn't go to sleep; on
+ * wake the firmware jumps to a vector instead of returning. */
+bool AcpiEnterS3(UINT32 real_vector, UINT32 pm32_vector);
+
+/* After waking: ACPI mode and the power button again */
+void AcpiResume(void);
+
 /* Reset the machine: the FADT's reset register, then port 0xCF9, then
  * the 8042, then a triple fault.  Never returns. */
 void AcpiReset(void) __attribute__((noreturn));

@@ -41,3 +41,7 @@ volatile void *PciMapBar(const PciDevice *d, int bar);
 
 /* Turn on memory-space decoding and bus mastering (for DMA). */
 void PciEnableDevice(const PciDevice *d);
+
+/* S3: save every function's configuration header, and put it back on wake */
+void PciSaveAll(void);
+void PciRestoreAll(void);

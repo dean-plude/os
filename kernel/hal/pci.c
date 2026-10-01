@@ -14,6 +14,7 @@
 #define PCI_MAX_DEVICES 64
 static PciDevice g_devices[PCI_MAX_DEVICES];
 static int       g_count;
+static UINT32    g_saved[PCI_MAX_DEVICES][16];   /* configuration headers over S3 */
 
 static UINT32 cfg_addr(UINT8 bus, UINT8 dev, UINT8 func, UINT8 off)
 {
@@ -178,4 +179,29 @@ bool PciFindClass(UINT8 class_code, UINT8 subclass, UINT8 prog_if, int index, Pc
         }
     }
     return false;
+}
+
+/* S3 takes the devices' power: their configuration (BARs, command
+ * register, bridge bus numbers) goes back as it was, in scan order so a
+ * bridge is set before the devices behind it, the command register last */
+void PciSaveAll(void)
+{
+    for (int i = 0; i < g_count; i++)
+        for (int r = 0; r < 16; r++)
+            g_saved[i][r] = PciRead32(g_devices[i].bus, g_devices[i].dev, g_devices[i].func, (UINT8)(r * 4));
+}
+
+/* (by the waking CPU alone, before the others run: without the lock,
+ * which a CPU stopped for the sleep may have been holding) */
+void PciRestoreAll(void)
+{
+    for (int i = 0; i < g_count; i++) {
+        const PciDevice *d = &g_devices[i];
+        for (int r = 15; r >= 1; r--) {
+            /* the command register last; the status half is write-1-to-clear */
+            UINT32 v = r == 1 ? g_saved[i][1] & 0xFFFFu : g_saved[i][r];
+            outl(PCI_ADDR, cfg_addr(d->bus, d->dev, d->func, (UINT8)(r * 4)));
+            outl(PCI_DATA, v);
+        }
+    }
 }

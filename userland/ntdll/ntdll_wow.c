@@ -728,6 +728,10 @@ NTSTATUS NTAPI NtOpenKeyEx(PHANDLE key, ACCESS_MASK access, POBJECT_ATTRIBUTES o
 NTSTATUS NTAPI NtDeleteKey(HANDLE key) { return SC(NtDeleteKey, H(key)); }
 NTSTATUS NTAPI NtFlushKey(HANDLE key)  { return SC(NtFlushKey, H(key)); }
 NTSTATUS NTAPI NtShutdownSystem(ULONG action) { return SC(NtShutdownSystem, U(action)); }
+NTSTATUS NTAPI NtSetSystemPowerState(ULONG action, ULONG min_state, ULONG flags)
+{ return SC(NtSetSystemPowerState, U(action), U(min_state), U(flags)); }
+NTSTATUS NTAPI NtInitiatePowerAction(ULONG action, ULONG min_state, ULONG flags, BOOLEAN async)
+{ return SC(NtInitiatePowerAction, U(action), U(min_state), U(flags), U(async)); }
 
 NTSTATUS NTAPI NtSetValueKey(HANDLE key, PUNICODE_STRING name, ULONG title, ULONG type, PVOID data, ULONG size)
 {

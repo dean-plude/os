@@ -80,12 +80,13 @@ bool ps2_init(void)
     ctrl_cmd(CMD_DISABLE_P2);
     flush_output();
 
-    /* Read config; disable both IRQs (we poll), keep translation (bit6). */
+    /* Read config; disable both IRQs (we poll), translation on (bit6). */
     ctrl_cmd(CMD_READ_CFG);
     UINT8 cfg = read_data();
     cfg &= (UINT8)~0x03;     /* clear bit0 (kbd int), bit1 (mouse int) */
     cfg &= (UINT8)~0x10;     /* clear bit4 — ensure first port clock enabled */
     cfg &= (UINT8)~0x20;     /* clear bit5 — ensure mouse clock enabled */
+    cfg |= 0x40;             /* translation on (set 1), which firmware may not have set after S3 */
     ctrl_cmd(CMD_WRITE_CFG);
     write_data(cfg);
 
@@ -112,6 +113,14 @@ bool ps2_init(void)
             !g_have_mouse ? "no mouse" : g_packet == 4 ? "wheel mouse" : "mouse");
     g_ready = true;
     return true;
+}
+
+/* After S3: the controller and devices were reset; set them up again */
+void ps2_resume(void)
+{
+    g_ready = false;                     /* the timer's poll stays out meanwhile */
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    ps2_init();
 }
 
 /* ---- decoding ---- */

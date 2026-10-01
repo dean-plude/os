@@ -3,6 +3,7 @@
  * fixed speed on mains power, with the "Balanced" scheme active.
  */
 #include <windows.h>
+#include <winternl.h>
 
 #define POWRPROF __declspec(dllexport)
 #define STATUS_SUCCESS_           0
@@ -67,8 +68,26 @@ POWRPROF DWORD WINAPI PowerReadDCValueIndex(HKEY root, const GUID *s, const GUID
 POWRPROF DWORD WINAPI PowerRegisterSuspendResumeNotification(DWORD flags, HANDLE recipient, PVOID *h)
 { (void)flags; (void)recipient; *h = (PVOID)(ULONG_PTR)0x5E01; return ERROR_SUCCESS; }
 POWRPROF DWORD WINAPI PowerUnregisterSuspendResumeNotification(PVOID h) { (void)h; return ERROR_SUCCESS; }
-POWRPROF BOOLEAN WINAPI GetPwrCapabilities(PVOID caps) { ZeroMemory(caps, 76); return TRUE; }
-POWRPROF BOOLEAN WINAPI IsPwrSuspendAllowed(void) { return FALSE; }
+/* SYSTEM_POWER_CAPABILITIES: a power button, S3 and S5 */
+POWRPROF BOOLEAN WINAPI GetPwrCapabilities(PVOID caps)
+{
+    BOOLEAN *b = caps;
+    ZeroMemory(caps, 76);
+    b[0] = TRUE;                          /* PowerButtonPresent */
+    b[5] = TRUE;                          /* SystemS3 */
+    b[7] = TRUE;                          /* SystemS5 */
+    return TRUE;
+}
+/* S3 where the firmware offers it (SetSuspendState fails where it doesn't);
+ * no hibernation */
+POWRPROF BOOLEAN WINAPI IsPwrSuspendAllowed(void) { return TRUE; }
 POWRPROF BOOLEAN WINAPI IsPwrHibernateAllowed(void) { return FALSE; }
 POWRPROF BOOLEAN WINAPI IsPwrShutdownAllowed(void) { return TRUE; }
-POWRPROF BOOLEAN WINAPI SetSuspendState(BOOLEAN hib, BOOLEAN force, BOOLEAN wake) { (void)hib; (void)force; (void)wake; return FALSE; }
+/* Sleep; returns once the machine is awake again */
+POWRPROF BOOLEAN WINAPI SetSuspendState(BOOLEAN hib, BOOLEAN force, BOOLEAN wake)
+{
+    (void)force; (void)wake;
+    LONG s = NtInitiatePowerAction(hib ? 3 : 2, hib ? 5 : 4, 0, FALSE);   /* PowerSystemHibernate / Sleeping3 */
+    if (s) { SetLastError(s == (LONG)0xC00000BB ? ERROR_NOT_SUPPORTED : ERROR_GEN_FAILURE); return FALSE; }
+    return TRUE;
+}

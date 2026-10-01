@@ -254,6 +254,10 @@ NTSYSAPI NTSTATUS NTAPI NtQueryKey(HANDLE key, int cls, PVOID info, ULONG len, P
 NTSYSAPI NTSTATUS NTAPI NtFlushKey(HANDLE key);
 /* SHUTDOWN_ACTION: 0 ShutdownNoReboot, 1 ShutdownReboot, 2 ShutdownPowerOff */
 NTSYSAPI NTSTATUS NTAPI NtShutdownSystem(ULONG action);
+/* POWER_ACTION: 2 Sleep, 3 Hibernate, 4 Shutdown, 5 ShutdownReset, 6 ShutdownOff;
+ * sleep returns once the machine is awake again */
+NTSYSAPI NTSTATUS NTAPI NtSetSystemPowerState(ULONG action, ULONG min_state, ULONG flags);
+NTSYSAPI NTSTATUS NTAPI NtInitiatePowerAction(ULONG action, ULONG min_state, ULONG flags, BOOLEAN async);
 NTSYSAPI NTSTATUS NTAPI NtRenameKey(HANDLE key, PUNICODE_STRING name);
 NTSYSAPI PVOID    NTAPI RtlPcToFileHeader(PVOID pc, PVOID *base);
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE p, NTSTATUS status);

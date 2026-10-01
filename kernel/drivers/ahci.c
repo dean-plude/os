@@ -15,6 +15,7 @@
 #include "../lib/string.h"
 #include "../ke/printf.h"
 #include "../arch/x86_64/cpu.h"
+#include "../arch/x86_64/apic.h"
 
 /* HBA (generic host control) registers */
 #define HBA_CAP     0x00
@@ -37,6 +38,8 @@
 #define PX_CI       0x38
 
 #define CMD_ST      (1u << 0)
+#define CMD_SUD     (1u << 1)
+#define CMD_POD     (1u << 2)
 #define CMD_FRE     (1u << 4)
 #define CMD_FR      (1u << 14)
 #define CMD_CR      (1u << 15)
@@ -78,6 +81,7 @@ typedef struct __attribute__((packed)) {
 
 typedef struct {
     BlockDev          dev;
+    volatile UINT8   *abar;              /* the controller's registers */
     volatile UINT8   *port;              /* the port's registers */
     CmdHeader        *cl;                /* command list (1 KiB aligned) */
     UINT8            *fis;               /* received FIS area (256 B aligned) */
@@ -209,6 +213,20 @@ static bool ahci_flush(BlockDev *bd)
     return issue(bd->ctx, ATA_FLUSH_CACHE_EXT, 0, 0, 0, false);
 }
 
+/* Point the port at its command list and FIS area and start it */
+static void port_setup(AhciDisk *d)
+{
+    port_stop(d);
+    pwr32(d, PX_CLB, (UINT32)phys(d->cl));
+    pwr32(d, PX_CLBU, (UINT32)(phys(d->cl) >> 32));
+    pwr32(d, PX_FB, (UINT32)phys(d->fis));
+    pwr32(d, PX_FBU, (UINT32)(phys(d->fis) >> 32));
+    pwr32(d, PX_IE, 0);                                  /* polled */
+    pwr32(d, PX_SERR, 0xFFFFFFFFu);
+    pwr32(d, PX_IS, 0xFFFFFFFFu);
+    port_start(d);
+}
+
 /* IDENTIFY strings are byte-swapped in 16-bit words and space padded */
 static void ata_string(const UINT16 *w, int words, char *out)
 {
@@ -229,6 +247,7 @@ static void probe_port(volatile UINT8 *abar, int port)
     if (g_ndisks >= MAX_DISKS) return;
     AhciDisk *d = &g_disks[g_ndisks];
     memset(d, 0, sizeof(*d));
+    d->abar = abar;
     d->port = abar + 0x100 + port * 0x80;
     UINT32 ssts = prd32(d, PX_SSTS);
     if ((ssts & 0xF) != 3) return;                       /* no device, or PHY not up */
@@ -242,15 +261,7 @@ static void probe_port(volatile UINT8 *abar, int port)
     d->ct = (CmdTable *)(mem + PAGE_SIZE);
     d->bounce = mem + 2 * PAGE_SIZE;
 
-    port_stop(d);
-    pwr32(d, PX_CLB, (UINT32)phys(d->cl));
-    pwr32(d, PX_CLBU, (UINT32)(phys(d->cl) >> 32));
-    pwr32(d, PX_FB, (UINT32)phys(d->fis));
-    pwr32(d, PX_FBU, (UINT32)(phys(d->fis) >> 32));
-    pwr32(d, PX_IE, 0);                                  /* polled */
-    pwr32(d, PX_SERR, 0xFFFFFFFFu);
-    pwr32(d, PX_IS, 0xFFFFFFFFu);
-    port_start(d);
+    port_setup(d);
 
     if (!issue(d, ATA_IDENTIFY, 0, 0, 512, false)) return;
     const UINT16 *id = (const UINT16 *)d->bounce;
@@ -284,4 +295,17 @@ int AhciInit(void)
             if (pi & (1u << p)) probe_port(abar, p);
     }
     return g_ndisks;
+}
+
+/* After S3: the controllers were reset; set each disk's port up again
+ * (once its link is back) with the same command list and buffers */
+void AhciResume(void)
+{
+    for (int i = 0; i < g_ndisks; i++) {
+        AhciDisk *d = &g_disks[i];
+        *(volatile UINT32 *)(d->abar + HBA_GHC) |= GHC_AE;
+        pwr32(d, PX_CMD, prd32(d, PX_CMD) | CMD_SUD | CMD_POD);     /* spin up, power on */
+        for (int t = 0; t < 1000 && (prd32(d, PX_SSTS) & 0xF) != 3; t++) udelay(1000);
+        port_setup(d);
+    }
 }

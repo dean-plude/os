@@ -62,7 +62,7 @@ static void lapic_write(uint32_t reg, uint32_t val)
 #define PIC2_DATA   0xA1
 #define PIC_EOI     0x20
 
-static void pic_disable(void)
+static void pic_mask(void)
 {
     /* Remap PIC1: ICW1 */
     outb(PIC1_CMD, 0x11);  io_wait();
@@ -85,7 +85,11 @@ static void pic_disable(void)
     /* OCW1: mask all IRQs on both PICs */
     outb(PIC1_DATA, 0xFF); io_wait();
     outb(PIC2_DATA, 0xFF); io_wait();
+}
 
+static void pic_disable(void)
+{
+    pic_mask();
     kprintf("[APIC] Legacy 8259A PIC disabled\n");
 }
 
@@ -194,6 +198,13 @@ void apic_init(void)
  * apic_init_ap — enable the calling CPU's LAPIC and its 100 Hz timer
  * (the other CPUs reuse the boot CPU's calibration)
  * ----------------------------------------------------------------------- */
+/* After S3: the firmware set the legacy PIC up again; mask it (no
+ * logging: the waking CPU takes no locks) */
+void apic_resume(void)
+{
+    pic_mask();
+}
+
 void apic_init_ap(void)
 {
     lapic_write(LAPIC_SPURIOUS, LAPIC_SPURIOUS_ENABLE | IRQ_SPURIOUS);

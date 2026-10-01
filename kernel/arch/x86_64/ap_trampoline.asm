@@ -10,7 +10,9 @@
 ;   whose low 2 MiB are identity-mapped) → 64-bit kernel code at ap_entry
 ;
 ; with RSP = ap_stack and RDI = ap_arg.  NXE is set before paging goes on
-; because the kernel's page tables use the NX bit.
+; because the kernel's page tables use the NX bit.  Waking from S3, the
+; firmware comes in the same way (the real-mode waking vector) or at
+; ap_trampoline_wake32 in 32-bit protected mode.
 
 [BITS 16]
 
@@ -19,6 +21,7 @@ SECTION .rodata
 GLOBAL ap_trampoline_start
 GLOBAL ap_trampoline_end
 GLOBAL ap_trampoline_data
+GLOBAL ap_trampoline_wake32
 
 ; Address of a label in the copy
 %define TRAMP_BASE 0x8000
@@ -38,6 +41,14 @@ ap_trampoline_start:
     jmp     dword 0x08:A(pm32)
 
 [BITS 32]
+; The 32-bit S3 waking vector (FACS X_Firmware_Waking_Vector): the firmware
+; comes here in flat protected mode, paging off, with its own GDT
+ap_trampoline_wake32:
+    cli
+    cld
+    lgdt    [A(tramp_gdtr)]
+    jmp     0x08:A(pm32)
+
 pm32:
     mov     ax, 0x10
     mov     ds, ax
