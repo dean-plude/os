@@ -88,7 +88,7 @@ PROGRAMS_X86 = {'hello', 'crttest', 'filetest', 'threads', 'dlltest', 'apitest',
                 'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh', 'cmd', 'pipetest',
                 'find', 'findstr', 'sort', 'more', 'timeout', 'cliptest'}
 # programs that live in C:\Windows\System32 rather than C:\Programs
-SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'timeout'}
+SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'timeout', 'shutdown'}
 UCRT_BASE = 0x7FFA28000000
 # DLLs built from more than their own directory
 DLL_SOURCES = {

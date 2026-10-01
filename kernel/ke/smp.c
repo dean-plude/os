@@ -16,6 +16,7 @@
 #include "../arch/x86_64/paging.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
+#include "../hal/acpi.h"
 #include "spinlock.h"
 
 void UmCpuCountChanged(void);
@@ -276,7 +277,6 @@ typedef struct __attribute__((packed)) {
     uint32_t oem_rev, creator, creator_rev;
 } AcpiHeader;
 
-static uint64_t g_rsdp;
 static bool     g_low_ok;
 
 #define TRAMP_PA  0x8000u                     /* trampoline; its page tables follow */
@@ -286,7 +286,6 @@ static bool     g_low_ok;
 
 void smp_early(const BootInfo *info)
 {
-    g_rsdp = info->rsdp_physical;
     const BootMemDescriptor *m = PHYS_TO_VIRT(info->mem_map);
     g_low_ok = true;
     for (uint64_t a = TRAMP_PA; a < TRAMP_PD + 0x1000; a += PAGE_SIZE) {
@@ -300,30 +299,10 @@ void smp_early(const BootInfo *info)
     }
 }
 
-static const AcpiHeader *acpi_find(const char *sig)
-{
-    if (!g_rsdp) return NULL;
-    const uint8_t *r = PHYS_TO_VIRT(g_rsdp);
-    if (memcmp(r, "RSD PTR ", 8)) return NULL;
-    uint64_t xsdt = r[15] >= 2 ? *(const uint64_t *)(r + 24) : 0;
-    uint32_t rsdt = *(const uint32_t *)(r + 16);
-    const AcpiHeader *root = PHYS_TO_VIRT(xsdt ? xsdt : rsdt);
-    if (!xsdt && !rsdt) return NULL;
-    uint32_t esize = xsdt ? 8 : 4;
-    uint32_t n = (root->len - sizeof(AcpiHeader)) / esize;
-    const uint8_t *ents = (const uint8_t *)(root + 1);
-    for (uint32_t i = 0; i < n; i++) {
-        uint64_t pa = esize == 8 ? *(const uint64_t *)(ents + 8 * i) : *(const uint32_t *)(ents + 4 * i);
-        const AcpiHeader *h = PHYS_TO_VIRT(pa);
-        if (pa && !memcmp(h->sig, sig, 4)) return h;
-    }
-    return NULL;
-}
-
 /* APIC IDs of the usable CPUs (the boot CPU included); returns the count */
 static uint32_t madt_cpus(uint8_t *ids, uint32_t max)
 {
-    const AcpiHeader *madt = acpi_find("APIC");
+    const AcpiHeader *madt = AcpiFindTable("APIC");
     if (!madt) return 0;
     const uint8_t *p = (const uint8_t *)madt + sizeof(AcpiHeader) + 8;   /* LAPIC address, flags */
     const uint8_t *end = (const uint8_t *)madt + madt->len;
