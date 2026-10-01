@@ -252,6 +252,8 @@ NTSYSAPI NTSTATUS NTAPI NtDeleteValueKey(HANDLE key, PUNICODE_STRING name);
 NTSYSAPI NTSTATUS NTAPI NtEnumerateKey(HANDLE key, ULONG index, int cls, PVOID info, ULONG len, PULONG ret);
 NTSYSAPI NTSTATUS NTAPI NtQueryKey(HANDLE key, int cls, PVOID info, ULONG len, PULONG ret);
 NTSYSAPI NTSTATUS NTAPI NtFlushKey(HANDLE key);
+/* SHUTDOWN_ACTION: 0 ShutdownNoReboot, 1 ShutdownReboot, 2 ShutdownPowerOff */
+NTSYSAPI NTSTATUS NTAPI NtShutdownSystem(ULONG action);
 NTSYSAPI NTSTATUS NTAPI NtRenameKey(HANDLE key, PUNICODE_STRING name);
 NTSYSAPI PVOID    NTAPI RtlPcToFileHeader(PVOID pc, PVOID *base);
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE p, NTSTATUS status);
@@ -288,6 +290,7 @@ NTSYSAPI NTSTATUS NTAPI NtReleaseSemaphore(HANDLE h, LONG count, PLONG prev);
 NTSYSAPI NTSTATUS NTAPI NtWaitForSingleObject(HANDLE h, BOOLEAN alertable, PLARGE_INTEGER timeout);
 NTSYSAPI NTSTATUS NTAPI NtWaitForMultipleObjects(ULONG n, const HANDLE *h, WAIT_TYPE type, BOOLEAN alertable,
                                                  PLARGE_INTEGER timeout);
+NTSYSAPI NTSTATUS NTAPI NtCompareObjects(HANDLE first, HANDLE second);
 NTSYSAPI NTSTATUS NTAPI NtDuplicateObject(HANDLE sp, HANDLE src, HANDLE tp, PHANDLE dst, ULONG access,
                                           ULONG attrs, ULONG options);
 /* Exceptions */

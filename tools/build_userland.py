@@ -72,9 +72,16 @@ DLLS = [
     ('crypt32',  ['kernel32', 'ntdll'],           0x7FFC10000000),
     ('dbghelp',  ['kernel32', 'ntdll'],           0x7FFC20000000),
     ('rpcrt4',   ['kernel32', 'ntdll'],           0x7FFC30000000),
-    ('cfgmgr32', ['advapi32', 'kernel32', 'ntdll'], 0x7FFC40000000),
-    ('dxgi',     ['kernel32', 'ntdll'],           0x7FFC50000000),
-    ('vulkan-1', ['advapi32', 'kernel32', 'ntdll'], 0x7FFC60000000),
+    ('uxtheme',  ['gdi32', 'user32', 'kernel32', 'ntdll'], 0x7FFC40000000),
+    ('dwmapi',   ['user32', 'kernel32', 'ntdll'], 0x7FFC50000000),
+    ('imm32',    ['kernel32', 'ntdll'],           0x7FFC60000000),
+    ('wintrust', ['kernel32', 'ntdll'],           0x7FFC70000000),
+    ('sensapi',  ['ws2_32', 'kernel32', 'ntdll'], 0x7FFC80000000),
+    ('wininet',  ['kernel32', 'ntdll'],           0x7FFC90000000),
+    ('msimg32',  ['gdi32', 'kernel32', 'ntdll'],  0x7FFCA0000000),
+    ('cfgmgr32', ['advapi32', 'kernel32', 'ntdll'], 0x7FFCB0000000),
+    ('dxgi',     ['kernel32', 'ntdll'],           0x7FFCC0000000),
+    ('vulkan-1', ['advapi32', 'kernel32', 'ntdll'], 0x7FFCD0000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}
@@ -84,7 +91,7 @@ PROGRAMS_X86 = {'hello', 'crttest', 'filetest', 'threads', 'dlltest', 'apitest',
                 'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh', 'cmd', 'pipetest',
                 'find', 'findstr', 'sort', 'more', 'timeout', 'cliptest'}
 # programs that live in C:\Windows\System32 rather than C:\Programs
-SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'timeout'}
+SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'timeout', 'shutdown'}
 UCRT_BASE = 0x7FFA28000000
 # DLLs built from more than their own directory
 DLL_SOURCES = {

@@ -1753,6 +1753,14 @@ USERAPI BOOL SetThreadDesktop(HANDLE h);
 USERAPI BOOL CloseWindowStation(HANDLE h);
 USERAPI BOOL GetUserObjectInformationW(HANDLE h, int index, PVOID p, DWORD n, LPDWORD need);
 USERAPI BOOL ExitWindowsEx(UINT flags, DWORD reason);
+#define EWX_LOGOFF          0x00000000
+#define EWX_SHUTDOWN        0x00000001
+#define EWX_REBOOT          0x00000002
+#define EWX_FORCE           0x00000004
+#define EWX_POWEROFF        0x00000008
+#define EWX_FORCEIFHUNG     0x00000010
+#define EWX_RESTARTAPPS     0x00000040
+#define EWX_HYBRID_SHUTDOWN 0x00400000
 USERAPI BOOL LockWorkStation(void);
 USERAPI BOOL ChangeWindowMessageFilterEx(HWND h, UINT msg, DWORD action, void *cf);
 USERAPI BOOL ChangeWindowMessageFilter(UINT msg, DWORD f);

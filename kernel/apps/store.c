@@ -73,7 +73,7 @@ static const StoreApp g_catalog[] = {
       "Mozilla Thunderbird\\core\\thunderbird.exe", KIND_ARCHIVE, 75, "Unpacked from the full installer; same runtime as Firefox", "Tb", GDI_C(0x1D, 0x66, 0xB4) },
     { "Notepad++", "Don Ho", "Source code editor with syntax highlighting and plugins",
       CAT_DEVELOPER, GH "notepad-plus-plus/notepad-plus-plus/releases/download/v8.8.3/npp.8.8.3.portable.x64.zip", "npp.8.8.3.portable.x64.zip", "Notepad++",
-      "Notepad++\\**\\notepad++.exe", KIND_ARCHIVE, 7, "64-bit portable zip; untested", "N++", GDI_C(0x8C, 0xC0, 0x44) },
+      "Notepad++\\**\\notepad++.exe", KIND_ARCHIVE, 7, "64-bit portable zip; opens and edits", "N++", GDI_C(0x8C, 0xC0, 0x44) },
     { "GIMP", "The GIMP Team", "Image editor for photo retouching, composition and authoring",
       CAT_GRAPHICS, "https://download.gimp.org/gimp/v3.0/windows/gimp-3.0.4-setup.exe", "gimp-3.0.4-setup.exe", NULL,
       NULL, KIND_SETUP, 260, "32-bit installer (Inno Setup) for 64-bit GIMP; untested", "G", GDI_C(0x5C, 0x4A, 0x36) },

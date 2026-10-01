@@ -196,6 +196,7 @@ typedef struct _OBJECT_HEADER {
 typedef struct _OBJECT_DIRECTORY_ENTRY {
     struct _OBJECT_DIRECTORY_ENTRY *HashNext;  /* Next in hash chain */
     void                           *Object;    /* Points to object body */
+    struct _OBJECT_DIRECTORY       *Directory; /* The directory it is in */
     UNICODE_STRING                  Name;      /* Object's name in this dir */
     WCHAR                           NameBuf[OBJ_NAME_MAX];
 } OBJECT_DIRECTORY_ENTRY, *POBJECT_DIRECTORY_ENTRY;

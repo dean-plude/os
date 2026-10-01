@@ -298,14 +298,10 @@ bool AppLinkRead(const RamNode *lnk, AppLink *out)
     return out->target[0] != '\0';
 }
 
-/* A Windows path ("C:\...") as a node on drive C: */
+/* A Windows path ("C:\...", "D:\...") as a node */
 static RamNode *resolve_win_path(const char *path)
 {
     if (!path || !path[0]) return NULL;
-    if (((path[0] | 0x20) >= 'a' && (path[0] | 0x20) <= 'z') && path[1] == ':') {
-        if ((path[0] | 0x20) != 'c') return NULL;
-        path += 2;
-    }
     return RamfsResolve(NULL, path);
 }
 

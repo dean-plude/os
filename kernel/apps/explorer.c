@@ -180,8 +180,14 @@ static bool copy_tree(RamNode *src, RamNode *dir, const char *name)
     for (RamNode *p = dir; p; p = p->parent) if (p == src) return false;   /* not into itself */
     RamNode *d = RamfsCreate(dir, name, src->dir);
     if (!d) return false;
-    if (!src->dir) return RamfsWrite(d, src->data, src->size);
-    bool ok = true;
+    RamfsRef(src);                          /* (a file or folder on another drive is read in meanwhile) */
+    bool ok = RamfsLoad(src);
+    if (!src->dir) {
+        ok = ok && RamfsWrite(d, src->data, src->size);
+        RamfsUnref(src);
+        return ok;
+    }
+    RamfsUnref(src);
     for (RamNode *c = src->child; c; c = c->next) ok = copy_tree(c, d, c->name) && ok;
     return ok;
 }

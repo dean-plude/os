@@ -1119,6 +1119,49 @@ finds them.
 - Next: Direct3D on top of this (WineD3D to OpenGL, or DXVK on Mesa's
   lavapipe Vulkan).
 
+## App coverage: Notepad++, bat, fd
+
+- **Notepad++ 8.7.9** (64-bit portable) opens with its menus, toolbar and
+  editor, and takes typing.  What it needed: the `.exe`'s TLS slot is now
+  always 0 (MSVC's thread-safe statics assume it), `GetFileAttributesEx`
+  leaves its output alone when the file is missing, and `RtlUnwindEx`
+  runs a consolidating unwind's callback, so `catch` blocks in programs
+  with the static MSVC C++ runtime run (a `throw` used to resume after
+  the throw site).
+- **bat** (`CompareObjectHandles`, a new `NtCompareObjects` call) and
+  **fd** (`GetModuleHandle` of an API set name) now run; rg and jq ran
+  already.
+- **New DLLs**: `uxtheme` (no theme; real buffered paint), `dwmapi`
+  (composition off), `imm32` (no IME), `msimg32`, `wintrust` (nothing is
+  signed), `sensapi`, `wininet` (URL parsing; offline).  `kernel32` has
+  `.ini` files (`GetPrivateProfileString` and friends), `gdi32` gradient
+  fills, pattern brushes and coordinate conversion, `crypt32`
+  `CryptStringToBinary`.
+- **`tools/novarun.py`** boots the image in QEMU with programs copied onto
+  a data disk, types Terminal commands and takes screenshots:
+  `python3 tools/novarun.py --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' 'x.exe' '!shot x.png'`.
+- Not yet: Notepad++'s status bar draws black and its toolbar is cut
+  short; Neovim hangs on exit (console input handles cannot be waited on);
+  ffmpeg needs `avrt`, `ncrypt`, `d2d1`, `dwrite` and more.
+
+## ACPI power: shut down, restart, power button
+
+- **`kernel/hal/acpi.c`** reads the FADT (PM1 event and control blocks,
+  the reset register, hardware-reduced sleep registers) and finds the S5
+  sleep type in the `\_S5` package of the DSDT or an SSDT, which is plain
+  data, so no AML interpreter is needed.  It switches the chipset into ACPI
+  mode through `SMI_CMD` and enables the fixed-feature power button.
+  The MADT lookup in `smp.c` now goes through `AcpiFindTable`.
+- **Shut down** writes `SLP_TYP | SLP_EN` to PM1a/PM1b control, falling
+  back to the virtual machines' ports.  **Restart** uses the FADT reset
+  register, then port `0xCF9`, then the 8042, then a triple fault.  Both
+  save drive C: first and show a "Shutting down" / "Restarting" screen.
+- **Power button**: the desktop polls `PWRBTN_STS` and shuts down, as
+  Windows does by default (`system_powerdown` in the QEMU monitor).
+- **Programs**: `NtShutdownSystem`, `ExitWindowsEx` (shut down, power off,
+  restart; no log-off), `InitiateSystemShutdown[Ex]` (at once; there is no
+  countdown to abort), and a `shutdown.exe` (`/s`, `/p`, `/r`).
+
 ## Direct3D: DXVK on Mesa's Vulkan
 
 Programs that draw with Direct3D 8, 9, 10 or 11 get it rendered on the

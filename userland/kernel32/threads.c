@@ -332,6 +332,12 @@ BOOL WINAPI DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, LPHANDLE dst, DWOR
     return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE);
 }
 
+BOOL WINAPI CompareObjectHandles(HANDLE first, HANDLE second)
+{
+    NTSTATUS s = NtCompareObjects(first, second);
+    return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE);
+}
+
 /* -----------------------------------------------------------------------
  * Critical sections, SRW locks, condition variables (thin wrappers)
  * ----------------------------------------------------------------------- */

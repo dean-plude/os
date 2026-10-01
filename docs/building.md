@@ -158,6 +158,23 @@ mcopy -i build/nova-data.img@@1M rg.exe ::/NOVA/C/Tools/
 (`@@1M`: the volume starts 1 MiB in, after the partition table.)  The ISO
 boots from a CD, which is read-only: attach a disk to keep files.
 
+### Other drives (NTFS)
+
+Every NTFS volume on an attached disk (a partition in an MBR or GPT, or a
+whole disk) becomes a drive of its own, D:, E:, ... in the order found.
+They are read-only: programs, the Terminal and File Explorer can list,
+open, copy from and run what is there, and writes fail with "the media is
+write protected".  Compressed and sparse files are read; encrypted files
+are not.  A file is read into memory when it is opened, so the largest one
+that opens is 256 MiB.  For a test disk (needs `ntfs-3g`):
+
+```bash
+scripts/make-ntfs-disk.sh build/nova-ntfs.img build
+qemu-system-x86_64 ... -drive format=raw,file=build/nova-ntfs.img
+```
+
+then run `drivetest` in the Terminal.
+
 ---
 
 ## Tests
@@ -185,6 +202,8 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
+| `acltest` | Access checks against DACLs (`AccessCheck`) |
+| `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
 
 Interactive ones: `winhello` and `guitest` (windows, menus, dialogs,

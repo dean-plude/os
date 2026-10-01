@@ -729,12 +729,12 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
         strncpy(path, name, sizeof(path) - 5);
         path[sizeof(path) - 5] = '\0';
         um_wow_path(p, path);
-        RamNode *n = RamfsResolve(p->cwd, path[1] == ':' ? path + 2 : path);
+        RamNode *n = RamfsResolve(p->cwd, path);
         if (!n) {
             const char *leaf = strrchr(path, '\\');
             if (!strchr(leaf ? leaf : path, '.')) {
                 strcat(path, ".dll");
-                n = RamfsResolve(p->cwd, path[1] == ':' ? path + 2 : path);
+                n = RamfsResolve(p->cwd, path);
             }
         }
         return n && !n->dir ? n : NULL;
@@ -744,11 +744,11 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
     if (n && !n->dir && known_dll(name)) return n;
     if (p->exe_dir) {
         RamNode *a = RamfsFind(p->exe_dir, name);
-        if (a && !a->dir && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
+        if (a && !a->dir && RamfsLoad(a) && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
     }
     if (dep_dir && dep_dir != p->exe_dir) {
         RamNode *a = RamfsFind(dep_dir, name);
-        if (a && !a->dir && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
+        if (a && !a->dir && RamfsLoad(a) && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
     }
     return n && !n->dir ? n : NULL;
 }
@@ -852,10 +852,11 @@ static RamNode *loader_file(Loader *L, RamNode *file, const char *name, char *pa
     DesktopLock();
     if (!file) file = find_dll(p, name, L->dep_dir);
     if (file && L->npins < UM_MAX_MODULES) {
-        RamfsPin(file);
+        RamfsPin(file);                     /* (reads it in, on a mounted volume) */
         L->pins[L->npins++] = file;
         RamfsPath(file, path, cap);
         *dir = file->parent;
+        if (!file->data && file->size) file = NULL;  /* it could not be read */
     } else file = NULL;
     DesktopUnlock();
     if (L->bkl) bkl_drop();
@@ -1832,6 +1833,25 @@ void UmFault(UINT32 status, UINT64 rip, UINT64 addr)
     UmFaultAt(status, rip, addr, 0);
 }
 
+/* The return addresses on a user stack from @sp (serial log only) */
+void um_log_stack(UmProcess *p, UINT64 sp)
+{
+    if (!sp) return;
+    int shown = 0, bad = 0;
+    unsigned step = p->wow ? 4 : 8;
+    for (unsigned i = 0; i < 4096 && shown < 24; i++) {
+        UINT64 v = 0;
+        if (!NT_SUCCESS(CopyFromUser(&v, (const void *)(uintptr_t)(sp + i * step), step))) {
+            if (++bad > 1024) break;                /* (it may start below the stack) */
+            continue;
+        }
+        const UmModule *cm = um_module_at(p, v);
+        if (!cm || v - cm->base < 0x1000) continue;
+        kprintf("[UM]   stack +%04x: %s+0x%llx\n", i * step, cm->name, (unsigned long long)(v - cm->base));
+        shown++;
+    }
+}
+
 /* As UmFault; @sp (0: unknown) is the stack pointer at the fault, which
  * names the caller when the program jumped to a bad address */
 void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
@@ -1871,23 +1891,7 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
                         code[0], code[1], code[2], code[3], code[4], code[5], code[6], code[7], code[8], code[9],
                         code[10], code[11], (unsigned long long)sp);
         }
-        /* the return addresses on the stack (serial log only): where it came from */
-        if (sp) {
-            int shown = 0;
-            unsigned step = p->wow ? 4 : 8;
-            int bad = 0;
-            for (unsigned i = 0; i < 4096 && shown < 24; i++) {
-                UINT64 v = 0;
-                if (!NT_SUCCESS(CopyFromUser(&v, (const void *)(uintptr_t)(sp + i * step), step))) {
-                    if (++bad > 1024) break;                /* (it may start below the stack) */
-                    continue;
-                }
-                const UmModule *cm = um_module_at(p, v);
-                if (!cm || v - cm->base < 0x1000) continue;
-                kprintf("[UM]   stack +%04x: %s+0x%llx\n", i * step, cm->name, (unsigned long long)(v - cm->base));
-                shown++;
-            }
-        }
+        um_log_stack(p, sp);                        /* where it came from (serial log only) */
     }
     um_exit_process(status);
 }

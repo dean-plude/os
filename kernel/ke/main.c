@@ -38,6 +38,7 @@
  */
 
 #include "../fs/persist.h"
+#include "../fs/drives.h"
 #include "../include/types.h"
 #include "../../include/boot_protocol.h"
 #include "../hal/serial.h"
@@ -70,6 +71,7 @@
 #include "../fs/setup.h"
 #include "../fs/ramfs.h"
 #include "../hal/pci.h"
+#include "../hal/acpi.h"
 #include "../net/net.h"
 #include "../um/um.h"
 #include "kpcr.h"
@@ -205,6 +207,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     kprintf("=== Phase 1: Memory Manager ===\n");
     pmm_init(info);
     smp_early(info);                      /* before the memory map can be reused */
+    UINT64 rsdp = info->rsdp_physical;    /* for AcpiInitialize, once paging is up */
     SetupBootInfo(info);                  /* installation media (booted from the disc) */
 
     kprintf("=== Phase 1: Paging ===\n");
@@ -362,7 +365,9 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
 
     /* Devices and networking: PCI scan, e1000 NIC, lwIP + DHCP */
     PciInitialize();
+    AcpiInitialize(rsdp);                 /* power-off, reset, the power button; MADT for SMP */
     PersistInit();                        /* SATA disks; the volume that keeps drive C: */
+    DrivesInit();                         /* their NTFS volumes: drives D:, E:, ... */
     if (!NetInitialize())
         kprintf("[NET] No network (no supported adapter)\n");
 

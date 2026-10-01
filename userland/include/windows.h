@@ -249,6 +249,7 @@ typedef struct _STARTUPINFOA {
 #define ERROR_NO_MORE_FILES      18
 #define ERROR_HANDLE_EOF         38
 #define ERROR_NOT_SUPPORTED      50
+#define ERROR_NO_SHUTDOWN_IN_PROGRESS 1116
 #define ERROR_FILE_EXISTS        80
 #define ERROR_INVALID_PARAMETER  87
 #define ERROR_DISK_FULL          112

@@ -22,6 +22,7 @@
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/apic.h"
 #include "../wm/clipboard.h"
+#include "../wm/desktop.h"
 
 #define ST_SUCCESS                 0x00000000u
 #define ST_PENDING                 0x00000103u
@@ -36,6 +37,8 @@
 #define ST_NO_MEMORY               0xC0000017u
 #define ST_CONFLICTING_ADDRESSES   0xC0000018u
 #define ST_ACCESS_DENIED           0xC0000022u
+#define ST_MEDIA_WRITE_PROTECTED   0xC00000A2u
+#define ST_DISK_CORRUPT            0xC0000032u
 #define ST_OBJECT_NAME_INVALID     0xC0000033u
 #define ST_OBJECT_NAME_NOT_FOUND   0xC0000034u
 #ifndef ST_TOO_MANY_HANDLES
@@ -382,9 +385,8 @@ static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode 
         if (!h || h->kind != H_DIR) return ST_INVALID_HANDLE;
         *root = h->node;
     }
-    if (((out[0] | 0x20) >= 'a' && (out[0] | 0x20) <= 'z') && out[1] == ':' &&
-        (out[0] | 0x20) != 'c')
-        return ST_OBJECT_PATH_NOT_FOUND;                /* only drive C: exists */
+    if (((out[0] | 0x20) >= 'a' && (out[0] | 0x20) <= 'z') && out[1] == ':' && !RamfsDriveRoot(out[0]))
+        return ST_OBJECT_PATH_NOT_FOUND;                /* no such drive */
     wow_redirect(p, out);
     return ST_SUCCESS;
 }
@@ -413,8 +415,12 @@ static RamNode *parent_of(RamNode *root, char *path, const char **leaf)
     for (char *c = path; *c; c++) if (*c == '\\' || *c == '/') slash = c;
     if (!slash) { *leaf = path; return root; }
     *leaf = slash + 1;
-    if (slash == path || (slash == path + 2 && path[1] == ':')) {
-        return RamfsResolve(NULL, "\\");
+    if (slash == path || (slash == path + 2 && path[1] == ':')) {   /* the root of the drive */
+        char c = slash[1];
+        slash[1] = '\0';
+        RamNode *dir = RamfsResolve(root, path);
+        slash[1] = c;
+        return dir;
     }
     *slash = '\0';
     RamNode *dir = RamfsResolve(root, path);
@@ -486,6 +492,12 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
     DesktopLock();
     RamNode *node = path[0] ? RamfsResolve(root, path) : root;
     UINT64 info = 1;                                            /* FILE_OPENED */
+    if (node && RamfsReadOnly(node) &&                          /* a read-only volume (drives D:, ...) */
+        (wr || disposition == 0 || disposition == 4 || disposition == 5 || (options & 0x1000))) {
+        DesktopUnlock();
+        return iosb(iosb_ptr, disposition == 2 ? ST_OBJECT_NAME_COLLISION : ST_MEDIA_WRITE_PROTECTED, 0);
+    }
+    if (node && !RamfsLoad(node)) { DesktopUnlock(); return iosb(iosb_ptr, ST_DISK_CORRUPT, 0); }
     if (node) {
         if (disposition == 2) { DesktopUnlock(); return iosb(iosb_ptr, ST_OBJECT_NAME_COLLISION, 4); }
         if (want_file && node->dir) { DesktopUnlock(); return iosb(iosb_ptr, ST_FILE_IS_A_DIRECTORY, 0); }
@@ -505,6 +517,7 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
         RamNode *dir = parent_of(root, path, &leaf);
         if (!dir || !dir->dir) { DesktopUnlock(); return iosb(iosb_ptr, ST_OBJECT_PATH_NOT_FOUND, 0); }
         if (!*leaf) { DesktopUnlock(); return iosb(iosb_ptr, ST_OBJECT_NAME_INVALID, 0); }
+        if (RamfsReadOnly(dir)) { DesktopUnlock(); return iosb(iosb_ptr, ST_MEDIA_WRITE_PROTECTED, 0); }
         node = RamfsCreate(dir, leaf, want_dir);
         if (!node) { DesktopUnlock(); return iosb(iosb_ptr, ST_DISK_FULL, 0); }
         info = 2;                                               /* FILE_CREATED */
@@ -547,6 +560,25 @@ static UINT64 sys_close(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a2; (void)a3; (void)a4;
     return um_close_handle(a1);
+}
+
+/* NtCompareObjects(HANDLE First, HANDLE Second): whether two handles stand
+ * for the same object (CompareObjectHandles) */
+static UINT64 sys_compare_objects(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    if (a1 == a2) return ST_SUCCESS;
+    UmProcess *p = UmCurrent();
+    um_lock(&p->lock);
+    UmHandle *x = handle(p, a1), *y = handle(p, a2);
+    UINT64 r;
+    if (!x || !y) r = ST_INVALID_HANDLE;
+    else if (x->kind != y->kind) r = UM_STATUS_NOT_SAME_OBJECT;
+    else if (x->kind == H_OBJECT) r = x->obj == y->obj ? ST_SUCCESS : UM_STATUS_NOT_SAME_OBJECT;
+    else if (x->kind == H_FILE || x->kind == H_DIR) r = x->node == y->node ? ST_SUCCESS : UM_STATUS_NOT_SAME_OBJECT;
+    else r = ST_SUCCESS;                        /* the console's input or output, NUL */
+    um_unlock(&p->lock);
+    return r;
 }
 
 UINT64 um_close_handle(UINT64 a1)
@@ -878,6 +910,8 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
     UINT32 cls = (UINT32)um_stack_arg(5);
     UINT64 v = 0;
     UINT8 flag = 0;
+    if ((h->kind == H_FILE || h->kind == H_DIR) && cls != 14 && RamfsReadOnly(h->node))
+        return iosb(a2, ST_MEDIA_WRITE_PROTECTED, 0);           /* a read-only volume: only the position moves */
     switch (cls) {
     case 14:                                                    /* FilePositionInformation */
         if (a4 < 8 || !get_u64(a3, &v)) return iosb(a2, ST_INVALID_PARAMETER, 0);
@@ -1126,13 +1160,18 @@ static UINT64 sys_query_volume_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
         UINT32 need;
         memset(b, 0, sizeof(b));
         UINT64 total = UINT64_C(1) << 20, avail = UINT64_C(1) << 19;   /* 4 KiB units: 4 GiB, 2 GiB free */
+        /* or a mounted volume (drives D:, ...): read-only, full */
+        const char *label = "NovaOS", *fsname = "FAT32";
+        UINT64 bytes;
+        bool ext = RamfsDriveInfo(h->node, &label, &fsname, &bytes);
+        if (ext) { total = bytes >> 12; avail = 0; }
         switch (cls) {
         case 1: {                                               /* FileFsVolumeInformation */
             memcpy(b, &g_boot_time, 8);
-            UINT32 serial = 0x4E4F5641u, ll = 12;               /* "NOVA", "NovaOS" */
+            UINT32 serial = ext ? 0x4E4F5600u + (UINT8)RamfsDriveLetter(h->node) : 0x4E4F5641u;   /* "NOVA", "NOV" + letter */
+            UINT32 ll = 2 * u2w(label, b + 18, 16);
             memcpy(b + 8, &serial, 4); memcpy(b + 12, &ll, 4);
-            u2w("NovaOS", b + 18, 6);
-            need = 18 + 12;
+            need = 18 + ll;
             break;
         }
         case 3:                                                 /* FileFsSizeInformation */
@@ -1141,10 +1180,11 @@ static UINT64 sys_query_volume_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
             need = 24;
             break;
         case 5: {                                               /* FileFsAttributeInformation */
-            UINT32 attrs = 0x6, maxc = 255, nl = 10;            /* CASE_PRESERVED_NAMES | UNICODE_ON_DISK */
+            UINT32 attrs = 0x6, maxc = 255, nl = 2 * (UINT32)strlen(fsname);  /* CASE_PRESERVED_NAMES | UNICODE_ON_DISK */
+            if (ext) attrs |= 0x80000u;                         /* FILE_READ_ONLY_VOLUME */
             memcpy(b, &attrs, 4); memcpy(b + 4, &maxc, 4); memcpy(b + 8, &nl, 4);
-            u2w("FAT32", b + 12, 5);
-            need = 12 + 10;
+            u2w(fsname, b + 12, 8);
+            need = 12 + nl;
             break;
         }
         case 7:                                                 /* FileFsFullSizeInformation */
@@ -1675,6 +1715,13 @@ static UINT64 sys_terminate_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         um_ob_unref(o);
         return ST_SUCCESS;
     }
+    /* the C runtime's fail-fast ends (an invalid parameter, a security check):
+     * log where from, as for a crash */
+    if ((UINT32)a2 == 0xC0000417u || (UINT32)a2 == 0xC0000409u) {
+        UmThread *t = UmCurrentThread();
+        kprintf("[UM] %s (PID %u) ended itself with status 0x%08x\n", p->name, p->pid, (UINT32)a2);
+        if (t && t->kt) um_log_stack(p, t->kt->user_rsp);
+    }
     um_exit_process((UINT32)a2);
 }
 
@@ -1684,6 +1731,18 @@ static UINT64 g_tsc0, g_tsc_hz;
 UINT64 um_now_100ns(void)
 {
     return g_boot_time + (sched_ticks() - g_boot_ticks) * 100000ULL;
+}
+
+/* NtShutdownSystem(SHUTDOWN_ACTION Action): ShutdownNoReboot (0) and
+ * ShutdownPowerOff (2) power off, ShutdownReboot (1) restarts.  The
+ * desktop loop saves drive C: and does it, so this returns. */
+static UINT64 sys_shutdown_system(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    if ((UINT32)a1 > 2) return ST_INVALID_PARAMETER;
+    kprintf("[UM] NtShutdownSystem(%s)\n", (UINT32)a1 == 1 ? "reboot" : "power off");
+    DesktopPowerRequest((UINT32)a1 == 1);
+    return ST_SUCCESS;
 }
 
 static UINT64 sys_query_system_time(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -2106,6 +2165,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtCreateFile,               sys_create_file);
     um_install(SYSCALL_NtOpenFile,                 sys_open_file);
     um_install(SYSCALL_NtClose,                    sys_close);
+    um_install(SYSCALL_NtCompareObjects,           sys_compare_objects);
     um_install(SYSCALL_NtReadFile,                 sys_read_file);
     um_install(SYSCALL_NtWriteFile,                sys_write_file);
     um_install(SYSCALL_NtQueryInformationFile,     sys_query_info_file);
@@ -2136,6 +2196,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtNovaProcessInfo,          sys_nova_process_info);
     um_install(SYSCALL_NtNovaProcessList,          sys_nova_process_list);
     um_install(SYSCALL_NtQuerySystemTime,          sys_query_system_time);
+    um_install(SYSCALL_NtShutdownSystem,           sys_shutdown_system);
     um_install(SYSCALL_NtQueryPerformanceCounter,  sys_query_perf_counter);
     um_install(SYSCALL_NtDelayExecution,           sys_delay);
     um_install(SYSCALL_NtYieldExecution,           sys_yield);

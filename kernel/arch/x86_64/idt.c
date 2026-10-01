@@ -132,11 +132,12 @@ static void dump_frame(InterruptFrame *f)
 /* -----------------------------------------------------------------------
  * terminate_faulting_user_thread
  *
- * A ring-3 thread raised an exception it cannot handle (there is no SEH
- * dispatch yet).  Instead of halting the machine, mark its process as
+ * A ring-3 thread raised an exception nothing else handles (programs'
+ * exceptions normally go to their SEH handlers, UmUserException).
+ * Instead of halting the machine, end its program or mark its process as
  * exited and retire the faulting thread: it never returns to user mode,
  * and the scheduler switches to other work.  Only called for faults taken
- * in ring 3, so the current thread is a user ETHREAD.
+ * in ring 3.
  * ----------------------------------------------------------------------- */
 static void __attribute__((noreturn))
 terminate_faulting_user_thread(NTSTATUS status, InterruptFrame *f, uint64_t addr)
@@ -207,7 +208,8 @@ static void handle_page_fault(InterruptFrame *f)
         cpu_halt_forever();
     }
 
-    /* TODO: deliver EXCEPTION_ACCESS_VIOLATION to a user SEH handler */
+    /* (a Windows program's faults never get here: dispatch hands them to
+     * its SEH handlers, UmUserException) */
     terminate_faulting_user_thread(STATUS_ACCESS_VIOLATION, f, cr2);
 }
 
@@ -258,7 +260,9 @@ static void dispatch(InterruptFrame *frame)
             kprintf("Unhandled kernel exception — halting\n");
             cpu_halt_forever();
         }
-        /* TODO: dispatch to a user SEH handler */
+        /* (a program's exceptions went to its SEH handlers above,
+         * UmUserException; what gets here from ring 3 is an NMI or a
+         * machine check, or a thread that is not a program's) */
         terminate_faulting_user_thread(exception_status(vector), frame, 0);
     }
 
@@ -312,7 +316,8 @@ static void dispatch(InterruptFrame *frame)
     /* ---- All other IRQs ---- */
     if (vector >= IRQ_BASE) {
         apic_eoi();
-        /* TODO: dispatch to registered IRQ handlers */
+        /* (no device interrupt is routed here: PS/2 is read on the timer
+         * tick, and the AHCI and e1000 drivers mask theirs and poll) */
         return;
     }
 

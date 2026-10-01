@@ -113,8 +113,37 @@ static int path_eq(const WCHAR *a, const char *b)
     }
 }
 
+/* An API set name stands for the DLL that implements it (the kernel's
+ * loader maps them the same way, see map_api_set in um.c), so
+ * GetModuleHandle("api-ms-win-core-synch-l1-2-0") finds kernel32 as on
+ * Windows.  Rust's standard library looks up WaitOnAddress that way. */
+static const char *api_set_host(const char *name)
+{
+    static const struct { const char *prefix, *dll; } sets[] = {
+        { "api-ms-win-crt-",        "ucrtbase.dll" },
+        { "api-ms-win-core-com-",   "ole32.dll" },
+        { "combase",                "ole32.dll" },
+        { "api-ms-win-core-",       "kernel32.dll" },
+        { "api-ms-win-security-",   "advapi32.dll" },
+        { "api-ms-win-eventing-",   "advapi32.dll" },
+        { "api-ms-win-shell-",      "shell32.dll" },
+        { "api-ms-win-shcore-",     "shlwapi.dll" },
+        { "ext-ms-win-",            "kernel32.dll" },
+        { "kernelbase",             "kernel32.dll" },
+        { "api-ms-win-",            "kernel32.dll" },
+    };
+    for (unsigned i = 0; i < sizeof(sets) / sizeof(sets[0]); i++) {
+        const char *p = sets[i].prefix, *n = name;
+        while (*p && (*n | 0x20) == *p) p++, n++;
+        if (!*p) return sets[i].dll;
+    }
+    return 0;
+}
+
 PVOID LdrNovaGetModuleA(const char *name)
 {
+    const char *host = api_set_host(name);
+    if (host) name = host;
     int has_dir = 0;
     for (const char *c = name; *c; c++) if (*c == '\\' || *c == '/') has_dir = 1;
     if (has_dir) {
@@ -299,9 +328,14 @@ static int absorb_new_modules(void)
         link(&g_ldr.InLoadOrderModuleList, &e->InLoadOrderLinks);
         link(&g_ldr.InMemoryOrderModuleList, &e->InMemoryOrderLinks);
         link(&g_ldr.InInitializationOrderModuleList, &e->InInitializationOrderLinks);
-        register_tls(m);
         g_nmod++;
     }
+    /* TLS slots: the program's first, as on Windows: an .exe's code may
+     * take its _tls_index to be 0 (MSVC's thread-safe statics read slot 0
+     * directly), whatever DLLs with TLS the kernel listed before it */
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = first; i < g_nmod; i++)
+            if (g_mod[i].is_dll == pass) register_tls(&g_mod[i]);
     return first;
 }
 

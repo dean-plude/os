@@ -62,6 +62,7 @@ XSTUB(NtDeleteValueKey,             SYS_NtDeleteValueKey)
 XSTUB(NtEnumerateKey,               SYS_NtEnumerateKey)
 XSTUB(NtQueryKey,                   SYS_NtQueryKey)
 XSTUB(NtFlushKey,                   SYS_NtFlushKey)
+XSTUB(NtShutdownSystem,             SYS_NtShutdownSystem)
 XSTUB(NtRenameKey,                  SYS_NtRenameKey)
 XSTUB(NtTerminateProcess,           SYS_NtTerminateProcess)
 XSTUB(NtQuerySystemTime,            SYS_NtQuerySystemTime)
@@ -115,6 +116,7 @@ XSTUB(NtQueryEvent,                 SYS_NtQueryEvent)
 XSTUB(NtQuerySemaphore,             SYS_NtQuerySemaphore)
 XSTUB(NtOpenThread,                 SYS_NtOpenThread)
 XSTUB(NtMapViewOfSectionEx,         SYS_NtMapViewOfSectionEx)
+XSTUB(NtCompareObjects,             SYS_NtCompareObjects)
 XSTUB(NtAllocateVirtualMemoryEx,    SYS_NtAllocateVirtualMemoryEx)
 XSTUB(NtReadVirtualMemory,          SYS_NtReadVirtualMemory)
 XSTUB(NtWriteVirtualMemory,         SYS_NtWriteVirtualMemory)
@@ -290,6 +292,8 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
     case 0xC0000035: return ERROR_ALREADY_EXISTS;
     case 0xC000003A: return ERROR_PATH_NOT_FOUND;
     case 0xC000007F: return ERROR_DISK_FULL;
+    case 0xC00000A2: return 19;                           /* ERROR_WRITE_PROTECT: a read-only volume */
+    case 0xC0000032: return 1392;                         /* ERROR_FILE_CORRUPT */
     case 0xC00000BA: return ERROR_ACCESS_DENIED;          /* file is a directory */
     case 0xC0000101: return ERROR_DIR_NOT_EMPTY;
     case 0xC0000103: return ERROR_INVALID_NAME;           /* not a directory */

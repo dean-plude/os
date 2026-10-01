@@ -190,35 +190,69 @@ NTSTATUS SeDuplicateToken(PTOKEN SourceToken, UINT32 TokenType,
 /* -----------------------------------------------------------------------
  * SeAccessCheck
  *
- * Phase 2: grants all accesses for kernel-mode callers (the entire OS
- * runs in ring 0 at this point).  Phase 3 will add DACL evaluation
- * once we have a full ACL implementation.
+ * The DACL decides, as on Windows: no DACL grants everything, an empty one
+ * nothing; otherwise the ACEs are taken in order, and for each one whose
+ * SID the token holds (enabled), allowed rights are granted unless an
+ * earlier ACE denied them and denied rights refused unless an earlier ACE
+ * granted them.  The owner always may read and change the DACL.  The
+ * SYSTEM token (the kernel's own threads) is not checked.
  * ----------------------------------------------------------------------- */
+#define SE_READ_CONTROL      0x00020000u
+#define SE_WRITE_DAC         0x00040000u
+#define SE_MAXIMUM_ALLOWED   0x02000000u
+#define SE_GENERIC_ALL       0x10000000u
+
+static bool token_has_sid(PTOKEN Token, PSID Sid)
+{
+    for (UINT32 i = 0; i < Token->UserAndGroupCount; i++) {
+        if (i > 0 && !(Token->UserAndGroups[i].Attributes & SE_GROUP_ENABLED)) continue;
+        if (Token->UserAndGroups[i].Sid && se_sids_equal(Token->UserAndGroups[i].Sid, Sid)) return true;
+    }
+    return false;
+}
+
 bool SeAccessCheck(
     PSECURITY_DESCRIPTOR SecurityDescriptor,
     PTOKEN               Token,
     ACCESS_MASK          DesiredAccess,
     ACCESS_MASK         *GrantedAccess)
 {
-    (void)SecurityDescriptor;
+    SECURITY_DESCRIPTOR *sd = (SECURITY_DESCRIPTOR *)SecurityDescriptor;
+    bool max = (DesiredAccess & SE_MAXIMUM_ALLOWED) != 0;
+    ACCESS_MASK want = DesiredAccess & ~SE_MAXIMUM_ALLOWED;
 
-    /* If there's no SD, or the token is SYSTEM, grant everything */
-    if (!SecurityDescriptor || !Token ||
+    /* No SD, no token, the SYSTEM token, or no DACL: everything */
+    if (!sd || !Token ||
         (Token->UserAndGroupCount > 0 &&
-         se_sids_equal(Token->UserAndGroups[0].Sid, SeLocalSystemSid)))
+         se_sids_equal(Token->UserAndGroups[0].Sid, SeLocalSystemSid)) ||
+        !(sd->Control & SE_DACL_PRESENT) || !sd->Dacl)
     {
-        if (GrantedAccess) *GrantedAccess = DesiredAccess;
+        if (GrantedAccess) *GrantedAccess = max ? 0x1FFFFFu | want : want;   /* (all specific and standard rights) */
         return true;
     }
 
-    /* NULL DACL = grant all */
-    if (!((SECURITY_DESCRIPTOR *)SecurityDescriptor)->Dacl) {
-        if (GrantedAccess) *GrantedAccess = DesiredAccess;
-        return true;
+    ACCESS_MASK allowed = 0, denied = 0;
+    if (sd->Owner && token_has_sid(Token, sd->Owner)) allowed = SE_READ_CONTROL | SE_WRITE_DAC;
+    const ACL *acl = sd->Dacl;
+    const UINT8 *p = (const UINT8 *)acl + sizeof(ACL), *end = (const UINT8 *)acl + acl->AclSize;
+    for (UINT16 i = 0; i < acl->AceCount; i++) {
+        const ACE_HEADER *h = (const ACE_HEADER *)p;
+        if (p + sizeof(ACE_HEADER) > end || h->AceSize < sizeof(ACCESS_ALLOWED_ACE) || p + h->AceSize > end) break;
+        p += h->AceSize;
+        if (h->AceFlags & INHERIT_ONLY_ACE) continue;
+        if (h->AceType != ACCESS_ALLOWED_ACE_TYPE && h->AceType != ACCESS_DENIED_ACE_TYPE) continue;
+        const ACCESS_ALLOWED_ACE *ace = (const ACCESS_ALLOWED_ACE *)h;
+        PSID sid = (PSID)&ace->SidStart;
+        if (8u + 4u * sid->SubAuthorityCount > h->AceSize - 8u || !token_has_sid(Token, sid)) continue;
+        ACCESS_MASK m = ace->Mask & SE_GENERIC_ALL ? 0x1FFFFFu : ace->Mask;
+        if (h->AceType == ACCESS_ALLOWED_ACE_TYPE) allowed |= m & ~denied;
+        else denied |= m & ~allowed;
     }
-
-    /* Default: grant (TODO: traverse DACL in Phase 3) */
-    if (GrantedAccess) *GrantedAccess = DesiredAccess;
+    if (want & ~allowed) {
+        if (GrantedAccess) *GrantedAccess = 0;
+        return false;
+    }
+    if (GrantedAccess) *GrantedAccess = max ? allowed | want : want;
     return true;
 }
 

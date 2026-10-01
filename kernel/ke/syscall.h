@@ -222,6 +222,8 @@
 #define SYSCALL_NtQuerySemaphore                  0x01D0
 #define SYSCALL_NtOpenThread                      0x01D1
 #define SYSCALL_NtMapViewOfSectionEx              0x01D2
+#define SYSCALL_NtCompareObjects                  0x01D3
+#define SYSCALL_NtShutdownSystem                  0x01D4
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x01A0
 #define SYSCALL_NtNovaGuiGetMessage               0x01A1

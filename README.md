@@ -44,7 +44,8 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **Python 3.14** | NuGet package | `-c`, a hashlib/JSON/regex/threads/subprocess test script. |
 | **Mesa 3D 24.2.4** (mesa-dist-win) | `opengl32.dll` (llvmpipe) and the Vulkan driver (lavapipe), x64 and x86, from the App Store | OpenGL 4.5: `tools/gltest` (pixel formats, immediate mode, GLSL, read-back, animated `SwapBuffers`) passes as a 64-bit and a 32-bit program. |
 | **DXVK 2.5.3** | `d3d8`, `d3d9`, `d3d10core`, `d3d11`, `dxgi`, x64 and x86, from the App Store, on Mesa's Vulkan and NovaOS's own `vulkan-1.dll` | Direct3D 9 and 11: `tools/d3dtest` (device creation, a D3D9 triangle, D3D11 clear, read-back, animated `Present` in a window) passes as a 64-bit and a 32-bit program. |
-| **ripgrep, fd, jq, fzf** | Rust (MSVC), C (MinGW), Go | Searching, walking folders, filtering, from the Terminal. |
+| **Notepad++ 8.7.9** (x64 portable) | Scintilla editor, static MSVC C++ runtime | Opens with its menus, toolbar and editor, and takes typing. |
+| **ripgrep, fd, bat, jq, fzf** | Rust (MSVC), C (MinGW), Go | Searching, walking folders, printing files, filtering, from the Terminal. |
 
 ### Built in
 
@@ -82,7 +83,8 @@ every part, phase by phase.
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.
 - **Drivers**: AHCI SATA disks, FAT16/FAT32, GPT; Intel e1000/e1000e
-  network cards; PS/2 keyboard and mouse; CMOS clock; the UEFI framebuffer.
+  network cards; PS/2 keyboard and mouse; CMOS clock; the UEFI framebuffer;
+  ACPI power-off, reset and power button from the FADT and `\_S5`.
 - **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
   TLS with the Mozilla root store.
 - **Windows userland** (`userland/`): about 35 system DLLs written from
