@@ -79,6 +79,12 @@ WINBASEAPI LSTATUS WINAPI RegEnumValueA(HKEY key, DWORD i, LPSTR name, LPDWORD n
 WINBASEAPI LSTATUS WINAPI RegQueryInfoKeyW(HKEY key, LPWSTR cls, LPDWORD ncls, LPDWORD reserved, LPDWORD subkeys, LPDWORD maxsub,
                                            LPDWORD maxcls, LPDWORD values, LPDWORD maxvname, LPDWORD maxvdata, LPDWORD sd, PFILETIME t);
 WINBASEAPI LSTATUS WINAPI RegFlushKey(HKEY key);
+WINBASEAPI BOOL WINAPI InitiateSystemShutdownExW(LPWSTR machine, LPWSTR msg, DWORD timeout, BOOL force, BOOL reboot, DWORD reason);
+WINBASEAPI BOOL WINAPI InitiateSystemShutdownExA(LPSTR machine, LPSTR msg, DWORD timeout, BOOL force, BOOL reboot, DWORD reason);
+WINBASEAPI BOOL WINAPI InitiateSystemShutdownW(LPWSTR machine, LPWSTR msg, DWORD timeout, BOOL force, BOOL reboot);
+WINBASEAPI BOOL WINAPI InitiateSystemShutdownA(LPSTR machine, LPSTR msg, DWORD timeout, BOOL force, BOOL reboot);
+WINBASEAPI BOOL WINAPI AbortSystemShutdownW(LPWSTR machine);
+WINBASEAPI BOOL WINAPI AbortSystemShutdownA(LPSTR machine);
 WINBASEAPI LSTATUS WINAPI RegSetKeyValueW(HKEY key, LPCWSTR sub, LPCWSTR name, DWORD type, LPCVOID data, DWORD n);
 WINBASEAPI LSTATUS WINAPI RegOpenCurrentUser(REGSAM sam, PHKEY out);
 WINBASEAPI LSTATUS WINAPI RegQueryInfoKeyA(HKEY key, LPSTR cls, LPDWORD ncls, LPDWORD reserved, LPDWORD subkeys, LPDWORD maxsub,

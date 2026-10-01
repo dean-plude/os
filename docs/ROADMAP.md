@@ -108,10 +108,12 @@ named program or test demonstrates it.
   NTFS write, NVMe.
 - IPv6, HTTP/2.
 - ~~USB (xHCI) with HID keyboards and mice~~ Done: boot-protocol keyboards
-  and mice on xHCI root ports, with hot-plug; USB hubs, absolute pointers
+  and mice on xHCI root ports, with hot-plug.  Still to do: USB hubs, absolute pointers
   (tablets, touch screens), report-protocol HID, mass storage.
-- ACPI beyond the MADT: power management, proper shutdown and reboot on
-  real machines; HPET or TSC-deadline timers.
+- ACPI beyond the MADT: ~~shutdown and reboot~~ Done: power-off (S5),
+  reset and the fixed power button from the FADT and `\_S5`, without an AML
+  interpreter.  Still to do: sleep (S3), batteries and lid, control-method
+  power buttons (these need AML); HPET or TSC-deadline timers.
 - Boot and test on real hardware, not only QEMU.
 
 ---

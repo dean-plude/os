@@ -209,16 +209,26 @@ void paging_init(void)
         kprintf("[PAGING] NX already enabled\n");
     }
 
+    /* Mark the kernel image's pages global (the bootloader maps it with
+     * 4 KiB pages; its mappings never change, and every process's PML4
+     * shares them).  Done before CR4.PGE goes on, which flushes the TLB. */
+    extern char __text_start[], __kernel_end[];
+    size_t global = 0;
+    for (uintptr_t va = (uintptr_t)__text_start; va < (uintptr_t)__kernel_end; va += PAGE_SIZE) {
+        pte_t *pdpt = get_or_create_table(kernel_pml4, PML4_IDX(va), false);
+        pte_t *pd   = pdpt ? get_or_create_table(pdpt, PDPT_IDX(va), false) : NULL;
+        pte_t *pt   = pd   ? get_or_create_table(pd, PD_IDX(va), false)     : NULL;
+        if (pt && (pt[PT_IDX(va)] & PTE_PRESENT)) {
+            pt[PT_IDX(va)] |= PTE_GLOBAL;
+            global++;
+        }
+    }
+
     /* Enable CR4.PGE (Page Global Enable) — kernel pages with PTE_GLOBAL
      * won't be flushed from TLB on CR3 switches (user context switches). */
     uint64_t cr4 = read_cr4();
     write_cr4(cr4 | CR4_PGE);
-    kprintf("[PAGING] CR4.PGE enabled\n");
-
-    /* Mark kernel pages as global by retroactively setting PTE_GLOBAL in
-     * all PT entries covering the kernel image.
-     * This is optional for Phase 1 but good practice. */
-    /* TODO: walk kernel VA range and set PTE_GLOBAL */
+    kprintf("[PAGING] CR4.PGE enabled, %lu kernel image pages global\n", (unsigned long)global);
 
     kprintf("[PAGING] Virtual memory initialized\n");
 }

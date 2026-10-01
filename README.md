@@ -83,7 +83,8 @@ every part, phase by phase.
   1903 numbers.
 - **Drivers**: AHCI SATA disks, FAT16/FAT32, GPT; Intel e1000/e1000e
   network cards; PS/2 and USB (xHCI) keyboards and mice; CMOS clock; the
-  UEFI framebuffer.
+  UEFI framebuffer; ACPI power-off, reset and power button from the FADT
+  and `\_S5`.
 - **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
   TLS with the Mozilla root store.
 - **Windows userland** (`userland/`): about 35 system DLLs written from

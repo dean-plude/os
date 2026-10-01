@@ -41,6 +41,9 @@ static void key_delete(void *obj)
 static OBJECT_TYPE cm_key_type_storage = {
     .Name            = "Key",
     .DefaultBodySize = sizeof(CM_KEY_BODY),
+    .GenericRead     = 0x00020019,  /* KEY_READ */
+    .GenericWrite    = 0x00020006,  /* KEY_WRITE */
+    .GenericExecute  = 0x00020019,  /* KEY_EXECUTE (= KEY_READ) */
     .GenericAll      = KEY_ALL_ACCESS,
     .Operations      = { .Delete = key_delete },
 };
