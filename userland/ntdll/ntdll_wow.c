@@ -817,6 +817,12 @@ LONG_PTR NTAPI NtNovaSockRecvFrom(INT_PTR h, void *buf, ULONG len, void *addr)
     return SCP(NtNovaSockRecvFrom, S(h), P(buf), U(len), P(addr));
 }
 LONG_PTR NTAPI NtNovaResolve(const char *name, ULONG *ip)        { return SCP(NtNovaResolve, P(name), P(ip)); }
+INT_PTR  NTAPI NtNovaAudioOpen(ULONG frames)                      { return SCP(NtNovaAudioOpen, U(frames)); }
+LONG_PTR NTAPI NtNovaAudioWrite(INT_PTR h, const void *frames, ULONG n) { return SCP(NtNovaAudioWrite, S(h), P(frames), U(n)); }
+LONG_PTR NTAPI NtNovaAudioCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out)
+{
+    return SCP(NtNovaAudioCtl, S(h), U(op), U(arg), P(out));
+}
 
 /* windows: the creation block is laid out with 64-bit fields already */
 LONG_PTR NTAPI NtNovaGuiCreate(void *info)                       { return SCP(NtNovaGuiCreate, P(info)); }

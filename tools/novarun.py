@@ -12,7 +12,8 @@ mark.  Prints each command's output.  A COMMAND of the form
 
 Options: --mem MiB (2048), --smp N (2), --timeout S per command (120),
 --keep DIR (keep the serial log, data disk and screenshots there),
---img PATH (the boot image).
+--img PATH (the boot image), --wav PATH (an Intel HD Audio card whose
+output QEMU records to PATH).
 """
 import argparse, json, os, shutil, socket, subprocess, sys, tempfile, time
 
@@ -125,6 +126,7 @@ def main():
     ap.add_argument('--data-mb', type=int, default=1024)
     ap.add_argument('--keep')
     ap.add_argument('--img', default=os.path.join(ROOT, 'build', 'nova.img'))
+    ap.add_argument('--wav')
     ap.add_argument('commands', nargs='*')
     a = ap.parse_args()
 
@@ -142,7 +144,10 @@ def main():
                           '-drive', f'format=raw,file={a.img},snapshot=on',
                           '-drive', f'format=raw,file={data}',
                           '-serial', f'file:{serial}', '-vga', 'std', '-display', 'none', '-nic', 'none',
-                          '-qmp', f'unix:{sock},server,nowait'])
+                          '-qmp', f'unix:{sock},server,nowait'] +
+                         (['-audiodev', f'wav,id=snd0,path={os.path.abspath(a.wav)},out.frequency=48000',
+                           '-device', 'intel-hda', '-device', 'hda-output,audiodev=snd0'] if a.wav else []))
+    qmp = None
     try:
         sr = Serial(serial)
         out, ok = sr.wait('Entering kernel main loop', 300)
@@ -187,6 +192,12 @@ def main():
             if tail.strip():
                 print(tail)
     finally:
+        if a.wav and qmp and q.poll() is None:   # quit cleanly: QEMU finishes the WAV header
+            try:
+                qmp.cmd('quit')
+                q.wait(timeout=10)
+            except Exception:
+                pass
         q.kill()
         q.wait()
         if not a.keep:
