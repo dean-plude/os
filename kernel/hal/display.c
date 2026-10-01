@@ -126,14 +126,13 @@ static bool bochs_probe(const BootFramebuffer *boot)
                 (unsigned long long)bar0, (unsigned long long)boot->base);
         return false;
     }
-    if (bar0 + boot->size > PHYSMAP_SIZE) return false;     /* outside the physmap */
-    /* The register BAR may sit above the physmap (firmware places 64-bit
-     * BARs high): then use the I/O ports, which -vga std also decodes */
-    UINT64 bar2 = PciBarAddress(&pci, 2);
-    if (bar2 + 0x1000 > PHYSMAP_SIZE) bar2 = 0;
-    d.mmio = bar2 != 0 && pci.vendor == 0x1234;
-    if (!d.mmio && pci.subclass != 0x00) return false;      /* bochs-display: MMIO only */
-    d.regs = d.mmio ? (volatile UINT16 *)(PHYSMAP_BASE + bar2 + VBE_MMIO_OFFSET) : NULL;
+    if (bar0 + boot->size > PHYSMAP_SIZE) return false;     /* the console's physmap view */
+    /* The registers: BAR2 (MMIO) when there is one, else the I/O ports
+     * (-vga std decodes both; bochs-display has only MMIO) */
+    volatile UINT8 *mmio = pci.vendor == 0x1234 ? (volatile UINT8 *)PciMapBar(&pci, 2) : NULL;
+    d.mmio = mmio != NULL;
+    if (!d.mmio && pci.subclass != 0x00) return false;
+    d.regs = d.mmio ? (volatile UINT16 *)(mmio + VBE_MMIO_OFFSET) : NULL;
     bool is_vga = pci.class_code == 0x03 && pci.subclass == 0x00;
 
     UINT16 id = vbe_read(VBE_ID);
@@ -158,7 +157,7 @@ static bool bochs_probe(const BootFramebuffer *boot)
     d.bgr = true;                          /* little-endian XRGB: byte0 = blue */
     d.kind = DRV_BOCHS;
     if (is_vga && d.mmio)                  /* unblank (attribute controller) */
-        *(volatile UINT8 *)(PHYSMAP_BASE + bar2 + VGA_MMIO_OFFSET) = 0x20;
+        mmio[VGA_MMIO_OFFSET] = 0x20;
 
     kprintf("[DISPLAY] Bochs VBE %04x (%04x:%04x) at %02x:%02x.%x, %llu MB video memory, "
             "max %dx%d, registers via %s\n", id, pci.vendor, pci.device,
