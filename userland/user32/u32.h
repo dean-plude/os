@@ -103,6 +103,7 @@ struct Wnd {
     /* painting */
     RECT      upd;                  /* update rectangle, client coordinates (NC: whole window) */
     int       has_upd, erase, nc_paint, internal_paint;
+    HDC       paint_dc;     /* BeginPaint's DC, until EndPaint (which presents) */
     /* top-level windows: the desktop window and its bitmap */
     UINT32    kid;
     DWORD     drop_accept;          /* CTL_ACCEPT_DROPS flags (drop.c) */

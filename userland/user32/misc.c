@@ -490,6 +490,40 @@ USERAPI BOOL EnumDisplayDevicesW(LPCWSTR dev, DWORD i, void *dd, DWORD flags)
     *(DWORD *)(b + 324) = 0x5;                              /* ATTACHED_TO_DESKTOP | PRIMARY_DEVICE */
     return TRUE;
 }
+USERAPI BOOL EnumDisplayDevicesA(LPCSTR dev, DWORD i, void *dd, DWORD flags)
+{
+    (void)dev; (void)flags;
+    if (i) return FALSE;
+    BYTE *b = dd;                                           /* cb, DeviceName[32], DeviceString[128], StateFlags, ... */
+    DWORD cb = *(DWORD *)b;
+    if (cb < 168) return FALSE;
+    memset(b + 4, 0, cb - 4);
+    strcpy((char *)(b + 4), "\\\\.\\DISPLAY1");
+    strcpy((char *)(b + 36), "NovaOS Display Adapter");
+    *(DWORD *)(b + 164) = 0x5;                              /* ATTACHED_TO_DESKTOP | PRIMARY_DEVICE */
+    return TRUE;
+}
+
+/* The display configuration API (paths, modes, monitor names): not
+ * provided; callers fall back to EnumDisplayDevices/EnumDisplaySettings */
+#define ERROR_NOT_SUPPORTED_ 50
+USERAPI LONG GetDisplayConfigBufferSizes(UINT32 flags, UINT32 *npaths, UINT32 *nmodes)
+{
+    (void)flags;
+    if (npaths) *npaths = 0;
+    if (nmodes) *nmodes = 0;
+    return ERROR_NOT_SUPPORTED_;
+}
+USERAPI LONG QueryDisplayConfig(UINT32 flags, UINT32 *npaths, void *paths, UINT32 *nmodes, void *modes, void *topo)
+{
+    (void)flags; (void)paths; (void)modes; (void)topo;
+    if (npaths) *npaths = 0;
+    if (nmodes) *nmodes = 0;
+    return ERROR_NOT_SUPPORTED_;
+}
+USERAPI LONG DisplayConfigGetDeviceInfo(void *req) { (void)req; return ERROR_NOT_SUPPORTED_; }
+USERAPI LONG DisplayConfigSetDeviceInfo(void *req) { (void)req; return ERROR_NOT_SUPPORTED_; }
+
 USERAPI LONG ChangeDisplaySettingsW(void *dm, DWORD f) { (void)dm; (void)f; return -2; /* DISP_CHANGE_BADMODE */ }
 USERAPI LONG ChangeDisplaySettingsExW(LPCWSTR d, void *dm, HWND h, DWORD f, void *p) { (void)d; (void)dm; (void)h; (void)f; (void)p; return -2; }
 

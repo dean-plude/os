@@ -302,6 +302,15 @@ void um_registry_add_cpus(UINT32 n)
     um_unlock(&g_reg);
 }
 
+/* Set a REG_DWORD from the kernel (an installer's registration): @path
+ * from the root, e.g. "Machine\\SOFTWARE\\...", the key created if need be */
+void um_registry_set_dword(const char *path, const char *name, UINT32 val)
+{
+    um_lock(&g_reg);
+    kset_dword(kpath(path, false), name, val);
+    um_unlock(&g_reg);
+}
+
 static void defaults(void)
 {
     /* HKLM\SOFTWARE */

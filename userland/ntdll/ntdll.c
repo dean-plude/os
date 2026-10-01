@@ -331,6 +331,10 @@ __declspec(dllexport) int strcmp(const char *a, const char *b)
 typedef struct Block {
     SIZE_T        size;        /* usable bytes (class size, or the large size) */
     SIZE_T        tag;         /* HEAP_MAGIC | class, or HEAP_LARGE */
+#ifndef _WIN64
+    SIZE_T        pad[2];      /* (32-bit: SSE code and JIT compilers such as
+                                * Mesa's expect 16-byte-aligned blocks too) */
+#endif
 } Block;                       /* 16 bytes: user data stays 16-byte aligned */
 
 #define HEAP_MAGIC   ((SIZE_T)0x4E4F564148454150ULL)   /* "NOVAHEAP" (its low half in 32-bit programs) */
