@@ -133,6 +133,52 @@ static void read_mac(void)
     }
 }
 
+/* Reset the adapter and give it the rings: at start-up, and after S3
+ * (@resume: the MAC address is known, write it back) */
+static void hw_setup(bool resume)
+{
+    /* Reset, then mask every interrupt source (we poll) */
+    wr(REG_IMC, 0xFFFFFFFFu);
+    wr(REG_CTRL, rd(REG_CTRL) | CTRL_RST);
+    delay_ms(10);
+    for (int i = 0; i < 100000 && (rd(REG_CTRL) & CTRL_RST); i++) pause_cpu();
+    wr(REG_IMC, 0xFFFFFFFFu);
+    (void)rd(REG_ICR);
+
+    wr(REG_CTRL, (rd(REG_CTRL) | CTRL_SLU | CTRL_ASDE));
+    if (resume) {
+        wr(REG_RAL0, (UINT32)g.mac[0] | (UINT32)g.mac[1] << 8 | (UINT32)g.mac[2] << 16 | (UINT32)g.mac[3] << 24);
+        wr(REG_RAH0, (UINT32)g.mac[4] | (UINT32)g.mac[5] << 8 | (1u << 31));   /* address valid */
+    } else {
+        read_mac();
+    }
+    for (int i = 0; i < 128; i++) wr(REG_MTA + i * 4, 0);
+
+    memset(g.rx, 0, PAGE_SIZE);
+    memset(g.tx, 0, PAGE_SIZE);
+    for (int i = 0; i < N_RX; i++) g.rx[i].addr = phys(g.rxbuf + i * BUF_SZ);
+    wr(REG_RDBAL, (UINT32)phys(g.rx));
+    wr(REG_RDBAH, (UINT32)(phys(g.rx) >> 32));
+    wr(REG_RDLEN, N_RX * sizeof(RxDesc));
+    wr(REG_RDH, 0);
+    wr(REG_RDT, N_RX - 1);
+    wr(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC);
+
+    for (int i = 0; i < N_TX; i++) {
+        g.tx[i].addr   = phys(g.txbuf + i * BUF_SZ);
+        g.tx[i].status = DESC_DD;              /* free */
+    }
+    wr(REG_TDBAL, (UINT32)phys(g.tx));
+    wr(REG_TDBAH, (UINT32)(phys(g.tx) >> 32));
+    wr(REG_TDLEN, N_TX * sizeof(TxDesc));
+    wr(REG_TDH, 0);
+    wr(REG_TDT, 0);
+    wr(REG_TIPG, 0x0060200A);
+    wr(REG_TCTL, TCTL_EN | TCTL_PSP | TCTL_CT | TCTL_COLD);
+    g.rx_next = 0;
+    g.tx_next = 0;
+}
+
 bool E1000Init(void)
 {
     static const UINT16 e1000_ids[]  = { 0x100E, 0x100F, 0x1004, 0x100C, 0x1015 };
@@ -153,18 +199,6 @@ bool E1000Init(void)
     PciEnableDevice(&d);
     g.mmio = (volatile UINT8 *)(uintptr_t)(PHYSMAP_BASE + bar);
 
-    /* Reset, then mask every interrupt source (we poll) */
-    wr(REG_IMC, 0xFFFFFFFFu);
-    wr(REG_CTRL, rd(REG_CTRL) | CTRL_RST);
-    delay_ms(10);
-    for (int i = 0; i < 100000 && (rd(REG_CTRL) & CTRL_RST); i++) pause_cpu();
-    wr(REG_IMC, 0xFFFFFFFFu);
-    (void)rd(REG_ICR);
-
-    wr(REG_CTRL, (rd(REG_CTRL) | CTRL_SLU | CTRL_ASDE));
-    read_mac();
-    for (int i = 0; i < 128; i++) wr(REG_MTA + i * 4, 0);
-
     /* Descriptor rings and buffers (physically contiguous, via the physmap) */
     g.rx    = kernel_alloc_pages(1);
     g.tx    = kernel_alloc_pages(1);
@@ -174,36 +208,24 @@ bool E1000Init(void)
         kprintf("[E1000] Out of memory for rings\n");
         return false;
     }
-    memset(g.rx, 0, PAGE_SIZE);
-    memset(g.tx, 0, PAGE_SIZE);
+    hw_setup(false);
 
-    for (int i = 0; i < N_RX; i++) g.rx[i].addr = phys(g.rxbuf + i * BUF_SZ);
-    wr(REG_RDBAL, (UINT32)phys(g.rx));
-    wr(REG_RDBAH, (UINT32)(phys(g.rx) >> 32));
-    wr(REG_RDLEN, N_RX * sizeof(RxDesc));
-    wr(REG_RDH, 0);
-    wr(REG_RDT, N_RX - 1);
-    wr(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC);
-
-    for (int i = 0; i < N_TX; i++) {
-        g.tx[i].addr   = phys(g.txbuf + i * BUF_SZ);
-        g.tx[i].status = DESC_DD;              /* free */
-    }
-    wr(REG_TDBAL, (UINT32)phys(g.tx));
-    wr(REG_TDBAH, (UINT32)(phys(g.tx) >> 32));
-    wr(REG_TDLEN, N_TX * sizeof(TxDesc));
-    wr(REG_TDH, 0);
-    wr(REG_TDT, 0);
-    wr(REG_TIPG, 0x0060200A);
-    wr(REG_TCTL, TCTL_EN | TCTL_PSP | TCTL_CT | TCTL_COLD);
-
-    g.rx_next = 0;
-    g.tx_next = 0;
     g.present = true;
     kprintf("[E1000] %s at %02x:%02x.%x, MAC %02x:%02x:%02x:%02x:%02x:%02x, link %s\n",
             g.name, d.bus, d.dev, d.func, g.mac[0], g.mac[1], g.mac[2], g.mac[3],
             g.mac[4], g.mac[5], E1000LinkUp() ? "up" : "down");
     return true;
+}
+
+/* After S3: the adapter was reset; set it up again with the same rings
+ * (frames in flight are lost, as on a cable pulled and plugged back) */
+void E1000Resume(void)
+{
+    if (!g.present) return;
+    g.present = false;                   /* the network thread leaves it alone meanwhile */
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    hw_setup(true);
+    g.present = true;
 }
 
 bool        E1000Present(void) { return g.present; }

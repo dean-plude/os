@@ -14,6 +14,7 @@
 #define PCI_MAX_DEVICES 64
 static PciDevice g_devices[PCI_MAX_DEVICES];
 static int       g_count;
+static UINT32    g_saved[PCI_MAX_DEVICES][16];   /* configuration headers over S3 */
 
 static UINT32 cfg_addr(UINT8 bus, UINT8 dev, UINT8 func, UINT8 off)
 {
@@ -146,18 +147,26 @@ volatile void *PciMapBar(const PciDevice *d, int bar)
     UINT64 pa = PciBarAddress(d, bar);
     if (!pa) return NULL;
     UINT64 size = bar_size(d, bar);
+    volatile void *va = PciMapPhysical(pa, size);
+    if (!va) kprintf("[PCI] cannot map BAR%d at %llx\n", bar, (unsigned long long)pa);
+    return va;
+}
+
+volatile void *PciMapPhysical(UINT64 pa, UINT64 size)
+{
     if (size < PAGE_SIZE) size = PAGE_SIZE;
     if (pa + size <= PHYSMAP_SIZE) return (volatile void *)(uintptr_t)(PHYSMAP_BASE + pa);
+    UINT64 off = pa & (PAGE_SIZE - 1);
+    pa -= off;
+    size = (size + off + PAGE_SIZE - 1) & ~(UINT64)(PAGE_SIZE - 1);
     IrqState s = spin_lock_irqsave(&g_mmio_lock);
     UINT64 va = g_mmio_next;
-    g_mmio_next += (size + PAGE_SIZE - 1) & ~(UINT64)(PAGE_SIZE - 1);
+    g_mmio_next += size;
     spin_unlock_irqrestore(&g_mmio_lock, s);
     if (!NT_SUCCESS(paging_map((uintptr_t)va, (uintptr_t)pa, (size_t)size,
-                               MAP_WRITABLE | MAP_NO_CACHE | MAP_NO_EXEC))) {
-        kprintf("[PCI] cannot map BAR%d at %llx\n", bar, (unsigned long long)pa);
+                               MAP_WRITABLE | MAP_NO_CACHE | MAP_NO_EXEC)))
         return NULL;
-    }
-    return (volatile void *)(uintptr_t)va;
+    return (volatile void *)(uintptr_t)(va + off);
 }
 
 void PciEnableDevice(const PciDevice *d)
@@ -178,4 +187,29 @@ bool PciFindClass(UINT8 class_code, UINT8 subclass, UINT8 prog_if, int index, Pc
         }
     }
     return false;
+}
+
+/* S3 takes the devices' power: their configuration (BARs, command
+ * register, bridge bus numbers) goes back as it was, in scan order so a
+ * bridge is set before the devices behind it, the command register last */
+void PciSaveAll(void)
+{
+    for (int i = 0; i < g_count; i++)
+        for (int r = 0; r < 16; r++)
+            g_saved[i][r] = PciRead32(g_devices[i].bus, g_devices[i].dev, g_devices[i].func, (UINT8)(r * 4));
+}
+
+/* (by the waking CPU alone, before the others run: without the lock,
+ * which a CPU stopped for the sleep may have been holding) */
+void PciRestoreAll(void)
+{
+    for (int i = 0; i < g_count; i++) {
+        const PciDevice *d = &g_devices[i];
+        for (int r = 15; r >= 1; r--) {
+            /* the command register last; the status half is write-1-to-clear */
+            UINT32 v = r == 1 ? g_saved[i][1] & 0xFFFFu : g_saved[i][r];
+            outl(PCI_ADDR, cfg_addr(d->bus, d->dev, d->func, (UINT8)(r * 4)));
+            outl(PCI_DATA, v);
+        }
+    }
 }

@@ -33,6 +33,7 @@
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
 #include "../hal/acpi.h"
+#include "../ke/sleep.h"
 #include "../arch/x86_64/cpu.h"
 #include "../apps/apps.h"
 #include "../net/net.h"
@@ -337,7 +338,7 @@ static void open_icon(int i)
 typedef enum {
     MA_NONE, MA_OPEN_ICON, MA_EXPLORER_AT, MA_TERMINAL_AT, MA_SETTINGS_PAGE, MA_APP,
     MA_CLOSE_APP, MA_WIN_CLOSE, MA_WIN_MIN, MA_WIN_MAX, MA_WIN_RESTORE, MA_WIN_SNAP_L,
-    MA_WIN_SNAP_R, MA_SHOW_DESKTOP, MA_THEME_NEXT, MA_RESTART, MA_SHUTDOWN,
+    MA_WIN_SNAP_R, MA_SHOW_DESKTOP, MA_THEME_NEXT, MA_SLEEP, MA_RESTART, MA_SHUTDOWN,
 } MenuAct;
 
 typedef struct {
@@ -409,7 +410,9 @@ static void draw_menu(void)
  * ----------------------------------------------------------------------- */
 static volatile UINT64 g_desktop_beat;             /* the desktop loop's last pass */
 static volatile int    g_power_req;                /* POWER_* from another thread */
-enum { POWER_NONE, POWER_SHUTDOWN, POWER_RESTART };
+static volatile UINT32 g_sleeps;                   /* sleep requests carried out */
+static volatile bool   g_slept;                    /* ... and whether the last one slept */
+static volatile bool   g_sleeping;                 /* (the watchdog's clock jumps meanwhile) */
 
 static void power_screen(const char *msg)
 {
@@ -441,13 +444,39 @@ static void power_shutdown(void)
     for (;;) hlt();
 }
 
-void DesktopPowerRequest(bool restart)
+/* Sleep (S3): drive C: is saved first, in case the machine never wakes */
+static bool power_sleep(void)
+{
+    kprintf("[SHELL] Sleeping\n");
+    UmSaveAll();
+    g_sleeping = true;
+    bool ok = SleepEnter();
+    sched_sleep_tick();                           /* the tick count catches up */
+    g_desktop_beat = sched_ticks();
+    g_sleeping = false;
+    if (ok) {
+        WmCursorHide();
+        WmInvalidateBackground();
+        WmInvalidate();
+        WmCursorShow(WmCursorX(), WmCursorY());
+    } else {
+        kprintf("[SHELL] Sleep failed\n");
+    }
+    return ok;
+}
+
+bool DesktopPowerRequest(int what)
 {
     if (!g_desktop_beat) {                        /* no desktop loop: do it here */
         DesktopLock();
-        if (restart) power_restart(); else power_shutdown();
+        if (what == POWER_SLEEP) { bool ok = power_sleep(); DesktopUnlock(); return ok; }
+        if (what == POWER_RESTART) power_restart(); else power_shutdown();
     }
-    __atomic_store_n(&g_power_req, restart ? POWER_RESTART : POWER_SHUTDOWN, __ATOMIC_RELEASE);
+    UINT32 n = g_sleeps;
+    __atomic_store_n(&g_power_req, what, __ATOMIC_RELEASE);
+    if (what != POWER_SLEEP) return true;
+    while (g_sleeps == n) sched_sleep_tick();     /* until the machine is awake again */
+    return g_slept;
 }
 
 /* The desktop loop: a pending request, or the power button (which shuts
@@ -461,6 +490,10 @@ static void power_poll(void)
     int req = __atomic_exchange_n(&g_power_req, POWER_NONE, __ATOMIC_ACQ_REL);
     if (req == POWER_RESTART) power_restart();
     else if (req == POWER_SHUTDOWN) power_shutdown();
+    else if (req == POWER_SLEEP) {
+        g_slept = power_sleep();
+        __atomic_fetch_add(&g_sleeps, 1, __ATOMIC_RELEASE);
+    }
 }
 
 static void run_menu_item(const MenuItem *m)
@@ -484,6 +517,7 @@ static void run_menu_item(const MenuItem *m)
     case MA_WIN_SNAP_R:     if (w) { WmSetActive(w); WmSnap(w, WM_SNAP_RIGHT); } break;
     case MA_SHOW_DESKTOP:   WmShowDesktopToggle(); break;
     case MA_THEME_NEXT:     DesktopSetTheme((g_theme + 1) % N_THEMES); break;
+    case MA_SLEEP:          power_sleep(); break;
     case MA_RESTART:        power_restart(); break;
     case MA_SHUTDOWN:       power_shutdown(); break;
     default: break;
@@ -1320,7 +1354,8 @@ static void menu_for_dock(const Hot *h, int x, int y)
         menu_add("File Explorer", MA_APP, APP_EXPLORER, NULL, false);
         menu_add("Settings", MA_APP, APP_SETTINGS, NULL, false);
         menu_add("Show desktop", MA_SHOW_DESKTOP, 0, NULL, true);
-        menu_add("Restart", MA_RESTART, 0, NULL, true);
+        if (SleepSupported()) menu_add("Sleep", MA_SLEEP, 0, NULL, true);
+        menu_add("Restart", MA_RESTART, 0, NULL, !SleepSupported());
         menu_add("Shut down", MA_SHUTDOWN, 0, NULL, false);
     }
 }
@@ -1353,10 +1388,11 @@ static void run_action(const Hot *h)
     case ACT_POWER: {
         GdiRect r = h->r;
         menu_begin(r.x, r.y - 4);
+        if (SleepSupported()) menu_add("Sleep", MA_SLEEP, 0, NULL, false);
         menu_add("Restart", MA_RESTART, 0, NULL, false);
         menu_add("Shut down", MA_SHUTDOWN, 0, NULL, false);
         /* open upwards from the button */
-        g_menu.y = r.y - (8 + 2 * MENU_ROW) - 6;
+        g_menu.y = r.y - (8 + g_menu.n * MENU_ROW) - 6;
         break; }
     default: break;
     }
@@ -1560,7 +1596,7 @@ void DesktopWatchdog(UINT64 now)
 {
     static UINT64 reported;
     Thread *kt = g_desktop_kt;
-    if (!kt || now - g_desktop_beat < 300 || reported == g_desktop_beat) return;
+    if (!kt || g_sleeping || now - g_desktop_beat < 300 || reported == g_desktop_beat) return;
     reported = g_desktop_beat;
     extern char __text_end[];
     Thread *who[2] = { kt, DesktopLockOwner() };

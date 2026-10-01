@@ -1,8 +1,10 @@
 /*
  * powrprof.dll — power management.  NovaOS runs every processor at one
- * fixed speed on mains power, with the "Balanced" scheme active.
+ * fixed speed, with the "Balanced" scheme active; battery readings come
+ * from the kernel (NtPowerInformation).
  */
 #include <windows.h>
+#include <winternl.h>
 
 #define POWRPROF __declspec(dllexport)
 #define STATUS_SUCCESS_           0
@@ -34,14 +36,9 @@ POWRPROF LONG WINAPI CallNtPowerInformation(int level, PVOID in, ULONG inlen, PV
         }
         return STATUS_SUCCESS_;
     }
-    case 5: {                                        /* SystemBatteryState: on mains, no battery */
+    case 5:                                          /* SystemBatteryState: the ACPI batteries */
         if (!out || outlen < sizeof(BATTERY_STATE_)) return STATUS_BUFFER_TOO_SMALL_;
-        BATTERY_STATE_ *b = out;
-        ZeroMemory(b, sizeof(*b));
-        b->AcOnLine = TRUE;
-        b->EstimatedTime = 0xFFFFFFFF;
-        return STATUS_SUCCESS_;
-    }
+        return NtPowerInformation(5, in, inlen, out, outlen);
     default:
         if (out && outlen) ZeroMemory(out, outlen);
         return out ? STATUS_SUCCESS_ : STATUS_INVALID_PARAMETER_;
@@ -67,8 +64,29 @@ POWRPROF DWORD WINAPI PowerReadDCValueIndex(HKEY root, const GUID *s, const GUID
 POWRPROF DWORD WINAPI PowerRegisterSuspendResumeNotification(DWORD flags, HANDLE recipient, PVOID *h)
 { (void)flags; (void)recipient; *h = (PVOID)(ULONG_PTR)0x5E01; return ERROR_SUCCESS; }
 POWRPROF DWORD WINAPI PowerUnregisterSuspendResumeNotification(PVOID h) { (void)h; return ERROR_SUCCESS; }
-POWRPROF BOOLEAN WINAPI GetPwrCapabilities(PVOID caps) { ZeroMemory(caps, 76); return TRUE; }
-POWRPROF BOOLEAN WINAPI IsPwrSuspendAllowed(void) { return FALSE; }
+/* SYSTEM_POWER_CAPABILITIES: a power button, S3, S5 and the batteries */
+POWRPROF BOOLEAN WINAPI GetPwrCapabilities(PVOID caps)
+{
+    BOOLEAN *b = caps;
+    BATTERY_STATE_ bs;
+    ZeroMemory(caps, 76);
+    b[0] = TRUE;                          /* PowerButtonPresent */
+    b[5] = TRUE;                          /* SystemS3 */
+    b[7] = TRUE;                          /* SystemS5 */
+    if (NtPowerInformation(5, NULL, 0, &bs, sizeof(bs)) >= 0 && bs.BatteryPresent)
+        b[30] = TRUE;                     /* SystemBatteriesPresent */
+    return TRUE;
+}
+/* S3 where the firmware offers it (SetSuspendState fails where it doesn't);
+ * no hibernation */
+POWRPROF BOOLEAN WINAPI IsPwrSuspendAllowed(void) { return TRUE; }
 POWRPROF BOOLEAN WINAPI IsPwrHibernateAllowed(void) { return FALSE; }
 POWRPROF BOOLEAN WINAPI IsPwrShutdownAllowed(void) { return TRUE; }
-POWRPROF BOOLEAN WINAPI SetSuspendState(BOOLEAN hib, BOOLEAN force, BOOLEAN wake) { (void)hib; (void)force; (void)wake; return FALSE; }
+/* Sleep; returns once the machine is awake again */
+POWRPROF BOOLEAN WINAPI SetSuspendState(BOOLEAN hib, BOOLEAN force, BOOLEAN wake)
+{
+    (void)force; (void)wake;
+    LONG s = NtInitiatePowerAction(hib ? 3 : 2, hib ? 5 : 4, 0, FALSE);   /* PowerSystemHibernate / Sleeping3 */
+    if (s) { SetLastError(s == (LONG)0xC00000BB ? ERROR_NOT_SUPPORTED : ERROR_GEN_FAILURE); return FALSE; }
+    return TRUE;
+}

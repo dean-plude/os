@@ -23,6 +23,7 @@
 #include "../arch/x86_64/apic.h"
 #include "../wm/clipboard.h"
 #include "../wm/desktop.h"
+#include "../hal/aml.h"
 
 #define ST_SUCCESS                 0x00000000u
 #define ST_PENDING                 0x00000103u
@@ -33,6 +34,8 @@
 #define ST_INFO_LENGTH_MISMATCH    0xC0000004u
 #define ST_INVALID_HANDLE          0xC0000008u
 #define ST_INVALID_PARAMETER       0xC000000Du
+#define ST_NOT_SUPPORTED           0xC00000BBu
+#define ST_BUFFER_TOO_SMALL        0xC0000023u
 #define ST_END_OF_FILE             0xC0000011u
 #define ST_NO_MEMORY               0xC0000017u
 #define ST_CONFLICTING_ADDRESSES   0xC0000018u
@@ -1735,6 +1738,13 @@ UINT64 um_now_100ns(void)
     return g_boot_time + (sched_ticks() - g_boot_ticks) * 100000ULL;
 }
 
+/* After S3: the tick count stood still while the machine slept; the
+ * wall clock moves on by the time the CMOS clock measured */
+void UmClockAdvance(UINT64 delta_100ns)
+{
+    g_boot_time += delta_100ns;
+}
+
 /* NtShutdownSystem(SHUTDOWN_ACTION Action): ShutdownNoReboot (0) and
  * ShutdownPowerOff (2) power off, ShutdownReboot (1) restarts.  The
  * desktop loop saves drive C: and does it, so this returns. */
@@ -1743,8 +1753,62 @@ static UINT64 sys_shutdown_system(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     (void)a2; (void)a3; (void)a4;
     if ((UINT32)a1 > 2) return ST_INVALID_PARAMETER;
     kprintf("[UM] NtShutdownSystem(%s)\n", (UINT32)a1 == 1 ? "reboot" : "power off");
-    DesktopPowerRequest((UINT32)a1 == 1);
+    DesktopPowerRequest((UINT32)a1 == 1 ? POWER_RESTART : POWER_SHUTDOWN);
     return ST_SUCCESS;
+}
+
+/* NtSetSystemPowerState(POWER_ACTION, SYSTEM_POWER_STATE MinState, ULONG
+ * Flags) and NtInitiatePowerAction(POWER_ACTION, MinState, Flags, BOOLEAN
+ * Asynchronous): sleep (S3) returns once the machine is awake again */
+static UINT64 sys_power_action(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    switch ((UINT32)a1) {
+    case 2:                                      /* PowerActionSleep */
+        kprintf("[UM] Sleep requested\n");
+        return DesktopPowerRequest(POWER_SLEEP) ? ST_SUCCESS : ST_NOT_SUPPORTED;
+    case 4: case 6:                              /* PowerActionShutdown, ShutdownOff */
+        DesktopPowerRequest(POWER_SHUTDOWN);
+        return ST_SUCCESS;
+    case 5:                                      /* PowerActionShutdownReset */
+        DesktopPowerRequest(POWER_RESTART);
+        return ST_SUCCESS;
+    case 3:                                      /* PowerActionHibernate: no hibernation file */
+        return ST_NOT_SUPPORTED;
+    default:
+        return ST_INVALID_PARAMETER;
+    }
+}
+
+/* NtPowerInformation(POWER_INFORMATION_LEVEL, PVOID In, ULONG InLength,
+ * PVOID Out, ULONG OutLength): SystemBatteryState (5) from the ACPI
+ * batteries and AC adapters.  powrprof answers the other levels itself. */
+static UINT64 sys_power_information(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3;
+    if ((UINT32)a1 != 5) return ST_NOT_IMPLEMENTED;
+    struct __attribute__((packed)) {
+        UINT8  ac_online, present, charging, discharging, spare[3], tag;
+        UINT32 max, remaining;
+        INT32  rate;
+        UINT32 estimated, alert1, alert2;
+    } out = { 0 };
+    if (!a4) return ST_INVALID_PARAMETER;
+    if ((UINT32)um_stack_arg(5) < sizeof(out)) return ST_BUFFER_TOO_SMALL;
+    AmlBatteryState b;
+    AmlGetBatteryState(&b);
+    out.ac_online = b.ac_online;
+    out.present = b.battery_present;
+    out.charging = b.charging;
+    out.discharging = b.discharging;
+    out.tag = b.battery_present ? 1 : 0;
+    out.max = b.max_capacity;
+    out.remaining = b.remaining_capacity;
+    out.rate = b.rate;
+    out.estimated = b.estimated_time;
+    out.alert1 = b.alert_low;
+    out.alert2 = b.alert_warning;
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &out, sizeof(out))) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
 }
 
 static UINT64 sys_query_system_time(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -2199,6 +2263,9 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtNovaProcessList,          sys_nova_process_list);
     um_install(SYSCALL_NtQuerySystemTime,          sys_query_system_time);
     um_install(SYSCALL_NtShutdownSystem,           sys_shutdown_system);
+    um_install(SYSCALL_NtSetSystemPowerState,      sys_power_action);
+    um_install(SYSCALL_NtInitiatePowerAction,      sys_power_action);
+    um_install(SYSCALL_NtPowerInformation,         sys_power_information);
     um_install(SYSCALL_NtQueryPerformanceCounter,  sys_query_perf_counter);
     um_install(SYSCALL_NtDelayExecution,           sys_delay);
     um_install(SYSCALL_NtYieldExecution,           sys_yield);

@@ -82,6 +82,7 @@ set(CMAKE_ASM_NASM_FLAGS "-f elf64 -g -F dwarf")
 
 set(LWIP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lwip/src")
 set(MBEDTLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mbedtls")
+set(UACPI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/uacpi")
 
 set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -90,6 +91,7 @@ set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/net/port"      # lwIP port: lwipopts.h, arch/cc.h
     "${LWIP_DIR}/include"
     "${MBEDTLS_DIR}/include"
+    "${UACPI_DIR}/include"
 )
 
 # -------------------------------------------------------------------------
@@ -121,6 +123,7 @@ set(KERNEL_C_SOURCES
     hal/ps2.c
     hal/pci.c
     hal/acpi.c
+    hal/aml.c
     hal/display.c
     drivers/e1000.c
     drivers/ahci.c
@@ -156,6 +159,7 @@ set(KERNEL_C_SOURCES
     ke/syscall.c
     ke/kpcr.c
     ke/smp.c
+    ke/sleep.c
     ke/waitq.c
     ke/probe.c
     ke/probe_test.c
@@ -212,6 +216,12 @@ file(GLOB MBEDTLS_SOURCES "${MBEDTLS_DIR}/library/*.c")
 set_source_files_properties(${MBEDTLS_SOURCES} PROPERTIES COMPILE_OPTIONS
     "-w;-I${MBEDTLS_DIR}/library")
 list(APPEND KERNEL_C_SOURCES ${MBEDTLS_SOURCES})
+
+# uACPI (third_party/uacpi, MIT): the AML interpreter; host functions in
+# hal/aml.c
+file(GLOB UACPI_SOURCES "${UACPI_DIR}/source/*.c")
+set_source_files_properties(${UACPI_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+list(APPEND KERNEL_C_SOURCES ${UACPI_SOURCES})
 
 # The Windows userland (userland/, tools/build_userland.py): system DLLs and
 # programs built with clang for x86_64-pc-windows-msvc, embedded as data and

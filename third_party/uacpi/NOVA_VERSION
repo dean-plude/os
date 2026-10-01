@@ -1,0 +1,1 @@
+uACPI (https://github.com/uACPI/uACPI), MIT licence, commit f5f6cc29f85dd5db0dd79c47700c8f3ebce18be4 (2026-09-04). Unmodified; NovaOS's host functions are in kernel/hal/aml.c.

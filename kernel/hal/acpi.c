@@ -8,11 +8,12 @@
  * be read without an AML interpreter.  Reset uses the FADT's reset
  * register when the firmware says it works.  The power button is the
  * fixed-feature one (PWRBTN_STS in the PM1 status register), which the
- * desktop polls; machines that only expose a control-method button need
- * AML to report it, which NovaOS can't run.
+ * desktop polls; once the AML interpreter (aml.c) is running it handles
+ * the events, control-method buttons included.
  */
 
 #include "acpi.h"
+#include "aml.h"
 #include "pci.h"
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/apic.h"
@@ -39,6 +40,7 @@ typedef struct __attribute__((packed)) {
 #define GAS_PCI    2
 
 /* FADT offsets (ACPI 6.x, table 5.9) */
+#define FADT_FACS          36
 #define FADT_DSDT          40
 #define FADT_SMI_CMD       48
 #define FADT_ACPI_ENABLE   52
@@ -50,6 +52,7 @@ typedef struct __attribute__((packed)) {
 #define FADT_FLAGS         112
 #define FADT_RESET_REG     116
 #define FADT_RESET_VALUE   128
+#define FADT_X_FACS        132
 #define FADT_X_DSDT        140
 #define FADT_X_PM1A_EVT    148
 #define FADT_X_PM1B_EVT    160
@@ -71,6 +74,7 @@ typedef struct __attribute__((packed)) {
 #define PM1_CNT_SLP_EN     (1u << 13)
 
 static UINT64 g_rsdp;
+static const UINT8 *g_fadt_ptr;
 static bool   g_fadt;                    /* found and read */
 static Gas    g_pm1a_evt, g_pm1b_evt, g_pm1a_cnt, g_pm1b_cnt;
 static UINT8  g_evt_len;
@@ -79,6 +83,8 @@ static Gas    g_reset;
 static UINT8  g_reset_value;
 static Gas    g_sleep_ctl, g_sleep_sts;
 static int    g_s5a = -1, g_s5b = -1;    /* \_S5 sleep types; -1 unknown */
+static int    g_s3a = -1, g_s3b = -1;    /* \_S3 */
+static UINT8 *g_facs;                    /* firmware ACPI control structure */
 static bool   g_button;                  /* fixed power button enabled */
 
 /* -----------------------------------------------------------------------
@@ -186,12 +192,13 @@ static int aml_integer(const UINT8 **pp, const UINT8 *end)
     }
 }
 
-static bool find_s5(const AcpiHeader *t)
+/* The sleep types in Name(@name, Package() { SLP_TYPa, SLP_TYPb, ... }) */
+static bool find_sleep_type(const AcpiHeader *t, const char *name, int *ta, int *tb)
 {
     if (!t || t->len <= sizeof(AcpiHeader)) return false;
     const UINT8 *body = (const UINT8 *)(t + 1), *end = (const UINT8 *)t + t->len;
     for (const UINT8 *p = body + 1; p + 4 < end; p++) {
-        if (memcmp(p, "_S5_", 4)) continue;
+        if (memcmp(p, name, 4)) continue;
         /* NameOp, possibly with a root prefix: 08 _S5_ or 08 5C _S5_ */
         if (!(p[-1] == 0x08 || (p[-1] == '\\' && p - 2 >= body && p[-2] == 0x08))) continue;
         const UINT8 *q = p + 4;
@@ -203,9 +210,21 @@ static bool find_s5(const AcpiHeader *t)
         int a = aml_integer(&q, end);
         int b = aml_integer(&q, end);
         if (a < 0) continue;
-        g_s5a = a & 7;
-        g_s5b = (b < 0 ? a : b) & 7;
+        *ta = a & 7;
+        *tb = (b < 0 ? a : b) & 7;
         return true;
+    }
+    return false;
+}
+
+/* \_Sx in the DSDT, else in an SSDT */
+static bool sleep_type(const AcpiHeader *dsdt, const char *name, int *ta, int *tb)
+{
+    if (find_sleep_type(dsdt, name, ta, tb)) return true;
+    for (int i = 0; i < 16; i++) {
+        const AcpiHeader *ssdt = find_nth("SSDT", i);
+        if (!ssdt) break;
+        if (find_sleep_type(ssdt, name, ta, tb)) return true;
     }
     return false;
 }
@@ -248,6 +267,7 @@ void AcpiInitialize(UINT64 rsdp_physical)
     const UINT8 *f = (const UINT8 *)fh;
     UINT32 len = fh->len;
     g_fadt      = true;
+    g_fadt_ptr  = f;
     g_flags     = *(const UINT32 *)(f + FADT_FLAGS);
     g_pm1a_evt  = fadt_block(f, len, FADT_PM1A_EVT, FADT_X_PM1A_EVT);
     g_pm1b_evt  = fadt_block(f, len, FADT_PM1B_EVT, FADT_X_PM1B_EVT);
@@ -265,12 +285,11 @@ void AcpiInitialize(UINT64 rsdp_physical)
 
     UINT64 dsdt = len >= FADT_X_DSDT + 8 ? *(const UINT64 *)(f + FADT_X_DSDT) : 0;
     if (!dsdt) dsdt = *(const UINT32 *)(f + FADT_DSDT);
-    bool s5 = find_s5(table_at(dsdt));
-    for (int i = 0; !s5 && i < 16; i++) {
-        const AcpiHeader *ssdt = find_nth("SSDT", i);
-        if (!ssdt) break;
-        s5 = find_s5(ssdt);
-    }
+    bool s5 = sleep_type(table_at(dsdt), "_S5_", &g_s5a, &g_s5b);
+    sleep_type(table_at(dsdt), "_S3_", &g_s3a, &g_s3b);
+    UINT64 facs = len >= FADT_X_FACS + 8 ? *(const UINT64 *)(f + FADT_X_FACS) : 0;
+    if (!facs) facs = *(const UINT32 *)(f + FADT_FACS);
+    if (facs && !memcmp(PHYS_TO_VIRT(facs), "FACS", 4)) g_facs = PHYS_TO_VIRT(facs);
 
     if (!(g_flags & FLAG_HW_REDUCED)) enable_acpi_mode(f);
     enable_power_button();
@@ -278,6 +297,8 @@ void AcpiInitialize(UINT64 rsdp_physical)
     kprintf("[ACPI] PM1a_CNT %s 0x%lx, S5 %s", g_pm1a_cnt.space == GAS_IO ? "port" : "mmio",
             g_pm1a_cnt.addr, s5 ? "" : "not found");
     if (s5) kprintf("%d/%d", g_s5a, g_s5b);
+    kprintf(", S3 %s", AcpiSleepSupported() ? "" : "not supported");
+    if (AcpiSleepSupported()) kprintf("%d/%d", g_s3a, g_s3b);
     kprintf(", reset %s, power button %s\n",
             (g_flags & FLAG_RESET_REG_SUP) && gas_valid(&g_reset) ? "register" : "fallback",
             g_button ? "fixed" : "none");
@@ -295,29 +316,65 @@ static void legacy_power_off(void)
     outw(0x4004, 0x3400);
 }
 
+/* Write SLP_TYPx | SLP_EN: the machine sleeps (or powers off) during the
+ * write, or soon after; returns if it didn't */
+static void enter_sleep_state(int ta, int tb)
+{
+    if ((g_flags & FLAG_HW_REDUCED) && gas_valid(&g_sleep_ctl)) {
+        if (gas_valid(&g_sleep_sts)) gas_write(&g_sleep_sts, 8, 0x80);   /* WAK_STS */
+        gas_write(&g_sleep_ctl, 8, (UINT32)(ta << 2) | 0x20);           /* SLP_TYPx | SLP_EN */
+    } else if (gas_valid(&g_pm1a_cnt)) {
+        if (gas_valid(&g_pm1a_evt)) gas_write(&g_pm1a_evt, 16, PM1_STS_WAK);
+        if (gas_valid(&g_pm1b_evt)) gas_write(&g_pm1b_evt, 16, PM1_STS_WAK);
+        UINT32 a = gas_read(&g_pm1a_cnt, 16) & ~(PM1_CNT_SLP_TYP | PM1_CNT_SLP_EN);
+        UINT32 b = gas_valid(&g_pm1b_cnt) ? gas_read(&g_pm1b_cnt, 16) & ~(PM1_CNT_SLP_TYP | PM1_CNT_SLP_EN) : 0;
+        /* The type first, then SLP_EN, to both blocks */
+        gas_write(&g_pm1a_cnt, 16, a | (UINT32)ta << 10);
+        if (gas_valid(&g_pm1b_cnt)) gas_write(&g_pm1b_cnt, 16, b | (UINT32)tb << 10);
+        gas_write(&g_pm1a_cnt, 16, a | (UINT32)ta << 10 | PM1_CNT_SLP_EN);
+        if (gas_valid(&g_pm1b_cnt)) gas_write(&g_pm1b_cnt, 16, b | (UINT32)tb << 10 | PM1_CNT_SLP_EN);
+    }
+}
+
 void AcpiPowerOff(void)
 {
     cli();
     if (g_fadt && g_s5a >= 0) {
-        if ((g_flags & FLAG_HW_REDUCED) && gas_valid(&g_sleep_ctl)) {
-            if (gas_valid(&g_sleep_sts)) gas_write(&g_sleep_sts, 8, 0x80);   /* WAK_STS */
-            gas_write(&g_sleep_ctl, 8, (UINT32)(g_s5a << 2) | 0x20);        /* SLP_TYPx | SLP_EN */
-        } else if (gas_valid(&g_pm1a_cnt)) {
-            if (gas_valid(&g_pm1a_evt)) gas_write(&g_pm1a_evt, 16, PM1_STS_WAK);
-            if (gas_valid(&g_pm1b_evt)) gas_write(&g_pm1b_evt, 16, PM1_STS_WAK);
-            UINT32 a = gas_read(&g_pm1a_cnt, 16) & ~(PM1_CNT_SLP_TYP | PM1_CNT_SLP_EN);
-            UINT32 b = gas_valid(&g_pm1b_cnt) ? gas_read(&g_pm1b_cnt, 16) & ~(PM1_CNT_SLP_TYP | PM1_CNT_SLP_EN) : 0;
-            /* The type first, then SLP_EN, to both blocks */
-            gas_write(&g_pm1a_cnt, 16, a | (UINT32)g_s5a << 10);
-            if (gas_valid(&g_pm1b_cnt)) gas_write(&g_pm1b_cnt, 16, b | (UINT32)g_s5b << 10);
-            gas_write(&g_pm1a_cnt, 16, a | (UINT32)g_s5a << 10 | PM1_CNT_SLP_EN);
-            if (gas_valid(&g_pm1b_cnt)) gas_write(&g_pm1b_cnt, 16, b | (UINT32)g_s5b << 10 | PM1_CNT_SLP_EN);
-        }
+        enter_sleep_state(g_s5a, g_s5b);
         udelay(100000);
         kprintf("[ACPI] Still running after the S5 request\n");
     }
     legacy_power_off();
     udelay(100000);
+}
+
+bool AcpiSleepSupported(void)
+{
+    return g_fadt && g_s3a >= 0 && g_facs
+        && (gas_valid(&g_pm1a_cnt) || ((g_flags & FLAG_HW_REDUCED) && gas_valid(&g_sleep_ctl)));
+}
+
+bool AcpiEnterS3(UINT32 real_vector, UINT32 pm32_vector)
+{
+    if (!AcpiSleepSupported()) return false;
+    *(volatile UINT32 *)(g_facs + 12) = real_vector;             /* real mode, CS:IP = vector */
+    if (*(const UINT32 *)(g_facs + 4) >= 40) {                    /* ACPI 2.0+: X_ vector, 32-bit */
+        *(volatile UINT64 *)(g_facs + 24) = pm32_vector;
+        *(volatile UINT32 *)(g_facs + 36) &= ~1u;                 /* OSPM flags: not 64BIT_WAKE */
+    }
+    wbinvd();
+    enter_sleep_state(g_s3a, g_s3b);
+    for (int i = 0; i < 1000; i++) udelay(1000);   /* the platform takes a moment to go down */
+    return false;
+}
+
+void AcpiResume(void)
+{
+    if (!g_fadt) return;
+    if (!(g_flags & FLAG_HW_REDUCED)) enable_acpi_mode(g_fadt_ptr);
+    if (gas_valid(&g_pm1a_evt)) gas_write(&g_pm1a_evt, 16, PM1_STS_WAK);
+    g_button = false;
+    enable_power_button();               /* a press that woke the machine doesn't count */
 }
 
 void AcpiReset(void)
@@ -341,8 +398,11 @@ void AcpiReset(void)
     for (;;) hlt();
 }
 
+UINT64 AcpiRsdpAddress(void) { return g_rsdp; }
+
 bool AcpiPowerButtonPressed(void)
 {
+    if (AmlReady()) return AmlPowerButtonPressed();   /* the interpreter handles the events */
     if (!g_button) return false;
     if (!(gas_read(&g_pm1a_evt, 16) & PM1_STS_PWRBTN)) return false;
     gas_write(&g_pm1a_evt, 16, PM1_STS_PWRBTN);                 /* write 1 to clear */

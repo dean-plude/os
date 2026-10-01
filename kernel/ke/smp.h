@@ -58,6 +58,14 @@ void smp_early(const BootInfo *info);
 /* Start the other CPUs (after the scheduler, syscalls and SSE are set up). */
 uint32_t smp_start(void);                 /* the number of CPUs running (or about to) */
 
+/* Point the start-up page at @entry (with RSP = @stack_top, RDI = @arg)
+ * and return its physical address, or 0 if the page isn't available */
+uint32_t smp_trampoline(void (*entry)(uint64_t), void *stack_top, uint64_t arg);
+/* The start-up page's 32-bit protected-mode entry (an S3 waking vector) */
+uint32_t smp_trampoline_wake32(void);
+/* INIT and STARTUP IPIs to @apic; true once the CPU sets *@started */
+bool smp_start_cpu(uint8_t apic, volatile uint32_t *started);
+
 /* A thread became ready in CPU @prefer's queue: wake that CPU if it is
  * halted, else any halted CPU (it will take the thread from the queue). */
 void smp_kick(uint32_t prefer);

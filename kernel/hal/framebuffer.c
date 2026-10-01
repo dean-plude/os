@@ -10,6 +10,7 @@
 
 #include "framebuffer.h"
 #include "../include/types.h"
+#include "../arch/x86_64/cpu.h"
 
 /* -----------------------------------------------------------------------
  * 8×16 VGA bitmap font (ASCII 0x20 – 0x7E, 95 characters)
@@ -370,4 +371,41 @@ void fb_set_colors(FbColor fg, FbColor bg)
 {
     fb.fg = fg;
     fb.bg = bg;
+}
+
+/* -----------------------------------------------------------------------
+ * S3: the display adapter is powered off while the machine sleeps.  The
+ * UEFI framebuffer's mode came from the firmware, which doesn't set it up
+ * again on wake; for the Bochs/QEMU "dispi" interface (QEMU std VGA,
+ * bochs-display, VirtualBox) we put the mode back ourselves.
+ * ----------------------------------------------------------------------- */
+
+#define DISPI_INDEX 0x01CE
+#define DISPI_DATA  0x01CF
+#define DISPI_ENABLED      0x01
+#define DISPI_LFB_ENABLED  0x40
+#define DISPI_NOCLEARMEM   0x80
+
+static uint16_t g_dispi[10];             /* registers 0 (ID) to 9 */
+static bool     g_dispi_saved;
+
+static uint16_t dispi_read(int r)  { outw(DISPI_INDEX, (uint16_t)r); return inw(DISPI_DATA); }
+static void dispi_write(int r, uint16_t v) { outw(DISPI_INDEX, (uint16_t)r); outw(DISPI_DATA, v); }
+
+void FbSuspend(void)
+{
+    uint16_t id = dispi_read(0);
+    g_dispi_saved = id >= 0xB0C0 && id <= 0xB0CF;
+    if (!g_dispi_saved) return;
+    for (int r = 0; r < 10; r++) g_dispi[r] = dispi_read(r);
+}
+
+void FbResume(void)
+{
+    if (!g_dispi_saved || !(g_dispi[4] & DISPI_ENABLED)) return;
+    dispi_write(4, 0);
+    for (int r = 1; r < 10; r++) if (r != 4) dispi_write(r, g_dispi[r]);
+    dispi_write(4, (uint16_t)(g_dispi[4] | DISPI_LFB_ENABLED | DISPI_NOCLEARMEM));
+    (void)inb(0x3DA);                    /* attribute controller: video on (palette from the CPU) */
+    outb(0x3C0, 0x20);
 }

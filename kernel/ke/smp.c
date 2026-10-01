@@ -320,7 +320,8 @@ static uint32_t madt_cpus(uint8_t *ids, uint32_t max)
 /* -----------------------------------------------------------------------
  * Starting the other CPUs
  * ----------------------------------------------------------------------- */
-extern const uint8_t ap_trampoline_start[], ap_trampoline_end[], ap_trampoline_data[];
+extern const uint8_t ap_trampoline_start[], ap_trampoline_end[], ap_trampoline_data[],
+                     ap_trampoline_wake32[];
 
 #define AP_STACK_SIZE (16 * 1024)
 
@@ -375,51 +376,15 @@ static void __attribute__((noreturn)) ap_entry(uint64_t cpu)
     }
 }
 
-static bool start_ap(uint32_t cpu, uint8_t apic)
+/* The start-up page: the trampoline, and a page table for it (the kernel's
+ * upper half plus the low 2 MiB mapped 1:1, where the trampoline runs as
+ * paging turns on).  Set up once; S3 resume uses it as the waking vector. */
+static bool g_tramp_ready;
+
+static bool tramp_setup(void)
 {
-    ApSetup *a = &g_ap[cpu];
-    a->stack = kernel_alloc_pages(AP_STACK_SIZE / PAGE_SIZE);
-    a->gdt = kernel_alloc_pages(1);
-    a->ist = kernel_alloc_pages(4 * EXCEPTION_STACK_SIZE / PAGE_SIZE);
-    a->idle = a->stack ? sched_new_idle_thread(cpu, a->stack, AP_STACK_SIZE) : NULL;
-    if (!a->stack || !a->gdt || !a->ist || !a->idle) return false;
-    memset(a->gdt, 0, PAGE_SIZE);
-
-    uint64_t *data = PHYS_TO_VIRT(TRAMP_PA + (uint64_t)(ap_trampoline_data - ap_trampoline_start));
-    data[0] = TRAMP_PML4;
-    data[1] = (uint64_t)(uintptr_t)ap_entry;
-    data[2] = (uint64_t)(uintptr_t)(a->stack + AP_STACK_SIZE);
-    data[3] = cpu;
-    __atomic_store_n(&g_ap_started, 0, __ATOMIC_SEQ_CST);
-
-    apic_send_ipi(apic, APIC_IPI_INIT);
-    udelay(10000);
-    for (int attempt = 0; attempt < 2; attempt++) {
-        apic_send_ipi(apic, APIC_IPI_SIPI | (TRAMP_PA >> 12));
-        for (int i = 0; i < (attempt ? 20000 : 100); i++) {      /* 1 ms, then 200 ms */
-            if (__atomic_load_n(&g_ap_started, __ATOMIC_ACQUIRE)) return true;
-            udelay(10);
-        }
-    }
-    return false;
-}
-
-uint32_t smp_start(void)
-{
-    g_kpcr[0].ApicId = apic_id();
-    uint8_t ids[64];
-    uint32_t n = madt_cpus(ids, 64);
-    if (n <= 1) {
-        kprintf("[SMP] One CPU%s\n", n ? "" : " (no ACPI MADT)");
-        return 1;
-    }
-    if (!g_low_ok) {
-        kprintf("[SMP] %u CPUs, but the start-up page 0x%x is in use: using one\n", n, TRAMP_PA);
-        return 1;
-    }
-
-    /* The trampoline, and a page table for it: the kernel's upper half plus
-     * the low 2 MiB mapped 1:1 (where the trampoline runs as paging turns on) */
+    if (g_tramp_ready) return true;
+    if (!g_low_ok) return false;
     memcpy(PHYS_TO_VIRT(TRAMP_PA), ap_trampoline_start, (size_t)(ap_trampoline_end - ap_trampoline_start));
     uint64_t *pml4 = PHYS_TO_VIRT(TRAMP_PML4), *pdpt = PHYS_TO_VIRT(TRAMP_PDPT), *pd = PHYS_TO_VIRT(TRAMP_PD);
     const uint64_t *kpml4 = PHYS_TO_VIRT(paging_get_kernel_cr3());
@@ -437,6 +402,71 @@ uint32_t smp_start(void)
         __asm__ volatile ("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
         g_bsp_xcr0 = ((uint64_t)hi << 32) | lo;
     }
+    g_tramp_ready = true;
+    return true;
+}
+
+uint32_t smp_trampoline(void (*entry)(uint64_t), void *stack_top, uint64_t arg)
+{
+    if (!tramp_setup()) return 0;
+    uint64_t *data = PHYS_TO_VIRT(TRAMP_PA + (uint64_t)(ap_trampoline_data - ap_trampoline_start));
+    data[0] = TRAMP_PML4;
+    data[1] = (uint64_t)(uintptr_t)entry;
+    data[2] = (uint64_t)(uintptr_t)stack_top;
+    data[3] = arg;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    return TRAMP_PA;
+}
+
+uint32_t smp_trampoline_wake32(void)
+{
+    return TRAMP_PA + (uint32_t)(ap_trampoline_wake32 - ap_trampoline_start);
+}
+
+bool smp_start_cpu(uint8_t apic, volatile uint32_t *started)
+{
+    apic_send_ipi(apic, APIC_IPI_INIT);
+    udelay(10000);
+    for (int attempt = 0; attempt < 2; attempt++) {
+        apic_send_ipi(apic, APIC_IPI_SIPI | (TRAMP_PA >> 12));
+        for (int i = 0; i < (attempt ? 20000 : 100); i++) {      /* 1 ms, then 200 ms */
+            if (__atomic_load_n(started, __ATOMIC_ACQUIRE)) return true;
+            udelay(10);
+        }
+    }
+    return false;
+}
+
+static bool start_ap(uint32_t cpu, uint8_t apic)
+{
+    ApSetup *a = &g_ap[cpu];
+    a->stack = kernel_alloc_pages(AP_STACK_SIZE / PAGE_SIZE);
+    a->gdt = kernel_alloc_pages(1);
+    a->ist = kernel_alloc_pages(4 * EXCEPTION_STACK_SIZE / PAGE_SIZE);
+    a->idle = a->stack ? sched_new_idle_thread(cpu, a->stack, AP_STACK_SIZE) : NULL;
+    if (!a->stack || !a->gdt || !a->ist || !a->idle) return false;
+    memset(a->gdt, 0, PAGE_SIZE);
+
+    smp_trampoline((void (*)(uint64_t))ap_entry, a->stack + AP_STACK_SIZE, cpu);
+    __atomic_store_n(&g_ap_started, 0, __ATOMIC_SEQ_CST);
+    return smp_start_cpu(apic, &g_ap_started);
+}
+
+uint32_t smp_start(void)
+{
+    g_kpcr[0].ApicId = apic_id();
+    uint8_t ids[64];
+    uint32_t n = madt_cpus(ids, 64);
+    if (n <= 1) {
+        kprintf("[SMP] One CPU%s\n", n ? "" : " (no ACPI MADT)");
+        return 1;
+    }
+    if (!g_low_ok) {
+        kprintf("[SMP] %u CPUs, but the start-up page 0x%x is in use: using one\n", n, TRAMP_PA);
+        return 1;
+    }
+
+    tramp_setup();
 
     uint32_t cpu = 1, started = 0;
     for (uint32_t i = 0; i < n && cpu < MAX_CPUS; i++) {

@@ -319,10 +319,12 @@ static bool reset_controller(void)
 
 static void setup_rings(void)
 {
-    UINT8 *page = kernel_alloc_pages(1);            /* CORB (1 KiB) + RIRB (2 KiB) */
-    memset(page, 0, PAGE_SIZE);
-    g.corb = (volatile UINT32 *)page;
-    g.rirb = (volatile UINT64 *)(page + 2048);
+    if (!g.corb) {
+        UINT8 *page = kernel_alloc_pages(1);        /* CORB (1 KiB) + RIRB (2 KiB) */
+        g.corb = (volatile UINT32 *)page;
+        g.rirb = (volatile UINT64 *)(page + 2048);
+    }
+    memset((void *)g.corb, 0, PAGE_SIZE);
 
     wr32(CORBLBASE, (UINT32)phys(g.corb));
     wr32(CORBUBASE, (UINT32)(phys(g.corb) >> 32));
@@ -343,6 +345,26 @@ static void setup_rings(void)
     wr8(RIRBCTL, 0x03);                             /* DMA on; response status (polled, INTCTL is off) */
 }
 
+/* Reset the output stream and run it over the ring */
+static void program_stream(void)
+{
+    wr32(g.sd + SD_CTL, 0);
+    for (int i = 0; i < 1000 && (rd32(g.sd + SD_CTL) & SD_CTL_RUN); i++) pause_cpu();
+    wr32(g.sd + SD_CTL, SD_CTL_SRST);
+    for (int i = 0; i < 1000 && !(rd32(g.sd + SD_CTL) & SD_CTL_SRST); i++) pause_cpu();
+    wr32(g.sd + SD_CTL, 0);
+    for (int i = 0; i < 1000 && (rd32(g.sd + SD_CTL) & SD_CTL_SRST); i++) pause_cpu();
+    wr8(g.sd + SD_STS, 0x1C);                       /* clear status */
+
+    wr32(g.sd + SD_BDPL, (UINT32)phys(g.bdl));
+    wr32(g.sd + SD_BDPU, (UINT32)(phys(g.bdl) >> 32));
+    wr32(g.sd + SD_CBL, RING_BYTES);
+    wr16(g.sd + SD_LVI, RING_ENTRIES - 1);
+    wr16(g.sd + SD_FMT, FMT_48K_16_STEREO);
+    wr32(g.sd + SD_CTL, ((UINT32)STREAM_TAG << 20));
+    wr32(g.sd + SD_CTL, ((UINT32)STREAM_TAG << 20) | SD_CTL_RUN);
+}
+
 static bool start_stream(UINT16 gcap)
 {
     int iss = (gcap >> 8) & 0xF, oss = (gcap >> 12) & 0xF;
@@ -359,22 +381,7 @@ static bool start_stream(UINT16 gcap)
         g.bdl[i].len = PAGE_SIZE;
         g.bdl[i].flags = 0;
     }
-
-    wr32(g.sd + SD_CTL, 0);
-    for (int i = 0; i < 1000 && (rd32(g.sd + SD_CTL) & SD_CTL_RUN); i++) pause_cpu();
-    wr32(g.sd + SD_CTL, SD_CTL_SRST);
-    for (int i = 0; i < 1000 && !(rd32(g.sd + SD_CTL) & SD_CTL_SRST); i++) pause_cpu();
-    wr32(g.sd + SD_CTL, 0);
-    for (int i = 0; i < 1000 && (rd32(g.sd + SD_CTL) & SD_CTL_SRST); i++) pause_cpu();
-    wr8(g.sd + SD_STS, 0x1C);                       /* clear status */
-
-    wr32(g.sd + SD_BDPL, (UINT32)phys(g.bdl));
-    wr32(g.sd + SD_BDPU, (UINT32)(phys(g.bdl) >> 32));
-    wr32(g.sd + SD_CBL, RING_BYTES);
-    wr16(g.sd + SD_LVI, RING_ENTRIES - 1);
-    wr16(g.sd + SD_FMT, FMT_48K_16_STEREO);
-    wr32(g.sd + SD_CTL, ((UINT32)STREAM_TAG << 20));
-    wr32(g.sd + SD_CTL, ((UINT32)STREAM_TAG << 20) | SD_CTL_RUN);
+    program_stream();
     return true;
 }
 
@@ -412,6 +419,24 @@ bool HdaInit(void)
     kprintf("[HDA] %s at %02x:%02x.%x, %d output stream%s, playing 48 kHz 16-bit stereo\n",
             g.name, d.bus, d.dev, d.func, (gcap >> 12) & 0xF, ((gcap >> 12) & 0xF) == 1 ? "" : "s");
     return true;
+}
+
+/* After S3 the controller and codecs are back at their reset state: set
+ * up the command rings, the codec paths and the stream again.  The ring
+ * keeps its memory; the mixer sees the position restart as a wrap. */
+void HdaResume(void)
+{
+    if (!g.present) return;
+    if (!reset_controller()) { kprintf("[HDA] Controller did not leave reset after sleep\n"); return; }
+    wr32(INTCTL, 0);
+    wr32(DPLBASE, 0);
+    setup_rings();
+    UINT16 codecs = rd16(STATESTS);
+    wr16(STATESTS, codecs);
+    g.outputs = 0;
+    for (int cad = 0; cad < 15; cad++)
+        if (codecs & (1u << cad)) setup_codec(cad);
+    program_stream();
 }
 
 const char *HdaName(void) { return g.present ? g.name : "No audio device"; }

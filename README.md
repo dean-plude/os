@@ -86,8 +86,8 @@ every part, phase by phase.
   network cards; Intel High Definition Audio (output) with a kernel mixer;
   PS/2 and USB (xHCI) keyboards and mice; CMOS clock; a Bochs/QEMU VBE
   display driver (resolutions switched at run time, page flipping) with the
-  UEFI framebuffer as the fallback; ACPI power-off, reset and power button
-  from the FADT and `\_S5`.
+  UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
+  sleep (S3), batteries and AC adapters (AML interpreted by uACPI).
 - **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
   TLS with the Mozilla root store.
 - **Windows userland** (`userland/`): about 35 system DLLs written from
@@ -228,7 +228,7 @@ os/
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
 │   ├── drivers/          # AHCI (SATA), e1000/e1000e, xHCI USB + HID
-│   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, ACPI
+│   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
 │   ├── wm/               # Window manager, desktop shell, input, clipboard
@@ -243,7 +243,7 @@ os/
 │   ├── programs/         # cmd.exe, msiexec, reg, find..., samples and self-tests
 │   ├── netsurf/          # NetSurf port: fetcher, window surface, fonts
 │   └── include/          # The Windows SDK headers NovaOS provides
-├── third_party/          # lwIP, Mbed TLS, musl (libm), NetSurf, stb, fonts, 7-Zip installer
+├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), NetSurf, stb, fonts, 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
 │                         #   make_icons.py, pe_imports.py, msitest/
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
@@ -295,7 +295,7 @@ os/
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
 code keeps its own permissive licence (lwIP: BSD 3-clause; Mbed TLS:
-Apache-2.0; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu
+Apache-2.0; uACPI: MIT; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu
 Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or
 MIT).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,

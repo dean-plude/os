@@ -112,3 +112,8 @@ void fb_draw_string(int x, int y, const char *s, FbColor fg, FbColor bg);
  * transparent background (only foreground pixels are written).
  */
 void fb_draw_string_trans(int x, int y, const char *s, FbColor fg);
+
+/* S3: save the display mode before sleeping, set it again on wake (the
+ * Bochs/QEMU dispi interface; other adapters keep what the firmware does) */
+void FbSuspend(void);
+void FbResume(void);

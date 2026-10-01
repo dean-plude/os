@@ -40,4 +40,12 @@ UINT64 PciBarAddress(const PciDevice *d, int bar);
 volatile void *PciMapBar(const PciDevice *d, int bar);
 
 /* Turn on memory-space decoding and bus mastering (for DMA). */
+/* Map @size bytes of physical memory or MMIO at @pa (uncached above the
+ * physical-memory map); NULL if it can't.  Never unmapped. */
+volatile void *PciMapPhysical(UINT64 pa, UINT64 size);
+
 void PciEnableDevice(const PciDevice *d);
+
+/* S3: save every function's configuration header, and put it back on wake */
+void PciSaveAll(void);
+void PciRestoreAll(void);
