@@ -785,7 +785,16 @@ USERAPI BOOL GetUserObjectInformationW(HANDLE h, int index, PVOID p, DWORD n, LP
     SetLastError(ERROR_INVALID_PARAMETER);
     return FALSE;
 }
-USERAPI BOOL ExitWindowsEx(UINT flags, DWORD reason) { (void)flags; (void)reason; SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+/* ExitWindowsEx: shut down or restart (the shell saves drive C: first);
+ * there is one session and no log-on screen, so no log-off */
+USERAPI BOOL ExitWindowsEx(UINT flags, DWORD reason)
+{
+    (void)reason;
+    if (flags & EWX_REBOOT) return NtShutdownSystem(1) == 0;
+    if (flags & (EWX_SHUTDOWN | EWX_POWEROFF)) return NtShutdownSystem(2) == 0;
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return FALSE;
+}
 USERAPI BOOL LockWorkStation(void) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
 
 USERAPI BOOL ChangeWindowMessageFilterEx(HWND h, UINT msg, DWORD action, void *cf) { (void)h; (void)msg; (void)action; (void)cf; return TRUE; }

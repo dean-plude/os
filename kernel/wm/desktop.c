@@ -31,6 +31,7 @@
 #include "../lib/string.h"
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
+#include "../hal/acpi.h"
 #include "../arch/x86_64/cpu.h"
 #include "../apps/apps.h"
 #include "../net/net.h"
@@ -401,16 +402,28 @@ static void draw_menu(void)
     }
 }
 
+/* -----------------------------------------------------------------------
+ * Power: the Start menu, the power button and NtShutdownSystem/ExitWindowsEx
+ * all end up here, on the desktop thread, which owns the screen and drive C:
+ * ----------------------------------------------------------------------- */
+static volatile UINT64 g_desktop_beat;             /* the desktop loop's last pass */
+static volatile int    g_power_req;                /* POWER_* from another thread */
+enum { POWER_NONE, POWER_SHUTDOWN, POWER_RESTART };
+
+static void power_screen(const char *msg)
+{
+    WmCursorHide();
+    GdiFillRect(RECT(0, 0, GdiScreenW(), GdiScreenH()), 0x0B1E3A);
+    GdiTextShadowCenter(0, GdiScreenH() / 2 - GDI_FONT_H / 2, GdiScreenW(), msg, 0xFFFFFF, 0);
+    GdiPresent();
+}
+
 static void power_restart(void)
 {
     kprintf("[SHELL] Restarting\n");
+    if (g_ready) power_screen("Restarting");
     UmSaveAll();
-    cli();
-    for (int i = 0; i < 100000; i++) {                    /* 8042: pulse the reset line */
-        if (!(inb(0x64) & 2)) break;
-    }
-    outb(0x64, 0xFE);
-    for (;;) hlt();
+    AcpiReset();
 }
 
 void DesktopRestart(void) { power_restart(); }
@@ -418,15 +431,35 @@ void DesktopRestart(void) { power_restart(); }
 static void power_shutdown(void)
 {
     kprintf("[SHELL] Shutting down\n");
+    if (g_ready) power_screen("Shutting down");
     UmSaveAll();
+    AcpiPowerOff();
+    kprintf("[SHELL] The machine didn't power off\n");
+    if (g_ready) power_screen("It's now safe to turn off your computer");
     cli();
-    /* ACPI S5 through the PM1a control port the common virtual machines
-     * use (QEMU q35/ICH9, QEMU i440fx, Bochs, VirtualBox); real hardware
-     * needs the FADT, which NovaOS doesn't parse yet */
-    outw(0x604, 0x2000);
-    outw(0xB004, 0x2000);
-    outw(0x4004, 0x3400);
     for (;;) hlt();
+}
+
+void DesktopPowerRequest(bool restart)
+{
+    if (!g_desktop_beat) {                        /* no desktop loop: do it here */
+        DesktopLock();
+        if (restart) power_restart(); else power_shutdown();
+    }
+    __atomic_store_n(&g_power_req, restart ? POWER_RESTART : POWER_SHUTDOWN, __ATOMIC_RELEASE);
+}
+
+/* The desktop loop: a pending request, or the power button (which shuts
+ * down, as Windows does by default) */
+static void power_poll(void)
+{
+    if (AcpiPowerButtonPressed()) {
+        kprintf("[SHELL] Power button pressed\n");
+        power_shutdown();
+    }
+    int req = __atomic_exchange_n(&g_power_req, POWER_NONE, __ATOMIC_ACQ_REL);
+    if (req == POWER_RESTART) power_restart();
+    else if (req == POWER_SHUTDOWN) power_shutdown();
 }
 
 static void run_menu_item(const MenuItem *m)
@@ -1492,7 +1525,6 @@ static void desktop_key(const KeyEvent *k)
 /* Watchdog (called from the timer tick): when the desktop loop has not come
  * round for 3 seconds, log where its thread is, once per stall. */
 static Thread *volatile g_desktop_kt;
-static volatile UINT64 g_desktop_beat;
 
 void DesktopWatchdog(UINT64 now)
 {
@@ -1540,6 +1572,7 @@ void DesktopRun(void *arg)
         /* Program threads take this lock around file-system access */
         DesktopLock();
         ps2_poll();
+        power_poll();
         /* C:\\Desktop changed (an installer made a shortcut)? redraw the icons */
         if (g_desktop_beat - last_desk_check >= 50) {
             last_desk_check = g_desktop_beat;

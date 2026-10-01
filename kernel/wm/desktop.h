@@ -34,6 +34,10 @@ void DesktopRun(void *arg);
 /* Save drive C: and restart the PC */
 void DesktopRestart(void);
 
+/* Shut down or restart from any thread: the desktop loop saves drive C:
+ * and does it (NtShutdownSystem, ExitWindowsEx) */
+void DesktopPowerRequest(bool restart);
+
 /* Toggle the Start menu open/closed. */
 void DesktopToggleStart(void);
 

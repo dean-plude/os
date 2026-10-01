@@ -120,6 +120,7 @@ set(KERNEL_C_SOURCES
     hal/rtc.c
     hal/ps2.c
     hal/pci.c
+    hal/acpi.c
     drivers/e1000.c
     drivers/ahci.c
     fs/block.c
