@@ -10,7 +10,7 @@
 
 #define UM_MAX_PROCS     32
 #define UM_MAX_HANDLES   256
-#define UM_MAX_REGIONS   256
+#define UM_MAX_REGIONS   8192     /* (runtimes such as CoreCLR reserve thousands of ranges) */
 #define UM_MAX_MODULES   64
 #define UM_MAX_THREADS   64
 
@@ -147,7 +147,7 @@ typedef struct {
 } UmRegion;
 
 typedef struct {
-    char   name[32];            /* lower case, e.g. "kernel32.dll" */
+    char   name[64];            /* lower case, e.g. "kernel32.dll" */
     char   path[96];            /* full path on drive C: */
     UINT64 base, size;
     UINT32 entry;               /* entry point RVA (0: none) */
@@ -168,7 +168,7 @@ struct UmProcess {
     UmLock      lock;           /* handles, regions, modules, threads */
 
     UmHandle    handles[UM_MAX_HANDLES];
-    UmRegion    regions[UM_MAX_REGIONS];
+    UmRegion   *regions;        /* [UM_MAX_REGIONS], allocated with the process */
     int         nregions;
     UmModule    modules[UM_MAX_MODULES];
     int         nmodules;
@@ -243,7 +243,7 @@ UmThread  *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack
                             bool suspended, UINT32 *status);
 /* Load a DLL (and what it imports) into the running process: *base gets
  * its address; new modules are appended to the loader info page. */
-UINT32     um_load_dll(UmProcess *p, const char *name, UINT64 *base);
+UINT32     um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags);
 const UmModule *um_module_at(UmProcess *p, UINT64 va);
 
 /* um_console.c */
@@ -332,3 +332,5 @@ void       um_registry_init(void);
 void       um_registry_syscalls_init(void);
 void       um_registry_poll(void);   /* save the hive after changes (desktop thread) */
 void       um_registry_flush(void);  /* save the hive now if it changed */
+void       um_registry_environment(void (*cb)(void *ctx, const char *name, const char *value, bool user, bool expand),
+                                   void *ctx);

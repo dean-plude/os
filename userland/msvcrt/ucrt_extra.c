@@ -291,3 +291,131 @@ CRTEXP void _get_stream_buffer_pointers(FILE *f, char ***base, char ***ptr, int 
     if (ptr) *ptr = &v->ptr;
     if (cnt) *cnt = &v->cnt;
 }
+
+/* -----------------------------------------------------------------------
+ * Locales: one, the "C" locale; a _locale_t names it
+ * ----------------------------------------------------------------------- */
+typedef struct { void *locinfo, *mbcinfo; } LocaleObj;
+static LocaleObj g_c_locale;
+CRTEXP void *_create_locale(int category, const char *name) { (void)category; (void)name; return &g_c_locale; }
+CRTEXP void *_wcreate_locale(int category, const wchar_t *name) { (void)category; (void)name; return &g_c_locale; }
+CRTEXP void *_get_current_locale(void) { return &g_c_locale; }
+CRTEXP void _free_locale(void *l) { (void)l; }
+
+CRTEXP int iswascii(wint_t c) { return c < 0x80; }
+CRTEXP errno_t _ltow_s(long v, wchar_t *buf, size_t n, int radix)
+{
+    if (!buf || !n || radix < 2 || radix > 36) return EINVAL;
+    wchar_t tmp[40];
+    int k = 0, neg = radix == 10 && v < 0;
+    unsigned long u = neg ? 0UL - (unsigned long)v : (unsigned long)v;
+    do { int d = (int)(u % (unsigned)radix); tmp[k++] = (wchar_t)(d < 10 ? '0' + d : 'a' + d - 10); u /= (unsigned)radix; } while (u);
+    if ((size_t)(k + neg + 1) > n) { buf[0] = 0; return ERANGE; }
+    size_t i = 0;
+    if (neg) buf[i++] = L'-';
+    while (k) buf[i++] = tmp[--k];
+    buf[i] = 0;
+    return 0;
+}
+
+/* Defined elsewhere without the export */
+#ifdef _WIN64
+__asm__(".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:_wcstoui64 /EXPORT:_wcstoi64\"\n\t.text\n");
+#else
+__asm__(".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:_wcstoui64=__wcstoui64 /EXPORT:_wcstoi64=__wcstoi64\"\n\t.text\n");
+#endif
+
+/* -----------------------------------------------------------------------
+ * <conio.h>: the console, one character at a time (no echo, no line
+ * editing); a character can be pushed back
+ * ----------------------------------------------------------------------- */
+static wint_t g_ungot = WEOF;
+CRTEXP wint_t _getwch(void)
+{
+    if (g_ungot != WEOF) { wint_t c = g_ungot; g_ungot = WEOF; return c; }
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0, got = 0;
+    BOOL con = GetConsoleMode(in, &mode);
+    if (con) SetConsoleMode(in, mode & ~(DWORD)(0x2 | 0x4)  /* ENABLE_LINE_INPUT, ENABLE_ECHO_INPUT */);
+    WCHAR c = 0;
+    BOOL ok = con ? ReadConsoleW(in, &c, 1, &got, 0) : ReadFile(in, &c, 1, &got, 0);
+    if (con) SetConsoleMode(in, mode);
+    return ok && got ? (wint_t)c : WEOF;
+}
+CRTEXP int _getch(void) { wint_t c = _getwch(); return c == WEOF ? EOF : (int)(c & 0xFF); }
+CRTEXP wint_t _putwch(wchar_t c)
+{
+    DWORD w;
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    return WriteConsoleW(out, &c, 1, &w, 0) || WriteFile(out, &c, 1, &w, 0) ? (wint_t)c : WEOF;
+}
+CRTEXP int _putch(int c) { return _putwch((wchar_t)(unsigned char)c) == WEOF ? EOF : c; }
+CRTEXP wint_t _getwche(void) { wint_t c = _getwch(); if (c != WEOF) _putwch((wchar_t)c); return c; }
+CRTEXP int _getche(void) { int c = _getch(); if (c != EOF) _putch(c); return c; }
+CRTEXP wint_t _ungetwch(wint_t c) { if (g_ungot != WEOF || c == WEOF) return WEOF; g_ungot = c; return c; }
+CRTEXP int _ungetch(int c) { return _ungetwch((wint_t)(unsigned char)c) == WEOF ? EOF : c; }
+CRTEXP int _kbhit(void)
+{
+    if (g_ungot != WEOF) return 1;
+    DWORD n = 0;
+    return GetNumberOfConsoleInputEvents(GetStdHandle(STD_INPUT_HANDLE), &n) && n > 0;
+}
+
+/* -----------------------------------------------------------------------
+ * The wide spawn/exec forms: the narrow ones in UTF-8
+ * ----------------------------------------------------------------------- */
+extern intptr_t _spawnve(int, const char *, const char *const *, const char *const *);
+extern intptr_t _execve(const char *, const char *const *, const char *const *);
+static char *u8(const wchar_t *w)
+{
+    if (!w) return 0;
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, 0, 0, 0, 0);
+    char *s = malloc(n > 0 ? (size_t)n : 1);
+    if (s) WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, 0, 0);
+    return s;
+}
+static char **u8v(const wchar_t *const *v)
+{
+    if (!v) return 0;
+    size_t n = 0;
+    while (v[n]) n++;
+    char **r = calloc(n + 1, sizeof(char *));
+    if (r) for (size_t i = 0; i < n; i++) r[i] = u8(v[i]);
+    return r;
+}
+static void free_v(char **v) { if (v) { for (size_t i = 0; v[i]; i++) free(v[i]); free(v); } }
+CRTEXP intptr_t _wspawnve(int m, const wchar_t *p, const wchar_t *const *a, const wchar_t *const *e)
+{
+    char *pp = u8(p), **aa = u8v(a), **ee = u8v(e);
+    intptr_t r = _spawnve(m, pp, (const char *const *)aa, (const char *const *)ee);
+    free(pp); free_v(aa); free_v(ee);
+    return r;
+}
+CRTEXP intptr_t _wspawnv(int m, const wchar_t *p, const wchar_t *const *a) { return _wspawnve(m, p, a, 0); }
+CRTEXP intptr_t _wexecve(const wchar_t *p, const wchar_t *const *a, const wchar_t *const *e)
+{
+    char *pp = u8(p), **aa = u8v(a), **ee = u8v(e);
+    intptr_t r = _execve(pp, (const char *const *)aa, (const char *const *)ee);
+    free(pp); free_v(aa); free_v(ee);
+    return r;
+}
+CRTEXP intptr_t _wexecv(const wchar_t *p, const wchar_t *const *a) { return _wexecve(p, a, 0); }
+
+/* -----------------------------------------------------------------------
+ * Error message table and floating-point rounding mode
+ * ----------------------------------------------------------------------- */
+#define NSYSERR 43
+static char *g_errlist[NSYSERR];
+static int g_nerr = NSYSERR;
+CRTEXP char **__sys_errlist(void)
+{
+    if (!g_errlist[0]) for (int i = 0; i < NSYSERR; i++) g_errlist[i] = strerror(i);
+    return g_errlist;
+}
+CRTEXP int *__sys_nerr(void) { return &g_nerr; }
+CRTEXP int __fpe_flt_rounds(void)
+{
+    unsigned m;
+    __asm__ volatile("stmxcsr %0" : "=m"(m));
+    switch ((m >> 13) & 3) { case 0: return 1; case 1: return 3; case 2: return 2; default: return 0; }
+}

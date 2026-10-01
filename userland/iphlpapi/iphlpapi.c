@@ -78,3 +78,72 @@ IPHLPAPI char *WINAPI if_indextoname(ULONG index, char *name)
     lstrcpyA(name, "eth0");
     return name;
 }
+
+/* -----------------------------------------------------------------------
+ * The IP helper's newer calls (NET_LUID-based): one interface, eth0
+ * ----------------------------------------------------------------------- */
+typedef union { ULONG64 Value; } NET_LUID_;
+IPHLPAPI DWORD WINAPI ConvertInterfaceIndexToLuid(ULONG index, NET_LUID_ *luid)
+{
+    if (!luid) return ERROR_INVALID_PARAMETER;
+    if (index != 1) { luid->Value = 0; return ERROR_FILE_NOT_FOUND; }
+    luid->Value = ((ULONG64)6 << 48) | ((ULONG64)1 << 24);       /* IfType 6 (Ethernet), NetLuidIndex 1 */
+    return NO_ERROR;
+}
+IPHLPAPI DWORD WINAPI ConvertInterfaceLuidToIndex(const NET_LUID_ *luid, ULONG *index)
+{
+    if (!luid || !index) return ERROR_INVALID_PARAMETER;
+    *index = 1;
+    return NO_ERROR;
+}
+IPHLPAPI DWORD WINAPI ConvertInterfaceLuidToNameW(const NET_LUID_ *luid, LPWSTR name, SIZE_T n)
+{
+    if (!luid || !name) return ERROR_INVALID_PARAMETER;
+    if (n < 10) return ERROR_NOT_ENOUGH_MEMORY;
+    lstrcpyW(name, L"ethernet_1");
+    return NO_ERROR;
+}
+IPHLPAPI DWORD WINAPI ConvertInterfaceLuidToNameA(const NET_LUID_ *luid, LPSTR name, SIZE_T n)
+{
+    if (!luid || !name) return ERROR_INVALID_PARAMETER;
+    if (n < 11) return ERROR_NOT_ENOUGH_MEMORY;
+    lstrcpyA(name, "ethernet_1");
+    return NO_ERROR;
+}
+/* Change notifications: registered, never delivered */
+IPHLPAPI DWORD WINAPI NotifyIpInterfaceChange(USHORT family, PVOID cb, PVOID ctx, BOOLEAN initial, HANDLE *h)
+{
+    (void)family; (void)cb; (void)ctx; (void)initial;
+    if (!h) return ERROR_INVALID_PARAMETER;
+    *h = (HANDLE)(ULONG_PTR)0x1F01;
+    return NO_ERROR;
+}
+IPHLPAPI DWORD WINAPI NotifyUnicastIpAddressChange(USHORT family, PVOID cb, PVOID ctx, BOOLEAN initial, HANDLE *h)
+{
+    return NotifyIpInterfaceChange(family, cb, ctx, initial, h);
+}
+IPHLPAPI DWORD WINAPI NotifyRouteChange2(USHORT family, PVOID cb, PVOID ctx, BOOLEAN initial, HANDLE *h)
+{
+    return NotifyIpInterfaceChange(family, cb, ctx, initial, h);
+}
+IPHLPAPI DWORD WINAPI CancelMibChangeNotify2(HANDLE h) { (void)h; return NO_ERROR; }
+IPHLPAPI DWORD WINAPI GetBestRoute2(PVOID luid, ULONG index, const void *src, const void *dst, ULONG opts, PVOID route, PVOID best)
+{
+    (void)luid; (void)index; (void)src; (void)dst; (void)opts; (void)route; (void)best;
+    return 1168;                                              /* ERROR_NOT_FOUND */
+}
+
+/* Interface tables (MIB_IF_TABLE2): empty, like the other tables here */
+IPHLPAPI DWORD WINAPI GetIfTable2Ex(int level, PVOID *table)
+{
+    (void)level;
+    if (!table) return ERROR_INVALID_PARAMETER;
+    ULONG *t = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 16);
+    if (!t) return ERROR_NOT_ENOUGH_MEMORY;
+    *table = t;                                       /* NumEntries = 0 */
+    return NO_ERROR;
+}
+IPHLPAPI DWORD WINAPI GetIfTable2(PVOID *table) { return GetIfTable2Ex(0, table); }
+IPHLPAPI DWORD WINAPI GetIpInterfaceTable(USHORT family, PVOID *table) { (void)family; return GetIfTable2Ex(0, table); }
+IPHLPAPI DWORD WINAPI GetUnicastIpAddressTable(USHORT family, PVOID *table) { (void)family; return GetIfTable2Ex(0, table); }
+IPHLPAPI VOID WINAPI FreeMibTable(PVOID table) { if (table) HeapFree(GetProcessHeap(), 0, table); }

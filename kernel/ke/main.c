@@ -373,7 +373,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
      * UmInit's SSE setup); they start scheduling once this CPU first lets
      * go of the kernel lock */
     kprintf("=== SMP ===\n");
-    smp_start();
+    um_registry_add_cpus(smp_start());
 
     if (GdiInitialize()) {
         WmInitialize();

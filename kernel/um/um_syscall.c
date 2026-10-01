@@ -983,6 +983,28 @@ static bool wild(const char *pat, const char *s)
     return (*pat == '?' || a == b) && wild(pat + 1, s + 1);
 }
 
+/* DOS wildcard rules (FindFirstFile's patterns): a trailing ".*" also
+ * matches a name with no extension ("*.*" is everything), and a trailing
+ * "." matches only names without one */
+static bool wild_dos(const char *pat, const char *s)
+{
+    if (wild(pat, s)) return true;
+    UINT32 n = (UINT32)strlen(pat);
+    if (strchr(s, '.')) return false;
+    char base[RAMFS_NAME_MAX];
+    if (n >= 2 && pat[n - 2] == '.' && pat[n - 1] == '*' && n - 2 < sizeof(base)) {
+        memcpy(base, pat, n - 2);
+        base[n - 2] = 0;
+        return wild(base, s);
+    }
+    if (n >= 1 && pat[n - 1] == '.' && n - 1 < sizeof(base)) {
+        memcpy(base, pat, n - 1);
+        base[n - 1] = 0;
+        return wild(base, s);
+    }
+    return false;
+}
+
 /* NtQueryDirectoryFile(HANDLE, Event, ApcRoutine, ApcContext,
  *   PIO_STATUS_BLOCK, PVOID FileInformation, ULONG Length,
  *   FILE_INFORMATION_CLASS, BOOLEAN ReturnSingleEntry,
@@ -1044,7 +1066,7 @@ static UINT64 sys_query_directory_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         if (!n) break;
         const char *name = k < dots ? (k == 0 ? "." : "..") : c->name;
         if (k >= dots) c = c->next;
-        if (!wild(pat, name)) continue;
+        if (!wild_dos(pat, name)) continue;
         UINT32 nl = (UINT32)strlen(name);
         UINT32 need = name_off + 2 * nl;
         UINT32 at = (used + 7) & ~7u;

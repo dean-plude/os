@@ -50,21 +50,26 @@ static bool load_strings(MsiDb *db)
     db->nstrings = count;
     size_t off = 0;
     db->strings[0] = "";
-    for (int i = 1; i < count; i++) {
+    int id = 1;
+    for (int i = 1; i < count; id++) {
         uint32_t len = rd16(pool + 4 * i);
         uint16_t refs = rd16(pool + 4 * i + 2);
         if (!len && refs && i + 1 < count) {
-            /* a string over 64 KB: this entry holds the high word of the
-             * length, the next one the low word; the id is the next entry */
-            len = ((uint32_t)refs << 16) | rd16(pool + 4 * (i + 1));
+            /* a string of 64 KB or more takes two entries but one id: this
+             * one is zero-length with a nonzero count, the next holds the
+             * low word of the length and the high word in its count */
+            len = ((uint32_t)rd16(pool + 4 * (i + 1) + 2) << 16) | rd16(pool + 4 * (i + 1));
+            i += 2;
+        } else {
             i++;
         }
-        if (!len) { db->strings[i] = ""; continue; }
-        if (off + len > dsz) { db->strings[i] = ""; continue; }
-        db->strings[i] = pool_string(data + off, len, db->codepage);
-        if (!db->strings[i]) db->strings[i] = "";
+        if (!len) { db->strings[id] = ""; continue; }
+        if (off + len > dsz) { db->strings[id] = ""; continue; }
+        db->strings[id] = pool_string(data + off, len, db->codepage);
+        if (!db->strings[id]) db->strings[id] = "";
         off += len;
     }
+    db->nstrings = id;
     free(pool);
     free(data);
     return true;

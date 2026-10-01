@@ -1620,8 +1620,10 @@ WINBASEAPI VOID  WINAPI SetFileApisToOEM(void)  { }
  * ----------------------------------------------------------------------- */
 WINBASEAPI HMODULE WINAPI LoadLibraryExW(LPCWSTR name, HANDLE f, DWORD flags)
 {
-    (void)f; (void)flags;
-    return LoadLibraryW(name);
+    char n[MAX_PATH * 3];
+    if (!name) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    if (!WideCharToMultiByte(CP_UTF8, 0, name, -1, n, sizeof(n), 0, 0)) { SetLastError(ERROR_FILENAME_EXCED_RANGE); return 0; }
+    return LoadLibraryExA(n, f, flags);
 }
 
 WINBASEAPI BOOL WINAPI GetModuleHandleExW(DWORD flags, LPCWSTR name, HMODULE *out)
@@ -1631,7 +1633,7 @@ WINBASEAPI BOOL WINAPI GetModuleHandleExW(DWORD flags, LPCWSTR name, HMODULE *ou
         RtlPcToFileHeader((PVOID)name, &base);
         *out = base;
     } else {
-        *out = GetModuleHandleW(name);
+        *out = GetModuleHandleW(name);               /* (PIN, UNCHANGED_REFCOUNT: modules stay loaded) */
     }
     if (!*out) { SetLastError(ERROR_MOD_NOT_FOUND); return FALSE; }
     return TRUE;
@@ -2073,6 +2075,8 @@ WCHAR k32_lower(WCHAR c)
     return c;
 }
 
+#define LING_IGNORECASE 0x10                                /* LINGUISTIC_IGNORECASE */
+
 static int compare(const WCHAR *a, int na, const WCHAR *b, int nb, BOOL fold)
 {
     if (na < 0) na = wlen(a);
@@ -2092,7 +2096,7 @@ WINBASEAPI int WINAPI CompareStringOrdinal(LPCWSTR a, int na, LPCWSTR b, int nb,
 WINBASEAPI int WINAPI CompareStringEx(LPCWSTR loc, DWORD flags, LPCWSTR a, int na, LPCWSTR b, int nb, LPVOID v, LPVOID r, LONG_PTR p)
 {
     (void)loc; (void)v; (void)r; (void)p;
-    return compare(a, na, b, nb, (flags & (NORM_IGNORECASE | 0x10000000 /* LINGUISTIC_IGNORECASE */)) != 0);
+    return compare(a, na, b, nb, (flags & (NORM_IGNORECASE | LING_IGNORECASE)) != 0);
 }
 
 WINBASEAPI int WINAPI CompareStringW(DWORD lcid, DWORD flags, LPCWSTR a, int na, LPCWSTR b, int nb)
@@ -2116,6 +2120,50 @@ WINBASEAPI int WINAPI CompareStringA(DWORD lcid, DWORD flags, LPCSTR a, int na, 
     return r;
 }
 
+/* Find @value in @src: from the start or end, or only as a prefix or suffix
+ * (FIND_* flags), optionally ignoring case.  Returns the index, or -1. */
+static int find_str(const WCHAR *src, int ns, const WCHAR *val, int nv, DWORD flags, BOOL fold, int *found)
+{
+    if (ns < 0) ns = wlen(src);
+    if (nv < 0) nv = wlen(val);
+    int first = 0, last = ns - nv;
+    if (flags & 0x00100000) last = first;                   /* FIND_STARTSWITH */
+    if (flags & 0x00200000) first = last;                   /* FIND_ENDSWITH */
+    BOOL back = (flags & (0x00800000 | 0x00200000)) != 0;   /* FIND_FROMEND */
+    for (int k = 0; k <= last - first; k++) {
+        int i = back ? last - k : first + k;
+        if (i < 0) break;
+        int j = 0;
+        for (; j < nv; j++) {
+            WCHAR x = fold ? k32_upper(src[i + j]) : src[i + j], y = fold ? k32_upper(val[j]) : val[j];
+            if (x != y) break;
+        }
+        if (j == nv) { if (found) *found = nv; return i; }
+    }
+    SetLastError(ERROR_SUCCESS);
+    return -1;
+}
+
+WINBASEAPI int WINAPI FindNLSStringEx(LPCWSTR loc, DWORD flags, LPCWSTR src, int ns, LPCWSTR val, int nv,
+                                      LPINT found, LPVOID ver, LPVOID r, LPARAM h)
+{
+    (void)loc; (void)ver; (void)r; (void)h;
+    if (!src || !val || ns < -1 || nv < -1) { SetLastError(ERROR_INVALID_PARAMETER); return -1; }
+    return find_str(src, ns, val, nv, flags, (flags & (NORM_IGNORECASE | LING_IGNORECASE)) != 0, found);
+}
+
+WINBASEAPI int WINAPI FindNLSString(LCID lcid, DWORD flags, LPCWSTR src, int ns, LPCWSTR val, int nv, LPINT found)
+{
+    (void)lcid;
+    return FindNLSStringEx(0, flags, src, ns, val, nv, found, 0, 0, 0);
+}
+
+WINBASEAPI int WINAPI FindStringOrdinal(DWORD flags, LPCWSTR src, int ns, LPCWSTR val, int nv, BOOL ignore_case)
+{
+    if (!src || !val) { SetLastError(ERROR_INVALID_PARAMETER); return -1; }
+    return find_str(src, ns, val, nv, flags, ignore_case, 0);
+}
+
 WINBASEAPI int WINAPI LCMapStringEx(LPCWSTR loc, DWORD flags, LPCWSTR s, int n, LPWSTR out, int cap, LPVOID v, LPVOID r, LONG_PTR p)
 {
     (void)loc; (void)v; (void)r; (void)p;
@@ -2125,7 +2173,7 @@ WINBASEAPI int WINAPI LCMapStringEx(LPCWSTR loc, DWORD flags, LPCWSTR s, int n, 
         if (!cap) return need;
         if (cap < need) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
         BYTE *o = (BYTE *)out;
-        for (int i = 0; i < len; i++) { WCHAR c = (flags & NORM_IGNORECASE) ? k32_upper(s[i]) : s[i]; o[2 * i] = (BYTE)(c >> 8); o[2 * i + 1] = (BYTE)c; }
+        for (int i = 0; i < len; i++) { WCHAR c = (flags & (NORM_IGNORECASE | LING_IGNORECASE)) ? k32_upper(s[i]) : s[i]; o[2 * i] = (BYTE)(c >> 8); o[2 * i + 1] = (BYTE)c; }
         o[2 * len] = 0;
         return need;
     }
@@ -2232,87 +2280,166 @@ WINBASEAPI WORD  WINAPI GetSystemDefaultLangID(void)   { return 0x409; }
 WINBASEAPI WORD  WINAPI GetUserDefaultUILanguage(void) { return 0x409; }
 WINBASEAPI WORD  WINAPI GetSystemDefaultUILanguage(void) { return 0x409; }
 WINBASEAPI BOOL  WINAPI IsValidLocale(DWORD lcid, DWORD f) { (void)f; return lcid == 0x409 || lcid == 0x400 || lcid == 0x800 || lcid == 0x7F; }
-WINBASEAPI BOOL  WINAPI IsValidLocaleName(LPCWSTR n)   { return !n || !n[0] || compare(n, -1, (const WCHAR *)L"en-US", -1, TRUE) == CSTR_EQUAL; }
-WINBASEAPI DWORD WINAPI LocaleNameToLCID(LPCWSTR n, DWORD f) { (void)n; (void)f; return 0x409; }
+#define LOC_UNKNOWN_ 3
+static int locale_of(LPCWSTR loc);
+WINBASEAPI BOOL  WINAPI IsValidLocaleName(LPCWSTR n)   { return locale_of(n) != LOC_UNKNOWN_; }
+WINBASEAPI DWORD WINAPI LocaleNameToLCID(LPCWSTR n, DWORD f)
+{
+    (void)f;
+    switch (locale_of(n)) {
+    case 0: return 0x409;
+    case 1: return 0x09;
+    case 2: return 0x7F;
+    default: SetLastError(ERROR_INVALID_PARAMETER); return 0;
+    }
+}
 WINBASEAPI int   WINAPI LCIDToLocaleName(DWORD lcid, LPWSTR n, int cap, DWORD f) { (void)lcid; (void)f; return cap ? (int)put_utf8_as_w("en-US", n, (DWORD)cap) + 1 : 6; }
 WINBASEAPI int   WINAPI GetUserDefaultLocaleName(LPWSTR n, int cap)   { return (int)put_utf8_as_w("en-US", n, (DWORD)cap) + 1; }
 WINBASEAPI int   WINAPI GetSystemDefaultLocaleName(LPWSTR n, int cap) { return (int)put_utf8_as_w("en-US", n, (DWORD)cap) + 1; }
 
-static const char *locale_value(DWORD type)
+/* Locales: English (United States), its neutral parent "en", and the
+ * invariant locale "" (what .NET's CultureInfo.InvariantCulture asks for);
+ * any other name is unknown (ERROR_INVALID_PARAMETER) */
+enum { LOC_EN_US, LOC_EN, LOC_INVARIANT, LOC_UNKNOWN };
+static int locale_of(LPCWSTR loc)
 {
-    switch (type & 0xFFFF) {
-    case 0x01: return "0409";                   /* LOCALE_ILANGUAGE */
-    case 0x02: return "English (United States)";/* LOCALE_SLANGUAGE */
-    case 0x03: return "ENU";                    /* LOCALE_SABBREVLANGNAME */
-    case 0x04: return "English";                /* LOCALE_SNATIVELANGNAME */
-    case 0x05: return "1";                      /* LOCALE_ICOUNTRY */
-    case 0x06: return "United States";          /* LOCALE_SCOUNTRY */
-    case 0x07: return "USA";                    /* LOCALE_SABBREVCTRYNAME */
-    case 0x0B: return "65001";                  /* LOCALE_IDEFAULTCODEPAGE */
-    case 0x0C: return ",";                      /* LOCALE_SLIST */
-    case 0x0D: return "1";                      /* LOCALE_IMEASURE */
-    case 0x0E: return ".";                      /* LOCALE_SDECIMAL */
-    case 0x0F: return ",";                      /* LOCALE_STHOUSAND */
-    case 0x10: return "3;0";                    /* LOCALE_SGROUPING */
-    case 0x11: return "2";                      /* LOCALE_IDIGITS */
-    case 0x12: return "1";                      /* LOCALE_ILZERO */
-    case 0x14: return "$";                      /* LOCALE_SCURRENCY */
-    case 0x15: return "USD";                    /* LOCALE_SINTLSYMBOL */
-    case 0x16: return ".";                      /* LOCALE_SMONDECIMALSEP */
-    case 0x17: return ",";                      /* LOCALE_SMONTHOUSANDSEP */
-    case 0x18: return "3;0";                    /* LOCALE_SMONGROUPING */
-    case 0x1D: return "/";                      /* LOCALE_SDATE */
-    case 0x1E: return ":";                      /* LOCALE_STIME */
-    case 0x1F: return "M/d/yyyy";               /* LOCALE_SSHORTDATE */
-    case 0x20: return "dddd, MMMM d, yyyy";     /* LOCALE_SLONGDATE */
-    case 0x28: return "AM";                     /* LOCALE_S1159 */
-    case 0x29: return "PM";                     /* LOCALE_S2359 */
-    case 0x59: return "en";                     /* LOCALE_SISO639LANGNAME */
-    case 0x5A: return "US";                     /* LOCALE_SISO3166CTRYNAME */
-    case 0x5C: return "en-US";                  /* LOCALE_SNAME */
-    case 0x1001: return "English";              /* LOCALE_SENGLANGUAGENAME */
-    case 0x1002: return "United States";        /* LOCALE_SENGCOUNTRY */
-    case 0x1003: return "h:mm:ss tt";           /* LOCALE_STIMEFORMAT */
-    case 0x1004: return "65001";                /* LOCALE_IDEFAULTANSICODEPAGE */
-    case 0x1009: return "0";                    /* LOCALE_IFIRSTDAYOFWEEK: Monday=0 ... US uses 6 */
-    case 0x100C: return "1";                    /* LOCALE_IFIRSTWEEKOFYEAR */
-    case 0x0024: return "-";                    /* LOCALE_SNEGATIVESIGN? (0x51) */
-    case 0x0050: return "";                     /* LOCALE_SPOSITIVESIGN */
-    case 0x0051: return "-";                    /* LOCALE_SNEGATIVESIGN */
-    case 0x0067: return "en-US";                /* LOCALE_SPARENT? */
-    case 0x0068: return "en-US";                /* LOCALE_SENGLISHDISPLAYNAME-ish */
-    case 0x0073: return "English (United States)"; /* LOCALE_SENGLISHDISPLAYNAME */
+    static const WCHAR sysdef[] = L"!x-sys-default-locale";
+    if (!loc) return LOC_EN_US;                                  /* LOCALE_NAME_USER_DEFAULT */
+    if (!loc[0]) return LOC_INVARIANT;
+    if (compare(loc, -1, sysdef, -1, TRUE) == CSTR_EQUAL) return LOC_EN_US;
+    if (compare(loc, -1, (const WCHAR *)L"en-US", -1, TRUE) == CSTR_EQUAL) return LOC_EN_US;
+    if (compare(loc, -1, (const WCHAR *)L"en_US", -1, TRUE) == CSTR_EQUAL) return LOC_EN_US;
+    if (compare(loc, -1, (const WCHAR *)L"en", -1, TRUE) == CSTR_EQUAL) return LOC_EN;
+    return LOC_UNKNOWN;
+}
+
+static const char *locale_value(int loc, DWORD type)
+{
+    DWORD t = type & 0xFFFF;
+    BOOL inv = loc == LOC_INVARIANT, neutral = loc == LOC_EN;
+    switch (t) {                                                 /* what differs by locale */
+    case 0x01: return inv ? "007F" : neutral ? "0009" : "0409";  /* LOCALE_ILANGUAGE */
+    case 0x02: case 0x72: return inv ? "Invariant Language (Invariant Country)" : neutral ? "English" : "English (United States)";
+    case 0x73: return inv ? "Invariant Language (Invariant Country)" : neutral ? "English" : "English (United States)";
+    case 0x5C: return inv ? "" : neutral ? "en" : "en-US";       /* LOCALE_SNAME */
+    case 0x6D: return neutral || inv ? "" : "en";                /* LOCALE_SPARENT */
+    case 0x71: return neutral ? "1" : "0";                       /* LOCALE_INEUTRAL */
+    case 0x5A: return inv ? "IV" : neutral ? "" : "US";          /* LOCALE_SISO3166CTRYNAME */
+    case 0x68: return inv ? "IVC" : neutral ? "" : "USA";        /* LOCALE_SISO3166CTRYNAME2 */
+    case 0x59: return inv ? "iv" : "en";                         /* LOCALE_SISO639LANGNAME */
+    case 0x67: return inv ? "ivl" : "eng";                       /* LOCALE_SISO639LANGNAME2 */
+    case 0x06: case 0x08: case 0x1002: return inv ? "Invariant Country" : neutral ? "" : "United States";
+    case 0x5B: return inv ? "39070" : "244";                     /* LOCALE_IGEOID */
+    case 0x14: return inv ? "\xC2\xA4" : "$";                    /* LOCALE_SCURRENCY */
+    case 0x15: return inv ? "XDR" : "USD";                       /* LOCALE_SINTLSYMBOL */
+    case 0x1007: return inv ? "International Monetary Fund" : "US Dollar";   /* LOCALE_SENGCURRNAME */
+    case 0x1008: return inv ? "International Monetary Fund" : "US Dollar";   /* LOCALE_SNATIVECURRNAME */
+    case 0x1F: return inv ? "MM/dd/yyyy" : "M/d/yyyy";           /* LOCALE_SSHORTDATE */
+    case 0x20: return inv ? "dddd, dd MMMM yyyy" : "dddd, MMMM d, yyyy";      /* LOCALE_SLONGDATE */
+    case 0x1003: return inv ? "HH:mm:ss" : "h:mm:ss tt";         /* LOCALE_STIMEFORMAT */
+    case 0x79: return inv ? "HH:mm" : "h:mm tt";                 /* LOCALE_SSHORTTIME */
+    case 0x23: return inv ? "1" : "0";                           /* LOCALE_ITIME (24-hour) */
+    case 0x100C: return inv ? "0" : "6";                         /* LOCALE_IFIRSTDAYOFWEEK: Monday 0 ... Sunday 6 */
+    case 0x0D: return inv ? "0" : "1";                           /* LOCALE_IMEASURE: metric 0, US 1 */
+    case 0x100A: return inv ? "9" : "1";                         /* LOCALE_IPAPERSIZE: A4 9, letter 1 */
     }
-    if ((type & 0xFFFF) >= 0x2A && (type & 0xFFFF) <= 0x30) {       /* LOCALE_SDAYNAME1..7 */
+    switch (t) {                                                 /* the same for all three */
+    case 0x03: return "ENU";                                     /* LOCALE_SABBREVLANGNAME */
+    case 0x04: case 0x1001: case 0x6F: return "English";         /* native / English / localized language name */
+    case 0x05: return "1";                                       /* LOCALE_ICOUNTRY */
+    case 0x07: return "USA";                                     /* LOCALE_SABBREVCTRYNAME */
+    case 0x0B: return "437";                                     /* LOCALE_IDEFAULTCODEPAGE (OEM) */
+    case 0x1004: return "1252";                                  /* LOCALE_IDEFAULTANSICODEPAGE */
+    case 0x1011: return "10000";                                 /* LOCALE_IDEFAULTMACCODEPAGE */
+    case 0x1012: return "037";                                   /* LOCALE_IDEFAULTEBCDICCODEPAGE */
+    case 0x0C: return ",";                                       /* LOCALE_SLIST */
+    case 0x0E: return ".";                                       /* LOCALE_SDECIMAL */
+    case 0x0F: return ",";                                       /* LOCALE_STHOUSAND */
+    case 0x10: return "3;0";                                     /* LOCALE_SGROUPING */
+    case 0x11: return "2";                                       /* LOCALE_IDIGITS */
+    case 0x12: return "1";                                       /* LOCALE_ILZERO */
+    case 0x13: return "0123456789";                              /* LOCALE_SNATIVEDIGITS */
+    case 0x16: return ".";                                       /* LOCALE_SMONDECIMALSEP */
+    case 0x17: return ",";                                       /* LOCALE_SMONTHOUSANDSEP */
+    case 0x18: return "3;0";                                     /* LOCALE_SMONGROUPING */
+    case 0x19: return "2";                                       /* LOCALE_ICURRDIGITS */
+    case 0x1A: return "2";                                       /* LOCALE_IINTLCURRDIGITS */
+    case 0x1B: return "0";                                       /* LOCALE_ICURRENCY: $1.1 */
+    case 0x1C: return "1";                                       /* LOCALE_INEGCURR: -$1.1 */
+    case 0x1D: return "/";                                       /* LOCALE_SDATE */
+    case 0x1E: return ":";                                       /* LOCALE_STIME */
+    case 0x21: return "0";                                       /* LOCALE_IDATE: M-D-Y */
+    case 0x22: return "0";                                       /* LOCALE_ILDATE */
+    case 0x24: return "1";                                       /* LOCALE_ICENTURY */
+    case 0x25: return "0";                                       /* LOCALE_ITLZERO */
+    case 0x26: return "0";                                       /* LOCALE_IDAYLZERO */
+    case 0x27: return "0";                                       /* LOCALE_IMONLZERO */
+    case 0x28: return "AM";                                      /* LOCALE_S1159 */
+    case 0x29: return "PM";                                      /* LOCALE_S2359 */
+    case 0x50: return "";                                        /* LOCALE_SPOSITIVESIGN */
+    case 0x51: return "-";                                       /* LOCALE_SNEGATIVESIGN */
+    case 0x52: return "3";                                       /* LOCALE_IPOSSIGNPOSN */
+    case 0x53: return "0";                                       /* LOCALE_INEGSIGNPOSN */
+    case 0x5D: return "h:mm:ss";                                 /* LOCALE_SDURATION */
+    case 0x69: return "NaN";                                     /* LOCALE_SNAN */
+    case 0x6A: return "Infinity";                                /* LOCALE_SPOSINFINITY */
+    case 0x6B: return "-Infinity";                               /* LOCALE_SNEGINFINITY */
+    case 0x6C: return "Latn;";                                   /* LOCALE_SSCRIPTS */
+    case 0x6E: return "en-US";                                   /* LOCALE_SCONSOLEFALLBACKNAME */
+    case 0x70: return "0";                                       /* LOCALE_IREADINGLAYOUT: left to right */
+    case 0x74: return "1";                                       /* LOCALE_INEGATIVEPERCENT: -n % */
+    case 0x75: return "1";                                       /* LOCALE_IPOSITIVEPERCENT: n % */
+    case 0x76: return "%";                                       /* LOCALE_SPERCENT */
+    case 0x77: return "\xE2\x80\xB0";                            /* LOCALE_SPERMILLE */
+    case 0x78: return "MMMM d";                                  /* LOCALE_SMONTHDAY */
+    case 0x7A: return "ENU";                                     /* LOCALE_SOPENTYPELANGUAGETAG */
+    case 0x7B: return "";                                        /* LOCALE_SSORTLOCALE */
+    case 0x1006: return "MMMM yyyy";                             /* LOCALE_SYEARMONTH */
+    case 0x1009: return "1";                                     /* LOCALE_ICALENDARTYPE: Gregorian */
+    case 0x100B: return "0";                                     /* LOCALE_IOPTIONALCALENDAR */
+    case 0x100D: return "0";                                     /* LOCALE_IFIRSTWEEKOFYEAR */
+    case 0x100E: case 0x100F: return "";                         /* LOCALE_SMONTHNAME13, ABBREV13 */
+    case 0x1010: return "1";                                     /* LOCALE_INEGNUMBER: -1.1 */
+    case 0x1014: return "1";                                     /* LOCALE_IDIGITSUBSTITUTION: none */
+    case 0x1016: return "en-US";                                 /* LOCALE_SNATIVELANGUAGE... (unused) */
+    }
+    if (t >= 0x2A && t <= 0x30) {                                /* LOCALE_SDAYNAME1..7 (Monday first) */
         static const char *d[] = { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
-        return d[(type & 0xFFFF) - 0x2A];
+        return d[t - 0x2A];
     }
-    if ((type & 0xFFFF) >= 0x31 && (type & 0xFFFF) <= 0x37) {
+    if (t >= 0x31 && t <= 0x37) {
         static const char *d[] = { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
-        return d[(type & 0xFFFF) - 0x31];
+        return d[t - 0x31];
     }
-    if ((type & 0xFFFF) >= 0x38 && (type & 0xFFFF) <= 0x43) {
+    if (t >= 0x60 && t <= 0x66) {                                /* LOCALE_SSHORTESTDAYNAME1..7 */
+        static const char *d[] = { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
+        return d[t - 0x60];
+    }
+    if (t >= 0x38 && t <= 0x43) {
         static const char *m[] = { "January", "February", "March", "April", "May", "June", "July", "August",
                                    "September", "October", "November", "December" };
-        return m[(type & 0xFFFF) - 0x38];
+        return m[t - 0x38];
     }
-    if ((type & 0xFFFF) >= 0x44 && (type & 0xFFFF) <= 0x4F) {
+    if (t >= 0x44 && t <= 0x4F) {
         static const char *m[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-        return m[(type & 0xFFFF) - 0x44];
+        return m[t - 0x44];
     }
     return 0;
 }
 
-WINBASEAPI int WINAPI GetLocaleInfoEx(LPCWSTR loc, DWORD type, LPWSTR buf, int n)
+WINBASEAPI int WINAPI GetLocaleInfoEx(LPCWSTR name, DWORD type, LPWSTR buf, int n)
 {
-    (void)loc;
-    const char *v = locale_value(type);
+    int loc = locale_of(name);
+    if (loc == LOC_UNKNOWN) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    const char *v = locale_value(loc, type);
     if (!v) { SetLastError(1004 /* ERROR_INVALID_FLAGS */); return 0; }
     if (type & 0x20000000) {                                 /* LOCALE_RETURN_NUMBER */
         DWORD num = 0;
-        for (const char *c = v; *c >= '0' && *c <= '9'; c++) num = num * 10 + (DWORD)(*c - '0');
-        if ((type & 0xFFFF) == 0x01) num = 0x409;
-        if (n < 2) { if (!n) return 2; SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+        DWORD t = type & 0xFFFF;
+        if (t == 0x01) num = loc == LOC_INVARIANT ? 0x7F : loc == LOC_EN ? 0x09 : 0x409;   /* (hex) */
+        else for (const char *c = v; *c >= '0' && *c <= '9'; c++) num = num * 10 + (DWORD)(*c - '0');
+        if (!n) return 2;
+        if (n < 2) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
         memcpy(buf, &num, 4);
         return 2;
     }
@@ -2325,12 +2452,18 @@ WINBASEAPI int WINAPI GetLocaleInfoEx(LPCWSTR loc, DWORD type, LPWSTR buf, int n
     return k + 1;
 }
 
-WINBASEAPI int WINAPI GetLocaleInfoW(DWORD lcid, DWORD type, LPWSTR buf, int n) { (void)lcid; return GetLocaleInfoEx(0, type, buf, n); }
+static LPCWSTR lcid_name(DWORD lcid)
+{
+    if (lcid == 0x7F) return (const WCHAR *)L"";
+    if (lcid == 0x09) return (const WCHAR *)L"en";
+    return 0;                                                    /* 0x409, the defaults: en-US */
+}
+WINBASEAPI int WINAPI GetLocaleInfoW(DWORD lcid, DWORD type, LPWSTR buf, int n) { return GetLocaleInfoEx(lcid_name(lcid), type, buf, n); }
 
 WINBASEAPI int WINAPI GetLocaleInfoA(DWORD lcid, DWORD type, LPSTR buf, int n)
 {
-    (void)lcid;
-    const char *v = locale_value(type);
+    LPCWSTR nm = lcid_name(lcid);
+    const char *v = locale_value(locale_of(nm), type);
     if (!v) { SetLastError(1004); return 0; }
     int k = (int)strlen(v);
     if (!n) return k + 1;
@@ -2410,7 +2543,22 @@ WINBASEAPI BOOL WINAPI SetConsoleCP(UINT cp)             { (void)cp; return TRUE
 WINBASEAPI BOOL WINAPI SetConsoleTitleW(LPCWSTR t)       { (void)t; return TRUE; }
 WINBASEAPI DWORD WINAPI GetConsoleTitleW(LPWSTR t, DWORD n) { return put_utf8_as_w("Terminal", t, n); }
 /* (console input handles only, as on Windows: callers use these to tell a console from a file) */
-static BOOL console_in(HANDLE h) { DWORD m; if (GetFileType(h) == FILE_TYPE_CHAR && GetConsoleMode(h, &m)) return TRUE; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+/* A console input handle (not an output one, nor a file): what programs
+ * test with GetNumberOfConsoleInputEvents to tell the two apart */
+static BOOL console_in(HANDLE h)
+{
+    DWORD m;
+    if (GetFileType(h) == FILE_TYPE_CHAR && GetConsoleMode(h, &m)) {
+        union { UNICODE_STRING us; BYTE b[256]; } name;
+        ULONG got = 0;
+        if (NT_SUCCESS(NtQueryObject(h, 1 /* ObjectNameInformation */, &name, sizeof(name), &got)) && name.us.Buffer) {
+            int n = name.us.Length / 2;
+            if (n >= 5 && name.us.Buffer[n - 5] == 'I' && name.us.Buffer[n - 1] == 't') return TRUE;   /* ...\Input */
+        }
+    }
+    SetLastError(ERROR_INVALID_HANDLE);
+    return FALSE;
+}
 WINBASEAPI BOOL WINAPI FlushConsoleInputBuffer(HANDLE h) { return console_in(h); }
 WINBASEAPI BOOL WINAPI GetNumberOfConsoleInputEvents(HANDLE h, LPDWORD n) { *n = 0; return console_in(h); }
 WINBASEAPI BOOL WINAPI AllocConsole(void)                { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }

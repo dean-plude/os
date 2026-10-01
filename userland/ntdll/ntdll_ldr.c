@@ -40,8 +40,8 @@ typedef struct {
     int         tls_slot;             /* static TLS index, or -1 */
     const BYTE *tls_raw;              /* template */
     SIZE_T      tls_rawsize, tls_zerofill;
-    char        name[32];
-    WCHAR       wname[32], wpath[96];
+    char        name[64];
+    WCHAR       wname[64], wpath[96];
     LDR_DATA_TABLE_ENTRY entry;
 } Module;
 
@@ -99,8 +99,28 @@ static IMAGE_DATA_DIRECTORY *dir_of(void *base, int which)
     return &nt->OptionalHeader.DataDirectory[which];
 }
 
+/* A path names a module by its full path; a bare name by its file name */
+static int path_eq(const WCHAR *a, const char *b)
+{
+    for (;; a++, b++) {
+        unsigned x = *a, y = (unsigned char)*b;
+        if (x == '/') x = '\\';
+        if (y == '/') y = '\\';
+        if (x >= 'A' && x <= 'Z') x += 32;
+        if (y >= 'A' && y <= 'Z') y += 32;
+        if (x != y) return 0;
+        if (!x) return 1;
+    }
+}
+
 PVOID LdrNovaGetModuleA(const char *name)
 {
+    int has_dir = 0;
+    for (const char *c = name; *c; c++) if (*c == '\\' || *c == '/') has_dir = 1;
+    if (has_dir) {
+        for (int i = 0; i < g_nmod; i++) if (path_eq(g_mod[i].wpath, name)) return g_mod[i].base;
+        return 0;
+    }
     for (int i = 0; i < g_nmod; i++) {
         const char *a = g_mod[i].name, *b = name;
         int eq = 1;
@@ -262,8 +282,8 @@ static int absorb_new_modules(void)
         m->entry_rva = k->EntryRva;
         m->is_dll = (k->Flags & 1) != 0;
         m->tls_slot = -1;
-        for (int j = 0; j < 31 && k->Name[j]; j++) m->name[j] = k->Name[j];
-        wcopy(m->wname, k->Name, 32);
+        for (int j = 0; j < 63 && k->Name[j]; j++) m->name[j] = k->Name[j];
+        wcopy(m->wname, k->Name, 64);
         wcopy(m->wpath, k->Path, 96);
         LDR_DATA_TABLE_ENTRY *e = &m->entry;
         e->DllBase = m->base;
@@ -321,13 +341,17 @@ static void ldr_init_process(void)
 /* -----------------------------------------------------------------------
  * Dynamic loading
  * ----------------------------------------------------------------------- */
-NTSTATUS NTAPI LdrNovaLoadDllA(const char *name, PVOID *base)
+NTSTATUS NTAPI LdrNovaLoadDllA(const char *name, PVOID *base) { return LdrNovaLoadDllExA(name, 0, base); }
+
+/* @flags: LoadLibraryEx's (the kernel maps AS_DATAFILE / AS_IMAGE_RESOURCE
+ * modules as data) */
+NTSTATUS NTAPI LdrNovaLoadDllExA(const char *name, ULONG flags, PVOID *base)
 {
     llock();
     void *existing = LdrNovaGetModuleA(name);
     if (existing) { lunlock(); if (base) *base = existing; return STATUS_SUCCESS; }
     PVOID b = 0;
-    NTSTATUS s = NtNovaLoadDll(name, (ULONG)strlen(name), &b);
+    NTSTATUS s = NtNovaLoadDll(name, (ULONG)strlen(name), &b, flags);
     if (NT_SUCCESS(s)) {
         int first = absorb_new_modules();
         setup_thread_tls();

@@ -1050,3 +1050,8 @@ WINADVAPI BOOL WINAPI LookupAccountNameA(LPCSTR sys, LPCSTR name, PSID sid, LPDW
     if (use) *use = SidTypeUser;
     return TRUE;
 }
+WINADVAPI BOOL WINAPI SetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd)
+{
+    (void)si; (void)sd;
+    return h != 0;
+}

@@ -741,16 +741,16 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 /* -----------------------------------------------------------------------
  * The loader's kernel half, debug output
  * ----------------------------------------------------------------------- */
-/* NtNovaLoadDll(PCSTR Name, ULONG Length, PVOID *Base) */
+/* NtNovaLoadDll(PCSTR Name, ULONG Length, PVOID *Base, ULONG Flags): Flags are
+ * LoadLibraryEx's (AS_DATAFILE / AS_IMAGE_RESOURCE map the module as data) */
 static UINT64 sys_nova_load_dll(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a4;
     char name[RAMFS_PATH_MAX];
     if (!a2 || a2 >= sizeof(name)) return ST_INVALID_PARAMETER;
     if (!NT_SUCCESS(CopyFromUser(name, (const void *)(uintptr_t)a1, a2))) return ST_ACCESS_VIOLATION;
     name[a2] = '\0';
     UINT64 base = 0;
-    UINT32 st = um_load_dll(UmCurrent(), name, &base);
+    UINT32 st = um_load_dll(UmCurrent(), name, &base, (UINT32)a4);
     if (st) return st;
     UINT64 b = base;
     return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, &b, 8)) ? ST_SUCCESS : ST_ACCESS_VIOLATION;

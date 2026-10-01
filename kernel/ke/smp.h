@@ -52,7 +52,7 @@ void cpu_idle_wait(void);
  * start-up code needs. */
 void smp_early(const BootInfo *info);
 /* Start the other CPUs (after the scheduler, syscalls and SSE are set up). */
-void smp_start(void);
+uint32_t smp_start(void);                 /* the number of CPUs running (or about to) */
 
 /* A thread became ready in CPU @prefer's queue: wake that CPU if it is
  * halted, else any halted CPU (it will take the thread from the queue). */

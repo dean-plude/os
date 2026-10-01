@@ -225,6 +225,12 @@ WSAAPI_DECL int WSAAddressToStringW(struct sockaddr *sa, DWORD len, void *info, 
 #define NI_MAXHOST     1025
 #define NI_MAXSERV     32
 WSAAPI_DECL int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, DWORD hostlen, char *serv, DWORD servlen, int flags);
+WSAAPI_DECL int GetNameInfoW(const struct sockaddr *sa, socklen_t salen, WCHAR *host, DWORD hostlen, WCHAR *serv, DWORD servlen, int flags);
+WSAAPI_DECL int WSADuplicateSocketW(SOCKET s, DWORD pid, void *info);
+WSAAPI_DECL int WSADuplicateSocketA(SOCKET s, DWORD pid, void *info);
+WSAAPI_DECL int WSAConnect(SOCKET s, const struct sockaddr *to, int len, void *caller, void *callee, void *sqos, void *gqos);
+WSAAPI_DECL int WSAStringToAddressA(char *str, int family, void *info, struct sockaddr *sa, int *len);
+WSAAPI_DECL int WSAStringToAddressW(WCHAR *str, int family, void *info, struct sockaddr *sa, int *len);
 WSAAPI_DECL BOOL WSACloseEvent(WSAEVENT e);
 WSAAPI_DECL BOOL WSASetEvent(WSAEVENT e);
 WSAAPI_DECL BOOL WSAResetEvent(WSAEVENT e);

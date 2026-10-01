@@ -388,11 +388,27 @@ K32 DWORD WINAPI GetActiveProcessorCount(WORD group) { (void)group; SYSTEM_INFO 
 K32 DWORD WINAPI GetMaximumProcessorCount(WORD group) { return GetActiveProcessorCount(group); }
 K32 WORD WINAPI GetActiveProcessorGroupCount(void) { return 1; }
 K32 WORD WINAPI GetMaximumProcessorGroupCount(void) { return 1; }
+/* The kernel keeps the CPU number in TSC_AUX (RDTSCP); a processor
+ * without RDTSCP (QEMU's default model) gives its initial APIC ID, which is
+ * the CPU number on the machines NovaOS starts */
 K32 DWORD WINAPI GetCurrentProcessorNumber(void)
 {
-    unsigned aux;
-    __builtin_ia32_rdtscp(&aux);                            /* the kernel keeps the CPU number in TSC_AUX */
-    return aux & 0xFFF;
+    static volatile int has_rdtscp = -1;
+    unsigned a, b, c, d;
+    if (has_rdtscp < 0) {
+        __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000001u), "c"(0));
+        has_rdtscp = (d >> 27) & 1;
+    }
+    if (has_rdtscp) {
+        unsigned aux;
+        __builtin_ia32_rdtscp(&aux);
+        return aux & 0xFFF;
+    }
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1u), "c"(0));
+    DWORD id = b >> 24;
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return id < si.dwNumberOfProcessors ? id : 0;
 }
 K32 VOID WINAPI GetCurrentProcessorNumberEx(PVOID p) { WORD *w = p; w[0] = 0; ((BYTE *)p)[2] = (BYTE)GetCurrentProcessorNumber(); ((BYTE *)p)[3] = 0; }
 /* 32-bit programs run under WoW64 (as far as they can tell) */
@@ -449,7 +465,9 @@ K32 BOOL WINAPI DebugBreakProcess(HANDLE h) { (void)h; SetLastError(ERROR_ACCESS
 K32 VOID WINAPI OutputDebugStringW(LPCWSTR s)
 {
     char buf[1024];
-    w2u(s, -1, buf, sizeof(buf));
+    if (!s) return;
+    int n = w2u(s, -1, buf, sizeof(buf) - 1);
+    buf[n < 0 ? (int)sizeof(buf) - 1 : n] = 0;
     OutputDebugStringA(buf);
 }
 
@@ -1559,10 +1577,14 @@ static int idn_copy(LPCWSTR src, int n, LPWSTR dst, int cap)
 }
 K32 int WINAPI IdnToAscii(DWORD flags, LPCWSTR src, int n, LPWSTR dst, int cap) { (void)flags; return idn_copy(src, n, dst, cap); }
 K32 int WINAPI IdnToUnicode(DWORD flags, LPCWSTR src, int n, LPWSTR dst, int cap) { (void)flags; return idn_copy(src, n, dst, cap); }
+WINBASEAPI BOOL WINAPI IsValidLocaleName(LPCWSTR n);
+/* The specific locale for a name: "en" and en-US resolve to en-US, the
+ * invariant one to itself, an unknown name to nothing */
 K32 int WINAPI ResolveLocaleName(LPCWSTR name, LPWSTR out, int cap)
 {
     static const WCHAR en[] = L"en-US";
-    (void)name;
+    if (name && !name[0]) { if (out && cap) out[0] = 0; return 1; }
+    if (name && !IsValidLocaleName(name)) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
     if (!out || !cap) return 6;
     if (cap < 6) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
     memcpy(out, en, sizeof(en));
@@ -1806,3 +1828,371 @@ K32 UINT WINAPI GetProfileIntW(LPCWSTR app, LPCWSTR key, INT def) { (void)app; (
 
 /* Every process is in session 1 */
 K32 BOOL WINAPI ProcessIdToSessionId(DWORD pid, DWORD *session) { (void)pid; if (!session) return FALSE; *session = 1; return TRUE; }
+
+/* -----------------------------------------------------------------------
+ * For the .NET runtime (CoreCLR)
+ * ----------------------------------------------------------------------- */
+/* Extended processor state: the legacy x87 and SSE state only (no AVX
+ * area in CONTEXT) */
+K32 DWORD64 WINAPI GetEnabledXStateFeatures(void) { return 3; }
+K32 BOOL WINAPI SetXStateFeaturesMask(PCONTEXT ctx, DWORD64 mask) { (void)ctx; return (mask & ~3ULL) == 0; }
+K32 BOOL WINAPI GetXStateFeaturesMask(PCONTEXT ctx, PDWORD64 mask) { (void)ctx; *mask = 3; return TRUE; }
+K32 PVOID WINAPI LocateXStateFeature(PCONTEXT ctx, DWORD id, PDWORD len)
+{
+#ifdef _WIN64
+    if (id <= 1) { if (len) *len = 512; return (BYTE *)ctx + 0x100; }   /* FltSave (XSAVE_FORMAT) */
+#else
+    if (id <= 1) { if (len) *len = 512; return (BYTE *)ctx + 0xCC; }    /* ExtendedRegisters */
+#endif
+    if (len) *len = 0;
+    return 0;
+}
+K32 BOOL WINAPI InitializeContext2(PVOID buf, DWORD flags, PCONTEXT *ctx, PDWORD len, ULONG64 compaction)
+{
+    (void)compaction;
+    DWORD need = (DWORD)sizeof(CONTEXT) + 15;
+    if (!buf || !len || *len < need) {
+        if (len) *len = need;
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    CONTEXT *c = (CONTEXT *)(((ULONG_PTR)buf + 15) & ~(ULONG_PTR)15);
+    memset(c, 0, sizeof(*c));
+    c->ContextFlags = flags;
+    *ctx = c;
+    return TRUE;
+}
+K32 BOOL WINAPI InitializeContext(PVOID buf, DWORD flags, PCONTEXT *ctx, PDWORD len)
+{
+    return InitializeContext2(buf, flags, ctx, len, 0);
+}
+K32 BOOL WINAPI CopyContext(PCONTEXT dst, DWORD flags, PCONTEXT src)
+{
+    if (!dst || !src) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    memcpy(dst, src, sizeof(CONTEXT));
+    dst->ContextFlags = flags & src->ContextFlags;
+    return TRUE;
+}
+
+/* Signal one object, then wait for another */
+K32 DWORD WINAPI SignalObjectAndWait(HANDLE sig, HANDLE wait, DWORD ms, BOOL alertable)
+{
+    DWORD err = GetLastError();
+    if (!SetEvent(sig) && !ReleaseMutex(sig) && !ReleaseSemaphore(sig, 1, 0)) return WAIT_FAILED;
+    SetLastError(err);
+    return WaitForSingleObjectEx(wait, ms, alertable);
+}
+
+/* Memory is never low or high enough to notify: the event stays unset */
+K32 HANDLE WINAPI CreateMemoryResourceNotification(int type) { (void)type; return CreateEventW(0, TRUE, FALSE, 0); }
+K32 BOOL WINAPI QueryMemoryResourceNotification(HANDLE h, PBOOL state)
+{
+    if (!h || !state) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    *state = FALSE;
+    return TRUE;
+}
+
+/* Windows Error Reporting: nothing is reported */
+K32 HRESULT WINAPI WerRegisterRuntimeExceptionModule(PCWSTR dll, PVOID ctx) { (void)dll; (void)ctx; return S_OK; }
+K32 HRESULT WINAPI WerUnregisterRuntimeExceptionModule(PCWSTR dll, PVOID ctx) { (void)dll; (void)ctx; return S_OK; }
+K32 HRESULT WINAPI WerSetFlags(DWORD f) { (void)f; return S_OK; }
+K32 HRESULT WINAPI WerGetFlags(HANDLE p, PDWORD f) { (void)p; if (f) *f = 0; return S_OK; }
+K32 HRESULT WINAPI WerRegisterMemoryBlock(PVOID p, DWORD n) { (void)p; (void)n; return S_OK; }
+K32 HRESULT WINAPI WerUnregisterMemoryBlock(PVOID p) { (void)p; return S_OK; }
+K32 HRESULT WINAPI WerRegisterFile(PCWSTR f, int t, DWORD flags) { (void)f; (void)t; (void)flags; return S_OK; }
+
+/* PROCESSOR_NUMBER { WORD Group; BYTE Number, Reserved } */
+K32 BOOL WINAPI SetThreadIdealProcessorEx(HANDLE t, PVOID ideal, PVOID prev)
+{
+    (void)t; (void)ideal;
+    if (prev) memset(prev, 0, 4);
+    return TRUE;
+}
+K32 BOOL WINAPI GetThreadIdealProcessorEx(HANDLE t, PVOID pn) { (void)t; if (pn) memset(pn, 0, 4); return TRUE; }
+
+/* Pages are never paged out: locking always succeeds */
+K32 BOOL WINAPI VirtualLock(LPVOID p, SIZE_T n) { (void)p; (void)n; return TRUE; }
+K32 BOOL WINAPI VirtualUnlock(LPVOID p, SIZE_T n) { (void)p; (void)n; return TRUE; }
+
+/* SYSTEM_LOGICAL_PROCESSOR_INFORMATION: a core per processor, one package
+ * and NUMA node, and caches (32 KiB L1 data and instruction and 1 MiB L2
+ * per core, an 8 MiB L3 shared) */
+typedef struct {
+    ULONG_PTR ProcessorMask;
+    int Relationship;
+    union {
+        BYTE Flags;
+        DWORD NodeNumber;
+        struct { BYTE Level, Associativity; WORD LineSize; DWORD Size; int Type; } Cache;
+        ULONGLONG Reserved[2];
+    };
+} SLPI;
+K32 BOOL WINAPI GetLogicalProcessorInformation(PVOID buf, PDWORD len)
+{
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    DWORD n = si.dwNumberOfProcessors, count = n * 4 + 3;   /* per core: core, L1d, L1i, L2; + package, NUMA, L3 */
+    DWORD need = count * (DWORD)sizeof(SLPI);
+    if (!len) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!buf || *len < need) { *len = need; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    *len = need;
+    SLPI *e = buf;
+    memset(e, 0, need);
+    ULONG_PTR all = n >= sizeof(ULONG_PTR) * 8 ? ~(ULONG_PTR)0 : ((ULONG_PTR)1 << n) - 1;
+    for (DWORD i = 0; i < n; i++) {
+        ULONG_PTR m = (ULONG_PTR)1 << i;
+        e->ProcessorMask = m; e->Relationship = 0; e->Flags = 0; e++;                  /* RelationProcessorCore */
+        e->ProcessorMask = m; e->Relationship = 2;                                      /* RelationCache */
+        e->Cache.Level = 1; e->Cache.Associativity = 8; e->Cache.LineSize = 64; e->Cache.Size = 32768; e->Cache.Type = 2; e++;
+        e->ProcessorMask = m; e->Relationship = 2;
+        e->Cache.Level = 1; e->Cache.Associativity = 8; e->Cache.LineSize = 64; e->Cache.Size = 32768; e->Cache.Type = 1; e++;
+        e->ProcessorMask = m; e->Relationship = 2;
+        e->Cache.Level = 2; e->Cache.Associativity = 16; e->Cache.LineSize = 64; e->Cache.Size = 1 << 20; e->Cache.Type = 0; e++;
+    }
+    e->ProcessorMask = all; e->Relationship = 2;
+    e->Cache.Level = 3; e->Cache.Associativity = 16; e->Cache.LineSize = 64; e->Cache.Size = 8 << 20; e->Cache.Type = 0; e++;
+    e->ProcessorMask = all; e->Relationship = 3; e++;                                   /* RelationProcessorPackage */
+    e->ProcessorMask = all; e->Relationship = 1; e->NodeNumber = 0;                     /* RelationNumaNode */
+    return TRUE;
+}
+
+/* Windows Runtime (api-ms-win-core-winrt): initializing it succeeds;
+ * there are no WinRT classes to activate */
+K32 HRESULT WINAPI RoInitialize(int type) { (void)type; return S_OK; }
+K32 void WINAPI RoUninitialize(void) { }
+K32 HRESULT WINAPI RoGetActivationFactory(PVOID cls, REFIID iid, void **f)
+{
+    (void)cls; (void)iid;
+    if (f) *f = 0;
+    return 0x80040154;                                    /* REGDB_E_CLASSNOTREG */
+}
+K32 HRESULT WINAPI RoActivateInstance(PVOID cls, void **inst) { (void)cls; if (inst) *inst = 0; return 0x80040154; }
+
+/* -----------------------------------------------------------------------
+ * Number and currency formatting (en-US): "1,234.57", "$1,234.57"
+ * ----------------------------------------------------------------------- */
+/* @value: "[-]digits[.digits]"; writes the grouped form with @decimals
+ * places (rounded) to @out, returns its length (0: invalid) */
+static int fmt_number(LPCWSTR value, int decimals, WCHAR *out, int cap, BOOL *neg)
+{
+    WCHAR ip[64], fp[64];
+    int ni = 0, nf = 0, i = 0;
+    *neg = FALSE;
+    if (value[i] == '-') { *neg = TRUE; i++; }
+    for (; value[i] >= '0' && value[i] <= '9'; i++) if (ni < 63) ip[ni++] = value[i];
+    if (value[i] == '.') for (i++; value[i] >= '0' && value[i] <= '9'; i++) if (nf < 63) fp[nf++] = value[i];
+    if (value[i] || (!ni && !nf)) return 0;
+    if (!ni) ip[ni++] = '0';
+    while (nf < decimals) fp[nf++] = '0';
+    if (nf > decimals) {                                     /* round half up */
+        BOOL up = fp[decimals] >= '5';
+        nf = decimals;
+        for (int k = nf - 1; up && k >= 0; k--) { if (fp[k] == '9') fp[k] = '0'; else { fp[k]++; up = FALSE; } }
+        for (int k = ni - 1; up && k >= 0; k--) { if (ip[k] == '9') ip[k] = '0'; else { ip[k]++; up = FALSE; } }
+        if (up) { for (int k = ni; k > 0; k--) ip[k] = ip[k - 1]; ip[0] = '1'; ni++; }
+    }
+    int o = 0;
+    for (int k = 0; k < ni; k++) {
+        if (o >= cap - 1) return 0;
+        out[o++] = ip[k];
+        if ((ni - k - 1) % 3 == 0 && k != ni - 1) out[o++] = ',';
+    }
+    if (decimals) { out[o++] = '.'; for (int k = 0; k < decimals && o < cap - 1; k++) out[o++] = fp[k]; }
+    out[o] = 0;
+    return o;
+}
+static int put_result(const WCHAR *s, int n, LPWSTR out, int cap)
+{
+    if (!cap) return n + 1;
+    if (cap < n + 1) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+    memcpy(out, s, (SIZE_T)(n + 1) * sizeof(WCHAR));
+    return n + 1;
+}
+K32 int WINAPI GetNumberFormatEx(LPCWSTR loc, DWORD flags, LPCWSTR value, const void *fmt, LPWSTR out, int cap)
+{
+    (void)loc; (void)flags; (void)fmt;
+    WCHAR buf[160];
+    BOOL neg;
+    int n = value ? fmt_number(value, 2, buf + 1, 158, &neg) : 0;
+    if (!n) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    WCHAR *s = buf + 1;
+    if (neg) { *--s = '-'; n++; }
+    return put_result(s, n, out, cap);
+}
+K32 int WINAPI GetNumberFormatW(LCID lcid, DWORD flags, LPCWSTR value, const void *fmt, LPWSTR out, int cap)
+{
+    (void)lcid;
+    return GetNumberFormatEx(0, flags, value, fmt, out, cap);
+}
+K32 int WINAPI GetCurrencyFormatEx(LPCWSTR loc, DWORD flags, LPCWSTR value, const void *fmt, LPWSTR out, int cap)
+{
+    (void)loc; (void)flags; (void)fmt;
+    WCHAR buf[160];
+    BOOL neg;
+    int n = value ? fmt_number(value, 2, buf + 2, 156, &neg) : 0;
+    if (!n) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    WCHAR *s = buf + 2;
+    *--s = '$'; n++;
+    if (neg) { *--s = '-'; n++; }
+    return put_result(s, n, out, cap);
+}
+K32 int WINAPI GetCurrencyFormatW(LCID lcid, DWORD flags, LPCWSTR value, const void *fmt, LPWSTR out, int cap)
+{
+    (void)lcid;
+    return GetCurrencyFormatEx(0, flags, value, fmt, out, cap);
+}
+
+/* Heaps: one process heap underneath */
+K32 SIZE_T WINAPI HeapCompact(HANDLE h, DWORD flags) { (void)h; (void)flags; return 1 << 20; }
+K32 BOOL WINAPI HeapValidate(HANDLE h, DWORD flags, LPCVOID p) { (void)h; (void)flags; (void)p; return TRUE; }
+K32 BOOL WINAPI HeapSetInformation(HANDLE h, int cls, PVOID info, SIZE_T n) { (void)h; (void)cls; (void)info; (void)n; return TRUE; }
+K32 BOOL WINAPI HeapQueryInformation(HANDLE h, int cls, PVOID info, SIZE_T n, PSIZE_T ret)
+{
+    (void)h;
+    if (cls != 0) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }   /* HeapCompatibilityInformation */
+    if (ret) *ret = sizeof(ULONG);
+    if (!info || n < sizeof(ULONG)) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    *(ULONG *)info = 2;                                       /* the low-fragmentation heap */
+    return TRUE;
+}
+
+/* Preferred UI languages: English (United States).  MUI_LANGUAGE_ID (4)
+ * gives "0409", otherwise names ("en-US"); a double-NUL-terminated list */
+static BOOL ui_languages(DWORD flags, PULONG count, LPWSTR buf, PULONG len)
+{
+    static const WCHAR name[] = L"en-US\0", id[] = L"0409\0";
+    const WCHAR *l = (flags & 4) ? id : name;
+    ULONG need = (flags & 4) ? 6 : 7;
+    if (!len) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (count) *count = 1;
+    if (!buf) { *len = need; return TRUE; }
+    if (*len < need) { *len = need; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    memcpy(buf, l, need * sizeof(WCHAR));
+    *len = need;
+    return TRUE;
+}
+K32 BOOL WINAPI GetUserPreferredUILanguages(DWORD f, PULONG n, LPWSTR b, PULONG l)    { return ui_languages(f, n, b, l); }
+K32 BOOL WINAPI GetSystemPreferredUILanguages(DWORD f, PULONG n, LPWSTR b, PULONG l)  { return ui_languages(f, n, b, l); }
+K32 BOOL WINAPI GetProcessPreferredUILanguages(DWORD f, PULONG n, LPWSTR b, PULONG l) { return ui_languages(f, n, b, l); }
+K32 BOOL WINAPI GetThreadPreferredUILanguages(DWORD f, PULONG n, LPWSTR b, PULONG l)  { return ui_languages(f, n, b, l); }
+K32 BOOL WINAPI SetThreadPreferredUILanguages(DWORD f, LPCWSTR b, PULONG n) { (void)f; (void)b; if (n) *n = 1; return TRUE; }
+K32 BOOL WINAPI SetProcessPreferredUILanguages(DWORD f, LPCWSTR b, PULONG n) { (void)f; (void)b; if (n) *n = 1; return TRUE; }
+
+/* -----------------------------------------------------------------------
+ * For Python (and others)
+ * ----------------------------------------------------------------------- */
+/* The current thread's stack: [low, high) */
+K32 VOID WINAPI GetCurrentThreadStackLimits(PULONG_PTR low, PULONG_PTR high)
+{
+#ifdef _WIN64
+    BYTE *t = NtCurrentTebBytes();
+    *low = *(ULONG_PTR *)(t + 0x1478);              /* DeallocationStack */
+    *high = *(ULONG_PTR *)(t + 0x8);                /* StackBase */
+    if (!*low) *low = *(ULONG_PTR *)(t + 0x10);
+#else
+    BYTE *t = NtCurrentTebBytes();
+    *low = *(ULONG_PTR *)(t + 0xE0C);
+    *high = *(ULONG_PTR *)(t + 0x4);
+    if (!*low) *low = *(ULONG_PTR *)(t + 0x8);
+#endif
+}
+
+/* SetWaitableTimerEx: the wake context and tolerable delay change nothing */
+K32 BOOL WINAPI SetWaitableTimerEx(HANDLE h, const LARGE_INTEGER *due, LONG period, LPVOID fn, LPVOID arg,
+                                   PVOID wake, ULONG delay)
+{
+    (void)wake; (void)delay;
+    return SetWaitableTimer(h, due, period, fn, arg, FALSE);
+}
+
+/* CopyFile2: CopyFileW, with an HRESULT; COPY_FILE_FAIL_IF_EXISTS (1) */
+typedef struct { DWORD dwSize, dwCopyFlags; BOOL *pfCancel; PVOID pProgressRoutine, pvCallbackContext; } COPYFILE2_PARAMS_;
+K32 HRESULT WINAPI CopyFile2(LPCWSTR from, LPCWSTR to, const COPYFILE2_PARAMS_ *p)
+{
+    BOOL fail_exists = p && (p->dwCopyFlags & 1);
+    if (CopyFileW(from, to, fail_exists)) return S_OK;
+    return HRESULT_FROM_WIN32(GetLastError());
+}
+
+/* Process snapshots (PssCaptureSnapshot): not available */
+K32 DWORD WINAPI PssCaptureSnapshot(HANDLE p, DWORD flags, DWORD ctxflags, PVOID *snap) { (void)p; (void)flags; (void)ctxflags; if (snap) *snap = 0; return ERROR_NOT_SUPPORTED; }
+K32 DWORD WINAPI PssQuerySnapshot(PVOID snap, int cls, void *buf, DWORD n) { (void)snap; (void)cls; (void)buf; (void)n; return ERROR_NOT_SUPPORTED; }
+K32 DWORD WINAPI PssFreeSnapshot(HANDLE p, PVOID snap) { (void)p; (void)snap; return ERROR_SUCCESS; }
+
+/* PathCch (api-ms-win-core-path): paths of up to @cch characters */
+static BOOL pcc_sep(WCHAR c) { return c == '\\' || c == '/'; }
+/* The length of @p's root: "C:\" 3, "C:" 2, "\\server\share\" ..., "\" 1, none 0 */
+static int pcc_root(LPCWSTR p)
+{
+    if (p[0] && p[1] == ':') return pcc_sep(p[2]) ? 3 : 2;
+    if (pcc_sep(p[0]) && pcc_sep(p[1])) {                          /* UNC or \\?\ */
+        int i = 2, parts = 0;
+        while (p[i] && parts < 2) { if (pcc_sep(p[i])) parts++; i++; }
+        return i;
+    }
+    return pcc_sep(p[0]) ? 1 : 0;
+}
+K32 HRESULT WINAPI PathCchSkipRoot(LPCWSTR p, LPCWSTR *end)
+{
+    if (!p || !end) return E_INVALIDARG;
+    int r = pcc_root(p);
+    if (!r) return E_INVALIDARG;
+    *end = p + r;
+    return S_OK;
+}
+/* @b relative to @a (or @b if it is absolute), with "." and ".." resolved */
+K32 HRESULT WINAPI PathCchCombineEx(LPWSTR out, SIZE_T cch, LPCWSTR a, LPCWSTR b, ULONG flags)
+{
+    (void)flags;
+    if (!out || !cch) return E_INVALIDARG;
+    WCHAR *tmp = HeapAlloc(GetProcessHeap(), 0, 2 * 65536 * sizeof(WCHAR));
+    if (!tmp) return E_OUTOFMEMORY;
+    WCHAR *res = tmp + 65536;
+    SIZE_T n = 0;
+    if (b && pcc_root(b) && !(pcc_sep(b[0]) && !pcc_sep(b[1]) && a && a[0] && a[1] == ':')) a = 0;
+    if (b && pcc_sep(b[0]) && !pcc_sep(b[1]) && a && a[0] && a[1] == ':') {   /* "\x" on a's drive */
+        tmp[n++] = a[0]; tmp[n++] = ':';
+        a = 0;
+    }
+    if (a) for (; *a && n < 32767; a++) tmp[n++] = *a == '/' ? '\\' : *a;
+    if (a && n && b && *b && tmp[n - 1] != '\\') tmp[n++] = '\\';
+    if (b) for (; *b && n < 65535; b++) tmp[n++] = *b == '/' ? '\\' : *b;
+    tmp[n] = 0;
+    /* canonicalize after the root */
+    int root = pcc_root(tmp);
+    SIZE_T o = 0;
+    for (int i = 0; i < root; i++) res[o++] = tmp[i];
+    SIZE_T seg_start[1024];
+    int depth = 0;
+    for (SIZE_T i = (SIZE_T)root; i < n;) {
+        SIZE_T j = i;
+        while (j < n && tmp[j] != '\\') j++;
+        SIZE_T len = j - i;
+        if (len == 1 && tmp[i] == '.') { }
+        else if (len == 2 && tmp[i] == '.' && tmp[i + 1] == '.') {
+            if (depth) o = seg_start[--depth];
+        } else if (len) {
+            if (depth < 1024) seg_start[depth++] = o;
+            if (o > (SIZE_T)root && res[o - 1] != '\\') res[o++] = '\\';
+            for (SIZE_T k = i; k < j; k++) res[o++] = tmp[k];
+        }
+        i = j + 1;
+    }
+    res[o] = 0;
+    if (!o) { res[o++] = '\\'; res[o] = 0; }
+    HRESULT hr = S_OK;
+    if (o + 1 > cch) { out[0] = 0; hr = HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER); }
+    else memcpy(out, res, (o + 1) * sizeof(WCHAR));
+    HeapFree(GetProcessHeap(), 0, tmp);
+    return hr;
+}
+K32 HRESULT WINAPI PathCchCombine(LPWSTR out, SIZE_T cch, LPCWSTR a, LPCWSTR b) { return PathCchCombineEx(out, cch, a, b, 0); }
+
+/* No thread has I/O that is pending in the kernel on its behalf */
+K32 BOOL WINAPI GetThreadIOPendingFlag(HANDLE thread, PBOOL pending)
+{
+    (void)thread;
+    if (!pending) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    *pending = FALSE;
+    return TRUE;
+}

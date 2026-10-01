@@ -107,7 +107,7 @@ typedef struct _PEB {
 typedef struct _NOVA_LDR_MODULE {
     ULONGLONG Base, Size;
     ULONG EntryRva, Flags;          /* Flags: 1 = DLL */
-    CHAR Name[32], Path[96];
+    CHAR Name[64], Path[96];
 } NOVA_LDR_MODULE;
 typedef struct _NOVA_LDR_INFO {
     ULONG Count, Reserved;
@@ -294,7 +294,7 @@ NTSYSAPI NTSTATUS NTAPI NtDuplicateObject(HANDLE sp, HANDLE src, HANDLE tp, PHAN
 NTSYSAPI NTSTATUS NTAPI NtContinue(PCONTEXT ctx, BOOLEAN alert);
 NTSYSAPI NTSTATUS NTAPI NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, BOOLEAN first_chance);
 /* NovaOS */
-NTSYSAPI NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base);
+NTSYSAPI NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base, ULONG flags);
 NTSYSAPI NTSTATUS NTAPI NtNovaDebugPrint(const char *s, ULONG len);
 NTSYSAPI NTSTATUS NTAPI NtNovaWatchDirectory(HANDLE dir, BOOLEAN subtree, HANDLE event, ULONG remove);
 NTSYSAPI NTSTATUS NTAPI NtNovaFlushView(PVOID base);
@@ -327,6 +327,7 @@ NTSYSAPI LONG_PTR NTAPI NtNovaGuiCtl(ULONG_PTR hwnd, ULONG op, ULONG_PTR arg, PV
 /* Loader */
 NTSYSAPI NTSTATUS NTAPI LdrLoadDll(const WCHAR *path, PULONG flags, PUNICODE_STRING name, PVOID *base);
 NTSYSAPI NTSTATUS NTAPI LdrNovaLoadDllA(const char *name, PVOID *base);
+NTSYSAPI NTSTATUS NTAPI LdrNovaLoadDllExA(const char *name, ULONG flags, PVOID *base);
 NTSYSAPI NTSTATUS NTAPI LdrGetDllHandle(const WCHAR *path, PULONG flags, PUNICODE_STRING name, PVOID *base);
 NTSYSAPI PVOID    NTAPI LdrNovaGetModuleA(const char *name);
 NTSYSAPI NTSTATUS NTAPI LdrGetProcedureAddress(PVOID base, const char *name, ULONG ordinal, PVOID *addr);

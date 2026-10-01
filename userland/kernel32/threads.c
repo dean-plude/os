@@ -434,22 +434,27 @@ BOOL  WINAPI FlsSetValue(DWORD i, PVOID v) { return TlsSetValue(i, v); }
 /* -----------------------------------------------------------------------
  * Dynamic loading
  * ----------------------------------------------------------------------- */
-HMODULE WINAPI LoadLibraryA(LPCSTR name)
+/* LoadLibraryEx's flags that change how a module is mapped (as data); the
+ * search-path ones need nothing: the program's folder, then the system's */
+#define LL_DATA_FLAGS 0x62                  /* AS_DATAFILE, AS_IMAGE_RESOURCE, AS_DATAFILE_EXCLUSIVE */
+HMODULE WINAPI LoadLibraryExA(LPCSTR name, HANDLE f, DWORD flags)
 {
+    (void)f;
+    if (!name || !*name) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
     PVOID base = 0;
-    NTSTATUS s = LdrNovaLoadDllA(name, &base);
+    NTSTATUS s = LdrNovaLoadDllExA(name, flags & LL_DATA_FLAGS, &base);
     if (!NT_SUCCESS(s)) { set_error(s); return 0; }
     return (HMODULE)base;
 }
+HMODULE WINAPI LoadLibraryA(LPCSTR name) { return LoadLibraryExA(name, 0, 0); }
 HMODULE WINAPI LoadLibraryW(LPCWSTR name)
 {
-    char n[128];
-    int i = 0;
-    if (name) for (; i < 127 && name[i]; i++) n[i] = (char)name[i];
-    n[i] = 0;
-    return LoadLibraryA(n);
+    char n[MAX_PATH * 3];
+    if (!name) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    int k = WideCharToMultiByte(CP_UTF8, 0, name, -1, n, sizeof(n), 0, 0);
+    if (!k) { SetLastError(ERROR_FILENAME_EXCED_RANGE); return 0; }
+    return LoadLibraryExA(n, 0, 0);
 }
-HMODULE WINAPI LoadLibraryExA(LPCSTR name, HANDLE f, DWORD flags) { (void)f; (void)flags; return LoadLibraryA(name); }
 
 BOOL WINAPI GetModuleHandleExA(DWORD flags, LPCSTR name, HMODULE *out)
 {

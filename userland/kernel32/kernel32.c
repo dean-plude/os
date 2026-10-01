@@ -332,10 +332,10 @@ WINBASEAPI HMODULE WINAPI GetModuleHandleA(LPCSTR name)
 WINBASEAPI HMODULE WINAPI GetModuleHandleW(LPCWSTR name)
 {
     if (!name) return (HMODULE)RtlGetCurrentPeb()->ImageBaseAddress;
-    char n[128];
-    int i = 0;
-    for (; i < 127 && name[i]; i++) n[i] = (char)name[i];
-    n[i] = 0;
+    char n[MAX_PATH * 3];
+    int k = w2u(name, -1, n, sizeof(n) - 1);
+    if (k < 0) { SetLastError(ERROR_MOD_NOT_FOUND); return 0; }
+    n[k] = 0;
     return GetModuleHandleA(n);
 }
 
@@ -409,7 +409,14 @@ WINBASEAPI FARPROC WINAPI GetProcAddress(HMODULE m, LPCSTR name)
         }
     }
     if (!rva) {
-        if ((ULONG_PTR)name >= 0x10000) {                   /* (the serial log shows what was missing) */
+        /* (the serial log shows what was missing, once per name: some
+         * programs ask again and again) */
+        static ULONG seen[256];
+        ULONG hsh = 5381;
+        if ((ULONG_PTR)name >= 0x10000) for (const char *c = name; *c; c++) hsh = hsh * 33 + (BYTE)*c;
+        BOOL first = (ULONG_PTR)name >= 0x10000 && seen[hsh & 255] != hsh;
+        if (first) seen[hsh & 255] = hsh;
+        if (first) {
             char msg[160];
             int k = 0;
             const char *parts[4] = { "GetProcAddress: no ", (const char *)b + *(DWORD *)(ed + 12), "!", name };
@@ -670,10 +677,8 @@ WINBASEAPI HANDLE WINAPI GetStdHandle(DWORD which);
 
 WINBASEAPI VOID WINAPI OutputDebugStringA(LPCSTR s)
 {
-    DWORD w;
     if (!s) return;
-    NtNovaDebugPrint(s, (ULONG)strlen(s));      /* the kernel log: NovaOS's debugger */
-    WriteFile(GetStdHandle(STD_ERROR_HANDLE), s, (DWORD)strlen(s), &w, 0);
+    NtNovaDebugPrint(s, (ULONG)strlen(s));      /* the kernel log: NovaOS's debugger (not the console) */
 }
 
 /* -----------------------------------------------------------------------

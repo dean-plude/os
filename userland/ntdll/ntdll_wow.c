@@ -782,10 +782,10 @@ NTSTATUS NTAPI NtYieldExecution(void) { return SC0(NtYieldExecution); }
 /* -----------------------------------------------------------------------
  * NovaOS services
  * ----------------------------------------------------------------------- */
-NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base)
+NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base, ULONG flags)
 {
     U64 b = 0;
-    NTSTATUS s = SC(NtNovaLoadDll, P(name), U(len), P(&b));
+    NTSTATUS s = SC(NtNovaLoadDll, P(name), U(len), P(&b), U(flags));
     if (base && NT_SUCCESS(s)) *base = (PVOID)(ULONG_PTR)b;
     return s;
 }

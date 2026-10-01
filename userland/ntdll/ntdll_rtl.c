@@ -1299,3 +1299,54 @@ NTSYSAPI NTSTATUS NTAPI NtTestAlert(void)
     if (g_apc_runner && g_apc_runner()) return 0x000000C0;       /* STATUS_USER_APC */
     return ST_SUCCESS;
 }
+
+/* Whether the process is shutting down (DLL_PROCESS_DETACH at exit) */
+NTSYSAPI BOOLEAN NTAPI RtlDllShutdownInProgress(void) { return FALSE; }
+
+/* Device I/O controls: no driver here answers them (pipes and the file
+ * system use NtFsControlFile) */
+NTSYSAPI NTSTATUS NTAPI NtDeviceIoControlFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG code,
+                                              PVOID in, ULONG in_len, PVOID out, ULONG out_len)
+{
+    (void)h; (void)ev; (void)apc; (void)ctx; (void)code; (void)in; (void)in_len; (void)out; (void)out_len;
+    if (io) { io->Status = (NTSTATUS)0xC0000010; io->Information = 0; }
+    return (NTSTATUS)0xC0000010;                         /* STATUS_INVALID_DEVICE_REQUEST */
+}
+
+/* The return addresses of the calling stack: @skip frames above this one,
+ * at most @count; @hash (optional) gets their sum */
+NTSYSAPI USHORT NTAPI RtlCaptureStackBackTrace(ULONG skip, ULONG count, PVOID *frames, PULONG hash)
+{
+    USHORT n = 0;
+    ULONG sum = 0;
+#ifdef _WIN64
+    CONTEXT c;
+    RtlCaptureContext(&c);
+    for (ULONG i = 0; n < count && i < skip + count + 1 && c.Rip; i++) {
+        DWORD64 base;
+        PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(c.Rip, &base, 0);
+        if (f) {
+            PVOID hd; DWORD64 est;
+            RtlVirtualUnwind(0, base, c.Rip, f, &c, &hd, &est, 0);
+        } else {
+            if (!c.Rsp) break;
+            c.Rip = *(DWORD64 *)c.Rsp;
+            c.Rsp += 8;
+        }
+        if (!c.Rip) break;
+        if (i >= skip) { frames[n++] = (PVOID)c.Rip; sum += (ULONG)c.Rip; }
+    }
+#else
+    ULONG_PTR *fp = __builtin_frame_address(0);
+    for (ULONG i = 0; n < count && fp && i < skip + count + 1; i++) {
+        ULONG_PTR ret = fp[1];
+        if (!ret) break;
+        if (i >= skip) { frames[n++] = (PVOID)ret; sum += (ULONG)ret; }
+        ULONG_PTR *next = (ULONG_PTR *)fp[0];
+        if (next <= fp) break;
+        fp = next;
+    }
+#endif
+    if (hash) *hash = sum;
+    return n;
+}

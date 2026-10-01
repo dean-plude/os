@@ -224,71 +224,203 @@ PRUNTIME_FUNCTION NTAPI RtlLookupFunctionEntry(DWORD64 pc, PDWORD64 base_out, PU
     return 0;
 }
 
-/* Apply the unwind codes for the instructions already executed at @pc,
- * updating @ctx to the caller's register state.  Returns the language
- * handler (if any) and its data. */
+/* Record where a register was restored from (the caller's save slot), for
+ * callers that need the address, such as a GC updating object references */
+static void set_int(CONTEXT *ctx, PKNONVOLATILE_CONTEXT_POINTERS ptrs, int reg, DWORD64 *slot)
+{
+    *int_reg(ctx, reg) = *slot;
+    if (ptrs) ptrs->IntegerContext[reg] = slot;
+}
+static void set_xmm(CONTEXT *ctx, PKNONVOLATILE_CONTEXT_POINTERS ptrs, int reg, M128A *slot)
+{
+    *xmm_reg(ctx, reg) = *slot;
+    if (ptrs) ptrs->FloatingContext[reg] = slot;
+}
+
+/* Is @pc in an epilogue: [add $n,%rsp | lea n(%reg),%rsp] pop* ret, or a
+ * jump within the function to such a sequence, or a tail jump */
+static int in_epilogue(const BYTE *pc, DWORD64 base, PRUNTIME_FUNCTION f)
+{
+    if ((pc[0] & 0xF8) == 0x48) {
+        switch (pc[1]) {
+        case 0x81: if (pc[0] == 0x48 && pc[2] == 0xC4) { pc += 7; break; } return 0;
+        case 0x83: if (pc[0] == 0x48 && pc[2] == 0xC4) { pc += 4; break; } return 0;
+        case 0x8D:
+            if (pc[0] & 0x06) return 0;                      /* rex.RX clear */
+            if (((pc[2] >> 3) & 7) != 4) return 0;           /* into %rsp */
+            if ((pc[2] & 7) == 4) return 0;                  /* no SIB */
+            if ((pc[2] >> 6) == 1) { pc += 4; break; }
+            if ((pc[2] >> 6) == 2) { pc += 7; break; }
+            return 0;
+        }
+    }
+    for (int steps = 0; steps < 32; steps++) {
+        BYTE rex = 0;
+        if ((*pc & 0xF0) == 0x40) rex = *pc++;
+        switch (*pc) {
+        case 0x58: case 0x59: case 0x5A: case 0x5B: case 0x5C: case 0x5D: case 0x5E: case 0x5F:
+            pc++;
+            continue;
+        case 0xC2: case 0xC3:
+            return 1;
+        case 0xF3:
+            return pc[1] == 0xC3;
+        case 0xFF:                                           /* rex.W jmp *ea: a tail call */
+            return (rex & 8) && ((pc[1] >> 3) & 7) == 4;
+        case 0xE9: {
+            const BYTE *t = pc + 5 + *(const LONG *)(pc + 1);
+            DWORD64 r = (DWORD64)t - base;
+            if (r >= f->BeginAddress && r < f->EndAddress) { pc = t; continue; }
+            return 0;
+        }
+        case 0xEB: {
+            const BYTE *t = pc + 2 + (signed char)pc[1];
+            DWORD64 r = (DWORD64)t - base;
+            if (r >= f->BeginAddress && r < f->EndAddress) { pc = t; continue; }
+            return 0;
+        }
+        }
+        return 0;
+    }
+    return 0;
+}
+
+/* Run the rest of an epilogue on @ctx */
+static void run_epilogue(const BYTE *pc, CONTEXT *ctx, PKNONVOLATILE_CONTEXT_POINTERS ptrs)
+{
+    for (int steps = 0; steps < 64; steps++) {
+        BYTE rex = 0;
+        if ((*pc & 0xF0) == 0x40) rex = *pc++ & 0x0F;
+        switch (*pc) {
+        case 0x58: case 0x59: case 0x5A: case 0x5B: case 0x5C: case 0x5D: case 0x5E: case 0x5F:
+            set_int(ctx, ptrs, *pc - 0x58 + (rex & 1) * 8, (DWORD64 *)ctx->Rsp);
+            ctx->Rsp += 8;
+            pc++;
+            continue;
+        case 0x81: ctx->Rsp += *(const LONG *)(pc + 2); pc += 6; continue;
+        case 0x83: ctx->Rsp += (signed char)pc[2]; pc += 3; continue;
+        case 0x8D:
+            if ((pc[1] >> 6) == 1) {
+                ctx->Rsp = *int_reg(ctx, (pc[1] & 7) + (rex & 1) * 8) + (signed char)pc[2];
+                pc += 3;
+            } else {
+                ctx->Rsp = *int_reg(ctx, (pc[1] & 7) + (rex & 1) * 8) + *(const LONG *)(pc + 2);
+                pc += 6;
+            }
+            continue;
+        case 0xC2:
+            ctx->Rip = *(DWORD64 *)ctx->Rsp;
+            ctx->Rsp += 8 + *(const WORD *)(pc + 1);
+            return;
+        case 0xC3: case 0xF3: case 0xFF:                     /* ret, rep ret, tail jump */
+            ctx->Rip = *(DWORD64 *)ctx->Rsp;
+            ctx->Rsp += 8;
+            return;
+        case 0xE9: pc += 5 + *(const LONG *)(pc + 1); continue;
+        case 0xEB: pc += 2 + (signed char)pc[1]; continue;
+        }
+        return;
+    }
+}
+
+/* Unwind one frame: undo the prologue instructions already executed at @pc
+ * (or finish the epilogue @pc is in), updating @ctx to the caller's
+ * register state.  @ptrs, if given, receives where each restored
+ * register was saved.  Returns the frame's handler of kind @type
+ * (UNW_FLAG_EHANDLER or UNW_FLAG_UHANDLER), if any, and its data. */
 PEXCEPTION_ROUTINE NTAPI RtlVirtualUnwind(ULONG type, DWORD64 base, DWORD64 pc, PRUNTIME_FUNCTION f,
                                           PCONTEXT ctx, PVOID *handler_data, PDWORD64 frame_out,
                                           PKNONVOLATILE_CONTEXT_POINTERS ptrs)
 {
-    (void)type; (void)ptrs;
-    while (f->UnwindData & 1) f = (PRUNTIME_FUNCTION)(base + (f->UnwindData & ~1u));   /* chain */
-    UNWIND_INFO *ui = (UNWIND_INFO *)(base + f->UnwindData);
-    DWORD off = (DWORD)(pc - (base + f->BeginAddress));
+    while (f->UnwindData & 1) f = (PRUNTIME_FUNCTION)(base + (f->UnwindData & ~1u));   /* indirect entry */
+    if (handler_data) *handler_data = 0;
+    UNWIND_INFO *ui;
     DWORD64 frame_base = ctx->Rsp;
-    BYTE framereg = ui->FrameRegOff & 0xF;
-    if (framereg) frame_base = *int_reg(ctx, framereg) - (ui->FrameRegOff >> 4) * 16;
+    int machframe = 0, in_prolog = 0, first = 1;
+    for (;;) {
+        ui = (UNWIND_INFO *)(base + f->UnwindData);
+        int n = ui->CountOfCodes;
+        BYTE framereg = ui->FrameRegOff & 0xF;
+        DWORD off = (DWORD)(pc - (base + f->BeginAddress));
+        int prolog = pc >= base + f->BeginAddress && off < ui->SizeOfProlog;
+        if (first) in_prolog = prolog;
 
-    int i = 0, n = ui->CountOfCodes, machframe = 0;
-    /* Only apply codes for prologue instructions that have executed. */
-    while (i < n) {
-        UNWIND_CODE *u = &ui->UnwindCode[i];
-        int op = u->UnwindOp_OpInfo & 0xF, info = u->UnwindOp_OpInfo >> 4;
-        int slots = 1;
-        int applied = u->CodeOffset <= off;
-        switch (op) {
-        case UWOP_PUSH_NONVOL:
-            if (applied) { *int_reg(ctx, info) = *(DWORD64 *)ctx->Rsp; ctx->Rsp += 8; }
-            break;
-        case UWOP_ALLOC_LARGE:
-            if (info == 0) { slots = 2; if (applied) ctx->Rsp += ui->UnwindCode[i + 1].FrameOffset * 8ULL; }
-            else { slots = 3; if (applied) ctx->Rsp += ui->UnwindCode[i + 1].FrameOffset | ((DWORD)ui->UnwindCode[i + 2].FrameOffset << 16); }
-            break;
-        case UWOP_ALLOC_SMALL:
-            if (applied) ctx->Rsp += info * 8ULL + 8;
-            break;
-        case UWOP_SET_FPREG:
-            if (applied) ctx->Rsp = frame_base;
-            break;
-        case UWOP_SAVE_NONVOL:
-            slots = 2;
-            if (applied) *int_reg(ctx, info) = *(DWORD64 *)(frame_base + ui->UnwindCode[i + 1].FrameOffset * 8ULL);
-            break;
-        case UWOP_SAVE_NONVOL_FAR:
-            slots = 3;
-            if (applied) { DWORD o = ui->UnwindCode[i + 1].FrameOffset | ((DWORD)ui->UnwindCode[i + 2].FrameOffset << 16);
-                           *int_reg(ctx, info) = *(DWORD64 *)(frame_base + o); }
-            break;
-        case UWOP_SAVE_XMM128:
-            slots = 2;
-            if (applied) *xmm_reg(ctx, info) = *(M128A *)(frame_base + ui->UnwindCode[i + 1].FrameOffset * 16ULL);
-            break;
-        case UWOP_SAVE_XMM128_FAR:
-            slots = 3;
-            if (applied) { DWORD o = ui->UnwindCode[i + 1].FrameOffset | ((DWORD)ui->UnwindCode[i + 2].FrameOffset << 16);
-                           *xmm_reg(ctx, info) = *(M128A *)(frame_base + o); }
-            break;
-        case UWOP_PUSH_MACHFRAME:
-            if (applied) {
-                DWORD64 sp = ctx->Rsp + (info ? 8 : 0);
-                ctx->Rip = *(DWORD64 *)(sp + 0);
-                ctx->Rsp = *(DWORD64 *)(sp + 24);
-                machframe = 1;
+        /* the frame register holds the frame base once it is set */
+        frame_base = ctx->Rsp;
+        if (framereg) {
+            int set = !prolog;
+            for (int i = 0; prolog && i < n; ) {
+                UNWIND_CODE *u = &ui->UnwindCode[i];
+                int op = u->UnwindOp_OpInfo & 0xF, info = u->UnwindOp_OpInfo >> 4;
+                if (op == UWOP_SET_FPREG && u->CodeOffset <= off) set = 1;
+                i += op == UWOP_ALLOC_LARGE ? (info ? 3 : 2)
+                   : (op == UWOP_SAVE_NONVOL || op == UWOP_SAVE_XMM128) ? 2
+                   : (op == UWOP_SAVE_NONVOL_FAR || op == UWOP_SAVE_XMM128_FAR) ? 3 : 1;
             }
-            break;
-        default: break;
+            if (set) frame_base = *int_reg(ctx, framereg) - (ui->FrameRegOff >> 4) * 16;
         }
-        i += slots;
+
+        if (first && !prolog && in_epilogue((const BYTE *)pc, base, f)) {
+            run_epilogue((const BYTE *)pc, ctx, ptrs);
+            if (frame_out) *frame_out = frame_base;
+            return 0;
+        }
+        first = 0;
+
+        for (int i = 0; i < n; ) {
+            UNWIND_CODE *u = &ui->UnwindCode[i];
+            int op = u->UnwindOp_OpInfo & 0xF, info = u->UnwindOp_OpInfo >> 4;
+            int slots = 1;
+            int applied = !prolog || u->CodeOffset <= off;
+            switch (op) {
+            case UWOP_PUSH_NONVOL:
+                if (applied) { set_int(ctx, ptrs, info, (DWORD64 *)ctx->Rsp); ctx->Rsp += 8; }
+                break;
+            case UWOP_ALLOC_LARGE:
+                if (info == 0) { slots = 2; if (applied) ctx->Rsp += ui->UnwindCode[i + 1].FrameOffset * 8ULL; }
+                else { slots = 3; if (applied) ctx->Rsp += ui->UnwindCode[i + 1].FrameOffset | ((DWORD)ui->UnwindCode[i + 2].FrameOffset << 16); }
+                break;
+            case UWOP_ALLOC_SMALL:
+                if (applied) ctx->Rsp += info * 8ULL + 8;
+                break;
+            case UWOP_SET_FPREG:
+                if (applied) ctx->Rsp = frame_base;
+                break;
+            case UWOP_SAVE_NONVOL:
+                slots = 2;
+                if (applied) set_int(ctx, ptrs, info, (DWORD64 *)(frame_base + ui->UnwindCode[i + 1].FrameOffset * 8ULL));
+                break;
+            case UWOP_SAVE_NONVOL_FAR:
+                slots = 3;
+                if (applied) set_int(ctx, ptrs, info, (DWORD64 *)(frame_base + (ui->UnwindCode[i + 1].FrameOffset |
+                                                                   ((DWORD)ui->UnwindCode[i + 2].FrameOffset << 16))));
+                break;
+            case UWOP_SAVE_XMM128:
+                slots = 2;
+                if (applied) set_xmm(ctx, ptrs, info, (M128A *)(frame_base + ui->UnwindCode[i + 1].FrameOffset * 16ULL));
+                break;
+            case UWOP_SAVE_XMM128_FAR:
+                slots = 3;
+                if (applied) set_xmm(ctx, ptrs, info, (M128A *)(frame_base + (ui->UnwindCode[i + 1].FrameOffset |
+                                                                ((DWORD)ui->UnwindCode[i + 2].FrameOffset << 16))));
+                break;
+            case UWOP_PUSH_MACHFRAME:
+                if (applied) {
+                    DWORD64 sp = ctx->Rsp + (info ? 8 : 0);
+                    ctx->Rip = *(DWORD64 *)(sp + 0);
+                    ctx->Rsp = *(DWORD64 *)(sp + 24);
+                    machframe = 1;
+                }
+                break;
+            default: break;
+            }
+            i += slots;
+        }
+        if (!((ui->VersionFlags >> 3) & UNW_FLAG_CHAININFO)) break;
+        /* chained: the parent's prologue (all of it has run) unwinds next */
+        f = (PRUNTIME_FUNCTION)&ui->UnwindCode[(n + 1) & ~1];
+        while (f->UnwindData & 1) f = (PRUNTIME_FUNCTION)(base + (f->UnwindData & ~1u));
+        pc = base + f->EndAddress;                           /* past its prologue */
     }
     if (frame_out) *frame_out = frame_base;
     /* Caller's RIP is at [RSP]; pop it (a machine frame already gave it). */
@@ -298,13 +430,11 @@ PEXCEPTION_ROUTINE NTAPI RtlVirtualUnwind(ULONG type, DWORD64 base, DWORD64 pc, 
     }
 
     BYTE flags = ui->VersionFlags >> 3;
-    if ((flags & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER))) {
-        DWORD *p = (DWORD *)&ui->UnwindCode[(n + 1) & ~1];    /* codes padded to even count */
-        DWORD handler_rva = *p;
+    if ((flags & type & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER)) && !in_prolog) {
+        DWORD *p = (DWORD *)&ui->UnwindCode[(ui->CountOfCodes + 1) & ~1];    /* codes padded to even count */
         if (handler_data) *handler_data = p + 1;
-        return (PEXCEPTION_ROUTINE)(base + handler_rva);
+        return (PEXCEPTION_ROUTINE)(base + *p);
     }
-    if (handler_data) *handler_data = 0;
     return 0;
 }
 
@@ -382,7 +512,7 @@ BOOLEAN NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx)
         }
         CONTEXT before = cur;
         PVOID hdata = 0;
-        PEXCEPTION_ROUTINE handler = RtlVirtualUnwind(0, base, before.Rip, f, &cur, &hdata, &frame, 0);
+        PEXCEPTION_ROUTINE handler = RtlVirtualUnwind(UNW_FLAG_EHANDLER, base, before.Rip, f, &cur, &hdata, &frame, 0);
         if (handler) {
             DISPATCHER_CONTEXT dc;
             memset(&dc, 0, sizeof(dc));
@@ -428,7 +558,7 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
         }
         CONTEXT before = cur;
         PVOID hdata = 0;
-        PEXCEPTION_ROUTINE handler = RtlVirtualUnwind(1, base, before.Rip, f, &cur, &hdata, &frame, 0);
+        PEXCEPTION_ROUTINE handler = RtlVirtualUnwind(UNW_FLAG_UHANDLER, base, before.Rip, f, &cur, &hdata, &frame, 0);
         int is_target = target_frame && frame == (DWORD64)target_frame;
         if (handler) {
             DISPATCHER_CONTEXT dc;

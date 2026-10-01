@@ -509,3 +509,58 @@ int WSAAddressToStringW(struct sockaddr *sa, DWORD len, void *info, WCHAR *out, 
     *outlen = n;
     return 0;
 }
+
+int GetNameInfoW(const struct sockaddr *sa, socklen_t salen, WCHAR *host, DWORD hostlen, WCHAR *serv, DWORD servlen, int flags)
+{
+    char h[64], s[16];
+    int r = getnameinfo(sa, salen, host ? h : 0, host ? sizeof(h) : 0, serv ? s : 0, serv ? sizeof(s) : 0, flags);
+    if (r) return r;
+    if (host) { DWORD i = 0; for (; h[i] && i < hostlen - 1; i++) host[i] = (WCHAR)h[i]; host[i] = 0; }
+    if (serv) { DWORD i = 0; for (; s[i] && i < servlen - 1; i++) serv[i] = (WCHAR)s[i]; serv[i] = 0; }
+    return 0;
+}
+
+/* Sharing a socket with another process is not supported */
+int WSADuplicateSocketW(SOCKET s, DWORD pid, void *info)
+{
+    (void)s; (void)pid; (void)info;
+    set_err(WSAEINVAL);
+    return SOCKET_ERROR;
+}
+int WSADuplicateSocketA(SOCKET s, DWORD pid, void *info) { return WSADuplicateSocketW(s, pid, info); }
+
+/* WSAConnect: caller and callee data and QoS are not supported (ignored) */
+int WSAConnect(SOCKET s, const struct sockaddr *to, int len, void *caller, void *callee, void *sqos, void *gqos)
+{
+    (void)caller; (void)callee; (void)sqos; (void)gqos;
+    return connect(s, to, len);
+}
+
+/* "a.b.c.d[:port]" (IPv4) into a sockaddr_in */
+int WSAStringToAddressA(char *str, int family, void *info, struct sockaddr *sa, int *len)
+{
+    (void)info;
+    if (!str || !sa || !len || family != AF_INET) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    if (*len < (int)sizeof(struct sockaddr_in)) { *len = sizeof(struct sockaddr_in); set_err(WSAEFAULT); return SOCKET_ERROR; }
+    char host[32];
+    int i = 0;
+    for (; str[i] && str[i] != ':' && i < 31; i++) host[i] = str[i];
+    host[i] = 0;
+    unsigned port = 0;
+    if (str[i] == ':') for (const char *p = str + i + 1; *p >= '0' && *p <= '9'; p++) port = port * 10 + (unsigned)(*p - '0');
+    struct sockaddr_in *in = (struct sockaddr_in *)sa;
+    memset(in, 0, sizeof(*in));
+    in->sin_family = AF_INET;
+    in->sin_port = htons((u_short)port);
+    if (inet_pton(AF_INET, host, &in->sin_addr) != 1) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    *len = sizeof(struct sockaddr_in);
+    return 0;
+}
+int WSAStringToAddressW(WCHAR *str, int family, void *info, struct sockaddr *sa, int *len)
+{
+    char a[64];
+    int i = 0;
+    for (; str && str[i] && i < 63; i++) a[i] = (char)str[i];
+    a[i] = 0;
+    return WSAStringToAddressA(str ? a : 0, family, info, sa, len);
+}

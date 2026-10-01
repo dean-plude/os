@@ -796,7 +796,8 @@ UINT32 um_pipe_fsctl(UmObject *o, UINT64 event, UINT64 iosb, UINT32 code,
 bool um_pipe_is_async(UmObject *o) { return ((PipeEnd *)o)->async; }
 
 /* FilePipeInformation (23), FilePipeLocalInformation (24),
- * FileStandardInformation (5), FileNameInformation (9) */
+ * FileStandardInformation (5), FileNameInformation (9),
+ * FileAccessInformation (8), FileModeInformation (16) */
 UINT32 um_pipe_query(UmObject *o, UINT32 cls, UINT8 *buf, UINT32 cap, UINT32 *len)
 {
     PipeEnd *e = (PipeEnd *)o;
@@ -825,6 +826,16 @@ UINT32 um_pipe_query(UmObject *o, UINT32 cls, UINT8 *buf, UINT32 cap, UINT32 *le
         UINT32 links = 1;
         memcpy(buf + 16, &links, 4);
         *len = 24;
+    } else if (cls == 8 && cap >= 4) {                      /* FileAccessInformation */
+        UINT32 acc = 0x00100000u | 0x00020000u | 0x00000180u;   /* SYNCHRONIZE, READ_CONTROL, attributes */
+        if (e->can_read) acc |= 0x00000089u;                /* FILE_GENERIC_READ's data/EA/attrs */
+        if (e->can_write) acc |= 0x00000116u;               /* FILE_GENERIC_WRITE's */
+        memcpy(buf, &acc, 4);
+        *len = 4;
+    } else if (cls == 16 && cap >= 4) {                     /* FileModeInformation */
+        UINT32 mode = e->async ? 0 : 0x20;                  /* FILE_SYNCHRONOUS_IO_NONALERT */
+        memcpy(buf, &mode, 4);
+        *len = 4;
     } else if (cls == 9 && cap >= 4) {                      /* FileNameInformation: "\NAME" */
         UINT32 n = (UINT32)strlen(p->name) + 1;
         UINT32 bytes = 2 * n, room = (cap - 4) / 2;

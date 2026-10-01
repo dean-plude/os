@@ -405,18 +405,18 @@ static bool start_ap(uint32_t cpu, uint8_t apic)
     return false;
 }
 
-void smp_start(void)
+uint32_t smp_start(void)
 {
     g_kpcr[0].ApicId = apic_id();
     uint8_t ids[64];
     uint32_t n = madt_cpus(ids, 64);
     if (n <= 1) {
         kprintf("[SMP] One CPU%s\n", n ? "" : " (no ACPI MADT)");
-        return;
+        return 1;
     }
     if (!g_low_ok) {
         kprintf("[SMP] %u CPUs, but the start-up page 0x%x is in use: using one\n", n, TRAMP_PA);
-        return;
+        return 1;
     }
 
     /* The trampoline, and a page table for it: the kernel's upper half plus
@@ -447,4 +447,5 @@ void smp_start(void)
     }
     kprintf("[SMP] %u CPUs found, %u started%s\n", n, started + 1,
             n > MAX_CPUS ? " (the rest exceed MAX_CPUS)" : "");
+    return started + 1;
 }

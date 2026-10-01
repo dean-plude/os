@@ -105,11 +105,60 @@ WINOLEAPI_(DWORD) CoGetCurrentProcess(void) { return GetCurrentProcessId(); }
 
 WINOLEAPI_(HRESULT) CoGetCallerTID(LPDWORD tid) { if (tid) *tid = GetCurrentThreadId(); return S_FALSE; }
 
+/* -----------------------------------------------------------------------
+ * The object context: one per apartment kind (there is no cross-apartment
+ * marshaling).  Its token is the object itself, as on Windows, and it
+ * answers IUnknown, IContextCallback (callbacks run directly) and
+ * IComThreadingInfo.
+ * ----------------------------------------------------------------------- */
+static const IID IID_IContextCallback_ = { 0x000001da, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+static const IID IID_IComThreadingInfo_ = { 0x000001ce, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+typedef struct { const void *vtbl; APTTYPE type; } ObjCtx;
+typedef HRESULT (__stdcall *PFNCONTEXTCALL_)(void *data);
+
+static HRESULT __stdcall ctx_qi(ObjCtx *This, REFIID riid, void **ppv);
+static ULONG __stdcall ctx_addref(ObjCtx *This) { (void)This; return 2; }
+static ULONG __stdcall ctx_release(ObjCtx *This) { (void)This; return 1; }
+static HRESULT __stdcall ctx_callback(ObjCtx *This, PFNCONTEXTCALL_ fn, void *data, REFIID riid, int method, IUnknown *unk)
+{
+    (void)This; (void)riid; (void)method; (void)unk;
+    return fn ? fn(data) : E_INVALIDARG;
+}
+static HRESULT __stdcall cti_apt_type(ObjCtx *This, APTTYPE *t) { if (!t) return E_POINTER; *t = This->type; return S_OK; }
+static HRESULT __stdcall cti_thread_type(ObjCtx *This, int *t) { (void)This; if (!t) return E_POINTER; *t = 0; return S_OK; }   /* THDTYPE_BLOCKMESSAGES */
+static HRESULT __stdcall cti_get_logical(ObjCtx *This, GUID *g) { (void)This; if (!g) return E_POINTER; ZeroMemory(g, sizeof(*g)); return S_OK; }
+static HRESULT __stdcall cti_set_logical(ObjCtx *This, REFGUID g) { (void)This; (void)g; return S_OK; }
+
+static const void *const g_ctx_callback_vtbl[] = { (void *)ctx_qi, (void *)ctx_addref, (void *)ctx_release, (void *)ctx_callback };
+static const void *const g_ctx_threading_vtbl[] = { (void *)ctx_qi, (void *)ctx_addref, (void *)ctx_release,
+                                                    (void *)cti_apt_type, (void *)cti_thread_type,
+                                                    (void *)cti_get_logical, (void *)cti_set_logical };
+/* per apartment kind: the object (IUnknown/IContextCallback) and its threading-info view */
+static ObjCtx g_ctx_sta = { g_ctx_callback_vtbl, APTTYPE_STA }, g_ctx_mta = { g_ctx_callback_vtbl, APTTYPE_MTA };
+static ObjCtx g_cti_sta = { g_ctx_threading_vtbl, APTTYPE_STA }, g_cti_mta = { g_ctx_threading_vtbl, APTTYPE_MTA };
+
+static HRESULT __stdcall ctx_qi(ObjCtx *This, REFIID riid, void **ppv)
+{
+    if (!ppv) return E_POINTER;
+    int sta = This->type == APTTYPE_STA;
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IContextCallback_)) { *ppv = sta ? &g_ctx_sta : &g_ctx_mta; return S_OK; }
+    if (IsEqualIID(riid, &IID_IComThreadingInfo_)) { *ppv = sta ? &g_cti_sta : &g_cti_mta; return S_OK; }
+    *ppv = 0;
+    return E_NOINTERFACE;
+}
+
+static ObjCtx *current_ctx(void)
+{
+    if (t_inits > 0) return t_model == COINIT_APARTMENTTHREADED ? &g_ctx_sta : &g_ctx_mta;
+    return g_mta_usage > 0 ? &g_ctx_mta : 0;
+}
+
 WINOLEAPI_(HRESULT) CoGetContextToken(ULONG_PTR *token)
 {
     if (!token) return E_POINTER;
-    if (t_inits <= 0 && g_mta_usage <= 0) return CO_E_NOTINITIALIZED;
-    *token = (ULONG_PTR)&t_inits;       /* one context per thread */
+    ObjCtx *c = current_ctx();
+    if (!c) { *token = 0; return CO_E_NOTINITIALIZED; }
+    *token = (ULONG_PTR)c;
     return S_OK;
 }
 
@@ -802,3 +851,36 @@ WINOLEAPI_(HRESULT) PropVariantCopy(PROPVARIANT_ *dst, const PROPVARIANT_ *src)
     }
     return S_OK;
 }
+
+/* -----------------------------------------------------------------------
+ * For the .NET runtime's COM interop: initialize spies are accepted (and
+ * never called), and there is no marshaling across apartments
+ * ----------------------------------------------------------------------- */
+WINOLEAPI_(HRESULT) CoRegisterInitializeSpy(IUnknown *spy, ULARGE_INTEGER *cookie)
+{
+    static LONG next;
+    if (!spy || !cookie) return E_INVALIDARG;
+    cookie->QuadPart = (ULONGLONG)InterlockedIncrement(&next);
+    return S_OK;
+}
+WINOLEAPI_(HRESULT) CoRevokeInitializeSpy(ULARGE_INTEGER cookie) { (void)cookie; return S_OK; }
+WINOLEAPI_(HRESULT) CoGetObjectContext(REFIID riid, LPVOID *ppv)
+{
+    if (!ppv) return E_POINTER;
+    ObjCtx *c = current_ctx();
+    if (!c) { *ppv = 0; return CO_E_NOTINITIALIZED; }
+    return ctx_qi(c, riid, ppv);
+}
+WINOLEAPI_(HRESULT) CoCreateFreeThreadedMarshaler(IUnknown *outer, IUnknown **marshal)
+{
+    (void)outer;
+    if (marshal) *marshal = 0;
+    return E_NOTIMPL;
+}
+WINOLEAPI_(HRESULT) CoGetMarshalSizeMax(ULONG *size, REFIID riid, IUnknown *unk, DWORD ctx, LPVOID pv, DWORD flags)
+{
+    (void)riid; (void)unk; (void)ctx; (void)pv; (void)flags;
+    if (size) *size = 0;
+    return E_NOTIMPL;
+}
+WINOLEAPI_(HRESULT) CoReleaseMarshalData(IStream *stm) { (void)stm; return E_NOTIMPL; }

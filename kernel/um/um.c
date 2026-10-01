@@ -573,6 +573,8 @@ typedef struct {
     Image      img[UM_MAX_MODULES];
     char      *err;
     int        err_cap;
+    bool       data;                /* LoadLibraryEx(LOAD_LIBRARY_AS_DATAFILE / AS_IMAGE_RESOURCE) */
+    RamNode   *dep_dir;             /* the folder of the module whose imports are being loaded */
 } Loader;
 
 static UINT16 rd16(const UINT8 *b) { return (UINT16)(b[0] | b[1] << 8); }
@@ -712,14 +714,24 @@ static bool known_dll(const char *name)
     return false;
 }
 
-static RamNode *find_dll(UmProcess *p, const char *name)
+/* (@dep_dir: the folder of the DLL that imports @name, searched after the
+ * program's, as LoadLibraryEx(LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR) does; a
+ * path without an extension gets ".dll", as LoadLibrary adds it) */
+static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
 {
     if (strchr(name, '\\') || strchr(name, ':')) {
         char path[RAMFS_PATH_MAX];
-        strncpy(path, name, sizeof(path) - 1);
-        path[sizeof(path) - 1] = '\0';
+        strncpy(path, name, sizeof(path) - 5);
+        path[sizeof(path) - 5] = '\0';
         um_wow_path(p, path);
         RamNode *n = RamfsResolve(p->cwd, path[1] == ':' ? path + 2 : path);
+        if (!n) {
+            const char *leaf = strrchr(path, '\\');
+            if (!strchr(leaf ? leaf : path, '.')) {
+                strcat(path, ".dll");
+                n = RamfsResolve(p->cwd, path[1] == ':' ? path + 2 : path);
+            }
+        }
         return n && !n->dir ? n : NULL;
     }
     RamNode *sys = RamfsResolve(NULL, p->wow ? "\\Windows\\SysWOW64" : "\\Windows\\System32");
@@ -727,6 +739,10 @@ static RamNode *find_dll(UmProcess *p, const char *name)
     if (n && !n->dir && known_dll(name)) return n;
     if (p->exe_dir) {
         RamNode *a = RamfsFind(p->exe_dir, name);
+        if (a && !a->dir && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
+    }
+    if (dep_dir && dep_dir != p->exe_dir) {
+        RamNode *a = RamfsFind(dep_dir, name);
         if (a && !a->dir && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
     }
     return n && !n->dir ? n : NULL;
@@ -803,6 +819,19 @@ static void map_api_set(char *lname, int cap)
         }
 }
 
+/* Whether the .NET header at @rva (IMAGE_COR20_HEADER) says IL only */
+static bool il_only(const UINT8 *f, UINT32 fsz, const UINT8 *sec, int nsec, UINT32 rva)
+{
+    for (int i = 0; i < nsec; i++) {
+        const UINT8 *s = sec + 40 * i;
+        UINT32 va = rd32(s + 12), vsz = rd32(s + 8), raw = rd32(s + 16), ptr = rd32(s + 20);
+        if (rva < va || rva >= va + (vsz > raw ? vsz : raw)) continue;
+        UINT32 off = ptr + (rva - va);
+        return off + 20 <= fsz && (rd32(f + off + 16) & 1);       /* COMIMAGE_FLAGS_ILONLY */
+    }
+    return false;
+}
+
 /* Load @file (or the DLL @name when file is NULL); returns the module index. */
 static int load_module(Loader *L, RamNode *file, const char *name, int depth)
 {
@@ -820,7 +849,7 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
     if (p->nmodules >= UM_MAX_MODULES) return fail(L, "Too many DLLs (at %s)", name);
 
     if (!file) {
-        file = find_dll(p, strchr(name, '\\') || strchr(name, ':') ? name : lname);
+        file = find_dll(p, strchr(name, '\\') || strchr(name, ':') ? name : lname, L->dep_dir);
         if (!file) return fail(L, "The DLL %s was not found", name);
     }
     const UINT8 *f = (const UINT8 *)file->data;
@@ -833,20 +862,25 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
     UINT16 machine = rd16(fh);
     bool pe32 = machine == 0x014C;
     if (machine != 0x014C && machine != 0x8664) return fail(L, "%s is not an x86 or x64 program", name);
-    if (pe32 != p->wow)
-        return fail(L, pe32 ? "%s is a 32-bit (x86) module and cannot be loaded into a 64-bit program"
-                            : "%s is a 64-bit (x64) module and cannot be loaded into a 32-bit program", name);
     if (rd16(oh) != (pe32 ? 0x10B : 0x20B)) return fail(L, "%s has an invalid optional header", name);
     UINT16 nsec = rd16(fh + 2), opt_size = rd16(fh + 16), chars = rd16(fh + 18);
     UINT32 size = rd32(oh + 56), hdr = rd32(oh + 60), ndirs = rd32(oh + (pe32 ? 92 : 108));
     UINT64 pref = pe32 ? rd32(oh + 28) : rd64(oh + 24);
-    if (!size || size > 64 * 1024 * 1024 || hdr > fsz || hdr > size)
+    if (!size || size > RAMFS_FILE_MAX || hdr > fsz || hdr > size)
         return fail(L, "%s has an invalid image size", name);
     const UINT8 *sec = oh + opt_size;
     if ((UINT64)(sec - f) + 40ULL * nsec > fsz) return fail(L, "%s has a truncated section table", name);
     const UINT8 *dir = oh + (pe32 ? 96 : 112);
     UINT32 dirv[16] = { 0 }, dirs[16] = { 0 };
     for (UINT32 i = 0; i < ndirs && i < 16; i++) { dirv[i] = rd32(dir + 8 * i); dirs[i] = rd32(dir + 8 * i + 4); }
+    /* A module mapped as data (LoadLibraryEx's AS_DATAFILE / AS_IMAGE_RESOURCE,
+     * or a .NET IL-only assembly of either architecture, as Windows maps
+     * those): sections in place, no imports, no entry point */
+    bool data = depth == 0 && L->data;
+    if (pe32 != p->wow && dirv[14] && il_only(f, fsz, sec, nsec, dirv[14])) data = true;
+    if (pe32 != p->wow && !data)
+        return fail(L, pe32 ? "%s is a 32-bit (x86) module and cannot be loaded into a 64-bit program"
+                            : "%s is a 64-bit (x64) module and cannot be loaded into a 32-bit program", name);
 
     int m = p->nmodules;
     Image *im = &L->img[m];
@@ -869,7 +903,9 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
     /* Choose the load address */
     UINT64 base = pref;
     if (!um_is_free(p, base, im->size)) {
-        if (!dirv[5] || (chars & 0x0001 /* RELOCS_STRIPPED */)) {
+        /* (no relocation table and not RELOCS_STRIPPED: nothing to fix up,
+         * e.g. a resource-only DLL; Windows loads it anywhere too) */
+        if (!data && (chars & 0x0001 /* RELOCS_STRIPPED */)) {
             kfree(im->img); im->img = NULL;
             return fail(L, "%s cannot be relocated and its address is taken", name);
         }
@@ -907,15 +943,17 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
     RamfsPath(file, mod->path, sizeof(mod->path));
     mod->base = base;
     mod->size = im->size;
-    mod->entry = rd32(oh + 16);
-    mod->dll = chars & 0x2000;
+    mod->entry = data ? 0 : rd32(oh + 16);
+    mod->dll = data || (chars & 0x2000);
     if (!mod->dll && depth == 0) {
         UINT64 reserve = pe32 ? rd32(oh + 72) : rd64(oh + 72);
         p->stack_reserve = (UINT32)(reserve > 0xFFFFFFFFu ? 0xFFFFFFFFu : reserve);
     }
 
-    /* Imports */
-    for (UINT32 d = dirv[1]; d && d + 20 <= im->size; d += 20) {
+    /* Imports (found in this module's folder too) */
+    RamNode *outer_dir = L->dep_dir;
+    L->dep_dir = file->parent;
+    for (UINT32 d = data ? 0 : dirv[1]; d && d + 20 <= im->size; d += 20) {
         UINT32 ilt = rd32(im->img + d), nm = rd32(im->img + d + 12), iat = rd32(im->img + d + 16);
         if (!nm && !iat) break;
         if (nm >= im->size) return fail(L, "%s has a corrupt import table", name);
@@ -951,6 +989,7 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
         }
     }
 
+    L->dep_dir = outer_dir;
     /* Commit and copy in; then per-section protection */
     if (!um_commit(p, base, im->size, 0x04) || !um_write(p, base, im->img, im->size))
         return fail(L, "Out of memory loading %s", name);
@@ -991,9 +1030,9 @@ const UmModule *um_module_at(UmProcess *p, UINT64 va)
  * The loader-info page read by ntdll (see NOVA_LDR_INFO in winternl.h):
  *   UINT32 count, UINT32 reserved, then per module in initialization
  *   order: UINT64 base, size; UINT32 entry_rva, flags (1 = DLL);
- *   char name[32], path[96]
+ *   char name[64], path[96]  (64 entries fit the 12 KiB area)
  * ----------------------------------------------------------------------- */
-#define LDR_ENTRY_SIZE 152
+#define LDR_ENTRY_SIZE 184
 
 static bool write_ldr_info(UmProcess *p, int from)
 {
@@ -1005,8 +1044,8 @@ static bool write_ldr_info(UmProcess *p, int from)
         wr64(e + 8, m->size);
         put_u32(e + 16, m->entry);
         put_u32(e + 20, m->dll ? 1 : 0);
-        memcpy(e + 24, m->name, 32);
-        memcpy(e + 56, m->path, 96);
+        memcpy(e + 24, m->name, 64);
+        memcpy(e + 88, m->path, 96);
         if (!um_write(p, p->lay.ldr_info + 8 + (UINT64)i * LDR_ENTRY_SIZE, e, sizeof(e))) return false;
     }
     UINT32 n = (UINT32)p->ninit;
@@ -1027,11 +1066,12 @@ static void unload_since(UmProcess *p, int nmod, int ninit)
     p->ninit = ninit;
 }
 
-UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base)
+UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags)
 {
     char err[128];
     Loader *L = loader_new(p, err, sizeof(err));
     if (!L) return 0xC0000017u;
+    L->data = (flags & 0x62) != 0;          /* LOAD_LIBRARY_AS_DATAFILE(_EXCLUSIVE), AS_IMAGE_RESOURCE */
     DesktopLock();
     um_lock(&p->lock);
     int nmod = p->nmodules, ninit = p->ninit;
@@ -1134,6 +1174,106 @@ static UINT64 put_runtime(UmProcess *p, const UINT8 *data, UINT32 len)
     return ok ? va : 0;
 }
 
+/* -----------------------------------------------------------------------
+ * The default environment: NovaOS's own variables, then the registry's
+ * (the system's, then the user's), as Windows builds it for a new logon.
+ * A block of "NAME=value\0" strings; names compare without case.
+ * ----------------------------------------------------------------------- */
+typedef struct { char *buf; UINT32 len, cap; bool fail; } EnvB;
+
+static int env_name_eq(const char *a, const char *b, UINT32 bn)
+{
+    for (UINT32 i = 0; i < bn; i++) {
+        char x = a[i], y = b[i];
+        if (x >= 'a' && x <= 'z') x -= 32;
+        if (y >= 'a' && y <= 'z') y -= 32;
+        if (x != y || !x) return 0;
+    }
+    return a[bn] == '=';
+}
+static const char *env_get(const EnvB *e, const char *name, UINT32 n)
+{
+    for (UINT32 o = 0; o < e->len; o += (UINT32)strlen(e->buf + o) + 1)
+        if (env_name_eq(e->buf + o, name, n)) return e->buf + o + n + 1;
+    return NULL;
+}
+static void env_set(EnvB *e, const char *name, const char *value)
+{
+    UINT32 n = (UINT32)strlen(name), vl = (UINT32)strlen(value);
+    for (UINT32 o = 0; o < e->len;) {                           /* drop the old one */
+        UINT32 l = (UINT32)strlen(e->buf + o) + 1;
+        if (env_name_eq(e->buf + o, name, n)) { memmove(e->buf + o, e->buf + o + l, e->len - o - l); e->len -= l; }
+        else o += l;
+    }
+    if (e->len + n + vl + 2 > e->cap) {
+        UINT32 cap = (e->len + n + vl + 2) * 2 + 1024;
+        char *b = kmalloc(cap + 1);
+        if (!b) { e->fail = true; return; }
+        if (e->buf) { memcpy(b, e->buf, e->len); kfree(e->buf); }
+        e->buf = b;
+        e->cap = cap;
+    }
+    memcpy(e->buf + e->len, name, n);
+    e->buf[e->len + n] = '=';
+    memcpy(e->buf + e->len + n + 1, value, vl + 1);
+    e->len += n + vl + 2;
+}
+/* %NAME% replaced by the variable's value (left as it is if unset) */
+static void env_expand(const EnvB *e, const char *in, char *out, UINT32 cap)
+{
+    UINT32 o = 0;
+    for (const char *s = in; *s && o < cap - 1;) {
+        const char *end = *s == '%' ? strchr(s + 1, '%') : NULL;
+        const char *v = end && end > s + 1 ? env_get(e, s + 1, (UINT32)(end - s - 1)) : NULL;
+        if (v) {
+            while (*v && o < cap - 1) out[o++] = *v++;
+            s = end + 1;
+        } else out[o++] = *s++;
+    }
+    out[o] = 0;
+}
+typedef struct { EnvB *e; char sys_path[1024], user_path[1024]; } EnvReg;
+static void env_from_registry(void *ctx, const char *name, const char *value, bool user, bool expand)
+{
+    EnvReg *r = ctx;
+    static const char *const own[] = { "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "PATHEXT", NULL };
+    for (int i = 0; own[i]; i++) if (env_name_eq(own[i], name, (UINT32)strlen(name)) && strlen(own[i]) == strlen(name)) return;
+    char v[1024];
+    if (expand) env_expand(r->e, value, v, sizeof(v));
+    else { strncpy(v, value, sizeof(v) - 1); v[sizeof(v) - 1] = 0; }
+    if (env_name_eq("PATH=", name, (UINT32)strlen(name)) && strlen(name) == 4) {     /* Path: system's, then user's */
+        strncpy(user ? r->user_path : r->sys_path, v, sizeof(r->sys_path) - 1);
+        return;
+    }
+    env_set(r->e, name, v);
+}
+static char *default_environment(const char *const *base, UINT32 *len)
+{
+    EnvB e = { 0 };
+    for (int i = 0; base[i]; i++) {
+        const char *eq = strchr(base[i], '=');
+        char name[64];
+        UINT32 n = (UINT32)(eq - base[i]);
+        if (n >= sizeof(name)) continue;
+        memcpy(name, base[i], n);
+        name[n] = 0;
+        env_set(&e, name, eq + 1);
+    }
+    EnvReg r;
+    memset(&r, 0, sizeof(r));
+    r.e = &e;
+    um_registry_environment(env_from_registry, &r);
+    if (r.sys_path[0] || r.user_path[0]) {
+        char path[2100];
+        const char *sp = r.sys_path[0] ? r.sys_path : env_get(&e, "PATH", 4);
+        ksnprintf(path, sizeof(path), "%s%s%s", sp ? sp : "", r.user_path[0] ? ";" : "", r.user_path);
+        env_set(&e, "Path", path);
+    }
+    if (e.fail || !e.buf) { kfree(e.buf); return NULL; }
+    *len = e.len;                                               /* (the closing NUL is added when it is copied) */
+    return e.buf;
+}
+
 static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image_path,
                               const char *cmdline, const char *cwd_path, const UINT64 stdv[3],
                               const char *envp, UINT32 env_len, const UINT8 *runtime, UINT32 runtime_len)
@@ -1175,19 +1315,9 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
         };
         char *def = NULL;
         if (!envp) {
-            UINT32 n = 0;
-            for (int i = 0; env[i]; i++) n += (UINT32)strlen(env[i]) + 1;
-            def = kmalloc(n + 1);
+            def = default_environment(env, &env_len);
             if (!def) ok = false;
-            else {
-                env_len = 0;
-                for (int i = 0; env[i]; i++) {
-                    UINT32 k = (UINT32)strlen(env[i]) + 1;
-                    memcpy(def + env_len, env[i], k);
-                    env_len += k;
-                }
-                envp = def;
-            }
+            else envp = def;
         }
         UINT32 env_bytes = 0;
         UINT64 env_va = ok ? put_environment(p, envp, env_len, &env_bytes) : 0;
@@ -1398,6 +1528,7 @@ static void destroy(UmProcess *p)
     um_release_views(p);
     if (p->con) UmConsoleRelease(p->con);
     kfree(p->stub_names);
+    kfree(p->regions);
     kfree(p);
 }
 
@@ -1460,8 +1591,9 @@ UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsol
     p->pid = um_new_id();
     p->parent_pid = UmCurrent() ? UmCurrent()->pid : 0;
     p->create_time = um_now_100ns();
-    p->pml4 = paging_create_process_pt();
-    if (!p->pml4) { kfree(p); ksnprintf(err, err_cap, "Out of memory"); return NULL; }
+    p->regions = kzalloc(sizeof(UmRegion) * UM_MAX_REGIONS);
+    p->pml4 = p->regions ? paging_create_process_pt() : 0;
+    if (!p->pml4) { kfree(p->regions); kfree(p); ksnprintf(err, err_cap, "Out of memory"); return NULL; }
     p->cwd = cwd ? cwd : RamfsRoot();
     p->exe_dir = exe->parent;
     p->con = um_console_ref(con);
@@ -1818,6 +1950,7 @@ void UmPoll(void)
             ob_unlock(st);
             if (p->con) UmConsoleRelease(p->con);
             kfree(p->stub_names);
+            kfree(p->regions);
             kfree(p);
         }
     }

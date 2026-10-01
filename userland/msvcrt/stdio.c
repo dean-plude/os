@@ -489,6 +489,4 @@ void perror(const char *s)
     fputc('\n', stderr);
 }
 
-/* conio */
-int _getch(void) { return fgetc(stdin); }
-int _kbhit(void) { return 0; }
+/* conio: ucrt_extra.c */

@@ -429,7 +429,6 @@ wint_t fputwc(wchar_t c, FILE *f)
 }
 wint_t putwc(wchar_t c, FILE *f) { return fputwc(c, f); }
 wint_t putwchar(wchar_t c) { return fputwc(c, stdout); }
-wint_t _putwch(wchar_t c) { return fputwc(c, stdout); }
 
 static int g_wpend = -1;                            /* a low surrogate still to return */
 wint_t fgetwc(FILE *f)

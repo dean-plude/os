@@ -18,6 +18,7 @@
  */
 
 #include "um_internal.h"
+#include "../ke/kpcr.h"
 #include "../ke/probe.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
@@ -278,6 +279,29 @@ static void cpu_brand(char *out)
     if (s != out) memmove(out, s, strlen(s) + 1);
 }
 
+/* HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\N: one key per running processor */
+static void add_cpus(UINT32 n)
+{
+    char brand[64];
+    cpu_brand(brand);
+    for (UINT32 i = 0; i < (n ? n : 1) && i < 64; i++) {
+        char path[80];
+        ksnprintf(path, sizeof(path), "Machine\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\%u", (unsigned)i);
+        RegKey *cpu = kpath(path, true);
+        kset_sz(cpu, "ProcessorNameString", brand, 1);
+        kset_sz(cpu, "Identifier", "Intel64 Family 6", 1);
+        kset_dword(cpu, "~MHz", 2000);
+    }
+}
+
+/* Once the other processors are running */
+void um_registry_add_cpus(UINT32 n)
+{
+    um_lock(&g_reg);
+    add_cpus(n);
+    um_unlock(&g_reg);
+}
+
 static void defaults(void)
 {
     /* HKLM\SOFTWARE */
@@ -322,7 +346,7 @@ static void defaults(void)
     RegKey *env = kpath("Machine\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", false);
     if (!has_value(env, "Path")) {
         kset_sz(env, "Path", "C:\\Programs;C:\\Windows\\System32", 2);
-        kset_sz(env, "PATHEXT", ".EXE", 1);
+        kset_sz(env, "PATHEXT", ".COM;.EXE;.BAT;.CMD", 1);
         kset_sz(env, "OS", "NovaOS", 1);
         kset_sz(env, "PROCESSOR_ARCHITECTURE", "AMD64", 1);
         kset_sz(env, "NUMBER_OF_PROCESSORS", "1", 1);
@@ -339,12 +363,7 @@ static void defaults(void)
     kpath("Machine\\SYSTEM\\CurrentControlSet\\Services", false);
 
     /* HKLM\HARDWARE: rebuilt every boot */
-    RegKey *cpu = kpath("Machine\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", true);
-    char brand[64];
-    cpu_brand(brand);
-    kset_sz(cpu, "ProcessorNameString", brand, 1);
-    kset_sz(cpu, "Identifier", "Intel64 Family 6", 1);
-    kset_dword(cpu, "~MHz", 2000);
+    add_cpus(1);                           /* the others once they start */
     RegKey *bios = kpath("Machine\\HARDWARE\\DESCRIPTION\\System\\BIOS", true);
     kset_sz(bios, "SystemManufacturer", "QEMU", 1);
     kset_sz(bios, "SystemProductName", "NovaOS PC", 1);
@@ -951,4 +970,43 @@ void um_registry_syscalls_init(void)
     um_install(SYSCALL_NtQueryKey,         sys_query_key);
     um_install(SYSCALL_NtFlushKey,         sys_flush_key);
     um_install(SYSCALL_NtRenameKey,        sys_rename_key);
+}
+
+/* -----------------------------------------------------------------------
+ * The environment new processes start with (Windows' CreateEnvironmentBlock):
+ * HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment,
+ * then the user's HKCU\Environment.  @cb gets each value (UTF-8) with
+ * whether it came from the user's key and is REG_EXPAND_SZ.
+ * ----------------------------------------------------------------------- */
+static void env_key(const char *path, bool user, void (*cb)(void *, const char *, const char *, bool, bool), void *ctx)
+{
+    UINT16 w[256];
+    UINT32 n = 0;
+    for (; path[n] && n < 255; n++) w[n] = (UINT8)path[n];
+    RegKey *k = NULL;
+    if (walk(g_root, w, n, false, false, &k, NULL) != ST_SUCCESS || !k) return;
+    for (RegValue *v = k->values; v; v = v->next) {
+        if ((v->type != 1 && v->type != 2) || !v->nlen) continue;
+        char name[128], val[1024];
+        UINT32 i = 0, o = 0;
+        for (; i < v->nlen && i < 127; i++) name[i] = v->name[i] < 0x80 ? (char)v->name[i] : '?';
+        name[i] = 0;
+        const UINT16 *d = (const UINT16 *)v->data;
+        for (i = 0; i < v->len / 2 && d[i] && o < sizeof(val) - 4; i++) {
+            UINT32 c = d[i];
+            if (c < 0x80) val[o++] = (char)c;
+            else if (c < 0x800) { val[o++] = (char)(0xC0 | c >> 6); val[o++] = (char)(0x80 | (c & 0x3F)); }
+            else { val[o++] = (char)(0xE0 | c >> 12); val[o++] = (char)(0x80 | ((c >> 6) & 0x3F)); val[o++] = (char)(0x80 | (c & 0x3F)); }
+        }
+        val[o] = 0;
+        cb(ctx, name, val, user, v->type == 2);
+    }
+}
+
+void um_registry_environment(void (*cb)(void *, const char *, const char *, bool, bool), void *ctx)
+{
+    um_lock(&g_reg);
+    env_key("Machine\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", false, cb, ctx);
+    env_key("User\\" USER_SID "\\Environment", true, cb, ctx);
+    um_unlock(&g_reg);
 }
