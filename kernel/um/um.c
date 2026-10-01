@@ -1832,6 +1832,25 @@ void UmFault(UINT32 status, UINT64 rip, UINT64 addr)
     UmFaultAt(status, rip, addr, 0);
 }
 
+/* The return addresses on a user stack from @sp (serial log only) */
+void um_log_stack(UmProcess *p, UINT64 sp)
+{
+    if (!sp) return;
+    int shown = 0, bad = 0;
+    unsigned step = p->wow ? 4 : 8;
+    for (unsigned i = 0; i < 4096 && shown < 24; i++) {
+        UINT64 v = 0;
+        if (!NT_SUCCESS(CopyFromUser(&v, (const void *)(uintptr_t)(sp + i * step), step))) {
+            if (++bad > 1024) break;                /* (it may start below the stack) */
+            continue;
+        }
+        const UmModule *cm = um_module_at(p, v);
+        if (!cm || v - cm->base < 0x1000) continue;
+        kprintf("[UM]   stack +%04x: %s+0x%llx\n", i * step, cm->name, (unsigned long long)(v - cm->base));
+        shown++;
+    }
+}
+
 /* As UmFault; @sp (0: unknown) is the stack pointer at the fault, which
  * names the caller when the program jumped to a bad address */
 void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
@@ -1864,23 +1883,7 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
                               (unsigned long long)(ret - cm->base));
         }
         kprintf("[UM] %s (PID %u) %s%s\n", p->name, p->pid, p->why, caller);
-        /* the return addresses on the stack (serial log only): where it came from */
-        if (sp) {
-            int shown = 0;
-            unsigned step = p->wow ? 4 : 8;
-            int bad = 0;
-            for (unsigned i = 0; i < 4096 && shown < 24; i++) {
-                UINT64 v = 0;
-                if (!NT_SUCCESS(CopyFromUser(&v, (const void *)(uintptr_t)(sp + i * step), step))) {
-                    if (++bad > 1024) break;                /* (it may start below the stack) */
-                    continue;
-                }
-                const UmModule *cm = um_module_at(p, v);
-                if (!cm || v - cm->base < 0x1000) continue;
-                kprintf("[UM]   stack +%04x: %s+0x%llx\n", i * step, cm->name, (unsigned long long)(v - cm->base));
-                shown++;
-            }
-        }
+        um_log_stack(p, sp);                        /* where it came from (serial log only) */
     }
     um_exit_process(status);
 }

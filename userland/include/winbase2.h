@@ -313,6 +313,7 @@ WINBASEAPI BOOL   WINAPI SetWaitableTimer(HANDLE t, const LARGE_INTEGER *due, LO
 WINBASEAPI BOOL   WINAPI CancelWaitableTimer(HANDLE t);
 /* wait on address */
 WINBASEAPI BOOL   WINAPI WaitOnAddress(volatile VOID *addr, PVOID cmp, SIZE_T size, DWORD ms);
+WINBASEAPI BOOL   WINAPI CompareObjectHandles(HANDLE first, HANDLE second);
 WINBASEAPI VOID   WINAPI WakeByAddressSingle(PVOID addr);
 WINBASEAPI VOID   WINAPI WakeByAddressAll(PVOID addr);
 /* interlocked singly linked lists */

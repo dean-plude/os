@@ -1320,9 +1320,9 @@ WINBASEAPI DWORD WINAPI GetFullPathNameW(LPCWSTR name, DWORD n, LPWSTR buf, LPWS
 
 static BOOL attr_data(const char *name, WIN32_FILE_ATTRIBUTE_DATA *d)
 {
-    memset(d, 0, sizeof(*d));
     DWORD a = GetFileAttributesA(name);
-    if (a == INVALID_FILE_ATTRIBUTES) return FALSE;
+    if (a == INVALID_FILE_ATTRIBUTES) return FALSE;  /* (the caller's buffer stays as it was, as on Windows) */
+    memset(d, 0, sizeof(*d));
     d->dwFileAttributes = a;
     if (!(a & FILE_ATTRIBUTE_DIRECTORY)) {
         HANDLE h = CreateFileA(name, 0, 7, 0, OPEN_EXISTING, 0, 0);

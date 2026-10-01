@@ -549,6 +549,25 @@ static UINT64 sys_close(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return um_close_handle(a1);
 }
 
+/* NtCompareObjects(HANDLE First, HANDLE Second): whether two handles stand
+ * for the same object (CompareObjectHandles) */
+static UINT64 sys_compare_objects(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    if (a1 == a2) return ST_SUCCESS;
+    UmProcess *p = UmCurrent();
+    um_lock(&p->lock);
+    UmHandle *x = handle(p, a1), *y = handle(p, a2);
+    UINT64 r;
+    if (!x || !y) r = ST_INVALID_HANDLE;
+    else if (x->kind != y->kind) r = UM_STATUS_NOT_SAME_OBJECT;
+    else if (x->kind == H_OBJECT) r = x->obj == y->obj ? ST_SUCCESS : UM_STATUS_NOT_SAME_OBJECT;
+    else if (x->kind == H_FILE || x->kind == H_DIR) r = x->node == y->node ? ST_SUCCESS : UM_STATUS_NOT_SAME_OBJECT;
+    else r = ST_SUCCESS;                        /* the console's input or output, NUL */
+    um_unlock(&p->lock);
+    return r;
+}
+
 UINT64 um_close_handle(UINT64 a1)
 {
     UmProcess *p = UmCurrent();
@@ -1675,6 +1694,13 @@ static UINT64 sys_terminate_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         um_ob_unref(o);
         return ST_SUCCESS;
     }
+    /* the C runtime's fail-fast ends (an invalid parameter, a security check):
+     * log where from, as for a crash */
+    if ((UINT32)a2 == 0xC0000417u || (UINT32)a2 == 0xC0000409u) {
+        UmThread *t = UmCurrentThread();
+        kprintf("[UM] %s (PID %u) ended itself with status 0x%08x\n", p->name, p->pid, (UINT32)a2);
+        if (t && t->kt) um_log_stack(p, t->kt->user_rsp);
+    }
     um_exit_process((UINT32)a2);
 }
 
@@ -2106,6 +2132,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtCreateFile,               sys_create_file);
     um_install(SYSCALL_NtOpenFile,                 sys_open_file);
     um_install(SYSCALL_NtClose,                    sys_close);
+    um_install(SYSCALL_NtCompareObjects,           sys_compare_objects);
     um_install(SYSCALL_NtReadFile,                 sys_read_file);
     um_install(SYSCALL_NtWriteFile,                sys_write_file);
     um_install(SYSCALL_NtQueryInformationFile,     sys_query_info_file);

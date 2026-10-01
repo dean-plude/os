@@ -55,6 +55,7 @@ typedef struct {
 /* NTSTATUS values used here */
 #define UM_STATUS_CONTROL_C_EXIT   0xC000013Au
 #define UM_STATUS_ACCESS_VIOLATION 0xC0000005u
+#define UM_STATUS_NOT_SAME_OBJECT  0xC00001ACu
 
 /* A recursive lock that waits by yielding (never held across user code) */
 typedef struct {
@@ -280,6 +281,7 @@ UmObject  *um_open_thread(UINT32 tid);           /* OpenThread: referenced, or N
 void       um_pipe_end_name(UmObject *o, char *buf, int cap); /* um_pipe.c: a pipe end's pipe name */
 void       um_object_name(UmObject *o, char *buf, int cap);   /* um_thread.c: a named object's name */
 UINT64     um_close_handle(UINT64 h);           /* NtClose for the current process */
+void       um_log_stack(UmProcess *p, UINT64 sp);   /* return addresses from @sp to the serial log */
 /* How a new process starts: standard handles (kind H_FREE = the console),
  * handles it inherits (at the same values; NULL: none) and its
  * environment (UTF-8 "NAME=value" strings, then an empty one; NULL: the

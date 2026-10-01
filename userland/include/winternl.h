@@ -288,6 +288,7 @@ NTSYSAPI NTSTATUS NTAPI NtReleaseSemaphore(HANDLE h, LONG count, PLONG prev);
 NTSYSAPI NTSTATUS NTAPI NtWaitForSingleObject(HANDLE h, BOOLEAN alertable, PLARGE_INTEGER timeout);
 NTSYSAPI NTSTATUS NTAPI NtWaitForMultipleObjects(ULONG n, const HANDLE *h, WAIT_TYPE type, BOOLEAN alertable,
                                                  PLARGE_INTEGER timeout);
+NTSYSAPI NTSTATUS NTAPI NtCompareObjects(HANDLE first, HANDLE second);
 NTSYSAPI NTSTATUS NTAPI NtDuplicateObject(HANDLE sp, HANDLE src, HANDLE tp, PHANDLE dst, ULONG access,
                                           ULONG attrs, ULONG options);
 /* Exceptions */
