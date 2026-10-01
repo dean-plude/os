@@ -68,6 +68,13 @@ static UINT8 mouse_cmd(UINT8 c)
 
 bool ps2_init(void)
 {
+    /* No controller (USB-only machines, or QEMU with i8042=off): the
+     * status port floats to all ones */
+    if (inb(PS2_STATUS) == 0xFF) {
+        kprintf("[PS2] No controller\n");
+        return false;
+    }
+
     /* Disable both ports while we configure. */
     ctrl_cmd(CMD_DISABLE_P1);
     ctrl_cmd(CMD_DISABLE_P2);

@@ -122,6 +122,8 @@ set(KERNEL_C_SOURCES
     hal/pci.c
     drivers/e1000.c
     drivers/ahci.c
+    drivers/xhci.c
+    drivers/usbhid.c
     fs/block.c
     fs/fat.c
     fs/ntfs.c

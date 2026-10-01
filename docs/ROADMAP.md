@@ -107,7 +107,9 @@ named program or test demonstrates it.
 - ~~NTFS read~~ Done: NTFS volumes mount read-only as drives D:, E:, ...;
   NTFS write, NVMe.
 - IPv6, HTTP/2.
-- USB (xHCI) with HID keyboards and mice, for real hardware without PS/2.
+- ~~USB (xHCI) with HID keyboards and mice~~ Done: boot-protocol keyboards
+  and mice on xHCI root ports, with hot-plug; USB hubs, absolute pointers
+  (tablets, touch screens), report-protocol HID, mass storage.
 - ACPI beyond the MADT: power management, proper shutdown and reboot on
   real machines; HPET or TSC-deadline timers.
 - Boot and test on real hardware, not only QEMU.
