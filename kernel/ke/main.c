@@ -71,6 +71,8 @@
 #include "../fs/setup.h"
 #include "../fs/ramfs.h"
 #include "../hal/pci.h"
+#include "../drivers/xhci.h"
+#include "../hal/acpi.h"
 #include "../net/net.h"
 #include "../um/um.h"
 #include "kpcr.h"
@@ -207,6 +209,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     kprintf("=== Phase 1: Memory Manager ===\n");
     pmm_init(info);
     smp_early(info);                      /* before the memory map can be reused */
+    UINT64 rsdp = info->rsdp_physical;    /* for AcpiInitialize, once paging is up */
     SetupBootInfo(info);                  /* installation media (booted from the disc) */
 
     kprintf("=== Phase 1: Paging ===\n");
@@ -364,6 +367,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
 
     /* Devices and networking: PCI scan, e1000 NIC, lwIP + DHCP */
     PciInitialize();
+    AcpiInitialize(rsdp);                 /* power-off, reset, the power button; MADT for SMP */
     PersistInit();                        /* SATA disks; the volume that keeps drive C: */
     DrivesInit();                         /* their NTFS volumes: drives D:, E:, ... */
     if (!NetInitialize())
@@ -385,6 +389,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
         /* Phase 8: input plumbing + interactive desktop event loop. */
         InputInit();
         ps2_init();
+        XhciInit();                       /* USB keyboards and mice */
         sched_create_thread("desktop", DesktopRun, NULL, 8);
         kprintf_set_fb_enabled(false);    /* WM owns the screen; logs → serial */
         kprintf("[NovaOS] Desktop event loop started (%dx%d)\n",

@@ -427,6 +427,36 @@ static void blit(NOVA_DC *dd, int x, int y, int w, int h, NOVA_DC *sd, int sx, i
     }
 }
 
+static void flush_window(NOVA_DC *d, int x, int y, int w, int h);
+
+/* An unscaled copy between two 32-bit DCs, a row at a time (presenting
+ * frames: Vulkan's software swap chain blits its DIB to the window) */
+static void blit_fast(NOVA_DC *dd, int x, int y, int w, int h, NOVA_DC *sd, int sx, int sy)
+{
+    RECT r = { x + dd->org_x, y + dd->org_y, x + dd->org_x + w, y + dd->org_y + h };
+    if (!dev_clip(dd, &r)) return;
+    int dx = sx + sd->org_x - (x + dd->org_x), dy = sy + sd->org_y - (y + dd->org_y);
+    if (r.left + dx < 0) r.left = -dx;
+    if (r.top + dy < 0) r.top = -dy;
+    if (r.right + dx > sd->w) r.right = sd->w - dx;
+    if (r.bottom + dy > sd->h) r.bottom = sd->h - dy;
+    if (r.left >= r.right) return;
+    for (int ty = r.top; ty < r.bottom; ty++) {
+        const DWORD *s = pixel_at(sd, r.left + dx, ty + dy);
+        DWORD *t = pixel_at(dd, r.left, ty);
+        int n = r.right - r.left;
+        if (sd->fmt == dd->fmt) memcpy(t, s, (size_t)n * 4);
+        else
+            for (int i = 0; i < n; i++) t[i] = to_native(dd, from_native(sd, s[i]));
+    }
+}
+
+/* Can blit() take the row-copy path? */
+static int can_fast(NOVA_DC *dd, int w, int h, NOVA_DC *sd, int sw, int sh, DWORD rop)
+{
+    return sd && dd->bits && sd->bits && sd->bits != dd->bits && w > 0 && h > 0 && w == sw && h == sh && rop == SRCCOPY && !dd->rop2;
+}
+
 GDIAPI BOOL BitBlt(HDC dst, int x, int y, int w, int hh, HDC src, int sx, int sy, DWORD rop)
 {
     NOVA_DC *dd = dc_of(dst);
@@ -435,7 +465,13 @@ GDIAPI BOOL BitBlt(HDC dst, int x, int y, int w, int hh, HDC src, int sx, int sy
         fill(dd, x, y, x + w, y + hh, rop == WHITENESS ? 0xFFFFFF : rop == PATCOPY ? dd->brush_color : 0);
         return TRUE;
     }
-    blit(dd, x, y, w, hh, dc_of(src), sx, sy, w, hh);
+    NOVA_DC *sd = dc_of(src);
+    if (can_fast(dd, w, hh, sd, w, hh, rop)) {
+        blit_fast(dd, x, y, w, hh, sd, sx, sy);
+        flush_window(dd, x, y, w, hh);
+        return TRUE;
+    }
+    blit(dd, x, y, w, hh, sd, sx, sy, w, hh);
     return TRUE;
 }
 
@@ -444,7 +480,10 @@ GDIAPI BOOL StretchBlt(HDC dst, int x, int y, int w, int h, HDC src, int sx, int
     NOVA_DC *dd = dc_of(dst);
     if (!dd) return FALSE;
     if (!src) return PatBlt(dst, x, y, w, h, rop);
-    blit(dd, x, y, w, h, dc_of(src), sx, sy, sw, sh);
+    NOVA_DC *sd = dc_of(src);
+    if (can_fast(dd, w, h, sd, sw, sh, rop)) blit_fast(dd, x, y, w, h, sd, sx, sy);
+    else blit(dd, x, y, w, h, sd, sx, sy, sw, sh);
+    flush_window(dd, x, y, w, h);
     return TRUE;
 }
 

@@ -70,8 +70,9 @@ named program or test demonstrates it.
 - ~~**OpenGL**: a working `opengl32.dll`~~ Done: Mesa's llvmpipe from the
   App Store is the system `opengl32.dll` (OpenGL 4.5, 64- and 32-bit); see
   [OpenGL](HISTORY.md#opengl-mesa-as-the-system-opengl32dll).
-- Direct3D (at least enough for programs that probe it and fall back),
-  DXGI.
+- ~~**Direct3D**, DXGI~~ Done: DXVK from the App Store is the system
+  Direct3D 8–11 on Mesa's lavapipe Vulkan, through NovaOS's own
+  `vulkan-1.dll`; see [Direct3D](HISTORY.md#direct3d-dxvk-on-mesas-vulkan).
 - ~~**Audio**: `winmm` wave output and WASAPI over a real sound device
   (QEMU's Intel HDA)~~ Done; see [Sound](HISTORY.md#sound-intel-hd-audio-winmm-and-wasapi).
   Still open: recording (`waveIn`, capture endpoints), `dsound.dll`
@@ -111,9 +112,13 @@ named program or test demonstrates it.
 - ~~NTFS read~~ Done: NTFS volumes mount read-only as drives D:, E:, ...;
   NTFS write, NVMe.
 - IPv6, HTTP/2.
-- USB (xHCI) with HID keyboards and mice, for real hardware without PS/2.
-- ACPI beyond the MADT: power management, proper shutdown and reboot on
-  real machines; HPET or TSC-deadline timers.
+- ~~USB (xHCI) with HID keyboards and mice~~ Done: boot-protocol keyboards
+  and mice on xHCI root ports, with hot-plug.  Still to do: USB hubs, absolute pointers
+  (tablets, touch screens), report-protocol HID, mass storage.
+- ACPI beyond the MADT: ~~shutdown and reboot~~ Done: power-off (S5),
+  reset and the fixed power button from the FADT and `\_S5`, without an AML
+  interpreter.  Still to do: sleep (S3), batteries and lid, control-method
+  power buttons (these need AML); HPET or TSC-deadline timers.
 - Boot and test on real hardware, not only QEMU.
 
 ---

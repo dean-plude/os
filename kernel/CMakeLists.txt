@@ -120,10 +120,13 @@ set(KERNEL_C_SOURCES
     hal/rtc.c
     hal/ps2.c
     hal/pci.c
+    hal/acpi.c
     drivers/e1000.c
     drivers/ahci.c
     drivers/hda.c
     drivers/audio.c
+    drivers/xhci.c
+    drivers/usbhid.c
     fs/block.c
     fs/fat.c
     fs/ntfs.c

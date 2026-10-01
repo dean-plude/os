@@ -145,8 +145,21 @@ WINADVAPI BOOL WINAPI IsTextUnicode(const void *buf, int n, LPINT result)
 }
 
 WINADVAPI BOOL WINAPI GetCurrentHwProfileW(PVOID info) { (void)info; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return FALSE; }
+/* InitiateSystemShutdown: this machine only, at once (no countdown to
+ * abort), saving drive C: first */
 WINADVAPI BOOL WINAPI InitiateSystemShutdownExW(LPWSTR m, LPWSTR msg, DWORD t, BOOL f, BOOL r, DWORD reason)
-{ (void)m; (void)msg; (void)t; (void)f; (void)r; (void)reason; SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+{
+    (void)m; (void)msg; (void)t; (void)f; (void)reason;
+    return NtShutdownSystem(r ? 1 : 2) == 0;
+}
+WINADVAPI BOOL WINAPI InitiateSystemShutdownExA(LPSTR m, LPSTR msg, DWORD t, BOOL f, BOOL r, DWORD reason)
+{ (void)m; (void)msg; return InitiateSystemShutdownExW(NULL, NULL, t, f, r, reason); }
+WINADVAPI BOOL WINAPI InitiateSystemShutdownW(LPWSTR m, LPWSTR msg, DWORD t, BOOL f, BOOL r)
+{ return InitiateSystemShutdownExW(m, msg, t, f, r, 0); }
+WINADVAPI BOOL WINAPI InitiateSystemShutdownA(LPSTR m, LPSTR msg, DWORD t, BOOL f, BOOL r)
+{ (void)m; (void)msg; return InitiateSystemShutdownExW(NULL, NULL, t, f, r, 0); }
+WINADVAPI BOOL WINAPI AbortSystemShutdownW(LPWSTR m) { (void)m; SetLastError(ERROR_NO_SHUTDOWN_IN_PROGRESS); return FALSE; }
+WINADVAPI BOOL WINAPI AbortSystemShutdownA(LPSTR m) { (void)m; SetLastError(ERROR_NO_SHUTDOWN_IN_PROGRESS); return FALSE; }
 
 WINADVAPI BOOL WINAPI QueryServiceStatusEx(SC_HANDLE s, int level, LPBYTE buf, DWORD n, LPDWORD need)
 {
@@ -168,3 +181,11 @@ static DWORD entries_in_acl(PACL *out)
 }
 WINADVAPI DWORD WINAPI SetEntriesInAclA(ULONG n, void *entries, PACL old, PACL *out) { (void)n; (void)entries; (void)old; return entries_in_acl(out); }
 WINADVAPI DWORD WINAPI SetEntriesInAclW(ULONG n, void *entries, PACL old, PACL *out) { (void)n; (void)entries; (void)old; return entries_in_acl(out); }
+
+NTSYSAPI NTSTATUS NTAPI NtAllocateLocallyUniqueId(PLUID luid);
+WINADVAPI BOOL WINAPI AllocateLocallyUniqueId(PLUID luid)
+{
+    if (!luid) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    NtAllocateLocallyUniqueId(luid);
+    return TRUE;
+}

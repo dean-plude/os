@@ -79,6 +79,9 @@ DLLS = [
     ('sensapi',  ['ws2_32', 'kernel32', 'ntdll'], 0x7FFC80000000),
     ('wininet',  ['kernel32', 'ntdll'],           0x7FFC90000000),
     ('msimg32',  ['gdi32', 'kernel32', 'ntdll'],  0x7FFCA0000000),
+    ('cfgmgr32', ['advapi32', 'kernel32', 'ntdll'], 0x7FFCB0000000),
+    ('dxgi',     ['kernel32', 'ntdll'],           0x7FFCC0000000),
+    ('vulkan-1', ['advapi32', 'kernel32', 'ntdll'], 0x7FFCD0000000),
     ('mmdevapi', ['ole32', 'kernel32', 'ntdll'],  0x7FFCE0000000),
     ('avrt',     ['kernel32', 'ntdll'],           0x7FFCF0000000),
 ]
@@ -90,7 +93,7 @@ PROGRAMS_X86 = {'hello', 'crttest', 'filetest', 'threads', 'dlltest', 'apitest',
                 'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh', 'cmd', 'pipetest',
                 'find', 'findstr', 'sort', 'more', 'timeout', 'cliptest', 'soundtest'}
 # programs that live in C:\Windows\System32 rather than C:\Programs
-SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'timeout'}
+SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'timeout', 'shutdown'}
 UCRT_BASE = 0x7FFA28000000
 # DLLs built from more than their own directory
 DLL_SOURCES = {

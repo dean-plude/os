@@ -727,6 +727,7 @@ NTSTATUS NTAPI NtOpenKeyEx(PHANDLE key, ACCESS_MASK access, POBJECT_ATTRIBUTES o
 
 NTSTATUS NTAPI NtDeleteKey(HANDLE key) { return SC(NtDeleteKey, H(key)); }
 NTSTATUS NTAPI NtFlushKey(HANDLE key)  { return SC(NtFlushKey, H(key)); }
+NTSTATUS NTAPI NtShutdownSystem(ULONG action) { return SC(NtShutdownSystem, U(action)); }
 
 NTSTATUS NTAPI NtSetValueKey(HANDLE key, PUNICODE_STRING name, ULONG title, ULONG type, PVOID data, ULONG size)
 {

@@ -33,5 +33,11 @@ bool PciFindClass(UINT8 class_code, UINT8 subclass, UINT8 prog_if, int index, Pc
 /* Physical base address of a memory BAR (handles 64-bit BARs). */
 UINT64 PciBarAddress(const PciDevice *d, int bar);
 
+/* Kernel address of a memory BAR's registers.  BARs inside the 64 GiB
+ * physmap are reached through it; firmware often places 64-bit BARs far
+ * above that (OVMF: at 512 GiB and up), so those get mapped, uncached,
+ * into a window after the physmap.  NULL for an I/O or unassigned BAR. */
+volatile void *PciMapBar(const PciDevice *d, int bar);
+
 /* Turn on memory-space decoding and bus mastering (for DMA). */
 void PciEnableDevice(const PciDevice *d);

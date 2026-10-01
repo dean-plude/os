@@ -22,6 +22,7 @@
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/apic.h"
 #include "../wm/clipboard.h"
+#include "../wm/desktop.h"
 
 #define ST_SUCCESS                 0x00000000u
 #define ST_PENDING                 0x00000103u
@@ -1734,6 +1735,18 @@ UINT64 um_now_100ns(void)
     return g_boot_time + (sched_ticks() - g_boot_ticks) * 100000ULL;
 }
 
+/* NtShutdownSystem(SHUTDOWN_ACTION Action): ShutdownNoReboot (0) and
+ * ShutdownPowerOff (2) power off, ShutdownReboot (1) restarts.  The
+ * desktop loop saves drive C: and does it, so this returns. */
+static UINT64 sys_shutdown_system(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    if ((UINT32)a1 > 2) return ST_INVALID_PARAMETER;
+    kprintf("[UM] NtShutdownSystem(%s)\n", (UINT32)a1 == 1 ? "reboot" : "power off");
+    DesktopPowerRequest((UINT32)a1 == 1);
+    return ST_SUCCESS;
+}
+
 static UINT64 sys_query_system_time(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     return put_u64(a1, um_now_100ns()) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
@@ -2185,6 +2198,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtNovaProcessInfo,          sys_nova_process_info);
     um_install(SYSCALL_NtNovaProcessList,          sys_nova_process_list);
     um_install(SYSCALL_NtQuerySystemTime,          sys_query_system_time);
+    um_install(SYSCALL_NtShutdownSystem,           sys_shutdown_system);
     um_install(SYSCALL_NtQueryPerformanceCounter,  sys_query_perf_counter);
     um_install(SYSCALL_NtDelayExecution,           sys_delay);
     um_install(SYSCALL_NtYieldExecution,           sys_yield);
