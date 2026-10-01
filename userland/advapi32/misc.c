@@ -168,3 +168,11 @@ static DWORD entries_in_acl(PACL *out)
 }
 WINADVAPI DWORD WINAPI SetEntriesInAclA(ULONG n, void *entries, PACL old, PACL *out) { (void)n; (void)entries; (void)old; return entries_in_acl(out); }
 WINADVAPI DWORD WINAPI SetEntriesInAclW(ULONG n, void *entries, PACL old, PACL *out) { (void)n; (void)entries; (void)old; return entries_in_acl(out); }
+
+NTSYSAPI NTSTATUS NTAPI NtAllocateLocallyUniqueId(PLUID luid);
+WINADVAPI BOOL WINAPI AllocateLocallyUniqueId(PLUID luid)
+{
+    if (!luid) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    NtAllocateLocallyUniqueId(luid);
+    return TRUE;
+}

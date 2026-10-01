@@ -72,6 +72,9 @@ DLLS = [
     ('crypt32',  ['kernel32', 'ntdll'],           0x7FFC10000000),
     ('dbghelp',  ['kernel32', 'ntdll'],           0x7FFC20000000),
     ('rpcrt4',   ['kernel32', 'ntdll'],           0x7FFC30000000),
+    ('cfgmgr32', ['advapi32', 'kernel32', 'ntdll'], 0x7FFC40000000),
+    ('dxgi',     ['kernel32', 'ntdll'],           0x7FFC50000000),
+    ('vulkan-1', ['advapi32', 'kernel32', 'ntdll'], 0x7FFC60000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}

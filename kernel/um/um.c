@@ -1864,6 +1864,13 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
                               (unsigned long long)(ret - cm->base));
         }
         kprintf("[UM] %s (PID %u) %s%s\n", p->name, p->pid, p->why, caller);
+        if (!mod) {                                         /* generated code (a JIT): show it */
+            UINT8 code[16];
+            if (NT_SUCCESS(CopyFromUser(code, (const void *)(uintptr_t)rip, sizeof(code))))
+                kprintf("[UM]   code: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x  (sp 0x%llx)\n",
+                        code[0], code[1], code[2], code[3], code[4], code[5], code[6], code[7], code[8], code[9],
+                        code[10], code[11], (unsigned long long)sp);
+        }
         /* the return addresses on the stack (serial log only): where it came from */
         if (sp) {
             int shown = 0;

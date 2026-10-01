@@ -1153,6 +1153,11 @@ __asm__(".section .drectve,\"yn\"\n\t"
         ".ascii \" /EXPORT:RtlDeleteFunctionTable=ntdll.RtlDeleteFunctionTable\"\n\t"
         ".ascii \" /EXPORT:RtlInstallFunctionTableCallback=ntdll.RtlInstallFunctionTableCallback\"\n\t"
         ".text\n");
+#ifdef _WIN64
+__asm__(".section .drectve,\"yn\"\n\t"
+        ".ascii \" /EXPORT:__C_specific_handler=ntdll.__C_specific_handler\"\n\t"
+        ".text\n");
+#endif
 
 /* -----------------------------------------------------------------------
  * Files and paths
