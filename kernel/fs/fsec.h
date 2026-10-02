@@ -8,11 +8,10 @@
  * who is the user.  With no descriptor anywhere above, a node has no DACL
  * and everyone may do anything, as on FAT.
  *
- * Access is checked for the one user there is (the SIDs advapi32 and
- * ntdll give the token: the user, Everyone, Users, Interactive,
- * Authenticated Users and the logon session; Administrators only to deny,
- * as a user who is not elevated).  The owner may always read and change
- * the DACL.
+ * Access is checked as the calling thread's effective token (its
+ * impersonation token, otherwise its process's; kernel/um/um_security.c),
+ * so restricted and impersonation tokens are refused what their SIDs are
+ * not granted.  The owner may always read and change the DACL.
  */
 
 #pragma once
@@ -27,7 +26,7 @@
 #define FSEC_ADD_SUBDIRECTORY 0x00000004u
 
 /* The rights of @want (generic rights mapped as for files; MAXIMUM_ALLOWED
- * asks for whatever the DACL grants) the user has to @n.  False if one is
+ * asks for whatever the DACL grants) the calling thread has to @n.  False if one is
  * denied; *granted (may be NULL) receives what was granted. */
 bool   FsecAccess(RamNode *n, UINT32 want, UINT32 *granted);
 

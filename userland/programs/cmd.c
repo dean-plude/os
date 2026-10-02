@@ -1392,6 +1392,16 @@ static void fmt_time(const FILETIME *ft, char *out)
 
 typedef struct { int bare, sub, wide, attr_dirs, attr_files; unsigned long long files, dirs, bytes; } DirOpt;
 
+/* The free bytes, with thousands separators, on the drive holding @path */
+static void free_on(const char *path, char *out)
+{
+    char full[MAX_PATH], root[4] = "C:\\";
+    ULARGE_INTEGER fr;
+    if (GetFullPathNameA(path, MAX_PATH, full, 0) && full[0] && full[1] == ':') root[0] = full[0];
+    strcpy(out, "0");
+    if (GetDiskFreeSpaceExA(root, &fr, 0, 0)) fmt_thousands(fr.QuadPart, out);
+}
+
 static int dir_list(const char *spec, DirOpt *o, Io *io, int top)
 {
     char pattern[MAX_PATH], dirpath[MAX_PATH];
@@ -1439,9 +1449,8 @@ static int dir_list(const char *spec, DirOpt *o, Io *io, int top)
             fmt_thousands(bytes, b);
             printf_h(io->out, "%16llu File(s) %14s bytes\n", files, b);
             if (!o->sub) {
-                ULARGE_INTEGER fr;
-                char f[32] = "0";
-                if (GetDiskFreeSpaceExA("C:\\", &fr, 0, 0)) fmt_thousands(fr.QuadPart, f);
+                char f[32];
+                free_on(dirpath, f);
                 printf_h(io->out, "%16llu Dir(s) %15s bytes free\n", dirs, f);
             } else puts_h(io->out, "\n");
         }
@@ -1489,13 +1498,20 @@ static int b_dir(const char *a, Io *io)
             }
         } else spec = av[i];
     }
-    if (!o.bare) puts_h(io->out, " Volume in drive C is NOVA\n Volume Serial Number is 4E4F-5641\n\n");
+    if (!o.bare) {                                      /* the drive being listed */
+        char full[MAX_PATH], root[4] = "C:\\", label[64] = "";
+        DWORD serial = 0;
+        if (GetFullPathNameA(spec ? spec : ".", MAX_PATH, full, 0) && full[0] && full[1] == ':') root[0] = (char)toupper((unsigned char)full[0]);
+        GetVolumeInformationA(root, label, sizeof(label), &serial, 0, 0, 0, 0);
+        if (label[0]) printf_h(io->out, " Volume in drive %c is %s\n", root[0], label);
+        else printf_h(io->out, " Volume in drive %c has no label.\n", root[0]);
+        printf_h(io->out, " Volume Serial Number is %04lX-%04lX\n\n", (unsigned long)(serial >> 16), (unsigned long)(serial & 0xFFFF));
+    }
     int any = dir_list(spec ? spec : ".", &o, io, 1);
     if (o.sub && !o.bare && any) {
-        char b[32], f[32] = "0";
-        ULARGE_INTEGER fr;
+        char b[32], f[32];
         fmt_thousands(o.bytes, b);
-        if (GetDiskFreeSpaceExA("C:\\", &fr, 0, 0)) fmt_thousands(fr.QuadPart, f);
+        free_on(spec ? spec : ".", f);
         printf_h(io->out, "     Total Files Listed:\n%16llu File(s) %14s bytes\n%16llu Dir(s) %15s bytes free\n", o.files, b, o.dirs, f);
     }
     free_args(av, n);

@@ -251,6 +251,23 @@ static UINT64 handle_alloc(UmProcess *p, UmHandle **out)
     return 0;
 }
 
+int um_handle_kind(UmProcess *p, UINT64 h)
+{
+    um_lock(&p->lock);
+    UmHandle *hd = handle(p, h);
+    int r = hd ? (int)hd->kind : -1;
+    um_unlock(&p->lock);
+    return r;
+}
+
+void um_handle_set_inherit(UmProcess *p, UINT64 h, bool inherit)
+{
+    um_lock(&p->lock);
+    UmHandle *hd = handle(p, h);
+    if (hd) hd->inherit = inherit;
+    um_unlock(&p->lock);
+}
+
 RamNode *um_handle_file(UmProcess *p, UINT64 h)
 {
     UmHandle *hd = handle(p, h);
@@ -1128,9 +1145,9 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
 }
 
 /* NtQuerySecurityObject(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
- * ULONG Length, PULONG LengthNeeded): a file's or directory's own, and
- * for other objects the one they all have (owned by the user, no DACL) */
-static UINT64 sys_query_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+ * ULONG Length, PULONG LengthNeeded) for a file or directory: its own
+ * descriptor or the one it inherits (um_security.c hands file handles here) */
+UINT64 um_file_query_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
     UINT64 need_ptr = um_stack_arg(5);
@@ -1154,9 +1171,9 @@ static UINT64 sys_query_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return st;
 }
 
-/* NtSetSecurityObject(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR):
- * kept for files and directories on drive C: (others have nowhere to keep one) */
-static UINT64 sys_set_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+/* NtSetSecurityObject(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR)
+ * for a file or directory: kept for those on drive C: */
+UINT64 um_file_set_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a4;
     UmProcess *p = UmCurrent();
@@ -1352,7 +1369,8 @@ static UINT64 sys_query_volume_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
         UINT8 b[64];
         UINT32 need;
         memset(b, 0, sizeof(b));
-        UINT64 total = UINT64_C(1) << 20, avail = UINT64_C(1) << 19;   /* 4 KiB units: 4 GiB, 2 GiB free */
+        uint64_t total = 0, avail = 0, used = 0;          /* 4 KiB units: drive C: lives in RAM */
+        pmm_stats(&total, &avail, &used);
         /* or a mounted volume (drives D:, ...): its size and free space */
         const char *label = "NovaOS", *fsname = "FAT32";
         UINT64 bytes;
@@ -2571,8 +2589,6 @@ void um_syscall_init(void)
 
     um_install(SYSCALL_NtCreateFile,               sys_create_file);
     um_install(SYSCALL_NtOpenFile,                 sys_open_file);
-    um_install(SYSCALL_NtQuerySecurityObject,      sys_query_security);
-    um_install(SYSCALL_NtSetSecurityObject,        sys_set_security);
     um_install(SYSCALL_NtClose,                    sys_close);
     um_install(SYSCALL_NtCompareObjects,           sys_compare_objects);
     um_install(SYSCALL_NtReadFile,                 sys_read_file);
@@ -2614,6 +2630,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtDelayExecution,           sys_delay);
     um_install(SYSCALL_NtYieldExecution,           sys_yield);
     um_thread_syscalls_init();
+    um_security_syscalls_init();
     um_exception_syscalls_init();
     um_registry_syscalls_init();
     um_socket_syscalls_init();

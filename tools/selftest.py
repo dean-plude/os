@@ -5,12 +5,13 @@
                       [--only NAME,...] [--junit FILE] [--summary FILE]
 
 Suites:
-  core      (default) apitest, abitest, filetest, pipetest, proctest, guitest auto,
-            disptest, battery, soundtest, sleeptest timer (Sleep and wait
-            timeouts within 1 ms under load), powertest (the lid, a thermal zone
-            and sleep, driven from the QEMU monitor), and last "crash
-            kernel" (a deliberate kernel fault must print a symbolized
-            backtrace)
+  core      (default) apitest, abitest, filetest, pipetest, proctest, sectest,
+            acltest, guitest auto, disptest, battery, soundtest, sleeptest timer
+            (Sleep and wait timeouts within 1 ms under load), powertest (the
+            lid, a thermal zone and sleep, driven from the QEMU monitor), an
+            install finished by a restart (which must also keep the display
+            mode), and last "crash kernel" (a deliberate kernel fault must
+            print a symbolized backtrace)
   graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
             tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
             made by tools/ci/stage-graphics.sh: 7-Zip, the two downloads and
@@ -49,11 +50,13 @@ class Test:
     the whole serial log so far must match (what the kernel logged at boot).
     @builtin: a Terminal command, not a program (no exit code; the output
     decides).  @settle: seconds to wait afterwards (NovaOS saves drive C:
-    once it has been quiet for a second)"""
+    once it has been quiet for a second).  @reboot: restart NovaOS
+    ("shutdown /r", drive C: kept) and pass when the new boot's log shows
+    @expect; later tests run in that boot."""
     def __init__(self, name, cmd, expect=(), timeout=180, check=None, store=None, shot=None, crash=False,
-                 acts=(), boot_expect=(), builtin=False, settle=0):
+                 acts=(), boot_expect=(), builtin=False, settle=0, reboot=False):
         self.name, self.cmd, self.expect, self.timeout, self.check = name, cmd, expect, timeout, check
-        self.store, self.shot, self.crash = store, shot, crash
+        self.store, self.shot, self.crash, self.reboot = store, shot, crash, reboot
         self.acts, self.boot_expect, self.builtin, self.settle = acts, boot_expect, builtin, settle
 
 
@@ -110,6 +113,9 @@ CORE = [
     Test('filetest', 'filetest', [r'filetest: \d+ passed, 0 failed']),
     Test('pipetest', 'pipetest', [r'pipetest: \d+ passed, 0 failed']),
     Test('proctest', 'proctest', [r'proctest: \d+ passed, 0 failed']),
+    Test('sectest', 'sectest', [r'sectest: \d+ passed, 0 failed']),
+    Test('acltest', 'acltest', [r'acltest: \d+ passed, 0 failed']),
+    Test('acltest x86', r'C:\Programs\x86\acltest.exe', [r'acltest: \d+ passed, 0 failed']),
     Test('guitest', 'guitest auto', [r'guitest: \d+ passed, 0 failed']),
     Test('disptest', 'disptest', [r'\d+ passed, 0 failed']),
     Test('battery', 'battery', [r'Power source: battery', r'Battery: 75%', r'Time left: 3 h 00 min',
@@ -131,21 +137,20 @@ CORE = [
                       r'\[ACPI\] Wake device \\_SB_\.PCI0\.XHC0 \(USB controller\)',
                       r'\[USB\] [^\n]*keyboard[^\n]*wakes the machine'],
          timeout=300),
-    # the next boot (RESTART below) must come up in this mode
+    # the boot after the restart below must come up in this mode
     Test('save display mode', 'disptest 1024 768', [r'ChangeDisplaySettings: 0', r'current 1024 x 768'], settle=5),
+    # an installer replacing a running program: done at the next boot (MoveFileEx DELAY_UNTIL_REBOOT)
+    Test('install in use', 'filetest install', [r'filetest install: \d+ passed, 0 failed']),
+    Test('restart', 'shutdown /r', [r'Pending file operations at boot: 2 done, 0 failed'], reboot=True),
+    Test('mode after restart', 'disptest saved 1024 768', [r'\d+ passed, 0 failed'],
+         boot_expect=[r'\[DISPLAY\] Restored the saved mode 1024x768']),
+    Test('installed', 'filetest installed', [r'filetest installed: \d+ passed, 0 failed']),
     # last: crash.exe asks the kernel to fault, which must print a backtrace with names
     Test('kernel backtrace', 'crash kernel', [r'Backtrace:\r?\n  #0 [0-9a-f]{16}  KeCrashTestFault\+0x[0-9a-f]+\r?\n'
                                               r'  #1 [0-9a-f]{16}  KeCrashTest\+0x[0-9a-f]+\r?\n'
                                               r'  #2 [0-9a-f]{16}  sys_nova_bugcheck\+0x[0-9a-f]+\r?\n'],
          timeout=60, crash=True),
 ]
-# A second boot on the core boot's drive C: (its data disk), as after a
-# restart: the display mode saved there comes back
-RESTART = [
-    Test('mode after restart', 'disptest saved 1024 768', [r'\d+ passed, 0 failed'],
-         boot_expect=[r'\[DISPLAY\] Restored the saved mode 1024x768']),
-]
-
 # The graphics boot: 7-Zip in C:\Programs\7-Zip and the Mesa and DXVK
 # downloads in C:\Downloads, so the Store's button installs without a network
 GRAPHICS = [
@@ -312,9 +317,6 @@ def main():
                          extra_args=tables + ['-device', 'pc-testdev', '-device', 'qemu-xhci,id=xhci,addr=0x5',
                                               '-device', 'usb-kbd,id=usbkbd,bus=xhci.0'])
         results = run_boot(a, tests, work, None, wav=wav, **boot_args)
-        saved = [r for r in results if r[0] == 'save display mode']
-        if a.suite == 'core' and saved and not saved[0][1]:
-            results += run_boot(a, RESTART, work, 'restart', keep_data=True, **boot_args)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     report(a, results)
@@ -349,11 +351,19 @@ def run_boot(a, tests, work, label, **nova_args):
                 if not out.strip():                 # nothing at all: what the kernel said last
                     out = '(no output; the serial log ends:)\n' + \
                         open(nova.serial_path, 'rb').read().decode('latin-1')[-3000:]
+            elif t.reboot:
+                try:
+                    out, ok = nova.reboot(t.timeout), True
+                except RuntimeError as e:
+                    out, ok = str(e), False
             else:
                 out, ok = nova.run(t.cmd, t.timeout, shot=(t.shot, png) if t.shot else None, acts=t.acts)
             if t.crash:
                 miss = [e for e in t.expect if not re.search(e, out)]
                 why = None if ok and not miss else ('no kernel fault' if not ok else 'no symbolized backtrace')
+            elif t.reboot:
+                miss = [e for e in t.expect if not re.search(e, out)]
+                why = 'did not boot again' if not ok else f'missing "{miss[0]}"' if miss else None
             elif t.store:
                 why, out = store_verdict(nova, t, out)
             else:

@@ -4,6 +4,13 @@
 # and DXVK from the App Store, then tools/gltest and tools/d3dtest).
 # A failing test fails its check; make both required status checks on main
 # to block the merge.
+#
+# The boot-test job also builds the bootable ISO (scripts/create-iso.sh) and
+# keeps it as the "nova-iso" run artifact, so every pull request has a
+# downloadable nova.iso.  After a push to main passes, the publish-iso job
+# puts that ISO on the rolling "latest" release:
+#   https://github.com/dean-plude/os/releases/latest/download/nova.iso
+# nova.iso is not committed to the repository.
 name: CI
 
 on:
@@ -29,7 +36,7 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             cmake make nasm clang lld llvm gcc-mingw-w64-x86-64 \
-            qemu-system-x86 ovmf mtools dosfstools acpica-tools
+            qemu-system-x86 ovmf mtools dosfstools acpica-tools xorriso
 
       - name: Build the kernel, bootloader, userland and disk image
         run: |
@@ -39,6 +46,16 @@ jobs:
             exit 1
           }
           test -f build/nova.img
+
+      - name: Build the bootable ISO
+        run: scripts/create-iso.sh build/nova.iso build/bootx64.efi build/kernel.elf
+
+      - name: Keep the ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-iso
+          path: build/nova.iso
+          if-no-files-found: error
 
       - name: Boot NovaOS and run the self-tests
         run: |
@@ -102,3 +119,37 @@ jobs:
           name: graphics-out
           path: graphics-out
           if-no-files-found: ignore
+
+  publish-iso:
+    name: Publish nova.iso
+    needs: [boot-test, graphics-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-iso
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nova-iso
+
+      - name: Move the "latest" release to this commit and attach the ISO
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum nova.iso > nova.iso.sha256
+          git tag -f latest "$GITHUB_SHA"
+          git push -f origin refs/tags/latest
+          notes="NovaOS built from main at ${GITHUB_SHA::7} by CI run ${GITHUB_RUN_ID}.
+          Boot it with UEFI firmware; see the README for the QEMU command line."
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest nova.iso nova.iso.sha256 --clobber
+            gh release edit latest --title "NovaOS (latest main)" --notes "$notes" --latest
+          else
+            gh release create latest nova.iso nova.iso.sha256 \
+              --title "NovaOS (latest main)" --notes "$notes" --latest
+          fi

@@ -24,6 +24,7 @@
 #include "../ke/scheduler.h"
 #include "../lib/string.h"
 #include "../mm/vmm.h"
+#include "../fs/ramfs.h"
 
 #define ST_SUCCESS               0x00000000u
 #define ST_BUFFER_OVERFLOW       0x80000005u
@@ -103,6 +104,11 @@ static void touch(RegKey *k)
     if (!k->vol) { g_dirty = true; g_dirty_ticks = sched_ticks(); }
 }
 
+/* Change notification: signal the watchers of @k for @what (below) */
+#define CHANGE_NAME     0x1u                /* REG_NOTIFY_CHANGE_NAME: subkeys added, deleted, renamed */
+#define CHANGE_LAST_SET 0x4u                /* REG_NOTIFY_CHANGE_LAST_SET: values set or deleted */
+static void notify(RegKey *k, UINT32 what);
+
 static RegKey *find_child(RegKey *k, const UINT16 *name, UINT32 n)
 {
     for (RegKey *c = k->child; c; c = c->next)
@@ -133,6 +139,7 @@ static RegKey *add_child(RegKey *k, const UINT16 *name, UINT32 n, bool vol)
     c->next = *pp;
     *pp = c;
     touch(c);
+    notify(k, CHANGE_NAME);
     return c;
 }
 
@@ -151,6 +158,8 @@ static void detach(RegKey *k)
 {
     for (RegKey *c = k->child, *n; c; c = n) { n = c->next; detach(c); }
     k->child = NULL;
+    notify(k, ~0u);                                         /* its own watchers: the key is gone */
+    if (k->parent) notify(k->parent, CHANGE_NAME);
     if (k->parent) {
         RegKey **pp = &k->parent->child;
         while (*pp && *pp != k) pp = &(*pp)->next;
@@ -189,6 +198,7 @@ static bool set_value(RegKey *k, const UINT16 *name, UINT32 n, UINT32 type, cons
     v->data = copy;
     v->len = len;
     touch(k);
+    notify(k, CHANGE_LAST_SET);
     return true;
 }
 
@@ -532,8 +542,11 @@ static bool load_hive(const UINT8 *d, UINT32 n)
 }
 
 /* Write the hive when it has been quiet for a second (desktop thread) */
+static void release_spent(void);
+
 void um_registry_poll(void)
 {
+    release_spent();
     if (!g_dirty || sched_ticks() - g_dirty_ticks < 100) return;
     Buf b = { 0 };
     um_lock(&g_reg);
@@ -839,7 +852,7 @@ static UINT64 sys_delete_value_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             RegValue **pp = &k->values;
             while (*pp && !name_eq((*pp)->name, (*pp)->nlen, name, n)) pp = &(*pp)->next;
             if (!*pp) st = ST_OBJECT_NAME_NOT_FOUND;
-            else { RegValue *v = *pp; *pp = v->next; free_value(v); touch(k); }
+            else { RegValue *v = *pp; *pp = v->next; free_value(v); touch(k); notify(k, CHANGE_LAST_SET); }
         }
     }
     um_unlock(&g_reg);
@@ -979,7 +992,10 @@ static UINT64 sys_rename_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         else {
             UINT16 *nm = dup16(name, n);
             if (!nm) st = ST_NO_MEMORY;
-            else { kfree(k->name); k->name = nm; k->nlen = n; touch(k); touch(k->parent); }
+            else {
+                kfree(k->name); k->name = nm; k->nlen = n; touch(k); touch(k->parent);
+                notify(k->parent, CHANGE_NAME);
+            }
         }
     }
     um_unlock(&g_reg);
@@ -987,8 +1003,244 @@ static UINT64 sys_rename_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return st;
 }
 
+/* -----------------------------------------------------------------------
+ * Change notification (NtNotifyChangeKey, RegNotifyChangeKeyValue): a
+ * watch on a key (and with @tree its subkeys) signals its event once,
+ * when something its filter names changes, and is gone.  The event is
+ * the caller's (asynchronous) or the kernel's own that the call waits on.
+ * ----------------------------------------------------------------------- */
+typedef struct Watch {
+    struct Watch *next;
+    RegKey *key;                            /* referenced */
+    UINT32 filter;
+    bool tree;
+    UmObject *ev;                           /* referenced */
+    UmProcess *proc;
+} Watch;
+
+static Watch *g_watch;                      /* under g_reg */
+static Watch *g_spent;                      /* fired: their events are released outside g_reg */
+
+static bool below(RegKey *k, RegKey *top)
+{
+    for (; k; k = k->parent) if (k == top) return true;
+    return false;
+}
+
+static void spend(Watch *w)
+{
+    key_unref(w->key);
+    w->key = NULL;
+    w->next = g_spent;
+    g_spent = w;
+}
+
+static void notify(RegKey *k, UINT32 what)
+{
+    for (Watch **pp = &g_watch; *pp;) {
+        Watch *w = *pp;
+        if (!(w->filter & what) || !(w->key == k || (w->tree && below(k, w->key)))) { pp = &w->next; continue; }
+        *pp = w->next;
+        IrqState s = ob_lock();
+        w->ev->signaled = true;
+        um_ob_wake(w->ev);
+        ob_unlock(s);
+        spend(w);
+    }
+}
+
+/* Release fired watches (not under g_reg: an event's last reference may
+ * take the big kernel lock) */
+static void release_spent(void)
+{
+    if (!g_spent) return;
+    um_lock(&g_reg);
+    Watch *w = g_spent;
+    g_spent = NULL;
+    um_unlock(&g_reg);
+    while (w) {
+        Watch *n = w->next;
+        um_ob_unref(w->ev);
+        kfree(w);
+        w = n;
+    }
+}
+
+/* A process ended: its watches go (their events are not signalled) */
+void um_registry_process_gone(UmProcess *p)
+{
+    um_lock(&g_reg);
+    for (Watch **pp = &g_watch; *pp;) {
+        Watch *w = *pp;
+        if (w->proc != p) { pp = &w->next; continue; }
+        *pp = w->next;
+        spend(w);
+    }
+    um_unlock(&g_reg);
+    release_spent();
+}
+
+/* NtNotifyChangeKey(HANDLE Key, HANDLE Event, PIO_APC_ROUTINE, PVOID ApcContext,
+ *                   PIO_STATUS_BLOCK, ULONG CompletionFilter, BOOLEAN WatchTree,
+ *                   PVOID Buffer, ULONG BufferSize, BOOLEAN Asynchronous) */
+static UINT64 sys_notify_change_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a4;
+    UINT64 iosb = um_stack_arg(5);
+    UINT32 filter = (UINT32)um_stack_arg(6);
+    bool tree = (um_stack_arg(7) & 0xFF) != 0, async = (um_stack_arg(10) & 0xFF) != 0;
+    if (!(filter & 0xFu) || (filter & ~0x1000000Fu)) return ST_INVALID_PARAMETER;   /* (THREAD_AGNOSTIC: as it is) */
+    if (async && !a2) return a3 ? 0xC00000BBu /* NOT_SUPPORTED: APC completion */ : ST_INVALID_PARAMETER;
+    UmObject *ev;
+    if (async) {
+        ev = um_handle_object(UmCurrent(), a2, UO_EVENT);
+        if (!ev) return ST_INVALID_HANDLE;
+        IrqState s = ob_lock();
+        ev->signaled = false;                               /* as Windows: reset when the watch starts */
+        ob_unlock(s);
+    } else {
+        ev = kzalloc(sizeof(*ev));
+        if (!ev) return ST_NO_MEMORY;
+        ev->type = UO_EVENT;
+        ev->refs = 1;
+        ev->manual = true;
+    }
+    Watch *w = kzalloc(sizeof(*w));
+    UmObject *o = NULL;
+    RegKey *k = w ? key_of(a1, &o) : NULL;
+    UINT32 st = !w ? ST_NO_MEMORY : !k ? ST_INVALID_HANDLE : ST_SUCCESS;
+    if (!st) {
+        um_lock(&g_reg);
+        if (k->deleted) st = ST_KEY_DELETED;
+        else {
+            k->refs++;
+            w->key = k;
+            w->filter = filter;
+            w->tree = tree;
+            w->ev = async ? ev : um_ob_ref(ev);             /* sync: the watch's reference and ours */
+            w->proc = UmCurrent();
+            w->next = g_watch;
+            g_watch = w;
+        }
+        um_unlock(&g_reg);
+    }
+    if (o) um_ob_unref(o);
+    if (st) { kfree(w); um_ob_unref(ev); return st; }
+    if (async) return 0x00000103u;                          /* STATUS_PENDING */
+
+    st = um_wait_one(ev, -1);
+    um_lock(&g_reg);                                        /* not fired (the process is ending): drop it */
+    for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next)
+        if (*pp == w) { *pp = w->next; spend(w); break; }
+    um_unlock(&g_reg);
+    release_spent();
+    um_ob_unref(ev);
+    if (st) return st;
+    if (iosb) {
+        UINT64 zero[2] = { 0, 0 };                          /* STATUS_SUCCESS, 0 bytes */
+        bool wow = UmCurrent() && UmCurrent()->wow;
+        if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)iosb, zero, wow ? 8 : 16))) return UM_STATUS_ACCESS_VIOLATION;
+    }
+    return ST_SUCCESS;
+}
+
+/* -----------------------------------------------------------------------
+ * MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT): Session Manager's
+ * PendingFileRenameOperations, carried out at boot before any program
+ * runs, then deleted.  Pairs of "\??\C:\from" and "\??\C:\to" ("!"
+ * first: replace an existing file), or "" to delete "from".
+ * ----------------------------------------------------------------------- */
+static void to_utf8(const UINT16 *w, UINT32 n, char *out, UINT32 cap)
+{
+    UINT32 o = 0;
+    for (UINT32 i = 0; i < n && w[i] && o + 4 < cap; i++) {
+        UINT32 c = w[i];
+        if (c >= 0xD800 && c < 0xDC00 && i + 1 < n && w[i + 1] >= 0xDC00 && w[i + 1] < 0xE000)
+            c = 0x10000 + ((c - 0xD800) << 10) + (w[++i] - 0xDC00);
+        if (c < 0x80) out[o++] = (char)c;
+        else if (c < 0x800) { out[o++] = (char)(0xC0 | c >> 6); out[o++] = (char)(0x80 | (c & 0x3F)); }
+        else if (c < 0x10000) { out[o++] = (char)(0xE0 | c >> 12); out[o++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[o++] = (char)(0x80 | (c & 0x3F)); }
+        else { out[o++] = (char)(0xF0 | c >> 18); out[o++] = (char)(0x80 | ((c >> 12) & 0x3F));
+               out[o++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[o++] = (char)(0x80 | (c & 0x3F)); }
+    }
+    out[o] = 0;
+}
+
+static const char *nt_path(const char *p)                   /* "\??\C:\x" -> "C:\x" */
+{
+    if (p[0] == '\\' && p[1] == '?' && p[2] == '?' && p[3] == '\\') return p + 4;
+    return p;
+}
+
+static bool pending_op(const char *from, const char *to)
+{
+    RamNode *src = RamfsResolve(NULL, nt_path(from));
+    if (!src) return false;
+    if (!*to) return RamfsDelete(src);
+    bool replace = *to == '!';
+    if (replace) to++;
+    to = nt_path(to);
+    char dir[512];
+    const char *slash = NULL;
+    for (const char *c = to; *c; c++) if (*c == '\\' || *c == '/') slash = c;
+    if (!slash) return false;
+    UINT32 dl = (UINT32)(slash - to);
+    if (dl >= sizeof(dir) - 1) return false;
+    memcpy(dir, to, dl);
+    dir[dl] = 0;
+    if (dl == 2 && dir[1] == ':') { dir[2] = '\\'; dir[3] = 0; }  /* "C:" alone is the drive's root */
+    RamNode *d = RamfsResolve(NULL, dir);
+    return d && d->dir && RamfsRename(src, d, slash + 1, replace);
+}
+
+void um_registry_pending_renames(void)
+{
+    static const UINT16 val[] = { 'P','e','n','d','i','n','g','F','i','l','e','R','e','n','a','m','e','O','p','e','r','a','t','i','o','n','s' };
+    const char *sm = "Machine\\SYSTEM\\CurrentControlSet\\Control\\Session Manager";
+    UINT16 w[96];
+    UINT32 n = 0;
+    for (; sm[n]; n++) w[n] = (UINT8)sm[n];
+    um_lock(&g_reg);
+    RegKey *k = NULL;
+    RegValue *v = NULL;
+    if (walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) v = find_value(k, val, 27);
+    UINT16 *list = NULL;
+    UINT32 len = 0;
+    if (v && v->type == 7 /* REG_MULTI_SZ */ && v->len >= 2) {
+        len = v->len / 2;
+        list = kmalloc(2 * (size_t)len + 4);
+        if (list) { memcpy(list, v->data, 2 * (size_t)len); list[len] = list[len + 1] = 0; }
+    }
+    if (v) {                                                /* done once, whatever happens */
+        RegValue **pp = &k->values;
+        while (*pp && *pp != v) pp = &(*pp)->next;
+        if (*pp) { *pp = v->next; free_value(v); touch(k); }
+    }
+    um_unlock(&g_reg);
+    if (!list) return;
+    char *from = kmalloc(1024), *to = kmalloc(1024);
+    int done = 0, failed = 0;
+    for (UINT32 i = 0; from && to && i < len && list[i];) {
+        UINT32 a = i;
+        while (i < len && list[i]) i++;
+        to_utf8(list + a, i - a, from, 1024);
+        i++;
+        UINT32 b = i;
+        while (i < len && list[i]) i++;
+        to_utf8(list + b, i - b, to, 1024);
+        i++;
+        if (pending_op(from, to)) done++;
+        else { failed++; kprintf("[REG] Pending %s of %s failed\n", *to ? "rename" : "delete", from); }
+    }
+    kprintf("[REG] Pending file operations at boot: %d done, %d failed\n", done, failed);
+    kfree(from);
+    kfree(to);
+    kfree(list);
+}
+
 void um_registry_syscalls_init(void)
 {
+    um_install(SYSCALL_NtNotifyChangeKey,  sys_notify_change_key);
     um_install(SYSCALL_NtCreateKey,        sys_create_key);
     um_install(SYSCALL_NtOpenKey,          sys_open_key);
     um_install(SYSCALL_NtOpenKeyEx,        sys_open_key);

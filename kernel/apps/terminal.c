@@ -241,6 +241,16 @@ static void cmd_help(Term *t)
         "Keys: Up/Down history, PgUp/PgDn scroll, Ctrl+C cancel.");
 }
 
+/* @v as "1,234,567" */
+static void thousands(UINT64 v, char *out)
+{
+    char tmp[32];
+    int n = 0, k = 0;
+    do { if (n && n % 3 == 0) tmp[k++] = ','; tmp[k++] = (char)('0' + v % 10); v /= 10; n++; } while (v);
+    for (int i = 0; i < k; i++) out[i] = tmp[k - 1 - i];
+    out[k] = 0;
+}
+
 static void cmd_dir(Term *t, const char *arg)
 {
     RamNode *d = arg ? RamfsResolve(t->cwd, arg) : t->cwd;
@@ -249,6 +259,13 @@ static void cmd_dir(Term *t, const char *arg)
     if (!RamfsLoad(d)) { terr(t, "The disk could not be read."); return; }
     char path[RAMFS_PATH_MAX];
     RamfsPath(d, path, sizeof(path));
+    RamNode *root = d;
+    while (root->parent) root = root->parent;
+    const char *label = "NovaOS";
+    if (root != RamfsRoot()) RamfsDriveInfo(root, &label, NULL, NULL);
+    char letter = root == RamfsRoot() ? 'C' : RamfsDriveLetter(root);
+    if (label && *label) tprintf(t, " Volume in drive %c is %s", letter, label);
+    else tprintf(t, " Volume in drive %c has no label.", letter);
     tprintf(t, " Directory of %s\n", path);
     int files = 0, dirs = 0;
     UINT64 bytes = 0;
@@ -262,7 +279,13 @@ static void cmd_dir(Term *t, const char *arg)
         pad_to(col, 16);
         tprintf(t, "%s%s", col, c->name);
     }
-    tprintf(t, "  %d file(s) %u bytes, %d folder(s)", files, (unsigned)bytes, dirs);
+    UINT64 total, free;                     /* the free space of this directory's own drive */
+    AppDriveSpace(d, &total, &free);
+    char b[32], f[32];
+    thousands(bytes, b);
+    thousands(free, f);
+    tprintf(t, "%16d File(s) %s%s bytes", files, "              " + (strlen(b) < 14 ? strlen(b) : 14), b);
+    tprintf(t, "%16d Dir(s) %s%s bytes free", dirs, "               " + (strlen(f) < 15 ? strlen(f) : 15), f);
 }
 
 static void cmd_cd(Term *t, const char *arg)
