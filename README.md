@@ -161,7 +161,16 @@ Rebuild the ISO from a fresh build with
 
 ## Testing
 
-There is no CI yet; testing is done in QEMU.
+**Every pull request is boot-tested.**  GitHub Actions
+(`.github/workflows/ci.yml`) builds the kernel, bootloader, userland and
+`build/nova.img`, boots it in QEMU with OVMF and runs the self-tests with
+`tools/selftest.py`: `apitest`, `filetest`, `pipetest`, `guitest auto`,
+`disptest`, `battery` (against the battery in `tests/acpi/battery.asl`) and
+`soundtest` (the recorded WAV must hold the tones played).  A failing test
+fails the "Build and boot-test" check, and the run's summary has a table of
+the results; the serial log and a screenshot after each test are kept as
+the `selftest-out` artifact.  Run the same gate locally with
+`python3 tools/selftest.py` after a build.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
@@ -173,8 +182,9 @@ There is no CI yet; testing is done in QEMU.
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
   write`, a restart and `disktest verify` check that drive C: survives a
   reboot.
-- **GUI and interactive checks**: `winhello`, `guitest`, `droptest`, `cpus`
-  (SMP speed-up).
+- **GUI and interactive checks**: `winhello`, `guitest` (`guitest auto`
+  drives its own menus, dialog, message box and property sheet and
+  reports), `droptest`, `cpus` (SMP speed-up).
 - **Real programs** are tested from a second disk image holding them
   (not in this repository), driven by a QEMU harness that types, clicks and takes screenshots.
 - **On the host**: `tools/pe_imports.py PROGRAM.exe` lists the imports a

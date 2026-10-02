@@ -1,0 +1,51 @@
+# Boot CI: every pull request builds NovaOS, boots it in QEMU and runs the
+# self-tests (tools/selftest.py).  A failing test fails the "boot-test"
+# check; make it a required status check on main to block the merge.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boot-test:
+    name: Build and boot-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain and QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            cmake make nasm clang lld llvm gcc-mingw-w64-x86-64 \
+            qemu-system-x86 ovmf mtools dosfstools acpica-tools
+
+      - name: Build the kernel, bootloader, userland and disk image
+        run: |
+          cmake -S . -B build -G "Unix Makefiles"
+          make -C build -j"$(nproc)" || {
+            cat build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-err.log 2>/dev/null | tail -100
+            exit 1
+          }
+          test -f build/nova.img
+
+      - name: Boot NovaOS and run the self-tests
+        run: |
+          python3 tools/selftest.py --img build/nova.img --out selftest-out \
+            --junit selftest-out/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the serial log and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-out
+          path: selftest-out
+          if-no-files-found: ignore

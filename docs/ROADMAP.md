@@ -128,9 +128,9 @@ named program or test demonstrates it.
 
 ## Cross-cutting (maintain throughout)
 
-- **Automated boot CI** (not done yet): the QEMU + OVMF harness that types
-  commands, clicks and takes screenshots should run on every pull request,
-  with the self-test programs as the regression gate.
+- **Automated boot CI** (done): every pull request builds NovaOS, boots it
+  under QEMU + OVMF and runs the self-tests (`tools/selftest.py`,
+  `.github/workflows/ci.yml`); a failing test fails the check.
 - **Reproducible build:** CMake drives `nasm`, clang/lld and `lld-link`
   for the kernel, bootloader and Windows userland; `nova.iso` is rebuilt
   with `scripts/create-iso.sh`.

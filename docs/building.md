@@ -186,7 +186,24 @@ then run `drivetest` in the Terminal.
 
 ## Tests
 
-There is no CI; tests run inside NovaOS under QEMU.
+Tests run inside NovaOS under QEMU.  `tools/selftest.py` boots
+`build/nova.img` and runs the regression gate, the same one CI runs on every
+pull request (`.github/workflows/ci.yml`):
+
+```bash
+sudo apt install acpica-tools          # iasl, for tests/acpi/battery.asl
+python3 tools/selftest.py              # all of them; exit status = failures
+python3 tools/selftest.py --only apitest,guitest --out /tmp/st
+```
+
+It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
+and the battery from `tests/acpi/battery.asl`, then types each test into the
+Terminal.  A test passes when the program exits with code 0, prints no
+`FAIL` line or non-zero "failed" count, and prints what the test expects;
+a kernel panic stops the run.  `--out` (default `selftest-out/`) keeps the
+serial log, a screenshot after each test and `sound.wav`; `--summary FILE`
+appends a Markdown table and `--junit FILE` writes JUnit XML.  To add a test,
+add a line to `TESTS` in `tools/selftest.py`.
 
 ### Self-test programs
 
@@ -208,6 +225,9 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `shmtest` | Named and file-backed shared memory between processes |
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
+| `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
+| `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
+| `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
 | `acltest` | Access checks against DACLs (`AccessCheck`) |
 | `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
@@ -215,7 +235,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
 
 Interactive ones: `winhello` and `guitest` (windows, menus, dialogs,
-property sheets), `droptest` (drag and drop), `cpus` (SMP speed-up), and
+property sheets; `guitest auto` drives them itself and reports, as CI runs it), `droptest` (drag and drop), `cpus` (SMP speed-up), and
 `hello`, `mandel`, `primes`, `wc`, `guess`.
 
 ### Real programs
