@@ -9,8 +9,9 @@ the --put trees, opens the Terminal (Win, "terminal", Enter), turns on
 mark.  Prints each command's output.  A COMMAND of the form
 "!shot NAME.png" saves a screenshot, "!wait N" waits N seconds and
 "!keys a b ctrl-c" presses QEMU key names, "!type TEXT" types
-without waiting (\\n Enter, \\e Esc) and "!done N" waits up to N seconds
-for the running command to end.
+without waiting (\\n Enter, \\e Esc), "!done N" waits up to N seconds
+for the running command to end and "!reboot" restarts NovaOS
+("shutdown /r": the data disk keeps drive C:) and opens the Terminal again.
 
 Options: --mem MiB (2048), --smp N (2), --timeout S per command (120),
 --keep DIR (keep the serial log, data disk and screenshots there),
@@ -149,22 +150,36 @@ class Nova:
                                   list(extra_args))
         try:
             self.sr = Serial(self.serial_path)
-            out, ok = self.sr.wait('Entering kernel main loop', boot_timeout)
-            self.boot_log = out
-            if not ok:
-                raise RuntimeError('NovaOS did not boot:\n' + out[-3000:])
-            self.qmp = Qmp(sock)
-            time.sleep(2)
-            self.qmp.key('meta_l')
-            time.sleep(1)
-            self.qmp.type('terminal\n')
-            time.sleep(3)
-            self.sr.read_new()
-            self.qmp.type('serial on\n')
-            self.sr.wait('[TERM-DONE]', 30)
+            self.sock = sock
+            self.start(boot_timeout)
         except BaseException:
             self.close()
             raise
+
+    def start(self, boot_timeout=300):
+        """Wait for the desktop, then open the Terminal mirrored to serial"""
+        out, ok = self.sr.wait('Entering kernel main loop', boot_timeout)
+        self.boot_log = out
+        if not ok:
+            raise RuntimeError('NovaOS did not boot:\n' + out[-3000:])
+        if not self.qmp:
+            self.qmp = Qmp(self.sock)
+        time.sleep(2)
+        self.qmp.key('meta_l')
+        time.sleep(1)
+        self.qmp.type('terminal\n')
+        time.sleep(3)
+        self.sr.read_new()
+        self.qmp.type('serial on\n')
+        self.sr.wait('[TERM-DONE]', 30)
+
+    def reboot(self, boot_timeout=300):
+        """Restart NovaOS (shutdown /r) and open the Terminal again; the
+        boot's log (up to the desktop) is returned"""
+        self.sr.read_new()
+        self.qmp.type('shutdown /r\n')
+        self.start(boot_timeout)
+        return self.boot_log
 
     def run(self, cmd, timeout=120, shot=None):
         """Type @cmd into the Terminal; returns (serial output, finished in time).
@@ -263,6 +278,10 @@ def main():
                 got, ok = nova.sr.wait('[TERM-DONE]', float(c[6:]))
                 print(got.replace('\n[TERM-DONE]\n', '').rstrip(), flush=True)
                 print(f'### {"done" if ok else "TIMEOUT"} in {time.time() - t0:.1f}s', flush=True)
+                continue
+            if c.strip() == '!reboot':
+                print('### !reboot', flush=True)
+                print(nova.reboot(), flush=True)
                 continue
             if c.startswith('!keys '):
                 nova.keys(c[6:])

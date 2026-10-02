@@ -6,6 +6,7 @@
 #include "apps.h"
 #include "../lib/string.h"
 #include "../mm/vmm.h"
+#include "../mm/pmm.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
 #include "../arch/x86_64/cpu.h"
@@ -542,10 +543,30 @@ void AppFormatSize(UINT64 bytes, char *buf, int cap)
     } else if (bytes < 1024 * 1024) {
         unsigned tenths = (unsigned)((bytes * 10 + 512) / 1024);
         ksnprintf(buf, (size_t)cap, "%u.%u KB", tenths / 10, tenths % 10);
-    } else {
+    } else if (bytes < UINT64_C(1024) * 1024 * 1024) {
         unsigned tenths = (unsigned)((bytes * 10 + 512 * 1024) / (1024 * 1024));
         ksnprintf(buf, (size_t)cap, "%u.%u MB", tenths / 10, tenths % 10);
+    } else {
+        unsigned tenths = (unsigned)((bytes * 10 + 512 * 1024 * 1024) / (UINT64_C(1024) * 1024 * 1024));
+        ksnprintf(buf, (size_t)cap, "%u.%u GB", tenths / 10, tenths % 10);
     }
+}
+
+/* (Free space on drives D:, ... comes from the volume's writer when there is one) */
+extern UINT64 RamfsDriveFree(const RamNode *n) __attribute__((weak));
+
+void AppDriveSpace(RamNode *n, UINT64 *total, UINT64 *free)
+{
+    *total = *free = 0;
+    while (n && n->parent) n = n->parent;
+    if (!n || n == RamfsRoot()) {                  /* drive C: lives in memory */
+        uint64_t t = 0, f = 0, u = 0;
+        pmm_stats(&t, &f, &u);
+        *total = t * 4096; *free = f * 4096;
+        return;
+    }
+    RamfsDriveInfo(n, NULL, NULL, total);
+    if (RamfsDriveFree) *free = RamfsDriveFree(n);
 }
 
 void AppCpuName(char *buf, int cap)
