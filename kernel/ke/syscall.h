@@ -160,6 +160,11 @@
 #define SYSCALL_NtCreateThreadEx                  0x00BD
 #define SYSCALL_NtAllocateVirtualMemoryEx         0x0074  /* Win10 1803+ */
 #define SYSCALL_NtFlushInstructionCache           0x00E3  /* Win10 1903 */
+#define SYSCALL_NtFilterToken                     0x00DF
+#define SYSCALL_NtOpenProcessToken                0x0123
+#define SYSCALL_NtImpersonateAnonymousToken       0x00F7
+#define SYSCALL_NtQuerySecurityObject             0x0155
+#define SYSCALL_NtSetSecurityObject               0x01A1
 
 /* More Windows services, and NovaOS's own (0x200 up; ntdll is built from
  * this header, so the stubs always match) */
@@ -204,6 +209,7 @@
 #define SYSCALL_NtFlushKey                        0x00E4
 #define SYSCALL_NtOpenKeyEx                       0x011B
 #define SYSCALL_NtRenameKey                       0x016C
+#define SYSCALL_NtNotifyChangeKey                 0x0114
 #define SYSCALL_NtOpenMutant                      0x011F
 /* Pipes and I/O Windows 10 numbers elsewhere */
 #define SYSCALL_NtCreateNamedPipeFile             0x00B0
@@ -230,8 +236,10 @@
 #define SYSCALL_NtSetSystemPowerState             0x01A5
 #define SYSCALL_NtInitiatePowerAction             0x00FC
 #define SYSCALL_NtPowerInformation                0x005F
-#define SYSCALL_NtQuerySecurityObject             0x0155
-#define SYSCALL_NtSetSecurityObject               0x01A1
+#define SYSCALL_NtQuerySection                    0x0051
+#define SYSCALL_NtQueryFullAttributesFile         0x0140
+#define SYSCALL_NtAlertThreadByThreadId           0x006F
+#define SYSCALL_NtWaitForAlertByThreadId          0x01CA
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x0220
 #define SYSCALL_NtNovaGuiGetMessage               0x0221

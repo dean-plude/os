@@ -6,6 +6,7 @@
  * the desktop thread.
  */
 
+#include "../ke/prof.h"
 #include "../wm/clipboard.h"
 #include "apps.h"
 #include "../lib/string.h"
@@ -153,6 +154,7 @@ static void tprint_ex(Term *t, int kind, int split, const char *s)
 }
 
 static void tprint(Term *t, const char *s)              { tprint_ex(t, K_NORMAL, 0, s); }
+static void prof_line(void *t, const char *s)            { tprint((Term *)t, s); }
 static void terr(Term *t, const char *s)                { tprint_ex(t, K_ERROR, 0, s); }
 
 static void tprintf(Term *t, const char *fmt, ...)
@@ -241,6 +243,16 @@ static void cmd_help(Term *t)
         "Keys: Up/Down history, PgUp/PgDn scroll, Ctrl+C cancel.");
 }
 
+/* @v as "1,234,567" */
+static void thousands(UINT64 v, char *out)
+{
+    char tmp[32];
+    int n = 0, k = 0;
+    do { if (n && n % 3 == 0) tmp[k++] = ','; tmp[k++] = (char)('0' + v % 10); v /= 10; n++; } while (v);
+    for (int i = 0; i < k; i++) out[i] = tmp[k - 1 - i];
+    out[k] = 0;
+}
+
 static void cmd_dir(Term *t, const char *arg)
 {
     RamNode *d = arg ? RamfsResolve(t->cwd, arg) : t->cwd;
@@ -249,6 +261,13 @@ static void cmd_dir(Term *t, const char *arg)
     if (!RamfsLoad(d)) { terr(t, "The disk could not be read."); return; }
     char path[RAMFS_PATH_MAX];
     RamfsPath(d, path, sizeof(path));
+    RamNode *root = d;
+    while (root->parent) root = root->parent;
+    const char *label = "NovaOS";
+    if (root != RamfsRoot()) RamfsDriveInfo(root, &label, NULL, NULL);
+    char letter = root == RamfsRoot() ? 'C' : RamfsDriveLetter(root);
+    if (label && *label) tprintf(t, " Volume in drive %c is %s", letter, label);
+    else tprintf(t, " Volume in drive %c has no label.", letter);
     tprintf(t, " Directory of %s\n", path);
     int files = 0, dirs = 0;
     UINT64 bytes = 0;
@@ -262,7 +281,13 @@ static void cmd_dir(Term *t, const char *arg)
         pad_to(col, 16);
         tprintf(t, "%s%s", col, c->name);
     }
-    tprintf(t, "  %d file(s) %u bytes, %d folder(s)", files, (unsigned)bytes, dirs);
+    UINT64 total, free;                     /* the free space of this directory's own drive */
+    AppDriveSpace(d, &total, &free);
+    char b[32], f[32];
+    thousands(bytes, b);
+    thousands(free, f);
+    tprintf(t, "%16d File(s) %s%s bytes", files, "              " + (strlen(b) < 14 ? strlen(b) : 14), b);
+    tprintf(t, "%16d Dir(s) %s%s bytes free", dirs, "               " + (strlen(f) < 15 ? strlen(f) : 15), f);
 }
 
 static void cmd_cd(Term *t, const char *arg)
@@ -777,7 +802,35 @@ static void proc_finish(Term *t);
 static void screen_resize(Term *t);
 static bool screen_enter(Term *t);
 
+static bool term_tick_files(WND *w);
+
+/* A running program's output: no files (the file-system lock stays free
+ * for the program); anything else takes it */
 static bool term_tick(WND *w)
+{
+    Term *t = w->user;
+    Job *j = &t->job;
+    if (j->kind == JOB_NONE) return false;
+    if (j->kind == JOB_PROC && !j->starting && j->proc && !UmHasExited(j->proc, NULL, NULL, 0)) {
+        static char buf[4096];
+        bool changed = false;
+        screen_resize(t);
+        if (!j->vt && !(UmConsoleInputMode(j->con) & CON_ENABLE_LINE_INPUT) && screen_enter(t)) changed = true;
+        for (int rounds = 0; rounds < 16; rounds++) {
+            int n = UmConsoleRead(j->con, buf, sizeof(buf));
+            if (!n) break;
+            proc_output(t, buf, n);
+            changed = true;
+        }
+        return changed;
+    }
+    FsLock();
+    bool r = term_tick_files(w);
+    FsUnlock();
+    return r;
+}
+
+static bool term_tick_files(WND *w)
 {
     Term *t = w->user;
     Job *j = &t->job;
@@ -1259,6 +1312,23 @@ static void run(Term *t, char *cmdline)
     if (!strncmp(s, "serial ", 7)) {                 /* serial on|off (see mirror) */
         g_mirror = !strcmp(s + 7, "on");
         tprint(t, g_mirror ? "Terminal output is copied to the serial port." : "Serial copy off.");
+        done_mark();
+        return;
+    }
+    if (!strncmp(s, "profile on", 10)) {                      /* the sampling profiler (ke/prof.c) */
+        const char *a = s + 10;                                 /* "profile on [DELAY LENGTH]" (ticks) */
+        UINT64 v[2] = { 0, 0 };
+        for (int i = 0; i < 2; i++) {
+            while (*a == ' ') a++;
+            while (*a >= '0' && *a <= '9') v[i] = v[i] * 10 + (UINT64)(*a++ - '0');
+        }
+        ProfStart(v[0], v[1]);
+        tprint(t, "Profiling: \"profile\" shows where the time went.");
+        done_mark();
+        return;
+    }
+    if (is(s, "profile")) {
+        ProfReport(prof_line, t);
         done_mark();
         return;
     }
@@ -1861,6 +1931,7 @@ static Term *term_new_ex(RamNode *cwd, bool banner)
     w->rbutton  = true;                        /* right click pastes, the wheel scrolls */
     w->on_close = term_close;
     w->on_tick  = term_tick;
+    w->tick_lock_free = true;
     if (!banner) return t;
     tprint_ex(t, K_DIM, 0, "NovaOS Terminal [Version 0.9.8]");
     tprint_ex(t, K_DIM, 0, "Type 'help' to see what you can do.");

@@ -180,3 +180,17 @@ INETAPI HANDLE WINAPI InternetOpenA(LPCSTR agent, DWORD access, LPCSTR proxy, LP
 INETAPI BOOL WINAPI InternetCloseHandle(HANDLE h) { (void)h; return TRUE; }
 INETAPI BOOL WINAPI InternetSetOptionW(HANDLE h, DWORD opt, LPVOID buf, DWORD n) { (void)h; (void)opt; (void)buf; (void)n; return TRUE; }
 INETAPI BOOL WINAPI InternetSetOptionA(HANDLE h, DWORD opt, LPVOID buf, DWORD n) { (void)h; (void)opt; (void)buf; (void)n; return TRUE; }
+
+INETAPI BOOL WINAPI InternetGetConnectedStateExW(LPDWORD flags, LPWSTR name, DWORD n, DWORD reserved)
+{
+    if (name && n) name[0] = 0;
+    return InternetGetConnectedState(flags, reserved);
+}
+/* Options: nothing configured (proxy settings, timeouts...) */
+INETAPI BOOL WINAPI InternetQueryOptionW(HANDLE h, DWORD opt, LPVOID buf, LPDWORD n)
+{
+    (void)h; (void)opt; (void)buf; (void)n;
+    SetLastError(12018);                            /* ERROR_INTERNET_INCORRECT_HANDLE_TYPE */
+    return FALSE;
+}
+INETAPI BOOL WINAPI InternetQueryOptionA(HANDLE h, DWORD opt, LPVOID buf, LPDWORD n) { return InternetQueryOptionW(h, opt, buf, n); }

@@ -254,6 +254,20 @@ int select(int nfds, fd_set *rd, fd_set *wr, fd_set *ex, const struct timeval *t
     }
 }
 
+/* "localhost" (and "x.localhost", RFC 6761) is the loopback address,
+ * without asking DNS, as on Windows */
+static int is_localhost(const char *n)
+{
+    static const char lh[] = "localhost";
+    size_t len = strlen(n);
+    if (len && n[len - 1] == '.') len--;
+    if (len < 9) return 0;
+    const char *t = n + len - 9;
+    if (t != n && t[-1] != '.') return 0;
+    for (int i = 0; i < 9; i++) if ((t[i] | 0x20) != lh[i]) return 0;
+    return 1;
+}
+
 struct hostent *gethostbyname(const char *name)
 {
     static __declspec(thread) struct hostent he;
@@ -261,6 +275,7 @@ struct hostent *gethostbyname(const char *name)
     static __declspec(thread) char *alist[2];
     static __declspec(thread) char namebuf[256];
     ULONG ip = inet_addr(name);
+    if (ip == INADDR_NONE && is_localhost(name)) ip = htonl(INADDR_LOOPBACK);
     if (ip == INADDR_NONE) {
         BYTE sa[28];
         if (NtNovaResolve(name, sa, 1, AF_INET) < 1) { set_err(WSAHOST_NOT_FOUND); return 0; }
@@ -342,16 +357,16 @@ int getaddrinfo(const char *node, const char *service, const struct addrinfo *hi
     if (e) return e;
     BYTE list[8][28];
     int n = 0;
-    if (!node) {                                /* a wildcard or loopback address */
-        int both = fam == AF_UNSPEC;
+    if (!node || is_localhost(node)) {          /* a wildcard or loopback address */
+        int both = fam == AF_UNSPEC, any = !node && (flags & AI_PASSIVE);
         if (fam == AF_INET6 || both) {
             memset(list[n], 0, 28); *(USHORT *)list[n] = AF_INET6;
-            if (!(flags & AI_PASSIVE)) list[n][23] = 1;            /* ::1 */
+            if (!any) list[n][23] = 1;                              /* ::1 */
             n++;
         }
         if (fam == AF_INET || both) {
             memset(list[n], 0, 28); *(USHORT *)list[n] = AF_INET;
-            if (!(flags & AI_PASSIVE)) { ULONG lo = htonl(INADDR_LOOPBACK); memcpy(list[n] + 4, &lo, 4); }
+            if (!any) { ULONG lo = htonl(INADDR_LOOPBACK); memcpy(list[n] + 4, &lo, 4); }
             n++;
         }
     } else if (numeric(node, list[0])) {

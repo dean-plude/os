@@ -70,3 +70,18 @@ UEAPI BOOL WINAPI ExpandEnvironmentStringsForUserW(HANDLE token, LPCWSTR s, LPWS
 
 UEAPI BOOL WINAPI LoadUserProfileW(HANDLE token, LPVOID info) { (void)token; (void)info; return TRUE; }
 UEAPI BOOL WINAPI UnloadUserProfile(HANDLE token, HANDLE profile) { (void)token; (void)profile; return TRUE; }
+
+/* AppContainers: a container's SID is S-1-15-2- and seven numbers hashed
+ * from its name (SHA-256 on Windows; here a simple hash: the SID only
+ * has to be stable per name, and NovaOS enforces no containers) */
+UEAPI HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(LPCWSTR name, PSID *sid)
+{
+    if (!name || !sid) return E_INVALIDARG;
+    DWORD h[7] = { 0x811C9DC5u, 0x01000193u, 0x2545F491u, 0x9E3779B9u, 0x85EBCA6Bu, 0xC2B2AE35u, 0x27D4EB2Fu };
+    for (const WCHAR *c = name; *c; c++) {
+        WCHAR ch = *c >= 'A' && *c <= 'Z' ? (WCHAR)(*c + 32) : *c;
+        for (int i = 0; i < 7; i++) h[i] = (h[i] ^ ch) * 0x01000193u + (DWORD)i;
+    }
+    SID_IDENTIFIER_AUTHORITY app = { { 0, 0, 0, 0, 0, 15 } };
+    return AllocateAndInitializeSid(&app, 8, 2, h[0], h[1], h[2], h[3], h[4], h[5], h[6], sid) ? S_OK : E_OUTOFMEMORY;
+}

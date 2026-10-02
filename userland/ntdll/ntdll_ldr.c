@@ -122,6 +122,7 @@ static const char *api_set_host(const char *name)
     static const struct { const char *prefix, *dll; } sets[] = {
         { "api-ms-win-crt-",        "ucrtbase.dll" },
         { "api-ms-win-core-com-",   "ole32.dll" },
+        { "api-ms-win-core-winrt-", "ole32.dll" },
         { "combase",                "ole32.dll" },
         { "api-ms-win-core-",       "kernel32.dll" },
         { "api-ms-win-security-",   "advapi32.dll" },
@@ -131,6 +132,7 @@ static const char *api_set_host(const char *name)
         { "ext-ms-win-",            "kernel32.dll" },
         { "kernelbase",             "kernel32.dll" },
         { "api-ms-win-",            "kernel32.dll" },
+        { "wsock32",                "ws2_32.dll" },
     };
     for (unsigned i = 0; i < sizeof(sets) / sizeof(sets[0]); i++) {
         const char *p = sets[i].prefix, *n = name;

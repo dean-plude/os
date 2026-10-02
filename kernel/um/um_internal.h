@@ -9,10 +9,11 @@
 #include "../ke/syscall.h"
 
 #define UM_MAX_PROCS     32
-#define UM_MAX_HANDLES   256
+#define UM_MAX_HANDLES   4096
 #define UM_MAX_REGIONS   8192     /* (runtimes such as CoreCLR reserve thousands of ranges) */
 #define UM_MAX_MODULES   64
-#define UM_MAX_THREADS   64
+#define UM_MAX_THREADS   256      /* (a browser's main process runs well over 64) */
+#define UM32_MAX_THREADS 96       /* WoW: the TEB area must stay below KUSER_SHARED_DATA */
 
 /* Fixed user addresses for the per-process system areas:
  *   PEB (1 page) | loader info (3 pages) | process parameters (4 pages) |
@@ -28,7 +29,7 @@
 #define UM_MAX_STUBS     (0x1000 / UM_STUB_SIZE)
 #define UM_TEB_AREA      (UM_PEB_VA + 0x10000)
 #define UM_TEB_SIZE      0x2000
-#define UM_SYS_SIZE      (0x10000 + UM_MAX_THREADS * UM_TEB_SIZE)
+#define UM_SYS_SIZE(n)   (0x10000 + (UINT64)(n) * UM_TEB_SIZE)
 #define UM_STACK_TOP     UINT64_C(0x00007FFDE0000000)        /* first thread */
 #define UM_STACK_SIZE    (1024 * 1024)
 #define UM_THREAD_STACK  (256 * 1024)                         /* default for new threads */
@@ -50,6 +51,7 @@
 typedef struct {
     UINT64 peb, ldr_info, params, stubs, teb_area;
     UINT64 stack_top, alloc_min, alloc_max, dll_min, dll_max;
+    int max_threads;
 } UmLayout;
 
 /* NTSTATUS values used here */
@@ -66,11 +68,22 @@ typedef struct {
 void um_lock(UmLock *l);
 void um_unlock(UmLock *l);
 
+/* A reader/writer lock on the same terms: one writer (recursive, and may
+ * take it shared too) or many readers, who must not take it twice. */
+typedef struct {
+    UmLock       w;
+    struct { volatile int n; } __attribute__((aligned(64))) readers[16];   /* by CPU (MAX_CPUS): each on a line of its own */
+} __attribute__((aligned(64))) UmRwLock;
+void um_lock_shared(UmRwLock *l);
+void um_unlock_shared(UmRwLock *l);
+void um_lock_excl(UmRwLock *l);
+void um_unlock_excl(UmRwLock *l);
+
 /* -----------------------------------------------------------------------
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
 typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION, UO_PIPE,
-               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO, UO_CONSOLE } UmObType;
+               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO, UO_CONSOLE, UO_TOKEN } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -84,6 +97,7 @@ typedef struct UmObject {
     UINT32          recursion;
     bool            abandoned;
     bool            named;          /* in the object namespace (um_thread.c) */
+    bool            free_unlocked;  /* @destroy needs no big kernel lock */
     int             sock;           /* UO_SOCKET: kernel socket index */
     int             audio;          /* UO_AUDIO: mixer stream (drivers/audio.c) */
     UmProcess      *proc;           /* UO_PROCESS: signaled when it has exited */
@@ -92,11 +106,13 @@ typedef struct UmObject {
     UINT64          due;            /* UO_TIMER: the tick it fires at (0: not set) */
     UINT32          period;         /* UO_TIMER: ticks between firings (0: once) */
     void          (*destroy)(struct UmObject *o);   /* extra cleanup (sockets, windows) */
+    void           *sd;             /* its security descriptor (um_security.c), or NULL: open to all */
 } UmObject;
 
 struct UmThread {
     UmObject        ob;             /* signaled when the thread has ended */
     UmProcess      *proc;
+    UmObject       *imp;            /* the token it impersonates (referenced), or NULL */
     Thread         *kt;             /* scheduler thread; NULL once reclaimed */
     UINT32          tid;
     int             slot;           /* TEB slot */
@@ -114,12 +130,16 @@ struct UmThread {
     volatile UINT8  park;
     void           *uframe;
     UINT16          last_sys;       /* the latest system call (diagnostics) */
+    UINT32          oa_attrs;       /* OBJECT_ATTRIBUTES.Attributes of its latest path (um_syscall.c) */
+    UINT64          oa_sd;          /* and its SecurityDescriptor (a user pointer) */
+    UINT64          last_a1;        /* and its first argument */
     /* Waiting (um_thread.c, under g_um_oblock): the objects, the waiter
      * list link, and the flag a signaler sets to wake it */
     UmObject      **wait_objs;
     int             wait_n;
     UmThread       *wait_next;
     volatile UINT32 wake;
+    volatile UINT32 alerted;        /* NtAlertThreadByThreadId, taken by NtWaitForAlertByThreadId */
 };
 
 UmObject *um_ob_ref(UmObject *o);
@@ -182,15 +202,18 @@ struct UmProcess {
     RamNode    *cwd;
     RamNode    *exe_dir;        /* searched for DLLs before System32 */
     UmConsole  *con;
-    UmLock      lock;           /* handles, regions, modules, threads */
+    UmRwLock    lock;           /* handles, regions, modules, threads */
     UmLock      ldr_lock;       /* one runtime DLL load at a time (taken before the desktop lock) */
     UINT64      image_base, image_entry;   /* the program's, between um_spawn_image and _finish */
 
     UmHandle    handles[UM_MAX_HANDLES];
+    volatile UINT8 hbusy[UM_MAX_HANDLES];   /* a slot's own lock, for object handles (see um_syscall.c) */
     UmRegion   *regions;        /* [UM_MAX_REGIONS], allocated with the process */
     int         nregions;
     UmModule    modules[UM_MAX_MODULES];
     int         nmodules;
+    RamNode    *images[UM_MAX_MODULES];   /* its program and DLL files, held (in use: not deleted or replaced) */
+    int         nimages;
     UINT8       init_order[UM_MAX_MODULES];   /* dependencies first */
     int         ninit;
     volatile UINT32 pages;      /* resident user pages (backed by memory) */
@@ -203,6 +226,7 @@ struct UmProcess {
     UINT32      stack_reserve;  /* from the image header */
 
     void       *gui;            /* per-process window-system state (um_gui.c) */
+    struct GdiCursorShape *cursor;  /* its SetCursor pointer (NULL: the arrow; um_gui.c) */
     char      (*stub_names)[64]; /* "dll!function" per stub at UM_STUBS_VA */
     int         nstubs;
 
@@ -213,6 +237,7 @@ struct UmProcess {
     char            why[96];    /* crash/kill description */
     bool            released;   /* spawner is done with it */
     UmObject       *exit_ob;    /* UO_PROCESS object of a program-created process (not referenced) */
+    UmObject       *token;      /* its primary token (referenced) */
     bool            reclaimed;  /* memory and handles freed */
 };
 
@@ -245,6 +270,7 @@ bool       um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect);
 bool       um_is_guard(UmProcess *p, UINT64 va);            /* a PAGE_GUARD page */
 void       um_decommit(UmProcess *p, UINT64 va, UINT64 size);
 bool       um_is_committed(UmProcess *p, UINT64 va);
+UINT32     um_page_protect(UmProcess *p, UINT64 va);       /* PAGE_* now, 0 if not committed */
 /* Shared sections: frames the section owns, mapped into processes */
 PADDR     *um_alloc_frames(UINT64 n);           /* n zeroed frames; NULL if memory is short */
 void       um_free_frames(PADDR *f, UINT64 n);
@@ -363,6 +389,23 @@ void       um_gui_process_gone(UmProcess *p);   /* destroy the process's windows
 UINT32     um_wait_one(UmObject *o, INT64 timeout_100ns);
 void       um_abandon_mutants(UmProcess *p, UmThread *t);
 
+/* um_security.c: tokens, security descriptors, access checks */
+void       um_security_syscalls_init(void);
+UmObject  *um_token_for_process(UmProcess *creator);   /* a new process's primary token (referenced) */
+void       um_thread_drop_token(UmThread *t);          /* stop impersonating (the thread ended) */
+UINT32     um_set_thread_token(UmThread *t, UINT64 buf, UINT32 len);   /* ThreadImpersonationToken */
+UINT32     um_check_object(UmObject *o, UINT32 want);  /* opening @o for @want: STATUS_SUCCESS or ACCESS_DENIED */
+UINT32     um_oa_security(UINT64 oa, void **sd);       /* OBJECT_ATTRIBUTES' descriptor, captured (NULL: none) */
+void       um_sd_free(void *sd);
+/* The file system's checks: @want (mapped by @map) against self-relative
+ * descriptor @sd (NULL: none, open to all) as the calling thread */
+UINT32     um_access_check_sd(const UINT8 *sd, UINT32 len, UINT32 want, const UINT32 map[4], UINT32 *granted);
+/* NtQuery/SetSecurityObject for H_FILE/H_DIR handles (um_syscall.c, on kernel/fs/fsec.c) */
+UINT64     um_file_query_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4);   /* (um_syscall.c) */
+UINT64     um_file_set_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4);
+int        um_handle_kind(UmProcess *p, UINT64 h);        /* its UmHandleKind; -1: no such handle */
+void       um_handle_set_inherit(UmProcess *p, UINT64 h, bool inherit);
+
 /* um_exception.c: SEH delivery */
 void       um_exception_syscalls_init(void);
 /* um_registry.c */
@@ -370,5 +413,7 @@ void       um_registry_init(void);
 void       um_registry_syscalls_init(void);
 void       um_registry_poll(void);   /* save the hive after changes (desktop thread) */
 void       um_registry_flush(void);  /* save the hive now if it changed */
+void       um_registry_pending_renames(void);   /* MoveFileEx(DELAY_UNTIL_REBOOT) operations, at boot */
+void       um_registry_process_gone(UmProcess *p);   /* drop the process's change watches */
 void       um_registry_environment(void (*cb)(void *ctx, const char *name, const char *value, bool user, bool expand),
                                    void *ctx);

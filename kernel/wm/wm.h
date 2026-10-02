@@ -96,6 +96,11 @@ typedef struct WND {
     WndCloseFn on_close_request; /* if set, the close button and Alt+F4 call this
                               * instead of closing (the owner decides) */
     WndTickFn  on_tick;      /* optional periodic work */
+    bool       tick_lock_free; /* on_tick takes the file-system lock itself
+                              * if it needs it (else WmTick holds it) */
+    const GdiCursorShape *cursor; /* the pointer over the client area (a program's
+                              * SetCursor), or NULL: the arrow.  Set under the
+                              * desktop lock, then WmCursorShapeChanged() */
     void      *user;         /* app state */
 } WND;
 
@@ -217,6 +222,11 @@ void WmCursorMoveBy(int dx, int dy);
 void WmCursorMoveAbs(int nx, int ny);
 /* Re-show the cursor after a new frame was presented. */
 void WmCursorReshow(void);
+/* A window's cursor shape changed (or was freed): redraw the pointer at
+ * the next tick.  Under the desktop lock. */
+void WmCursorShapeChanged(void);
+/* The pointer's current frame and step: shape (NULL = the arrow), step */
+const GdiCursorShape *WmCursorCurrent(int *step);
 
 /* The display mode changed (GdiDisplayChanged done, work area set): refit
  * the windows and the pointer.  @old_w/@old_h/@old_s: the old logical

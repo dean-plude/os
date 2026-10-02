@@ -823,13 +823,19 @@ USERAPI BOOL ClipCursor(const RECT *r) { (void)r; return TRUE; }
 USERAPI BOOL GetClipCursor(LPRECT r) { if (r) SetRect(r, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)); return TRUE; }
 static HCURSOR g_cur;
 static int g_cursor_count;
-USERAPI HCURSOR SetCursor(HCURSOR c) { HCURSOR o = g_cur; g_cur = c; return o; }
+/* The kernel draws the pointer: this process's over its windows */
+USERAPI HCURSOR SetCursor(HCURSOR c) { HCURSOR o = g_cur; g_cur = c; cursor_to_kernel(c, g_cursor_count < 0); return o; }
 USERAPI HCURSOR GetCursor(void) { return g_cur; }
-USERAPI int ShowCursor(BOOL show) { return show ? ++g_cursor_count : --g_cursor_count; }
+USERAPI int ShowCursor(BOOL show)
+{
+    int n = show ? ++g_cursor_count : --g_cursor_count;
+    cursor_to_kernel(g_cur ? g_cur : LoadCursorW(NULL, (LPCWSTR)IDC_ARROW), n < 0);
+    return n;
+}
 USERAPI BOOL GetCursorInfo(PCURSORINFO ci)
 {
     if (!ci) return FALSE;
-    ci->flags = CURSOR_SHOWING;
+    ci->flags = g_cursor_count >= 0 ? CURSOR_SHOWING : 0;
     ci->hCursor = g_cur;
     GetCursorPos(&ci->ptScreenPos);
     return TRUE;

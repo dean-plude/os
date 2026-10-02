@@ -118,6 +118,7 @@ set(KERNEL_ASM_SOURCES
 set(KERNEL_C_SOURCES
     arch/x86_64/gdt.c
     ke/ksym.c
+    ke/prof.c
     arch/x86_64/idt.c
     arch/x86_64/apic.c
     arch/x86_64/paging.c
@@ -169,6 +170,7 @@ set(KERNEL_C_SOURCES
     um/um_pipe.c
     um/um_gui.c
     um/um_registry.c
+    um/um_security.c
     ke/main.c
     ke/printf.c
     ke/scheduler.c
@@ -258,6 +260,8 @@ file(GLOB_RECURSE USERLAND_DEPS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.rc"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.ico"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.png"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*/build.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/netsurf/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/netsurf/*.h")
 set(USERLAND_C "${CMAKE_CURRENT_BINARY_DIR}/userland_files.c")

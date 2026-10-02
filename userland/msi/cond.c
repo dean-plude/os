@@ -5,6 +5,8 @@
  *   term   := factor ( AND factor )*
  *   factor := NOT factor | '(' expr ')' | value [ op value ]
  *   value  := property | %ENVIRONMENT | "string" | number
+ *             | &Feature | !Feature | $Component | ?Component  (action and
+ *               installed states, which the property lookup answers)
  *   op     := = <> > >= < <= >< << >>  (a ~ prefix compares case-insensitively)
  *
  * A property on its own is true when it is set (non-empty); comparing
@@ -56,8 +58,8 @@ static Val parse_value(Cond *c)
     } else if (isdigit((unsigned char)*c->p) || (*c->p == '-' && isdigit((unsigned char)c->p[1]))) {
         v.n = strtol(c->p, (char **)&c->p, 10);
         v.is_num = true;
-    } else if (*c->p == '%') {
-        c->p++;
+    } else if (*c->p == '%' || *c->p == '&' || *c->p == '!' || *c->p == '$' || *c->p == '?') {
+        char sigil = *c->p++;
         const char *s = c->p;
         while (isalnum((unsigned char)*c->p) || *c->p == '_' || *c->p == '.') c->p++;
         char name[128];
@@ -65,9 +67,10 @@ static Val parse_value(Cond *c)
         memcpy(name, s, n);
         name[n] = '\0';
         char env[136];
-        snprintf(env, sizeof(env), "%%%s", name);
+        snprintf(env, sizeof(env), "%c%s", sigil, name);
         const char *r = c->prop(c->ctx, env);
-        v.s = strdup(r ? r : "");
+        if (sigil != '%' && r && *r) { v.n = strtol(r, NULL, 10); v.is_num = true; }
+        else v.s = strdup(r ? r : "");
     } else if (isalpha((unsigned char)*c->p) || *c->p == '_') {
         const char *s = c->p;
         while (isalnum((unsigned char)*c->p) || *c->p == '_' || *c->p == '.') c->p++;

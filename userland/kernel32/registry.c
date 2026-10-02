@@ -676,14 +676,20 @@ WINBASEAPI LSTATUS WINAPI RegRenameKey(HKEY key, LPCWSTR sub, LPCWSTR newname)
     return r;
 }
 
-/* Change notification: accepted; the event is never signalled (no watchers) */
+/* Change notification: @ev is signalled once, when @filter's kind of
+ * change happens to the key (or with @subtree below it); without @async
+ * the call returns only then */
+NTSYSAPI NTSTATUS NTAPI NtNotifyChangeKey(HANDLE key, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG filter,
+                                          BOOLEAN tree, PVOID buf, ULONG len, BOOLEAN async);
 WINBASEAPI LSTATUS WINAPI RegNotifyChangeKeyValue(HKEY key, BOOL subtree, DWORD filter, HANDLE ev, BOOL async)
 {
-    (void)subtree; (void)filter; (void)ev;
     HANDLE h;
     NTSTATUS s = handle_of(key, &h);
     if (s) return err(s);
-    return async ? ERROR_SUCCESS : ERROR_CALL_NOT_IMPLEMENTED;   /* a synchronous wait would never end */
+    if (async && !ev) return ERROR_INVALID_PARAMETER;
+    IO_STATUS_BLOCK io;
+    s = NtNotifyChangeKey(h, async ? ev : 0, 0, 0, &io, filter, (BOOLEAN)(subtree != 0), 0, 0, (BOOLEAN)(async != 0));
+    return s == 0x103 /* STATUS_PENDING */ ? ERROR_SUCCESS : err(s);
 }
 
 WINBASEAPI LSTATUS WINAPI RegGetKeySecurity(HKEY key, DWORD si, PVOID sd, LPDWORD n)

@@ -8,6 +8,7 @@
 
 #include "input.h"
 #include "../lib/string.h"
+#include "../um/um.h"
 
 #define INPUT_QUEUE_SIZE 256   /* must be a power of two */
 
@@ -90,6 +91,9 @@ bool InputTranslateKey(const InputEvent *ev, KeyEvent *out)
     }
     if (sc == KEY_CTRL) g_ctrl = down;       /* left or right */
     if (sc == KEY_ALT)  g_alt  = down;
+    /* Ctrl+Alt+F12: where every program's threads are (serial log), for a
+     * program that hangs */
+    if (sc == KEY_F12 && !ev->extended && down && g_ctrl && g_alt) UmDumpAll();
 
     out->scancode = sc;
     out->extended = ev->extended != 0;

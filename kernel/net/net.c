@@ -537,6 +537,9 @@ static void net_thread(void *arg)
             if (link) netif_set_link_up(&g_netif); else netif_set_link_down(&g_netif);
         }
         bool got = poll_input() > 0;
+        struct netif *nf;
+        NETIF_FOREACH(nf) got |= nf->loop_first != NULL;    /* to 127.0.0.1, ::1 or ourselves */
+        netif_poll_all();
         bool busy = got;
         for (int i = 0; i < NET_OPS && !busy; i++) busy = g_ops[i].in_use;
         sys_check_timeouts();

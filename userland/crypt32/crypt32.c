@@ -270,3 +270,47 @@ CRYPT32API HANDLE WINAPI PFXImportCertStore(void *pfx, LPCWSTR pw, DWORD flags)
 CRYPT32API BOOL WINAPI CertCreateCertificateChainEngine(void *config, HANDLE *engine)
 { (void)config; if (engine) *engine = 0; SetLastError(NTE_NOT_SUPPORTED_); return FALSE; }
 CRYPT32API VOID WINAPI CertFreeCertificateChainEngine(HANDLE engine) { (void)engine; }
+
+CRYPT32API BOOL WINAPI CryptBinaryToStringW(const BYTE *b, DWORD n, DWORD flags, LPWSTR out, DWORD *len)
+{
+    DWORD need = 0;
+    if (!CryptBinaryToStringA(b, n, flags, 0, &need)) return FALSE;
+    if (!out) { *len = need; return TRUE; }
+    if (*len < need) { *len = need; SetLastError(ERROR_MORE_DATA); return FALSE; }
+    char *a = HeapAlloc(GetProcessHeap(), 0, need);
+    if (!a) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    DWORD k = need;
+    BOOL ok = CryptBinaryToStringA(b, n, flags, a, &k);
+    if (ok) { for (DWORD i = 0; i <= k; i++) out[i] = (WCHAR)(BYTE)a[i]; *len = k; }
+    HeapFree(GetProcessHeap(), 0, a);
+    return ok;
+}
+
+/* Signed messages (PKCS #7) and certificate chains to a private key:
+ * no message decoder and no keys in the stores */
+CRYPT32API HANDLE WINAPI CryptMsgOpenToDecode(DWORD enc, DWORD flags, DWORD type, HANDLE prov, void *recip, const void *stream)
+{
+    (void)enc; (void)flags; (void)type; (void)prov; (void)recip; (void)stream;
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return 0;
+}
+CRYPT32API BOOL WINAPI CryptMsgUpdate(HANDLE msg, const BYTE *data, DWORD n, BOOL final)
+{
+    (void)msg; (void)data; (void)n; (void)final;
+    SetLastError(ERROR_INVALID_HANDLE);
+    return FALSE;
+}
+CRYPT32API const void *WINAPI CertFindChainInStore(HANDLE store, DWORD enc, DWORD flags, DWORD type, const void *para, const void *prev)
+{
+    (void)store; (void)enc; (void)flags; (void)type; (void)para; (void)prev;
+    SetLastError(CRYPT_E_NOT_FOUND_);
+    return 0;
+}
+CRYPT32API BOOL WINAPI CryptAcquireCertificatePrivateKey(const void *cert, DWORD flags, void *para, HANDLE *key, DWORD *spec, BOOL *free_key)
+{
+    (void)cert; (void)flags; (void)para; (void)spec;
+    if (key) *key = 0;
+    if (free_key) *free_key = FALSE;
+    SetLastError(0x8009200B);                       /* CRYPT_E_NO_KEY_PROPERTY */
+    return FALSE;
+}

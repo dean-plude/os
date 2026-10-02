@@ -69,6 +69,7 @@
 #define LWIP_NETIF_STATUS_CALLBACK  1
 #define LWIP_NETIF_LINK_CALLBACK    1
 #define LWIP_NETIF_HOSTNAME         1
+#define LWIP_NETIF_LOOPBACK         1       /* 127.0.0.1, ::1 and our own addresses (the net thread polls) */
 #define ETH_PAD_SIZE                0
 
 /* Checksums in software (the driver does no offload) */

@@ -47,6 +47,7 @@ typedef struct {
 #define KEY_NUMLOCK    0x45
 #define KEY_SCROLLLOCK 0x46
 #define KEY_F4         0x3E
+#define KEY_F12        0x58
 #define KEY_HOME       0x47   /* extended */
 #define KEY_UP         0x48   /* extended */
 #define KEY_PGUP       0x49   /* extended */

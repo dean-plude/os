@@ -1,4 +1,5 @@
 # NovaOS — Feature History, Phase by Phase
+<!-- The regions between "BEGIN generated" and "END generated" markers are built from fragment files by tools/docgen.py: edit those files, not the regions (CONTRIBUTING.md). -->
 
 This is the detailed record of what each phase of NovaOS added, in the
 order it landed.  The [README](../README.md) has the short version: what
@@ -35,6 +36,8 @@ Contents:
 [Runtimes](#language-runtimes-java-net-nodejs-python) ·
 [Installing NovaOS](#installing-novaos-on-a-disk) ·
 [Sound](#sound-intel-hd-audio-winmm-and-wasapi)
+
+<!-- BEGIN generated:history -->
 
 ## Phase 1 — Boot & Kernel Foundation
 - UEFI bootloader (PE32+ EFI application, loads kernel ELF from FAT32 ESP)
@@ -386,7 +389,8 @@ Contents:
 - Not yet: `LoadIcon`/`DrawIcon` and `WM_SETICON` for programs (a window
   shows its program's first icon), and animated cursors.  *(Phase 12's
   user32 has icons from `.ico` files and PE resources and `WM_SETICON`;
-  animated cursors are still missing.)*
+  animated cursors came with "Program pointers and animated cursors"
+  below.)*
 
 ## Phase 10 — Standard DLLs, registry, COM and persistent storage
 - **Unmodified Windows programs run**: stock release builds of ripgrep and
@@ -444,8 +448,9 @@ Contents:
   controls, file-open dialogs (they report "cancelled"), the MSVC FH4 C++
   exception tables, type libraries, `RegNotifyChangeKeyValue` events, audio,
   and a clipboard shared between programs.  *(Dialogs, menus and controls
-  came in Phase 12 and the shared clipboard after Phase 13; the rest is
-  still open.)*
+  came in Phase 12, the shared clipboard after Phase 13, audio with HD
+  Audio, and type libraries and FH4 in "COM type libraries and FH4 C++
+  exceptions" below; the rest is still open.)*
 
 ## Phase 11 — Multiprocessor (SMP)
 
@@ -684,10 +689,8 @@ Install button all go through it, and programs can call
   `/qb`, `/passive`, `/l*v FILE` and `PROPERTY=value` overrides, and
   shows the familiar progress window with Cancel (full UI adds the
   completion message box).  Logs also go to the kernel log (`dmesg`).
-- Not yet: the packages' own dialogs (`InstallUISequence`), the
-  `Shortcut` table, services, environment variables, and
-  merge modules.  LZX decoding is written to the specification but has
-  only been exercised with MSZIP cabinets so far.
+- Custom actions, the packages' own dialogs, shortcuts, services and LZX
+  on real packages came later; see "Windows Installer depth" below.
 
 ## Phase 13 — 32-bit Windows programs (WoW64)
 
@@ -1045,8 +1048,9 @@ finds `java` and `node`.  What it took:
   UCRT (`_create_locale`, conio, `_wspawnve`...).
 - **Windows Installer**: the string pool's encoding of strings of 64 KB
   or more (Node's licence text), which shifted every later string id.
-- Not yet: MSI custom actions still do not run, and .NET has no ICU
-  (globalization works through NLS for English and invariant cultures).
+- Not yet: nothing from this list.  (MSI custom actions run since
+  "Windows Installer depth", and .NET's globalization goes through ICU
+  since "ICU: .NET globalization and kernel32's locales".)
 
 ## Installing NovaOS on a disk
 
@@ -1058,7 +1062,7 @@ menu and `start setup` in the Terminal opens it, to copy NovaOS to
 another disk.
 
 - **Welcome, choose a disk, confirm, install, finish.**  Setup lists the
-  SATA, NVMe and USB disks with their size and what is on them, marks the one NovaOS
+  SATA disks with their size and what is on them, marks the one NovaOS
   started from and the one drive C: is kept on, and asks before erasing
   anything.  Disks under 256 MB are shown but cannot be picked.
 - **What it writes**: a GPT (protective MBR, primary and backup headers
@@ -1203,10 +1207,10 @@ finds them.
   usb-kbd -device usb-mouse`: Terminal commands typed and the pointer moved
   over USB alone, and a keyboard added and removed with `device_add` /
   `device_del` while running.
-- Not yet: a keyboard's media keys and a mouse's extra buttons.  (Done
-  since: hubs, absolute pointers and report protocol in Phase 18.1, USB
-  mass storage in 18.2, and keyboard LEDs, several controllers and the
-  older UHCI/OHCI/EHCI controllers under "Older USB controllers".)
+- Not yet: USB hubs (devices must sit on a root port), absolute pointers
+  (`usb-tablet`, touch screens), HID report protocol (a keyboard's media
+  keys, a mouse's extra buttons), keyboard LEDs, more than one xHCI
+  controller, USB mass storage, and the older UHCI/OHCI/EHCI controllers.
 
 ## Direct3D: DXVK on Mesa's Vulkan
 
@@ -1504,175 +1508,6 @@ where git finds it:
   expected output without the kernel's `[UM]`/`[SCHED]` log lines, which
   share the serial port and could land mid-line (`[[UM] jq.exe ... 40,2]`).
 
-## USB hubs and report-protocol HID (Phase 18.1)
-
-- **USB core** (`kernel/drivers/xhci.c`, `usb.h`): devices are enumerated
-  on root ports and behind hubs (the slot context carries the route
-  string, the root port and, for low and full speed devices behind a high
-  speed hub, the transaction translator).  Every endpoint of the
-  configuration gets a ring in one Configure Endpoint, then
-  SET_CONFIGURATION, and each interface is offered to the class drivers,
-  which open pipes: interrupt IN with a completion callback, and bulk
-  transfers that wait.  A device that leaves takes everything behind it
-  with it; its drivers' `gone` callbacks run on the `usb` thread.
-- **Hubs** (`usbhub.c`): USB 2 and USB 3 hubs.  Ports are powered, the
-  status-change endpoint says which port changed, and the `usb` thread
-  reads its status, debounces, resets it and enumerates the device.
-- **HID** (`usbhid.c`): report protocol.  The report descriptor is parsed
-  into fields (report IDs, usage pages, arrays and bitmaps, push/pop);
-  keyboards report keys held (array or bitmap), mice relative X/Y, wheel
-  and buttons, tablets and touch screens absolute X/Y (scaled to the
-  screen) with a button or the first contact's tip switch.  Boot-class
-  devices whose report descriptor can't be used fall back to boot
-  protocol.  Absolute pointers move the cursor to a position
-  (`InputEvent.absolute`, `WmCursorMoveAbs`).
-- Tested in QEMU (`-machine q35,i8042=off -device qemu-xhci`) with a
-  `usb-hub` on port 1 holding a `usb-kbd` and a `usb-mouse`, and a
-  `usb-tablet` on port 2: typing in Terminal, relative motion and absolute
-  positions all work; the keyboard was unplugged and a new one added on
-  another hub port, and the tablet unplugged and added on a third root
-  port, with `device_del` / `device_add`.
-- Not yet: multi-touch.  (Keyboard LEDs, more than one controller and the
-  older UHCI/OHCI/EHCI controllers: see "Older USB controllers".)
-
-## USB mass storage (Phase 18.2)
-
-- **Bulk-Only Transport + SCSI** (`kernel/drivers/usbmsc.c`): INQUIRY,
-  TEST UNIT READY, REQUEST SENSE, READ CAPACITY (10 and 16), READ/WRITE
-  (10 and 16) and SYNCHRONIZE CACHE, with stall handling and reset
-  recovery.  Each stick becomes a removable block device (`usb0`, `usb1`,
-  ...); `BlockUnregister` takes it off the list when it is pulled.
-- **Drives** (`kernel/fs/drives.c`): a removable disk's FAT12/16/32 and
-  NTFS volumes (whole disk, MBR or GPT) are mounted as the next free drive
-  letter when it arrives, and unmounted when it goes
-  (`RamfsUnmountDrive`: nodes still held stay valid but read nothing).
-  Fixed disks still only mount NTFS, since their FAT volumes are NovaOS's
-  own.  Mounts are read-only for now.
-- **File Explorer** lists the other drives (D: to Z:) under the places in
-  its sidebar, names them by label in the title and breadcrumb, and goes
-  back to This PC when the drive it shows is unplugged.
-- Tested in QEMU with a FAT32 (MBR) `usb-storage` stick present at boot
-  (`dir`, `type`, Explorer, Notepad), unplugged and plugged back in with
-  `device_del` / `device_add`, and an NTFS stick added while running.
-
-## NVMe disks (Phase 18.3)
-
-- **Driver** (`kernel/drivers/nvme.c`): resets each NVMe controller, sets
-  up an admin queue and one I/O queue pair (64 entries, polled through the
-  completion phase bit), identifies the controller and its active
-  namespaces, and registers each namespace with 512-byte blocks as a
-  block device (`nvme0n1`, ...).  Reads and writes go through a 128 KiB
-  bounce buffer described by PRP entries or a PRP list; Flush backs
-  `BlockDev.flush`.  After S3 the controllers are reset and their queues
-  created again.
-- **Install**: NVMe disks are found with the SATA disks (`PersistInit`),
-  so Setup lists them, a blank one holds drive C: in a live session, and
-  NovaOS installs to them.
-- Tested in QEMU/OVMF with a blank 1 GB `-device nvme` and the ISO:
-  Setup installed onto `nvme0n1`, then the NVMe disk alone booted
-  (OVMF's `UEFI QEMU NVMe Ctrl` entry), and a file written in Terminal was
-  saved to its NOVADATA partition.
-
-## NTFS write (Phase 18.4)
-
-- **Writer** (`kernel/fs/ntfs.c`, NovaOS's own code: ntfs-3g and the
-  Linux ntfs3 driver are GPL): rewrites a file's data (resident when it
-  fits in its MFT record, else in newly allocated clusters, the old ones
-  freed once the record points at the new ones), creates files and
-  directories (a `$STANDARD_INFORMATION` carrying the parent's security
-  id, a Win32 `$FILE_NAME`, an empty `$DATA` or `$I30` index), renames
-  and moves them, and deletes files and empty directories (a file with
-  other hard links only loses the name).  Directory indexes are rebuilt
-  whole on each change, as a B+ tree of INDX blocks packed bottom up
-  (`$UpCase` collation), in the index root alone while it fits; the
-  `$INDEX_ALLOCATION` grows, and is given back when the index fits in the
-  root again.  The MFT grows 64 records at a time.  The cluster and MFT
-  bitmaps are kept in memory and written through; records 0-3 are
-  mirrored to `$MFTMirr`.  There is no journal: `$LogFile` is emptied when
-  writing starts (as `ntfsfix` does) and each call leaves the volume
-  consistent.  Files in an attribute list, and compressed, sparse or
-  encrypted files, are not rewritten: the first time something asks
-  whether such a file is writable its record is read, and it shows as
-  read-only from then on (the directory's copy of its attributes can't be
-  trusted for this; ntfs-3g leaves it stale).
-- **When it is writable**: a volume Windows left hibernated (a
-  `hiberfil.sys` starting `hibr`, which Fast Startup leaves too), marked
-  dirty, or with unfinished transactions in `$LogFile` stays read-only.
-- **Drives** (`kernel/fs/drives.c`, `ramfs.c`): `RamfsSource` gained
-  create, remove, rename, write and free-space calls.  Creating, deleting
-  and renaming on a writable drive go to the disk at once; a file's new
-  contents are written when nothing holds it any more, after a quiet
-  second (`DrivesPoll`), and at shutdown (`DrivesSync` from `UmSaveAll`).
-  Volume information reports the real free space and drops
-  `FILE_READ_ONLY_VOLUME`.  Renames within drives D:, E:, ... are real
-  renames now (they were refused as "another device", so `MoveFile`
-  copied and deleted).
-- **Checks**: `drivetest` now writes (small, appended and 700 KB files,
-  overwrites, renames, moves, a case change, a folder of 300 files, then
-  deletes) and leaves two files for the host; `scripts/check-ntfs-disk.sh`
-  runs `ntfsfix -n` and `scripts/ntfs-check.py`, a chkdsk-style check of
-  the cluster and MFT bitmaps against what the records own, the records'
-  headers, attributes and link counts, every `$I30` index (order, leaf
-  depth, VCNs, index bitmap, entries against the `$FILE_NAME`s) and
-  `$LogFile`.  It reports no errors on volumes mkntfs and ntfs-3g made,
-  and none after drivetest and Terminal tests (MFT growth, a 90-file
-  folder split across INDX blocks and shrunk back, a USB stick written to
-  and pulled out without a sync) wrote to them.
-  Windows `chkdsk` has not been run on them: there is no Windows here.
-
-## NTFS as drive C: and file ACLs (Phase 18.5)
-
-Drive C: can now be kept on NTFS, with each file's security descriptor,
-and the kernel enforces those DACLs.
-
-- **`$Secure` writing** (`kernel/fs/ntfs.c`): `NtfsAddSecurity` stores a
-  descriptor once (found again by hash and bytes), appending it to `$SDS`
-  and its mirror 256 KiB on, never across a 256 KiB block, and adds it to
-  the `$SII` and `$SDH` view indexes; `NtfsSetSecurityId` points a file's
-  standard information at it.  The index code takes any named index now,
-  view-index roots are kept small so record 9 doesn't fill, `$SDS` grows
-  64 KiB at a time, allocations extend a stream's last run when they can,
-  and attributes of one type are kept in name order (ntfs-3g looks them up
-  that way).  `NtfsSetInfo` saves times and attribute bits and
-  `NtfsLookup` finds a name in a folder.  New volumes give the root
-  `CREATOR OWNER` full control, inherited, as Windows' C:\ has.
-- **File security** (`kernel/fs/fsec.c`): a RamNode may carry a
-  self-relative descriptor; one without inherits from the nearest folder
-  above that has one (object- and container-inherit ACEs, no-propagate,
-  `CREATOR OWNER`).  `FsecAccess` checks a request against the user's
-  token SIDs with the file generic mapping; the owner can always read and
-  change the DACL.  With no descriptor anywhere above, as on FAT, anyone
-  may do anything.
-- **Syscalls** (`kernel/um/um_syscall.c`): opening, creating, overwriting,
-  deleting, renaming and setting basic information check the DACL (delete
-  falls back to the parent's `FILE_DELETE_CHILD`; `MAXIMUM_ALLOWED` gets
-  what is granted).  A descriptor given in `OBJECT_ATTRIBUTES` (from
-  `CreateFile`'s or `CreateDirectory`'s `SECURITY_ATTRIBUTES`) is applied
-  to the new file.  `NtQuerySecurityObject` (0x155) and
-  `NtSetSecurityObject` (0x1A1, their Windows 10 1903 numbers) moved
-  from ntdll into the kernel; other
-  handles still get the default descriptor.  advapi32's
-  `Get/SetNamedSecurityInfo`, `Get/SetSecurityInfo` and
-  `Get/SetFileSecurity` are real now.
-- **Persistence** (`kernel/fs/persist.c`): an NTFS volume labelled
-  `NOVADATA` can hold C:.  C: is its root (on FAT it stays `\NOVA\C`),
-  NovaOS's own bookkeeping goes in a hidden `$NovaOS` folder, and each
-  file is saved with its times, attributes and security id (one that
-  inherits gets the root's id, read back as "inherit").
-- **Installer**: the confirm page asks how to keep drive C:, NTFS
-  (recommended) or FAT32; NTFS data partitions have no 1 TiB cap.
-- **Checks**: `acltest` gained file tests on C:\AclTest (inheritance,
-  deny write and delete, rename, `MAXIMUM_ALLOWED`, the owner restoring
-  access, a DACL from `SECURITY_ATTRIBUTES`) and leaves `kept.txt`, whose
-  DACL a second run after a restart checks.  `scripts/ntfs-check.py`
-  checks `$SII`, `$SDH` and `$SDS` against each other and attribute order;
-  `check-ntfs-disk.sh` also runs `ntfssecaudit -a`.  In QEMU, NovaOS was
-  installed with C: on NTFS to a blank NVMe disk and booted from it;
-  `acltest` passed 33 of 33 on both boots and `kept.txt` kept its DACL.
-  ntfs-check, `ntfsfix -n` and `ntfssecaudit` found no errors on the
-  partition, nor on a host test volume with 5,100 descriptors.
-- **Not done**: hard links (`CreateHardLink`) are still to come.
-
 ## Phase 17: kernel and API correctness
 
 - **Every thread has a real `ETHREAD`** (17.1): `PsGetCurrentThread` used
@@ -1728,6 +1563,89 @@ and the kernel enforces those DACLs.
   child's standard output share it, so a parent and child writing to one
   log file follow each other instead of overwriting.  `proctest` covers
   all three in the core suite.
+- **Security on objects** (17.4): tokens are kernel objects.  Each process
+  has a primary token, inherited from the process that started it (the
+  desktop user's otherwise: a standard user in Users, with Administrators
+  only for denying since nothing is elevated), and a thread can
+  impersonate an impersonation token.  `NtOpenProcessToken(Ex)`,
+  `NtOpenThreadToken(Ex)`, `NtDuplicateToken`, `NtFilterToken`,
+  `NtQueryInformationToken`, `NtImpersonateAnonymousToken`,
+  `NtAccessCheck` and `NtQuery/SetSecurityObject` moved from ntdll into
+  the kernel at their Windows 10 1903 numbers, and
+  `NtSetInformationThread(ThreadImpersonationToken)` sets or ends
+  impersonation.  `NtFilterToken` (advapi32's `CreateRestrictedToken`)
+  makes SIDs deny-only, removes privileges and adds restricting SIDs, and
+  can make the token write-restricted.  A named event, mutex, semaphore,
+  timer, section, directory or symbolic link keeps the security descriptor
+  it was created with (`SECURITY_ATTRIBUTES`), and opening it, or creating
+  an existing name, checks the access asked for against it as the calling
+  thread: the DACL in order, deny-only groups only in deny ACEs, the
+  owner's implicit `READ_CONTROL | WRITE_DAC`, and for a restricted token a
+  second pass with its restricting SIDs.  kernel32's `OpenEvent`,
+  `OpenMutex` and `OpenSemaphore` pass the access asked for, not all.
+  `GetKernelObjectSecurity`, `SetKernelObjectSecurity`, `GetSecurityInfo`
+  and `SetSecurityInfo` read and change the descriptor; `CheckTokenMembership`,
+  `ImpersonateSelf`, `RevertToSelf`, `SetThreadToken` and
+  `ImpersonateLoggedOnUser` work on real tokens.  Files keep no
+  descriptor yet: the file system takes that part in Phase 18 (18.5), on
+  the same check (`um_access_check_sd`).  `sectest` and `acltest` (also
+  32-bit) show a restricted token refused a protected event.
+- **Registry change events and pending renames** (17.5):
+  `RegNotifyChangeKeyValue` works, on the new `NtNotifyChangeKey`: a watch
+  on a key (optionally with its subkeys) signals its event once when a
+  value is set or deleted, a subkey is added, deleted or renamed, or the
+  key itself is deleted, as its filter asks; without `async` the call
+  waits for that.  `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` writes full
+  `\??\` paths to Session Manager's `PendingFileRenameOperations` (with
+  `!` for `MOVEFILE_REPLACE_EXISTING`), and the kernel now carries the
+  list out at boot, after loading the registry and before any program
+  runs, then deletes it.  A running program's files (its `.exe` and DLLs)
+  are now held while it runs, as on Windows, so they cannot be deleted or
+  replaced until it ends (renaming them still works).  The core suite
+  runs an installer that has to replace a running program, restarts
+  (`tools/novarun.py` and `tools/selftest.py` can restart NovaOS) and
+  checks the replacement happened.  Hard links are still to come.
+- **Small visible bugs** (17.6): File Explorer's This PC is now a list of
+  the drives (C: and each mounted volume, D:, E:, ...) with their free
+  space and size, and opening `C:\` or the desktop's This PC shows it; the
+  up button and Backspace go from a drive's root back to This PC.  The
+  Terminal's `dir` and cmd's `dir` name the drive they list and give that
+  drive's own free space (cmd always asked C: before), and
+  `GetDiskFreeSpaceEx` asks each volume (`FileFsFullSizeInformation`),
+  C: included, whose free space is the free memory it lives in.
+  Notepad++'s tab bar and status bar drew black: it double-buffers them by
+  sending `WM_PRINT` into a memory DC, which `DefWindowProc` ignored.
+  `WM_PRINT` now erases, sends `WM_PRINTCLIENT` and prints the children;
+  the status bar, tab control and progress bar draw on `WM_PRINTCLIENT`;
+  and the tab control lets its parent draw `TCS_OWNERDRAWFIXED` tabs
+  (`WM_DRAWITEM`), sizes tabs from their text, icon and `TCM_SETPADDING`
+  (`TCM_SETITEMSIZE`'s width only with `TCS_FIXEDWIDTH`) and takes
+  `TCM_SETMINTABWIDTH`.  The nightly app corpus now boots with an empty
+  NTFS drive D: and keeps screenshots of `dir C:\` and `dir D:\` (each
+  with its own free space), This PC and Notepad++ (the last two compared
+  with references in `tests/reference/`).
+- **Off the big kernel lock** (17.7): files, the registry, the console and
+  starting processes and threads now run beside each other on every CPU.
+  The file system has a reader/writer lock: opening a file that is there,
+  reading, writing, seeking and closing take it shared (each open file's
+  contents under a lock of its own), and only changes to the tree take it
+  alone.  The desktop thread's loop no longer holds it every tick, only
+  around input, drawing and built-in windows' timers that may use files.
+  The registry has a reader/writer lock of its own, a lock per key and
+  value names on the stack.  A process's lock is a reader/writer lock too,
+  and handles are opened, looked up and closed under it shared, each slot
+  with its own lock; console output takes turns on the console's lock.
+  Programs' memory allocation got arenas picked by thread (one heap lock
+  was 18% of a 4-thread registry run) and stopped losing every freed small
+  block (a tag bug kept them from being reused); kmalloc keeps a few
+  objects per CPU; copies to and from programs move 8 bytes at a time and
+  msvcrt's `memcmp` compares 8 at a time.  On one CPU in QEMU, files went
+  from 1,800 to 18,000 operations a second and the registry from 5,000 to
+  70,000; four CPUs do about 3x that (`smpstress scaling 3`; computing
+  alone scales 3.7–4x on the same host).  smpstress also starts copies of
+  itself from several threads at once, and the nightly run boots it on 4
+  CPUs.  The Terminal's new `profile` command samples where the CPUs spend
+  their time.
 - Tested in QEMU: Neovim 0.10.4 and 0.11.4 open `t.txt`, take `ihello
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,
@@ -1760,222 +1678,584 @@ and the kernel enforces those DACLs.
   no driver, so they stay on the UEFI framebuffer, and after sleep they
   show whatever the firmware's wake path sets up, which is often nothing.
 
-## ACPI: SCI interrupt, lid, thermal zones, wake devices, _PRT (Phase 18.6)
+## Program pointers and animated cursors (.ani)
 
-- **The SCI is an interrupt** (`kernel/hal/ioapic.c`): the I/O APICs come
-  from the MADT, every input is masked at boot, and the SCI (FADT
-  `SCI_INT`, with the MADT's interrupt source override) is routed to vector
-  0x32 on the boot CPU.  Its handler runs uACPI's, which queues GPE methods
-  and `Notify` handlers and wakes the `acpi` thread to run them.  The
-  thread still calls the handler once a second in case an edge was missed,
-  and polls every 100 ms as before when there is no I/O APIC.  The routes
-  are put back after S3.  It is the only device interrupt; the drivers
-  still poll.
-- **PCI interrupt routing**: with an I/O APIC, `\_PIC(1)` selects APIC
-  mode and the root bridge's `_PRT` is read, link devices (`PNP0C0F`)
-  resolved through their `_CRS`; `AmlPciIrq` answers which GSI a pin is
-  wired to, and each function on bus 0 gets it in its Interrupt Line
-  register.  (QEMU's q35: 128 entries, all through links.)
-- **The lid** (`PNP0C0D`): `_LID` is read at load, on `Notify 0x80` and
-  after waking.  Closing it puts the machine to sleep, as Windows does by
-  default.
-- **Thermal zones**: `_TMP`, `_PSV`, `_HOT`, `_CRT` and `_TZP`, read every
-  `_TZP` (at least every 10 s) and on `Notify 0x80`/`0x81`.  Crossing the
-  passive trip point is logged (NovaOS can't throttle the CPUs yet);
-  `_HOT` puts the machine to sleep and `_CRT` shuts it down, drive C: saved
-  first.
-- **Wake devices** (`_PRW`): the lid, power buttons and USB host
-  controllers have their wake GPEs set up, and before S3 `_DSW` (or
-  `_PSW`) tells them to arm.  USB keyboards that can are set for remote
-  wakeup (`SET_FEATURE(DEVICE_REMOTE_WAKEUP)`), and before S3 the xHCI root
-  ports enable wake on connect, disconnect and over-current, suspend
-  (U3) the ports with a device and turn on PME#.  After waking the kernel
-  logs which wake GPE (or the power button, or the RTC alarm) woke it.
-- **For programs**: `NtPowerInformation` answers `SystemPowerCapabilities`
-  (`LidPresent`, `SystemS3`, `ThermalControl`, batteries),
-  `ThermalInformation` (the first zone; converted to the 32-bit layout in
-  ntdll) and `LastSleepTime`/`LastWakeTime`; powrprof's
-  `GetPwrCapabilities` and `CallNtPowerInformation` use them.
-- **Self-test**: `tests/acpi/lid-thermal.asl` describes a lid, a thermal
-  zone (40 C; passive 60, hot 90, critical 95 C) and the xHCI controller as
-  a wake device, with QEMU's `pc-testdev` (ports 0xE8 and 0xE9, written
-  from the QEMU monitor) as the embedded controller.  `powertest` checks
-  the capabilities and readings, then asks the test to close the lid:
-  NovaOS sleeps, the test opens the lid, presses a key on the USB keyboard
-  and wakes the machine, and `powertest` sees `LastSleepTime` and
-  `LastWakeTime` move on; then the zone is heated to 70 C (passive cooling
-  on) and cooled to 45 C.  It runs in the CI boot, which now also has a
-  USB keyboard on an xHCI controller (the self-tests are typed through
-  it).  Also tested by hand: 91 C sleeps and 96 C shuts down.
-- **Not done**: in QEMU a USB key can't wake the machine itself.  QEMU
-  8.2 delivers the key to the suspended port (`xhci_wakeup`) but has no
-  path from there to the platform, so the test wakes it with
-  `system_wakeup` (which QEMU reports as the power button).  USB wake
-  needs checking on real hardware, as do GPE block devices other than
-  `\_GPE` and routing behind PCI bridges.
+Until now `SetCursor` only remembered its argument: the desktop always
+drew its own arrow.  The pointer is now the program's, and animated
+cursors play.  No MIT, BSD or zlib licensed .ani reader was found (Wine's
+is LGPL), so the parser is written here; the format is a small RIFF file.
 
-## HPET and one-shot/TSC-deadline timers (Phase 18.7)
+- **The kernel draws a program's pointer** (`kernel/wm/wm.c`,
+  `kernel/gdi/gdi.c`): `NtNovaGuiCtl` op 19 hands it a shape (up to
+  64 x 64 logical pixels, its hot spot, up to 64 frames and 256 steps,
+  each step's time in jiffies), or asks for the arrow or no pointer.  It
+  shows over the client area of that process's windows, and anywhere while
+  one of them has the mouse captured; the desktop, title bars, borders and
+  window drags keep the arrow.  The desktop's tick steps animated shapes
+  (100 Hz against the .ani's 60 Hz jiffies) and redraws the pointer when
+  the window under it changes.  Op 20 reports what the pointer shows, for
+  tests.
+- **user32**: `SetCursor` sends the cursor to the kernel when it changes
+  (the system `IDC_*` cursors are the arrow; `NULL` hides the pointer),
+  `ShowCursor` below zero hides it, and `GetCursorInfo` says whether it
+  shows.
+- **Animated cursors** (`userland/user32/res.c`): RIFF `ACON` files with
+  `anih`, `rate`, `seq ` and the `fram` list of .cur/.ico frames, from
+  `LoadCursorFromFile`, `LoadImage(LR_LOADFROMFILE)`,
+  `CreateIconFromResourceEx` and `ANICURSOR`/`ANIICON` resources
+  (`LoadCursor`, `LoadImage`).  `DrawIconEx` draws the frame of the step it
+  is given, and `GetCursorFrameInfo` reports each step's frame and rate.
+  `LoadCursorFromFile` loads .cur files too, and returns `NULL` for a
+  missing file as Windows does (it used to return the arrow).
+- **`anitest.exe`** (in the core self-tests) loads a spinner
+  (`userland/programs/anitest.ani`, made by `tools/mkani.py`: 8 frames
+  played in a custom order with two rates) from its resource, from memory
+  and from a file, checks the steps, rates, hot spot and each step's
+  drawing, then makes it the pointer over a window and checks the desktop
+  shows it and steps through at least 6 of the 8 frames in 1.5 s, that
+  `SetCursor(NULL)` hides it and the arrow comes back.  `anitest show N`
+  keeps the window up for N seconds.  It runs as a 32-bit program too
+  (`C:\Programs\x86\anitest`).
+- Not yet: the system cursors themselves (I-beam, resize arrows, the
+  busy and "working in background" animations) are all the arrow;
+  `SetSystemCursor` does nothing; `CopyIcon` of an animated cursor keeps
+  only its first frame; at 200 % the pointer is scaled up by nearest
+  neighbour.
 
-- **HPET** (`kernel/hal/hpet.c`): found through the ACPI `HPET` table
-  (read straight from the RSDP, before the rest of ACPI starts), its main
-  counter started; it replaces the PIT as the reference that calibrates
-  the TSC and the local APIC timer (the PIT stays the fallback).
-- **The APIC timer is one-shot**, in TSC-deadline mode where the CPU has
-  it.  Each timer interrupt re-arms it for the CPU's next 10 ms tick or
-  the earliest TSC-deadline sleeper on that CPU, whichever is sooner, so
-  the tick work stays at 100 Hz while sleeps end when they are due.
-- **Sleeps and timed waits** (`NtDelayExecution`, `NtWaitFor*Object(s)`
-  timeouts) sleep until a TSC deadline (`sched_sleep_until_tsc`) instead
-  of whole 10 ms ticks.  A thread woken by its deadline goes to the front
-  of its run queue and preempts a running thread of no higher priority.
-- `sleeptest timer` measures how late `Sleep(1)`, `Sleep(5)` and a 1 ms
-  wait timeout end, idle and with a busy thread on every CPU; it is in the
-  core self-tests.  In QEMU (TCG, 2 CPUs) the 95th percentile under load
-  was 0.26 ms late (it was 10 to 20 ms with the 100 Hz tick).
-- QEMU emulates the TSC-deadline timer only with KVM, so the self-tests
-  exercise the one-shot mode; TSC-deadline mode is untested.
-- Not yet: waitable timers (`SetWaitableTimer`) still fire on the 10 ms
-  tick.
+## COM type libraries and FH4 C++ exceptions
 
-## IPv6, HTTP/2 and virtio-net (Phase 18.8)
+Two items left open since Phase 10.  We looked for MIT, BSD or zlib
+licensed code first: Wine's typelib and FH4 code are LGPL, and nothing
+permissive covers either, so both are written here from the file formats
+(checked against `widl` output and real MSVC binaries).
 
-- **virtio-net** (`kernel/drivers/virtio_net.c`): virtio 1.0 network
-  adapters (QEMU `virtio-net-pci`), through the modern PCI capabilities;
-  one receive and one transmit queue of 64 buffers, polled like the e1000
-  driver.  The network stack tries the e1000 first, then virtio-net, and
-  sets either up again after sleep.
-- **IPv6** in lwIP: a link-local address, SLAAC addresses from router
-  advertisements, DNS servers from RDNSS (added beside DHCP's, not in their
-  place: a small change to `nd6.c`), MLD, and AAAA lookups (IPv6 first
-  when there is a global IPv6 address).  `ipconfig` shows the addresses,
-  `ping -6`, `curl -6` and `wget -6` force IPv6 (`-4` forces IPv4), and
-  `curl http://[addr]/` takes literals.
-- **Winsock over IPv6**: `AF_INET6` sockets (dual-stack: IPv4 peers show
-  as v4-mapped), `sockaddr_in6` in `connect`, `bind`, `accept`,
-  `sendto`/`recvfrom` and the name calls; `getaddrinfo` returns IPv6 and
-  IPv4 addresses (with `AI_V4MAPPED`, `AI_CANONNAME`, numeric hosts with
-  `%zone`, service names), and `inet_pton`/`inet_ntop`,
-  `WSAStringToAddress`/`WSAAddressToString` and `getnameinfo` handle IPv6.
-  `netcat` resolves with `getaddrinfo` and takes `-4`/`-6`/`-p`.
-- **winhttp.dll** (`userland/winhttp`) became a real HTTP client: sessions,
-  connections and requests, request headers, request bodies
-  (`WinHttpWriteData`), `WinHttpQueryHeaders` (by index, name, number or
-  date), `WinHttpQueryDataAvailable`/`WinHttpReadData`, redirects, Basic
-  credentials, `WinHttpCrackUrl`/`WinHttpCreateUrl`, options and time-outs,
-  and asynchronous sessions that report through the status callback.
-  HTTPS goes through Schannel (secur32); with
-  `WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL` it offers `h2` by ALPN and speaks
-  HTTP/2 through [nghttp2](https://nghttp2.org/) 1.64.0 (MIT, vendored in
-  `third_party/nghttp2`) when the server picks it
-  (`WINHTTP_OPTION_HTTP_PROTOCOL_USED` says which).  Each request opens its
-  own connection; there is no proxy support.
-- **Tests**: `tools/selftest.py --suite network` boots twice with a
-  virtio-net card.  On QEMU's user network it checks `ipconfig`, `ping`,
-  Winsock over IPv4 and `httptest suite` (`userland/programs/httptest.c`:
-  HTTP/2 negotiated, a 300 KB body, POST, redirects, a refused untrusted
-  certificate, chunked HTTP/1.1, the asynchronous API) against
-  `tools/h2server.js` (Node).  On an IPv6-only network, `tools/v6peer.py`
-  (a router, DNS and HTTP server reached through a QEMU datagram netdev,
-  so the host needs no IPv6) checks SLAAC and RDNSS, `ping -6`, `curl -6`
-  and Winsock over IPv6.
-- Also fixed: the USB hot-plug thread could be enumerating when the
-  machine went to sleep, so after the wake its command timed out and the
-  USB keyboard did not come back (an intermittent `powertest` failure).
-  Sleep now waits for it, and it stays idle until the controller is
-  running again.
+- **Type libraries** (`userland/oleaut32/typelib.c`, `typeinfo.c`,
+  `invoke.c`): `LoadTypeLib`/`LoadTypeLibEx` read MSFT-format libraries
+  from `.tlb` files and from the `TYPELIB` resources of DLLs and EXEs
+  (`file.dll\2` picks a resource), with `stdole2.tlb` built in (`IUnknown`,
+  `IDispatch`, `IEnumVARIANT`).  `ITypeLib2`, `ITypeInfo2` and `ITypeComp`
+  cover enums, records, coclasses, interfaces and dispinterfaces,
+  including both views of a dual interface (`href -1`), default values,
+  references into imported libraries and documentation strings (aliases
+  and modules are read too, but no test library has them yet).
+  `RegisterTypeLib`, `UnRegisterTypeLib` (and the `ForUser` forms), `QueryPathOfRegTypeLib` and `LoadRegTypeLib` keep
+  `HKCR\TypeLib` and the interfaces' `ProxyStubClsid32` keys.
+  `LHashValOfNameSys` gives a case-insensitive hash, not Windows' exact
+  values (the lookups here compare names, so the hash is never needed).
+- **Calling through type information**: `ITypeInfo::Invoke` (and so
+  `DispInvoke`, `DispGetIDsOfNames` and `CreateStdDispatch`) converts
+  DISPPARAMS to each method's own argument types, with named arguments,
+  `[optional]` and `[defaultvalue]`, `[in, out]` by reference, `[retval]`
+  and property puts, calls the vtable, and turns a failing HRESULT into
+  `DISP_E_EXCEPTION` with the object's error info.  `DispCallFunc` calls
+  any function or vtable slot (x64 register and stack arguments, x86
+  stdcall and cdecl, floating-point and structure returns).
+- **FH4** (`userland/vcruntime140/eh.c`, `vcruntime140_1.dll`):
+  `__CxxFrameHandler4`, the compressed exception tables that MSVC has
+  emitted for x64 since Visual Studio 2019, decoded into the same state
+  machine as `__CxxFrameHandler3` (unwind maps, try blocks, catch
+  continuations, separated code, `noexcept` functions).  The new
+  `vcruntime140_1.dll` forwards to `vcruntime140.dll`, as Microsoft's does.
+- **The sample COM server** (`testdll.dll`, `Nova.Calc`) now embeds its
+  type library (`userland/testdll/idl/novacalc.idl`, compiled with `widl`
+  by `make_tlb.sh`); its `IDispatch` is `DispInvoke` over that library and
+  `DllRegisterServer` registers it.  DLLs can now carry an `.rc` file.
+- **CRT**: the `<fenv.h>` functions (`fetestexcept`, `feclearexcept`,
+  `fegetround`...) are exported from `msvcrt.dll` and `ucrtbase.dll`.
+- Tests: the new `tlbtest` passes 110/110, 64- and 32-bit; `comtest`
+  59/59 and `cppeh` 17/17, both architectures, all in the CI core suite
+  now.  Python 3.14 with the kiwisolver 1.5.1 wheel, run against NovaOS's
+  own `vcruntime140.dll` and `vcruntime140_1.dll` (Microsoft's copies
+  removed from the Python folder), raises and catches kiwisolver's C++
+  exceptions (`DuplicateConstraint`, `UnsatisfiableConstraint`,
+  `UnknownConstraint`, `UnknownEditVariable`) through FH4 tables and gets
+  the same results as on Linux.
+- Not yet: NumPy still stops at the C99 complex functions (`cabs`,
+  `cexp`...) the UCRT exports, and `AddDllDirectory` is a stub, so
+  `os.add_dll_directory` paths are not searched.  `msvcp140.dll` (the C++
+  standard library) is not provided.
 
-## Display persistence (Phase 18.9)
+## Complex text: HarfBuzz, FreeType and Uniscribe
 
-- **The chosen resolution survives a restart.**  Choosing a mode in
-  Settings > Display, or `ChangeDisplaySettings` with
-  `CDS_UPDATEREGISTRY`, saves it where Windows keeps it,
-  `HKLM\SYSTEM\CurrentControlSet\Control\Video\{NovaOS-Display}\0000`
-  (`DefaultSettings.XResolution`, `YResolution`, `BitsPerPel`), which
-  reaches the disk with the rest of drive C:.  At boot, once drive C: and
-  the registry are loaded and before the desktop starts, the kernel
-  switches to that mode if the adapter has it (`[DISPLAY] Restored the
-  saved mode WxH`); on another adapter without it, NovaOS stays in the
-  boot mode.
-- **Windows grow back.**  A window a smaller mode shrank or pushed aside
-  remembers the frame it had and gets it back when a later mode has room
-  for it, unless it was moved or resized in between.  Maximized windows
-  already followed the work area.
-- `disptest` checks both (46 checks): a 1000x640 window shrinks to fit
-  800x600 and comes back to its size and place, and `CDS_UPDATEREGISTRY`
-  writes the registry values.  The core self-tests save 1024x768 with
-  `disptest 1024 768`, and a second boot on the same drive C: runs
-  `disptest saved 1024 768`, which passes only if NovaOS came up in that
-  mode.
-- Not yet: a per-monitor layout (NovaOS drives one display).
+Phase 19.1.  Arabic, Hebrew and the Indic scripts are shaped: letters join
+into their contextual forms, ligate, reorder and run right to left.
 
-## Older USB controllers: EHCI, OHCI and UHCI
+- **`novatext.dll`** (`userland/novatext`) is the text core, built once and
+  shared by Uniscribe, DirectWrite and Direct2D: **HarfBuzz 11.2.1**
+  (`third_party/harfbuzz`, MIT) and **FreeType 2.13.3**
+  (`third_party/freetype`, the FreeType License; TrueType, OpenType/CFF,
+  Type 1, CID and `.fon` drivers, the smooth and mono rasterizers, the
+  auto-hinter and the stroker).  It exports both libraries' C APIs (`hb_*`,
+  `FT_*`).  No MIT Uniscribe or HarfBuzz-free shaper fitted, so this reuses
+  the standard pair.  HarfBuzz is C++: `tools/build_userland.py` compiles it
+  with clang against libc++'s headers (`libc++-dev`; nothing of libc++ is
+  linked, and HarfBuzz needs no C++ runtime).  For that, the userland's
+  `math.h` and `stdlib.h` gained the C++ overloads the Windows SDK's have,
+  `locale.h` Windows' full `lconv`, and `include/cxx/functional` a slim
+  `<functional>`.
+- **`usp10.dll`** (`userland/usp10/usp10.c`) is rewritten on it.
+  `ScriptItemize` splits text by script (HarfBuzz's Unicode data) and by
+  bidirectional level (a compact UAX #9: strong letters, European and
+  Arabic numbers, neutrals between them).  `ScriptShape` reads the DC's
+  font through `GetFontData`, shapes the run with HarfBuzz at gdi32's
+  pixel size and returns glyphs in visual order, logical clusters and
+  visual attributes; it reports `USP_E_SCRIPT_NOT_IN_FONT` when the font
+  lacks a complex script.  `ScriptPlace` hands out HarfBuzz's advances and
+  mark offsets, `ScriptTextOut` draws marks at their offsets, and
+  `ScriptCPtoX`, `ScriptXtoCP` and `ScriptGetLogicalWidths` handle
+  right-to-left clusters.  New: `ScriptShapeOpenType`,
+  `ScriptPlaceOpenType` (OpenType features), `ScriptItemizeOpenType`'s
+  real script tags, `ScriptGetFontScriptTags`, `ScriptStringGetOrder`.
+  The `ScriptString*` layer shapes each run with a fallback font when the
+  DC's lacks its script (`SSA_FALLBACK`), lays the runs out in visual
+  order and draws them all on the DC font's baseline.
+- **GDI**: `ExtTextOut`, `TextOut` and `GetTextExtentPoint32` send text
+  with complex-script characters through Uniscribe, as Windows' LPK does
+  (`ETO_GLYPH_INDEX` and `ETO_IGNORELANGUAGE` skip it; `ETO_RTLREADING`
+  makes the line right to left).  GDI gained the faces Noto Sans Arabic
+  and Noto Sans Devanagari (`C:\Windows\Fonts`), also under Windows'
+  names for those scripts (Traditional Arabic, Mangal, Nirmala UI...).
+- **`usptest`** (in the CI core suite, 64- and 32-bit) checks itemizing,
+  the Arabic contextual forms and lam-alef ligature, the Devanagari kssa
+  conjunct with its reordered i sign and a half form, against the glyphs
+  HarfBuzz gives on the build host, and that `ExtTextOut` draws mixed
+  Latin, Arabic and Devanagari lines pixel for pixel as `ScriptStringOut`
+  does.
 
-USB devices now work on every kind of PC USB controller, not only xHCI,
-and on any number of controllers at once, so machines from before about
-2012 (and virtual machines that emulate only USB 1.1 or 2.0) get their
-keyboards, mice, hubs and sticks too.
+## Direct2D
 
-- **USB core** (`kernel/drivers/usb.c`, `usb_hc.h`): what used to be part
-  of the xHCI driver and is the same for every controller moved into a
-  core of its own: enumeration (SET_ADDRESS, or xHCI's Address Device),
-  descriptors, a pipe per endpoint, offering interfaces to the hub, HID and
-  mass-storage drivers, taking devices away, and the `usb` thread that
-  watches the root ports.  A controller driver supplies root-port reset,
-  control, bulk and interrupt IN transfers, and its own per-device and
-  per-endpoint state (`UsbHcOps`).  The class drivers (`usb.h`) are
-  unchanged.
-- **xHCI** (`xhci.c`): its state moved into a per-controller structure,
-  so every xHCI controller is started, each a bus of its own (`usb1 port
-  3` in the log).  On Intel 7- to 9-series chipsets it takes the shared
-  USB 2 ports over from EHCI, as Windows does.
-- **EHCI** (`ehci.c`, USB 2): a queue head per endpoint, control and bulk
-  on the asynchronous ring and interrupt ones on a periodic list that
-  every frame points at; transfers are chains of qTDs (20 KiB each) and a
-  short packet ends a bulk or interrupt transfer through an inactive
-  "stop" qTD.  Full- and low-speed devices on a root port are passed to
-  the companion controller that shares the port (`PORT_OWNER`); behind a
-  high-speed hub they go through the hub's transaction translator (split
-  transactions).  The firmware's legacy support is turned off first.
-- **OHCI** (`ohci.c`, USB 1.1): an endpoint descriptor per endpoint on the
-  control, bulk or interrupt list, transfers queued behind a dummy TD
-  (8 KiB per TD), the data toggle kept in the ED, and a short packet in
-  the middle of a bulk transfer ending it.  The controller is taken from
-  the firmware's SMM driver (`OwnershipChangeRequest`).
-- **UHCI** (`uhci.c`, USB 1.1): skeleton queue heads for interrupt,
-  control and bulk transfers behind every frame, a queue head per
-  endpoint, a TD per packet with the data toggle kept by the driver, and
-  short-packet detection that ends a transfer (or moves a control
-  transfer on to its status stage).  Legacy keyboard emulation is turned
-  off (`USBLEGSUP`).
-- All of them are polled from the timer tick like the rest of NovaOS's
-  drivers (their interrupts stay off); an interrupt endpoint is polled
-  each frame.  Controllers start in the order that lets EHCI hand devices
-  to its companions: xHCI, EHCI, then OHCI and UHCI.  Before sleep (S3)
-  every xHCI controller arms its root ports to wake the machine (Phase
-  18.6's keyboard wake, now a controller operation, `prepare_sleep`);
-  after it each controller is reset and its devices enumerated again.
-- **Keyboard LEDs**: Num Lock, Caps Lock and Scroll Lock follow the lock
-  keys (`InputLockState`, which now tracks Num and Scroll Lock too).  The
-  report descriptor's LED outputs are found (the boot-protocol descriptor
-  gained them), and the `usb` thread sends an output report
-  (`SET_REPORT`) to every keyboard when the state changes.
-- Tested in QEMU 8.2 (`-machine q35,i8042=off`, so typing goes over USB)
-  with a keyboard, a tablet and a FAT stick (`dir`, `type`) on each of
-  `qemu-xhci`, `usb-ehci`, `pci-ohci` and `piix3-usb-uhci` (on OHCI and
-  UHCI the stick sat behind the hub QEMU adds when the root ports run
-  out); an ICH9 EHCI with three
-  UHCI companions (a full-speed hub with keyboard and mouse passed to a
-  companion, a high-speed stick and tablet on EHCI); EHCI with an OHCI
-  companion and full-speed keyboards (`usb_version=1`) unplugged and
-  plugged in on other ports; two xHCI controllers with the keyboard moved
-  from one to the other; devices added and removed while running on
-  each; `sleeptest` on xHCI (two controllers), OHCI and ICH9 EHCI + UHCI
-  with every device back after waking.  Caps Lock reached the keyboards
-  as `SET_REPORT` output reports (QEMU's USB packet capture).
-- Not yet: isochronous transfers (webcams, USB audio), interrupt
-  endpoints are polled every frame whatever their interval, and split
-  transactions through a high-speed hub's transaction translator are
-  untested (QEMU's EHCI has none).  Unplugging a hub from a port that EHCI
-  passed to a UHCI companion aborts QEMU 8.2 (an assertion in its USB
-  core when it hands the port back); unplugging other devices there, or
-  a hub elsewhere, works.
+Phase 19.2.  `d2d1.dll` (`userland/d2d1`) is a software Direct2D.  No
+MIT, zlib or BSD Direct2D exists (Wine's is LGPL), and the permissive
+vector libraries (ThorVG, Blend2D, plutovg) could not be fetched here, so
+it is written for NovaOS on a small core of its own:
+
+- **Geometry** (`path.c`, `geometry.c`): figures of lines and cubic
+  Béziers; rectangles, rounded rectangles, ellipses, arcs (SVG's endpoint
+  form) and quadratic curves become them.  Path geometries and their
+  sinks, transformed geometries and groups.  `GetBounds` is exact (curve
+  extrema); `FillContainsPoint`, `ComputeLength`, `ComputePointAtLength`;
+  `Tessellate`, `ComputeArea`, `CompareWithGeometry`,
+  `CombineWithGeometry` (union, intersect, xor, exclude) and `Outline`
+  cut the flattened shapes into horizontal slabs and join the result back
+  into clean outlines.
+- **Strokes** (`stroke.c`): each figure is flattened, cut into dashes
+  (solid, dash, dot, dash-dot, dash-dot-dot and custom, with an offset),
+  and outlined: miter (with its limit, clipped or bevelled), bevel and
+  round joins; flat, square, round and triangle caps; separate start, end
+  and dash caps.  `Widen`, `GetWidenedBounds` and `StrokeContainsPoint`
+  use the same outline.
+- **Rasterizer** (`raster.c`): exact-area anti-aliasing (each edge adds
+  the area it covers to the cells it crosses, and a running sum gives
+  every pixel's coverage), nonzero and even-odd fills, aliased mode, in
+  bands.  Paint is source-over into premultiplied BGRA.
+- **Brushes** (`brush.c`): solid; linear and radial gradients (with the
+  gradient origin offset, clamp, wrap and mirror, sRGB or linear-light
+  interpolation, from a 256-entry table); bitmap brushes with nearest or
+  linear sampling and extend modes; bitmaps from memory or a WIC bitmap.
+- **Render targets** (`target.c`): HWND targets (a DIB section copied to
+  the window at `EndDraw`, `Resize`), DC targets (`BindDC`) and bitmap
+  targets (`CreateCompatibleRenderTarget`), with DPI, transforms,
+  axis-aligned clips, layers (opacity, geometric masks, opacity brushes),
+  `FillOpacityMask`, meshes, drawing state blocks and
+  `ID2D1GdiInteropRenderTarget`.
+- **Text** (`text.c`): `DrawGlyphRun` fills the outlines from
+  `IDWriteFontFace::GetGlyphRunOutline`; `DrawTextLayout` runs
+  `IDWriteTextLayout::Draw` with Direct2D's text renderer (drawing effects
+  that are brushes colour their ranges, underlines and strikethroughs are
+  drawn); `DrawText` lays the text out with the shared DirectWrite
+  factory first.
+- **`tools/d2dtest`** (MinGW, so it uses MinGW's `d2d1.h` like any
+  Windows program) checks geometry answers, draws a scene of fills,
+  strokes, gradients, a dashed path of arcs, a bitmap and a rotated
+  translucent rectangle, and compares it with the image
+  `tools/d2dtest/reference.py` draws with Skia: under QEMU the mean
+  difference is 0.24 of 255 per pixel.  It then checks layers, clips and
+  an HWND render target in a window.  It runs in the CI graphics suite,
+  64- and 32-bit.  Its text check draws "NovaOS" with `DrawText` and
+  saves it as `d2dtext.bmp`.  DirectWrite's text formats and layouts (on
+  HarfBuzz from `novatext.dll`) were written here and went in with the
+  Firefox work, and with them the check passes, 64- and 32-bit.
+
+## One file per item: parallel changes without merge conflicts
+
+Up to seven pull requests were open at once, and nearly every one edited
+the same lines of the same files: the DLL table and program sets in
+`tools/build_userland.py`, the test lists in `tools/selftest.py` and
+`tools/appcorpus.py`, and the lists in the README, `docs/HISTORY.md`,
+`docs/ROADMAP.md` and `docs/building.md`.  Each merge left the others
+conflicted, and twice conflict markers reached main.  Those lists are now
+directories with one file per item, so changes add files instead of
+editing shared lines.  [CONTRIBUTING.md](../CONTRIBUTING.md) is the guide.
+
+- **DLLs**: `userland/NAME/dll.json` registers each DLL (dependencies,
+  load addresses, extra source directories, entry point, implicit TLS,
+  export ordinals); `tools/build_userland.py` finds them and links each
+  after its dependencies.  A DLL that needs more (Mbed TLS for secur32,
+  the msvcrt/ucrtbase double link) keeps that code in its own
+  `userland/NAME/build.py`.  The existing DLLs keep their addresses; a
+  new DLL leaves them out and gets a free 16 MiB slot, so two branches can
+  no longer pick the same address (three open ones had all chosen
+  0x7FFE50000000), and the build stops if two DLLs' images overlap.  The
+  userland it builds is byte-for-byte the same as before (link timestamps
+  aside).
+- **Programs**: `userland/programs/NAME.json` replaces the 32-bit and
+  System32 sets (`x86`, `system`, extra `libs`, `selftest`).
+- **Tests**: one file per self-test in `tests/selftest/core/` and
+  `graphics/`, one per program in `tests/appcorpus/`, run in file-name
+  order; `tools/selftest.py --list` prints a suite.
+- **Docs**: README's program table, "What is inside" list, licences,
+  core-suite and self-test lists, the roadmap's "What comes next" items,
+  building.md's self-test table and every HISTORY section are built by
+  `tools/docgen.py` from files in `docs/readme/`, `docs/roadmap/`,
+  `docs/selftests/` and `docs/history/` (and the tests' `DOC` strings).
+  Pull requests add fragments and leave the generated regions alone; the
+  Docs workflow (`.github/workflows/docs.yml`) rebuilds them on main after
+  each merge.
+- **CI**: a quick Checks job runs before the boot tests: no conflict
+  markers or stray branch-name lines (`tools/ci/check-conflict-markers.py`),
+  the manifests and test files load, and a pull request has not edited a
+  generated region by hand.
+
+## ffmpeg
+
+Phase 19.3.  `tools/pe_imports.py` on a current Windows ffmpeg build
+(BtbN's, statically linked, 168 MB) listed nine missing functions, now
+added:
+- gdi32: `ExtCreateRegion` (kept as a bounding box like every region),
+  `GetGraphicsMode`, `Get`/`Set`/`ModifyWorldTransform` (kept per DC and
+  reported back; drawing stays in device coordinates),
+  `GetOutlineTextMetricsA`/`W` (from the font's head, hhea, OS/2, post and
+  name tables) and `GetFontUnicodeRanges`.
+- The CRT: `getenv_s` and `_wgetenv_s`.
+- ws2_32: `WSASendMsg` (control data is not carried).
+The tenth, `DWriteCreateFactory`, is the Firefox branch's DirectWrite.
+
+Running it found three kernel bugs, all from ffmpeg's many threads:
+- **Thread stacks**: new threads got a fixed 256 KB stack.  They now get at
+  least the image's stack reserve, as on Windows (2 MB for ffmpeg, whose
+  H.264 decoder threads overflowed the smaller stack into each other's).
+- **Lost sleeps**: a thread woken early from a timed sleep stays on its
+  CPU's sleep list until that CPU's next tick drops it.  A thread that
+  exited in between was freed while still on the list, and every sleeper
+  after it was lost: their `Sleep` never returned.  An exiting thread now
+  leaves the list first, and a thread that moved to another CPU leaves the
+  old CPU's list before sleeping on the new one.
+- **Handles**: a process could hold 256 handles.  winpthreads makes events
+  and semaphores for every mutex and condition variable, so ffmpeg ran out
+  ("Cannot allocate memory", "Resource temporarily unavailable").  The
+  limit is 4096.
+
+`ffmpeg -i in.mp4 out.webm` (H.264 and AAC in, VP9 and Opus out) completes
+under QEMU with its default threads, as do MPEG-4 encoding and 16 decoder
+threads; the result plays on Linux.  The process dump on Ctrl+C now shows
+each thread's scheduler state.  The nightly app corpus runs Gyan's ffmpeg
+7.1.1 build (`tests/appcorpus/080-ffmpeg.py`): it makes an MP4 from its
+test sources, converts it to WebM, and ffprobe must find VP9 and Opus.
+
+## Firefox (Floorp)
+
+Floorp 12.19, a Firefox build (the Firefox 157 engine), starts from the
+Terminal, creates its profile and draws its full browser window.  The
+browser is run as shipped; everything below is in NovaOS.
+
+- **Imports**: the C runtime pieces Gecko uses (`_wsetlocale` and the
+  rest), the delay-loaded DLLs it asks for, and cross-process
+  `NtQueryInformationProcess`.
+- **DirectWrite** (`userland/dwrite`): NovaOS's own `dwrite.dll`.  The
+  factory, the system font collection (scanned from `%WINDIR%\Fonts`,
+  with the common Windows family names mapped to the bundled fonts),
+  font families, fonts, font faces (metrics, glyph indices, advances,
+  kerning, outlines into a geometry sink, font tables), GDI interop and
+  glyph run analysis (aliased and ClearType alpha textures).  Fonts are
+  read with stb_truetype (public domain).  Text formats and text layouts
+  (`layout.c`, written in the Phase 19 work for Direct2D's `DrawText`)
+  break lines, handle bidirectional text, carry per-range font
+  attributes, and answer metrics and hit tests.  They shape with
+  HarfBuzz from `novatext.dll` when it is present, and with the font's
+  plain glyphs and advances otherwise.
+- **Kernel**: `NtQuerySection`, `MEM_RESET`/`MEM_RESET_UNDO`, a
+  per-process handle table of 4096 (Gecko keeps far more than the old
+  256 open), and `C:\AppData\Roaming`, `Local`, `LocalLow` and
+  `C:\ProgramData` made at boot.
+- **C runtime**: `_vsnwprintf` (the legacy option of
+  `__stdio_common_vswprintf`) now fills a buffer exactly, without the
+  terminator, when the output is exactly the buffer's size.  Gecko formats
+  its 16-digit install hash that way; returning -1 made the profile
+  service fail and Firefox show "Profile Missing".
+- **user32**: window class names up to 256 characters (Gecko's remote
+  window class contains the profile path).
+- **Window station security**: the sandbox's alternate desktop reads and
+  sets the window station's and desktop's security with `GetSecurityInfo`
+  and `SetSecurityInfo` (`SE_WINDOW_OBJECT`).  Those are user32 pseudo
+  handles, so they answer with the default descriptor instead of failing;
+  the failure had left the broker without a desktop and crashed it.
+- **Debugging aids**: the kernel prints each new process's command line;
+  `tools/novarun.py` takes `!bg COMMAND` to leave a program running while
+  it waits and takes screenshots, and `NOVARUN_GDB=1` starts QEMU with a
+  gdb server so breakpoints can be set in a program's code.
+- **Sandbox** (Chromium's, which Firefox uses for its child processes):
+  - ntdll's system call exports have the Windows byte layout (see the
+    ABI conformance work below), so the sandbox can copy and patch them
+    to intercept calls in the child.
+  - Token handles know whether they are primary or impersonation tokens
+    and at which level; `SetThreadToken`, `OpenThreadToken`,
+    `ImpersonateSelf` and `RevertToSelf` track a token per thread.
+    `CreateWellKnownSid` covers every well-known SID type.
+  - New system calls: `NtOpenProcessToken(Ex)`, `NtOpenThreadToken(Ex)`,
+    `NtImpersonateAnonymousToken`, `NtQueryFullAttributesFile`,
+    `NtSetInformationProcess`, and the `ProcessHandleCount` and
+    `ProcessHandleTable` classes of `NtQueryInformationProcess`.
+  - `CREATE_SUSPENDED` really suspends a new process, so the parent can
+    patch the child before it runs.
+  - ntdll exports the heap and string functions the sandbox resolves in
+    the child (`RtlCreateHeap`, `NtSignalAndWaitForSingleObject`,
+    `_strnicmp`, `wcslen`...), and `GetProcessHeaps` includes an empty
+    csrss port heap the sandbox expects to find before it cuts a content
+    process off from csrss.
+  - A process can have 256 threads (was 64); Firefox's main process runs
+    more than 64.
+- **Overlapped I/O**: a pipe read or write that fails at once (a broken
+  pipe when a child process exits) no longer sets its event or queues a
+  completion packet or routine; Windows does none of these, and Firefox's
+  IPC and Rust I/O free the `OVERLAPPED` after such a failure, so the late
+  packet crashed the main process with a use-after-free.
+- **GDI**: `CreateDIBSection` with a file-mapping handle puts the pixels in
+  that mapping (Firefox's GPU process draws the browser into one shared
+  with the main process).
+- **Window handles across processes**: an `HWND` now names the same
+  window in every process, as on Windows.  user32 builds each handle from
+  a tag the kernel gives the process (unique among running processes), so
+  handles never collide, and tells the kernel each desktop window's handle
+  and client area.  `IsWindow`, `GetClientRect`, `GetWindowRect`,
+  `ClientToScreen`, `ScreenToClient`, `IsWindowVisible`, `IsIconic`,
+  `IsZoomed` and `GetWindowThreadProcessId` answer for another process's
+  window.  Firefox's GPU process sizes its frames from the main process's
+  window; before, it saw a 0 x 0 window and never drew, so the browser
+  showed white.  The full browser now draws through the GPU process.
+- **Locks that sleep**: `WaitOnAddress`, SRW locks and condition
+  variables park the thread until another wakes it, the way Windows 8
+  and later do: ntdll lists the waiters per address and they sleep in the
+  new `NtWaitForAlertByThreadId` system call until a waker calls
+  `NtAlertThreadByThreadId`.  They used to poll every 10 ms, which left
+  Firefox's main thread too slow to read its input.  Also
+  `SleepConditionVariableSRW`/`CS` return FALSE with `ERROR_TIMEOUT` when
+  they time out, as on Windows.
+- **Drawing from another thread**: `ReleaseDC` shows what was drawn at
+  once even while part of the window waits for `WM_PAINT` (Firefox
+  presents from its own thread while the window may never stop being
+  invalidated).
+- **Debugging aids**: Ctrl+Alt+F12 writes every program's threads to the
+  serial log (state, last system call and its first argument, return
+  addresses on the stack); the syscall trace shows the thread id
+  (`[TRACE] name pid/tid`); the standard error of a detached process
+  (Firefox's sandboxed children) goes to the serial log; and
+  `tools/novarun.py` takes `!click X Y`.
+- Not yet: a page's content (the tab area stays empty) and fetching a page
+  over the network.
+
+## ICU: .NET globalization and kernel32's locales
+
+.NET 5 and later do their globalization through ICU when
+`C:\Windows\System32\icu.dll` loads, and fall back to NLS otherwise;
+until now NovaOS had no `icu.dll`, so .NET programs only knew English and
+the invariant culture.  NovaOS now ships ICU the way Windows 10 does.
+
+- **`icu.dll`** (`third_party/icu`, ICU 77.1, Unicode License v3): one
+  DLL per architecture (System32 and SysWOW64) holding ICU's common and
+  i18n libraries, exporting ICU's C API (1193 functions) under unversioned
+  names (`ucol_open`, not `ucol_open_77`), which is what .NET looks up.
+  `tools/build_icu.py` builds it from the official ICU4C source with
+  MinGW-w64; the outputs are committed.
+- **ICU's data** is a separate file, as on Windows:
+  `C:\Windows\Globalization\ICU\icudt77l.dat`, which `icu.dll` points ICU
+  at when it loads (`tools/icu/nova_icu.c`; `ICU_DATA` overrides it).  It
+  is ICU's own data less legacy code-page converters, the word-break
+  dictionaries, transliteration, unit names and character names (18 MB
+  instead of 31).  Every culture .NET knows (1301, plus the time zones)
+  gives the same names, formats and comparisons with the trimmed data as
+  with the full data.
+- **kernel32's locales** (`userland/kernel32/locale.c`): .NET on Windows
+  also asks `GetLocaleInfoEx(name, LOCALE_SNAME)` whether Windows knows a
+  culture before it uses ICU's, and kernel32 knew only English.  It now
+  has the table of all 864 Windows locales (`locale_data.h`, generated by
+  `tools/gen_locales.py` from .NET's MIT-licensed `IcuLocaleData.cs`):
+  names, LCIDs, ANSI/OEM/Mac/EBCDIC code pages, GEOIDs, list separators,
+  parents.  `LocaleNameToLCID`, `LCIDToLocaleName`, `IsValidLocale(Name)`,
+  `ResolveLocaleName` and `EnumSystemLocales(A/W/Ex)` use it, and for
+  locales other than English `GetLocaleInfoEx`/`W`/`A` answer from ICU:
+  names in the locale's own language and in English, number and currency
+  symbols and patterns, grouping, day and month names (genitive too),
+  short and long dates, times, year-month and month-day formats, first day
+  of the week, measurement system and paper size (the date-pattern and
+  number-pattern conversions follow .NET's own, MIT).  English answers
+  from the same tables as before.
+- **msvcrt** exports the `_timezone`, `_daylight` and `_tzname` variables
+  (MinGW-built DLLs such as `icu.dll` import them).
+- **Smaller kernel image**: system files of 1 MiB or more (ICU's data and
+  DLLs, NetSurf) are embedded zlib-compressed and inflated onto drive C:
+  at boot, so `kernel.elf` is 27 MB rather than 48 MB with ICU in it.
+- **Stack overflows** a program handles itself (the .NET runtime prints
+  "Stack overflow." and exits) are logged with where they happened.
+- **Tests**: `icutest` (in the CI core suite, 64- and 32-bit, 56 checks)
+  loads `icu.dll` as .NET does and checks German and Japanese display
+  names, numbers, currencies, dates, the Japanese calendar's era,
+  collation, Turkish and German case mapping, Windows-to-IANA time zones,
+  IDNA, NFC, eight threads at once, and kernel32's answers for those
+  locales.  The nightly app corpus now runs .NET 10.0.12 (from NuGet) with
+  `tests/dotnet/culturetest.dll`: `de-DE` gives `1.234.567,89`,
+  `1.234,50 €`, `Freitag, 2. Oktober 2026`, `02.10.2026`; `ja-JP` gives
+  `￥1,235`, `2026年10月2日金曜日`, `2026/10/02`, `日本語 (日本)`; German
+  sorts `ä` with `a`, Japanese compares kana and widths, all through ICU.
+- Not yet: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat`
+  still format the English way for every locale, and the user's locale is
+  always `en-US`.
+
+## Recording: waveIn, WASAPI capture and endpoint volume
+
+Phase 19.4.  The HD Audio driver now also programs an input stream: it
+picks the codec's first input pin, preferring a microphone, then line in,
+aux and CD, routes it through the mixer and selector widgets to an ADC,
+and records 48 kHz 16-bit stereo into a ring the mixer thread reads every
+tick.  The kernel mixer gained capture streams: each running one gets a
+copy of what was recorded (the oldest frames dropped and counted when a
+program falls behind), and the card records only while one runs.  Each
+direction has a master volume, applied as the mixer mixes or copies.
+`NtNovaAudioOpen` with its top bit set opens a capture stream, and
+`NtNovaAudioCtl` gained four operations: read frames, describe the
+recording device, and set and get the endpoint volume.
+
+On top of that:
+- winmm: `waveIn` (devices, capabilities, open with every callback kind,
+  prepare and add buffers, start, stop, reset, position).  A thread
+  converts the mixer's frames into each buffer in the program's format and
+  hands it back full (`WIM_DATA`); stop hands back a partly filled one.
+  The converter learned the reverse direction (any rate, 8 to 32-bit or
+  float, mono as the average of both sides).
+- mmdevapi: a second endpoint, the recording one ("Microphone (High
+  Definition Audio)", or "Line in"), in the enumerator's lists and as the
+  default `eCapture` device; its `IAudioClient` fills its buffer from a
+  capture stream and `IAudioCaptureClient` hands it out ten milliseconds
+  at a time, flagging a discontinuity when frames were dropped.  Both
+  endpoints have `IAudioEndpointVolume` (scalar and decibel levels from
+  -65.25 to 0 dB, per channel, mute, steps), kept in the kernel so every
+  program sees the same volume.
+
+To test it, `tools/novarun.py --rec FILE.wav` gives QEMU an `hda-micro`
+card on a private PulseAudio server: the microphone hears FILE played over
+and over into a null sink, and the speakers go to a second null sink
+(saved with `--wav`).  Null sinks run on a clock, so the guest records in
+real time; QEMU's ALSA backend with the file plugin delivered audio about
+ten times too fast.  The core self-tests now record 3 s through `waveIn`
+at 44.1 kHz mono and 3 s through WASAPI in the mix format, and
+`tools/wavcheck.py --tone 523 2500` must find the 523 Hz tone in each
+recording; the WASAPI test turns the recording volume down to a quarter
+half way and must measure the level a quarter as loud, and `soundtest
+volume` checks the volume controls on both endpoints.
+
+## Windows Installer depth: custom actions, dialogs, shortcuts, services
+
+Roadmap step 20.5.  Before writing anything we looked for a permissive
+(MIT, BSD, zlib) Windows Installer to reuse; there is none (Wine's is
+LGPL), so the engine stays NovaOS's own, with `stb_image` (public domain
+or MIT) for the dialogs' pictures.
+
+- **Custom actions that run code.**  DLL actions (types 1 and 17) run out
+  of process, as on Windows: `msiexec /novaca` is a custom-action server
+  that loads the DLL and calls its entry point, and a 32-bit DLL (WiX's
+  `WixCA` usually is, even in x64 packages) runs in `SysWOW64`'s
+  `msiexec`.  Its `MsiGetProperty`, `MsiDatabaseOpenView`,
+  `MsiProcessMessage`... calls cross a pipe back to the installation.
+  EXE actions (2, 18, 34, 50) start the program from the Binary table, an
+  installed file, a folder or a property; type 19 shows its error; 35 and
+  51 set folders and properties.  The flags are honoured: continue on
+  error, asynchronous, run once, deferred with `CustomActionData`, commit
+  actions after `InstallFinalize`; rollback actions are kept unused (there
+  is no rollback yet).  Script actions (VBScript, JScript) and nested
+  installs are logged and skipped.
+- **The MSIHANDLE API** (`userland/msi/api.c`), exported at Windows'
+  ordinals: records, views with an SQL engine (`sql.c`: `SELECT ... WHERE
+  ... ORDER BY`, joins, `INSERT`/`UPDATE`/`DELETE`, `CREATE TABLE` and
+  temporary rows through `MsiViewModify`), properties, formatted strings
+  (`[Prop]`, `[#File]`, `[!File]`, `[$Comp]`, `[%ENV]`, `[1]`, `{...}`
+  groups), feature and component states, target and source paths,
+  `MsiDoAction`, `MsiSequence`, `MsiEvaluateCondition`, the summary
+  information stream, `MsiGetMode` and `MsiSetMode`.
+- **The packages' own dialogs.**  At full UI a package with an
+  `InstallUISequence` shows its own wizard (`dialog.c`): the Dialog,
+  Control, ControlEvent, ControlCondition, EventMapping, TextStyle,
+  RadioButton, CheckBox, ListBox and ComboBox tables; text, bitmaps (BMP,
+  PNG, JPEG), icons, lines and group boxes painted in place; push buttons,
+  check boxes, edit and path fields, radio groups, the licence's RTF,
+  progress bars, the feature tree (with check boxes), folder lists and
+  combos, volume lists, list and combo boxes as real controls.  Events:
+  property changes, `NewDialog`, `SpawnDialog`, `EndDialog`, `DoAction`,
+  `SetTargetPath`, `Reset`, `AddLocal`, `Remove`, `SetInstallLevel`,
+  `SelectionBrowse` and the folder-list events; the progress dialog
+  follows `ActionText`, `ActionData` and `SetProgress`; Cancel asks first.
+  The success, cancel and failure dialogs (-1, -2, -3) end it.  Packages
+  without dialogs keep the progress window.
+- **Shortcuts**: the Shortcut table (`IShellLink`, with arguments,
+  working folder, description, show command and icons from the Icon
+  table, saved under `C:\Windows\Installer\{ProductCode}`), into the
+  Start menu (`C:\AppData\Roaming\Start Menu\Programs`) and the
+  desktop; `msiexec /x` removes them.  shell32 gains the
+  InternetShortcut class (`.url` files with `IUniformResourceLocator`,
+  `IPersistFile` and its property set) that WiX's internet shortcuts use.
+- **Services**: `ServiceInstall` and `ServiceControl` (install, start,
+  stop, delete, on install and on uninstall), on a **service control
+  manager** in `advapi32` (`service.c`).  Services live under
+  `HKLM\SYSTEM\CurrentControlSet\Services` as on Windows;
+  `StartService` runs the image, whose `StartServiceCtrlDispatcher` runs
+  `ServiceMain` on a thread and takes controls on a pipe; `ControlService`,
+  `QueryServiceStatus(Ex)`, `QueryServiceConfig(2)`, `ChangeServiceConfig(2)`,
+  `EnumServicesStatus(Ex)`, `DeleteService` and the A forms work.
+  `tools/msitest/make_service_package.sh` builds a package around a test
+  service (`svc.c`).  Services marked automatic do not start at boot yet.
+- **AppSearch** follows DrLocator (with Parent chains and Depth) and the
+  Signature table (file names, minimum and maximum versions and sizes),
+  besides RegLocator, whose directory and file types now check the
+  signature too.
+- **Smaller pieces**: `CostingComplete`, empty files missing from the
+  cabinet are created, `MsiEnumRelatedProducts`, the features installed
+  are remembered so maintenance runs and removals know them, and
+  `ADDLOCAL`/`REMOVE` follow the dialogs' feature choices.  New:
+  `activeds.dll` (ADSI; binding fails, as on a machine in no domain),
+  which WiX's util custom actions import.  `advapi32` names all the usual
+  well-known SIDs (`LOCAL SERVICE`, `Guests`, `Performance Log Users`...)
+  and clears the last error on success where callers look at it.
+- **FAT**: creating a file whose 8.3 alias was taken walked the folder
+  once per `~N` tried, so a folder of a thousand similar names (CMake's
+  documentation) froze the desktop while drive C: was saved.  One walk
+  now marks the taken numbers.
+- **Merge modules** are merged into a package's own tables when it is
+  built (the `Module*` tables only record what came from where), so the
+  engine installs them like any other component; none of the packages
+  tested here carries one, so that is untested.
+- **LZX on real packages**: 7-Zip's MSI (LZX:21) extracts byte for byte
+  as `cabextract` does, and Node.js, CMake, Temurin and KeePassXC
+  install.
+- **`taskkill.exe`** (`/IM`, `/PID`, `/F`), which WiX's quiet-exec
+  actions run to close a program before it is replaced.
+- **C runtime**: MinGW programs lock a stream themselves, entering the
+  critical section Microsoft's CRT keeps after each `FILE` (`_FILEX`) and
+  setting a flag in `_flag` for the standard three.  msvcrt now allocates
+  streams that way and keeps its flags where `_flag` sits, so a MinGW
+  `fprintf` to a file no longer hangs (the test service's `ServiceMain`
+  did).
+- Tested in QEMU: 7-Zip and CMake through their own wizards (welcome,
+  licence, options, folder, ready, progress, finish; CMake's
+  `ValidatePath` and `DetectNsisOverwrite` DLL actions run from its
+  dialogs); 7-Zip's two Start menu shortcuts; with `/qn`, CMake
+  (`cmake --version`), Node.js (64-bit and 32-bit WiX custom actions,
+  `node -e`, Start menu and internet shortcuts) and Temurin (the
+  `WixRemoveFoldersEx` action, `java -version`) installed, ran and were
+  removed with `/x`; KeePassXC (32-bit `WixQuietExec` running
+  `taskkill`) installed and was removed, though it needs `MSVCP140.dll`
+  (the Visual C++ runtime) to start; the test service installed,
+  started, wrote its state, stopped and was deleted.  PowerShell 7 stops
+  at its own launch condition: it wants Windows' `pwrshplugin.dll`
+  (WinRM remoting), which NovaOS lacks.
+- Not yet: rollback, script custom actions, nested installs, patches
+  (`.msp`) and transforms (`.mst`), advertised features, services at boot.
+
+<!-- END generated:history -->

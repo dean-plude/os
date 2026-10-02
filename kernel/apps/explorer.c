@@ -6,6 +6,9 @@
  * folders, and a details list with each file's icon (.ico files, program
  * icons, PNG thumbnails).  Double-click (or Enter) opens a folder, or opens
  * a file by type (Photos, the program itself, else Notepad).
+ *
+ * This PC (no folder: e->dir is NULL) lists the drives, C: and every
+ * mounted volume, with their free space and size.
  */
 
 #include "apps.h"
@@ -24,20 +27,20 @@
 #define CRUMB_MAX 12
 
 typedef struct {
-    RamNode *dir;
+    RamNode *dir;            /* NULL: This PC */
     int      sel;            /* selected row, -1 = none */
     int      top;            /* first visible row */
     RamNode *back[HIST_MAX];
     int      back_n;
     /* breadcrumb segments as last drawn (client-relative), for clicks */
     GdiRect  crumb_r[CRUMB_MAX];
-    RamNode *crumb_dir[CRUMB_MAX];
+    RamNode *crumb_dir[CRUMB_MAX];   /* NULL: This PC */
     int      ncrumb;
     char     status[80];     /* the last copy/paste, in the status bar */
 } Explorer;
 
 static const struct { const char *label; const char *path; Glyph glyph; } g_places[] = {
-    { "This PC",   "\\",          GL_PC },
+    { "This PC",   NULL,          GL_PC },
     { "Documents", "\\Documents", GL_DOCUMENTS },
     { "Downloads", "\\Downloads", GL_DOWNLOADS },
     { "Pictures",  "\\Pictures",  GL_PICTURES },
@@ -85,6 +88,31 @@ static RamNode *child_at(RamNode *dir, int idx)
     return c;
 }
 
+/* This PC's rows: drive C: and then D: to Z: as they are now */
+static int pc_drives(RamNode **roots)
+{
+    char letters[26];
+    int nd = sidebar_drives(letters);
+    roots[0] = RamfsRoot();
+    for (int i = 0; i < nd; i++) roots[i + 1] = RamfsDriveRoot(letters[i]);
+    return nd + 1;
+}
+
+/* The number of rows, and the node on row @idx (a drive's root on This PC) */
+static int rows_of(const Explorer *e)
+{
+    RamNode *roots[27];
+    return e->dir ? RamfsCount(e->dir) : pc_drives(roots);
+}
+
+static RamNode *row_at(const Explorer *e, int idx)
+{
+    if (idx < 0) return NULL;
+    if (e->dir) return child_at(e->dir, idx);
+    RamNode *roots[27];
+    return idx < pc_drives(roots) ? roots[idx] : NULL;
+}
+
 /* -----------------------------------------------------------------------
  * Navigation
  * ----------------------------------------------------------------------- */
@@ -92,9 +120,9 @@ static void update_title(WND *w, Explorer *e)
 {
     char t[WM_TITLE_MAX];
     char dn[80];
-    if (!e->dir->parent && e->dir != RamfsRoot()) drive_name(e->dir, dn, sizeof(dn));
+    if (e->dir && !e->dir->parent) drive_name(e->dir, dn, sizeof(dn));
     ksnprintf(t, sizeof(t), "%s - File Explorer",
-              e->dir == RamfsRoot() ? "This PC" : !e->dir->parent ? dn : e->dir->name);
+              !e->dir ? "This PC" : !e->dir->parent ? dn : e->dir->name);
     WmSetTitle(w, t);
 }
 
@@ -103,15 +131,16 @@ static void set_dir(WND *w, Explorer *e, RamNode *d)
     RamfsUnref(e->dir);
     RamfsRef(d);
     e->dir = d;
-    e->sel = RamfsCount(d) ? 0 : -1;
+    e->sel = rows_of(e) ? 0 : -1;
     e->top = 0;
     e->status[0] = 0;
     update_title(w, e);
 }
 
+/* To folder @d, or This PC when @d is NULL */
 static void navigate(WND *w, Explorer *e, RamNode *d)
 {
-    if (!d || !d->dir || d == e->dir) return;
+    if ((d && !d->dir) || d == e->dir) return;
     if (e->back_n == HIST_MAX) {
         RamfsUnref(e->back[0]);
         memmove(e->back, e->back + 1, sizeof(e->back[0]) * (HIST_MAX - 1));
@@ -132,7 +161,7 @@ static void go_back(WND *w, Explorer *e)
 
 static void open_sel(WND *w, Explorer *e)
 {
-    RamNode *n = e->sel >= 0 ? child_at(e->dir, e->sel) : NULL;
+    RamNode *n = row_at(e, e->sel);
     if (!n) return;
     if (n->dir) navigate(w, e, n);
     else        AppOpenFile(n);
@@ -142,6 +171,7 @@ static void make_new(WND *w, Explorer *e, bool dir)
 {
     char name[RAMFS_NAME_MAX];
     const char *base = dir ? "New folder" : "New Text Document";
+    if (!e->dir) return;
     for (int i = 1; i < 100; i++) {
         if (i == 1) ksnprintf(name, sizeof(name), dir ? "%s" : "%s.txt", base);
         else        ksnprintf(name, sizeof(name), dir ? "%s (%d)" : "%s (%d).txt", base, i);
@@ -168,7 +198,7 @@ static void ensure_visible(Explorer *e, GdiRect c)
  * ----------------------------------------------------------------------- */
 static void clip_copy(Explorer *e, bool cut)
 {
-    RamNode *f = e->sel >= 0 ? child_at(e->dir, e->sel) : NULL;
+    RamNode *f = e->dir ? row_at(e, e->sel) : NULL;
     if (!f) return;
     char path[RAMFS_PATH_MAX];
     RamfsPath(f, path, sizeof(path));
@@ -215,6 +245,7 @@ static bool copy_tree(RamNode *src, RamNode *dir, const char *name)
 static void clip_paste(Explorer *e)
 {
     UINT8 eff[4] = { 1, 0, 0, 0 };
+    if (!e->dir) return;
     ClipGet(0xC000, "Preferred DropEffect", eff, 4);
     bool move = eff[0] & 2;
     int done = 0, failed = 0;
@@ -270,9 +301,11 @@ static void draw_crumbs(Explorer *e, GdiRect bar, GdiRect c)
     for (RamNode *d = e->dir; d && d->parent && depth < CRUMB_MAX - 2; d = d->parent) { chain[depth++] = d; top = d->parent; }
     int n = 0;
     static char drive_label[80];
-    drive_name(top, drive_label, sizeof(drive_label));
-    label[n] = "This PC";         dir[n++] = RamfsRoot();
-    label[n] = drive_label;       dir[n++] = top;
+    label[n] = "This PC";         dir[n++] = NULL;
+    if (top) {
+        drive_name(top, drive_label, sizeof(drive_label));
+        label[n] = drive_label;   dir[n++] = top;
+    }
     for (int i = depth - 1; i >= 0; i--) { label[n] = chain[i]->name; dir[n++] = chain[i]; }
 
     int chev = 18, avail = bar.w - 20;
@@ -324,30 +357,29 @@ static void exp_paint(WND *w)
 {
     Explorer *e = w->user;
     GdiRect c = WmClientRect(w);
-    if (RamfsDetached(e->dir)) {                    /* its drive was unplugged */
+    if (e->dir && RamfsDetached(e->dir)) {   /* its drive was unplugged */
         for (int i = 0; i < e->back_n; i++) RamfsUnref(e->back[i]);
         e->back_n = 0;
-        set_dir(w, e, RamfsRoot());
+        set_dir(w, e, NULL);
     }
 
     /* Command bar */
     GdiFillRect(RECT(c.x, c.y, c.w, TB_H), UI_PANEL);
     GdiFillRect(RECT(c.x, c.y + TB_H - 1, c.w, 1), UI_LINE);
     cmd_button(off(r_back(), c), GL_BACK, NULL, e->back_n > 0);
-    cmd_button(off(r_up(), c), GL_UP, NULL, e->dir->parent != NULL);
+    cmd_button(off(r_up(), c), GL_UP, NULL, e->dir != NULL);
     draw_crumbs(e, off(r_crumbs(c), c), c);
-    cmd_button(off(r_copy(c), c), GL_FILE, "Copy", e->sel >= 0);
-    cmd_button(off(r_paste(c), c), GL_FILE, "Paste", ClipList((ClipEntry[1]){ { 0 } }, 1) > 0);
-    cmd_button(off(r_newdir(c), c), GL_PLUS, "Folder", true);
-    cmd_button(off(r_newfile(c), c), GL_PLUS, "File", true);
+    cmd_button(off(r_copy(c), c), GL_FILE, "Copy", e->dir && e->sel >= 0);
+    cmd_button(off(r_paste(c), c), GL_FILE, "Paste", e->dir && ClipList((ClipEntry[1]){ { 0 } }, 1) > 0);
+    cmd_button(off(r_newdir(c), c), GL_PLUS, "Folder", e->dir != NULL);
+    cmd_button(off(r_newfile(c), c), GL_PLUS, "File", e->dir != NULL);
 
     /* Sidebar: places with line glyphs, divided from the list */
     GdiFillRect(RECT(c.x, c.y + TB_H, SIDE_W, c.h - TB_H), UI_PANEL);
     GdiFillRect(RECT(c.x + SIDE_W - 1, c.y + TB_H, 1, c.h - TB_H), UI_LINE);
     for (int i = 0; i < N_PLACES; i++) {
         int y = c.y + TB_H + 8 + i * 32;
-        RamNode *p = RamfsResolve(NULL, g_places[i].path);
-        bool here = p == e->dir;
+        bool here = g_places[i].path ? e->dir && RamfsResolve(NULL, g_places[i].path) == e->dir : !e->dir;
         if (here) {
             GdiRoundRect(RECT(c.x + 6, y, SIDE_W - 13, 30), 4, UI_HOVER, GDI_TRANSPARENT);
             GdiRoundRect(RECT(c.x + 6, y + 8, 3, 14), 1, UI_ACCENT, GDI_TRANSPARENT);
@@ -362,7 +394,7 @@ static void exp_paint(WND *w)
     for (int i = 0; i < nd; i++) {
         int y = c.y + TB_H + 16 + (N_PLACES + i) * 32;
         RamNode *root = RamfsDriveRoot(letters[i]);
-        bool here = root == e->dir;
+        bool here = root && root == e->dir;
         if (here) {
             GdiRoundRect(RECT(c.x + 6, y, SIDE_W - 13, 30), 4, UI_HOVER, GDI_TRANSPARENT);
             GdiRoundRect(RECT(c.x + 6, y + 8, 3, 14), 1, UI_ACCENT, GDI_TRANSPARENT);
@@ -379,15 +411,37 @@ static void exp_paint(WND *w)
     int lx = c.x + SIDE_W;
     int size_x = c.x + c.w - 250, type_x = c.x + c.w - 150;
     GdiTextT(lx + 48, c.y + TB_H + 6, "Name", UI_TEXT2);
-    GdiTextT(size_x, c.y + TB_H + 6, "Size", UI_TEXT2);
-    GdiTextT(type_x, c.y + TB_H + 6, "Type", UI_TEXT2);
+    GdiTextT(size_x, c.y + TB_H + 6, e->dir ? "Size" : "Free space", UI_TEXT2);
+    GdiTextT(type_x, c.y + TB_H + 6, e->dir ? "Type" : "Total size", UI_TEXT2);
     GdiFillRect(RECT(lx, c.y + TB_H + HDR_H - 1, c.w - SIDE_W, 1), UI_LINE);
 
     /* Rows */
     GdiRect lr = off(r_list(c), c);
     GdiSetClip(lr);
     int vis = rows_visible(c), idx = 0, n = 0;
-    for (RamNode *f = e->dir->child; f; f = f->next, idx++) {
+    RamNode *roots[27];
+    int nroots = e->dir ? 0 : pc_drives(roots);
+    for (int i = 0; i < nroots; i++, idx++) {       /* This PC: the drives */
+        n++;
+        if (idx < e->top || idx >= e->top + vis) continue;
+        int y = lr.y + (idx - e->top) * ROW_H;
+        if (idx == e->sel)
+            GdiRoundRect(RECT(lx + 6, y + 1, c.w - SIDE_W - 12, ROW_H - 2), 4,
+                         w->active ? UI_SELECT : UI_HOVER, GDI_TRANSPARENT);
+        AppDrawGlyph(GL_PC, lx + 20, y + 6, 16, UI_TEXT);
+        char dn[80], fs[24], ts[24];
+        UINT64 total, free;
+        drive_name(roots[i], dn, sizeof(dn));
+        AppDriveSpace(roots[i], &total, &free);
+        AppFormatSize(free, fs, sizeof(fs));
+        AppFormatSize(total, ts, sizeof(ts));
+        GdiSetClip(RECT(lr.x, lr.y, size_x - lr.x - 12, lr.h));
+        GdiTextT(lx + 48, y + 6, dn, UI_TEXT);
+        GdiSetClip(lr);
+        GdiTextT(size_x, y + 6, fs, UI_TEXT2);
+        GdiTextT(type_x, y + 6, ts, UI_TEXT2);
+    }
+    for (RamNode *f = e->dir ? e->dir->child : NULL; f; f = f->next, idx++) {
         n++;
         if (idx < e->top || idx >= e->top + vis) continue;
         int y = lr.y + (idx - e->top) * ROW_H;
@@ -427,7 +481,7 @@ static void exp_mouse(WND *w, WmMouseMsg msg, int x, int y)
 
     if (msg == WM_MOUSE_UP) {
         if (UiHit(r_back(), x, y))        go_back(w, e);
-        else if (UiHit(r_up(), x, y))     navigate(w, e, e->dir->parent);
+        else if (UiHit(r_up(), x, y))     { if (e->dir) navigate(w, e, e->dir->parent); }
         else if (UiHit(r_copy(c), x, y))    clip_copy(e, false);
         else if (UiHit(r_paste(c), x, y))   clip_paste(e);
         else if (UiHit(r_newdir(c), x, y))  make_new(w, e, true);
@@ -442,7 +496,7 @@ static void exp_mouse(WND *w, WmMouseMsg msg, int x, int y)
     if (x < SIDE_W && y >= TB_H) {                 /* sidebar */
         int i = (y - TB_H - 8) / 32;
         if (i >= 0 && i < N_PLACES) {
-            navigate(w, e, RamfsResolve(NULL, g_places[i].path));
+            navigate(w, e, g_places[i].path ? RamfsResolve(NULL, g_places[i].path) : NULL);
             return;
         }
         char letters[26];
@@ -454,7 +508,7 @@ static void exp_mouse(WND *w, WmMouseMsg msg, int x, int y)
     GdiRect lr = r_list(c);
     if (UiHit(lr, x, y)) {
         int idx = e->top + (y - lr.y) / ROW_H;
-        if (idx < RamfsCount(e->dir)) {
+        if (idx < rows_of(e)) {
             e->sel = idx;
             if (msg == WM_MOUSE_DBLCLK) open_sel(w, e);
         } else {
@@ -466,7 +520,7 @@ static void exp_mouse(WND *w, WmMouseMsg msg, int x, int y)
 static void exp_key(WND *w, const KeyEvent *k)
 {
     Explorer *e = w->user;
-    int n = RamfsCount(e->dir);
+    int n = rows_of(e);
     if (k->ctrl && (k->ch == 'c' || k->ch == 'C')) { clip_copy(e, false); return; }
     if (k->ctrl && (k->ch == 'x' || k->ch == 'X')) { clip_copy(e, true); return; }
     if (k->ctrl && (k->ch == 'v' || k->ch == 'V')) { clip_paste(e); return; }
@@ -476,7 +530,7 @@ static void exp_key(WND *w, const KeyEvent *k)
         if (k->scancode == KEY_DOWN && e->sel < n - 1) e->sel++;
         if (k->scancode == KEY_HOME && n) e->sel = 0;
         if (k->scancode == KEY_END  && n) e->sel = n - 1;
-        if (k->scancode == KEY_DELETE && e->sel >= 0) {
+        if (k->scancode == KEY_DELETE && e->dir && e->sel >= 0) {
             RamNode *victim = child_at(e->dir, e->sel);
             if (victim && RamfsDelete(victim) && e->sel >= RamfsCount(e->dir))
                 e->sel = RamfsCount(e->dir) - 1;
@@ -485,7 +539,7 @@ static void exp_key(WND *w, const KeyEvent *k)
         return;
     }
     if (k->ch == '\n')      open_sel(w, e);
-    else if (k->ch == '\b') navigate(w, e, e->dir->parent);
+    else if (k->ch == '\b' && e->dir) navigate(w, e, e->dir->parent);
 }
 
 static void exp_close(WND *w)
@@ -508,5 +562,5 @@ void ExplorerOpen(RamNode *dir)
     w->on_mouse = exp_mouse;
     w->on_key   = exp_key;
     w->on_close = exp_close;
-    set_dir(w, e, (dir && dir->dir) ? dir : RamfsRoot());
+    set_dir(w, e, dir && dir->dir && dir != RamfsRoot() ? dir : NULL);   /* C:\\ itself opens This PC */
 }

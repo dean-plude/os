@@ -1,0 +1,6 @@
+{
+  "deps": ["user32", "advapi32", "kernel32", "ntdll"],
+  "base": "0x7FFAE0000000",
+  "base_x86": "0x75000000",
+  "tlssup": true
+}

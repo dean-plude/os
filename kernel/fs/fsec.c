@@ -6,6 +6,9 @@
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 
+/* (kernel/um/um_security.c: the check against the effective token) */
+UINT32 um_access_check_sd(const UINT8 *sd, UINT32 len, UINT32 want, const UINT32 map[4], UINT32 *granted);
+
 static UINT16 rd16(const UINT8 *p) { UINT16 v; memcpy(&v, p, 2); return v; }
 static UINT32 rd32(const UINT8 *p) { UINT32 v; memcpy(&v, p, 4); return v; }
 static void   wr16(UINT8 *p, UINT16 v) { memcpy(p, &v, 2); }
@@ -15,11 +18,6 @@ static void   wr32(UINT8 *p, UINT32 v) { memcpy(p, &v, 4); }
 static const UINT8 g_user[] = {                     /* S-1-5-21-1000-2000-3000-1001 */
     1, 5, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 0xE8, 3, 0, 0, 0xD0, 7, 0, 0, 0xB8, 0x0B, 0, 0, 0xE9, 3, 0, 0 };
 static const UINT8 g_users[]       = { 1, 2, 0, 0, 0, 0, 0, 5, 0x20, 0, 0, 0, 0x21, 2, 0, 0 };     /* S-1-5-32-545 */
-static const UINT8 g_admins[]      = { 1, 2, 0, 0, 0, 0, 0, 5, 0x20, 0, 0, 0, 0x20, 2, 0, 0 };     /* S-1-5-32-544 */
-static const UINT8 g_everyone[]    = { 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 };                       /* S-1-1-0 */
-static const UINT8 g_auth_users[]  = { 1, 1, 0, 0, 0, 0, 0, 5, 11, 0, 0, 0 };                      /* S-1-5-11 */
-static const UINT8 g_interactive[] = { 1, 1, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0 };                       /* S-1-5-4 */
-static const UINT8 g_logon[]       = { 1, 3, 0, 0, 0, 0, 0, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0x2A, 0, 0, 0 };  /* S-1-5-5-0-42 */
 static const UINT8 g_creator_owner[] = { 1, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0 };                     /* S-1-3-0 */
 static const UINT8 g_creator_group[] = { 1, 1, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0 };                     /* S-1-3-1 */
 
@@ -44,24 +42,6 @@ static UINT32 sid_len(const UINT8 *s) { return 8u + 4u * s[1]; }
 static bool sid_eq(const UINT8 *a, const UINT8 *b)
 {
     return a[1] == b[1] && !memcmp(a, b, sid_len(a));
-}
-
-/* The user holds @sid (for a deny ACE, also the groups only used for denying) */
-static bool holds(const UINT8 *sid, bool deny)
-{
-    static const UINT8 *const on[] = { g_user, g_everyone, g_users, g_interactive, g_auth_users, g_logon };
-    for (unsigned i = 0; i < sizeof(on) / sizeof(on[0]); i++)
-        if (sid_eq(sid, on[i])) return true;
-    return deny && sid_eq(sid, g_admins);
-}
-
-static UINT32 map_generic(UINT32 m)
-{
-    if (m & GENERIC_READ)    m |= 0x00120089u;
-    if (m & GENERIC_WRITE)   m |= 0x00120116u;
-    if (m & GENERIC_EXECUTE) m |= 0x001200A0u;
-    if (m & GENERIC_ALL)     m |= FILE_ALL;
-    return m & 0x0FFFFFFFu;
 }
 
 /* ---------------------------------------------------------------------------
@@ -203,35 +183,14 @@ static bool view_of(RamNode *n, View *v, UINT8 *buf)
  * ------------------------------------------------------------------------- */
 bool FsecAccess(RamNode *n, UINT32 want, UINT32 *granted)
 {
-    bool max = want & FSEC_MAXIMUM_ALLOWED;
-    UINT32 m = map_generic(want & ~0x03000000u);                /* (ACCESS_SYSTEM_SECURITY: not checked) */
-    UINT8 *buf = kmalloc(DACL_MAX);
-    View v;
-    if (!buf || !view_of(n, &v, buf)) { kfree(buf); if (granted) *granted = 0; return false; }
-    if (!v.dacl_present || !v.dacl) {
-        kfree(buf);
-        if (granted) *granted = max ? FILE_ALL | m : m;
-        return true;
-    }
-    UINT32 allowed = 0, denied = 0;
-    if (v.owner && holds(v.owner, false)) allowed = 0x00060000u;    /* READ_CONTROL | WRITE_DAC */
-    const UINT8 *d = v.dacl;
-    UINT32 o = 8, size = rd16(d + 2), count = rd16(d + 4);
-    for (UINT32 i = 0; i < count && o + 8 <= size; i++) {
-        const UINT8 *a = d + o;
-        UINT32 alen = rd16(a + 2);
-        o += alen;
-        if (alen < 16 || o > size || (a[1] & ACE_IO) || a[0] > 1) continue;
-        if (!holds(a + 8, a[0] == 1)) continue;
-        UINT32 am = map_generic(rd32(a + 4));
-        if (a[0] == 0) allowed |= am & ~denied;
-        else denied |= am & ~allowed;
-    }
-    kfree(buf);
-    if (m & ~allowed) { if (granted) *granted = 0; return false; }
-    UINT32 g = max ? allowed | m : m;
-    if (granted) *granted = g;
-    return !(max && !g);
+    static const UINT32 map[4] = { 0x00120089u, 0x00120116u, 0x001200A0u, FILE_ALL };
+    UINT32 g = 0, len = FsecQuery(n, 7, NULL, 0);
+    UINT8 *sd = len ? kmalloc(len) : NULL;
+    bool ok = sd && FsecQuery(n, 7, sd, len) == len &&
+              um_access_check_sd(sd, len, want, map, &g) == 0;  /* as the calling thread's token */
+    kfree(sd);
+    if (granted) *granted = ok ? g : 0;
+    return ok;
 }
 
 UINT32 FsecQuery(RamNode *n, UINT32 info, void *out, UINT32 cap)

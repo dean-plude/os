@@ -32,6 +32,9 @@ typedef struct _GENERIC_MAPPING { ACCESS_MASK GenericRead, GenericWrite, Generic
 typedef struct _PRIVILEGE_SET { DWORD PrivilegeCount, Control; LUID_AND_ATTRIBUTES Privilege[1]; } PRIVILEGE_SET, *PPRIVILEGE_SET;
 typedef struct _TOKEN_PRIVILEGES { DWORD PrivilegeCount; LUID_AND_ATTRIBUTES Privileges[1]; } TOKEN_PRIVILEGES, *PTOKEN_PRIVILEGES;
 typedef struct _TOKEN_USER { SID_AND_ATTRIBUTES User; } TOKEN_USER;
+typedef LUID_AND_ATTRIBUTES *PLUID_AND_ATTRIBUTES;
+typedef struct _TOKEN_GROUPS { DWORD GroupCount; SID_AND_ATTRIBUTES Groups[1]; } TOKEN_GROUPS, *PTOKEN_GROUPS;
+typedef enum { TokenPrimary = 1, TokenImpersonation } TOKEN_TYPE;
 typedef struct _TOKEN_ELEVATION { DWORD TokenIsElevated; } TOKEN_ELEVATION;
 typedef enum { TokenUser = 1, TokenGroups, TokenPrivileges, TokenOwner, TokenPrimaryGroup, TokenDefaultDacl, TokenSource,
                TokenType, TokenImpersonationLevel, TokenStatistics, TokenRestrictedSids, TokenSessionId,
@@ -40,14 +43,29 @@ typedef enum { TokenUser = 1, TokenGroups, TokenPrivileges, TokenOwner, TokenPri
                TokenVirtualizationAllowed, TokenVirtualizationEnabled, TokenIntegrityLevel, TokenUIAccess,
                TokenMandatoryPolicy, TokenLogonSid, TokenIsAppContainer } TOKEN_INFORMATION_CLASS;
 typedef enum { SecurityAnonymous, SecurityIdentification, SecurityImpersonation, SecurityDelegation } SECURITY_IMPERSONATION_LEVEL;
-typedef enum { SidTypeUser = 1, SidTypeGroup, SidTypeDomain, SidTypeAlias, SidTypeWellKnownGroup } SID_NAME_USE, *PSID_NAME_USE;
-typedef enum { SE_UNKNOWN_OBJECT_TYPE, SE_FILE_OBJECT, SE_SERVICE, SE_PRINTER, SE_REGISTRY_KEY } SE_OBJECT_TYPE;
+typedef struct _SECURITY_QUALITY_OF_SERVICE {
+    DWORD Length;
+    SECURITY_IMPERSONATION_LEVEL ImpersonationLevel;
+    BYTE ContextTrackingMode;
+    BOOLEAN EffectiveOnly;
+} SECURITY_QUALITY_OF_SERVICE;
+typedef enum { SidTypeUser = 1, SidTypeGroup, SidTypeDomain, SidTypeAlias, SidTypeWellKnownGroup, SidTypeDeletedAccount,
+               SidTypeInvalid, SidTypeUnknown, SidTypeComputer, SidTypeLabel } SID_NAME_USE, *PSID_NAME_USE;
+typedef enum { SE_UNKNOWN_OBJECT_TYPE, SE_FILE_OBJECT, SE_SERVICE, SE_PRINTER, SE_REGISTRY_KEY,
+               SE_LMSHARE, SE_KERNEL_OBJECT, SE_WINDOW_OBJECT } SE_OBJECT_TYPE;
 
 #define TOKEN_QUERY              0x0008
 #define TOKEN_ADJUST_PRIVILEGES  0x0020
 #define TOKEN_DUPLICATE          0x0002
 #define TOKEN_IMPERSONATE        0x0004
 #define TOKEN_ALL_ACCESS         0xF01FF
+#define TOKEN_ASSIGN_PRIMARY     0x0001
+#define TOKEN_ADJUST_DEFAULT     0x0080
+#define DISABLE_MAX_PRIVILEGE    0x1         /* CreateRestrictedToken flags */
+#define SANDBOX_INERT            0x2
+#define WRITE_RESTRICTED         0x8
+#define SE_GROUP_ENABLED         0x00000004
+#define SE_GROUP_USE_FOR_DENY_ONLY 0x00000010
 #define SE_PRIVILEGE_ENABLED     0x00000002
 #define OWNER_SECURITY_INFORMATION 0x00000001
 #define GROUP_SECURITY_INFORMATION 0x00000002
@@ -102,11 +120,24 @@ WINADVAPI BOOL  WINAPI LookupPrivilegeValueW(LPCWSTR sys, LPCWSTR name, PLUID lu
 WINADVAPI BOOL  WINAPI LookupPrivilegeValueA(LPCSTR sys, LPCSTR name, PLUID luid);
 WINADVAPI BOOL  WINAPI ImpersonateSelf(SECURITY_IMPERSONATION_LEVEL level);
 WINADVAPI BOOL  WINAPI RevertToSelf(void);
+WINADVAPI BOOL  WINAPI DuplicateToken(HANDLE t, SECURITY_IMPERSONATION_LEVEL l, PHANDLE out);
+WINADVAPI BOOL  WINAPI DuplicateTokenEx(HANDLE t, DWORD access, LPSECURITY_ATTRIBUTES sa, SECURITY_IMPERSONATION_LEVEL l, int type, PHANDLE out);
+WINADVAPI BOOL  WINAPI SetThreadToken(PHANDLE t, HANDLE token);
+WINADVAPI BOOL  WINAPI ImpersonateLoggedOnUser(HANDLE t);
+WINADVAPI BOOL  WINAPI CreateRestrictedToken(HANDLE t, DWORD flags, DWORD ndisable, PSID_AND_ATTRIBUTES disable, DWORD ndelete,
+                                             PLUID_AND_ATTRIBUTES del, DWORD nrestrict, PSID_AND_ATTRIBUTES restricted, PHANDLE out);
+WINADVAPI BOOL  WINAPI IsTokenRestricted(HANDLE t);
 /* security descriptors and access checks */
 WINADVAPI BOOL  WINAPI InitializeSecurityDescriptor(PSECURITY_DESCRIPTOR sd, DWORD rev);
 WINADVAPI BOOL  WINAPI SetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR sd, BOOL present, PACL acl, BOOL defaulted);
+WINADVAPI BOOL  WINAPI GetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR sd, LPBOOL present, PACL *acl, LPBOOL defaulted);
 WINADVAPI BOOL  WINAPI InitializeAcl(PACL acl, DWORD n, DWORD rev);
 WINADVAPI BOOL  WINAPI AddAccessAllowedAce(PACL acl, DWORD rev, DWORD mask, PSID sid);
+WINADVAPI BOOL  WINAPI AddAccessDeniedAce(PACL acl, DWORD rev, DWORD mask, PSID sid);
+WINADVAPI BOOL  WINAPI SetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR sd, PSID o, BOOL def);
+WINADVAPI BOOL  WINAPI SetSecurityDescriptorGroup(PSECURITY_DESCRIPTOR sd, PSID g, BOOL def);
+WINADVAPI BOOL  WINAPI GetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd, DWORD n, LPDWORD need);
+WINADVAPI BOOL  WINAPI SetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd);
 WINADVAPI VOID  WINAPI MapGenericMask(PDWORD mask, PGENERIC_MAPPING m);
 WINADVAPI BOOL  WINAPI AccessCheck(PSECURITY_DESCRIPTOR sd, HANDLE token, DWORD want, PGENERIC_MAPPING m, PPRIVILEGE_SET ps,
                                    LPDWORD psn, LPDWORD granted, LPBOOL status);

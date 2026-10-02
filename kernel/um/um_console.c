@@ -1,9 +1,9 @@
 /*
  * um_console.c — consoles: a program's standard input/output ↔ a Terminal
  *
- * Output is a single-producer (program thread) / single-consumer (desktop
- * thread) ring; a program that writes faster than the Terminal drains it
- * waits.
+ * Output is a ring with one reader (the desktop thread) and writers taking
+ * turns (out_lock: programs' threads, without the big kernel lock); a
+ * program that writes faster than the Terminal drains it waits.
  *
  * Input is a queue of Windows input records (INPUT_RECORD: key events,
  * and whatever programs add with WriteConsoleInput).  The Terminal adds
@@ -16,6 +16,7 @@
  */
 
 #include "um_internal.h"
+#include "../ke/printf.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 
@@ -26,6 +27,7 @@ struct UmConsole {
     volatile int    refs;
     char            out[OUT_SIZE];
     volatile UINT32 out_head, out_tail;      /* head: next write, tail: next read */
+    UmLock          out_lock;                /* one writer at a time */
     KSpinLock       in_lock;                 /* the input queue and pend[] */
     UmConInput      in[IN_RECS];
     UINT32          in_head, in_tail;
@@ -81,9 +83,27 @@ UmObject *um_console_object(UmConsole *c)
 /* Program → Terminal */
 int um_console_write(UmConsole *c, const char *data, int len)
 {
-    if (!c) return len;                                 /* no console: discard */
+    if (!c) {
+        /* No console (a detached process handed its creator's console
+         * handles, as Firefox's sandbox does for its child processes):
+         * the kernel log, a line at a time */
+        UmProcess *me = UmCurrent();
+        char line[256];
+        int n = 0;
+        for (int i = 0; i < len; i++) {
+            char ch = data[i];
+            if (ch != '\n' && ch != '\r' && n < (int)sizeof(line) - 1) line[n++] = ch;
+            if ((ch == '\n' || i == len - 1 || n == (int)sizeof(line) - 1) && n) {
+                line[n] = 0;
+                kprintf("[UM] %s (PID %u, detached): %s\n", me ? me->name : "?", me ? me->pid : 0, line);
+                n = 0;
+            }
+        }
+        return len;
+    }
     UmProcess *p = UmCurrent();
     int done = 0;
+    um_lock(&c->out_lock);
     while (done < len) {
         UINT32 used = c->out_head - c->out_tail;
         if (used == OUT_SIZE) {                         /* full: let the Terminal drain */
@@ -97,6 +117,7 @@ int um_console_write(UmConsole *c, const char *data, int len)
         __atomic_store_n(&c->out_head, c->out_head + n, __ATOMIC_RELEASE);
         done += (int)n;
     }
+    um_unlock(&c->out_lock);
     return done;
 }
 

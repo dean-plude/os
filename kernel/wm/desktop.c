@@ -1673,19 +1673,24 @@ void DesktopRun(void *arg)
     UINT64 desk_sig = 0;
     for (;;) {
         g_desktop_beat = sched_ticks();
-        /* Program threads take this lock around file-system access */
-        DesktopLock();
+        /* The window system's lock; the file system's (which program
+         * threads take around file access) only for what may use files */
+        DesktopLockAlone();
         ps2_poll();
         power_poll();
         /* C:\\Desktop changed (an installer made a shortcut)? redraw the icons */
         if (g_desktop_beat - last_desk_check >= 50) {
             last_desk_check = g_desktop_beat;
+            FsLock();
             UINT64 sig = desktop_files_signature();
+            FsUnlock();
             if (sig != desk_sig) { desk_sig = sig; WmInvalidateBackground(); }
         }
 
         InputEvent ev;
-        while (InputPoll(&ev)) {
+        bool input = InputPoll(&ev), files = input;
+        if (files) FsLock();                    /* (a click may open a file) */
+        for (; input; input = InputPoll(&ev)) {
             if (ev.type == INPUT_MOUSE) {
                 if (ev.absolute) {
                     WmCursorMoveAbs(ev.dx, ev.dy);
@@ -1724,8 +1729,9 @@ void DesktopRun(void *arg)
                 if (InputTranslateKey(&ev, &k)) desktop_key(&k);
             }
         }
+        if (files) FsUnlock();
 
-        WmTick();
+        WmTick();                               /* (takes the file-system lock as needed) */
         UmPoll();                               /* reclaim exited programs */
 
         rtc_read(&t);
@@ -1739,11 +1745,13 @@ void DesktopRun(void *arg)
             /* Drawing needs only the desktop lock (built-in apps' painters
              * take the big one back, see WND.paint_lock_free): the other
              * CPUs keep entering the kernel meanwhile */
+            FsLock();                   /* (the shell draws files' icons) */
             bkl_release();
             WmComposite();              /* redraws the pointer too */
             bkl_acquire();
+            FsUnlock();
         }
-        DesktopUnlock();
+        DesktopUnlockAlone();
         /* Sleep until the next tick (10 ms: input is collected at the
          * tick) instead of spinning.  Sleeping in the scheduler, not
          * halting the CPU, leaves the CPU to its idle thread, which takes

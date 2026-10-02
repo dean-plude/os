@@ -710,9 +710,9 @@ void draw_icon(HDC dc, int x, int y, HICON h, int cx, int cy)
 
 USERAPI BOOL DrawIconEx(HDC dc, int x, int y, HICON h, int cx, int cy, UINT step, HBRUSH br, UINT flags)
 {
-    (void)step;
-    Icon *ic = icon_of(h);
+    Icon *ic = icon_step(icon_of(h), step);           /* an animated cursor's frame */
     if (!ic) return FALSE;
+    h = (HICON)ic;
     if (!cx && !(flags & DI_DEFAULTSIZE)) cx = ic->w;
     if (!cy && !(flags & DI_DEFAULTSIZE)) cy = ic->h;
     if (flags & DI_DEFAULTSIZE) { if (!cx) cx = GetSystemMetrics(ic->cursor ? SM_CXCURSOR : SM_CXICON); if (!cy) cy = GetSystemMetrics(ic->cursor ? SM_CYCURSOR : SM_CYICON); }
