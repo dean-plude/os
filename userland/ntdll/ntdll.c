@@ -167,6 +167,17 @@ XSTUB(NtNovaGuiMessageBox,             SYS_NtNovaGuiMessageBox)
 XSTUB(NtNovaGuiScreenSize,             SYS_NtNovaGuiScreenSize)
 XSTUB(NtNovaGuiPostMessage,            SYS_NtNovaGuiPostMessage)
 XSTUB(NtNovaGuiCtl,                    SYS_NtNovaGuiCtl)
+XSTUB(NtAccessCheck,                    SYS_NtAccessCheck)
+XSTUB(NtOpenProcessToken,               SYS_NtOpenProcessToken)
+XSTUB(NtOpenProcessTokenEx,             SYS_NtOpenProcessTokenEx)
+XSTUB(NtOpenThreadToken,                SYS_NtOpenThreadToken)
+XSTUB(NtOpenThreadTokenEx,              SYS_NtOpenThreadTokenEx)
+XSTUB(NtDuplicateToken,                 SYS_NtDuplicateToken)
+XSTUB(NtFilterToken,                    SYS_NtFilterToken)
+XSTUB(NtQueryInformationToken,          SYS_NtQueryInformationToken)
+XSTUB(NtQuerySecurityObject,            SYS_NtQuerySecurityObject)
+XSTUB(NtSetSecurityObject,              SYS_NtSetSecurityObject)
+XSTUB(NtImpersonateAnonymousToken,      SYS_NtImpersonateAnonymousToken)
 #endif
 
 /* -----------------------------------------------------------------------
@@ -315,6 +326,12 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
     case 0xC0000103: return ERROR_INVALID_NAME;           /* not a directory */
     case 0xC000011F: return ERROR_TOO_MANY_OPEN_FILES;
     case 0xC0000121: return ERROR_ACCESS_DENIED;
+    case 0xC0000024: return 6;                            /* OBJECT_TYPE_MISMATCH: ERROR_INVALID_HANDLE */
+    case 0xC000005C: return 1309;                         /* ERROR_NO_IMPERSONATION_TOKEN */
+    case 0xC0000078: return 1337;                         /* ERROR_INVALID_SID */
+    case 0xC0000079: return 1338;                         /* ERROR_INVALID_SECURITY_DESCR */
+    case 0xC000007C: return 1008;                         /* ERROR_NO_TOKEN */
+    case 0xC00000A8: return 1349;                         /* ERROR_BAD_TOKEN_TYPE */
     }
     return ERROR_INVALID_FUNCTION;
 }

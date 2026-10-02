@@ -871,4 +871,53 @@ LONG_PTR NTAPI NtNovaGuiCtl(ULONG_PTR hwnd, ULONG op, ULONG_PTR arg, PVOID data)
     return SCP(NtNovaGuiCtl, P(hwnd), U(op), P(arg), P(data));
 }
 
+/* -----------------------------------------------------------------------
+ * Tokens and security descriptors: the kernel reads and writes the 32-bit
+ * layouts itself (it knows the caller is a 32-bit program), so pointers
+ * and handle slots pass straight through
+ * ----------------------------------------------------------------------- */
+NTSYSAPI NTSTATUS NTAPI NtOpenProcessToken(HANDLE p, ACCESS_MASK access, PHANDLE t)
+{
+    return SC(NtOpenProcessToken, H(p), U(access), P(t));
+}
+NTSYSAPI NTSTATUS NTAPI NtOpenProcessTokenEx(HANDLE p, ACCESS_MASK access, ULONG attrs, PHANDLE t)
+{
+    return SC(NtOpenProcessTokenEx, H(p), U(access), U(attrs), P(t));
+}
+NTSYSAPI NTSTATUS NTAPI NtOpenThreadToken(HANDLE th, ACCESS_MASK access, BOOLEAN self, PHANDLE t)
+{
+    return SC(NtOpenThreadToken, H(th), U(access), U(self), P(t));
+}
+NTSYSAPI NTSTATUS NTAPI NtOpenThreadTokenEx(HANDLE th, ACCESS_MASK access, BOOLEAN self, ULONG attrs, PHANDLE t)
+{
+    return SC(NtOpenThreadTokenEx, H(th), U(access), U(self), U(attrs), P(t));
+}
+NTSYSAPI NTSTATUS NTAPI NtDuplicateToken(HANDLE t, ACCESS_MASK access, POBJECT_ATTRIBUTES oa, BOOLEAN effective, ULONG type, PHANDLE out)
+{
+    OAC oc;
+    return SC(NtDuplicateToken, H(t), U(access), oa_in(&oc, oa), U(effective), U(type), P(out));
+}
+NTSYSAPI NTSTATUS NTAPI NtFilterToken(HANDLE t, ULONG flags, PVOID disable, PVOID privs, PVOID restrict_sids, PHANDLE out)
+{
+    return SC(NtFilterToken, H(t), U(flags), P(disable), P(privs), P(restrict_sids), P(out));
+}
+NTSYSAPI NTSTATUS NTAPI NtQueryInformationToken(HANDLE t, ULONG cls, PVOID buf, ULONG n, PULONG ret)
+{
+    return SC(NtQueryInformationToken, H(t), U(cls), P(buf), U(n), P(ret));
+}
+NTSYSAPI NTSTATUS NTAPI NtAccessCheck(PVOID sd, HANDLE t, ACCESS_MASK want, PVOID map, PVOID privs, PULONG privs_len,
+                             PULONG granted, PLONG status)
+{
+    return SC(NtAccessCheck, P(sd), H(t), U(want), P(map), P(privs), P(privs_len), P(granted), P(status));
+}
+NTSYSAPI NTSTATUS NTAPI NtQuerySecurityObject(HANDLE h, ULONG info, PVOID sd, ULONG len, PULONG ret)
+{
+    return SC(NtQuerySecurityObject, H(h), U(info), P(sd), U(len), P(ret));
+}
+NTSYSAPI NTSTATUS NTAPI NtImpersonateAnonymousToken(HANDLE th) { return SC(NtImpersonateAnonymousToken, H(th)); }
+NTSYSAPI NTSTATUS NTAPI NtSetSecurityObject(HANDLE h, ULONG info, PVOID sd)
+{
+    return SC(NtSetSecurityObject, H(h), U(info), P(sd));
+}
+
 #endif /* !_WIN64 */

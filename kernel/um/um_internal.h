@@ -70,7 +70,7 @@ void um_unlock(UmLock *l);
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
 typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION, UO_PIPE,
-               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO, UO_CONSOLE } UmObType;
+               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO, UO_CONSOLE, UO_TOKEN } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -92,11 +92,13 @@ typedef struct UmObject {
     UINT64          due;            /* UO_TIMER: the tick it fires at (0: not set) */
     UINT32          period;         /* UO_TIMER: ticks between firings (0: once) */
     void          (*destroy)(struct UmObject *o);   /* extra cleanup (sockets, windows) */
+    void           *sd;             /* its security descriptor (um_security.c), or NULL: open to all */
 } UmObject;
 
 struct UmThread {
     UmObject        ob;             /* signaled when the thread has ended */
     UmProcess      *proc;
+    UmObject       *imp;            /* the token it impersonates (referenced), or NULL */
     Thread         *kt;             /* scheduler thread; NULL once reclaimed */
     UINT32          tid;
     int             slot;           /* TEB slot */
@@ -213,6 +215,7 @@ struct UmProcess {
     char            why[96];    /* crash/kill description */
     bool            released;   /* spawner is done with it */
     UmObject       *exit_ob;    /* UO_PROCESS object of a program-created process (not referenced) */
+    UmObject       *token;      /* its primary token (referenced) */
     bool            reclaimed;  /* memory and handles freed */
 };
 
@@ -362,6 +365,23 @@ void       um_gui_process_gone(UmProcess *p);   /* destroy the process's windows
  * forever) or the process is being killed. */
 UINT32     um_wait_one(UmObject *o, INT64 timeout_100ns);
 void       um_abandon_mutants(UmProcess *p, UmThread *t);
+
+/* um_security.c: tokens, security descriptors, access checks */
+void       um_security_syscalls_init(void);
+UmObject  *um_token_for_process(UmProcess *creator);   /* a new process's primary token (referenced) */
+void       um_thread_drop_token(UmThread *t);          /* stop impersonating (the thread ended) */
+UINT32     um_set_thread_token(UmThread *t, UINT64 buf, UINT32 len);   /* ThreadImpersonationToken */
+UINT32     um_check_object(UmObject *o, UINT32 want);  /* opening @o for @want: STATUS_SUCCESS or ACCESS_DENIED */
+UINT32     um_oa_security(UINT64 oa, void **sd);       /* OBJECT_ATTRIBUTES' descriptor, captured (NULL: none) */
+void       um_sd_free(void *sd);
+/* The file system's checks: @want (mapped by @map) against self-relative
+ * descriptor @sd (NULL: none, open to all) as the calling thread */
+UINT32     um_access_check_sd(const UINT8 *sd, UINT32 len, UINT32 want, const UINT32 map[4], UINT32 *granted);
+/* Where an H_FILE/H_DIR handle's descriptor is kept (a UmSd: length,
+ * then the descriptor), or NULL; the file system supplies it */
+void     **um_file_sd_slot(UmProcess *p, UINT64 h);
+int        um_handle_kind(UmProcess *p, UINT64 h);        /* its UmHandleKind; -1: no such handle */
+void       um_handle_set_inherit(UmProcess *p, UINT64 h, bool inherit);
 
 /* um_exception.c: SEH delivery */
 void       um_exception_syscalls_init(void);

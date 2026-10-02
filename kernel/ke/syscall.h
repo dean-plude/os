@@ -160,6 +160,11 @@
 #define SYSCALL_NtCreateThreadEx                  0x00BD
 #define SYSCALL_NtAllocateVirtualMemoryEx         0x0074  /* Win10 1803+ */
 #define SYSCALL_NtFlushInstructionCache           0x00E3  /* Win10 1903 */
+#define SYSCALL_NtFilterToken                     0x00DF
+#define SYSCALL_NtOpenProcessToken                0x0123
+#define SYSCALL_NtImpersonateAnonymousToken       0x00F7
+#define SYSCALL_NtQuerySecurityObject             0x0155
+#define SYSCALL_NtSetSecurityObject               0x01A1
 
 /* More Windows services, and NovaOS's own (0x200 up; ntdll is built from
  * this header, so the stubs always match) */

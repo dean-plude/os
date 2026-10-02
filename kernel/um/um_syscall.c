@@ -248,6 +248,23 @@ static UINT64 handle_alloc(UmProcess *p, UmHandle **out)
     return 0;
 }
 
+int um_handle_kind(UmProcess *p, UINT64 h)
+{
+    um_lock(&p->lock);
+    UmHandle *hd = handle(p, h);
+    int r = hd ? (int)hd->kind : -1;
+    um_unlock(&p->lock);
+    return r;
+}
+
+void um_handle_set_inherit(UmProcess *p, UINT64 h, bool inherit)
+{
+    um_lock(&p->lock);
+    UmHandle *hd = handle(p, h);
+    if (hd) hd->inherit = inherit;
+    um_unlock(&p->lock);
+}
+
 RamNode *um_handle_file(UmProcess *p, UINT64 h)
 {
     UmHandle *hd = handle(p, h);
@@ -2427,6 +2444,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtDelayExecution,           sys_delay);
     um_install(SYSCALL_NtYieldExecution,           sys_yield);
     um_thread_syscalls_init();
+    um_security_syscalls_init();
     um_exception_syscalls_init();
     um_registry_syscalls_init();
     um_socket_syscalls_init();

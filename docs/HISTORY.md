@@ -1516,6 +1516,33 @@ TLS already in the tree.
   child's standard output share it, so a parent and child writing to one
   log file follow each other instead of overwriting.  `proctest` covers
   all three in the core suite.
+- **Security on objects** (17.4): tokens are kernel objects.  Each process
+  has a primary token, inherited from the process that started it (the
+  desktop user's otherwise: a standard user in Users, with Administrators
+  only for denying since nothing is elevated), and a thread can
+  impersonate an impersonation token.  `NtOpenProcessToken(Ex)`,
+  `NtOpenThreadToken(Ex)`, `NtDuplicateToken`, `NtFilterToken`,
+  `NtQueryInformationToken`, `NtImpersonateAnonymousToken`,
+  `NtAccessCheck` and `NtQuery/SetSecurityObject` moved from ntdll into
+  the kernel at their Windows 10 1903 numbers, and
+  `NtSetInformationThread(ThreadImpersonationToken)` sets or ends
+  impersonation.  `NtFilterToken` (advapi32's `CreateRestrictedToken`)
+  makes SIDs deny-only, removes privileges and adds restricting SIDs, and
+  can make the token write-restricted.  A named event, mutex, semaphore,
+  timer, section, directory or symbolic link keeps the security descriptor
+  it was created with (`SECURITY_ATTRIBUTES`), and opening it, or creating
+  an existing name, checks the access asked for against it as the calling
+  thread: the DACL in order, deny-only groups only in deny ACEs, the
+  owner's implicit `READ_CONTROL | WRITE_DAC`, and for a restricted token a
+  second pass with its restricting SIDs.  kernel32's `OpenEvent`,
+  `OpenMutex` and `OpenSemaphore` pass the access asked for, not all.
+  `GetKernelObjectSecurity`, `SetKernelObjectSecurity`, `GetSecurityInfo`
+  and `SetSecurityInfo` read and change the descriptor; `CheckTokenMembership`,
+  `ImpersonateSelf`, `RevertToSelf`, `SetThreadToken` and
+  `ImpersonateLoggedOnUser` work on real tokens.  Files keep no
+  descriptor yet: the file system takes that part in Phase 18 (18.5), on
+  the same check (`um_access_check_sd`).  `sectest` and `acltest` (also
+  32-bit) show a restricted token refused a protected event.
 - Tested in QEMU: Neovim 0.10.4 and 0.11.4 open `t.txt`, take `ihello
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,

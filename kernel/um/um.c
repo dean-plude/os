@@ -1583,6 +1583,7 @@ static void destroy(UmProcess *p)
     if (p->pml4) free_address_space(p->pml4);
     um_release_views(p);
     if (p->con) UmConsoleRelease(p->con);
+    if (p->token) um_ob_unref(p->token);
     kfree(p->stub_names);
     kfree(p->regions);
     kfree(p);
@@ -1663,6 +1664,7 @@ UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield
     p->cwd = cwd ? cwd : RamfsRoot();
     p->exe_dir = exe->parent;
     p->con = um_console_ref(con);
+    p->token = um_token_for_process(UmCurrent());        /* its creator's user (the desktop's: the default) */
     um_set_layout(p, um_pe_machine(exe) == 0x014C);
 
     /* Map the program, ntdll (every process has it) and their imports */
@@ -1788,6 +1790,7 @@ void um_exit_thread(UINT32 status)
     UINT32 code = p->exit_status;
     ob_unlock(s);
     um_unlock(&p->lock);
+    um_thread_drop_token(t);
     if (last) kprintf("[UM] %s (PID %u) exited with code %u (0x%x)\n", p->name, p->pid, code, code);
     sched_exit_current();
 }
@@ -2170,6 +2173,7 @@ void UmPoll(void)
             if (p->exit_ob) { p->exit_ob->count = (INT32)p->exit_status; p->exit_ob->proc = NULL; p->exit_ob = NULL; }
             ob_unlock(st);
             if (p->con) UmConsoleRelease(p->con);
+            if (p->token) um_ob_unref(p->token);
             kfree(p->stub_names);
             kfree(p->regions);
             kfree(p);
