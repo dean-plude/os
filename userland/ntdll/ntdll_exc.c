@@ -456,6 +456,8 @@ __asm__(
     "movq %r14, 0xE8(%rcx)\n\t" "movq %r15, 0xF0(%rcx)\n\t"
     "movq (%rsp), %rax\n\t" "movq %rax, 0xF8(%rcx)\n\t"
     "pushfq\n\t" "popq %rax\n\t" "movl %eax, 0x44(%rcx)\n\t"
+    "movw %cs, 0x38(%rcx)\n\t" "movw %ds, 0x3A(%rcx)\n\t" "movw %es, 0x3C(%rcx)\n\t"
+    "movw %fs, 0x3E(%rcx)\n\t" "movw %gs, 0x40(%rcx)\n\t" "movw %ss, 0x42(%rcx)\n\t"
     "movq 0x78(%rcx), %rax\n\t"
     "stmxcsr 0x34(%rcx)\n\t"
     "movdqa %xmm0, 0x1A0(%rcx)\n\t" "movdqa %xmm1, 0x1B0(%rcx)\n\t"
@@ -609,6 +611,12 @@ VOID NTAPI RtlRaiseException(PEXCEPTION_RECORD rec)
 {
     CONTEXT c;
     RtlCaptureContext(&c);
+    /* Report the caller's frame, so a handler that continues execution
+     * resumes after the call rather than raising again from in here */
+    DWORD64 base, est;
+    PVOID hd;
+    PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(c.Rip, &base, 0);
+    if (f) RtlVirtualUnwind(0, base, c.Rip, f, &c, &hd, &est, 0);
     rec->ExceptionAddress = (PVOID)c.Rip;
     NtRaiseException(rec, &c, TRUE);                 /* first chance: back through the dispatcher */
 }

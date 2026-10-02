@@ -219,6 +219,7 @@ static void cmd_help(Term *t)
         "  del <name>          delete a file or empty folder (also: rm)\n"
         "  copy <src> <dst>    copy a file (also: cp)\n"
         "  start <app> [file]  open notepad, explorer, settings, calendar, browser\n"
+        "  store install <name>  get a program from the App Store\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  vol  sync           where drive C: is saved; save it now\n"
         "  ipconfig            show the network configuration\n"
@@ -1324,6 +1325,17 @@ static void run_cmd(Term *t, char *cmdline)
     else if (is(c, "sysinfo") || is(c, "neofetch")) cmd_sysinfo(t);
     else if (is(c, "dmesg"))                    cmd_dmesg(t);
     else if (is(c, "start") || is(c, "open"))   cmd_start(t, argc, argv);
+    else if (is(c, "store")) {
+        if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name>");
+        else {
+            char name[64];
+            int n = 0;
+            name[0] = '\0';
+            for (int i = 2; i < argc && n < (int)sizeof(name) - 1; i++)   /* "store install Mesa 3D" */
+                n += ksnprintf(name + n, sizeof(name) - n, i > 2 ? " %s" : "%s", argv[i]);
+            tprint(t, StoreInstall(name));
+        }
+    }
     else if (is(c, "ipconfig") || is(c, "ifconfig")) cmd_ipconfig(t);
     else if (is(c, "ping"))                     cmd_ping(t, argc, argv);
     else if (is(c, "nslookup"))                 cmd_nslookup(t, a1);

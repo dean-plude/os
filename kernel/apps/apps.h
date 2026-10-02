@@ -165,5 +165,8 @@ void PhotosOpen(RamNode *file);
 void PlaceholderOpen(AppId id);
 /* App Store: a catalog of open-source Windows programs to download and run */
 void StoreOpen(void);
+/* Get or install the App Store program called @name, as its button would;
+ * returns what the Store says (the outcome is logged as "[STORE] ...") */
+const char *StoreInstall(const char *name);
 /* Install NovaOS on a disk */
 void SetupOpen(void);

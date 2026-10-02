@@ -288,6 +288,14 @@ static BOOL call_dllmain(Module *m, DWORD reason)
 /* -----------------------------------------------------------------------
  * Building the loader list from the kernel's info
  * ----------------------------------------------------------------------- */
+static void link_first(LIST_ENTRY *head, LIST_ENTRY *e)
+{
+    e->Flink = head->Flink;
+    e->Blink = head;
+    head->Flink->Blink = e;
+    head->Flink = e;
+}
+
 static void link(LIST_ENTRY *head, LIST_ENTRY *e)
 {
     e->Blink = head->Blink;
@@ -325,9 +333,16 @@ static int absorb_new_modules(void)
         { int n = 0; while (m->wpath[n]) n++; e->FullDllName.Length = (USHORT)(n * 2); e->FullDllName.MaximumLength = (USHORT)(n * 2 + 2); }
         e->Flags = m->is_dll ? LDRP_IMAGE_DLL : 0;
         e->LoadCount = 1;
-        link(&g_ldr.InLoadOrderModuleList, &e->InLoadOrderLinks);
-        link(&g_ldr.InMemoryOrderModuleList, &e->InMemoryOrderLinks);
-        link(&g_ldr.InInitializationOrderModuleList, &e->InInitializationOrderLinks);
+        if (m->is_dll) {
+            link(&g_ldr.InLoadOrderModuleList, &e->InLoadOrderLinks);
+            link(&g_ldr.InMemoryOrderModuleList, &e->InMemoryOrderLinks);
+            link(&g_ldr.InInitializationOrderModuleList, &e->InInitializationOrderLinks);
+        } else {                                     /* as on Windows: the program heads the */
+            link_first(&g_ldr.InLoadOrderModuleList, &e->InLoadOrderLinks);     /* load and memory */
+            link_first(&g_ldr.InMemoryOrderModuleList, &e->InMemoryOrderLinks); /* lists, and is not */
+            e->InInitializationOrderLinks.Flink = e->InInitializationOrderLinks.Blink =   /* initialized */
+                &e->InInitializationOrderLinks;
+        }
         g_nmod++;
     }
     /* TLS slots: the program's first, as on Windows: an .exe's code may
@@ -345,11 +360,20 @@ static BOOL attach_new_modules(int first)
 {
     for (int i = first; i < g_nmod; i++) {
         Module *m = &g_mod[i];
-        if (m->attached || !m->is_dll) { m->attached = TRUE; continue; }
+        if (m->attached || !m->is_dll) continue;
         m->attached = TRUE;                          /* (a nested load must not run it again) */
         run_tls_callbacks(m, DLL_PROCESS_ATTACH);
         if (!call_dllmain(m, DLL_PROCESS_ATTACH)) return FALSE;
         m->entry.Flags |= LDRP_PROCESS_ATTACH_CALLED;
+    }
+    /* the program's own TLS callbacks run once its DLLs are initialized,
+     * before its entry point (MinGW programs set up thread-local data and
+     * winpthreads' cleanup there) */
+    for (int i = first; i < g_nmod; i++) {
+        Module *m = &g_mod[i];
+        if (m->attached) continue;
+        m->attached = TRUE;
+        run_tls_callbacks(m, DLL_PROCESS_ATTACH);
     }
     return TRUE;
 }
@@ -456,7 +480,7 @@ void nova_run_thread_detach(void)
     if (!g_process_ready) return;
     for (int i = g_nmod - 1; i >= 0; i--) {
         Module *m = &g_mod[i];
-        if (m->is_dll && m->attached && !m->no_thread_calls) {
+        if (m->attached && !m->no_thread_calls) {
             run_tls_callbacks(m, DLL_THREAD_DETACH);
             call_dllmain(m, DLL_THREAD_DETACH);
         }
@@ -469,7 +493,9 @@ void nova_run_process_detach(void)
     if (!g_process_ready) return;
     for (int i = g_nmod - 1; i >= 0; i--) {
         Module *m = &g_mod[i];
-        if (m->is_dll && m->attached) call_dllmain(m, DLL_PROCESS_DETACH);
+        if (!m->attached) continue;
+        if (!m->is_dll) run_tls_callbacks(m, DLL_PROCESS_DETACH);
+        else call_dllmain(m, DLL_PROCESS_DETACH);
     }
 }
 
@@ -480,7 +506,7 @@ static void thread_attach(void)
     setup_thread_tls();
     for (int i = 0; i < g_nmod; i++) {
         Module *m = &g_mod[i];
-        if (m->is_dll && m->attached && !m->no_thread_calls) {
+        if (m->attached && !m->no_thread_calls) {
             run_tls_callbacks(m, DLL_THREAD_ATTACH);
             call_dllmain(m, DLL_THREAD_ATTACH);
         }

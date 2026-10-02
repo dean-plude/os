@@ -9,6 +9,10 @@
 
 static HINSTANCE g_inst;
 static HWND g_log, g_edit;
+static int g_auto, g_pass, g_fail, g_applied;     /* "guitest auto": drives itself and checks */
+static char g_ok_name[260];
+static int g_ok_fmt = -1, g_ok_enc = -1;
+#define CHECK(what, cond) do { if (cond) g_pass++; else { g_fail++; printf("FAIL: %s (line %d)\n", what, __LINE__); } } while (0)
 static INT_PTR CALLBACK page_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
 
 static void logf(const char *fmt, ...)
@@ -47,6 +51,11 @@ static INT_PTR CALLBACK options_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             SendDlgItemMessageW(h, IDC_LIST, LB_ADDSTRING, 0, (LPARAM)s);
         }
         logf("options: WM_INITDIALOG");
+        if (g_auto) {                                /* pick zip, tick Encrypt, press OK */
+            SendDlgItemMessageW(h, IDC_FORMAT, CB_SETCURSEL, 1, 0);
+            CheckDlgButton(h, IDC_ENCRYPT, BST_CHECKED);
+            PostMessageW(h, WM_COMMAND, IDOK, 0);
+        }
         return TRUE;
     }
     case WM_COMMAND:
@@ -59,6 +68,9 @@ static INT_PTR CALLBACK options_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             char a[260];
             WideCharToMultiByte(CP_UTF8, 0, name, -1, a, 260, NULL, NULL);
             logf("options: OK name=%s format=%d encrypt=%d", a, fmt, enc);
+            strcpy(g_ok_name, a);
+            g_ok_fmt = fmt;
+            g_ok_enc = enc;
             EndDialog(h, IDOK);
             return TRUE;
         }
@@ -139,6 +151,11 @@ static LRESULT CALLBACK main_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         }
         break;
+    case WM_TIMER: {                                 /* auto: answer the message box */
+        HWND mb = FindWindowW(L"#32770", L"Guitest");
+        if (mb) { KillTimer(h, 1); PostMessageW(mb, WM_COMMAND, IDNO, 0); }
+        return 0;
+    }
     case WM_CLOSE: logf("main: WM_CLOSE"); DestroyWindow(h); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
@@ -176,8 +193,12 @@ static INT_PTR CALLBACK page_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_NOTIFY: {
         NMHDR *nm = (NMHDR *)lp;
-        if (nm->code == PSN_APPLY) { logf("page %s: PSN_APPLY", GetDlgItem(h, IDC_TREE) ? "folders" : "general"); SetWindowLongPtrW(h, DWLP_MSGRESULT, PSNRET_NOERROR); return TRUE; }
-        if (nm->code == PSN_SETACTIVE) { logf("page %s: PSN_SETACTIVE", GetDlgItem(h, IDC_TREE) ? "folders" : "general"); return TRUE; }
+        if (nm->code == PSN_APPLY) { g_applied++; logf("page %s: PSN_APPLY", GetDlgItem(h, IDC_TREE) ? "folders" : "general"); SetWindowLongPtrW(h, DWLP_MSGRESULT, PSNRET_NOERROR); return TRUE; }
+        if (nm->code == PSN_SETACTIVE) {
+            logf("page %s: PSN_SETACTIVE", GetDlgItem(h, IDC_TREE) ? "folders" : "general");
+            if (g_auto) PostMessageW(GetParent(h), PSM_PRESSBUTTON, PSBTN_OK, 0);
+            return TRUE;
+        }
         if (nm->code == TVN_SELCHANGEDW) {
             NMTREEVIEWW *tv = (NMTREEVIEWW *)lp;
             WCHAR t[64] = { 0 };
@@ -190,6 +211,47 @@ static INT_PTR CALLBACK page_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
     }
     return FALSE;
+}
+
+/* "guitest auto": the menu, edit, list box, dialog, message box and
+ * property sheet driven by the program itself; exits with the failure count */
+static int run_auto(HWND h, HACCEL acc)
+{
+    HMENU m = GetMenu(h);
+    CHECK("menu bar", m && GetMenuItemCount(m) >= 2);
+    CHECK("accelerators", acc && CopyAcceleratorTableW(acc, NULL, 0) == 2);
+    UINT on = GetMenuState(m, IDC_TOOLBAR, MF_BYCOMMAND) & MF_CHECKED;   /* (checked in guitest.rc) */
+    SendMessageW(h, WM_COMMAND, IDC_TOOLBAR, 0);
+    CHECK("CheckMenuItem", (GetMenuState(m, IDC_TOOLBAR, MF_BYCOMMAND) & MF_CHECKED) != on);
+    SendMessageW(h, WM_COMMAND, IDC_TOOLBAR, 0);
+    CHECK("CheckMenuItem back", (GetMenuState(m, IDC_TOOLBAR, MF_BYCOMMAND) & MF_CHECKED) == on);
+    SendMessageW(h, WM_COMMAND, IDC_SORTSIZE, 0);
+    CHECK("CheckMenuRadioItem", (GetMenuState(m, IDC_SORTSIZE, MF_BYCOMMAND) & MF_CHECKED) &&
+                                !(GetMenuState(m, IDC_SORTNAME, MF_BYCOMMAND) & MF_CHECKED));
+
+    char a[128] = "";
+    SetWindowTextW(g_edit, L"auto text");
+    GetWindowTextA(g_edit, a, sizeof(a));
+    CHECK("edit text", !strcmp(a, "auto text"));
+    int before = (int)SendMessageW(g_log, LB_GETCOUNT, 0, 0);
+    logf("auto: list box");
+    CHECK("list box", before > 0 && SendMessageW(g_log, LB_GETCOUNT, 0, 0) == before + 1);
+
+    INT_PTR r = DialogBoxParamW(g_inst, MAKEINTRESOURCEW(IDD_OPTIONS), h, options_proc, 0);
+    CHECK("DialogBoxParam", r == IDOK);
+    CHECK("dialog values", !strcmp(g_ok_name, "C:\\Documents\\archive.7z") && g_ok_fmt == 1 && g_ok_enc == 1);
+
+    SetTimer(h, 1, 100, NULL);
+    int mr = MessageBoxW(h, L"Do you want to save the changes to the archive before closing?", L"Guitest", MB_YESNOCANCEL | MB_ICONQUESTION);
+    CHECK("MessageBox", mr == IDNO);
+
+    SendMessageW(h, WM_COMMAND, IDC_PROPS, 0);
+    CHECK("PropertySheet PSN_APPLY", g_applied >= 1);
+
+    DestroyWindow(h);
+    CHECK("DestroyWindow", !IsWindow(h));
+    printf("guitest: %d passed, %d failed\n", g_pass, g_fail);
+    return g_fail != 0;
 }
 
 int main(int argc, char **argv)
@@ -209,6 +271,7 @@ int main(int argc, char **argv)
     ShowWindow(h, SW_SHOW);
     UpdateWindow(h);
     HACCEL acc = LoadAcceleratorsW(g_inst, MAKEINTRESOURCEW(IDA_MAIN));
+    if (argc > 1 && !strcmp(argv[1], "auto")) { g_auto = 1; return run_auto(h, acc); }
     if (argc > 1 && !strcmp(argv[1], "dialog")) PostMessageW(h, WM_COMMAND, IDC_OPTIONS, 0);
     if (argc > 1 && !strcmp(argv[1], "msgbox")) PostMessageW(h, WM_COMMAND, IDC_MSGBOX, 0);
     if (argc > 1 && !strcmp(argv[1], "props")) PostMessageW(h, WM_COMMAND, IDC_PROPS, 0);

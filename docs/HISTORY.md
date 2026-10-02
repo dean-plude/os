@@ -1143,7 +1143,8 @@ finds them.
   `python3 tools/novarun.py --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' 'x.exe' '!shot x.png'`.
 - Not yet: Notepad++'s status bar draws black and its toolbar is cut
   short; Neovim hangs on exit (console input handles cannot be waited on);
-  ffmpeg needs `avrt`, `ncrypt`, `d2d1`, `dwrite` and more.
+  ffmpeg needs `avrt`, `ncrypt`, `d2d1`, `dwrite` and more (see
+  [More compatibility](#more-compatibility-schannel-uniscribe-idn-crt-gaps)).
 
 ## ACPI power: shut down, restart, power button
 
@@ -1339,6 +1340,125 @@ build machine, and DXVK is the faster, more complete path anyway.
 - Tested in QEMU with extra SSDTs (`-acpitable`) describing a battery in
   mWh on battery power (75%, 3 h left) and one in mAh charging on AC
   (25%); sleep and the power button pass as before.
+
+## Regression gate: boot CI on every pull request
+
+- **GitHub Actions** (`.github/workflows/ci.yml`): every pull request and
+  every push to main builds the kernel, bootloader, userland and
+  `build/nova.img` on Ubuntu 24.04, boots it in QEMU (q35, OVMF, TCG) and
+  runs the self-tests.  A failing test fails the "Build and boot-test"
+  check; the step summary has a table of results and the serial log,
+  screenshots and sound recording are kept as an artifact.
+- **`tools/selftest.py`**: one boot, then each test typed into the
+  Terminal.  A test passes on exit code 0, no `FAIL` line, no non-zero
+  "failed" count and the output it expects; a kernel panic ends the run.
+  The boot has an HD Audio card recorded to a WAV, which must hold the
+  tones `soundtest` played, and the battery in `tests/acpi/battery.asl`
+  (75%, 3 h left), which `battery` must report.
+- **`guitest auto`** drives its own menus, edit and list boxes, the
+  resource dialog, a message box and the property sheet, and reports.
+- `tools/novarun.py`'s boot-and-type logic is now a `Nova` class that
+  other tools import.
+
+## Graphics tests in CI, ABI conformance, kernel backtraces
+
+- **Graphics in CI**: a second CI job stages 7-Zip and the Mesa 3D and DXVK
+  archives (`tools/ci/stage-graphics.sh`), installs both with the App
+  Store, and runs `tools/gltest` (14) and `tools/d3dtest` (17), 64- and
+  32-bit, with a screenshot of each while it draws.  The Terminal's new
+  `store install NAME` presses a program's App Store button; the outcome
+  goes to the serial log as `[STORE] NAME: Installed ...`.
+- **`abitest`** checks NovaOS's binary interface against Windows 10 1903
+  x64, each offset written out as Windows has it: the TEB, PEB, process
+  parameters and loader lists, `KUSER_SHARED_DATA`, `CONTEXT` and
+  `EXCEPTION_RECORD` (at compile time and at run time, through an
+  exception handler that edits `Rip` and `Rax`, and `GetThreadContext` on a
+  suspended thread), ntdll's stubs and all 464 system-call numbers, plus
+  raw `syscall` instructions that bypass ntdll.  What it found and fixed:
+  - 42 services had NovaOS numbers rather than 1903's (`NtQuerySystemTime`
+    0x52 instead of 0x5A, `NtTerminateThread`, `NtResumeThread`, the
+    registry, timer, directory and symbolic-link services, ...).  Every
+    service Windows has is now at its 1903 number; NovaOS's own services
+    moved to 0x200 and up.
+  - ntdll's stubs are now Windows's bytes (`mov r10, rcx; mov eax, N; test
+    byte [7FFE0308h], 1; jne; syscall; ret; int 2Eh; ret`), which
+    sandboxes and hooking libraries parse.
+  - The program now heads `InLoadOrderModuleList` and
+    `InMemoryOrderModuleList` and is not in the initialization-order list.
+  - `KUSER_SHARED_DATA.NtBuildNumber` said 19045; it is 18362, as the PEB
+    and registry say.  `GetTickCount` reads the shared page's tick count,
+    as on Windows, so both agree.
+  - `RtlCaptureContext` fills in the segment registers.
+  - `GetThreadContext` on a thread just suspended while running in user
+    mode failed: the kernel waited a number of yields for it to stop, which
+    can pass in microseconds; it now waits up to a second.
+- **Symbolized kernel backtraces**: the kernel is linked twice; the first
+  link's functions (`tools/mkksyms.py`) become a `.ksyms` table that the
+  second link embeds after `.text`, so no function moves (the build checks).
+  The kernel is built with frame pointers; a kernel page fault, exception,
+  `KPANIC` or `KASSERT` prints `Backtrace:` and `#N address function+offset`
+  frames on the serial log.  `crash kernel` (a new `NtNovaBugCheck`
+  service, guarded by a magic argument) faults three calls deep to show
+  it; CI checks the frames.
+
+## Nightly app corpus
+
+- **`tools/appcorpus.py`** downloads the official Windows x64 releases of
+  ripgrep, fd, jq, 7-Zip, MinGit, Python (the NuGet package), Node.js and
+  Notepad++ (portable), unpacks them into `C:\Apps` with a few sample files
+  and a bare git repository, boots once and types each program's commands:
+  a search, a `find`, a JSON filter, an archive made and tested, `git
+  clone`, `log` and `status`, `python -c`, `node -e`.  Notepad++ opens a
+  file and its screenshot is compared with `tests/reference/notepad++.png`
+  (scaled down; at most 3% of pixels may differ).
+- **`.github/workflows/nightly.yml`** runs it every night on main (and on
+  pull requests that change the corpus) and posts the pass/fail table to
+  the run's summary and as a comment on the "Nightly app corpus" issue.
+- Not yet: Notepad++'s tab bar and status bar still draw black; the
+  reference shows them so, and an improvement means updating it
+  (`--update-reference`).
+
+## More compatibility: Schannel, Uniscribe, IDN, CRT gaps
+
+Driven by ffmpeg's imports (`tools/pe_imports.py`).  Before writing each
+DLL we looked for an MIT, BSD or zlib licensed one to reuse; none existed
+for these, so the new ones are written here, and Schannel reuses the Mbed
+TLS already in the tree.
+
+- **Schannel** (`userland/secur32/schannel.c`): `InitializeSecurityContext`,
+  `EncryptMessage`, `DecryptMessage`, `QueryContextAttributes` (stream
+  sizes, connection info, ALPN), `ApplyControlToken` (shutdown) and the
+  `InitSecurityInterface` tables, on Mbed TLS with the Mozilla roots
+  (`C:\Windows\System32\ca-bundle.der`).  It takes `SCHANNEL_CRED` and
+  `SCH_CREDENTIALS`, SNI, ALPN, manual validation and
+  `SCH_CRED_NO_SERVERNAME_CHECK`, and reports untrusted roots, expired
+  certificates and name mismatches as Windows does.  Client side only.
+- **New DLLs**: `usp10` (Uniscribe for left-to-right scripts:
+  `ScriptItemize`, `ScriptShape`, `ScriptPlace`, `ScriptTextOut`,
+  `ScriptBreak`, `ScriptString*`…), `normaliz` (`IdnToAscii`/`IdnToUnicode`,
+  RFC 3492 Punycode), `ncrypt` (the provider opens; there are no stored
+  keys), `avicap32` (no capture devices), `d2d1` (the matrix helpers;
+  factories report `E_NOTIMPL`).
+- **More of existing DLLs**: the CRT's `mbstowcs_s`/`wcstombs_s`, the
+  `_nolock` functions, `freopen_s`, `tmpnam_s`, `_utime64`, `_wspawnvp`
+  and the single-byte `_mbs*` set; `ws2_32` `getservbyname`/`getservbyport`,
+  `gethostbyaddr` and `WSAPoll`; `winmm` `waveIn*` (no recording devices);
+  `dnsapi` `DnsQuery_UTF8`; `iphlpapi` `GetIpForwardTable2` and friends;
+  `advapi32` `RegLoadMUIStringW`; `shlwapi` `SHCreateStreamOnFileEx` and
+  `StrRetTo*`; `ole32` `CreateBindCtx`, `ReadClassStm`/`WriteClassStm`,
+  `OleSaveToStream`/`OleLoadFromStream`; `gdi32` DIB colour tables.
+- **Loader**: a program's own TLS callbacks now run (process and thread
+  attach and detach), not only those of DLLs; GLib checks for this.
+- **Exceptions**: `RtlRaiseException` reports its caller's frame, so a
+  handler that continues execution (the "set thread name" exception
+  `0x406D1388`) resumes after the call instead of raising again forever.
+- **`tools/novarun.py --net`** gives the guest a network card on QEMU's
+  user network (the host is `10.0.2.2`).
+- Tested with an FFmpeg nightly (BtbN's static x64 build) in QEMU, with
+  the GDI and DirectWrite functions of the Firefox work in place: an x264
+  encode, decoding it back, and streaming a WAV over HTTPS from the host
+  with TLS 1.3 and with TLS 1.2; with `tls_verify` on (ffmpeg's default) a
+  self-signed server is refused as an untrusted root.
 
 ## Phase 17: kernel and API correctness
 

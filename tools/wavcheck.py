@@ -9,7 +9,8 @@ Used with tools/novarun.py --wav to check NovaOS's sound output.
 import math, struct, sys, wave
 
 
-def main(path):
+def segments(path, show=False):
+    """The sounding stretches: [(start s, length ms, rms, ~Hz, share of L=R samples)]"""
     w = wave.open(path)
     rate, ch, width, n = w.getframerate(), w.getnchannels(), w.getsampwidth(), w.getnframes()
     raw = w.readframes(n)
@@ -17,7 +18,9 @@ def main(path):
         sys.exit('16-bit recordings only')
     s = struct.unpack('<%dh' % (len(raw) // 2), raw)
     left = s[0::ch]
-    print(f'{path}: {rate} Hz, {ch} channels, {n / rate:.2f} s')
+    if show:
+        print(f'{path}: {rate} Hz, {ch} channels, {n / rate:.2f} s')
+    found = []
     win = rate // 100                                 # 10 ms windows
     loud = [max(abs(x) for x in left[i:i + win]) > 300 for i in range(0, len(left) - win, win)]
     i = 0
@@ -33,9 +36,16 @@ def main(path):
         rms = math.sqrt(sum(x * x for x in seg) / len(seg))
         right = s[1::ch][i * win:j * win] if ch > 1 else seg
         same = sum(1 for a, b in zip(seg, right) if abs(a - b) < 4) / len(seg)
-        print(f'  {i * win / rate:7.2f} s  {len(seg) / rate * 1000:7.0f} ms  rms {rms:7.0f}  '
-              f'~{zc / 2 / (len(seg) / rate):7.1f} Hz  L=R {same * 100:3.0f}%')
+        found.append((i * win / rate, len(seg) / rate * 1000, rms, zc / 2 / (len(seg) / rate), same))
+        if show:
+            print(f'  {i * win / rate:7.2f} s  {len(seg) / rate * 1000:7.0f} ms  rms {rms:7.0f}  '
+                  f'~{zc / 2 / (len(seg) / rate):7.1f} Hz  L=R {same * 100:3.0f}%')
         i = j
+    return found
+
+
+def main(path):
+    segments(path, show=True)
 
 
 if __name__ == '__main__':
