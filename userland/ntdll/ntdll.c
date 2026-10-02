@@ -178,6 +178,7 @@ XSTUB(NtQueryInformationToken,          SYS_NtQueryInformationToken)
 XSTUB(NtQuerySecurityObject,            SYS_NtQuerySecurityObject)
 XSTUB(NtSetSecurityObject,              SYS_NtSetSecurityObject)
 XSTUB(NtImpersonateAnonymousToken,      SYS_NtImpersonateAnonymousToken)
+XSTUB(NtNotifyChangeKey,                SYS_NtNotifyChangeKey)
 #endif
 
 /* -----------------------------------------------------------------------

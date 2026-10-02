@@ -1543,6 +1543,21 @@ TLS already in the tree.
   descriptor yet: the file system takes that part in Phase 18 (18.5), on
   the same check (`um_access_check_sd`).  `sectest` and `acltest` (also
   32-bit) show a restricted token refused a protected event.
+- **Registry change events and pending renames** (17.5):
+  `RegNotifyChangeKeyValue` works, on the new `NtNotifyChangeKey`: a watch
+  on a key (optionally with its subkeys) signals its event once when a
+  value is set or deleted, a subkey is added, deleted or renamed, or the
+  key itself is deleted, as its filter asks; without `async` the call
+  waits for that.  `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` writes full
+  `\??\` paths to Session Manager's `PendingFileRenameOperations` (with
+  `!` for `MOVEFILE_REPLACE_EXISTING`), and the kernel now carries the
+  list out at boot, after loading the registry and before any program
+  runs, then deletes it.  A running program's files (its `.exe` and DLLs)
+  are now held while it runs, as on Windows, so they cannot be deleted or
+  replaced until it ends (renaming them still works).  The core suite
+  runs an installer that has to replace a running program, restarts
+  (`tools/novarun.py` and `tools/selftest.py` can restart NovaOS) and
+  checks the replacement happened.  Hard links are still to come.
 - Tested in QEMU: Neovim 0.10.4 and 0.11.4 open `t.txt`, take `ihello
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,

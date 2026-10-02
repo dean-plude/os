@@ -202,7 +202,10 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
-`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`, and
+`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`,
+`filetest install` (an installer that must replace a running program
+schedules it for the next boot), a restart that must report `Pending file
+operations at boot: 2 done, 0 failed`, `filetest installed`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
@@ -229,7 +232,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | Program | Covers |
 |---------|--------|
 | `crttest` | The C runtime |
-| `filetest` | Files and directories |
+| `filetest` | Files and directories; `RegNotifyChangeKeyValue` (values, subkeys, subtrees, deleted keys, synchronous); `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`.  `filetest install`, a restart and `filetest installed` check that a running program replaced at boot |
 | `sectest` (x64) | Hostile system calls refused (kernel pointers, bogus handles, bad descriptors); tokens and object security through the native API: a restricted or deny-only impersonation token is refused a protected named event |
 | `threads` | Threads, synchronization, SEH |
 | `dlltest` | DLL loading, TLS, `DllMain` |
@@ -304,6 +307,13 @@ it to end:
 ```bash
 python3 tools/novarun.py --put 'nvim-win64=C:\Apps\nvim' 'cd C:\Apps\nvim\bin' \
     '!type nvim --clean t.txt\n' '!wait 40' '!type ihello\e:wq\n' '!done 60' 'type t.txt'
+```
+
+`!reboot` restarts NovaOS (`shutdown /r`; drive C: on the data disk is
+kept) and opens the Terminal again, for what must survive a restart:
+
+```bash
+python3 tools/novarun.py 'filetest install' '!reboot' 'filetest installed'
 ```
 
 ### Sound

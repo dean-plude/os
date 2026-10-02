@@ -193,6 +193,8 @@ struct UmProcess {
     int         nregions;
     UmModule    modules[UM_MAX_MODULES];
     int         nmodules;
+    RamNode    *images[UM_MAX_MODULES];   /* its program and DLL files, held (in use: not deleted or replaced) */
+    int         nimages;
     UINT8       init_order[UM_MAX_MODULES];   /* dependencies first */
     int         ninit;
     volatile UINT32 pages;      /* resident user pages (backed by memory) */
@@ -390,5 +392,7 @@ void       um_registry_init(void);
 void       um_registry_syscalls_init(void);
 void       um_registry_poll(void);   /* save the hive after changes (desktop thread) */
 void       um_registry_flush(void);  /* save the hive now if it changed */
+void       um_registry_pending_renames(void);   /* MoveFileEx(DELAY_UNTIL_REBOOT) operations, at boot */
+void       um_registry_process_gone(UmProcess *p);   /* drop the process's change watches */
 void       um_registry_environment(void (*cb)(void *ctx, const char *name, const char *value, bool user, bool expand),
                                    void *ctx);

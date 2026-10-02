@@ -914,6 +914,12 @@ NTSYSAPI NTSTATUS NTAPI NtQuerySecurityObject(HANDLE h, ULONG info, PVOID sd, UL
 {
     return SC(NtQuerySecurityObject, H(h), U(info), P(sd), U(len), P(ret));
 }
+/* (the kernel writes a synchronous call's 32-bit IO_STATUS_BLOCK itself) */
+NTSYSAPI NTSTATUS NTAPI NtNotifyChangeKey(HANDLE key, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG filter,
+                                          BOOLEAN tree, PVOID buf, ULONG len, BOOLEAN async)
+{
+    return SC(NtNotifyChangeKey, H(key), H(ev), P(apc), P(ctx), P(io), U(filter), U(tree), P(buf), U(len), U(async));
+}
 NTSYSAPI NTSTATUS NTAPI NtImpersonateAnonymousToken(HANDLE th) { return SC(NtImpersonateAnonymousToken, H(th)); }
 NTSYSAPI NTSTATUS NTAPI NtSetSecurityObject(HANDLE h, ULONG info, PVOID sd)
 {

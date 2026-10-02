@@ -209,6 +209,7 @@
 #define SYSCALL_NtFlushKey                        0x00E4
 #define SYSCALL_NtOpenKeyEx                       0x011B
 #define SYSCALL_NtRenameKey                       0x016C
+#define SYSCALL_NtNotifyChangeKey                 0x0114
 #define SYSCALL_NtOpenMutant                      0x011F
 /* Pipes and I/O Windows 10 numbers elsewhere */
 #define SYSCALL_NtCreateNamedPipeFile             0x00B0

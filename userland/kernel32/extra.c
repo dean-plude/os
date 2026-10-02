@@ -1456,9 +1456,10 @@ WINBASEAPI BOOL WINAPI CopyFileExW(LPCWSTR from, LPCWSTR to, LPVOID progress, LP
 
 /* MOVEFILE_DELAY_UNTIL_REBOOT: as Windows, the operation is only written
  * down, in Session Manager's PendingFileRenameOperations (pairs of
- * "\\??\\source", "\\??\\target" or "" for a delete); installers use it
- * for files they cannot remove while they run */
-static BOOL pending_file_op(LPCSTR from, LPCSTR to)
+ * "\\??\\source", "\\??\\target" ("!" first with @replace) or "" for a
+ * delete), and the kernel carries it out at the next boot; installers use
+ * it for files they cannot replace while they run */
+static BOOL pending_file_op(LPCSTR from, LPCSTR to, BOOL replace)
 {
     HKEY k;
     if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager", 0, 0, 0,
@@ -1475,8 +1476,11 @@ static BOOL pending_file_op(LPCSTR from, LPCSTR to)
     const char *items[2] = { from, to };
     for (int i = 0; i < 2; i++) {
         if (items[i] && *items[i]) {
+            if (i == 1 && replace) buf[w++] = '!';
             buf[w++] = '\\'; buf[w++] = '?'; buf[w++] = '?'; buf[w++] = '\\';
-            int m = MultiByteToWideChar(CP_UTF8, 0, items[i], -1, buf + w, 2 * MAX_PATH);
+            char full[MAX_PATH * 3];                 /* stored as full paths, as Windows does */
+            DWORD fl = GetFullPathNameA(items[i], sizeof(full), full, 0);
+            int m = MultiByteToWideChar(CP_UTF8, 0, fl && fl < sizeof(full) ? full : items[i], -1, buf + w, 2 * MAX_PATH);
             w += m > 0 ? (DWORD)m : 1;
         } else buf[w++] = 0;
     }
@@ -1489,7 +1493,7 @@ static BOOL pending_file_op(LPCSTR from, LPCSTR to)
 
 WINBASEAPI BOOL WINAPI MoveFileExA(LPCSTR from, LPCSTR to, DWORD flags)
 {
-    if (flags & 4) return pending_file_op(from, to);       /* MOVEFILE_DELAY_UNTIL_REBOOT */
+    if (flags & 4) return pending_file_op(from, to, (flags & 1) != 0);   /* MOVEFILE_DELAY_UNTIL_REBOOT */
     if (!to) return DeleteFileA(from);
     HANDLE h = CreateFileA(from, DELETE, 7, 0, OPEN_EXISTING, 0x02000000 /* BACKUP_SEMANTICS */, 0);
     if (h == INVALID_HANDLE_VALUE) return FALSE;
