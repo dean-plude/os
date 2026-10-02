@@ -370,6 +370,17 @@ static void defaults(void)
         RegKey *k = kpath(path, false);
         if (!has_value(k, "")) { kset_sz(k, "", "dsound.dll", 1); kset_sz(k, "ThreadingModel", "Both", 1); }
     }
+    /* XAudio2 2.7 (the DirectX SDK's): the engine, its debug twin and its two effects */
+    static const char *const xa27_clsids[] = {
+        "{5A508685-A254-4FBA-9B82-9A24B00306AF}", "{DB05EA35-0329-4D4B-A53A-6DEAD03D3852}",
+        "{CAC1105F-619B-4D04-831A-44E1CBF12D57}", "{6A93130E-1D53-41D1-A9CF-E758800BB179}",
+    };
+    for (unsigned i = 0; i < sizeof xa27_clsids / sizeof xa27_clsids[0]; i++) {
+        char path[96];
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\CLSID\\%s\\InprocServer32", xa27_clsids[i]);
+        RegKey *k = kpath(path, false);
+        if (!has_value(k, "")) { kset_sz(k, "", "xaudio2_7.dll", 1); kset_sz(k, "ThreadingModel", "Both", 1); }
+    }
     RegKey *lnk = kpath("Machine\\SOFTWARE\\Classes\\.lnk", false);
     if (!has_value(lnk, "")) kset_sz(lnk, "", "lnkfile", 1);
     RegKey *txt = kpath("Machine\\SOFTWARE\\Classes\\.txt", false);

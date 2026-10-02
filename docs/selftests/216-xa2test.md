@@ -1,0 +1,1 @@
+| `xa2test [HZ] [MS]` | XAudio2 2.9 (source and mastering voices, voice and engine callbacks, end of stream, a volume meter in an effect chain), XAudio2 2.7 made with `CoCreateInstance` (a looped buffer through a submix voice), and X3DAudio panning |
