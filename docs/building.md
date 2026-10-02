@@ -220,7 +220,7 @@ Tests run inside NovaOS under QEMU.  `tools/selftest.py` boots
 pull request (`.github/workflows/ci.yml`):
 
 ```bash
-sudo apt install acpica-tools          # iasl, for tests/acpi/battery.asl
+sudo apt install acpica-tools          # iasl, for the tables in tests/acpi/
 python3 tools/selftest.py              # the core suite; exit status = failures
 python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 
@@ -231,8 +231,8 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
-`guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`, and
-last `crash kernel`, which halts the kernel on purpose and passes when the
+`guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`,
+`powertest`, and last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
 install Mesa 3D` and `store install DXVK` (the archives are already in
@@ -240,9 +240,15 @@ install Mesa 3D` and `store install DXVK` (the archives are already in
 `gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
 of each while it draws.
 
-It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
-and the battery from `tests/acpi/battery.asl`, then types each test into the
-Terminal.  A test passes when the program exits with code 0, prints no
+It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV,
+the battery from `tests/acpi/battery.asl`, the lid and thermal zone from
+`tests/acpi/lid-thermal.asl` (QEMU's `pc-testdev` stands in for the embedded
+controller: the test writes the lid and temperature to ports 0xE8 and 0xE9
+through the QEMU monitor) and a USB keyboard on an xHCI controller at
+00:05.0, then types each test into the Terminal.  `powertest` asks the test
+to close the lid; once NovaOS has gone to sleep the test opens it, presses a
+key on the USB keyboard and wakes the machine (`system_wakeup`, as QEMU has
+no USB-to-platform wake), then heats and cools the thermal zone.  A test passes when the program exits with code 0, prints no
 `FAIL` line or non-zero "failed" count, and prints what the test expects;
 a kernel panic stops the run.  `--out` (default `selftest-out/`) keeps the
 serial log, a screenshot after each test and `sound.wav`; `--summary FILE`
@@ -273,6 +279,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
 | `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
+| `powertest` | The lid and a thermal zone (`GetPwrCapabilities`, `ThermalInformation`, `LastSleepTime`/`LastWakeTime`): closing the lid sleeps; needs `tests/acpi/lid-thermal.asl` and the self-test's help (see above) |
 | `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
 | `acltest` | Access checks against DACLs (`AccessCheck`), and file ACLs on drive C:: denied writes, deletes and renames, inheritance, `CreateFile` with a descriptor; it leaves `C:\AclTest\kept.txt` and, run again after a restart, checks it kept its DACL (C: on NTFS) |

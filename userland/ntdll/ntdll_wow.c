@@ -759,7 +759,20 @@ NTSTATUS NTAPI NtSetSystemPowerState(ULONG action, ULONG min_state, ULONG flags)
 NTSTATUS NTAPI NtInitiatePowerAction(ULONG action, ULONG min_state, ULONG flags, BOOLEAN async)
 { return SC(NtInitiatePowerAction, U(action), U(min_state), U(flags), U(async)); }
 NTSTATUS NTAPI NtPowerInformation(ULONG level, PVOID in, ULONG inlen, PVOID out, ULONG outlen)
-{ return SC(NtPowerInformation, U(level), P(in), U(inlen), P(out), U(outlen)); }
+{
+    if (level == 12) {                       /* THERMAL_INFORMATION: KAFFINITY is 4 bytes here */
+        ULONG t[22];                         /* the 64-bit layout */
+        NTSTATUS st = SC(NtPowerInformation, U(level), P(in), U(inlen), P(t), U(sizeof(t)));
+        if (st < 0) return st;
+        if (!out || outlen < 76) return (NTSTATUS)0xC0000023L;
+        ULONG *o = out;
+        o[0] = t[0]; o[1] = t[1]; o[2] = t[2];           /* stamp, constants */
+        o[3] = t[4];                                     /* processors */
+        memcpy(o + 4, t + 6, 76 - 16);                   /* period, temperatures, active trip points */
+        return st;
+    }
+    return SC(NtPowerInformation, U(level), P(in), U(inlen), P(out), U(outlen));
+}
 
 NTSTATUS NTAPI NtSetValueKey(HANDLE key, PUNICODE_STRING name, ULONG title, ULONG type, PVOID data, ULONG size)
 {

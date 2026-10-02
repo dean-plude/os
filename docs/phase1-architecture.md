@@ -152,6 +152,7 @@ exactly, which simplifies STAR MSR configuration for Phase 4.
 | 0–31      | CPU exceptions (#DE, #PF, #GP, etc.) |
 | 32–47     | APIC hardware IRQs (remapped PIC)    |
 | 0x30      | APIC timer (scheduler tick)          |
+| 0x32      | ACPI SCI, routed through the I/O APIC (the only device interrupt; the other drivers poll) |
 | 0x2E      | NT syscall (int 0x2E)                |
 | 0xFF      | APIC spurious interrupt              |
 

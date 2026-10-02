@@ -33,6 +33,7 @@
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
 #include "../hal/acpi.h"
+#include "../hal/aml.h"
 #include "../ke/sleep.h"
 #include "../arch/x86_64/cpu.h"
 #include "../apps/apps.h"
@@ -479,13 +480,22 @@ bool DesktopPowerRequest(int what)
     return g_slept;
 }
 
-/* The desktop loop: a pending request, or the power button (which shuts
- * down, as Windows does by default) */
+/* The desktop loop: a pending request, the power button (which shuts
+ * down, as Windows does by default), closing the lid (which sleeps) or a
+ * thermal zone that got too hot (sleep at _HOT, shut down at _CRT) */
 static void power_poll(void)
 {
     if (AcpiPowerButtonPressed()) {
         kprintf("[SHELL] Power button pressed\n");
         power_shutdown();
+    }
+    int heat = AmlThermalRequest();
+    if (heat == AML_THERMAL_SHUTDOWN) power_shutdown();
+    if (AmlLidClosedEvent() && SleepSupported()) {
+        kprintf("[SHELL] Lid closed: sleeping\n");
+        g_slept = power_sleep();
+    } else if (heat == AML_THERMAL_SLEEP && SleepSupported()) {
+        g_slept = power_sleep();
     }
     int req = __atomic_exchange_n(&g_power_req, POWER_NONE, __ATOMIC_ACQ_REL);
     if (req == POWER_RESTART) power_restart();

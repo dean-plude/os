@@ -26,6 +26,7 @@
 #include "../apps/apps.h"
 #include "../hal/aml.h"
 #include "../fs/fsec.h"
+#include "../ke/sleep.h"
 
 #define ST_SUCCESS                 0x00000000u
 #define ST_PENDING                 0x00000103u
@@ -1984,20 +1985,64 @@ static UINT64 sys_power_action(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 }
 
 /* NtPowerInformation(POWER_INFORMATION_LEVEL, PVOID In, ULONG InLength,
- * PVOID Out, ULONG OutLength): SystemBatteryState (5) from the ACPI
- * batteries and AC adapters.  powrprof answers the other levels itself. */
+ * PVOID Out, ULONG OutLength): SystemPowerCapabilities (4),
+ * SystemBatteryState (5) from the ACPI batteries and AC adapters,
+ * ThermalInformation (12) of the first thermal zone, LastWakeTime (14) and
+ * LastSleepTime (15).  powrprof answers the other levels itself. */
 static UINT64 sys_power_information(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a2; (void)a3;
-    if ((UINT32)a1 != 5) return ST_NOT_IMPLEMENTED;
+    UINT32 cap = (UINT32)um_stack_arg(5);
+    if (!a4) return ST_INVALID_PARAMETER;
+    switch ((UINT32)a1) {
+    case 4: {                                       /* SYSTEM_POWER_CAPABILITIES */
+        UINT8 c[76] = { 0 };
+        AmlBatteryState b;
+        AmlThermalZone z;
+        AmlGetBatteryState(&b);
+        c[0] = 1;                                   /* PowerButtonPresent */
+        c[2] = AmlLidPresent();                     /* LidPresent */
+        c[5] = SleepSupported();                    /* SystemS3 */
+        c[7] = 1;                                   /* SystemS5 */
+        c[13] = AmlThermalZones(&z, 1) > 0;         /* ThermalControl */
+        c[30] = b.battery_present;                  /* SystemBatteriesPresent */
+        if (cap < sizeof(c)) return ST_BUFFER_TOO_SMALL;
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, c, sizeof(c))) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
+    }
+    case 12: {                                      /* THERMAL_INFORMATION (64-bit layout) */
+        struct {
+            UINT32 stamp, c1, c2, pad;
+            UINT64 processors;
+            UINT32 period, temp, passive, critical;
+            UINT8  active_count, pad2[3];
+            UINT32 active[10];
+        } t = { 0 };
+        AmlThermalZone z;
+        if (AmlThermalZones(&z, 1) < 1) return ST_NOT_SUPPORTED;
+        t.stamp = z.stamp;
+        t.processors = 1;
+        t.period = z.period;
+        t.temp = z.temp;
+        t.passive = z.passive;
+        t.critical = z.critical;
+        if (cap < sizeof(t)) return ST_BUFFER_TOO_SMALL;
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &t, sizeof(t))) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
+    }
+    case 14: case 15: {                             /* interrupt time (100 ns) of the last wake or sleep */
+        UINT64 t = (UINT32)a1 == 14 ? SleepLastWakeTime() : SleepLastSleepTime();
+        if (cap < sizeof(t)) return ST_BUFFER_TOO_SMALL;
+        return put_u64(a4, t) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
+    }
+    case 5: break;
+    default: return ST_NOT_IMPLEMENTED;
+    }
     struct __attribute__((packed)) {
         UINT8  ac_online, present, charging, discharging, spare[3], tag;
         UINT32 max, remaining;
         INT32  rate;
         UINT32 estimated, alert1, alert2;
     } out = { 0 };
-    if (!a4) return ST_INVALID_PARAMETER;
-    if ((UINT32)um_stack_arg(5) < sizeof(out)) return ST_BUFFER_TOO_SMALL;
+    if (cap < sizeof(out)) return ST_BUFFER_TOO_SMALL;
     AmlBatteryState b;
     AmlGetBatteryState(&b);
     out.ac_online = b.ac_online;

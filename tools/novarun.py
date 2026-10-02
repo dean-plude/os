@@ -166,13 +166,22 @@ class Nova:
             self.close()
             raise
 
-    def run(self, cmd, timeout=120, shot=None):
+    def run(self, cmd, timeout=120, shot=None, acts=()):
         """Type @cmd into the Terminal; returns (serial output, finished in time).
         @shot = (regex, path): a screenshot 2 s after the output matches
-        regex (while the program is still drawing)"""
+        regex (while the program is still drawing).  @acts: (regex, function)
+        pairs; each function is called with this Nova once the output
+        matches its regex (a program asking the test to do something)"""
         self.sr.read_new()
         self.qmp.type(cmd + '\n')
         got, ok, end = '', False, time.time() + timeout
+        pending = list(acts)
+        while pending and time.time() < end and '[TERM-DONE]' not in got:
+            time.sleep(0.25)
+            got += self.sr.read_new()
+            for a in [a for a in pending if re.search(a[0], got)]:
+                pending.remove(a)
+                a[1](self)
         if shot:
             pat = re.compile(shot[0])
             while time.time() < end and '[TERM-DONE]' not in got and not pat.search(got):
@@ -194,6 +203,13 @@ class Nova:
 
     def shot(self, path):
         self.qmp.cmd('screendump', filename=os.path.abspath(path), format='png')
+
+    def hmp(self, line):
+        """A QEMU monitor command (e.g. "o /b 0xe8 1": write an I/O port)"""
+        return self.qmp.cmd('human-monitor-command', **{'command-line': line}).get('return', '')
+
+    def status(self):
+        return self.qmp.cmd('query-status').get('return', {}).get('status')
 
     def keys(self, names):
         for k in names.split():

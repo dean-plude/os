@@ -19,5 +19,8 @@
 int  XhciInit(void);
 /* Drain the event rings (timer tick, any CPU). */
 void XhciPoll(void);
-/* After waking from S3: restart the controller and enumerate again */
+/* Before S3: arm the root ports and PME# to wake the machine */
+void XhciPrepareSleep(void);
+/* After waking from S3 (or a sleep that didn't happen): restart the
+ * controller and enumerate again */
 void XhciResume(void);

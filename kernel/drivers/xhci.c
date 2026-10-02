@@ -1015,8 +1015,11 @@ static bool controller_program(void)
     return wait_sts(STS_HCH, false);
 }
 
+static PciDevice g_pci;
+
 static bool controller_start(const PciDevice *pci)
 {
+    g_pci = *pci;
     g_cap = PciMapBar(pci, 0);
     if (!g_cap) return false;
     PciEnableDevice(pci);
@@ -1134,4 +1137,28 @@ void XhciResume(void)
     for (int p = 1; p <= g_ports; p++) g_port_pending[p] = true;
     g_port_changed = 1;
     g_ready = true;
+}
+
+/* Before S3: the root ports may wake the machine (a device connecting or
+ * leaving, over-current, a suspended device's remote wakeup), the ports
+ * with a device are suspended (U3) and the controller signals PME# */
+void XhciPrepareSleep(void)
+{
+    if (!g_ready) return;
+    for (int p = 1; p <= g_ports; p++) {
+        UINT32 sc = rd32(g_op, OP_PORTSC(p));
+        UINT32 w = (sc & PORT_PRESERVE) | (7u << 25);                    /* WCE WDE WOE */
+        wr32(g_op, OP_PORTSC(p), w);
+        if ((sc & PORT_CCS) && (sc & PORT_PED))
+            wr32(g_op, OP_PORTSC(p), (w & ~(0xFu << 5)) | (3u << 5) | (1u << 16));   /* PLS U3, LWS */
+    }
+    for (UINT8 cap = (UINT8)PciRead32(g_pci.bus, g_pci.dev, g_pci.func, 0x34) & 0xFC, n = 0; cap && n < 48; n++) {
+        UINT32 hdr = PciRead32(g_pci.bus, g_pci.dev, g_pci.func, cap);
+        if ((hdr & 0xFF) == 1) {                                        /* power management: PME_En, clear PME_Status */
+            UINT32 csr = PciRead32(g_pci.bus, g_pci.dev, g_pci.func, cap + 4);
+            PciWrite32(g_pci.bus, g_pci.dev, g_pci.func, cap + 4, (csr & ~3u) | (1u << 8) | (1u << 15));
+            break;
+        }
+        cap = (UINT8)(hdr >> 8) & 0xFC;
+    }
 }

@@ -94,7 +94,9 @@ every part, phase by phase.
   as the next drive letter, hot-plugged); CMOS clock; a Bochs/QEMU VBE
   display driver (resolutions switched at run time, page flipping) with the
   UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
-  sleep (S3), batteries and AC adapters (AML interpreted by uACPI).
+  sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
+  devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
+  a real interrupt through the I/O APIC).
 - **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
   TLS with the Mozilla root store.
 - **Windows userland** (`userland/`): about 35 system DLLs written from
@@ -179,7 +181,8 @@ Rebuild the ISO from a fresh build with
   system-call numbers, against Windows 10 1903 x64), `filetest`,
   `pipetest`, `proctest`, `guitest auto`, `disptest`, `battery` (against the battery in
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
-  tones played), and last `crash kernel`, a deliberate kernel fault whose
+  tones played), `powertest` (closing the lid in `tests/acpi/lid-thermal.asl`
+  sleeps, a USB key and the lid wake it, the thermal zone's readings), and last `crash kernel`, a deliberate kernel fault whose
   serial log must show a backtrace with function names.
 - **Graphics tests**: installs Mesa 3D and DXVK with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
@@ -266,7 +269,7 @@ os/
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
 │   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, xHCI USB core, hubs, HID, mass storage
-│   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, ACPI (uACPI host)
+│   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, I/O APIC, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
 │   ├── wm/               # Window manager, desktop shell, input, clipboard
