@@ -114,6 +114,9 @@ every part, phase by phase.
   combining, widening, tessellation), strokes with caps, joins and dashes,
   solid, gradient and bitmap brushes, layers and clips, on HWND, DC and
   bitmap render targets.  Text goes through DirectWrite's interfaces.
+- **Media tools**: a current Windows build of ffmpeg runs unchanged and
+  converts H.264 and AAC to VP9 and Opus with all its threads (its one
+  DirectWrite import comes with the Firefox work).
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions; registry saved to disk;
   COM in-process servers; drag and drop; a shared clipboard; `.lnk`

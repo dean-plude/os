@@ -1635,10 +1635,11 @@ it is written for NovaOS on a small core of its own:
   `novatext.dll`) is written for the Firefox branch, and with it the check
   passes, 64- and 32-bit.
 
-## ffmpeg's imports
+## ffmpeg
 
-Phase 19.3, in progress.  `tools/pe_imports.py` on a current Windows ffmpeg
-build listed nine missing functions, now added:
+Phase 19.3.  `tools/pe_imports.py` on a current Windows ffmpeg build
+(BtbN's, statically linked, 168 MB) listed nine missing functions, now
+added:
 - gdi32: `ExtCreateRegion` (kept as a bounding box like every region),
   `GetGraphicsMode`, `Get`/`Set`/`ModifyWorldTransform` (kept per DC and
   reported back; drawing stays in device coordinates),
@@ -1646,8 +1647,24 @@ build listed nine missing functions, now added:
   name tables) and `GetFontUnicodeRanges`.
 - The CRT: `getenv_s` and `_wgetenv_s`.
 - ws2_32: `WSASendMsg` (control data is not carried).
+The tenth, `DWriteCreateFactory`, is the Firefox branch's DirectWrite.
 
-New threads now get at least the program's stack reserve from its image
-header, as on Windows, instead of a fixed 256 KB: ffmpeg's H.264 decoder
-threads overflowed the smaller stack and corrupted each other's data.
+Running it found three kernel bugs, all from ffmpeg's many threads:
+- **Thread stacks**: new threads got a fixed 256 KB stack.  They now get at
+  least the image's stack reserve, as on Windows (2 MB for ffmpeg, whose
+  H.264 decoder threads overflowed the smaller stack into each other's).
+- **Lost sleeps**: a thread woken early from a timed sleep stays on its
+  CPU's sleep list until that CPU's next tick drops it.  A thread that
+  exited in between was freed while still on the list, and every sleeper
+  after it was lost: their `Sleep` never returned.  An exiting thread now
+  leaves the list first, and a thread that moved to another CPU leaves the
+  old CPU's list before sleeping on the new one.
+- **Handles**: a process could hold 256 handles.  winpthreads makes events
+  and semaphores for every mutex and condition variable, so ffmpeg ran out
+  ("Cannot allocate memory", "Resource temporarily unavailable").  The
+  limit is 4096.
 
+`ffmpeg -i in.mp4 out.webm` (H.264 and AAC in, VP9 and Opus out) completes
+under QEMU with its default threads, as do MPEG-4 encoding and 16 decoder
+threads; the result plays on Linux.  The process dump on Ctrl+C now shows
+each thread's scheduler state.

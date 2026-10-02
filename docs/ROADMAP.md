@@ -87,10 +87,10 @@ named program or test demonstrates it.
   see [Direct2D](HISTORY.md#direct2d).  Still open: `d2dtest`'s text
   check waits for DirectWrite's `CreateTextFormat` and `CreateTextLayout`,
   which are written (on HarfBuzz) and land with the Firefox branch (PR #32).
-- The rest of ffmpeg's imports (19.3, in progress): every import of a
-  current ffmpeg build now resolves except `DWriteCreateFactory` (DirectWrite
-  comes with PR #32); `ffmpeg -i in.mp4 out.webm` still fails when it runs
-  many threads at once.
+- ~~**ffmpeg's imports**~~ Done (19.3): see
+  [ffmpeg](HISTORY.md#ffmpeg).  `ffmpeg -i in.mp4 out.webm` (H.264 and AAC
+  to VP9 and Opus) completes; its one DirectWrite import comes with the
+  Firefox branch (PR #32), and the app corpus gets ffmpeg once that lands.
 - Display: GPU-backed or at least faster blits; mode changes.
 - NetSurf: SVG; redrawing pages a script changes after layout.
 
