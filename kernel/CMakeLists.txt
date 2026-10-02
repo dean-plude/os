@@ -165,6 +165,7 @@ set(KERNEL_C_SOURCES
     ke/probe_test.c
     ob/ob.c
     ps/ps.c
+    ps/ps_test.c
     cm/cm.c
     se/se.c
     io/io.c
