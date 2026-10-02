@@ -6,7 +6,7 @@
 
 Suites:
   core      (default) apitest, abitest, filetest, pipetest, guitest auto,
-            disptest, battery, soundtest, and last "crash kernel" (a
+            anitest, disptest, battery, soundtest, and last "crash kernel" (a
             deliberate kernel fault must print a symbolized backtrace)
   graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
             tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
@@ -62,6 +62,7 @@ CORE = [
     Test('filetest', 'filetest', [r'filetest: \d+ passed, 0 failed']),
     Test('pipetest', 'pipetest', [r'pipetest: \d+ passed, 0 failed']),
     Test('guitest', 'guitest auto', [r'guitest: \d+ passed, 0 failed']),
+    Test('anitest', 'anitest', [r'anitest: \d+ passed, 0 failed']),
     Test('disptest', 'disptest', [r'\d+ passed, 0 failed']),
     Test('battery', 'battery', [r'Power source: battery', r'Battery: 75%', r'Time left: 3 h 00 min',
                                 r'SystemBatteryState: present 1, AC 0, charging 0, discharging 1']),
