@@ -103,6 +103,10 @@ named program or test demonstrates it.
   cultures.
 - Keep the App Store's per-app compatibility notes in step with what has
   been verified.
+- Firefox (tested with Floorp): the browser window opens and draws
+  through its GPU process, and its sandboxed child processes start; see
+  [Firefox](HISTORY.md#firefox-floorp).  Still open: showing a page's
+  content, fetching pages over the network, `nssckbi.dll`.
 
 <!-- END generated:next-apps -->
 
