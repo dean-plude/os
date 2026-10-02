@@ -1122,3 +1122,13 @@ WINADVAPI BOOL WINAPI DestroyPrivateObjectSecurity(PSECURITY_DESCRIPTOR *sd)
 WINADVAPI BOOL WINAPI CredReadA(LPCSTR target, DWORD type, DWORD flags, PVOID *cred) { (void)target; return CredReadW(0, type, flags, cred); }
 WINADVAPI BOOL WINAPI CredWriteA(PVOID cred, DWORD flags) { return CredWriteW(cred, flags); }
 WINADVAPI BOOL WINAPI CredDeleteA(LPCSTR target, DWORD type, DWORD flags) { (void)target; return CredDeleteW(0, type, flags); }
+
+/* A restricted token: NovaOS checks no token's groups or privileges when
+ * a process runs, so the restrictions are accepted and the new token is
+ * a copy of the old */
+WINADVAPI BOOL WINAPI CreateRestrictedToken(HANDLE t, DWORD flags, DWORD ndisable, PVOID disable, DWORD ndelete, PVOID del,
+                                            DWORD nrestrict, PVOID restricted, PHANDLE out)
+{
+    (void)flags; (void)ndisable; (void)disable; (void)ndelete; (void)del; (void)nrestrict; (void)restricted;
+    return DuplicateTokenEx(t, 0x02000000 /* MAXIMUM_ALLOWED */, 0, SecurityImpersonation, 1 /* TokenPrimary */, out);
+}

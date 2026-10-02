@@ -47,7 +47,7 @@ DLLS = [
     ('advapi32', ['kernel32', 'ntdll'],  0x7FFA80000000),
     ('bcrypt',   ['kernel32', 'ntdll'],  0x7FFA90000000),
     ('bcryptprimitives', ['kernel32', 'ntdll'], 0x7FFAA0000000),
-    ('userenv',  ['kernel32', 'ntdll'],  0x7FFAB0000000),
+    ('userenv',  ['advapi32', 'kernel32', 'ntdll'],  0x7FFAB0000000),
     ('shlwapi',  ['msvcrt', 'kernel32', 'ntdll'], 0x7FFAD0000000),
     ('psapi',    ['kernel32'],           0x7FFB40000000),
     ('shfolder', [],                     0x7FFB70000000),
@@ -87,6 +87,11 @@ DLLS = [
     ('ktmw32',   ['kernel32', 'ntdll'],           0x7FFD10000000),
     ('propsys',  ['ole32', 'kernel32', 'ntdll'],  0x7FFD20000000),
     ('windowscodecs', ['kernel32', 'ntdll'],      0x7FFD30000000),
+    ('wtsapi32', ['user32', 'advapi32', 'kernel32', 'ntdll'], 0x7FFD00000000),
+    ('setupapi', ['kernel32', 'ntdll'],           0x7FFD40000000),
+    ('hid',      ['kernel32', 'ntdll'],           0x7FFD50000000),
+    ('oleacc',   ['user32', 'kernel32', 'ntdll'], 0x7FFD60000000),
+    ('uiautomationcore', ['kernel32', 'ntdll'],   0x7FFD70000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}

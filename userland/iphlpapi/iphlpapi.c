@@ -147,3 +147,6 @@ IPHLPAPI DWORD WINAPI GetIfTable2(PVOID *table) { return GetIfTable2Ex(0, table)
 IPHLPAPI DWORD WINAPI GetIpInterfaceTable(USHORT family, PVOID *table) { (void)family; return GetIfTable2Ex(0, table); }
 IPHLPAPI DWORD WINAPI GetUnicastIpAddressTable(USHORT family, PVOID *table) { (void)family; return GetIfTable2Ex(0, table); }
 IPHLPAPI VOID WINAPI FreeMibTable(PVOID table) { if (table) HeapFree(GetProcessHeap(), 0, table); }
+
+/* The interface toward an address (sockaddr form): no route is known */
+IPHLPAPI DWORD WINAPI GetBestInterfaceEx(const void *addr, PDWORD index) { (void)addr; (void)index; return ERROR_NO_DATA_; }

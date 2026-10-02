@@ -635,10 +635,19 @@ static UINT64 sys_set_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 }
 
 /* NtQueryInformationProcess(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG) */
+static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4);
 static UINT64 sys_query_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    UmProcess *p = UmCurrent();
-    if (a1 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_INVALID_HANDLE;
+    UmObject *ob;
+    UmProcess *p = um_proc_of(UmCurrent(), a1, &ob);          /* this process or another (a launcher's child) */
+    if (!p) return ST_INVALID_HANDLE;
+    UINT64 r = query_info_process(p, a2, a3, a4);
+    if (ob) um_ob_unref(ob);
+    return r;
+}
+
+static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4)
+{
     if (a2 == 23) {                                            /* ProcessDeviceMap: the drive letters */
         if (a4 < 36) return ST_INFO_LENGTH_MISMATCH;
         UINT8 b[36];
@@ -652,7 +661,7 @@ static UINT64 sys_query_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     if (a2 != 0) return ST_INVALID_INFO_CLASS;                 /* ProcessBasicInformation */
     if (a4 < 48) return ST_INFO_LENGTH_MISMATCH;
-    UINT64 b[6] = { ST_STILL_ACTIVE, p->lay.peb, 1, 8, p->pid, 0 };
+    UINT64 b[6] = { p->exited ? p->exit_status : ST_STILL_ACTIVE, p->lay.peb, 1, 8, p->pid, p->parent_pid };
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, sizeof(b)))) return ST_ACCESS_VIOLATION;
     return put_u32(um_stack_arg(5), 48) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }

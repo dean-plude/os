@@ -126,3 +126,86 @@ WINOLEAPI_(HRESULT) RoGetActivationFactory(HSTRING cls, REFIID iid, void **f) { 
 WINOLEAPI_(HRESULT) RoActivateInstance(HSTRING cls, void **inst) { (void)cls; if (inst) *inst = 0; return REGDB_E_CLASSNOTREG; }
 WINOLEAPI_(BOOL) RoOriginateErrorW(HRESULT hr, UINT32 len, const WCHAR *msg) { (void)hr; (void)len; (void)msg; return FALSE; }
 WINOLEAPI_(BOOL) RoOriginateError(HRESULT hr, HSTRING msg) { (void)hr; (void)msg; return FALSE; }
+
+/* Agile references: every object here can be used from any thread, so
+ * the reference holds the object and Resolve is a QueryInterface */
+typedef struct AgileRef AgileRef;
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(AgileRef *, REFIID, void **);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(AgileRef *);
+    ULONG   (STDMETHODCALLTYPE *Release)(AgileRef *);
+    HRESULT (STDMETHODCALLTYPE *Resolve)(AgileRef *, REFIID, void **);
+} AgileRefVtbl;
+struct AgileRef { const AgileRefVtbl *lpVtbl; LONG refs; IUnknown *obj; };
+static const GUID IID_IAgileReference_ = { 0xc03f6a43, 0x65a4, 0x9818, { 0x98, 0x7e, 0xe0, 0xb8, 0x10, 0xd2, 0xa6, 0xf2 } };
+static const GUID IID_IUnknown__ = { 0, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+static HRESULT STDMETHODCALLTYPE ar_qi(AgileRef *a, REFIID iid, void **out)
+{
+    if (!out) return E_POINTER;
+    if (IsEqualGUID(iid, &IID_IUnknown__) || IsEqualGUID(iid, &IID_IAgileReference_)) {
+        *out = a;
+        InterlockedIncrement(&a->refs);
+        return S_OK;
+    }
+    *out = 0;
+    return E_NOINTERFACE;
+}
+static ULONG STDMETHODCALLTYPE ar_addref(AgileRef *a) { return (ULONG)InterlockedIncrement(&a->refs); }
+static ULONG STDMETHODCALLTYPE ar_release(AgileRef *a)
+{
+    LONG r = InterlockedDecrement(&a->refs);
+    if (!r) { a->obj->lpVtbl->Release(a->obj); HeapFree(GetProcessHeap(), 0, a); }
+    return (ULONG)r;
+}
+static HRESULT STDMETHODCALLTYPE ar_resolve(AgileRef *a, REFIID iid, void **out) { return a->obj->lpVtbl->QueryInterface(a->obj, iid, out); }
+static const AgileRefVtbl g_agile_vtbl = { ar_qi, ar_addref, ar_release, ar_resolve };
+
+WINOLEAPI_(HRESULT) RoGetAgileReference(int options, REFIID iid, IUnknown *obj, void **out)
+{
+    (void)options;
+    if (!obj || !out) return E_INVALIDARG;
+    *out = 0;
+    void *check;
+    HRESULT hr = obj->lpVtbl->QueryInterface(obj, iid, &check);    /* the object must have @iid */
+    if (FAILED(hr)) return hr;
+    ((IUnknown *)check)->lpVtbl->Release((IUnknown *)check);
+    AgileRef *a = HeapAlloc(GetProcessHeap(), 0, sizeof(AgileRef));
+    if (!a) return E_OUTOFMEMORY;
+    a->lpVtbl = &g_agile_vtbl;
+    a->refs = 1;
+    a->obj = obj;
+    obj->lpVtbl->AddRef(obj);
+    *out = a;
+    return S_OK;
+}
+
+/* Channel hooks see cross-apartment calls; there are none */
+WINOLEAPI_(HRESULT) CoRegisterChannelHook(REFGUID ext, void *hook) { (void)ext; (void)hook; return S_OK; }
+
+/* OleDuplicateData: a copy of clipboard data; HGLOBAL-backed formats
+ * (all but bitmaps, metafiles and palettes) by copying the memory */
+WINOLEAPI_(HANDLE) OleDuplicateData(HANDLE src, WORD fmt, UINT flags)
+{
+    if (!src || fmt == 2 /* CF_BITMAP */ || fmt == 3 /* CF_METAFILEPICT */ || fmt == 9 /* CF_PALETTE */ ||
+        fmt == 14 /* CF_ENHMETAFILE */) return 0;
+    SIZE_T n = GlobalSize(src);
+    HGLOBAL dst = GlobalAlloc(flags ? flags : GMEM_MOVEABLE, n);
+    if (!dst) return 0;
+    void *d = GlobalLock(dst), *s = GlobalLock(src);
+    if (d && s) CopyMemory(d, s, n);
+    if (s) GlobalUnlock(src);
+    if (d) GlobalUnlock(dst);
+    return dst;
+}
+
+/* No data object carries an OLE link */
+WINOLEAPI_(HRESULT) OleQueryLinkFromData(IUnknown *data) { (void)data; return S_FALSE; }
+
+/* Compound files (structured storage) cannot be created */
+WINOLEAPI_(HRESULT) StgCreateStorageEx(const WCHAR *name, DWORD mode, DWORD fmt, DWORD attrs, void *opts, void *sd,
+                                      REFIID iid, void **out)
+{
+    (void)name; (void)mode; (void)fmt; (void)attrs; (void)opts; (void)sd; (void)iid;
+    if (out) *out = 0;
+    return (HRESULT)0x80030001L;                    /* STG_E_INVALIDFUNCTION */
+}
