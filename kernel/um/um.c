@@ -1009,6 +1009,11 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
                 if (hn + 2 >= im->size) return fail(L, "%s has a corrupt import entry", name);
                 const char *fn = (const char *)im->img + hn + 2;
                 addr = find_export(L, dm, fn, 0, 0);
+                /* ucrtbase's "_o_" exports (api-ms-win-crt-private) are
+                 * the plain functions under another name */
+                if (!addr && !strncmp(fn, "_o_", 3) &&
+                    (!strncmp(dll, "api-ms-win-crt-", 15) || !strncmp(dll, "ucrtbase", 8)))
+                    addr = find_export(L, dm, fn + 3, 0, 0);
                 ksnprintf(what, sizeof(what), "%s in %s", fn, dll);
             }
             /* A function NovaOS lacks: bind a stub that reports it if the

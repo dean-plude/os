@@ -70,7 +70,7 @@ void um_unlock(UmLock *l);
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
 typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION, UO_PIPE,
-               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO } UmObType;
+               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO, UO_CONSOLE } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -255,6 +255,15 @@ UmConsole *um_console_ref(UmConsole *c);
 int        um_console_write(UmConsole *c, const char *data, int len);   /* program output */
 /* Program reads keyboard input: bytes, 0 at EOF, -1 if killed while waiting */
 int        um_console_read(UmConsole *c, char *buf, int cap, UmProcess *p);
+/* The console's waitable object (referenced), for input handles */
+UmObject  *um_console_object(UmConsole *c);
+/* Input records: copy up to @max (taking them with @remove; @wait for
+ * one); -1 if the thread is being ended while waiting */
+int        um_console_records(UmConsole *c, UmConInput *out, int max, bool remove, bool wait);
+int        um_console_count(UmConsole *c);
+void       um_console_flush(UmConsole *c);
+void       um_console_set_mode(UmConsole *c, bool input, UINT32 mode);
+void       um_console_size(UmConsole *c, int *cols, int *rows);
 
 /* um_syscall.c */
 void       um_syscall_init(void);

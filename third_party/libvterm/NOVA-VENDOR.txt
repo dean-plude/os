@@ -1,0 +1,8 @@
+libvterm 0.3.3 (MIT, see LICENSE), from the Debian/Ubuntu source package
+(apt-get source libvterm).  Only include/ and src/ are used, unmodified;
+the kernel builds it with kernel/apps/vterm_libc.h force-included, which
+maps the few C library calls it makes onto the kernel's.
+
+The Terminal uses it for full-screen programs (Neovim, less, ...): while a
+program is in raw input mode or on the alternate screen, its output goes to
+a VTerm grid and the Terminal paints that grid.

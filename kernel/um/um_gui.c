@@ -186,7 +186,7 @@ static void gui_paint(WND *w)
 
 /* Windows virtual-key code for a set-1 scan code (keypad keys as with
  * Num Lock off; E0-prefixed ones in the second table) */
-static UINT32 scancode_to_vk(UINT8 sc, bool ext)
+UINT32 UmScancodeToVk(UINT8 sc, bool ext)
 {
     static const UINT8 base[0x59] = {
         0, 0x1B, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 0xBD, 0xBB, 0x08, 0x09,
@@ -217,7 +217,7 @@ static void gui_key(WND *w, const KeyEvent *k)
 {
     GuiWin *g = w->user;
     if (!g) return;
-    UINT32 vk = scancode_to_vk(k->scancode, k->extended) & 0xFF;
+    UINT32 vk = UmScancodeToVk(k->scancode, k->extended) & 0xFF;
     bool repeat = k->pressed && g_keydown[vk];
     g_keydown[vk] = k->pressed;
     /* lParam as in Win32: repeat count 1, scan code in bits 16-23, bit 24

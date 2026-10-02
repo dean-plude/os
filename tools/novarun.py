@@ -8,7 +8,9 @@ the --put trees, opens the Terminal (Win, "terminal", Enter), turns on
 "serial on" and types each COMMAND, waiting for the Terminal's end-of-command
 mark.  Prints each command's output.  A COMMAND of the form
 "!shot NAME.png" saves a screenshot, "!wait N" waits N seconds and
-"!keys a b ctrl-c" presses QEMU key names.
+"!keys a b ctrl-c" presses QEMU key names, "!type TEXT" types
+without waiting (\\n Enter, \\e Esc) and "!done N" waits up to N seconds
+for the running command to end.
 
 Options: --mem MiB (2048), --smp N (2), --timeout S per command (120),
 --keep DIR (keep the serial log, data disk and screenshots there),
@@ -170,6 +172,20 @@ def main():
                 continue
             if c.startswith('!wait '):
                 time.sleep(float(c[6:]))
+                continue
+            if c.startswith('!type '):      # type without waiting (\n, \e: Enter, Esc)
+                text = c[6:].replace('\\n', '\n')
+                for i, part in enumerate(text.split('\\e')):
+                    if i:
+                        qmp.key('esc')
+                        time.sleep(0.1)
+                    qmp.type(part)
+                continue
+            if c.startswith('!done '):      # wait for the running command to end
+                t0 = time.time()
+                got, ok = sr.wait('[TERM-DONE]', float(c[6:]))
+                print(got.replace('\n[TERM-DONE]\n', '').rstrip(), flush=True)
+                print(f'### {"done" if ok else "TIMEOUT"} in {time.time() - t0:.1f}s', flush=True)
                 continue
             if c.startswith('!keys '):
                 for k in c[6:].split():

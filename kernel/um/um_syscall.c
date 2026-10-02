@@ -34,6 +34,7 @@
 #define ST_INFO_LENGTH_MISMATCH    0xC0000004u
 #define ST_INVALID_HANDLE          0xC0000008u
 #define ST_INVALID_PARAMETER       0xC000000Du
+#define ST_CANCELLED               0xC0000120u
 #define ST_NOT_SUPPORTED           0xC00000BBu
 #define ST_BUFFER_TOO_SMALL        0xC0000023u
 #define ST_END_OF_FILE             0xC0000011u
@@ -165,8 +166,8 @@ UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             UINT64 oa = num == SYSCALL_NtCreateFile || num == SYSCALL_NtOpenFile ? a3 :
                         num == SYSCALL_NtQueryAttributesFile ? a1 : 0;
             if (oa && get_path(t->proc, oa, path, sizeof(path), &root)) path[0] = 0;
-            kprintf("[TRACE] %s: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
-                    (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
+            kprintf("[TRACE] %s %u: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
+                    (unsigned)t->proc->pid, (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
                     (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r,
                     path[0] ? " " : "", path);
         }
@@ -290,6 +291,7 @@ UmObject *um_handle_object(UmProcess *p, UINT64 hv, UmObType type)
     um_lock(&p->lock);
     UmHandle *h = handle(p, hv);
     if (h && h->kind == H_OBJECT && (!type || h->obj->type == type)) o = um_ob_ref(h->obj);
+    else if (h && h->kind == H_CON_IN && (!type || type == UO_CONSOLE)) o = um_console_object(p->con);
     um_unlock(&p->lock);
     return o;
 }
@@ -2107,6 +2109,83 @@ static bool clip_name(UINT64 ptr, char *name)
     return !ptr || get_str(ptr, name, CLIP_NAME_MAX);
 }
 
+/* NtNovaConsole(HANDLE, ULONG Op, PVOID Buffer, ULONG Length, PULONG Result):
+ * the console calls of kernel32 on a console handle.  Records are
+ * INPUT_RECORDs (UmConInput). */
+enum { CON_GET_MODE, CON_SET_MODE, CON_READ_INPUT, CON_PEEK_INPUT, CON_WRITE_INPUT,
+       CON_COUNT_INPUT, CON_FLUSH_INPUT, CON_GET_SIZE };
+static UINT64 sys_nova_console(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    UmProcess *p = UmCurrent();
+    UINT64 res_ptr = um_stack_arg(5);
+    um_lock(&p->lock);
+    UmHandle *h = handle(p, a1);
+    UmHandleKind kind = h ? h->kind : H_FREE;
+    um_unlock(&p->lock);
+    if (kind != H_CON_IN && kind != H_CON_OUT) return ST_INVALID_HANDLE;
+    UmConsole *c = p->con;
+    bool in = kind == H_CON_IN;
+    UINT32 res = 0;
+    switch ((UINT32)a2) {
+    case CON_GET_MODE: {
+        res = !c ? (in ? CON_IN_DEFAULT : CON_OUT_DEFAULT) :
+              in ? UmConsoleInputMode(c) : UmConsoleOutputMode(c);
+        break;
+    }
+    case CON_SET_MODE:
+        um_console_set_mode(c, in, (UINT32)a4);
+        break;
+    case CON_READ_INPUT:
+    case CON_PEEK_INPUT: {
+        if (!in) return ST_INVALID_HANDLE;
+        UmConInput recs[64];
+        UINT32 max = (UINT32)a4 < 64 ? (UINT32)a4 : 64;
+        if (!max) break;
+        int n = um_console_records(c, recs, (int)max, a2 == CON_READ_INPUT, a2 == CON_READ_INPUT && c);
+        if (n < 0) return ST_CANCELLED;
+        if (n && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, recs, (size_t)n * sizeof(UmConInput))))
+            return UM_STATUS_ACCESS_VIOLATION;
+        res = (UINT32)n;
+        break;
+    }
+    case CON_WRITE_INPUT: {
+        if (!in) return ST_INVALID_HANDLE;
+        UmConInput recs[64];
+        UINT32 left = (UINT32)a4;
+        UINT64 src = a3;
+        while (left) {
+            UINT32 k = left < 64 ? left : 64;
+            if (!NT_SUCCESS(CopyFromUser(recs, (const void *)(uintptr_t)src, (size_t)k * sizeof(UmConInput))))
+                return UM_STATUS_ACCESS_VIOLATION;
+            int put = c ? UmConsolePushInput(c, recs, (int)k) : (int)k;
+            res += (UINT32)put;
+            if ((UINT32)put < k) break;                 /* full */
+            left -= k;
+            src += (UINT64)k * sizeof(UmConInput);
+        }
+        break;
+    }
+    case CON_COUNT_INPUT:
+        if (!in) return ST_INVALID_HANDLE;
+        res = (UINT32)um_console_count(c);
+        break;
+    case CON_FLUSH_INPUT:
+        if (!in) return ST_INVALID_HANDLE;
+        um_console_flush(c);
+        break;
+    case CON_GET_SIZE: {
+        int cols, rows;
+        um_console_size(c, &cols, &rows);
+        res = (UINT32)cols | (UINT32)rows << 16;
+        break;
+    }
+    default:
+        return ST_INVALID_PARAMETER;
+    }
+    if (res_ptr && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)res_ptr, &res, 4))) return UM_STATUS_ACCESS_VIOLATION;
+    return ST_SUCCESS;
+}
+
 static UINT64 sys_clipboard(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     char name[CLIP_NAME_MAX];
@@ -2248,6 +2327,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtSetInformationObject,     sys_set_info_object);
     um_install(SYSCALL_NtQueryObject,              sys_query_object);
     um_install(SYSCALL_NtNovaClipboard,            sys_clipboard);
+    um_install(SYSCALL_NtNovaConsole,              sys_nova_console);
     um_install(SYSCALL_NtOpenProcess,              sys_open_process);
     RamfsSetChangeHook(fs_changed);
     um_install(SYSCALL_NtFreeVirtualMemory,        sys_free_vm);

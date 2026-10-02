@@ -700,7 +700,17 @@ typedef struct {
     PVOID ctx;
     DWORD ms;
     ULONG flags;
+    volatile LONG gone;                 /* unregistered by its own callback */
 } WaitReg;
+
+static void wait_free(WaitReg *r)
+{
+    CloseHandle(r->thread);
+    CloseHandle(r->stop);
+    if (r->obj) CloseHandle(r->obj);
+    r->magic = 0;
+    zfree(r);
+}
 
 static DWORD WINAPI wait_thread(LPVOID p)
 {
@@ -712,6 +722,7 @@ static DWORD WINAPI wait_thread(LPVOID p)
         BOOLEAN timed_out = w == WAIT_TIMEOUT;
         if (w != WAIT_OBJECT_0 + 1 && !timed_out) break;
         r->fn(r->ctx, timed_out);
+        if (r->gone) { wait_free(r); return 0; }        /* (the callback unregistered it) */
         if (r->flags & 8 /* WT_EXECUTEONLYONCE */) break;
         if (!timed_out && WaitForSingleObject(r->obj, 0) == WAIT_OBJECT_0 && r->ms == INFINITE) {
             /* a manual-reset object stays signaled: don't spin on it */
@@ -746,15 +757,15 @@ K32 BOOL WINAPI UnregisterWaitEx(HANDLE h, HANDLE done)
     WaitReg *r = (WaitReg *)h;
     if (!r || r->magic != 0x57414954) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
     SetEvent(r->stop);
-    if (GetCurrentThreadId() != GetThreadId(r->thread)) {
-        if (done == INVALID_HANDLE_VALUE) WaitForSingleObject(r->thread, INFINITE);
-        else if (done) { WaitForSingleObject(r->thread, INFINITE); SetEvent(done); }
+    if (GetCurrentThreadId() == GetThreadId(r->thread)) {   /* from its callback: the thread frees it */
+        r->magic = 0;
+        r->gone = 1;
+        if (done && done != INVALID_HANDLE_VALUE) SetEvent(done);
+        return TRUE;
     }
-    CloseHandle(r->thread);
-    CloseHandle(r->stop);
-    if (r->obj) CloseHandle(r->obj);
-    r->magic = 0;
-    zfree(r);
+    if (done == INVALID_HANDLE_VALUE) WaitForSingleObject(r->thread, INFINITE);
+    else if (done) { WaitForSingleObject(r->thread, INFINITE); SetEvent(done); }
+    wait_free(r);
     return TRUE;
 }
 
@@ -1314,8 +1325,6 @@ K32 BOOL WINAPI GetSystemTimeAdjustment(PDWORD adj, PDWORD inc, PBOOL disabled)
 }
 
 /* Console input records: the Terminal delivers lines, not key events */
-K32 BOOL WINAPI PeekConsoleInputW(HANDLE h, void *rec, DWORD n, LPDWORD read) { (void)rec; (void)n; *read = 0; DWORD e; return GetNumberOfConsoleInputEvents(h, &e); }
-K32 BOOL WINAPI PeekConsoleInputA(HANDLE h, void *rec, DWORD n, LPDWORD read) { return PeekConsoleInputW(h, rec, n, read); }
 
 /* Threads in this process only */
 K32 HANDLE WINAPI CreateRemoteThread(HANDLE p, LPSECURITY_ATTRIBUTES sa, SIZE_T stack, LPTHREAD_START_ROUTINE fn,
@@ -1609,38 +1618,80 @@ typedef struct {
     struct { BOOL KeyDown; WORD RepeatCount, VirtualKeyCode, VirtualScanCode; WCHAR UnicodeChar; DWORD ControlKeyState; } Key;
 } NOVA_INPUT_RECORD;
 
-K32 BOOL WINAPI ReadConsoleInputW(HANDLE h, NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD read)
+/* Input records live in the kernel's console (NtNovaConsole): the keys the
+ * Terminal sends and what programs add with WriteConsoleInput */
+static BOOL con_call(HANDLE h, ULONG op, PVOID buf, ULONG len, DWORD *res)
 {
-    WCHAR buf[64];
-    DWORD got = 0;
-    if (n > 64) n = 64;
-    if (!n || !ReadConsoleW(h, buf, n, &got, 0)) { if (read) *read = 0; return n == 0; }
-    for (DWORD i = 0; i < got; i++) {
-        memset(&rec[i], 0, sizeof(rec[i]));
-        rec[i].EventType = 1;                                            /* KEY_EVENT */
-        rec[i].Key.KeyDown = TRUE;
-        rec[i].Key.RepeatCount = 1;
-        rec[i].Key.UnicodeChar = buf[i];
-        WCHAR c = buf[i];
-        rec[i].Key.VirtualKeyCode = c == '\r' || c == '\n' ? VK_RETURN : c == 8 ? VK_BACK : c == 27 ? VK_ESCAPE :
-                                    (c >= 'a' && c <= 'z') ? (WORD)(c - 32) : (WORD)c;
-    }
-    if (read) *read = got;
+    ULONG r = 0;
+    NTSTATUS s = NtNovaConsole(h, op, buf, len, &r);
+    if (res) *res = r;
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
     return TRUE;
 }
+/* Reads in batches of at most 64 records */
+static BOOL con_records(HANDLE h, ULONG op, NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD got)
+{
+    DWORD k = 0;
+    BOOL ok = con_call(h, op, rec, n > 64 ? 64 : n, &k);
+    if (got) *got = k;
+    return ok;
+}
+/* The ANSI forms: characters above 0x7F become '?' (no code page but UTF-8) */
+static void con_to_ansi(NOVA_INPUT_RECORD *rec, DWORD n)
+{
+    for (DWORD i = 0; i < n; i++)
+        if (rec[i].EventType == 1 && rec[i].Key.UnicodeChar > 0x7F) rec[i].Key.UnicodeChar = '?';
+}
+K32 BOOL WINAPI ReadConsoleInputW(HANDLE h, NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD read) { return con_records(h, 2, rec, n, read); }
+K32 BOOL WINAPI PeekConsoleInputW(HANDLE h, NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD read) { return con_records(h, 3, rec, n, read); }
 K32 BOOL WINAPI ReadConsoleInputA(HANDLE h, NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD read)
 {
     if (!ReadConsoleInputW(h, rec, n, read)) return FALSE;
-    for (DWORD i = 0; i < *read; i++) if (rec[i].Key.UnicodeChar > 0x7F) rec[i].Key.UnicodeChar = '?';
+    con_to_ansi(rec, *read);
     return TRUE;
+}
+K32 BOOL WINAPI PeekConsoleInputA(HANDLE h, NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD read)
+{
+    if (!PeekConsoleInputW(h, rec, n, read)) return FALSE;
+    con_to_ansi(rec, *read);
+    return TRUE;
+}
+/* ReadConsoleInputEx: flag 2 (CONSOLE_READ_NOWAIT) returns at once */
+K32 BOOL WINAPI ReadConsoleInputExW(HANDLE h, NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD read, USHORT flags)
+{
+    if (flags & 2) {
+        DWORD k = 0;
+        if (!GetNumberOfConsoleInputEvents(h, &k)) return FALSE;
+        if (!k) { if (read) *read = 0; return TRUE; }
+    }
+    return con_records(h, (flags & 1) ? 3 : 2, rec, n, read);   /* 1: CONSOLE_READ_NOREMOVE */
 }
 K32 BOOL WINAPI WriteConsoleInputW(HANDLE h, const NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD written)
 {
-    (void)h; (void)rec;
-    if (written) *written = n;                                           /* (nothing reads them back) */
-    return TRUE;
+    return con_call(h, 4, (PVOID)rec, n, written);
 }
+K32 BOOL WINAPI WriteConsoleInputA(HANDLE h, const NOVA_INPUT_RECORD *rec, DWORD n, LPDWORD written)
+{
+    return WriteConsoleInputW(h, rec, n, written);
+}
+K32 BOOL WINAPI GetNumberOfConsoleInputEvents(HANDLE h, LPDWORD n) { return con_call(h, 5, 0, 0, n); }
+K32 BOOL WINAPI FlushConsoleInputBuffer(HANDLE h) { return con_call(h, 6, 0, 0, 0); }
+K32 BOOL WINAPI GetConsoleMode(HANDLE h, LPDWORD mode) { return con_call(h, 0, 0, 0, mode); }
+K32 BOOL WINAPI SetConsoleMode(HANDLE h, DWORD mode) { return con_call(h, 1, 0, mode, 0); }
 K32 BOOL WINAPI GetNumberOfConsoleMouseButtons(LPDWORD n) { *n = 2; return TRUE; }
+
+/* Pseudo consoles (ConPTY): not yet.  The functions exist because programs
+ * probe for them to learn they run on a console that understands virtual
+ * terminal sequences (Neovim's --embed server then talks to CONIN$/CONOUT$
+ * and keeps its RPC on the pipes); creating one fails cleanly. */
+K32 LONG WINAPI CreatePseudoConsole(COORD size, HANDLE in, HANDLE out, DWORD flags, PVOID *pc)
+{
+    (void)size; (void)in; (void)out; (void)flags;
+    if (pc) *pc = 0;
+    return (LONG)0x80004001;                                /* E_NOTIMPL */
+}
+K32 LONG WINAPI ResizePseudoConsole(PVOID pc, COORD size) { (void)pc; (void)size; return (LONG)0x80004001; }
+K32 VOID WINAPI ClosePseudoConsole(PVOID pc) { (void)pc; }
 K32 DWORD WINAPI GetConsoleProcessList(LPDWORD list, DWORD n)
 {
     if (n >= 1) list[0] = GetCurrentProcessId();

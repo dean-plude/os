@@ -785,22 +785,6 @@ WINBASEAPI DWORD WINAPI GetFileType(HANDLE h)
            d.DeviceType == 0x22 ? FILE_TYPE_UNKNOWN : FILE_TYPE_DISK;
 }
 
-/* A console handle (not NUL, which is a character device too) */
-static BOOL is_console(HANDLE h)
-{
-    IO_STATUS_BLOCK io;
-    FILE_FS_DEVICE_INFORMATION d;
-    return NT_SUCCESS(NtQueryVolumeInformationFile(h, &io, &d, sizeof(d), FileFsDeviceInformation)) && d.DeviceType == 0x50;
-}
-
-WINBASEAPI BOOL WINAPI GetConsoleMode(HANDLE h, LPDWORD mode)
-{
-    if (!is_console(h)) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-    *mode = 0x7;                                            /* processed, line input, echo */
-    return TRUE;
-}
-
-WINBASEAPI BOOL WINAPI SetConsoleMode(HANDLE h, DWORD mode) { (void)mode; return is_console(h); }
 WINBASEAPI UINT WINAPI GetConsoleCP(void)             { return CP_UTF8; }
 WINBASEAPI UINT WINAPI GetConsoleOutputCP(void)       { return CP_UTF8; }
 WINBASEAPI BOOL WINAPI SetConsoleOutputCP(UINT cp)    { (void)cp; return TRUE; }
