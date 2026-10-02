@@ -299,6 +299,16 @@ python3 tools/novarun.py --wav /tmp/out.wav 'C:\Programs\soundtest.exe tone 440 
 python3 tools/wavcheck.py /tmp/out.wav     # each tone: start, length, level, pitch
 ```
 
+### Network
+
+`--net` gives the guest an e1000e card on QEMU's user network; the host is
+`10.0.2.2`, so a test server on the host is reachable from programs:
+
+```bash
+python3 tools/novarun.py --net --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' \
+    'ffmpeg.exe -tls_verify 0 -i https://10.0.2.2:8443/tone.wav -f null -'
+```
+
 ### On the host
 
 - `tools/pe_imports.py PROGRAM.exe ...` lists every DLL and function a

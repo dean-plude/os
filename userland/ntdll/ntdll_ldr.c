@@ -360,11 +360,20 @@ static BOOL attach_new_modules(int first)
 {
     for (int i = first; i < g_nmod; i++) {
         Module *m = &g_mod[i];
-        if (m->attached || !m->is_dll) { m->attached = TRUE; continue; }
+        if (m->attached || !m->is_dll) continue;
         m->attached = TRUE;                          /* (a nested load must not run it again) */
         run_tls_callbacks(m, DLL_PROCESS_ATTACH);
         if (!call_dllmain(m, DLL_PROCESS_ATTACH)) return FALSE;
         m->entry.Flags |= LDRP_PROCESS_ATTACH_CALLED;
+    }
+    /* the program's own TLS callbacks run once its DLLs are initialized,
+     * before its entry point (MinGW programs set up thread-local data and
+     * winpthreads' cleanup there) */
+    for (int i = first; i < g_nmod; i++) {
+        Module *m = &g_mod[i];
+        if (m->attached) continue;
+        m->attached = TRUE;
+        run_tls_callbacks(m, DLL_PROCESS_ATTACH);
     }
     return TRUE;
 }
@@ -471,7 +480,7 @@ void nova_run_thread_detach(void)
     if (!g_process_ready) return;
     for (int i = g_nmod - 1; i >= 0; i--) {
         Module *m = &g_mod[i];
-        if (m->is_dll && m->attached && !m->no_thread_calls) {
+        if (m->attached && !m->no_thread_calls) {
             run_tls_callbacks(m, DLL_THREAD_DETACH);
             call_dllmain(m, DLL_THREAD_DETACH);
         }
@@ -484,7 +493,9 @@ void nova_run_process_detach(void)
     if (!g_process_ready) return;
     for (int i = g_nmod - 1; i >= 0; i--) {
         Module *m = &g_mod[i];
-        if (m->is_dll && m->attached) call_dllmain(m, DLL_PROCESS_DETACH);
+        if (!m->attached) continue;
+        if (!m->is_dll) run_tls_callbacks(m, DLL_PROCESS_DETACH);
+        else call_dllmain(m, DLL_PROCESS_DETACH);
     }
 }
 
@@ -495,7 +506,7 @@ static void thread_attach(void)
     setup_thread_tls();
     for (int i = 0; i < g_nmod; i++) {
         Module *m = &g_mod[i];
-        if (m->is_dll && m->attached && !m->no_thread_calls) {
+        if (m->attached && !m->no_thread_calls) {
             run_tls_callbacks(m, DLL_THREAD_ATTACH);
             call_dllmain(m, DLL_THREAD_ATTACH);
         }

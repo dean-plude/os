@@ -11,5 +11,7 @@ DNSAPI LONG WINAPI DnsQuery_A(LPCSTR name, WORD type, DWORD opts, PVOID extra, P
 { (void)name; (void)type; (void)opts; (void)extra; if (results) *results = 0; if (reserved) *reserved = 0; return DNS_ERROR_RCODE_NAME_ERROR_; }
 DNSAPI LONG WINAPI DnsQuery_W(PCWSTR name, WORD type, DWORD opts, PVOID extra, PVOID *results, PVOID *reserved)
 { (void)name; (void)type; (void)opts; (void)extra; if (results) *results = 0; if (reserved) *reserved = 0; return DNS_ERROR_RCODE_NAME_ERROR_; }
+DNSAPI LONG WINAPI DnsQuery_UTF8(LPCSTR name, WORD type, DWORD opts, PVOID extra, PVOID *results, PVOID *reserved)
+{ return DnsQuery_A(name, type, opts, extra, results, reserved); }
 DNSAPI VOID WINAPI DnsFree(PVOID data, int type) { (void)data; (void)type; }
 DNSAPI VOID WINAPI DnsRecordListFree(PVOID data, int type) { (void)data; (void)type; }
