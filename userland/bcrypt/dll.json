@@ -1,0 +1,6 @@
+{
+  "deps": ["kernel32", "ntdll"],
+  "base": "0x7FFA90000000",
+  "base_x86": "0x69000000",
+  "sources": ["bcrypt", "common"]
+}

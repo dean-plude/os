@@ -21,12 +21,14 @@ have no x86 CPU.  Hypervisor.framework there only runs ARM guests, so
 
 ## Running the ready-made ISO (no build)
 
-The repository carries a bootable `nova.iso`, so you can try NovaOS without
-building anything.  You need QEMU, which brings the UEFI firmware with it:
+CI publishes a bootable `nova.iso` built from `main`, so you can try NovaOS
+without building anything.  You need QEMU, which brings the UEFI firmware
+with it:
 
 ```bash
 brew install qemu
-git clone https://github.com/dean-plude/os && cd os
+mkdir nova && cd nova
+curl -LO https://github.com/dean-plude/os/releases/latest/download/nova.iso
 ```
 
 The firmware's variable store has to be writable, so copy it first.
@@ -56,6 +58,7 @@ Additions to the command line:
 |-----|-----|
 | `-accel hvf -cpu host` | **Intel Macs only**: hardware virtualization.  Leave it out on Apple Silicon. |
 | `-device intel-hda -device hda-output,audiodev=snd0 -audiodev coreaudio,id=snd0` | Sound through the Mac's speakers |
+| `-device intel-hda -device hda-micro,audiodev=snd0 -audiodev coreaudio,id=snd0` | Sound, and recording from the Mac's microphone (macOS asks Terminal for microphone access) |
 | `-nic user,model=e1000e` | Network (q35's default NIC is already an e1000e; this just makes it explicit) |
 | `-display cocoa,zoom-to-fit=on` | Scale the window on a Retina screen |
 | `-smp 8` | More cores (up to 16).  Under emulation more cores help less than on Linux/KVM. |
@@ -70,7 +73,7 @@ it is progressing.  `-smp` higher than 4 rarely helps there.
 
 1. **Create a New Virtual Machine** → **Emulate** (on Apple Silicon; on an
    Intel Mac choose **Virtualize**) → **Other**.
-2. Boot device: **CD/DVD Image**, and pick `nova.iso`.
+2. Boot device: **CD/DVD Image**, and pick the downloaded `nova.iso`.
 3. Architecture **x86_64**, System **Standard PC (Q35 + ICH9)**, memory
    2048 MB, 4 cores.
 4. Create a 1 GB drive.  Before saving, tick **Open VM Settings** and set:
@@ -109,7 +112,7 @@ brew install cmake ninja nasm python \
 
 | Package | Used for |
 |---------|----------|
-| `llvm`, `lld` | `clang`, `clang++`, `lld-link`, `llvm-rc`, `llvm-nm`: the Windows userland and NetSurf |
+| `llvm`, `lld` | `clang`, `clang++`, `lld-link`, `llvm-rc`, `llvm-nm`: the Windows userland and NetSurf; LLVM's libc++ headers, which the build finds next to `clang`, for HarfBuzz in `novatext.dll` |
 | `x86_64-elf-gcc` | The kernel (CMake prefers it over clang) |
 | `mingw-w64` | The UEFI bootloader (`x86_64-w64-mingw32-gcc`) |
 | `nasm` | Kernel assembly |
@@ -172,7 +175,7 @@ unchanged.  With Docker Desktop, [OrbStack](https://orbstack.dev) or
 docker run --rm -it -v "$PWD":/src -w /src ubuntu:24.04 bash -c '
   apt-get update &&
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
-      cmake make nasm clang lld llvm python3 mtools dosfstools xorriso &&
+      cmake make nasm clang lld llvm libc++-dev python3 mtools dosfstools xorriso &&
   NOVA_NO_NETSURF=1 scripts/build.sh'
 ```
 

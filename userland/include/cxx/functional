@@ -1,0 +1,11 @@
+// <functional> for C++ built against libc++'s headers: what C++ libraries
+// such as HarfBuzz use (std::hash, invoke, reference_wrapper, the function
+// objects), without libc++'s full header, which pulls in <vector> and
+// <locale> and with them the C runtime's locale internals
+#pragma once
+#include <__config>
+#include <__functional/hash.h>
+#include <__functional/identity.h>
+#include <__functional/invoke.h>
+#include <__functional/operations.h>
+#include <__functional/reference_wrapper.h>

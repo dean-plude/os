@@ -2,9 +2,12 @@
 """Summarise what a WAV recording holds: the sounding stretches, each one's
 length, level and pitch (from zero crossings, so: sine-like tones).
 
-    tools/wavcheck.py FILE.wav
+    tools/wavcheck.py FILE.wav [--tone HZ MS]
 
-Used with tools/novarun.py --wav to check NovaOS's sound output.
+Used with tools/novarun.py --wav to check NovaOS's sound output, and on
+what NovaOS records (soundtest record/capture under novarun --rec).  With
+--tone the exit status says whether the file holds a tone within 2% of HZ
+lasting at least MS milliseconds (0: it does).
 """
 import math, struct, sys, wave
 
@@ -44,9 +47,19 @@ def segments(path, show=False):
     return found
 
 
-def main(path):
-    segments(path, show=True)
+def has_tone(path, hz, ms, show=False):
+    """Whether @path holds a tone within 2% of @hz lasting @ms or longer"""
+    return any(abs(s[3] - hz) <= hz * 0.02 and s[1] >= ms for s in segments(path, show))
+
+
+def main(argv):
+    if len(argv) == 4 and argv[1] == '--tone':
+        ok = has_tone(argv[0], float(argv[2]), float(argv[3]), show=True)
+        print(f'{"ok" if ok else "FAIL"}: {"a" if ok else "no"} {argv[2]} Hz tone of {argv[3]} ms or more')
+        return 0 if ok else 1
+    segments(argv[0], show=True)
+    return 0
 
 
 if __name__ == '__main__':
-    main(sys.argv[1])
+    sys.exit(main(sys.argv[1:]))

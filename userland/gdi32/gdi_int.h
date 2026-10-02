@@ -22,7 +22,8 @@ typedef struct GObj {
     WCHAR face[32];
     int strike, pitch, charset, escapement, avg_width;
     /* bitmaps */
-    int bw, bh, bpp, fmt, flip, owns;
+    int bw, bh, bpp, fmt, flip, owns;              /* owns: 1 VirtualAlloc'd bits, 2 a mapped view */
+    void *view;
     DWORD *bits;
     /* regions (a rectangle) */
     RECT rc;

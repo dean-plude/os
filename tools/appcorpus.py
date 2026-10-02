@@ -4,97 +4,71 @@
     tools/appcorpus.py [--img build/nova.img] [--cache DIR] [--out DIR]
                        [--only NAME,...] [--summary FILE] [--update-reference]
 
-Downloads each program's official Windows x64 release into --cache (kept
+The programs are tests/appcorpus/*.py, one file each, run in file-name
+order.  Downloads each program's official Windows x64 release into --cache (kept
 between runs), unpacks it onto drive C: (C:\\Apps\\NAME) with a few sample
 files, boots NovaOS once and types each program's commands into the
 Terminal (tools/novarun.py's Nova class).  A command passes as a self-test
 does (tools/selftest.py): it exits with code 0 and prints what is expected.
-Notepad++ runs last (it takes the keyboard): it opens a file and its
-screenshot must match tests/reference/notepad++.png (--update-reference
-writes that file from this run instead).
+Before it, NovaOS's own screens are checked (Phase 17.6): `dir` on drives
+C: and D: (an empty NTFS disk made with mkntfs, from the ntfs-3g package)
+must name each drive and give its own free space, and File Explorer's This
+PC must list both drives.  Notepad++ runs last (it takes the keyboard): it
+opens a file.  The This PC and Notepad++ screenshots must match
+tests/reference/this-pc.png and notepad++.png (--update-reference writes
+those files from this run instead); the screenshots are kept in --out.
 
 The exit status is the number of programs that failed.  --summary appends
 a Markdown pass/fail table, one row per program (the nightly workflow,
 .github/workflows/nightly.yml, posts it).
 """
-import argparse, os, re, shutil, subprocess, sys, tempfile, time, zipfile
+import argparse, os, re, shutil, struct, subprocess, sys, tempfile, time, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from novarun import Nova, ROOT
 from selftest import Test, verdict, PANIC
 
-REFERENCE = os.path.join(ROOT, 'tests', 'reference', 'notepad++.png')
+REFERENCES = os.path.join(ROOT, 'tests', 'reference')
+DRIVE_LABEL = 'NOVACORPUS'
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
 SAMPLE = 'NovaOS app corpus\na needle in a haystack\nthe end\n'
 
 
 class App:
     """@url's download (and @extra's), unpacked by @unpack into
-    C:\\Apps\\@dir; @tests run in order"""
+    C:\\Apps\\@dir; @tests run in order.  @unpack may be a function
+    (app, [downloaded files], dest) for a program its file stages itself."""
     def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=()):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
         self.unpack, self.strip, self.extra = unpack, strip, list(extra)
 
 
 A = r'C:\Apps'
-NUGET = 'https://api.nuget.org/v3-flatcontainer'
-APPS = [
-    App('ripgrep', '14.1.1',
-        'https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip',
-        'rg', [Test('rg --version', rf'{A}\rg\rg.exe --version', [r'ripgrep 14\.1\.1']),
-               Test('rg search', rf'{A}\rg\rg.exe -n needle {A}\data', [r'hello\.txt\r?\n2:a needle in a haystack'])],
-        strip=1),
-    App('fd', '10.2.0',
-        'https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip',
-        'fd', [Test('fd --version', rf'{A}\fd\fd.exe --version', [r'fd 10\.2\.0']),
-               Test('fd find', rf'{A}\fd\fd.exe -e txt . {A}\data', [r'hello\.txt', r'notes\.txt'])],
-        strip=1),
-    App('jq', '1.7.1', 'https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-windows-amd64.exe',
-        'jq', [Test('jq --version', rf'{A}\jq\jq.exe --version', [r'jq-1\.7\.1']),
-               Test('jq filter', rf'{A}\jq\jq.exe -c ".a+.b, [.[]]" {A}\data\ab.json', [r'(?m)^42\r?$', r'\[40,2\]'])],
-        unpack='exe'),
-    App('7-Zip', '26.03', 'https://github.com/ip7z/7zip/releases/download/26.03/7z2603-x64.exe',
-        '7-Zip', [Test('7z a', rf'{A}\7-Zip\7z.exe a {A}\data.7z {A}\data', [r'Everything is Ok']),
-                  Test('7z t', rf'{A}\7-Zip\7z.exe t {A}\data.7z', [r'Type = 7z', r'Everything is Ok'])],
-        unpack='7z'),
-    App('MinGit', '2.51.0',
-        'https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/MinGit-2.51.0-64-bit.zip',
-        'MinGit', [Test('git clone', rf'{A}\MinGit\cmd\git.exe clone {A}\data\src.git {A}\clone',
-                        [r'Cloning into'], timeout=300),
-                   Test('git log', rf'{A}\MinGit\cmd\git.exe -C {A}\clone log --format=%s',
-                        [r'Add the corpus notes', r'First commit']),
-                   Test('git status', rf'{A}\MinGit\cmd\git.exe -C {A}\clone status --short --branch',
-                        [r'## main\.\.\.origin/main'])]),
-    App('Python', '3.14.0', 'https://api.nuget.org/v3-flatcontainer/python/3.14.0/python.3.14.0.nupkg',
-        'Python', [Test('python -c', rf'{A}\Python\python.exe -c "import sys, json; '
-                        r'print(json.dumps([sum(range(10)), sys.version_info[:2]]))"', [r'\[45, \[3, 14\]\]'],
-                        timeout=300)],
-        strip='tools'),
-    App('Node.js', '24.9.0', 'https://nodejs.org/dist/v24.9.0/node-v24.9.0-win-x64.zip',
-        'node', [Test('node -v', rf'{A}\node\node.exe -v', [r'v24\.9\.0'], timeout=300),
-                 Test('node -e', rf'{A}\node\node.exe -e "console.log(6*7, process.platform)"',
-                      [r'42 win32'], timeout=300)],
-        strip=1),
-    # .NET from its NuGet packages (the muxer and hostfxr of 8.0 run any later runtime);
-    # tests/dotnet/culturetest.dll formats German and Japanese through ICU
-    App('.NET', '10.0.12', f'{NUGET}/microsoft.netcore.app.runtime.win-x64/10.0.12/'
-        'microsoft.netcore.app.runtime.win-x64.10.0.12.nupkg',
-        'dotnet', [Test('dotnet runtimes', rf'{A}\dotnet\dotnet.exe --list-runtimes',
-                        [r'Microsoft\.NETCore\.App 10\.0\.12'], timeout=300),
-                   Test('culture formats', rf'{A}\dotnet\dotnet.exe {A}\dotnet\culturetest.dll',
-                        [r'globalization: ICU', r'culturetest: ok'], timeout=300)],
-        unpack='dotnet',
-        extra=[f'{NUGET}/runtime.win-x64.microsoft.netcore.dotnethost/8.0.31/'
-               'runtime.win-x64.microsoft.netcore.dotnethost.8.0.31.nupkg',
-               f'{NUGET}/runtime.win-x64.microsoft.netcore.dotnethostresolver/8.0.31/'
-               'runtime.win-x64.microsoft.netcore.dotnethostresolver.8.0.31.nupkg']),
-    App('Notepad++', '8.8.3',
-        'https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.8.3/npp.8.8.3.portable.x64.zip',
-        'npp', [Test('open a file', rf'start {A}\npp\notepad++.exe {A}\data\hello.txt')]),
-]
+
+
+def load_apps():
+    """The programs in tests/appcorpus/*.py, in file-name order.  Each file
+    defines APP (an App; App, Test, A and DRIVE_LABEL are given to it) and
+    DOC, its name in README's list (tools/docgen.py).  One file per
+    program, so changes adding programs add files instead of editing a
+    shared list."""
+    import glob
+    apps = []
+    for f in sorted(glob.glob(os.path.join(ROOT, 'tests', 'appcorpus', '*.py'))):
+        ns = {'App': App, 'Test': Test, 'A': A, 'DRIVE_LABEL': DRIVE_LABEL, 'ROOT': ROOT, '__file__': f}
+        exec(compile(open(f).read(), f, 'exec'), ns)
+        if not isinstance(ns.get('APP'), App):
+            sys.exit(f'{f}: APP must be an App')
+        apps.append(ns['APP'])
+    return apps
+
+
+APPS = load_apps()
 
 
 def fetch(url, cache):
+    if not url:
+        return None
     f = os.path.join(cache, os.path.basename(url))
     if not os.path.exists(f) or not os.path.getsize(f):
         subprocess.run(['curl', '-sSLf', '--retry', '4', '-o', f + '.part', url], check=True)
@@ -102,33 +76,11 @@ def fetch(url, cache):
     return f
 
 
-def stage_dotnet(app, archives, dest):
-    """A dotnet folder as the installer lays it out: dotnet.exe,
-    host\\fxr\\V\\hostfxr.dll and shared\\Microsoft.NETCore.App\\V, from the
-    runtime, host and host-resolver packages; plus the culture test"""
-    runtime, host, resolver = archives
-    fxr = re.search(r'(\d+\.\d+\.\d+)\.nupkg$', resolver).group(1)
-    shared = os.path.join(dest, 'shared', 'Microsoft.NETCore.App', app.version)
-    for archive, folder, keep in [(host, dest, lambda n: n == 'dotnet.exe'),
-                                  (resolver, os.path.join(dest, 'host', 'fxr', fxr), lambda n: True),
-                                  (runtime, shared, lambda n: True)]:
-        os.makedirs(folder, exist_ok=True)
-        with zipfile.ZipFile(archive) as z:
-            for m in z.namelist():
-                name = m.rsplit('/', 1)[-1]
-                if m.startswith('runtimes/win-x64/') and ('/native/' in m or '/lib/net' in m) and name and keep(name):
-                    with z.open(m) as src, open(os.path.join(folder, name), 'wb') as out:
-                        shutil.copyfileobj(src, out)
-                elif name.startswith('Microsoft.NETCore.App.') and name.endswith('.json'):
-                    with z.open(m) as src, open(os.path.join(shared, name), 'wb') as out:
-                        shutil.copyfileobj(src, out)
-    for n in ('culturetest.dll', 'culturetest.runtimeconfig.json'):
-        shutil.copy(os.path.join(ROOT, 'tests', 'dotnet', n), dest)
-
-
 def stage(app, archive, dest):
     """Unpack @archive into @dest, dropping @app.strip leading folders (or
     keeping only the folder named @app.strip)"""
+    if app.unpack is None:                        # nothing to download (NovaOS's own screens)
+        return
     if app.unpack == 'exe':
         os.makedirs(dest)
         shutil.copy(archive, os.path.join(dest, app.dir + '.exe'))
@@ -178,6 +130,28 @@ def make_data(d):
     shutil.rmtree(work)
 
 
+def make_ntfs(path, mb=128):
+    """A disk with one empty NTFS partition from 1 MiB (drive D:), or None
+    without mkntfs"""
+    mkntfs = shutil.which('mkntfs') or ('/usr/sbin/mkntfs' if os.path.exists('/usr/sbin/mkntfs') else None)
+    if not mkntfs:
+        return None
+    vol = path + '.vol'
+    with open(vol, 'wb') as f:
+        f.truncate((mb - 1) << 20)
+    subprocess.run([mkntfs, '-F', '-Q', '-L', DRIVE_LABEL, '-p', '2048', '-H', '255', '-S', '63', vol],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    mbr = bytearray(512)
+    mbr[446:462] = struct.pack('<B3sB3sII', 0, b'\xfe\xff\xff', 0x07, b'\xfe\xff\xff', 2048, (mb - 1) * 2048)
+    mbr[510:512] = b'\x55\xaa'
+    with open(path, 'wb') as out, open(vol, 'rb') as src:
+        out.write(mbr)
+        out.write(bytes((1 << 20) - 512))
+        shutil.copyfileobj(src, out)
+    os.unlink(vol)
+    return path
+
+
 def compare(shot, ref, size=(640, 400), level=48):
     """The share of pixels (both images scaled to @size) whose colour
     differs from the reference by more than @level in some channel"""
@@ -208,9 +182,9 @@ def main():
     staged = []
     for app in apps:
         try:
-            if app.unpack == 'dotnet':
-                stage_dotnet(app, [fetch(u, a.cache) for u in [app.url] + app.extra],
-                             os.path.join(apps_dir, app.dir))
+            if callable(app.unpack):
+                app.unpack(app, [fetch(u, a.cache) for u in [app.url] + app.extra],
+                           os.path.join(apps_dir, app.dir))
             else:
                 stage(app, fetch(app.url, a.cache), os.path.join(apps_dir, app.dir))
             staged.append(app)
@@ -219,9 +193,11 @@ def main():
             print(f'FAIL  {app.name:10s} {results[app.name][0]}', flush=True)
     make_data(os.path.join(apps_dir, 'data'))
 
+    ntfs = make_ntfs(os.path.join(work, 'ntfs.img')) if any(x.name == 'NovaOS' for x in staged) else None
     t_boot = time.time()
     try:
-        nova = Nova(a.img, os.path.join(work, 'boot'), [(apps_dir, A)], mem=4096, data_mb=2048)
+        nova = Nova(a.img, os.path.join(work, 'boot'), [(apps_dir, A)], mem=4096, data_mb=2048,
+                    extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [])
     except RuntimeError as e:
         print(e)
         for app in staged:
@@ -241,6 +217,8 @@ def main():
                 ts = time.time()
                 if app.name == 'Notepad++':
                     out, w = notepad(nova, t, a)
+                elif app.name == 'NovaOS':
+                    out, w = screen(nova, t, a, ntfs)
                 else:
                     out, ok = nova.run(t.cmd, t.timeout)
                     out = ANSI.sub('', out)          # rg and fd colour their output in a console
@@ -282,18 +260,57 @@ def notepad(nova, t, a):
     if m:
         return out, m.group(0).split(') ', 1)[1]
     time.sleep(5)
+    return out, check_shot(nova, a, 'notepad++.png')
+
+
+def check_shot(nova, a, name):
+    """Screenshot @name into --out; why it differs from its reference, or None"""
+    shot, ref = os.path.join(a.out, name), os.path.join(REFERENCES, name)
     nova.shot(shot)
     time.sleep(1)
     if a.update_reference:
-        os.makedirs(os.path.dirname(REFERENCE), exist_ok=True)
+        os.makedirs(REFERENCES, exist_ok=True)
         from PIL import Image
-        Image.open(shot).convert('RGB').resize((1280, 800), Image.BOX).save(REFERENCE, optimize=True)
-        return out, None
-    if not os.path.exists(REFERENCE):
-        return out, 'no reference screenshot (run with --update-reference)'
-    d = compare(shot, REFERENCE)
-    print(f'  screenshot differs from the reference in {d:.1%} of pixels', flush=True)
-    return out, None if d <= a.max_diff else f'screenshot differs from the reference in {d:.1%} of pixels'
+        Image.open(shot).convert('RGB').resize((1280, 800), Image.BOX).save(ref, optimize=True)
+        return None
+    if not os.path.exists(ref):
+        return 'no reference screenshot (run with --update-reference)'
+    d = compare(shot, ref)
+    print(f'  {name} differs from the reference in {d:.1%} of pixels', flush=True)
+    return None if d <= a.max_diff else f'screenshot differs from the reference in {d:.1%} of pixels'
+
+
+def screen(nova, t, a, ntfs):
+    """NovaOS's own screens: `dir` names each drive and gives its own free
+    space; File Explorer's This PC lists the drives"""
+    if t.name == 'This PC':
+        out, ok = nova.run(t.cmd, 30)
+        if not ok:
+            return out, 'did not start'
+        time.sleep(4)                               # the window opens and draws
+        w = check_shot(nova, a, 'this-pc.png')
+        nova.keys('alt-f4')                         # back to the Terminal
+        time.sleep(2)
+        return out, w
+    if t.name == 'dir D:' and not ntfs:
+        return '', 'no drive D: (mkntfs, from the ntfs-3g package, is not installed)'
+    out, ok = nova.run(t.cmd, 60)
+    if not ok:
+        return out, 'did not finish in 60 s'
+    for e in t.expect:
+        if not re.search(e, out):
+            return out, f'missing "{e}"'
+    free = re.search(r'Dir\(s\)\s+([\d,]+) bytes free', out).group(1)
+    screen.free[t.name] = free
+    if t.name == 'dir D:':
+        time.sleep(1)
+        nova.shot(os.path.join(a.out, 'dir.png'))
+        if screen.free.get('dir C:') == free:
+            return out, f"D: reports C:'s free space ({free} bytes)"
+    return out, None
+
+
+screen.free = {}
 
 
 def report(a, apps, results):

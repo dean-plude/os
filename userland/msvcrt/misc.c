@@ -140,15 +140,11 @@ int raise(int sig)
     exit(3);
 }
 
-char *setlocale(int category, const char *locale)
-{
-    (void)category;
-    if (!locale || !*locale || (locale[0] == 'C' && !locale[1])) return "C";
-    return 0;
-}
-
 struct lconv *localeconv(void)
 {
-    static struct lconv lc = { ".", "", "" };
+    /* the "C" locale: CHAR_MAX (127) marks the values it leaves unspecified */
+    static struct lconv lc = { ".", "", "", "", "", "", "", "", "", "",
+                               127, 127, 127, 127, 127, 127, 127, 127,
+                               L".", L"", L"", L"", L"", L"", L"", L"" };
     return &lc;
 }

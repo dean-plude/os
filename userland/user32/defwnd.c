@@ -231,7 +231,34 @@ static LRESULT def_common(Wnd *w, HWND h, UINT msg, WPARAM wp, LPARAM lp, int wi
     case WM_SETREDRAW:
         if (wp) { invalidate(w, NULL, TRUE, 1); }
         return 0;
-    case WM_PRINT: case WM_PRINTCLIENT: return 0;
+    case WM_PRINT: {
+        /* Draw the window into DC @wp: its background and client area, as
+         * double-buffering programs ask of a control they then copy to the
+         * screen; and its children.  With PRF_NONCLIENT the DC's origin is
+         * the window's corner (the frame itself is not drawn), else the
+         * client area's. */
+        HDC dc = (HDC)wp;
+        if ((lp & PRF_CHECKVISIBLE) && !(w->style & WS_VISIBLE)) return 0;
+        POINT o;
+        int nc = (lp & PRF_NONCLIENT) != 0;
+        if (!OffsetViewportOrgEx(dc, nc ? w->client.left - w->rect.left : 0, nc ? w->client.top - w->rect.top : 0, &o)) return 0;
+        if (lp & PRF_ERASEBKGND) send_msg(w, WM_ERASEBKGND, wp, 0);
+        if (lp & PRF_CLIENT) send_msg(w, WM_PRINTCLIENT, wp, lp);
+        if (lp & PRF_CHILDREN) {
+            Wnd *c = w->child;
+            while (c && c->next) c = c->next;               /* bottom-most first */
+            for (; c; c = c->prev) {
+                if (!(c->style & WS_VISIBLE)) continue;
+                POINT co;
+                OffsetViewportOrgEx(dc, c->rect.left, c->rect.top, &co);
+                send_msg(c, WM_PRINT, wp, (lp & ~PRF_CHECKVISIBLE) | PRF_NONCLIENT);
+                SetViewportOrgEx(dc, co.x, co.y, NULL);
+            }
+        }
+        SetViewportOrgEx(dc, o.x, o.y, NULL);
+        return 0;
+    }
+    case WM_PRINTCLIENT: return 0;
     case WM_QUERYUISTATE: return UISF_HIDEACCEL | UISF_HIDEFOCUS;
     case WM_UPDATEUISTATE: case WM_CHANGEUISTATE: return 0;
     case WM_ISACTIVEICON: return g_active == h;

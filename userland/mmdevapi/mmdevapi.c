@@ -1,15 +1,19 @@
 /*
- * mmdevapi.dll — the Core Audio API (WASAPI) for playback
+ * mmdevapi.dll — the Core Audio API (WASAPI)
  *
- * CLSID_MMDeviceEnumerator lists one endpoint, the sound card's speakers,
- * when NovaOS has one.  Its IAudioClient runs in shared mode: the client
- * writes frames in its own format (the mix format is 48 kHz float stereo,
- * but any PCM or float format is accepted and converted), and each
- * ReleaseBuffer converts them onto a kernel mixer stream.  The padding is
- * what the stream still holds; in event mode a helper thread sets the
- * client's event every device period while the stream runs.
+ * CLSID_MMDeviceEnumerator lists up to two endpoints: the sound card's
+ * speakers and, when the card can record, its microphone or line in.  An
+ * IAudioClient runs in shared mode in the client's own format (the mix
+ * format is 48 kHz float stereo, but any PCM or float format is accepted
+ * and converted).  On the speakers each ReleaseBuffer converts the frames
+ * onto a kernel mixer stream and the padding is what the stream still
+ * holds; on the recording endpoint the client buffer fills from a kernel
+ * capture stream and IAudioCaptureClient hands it out a device period at a
+ * time.  In event mode a helper thread sets the client's event every
+ * device period while the stream runs.  IAudioEndpointVolume is each
+ * endpoint's master volume, kept in the kernel for every program.
  *
- * No capture endpoints, no exclusive mode and no endpoint volume control.
+ * No exclusive mode and no loopback capture.
  */
 
 #include <windows.h>
@@ -31,6 +35,9 @@ DEFINE_GUID(IID_IAudioClient,          0x1CB9AD4C, 0xDBFA, 0x4C32, 0xB1, 0x78, 0
 DEFINE_GUID(IID_IAudioClient2,         0x726778CD, 0xF60A, 0x4EDA, 0x82, 0xDE, 0xE4, 0x76, 0x10, 0xCD, 0x78, 0xAA);
 DEFINE_GUID(IID_IAudioClient3,         0x7ED4EE07, 0x8E67, 0x4CD4, 0x8C, 0x1A, 0x2B, 0x7A, 0x59, 0x87, 0xAD, 0x42);
 DEFINE_GUID(IID_IAudioRenderClient,    0xF294ACFC, 0x3146, 0x4483, 0xA7, 0xBF, 0xAD, 0xDC, 0xA7, 0xC2, 0x60, 0xE2);
+DEFINE_GUID(IID_IAudioCaptureClient,   0xC8ADBD64, 0xE71E, 0x48A0, 0xA4, 0xDE, 0x18, 0x5C, 0x39, 0x5C, 0xD3, 0x17);
+DEFINE_GUID(IID_IAudioEndpointVolume,  0x5CDF2C82, 0x841E, 0x4546, 0x97, 0x22, 0x0C, 0xF7, 0x40, 0x78, 0x22, 0x9A);
+DEFINE_GUID(IID_IAudioEndpointVolumeEx, 0x66E11784, 0xF695, 0x4F28, 0xA5, 0x05, 0xA7, 0x08, 0x00, 0x81, 0xA7, 0x8F);
 DEFINE_GUID(IID_IAudioClock,           0xCD63314F, 0x3FBA, 0x4A1B, 0x81, 0x2C, 0xEF, 0x96, 0x35, 0x87, 0x28, 0xE7);
 DEFINE_GUID(IID_ISimpleAudioVolume,    0x87CE5498, 0x68D6, 0x44E5, 0x92, 0x15, 0x6D, 0xA4, 0x7E, 0xF8, 0x83, 0xD8);
 DEFINE_GUID(IID_IAudioStreamVolume,    0x93014887, 0x242D, 0x4068, 0x8A, 0x15, 0xCF, 0x5E, 0x93, 0xB9, 0x0F, 0xE3);
@@ -54,7 +61,9 @@ static const GUID FMTID_EngineFormat = { 0xF19F064D, 0x082C, 0x4E27, { 0xBC, 0x7
 #define AUDCLNT_E_EVENTHANDLE_NOT_SET      ((HRESULT)0x88890014)
 #define AUDCLNT_STREAMFLAGS_LOOPBACK       0x00020000
 #define AUDCLNT_STREAMFLAGS_EVENTCALLBACK  0x00040000
+#define AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY 0x1
 #define AUDCLNT_BUFFERFLAGS_SILENT         0x2
+#define AUDCLNT_S_BUFFER_EMPTY             ((HRESULT)0x08890001)
 #define E_NOTFOUND                         ((HRESULT)0x80070490)
 
 #define PERIOD   100000LL           /* 10 ms, in 100 ns units */
@@ -72,14 +81,20 @@ typedef struct { GUID fmtid; DWORD pid; } PROPERTYKEY;
 #define VT_BLOB   65
 
 
-static BOOL device_present(void)
+/* eRender (0) or eCapture (1): whether NovaOS has that endpoint; its name
+ * from the kernel ("Microphone (Intel ...)") */
+static struct { LONG known; char name[96]; } g_dev[2] = { { -1 }, { -1 } };
+
+static BOOL device_present_flow(int flow)
 {
-    static LONG known = -1;
-    if (known < 0) {
+    if (flow < 0 || flow > 1) return FALSE;
+    if (g_dev[flow].known < 0) {
         struct { UINT32 present, rate; char name[96]; } info = { 0 };
-        known = NtNovaAudioCtl(0, 5, 0, &info) == 0 && info.present;
+        BOOL ok = NtNovaAudioCtl(0, flow ? 7 : 5, 0, &info) == 0 && info.present;
+        memcpy(g_dev[flow].name, info.name, sizeof(info.name));
+        g_dev[flow].known = ok;
     }
-    return known;
+    return g_dev[flow].known;
 }
 
 static void mix_format(AcWaveFormatExt *f)
@@ -105,8 +120,55 @@ static LPWSTR co_str(LPCWSTR s)
     return p;
 }
 
-static const WCHAR DEVICE_ID[]   = L"{0.0.0.00000000}.{6e6f7661-6864-6100-0000-000000000001}";
-static const WCHAR DEVICE_NAME[] = L"Speakers (High Definition Audio)";
+static const WCHAR *const DEVICE_ID[2] = {
+    L"{0.0.0.00000000}.{6e6f7661-6864-6100-0000-000000000001}",
+    L"{0.0.1.00000000}.{6e6f7661-6864-6100-0000-000000000002}",
+};
+
+/* "Speakers", or what the card records from ("Microphone", "Line in") */
+static void device_desc(int flow, WCHAR *out, int n)
+{
+    const char *src = flow ? g_dev[1].name : "Speakers";
+    int i = 0;
+    while (src[i] && i < n - 1 && !(src[i] == ' ' && src[i + 1] == '(')) { out[i] = (WCHAR)(BYTE)src[i]; i++; }
+    out[i] = 0;
+    if (!i && n > 10) lstrcpyW(out, flow ? L"Microphone" : L"Speakers");
+}
+
+static void device_name(int flow, WCHAR *out, int n)
+{
+    device_desc(flow, out, n - 26);
+    lstrcatW(out, L" (High Definition Audio)");
+}
+
+/* -----------------------------------------------------------------------
+ * Decibels (no maths library here)
+ * ----------------------------------------------------------------------- */
+static double ln_(double x)
+{
+    if (x <= 0) return -1e9;
+    int k = 0;
+    while (x < 0.5) { x *= 2; k--; }
+    while (x > 1) { x /= 2; k++; }
+    double y = (x - 1) / (x + 1), y2 = y * y, t = y, sum = 0;
+    for (int i = 1; i < 60; i += 2) { sum += t / i; t *= y2; }
+    return 2 * sum + k * 0.69314718055994531;
+}
+
+static double exp_(double x)
+{
+    int k = (int)(x / 0.69314718055994531);
+    double r = x - k * 0.69314718055994531, t = 1, sum = 1;
+    for (int i = 1; i < 30; i++) { t *= r / i; sum += t; }
+    for (; k > 0; k--) sum *= 2;
+    for (; k < 0; k++) sum /= 2;
+    return sum;
+}
+
+#define VOL_MIN_DB  -65.25f
+#define VOL_STEP_DB 0.03125f
+static float db_of(float v)  { return v <= 0.000545f ? VOL_MIN_DB : (float)(20 * ln_(v) / 2.302585092994046); }
+static float lin_of(float db) { return db <= VOL_MIN_DB ? 0 : db >= 0 ? 1 : (float)exp_(db * 2.302585092994046 / 20); }
 
 /* -----------------------------------------------------------------------
  * The audio client and the services it hands out
@@ -118,8 +180,13 @@ struct Client {
     const void *vtbl;
     LONG        refs;
     CRITICAL_SECTION lock;
+    int         flow;               /* 0 render, 1 capture */
     BOOL        init, started, event_mode, in_buffer;
     AudioConv   conv;
+    AudioCapConv cconv;             /* capture: the mixer's frames to the client's */
+    UINT32      filled;             /* capture: client frames waiting in buf */
+    ULONGLONG   dropped;            /* capture: the stream's lost frames, last seen */
+    BOOL        discontinuity;
     AcWaveFormatExt fmt;
     UINT32      frames;             /* buffer size, client frames */
     BYTE       *buf;
@@ -129,13 +196,31 @@ struct Client {
     float       vol, chan[2];
     BOOL        mute;
     ULONGLONG   written;            /* client frames released since the last reset */
-    Sub         render, clock, simple, stream_vol, session;
+    Sub         render, capture, clock, simple, stream_vol, session;
 };
 
 typedef struct {
     ULONGLONG written, consumed, played;
     UINT32 queued, capacity, running, latency;
 } StreamStatus;
+
+/* Capture: move what the stream recorded into the client buffer (locked) */
+static void cap_pull(Client *c)
+{
+    SHORT tmp[1024 * 2];
+    StreamStatus st;
+    if (NtNovaAudioCtl(c->stream, 0, 0, &st) == 0 && st.played != c->dropped) {
+        c->dropped = st.played;
+        c->discontinuity = TRUE;
+    }
+    while (c->filled < c->frames) {
+        UINT room = c->frames - c->filled, m = acc_src_for(&c->cconv, room);
+        if (m > 1024) m = 1024;
+        LONG_PTR got = NtNovaAudioCtl(c->stream, 6, m, tmp);
+        if (got <= 0) return;
+        c->filled += acc_convert(&c->cconv, tmp, (UINT)got, c->buf + (SIZE_T)c->filled * c->conv.block, room);
+    }
+}
 
 static void apply_volume(Client *c)
 {
@@ -146,6 +231,7 @@ static void apply_volume(Client *c)
 
 static UINT32 padding(Client *c)
 {
+    if (c->flow) { cap_pull(c); return c->filled; }
     StreamStatus st;
     if (!c->stream || NtNovaAudioCtl(c->stream, 0, 0, &st)) return 0;
     ULONGLONG p = (ULONGLONG)st.queued * c->conv.rate / AC_RATE;
@@ -195,7 +281,7 @@ static HRESULT STDMETHODCALLTYPE ac_initialize(Client *c, int mode, DWORD flags,
     EnterCriticalSection(&c->lock);
     HRESULT hr = S_OK;
     if (c->init) { hr = AUDCLNT_E_ALREADY_INITIALIZED; goto out; }
-    if (!ac_init(&c->conv, fmt)) { hr = AUDCLNT_E_UNSUPPORTED_FORMAT; goto out; }
+    if (!ac_init(&c->conv, fmt) || !acc_init(&c->cconv, fmt)) { hr = AUDCLNT_E_UNSUPPORTED_FORMAT; goto out; }
     memset(&c->fmt, 0, sizeof(c->fmt));
     memcpy(&c->fmt, fmt, sizeof(AcWaveFormat) + (fmt->wFormatTag == 0xFFFE ? 22 : 0));
     if (dur <= 0) dur = DEF_BUF;
@@ -204,7 +290,7 @@ static HRESULT STDMETHODCALLTYPE ac_initialize(Client *c, int mode, DWORD flags,
     c->frames = (UINT32)((dur * c->conv.rate + 9999999) / 10000000);
     c->buf = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)c->frames * c->conv.block);
     UINT32 dev = (UINT32)((ULONGLONG)c->frames * AC_RATE / c->conv.rate) + 1024;
-    c->stream = c->buf ? NtNovaAudioOpen(dev) : 0;
+    c->stream = c->buf ? NtNovaAudioOpen(dev | (c->flow ? 0x80000000u : 0)) : 0;   /* capture: a recording stream */
     if (!c->stream) { hr = E_OUTOFMEMORY; goto out; }
     c->event_mode = (flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0;
     if (c->event_mode) {
@@ -312,8 +398,11 @@ static HRESULT STDMETHODCALLTYPE ac_reset(Client *c)
     if (hr == S_OK) {
         NtNovaAudioCtl(c->stream, 2, 0, 0);
         c->written = 0;
-        c->conv.pos = 0;
+        c->filled = 0;
+        c->dropped = 0;
+        c->conv.pos = c->cconv.pos = 0;
         c->conv.prev[0] = c->conv.prev[1] = 0;
+        c->cconv.prev[0] = c->cconv.prev[1] = 0;
     }
     LeaveCriticalSection(&c->lock);
     return hr;
@@ -333,7 +422,10 @@ static HRESULT STDMETHODCALLTYPE ac_get_service(Client *c, REFIID riid, void **p
     if (!ppv) return E_POINTER;
     *ppv = 0;
     if (!c->init) return AUDCLNT_E_NOT_INITIALIZED;
+    if (IsEqualIID(riid, &IID_IAudioRenderClient) && c->flow) return AUDCLNT_E_WRONG_ENDPOINT_TYPE;
+    if (IsEqualIID(riid, &IID_IAudioCaptureClient) && !c->flow) return AUDCLNT_E_WRONG_ENDPOINT_TYPE;
     Sub *s = IsEqualIID(riid, &IID_IAudioRenderClient)   ? &c->render :
+             IsEqualIID(riid, &IID_IAudioCaptureClient)  ? &c->capture :
              IsEqualIID(riid, &IID_IAudioClock)          ? &c->clock :
              IsEqualIID(riid, &IID_ISimpleAudioVolume)   ? &c->simple :
              IsEqualIID(riid, &IID_IAudioStreamVolume)   ? &c->stream_vol :
@@ -410,6 +502,7 @@ static HRESULT STDMETHODCALLTYPE sub_qi(Sub *s, REFIID riid, void **ppv)
     if (!ppv) return E_POINTER;
     if (IsEqualIID(riid, &IID_IUnknown) ||
         (s == &s->c->render && IsEqualIID(riid, &IID_IAudioRenderClient)) ||
+        (s == &s->c->capture && IsEqualIID(riid, &IID_IAudioCaptureClient)) ||
         (s == &s->c->clock && IsEqualIID(riid, &IID_IAudioClock)) ||
         (s == &s->c->simple && IsEqualIID(riid, &IID_ISimpleAudioVolume)) ||
         (s == &s->c->stream_vol && IsEqualIID(riid, &IID_IAudioStreamVolume)) ||
@@ -472,13 +565,88 @@ static const struct { void *qi, *addref, *release, *get, *rel; } g_render_vtbl =
     sub_qi, sub_addref, sub_release, rc_get_buffer, rc_release_buffer,
 };
 
+/* IAudioCaptureClient: the buffer a device period (10 ms) at a time */
+static UINT32 packet(Client *c)
+{
+    UINT32 per = c->conv.rate / 100;
+    return c->filled < per ? c->filled : per;
+}
+
+static HRESULT STDMETHODCALLTYPE cc_get_buffer(Sub *s, BYTE **data, UINT32 *n, DWORD *flags, UINT64 *devpos, UINT64 *qpcpos)
+{
+    Client *c = s->c;
+    if (!data || !n || !flags) return E_POINTER;
+    *data = 0;
+    *n = 0;
+    *flags = 0;
+    EnterCriticalSection(&c->lock);
+    HRESULT hr = S_OK;
+    if (c->in_buffer) hr = AUDCLNT_E_OUT_OF_ORDER;
+    else {
+        cap_pull(c);
+        UINT32 k = packet(c);
+        if (!k) hr = AUDCLNT_S_BUFFER_EMPTY;
+        else {
+            c->in_buffer = TRUE;
+            c->pending = k;
+            *data = c->buf;
+            *n = k;
+            if (c->discontinuity) { *flags = AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY; c->discontinuity = FALSE; }
+            if (devpos) *devpos = c->written;
+            if (qpcpos) {
+                LARGE_INTEGER t, f;
+                QueryPerformanceCounter(&t);
+                QueryPerformanceFrequency(&f);
+                *qpcpos = (UINT64)((double)t.QuadPart * 10000000.0 / (double)f.QuadPart);
+            }
+        }
+    }
+    LeaveCriticalSection(&c->lock);
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE cc_release_buffer(Sub *s, UINT32 n)
+{
+    Client *c = s->c;
+    EnterCriticalSection(&c->lock);
+    HRESULT hr = S_OK;
+    if (!c->in_buffer) hr = n ? AUDCLNT_E_OUT_OF_ORDER : S_OK;
+    else if (n && n != c->pending) hr = AUDCLNT_E_INVALID_SIZE;
+    else {
+        if (n) {                                                /* consumed: drop it from the front */
+            memmove(c->buf, c->buf + (SIZE_T)n * c->conv.block, (SIZE_T)(c->filled - n) * c->conv.block);
+            c->filled -= n;
+            c->written += n;
+        }
+        c->in_buffer = FALSE;
+    }
+    LeaveCriticalSection(&c->lock);
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE cc_next_packet(Sub *s, UINT32 *n)
+{
+    Client *c = s->c;
+    if (!n) return E_POINTER;
+    EnterCriticalSection(&c->lock);
+    cap_pull(c);
+    *n = packet(c);
+    LeaveCriticalSection(&c->lock);
+    return S_OK;
+}
+
+static const struct { void *qi, *addref, *release, *get, *rel, *next; } g_capture_vtbl = {
+    sub_qi, sub_addref, sub_release, cc_get_buffer, cc_release_buffer, cc_next_packet,
+};
+
 /* IAudioClock: positions in the client's frames */
 static HRESULT STDMETHODCALLTYPE ck_freq(Sub *s, UINT64 *f) { if (!f) return E_POINTER; *f = s->c->conv.rate; return S_OK; }
 static HRESULT STDMETHODCALLTYPE ck_pos(Sub *s, UINT64 *pos, UINT64 *qpc)
 {
     if (!pos) return E_POINTER;
     StreamStatus st;
-    *pos = NtNovaAudioCtl(s->c->stream, 0, 0, &st) == 0 ? st.played * s->c->conv.rate / AC_RATE : 0;
+    if (s->c->flow) *pos = s->c->written + s->c->filled;    /* recorded so far */
+    else *pos = NtNovaAudioCtl(s->c->stream, 0, 0, &st) == 0 ? st.played * s->c->conv.rate / AC_RATE : 0;
     if (qpc) {
         LARGE_INTEGER t, f;
         QueryPerformanceCounter(&t);
@@ -560,15 +728,17 @@ g_session_vtbl = {
     se_get_group, se_set_group, se_notify, se_notify,
 };
 
-static HRESULT new_client(void **ppv)
+static HRESULT new_client(int flow, void **ppv)
 {
     Client *c = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*c));
     if (!c) return E_OUTOFMEMORY;
     c->vtbl = &g_client_vtbl;
+    c->flow = flow;
     c->refs = 1;
     c->vol = c->chan[0] = c->chan[1] = 1.0f;
     InitializeCriticalSection(&c->lock);
     c->render     = (Sub){ &g_render_vtbl, c };
+    c->capture    = (Sub){ &g_capture_vtbl, c };
     c->clock      = (Sub){ &g_clock_vtbl, c };
     c->simple     = (Sub){ &g_simple_vtbl, c };
     c->stream_vol = (Sub){ &g_stream_vol_vtbl, c };
@@ -578,45 +748,48 @@ static HRESULT new_client(void **ppv)
 }
 
 /* -----------------------------------------------------------------------
- * The endpoint: IMMDevice + IMMEndpoint, its property store, a collection
- * (static objects: their reference counts do not matter)
+ * The endpoints: for each flow an IMMDevice + IMMEndpoint, its property
+ * store, its IAudioEndpointVolume, and the collections (static objects:
+ * their reference counts do not matter)
  * ----------------------------------------------------------------------- */
-typedef struct { const void *vtbl; } Static;
-static Static g_device, g_endpoint, g_props, g_collection;
+typedef struct { const void *vtbl; int flow; } Static;
+static Static g_device[2], g_endpoint[2], g_props[2], g_epvol[2], g_collection[3], g_empty;
 
 static ULONG STDMETHODCALLTYPE static_addref(Static *s)  { (void)s; return 2; }
 static ULONG STDMETHODCALLTYPE static_release(Static *s) { (void)s; return 1; }
 
 static HRESULT STDMETHODCALLTYPE dev_qi(Static *s, REFIID riid, void **ppv)
 {
-    (void)s;
     if (!ppv) return E_POINTER;
-    *ppv = IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMMDevice) ? (void *)&g_device :
-           IsEqualIID(riid, &IID_IMMEndpoint) ? (void *)&g_endpoint : 0;
+    *ppv = IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMMDevice) ? (void *)&g_device[s->flow] :
+           IsEqualIID(riid, &IID_IMMEndpoint) ? (void *)&g_endpoint[s->flow] : 0;
     return *ppv ? S_OK : E_NOINTERFACE;
 }
 static HRESULT STDMETHODCALLTYPE dev_activate(Static *s, REFIID riid, DWORD ctx, void *params, void **ppv)
 {
-    (void)s; (void)ctx; (void)params;
+    (void)ctx; (void)params;
     if (!ppv) return E_POINTER;
     *ppv = 0;
     if (IsEqualIID(riid, &IID_IAudioClient) || IsEqualIID(riid, &IID_IAudioClient2) ||
         IsEqualIID(riid, &IID_IAudioClient3) || IsEqualIID(riid, &IID_IUnknown))
-        return new_client(ppv);
+        return new_client(s->flow, ppv);
+    if (IsEqualIID(riid, &IID_IAudioEndpointVolume) || IsEqualIID(riid, &IID_IAudioEndpointVolumeEx)) {
+        *ppv = &g_epvol[s->flow];
+        return S_OK;
+    }
     return E_NOINTERFACE;
 }
 static HRESULT STDMETHODCALLTYPE dev_open_props(Static *s, DWORD access, void **ppv)
 {
-    (void)s; (void)access;
+    (void)access;
     if (!ppv) return E_POINTER;
-    *ppv = &g_props;
+    *ppv = &g_props[s->flow];
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dev_get_id(Static *s, LPWSTR *id)
 {
-    (void)s;
     if (!id) return E_POINTER;
-    *id = co_str(DEVICE_ID);
+    *id = co_str(DEVICE_ID[s->flow]);
     return *id ? S_OK : E_OUTOFMEMORY;
 }
 static HRESULT STDMETHODCALLTYPE dev_get_state(Static *s, DWORD *st) { (void)s; if (!st) return E_POINTER; *st = 1; return S_OK; }
@@ -624,7 +797,7 @@ static const struct { void *qi, *addref, *release, *activate, *open_props, *get_
     dev_qi, static_addref, static_release, dev_activate, dev_open_props, dev_get_id, dev_get_state,
 };
 
-static HRESULT STDMETHODCALLTYPE ep_flow(Static *s, int *flow) { (void)s; if (!flow) return E_POINTER; *flow = 0; return S_OK; }
+static HRESULT STDMETHODCALLTYPE ep_flow(Static *s, int *flow) { if (!flow) return E_POINTER; *flow = s->flow; return S_OK; }
 static const struct { void *qi, *addref, *release, *flow; } g_endpoint_vtbl = { dev_qi, static_addref, static_release, ep_flow };
 
 static HRESULT STDMETHODCALLTYPE ps_qi(Static *s, REFIID riid, void **ppv)
@@ -650,21 +823,27 @@ static HRESULT STDMETHODCALLTYPE ps_get_at(Static *s, DWORD i, PROPERTYKEY *k)
 }
 static HRESULT STDMETHODCALLTYPE ps_get(Static *s, const PROPERTYKEY *k, PROPVARIANT *v)
 {
-    (void)s;
     if (!k || !v) return E_POINTER;
     memset(v, 0, sizeof(*v));
+    WCHAR name[96];
+    device_present_flow(s->flow);
     if (IsEqualGUID(&k->fmtid, &FMTID_Device) && (k->pid == 14 || k->pid == 2)) {   /* FriendlyName, DeviceDesc */
+        if (k->pid == 14) device_name(s->flow, name, 96); else device_desc(s->flow, name, 96);
         v->vt = VT_LPWSTR;
-        v->pwszVal = co_str(k->pid == 14 ? DEVICE_NAME : L"Speakers");
+        v->pwszVal = co_str(name);
     } else if (IsEqualGUID(&k->fmtid, &FMTID_Interface) && k->pid == 2) {            /* the adapter */
         v->vt = VT_LPWSTR;
         v->pwszVal = co_str(L"High Definition Audio Device");
-    } else if (IsEqualGUID(&k->fmtid, &FMTID_Endpoint) && (k->pid == 0 || k->pid == 3)) {
+    } else if (IsEqualGUID(&k->fmtid, &FMTID_Endpoint) && k->pid == 0) {              /* FormFactor */
         v->vt = VT_UI4;
-        v->ulVal = k->pid == 0 ? 1 /* Speakers */ : 3 /* front left and right */;
+        device_desc(s->flow, name, 96);
+        v->ulVal = !s->flow ? 1 /* Speakers */ : lstrcmpW(name, L"Microphone") ? 2 /* LineLevel */ : 4 /* Microphone */;
+    } else if (IsEqualGUID(&k->fmtid, &FMTID_Endpoint) && k->pid == 3 && !s->flow) {  /* PhysicalSpeakers */
+        v->vt = VT_UI4;
+        v->ulVal = 3;                                           /* front left and right */
     } else if (IsEqualGUID(&k->fmtid, &FMTID_Endpoint) && k->pid == 4) {             /* AudioEndpoint_GUID */
         v->vt = VT_LPWSTR;
-        v->pwszVal = co_str(DEVICE_ID + 17);
+        v->pwszVal = co_str(DEVICE_ID[s->flow] + 17);
     } else if (IsEqualGUID(&k->fmtid, &FMTID_EngineFormat) && k->pid == 0) {         /* the device format */
         AcWaveFormatExt *f = CoTaskMemAlloc(sizeof(*f));
         if (!f) return E_OUTOFMEMORY;
@@ -681,32 +860,148 @@ static const struct { void *qi, *addref, *release, *count, *get_at, *get, *set, 
     ps_qi, static_addref, static_release, ps_count, ps_get_at, ps_get, ps_set, ps_commit,
 };
 
+/* IAudioEndpointVolume: the kernel's master volume for the flow (0..65536
+ * a channel); scalars are amplitudes, levels their decibels */
+static void ev_read(int flow, float ch[2], BOOL *mute)
+{
+    UINT32 v[3] = { 65536, 65536, 0 };
+    NtNovaAudioCtl(0, 9, (ULONG_PTR)flow, v);
+    ch[0] = v[0] / 65536.0f;
+    ch[1] = v[1] / 65536.0f;
+    if (mute) *mute = v[2] != 0;
+}
+static void ev_write(int flow, const float ch[2], BOOL mute)
+{
+    UINT32 v[3] = { (UINT32)(ch[0] * 65536.0f + 0.5f), (UINT32)(ch[1] * 65536.0f + 0.5f), (UINT32)!!mute };
+    NtNovaAudioCtl(0, 8, (ULONG_PTR)flow, v);
+}
+static HRESULT STDMETHODCALLTYPE ev_qi(Static *s, REFIID riid, void **ppv)
+{
+    if (!ppv) return E_POINTER;
+    *ppv = IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IAudioEndpointVolume) ||
+           IsEqualIID(riid, &IID_IAudioEndpointVolumeEx) ? s : 0;
+    return *ppv ? S_OK : E_NOINTERFACE;
+}
+static HRESULT STDMETHODCALLTYPE ev_notify(Static *s, void *cb) { (void)s; return cb ? S_OK : E_POINTER; }
+static HRESULT STDMETHODCALLTYPE ev_count(Static *s, UINT *n) { (void)s; if (!n) return E_POINTER; *n = 2; return S_OK; }
+static HRESULT ev_set_scalar(Static *s, int ch, float v)        /* ch -1: both (the master) */
+{
+    if (v < 0 || v > 1) return E_INVALIDARG;
+    float c[2];
+    BOOL mute;
+    ev_read(s->flow, c, &mute);
+    if (ch < 0) {                                               /* keeps the balance */
+        float top = c[0] > c[1] ? c[0] : c[1];
+        if (top > 0) { c[0] = c[0] / top * v; c[1] = c[1] / top * v; }
+        else c[0] = c[1] = v;
+    } else {
+        c[ch] = v;
+    }
+    ev_write(s->flow, c, mute);
+    return S_OK;
+}
+static float ev_get_scalar(Static *s, int ch)
+{
+    float c[2];
+    ev_read(s->flow, c, 0);
+    return ch < 0 ? (c[0] > c[1] ? c[0] : c[1]) : c[ch];
+}
+static HRESULT STDMETHODCALLTYPE ev_set_level(Static *s, float db, const GUID *ctx)
+{ (void)ctx; return db < VOL_MIN_DB || db > 0 ? E_INVALIDARG : ev_set_scalar(s, -1, lin_of(db)); }
+static HRESULT STDMETHODCALLTYPE ev_set_level_scalar(Static *s, float v, const GUID *ctx) { (void)ctx; return ev_set_scalar(s, -1, v); }
+static HRESULT STDMETHODCALLTYPE ev_get_level(Static *s, float *db) { if (!db) return E_POINTER; *db = db_of(ev_get_scalar(s, -1)); return S_OK; }
+static HRESULT STDMETHODCALLTYPE ev_get_level_scalar(Static *s, float *v) { if (!v) return E_POINTER; *v = ev_get_scalar(s, -1); return S_OK; }
+static HRESULT STDMETHODCALLTYPE ev_set_ch_level(Static *s, UINT ch, float db, const GUID *ctx)
+{ (void)ctx; return ch > 1 || db < VOL_MIN_DB || db > 0 ? E_INVALIDARG : ev_set_scalar(s, (int)ch, lin_of(db)); }
+static HRESULT STDMETHODCALLTYPE ev_set_ch_scalar(Static *s, UINT ch, float v, const GUID *ctx)
+{ (void)ctx; return ch > 1 ? E_INVALIDARG : ev_set_scalar(s, (int)ch, v); }
+static HRESULT STDMETHODCALLTYPE ev_get_ch_level(Static *s, UINT ch, float *db)
+{ if (!db) return E_POINTER; if (ch > 1) return E_INVALIDARG; *db = db_of(ev_get_scalar(s, (int)ch)); return S_OK; }
+static HRESULT STDMETHODCALLTYPE ev_get_ch_scalar(Static *s, UINT ch, float *v)
+{ if (!v) return E_POINTER; if (ch > 1) return E_INVALIDARG; *v = ev_get_scalar(s, (int)ch); return S_OK; }
+static HRESULT STDMETHODCALLTYPE ev_set_mute(Static *s, BOOL m, const GUID *ctx)
+{
+    (void)ctx;
+    float c[2];
+    BOOL was;
+    ev_read(s->flow, c, &was);
+    ev_write(s->flow, c, m);
+    return !!was == !!m ? S_FALSE : S_OK;
+}
+static HRESULT STDMETHODCALLTYPE ev_get_mute(Static *s, BOOL *m) { float c[2]; if (!m) return E_POINTER; ev_read(s->flow, c, m); return S_OK; }
+#define VOL_STEPS 100
+static HRESULT STDMETHODCALLTYPE ev_step_info(Static *s, UINT *step, UINT *count)
+{
+    if (!step || !count) return E_POINTER;
+    *count = VOL_STEPS + 1;
+    *step = (UINT)(ev_get_scalar(s, -1) * VOL_STEPS + 0.5f);
+    return S_OK;
+}
+static HRESULT ev_step(Static *s, int d)
+{
+    int step = (int)(ev_get_scalar(s, -1) * VOL_STEPS + 0.5f) + d;
+    if (step < 0) step = 0;
+    if (step > VOL_STEPS) step = VOL_STEPS;
+    return ev_set_scalar(s, -1, (float)step / VOL_STEPS);
+}
+static HRESULT STDMETHODCALLTYPE ev_step_up(Static *s, const GUID *ctx) { (void)ctx; return ev_step(s, 1); }
+static HRESULT STDMETHODCALLTYPE ev_step_down(Static *s, const GUID *ctx) { (void)ctx; return ev_step(s, -1); }
+static HRESULT STDMETHODCALLTYPE ev_hw(Static *s, DWORD *mask) { (void)s; if (!mask) return E_POINTER; *mask = 0; return S_OK; }
+static HRESULT STDMETHODCALLTYPE ev_range(Static *s, float *mn, float *mx, float *inc)
+{
+    (void)s;
+    if (!mn || !mx || !inc) return E_POINTER;
+    *mn = VOL_MIN_DB;
+    *mx = 0;
+    *inc = VOL_STEP_DB;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE ev_range_ch(Static *s, UINT ch, float *mn, float *mx, float *inc)
+{ return ch > 1 ? E_INVALIDARG : ev_range(s, mn, mx, inc); }
+static const struct {
+    void *qi, *addref, *release, *reg, *unreg, *count, *set_level, *set_level_scalar, *get_level, *get_level_scalar,
+         *set_ch_level, *set_ch_scalar, *get_ch_level, *get_ch_scalar, *set_mute, *get_mute, *step_info,
+         *step_up, *step_down, *hw, *range, *range_ch;
+} g_epvol_vtbl = {
+    ev_qi, static_addref, static_release, ev_notify, ev_notify, ev_count, ev_set_level, ev_set_level_scalar,
+    ev_get_level, ev_get_level_scalar, ev_set_ch_level, ev_set_ch_scalar, ev_get_ch_level, ev_get_ch_scalar,
+    ev_set_mute, ev_get_mute, ev_step_info, ev_step_up, ev_step_down, ev_hw, ev_range, ev_range_ch,
+};
+
+/* A collection: the endpoints of its flow (2: both) that exist */
 static HRESULT STDMETHODCALLTYPE col_qi(Static *s, REFIID riid, void **ppv)
 {
     if (!ppv) return E_POINTER;
     *ppv = IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMMDeviceCollection) ? s : 0;
     return *ppv ? S_OK : E_NOINTERFACE;
 }
-/* the collection object stands for "render endpoints" only when one exists */
-static UINT col_n(Static *s) { return s == &g_collection && device_present() ? 1 : 0; }
-static HRESULT STDMETHODCALLTYPE col_count(Static *s, UINT *n) { if (!n) return E_POINTER; *n = col_n(s); return S_OK; }
+static UINT col_list(Static *s, Static **out)
+{
+    UINT n = 0;
+    for (int f = 0; f < 2; f++)
+        if ((s->flow == f || s->flow == 2) && device_present_flow(f)) out[n++] = &g_device[f];
+    return n;
+}
+static HRESULT STDMETHODCALLTYPE col_count(Static *s, UINT *n) { Static *l[2]; if (!n) return E_POINTER; *n = col_list(s, l); return S_OK; }
 static HRESULT STDMETHODCALLTYPE col_item(Static *s, UINT i, void **dev)
 {
+    Static *l[2];
     if (!dev) return E_POINTER;
     *dev = 0;
-    if (i >= col_n(s)) return E_INVALIDARG;
-    *dev = &g_device;
+    if (i >= col_list(s, l)) return E_INVALIDARG;
+    *dev = l[i];
     return S_OK;
 }
 static const struct { void *qi, *addref, *release, *count, *item; } g_collection_vtbl = {
     col_qi, static_addref, static_release, col_count, col_item,
 };
-static Static g_empty = { &g_collection_vtbl };
 
-static Static g_device     = { &g_device_vtbl };
-static Static g_endpoint   = { &g_endpoint_vtbl };
-static Static g_props      = { &g_props_vtbl };
-static Static g_collection = { &g_collection_vtbl };
+static Static g_empty         = { &g_collection_vtbl, -1 };
+static Static g_device[2]     = { { &g_device_vtbl, 0 }, { &g_device_vtbl, 1 } };
+static Static g_endpoint[2]   = { { &g_endpoint_vtbl, 0 }, { &g_endpoint_vtbl, 1 } };
+static Static g_props[2]      = { { &g_props_vtbl, 0 }, { &g_props_vtbl, 1 } };
+static Static g_epvol[2]      = { { &g_epvol_vtbl, 0 }, { &g_epvol_vtbl, 1 } };
+static Static g_collection[3] = { { &g_collection_vtbl, 0 }, { &g_collection_vtbl, 1 }, { &g_collection_vtbl, 2 } };
 
 /* -----------------------------------------------------------------------
  * IMMDeviceEnumerator (a static object too)
@@ -722,7 +1017,7 @@ static HRESULT STDMETHODCALLTYPE en_enum(Static *s, int flow, DWORD mask, void *
     (void)s;
     if (!out) return E_POINTER;
     if (flow < 0 || flow > 2 || !mask || (mask & ~0xFu)) return E_INVALIDARG;
-    *out = flow != 1 && (mask & 1) ? &g_collection : &g_empty;  /* DEVICE_STATE_ACTIVE render */
+    *out = (mask & 1) ? &g_collection[flow] : &g_empty;      /* DEVICE_STATE_ACTIVE */
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE en_default(Static *s, int flow, int role, void **out)
@@ -731,8 +1026,8 @@ static HRESULT STDMETHODCALLTYPE en_default(Static *s, int flow, int role, void 
     if (!out) return E_POINTER;
     *out = 0;
     if (flow < 0 || flow > 2 || role < 0 || role > 2) return E_INVALIDARG;
-    if (flow != 0 || !device_present()) return E_NOTFOUND;
-    *out = &g_device;
+    if (flow == 2 || !device_present_flow(flow)) return E_NOTFOUND;
+    *out = &g_device[flow];
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE en_get(Static *s, LPCWSTR id, void **out)
@@ -740,15 +1035,15 @@ static HRESULT STDMETHODCALLTYPE en_get(Static *s, LPCWSTR id, void **out)
     (void)s;
     if (!id || !out) return E_POINTER;
     *out = 0;
-    if (!device_present() || lstrcmpiW(id, DEVICE_ID)) return E_NOTFOUND;
-    *out = &g_device;
-    return S_OK;
+    for (int f = 0; f < 2; f++)
+        if (device_present_flow(f) && !lstrcmpiW(id, DEVICE_ID[f])) { *out = &g_device[f]; return S_OK; }
+    return E_NOTFOUND;
 }
 static HRESULT STDMETHODCALLTYPE en_notify(Static *s, void *cb) { (void)s; return cb ? S_OK : E_POINTER; }
 static const struct { void *qi, *addref, *release, *enum_eps, *get_default, *get, *reg, *unreg; } g_enum_vtbl = {
     en_qi, static_addref, static_release, en_enum, en_default, en_get, en_notify, en_notify,
 };
-static Static g_enumerator = { &g_enum_vtbl };
+static Static g_enumerator = { &g_enum_vtbl, 0 };
 
 /* -----------------------------------------------------------------------
  * Class factory

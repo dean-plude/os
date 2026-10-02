@@ -222,3 +222,40 @@ __declspec(dllexport) int __cdecl wnsprintfW(LPWSTR buf, int n, LPCWSTR fmt, ...
 /* StrCpyW/StrCatW: shlwapi exports them too */
 LWSTDAPI_(LPWSTR) StrCpyW(LPWSTR d, LPCWSTR s) { lstrcpyW_(d, s); return d; }
 LWSTDAPI_(LPWSTR) StrCatW(LPWSTR d, LPCWSTR s) { lstrcpyW_(d + lstrlenW(d), s); return d; }
+
+static WCHAR lower_w(WCHAR c) { return c >= 'A' && c <= 'Z' ? (WCHAR)(c + 32) : c; }
+
+/* "C:\Users\me\AppData\Roaming\x" -> "%APPDATA%\x": the variable whose
+ * value is the longest prefix of the path */
+__declspec(dllexport) BOOL __stdcall PathUnExpandEnvStringsW(LPCWSTR path, LPWSTR out, UINT cch)
+{
+    static const WCHAR *const vars[] = { L"ALLUSERSPROFILE", L"APPDATA", L"LOCALAPPDATA", L"USERPROFILE",
+                                         L"ProgramFiles", L"SystemRoot", L"SystemDrive" };
+    if (!path || !out) return FALSE;
+    int best = -1, best_len = 0;
+    for (int i = 0; i < (int)(sizeof(vars) / sizeof(vars[0])); i++) {
+        WCHAR v[MAX_PATH];
+        DWORD n = GetEnvironmentVariableW(vars[i], v, MAX_PATH);
+        if (!n || n >= MAX_PATH || (int)n <= best_len) continue;
+        DWORD k = 0;
+        while (k < n && path[k] && lower_w(path[k]) == lower_w(v[k])) k++;
+        if (k == n && (!path[n] || path[n] == '\\')) { best = i; best_len = (int)n; }
+    }
+    if (best < 0) return FALSE;
+    UINT o = 0;
+    #define PUTC(c) do { if (o + 1 >= cch) return FALSE; out[o++] = (c); } while (0)
+    PUTC('%');
+    for (const WCHAR *c = vars[best]; *c; c++) PUTC(*c);
+    PUTC('%');
+    for (const WCHAR *c = path + best_len; *c; c++) PUTC(*c);
+    #undef PUTC
+    out[o] = 0;
+    return TRUE;
+}
+__declspec(dllexport) BOOL __stdcall PathUnExpandEnvStringsA(LPCSTR path, LPSTR out, UINT cch)
+{
+    WCHAR w[MAX_PATH], r[MAX_PATH];
+    if (!path || !out || !MultiByteToWideChar(CP_ACP, 0, path, -1, w, MAX_PATH)) return FALSE;
+    if (!PathUnExpandEnvStringsW(w, r, MAX_PATH)) return FALSE;
+    return WideCharToMultiByte(CP_ACP, 0, r, -1, out, (int)cch, 0, 0) > 0;
+}

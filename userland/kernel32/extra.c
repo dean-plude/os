@@ -304,11 +304,24 @@ static DWORD WINAPI watcher(LPVOID arg)
         HANDLE hs[MAXIMUM_WAIT_OBJECTS];
         Watch *ws[MAXIMUM_WAIT_OBJECTS];
         DWORD n = 0;
+        BOOL more = FALSE;
+        Watch *done = 0;
         hs[n++] = g_watch_wake;
         lock();
-        for (Watch *w = g_watch; w && n < MAXIMUM_WAIT_OBJECTS; w = w->next) { ws[n] = w; hs[n++] = w->ev; }
+        for (Watch *w = g_watch; w; w = w->next) {
+            if (n < MAXIMUM_WAIT_OBJECTS) { ws[n] = w; hs[n++] = w->ev; continue; }
+            more = TRUE;                                    /* past what one wait can hold: poll */
+            if (WaitForSingleObject(w->ev, 0) == WAIT_OBJECT_0) { done = w; break; }
+        }
         unlock();
-        DWORD r = WaitForMultipleObjects(n, hs, FALSE, n == 1 ? INFINITE : 100);
+        if (done) {
+            lock();
+            for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next) if (*pp == done) { *pp = done->next; break; }
+            unlock();
+            watch_done(done);
+            continue;
+        }
+        DWORD r = WaitForMultipleObjects(n, hs, FALSE, more ? 5 : n == 1 ? INFINITE : 100);
         if (r == WAIT_OBJECT_0 || r == WAIT_TIMEOUT || r >= WAIT_OBJECT_0 + n) continue;
         Watch *w = ws[r - WAIT_OBJECT_0];
         lock();
@@ -356,10 +369,14 @@ static void watch_start(Watch *w)
     SetEvent(g_watch_wake);
 }
 
-/* Finish a request that did not stay pending */
+/* Finish a request that did not stay pending.  One that failed at once
+ * (an error status, such as a broken pipe) completes nothing: no event, no
+ * completion packet, no completion routine, as on Windows.  Programs free
+ * the OVERLAPPED after such a failure. */
 static void finished_now(HANDLE h, OVERLAPPED *o, Watch *w, void *fn, NTSTATUS s)
 {
     if (w) { CloseHandle(w->ev); zfree(w); }
+    if ((ULONG)s >= 0xC0000000u) return;
     if (fn) queue_apc(GetCurrentThreadId(), 0, fn, apc_error(s), (DWORD)o->InternalHigh, (ULONG_PTR)o);
     else k32_io_done(h, o, s, (DWORD)o->InternalHigh);
 }
@@ -384,7 +401,7 @@ BOOL k32_overlapped(HANDLE h, OVERLAPPED *o, int op, PVOID buf, DWORD n, LPDWORD
     o->Internal = (ULONG_PTR)s;
     if (!NT_SUCCESS(s) && s != STATUS_END_OF_FILE && s != STATUS_BUFFER_OVERFLOW) o->InternalHigh = 0;
     finished_now(h, o, w, fn, s);
-    if (fn) { SetLastError(0); return NT_SUCCESS(s) || s == STATUS_END_OF_FILE || s == STATUS_BUFFER_OVERFLOW; }
+    if (fn && (ULONG)s < 0xC0000000u) { SetLastError(0); return TRUE; }   /* ReadFileEx: the routine is queued */
     if (done) *done = (DWORD)o->InternalHigh;
     if (s == STATUS_END_OF_FILE) { SetLastError(ERROR_HANDLE_EOF); return FALSE; }
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
@@ -399,9 +416,7 @@ NTSTATUS k32_overlapped_fsctl(HANDLE h, OVERLAPPED *o, ULONG code, PVOID in, DWO
     NTSTATUS s = NtFsControlFile(h, ev, 0, 0, (PIO_STATUS_BLOCK)o, code, in, in_len, out, out_len);
     if (s == STATUS_PENDING) { if (w) watch_start(w); return s; }
     o->Internal = (ULONG_PTR)s;
-    /* ConnectNamedPipe finding its client already there completes nothing */
-    if (s == (NTSTATUS)0xC00000B2) { if (w) { CloseHandle(w->ev); zfree(w); } return s; }
-    finished_now(h, o, w, 0, s);
+    finished_now(h, o, w, 0, s);         /* (ConnectNamedPipe finding its client there fails, completing nothing) */
     return s;
 }
 
@@ -735,46 +750,20 @@ void k32_forget_handle(HANDLE h)
 }
 
 /* -----------------------------------------------------------------------
- * WaitOnAddress: hashed wait queues (a lock and a condition variable)
+ * WaitOnAddress: ntdll's (RtlWaitOnAddress), as on Windows
  * ----------------------------------------------------------------------- */
-typedef struct { SRWLOCK l; CONDITION_VARIABLE cv; } AddrQueue;
-static AddrQueue g_addr[64];
-
-static AddrQueue *addr_queue(const volatile void *a) { return &g_addr[((ULONG_PTR)a >> 3) % 64]; }
-
-static BOOL same(const volatile void *a, const void *b, SIZE_T n)
-{
-    switch (n) {
-    case 1: return *(const volatile BYTE *)a == *(const BYTE *)b;
-    case 2: return *(const volatile WORD *)a == *(const WORD *)b;
-    case 4: return *(const volatile DWORD *)a == *(const DWORD *)b;
-    case 8: return *(const volatile ULONGLONG *)a == *(const ULONGLONG *)b;
-    }
-    return FALSE;
-}
-
 WINBASEAPI BOOL WINAPI WaitOnAddress(volatile VOID *addr, PVOID cmp, SIZE_T size, DWORD ms)
 {
-    if (size != 1 && size != 2 && size != 4 && size != 8) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    AddrQueue *q = addr_queue(addr);
-    AcquireSRWLockExclusive(&q->l);
-    BOOL ok = TRUE;
-    if (same(addr, cmp, size)) ok = SleepConditionVariableSRW(&q->cv, &q->l, ms, 0);
-    ReleaseSRWLockExclusive(&q->l);
-    if (!ok) SetLastError(1460 /* ERROR_TIMEOUT */);
-    return ok;
+    LARGE_INTEGER t;
+    t.QuadPart = -(LONGLONG)ms * 10000;
+    NTSTATUS s = RtlWaitOnAddress(addr, cmp, size, ms == INFINITE ? NULL : &t);
+    if (s == (NTSTATUS)STATUS_TIMEOUT) { SetLastError(1460 /* ERROR_TIMEOUT */); return FALSE; }
+    if (!NT_SUCCESS(s)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return TRUE;
 }
 
-WINBASEAPI VOID WINAPI WakeByAddressAll(PVOID addr)
-{
-    AddrQueue *q = addr_queue(addr);
-    AcquireSRWLockExclusive(&q->l);
-    WakeAllConditionVariable(&q->cv);
-    ReleaseSRWLockExclusive(&q->l);
-}
-
-/* waiters on the same bucket re-check their own value, so waking all is safe */
-WINBASEAPI VOID WINAPI WakeByAddressSingle(PVOID addr) { WakeByAddressAll(addr); }
+WINBASEAPI VOID WINAPI WakeByAddressAll(PVOID addr)    { RtlWakeAddressAll(addr); }
+WINBASEAPI VOID WINAPI WakeByAddressSingle(PVOID addr) { RtlWakeAddressSingle(addr); }
 
 /* -----------------------------------------------------------------------
  * Interlocked singly linked lists (a spin lock keeps them simple)
@@ -1456,9 +1445,10 @@ WINBASEAPI BOOL WINAPI CopyFileExW(LPCWSTR from, LPCWSTR to, LPVOID progress, LP
 
 /* MOVEFILE_DELAY_UNTIL_REBOOT: as Windows, the operation is only written
  * down, in Session Manager's PendingFileRenameOperations (pairs of
- * "\\??\\source", "\\??\\target" or "" for a delete); installers use it
- * for files they cannot remove while they run */
-static BOOL pending_file_op(LPCSTR from, LPCSTR to)
+ * "\\??\\source", "\\??\\target" ("!" first with @replace) or "" for a
+ * delete), and the kernel carries it out at the next boot; installers use
+ * it for files they cannot replace while they run */
+static BOOL pending_file_op(LPCSTR from, LPCSTR to, BOOL replace)
 {
     HKEY k;
     if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager", 0, 0, 0,
@@ -1475,8 +1465,11 @@ static BOOL pending_file_op(LPCSTR from, LPCSTR to)
     const char *items[2] = { from, to };
     for (int i = 0; i < 2; i++) {
         if (items[i] && *items[i]) {
+            if (i == 1 && replace) buf[w++] = '!';
             buf[w++] = '\\'; buf[w++] = '?'; buf[w++] = '?'; buf[w++] = '\\';
-            int m = MultiByteToWideChar(CP_UTF8, 0, items[i], -1, buf + w, 2 * MAX_PATH);
+            char full[MAX_PATH * 3];                 /* stored as full paths, as Windows does */
+            DWORD fl = GetFullPathNameA(items[i], sizeof(full), full, 0);
+            int m = MultiByteToWideChar(CP_UTF8, 0, fl && fl < sizeof(full) ? full : items[i], -1, buf + w, 2 * MAX_PATH);
             w += m > 0 ? (DWORD)m : 1;
         } else buf[w++] = 0;
     }
@@ -1489,7 +1482,7 @@ static BOOL pending_file_op(LPCSTR from, LPCSTR to)
 
 WINBASEAPI BOOL WINAPI MoveFileExA(LPCSTR from, LPCSTR to, DWORD flags)
 {
-    if (flags & 4) return pending_file_op(from, to);       /* MOVEFILE_DELAY_UNTIL_REBOOT */
+    if (flags & 4) return pending_file_op(from, to, (flags & 1) != 0);   /* MOVEFILE_DELAY_UNTIL_REBOOT */
     if (!to) return DeleteFileA(from);
     HANDLE h = CreateFileA(from, DELETE, 7, 0, OPEN_EXISTING, 0x02000000 /* BACKUP_SEMANTICS */, 0);
     if (h == INVALID_HANDLE_VALUE) return FALSE;
@@ -1632,21 +1625,13 @@ static BOOL volume_query(WCHAR letter, ULONG cls, void *buf, ULONG len)
 
 WINBASEAPI BOOL WINAPI GetDiskFreeSpaceExW(LPCWSTR dir, PULARGE_INTEGER avail, PULARGE_INTEGER total, PULARGE_INTEGER free)
 {
-    WCHAR d = other_drive(dir);
-    if (d) {                                /* FileFsSizeInformation: read-only, so none free */
-        LONGLONG sz[3];
-        if (!volume_query(d, 3, sz, 24)) return FALSE;
-        if (avail) avail->QuadPart = 0;
-        if (free) free->QuadPart = 0;
-        if (total) total->QuadPart = (ULONGLONG)sz[0] * (ULONG)(sz[2] >> 32) * (ULONG)sz[2];
-        return TRUE;
-    }
-    MEMORYSTATUSEX ms;
-    ms.dwLength = sizeof(ms);
-    ULONGLONG f = GlobalMemoryStatusEx(&ms) ? ms.ullAvailPhys : 256ULL << 20;   /* drive C: lives in RAM */
-    if (avail) avail->QuadPart = f;
-    if (free) free->QuadPart = f;
-    if (total) total->QuadPart = GlobalMemoryStatusEx(&ms) ? ms.ullTotalPhys : 512ULL << 20;
+    WCHAR d = other_drive(dir);             /* FileFsFullSizeInformation: the volume's own (C: lives in RAM) */
+    LONGLONG sz[4];                         /* total, caller free, free (in units), sectors/unit | bytes/sector */
+    if (!volume_query(d ? d : 'C', 7, sz, 32)) return FALSE;
+    ULONGLONG unit = (ULONGLONG)(ULONG)sz[3] * (ULONG)(sz[3] >> 32);
+    if (avail) avail->QuadPart = sz[1] * unit;
+    if (free) free->QuadPart = sz[2] * unit;
+    if (total) total->QuadPart = sz[0] * unit;
     return TRUE;
 }
 
