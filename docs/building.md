@@ -25,6 +25,7 @@ What each part is for:
 | `clang`, `lld` (`lld-link`) | **Required.** The Windows userland (`--target=x86_64-pc-windows-msvc` and `i686-pc-windows-msvc`), NetSurf, and the kernel and bootloader unless the alternatives below are installed |
 | `llvm` (`llvm-rc`) | Compiling programs' resource scripts (icons, dialogs) |
 | `python3` | `tools/build_userland.py`, `tools/build_netsurf.py` |
+| `g++-mingw-w64-x86-64`, `g++-mingw-w64-i686` | Only for `tools/build_icu.py` (rebuilding `icu.dll`) |
 | `mtools`, `dosfstools` | `nova.img` and putting files on the data disk |
 | `xorriso` | `scripts/create-iso.sh` |
 | `qemu-system-x86`, `ovmf` | Running NovaOS |
@@ -132,6 +133,26 @@ made in parallel add files rather than collide on the same lines.
   well, `"system": true` installs it in `C:\Windows\System32`, `"libs":
   ["usp10"]` links more DLLs, and `"selftest": true` lists it among the
   README's self-test programs.
+
+Two pieces are built by their own tools and committed, so the normal build
+needs neither:
+
+- **ICU** (`third_party/icu`): `icu.dll` for x64 and x86, one DLL holding
+  ICU's C API under unversioned names as Windows 10's does, and the ICU
+  data both read from `C:\Windows\Globalization\ICU\icudt77l.dat`.
+  `tools/build_icu.py` downloads the ICU4C 77.1 source (checking its
+  SHA-256), builds ICU's host tools, cross-compiles ICU with MinGW-w64
+  (`sudo apt install g++-mingw-w64-x86-64 g++-mingw-w64-i686`) and trims the
+  data (legacy code-page converters, word-break dictionaries,
+  transliteration, unit names and character names: 18 MB instead of 31;
+  .NET's answers for all its cultures are the same with either).  Run it
+  again only to move to another ICU release.  `build_userland.py` embeds
+  files of 1 MiB or more (ICU's, NetSurf) zlib-compressed; the kernel
+  inflates them onto drive C: at boot.
+- **kernel32's locale table** (`userland/kernel32/locale_data.h`):
+  `tools/gen_locales.py` generates it from .NET's `IcuLocaleData.cs` (MIT),
+  .NET's record of the names, LCIDs, code pages and GEOIDs of the 864
+  locales Windows knows.
 
 ### The ISO
 
@@ -250,7 +271,7 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
-`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `comtest`,
+`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `icutest` (x64 and x86), `comtest`,
 `tlbtest` (x64 and x86), `usptest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`,
 `soundtest wasapi`, `soundtest record`, `soundtest capture`, `soundtest volume`,
 `filetest install` (an installer that must replace a running program
@@ -373,6 +394,7 @@ would do).
 | MinGit 2.51.0 | `git clone` of a bare repository, `log` (through the `less` pager), `status` |
 | Python 3.14.0 (NuGet package) | `-c` with `json` and `sys` |
 | Node.js 24.9.0 | `-v`, `-e` |
+| .NET 10.0.12 (runtime from NuGet, with the 8.0 host) | `--list-runtimes`; `tests/dotnet/culturetest.dll` formats German and Japanese through ICU |
 | NovaOS's own screens | `dir C:\` and `dir D:\` (an empty NTFS disk made with `mkntfs`) name their drive and give its own free space (`dir.png`); `start explorer` shows This PC with both drives, matching `tests/reference/this-pc.png` |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
 
@@ -385,7 +407,7 @@ python3 tools/appcorpus.py --only NovaOS,Notepad++ --update-reference   # after 
 
 A command passes as a self-test does (exit code 0, the output expected).
 To add a program, add an `App` to `APPS`.  Other third-party programs (the
-installers, Java, .NET) and test scripts such as `cmdtest.bat` for
+installers, Java, Roslyn) and test scripts such as `cmdtest.bat` for
 `cmd.exe` are tried by hand with `tools/novarun.py`: copy a program onto
 the data disk with `--put` and type its commands.
 
