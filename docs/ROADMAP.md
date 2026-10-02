@@ -148,8 +148,9 @@ named program or test demonstrates it.
   (`tools/selftest.py`, `.github/workflows/ci.yml`); a failing test fails
   the check.
 - **Reproducible build:** CMake drives `nasm`, clang/lld and `lld-link`
-  for the kernel, bootloader and Windows userland; `nova.iso` is rebuilt
-  with `scripts/create-iso.sh`.
+  for the kernel, bootloader and Windows userland; CI builds `nova.iso`
+  with `scripts/create-iso.sh` (a run artifact on every pull request, the
+  `latest` release from `main`); the ISO is not committed.
 - **Debugging:** the GDB stub over QEMU (`run-debug`), the serial log,
   crash reports naming the module and offset, and the Terminal's `trace
   NAME` for a program's failing system calls, and symbolized kernel
