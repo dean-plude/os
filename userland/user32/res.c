@@ -79,9 +79,11 @@ Icon *icon_of(HICON h)
 
 static Icon *new_icon(int w, int h)
 {
+    static LONG serial;
     Icon *ic = calloc(1, sizeof(Icon));
     if (!ic) return NULL;
     ic->magic = ICON_MAGIC;
+    ic->serial = (DWORD)InterlockedIncrement(&serial);
     handle_add(ic);
     ic->w = w; ic->h = h;
     ic->argb = calloc((size_t)w * h, 4);
@@ -91,6 +93,12 @@ static Icon *new_icon(int w, int h)
 
 static void free_icon(Icon *ic)
 {
+    if (ic && ic->ani) {
+        Ani *a = ic->ani;
+        ic->ani = NULL;
+        for (int i = 1; i < a->nframes; i++) free_icon(a->frames[i]);
+        free(a->frames); free(a->seq); free(a->rate); free(a);
+    }
     while (ic) {
         Icon *n = ic->more;
         ic->magic = 0;
@@ -185,10 +193,15 @@ USERAPI int LookupIconIdFromDirectoryEx(PBYTE dir, BOOL icon, int cx, int cy, UI
 
 USERAPI int LookupIconIdFromDirectory(PBYTE dir, BOOL icon) { return LookupIconIdFromDirectoryEx(dir, icon, 0, 0, 0); }
 
+static Icon *ani_from_mem(const BYTE *p, DWORD size, int cx, int cy, int cursor);
+
 USERAPI HICON CreateIconFromResourceEx(PBYTE bits, DWORD size, BOOL icon, DWORD ver, int cx, int cy, UINT flags)
 {
-    (void)ver; (void)cx; (void)cy; (void)flags;
+    (void)ver; (void)flags;
+    if (bits && size >= 12 && !memcmp(bits, "RIFF", 4))      /* an animated cursor (.ani) */
+        return (HICON)ani_from_mem(bits, size, cx ? cx : 32, cy ? cy : 32, !icon);
     Icon *ic = decode_image(bits, size, !icon);
+    if (ic && !icon && size >= 4) { ic->hot.x = *(const WORD *)bits; ic->hot.y = *(const WORD *)(bits + 2); }
     return (HICON)ic;
 }
 
@@ -222,7 +235,10 @@ HICON load_icon_res(HINSTANCE inst, LPCWSTR name, int cx, int cy, int cursor)
 {
     DWORD size;
     const BYTE *dir = find_res(inst, name, cursor ? RT_GROUP_CURSOR : RT_GROUP_ICON, &size);
-    if (!dir) return 0;
+    if (!dir) {                                             /* an animated one? (ANICURSOR, ANIICON) */
+        const BYTE *ani = find_res(inst, name, cursor ? RT_ANICURSOR : RT_ANIICON, &size);
+        return ani ? (HICON)ani_from_mem(ani, size, cx, cy, cursor) : 0;
+    }
     int n = *(const WORD *)(dir + 4);
     /* every image, the best one first */
     int best = pick_entry(dir, cursor, cx, cy);
@@ -365,7 +381,7 @@ static HCURSOR sys_cursor(int which)
     int k = (which - 32512) & 31;
     if (!cache[k]) {
         cache[k] = new_icon(1, 1);
-        if (cache[k]) { cache[k]->cursor = 1; cache[k]->shared = 1; }
+        if (cache[k]) { cache[k]->cursor = 1; cache[k]->shared = 1; cache[k]->sys = 32512 + k; }
     }
     return (HCURSOR)cache[k];
 }
@@ -412,8 +428,26 @@ USERAPI HCURSOR LoadCursorA(HINSTANCE inst, LPCSTR name)
     return r;
 }
 
-USERAPI HCURSOR LoadCursorFromFileW(LPCWSTR f) { (void)f; return sys_cursor(32512); }
-USERAPI HCURSOR LoadCursorFromFileA(LPCSTR f) { (void)f; return sys_cursor(32512); }
+static HICON icon_from_file(LPCWSTR name, int cx, int cy, int cursor);
+
+/* A .cur or .ani file */
+USERAPI HCURSOR LoadCursorFromFileW(LPCWSTR f)
+{
+    if (!f) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    int cx = GetSystemMetrics(SM_CXCURSOR), cy = GetSystemMetrics(SM_CYCURSOR);
+    HCURSOR c = icon_from_file(f, cx, cy, 1);
+    if (!c && GetLastError() == ERROR_SUCCESS) SetLastError(ERROR_FILE_NOT_FOUND);
+    return c;
+}
+
+USERAPI HCURSOR LoadCursorFromFileA(LPCSTR f)
+{
+    if (!f) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    WCHAR *w = a2w(f, -1);
+    HCURSOR r = LoadCursorFromFileW(w);
+    free(w);
+    return r;
+}
 
 static void *read_file(LPCWSTR name, DWORD *size)
 {
@@ -427,38 +461,183 @@ static void *read_file(LPCWSTR name, DWORD *size)
     return buf;
 }
 
-/* An .ico / .cur file */
+/* The images of an .ico / .cur file in memory, the best one for cx x cy first */
+static Icon *icon_from_mem(const BYTE *p, DWORD size, int cx, int cy, int cursor)
+{
+    Icon *first = NULL, *last = NULL;
+    if (size < 6 || *(const WORD *)(p + 2) < 1 || *(const WORD *)(p + 2) > 2) return NULL;
+    int n = *(const WORD *)(p + 4);
+    int best = -1, bestd = 1 << 30;
+    for (int i = 0; i < n && 6 + i * 16 + 16 <= (int)size; i++) {
+        const BYTE *e = p + 6 + i * 16;
+        int w = e[0] ? e[0] : 256, h = e[1] ? e[1] : 256;
+        int d = abs(w - cx) + abs(h - cy) + (w < cx ? 1000 : 0);
+        if (d < bestd) { bestd = d; best = i; }
+    }
+    for (int k = -1; k < n; k++) {
+        int i = k < 0 ? best : k;
+        if (i < 0 || (k >= 0 && k == best)) continue;
+        const BYTE *e = p + 6 + i * 16;
+        DWORD isz = *(const DWORD *)(e + 8), off = *(const DWORD *)(e + 12);
+        if (off > size || isz > size - off) continue;
+        Icon *ic = decode_image(p + off, isz, 0);
+        if (!ic) continue;
+        ic->cursor = cursor;
+        if (cursor && *(const WORD *)(p + 2) == 2) { ic->hot.x = *(const WORD *)(e + 4); ic->hot.y = *(const WORD *)(e + 6); }
+        else if (cursor) { ic->hot.x = ic->w / 2; ic->hot.y = ic->h / 2; }
+        if (!first) first = ic; else last->more = ic;
+        last = ic;
+    }
+    return first;
+}
+
+/* -----------------------------------------------------------------------
+ * Animated cursors (.ani): a RIFF "ACON" file.  "anih" gives the frame and
+ * step counts and the default rate (jiffies, 1/60 s), "rate" and "seq "
+ * (optional) each step's time and frame, and LIST "fram" holds the frames,
+ * one "icon" chunk each: a whole .ico or .cur file.
+ * ----------------------------------------------------------------------- */
+#define ANI_ICON     1                  /* anih flags: frames are .ico/.cur files */
+#define ANI_SEQUENCE 2                  /* there is a "seq " chunk */
+
+static Icon *ani_from_mem(const BYTE *p, DWORD size, int cx, int cy, int cursor)
+{
+    if (size < 12 || memcmp(p, "RIFF", 4) || memcmp(p + 8, "ACON", 4)) return NULL;
+    DWORD riff = *(const DWORD *)(p + 4);
+    if (riff < size - 8) size = riff + 8;
+    DWORD nframes = 0, nsteps = 0, disp = 0, flags = 0;
+    const DWORD *rate = NULL, *seq = NULL;
+    DWORD nrate = 0, nseq = 0;
+    const BYTE *fram = NULL;
+    DWORD framsz = 0;
+    for (DWORD off = 12; off + 8 <= size; ) {
+        const BYTE *ck = p + off;
+        DWORD len = *(const DWORD *)(ck + 4);
+        if (len > size - off - 8) len = size - off - 8;
+        const BYTE *d = ck + 8;
+        if (!memcmp(ck, "anih", 4) && len >= 36) {
+            nframes = *(const DWORD *)(d + 4); nsteps = *(const DWORD *)(d + 8);
+            disp = *(const DWORD *)(d + 28); flags = *(const DWORD *)(d + 32);
+        } else if (!memcmp(ck, "rate", 4)) { rate = (const DWORD *)d; nrate = len / 4; }
+        else if (!memcmp(ck, "seq ", 4)) { seq = (const DWORD *)d; nseq = len / 4; }
+        else if (!memcmp(ck, "LIST", 4) && len >= 4 && !memcmp(d, "fram", 4)) { fram = d + 4; framsz = len - 4; }
+        off += 8 + ((len + 1) & ~1u);
+    }
+    if (!fram || !nframes || nframes > 1024) return NULL;
+    if (!nsteps) nsteps = nframes;
+    if (nsteps > 4096) return NULL;
+    Ani *a = calloc(1, sizeof(Ani));
+    Icon **frames = calloc(nframes, sizeof(Icon *));
+    DWORD *sq = calloc(nsteps, 4), *rt = calloc(nsteps, 4);
+    int n = 0;
+    for (DWORD off = 0; a && frames && sq && rt && off + 8 <= framsz && n < (int)nframes; ) {
+        const BYTE *ck = fram + off;
+        DWORD len = *(const DWORD *)(ck + 4);
+        if (len > framsz - off - 8) len = framsz - off - 8;
+        if (!memcmp(ck, "icon", 4)) {
+            Icon *ic = (flags & ANI_ICON) ? icon_from_mem(ck + 8, len, cx, cy, cursor) : decode_image(ck + 8, len, 0);
+            if (!ic) break;
+            if (!(flags & ANI_ICON)) { ic->cursor = cursor; ic->hot.x = ic->w / 2; ic->hot.y = ic->h / 2; }
+            frames[n++] = ic;
+        }
+        off += 8 + ((len + 1) & ~1u);
+    }
+    if (!a || !frames || !sq || !rt || n != (int)nframes) {
+        for (int i = 0; i < n; i++) free_icon(frames[i]);
+        free(a); free(frames); free(sq); free(rt);
+        return NULL;
+    }
+    for (DWORD i = 0; i < nsteps; i++) {
+        DWORD f = (flags & ANI_SEQUENCE) && seq && i < nseq ? seq[i] : i;
+        sq[i] = f < nframes ? f : 0;
+        rt[i] = rate && i < nrate ? rate[i] : disp;
+        if (!rt[i]) rt[i] = 1;
+    }
+    a->nframes = (int)nframes; a->nsteps = (int)nsteps;
+    a->frames = frames; a->seq = sq; a->rate = rt;
+    frames[0]->ani = a;
+    return frames[0];
+}
+
+Icon *icon_step(Icon *ic, UINT step)
+{
+    if (!ic || !ic->ani) return ic;
+    return ic->ani->frames[ic->ani->seq[step % (UINT)ic->ani->nsteps]];
+}
+
+/* user32's GetCursorFrameInfo (no header declares it): the frame shown at
+ * @step, its time in jiffies and the number of steps */
+USERAPI HCURSOR GetCursorFrameInfo(HCURSOR h, DWORD reserved, DWORD step, DWORD *rate, DWORD *nsteps)
+{
+    (void)reserved;
+    Icon *ic = icon_of(h);
+    if (!ic) return 0;
+    if (!ic->ani) { if (rate) *rate = 0; if (nsteps) *nsteps = 1; return h; }
+    if (step >= (DWORD)ic->ani->nsteps) return 0;
+    if (rate) *rate = ic->ani->rate[step];
+    if (nsteps) *nsteps = (DWORD)ic->ani->nsteps;
+    return (HCURSOR)ic->ani->frames[ic->ani->seq[step]];
+}
+
+/* An .ico, .cur or .ani file */
 static HICON icon_from_file(LPCWSTR name, int cx, int cy, int cursor)
 {
     DWORD size;
     BYTE *p = read_file(name, &size);
     if (!p) return 0;
-    Icon *first = NULL, *last = NULL;
-    if (size >= 6 && *(WORD *)(p + 2) >= 1 && *(WORD *)(p + 2) <= 2) {
-        int n = *(WORD *)(p + 4);
-        int best = -1, bestd = 1 << 30;
-        for (int i = 0; i < n && 6 + i * 16 + 16 <= (int)size; i++) {
-            const BYTE *e = p + 6 + i * 16;
-            int w = e[0] ? e[0] : 256, h = e[1] ? e[1] : 256;
-            int d = abs(w - cx) + abs(h - cy) + (w < cx ? 1000 : 0);
-            if (d < bestd) { bestd = d; best = i; }
-        }
-        for (int k = -1; k < n; k++) {
-            int i = k < 0 ? best : k;
-            if (i < 0 || (k >= 0 && k == best)) continue;
-            const BYTE *e = p + 6 + i * 16;
-            DWORD isz = *(const DWORD *)(e + 8), off = *(const DWORD *)(e + 12);
-            if (off + isz > size) continue;
-            Icon *ic = decode_image(p + off, isz, 0);
-            if (!ic) continue;
-            ic->cursor = cursor;
-            if (cursor) { ic->hot.x = *(const WORD *)(e + 4); ic->hot.y = *(const WORD *)(e + 6); }
-            if (!first) first = ic; else last->more = ic;
-            last = ic;
-        }
-    }
+    Icon *ic = size >= 12 && !memcmp(p, "RIFF", 4) ? ani_from_mem(p, size, cx, cy, cursor) : icon_from_mem(p, size, cx, cy, cursor);
     free(p);
-    return (HICON)first;
+    return (HICON)ic;
+}
+
+/* -----------------------------------------------------------------------
+ * The pointer: the kernel draws it over our windows (SetCursor)
+ * ----------------------------------------------------------------------- */
+/* @ic's image nearest to cx x cy */
+static Icon *nearest(Icon *ic, int cx, int cy)
+{
+    Icon *best = ic;
+    for (Icon *i = ic; i; i = i->more) {
+        int d = abs(i->w - cx) + abs(i->h - cy), bd = abs(best->w - cx) + abs(best->h - cy);
+        if (d < bd || (d == bd && i->w > best->w)) best = i;
+    }
+    return best;
+}
+
+void cursor_to_kernel(HCURSOR c, int hidden)
+{
+    static DWORD sent_serial = ~0u;
+    static int sent_hidden = -1;
+    Icon *ic = icon_of(c);
+    DWORD serial = ic ? ic->serial : 0;
+    hidden = hidden || !c;
+    if (serial == sent_serial && hidden == sent_hidden) return;
+    sent_serial = serial; sent_hidden = hidden;
+    if (hidden) { NtNovaGuiCtl(0, CTL_SET_CURSOR, 1, NULL); return; }
+    if (!ic || ic->sys) { NtNovaGuiCtl(0, CTL_SET_CURSOR, 0, NULL); return; }
+    int nf = ic->ani ? ic->ani->nframes : 1, ns = ic->ani ? ic->ani->nsteps : 1;
+    if (nf > 64) nf = 64;
+    if (ns > 256) ns = 256;
+    Icon *f0 = nearest(ic, GetSystemMetrics(SM_CXCURSOR), GetSystemMetrics(SM_CYCURSOR));
+    int w = f0->w > 64 ? 64 : f0->w, h = f0->h > 64 ? 64 : f0->h;
+    INT32 *buf = malloc(24 + (size_t)ns * 8 + (size_t)nf * w * h * 4);
+    if (!buf) { NtNovaGuiCtl(0, CTL_SET_CURSOR, 0, NULL); return; }
+    POINT hot = ic->cursor ? f0->hot : (POINT){ f0->w / 2, f0->h / 2 };
+    buf[0] = w; buf[1] = h; buf[2] = hot.x * w / f0->w; buf[3] = hot.y * h / f0->h; buf[4] = nf; buf[5] = ns;
+    DWORD *st = (DWORD *)(buf + 6), *px = st + ns * 2;
+    for (int i = 0; i < ns; i++) {
+        DWORD fr = ic->ani ? ic->ani->seq[i] : 0;
+        st[i * 2] = fr < (DWORD)nf ? fr : 0;
+        st[i * 2 + 1] = ic->ani ? ic->ani->rate[i] : 0;
+    }
+    for (int k = 0; k < nf; k++) {                  /* each frame at the first one's size */
+        Icon *fi = nearest(ic->ani ? ic->ani->frames[k] : ic, w, h);
+        DWORD *out = px + (size_t)k * w * h;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) out[y * w + x] = fi->argb[(size_t)(y * fi->h / h) * fi->w + x * fi->w / w];
+    }
+    if (!NtNovaGuiCtl(0, CTL_SET_CURSOR, 2, buf)) NtNovaGuiCtl(0, CTL_SET_CURSOR, 0, NULL);
+    free(buf);
 }
 
 /* -----------------------------------------------------------------------

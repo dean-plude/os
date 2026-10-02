@@ -207,6 +207,7 @@ struct UmProcess {
     UINT32      stack_reserve;  /* from the image header */
 
     void       *gui;            /* per-process window-system state (um_gui.c) */
+    struct GdiCursorShape *cursor;  /* its SetCursor pointer (NULL: the arrow; um_gui.c) */
     char      (*stub_names)[64]; /* "dll!function" per stub at UM_STUBS_VA */
     int         nstubs;
 
