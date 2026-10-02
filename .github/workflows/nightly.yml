@@ -60,11 +60,11 @@ jobs:
 
       # The target is 3x one CPU's file and registry throughput (Phase 17.7),
       # but a shared runner may not run the 4 emulated CPUs side by side at
-      # all (bare system calls: 0.6x there).  So the run measures (scaling
-      # 0: no fixed target) and fails on a hang, a failed test, or files or
-      # the registry scaling less than 60% as well as bare system calls do
-      # in the same run (work under one big lock would); the table records
-      # the figures.
+      # all (bare system calls: 0.6-1x there).  So the run measures
+      # (scaling 0: no fixed target) and fails on a hang or a failed test;
+      # where bare system calls do scale (2x or more), also on files or the
+      # registry scaling less than half as well (work under one big lock
+      # would).  The table records the figures.
       - name: SMP stress on 4 CPUs
         id: smp
         run: |

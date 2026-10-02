@@ -345,9 +345,10 @@ unpacks them into `C:\Apps`, boots once and runs each one's commands.
 The same run then boots on 4 CPUs for `smpstress scaling 0` and records
 each scaling figure in the night's table.  A shared runner may not run the
 emulated CPUs side by side at all, so rather than the 3x target
-`tools/ci/check-smpstress.py` fails the run on a hang, a failed test, or
-files or the registry scaling less than 60% as well as bare system calls
-in the same run (what work under one big lock would do).
+`tools/ci/check-smpstress.py` fails the run on a hang or a failed test,
+and, when bare system calls scale 2x or more in the same run, on files or
+the registry scaling less than half as well (what work under one big lock
+would do).
 
 | Program | Checks |
 |---|---|

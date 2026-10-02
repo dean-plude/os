@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Check a `smpstress scaling 0` log (tools/novarun.py output) from the
-nightly run: every test passed, nothing hung, and files and the registry
-scale at least 60% as well as bare system calls do in the same run.
+nightly run: every test passed, nothing hung, and, where the machine runs
+the CPUs side by side, files and the registry scale at least half as well
+as bare system calls do in the same run.
 
 The bare system call loop (NtQuerySystemTime) takes no lock, so its scaling
-is what the machine allows; work still under one big lock would scale far
-less than it.  Exit status 0: pass."""
+is what the machine allows; work still under one big lock would stay near
+1x while it reaches 3-4x.  A shared runner often does not run the emulated
+CPUs side by side at all (system calls 0.6-1x, moving a lot from run to
+run): there the figures are only recorded.  Exit status 0: pass."""
 import re, sys
 
-RATIO = 0.6
+RATIO = 0.5           # of the system calls' scaling
+PARALLEL = 2.0        # system calls scaling at least this: the CPUs ran side by side
 
 
 def main(path):
@@ -26,6 +30,13 @@ def main(path):
     if not calls:
         print('no system call yardstick in the log')
         return 1
+    cpus = re.search(r'smpstress: (\d+) CPUs', log)
+    if cpus:                            # (a slow one-thread sample can make it look better than possible)
+        calls = min(calls, float(cpus.group(1)))
+    if calls < PARALLEL:
+        print(f'bare system calls scaled {calls}x: the CPUs did not run side by side here, '
+              'so scaling is recorded, not judged')
+        return 0
     bad = 0
     for name in ('files', 'registry'):
         got = x.get(name)
