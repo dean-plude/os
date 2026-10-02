@@ -27,6 +27,24 @@ __declspec(dllexport) FILE _iob[3];      /* stdin, stdout, stderr (msvcrt export
 static FILE *g_files[FOPEN_MAX];
 static int  g_iob_ready;
 
+/* Streams other than the standard three are Microsoft's _FILEX: the FILE
+ * followed by its lock, which MinGW's static _lock_file enters directly */
+typedef struct { FILE f; CRITICAL_SECTION lock; } FileX;
+
+static FILE *new_file(void)
+{
+    FileX *x = calloc(1, sizeof(FileX));
+    if (!x) return 0;
+    InitializeCriticalSection(&x->lock);
+    return &x->f;
+}
+
+static void free_file(FILE *f)
+{
+    DeleteCriticalSection(&((FileX *)f)->lock);
+    free(f);
+}
+
 static void set_errno_from_win32(void)
 {
     switch (GetLastError()) {
@@ -281,7 +299,7 @@ FILE *fopen(const char *path, const char *mode)
     if (mode[1] == 'x' || (mode[1] && mode[2] == 'x')) disp = CREATE_NEW;
     HANDLE h = CreateFileA(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, disp, FILE_ATTRIBUTE_NORMAL, 0);
     if (h == INVALID_HANDLE_VALUE) { set_errno_from_win32(); return 0; }
-    FILE *f = calloc(1, sizeof(FILE));
+    FILE *f = new_file();
     if (!f) { CloseHandle(h); errno = ENOMEM; return 0; }
     f->_handle = h;
     f->_flags = flags;
@@ -304,7 +322,7 @@ int fclose(FILE *f)
     }
     if (f->_flags & F_OWNBUF) free(f->_buf);
     for (int i = 0; i < FOPEN_MAX; i++) if (g_files[i] == f) g_files[i] = 0;
-    free(f);
+    free_file(f);
     return r;
 }
 
@@ -317,7 +335,7 @@ FILE *freopen(const char *path, const char *mode, FILE *f)
     if (f->_flags & F_OWNBUF) free(f->_buf);
     for (int i = 0; i < FOPEN_MAX; i++) if (g_files[i] == n) g_files[i] = f;
     *f = *n;
-    free(n);
+    free_file(n);
     return f;
 }
 
@@ -375,7 +393,7 @@ static FILE *add_stream(HANDLE h, int flags)
     int slot = -1;
     for (int i = 0; i < FOPEN_MAX; i++) if (!g_files[i]) { slot = i; break; }
     if (slot < 0) { errno = EMFILE; return 0; }
-    FILE *f = calloc(1, sizeof(FILE));
+    FILE *f = new_file();
     if (!f) { errno = ENOMEM; return 0; }
     f->_handle = h;
     f->_flags = flags | F_OPEN;

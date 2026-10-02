@@ -432,12 +432,27 @@ static bool exact_sfn(const char *name, UINT8 *sfn)
     return true;
 }
 
-typedef struct { const UINT8 *sfn; bool clash; } ClashCtx;
-static bool clash_cb(FatVol *v, const FatEntry *e, const UINT8 *raw, void *ctx)
+#define ALIAS_MAX 131072                      /* ~1 .. ~131071 */
+typedef struct { const UINT8 *base, *ext; int nb, ne; UINT8 *used; } AliasCtx;
+
+/* Marks N when @raw is "BASIS~N.EXT" for this basis (cut to fit the tail) */
+static bool alias_cb(FatVol *v, const FatEntry *e, const UINT8 *raw, void *ctx)
 {
+    AliasCtx *a = ctx;
     (void)v; (void)e;
-    ClashCtx *c = ctx;
-    if (!memcmp(raw, c->sfn, 11)) { c->clash = true; return false; }
+    if (memcmp(raw + 8, a->ext, (size_t)a->ne)) return true;
+    for (int i = a->ne; i < 3; i++) if (raw[8 + i] != ' ') return true;
+    int t = 0;
+    while (t < 8 && raw[t] != '~') t++;
+    if (t == 8 || t > a->nb || memcmp(raw, a->base, (size_t)t)) return true;
+    UINT32 n = 0;
+    int i = t + 1, digits = 0;
+    for (; i < 8 && raw[i] >= '0' && raw[i] <= '9'; i++, digits++) n = n * 10 + (UINT32)(raw[i] - '0');
+    for (; i < 8; i++) if (raw[i] != ' ') return true;
+    if (!digits || n >= ALIAS_MAX) return true;
+    int tl = 1 + digits, keep = a->nb + tl > 8 ? 8 - tl : a->nb;
+    if (keep != t) return true;
+    a->used[n / 8] |= (UINT8)(1u << (n % 8));
     return true;
 }
 
@@ -460,19 +475,23 @@ static bool make_alias(FatVol *v, UINT32 dir, const char *name, UINT8 *sfn)
             ext[ne++] = (UINT8)(sfn_char_ok(c) ? c : '_');
         }
     if (!nb) base[nb++] = '_';
-    for (UINT32 n = 1; n < 1000000; n++) {
-        char tail[8];
-        int tl = ksnprintf(tail, sizeof(tail), "~%u", n);
-        int keep = nb + tl > 8 ? 8 - tl : nb;
-        memset(sfn, ' ', 11);
-        memcpy(sfn, base, (size_t)keep);
-        memcpy(sfn + keep, tail, (size_t)tl);
-        memcpy(sfn + 8, ext, (size_t)ne);
-        ClashCtx c = { sfn, false };
-        dir_walk(v, dir, clash_cb, &c);
-        if (!c.clash) return true;
-    }
-    return false;
+    /* one walk marks the ~N tails already taken for this basis and
+     * extension (a walk per candidate made big directories quadratic) */
+    AliasCtx a = { base, ext, nb, ne, kzalloc(ALIAS_MAX / 8) };
+    if (!a.used) return false;
+    dir_walk(v, dir, alias_cb, &a);
+    UINT32 n = 1;
+    while (n < ALIAS_MAX && (a.used[n / 8] & (1u << (n % 8)))) n++;
+    kfree(a.used);
+    if (n >= ALIAS_MAX) return false;
+    char tail[8];
+    int tl = ksnprintf(tail, sizeof(tail), "~%u", n);
+    int keep = nb + tl > 8 ? 8 - tl : nb;
+    memset(sfn, ' ', 11);
+    memcpy(sfn, base, (size_t)keep);
+    memcpy(sfn + keep, tail, (size_t)tl);
+    memcpy(sfn + 8, ext, (size_t)ne);
+    return true;
 }
 
 static UINT32 g_stamp;

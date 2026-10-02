@@ -118,6 +118,7 @@ set(KERNEL_ASM_SOURCES
 set(KERNEL_C_SOURCES
     arch/x86_64/gdt.c
     ke/ksym.c
+    ke/prof.c
     arch/x86_64/idt.c
     arch/x86_64/apic.c
     arch/x86_64/paging.c

@@ -96,6 +96,8 @@ typedef struct WND {
     WndCloseFn on_close_request; /* if set, the close button and Alt+F4 call this
                               * instead of closing (the owner decides) */
     WndTickFn  on_tick;      /* optional periodic work */
+    bool       tick_lock_free; /* on_tick takes the file-system lock itself
+                              * if it needs it (else WmTick holds it) */
     const GdiCursorShape *cursor; /* the pointer over the client area (a program's
                               * SetCursor), or NULL: the arrow.  Set under the
                               * desktop lock, then WmCursorShapeChanged() */

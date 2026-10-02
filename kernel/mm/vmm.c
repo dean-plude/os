@@ -29,6 +29,7 @@
 #include "../ke/printf.h"
 #include "../include/types.h"
 #include "../arch/x86_64/cpu.h"
+#include "../ke/kpcr.h"
 
 /* -----------------------------------------------------------------------
  * Slab cache
@@ -53,11 +54,29 @@ typedef struct Slab {
 
 typedef struct {
     size_t  obj_size;
-    Slab   *slabs;      /* Linked list of slabs (partial + empty) */
+    Slab   *slabs;      /* The slabs with free objects (full ones are on no list) */
     KSpinLock lock;
 } SlabCache;
 
 static SlabCache caches[SLAB_SIZES_COUNT];
+
+/* Each CPU keeps a few freed objects of each size for itself (a magazine):
+ * most kmalloc/kfree pairs then touch no shared lock or line.  On once
+ * CPU 0's KPCR is set (vmm_percpu_ready). */
+#define MAG_SIZE 32
+typedef struct {
+    int   n;
+    void *obj[MAG_SIZE];
+} Magazine;
+static Magazine g_mag[MAX_CPUS][SLAB_SIZES_COUNT];
+static bool     g_mag_on;
+
+void vmm_percpu_ready(void) { g_mag_on = true; }
+
+static Magazine *mag_of(SlabCache *c)
+{
+    return &g_mag[KiGetCurrentKpcr()->CpuNumber % MAX_CPUS][c - caches];
+}
 
 /* Each cache's spinlock (interrupts off while held) */
 static IrqState cache_lock(SlabCache *c)            { return spin_lock_irqsave(&c->lock); }
@@ -105,13 +124,17 @@ static Slab *slab_create(size_t obj_size)
 
 static void *slab_alloc(SlabCache *c)
 {
+    if (g_mag_on) {
+        IrqState is = irq_save();                   /* (stay on this CPU) */
+        Magazine *m = mag_of(c);
+        void *o = m->n ? m->obj[--m->n] : NULL;
+        irq_restore(is);
+        if (o) return o;
+    }
     IrqState s = cache_lock(c);
 
-    /* Find a slab with free objects */
+    /* The first slab with free objects (all on the list have some) */
     Slab *slab = c->slabs;
-    while (slab && slab->free_count == 0) {
-        slab = slab->next;
-    }
 
     if (!slab) {
         /* No slab with free objects — create a new one */
@@ -126,7 +149,7 @@ static void *slab_alloc(SlabCache *c)
     /* Pop from free list */
     FreeObj *obj    = slab->free_list;
     slab->free_list = obj->next;
-    slab->free_count--;
+    if (--slab->free_count == 0) c->slabs = slab->next;    /* full: off the list until a free */
 
     cache_unlock(c, s);
     return (void *)obj;
@@ -152,11 +175,22 @@ static void slab_free(void *ptr, size_t obj_size)
     }
     if (!c) return;
 
+    if (g_mag_on) {
+        IrqState is = irq_save();
+        Magazine *m = mag_of(c);
+        bool kept = m->n < MAG_SIZE;
+        if (kept) m->obj[m->n++] = ptr;
+        irq_restore(is);
+        if (kept) return;
+    }
     IrqState s = cache_lock(c);
     FreeObj *obj    = (FreeObj *)ptr;
     obj->next       = slab->free_list;
     slab->free_list = obj;
-    slab->free_count++;
+    if (slab->free_count++ == 0) {                        /* was full: back on the list */
+        slab->next = c->slabs;
+        c->slabs   = slab;
+    }
     cache_unlock(c, s);
 }
 

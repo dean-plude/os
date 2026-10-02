@@ -169,12 +169,13 @@ void um_ob_unref(UmObject *o)
         if (left) return;
     } else if (__atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL)) return;
     /* The last reference may go in a service that runs without the big
-     * kernel lock; the destructors (a process's, a socket's...) want it */
-    bkl_acquire();
+     * kernel lock; most destructors (a process's, a socket's...) want it */
+    bool big = !o->free_unlocked;
+    if (big) bkl_acquire();
     if (o->destroy) o->destroy(o);
     um_sd_free(o->sd);
     kfree(o);                                       /* UmThread: ob is its first member */
-    bkl_release();
+    if (big) bkl_release();
 }
 
 static UmObject *ob_new(UmObType type)
@@ -306,7 +307,7 @@ UINT32 um_wait_one(UmObject *o, INT64 timeout_100ns)
 
 void um_abandon_mutants(UmProcess *p, UmThread *t)
 {
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     for (int i = 0; i < UM_MAX_HANDLES; i++) {
         UmHandle *h = &p->handles[i];
         if (h->kind != H_OBJECT || h->obj->type != UO_MUTANT || h->obj->owner != t) continue;
@@ -317,7 +318,7 @@ void um_abandon_mutants(UmProcess *p, UmThread *t)
         um_ob_wake(h->obj);
         ob_unlock(s);
     }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
 }
 
 /* -----------------------------------------------------------------------
@@ -547,7 +548,7 @@ static UINT64 sys_alert_by_tid(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     (void)a2; (void)a3; (void)a4;
     UmProcess *p = UmCurrent();
     UINT64 st = 0xC000000Bu;                                /* STATUS_INVALID_CID */
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     for (int i = 0; i < UM_MAX_THREADS; i++) {
         UmThread *t = p->threads[i];
         if (!t || t->tid != (UINT32)a1 || t->exited) continue;
@@ -558,7 +559,7 @@ static UINT64 sys_alert_by_tid(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         st = ST_SUCCESS;
         break;
     }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     return st;
 }
 
@@ -570,13 +571,13 @@ static UINT64 sys_wait_alert(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     INT64 t;
     if (!get_timeout(a2, &t)) return ST_ACCESS_VIOLATION;
     UmThread *me = UmCurrentThread();
-    UINT64 until = deadline_ticks(t);
+    UINT64 until = deadline_tsc(t);
     for (;;) {
         if (__atomic_exchange_n(&me->alerted, 0, __ATOMIC_ACQ_REL)) return 0x101;   /* STATUS_ALERTED */
         if (um_stopping()) return ST_THREAD_IS_TERMINATING;
-        if (t == 0 || sched_ticks() >= until) return ST_TIMEOUT;
-        UINT64 nap = sched_ticks() + 10;
-        sched_sleep_until(&me->alerted, until < nap ? until : nap);
+        if (t == 0 || rdtsc() >= until) return ST_TIMEOUT;
+        UINT64 nap = sched_tick_tsc(sched_ticks() + 10);
+        sched_sleep_until_tsc(&me->alerted, until < nap ? until : nap);
     }
 }
 
@@ -746,9 +747,9 @@ static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4)
         static UmLock tlock;
         um_lock(&tlock);
         UINT32 n = 0;
-        um_lock(&p->lock);
+        um_lock_excl(&p->lock);
         for (UINT32 i = 0; i < UM_MAX_HANDLES; i++) if (p->handles[i].kind != H_FREE) vals[n++] = (i + 1) * 4;
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         UINT32 need = a2 == 20 ? 4 : n * 4;
         UINT64 st = ST_SUCCESS, ret = um_stack_arg(5);
         if (a4 < need) st = ST_INFO_LENGTH_MISMATCH;
@@ -802,15 +803,15 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             nh = um_handle_new_object(tp, self);
             if (!nh) st = ST_TOO_MANY_HANDLES;
             else if (attrs & 2) {                            /* OBJ_INHERIT */
-                um_lock(&tp->lock);
+                um_lock_excl(&tp->lock);
                 tp->handles[nh / 4 - 1].inherit = true;
-                um_unlock(&tp->lock);
+                um_unlock_excl(&tp->lock);
             }
         }
         if (self) um_ob_unref(self);
     } else {
         DesktopLock();
-        um_lock(&sp->lock);
+        um_lock_excl(&sp->lock);
         UmHandle src;
         bool ok = a2 >= 4 && !(a2 & 3) && a2 / 4 - 1 < UM_MAX_HANDLES && sp->handles[a2 / 4 - 1].kind != H_FREE;
         if (ok) {
@@ -819,15 +820,15 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             if (src.kind == H_FILE) um_fpos_ref(src.fp);         /* a duplicate shares the position */
             if (src.kind == H_OBJECT) um_ob_ref(src.obj);
         }
-        um_unlock(&sp->lock);
+        um_unlock_excl(&sp->lock);
         if (!ok) st = ST_INVALID_HANDLE;
         else if (tp) {
             if (!(options & 4)) src.inherit = attrs & 2;     /* DUPLICATE_SAME_ATTRIBUTES, OBJ_INHERIT */
-            um_lock(&tp->lock);
+            um_lock_excl(&tp->lock);
             int free = -1;
             for (int i = 0; i < UM_MAX_HANDLES; i++) if (tp->handles[i].kind == H_FREE) { free = i; break; }
             if (free >= 0) { tp->handles[free] = src; nh = (UINT64)(free + 1) * 4; }
-            um_unlock(&tp->lock);
+            um_unlock_excl(&tp->lock);
             if (free < 0) st = ST_TOO_MANY_HANDLES;
         }
         if (ok && (!tp || st)) {                             /* not placed: drop the reference */
@@ -841,11 +842,11 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (sp == p) um_close_handle(a2);
         else {
             DesktopLock();
-            um_lock(&sp->lock);
+            um_lock_excl(&sp->lock);
             UmHandle *h = a2 >= 4 && !(a2 & 3) && a2 / 4 - 1 < UM_MAX_HANDLES ? &sp->handles[a2 / 4 - 1] : NULL;
             UmHandle old = h ? *h : (UmHandle){ 0 };
             if (h) memset(h, 0, sizeof(*h));
-            um_unlock(&sp->lock);
+            um_unlock_excl(&sp->lock);
             if (old.kind == H_FILE || old.kind == H_DIR) RamfsUnref(old.node);
             if (old.kind == H_FILE) um_fpos_unref(old.fp);
             if (old.kind == H_OBJECT) um_ob_unref(old.obj);
@@ -1002,10 +1003,10 @@ static void section_destroy(UmObject *o)
 
 void um_flush_view_at(UmProcess *p, UINT64 va)
 {
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmRegion *r = um_region_find(p, va);
     UmObject *o = r && r->section ? um_ob_ref(r->section) : NULL;
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (!o) return;
     section_writeback(o->ptr);
     um_ob_unref(o);
@@ -1031,10 +1032,10 @@ static UINT64 sys_create_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     RamNode *file = NULL;
     if (fileh) {                                            /* the file's size when none is given */
         DesktopLock();
-        um_lock(&p->lock);
+        um_lock_excl(&p->lock);
         file = um_handle_file(p, fileh);
         if (file) { RamfsRef(file); if (!size) size = file->size; }
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         DesktopUnlock();
         if (!file) return ST_INVALID_HANDLE;
     }
@@ -1118,7 +1119,7 @@ static UINT64 map_view(UINT64 a1, UINT64 a3, UINT64 off_ptr, UINT64 size_ptr, UI
     UINT64 npages = (view + PAGE_SIZE - 1) / PAGE_SIZE;
     UINT64 bytes = npages * PAGE_SIZE;
     if ((prot & 0xFF) == 0) prot = 0x04;
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UINT64 r = ST_SUCCESS;
     if (base) {
         base &= ~0xFFFFULL;
@@ -1137,7 +1138,7 @@ static UINT64 map_view(UINT64 a1, UINT64 a3, UINT64 off_ptr, UINT64 size_ptr, UI
         r = ST_NO_MEMORY;
     }
     if (r == ST_SUCCESS) reg->section = o;                  /* the view keeps the reference */
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (r != ST_SUCCESS) { um_ob_unref(o); return r; }
     put_u64_(a3, base);
     put_u64_(size_ptr, bytes);
@@ -1150,13 +1151,13 @@ static UINT64 sys_unmap_view(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     (void)a3; (void)a4;
     UmProcess *p = UmCurrent();
     if (a1 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_NOT_SUPPORTED_;
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmRegion *r = um_region_find(p, a2);
-    if (!r || !r->section) { um_unlock(&p->lock); return ST_NOT_MAPPED_VIEW; }
+    if (!r || !r->section) { um_unlock_excl(&p->lock); return ST_NOT_MAPPED_VIEW; }
     UmObject *o = r->section;
     um_unmap_frames(p, r->base, r->size / PAGE_SIZE);
     um_region_remove(p, r);
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     section_writeback(o->ptr);
     um_ob_unref(o);
     return ST_SUCCESS;
@@ -1208,6 +1209,7 @@ static UINT64 sys_create_directory(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     memcpy(copy, name, strlen(name) + 1);
     o->ptr = copy;
     o->destroy = ptr_destroy;
+    o->free_unlocked = true;
     return finish_create(o, name, a1, a3);
 }
 static UINT64 sys_open_directory(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_named(UO_DIRECTORY, a1, a3, (UINT32)a2); }
@@ -1334,6 +1336,7 @@ static UINT64 sys_create_symlink(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!o) { kfree(t); return ST_NO_MEMORY; }
     o->ptr = t;
     o->destroy = ptr_destroy;
+    o->free_unlocked = true;
     return finish_create(o, name, a1, a3);
 }
 static UINT64 sys_open_symlink(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_named(UO_SYMLINK, a1, a3, (UINT32)a2); }
@@ -1462,10 +1465,10 @@ static UINT64 oa_inherit(UINT64 st, UINT64 handle_ptr, UINT64 oa_ptr)
     if (!NT_SUCCESS(CopyFromUser(oa, (const void *)(uintptr_t)oa_ptr, sizeof(oa))) || !(oa[3] & 2)) return st;
     if (!NT_SUCCESS(CopyFromUser(&h, (const void *)(uintptr_t)handle_ptr, 8))) return st;
     UmProcess *p = UmCurrent();
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     if (h && h % 4 == 0 && h / 4 - 1 < UM_MAX_HANDLES && p->handles[h / 4 - 1].kind != H_FREE)
         p->handles[h / 4 - 1].inherit = true;
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     return st;
 }
 #define INHERITABLE(fn) \

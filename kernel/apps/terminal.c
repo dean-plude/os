@@ -6,6 +6,7 @@
  * the desktop thread.
  */
 
+#include "../ke/prof.h"
 #include "../wm/clipboard.h"
 #include "apps.h"
 #include "../lib/string.h"
@@ -153,6 +154,7 @@ static void tprint_ex(Term *t, int kind, int split, const char *s)
 }
 
 static void tprint(Term *t, const char *s)              { tprint_ex(t, K_NORMAL, 0, s); }
+static void prof_line(void *t, const char *s)            { tprint((Term *)t, s); }
 static void terr(Term *t, const char *s)                { tprint_ex(t, K_ERROR, 0, s); }
 
 static void tprintf(Term *t, const char *fmt, ...)
@@ -800,7 +802,35 @@ static void proc_finish(Term *t);
 static void screen_resize(Term *t);
 static bool screen_enter(Term *t);
 
+static bool term_tick_files(WND *w);
+
+/* A running program's output: no files (the file-system lock stays free
+ * for the program); anything else takes it */
 static bool term_tick(WND *w)
+{
+    Term *t = w->user;
+    Job *j = &t->job;
+    if (j->kind == JOB_NONE) return false;
+    if (j->kind == JOB_PROC && !j->starting && j->proc && !UmHasExited(j->proc, NULL, NULL, 0)) {
+        static char buf[4096];
+        bool changed = false;
+        screen_resize(t);
+        if (!j->vt && !(UmConsoleInputMode(j->con) & CON_ENABLE_LINE_INPUT) && screen_enter(t)) changed = true;
+        for (int rounds = 0; rounds < 16; rounds++) {
+            int n = UmConsoleRead(j->con, buf, sizeof(buf));
+            if (!n) break;
+            proc_output(t, buf, n);
+            changed = true;
+        }
+        return changed;
+    }
+    FsLock();
+    bool r = term_tick_files(w);
+    FsUnlock();
+    return r;
+}
+
+static bool term_tick_files(WND *w)
 {
     Term *t = w->user;
     Job *j = &t->job;
@@ -1282,6 +1312,23 @@ static void run(Term *t, char *cmdline)
     if (!strncmp(s, "serial ", 7)) {                 /* serial on|off (see mirror) */
         g_mirror = !strcmp(s + 7, "on");
         tprint(t, g_mirror ? "Terminal output is copied to the serial port." : "Serial copy off.");
+        done_mark();
+        return;
+    }
+    if (!strncmp(s, "profile on", 10)) {                      /* the sampling profiler (ke/prof.c) */
+        const char *a = s + 10;                                 /* "profile on [DELAY LENGTH]" (ticks) */
+        UINT64 v[2] = { 0, 0 };
+        for (int i = 0; i < 2; i++) {
+            while (*a == ' ') a++;
+            while (*a >= '0' && *a <= '9') v[i] = v[i] * 10 + (UINT64)(*a++ - '0');
+        }
+        ProfStart(v[0], v[1]);
+        tprint(t, "Profiling: \"profile\" shows where the time went.");
+        done_mark();
+        return;
+    }
+    if (is(s, "profile")) {
+        ProfReport(prof_line, t);
         done_mark();
         return;
     }
@@ -1884,6 +1931,7 @@ static Term *term_new_ex(RamNode *cwd, bool banner)
     w->rbutton  = true;                        /* right click pastes, the wheel scrolls */
     w->on_close = term_close;
     w->on_tick  = term_tick;
+    w->tick_lock_free = true;
     if (!banner) return t;
     tprint_ex(t, K_DIM, 0, "NovaOS Terminal [Version 0.9.8]");
     tprint_ex(t, K_DIM, 0, "Type 'help' to see what you can do.");

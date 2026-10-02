@@ -11,13 +11,23 @@
  * out — except those that run under finer-grained locks (smp.c has the
  * list of what does): the scheduler, the timer and IPIs, and the services
  * um_syscall.c marks lock-free (waits and events, memory, sockets, the GUI,
- * time), plus the desktop's drawing.
+ * time, files, the registry, the console, starting processes and threads),
+ * plus the desktop's drawing.
  *
- * Locking order: the BKL and the sleeping locks (UmLock: DesktopLock,
- * process locks, net_lock) may be taken in either order, because waiting
- * for a UmLock yields, and yielding hands over the BKL.  Spinlocks
- * (spinlock.h) come last: nothing that sleeps or takes the BKL while one
- * is held.
+ * Locking order: the BKL and the sleeping locks (UmLock and UmRwLock:
+ * DesktopLock, the file-system lock, process locks, the registry's,
+ * net_lock) may be taken in either order, because waiting for one yields,
+ * and yielding hands over the BKL.  Among the sleeping locks: the desktop,
+ * then the file system (FsLock: exclusive to change the tree, shared to
+ * read and write open files), then a file's own lock, then a process's
+ * (exclusive; looking up, opening and closing a handle take it shared
+ * plus the handle's slot lock); the registry's g_reg, then a key's lock,
+ * then its watch lock.  Spinlocks (spinlock.h) come last: nothing that
+ * sleeps or takes the BKL while one is held.
+ *
+ * The terminal's "profile" command samples where the CPUs spend their time
+ * (prof.c): kernel functions and their callers, waits for the BKL by who
+ * waits, programs' code, and the system calls made.
  */
 
 #pragma once

@@ -106,9 +106,12 @@ named program or test demonstrates it.
   the Qt and GTK applications (KeePassXC, Krita, Inkscape), then Firefox.
 - Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the
   `IFileDialog` interfaces (today they report "cancelled").
-- Windows Installer: custom actions that run code, the packages' own
+- ~~Windows Installer: custom actions that run code, the packages' own
   dialogs (`InstallUISequence`), the `Shortcut` table, services, merge
-  modules; LZX cabinets tested against real packages.
+  modules; LZX cabinets tested against real packages~~ Done; see
+  [Windows Installer depth](HISTORY.md#windows-installer-depth-custom-actions-dialogs-shortcuts-services).
+  Still to come: rollback, script custom actions, patches and transforms,
+  services that start at boot.
 - ~~COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception
   tables~~ Done; see [Type libraries and FH4](HISTORY.md#com-type-libraries-and-fh4-c-exceptions).
 - .NET globalization through ICU, not only NLS for English and invariant
@@ -142,8 +145,9 @@ named program or test demonstrates it.
   one (git pages through NovaOS's own `less` today).
 - Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
   Windows Terminal-style hosts) exist only as functions that fail.
-- Move files, the registry, process creation and the console off the big
-  kernel lock.
+- ~~Move files, the registry, process creation and the console off the
+  big kernel lock~~ Done (Phase 17.7): file and registry throughput scale
+  about 3x from one CPU to four (`smpstress scaling 3`, run nightly).
 - ~~Security: enforce tokens and ACLs on objects~~ Done for named kernel
   objects: real tokens, restricted tokens, impersonation, and descriptors
   checked on open (Phase 17.4, `sectest`, `acltest`).  Files' descriptors

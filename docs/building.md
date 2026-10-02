@@ -376,7 +376,7 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 | `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
 | `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
-| `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
+| `smpstress` (x64) | Locks, events, semaphores, memory, handles and starting processes from many threads, then file and registry throughput on one CPU and on all (`smpstress scaling 3` fails below 3x; `smpstress throughput [X [files\|registry [many\|N]]]` measures only; run with `tools/novarun.py --smp 4`) |
 | `acltest` | Access checks against DACLs (`AccessCheck`) for our token and restricted, write-restricted and deny-only ones; `CheckTokenMembership`, impersonation; a named event with a DACL refused to a restricted token |
 | `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
@@ -405,6 +405,13 @@ serial.log` lists them; each should end "0 failed".
 (`.github/workflows/nightly.yml`, which also runs on pull requests that
 change it): it downloads the official Windows x64 releases into a cache,
 unpacks them into `C:\Apps`, boots once and runs each one's commands.
+The same run then boots on 4 CPUs for `smpstress scaling 0` and records
+each scaling figure in the night's table.  A shared runner may not run the
+emulated CPUs side by side at all, so rather than the 3x target
+`tools/ci/check-smpstress.py` fails the run on a hang or a failed test,
+and, when bare system calls scale 2x or more in the same run, on files or
+the registry scaling less than half as well (what work under one big lock
+would do).
 
 | Program | Checks |
 |---|---|
@@ -515,6 +522,15 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
 - **`trace NAME`** in the Terminal logs the failing system calls (with file
   names) of the program called NAME, each with its process id; `trace
   +NAME` logs every call, not only the failing ones; `trace off` stops it.
+- **`profile on [DELAY LENGTH]`** in the Terminal samples every CPU at each
+  timer tick (from DELAY ticks on, for LENGTH ticks; 100 a second), and
+  **`profile`** prints the result: how the time split between programs, the
+  kernel, waiting for the big kernel lock and idle; the busiest kernel
+  functions and their callers; the busiest 64-byte lines of program code
+  (look the address up in a DLL's `.map` next to it in the build); and the
+  system calls made (3xx: an interrupt under the big lock).  For example
+  `tools/novarun.py --smp 4 "profile on 550 100" "smpstress throughput 0
+  files many" profile`.
 
 ### GDB
 

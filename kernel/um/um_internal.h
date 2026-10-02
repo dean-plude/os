@@ -68,6 +68,17 @@ typedef struct {
 void um_lock(UmLock *l);
 void um_unlock(UmLock *l);
 
+/* A reader/writer lock on the same terms: one writer (recursive, and may
+ * take it shared too) or many readers, who must not take it twice. */
+typedef struct {
+    UmLock       w;
+    struct { volatile int n; } __attribute__((aligned(64))) readers[16];   /* by CPU (MAX_CPUS): each on a line of its own */
+} __attribute__((aligned(64))) UmRwLock;
+void um_lock_shared(UmRwLock *l);
+void um_unlock_shared(UmRwLock *l);
+void um_lock_excl(UmRwLock *l);
+void um_unlock_excl(UmRwLock *l);
+
 /* -----------------------------------------------------------------------
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
@@ -86,6 +97,7 @@ typedef struct UmObject {
     UINT32          recursion;
     bool            abandoned;
     bool            named;          /* in the object namespace (um_thread.c) */
+    bool            free_unlocked;  /* @destroy needs no big kernel lock */
     int             sock;           /* UO_SOCKET: kernel socket index */
     int             audio;          /* UO_AUDIO: mixer stream (drivers/audio.c) */
     UmProcess      *proc;           /* UO_PROCESS: signaled when it has exited */
@@ -118,6 +130,8 @@ struct UmThread {
     volatile UINT8  park;
     void           *uframe;
     UINT16          last_sys;       /* the latest system call (diagnostics) */
+    UINT32          oa_attrs;       /* OBJECT_ATTRIBUTES.Attributes of its latest path (um_syscall.c) */
+    UINT64          oa_sd;          /* and its SecurityDescriptor (a user pointer) */
     UINT64          last_a1;        /* and its first argument */
     /* Waiting (um_thread.c, under g_um_oblock): the objects, the waiter
      * list link, and the flag a signaler sets to wake it */
@@ -188,11 +202,12 @@ struct UmProcess {
     RamNode    *cwd;
     RamNode    *exe_dir;        /* searched for DLLs before System32 */
     UmConsole  *con;
-    UmLock      lock;           /* handles, regions, modules, threads */
+    UmRwLock    lock;           /* handles, regions, modules, threads */
     UmLock      ldr_lock;       /* one runtime DLL load at a time (taken before the desktop lock) */
     UINT64      image_base, image_entry;   /* the program's, between um_spawn_image and _finish */
 
     UmHandle    handles[UM_MAX_HANDLES];
+    volatile UINT8 hbusy[UM_MAX_HANDLES];   /* a slot's own lock, for object handles (see um_syscall.c) */
     UmRegion   *regions;        /* [UM_MAX_REGIONS], allocated with the process */
     int         nregions;
     UmModule    modules[UM_MAX_MODULES];

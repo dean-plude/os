@@ -251,6 +251,7 @@ static UmObject *token_new(const UmToken *from)
     o->refs = 1;
     o->ptr = t;
     o->destroy = token_destroy;
+    o->free_unlocked = true;
     return o;
 }
 
