@@ -103,6 +103,9 @@ named program or test demonstrates it.
 - Files: hard links, `MoveFileEx` pending renames carried out at boot,
   `RegNotifyChangeKeyValue` change events.
 - Interactive MSYS2 `sh` sessions (only `sh -c` and scripts are tested).
+- A console screen buffer with raw (per-key) input, so full-screen console
+  programs work and `less` can be the real one (git pages through NovaOS's
+  line-based `less` today).
 - Move files, the registry, process creation and the console off the big
   kernel lock.
 - Security: enforce tokens and ACLs on objects (`AccessCheck` already

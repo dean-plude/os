@@ -917,7 +917,8 @@ MinGit's `git.exe` (2.47) runs: `--version`, `init`, `add`, `commit`,
     now finds it while any handle keeps it, as on Windows, so `waitpid`
     on a finished child gets its exit code.
 - Not yet: MinGit ships no `less`, git's default pager, so give `log` and
-  `config --list` `--no-pager` or `-c core.pager=more`.
+  `config --list` `--no-pager` or `-c core.pager=more`.  *(Since done:
+  NovaOS's own `less`, see [A pager for git](#a-pager-for-git-lessexe).)*
 
 ## The MSYS2 runtime: `sh.exe`, `clone`, `push`
 
@@ -1459,3 +1460,26 @@ TLS already in the tree.
   encode, decoding it back, and streaming a WAV over HTTPS from the host
   with TLS 1.3 and with TLS 1.2; with `tls_verify` on (ffmpeg's default) a
   self-signed server is refused as an untrusted root.
+
+## A pager for git: `less.exe`
+
+`git log`, `diff` and `config --list` on the Terminal now page without
+`--no-pager`.  MinGit has no `less`, git's default pager, so git stopped
+with "unable to execute pager 'less'" (it does on Windows too).  NovaOS
+now ships `less.exe` in `C:\Windows\System32` (and SysWOW64), on `PATH`,
+where git finds it:
+
+- It shows a screenful (the console's 25 rows), then asks
+  `-- More --`: Enter shows the next page, a number that many more lines,
+  `/text` skips to the next line containing the text, `q` quits (git then
+  stops quietly).  The Terminal hands programs whole lines, so each answer
+  ends with Enter; single-key commands wait for raw console input.
+- Output that fits on one screen goes straight through, as with git's
+  `LESS=FRX`, and so does everything when the output is not a console
+  (`git log | find` is unchanged).  Color escapes pass through, files
+  given as arguments (`less a.txt`) work, and options are accepted.
+- Why not the real `less`: it is a full-screen program that moves the
+  cursor through the console screen buffer, and the Terminal is a
+  scrolling line view, so it would draw garbage; it can come once the
+  console has a real screen buffer.
+- The nightly corpus's `git log` test no longer passes `--no-pager`.
