@@ -284,13 +284,14 @@ unpacks them into `C:\Apps`, boots once and runs each one's commands.
 | MinGit 2.51.0 | `git clone` of a bare repository, `log`, `status` |
 | Python 3.14.0 (NuGet package) | `-c` with `json` and `sys` |
 | Node.js 24.9.0 | `-v`, `-e` |
-| Notepad++ 8.8.3 (portable) | opens a file; the screenshot must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
+| NovaOS's own screens | `dir C:\` and `dir D:\` (an empty NTFS disk made with `mkntfs`) name their drive and give its own free space (`dir.png`); `start explorer` shows This PC with both drives, matching `tests/reference/this-pc.png` |
+| Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
 
 ```bash
-sudo apt install p7zip-full python3-pil     # 7-Zip's installer, Pillow
+sudo apt install p7zip-full python3-pil ntfs-3g   # 7-Zip's installer, Pillow, mkntfs (drive D:)
 python3 tools/appcorpus.py                   # exit status = programs that failed
 python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
-python3 tools/appcorpus.py --only Notepad++ --update-reference   # after an intended change
+python3 tools/appcorpus.py --only NovaOS,Notepad++ --update-reference   # after an intended change
 ```
 
 A command passes as a self-test does (exit code 0, the output expected).

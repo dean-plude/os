@@ -1636,21 +1636,13 @@ static BOOL volume_query(WCHAR letter, ULONG cls, void *buf, ULONG len)
 
 WINBASEAPI BOOL WINAPI GetDiskFreeSpaceExW(LPCWSTR dir, PULARGE_INTEGER avail, PULARGE_INTEGER total, PULARGE_INTEGER free)
 {
-    WCHAR d = other_drive(dir);
-    if (d) {                                /* FileFsSizeInformation: read-only, so none free */
-        LONGLONG sz[3];
-        if (!volume_query(d, 3, sz, 24)) return FALSE;
-        if (avail) avail->QuadPart = 0;
-        if (free) free->QuadPart = 0;
-        if (total) total->QuadPart = (ULONGLONG)sz[0] * (ULONG)(sz[2] >> 32) * (ULONG)sz[2];
-        return TRUE;
-    }
-    MEMORYSTATUSEX ms;
-    ms.dwLength = sizeof(ms);
-    ULONGLONG f = GlobalMemoryStatusEx(&ms) ? ms.ullAvailPhys : 256ULL << 20;   /* drive C: lives in RAM */
-    if (avail) avail->QuadPart = f;
-    if (free) free->QuadPart = f;
-    if (total) total->QuadPart = GlobalMemoryStatusEx(&ms) ? ms.ullTotalPhys : 512ULL << 20;
+    WCHAR d = other_drive(dir);             /* FileFsFullSizeInformation: the volume's own (C: lives in RAM) */
+    LONGLONG sz[4];                         /* total, caller free, free (in units), sectors/unit | bytes/sector */
+    if (!volume_query(d ? d : 'C', 7, sz, 32)) return FALSE;
+    ULONGLONG unit = (ULONGLONG)(ULONG)sz[3] * (ULONG)(sz[3] >> 32);
+    if (avail) avail->QuadPart = sz[1] * unit;
+    if (free) free->QuadPart = sz[2] * unit;
+    if (total) total->QuadPart = sz[0] * unit;
     return TRUE;
 }
 

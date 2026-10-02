@@ -1558,6 +1558,25 @@ TLS already in the tree.
   runs an installer that has to replace a running program, restarts
   (`tools/novarun.py` and `tools/selftest.py` can restart NovaOS) and
   checks the replacement happened.  Hard links are still to come.
+- **Small visible bugs** (17.6): File Explorer's This PC is now a list of
+  the drives (C: and each mounted volume, D:, E:, ...) with their free
+  space and size, and opening `C:\` or the desktop's This PC shows it; the
+  up button and Backspace go from a drive's root back to This PC.  The
+  Terminal's `dir` and cmd's `dir` name the drive they list and give that
+  drive's own free space (cmd always asked C: before), and
+  `GetDiskFreeSpaceEx` asks each volume (`FileFsFullSizeInformation`),
+  C: included, whose free space is the free memory it lives in.
+  Notepad++'s tab bar and status bar drew black: it double-buffers them by
+  sending `WM_PRINT` into a memory DC, which `DefWindowProc` ignored.
+  `WM_PRINT` now erases, sends `WM_PRINTCLIENT` and prints the children;
+  the status bar, tab control and progress bar draw on `WM_PRINTCLIENT`;
+  and the tab control lets its parent draw `TCS_OWNERDRAWFIXED` tabs
+  (`WM_DRAWITEM`), sizes tabs from their text, icon and `TCM_SETPADDING`
+  (`TCM_SETITEMSIZE`'s width only with `TCS_FIXEDWIDTH`) and takes
+  `TCM_SETMINTABWIDTH`.  The nightly app corpus now boots with an empty
+  NTFS drive D: and keeps screenshots of `dir C:\` and `dir D:\` (each
+  with its own free space), This PC and Notepad++ (the last two compared
+  with references in `tests/reference/`).
 - Tested in QEMU: Neovim 0.10.4 and 0.11.4 open `t.txt`, take `ihello
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,

@@ -1233,7 +1233,8 @@ static UINT64 sys_query_volume_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
         UINT8 b[64];
         UINT32 need;
         memset(b, 0, sizeof(b));
-        UINT64 total = UINT64_C(1) << 20, avail = UINT64_C(1) << 19;   /* 4 KiB units: 4 GiB, 2 GiB free */
+        uint64_t total = 0, avail = 0, used = 0;          /* 4 KiB units: drive C: lives in RAM */
+        pmm_stats(&total, &avail, &used);
         /* or a mounted volume (drives D:, ...): read-only, full */
         const char *label = "NovaOS", *fsname = "FAT32";
         UINT64 bytes;

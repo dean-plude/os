@@ -100,6 +100,9 @@ named program or test demonstrates it.
 - ~~Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
   with a console of its own, file handles that share their position with
   the processes they are handed to~~ Done (Phase 17.3, `proctest`).
+- ~~Small visible bugs: This PC lists D:, E:, ...; `dir` reports each
+  drive's own free space; Notepad++'s status bar draws~~ Done (Phase
+  17.6, screenshots in the nightly app corpus).
 - Files: hard links.  ~~`MoveFileEx` pending renames carried out at boot,
   `RegNotifyChangeKeyValue` change events~~ Done (Phase 17.5, `filetest`
   and a restart in the core suite).
@@ -153,8 +156,9 @@ named program or test demonstrates it.
   permanent regression test, built for x64 and x86; `tools/pe_imports.py`
   shows what a new program needs before it is tried.
 - **Nightly app corpus** (done): `tools/appcorpus.py` runs ripgrep, fd, jq,
-  7-Zip, MinGit, Python, Node.js and Notepad++ every night and posts a
-  pass/fail table per program.
+  7-Zip, MinGit, Python, Node.js and Notepad++ every night, checks
+  NovaOS's own `dir` and This PC screens, and posts a pass/fail table per
+  program.
 
 ## Reality check
 
