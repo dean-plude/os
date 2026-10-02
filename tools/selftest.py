@@ -9,10 +9,11 @@ Suites:
             disptest, usptest (64- and 32-bit), battery, soundtest, and last
             "crash kernel" (a deliberate kernel fault must print a
             symbolized backtrace)
-  graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
-            tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
-            made by tools/ci/stage-graphics.sh: 7-Zip, the two downloads and
-            the four test programs
+  graphics  tools/d2dtest (Direct2D against a Skia reference image), then
+            installs "Mesa 3D" and "DXVK" with the App Store and runs
+            tools/gltest and tools/d3dtest; each 64- and 32-bit.  Needs --gfx
+            DIR, made by tools/ci/stage-graphics.sh: 7-Zip, the two downloads,
+            the six test programs and d2dtest's reference image
 
 Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
@@ -81,6 +82,10 @@ CORE = [
 # The graphics boot: 7-Zip in C:\Programs\7-Zip and the Mesa and DXVK
 # downloads in C:\Downloads, so the Store's button installs without a network
 GRAPHICS = [
+    Test('d2dtest x64', r'C:\Tests\d2dtest.exe 4', [r'd2dtest: \d+ passed, 0 failed', r'ok   scene matches the Skia reference'],
+         shot=r'Direct2D scene on screen'),
+    Test('d2dtest x86', r'C:\Tests\d2dtest32.exe 4', [r'd2dtest: \d+ passed, 0 failed', r'ok   scene matches the Skia reference'],
+         shot=r'Direct2D scene on screen'),
     Test('install Mesa 3D', 'store install Mesa 3D', store='Mesa 3D', timeout=1200),
     Test('install DXVK', 'store install DXVK', store='DXVK', timeout=600),
     Test('gltest x64', r'C:\Tests\gltest.exe 6', [r'gltest: 14 passed, 0 failed'], timeout=600, shot=r'GLSL '),

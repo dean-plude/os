@@ -89,7 +89,7 @@ DLLS = [
     ('normaliz', ['user32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFE10000000),
     ('ncrypt',   ['kernel32', 'ntdll'],           0x7FFE20000000),
     ('avicap32', ['kernel32', 'ntdll'],           0x7FFE30000000),
-    ('d2d1',     ['msvcrt', 'kernel32', 'ntdll'], 0x7FFE40000000),
+    ('d2d1',     ['gdi32', 'user32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFE40000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}

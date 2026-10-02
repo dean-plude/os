@@ -83,7 +83,7 @@ jobs:
       - name: Stage 7-Zip, the downloads and the test programs
         run: tools/ci/stage-graphics.sh gfx gfx-cache
 
-      - name: Install Mesa and DXVK from the App Store, run gltest and d3dtest
+      - name: Run d2dtest, install Mesa and DXVK from the App Store, run gltest and d3dtest
         run: |
           python3 tools/selftest.py --suite graphics --gfx gfx --img build/nova.img --out graphics-out \
             --junit graphics-out/junit.xml --summary "$GITHUB_STEP_SUMMARY"

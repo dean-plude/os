@@ -109,6 +109,11 @@ every part, phase by phase.
   Arabic, Hebrew and the Indic scripts join, reorder and run right to left.
   Arabic and Devanagari draw with Noto Sans; GDI falls back to them by
   script.
+- **2D drawing**: Direct2D (`d2d1.dll`) draws in software: geometries
+  (rectangles, ellipses, paths with Béziers and arcs, groups, transforms,
+  combining, widening, tessellation), strokes with caps, joins and dashes,
+  solid, gradient and bitmap brushes, layers and clips, on HWND, DC and
+  bitmap render targets.  Text goes through DirectWrite's interfaces.
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions; registry saved to disk;
   COM in-process servers; drag and drop; a shared clipboard; `.lnk`
@@ -185,11 +190,13 @@ Rebuild the ISO from a fresh build with
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
   tones played), and last `crash kernel`, a deliberate kernel fault whose
   serial log must show a backtrace with function names.
-- **Graphics tests**: installs Mesa 3D and DXVK with the App Store
+- **Graphics tests**: `tools/d2dtest` (Direct2D geometry answers, and a
+  scene that must match the reference `tools/d2dtest/reference.py` draws
+  with Skia), then installs Mesa 3D and DXVK with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
-  stages the downloads), then runs `tools/gltest` (14 tests) and
-  `tools/d3dtest` (17 tests), 64- and 32-bit, with a screenshot of each
-  while it draws.
+  stages the downloads) and runs `tools/gltest` (14 tests) and
+  `tools/d3dtest` (17 tests); each 64- and 32-bit, with a screenshot of
+  each while it draws.
 
 A failing test fails its check; each run's summary has a table of results,
 and the serial logs and screenshots are kept as artifacts.  Run the same
@@ -219,9 +226,10 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   (not in this repository), driven by a QEMU harness that types, clicks and takes screenshots.
 - **On the host**: `tools/pe_imports.py PROGRAM.exe` lists the imports a
   Windows program needs that NovaOS's DLLs lack; `tools/msitest/` exercises
-  the Windows Installer's package readers.  `tools/gltest/` and
-  `tools/d3dtest/` are OpenGL and Direct3D 9/11 test programs, built with
-  MinGW, for checking Mesa and DXVK on NovaOS.
+  the Windows Installer's package readers.  `tools/gltest/`,
+  `tools/d3dtest/` and `tools/d2dtest/` are OpenGL, Direct3D 9/11 and
+  Direct2D test programs, built with MinGW, for checking Mesa, DXVK and
+  `d2d1.dll` on NovaOS.
 - **Debugging**: the serial log (COM1) has every kernel message; the
   Terminal's `dmesg` shows it, and `trace NAME` logs a program's failing
   system calls.  A kernel fault, panic or failed assertion prints a

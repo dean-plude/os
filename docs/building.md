@@ -196,7 +196,7 @@ sudo apt install acpica-tools          # iasl, for tests/acpi/battery.asl
 python3 tools/selftest.py              # the core suite; exit status = failures
 python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 
-# the graphics suite: 7-Zip, Mesa and DXVK downloads, gltest/d3dtest builds
+# the graphics suite: 7-Zip, Mesa and DXVK downloads, gltest/d3dtest/d2dtest builds
 sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
 tools/ci/stage-graphics.sh /tmp/gfx
 python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
@@ -207,7 +207,12 @@ The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
 tone`, `soundtest wasapi`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
-`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
+`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite first runs
+`d2dtest`, x64 and x86: it checks geometry computations, draws a scene into
+a DC render target and compares it with `d2dref.bmp`, the image
+`tools/d2dtest/reference.py` draws with Skia (`pip install skia-python`;
+re-run it when the scene changes), then shows the scene in a window.  It
+then types `store
 install Mesa 3D` and `store install DXVK` (the archives are already in
 `C:\Downloads`, so the App Store installs without a network) and then runs
 `gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
