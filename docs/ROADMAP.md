@@ -102,7 +102,10 @@ named program or test demonstrates it.
   the processes they are handed to.
 - Files: hard links, `MoveFileEx` pending renames carried out at boot,
   `RegNotifyChangeKeyValue` change events.
-- Interactive MSYS2 `sh` sessions (only `sh -c` and scripts are tested).
+- ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
+  is waitable and the Terminal runs full-screen programs (Phase 17.2).
+- Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
+  Windows Terminal-style hosts) exist only as functions that fail.
 - Move files, the registry, process creation and the console off the big
   kernel lock.
 - Security: enforce tokens and ACLs on objects (`AccessCheck` already

@@ -244,13 +244,13 @@ def main():
                 text = c[6:].replace('\\n', '\n')
                 for i, part in enumerate(text.split('\\e')):
                     if i:
-                        qmp.key('esc')
+                        nova.qmp.key('esc')
                         time.sleep(0.1)
-                    qmp.type(part)
+                    nova.qmp.type(part)
                 continue
             if c.startswith('!done '):      # wait for the running command to end
                 t0 = time.time()
-                got, ok = sr.wait('[TERM-DONE]', float(c[6:]))
+                got, ok = nova.sr.wait('[TERM-DONE]', float(c[6:]))
                 print(got.replace('\n[TERM-DONE]\n', '').rstrip(), flush=True)
                 print(f'### {"done" if ok else "TIMEOUT"} in {time.time() - t0:.1f}s', flush=True)
                 continue

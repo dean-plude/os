@@ -295,6 +295,16 @@ installers, Java, .NET) and test scripts such as `cmdtest.bat` for
 `cmd.exe` are tried by hand with `tools/novarun.py`: copy a program onto
 the data disk with `--put` and type its commands.
 
+Full-screen and interactive programs (Neovim, an MSYS2 `sh` session) are
+driven with `!type`, which types without waiting for the command to end
+(`\n` is Enter, `\e` Esc), and `!done N`, which waits up to N seconds for
+it to end:
+
+```bash
+python3 tools/novarun.py --put 'nvim-win64=C:\Apps\nvim' 'cd C:\Apps\nvim\bin' \
+    '!type nvim --clean t.txt\n' '!wait 40' '!type ihello\e:wq\n' '!done 60' 'type t.txt'
+```
+
 ### Sound
 
 `soundtest` plays sine tones through each path.  To check what came out,
@@ -335,7 +345,8 @@ python3 tools/novarun.py --net --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' \
 - **Program crashes** are logged with the faulting module and offset, the
   process's exit code, and `OutputDebugString` output.
 - **`trace NAME`** in the Terminal logs the failing system calls (with file
-  names) of the program called NAME; `trace off` stops it.
+  names) of the program called NAME, each with its process id; `trace
+  +NAME` logs every call, not only the failing ones; `trace off` stops it.
 
 ### GDB
 
