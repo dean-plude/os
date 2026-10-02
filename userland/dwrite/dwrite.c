@@ -1112,10 +1112,8 @@ static HRESULT STDMETHODCALLTYPE fa_unregister_file_loader(Factory *f, void *l) 
 static HRESULT STDMETHODCALLTYPE fa_text_format(Factory *f, const WCHAR *family, void *coll, UINT32 weight, UINT32 style,
                                                 UINT32 stretch, float size, const WCHAR *locale, void **out)
 {
-    (void)f; (void)coll; (void)weight; (void)style; (void)stretch; (void)size; (void)locale;
-    dw_log("unimplemented IDWriteFactory::CreateTextFormat(%S)", family);
-    *out = NULL;
-    return E_NOTIMPL;
+    (void)f;
+    return text_format_create(family, coll, weight, style, stretch, size, locale, out);
 }
 static HRESULT STDMETHODCALLTYPE fa_typography(Factory *f, void **out)
 {
@@ -1127,18 +1125,15 @@ static HRESULT STDMETHODCALLTYPE fa_typography(Factory *f, void **out)
 static HRESULT STDMETHODCALLTYPE fa_gdi_interop(Factory *f, void **out) { (void)f; *out = &g_gdi_interop; return S_OK; }
 static HRESULT STDMETHODCALLTYPE fa_text_layout(Factory *f, const WCHAR *s, UINT32 n, void *fmt, float w, float h, void **out)
 {
-    (void)f; (void)s; (void)n; (void)fmt; (void)w; (void)h;
-    dw_log("unimplemented IDWriteFactory::CreateTextLayout");
-    *out = NULL;
-    return E_NOTIMPL;
+    (void)f;
+    return text_layout_create(s, n, fmt, w, h, out);
 }
+/* GDI-compatible layouts are laid out like ideal ones */
 static HRESULT STDMETHODCALLTYPE fa_gdi_text_layout(Factory *f, const WCHAR *s, UINT32 n, void *fmt, float w, float h,
                                                     float ppd, const DW_MATRIX *m, BOOL natural, void **out)
 {
-    (void)f; (void)s; (void)n; (void)fmt; (void)w; (void)h; (void)ppd; (void)m; (void)natural;
-    dw_log("unimplemented IDWriteFactory::CreateGdiCompatibleTextLayout");
-    *out = NULL;
-    return E_NOTIMPL;
+    (void)f; (void)ppd; (void)m; (void)natural;
+    return text_layout_create(s, n, fmt, w, h, out);
 }
 static HRESULT STDMETHODCALLTYPE fa_ellipsis(Factory *f, void *fmt, void **out)
 {

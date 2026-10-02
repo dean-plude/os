@@ -189,5 +189,9 @@ typedef struct FontFace {
 HRESULT font_file_data(FontFile *f, FontData **out);
 HRESULT font_face_create(FontFile *file, UINT32 index, UINT32 sims, FontFace **out);
 FontFace *font_face_from(void *iface);   /* NULL unless one of ours */
+/* layout.c */
+HRESULT text_format_create(const WCHAR *family, void *coll, UINT32 weight, UINT32 style, UINT32 stretch, float size,
+                           const WCHAR *locale, void **out);
+HRESULT text_layout_create(const WCHAR *s, UINT32 n, void *fmt, float w, float h, void **out);
 HRESULT glyph_run_analysis_create(const DW_GLYPH_RUN *run, float ppd, const DW_MATRIX *m, UINT32 mode,
                                   float ox, float oy, void **out);

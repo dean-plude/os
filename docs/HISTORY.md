@@ -1373,8 +1373,12 @@ browser is run as shipped; everything below is in NovaOS.
   font families, fonts, font faces (metrics, glyph indices, advances,
   kerning, outlines into a geometry sink, font tables), GDI interop and
   glyph run analysis (aliased and ClearType alpha textures).  Fonts are
-  read with stb_truetype (public domain).  Text formats and layouts are not
-  there yet; Gecko does its own layout and only needs the parts above.
+  read with stb_truetype (public domain).  Text formats and text layouts
+  (`layout.c`, written in the Phase 19 work for Direct2D's `DrawText`)
+  break lines, handle bidirectional text, carry per-range font
+  attributes, and answer metrics and hit tests.  They shape with
+  HarfBuzz from `novatext.dll` when it is present, and with the font's
+  plain glyphs and advances otherwise.
 - **Kernel**: `NtQuerySection`, `MEM_RESET`/`MEM_RESET_UNDO`, a
   per-process handle table of 4096 (Gecko keeps far more than the old
   256 open), and `C:\AppData\Roaming`, `Local`, `LocalLow` and
