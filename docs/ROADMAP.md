@@ -120,8 +120,10 @@ named program or test demonstrates it.
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,
   control-method power buttons and `_PTS`/`_WAK`.  Still to do: the lid
   switch, thermal zones, wake devices (USB keyboards), a real SCI
-  interrupt and PCI interrupt routing from `_PRT`; display modes after S3
-  on adapters other than the Bochs/QEMU one; HPET or TSC-deadline timers.
+  interrupt and PCI interrupt routing from `_PRT`; HPET or TSC-deadline
+  timers.  (Display modes after S3 are set again on every adapter NovaOS
+  drives: the VBE ones, QXL, virtio-vga, VMware SVGA and Cirrus.  Real
+  GPUs have no driver yet.)
 - Boot and test on real hardware, not only QEMU.
 
 ---
