@@ -10,7 +10,10 @@
  *   5. handles: threads create and close events as fast as they can;
  *   6. a system call writing into memory that another thread frees at the
  *      same time: the kernel must fail the call, not crash;
- *   7. throughput: files (open, write, read back, close) and the registry
+ *   7. processes and the console: threads start copies of this program
+ *      side by side ("smpstress child N" prints a line and exits with N)
+ *      and check each one's exit code;
+ *   8. throughput: files (open, write, read back, close) and the registry
  *      (open a key, set and read a value, close), each thread on its own
  *      file or key, by one thread and then by one per CPU.  With
  *      "smpstress scaling X" it fails unless both scale by X or more.
@@ -252,6 +255,31 @@ static int scaling(const char *name, LPTHREAD_START_ROUTINE fn, int cpus, double
     return !(want > 0 && x < want);
 }
 
+/* 7: start children, each printing to the shared console */
+#define CHILDREN 6
+static char g_self[MAX_PATH];
+
+static DWORD WINAPI spawn_worker(LPVOID arg)
+{
+    int id = (int)(ULONG_PTR)arg;
+    for (int i = 0; i < CHILDREN; i++) {
+        char cmd[MAX_PATH + 32];
+        int code = id * 100 + i + 1;
+        wsprintfA(cmd, "\"%s\" child %d", g_self, code);
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        memset(&si, 0, sizeof(si));
+        si.cb = sizeof(si);
+        if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) { InterlockedIncrement(&g_bad); continue; }
+        DWORD got = 0;
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        if (!GetExitCodeProcess(pi.hProcess, &got) || got != (DWORD)code) InterlockedIncrement(&g_bad);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    return 0;
+}
+
 static void run(const char *name, LPTHREAD_START_ROUTINE fn, int n, void **args)
 {
     HANDLE h[64];
@@ -266,6 +294,11 @@ int main(int argc, char **argv)
 {
     /* "smpstress scaling X": also require X times one thread's file and
      * registry throughput; "smpstress throughput [X]": only measure that */
+    if (argc > 2 && !strcmp(argv[1], "child")) {               /* test 7's children */
+        int code = atoi(argv[2]);
+        printf("    child %d (process %lu) here\n", code, GetCurrentProcessId());
+        return code;
+    }
     BOOL only_tp = argc > 1 && !strcmp(argv[1], "throughput");
     double want = argc > 2 && (only_tp || !strcmp(argv[1], "scaling")) ? atof(argv[2]) : 0;
     SYSTEM_INFO si;
@@ -329,6 +362,12 @@ int main(int argc, char **argv)
     CloseHandle(fr);
     printf("  (%ld copies landed, %ld refused: the page was gone)\n", g_race_ok, g_race_fault);
     if (g_race_ok + g_race_fault == 3L * ITER) pass++; else fail++;
+
+    GetModuleFileNameA(NULL, g_self, sizeof(g_self));
+    bad0 = g_bad;
+    int spawners = g_threads / 2;
+    run("processes", spawn_worker, spawners, NULL);
+    if (g_bad == bad0) pass++; else { fail++; printf("  processes: %ld of %d failed\n", g_bad - bad0, spawners * CHILDREN); }
 
 throughput:
     CreateDirectoryA("C:\\Temp", NULL);

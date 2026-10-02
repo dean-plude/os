@@ -109,12 +109,18 @@ void um_lock_free(UINT32 num)
  *                               queues) and the process lock;
  *   files:                      FsLock (ramfs, file handles), which
  *                               DesktopLock includes; the big lock again
- *                               for pipes, the console and reading a
- *                               mounted volume (its drivers want it);
- *   the registry:               g_reg (um_registry.c).
+ *                               for pipes and reading a mounted volume
+ *                               (its drivers want it);
+ *   the console:                its input queue's spinlock and its output
+ *                               ring's lock (um_console.c);
+ *   the registry:               g_reg (um_registry.c);
+ *   starting processes and threads: DesktopLock (the program's files,
+ *                               loading), the process locks, plock (the
+ *                               process table) and the scheduler; the big
+ *                               lock for a new console's Terminal window.
  * User memory is reached through CopyFromUser/CopyToUser, which survive
- * the memory disappearing meanwhile.  Anything else (processes, sections,
- * named pipes' creation, the loader...) keeps the big lock. */
+ * the memory disappearing meanwhile.  Anything else (sections, named
+ * pipes' creation, debugging...) keeps the big lock. */
 static void um_lock_free_init(void)
 {
     static const UINT32 list[] = {
@@ -144,6 +150,7 @@ static void um_lock_free_init(void)
         SYSCALL_NtSetValueKey, SYSCALL_NtQueryValueKey, SYSCALL_NtEnumerateValueKey,
         SYSCALL_NtDeleteValueKey, SYSCALL_NtEnumerateKey, SYSCALL_NtQueryKey,
         SYSCALL_NtFlushKey, SYSCALL_NtRenameKey, SYSCALL_NtNotifyChangeKey,
+        SYSCALL_NtNovaConsole, SYSCALL_NtNovaCreateProcess, SYSCALL_NtCreateThreadEx,
     };
     for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) um_lock_free(list[i]);
 }
@@ -889,9 +896,7 @@ static UINT64 sys_read_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (h->kind == H_CON_IN) {
         FsUnlockShared();
         char tmp[512];
-        bkl_acquire();
-        int n = um_console_read(p->con, tmp, len < sizeof(tmp) ? (int)len : (int)sizeof(tmp), p);
-        bkl_release();
+        int n = um_console_read(p->con, tmp, len < sizeof(tmp) ? (int)len : (int)sizeof(tmp), p);   /* (in_lock) */
         if (n < 0) return iosb(iosb_ptr, ST_END_OF_FILE, 0);
         if (n && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)buf, tmp, (size_t)n))) return UM_STATUS_ACCESS_VIOLATION;
         return iosb(iosb_ptr, ST_SUCCESS, (UINT64)n);
@@ -971,9 +976,7 @@ static UINT64 sys_write_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             break;
         }
         if (h->kind == H_CON_OUT) {
-            bkl_acquire();
-            int w = um_console_write(p->con, tmp, (int)chunk);
-            bkl_release();
+            int w = um_console_write(p->con, tmp, (int)chunk);     /* (its own lock) */
             done += (UINT64)w;
             if ((UINT32)w < chunk) break;                        /* killed */
         } else {
@@ -1887,7 +1890,9 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     UmConsole *con = (flags & NCP_NO_CONSOLE) ? NULL : p->con;
     int con_wnd = 0;                                /* CREATE_NEW_CONSOLE: console programs get a window */
     if (!st && (flags & NCP_NEW_CONSOLE) && !(flags & NCP_NO_CONSOLE) && um_pe_subsystem(exe) == 3) {
+        bkl_acquire();                              /* (the Terminal's state: under the big lock) */
         con_wnd = TerminalConsoleNew(image, cwd, &con);
+        bkl_release();
         if (!con_wnd) st = ST_NO_MEMORY;
     }
     if (!st) {
@@ -1929,7 +1934,7 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     }
     um_unlock_excl(&p->lock);
     if (pinned) { RamfsUnpin(exe); RamfsUnref(cwd); }
-    if (con_wnd && st) TerminalConsoleAdopt(con_wnd, NULL);   /* not started: close the window */
+    if (con_wnd && st) { bkl_acquire(); TerminalConsoleAdopt(con_wnd, NULL); bkl_release(); }   /* not started: close the window */
     DesktopUnlock();
     kfree(cmd);
     kfree(env);
@@ -1947,7 +1952,9 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     ob_unlock(s);
     if (con_wnd) {                                              /* the window holds the process */
         DesktopLock();
+        bkl_acquire();
         if (!TerminalConsoleAdopt(con_wnd, c)) UmKill(c, 1);    /* (closed already) */
+        bkl_release();
         DesktopUnlock();
     }
     UINT64 hp = um_handle_new_object(p, o);
