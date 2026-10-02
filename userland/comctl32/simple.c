@@ -63,6 +63,7 @@ LRESULT CALLBACK ProgressProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_NCDESTROY: free(p); ctl_set(h, NULL); return 0;
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); prog_paint(h, p, dc); EndPaint(h, &ps); return 0; }
+    case WM_PRINTCLIENT: prog_paint(h, p, (HDC)wp); return 0;
     case WM_TIMER: p->mpos += 4; InvalidateRect(h, NULL, FALSE); return 0;
     case PBM_SETRANGE: { LRESULT o = MAKELONG(p->lo, p->hi); p->lo = LOWORD(lp); p->hi = HIWORD(lp); if (p->hi <= p->lo) p->hi = p->lo + 1; prog_set(h, p, p->pos); InvalidateRect(h, NULL, FALSE); return o; }
     case PBM_SETRANGE32: { LRESULT o = MAKELONG(p->lo, p->hi); p->lo = (int)wp; p->hi = (int)lp; if (p->hi <= p->lo) p->hi = p->lo + 1; prog_set(h, p, p->pos); InvalidateRect(h, NULL, FALSE); return o; }
@@ -199,6 +200,7 @@ LRESULT CALLBACK StatusProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_SIZE: stat_layout(h, s); InvalidateRect(h, NULL, FALSE); return 0;
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); stat_paint(h, s, dc); EndPaint(h, &ps); return 0; }
+    case WM_PRINTCLIENT: stat_paint(h, s, (HDC)wp); return 0;
     case WM_SETFONT: s->font = (HFONT)wp; if (lp) InvalidateRect(h, NULL, TRUE); return 0;
     case WM_GETFONT: return (LRESULT)s->font;
     case WM_SETTEXT: set_str(&s->text[0], (const WCHAR *)lp, 1); InvalidateRect(h, NULL, FALSE); return TRUE;
@@ -547,22 +549,78 @@ LRESULT CALLBACK TrackbarProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 /* =======================================================================
  * Tab control
  * ======================================================================= */
-typedef struct { int n; WCHAR *text[64]; LPARAM param[64]; int image[64]; int cur, focus; HFONT font; HIMAGELIST il; int fixw, fixh; } Tab;
+typedef struct { int n; WCHAR *text[64]; LPARAM param[64]; int image[64]; int cur, focus; HFONT font; HIMAGELIST il; int fixw, fixh, padx, pady, minw; } Tab;
 
-static int tab_row_h(Tab *t) { return t->fixh ? t->fixh : cc_font_h(t->font) + 10; }
+/* The image list's icon size (0 without one) */
+static void tab_icon(Tab *t, int *cx, int *cy)
+{
+    *cx = *cy = 0;
+    if (t->il) ImageList_GetIconSize(t->il, cx, cy);
+}
+
+static int tab_row_h(Tab *t)
+{
+    if (t->fixh) return t->fixh;
+    int ix, iy, fh = cc_font_h(t->font);
+    tab_icon(t, &ix, &iy);
+    return (iy > fh ? iy : fh) + 2 * t->pady + 4;
+}
 
 static void tab_rect(HWND h, Tab *t, int i, RECT *r)
 {
     HDC dc = GetDC(NULL);
     HGDIOBJ of = SelectObject(dc, wfont(h, t->font));
-    int x = 2;
+    int x = 2, fixed = (GetWindowLongW(h, GWL_STYLE) & TCS_FIXEDWIDTH) && t->fixw;   /* TCM_SETITEMSIZE's width */
     for (int k = 0; k <= i && k < t->n; k++) {
-        int w = t->fixw ? t->fixw : cc_text_w(dc, t->text[k] ? t->text[k] : L"", -1) + 20;
+        int ix, iy;                     /* text, the image list's icon width and padding, padding on both sides */
+        tab_icon(t, &ix, &iy);
+        int w = fixed ? t->fixw : cc_text_w(dc, t->text[k] ? t->text[k] : L"", -1) + 2 * t->padx +
+                                    (ix ? ix + t->padx : 0);
+        if (!fixed && w < t->minw) w = t->minw;
         if (k == i) { SetRect(r, x, 2, x + w, 2 + tab_row_h(t)); break; }
         x += w;
     }
     SelectObject(dc, of);
     ReleaseDC(NULL, dc);
+}
+
+/* The tabs and the body below them; TCS_OWNERDRAWFIXED: the parent draws
+ * each tab (WM_DRAWITEM, ODT_TAB) */
+static void tab_paint(HWND h, Tab *t, HDC dc)
+{
+    RECT c; GetClientRect(h, &c);
+    HBRUSH bg = (HBRUSH)SendMessageW(GetParent(h), WM_CTLCOLORDLG, (WPARAM)dc, (LPARAM)h);
+    if (bg) FillRect(dc, &c, bg); else cc_fill(dc, &c, GetSysColor(COLOR_3DFACE));
+    int rh = tab_row_h(t);
+    RECT body = { c.left, c.top + rh + 1, c.right, c.bottom };
+    cc_fill(dc, &body, 0xFFFFFF);
+    cc_frame(dc, &body, 0xD9D9D9);
+    HGDIOBJ of = SelectObject(dc, wfont(h, t->font));
+    SetBkMode(dc, TRANSPARENT);
+    int owner = (GetWindowLongW(h, GWL_STYLE) & TCS_OWNERDRAWFIXED) != 0;
+    for (int i = 0; i < t->n; i++) {
+        RECT r;
+        tab_rect(h, t, i, &r);
+        int sel = i == t->cur;
+        if (owner) {
+            DRAWITEMSTRUCT di;
+            memset(&di, 0, sizeof(di));
+            di.CtlType = ODT_TAB; di.CtlID = (UINT)GetDlgCtrlID(h); di.itemID = (UINT)i;
+            di.itemAction = ODA_DRAWENTIRE; di.itemState = sel ? ODS_SELECTED : 0;
+            di.hwndItem = h; di.hDC = dc; di.rcItem = r; di.itemData = (ULONG_PTR)t->param[i];
+            SendMessageW(GetParent(h), WM_DRAWITEM, di.CtlID, (LPARAM)&di);
+            continue;
+        }
+        if (sel) { r.top -= 2; r.bottom += 1; }
+        cc_fill(dc, &r, sel ? 0xFFFFFF : 0xF0F0F0);
+        RECT fr = r;
+        if (sel) fr.bottom -= 1;
+        cc_frame(dc, &fr, 0xD9D9D9);
+        if (sel) { RECT cover = { r.left + 1, r.bottom - 2, r.right - 1, r.bottom }; cc_fill(dc, &cover, 0xFFFFFF); }
+        SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
+        DrawTextW(dc, t->text[i] ? t->text[i] : L"", -1, &r, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_HIDEPREFIX);
+    }
+    SelectObject(dc, of);
 }
 
 LRESULT CALLBACK TabProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
@@ -574,6 +632,7 @@ LRESULT CALLBACK TabProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         t = calloc(1, sizeof(Tab));
         if (!t) return FALSE;
         t->cur = -1;
+        t->padx = 6; t->pady = 3;
         ctl_set(h, t);
         return DefWindowProcW(h, msg, wp, lp);
     case WM_NCDESTROY:
@@ -582,35 +641,8 @@ LRESULT CALLBACK TabProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         ctl_set(h, NULL);
         return 0;
     case WM_ERASEBKGND: return 1;
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC dc = BeginPaint(h, &ps);
-        RECT c; GetClientRect(h, &c);
-        HBRUSH bg = (HBRUSH)SendMessageW(GetParent(h), WM_CTLCOLORDLG, (WPARAM)dc, (LPARAM)h);
-        if (bg) FillRect(dc, &c, bg); else cc_fill(dc, &c, GetSysColor(COLOR_3DFACE));
-        int rh = tab_row_h(t);
-        RECT body = { c.left, c.top + rh + 1, c.right, c.bottom };
-        cc_fill(dc, &body, 0xFFFFFF);
-        cc_frame(dc, &body, 0xD9D9D9);
-        HGDIOBJ of = SelectObject(dc, wfont(h, t->font));
-        SetBkMode(dc, TRANSPARENT);
-        for (int i = 0; i < t->n; i++) {
-            RECT r;
-            tab_rect(h, t, i, &r);
-            int sel = i == t->cur;
-            if (sel) { r.top -= 2; r.bottom += 1; }
-            cc_fill(dc, &r, sel ? 0xFFFFFF : 0xF0F0F0);
-            RECT fr = r;
-            if (sel) fr.bottom -= 1;
-            cc_frame(dc, &fr, 0xD9D9D9);
-            if (sel) { RECT cover = { r.left + 1, r.bottom - 2, r.right - 1, r.bottom }; cc_fill(dc, &cover, 0xFFFFFF); }
-            SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
-            DrawTextW(dc, t->text[i] ? t->text[i] : L"", -1, &r, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_HIDEPREFIX);
-        }
-        SelectObject(dc, of);
-        EndPaint(h, &ps);
-        return 0;
-    }
+    case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); tab_paint(h, t, dc); EndPaint(h, &ps); return 0; }
+    case WM_PRINTCLIENT: tab_paint(h, t, (HDC)wp); return 0;
     case WM_SETFONT: t->font = (HFONT)wp; if (lp) InvalidateRect(h, NULL, TRUE); return 0;
     case WM_GETFONT: return (LRESULT)t->font;
     case WM_GETDLGCODE: return DLGC_WANTARROWS | DLGC_WANTCHARS;
@@ -698,6 +730,8 @@ LRESULT CALLBACK TabProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case TCM_GETROWCOUNT: return 1;
     case TCM_SETITEMSIZE: { LRESULT o = MAKELONG(t->fixw, t->fixh); t->fixw = LOWORD(lp); t->fixh = HIWORD(lp); return o; }
     case TCM_SETIMAGELIST: { HIMAGELIST o = t->il; t->il = (HIMAGELIST)lp; return (LRESULT)o; }
+    case TCM_SETMINTABWIDTH: { int o = t->minw; t->minw = (int)lp < 0 ? 0 : (int)lp; return o; }
+    case TCM_SETPADDING: t->padx = (short)LOWORD(lp); t->pady = (short)HIWORD(lp); InvalidateRect(h, NULL, TRUE); return 0;
     case TCM_GETIMAGELIST: return (LRESULT)t->il;
     case TCM_HITTEST: {
         TCHITTESTINFO *hi = (TCHITTESTINFO *)lp;

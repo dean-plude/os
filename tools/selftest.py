@@ -5,9 +5,10 @@
                       [--only NAME,...] [--junit FILE] [--summary FILE]
 
 Suites:
-  core      (default) apitest, abitest, filetest, pipetest, proctest,
-            guitest auto, disptest, comtest, tlbtest (64- and 32-bit),
-            cppeh, battery, soundtest, and last "crash kernel" (a
+  core      (default) apitest, abitest, filetest, pipetest, proctest, sectest,
+            acltest, guitest auto, disptest, comtest, tlbtest (64- and
+            32-bit), cppeh, battery, soundtest, an install finished by a
+            restart, and last "crash kernel" (a
             deliberate kernel fault must print a symbolized backtrace)
   graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
             tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
@@ -35,10 +36,12 @@ class Test:
     wait for the App Store's "[STORE] @store: Installed" line.  @shot: take
     the screenshot 2 s after the output matches this regex (while the
     program draws).  @crash: the command halts the kernel on purpose; the
-    test passes when the serial log then shows @expect (it runs last)."""
-    def __init__(self, name, cmd, expect=(), timeout=180, check=None, store=None, shot=None, crash=False):
+    test passes when the serial log then shows @expect (it runs last).
+    @reboot: restart NovaOS ("shutdown /r", drive C: kept) and pass when
+    the new boot's log shows @expect; later tests run in that boot."""
+    def __init__(self, name, cmd, expect=(), timeout=180, check=None, store=None, shot=None, crash=False, reboot=False):
         self.name, self.cmd, self.expect, self.timeout, self.check = name, cmd, expect, timeout, check
-        self.store, self.shot, self.crash = store, shot, crash
+        self.store, self.shot, self.crash, self.reboot = store, shot, crash, reboot
 
 
 def tones(*hz):
@@ -63,6 +66,9 @@ CORE = [
     Test('filetest', 'filetest', [r'filetest: \d+ passed, 0 failed']),
     Test('pipetest', 'pipetest', [r'pipetest: \d+ passed, 0 failed']),
     Test('proctest', 'proctest', [r'proctest: \d+ passed, 0 failed']),
+    Test('sectest', 'sectest', [r'sectest: \d+ passed, 0 failed']),
+    Test('acltest', 'acltest', [r'acltest: \d+ passed, 0 failed']),
+    Test('acltest x86', r'C:\Programs\x86\acltest.exe', [r'acltest: \d+ passed, 0 failed']),
     Test('guitest', 'guitest auto', [r'guitest: \d+ passed, 0 failed']),
     Test('disptest', 'disptest', [r'\d+ passed, 0 failed']),
     Test('comtest', 'comtest', [r'comtest: \d+ passed, 0 failed']),
@@ -73,6 +79,10 @@ CORE = [
                                 r'SystemBatteryState: present 1, AC 0, charging 0, discharging 1']),
     Test('soundtest tone', 'soundtest tone 440 1000', [r'played \d+ samples']),
     Test('soundtest wasapi', 'soundtest wasapi 660 1000', [r'played \d+ frames'], check=tones(440, 660)),
+    # an installer replacing a running program: done at the next boot (MoveFileEx DELAY_UNTIL_REBOOT)
+    Test('install in use', 'filetest install', [r'filetest install: \d+ passed, 0 failed']),
+    Test('restart', 'shutdown /r', [r'Pending file operations at boot: 2 done, 0 failed'], reboot=True),
+    Test('installed', 'filetest installed', [r'filetest installed: \d+ passed, 0 failed']),
     # last: crash.exe asks the kernel to fault, which must print a backtrace with names
     Test('kernel backtrace', 'crash kernel', [r'Backtrace:\r?\n  #0 [0-9a-f]{16}  KeCrashTestFault\+0x[0-9a-f]+\r?\n'
                                               r'  #1 [0-9a-f]{16}  KeCrashTest\+0x[0-9a-f]+\r?\n'
@@ -186,11 +196,19 @@ def main():
                 nova.qmp.type(t.cmd + '\n')
                 out, ok = nova.sr.wait('KERNEL PAGE FAULT', t.timeout)
                 out += nova.sr.wait('halting', 5)[0]
+            elif t.reboot:
+                try:
+                    out, ok = nova.reboot(t.timeout), True
+                except RuntimeError as e:
+                    out, ok = str(e), False
             else:
                 out, ok = nova.run(t.cmd, t.timeout, shot=(t.shot, png) if t.shot else None)
             if t.crash:
                 miss = [e for e in t.expect if not re.search(e, out)]
                 why = None if ok and not miss else ('no kernel fault' if not ok else 'no symbolized backtrace')
+            elif t.reboot:
+                miss = [e for e in t.expect if not re.search(e, out)]
+                why = 'did not boot again' if not ok else f'missing "{miss[0]}"' if miss else None
             elif t.store:
                 why, out = store_verdict(nova, t, out)
             else:

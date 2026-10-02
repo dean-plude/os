@@ -45,7 +45,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **Python 3.14** | NuGet package | `-c`, a hashlib/JSON/regex/threads/subprocess test script. |
 | **Mesa 3D 24.2.4** (mesa-dist-win) | `opengl32.dll` (llvmpipe) and the Vulkan driver (lavapipe), x64 and x86, from the App Store | OpenGL 4.5: `tools/gltest` (pixel formats, immediate mode, GLSL, read-back, animated `SwapBuffers`) passes as a 64-bit and a 32-bit program. |
 | **DXVK 2.5.3** | `d3d8`, `d3d9`, `d3d10core`, `d3d11`, `dxgi`, x64 and x86, from the App Store, on Mesa's Vulkan and NovaOS's own `vulkan-1.dll` | Direct3D 9 and 11: `tools/d3dtest` (device creation, a D3D9 triangle, D3D11 clear, read-back, animated `Present` in a window) passes as a 64-bit and a 32-bit program. |
-| **Notepad++ 8.7.9** (x64 portable) | Scintilla editor, static MSVC C++ runtime | Opens with its menus, toolbar and editor, and takes typing. |
+| **Notepad++ 8.7.9** (x64 portable) | Scintilla editor, static MSVC C++ runtime | Opens with its menus, toolbar, tab bar, editor and status bar, and takes typing. |
 | **ripgrep, fd, bat, jq, fzf** | Rust (MSVC), C (MinGW), Go | Searching, walking folders, printing files, filtering, from the Terminal. |
 
 ### Built in
@@ -82,7 +82,8 @@ every part, phase by phase.
   from the EFI System Partition, or from a CD.
 - **Kernel** (`kernel/`): NT-style executive: object manager and handles,
   processes and threads, virtual memory with sections and guard pages, I/O,
-  registry, security tokens.  SMP with per-core scheduling and fine-grained
+  registry, security tokens (restricted tokens, impersonation) and
+  security descriptors checked when named objects are opened.  SMP with per-core scheduling and fine-grained
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.
 - **Drivers**: AHCI SATA disks, FAT16/FAT32, GPT; Intel e1000/e1000e
@@ -138,8 +139,10 @@ options, putting your own programs on the disk, and debugging.
 
 ### Bootable ISO and installing on a disk
 
-A ready-to-boot UEFI ISO, `nova.iso`, is committed at the repository root.
-It is also the installation disc: booted from it, NovaOS runs live and
+A ready-to-boot UEFI ISO, `nova.iso`, is built by CI rather than committed.
+Download the one built from `main` from the
+[latest release](https://github.com/dean-plude/os/releases/latest/download/nova.iso), or the `nova-iso` artifact of any pull request's
+CI run (the **Artifacts** list on the run's Summary page).  It is also the installation disc: booted from it, NovaOS runs live and
 opens **Install NovaOS**, which writes a GPT disk with an EFI System
 Partition and a data partition for drive C:.
 
@@ -164,8 +167,9 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -cdrom nova.iso -serial stdio
 ```
 
-Rebuild the ISO from a fresh build with
-`scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf`.
+To make the ISO yourself from a fresh build, run
+`scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf`
+(needs `xorriso`).  `*.iso` is in `.gitignore`: the ISO is never committed.
 
 ## Testing
 
@@ -177,10 +181,12 @@ Rebuild the ISO from a fresh build with
 - **Build and boot-test** (core): `apitest`, `abitest` (the PEB, TEB,
   `KUSER_SHARED_DATA`, `CONTEXT` and loader layouts, ntdll's stubs and the
   system-call numbers, against Windows 10 1903 x64), `filetest`,
-  `pipetest`, `proctest`, `guitest auto`, `disptest`, `comtest`, `tlbtest`
-  (type libraries, 64- and 32-bit), `cppeh`, `battery` (against the battery in
+  `pipetest`, `proctest`, `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `disptest`,
+  `comtest`, `tlbtest` (type libraries, 64- and 32-bit), `cppeh`, `battery` (against the battery in
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
-  tones played), and last `crash kernel`, a deliberate kernel fault whose
+  tones played), an installer that replaces a running program and
+  finishes after a restart (`filetest install`, `shutdown /r`, `filetest
+  installed`), and last `crash kernel`, a deliberate kernel fault whose
   serial log must show a backtrace with function names.
 - **Graphics tests**: installs Mesa 3D and DXVK with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
@@ -189,7 +195,9 @@ Rebuild the ISO from a fresh build with
   while it draws.
 
 A failing test fails its check; each run's summary has a table of results,
-and the serial logs and screenshots are kept as artifacts.  Run the same
+and the serial logs and screenshots are kept as artifacts, along with the
+bootable ISO (`nova-iso`).  When a push to `main` passes both suites, the
+**Publish nova.iso** job puts that ISO on the `latest` release.  Run the same
 gates locally with `python3 tools/selftest.py` (and `--suite graphics`)
 after a build.
 
@@ -197,13 +205,15 @@ after a build.
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
 ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js and
 Notepad++, whose screenshot must match `tests/reference/notepad++.png`.
+It also checks NovaOS's own screens: `dir` on C: and on an NTFS drive D:
+(each with its own free space) and File Explorer's This PC listing both.
 It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
   `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `proctest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
+  `cppeh`, `shmtest`, `pipetest`, `proctest`, `acltest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
   `tools/novarun.py --wav out.wav` records what NovaOS plays and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
@@ -286,8 +296,7 @@ os/
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
 │                         #   make_icons.py, pe_imports.py, msitest/
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
-├── docs/                 # Building, roadmap, feature history, Phase 1 architecture
-└── nova.iso              # Prebuilt bootable/installation ISO
+└── docs/                 # Building, roadmap, feature history, Phase 1 architecture
 ```
 
 ## Key design decisions

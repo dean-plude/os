@@ -21,12 +21,14 @@ have no x86 CPU.  Hypervisor.framework there only runs ARM guests, so
 
 ## Running the ready-made ISO (no build)
 
-The repository carries a bootable `nova.iso`, so you can try NovaOS without
-building anything.  You need QEMU, which brings the UEFI firmware with it:
+CI publishes a bootable `nova.iso` built from `main`, so you can try NovaOS
+without building anything.  You need QEMU, which brings the UEFI firmware
+with it:
 
 ```bash
 brew install qemu
-git clone https://github.com/dean-plude/os && cd os
+mkdir nova && cd nova
+curl -LO https://github.com/dean-plude/os/releases/latest/download/nova.iso
 ```
 
 The firmware's variable store has to be writable, so copy it first.
@@ -70,7 +72,7 @@ it is progressing.  `-smp` higher than 4 rarely helps there.
 
 1. **Create a New Virtual Machine** → **Emulate** (on Apple Silicon; on an
    Intel Mac choose **Virtualize**) → **Other**.
-2. Boot device: **CD/DVD Image**, and pick `nova.iso`.
+2. Boot device: **CD/DVD Image**, and pick the downloaded `nova.iso`.
 3. Architecture **x86_64**, System **Standard PC (Q35 + ICH9)**, memory
    2048 MB, 4 cores.
 4. Create a 1 GB drive.  Before saving, tick **Open VM Settings** and set:
