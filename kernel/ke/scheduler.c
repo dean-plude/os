@@ -645,16 +645,32 @@ Thread *sched_current(void)
 /* -----------------------------------------------------------------------
  * sched_block / sched_unblock
  * ----------------------------------------------------------------------- */
+/* Take @t (the current thread, interrupts off, no run queue lock held)
+ * off the timed-sleep list it is still on after an early wake-up */
+static void leave_sleepers(Thread *t)
+{
+    if (!__atomic_load_n(&t->in_sleepers, __ATOMIC_ACQUIRE)) return;   /* (only t itself sets it) */
+    RunQueue *o = &g_rq[t->sleep_cpu];
+    spin_lock(&o->lock);
+    if (t->in_sleepers) rq_drop_sleeper(o, t);
+    spin_unlock(&o->lock);
+}
+
 void sched_sleep_until(volatile uint32_t *flag, uint64_t deadline)
 {
     IrqState irq = irq_save();
+    Thread *t = current_thread;
+    /* Still on another CPU's sleep list (woken early there, then moved
+     * here): leave it.  Left there, that CPU's next tick would drop it
+     * while this one thought it already queued, and the sleep would never
+     * end. */
+    if (t->sleep_cpu != this_cpu()) leave_sleepers(t);
     RunQueue *rq = my_rq();
     spin_lock(&rq->lock);
     if ((flag && *flag) || tick_count >= deadline) {  /* woken already, or due */
         spin_unlock_irqrestore(&rq->lock, irq);
         return;
     }
-    Thread *t = current_thread;
     t->state = THREAD_WAITING;
     t->wake_tick = deadline;
     t->wake_tsc = 0;
@@ -662,6 +678,7 @@ void sched_sleep_until(volatile uint32_t *flag, uint64_t deadline)
         t->sleep_next = rq->sleepers;
         rq->sleepers = t;
         t->in_sleepers = true;
+        t->sleep_cpu = this_cpu();
     }
     switch_locked(rq);                              /* woken by sched_unblock or sched_tick */
     irq_restore(irq);
@@ -768,6 +785,10 @@ void sched_unblock(Thread *t)
 void sched_exit_current(void)
 {
     cli();
+    /* A thread woken early is still on a sleep list: it must not be once
+     * freed (the list would run through freed memory and lose the
+     * sleepers after it) */
+    leave_sleepers(current_thread);
     RunQueue *rq = my_rq();
     spin_lock(&rq->lock);
     current_thread->state = THREAD_DEAD;

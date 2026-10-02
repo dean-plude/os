@@ -1,4 +1,5 @@
 # NovaOS — Windows-Compatible Operating System
+<!-- The regions between "BEGIN generated" and "END generated" markers are built from fragment files by tools/docgen.py: edit those files, not the regions (CONTRIBUTING.md). -->
 
 A clean-room, from-scratch x86-64 operating system that runs native Windows
 executables without emulation.  The programs' own machine code runs directly
@@ -31,6 +32,8 @@ itself on a disk from its live ISO.
 These are official release builds, run as shipped; every fix that made them
 work is in NovaOS.  "Tested" is what has been checked in QEMU.
 
+<!-- BEGIN generated:programs -->
+
 | Program | Kind | Tested on NovaOS |
 |---|---|---|
 | **7-Zip 26.03** (x64) | GUI installer, file manager, `7zG`, `7z.exe` | Installs; the file manager browses, opens archives, adds and extracts with the full dialogs, and drags files out of archives and folders onto other programs; Options has all six pages.  The App Store uses `7z.exe` to unpack downloads. |
@@ -47,6 +50,9 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **DXVK 2.5.3** | `d3d8`, `d3d9`, `d3d10core`, `d3d11`, `dxgi`, x64 and x86, from the App Store, on Mesa's Vulkan and NovaOS's own `vulkan-1.dll` | Direct3D 9 and 11: `tools/d3dtest` (device creation, a D3D9 triangle, D3D11 clear, read-back, animated `Present` in a window) passes as a 64-bit and a 32-bit program. |
 | **Notepad++ 8.7.9** (x64 portable) | Scintilla editor, static MSVC C++ runtime | Opens with its menus, toolbar, tab bar, editor and status bar, and takes typing. |
 | **ripgrep, fd, bat, jq, fzf** | Rust (MSVC), C (MinGW), Go | Searching, walking folders, printing files, filtering, from the Terminal. |
+| **Floorp 12.19** (Firefox 157 engine, x64) | Gecko browser | Starts, creates its profile, and draws the full browser window (toolbar, address bar, sidebar) with DirectWrite text through its GPU process, and takes keyboard input.  Its sandboxed child processes (tab, extension, GPU, network, media) start and talk to the main process.  Page content does not show yet and pages are not fetched yet.  See [Firefox](docs/HISTORY.md#firefox-floorp). |
+
+<!-- END generated:programs -->
 
 ### Built in
 
@@ -78,6 +84,8 @@ above are the ones verified.  See [the App Store](docs/HISTORY.md#the-app-store)
 A one-paragraph tour; [docs/HISTORY.md](docs/HISTORY.md) has the details of
 every part, phase by phase.
 
+<!-- BEGIN generated:inside -->
+
 - **Boot**: a UEFI bootloader (a PE32+ EFI application) loads the ELF kernel
   from the EFI System Partition, or from a CD.
 - **Kernel** (`kernel/`): NT-style executive: object manager and handles,
@@ -85,42 +93,51 @@ every part, phase by phase.
   registry, security tokens (restricted tokens, impersonation) and
   security descriptors checked when named objects are opened.  SMP with per-core scheduling and fine-grained
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
-  1903 numbers.  Timers are the local APIC's, one-shot or TSC-deadline and
-  calibrated against the HPET, so `Sleep(1)` and wait timeouts end within
-  a fraction of a millisecond even with every CPU busy.
-- **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
-  either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
-  file ACLs, and other drives); Intel e1000/e1000e
-  and virtio-net network cards; Intel High Definition Audio (output) with a kernel mixer;
-  PS/2 keyboards and mice; USB (xHCI) with hubs and HID keyboards, mice,
-  tablets and touch screens (report protocol) and USB sticks (FAT and NTFS,
-  as the next drive letter, hot-plugged); CMOS clock; a VBE display
+  1903 numbers.
+- **Drivers**: AHCI SATA disks, FAT16/FAT32, GPT; Intel e1000/e1000e
+  network cards; Intel High Definition Audio (playback and recording) with a kernel
+  mixer;
+  PS/2 and USB (xHCI) keyboards and mice; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
-  flipping, the mode set again after sleep and kept across restarts) and a
-  Cirrus GD5446 one, with
+  flipping, the mode set again after sleep) and a Cirrus GD5446 one, with
   the UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
-  sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
-  devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
-  a real interrupt through the I/O APIC).
-- **Networking**: lwIP (TCP/IP over IPv4 and IPv6: DHCP, SLAAC, DNS over
-  either), an HTTP/1.1 client, and Mbed TLS with the Mozilla root store.
-  Winsock (`ws2_32`) speaks IPv6 and dual-stack sockets with `getaddrinfo`;
-  `winhttp` is a real HTTP client over Schannel TLS, with HTTP/2 by ALPN
-  (nghttp2).
+  sleep (S3), batteries and AC adapters (AML interpreted by uACPI).
+- **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
+  TLS with the Mozilla root store.
 - **Windows userland** (`userland/`): about 35 system DLLs written from
   scratch and compiled with clang for `x86_64-pc-windows-msvc`, and again
   for `i686` in `SysWOW64`: `ntdll`, `kernel32`, `msvcrt`/`ucrtbase` with
-  the `api-ms-win-crt-*` API sets, `vcruntime140` (C++ exceptions),
+  the `api-ms-win-crt-*` API sets, `vcruntime140`/`vcruntime140_1` (C++
+  exceptions, FH3 and FH4 tables),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs),
-  `comctl32`, `shell32`, `ole32`/`oleaut32` (COM), `advapi32`, `ws2_32`,
-  `winmm` and `mmdevapi` (sound: `waveOut`, `PlaySound`, WASAPI), `msi`,
+  `comctl32`, `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
+  type libraries), `advapi32`, `ws2_32`,
+  `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, WASAPI
+  playback and capture, endpoint volume), `msi`,
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
   `usp10` (Uniscribe), `normaliz` (IDN), and more.
+- **Text**: `novatext.dll`, the text core built once and shared, carries
+  HarfBuzz (shaping) and FreeType (fonts).  Uniscribe (`usp10`) itemizes
+  text by script and direction and shapes it with HarfBuzz, and GDI's
+  `ExtTextOut` sends complex scripts through it, as Windows' LPK does, so
+  Arabic, Hebrew and the Indic scripts join, reorder and run right to left.
+  Arabic and Devanagari draw with Noto Sans; GDI falls back to them by
+  script.
+- **2D drawing**: Direct2D (`d2d1.dll`) draws in software: geometries
+  (rectangles, ellipses, paths with Béziers and arcs, groups, transforms,
+  combining, widening, tessellation), strokes with caps, joins and dashes,
+  solid, gradient and bitmap brushes, layers and clips, on HWND, DC and
+  bitmap render targets.  Text goes through DirectWrite's text formats and
+  layouts.
+- **Media tools**: a current Windows build of ffmpeg runs unchanged and
+  converts H.264 and AAC to VP9 and Opus with all its threads.
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions; registry saved to disk;
-  COM in-process servers; drag and drop; a shared clipboard; `.lnk`
+  COM in-process servers and type libraries; drag and drop; a shared clipboard; `.lnk`
   shortcuts; Windows Installer packages.
+
+<!-- END generated:inside -->
 
 ## Quick start
 
@@ -185,50 +202,59 @@ To make the ISO yourself from a fresh build, run
 
 **Every pull request is boot-tested.**  GitHub Actions
 (`.github/workflows/ci.yml`) builds the kernel, bootloader, userland and
-`build/nova.img`, boots it in QEMU with OVMF and runs two suites with
+`build/nova.img`, boots it in QEMU with OVMF and runs three suites with
 `tools/selftest.py`:
 
-- **Build and boot-test** (core): `apitest`, `abitest` (the PEB, TEB,
-  `KUSER_SHARED_DATA`, `CONTEXT` and loader layouts, ntdll's stubs and the
-  system-call numbers, against Windows 10 1903 x64), `filetest`,
-  `pipetest`, `proctest`, `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `disptest`, `battery` (against the battery in
-  `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
-  tones played), `sleeptest timer`, `powertest` (closing the lid in
-  `tests/acpi/lid-thermal.asl` sleeps, a USB key and the lid wake it, the
-  thermal zone's readings), `disptest 1024 768` (saves the mode), an
-  installer that replaces a running program and finishes after a restart
-  (`filetest install`, `shutdown /r`, `filetest installed`; the restart
-  must also come up in the saved mode, `disptest saved 1024 768`), and
-  last `crash kernel`, a deliberate kernel fault whose serial log must show
-  a backtrace with function names.
-- **Graphics tests**: installs Mesa 3D and DXVK with the App Store
+- **Build and boot-test** (core): <!-- BEGIN generated:core-tests -->`apitest`, `abitest` (the PEB, TEB, `KUSER_SHARED_DATA`, `CONTEXT` and
+  loader layouts, ntdll's stubs and the system-call numbers, against
+  Windows 10 1903 x64), `filetest`, `pipetest`, `proctest`, `sectest`,
+  `acltest` (64- and 32-bit), `guitest auto`, `anitest` (animated
+  cursors and program pointers), `disptest`, `comtest`, `tlbtest` (type
+  libraries, 64- and 32-bit), `usptest` (Arabic and Devanagari shaped
+  through Uniscribe and drawn by `ExtTextOut`, 64- and 32-bit), `cppeh`,
+  `battery` (against the battery in `tests/acpi/battery.asl`),
+  `soundtest` (the recorded WAV must hold the tones played), `soundtest
+  record`, `capture` and `volume` (`waveIn` and WASAPI capture must
+  record the tone the microphone hears, and a quarter of the endpoint
+  volume must sound 12 dB quieter), an installer that replaces a running
+  program and finishes after a restart (`filetest install`, `shutdown
+  /r`, `filetest installed`), and last `crash kernel`, a deliberate
+  kernel fault whose serial log must show a backtrace with function
+  names.<!-- END generated:core-tests -->
+- **Network** (in the boot-test job): two boots with a virtio-net card.
+  On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
+  `httptest suite` (winhttp with HTTP/2 by ALPN) against
+  `tools/h2server.js`; on an IPv6-only network that is `tools/v6peer.py`,
+  SLAAC and RDNSS, `ping -6`, `curl -6` and Winsock over IPv6.
+- **Graphics tests**: `tools/d2dtest` (Direct2D geometry answers, and a
+  scene that must match the reference `tools/d2dtest/reference.py` draws
+  with Skia), then installs Mesa 3D and DXVK with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
-  stages the downloads), then runs `tools/gltest` (14 tests) and
-  `tools/d3dtest` (17 tests), 64- and 32-bit, with a screenshot of each
-  while it draws.
+  stages the downloads) and runs `tools/gltest` (14 tests) and
+  `tools/d3dtest` (17 tests); each 64- and 32-bit, with a screenshot of
+  each while it draws.
 
 A failing test fails its check; each run's summary has a table of results,
 and the serial logs and screenshots are kept as artifacts, along with the
 bootable ISO (`nova-iso`).  When a push to `main` passes both suites, the
 **Publish nova.iso** job puts that ISO on the `latest` release.  Run the same
-gates locally with `python3 tools/selftest.py` (and `--suite graphics`)
+gates locally with `python3 tools/selftest.py` (and `--suite network`, `--suite graphics`)
 after a build.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
-ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js and
-Notepad++, whose screenshot must match `tests/reference/notepad++.png`.
+<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, ffmpeg (an MP4 converted to WebM) and Notepad++<!-- END generated:corpus -->, whose screenshot must match `tests/reference/notepad++.png`.
 It also checks NovaOS's own screens: `dir` on C: and on an NTFS drive D:
 (each with its own free space) and File Explorer's This PC listing both.
 It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
-  `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `proctest`, `acltest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
-  plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
-  `tools/novarun.py --wav out.wav` records what NovaOS plays and
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `disptest`, `dlltest`, `filetest`, `pipetest`, `posixtest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
+  plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
+  through `waveIn` and WASAPI capture;
+  `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`
+  feeds a WAV to its microphone, and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
   write`, a restart and `disktest verify` check that drive C: survives a
   reboot.
@@ -239,9 +265,10 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   (not in this repository), driven by a QEMU harness that types, clicks and takes screenshots.
 - **On the host**: `tools/pe_imports.py PROGRAM.exe` lists the imports a
   Windows program needs that NovaOS's DLLs lack; `tools/msitest/` exercises
-  the Windows Installer's package readers.  `tools/gltest/` and
-  `tools/d3dtest/` are OpenGL and Direct3D 9/11 test programs, built with
-  MinGW, for checking Mesa and DXVK on NovaOS.
+  the Windows Installer's package readers.  `tools/gltest/`,
+  `tools/d3dtest/` and `tools/d2dtest/` are OpenGL, Direct3D 9/11 and
+  Direct2D test programs, built with MinGW, for checking Mesa, DXVK and
+  `d2d1.dll` on NovaOS.
 - **Debugging**: the serial log (COM1) has every kernel message; the
   Terminal's `dmesg` shows it, and `trace NAME` logs a program's failing
   system calls.  A kernel fault, panic or failed assertion prints a
@@ -299,17 +326,20 @@ os/
 │   ├── ldr/              # Early PE loader and syscall thunk pages
 │   └── lib/              # Freestanding string and memory library
 ├── userland/             # The Windows userland, built with clang + lld-link:
-│   ├── ntdll/ kernel32/ user32/ gdi32/ ...   # one directory per system DLL
+│   ├── ntdll/ kernel32/ user32/ gdi32/ ...   # one directory per system DLL (dll.json)
 │   ├── msvcrt/ crt/      # C runtime (msvcrt.dll and ucrtbase.dll), program startup
 │   ├── msi/              # Windows Installer (msi.dll)
 │   ├── programs/         # cmd.exe, msiexec, reg, find..., samples and self-tests
 │   ├── netsurf/          # NetSurf port: fetcher, window surface, fonts
 │   └── include/          # The Windows SDK headers NovaOS provides
-├── third_party/          # lwIP, Mbed TLS, nghttp2, uACPI, musl (libm), NetSurf, stb, fonts, 7-Zip installer
+├── third_party/          # lwIP, Mbed TLS, nghttp2, uACPI, musl (libm), HarfBuzz, FreeType, NetSurf, stb, fonts, 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
-│                         #   make_icons.py, pe_imports.py, msitest/
+│                         #   make_icons.py, mkani.py, pe_imports.py, msitest/, docgen.py
+├── tests/                # CI self-tests and app corpus (one file per test), ACPI
+│                         #   tables, reference screenshots
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
-└── docs/                 # Building, roadmap, feature history, Phase 1 architecture
+└── docs/                 # Building, roadmap, feature history, Phase 1 architecture,
+                          #   and the fragments README and docs/*.md are built from
 ```
 
 ## Key design decisions
@@ -324,7 +354,9 @@ os/
   call to the kernel's 64-bit form, the way Windows' WoW64 does.
 - **The window system lives in the program**: `user32` keeps each program's
   window tree; the kernel's window manager composites only top-level
-  windows, drawn from bitmaps the programs own.
+  windows, drawn from bitmaps the programs own.  The kernel also draws the
+  pointer: a program's `SetCursor` shape (animated .ani cursors included)
+  over its own windows, the desktop's arrow elsewhere.
 - **Software rendering**: GDI is a CPU rasterizer drawing into a back
   buffer in RAM at integer HiDPI scale.  On QEMU's standard VGA, QXL,
   virtio-vga and VMware adapters (and Bochs, VirtualBox's VBoxVGA) a VBE
@@ -344,6 +376,9 @@ os/
 
 ## Documentation
 
+- [CONTRIBUTING.md](CONTRIBUTING.md): where a change goes (one file per
+  DLL, test and doc item, so parallel pull requests do not conflict) and
+  how to merge main into a branch.
 - [docs/building.md](docs/building.md): building, running, the data disk,
   tests, debugging.
 - [docs/macos.md](docs/macos.md): running and building on a Mac (Apple
@@ -358,10 +393,7 @@ os/
 
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
-code keeps its own permissive licence (lwIP: BSD 3-clause; Mbed TLS:
-Apache-2.0; nghttp2: MIT; uACPI: MIT; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu
-Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or
-MIT).  All Win32 API implementations are clean-room, based on public
+code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; uACPI: MIT; musl's libm: MIT; HarfBuzz: MIT; FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,
 but independently written.
 

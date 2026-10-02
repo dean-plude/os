@@ -1216,6 +1216,8 @@ typedef struct tagMSGBOXPARAMSW { UINT cbSize; HWND hwndOwner; HINSTANCE hInstan
 #define RT_ACCELERATOR  MAKEINTRESOURCEW(9)
 #define RT_GROUP_CURSOR MAKEINTRESOURCEW(12)
 #define RT_GROUP_ICON   MAKEINTRESOURCEW(14)
+#define RT_ANICURSOR    MAKEINTRESOURCEW(21)
+#define RT_ANIICON      MAKEINTRESOURCEW(22)
 #define IMAGE_BITMAP 0
 #define IMAGE_ICON 1
 #define IMAGE_CURSOR 2
@@ -1896,12 +1898,13 @@ USERAPI HICON CreateIconFromResourceEx(PBYTE bits, DWORD size, BOOL icon, DWORD 
 USERAPI HICON CreateIconFromResource(PBYTE bits, DWORD size, BOOL icon, DWORD ver);
 USERAPI HCURSOR LoadCursorFromFileW(LPCWSTR f);
 USERAPI HCURSOR LoadCursorFromFileA(LPCSTR f);
+USERAPI HCURSOR GetCursorFrameInfo(HCURSOR h, DWORD reserved, DWORD step, DWORD *rate, DWORD *nsteps);
 USERAPI HBITMAP LoadBitmapW(HINSTANCE inst, LPCWSTR name);
 USERAPI HBITMAP LoadBitmapA(HINSTANCE inst, LPCSTR name);
 USERAPI HANDLE LoadImageA(HINSTANCE inst, LPCSTR name, UINT type, int cx, int cy, UINT flags);
 USERAPI HICON CreateIconIndirect(PICONINFO ii);
-USERAPI HICON CreateIcon(HINSTANCE inst, int w, int h, BYTE planes, BYTE bpp, const BYTE *and, const BYTE *xor);
-USERAPI HCURSOR CreateCursor(HINSTANCE inst, int hx, int hy, int w, int h, const void *and, const void *xor);
+USERAPI HICON CreateIcon(HINSTANCE inst, int w, int h, BYTE planes, BYTE bpp, const BYTE *and_mask, const BYTE *xor_mask);
+USERAPI HCURSOR CreateCursor(HINSTANCE inst, int hx, int hy, int w, int h, const void *and_mask, const void *xor_mask);
 USERAPI BOOL GetIconInfo(HICON h, PICONINFO ii);
 USERAPI BOOL GetIconInfoExW(HICON h, void *ix);
 USERAPI HICON CopyIcon(HICON h);

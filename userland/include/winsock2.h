@@ -198,6 +198,9 @@ WSAAPI_DECL int __WSAFDIsSet(SOCKET fd, fd_set *set);
 
 /* ---- Winsock 2 extensions (overlapped operations complete at once) ---- */
 typedef struct _WSABUF { ULONG len; CHAR *buf; } WSABUF, *LPWSABUF;
+typedef struct _WSAMSG {
+    struct sockaddr *name; INT namelen; LPWSABUF lpBuffers; ULONG dwBufferCount; WSABUF Control; ULONG dwFlags;
+} WSAMSG, *PWSAMSG, *LPWSAMSG;
 typedef OVERLAPPED WSAOVERLAPPED, *LPWSAOVERLAPPED;
 typedef void (WINAPI *LPWSAOVERLAPPED_COMPLETION_ROUTINE)(DWORD err, DWORD bytes, LPWSAOVERLAPPED ov, DWORD flags);
 typedef HANDLE WSAEVENT;
@@ -233,6 +236,8 @@ WSAAPI_DECL int WSASend(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD sent, DWORD fl
                         LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
 WSAAPI_DECL int WSARecv(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD got, LPDWORD flags, LPWSAOVERLAPPED ov,
                         LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+WSAAPI_DECL int WSASendMsg(SOCKET s, LPWSAMSG msg, DWORD flags, LPDWORD sent, LPWSAOVERLAPPED ov,
+                           LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
 WSAAPI_DECL int WSASendTo(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD sent, DWORD flags, const struct sockaddr *to, int tolen,
                           LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
 WSAAPI_DECL int WSARecvFrom(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD got, LPDWORD flags, struct sockaddr *from, int *fromlen,

@@ -40,6 +40,8 @@ typedef struct NOVA_DC {
     int      rop2;         /* R2_* (0: R2_COPYPEN) */
     int      brush_style;  /* 0 solid, 1 hollow, 2 hatched, 3 pattern */
     int      base_x, base_y; /* where the window's origin is in `bits` (the viewport origin is relative to it) */
+    int      gmode;        /* GM_ADVANCED, or 0 for GM_COMPATIBLE */
+    float    xform[6];     /* the world transform (eM11 eM12 eM21 eM22 eDx eDy); all zero means identity */
 } NOVA_DC;
 
 #define TRANSPARENT 1
@@ -98,12 +100,39 @@ typedef struct tagTEXTMETRICA {
     BYTE tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar;
     BYTE tmItalic, tmUnderlined, tmStruckOut, tmPitchAndFamily, tmCharSet;
 } TEXTMETRICA, *LPTEXTMETRICA;
+typedef struct tagXFORM { float eM11, eM12, eM21, eM22, eDx, eDy; } XFORM, *LPXFORM;
+#define GM_COMPATIBLE 1
+#define GM_ADVANCED   2
+#define MWT_IDENTITY      1
+#define MWT_LEFTMULTIPLY  2
+#define MWT_RIGHTMULTIPLY 3
+typedef struct _RGNDATAHEADER { DWORD dwSize, iType, nCount, nRgnSize; RECT rcBound; } RGNDATAHEADER;
+typedef struct _RGNDATA { RGNDATAHEADER rdh; char Buffer[1]; } RGNDATA, *LPRGNDATA;
+typedef struct tagPANOSE {
+    BYTE bFamilyType, bSerifStyle, bWeight, bProportion, bContrast, bStrokeVariation, bArmStyle, bLetterform,
+         bMidline, bXHeight;
+} PANOSE;
+#define NOVA_OTM_FIELDS(TM, STR)                                                                       \
+    UINT otmSize; TM otmTextMetrics; BYTE otmFiller; PANOSE otmPanoseNumber; UINT otmfsSelection,      \
+    otmfsType; int otmsCharSlopeRise, otmsCharSlopeRun, otmItalicAngle; UINT otmEMSquare;              \
+    int otmAscent, otmDescent; UINT otmLineGap, otmsCapEmHeight, otmsXHeight; RECT otmrcFontBox;      \
+    int otmMacAscent, otmMacDescent; UINT otmMacLineGap, otmusMinimumPPEM;                            \
+    POINT otmptSubscriptSize, otmptSubscriptOffset, otmptSuperscriptSize, otmptSuperscriptOffset;     \
+    UINT otmsStrikeoutSize; int otmsStrikeoutPosition, otmsUnderscoreSize, otmsUnderscorePosition;    \
+    STR otmpFamilyName; STR otmpFaceName; STR otmpStyleName; STR otmpFullName;
+typedef struct _OUTLINETEXTMETRICW { NOVA_OTM_FIELDS(TEXTMETRICW, char *) } OUTLINETEXTMETRICW, *LPOUTLINETEXTMETRICW;
+typedef struct _OUTLINETEXTMETRICA { NOVA_OTM_FIELDS(TEXTMETRICA, char *) } OUTLINETEXTMETRICA, *LPOUTLINETEXTMETRICA;
+typedef struct tagWCRANGE { WCHAR wcLow; USHORT cGlyphs; } WCRANGE;
+typedef struct tagGLYPHSET { DWORD cbThis, flAccel, cGlyphsSupported, cRanges; WCRANGE ranges[1]; } GLYPHSET, *LPGLYPHSET;
 typedef struct tagRGBQUAD { BYTE rgbBlue, rgbGreen, rgbRed, rgbReserved; } RGBQUAD;
 typedef struct tagBITMAPINFOHEADER {
     DWORD biSize; LONG biWidth, biHeight; WORD biPlanes, biBitCount; DWORD biCompression, biSizeImage;
     LONG biXPelsPerMeter, biYPelsPerMeter; DWORD biClrUsed, biClrImportant;
 } BITMAPINFOHEADER, *LPBITMAPINFOHEADER;
 typedef struct tagBITMAPINFO { BITMAPINFOHEADER bmiHeader; RGBQUAD bmiColors[1]; } BITMAPINFO, *LPBITMAPINFO;
+#pragma pack(push, 2)
+typedef struct tagBITMAPFILEHEADER { WORD bfType; DWORD bfSize; WORD bfReserved1, bfReserved2; DWORD bfOffBits; } BITMAPFILEHEADER, *LPBITMAPFILEHEADER;
+#pragma pack(pop)
 typedef struct tagBITMAP { LONG bmType, bmWidth, bmHeight, bmWidthBytes; WORD bmPlanes, bmBitsPixel; LPVOID bmBits; } BITMAP;
 typedef struct tagDIBSECTION { BITMAP dsBm; BITMAPINFOHEADER dsBmih; DWORD dsBitfields[3]; HANDLE dshSection; DWORD dsOffset; } DIBSECTION;
 typedef struct _BLENDFUNCTION { BYTE BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat; } BLENDFUNCTION;
@@ -155,6 +184,14 @@ GDIAPI BOOL     ExtTextOutW(HDC dc, int x, int y, UINT opts, const RECT *rc, LPC
 GDIAPI BOOL     GetTextExtentPoint32W(HDC dc, LPCWSTR s, int n, LPSIZE sz);
 GDIAPI BOOL     GetTextMetricsW(HDC dc, TEXTMETRICW *tm);
 GDIAPI BOOL     GetTextMetricsA(HDC dc, TEXTMETRICA *tm);
+GDIAPI UINT     GetOutlineTextMetricsW(HDC dc, UINT size, OUTLINETEXTMETRICW *otm);
+GDIAPI UINT     GetOutlineTextMetricsA(HDC dc, UINT size, OUTLINETEXTMETRICA *otm);
+GDIAPI DWORD    GetFontUnicodeRanges(HDC dc, LPGLYPHSET gs);
+GDIAPI int      GetGraphicsMode(HDC dc);
+GDIAPI BOOL     SetWorldTransform(HDC dc, const XFORM *x);
+GDIAPI BOOL     GetWorldTransform(HDC dc, LPXFORM x);
+GDIAPI BOOL     ModifyWorldTransform(HDC dc, const XFORM *x, DWORD mode);
+GDIAPI HRGN     ExtCreateRegion(const XFORM *x, DWORD n, const RGNDATA *data);
 GDIAPI UINT     SetTextAlign(HDC dc, UINT align);
 GDIAPI BOOL     Polygon(HDC dc, const POINT *pt, int n);
 GDIAPI BOOL     Polyline(HDC dc, const POINT *pt, int n);

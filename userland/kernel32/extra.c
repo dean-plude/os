@@ -304,11 +304,24 @@ static DWORD WINAPI watcher(LPVOID arg)
         HANDLE hs[MAXIMUM_WAIT_OBJECTS];
         Watch *ws[MAXIMUM_WAIT_OBJECTS];
         DWORD n = 0;
+        BOOL more = FALSE;
+        Watch *done = 0;
         hs[n++] = g_watch_wake;
         lock();
-        for (Watch *w = g_watch; w && n < MAXIMUM_WAIT_OBJECTS; w = w->next) { ws[n] = w; hs[n++] = w->ev; }
+        for (Watch *w = g_watch; w; w = w->next) {
+            if (n < MAXIMUM_WAIT_OBJECTS) { ws[n] = w; hs[n++] = w->ev; continue; }
+            more = TRUE;                                    /* past what one wait can hold: poll */
+            if (WaitForSingleObject(w->ev, 0) == WAIT_OBJECT_0) { done = w; break; }
+        }
         unlock();
-        DWORD r = WaitForMultipleObjects(n, hs, FALSE, n == 1 ? INFINITE : 100);
+        if (done) {
+            lock();
+            for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next) if (*pp == done) { *pp = done->next; break; }
+            unlock();
+            watch_done(done);
+            continue;
+        }
+        DWORD r = WaitForMultipleObjects(n, hs, FALSE, more ? 5 : n == 1 ? INFINITE : 100);
         if (r == WAIT_OBJECT_0 || r == WAIT_TIMEOUT || r >= WAIT_OBJECT_0 + n) continue;
         Watch *w = ws[r - WAIT_OBJECT_0];
         lock();
@@ -356,10 +369,14 @@ static void watch_start(Watch *w)
     SetEvent(g_watch_wake);
 }
 
-/* Finish a request that did not stay pending */
+/* Finish a request that did not stay pending.  One that failed at once
+ * (an error status, such as a broken pipe) completes nothing: no event, no
+ * completion packet, no completion routine, as on Windows.  Programs free
+ * the OVERLAPPED after such a failure. */
 static void finished_now(HANDLE h, OVERLAPPED *o, Watch *w, void *fn, NTSTATUS s)
 {
     if (w) { CloseHandle(w->ev); zfree(w); }
+    if ((ULONG)s >= 0xC0000000u) return;
     if (fn) queue_apc(GetCurrentThreadId(), 0, fn, apc_error(s), (DWORD)o->InternalHigh, (ULONG_PTR)o);
     else k32_io_done(h, o, s, (DWORD)o->InternalHigh);
 }
@@ -384,7 +401,7 @@ BOOL k32_overlapped(HANDLE h, OVERLAPPED *o, int op, PVOID buf, DWORD n, LPDWORD
     o->Internal = (ULONG_PTR)s;
     if (!NT_SUCCESS(s) && s != STATUS_END_OF_FILE && s != STATUS_BUFFER_OVERFLOW) o->InternalHigh = 0;
     finished_now(h, o, w, fn, s);
-    if (fn) { SetLastError(0); return NT_SUCCESS(s) || s == STATUS_END_OF_FILE || s == STATUS_BUFFER_OVERFLOW; }
+    if (fn && (ULONG)s < 0xC0000000u) { SetLastError(0); return TRUE; }   /* ReadFileEx: the routine is queued */
     if (done) *done = (DWORD)o->InternalHigh;
     if (s == STATUS_END_OF_FILE) { SetLastError(ERROR_HANDLE_EOF); return FALSE; }
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
@@ -399,9 +416,7 @@ NTSTATUS k32_overlapped_fsctl(HANDLE h, OVERLAPPED *o, ULONG code, PVOID in, DWO
     NTSTATUS s = NtFsControlFile(h, ev, 0, 0, (PIO_STATUS_BLOCK)o, code, in, in_len, out, out_len);
     if (s == STATUS_PENDING) { if (w) watch_start(w); return s; }
     o->Internal = (ULONG_PTR)s;
-    /* ConnectNamedPipe finding its client already there completes nothing */
-    if (s == (NTSTATUS)0xC00000B2) { if (w) { CloseHandle(w->ev); zfree(w); } return s; }
-    finished_now(h, o, w, 0, s);
+    finished_now(h, o, w, 0, s);         /* (ConnectNamedPipe finding its client there fails, completing nothing) */
     return s;
 }
 
@@ -735,46 +750,20 @@ void k32_forget_handle(HANDLE h)
 }
 
 /* -----------------------------------------------------------------------
- * WaitOnAddress: hashed wait queues (a lock and a condition variable)
+ * WaitOnAddress: ntdll's (RtlWaitOnAddress), as on Windows
  * ----------------------------------------------------------------------- */
-typedef struct { SRWLOCK l; CONDITION_VARIABLE cv; } AddrQueue;
-static AddrQueue g_addr[64];
-
-static AddrQueue *addr_queue(const volatile void *a) { return &g_addr[((ULONG_PTR)a >> 3) % 64]; }
-
-static BOOL same(const volatile void *a, const void *b, SIZE_T n)
-{
-    switch (n) {
-    case 1: return *(const volatile BYTE *)a == *(const BYTE *)b;
-    case 2: return *(const volatile WORD *)a == *(const WORD *)b;
-    case 4: return *(const volatile DWORD *)a == *(const DWORD *)b;
-    case 8: return *(const volatile ULONGLONG *)a == *(const ULONGLONG *)b;
-    }
-    return FALSE;
-}
-
 WINBASEAPI BOOL WINAPI WaitOnAddress(volatile VOID *addr, PVOID cmp, SIZE_T size, DWORD ms)
 {
-    if (size != 1 && size != 2 && size != 4 && size != 8) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    AddrQueue *q = addr_queue(addr);
-    AcquireSRWLockExclusive(&q->l);
-    BOOL ok = TRUE;
-    if (same(addr, cmp, size)) ok = SleepConditionVariableSRW(&q->cv, &q->l, ms, 0);
-    ReleaseSRWLockExclusive(&q->l);
-    if (!ok) SetLastError(1460 /* ERROR_TIMEOUT */);
-    return ok;
+    LARGE_INTEGER t;
+    t.QuadPart = -(LONGLONG)ms * 10000;
+    NTSTATUS s = RtlWaitOnAddress(addr, cmp, size, ms == INFINITE ? NULL : &t);
+    if (s == (NTSTATUS)STATUS_TIMEOUT) { SetLastError(1460 /* ERROR_TIMEOUT */); return FALSE; }
+    if (!NT_SUCCESS(s)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return TRUE;
 }
 
-WINBASEAPI VOID WINAPI WakeByAddressAll(PVOID addr)
-{
-    AddrQueue *q = addr_queue(addr);
-    AcquireSRWLockExclusive(&q->l);
-    WakeAllConditionVariable(&q->cv);
-    ReleaseSRWLockExclusive(&q->l);
-}
-
-/* waiters on the same bucket re-check their own value, so waking all is safe */
-WINBASEAPI VOID WINAPI WakeByAddressSingle(PVOID addr) { WakeByAddressAll(addr); }
+WINBASEAPI VOID WINAPI WakeByAddressAll(PVOID addr)    { RtlWakeAddressAll(addr); }
+WINBASEAPI VOID WINAPI WakeByAddressSingle(PVOID addr) { RtlWakeAddressSingle(addr); }
 
 /* -----------------------------------------------------------------------
  * Interlocked singly linked lists (a spin lock keeps them simple)

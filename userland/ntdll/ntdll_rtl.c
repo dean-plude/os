@@ -1239,3 +1239,147 @@ NTSYSAPI NTSTATUS NTAPI RtlGetLastNtStatus(void)
     return *(NTSTATUS *)(NtCurrentTebBytes() + 0xBF4);
 #endif
 }
+
+/* -----------------------------------------------------------------------
+ * Helpers Firefox's launcher (and mozglue) call straight from ntdll
+ * ----------------------------------------------------------------------- */
+NTSYSAPI ULONG NTAPI RtlGetLastWin32Error(void) { return *(ULONG *)(NtCurrentTebBytes() + TEB_LAST_ERROR); }
+NTSYSAPI VOID NTAPI RtlSetLastWin32Error(ULONG err) { *(ULONG *)(NtCurrentTebBytes() + TEB_LAST_ERROR) = err; }
+NTSYSAPI VOID NTAPI RtlRestoreLastWin32Error(ULONG err) { RtlSetLastWin32Error(err); }
+
+NTSYSAPI SIZE_T NTAPI RtlCompareMemory(const VOID *a, const VOID *b, SIZE_T n)
+{
+    const BYTE *x = a, *y = b;
+    SIZE_T i = 0;
+    while (i < n && x[i] == y[i]) i++;
+    return i;
+}
+
+NTSYSAPI BOOLEAN NTAPI RtlQueryPerformanceCounter(PLARGE_INTEGER c) { return NT_SUCCESS(NtQueryPerformanceCounter(c, 0)); }
+NTSYSAPI BOOLEAN NTAPI RtlQueryPerformanceFrequency(PLARGE_INTEGER f)
+{
+    LARGE_INTEGER c;
+    return NT_SUCCESS(NtQueryPerformanceCounter(&c, f));
+}
+
+NTSYSAPI ULONGLONG NTAPI VerSetConditionMask(ULONGLONG cond, ULONG mask, UCHAR op)
+{
+    for (int i = 0; i < 8; i++) if (mask & (1u << i)) cond |= (ULONGLONG)(op & 7) << (3 * i);
+    return cond;
+}
+
+/* flags: 1 = add a NUL, 2 = an empty source gives an empty buffer rather than none */
+NTSYSAPI NTSTATUS NTAPI RtlDuplicateUnicodeString(ULONG flags, const UNICODE_STRING *src, PUNICODE_STRING dst)
+{
+    if (!src || !dst || flags > 3 || (src->Length & 1)) return ST_INVALID_PARAMETER;
+    if (!src->Length && !(flags & 2)) {
+        dst->Buffer = 0;
+        dst->Length = dst->MaximumLength = 0;
+        return ST_SUCCESS;
+    }
+    ULONG max = src->Length + ((flags & 1) ? 2u : 0u);
+    if (max > 0xFFFF) return ST_INVALID_PARAMETER;
+    WCHAR *b = RtlAllocateHeap(heap(), 0, max ? max : 2);
+    if (!b) return ST_NO_MEMORY;
+    for (ULONG i = 0; i < src->Length / 2u; i++) b[i] = src->Buffer[i];
+    if (flags & 1) b[src->Length / 2u] = 0;
+    dst->Buffer = b;
+    dst->Length = src->Length;
+    dst->MaximumLength = (USHORT)max;
+    return ST_SUCCESS;
+}
+
+/* The ANSI code page is UTF-8 (see utf8_of) */
+static ULONG utf16_of(const CHAR *s, ULONG n, WCHAR *out, ULONG cap)
+{
+    ULONG o = 0;
+    for (ULONG i = 0; i < n; ) {
+        ULONG c = (BYTE)s[i++], need = 0;
+        if (c >= 0xF0 && c < 0xF8) { c &= 7; need = 3; }
+        else if (c >= 0xE0) { c &= 15; need = 2; }
+        else if (c >= 0xC0) { c &= 31; need = 1; }
+        else if (c >= 0x80) c = 0xFFFD;
+        while (need && i < n && ((BYTE)s[i] & 0xC0) == 0x80) { c = c << 6 | ((BYTE)s[i++] & 0x3F); need--; }
+        if (need) c = 0xFFFD;
+        if (c >= 0x10000) {
+            if (out && o < cap) out[o] = (WCHAR)(0xD800 + ((c - 0x10000) >> 10));
+            o++;
+            c = 0xDC00 + ((c - 0x10000) & 0x3FF);
+        }
+        if (out && o < cap) out[o] = (WCHAR)c;
+        o++;
+    }
+    return o;
+}
+
+NTSYSAPI NTSTATUS NTAPI RtlAnsiStringToUnicodeString(PUNICODE_STRING dst, const NT_ANSI_STRING *src, BOOLEAN alloc)
+{
+    ULONG n = utf16_of(src->Buffer, src->Length, 0, 0);
+    if (n * 2 > 0xFFFC) return ST_INVALID_PARAMETER;
+    if (alloc) {
+        dst->Buffer = RtlAllocateHeap(heap(), 0, n * 2 + 2);
+        if (!dst->Buffer) return ST_NO_MEMORY;
+        dst->MaximumLength = (USHORT)(n * 2 + 2);
+    } else if (dst->MaximumLength < n * 2 + 2) {
+        return ST_BUFFER_OVERFLOW;
+    }
+    utf16_of(src->Buffer, src->Length, dst->Buffer, n);
+    dst->Buffer[n] = 0;
+    dst->Length = (USHORT)(n * 2);
+    return ST_SUCCESS;
+}
+NTSYSAPI ULONG NTAPI RtlAnsiStringToUnicodeSize(const NT_ANSI_STRING *s) { return utf16_of(s->Buffer, s->Length, 0, 0) * 2 + 2; }
+
+/* "C:\dir\f" -> "\??\C:\dir\f" (relative paths against the current
+ * directory, "\\server\share" -> "\??\UNC\server\share") */
+NTSYSAPI NTSTATUS NTAPI RtlDosPathNameToNtPathName_U_WithStatus(PCWSTR dos, PUNICODE_STRING nt, PWSTR *part, PVOID rel)
+{
+    (void)rel;
+    if (!dos || !nt || !*dos) return (NTSTATUS)0xC0000033;          /* STATUS_OBJECT_NAME_INVALID */
+    WCHAR full[1024];
+    ULONG k = 0;
+    const WCHAR *p = dos;
+    #define PUT(c) do { if (k >= 1023) return (NTSTATUS)0xC0000106; full[k++] = (c); } while (0)
+    if ((p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/') && (p[2] == '?' || p[2] == '.') && (p[3] == '\\' || p[3] == '/')) {
+        const WCHAR *pre = L"\\??\\";
+        for (; *pre; pre++) PUT(*pre);
+        p += 4;
+    } else if ((p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/')) {
+        const WCHAR *pre = L"\\??\\UNC\\";
+        for (; *pre; pre++) PUT(*pre);
+        p += 2;
+    } else {
+        const WCHAR *pre = L"\\??\\";
+        for (; *pre; pre++) PUT(*pre);
+        if (p[0] && p[1] == ':') {
+            PUT(p[0]); PUT(':');
+            p += 2;
+            if (*p != '\\' && *p != '/') PUT('\\');
+        } else {
+            WCHAR cwd[260];
+            ULONG n = RtlGetCurrentDirectory_U(sizeof(cwd), cwd) / 2u;
+            if (n >= 260) return (NTSTATUS)0xC0000106;         /* STATUS_NAME_TOO_LONG */
+            if (*p == '\\' || *p == '/') n = n >= 2 && cwd[1] == ':' ? 2 : n;   /* "\x": the drive's root */
+            for (ULONG i = 0; i < n; i++) PUT(cwd[i]);
+            if (k && full[k - 1] != '\\' && *p != '\\' && *p != '/') PUT('\\');
+        }
+    }
+    for (; *p; p++) PUT(*p == '/' ? '\\' : *p);
+    #undef PUT
+    nt->Buffer = RtlAllocateHeap(heap(), 0, (k + 1) * 2);
+    if (!nt->Buffer) return ST_NO_MEMORY;
+    for (ULONG i = 0; i < k; i++) nt->Buffer[i] = full[i];
+    nt->Buffer[k] = 0;
+    nt->Length = (USHORT)(k * 2);
+    nt->MaximumLength = (USHORT)(k * 2 + 2);
+    if (part) {
+        *part = 0;
+        for (ULONG i = k; i > 4; i--)
+            if (nt->Buffer[i - 1] == '\\') { if (i < k) *part = nt->Buffer + i; break; }
+    }
+    return ST_SUCCESS;
+}
+NTSYSAPI BOOLEAN NTAPI RtlDosPathNameToNtPathName_U(PCWSTR dos, PUNICODE_STRING nt, PWSTR *part, PVOID rel)
+{
+    return NT_SUCCESS(RtlDosPathNameToNtPathName_U_WithStatus(dos, nt, part, rel));
+}

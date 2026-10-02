@@ -1,0 +1,1 @@
+- NetSurf: SVG; redrawing pages a script changes after layout.

@@ -4,7 +4,8 @@
     tools/appcorpus.py [--img build/nova.img] [--cache DIR] [--out DIR]
                        [--only NAME,...] [--summary FILE] [--update-reference]
 
-Downloads each program's official Windows x64 release into --cache (kept
+The programs are tests/appcorpus/*.py, one file each, run in file-name
+order.  Downloads each program's official Windows x64 release into --cache (kept
 between runs), unpacks it onto drive C: (C:\\Apps\\NAME) with a few sample
 files, boots NovaOS once and types each program's commands into the
 Terminal (tools/novarun.py's Nova class).  A command passes as a self-test
@@ -41,52 +42,26 @@ class App:
 
 
 A = r'C:\Apps'
-APPS = [
-    App('ripgrep', '14.1.1',
-        'https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip',
-        'rg', [Test('rg --version', rf'{A}\rg\rg.exe --version', [r'ripgrep 14\.1\.1']),
-               Test('rg search', rf'{A}\rg\rg.exe -n needle {A}\data', [r'hello\.txt\r?\n2:a needle in a haystack'])],
-        strip=1),
-    App('fd', '10.2.0',
-        'https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip',
-        'fd', [Test('fd --version', rf'{A}\fd\fd.exe --version', [r'fd 10\.2\.0']),
-               Test('fd find', rf'{A}\fd\fd.exe -e txt . {A}\data', [r'hello\.txt', r'notes\.txt'])],
-        strip=1),
-    App('jq', '1.7.1', 'https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-windows-amd64.exe',
-        'jq', [Test('jq --version', rf'{A}\jq\jq.exe --version', [r'jq-1\.7\.1']),
-               Test('jq filter', rf'{A}\jq\jq.exe -c ".a+.b, [.[]]" {A}\data\ab.json', [r'(?m)^42\r?$', r'\[40,2\]'])],
-        unpack='exe'),
-    App('7-Zip', '26.03', 'https://github.com/ip7z/7zip/releases/download/26.03/7z2603-x64.exe',
-        '7-Zip', [Test('7z a', rf'{A}\7-Zip\7z.exe a {A}\data.7z {A}\data', [r'Everything is Ok']),
-                  Test('7z t', rf'{A}\7-Zip\7z.exe t {A}\data.7z', [r'Type = 7z', r'Everything is Ok'])],
-        unpack='7z'),
-    App('MinGit', '2.51.0',
-        'https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/MinGit-2.51.0-64-bit.zip',
-        'MinGit', [Test('git clone', rf'{A}\MinGit\cmd\git.exe clone {A}\data\src.git {A}\clone',
-                        [r'Cloning into'], timeout=300),
-                   Test('git log', rf'{A}\MinGit\cmd\git.exe -C {A}\clone log --format=%s',
-                        [r'Add the corpus notes', r'First commit']),
-                   Test('git status', rf'{A}\MinGit\cmd\git.exe -C {A}\clone status --short --branch',
-                        [r'## main\.\.\.origin/main'])]),
-    App('Python', '3.14.0', 'https://api.nuget.org/v3-flatcontainer/python/3.14.0/python.3.14.0.nupkg',
-        'Python', [Test('python -c', rf'{A}\Python\python.exe -c "import sys, json; '
-                        r'print(json.dumps([sum(range(10)), sys.version_info[:2]]))"', [r'\[45, \[3, 14\]\]'],
-                        timeout=300)],
-        strip='tools'),
-    App('Node.js', '24.9.0', 'https://nodejs.org/dist/v24.9.0/node-v24.9.0-win-x64.zip',
-        'node', [Test('node -v', rf'{A}\node\node.exe -v', [r'v24\.9\.0'], timeout=300),
-                 Test('node -e', rf'{A}\node\node.exe -e "console.log(6*7, process.platform)"',
-                      [r'42 win32'], timeout=300)],
-        strip=1),
-    App('NovaOS', 'screens', None, '',
-        [Test('dir C:', 'dir C:\\', [r'Volume in drive C is', r'Dir\(s\)\s+[\d,]+ bytes free']),
-         Test('dir D:', 'dir D:\\', [rf'Volume in drive D is {DRIVE_LABEL}', r'Dir\(s\)\s+[\d,]+ bytes free']),
-         Test('This PC', 'start explorer', [])],
-        unpack=None),
-    App('Notepad++', '8.8.3',
-        'https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.8.3/npp.8.8.3.portable.x64.zip',
-        'npp', [Test('open a file', rf'start {A}\npp\notepad++.exe {A}\data\hello.txt')]),
-]
+
+
+def load_apps():
+    """The programs in tests/appcorpus/*.py, in file-name order.  Each file
+    defines APP (an App; App, Test, A and DRIVE_LABEL are given to it) and
+    DOC, its name in README's list (tools/docgen.py).  One file per
+    program, so changes adding programs add files instead of editing a
+    shared list."""
+    import glob
+    apps = []
+    for f in sorted(glob.glob(os.path.join(ROOT, 'tests', 'appcorpus', '*.py'))):
+        ns = {'App': App, 'Test': Test, 'A': A, 'DRIVE_LABEL': DRIVE_LABEL, '__file__': f}
+        exec(compile(open(f).read(), f, 'exec'), ns)
+        if not isinstance(ns.get('APP'), App):
+            sys.exit(f'{f}: APP must be an App')
+        apps.append(ns['APP'])
+    return apps
+
+
+APPS = load_apps()
 
 
 def fetch(url, cache):

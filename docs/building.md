@@ -1,4 +1,5 @@
 # Building NovaOS
+<!-- The regions between "BEGIN generated" and "END generated" markers are built from fragment files by tools/docgen.py: edit those files, not the regions (CONTRIBUTING.md). -->
 
 ## Prerequisites
 
@@ -9,7 +10,7 @@ Linux VM.  On a Mac, see [macos.md](macos.md).
 sudo apt update
 sudo apt install -y \
     cmake ninja-build nasm python3 \
-    clang lld llvm \
+    clang lld llvm libc++-dev \
     mtools dosfstools xorriso \
     qemu-system-x86 ovmf
 ```
@@ -20,6 +21,7 @@ What each part is for:
 |------|----------|
 | `cmake`, `ninja-build` (or make) | The build |
 | `nasm` | Kernel assembly (entry, interrupt stubs, SMP trampoline, syscall entry) |
+| `libc++-dev` | libc++'s C++ headers, for HarfBuzz in `novatext.dll` (nothing of libc++ is linked; set `NOVA_LIBCXX` to use headers elsewhere) |
 | `clang`, `lld` (`lld-link`) | **Required.** The Windows userland (`--target=x86_64-pc-windows-msvc` and `i686-pc-windows-msvc`), NetSurf, and the kernel and bootloader unless the alternatives below are installed |
 | `llvm` (`llvm-rc`) | Compiling programs' resource scripts (icons, dialogs) |
 | `python3` | `tools/build_userland.py`, `tools/build_netsurf.py` |
@@ -89,7 +91,47 @@ To rebuild only the userland, for a quick check of a DLL:
 
 ```bash
 NOVA_NO_NETSURF=1 python3 tools/build_userland.py /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
+python3 tools/build_userland.py --check     # just load the manifests (CI runs this)
 ```
+
+### Adding a DLL or program
+
+There is no central list to edit: each DLL registers itself, so changes
+made in parallel add files rather than collide on the same lines.
+
+- **A DLL** is a directory `userland/NAME/` with its `.c` files and a
+  `dll.json`:
+
+  ```json
+  {
+    "deps": ["user32", "kernel32", "ntdll"],
+    "tlssup": true
+  }
+  ```
+
+  `deps` are the DLLs it links against (they are built first; a cycle or a
+  missing one stops the build).  Leave `base` and `base_x86` out: a new
+  DLL gets the first free 16 MiB slot at 0x7FFD00000000 (x64) and
+  0x97000000 (x86), and the build checks that no two DLLs overlap.  The
+  older DLLs keep the fixed addresses written in their `dll.json`.  Other
+  keys: `sources` (directories its `.c` files come from, default its own),
+  `entry` (`"DllMain"`), `x64_only`, and `ordinals` (`{"Name": 12}`, for
+  DLLs programs import from by number).
+- **When a DLL needs more** (a third-party library, extra flags, a
+  special link), put the code in `userland/NAME/build.py`, not in
+  `tools/build_userland.py`: it may define `cflags(b)` (flags for the
+  DLL's own sources), `objs(b, odir)` (extra objects; `b.compile_many`
+  compiles a library in parallel and reuses fresh objects) and `link(b,
+  odir, objs, deps, base)` (replaces the link; `b` is
+  `tools/build_userland.py` itself, with `b.ARCH`, `b.cflags()`, `b.cc`,
+  `b.run`, `b.link_dll`).  `userland/secur32/build.py` (Mbed TLS) and
+  `userland/msvcrt/build.py` (msvcrt.dll and ucrtbase.dll) are examples.
+- **A program** is `userland/programs/NAME.c` (or `.cpp`, and `NAME.rc`
+  for resources).  It goes to `C:\Programs`, 64-bit only, unless
+  `NAME.json` says otherwise: `{"x86": true}` builds it for 32 bits as
+  well, `"system": true` installs it in `C:\Windows\System32`, `"libs":
+  ["usp10"]` links more DLLs, and `"selftest": true` lists it among the
+  README's self-test programs.
 
 ### The ISO
 
@@ -138,7 +180,8 @@ add `-nic user,model=e1000` to test the older card or
 `-nic user,model=virtio-net-pci` for virtio-net.  `-smp N` sets the core
 count (up to 16).
 
-For sound add `-device intel-hda -device hda-output` (or `hda-duplex`);
+For sound add `-device intel-hda -device hda-output` (or `hda-duplex` or
+`hda-micro`, which add a line in or a microphone to record from);
 `-audiodev wav,id=snd0,path=out.wav,out.frequency=48000` with
 `-device hda-output,audiodev=snd0` records it instead of playing it.
 `cmake --build . --target run` adds the card, playing through the host's
@@ -230,17 +273,19 @@ sudo apt install acpica-tools          # iasl, for the tables in tests/acpi/
 python3 tools/selftest.py              # the core suite; exit status = failures
 python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 
-# the network suite: IPv4, IPv6 and winhttp's HTTP/2 (needs node and openssl)
-python3 tools/selftest.py --suite network
-
-# the graphics suite: 7-Zip, Mesa and DXVK downloads, gltest/d3dtest builds
+# the graphics suite: 7-Zip, Mesa and DXVK downloads, gltest/d3dtest/d2dtest builds
 sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
 tools/ci/stage-graphics.sh /tmp/gfx
 python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
+
+# the network suite: IPv4, IPv6 and winhttp's HTTP/2 (needs node and openssl)
+python3 tools/selftest.py --suite network
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
-`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`,
+`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `comtest`,
+`tlbtest` (x64 and x86), `usptest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`,
+`soundtest wasapi`, `soundtest record`, `soundtest capture`, `soundtest volume`,
 `sleeptest timer`, `powertest`, `disptest 1024 768` (saves the mode),
 `filetest install` (an installer that must replace a running program
 schedules it for the next boot), a restart that must report `Pending file
@@ -248,11 +293,17 @@ operations at boot: 2 done, 0 failed` and come up in the saved mode
 (`disptest saved 1024 768`), `filetest installed`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
-`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
+`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite first runs
+`d2dtest`, x64 and x86: it checks geometry computations, draws a scene into
+a DC render target and compares it with `d2dref.bmp`, the image
+`tools/d2dtest/reference.py` draws with Skia (`pip install skia-python`;
+re-run it when the scene changes), then shows the scene in a window.  It
+then types `store
 install Mesa 3D` and `store install DXVK` (the archives are already in
 `C:\Downloads`, so the App Store installs without a network) and then runs
 `gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
-of each while it draws.  The network suite boots twice with a virtio-net
+of each while it draws.  The network suite (`tests/selftest/network4` and
+`network6`) boots twice with a virtio-net
 card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 (Winsock over IPv4) and `httptest suite` (winhttp: HTTP/2 by ALPN, large
 bodies, POST, redirects, certificate checks, chunked HTTP/1.1, the
@@ -260,29 +311,52 @@ asynchronous API) against `tools/h2server.js` with a throwaway self-signed
 certificate; on an IPv6-only network made by `tools/v6peer.py` it checks
 SLAAC and RDNSS (`ipconfig`), `ping -6`, `curl -6` and `netcat` over IPv6.
 
-It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV,
-the battery from `tests/acpi/battery.asl`, the lid and thermal zone from
-`tests/acpi/lid-thermal.asl` (QEMU's `pc-testdev` stands in for the embedded
-controller: the test writes the lid and temperature to ports 0xE8 and 0xE9
-through the QEMU monitor) and a USB keyboard on an xHCI controller at
-00:05.0, then types each test into the Terminal.  `powertest` asks the test
-to close the lid; once NovaOS has gone to sleep the test opens it, presses a
-key on the USB keyboard and wakes the machine (`system_wakeup`, as QEMU has
-no USB-to-platform wake), then heats and cools the thermal zone.  A test passes when the program exits with code 0, prints no
+It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
+whose microphone hears a 523 Hz tone (through a private PulseAudio server,
+so the host needs `pulseaudio`, `pulseaudio-utils` and QEMU's PulseAudio
+backend, `qemu-system-gui` on Ubuntu; without them the recording tests
+fail and the rest run), the battery from `tests/acpi/battery.asl`, the
+lid and thermal zone from `tests/acpi/lid-thermal.asl` (QEMU's `pc-testdev`
+stands in for the embedded controller: the test writes the lid and
+temperature to ports 0xE8 and 0xE9 through the QEMU monitor) and a USB
+keyboard on an xHCI controller at 00:05.0, then types each test into the
+Terminal.  `powertest` asks the test to close the lid; once NovaOS has gone
+to sleep the test opens it, presses a key on the USB keyboard and wakes the
+machine (`system_wakeup`, as QEMU has no USB-to-platform wake), then heats
+and cools the thermal zone.  A test passes when the program exits with code 0, prints no
 `FAIL` line or non-zero "failed" count, and prints what the test expects;
 a kernel panic stops the run.  `--out` (default `selftest-out/`) keeps the
-serial log, a screenshot after each test and `sound.wav`; `--summary FILE`
-appends a Markdown table and `--junit FILE` writes JUnit XML.  To add a test,
-add a line to `CORE`, `GRAPHICS`, `NET4` or `NET6` in `tools/selftest.py`.
+serial log, a screenshot after each test, `sound.wav` and the two
+recordings (`rec.wav`, `cap.wav`); `--summary FILE`
+appends a Markdown table and `--junit FILE` writes JUnit XML.
+
+To add a test, add a file to `tests/selftest/core/` (or `graphics/`):
+tests run in file-name order, so the number prefix places it (the restart
+is at 130 and `crash kernel`, which halts NovaOS, stays last at 900).
+
+```python
+# tests/selftest/core/140-mytest.py
+DOC = '`mytest` (what it covers)'      # its entry in README's core-suite list
+TESTS = [
+    Test('mytest', 'mytest', [r'mytest: \d+ passed, 0 failed']),
+]
+```
+
+`python3 tools/selftest.py --list` prints the suite.  The nightly app
+corpus works the same way: one file per program in `tests/appcorpus/`
+defining `APP = App(...)` and `DOC` (Notepad++ stays last at 900).
 
 ### Self-test programs
 
 In `userland/programs/`, installed in `C:\Programs` and, as 32-bit builds,
 in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
-0 failed".
+0 failed".  Each row of this table is a file in `docs/selftests/` (a new
+program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
+
+<!-- BEGIN generated:selftest-table -->
 
 | Program | Covers |
-|---------|--------|
+|---|---|
 | `crttest` | The C runtime |
 | `filetest` | Files and directories; `RegNotifyChangeKeyValue` (values, subkeys, subtrees, deleted keys, synchronous); `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`.  `filetest install`, a restart and `filetest installed` check that a running program replaced at boot |
 | `sectest` (x64) | Hostile system calls refused (kernel pointers, bogus handles, bad descriptors); tokens and object security through the native API: a restricted or deny-only impersonation token is refused a protected named event |
@@ -292,23 +366,24 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `apitest` | kernel32, advapi32, bcrypt, shell32, shlwapi, psapi, user32/gdi32, the registry |
 | `abitest` (x64) | The binary interface against Windows 10 1903 x64: TEB, PEB, process parameters, loader lists, `KUSER_SHARED_DATA`, `CONTEXT` and `EXCEPTION_RECORD` offsets, ntdll's stub bytes and every system-call number (`abitest_nt1903.h`), raw `syscall`s |
 | `comtest` | ole32/oleaut32, `IShellLink` |
+| `tlbtest` | COM type libraries: `LoadTypeLib` on `testdll.dll`'s embedded library, `ITypeLib`/`ITypeInfo`/`ITypeComp`, registration, `ITypeInfo::Invoke`, `DispCallFunc`, `CreateStdDispatch` |
 | `cppeh` | C++ exceptions and RTTI |
+| `usptest` | Uniscribe on HarfBuzz: Arabic and Devanagari itemized, shaped (contextual forms, ligatures, reordering) and placed with the Noto fonts, and GDI `ExtTextOut` drawing complex text exactly as `ScriptStringOut` does; `usptest bmp FILE` saves sample lines as a bitmap |
 | `shmtest` | Named and file-backed shared memory between processes |
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `proctest` | `CreateProcess` flags: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` (`GetConsoleProcessList`), file positions shared with children and duplicates |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
-| `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE`, a window that 800x600 shrinks growing back to its size and place, `CDS_UPDATEREGISTRY` saving the mode in the registry.  `disptest W H` switches and saves; `disptest saved W H` checks the mode after a restart |
+| `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
-| `sleeptest timer` | How late `Sleep(1)`, `Sleep(5)` and a 1 ms wait timeout end, idle and with a busy thread on every CPU; passes when the 95th percentile under load is 1 ms or less and none ends early.  Plain `sleeptest` sleeps (S3) instead |
-| `powertest` | The lid and a thermal zone (`GetPwrCapabilities`, `ThermalInformation`, `LastSleepTime`/`LastWakeTime`): closing the lid sleeps; needs `tests/acpi/lid-thermal.asl` and the self-test's help (see above) |
 | `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
-| `acltest` | Access checks against DACLs (`AccessCheck`) for our token and restricted, write-restricted and deny-only ones; `CheckTokenMembership`, impersonation; a named event with a DACL refused to a restricted token; file ACLs on drive C:: denied writes, deletes and renames (and reads for a restricted token), inheritance, `CreateFile` with a descriptor.  It leaves `C:\AclTest\kept.txt` and, run again after a restart, checks it kept its DACL (C: on NTFS) |
-| `drivetest` | Drive D: (NTFS: reading, then writing, renaming, deleting), with the disk from `scripts/make-ntfs-disk.sh`; then `scripts/check-ntfs-disk.sh` on the host |
+| `acltest` | Access checks against DACLs (`AccessCheck`) for our token and restricted, write-restricted and deny-only ones; `CheckTokenMembership`, impersonation; a named event with a DACL refused to a restricted token |
+| `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
+| `soundtest record FILE [MS]`, `capture FILE [MS]`, `volume` | Recording through `waveIn` and WASAPI capture into a WAV, and `IAudioEndpointVolume` (needs a card with an input) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
-| `httptest suite HTTPS-BASE HTTP-BASE` | winhttp against `tools/h2server.js`: HTTP/2 by ALPN, a 300 KB body, POST, a redirect, an untrusted certificate refused, chunked HTTP/1.1, the asynchronous API.  `httptest [-2] [-k] [-a] URL` fetches one URL |
-| `netcat [-4\|-6] [-p PORT] HOST [PATH]` | Winsock: `getaddrinfo`, IPv4 or IPv6 sockets, an HTTP/1.0 GET |
+
+<!-- END generated:selftest-table -->
 
 `crash` writes through a NULL pointer (only it dies); `crash kernel`
 crashes the kernel on purpose (`NtNovaBugCheck`) to show the backtrace.
@@ -382,6 +457,18 @@ record it and measure it:
 python3 tools/novarun.py --wav /tmp/out.wav 'C:\Programs\soundtest.exe tone 440 1000' \
     'C:\Programs\soundtest.exe wasapi 523 800'
 python3 tools/wavcheck.py /tmp/out.wav     # each tone: start, length, level, pitch
+```
+
+To test recording, `--rec FILE.wav` gives the card a microphone that hears
+FILE over and over (a private PulseAudio server with two null sinks, so the
+guest records and plays in real time; with `--wav` too, the playback is
+saved from the second sink).  Copy the recording off the data disk and
+check it:
+
+```bash
+python3 tools/novarun.py --keep /tmp/rec --rec tone523.wav 'soundtest record C:\rec.wav 3000'
+mcopy -i /tmp/rec/data.img ::/NOVA/C/rec.wav /tmp/
+python3 tools/wavcheck.py /tmp/rec.wav --tone 523 2500   # exit 0: the tone is there
 ```
 
 ### Network

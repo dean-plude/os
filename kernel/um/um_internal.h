@@ -9,10 +9,11 @@
 #include "../ke/syscall.h"
 
 #define UM_MAX_PROCS     32
-#define UM_MAX_HANDLES   256
+#define UM_MAX_HANDLES   4096
 #define UM_MAX_REGIONS   8192     /* (runtimes such as CoreCLR reserve thousands of ranges) */
 #define UM_MAX_MODULES   64
-#define UM_MAX_THREADS   64
+#define UM_MAX_THREADS   256      /* (a browser's main process runs well over 64) */
+#define UM32_MAX_THREADS 96       /* WoW: the TEB area must stay below KUSER_SHARED_DATA */
 
 /* Fixed user addresses for the per-process system areas:
  *   PEB (1 page) | loader info (3 pages) | process parameters (4 pages) |
@@ -28,7 +29,7 @@
 #define UM_MAX_STUBS     (0x1000 / UM_STUB_SIZE)
 #define UM_TEB_AREA      (UM_PEB_VA + 0x10000)
 #define UM_TEB_SIZE      0x2000
-#define UM_SYS_SIZE      (0x10000 + UM_MAX_THREADS * UM_TEB_SIZE)
+#define UM_SYS_SIZE(n)   (0x10000 + (UINT64)(n) * UM_TEB_SIZE)
 #define UM_STACK_TOP     UINT64_C(0x00007FFDE0000000)        /* first thread */
 #define UM_STACK_SIZE    (1024 * 1024)
 #define UM_THREAD_STACK  (256 * 1024)                         /* default for new threads */
@@ -50,6 +51,7 @@
 typedef struct {
     UINT64 peb, ldr_info, params, stubs, teb_area;
     UINT64 stack_top, alloc_min, alloc_max, dll_min, dll_max;
+    int max_threads;
 } UmLayout;
 
 /* NTSTATUS values used here */
@@ -116,12 +118,14 @@ struct UmThread {
     volatile UINT8  park;
     void           *uframe;
     UINT16          last_sys;       /* the latest system call (diagnostics) */
+    UINT64          last_a1;        /* and its first argument */
     /* Waiting (um_thread.c, under g_um_oblock): the objects, the waiter
      * list link, and the flag a signaler sets to wake it */
     UmObject      **wait_objs;
     int             wait_n;
     UmThread       *wait_next;
     volatile UINT32 wake;
+    volatile UINT32 alerted;        /* NtAlertThreadByThreadId, taken by NtWaitForAlertByThreadId */
 };
 
 UmObject *um_ob_ref(UmObject *o);
@@ -207,6 +211,7 @@ struct UmProcess {
     UINT32      stack_reserve;  /* from the image header */
 
     void       *gui;            /* per-process window-system state (um_gui.c) */
+    struct GdiCursorShape *cursor;  /* its SetCursor pointer (NULL: the arrow; um_gui.c) */
     char      (*stub_names)[64]; /* "dll!function" per stub at UM_STUBS_VA */
     int         nstubs;
 
@@ -250,6 +255,7 @@ bool       um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect);
 bool       um_is_guard(UmProcess *p, UINT64 va);            /* a PAGE_GUARD page */
 void       um_decommit(UmProcess *p, UINT64 va, UINT64 size);
 bool       um_is_committed(UmProcess *p, UINT64 va);
+UINT32     um_page_protect(UmProcess *p, UINT64 va);       /* PAGE_* now, 0 if not committed */
 /* Shared sections: frames the section owns, mapped into processes */
 PADDR     *um_alloc_frames(UINT64 n);           /* n zeroed frames; NULL if memory is short */
 void       um_free_frames(PADDR *f, UINT64 n);
