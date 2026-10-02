@@ -871,7 +871,9 @@ static DWORD object_sd(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR *
 WINADVAPI DWORD WINAPI GetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
                                        PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
 {
-    (void)t;
+    /* NovaOS's one window station and desktop are user32 pseudo handles,
+     * not kernel objects: they carry the default descriptor */
+    if (t == SE_WINDOW_OBJECT) return security_info(si, owner, group, dacl, sacl, sd);
     PSECURITY_DESCRIPTOR d;
     DWORD e = object_sd(h, si, &d);
     if (e) return e;
@@ -902,7 +904,8 @@ WINADVAPI DWORD WINAPI SetNamedSecurityInfoW(LPWSTR name, SE_OBJECT_TYPE t, SECU
 
 WINADVAPI DWORD WINAPI SetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
 {
-    (void)t; (void)s;                       /* (SACLs are not kept) */
+    (void)s;                                /* (SACLs are not kept) */
+    if (t == SE_WINDOW_OBJECT) return ERROR_SUCCESS;    /* (see GetSecurityInfo) */
     SECURITY_DESCRIPTOR sd;
     InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
     if (si & OWNER_SECURITY_INFORMATION) sd.Owner = o;
