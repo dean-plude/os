@@ -30,7 +30,5 @@ Install button all go through it, and programs can call
   `/qb`, `/passive`, `/l*v FILE` and `PROPERTY=value` overrides, and
   shows the familiar progress window with Cancel (full UI adds the
   completion message box).  Logs also go to the kernel log (`dmesg`).
-- Not yet: the packages' own dialogs (`InstallUISequence`), the
-  `Shortcut` table, services, environment variables, and
-  merge modules.  LZX decoding is written to the specification but has
-  only been exercised with MSZIP cabinets so far.
+- Custom actions, the packages' own dialogs, shortcuts, services and LZX
+  on real packages came later; see "Windows Installer depth" below.

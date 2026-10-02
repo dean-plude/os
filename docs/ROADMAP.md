@@ -106,9 +106,12 @@ named program or test demonstrates it.
   the Qt and GTK applications (KeePassXC, Krita, Inkscape), then Firefox.
 - Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the
   `IFileDialog` interfaces (today they report "cancelled").
-- Windows Installer: custom actions that run code, the packages' own
+- ~~Windows Installer: custom actions that run code, the packages' own
   dialogs (`InstallUISequence`), the `Shortcut` table, services, merge
-  modules; LZX cabinets tested against real packages.
+  modules; LZX cabinets tested against real packages~~ Done; see
+  [Windows Installer depth](HISTORY.md#windows-installer-depth-custom-actions-dialogs-shortcuts-services).
+  Still to come: rollback, script custom actions, patches and transforms,
+  services that start at boot.
 - ~~COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception
   tables~~ Done; see [Type libraries and FH4](HISTORY.md#com-type-libraries-and-fh4-c-exceptions).
 - .NET globalization through ICU, not only NLS for English and invariant

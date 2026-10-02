@@ -6,21 +6,27 @@
  * InstallFiles extracts the cabinets, WriteRegistryValues writes the
  * Registry table, and InstallFinalize registers the product under the
  * Uninstall key and keeps a copy of the package for uninstalling.
- * Custom actions that set properties or directories (types 51 and 35)
- * run; ones that execute code are logged and skipped.  Uninstalling
- * (REMOVE=ALL) reverses the files, folders and registry entries.
+ * Custom actions run: property and directory setters, DLLs (in a
+ * custom-action server, see api.c), programs, deferred ones in their
+ * place in the sequence and commit ones at the end.  CreateShortcuts
+ * makes .lnk files, InstallServices registers services with the service
+ * control manager.  With full UI the package's own dialogs run first
+ * (InstallUISequence, dialog.c).  Uninstalling (REMOVE=ALL) reverses the
+ * files, folders, registry entries, shortcuts and services.
  */
 #define MSI_EXPORT __declspec(dllexport)
 #include "msi.h"
-#include "msi_int.h"
+#include "engine.h"
 #include "ui.h"
+#include "dialog.h"
+#include <objbase.h>
 
 /* -----------------------------------------------------------------------
  * State
  * ----------------------------------------------------------------------- */
 typedef struct { char *name, *value; } Prop;
 
-typedef struct {
+struct Inst {
     MsiDb     db;
     void     *pkg;
     size_t    pkg_size;
@@ -39,8 +45,23 @@ typedef struct {
     char      error[256];
     int       result;
     bool      resolved;              /* directories resolved (CostFinalize ran) */
-    bool      removed_files, removed_registry, removed_folders, removed_env;
-} Inst;
+    bool      removed_files, removed_registry, removed_folders, removed_env, removed_shortcuts;
+    bool     *dir_explicit;          /* Directory rows whose path was set, not derived */
+    bool      installed;             /* the product was registered before this run */
+    char     *installed_features;    /* ",A,B," as registered, NULL if unknown */
+    bool      modes[32];             /* MsiSetMode / MsiGetMode */
+    char    **commit;                /* commit custom actions, run after InstallFinalize */
+    int       ncommit;
+    char    **ran;                   /* actions the UI sequence ran (FirstSequence, OncePerProcess) */
+    int       nran;
+    bool      in_ui;                 /* running InstallUISequence */
+    bool      executed;              /* ExecuteAction ran */
+    bool      stop_sequence;         /* a custom action returned ERROR_NO_MORE_ITEMS */
+    Dlg      *dlg;                   /* the package's dialogs (full UI) */
+    char      action_template[512];  /* ActionText template of the running action */
+    long long prog_total, prog_done; /* progress ticks from MsiProcessMessage */
+    int       sequence_depth;
+};
 
 static void logf(Inst *in, const char *fmt, ...)
 {
@@ -118,7 +139,12 @@ static void set_prop(Inst *in, const char *name, const char *value)
 
 static bool prop_set(Inst *in, const char *name) { return get_prop(in, name)[0] != 0; }
 
-static const char *cond_prop(void *ctx, const char *name) { return get_prop(ctx, name); }
+static const char *state_prop(Inst *in, const char *name);
+static const char *cond_prop(void *ctx, const char *name)
+{
+    if (name[0] == '&' || name[0] == '!' || name[0] == '$' || name[0] == '?') return state_prop(ctx, name);
+    return get_prop(ctx, name);
+}
 static bool cond(Inst *in, const char *c) { return msi_condition(c, cond_prop, in); }
 
 /* "NAME=value NAME2="two words"" from the command line */
@@ -157,10 +183,62 @@ static void parse_cmdline_props(Inst *in, const WCHAR *cmd)
 static void dir_path(Inst *in, const char *dir, char *out, int cap);
 static void file_path(Inst *in, const char *filekey, char *out, int cap);
 
-static void format_str(Inst *in, const char *s, char *out, int cap)
+/* One [...] key; @missing is set when it names an empty property (for
+ * {...} groups) */
+static const char *format_key(Inst *in, const MsiRec *rec, const char *key, char *val, int cap, bool *missing)
+{
+    const char *v = "";
+    if (key[0] == '\\' && key[1]) { val[0] = key[1]; val[1] = 0; return val; }
+    if (!strcmp(key, "~")) return "";                          /* null separator: dropped */
+    if (key[0] == '#' || key[0] == '!') { file_path(in, key + 1, val, cap); v = val; }
+    else if (key[0] == '$') { dir_path(in, key + 1, val, cap); v = val; }
+    else if (key[0] == '%') v = get_prop(in, key);
+    else if (key[0] >= '0' && key[0] <= '9') {
+        char nb[16];
+        v = rec ? msirec_str(rec, atoi(key), nb) : "";
+        snprintf(val, (size_t)cap, "%s", v);
+        v = val;
+    } else if (key[0]) v = get_prop(in, key);
+    if (!*v) *missing = true;
+    return v;
+}
+
+static void format_rec(Inst *in, const MsiRec *rec, const char *s, char *out, int cap)
 {
     int n = 0;
     while (*s && n < cap - 1) {
+        if (*s == '{' && s[1] != '{') {
+            /* {text [PROP]}: the text only when every property in it is set */
+            const char *e = strchr(s + 1, '}');
+            if (!e) { out[n++] = *s++; continue; }
+            char inner[1024], fmt[2048];
+            size_t il = (size_t)(e - s - 1);
+            if (il >= sizeof(inner)) il = sizeof(inner) - 1;
+            memcpy(inner, s + 1, il);
+            inner[il] = 0;
+            s = e + 1;
+            bool missing = false, any = false;
+            int k = 0;
+            for (const char *p = inner; *p && k < (int)sizeof(fmt) - 1; ) {
+                const char *q;
+                if (*p == '[' && (q = strchr(p + 1, ']'))) {
+                    char key[256], val[MAX_PATH * 2];
+                    size_t kl = (size_t)(q - p - 1);
+                    if (kl >= sizeof(key)) kl = sizeof(key) - 1;
+                    memcpy(key, p + 1, kl);
+                    key[kl] = 0;
+                    any = true;
+                    const char *v = format_key(in, rec, key, val, sizeof(val), &missing);
+                    for (; *v && k < (int)sizeof(fmt) - 1; v++) fmt[k++] = *v;
+                    p = q + 1;
+                } else fmt[k++] = *p++;
+            }
+            fmt[k] = 0;
+            if (any && missing) continue;
+            if (!any && !il) continue;                          /* "{}" */
+            for (const char *v = fmt; *v && n < cap - 1; v++) out[n++] = *v;
+            continue;
+        }
         if (*s != '[') { out[n++] = *s++; continue; }
         const char *e = strchr(s + 1, ']');
         if (!e) { out[n++] = *s++; continue; }
@@ -169,21 +247,31 @@ static void format_str(Inst *in, const char *s, char *out, int cap)
         if (kl >= sizeof(key)) kl = sizeof(key) - 1;
         memcpy(key, s + 1, kl);
         key[kl] = '\0';
+        if (strchr(key, '[')) {                                 /* nested: [[NAME]] */
+            char inner[512];
+            const char *e2 = strchr(e + 1, ']');
+            snprintf(inner, sizeof(inner), "%.*s", (int)(e - s), s + 1);
+            if (e2) {
+                char resolved[512];
+                format_rec(in, rec, inner, resolved, sizeof(resolved));
+                char val[MAX_PATH * 2];
+                bool missing = false;
+                const char *v = format_key(in, rec, resolved, val, sizeof(val), &missing);
+                for (; *v && n < cap - 1; v++) out[n++] = *v;
+                s = e2 + 1;
+                continue;
+            }
+        }
         s = e + 1;
         char val[MAX_PATH * 2];
-        const char *v = "";
-        if (key[0] == '\\' && key[1]) { val[0] = key[1]; val[1] = 0; v = val; }
-        else if (!strcmp(key, "~")) { v = ""; }                 /* null separator: dropped */
-        else if (key[0] == '#') { file_path(in, key + 1, val, sizeof(val)); v = val; }
-        else if (key[0] == '$') { dir_path(in, key + 1, val, sizeof(val)); v = val; }
-        else if (key[0] == '%') { v = get_prop(in, key); }
-        else if (key[0] == '!') { v = get_prop(in, key + 1); }
-        else if (!key[0]) { v = ""; }
-        else v = get_prop(in, key);
+        bool missing = false;
+        const char *v = format_key(in, rec, key, val, sizeof(val), &missing);
         for (; *v && n < cap - 1; v++) out[n++] = *v;
     }
     out[n] = '\0';
 }
+
+static void format_str(Inst *in, const char *s, char *out, int cap) { format_rec(in, NULL, s, out, cap); }
 
 /* -----------------------------------------------------------------------
  * Directories
@@ -254,15 +342,16 @@ static void standard_folders(Inst *in)
         { "System16Folder", "C:\\Windows\\System32\\" }, { "WindowsFolder", "C:\\Windows\\" },
         { "WindowsVolume", "C:\\" }, { "FontsFolder", "C:\\Windows\\Fonts\\" },
         { "TempFolder", "C:\\Temp\\" }, { "DesktopFolder", "C:\\Desktop\\" },
-        { "ProgramMenuFolder", "C:\\ProgramData\\Start Menu\\Programs\\" },
-        { "StartMenuFolder", "C:\\ProgramData\\Start Menu\\" },
-        { "StartupFolder", "C:\\ProgramData\\Start Menu\\Programs\\Startup\\" },
+        /* one user: the Start menu lists C:\AppData\Roaming\Start Menu\Programs */
+        { "ProgramMenuFolder", "C:\\AppData\\Roaming\\Start Menu\\Programs\\" },
+        { "StartMenuFolder", "C:\\AppData\\Roaming\\Start Menu\\" },
+        { "StartupFolder", "C:\\AppData\\Roaming\\Start Menu\\Programs\\Startup\\" },
         { "AppDataFolder", "C:\\AppData\\Roaming\\" }, { "LocalAppDataFolder", "C:\\AppData\\Local\\" },
         { "CommonAppDataFolder", "C:\\ProgramData\\" }, { "PersonalFolder", "C:\\Documents\\" },
         { "MyPicturesFolder", "C:\\Pictures\\" }, { "SendToFolder", "C:\\AppData\\Roaming\\SendTo\\" },
         { "TemplateFolder", "C:\\AppData\\Roaming\\Templates\\" }, { "FavoritesFolder", "C:\\Favorites\\" },
         { "NetHoodFolder", "C:\\AppData\\Roaming\\NetHood\\" }, { "PrintHoodFolder", "C:\\AppData\\Roaming\\PrintHood\\" },
-        { "RecentFolder", "C:\\AppData\\Roaming\\Recent\\" }, { "AdminToolsFolder", "C:\\ProgramData\\Start Menu\\Programs\\Administrative Tools\\" },
+        { "RecentFolder", "C:\\AppData\\Roaming\\Recent\\" }, { "AdminToolsFolder", "C:\\AppData\\Roaming\\Start Menu\\Programs\\Administrative Tools\\" },
         { "LocalAppDataFolder", "C:\\AppData\\Local\\" },
     };
     for (size_t i = 0; i < sizeof(f) / sizeof(f[0]); i++)
@@ -397,44 +486,23 @@ static bool in_list(const char *list, const char *name)
     return false;
 }
 
-static void select_features(Inst *in)
+static bool feature_was_installed(Inst *in, const char *name)
 {
-    MsiTable *ft = in->feature;
-    int nf = ft ? ft->nrows : 0;
-    in->feature_on = calloc((size_t)nf + 1, 1);
-    int level = atoi(get_prop(in, "INSTALLLEVEL"));
-    if (level <= 0) level = 1;
-    /* the Condition table changes feature levels */
-    MsiTable *ct = msidb_table(&in->db, "Condition");
-    char b[16];
-    for (int i = 0; i < nf; i++) {
-        const char *name = msidb_str(&in->db, ft, i, 0, b);
-        int lv = msidb_int(&in->db, ft, i, msidb_col(ft, "Level"), NULL);
-        for (int r = 0; ct && r < ct->nrows; r++) {
-            if (strcmp(msidb_str(&in->db, ct, r, 0, b), name)) continue;
-            int nl = msidb_int(&in->db, ct, r, 1, NULL);
-            if (cond(in, msidb_str(&in->db, ct, r, 2, b))) lv = nl;
-        }
-        bool on = lv > 0 && lv <= level;
-        const char *add = get_prop(in, "ADDLOCAL"), *rem = get_prop(in, "REMOVE");
-        if (in_list(add, name)) on = true;
-        if (in_list(rem, name)) on = false;
-        if (in->remove) on = true;             /* everything that was installed goes */
-        in->feature_on[i] = on;
-    }
-    /* a feature whose parent is off is off */
-    for (int pass = 0; pass < 8; pass++)
-        for (int i = 0; i < nf; i++) {
-            const char *parent = msidb_str(&in->db, ft, i, 1, b);
-            if (!*parent || !in->feature_on[i]) continue;
-            int p = find_feature(in, parent);
-            if (p >= 0 && p != i && !in->feature_on[p]) in->feature_on[i] = false;
-        }
+    if (!in->installed) return false;
+    if (!in->installed_features) return true;              /* registered before features were recorded */
+    char k[100];
+    snprintf(k, sizeof(k), ",%s,", name);
+    return strstr(in->installed_features, k) != NULL;
+}
 
+/* Components follow their features (and their own conditions) */
+static void compute_components(Inst *in)
+{
     MsiTable *comp = in->component, *fc = msidb_table(&in->db, "FeatureComponents");
     int nc = comp ? comp->nrows : 0;
-    in->comp_on = calloc((size_t)nc + 1, 1);
+    if (!in->comp_on) in->comp_on = calloc((size_t)nc + 1, 1);
     int ccond = msidb_col(comp, "Condition");
+    char b[16];
     for (int c = 0; c < nc; c++) {
         const char *cname = msidb_str(&in->db, comp, c, 0, b);
         bool on = false;
@@ -446,7 +514,51 @@ static void select_features(Inst *in)
         if (on && !in->remove && !cond(in, msidb_str(&in->db, comp, c, ccond, b))) on = false;
         in->comp_on[c] = on;
     }
-    int fon = 0, con = 0;
+}
+
+static void select_features(Inst *in)
+{
+    MsiTable *ft = in->feature;
+    int nf = ft ? ft->nrows : 0;
+    free(in->feature_on);
+    in->feature_on = calloc((size_t)nf + 1, 1);
+    int level = atoi(get_prop(in, "INSTALLLEVEL"));
+    if (level <= 0) level = 1;
+    /* the Condition table changes feature levels */
+    MsiTable *ct = msidb_table(&in->db, "Condition");
+    char b[16];
+    const char *add = get_prop(in, "ADDLOCAL"), *rem = get_prop(in, "REMOVE");
+    bool explicit_list = *add && strcmp(add, "ALL");
+    for (int i = 0; i < nf; i++) {
+        const char *name = msidb_str(&in->db, ft, i, 0, b);
+        int lv = msidb_int(&in->db, ft, i, msidb_col(ft, "Level"), NULL);
+        for (int r = 0; ct && r < ct->nrows; r++) {
+            if (strcmp(msidb_str(&in->db, ct, r, 0, b), name)) continue;
+            int nl = msidb_int(&in->db, ct, r, 1, NULL);
+            if (cond(in, msidb_str(&in->db, ct, r, 2, b))) lv = nl;
+        }
+        bool on = lv > 0 && lv <= level;
+        if (in->installed && !in->remove) on = feature_was_installed(in, name);   /* maintenance: keep what is there */
+        if (explicit_list && !in->installed) on = false;   /* ADDLOCAL=a,b: only those (and their parents) */
+        if (in_list(add, name)) on = true;
+        if (in_list(rem, name)) on = false;
+        if (in->remove) on = feature_was_installed(in, name) || !in->installed_features;
+        in->feature_on[i] = on;
+    }
+    /* a feature asked for brings its parents; a feature whose parent is off is off */
+    for (int pass = 0; pass < 8; pass++)
+        for (int i = 0; i < nf; i++) {
+            const char *parent = msidb_str(&in->db, ft, i, 1, b);
+            if (!*parent || !in->feature_on[i]) continue;
+            int p = find_feature(in, parent);
+            if (p < 0 || p == i || in->feature_on[p]) continue;
+            if (in_list(add, msidb_str(&in->db, ft, i, 0, b)) && !in_list(rem, parent)) in->feature_on[p] = true;
+            else in->feature_on[i] = false;
+        }
+    free(in->comp_on);
+    in->comp_on = NULL;
+    compute_components(in);
+    int fon = 0, con = 0, nc = in->component ? in->component->nrows : 0;
     for (int i = 0; i < nf; i++) fon += in->feature_on[i];
     for (int i = 0; i < nc; i++) con += in->comp_on[i];
     logf(in, "Selected %d of %d features, %d of %d components", fon, nf, con, nc);
@@ -460,10 +572,19 @@ static bool comp_enabled(Inst *in, const char *name)
 
 static void resolve_directories(Inst *in)
 {
-    /* every Directory key becomes a property holding its path (ones set
-     * on the command line or by custom actions keep their value) */
+    /* every Directory key becomes a property holding its path.  Ones set
+     * before costing (command line, Property table, custom actions) or
+     * later by MsiSetTargetPath keep their value; the rest are derived
+     * from their parents again each time. */
     char b[16], path[MAX_PATH];
-    for (int r = 0; in->dir && r < in->dir->nrows; r++) {
+    int nd = in->dir ? in->dir->nrows : 0;
+    if (!in->dir_explicit) {
+        in->dir_explicit = calloc((size_t)nd + 1, 1);
+        for (int r = 0; r < nd; r++) in->dir_explicit[r] = prop_set(in, msidb_str(&in->db, in->dir, r, 0, b));
+    }
+    for (int r = 0; r < nd; r++)
+        if (!in->dir_explicit[r]) set_prop(in, msidb_str(&in->db, in->dir, r, 0, b), "");
+    for (int r = 0; r < nd; r++) {
         const char *name = msidb_str(&in->db, in->dir, r, 0, b);
         dir_path(in, name, path, sizeof(path));      /* (a set property keeps its value, with a '\') */
         set_prop(in, name, path);
@@ -474,6 +595,67 @@ static void resolve_directories(Inst *in)
         for (int i = 0; i < 4; i++)
             if (prop_set(in, keys[i])) { logf(in, "%s = %s", keys[i], get_prop(in, keys[i])); break; }
     }
+}
+
+/* -----------------------------------------------------------------------
+ * What the user sees: the progress window, or the package's own progress
+ * dialog (its ActionText, ActionData and SetProgress events)
+ * ----------------------------------------------------------------------- */
+static void ui_detail(Inst *in, const char *text)
+{
+    if (in->dlg) dlg_event(in->dlg, "ActionData", text, 0, 0);
+    else if (in->ui) msiui_status(in->ui, text);
+}
+
+static void ui_action_text(Inst *in, const char *text)
+{
+    if (in->dlg) dlg_event(in->dlg, "ActionText", text, 0, 0);
+    else if (in->ui && text[0]) msiui_status(in->ui, text);
+}
+
+static void ui_progress(Inst *in, int done, int total)
+{
+    if (in->dlg) dlg_event(in->dlg, "SetProgress", NULL, done, total);
+    else if (in->ui) msiui_progress(in->ui, done, total);
+}
+
+static bool ui_cancelled(Inst *in)
+{
+    if (in->dlg) return dlg_cancelled(in->dlg);
+    return in->ui && msiui_cancelled(in->ui);
+}
+
+void eng_pump(Inst *in)
+{
+    if (in->dlg) dlg_pump(in->dlg);
+    else if (in->ui) msiui_cancelled(in->ui);
+}
+
+/* An action starts: its description from the ActionText table */
+static void ui_action(Inst *in, const char *action)
+{
+    static const struct { const char *a, *d; } std[] = {
+        { "InstallFiles", "Copying new files" }, { "RemoveFiles", "Removing files" },
+        { "WriteRegistryValues", "Writing system registry values" }, { "RemoveRegistryValues", "Removing system registry values" },
+        { "CreateShortcuts", "Creating shortcuts" }, { "RemoveShortcuts", "Removing shortcuts" },
+        { "InstallServices", "Installing new services" }, { "StartServices", "Starting services" },
+        { "StopServices", "Stopping services" }, { "DeleteServices", "Deleting services" },
+        { "WriteEnvironmentStrings", "Updating environment strings" }, { "RegisterProduct", "Registering product" },
+        { "CreateFolders", "Creating folders" }, { "RemoveFolders", "Removing folders" },
+        { "InstallFinalize", "" }, { "CostFinalize", "Computing space requirements" },
+    };
+    char text[512] = "", b[16];
+    in->action_template[0] = 0;
+    MsiTable *t = msidb_table(&in->db, "ActionText");
+    int r = t ? msidb_find(&in->db, t, 0, action, 0) : -1;
+    if (r >= 0) {
+        format_str(in, msidb_str(&in->db, t, r, 1, b), text, sizeof(text));
+        snprintf(in->action_template, sizeof(in->action_template), "%s", msidb_str(&in->db, t, r, 2, b));
+    } else {
+        for (size_t i = 0; i < sizeof(std) / sizeof(std[0]); i++)
+            if (!strcmp(std[i].a, action)) snprintf(text, sizeof(text), "%s", std[i].d);
+    }
+    if (text[0]) ui_action_text(in, text);
 }
 
 /* -----------------------------------------------------------------------
@@ -608,11 +790,11 @@ static bool open_writer(Inst *in, Writer *w)
         fail(in, MSI_ERROR_FAILURE, "Could not create %s (error %lu)", w->pf->target, GetLastError());
         return false;
     }
-    if (in->ui) {
+    if (in->ui || in->dlg) {
         char status[MAX_PATH + 32];
         const char *name = strrchr(w->pf->target, '\\');
-        snprintf(status, sizeof(status), "Copying new files: %s", name ? name + 1 : w->pf->target);
-        msiui_status(in->ui, status);
+        snprintf(status, sizeof(status), in->dlg ? "%s" : "Copying new files: %s", name ? name + 1 : w->pf->target);
+        ui_detail(in, status);
     }
     logf(in, "Installing %s (%u bytes)", w->pf->target, w->pf->size);
     return true;
@@ -624,7 +806,7 @@ static void close_writer(Inst *in, Writer *w)
     w->h = NULL;
     w->pf->done = true;
     in->done_work++;
-    if (in->ui) msiui_progress(in->ui, in->done_work, in->total_work);
+    ui_progress(in, in->done_work, in->total_work);
 }
 
 /* Extract one cabinet set (starting at Media row @m) for the planned
@@ -690,7 +872,7 @@ static bool extract_media(Inst *in, int m, PlanFile *pf, int npf)
             }
             if (!ok) break;
             pos = bend;
-            if (in->ui && msiui_cancelled(in->ui)) { fail(in, MSI_ERROR_USEREXIT, "Cancelled by the user"); ok = false; break; }
+            if (ui_cancelled(in)) { fail(in, MSI_ERROR_USEREXIT, "Cancelled by the user"); ok = false; break; }
         }
         for (int i = 0; i < nw; i++) if (ws[i].h) close_writer(in, &ws[i]);
         cab_reader_end(&r);
@@ -718,7 +900,7 @@ static bool copy_uncompressed(Inst *in, PlanFile *p)
     if (!CopyFileW(ws, wd, FALSE)) { fail(in, MSI_ERROR_PACKAGE_OPEN, "Source file %s is missing", src); return false; }
     p->done = true;
     in->done_work++;
-    if (in->ui) msiui_progress(in->ui, in->done_work, in->total_work);
+    ui_progress(in, in->done_work, in->total_work);
     return true;
 }
 
@@ -727,7 +909,7 @@ static bool action_install_files(Inst *in)
     int n;
     PlanFile *pf = plan_files(in, &n);
     in->total_work = n + 1;
-    if (in->ui) msiui_progress(in->ui, 0, in->total_work);
+    ui_progress(in, 0, in->total_work);
     bool ok = true;
     char b[16];
     int attr_col = msidb_col(in->file, "Attributes");
@@ -751,8 +933,20 @@ static bool action_install_files(Inst *in)
         }
         ok = extract_media(in, m, pf, n);
     }
-    for (int i = 0; ok && i < n; i++)
-        if (!pf[i].done) { logf(in, "Warning: %s was not in any cabinet", pf[i].key); }
+    for (int i = 0; ok && i < n; i++) {
+        if (pf[i].done) continue;
+        if (pf[i].size == 0) {                   /* empty files are often left out of the cabinet */
+            char dir[MAX_PATH];
+            snprintf(dir, sizeof(dir), "%s", pf[i].target);
+            char *slash = strrchr(dir, '\\');
+            if (slash) { slash[1] = 0; make_dirs(dir); }
+            WCHAR wt[MAX_PATH];
+            to_w(pf[i].target, wt, MAX_PATH);
+            HANDLE h = CreateFileW(wt, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h != INVALID_HANDLE_VALUE) { CloseHandle(h); pf[i].done = true; continue; }
+        }
+        logf(in, "Warning: %s was not in any cabinet", pf[i].key);
+    }
     free(pf);
     return ok;
 }
@@ -769,7 +963,7 @@ static bool action_remove_files(Inst *in)
         if (DeleteFileW(w)) logf(in, "Removed %s", pf[i].target);
         else if (GetFileAttributesW(w) != INVALID_FILE_ATTRIBUTES) logf(in, "Could not remove %s", pf[i].target);
         in->done_work++;
-        if (in->ui) { msiui_progress(in->ui, in->done_work, in->total_work); }
+        ui_progress(in, in->done_work, in->total_work);
     }
     free(pf);
     return true;
@@ -1154,6 +1348,14 @@ static void action_register_product(Inst *in)
         char loc[MAX_PATH];
         install_location(in, loc, sizeof(loc));
         set_sz(h, L"InstallLocation", loc);
+        /* the features installed, for maintenance and removal */
+        char feats[4096] = ",", b[16];
+        for (int i = 0; in->feature && i < in->feature->nrows; i++) {
+            if (!in->feature_on || !in->feature_on[i]) continue;
+            size_t n = strlen(feats);
+            snprintf(feats + n, sizeof(feats) - n, "%s,", msidb_str(&in->db, in->feature, i, 0, b));
+        }
+        set_sz(h, L"Features", feats);
         RegCloseKey(h);
     }
     logf(in, "Registered product %s (%s)", get_prop(in, "ProductName"), code);
@@ -1192,18 +1394,123 @@ static bool action_launch_conditions(Inst *in)
     return true;
 }
 
-static void action_app_search(Inst *in)
+/* A file's version from its VS_FIXEDFILEINFO (the 0xFEEF04BD signature in
+ * its version resource); false when it has none */
+static bool file_version(const WCHAR *path, unsigned v[4])
 {
-    /* AppSearch(Property, Signature_) with RegLocator(Signature_, Root, Key, Name, Type) */
-    MsiTable *as = msidb_table(&in->db, "AppSearch"), *rl = msidb_table(&in->db, "RegLocator");
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    static uint8_t buf[65536 + 16];
+    size_t keep = 0;
+    bool found = false;
+    DWORD n;
+    while (!found && ReadFile(h, buf + keep, 65536, &n, NULL) && n) {
+        size_t len = keep + n;
+        for (size_t i = 0; i + 16 <= len; i += 4) {
+            if (*(uint32_t *)(buf + i) != 0xFEEF04BD) continue;
+            uint32_t ms = *(uint32_t *)(buf + i + 8), ls = *(uint32_t *)(buf + i + 12);
+            v[0] = ms >> 16; v[1] = ms & 0xFFFF; v[2] = ls >> 16; v[3] = ls & 0xFFFF;
+            found = true;
+            break;
+        }
+        /* the structure is DWORD aligned in the file; carry 16 bytes over */
+        keep = len >= 16 ? 16 : len;
+        memmove(buf, buf + len - keep, keep);
+    }
+    CloseHandle(h);
+    return found;
+}
+
+static int cmp_version(const unsigned a[4], const char *s)
+{
+    unsigned b[4] = { 0, 0, 0, 0 };
+    sscanf(s, "%u.%u.%u.%u", &b[0], &b[1], &b[2], &b[3]);
+    for (int i = 0; i < 4; i++) if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+    return 0;
+}
+
+/* Does @path satisfy Signature row @r (versions, sizes)? */
+static bool signature_match(Inst *in, MsiTable *sg, int r, const char *path)
+{
+    char b[16], minv[64], maxv[64];
+    snprintf(minv, sizeof(minv), "%s", msidb_str(&in->db, sg, r, msidb_col(sg, "MinVersion"), b));
+    snprintf(maxv, sizeof(maxv), "%s", msidb_str(&in->db, sg, r, msidb_col(sg, "MaxVersion"), b));
+    WCHAR wp[MAX_PATH];
+    to_w(path, wp, MAX_PATH);
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!GetFileAttributesExW(wp, GetFileExInfoStandard, &fa) || (fa.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    if (minv[0] || maxv[0]) {
+        unsigned v[4];
+        if (!file_version(wp, v)) return false;
+        if (minv[0] && cmp_version(v, minv) < 0) return false;
+        if (maxv[0] && cmp_version(v, maxv) > 0) return false;
+    }
+    bool null;
+    int mins = msidb_int(&in->db, sg, r, msidb_col(sg, "MinSize"), &null);
+    if (!null && (int64_t)fa.nFileSizeLow < mins) return false;
+    int maxs = msidb_int(&in->db, sg, r, msidb_col(sg, "MaxSize"), &null);
+    if (!null && (int64_t)fa.nFileSizeLow > maxs) return false;
+    return true;
+}
+
+/* The file of Signature row @r under @dir, down @depth levels of folders */
+static bool find_signature_file(Inst *in, MsiTable *sg, int r, const char *dir, int depth, char *out, int cap)
+{
+    char b[16], name[256];
+    snprintf(name, sizeof(name), "%s", msidb_str(&in->db, sg, r, msidb_col(sg, "FileName"), b));
+    char *bar = strchr(name, '|');
+    const char *lng = bar ? bar + 1 : name;
+    char path[MAX_PATH * 2];
+    snprintf(path, sizeof(path), "%s", dir);
+    ensure_slash(path, sizeof(path));
+    size_t base = strlen(path);
+    snprintf(path + base, sizeof(path) - base, "%s", lng);
+    if (signature_match(in, sg, r, path)) { snprintf(out, (size_t)cap, "%s", path); return true; }
+    if (bar) {
+        *bar = 0;
+        snprintf(path + base, sizeof(path) - base, "%s", name);
+        if (signature_match(in, sg, r, path)) { snprintf(out, (size_t)cap, "%s", path); return true; }
+    }
+    if (depth <= 0) return false;
+    snprintf(path + base, sizeof(path) - base, "*");
+    WCHAR wp[MAX_PATH * 2];
+    to_w(path, wp, MAX_PATH * 2);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(wp, &fd);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    bool found = false;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+        char sub[MAX_PATH], subdir[MAX_PATH * 2];
+        to_u8(fd.cFileName, sub, sizeof(sub));
+        path[base] = 0;
+        snprintf(subdir, sizeof(subdir), "%s%s", path, sub);
+        found = find_signature_file(in, sg, r, subdir, depth - 1, out, cap);
+    } while (!found && FindNextFileW(h, &fd));
+    FindClose(h);
+    return found;
+}
+
+static bool dir_exists(const char *p)
+{
+    WCHAR w[MAX_PATH * 2];
+    to_w(p, w, MAX_PATH * 2);
+    DWORD a = GetFileAttributesW(w);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+/* What a signature finds: a file (when the Signature table describes one)
+ * or a folder, through RegLocator or DrLocator (Parent chains followed) */
+static bool locate(Inst *in, const char *sig, char *out, int cap, int guard)
+{
+    if (guard > 16) return false;
     char b[16];
-    for (int r = 0; as && rl && r < as->nrows; r++) {
-        const char *prop = msidb_str(&in->db, as, r, 0, b);
-        char sig[80];
-        snprintf(sig, sizeof(sig), "%s", msidb_str(&in->db, as, r, 1, b));
-        int l = msidb_find(&in->db, rl, 0, sig, 0);
-        if (l < 0) continue;
-        int root = msidb_int(&in->db, rl, l, 1, NULL);
+    MsiTable *sg = msidb_table(&in->db, "Signature");
+    int sr = sg ? msidb_find(&in->db, sg, 0, sig, 0) : -1;
+    MsiTable *rl = msidb_table(&in->db, "RegLocator");
+    int l = rl ? msidb_find(&in->db, rl, 0, sig, 0) : -1;
+    if (l >= 0) {
+        int root = msidb_int(&in->db, rl, l, 1, NULL), type = msidb_int(&in->db, rl, l, 4, NULL);
         char key[512], name[256];
         format_str(in, msidb_str(&in->db, rl, l, 2, b), key, sizeof(key));
         format_str(in, msidb_str(&in->db, rl, l, 3, b), name, sizeof(name));
@@ -1211,18 +1518,84 @@ static void action_app_search(Inst *in)
         to_w(key, wkey, 512);
         to_w(name, wname, 256);
         HKEY h;
-        if (RegOpenKeyExW(root_key(in, root), wkey, 0, KEY_READ, &h)) continue;
-        DWORD type, size = sizeof(wv);
-        if (!RegQueryValueExW(h, name[0] ? wname : NULL, NULL, &type, (BYTE *)wv, &size)) {
-            char v[1024];
-            if (type == REG_DWORD) snprintf(v, sizeof(v), "#%lu", (unsigned long)*(DWORD *)wv);
-            else to_u8(wv, v, sizeof(v));
-            char prop_name[80];
-            snprintf(prop_name, sizeof(prop_name), "%s", prop);
-            set_prop(in, prop_name, v);
-            logf(in, "AppSearch: %s = %s", prop_name, v);
-        }
+        if (RegOpenKeyExW(root_key(in, root), wkey, 0, KEY_READ, &h)) return false;
+        DWORD vt, size = sizeof(wv) - 2;
+        LSTATUS e = RegQueryValueExW(h, name[0] ? wname : NULL, NULL, &vt, (BYTE *)wv, &size);
         RegCloseKey(h);
+        if (e) return false;
+        wv[size / 2] = 0;
+        char v[1024];
+        if (vt == REG_DWORD) snprintf(v, sizeof(v), "#%lu", (unsigned long)*(DWORD *)wv);
+        else if (vt == REG_EXPAND_SZ) { WCHAR x[1024]; ExpandEnvironmentStringsW(wv, x, 1024); to_u8(x, v, sizeof(v)); }
+        else to_u8(wv, v, sizeof(v));
+        switch (type & 0x0F) {
+        case 2:                                                  /* the raw value */
+            snprintf(out, (size_t)cap, "%s", v);
+            return true;
+        case 1:                                                  /* a file path */
+            if (v[0] == '"') { memmove(v, v + 1, strlen(v)); char *q = strchr(v, '"'); if (q) *q = 0; }
+            if (sr >= 0) {
+                char *slash = strrchr(v, '\\');
+                if (!slash) return false;
+                *slash = 0;
+                return find_signature_file(in, sg, sr, v, 0, out, cap);
+            }
+            if (!dir_exists(v)) { WCHAR w[1024]; to_w(v, w, 1024); if (GetFileAttributesW(w) == INVALID_FILE_ATTRIBUTES) return false; }
+            snprintf(out, (size_t)cap, "%s", v);
+            return true;
+        default:                                                 /* a folder */
+            if (sr >= 0) return find_signature_file(in, sg, sr, v, 0, out, cap);
+            if (!dir_exists(v)) return false;
+            snprintf(out, (size_t)cap, "%s", v);
+            ensure_slash(out, (size_t)cap);
+            return true;
+        }
+    }
+    MsiTable *dl = msidb_table(&in->db, "DrLocator");
+    for (int r = 0; dl && (r = msidb_find(&in->db, dl, 0, sig, r)) >= 0; r++) {
+        char parent[80], path[MAX_PATH * 2], dir[MAX_PATH * 2];
+        snprintf(parent, sizeof(parent), "%s", msidb_str(&in->db, dl, r, 1, b));
+        format_str(in, msidb_str(&in->db, dl, r, 2, b), path, sizeof(path));
+        bool null;
+        int depth = msidb_int(&in->db, dl, r, 3, &null);
+        if (null) depth = 0;
+        if (parent[0]) {
+            if (!locate(in, parent, dir, sizeof(dir), guard + 1)) continue;
+            if (!dir_exists(dir)) {                              /* the parent found a file: its folder */
+                char *slash = strrchr(dir, '\\');
+                if (slash) slash[1] = 0;
+            }
+            ensure_slash(dir, sizeof(dir));
+            strncat(dir, path, sizeof(dir) - strlen(dir) - 1);
+        } else if (path[0] && path[1] != ':' && path[0] != '\\') {
+            snprintf(dir, sizeof(dir), "C:\\%s", path);         /* relative: on the (one) fixed drive */
+        } else {
+            snprintf(dir, sizeof(dir), "%s", path[0] ? path : "C:\\");
+        }
+        if (sr >= 0) {
+            if (find_signature_file(in, sg, sr, dir, depth, out, cap)) return true;
+        } else if (dir_exists(dir)) {
+            snprintf(out, (size_t)cap, "%s", dir);
+            ensure_slash(out, (size_t)cap);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void action_app_search(Inst *in)
+{
+    /* AppSearch(Property, Signature_): RegLocator and DrLocator, with the
+     * Signature table for files */
+    MsiTable *as = msidb_table(&in->db, "AppSearch");
+    char b[16];
+    for (int r = 0; as && r < as->nrows; r++) {
+        char prop[80], sig[80], v[MAX_PATH * 2];
+        snprintf(prop, sizeof(prop), "%s", msidb_str(&in->db, as, r, 0, b));
+        snprintf(sig, sizeof(sig), "%s", msidb_str(&in->db, as, r, 1, b));
+        if (!locate(in, sig, v, sizeof(v), 0)) continue;
+        set_prop(in, prop, v);
+        logf(in, "AppSearch: %s = %s", prop, v);
     }
 }
 
@@ -1288,98 +1661,632 @@ static void action_remove_existing(Inst *in)
     }
 }
 
-static void action_shortcuts(Inst *in)
+/* -----------------------------------------------------------------------
+ * Shortcut table: .lnk files through shell32's IShellLinkW.  A Target in
+ * brackets is a formatted path; anything else names a feature (an
+ * "advertised" shortcut), which points at the component's key file.
+ * Icons come from the Icon table, saved under C:\Windows\Installer\{ProductCode}.
+ * ----------------------------------------------------------------------- */
+typedef struct LinkW LinkW;
+typedef struct {
+    HRESULT (WINAPI *QueryInterface)(LinkW *, REFIID, void **);
+    ULONG   (WINAPI *AddRef)(LinkW *);
+    ULONG   (WINAPI *Release)(LinkW *);
+    HRESULT (WINAPI *GetPath)(LinkW *, LPWSTR, int, void *, DWORD);
+    HRESULT (WINAPI *GetIDList)(LinkW *, void **);
+    HRESULT (WINAPI *SetIDList)(LinkW *, const void *);
+    HRESULT (WINAPI *GetDescription)(LinkW *, LPWSTR, int);
+    HRESULT (WINAPI *SetDescription)(LinkW *, LPCWSTR);
+    HRESULT (WINAPI *GetWorkingDirectory)(LinkW *, LPWSTR, int);
+    HRESULT (WINAPI *SetWorkingDirectory)(LinkW *, LPCWSTR);
+    HRESULT (WINAPI *GetArguments)(LinkW *, LPWSTR, int);
+    HRESULT (WINAPI *SetArguments)(LinkW *, LPCWSTR);
+    HRESULT (WINAPI *GetHotkey)(LinkW *, WORD *);
+    HRESULT (WINAPI *SetHotkey)(LinkW *, WORD);
+    HRESULT (WINAPI *GetShowCmd)(LinkW *, int *);
+    HRESULT (WINAPI *SetShowCmd)(LinkW *, int);
+    HRESULT (WINAPI *GetIconLocation)(LinkW *, LPWSTR, int, int *);
+    HRESULT (WINAPI *SetIconLocation)(LinkW *, LPCWSTR, int);
+    HRESULT (WINAPI *SetRelativePath)(LinkW *, LPCWSTR, DWORD);
+    HRESULT (WINAPI *Resolve)(LinkW *, HWND, DWORD);
+    HRESULT (WINAPI *SetPath)(LinkW *, LPCWSTR);
+} LinkWVtbl;
+struct LinkW { const LinkWVtbl *v; };
+
+typedef struct PFile PFile;
+typedef struct {
+    HRESULT (WINAPI *QueryInterface)(PFile *, REFIID, void **);
+    ULONG   (WINAPI *AddRef)(PFile *);
+    ULONG   (WINAPI *Release)(PFile *);
+    HRESULT (WINAPI *GetClassID)(PFile *, CLSID *);
+    HRESULT (WINAPI *IsDirty)(PFile *);
+    HRESULT (WINAPI *Load)(PFile *, LPCWSTR, DWORD);
+    HRESULT (WINAPI *Save)(PFile *, LPCWSTR, BOOL);
+} PFileVtbl;
+struct PFile { const PFileVtbl *v; };
+
+static const GUID CLSID_ShellLink_ = { 0x00021401, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+static const GUID IID_IShellLinkW_ = { 0x000214F9, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+static const GUID IID_IPersistFile_ = { 0x0000010B, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+
+/* The key file of a component (its KeyPath names a File row) */
+static void component_key_file(Inst *in, const char *comp, char *out, int cap)
+{
+    out[0] = 0;
+    int c = msidb_find(&in->db, in->component, 0, comp, 0);
+    if (c < 0) return;
+    char b[16];
+    const char *key = msidb_str(&in->db, in->component, c, msidb_col(in->component, "KeyPath"), b);
+    if (*key && msidb_find(&in->db, in->file, 0, key, 0) >= 0) file_path(in, key, out, cap);
+    else dir_path(in, msidb_str(&in->db, in->component, c, 2, b), out, cap);
+}
+
+static void shortcut_path(Inst *in, MsiTable *t, int r, char *out, int cap)
+{
+    char b[16], dir[MAX_PATH], name[MAX_PATH];
+    dir_path(in, msidb_str(&in->db, t, r, 1, b), dir, sizeof(dir));
+    long_name(msidb_str(&in->db, t, r, 2, b), name, sizeof(name));
+    snprintf(out, (size_t)cap, "%s%s.lnk", dir, name);
+}
+
+/* An Icon table entry as a file, for shortcuts to point at */
+static bool save_icon(Inst *in, const char *icon, char *out, int cap)
+{
+    char sname[128];
+    snprintf(sname, sizeof(sname), "Icon.%s", icon);
+    size_t size = 0;
+    void *data = cfb_read(&in->db.cfb, sname, &size);
+    if (!data) return false;
+    snprintf(out, (size_t)cap, "C:\\Windows\\Installer\\%s\\", get_prop(in, "ProductCode"));
+    make_dirs(out);
+    size_t n = strlen(out);
+    snprintf(out + n, (size_t)cap - n, "%s", icon);
+    WCHAR w[MAX_PATH];
+    to_w(out, w, MAX_PATH);
+    HANDLE h = CreateFileW(w, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    bool ok = false;
+    if (h != INVALID_HANDLE_VALUE) {
+        DWORD wr = 0;
+        ok = WriteFile(h, data, (DWORD)size, &wr, NULL) && wr == size;
+        CloseHandle(h);
+    }
+    free(data);
+    return ok;
+}
+
+static void action_create_shortcuts(Inst *in)
+{
+    MsiTable *t = msidb_table(&in->db, "Shortcut");
+    if (!t) return;
+    CoInitialize(NULL);
+    char b[16];
+    int cargs = msidb_col(t, "Arguments"), cdesc = msidb_col(t, "Description"), chot = msidb_col(t, "Hotkey"),
+        cicon = msidb_col(t, "Icon_"), cidx = msidb_col(t, "IconIndex"), cshow = msidb_col(t, "ShowCmd"),
+        cwk = msidb_col(t, "WkDir");
+    for (int r = 0; r < t->nrows; r++) {
+        const char *comp = msidb_str(&in->db, t, r, 3, b);
+        if (!comp_enabled(in, comp)) continue;
+        char lnk[MAX_PATH], target[MAX_PATH * 2], tmp[MAX_PATH * 2];
+        shortcut_path(in, t, r, lnk, sizeof(lnk));
+        const char *raw = msidb_str(&in->db, t, r, 4, b);
+        if (raw[0] == '[') format_str(in, raw, target, sizeof(target));
+        else component_key_file(in, comp, target, sizeof(target));     /* advertised: the feature's component */
+        LinkW *link = NULL;
+        if (FAILED(CoCreateInstance(&CLSID_ShellLink_, NULL, CLSCTX_INPROC_SERVER, &IID_IShellLinkW_, (void **)&link)) || !link) {
+            logf(in, "Shortcut %s: shell32 has no ShellLink", lnk);
+            continue;
+        }
+        WCHAR w[MAX_PATH * 2];
+        to_w(target, w, MAX_PATH * 2);
+        link->v->SetPath(link, w);
+        format_str(in, msidb_str(&in->db, t, r, cargs, b), tmp, sizeof(tmp));
+        if (tmp[0]) { to_w(tmp, w, MAX_PATH * 2); link->v->SetArguments(link, w); }
+        format_str(in, msidb_str(&in->db, t, r, cdesc, b), tmp, sizeof(tmp));
+        if (tmp[0]) { to_w(tmp, w, MAX_PATH * 2); link->v->SetDescription(link, w); }
+        const char *wk = msidb_str(&in->db, t, r, cwk, b);
+        if (*wk) { dir_path(in, wk, tmp, sizeof(tmp)); to_w(tmp, w, MAX_PATH * 2); link->v->SetWorkingDirectory(link, w); }
+        else {
+            /* like Windows: the target's folder */
+            snprintf(tmp, sizeof(tmp), "%s", target);
+            char *bs = strrchr(tmp, '\\');
+            if (bs) { *bs = 0; to_w(tmp, w, MAX_PATH * 2); link->v->SetWorkingDirectory(link, w); }
+        }
+        bool null;
+        int hot = msidb_int(&in->db, t, r, chot, &null);
+        if (!null && hot) link->v->SetHotkey(link, (WORD)hot);
+        int show = msidb_int(&in->db, t, r, cshow, &null);
+        if (!null && show) link->v->SetShowCmd(link, show);
+        const char *icon = msidb_str(&in->db, t, r, cicon, b);
+        char iconpath[MAX_PATH];
+        if (*icon && save_icon(in, icon, iconpath, sizeof(iconpath))) {
+            to_w(iconpath, w, MAX_PATH * 2);
+            link->v->SetIconLocation(link, w, msidb_int(&in->db, t, r, cidx, NULL));
+        }
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof(dir), "%s", lnk);
+        char *bs = strrchr(dir, '\\');
+        if (bs) { bs[1] = 0; make_dirs(dir); }
+        PFile *pf = NULL;
+        HRESULT hr = E_FAIL;
+        if (SUCCEEDED(link->v->QueryInterface(link, &IID_IPersistFile_, (void **)&pf)) && pf) {
+            to_w(lnk, w, MAX_PATH * 2);
+            hr = pf->v->Save(pf, w, TRUE);
+            pf->v->Release(pf);
+        }
+        link->v->Release(link);
+        if (SUCCEEDED(hr)) logf(in, "Shortcut %s -> %s", lnk, target);
+        else logf(in, "Could not save shortcut %s (%#lx)", lnk, (unsigned long)hr);
+    }
+}
+
+static void action_remove_shortcuts(Inst *in)
 {
     MsiTable *t = msidb_table(&in->db, "Shortcut");
     char b[16];
     for (int r = 0; t && r < t->nrows; r++) {
         if (!comp_enabled(in, msidb_str(&in->db, t, r, 3, b))) continue;
-        char name[MAX_PATH];
-        long_name(msidb_str(&in->db, t, r, 2, b), name, sizeof(name));
-        logf(in, "Shortcut \"%s\" not created (no shortcuts on NovaOS; programs start from C:\\Programs)", name);
+        char lnk[MAX_PATH];
+        shortcut_path(in, t, r, lnk, sizeof(lnk));
+        WCHAR w[MAX_PATH];
+        to_w(lnk, w, MAX_PATH);
+        if (DeleteFileW(w)) logf(in, "Removed shortcut %s", lnk);
+        char *bs = strrchr(lnk, '\\');
+        if (bs) { *bs = 0; remove_folder_chain(in, lnk); }
     }
+    /* the saved icons */
+    char dir[MAX_PATH];
+    snprintf(dir, sizeof(dir), "C:\\Windows\\Installer\\%s", get_prop(in, "ProductCode"));
+    WCHAR wd[MAX_PATH], pat[MAX_PATH];
+    to_w(dir, wd, MAX_PATH);
+    _snwprintf(pat, MAX_PATH, L"%s\\*", wd);
+    WIN32_FIND_DATAW fd;
+    HANDLE f = FindFirstFileW(pat, &fd);
+    if (f != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            WCHAR p[MAX_PATH];
+            _snwprintf(p, MAX_PATH, L"%s\\%s", wd, fd.cFileName);
+            DeleteFileW(p);
+        } while (FindNextFileW(f, &fd));
+        FindClose(f);
+    }
+    RemoveDirectoryW(wd);
 }
 
-/* Custom actions: only the property/directory setters run */
+/* -----------------------------------------------------------------------
+ * Services: ServiceInstall registers them with the service control
+ * manager (advapi32), ServiceControl starts, stops and deletes them.
+ * ----------------------------------------------------------------------- */
+typedef void *SC_H;
+__declspec(dllimport) SC_H WINAPI OpenSCManagerW(LPCWSTR, LPCWSTR, DWORD);
+__declspec(dllimport) SC_H WINAPI OpenServiceW(SC_H, LPCWSTR, DWORD);
+__declspec(dllimport) SC_H WINAPI CreateServiceW(SC_H, LPCWSTR, LPCWSTR, DWORD, DWORD, DWORD, DWORD, LPCWSTR, LPCWSTR,
+                                                 LPDWORD, LPCWSTR, LPCWSTR, LPCWSTR);
+__declspec(dllimport) BOOL WINAPI ChangeServiceConfigW(SC_H, DWORD, DWORD, DWORD, LPCWSTR, LPCWSTR, LPDWORD, LPCWSTR,
+                                                       LPCWSTR, LPCWSTR, LPCWSTR);
+__declspec(dllimport) BOOL WINAPI ChangeServiceConfig2W(SC_H, DWORD, LPVOID);
+__declspec(dllimport) BOOL WINAPI StartServiceW(SC_H, DWORD, LPCWSTR *);
+__declspec(dllimport) BOOL WINAPI ControlService(SC_H, DWORD, LPVOID);
+__declspec(dllimport) BOOL WINAPI DeleteService(SC_H);
+__declspec(dllimport) BOOL WINAPI CloseServiceHandle(SC_H);
+__declspec(dllimport) BOOL WINAPI QueryServiceStatus(SC_H, LPVOID);
+
+#define SVC_ALL_ACCESS 0xF01FF
+#define SCM_ALL_ACCESS 0xF003F
+#define SVC_NO_CHANGE  0xFFFFFFFF
+
+static void action_install_services(Inst *in)
+{
+    MsiTable *t = msidb_table(&in->db, "ServiceInstall");
+    if (!t) return;
+    SC_H scm = OpenSCManagerW(NULL, NULL, SCM_ALL_ACCESS);
+    if (!scm) { logf(in, "No service control manager"); return; }
+    char b[16];
+    int ccomp = msidb_col(t, "Component_"), cdesc = msidb_col(t, "Description"), cargs = msidb_col(t, "Arguments");
+    for (int r = 0; r < t->nrows; r++) {
+        const char *comp = msidb_str(&in->db, t, r, ccomp, b);
+        if (!comp_enabled(in, comp)) continue;
+        char name[256], disp[256], group[256], deps[512], user[256], pass[256], args[512], desc[1024], exe[MAX_PATH];
+        format_str(in, msidb_str(&in->db, t, r, 1, b), name, sizeof(name));
+        format_str(in, msidb_str(&in->db, t, r, 2, b), disp, sizeof(disp));
+        int type = msidb_int(&in->db, t, r, 3, NULL), start = msidb_int(&in->db, t, r, 4, NULL),
+            errc = msidb_int(&in->db, t, r, 5, NULL);
+        format_str(in, msidb_str(&in->db, t, r, 6, b), group, sizeof(group));
+        format_str(in, msidb_str(&in->db, t, r, 7, b), deps, sizeof(deps));
+        format_str(in, msidb_str(&in->db, t, r, 8, b), user, sizeof(user));
+        format_str(in, msidb_str(&in->db, t, r, 9, b), pass, sizeof(pass));
+        format_str(in, msidb_str(&in->db, t, r, cargs, b), args, sizeof(args));
+        format_str(in, msidb_str(&in->db, t, r, cdesc, b), desc, sizeof(desc));
+        component_key_file(in, comp, exe, sizeof(exe));
+        char cmd[MAX_PATH + 600];
+        snprintf(cmd, sizeof(cmd), "\"%s\"%s%s", exe, args[0] ? " " : "", args);
+        /* Dependencies: names separated by [~] (already dropped by formatting: re-split the raw text) */
+        WCHAR wdeps[512];
+        int nd = 0;
+        const char *rawdeps = msidb_str(&in->db, t, r, 7, b);
+        for (const char *p = rawdeps; *p && nd < 500; ) {
+            const char *e = strstr(p, "[~]");
+            size_t l = e ? (size_t)(e - p) : strlen(p);
+            if (l) {
+                char one[256];
+                snprintf(one, sizeof(one), "%.*s", (int)l, p);
+                WCHAR w1[256];
+                to_w(one, w1, 256);
+                for (int i = 0; w1[i] && nd < 500; i++) wdeps[nd++] = w1[i];
+                wdeps[nd++] = 0;
+            }
+            if (!e) break;
+            p = e + 3;
+        }
+        wdeps[nd++] = 0;
+        wdeps[nd] = 0;
+        WCHAR wname[256], wdisp[256], wcmd[MAX_PATH + 600], wgroup[256], wuser[256], wpass[256];
+        to_w(name, wname, 256); to_w(disp, wdisp, 256); to_w(cmd, wcmd, MAX_PATH + 600);
+        to_w(group, wgroup, 256); to_w(user, wuser, 256); to_w(pass, wpass, 256);
+        SC_H svc = CreateServiceW(scm, wname, disp[0] ? wdisp : wname, SVC_ALL_ACCESS, (DWORD)type, (DWORD)start, (DWORD)errc,
+                                  wcmd, group[0] ? wgroup : NULL, NULL, nd > 2 ? wdeps : NULL,
+                                  user[0] ? wuser : NULL, pass[0] ? wpass : NULL);
+        if (!svc && GetLastError() == 1073 /* ERROR_SERVICE_EXISTS */) {
+            svc = OpenServiceW(scm, wname, SVC_ALL_ACCESS);
+            if (svc) ChangeServiceConfigW(svc, (DWORD)type, (DWORD)start, (DWORD)errc, wcmd, group[0] ? wgroup : NULL, NULL,
+                                          nd > 2 ? wdeps : NULL, user[0] ? wuser : NULL, pass[0] ? wpass : NULL,
+                                          disp[0] ? wdisp : NULL);
+        }
+        if (!svc) { logf(in, "Could not install service %s (error %lu)", name, GetLastError()); continue; }
+        if (desc[0]) {
+            WCHAR wdesc[1024];
+            to_w(desc, wdesc, 1024);
+            WCHAR *pd = wdesc;
+            ChangeServiceConfig2W(svc, 1 /* SERVICE_CONFIG_DESCRIPTION */, &pd);
+        }
+        CloseServiceHandle(svc);
+        logf(in, "Installed service %s: %s", name, cmd);
+    }
+    CloseServiceHandle(scm);
+}
+
+/* ServiceControl events: 0x1/0x10 start, 0x2/0x20 stop, 0x8/0x80 delete
+ * (low bits on install, high bits on uninstall) */
+static void service_control(Inst *in, int what)
+{
+    MsiTable *t = msidb_table(&in->db, "ServiceControl");
+    if (!t) return;
+    SC_H scm = OpenSCManagerW(NULL, NULL, SCM_ALL_ACCESS);
+    if (!scm) return;
+    char b[16];
+    int ccomp = msidb_col(t, "Component_"), cwait = msidb_col(t, "Wait"), cargs = msidb_col(t, "Arguments");
+    for (int r = 0; r < t->nrows; r++) {
+        if (!comp_enabled(in, msidb_str(&in->db, t, r, ccomp, b))) continue;
+        int ev = msidb_int(&in->db, t, r, 2, NULL);
+        int bit = in->remove ? what << 4 : what;
+        if (!(ev & bit)) continue;
+        char name[256];
+        format_str(in, msidb_str(&in->db, t, r, 1, b), name, sizeof(name));
+        WCHAR wname[256];
+        to_w(name, wname, 256);
+        SC_H svc = OpenServiceW(scm, wname, SVC_ALL_ACCESS);
+        if (!svc) continue;
+        bool wait = msidb_int(&in->db, t, r, cwait, NULL) != 0;
+        if (what == 1) {
+            char args[512];
+            format_str(in, msidb_str(&in->db, t, r, cargs, b), args, sizeof(args));
+            WCHAR wargs[512];
+            to_w(args, wargs, 512);
+            const WCHAR *argv[1] = { wargs };
+            BOOL ok = StartServiceW(svc, args[0] ? 1 : 0, args[0] ? argv : NULL);
+            logf(in, "Start service %s: %s", name, ok ? "started" : "failed");
+            if (!ok && GetLastError() != 1056 /* already running */ && wait)
+                logf(in, "Service %s did not start (error %lu)", name, GetLastError());
+        } else if (what == 2) {
+            DWORD st[7];
+            if (ControlService(svc, 1 /* SERVICE_CONTROL_STOP */, st)) {
+                for (int i = 0; wait && i < 300; i++) {
+                    if (!QueryServiceStatus(svc, st) || st[1] == 1 /* SERVICE_STOPPED */) break;
+                    eng_pump(in);
+                    Sleep(100);
+                }
+                logf(in, "Stopped service %s", name);
+            }
+        } else if (what == 8) {
+            if (DeleteService(svc)) logf(in, "Deleted service %s", name);
+        }
+        CloseServiceHandle(svc);
+    }
+    CloseServiceHandle(scm);
+}
+
+/* -----------------------------------------------------------------------
+ * Custom actions
+ *
+ * Type = source and kind in the low six bits (DLL 1/17, EXE 2/18/34/50,
+ * text: error 19, directory 35, property 51; scripts 5/6/21/22/37/38/53/54;
+ * nested installs 7/23/39) plus 0x40 ignore the result, 0x80 don't wait,
+ * 0x100/0x200 run once, 0x400 deferred (0x500 rollback, 0x600 commit).
+ * ----------------------------------------------------------------------- */
+#define CA_CONTINUE   0x40
+#define CA_ASYNC      0x80
+#define CA_FIRSTSEQ   0x100
+#define CA_ONCE       0x200
+#define CA_INSCRIPT   0x400
+#define CA_ROLLBACK   (CA_INSCRIPT | CA_FIRSTSEQ)
+#define CA_COMMIT     (CA_INSCRIPT | CA_ONCE)
+
+static bool action_ran_in_ui(Inst *in, const char *name)
+{
+    for (int i = 0; i < in->nran; i++) if (!strcmp(in->ran[i], name)) return true;
+    return false;
+}
+
+static void mark_ran(Inst *in, const char *name)
+{
+    if (!in->in_ui || action_ran_in_ui(in, name)) return;
+    in->ran = realloc(in->ran, (size_t)(in->nran + 1) * sizeof(char *));
+    in->ran[in->nran++] = strdup(name);
+}
+
+/* A Binary table stream written to a temporary file (for DLL and EXE actions) */
+static bool binary_to_file(Inst *in, const char *key, const char *ext, WCHAR *out)
+{
+    char sname[128];
+    snprintf(sname, sizeof(sname), "Binary.%s", key);
+    size_t size = 0;
+    void *data = cfb_read(&in->db.cfb, sname, &size);
+    if (!data) { logf(in, "Binary %s is missing", key); return false; }
+    make_dirs("C:\\Windows\\Installer\\");
+    static unsigned counter;
+    WCHAR wext[16];
+    to_w(ext, wext, 16);
+    _snwprintf(out, MAX_PATH, L"C:\\Windows\\Installer\\MSI%04X%04X.%s", (unsigned)(GetTickCount() & 0xFFFF), ++counter, wext);
+    HANDLE h = CreateFileW(out, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    bool ok = false;
+    if (h != INVALID_HANDLE_VALUE) {
+        DWORD wr = 0;
+        ok = WriteFile(h, data, (DWORD)size, &wr, NULL) && wr == size;
+        CloseHandle(h);
+    }
+    free(data);
+    return ok;
+}
+
+/* Run a program: wait for it unless asynchronous; its exit code is the result */
+static UINT run_program(Inst *in, const char *cmd, const char *workdir, int type)
+{
+    WCHAR wcmd[4096], wdir[MAX_PATH];
+    to_w(cmd, wcmd, 4096);
+    if (workdir) to_w(workdir, wdir, MAX_PATH);
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    logf(in, "Running %s%s%s", cmd, workdir ? " in " : "", workdir ? workdir : "");
+    if (!CreateProcessW(NULL, wcmd, NULL, NULL, FALSE, 0, NULL, workdir && *workdir ? wdir : NULL, &si, &pi)) {
+        logf(in, "Could not start it (error %lu)", GetLastError());
+        return ERROR_INSTALL_FAILURE;
+    }
+    CloseHandle(pi.hThread);
+    if (type & CA_ASYNC) { CloseHandle(pi.hProcess); return 0; }
+    DWORD code = api_wait_process(in, pi.hProcess);
+    CloseHandle(pi.hProcess);
+    logf(in, "It exited with %lu", (unsigned long)code);
+    return code ? ERROR_INSTALL_FAILURE : 0;
+}
+
+static UINT run_dll(Inst *in, const WCHAR *dll, const char *entry)
+{
+    bool crashed;
+    int r = api_run_dll_action(in, dll, entry, &crashed);
+    return (UINT)r;
+}
+
 static bool run_custom_action(Inst *in, const char *name)
 {
     MsiTable *t = msidb_table(&in->db, "CustomAction");
     int r = msidb_find(&in->db, t, 0, name, 0);
-    if (r < 0) { logf(in, "Action %s: unknown, skipped", name); return true; }
-    char b[16];
+    if (r < 0) {
+        logf(in, "Action %s: unknown, skipped", name);
+        return true;
+    }
+    char b[16], source[256], target[4096];
     int type = msidb_int(&in->db, t, r, 1, NULL);
-    const char *source = msidb_str(&in->db, t, r, 2, b);
-    char target[1024];
+    snprintf(source, sizeof(source), "%s", msidb_str(&in->db, t, r, 2, b));
     const char *raw_target = msidb_str(&in->db, t, r, 3, b);
-    switch (type & 0x3F) {
+    int kind = type & 0x3F;
+    /* scheduling: once when the UI sequence already ran it */
+    if (!in->in_ui && (type & (CA_FIRSTSEQ | CA_ONCE)) && !(type & CA_INSCRIPT) && action_ran_in_ui(in, name)) {
+        logf(in, "Custom action %s already ran in the UI sequence", name);
+        return true;
+    }
+    mark_ran(in, name);
+    if ((type & CA_ROLLBACK) == CA_ROLLBACK) { logf(in, "Rollback action %s kept for an error (not needed)", name); return true; }
+    if ((type & CA_COMMIT) == CA_COMMIT && in->sequence_depth >= 0 && !in->modes[RUNMODE_COMMIT]) {
+        in->commit = realloc(in->commit, (size_t)(in->ncommit + 1) * sizeof(char *));
+        in->commit[in->ncommit++] = strdup(name);
+        logf(in, "Commit action %s runs at the end", name);
+        return true;
+    }
+    bool deferred = (type & CA_INSCRIPT) != 0;
+    char *saved_cad = NULL;
+    if (deferred) {
+        /* a deferred action sees its data as CustomActionData */
+        saved_cad = strdup(get_prop(in, "CustomActionData"));
+        set_prop(in, "CustomActionData", get_prop(in, name));
+        in->modes[RUNMODE_SCHEDULED] = true;
+    }
+    UINT result = 0;
+    switch (kind) {
     case 51:                                   /* set property */
         format_str(in, raw_target, target, sizeof(target));
         set_prop(in, source, target);
         logf(in, "Property %s = %s", source, target);
-        return true;
+        break;
     case 35:                                   /* set directory */
         format_str(in, raw_target, target, sizeof(target));
-        ensure_slash(target, sizeof(target));
-        set_prop(in, source, target);
+        eng_set_target_path(in, source, target);
         logf(in, "Directory %s = %s", source, target);
-        return true;
+        break;
     case 19:                                   /* error message */
         format_str(in, raw_target, target, sizeof(target));
         fail(in, MSI_ERROR_FAILURE, "%s", target[0] ? target : name);
-        return false;
+        result = ERROR_INSTALL_FAILURE;
+        type &= ~CA_CONTINUE;
+        break;
+    case 1: {                                  /* DLL in the Binary table */
+        WCHAR dll[MAX_PATH];
+        if (!binary_to_file(in, source, "tmp", dll)) { result = ERROR_INSTALL_FAILURE; break; }
+        format_str(in, raw_target, target, sizeof(target));
+        logf(in, "Custom action %s: %s in Binary %s", name, target, source);
+        result = run_dll(in, dll, target);
+        DeleteFileW(dll);
+        break;
+    }
+    case 17: {                                 /* DLL installed with the product */
+        char path[MAX_PATH * 2];
+        file_path(in, source, path, sizeof(path));
+        WCHAR dll[MAX_PATH];
+        to_w(path, dll, MAX_PATH);
+        format_str(in, raw_target, target, sizeof(target));
+        logf(in, "Custom action %s: %s in %s", name, target, path);
+        result = run_dll(in, dll, target);
+        break;
+    }
+    case 2: {                                  /* program in the Binary table */
+        WCHAR exe[MAX_PATH];
+        if (!binary_to_file(in, source, "exe", exe)) { result = ERROR_INSTALL_FAILURE; break; }
+        char u8[MAX_PATH], cmd[4096 + MAX_PATH];
+        to_u8(exe, u8, sizeof(u8));
+        format_str(in, raw_target, target, sizeof(target));
+        snprintf(cmd, sizeof(cmd), "\"%s\"%s%s", u8, target[0] ? " " : "", target);
+        result = run_program(in, cmd, NULL, type);
+        if (!(type & CA_ASYNC)) DeleteFileW(exe);
+        break;
+    }
+    case 18: {                                 /* installed program */
+        char path[MAX_PATH * 2], cmd[4096 + MAX_PATH * 2];
+        file_path(in, source, path, sizeof(path));
+        format_str(in, raw_target, target, sizeof(target));
+        snprintf(cmd, sizeof(cmd), "\"%s\"%s%s", path, target[0] ? " " : "", target);
+        result = run_program(in, cmd, NULL, type);
+        break;
+    }
+    case 34: {                                 /* command line in a working folder */
+        char dir[MAX_PATH * 2];
+        dir_path(in, source, dir, sizeof(dir));
+        format_str(in, raw_target, target, sizeof(target));
+        result = run_program(in, target, dir, type);
+        break;
+    }
+    case 50: {                                 /* program named by a property */
+        char exe[MAX_PATH * 2], cmd[4096 + MAX_PATH * 2];
+        format_str(in, get_prop(in, source), exe, sizeof(exe));
+        format_str(in, raw_target, target, sizeof(target));
+        if (!exe[0]) { logf(in, "Custom action %s: property %s is empty", name, source); result = ERROR_INSTALL_FAILURE; break; }
+        snprintf(cmd, sizeof(cmd), exe[0] == '"' ? "%s%s%s" : "\"%s\"%s%s", exe, target[0] ? " " : "", target);
+        result = run_program(in, cmd, NULL, type);
+        break;
+    }
+    case 5: case 6: case 21: case 22: case 37: case 38: case 53: case 54:
+        logf(in, "Custom action %s is a %s script: NovaOS has no script engine, skipped", name,
+             (kind & 7) == 5 ? "JScript" : "VBScript");
+        break;
     default:
-        logf(in, "Custom action %s (type %d) skipped: not run on NovaOS", name, type);
+        logf(in, "Custom action %s (type %d) skipped: nested installations are not supported", name, type);
+        break;
+    }
+    if (deferred) {
+        set_prop(in, "CustomActionData", saved_cad);
+        free(saved_cad);
+        in->modes[RUNMODE_SCHEDULED] = false;
+    }
+    if (result == ERROR_NO_MORE_ITEMS) {        /* skip the rest of the sequence, successfully */
+        logf(in, "Custom action %s: the rest of the sequence is skipped", name);
+        in->stop_sequence = true;
         return true;
     }
+    if (result == 1626 /* ERROR_FUNCTION_NOT_CALLED */) result = 0;
+    if (result && (type & CA_CONTINUE)) {
+        logf(in, "Custom action %s returned %u (ignored)", name, result);
+        return true;
+    }
+    if (result) {
+        if (result == MSI_ERROR_USEREXIT) fail(in, MSI_ERROR_USEREXIT, "Cancelled by the user");
+        else fail(in, MSI_ERROR_FAILURE, "Custom action %s failed (%u)", name, result);
+        return false;
+    }
+    return true;
+}
+
+static void run_commit_actions(Inst *in)
+{
+    in->modes[RUNMODE_COMMIT] = true;
+    for (int i = 0; i < in->ncommit; i++) {
+        logf(in, "Commit action: %s", in->commit[i]);
+        run_custom_action(in, in->commit[i]);
+        free(in->commit[i]);
+    }
+    free(in->commit);
+    in->commit = NULL;
+    in->ncommit = 0;
+    in->modes[RUNMODE_COMMIT] = false;
 }
 
 /* -----------------------------------------------------------------------
  * The sequence
  * ----------------------------------------------------------------------- */
+static bool run_sequence(Inst *in, const char *table);
+
+static bool is_noop_action(const char *a)
+{
+    static const char *noop[] = {
+        "CostInitialize", "FileCost", "InstallValidate", "InstallInitialize", "ProcessComponents", "ValidateProductID",
+        "MigrateFeatureStates", "PublishFeatures", "PublishProduct", "RegisterUser", "UnpublishFeatures",
+        "UnpublishComponents", "RegisterComponents", "UnregisterComponents", "SetODBCFolders", "InstallODBC",
+        "RemoveODBC", "AllocateRegistrySpace", "ScheduleReboot", "ForceReboot", "IsolateComponents",
+        "RegisterProgIdInfo", "UnregisterProgIdInfo", "DuplicateFiles", "RemoveDuplicateFiles", "PatchFiles",
+        "BindImage", "SelfRegModules", "SelfUnregModules", "RemoveIniValues", "WriteIniValues", "RegisterFonts",
+        "UnregisterFonts", "RegisterTypeLibraries", "UnregisterTypeLibraries", "RegisterExtensionInfo",
+        "UnregisterExtensionInfo", "RegisterMIMEInfo", "UnregisterMIMEInfo", "RegisterClassInfo", "UnregisterClassInfo",
+        "MoveFiles", "InstallAdminPackage", "InstallSFPCatalogFile", "InstallExecute", "InstallExecuteAgain",
+        "RMCCPSearch", "CCPSearch", "MsiPublishAssemblies", "MsiUnpublishAssemblies", "PublishComponents",
+        "MsiConfigureServices", "SetupProgress", "ResolveSource", "LaunchConditions_", "DisableRollback",
+        "PrepareDlg_", "MsiUnpublishAssemblies_", "RemoveFile_",
+    };
+    for (size_t i = 0; i < sizeof(noop) / sizeof(noop[0]); i++) if (!strcmp(a, noop[i])) return true;
+    return false;
+}
+
+/* The UI sequence hands its feature choices to the execute sequence the
+ * way Windows' client does: as ADDLOCAL and REMOVE */
+static void pass_feature_choices(Inst *in)
+{
+    if (!in->feature_on || !in->feature) return;
+    char add[4096] = "", rem[4096] = "", b[16];
+    for (int i = 0; i < in->feature->nrows; i++) {
+        char *list = in->feature_on[i] ? add : rem;
+        size_t n = strlen(list);
+        snprintf(list + n, sizeof(add) - n, "%s%s", n ? "," : "", msidb_str(&in->db, in->feature, i, 0, b));
+    }
+    set_prop(in, "ADDLOCAL", add);
+    if (in->installed) set_prop(in, "REMOVE", rem);
+    logf(in, "Features chosen: ADDLOCAL=%s", add);
+}
+
+static bool action_execute(Inst *in)
+{
+    in->executed = true;
+    if (!strcmp(get_prop(in, "REMOVE"), "ALL")) in->remove = true;
+    else if (in->dlg) pass_feature_choices(in);
+    bool was_ui = in->in_ui;
+    in->in_ui = false;
+    logf(in, "Running InstallExecuteSequence");
+    bool ok = run_sequence(in, "InstallExecuteSequence");
+    in->in_ui = was_ui;
+    in->stop_sequence = false;
+    return ok;
+}
+
 static bool run_action(Inst *in, const char *a)
 {
-    if (!strcmp(a, "CostInitialize") || !strcmp(a, "FileCost") || !strcmp(a, "InstallValidate") ||
-        !strcmp(a, "InstallInitialize") || !strcmp(a, "ProcessComponents") || !strcmp(a, "ValidateProductID") ||
-        !strcmp(a, "MigrateFeatureStates") || !strcmp(a, "PublishFeatures") || !strcmp(a, "PublishProduct") ||
-        !strcmp(a, "RegisterUser") || !strcmp(a, "UnpublishFeatures") || !strcmp(a, "UnpublishComponents") ||
-        !strcmp(a, "RegisterComponents") || !strcmp(a, "UnregisterComponents") || !strcmp(a, "SetODBCFolders") ||
-        !strcmp(a, "InstallODBC") || !strcmp(a, "RemoveODBC") || !strcmp(a, "AllocateRegistrySpace") ||
-        !strcmp(a, "ScheduleReboot") || !strcmp(a, "ForceReboot") || !strcmp(a, "IsolateComponents") ||
-        !strcmp(a, "RegisterProgIdInfo") || !strcmp(a, "UnregisterProgIdInfo") || !strcmp(a, "DuplicateFiles") ||
-        !strcmp(a, "RemoveDuplicateFiles") || !strcmp(a, "PatchFiles") || !strcmp(a, "BindImage") ||
-        !strcmp(a, "SelfRegModules") || !strcmp(a, "SelfUnregModules") || !strcmp(a, "RemoveIniValues") ||
-        !strcmp(a, "WriteIniValues") || !strcmp(a, "DeleteServices") || !strcmp(a, "InstallServices") ||
-        !strcmp(a, "StartServices") || !strcmp(a, "StopServices") || !strcmp(a, "RegisterFonts") ||
-        !strcmp(a, "UnregisterFonts") || !strcmp(a, "RegisterTypeLibraries") || !strcmp(a, "UnregisterTypeLibraries") ||
-        !strcmp(a, "RegisterExtensionInfo") || !strcmp(a, "UnregisterExtensionInfo") || !strcmp(a, "RegisterMIMEInfo") ||
-        !strcmp(a, "UnregisterMIMEInfo") || !strcmp(a, "RegisterClassInfo") || !strcmp(a, "UnregisterClassInfo") ||
-        !strcmp(a, "MoveFiles") || !strcmp(a, "InstallAdminPackage") || !strcmp(a, "InstallSFPCatalogFile") ||
-        !strcmp(a, "RemoveEnvironmentStrings") || !strcmp(a, "WriteEnvironmentStrings") ||
-        !strcmp(a, "RemoveRegistryValues") || !strcmp(a, "RemoveShortcuts") || !strcmp(a, "InstallExecute") ||
-        !strcmp(a, "InstallExecuteAgain") || !strcmp(a, "RMCCPSearch") || !strcmp(a, "CCPSearch") ||
-        !strcmp(a, "MsiPublishAssemblies") || !strcmp(a, "MsiUnpublishAssemblies") || !strcmp(a, "RegisterFonts") ||
-        !strcmp(a, "RemoveFiles") || !strcmp(a, "RemoveFolders") || !strcmp(a, "RegisterProduct") ||
-        !strcmp(a, "CreateShortcuts") || !strcmp(a, "InstallFinalize")) {
-        /* the ones with work in them */
-        if (!strcmp(a, "CostFinalize")) { }
-        if (!strcmp(a, "RemoveRegistryValues") && in->remove) { action_remove_registry(in); in->removed_registry = true; }
-        else if (!strcmp(a, "RemoveFiles") && in->remove) { action_remove_files(in); in->removed_files = true; }
-        else if (!strcmp(a, "RemoveFolders") && in->remove) { action_remove_folders(in); in->removed_folders = true; }
-        else if (!strcmp(a, "RegisterProduct") && !in->remove) action_register_product(in);
-        else if (!strcmp(a, "CreateShortcuts") && !in->remove) action_shortcuts(in);
-        else if (!strcmp(a, "InstallFinalize") && in->remove) {
-            /* a package whose sequence lacks the removal actions still gets cleaned up */
-            if (!in->removed_registry) action_remove_registry(in);
-            if (!in->removed_env) action_remove_env(in);
-            if (!in->removed_files) action_remove_files(in);
-            if (!in->removed_folders) action_remove_folders(in);
-            action_unregister_product(in);
-        }
-        else if (!strcmp(a, "WriteEnvironmentStrings") && !in->remove) action_write_env(in);
-        else if (!strcmp(a, "RemoveEnvironmentStrings") && in->remove) { action_remove_env(in); in->removed_env = true; }
-        return true;
-    }
-    if (!strcmp(a, "CostFinalize"))      { select_features(in); resolve_directories(in); return true; }
+    if (!strcmp(a, "CostFinalize"))      { select_features(in); resolve_directories(in); set_prop(in, "CostingComplete", "1"); return true; }
     if (!strcmp(a, "LaunchConditions"))  return action_launch_conditions(in);
     if (!strcmp(a, "AppSearch"))         { action_app_search(in); return true; }
     if (!strcmp(a, "FindRelatedProducts")) { action_find_related(in); return true; }
@@ -1387,6 +2294,39 @@ static bool run_action(Inst *in, const char *a)
     if (!strcmp(a, "CreateFolders"))     { if (!in->remove) action_create_folders(in); return true; }
     if (!strcmp(a, "InstallFiles"))      return in->remove ? true : action_install_files(in);
     if (!strcmp(a, "WriteRegistryValues")) { if (!in->remove) action_write_registry(in); return true; }
+    if (!strcmp(a, "RemoveRegistryValues")) { if (in->remove) { action_remove_registry(in); in->removed_registry = true; } return true; }
+    if (!strcmp(a, "RemoveFiles"))       { if (in->remove) { action_remove_files(in); in->removed_files = true; } return true; }
+    if (!strcmp(a, "RemoveFolders"))     { if (in->remove) { action_remove_folders(in); in->removed_folders = true; } return true; }
+    if (!strcmp(a, "RegisterProduct"))   { if (!in->remove) action_register_product(in); return true; }
+    if (!strcmp(a, "CreateShortcuts"))   { if (!in->remove) action_create_shortcuts(in); return true; }
+    if (!strcmp(a, "RemoveShortcuts"))   { if (in->remove) { action_remove_shortcuts(in); in->removed_shortcuts = true; } return true; }
+    if (!strcmp(a, "WriteEnvironmentStrings")) { if (!in->remove) action_write_env(in); return true; }
+    if (!strcmp(a, "RemoveEnvironmentStrings")) { if (in->remove) { action_remove_env(in); in->removed_env = true; } return true; }
+    if (!strcmp(a, "InstallServices"))   { if (!in->remove) action_install_services(in); return true; }
+    if (!strcmp(a, "StartServices"))     { service_control(in, 1); return true; }
+    if (!strcmp(a, "StopServices"))      { service_control(in, 2); return true; }
+    if (!strcmp(a, "DeleteServices"))    { service_control(in, 8); return true; }
+    if (!strcmp(a, "ExecuteAction"))     return action_execute(in);
+    if (!strcmp(a, "InstallFinalize")) {
+        if (in->remove) {
+            /* a package whose sequence lacks the removal actions still gets cleaned up */
+            if (!in->removed_shortcuts) action_remove_shortcuts(in);
+            if (!in->removed_registry) action_remove_registry(in);
+            if (!in->removed_env) action_remove_env(in);
+            if (!in->removed_files) action_remove_files(in);
+            if (!in->removed_folders) action_remove_folders(in);
+            action_unregister_product(in);
+        }
+        run_commit_actions(in);
+        return true;
+    }
+    if (is_noop_action(a)) return true;
+    if (in->dlg && dlg_exists(in->dlg, a)) {
+        int r = dlg_run(in->dlg, a);
+        if (r == MSI_ERROR_USEREXIT) { fail(in, MSI_ERROR_USEREXIT, "Cancelled by the user"); return false; }
+        if (r) { fail(in, r, "The dialog %s ended the installation", a); return false; }
+        return true;
+    }
     return run_custom_action(in, a);
 }
 
@@ -1394,9 +2334,10 @@ typedef struct { char name[80]; char *condition; int seq; } SeqItem;
 
 static int cmp_seqitem(const void *a, const void *b) { return ((const SeqItem *)a)->seq - ((const SeqItem *)b)->seq; }
 
-static bool run_sequence(Inst *in)
+static bool run_sequence(Inst *in, const char *table)
 {
-    MsiTable *t = msidb_table(&in->db, "InstallExecuteSequence");
+    MsiTable *t = msidb_table(&in->db, table);
+    bool execute = !strcmp(table, "InstallExecuteSequence");
     SeqItem *items;
     int n = 0;
     char b[16];
@@ -1411,28 +2352,290 @@ static bool run_sequence(Inst *in)
             n++;
         }
         qsort(items, (size_t)n, sizeof(SeqItem), cmp_seqitem);
-    } else {
+    } else if (execute) {
         static const char *std[] = { "LaunchConditions", "FindRelatedProducts", "AppSearch", "CostInitialize",
             "FileCost", "CostFinalize", "InstallValidate", "RemoveExistingProducts", "InstallInitialize",
-            "ProcessComponents", "RemoveRegistryValues", "RemoveFiles", "RemoveFolders", "CreateFolders",
-            "InstallFiles", "WriteRegistryValues", "CreateShortcuts", "RegisterProduct", "InstallFinalize" };
+            "ProcessComponents", "StopServices", "DeleteServices", "RemoveRegistryValues", "RemoveShortcuts",
+            "RemoveFiles", "RemoveFolders", "CreateFolders", "InstallFiles", "WriteRegistryValues",
+            "InstallServices", "StartServices", "CreateShortcuts", "RegisterProduct", "InstallFinalize" };
         n = (int)(sizeof(std) / sizeof(std[0]));
         items = calloc((size_t)n, sizeof(SeqItem));
         for (int i = 0; i < n; i++) { snprintf(items[i].name, sizeof(items[i].name), "%s", std[i]); items[i].condition = strdup(""); }
+    } else {
+        return true;
     }
     bool ok = true;
     bool costed = false;
-    for (int i = 0; ok && i < n; i++) {
+    in->sequence_depth++;
+    for (int i = 0; ok && i < n && !in->stop_sequence; i++) {
         if (!strcmp(items[i].name, "CostFinalize")) costed = true;
         if (!cond(in, items[i].condition)) { logf(in, "Action %s skipped (condition)", items[i].name); continue; }
         logf(in, "Action: %s", items[i].name);
+        ui_action(in, items[i].name);
         ok = run_action(in, items[i].name);
-        if (in->ui && msiui_cancelled(in->ui)) { fail(in, MSI_ERROR_USEREXIT, "Cancelled by the user"); ok = false; }
+        if (ok && ui_cancelled(in)) { fail(in, MSI_ERROR_USEREXIT, "Cancelled by the user"); ok = false; }
     }
-    if (ok && !costed) { fail(in, MSI_ERROR_PACKAGE_INVALID, "The package has no CostFinalize action"); ok = false; }
+    in->sequence_depth--;
+    if (in->sequence_depth == 0) in->stop_sequence = false;
+    if (ok && execute && !costed && !in->result) { fail(in, MSI_ERROR_PACKAGE_INVALID, "The package has no CostFinalize action"); ok = false; }
     for (int i = 0; i < n; i++) free(items[i].condition);
     free(items);
     return ok;
+}
+
+/* The dialog the UI sequence names for an outcome: -1 success, -2 the
+ * user cancelled, -3 failure */
+static void show_exit_dialog(Inst *in, int seq)
+{
+    MsiTable *t = msidb_table(&in->db, "InstallUISequence");
+    char b[16];
+    for (int r = 0; t && r < t->nrows; r++) {
+        if (msidb_int(&in->db, t, r, 2, NULL) != seq) continue;
+        const char *name = msidb_str(&in->db, t, r, 0, b);
+        if (!cond(in, msidb_str(&in->db, t, r, 1, b))) continue;
+        char dname[80];
+        snprintf(dname, sizeof(dname), "%s", name);
+        if (dlg_exists(in->dlg, dname)) dlg_run(in->dlg, dname);
+        else run_custom_action(in, dname);
+        return;
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * The session, for the handle API, custom actions and dialogs
+ * ----------------------------------------------------------------------- */
+const char *eng_get_prop(Inst *in, const char *name) { return get_prop(in, name); }
+
+void eng_set_prop(Inst *in, const char *name, const char *value)
+{
+    set_prop(in, name, value);
+    if (in->dlg) dlg_property_changed(in->dlg, name);
+}
+
+MsiDb *eng_db(Inst *in) { return &in->db; }
+bool eng_condition(Inst *in, const char *c) { return cond(in, c); }
+void eng_format(Inst *in, const MsiRec *rec, const char *s, char *out, int cap) { format_rec(in, rec, s, out, cap); }
+
+void eng_log(Inst *in, const char *fmt, ...)
+{
+    char line[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    logf(in, "%s", line);
+}
+
+static int dir_row(Inst *in, const char *folder)
+{
+    return in->dir ? msidb_find(&in->db, in->dir, 0, folder, 0) : -1;
+}
+
+int eng_target_path(Inst *in, const char *folder, char *out, int cap)
+{
+    if (dir_row(in, folder) < 0 && !prop_set(in, folder)) return 267;   /* ERROR_DIRECTORY */
+    dir_path(in, folder, out, cap);
+    return 0;
+}
+
+int eng_source_path(Inst *in, const char *folder, char *out, int cap)
+{
+    if (dir_row(in, folder) < 0 && strcmp(folder, "SourceDir") && strcmp(folder, "SOURCEDIR")) return 267;
+    snprintf(out, (size_t)cap, "%s", in->source_dir);
+    return 0;
+}
+
+int eng_set_target_path(Inst *in, const char *folder, const char *path)
+{
+    char p[MAX_PATH * 2];
+    snprintf(p, sizeof(p), "%s", path);
+    ensure_slash(p, sizeof(p));
+    set_prop(in, folder, p);
+    int r = dir_row(in, folder);
+    if (r >= 0 && in->dir_explicit) in->dir_explicit[r] = true;
+    if (in->resolved) resolve_directories(in);
+    if (in->dlg) dlg_property_changed(in->dlg, folder);
+    return 0;
+}
+
+int eng_do_action(Inst *in, const char *action)
+{
+    logf(in, "Action (requested): %s", action);
+    if (run_action(in, action)) return 0;
+    return in->result == MSI_ERROR_USEREXIT ? MSI_ERROR_USEREXIT : MSI_ERROR_FAILURE;
+}
+
+int eng_sequence(Inst *in, const char *table) { return run_sequence(in, table) ? 0 : MSI_ERROR_FAILURE; }
+
+bool eng_get_mode(Inst *in, int mode)
+{
+    switch (mode) {
+    case RUNMODE_MAINTENANCE:     return in->installed;
+    case RUNMODE_ROLLBACKENABLED: return true;
+    case RUNMODE_LOGENABLED:      return in->log != NULL;
+    case RUNMODE_CABINET:         return in->media != NULL;
+    default:                      return mode >= 0 && mode < 32 && in->modes[mode];
+    }
+}
+
+int eng_set_mode(Inst *in, int mode, bool state)
+{
+    if (mode != RUNMODE_REBOOTATEND && mode != RUNMODE_REBOOTNOW) return ERROR_ACCESS_DENIED;
+    in->modes[mode] = state;
+    return 0;
+}
+
+static bool comp_in_installed_feature(Inst *in, const char *comp)
+{
+    MsiTable *fc = msidb_table(&in->db, "FeatureComponents");
+    char b[16];
+    for (int r = 0; fc && r < fc->nrows; r++)
+        if (!strcmp(msidb_str(&in->db, fc, r, 1, b), comp) && feature_was_installed(in, msidb_str(&in->db, fc, r, 0, b)))
+            return true;
+    return false;
+}
+
+int eng_feature_state(Inst *in, const char *feature, int *installed, int *action)
+{
+    int f = find_feature(in, feature);
+    if (f < 0) return 1606;                                   /* ERROR_UNKNOWN_FEATURE */
+    bool was = feature_was_installed(in, feature);
+    *installed = was ? ISTATE_LOCAL : ISTATE_ABSENT;
+    if (!in->feature_on) *action = ISTATE_UNKNOWN;
+    else if (in->remove) *action = was ? ISTATE_ABSENT : ISTATE_UNKNOWN;
+    else if (in->feature_on[f]) *action = ISTATE_LOCAL;
+    else *action = was ? ISTATE_ABSENT : ISTATE_UNKNOWN;
+    return 0;
+}
+
+int eng_set_feature_state(Inst *in, const char *feature, int state)
+{
+    int f = find_feature(in, feature);
+    if (f < 0) return 1606;
+    if (!in->feature_on) return 1609;                          /* before costing */
+    in->feature_on[f] = state == ISTATE_LOCAL || state == ISTATE_SOURCE || state == ISTATE_DEFAULT || state == ISTATE_ADVERTISED;
+    compute_components(in);
+    logf(in, "Feature %s: %s", feature, in->feature_on[f] ? "install" : "do not install");
+    return 0;
+}
+
+int eng_component_state(Inst *in, const char *comp, int *installed, int *action)
+{
+    int c = in->component ? msidb_find(&in->db, in->component, 0, comp, 0) : -1;
+    if (c < 0) return 1607;                                    /* ERROR_UNKNOWN_COMPONENT */
+    bool was = comp_in_installed_feature(in, comp);
+    *installed = was ? ISTATE_LOCAL : ISTATE_ABSENT;
+    if (!in->comp_on) *action = ISTATE_UNKNOWN;
+    else if (in->remove) *action = was ? ISTATE_ABSENT : ISTATE_UNKNOWN;
+    else if (in->comp_on[c]) *action = ISTATE_LOCAL;
+    else *action = was ? ISTATE_ABSENT : ISTATE_UNKNOWN;
+    return 0;
+}
+
+int eng_set_component_state(Inst *in, const char *comp, int state)
+{
+    int c = in->component ? msidb_find(&in->db, in->component, 0, comp, 0) : -1;
+    if (c < 0) return 1607;
+    if (!in->comp_on) return 1609;
+    in->comp_on[c] = state == ISTATE_LOCAL || state == ISTATE_SOURCE || state == ISTATE_DEFAULT;
+    return 0;
+}
+
+int eng_set_install_level(Inst *in, int level)
+{
+    char v[16];
+    snprintf(v, sizeof(v), "%d", level);
+    set_prop(in, "INSTALLLEVEL", v);
+    if (in->feature_on) select_features(in);
+    return 0;
+}
+
+/* &Feature, !Feature, $Component, ?Component in conditions */
+static const char *state_prop(Inst *in, const char *name)
+{
+    static char buf[16];
+    int installed = ISTATE_UNKNOWN, action = ISTATE_UNKNOWN;
+    if (name[0] == '&' || name[0] == '!') eng_feature_state(in, name + 1, &installed, &action);
+    else eng_component_state(in, name + 1, &installed, &action);
+    int v = (name[0] == '&' || name[0] == '$') ? action : installed;
+    snprintf(buf, sizeof(buf), "%d", v);
+    return buf;
+}
+
+/* The Error table's text for message number @n */
+static const char *error_template(Inst *in, int n, char *buf, int cap)
+{
+    MsiTable *t = msidb_table(&in->db, "Error");
+    char key[16], b[16];
+    snprintf(key, sizeof(key), "%d", n);
+    int r = t ? msidb_find(&in->db, t, 0, key, 0) : -1;
+    if (r < 0) return NULL;
+    snprintf(buf, (size_t)cap, "%s", msidb_str(&in->db, t, r, 1, b));
+    return buf;
+}
+
+int eng_message(Inst *in, int type, const MsiRec *rec)
+{
+    int kind = type & 0xFF000000;
+    char text[2048] = "";
+    if (rec) {
+        char tb[1024], nb[16];
+        const char *tmpl = NULL;
+        if (!msirec_is_null(rec, 0)) tmpl = msirec_str(rec, 0, nb);
+        else if ((kind == IMSG_ERROR || kind == IMSG_WARNING || kind == IMSG_USER || kind == IMSG_FATALEXIT ||
+                  kind == IMSG_INFO) && rec->f[1].type == MSIF_INT)
+            tmpl = error_template(in, rec->f[1].i, tb, sizeof(tb));
+        if (kind == IMSG_ACTIONDATA && !tmpl && in->action_template[0]) tmpl = in->action_template;
+        if (tmpl) format_rec(in, rec, tmpl, text, sizeof(text));
+        else {
+            size_t n = 0;
+            for (int i = 1; i <= rec->n && n < sizeof(text) - 32; i++)
+                n += (size_t)snprintf(text + n, sizeof(text) - n, "%s%d: %s", i > 1 ? " " : "", i, msirec_str(rec, i, nb));
+        }
+    }
+    switch (kind) {
+    case IMSG_INFO:
+        logf(in, "%s", text);
+        return IDOK;
+    case IMSG_ACTIONSTART: {
+        char nb[16], name[128], desc[512];
+        snprintf(name, sizeof(name), "%s", rec ? msirec_str(rec, 1, nb) : "");
+        snprintf(desc, sizeof(desc), "%s", rec ? msirec_str(rec, 2, nb) : "");
+        snprintf(in->action_template, sizeof(in->action_template), "%s", rec ? msirec_str(rec, 3, nb) : "");
+        logf(in, "Action start: %s %s", name, desc);
+        if (desc[0]) ui_action_text(in, desc);
+        return ui_cancelled(in) ? IDCANCEL : IDOK;
+    }
+    case IMSG_ACTIONDATA:
+        if (text[0]) ui_detail(in, text);
+        return ui_cancelled(in) ? IDCANCEL : IDOK;
+    case IMSG_PROGRESS: {
+        int f1 = rec ? msirec_int(rec, 1) : 0, f2 = rec ? msirec_int(rec, 2) : 0;
+        if (f2 == MSI_NULL_INTEGER) f2 = 0;
+        if (f1 == 0) { in->prog_total = f2 > 0 ? f2 : 0; in->prog_done = 0; }
+        else if (f1 == 2) in->prog_done += f2;
+        else if (f1 == 3) in->prog_total += f2;
+        if (in->prog_total > 0 && (f1 == 2 || f1 == 0)) {
+            long long d = in->prog_done > in->prog_total ? in->prog_total : in->prog_done;
+            ui_progress(in, (int)(d * 1000 / in->prog_total), 1000);
+        }
+        return ui_cancelled(in) ? IDCANCEL : IDOK;
+    }
+    case IMSG_ERROR: case IMSG_WARNING: case IMSG_USER: case IMSG_FATALEXIT: case IMSG_OUTOFDISKSPACE: case IMSG_FILESINUSE: {
+        logf(in, "Message (%s): %s", kind == IMSG_ERROR ? "error" : kind == IMSG_WARNING ? "warning" : "user", text);
+        UINT buttons = (UINT)type & 0xFFFF;
+        if (in->ui_level <= MSIUI_BASIC || (!in->ui && !in->dlg)) return (buttons & 0xF) == MB_OK ? IDOK : 0;
+        if (!(buttons & 0xF0)) buttons |= kind == IMSG_ERROR ? MB_ICONERROR : kind == IMSG_WARNING ? MB_ICONWARNING : MB_ICONINFORMATION;
+        WCHAR wt[2048], wc[256];
+        to_w(text, wt, 2048);
+        to_w(get_prop(in, "ProductName"), wc, 256);
+        return MessageBoxW(in->dlg ? dlg_window(in->dlg) : NULL, wt, wc[0] ? wc : L"Windows Installer", buttons);
+    }
+    case IMSG_COMMONDATA: case IMSG_INITIALIZE: case IMSG_TERMINATE: case IMSG_SHOWDIALOG: case IMSG_RESOLVESOURCE:
+        return 0;
+    default:
+        return 0;
+    }
 }
 
 /* -----------------------------------------------------------------------
@@ -1475,12 +2678,37 @@ static void inst_free(Inst *in)
     free(in->props);
     free(in->feature_on);
     free(in->comp_on);
+    free(in->dir_explicit);
+    free(in->installed_features);
+    for (int i = 0; i < in->nran; i++) free(in->ran[i]);
+    free(in->ran);
+    for (int i = 0; i < in->ncommit; i++) free(in->commit[i]);
+    free(in->commit);
+    msisql_free_temp(&in->db);
     msidb_close(&in->db);
     free(in->pkg);
     if (in->log) fclose(in->log);
 }
 
-static int run(Inst *in, const MsiRequest *req)
+/* The features recorded at install time (",A,B,") */
+static void read_installed_features(Inst *in, const char *code)
+{
+    WCHAR key[300], wc[64], buf[4096];
+    to_w(code, wc, 64);
+    _snwprintf(key, 300, L"%s\\%s", NOVA_INSTALLER_KEY, wc);
+    HKEY h;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key, 0, KEY_READ, &h)) return;
+    DWORD type, size = sizeof(buf) - 2;
+    if (!RegQueryValueExW(h, L"Features", NULL, &type, (BYTE *)buf, &size)) {
+        buf[size / 2] = 0;
+        char u8[4096];
+        to_u8(buf, u8, sizeof(u8));
+        in->installed_features = strdup(u8);
+    }
+    RegCloseKey(h);
+}
+
+static int run(Inst *in, const MsiRequest *req, bool *dialogs_shown)
 {
     if (req->logfile) {
         in->log = _wfopen(req->logfile, L"wb");
@@ -1491,24 +2719,48 @@ static int run(Inst *in, const MsiRequest *req)
     system_properties(in);
     parse_cmdline_props(in, req->properties);
     const char *code = get_prop(in, "ProductCode");
-    bool installed = product_registered(code, NULL, 0);
-    if (installed) set_prop(in, "Installed", "1");
+    in->installed = product_registered(code, NULL, 0);
+    if (in->installed) {
+        set_prop(in, "Installed", "1");
+        set_prop(in, "ProductState", "5");
+        read_installed_features(in, code);
+    } else set_prop(in, "ProductState", "-1");
+    if (!strcmp(get_prop(in, "REMOVE"), "ALL")) in->remove = true;
     if (in->remove) {
-        if (!installed) logf(in, "Product %s is not registered; removing what the package lists anyway", code);
+        if (!in->installed) logf(in, "Product %s is not registered; removing what the package lists anyway", code);
         else restore_install_location(in, code);
         set_prop(in, "REMOVE", "ALL");
-    } else if (installed) {
+    } else if (in->installed && in->ui_level < MSIUI_FULL) {
         set_prop(in, "REINSTALL", "ALL");
         set_prop(in, "REINSTALLMODE", "vomus");
     }
+    if (in->installed && !in->remove) restore_install_location(in, code);
     logf(in, "%s %s %s (%s)", in->remove ? "Removing" : "Installing", get_prop(in, "ProductName"),
          get_prop(in, "ProductVersion"), code);
+    /* full UI and a package with dialogs: its own InstallUISequence */
+    if (in->ui_level >= MSIUI_FULL && !in->remove && dlg_available(&in->db)) {
+        in->dlg = dlg_create(in);
+        if (in->dlg) {
+            *dialogs_shown = true;
+            in->in_ui = true;
+            bool ok = run_sequence(in, "InstallUISequence");
+            if (ok && !in->executed && !in->result) ok = action_execute(in);
+            in->in_ui = false;
+            int outcome = !in->result ? -1 : in->result == MSI_ERROR_USEREXIT ? -2 : -3;
+            if (outcome == -3) eng_set_prop(in, "ERRORMESSAGE", in->error);   /* (shown by some FatalError dialogs) */
+            show_exit_dialog(in, outcome);
+            dlg_destroy(in->dlg);
+            in->dlg = NULL;
+            if (!in->result) logf(in, "Installation completed successfully");
+            return in->result;
+        }
+    }
     if (in->ui) {
         char title[256];
         snprintf(title, sizeof(title), "%s", get_prop(in, "ProductName"));
         msiui_begin(in->ui, title, in->remove);
     }
-    run_sequence(in);
+    run_sequence(in, "InstallExecuteSequence");
     if (!in->result) logf(in, "%s completed successfully", in->remove ? "Removal" : "Installation");
     return in->result;
 }
@@ -1532,7 +2784,8 @@ static int run_product(const WCHAR *code, bool remove, int ui_level, MsiUi *ui, 
     in->ui_level = ui_level;
     in->ui = ui;
     wcsncpy(in->pkg_path, pkg, MAX_PATH);
-    int r = run(in, &req);
+    bool shown = false;
+    int r = run(in, &req, &shown);
     if (r && err) snprintf(err, (size_t)cap, "%s", in->error);
     inst_free(in);
     free(in);
@@ -1544,6 +2797,7 @@ int MsiRunInstall(const MsiRequest *req, char *err, int err_cap)
     if (err && err_cap) err[0] = 0;
     MsiUi *ui = req->ui_level > MSIUI_NONE ? msiui_create() : NULL;
     int r;
+    bool dialogs = false;
     if (req->product_code && !req->package) {
         r = run_product(req->product_code, req->remove, req->ui_level, ui, err, err_cap);
     } else {
@@ -1552,11 +2806,12 @@ int MsiRunInstall(const MsiRequest *req, char *err, int err_cap)
         in->ui_level = req->ui_level;
         in->ui = ui;
         wcsncpy(in->pkg_path, req->package ? req->package : L"", MAX_PATH);
-        r = run(in, req);
+        r = run(in, req, &dialogs);
         if (r && err) snprintf(err, (size_t)err_cap, "%s", in->error);
         inst_free(in);
         free(in);
     }
-    if (ui) msiui_end(ui, r, req->ui_level >= MSIUI_FULL, err);
+    /* the package's own dialogs already told the user how it went */
+    if (ui) msiui_end(ui, dialogs ? MSI_OK : r, req->ui_level >= MSIUI_FULL && !dialogs, err);
     return r;
 }
