@@ -63,6 +63,8 @@ typedef struct {
     size_t     stream_size;
 } MsiTable;
 
+struct MsiTemp;                       /* sql.c: rows and tables added at run time */
+
 typedef struct {
     Cfb       cfb;
     char    **strings;                /* by id; [0] = "" */
@@ -71,7 +73,12 @@ typedef struct {
     int       codepage;
     MsiTable *tables;
     int       ntables;
+    struct MsiTemp *temp;
 } MsiDb;
+
+/* A stream column ('v0': string type, no length): the cell refers to the
+ * stream named "Table.Key" */
+#define MSI_IS_BINARY(type) (((type) & ~(MSI_NULLABLE | MSI_KEY | 0x4000)) == 0x0900)
 
 bool        msidb_open(MsiDb *db, const void *data, size_t size);
 void        msidb_close(MsiDb *db);
@@ -84,6 +91,51 @@ const char *msidb_str(const MsiDb *db, const MsiTable *t, int row, int col, char
 int         msidb_int(const MsiDb *db, const MsiTable *t, int row, int col, bool *null);
 /* Row whose column @col equals @value, from @from; -1 if none */
 int         msidb_find(const MsiDb *db, const MsiTable *t, int col, const char *value, int from);
+
+/* -----------------------------------------------------------------------
+ * Records and SQL views (sql.c), the data behind MSIHANDLEs
+ * ----------------------------------------------------------------------- */
+enum { MSIF_NULL, MSIF_INT, MSIF_STR, MSIF_STREAM };
+
+typedef struct {
+    int      type;
+    int      i;
+    char    *s;                       /* MSIF_STR: UTF-8, malloc'd */
+    uint8_t *data;                    /* MSIF_STREAM */
+    size_t   size, pos;
+} MsiField;
+
+typedef struct MsiRec {
+    int       n;                      /* fields 1..n; f[0] is the format field */
+    MsiField *f;
+    void     *view;                   /* the view it was fetched from */
+    int       src[4];                 /* source row in each joined table */
+} MsiRec;
+
+MsiRec     *msirec_new(int n);
+void        msirec_free(MsiRec *r);
+void        msirec_clear(MsiRec *r);
+void        msirec_set_str(MsiRec *r, int i, const char *s);   /* NULL/"" = null */
+void        msirec_set_int(MsiRec *r, int i, int v);            /* MSI_NULL_INTEGER = null */
+void        msirec_set_stream(MsiRec *r, int i, const void *data, size_t size);
+bool        msirec_is_null(const MsiRec *r, int i);
+int         msirec_int(const MsiRec *r, int i);                 /* MSI_NULL_INTEGER for null/non-number */
+const char *msirec_str(const MsiRec *r, int i, char *buf);      /* buf: 16 bytes for integers */
+MsiRec     *msirec_copy(const MsiRec *r);
+#define MSI_NULL_INTEGER ((int)0x80000000)
+
+typedef struct MsiView MsiView;
+/* Errors are Win32 codes: 0, ERROR_BAD_QUERY_SYNTAX (1615), ERROR_INVALID_TABLE (1628)... */
+int      msisql_open(MsiDb *db, const char *sql, MsiView **out, char *err, int errcap);
+int      msisql_execute(MsiView *v, const MsiRec *params);
+int      msisql_fetch(MsiView *v, MsiRec **out);               /* 259 (no more items) at the end */
+int      msisql_colinfo(MsiView *v, bool types, MsiRec **out);
+int      msisql_modify(MsiView *v, int mode, MsiRec *rec);
+void     msisql_close(MsiView *v);
+void     msisql_free_temp(MsiDb *db);
+/* Primary key columns of a table: a record of their names, field 0 the table */
+int      msisql_primary_keys(MsiDb *db, const char *table, MsiRec **out);
+bool     msisql_table_exists(MsiDb *db, const char *table);
 
 /* -----------------------------------------------------------------------
  * Cabinets

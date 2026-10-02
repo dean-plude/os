@@ -10,7 +10,8 @@ NovaOS's own WoW64 layer, as on 64-bit Windows.
 **Status:** Phases 1–15 are done.  NovaOS boots on UEFI machines (tested in
 QEMU with OVMF), uses every CPU core, keeps its files on a SATA disk, and
 runs unmodified Windows programs: 7-Zip, Git, NSIS installers, `.msi`
-packages, the Java, .NET, Node.js and Python runtimes, and OpenGL, Vulkan
+packages (with their own dialogs, custom actions, shortcuts and
+services), the Java, .NET, Node.js and Python runtimes, and OpenGL, Vulkan
 and Direct3D 8–11 programs through Mesa and DXVK.  It can install
 itself on a disk from its live ISO.
 
@@ -40,7 +41,8 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **MSYS2 runtime** (MinGit's `usr\bin`) | `sh.exe` (bash), `ls`, `cat`, `wc`… | `sh -c` with pipes, `$(...)`, subshells, globbing, `fork`. |
 | **Eclipse Temurin 21** | Java JRE `.msi`, JDK `.zip` | `java -version`, a threads/exceptions/files stress test, `javac` compiling a program that then runs. |
 | **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes. |
-| **Node.js 24** | `.msi`, `.zip` | `node -v`, `-e`, `npm -v`, a crypto/fs/JSON/timers test script. |
+| **Node.js 24** | `.msi`, `.zip` | `node -v`, `-e`, `npm -v`, a crypto/fs/JSON/timers test script; the `.msi` runs its 64-bit and 32-bit custom actions, makes its Start menu shortcuts and uninstalls. |
+| **Windows Installer packages** | 7-Zip, CMake, Node.js, Temurin, KeePassXC `.msi` | 7-Zip and CMake install through their own wizards (licence, options, feature tree, progress), CMake's dialogs running its DLL custom actions; custom-action DLLs run in 64-bit and 32-bit custom-action servers; shortcuts and a test service are created and removed again by `msiexec /x`. |
 | **Python 3.14** | NuGet package | `-c`, a hashlib/JSON/regex/threads/subprocess test script. |
 | **Mesa 3D 24.2.4** (mesa-dist-win) | `opengl32.dll` (llvmpipe) and the Vulkan driver (lavapipe), x64 and x86, from the App Store | OpenGL 4.5: `tools/gltest` (pixel formats, immediate mode, GLSL, read-back, animated `SwapBuffers`) passes as a 64-bit and a 32-bit program. |
 | **DXVK 2.5.3** | `d3d8`, `d3d9`, `d3d10core`, `d3d11`, `dxgi`, x64 and x86, from the App Store, on Mesa's Vulkan and NovaOS's own `vulkan-1.dll` | Direct3D 9 and 11: `tools/d3dtest` (device creation, a D3D9 triangle, D3D11 clear, read-back, animated `Present` in a window) passes as a 64-bit and a 32-bit program. |
@@ -59,7 +61,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 - **Command line**: the Terminal's own commands (`dir`, `copy`, `ping`,
   `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
-  `more`, `timeout`, `reg`, `regsvr32` and `msiexec`.
+  `more`, `timeout`, `taskkill`, `reg`, `regsvr32` and `msiexec`.
 
 ### The App Store
 
@@ -103,7 +105,8 @@ every part, phase by phase.
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions; registry saved to disk;
   COM in-process servers; drag and drop; a shared clipboard; `.lnk`
-  shortcuts; Windows Installer packages.
+  shortcuts; Windows Installer packages; services (`advapi32`'s service
+  control manager).
 
 ## Quick start
 
@@ -209,7 +212,8 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   (not in this repository), driven by a QEMU harness that types, clicks and takes screenshots.
 - **On the host**: `tools/pe_imports.py PROGRAM.exe` lists the imports a
   Windows program needs that NovaOS's DLLs lack; `tools/msitest/` exercises
-  the Windows Installer's package readers.  `tools/gltest/` and
+  the Windows Installer's package readers and SQL, and builds test
+  packages (one with a service).  `tools/gltest/` and
   `tools/d3dtest/` are OpenGL and Direct3D 9/11 test programs, built with
   MinGW, for checking Mesa and DXVK on NovaOS.
 - **Debugging**: the serial log (COM1) has every kernel message; the

@@ -183,28 +183,72 @@ static BOOL string_to_sid(const char *s, PSID *out)
     return TRUE;
 }
 
-WINADVAPI BOOL WINAPI ConvertStringSidToSidA(LPCSTR s, PSID *out) { return string_to_sid(s, out); }
+WINADVAPI BOOL WINAPI ConvertStringSidToSidA(LPCSTR s, PSID *out)
+{
+    if (!s || !out) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!string_to_sid(s, out)) return FALSE;
+    SetLastError(ERROR_SUCCESS);            /* Windows clears it; some callers test GetLastError alone */
+    return TRUE;
+}
 
 WINADVAPI BOOL WINAPI ConvertStringSidToSidW(LPCWSTR s, PSID *out)
 {
     char a[200];
     int i = 0;
+    if (!s || !out) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     for (; s[i] && i < 199; i++) a[i] = (char)s[i];
     a[i] = 0;
-    return string_to_sid(a, out);
+    return ConvertStringSidToSidA(a, out);
 }
+
+/* Well-known SIDs: WELL_KNOWN_SID_TYPE, the SID, and the account it names */
+static const struct { int type; const char *sid, *domain, *name; SID_NAME_USE use; } g_known[] = {
+    { 0,  "S-1-0-0",      "",             "NULL SID",            SidTypeWellKnownGroup },
+    { 1,  "S-1-1-0",      "",             "Everyone",            SidTypeWellKnownGroup },
+    { 2,  "S-1-2-0",      "",             "LOCAL",               SidTypeWellKnownGroup },
+    { 3,  "S-1-3-0",      "",             "CREATOR OWNER",       SidTypeWellKnownGroup },
+    { 4,  "S-1-3-1",      "",             "CREATOR GROUP",       SidTypeWellKnownGroup },
+    { 8,  "S-1-5-1",      "NT AUTHORITY", "DIALUP",              SidTypeWellKnownGroup },
+    { 9,  "S-1-5-2",      "NT AUTHORITY", "NETWORK",             SidTypeWellKnownGroup },
+    { 10, "S-1-5-3",      "NT AUTHORITY", "BATCH",               SidTypeWellKnownGroup },
+    { 11, "S-1-5-4",      "NT AUTHORITY", "INTERACTIVE",         SidTypeWellKnownGroup },
+    { 12, "S-1-5-6",      "NT AUTHORITY", "SERVICE",             SidTypeWellKnownGroup },
+    { 13, "S-1-5-7",      "NT AUTHORITY", "ANONYMOUS LOGON",     SidTypeWellKnownGroup },
+    { 16, "S-1-5-10",     "NT AUTHORITY", "SELF",                SidTypeWellKnownGroup },
+    { 17, "S-1-5-11",     "NT AUTHORITY", "Authenticated Users", SidTypeWellKnownGroup },
+    { 19, "S-1-5-13",     "NT AUTHORITY", "TERMINAL SERVER USER", SidTypeWellKnownGroup },
+    { 22, "S-1-5-18",     "NT AUTHORITY", "SYSTEM",              SidTypeWellKnownGroup },
+    { 23, "S-1-5-19",     "NT AUTHORITY", "LOCAL SERVICE",       SidTypeWellKnownGroup },
+    { 24, "S-1-5-20",     "NT AUTHORITY", "NETWORK SERVICE",     SidTypeWellKnownGroup },
+    { 25, "S-1-5-32",     "BUILTIN",      "BUILTIN",             SidTypeDomain },
+    { 26, "S-1-5-32-544", "BUILTIN",      "Administrators",      SidTypeAlias },
+    { 27, "S-1-5-32-545", "BUILTIN",      "Users",               SidTypeAlias },
+    { 28, "S-1-5-32-546", "BUILTIN",      "Guests",              SidTypeAlias },
+    { 29, "S-1-5-32-547", "BUILTIN",      "Power Users",         SidTypeAlias },
+    { 33, "S-1-5-32-551", "BUILTIN",      "Backup Operators",    SidTypeAlias },
+    { 36, "S-1-5-32-555", "BUILTIN",      "Remote Desktop Users", SidTypeAlias },
+    { 37, "S-1-5-32-556", "BUILTIN",      "Network Configuration Operators", SidTypeAlias },
+    { 75, "S-1-5-32-558", "BUILTIN",      "Performance Monitor Users", SidTypeAlias },
+    { 76, "S-1-5-32-559", "BUILTIN",      "Performance Log Users", SidTypeAlias },
+    { 66, "S-1-16-8192",  "Mandatory Label", "Medium Mandatory Level", SidTypeLabel },
+    { 68, "S-1-16-12288", "Mandatory Label", "High Mandatory Level", SidTypeLabel },
+    { 69, "S-1-16-16384", "Mandatory Label", "System Mandatory Level", SidTypeLabel },
+};
 
 /* well-known SID types (WELL_KNOWN_SID_TYPE) */
 WINADVAPI BOOL WINAPI CreateWellKnownSid(int type, PSID domain, PSID out, DWORD *n)
 {
     (void)domain;
-    const BYTE *s = type == 1 ? g_everyone_sid : type == 17 ? g_auth_users_sid : type == 22 ? g_system_sid :
-                    type == 26 ? g_admins_sid : type == 27 ? g_users_sid : type == 9 ? g_interactive_sid :
-                    type == 66 ? g_medium_il_sid : 0;
-    if (!s) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    DWORD len = GetLengthSid((PSID)s);
-    if (!out || *n < len) { *n = len; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    if (!n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    const char *str = 0;
+    for (unsigned i = 0; i < sizeof(g_known) / sizeof(g_known[0]); i++)
+        if (g_known[i].type == type) { str = g_known[i].sid; break; }
+    PSID s;
+    if (!str || !string_to_sid(str, &s)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    DWORD len = GetLengthSid(s);
+    if (!out || *n < len) { LocalFree(s); *n = len; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
     memcpy(out, s, len);
+    LocalFree(s);
     *n = len;
     return TRUE;
 }
@@ -218,20 +262,20 @@ WINADVAPI BOOL WINAPI IsWellKnownSid(PSID sid, int type)
 
 static const char *account_of(PSID sid, const char **domain, SID_NAME_USE *use)
 {
-    *domain = "BUILTIN";
-    *use = SidTypeAlias;
+    if (!sid || !IsValidSid(sid)) return 0;
     if (EqualSid(sid, (PSID)g_user_sid)) { *domain = "NOVAOS"; *use = SidTypeUser; return user_name(); }
     static const BYTE domain_sid[] = { 1, 4, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 0xE8, 3, 0, 0, 0xD0, 7, 0, 0, 0xB8, 0x0B, 0, 0 };
     if (EqualSid(sid, (PSID)domain_sid)) { *domain = "NOVAOS"; *use = SidTypeDomain; return "NOVAOS"; }
-    if (EqualSid(sid, (PSID)g_admins_sid)) return "Administrators";
-    if (EqualSid(sid, (PSID)g_users_sid)) return "Users";
-    *domain = "";
-    *use = SidTypeWellKnownGroup;
-    if (EqualSid(sid, (PSID)g_everyone_sid)) return "Everyone";
-    *domain = "NT AUTHORITY";
-    if (EqualSid(sid, (PSID)g_auth_users_sid)) return "Authenticated Users";
-    if (EqualSid(sid, (PSID)g_interactive_sid)) return "INTERACTIVE";
-    if (EqualSid(sid, (PSID)g_system_sid)) return "SYSTEM";
+    char str[200];
+    if (!sid_to_string(sid, str, sizeof(str))) return 0;
+    for (unsigned i = 0; i < sizeof(g_known) / sizeof(g_known[0]); i++) {
+        const char *a = g_known[i].sid, *b = str;
+        while (*a && *a == *b) { a++; b++; }
+        if (*a || *b) continue;
+        *domain = g_known[i].domain;
+        *use = g_known[i].use;
+        return g_known[i].name;
+    }
     return 0;
 }
 
@@ -248,6 +292,7 @@ WINADVAPI BOOL WINAPI LookupAccountSidA(LPCSTR sys, PSID sid, LPSTR name, LPDWOR
     memcpy(dom, d, ld + 1);
     *nn = ln; *nd = ld;
     if (use) *use = u;
+    SetLastError(ERROR_SUCCESS);
     return TRUE;
 }
 
@@ -264,6 +309,7 @@ WINADVAPI BOOL WINAPI LookupAccountSidW(LPCWSTR sys, PSID sid, LPWSTR name, LPDW
     for (DWORD i = 0; i <= ld; i++) dom[i] = (WCHAR)(BYTE)d[i];
     *nn = ln; *nd = ld;
     if (use) *use = u;
+    SetLastError(ERROR_SUCCESS);
     return TRUE;
 }
 

@@ -1,9 +1,8 @@
 /*
- * misc.c — advapi32's event tracing (ETW), event log, services and a few
- * odds and ends.  NovaOS has no trace sessions, event log service or
- * service control manager: providers register successfully and are never
- * enabled, event-log reports go to the kernel log, and services report
- * that none exist.
+ * misc.c — advapi32's event tracing (ETW), event log and a few
+ * odds and ends.  NovaOS has no trace sessions or event log service:
+ * providers register successfully and are never enabled, and event-log
+ * reports go to the kernel log.  (Services are in service.c.)
  */
 
 #define NOVA_BUILD_ADVAPI32
@@ -93,40 +92,6 @@ WINADVAPI HANDLE WINAPI OpenEventLogW(LPCWSTR server, LPCWSTR source) { (void)se
 WINADVAPI BOOL WINAPI CloseEventLog(HANDLE h) { (void)h; return TRUE; }
 
 /* -----------------------------------------------------------------------
- * Services: a control manager with no services in it
- * ----------------------------------------------------------------------- */
-typedef void *SC_HANDLE;
-#define SCM_HANDLE ((SC_HANDLE)(ULONG_PTR)0x5C4D)
-
-WINADVAPI SC_HANDLE WINAPI OpenSCManagerW(LPCWSTR machine, LPCWSTR db, DWORD access) { (void)machine; (void)db; (void)access; return SCM_HANDLE; }
-WINADVAPI SC_HANDLE WINAPI OpenSCManagerA(LPCSTR machine, LPCSTR db, DWORD access) { (void)machine; (void)db; (void)access; return SCM_HANDLE; }
-WINADVAPI SC_HANDLE WINAPI OpenServiceW(SC_HANDLE scm, LPCWSTR name, DWORD access) { (void)scm; (void)name; (void)access; SetLastError(1060 /* ERROR_SERVICE_DOES_NOT_EXIST */); return 0; }
-WINADVAPI SC_HANDLE WINAPI OpenServiceA(SC_HANDLE scm, LPCSTR name, DWORD access) { (void)scm; (void)name; (void)access; SetLastError(1060); return 0; }
-WINADVAPI SC_HANDLE WINAPI CreateServiceW(SC_HANDLE scm, LPCWSTR n, LPCWSTR d, DWORD a, DWORD t, DWORD s, DWORD e, LPCWSTR p,
-                                          LPCWSTR g, LPDWORD tag, LPCWSTR dep, LPCWSTR user, LPCWSTR pw)
-{
-    (void)scm; (void)n; (void)d; (void)a; (void)t; (void)s; (void)e; (void)p; (void)g; (void)tag; (void)dep; (void)user; (void)pw;
-    SetLastError(ERROR_ACCESS_DENIED);
-    return 0;
-}
-WINADVAPI BOOL WINAPI CloseServiceHandle(SC_HANDLE h) { (void)h; return TRUE; }
-WINADVAPI BOOL WINAPI EnumServicesStatusExW(SC_HANDLE scm, int level, DWORD type, DWORD state, LPBYTE buf, DWORD n, LPDWORD need,
-                                            LPDWORD count, LPDWORD resume, LPCWSTR group)
-{
-    (void)scm; (void)level; (void)type; (void)state; (void)buf; (void)n; (void)group;
-    *need = 0; *count = 0;
-    if (resume) *resume = 0;
-    return TRUE;
-}
-
-/* Not started by a service control manager */
-WINADVAPI BOOL WINAPI StartServiceCtrlDispatcherW(const void *table) { (void)table; SetLastError(1063 /* ERROR_FAILED_SERVICE_CONTROLLER_CONNECT */); return FALSE; }
-WINADVAPI BOOL WINAPI StartServiceCtrlDispatcherA(const void *table) { (void)table; SetLastError(1063); return FALSE; }
-WINADVAPI HANDLE WINAPI RegisterServiceCtrlHandlerW(LPCWSTR name, PVOID fn) { (void)name; (void)fn; SetLastError(1063); return 0; }
-WINADVAPI HANDLE WINAPI RegisterServiceCtrlHandlerExW(LPCWSTR name, PVOID fn, PVOID ctx) { (void)name; (void)fn; (void)ctx; SetLastError(1063); return 0; }
-WINADVAPI BOOL WINAPI SetServiceStatus(HANDLE h, PVOID st) { (void)h; (void)st; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-
-/* -----------------------------------------------------------------------
  * Odds and ends
  * ----------------------------------------------------------------------- */
 /* Guess whether a buffer is UTF-16 text (IS_TEXT_UNICODE_* tests) */
@@ -160,14 +125,6 @@ WINADVAPI BOOL WINAPI InitiateSystemShutdownA(LPSTR m, LPSTR msg, DWORD t, BOOL 
 { (void)m; (void)msg; return InitiateSystemShutdownExW(NULL, NULL, t, f, r, 0); }
 WINADVAPI BOOL WINAPI AbortSystemShutdownW(LPWSTR m) { (void)m; SetLastError(ERROR_NO_SHUTDOWN_IN_PROGRESS); return FALSE; }
 WINADVAPI BOOL WINAPI AbortSystemShutdownA(LPSTR m) { (void)m; SetLastError(ERROR_NO_SHUTDOWN_IN_PROGRESS); return FALSE; }
-
-WINADVAPI BOOL WINAPI QueryServiceStatusEx(SC_HANDLE s, int level, LPBYTE buf, DWORD n, LPDWORD need)
-{
-    (void)s; (void)level; (void)buf; (void)n;
-    if (need) *need = 0;
-    SetLastError(ERROR_INVALID_HANDLE);             /* (there are no services to open) */
-    return FALSE;
-}
 
 /* SetEntriesInAcl: files carry no ACLs here, so the new ACL is an empty
  * one the caller frees with LocalFree */

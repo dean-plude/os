@@ -40,7 +40,8 @@ typedef enum { TokenUser = 1, TokenGroups, TokenPrivileges, TokenOwner, TokenPri
                TokenVirtualizationAllowed, TokenVirtualizationEnabled, TokenIntegrityLevel, TokenUIAccess,
                TokenMandatoryPolicy, TokenLogonSid, TokenIsAppContainer } TOKEN_INFORMATION_CLASS;
 typedef enum { SecurityAnonymous, SecurityIdentification, SecurityImpersonation, SecurityDelegation } SECURITY_IMPERSONATION_LEVEL;
-typedef enum { SidTypeUser = 1, SidTypeGroup, SidTypeDomain, SidTypeAlias, SidTypeWellKnownGroup } SID_NAME_USE, *PSID_NAME_USE;
+typedef enum { SidTypeUser = 1, SidTypeGroup, SidTypeDomain, SidTypeAlias, SidTypeWellKnownGroup, SidTypeDeletedAccount,
+               SidTypeInvalid, SidTypeUnknown, SidTypeComputer, SidTypeLabel } SID_NAME_USE, *PSID_NAME_USE;
 typedef enum { SE_UNKNOWN_OBJECT_TYPE, SE_FILE_OBJECT, SE_SERVICE, SE_PRINTER, SE_REGISTRY_KEY } SE_OBJECT_TYPE;
 
 #define TOKEN_QUERY              0x0008
