@@ -236,6 +236,7 @@ int main(int argc, char **argv)
         del(f);
     }
 
+    CHECK("deliberate failure to prove the CI gate (revert me)", 0);
     printf("apitest: %d passed, %d failed\n", pass, fail);
     return fail != 0;
 }
