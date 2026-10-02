@@ -929,7 +929,8 @@ MinGit's `git.exe` (2.47) runs: `--version`, `init`, `add`, `commit`,
     now finds it while any handle keeps it, as on Windows, so `waitpid`
     on a finished child gets its exit code.
 - Not yet: MinGit ships no `less`, git's default pager, so give `log` and
-  `config --list` `--no-pager` or `-c core.pager=more`.
+  `config --list` `--no-pager` or `-c core.pager=more`.  *(Since done:
+  NovaOS's own `less`, see [A pager for git](#a-pager-for-git-lessexe).)*
 
 ## The MSYS2 runtime: `sh.exe`, `clone`, `push`
 
@@ -1473,6 +1474,36 @@ TLS already in the tree.
   with TLS 1.3 and with TLS 1.2; with `tls_verify` on (ffmpeg's default) a
   self-signed server is refused as an untrusted root.
 
+<<<<<<< HEAD
+## A pager for git: `less.exe`
+
+`git log`, `diff` and `config --list` on the Terminal now page without
+`--no-pager`.  MinGit has no `less`, git's default pager, so git stopped
+with "unable to execute pager 'less'" (it does on Windows too).  NovaOS
+now ships `less.exe` in `C:\Windows\System32` (and SysWOW64), on `PATH`,
+where git finds it:
+
+- It shows a screenful (the console's rows), then asks `-- More --` and
+  takes single keys, through the per-key console input of Phase 17.2:
+  Space (or `f`, Page Down) the next page, Enter (or `j`, Down) one more
+  line, `d` half a page, `/text` and Enter skips to the next line
+  containing the text, `q` (or Esc) quits, and git then stops quietly.
+  The prompt is erased as the text moves on.  On a console that only
+  hands over whole lines it asks for a line instead (Enter, a number,
+  `/text` or `q`).
+- Output that fits on one screen goes straight through, as with git's
+  `LESS=FRX`, and so does everything when the output is not a console
+  (`git log | find` is unchanged).  Color escapes pass through, files
+  given as arguments (`less a.txt`) work, and options are accepted.
+- Why not the real `less`: its Windows build draws through the console
+  screen-buffer calls (`SetConsoleCursorPosition`, `FillConsoleOutput*`),
+  which are still no-ops, so it would draw garbage; it can come once they
+  drive the Terminal's screen.
+- The nightly corpus's `git log` test no longer passes `--no-pager`.
+- The test tools (`tools/selftest.py`, `appcorpus.py`) match a program's
+  expected output without the kernel's `[UM]`/`[SCHED]` log lines, which
+  share the serial port and could land mid-line (`[[UM] jq.exe ... 40,2]`).
+=======
 ## Phase 17: kernel and API correctness
 
 - **Every thread has a real `ETHREAD`** (17.1): `PsGetCurrentThread` used
@@ -1532,3 +1563,4 @@ TLS already in the tree.
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,
   `$(...)` and redirections to `/dev/null`; the core self-tests pass.
+>>>>>>> origin/main
