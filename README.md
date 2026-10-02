@@ -99,15 +99,17 @@ every part, phase by phase.
 - **Windows userland** (`userland/`): about 35 system DLLs written from
   scratch and compiled with clang for `x86_64-pc-windows-msvc`, and again
   for `i686` in `SysWOW64`: `ntdll`, `kernel32`, `msvcrt`/`ucrtbase` with
-  the `api-ms-win-crt-*` API sets, `vcruntime140` (C++ exceptions),
+  the `api-ms-win-crt-*` API sets, `vcruntime140`/`vcruntime140_1` (C++
+  exceptions, FH3 and FH4 tables),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs),
-  `comctl32`, `shell32`, `ole32`/`oleaut32` (COM), `advapi32`, `ws2_32`,
+  `comctl32`, `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
+  type libraries), `advapi32`, `ws2_32`,
   `winmm` and `mmdevapi` (sound: `waveOut`, `PlaySound`, WASAPI), `msi`,
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
   `usp10` (Uniscribe), `normaliz` (IDN), and more.
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions; registry saved to disk;
-  COM in-process servers; drag and drop; a shared clipboard; `.lnk`
+  COM in-process servers and type libraries; drag and drop; a shared clipboard; `.lnk`
   shortcuts; Windows Installer packages.
 
 ## Quick start
@@ -179,7 +181,8 @@ To make the ISO yourself from a fresh build, run
 - **Build and boot-test** (core): `apitest`, `abitest` (the PEB, TEB,
   `KUSER_SHARED_DATA`, `CONTEXT` and loader layouts, ntdll's stubs and the
   system-call numbers, against Windows 10 1903 x64), `filetest`,
-  `pipetest`, `proctest`, `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `disptest`, `battery` (against the battery in
+  `pipetest`, `proctest`, `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `anitest` (animated cursors and
+  program pointers), `disptest`, `comtest`, `tlbtest` (type libraries, 64- and 32-bit), `cppeh`, `battery` (against the battery in
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
   tones played), an installer that replaces a running program and
   finishes after a restart (`filetest install`, `shutdown /r`, `filetest
@@ -210,7 +213,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
   `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `proctest`, `acltest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
+  `cppeh`, `shmtest`, `pipetest`, `proctest`, `acltest`, `cliptest`, `disptest`, `anitest`, `smpstress`.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
   `tools/novarun.py --wav out.wav` records what NovaOS plays and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
@@ -291,7 +294,7 @@ os/
 │   └── include/          # The Windows SDK headers NovaOS provides
 ├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), NetSurf, stb, fonts, 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
-│                         #   make_icons.py, pe_imports.py, msitest/
+│                         #   make_icons.py, mkani.py, pe_imports.py, msitest/
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
 └── docs/                 # Building, roadmap, feature history, Phase 1 architecture
 ```
@@ -308,7 +311,9 @@ os/
   call to the kernel's 64-bit form, the way Windows' WoW64 does.
 - **The window system lives in the program**: `user32` keeps each program's
   window tree; the kernel's window manager composites only top-level
-  windows, drawn from bitmaps the programs own.
+  windows, drawn from bitmaps the programs own.  The kernel also draws the
+  pointer: a program's `SetCursor` shape (animated .ani cursors included)
+  over its own windows, the desktop's arrow elsewhere.
 - **Software rendering**: GDI is a CPU rasterizer drawing into a back
   buffer in RAM at integer HiDPI scale.  On QEMU's standard VGA, QXL,
   virtio-vga and VMware adapters (and Bochs, VirtualBox's VBoxVGA) a VBE
