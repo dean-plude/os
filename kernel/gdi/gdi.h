@@ -168,3 +168,23 @@ int  GdiMonoCellW256(void);
  * ----------------------------------------------------------------------- */
 void GdiCursorDraw (int dev_x, int dev_y);
 void GdiCursorErase(int dev_x, int dev_y);
+
+/* A program's pointer (SetCursor): w x h logical pixels with its hot spot,
+ * one or more frames (animated cursors, .ani) shown in the order of
+ * steps[], each for its own number of scheduler ticks.  Pixels are
+ * 0xAARRGGBB, not premultiplied, frame after frame.  hidden: no pointer
+ * (SetCursor(NULL), ShowCursor below zero). */
+#define GDI_CURSOR_MAX     64       /* logical pixels, either side */
+#define GDI_CURSOR_FRAMES  64
+#define GDI_CURSOR_STEPS   256
+typedef struct GdiCursorShape {
+    int     w, h, hot_x, hot_y;
+    bool    hidden;
+    int     nframes, nsteps;
+    UINT32  total;                  /* ticks for one pass of the steps */
+    struct { UINT16 frame; UINT32 ticks; } steps[GDI_CURSOR_STEPS];
+    UINT32  argb[];                 /* nframes * w * h */
+} GdiCursorShape;
+
+/* Draws frame @frame of @shape with its hot spot at the device pixel */
+void GdiCursorDrawShape(int dev_x, int dev_y, const GdiCursorShape *shape, int frame);

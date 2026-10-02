@@ -97,6 +97,11 @@ NOVA_NO_NETSURF=1 python3 tools/build_userland.py /tmp/ul /tmp/ul/gen.c kernel/k
 scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf
 ```
 
+The ISO is not committed (`*.iso` is in `.gitignore`).  CI builds it on
+every pull request and keeps it as the run's `nova-iso` artifact, and each
+push to `main` that passes CI replaces `nova.iso` on the `latest` release:
+<https://github.com/dean-plude/os/releases/latest/download/nova.iso>.
+
 The ISO is El Torito UEFI, no emulation: its EFI System Partition holds
 `\EFI\BOOT\BOOTX64.EFI` and `\EFI\NOVA\kernel.elf`.  Booted from it, NovaOS
 runs live and opens Install NovaOS (see the README).
@@ -202,7 +207,11 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
-`guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`, and
+`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `comtest`,
+`tlbtest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`, `soundtest wasapi`,
+`filetest install` (an installer that must replace a running program
+schedules it for the next boot), a restart that must report `Pending file
+operations at boot: 2 done, 0 failed`, `filetest installed`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
@@ -229,14 +238,15 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | Program | Covers |
 |---------|--------|
 | `crttest` | The C runtime |
-| `filetest` | Files and directories |
-| `sectest` | Sections and memory |
+| `filetest` | Files and directories; `RegNotifyChangeKeyValue` (values, subkeys, subtrees, deleted keys, synchronous); `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`.  `filetest install`, a restart and `filetest installed` check that a running program replaced at boot |
+| `sectest` (x64) | Hostile system calls refused (kernel pointers, bogus handles, bad descriptors); tokens and object security through the native API: a restricted or deny-only impersonation token is refused a protected named event |
 | `threads` | Threads, synchronization, SEH |
 | `dlltest` | DLL loading, TLS, `DllMain` |
 | `posixtest` | The POSIX layer in msvcrt |
 | `apitest` | kernel32, advapi32, bcrypt, shell32, shlwapi, psapi, user32/gdi32, the registry |
 | `abitest` (x64) | The binary interface against Windows 10 1903 x64: TEB, PEB, process parameters, loader lists, `KUSER_SHARED_DATA`, `CONTEXT` and `EXCEPTION_RECORD` offsets, ntdll's stub bytes and every system-call number (`abitest_nt1903.h`), raw `syscall`s |
 | `comtest` | ole32/oleaut32, `IShellLink` |
+| `tlbtest` | COM type libraries: `LoadTypeLib` on `testdll.dll`'s embedded library, `ITypeLib`/`ITypeInfo`/`ITypeComp`, registration, `ITypeInfo::Invoke`, `DispCallFunc`, `CreateStdDispatch` |
 | `cppeh` | C++ exceptions and RTTI |
 | `shmtest` | Named and file-backed shared memory between processes |
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
@@ -246,7 +256,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
 | `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
-| `acltest` | Access checks against DACLs (`AccessCheck`) |
+| `acltest` | Access checks against DACLs (`AccessCheck`) for our token and restricted, write-restricted and deny-only ones; `CheckTokenMembership`, impersonation; a named event with a DACL refused to a restricted token |
 | `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
@@ -278,16 +288,17 @@ unpacks them into `C:\Apps`, boots once and runs each one's commands.
 | fd 10.2.0 | `--version`, finding `*.txt` |
 | jq 1.7.1 | `--version`, a filter over a JSON file |
 | 7-Zip 26.03 | `7z a`, `7z t` |
-| MinGit 2.51.0 | `git clone` of a bare repository, `log`, `status` |
+| MinGit 2.51.0 | `git clone` of a bare repository, `log` (through the `less` pager), `status` |
 | Python 3.14.0 (NuGet package) | `-c` with `json` and `sys` |
 | Node.js 24.9.0 | `-v`, `-e` |
-| Notepad++ 8.8.3 (portable) | opens a file; the screenshot must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
+| NovaOS's own screens | `dir C:\` and `dir D:\` (an empty NTFS disk made with `mkntfs`) name their drive and give its own free space (`dir.png`); `start explorer` shows This PC with both drives, matching `tests/reference/this-pc.png` |
+| Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
 
 ```bash
-sudo apt install p7zip-full python3-pil     # 7-Zip's installer, Pillow
+sudo apt install p7zip-full python3-pil ntfs-3g   # 7-Zip's installer, Pillow, mkntfs (drive D:)
 python3 tools/appcorpus.py                   # exit status = programs that failed
 python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
-python3 tools/appcorpus.py --only Notepad++ --update-reference   # after an intended change
+python3 tools/appcorpus.py --only NovaOS,Notepad++ --update-reference   # after an intended change
 ```
 
 A command passes as a self-test does (exit code 0, the output expected).
@@ -304,6 +315,13 @@ it to end:
 ```bash
 python3 tools/novarun.py --put 'nvim-win64=C:\Apps\nvim' 'cd C:\Apps\nvim\bin' \
     '!type nvim --clean t.txt\n' '!wait 40' '!type ihello\e:wq\n' '!done 60' 'type t.txt'
+```
+
+`!reboot` restarts NovaOS (`shutdown /r`; drive C: on the data disk is
+kept) and opens the Terminal again, for what must survive a restart:
+
+```bash
+python3 tools/novarun.py 'filetest install' '!reboot' 'filetest installed'
 ```
 
 ### Sound

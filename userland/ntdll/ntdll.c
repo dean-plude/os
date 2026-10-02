@@ -130,11 +130,6 @@ XSTUB(NtQueryTimer,                 SYS_NtQueryTimer)
 XSTUB(NtQueryEvent,                 SYS_NtQueryEvent)
 XSTUB(NtQuerySemaphore,             SYS_NtQuerySemaphore)
 XSTUB(NtQuerySection,               SYS_NtQuerySection)
-XSTUB(NtOpenProcessToken,           SYS_NtOpenProcessToken)
-XSTUB(NtOpenProcessTokenEx,         SYS_NtOpenProcessTokenEx)
-XSTUB(NtOpenThreadToken,            SYS_NtOpenThreadToken)
-XSTUB(NtOpenThreadTokenEx,          SYS_NtOpenThreadTokenEx)
-XSTUB(NtImpersonateAnonymousToken,  SYS_NtImpersonateAnonymousToken)
 XSTUB(NtQueryFullAttributesFile,    SYS_NtQueryFullAttributesFile)
 XSTUB(NtOpenThread,                 SYS_NtOpenThread)
 XSTUB(NtMapViewOfSectionEx,         SYS_NtMapViewOfSectionEx)
@@ -178,6 +173,18 @@ XSTUB(NtNovaGuiMessageBox,             SYS_NtNovaGuiMessageBox)
 XSTUB(NtNovaGuiScreenSize,             SYS_NtNovaGuiScreenSize)
 XSTUB(NtNovaGuiPostMessage,            SYS_NtNovaGuiPostMessage)
 XSTUB(NtNovaGuiCtl,                    SYS_NtNovaGuiCtl)
+XSTUB(NtAccessCheck,                    SYS_NtAccessCheck)
+XSTUB(NtOpenProcessToken,               SYS_NtOpenProcessToken)
+XSTUB(NtOpenProcessTokenEx,             SYS_NtOpenProcessTokenEx)
+XSTUB(NtOpenThreadToken,                SYS_NtOpenThreadToken)
+XSTUB(NtOpenThreadTokenEx,              SYS_NtOpenThreadTokenEx)
+XSTUB(NtDuplicateToken,                 SYS_NtDuplicateToken)
+XSTUB(NtFilterToken,                    SYS_NtFilterToken)
+XSTUB(NtQueryInformationToken,          SYS_NtQueryInformationToken)
+XSTUB(NtQuerySecurityObject,            SYS_NtQuerySecurityObject)
+XSTUB(NtSetSecurityObject,              SYS_NtSetSecurityObject)
+XSTUB(NtImpersonateAnonymousToken,      SYS_NtImpersonateAnonymousToken)
+XSTUB(NtNotifyChangeKey,                SYS_NtNotifyChangeKey)
 #endif
 
 /* -----------------------------------------------------------------------
@@ -409,7 +416,6 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
     case 0xC000014B: return 109;                          /* ERROR_BROKEN_PIPE */
     case 0xC0000120: return 995;                          /* ERROR_OPERATION_ABORTED */
     case 0xC0000225: return 1168;                         /* ERROR_NOT_FOUND */
-    case 0xC000007C: return 1008;                         /* ERROR_NO_TOKEN */
     case 0xC000004F: return 282;                          /* ERROR_EAS_NOT_SUPPORTED */
     case 0xC0000135: return 126;                          /* ERROR_MOD_NOT_FOUND */
     case 0xC000007B: return 193;                          /* ERROR_BAD_EXE_FORMAT */
@@ -434,6 +440,12 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
     case 0xC0000103: return ERROR_INVALID_NAME;           /* not a directory */
     case 0xC000011F: return ERROR_TOO_MANY_OPEN_FILES;
     case 0xC0000121: return ERROR_ACCESS_DENIED;
+    case 0xC0000024: return 6;                            /* OBJECT_TYPE_MISMATCH: ERROR_INVALID_HANDLE */
+    case 0xC000005C: return 1309;                         /* ERROR_NO_IMPERSONATION_TOKEN */
+    case 0xC0000078: return 1337;                         /* ERROR_INVALID_SID */
+    case 0xC0000079: return 1338;                         /* ERROR_INVALID_SECURITY_DESCR */
+    case 0xC000007C: return 1008;                         /* ERROR_NO_TOKEN */
+    case 0xC00000A8: return 1349;                         /* ERROR_BAD_TOKEN_TYPE */
     }
     return ERROR_INVALID_FUNCTION;
 }

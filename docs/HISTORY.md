@@ -386,7 +386,8 @@ Contents:
 - Not yet: `LoadIcon`/`DrawIcon` and `WM_SETICON` for programs (a window
   shows its program's first icon), and animated cursors.  *(Phase 12's
   user32 has icons from `.ico` files and PE resources and `WM_SETICON`;
-  animated cursors are still missing.)*
+  animated cursors came with "Program pointers and animated cursors"
+  below.)*
 
 ## Phase 10 — Standard DLLs, registry, COM and persistent storage
 - **Unmodified Windows programs run**: stock release builds of ripgrep and
@@ -444,8 +445,9 @@ Contents:
   controls, file-open dialogs (they report "cancelled"), the MSVC FH4 C++
   exception tables, type libraries, `RegNotifyChangeKeyValue` events, audio,
   and a clipboard shared between programs.  *(Dialogs, menus and controls
-  came in Phase 12 and the shared clipboard after Phase 13; the rest is
-  still open.)*
+  came in Phase 12, the shared clipboard after Phase 13, audio with HD
+  Audio, and type libraries and FH4 in "COM type libraries and FH4 C++
+  exceptions" below; the rest is still open.)*
 
 ## Phase 11 — Multiprocessor (SMP)
 
@@ -929,7 +931,8 @@ MinGit's `git.exe` (2.47) runs: `--version`, `init`, `add`, `commit`,
     now finds it while any handle keeps it, as on Windows, so `waitpid`
     on a finished child gets its exit code.
 - Not yet: MinGit ships no `less`, git's default pager, so give `log` and
-  `config --list` `--no-pager` or `-c core.pager=more`.
+  `config --list` `--no-pager` or `-c core.pager=more`.  *(Since done:
+  NovaOS's own `less`, see [A pager for git](#a-pager-for-git-lessexe).)*
 
 ## The MSYS2 runtime: `sh.exe`, `clone`, `push`
 
@@ -1329,8 +1332,9 @@ build machine, and DXVK is the faster, more complete path anyway.
 - `sleeptest.exe` sleeps and then checks the clock, threads and files.
   Tested in QEMU (OVMF, q35) with 1, 2 and 4 CPUs, three sleeps in a row,
   and with a USB keyboard and mouse and HD Audio attached.
-- Not yet: wake devices such as USB keyboards, display modes on adapters
-  other than the Bochs/QEMU one.
+- Not yet: wake devices such as USB keyboards.  (Display modes on other
+  adapters came later: see "Display adapters: QXL, virtio, VMware, Cirrus,
+  and their modes after sleep".)
 
 ## ACPI namespace (uACPI): batteries and AC power
 
@@ -1565,6 +1569,35 @@ TLS already in the tree.
   with TLS 1.3 and with TLS 1.2; with `tls_verify` on (ffmpeg's default) a
   self-signed server is refused as an untrusted root.
 
+## A pager for git: `less.exe`
+
+`git log`, `diff` and `config --list` on the Terminal now page without
+`--no-pager`.  MinGit has no `less`, git's default pager, so git stopped
+with "unable to execute pager 'less'" (it does on Windows too).  NovaOS
+now ships `less.exe` in `C:\Windows\System32` (and SysWOW64), on `PATH`,
+where git finds it:
+
+- It shows a screenful (the console's rows), then asks `-- More --` and
+  takes single keys, through the per-key console input of Phase 17.2:
+  Space (or `f`, Page Down) the next page, Enter (or `j`, Down) one more
+  line, `d` half a page, `/text` and Enter skips to the next line
+  containing the text, `q` (or Esc) quits, and git then stops quietly.
+  The prompt is erased as the text moves on.  On a console that only
+  hands over whole lines it asks for a line instead (Enter, a number,
+  `/text` or `q`).
+- Output that fits on one screen goes straight through, as with git's
+  `LESS=FRX`, and so does everything when the output is not a console
+  (`git log | find` is unchanged).  Color escapes pass through, files
+  given as arguments (`less a.txt`) work, and options are accepted.
+- Why not the real `less`: its Windows build draws through the console
+  screen-buffer calls (`SetConsoleCursorPosition`, `FillConsoleOutput*`),
+  which are still no-ops, so it would draw garbage; it can come once they
+  drive the Terminal's screen.
+- The nightly corpus's `git log` test no longer passes `--no-pager`.
+- The test tools (`tools/selftest.py`, `appcorpus.py`) match a program's
+  expected output without the kernel's `[UM]`/`[SCHED]` log lines, which
+  share the serial port and could land mid-line (`[[UM] jq.exe ... 40,2]`).
+
 ## Phase 17: kernel and API correctness
 
 - **Every thread has a real `ETHREAD`** (17.1): `PsGetCurrentThread` used
@@ -1620,7 +1653,192 @@ TLS already in the tree.
   child's standard output share it, so a parent and child writing to one
   log file follow each other instead of overwriting.  `proctest` covers
   all three in the core suite.
+- **Security on objects** (17.4): tokens are kernel objects.  Each process
+  has a primary token, inherited from the process that started it (the
+  desktop user's otherwise: a standard user in Users, with Administrators
+  only for denying since nothing is elevated), and a thread can
+  impersonate an impersonation token.  `NtOpenProcessToken(Ex)`,
+  `NtOpenThreadToken(Ex)`, `NtDuplicateToken`, `NtFilterToken`,
+  `NtQueryInformationToken`, `NtImpersonateAnonymousToken`,
+  `NtAccessCheck` and `NtQuery/SetSecurityObject` moved from ntdll into
+  the kernel at their Windows 10 1903 numbers, and
+  `NtSetInformationThread(ThreadImpersonationToken)` sets or ends
+  impersonation.  `NtFilterToken` (advapi32's `CreateRestrictedToken`)
+  makes SIDs deny-only, removes privileges and adds restricting SIDs, and
+  can make the token write-restricted.  A named event, mutex, semaphore,
+  timer, section, directory or symbolic link keeps the security descriptor
+  it was created with (`SECURITY_ATTRIBUTES`), and opening it, or creating
+  an existing name, checks the access asked for against it as the calling
+  thread: the DACL in order, deny-only groups only in deny ACEs, the
+  owner's implicit `READ_CONTROL | WRITE_DAC`, and for a restricted token a
+  second pass with its restricting SIDs.  kernel32's `OpenEvent`,
+  `OpenMutex` and `OpenSemaphore` pass the access asked for, not all.
+  `GetKernelObjectSecurity`, `SetKernelObjectSecurity`, `GetSecurityInfo`
+  and `SetSecurityInfo` read and change the descriptor; `CheckTokenMembership`,
+  `ImpersonateSelf`, `RevertToSelf`, `SetThreadToken` and
+  `ImpersonateLoggedOnUser` work on real tokens.  Files keep no
+  descriptor yet: the file system takes that part in Phase 18 (18.5), on
+  the same check (`um_access_check_sd`).  `sectest` and `acltest` (also
+  32-bit) show a restricted token refused a protected event.
+- **Registry change events and pending renames** (17.5):
+  `RegNotifyChangeKeyValue` works, on the new `NtNotifyChangeKey`: a watch
+  on a key (optionally with its subkeys) signals its event once when a
+  value is set or deleted, a subkey is added, deleted or renamed, or the
+  key itself is deleted, as its filter asks; without `async` the call
+  waits for that.  `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` writes full
+  `\??\` paths to Session Manager's `PendingFileRenameOperations` (with
+  `!` for `MOVEFILE_REPLACE_EXISTING`), and the kernel now carries the
+  list out at boot, after loading the registry and before any program
+  runs, then deletes it.  A running program's files (its `.exe` and DLLs)
+  are now held while it runs, as on Windows, so they cannot be deleted or
+  replaced until it ends (renaming them still works).  The core suite
+  runs an installer that has to replace a running program, restarts
+  (`tools/novarun.py` and `tools/selftest.py` can restart NovaOS) and
+  checks the replacement happened.  Hard links are still to come.
+- **Small visible bugs** (17.6): File Explorer's This PC is now a list of
+  the drives (C: and each mounted volume, D:, E:, ...) with their free
+  space and size, and opening `C:\` or the desktop's This PC shows it; the
+  up button and Backspace go from a drive's root back to This PC.  The
+  Terminal's `dir` and cmd's `dir` name the drive they list and give that
+  drive's own free space (cmd always asked C: before), and
+  `GetDiskFreeSpaceEx` asks each volume (`FileFsFullSizeInformation`),
+  C: included, whose free space is the free memory it lives in.
+  Notepad++'s tab bar and status bar drew black: it double-buffers them by
+  sending `WM_PRINT` into a memory DC, which `DefWindowProc` ignored.
+  `WM_PRINT` now erases, sends `WM_PRINTCLIENT` and prints the children;
+  the status bar, tab control and progress bar draw on `WM_PRINTCLIENT`;
+  and the tab control lets its parent draw `TCS_OWNERDRAWFIXED` tabs
+  (`WM_DRAWITEM`), sizes tabs from their text, icon and `TCM_SETPADDING`
+  (`TCM_SETITEMSIZE`'s width only with `TCS_FIXEDWIDTH`) and takes
+  `TCM_SETMINTABWIDTH`.  The nightly app corpus now boots with an empty
+  NTFS drive D: and keeps screenshots of `dir C:\` and `dir D:\` (each
+  with its own free space), This PC and Notepad++ (the last two compared
+  with references in `tests/reference/`).
 - Tested in QEMU: Neovim 0.10.4 and 0.11.4 open `t.txt`, take `ihello
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,
   `$(...)` and redirections to `/dev/null`; the core self-tests pass.
+
+## Display adapters: QXL, virtio, VMware, Cirrus, and their modes after sleep
+
+- **More adapters with the DISPI registers** (`kernel/hal/display.c`): the
+  VBE driver now also drives QEMU's QXL (`-vga qxl`), virtio-vga
+  (`-vga virtio`) and VMware SVGA II (`-vga vmware`, whose VGA core has
+  them, with the framebuffer in BAR1) besides the standard VGA,
+  bochs-display and VirtualBox's VBoxVGA.  The adapter table follows
+  OVMF's QemuVideoDxe (BSD-2-Clause-Patent).  All of them get run-time
+  resolutions and Settings > Display names the adapter.
+- **Cirrus Logic GD5446** (`-vga cirrus`): 800x600 and 640x480 at 32 bpp,
+  set with QemuVideoDxe's VGA and Cirrus register tables.  The bootloader
+  now only picks 32-bit GOP modes, so Cirrus boots in 800x600 instead of
+  its 24-bit 1024x768 mode, which drew garbled.
+- **Modes after S3** (`DisplayResume`): the driver sets the current mode
+  again on wake from what it knows, not from registers saved through I/O
+  ports, so bochs-display (MMIO only) and Cirrus come back too; the page
+  that was on screen stays on screen, and the desktop is redrawn in case
+  video memory was lost.
+- `tools/novarun.py --display NAME` boots on another adapter (`cirrus`,
+  `vmware`, `qxl`, `virtio`, or a `-device` such as `bochs-display`).
+- Tested in QEMU on all six adapters: switch to a non-boot mode with
+  `disptest W H`, `sleeptest`, `system_wakeup`, and the desktop is back in
+  that mode; also with page flipping (`-global VGA.vgamem_mb=64`).
+- Not yet: real GPUs (Intel, AMD, NVIDIA) and virtio-gpu without VGA have
+  no driver, so they stay on the UEFI framebuffer, and after sleep they
+  show whatever the firmware's wake path sets up, which is often nothing.
+
+## Program pointers and animated cursors (.ani)
+
+Until now `SetCursor` only remembered its argument: the desktop always
+drew its own arrow.  The pointer is now the program's, and animated
+cursors play.  No MIT, BSD or zlib licensed .ani reader was found (Wine's
+is LGPL), so the parser is written here; the format is a small RIFF file.
+
+- **The kernel draws a program's pointer** (`kernel/wm/wm.c`,
+  `kernel/gdi/gdi.c`): `NtNovaGuiCtl` op 19 hands it a shape (up to
+  64 x 64 logical pixels, its hot spot, up to 64 frames and 256 steps,
+  each step's time in jiffies), or asks for the arrow or no pointer.  It
+  shows over the client area of that process's windows, and anywhere while
+  one of them has the mouse captured; the desktop, title bars, borders and
+  window drags keep the arrow.  The desktop's tick steps animated shapes
+  (100 Hz against the .ani's 60 Hz jiffies) and redraws the pointer when
+  the window under it changes.  Op 20 reports what the pointer shows, for
+  tests.
+- **user32**: `SetCursor` sends the cursor to the kernel when it changes
+  (the system `IDC_*` cursors are the arrow; `NULL` hides the pointer),
+  `ShowCursor` below zero hides it, and `GetCursorInfo` says whether it
+  shows.
+- **Animated cursors** (`userland/user32/res.c`): RIFF `ACON` files with
+  `anih`, `rate`, `seq ` and the `fram` list of .cur/.ico frames, from
+  `LoadCursorFromFile`, `LoadImage(LR_LOADFROMFILE)`,
+  `CreateIconFromResourceEx` and `ANICURSOR`/`ANIICON` resources
+  (`LoadCursor`, `LoadImage`).  `DrawIconEx` draws the frame of the step it
+  is given, and `GetCursorFrameInfo` reports each step's frame and rate.
+  `LoadCursorFromFile` loads .cur files too, and returns `NULL` for a
+  missing file as Windows does (it used to return the arrow).
+- **`anitest.exe`** (in the core self-tests) loads a spinner
+  (`userland/programs/anitest.ani`, made by `tools/mkani.py`: 8 frames
+  played in a custom order with two rates) from its resource, from memory
+  and from a file, checks the steps, rates, hot spot and each step's
+  drawing, then makes it the pointer over a window and checks the desktop
+  shows it and steps through at least 6 of the 8 frames in 1.5 s, that
+  `SetCursor(NULL)` hides it and the arrow comes back.  `anitest show N`
+  keeps the window up for N seconds.  It runs as a 32-bit program too
+  (`C:\Programs\x86\anitest`).
+- Not yet: the system cursors themselves (I-beam, resize arrows, the
+  busy and "working in background" animations) are all the arrow;
+  `SetSystemCursor` does nothing; `CopyIcon` of an animated cursor keeps
+  only its first frame; at 200 % the pointer is scaled up by nearest
+  neighbour.
+
+## COM type libraries and FH4 C++ exceptions
+
+Two items left open since Phase 10.  We looked for MIT, BSD or zlib
+licensed code first: Wine's typelib and FH4 code are LGPL, and nothing
+permissive covers either, so both are written here from the file formats
+(checked against `widl` output and real MSVC binaries).
+
+- **Type libraries** (`userland/oleaut32/typelib.c`, `typeinfo.c`,
+  `invoke.c`): `LoadTypeLib`/`LoadTypeLibEx` read MSFT-format libraries
+  from `.tlb` files and from the `TYPELIB` resources of DLLs and EXEs
+  (`file.dll\2` picks a resource), with `stdole2.tlb` built in (`IUnknown`,
+  `IDispatch`, `IEnumVARIANT`).  `ITypeLib2`, `ITypeInfo2` and `ITypeComp`
+  cover enums, records, coclasses, interfaces and dispinterfaces,
+  including both views of a dual interface (`href -1`), default values,
+  references into imported libraries and documentation strings (aliases
+  and modules are read too, but no test library has them yet).
+  `RegisterTypeLib`, `UnRegisterTypeLib` (and the `ForUser` forms), `QueryPathOfRegTypeLib` and `LoadRegTypeLib` keep
+  `HKCR\TypeLib` and the interfaces' `ProxyStubClsid32` keys.
+  `LHashValOfNameSys` gives a case-insensitive hash, not Windows' exact
+  values (the lookups here compare names, so the hash is never needed).
+- **Calling through type information**: `ITypeInfo::Invoke` (and so
+  `DispInvoke`, `DispGetIDsOfNames` and `CreateStdDispatch`) converts
+  DISPPARAMS to each method's own argument types, with named arguments,
+  `[optional]` and `[defaultvalue]`, `[in, out]` by reference, `[retval]`
+  and property puts, calls the vtable, and turns a failing HRESULT into
+  `DISP_E_EXCEPTION` with the object's error info.  `DispCallFunc` calls
+  any function or vtable slot (x64 register and stack arguments, x86
+  stdcall and cdecl, floating-point and structure returns).
+- **FH4** (`userland/vcruntime140/eh.c`, `vcruntime140_1.dll`):
+  `__CxxFrameHandler4`, the compressed exception tables that MSVC has
+  emitted for x64 since Visual Studio 2019, decoded into the same state
+  machine as `__CxxFrameHandler3` (unwind maps, try blocks, catch
+  continuations, separated code, `noexcept` functions).  The new
+  `vcruntime140_1.dll` forwards to `vcruntime140.dll`, as Microsoft's does.
+- **The sample COM server** (`testdll.dll`, `Nova.Calc`) now embeds its
+  type library (`userland/testdll/idl/novacalc.idl`, compiled with `widl`
+  by `make_tlb.sh`); its `IDispatch` is `DispInvoke` over that library and
+  `DllRegisterServer` registers it.  DLLs can now carry an `.rc` file.
+- **CRT**: the `<fenv.h>` functions (`fetestexcept`, `feclearexcept`,
+  `fegetround`...) are exported from `msvcrt.dll` and `ucrtbase.dll`.
+- Tests: the new `tlbtest` passes 110/110, 64- and 32-bit; `comtest`
+  59/59 and `cppeh` 17/17, both architectures, all in the CI core suite
+  now.  Python 3.14 with the kiwisolver 1.5.1 wheel, run against NovaOS's
+  own `vcruntime140.dll` and `vcruntime140_1.dll` (Microsoft's copies
+  removed from the Python folder), raises and catches kiwisolver's C++
+  exceptions (`DuplicateConstraint`, `UnsatisfiableConstraint`,
+  `UnknownConstraint`, `UnknownEditVariable`) through FH4 tables and gets
+  the same results as on Linux.
+- Not yet: NumPy still stops at the C99 complex functions (`cabs`,
+  `cexp`...) the UCRT exports, and `AddDllDirectory` is a stub, so
+  `os.add_dll_directory` paths are not searched.  `msvcp140.dll` (the C++
+  standard library) is not provided.

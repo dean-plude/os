@@ -1166,6 +1166,9 @@ typedef struct tagACCEL { BYTE fVirt; WORD key; WORD cmd; } ACCEL, *LPACCEL;
 #define ODT_COMBOBOX 3
 #define ODT_BUTTON 4
 #define ODT_STATIC 5
+#ifndef ODT_TAB
+#define ODT_TAB 101
+#endif
 #define ODA_DRAWENTIRE 0x0001
 #define ODA_SELECT 0x0002
 #define ODA_FOCUS 0x0004
@@ -1213,6 +1216,8 @@ typedef struct tagMSGBOXPARAMSW { UINT cbSize; HWND hwndOwner; HINSTANCE hInstan
 #define RT_ACCELERATOR  MAKEINTRESOURCEW(9)
 #define RT_GROUP_CURSOR MAKEINTRESOURCEW(12)
 #define RT_GROUP_ICON   MAKEINTRESOURCEW(14)
+#define RT_ANICURSOR    MAKEINTRESOURCEW(21)
+#define RT_ANIICON      MAKEINTRESOURCEW(22)
 #define IMAGE_BITMAP 0
 #define IMAGE_ICON 1
 #define IMAGE_CURSOR 2
@@ -1300,6 +1305,14 @@ typedef struct tagDRAWTEXTPARAMS { UINT cbSize; int iTabLength, iLeftMargin, iRi
 #define WM_QUERYDROPOBJECT 0x022B
 #define WM_DROPOBJECT 0x022A
 #define WM_PRINT 0x0317
+#ifndef PRF_CLIENT
+#define PRF_CHECKVISIBLE 0x01
+#define PRF_NONCLIENT    0x02
+#define PRF_CLIENT       0x04
+#define PRF_ERASEBKGND   0x08
+#define PRF_CHILDREN     0x10
+#define PRF_OWNED        0x20
+#endif
 #define WM_NEXTDLGCTL 0x0028
 #define WM_ISACTIVEICON 0x0035
 #define WM_INPUTLANGCHANGEREQUEST 0x0050
@@ -1885,6 +1898,7 @@ USERAPI HICON CreateIconFromResourceEx(PBYTE bits, DWORD size, BOOL icon, DWORD 
 USERAPI HICON CreateIconFromResource(PBYTE bits, DWORD size, BOOL icon, DWORD ver);
 USERAPI HCURSOR LoadCursorFromFileW(LPCWSTR f);
 USERAPI HCURSOR LoadCursorFromFileA(LPCSTR f);
+USERAPI HCURSOR GetCursorFrameInfo(HCURSOR h, DWORD reserved, DWORD step, DWORD *rate, DWORD *nsteps);
 USERAPI HBITMAP LoadBitmapW(HINSTANCE inst, LPCWSTR name);
 USERAPI HBITMAP LoadBitmapA(HINSTANCE inst, LPCSTR name);
 USERAPI HANDLE LoadImageA(HINSTANCE inst, LPCSTR name, UINT type, int cx, int cy, UINT flags);

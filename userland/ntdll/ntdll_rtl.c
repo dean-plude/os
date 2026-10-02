@@ -382,157 +382,17 @@ NTSYSAPI NTSTATUS NTAPI RtlAbsoluteToSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PS
     return RtlMakeSelfRelativeSD(abs, rel, len);
 }
 
-/* The descriptor every object has: owned by the user, group Users, and no
- * DACL (full access for everyone) */
-static NTSTATUS default_sd(ULONG info, PSECURITY_DESCRIPTOR out, ULONG len, PULONG ret)
-{
-    SECURITY_DESCRIPTOR abs;
-    RtlCreateSecurityDescriptor(&abs, 1);
-    if (info & OWNER_SECURITY_INFORMATION) abs.Owner = (PSID)g_user_sid;
-    if (info & GROUP_SECURITY_INFORMATION) abs.Group = (PSID)g_users_sid;
-    if (info & DACL_SECURITY_INFORMATION) abs.Control |= SE_DACL_PRESENT;
-    ULONG n = len;
-    NTSTATUS s = RtlMakeSelfRelativeSD(&abs, out, &n);
-    if (ret) *ret = n;
-    return s;
-}
-
-NTSYSAPI NTSTATUS NTAPI NtQuerySecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd, ULONG len, PULONG ret)
-{
-    (void)h;
-    return default_sd(info, sd, len, ret);
-}
-NTSYSAPI NTSTATUS NTAPI NtSetSecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd) { (void)h; (void)info; (void)sd; return ST_SUCCESS; }
-
 /* -----------------------------------------------------------------------
- * Tokens
+ * Tokens.  The kernel keeps them (NtOpenProcessToken, NtQueryInformationToken,
+ * NtFilterToken, NtAccessCheck, NtQuery/SetSecurityObject are system calls);
+ * these few still only pretend.
  * ----------------------------------------------------------------------- */
-static NTSTATUS new_token(PHANDLE out)
-{
-    return NtCreateEvent(out, 0x1F0003, 0, NotificationEvent, TRUE);
-}
-
-/* NtOpenProcessToken(Ex), NtOpenThreadToken(Ex): system calls (ntdll.c) */
-NTSYSAPI NTSTATUS NTAPI NtDuplicateToken(HANDLE t, ACCESS_MASK access, POBJECT_ATTRIBUTES oa, BOOLEAN effective, ULONG type, PHANDLE out)
-{
-    (void)t; (void)access; (void)oa; (void)effective; (void)type;
-    return new_token(out);
-}
-
 static NTSTATUS put_info(const void *data, ULONG n, PVOID buf, ULONG cap, PULONG ret)
 {
     if (ret) *ret = n;
     if (!buf || cap < n) return ST_BUFFER_TOO_SMALL;
     memcpy(buf, data, n);
     return ST_SUCCESS;
-}
-
-/* SID_AND_ATTRIBUTES entries (after a count if @with_count), then the SIDs */
-static NTSTATUS put_groups(const BYTE *const *sids, const ULONG *attrs, int n, PVOID buf, ULONG cap, PULONG ret, BOOL with_count)
-{
-    ULONG head = (with_count ? sizeof(ULONG_PTR) : 0) + (ULONG)sizeof(SID_AND_ATTRIBUTES) * (ULONG)n, need = head;
-    for (int i = 0; i < n; i++) need += RtlLengthSid((PSID)sids[i]);
-    if (ret) *ret = need;
-    if (!buf || cap < need) return ST_BUFFER_TOO_SMALL;
-    BYTE *b = buf, *tail = b + head;
-    SID_AND_ATTRIBUTES *sa = (SID_AND_ATTRIBUTES *)(b + (with_count ? sizeof(ULONG_PTR) : 0));
-    if (with_count) *(ULONG *)b = (ULONG)n;
-    for (int i = 0; i < n; i++) {
-        ULONG l = RtlLengthSid((PSID)sids[i]);
-        memcpy(tail, sids[i], l);
-        sa[i].Sid = tail;
-        sa[i].Attributes = attrs[i];
-        tail += l;
-    }
-    return ST_SUCCESS;
-}
-
-/* PSID then the SID (TOKEN_OWNER, TOKEN_PRIMARY_GROUP) */
-static NTSTATUS put_sid_ptr(const BYTE *sid, PVOID buf, ULONG cap, PULONG ret)
-{
-    ULONG l = RtlLengthSid((PSID)sid), need = (ULONG)sizeof(PVOID) + l;
-    if (ret) *ret = need;
-    if (!buf || cap < need) return ST_BUFFER_TOO_SMALL;
-    memcpy((BYTE *)buf + sizeof(PVOID), sid, l);
-    *(PSID *)buf = (BYTE *)buf + sizeof(PVOID);
-    return ST_SUCCESS;
-}
-
-#define GROUP_ON   7u               /* MANDATORY | ENABLED_BY_DEFAULT | ENABLED */
-
-NTSYSAPI NTSTATUS NTAPI NtQueryInformationToken(HANDLE token, ULONG cls, PVOID buf, ULONG n, PULONG ret)
-{
-    (void)token;
-    ULONG v;
-    switch (cls) {
-    case TokenUser: {
-        const BYTE *s[1] = { g_user_sid };
-        ULONG a[1] = { 0 };
-        return put_groups(s, a, 1, buf, n, ret, FALSE);
-    }
-    case TokenOwner:        return put_sid_ptr(g_user_sid, buf, n, ret);
-    case TokenPrimaryGroup: return put_sid_ptr(g_users_sid, buf, n, ret);
-    case TokenGroups: {
-        const BYTE *g[] = { g_everyone_sid, g_users_sid, g_admins_sid, g_interactive_sid, g_auth_users_sid, g_logon_sid };
-        ULONG a[] = { GROUP_ON, GROUP_ON, 0x10 /* USE_FOR_DENY_ONLY: not elevated */, GROUP_ON, GROUP_ON, GROUP_ON | 0xC0000000u /* LOGON_ID */ };
-        return put_groups(g, a, 6, buf, n, ret, TRUE);
-    }
-    case TokenLogonSid: {
-        const BYTE *g[] = { g_logon_sid };
-        ULONG a[] = { GROUP_ON | 0xC0000000u };
-        return put_groups(g, a, 1, buf, n, ret, TRUE);
-    }
-    case TokenIntegrityLevel: {
-        const BYTE *g[] = { g_medium_il_sid };
-        ULONG a[] = { 0x20 /* SE_GROUP_INTEGRITY */ };
-        return put_groups(g, a, 1, buf, n, ret, FALSE);
-    }
-    case TokenPrivileges: {
-        struct { ULONG n; LUID_AND_ATTRIBUTES p[1]; } tp = { 1, { { { 23, 0 }, 3 } } };   /* SeChangeNotifyPrivilege */
-        return put_info(&tp, sizeof(tp), buf, n, ret);
-    }
-    case TokenDefaultDacl: {
-        /* TOKEN_DEFAULT_DACL { PACL } then an ACL: the user and SYSTEM, full access */
-        static const BYTE system_sid[] = { 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0 };
-        ULONG acl_len = sizeof(ACL) + 8 + sizeof(g_user_sid) + 8 + sizeof(system_sid);
-        ULONG need = (ULONG)sizeof(PVOID) + acl_len;
-        if (ret) *ret = need;
-        if (!buf || n < need) return ST_BUFFER_TOO_SMALL;
-        PACL acl = (PACL)((BYTE *)buf + sizeof(PVOID));
-        RtlCreateAcl(acl, acl_len, ACL_REVISION);
-        add_ace(acl, ACL_REVISION, 0, 0, 0x10000000 /* GENERIC_ALL */, (PSID)g_user_sid);
-        add_ace(acl, ACL_REVISION, 0, 0, 0x10000000, (PSID)system_sid);
-        *(PACL *)buf = acl;
-        return ST_SUCCESS;
-    }
-    case TokenSource: {
-        struct { CHAR name[8]; LUID id; } src = { { 'U', 's', 'e', 'r', '3', '2', ' ', 0 }, { 0x3E9, 0 } };
-        return put_info(&src, sizeof(src), buf, n, ret);
-    }
-    case TokenStatistics: {
-        BYTE st[56];
-        memset(st, 0, sizeof(st));
-        *(ULONG *)st = 0x1000;                                          /* TokenId */
-        *(ULONG *)(st + 8) = 0x3E7 + 1;                                 /* AuthenticationId */
-        *(ULONG *)(st + 24) = 1;                                        /* TokenType: primary */
-        *(ULONG *)(st + 28) = SecurityImpersonation;                    /* ImpersonationLevel */
-        *(ULONG *)(st + 40) = 6;                                        /* GroupCount */
-        *(ULONG *)(st + 44) = 1;                                        /* PrivilegeCount */
-        return put_info(st, sizeof(st), buf, n, ret);
-    }
-    case TokenLinkedToken: return ST_NO_TOKEN;                          /* not a split (UAC) token */
-    case TokenElevation:     v = 0; return put_info(&v, 4, buf, n, ret);
-    case TokenElevationType: v = 1; return put_info(&v, 4, buf, n, ret);   /* TokenElevationTypeDefault */
-    case TokenType:          v = 1; return put_info(&v, 4, buf, n, ret);   /* TokenPrimary */
-    case TokenSessionId:     v = 1; return put_info(&v, 4, buf, n, ret);
-    case TokenImpersonationLevel: v = SecurityImpersonation; return put_info(&v, 4, buf, n, ret);
-    case TokenMandatoryPolicy: v = 1; return put_info(&v, 4, buf, n, ret);  /* NO_WRITE_UP */
-    case TokenIsAppContainer: case TokenHasRestrictions: case TokenUIAccess: case TokenVirtualizationAllowed:
-    case TokenVirtualizationEnabled: case TokenSandBoxInert:
-        v = 0; return put_info(&v, 4, buf, n, ret);
-    default:
-        return ST_INVALID_INFO_CLASS;
-    }
 }
 
 NTSYSAPI NTSTATUS NTAPI NtSetInformationToken(HANDLE t, ULONG cls, PVOID buf, ULONG n) { (void)t; (void)cls; (void)buf; (void)n; return ST_SUCCESS; }
@@ -556,77 +416,6 @@ NTSYSAPI NTSTATUS NTAPI NtPrivilegeCheck(HANDLE t, PPRIVILEGE_SET set, PBOOLEAN 
     (void)t;
     for (ULONG i = 0; set && i < set->PrivilegeCount; i++) set->Privilege[i].Attributes |= 0x80000000u;   /* USED_FOR_ACCESS */
     *result = TRUE;
-    return ST_SUCCESS;
-}
-
-/* Whether the token holds @sid: its user and enabled groups, and for deny
- * ACEs also the groups only used for denying (Administrators: not elevated) */
-static BOOL token_holds(PSID sid, BOOL deny)
-{
-    const BYTE *on[] = { g_user_sid, g_everyone_sid, g_users_sid, g_interactive_sid, g_auth_users_sid, g_logon_sid };
-    for (unsigned i = 0; i < sizeof(on) / sizeof(on[0]); i++)
-        if (RtlEqualSid(sid, (PSID)on[i])) return TRUE;
-    return deny && RtlEqualSid(sid, (PSID)g_admins_sid);
-}
-
-static ACCESS_MASK map_generic(ACCESS_MASK m, PGENERIC_MAPPING map)
-{
-    if (!map) return m & 0x10000000u ? 0x001FFFFFu | (m & 0x0FFFFFFFu) : m;   /* GENERIC_ALL: every right */
-    if (m & 0x80000000u) m |= map->GenericRead;
-    if (m & 0x40000000u) m |= map->GenericWrite;
-    if (m & 0x20000000u) m |= map->GenericExecute;
-    if (m & 0x10000000u) m |= map->GenericAll;
-    return m & 0x0FFFFFFFu;
-}
-
-/* The DACL decides, as on Windows: no DACL grants everything, an empty one
- * nothing; the ACEs are taken in order, and each whose SID the token holds
- * grants its rights unless an earlier one denied them, or denies its
- * rights unless an earlier one granted them.  The owner always may read
- * and change the DACL.  MAXIMUM_ALLOWED asks for whatever is granted. */
-NTSYSAPI NTSTATUS NTAPI NtAccessCheck(PSECURITY_DESCRIPTOR sd, HANDLE token, ACCESS_MASK want, PGENERIC_MAPPING map,
-                                      PPRIVILEGE_SET privs, PULONG privs_len, PACCESS_MASK granted, PNTSTATUS status)
-{
-    (void)token;
-    if (!sd || !granted || !status) return ST_INVALID_PARAMETER;
-    if (privs && privs_len && *privs_len >= sizeof(PRIVILEGE_SET)) privs->PrivilegeCount = 0;
-    BOOL max = (want & 0x02000000u) != 0;
-    ACCESS_MASK m = map_generic(want & ~0x03000000u, map);              /* (ACCESS_SYSTEM_SECURITY: not checked) */
-    ACCESS_MASK all = map ? map->GenericAll : 0x001FFFFFu;
-
-    BOOLEAN present = FALSE, def;
-    PACL dacl = 0;
-    RtlGetDaclSecurityDescriptor(sd, &present, &dacl, &def);
-    if (!present || !dacl) {
-        *granted = max ? all | m : m;
-        *status = ST_SUCCESS;
-        return ST_SUCCESS;
-    }
-    ACCESS_MASK allowed = 0, denied = 0;
-    PSID owner = 0;
-    RtlGetOwnerSecurityDescriptor(sd, &owner, &def);
-    if (owner && token_holds(owner, FALSE)) allowed = 0x00060000u;      /* READ_CONTROL | WRITE_DAC */
-    const BYTE *p = (const BYTE *)(dacl + 1), *end = (const BYTE *)dacl + dacl->AclSize;
-    for (USHORT i = 0; i < dacl->AceCount; i++) {
-        const ACE_HEADER *h = (const ACE_HEADER *)p;
-        if (p + sizeof(ACE_HEADER) > end || h->AceSize < 16 || p + h->AceSize > end) break;
-        p += h->AceSize;
-        if (h->AceFlags & 0x08) continue;                               /* INHERIT_ONLY_ACE: for children */
-        if (h->AceType > 1) continue;                                   /* not ACCESS_ALLOWED / ACCESS_DENIED */
-        const ACCESS_ALLOWED_ACE *ace = (const ACCESS_ALLOWED_ACE *)h;
-        PSID sid = (PSID)&ace->SidStart;
-        if (8u + 4u * ((const BYTE *)sid)[1] > h->AceSize - 8u || !token_holds(sid, h->AceType == 1)) continue;
-        ACCESS_MASK am = map_generic(ace->Mask, map);
-        if (h->AceType == 0) allowed |= am & ~denied;
-        else denied |= am & ~allowed;
-    }
-    if (m & ~allowed) {
-        *granted = 0;
-        *status = ST_ACCESS_DENIED;
-    } else {
-        *granted = max ? allowed | m : m;
-        *status = max && !*granted ? ST_ACCESS_DENIED : ST_SUCCESS;
-    }
     return ST_SUCCESS;
 }
 

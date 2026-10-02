@@ -42,7 +42,7 @@ DLLS = [
     ('ws2_32',   ['kernel32', 'ntdll'],  0x7FFA30000000),
     ('gdi32',    ['kernel32', 'ntdll'],  0x7FFA50000000),
     ('user32',   ['gdi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFA60000000),
-    ('testdll',  ['kernel32', 'ntdll'],  0x7FFA40000000),
+    ('testdll',  ['oleaut32', 'ole32', 'advapi32', 'kernel32', 'ntdll'], 0x7FFA40000000),   # built last
     ('vcruntime140', ['kernel32', 'ntdll'], 0x7FFA70000000),
     ('advapi32', ['kernel32', 'ntdll'],  0x7FFA80000000),
     ('bcrypt',   ['kernel32', 'ntdll'],  0x7FFA90000000),
@@ -98,6 +98,7 @@ DLLS = [
     ('ncrypt',   ['kernel32', 'ntdll'],           0x7FFE20000000),
     ('avicap32', ['kernel32', 'ntdll'],           0x7FFE30000000),
     ('d2d1',     ['msvcrt', 'kernel32', 'ntdll'], 0x7FFE40000000),
+    ('vcruntime140_1', ['vcruntime140'],  0x7FFE50000000),     # x64 only (FH4)
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}
@@ -105,9 +106,10 @@ UCRT_BASE_X86 = 0x5F000000
 # 32-bit builds of these test programs go to C:\Programs\x86
 PROGRAMS_X86 = {'hello', 'crttest', 'filetest', 'threads', 'dlltest', 'apitest', 'posixtest', 'comtest',
                 'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh', 'cmd', 'pipetest',
-                'find', 'findstr', 'sort', 'more', 'timeout', 'cliptest', 'soundtest', 'disptest'}
+                'find', 'findstr', 'sort', 'more', 'less', 'timeout', 'cliptest', 'soundtest', 'disptest', 'acltest', 'anitest',
+                'tlbtest'}
 # programs that live in C:\Windows\System32 rather than C:\Programs
-SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'timeout', 'shutdown'}
+SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'less', 'timeout', 'shutdown'}
 UCRT_BASE = 0x7FFA28000000
 # DLLs built from more than their own directory
 DLL_SOURCES = {
@@ -358,7 +360,10 @@ def build_pass(arch):
     # system DLLs
     math_objs, math_names = musl_math_objs(odir)
     bases = {n: b for n, _, b in DLLS} if arch == 'x64' else DLL_BASES_X86
-    for name, deps, _ in DLLS:
+    # testdll (a COM server, it uses oleaut32) is built after the system DLLs
+    for name, deps, _ in sorted(DLLS, key=lambda d: d[0] == 'testdll'):
+        if name == 'vcruntime140_1' and arch == 'x86':
+            continue                                # FH4 exists only on x64
         base = bases[name]
         srcdirs = DLL_SOURCES.get(name, [name])
         objs = dll_objs(odir, name, srcdirs)
@@ -369,6 +374,13 @@ def build_pass(arch):
             objs.append(tlssup)
         if arch == 'x86':
             objs.append(rt)
+        rc = os.path.join(HERE, srcdirs[0], name + '.rc')    # NAME.rc: resources (testdll's type library)
+        if os.path.exists(rc):
+            res = os.path.join(odir, name + '.res')
+            run([build_netsurf.llvm_rc()] + (['/D', 'NOVA_X86'] if arch == 'x86' else []) + ['/FO', res, rc])
+            objs.append(res)
+        if name == 'vcruntime140_1':
+            extra = [f'/export:{n}=vcruntime140.{n}' for n in ('__CxxFrameHandler4', '__NLG_Dispatch2', '__NLG_Return2')]
         if name == 'msvcrt':
             objs += math_objs
             rsp = os.path.join(odir, 'crt_exports.rsp')
