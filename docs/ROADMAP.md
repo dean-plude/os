@@ -31,8 +31,8 @@ loader semantics, and the drivers they expect.
 The details of each phase are in [HISTORY.md](HISTORY.md).
 
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
-NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound is
-output only (no recording, MIDI, DirectSound or XAudio2); drive
+NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound has
+no MIDI, DirectSound or XAudio2 yet; drive
 C: is FAT, so there are no hard links or ACL enforcement on files (NTFS
 disks can be read, as drives D:, E:, ...); and most of the App Store's catalog (Qt, GTK and
 multimedia programs) does not run yet.
@@ -75,9 +75,11 @@ named program or test demonstrates it.
   `vulkan-1.dll`; see [Direct3D](HISTORY.md#direct3d-dxvk-on-mesas-vulkan).
 - ~~**Audio**: `winmm` wave output and WASAPI over a real sound device
   (QEMU's Intel HDA)~~ Done; see [Sound](HISTORY.md#sound-intel-hd-audio-winmm-and-wasapi).
-  Still open: recording (`waveIn`, capture endpoints), `dsound.dll`
-  (DirectSound), XAudio2, MIDI, endpoint volume (`IAudioEndpointVolume`),
-  and testing VLC and Audacity on it.
+  ~~Recording (`waveIn`, capture endpoints) and endpoint volume
+  (`IAudioEndpointVolume`)~~ Done (19.4); see
+  [Recording](HISTORY.md#recording-wavein-wasapi-capture-and-endpoint-volume).
+  Still open: `dsound.dll` (DirectSound), XAudio2, MIDI, and testing VLC
+  and Audacity on it.
 - ~~**Complex scripts**: Uniscribe shaping Arabic and the Indic scripts~~
   Done (19.1): `usp10.dll` on HarfBuzz in `novatext.dll` (HarfBuzz +
   FreeType, shared with DirectWrite and Direct2D), and GDI's `ExtTextOut`

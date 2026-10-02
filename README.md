@@ -86,7 +86,7 @@ every part, phase by phase.
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.
 - **Drivers**: AHCI SATA disks, FAT16/FAT32, GPT; Intel e1000/e1000e
-  network cards; Intel High Definition Audio (output) with a kernel mixer;
+  network cards; Intel High Definition Audio (playback and recording) with a kernel mixer;
   PS/2 and USB (xHCI) keyboards and mice; CMOS clock; a Bochs/QEMU VBE
   display driver (resolutions switched at run time, page flipping) with the
   UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
@@ -99,7 +99,8 @@ every part, phase by phase.
   the `api-ms-win-crt-*` API sets, `vcruntime140` (C++ exceptions),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs),
   `comctl32`, `shell32`, `ole32`/`oleaut32` (COM), `advapi32`, `ws2_32`,
-  `winmm` and `mmdevapi` (sound: `waveOut`, `PlaySound`, WASAPI), `msi`,
+  `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, WASAPI
+  playback and capture, endpoint volume), `msi`,
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
   `usp10` (Uniscribe), `normaliz` (IDN), and more.
 - **Text**: `novatext.dll`, the text core built once and shared, carries
@@ -191,7 +192,9 @@ Rebuild the ISO from a fresh build with
   `pipetest`, `proctest`, `guitest auto`, `disptest`, `usptest` (Arabic and Devanagari
   shaped through Uniscribe and drawn by `ExtTextOut`), `battery` (against the battery in
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
-  tones played), and last `crash kernel`, a deliberate kernel fault whose
+  tones played; the card's microphone hears a tone, which `waveIn` and
+  WASAPI capture must record, and a quarter of the endpoint volume must
+  sound 12 dB quieter), and last `crash kernel`, a deliberate kernel fault whose
   serial log must show a backtrace with function names.
 - **Graphics tests**: `tools/d2dtest` (Direct2D geometry answers, and a
   scene that must match the reference `tools/d2dtest/reference.py` draws
@@ -217,8 +220,10 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
   `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
   `cppeh`, `shmtest`, `pipetest`, `proctest`, `cliptest`, `disptest`, `usptest`, `smpstress`.  `soundtest`
-  plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
-  `tools/novarun.py --wav out.wav` records what NovaOS plays and
+  plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
+  through `waveIn` and WASAPI capture;
+  `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`
+  feeds a WAV to its microphone, and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
   write`, a restart and `disktest verify` check that drive C: survives a
   reboot.

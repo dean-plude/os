@@ -133,7 +133,8 @@ QEMU's default user-mode network (an e1000e on q35) works out of the box;
 add `-nic user,model=e1000` to test the older card.  `-smp N` sets the core
 count (up to 16).
 
-For sound add `-device intel-hda -device hda-output` (or `hda-duplex`);
+For sound add `-device intel-hda -device hda-output` (or `hda-duplex` or
+`hda-micro`, which add a line in or a microphone to record from);
 `-audiodev wav,id=snd0,path=out.wav,out.frequency=48000` with
 `-device hda-output,audiodev=snd0` records it instead of playing it.
 `cmake --build . --target run` adds the card, playing through the host's
@@ -204,7 +205,8 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
 `guitest auto`, `disptest`, `usptest` (64- and 32-bit), `battery`, `soundtest
-tone`, `soundtest wasapi`, and
+tone`, `soundtest wasapi`, `soundtest record`, `soundtest capture`, `soundtest
+volume`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite first runs
@@ -219,13 +221,17 @@ install Mesa 3D` and `store install DXVK` (the archives are already in
 of each while it draws.
 
 It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
-and the battery from `tests/acpi/battery.asl`, then types each test into the
+whose microphone hears a 523 Hz tone (through a private PulseAudio server,
+so the host needs `pulseaudio`, `pulseaudio-utils` and QEMU's PulseAudio
+backend, `qemu-system-gui` on Ubuntu; without them the two recording tests
+fail and the rest run), and the battery from `tests/acpi/battery.asl`, then types each test into the
 Terminal.  A test passes when the program exits with code 0, prints no
 `FAIL` line or non-zero "failed" count, and prints what the test expects;
 a kernel panic stops the run.  `--out` (default `selftest-out/`) keeps the
-serial log, a screenshot after each test and `sound.wav`; `--summary FILE`
+serial log, a screenshot after each test, `sound.wav` and the two
+recordings (`rec.wav`, `cap.wav`); `--summary FILE`
 appends a Markdown table and `--junit FILE` writes JUnit XML.  To add a test,
-add a line to `CORE` or `GRAPHICS` in `tools/selftest.py`.
+add a line to `core()` or `GRAPHICS` in `tools/selftest.py`.
 
 ### Self-test programs
 
@@ -257,6 +263,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `acltest` | Access checks against DACLs (`AccessCheck`) |
 | `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
+| `soundtest record FILE [MS]`, `capture FILE [MS]`, `volume` | Recording through `waveIn` and WASAPI capture into a WAV, and `IAudioEndpointVolume` (needs a card with an input) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
 
 `crash` writes through a NULL pointer (only it dies); `crash kernel`
@@ -323,6 +330,18 @@ record it and measure it:
 python3 tools/novarun.py --wav /tmp/out.wav 'C:\Programs\soundtest.exe tone 440 1000' \
     'C:\Programs\soundtest.exe wasapi 523 800'
 python3 tools/wavcheck.py /tmp/out.wav     # each tone: start, length, level, pitch
+```
+
+To test recording, `--rec FILE.wav` gives the card a microphone that hears
+FILE over and over (a private PulseAudio server with two null sinks, so the
+guest records and plays in real time; with `--wav` too, the playback is
+saved from the second sink).  Copy the recording off the data disk and
+check it:
+
+```bash
+python3 tools/novarun.py --keep /tmp/rec --rec tone523.wav 'soundtest record C:\rec.wav 3000'
+mcopy -i /tmp/rec/data.img ::/NOVA/C/rec.wav /tmp/
+python3 tools/wavcheck.py /tmp/rec.wav --tone 523 2500   # exit 0: the tone is there
 ```
 
 ### Network

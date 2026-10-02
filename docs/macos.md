@@ -56,6 +56,7 @@ Additions to the command line:
 |-----|-----|
 | `-accel hvf -cpu host` | **Intel Macs only**: hardware virtualization.  Leave it out on Apple Silicon. |
 | `-device intel-hda -device hda-output,audiodev=snd0 -audiodev coreaudio,id=snd0` | Sound through the Mac's speakers |
+| `-device intel-hda -device hda-micro,audiodev=snd0 -audiodev coreaudio,id=snd0` | Sound, and recording from the Mac's microphone (macOS asks Terminal for microphone access) |
 | `-nic user,model=e1000e` | Network (q35's default NIC is already an e1000e; this just makes it explicit) |
 | `-display cocoa,zoom-to-fit=on` | Scale the window on a Retina screen |
 | `-smp 8` | More cores (up to 16).  Under emulation more cores help less than on Linux/KVM. |

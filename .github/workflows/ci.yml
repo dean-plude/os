@@ -28,7 +28,8 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
-            qemu-system-x86 ovmf mtools dosfstools acpica-tools
+            qemu-system-x86 qemu-system-gui ovmf mtools dosfstools acpica-tools \
+            pulseaudio pulseaudio-utils
 
       - name: Build the kernel, bootloader, userland and disk image
         run: |
