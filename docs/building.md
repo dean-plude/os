@@ -342,9 +342,12 @@ serial.log` lists them; each should end "0 failed".
 (`.github/workflows/nightly.yml`, which also runs on pull requests that
 change it): it downloads the official Windows x64 releases into a cache,
 unpacks them into `C:\Apps`, boots once and runs each one's commands.
-The same run then boots on 4 CPUs for `smpstress scaling 2` (the target is
-3x, but shared runners without KVM are noisy): it fails on a hang or a lock
-regression, and the night's table records each scaling figure.
+The same run then boots on 4 CPUs for `smpstress scaling 0` and records
+each scaling figure in the night's table.  A shared runner may not run the
+emulated CPUs side by side at all, so rather than the 3x target
+`tools/ci/check-smpstress.py` fails the run on a hang, a failed test, or
+files or the registry scaling less than 60% as well as bare system calls
+in the same run (what work under one big lock would do).
 
 | Program | Checks |
 |---|---|

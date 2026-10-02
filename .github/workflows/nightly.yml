@@ -58,19 +58,23 @@ jobs:
             --summary appcorpus-out/table.md
         continue-on-error: true
 
-      # The target is 3x one CPU's file and registry throughput (Phase 17.7);
-      # shared runners without KVM are noisy, so the run fails below 2x (a
-      # lock regression) or on a hang, and the table records the figures.
+      # The target is 3x one CPU's file and registry throughput (Phase 17.7),
+      # but a shared runner may not run the 4 emulated CPUs side by side at
+      # all (bare system calls: 0.6x there).  So the run measures (scaling
+      # 0: no fixed target) and fails on a hang, a failed test, or files or
+      # the registry scaling less than 60% as well as bare system calls do
+      # in the same run (work under one big lock would); the table records
+      # the figures.
       - name: SMP stress on 4 CPUs
         id: smp
         run: |
           mkdir -p appcorpus-out
-          python3 tools/novarun.py --img build/nova.img --smp 4 --timeout 900 'smpstress scaling 2' \
+          python3 tools/novarun.py --img build/nova.img --smp 4 --timeout 900 'smpstress scaling 0' \
             | tee appcorpus-out/smpstress.log
           { echo; echo '### smpstress on 4 CPUs'; echo; echo '```'
             grep -E '^  [a-z(].*(x|ms)$|smpstress: [0-9]+ passed|TIMEOUT' appcorpus-out/smpstress.log
             echo '```'; } > appcorpus-out/smp.md
-          grep -q 'smpstress: [0-9]* passed, 0 failed' appcorpus-out/smpstress.log
+          python3 tools/ci/check-smpstress.py appcorpus-out/smpstress.log
         continue-on-error: true
 
       - name: Post the table
