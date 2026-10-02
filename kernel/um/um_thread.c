@@ -169,12 +169,13 @@ void um_ob_unref(UmObject *o)
         if (left) return;
     } else if (__atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL)) return;
     /* The last reference may go in a service that runs without the big
-     * kernel lock; the destructors (a process's, a socket's...) want it */
-    bkl_acquire();
+     * kernel lock; most destructors (a process's, a socket's...) want it */
+    bool big = !o->free_unlocked;
+    if (big) bkl_acquire();
     if (o->destroy) o->destroy(o);
     um_sd_free(o->sd);
     kfree(o);                                       /* UmThread: ob is its first member */
-    bkl_release();
+    if (big) bkl_release();
 }
 
 static UmObject *ob_new(UmObType type)
@@ -1108,6 +1109,7 @@ static UINT64 sys_create_directory(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     memcpy(copy, name, strlen(name) + 1);
     o->ptr = copy;
     o->destroy = ptr_destroy;
+    o->free_unlocked = true;
     return finish_create(o, name, a1, a3);
 }
 static UINT64 sys_open_directory(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_named(UO_DIRECTORY, a1, a3, (UINT32)a2); }
@@ -1234,6 +1236,7 @@ static UINT64 sys_create_symlink(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!o) { kfree(t); return ST_NO_MEMORY; }
     o->ptr = t;
     o->destroy = ptr_destroy;
+    o->free_unlocked = true;
     return finish_create(o, name, a1, a3);
 }
 static UINT64 sys_open_symlink(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_named(UO_SYMLINK, a1, a3, (UINT32)a2); }

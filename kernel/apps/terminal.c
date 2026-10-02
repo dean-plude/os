@@ -6,6 +6,7 @@
  * the desktop thread.
  */
 
+#include "../ke/prof.h"
 #include "../wm/clipboard.h"
 #include "apps.h"
 #include "../lib/string.h"
@@ -152,6 +153,7 @@ static void tprint_ex(Term *t, int kind, int split, const char *s)
 }
 
 static void tprint(Term *t, const char *s)              { tprint_ex(t, K_NORMAL, 0, s); }
+static void prof_line(void *t, const char *s)            { tprint((Term *)t, s); }
 static void terr(Term *t, const char *s)                { tprint_ex(t, K_ERROR, 0, s); }
 
 static void tprintf(Term *t, const char *fmt, ...)
@@ -1248,6 +1250,17 @@ static void run(Term *t, char *cmdline)
     if (!strncmp(s, "serial ", 7)) {                 /* serial on|off (see mirror) */
         g_mirror = !strcmp(s + 7, "on");
         tprint(t, g_mirror ? "Terminal output is copied to the serial port." : "Serial copy off.");
+        done_mark();
+        return;
+    }
+    if (is(s, "profile on")) {                                 /* the sampling profiler (ke/prof.c) */
+        ProfStart();
+        tprint(t, "Profiling: \"profile\" shows where the time went.");
+        done_mark();
+        return;
+    }
+    if (is(s, "profile")) {
+        ProfReport(prof_line, t);
         done_mark();
         return;
     }

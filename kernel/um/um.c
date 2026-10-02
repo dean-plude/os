@@ -60,7 +60,16 @@ void um_lock(UmLock *l)
 {
     Thread *me = sched_current();
     if (l->owner == me) { l->depth++; return; }
-    while (__atomic_exchange_n(&l->v, 1, __ATOMIC_ACQUIRE)) sched_yield();
+    /* Held briefly as a rule: spin a while (the holder is likely running
+     * on another CPU) before giving the CPU away — but not holding the big
+     * kernel lock, which the holder may be waiting for (yielding lets it go) */
+    int most = bkl_held() ? 0 : 2000;
+    for (int spins = 0; __atomic_exchange_n(&l->v, 1, __ATOMIC_ACQUIRE); ) {
+        while (__atomic_load_n(&l->v, __ATOMIC_RELAXED)) {
+            if (++spins < most) pause_cpu();
+            else { sched_yield(); spins = 0; }
+        }
+    }
     l->owner = me;
     l->depth = 1;
 }
@@ -72,10 +81,53 @@ void um_unlock(UmLock *l)
     __atomic_store_n(&l->v, 0, __ATOMIC_RELEASE);
 }
 
-/* The desktop lock (recursive for its owner) */
+/* Wait (spin a while, then yield) until @cond holds */
+#define UM_WAIT_UNTIL(cond) do { \
+        int most_ = bkl_held() ? 0 : 2000; \
+        for (int spins_ = 0; !(cond); ) { \
+            if (++spins_ < most_) pause_cpu(); \
+            else { sched_yield(); spins_ = 0; } \
+        } \
+    } while (0)
+
+void um_lock_excl(UmRwLock *l)
+{
+    um_lock(&l->w);                             /* new readers stay out */
+    if (l->w.depth > 1) return;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    UM_WAIT_UNTIL(__atomic_load_n(&l->readers, __ATOMIC_SEQ_CST) == 0);
+}
+
+void um_unlock_excl(UmRwLock *l) { um_unlock(&l->w); }
+
+void um_lock_shared(UmRwLock *l)
+{
+    if (l->w.owner == sched_current()) { l->w.depth++; return; }   /* the writer */
+    for (;;) {
+        __atomic_add_fetch(&l->readers, 1, __ATOMIC_SEQ_CST);
+        if (!__atomic_load_n(&l->w.v, __ATOMIC_SEQ_CST)) return;
+        __atomic_sub_fetch(&l->readers, 1, __ATOMIC_SEQ_CST);     /* a writer: let it go first */
+        UM_WAIT_UNTIL(!__atomic_load_n(&l->w.v, __ATOMIC_RELAXED));
+    }
+}
+
+void um_unlock_shared(UmRwLock *l)
+{
+    if (l->w.owner == sched_current()) { um_unlock(&l->w); return; }
+    __atomic_sub_fetch(&l->readers, 1, __ATOMIC_RELEASE);
+}
+
+/* The desktop lock (recursive for its owner), and the file-system lock it
+ * includes: file services take only the latter.  Order: desktop, files,
+ * then a process's lock. */
 static UmLock g_desktop;
-void DesktopLock(void)   { um_lock(&g_desktop); }
-void DesktopUnlock(void) { um_unlock(&g_desktop); }
+static UmRwLock g_fs;
+void DesktopLock(void)   { um_lock(&g_desktop); um_lock_excl(&g_fs); }
+void DesktopUnlock(void) { um_unlock_excl(&g_fs); um_unlock(&g_desktop); }
+void FsLock(void)        { um_lock_excl(&g_fs); }
+void FsUnlock(void)      { um_unlock_excl(&g_fs); }
+void FsLockShared(void)  { um_lock_shared(&g_fs); }
+void FsUnlockShared(void) { um_unlock_shared(&g_fs); }
 Thread *DesktopLockOwner(void) { return g_desktop.owner; }
 
 /* KUSER_SHARED_DATA (see below) */
@@ -1845,6 +1897,11 @@ void UmReturnToUser(void)
         kprintf("[UM] Bug: system call %03x returned holding the desktop lock\n", t->last_sys);
         g_desktop.depth = 1;
         um_unlock(&g_desktop);
+    }
+    if (g_fs.w.owner == sched_current()) {
+        kprintf("[UM] Bug: system call %03x returned holding the file-system lock\n", t->last_sys);
+        g_fs.w.depth = 1;
+        um_unlock(&g_fs.w);
     }
     while (t->suspend > 0 && !um_stopping()) sched_yield();         /* NtSuspendThread */
     if (p->kill_pending) um_exit_thread(p->kill_status);

@@ -6,6 +6,7 @@
  */
 
 #include "idt.h"
+#include "../../ke/prof.h"
 #include "../../um/um.h"
 #include "gdt.h"
 #include "cpu.h"
@@ -357,6 +358,9 @@ void interrupt_dispatch(InterruptFrame *frame)
     /* A timer tick while this CPU is halted waiting for the kernel lock:
      * nothing to do (the clock follows the TSC, and the other CPUs keep
      * it), and switching the waiting thread out halfway would be wrong. */
+    if (vector == IRQ_TIMER)
+        ProfSample(frame->rip, frame->rbp, (frame->cs & 3) != 0, KiGetCurrentKpcr()->LockWait,
+                   KiGetCurrentKpcr()->Idle || sched_current() == KiGetCurrentKpcr()->IdleThread);
     if (vector == IRQ_TIMER && KiGetCurrentKpcr()->LockWait) {
         apic_eoi();
         return;

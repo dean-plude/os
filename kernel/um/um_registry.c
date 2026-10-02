@@ -589,6 +589,7 @@ static UINT64 new_key_handle(UmProcess *p, RegKey *k)
     o->signaled = true;
     o->ptr = k;
     o->destroy = key_ob_destroy;                            /* the caller referenced @k for us */
+    o->free_unlocked = true;                                /* (g_reg) */
     UINT64 h = um_handle_new_object(p, o);
     um_ob_unref(o);                                         /* the handle holds it (or it goes now) */
     return h;

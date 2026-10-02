@@ -66,6 +66,17 @@ typedef struct {
 void um_lock(UmLock *l);
 void um_unlock(UmLock *l);
 
+/* A reader/writer lock on the same terms: one writer (recursive, and may
+ * take it shared too) or many readers, who must not take it twice. */
+typedef struct {
+    UmLock       w;
+    volatile int readers;
+} UmRwLock;
+void um_lock_shared(UmRwLock *l);
+void um_unlock_shared(UmRwLock *l);
+void um_lock_excl(UmRwLock *l);
+void um_unlock_excl(UmRwLock *l);
+
 /* -----------------------------------------------------------------------
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
@@ -84,6 +95,7 @@ typedef struct UmObject {
     UINT32          recursion;
     bool            abandoned;
     bool            named;          /* in the object namespace (um_thread.c) */
+    bool            free_unlocked;  /* @destroy needs no big kernel lock */
     int             sock;           /* UO_SOCKET: kernel socket index */
     int             audio;          /* UO_AUDIO: mixer stream (drivers/audio.c) */
     UmProcess      *proc;           /* UO_PROCESS: signaled when it has exited */
@@ -116,6 +128,7 @@ struct UmThread {
     volatile UINT8  park;
     void           *uframe;
     UINT16          last_sys;       /* the latest system call (diagnostics) */
+    UINT32          oa_attrs;       /* OBJECT_ATTRIBUTES.Attributes of its latest path (um_syscall.c) */
     /* Waiting (um_thread.c, under g_um_oblock): the objects, the waiter
      * list link, and the flag a signaler sets to wake it */
     UmObject      **wait_objs;
