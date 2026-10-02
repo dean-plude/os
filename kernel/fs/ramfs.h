@@ -113,6 +113,10 @@ bool     RamfsLoad(RamNode *n);
 
 /* Resolve a path relative to `cwd` (NULL = root).  NULL if not found. */
 RamNode *RamfsResolve(RamNode *cwd, const char *path);
+/* The same without loading anything (no change to the tree, so readers may
+ * look up side by side): *@unloaded is set, and NULL returned, when it
+ * would have to read a mounted volume's directory. */
+RamNode *RamfsLookup(RamNode *cwd, const char *path, bool *unloaded);
 
 /* Child named `name` in `dir` (case-insensitive), or NULL. */
 RamNode *RamfsFind(RamNode *dir, const char *name);
@@ -123,6 +127,9 @@ RamNode *RamfsCreate(RamNode *dir, const char *name, bool is_dir);
 
 /* Replace a file's contents.  False if too large or out of memory. */
 bool     RamfsWrite(RamNode *file, const char *data, UINT32 len);
+/* The same with @buf (from kmalloc), which the file takes over: no copy.
+ * On failure @buf is still the caller's. */
+bool     RamfsWriteOwned(RamNode *file, char *buf, UINT32 len);
 
 /* Write @len bytes at @off, growing the file (zero-filled) as needed.
  * False if the result would exceed RAMFS_FILE_MAX or memory runs out. */
@@ -140,7 +147,9 @@ bool     RamfsDelete(RamNode *node);
 bool     RamfsRename(RamNode *node, RamNode *dir, const char *name, bool replace);
 
 /* Mark a node as held (e.g. shown in a window) so it cannot be deleted
- * underneath its holder.  NULL is ignored. */
+ * underneath its holder.  NULL is ignored.  (Both are atomic: readers
+ * sharing the lock take and drop references side by side, though only
+ * for files of drive C:, whose contents never unload.) */
 void     RamfsRef(RamNode *node);
 void     RamfsUnref(RamNode *node);
 

@@ -1,9 +1,9 @@
 /*
  * um_console.c — consoles: a program's standard input/output ↔ a Terminal
  *
- * Output is a single-producer (program thread) / single-consumer (desktop
- * thread) ring; a program that writes faster than the Terminal drains it
- * waits.
+ * Output is a ring with one reader (the desktop thread) and writers taking
+ * turns (out_lock: programs' threads, without the big kernel lock); a
+ * program that writes faster than the Terminal drains it waits.
  *
  * Input is a queue of Windows input records (INPUT_RECORD: key events,
  * and whatever programs add with WriteConsoleInput).  The Terminal adds
@@ -27,6 +27,7 @@ struct UmConsole {
     volatile int    refs;
     char            out[OUT_SIZE];
     volatile UINT32 out_head, out_tail;      /* head: next write, tail: next read */
+    UmLock          out_lock;                /* one writer at a time */
     KSpinLock       in_lock;                 /* the input queue and pend[] */
     UmConInput      in[IN_RECS];
     UINT32          in_head, in_tail;
@@ -102,6 +103,7 @@ int um_console_write(UmConsole *c, const char *data, int len)
     }
     UmProcess *p = UmCurrent();
     int done = 0;
+    um_lock(&c->out_lock);
     while (done < len) {
         UINT32 used = c->out_head - c->out_tail;
         if (used == OUT_SIZE) {                         /* full: let the Terminal drain */
@@ -115,6 +117,7 @@ int um_console_write(UmConsole *c, const char *data, int len)
         __atomic_store_n(&c->out_head, c->out_head + n, __ATOMIC_RELEASE);
         done += (int)n;
     }
+    um_unlock(&c->out_lock);
     return done;
 }
 

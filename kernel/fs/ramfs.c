@@ -6,6 +6,7 @@
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "../ke/printf.h"
+#include "../ke/smp.h"
 
 static RamNode g_root;
 
@@ -115,14 +116,16 @@ void RamfsSetRemovedHook(void (*fn)(const char *path)) { g_removed_hook = fn; }
 static void (*g_change_hook)(RamNode *dir);
 void RamfsSetChangeHook(void (*fn)(RamNode *dir)) { g_change_hook = fn; }
 
+/* (Atomically: writers of different files share the lock, see FsLockShared) */
 static void mark(RamNode *n, UINT8 flags)
 {
     if (n && g_change_hook && g_mode != RAMFS_LOADING) g_change_hook((flags & RAMFS_F_DIRTYDIR) ? n : n->parent ? n->parent : n);
     if (g_mode != RAMFS_TRACK || !n) return;
-    n->pflags |= flags;
-    for (RamNode *a = n->parent; a && !(a->pflags & RAMFS_F_SUB); a = a->parent) a->pflags |= RAMFS_F_SUB;
-    if (n->parent) n->parent->pflags |= RAMFS_F_SUB;
-    g_changes++;
+    __atomic_or_fetch(&n->pflags, flags, __ATOMIC_RELAXED);
+    for (RamNode *a = n->parent; a && !(a->pflags & RAMFS_F_SUB); a = a->parent)
+        __atomic_or_fetch(&a->pflags, RAMFS_F_SUB, __ATOMIC_RELAXED);
+    if (n->parent) __atomic_or_fetch(&n->parent->pflags, RAMFS_F_SUB, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_changes, 1, __ATOMIC_RELAXED);
 }
 
 /* Before @n moves or goes away: report its starter files, which then stop being ones. */
@@ -195,10 +198,10 @@ static bool fill_add(const RamfsExtEntry *e, void *ctx)
     return true;
 }
 
-bool RamfsLoad(RamNode *n)
+/* A mounted volume's directory listing or file contents, read in under the
+ * big kernel lock, which the volume and disk drivers rely on */
+static bool load(RamNode *n, Drive *d)
 {
-    Drive *d;
-    if (!n || !(n->xflags & RAMFS_X_EXTERN) || !(d = drive_of(n))) return true;
     if (n->dir) {
         if (n->xflags & RAMFS_X_LISTED) return true;
         n->xflags |= RAMFS_X_LISTED;
@@ -217,6 +220,17 @@ bool RamfsLoad(RamNode *n)
     n->size = n->cap = (UINT32)size;
     n->xflags |= RAMFS_X_LOADED;
     return true;
+}
+
+bool RamfsLoad(RamNode *n)
+{
+    Drive *d;
+    if (!n || !(n->xflags & RAMFS_X_EXTERN) || !(d = drive_of(n))) return true;
+    if (n->xflags & (n->dir ? RAMFS_X_LISTED : RAMFS_X_LOADED)) return true;
+    bkl_acquire();
+    bool ok = load(n, d);
+    bkl_release();
+    return ok;
 }
 
 /* The contents of a mounted volume's file go when nothing holds it */
@@ -298,6 +312,18 @@ bool RamfsWrite(RamNode *f, const char *data, UINT32 len)
     return true;
 }
 
+bool RamfsWriteOwned(RamNode *f, char *buf, UINT32 len)
+{
+    if (!f || f->dir || f->pins || len > RAMFS_FILE_MAX || RamfsReadOnly(f)) return false;
+    kfree(f->data);
+    f->data = buf;
+    f->size = len;
+    f->cap = len;
+    mark(f, RAMFS_F_DIRTY);
+    touch(f);
+    return true;
+}
+
 /* Grow capacity to at least @need (geometrically, so appends are cheap). */
 static bool reserve(RamNode *f, UINT32 need)
 {
@@ -336,8 +362,14 @@ bool RamfsResize(RamNode *f, UINT32 len)
     return true;
 }
 
-void RamfsRef(RamNode *n)   { if (n) n->refs++; }
-void RamfsUnref(RamNode *n) { if (n && n->refs > 0 && !--n->refs && !n->dir) unload(n); }
+void RamfsRef(RamNode *n)   { if (n) __atomic_add_fetch(&n->refs, 1, __ATOMIC_RELAXED); }
+void RamfsUnref(RamNode *n)
+{
+    if (!n) return;
+    int left = __atomic_sub_fetch(&n->refs, 1, __ATOMIC_ACQ_REL);
+    if (left < 0) { __atomic_add_fetch(&n->refs, 1, __ATOMIC_RELAXED); return; }
+    if (!left && !n->dir) unload(n);
+}
 void RamfsPin(RamNode *f)
 {
     if (!f) return;
@@ -393,7 +425,18 @@ bool RamfsRename(RamNode *n, RamNode *dir, const char *name, bool replace)
     return true;
 }
 
-RamNode *RamfsResolve(RamNode *cwd, const char *path)
+static RamNode *resolve(RamNode *cwd, const char *path, bool *unloaded);
+
+RamNode *RamfsResolve(RamNode *cwd, const char *path) { return resolve(cwd, path, NULL); }
+
+RamNode *RamfsLookup(RamNode *cwd, const char *path, bool *unloaded)
+{
+    *unloaded = false;
+    return resolve(cwd, path, unloaded);
+}
+
+/* @unloaded NULL: load directories as needed */
+static RamNode *resolve(RamNode *cwd, const char *path, bool *unloaded)
 {
     RamNode *cur = cwd ? cwd : &g_root;
     if (!path) return NULL;
@@ -417,7 +460,11 @@ RamNode *RamfsResolve(RamNode *cwd, const char *path)
         part[n] = '\0';
         if (!strcmp(part, ".")) continue;
         if (!strcmp(part, "..")) { if (cur->parent) cur = cur->parent; continue; }
-        cur = RamfsFind(cur, part);
+        if (unloaded && cur->dir && (cur->xflags & RAMFS_X_EXTERN) && !(cur->xflags & RAMFS_X_LISTED)) {
+            *unloaded = true;
+            return NULL;
+        }
+        cur = unloaded ? (cur->dir ? find_in(cur, part) : NULL) : RamfsFind(cur, part);
         if (!cur) return NULL;
     }
     return cur;

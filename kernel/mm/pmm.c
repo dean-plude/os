@@ -44,6 +44,7 @@ static struct {
     size_t    free_pages;     /* Current free page count */
     size_t    bitmap_words;   /* Number of uint64_t words in bitmap */
     uintptr_t highest_phys;   /* Highest physical address + 1 */
+    size_t    hint;           /* No free page in the words below this one */
     KSpinLock lock;
 } pmm;
 
@@ -59,6 +60,7 @@ static void bitmap_set(size_t page_idx)   /* mark used */
 static void bitmap_clear(size_t page_idx) /* mark free */
 {
     pmm.bitmap[page_idx / 64] &= ~(UINT64_C(1) << (page_idx % 64));
+    if (page_idx / 64 < pmm.hint) pmm.hint = page_idx / 64;
 }
 
 static bool bitmap_test(size_t page_idx)  /* 1 = used */
@@ -231,9 +233,10 @@ uintptr_t pmm_alloc_page(void)
     }
 
     /* Walk bitmap words looking for a word with a clear bit (free page) */
-    for (size_t w = 0; w < pmm.bitmap_words; w++) {
+    for (size_t w = pmm.hint; w < pmm.bitmap_words; w++) {
         if (pmm.bitmap[w] == UINT64_C(0xFFFFFFFFFFFFFFFF))
             continue;  /* all used in this group */
+        pmm.hint = w;
 
         /* Find the lowest clear bit using compiler builtin */
         int bit = __builtin_ctzll(~pmm.bitmap[w]);
@@ -262,11 +265,17 @@ uintptr_t pmm_alloc_pages(size_t count)
 
     lock_acquire(&pmm.lock);
 
-    /* Linear scan for `count` consecutive free pages */
+    /* Linear scan for `count` consecutive free pages, from the lowest free
+     * one, a whole word of used pages at a time */
     size_t run = 0;
     size_t run_start = 0;
 
-    for (size_t i = 0; i < pmm.total_pages; i++) {
+    for (size_t i = pmm.hint * 64; i < pmm.total_pages; i++) {
+        if (!(i & 63) && pmm.bitmap[i / 64] == UINT64_C(0xFFFFFFFFFFFFFFFF)) {
+            run = 0;
+            i += 63;
+            continue;
+        }
         if (!bitmap_test(i)) {
             if (run == 0) run_start = i;
             run++;
@@ -322,9 +331,21 @@ void pmm_free_page(uintptr_t pa)
  * ----------------------------------------------------------------------- */
 void pmm_free_pages(uintptr_t pa, size_t count)
 {
-    for (size_t i = 0; i < count; i++) {
-        pmm_free_page(pa + i * PAGE_SIZE);
+    size_t idx = pa / PAGE_SIZE;
+    if (!IS_ALIGNED(pa, PAGE_SIZE) || idx + count > pmm.total_pages) {
+        for (size_t i = 0; i < count; i++) pmm_free_page(pa + i * PAGE_SIZE);   /* (reports it) */
+        return;
     }
+    lock_acquire(&pmm.lock);
+    for (size_t i = idx; i < idx + count; i++) {
+        if (!bitmap_test(i)) {
+            kprintf("[PMM] BUG: double free of page 0x%lx!\n", i * PAGE_SIZE);
+            continue;
+        }
+        bitmap_clear(i);
+        pmm.free_pages++;
+    }
+    lock_release(&pmm.lock);
 }
 
 /* -----------------------------------------------------------------------

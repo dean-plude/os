@@ -114,6 +114,28 @@
   NTFS drive D: and keeps screenshots of `dir C:\` and `dir D:\` (each
   with its own free space), This PC and Notepad++ (the last two compared
   with references in `tests/reference/`).
+- **Off the big kernel lock** (17.7): files, the registry, the console and
+  starting processes and threads now run beside each other on every CPU.
+  The file system has a reader/writer lock: opening a file that is there,
+  reading, writing, seeking and closing take it shared (each open file's
+  contents under a lock of its own), and only changes to the tree take it
+  alone.  The desktop thread's loop no longer holds it every tick, only
+  around input, drawing and built-in windows' timers that may use files.
+  The registry has a reader/writer lock of its own, a lock per key and
+  value names on the stack.  A process's lock is a reader/writer lock too,
+  and handles are opened, looked up and closed under it shared, each slot
+  with its own lock; console output takes turns on the console's lock.
+  Programs' memory allocation got arenas picked by thread (one heap lock
+  was 18% of a 4-thread registry run) and stopped losing every freed small
+  block (a tag bug kept them from being reused); kmalloc keeps a few
+  objects per CPU; copies to and from programs move 8 bytes at a time and
+  msvcrt's `memcmp` compares 8 at a time.  On one CPU in QEMU, files went
+  from 1,800 to 18,000 operations a second and the registry from 5,000 to
+  70,000; four CPUs do about 3x that (`smpstress scaling 3`; computing
+  alone scales 3.7–4x on the same host).  smpstress also starts copies of
+  itself from several threads at once, and the nightly run boots it on 4
+  CPUs.  The Terminal's new `profile` command samples where the CPUs spend
+  their time.
 - Tested in QEMU: Neovim 0.10.4 and 0.11.4 open `t.txt`, take `ihello
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,

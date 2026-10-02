@@ -570,10 +570,15 @@ static HRESULT STDMETHODCALLTYPE cf_lock(void *t, BOOL lock) { (void)t; (void)lo
 static void *const g_cf_vtbl[] = { cf_qi, cf_addref, cf_release, cf_create, cf_lock };
 static Factory g_link_factory = { (void *)g_cf_vtbl };
 
+/* urlshort.c: the InternetShortcut class */
+static const GUID CLSID_InternetShortcut_ = { 0xFBF23B40, 0xE3F0, 0x101B, { 0x84, 0x88, 0x00, 0xAA, 0x00, 0x3E, 0x56, 0xF8 } };
+HRESULT url_class_object(REFIID riid, void **ppv);
+
 __declspec(dllexport) HRESULT STDAPICALLTYPE DllGetClassObject(REFCLSID clsid, REFIID riid, void **ppv)
 {
     if (!ppv) return E_INVALIDARG_;
     *ppv = 0;
+    if (same_guid(clsid, &CLSID_InternetShortcut_)) return url_class_object(riid, ppv);
     if (!same_guid(clsid, &CLSID_ShellLink_)) return CLASS_E_CLASSNOTAVAILABLE_;
     return cf_qi(&g_link_factory, riid, ppv);
 }

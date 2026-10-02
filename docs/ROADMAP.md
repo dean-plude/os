@@ -105,13 +105,16 @@ named program or test demonstrates it.
   the Qt and GTK applications (KeePassXC, Krita, Inkscape), then Firefox.
 - Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the
   `IFileDialog` interfaces (today they report "cancelled").
-- Windows Installer: custom actions that run code, the packages' own
+- ~~Windows Installer: custom actions that run code, the packages' own
   dialogs (`InstallUISequence`), the `Shortcut` table, services, merge
-  modules; LZX cabinets tested against real packages.
+  modules; LZX cabinets tested against real packages~~ Done; see
+  [Windows Installer depth](HISTORY.md#windows-installer-depth-custom-actions-dialogs-shortcuts-services).
+  Still to come: rollback, script custom actions, patches and transforms,
+  services that start at boot.
 - ~~COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception
   tables~~ Done; see [Type libraries and FH4](HISTORY.md#com-type-libraries-and-fh4-c-exceptions).
-- .NET globalization through ICU, not only NLS for English and invariant
-  cultures.
+- ~~.NET globalization through ICU, not only NLS for English and invariant
+  cultures~~ Done; see [ICU](HISTORY.md#icu-net-globalization-and-kernel32s-locales).
 - Keep the App Store's per-app compatibility notes in step with what has
   been verified.
 - Firefox (tested with Floorp): the browser window opens and draws
@@ -141,12 +144,18 @@ named program or test demonstrates it.
   one (git pages through NovaOS's own `less` today).
 - Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
   Windows Terminal-style hosts) exist only as functions that fail.
-- Move files, the registry, process creation and the console off the big
-  kernel lock.
+- ~~Move files, the registry, process creation and the console off the
+  big kernel lock~~ Done (Phase 17.7): file and registry throughput scale
+  about 3x from one CPU to four (`smpstress scaling 3`, run nightly).
 - ~~Security: enforce tokens and ACLs on objects~~ Done for named kernel
   objects: real tokens, restricted tokens, impersonation, and descriptors
   checked on open (Phase 17.4, `sectest`, `acltest`).  Files' descriptors
   come with Phase 18.5.
+- Locales: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat` in
+  the requested locale (ICU already answers `GetLocaleInfoEx` for all of
+  them), and a user locale other than `en-US`.
+- .NET: an unhandled managed exception prints "Stack overflow." instead of
+  the exception and its stack trace (with NLS as well as ICU).
 
 <!-- END generated:next-kernel -->
 

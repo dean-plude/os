@@ -99,6 +99,7 @@ static uint32_t raw_cell(const MsiDb *db, const MsiTable *t, int row, int col)
 
 static int col_width(const MsiDb *db, uint16_t type)
 {
+    if (MSI_IS_BINARY(type)) return 2;             /* a stream reference */
     if (type & MSI_STRING) return db->strref_size;
     return (type & 0xFF) == 4 ? 4 : 2;
 }
@@ -209,6 +210,7 @@ const char *msidb_str(const MsiDb *db, const MsiTable *t, int row, int col, char
 {
     if (col < 0 || !t) return "";
     uint32_t v = raw_cell(db, t, row, col);
+    if (MSI_IS_BINARY(t->cols[col].type)) return "";
     if (t->cols[col].type & MSI_STRING) return str_at(db, v);
     if (!v) return "";
     bool null;
