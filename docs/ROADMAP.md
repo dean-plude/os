@@ -78,6 +78,12 @@ named program or test demonstrates it.
   Still open: recording (`waveIn`, capture endpoints), `dsound.dll`
   (DirectSound), XAudio2, MIDI, endpoint volume (`IAudioEndpointVolume`),
   and testing VLC and Audacity on it.
+- ~~**Complex scripts**: Uniscribe shaping Arabic and the Indic scripts~~
+  Done (19.1): `usp10.dll` on HarfBuzz in `novatext.dll` (HarfBuzz +
+  FreeType, shared with DirectWrite and Direct2D), and GDI's `ExtTextOut`
+  draws complex text through it; see
+  [Complex text](HISTORY.md#complex-text-harfbuzz-freetype-and-uniscribe).
+- Direct2D (`d2d1.dll`), the rest of ffmpeg's imports.
 - Display: GPU-backed or at least faster blits; mode changes.
 - NetSurf: SVG; redrawing pages a script changes after layout.
 

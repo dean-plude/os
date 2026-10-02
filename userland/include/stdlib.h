@@ -71,3 +71,10 @@ extern _CRTIMP char **__argv;
 extern _CRTIMP wchar_t **__wargv;
 extern _CRTIMP char **_environ;
 _NOVA_END
+#ifdef __cplusplus
+/* C++: the overloads the Windows SDK's stdlib.h adds */
+extern "C++" {
+inline long abs(long x) { return labs(x); }
+inline long long abs(long long x) { return llabs(x); }
+}
+#endif

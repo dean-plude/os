@@ -78,11 +78,14 @@ static void  t_free(void *p)   { if (p) HeapFree(GetProcessHeap(), 0, p); }
 /* -----------------------------------------------------------------------
  * Faces
  * ----------------------------------------------------------------------- */
-enum { F_SANS, F_SANS_BOLD, F_MONO, F_MONO_BOLD, F_COUNT };
+/* the complex-script faces have no bold file: bold is drawn twice, a pixel apart */
+enum { F_SANS, F_SANS_BOLD, F_MONO, F_MONO_BOLD, F_ARABIC, F_DEVANAGARI, F_COUNT };
 static const WCHAR *const g_face_file[F_COUNT] = {
     L"C:\\Windows\\Fonts\\inter.ttf", L"C:\\Windows\\Fonts\\interbd.ttf",
     L"C:\\Windows\\Fonts\\dejavumono.ttf", L"C:\\Windows\\Fonts\\dejavumonobd.ttf",
+    L"C:\\Windows\\Fonts\\notosansarabic.ttf", L"C:\\Windows\\Fonts\\notosansdevanagari.ttf",
 };
+static int is_bold_face(int fi) { return fi == F_SANS_BOLD || fi == F_MONO_BOLD; }
 
 typedef struct {
     int state;                      /* 0 not tried, 1 loaded, -1 missing */
@@ -97,7 +100,7 @@ static SRWLOCK g_text_lock;
 static Face *face(int i)
 {
     Face *f = &g_faces[i];
-    if (f->state) return f->state > 0 ? f : (i != F_SANS ? face(i & 1 ? i - 1 : F_SANS) : 0);
+    if (f->state) return f->state > 0 ? f : (i != F_SANS ? face(i == F_MONO_BOLD ? F_MONO : F_SANS) : 0);
     f->state = -1;
     HANDLE h = CreateFileW(g_face_file[i], GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
     if (h != INVALID_HANDLE_VALUE) {
@@ -112,7 +115,7 @@ static Face *face(int i)
         CloseHandle(h);
     }
     if (f->state > 0) return f;
-    return i != F_SANS ? face(i & 1 ? i - 1 : F_SANS) : 0;
+    return i != F_SANS ? face(i == F_MONO_BOLD ? F_MONO : F_SANS) : 0;
 }
 
 static int wieq(const WCHAR *a, const char *b)
@@ -140,6 +143,13 @@ static int face_index(const GObj *o)
 {
     static const char *const mono[] = { "Courier", "Courier New", "Consolas", "Lucida Console", "Fixedsys", "Terminal",
                                         "Cascadia Mono", "Cascadia Code", "DejaVu Sans Mono", "Lucida Sans Typewriter", 0 };
+    /* the scripts' own faces, under their Noto names and Windows' */
+    static const char *const arabic[] = { "Noto Sans Arabic", "Noto Naskh Arabic", "Traditional Arabic",
+                                          "Simplified Arabic", "Arabic Typesetting", "Sakkal Majalla", "Andalus", 0 };
+    static const char *const deva[] = { "Noto Sans Devanagari", "Mangal", "Nirmala UI", "Aparajita", "Kokila",
+                                        "Utsaah", 0 };
+    for (int i = 0; arabic[i]; i++) if (wieq(o->face, arabic[i])) return F_ARABIC;
+    for (int i = 0; deva[i]; i++) if (wieq(o->face, deva[i])) return F_DEVANAGARI;
     int is_mono = 0;
     for (int i = 0; mono[i]; i++) if (wieq(o->face, mono[i])) is_mono = 1;
     if (!is_mono && wcontains(o->face, "mono")) is_mono = 1;
@@ -392,7 +402,7 @@ static BOOL text_out(NOVA_DC *d, int x, int y, const WCHAR *t, int n, const INT 
                 }
             } else {
                 draw_glyph(d, g, pen, base, c, clip);
-                if (font->weight >= 600 && s->fi != F_SANS_BOLD && s->fi != F_MONO_BOLD) draw_glyph(d, g, pen + 1, base, c, clip);
+                if (font->weight >= 600 && !is_bold_face(s->fi)) draw_glyph(d, g, pen + 1, base, c, clip);
             }
         }
         pen += dx ? dx[start] + (i != start ? dx[i] : 0) : (g ? g->adv : 0);
@@ -403,10 +413,12 @@ static BOOL text_out(NOVA_DC *d, int x, int y, const WCHAR *t, int n, const INT 
     return TRUE;
 }
 
+static int is_complex(LPCWSTR s, int n);
 GDIAPI BOOL TextOutW(HDC h, int x, int y, LPCWSTR s, int len)
 {
     NOVA_DC *d = dc_of(h);
     if (!d || !s) return FALSE;
+    if (len > 0 && is_complex(s, len)) return ExtTextOutW(h, x, y, 0, 0, s, (UINT)len, 0);
     return text_out(d, x, y, s, len, 0, 0, 0, 0);
 }
 
@@ -432,6 +444,96 @@ GDIAPI BOOL TextOutA(HDC h, int x, int y, LPCSTR s, int len)
     return r;
 }
 
+/* -----------------------------------------------------------------------
+ * Complex scripts: as Windows' LPK does, text with right-to-left or
+ * shaped characters goes through Uniscribe (usp10.dll), which picks a font
+ * for each script, shapes the runs with HarfBuzz, orders them and draws
+ * them back here as glyph indices
+ * ----------------------------------------------------------------------- */
+static int complex_char(WCHAR c)
+{
+    return (c >= 0x0590 && c <= 0x08FF) ||                  /* Hebrew, Arabic, Syriac, Thaana, N'Ko... */
+           (c >= 0x0900 && c <= 0x0DFF) ||                  /* the Indic scripts */
+           (c >= 0x0E00 && c <= 0x0FFF) ||                  /* Thai, Lao, Tibetan */
+           (c >= 0x1000 && c <= 0x109F) || (c >= 0x1780 && c <= 0x18AF) ||   /* Myanmar, Khmer, Mongolian */
+           (c >= 0x200C && c <= 0x200F) || (c >= 0x202A && c <= 0x202E) || (c >= 0x2066 && c <= 0x2069) ||
+           (c >= 0xA8E0 && c <= 0xA8FF) || (c >= 0xFB1D && c <= 0xFDFF) || (c >= 0xFE70 && c <= 0xFEFF);
+}
+
+static int is_complex(LPCWSTR s, int n)
+{
+    for (int i = 0; i < n; i++) if (complex_char(s[i])) return 1;
+    return 0;
+}
+
+#define SSA_GLYPHS_   0x80
+#define SSA_FALLBACK_ 0x20
+#define SSA_RTL_      0x100
+typedef HRESULT (WINAPI *SSAnalyse_)(HDC, const void *, int, int, int, DWORD, int, void *, void *, const int *,
+                                    void *, const BYTE *, void **);
+typedef HRESULT (WINAPI *SSOut_)(void *, int, int, UINT, const RECT *, int, int, BOOL);
+typedef HRESULT (WINAPI *SSFree_)(void **);
+typedef const SIZE *(WINAPI *SSSize_)(void *);
+static struct { int tried; SSAnalyse_ analyse; SSOut_ out; SSFree_ free; SSSize_ size; } g_usp;
+
+static int usp_ready(void)
+{
+    if (!g_usp.tried) {
+        HMODULE m = LoadLibraryW(L"usp10.dll");
+        if (m) {
+            g_usp.analyse = (SSAnalyse_)GetProcAddress(m, "ScriptStringAnalyse");
+            g_usp.out = (SSOut_)GetProcAddress(m, "ScriptStringOut");
+            g_usp.free = (SSFree_)GetProcAddress(m, "ScriptStringFree");
+            g_usp.size = (SSSize_)GetProcAddress(m, "ScriptString_pSize");
+        }
+        g_usp.tried = 1;
+    }
+    return g_usp.analyse && g_usp.out && g_usp.free && g_usp.size;
+}
+
+/* Analyse @s with Uniscribe: the analysis, or 0 */
+static void *usp_analyse(HDC h, LPCWSTR s, int n, int rtl)
+{
+    void *ssa = 0;
+    if (n <= 0 || !usp_ready()) return 0;
+    DWORD flags = SSA_GLYPHS_ | SSA_FALLBACK_ | (rtl ? SSA_RTL_ : 0);
+    if (FAILED(g_usp.analyse(h, s, n, n * 3 / 2 + 16, -1, flags, 0, 0, 0, 0, 0, 0, &ssa))) return 0;
+    return ssa;
+}
+
+static int dc_rtl(NOVA_DC *d, UINT opts) { return (opts & 0x80 /* ETO_RTLREADING */) || (d->text_align & 256 /* TA_RTLREADING */); }
+
+/* ExtTextOut for complex text; FALSE: Uniscribe is missing, draw it plainly */
+static BOOL complex_text_out(HDC h, NOVA_DC *d, int x, int y, UINT opts, const RECT *rc, LPCWSTR s, int n, BOOL *ok)
+{
+    void *ssa = usp_analyse(h, s, n, dc_rtl(d, opts));
+    if (!ssa) return FALSE;
+    const SIZE *sz = g_usp.size(ssa);
+    int w = sz ? sz->cx : 0;
+    UINT al = d->text_align;
+    if (al & 1 /* TA_UPDATECP */) { x = d->cx; y = d->cy; }
+    if ((al & 6) == 6) x -= w / 2;                          /* TA_CENTER */
+    else if (al & 2) x -= w;                                /* TA_RIGHT */
+    /* the runs are placed left to right from x: no alignment of their own */
+    d->text_align = al & 24;
+    *ok = SUCCEEDED(g_usp.out(ssa, x, y, opts & 4 /* ETO_CLIPPED */, rc, 0, 0, FALSE));
+    d->text_align = al;
+    if (al & 1) d->cx = (al & 6) == 6 ? d->cx : (al & 2) ? x : x + w;
+    g_usp.free(&ssa);
+    return TRUE;
+}
+
+/* The width of complex text as Uniscribe lays it out, or -1 */
+static int complex_width(HDC h, NOVA_DC *d, LPCWSTR s, int n)
+{
+    void *ssa = usp_analyse(h, s, n, dc_rtl(d, 0));
+    if (!ssa) return -1;
+    const SIZE *sz = g_usp.size(ssa);
+    int w = sz ? sz->cx : -1;
+    g_usp.free(&ssa);
+    return w;
+}
+
 GDIAPI BOOL ExtTextOutW(HDC h, int x, int y, UINT opts, const RECT *rc, LPCWSTR s, UINT len, const INT *dx)
 {
     NOVA_DC *d = dc_of(h);
@@ -443,6 +545,10 @@ GDIAPI BOOL ExtTextOutW(HDC h, int x, int y, UINT opts, const RECT *rc, LPCWSTR 
         clip.left = rc->left + d->org_x; clip.top = rc->top + d->org_y;
         clip.right = rc->right + d->org_x; clip.bottom = rc->bottom + d->org_y;
         cp = &clip;
+    }
+    if (!(opts & (0x10 /* ETO_GLYPH_INDEX */ | 0x1000 /* ETO_IGNORELANGUAGE */)) && is_complex(s, (int)len)) {
+        BOOL ok;
+        if (complex_text_out(h, d, x, y, opts, rc, s, (int)len, &ok)) return ok;
     }
     INT *pdx = 0;
     if (dx && (opts & 0x2000 /* ETO_PDY */)) {              /* x,y pairs: keep the x advances */
@@ -482,7 +588,8 @@ GDIAPI BOOL GetTextExtentPoint32W(HDC h, LPCWSTR s, int len, LPSIZE sz)
     NOVA_DC *d = dc_of(h);
     Size *z = dc_size(d, 0);
     if (!z || !sz) return FALSE;
-    sz->cx = s && len > 0 ? text_width(z, s, len, 0, 0, 0) : 0;
+    int cw = s && len > 0 && is_complex(s, len) ? complex_width(h, d, s, len) : -1;
+    sz->cx = cw >= 0 ? cw : s && len > 0 ? text_width(z, s, len, 0, 0, 0) : 0;
     sz->cy = z->ascent + z->descent;
     return TRUE;
 }
@@ -752,7 +859,8 @@ typedef int (CALLBACK *FONTENUMPROCW_)(const LOGFONTW *, const TEXTMETRICW *, DW
 typedef int (CALLBACK *FONTENUMPROCA_)(const LOGFONTA *, const TEXTMETRICA *, DWORD, LPARAM);
 static const char *const g_families[] = {
     "Segoe UI", "MS Shell Dlg", "MS Shell Dlg 2", "Tahoma", "Arial", "Microsoft Sans Serif", "Verdana", "Calibri",
-    "Times New Roman", "Inter", "Consolas", "Courier New", "Lucida Console", "DejaVu Sans Mono", 0 };
+    "Times New Roman", "Inter", "Consolas", "Courier New", "Lucida Console", "DejaVu Sans Mono",
+    "Noto Sans Arabic", "Noto Sans Devanagari", 0 };
 
 static int enum_fonts(HDC h, const WCHAR *want, FONTENUMPROCW_ fn, LPARAM lp)
 {
@@ -776,7 +884,8 @@ static int enum_fonts(HDC h, const WCHAR *want, FONTENUMPROCW_ fn, LPARAM lp)
         elf.lf.lfHeight = ntm.tm.tmHeight;
         elf.lf.lfWeight = 400;
         elf.lf.lfOutPrecision = 3; elf.lf.lfClipPrecision = 2; elf.lf.lfQuality = 1;
-        elf.lf.lfPitchAndFamily = (BYTE)((z->fi >= F_MONO ? 1 : 2) | (z->fi >= F_MONO ? 0x30 : 0x20));
+        int mono = z->fi == F_MONO || z->fi == F_MONO_BOLD;
+        elf.lf.lfPitchAndFamily = (BYTE)((mono ? 1 : 2) | (mono ? 0x30 : 0x20));
         r = fn(&elf.lf, &ntm.tm, 4 /* TRUETYPE_FONTTYPE */, lp);
     }
     return r;

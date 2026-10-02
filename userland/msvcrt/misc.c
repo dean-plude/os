@@ -149,6 +149,9 @@ char *setlocale(int category, const char *locale)
 
 struct lconv *localeconv(void)
 {
-    static struct lconv lc = { ".", "", "" };
+    /* the "C" locale: CHAR_MAX (127) marks the values it leaves unspecified */
+    static struct lconv lc = { ".", "", "", "", "", "", "", "", "", "",
+                               127, 127, 127, 127, 127, 127, 127, 127,
+                               L".", L"", L"", L"", L"", L"", L"", L"" };
     return &lc;
 }

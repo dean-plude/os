@@ -108,7 +108,7 @@ brew install cmake ninja nasm python \
 
 | Package | Used for |
 |---------|----------|
-| `llvm`, `lld` | `clang`, `clang++`, `lld-link`, `llvm-rc`, `llvm-nm`: the Windows userland and NetSurf |
+| `llvm`, `lld` | `clang`, `clang++`, `lld-link`, `llvm-rc`, `llvm-nm`: the Windows userland and NetSurf; LLVM's libc++ headers, which the build finds next to `clang`, for HarfBuzz in `novatext.dll` |
 | `x86_64-elf-gcc` | The kernel (CMake prefers it over clang) |
 | `mingw-w64` | The UEFI bootloader (`x86_64-w64-mingw32-gcc`) |
 | `nasm` | Kernel assembly |
@@ -171,7 +171,7 @@ unchanged.  With Docker Desktop, [OrbStack](https://orbstack.dev) or
 docker run --rm -it -v "$PWD":/src -w /src ubuntu:24.04 bash -c '
   apt-get update &&
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
-      cmake make nasm clang lld llvm python3 mtools dosfstools xorriso &&
+      cmake make nasm clang lld llvm libc++-dev python3 mtools dosfstools xorriso &&
   NOVA_NO_NETSURF=1 scripts/build.sh'
 ```
 

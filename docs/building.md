@@ -9,7 +9,7 @@ Linux VM.  On a Mac, see [macos.md](macos.md).
 sudo apt update
 sudo apt install -y \
     cmake ninja-build nasm python3 \
-    clang lld llvm \
+    clang lld llvm libc++-dev \
     mtools dosfstools xorriso \
     qemu-system-x86 ovmf
 ```
@@ -20,6 +20,7 @@ What each part is for:
 |------|----------|
 | `cmake`, `ninja-build` (or make) | The build |
 | `nasm` | Kernel assembly (entry, interrupt stubs, SMP trampoline, syscall entry) |
+| `libc++-dev` | libc++'s C++ headers, for HarfBuzz in `novatext.dll` (nothing of libc++ is linked; set `NOVA_LIBCXX` to use headers elsewhere) |
 | `clang`, `lld` (`lld-link`) | **Required.** The Windows userland (`--target=x86_64-pc-windows-msvc` and `i686-pc-windows-msvc`), NetSurf, and the kernel and bootloader unless the alternatives below are installed |
 | `llvm` (`llvm-rc`) | Compiling programs' resource scripts (icons, dialogs) |
 | `python3` | `tools/build_userland.py`, `tools/build_netsurf.py` |
@@ -202,7 +203,8 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `guitest
-auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`, and
+auto`, `disptest`, `usptest` (64- and 32-bit), `battery`, `soundtest tone`,
+`soundtest wasapi`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
@@ -238,6 +240,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `abitest` (x64) | The binary interface against Windows 10 1903 x64: TEB, PEB, process parameters, loader lists, `KUSER_SHARED_DATA`, `CONTEXT` and `EXCEPTION_RECORD` offsets, ntdll's stub bytes and every system-call number (`abitest_nt1903.h`), raw `syscall`s |
 | `comtest` | ole32/oleaut32, `IShellLink` |
 | `cppeh` | C++ exceptions and RTTI |
+| `usptest` | Uniscribe on HarfBuzz: Arabic and Devanagari itemized, shaped (contextual forms, ligatures, reordering) and placed with the Noto fonts, and GDI `ExtTextOut` drawing complex text exactly as `ScriptStringOut` does; `usptest bmp FILE` saves sample lines as a bitmap |
 | `shmtest` | Named and file-backed shared memory between processes |
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |

@@ -84,7 +84,8 @@ DLLS = [
     ('vulkan-1', ['advapi32', 'kernel32', 'ntdll'], 0x7FFCD0000000),
     ('mmdevapi', ['ole32', 'kernel32', 'ntdll'],  0x7FFCE0000000),
     ('avrt',     ['kernel32', 'ntdll'],           0x7FFCF0000000),
-    ('usp10',    ['gdi32', 'user32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFE00000000),
+    ('novatext', ['msvcrt', 'kernel32', 'ntdll'], 0x7FFE50000000),
+    ('usp10',    ['novatext', 'gdi32', 'user32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFE00000000),
     ('normaliz', ['user32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFE10000000),
     ('ncrypt',   ['kernel32', 'ntdll'],           0x7FFE20000000),
     ('avicap32', ['kernel32', 'ntdll'],           0x7FFE30000000),
@@ -96,7 +97,9 @@ UCRT_BASE_X86 = 0x5F000000
 # 32-bit builds of these test programs go to C:\Programs\x86
 PROGRAMS_X86 = {'hello', 'crttest', 'filetest', 'threads', 'dlltest', 'apitest', 'posixtest', 'comtest',
                 'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh', 'cmd', 'pipetest',
-                'find', 'findstr', 'sort', 'more', 'timeout', 'cliptest', 'soundtest', 'disptest'}
+                'find', 'findstr', 'sort', 'more', 'timeout', 'cliptest', 'soundtest', 'disptest', 'usptest'}
+# DLLs a test program links against beyond the usual set
+PROGRAM_LIBS = {'usptest': ['usp10']}
 # programs that live in C:\Windows\System32 rather than C:\Programs
 SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'timeout', 'shutdown'}
 UCRT_BASE = 0x7FFA28000000
@@ -188,7 +191,8 @@ MB_FLAGS = ['-I', os.path.join(MBEDTLS, 'include'), '-I', os.path.join(MBEDTLS, 
             '-DMBEDTLS_CONFIG_FILE="mbedtls_user_config.h"',
             # as NetSurf builds it: Mbed TLS's POSIX/GCC paths, not MSVC's
             '-std=gnu99', '-w', '-D_NOVAOS', '-DNOVA_POSIX', '-U_WIN32', '-U_WIN64', '-fgnuc-version=4.2.1']
-DLL_CFLAGS = {'secur32': MB_FLAGS}
+HB_INC = ['-I', os.path.join(os.path.dirname(HERE), 'third_party', 'harfbuzz', 'src')]
+DLL_CFLAGS = {'secur32': MB_FLAGS, 'usp10': HB_INC}
 
 def mbedtls_objs(odir):
     """Mbed TLS's library and the TLS glue for this architecture, compiled
@@ -214,6 +218,76 @@ def mbedtls_objs(odir):
         sys.stderr.write('\n'.join(errors[:4]))
         sys.exit(1)
     return [os.path.join(odir, 'mbedtls_' + os.path.basename(s)[:-2] + '.obj') for s in srcs]
+
+# novatext.dll: the text core Uniscribe, DirectWrite and Direct2D share.
+# HarfBuzz (third_party/harfbuzz, C++ against libc++'s headers, no C++
+# runtime) shapes text; FreeType (third_party/freetype) loads and
+# rasterizes fonts.  It exports both libraries' C APIs (hb_*, FT_*).
+TP_DIR = os.path.join(os.path.dirname(HERE), 'third_party')
+FT_DIR = os.path.join(TP_DIR, 'freetype')
+FT_SRCS = ['base/ftsystem.c', 'base/ftinit.c', 'base/ftdebug.c', 'base/ftbase.c', 'base/ftbbox.c', 'base/ftbitmap.c',
+           'base/ftglyph.c', 'base/ftsynth.c', 'base/ftmm.c', 'base/fttype1.c', 'base/ftstroke.c',
+           'base/ftgasp.c', 'base/ftcid.c', 'base/ftfstype.c', 'base/ftpatent.c', 'base/ftwinfnt.c',
+           'autofit/autofit.c', 'truetype/truetype.c', 'type1/type1.c', 'cff/cff.c', 'cid/type1cid.c',
+           'psaux/psaux.c', 'psnames/psnames.c', 'pshinter/pshinter.c', 'sfnt/sfnt.c', 'smooth/smooth.c',
+           'raster/raster.c', 'winfonts/winfnt.c']
+FT_FLAGS = ['-w', '-I', os.path.join(FT_DIR, 'include'), '-I', os.path.join(HERE, 'novatext'), '-DFT2_BUILD_LIBRARY',
+            '-DFT_CONFIG_MODULES_H=<nova_ftmodule.h>', '-DFT_CONFIG_OPTIONS_H=<nova_ftoption.h>']
+def find_libcxx():
+    """libc++'s headers: $NOVA_LIBCXX, next to the clang in use (Homebrew's
+    LLVM), or Debian/Ubuntu's libc++-dev"""
+    import shutil
+    cands = [os.environ.get('NOVA_LIBCXX', '')]
+    if shutil.which('clang'):
+        cands.append(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(shutil.which('clang')))),
+                                  'include', 'c++', 'v1'))
+    cands += ['/usr/lib/llvm-%d/include/c++/v1' % v for v in range(30, 13, -1)] + ['/usr/include/c++/v1']
+    return next((d for d in cands if d and os.path.isfile(os.path.join(d, '__config'))), None)
+LIBCXX = find_libcxx()
+HB_FLAGS = ['-std=c++17', '-fno-exceptions', '-fno-rtti', '-w', '-D_LIBCPP_NO_VCRUNTIME',
+            '-D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES', '-DHB_NO_MT', '-DHB_NO_MMAP', '-DHAVE_FREETYPE',
+            '-I', os.path.join(FT_DIR, 'include')]
+
+def cxx_flags():
+    """C++ against libc++'s headers: our <functional>, libc++, then the C headers"""
+    if not LIBCXX:
+        raise SystemExit("libc++'s headers not found (install libc++-dev)")
+    inc = os.path.join(HERE, 'include')
+    return ['--target=' + TARGETS[ARCH]] + (['-msse2'] if ARCH == 'x86' else []) + \
+        ['-O2', '-ffreestanding', '-nostdlibinc', '-fno-stack-protector', '-mno-stack-arg-probe', '-fms-extensions',
+         '-isystem', os.path.join(inc, 'cxx'), '-isystem', LIBCXX, '-isystem', os.path.join(inc, 'posix'),
+         '-isystem', inc, '-I', inc_gen]
+
+def novatext_objs(odir):
+    """FreeType and HarfBuzz for this architecture, compiled in parallel; an
+    object newer than its source is reused"""
+    from concurrent.futures import ThreadPoolExecutor
+    jobs = []
+    for f in FT_SRCS:
+        jobs.append((['clang'] + cflags() + FT_FLAGS, os.path.join(FT_DIR, 'src', f),
+                     os.path.join(odir, 'ft_' + os.path.basename(f)[:-2] + '.obj')))
+    jobs.append((['clang++'] + cxx_flags() + HB_FLAGS, os.path.join(TP_DIR, 'harfbuzz', 'src', 'harfbuzz.cc'),
+                 os.path.join(odir, 'harfbuzz.obj')))
+    cfg = max(os.stat(os.path.join(HERE, 'novatext', h)).st_mtime for h in os.listdir(os.path.join(HERE, 'novatext')))
+    def one(job):
+        flags, src, obj = job
+        if os.path.exists(obj) and os.stat(obj).st_mtime > max(os.stat(src).st_mtime, cfg):
+            return None
+        r = subprocess.run(flags + ['-c', src, '-o', obj], capture_output=True, text=True)
+        return None if r.returncode == 0 else src + ':\n' + r.stderr
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+        errors = [e for e in ex.map(one, jobs) if e]
+    if errors:
+        sys.stderr.write('\n'.join(errors[:4]))
+        sys.exit(1)
+    return [j[2] for j in jobs]
+
+def novatext_def(odir, objs):
+    """export every hb_* and FT_* function the objects define"""
+    names = sorted(n for n in defined_names(objs) if n.startswith(('hb_', 'FT_')))
+    path = os.path.join(odir, 'novatext.def')
+    open(path, 'w').write('LIBRARY novatext.dll\nEXPORTS\n' + ''.join(f'  {n}\n' for n in names))
+    return ['/def:' + path]
 
 def flavor_obj(odir, legacy):
     """msvcrt.dll and ucrtbase.dll share the C runtime's objects; this one
@@ -310,7 +384,7 @@ def x86_def(odir, name, objs):
 def link_dll(odir, name, objs, deps, base, extra=()):
     extra = list(extra) + ordinal_exports(name, objs)
     if ARCH == 'x86':
-        extra += x86_def(odir, name, objs) + ['/safeseh:no', '/machine:x86']
+        extra += (x86_def(odir, name, objs) if name != 'novatext' else []) + ['/safeseh:no', '/machine:x86']
     dll = os.path.join(odir, f'{name}.dll')
     entry = ['/entry:DllMain'] if name in ('testdll', 'comctl32') else ['/noentry']
     run(['lld-link', '/dll', '/nodefaultlib', f'/base:{base:#x}'] + entry +
@@ -356,6 +430,9 @@ def build_pass(arch):
         extra = []
         if name == 'secur32':
             objs += mbedtls_objs(odir)
+        if name == 'novatext':
+            objs += novatext_objs(odir)
+            extra = novatext_def(odir, objs)
         if name in ('testdll', 'ws2_32', 'ole32', 'oleaut32'):
             objs.append(tlssup)
         if arch == 'x86':
@@ -406,7 +483,7 @@ def build_pass(arch):
             res = [os.path.join(odir, f'prog_{name}.res')]
             run([build_netsurf.llvm_rc(), '/FO', res[0], rc])
         libs = ['msvcrt', 'kernel32', 'ntdll', 'ws2_32', 'user32', 'gdi32', 'testdll', 'vcruntime140',
-                'advapi32', 'ole32', 'oleaut32', 'comctl32', 'shell32', 'msi', 'winmm']
+                'advapi32', 'ole32', 'oleaut32', 'comctl32', 'shell32', 'msi', 'winmm'] + PROGRAM_LIBS.get(name, [])
         run(['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib'] +
             (['/safeseh:no', '/machine:x86'] if arch == 'x86' else []) +
             [f'/out:{exe}'] + crt0_objs + [tlssup, obj] + res + [os.path.join(odir, l + '.lib') for l in libs])
@@ -426,7 +503,9 @@ ARCH = 'x64'
 # 3a0. fonts gdi32 draws text with (C:\Windows\Fonts)
 TP = os.path.join(os.path.dirname(HERE), 'third_party')
 for src, dst in [('inter/Inter-Regular.ttf', 'inter.ttf'), ('inter/Inter-Bold.ttf', 'interbd.ttf'),
-                 ('dejavu/DejaVuSansMono.ttf', 'dejavumono.ttf'), ('dejavu/DejaVuSansMono-Bold.ttf', 'dejavumonobd.ttf')]:
+                 ('dejavu/DejaVuSansMono.ttf', 'dejavumono.ttf'), ('dejavu/DejaVuSansMono-Bold.ttf', 'dejavumonobd.ttf'),
+                 ('noto/NotoSansArabic-Regular.ttf', 'notosansarabic.ttf'),
+                 ('noto/NotoSansDevanagari-Regular.ttf', 'notosansdevanagari.ttf')]:
     built.append((f'\\Windows\\Fonts\\{dst}', os.path.join(TP, src)))
 
 # 3a1. the trusted roots secur32's Schannel checks certificates against
