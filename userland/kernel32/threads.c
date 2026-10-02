@@ -364,12 +364,14 @@ BOOL WINAPI SleepConditionVariableCS(PCONDITION_VARIABLE cv, PCRITICAL_SECTION c
 {
     LARGE_INTEGER li;
     NTSTATUS s = RtlSleepConditionVariableCS(cv, cs, ms_timeout(&li, ms));
+    if (s == 0x102) { SetLastError(1460 /* ERROR_TIMEOUT */); return FALSE; }   /* STATUS_TIMEOUT */
     return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE);
 }
 BOOL WINAPI SleepConditionVariableSRW(PCONDITION_VARIABLE cv, PSRWLOCK l, DWORD ms, ULONG flags)
 {
     LARGE_INTEGER li;
     NTSTATUS s = RtlSleepConditionVariableSRW(cv, l, ms_timeout(&li, ms), flags);
+    if (s == 0x102) { SetLastError(1460 /* ERROR_TIMEOUT */); return FALSE; }   /* STATUS_TIMEOUT */
     return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE);
 }
 

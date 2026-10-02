@@ -16,6 +16,7 @@
  */
 
 #include "um_internal.h"
+#include "../ke/printf.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 
@@ -81,7 +82,24 @@ UmObject *um_console_object(UmConsole *c)
 /* Program → Terminal */
 int um_console_write(UmConsole *c, const char *data, int len)
 {
-    if (!c) return len;                                 /* no console: discard */
+    if (!c) {
+        /* No console (a detached process handed its creator's console
+         * handles, as Firefox's sandbox does for its child processes):
+         * the kernel log, a line at a time */
+        UmProcess *me = UmCurrent();
+        char line[256];
+        int n = 0;
+        for (int i = 0; i < len; i++) {
+            char ch = data[i];
+            if (ch != '\n' && ch != '\r' && n < (int)sizeof(line) - 1) line[n++] = ch;
+            if ((ch == '\n' || i == len - 1 || n == (int)sizeof(line) - 1) && n) {
+                line[n] = 0;
+                kprintf("[UM] %s (PID %u, detached): %s\n", me ? me->name : "?", me ? me->pid : 0, line);
+                n = 0;
+            }
+        }
+        return len;
+    }
     UmProcess *p = UmCurrent();
     int done = 0;
     while (done < len) {

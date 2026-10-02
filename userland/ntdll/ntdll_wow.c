@@ -847,6 +847,11 @@ NTSTATUS NTAPI NtDelayExecution(BOOLEAN alertable, PLARGE_INTEGER interval)
     return SC(NtDelayExecution, U(alertable), P(interval));
 }
 NTSTATUS NTAPI NtYieldExecution(void) { return SC0(NtYieldExecution); }
+NTSTATUS NTAPI NtWaitForAlertByThreadId(PVOID address, PLARGE_INTEGER timeout)
+{
+    return SC(NtWaitForAlertByThreadId, P(address), P(timeout));
+}
+NTSTATUS NTAPI NtAlertThreadByThreadId(HANDLE tid) { return SC(NtAlertThreadByThreadId, P(tid)); }
 
 /* -----------------------------------------------------------------------
  * NovaOS services

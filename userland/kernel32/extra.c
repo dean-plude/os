@@ -750,46 +750,20 @@ void k32_forget_handle(HANDLE h)
 }
 
 /* -----------------------------------------------------------------------
- * WaitOnAddress: hashed wait queues (a lock and a condition variable)
+ * WaitOnAddress: ntdll's (RtlWaitOnAddress), as on Windows
  * ----------------------------------------------------------------------- */
-typedef struct { SRWLOCK l; CONDITION_VARIABLE cv; } AddrQueue;
-static AddrQueue g_addr[64];
-
-static AddrQueue *addr_queue(const volatile void *a) { return &g_addr[((ULONG_PTR)a >> 3) % 64]; }
-
-static BOOL same(const volatile void *a, const void *b, SIZE_T n)
-{
-    switch (n) {
-    case 1: return *(const volatile BYTE *)a == *(const BYTE *)b;
-    case 2: return *(const volatile WORD *)a == *(const WORD *)b;
-    case 4: return *(const volatile DWORD *)a == *(const DWORD *)b;
-    case 8: return *(const volatile ULONGLONG *)a == *(const ULONGLONG *)b;
-    }
-    return FALSE;
-}
-
 WINBASEAPI BOOL WINAPI WaitOnAddress(volatile VOID *addr, PVOID cmp, SIZE_T size, DWORD ms)
 {
-    if (size != 1 && size != 2 && size != 4 && size != 8) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    AddrQueue *q = addr_queue(addr);
-    AcquireSRWLockExclusive(&q->l);
-    BOOL ok = TRUE;
-    if (same(addr, cmp, size)) ok = SleepConditionVariableSRW(&q->cv, &q->l, ms, 0);
-    ReleaseSRWLockExclusive(&q->l);
-    if (!ok) SetLastError(1460 /* ERROR_TIMEOUT */);
-    return ok;
+    LARGE_INTEGER t;
+    t.QuadPart = -(LONGLONG)ms * 10000;
+    NTSTATUS s = RtlWaitOnAddress(addr, cmp, size, ms == INFINITE ? NULL : &t);
+    if (s == (NTSTATUS)STATUS_TIMEOUT) { SetLastError(1460 /* ERROR_TIMEOUT */); return FALSE; }
+    if (!NT_SUCCESS(s)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return TRUE;
 }
 
-WINBASEAPI VOID WINAPI WakeByAddressAll(PVOID addr)
-{
-    AddrQueue *q = addr_queue(addr);
-    AcquireSRWLockExclusive(&q->l);
-    WakeAllConditionVariable(&q->cv);
-    ReleaseSRWLockExclusive(&q->l);
-}
-
-/* waiters on the same bucket re-check their own value, so waking all is safe */
-WINBASEAPI VOID WINAPI WakeByAddressSingle(PVOID addr) { WakeByAddressAll(addr); }
+WINBASEAPI VOID WINAPI WakeByAddressAll(PVOID addr)    { RtlWakeAddressAll(addr); }
+WINBASEAPI VOID WINAPI WakeByAddressSingle(PVOID addr) { RtlWakeAddressSingle(addr); }
 
 /* -----------------------------------------------------------------------
  * Interlocked singly linked lists (a spin lock keeps them simple)

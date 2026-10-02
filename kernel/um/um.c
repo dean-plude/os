@@ -27,6 +27,7 @@
 #include "../fs/persist.h"
 #include "../arch/x86_64/idt.h"
 #include "um_internal.h"
+#include "../ke/syscall.h"
 #include "../ke/scheduler.h"
 #include "../ke/probe.h"
 #include "../ke/printf.h"
@@ -1943,9 +1944,12 @@ static void dump_threads(UmProcess *p)
         UmThread *t = p->threads[i];
         if (!t || t->exited) continue;
         UINT64 rip = t->park == 2 && t->uframe ? ((InterruptFrame *)t->uframe)->rip : 0;
-        kprintf("[UM]   thread %u: %s, last system call %03x, user rip %llx\n", t->tid,
+        kprintf("[UM]   thread %u: %s, last system call %03x(%llx), user rip %llx\n", t->tid,
                 t->park == 1 ? "in a system call" : t->park == 2 ? "interrupted" : "running",
-                t->last_sys, (unsigned long long)rip);
+                t->last_sys, (unsigned long long)t->last_a1, (unsigned long long)rip);
+        UINT64 word = 0;
+        if (t->park == 1 && t->last_sys == SYSCALL_NtWaitForAlertByThreadId && um_read(p, t->last_a1, &word, 8))
+            kprintf("[UM]     the address holds %llx\n", (unsigned long long)word);
         for (int k = 0; k < t->wait_n && k < 4 && t->wait_objs; k++) {
             UmObject *wo = t->wait_objs[k];
             char nm[96];

@@ -155,7 +155,7 @@ void UmSetTrace(const char *name)
 UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmThread *t = UmCurrentThread();
-    if (t) { t->park = 1; t->last_sys = (UINT16)num; }   /* park: cleared on the way out (UmReturnToUser) */
+    if (t) { t->park = 1; t->last_sys = (UINT16)num; t->last_a1 = a1; }   /* park: cleared on the way out (UmReturnToUser) */
     UINT64 r = g_um[num](a1, a2, a3, a4);
     if (g_trace[0] && t && (g_trace_all || ((r & 0x80000000u) && (UINT32)r == r))) {
         const char *n = t->proc->name;
@@ -182,8 +182,8 @@ UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
                     }
                 }
             }
-            kprintf("[TRACE] %s %u: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
-                    (unsigned)t->proc->pid, (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
+            kprintf("[TRACE] %s %u/%u: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
+                    (unsigned)t->proc->pid, (unsigned)t->tid, (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
                     (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r,
                     path[0] ? " " : "", path);
         }

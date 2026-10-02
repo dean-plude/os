@@ -70,13 +70,48 @@ int wcsicmp_(const WCHAR *a, const WCHAR *b)
 }
 
 /* -----------------------------------------------------------------------
- * The window table.  A handle is (generation << 16) | ((slot + 16) << 1):
- * never below 0x10000, so it cannot be mistaken for HWND_BROADCAST and
- * friends, and a stale handle to a reused slot is rejected.
+ * The window table.  A handle is
+ *   (generation << 25) | (tag << 14) | ((slot + 16) << 1)
+ * where the tag is the kernel's for this process (CTL_HWND_TAG), unique
+ * among running processes and at least 4: handles never collide between
+ * processes (a GPU process can ask about its parent's window, as on
+ * Windows), never fall below 0x10000, so they cannot be mistaken for
+ * HWND_BROADCAST and friends, and a stale handle to a reused slot is
+ * rejected.
  * ----------------------------------------------------------------------- */
 #define MAX_WND 4096
+#define HWND_TAG_SHIFT 14
+#define HWND_TAG_MASK  0x7FF
 static Wnd *g_wnds[MAX_WND];
 static UINT g_gen = 1;
+static UINT g_tag;
+
+static UINT hwnd_tag(void)
+{
+    if (!g_tag) {
+        UINT t = (UINT)NtNovaGuiCtl(0, CTL_HWND_TAG, 0, NULL);
+        g_tag = t >= 4 && t <= HWND_TAG_MASK ? t : 4;
+    }
+    return g_tag;
+}
+
+/* another process's window handle (as far as the layout tells) */
+int hwnd_foreign(HWND h)
+{
+    ULONG_PTR v = (ULONG_PTR)h;
+    return v >= 0x10000 && v <= 0x7FFFFFFF && v != 0x10010 &&
+           ((v >> HWND_TAG_SHIFT) & HWND_TAG_MASK) != hwnd_tag();
+}
+
+/* What the kernel knows of another process's window: 2 a desktop
+ * (top-level) window with @f filled, 1 a window of a running process (only
+ * the pid), 0 none.  f: { pid, thread, state, client x y w h, frame x y w h } */
+int foreign_info(HWND h, INT32 f[11])
+{
+    memset(f, 0, 11 * sizeof(INT32));
+    if (!hwnd_foreign(h)) return 0;
+    return (int)NtNovaGuiCtl(0, CTL_FOREIGN, (ULONG_PTR)h, f);
+}
 static Wnd g_desktop_wnd;
 HWND g_focus, g_active, g_capture;
 int  g_capture_nc;
@@ -89,7 +124,7 @@ Wnd *W_quiet(HWND h)
     ULONG_PTR v = (ULONG_PTR)h;
     if (v == 0x10010) return desktop();
     if (v < 0x10000 || v > 0x7FFFFFFF) return NULL;
-    int slot = (int)((v & 0xFFFF) >> 1) - 16;
+    int slot = (int)((v >> 1) & 0x1FFF) - 16;
     if (slot < 0 || slot >= MAX_WND) return NULL;
     Wnd *w = g_wnds[slot];
     if (!w || !w->used || w->h != h) return NULL;
@@ -114,9 +149,9 @@ static Wnd *alloc_wnd(void)
         w = g_wnds[i];
         memset(w, 0, sizeof(*w));
         w->used = 1;
-        w->gen = g_gen++ & 0x7FFF;
-        if (!w->gen) w->gen = g_gen++ & 0x7FFF;
-        w->h = (HWND)(ULONG_PTR)(((ULONG_PTR)w->gen << 16) | ((ULONG_PTR)(i + 16) << 1));
+        w->gen = g_gen++ & 0x3F;
+        w->h = (HWND)(ULONG_PTR)(((ULONG_PTR)w->gen << 25) | ((ULONG_PTR)hwnd_tag() << HWND_TAG_SHIFT) |
+                                 ((ULONG_PTR)(i + 16) << 1));
         break;
     }
     UNLOCK();
@@ -541,6 +576,16 @@ void default_nc_calc(Wnd *w, RECT *r)
     if (r->bottom < r->top) r->bottom = r->top;
 }
 
+/* Tell the kernel a desktop window's client area, for other processes'
+ * GetClientRect (CTL_FOREIGN) */
+static void publish_client(Wnd *w)
+{
+    if (!w->kid || w->parent) return;
+    INT32 uc[4] = { w->client.left - w->rect.left, w->client.top - w->rect.top,
+                    w->client.right - w->client.left, w->client.bottom - w->client.top };
+    NtNovaGuiCtl(w->kid, CTL_SET_HWND, (ULONG_PTR)w->h, uc);
+}
+
 void wnd_calc_client(Wnd *w)
 {
     NCCALCSIZE_PARAMS p;
@@ -554,6 +599,7 @@ void wnd_calc_client(Wnd *w)
     if (w->proc && (w->flags & WF_CREATED)) send_msg(w, WM_NCCALCSIZE, TRUE, (LPARAM)&p);
     else default_nc_calc(w, &p.rgrc[0]);
     w->client = p.rgrc[0];
+    publish_client(w);
 }
 
 void wnd_screen_origin(Wnd *w, int client, POINT *p)
@@ -721,6 +767,7 @@ static int kernel_window(Wnd *w)
     gc.owner = o ? o->kid : 0;
     if (!NtNovaGuiCreate(&gc) || !gc.hwnd) return 0;
     w->kid = (UINT32)gc.hwnd;
+    publish_client(w);
     if (w->drop_accept) NtNovaGuiCtl(w->kid, CTL_ACCEPT_DROPS, (w->drop_accept | (w->drop_accept >> 2)) & 3, NULL);
     w->front = (DWORD *)(ULONG_PTR)gc.bitmap;
     w->stride = (int)gc.stride / 4;
@@ -1107,12 +1154,28 @@ USERAPI BOOL ShowWindow(HWND h, int cmd)
 USERAPI BOOL ShowWindowAsync(HWND h, int cmd) { return ShowWindow(h, cmd); }
 USERAPI BOOL ShowOwnedPopups(HWND h, BOOL show) { (void)h; (void)show; return TRUE; }
 
-USERAPI BOOL IsWindowVisible(HWND h) { Wnd *w = W_quiet(h); return w && wnd_visible(w); }
-USERAPI BOOL IsWindow(HWND h) { return W_quiet(h) != NULL; }
+USERAPI BOOL IsWindowVisible(HWND h)
+{
+    Wnd *w = W_quiet(h);
+    INT32 f[11];
+    if (!w) return foreign_info(h, f) == 2 && (f[2] & 1) && !(f[2] & 4);
+    return wnd_visible(w);
+}
+USERAPI BOOL IsWindow(HWND h) { INT32 f[11]; return W_quiet(h) != NULL || foreign_info(h, f) != 0; }
 USERAPI BOOL IsWindowEnabled(HWND h) { Wnd *w = W_quiet(h); return w && !(w->style & WS_DISABLED); }
 USERAPI BOOL IsWindowUnicode(HWND h) { Wnd *w = W_quiet(h); return w && w->wide; }
-USERAPI BOOL IsIconic(HWND h) { Wnd *w = W_quiet(h); return w && w->minimized; }
-USERAPI BOOL IsZoomed(HWND h) { Wnd *w = W_quiet(h); return w && w->maximized; }
+USERAPI BOOL IsIconic(HWND h)
+{
+    Wnd *w = W_quiet(h);
+    INT32 f[11];
+    return w ? w->minimized : foreign_info(h, f) == 2 && (f[2] & 4);
+}
+USERAPI BOOL IsZoomed(HWND h)
+{
+    Wnd *w = W_quiet(h);
+    INT32 f[11];
+    return w ? w->maximized : foreign_info(h, f) == 2 && (f[2] & 8);
+}
 
 USERAPI BOOL EnableWindow(HWND h, BOOL on)
 {
@@ -1413,8 +1476,14 @@ USERAPI HWND FindWindowA(LPCSTR cls, LPCSTR title) { return FindWindowExA(0, 0, 
 
 USERAPI DWORD GetWindowThreadProcessId(HWND h, LPDWORD pid)
 {
-    Wnd *w = W(h);
-    if (!w) { if (pid) *pid = 0; return 0; }
+    Wnd *w = W_quiet(h);
+    if (!w) {
+        INT32 f[11];
+        int k = foreign_info(h, f);
+        if (pid) *pid = k ? (DWORD)f[0] : 0;
+        if (!k) SetLastError(ERROR_INVALID_WINDOW_HANDLE);
+        return k == 2 ? (DWORD)f[1] : 0;                 /* a child window's thread is not known */
+    }
     if (pid) *pid = GetCurrentProcessId();
     return w == desktop() ? g_main_tid : w->tid;
 }
@@ -1422,10 +1491,21 @@ USERAPI DWORD GetWindowThreadProcessId(HWND h, LPDWORD pid)
 /* -----------------------------------------------------------------------
  * Rectangles and coordinates
  * ----------------------------------------------------------------------- */
+/* another process's desktop window: its rectangles from the kernel */
+static BOOL foreign_rect(HWND h, int client, LPRECT r)
+{
+    INT32 f[11];
+    if (!r || foreign_info(h, f) != 2) { SetLastError(ERROR_INVALID_WINDOW_HANDLE); return FALSE; }
+    if (client) SetRect(r, f[3], f[4], f[3] + f[5], f[4] + f[6]);
+    else SetRect(r, f[7], f[8], f[7] + f[9], f[8] + f[10]);
+    return TRUE;
+}
+
 USERAPI BOOL GetWindowRect(HWND h, LPRECT r)
 {
-    Wnd *w = W(h);
-    if (!w || !r) return FALSE;
+    Wnd *w = W_quiet(h);
+    if (!w) return foreign_rect(h, 0, r);
+    if (!r) return FALSE;
     POINT o;
     wnd_screen_origin(w, 0, &o);
     SetRect(r, o.x, o.y, o.x + w->rect.right - w->rect.left, o.y + w->rect.bottom - w->rect.top);
@@ -1434,16 +1514,26 @@ USERAPI BOOL GetWindowRect(HWND h, LPRECT r)
 
 USERAPI BOOL GetClientRect(HWND h, LPRECT r)
 {
-    Wnd *w = W(h);
-    if (!w || !r) return FALSE;
+    Wnd *w = W_quiet(h);
+    if (!w) {
+        if (!foreign_rect(h, 1, r)) return FALSE;
+        OffsetRect(r, -r->left, -r->top);
+        return TRUE;
+    }
+    if (!r) return FALSE;
     SetRect(r, 0, 0, w->client.right - w->client.left, w->client.bottom - w->client.top);
     return TRUE;
 }
 
 USERAPI BOOL ClientToScreen(HWND h, LPPOINT p)
 {
-    Wnd *w = W(h);
-    if (!w) return FALSE;
+    Wnd *w = W_quiet(h);
+    RECT fr;
+    if (!w) {
+        if (!foreign_rect(h, 1, &fr)) return FALSE;
+        p->x += fr.left; p->y += fr.top;
+        return TRUE;
+    }
     POINT o;
     wnd_screen_origin(w, 1, &o);
     p->x += o.x; p->y += o.y;
@@ -1452,8 +1542,13 @@ USERAPI BOOL ClientToScreen(HWND h, LPPOINT p)
 
 USERAPI BOOL ScreenToClient(HWND h, LPPOINT p)
 {
-    Wnd *w = W(h);
-    if (!w) return FALSE;
+    Wnd *w = W_quiet(h);
+    RECT fr;
+    if (!w) {
+        if (!foreign_rect(h, 1, &fr)) return FALSE;
+        p->x -= fr.left; p->y -= fr.top;
+        return TRUE;
+    }
     POINT o;
     wnd_screen_origin(w, 1, &o);
     p->x -= o.x; p->y -= o.y;

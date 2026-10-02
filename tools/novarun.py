@@ -8,7 +8,8 @@ the --put trees, opens the Terminal (Win, "terminal", Enter), turns on
 "serial on" and types each COMMAND, waiting for the Terminal's end-of-command
 mark.  Prints each command's output.  A COMMAND of the form
 "!shot NAME.png" saves a screenshot, "!wait N" waits N seconds and
-"!keys a b ctrl-c" presses QEMU key names, "!type TEXT" types
+"!keys a b ctrl-c" presses QEMU key names, "!click X Y" clicks at a
+logical screen point (1280x800 at the default mode), "!type TEXT" types
 without waiting (\\n Enter, \\e Esc) and "!done N" waits up to N seconds
 for the running command to end.
 
@@ -196,6 +197,25 @@ class Nova:
     def shot(self, path):
         self.qmp.cmd('screendump', filename=os.path.abspath(path), format='png')
 
+    def click(self, x, y, button=1):
+        """Click at logical screen point (x, y): HMP relative moves from the top-left corner
+        (QMP input-send-event moves do nothing on this mouse)"""
+        hmp = lambda c: self.qmp.cmd('human-monitor-command', **{'command-line': c})
+        for _ in range(40):
+            hmp('mouse_move -100 -100')
+            time.sleep(0.01)
+        while x > 0 or y > 0:
+            dx, dy = min(x, 40), min(y, 40)
+            hmp(f'mouse_move {dx} {dy}')
+            time.sleep(0.02)
+            x -= dx
+            y -= dy
+        time.sleep(0.3)
+        hmp(f'mouse_button {button}')
+        time.sleep(0.1)
+        hmp('mouse_button 0')
+        time.sleep(0.3)
+
     def keys(self, names):
         for k in names.split():
             self.qmp.key(*k.split('-'))
@@ -254,6 +274,10 @@ def main():
                 got, ok = nova.sr.wait('[TERM-DONE]', float(c[6:]))
                 print(got.replace('\n[TERM-DONE]\n', '').rstrip(), flush=True)
                 print(f'### {"done" if ok else "TIMEOUT"} in {time.time() - t0:.1f}s', flush=True)
+                continue
+            if c.startswith('!click '):     # !click X Y: left click at a logical screen point
+                x, y = (int(v) for v in c[7:].split()[:2])
+                nova.click(x, y)
                 continue
             if c.startswith('!keys '):
                 nova.keys(c[6:])

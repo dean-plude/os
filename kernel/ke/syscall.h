@@ -234,6 +234,8 @@
 #define SYSCALL_NtOpenProcessToken                0x0123
 #define SYSCALL_NtImpersonateAnonymousToken       0x00F7
 #define SYSCALL_NtQueryFullAttributesFile         0x0140
+#define SYSCALL_NtAlertThreadByThreadId           0x006F
+#define SYSCALL_NtWaitForAlertByThreadId          0x01CA
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x0220
 #define SYSCALL_NtNovaGuiGetMessage               0x0221

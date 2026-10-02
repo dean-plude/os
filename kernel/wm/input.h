@@ -44,6 +44,7 @@ typedef struct {
 #define KEY_ALT        0x38
 #define KEY_CAPSLOCK   0x3A
 #define KEY_F4         0x3E
+#define KEY_F12        0x58
 #define KEY_HOME       0x47   /* extended */
 #define KEY_UP         0x48   /* extended */
 #define KEY_PGUP       0x49   /* extended */

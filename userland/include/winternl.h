@@ -295,6 +295,8 @@ NTSYSAPI NTSTATUS NTAPI NtOpenSemaphore(PHANDLE h, ULONG access, POBJECT_ATTRIBU
 NTSYSAPI NTSTATUS NTAPI NtCreateSemaphore(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, LONG init, LONG max);
 NTSYSAPI NTSTATUS NTAPI NtReleaseSemaphore(HANDLE h, LONG count, PLONG prev);
 NTSYSAPI NTSTATUS NTAPI NtWaitForSingleObject(HANDLE h, BOOLEAN alertable, PLARGE_INTEGER timeout);
+NTSYSAPI NTSTATUS NTAPI NtWaitForAlertByThreadId(PVOID address, PLARGE_INTEGER timeout);
+NTSYSAPI NTSTATUS NTAPI NtAlertThreadByThreadId(HANDLE tid);
 NTSYSAPI NTSTATUS NTAPI NtWaitForMultipleObjects(ULONG n, const HANDLE *h, WAIT_TYPE type, BOOLEAN alertable,
                                                  PLARGE_INTEGER timeout);
 NTSYSAPI NTSTATUS NTAPI NtCompareObjects(HANDLE first, HANDLE second);
@@ -376,6 +378,9 @@ NTSYSAPI NTSTATUS NTAPI RtlSleepConditionVariableCS(PRTL_CONDITION_VARIABLE cv, 
                                                     PLARGE_INTEGER timeout);
 NTSYSAPI NTSTATUS NTAPI RtlSleepConditionVariableSRW(PRTL_CONDITION_VARIABLE cv, PRTL_SRWLOCK l,
                                                      PLARGE_INTEGER timeout, ULONG flags);
+NTSYSAPI NTSTATUS NTAPI RtlWaitOnAddress(const volatile void *addr, const void *cmp, SIZE_T size, PLARGE_INTEGER timeout);
+NTSYSAPI VOID     NTAPI RtlWakeAddressAll(PVOID addr);
+NTSYSAPI VOID     NTAPI RtlWakeAddressSingle(PVOID addr);
 NTSYSAPI VOID     NTAPI RtlRunOnceInitialize(PRTL_RUN_ONCE once);
 NTSYSAPI NTSTATUS NTAPI RtlRunOnceBeginInitialize(PRTL_RUN_ONCE once, ULONG flags, PVOID *ctx);
 NTSYSAPI NTSTATUS NTAPI RtlRunOnceComplete(PRTL_RUN_ONCE once, ULONG flags, PVOID ctx);

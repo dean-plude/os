@@ -566,6 +566,48 @@ static UINT64 sys_wait_single(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return st;
 }
 
+/* NtAlertThreadByThreadId(HANDLE ThreadId): wake that thread of this
+ * process from NtWaitForAlertByThreadId, or make its next one return at
+ * once.  ntdll builds WaitOnAddress, SRW locks and condition variables on
+ * this pair, as Windows 8 and later do. */
+static UINT64 sys_alert_by_tid(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    UmProcess *p = UmCurrent();
+    UINT64 st = 0xC000000Bu;                                /* STATUS_INVALID_CID */
+    um_lock(&p->lock);
+    for (int i = 0; i < UM_MAX_THREADS; i++) {
+        UmThread *t = p->threads[i];
+        if (!t || t->tid != (UINT32)a1 || t->exited) continue;
+        IrqState s = ob_lock();
+        t->alerted = 1;
+        if (t->kt) sched_unblock(t->kt);
+        ob_unlock(s);
+        st = ST_SUCCESS;
+        break;
+    }
+    um_unlock(&p->lock);
+    return st;
+}
+
+/* NtWaitForAlertByThreadId(PVOID Address (a hint only), PLARGE_INTEGER Timeout):
+ * STATUS_ALERTED once alerted, else STATUS_TIMEOUT */
+static UINT64 sys_wait_alert(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a1; (void)a3; (void)a4;
+    INT64 t;
+    if (!get_timeout(a2, &t)) return ST_ACCESS_VIOLATION;
+    UmThread *me = UmCurrentThread();
+    UINT64 until = deadline_ticks(t);
+    for (;;) {
+        if (__atomic_exchange_n(&me->alerted, 0, __ATOMIC_ACQ_REL)) return 0x101;   /* STATUS_ALERTED */
+        if (um_stopping()) return ST_THREAD_IS_TERMINATING;
+        if (t == 0 || sched_ticks() >= until) return ST_TIMEOUT;
+        UINT64 nap = sched_ticks() + 10;
+        sched_sleep_until(&me->alerted, until < nap ? until : nap);
+    }
+}
+
 /* NtWaitForMultipleObjects(ULONG Count, PHANDLE Handles, WAIT_TYPE (0 all, 1 any),
  *                          BOOLEAN Alertable, PLARGE_INTEGER Timeout) */
 static UINT64 sys_wait_multiple(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -1498,6 +1540,8 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtCreateSemaphore,         sys_create_semaphore_oa);
     um_install(SYSCALL_NtReleaseSemaphore,        sys_release_semaphore);
     um_install(SYSCALL_NtWaitForSingleObject,     sys_wait_single);
+    um_install(SYSCALL_NtAlertThreadByThreadId,   sys_alert_by_tid);
+    um_install(SYSCALL_NtWaitForAlertByThreadId,  sys_wait_alert);
     um_install(SYSCALL_NtWaitForMultipleObjects,  sys_wait_multiple);
     um_install(SYSCALL_NtCreateThreadEx,          sys_create_thread_ex);
     um_install(SYSCALL_NtTerminateThread,         sys_terminate_thread);

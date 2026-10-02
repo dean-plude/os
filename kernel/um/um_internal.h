@@ -116,12 +116,14 @@ struct UmThread {
     volatile UINT8  park;
     void           *uframe;
     UINT16          last_sys;       /* the latest system call (diagnostics) */
+    UINT64          last_a1;        /* and its first argument */
     /* Waiting (um_thread.c, under g_um_oblock): the objects, the waiter
      * list link, and the flag a signaler sets to wake it */
     UmObject      **wait_objs;
     int             wait_n;
     UmThread       *wait_next;
     volatile UINT32 wake;
+    volatile UINT32 alerted;        /* NtAlertThreadByThreadId, taken by NtWaitForAlertByThreadId */
 };
 
 UmObject *um_ob_ref(UmObject *o);

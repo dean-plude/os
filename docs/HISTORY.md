@@ -1415,8 +1415,36 @@ browser is run as shipped; everything below is in NovaOS.
 - **GDI**: `CreateDIBSection` with a file-mapping handle puts the pixels in
   that mapping (Firefox's GPU process draws the browser into one shared
   with the main process).
-- Not yet: the window shows white instead of the browser, and no page has
-  been loaded.
+- **Window handles across processes**: an `HWND` now names the same
+  window in every process, as on Windows.  user32 builds each handle from
+  a tag the kernel gives the process (unique among running processes), so
+  handles never collide, and tells the kernel each desktop window's handle
+  and client area.  `IsWindow`, `GetClientRect`, `GetWindowRect`,
+  `ClientToScreen`, `ScreenToClient`, `IsWindowVisible`, `IsIconic`,
+  `IsZoomed` and `GetWindowThreadProcessId` answer for another process's
+  window.  Firefox's GPU process sizes its frames from the main process's
+  window; before, it saw a 0 x 0 window and never drew, so the browser
+  showed white.  The full browser now draws through the GPU process.
+- **Locks that sleep**: `WaitOnAddress`, SRW locks and condition
+  variables park the thread until another wakes it, the way Windows 8
+  and later do: ntdll lists the waiters per address and they sleep in the
+  new `NtWaitForAlertByThreadId` system call until a waker calls
+  `NtAlertThreadByThreadId`.  They used to poll every 10 ms, which left
+  Firefox's main thread too slow to read its input.  Also
+  `SleepConditionVariableSRW`/`CS` return FALSE with `ERROR_TIMEOUT` when
+  they time out, as on Windows.
+- **Drawing from another thread**: `ReleaseDC` shows what was drawn at
+  once even while part of the window waits for `WM_PAINT` (Firefox
+  presents from its own thread while the window may never stop being
+  invalidated).
+- **Debugging aids**: Ctrl+Alt+F12 writes every program's threads to the
+  serial log (state, last system call and its first argument, return
+  addresses on the stack); the syscall trace shows the thread id
+  (`[TRACE] name pid/tid`); the standard error of a detached process
+  (Firefox's sandboxed children) goes to the serial log; and
+  `tools/novarun.py` takes `!click X Y`.
+- Not yet: a page's content (the tab area stays empty) and fetching a page
+  over the network.
 
 ## Regression gate: boot CI on every pull request
 
