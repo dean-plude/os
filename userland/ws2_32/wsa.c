@@ -304,13 +304,6 @@ int GetHostNameW(PWSTR name, int len)
     return 0;
 }
 
-struct servent *getservbyname(const char *name, const char *proto)
-{
-    (void)name; (void)proto;
-    set_err(WSANO_DATA);
-    return 0;
-}
-
 /* ---- protocols: TCP and UDP over IPv4 (WSAPROTOCOL_INFOW is 628 bytes, the A form 372) ---- */
 static int enum_protocols(const int *which, BYTE *buf, LPDWORD len, BOOL wide)
 {

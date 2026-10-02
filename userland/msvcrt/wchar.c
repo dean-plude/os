@@ -396,22 +396,6 @@ size_t wcstombs(char *d, const wchar_t *s, size_t n)
     const wchar_t *p = s;
     return wcsrtombs(d, &p, n, NULL);
 }
-int mbstowcs_s(size_t *ret, wchar_t *d, size_t dn, const char *s, size_t n)
-{
-    size_t r = mbstowcs(d, s, n < dn ? n : dn - 1);
-    if (r == (size_t)-1) return EILSEQ;
-    if (d && r < dn) d[r] = 0;
-    if (ret) *ret = r + 1;
-    return 0;
-}
-int wcstombs_s(size_t *ret, char *d, size_t dn, const wchar_t *s, size_t n)
-{
-    size_t r = wcstombs(d, s, n < dn ? n : dn - 1);
-    if (r == (size_t)-1) return EILSEQ;
-    if (d && r < dn) d[r] = 0;
-    if (ret) *ret = r + 1;
-    return 0;
-}
 
 /* -----------------------------------------------------------------------
  * Wide streams: NovaOS files and the console hold UTF-8, so wide
