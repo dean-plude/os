@@ -132,6 +132,13 @@ QEMU's default user-mode network (an e1000e on q35) works out of the box;
 add `-nic user,model=e1000` to test the older card.  `-smp N` sets the core
 count (up to 16).
 
+USB devices need a controller: `-device qemu-xhci` (USB 3), `-device
+usb-ehci` (USB 2), `-device pci-ohci` or `-device piix3-usb-uhci` (USB
+1.1), or an ICH9 EHCI with UHCI companions (`ich9-usb-ehci1` plus
+`ich9-usb-uhci1..3` with `masterbus=`), then e.g. `-device usb-kbd
+-device usb-tablet`.  With `-machine q35,i8042=off` there is no PS/2
+keyboard, so typing goes over USB.
+
 For sound add `-device intel-hda -device hda-output` (or `hda-duplex`);
 `-audiodev wav,id=snd0,path=out.wav,out.frequency=48000` with
 `-device hda-output,audiodev=snd0` records it instead of playing it.

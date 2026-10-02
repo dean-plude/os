@@ -68,8 +68,9 @@ static const UINT16 g_mod_to_set1[8] = {
 /* Boot protocol report descriptors (HID 1.11 appendix B) */
 static const UINT8 g_boot_kbd_desc[] = {
     0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
-    0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x95, 0x06, 0x75, 0x08,
-    0x15, 0x00, 0x25, 0x65, 0x05, 0x07, 0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xC0,
+    0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x95, 0x05, 0x75, 0x01,
+    0x05, 0x08, 0x19, 0x01, 0x29, 0x05, 0x91, 0x02, 0x95, 0x01, 0x75, 0x03, 0x91, 0x01, 0x95, 0x06,
+    0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07, 0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xC0,
 };
 static const UINT8 g_boot_mouse_desc[] = {
     0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09, 0x19, 0x01, 0x29, 0x03,
@@ -85,6 +86,7 @@ static const UINT8 g_boot_mouse_desc[] = {
 #define PAGE_DESKTOP   0x01
 #define PAGE_KEYBOARD  0x07
 #define PAGE_BUTTON    0x09
+#define PAGE_LED       0x08
 #define PAGE_DIGITIZER 0x0D
 
 #define MAX_FIELDS     96
@@ -105,6 +107,10 @@ typedef struct {
     int      n;
     bool     ids;              /* reports start with an ID byte */
     UINT16   app;              /* the first application collection: page << 8 | usage */
+    /* Keyboard LEDs: Num Lock, Caps Lock, Scroll Lock in output report
+     * @led_id (@led_bytes long, without the ID byte) */
+    INT16    led_bit[3];       /* -1: no such LED */
+    UINT8    led_id, led_bytes;
 } HidLayout;
 
 static UINT32 item_u(const UINT8 *p, int n)
@@ -133,8 +139,10 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
     int nusage = 0;
     UINT32 umin = 0, umax = 0;
     bool have_range = false;
-    UINT16 bits[256];                   /* input bits so far, per report ID */
+    UINT16 bits[256], obits[256];       /* input and output bits so far, per report ID */
     memset(bits, 0, sizeof(bits));
+    memset(obits, 0, sizeof(obits));
+    L->led_bit[0] = L->led_bit[1] = L->led_bit[2] = -1;
     int depth = 0;
 
     for (int i = 0; i < len;) {
@@ -192,7 +200,28 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
             nusage = 0; have_range = false;
             break;
         }
-        case 0x90: case 0xB0:                            /* Output, Feature */
+        case 0x90: {                                     /* Output: keyboard LEDs */
+            UINT32 flags = item_u(v, n);
+            UINT16 *pos = &obits[g.id];
+            if (!(flags & 1) && (flags & 2) && g.size == 1)
+                for (int k = 0; k < g.count; k++) {
+                    UINT32 u;
+                    if (k < nusage) u = usages[k];
+                    else if (have_range && umin + (UINT32)k - (UINT32)nusage <= umax) u = umin + (UINT32)k - (UINT32)nusage;
+                    else continue;
+                    UINT16 page = (u >> 16) ? (UINT16)(u >> 16) : g.page;
+                    UINT16 led = (UINT16)u;
+                    if (page == PAGE_LED && led >= 1 && led <= 3 &&
+                        (L->led_bit[0] < 0 && L->led_bit[1] < 0 && L->led_bit[2] < 0 ? true : L->led_id == g.id)) {
+                        L->led_bit[led - 1] = (INT16)(*pos + k);
+                        L->led_id = g.id;
+                    }
+                }
+            *pos = (UINT16)(*pos + g.size * g.count);
+            nusage = 0; have_range = false;
+            break;
+        }
+        case 0xB0:                                       /* Feature */
             nusage = 0; have_range = false;
             break;
         case 0xA0:                                       /* Collection */
@@ -223,6 +252,7 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
         default: break;
         }
     }
+    L->led_bytes = (UINT8)((obits[L->led_id] + 7) / 8);
     return L->n > 0;
 }
 
@@ -255,6 +285,8 @@ typedef struct {
     UINT8      repeat;
     UINT64     repeat_at;
     UINT8      buttons;
+    UINT8      iface;
+    UINT8      leds;                 /* lock state the LEDs show (0xFF: not set yet) */
     bool       dead;
 } Hid;
 
@@ -390,6 +422,32 @@ void UsbHidTickAll(UINT64 now)
     }
 }
 
+/* Keep keyboard LEDs in step with the lock keys (usb thread) */
+void UsbHidSyncLeds(void)
+{
+    UINT32 want = InputLockState();
+    for (int i = 0; i < MAX_HID; i++) {
+        Hid *h = g_hids[i];
+        if (!h || h->dead || !h->keyboard || h->leds == want || !h->L.led_bytes) continue;
+        bool any = false;
+        UINT8 rep[9];
+        memset(rep, 0, sizeof(rep));
+        int at = h->L.led_id ? 1 : 0;                      /* (the report ID comes first) */
+        rep[0] = h->L.led_id;
+        for (int k = 0; k < 3; k++) {
+            int bit = h->L.led_bit[k];
+            if (bit < 0 || bit / 8 >= 8) continue;
+            any = true;
+            if (want & (1u << k)) rep[at + bit / 8] |= (UINT8)(1u << (bit % 8));
+        }
+        h->leds = (UINT8)want;
+        if (!any) continue;
+        int len = at + (h->L.led_bytes > 8 ? 8 : h->L.led_bytes);
+        if (UsbControl(h->dev, 0x21, 0x09, (UINT16)(0x0200 | h->L.led_id), h->iface, (UINT16)len, rep) < 0)   /* SET_REPORT(output) */
+            kprintf("[USB] %s: keyboard LEDs not set\n", UsbDevName(h->dev));
+    }
+}
+
 static void hid_gone(void *inst)
 {
     Hid *h = inst;
@@ -435,6 +493,8 @@ void *UsbHidProbe(UsbDev *d, const UsbIface *f)
     Hid *h = kzalloc(sizeof(Hid));
     if (!h) return NULL;
     h->dev = d;
+    h->iface = f->number;
+    h->leds = 0xFF;
 
     /* Report protocol, from the report descriptor */
     bool ok = false;

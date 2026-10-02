@@ -129,7 +129,11 @@ set(KERNEL_C_SOURCES
     drivers/ahci.c
     drivers/hda.c
     drivers/audio.c
+    drivers/usb.c
     drivers/xhci.c
+    drivers/ehci.c
+    drivers/ohci.c
+    drivers/uhci.c
     drivers/usbhid.c
     drivers/usbhub.c
     drivers/usbmsc.c

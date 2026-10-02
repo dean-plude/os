@@ -85,9 +85,10 @@ every part, phase by phase.
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
   either), FAT16/FAT32, GPT, NTFS (other drives, read and write); Intel e1000/e1000e
   network cards; Intel High Definition Audio (output) with a kernel mixer;
-  PS/2 keyboards and mice; USB (xHCI) with hubs and HID keyboards, mice,
-  tablets and touch screens (report protocol) and USB sticks (FAT and NTFS,
-  as the next drive letter, hot-plugged); CMOS clock; a Bochs/QEMU VBE
+  PS/2 keyboards and mice; USB (xHCI, EHCI, OHCI and UHCI controllers, any
+  number of each) with hubs and HID keyboards (lock-key LEDs included),
+  mice, tablets and touch screens (report protocol) and USB sticks (FAT and
+  NTFS, as the next drive letter, hot-plugged); CMOS clock; a Bochs/QEMU VBE
   display driver (resolutions switched at run time, page flipping) with the
   UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
   sleep (S3), batteries and AC adapters (AML interpreted by uACPI).
@@ -231,7 +232,7 @@ os/
 │   ├── um/               # Windows programs: processes, threads, loader, NT services,
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
-│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, xHCI USB core, hubs, HID, mass storage
+│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, USB core, xHCI/EHCI/OHCI/UHCI, hubs, HID, mass storage
 │   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding

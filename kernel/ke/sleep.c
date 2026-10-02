@@ -40,7 +40,7 @@
 #include "../drivers/nvme.h"
 #include "../drivers/e1000.h"
 #include "../drivers/hda.h"
-#include "../drivers/xhci.h"
+#include "../drivers/usb.h"
 #include "../lib/string.h"
 
 void UmClockAdvance(UINT64 delta_100ns);
@@ -319,7 +319,7 @@ bool SleepEnter(void)
     AhciResume();
     NvmeResume();
     E1000Resume();
-    XhciResume();
+    UsbResume();
     HdaResume();
     ps2_resume();
     FbResume();

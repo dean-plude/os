@@ -44,6 +44,8 @@ typedef struct {
 #define KEY_RSHIFT     0x36
 #define KEY_ALT        0x38
 #define KEY_CAPSLOCK   0x3A
+#define KEY_NUMLOCK    0x45
+#define KEY_SCROLLLOCK 0x46
 #define KEY_F4         0x3E
 #define KEY_HOME       0x47   /* extended */
 #define KEY_UP         0x48   /* extended */
@@ -72,6 +74,9 @@ bool InputTranslateKey(const InputEvent *ev, KeyEvent *out);
 void InputInit(void);
 /* Modifier keys held: bit 0 Shift, 1 Ctrl, 2 Alt; bit 3 Caps Lock on */
 UINT32 InputModifiers(void);
+/* Lock keys on, as keyboard LEDs show them: bit 0 Num Lock, 1 Caps Lock,
+ * 2 Scroll Lock */
+UINT32 InputLockState(void);
 /* Producer (drivers). Drops the event if the queue is full. */
 void InputPost(const InputEvent *ev);
 /* Consumer (WM). Returns false if empty. */
