@@ -293,7 +293,7 @@ See [docs/building.md#tests](docs/building.md#tests) for how to run them.
 | 15 | 3D graphics on the CPU: OpenGL 4.5 (Mesa llvmpipe), Vulkan 1.3 (lavapipe), Direct3D 8–11 (DXVK) | ✅ Done |
 | 16 | Sound: Intel HD Audio, a kernel mixer, `waveOut`/`PlaySound`/`Beep`, WASAPI | ✅ Done |
 
-What comes next (DirectSound and XAudio2, broader app coverage, the
+What comes next (broader app coverage, the GPU, the
 remaining kernel and API gaps, storage and hardware) is in
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
