@@ -290,7 +290,7 @@ gdb build/kernel.elf \
 
 ## Known Limitations (Phase 1)
 
-Everything Phase 1 left out has since been built, except NTFS:
+Everything Phase 1 left out has since been built:
 
 | Component | At Phase 1 | Landed in |
 |-----------|------------|-----------|
@@ -298,7 +298,7 @@ Everything Phase 1 left out has since been built, except NTFS:
 | NT syscall dispatcher | Stub only | Phase 2 (table), Phase 9 (real services) |
 | Registry | Not implemented | Phase 2 (bootstrap), Phase 10 (real, saved to disk) |
 | IRP-based I/O | Not implemented | Phase 3 |
-| NTFS driver | Not implemented | Not yet (drive C: is FAT; see [ROADMAP.md](ROADMAP.md)) |
+| NTFS driver | Not implemented | Phase 18 (other drives, read and write; drive C: is still FAT, see [ROADMAP.md](ROADMAP.md)) |
 | PE loader | Not implemented | Phase 3, ring 3 in Phase 9 |
 | Win32 API (kernel32, ntdll) | Not implemented | Phase 9 onward |
 | Window Manager / GDI | Not implemented | Phase 7, Win32 window system in Phase 12 |

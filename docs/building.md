@@ -169,18 +169,36 @@ boots from a CD, which is read-only: attach a disk to keep files.
 
 Every NTFS volume on an attached disk (a partition in an MBR or GPT, or a
 whole disk) becomes a drive of its own, D:, E:, ... in the order found.
-They are read-only: programs, the Terminal and File Explorer can list,
-open, copy from and run what is there, and writes fail with "the media is
-write protected".  Compressed and sparse files are read; encrypted files
-are not.  A file is read into memory when it is opened, so the largest one
-that opens is 256 MiB.  For a test disk (needs `ntfs-3g`):
+Programs, the Terminal and File Explorer list, open, run, write, create,
+rename and delete files there.  Creating, renaming and deleting reach the
+disk at once; a file's new contents when the program closes it, or after
+a quiet second.  Compressed and sparse files are read but not rewritten
+(they show as read-only); encrypted files are not read.  A file is read
+into memory when it is opened, so the largest one that opens is 256 MiB.
+
+There is no journal: `$LogFile` is emptied when a volume is mounted and
+each change is complete on disk when it returns, so Windows and
+`ntfsfix` find the volume clean.  A volume Windows left hibernated (Fast
+Startup included), with a chkdsk pending or with transactions in its
+`$LogFile` is mounted read-only, as ntfs-3g does.
+
+For a test disk (needs `ntfs-3g`):
 
 ```bash
 scripts/make-ntfs-disk.sh build/nova-ntfs.img build
 qemu-system-x86_64 ... -drive format=raw,file=build/nova-ntfs.img
 ```
 
-then run `drivetest` in the Terminal.
+then run `drivetest` in the Terminal, shut down, and check the disk on the
+host:
+
+```bash
+scripts/check-ntfs-disk.sh build/nova-ntfs.img
+```
+
+which runs `ntfsfix -n` and `scripts/ntfs-check.py` (a chkdsk-style check
+of the bitmaps, MFT records, directory indexes and link counts) and checks
+the files drivetest left behind.
 
 ---
 
@@ -210,7 +228,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
 | `acltest` | Access checks against DACLs (`AccessCheck`) |
-| `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
+| `drivetest` | Drive D: (NTFS: reading, then writing, renaming, deleting), with the disk from `scripts/make-ntfs-disk.sh`; then `scripts/check-ntfs-disk.sh` on the host |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
 

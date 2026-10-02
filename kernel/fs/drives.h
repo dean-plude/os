@@ -1,5 +1,5 @@
 /*
- * drives.h — the disks' other volumes as drives D:, E:, ... (read-only)
+ * drives.h — the disks' other volumes as drives D:, E:, ...
  */
 
 #pragma once
@@ -13,3 +13,7 @@ void DrivesInit(void);
 void DrivesAttach(BlockDev *d);
 /* A disk went away: its drive letters go with it */
 void DrivesDetach(BlockDev *d);
+/* Write files changed on the drives to their disks: after a quiet second
+ * (DrivesPoll, called often), or now (DrivesSync, before shutting down) */
+void DrivesPoll(void);
+bool DrivesSync(void);

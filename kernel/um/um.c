@@ -25,6 +25,7 @@
  */
 
 #include "../fs/persist.h"
+#include "../fs/drives.h"
 #include "../arch/x86_64/idt.h"
 #include "um_internal.h"
 #include "../ke/scheduler.h"
@@ -2097,12 +2098,14 @@ void UmSaveAll(void)
 {
     um_registry_flush();
     if (!PersistSync()) kprintf("[PERSIST] Saving drive C: failed\n");
+    if (!DrivesSync()) kprintf("[DRIVES] Writing changed files to the drives failed\n");
 }
 
 void UmPoll(void)
 {
     um_registry_poll();
     PersistPoll();
+    DrivesPoll();
     for (int i = 0; i < UM_MAX_PROCS; i++) {
         UmProcess *p = g_procs[i];
         if (!p) continue;

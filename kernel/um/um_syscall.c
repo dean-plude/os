@@ -731,6 +731,7 @@ static void basic_info(UINT8 *b, const RamNode *n)
     memset(b, 0, 40);
     UINT64 c = n->ctime ? n->ctime : g_boot_time, m = n->mtime ? n->mtime : c;
     memcpy(b, &c, 8); memcpy(b + 8, &m, 8); memcpy(b + 16, &m, 8); memcpy(b + 24, &m, 8);
+    RamfsReadOnly(n);                                           /* (a file another drive can't rewrite gets READONLY) */
     UINT32 attr = (n->dir ? 0x10 : 0x20) | (n->attrs & 0x07);  /* DIRECTORY / ARCHIVE, R/H/S */
     memcpy(b + 32, &attr, 4);
 }
@@ -945,10 +946,9 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
         w2u(w, nlen, path, sizeof(path));
         char *s = path;
         if (!strncmp(s, "\\??\\", 4)) s += 4;
-        if (((s[0] | 0x20) >= 'a' && (s[0] | 0x20) <= 'z') && s[1] == ':') {
-            if ((s[0] | 0x20) != 'c') return iosb(a2, 0xC00000D4u, 0);   /* NOT_SAME_DEVICE */
-            s += 2;
-        }
+        if (((s[0] | 0x20) >= 'a' && (s[0] | 0x20) <= 'z') && s[1] == ':' &&
+            (s[0] & ~0x20) != RamfsDriveLetter(h->node))
+            return iosb(a2, 0xC00000D4u, 0);                    /* NOT_SAME_DEVICE: another drive */
         /* absolute, relative to RootDirectory, a bare name (same directory), or relative to the cwd */
         RamNode *root = strchr(s, '\\') || strchr(s, '/') ? p->cwd : h->node->parent;
         if (hdr[1]) {
@@ -1165,11 +1165,11 @@ static UINT64 sys_query_volume_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
         UINT32 need;
         memset(b, 0, sizeof(b));
         UINT64 total = UINT64_C(1) << 20, avail = UINT64_C(1) << 19;   /* 4 KiB units: 4 GiB, 2 GiB free */
-        /* or a mounted volume (drives D:, ...): read-only, full */
+        /* or a mounted volume (drives D:, ...): its size and free space */
         const char *label = "NovaOS", *fsname = "FAT32";
         UINT64 bytes;
         bool ext = RamfsDriveInfo(h->node, &label, &fsname, &bytes);
-        if (ext) { total = bytes >> 12; avail = 0; }
+        if (ext) { total = bytes >> 12; avail = RamfsDriveFree(h->node) >> 12; }
         switch (cls) {
         case 1: {                                               /* FileFsVolumeInformation */
             memcpy(b, &g_boot_time, 8);
@@ -1186,7 +1186,7 @@ static UINT64 sys_query_volume_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
             break;
         case 5: {                                               /* FileFsAttributeInformation */
             UINT32 attrs = 0x6, maxc = 255, nl = 2 * (UINT32)strlen(fsname);  /* CASE_PRESERVED_NAMES | UNICODE_ON_DISK */
-            if (ext) attrs |= 0x80000u;                         /* FILE_READ_ONLY_VOLUME */
+            if (ext && RamfsReadOnly(RamfsDriveRoot(RamfsDriveLetter(h->node)))) attrs |= 0x80000u;   /* FILE_READ_ONLY_VOLUME */
             memcpy(b, &attrs, 4); memcpy(b + 4, &maxc, 4); memcpy(b + 8, &nl, 4);
             u2w(fsname, b + 12, 8);
             need = 12 + nl;

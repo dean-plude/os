@@ -8,11 +8,14 @@
  * ("C:\Documents\a.txt", "\Documents") or relative to a directory, with
  * "." and ".." components.
  *
- * Other drives (D:, E:, ...) are read-only volumes on disk mounted into
- * the same tree of nodes: a drive's root has no parent, a directory's
- * entries are read from the volume the first time something looks in it,
- * and a file's contents when it is opened (RamfsLoad), then dropped again
- * when nothing holds the file any more.  Nothing on them can be changed.
+ * Other drives (D:, E:, ...) are volumes on disk mounted into the same
+ * tree of nodes: a drive's root has no parent, a directory's entries are
+ * read from the volume the first time something looks in it, and a file's
+ * contents when it is opened (RamfsLoad), then dropped again when nothing
+ * holds the file any more.  A volume whose file system can write (its
+ * RamfsSource has the write calls) can be changed: creating, deleting and
+ * renaming go to the disk at once, a file's new contents when nothing
+ * holds it any more or at the next RamfsFlush.
  */
 
 #pragma once
@@ -45,6 +48,9 @@ typedef struct RamNode {
 #define RAMFS_X_EXTERN   0x01     /* on a mounted (read-only) volume */
 #define RAMFS_X_LISTED   0x02     /* directory: its entries were read */
 #define RAMFS_X_LOADED   0x04     /* file: @data holds its contents */
+#define RAMFS_X_DIRTY    0x08     /* file: @data is newer than the disk */
+#define RAMFS_X_NOWRITE  0x10     /* file: its volume can't rewrite it (compressed, sparse, encrypted) */
+#define RAMFS_X_CHECKED  0x20     /* file: the volume was asked whether it can rewrite it */
 
 /* A mounted volume, as its file system reads it */
 typedef struct {
@@ -61,6 +67,15 @@ typedef struct {
     /* The real size of file @ref, and reading @len bytes of it from @off */
     bool (*size)(void *vol, UINT64 ref, UINT64 *size);
     bool (*read)(void *vol, UINT64 ref, UINT64 off, void *buf, UINT64 len);
+    /* Writing (all NULL on a read-only volume): create @name in directory
+     * @dir, remove @ref from @dir, move @ref from @dir to @to as @name,
+     * replace @ref's contents */
+    bool (*create)(void *vol, UINT64 dir, const char *name, bool is_dir, UINT64 *ref);
+    bool (*remove)(void *vol, UINT64 dir, UINT64 ref);
+    bool (*rename)(void *vol, UINT64 dir, UINT64 ref, UINT64 to, const char *name);
+    bool (*write)(void *vol, UINT64 ref, const void *data, UINT64 len);
+    UINT64 (*free_bytes)(void *vol);
+    bool (*can_write)(void *vol, UINT64 ref);                    /* (NULL: every file) */
 } RamfsSource;
 
 /* Change tracking, for saving drive C: to disk (fs/persist.c).  Nodes
@@ -108,10 +123,19 @@ UINT32   RamfsDriveMask(void);
 /* The volume label and file system name of the drive @n is on ("NTFS", "FAT32"),
  * its size in bytes; false for drive C: */
 bool     RamfsDriveInfo(const RamNode *n, const char **label, const char **fs, UINT64 *total);
+/* The free bytes on the drive @n is on (0 for a read-only one) */
+UINT64   RamfsDriveFree(const RamNode *n);
 /* The letter of the drive @n is on ('C', 'D', ...) */
 char     RamfsDriveLetter(const RamNode *n);
-/* Nodes on a mounted volume can't be changed */
+/* @n is on a mounted volume that can't be changed (or was unmounted) */
 bool     RamfsReadOnly(const RamNode *n);
+/* Write the mounted volumes' changed files to their disks.  False if one
+ * could not be written. */
+bool     RamfsFlush(void);
+/* Files changed on mounted volumes and not yet written, and a counter of
+ * changes to them that only grows */
+UINT32   RamfsExtDirty(void);
+UINT32   RamfsExtChanges(void);
 /* Read what a node on a mounted volume needs from the disk: a directory's
  * entries, a file's contents.  True at once for other nodes.  False on a
  * read error, or a file too large to hold (RAMFS_FILE_MAX). */
@@ -166,5 +190,6 @@ int      RamfsCount(const RamNode *dir);
 /* The clock new and written files are stamped with (100 ns since 1601);
  * until it is set, files get no times. */
 void RamfsSetClock(UINT64 (*now)(void));
+UINT64 RamfsNow(void);                          /* 0 until it is set */
 /* Record that @n's times or attributes changed (it is saved again) */
 void RamfsMarkChanged(RamNode *n);

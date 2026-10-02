@@ -2,10 +2,11 @@
  * drives.c — the disks' volumes as drives D:, E:, ... (see drives.h)
  *
  * A disk holds a volume of its own (no partition table) or partitions in
- * an MBR or a GPT; each partition that is an NTFS volume is mounted,
- * read-only, into drive C:'s tree of nodes (ramfs.h).  On removable disks
- * (USB sticks) FAT volumes are mounted too; the fixed disks' FAT volumes
- * are NovaOS's own (the EFI partition, the one drive C: is saved to).
+ * an MBR or a GPT; each partition that is an NTFS volume is mounted into
+ * drive C:'s tree of nodes (ramfs.h), writable when Windows left it clean
+ * (ntfs.c).  On removable disks (USB sticks) FAT volumes are mounted too,
+ * read-only; the fixed disks' FAT volumes are NovaOS's own (the EFI
+ * partition, the one drive C: is saved to).
  */
 
 #include "drives.h"
@@ -19,6 +20,7 @@
 #include "../ke/printf.h"
 #include "../um/um.h"
 #include "../wm/wm.h"
+#include "../ke/scheduler.h"
 
 /* ---- NTFS ---- */
 
@@ -26,7 +28,26 @@ static bool ntfs_list(void *vol, UINT64 ref, bool (*add)(const RamfsExtEntry *e,
 static bool ntfs_size(void *vol, UINT64 ref, UINT64 *size) { return NtfsSize(vol, ref, size); }
 static bool ntfs_read(void *vol, UINT64 ref, UINT64 off, void *buf, UINT64 len) { return NtfsRead(vol, ref, off, buf, len); }
 
-static const RamfsSource g_ntfs_source = { ntfs_list, ntfs_size, ntfs_read };
+static bool ntfs_create(void *vol, UINT64 dir, const char *name, bool is_dir, UINT64 *ref)
+{
+    return NtfsCreate(vol, dir, name, is_dir, ref) && NtfsSync(vol);
+}
+static bool ntfs_remove(void *vol, UINT64 dir, UINT64 ref) { return NtfsDelete(vol, dir, ref) && NtfsSync(vol); }
+static bool ntfs_rename(void *vol, UINT64 dir, UINT64 ref, UINT64 to, const char *name)
+{
+    return NtfsRename(vol, dir, ref, to, name) && NtfsSync(vol);
+}
+static bool ntfs_write(void *vol, UINT64 ref, const void *data, UINT64 len)
+{
+    return NtfsWriteFile(vol, ref, data, len) && NtfsSync(vol);
+}
+
+static UINT64 ntfs_free(void *vol) { return NtfsFreeBytes(vol); }
+static bool ntfs_can_write(void *vol, UINT64 ref) { return NtfsCanWrite(vol, ref); }
+
+static const RamfsSource g_ntfs_source = { ntfs_list, ntfs_size, ntfs_read, NULL, NULL, NULL, NULL, NULL, NULL };
+static const RamfsSource g_ntfs_rw_source = { ntfs_list, ntfs_size, ntfs_read, ntfs_create, ntfs_remove,
+                                              ntfs_rename, ntfs_write, ntfs_free, ntfs_can_write };
 
 typedef struct { bool (*add)(const RamfsExtEntry *e, void *ctx); void *ctx; } ListCtx;
 
@@ -120,7 +141,7 @@ static bool fat_read(void *vol, UINT64 ref, UINT64 off, void *buf, UINT64 len)
     return ok;
 }
 
-static const RamfsSource g_fat_source = { fat_list, fat_size, fat_read };
+static const RamfsSource g_fat_source = { fat_list, fat_size, fat_read, NULL, NULL, NULL, NULL, NULL, NULL };
 
 /* ---- mounting ---- */
 
@@ -157,12 +178,16 @@ static void try_mount(BlockDev *d, UINT64 lba)
     if (!letter) return;
     NtfsVol *v = NtfsMount(d, lba);
     if (v) {
-        if (!RamfsMountDrive(letter, &g_ntfs_source, v, NTFS_ROOT, NtfsLabel(v), "NTFS", NtfsTotalBytes(v))) {
+        NtfsSetClock(RamfsNow);
+        bool rw = NtfsEnableWrite(v);
+        if (!RamfsMountDrive(letter, rw ? &g_ntfs_rw_source : &g_ntfs_source, v, NTFS_ROOT, NtfsLabel(v), "NTFS",
+                             NtfsTotalBytes(v))) {
             NtfsUnmount(v);
             return;
         }
         record(d, letter, true, v);
-        kprintf("[DRIVES] %c: is NTFS volume \"%s\" on %s (read-only)\n", letter, NtfsLabel(v), d->name);
+        kprintf("[DRIVES] %c: is NTFS volume \"%s\" on %s (%s)\n", letter, NtfsLabel(v), d->name,
+                rw ? "read-write" : "read-only");
         return;
     }
     if (!d->removable) return;
@@ -241,6 +266,25 @@ void DrivesAttach(BlockDev *d)
     scan(d);
     WmInvalidate();                          /* (File Explorer lists the drives) */
     DesktopUnlock();
+}
+
+void DrivesPoll(void)
+{
+    static UINT32 seen;
+    static UINT64 since;
+    UINT32 c = RamfsExtChanges();
+    UINT64 t = sched_ticks();
+    if (c != seen) { seen = c; since = t; }
+    if (!RamfsExtDirty() || t - since < 100) return;         /* wait for a quiet second */
+    DrivesSync();
+}
+
+bool DrivesSync(void)
+{
+    DesktopLock();
+    bool ok = RamfsFlush();
+    DesktopUnlock();
+    return ok;
 }
 
 void DrivesDetach(BlockDev *d)

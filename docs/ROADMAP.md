@@ -34,7 +34,7 @@ The details of each phase are in [HISTORY.md](HISTORY.md).
 NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound is
 output only (no recording, MIDI, DirectSound or XAudio2); drive
 C: is FAT, so there are no hard links or ACL enforcement on files (NTFS
-disks can be read, as drives D:, E:, ...); and most of the App Store's catalog (Qt, GTK and
+disks are read and written as drives D:, E:, ...); and most of the App Store's catalog (Qt, GTK and
 multimedia programs) does not run yet.
 
 ---
@@ -109,13 +109,15 @@ named program or test demonstrates it.
   evaluates the DACLs it is given).
 
 ### Storage, network and hardware
-- ~~NTFS read~~ Done: NTFS volumes mount read-only as drives D:, E:, ...;
-  NTFS write.  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
+- ~~NTFS read~~ ~~NTFS write~~ Done: NTFS volumes mount as drives D:, E:,
+  ...; files on them are written, created, renamed and deleted (volumes
+  Windows left hibernated or unclean stay read-only).  NTFS as drive C: is
+  next.  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
 - IPv6, HTTP/2.
 - ~~USB (xHCI) with HID keyboards and mice~~ Done: keyboards, mice,
   tablets and touch screens in report protocol, on root ports or behind
   hubs, with hot-plug; USB mass storage (FAT and NTFS sticks as the next
-  drive letter, read-only).
+  drive letter; NTFS ones writable).
 - ACPI beyond the MADT: ~~shutdown, reboot, sleep, batteries~~ Done:
   power-off (S5), sleep (S3), reset and the fixed power button from the
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,

@@ -83,7 +83,7 @@ every part, phase by phase.
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
-  either), FAT16/FAT32, GPT; Intel e1000/e1000e
+  either), FAT16/FAT32, GPT, NTFS (other drives, read and write); Intel e1000/e1000e
   network cards; Intel High Definition Audio (output) with a kernel mixer;
   PS/2 keyboards and mice; USB (xHCI) with hubs and HID keyboards, mice,
   tablets and touch screens (report protocol) and USB sticks (FAT and NTFS,
