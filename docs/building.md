@@ -254,7 +254,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 crashes the kernel on purpose (`NtNovaBugCheck`) to show the backtrace.
 
 Interactive ones: `winhello` and `guitest` (windows, menus, dialogs,
-property sheets; `guitest auto` drives them itself and reports, as CI runs it), `droptest` (drag and drop), `cpus` (SMP speed-up), and
+property sheets; `guitest auto` drives them itself and reports, as CI runs it), `droptest` (drag and drop; its targets list each dropped file's size, or "missing"), `cpus` (SMP speed-up), and
 `hello`, `mandel`, `primes`, `wc`, `guess`.
 
 ### Real programs

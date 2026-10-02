@@ -6,10 +6,20 @@
  * becomes WM_DROPFILES for a window with WS_EX_ACCEPTFILES, or goes to
  * ole32's drop-target hook (a program's IDropTarget). ole32 and shell32
  * use the Nova* exports below.
+ *
+ * As on Windows, the drop is synchronous for the source: NovaSendDrop
+ * waits until the target has handled it (CTL_DROP_DONE), so a source may
+ * delete the files once DoDragDrop returns. 7-Zip does: files dragged out
+ * of an archive are extracted to a temporary folder that goes right after.
  */
 #include "u32.h"
 
-typedef BOOL (WINAPI *DropHook)(HWND hwnd, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes);
+#ifndef DROPEFFECT_NONE
+#define DROPEFFECT_NONE 0
+#define DROPEFFECT_COPY 1
+#endif
+
+typedef BOOL (WINAPI *DropHook)(HWND hwnd, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes, DWORD *taken);
 static DropHook g_hook;
 
 USERAPI void NovaSetDropHook(void *fn) { g_hook = (DropHook)fn; }
@@ -57,17 +67,31 @@ USERAPI HWND NovaTopFromKid(UINT32 kid)
     return h;
 }
 
-/* a file list (UTF-16, double-NUL) dropped on another program's window */
-USERAPI BOOL NovaSendDrop(UINT32 kid, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes)
+#define DROP_WAIT_MS (5 * 60 * 1000)      /* a target that never answers */
+
+/* a file list (UTF-16, double-NUL) dropped on another program's window:
+ * waits for the target to handle it and returns the effect it took
+ * (DROPEFFECT_NONE: refused, or the window went away) */
+USERAPI DWORD NovaSendDrop(UINT32 kid, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes)
 {
-    if (bytes > 60000) return FALSE;
+    if (bytes > 60000) return DROPEFFECT_NONE;
     INT32 *buf = malloc(16 + bytes);
-    if (!buf) return FALSE;
+    if (!buf) return DROPEFFECT_NONE;
     buf[0] = screen.x; buf[1] = screen.y; buf[2] = (INT32)effect; buf[3] = (INT32)bytes;
     memcpy(buf + 4, files, bytes);
-    BOOL ok = NtNovaGuiCtl(0, CTL_DROP, kid, buf) != 0;
+    ULONG_PTR seq = (ULONG_PTR)NtNovaGuiCtl(0, CTL_DROP, kid, buf);
     free(buf);
-    return ok;
+    if (!seq) return DROPEFFECT_NONE;
+    DWORD start = GetTickCount();
+    for (;;) {
+        LONG_PTR r = NtNovaGuiCtl(0, CTL_DROP_STATUS, seq, NULL);
+        if (r < 0) return DROPEFFECT_NONE;
+        if (r > 0) return (DWORD)(r - 1);
+        if (GetTickCount() - start > DROP_WAIT_MS) return DROPEFFECT_NONE;
+        MSG m;                              /* keep our windows drawn meanwhile */
+        while (PeekMessageW(&m, NULL, WM_PAINT, WM_PAINT, PM_REMOVE)) DispatchMessageW(&m);
+        Sleep(10);
+    }
 }
 
 /* the drop arrived: WM_DROPFILES on the accepting window under the point */
@@ -78,7 +102,8 @@ void drop_from_kernel(Wnd *top, const MSG *km)
     UINT32 *buf = malloc(cap);
     if (!buf) return;
     UINT64 got = NtNovaGuiCtl(top->kid, CTL_DROP_FETCH, cap, buf);
-    if (got < 20) { free(buf); return; }
+    DWORD taken = DROPEFFECT_NONE;
+    if (got < 20) { free(buf); NtNovaGuiCtl(top->kid, CTL_DROP_DONE, taken, NULL); return; }
     POINT pt = { (INT32)buf[0], (INT32)buf[1] };
     DWORD effect = buf[2], bytes = buf[4];
     const WCHAR *files = (const WCHAR *)(buf + 5);
@@ -91,7 +116,11 @@ void drop_from_kernel(Wnd *top, const MSG *km)
         if (!k || k == h) break;
         h = k;
     }
-    if (g_hook && g_hook(h, pt, effect, files, bytes)) { free(buf); return; }
+    if (g_hook && g_hook(h, pt, effect, files, bytes, &taken)) {
+        free(buf);
+        NtNovaGuiCtl(top->kid, CTL_DROP_DONE, taken, NULL);
+        return;
+    }
     /* WS_EX_ACCEPTFILES: this window or an ancestor */
     HWND a = h;
     while (a && !(GetWindowLongW(a, GWL_EXSTYLE) & WS_EX_ACCEPTFILES)) a = GetParent(a);
@@ -109,8 +138,11 @@ void drop_from_kernel(Wnd *top, const MSG *km)
             memcpy(d + 16, &wide, 4);
             memcpy(d + 20, files, bytes);
             GlobalUnlock(g);
-            PostMessageW(a, WM_DROPFILES, (WPARAM)g, 0);
+            /* sent, not posted: the program has read the files when the source hears back */
+            SendMessageW(a, WM_DROPFILES, (WPARAM)g, 0);
+            taken = DROPEFFECT_COPY;            /* the program has the names; nothing was moved */
         } else if (g) GlobalFree(g);
     }
     free(buf);
+    NtNovaGuiCtl(top->kid, CTL_DROP_DONE, taken, NULL);
 }
