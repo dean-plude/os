@@ -96,7 +96,7 @@ UCRT_BASE_X86 = 0x5F000000
 # 32-bit builds of these test programs go to C:\Programs\x86
 PROGRAMS_X86 = {'hello', 'crttest', 'filetest', 'threads', 'dlltest', 'apitest', 'posixtest', 'comtest',
                 'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh', 'cmd', 'pipetest',
-                'find', 'findstr', 'sort', 'more', 'less', 'timeout', 'cliptest', 'soundtest', 'disptest', 'anitest'}
+                'find', 'findstr', 'sort', 'more', 'less', 'timeout', 'cliptest', 'soundtest', 'disptest', 'acltest', 'anitest'}
 # programs that live in C:\Windows\System32 rather than C:\Programs
 SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'less', 'timeout', 'shutdown'}
 UCRT_BASE = 0x7FFA28000000

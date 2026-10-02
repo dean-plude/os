@@ -1,4 +1,10 @@
-/* filetest.exe — Win32 file API self-test on drive C: */
+/* filetest.exe — Win32 file API self-test on drive C:
+ *
+ *   filetest            the tests (files, registry change events, pending renames)
+ *   filetest install    an "installer" that must replace a running program:
+ *                       it schedules the replacement for the next boot
+ *   filetest installed  after a restart: the replacement happened
+ */
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
@@ -6,8 +12,154 @@
 static int pass, fail;
 #define CHECK(cond) do { if (cond) pass++; else { fail++; printf("FAIL line %d: %s (error %lu)\n", __LINE__, #cond, GetLastError()); } } while (0)
 
-int main(void)
+/* RegNotifyChangeKeyValue: an event signalled once, for the changes asked for */
+static DWORD WINAPI set_later(LPVOID key)
 {
+    Sleep(300);
+    DWORD v = 2;
+    RegSetValueExA((HKEY)key, "v", 0, REG_DWORD, (const BYTE *)&v, 4);
+    return 0;
+}
+
+static void notify(void)
+{
+    HKEY k = 0, sub = 0;
+    HANDLE ev = CreateEventA(0, FALSE, FALSE, 0);
+    RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\NovaFiletest");
+    CHECK(!RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\NovaFiletest", 0, 0, 0, KEY_ALL_ACCESS, 0, &k, 0));
+    DWORD v = 1;
+
+    CHECK(!RegNotifyChangeKeyValue(k, FALSE, REG_NOTIFY_CHANGE_LAST_SET, ev, TRUE));
+    CHECK(WaitForSingleObject(ev, 0) == WAIT_TIMEOUT);              /* nothing yet */
+    CHECK(!RegSetValueExA(k, "v", 0, REG_DWORD, (const BYTE *)&v, 4));
+    CHECK(WaitForSingleObject(ev, 2000) == WAIT_OBJECT_0);         /* a value set */
+    CHECK(!RegSetValueExA(k, "v", 0, REG_DWORD, (const BYTE *)&v, 4));
+    CHECK(WaitForSingleObject(ev, 200) == WAIT_TIMEOUT);           /* once: the watch is gone */
+
+    CHECK(!RegNotifyChangeKeyValue(k, FALSE, REG_NOTIFY_CHANGE_NAME, ev, TRUE));
+    CHECK(!RegSetValueExA(k, "w", 0, REG_DWORD, (const BYTE *)&v, 4));
+    CHECK(WaitForSingleObject(ev, 200) == WAIT_TIMEOUT);           /* a value is not a name change */
+    CHECK(!RegCreateKeyExA(k, "Sub", 0, 0, 0, KEY_ALL_ACCESS, 0, &sub, 0));
+    CHECK(WaitForSingleObject(ev, 2000) == WAIT_OBJECT_0);         /* a subkey added */
+
+    CHECK(!RegNotifyChangeKeyValue(k, FALSE, REG_NOTIFY_CHANGE_LAST_SET, ev, TRUE));
+    CHECK(!RegSetValueExA(sub, "x", 0, REG_DWORD, (const BYTE *)&v, 4));
+    CHECK(WaitForSingleObject(ev, 200) == WAIT_TIMEOUT);           /* a subkey's value: not without the subtree */
+    CHECK(!RegDeleteValueA(k, "w"));
+    CHECK(WaitForSingleObject(ev, 2000) == WAIT_OBJECT_0);         /* a value deleted */
+    CHECK(!RegNotifyChangeKeyValue(k, TRUE, REG_NOTIFY_CHANGE_LAST_SET, ev, TRUE));
+    CHECK(!RegSetValueExA(sub, "x", 0, REG_DWORD, (const BYTE *)&v, 4));
+    CHECK(WaitForSingleObject(ev, 2000) == WAIT_OBJECT_0);         /* with the subtree it counts */
+
+    CHECK(!RegNotifyChangeKeyValue(sub, FALSE, REG_NOTIFY_CHANGE_LAST_SET, ev, TRUE));
+    RegCloseKey(sub);
+    CHECK(!RegDeleteKeyA(k, "Sub"));
+    CHECK(WaitForSingleObject(ev, 2000) == WAIT_OBJECT_0);         /* the watched key deleted */
+
+    /* synchronous: the call returns when another thread sets a value */
+    HANDLE t = CreateThread(0, 0, set_later, k, 0, 0);
+    DWORD t0 = GetTickCount();
+    CHECK(!RegNotifyChangeKeyValue(k, FALSE, REG_NOTIFY_CHANGE_LAST_SET, 0, FALSE));
+    CHECK(GetTickCount() - t0 >= 200);
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
+    CHECK(RegNotifyChangeKeyValue(k, FALSE, REG_NOTIFY_CHANGE_LAST_SET, 0, TRUE) == ERROR_INVALID_PARAMETER);
+
+    RegCloseKey(k);
+    RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\NovaFiletest");
+    CloseHandle(ev);
+}
+
+/* MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT): written down as Windows does */
+static int pending_count(char *list, DWORD cap)
+{
+    HKEY k;
+    DWORD n = cap, type = 0;
+    list[0] = list[1] = 0;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Session Manager", 0, KEY_READ, &k)) return -1;
+    LSTATUS r = RegQueryValueExA(k, "PendingFileRenameOperations", 0, &type, (BYTE *)list, &n);
+    RegCloseKey(k);
+    if (r) return 0;
+    int items = 0;                                                  /* strings, before the list's final NUL */
+    for (DWORD i = 0; i + 1 < n; i += (DWORD)strlen(list + i) + 1) items++;
+    return items;
+}
+
+static void pending(void)
+{
+    char list[4096];
+    HANDLE h = CreateFileA("C:\\Temp\\pending.tmp", GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
+    CloseHandle(h);
+    CHECK(MoveFileExA("pending.tmp", 0, MOVEFILE_DELAY_UNTIL_REBOOT));
+    CHECK(GetFileAttributesA("pending.tmp") != INVALID_FILE_ATTRIBUTES);  /* still there until the restart */
+    pending_count(list, sizeof(list));
+    CHECK(!strcmp(list, "\\??\\C:\\Temp\\pending.tmp"));        /* a full NT path, then "" */
+    CHECK(list[strlen(list) + 1] == 0);
+    /* take it back out: the registry value is what the boot reads */
+    HKEY k;
+    if (!RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Session Manager", 0, KEY_ALL_ACCESS, &k)) {
+        CHECK(!RegDeleteValueA(k, "PendingFileRenameOperations"));
+        RegCloseKey(k);
+    }
+    DeleteFileA("pending.tmp");
+}
+
+/* The installer: C:\Temp\app\app.exe runs (a copy of us, waiting), so it
+ * can't be replaced now; the new version and the removal of a stale file
+ * are scheduled for the next boot */
+static int install(void)
+{
+    char self[MAX_PATH];
+    GetModuleFileNameA(0, self, sizeof(self));
+    CreateDirectoryA("C:\\Temp", 0);
+    CreateDirectoryA("C:\\Temp\\app", 0);
+    CHECK(CopyFileA(self, "C:\\Temp\\app\\app.exe", FALSE));
+    HANDLE h = CreateFileA("C:\\Temp\\app\\app.new", GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
+    DWORD n;
+    CHECK(WriteFile(h, "version 2", 9, &n, 0));
+    CloseHandle(h);
+    h = CreateFileA("C:\\Temp\\app\\stale.dll", GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
+    CloseHandle(h);
+
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    char cmd[] = "C:\\Temp\\app\\app.exe wait";
+    CHECK(CreateProcessA("C:\\Temp\\app\\app.exe", cmd, 0, 0, FALSE, 0, 0, 0, &si, &pi));
+    Sleep(500);
+    CHECK(!MoveFileExA("C:\\Temp\\app\\app.new", "C:\\Temp\\app\\app.exe", MOVEFILE_REPLACE_EXISTING));   /* in use */
+    CHECK(MoveFileExA("C:\\Temp\\app\\app.new", "C:\\Temp\\app\\app.exe", MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT));
+    CHECK(MoveFileExA("C:\\Temp\\app\\stale.dll", 0, MOVEFILE_DELAY_UNTIL_REBOOT));
+    char list[4096];
+    CHECK(pending_count(list, sizeof(list)) >= 4);
+    TerminateProcess(pi.hProcess, 0);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    printf("filetest install: %d passed, %d failed; restart to finish\n", pass, fail);
+    return fail ? 1 : 0;
+}
+
+static int installed(void)
+{
+    char buf[64], list[4096];
+    DWORD n = 0;
+    HANDLE h = CreateFileA("C:\\Temp\\app\\app.exe", GENERIC_READ, 0, 0, OPEN_EXISTING, 0, 0);
+    CHECK(h != INVALID_HANDLE_VALUE);
+    CHECK(ReadFile(h, buf, sizeof(buf), &n, 0) && n == 9 && !memcmp(buf, "version 2", 9));   /* replaced */
+    CloseHandle(h);
+    CHECK(GetFileAttributesA("C:\\Temp\\app\\app.new") == INVALID_FILE_ATTRIBUTES);
+    CHECK(GetFileAttributesA("C:\\Temp\\app\\stale.dll") == INVALID_FILE_ATTRIBUTES);  /* deleted */
+    CHECK(pending_count(list, sizeof(list)) == 0);                   /* and the list is gone */
+    DeleteFileA("C:\\Temp\\app\\app.exe");
+    RemoveDirectoryA("C:\\Temp\\app");
+    printf("filetest installed: %d passed, %d failed\n", pass, fail);
+    return fail ? 1 : 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1 && !strcmp(argv[1], "wait")) { Sleep(60000); return 0; }
+    if (argc > 1 && !strcmp(argv[1], "install")) return install();
+    if (argc > 1 && !strcmp(argv[1], "installed")) return installed();
     DWORD n;
     char buf[256];
     CreateDirectoryA("C:\\Temp", 0);
@@ -72,6 +224,9 @@ int main(void)
     void *p = VirtualAlloc(0, 1 << 20, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     CHECK(p != 0);
     if (p) { memset(p, 0xAB, 1 << 20); CHECK(VirtualFree(p, 0, MEM_RELEASE)); }
+
+    notify();
+    pending();
 
     printf("filetest: %d passed, %d failed\n", pass, fail);
     return fail ? 1 : 0;

@@ -9,8 +9,9 @@ the --put trees, opens the Terminal (Win, "terminal", Enter), turns on
 mark.  Prints each command's output.  A COMMAND of the form
 "!shot NAME.png" saves a screenshot, "!wait N" waits N seconds and
 "!keys a b ctrl-c" presses QEMU key names, "!type TEXT" types
-without waiting (\\n Enter, \\e Esc) and "!done N" waits up to N seconds
-for the running command to end.
+without waiting (\\n Enter, \\e Esc), "!done N" waits up to N seconds
+for the running command to end and "!reboot" restarts NovaOS
+("shutdown /r": the data disk keeps drive C:) and opens the Terminal again.
 
 Options: --mem MiB (2048), --smp N (2), --timeout S per command (120),
 --keep DIR (keep the serial log, data disk and screenshots there),
@@ -126,7 +127,7 @@ class Nova:
     """One NovaOS boot in QEMU with its Terminal open and mirrored to serial"""
 
     def __init__(self, img=None, work=None, puts=(), mem=2048, smp=2, data_mb=1024, wav=None,
-                 extra_args=(), boot_timeout=300, net=False):
+                 extra_args=(), boot_timeout=300, net=False, vga=('-vga', 'std')):
         self.work = work or tempfile.mkdtemp(prefix='novarun')
         os.makedirs(self.work, exist_ok=True)
         data, self.serial_path, sock = (os.path.join(self.work, n) for n in ('data.img', 'serial.log', 'qmp.sock'))
@@ -141,7 +142,7 @@ class Nova:
                                    '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
                                    '-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on',
                                    '-drive', f'format=raw,file={data}',
-                                   '-serial', f'file:{self.serial_path}', '-vga', 'std', '-display', 'none',
+                                   '-serial', f'file:{self.serial_path}'] + list(vga) + ['-display', 'none',
                                    '-nic', 'user,model=e1000e' if net else 'none',
                                    '-qmp', f'unix:{sock},server,nowait'] +
                                   (['-audiodev', f'wav,id=snd0,path={os.path.abspath(wav)},out.frequency=48000',
@@ -149,22 +150,36 @@ class Nova:
                                   list(extra_args))
         try:
             self.sr = Serial(self.serial_path)
-            out, ok = self.sr.wait('Entering kernel main loop', boot_timeout)
-            self.boot_log = out
-            if not ok:
-                raise RuntimeError('NovaOS did not boot:\n' + out[-3000:])
-            self.qmp = Qmp(sock)
-            time.sleep(2)
-            self.qmp.key('meta_l')
-            time.sleep(1)
-            self.qmp.type('terminal\n')
-            time.sleep(3)
-            self.sr.read_new()
-            self.qmp.type('serial on\n')
-            self.sr.wait('[TERM-DONE]', 30)
+            self.sock = sock
+            self.start(boot_timeout)
         except BaseException:
             self.close()
             raise
+
+    def start(self, boot_timeout=300):
+        """Wait for the desktop, then open the Terminal mirrored to serial"""
+        out, ok = self.sr.wait('Entering kernel main loop', boot_timeout)
+        self.boot_log = out
+        if not ok:
+            raise RuntimeError('NovaOS did not boot:\n' + out[-3000:])
+        if not self.qmp:
+            self.qmp = Qmp(self.sock)
+        time.sleep(2)
+        self.qmp.key('meta_l')
+        time.sleep(1)
+        self.qmp.type('terminal\n')
+        time.sleep(3)
+        self.sr.read_new()
+        self.qmp.type('serial on\n')
+        self.sr.wait('[TERM-DONE]', 30)
+
+    def reboot(self, boot_timeout=300):
+        """Restart NovaOS (shutdown /r) and open the Terminal again; the
+        boot's log (up to the desktop) is returned"""
+        self.sr.read_new()
+        self.qmp.type('shutdown /r\n')
+        self.start(boot_timeout)
+        return self.boot_log
 
     def run(self, cmd, timeout=120, shot=None):
         """Type @cmd into the Terminal; returns (serial output, finished in time).
@@ -213,6 +228,13 @@ class Nova:
             shutil.rmtree(self.work, ignore_errors=True)
 
 
+def vga_args(name):
+    """QEMU arguments for the display adapter @name: a -vga type, or a -device"""
+    if name in ('std', 'cirrus', 'vmware', 'qxl', 'virtio', 'none'):
+        return ('-vga', name)
+    return ('-vga', 'none', '-device', name)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--put', action='append', default=[])
@@ -224,11 +246,14 @@ def main():
     ap.add_argument('--img', default=os.path.join(ROOT, 'build', 'nova.img'))
     ap.add_argument('--wav')
     ap.add_argument('--net', action='store_true', help='a network card on QEMU user networking (the host is 10.0.2.2)')
+    ap.add_argument('--display', default='std',
+                    help='the display adapter: a -vga name (std, cirrus, vmware, qxl, virtio) or a -device name (bochs-display)')
     ap.add_argument('commands', nargs='*')
     a = ap.parse_args()
 
     try:
-        nova = Nova(a.img, a.keep, [p.split('=', 1) for p in a.put], a.mem, a.smp, a.data_mb, a.wav, net=a.net)
+        nova = Nova(a.img, a.keep, [p.split('=', 1) for p in a.put], a.mem, a.smp, a.data_mb, a.wav, net=a.net,
+                    vga=vga_args(a.display))
     except RuntimeError as e:
         sys.exit(str(e))
     try:
@@ -253,6 +278,10 @@ def main():
                 got, ok = nova.sr.wait('[TERM-DONE]', float(c[6:]))
                 print(got.replace('\n[TERM-DONE]\n', '').rstrip(), flush=True)
                 print(f'### {"done" if ok else "TIMEOUT"} in {time.time() - t0:.1f}s', flush=True)
+                continue
+            if c.strip() == '!reboot':
+                print('### !reboot', flush=True)
+                print(nova.reboot(), flush=True)
                 continue
             if c.startswith('!keys '):
                 nova.keys(c[6:])

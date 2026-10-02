@@ -100,20 +100,26 @@ named program or test demonstrates it.
 - ~~Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
   with a console of its own, file handles that share their position with
   the processes they are handed to~~ Done (Phase 17.3, `proctest`).
-- Files: hard links, `MoveFileEx` pending renames carried out at boot,
-  `RegNotifyChangeKeyValue` change events.
+- ~~Small visible bugs: This PC lists D:, E:, ...; `dir` reports each
+  drive's own free space; Notepad++'s status bar draws~~ Done (Phase
+  17.6, screenshots in the nightly app corpus).
+- Files: hard links.  ~~`MoveFileEx` pending renames carried out at boot,
+  `RegNotifyChangeKeyValue` change events~~ Done (Phase 17.5, `filetest`
+  and a restart in the core suite).
+- ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
+  is waitable and the Terminal runs full-screen programs (Phase 17.2).
 - The Win32 console screen-buffer calls (`SetConsoleCursorPosition`,
   `FillConsoleOutputCharacter`... are still no-ops), so programs that draw
   through them rather than VT sequences work and `less` can be the real
   one (git pages through NovaOS's own `less` today).
-- ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
-  is waitable and the Terminal runs full-screen programs (Phase 17.2).
 - Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
   Windows Terminal-style hosts) exist only as functions that fail.
 - Move files, the registry, process creation and the console off the big
   kernel lock.
-- Security: enforce tokens and ACLs on objects (`AccessCheck` already
-  evaluates the DACLs it is given).
+- ~~Security: enforce tokens and ACLs on objects~~ Done for named kernel
+  objects: real tokens, restricted tokens, impersonation, and descriptors
+  checked on open (Phase 17.4, `sectest`, `acltest`).  Files' descriptors
+  come with Phase 18.5.
 
 ### Storage, network and hardware
 - ~~NTFS read~~ Done: NTFS volumes mount read-only as drives D:, E:, ...;
@@ -127,8 +133,10 @@ named program or test demonstrates it.
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,
   control-method power buttons and `_PTS`/`_WAK`.  Still to do: the lid
   switch, thermal zones, wake devices (USB keyboards), a real SCI
-  interrupt and PCI interrupt routing from `_PRT`; display modes after S3
-  on adapters other than the Bochs/QEMU one; HPET or TSC-deadline timers.
+  interrupt and PCI interrupt routing from `_PRT`; HPET or TSC-deadline
+  timers.  (Display modes after S3 are set again on every adapter NovaOS
+  drives: the VBE ones, QXL, virtio-vga, VMware SVGA and Cirrus.  Real
+  GPUs have no driver yet.)
 - Boot and test on real hardware, not only QEMU.
 
 ---
@@ -140,8 +148,9 @@ named program or test demonstrates it.
   (`tools/selftest.py`, `.github/workflows/ci.yml`); a failing test fails
   the check.
 - **Reproducible build:** CMake drives `nasm`, clang/lld and `lld-link`
-  for the kernel, bootloader and Windows userland; `nova.iso` is rebuilt
-  with `scripts/create-iso.sh`.
+  for the kernel, bootloader and Windows userland; CI builds `nova.iso`
+  with `scripts/create-iso.sh` (a run artifact on every pull request, the
+  `latest` release from `main`); the ISO is not committed.
 - **Debugging:** the GDB stub over QEMU (`run-debug`), the serial log,
   crash reports naming the module and offset, and the Terminal's `trace
   NAME` for a program's failing system calls, and symbolized kernel
@@ -154,8 +163,9 @@ named program or test demonstrates it.
   permanent regression test, built for x64 and x86; `tools/pe_imports.py`
   shows what a new program needs before it is tried.
 - **Nightly app corpus** (done): `tools/appcorpus.py` runs ripgrep, fd, jq,
-  7-Zip, MinGit, Python, Node.js and Notepad++ every night and posts a
-  pass/fail table per program.
+  7-Zip, MinGit, Python, Node.js and Notepad++ every night, checks
+  NovaOS's own `dir` and This PC screens, and posts a pass/fail table per
+  program.
 
 ## Reality check
 

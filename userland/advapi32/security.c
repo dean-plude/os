@@ -1,14 +1,13 @@
 /*
  * security.c — advapi32's security API.
  *
- * NovaOS has a single user and does not check access: every program runs
- * as that user, with full access to everything.  The functions here keep
- * programs that ask questions working with truthful answers for that
- * model: tokens name the user (S-1-5-21-…-1001, member of Users and
- * Administrators, not elevated), access checks evaluate the DACL they are
- * given against that token (ntdll's NtAccessCheck), objects are owned by
- * the user and have no DACL (full access), and impersonation changes
- * nothing.
+ * NovaOS has one desktop user, but tokens and object security are real:
+ * the kernel keeps tokens (the user, S-1-5-21-…-1001, member of Users,
+ * with Administrators only for denying since nothing is elevated), a
+ * thread can impersonate another token, restricted tokens can be made,
+ * and named kernel objects keep the security descriptor they were created
+ * with and check it when they are opened.  Files' descriptors are not
+ * kept yet: they read as owned by the user with no DACL (full access).
  */
 
 #define NOVA_BUILD_ADVAPI32
@@ -17,6 +16,15 @@
 
 NTSYSAPI NTSTATUS NTAPI NtAccessCheck(PSECURITY_DESCRIPTOR sd, HANDLE token, ACCESS_MASK want, PGENERIC_MAPPING map,
                                       PPRIVILEGE_SET privs, PULONG privs_len, PACCESS_MASK granted, NTSTATUS *status);
+NTSYSAPI NTSTATUS NTAPI NtOpenProcessToken(HANDLE p, ACCESS_MASK access, PHANDLE token);
+NTSYSAPI NTSTATUS NTAPI NtOpenThreadToken(HANDLE t, ACCESS_MASK access, BOOLEAN self, PHANDLE token);
+NTSYSAPI NTSTATUS NTAPI NtOpenThreadTokenEx(HANDLE t, ACCESS_MASK access, BOOLEAN self, ULONG attrs, PHANDLE token);
+NTSYSAPI NTSTATUS NTAPI NtDuplicateToken(HANDLE t, ACCESS_MASK access, POBJECT_ATTRIBUTES oa, BOOLEAN effective, TOKEN_TYPE type, PHANDLE out);
+NTSYSAPI NTSTATUS NTAPI NtFilterToken(HANDLE t, ULONG flags, PTOKEN_GROUPS disable, PTOKEN_PRIVILEGES del, PTOKEN_GROUPS restrict_sids, PHANDLE out);
+NTSYSAPI NTSTATUS NTAPI NtQueryInformationToken(HANDLE t, ULONG cls, PVOID buf, ULONG n, PULONG ret);
+NTSYSAPI NTSTATUS NTAPI NtImpersonateAnonymousToken(HANDLE thread);
+NTSYSAPI NTSTATUS NTAPI NtQuerySecurityObject(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd, ULONG len, PULONG need);
+NTSYSAPI NTSTATUS NTAPI NtSetSecurityObject(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd);
 void *memcpy(void *d, const void *s, size_t n);
 void *memset(void *d, int c, size_t n);
 
@@ -281,139 +289,156 @@ WINADVAPI BOOL WINAPI LookupAccountNameW(LPCWSTR sys, LPCWSTR name, PSID sid, LP
 }
 
 /* -----------------------------------------------------------------------
- * Tokens: an event handle stands in (so CloseHandle works); what it
- * describes is always the one user
+ * Tokens: kernel objects (NtOpenProcessToken and friends).  A process runs
+ * with the token of the program that started it; a thread can impersonate
+ * another (an impersonation token) and access checks use that.
  * ----------------------------------------------------------------------- */
-static HANDLE new_token(void) { return CreateEventW(0, TRUE, TRUE, 0); }
+static BOOL nt_ok(NTSTATUS s)
+{
+    if (NT_SUCCESS(s)) return TRUE;
+    SetLastError(RtlNtStatusToDosError(s));
+    return FALSE;
+}
 
 WINADVAPI BOOL WINAPI OpenProcessToken(HANDLE p, DWORD access, PHANDLE token)
 {
-    (void)p; (void)access;
-    *token = new_token();
-    return *token != 0;
+    return nt_ok(NtOpenProcessToken(p, access, token));
 }
 
 WINADVAPI BOOL WINAPI OpenThreadToken(HANDLE t, DWORD access, BOOL self, PHANDLE token)
 {
-    (void)t; (void)access; (void)self;
-    *token = 0;
-    SetLastError(1008 /* ERROR_NO_TOKEN: the thread is not impersonating */);
-    return FALSE;
+    return nt_ok(NtOpenThreadToken(t, access, (BOOLEAN)self, token));   /* ERROR_NO_TOKEN: not impersonating */
 }
 
 WINADVAPI BOOL WINAPI OpenThreadTokenEx(HANDLE t, DWORD access, BOOL self, DWORD attr, PHANDLE token)
 {
-    (void)attr;
-    return OpenThreadToken(t, access, self, token);
-}
-
-WINADVAPI BOOL WINAPI DuplicateToken(HANDLE t, SECURITY_IMPERSONATION_LEVEL l, PHANDLE out)
-{
-    (void)t; (void)l;
-    *out = new_token();
-    return *out != 0;
+    return nt_ok(NtOpenThreadTokenEx(t, access, (BOOLEAN)self, attr, token));
 }
 
 WINADVAPI BOOL WINAPI DuplicateTokenEx(HANDLE t, DWORD access, LPSECURITY_ATTRIBUTES sa, SECURITY_IMPERSONATION_LEVEL l, int type, PHANDLE out)
 {
-    (void)access; (void)sa; (void)type;
-    return DuplicateToken(t, l, out);
+    SECURITY_QUALITY_OF_SERVICE qos = { sizeof(qos), l, 0, FALSE };
+    OBJECT_ATTRIBUTES oa;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.Attributes = sa && sa->bInheritHandle ? OBJ_INHERIT : 0;
+    oa.SecurityDescriptor = sa ? sa->lpSecurityDescriptor : 0;
+    oa.SecurityQualityOfService = &qos;
+    return nt_ok(NtDuplicateToken(t, access, &oa, FALSE, (TOKEN_TYPE)type, out));
 }
 
-static BOOL put_info(const void *data, DWORD n, LPVOID buf, DWORD cap, PDWORD ret)
+WINADVAPI BOOL WINAPI DuplicateToken(HANDLE t, SECURITY_IMPERSONATION_LEVEL l, PHANDLE out)
 {
-    if (ret) *ret = n;
-    if (!buf || cap < n) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
-    memcpy(buf, data, n);
-    return TRUE;
-}
-
-/* a SID_AND_ATTRIBUTES-style header followed by the SID(s) it points to */
-static BOOL put_groups(const BYTE *const *sids, int n, LPVOID buf, DWORD cap, PDWORD ret, BOOL with_count)
-{
-    DWORD head = (with_count ? 8 : 0) + 16u * (DWORD)n, need = head;
-    for (int i = 0; i < n; i++) need += GetLengthSid((PSID)sids[i]);
-    if (ret) *ret = need;
-    if (!buf || cap < need) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
-    BYTE *b = buf, *tail = b + head;
-    SID_AND_ATTRIBUTES *sa = (SID_AND_ATTRIBUTES *)(b + (with_count ? 8 : 0));
-    if (with_count) *(DWORD *)b = (DWORD)n;
-    for (int i = 0; i < n; i++) {
-        DWORD l = GetLengthSid((PSID)sids[i]);
-        memcpy(tail, sids[i], l);
-        sa[i].Sid = tail;
-        sa[i].Attributes = with_count ? 7 /* MANDATORY | ENABLED_BY_DEFAULT | ENABLED */ : 0;
-        tail += l;
-    }
-    return TRUE;
+    return DuplicateTokenEx(t, TOKEN_IMPERSONATE | TOKEN_QUERY, 0, l, TokenImpersonation, out);
 }
 
 WINADVAPI BOOL WINAPI GetTokenInformation(HANDLE token, TOKEN_INFORMATION_CLASS c, LPVOID buf, DWORD n, PDWORD ret)
 {
-    (void)token;
-    DWORD v;
-    switch (c) {
-    case TokenUser: case TokenOwner: case TokenPrimaryGroup: {
-        const BYTE *s[1] = { g_user_sid };
-        if (c == TokenPrimaryGroup) s[0] = g_users_sid;
-        if (c == TokenUser) return put_groups(s, 1, buf, n, ret, FALSE);
-        /* TOKEN_OWNER / TOKEN_PRIMARY_GROUP: just a PSID, then the SID */
-        DWORD l = GetLengthSid((PSID)s[0]);
-        if (ret) *ret = 8 + l;
-        if (!buf || n < 8 + l) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
-        memcpy((BYTE *)buf + 8, s[0], l);
-        *(PSID *)buf = (BYTE *)buf + 8;
-        return TRUE;
-    }
-    case TokenGroups: case TokenLogonSid: {
-        const BYTE *g[] = { g_everyone_sid, g_users_sid, g_admins_sid, g_interactive_sid, g_auth_users_sid };
-        return put_groups(g, c == TokenLogonSid ? 1 : 5, buf, n, ret, TRUE);
-    }
-    case TokenIntegrityLevel: {
-        const BYTE *g[] = { g_medium_il_sid };
-        if (!put_groups(g, 1, buf, n, ret, FALSE)) return FALSE;
-        ((SID_AND_ATTRIBUTES *)buf)->Attributes = 0x20;       /* SE_GROUP_INTEGRITY */
-        return TRUE;
-    }
-    case TokenPrivileges: {
-        struct { DWORD n; LUID_AND_ATTRIBUTES p[1]; } tp = { 1, { { { 23, 0 }, 3 } } };   /* SeChangeNotifyPrivilege */
-        return put_info(&tp, sizeof(tp), buf, n, ret);
-    }
-    case TokenElevation:     v = 0; return put_info(&v, 4, buf, n, ret);
-    case TokenElevationType: v = 1; return put_info(&v, 4, buf, n, ret);   /* TokenElevationTypeDefault */
-    case TokenType:          v = 1; return put_info(&v, 4, buf, n, ret);   /* TokenPrimary */
-    case TokenSessionId:     v = 1; return put_info(&v, 4, buf, n, ret);
-    case TokenIsAppContainer: case TokenHasRestrictions: case TokenUIAccess: case TokenVirtualizationAllowed:
-    case TokenVirtualizationEnabled: case TokenSandBoxInert:
-        v = 0; return put_info(&v, 4, buf, n, ret);
-    case TokenImpersonationLevel: v = SecurityImpersonation; return put_info(&v, 4, buf, n, ret);
-    case TokenMandatoryPolicy: v = 1; return put_info(&v, 4, buf, n, ret);  /* NO_WRITE_UP */
-    case TokenStatistics: {
-        BYTE st[56];
-        memset(st, 0, sizeof(st));
-        *(DWORD *)st = 0x1000 + GetCurrentProcessId();                      /* TokenId */
-        *(DWORD *)(st + 8) = 0x3E7 + 1;                                     /* AuthenticationId */
-        *(DWORD *)(st + 24) = 1;                                            /* TokenType: primary */
-        return put_info(st, sizeof(st), buf, n, ret);
-    }
-    case TokenDefaultDacl: {
-        PVOID z = 0;                                                        /* no default DACL */
-        return put_info(&z, sizeof(z), buf, n, ret);
-    }
-    default:
-        SetLastError(ERROR_INVALID_PARAMETER);
-        return FALSE;
-    }
+    ULONG got = 0;
+    NTSTATUS s = NtQueryInformationToken(token, (ULONG)c, buf, n, &got);
+    if (ret) *ret = got;
+    if (s == (NTSTATUS)0xC0000023L) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }   /* BUFFER_TOO_SMALL */
+    return nt_ok(s);
 }
 
 WINADVAPI BOOL WINAPI SetTokenInformation(HANDLE t, TOKEN_INFORMATION_CLASS c, LPVOID buf, DWORD n) { (void)t; (void)c; (void)buf; (void)n; return TRUE; }
 
+/* The thread acts as @token (an impersonation token: a primary one is
+ * copied into one first), or as itself again (0) */
+static BOOL impersonate(HANDLE thread, HANDLE token)
+{
+    HANDLE imp = token;
+    DWORD type = TokenImpersonation, n;
+    if (token && GetTokenInformation(token, TokenType, &type, sizeof(type), &n) && type == TokenPrimary &&
+        !DuplicateTokenEx(token, TOKEN_IMPERSONATE | TOKEN_QUERY, 0, SecurityImpersonation, TokenImpersonation, &imp))
+        return FALSE;
+    BOOL ok = nt_ok(NtSetInformationThread(thread, 5 /* ThreadImpersonationToken */, &imp, sizeof(imp)));
+    if (imp != token) CloseHandle(imp);
+    return ok;
+}
+
+WINADVAPI BOOL WINAPI ImpersonateSelf(SECURITY_IMPERSONATION_LEVEL level)
+{
+    HANDLE p, t;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE, &p)) return FALSE;
+    BOOL ok = DuplicateTokenEx(p, TOKEN_IMPERSONATE | TOKEN_QUERY, 0, level, TokenImpersonation, &t);
+    CloseHandle(p);
+    if (!ok) return FALSE;
+    ok = impersonate(GetCurrentThread(), t);
+    CloseHandle(t);
+    return ok;
+}
+WINADVAPI BOOL WINAPI RevertToSelf(void) { return impersonate(GetCurrentThread(), 0); }
+WINADVAPI BOOL WINAPI ImpersonateLoggedOnUser(HANDLE t) { return impersonate(GetCurrentThread(), t); }
+WINADVAPI BOOL WINAPI ImpersonateAnonymousToken(HANDLE t) { return nt_ok(NtImpersonateAnonymousToken(t)); }
+WINADVAPI BOOL WINAPI SetThreadToken(PHANDLE t, HANDLE token) { return impersonate(t ? *t : GetCurrentThread(), token); }
+
+/* Whether @token (an impersonation token; NULL: the thread's, else the
+ * process's) has @sid enabled: what an ACE naming @sid would grant it */
 WINADVAPI BOOL WINAPI CheckTokenMembership(HANDLE token, PSID sid, PBOOL is_member)
 {
-    (void)token;
-    *is_member = EqualSid(sid, (PSID)g_user_sid) || EqualSid(sid, (PSID)g_users_sid) || EqualSid(sid, (PSID)g_admins_sid) ||
-                 EqualSid(sid, (PSID)g_everyone_sid) || EqualSid(sid, (PSID)g_auth_users_sid) || EqualSid(sid, (PSID)g_interactive_sid);
+    HANDLE t = token, p;
+    if (!sid || !is_member || !IsValidSid(sid)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    *is_member = FALSE;
+    if (!t && !OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &t)) {
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE, &p)) return FALSE;
+        BOOL ok = DuplicateToken(p, SecurityIdentification, &t);
+        CloseHandle(p);
+        if (!ok) return FALSE;
+    }
+    BYTE acl_buf[sizeof(ACL) + 8 + SECURITY_MAX_SID_SIZE];
+    PACL acl = (PACL)acl_buf;
+    SECURITY_DESCRIPTOR sd;
+    InitializeAcl(acl, sizeof(acl_buf), ACL_REVISION);
+    AddAccessAllowedAce(acl, ACL_REVISION, 1, sid);
+    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+    SetSecurityDescriptorDacl(&sd, TRUE, acl, FALSE);
+    SetSecurityDescriptorOwner(&sd, (PSID)g_system_sid, FALSE);
+    SetSecurityDescriptorGroup(&sd, (PSID)g_system_sid, FALSE);
+    GENERIC_MAPPING map = { 1, 1, 1, 1 };
+    struct { PRIVILEGE_SET s; LUID_AND_ATTRIBUTES more[3]; } ps;
+    DWORD psn = sizeof(ps), granted = 0;
+    BOOL status = FALSE;
+    BOOL ok = AccessCheck(&sd, t, 1, &map, &ps.s, &psn, &granted, &status);
+    if (t != token) CloseHandle(t);
+    if (!ok) return FALSE;
+    *is_member = status && granted == 1;
     return TRUE;
+}
+
+/* A copy of @t with SIDs made deny-only, privileges removed and SIDs to
+ * restrict it (an access needs both its groups and the restricting SIDs) */
+WINADVAPI BOOL WINAPI CreateRestrictedToken(HANDLE t, DWORD flags, DWORD ndisable, PSID_AND_ATTRIBUTES disable, DWORD ndelete,
+                                            PLUID_AND_ATTRIBUTES del, DWORD nrestrict, PSID_AND_ATTRIBUTES restricted, PHANDLE out)
+{
+    if (!out || ndisable > 64 || ndelete > 64 || nrestrict > 64) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    DWORD head = __builtin_offsetof(TOKEN_GROUPS, Groups);
+    HANDLE heap = GetProcessHeap();
+    TOKEN_GROUPS *d = 0, *r = 0;
+    TOKEN_PRIVILEGES *p = 0;
+    if (ndisable) d = HeapAlloc(heap, 0, head + ndisable * sizeof(SID_AND_ATTRIBUTES));
+    if (nrestrict) r = HeapAlloc(heap, 0, head + nrestrict * sizeof(SID_AND_ATTRIBUTES));
+    if (ndelete) p = HeapAlloc(heap, 0, __builtin_offsetof(TOKEN_PRIVILEGES, Privileges) + ndelete * sizeof(LUID_AND_ATTRIBUTES));
+    BOOL ok = (!ndisable || d) && (!nrestrict || r) && (!ndelete || p);
+    if (!ok) SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+    else {
+        if (d) { d->GroupCount = ndisable; memcpy(d->Groups, disable, ndisable * sizeof(SID_AND_ATTRIBUTES)); }
+        if (r) { r->GroupCount = nrestrict; memcpy(r->Groups, restricted, nrestrict * sizeof(SID_AND_ATTRIBUTES)); }
+        if (p) { p->PrivilegeCount = ndelete; memcpy(p->Privileges, del, ndelete * sizeof(LUID_AND_ATTRIBUTES)); }
+        ok = nt_ok(NtFilterToken(t, flags, d, p, r, out));
+    }
+    HeapFree(heap, 0, d);
+    HeapFree(heap, 0, r);
+    HeapFree(heap, 0, p);
+    return ok;
+}
+
+WINADVAPI BOOL WINAPI IsTokenRestricted(HANDLE t)
+{
+    DWORD v = 0, n;
+    if (!GetTokenInformation(t, TokenHasRestrictions, &v, sizeof(v), &n)) return FALSE;
+    SetLastError(ERROR_SUCCESS);
+    return v != 0;
 }
 
 static const char *const g_privs[] = {
@@ -476,11 +501,6 @@ WINADVAPI BOOL WINAPI AdjustTokenPrivileges(HANDLE token, BOOL disable_all, PTOK
 }
 
 WINADVAPI BOOL WINAPI PrivilegeCheck(HANDLE token, PPRIVILEGE_SET ps, LPBOOL result) { (void)token; (void)ps; *result = TRUE; return TRUE; }
-WINADVAPI BOOL WINAPI ImpersonateSelf(SECURITY_IMPERSONATION_LEVEL level) { (void)level; return TRUE; }
-WINADVAPI BOOL WINAPI RevertToSelf(void) { return TRUE; }
-WINADVAPI BOOL WINAPI ImpersonateLoggedOnUser(HANDLE t) { (void)t; return TRUE; }
-WINADVAPI BOOL WINAPI ImpersonateAnonymousToken(HANDLE t) { (void)t; return TRUE; }
-WINADVAPI BOOL WINAPI SetThreadToken(PHANDLE t, HANDLE token) { (void)t; (void)token; return TRUE; }
 
 WINADVAPI BOOL WINAPI LogonUserW(LPCWSTR user, LPCWSTR domain, LPCWSTR pass, DWORD type, DWORD prov, PHANDLE token)
 {
@@ -786,11 +806,45 @@ WINADVAPI DWORD WINAPI GetNamedSecurityInfoA(LPCSTR name, SE_OBJECT_TYPE t, SECU
     return security_info(si, owner, group, dacl, sacl, sd);
 }
 
+/* A kernel object's descriptor (self-relative, LocalAlloc'd) */
+static DWORD object_sd(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR *out)
+{
+    ULONG need = 0;
+    NTSTATUS st = NtQuerySecurityObject(h, si, 0, 0, &need);
+    for (int tries = 0; tries < 4 && st == (NTSTATUS)0xC0000023L; tries++) {   /* BUFFER_TOO_SMALL */
+        BYTE *b = LocalAlloc(LMEM_ZEROINIT, need);
+        if (!b) return ERROR_NOT_ENOUGH_MEMORY;
+        st = NtQuerySecurityObject(h, si, b, need, &need);
+        if (NT_SUCCESS(st)) { *out = b; return ERROR_SUCCESS; }
+        LocalFree(b);
+    }
+    return NT_SUCCESS(st) ? 1338 /* ERROR_INVALID_SECURITY_DESCR */ : RtlNtStatusToDosError(st);
+}
+
 WINADVAPI DWORD WINAPI GetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
                                        PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
 {
-    (void)h; (void)t;
-    return security_info(si, owner, group, dacl, sacl, sd);
+    (void)t;
+    PSECURITY_DESCRIPTOR d;
+    DWORD e = object_sd(h, si, &d);
+    if (e) return e;
+    if (owner) *owner = sd_part(d, 0);
+    if (group) *group = sd_part(d, 1);
+    if (dacl) *dacl = sd_part(d, 3);
+    if (sacl) *sacl = 0;
+    if (sd) *sd = d;
+    else LocalFree(d);                      /* only the pointers were wanted: MSDN requires @sd with them */
+    return ERROR_SUCCESS;
+}
+
+WINADVAPI BOOL WINAPI GetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd, DWORD n, LPDWORD need)
+{
+    ULONG got = 0;
+    NTSTATUS st = NtQuerySecurityObject(h, si, sd, n, &got);
+    if (need) *need = got;
+    if (st == (NTSTATUS)0xC0000023L) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    if (!NT_SUCCESS(st)) { SetLastError(RtlNtStatusToDosError(st)); return FALSE; }
+    return TRUE;
 }
 
 WINADVAPI DWORD WINAPI SetNamedSecurityInfoW(LPWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
@@ -801,8 +855,14 @@ WINADVAPI DWORD WINAPI SetNamedSecurityInfoW(LPWSTR name, SE_OBJECT_TYPE t, SECU
 
 WINADVAPI DWORD WINAPI SetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
 {
-    (void)h; (void)t; (void)si; (void)o; (void)g; (void)d; (void)s;
-    return ERROR_SUCCESS;
+    (void)t; (void)s;                       /* (SACLs are not kept) */
+    SECURITY_DESCRIPTOR sd;
+    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+    if (si & OWNER_SECURITY_INFORMATION) sd.Owner = o;
+    if (si & GROUP_SECURITY_INFORMATION) sd.Group = g;
+    if (si & DACL_SECURITY_INFORMATION) SetSecurityDescriptorDacl(&sd, TRUE, d, FALSE);
+    NTSTATUS st = NtSetSecurityObject(h, si & 7, &sd);
+    return NT_SUCCESS(st) ? ERROR_SUCCESS : RtlNtStatusToDosError(st);
 }
 
 WINADVAPI BOOL WINAPI GetFileSecurityW(LPCWSTR name, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd, DWORD n, LPDWORD need)
@@ -1053,6 +1113,7 @@ WINADVAPI BOOL WINAPI LookupAccountNameA(LPCSTR sys, LPCSTR name, PSID sid, LPDW
 }
 WINADVAPI BOOL WINAPI SetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd)
 {
-    (void)si; (void)sd;
-    return h != 0;
+    NTSTATUS st = NtSetSecurityObject(h, si, sd);
+    if (!NT_SUCCESS(st)) { SetLastError(RtlNtStatusToDosError(st)); return FALSE; }
+    return TRUE;
 }
