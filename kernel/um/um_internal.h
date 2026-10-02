@@ -70,8 +70,8 @@ void um_unlock(UmLock *l);
  * take it shared too) or many readers, who must not take it twice. */
 typedef struct {
     UmLock       w;
-    struct { volatile int n; char pad[60]; } readers[16];   /* by CPU (MAX_CPUS): no shared line to bounce */
-} UmRwLock;
+    struct { volatile int n; } __attribute__((aligned(64))) readers[16];   /* by CPU (MAX_CPUS): each on a line of its own */
+} __attribute__((aligned(64))) UmRwLock;
 void um_lock_shared(UmRwLock *l);
 void um_unlock_shared(UmRwLock *l);
 void um_lock_excl(UmRwLock *l);
@@ -197,11 +197,12 @@ struct UmProcess {
     RamNode    *cwd;
     RamNode    *exe_dir;        /* searched for DLLs before System32 */
     UmConsole  *con;
-    UmLock      lock;           /* handles, regions, modules, threads */
+    UmRwLock    lock;           /* handles, regions, modules, threads */
     UmLock      ldr_lock;       /* one runtime DLL load at a time (taken before the desktop lock) */
     UINT64      image_base, image_entry;   /* the program's, between um_spawn_image and _finish */
 
     UmHandle    handles[UM_MAX_HANDLES];
+    volatile UINT8 hbusy[UM_MAX_HANDLES];   /* a slot's own lock, for object handles (see um_syscall.c) */
     UmRegion   *regions;        /* [UM_MAX_REGIONS], allocated with the process */
     int         nregions;
     UmModule    modules[UM_MAX_MODULES];

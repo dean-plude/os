@@ -923,7 +923,7 @@ static bool il_only(const UINT8 *f, UINT32 fsz, const UINT8 *sec, int nsec, UINT
 static RamNode *loader_file(Loader *L, RamNode *file, const char *name, char *path, int cap, RamNode **dir)
 {
     UmProcess *p = L->p;
-    if (L->plock) um_unlock(&p->lock);
+    if (L->plock) um_unlock_excl(&p->lock);
     bkl_restore(L->bkl);                    /* the file system still wants it */
     DesktopLock();
     if (!file) file = find_dll(p, name, L->dep_dir);
@@ -936,7 +936,7 @@ static RamNode *loader_file(Loader *L, RamNode *file, const char *name, char *pa
     } else file = NULL;
     DesktopUnlock();
     if (L->bkl) bkl_drop();
-    if (L->plock) um_lock(&p->lock);
+    if (L->plock) um_lock_excl(&p->lock);
     return file;
 }
 
@@ -1202,7 +1202,7 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags)
     L->data = (flags & 0x62) != 0;          /* LOAD_LIBRARY_AS_DATAFILE(_EXCLUSIVE), AS_IMAGE_RESOURCE */
     L->plock = true;                        /* (not the desktop lock: see loader_file) */
     um_lock(&p->ldr_lock);
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     int nmod = p->nmodules, ninit = p->ninit;
     L->bkl = bkl_drop();                    /* copying a large image needs no big lock */
     int m = load_module(L, NULL, name, 1);
@@ -1218,7 +1218,7 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags)
         *base = p->modules[m].base;
         if (!write_ldr_info(p, ninit) || !write_stubs(p)) st = 0xC0000017u;
     }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     L->keep = !st;
     loader_free(L);
     um_unlock(&p->ldr_lock);
@@ -1554,11 +1554,11 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
     t->suspend = suspended ? 1 : 0;
     t->stack_size = stack_size;
 
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     int slot = -1;
     for (int i = 0; i < UM_MAX_THREADS; i++) if (!p->threads[i]) { slot = i; break; }
     if (slot < 0 || p->kill_pending) {
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         kfree(t); kernel_free_pages(fpu, 1);
         *status = slot < 0 ? 0xC0000059u /* TOO_MANY_THREADS */ : 0xC000010Au /* PROCESS_IS_TERMINATING */;
         return NULL;
@@ -1608,7 +1608,7 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
         }
     }
     if (!ok) {
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         kfree(t); kernel_free_pages(fpu, 1);
         return NULL;
     }
@@ -1633,11 +1633,11 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
         um_decommit(p, t->teb, UM_TEB_SIZE);
         um_decommit(p, t->stack_lo, stack_size);
         um_region_remove(p, um_region_find(p, t->stack_lo));
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         kfree(t); kernel_free_pages(fpu, 1);
         return NULL;
     }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     *status = 0;
     return t;
 }
@@ -1855,7 +1855,7 @@ void um_exit_thread(UINT32 status)
     um_abandon_mutants(p, t);
 
     /* The user stack and TEB go now; the kernel side once off the CPU */
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmRegion *r = um_region_find(p, t->stack_lo);
     if (r && r->base == t->stack_lo) {
         um_decommit(p, r->base, r->size);
@@ -1875,7 +1875,7 @@ void um_exit_thread(UINT32 status)
     bool last = p->exited && t->exit_code == status && p->live_threads == 0;
     UINT32 code = p->exit_status;
     ob_unlock(s);
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     um_thread_drop_token(t);
     if (last) kprintf("[UM] %s (PID %u) exited with code %u (0x%x)\n", p->name, p->pid, code, code);
     sched_exit_current();
@@ -2243,9 +2243,9 @@ void UmPoll(void)
     for (int i = 0; i < UM_MAX_PROCS; i++) {
         UmProcess *p = g_procs[i];
         if (!p) continue;
-        um_lock(&p->lock);
+        um_lock_excl(&p->lock);
         int left = reap_threads(p);
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         if (!p->exited || left) continue;
         if (!p->reclaimed) {
             um_gui_process_gone(p);

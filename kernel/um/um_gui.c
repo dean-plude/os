@@ -415,11 +415,11 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
      * screen so resizing never moves it (pages are backed when touched) */
     UINT64 va = GUI_BITMAP_VA + (UINT64)slot * GUI_BITMAP_STRIDE;
     UINT64 size = ((UINT64)maxw * maxh * 4 + 0xFFF) & ~0xFFFULL;
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     if (p->wow) va = um_find_free(p, size, p->lay.alloc_min, p->lay.alloc_max);   /* below 2 GiB */
     bool ok = va && um_is_free(p, va, size) && um_region_add(p, va, size, 0x04, false) &&
               um_commit(p, va, size, 0x04);
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (!ok) { s = spin_lock_irqsave(&g_gui_lock); g->used = false; spin_unlock_irqrestore(&g_gui_lock, s); return 0; }
 
     char title[128];
@@ -472,7 +472,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     DesktopUnlock();
     if (!w) {
-        um_lock(&p->lock); um_decommit(p, va, size); um_region_remove(p, um_region_find(p, va)); um_unlock(&p->lock);
+        um_lock_excl(&p->lock); um_decommit(p, va, size); um_region_remove(p, um_region_find(p, va)); um_unlock_excl(&p->lock);
         s = spin_lock_irqsave(&g_gui_lock); g->used = false; spin_unlock_irqrestore(&g_gui_lock, s);
         return 0;
     }
@@ -586,10 +586,10 @@ static void destroy_window(GuiWin *g)
         g->wnd = NULL;
     }
     if (p && !p->exited) {
-        um_lock(&p->lock);
+        um_lock_excl(&p->lock);
         UmRegion *r = um_region_find(p, va);
         if (r) { um_decommit(p, r->base, r->size); um_region_remove(p, r); }
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
     }
     IrqState s = spin_lock_irqsave(&g_gui_lock);
     void *drop = g->drop;

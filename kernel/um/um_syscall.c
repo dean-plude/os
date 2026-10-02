@@ -254,6 +254,26 @@ static UmHandle *handle(UmProcess *p, UINT64 h)
     return &p->handles[i];
 }
 
+/* Handles of objects come and go side by side: under the process lock
+ * shared, each slot under its own lock (hbusy) while it is looked at or
+ * changed.  Whatever else changes or walks the handles takes the process
+ * lock exclusively, which keeps all of these out. */
+static int slot_lock(UmProcess *p, UINT64 hv)
+{
+    if (hv < 4 || (hv & 3) || hv / 4 - 1 >= UM_MAX_HANDLES) return -1;
+    int i = (int)(hv / 4 - 1);
+    for (int spins = 0; __atomic_exchange_n(&p->hbusy[i], 1, __ATOMIC_ACQUIRE); )
+        while (__atomic_load_n(&p->hbusy[i], __ATOMIC_RELAXED))
+            if (++spins < 2000) pause_cpu();
+            else { sched_yield(); spins = 0; }      /* (its holder was switched out) */
+    return i;
+}
+
+static void slot_unlock(UmProcess *p, int i)
+{
+    __atomic_store_n(&p->hbusy[i], 0, __ATOMIC_RELEASE);
+}
+
 /* Reserve a free slot (kind set by the caller before unlocking). */
 static UINT64 handle_alloc(UmProcess *p, UmHandle **out)
 {
@@ -269,19 +289,19 @@ static UINT64 handle_alloc(UmProcess *p, UmHandle **out)
 
 int um_handle_kind(UmProcess *p, UINT64 h)
 {
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmHandle *hd = handle(p, h);
     int r = hd ? (int)hd->kind : -1;
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     return r;
 }
 
 void um_handle_set_inherit(UmProcess *p, UINT64 h, bool inherit)
 {
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmHandle *hd = handle(p, h);
     if (hd) hd->inherit = inherit;
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
 }
 
 RamNode *um_handle_file(UmProcess *p, UINT64 h)
@@ -351,14 +371,22 @@ void um_close_all_handles(UmProcess *p)
 
 UINT64 um_handle_new_object(UmProcess *p, UmObject *o)
 {
-    UmHandle *h;
-    um_lock(&p->lock);
-    UINT64 hv = handle_alloc(p, &h);
-    if (hv) {
-        h->kind = H_OBJECT;
-        h->obj = um_ob_ref(o);
+    UINT64 hv = 0;
+    um_lock_shared(&p->lock);
+    for (int i = 0; i < UM_MAX_HANDLES && !hv; i++) {
+        if (__atomic_load_n(&p->handles[i].kind, __ATOMIC_RELAXED) != H_FREE) continue;
+        UINT64 v = (UINT64)(i + 1) * 4;
+        slot_lock(p, v);
+        UmHandle *h = &p->handles[i];
+        if (h->kind == H_FREE) {
+            memset(h, 0, sizeof(*h));
+            h->obj = um_ob_ref(o);
+            h->kind = H_OBJECT;
+            hv = v;
+        }
+        slot_unlock(p, i);
     }
-    um_unlock(&p->lock);
+    um_unlock_shared(&p->lock);
     return hv;
 }
 
@@ -371,11 +399,13 @@ UmObject *um_handle_object(UmProcess *p, UINT64 hv, UmObType type)
         o = &UmCurrentThread()->ob;
         return (!type || type == UO_THREAD) ? um_ob_ref(o) : NULL;
     }
-    um_lock(&p->lock);
-    UmHandle *h = handle(p, hv);
+    um_lock_shared(&p->lock);
+    int i = slot_lock(p, hv);
+    UmHandle *h = i < 0 ? NULL : handle(p, hv);
     if (h && h->kind == H_OBJECT && (!type || h->obj->type == type)) o = um_ob_ref(h->obj);
     else if (h && h->kind == H_CON_IN && (!type || type == UO_CONSOLE)) o = um_console_object(p->con);
-    um_unlock(&p->lock);
+    if (i >= 0) slot_unlock(p, i);
+    um_unlock_shared(&p->lock);
     return o;
 }
 
@@ -546,10 +576,10 @@ static UINT32 open_other(UmProcess *p, const char *path, UINT32 access, UINT32 o
     UmHandleKind ck;
     UmHandle *h;
     if (um_pipe_name(path) && !*um_pipe_name(path)) {           /* the pipe file system's root */
-        um_lock(&p->lock);
+        um_lock_excl(&p->lock);
         UINT64 hv = handle_alloc(p, &h);
         if (hv) { h->kind = H_NULL; h->npfs = true; h->inherit = inherit; }
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         if (!hv) return iosb(iosb_ptr, ST_TOO_MANY_OPENED_FILES, 0);
         if (!put_u64(handle_ptr, hv)) { um_close_handle(hv); return UM_STATUS_ACCESS_VIOLATION; }
         return iosb(iosb_ptr, ST_SUCCESS, 1);
@@ -559,19 +589,19 @@ static UINT32 open_other(UmProcess *p, const char *path, UINT32 access, UINT32 o
         bool rd, wr;
         UINT32 pst = um_pipe_open(path, access, options, &o, &rd, &wr);
         if (pst) return iosb(iosb_ptr, pst, 0);
-        um_lock(&p->lock);
+        um_lock_excl(&p->lock);
         UINT64 hv = handle_alloc(p, &h);
         if (hv) { h->kind = H_OBJECT; h->obj = o; h->read = rd; h->write = wr; h->inherit = inherit; }
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         if (!hv) { um_ob_unref(o); return iosb(iosb_ptr, ST_TOO_MANY_OPENED_FILES, 0); }
         if (!put_u64(handle_ptr, hv)) { um_close_handle(hv); return UM_STATUS_ACCESS_VIOLATION; }
         return iosb(iosb_ptr, ST_SUCCESS, 1);
     }
     is_console_name(path, &ck);                                 /* the console's input or output */
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UINT64 hv = handle_alloc(p, &h);
     if (hv) { h->kind = ck; h->inherit = inherit; }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (!hv) return iosb(iosb_ptr, ST_TOO_MANY_OPENED_FILES, 0);
     if (!put_u64(handle_ptr, hv)) { h->kind = H_FREE; return UM_STATUS_ACCESS_VIOLATION; }
     return iosb(iosb_ptr, ST_SUCCESS, 1);
@@ -586,7 +616,7 @@ static UINT64 file_handle(UmProcess *p, RamNode *node, UINT32 access, UINT32 opt
     bool append = (access & FILE_APPEND_DATA) && !(access & (FILE_WRITE_DATA | GENERIC_WRITE | GENERIC_ALL));
     UmFilePos *fp = node->dir ? NULL : um_fpos_new();           /* (none: a position of its own) */
     UmHandle *h;
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UINT64 hv = handle_alloc(p, &h);
     if (hv) {
         h->kind = node->dir ? H_DIR : H_FILE;
@@ -600,7 +630,7 @@ static UINT64 file_handle(UmProcess *p, RamNode *node, UINT32 access, UINT32 opt
         h->fp = fp;
         RamfsRef(node);
     }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (!hv) um_fpos_unref(fp);
     *out = h;
     return hv;
@@ -720,7 +750,7 @@ static UINT64 sys_compare_objects(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     (void)a3; (void)a4;
     if (a1 == a2) return ST_SUCCESS;
     UmProcess *p = UmCurrent();
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmHandle *x = handle(p, a1), *y = handle(p, a2);
     UINT64 r;
     if (!x || !y) r = ST_INVALID_HANDLE;
@@ -728,7 +758,7 @@ static UINT64 sys_compare_objects(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     else if (x->kind == H_OBJECT) r = x->obj == y->obj ? ST_SUCCESS : UM_STATUS_NOT_SAME_OBJECT;
     else if (x->kind == H_FILE || x->kind == H_DIR) r = x->node == y->node ? ST_SUCCESS : UM_STATUS_NOT_SAME_OBJECT;
     else r = ST_SUCCESS;                        /* the console's input or output, NUL */
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     return r;
 }
 
@@ -739,20 +769,20 @@ static UINT64 sys_compare_objects(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 static bool close_shared(UmProcess *p, UINT64 hv)
 {
     FsLockShared();
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmHandle *h = handle(p, hv);
     RamNode *n = h && (h->kind == H_FILE || h->kind == H_DIR) && !h->delete_on_close &&
                  !(h->node->xflags & RAMFS_X_EXTERN) ? h->node : NULL;
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (!n) { FsUnlockShared(); return false; }
     UmLock *nl = node_lock(n);
     um_lock(nl);                                    /* lock order: file, then process */
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     h = handle(p, hv);
     bool ok = h && h->node == n && (h->kind == H_FILE || h->kind == H_DIR) && !h->delete_on_close;
     UmFilePos *fp = NULL;
     if (ok) { fp = h->fp; h->fp = NULL; h->kind = H_FREE; }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (ok) RamfsUnref(n);
     um_unlock(nl);
     FsUnlockShared();
@@ -767,20 +797,27 @@ UINT64 um_close_handle(UINT64 a1)
     /* An object's handle goes under the process lock, the object itself
      * (its destructor may take other locks) after it */
     UmObject *o = NULL;
-    um_lock(&p->lock);
-    UmHandle *h = handle(p, a1);
+    um_lock_shared(&p->lock);
+    int i = slot_lock(p, a1);
+    UmHandle *h = i < 0 ? NULL : handle(p, a1);
+    if (h && h->kind == H_OBJECT) { o = h->obj; h->obj = NULL; h->kind = H_FREE; }
+    if (i >= 0) slot_unlock(p, i);
+    um_unlock_shared(&p->lock);
+    if (o) { um_ob_unref(o); return ST_SUCCESS; }
+    um_lock_excl(&p->lock);
+    h = handle(p, a1);
     bool file = h && (h->kind == H_FILE || h->kind == H_DIR);
     if (h && h->kind == H_OBJECT) { o = h->obj; h->obj = NULL; h->kind = H_FREE; }
     else if (h && !file) handle_close(h);
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (file && close_shared(p, a1)) return ST_SUCCESS;
     if (file) {                                     /* lock order: files, then process */
         FsLock();
-        um_lock(&p->lock);
+        um_lock_excl(&p->lock);
         h = handle(p, a1);                          /* (closed meanwhile by another thread?) */
         file = h && (h->kind == H_FILE || h->kind == H_DIR);
         if (file) handle_close(h);
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         FsUnlock();
         if (!file) return ST_INVALID_HANDLE;
     }
@@ -1540,9 +1577,9 @@ static UINT64 sys_alloc_vm_ex(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UINT64 r;
     if (!um_addr_requirements(um_stack_arg(6), (UINT32)um_stack_arg(7), &lo, &hi, &align)) r = UM_STATUS_ACCESS_VIOLATION;
     else {
-        um_lock(&p->lock);
+        um_lock_excl(&p->lock);
         r = alloc_vm(p, a2, a3, (UINT32)a4, (UINT32)um_stack_arg(5), lo, hi, align);
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
     }
     if (ob) um_ob_unref(ob);
     return r;
@@ -1688,9 +1725,9 @@ static UINT64 on_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4,
     UmObject *ob;
     UmProcess *p = um_proc_of(UmCurrent(), a1, &ob);
     if (!p) return ST_INVALID_HANDLE;
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UINT64 r = fn(p, a2, a3, a4);
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (ob) um_ob_unref(ob);
     return r;
 }
@@ -1719,14 +1756,14 @@ static UINT64 copy_vm(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4, bool write)
         void *u = (void *)(uintptr_t)(a3 + done);
         if (write) {
             if (!NT_SUCCESS(CopyFromUser(k, u, n))) { st = UM_STATUS_ACCESS_VIOLATION; break; }
-            um_lock(&p->lock);
+            um_lock_excl(&p->lock);
             bool ok = um_region_find(p, a2 + done) && um_write(p, a2 + done, k, n);
-            um_unlock(&p->lock);
+            um_unlock_excl(&p->lock);
             if (!ok) { st = ST_PARTIAL_COPY; break; }
         } else {
-            um_lock(&p->lock);
+            um_lock_excl(&p->lock);
             bool ok = um_region_find(p, a2 + done) && um_read(p, a2 + done, k, n);
-            um_unlock(&p->lock);
+            um_unlock_excl(&p->lock);
             if (!ok) { st = ST_PARTIAL_COPY; break; }
             if (!NT_SUCCESS(CopyToUser(u, k, n))) { st = UM_STATUS_ACCESS_VIOLATION; break; }
         }
@@ -1846,7 +1883,7 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
             st = strstr(err, "not found") ? 0xC0000135u : strstr(err, "memory") ? ST_NO_MEMORY : 0xC000007Bu;
         }
     }
-    um_lock(&p->lock);                              /* the handles stay put while they are copied */
+    um_lock_excl(&p->lock);                              /* the handles stay put while they are copied */
     UmSpawnOpts opts;
     UmHandle std[3];
     memset(&opts, 0, sizeof(opts));
@@ -1873,7 +1910,7 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
             st = strstr(err, "memory") ? ST_NO_MEMORY : 0xC000007Bu;
         }
     }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (pinned) { RamfsUnpin(exe); RamfsUnref(cwd); }
     if (con_wnd && st) TerminalConsoleAdopt(con_wnd, NULL);   /* not started: close the window */
     DesktopUnlock();
@@ -2132,10 +2169,10 @@ static UINT64 sys_create_named_pipe(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
                         &o, &rd, &wr);
     if (st) return iosb(a4, st, 0);
     UmHandle *h;
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UINT64 hv = handle_alloc(p, &h);
     if (hv) { h->kind = H_OBJECT; h->obj = o; h->read = rd; h->write = wr; h->inherit = attrs & 0x2; }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (!hv) { um_ob_unref(o); return iosb(a4, ST_TOO_MANY_OPENED_FILES, 0); }
     if (!put_u64(a1, hv)) { um_close_handle(hv); return UM_STATUS_ACCESS_VIOLATION; }
     return iosb(a4, ST_SUCCESS, 2);                             /* FILE_CREATED */
@@ -2184,9 +2221,9 @@ static UINT64 sys_cancel_io_ex(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 
 bool um_handle_object_exists(UmProcess *p, UINT64 hv)
 {
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     bool ok = handle(p, hv) != NULL;
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     return ok;
 }
 
@@ -2228,10 +2265,10 @@ static UINT64 sys_set_info_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a2 != 4) return ST_INVALID_INFO_CLASS;
     if (a4 < 2) return ST_INFO_LENGTH_MISMATCH;
     if (!NT_SUCCESS(CopyFromUser(v, (const void *)(uintptr_t)a3, 2))) return UM_STATUS_ACCESS_VIOLATION;
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmHandle *h = handle(p, a1);
     if (h) h->inherit = v[0] != 0;
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     return h ? ST_SUCCESS : ST_INVALID_HANDLE;
 }
 
@@ -2250,7 +2287,7 @@ static UINT64 sys_query_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     bool inherit = false;
     name[0] = 0;
     DesktopLock();
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmHandle *h = handle(p, a1);
     UmObject *o = NULL;
     if (h) {
@@ -2268,7 +2305,7 @@ static UINT64 sys_query_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             o = um_ob_ref(h->obj);
         }
     }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     DesktopUnlock();
     if (!h) return ST_INVALID_HANDLE;
     if (o) {
@@ -2372,10 +2409,10 @@ static UINT64 sys_nova_console(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (res_ptr && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)res_ptr, &res, 4))) return UM_STATUS_ACCESS_VIOLATION;
         return ST_SUCCESS;
     }
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmHandle *h = handle(p, a1);
     UmHandleKind kind = h ? h->kind : H_FREE;
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (kind != H_CON_IN && kind != H_CON_OUT) return ST_INVALID_HANDLE;
     UmConsole *c = p->con;
     bool in = kind == H_CON_IN;
@@ -2537,11 +2574,11 @@ static UINT64 sys_watch_dir(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     unwatch(NULL);                                          /* forgotten watches */
     if (a4) { unwatch(ev); um_ob_unref(ev); return ST_SUCCESS; }
     DesktopLock();                                          /* lock order: desktop, then process */
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmHandle *hd = handle(p, a1);
     RamNode *dir = hd && (hd->kind == H_DIR || (hd->kind == H_FILE && hd->node && hd->node->dir)) ? hd->node : NULL;
     if (dir) RamfsRef(dir);
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     DesktopUnlock();
     if (!dir) { um_ob_unref(ev); return ST_INVALID_HANDLE; }
     IrqState s = spin_lock_irqsave(&g_watch_lock);

@@ -189,6 +189,14 @@ static RegValue *find_value(RegKey *k, const UINT16 *name, UINT32 n)
 
 static bool set_value(RegKey *k, const UINT16 *name, UINT32 n, UINT32 type, const void *data, UINT32 len)
 {
+    RegValue *same = find_value(k, name, n);
+    if (same && same->len == len && len) {                  /* the same size: in place */
+        memcpy(same->data, data, len);
+        same->type = type;
+        touch(k);
+        notify(k, CHANGE_LAST_SET);
+        return true;
+    }
     UINT8 *copy = len ? kmalloc(len) : NULL;
     if (len && !copy) return false;
     if (len) memcpy(copy, data, len);
@@ -759,9 +767,9 @@ static UINT64 sys_set_value_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (size > DATA_MAX) return ST_INVALID_PARAMETER;
     UINT16 small[SMALL_NAME + 1], *name = name_buf(a2, small);
     if (!name) return ST_NO_MEMORY;
-    UINT8 *data = size ? kmalloc(size) : NULL;
-    if (size && !data) { name_done(name, small); return ST_NO_MEMORY; }
-    if (size && !NT_SUCCESS(CopyFromUser(data, (const void *)(uintptr_t)data_ptr, size))) { kfree(data); name_done(name, small); return UM_STATUS_ACCESS_VIOLATION; }
+    UINT8 sdata[64], *data = size <= sizeof(sdata) ? sdata : kmalloc(size);   /* (small: on the stack) */
+    if (!data) { name_done(name, small); return ST_NO_MEMORY; }
+    if (size && !NT_SUCCESS(CopyFromUser(data, (const void *)(uintptr_t)data_ptr, size))) { if (data != sdata) kfree(data); name_done(name, small); return UM_STATUS_ACCESS_VIOLATION; }
     UmObject *o;
     UINT32 n, st = get_ustr(a2, name, name_cap(name, small), &n);
     RegKey *k = st ? NULL : key_of(a1, &o);
@@ -771,7 +779,7 @@ static UINT64 sys_set_value_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (k) um_unlock(key_lock(k));
     um_unlock_shared(&g_reg);
     if (k) um_ob_unref(o);
-    kfree(data);
+    if (data != sdata) kfree(data);
     name_done(name, small);
     return st;
 }
@@ -780,11 +788,12 @@ static UINT64 sys_set_value_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 static UINT32 value_info(RegValue *v, UINT32 cls, UINT64 out, UINT32 cap, UINT64 ret_ptr)
 {
     UINT32 need, fixed;
-    UINT8 *b;
+    UINT8 small[256], *b;                   /* (larger: from the heap) */
+#define INFO_BUF(n) ((n) <= sizeof(small) ? small : kmalloc(n))
     switch (cls) {
     case 0:
         fixed = 12; need = fixed + 2 * v->nlen;
-        b = kmalloc(need);
+        b = INFO_BUF(need);
         if (!b) return ST_NO_MEMORY;
         memset(b, 0, 4); memcpy(b + 4, &v->type, 4);
         { UINT32 nl = 2 * v->nlen; memcpy(b + 8, &nl, 4); }
@@ -794,8 +803,9 @@ static UINT32 value_info(RegValue *v, UINT32 cls, UINT64 out, UINT32 cap, UINT64
         fixed = 20;
         UINT32 doff = (fixed + 2 * v->nlen + 7) & ~7u;
         need = doff + v->len;
-        b = kzalloc(need);
+        b = INFO_BUF(need);
         if (!b) return ST_NO_MEMORY;
+        memset(b, 0, need);
         UINT32 nl = 2 * v->nlen;
         memcpy(b + 4, &v->type, 4); memcpy(b + 8, &doff, 4); memcpy(b + 12, &v->len, 4); memcpy(b + 16, &nl, 4);
         memcpy(b + 20, v->name, nl);
@@ -804,7 +814,7 @@ static UINT32 value_info(RegValue *v, UINT32 cls, UINT64 out, UINT32 cap, UINT64
     }
     case 2:
         fixed = 12; need = fixed + v->len;
-        b = kmalloc(need);
+        b = INFO_BUF(need);
         if (!b) return ST_NO_MEMORY;
         memset(b, 0, 4); memcpy(b + 4, &v->type, 4); memcpy(b + 8, &v->len, 4);
         if (v->len) memcpy(b + 12, v->data, v->len);
@@ -812,8 +822,9 @@ static UINT32 value_info(RegValue *v, UINT32 cls, UINT64 out, UINT32 cap, UINT64
     default:
         return ST_INVALID_INFO_CLASS;
     }
+#undef INFO_BUF
     UINT32 st = give(out, cap, b, need, fixed, ret_ptr);
-    kfree(b);
+    if (b != small) kfree(b);
     return st;
 }
 

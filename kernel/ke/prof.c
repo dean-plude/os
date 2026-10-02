@@ -63,7 +63,7 @@ void ProfSample(UINT64 rip, UINT64 rbp, bool user, bool lock_wait, bool idle)
             rbp = ((const UINT64 *)(uintptr_t)rbp)[0];
         }
     }
-    if (user) rip = P_USER;
+    if (user) { caller = rip; rip = P_USER; }       /* (the program's address, in caller) */
     else if (lock_wait) rip = P_LOCKWAIT;
     else if (idle) rip = P_IDLE;
     else if (rbp >= UINT64_C(0xFFFF800000000000) && !(rbp & 7))
@@ -73,6 +73,15 @@ void ProfSample(UINT64 rip, UINT64 rbp, bool user, bool lock_wait, bool idle)
 }
 
 typedef struct { const char *a, *b; UINT32 n; } Row;
+typedef struct { UINT64 a; UINT32 n; } Addr;
+
+static int add_addr(Addr *rows, int n, int cap, UINT64 a)
+{
+    for (int i = 0; i < n; i++) if (rows[i].a == a) { rows[i].n++; return n; }
+    if (n == cap) return n;
+    rows[n].a = a; rows[n].n = 1;
+    return n + 1;
+}
 
 static int add_row(Row *rows, int n, int cap, const char *a, const char *b)
 {
@@ -105,10 +114,16 @@ void ProfReport(void (*out)(void *ctx, const char *line), void *ctx)
     char line[160];
     if (!n) { out(ctx, "No samples (profile on first)."); return; }
     static Row fn[512], pair[1024];
+    static Addr uaddr[256];
+    int nu = 0;
     int nf = 0, np = 0;
     UINT32 user = 0, wait = 0, idle = 0;
     for (UINT32 i = 0; i < n; i++) {
-        if (g_rip[i] == P_USER) { user++; continue; }
+        if (g_rip[i] == P_USER) {                           /* by 64-byte line of program code */
+            user++;
+            nu = add_addr(uaddr, nu, 256, g_caller[i] & ~UINT64_C(63));
+            continue;
+        }
         if (g_rip[i] == P_LOCKWAIT) {
             wait++;
             UINT64 off;
@@ -131,6 +146,17 @@ void ProfReport(void (*out)(void *ctx, const char *line), void *ctx)
     top(fn, nf, 15, n, false, out, ctx);
     out(ctx, "Callers:");
     top(pair, np, 15, n, true, out, ctx);
+    if (nu) {
+        out(ctx, "Program code (64-byte lines):");
+        for (int k = 0; k < 10 && k < nu; k++) {
+            int best = k;
+            for (int i = k + 1; i < nu; i++) if (uaddr[i].n > uaddr[best].n) best = i;
+            Addr r = uaddr[k]; uaddr[k] = uaddr[best]; uaddr[best] = r;
+            ksnprintf(line, sizeof(line), "%5u %3u%%  %p", uaddr[k].n, uaddr[k].n * 100 / n, (void *)(uintptr_t)uaddr[k].a);
+            kprintf("[PROF] %s\n", line);
+            out(ctx, line);
+        }
+    }
     out(ctx, "System calls (3xx: interrupt or exception xx under the kernel lock):");
     for (int k = 0; k < 12; k++) {
         UINT32 best = 0;

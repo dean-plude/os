@@ -364,14 +364,14 @@ __declspec(dllexport) int strcmp(const char *a, const char *b)
  * ----------------------------------------------------------------------- */
 typedef struct Block {
     SIZE_T        size;        /* usable bytes (class size, or the large size) */
-    SIZE_T        tag;         /* HEAP_MAGIC with the class in its low byte, or HEAP_LARGE */
+    SIZE_T        tag;         /* HEAP_MAGIC with the arena and class in its low bytes, or HEAP_LARGE */
 #ifndef _WIN64
     SIZE_T        pad[2];      /* (32-bit: SSE code and JIT compilers such as
                                 * Mesa's expect 16-byte-aligned blocks too) */
 #endif
 } Block;                       /* 16 bytes: user data stays 16-byte aligned */
 
-#define HEAP_MAGIC   ((SIZE_T)0x4E4F564148454150ULL)   /* "NOVAHEAP" (its low half in 32-bit programs) */
+#define HEAP_MAGIC   ((SIZE_T)0x4E4F564148454150ULL)   /* "NOVAHEAP" (its low half in 32-bit programs; low 2 bytes: arena, class) */
 #define HEAP_LARGE   ((SIZE_T)0x4E4F56414C415247ULL)   /* "NOVALARG" */
 #define NCLASSES     48
 #define LARGE_MIN    (256 * 1024)
@@ -382,14 +382,42 @@ typedef struct Block {
 #endif
 #define ARENA_SIZE   (1024 * 1024)
 
+/* Small blocks come from a few arenas, each with its own lock and free
+ * lists; a thread uses the one its ID picks (threads side by side mostly
+ * get different ones) and a block goes back to the arena it came from
+ * (its number is in the tag).  Fresh memory is carved under a lock of its
+ * own. */
+#define NARENAS      8
+typedef struct {
+    volatile long lock;
+    void         *free_list[NCLASSES];
+    char          pad[64];                  /* (no line shared with the next arena's lock) */
+} Arena;
+
 static SIZE_T  class_size[NCLASSES];
-static void   *free_list[NCLASSES];
+static Arena   arenas[NARENAS];
 static char   *arena_base, *arena_cur, *arena_end, *arena_reserved_end;
 static int     heap_ready;
-static volatile long heap_lock;
+static volatile long carve_lock;
 
-static void hlock(void) { while (__atomic_exchange_n(&heap_lock, 1, __ATOMIC_ACQUIRE)) __builtin_ia32_pause(); }
-static void hunlock(void) { __atomic_store_n(&heap_lock, 0, __ATOMIC_RELEASE); }
+static void spin_lock(volatile long *l)
+{
+    for (int spins = 0; __atomic_exchange_n(l, 1, __ATOMIC_ACQUIRE); )
+        while (__atomic_load_n(l, __ATOMIC_RELAXED))
+            if (++spins < 1000) __builtin_ia32_pause();
+            else { NtYieldExecution(); spins = 0; }     /* (its holder was switched out) */
+}
+static void spin_unlock(volatile long *l) { __atomic_store_n(l, 0, __ATOMIC_RELEASE); }
+
+static int my_arena(void)
+{
+#ifdef _WIN64
+    SIZE_T tid = *(SIZE_T *)(NtCurrentTebBytes() + 0x48);  /* ClientId.UniqueThread */
+#else
+    SIZE_T tid = *(SIZE_T *)(NtCurrentTebBytes() + 0x24);
+#endif
+    return (int)(tid / 4 % NARENAS);
+}
 
 static void heap_init(void)
 {
@@ -463,18 +491,22 @@ NTSYSAPI PVOID NTAPI RtlAllocateHeap(PVOID heap, ULONG flags, SIZE_T n)
         b->tag = HEAP_LARGE;
         return b + 1;                               /* fresh pages are zeroed */
     }
-    int c = class_of(n);
-    hlock();
-    if (free_list[c]) {
-        b = (Block *)free_list[c] - 1;
-        free_list[c] = *(void **)free_list[c];
+    int c = class_of(n), a = my_arena();
+    Arena *ar = &arenas[a];
+    spin_lock(&ar->lock);
+    if (ar->free_list[c]) {
+        b = (Block *)ar->free_list[c] - 1;
+        ar->free_list[c] = *(void **)ar->free_list[c];
+        spin_unlock(&ar->lock);
     } else {
+        spin_unlock(&ar->lock);
+        spin_lock(&carve_lock);
         b = carve(class_size[c] + sizeof(Block));
+        spin_unlock(&carve_lock);
     }
-    hunlock();
     if (!b) return 0;
     b->size = class_size[c];
-    b->tag = (HEAP_MAGIC & ~(SIZE_T)0xFF) | (SIZE_T)c;    /* (the magic's own low byte would hide the class) */
+    b->tag = (HEAP_MAGIC & ~(SIZE_T)0xFFFF) | (SIZE_T)a << 8 | (SIZE_T)c;  /* (the magic's own low bytes would hide them) */
     if (flags & HEAP_ZERO_MEMORY) memset(b + 1, 0, class_size[c]);
     return b + 1;
 }
@@ -489,14 +521,15 @@ NTSYSAPI BOOLEAN NTAPI RtlFreeHeap(PVOID heap, ULONG flags, PVOID p)
         SIZE_T size = 0;
         return NT_SUCCESS(NtFreeVirtualMemory(NtCurrentProcess(), &base, &size, MEM_RELEASE));
     }
-    if ((b->tag & ~(SIZE_T)0xFF) != (HEAP_MAGIC & ~(SIZE_T)0xFF)) return FALSE;   /* not ours */
-    int c = (int)(b->tag & 0xFF);
-    if (c >= NCLASSES) return FALSE;
-    hlock();
-    *(void **)p = free_list[c];
-    free_list[c] = p;
+    if ((b->tag & ~(SIZE_T)0xFFFF) != (HEAP_MAGIC & ~(SIZE_T)0xFFFF)) return FALSE;   /* not ours */
+    int c = (int)(b->tag & 0xFF), a = (int)(b->tag >> 8 & 0xFF);
+    if (c >= NCLASSES || a >= NARENAS) return FALSE;
+    Arena *ar = &arenas[a];
+    spin_lock(&ar->lock);
+    *(void **)p = ar->free_list[c];
+    ar->free_list[c] = p;
     b->tag = 0;                                     /* catches double frees */
-    hunlock();
+    spin_unlock(&ar->lock);
     return TRUE;
 }
 
