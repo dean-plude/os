@@ -39,7 +39,7 @@
 #include "../hal/framebuffer.h"
 #include "../drivers/ahci.h"
 #include "../drivers/nvme.h"
-#include "../drivers/e1000.h"
+#include "../net/net.h"
 #include "../drivers/hda.h"
 #include "../drivers/xhci.h"
 #include "../lib/string.h"
@@ -327,7 +327,7 @@ bool SleepEnter(void)
     IoApicResume();                      /* the SCI */
     AhciResume();
     NvmeResume();
-    E1000Resume();
+    NetResume();                         /* the network adapter */
     XhciResume();
     HdaResume();
     ps2_resume();

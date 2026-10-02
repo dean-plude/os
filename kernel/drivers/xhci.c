@@ -194,6 +194,9 @@ static volatile bool   g_port_pending[MAX_PORTS + 1];
 static volatile bool   g_hubs_pending;
 static volatile bool   g_thread_up;
 static volatile bool   g_forget_all;     /* woke from S3: drop every device */
+static volatile int    g_work;           /* the usb thread is enumerating or removing */
+static volatile bool   g_sleeping;       /* between XhciPrepareSleep and XhciResume */
+static bool            g_work_held;      /* XhciPrepareSleep took g_work */
 
 static volatile int    g_cmd_busy;
 static volatile bool   g_cmd_done;
@@ -923,7 +926,11 @@ static void usb_thread(void *arg)
     g_thread_up = true;
     for (;;) {
         sched_sleep_until(NULL, sched_ticks() + 2);
-        if (!g_port_changed) continue;
+        if (!g_port_changed || g_sleeping) continue;
+        /* (sleep waits for this batch to end, so no command is cut off
+         * by S3 and none runs while XhciResume resets the controller) */
+        flag_take(&g_work);
+        if (g_sleeping) { flag_drop(&g_work); continue; }
         g_port_changed = 0;
         if (g_forget_all) {                /* after S3: the old devices are gone */
             g_forget_all = false;
@@ -944,6 +951,7 @@ static void usb_thread(void *arg)
             g_hubs_pending = false;
             UsbHubServiceAll();
         }
+        flag_drop(&g_work);
     }
 }
 
@@ -1114,9 +1122,15 @@ int XhciInit(void)
 /* After S3 the controller has lost its state, and the devices theirs: start
  * it again, forget the devices and let the hot-plug thread enumerate what
  * is plugged in (interrupts are off here; enumeration waits). */
+static void work_release(void)
+{
+    g_sleeping = false;
+    if (g_work_held) { g_work_held = false; flag_drop(&g_work); }
+}
+
 void XhciResume(void)
 {
-    if (!g_ready) return;
+    if (!g_ready) { work_release(); return; }
     g_ready = false;
     IrqState s = spin_lock_irqsave(&g_evt_lock);
     for (int i = 0; i < MAX_DEVS; i++) {
@@ -1130,6 +1144,7 @@ void XhciResume(void)
     spin_unlock_irqrestore(&g_evt_lock, s);
     if (!controller_program()) {
         kprintf("[USB] xHCI controller didn't restart after sleep\n");
+        work_release();
         return;
     }
     power_ports();
@@ -1137,6 +1152,7 @@ void XhciResume(void)
     for (int p = 1; p <= g_ports; p++) g_port_pending[p] = true;
     g_port_changed = 1;
     g_ready = true;
+    work_release();
 }
 
 /* Before S3: the root ports may wake the machine (a device connecting or
@@ -1145,6 +1161,14 @@ void XhciResume(void)
 void XhciPrepareSleep(void)
 {
     if (!g_ready) return;
+    /* The usb thread finishes what it is doing and waits until the wake
+     * (bounded: a stuck enumeration must not keep the machine awake) */
+    g_sleeping = true;
+    for (UINT64 end = sched_ticks() + 300; !g_work_held && sched_ticks() < end;) {
+        if (!__atomic_exchange_n(&g_work, 1, __ATOMIC_ACQUIRE)) g_work_held = true;
+        else sched_yield();
+    }
+    if (!g_work_held) kprintf("[USB] still enumerating: sleeping anyway\n");
     for (int p = 1; p <= g_ports; p++) {
         UINT32 sc = rd32(g_op, OP_PORTSC(p));
         UINT32 w = (sc & PORT_PRESERVE) | (7u << 25);                    /* WCE WDE WOE */

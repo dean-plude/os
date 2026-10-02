@@ -134,6 +134,7 @@ set(KERNEL_C_SOURCES
     hal/hpet.c
     hal/display.c
     drivers/e1000.c
+    drivers/virtio_net.c
     drivers/ahci.c
     drivers/hda.c
     drivers/audio.c
@@ -213,10 +214,11 @@ set(KERNEL_C_SOURCES
 # Build
 # -------------------------------------------------------------------------
 
-# lwIP 2.2.0 (third_party/lwip, BSD licence): IPv4 core + Ethernet
+# lwIP 2.2.0 (third_party/lwip, BSD licence): IPv4 and IPv6 core + Ethernet
 file(GLOB LWIP_SOURCES
     "${LWIP_DIR}/core/*.c"
     "${LWIP_DIR}/core/ipv4/*.c"
+    "${LWIP_DIR}/core/ipv6/*.c"
     "${LWIP_DIR}/netif/ethernet.c"
 )
 set_source_files_properties(${LWIP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")

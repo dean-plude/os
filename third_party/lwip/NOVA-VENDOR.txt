@@ -1,0 +1,9 @@
+lwIP 2.2.0 (https://savannah.nongnu.org/projects/lwip/), BSD licence
+(COPYING).  The IPv6 sources in src/core/ipv6 come from the Debian/Ubuntu
+source tarball lwip_2.2.0+dfsg1.orig.tar.xz (the upstream 2.2.0 files).
+The configuration is kernel/net/port/lwipopts.h.
+
+NovaOS changes:
+- src/core/ipv6/nd6.c: a DNS server from a router advertisement (RDNSS)
+  goes in the first free DNS slot instead of replacing the servers DHCPv4
+  set (marked "NovaOS:").

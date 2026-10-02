@@ -369,9 +369,9 @@ static bool store_tick(WND *w)
     if (s->phase == DL_RESOLVE) {
         if (op->state == NET_PENDING) return false;
         if (op->state == NET_FAILED) { dl_fail(s, op->error[0] ? op->error : "name not found"); return true; }
-        UINT32 ip = op->ip;
+        NetIp ip = op->addr;
         NetRelease(op);
-        s->op = NetHttpGet(ip, s->port, s->host, s->path, s->https);
+        s->op = NetHttpGetAddr(&ip, s->port, s->host, s->path, s->https);
         s->phase = DL_FETCH;
         if (!s->op) { dl_fail(s, "the network is busy"); return true; }
         set_msg(s, s->dl, "Downloading...");

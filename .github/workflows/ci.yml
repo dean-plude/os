@@ -1,6 +1,7 @@
 # Boot CI: every pull request builds NovaOS, boots it in QEMU and runs the
-# self-tests (tools/selftest.py): the core suite, and the graphics suite
-# (Mesa and DXVK from the App Store, then tools/gltest and tools/d3dtest).
+# self-tests (tools/selftest.py): the core suite, the network suite (IPv4,
+# IPv6 and winhttp's HTTP/2 over virtio-net) and the graphics suite (Mesa
+# and DXVK from the App Store, then tools/gltest and tools/d3dtest).
 # A failing test fails its check; make both required status checks on main
 # to block the merge.
 name: CI
@@ -43,6 +44,12 @@ jobs:
         run: |
           python3 tools/selftest.py --img build/nova.img --out selftest-out \
             --junit selftest-out/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the network self-tests (IPv4, IPv6, HTTP/2)
+        if: success() || failure()
+        run: |
+          python3 tools/selftest.py --suite network --img build/nova.img --out selftest-out/network \
+            --junit selftest-out/network/junit.xml --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the serial log and screenshots
         if: always()

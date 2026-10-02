@@ -90,7 +90,7 @@ every part, phase by phase.
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
   either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
   file ACLs, and other drives); Intel e1000/e1000e
-  network cards; Intel High Definition Audio (output) with a kernel mixer;
+  and virtio-net network cards; Intel High Definition Audio (output) with a kernel mixer;
   PS/2 keyboards and mice; USB (xHCI) with hubs and HID keyboards, mice,
   tablets and touch screens (report protocol) and USB sticks (FAT and NTFS,
   as the next drive letter, hot-plugged); CMOS clock; a Bochs/QEMU VBE
@@ -99,8 +99,11 @@ every part, phase by phase.
   sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
   devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
   a real interrupt through the I/O APIC).
-- **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
-  TLS with the Mozilla root store.
+- **Networking**: lwIP (TCP/IP over IPv4 and IPv6: DHCP, SLAAC, DNS over
+  either), an HTTP/1.1 client, and Mbed TLS with the Mozilla root store.
+  Winsock (`ws2_32`) speaks IPv6 and dual-stack sockets with `getaddrinfo`;
+  `winhttp` is a real HTTP client over Schannel TLS, with HTTP/2 by ALPN
+  (nghttp2).
 - **Windows userland** (`userland/`): about 35 system DLLs written from
   scratch and compiled with clang for `x86_64-pc-windows-msvc`, and again
   for `i686` in `SysWOW64`: `ntdll`, `kernel32`, `msvcrt`/`ucrtbase` with
@@ -270,7 +273,7 @@ os/
 │   ├── um/               # Windows programs: processes, threads, loader, NT services,
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
-│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, xHCI USB core, hubs, HID, mass storage
+│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, virtio-net, xHCI USB core, hubs, HID, mass storage
 │   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, HPET, I/O APIC, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
@@ -286,7 +289,7 @@ os/
 │   ├── programs/         # cmd.exe, msiexec, reg, find..., samples and self-tests
 │   ├── netsurf/          # NetSurf port: fetcher, window surface, fonts
 │   └── include/          # The Windows SDK headers NovaOS provides
-├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), NetSurf, stb, fonts, 7-Zip installer
+├── third_party/          # lwIP, Mbed TLS, nghttp2, uACPI, musl (libm), NetSurf, stb, fonts, 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
 │                         #   make_icons.py, pe_imports.py, msitest/
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
@@ -340,7 +343,7 @@ os/
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
 code keeps its own permissive licence (lwIP: BSD 3-clause; Mbed TLS:
-Apache-2.0; uACPI: MIT; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu
+Apache-2.0; nghttp2: MIT; uACPI: MIT; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu
 Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or
 MIT).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,

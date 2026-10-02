@@ -26,26 +26,37 @@
 #define SOCK_ENETDOWN      12
 #define SOCK_EMFILE        13
 #define SOCK_ENOTSOCK      14
+#define SOCK_EAFNOSUPPORT  15
 
 /* A "kill" predicate: the blocking calls poll it and return -SOCK_ETIMEDOUT
  * (cancelled) when it returns true, so a killed program does not hang. */
 typedef bool (*SockCancelFn)(void *arg);
 
-int  NetSockTcp(void);                  /* new TCP socket; -err */
-int  NetSockUdp(void);                  /* new UDP socket; -err */
-int  NetSockConnect(int s, UINT32 ip_be, UINT16 port_be, SockCancelFn c, void *ca);
+/* A socket address: family 2 (AF_INET, the address in addr[0..3]) or 23
+ * (AF_INET6, with its zone in scope), port and address in network order */
+typedef struct {
+    UINT16 family;
+    UINT16 port_be;
+    UINT8  addr[16];
+    UINT32 scope;
+} NetSockAddr;
+#define NET_AF_INET   2
+#define NET_AF_INET6  23
+
+int  NetSockTcp(int family);            /* new TCP socket (NET_AF_*); -err */
+int  NetSockUdp(int family);            /* new UDP socket; -err */
+int  NetSockConnect(int s, const NetSockAddr *to, SockCancelFn c, void *ca);
 int  NetSockSend(int s, const void *buf, int len, SockCancelFn c, void *ca);
 int  NetSockRecv(int s, void *buf, int len, SockCancelFn c, void *ca);   /* 0 = closed */
-int  NetSockSendTo(int s, const void *buf, int len, UINT32 ip_be, UINT16 port_be);
-int  NetSockRecvFrom(int s, void *buf, int len, UINT32 *ip_be, UINT16 *port_be,
-                     SockCancelFn c, void *ca);
-int  NetSockBind(int s, UINT32 ip_be, UINT16 port_be);
+int  NetSockSendTo(int s, const void *buf, int len, const NetSockAddr *to);
+int  NetSockRecvFrom(int s, void *buf, int len, NetSockAddr *from, SockCancelFn c, void *ca);
+int  NetSockBind(int s, const NetSockAddr *a);
 int  NetSockListen(int s, int backlog);
-int  NetSockAccept(int s, UINT32 *ip_be, UINT16 *port_be, SockCancelFn c, void *ca);
+int  NetSockAccept(int s, NetSockAddr *peer, SockCancelFn c, void *ca);
 int  NetSockShutdown(int s, int how);   /* 0 recv, 1 send, 2 both */
 void NetSockClose(int s);
 void NetSockSetNonblock(int s, bool nb);
-int  NetSockLocalName(int s, UINT32 *ip_be, UINT16 *port_be);
-int  NetSockPeerName(int s, UINT32 *ip_be, UINT16 *port_be);
+int  NetSockLocalName(int s, NetSockAddr *out);
+int  NetSockPeerName(int s, NetSockAddr *out);
 /* select-style readiness (no block); *rd/*wr set if ready.  ex unused. */
 void NetSockPoll(int s, bool *readable, bool *writable, bool *error);

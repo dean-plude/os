@@ -37,7 +37,7 @@ typedef struct {
     struct tcp_pcb *pcb;
     TlsConn        *tls;
     bool            connected, tls_ready;
-    UINT32          ip;
+    NetIp           ip;
     UINT16          port;
     bool            https;
     char            host[128];
@@ -72,7 +72,7 @@ static err_t cb_end(void)
     return r;
 }
 
-static void submit(NetOp *op, UINT32 ip, UINT16 port, const char *host, bool https);
+static void submit(NetOp *op, const NetIp *ip, UINT16 port, const char *host, bool https);
 
 /* -----------------------------------------------------------------------
  * Helpers
@@ -171,7 +171,7 @@ static void peer_closed(Conn *c, bool reset)
     }
     if (op && op->reused && op->len == 0 && !op->retried) {
         /* a kept-alive connection the server had already given up on */
-        UINT32 ip = c->ip; UINT16 port = c->port; bool https = c->https;
+        NetIp ip = c->ip; UINT16 port = c->port; bool https = c->https;
         char host[128];
         memcpy(host, c->host, sizeof(host));
         op->conn = NULL;
@@ -179,7 +179,7 @@ static void peer_closed(Conn *c, bool reset)
         conn_close(c, false);
         op->retried = true;
         op->reused = false;
-        submit(op, ip, port, host, https);
+        submit(op, &ip, port, host, https);
         return;
     }
     if (op)
@@ -500,13 +500,13 @@ static void start_request(Conn *c, NetOp *op)
     c->close_after = false;
 }
 
-static void submit(NetOp *op, UINT32 ip, UINT16 port, const char *host, bool https)
+static void submit(NetOp *op, const NetIp *ip, UINT16 port, const char *host, bool https)
 {
     /* 1. an idle kept-alive connection to the same server */
     for (int i = 0; i < HTTP_CONNS; i++) {
         Conn *c = &g_conns[i];
         if (c->used && !c->op && c->connected && c->pcb && (!https || c->tls_ready) &&
-            c->ip == ip && c->port == port && c->https == https && ieq(c->host, host)) {
+            !memcmp(&c->ip, ip, sizeof(*ip)) && c->port == port && c->https == https && ieq(c->host, host)) {
             op->reused = true;
             start_request(c, op);
             start_sending(c);
@@ -525,9 +525,9 @@ static void submit(NetOp *op, UINT32 ip, UINT16 port, const char *host, bool htt
 
     memset(c, 0, sizeof(*c));
     c->used = true;
-    c->ip = ip; c->port = port; c->https = https;
+    c->ip = *ip; c->port = port; c->https = https;
     strncpy(c->host, host, sizeof(c->host) - 1);
-    struct tcp_pcb *pcb = tcp_new();
+    struct tcp_pcb *pcb = tcp_new_ip_type(ip->v6 ? IPADDR_TYPE_V6 : IPADDR_TYPE_V4);
     if (!pcb) { c->used = false; net_op_fail(op, "Out of connections"); return; }
     c->pcb = pcb;
     start_request(c, op);
@@ -536,32 +536,41 @@ static void submit(NetOp *op, UINT32 ip, UINT16 port, const char *host, bool htt
     tcp_recv(pcb, cb_recv);
     tcp_sent(pcb, cb_sent);
     ip_addr_t dst;
-    ip_addr_set_ip4_u32(&dst, ip);
+    net_addr_to_lwip(ip, &dst);
     if (tcp_connect(pcb, &dst, port, cb_connected) != ERR_OK) {
         req_fail(c, "Could not connect");
         conn_close(c, false);
     }
 }
 
-NetOp *NetHttpGet(UINT32 ip_be, UINT16 port, const char *host, const char *path, bool https)
+NetOp *NetHttpGetAddr(const NetIp *ip, UINT16 port, const char *host, const char *path, bool https)
 {
     net_lock();
     NetOp *op = net_op_alloc(NETOP_HTTP);
     if (!op) { net_unlock(); return NULL; }
-    op->ip = ip_be;
+    op->addr = *ip;
+    if (!ip->v6) memcpy(&op->ip, ip->a, 4);
     op->deadline = sched_ticks() + HTTP_TIMEOUT;
     if (!net_up()) { net_op_fail(op, "Network is not available"); net_unlock(); return op; }
 
     char hostport[140];
-    if (port == (https ? 443 : 80)) ksnprintf(hostport, sizeof(hostport), "%s", host);
-    else                            ksnprintf(hostport, sizeof(hostport), "%s:%u", host, port);
+    const char *lb = strchr(host, ':') ? "[" : "", *rb = *lb ? "]" : "";   /* an IPv6 literal */
+    if (port == (https ? 443 : 80)) ksnprintf(hostport, sizeof(hostport), "%s%s%s", lb, host, rb);
+    else                            ksnprintf(hostport, sizeof(hostport), "%s%s%s:%u", lb, host, rb, port);
     ksnprintf(op->request, sizeof(op->request),
               "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: NovaOS/0.9\r\n"
               "Accept: */*\r\nAccept-Encoding: identity\r\nConnection: keep-alive\r\n\r\n",
               path && *path ? path : "/", hostport);
-    submit(op, ip_be, port, host, https);
+    submit(op, ip, port, host, https);
     net_unlock();
     return op;
+}
+
+NetOp *NetHttpGet(UINT32 ip_be, UINT16 port, const char *host, const char *path, bool https)
+{
+    NetIp ip = { 0 };
+    memcpy(ip.a, &ip_be, 4);
+    return NetHttpGetAddr(&ip, port, host, path, https);
 }
 
 void http_release(NetOp *op)
@@ -639,9 +648,18 @@ bool NetParseUrl(const char *url, char *host, int host_cap, UINT16 *port,
     else if (strstr(p, "://"))           return false;       /* other scheme */
 
     int n = 0;
-    while (*p && *p != '/' && *p != ':' && *p != '?' && *p != '#') {
-        if (n >= host_cap - 1) return false;
-        host[n++] = *p++;
+    if (*p == '[') {                              /* an IPv6 literal: [fd00::1] (host gets it bare) */
+        p++;
+        while (*p && *p != ']') {
+            if (n >= host_cap - 1) return false;
+            host[n++] = *p++;
+        }
+        if (*p++ != ']') return false;
+    } else {
+        while (*p && *p != '/' && *p != ':' && *p != '?' && *p != '#') {
+            if (n >= host_cap - 1) return false;
+            host[n++] = *p++;
+        }
     }
     host[n] = '\0';
     if (!n) return false;

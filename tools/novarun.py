@@ -20,7 +20,7 @@ networking; the host is 10.0.2.2).
 
 Other tools (tools/selftest.py) import the Nova class to drive a boot.
 """
-import argparse, json, os, re, shutil, socket, subprocess, sys, tempfile, time
+import argparse, json, os, re, shlex, shutil, socket, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OVMF = next((p for p in ('/usr/share/ovmf/OVMF.fd', '/usr/share/OVMF/OVMF_CODE.fd',
@@ -240,11 +240,13 @@ def main():
     ap.add_argument('--img', default=os.path.join(ROOT, 'build', 'nova.img'))
     ap.add_argument('--wav')
     ap.add_argument('--net', action='store_true', help='a network card on QEMU user networking (the host is 10.0.2.2)')
+    ap.add_argument('--extra', action='append', default=[], help='more QEMU arguments (split like a shell)')
     ap.add_argument('commands', nargs='*')
     a = ap.parse_args()
 
     try:
-        nova = Nova(a.img, a.keep, [p.split('=', 1) for p in a.put], a.mem, a.smp, a.data_mb, a.wav, net=a.net)
+        nova = Nova(a.img, a.keep, [p.split('=', 1) for p in a.put], a.mem, a.smp, a.data_mb, a.wav, net=a.net,
+                    extra_args=[x for e in a.extra for x in shlex.split(e)])
     except RuntimeError as e:
         sys.exit(str(e))
     try:
