@@ -1,4 +1,5 @@
 # NovaOS — Feature History, Phase by Phase
+<!-- The regions between "BEGIN generated" and "END generated" markers are built from fragment files by tools/docgen.py: edit those files, not the regions (CONTRIBUTING.md). -->
 
 This is the detailed record of what each phase of NovaOS added, in the
 order it landed.  The [README](../README.md) has the short version: what
@@ -35,6 +36,8 @@ Contents:
 [Runtimes](#language-runtimes-java-net-nodejs-python) ·
 [Installing NovaOS](#installing-novaos-on-a-disk) ·
 [Sound](#sound-intel-hd-audio-winmm-and-wasapi)
+
+<!-- BEGIN generated:history -->
 
 ## Phase 1 — Boot & Kernel Foundation
 - UEFI bootloader (PE32+ EFI application, loads kernel ELF from FAT32 ESP)
@@ -386,7 +389,8 @@ Contents:
 - Not yet: `LoadIcon`/`DrawIcon` and `WM_SETICON` for programs (a window
   shows its program's first icon), and animated cursors.  *(Phase 12's
   user32 has icons from `.ico` files and PE resources and `WM_SETICON`;
-  animated cursors are still missing.)*
+  animated cursors came with "Program pointers and animated cursors"
+  below.)*
 
 ## Phase 10 — Standard DLLs, registry, COM and persistent storage
 - **Unmodified Windows programs run**: stock release builds of ripgrep and
@@ -444,8 +448,9 @@ Contents:
   controls, file-open dialogs (they report "cancelled"), the MSVC FH4 C++
   exception tables, type libraries, `RegNotifyChangeKeyValue` events, audio,
   and a clipboard shared between programs.  *(Dialogs, menus and controls
-  came in Phase 12 and the shared clipboard after Phase 13; the rest is
-  still open.)*
+  came in Phase 12, the shared clipboard after Phase 13, audio with HD
+  Audio, and type libraries and FH4 in "COM type libraries and FH4 C++
+  exceptions" below; the rest is still open.)*
 
 ## Phase 11 — Multiprocessor (SMP)
 
@@ -1620,28 +1625,6 @@ where git finds it:
   NTFS drive D: and keeps screenshots of `dir C:\` and `dir D:\` (each
   with its own free space), This PC and Notepad++ (the last two compared
   with references in `tests/reference/`).
-- **Off the big kernel lock** (17.7): files, the registry, the console and
-  starting processes and threads now run beside each other on every CPU.
-  The file system has a reader/writer lock: opening a file that is there,
-  reading, writing, seeking and closing take it shared (each open file's
-  contents under a lock of its own), and only changes to the tree take it
-  alone.  The desktop thread's loop no longer holds it every tick, only
-  around input, drawing and built-in windows' timers that may use files.
-  The registry has a reader/writer lock of its own, a lock per key and
-  value names on the stack.  A process's lock is a reader/writer lock too,
-  and handles are opened, looked up and closed under it shared, each slot
-  with its own lock; console output takes turns on the console's lock.
-  Programs' memory allocation got arenas picked by thread (one heap lock
-  was 18% of a 4-thread registry run) and stopped losing every freed small
-  block (a tag bug kept them from being reused); kmalloc keeps a few
-  objects per CPU; copies to and from programs move 8 bytes at a time and
-  msvcrt's `memcmp` compares 8 at a time.  On one CPU in QEMU, files went
-  from 1,800 to 18,000 operations a second and the registry from 5,000 to
-  70,000; four CPUs do about 3x that (`smpstress scaling 3`; computing
-  alone scales 3.7–4x on the same host).  smpstress also starts copies of
-  itself from several threads at once, and the nightly run boots it on 4
-  CPUs.  The Terminal's new `profile` command samples where the CPUs spend
-  their time.
 - Tested in QEMU: Neovim 0.10.4 and 0.11.4 open `t.txt`, take `ihello
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,
@@ -1674,3 +1657,237 @@ where git finds it:
   no driver, so they stay on the UEFI framebuffer, and after sleep they
   show whatever the firmware's wake path sets up, which is often nothing.
 
+## Program pointers and animated cursors (.ani)
+
+Until now `SetCursor` only remembered its argument: the desktop always
+drew its own arrow.  The pointer is now the program's, and animated
+cursors play.  No MIT, BSD or zlib licensed .ani reader was found (Wine's
+is LGPL), so the parser is written here; the format is a small RIFF file.
+
+- **The kernel draws a program's pointer** (`kernel/wm/wm.c`,
+  `kernel/gdi/gdi.c`): `NtNovaGuiCtl` op 19 hands it a shape (up to
+  64 x 64 logical pixels, its hot spot, up to 64 frames and 256 steps,
+  each step's time in jiffies), or asks for the arrow or no pointer.  It
+  shows over the client area of that process's windows, and anywhere while
+  one of them has the mouse captured; the desktop, title bars, borders and
+  window drags keep the arrow.  The desktop's tick steps animated shapes
+  (100 Hz against the .ani's 60 Hz jiffies) and redraws the pointer when
+  the window under it changes.  Op 20 reports what the pointer shows, for
+  tests.
+- **user32**: `SetCursor` sends the cursor to the kernel when it changes
+  (the system `IDC_*` cursors are the arrow; `NULL` hides the pointer),
+  `ShowCursor` below zero hides it, and `GetCursorInfo` says whether it
+  shows.
+- **Animated cursors** (`userland/user32/res.c`): RIFF `ACON` files with
+  `anih`, `rate`, `seq ` and the `fram` list of .cur/.ico frames, from
+  `LoadCursorFromFile`, `LoadImage(LR_LOADFROMFILE)`,
+  `CreateIconFromResourceEx` and `ANICURSOR`/`ANIICON` resources
+  (`LoadCursor`, `LoadImage`).  `DrawIconEx` draws the frame of the step it
+  is given, and `GetCursorFrameInfo` reports each step's frame and rate.
+  `LoadCursorFromFile` loads .cur files too, and returns `NULL` for a
+  missing file as Windows does (it used to return the arrow).
+- **`anitest.exe`** (in the core self-tests) loads a spinner
+  (`userland/programs/anitest.ani`, made by `tools/mkani.py`: 8 frames
+  played in a custom order with two rates) from its resource, from memory
+  and from a file, checks the steps, rates, hot spot and each step's
+  drawing, then makes it the pointer over a window and checks the desktop
+  shows it and steps through at least 6 of the 8 frames in 1.5 s, that
+  `SetCursor(NULL)` hides it and the arrow comes back.  `anitest show N`
+  keeps the window up for N seconds.  It runs as a 32-bit program too
+  (`C:\Programs\x86\anitest`).
+- Not yet: the system cursors themselves (I-beam, resize arrows, the
+  busy and "working in background" animations) are all the arrow;
+  `SetSystemCursor` does nothing; `CopyIcon` of an animated cursor keeps
+  only its first frame; at 200 % the pointer is scaled up by nearest
+  neighbour.
+
+## COM type libraries and FH4 C++ exceptions
+
+Two items left open since Phase 10.  We looked for MIT, BSD or zlib
+licensed code first: Wine's typelib and FH4 code are LGPL, and nothing
+permissive covers either, so both are written here from the file formats
+(checked against `widl` output and real MSVC binaries).
+
+- **Type libraries** (`userland/oleaut32/typelib.c`, `typeinfo.c`,
+  `invoke.c`): `LoadTypeLib`/`LoadTypeLibEx` read MSFT-format libraries
+  from `.tlb` files and from the `TYPELIB` resources of DLLs and EXEs
+  (`file.dll\2` picks a resource), with `stdole2.tlb` built in (`IUnknown`,
+  `IDispatch`, `IEnumVARIANT`).  `ITypeLib2`, `ITypeInfo2` and `ITypeComp`
+  cover enums, records, coclasses, interfaces and dispinterfaces,
+  including both views of a dual interface (`href -1`), default values,
+  references into imported libraries and documentation strings (aliases
+  and modules are read too, but no test library has them yet).
+  `RegisterTypeLib`, `UnRegisterTypeLib` (and the `ForUser` forms), `QueryPathOfRegTypeLib` and `LoadRegTypeLib` keep
+  `HKCR\TypeLib` and the interfaces' `ProxyStubClsid32` keys.
+  `LHashValOfNameSys` gives a case-insensitive hash, not Windows' exact
+  values (the lookups here compare names, so the hash is never needed).
+- **Calling through type information**: `ITypeInfo::Invoke` (and so
+  `DispInvoke`, `DispGetIDsOfNames` and `CreateStdDispatch`) converts
+  DISPPARAMS to each method's own argument types, with named arguments,
+  `[optional]` and `[defaultvalue]`, `[in, out]` by reference, `[retval]`
+  and property puts, calls the vtable, and turns a failing HRESULT into
+  `DISP_E_EXCEPTION` with the object's error info.  `DispCallFunc` calls
+  any function or vtable slot (x64 register and stack arguments, x86
+  stdcall and cdecl, floating-point and structure returns).
+- **FH4** (`userland/vcruntime140/eh.c`, `vcruntime140_1.dll`):
+  `__CxxFrameHandler4`, the compressed exception tables that MSVC has
+  emitted for x64 since Visual Studio 2019, decoded into the same state
+  machine as `__CxxFrameHandler3` (unwind maps, try blocks, catch
+  continuations, separated code, `noexcept` functions).  The new
+  `vcruntime140_1.dll` forwards to `vcruntime140.dll`, as Microsoft's does.
+- **The sample COM server** (`testdll.dll`, `Nova.Calc`) now embeds its
+  type library (`userland/testdll/idl/novacalc.idl`, compiled with `widl`
+  by `make_tlb.sh`); its `IDispatch` is `DispInvoke` over that library and
+  `DllRegisterServer` registers it.  DLLs can now carry an `.rc` file.
+- **CRT**: the `<fenv.h>` functions (`fetestexcept`, `feclearexcept`,
+  `fegetround`...) are exported from `msvcrt.dll` and `ucrtbase.dll`.
+- Tests: the new `tlbtest` passes 110/110, 64- and 32-bit; `comtest`
+  59/59 and `cppeh` 17/17, both architectures, all in the CI core suite
+  now.  Python 3.14 with the kiwisolver 1.5.1 wheel, run against NovaOS's
+  own `vcruntime140.dll` and `vcruntime140_1.dll` (Microsoft's copies
+  removed from the Python folder), raises and catches kiwisolver's C++
+  exceptions (`DuplicateConstraint`, `UnsatisfiableConstraint`,
+  `UnknownConstraint`, `UnknownEditVariable`) through FH4 tables and gets
+  the same results as on Linux.
+- Not yet: NumPy still stops at the C99 complex functions (`cabs`,
+  `cexp`...) the UCRT exports, and `AddDllDirectory` is a stub, so
+  `os.add_dll_directory` paths are not searched.  `msvcp140.dll` (the C++
+  standard library) is not provided.
+
+## One file per item: parallel changes without merge conflicts
+
+Up to seven pull requests were open at once, and nearly every one edited
+the same lines of the same files: the DLL table and program sets in
+`tools/build_userland.py`, the test lists in `tools/selftest.py` and
+`tools/appcorpus.py`, and the lists in the README, `docs/HISTORY.md`,
+`docs/ROADMAP.md` and `docs/building.md`.  Each merge left the others
+conflicted, and twice conflict markers reached main.  Those lists are now
+directories with one file per item, so changes add files instead of
+editing shared lines.  [CONTRIBUTING.md](../CONTRIBUTING.md) is the guide.
+
+- **DLLs**: `userland/NAME/dll.json` registers each DLL (dependencies,
+  load addresses, extra source directories, entry point, implicit TLS,
+  export ordinals); `tools/build_userland.py` finds them and links each
+  after its dependencies.  A DLL that needs more (Mbed TLS for secur32,
+  the msvcrt/ucrtbase double link) keeps that code in its own
+  `userland/NAME/build.py`.  The existing DLLs keep their addresses; a
+  new DLL leaves them out and gets a free 16 MiB slot, so two branches can
+  no longer pick the same address (three open ones had all chosen
+  0x7FFE50000000), and the build stops if two DLLs' images overlap.  The
+  userland it builds is byte-for-byte the same as before (link timestamps
+  aside).
+- **Programs**: `userland/programs/NAME.json` replaces the 32-bit and
+  System32 sets (`x86`, `system`, extra `libs`, `selftest`).
+- **Tests**: one file per self-test in `tests/selftest/core/` and
+  `graphics/`, one per program in `tests/appcorpus/`, run in file-name
+  order; `tools/selftest.py --list` prints a suite.
+- **Docs**: README's program table, "What is inside" list, licences,
+  core-suite and self-test lists, the roadmap's "What comes next" items,
+  building.md's self-test table and every HISTORY section are built by
+  `tools/docgen.py` from files in `docs/readme/`, `docs/roadmap/`,
+  `docs/selftests/` and `docs/history/` (and the tests' `DOC` strings).
+  Pull requests add fragments and leave the generated regions alone; the
+  Docs workflow (`.github/workflows/docs.yml`) rebuilds them on main after
+  each merge.
+- **CI**: a quick Checks job runs before the boot tests: no conflict
+  markers or stray branch-name lines (`tools/ci/check-conflict-markers.py`),
+  the manifests and test files load, and a pull request has not edited a
+  generated region by hand.
+
+## Firefox (Floorp)
+
+Floorp 12.19, a Firefox build (the Firefox 157 engine), starts from the
+Terminal, creates its profile and draws its full browser window.  The
+browser is run as shipped; everything below is in NovaOS.
+
+- **Imports**: the C runtime pieces Gecko uses (`_wsetlocale` and the
+  rest), the delay-loaded DLLs it asks for, and cross-process
+  `NtQueryInformationProcess`.
+- **DirectWrite** (`userland/dwrite`): NovaOS's own `dwrite.dll`.  The
+  factory, the system font collection (scanned from `%WINDIR%\Fonts`,
+  with the common Windows family names mapped to the bundled fonts),
+  font families, fonts, font faces (metrics, glyph indices, advances,
+  kerning, outlines into a geometry sink, font tables), GDI interop and
+  glyph run analysis (aliased and ClearType alpha textures).  Fonts are
+  read with stb_truetype (public domain).  Text formats and text layouts
+  (`layout.c`, written in the Phase 19 work for Direct2D's `DrawText`)
+  break lines, handle bidirectional text, carry per-range font
+  attributes, and answer metrics and hit tests.  They shape with
+  HarfBuzz from `novatext.dll` when it is present, and with the font's
+  plain glyphs and advances otherwise.
+- **Kernel**: `NtQuerySection`, `MEM_RESET`/`MEM_RESET_UNDO`, a
+  per-process handle table of 4096 (Gecko keeps far more than the old
+  256 open), and `C:\AppData\Roaming`, `Local`, `LocalLow` and
+  `C:\ProgramData` made at boot.
+- **C runtime**: `_vsnwprintf` (the legacy option of
+  `__stdio_common_vswprintf`) now fills a buffer exactly, without the
+  terminator, when the output is exactly the buffer's size.  Gecko formats
+  its 16-digit install hash that way; returning -1 made the profile
+  service fail and Firefox show "Profile Missing".
+- **user32**: window class names up to 256 characters (Gecko's remote
+  window class contains the profile path).
+- **Debugging aids**: the kernel prints each new process's command line;
+  `tools/novarun.py` takes `!bg COMMAND` to leave a program running while
+  it waits and takes screenshots, and `NOVARUN_GDB=1` starts QEMU with a
+  gdb server so breakpoints can be set in a program's code.
+- **Sandbox** (Chromium's, which Firefox uses for its child processes):
+  - ntdll's system call exports have the Windows byte layout (see the
+    ABI conformance work below), so the sandbox can copy and patch them
+    to intercept calls in the child.
+  - Token handles know whether they are primary or impersonation tokens
+    and at which level; `SetThreadToken`, `OpenThreadToken`,
+    `ImpersonateSelf` and `RevertToSelf` track a token per thread.
+    `CreateWellKnownSid` covers every well-known SID type.
+  - New system calls: `NtOpenProcessToken(Ex)`, `NtOpenThreadToken(Ex)`,
+    `NtImpersonateAnonymousToken`, `NtQueryFullAttributesFile`,
+    `NtSetInformationProcess`, and the `ProcessHandleCount` and
+    `ProcessHandleTable` classes of `NtQueryInformationProcess`.
+  - `CREATE_SUSPENDED` really suspends a new process, so the parent can
+    patch the child before it runs.
+  - ntdll exports the heap and string functions the sandbox resolves in
+    the child (`RtlCreateHeap`, `NtSignalAndWaitForSingleObject`,
+    `_strnicmp`, `wcslen`...), and `GetProcessHeaps` includes an empty
+    csrss port heap the sandbox expects to find before it cuts a content
+    process off from csrss.
+  - A process can have 256 threads (was 64); Firefox's main process runs
+    more than 64.
+- **Overlapped I/O**: a pipe read or write that fails at once (a broken
+  pipe when a child process exits) no longer sets its event or queues a
+  completion packet or routine; Windows does none of these, and Firefox's
+  IPC and Rust I/O free the `OVERLAPPED` after such a failure, so the late
+  packet crashed the main process with a use-after-free.
+- **GDI**: `CreateDIBSection` with a file-mapping handle puts the pixels in
+  that mapping (Firefox's GPU process draws the browser into one shared
+  with the main process).
+- **Window handles across processes**: an `HWND` now names the same
+  window in every process, as on Windows.  user32 builds each handle from
+  a tag the kernel gives the process (unique among running processes), so
+  handles never collide, and tells the kernel each desktop window's handle
+  and client area.  `IsWindow`, `GetClientRect`, `GetWindowRect`,
+  `ClientToScreen`, `ScreenToClient`, `IsWindowVisible`, `IsIconic`,
+  `IsZoomed` and `GetWindowThreadProcessId` answer for another process's
+  window.  Firefox's GPU process sizes its frames from the main process's
+  window; before, it saw a 0 x 0 window and never drew, so the browser
+  showed white.  The full browser now draws through the GPU process.
+- **Locks that sleep**: `WaitOnAddress`, SRW locks and condition
+  variables park the thread until another wakes it, the way Windows 8
+  and later do: ntdll lists the waiters per address and they sleep in the
+  new `NtWaitForAlertByThreadId` system call until a waker calls
+  `NtAlertThreadByThreadId`.  They used to poll every 10 ms, which left
+  Firefox's main thread too slow to read its input.  Also
+  `SleepConditionVariableSRW`/`CS` return FALSE with `ERROR_TIMEOUT` when
+  they time out, as on Windows.
+- **Drawing from another thread**: `ReleaseDC` shows what was drawn at
+  once even while part of the window waits for `WM_PAINT` (Firefox
+  presents from its own thread while the window may never stop being
+  invalidated).
+- **Debugging aids**: Ctrl+Alt+F12 writes every program's threads to the
+  serial log (state, last system call and its first argument, return
+  addresses on the stack); the syscall trace shows the thread id
+  (`[TRACE] name pid/tid`); the standard error of a detached process
+  (Firefox's sandboxed children) goes to the serial log; and
+  `tools/novarun.py` takes `!click X Y`.
+- Not yet: a page's content (the tab area stays empty) and fetching a page
+  over the network.
+
+<!-- END generated:history -->

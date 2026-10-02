@@ -248,6 +248,8 @@ file(GLOB_RECURSE USERLAND_DEPS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.rc"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.ico"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.png"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*/build.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/netsurf/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/netsurf/*.h")
 set(USERLAND_C "${CMAKE_CURRENT_BINARY_DIR}/userland_files.c")

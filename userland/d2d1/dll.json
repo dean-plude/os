@@ -1,0 +1,5 @@
+{
+  "deps": ["msvcrt", "kernel32", "ntdll"],
+  "base": "0x7FFE40000000",
+  "base_x86": "0x94000000"
+}

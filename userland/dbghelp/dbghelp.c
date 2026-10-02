@@ -128,3 +128,21 @@ DBGHELPAPI PVOID WINAPI ImageNtHeader(PVOID base)
     IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)base + d->e_lfanew);
     return nt->Signature == IMAGE_NT_SIGNATURE ? nt : 0;
 }
+
+/* Modules: symbols are never loaded, so there is no module information */
+DBGHELPAPI DWORD64 WINAPI SymLoadModule64(HANDLE p, HANDLE f, LPCSTR image, LPCSTR module, DWORD64 base, DWORD size)
+{
+    (void)p; (void)f; (void)image; (void)module; (void)size;
+    return base;
+}
+DBGHELPAPI BOOL WINAPI SymGetModuleInfo64(HANDLE p, DWORD64 addr, PVOID info)
+{
+    (void)p; (void)addr; (void)info;
+    SetLastError(ERROR_MOD_NOT_FOUND);
+    return FALSE;
+}
+DBGHELPAPI BOOL WINAPI EnumerateLoadedModules64(HANDLE p, PVOID cb, PVOID ctx)
+{
+    (void)p; (void)cb; (void)ctx;
+    return TRUE;                                    /* (listed nothing) */
+}

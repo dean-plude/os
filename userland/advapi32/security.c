@@ -203,16 +203,63 @@ WINADVAPI BOOL WINAPI ConvertStringSidToSidW(LPCWSTR s, PSID *out)
 }
 
 /* well-known SID types (WELL_KNOWN_SID_TYPE) */
+/* WELL_KNOWN_SID_TYPE: identifier authority and sub-authorities; dom marks
+ * the ones relative to a domain SID (the machine's when none is given) */
+static const struct { BYTE type, auth, dom, n; DWORD sub[2]; } g_known[] = {
+    {  0,  0, 0, 1, { 0 } },      {  1,  1, 0, 1, { 0 } },      {  2,  2, 0, 1, { 0 } },
+    {  3,  3, 0, 1, { 0 } },      {  4,  3, 0, 1, { 1 } },      {  5,  3, 0, 1, { 2 } },
+    {  6,  3, 0, 1, { 3 } },      {  7,  5, 0, 0, { 0 } },      {  8,  5, 0, 1, { 1 } },
+    {  9,  5, 0, 1, { 2 } },      { 10,  5, 0, 1, { 3 } },      { 11,  5, 0, 1, { 4 } },
+    { 12,  5, 0, 1, { 6 } },      { 13,  5, 0, 1, { 7 } },      { 14,  5, 0, 1, { 8 } },
+    { 15,  5, 0, 1, { 9 } },      { 16,  5, 0, 1, { 10 } },     { 17,  5, 0, 1, { 11 } },
+    { 18,  5, 0, 1, { 12 } },     { 19,  5, 0, 1, { 13 } },     { 20,  5, 0, 1, { 14 } },
+    { 21,  5, 0, 1, { 5 } },      { 22,  5, 0, 1, { 18 } },     { 23,  5, 0, 1, { 19 } },
+    { 24,  5, 0, 1, { 20 } },     { 25,  5, 0, 1, { 32 } },
+    { 26,  5, 0, 2, { 32, 544 } }, { 27, 5, 0, 2, { 32, 545 } }, { 28, 5, 0, 2, { 32, 546 } },
+    { 29,  5, 0, 2, { 32, 547 } }, { 30, 5, 0, 2, { 32, 548 } }, { 31, 5, 0, 2, { 32, 549 } },
+    { 32,  5, 0, 2, { 32, 550 } }, { 33, 5, 0, 2, { 32, 551 } }, { 34, 5, 0, 2, { 32, 552 } },
+    { 35,  5, 0, 2, { 32, 554 } }, { 36, 5, 0, 2, { 32, 555 } }, { 37, 5, 0, 2, { 32, 556 } },
+    { 38,  5, 1, 1, { 500 } },    { 39,  5, 1, 1, { 501 } },    { 40,  5, 1, 1, { 502 } },
+    { 41,  5, 1, 1, { 512 } },    { 42,  5, 1, 1, { 513 } },    { 43,  5, 1, 1, { 514 } },
+    { 44,  5, 1, 1, { 515 } },    { 45,  5, 1, 1, { 516 } },    { 46,  5, 1, 1, { 517 } },
+    { 47,  5, 1, 1, { 518 } },    { 48,  5, 1, 1, { 519 } },    { 49,  5, 1, 1, { 520 } },
+    { 50,  5, 1, 1, { 553 } },    { 51,  5, 0, 2, { 64, 10 } }, { 52,  5, 0, 2, { 64, 21 } },
+    { 53,  5, 0, 2, { 64, 14 } }, { 54,  5, 0, 1, { 15 } },     { 55,  5, 0, 1, { 1000 } },
+    { 56,  5, 0, 2, { 32, 557 } }, { 57, 5, 0, 2, { 32, 558 } }, { 58, 5, 0, 2, { 32, 559 } },
+    { 59,  5, 0, 2, { 32, 560 } }, { 60, 5, 0, 2, { 32, 561 } }, { 61, 5, 0, 2, { 32, 562 } },
+    { 62,  5, 0, 2, { 32, 568 } }, { 63, 5, 0, 1, { 17 } },     { 64,  5, 0, 2, { 32, 569 } },
+    { 65, 16, 0, 1, { 0 } },      { 66, 16, 0, 1, { 4096 } },   { 67, 16, 0, 1, { 8192 } },
+    { 68, 16, 0, 1, { 12288 } },  { 69, 16, 0, 1, { 16384 } },  { 70,  5, 0, 1, { 33 } },
+    { 71,  3, 0, 1, { 4 } },      { 72,  5, 1, 1, { 571 } },    { 73,  5, 1, 1, { 572 } },
+    { 74,  5, 1, 1, { 498 } },    { 75,  5, 1, 1, { 521 } },    { 76,  5, 0, 2, { 32, 573 } },
+    { 77,  5, 1, 1, { 498 } },    { 78,  5, 0, 2, { 32, 574 } }, { 79, 16, 0, 1, { 8448 } },
+    { 80,  2, 0, 1, { 0 } },      { 81,  2, 0, 1, { 1 } },      { 82,  5, 0, 2, { 65, 1 } },
+    { 83, 15, 0, 1, { 2 } },      { 84, 15, 0, 2, { 2, 1 } },   { 85, 15, 0, 2, { 3, 1 } },
+    { 86, 15, 0, 2, { 3, 2 } },   { 87, 15, 0, 2, { 3, 3 } },   { 88, 15, 0, 2, { 3, 4 } },
+    { 89, 15, 0, 2, { 3, 5 } },   { 90, 15, 0, 2, { 3, 6 } },   { 91, 15, 0, 2, { 3, 7 } },
+    { 92, 15, 0, 2, { 3, 9 } },   { 93, 15, 0, 2, { 3, 8 } },   { 94, 15, 0, 2, { 3, 10 } },
+};
+
 WINADVAPI BOOL WINAPI CreateWellKnownSid(int type, PSID domain, PSID out, DWORD *n)
 {
-    (void)domain;
-    const BYTE *s = type == 1 ? g_everyone_sid : type == 17 ? g_auth_users_sid : type == 22 ? g_system_sid :
-                    type == 26 ? g_admins_sid : type == 27 ? g_users_sid : type == 9 ? g_interactive_sid :
-                    type == 66 ? g_medium_il_sid : 0;
-    if (!s) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    DWORD len = GetLengthSid((PSID)s);
+    static const BYTE machine[] = { 1, 4, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 0xE8, 3, 0, 0, 0xD0, 7, 0, 0, 0xB8, 0x0B, 0, 0 };
+    int k = -1;
+    for (int i = 0; i < (int)(sizeof(g_known) / sizeof(g_known[0])); i++) if (g_known[i].type == type) k = i;
+    if (k < 0 || !n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    BYTE sid[SECURITY_MAX_SID_SIZE];
+    memset(sid, 0, sizeof(sid));
+    sid[0] = 1;
+    if (g_known[k].dom) {                               /* the domain's SID, then the RID */
+        const BYTE *d = domain ? (const BYTE *)domain : machine;
+        if (!IsValidSid((PSID)d) || d[1] > 14) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+        memcpy(sid, d, GetLengthSid((PSID)d));
+    } else {
+        sid[7] = g_known[k].auth;
+    }
+    for (int i = 0; i < g_known[k].n; i++) memcpy(sid + 8 + 4 * sid[1]++, &g_known[k].sub[i], 4);
+    DWORD len = 8 + 4u * sid[1];
     if (!out || *n < len) { *n = len; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
-    memcpy(out, s, len);
+    memcpy(out, sid, len);
     *n = len;
     return TRUE;
 }
@@ -1117,3 +1164,69 @@ WINADVAPI BOOL WINAPI SetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si,
     if (!NT_SUCCESS(st)) { SetLastError(RtlNtStatusToDosError(st)); return FALSE; }
     return TRUE;
 }
+
+WINADVAPI BOOL WINAPI GetSecurityDescriptorSacl(PSECURITY_DESCRIPTOR sd, LPBOOL present, PACL *acl, LPBOOL defaulted)
+{
+    SECURITY_DESCRIPTOR *s = sd;
+    *present = (s->Control & 0x0010 /* SE_SACL_PRESENT */) != 0;
+    *acl = *present ? sd_part(sd, 2) : 0;
+    if (defaulted) *defaulted = (s->Control & 0x0020) != 0;
+    return TRUE;
+}
+
+/* TRUSTEE_W naming a SID */
+typedef struct _TRUSTEE_W_ {
+    struct _TRUSTEE_W_ *pMultipleTrustee;
+    int MultipleTrusteeOperation, TrusteeForm, TrusteeType;
+    LPWSTR ptstrName;
+} TRUSTEE_W_;
+WINADVAPI VOID WINAPI BuildTrusteeWithSidW(TRUSTEE_W_ *t, PSID sid)
+{
+    if (!t) return;
+    t->pMultipleTrustee = 0;
+    t->MultipleTrusteeOperation = 0;                /* NO_MULTIPLE_TRUSTEE */
+    t->TrusteeForm = 0;                             /* TRUSTEE_IS_SID */
+    t->TrusteeType = 0;                             /* TRUSTEE_IS_UNKNOWN */
+    t->ptstrName = (LPWSTR)sid;
+}
+WINADVAPI VOID WINAPI BuildTrusteeWithSidA(TRUSTEE_W_ *t, PSID sid) { BuildTrusteeWithSidW(t, sid); }
+
+/* Private object security: the new object's descriptor is a self-relative
+ * copy of the creator's (no inheritance from the parent: NovaOS's own
+ * objects carry no ACLs to inherit) */
+WINADVAPI BOOL WINAPI CreatePrivateObjectSecurityEx(PSECURITY_DESCRIPTOR parent, PSECURITY_DESCRIPTOR creator,
+                                                    PSECURITY_DESCRIPTOR *out, GUID *type, BOOL container,
+                                                    ULONG flags, HANDLE token, PGENERIC_MAPPING map)
+{
+    (void)parent; (void)type; (void)container; (void)flags; (void)token; (void)map;
+    if (!out) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    SECURITY_DESCRIPTOR empty;
+    if (!creator) {
+        InitializeSecurityDescriptor(&empty, 1);
+        creator = &empty;
+    }
+    DWORD n = 0;
+    if (((SECURITY_DESCRIPTOR *)creator)->Control & SE_SELF_RELATIVE) n = GetSecurityDescriptorLength(creator);
+    else MakeSelfRelativeSD(creator, 0, &n);
+    PSECURITY_DESCRIPTOR sd = n ? HeapAlloc(GetProcessHeap(), 0, n) : 0;
+    if (!sd) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    if (((SECURITY_DESCRIPTOR *)creator)->Control & SE_SELF_RELATIVE) memcpy(sd, creator, n);
+    else if (!MakeSelfRelativeSD(creator, sd, &n)) { HeapFree(GetProcessHeap(), 0, sd); return FALSE; }
+    *out = sd;
+    return TRUE;
+}
+WINADVAPI BOOL WINAPI CreatePrivateObjectSecurity(PSECURITY_DESCRIPTOR parent, PSECURITY_DESCRIPTOR creator,
+                                                  PSECURITY_DESCRIPTOR *out, BOOL container, HANDLE token, PGENERIC_MAPPING map)
+{
+    return CreatePrivateObjectSecurityEx(parent, creator, out, 0, container, 0, token, map);
+}
+WINADVAPI BOOL WINAPI DestroyPrivateObjectSecurity(PSECURITY_DESCRIPTOR *sd)
+{
+    if (sd && *sd) { HeapFree(GetProcessHeap(), 0, *sd); *sd = 0; }
+    return TRUE;
+}
+
+/* Credentials, ANSI forms: none stored either */
+WINADVAPI BOOL WINAPI CredReadA(LPCSTR target, DWORD type, DWORD flags, PVOID *cred) { (void)target; return CredReadW(0, type, flags, cred); }
+WINADVAPI BOOL WINAPI CredWriteA(PVOID cred, DWORD flags) { return CredWriteW(cred, flags); }
+WINADVAPI BOOL WINAPI CredDeleteA(LPCSTR target, DWORD type, DWORD flags) { (void)target; return CredDeleteW(0, type, flags); }

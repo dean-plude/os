@@ -48,3 +48,6 @@ SECUR32 BOOLEAN WINAPI GetUserNameExW(int fmt, LPWSTR out, PULONG n)
     *n = (ULONG)o;
     return TRUE;
 }
+
+/* SSPI's dispatch table: no security packages (NTLM, Kerberos,
+ * Negotiate) are installed, so there is none to hand out */

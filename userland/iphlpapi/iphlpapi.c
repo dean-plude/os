@@ -151,3 +151,6 @@ IPHLPAPI DWORD WINAPI GetIpNetTable2(USHORT family, PVOID *table) { (void)family
 IPHLPAPI DWORD WINAPI GetAnycastIpAddressTable(USHORT family, PVOID *table) { (void)family; return GetIfTable2Ex(0, table); }
 IPHLPAPI DWORD WINAPI GetMulticastIpAddressTable(USHORT family, PVOID *table) { (void)family; return GetIfTable2Ex(0, table); }
 IPHLPAPI VOID WINAPI FreeMibTable(PVOID table) { if (table) HeapFree(GetProcessHeap(), 0, table); }
+
+/* The interface toward an address (sockaddr form): no route is known */
+IPHLPAPI DWORD WINAPI GetBestInterfaceEx(const void *addr, PDWORD index) { (void)addr; (void)index; return ERROR_NO_DATA_; }

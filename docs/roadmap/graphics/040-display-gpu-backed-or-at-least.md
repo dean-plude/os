@@ -1,0 +1,1 @@
+- Display: GPU-backed or at least faster blits; mode changes.

@@ -1,10 +1,10 @@
 # Nightly app corpus: boots NovaOS built from main and runs unmodified
 # Windows programs (ripgrep, fd, jq, 7-Zip, MinGit, Python, Node.js,
-# Notepad++) with tools/appcorpus.py, then smpstress on 4 CPUs (locking
-# under load: no deadlocks, and how file and registry throughput scale).
-# The pass/fail table goes to the run's summary and, as a comment, to the
-# "Nightly app corpus" issue (opened on the first run).  Pull requests that
-# change the corpus run it as well.
+# Notepad++; one file each in tests/appcorpus/) with tools/appcorpus.py,
+# then smpstress on 4 CPUs (locking under load: no deadlocks, and how file
+# and registry throughput scale).  The pass/fail table goes to the run's
+# summary and, as a comment, to the "Nightly app corpus" issue (opened on
+# the first run).  Pull requests that change the corpus run it as well.
 name: Nightly app corpus
 
 on:
@@ -12,7 +12,7 @@ on:
     - cron: '17 3 * * *'
   workflow_dispatch:
   pull_request:                 # a change to the corpus itself runs it too (no issue comment)
-    paths: [tools/appcorpus.py, .github/workflows/nightly.yml, tests/reference/**]
+    paths: [tools/appcorpus.py, tests/appcorpus/**, .github/workflows/nightly.yml, tests/reference/**]
 
 permissions:
   contents: read
@@ -41,7 +41,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: appcorpus-cache
-          key: appcorpus-${{ hashFiles('tools/appcorpus.py') }}
+          key: appcorpus-${{ hashFiles('tools/appcorpus.py', 'tests/appcorpus/*.py') }}
 
       - name: Build NovaOS
         run: |

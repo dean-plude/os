@@ -17,6 +17,7 @@
 #include "../gdi/gdi.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
+#include "../ke/scheduler.h"
 
 /* -----------------------------------------------------------------------
  * State
@@ -700,8 +701,11 @@ bool WmMouseOther(int x, int y, WmMouseMsg msg, int dz)
     return true;
 }
 
+static void cursor_animate(void);
+
 void WmTick(void)
 {
+    cursor_animate();
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
         WND *w = &g_windows[i];
         if (!g_used[i] || !w->on_tick) continue;
@@ -901,6 +905,60 @@ static bool g_cursor_started;      /* shown once: every frame redraws it */
 int WmCursorX(void) { return g_cx / GdiScale(); }
 int WmCursorY(void) { return g_cy / GdiScale(); }
 
+/* A program's own pointer (WND.cursor) replaces the arrow over its client
+ * area, or anywhere while it has the mouse captured; animated ones step
+ * through their frames as the ticks go by (cursor_animate). */
+static const GdiCursorShape *g_shape_drawn;     /* compared, never dereferenced */
+static int    g_step_drawn;
+static UINT64 g_shape_since;                    /* tick the animation started */
+
+static const GdiCursorShape *shape_at(int x, int y)
+{
+    if (g_drag || g_resize) return NULL;
+    WND *w = WmGetCapture();
+    if (!w) {
+        int part;
+        w = hit(x, y, &part);
+        if (!w || part != HT_CLIENT) return NULL;
+    }
+    return w->cursor;
+}
+
+static int step_of(const GdiCursorShape *c, UINT64 now)
+{
+    if (!c || c->nsteps <= 1 || !c->total) return 0;
+    UINT64 t = (now - g_shape_since) % c->total;
+    for (int i = 0; i < c->nsteps; i++) {
+        if (t < c->steps[i].ticks) return i;
+        t -= c->steps[i].ticks;
+    }
+    return 0;
+}
+
+static void cursor_draw_here(void)
+{
+    int s = GdiScale();
+    const GdiCursorShape *c = shape_at(g_cx / s, g_cy / s);
+    UINT64 now = sched_ticks();
+    if (c != g_shape_drawn) g_shape_since = now;
+    int step = step_of(c, now);
+    if (c) GdiCursorDrawShape(g_cx, g_cy, c, c->steps[step].frame);
+    else GdiCursorDraw(g_cx, g_cy);
+    g_shape_drawn = c;
+    g_step_drawn = step;
+}
+
+const GdiCursorShape *WmCursorCurrent(int *step)
+{
+    if (step) *step = g_step_drawn;
+    return g_shape_drawn;
+}
+
+void WmCursorShapeChanged(void)
+{
+    g_shape_drawn = (const GdiCursorShape *)(uintptr_t)1;    /* differs from any shape */
+}
+
 static void cursor_show_dev(int dx, int dy)
 {
     int s = GdiScale();
@@ -911,7 +969,7 @@ static void cursor_show_dev(int dx, int dy)
     if (dy > maxy) dy = maxy;
     g_cx = dx;
     g_cy = dy;
-    GdiCursorDraw(g_cx, g_cy);
+    cursor_draw_here();
     g_cursor_shown = true;
     g_cursor_started = true;
 }
@@ -948,6 +1006,19 @@ void WmCursorReshow(void)
     /* A new frame was presented: the pointer and its save-under are gone.
      * Grab a fresh save-under and redraw at the current position. */
     g_cursor_shown = false;
+    cursor_show_dev(g_cx, g_cy);
+}
+
+/* Every desktop tick: the next frame of an animated pointer, or the shape
+ * under the pointer changed (a window opened or closed beneath it, a
+ * program called SetCursor) */
+static void cursor_animate(void)
+{
+    if (!g_cursor_shown) return;
+    int s = GdiScale();
+    const GdiCursorShape *c = shape_at(g_cx / s, g_cy / s);
+    if (c == g_shape_drawn && step_of(c, sched_ticks()) == g_step_drawn) return;
+    WmCursorHide();
     cursor_show_dev(g_cx, g_cy);
 }
 
