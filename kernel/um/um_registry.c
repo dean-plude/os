@@ -359,6 +359,17 @@ static void defaults(void)
     /* the audio endpoints (mmdevapi's MMDeviceEnumerator) */
     RegKey *mmd = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{BCDE0395-E52F-467C-8E3D-C4579291692E}\\InprocServer32", false);
     if (!has_value(mmd, "")) { kset_sz(mmd, "", "mmdevapi.dll", 1); kset_sz(mmd, "ThreadingModel", "Both", 1); }
+    /* DirectSound and DirectSoundCapture (dsound.dll), so CoCreateInstance finds them */
+    static const char *const ds_clsids[] = {
+        "{47D4D946-62E8-11CF-93BC-444553540000}", "{3901CC3F-84B5-4FA4-BA35-AA8172B8A09B}",
+        "{B0210780-89CD-11D0-AF08-00A0C925CD16}", "{E4BCAC13-7F99-4908-9A8E-74E3BF24B6E1}",
+    };
+    for (unsigned i = 0; i < sizeof ds_clsids / sizeof ds_clsids[0]; i++) {
+        char path[96];
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\CLSID\\%s\\InprocServer32", ds_clsids[i]);
+        RegKey *k = kpath(path, false);
+        if (!has_value(k, "")) { kset_sz(k, "", "dsound.dll", 1); kset_sz(k, "ThreadingModel", "Both", 1); }
+    }
     RegKey *lnk = kpath("Machine\\SOFTWARE\\Classes\\.lnk", false);
     if (!has_value(lnk, "")) kset_sz(lnk, "", "lnkfile", 1);
     RegKey *txt = kpath("Machine\\SOFTWARE\\Classes\\.txt", false);

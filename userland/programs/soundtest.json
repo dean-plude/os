@@ -1,3 +1,4 @@
 {
-  "x86": true
+  "x86": true,
+  "libs": ["dsound"]
 }
