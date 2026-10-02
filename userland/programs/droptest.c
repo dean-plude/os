@@ -15,6 +15,17 @@
 static HWND g_list;
 static int g_mode;                          /* 0 files, 1 ole, 2 source */
 
+static void logf(const char *fmt, ...);
+
+/* a dropped path and whether the target can still read it */
+static void log_path(const char *p)
+{
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExA(p, GetFileExInfoStandard, &a)) logf("  %s (missing)", p);
+    else if (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) logf("  %s (folder)", p);
+    else logf("  %s (%lu bytes)", p, a.nFileSizeLow);
+}
+
 static void logf(const char *fmt, ...)
 {
     char b[512];
@@ -127,7 +138,7 @@ static HRESULT STDMETHODCALLTYPE t_drop(IDropTarget *t, IDataObject *d, DWORD ke
         HDROP h = m.hGlobal;
         UINT n = DragQueryFileW(h, 0xFFFFFFFF, NULL, 0);
         logf("target: Drop at %d,%d: %u file(s)", pt.x, pt.y, n);
-        for (UINT i = 0; i < n; i++) { char p[MAX_PATH]; DragQueryFileA(h, i, p, MAX_PATH); logf("  %s", p); }
+        for (UINT i = 0; i < n; i++) { char p[MAX_PATH]; DragQueryFileA(h, i, p, MAX_PATH); log_path(p); }
         ReleaseStgMedium(&m);
     } else logf("target: Drop without CF_HDROP");
     *eff = DROPEFFECT_COPY;
@@ -156,7 +167,7 @@ static LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         POINT pt;
         DragQueryPoint(d, &pt);
         logf("WM_DROPFILES at %d,%d: %u file(s)", pt.x, pt.y, n);
-        for (UINT i = 0; i < n; i++) { char p[MAX_PATH]; DragQueryFileA(d, i, p, MAX_PATH); logf("  %s", p); }
+        for (UINT i = 0; i < n; i++) { char p[MAX_PATH]; DragQueryFileA(d, i, p, MAX_PATH); log_path(p); }
         DragFinish(d);
         return 0;
     }

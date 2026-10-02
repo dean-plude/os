@@ -40,7 +40,7 @@ typedef struct {
 #define GUI_NOFRAME   0x80
 enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CTL_ENABLE, CTL_SHOW, CTL_PRESENT,
        CTL_WORKAREA, CTL_WAKE, CTL_WINDOW_AT, CTL_ACCEPT_DROPS, CTL_DROP, CTL_DROP_FETCH,
-       CTL_DISPLAY_MODE, CTL_SET_DISPLAY, CTL_SET_CURSOR, CTL_CURSOR_SHAPE };
+       CTL_DISPLAY_MODE, CTL_SET_DISPLAY, CTL_DROP_DONE, CTL_DROP_STATUS, CTL_SET_CURSOR, CTL_CURSOR_SHAPE };
 #define WM_NOVA_DROP 0x03FE                     /* from the desktop: a drop from another program (drop.c) */
 #define FRAME_TITLE 32                          /* the desktop's title bar */
 #define FRAME_BORDER 1

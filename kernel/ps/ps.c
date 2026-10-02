@@ -3,10 +3,12 @@
  *
  * Key design points:
  *
- * 1. The scheduler's Thread object is EMBEDDED at the start of KTHREAD,
- *    which is embedded at the start of ETHREAD.  The scheduler only knows
- *    about Thread (Phase 1 type).  KTHREAD/ETHREAD extend it.
- *    We cast Thread* ↔ ETHREAD* freely since Thread is at offset 0.
+ * 1. A thread made by PsCreateSystemThread has the scheduler's Thread
+ *    EMBEDDED at the start of its KTHREAD, at the start of its ETHREAD.
+ *    Every other thread (sched_create_thread: kernel threads, Windows
+ *    programs' threads, the idle threads) is a bare Thread, and Ps gives
+ *    it an ETHREAD of its own the first time it asks for one.  Either way
+ *    Thread.ethread leads to the ETHREAD and ETHREAD.Kthread back.
  *
  * 2. System process (PsInitialSystemProcess) wraps the kernel's boot
  *    execution context.  It runs at ring 0 and never has a user VA space.
@@ -102,6 +104,7 @@ static void process_delete(void *obj)
 static void thread_delete(void *obj)
 {
     PETHREAD t = (PETHREAD)obj;
+    if (t->Kthread && t->Kthread->ethread == t) t->Kthread->ethread = NULL;
     ps_list_lock();
     ps_unlink(&t->Tcb.ThreadListEntry);
     if (t->Process) t->Process->Pcb.ThreadCount--;
@@ -112,21 +115,66 @@ static void thread_delete(void *obj)
 /* -----------------------------------------------------------------------
  * PsGetCurrentProcess / PsGetCurrentThread
  *
- * The scheduler's current_thread IS the KTHREAD (which is the first member
- * of ETHREAD, which starts with KTHREAD).  We cast directly.
+ * The running Thread's ETHREAD (Thread.ethread).  A thread the scheduler
+ * created directly has none until it first asks: then it gets an ETHREAD
+ * in the System process, which stays its own until the thread is freed.
+ * That needs the heap, so not with interrupts off (an interrupt handler
+ * may have interrupted the heap itself): there the answer is NULL.
  * ----------------------------------------------------------------------- */
+static UINT64 alloc_tid(void);
+static void ps_thread_freed(Thread *t);
+
 PEPROCESS PsGetCurrentProcess(void)
 {
     PETHREAD et = PsGetCurrentThread();
     return et ? et->Process : PsInitialSystemProcess;
 }
 
+/* An ETHREAD for @t, a thread the scheduler created directly */
+static PETHREAD ps_adopt_thread(Thread *t)
+{
+    if (!ObpThreadType || !PsInitialSystemProcess) return NULL;  /* before PsInitialize */
+    OBJECT_ATTRIBUTES attr = { sizeof(OBJECT_ATTRIBUTES),
+                               .Attributes = OBJ_KERNEL_HANDLE };
+    void *obj;
+    if (!NT_SUCCESS(ObCreateObject(ObpThreadType, &attr, 0, &obj))) return NULL;
+    PETHREAD et = obj;
+    __builtin_memset(et, 0, sizeof(ETHREAD));
+    PEPROCESS proc = PsInitialSystemProcess;
+    et->Kthread          = t;
+    et->UniqueThread     = t->idle && t->cpu == 0 ? 4 : alloc_tid();
+    et->Process          = proc;
+    et->Cid.UniqueProcess = proc->UniqueProcessId;
+    et->Cid.UniqueThread  = et->UniqueThread;
+    et->ExitStatus       = (NTSTATUS)0x103;          /* STATUS_PENDING */
+    ps_list_lock();
+    ps_link_tail(&proc->Pcb.ThreadListHead, &et->Tcb.ThreadListEntry);
+    proc->Pcb.ThreadCount++;
+    ps_list_unlock();
+    sched_thread_free_hook = ps_thread_freed;
+    t->ethread = et;                    /* holds the creation reference */
+    return et;
+}
+
+/* The scheduler frees @t: its adopted ETHREAD outlives it only while
+ * someone still holds a reference */
+static void ps_thread_freed(Thread *t)
+{
+    PETHREAD et = t->ethread;
+    if (!et || &et->Tcb.SchedulerThread == t) return;
+    t->ethread = NULL;
+    et->Kthread = NULL;
+    et->HasExited = true;
+    ObDereferenceObject(et);
+}
+
 PETHREAD PsGetCurrentThread(void)
 {
     Thread *t = sched_current();
     if (!t) return NULL;
-    /* Thread is embedded at offset 0 in KTHREAD, which is at offset 0 in ETHREAD */
-    return (PETHREAD)t;
+    if (t->ethread) return t->ethread;
+    if (!interrupts_enabled()) return NULL;
+    return ps_adopt_thread(t);
 }
 
 PHANDLE_TABLE PsGetCurrentProcessHandleTable(void)
@@ -257,6 +305,8 @@ NTSTATUS PsCreateSystemThread(
      * We initialize it directly (bypassing sched_create_thread which allocates
      * a separate Thread struct — we ARE the Thread struct). */
     Thread *sched_t = &et->Tcb.SchedulerThread;
+    sched_t->ethread  = et;
+    et->Kthread       = sched_t;
     sched_t->tid      = et->UniqueThread;
     sched_t->priority = 8;
     sched_t->state    = THREAD_READY;
@@ -514,15 +564,15 @@ void PsUserThreadEntry(void *arg)
 
     /* Update the TSS RSP0 for this thread (kernel stack for syscall returns) */
     if (et) {
-        uintptr_t kstack_top = (uintptr_t)et->Tcb.SchedulerThread.kernel_stack
-                             + et->Tcb.SchedulerThread.stack_size;
+        uintptr_t kstack_top = (uintptr_t)et->Kthread->kernel_stack
+                             + et->Kthread->stack_size;
         gdt_set_rsp0(kstack_top);
     }
 
     /* Phase 5: set up per-process page table and user GS (TEB).
      * This must happen before IRETQ switches the CPU to ring-3. */
     if (proc && proc->Pcb.DirectoryTableBase) {
-        Thread *sched_t = &et->Tcb.SchedulerThread;
+        Thread *sched_t = et->Kthread;
 
         /* Record the CR3 in the scheduler thread so perform_switch()
          * reloads it on every subsequent context switch. */
@@ -763,15 +813,9 @@ void PsInitialize(void)
         for (;;) {}
     }
 
-    /* The current boot thread becomes TID 4 (System:System) */
-    PETHREAD idle_et = PsGetCurrentThread();
-    if (idle_et) {
-        idle_et->UniqueThread         = 4;
-        idle_et->Process              = PsInitialSystemProcess;
-        idle_et->Cid.UniqueProcess    = 4;
-        idle_et->Cid.UniqueThread     = 4;
-        ps_next_tid = 8;  /* next TID after 4 */
-    }
+    /* TIDs 4 and up: the boot thread (CPU 0's idle thread) is TID 4
+     * (System:System) once ps_adopt_thread gives it its ETHREAD */
+    ps_next_tid = 8;
 
     kprintf("[PS] Process manager initialized (System PID=%lu)\n",
             PsInitialSystemProcess->UniqueProcessId);

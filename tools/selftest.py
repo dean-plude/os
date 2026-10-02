@@ -5,7 +5,7 @@
                       [--only NAME,...] [--junit FILE] [--summary FILE]
 
 Suites:
-  core      (default) apitest, abitest, filetest, pipetest, guitest auto,
+  core      (default) apitest, abitest, filetest, pipetest, proctest, guitest auto,
             anitest, disptest, battery, soundtest, and last "crash kernel" (a
             deliberate kernel fault must print a symbolized backtrace)
   graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
@@ -61,6 +61,7 @@ CORE = [
     Test('abitest', 'abitest', [r'abitest: \d+ passed, 0 failed']),
     Test('filetest', 'filetest', [r'filetest: \d+ passed, 0 failed']),
     Test('pipetest', 'pipetest', [r'pipetest: \d+ passed, 0 failed']),
+    Test('proctest', 'proctest', [r'proctest: \d+ passed, 0 failed']),
     Test('guitest', 'guitest auto', [r'guitest: \d+ passed, 0 failed']),
     Test('anitest', 'anitest', [r'anitest: \d+ passed, 0 failed']),
     Test('disptest', 'disptest', [r'\d+ passed, 0 failed']),
@@ -119,12 +120,16 @@ def verdict(t, out, ok, exe):
     bad = re.search(r'^(FAIL[^\n]*)', out, re.M) or re.search(r'\b([1-9]\d* failed)', out)
     if bad:
         return bad.group(1)
+    # the kernel's log shares the serial port with the Terminal's copy and
+    # can land in the middle of a line of output: match without it
+    text = KLOG.sub('', out)
     for e in t.expect:
-        if not re.search(e, out):
+        if not re.search(e, text):
             return f'missing "{e}"'
     return None
 
 
+KLOG = re.compile(r'\[(?:UM|SCHED)\] [^\n]*\n')
 PANIC = re.compile(r'KERNEL PANIC|KERNEL PAGE FAULT|DOUBLE FAULT|Unhandled kernel exception')
 
 

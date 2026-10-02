@@ -1856,7 +1856,7 @@ static int b_start(const char *a, Io *io)
         const char *e = strchr(p + 1, '"');
         p = e ? e + 1 : p + strlen(p);
     }
-    int wait = 0;
+    int wait = 0, same = 0;
     char dir[MAX_PATH] = "";
     for (;;) {
         while (*p == ' ') p++;
@@ -1865,6 +1865,7 @@ static int b_start(const char *a, Io *io)
         const char *e = sw;
         while (*e && *e != ' ') e++;
         if (!_strnicmp(sw, "wait", 4)) wait = 1;
+        else if (e - sw == 1 && (*sw | 0x20) == 'b') same = 1;     /* /B: in this console */
         else if (!_strnicmp(sw, "d", 1)) {
             const char *v = sw + 1;
             if (v == e) { while (*e == ' ') e++; v = e; while (*e && *e != ' ') e++; }
@@ -1883,7 +1884,8 @@ static int b_start(const char *a, Io *io)
         si.cb = sizeof(si);
         PROCESS_INFORMATION pi;
         char *cl = xstrdup(p);
-        if (CreateProcessA(full, cl, 0, 0, FALSE, 0, 0, dir[0] ? dir : 0, &si, &pi)) {
+        /* a console program gets a console (window) of its own, as on Windows */
+        if (CreateProcessA(full, cl, 0, 0, FALSE, same ? 0 : CREATE_NEW_CONSOLE, 0, dir[0] ? dir : 0, &si, &pi)) {
             CloseHandle(pi.hThread);
             if (wait) rc = wait_exit(pi.hProcess); else CloseHandle(pi.hProcess);
         } else rc = 1;

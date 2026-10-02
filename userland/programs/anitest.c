@@ -21,8 +21,8 @@
 #ifndef SPI_GETWORKAREA
 #define SPI_GETWORKAREA  0x0030
 #endif
-#define CTL_SET_CURSOR   17
-#define CTL_CURSOR_SHAPE 18
+#define CTL_SET_CURSOR   19
+#define CTL_CURSOR_SHAPE 20
 
 static const DWORD COLORS[8] = { 0xE81123, 0xFF8C00, 0xFFB900, 0x10893E, 0x00B7C3, 0x0078D7, 0x8764B8, 0xE3008C };
 static const DWORD SEQ[8] = { 0, 7, 6, 5, 4, 3, 2, 1 };
