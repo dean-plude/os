@@ -1397,7 +1397,7 @@ static UINT64 sys_protect_vm_locked(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a
     if (!r || end > r->base + r->size) return ST_MEMORY_NOT_ALLOCATED;
     for (UINT64 a = base; a < end; a += PAGE_SIZE)
         if (!um_is_committed(p, a)) return ST_MEMORY_NOT_ALLOCATED;
-    UINT32 old = r->protect;
+    UINT32 old = um_page_protect(p, base);                      /* the first page's, as Windows reports */
     um_commit(p, base, end - base, (UINT32)a4);                 /* re-protect committed pages */
     if (old_ptr) { UINT32 o = old; CopyToUser((void *)(uintptr_t)old_ptr, &o, 4); }
     put_u64(a2, base);
@@ -1436,14 +1436,15 @@ static UINT64 sys_query_vm_locked(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4)
         bool c = um_is_committed(p, va);
         UINT64 end = va + PAGE_SIZE, lim = r->base + r->size;
         /* a run of pages in the same state (bounded, so huge reservations stay cheap) */
-        for (int k = 0; end < lim && k < 65536 && um_is_committed(p, end) == c; k++) end += PAGE_SIZE;
-        if (end < lim && um_is_committed(p, end) == c) end = lim;
+        UINT32 prot = c ? um_page_protect(p, va) : 0;
+        for (int k = 0; end < lim && k < 65536 && um_is_committed(p, end) == c &&
+                        (!c || um_page_protect(p, end) == prot); k++) end += PAGE_SIZE;
+        if (end < lim && um_is_committed(p, end) == c && (!c || um_page_protect(p, end) == prot)) end = lim;
         mbi.alloc_base = r->base;
         mbi.alloc_protect = r->image ? 0x80 : r->protect;       /* images: EXECUTE_WRITECOPY */
         mbi.size = end - va;
         mbi.state = c ? 0x1000 : 0x2000;                        /* MEM_COMMIT / MEM_RESERVE */
-        mbi.protect = c ? r->protect : 0;
-        if (c && r->image) mbi.protect = 0x20;                  /* report images as EXECUTE_READ */
+        mbi.protect = c ? um_page_protect(p, va) : 0;
         mbi.type = r->image ? 0x1000000 : r->section ? 0x40000 : 0x20000;   /* MEM_IMAGE / MEM_MAPPED / MEM_PRIVATE */
     }
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &mbi, 48))) return UM_STATUS_ACCESS_VIOLATION;

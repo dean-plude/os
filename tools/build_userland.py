@@ -84,6 +84,9 @@ DLLS = [
     ('vulkan-1', ['advapi32', 'kernel32', 'ntdll'], 0x7FFCD0000000),
     ('mmdevapi', ['ole32', 'kernel32', 'ntdll'],  0x7FFCE0000000),
     ('avrt',     ['kernel32', 'ntdll'],           0x7FFCF0000000),
+    ('ktmw32',   ['kernel32', 'ntdll'],           0x7FFD10000000),
+    ('propsys',  ['ole32', 'kernel32', 'ntdll'],  0x7FFD20000000),
+    ('windowscodecs', ['kernel32', 'ntdll'],      0x7FFD30000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}

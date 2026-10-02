@@ -227,3 +227,14 @@ NTSTATUS NTAPI RtlRunOnceComplete(PRTL_RUN_ONCE once, ULONG flags, PVOID ctx)
     once->Ptr = (flags & 4 /* INIT_ONCE_INIT_FAILED */) ? 0 : RUNONCE_DONE;
     return STATUS_SUCCESS;
 }
+
+NTSTATUS NTAPI RtlRunOnceExecuteOnce(PRTL_RUN_ONCE once, PRTL_RUN_ONCE_INIT_FN fn, PVOID param, PVOID *ctx)
+{
+    NTSTATUS s = RtlRunOnceBeginInitialize(once, 0, ctx);
+    if (s != STATUS_PENDING) return s;
+    if (!fn(once, param, ctx)) {
+        RtlRunOnceComplete(once, 4 /* INIT_ONCE_INIT_FAILED */, 0);
+        return (NTSTATUS)0xC0000001;                    /* STATUS_UNSUCCESSFUL */
+    }
+    return RtlRunOnceComplete(once, 0, ctx ? *ctx : 0);
+}

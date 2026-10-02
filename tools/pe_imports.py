@@ -81,13 +81,33 @@ class PE:
         return {self.cstr(struct.unpack_from('<I', self.d, self.off(names) + 4 * i)[0]) for i in range(nnames)}
 
 
+# API sets, mapped the way the kernel's loader maps them (map_api_set in
+# kernel/um/um.c): first matching prefix wins
+API_SETS = [
+    ('api-ms-win-crt-', 'ucrtbase.dll'),
+    ('api-ms-win-core-synch-', 'kernel32.dll'),
+    ('api-ms-win-core-com-', 'ole32.dll'),
+    ('api-ms-win-core-winrt-', 'ole32.dll'),
+    ('combase.dll', 'ole32.dll'),
+    ('api-ms-win-core-', 'kernel32.dll'),
+    ('api-ms-win-security-', 'advapi32.dll'),
+    ('api-ms-win-eventing-', 'advapi32.dll'),
+    ('api-ms-win-shell-', 'shell32.dll'),
+    ('api-ms-win-shcore-', 'shlwapi.dll'),
+    ('ext-ms-win-', 'kernel32.dll'),
+    ('kernelbase.dll', 'kernel32.dll'),
+    ('api-ms-win-', 'kernel32.dll'),
+    ('msvcrt40.dll', 'msvcrt.dll'),
+    ('wsock32.dll', 'ws2_32.dll'),
+]
+
+
 def apiset(name):
     """The DLL an API set name resolves to (as kernel/um/um.c maps them)"""
     n = name.lower()
-    if n.startswith('api-ms-win-crt-'):
-        return 'ucrtbase.dll'
-    if n.startswith('api-ms-win-') or n.startswith('ext-ms-win-'):
-        return 'kernel32.dll'
+    for prefix, dll in API_SETS:
+        if n.startswith(prefix):
+            return dll
     return n
 
 

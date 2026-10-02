@@ -1056,3 +1056,69 @@ WINADVAPI BOOL WINAPI SetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si,
     (void)si; (void)sd;
     return h != 0;
 }
+
+WINADVAPI BOOL WINAPI GetSecurityDescriptorSacl(PSECURITY_DESCRIPTOR sd, LPBOOL present, PACL *acl, LPBOOL defaulted)
+{
+    SECURITY_DESCRIPTOR *s = sd;
+    *present = (s->Control & 0x0010 /* SE_SACL_PRESENT */) != 0;
+    *acl = *present ? sd_part(sd, 2) : 0;
+    if (defaulted) *defaulted = (s->Control & 0x0020) != 0;
+    return TRUE;
+}
+
+/* TRUSTEE_W naming a SID */
+typedef struct _TRUSTEE_W_ {
+    struct _TRUSTEE_W_ *pMultipleTrustee;
+    int MultipleTrusteeOperation, TrusteeForm, TrusteeType;
+    LPWSTR ptstrName;
+} TRUSTEE_W_;
+WINADVAPI VOID WINAPI BuildTrusteeWithSidW(TRUSTEE_W_ *t, PSID sid)
+{
+    if (!t) return;
+    t->pMultipleTrustee = 0;
+    t->MultipleTrusteeOperation = 0;                /* NO_MULTIPLE_TRUSTEE */
+    t->TrusteeForm = 0;                             /* TRUSTEE_IS_SID */
+    t->TrusteeType = 0;                             /* TRUSTEE_IS_UNKNOWN */
+    t->ptstrName = (LPWSTR)sid;
+}
+WINADVAPI VOID WINAPI BuildTrusteeWithSidA(TRUSTEE_W_ *t, PSID sid) { BuildTrusteeWithSidW(t, sid); }
+
+/* Private object security: the new object's descriptor is a self-relative
+ * copy of the creator's (no inheritance from the parent: NovaOS's own
+ * objects carry no ACLs to inherit) */
+WINADVAPI BOOL WINAPI CreatePrivateObjectSecurityEx(PSECURITY_DESCRIPTOR parent, PSECURITY_DESCRIPTOR creator,
+                                                    PSECURITY_DESCRIPTOR *out, GUID *type, BOOL container,
+                                                    ULONG flags, HANDLE token, PGENERIC_MAPPING map)
+{
+    (void)parent; (void)type; (void)container; (void)flags; (void)token; (void)map;
+    if (!out) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    SECURITY_DESCRIPTOR empty;
+    if (!creator) {
+        InitializeSecurityDescriptor(&empty, 1);
+        creator = &empty;
+    }
+    DWORD n = 0;
+    if (((SECURITY_DESCRIPTOR *)creator)->Control & SE_SELF_RELATIVE) n = GetSecurityDescriptorLength(creator);
+    else MakeSelfRelativeSD(creator, 0, &n);
+    PSECURITY_DESCRIPTOR sd = n ? HeapAlloc(GetProcessHeap(), 0, n) : 0;
+    if (!sd) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    if (((SECURITY_DESCRIPTOR *)creator)->Control & SE_SELF_RELATIVE) memcpy(sd, creator, n);
+    else if (!MakeSelfRelativeSD(creator, sd, &n)) { HeapFree(GetProcessHeap(), 0, sd); return FALSE; }
+    *out = sd;
+    return TRUE;
+}
+WINADVAPI BOOL WINAPI CreatePrivateObjectSecurity(PSECURITY_DESCRIPTOR parent, PSECURITY_DESCRIPTOR creator,
+                                                  PSECURITY_DESCRIPTOR *out, BOOL container, HANDLE token, PGENERIC_MAPPING map)
+{
+    return CreatePrivateObjectSecurityEx(parent, creator, out, 0, container, 0, token, map);
+}
+WINADVAPI BOOL WINAPI DestroyPrivateObjectSecurity(PSECURITY_DESCRIPTOR *sd)
+{
+    if (sd && *sd) { HeapFree(GetProcessHeap(), 0, *sd); *sd = 0; }
+    return TRUE;
+}
+
+/* Credentials, ANSI forms: none stored either */
+WINADVAPI BOOL WINAPI CredReadA(LPCSTR target, DWORD type, DWORD flags, PVOID *cred) { (void)target; return CredReadW(0, type, flags, cred); }
+WINADVAPI BOOL WINAPI CredWriteA(PVOID cred, DWORD flags) { return CredWriteW(cred, flags); }
+WINADVAPI BOOL WINAPI CredDeleteA(LPCSTR target, DWORD type, DWORD flags) { (void)target; return CredDeleteW(0, type, flags); }

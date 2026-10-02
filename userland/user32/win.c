@@ -544,10 +544,13 @@ void default_nc_calc(Wnd *w, RECT *r)
 void wnd_calc_client(Wnd *w)
 {
     NCCALCSIZE_PARAMS p;
+    WINDOWPOS pos = { w->h, 0, w->rect.left, w->rect.top, w->rect.right - w->rect.left, w->rect.bottom - w->rect.top,
+                      SWP_NOZORDER | SWP_NOACTIVATE };
     memset(&p, 0, sizeof(p));
     p.rgrc[0] = w->rect;
     p.rgrc[1] = w->rect;
     p.rgrc[2] = w->client;
+    p.lppos = &pos;                                         /* always there when wParam is TRUE */
     if (w->proc && (w->flags & WF_CREATED)) send_msg(w, WM_NCCALCSIZE, TRUE, (LPARAM)&p);
     else default_nc_calc(w, &p.rgrc[0]);
     w->client = p.rgrc[0];

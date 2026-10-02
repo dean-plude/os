@@ -229,6 +229,7 @@ bool       um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect);
 bool       um_is_guard(UmProcess *p, UINT64 va);            /* a PAGE_GUARD page */
 void       um_decommit(UmProcess *p, UINT64 va, UINT64 size);
 bool       um_is_committed(UmProcess *p, UINT64 va);
+UINT32     um_page_protect(UmProcess *p, UINT64 va);       /* PAGE_* now, 0 if not committed */
 /* Shared sections: frames the section owns, mapped into processes */
 PADDR     *um_alloc_frames(UINT64 n);           /* n zeroed frames; NULL if memory is short */
 void       um_free_frames(PADDR *f, UINT64 n);

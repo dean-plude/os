@@ -114,6 +114,28 @@ int feupdateenv(const fenv_t *e) { unsigned ex = mxcsr() & 0x3F; fesetenv(e); fe
 int fegetexceptflag(fexcept_t *f, int e) { *f = (fexcept_t)fetestexcept(e); return 0; }
 int fesetexceptflag(const fexcept_t *f, int e) { set_mxcsr((mxcsr() & ~((unsigned)e & FE_ALL)) | ((unsigned)*f & (unsigned)e & FE_ALL)); return 0; }
 
+/* The exported <fenv.h>: Microsoft numbers the rounding modes as its
+ * _RC_* bits (near 0, down 0x100, up 0x200, chop 0x300); the exception
+ * bits match MXCSR's.  The functions above keep musl's x87 numbering
+ * for the math library. */
+static int ms_round(int r) { return r == 0x400 ? 0x100 : r == 0x800 ? 0x200 : r == 0xC00 ? 0x300 : 0; }
+static int x87_round(int r) { return r == 0x100 ? 0x400 : r == 0x200 ? 0x800 : r == 0x300 ? 0xC00 : 0; }
+int nova_ms_fegetround(void) { return ms_round(fegetround()); }
+int nova_ms_fesetround(int r) { return r & ~0x300 ? 1 : fesetround(x87_round(r)) ? 1 : 0; }
+#ifdef _WIN64
+#define FE_SYM(n) #n
+#else
+#define FE_SYM(n) "_" #n                    /* x86: C names carry an underscore */
+#endif
+#define FE_EXPORT(name, sym) ".ascii \" /EXPORT:" #name "=" FE_SYM(sym) "\"\n\t"
+__asm__(".section .drectve,\"yn\"\n\t"
+        FE_EXPORT(fegetround, nova_ms_fegetround) FE_EXPORT(fesetround, nova_ms_fesetround)
+        FE_EXPORT(fegetenv, fegetenv) FE_EXPORT(fesetenv, fesetenv) FE_EXPORT(feholdexcept, feholdexcept)
+        FE_EXPORT(feupdateenv, feupdateenv) FE_EXPORT(feclearexcept, feclearexcept)
+        FE_EXPORT(fetestexcept, fetestexcept) FE_EXPORT(feraiseexcept, feraiseexcept)
+        FE_EXPORT(fegetexceptflag, fegetexceptflag) FE_EXPORT(fesetexceptflag, fesetexceptflag)
+        ".text\n");
+
 /* Microsoft's float control API over MXCSR */
 __declspec(dllexport) unsigned int _clearfp(void)  { unsigned s = mxcsr() & 0x3F; set_mxcsr(mxcsr() & ~0x3Fu); __asm__ volatile("fnclex"); return s; }
 __declspec(dllexport) unsigned int _statusfp(void) { return mxcsr() & 0x3F; }

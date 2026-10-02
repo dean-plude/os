@@ -346,6 +346,19 @@ bool um_is_committed(UmProcess *p, UINT64 va)
     return e && (*e & (PTE_PRESENT | PTE_LAZY));
 }
 
+/* The PAGE_* protection a committed page has now (from its entry: a
+ * module's pages each carry their own section's, and VirtualProtect may
+ * have changed single pages); 0 if not committed */
+UINT32 um_page_protect(UmProcess *p, UINT64 va)
+{
+    pte_t *e = walk(p->pml4, va, false);
+    if (!e || !(*e & (PTE_PRESENT | PTE_LAZY))) return 0;
+    pte_t v = *e;
+    bool w = v & PTE_WRITE, x = !(v & PTE_NX);
+    UINT32 prot = x ? (w ? 0x40 : 0x20) : (w ? 0x04 : 0x02);
+    return prot | ((v & PTE_GUARD) ? 0x100 : 0);
+}
+
 bool um_is_guard(UmProcess *p, UINT64 va)
 {
     pte_t *e = walk(p->pml4, va, false);
@@ -805,6 +818,7 @@ static void map_api_set(char *lname, int cap)
         { "api-ms-win-crt-",              "ucrtbase.dll" },
         { "api-ms-win-core-synch-",       "kernel32.dll" },
         { "api-ms-win-core-com-",         "ole32.dll" },
+        { "api-ms-win-core-winrt-",       "ole32.dll" },      /* combase: HSTRINGs, activation */
         { "combase.dll",                  "ole32.dll" },
         { "api-ms-win-core-",             "kernel32.dll" },
         { "api-ms-win-security-",         "advapi32.dll" },
@@ -815,6 +829,7 @@ static void map_api_set(char *lname, int cap)
         { "kernelbase.dll",               "kernel32.dll" },
         { "api-ms-win-",                  "kernel32.dll" },   /* any other set: what exists is there */
         { "msvcrt40.dll",                 "msvcrt.dll" },
+        { "wsock32.dll",                  "ws2_32.dll" },     /* Winsock 1.1: the same functions and ordinals */
     };
     for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++)
         if (!strncmp(lname, sets[i].prefix, strlen(sets[i].prefix))) {

@@ -564,3 +564,48 @@ int WSAStringToAddressW(WCHAR *str, int family, void *info, struct sockaddr *sa,
     a[i] = 0;
     return WSAStringToAddressA(str ? a : 0, family, info, sa, len);
 }
+
+/* WSASendMsg: the message's buffers to its address (or the connected peer) */
+typedef struct { struct sockaddr *name; int namelen; LPWSABUF lpBuffers; ULONG dwBufferCount; WSABUF Control; ULONG dwFlags; } WSAMSG_;
+__declspec(dllexport) int WSAAPI WSASendMsg(SOCKET s, WSAMSG_ *msg, DWORD flags, LPDWORD sent, LPWSAOVERLAPPED ov,
+                                            LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
+{
+    if (!msg) { set_err(WSAEFAULT); return SOCKET_ERROR; }
+    return WSASendTo(s, msg->lpBuffers, msg->dwBufferCount, sent, flags, msg->name, msg->namelen, ov, cr);
+}
+
+/* The service provider interface: the protocols are NovaOS's own (the
+ * catalog WSAEnumProtocols lists), all provided by mswsock.dll */
+__declspec(dllexport) int WSAAPI WSCEnumProtocols(int *protocols, LPWSAPROTOCOL_INFOW buf, LPDWORD len, int *err)
+{
+    int r = WSAEnumProtocolsW(protocols, buf, len);
+    if (r == SOCKET_ERROR && err) *err = (int)*(DWORD *)(NtCurrentTebBytes() + TEB_LAST_ERROR);
+    return r;
+}
+__declspec(dllexport) int WSAAPI WSCGetProviderPath(GUID *id, WCHAR *path, int *len, int *err)
+{
+    static const WCHAR p[] = L"%SystemRoot%\\system32\\mswsock.dll";
+    int n = (int)(sizeof(p) / sizeof(WCHAR));
+    (void)id;
+    if (!path || !len) { if (err) *err = WSAEFAULT; return SOCKET_ERROR; }
+    if (*len < n) { *len = n; if (err) *err = WSAEFAULT; return SOCKET_ERROR; }
+    memcpy(path, p, sizeof(p));
+    *len = n;
+    return 0;
+}
+/* Provider information classes (LSP categories...): none to report */
+__declspec(dllexport) int WSAAPI WSCGetProviderInfo(GUID *id, int cls, PBYTE info, size_t *len, DWORD flags, int *err)
+{
+    (void)id; (void)cls; (void)info; (void)len; (void)flags;
+    if (err) *err = WSAEINVAL;
+    return SOCKET_ERROR;
+}
+
+/* WSARecvEx (Winsock 1.1's, programs reach it through wsock32.dll): recv
+ * with MSG_PARTIAL never set, as NovaOS delivers whole datagrams */
+__declspec(dllexport) int WSAAPI WSARecvEx(SOCKET s, char *buf, int len, int *flags)
+{
+    int r = recv(s, buf, len, flags ? *flags : 0);
+    if (flags) *flags = 0;
+    return r;
+}
