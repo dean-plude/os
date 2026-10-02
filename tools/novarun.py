@@ -8,14 +8,19 @@ the --put trees, opens the Terminal (Win, "terminal", Enter), turns on
 "serial on" and types each COMMAND, waiting for the Terminal's end-of-command
 mark.  Prints each command's output.  A COMMAND of the form
 "!shot NAME.png" saves a screenshot, "!wait N" waits N seconds and
-"!keys a b ctrl-c" presses QEMU key names.
+"!keys a b ctrl-c" presses QEMU key names, "!type TEXT" types
+without waiting (\\n Enter, \\e Esc) and "!done N" waits up to N seconds
+for the running command to end.
 
 Options: --mem MiB (2048), --smp N (2), --timeout S per command (120),
 --keep DIR (keep the serial log, data disk and screenshots there),
 --img PATH (the boot image), --wav PATH (an Intel HD Audio card whose
-output QEMU records to PATH).
+output QEMU records to PATH), --net (a network card on QEMU user
+networking; the host is 10.0.2.2).
+
+Other tools (tools/selftest.py) import the Nova class to drive a boot.
 """
-import argparse, json, os, shutil, socket, subprocess, sys, tempfile, time
+import argparse, json, os, re, shutil, socket, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OVMF = next((p for p in ('/usr/share/ovmf/OVMF.fd', '/usr/share/OVMF/OVMF_CODE.fd',
@@ -117,6 +122,98 @@ def make_data(path, puts, size_mb):
             subprocess.run(['mcopy', '-o', '-i', path, host, target], check=True, env=env)
 
 
+class Nova:
+    """One NovaOS boot in QEMU with its Terminal open and mirrored to serial"""
+
+    def __init__(self, img=None, work=None, puts=(), mem=2048, smp=2, data_mb=1024, wav=None,
+                 extra_args=(), boot_timeout=300, net=False):
+        self.work = work or tempfile.mkdtemp(prefix='novarun')
+        os.makedirs(self.work, exist_ok=True)
+        data, self.serial_path, sock = (os.path.join(self.work, n) for n in ('data.img', 'serial.log', 'qmp.sock'))
+        for p in (self.serial_path, sock):
+            if os.path.exists(p):
+                os.unlink(p)
+        make_data(data, puts, data_mb)
+        self.wav = wav
+        self.qmp = None
+        self.q = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35', '-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
+                                   '-m', str(mem), '-smp', str(smp),
+                                   '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
+                                   '-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on',
+                                   '-drive', f'format=raw,file={data}',
+                                   '-serial', f'file:{self.serial_path}', '-vga', 'std', '-display', 'none',
+                                   '-nic', 'user,model=e1000e' if net else 'none',
+                                   '-qmp', f'unix:{sock},server,nowait'] +
+                                  (['-audiodev', f'wav,id=snd0,path={os.path.abspath(wav)},out.frequency=48000',
+                                    '-device', 'intel-hda', '-device', 'hda-output,audiodev=snd0'] if wav else []) +
+                                  (['-s'] if os.environ.get('NOVARUN_GDB') else []) +   # gdb server on :1234
+                                  list(extra_args))
+        try:
+            self.sr = Serial(self.serial_path)
+            out, ok = self.sr.wait('Entering kernel main loop', boot_timeout)
+            self.boot_log = out
+            if not ok:
+                raise RuntimeError('NovaOS did not boot:\n' + out[-3000:])
+            self.qmp = Qmp(sock)
+            time.sleep(2)
+            self.qmp.key('meta_l')
+            time.sleep(1)
+            self.qmp.type('terminal\n')
+            time.sleep(3)
+            self.sr.read_new()
+            self.qmp.type('serial on\n')
+            self.sr.wait('[TERM-DONE]', 30)
+        except BaseException:
+            self.close()
+            raise
+
+    def run(self, cmd, timeout=120, shot=None):
+        """Type @cmd into the Terminal; returns (serial output, finished in time).
+        @shot = (regex, path): a screenshot 2 s after the output matches
+        regex (while the program is still drawing)"""
+        self.sr.read_new()
+        self.qmp.type(cmd + '\n')
+        got, ok, end = '', False, time.time() + timeout
+        if shot:
+            pat = re.compile(shot[0])
+            while time.time() < end and '[TERM-DONE]' not in got and not pat.search(got):
+                time.sleep(0.25)
+                got += self.sr.read_new()
+            if pat.search(got) and '[TERM-DONE]' not in got:
+                time.sleep(2)
+                self.shot(shot[1])
+            ok = '[TERM-DONE]' in got
+        if not ok:
+            more, ok = self.sr.wait('[TERM-DONE]', max(1, end - time.time()))
+            got += more
+            ok = '[TERM-DONE]' in got
+        if not ok:                          # Ctrl+C: the kernel logs where its threads are
+            self.qmp.key('ctrl', 'c')
+            more, _ = self.sr.wait('[TERM-DONE]', 20)
+            got += more
+        return got.replace('\n[TERM-DONE]\n', '').rstrip(), ok
+
+    def shot(self, path):
+        self.qmp.cmd('screendump', filename=os.path.abspath(path), format='png')
+
+    def keys(self, names):
+        for k in names.split():
+            self.qmp.key(*k.split('-'))
+            time.sleep(0.1)
+
+    def close(self, keep=True):
+        if self.wav and self.qmp and self.q.poll() is None:   # quit cleanly: QEMU finishes the WAV header
+            try:
+                self.qmp.cmd('quit')
+                self.q.wait(timeout=10)
+            except Exception:
+                pass
+        self.q.kill()
+        self.q.wait()
+        if not keep:
+            shutil.rmtree(self.work, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--put', action='append', default=[])
@@ -127,86 +224,56 @@ def main():
     ap.add_argument('--keep')
     ap.add_argument('--img', default=os.path.join(ROOT, 'build', 'nova.img'))
     ap.add_argument('--wav')
+    ap.add_argument('--net', action='store_true', help='a network card on QEMU user networking (the host is 10.0.2.2)')
     ap.add_argument('commands', nargs='*')
     a = ap.parse_args()
 
-    work = a.keep or tempfile.mkdtemp(prefix='novarun')
-    os.makedirs(work, exist_ok=True)
-    data, serial, sock = (os.path.join(work, n) for n in ('data.img', 'serial.log', 'qmp.sock'))
-    for p in (serial, sock):
-        if os.path.exists(p):
-            os.unlink(p)
-    make_data(data, [p.split('=', 1) for p in a.put], a.data_mb)
-
-    q = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35', '-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
-                          '-m', str(a.mem), '-smp', str(a.smp),
-                          '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
-                          '-drive', f'format=raw,file={a.img},snapshot=on',
-                          '-drive', f'format=raw,file={data}',
-                          '-serial', f'file:{serial}', '-vga', 'std', '-display', 'none', '-nic', 'none',
-                          '-qmp', f'unix:{sock},server,nowait'] + (['-s'] if os.environ.get('NOVARUN_GDB') else []) +
-                         (['-audiodev', f'wav,id=snd0,path={os.path.abspath(a.wav)},out.frequency=48000',
-                           '-device', 'intel-hda', '-device', 'hda-output,audiodev=snd0'] if a.wav else []))
-    qmp = None
     try:
-        sr = Serial(serial)
-        out, ok = sr.wait('Entering kernel main loop', 300)
-        if not ok:
-            print(out[-3000:])
-            sys.exit('NovaOS did not boot')
-        qmp = Qmp(sock)
-        time.sleep(2)
-        qmp.key('meta_l')
-        time.sleep(1)
-        qmp.type('terminal\n')
-        time.sleep(3)
-        sr.read_new()
-        qmp.type('serial on\n')
-        sr.wait('[TERM-DONE]', 30)
+        nova = Nova(a.img, a.keep, [p.split('=', 1) for p in a.put], a.mem, a.smp, a.data_mb, a.wav, net=a.net)
+    except RuntimeError as e:
+        sys.exit(str(e))
+    try:
         for c in a.commands:
             if c.startswith('!shot '):
-                qmp.cmd('screendump', filename=os.path.abspath(os.path.join(work, c[6:].strip())), format='png')
-                print(f'### screenshot {os.path.join(work, c[6:].strip())}', flush=True)
+                nova.shot(os.path.join(nova.work, c[6:].strip()))
+                print(f'### screenshot {os.path.join(nova.work, c[6:].strip())}', flush=True)
                 continue
             if c.startswith('!wait '):
                 time.sleep(float(c[6:]))
                 continue
+            if c.startswith('!type '):      # type without waiting (\n, \e: Enter, Esc)
+                text = c[6:].replace('\\n', '\n')
+                for i, part in enumerate(text.split('\\e')):
+                    if i:
+                        nova.qmp.key('esc')
+                        time.sleep(0.1)
+                    nova.qmp.type(part)
+                continue
+            if c.startswith('!done '):      # wait for the running command to end
+                t0 = time.time()
+                got, ok = nova.sr.wait('[TERM-DONE]', float(c[6:]))
+                print(got.replace('\n[TERM-DONE]\n', '').rstrip(), flush=True)
+                print(f'### {"done" if ok else "TIMEOUT"} in {time.time() - t0:.1f}s', flush=True)
+                continue
             if c.startswith('!keys '):
-                for k in c[6:].split():
-                    qmp.key(*k.split('-'))
-                    time.sleep(0.1)
+                nova.keys(c[6:])
                 continue
             if c.startswith('!bg '):       # type a command and leave it running
-                sr.read_new()
+                nova.sr.read_new()
                 print(f'### (running) {c[4:]}', flush=True)
-                qmp.type(c[4:] + '\n')
+                nova.qmp.type(c[4:] + '\n')
                 continue
-            sr.read_new()
             print(f'### {c}', flush=True)
-            qmp.type(c + '\n')
             t0 = time.time()
-            got, ok = sr.wait('[TERM-DONE]', a.timeout)
-            if not ok:                      # Ctrl+C: the kernel logs where its threads are
-                qmp.key('ctrl', 'c')
-                more, _ = sr.wait('[TERM-DONE]', 20)
-                got += more
-            print(got.replace('\n[TERM-DONE]\n', '').rstrip(), flush=True)
+            got, ok = nova.run(c, a.timeout)
+            print(got, flush=True)
             print(f'### {"done" if ok else "TIMEOUT"} in {time.time() - t0:.1f}s', flush=True)
         if a.keep:
-            tail = sr.read_new()
+            tail = nova.sr.read_new()
             if tail.strip():
                 print(tail)
     finally:
-        if a.wav and qmp and q.poll() is None:   # quit cleanly: QEMU finishes the WAV header
-            try:
-                qmp.cmd('quit')
-                q.wait(timeout=10)
-            except Exception:
-                pass
-        q.kill()
-        q.wait()
-        if not a.keep:
-            shutil.rmtree(work, ignore_errors=True)
+        nova.close(keep=bool(a.keep))
 
 
 if __name__ == '__main__':

@@ -72,7 +72,7 @@ void um_unlock(UmLock *l);
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
 typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION, UO_PIPE,
-               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO } UmObType;
+               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO, UO_CONSOLE } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -132,11 +132,26 @@ void      um_ob_wake(UmObject *o);
 
 typedef enum { H_FREE = 0, H_FILE, H_CON_IN, H_CON_OUT, H_DIR, H_OBJECT, H_NULL } UmHandleKind;
 
+/* An open file's byte offset.  Like a Windows file object's
+ * CurrentByteOffset it belongs to the open, not the handle: duplicates and
+ * inherited copies of a handle share it (refs), so a child process writing
+ * to an inherited log file appends after its parent.  Changed with the
+ * desktop lock held. */
+typedef struct {
+    volatile INT32 refs;
+    UINT64         pos;
+} UmFilePos;
+
+UmFilePos *um_fpos_new(void);
+void       um_fpos_ref(UmFilePos *f);
+void       um_fpos_unref(UmFilePos *f);
+
 typedef struct {
     UmHandleKind kind;
     RamNode     *node;          /* H_FILE, H_DIR */
     UmObject    *obj;           /* H_OBJECT */
-    UINT64       pos;           /* H_FILE: current byte offset; H_DIR: next entry */
+    UINT64       pos;           /* H_DIR: next entry (H_FILE without fp: its byte offset) */
+    UmFilePos   *fp;            /* H_FILE: the shared byte offset (referenced) */
     bool         read, write, append, delete_on_close;
     bool         inherit;       /* passed to child processes (bInheritHandles) */
     bool         async;         /* H_FILE: opened for overlapped I/O */
@@ -208,6 +223,7 @@ UmProcess *UmCurrent(void);                    /* NULL for kernel threads */
 void       um_set_layout(UmProcess *p, bool wow);   /* 64-bit or 32-bit (WoW) address layout */
 void       um_wow_path(UmProcess *p, char *path);  /* System32 -> SysWOW64 for 32-bit programs */
 UINT16     um_pe_machine(const RamNode *f);     /* 0x8664, 0x014C, or 0 if not a PE file */
+UINT16     um_pe_subsystem(RamNode *f);   /* IMAGE_SUBSYSTEM_* (2 GUI, 3 console), 0 if not an image */
 UmThread  *UmCurrentThread(void);
 UINT32     um_new_id(void);
 /* The calling thread should stop (its process or itself is being ended) */
@@ -258,6 +274,16 @@ UmConsole *um_console_ref(UmConsole *c);
 int        um_console_write(UmConsole *c, const char *data, int len);   /* program output */
 /* Program reads keyboard input: bytes, 0 at EOF, -1 if killed while waiting */
 int        um_console_read(UmConsole *c, char *buf, int cap, UmProcess *p);
+/* The console's waitable object (referenced), for input handles */
+UmObject  *um_console_object(UmConsole *c);
+/* Input records: copy up to @max (taking them with @remove; @wait for
+ * one); -1 if the thread is being ended while waiting */
+int        um_console_records(UmConsole *c, UmConInput *out, int max, bool remove, bool wait);
+int        um_console_count(UmConsole *c);
+void       um_console_flush(UmConsole *c);
+void       um_console_set_mode(UmConsole *c, bool input, UINT32 mode);
+void       um_console_size(UmConsole *c, int *cols, int *rows);
+int        um_console_pids(UmConsole *c, UINT32 *out, int max);   /* running processes on @c (count; up to @max ids) */
 
 /* um_syscall.c */
 void       um_syscall_init(void);

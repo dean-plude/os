@@ -176,36 +176,31 @@ WINBASEAPI BOOL WINAPI GetQueuedCompletionStatusEx(HANDLE port, LPOVERLAPPED_ENT
     return TRUE;
 }
 
-/* Called by ReadFile/WriteFile once an OVERLAPPED request has completed */
-void k32_io_done(HANDLE h, OVERLAPPED *o, NTSTATUS s, DWORD bytes)
+/* Finish an OVERLAPPED request: its status, its event, and a packet on
+ * @port (a port handle, or 0) unless the event's low bit says not to */
+static void io_done_port(HANDLE port, ULONG_PTR key, OVERLAPPED *o, NTSTATUS s, DWORD bytes)
 {
     o->Internal = (ULONG_PTR)s;
     o->InternalHigh = bytes;
     ULONG_PTR ev = (ULONG_PTR)o->hEvent;
     if (ev & ~(ULONG_PTR)1) SetEvent((HANDLE)(ev & ~(ULONG_PTR)1));
-    if (ev & 1) return;                                     /* low bit: no completion packet */
-    lock();
-    FileInfo *f = file_info(h, FALSE);
-    Port *p = f ? f->port : 0;
-    BOOL queued = p && !(NT_SUCCESS(s) && (f->modes & 1)) && post(p, bytes, f->key, o, s);
-    unlock();
-    if (queued) ReleaseSemaphore(p->h, 1, 0);
-}
-
-/* A request that stayed pending completes to the port and key its handle
- * was bound to when it was issued (by then the handle may be closed, and
- * its value reused for another file) */
-static void io_done_to(HANDLE port, ULONG_PTR key, OVERLAPPED *o, NTSTATUS s, DWORD bytes)
-{
-    o->Internal = (ULONG_PTR)s;
-    o->InternalHigh = bytes;
-    ULONG_PTR ev = (ULONG_PTR)o->hEvent;
-    if (ev & ~(ULONG_PTR)1) SetEvent((HANDLE)(ev & ~(ULONG_PTR)1));
+    if ((ev & 1) || !port) return;                          /* low bit: no completion packet */
     lock();
     Port *p = find_port(port);
     BOOL queued = p && post(p, bytes, key, o, s);
     unlock();
     if (queued) ReleaseSemaphore(port, 1, 0);
+}
+
+/* Called by ReadFile/WriteFile once an OVERLAPPED request has completed */
+void k32_io_done(HANDLE h, OVERLAPPED *o, NTSTATUS s, DWORD bytes)
+{
+    lock();
+    FileInfo *f = file_info(h, FALSE);
+    HANDLE port = f && f->port && !(NT_SUCCESS(s) && (f->modes & 1)) ? f->port->h : 0;
+    ULONG_PTR key = f ? f->key : 0;
+    unlock();
+    io_done_port(port, key, o, s, bytes);
 }
 
 /* For ws2_32: finishes an overlapped operation on @h the way file I/O does
@@ -281,6 +276,8 @@ static BOOL run_apcs(void)
  * waits (ReadFileEx), a helper thread watches a private event instead and
  * then does what k32_io_done does at once for other requests.
  * ----------------------------------------------------------------------- */
+/* (The port and key are taken when the request starts: closing the handle
+ * cancels it, and the packet saying so must still reach the port.) */
 typedef struct Watch { struct Watch *next; HANDLE ev, h, port; ULONG_PTR key; OVERLAPPED *o; void *fn; DWORD tid; } Watch;
 static Watch *g_watch;
 static HANDLE g_watch_wake;
@@ -295,7 +292,7 @@ static void watch_done(Watch *w)
     NTSTATUS s = (NTSTATUS)w->o->Internal;
     DWORD bytes = (DWORD)w->o->InternalHigh;
     if (w->fn) queue_apc(w->tid, 0, w->fn, apc_error(s), bytes, (ULONG_PTR)w->o);
-    else io_done_to(w->port, w->key, w->o, s, bytes);
+    else io_done_port(w->port, w->key, w->o, s, bytes);
     CloseHandle(w->ev);
     zfree(w);
 }
@@ -339,16 +336,17 @@ static Watch *watch_new(HANDLE h, OVERLAPPED *o, void *fn)
 {
     lock();
     FileInfo *f = file_info(h, FALSE);
-    BOOL port = f && f->port && !((ULONG_PTR)o->hEvent & 1);
-    HANDLE porth = port ? f->port->h : 0;
-    ULONG_PTR key = port ? f->key : 0;
+    HANDLE port = f && f->port && !((ULONG_PTR)o->hEvent & 1) ? f->port->h : 0;
+    ULONG_PTR key = f ? f->key : 0;
     unlock();
     if (!port && !fn) return 0;
     Watch *w = zalloc(sizeof(*w));
     if (!w) return 0;
+    w->port = port;
+    w->key = key;
     w->ev = CreateEventW(0, TRUE, FALSE, 0);
     if (!w->ev) { zfree(w); return 0; }
-    w->h = h; w->port = porth; w->key = key; w->o = o; w->fn = fn; w->tid = GetCurrentThreadId();
+    w->h = h; w->o = o; w->fn = fn; w->tid = GetCurrentThreadId();
     return w;
 }
 
@@ -978,6 +976,7 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
     for (int i = 0; i < 3; i++) io.StdHandle[i] = std[i];
     io.Flags = (inherit ? 1 : 0) | ((flags & (DETACHED_PROCESS | CREATE_NO_WINDOW)) ? 2 : 0) |
                ((flags & CREATE_SUSPENDED) ? 4 : 0);
+    if ((flags & CREATE_NEW_CONSOLE) && !(flags & DETACHED_PROCESS)) io.Flags |= 8;
     io.Environment = envb;
     io.EnvironmentSize = env_len;
     if (rt && rt_len) { io.RuntimeData = rt; io.RuntimeDataSize = rt_len; }
@@ -993,10 +992,12 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
 }
 
 /* The new process's standard handles: STARTUPINFO's when it says so,
- * else the creator's own (a console program's output goes where ours does) */
-static void std_handles(DWORD flags, HANDLE si_in, HANDLE si_out, HANDLE si_err, HANDLE std[3])
+ * else the creator's own (a console program's output goes where ours
+ * does), or with a console of its own, that console (0) */
+static void std_handles(DWORD flags, DWORD create, HANDLE si_in, HANDLE si_out, HANDLE si_err, HANDLE std[3])
 {
     if (flags & STARTF_USESTDHANDLES) { std[0] = si_in; std[1] = si_out; std[2] = si_err; return; }
+    if (create & CREATE_NEW_CONSOLE) { std[0] = std[1] = std[2] = 0; return; }
     std[0] = GetStdHandle(STD_INPUT_HANDLE);
     std[1] = GetStdHandle(STD_OUTPUT_HANDLE);
     std[2] = GetStdHandle(STD_ERROR_HANDLE);
@@ -1009,7 +1010,7 @@ WINBASEAPI BOOL WINAPI CreateProcessA(LPCSTR app, LPSTR cmd, LPSECURITY_ATTRIBUT
     (void)pa; (void)ta;
     HANDLE std[3];
     if (!app && !cmd) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    std_handles(si ? si->dwFlags : 0, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
+    std_handles(si ? si->dwFlags : 0, flags, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
     return create_process(app, cmd, dir, std, inherit, flags, env,
                           si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, pi);
 }
@@ -1027,7 +1028,7 @@ WINBASEAPI BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIB
         w2u(cmd, -1, c, n);
     }
     HANDLE std[3];
-    std_handles(si ? si->dwFlags : 0, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
+    std_handles(si ? si->dwFlags : 0, flags, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
     BOOL ok = create_process(app ? wide_to_temp(app, a, sizeof(a)) : 0, c, dir ? wide_to_temp(dir, d, sizeof(d)) : 0,
                              std, inherit, flags, env, si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, pi);
     zfree(c);
@@ -2616,12 +2617,15 @@ WINBASEAPI BOOL WINAPI EnumSystemLocalesEx(BOOL (WINAPI *fn)(LPWSTR, DWORD, LPAR
  * ----------------------------------------------------------------------- */
 WINBASEAPI BOOL WINAPI GetConsoleScreenBufferInfo(HANDLE h, PCONSOLE_SCREEN_BUFFER_INFO info)
 {
-    if (GetFileType(h) != FILE_TYPE_CHAR) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+    ULONG size = 0;
+    NTSTATUS s = NtNovaConsole(h, 7, 0, 0, &size);       /* the Terminal's size in cells */
+    if (!NT_SUCCESS(s)) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+    SHORT cols = (SHORT)(size & 0xFFFF), rows = (SHORT)(size >> 16);
     memset(info, 0, sizeof(*info));
-    info->dwSize.X = 80; info->dwSize.Y = 300;
+    info->dwSize.X = cols; info->dwSize.Y = rows;
     info->wAttributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
-    info->srWindow.Right = 79; info->srWindow.Bottom = 24;
-    info->dwMaximumWindowSize.X = 80; info->dwMaximumWindowSize.Y = 25;
+    info->srWindow.Right = (SHORT)(cols - 1); info->srWindow.Bottom = (SHORT)(rows - 1);
+    info->dwMaximumWindowSize.X = cols; info->dwMaximumWindowSize.Y = rows;
     return TRUE;
 }
 
@@ -2672,25 +2676,6 @@ WINBASEAPI BOOL WINAPI ReadConsoleW(HANDLE h, LPVOID buf, DWORD n, LPDWORD read,
 WINBASEAPI BOOL WINAPI SetConsoleCP(UINT cp)             { (void)cp; return TRUE; }
 WINBASEAPI BOOL WINAPI SetConsoleTitleW(LPCWSTR t)       { (void)t; return TRUE; }
 WINBASEAPI DWORD WINAPI GetConsoleTitleW(LPWSTR t, DWORD n) { return put_utf8_as_w("Terminal", t, n); }
-/* (console input handles only, as on Windows: callers use these to tell a console from a file) */
-/* A console input handle (not an output one, nor a file): what programs
- * test with GetNumberOfConsoleInputEvents to tell the two apart */
-static BOOL console_in(HANDLE h)
-{
-    DWORD m;
-    if (GetFileType(h) == FILE_TYPE_CHAR && GetConsoleMode(h, &m)) {
-        union { UNICODE_STRING us; BYTE b[256]; } name;
-        ULONG got = 0;
-        if (NT_SUCCESS(NtQueryObject(h, 1 /* ObjectNameInformation */, &name, sizeof(name), &got)) && name.us.Buffer) {
-            int n = name.us.Length / 2;
-            if (n >= 5 && name.us.Buffer[n - 5] == 'I' && name.us.Buffer[n - 1] == 't') return TRUE;   /* ...\Input */
-        }
-    }
-    SetLastError(ERROR_INVALID_HANDLE);
-    return FALSE;
-}
-WINBASEAPI BOOL WINAPI FlushConsoleInputBuffer(HANDLE h) { return console_in(h); }
-WINBASEAPI BOOL WINAPI GetNumberOfConsoleInputEvents(HANDLE h, LPDWORD n) { *n = 0; return console_in(h); }
 WINBASEAPI BOOL WINAPI AllocConsole(void)                { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
 WINBASEAPI BOOL WINAPI FreeConsole(void)                 { return TRUE; }
 WINBASEAPI BOOL WINAPI AttachConsole(DWORD pid)          { (void)pid; SetLastError(ERROR_ACCESS_DENIED); return FALSE; }

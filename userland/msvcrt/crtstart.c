@@ -702,6 +702,12 @@ CRTEXP char *_strrev(char *s)
     for (size_t i = 0; i < n / 2; i++) { char t = s[i]; s[i] = s[n - 1 - i]; s[n - 1 - i] = t; }
     return s;
 }
+CRTEXP wchar_t *_wcsrev(wchar_t *s)
+{
+    size_t n = wcslen(s);
+    for (size_t i = 0; i < n / 2; i++) { wchar_t t = s[i]; s[i] = s[n - 1 - i]; s[n - 1 - i] = t; }
+    return s;
+}
 CRTEXP char *_strset(char *s, int c) { for (char *p = s; *p; p++) *p = (char)c; return s; }
 CRTEXP char *_strnset(char *s, int c, size_t n) { for (size_t i = 0; i < n && s[i]; i++) s[i] = (char)c; return s; }
 CRTEXP size_t strxfrm(char *d, const char *s, size_t n)

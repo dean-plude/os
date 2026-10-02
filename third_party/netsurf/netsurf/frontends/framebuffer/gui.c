@@ -424,7 +424,15 @@ fb_browser_window_redraw(fbtk_widget_t *widget, fbtk_callback_info *cbi)
 	}
 
 	if (bwidget->redraw_required) {
-		fb_redraw(widget, bwidget, gw->bw);
+		/* the area was queued before the widget last shrank (a window
+		 * resize): never let it plot over the scroll bars (NovaOS) */
+		if (fbtk_clip_to_widget(widget, &bwidget->redraw_box)) {
+			fb_redraw(widget, bwidget, gw->bw);
+		} else {
+			bwidget->redraw_box.y0 = bwidget->redraw_box.x0 = INT_MAX;
+			bwidget->redraw_box.y1 = bwidget->redraw_box.x1 = INT_MIN;
+			bwidget->redraw_required = false;
+		}
 	} else {
 		bwidget->redraw_box.x0 = 0;
 		bwidget->redraw_box.y0 = 0;

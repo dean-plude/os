@@ -228,13 +228,13 @@ NTSTATUS NTAPI RtlRunOnceComplete(PRTL_RUN_ONCE once, ULONG flags, PVOID ctx)
     return STATUS_SUCCESS;
 }
 
-NTSTATUS NTAPI RtlRunOnceExecuteOnce(PRTL_RUN_ONCE once, PRTL_RUN_ONCE_INIT_FN fn, PVOID param, PVOID *ctx)
+NTSYSAPI NTSTATUS NTAPI RtlRunOnceExecuteOnce(PRTL_RUN_ONCE once, PRTL_RUN_ONCE_INIT_FN fn, PVOID param, PVOID *ctx)
 {
-    NTSTATUS s = RtlRunOnceBeginInitialize(once, 0, ctx);
+    PVOID c = 0;
+    NTSTATUS s = RtlRunOnceBeginInitialize(once, 0, &c);
+    if (s == STATUS_SUCCESS) { if (ctx) *ctx = c; return s; }
     if (s != STATUS_PENDING) return s;
-    if (!fn(once, param, ctx)) {
-        RtlRunOnceComplete(once, 4 /* INIT_ONCE_INIT_FAILED */, 0);
-        return (NTSTATUS)0xC0000001;                    /* STATUS_UNSUCCESSFUL */
-    }
-    return RtlRunOnceComplete(once, 0, ctx ? *ctx : 0);
+    ULONG ok = fn(once, param, ctx);
+    RtlRunOnceComplete(once, ok ? 0 : 4, ctx ? *ctx : 0);
+    return ok ? STATUS_SUCCESS : (NTSTATUS)0xC0000001;   /* STATUS_UNSUCCESSFUL */
 }

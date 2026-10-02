@@ -461,10 +461,3 @@ typedef struct { long long quot, rem; } lldiv_t_;
 CRTEXP lldiv_t_ lldiv(long long a, long long b) { lldiv_t_ r = { a / b, a % b }; return r; }
 CRTEXP lldiv_t_ imaxdiv(long long a, long long b) { lldiv_t_ r = { a / b, a % b }; return r; }
 
-/* The multibyte code page is single-byte until a program picks another
- * (_setmbcp), so stepping through a string is one byte at a time */
-CRTEXP unsigned char *_mbsinc(const unsigned char *s) { return (unsigned char *)s + 1; }
-CRTEXP unsigned char *_mbsdec(const unsigned char *start, const unsigned char *s)
-{
-    return start && s && s > start ? (unsigned char *)s - 1 : 0;
-}

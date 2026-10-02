@@ -33,11 +33,12 @@ typedef struct {
 
 static OpenFile *g_fd[MAX_FD];
 static OpenFile g_std_fd[3];                   /* 0-2 before anything replaces them */
+static char g_std_closed[3];                   /* 0-2 closed: free for the next descriptor */
 
 static OpenFile *fd_get(int fd)
 {
     if (fd < 0 || fd >= MAX_FD) { errno = EBADF; return 0; }
-    if (!g_fd[fd] && fd < 3) {
+    if (!g_fd[fd] && fd < 3 && !g_std_closed[fd]) {
         OpenFile *std = g_std_fd;
         std[fd].h = GetStdHandle(fd == 0 ? STD_INPUT_HANDLE : fd == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
         std[fd].refs = 1;
@@ -47,12 +48,24 @@ static OpenFile *fd_get(int fd)
     return g_fd[fd];
 }
 
+/* Descriptors 0-2 carry the standard handles with them (as Windows' CRT
+ * does for a console program): the console streams follow too. */
+static void std_follow(int fd, HANDLE h)
+{
+    extern void __nova_std_changed(int fd, void *h);
+    g_std_closed[fd] = 0;
+    SetStdHandle(fd == 0 ? STD_INPUT_HANDLE : fd == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE, h);
+    __nova_std_changed(fd, h);
+}
+
+/* The lowest free descriptor from @lowest gets @o (0-2 only once closed) */
 static int fd_install(OpenFile *o, int lowest)
 {
     for (int i = lowest; i < MAX_FD; i++) {
         if (!g_fd[i] && !(i < 3 && fd_get(i))) {
             g_fd[i] = o;
             o->refs++;
+            if (i < 3) std_follow(i, o->h);
             return i;
         }
     }
@@ -66,7 +79,7 @@ int __nova_fd_new(void *handle, int owns)
     if (!o) { errno = ENOMEM; return -1; }
     o->h = handle;
     o->owns = owns;
-    int fd = fd_install(o, 3);
+    int fd = fd_install(o, 0);
     if (fd < 0) free(o);
     return fd;
 }
@@ -119,6 +132,7 @@ int close(int fd)
     OpenFile *o = fd_get(fd);
     if (!o) return -1;
     g_fd[fd] = 0;
+    if (fd < 3) g_std_closed[fd] = 1;
     if (--o->refs == 0) {                       /* the last descriptor: the handle goes */
         if (o->owns) CloseHandle(o->h);
         if (o < g_std_fd || o >= g_std_fd + 3) free(o);
@@ -143,11 +157,7 @@ int dup2(int fd, int fd2)
     if (g_fd[fd2] || fd2 < 3) { if (fd_get(fd2)) close(fd2); }
     g_fd[fd2] = o;
     o->refs++;
-    if (fd2 < 3) {                              /* as Windows' CRT: the standard handle follows */
-        extern void __nova_std_changed(int fd, void *h);
-        SetStdHandle(fd2 == 0 ? STD_INPUT_HANDLE : fd2 == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE, o->h);
-        __nova_std_changed(fd2, o->h);
-    }
+    if (fd2 < 3) std_follow(fd2, o->h);
     return fd2;
 }
 int _dup2(int fd, int fd2) { return dup2(fd, fd2); }

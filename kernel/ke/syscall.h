@@ -65,7 +65,9 @@
  * Source: j00ru's Windows NT syscall tables
  * https://j00ru.vexillium.org/syscalls/nt/64/
  *
- * Only the subset needed for Phase 2-4 is listed here.
+ * Every service NovaOS has that Windows has is at its Windows 10 1903
+ * number (userland/programs/abitest.c checks); NovaOS's own services are
+ * numbered from 0x200, past Windows's last (0x1CF).
  * ----------------------------------------------------------------------- */
 #define SYSCALL_NtAccessCheck                     0x0000
 #define SYSCALL_NtWorkerFactoryWorkerReady        0x0001
@@ -149,110 +151,107 @@
 #define SYSCALL_NtCreateThread                    0x004E
 #define SYSCALL_NtIsProcessInJob                  0x004F
 #define SYSCALL_NtProtectVirtualMemory            0x0050
-#define SYSCALL_NtQuerySectionImageName           0x0051
-#define SYSCALL_NtQuerySystemTime                 0x0052
-#define SYSCALL_NtOpenSemaphore                   0x0053
-#define SYSCALL_NtCreateMutant                    0x0054
+#define SYSCALL_NtQuerySectionImageName           0x0200
+#define SYSCALL_NtQuerySystemTime                 0x005A
+#define SYSCALL_NtOpenSemaphore                   0x0126
+#define SYSCALL_NtCreateMutant                    0x00AF
 #define SYSCALL_NtCreateFile                      0x0055
 #define SYSCALL_NtWaitForMultipleObjects          0x005B
 #define SYSCALL_NtCreateThreadEx                  0x00BD
-#define SYSCALL_NtAllocateVirtualMemoryEx         0x00C4  /* Win10 1803+ */
-#define SYSCALL_NtFlushInstructionCache           0x00CC  /* Win10 1903 */
-#define SYSCALL_NtSetInformationThread            0x000D
-#define SYSCALL_NtCreateProcessEx                 0x004D
-#define SYSCALL_NtCreateThread                    0x004E
-#define SYSCALL_NtQueryInformationFile            0x0011
+#define SYSCALL_NtAllocateVirtualMemoryEx         0x0074  /* Win10 1803+ */
+#define SYSCALL_NtFlushInstructionCache           0x00E3  /* Win10 1903 */
 
-/* Services for NovaOS user-mode programs whose Windows 10 1903 numbers
- * collide with entries above: numbered from 0x0180 (ntdll is built from
- * this header, so the stubs always match). */
-#define SYSCALL_NtTerminateThread                 0x0180
-#define SYSCALL_NtResumeThread                    0x0181
-#define SYSCALL_NtSuspendThread                   0x0182
-#define SYSCALL_NtCreateSemaphore                 0x0183
-#define SYSCALL_NtResetEvent                      0x0184
-#define SYSCALL_NtRaiseException                  0x0185
-#define SYSCALL_NtNovaLoadDll                     0x0186  /* NovaOS: LdrLoadDll's kernel half */
-#define SYSCALL_NtNovaDebugPrint                  0x0187  /* NovaOS: OutputDebugString */
-#define SYSCALL_NtNovaGetRandom                   0x0188  /* NovaOS: RtlGenRandom (the kernel entropy pool) */
-#define SYSCALL_NtNovaUnimplemented               0x0189  /* NovaOS: a program called an import NovaOS lacks */
-#define SYSCALL_NtGetContextThread                0x018A
-#define SYSCALL_NtSetContextThread                0x018B
-#define SYSCALL_NtNovaCreateProcess               0x018C  /* NovaOS: CreateProcess's kernel half */
-#define SYSCALL_NtNovaProcessInfo                 0x018D  /* NovaOS: exit code / pid of a process handle */
-#define SYSCALL_NtNovaProcessList                 0x018E  /* NovaOS: the running programs (tasklist) */
-#define SYSCALL_NtNovaWatchDirectory              0x018F  /* NovaOS: FindFirstChangeNotification's kernel half */
-#define SYSCALL_NtNovaFlushView                   0x019B  /* NovaOS: FlushViewOfFile's kernel half */
+/* More Windows services, and NovaOS's own (0x200 up; ntdll is built from
+ * this header, so the stubs always match) */
+#define SYSCALL_NtTerminateThread                 0x0053
+#define SYSCALL_NtResumeThread                    0x0052
+#define SYSCALL_NtSuspendThread                   0x01B6
+#define SYSCALL_NtCreateSemaphore                 0x00BB
+#define SYSCALL_NtResetEvent                      0x0172
+#define SYSCALL_NtRaiseException                  0x0160
+#define SYSCALL_NtNovaLoadDll                     0x0206  /* NovaOS: LdrLoadDll's kernel half */
+#define SYSCALL_NtNovaDebugPrint                  0x0207  /* NovaOS: OutputDebugString */
+#define SYSCALL_NtNovaGetRandom                   0x0208  /* NovaOS: RtlGenRandom (the kernel entropy pool) */
+#define SYSCALL_NtNovaUnimplemented               0x0209  /* NovaOS: a program called an import NovaOS lacks */
+#define SYSCALL_NtGetContextThread                0x00ED
+#define SYSCALL_NtSetContextThread                0x0185
+#define SYSCALL_NtNovaCreateProcess               0x020C  /* NovaOS: CreateProcess's kernel half */
+#define SYSCALL_NtNovaProcessInfo                 0x020D  /* NovaOS: exit code / pid of a process handle */
+#define SYSCALL_NtNovaProcessList                 0x020E  /* NovaOS: the running programs (tasklist) */
+#define SYSCALL_NtNovaWatchDirectory              0x020F  /* NovaOS: FindFirstChangeNotification's kernel half */
+#define SYSCALL_NtNovaFlushView                   0x021B  /* NovaOS: FlushViewOfFile's kernel half */
+#define SYSCALL_NtNovaBugCheck                    0x021C  /* NovaOS: crash the kernel on purpose (crash.exe kernel) */
+#define SYSCALL_NtNovaConsole                     0x021D  /* NovaOS: console modes and input records */
 /* NovaOS sockets (ws2_32's kernel half) */
-#define SYSCALL_NtNovaSocket                      0x0190
-#define SYSCALL_NtNovaSockConnect                 0x0191
-#define SYSCALL_NtNovaSockSend                    0x0192
-#define SYSCALL_NtNovaSockRecv                    0x0193
-#define SYSCALL_NtNovaSockBind                    0x0194
-#define SYSCALL_NtNovaSockListen                  0x0195
-#define SYSCALL_NtNovaSockAccept                  0x0196
-#define SYSCALL_NtNovaSockCtl                     0x0197
-#define SYSCALL_NtNovaSockSendTo                  0x0198
-#define SYSCALL_NtNovaSockRecvFrom                0x0199
-#define SYSCALL_NtNovaResolve                     0x019A
+#define SYSCALL_NtNovaSocket                      0x0210
+#define SYSCALL_NtNovaSockConnect                 0x0211
+#define SYSCALL_NtNovaSockSend                    0x0212
+#define SYSCALL_NtNovaSockRecv                    0x0213
+#define SYSCALL_NtNovaSockBind                    0x0214
+#define SYSCALL_NtNovaSockListen                  0x0215
+#define SYSCALL_NtNovaSockAccept                  0x0216
+#define SYSCALL_NtNovaSockCtl                     0x0217
+#define SYSCALL_NtNovaSockSendTo                  0x0218
+#define SYSCALL_NtNovaSockRecvFrom                0x0219
+#define SYSCALL_NtNovaResolve                     0x021A
 /* NovaOS sound (winmm and mmdevapi's kernel half) */
-#define SYSCALL_NtNovaAudioOpen                   0x01E0
-#define SYSCALL_NtNovaAudioWrite                  0x01E1
-#define SYSCALL_NtNovaAudioCtl                    0x01E2
+#define SYSCALL_NtNovaAudioOpen                   0x0260
+#define SYSCALL_NtNovaAudioWrite                  0x0261
+#define SYSCALL_NtNovaAudioCtl                    0x0262
 /* Registry services Windows 10 numbers elsewhere */
-#define SYSCALL_NtDeleteKey                       0x01B0
-#define SYSCALL_NtDeleteValueKey                  0x01B1
-#define SYSCALL_NtFlushKey                        0x01B2
-#define SYSCALL_NtOpenKeyEx                       0x01B3
-#define SYSCALL_NtRenameKey                       0x01B4
-#define SYSCALL_NtOpenMutant                      0x01B8
+#define SYSCALL_NtDeleteKey                       0x00CF
+#define SYSCALL_NtDeleteValueKey                  0x00D2
+#define SYSCALL_NtFlushKey                        0x00E4
+#define SYSCALL_NtOpenKeyEx                       0x011B
+#define SYSCALL_NtRenameKey                       0x016C
+#define SYSCALL_NtOpenMutant                      0x011F
 /* Pipes and I/O Windows 10 numbers elsewhere */
-#define SYSCALL_NtCreateNamedPipeFile             0x01C0
-#define SYSCALL_NtCancelIoFile                    0x01C1
-#define SYSCALL_NtCancelIoFileEx                  0x01C2
-#define SYSCALL_NtSetInformationObject            0x01C3
-#define SYSCALL_NtNovaClipboard                   0x01C4  /* NovaOS: the system clipboard */
-#define SYSCALL_NtCreateDirectoryObject           0x01C5
-#define SYSCALL_NtOpenDirectoryObject             0x01C6
-#define SYSCALL_NtQueryDirectoryObject            0x01C7
-#define SYSCALL_NtCreateSymbolicLinkObject        0x01C8
-#define SYSCALL_NtOpenSymbolicLinkObject          0x01C9
-#define SYSCALL_NtQuerySymbolicLinkObject         0x01CA
-#define SYSCALL_NtCreateTimer                     0x01CB
-#define SYSCALL_NtOpenTimer                       0x01CC
-#define SYSCALL_NtSetTimer                        0x01CD
-#define SYSCALL_NtCancelTimer                     0x01CE
-#define SYSCALL_NtQueryEvent                      0x01CF
-#define SYSCALL_NtQuerySemaphore                  0x01D0
-#define SYSCALL_NtOpenThread                      0x01D1
-#define SYSCALL_NtMapViewOfSectionEx              0x01D2
-#define SYSCALL_NtCompareObjects                  0x01D3
-#define SYSCALL_NtShutdownSystem                  0x01D4
-#define SYSCALL_NtSetSystemPowerState             0x01D5
-#define SYSCALL_NtInitiatePowerAction             0x01D6
-#define SYSCALL_NtPowerInformation                0x01D7
-#define SYSCALL_NtQuerySection                    0x01D8
-#define SYSCALL_NtOpenProcessToken                0x01D9
-#define SYSCALL_NtImpersonateAnonymousToken       0x01DD
-#define SYSCALL_NtQueryFullAttributesFile         0x01DE
+#define SYSCALL_NtCreateNamedPipeFile             0x00B0
+#define SYSCALL_NtCancelIoFile                    0x005D
+#define SYSCALL_NtCancelIoFileEx                  0x0090
+#define SYSCALL_NtSetInformationObject            0x005C
+#define SYSCALL_NtNovaClipboard                   0x0244  /* NovaOS: the system clipboard */
+#define SYSCALL_NtCreateDirectoryObject           0x00A2
+#define SYSCALL_NtOpenDirectoryObject             0x0058
+#define SYSCALL_NtQueryDirectoryObject            0x013D
+#define SYSCALL_NtCreateSymbolicLinkObject        0x00BC
+#define SYSCALL_NtOpenSymbolicLinkObject          0x0128
+#define SYSCALL_NtQuerySymbolicLinkObject         0x0158
+#define SYSCALL_NtCreateTimer                     0x00BE
+#define SYSCALL_NtOpenTimer                       0x012A
+#define SYSCALL_NtSetTimer                        0x0062
+#define SYSCALL_NtCancelTimer                     0x0061
+#define SYSCALL_NtQueryEvent                      0x0056
+#define SYSCALL_NtQuerySemaphore                  0x0157
+#define SYSCALL_NtOpenThread                      0x0129
+#define SYSCALL_NtMapViewOfSectionEx              0x010F
+#define SYSCALL_NtCompareObjects                  0x0099
+#define SYSCALL_NtShutdownSystem                  0x01AE
+#define SYSCALL_NtSetSystemPowerState             0x01A5
+#define SYSCALL_NtInitiatePowerAction             0x00FC
+#define SYSCALL_NtPowerInformation                0x005F
+#define SYSCALL_NtQuerySection                    0x0051
+#define SYSCALL_NtOpenProcessToken                0x0123
+#define SYSCALL_NtImpersonateAnonymousToken       0x00F7
+#define SYSCALL_NtQueryFullAttributesFile         0x0140
 /* NovaOS GUI (user32/gdi32's kernel half) */
-#define SYSCALL_NtNovaGuiCreate                   0x01A0
-#define SYSCALL_NtNovaGuiGetMessage               0x01A1
-#define SYSCALL_NtNovaGuiInvalidate               0x01A2
-#define SYSCALL_NtNovaGuiSetText                  0x01A3
-#define SYSCALL_NtNovaGuiShow                     0x01A4
-#define SYSCALL_NtNovaGuiDestroy                  0x01A5
-#define SYSCALL_NtNovaGuiSetTimer                 0x01A6
-#define SYSCALL_NtNovaGuiKillTimer                0x01A7
-#define SYSCALL_NtNovaGuiMessageBox               0x01A8
-#define SYSCALL_NtNovaGuiScreenSize               0x01A9
-#define SYSCALL_NtNovaGuiPostMessage              0x01AA
-#define SYSCALL_NtNovaGuiCtl                      0x01AB
+#define SYSCALL_NtNovaGuiCreate                   0x0220
+#define SYSCALL_NtNovaGuiGetMessage               0x0221
+#define SYSCALL_NtNovaGuiInvalidate               0x0222
+#define SYSCALL_NtNovaGuiSetText                  0x0223
+#define SYSCALL_NtNovaGuiShow                     0x0224
+#define SYSCALL_NtNovaGuiDestroy                  0x0225
+#define SYSCALL_NtNovaGuiSetTimer                 0x0226
+#define SYSCALL_NtNovaGuiKillTimer                0x0227
+#define SYSCALL_NtNovaGuiMessageBox               0x0228
+#define SYSCALL_NtNovaGuiScreenSize               0x0229
+#define SYSCALL_NtNovaGuiPostMessage              0x022A
+#define SYSCALL_NtNovaGuiCtl                      0x022B
 
 /* -----------------------------------------------------------------------
  * Syscall table size
  * ----------------------------------------------------------------------- */
-#define SYSCALL_MAX  0x0200   /* 512 entries — covers all Win10 1903 syscalls + KH helpers */
+#define SYSCALL_MAX  0x0300   /* Win10 1903 numbers (0x000-0x1C3), NovaOS's own services (0x200-0x2FF) */
 
 /* -----------------------------------------------------------------------
  * NtQuerySystemInformation system information classes

@@ -1,8 +1,12 @@
 /*
  * ntdll.dll — NovaOS native API: system-call stubs, heap, runtime helpers
  *
- * Each Nt* export is the classic x64 stub: mov r10, rcx; mov eax, N;
- * syscall; ret — numbers generated from the kernel's ke/syscall.h.
+ * Each Nt* export is Windows 10's x64 stub, byte for byte: mov r10, rcx;
+ * mov eax, N; test byte [7FFE0308h], 1; jne +3; syscall; ret; int 2Eh; ret
+ * (programs and sandboxes that read or copy the stubs expect exactly this;
+ * KUSER_SHARED_DATA.SystemCall is 0, so syscall is the path taken).  The
+ * numbers, generated from the kernel's ke/syscall.h, are Windows 10
+ * 1903's; abitest checks both.
  *
  * The heap (Rtl*Heap) serves one process-wide heap: small blocks come
  * from segregated free lists carved out of 1 MiB arenas committed from a
@@ -24,11 +28,14 @@
             ".section .text$" #name ",\"xr\"\n"                             \
             ".p2align 4\n"                                                  \
             #name ":\n\t"                                                   \
-            ".byte 0x4c, 0x8b, 0xd1\n\t"          /* mov r10, rcx */          \
-            ".byte 0xb8\n\t.long " #num "\n\t"    /* mov eax, num */          \
+            ".byte 0x4C, 0x8B, 0xD1\n\t"          /* mov r10, rcx */         \
+            ".byte 0xB8\n\t.long " #num "\n\t"    /* mov eax, num */         \
+            "testb $1, 0x7FFE0308\n\t"                                      \
+            ".byte 0x75, 0x03\n\t"                /* jne +3: int 2Eh */      \
             "syscall\n\t"                                                   \
             "retq\n\t"                                                      \
-            ".byte 0x66, 0x66, 0x90, 0x66, 0x90\n\t"  /* pad to 16 bytes */   \
+            "int $0x2E\n\t"                                                 \
+            "retq\n\t"                                                      \
             ".section .drectve,\"yn\"\n\t"                                  \
             ".ascii \" /EXPORT:" #name "\"\n\t"                             \
             ".text\n");
@@ -138,8 +145,10 @@ XSTUB(NtContinue,                   SYS_NtContinue)
 XSTUB(NtRaiseException,             SYS_NtRaiseException)
 XSTUB(NtNovaLoadDll,                SYS_NtNovaLoadDll)
 XSTUB(NtNovaDebugPrint,             SYS_NtNovaDebugPrint)
+XSTUB(NtNovaBugCheck,               SYS_NtNovaBugCheck)
 XSTUB(NtNovaWatchDirectory,         SYS_NtNovaWatchDirectory)
 XSTUB(NtNovaFlushView,              SYS_NtNovaFlushView)
+XSTUB(NtNovaConsole,                SYS_NtNovaConsole)
 XSTUB(NtNovaGetRandom,              SYS_NtNovaGetRandom)
 XSTUB(NtNovaSocket,                    SYS_NtNovaSocket)
 XSTUB(NtNovaSockConnect,               SYS_NtNovaSockConnect)

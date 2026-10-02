@@ -685,9 +685,12 @@ bool sched_thread_gone(const Thread *t)
     return t->state == THREAD_DEAD && t->off_cpu;
 }
 
+void (*sched_thread_free_hook)(Thread *t);
+
 void sched_free_thread(Thread *t)
 {
     if (!sched_thread_gone(t) || t == current_thread) return;
+    if (sched_thread_free_hook) sched_thread_free_hook(t);
     if (t->kernel_stack) kernel_free_pages(t->kernel_stack, t->stack_size / PAGE_SIZE);
     kfree(t);
 }

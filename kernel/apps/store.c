@@ -253,6 +253,8 @@ static int visible(const Store *s, int *out)
 static void set_msg(Store *s, int i, const char *m)
 {
     s->bad[i] = !strncmp(m, "Failed", 6) || !strncmp(m, "Could not", 9);
+    if (s->bad[i] || !strncmp(m, "Installed", 9))       /* the outcome, for the serial log */
+        kprintf("[STORE] %s: %s\n", g_catalog[i].name, m);
     strncpy(s->msg[i], m, sizeof(s->msg[i]) - 1);
     s->msg[i][sizeof(s->msg[i]) - 1] = '\0';
 }
@@ -803,6 +805,32 @@ static void store_close(WND *w)
     kfree(s);
     w->user = NULL;
     if (g_store == w) g_store = NULL;
+}
+
+/* "store install NAME" in the Terminal: press the row's button as a click
+ * would (Get, or Install once the file is in C:\Downloads).  The Store
+ * window opens in the background; the outcome lands in the serial log as
+ * "[STORE] NAME: Installed ..." or "... Failed/Could not ...". */
+const char *StoreInstall(const char *name)
+{
+    int i = 0;
+    for (; i < N_APPS; i++) {
+        const char *a = g_catalog[i].name, *b = name;
+        while (*a && (*a | 0x20) == (*b | 0x20)) { a++; b++; }
+        if (!*a && !*b) break;
+    }
+    if (i == N_APPS) return "There is no such program in the App Store.";
+    WND *was = WmActiveWindow();
+    StoreOpen();
+    if (!g_store) return "Could not open the App Store.";
+    if (was && was != g_store) WmSetActive(was);
+    Store *s = g_store->user;
+    if (installed_exe(&g_catalog[i])) {
+        kprintf("[STORE] %s: Installed already\n", g_catalog[i].name);
+        return "Installed already.";
+    }
+    press(s, i);
+    return s->msg[i][0] ? s->msg[i] : "Started.";
 }
 
 void StoreOpen(void)
