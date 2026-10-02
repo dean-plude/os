@@ -322,7 +322,7 @@ unpacks them into `C:\Apps`, boots once and runs each one's commands.
 | fd 10.2.0 | `--version`, finding `*.txt` |
 | jq 1.7.1 | `--version`, a filter over a JSON file |
 | 7-Zip 26.03 | `7z a`, `7z t` |
-| MinGit 2.51.0 | `git clone` of a bare repository, `log`, `status` |
+| MinGit 2.51.0 | `git clone` of a bare repository, `log` (through the `less` pager), `status` |
 | Python 3.14.0 (NuGet package) | `-c` with `json` and `sys` |
 | Node.js 24.9.0 | `-v`, `-e` |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
