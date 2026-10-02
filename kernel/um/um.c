@@ -81,9 +81,12 @@ void um_unlock(UmLock *l)
     __atomic_store_n(&l->v, 0, __ATOMIC_RELEASE);
 }
 
-/* Wait (spin a while, then yield) until @cond holds */
+/* Wait (spin a while, then yield) until @cond holds.  Spinning holding the
+ * big kernel lock too: what is waited for (readers leaving) takes moments,
+ * and a thread that yields here may not run again for a whole time slice,
+ * holding up everyone its taken write lock keeps out. */
 #define UM_WAIT_UNTIL(cond) do { \
-        int most_ = bkl_held() ? 0 : 2000; \
+        int most_ = 2000; \
         for (int spins_ = 0; !(cond); ) { \
             if (++spins_ < most_) pause_cpu(); \
             else { sched_yield(); spins_ = 0; } \
@@ -136,6 +139,8 @@ static UmLock g_desktop;
 static UmRwLock g_fs;
 void DesktopLock(void)   { um_lock(&g_desktop); um_lock_excl(&g_fs); }
 void DesktopUnlock(void) { um_unlock_excl(&g_fs); um_unlock(&g_desktop); }
+void DesktopLockAlone(void)   { um_lock(&g_desktop); }
+void DesktopUnlockAlone(void) { um_unlock(&g_desktop); }
 void FsLock(void)        { um_lock_excl(&g_fs); }
 void FsUnlock(void)      { um_unlock_excl(&g_fs); }
 void FsLockShared(void)  { um_lock_shared(&g_fs); }
@@ -2230,6 +2235,17 @@ static int reap_threads(UmProcess *p)
     return left;
 }
 
+/* Whether a thread of @p has ended (reap_threads has work); a look without
+ * the process lock: threads are added under it, and only taken out here */
+static bool reap_due(UmProcess *p)
+{
+    for (int i = 0; i < UM_MAX_THREADS; i++) {
+        UmThread *t = __atomic_load_n(&p->threads[i], __ATOMIC_ACQUIRE);
+        if (t && t->exited && t->kt && sched_thread_gone(t->kt)) return true;
+    }
+    return false;
+}
+
 void UmSaveAll(void)
 {
     um_registry_flush();
@@ -2243,11 +2259,13 @@ void UmPoll(void)
     for (int i = 0; i < UM_MAX_PROCS; i++) {
         UmProcess *p = g_procs[i];
         if (!p) continue;
+        if (!p->exited && !reap_due(p)) continue;  /* (most ticks: nothing to do) */
         um_lock_excl(&p->lock);
         int left = reap_threads(p);
         um_unlock_excl(&p->lock);
         if (!p->exited || left) continue;
         if (!p->reclaimed) {
+            FsLock();                           /* (its images and files) */
             um_gui_process_gone(p);
             um_registry_process_gone(p);
             release_images(p);
@@ -2259,6 +2277,7 @@ void UmPoll(void)
             p->pages = 0;
             p->commit = 0;
             p->reclaimed = true;
+            FsUnlock();
         }
         if (p->released) {
             plock(); g_procs[i] = NULL; punlock();

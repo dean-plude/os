@@ -554,10 +554,13 @@ void um_registry_poll(void)
     put(&b, "E", 1);
     um_unlock_excl(&g_reg);
     if (b.bad) { kprintf("[REG] The registry is too large to save\n"); kfree(b.p); return; }
+    FsLock();
     RamNode *dir = RamfsResolve(NULL, "\\Windows\\System32");
     RamNode *cfg = dir ? RamfsCreate(dir, "config", true) : NULL;
     RamNode *f = cfg ? RamfsCreate(cfg, "REGISTRY.DAT", false) : NULL;
-    if (!f || !RamfsWrite(f, (const char *)b.p, b.n)) kprintf("[REG] Saving the registry failed\n");
+    bool ok = f && RamfsWrite(f, (const char *)b.p, b.n);
+    FsUnlock();
+    if (!ok) kprintf("[REG] Saving the registry failed\n");
     kfree(b.p);
 }
 

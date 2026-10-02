@@ -464,6 +464,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         w->on_close = gui_close;
         w->on_close_request = gui_close_request;
         w->on_tick = gui_tick;
+        w->tick_lock_free = true;           /* (messages only, no files) */
         if (gc.flags & GUI_HIDDEN) WmShowWindow(w, false);
         g->wnd = w;
         GdiRect c2 = WmClientRect(w);

@@ -164,6 +164,12 @@ void UmNoteSyscallFrame(void *frame);
  * ----------------------------------------------------------------------- */
 void DesktopLock(void);
 void DesktopUnlock(void);
+/* The desktop lock without the file-system one: the desktop thread's loop,
+ * which takes FsLock only around the work that may touch files (input,
+ * drawing, built-in windows' timers), so programs' file I/O goes on
+ * meanwhile */
+void DesktopLockAlone(void);
+void DesktopUnlockAlone(void);
 void FsLock(void);
 void FsUnlock(void);
 /* Shared: reading and writing open files' contents, each under its own

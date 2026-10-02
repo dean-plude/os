@@ -35,7 +35,12 @@ uaccess_begin:
     cld
     xor     eax, eax
     ret
-uaccess_copy_fwd:
+uaccess_copy_fwd:                       ; 8 bytes at a time, then the rest
+    mov     rcx, rdx
+    shr     rcx, 3
+    rep movsq
+    mov     rcx, rdx
+    and     rcx, 7
     rep movsb
     xor     eax, eax
     ret

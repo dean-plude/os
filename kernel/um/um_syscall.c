@@ -274,6 +274,24 @@ static void slot_unlock(UmProcess *p, int i)
     __atomic_store_n(&p->hbusy[i], 0, __ATOMIC_RELEASE);
 }
 
+/* A free slot, cleared and locked (the caller fills it in, kind last, and
+ * unlocks it), with the process lock held shared; 0 if there is none */
+static UINT64 slot_alloc(UmProcess *p, UmHandle **out)
+{
+    for (int i = 0; i < UM_MAX_HANDLES; i++) {
+        if (__atomic_load_n(&p->handles[i].kind, __ATOMIC_RELAXED) != H_FREE) continue;
+        UINT64 v = (UINT64)(i + 1) * 4;
+        slot_lock(p, v);
+        if (p->handles[i].kind == H_FREE) {
+            memset(&p->handles[i], 0, sizeof(UmHandle));
+            *out = &p->handles[i];
+            return v;
+        }
+        slot_unlock(p, i);
+    }
+    return 0;
+}
+
 /* Reserve a free slot (kind set by the caller before unlocking). */
 static UINT64 handle_alloc(UmProcess *p, UmHandle **out)
 {
@@ -371,20 +389,13 @@ void um_close_all_handles(UmProcess *p)
 
 UINT64 um_handle_new_object(UmProcess *p, UmObject *o)
 {
-    UINT64 hv = 0;
+    UmHandle *h;
     um_lock_shared(&p->lock);
-    for (int i = 0; i < UM_MAX_HANDLES && !hv; i++) {
-        if (__atomic_load_n(&p->handles[i].kind, __ATOMIC_RELAXED) != H_FREE) continue;
-        UINT64 v = (UINT64)(i + 1) * 4;
-        slot_lock(p, v);
-        UmHandle *h = &p->handles[i];
-        if (h->kind == H_FREE) {
-            memset(h, 0, sizeof(*h));
-            h->obj = um_ob_ref(o);
-            h->kind = H_OBJECT;
-            hv = v;
-        }
-        slot_unlock(p, i);
+    UINT64 hv = slot_alloc(p, &h);
+    if (hv) {
+        h->obj = um_ob_ref(o);
+        h->kind = H_OBJECT;
+        slot_unlock(p, (int)(hv / 4 - 1));
     }
     um_unlock_shared(&p->lock);
     return hv;
@@ -615,11 +626,10 @@ static UINT64 file_handle(UmProcess *p, RamNode *node, UINT32 access, UINT32 opt
     bool wr = access & (GENERIC_WRITE | GENERIC_ALL | FILE_WRITE_DATA | FILE_APPEND_DATA);
     bool append = (access & FILE_APPEND_DATA) && !(access & (FILE_WRITE_DATA | GENERIC_WRITE | GENERIC_ALL));
     UmFilePos *fp = node->dir ? NULL : um_fpos_new();           /* (none: a position of its own) */
-    UmHandle *h;
-    um_lock_excl(&p->lock);
-    UINT64 hv = handle_alloc(p, &h);
+    UmHandle *h = NULL;
+    um_lock_shared(&p->lock);
+    UINT64 hv = slot_alloc(p, &h);
     if (hv) {
-        h->kind = node->dir ? H_DIR : H_FILE;
         h->node = node;
         h->read = rd || node->dir;
         h->write = wr && !node->dir;
@@ -629,8 +639,10 @@ static UINT64 file_handle(UmProcess *p, RamNode *node, UINT32 access, UINT32 opt
         h->async = !(options & 0x30);                           /* no FILE_SYNCHRONOUS_IO_* */
         h->fp = fp;
         RamfsRef(node);
+        h->kind = node->dir ? H_DIR : H_FILE;
+        slot_unlock(p, (int)(hv / 4 - 1));
     }
-    um_unlock_excl(&p->lock);
+    um_unlock_shared(&p->lock);
     if (!hv) um_fpos_unref(fp);
     *out = h;
     return hv;
@@ -769,20 +781,24 @@ static UINT64 sys_compare_objects(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 static bool close_shared(UmProcess *p, UINT64 hv)
 {
     FsLockShared();
-    um_lock_excl(&p->lock);
-    UmHandle *h = handle(p, hv);
+    um_lock_shared(&p->lock);
+    int i = slot_lock(p, hv);
+    UmHandle *h = i < 0 ? NULL : handle(p, hv);
     RamNode *n = h && (h->kind == H_FILE || h->kind == H_DIR) && !h->delete_on_close &&
                  !(h->node->xflags & RAMFS_X_EXTERN) ? h->node : NULL;
-    um_unlock_excl(&p->lock);
+    if (i >= 0) slot_unlock(p, i);
+    um_unlock_shared(&p->lock);
     if (!n) { FsUnlockShared(); return false; }
     UmLock *nl = node_lock(n);
     um_lock(nl);                                    /* lock order: file, then process */
-    um_lock_excl(&p->lock);
+    um_lock_shared(&p->lock);
+    slot_lock(p, hv);
     h = handle(p, hv);
     bool ok = h && h->node == n && (h->kind == H_FILE || h->kind == H_DIR) && !h->delete_on_close;
     UmFilePos *fp = NULL;
     if (ok) { fp = h->fp; h->fp = NULL; h->kind = H_FREE; }
-    um_unlock_excl(&p->lock);
+    slot_unlock(p, i);
+    um_unlock_shared(&p->lock);
     if (ok) RamfsUnref(n);
     um_unlock(nl);
     FsUnlockShared();
@@ -800,17 +816,18 @@ UINT64 um_close_handle(UINT64 a1)
     um_lock_shared(&p->lock);
     int i = slot_lock(p, a1);
     UmHandle *h = i < 0 ? NULL : handle(p, a1);
+    bool file = h && (h->kind == H_FILE || h->kind == H_DIR);
     if (h && h->kind == H_OBJECT) { o = h->obj; h->obj = NULL; h->kind = H_FREE; }
     if (i >= 0) slot_unlock(p, i);
     um_unlock_shared(&p->lock);
     if (o) { um_ob_unref(o); return ST_SUCCESS; }
+    if (file && close_shared(p, a1)) return ST_SUCCESS;
     um_lock_excl(&p->lock);
     h = handle(p, a1);
-    bool file = h && (h->kind == H_FILE || h->kind == H_DIR);
+    file = h && (h->kind == H_FILE || h->kind == H_DIR);
     if (h && h->kind == H_OBJECT) { o = h->obj; h->obj = NULL; h->kind = H_FREE; }
     else if (h && !file) handle_close(h);
     um_unlock_excl(&p->lock);
-    if (file && close_shared(p, a1)) return ST_SUCCESS;
     if (file) {                                     /* lock order: files, then process */
         FsLock();
         um_lock_excl(&p->lock);
@@ -2528,9 +2545,11 @@ void um_install(UINT32 num, SYSCALL_HANDLER h)
 typedef struct { RamNode *dir; bool subtree; UmObject *ev; } Watch;
 static Watch g_watch[MAX_WATCHES];
 static KSpinLock g_watch_lock = KSPINLOCK_INIT;
+static volatile int g_nwatch;                               /* watches set (none: nothing to tell) */
 
 static void fs_changed(RamNode *d)
 {
+    if (!__atomic_load_n(&g_nwatch, __ATOMIC_ACQUIRE)) return;
     IrqState s = spin_lock_irqsave(&g_watch_lock);
     for (int i = 0; i < MAX_WATCHES; i++) {
         Watch *w = &g_watch[i];
@@ -2555,7 +2574,7 @@ static void unwatch(UmObject *ev)
     for (int i = 0; i < MAX_WATCHES; i++) {
         Watch *w = &g_watch[i];
         if (!w->ev) continue;
-        if (ev ? w->ev == ev : __atomic_load_n(&w->ev->refs, __ATOMIC_ACQUIRE) <= 1) { gone[n++] = *w; w->ev = NULL; w->dir = NULL; }
+        if (ev ? w->ev == ev : __atomic_load_n(&w->ev->refs, __ATOMIC_ACQUIRE) <= 1) { gone[n++] = *w; w->ev = NULL; w->dir = NULL; __atomic_sub_fetch(&g_nwatch, 1, __ATOMIC_RELEASE); }
     }
     spin_unlock_irqrestore(&g_watch_lock, s);
     if (!n) return;
@@ -2584,7 +2603,7 @@ static UINT64 sys_watch_dir(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     IrqState s = spin_lock_irqsave(&g_watch_lock);
     int slot = -1;
     for (int i = 0; i < MAX_WATCHES && slot < 0; i++) if (!g_watch[i].ev) slot = i;
-    if (slot >= 0) { g_watch[slot].dir = dir; g_watch[slot].subtree = (a2 & 0xFF) != 0; g_watch[slot].ev = ev; }
+    if (slot >= 0) { g_watch[slot].dir = dir; g_watch[slot].subtree = (a2 & 0xFF) != 0; g_watch[slot].ev = ev; __atomic_add_fetch(&g_nwatch, 1, __ATOMIC_RELEASE); }
     spin_unlock_irqrestore(&g_watch_lock, s);
     if (slot < 0) { DesktopLock(); RamfsUnref(dir); DesktopUnlock(); um_ob_unref(ev); return ST_NO_MEMORY; }
     return ST_SUCCESS;
