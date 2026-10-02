@@ -165,9 +165,29 @@ UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             UINT64 oa = num == SYSCALL_NtCreateFile || num == SYSCALL_NtOpenFile ? a3 :
                         num == SYSCALL_NtQueryAttributesFile ? a1 : 0;
             if (oa && get_path(t->proc, oa, path, sizeof(path), &root)) path[0] = 0;
-            kprintf("[TRACE] %s: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
+            /* registry calls: the key or value name as given */
+            UINT64 us = num == SYSCALL_NtOpenKey || num == SYSCALL_NtCreateKey || num == SYSCALL_NtOpenKeyEx ? 0 :
+                        num == SYSCALL_NtQueryValueKey ? a2 : 0;
+            if (num == SYSCALL_NtOpenKey || num == SYSCALL_NtCreateKey || num == SYSCALL_NtOpenKeyEx) {
+                UINT64 hdr[3];
+                if (NT_SUCCESS(CopyFromUser(hdr, (const void *)(uintptr_t)a3, sizeof(hdr)))) us = hdr[2];
+            }
+            if (us) {
+                UINT64 u[2];
+                UINT16 w[96];
+                if (NT_SUCCESS(CopyFromUser(u, (const void *)(uintptr_t)us, 16))) {
+                    UINT32 len = (UINT32)(u[0] & 0xFFFF) / 2;
+                    if (len > 95) len = 95;
+                    if (len && NT_SUCCESS(CopyFromUser(w, (const void *)(uintptr_t)u[1], len * 2))) {
+                        for (UINT32 k = 0; k < len; k++) path[k] = w[k] < 0x80 ? (char)w[k] : '?';
+                        path[len] = 0;
+                    }
+                }
+            }
+            kprintf("[TRACE] %s: syscall %03llx(%llx, %llx, %llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
                     (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
-                    (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r,
+                    (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)um_stack_arg(5),
+                    (unsigned long long)um_stack_arg(6), (unsigned long long)r,
                     path[0] ? " " : "", path);
         }
     }
@@ -1324,6 +1344,10 @@ static UINT64 alloc_vm(UmProcess *p, UINT64 a2, UINT64 a4, UINT32 type, UINT32 p
 {
     UINT64 base, size;
     if (!get_u64(a2, &base) || !get_u64(a4, &size)) return UM_STATUS_ACCESS_VIOLATION;
+    if (type == 0x80000 || type == 0x1000000) {                 /* MEM_RESET / MEM_RESET_UNDO: contents kept */
+        if (!base || !size || !um_region_find(p, base)) return ST_INVALID_PARAMETER;
+        return ST_SUCCESS;
+    }
     if (!size || !(type & (MEM_COMMIT | MEM_RESERVE)) || !valid_protect(prot)) return ST_INVALID_PARAMETER;
     if (!base) type |= MEM_RESERVE;                             /* committing at no address reserves too */
     UINT64 end = (base + size + 0xFFF) & ~0xFFFULL;

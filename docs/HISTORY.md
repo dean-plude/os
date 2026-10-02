@@ -1339,3 +1339,39 @@ build machine, and DXVK is the faster, more complete path anyway.
 - Tested in QEMU with extra SSDTs (`-acpitable`) describing a battery in
   mWh on battery power (75%, 3 h left) and one in mAh charging on AC
   (25%); sleep and the power button pass as before.
+
+## Firefox (Floorp)
+
+Floorp 12.19, a Firefox build (the Firefox 157 engine), starts from the
+Terminal, creates its profile and draws its full browser window.  The
+browser is run as shipped; everything below is in NovaOS.
+
+- **Imports**: the C runtime pieces Gecko uses (`_wsetlocale` and the
+  rest), the delay-loaded DLLs it asks for, and cross-process
+  `NtQueryInformationProcess`.
+- **DirectWrite** (`userland/dwrite`): NovaOS's own `dwrite.dll`.  The
+  factory, the system font collection (scanned from `%WINDIR%\Fonts`,
+  with the common Windows family names mapped to the bundled fonts),
+  font families, fonts, font faces (metrics, glyph indices, advances,
+  kerning, outlines into a geometry sink, font tables), GDI interop and
+  glyph run analysis (aliased and ClearType alpha textures).  Fonts are
+  read with stb_truetype (public domain).  Text formats and layouts are not
+  there yet; Gecko does its own layout and only needs the parts above.
+- **Kernel**: `NtQuerySection`, `MEM_RESET`/`MEM_RESET_UNDO`, a
+  per-process handle table of 4096 (Gecko keeps far more than the old
+  256 open), and `C:\AppData\Roaming`, `Local`, `LocalLow` and
+  `C:\ProgramData` made at boot.
+- **C runtime**: `_vsnwprintf` (the legacy option of
+  `__stdio_common_vswprintf`) now fills a buffer exactly, without the
+  terminator, when the output is exactly the buffer's size.  Gecko formats
+  its 16-digit install hash that way; returning -1 made the profile
+  service fail and Firefox show "Profile Missing".
+- **user32**: window class names up to 256 characters (Gecko's remote
+  window class contains the profile path).
+- **Debugging aids**: the kernel prints each new process's command line;
+  `tools/novarun.py` takes `!bg COMMAND` to leave a program running while
+  it waits and takes screenshots, and `NOVARUN_GDB=1` starts QEMU with a
+  gdb server so breakpoints can be set in a program's code.
+- Not yet: the sandbox's `SpawnTarget` fails with
+  `ERROR_INSUFFICIENT_BUFFER`, so the GPU and network child processes
+  don't start; no page has been loaded yet.

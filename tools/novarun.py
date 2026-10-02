@@ -144,7 +144,7 @@ def main():
                           '-drive', f'format=raw,file={a.img},snapshot=on',
                           '-drive', f'format=raw,file={data}',
                           '-serial', f'file:{serial}', '-vga', 'std', '-display', 'none', '-nic', 'none',
-                          '-qmp', f'unix:{sock},server,nowait'] +
+                          '-qmp', f'unix:{sock},server,nowait'] + (['-s'] if os.environ.get('NOVARUN_GDB') else []) +
                          (['-audiodev', f'wav,id=snd0,path={os.path.abspath(a.wav)},out.frequency=48000',
                            '-device', 'intel-hda', '-device', 'hda-output,audiodev=snd0'] if a.wav else []))
     qmp = None
@@ -175,6 +175,11 @@ def main():
                 for k in c[6:].split():
                     qmp.key(*k.split('-'))
                     time.sleep(0.1)
+                continue
+            if c.startswith('!bg '):       # type a command and leave it running
+                sr.read_new()
+                print(f'### (running) {c[4:]}', flush=True)
+                qmp.type(c[4:] + '\n')
                 continue
             sr.read_new()
             print(f'### {c}', flush=True)

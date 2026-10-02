@@ -525,6 +525,22 @@ NTSTATUS NTAPI NtNovaProcessList(NOVA_PROCESS_ENTRY *buf, ULONG max, PULONG coun
 }
 NTSTATUS NTAPI NtTerminateProcess(HANDLE p, NTSTATUS status) { return SC(NtTerminateProcess, H(p), U(status)); }
 
+NTSTATUS NTAPI NtQuerySection(HANDLE h, ULONG cls, PVOID info, SIZE_T len, PSIZE_T ret)
+{
+    if (cls != 0) return SC(NtQuerySection, H(h), U(cls), P(info), U(len), P(ret));
+    if (len < 16) return 0xC0000004;
+    U64 b[3];
+    NTSTATUS s = SC(NtQuerySection, H(h), 0, P(b), 24, 0);
+    if (NT_SUCCESS(s)) {
+        ULONG *o = info;
+        o[0] = (ULONG)b[0];
+        o[1] = (ULONG)b[1];
+        *(U64 *)(o + 2) = b[2];
+        if (ret) *ret = 16;
+    }
+    return s;
+}
+
 NTSTATUS NTAPI NtQueryInformationProcess(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret)
 {
     if (cls == 26) {                                 /* ProcessWow64Information: yes, a 32-bit process */

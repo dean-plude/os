@@ -50,7 +50,7 @@ enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CT
  * ----------------------------------------------------------------------- */
 typedef struct WClass {
     int       used;
-    WCHAR     name[64];
+    WCHAR     name[257];                /* up to 256 characters, as on Windows */
     ATOM      atom;
     WNDPROC   proc;                 /* as registered */
     int       wide;                 /* registered with the W functions */

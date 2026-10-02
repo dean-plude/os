@@ -92,6 +92,7 @@ DLLS = [
     ('hid',      ['kernel32', 'ntdll'],           0x7FFD50000000),
     ('oleacc',   ['user32', 'kernel32', 'ntdll'], 0x7FFD60000000),
     ('uiautomationcore', ['kernel32', 'ntdll'],   0x7FFD70000000),
+    ('dwrite',   ['gdi32', 'kernel32', 'ntdll'], 0x7FFD80000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}

@@ -945,6 +945,23 @@ static UINT64 sys_create_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return finish_create(o, name, a1);
 }
 
+/* NtQuerySection(HANDLE, SECTION_INFORMATION_CLASS, PVOID, SIZE_T, PSIZE_T): SectionBasicInformation
+ * { PVOID BaseAddress; ULONG AllocationAttributes; LARGE_INTEGER MaximumSize } */
+static UINT64 sys_query_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    if (a2 == 1) return 0xC0000049U;                        /* SectionImageInformation: SECTION_NOT_IMAGE */
+    if (a2 != 0) return ST_INVALID_INFO_CLASS;
+    if (a4 < 24) return ST_INFO_LENGTH_MISMATCH;
+    UmObject *o = um_handle_object(UmCurrent(), a1, UO_SECTION);
+    if (!o) return ST_INVALID_HANDLE;
+    UINT64 b[3] = { 0, 0x8000000 /* SEC_COMMIT */, ((UmSection *)o->ptr)->size };
+    if (((UmSection *)o->ptr)->file) b[1] |= 0x800000;     /* SEC_FILE */
+    um_ob_unref(o);
+    if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, 24))) return ST_ACCESS_VIOLATION;
+    UINT64 ret = um_stack_arg(5);
+    return !ret || put_u64_(ret, 24) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
+}
+
 static UINT64 sys_open_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a2; (void)a4; return open_named(UO_SECTION, a1, a3); }
 
 /* NtMapViewOfSection(HANDLE Section, HANDLE Process, PVOID *Base, ULONG_PTR ZeroBits, SIZE_T CommitSize,
@@ -1362,6 +1379,7 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtQueryTimer,              sys_query_timer);
     um_install(SYSCALL_NtQueryEvent,              sys_query_event);
     um_install(SYSCALL_NtQuerySemaphore,          sys_query_semaphore);
+    um_install(SYSCALL_NtQuerySection,            sys_query_section);
     um_install(SYSCALL_NtCreateEvent,             sys_create_event_oa);
     um_install(SYSCALL_NtCreateSection,           sys_create_section_oa);
     um_install(SYSCALL_NtOpenSection,             sys_open_section_oa);

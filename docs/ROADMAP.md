@@ -85,6 +85,11 @@ named program or test demonstrates it.
 - Bring the App Store catalog up program by program, starting with the
   "untested" portable ones (Notepad++, SumatraPDF, PuTTY, WinMerge), then
   the Qt and GTK applications (KeePassXC, Krita, Inkscape), then Firefox.
+- Firefox (tested with Floorp): the browser window opens; see
+  [Firefox](HISTORY.md#firefox-floorp).  Still open: the sandbox launching
+  child processes (`SpawnTarget` fails with `ERROR_INSUFFICIENT_BUFFER`),
+  loading a page, DirectWrite text layout (`CreateTextFormat`,
+  `CreateTextLayout`), `nssckbi.dll`.
 - Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the
   `IFileDialog` interfaces (today they report "cancelled").
 - Windows Installer: custom actions that run code, the packages' own

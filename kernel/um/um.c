@@ -99,6 +99,14 @@ void UmInit(void)
     /* Install the system DLLs and programs on drive C: */
     int installed = 0;
     RamfsCreate(RamfsRoot(), "Temp", true);
+    /* the profile folders every Windows program can assume exist (%APPDATA%, %LOCALAPPDATA%, ...) */
+    RamfsCreate(RamfsRoot(), "ProgramData", true);
+    RamNode *appdata = RamfsCreate(RamfsRoot(), "AppData", true);
+    if (appdata) {
+        RamfsCreate(appdata, "Roaming", true);
+        RamfsCreate(appdata, "Local", true);
+        RamfsCreate(appdata, "LocalLow", true);
+    }
     RamfsSetMode(RAMFS_INSTALLING);                 /* system files: never saved to disk */
     for (int i = 0; i < g_userland_file_count; i++) {
         const UserlandFile *uf = &g_userland_files[i];
@@ -1753,6 +1761,7 @@ UmProcess *um_spawn_finish(UmProcess *p, RamNode *exe, const char *cmdline, cons
     }
     kprintf("[UM] Started %s (PID %u): %d module(s), entry 0x%llx, %u KB\n", p->name, p->pid,
             p->nmodules, (unsigned long long)entry, p->pages * 4);
+    kprintf("[UM]   command line: %s\n", cmdline ? cmdline : "");
     return p;
 }
 

@@ -280,7 +280,7 @@ static ATOM register_class(const ClassDef *d, int wide, int system)
     memset(c, 0, sizeof(*c));
     c->used = 1;
     int n = 0;
-    for (; d->name[n] && n < 63; n++) c->name[n] = d->name[n];
+    for (; d->name[n] && n < 256; n++) c->name[n] = d->name[n];
     c->name[n] = 0;
     c->proc = d->proc; c->wide = wide; c->style = d->style;
     c->extra = d->wnd_extra < 0 ? 0 : d->wnd_extra;
@@ -424,8 +424,8 @@ USERAPI int GetClassNameW(HWND h, LPWSTR buf, int n)
 
 USERAPI int GetClassNameA(HWND h, LPSTR buf, int n)
 {
-    WCHAR w[64];
-    int k = GetClassNameW(h, w, 64);
+    WCHAR w[257];
+    int k = GetClassNameW(h, w, 257);
     if (!k || n <= 0) { if (n > 0) buf[0] = 0; return 0; }
     int m = WideCharToMultiByte(CP_ACP, 0, w, k, buf, n - 1, NULL, NULL);
     buf[m] = 0;

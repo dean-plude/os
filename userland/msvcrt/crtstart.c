@@ -370,6 +370,12 @@ static int pf_flags(unsigned long long opt, int wide)
 }
 
 /* snprintf family: count = buffer size; the options pick the return value */
+static int exact_fit(unsigned long long opt, const void *buf, int r, size_t count)
+{
+    return buf && count && (size_t)r == count && !(opt & OPT_STANDARD_SNPRINTF) &&
+           (opt & OPT_LEGACY_NULL_TERMINATION);
+}
+
 static int finish_sprintf(unsigned long long opt, int r, size_t count, int truncated)
 {
     if (opt & OPT_STANDARD_SNPRINTF) return r;          /* C99: the full length */
@@ -390,8 +396,18 @@ CRTEXP int __stdio_common_vfprintf_p(unsigned long long opt, FILE *f, const char
 CRTEXP int __stdio_common_vsprintf(unsigned long long opt, char *buf, size_t count, const char *fmt, void *loc, va_list ap)
 {
     (void)loc;
+    va_list again;
+    va_copy(again, ap);
     int r = __nova_vsnprintf(buf, buf ? count : 0, fmt, ap, 0);
-    if (r < 0) return -1;
+    if (r < 0) { va_end(again); return -1; }
+    /* legacy _vsnprintf: output exactly the buffer size fills it, unterminated */
+    if (exact_fit(opt, buf, r, count)) {
+        char *t = malloc(count + 1);
+        if (t) { __nova_vsnprintf(t, count + 1, fmt, again, 0); memcpy(buf, t, count); free(t); }
+        va_end(again);
+        return r;
+    }
+    va_end(again);
     return finish_sprintf(opt, r, count, (size_t)r >= count);
 }
 CRTEXP int __stdio_common_vsprintf_s(unsigned long long opt, char *buf, size_t count, const char *fmt, void *loc, va_list ap)
@@ -423,8 +439,17 @@ CRTEXP int __stdio_common_vfwprintf_p(unsigned long long opt, FILE *f, const wch
 CRTEXP int __stdio_common_vswprintf(unsigned long long opt, wchar_t *buf, size_t count, const wchar_t *fmt, void *loc, va_list ap)
 {
     (void)loc;
+    va_list again;
+    va_copy(again, ap);
     int r = __nova_vsnwprintf(buf, buf ? count : 0, fmt, ap, pf_flags(opt, 1));
-    if (r < 0) return -1;
+    if (r < 0) { va_end(again); return -1; }
+    if (exact_fit(opt, buf, r, count)) {
+        wchar_t *t = malloc((count + 1) * sizeof(wchar_t));
+        if (t) { __nova_vsnwprintf(t, count + 1, fmt, again, pf_flags(opt, 1)); memcpy(buf, t, count * sizeof(wchar_t)); free(t); }
+        va_end(again);
+        return r;
+    }
+    va_end(again);
     return finish_sprintf(opt, r, count, (size_t)r >= count);
 }
 CRTEXP int __stdio_common_vswprintf_s(unsigned long long opt, wchar_t *buf, size_t count, const wchar_t *fmt, void *loc, va_list ap)

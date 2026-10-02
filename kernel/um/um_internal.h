@@ -9,7 +9,7 @@
 #include "../ke/syscall.h"
 
 #define UM_MAX_PROCS     32
-#define UM_MAX_HANDLES   256
+#define UM_MAX_HANDLES   4096
 #define UM_MAX_REGIONS   8192     /* (runtimes such as CoreCLR reserve thousands of ranges) */
 #define UM_MAX_MODULES   64
 #define UM_MAX_THREADS   64
