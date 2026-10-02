@@ -356,6 +356,13 @@ serial.log` lists them; each should end "0 failed".
 (`.github/workflows/nightly.yml`, which also runs on pull requests that
 change it): it downloads the official Windows x64 releases into a cache,
 unpacks them into `C:\Apps`, boots once and runs each one's commands.
+The same run then boots on 4 CPUs for `smpstress scaling 0` and records
+each scaling figure in the night's table.  A shared runner may not run the
+emulated CPUs side by side at all, so rather than the 3x target
+`tools/ci/check-smpstress.py` fails the run on a hang or a failed test,
+and, when bare system calls scale 2x or more in the same run, on files or
+the registry scaling less than half as well (what work under one big lock
+would do).
 
 | Program | Checks |
 |---|---|
@@ -453,6 +460,15 @@ python3 tools/novarun.py --net --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' \
 - **`trace NAME`** in the Terminal logs the failing system calls (with file
   names) of the program called NAME, each with its process id; `trace
   +NAME` logs every call, not only the failing ones; `trace off` stops it.
+- **`profile on [DELAY LENGTH]`** in the Terminal samples every CPU at each
+  timer tick (from DELAY ticks on, for LENGTH ticks; 100 a second), and
+  **`profile`** prints the result: how the time split between programs, the
+  kernel, waiting for the big kernel lock and idle; the busiest kernel
+  functions and their callers; the busiest 64-byte lines of program code
+  (look the address up in a DLL's `.map` next to it in the build); and the
+  system calls made (3xx: an interrupt under the big lock).  For example
+  `tools/novarun.py --smp 4 "profile on 550 100" "smpstress throughput 0
+  files many" profile`.
 
 ### GDB
 

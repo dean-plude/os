@@ -4,3 +4,4 @@ __pycache__/
 # The ISO is built by CI (.github/workflows/ci.yml), never committed
 /nova.iso
 *.iso
+selftest-out/

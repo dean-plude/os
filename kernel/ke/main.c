@@ -234,6 +234,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     g_kpcr[0].Gdt    = gdt_boot();
     g_kpcr[0].Tss    = &gdt_boot()->tss;
     g_kpcr[0].Online = 1;
+    vmm_percpu_ready();
 
     kprintf("=== Phase 1: IDT ===\n");
     idt_init();

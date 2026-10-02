@@ -6,6 +6,7 @@
  */
 
 #include "idt.h"
+#include "../../ke/prof.h"
 #include "../../um/um.h"
 #include "gdt.h"
 #include "cpu.h"
@@ -357,6 +358,9 @@ void interrupt_dispatch(InterruptFrame *frame)
     /* A timer tick while this CPU is halted waiting for the kernel lock:
      * nothing to do (the clock follows the TSC, and the other CPUs keep
      * it), and switching the waiting thread out halfway would be wrong. */
+    if (vector == IRQ_TIMER)
+        ProfSample(frame->rip, frame->rbp, (frame->cs & 3) != 0, KiGetCurrentKpcr()->LockWait,
+                   KiGetCurrentKpcr()->Idle || sched_current() == KiGetCurrentKpcr()->IdleThread);
     if (vector == IRQ_TIMER && KiGetCurrentKpcr()->LockWait) {
         apic_eoi();
         return;
@@ -369,7 +373,7 @@ void interrupt_dispatch(InterruptFrame *frame)
     /* (a 32-bit program's system call takes the lock itself, like SYSCALL) */
     bool big = vector != IRQ_TIMER && vector != IRQ_SPURIOUS &&
                !(vector == VECTOR_SYSCALL && (frame->cs & ~3ULL) == GDT_USER_CODE32);
-    if (big) bkl_acquire();
+    if (big) { ProfInterrupt(vector); bkl_acquire(); }
     dispatch(frame);
     /* Returning to a user program that has been killed meanwhile? */
     if ((frame->cs & 3) && sched_current()->um) UmReturnToUserFrame(frame);

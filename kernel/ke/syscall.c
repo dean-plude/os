@@ -13,6 +13,7 @@
  */
 
 #include "syscall.h"
+#include "prof.h"
 #include "scheduler.h"
 #include "printf.h"
 #include "../include/types.h"
@@ -1142,6 +1143,7 @@ UINT64 KiSystemCallEntry(UINT64 num, UINT64 arg1, UINT64 arg2,
                          UINT64 arg3, UINT64 arg4, UINT64 user_rsp)
 {
     /* Programs' services with locks of their own skip the big lock */
+    ProfSyscall(num);
     bool big = !(sched_current()->um && num < SYSCALL_MAX && UmSyscallLockFree(num));
     if (big) bkl_acquire();
     UINT64 r = KiSystemCallDispatch(num, arg1, arg2, arg3, arg4, user_rsp);
