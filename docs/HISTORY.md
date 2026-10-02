@@ -1045,7 +1045,7 @@ menu and `start setup` in the Terminal opens it, to copy NovaOS to
 another disk.
 
 - **Welcome, choose a disk, confirm, install, finish.**  Setup lists the
-  SATA disks with their size and what is on them, marks the one NovaOS
+  SATA, NVMe and USB disks with their size and what is on them, marks the one NovaOS
   started from and the one drive C: is kept on, and asks before erasing
   anything.  Disks under 256 MB are shown but cannot be picked.
 - **What it writes**: a GPT (protective MBR, primary and backup headers
@@ -1390,3 +1390,21 @@ build machine, and DXVK is the faster, more complete path anyway.
 - Tested in QEMU with a FAT32 (MBR) `usb-storage` stick present at boot
   (`dir`, `type`, Explorer, Notepad), unplugged and plugged back in with
   `device_del` / `device_add`, and an NTFS stick added while running.
+
+## NVMe disks (Phase 18.3)
+
+- **Driver** (`kernel/drivers/nvme.c`): resets each NVMe controller, sets
+  up an admin queue and one I/O queue pair (64 entries, polled through the
+  completion phase bit), identifies the controller and its active
+  namespaces, and registers each namespace with 512-byte blocks as a
+  block device (`nvme0n1`, ...).  Reads and writes go through a 128 KiB
+  bounce buffer described by PRP entries or a PRP list; Flush backs
+  `BlockDev.flush`.  After S3 the controllers are reset and their queues
+  created again.
+- **Install**: NVMe disks are found with the SATA disks (`PersistInit`),
+  so Setup lists them, a blank one holds drive C: in a live session, and
+  NovaOS installs to them.
+- Tested in QEMU/OVMF with a blank 1 GB `-device nvme` and the ISO:
+  Setup installed onto `nvme0n1`, then the NVMe disk alone booted
+  (OVMF's `UEFI QEMU NVMe Ctrl` entry), and a file written in Terminal was
+  saved to its NOVADATA partition.

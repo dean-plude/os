@@ -13,6 +13,7 @@
 #include "ramfs.h"
 #include "block.h"
 #include "../drivers/ahci.h"
+#include "../drivers/nvme.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
@@ -148,6 +149,7 @@ static FatVol *format_blank(BlockDev *d)
 void PersistInit(void)
 {
     AhciInit();
+    NvmeInit();
     Cand c[16];
     int n = 0;
     BlockDev *blank = NULL;

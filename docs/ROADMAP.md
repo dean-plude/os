@@ -110,7 +110,7 @@ named program or test demonstrates it.
 
 ### Storage, network and hardware
 - ~~NTFS read~~ Done: NTFS volumes mount read-only as drives D:, E:, ...;
-  NTFS write, NVMe.
+  NTFS write.  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
 - IPv6, HTTP/2.
 - ~~USB (xHCI) with HID keyboards and mice~~ Done: keyboards, mice,
   tablets and touch screens in report protocol, on root ports or behind

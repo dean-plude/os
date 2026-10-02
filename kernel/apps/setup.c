@@ -137,7 +137,7 @@ static void setup_paint(WND *w)
         GdiTextLarge(x, y, "Choose a disk", UI_TEXT);
         GdiTextT(x, y + 40, "NovaOS goes on the disk you pick. Everything on it is erased.", UI_TEXT2);
         if (!s->ndisks)
-            wrap(x, y + 90, tw, "No disks were found. NovaOS installs on SATA (AHCI) disks; "
+            wrap(x, y + 90, tw, "No disks were found. NovaOS installs on SATA (AHCI), NVMe and USB disks; "
                                 "add one and start Setup again.", UI_TEXT2);
         for (int i = 0; i < s->ndisks; i++) {
             const SetupDisk *d = &s->disks[i];

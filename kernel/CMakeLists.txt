@@ -133,6 +133,7 @@ set(KERNEL_C_SOURCES
     drivers/usbhid.c
     drivers/usbhub.c
     drivers/usbmsc.c
+    drivers/nvme.c
     fs/block.c
     fs/fat.c
     fs/ntfs.c

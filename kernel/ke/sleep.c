@@ -37,6 +37,7 @@
 #include "../hal/rtc.h"
 #include "../hal/framebuffer.h"
 #include "../drivers/ahci.h"
+#include "../drivers/nvme.h"
 #include "../drivers/e1000.h"
 #include "../drivers/hda.h"
 #include "../drivers/xhci.h"
@@ -316,6 +317,7 @@ bool SleepEnter(void)
     /* Devices the platform powered off */
     AcpiResume();
     AhciResume();
+    NvmeResume();
     E1000Resume();
     XhciResume();
     HdaResume();
