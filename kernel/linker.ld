@@ -54,6 +54,12 @@ SECTIONS {
         *(.rodata .rodata.*)
         *(.eh_frame_hdr)
         *(.eh_frame)
+        /* function names for backtraces (tools/mkksyms.py, ke/ksym.c);
+         * after .text, so the second link moves no function */
+        . = ALIGN(8);
+        __ksyms_start = .;
+        KEEP(*(.ksyms))
+        __ksyms_end = .;
         __rodata_end = .;
     }
 

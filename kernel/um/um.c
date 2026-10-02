@@ -409,7 +409,7 @@ static void kusd_init(void)
     *(UINT16 *)(g_kusd + 0x2E) = 0x8664;
     static const char root[] = "C:\\Windows";
     for (int i = 0; root[i]; i++) *(UINT16 *)(g_kusd + 0x30 + 2 * i) = (UINT16)root[i];   /* NtSystemRoot */
-    *(UINT32 *)(g_kusd + 0x260) = 19045;                  /* NtBuildNumber */
+    *(UINT32 *)(g_kusd + 0x260) = 18362;                  /* NtBuildNumber: 1903, as the PEB says */
     *(UINT32 *)(g_kusd + 0x264) = 1;                      /* NtProductType: workstation */
     g_kusd[0x268] = 1;                                    /* ProductTypeIsValid */
     *(UINT32 *)(g_kusd + 0x26C) = 10;                     /* NtMajorVersion */

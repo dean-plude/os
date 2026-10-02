@@ -296,7 +296,9 @@ static UmThread *stopped_thread(UINT64 h, UmObject **ref)
     if (!o) return NULL;
     UmThread *t = (UmThread *)o;
     if (t == UmCurrentThread() || t->suspend <= 0) { um_ob_unref(o); return NULL; }
-    for (int i = 0; i < 2000 && !t->park && !t->exited; i++) sched_yield();
+    /* (a thread running in user mode parks at its CPU's next timer tick:
+     * wait by time, not by yields, which may come straight back) */
+    for (UINT64 end = sched_ticks() + 100; !t->park && !t->exited && sched_ticks() < end; ) sched_yield();
     if (!t->park || t->exited) { um_ob_unref(o); return NULL; }
     *ref = o;
     return t;
