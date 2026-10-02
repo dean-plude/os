@@ -1483,3 +1483,6 @@ where git finds it:
   scrolling line view, so it would draw garbage; it can come once the
   console has a real screen buffer.
 - The nightly corpus's `git log` test no longer passes `--no-pager`.
+- The test tools (`tools/selftest.py`, `appcorpus.py`) match a program's
+  expected output without the kernel's `[UM]`/`[SCHED]` log lines, which
+  share the serial port and could land mid-line (`[[UM] jq.exe ... 40,2]`).
