@@ -381,6 +381,12 @@ NTSTATUS NTAPI NtQueryAttributesFile(POBJECT_ATTRIBUTES oa, FILE_BASIC_INFORMATI
     return SC(NtQueryAttributesFile, oa_in(&oc, oa), P(info));
 }
 
+NTSTATUS NTAPI NtQueryFullAttributesFile(POBJECT_ATTRIBUTES oa, PVOID info)
+{
+    OAC oc;
+    return SC(NtQueryFullAttributesFile, oa_in(&oc, oa), P(info));   /* the same layout in both */
+}
+
 NTSTATUS NTAPI NtQueryDirectoryFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io,
                                     PVOID info, ULONG len, ULONG cls, BOOLEAN single,
                                     PUNICODE_STRING name, BOOLEAN restart)
@@ -527,6 +533,22 @@ NTSTATUS NTAPI NtNovaProcessList(NOVA_PROCESS_ENTRY *buf, ULONG max, PULONG coun
 }
 NTSTATUS NTAPI NtTerminateProcess(HANDLE p, NTSTATUS status) { return SC(NtTerminateProcess, H(p), U(status)); }
 
+NTSTATUS NTAPI NtQuerySection(HANDLE h, ULONG cls, PVOID info, SIZE_T len, PSIZE_T ret)
+{
+    if (cls != 0) return SC(NtQuerySection, H(h), U(cls), P(info), U(len), P(ret));
+    if (len < 16) return 0xC0000004;
+    U64 b[3];
+    NTSTATUS s = SC(NtQuerySection, H(h), 0, P(b), 24, 0);
+    if (NT_SUCCESS(s)) {
+        ULONG *o = info;
+        o[0] = (ULONG)b[0];
+        o[1] = (ULONG)b[1];
+        *(U64 *)(o + 2) = b[2];
+        if (ret) *ret = 16;
+    }
+    return s;
+}
+
 NTSTATUS NTAPI NtQueryInformationProcess(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret)
 {
     if (cls == 26) {                                 /* ProcessWow64Information: yes, a 32-bit process */
@@ -588,6 +610,11 @@ NTSTATUS NTAPI NtQueryInformationThread(HANDLE h, ULONG cls, PVOID info, ULONG l
         if (ret) *ret = sizeof(*o);
     }
     return s;
+}
+
+NTSTATUS NTAPI NtSetInformationProcess(HANDLE h, ULONG cls, PVOID info, ULONG len)
+{
+    return SC(NtSetInformationProcess, H(h), U(cls), P(info), U(len));
 }
 
 NTSTATUS NTAPI NtSetInformationThread(HANDLE h, ULONG cls, PVOID info, ULONG len)
@@ -789,6 +816,11 @@ NTSTATUS NTAPI NtDelayExecution(BOOLEAN alertable, PLARGE_INTEGER interval)
     return SC(NtDelayExecution, U(alertable), P(interval));
 }
 NTSTATUS NTAPI NtYieldExecution(void) { return SC0(NtYieldExecution); }
+NTSTATUS NTAPI NtWaitForAlertByThreadId(PVOID address, PLARGE_INTEGER timeout)
+{
+    return SC(NtWaitForAlertByThreadId, P(address), P(timeout));
+}
+NTSTATUS NTAPI NtAlertThreadByThreadId(HANDLE tid) { return SC(NtAlertThreadByThreadId, P(tid)); }
 
 /* -----------------------------------------------------------------------
  * NovaOS services

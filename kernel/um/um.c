@@ -27,6 +27,7 @@
 #include "../fs/persist.h"
 #include "../arch/x86_64/idt.h"
 #include "um_internal.h"
+#include "../ke/syscall.h"
 #include "../ke/scheduler.h"
 #include "../ke/probe.h"
 #include "../ke/printf.h"
@@ -99,6 +100,14 @@ void UmInit(void)
     /* Install the system DLLs and programs on drive C: */
     int installed = 0;
     RamfsCreate(RamfsRoot(), "Temp", true);
+    /* the profile folders every Windows program can assume exist (%APPDATA%, %LOCALAPPDATA%, ...) */
+    RamfsCreate(RamfsRoot(), "ProgramData", true);
+    RamNode *appdata = RamfsCreate(RamfsRoot(), "AppData", true);
+    if (appdata) {
+        RamfsCreate(appdata, "Roaming", true);
+        RamfsCreate(appdata, "Local", true);
+        RamfsCreate(appdata, "LocalLow", true);
+    }
     RamfsSetMode(RAMFS_INSTALLING);                 /* system files: never saved to disk */
     for (int i = 0; i < g_userland_file_count; i++) {
         const UserlandFile *uf = &g_userland_files[i];
@@ -345,6 +354,19 @@ bool um_is_committed(UmProcess *p, UINT64 va)
 {
     pte_t *e = walk(p->pml4, va, false);
     return e && (*e & (PTE_PRESENT | PTE_LAZY));
+}
+
+/* The PAGE_* protection a committed page has now (from its entry: a
+ * module's pages each carry their own section's, and VirtualProtect may
+ * have changed single pages); 0 if not committed */
+UINT32 um_page_protect(UmProcess *p, UINT64 va)
+{
+    pte_t *e = walk(p->pml4, va, false);
+    if (!e || !(*e & (PTE_PRESENT | PTE_LAZY))) return 0;
+    pte_t v = *e;
+    bool w = v & PTE_WRITE, x = !(v & PTE_NX);
+    UINT32 prot = x ? (w ? 0x40 : 0x20) : (w ? 0x04 : 0x02);
+    return prot | ((v & PTE_GUARD) ? 0x100 : 0);
 }
 
 bool um_is_guard(UmProcess *p, UINT64 va)
@@ -817,6 +839,7 @@ static void map_api_set(char *lname, int cap)
         { "api-ms-win-crt-",              "ucrtbase.dll" },
         { "api-ms-win-core-synch-",       "kernel32.dll" },
         { "api-ms-win-core-com-",         "ole32.dll" },
+        { "api-ms-win-core-winrt-",       "ole32.dll" },      /* combase: HSTRINGs, activation */
         { "combase.dll",                  "ole32.dll" },
         { "api-ms-win-core-",             "kernel32.dll" },
         { "api-ms-win-security-",         "advapi32.dll" },
@@ -827,6 +850,7 @@ static void map_api_set(char *lname, int cap)
         { "kernelbase.dll",               "kernel32.dll" },
         { "api-ms-win-",                  "kernel32.dll" },   /* any other set: what exists is there */
         { "msvcrt40.dll",                 "msvcrt.dll" },
+        { "wsock32.dll",                  "ws2_32.dll" },     /* Winsock 1.1: the same functions and ordinals */
     };
     for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++)
         if (!strncmp(lname, sets[i].prefix, strlen(sets[i].prefix))) {
@@ -1412,7 +1436,7 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
         put_u32(peb + L->peb_platform, 2);                  /* OSPlatformId: NT */
 
         UINT64 pv = p->lay.peb;
-        ok = ok && map_kusd(p) && um_region_add(p, pv, UM_SYS_SIZE, 0x04, false) &&
+        ok = ok && map_kusd(p) && um_region_add(p, pv, UM_SYS_SIZE(p->lay.max_threads), 0x04, false) &&
              um_commit(p, pv, (pva - pv) + UM_PARAMS_PAGES * PAGE_SIZE, 0x04) &&
              um_write(p, pv, peb, PAGE_SIZE) &&
              um_write(p, pva, pp, sz) &&
@@ -1492,7 +1516,7 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
 
     um_lock(&p->lock);
     int slot = -1;
-    for (int i = 0; i < UM_MAX_THREADS; i++) if (!p->threads[i]) { slot = i; break; }
+    for (int i = 0; i < p->lay.max_threads; i++) if (!p->threads[i]) { slot = i; break; }
     if (slot < 0 || p->kill_pending) {
         um_unlock(&p->lock);
         kfree(t); kernel_free_pages(fpu, 1);
@@ -1651,6 +1675,7 @@ void um_set_layout(UmProcess *p, bool wow)
     p->lay.alloc_max = wow ? UM32_ALLOC_MAX : UM_ALLOC_MAX;
     p->lay.dll_min = wow ? UM32_DLL_MIN : UM_DLL_MIN;
     p->lay.dll_max = wow ? UM32_DLL_MAX : UM_DLL_MAX;
+    p->lay.max_threads = wow ? UM32_MAX_THREADS : UM_MAX_THREADS;
 }
 
 UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
@@ -1777,6 +1802,7 @@ UmProcess *um_spawn_finish(UmProcess *p, RamNode *exe, const char *cmdline, cons
     }
     kprintf("[UM] Started %s (PID %u): %d module(s), entry 0x%llx, %u KB\n", p->name, p->pid,
             p->nmodules, (unsigned long long)entry, p->pages * 4);
+    kprintf("[UM]   command line: %s\n", cmdline ? cmdline : "");
     return p;
 }
 
@@ -1943,9 +1969,12 @@ static void dump_threads(UmProcess *p)
         UmThread *t = p->threads[i];
         if (!t || t->exited) continue;
         UINT64 rip = t->park == 2 && t->uframe ? ((InterruptFrame *)t->uframe)->rip : 0;
-        kprintf("[UM]   thread %u: %s, last system call %03x, user rip %llx\n", t->tid,
+        kprintf("[UM]   thread %u: %s, last system call %03x(%llx), user rip %llx\n", t->tid,
                 t->park == 1 ? "in a system call" : t->park == 2 ? "interrupted" : "running",
-                t->last_sys, (unsigned long long)rip);
+                t->last_sys, (unsigned long long)t->last_a1, (unsigned long long)rip);
+        UINT64 word = 0;
+        if (t->park == 1 && t->last_sys == SYSCALL_NtWaitForAlertByThreadId && um_read(p, t->last_a1, &word, 8))
+            kprintf("[UM]     the address holds %llx\n", (unsigned long long)word);
         for (int k = 0; k < t->wait_n && k < 4 && t->wait_objs; k++) {
             UmObject *wo = t->wait_objs[k];
             char nm[96];

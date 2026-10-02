@@ -371,14 +371,23 @@ GDIAPI HBITMAP CreateBitmap(int w, int h, UINT planes, UINT bpp, const void *bit
 
 GDIAPI HBITMAP CreateDIBSection(HDC h, const BITMAPINFO *bi, UINT usage, void **bits, HANDLE section, DWORD offset)
 {
-    (void)h; (void)usage; (void)section; (void)offset;
+    (void)h; (void)usage;
     const BITMAPINFOHEADER *bh = &bi->bmiHeader;
     if (bh->biBitCount != 32 && bh->biBitCount != 24) { SetLastError(ERROR_INVALID_PARAMETER); if (bits) *bits = 0; return 0; }
     int w = bh->biWidth, hh = bh->biHeight < 0 ? -bh->biHeight : bh->biHeight;
     if (bh->biBitCount == 24) {
         /* 24-bit DIBs are kept as 32-bit here; the program's pointer sees 32-bit pixels */
     }
-    GObj *o = make_bitmap(w, hh, 1, bh->biHeight > 0, 0);
+    /* The pixels can live in a file mapping (Firefox's GPU process draws the
+     * browser into one shared with the main process, which then blits it) */
+    DWORD *view = 0;
+    if (section && bh->biBitCount == 32 && w > 0 && hh > 0) {
+        view = MapViewOfFile(section, FILE_MAP_ALL_ACCESS, 0, 0, (SIZE_T)offset + (SIZE_T)w * hh * 4);
+        if (!view) { if (bits) *bits = 0; return 0; }
+    }
+    GObj *o = make_bitmap(w, hh, 1, bh->biHeight > 0, view ? (DWORD *)((BYTE *)view + offset) : 0);
+    if (o && view) { o->owns = 2; o->view = view; }
+    if (!o && view) UnmapViewOfFile(view);
     if (bits) *bits = o ? o->bits : 0;
     return (HBITMAP)o;
 }
@@ -809,7 +818,8 @@ GDIAPI BOOL DeleteObject(HGDIOBJ obj)
     GObj *o = obj_of(obj);
     if (!o) return FALSE;
     if (o >= g_pool && o < g_pool + POOL) {                 /* stock objects are not freed */
-        if (o->kind == K_BITMAP && o->owns && o->bits) VirtualFree(o->bits, 0, MEM_RELEASE);
+        if (o->kind == K_BITMAP && o->owns == 1 && o->bits) VirtualFree(o->bits, 0, MEM_RELEASE);
+        if (o->kind == K_BITMAP && o->owns == 2) UnmapViewOfFile(o->view);
         o->used = 0;
     }
     return TRUE;

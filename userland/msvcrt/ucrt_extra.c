@@ -419,3 +419,45 @@ CRTEXP int __fpe_flt_rounds(void)
     __asm__ volatile("stmxcsr %0" : "=m"(m));
     switch ((m >> 13) & 3) { case 0: return 1; case 1: return 3; case 2: return 2; default: return 0; }
 }
+
+/* -----------------------------------------------------------------------
+ * Odds and ends Firefox (xul, nss3) imports
+ * ----------------------------------------------------------------------- */
+CRTEXP errno_t getenv_s(size_t *len, char *buf, size_t size, const char *name)
+{
+    if (!len || !name || (!buf && size)) return EINVAL;
+    *len = 0;
+    if (buf && size) buf[0] = 0;
+    DWORD n = GetEnvironmentVariableA(name, 0, 0);
+    if (!n) return 0;
+    *len = n;                                   /* includes the terminator */
+    if (!buf) return 0;
+    if (n > size) return ERANGE;
+    GetEnvironmentVariableA(name, buf, (DWORD)size);
+    return 0;
+}
+CRTEXP errno_t _wgetenv_s(size_t *len, wchar_t *buf, size_t size, const wchar_t *name)
+{
+    if (!len || !name || (!buf && size)) return EINVAL;
+    *len = 0;
+    if (buf && size) buf[0] = 0;
+    DWORD n = GetEnvironmentVariableW(name, 0, 0);
+    if (!n) return 0;
+    *len = n;
+    if (!buf) return 0;
+    if (n > size) return ERANGE;
+    GetEnvironmentVariableW(name, buf, (DWORD)size);
+    return 0;
+}
+
+wchar_t *_wmktemp(wchar_t *t);
+CRTEXP errno_t _wmktemp_s(wchar_t *t, size_t n)
+{
+    if (!t || !n || wcsnlen(t, n) >= n) return EINVAL;
+    return _wmktemp(t) ? 0 : errno;
+}
+
+typedef struct { long long quot, rem; } lldiv_t_;
+CRTEXP lldiv_t_ lldiv(long long a, long long b) { lldiv_t_ r = { a / b, a % b }; return r; }
+CRTEXP lldiv_t_ imaxdiv(long long a, long long b) { lldiv_t_ r = { a / b, a % b }; return r; }
+

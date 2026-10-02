@@ -537,6 +537,48 @@ static UINT64 sys_wait_single(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return st;
 }
 
+/* NtAlertThreadByThreadId(HANDLE ThreadId): wake that thread of this
+ * process from NtWaitForAlertByThreadId, or make its next one return at
+ * once.  ntdll builds WaitOnAddress, SRW locks and condition variables on
+ * this pair, as Windows 8 and later do. */
+static UINT64 sys_alert_by_tid(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    UmProcess *p = UmCurrent();
+    UINT64 st = 0xC000000Bu;                                /* STATUS_INVALID_CID */
+    um_lock(&p->lock);
+    for (int i = 0; i < UM_MAX_THREADS; i++) {
+        UmThread *t = p->threads[i];
+        if (!t || t->tid != (UINT32)a1 || t->exited) continue;
+        IrqState s = ob_lock();
+        t->alerted = 1;
+        if (t->kt) sched_unblock(t->kt);
+        ob_unlock(s);
+        st = ST_SUCCESS;
+        break;
+    }
+    um_unlock(&p->lock);
+    return st;
+}
+
+/* NtWaitForAlertByThreadId(PVOID Address (a hint only), PLARGE_INTEGER Timeout):
+ * STATUS_ALERTED once alerted, else STATUS_TIMEOUT */
+static UINT64 sys_wait_alert(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a1; (void)a3; (void)a4;
+    INT64 t;
+    if (!get_timeout(a2, &t)) return ST_ACCESS_VIOLATION;
+    UmThread *me = UmCurrentThread();
+    UINT64 until = deadline_ticks(t);
+    for (;;) {
+        if (__atomic_exchange_n(&me->alerted, 0, __ATOMIC_ACQ_REL)) return 0x101;   /* STATUS_ALERTED */
+        if (um_stopping()) return ST_THREAD_IS_TERMINATING;
+        if (t == 0 || sched_ticks() >= until) return ST_TIMEOUT;
+        UINT64 nap = sched_ticks() + 10;
+        sched_sleep_until(&me->alerted, until < nap ? until : nap);
+    }
+}
+
 /* NtWaitForMultipleObjects(ULONG Count, PHANDLE Handles, WAIT_TYPE (0 all, 1 any),
  *                          BOOLEAN Alertable, PLARGE_INTEGER Timeout) */
 static UINT64 sys_wait_multiple(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -659,10 +701,30 @@ static UINT64 sys_set_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 }
 
 /* NtQueryInformationProcess(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG) */
+static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4);
+/* Mitigation policies, priorities and the like: accepted, none of them change anything here */
+static UINT64 sys_set_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    UmObject *ob;
+    UmProcess *p = um_proc_of(UmCurrent(), a1, &ob);
+    if (!p) return ST_INVALID_HANDLE;
+    if (ob) um_ob_unref(ob);
+    return ST_SUCCESS;
+}
+
 static UINT64 sys_query_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    UmProcess *p = UmCurrent();
-    if (a1 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_INVALID_HANDLE;
+    UmObject *ob;
+    UmProcess *p = um_proc_of(UmCurrent(), a1, &ob);          /* this process or another (a launcher's child) */
+    if (!p) return ST_INVALID_HANDLE;
+    UINT64 r = query_info_process(p, a2, a3, a4);
+    if (ob) um_ob_unref(ob);
+    return r;
+}
+
+static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4)
+{
     if (a2 == 23) {                                            /* ProcessDeviceMap: the drive letters */
         if (a4 < 36) return ST_INFO_LENGTH_MISMATCH;
         UINT8 b[36];
@@ -674,9 +736,25 @@ static UINT64 sys_query_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         UINT64 ret = um_stack_arg(5);
         return !ret || put_u32(ret, 36) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
     }
+    if (a2 == 20 || a2 == 58) {                                /* ProcessHandleCount, ProcessHandleTable */
+        static UINT32 vals[UM_MAX_HANDLES];
+        static UmLock tlock;
+        um_lock(&tlock);
+        UINT32 n = 0;
+        um_lock(&p->lock);
+        for (UINT32 i = 0; i < UM_MAX_HANDLES; i++) if (p->handles[i].kind != H_FREE) vals[n++] = (i + 1) * 4;
+        um_unlock(&p->lock);
+        UINT32 need = a2 == 20 ? 4 : n * 4;
+        UINT64 st = ST_SUCCESS, ret = um_stack_arg(5);
+        if (a4 < need) st = ST_INFO_LENGTH_MISMATCH;
+        else if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, a2 == 20 ? &n : vals, need))) st = ST_ACCESS_VIOLATION;
+        um_unlock(&tlock);
+        if (ret && !put_u32(ret, need)) return ST_ACCESS_VIOLATION;
+        return st;
+    }
     if (a2 != 0) return ST_INVALID_INFO_CLASS;                 /* ProcessBasicInformation */
     if (a4 < 48) return ST_INFO_LENGTH_MISMATCH;
-    UINT64 b[6] = { ST_STILL_ACTIVE, p->lay.peb, 1, 8, p->pid, 0 };
+    UINT64 b[6] = { p->exited ? p->exit_status : ST_STILL_ACTIVE, p->lay.peb, 1, 8, p->pid, p->parent_pid };
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, sizeof(b)))) return ST_ACCESS_VIOLATION;
     return put_u32(um_stack_arg(5), 48) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }
@@ -974,6 +1052,23 @@ static UINT64 sys_create_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     o->ptr = sec;
     o->destroy = section_destroy;
     return finish_create(o, name, a1, a3);
+}
+
+/* NtQuerySection(HANDLE, SECTION_INFORMATION_CLASS, PVOID, SIZE_T, PSIZE_T): SectionBasicInformation
+ * { PVOID BaseAddress; ULONG AllocationAttributes; LARGE_INTEGER MaximumSize } */
+static UINT64 sys_query_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    if (a2 == 1) return 0xC0000049U;                        /* SectionImageInformation: SECTION_NOT_IMAGE */
+    if (a2 != 0) return ST_INVALID_INFO_CLASS;
+    if (a4 < 24) return ST_INFO_LENGTH_MISMATCH;
+    UmObject *o = um_handle_object(UmCurrent(), a1, UO_SECTION);
+    if (!o) return ST_INVALID_HANDLE;
+    UINT64 b[3] = { 0, 0x8000000 /* SEC_COMMIT */, ((UmSection *)o->ptr)->size };
+    if (((UmSection *)o->ptr)->file) b[1] |= 0x800000;     /* SEC_FILE */
+    um_ob_unref(o);
+    if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, 24))) return ST_ACCESS_VIOLATION;
+    UINT64 ret = um_stack_arg(5);
+    return !ret || put_u64_(ret, 24) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }
 
 static UINT64 sys_open_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_named(UO_SECTION, a1, a3, (UINT32)a2); }
@@ -1393,6 +1488,7 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtQueryTimer,              sys_query_timer);
     um_install(SYSCALL_NtQueryEvent,              sys_query_event);
     um_install(SYSCALL_NtQuerySemaphore,          sys_query_semaphore);
+    um_install(SYSCALL_NtQuerySection,            sys_query_section);
     um_install(SYSCALL_NtCreateEvent,             sys_create_event_oa);
     um_install(SYSCALL_NtCreateSection,           sys_create_section_oa);
     um_install(SYSCALL_NtOpenSection,             sys_open_section_oa);
@@ -1411,6 +1507,8 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtCreateSemaphore,         sys_create_semaphore_oa);
     um_install(SYSCALL_NtReleaseSemaphore,        sys_release_semaphore);
     um_install(SYSCALL_NtWaitForSingleObject,     sys_wait_single);
+    um_install(SYSCALL_NtAlertThreadByThreadId,   sys_alert_by_tid);
+    um_install(SYSCALL_NtWaitForAlertByThreadId,  sys_wait_alert);
     um_install(SYSCALL_NtWaitForMultipleObjects,  sys_wait_multiple);
     um_install(SYSCALL_NtCreateThreadEx,          sys_create_thread_ex);
     um_install(SYSCALL_NtTerminateThread,         sys_terminate_thread);
@@ -1419,6 +1517,7 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtQueryInformationThread,  sys_query_info_thread);
     um_install(SYSCALL_NtSetInformationThread,    sys_set_info_thread);
     um_install(SYSCALL_NtQueryInformationProcess, sys_query_info_process);
+    um_install(SYSCALL_NtSetInformationProcess, sys_set_info_process);
     um_install(SYSCALL_NtDuplicateObject,         sys_duplicate_object);
     um_install(SYSCALL_NtNovaLoadDll,             sys_nova_load_dll);
     um_install(SYSCALL_NtNovaDebugPrint,          sys_nova_debug_print);

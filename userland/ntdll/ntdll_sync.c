@@ -4,9 +4,10 @@
  *
  * Critical sections use the classic NT algorithm: an interlocked LockCount
  * for the fast, uncontended path and a lazily created auto-reset event to
- * park a contending thread.  SRW locks are a compact reader/writer word.
- * Condition variables use a signal counter (spurious wakeups are allowed
- * by the contract, so callers re-check their predicate).
+ * park a contending thread.  SRW locks are a compact reader/writer word
+ * and condition variables a wake counter; both park on their word with
+ * RtlWaitOnAddress (NtWaitForAlertByThreadId), so a waiter sleeps until it
+ * is woken instead of polling.
  */
 
 #include <winternl.h>
@@ -109,74 +110,200 @@ NTSTATUS NTAPI RtlDeleteCriticalSection(PRTL_CRITICAL_SECTION cs)
 }
 
 /* -----------------------------------------------------------------------
- * Slim reader/writer locks (bit 0: writer held; bits 1..: reader count)
+ * Waiting on an address (RtlWaitOnAddress, as kernel32's WaitOnAddress).
+ * As on Windows 8 and later, the waiters are listed here, in hashed
+ * buckets, and sleep in NtWaitForAlertByThreadId; a waker unlinks them and
+ * alerts their threads (NtAlertThreadByThreadId).  SRW locks and condition
+ * variables park on their own words this way.
  * ----------------------------------------------------------------------- */
+typedef struct AddrWaiter {
+    const volatile void *addr;
+    ULONG tid;
+    volatile LONG done;                 /* set (under the bucket lock) by the waker */
+    struct AddrWaiter *next;
+} AddrWaiter;
+static struct { volatile LONG lock; AddrWaiter *head; } g_wq[64];
+
+static int wq_of(const volatile void *a) { return (int)(((ULONG_PTR)a >> 3) % 64); }
+static void wq_lock(int b)
+{
+    for (ULONG n = 0; __atomic_exchange_n(&g_wq[b].lock, 1, __ATOMIC_ACQUIRE); n++)
+        if (n < 64) __builtin_ia32_pause(); else yield();
+}
+static void wq_unlock(int b) { __atomic_store_n(&g_wq[b].lock, 0, __ATOMIC_RELEASE); }
+
+static BOOLEAN same_value(const volatile void *a, const void *b, SIZE_T n)
+{
+    switch (n) {
+    case 1: return *(const volatile UCHAR *)a == *(const UCHAR *)b;
+    case 2: return *(const volatile USHORT *)a == *(const USHORT *)b;
+    case 4: return *(const volatile ULONG *)a == *(const ULONG *)b;
+    case 8: return *(const volatile ULONGLONG *)a == *(const ULONGLONG *)b;
+    }
+    return FALSE;
+}
+
+NTSTATUS NTAPI RtlWaitOnAddress(const volatile void *addr, const void *cmp, SIZE_T size, PLARGE_INTEGER timeout)
+{
+    if (size != 1 && size != 2 && size != 4 && size != 8) return STATUS_INVALID_PARAMETER;
+    /* a relative timeout counts from now: what is left goes to each wait */
+    LARGE_INTEGER left, *t = timeout;
+    ULONGLONG start = now_ms(), limit = 0;
+    BOOLEAN relative = timeout && timeout->QuadPart < 0;
+    if (relative) limit = (ULONGLONG)(-timeout->QuadPart) / 10000;
+    AddrWaiter w = { addr, cur_tid(), 0, 0 };
+    int b = wq_of(addr);
+    wq_lock(b);
+    if (!same_value(addr, cmp, size)) { wq_unlock(b); return STATUS_SUCCESS; }
+    w.next = g_wq[b].head;
+    g_wq[b].head = &w;
+    wq_unlock(b);
+    for (;;) {
+        if (w.done) return STATUS_SUCCESS;
+        if (relative) {
+            ULONGLONG gone = now_ms() - start;
+            left.QuadPart = gone >= limit ? 0 : -(LONGLONG)((limit - gone) * 10000);
+            t = &left;
+        }
+        NTSTATUS s = NtWaitForAlertByThreadId((PVOID)addr, t);
+        if (w.done) return STATUS_SUCCESS;
+        if (s != STATUS_TIMEOUT && NT_SUCCESS(s)) continue;     /* alerted for something else: look again */
+        wq_lock(b);
+        BOOLEAN done = w.done != 0;
+        if (!done)
+            for (AddrWaiter **pp = &g_wq[b].head; *pp; pp = &(*pp)->next)
+                if (*pp == &w) { *pp = w.next; break; }
+        wq_unlock(b);
+        return done ? STATUS_SUCCESS : NT_SUCCESS(s) ? STATUS_TIMEOUT : s;
+    }
+}
+
+static void wake_address(const volatile void *addr, BOOLEAN all)
+{
+    int b = wq_of(addr);
+    for (;;) {
+        ULONG tids[16];
+        int n = 0;
+        BOOLEAN more = FALSE;
+        wq_lock(b);
+        for (AddrWaiter **pp = &g_wq[b].head; *pp; ) {
+            AddrWaiter *w = *pp;
+            if (w->addr != addr) { pp = &w->next; continue; }
+            if (n == 16) { more = TRUE; break; }
+            *pp = w->next;
+            tids[n++] = w->tid;
+            w->done = 1;                    /* its owner may return (and its stack go) from here on */
+            if (!all) break;
+        }
+        wq_unlock(b);
+        for (int i = 0; i < n; i++) NtAlertThreadByThreadId((HANDLE)(ULONG_PTR)tids[i]);
+        if (!more) return;
+    }
+}
+
+VOID NTAPI RtlWakeAddressAll(PVOID addr)    { wake_address(addr, TRUE); }
+VOID NTAPI RtlWakeAddressSingle(PVOID addr) { wake_address(addr, FALSE); }
+
+/* Park on a pointer-sized word while it holds @v */
+static void park_on(volatile LONG_PTR *p, LONG_PTR v)
+{
+    RtlWaitOnAddress(p, &v, sizeof(v), NULL);
+}
+
+/* -----------------------------------------------------------------------
+ * Slim reader/writer locks: bit 0 a writer holds it, bit 1 threads are
+ * parked on it, bits 2.. the readers.  A thread that cannot have it spins
+ * a little, then sets bit 1 and parks; whoever releases it with bit 1 set
+ * clears it and wakes them all to try again.
+ * ----------------------------------------------------------------------- */
+#define SRW_WRITER  1
+#define SRW_PARKED  2
+#define SRW_READER  4
+#define SRW_SPINS   100
+
 /* pointer-sized (8 bytes, or 4 in 32-bit programs) */
 static volatile LONG_PTR *srw(PRTL_SRWLOCK l) { return (volatile LONG_PTR *)&l->Ptr; }
 static LONG_PTR cas(volatile LONG_PTR *p, LONG_PTR v, LONG_PTR cmp) { return __sync_val_compare_and_swap(p, cmp, v); }
 
 VOID NTAPI RtlInitializeSRWLock(PRTL_SRWLOCK l) { l->Ptr = 0; }
 
+/* it is taken: spin, or mark it and park until it changes */
+static void srw_contend(volatile LONG_PTR *w, LONG_PTR v, ULONG *spins)
+{
+    if ((*spins)++ < SRW_SPINS) { __builtin_ia32_pause(); return; }
+    if (!(v & SRW_PARKED) && cas(w, v | SRW_PARKED, v) != v) return;
+    park_on(w, v | SRW_PARKED);
+}
+
 VOID NTAPI RtlAcquireSRWLockExclusive(PRTL_SRWLOCK l)
 {
-    ULONG round = 0;
-    while (cas(srw(l), 1, 0) != 0) backoff(&round);
+    volatile LONG_PTR *w = srw(l);
+    for (ULONG spins = 0;;) {
+        LONG_PTR v = *w;
+        if (!(v & ~(LONG_PTR)SRW_PARKED)) { if (cas(w, v | SRW_WRITER, v) == v) return; continue; }
+        srw_contend(w, v, &spins);
+    }
 }
 
 BOOLEAN NTAPI RtlTryAcquireSRWLockExclusive(PRTL_SRWLOCK l)
 {
-    return cas(srw(l), 1, 0) == 0;
+    LONG_PTR v = *srw(l);
+    return !(v & ~(LONG_PTR)SRW_PARKED) && cas(srw(l), v | SRW_WRITER, v) == v;
 }
 
 VOID NTAPI RtlReleaseSRWLockExclusive(PRTL_SRWLOCK l)
 {
-    __atomic_store_n(srw(l), 0, __ATOMIC_RELEASE);
+    LONG_PTR old = __atomic_fetch_and(srw(l), ~(LONG_PTR)(SRW_WRITER | SRW_PARKED), __ATOMIC_RELEASE);
+    if (old & SRW_PARKED) wake_address(srw(l), TRUE);
 }
 
 VOID NTAPI RtlAcquireSRWLockShared(PRTL_SRWLOCK l)
 {
-    for (ULONG round = 0;;) {
-        LONG_PTR v = *srw(l);
-        if (!(v & 1) && cas(srw(l), v + 2, v) == v) return;
-        backoff(&round);
+    volatile LONG_PTR *w = srw(l);
+    for (ULONG spins = 0;;) {
+        LONG_PTR v = *w;
+        if (!(v & SRW_WRITER)) { if (cas(w, v + SRW_READER, v) == v) return; continue; }
+        srw_contend(w, v, &spins);
     }
 }
 
 BOOLEAN NTAPI RtlTryAcquireSRWLockShared(PRTL_SRWLOCK l)
 {
     LONG_PTR v = *srw(l);
-    return !(v & 1) && cas(srw(l), v + 2, v) == v;
+    return !(v & SRW_WRITER) && cas(srw(l), v + SRW_READER, v) == v;
 }
 
 VOID NTAPI RtlReleaseSRWLockShared(PRTL_SRWLOCK l)
 {
-    __sync_fetch_and_sub(srw(l), 2);
+    LONG_PTR old = __sync_fetch_and_sub(srw(l), SRW_READER);
+    /* the last reader out with threads parked: free it and wake them */
+    if (old == SRW_READER + SRW_PARKED && cas(srw(l), 0, SRW_PARKED) == SRW_PARKED) wake_address(srw(l), TRUE);
 }
 
 /* -----------------------------------------------------------------------
- * Condition variables (signal counter; spurious wakeups permitted)
+ * Condition variables: a wake counter that sleepers park on (spurious
+ * wakeups are allowed by the contract, so callers re-check their predicate)
  * ----------------------------------------------------------------------- */
 VOID NTAPI RtlInitializeConditionVariable(PRTL_CONDITION_VARIABLE cv) { cv->Ptr = 0; }
-VOID NTAPI RtlWakeConditionVariable(PRTL_CONDITION_VARIABLE cv)    { __sync_fetch_and_add((volatile LONG_PTR *)&cv->Ptr, 1); }
-VOID NTAPI RtlWakeAllConditionVariable(PRTL_CONDITION_VARIABLE cv) { __sync_fetch_and_add((volatile LONG_PTR *)&cv->Ptr, 1); }
+VOID NTAPI RtlWakeConditionVariable(PRTL_CONDITION_VARIABLE cv)
+{
+    __sync_fetch_and_add((volatile LONG_PTR *)&cv->Ptr, 1);
+    wake_address(&cv->Ptr, FALSE);
+}
+VOID NTAPI RtlWakeAllConditionVariable(PRTL_CONDITION_VARIABLE cv)
+{
+    __sync_fetch_and_add((volatile LONG_PTR *)&cv->Ptr, 1);
+    wake_address(&cv->Ptr, TRUE);
+}
 
 static NTSTATUS cv_sleep(PRTL_CONDITION_VARIABLE cv, PLARGE_INTEGER timeout,
                          void (*unlock)(void *), void (*lock)(void *), void *obj)
 {
     LONG_PTR seen = *(volatile LONG_PTR *)&cv->Ptr;
-    /* Timeout: relative (negative, 100 ns units) is the common case; an
-     * absolute one is treated as already due */
-    ULONGLONG start = now_ms(), limit = 0;
-    if (timeout) limit = timeout->QuadPart < 0 ? (ULONGLONG)(-timeout->QuadPart) / 10000 : 0;
     unlock(obj);
-    NTSTATUS s = STATUS_SUCCESS;
-    ULONG round = 0;
-    while (*(volatile LONG_PTR *)&cv->Ptr == seen) {
-        if (timeout && now_ms() - start >= limit) { s = STATUS_TIMEOUT; break; }
-        backoff(&round);
-    }
+    NTSTATUS s = RtlWaitOnAddress(&cv->Ptr, &seen, sizeof(seen), timeout);
     lock(obj);
-    return s;
+    return s == STATUS_TIMEOUT ? STATUS_TIMEOUT : STATUS_SUCCESS;
 }
 
 static void cs_unlock(void *o) { RtlLeaveCriticalSection(o); }
@@ -228,7 +355,6 @@ NTSTATUS NTAPI RtlRunOnceComplete(PRTL_RUN_ONCE once, ULONG flags, PVOID ctx)
     return STATUS_SUCCESS;
 }
 
-typedef ULONG (NTAPI *PRTL_RUN_ONCE_INIT_FN)(PRTL_RUN_ONCE, PVOID, PVOID *);
 NTSYSAPI NTSTATUS NTAPI RtlRunOnceExecuteOnce(PRTL_RUN_ONCE once, PRTL_RUN_ONCE_INIT_FN fn, PVOID param, PVOID *ctx)
 {
     PVOID c = 0;

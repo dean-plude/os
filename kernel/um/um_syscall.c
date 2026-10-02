@@ -155,7 +155,7 @@ void UmSetTrace(const char *name)
 UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmThread *t = UmCurrentThread();
-    if (t) { t->park = 1; t->last_sys = (UINT16)num; }   /* park: cleared on the way out (UmReturnToUser) */
+    if (t) { t->park = 1; t->last_sys = (UINT16)num; t->last_a1 = a1; }   /* park: cleared on the way out (UmReturnToUser) */
     UINT64 r = g_um[num](a1, a2, a3, a4);
     if (g_trace[0] && t && (g_trace_all || ((r & 0x80000000u) && (UINT32)r == r))) {
         const char *n = t->proc->name;
@@ -166,7 +166,7 @@ UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             char path[RAMFS_PATH_MAX] = "";
             RamNode *root;
             UINT64 oa = num == SYSCALL_NtCreateFile || num == SYSCALL_NtOpenFile ? a3 :
-                        num == SYSCALL_NtQueryAttributesFile ? a1 : 0;
+                        num == SYSCALL_NtQueryAttributesFile || num == SYSCALL_NtQueryFullAttributesFile ? a1 : 0;
             if (oa && get_path(t->proc, oa, path, sizeof(path), &root)) {
                 /* not a path we resolve: the raw name and its root handle */
                 UINT64 o[3], us[2];
@@ -182,8 +182,8 @@ UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
                     }
                 }
             }
-            kprintf("[TRACE] %s %u: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
-                    (unsigned)t->proc->pid, (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
+            kprintf("[TRACE] %s %u/%u: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
+                    (unsigned)t->proc->pid, (unsigned)t->tid, (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
                     (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r,
                     path[0] ? " " : "", path);
         }
@@ -1077,6 +1077,32 @@ static UINT64 sys_query_attributes(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, b, 40)) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
 }
 
+/* NtQueryFullAttributesFile(POBJECT_ATTRIBUTES, PFILE_NETWORK_OPEN_INFORMATION) */
+static UINT64 sys_query_full_attributes(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    UmProcess *p = UmCurrent();
+    char path[RAMFS_PATH_MAX];
+    RamNode *root;
+    UINT32 st = get_path(p, a1, path, sizeof(path), &root);
+    if (st) return st;
+    UINT8 b[56], basic[40];
+    memset(b, 0, sizeof(b));
+    DesktopLock();
+    RamNode *n = path[0] ? RamfsResolve(root, path) : root;
+    if (n) {
+        basic_info(basic, n);
+        UINT64 size = n->dir ? 0 : n->size, alloc = (size + 4095) & ~4095ULL;
+        memcpy(b, basic, 32);                                   /* the four times */
+        memcpy(b + 32, &alloc, 8);
+        memcpy(b + 40, &size, 8);
+        memcpy(b + 48, basic + 32, 4);                          /* FileAttributes */
+    }
+    DesktopUnlock();
+    if (!n) return ST_OBJECT_NAME_NOT_FOUND;
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, b, 56)) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
+}
+
 /* Wildcard match, case-insensitive: '*' any run, '?' one character. */
 static bool wild(const char *pat, const char *s)
 {
@@ -1394,6 +1420,10 @@ static UINT64 alloc_vm(UmProcess *p, UINT64 a2, UINT64 a4, UINT32 type, UINT32 p
 {
     UINT64 base, size;
     if (!get_u64(a2, &base) || !get_u64(a4, &size)) return UM_STATUS_ACCESS_VIOLATION;
+    if (type == 0x80000 || type == 0x1000000) {                 /* MEM_RESET / MEM_RESET_UNDO: contents kept */
+        if (!base || !size || !um_region_find(p, base)) return ST_INVALID_PARAMETER;
+        return ST_SUCCESS;
+    }
     if (!size || !(type & (MEM_COMMIT | MEM_RESERVE)) || !valid_protect(prot)) return ST_INVALID_PARAMETER;
     if (!base) type |= MEM_RESERVE;                             /* committing at no address reserves too */
     UINT64 end = (base + size + 0xFFF) & ~0xFFFULL;
@@ -1467,7 +1497,7 @@ static UINT64 sys_protect_vm_locked(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a
     if (!r || end > r->base + r->size) return ST_MEMORY_NOT_ALLOCATED;
     for (UINT64 a = base; a < end; a += PAGE_SIZE)
         if (!um_is_committed(p, a)) return ST_MEMORY_NOT_ALLOCATED;
-    UINT32 old = r->protect;
+    UINT32 old = um_page_protect(p, base);                      /* the first page's, as Windows reports */
     um_commit(p, base, end - base, (UINT32)a4);                 /* re-protect committed pages */
     if (old_ptr) { UINT32 o = old; CopyToUser((void *)(uintptr_t)old_ptr, &o, 4); }
     put_u64(a2, base);
@@ -1506,14 +1536,15 @@ static UINT64 sys_query_vm_locked(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4)
         bool c = um_is_committed(p, va);
         UINT64 end = va + PAGE_SIZE, lim = r->base + r->size;
         /* a run of pages in the same state (bounded, so huge reservations stay cheap) */
-        for (int k = 0; end < lim && k < 65536 && um_is_committed(p, end) == c; k++) end += PAGE_SIZE;
-        if (end < lim && um_is_committed(p, end) == c) end = lim;
+        UINT32 prot = c ? um_page_protect(p, va) : 0;
+        for (int k = 0; end < lim && k < 65536 && um_is_committed(p, end) == c &&
+                        (!c || um_page_protect(p, end) == prot); k++) end += PAGE_SIZE;
+        if (end < lim && um_is_committed(p, end) == c && (!c || um_page_protect(p, end) == prot)) end = lim;
         mbi.alloc_base = r->base;
         mbi.alloc_protect = r->image ? 0x80 : r->protect;       /* images: EXECUTE_WRITECOPY */
         mbi.size = end - va;
         mbi.state = c ? 0x1000 : 0x2000;                        /* MEM_COMMIT / MEM_RESERVE */
-        mbi.protect = c ? r->protect : 0;
-        if (c && r->image) mbi.protect = 0x20;                  /* report images as EXECUTE_READ */
+        mbi.protect = c ? um_page_protect(p, va) : 0;
         mbi.type = r->image ? 0x1000000 : r->section ? 0x40000 : 0x20000;   /* MEM_IMAGE / MEM_MAPPED / MEM_PRIVATE */
     }
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &mbi, 48))) return UM_STATUS_ACCESS_VIOLATION;
@@ -2411,6 +2442,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtQueryInformationFile,     sys_query_info_file);
     um_install(SYSCALL_NtSetInformationFile,       sys_set_info_file);
     um_install(SYSCALL_NtQueryAttributesFile,      sys_query_attributes);
+    um_install(SYSCALL_NtQueryFullAttributesFile,  sys_query_full_attributes);
     um_install(SYSCALL_NtQueryDirectoryFile,       sys_query_directory);
     um_install(SYSCALL_NtQueryVolumeInformationFile, sys_query_volume);
     um_install(SYSCALL_NtAllocateVirtualMemory,    sys_alloc_vm);

@@ -140,13 +140,6 @@ int raise(int sig)
     exit(3);
 }
 
-char *setlocale(int category, const char *locale)
-{
-    (void)category;
-    if (!locale || !*locale || (locale[0] == 'C' && !locale[1])) return "C";
-    return 0;
-}
-
 struct lconv *localeconv(void)
 {
     static struct lconv lc = { ".", "", "" };

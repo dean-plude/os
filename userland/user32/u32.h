@@ -40,7 +40,8 @@ typedef struct {
 #define GUI_NOFRAME   0x80
 enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CTL_ENABLE, CTL_SHOW, CTL_PRESENT,
        CTL_WORKAREA, CTL_WAKE, CTL_WINDOW_AT, CTL_ACCEPT_DROPS, CTL_DROP, CTL_DROP_FETCH,
-       CTL_DISPLAY_MODE, CTL_SET_DISPLAY, CTL_DROP_DONE, CTL_DROP_STATUS, CTL_SET_CURSOR, CTL_CURSOR_SHAPE };
+       CTL_DISPLAY_MODE, CTL_SET_DISPLAY, CTL_DROP_DONE, CTL_DROP_STATUS, CTL_SET_CURSOR, CTL_CURSOR_SHAPE,
+       CTL_HWND_TAG, CTL_SET_HWND, CTL_FOREIGN };
 #define WM_NOVA_DROP 0x03FE                     /* from the desktop: a drop from another program (drop.c) */
 #define FRAME_TITLE 32                          /* the desktop's title bar */
 #define FRAME_BORDER 1
@@ -50,7 +51,7 @@ enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CT
  * ----------------------------------------------------------------------- */
 typedef struct WClass {
     int       used;
-    WCHAR     name[64];
+    WCHAR     name[257];                /* up to 256 characters, as on Windows */
     ATOM      atom;
     WNDPROC   proc;                 /* as registered */
     int       wide;                 /* registered with the W functions */
@@ -130,6 +131,8 @@ void u32_unlock(void);
 #define LOCK()   u32_lock()
 #define UNLOCK() u32_unlock()
 
+int   hwnd_foreign(HWND h);           /* another process's handle */
+int   foreign_info(HWND h, INT32 f[11]); /* CTL_FOREIGN: 2 desktop window, 1 other window, 0 none */
 Wnd  *W(HWND h);                    /* NULL (and ERROR_INVALID_WINDOW_HANDLE) if not a window */
 Wnd  *W_quiet(HWND h);
 Wnd  *top_of(Wnd *w);               /* the top-level window holding @w */
