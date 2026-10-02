@@ -18,6 +18,7 @@
 #include "../um/um.h"
 #include "../fs/persist.h"
 #include "../hal/serial.h"
+#include "vterm.h"
 
 #define T_COLS   160
 #define T_ROWS   400
@@ -64,10 +65,22 @@ typedef struct {
     UmProcess *proc;           /* JOB_PROC: a Windows program in this console */
     UmSpawnJob *starting;      /* JOB_PROC: being loaded (proc is NULL until then) */
     UmConsole *con;
+    bool    adopted;           /* JOB_PROC: CREATE_NEW_CONSOLE's program (held, not ours to release); the window closes when it ends */
     bool    open_line;         /* the last line is the program's unfinished line */
     int     col;               /* its output column (after '\r') */
     int     esc;               /* inside an escape sequence: 1 ESC, 2 CSI, 3 OSC */
     int     esc_arg;           /* the CSI's first number */
+    char    csi[24];           /* the CSI's parameter bytes so far */
+    int     csi_n;
+    /* Screen mode: a program that addresses the screen (cursor moves, the
+     * alternate screen) or reads keys one at a time gets a VT emulator
+     * (libvterm) the size of the window; lines it scrolls off the top
+     * join the scrollback, and its screen does when it ends */
+    VTerm       *vt;
+    VTermScreen *vs;
+    int     vt_rows, vt_cols;
+    bool    vt_alt;            /* on the alternate screen */
+    bool    vt_cursor;         /* the cursor is shown */
 } Job;
 
 typedef struct {
@@ -508,11 +521,15 @@ static void done_mark(void)
 
 static void job_end(Term *t)
 {
-    done_mark();
+    if (!t->job.adopted) done_mark();             /* (a new console's window is not the command's) */
     NetRelease(t->job.op);
-    if (t->job.proc) UmRelease(t->job.proc);          /* (kills it if still running) */
+    if (t->job.proc && t->job.adopted) {
+        UmKillConsole(t->job.con, 1);                 /* closing the console ends its programs */
+        UmUnhold(t->job.proc);
+    } else if (t->job.proc) UmRelease(t->job.proc);   /* (kills it if still running) */
     UmSpawnAbandon(t->job.starting);
     if (t->job.con) UmConsoleRelease(t->job.con);
+    if (t->job.vt) vterm_free(t->job.vt);
     memset(&t->job, 0, sizeof(t->job));
 }
 
@@ -727,6 +744,8 @@ static void fetch_done(Term *t)
 
 static void proc_output(Term *t, const char *s, int n);
 static void proc_finish(Term *t);
+static void screen_resize(Term *t);
+static bool screen_enter(Term *t);
 
 static bool term_tick(WND *w)
 {
@@ -744,6 +763,10 @@ static bool term_tick(WND *w)
             if (!p) { terr(t, err); job_end(t); return true; }
             j->proc = p;
         }
+        if (!j->proc) return false;                    /* CREATE_NEW_CONSOLE: not handed over yet */
+        screen_resize(t);
+        /* a program reading keys one at a time gets the screen */
+        if (!j->vt && !(UmConsoleInputMode(j->con) & CON_ENABLE_LINE_INPUT) && screen_enter(t)) changed = true;
         for (int rounds = 0; rounds < 16; rounds++) {  /* keep the UI responsive */
             int n = UmConsoleRead(j->con, buf, sizeof(buf));
             if (!n) break;
@@ -753,6 +776,7 @@ static bool term_tick(WND *w)
         if (UmHasExited(j->proc, NULL, NULL, 0)) {
             int n;
             while ((n = UmConsoleRead(j->con, buf, sizeof(buf))) > 0) proc_output(t, buf, n);
+            if (j->adopted) { WmDestroyWindow(t->w); return true; }   /* as a Windows console window does */
             proc_finish(t);
             return true;
         }
@@ -864,10 +888,203 @@ static void line_put(char *l, int col, char ch)
     if (col >= len) l[col + 1] = '\0';
 }
 
+/* -----------------------------------------------------------------------
+ * Screen mode (libvterm)
+ * ----------------------------------------------------------------------- */
+static int term_rows(Term *t)
+{
+    GdiRect c = WmClientRect(t->w);
+    int r = (c.h - 2 * T_PAD) / T_LINE_H;
+    return r < 2 ? 2 : r;
+}
+
+/* A cell's character as the ASCII the monospace font has: box drawing as
+ * lines and corners, anything else outside ASCII as '?' */
+static char cell_char(UINT32 c)
+{
+    if (!c) return ' ';
+    if (c >= ' ' && c < 0x7F) return (char)c;
+    if (c == 0xA0) return ' ';
+    if (c >= 0x2500 && c <= 0x257F) {
+        if (c == 0x2500 || c == 0x2501 || c == 0x2504 || c == 0x2505 || c == 0x2508 || c == 0x2509 ||
+            c == 0x254C || c == 0x254D || c == 0x2550) return '-';
+        if (c == 0x2502 || c == 0x2503 || c == 0x2506 || c == 0x2507 || c == 0x250A || c == 0x250B ||
+            c == 0x254E || c == 0x254F || c == 0x2551) return '|';
+        return '+';
+    }
+    if (c == 0x2026) return '.';                       /* ellipsis */
+    if (c == 0x2018 || c == 0x2019) return '\'';
+    if (c == 0x201C || c == 0x201D) return '"';
+    if (c == 0x2022 || c == 0x00B7) return '*';
+    if (c >= 0x2580 && c <= 0x259F) return '#';         /* blocks */
+    return '?';
+}
+
+/* The text of screen row @row (trailing blanks dropped) */
+static int vt_row_text(Term *t, int row, char *out, int cap)
+{
+    Job *j = &t->job;
+    int n = 0, last = 0;
+    VTermPos pos = { .row = row };
+    for (pos.col = 0; pos.col < j->vt_cols && n < cap - 1; pos.col++) {
+        VTermScreenCell cell;
+        if (!vterm_screen_get_cell(j->vs, pos, &cell)) break;
+        if (cell.width == 0) continue;                 /* the second half of a wide one */
+        out[n++] = cell_char(cell.chars[0]);
+        if (out[n - 1] != ' ') last = n;
+    }
+    out[last] = '\0';
+    return last;
+}
+
+/* libvterm: a line scrolled off the top of the primary screen */
+static int vt_pushline(int cols, const VTermScreenCell *cells, void *user)
+{
+    Term *t = user;
+    int i = new_line(t, K_NORMAL, 0), n = 0, last = 0;
+    for (int c = 0; c < cols && n < T_COLS; c++) {
+        if (cells[c].width == 0) continue;
+        t->line[i][n++] = cell_char(cells[c].chars[0]);
+        if (t->line[i][n - 1] != ' ') last = n;
+    }
+    t->line[i][last] = '\0';
+    return 1;
+}
+
+static int vt_settermprop(VTermProp prop, VTermValue *val, void *user)
+{
+    Job *j = &((Term *)user)->job;
+    if (prop == VTERM_PROP_ALTSCREEN) j->vt_alt = val->boolean;
+    if (prop == VTERM_PROP_CURSORVISIBLE) j->vt_cursor = val->boolean;
+    return 1;
+}
+
+/* libvterm's replies (device attributes, cursor position reports) are
+ * typed input for the program */
+static void vt_output(const char *s, size_t len, void *user)
+{
+    Job *j = &((Term *)user)->job;
+    for (size_t i = 0; i < len && j->con; i++) UmConsoleKey(j->con, 0, 0, (UINT8)s[i], 0, true);
+}
+
+static const VTermScreenCallbacks g_vt_cbs = {
+    .settermprop = vt_settermprop,
+    .sb_pushline = vt_pushline,
+};
+
+/* Start screen mode: the lines on show move into the emulator's screen
+ * (the last one, still open, with the cursor after it) */
+static bool screen_enter(Term *t)
+{
+    Job *j = &t->job;
+    if (j->vt) return true;
+    int rows = term_rows(t), cols = term_cols(t);
+    VTerm *vt = vterm_new(rows, cols);
+    if (!vt) return false;
+    vterm_set_utf8(vt, 1);
+    j->vt = vt;
+    j->vs = vterm_obtain_screen(vt);
+    j->vt_rows = rows;
+    j->vt_cols = cols;
+    j->vt_cursor = true;
+    vterm_screen_enable_altscreen(j->vs, 1);
+    vterm_screen_set_callbacks(j->vs, &g_vt_cbs, t);
+    vterm_output_set_callback(vt, vt_output, t);
+    vterm_screen_reset(j->vs, 1);
+    int keep = t->count < rows - 1 ? t->count : rows - 1;
+    int from = t->count - keep;
+    char buf[T_COLS + 3];
+    for (int i = from; i < t->count; i++) {
+        bool last = i == t->count - 1 && j->open_line;
+        int n = ksnprintf(buf, sizeof(buf), last ? "%s" : "%s\r\n", t->line[i]);
+        vterm_input_write(vt, buf, (size_t)n);
+        if (last) {                                    /* the cursor where the program left it */
+            n = ksnprintf(buf, sizeof(buf), "\r\x1b[%dG", (j->col < cols ? j->col : cols - 1) + 1);
+            vterm_input_write(vt, buf, (size_t)n);
+        }
+    }
+    t->count = from;                                   /* those lines are on the screen now */
+    j->open_line = false;
+    t->has_sel = false;
+    t->scroll = 0;
+    return true;
+}
+
+/* End screen mode: the primary screen's lines, down to the last one used,
+ * join the scrollback */
+static void screen_leave(Term *t)
+{
+    Job *j = &t->job;
+    if (!j->vt) return;
+    if (!j->vt_alt) {
+        VTermPos cur;
+        vterm_state_get_cursorpos(vterm_obtain_state(j->vt), &cur);
+        char text[T_COLS + 1];
+        int last = cur.col ? cur.row : cur.row - 1;
+        for (int r = 0; r < j->vt_rows; r++)
+            if (vt_row_text(t, r, text, sizeof(text))) { if (r > last) last = r; }
+        for (int r = 0; r <= last; r++) {
+            vt_row_text(t, r, text, sizeof(text));
+            int i = new_line(t, K_NORMAL, 0);
+            strncpy(t->line[i], text, T_COLS);
+            t->line[i][T_COLS] = '\0';
+        }
+    }
+    vterm_free(j->vt);
+    j->vt = NULL;
+    j->vs = NULL;
+    j->open_line = false;
+}
+
+/* The window changed size: so does the screen */
+static void screen_resize(Term *t)
+{
+    Job *j = &t->job;
+    int rows = term_rows(t), cols = term_cols(t);
+    if (j->con) UmConsoleSetSize(j->con, cols, rows);
+    if (!j->vt || (rows == j->vt_rows && cols == j->vt_cols)) return;
+    vterm_set_size(j->vt, rows, cols);
+    j->vt_rows = rows;
+    j->vt_cols = cols;
+}
+
+/* CSI sequences that address the screen start screen mode: cursor
+ * positioning, clearing it, scroll regions, the alternate screen */
+static bool screen_csi(const char *p, int n, char final)
+{
+    if (final == 'H' || final == 'f' || final == 'r' || final == 'd') return true;
+    if (final == 'J') return n == 1 && (p[0] == '2' || p[0] == '3');
+    if ((final == 'h' || final == 'l') && n >= 2 && p[0] == '?') {
+        int v = 0;
+        for (int i = 1; i < n && p[i] >= '0' && p[i] <= '9'; i++) v = v * 10 + (p[i] - '0');
+        return v == 1049 || v == 1047 || v == 47;
+    }
+    return false;
+}
+
+/* Program output to the screen grid.  As in a Windows console, a line feed
+ * also returns the carriage unless the program set DISABLE_NEWLINE_AUTO_RETURN. */
+static void vt_write(Job *j, const char *s, size_t n)
+{
+    if (j->con && (UmConsoleOutputMode(j->con) & 0x0008)) { vterm_input_write(j->vt, s, n); return; }
+    size_t from = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] != '\n') continue;
+        if (i > from) vterm_input_write(j->vt, s + from, i - from);
+        vterm_input_write(j->vt, "\r\n", 2);
+        from = i + 1;
+    }
+    if (n > from) vterm_input_write(j->vt, s + from, n - from);
+}
+
 static void proc_output(Term *t, const char *s, int n)
 {
     mirror(s, n);
     Job *j = &t->job;
+    if (j->vt) {
+        vt_write(j, s, (size_t)n);
+        return;
+    }
     int cols = term_cols(t);
     for (int k = 0; k < n; k++) {
         char c = s[k];
@@ -876,12 +1093,23 @@ static void proc_output(Term *t, const char *s, int n)
         if (j->esc == 1) {
             j->esc = c == '[' ? 2 : c == ']' ? 3 : 0;
             j->esc_arg = 0;
+            j->csi_n = 0;
             continue;
         }
         if (j->esc == 2) {
+            if ((unsigned char)c < 0x40 && j->csi_n < (int)sizeof(j->csi)) j->csi[j->csi_n++] = c;
             if (c >= '0' && c <= '9') j->esc_arg = j->esc_arg * 10 + (c - '0');
             else if ((unsigned char)c >= 0x40 && (unsigned char)c <= 0x7E) {
                 j->esc = 0;
+                if (screen_csi(j->csi, j->csi_n, c) && screen_enter(t)) {
+                    char seq[sizeof(j->csi) + 3];
+                    seq[0] = 0x1B; seq[1] = '[';
+                    memcpy(seq + 2, j->csi, (size_t)j->csi_n);
+                    seq[2 + j->csi_n] = c;
+                    vterm_input_write(j->vt, seq, (size_t)j->csi_n + 3);
+                    if (k + 1 < n) vt_write(j, s + k + 1, (size_t)(n - k - 1));
+                    return;
+                }
                 if (c == 'G' && j->open_line) j->col = j->esc_arg > 0 ? j->esc_arg - 1 : 0;   /* column */
                 if (c == 'K' && j->open_line && j->esc_arg == 0) {                              /* erase to end */
                     char *ln = t->line[t->count - 1];
@@ -926,6 +1154,7 @@ static bool start_program(Term *t, RamNode *exe, const char *cmdline)
     memset(j, 0, sizeof(*j));
     j->con = UmConsoleNew();
     if (!j->con) { terr(t, "Not enough memory."); return true; }
+    UmConsoleSetSize(j->con, term_cols(t), term_rows(t));
     /* mapped on a worker thread, so a large program does not hold up the
      * desktop; term_tick picks the process up */
     j->starting = UmSpawnStart(exe, cmdline, t->cwd, j->con);
@@ -944,6 +1173,7 @@ static void proc_finish(Term *t)
     UINT32 status;
     char why[96];
     UmHasExited(j->proc, &status, why, sizeof(why));
+    screen_leave(t);
     j->open_line = false;
     char msg[160];
     if (why[0]) {
@@ -1286,10 +1516,66 @@ static void term_mouse(WND *w, WmMouseMsg msg, int x, int y)
     }
 }
 
+/* libvterm's colours as the desktop's (the defaults are the Terminal's) */
+static GdiColor vt_color(VTermScreen *vs, VTermColor col, bool fg)
+{
+    if (fg && VTERM_COLOR_IS_DEFAULT_FG(&col)) return T_FG;
+    if (!fg && VTERM_COLOR_IS_DEFAULT_BG(&col)) return T_BG;
+    vterm_screen_convert_color_to_rgb(vs, &col);
+    return GDI_C(col.rgb.red, col.rgb.green, col.rgb.blue);
+}
+
+/* Screen mode: the emulator's cells, runs of one colour at a time */
+static void paint_screen(Term *t, GdiRect c)
+{
+    Job *j = &t->job;
+    int cell = GdiMonoCellW256();
+    int x0 = c.x + T_PAD, y = c.y + T_PAD;
+    VTermPos cur;
+    vterm_state_get_cursorpos(vterm_obtain_state(j->vt), &cur);
+    for (int r = 0; r < j->vt_rows; r++, y += T_LINE_H) {
+        char run[T_COLS + 1];
+        int n = 0, run_col = 0;
+        GdiColor run_fg = T_FG;
+        VTermPos pos = { .row = r };
+        for (pos.col = 0; pos.col <= j->vt_cols; pos.col++) {
+            VTermScreenCell cl;
+            bool end = pos.col == j->vt_cols || !vterm_screen_get_cell(j->vs, pos, &cl);
+            GdiColor fg = T_FG, bg = T_BG;
+            if (!end) {
+                fg = vt_color(j->vs, cl.fg, true);
+                bg = vt_color(j->vs, cl.bg, false);
+                if (cl.attrs.reverse) { GdiColor x = fg; fg = bg; bg = x; }
+                if (bg != T_BG) {
+                    int w = cl.width > 1 ? cl.width : 1;
+                    int px = x0 + (pos.col * cell) / 256;
+                    GdiFillRect(RECT(px, y, x0 + ((pos.col + w) * cell) / 256 - px, T_LINE_H), bg);
+                }
+            }
+            if (n && (end || fg != run_fg)) {
+                GdiTextMonoN(x0 + (run_col * cell) / 256, y, run, n, run_fg);
+                n = 0;
+            }
+            if (end) break;
+            if (cl.width == 0) continue;
+            if (!n) { run_col = pos.col; run_fg = fg; }
+            run[n++] = cell_char(cl.chars[0]);
+            if (cl.width > 1) run[n++] = ' ';
+        }
+    }
+    if (t->in_len && (UmConsoleInputMode(j->con) & CON_ENABLE_LINE_INPUT)) {   /* a line being typed */
+        GdiTextMonoN(x0 + (cur.col * cell) / 256, c.y + T_PAD + cur.row * T_LINE_H, t->input, t->in_len, T_FG);
+        cur.col += t->in_len;
+    }
+    if (j->vt_cursor && t->w->active && cur.row < j->vt_rows && cur.col < j->vt_cols)
+        GdiAlphaFill(RECT(x0 + (cur.col * cell) / 256, c.y + T_PAD + cur.row * T_LINE_H + 1, cell / 256, 15), T_FG, 170);
+}
+
 static void term_paint(WND *w)
 {
     Term *t = w->user;
     GdiRect c = WmClientRect(w);
+    if (t->job.kind == JOB_PROC && t->job.vt) { paint_screen(t, c); return; }
     int cell = GdiMonoCellW256();
     int rows = (c.h - 2 * T_PAD) / T_LINE_H;
     if (rows < 1) rows = 1;
@@ -1356,6 +1642,64 @@ static void remember(Term *t, const char *cmd)
     t->hist_n++;
 }
 
+/* Raw input: a key press as an input record (the character it types, as
+ * user32 would make it), or with ENABLE_VIRTUAL_TERMINAL_INPUT as the
+ * characters of its xterm sequence */
+static void send_key(Term *t, const KeyEvent *k)
+{
+    UmConsole *con = t->job.con;
+    UINT32 vk = UmScancodeToVk(k->scancode, k->extended) & 0xFF;
+    if (vk == 0x10 || vk == 0x11 || vk == 0x12 || vk == 0x14) return;   /* modifiers alone */
+    if (!vk && !k->ch) return;                          /* (pasted text has characters only) */
+    UINT32 ch = (UINT8)k->ch;
+    if (ch == '\n') ch = '\r';
+    if (vk == 0x1B) ch = 0x1B;
+    if (vk == 0x08) ch = 0x08;
+    if (k->ctrl && !k->alt) {                           /* Ctrl+letter: control characters */
+        if (vk >= 'A' && vk <= 'Z') ch = vk - 'A' + 1;
+        else if (vk == 0xDB) ch = 0x1B; else if (vk == 0xDD) ch = 0x1D; else if (vk == 0xDC) ch = 0x1C;
+        else if (vk == 0x20 || vk == '2') ch = 0;
+        else if (ch != '\r' && ch != 8 && ch != 9 && ch != 0x1B) ch = 0;
+    }
+    UINT32 ctrl = (k->shift ? CON_SHIFT : 0) | (k->ctrl ? CON_LEFT_CTRL : 0) | (k->alt ? CON_LEFT_ALT : 0) |
+                  (k->extended ? CON_ENHANCED_KEY : 0);
+    if (!(UmConsoleInputMode(con) & CON_ENABLE_VT_INPUT)) {
+        UmConsoleKey(con, (UINT16)vk, k->scancode, (UINT16)ch, ctrl, true);
+        return;
+    }
+    const char *seq = NULL;
+    char buf[16];
+    int mod = 1 + (k->shift ? 1 : 0) + (k->alt ? 2 : 0) + (k->ctrl ? 4 : 0);
+    static const char arrows[] = { 0x26, 'A', 0x28, 'B', 0x27, 'C', 0x25, 'D', 0x24, 'H', 0x23, 'F', 0 };
+    for (int i = 0; arrows[i]; i += 2)
+        if ((UINT8)arrows[i] == vk) {
+            if (mod > 1) ksnprintf(buf, sizeof(buf), "\x1b[1;%d%c", mod, arrows[i + 1]);
+            else ksnprintf(buf, sizeof(buf), "\x1b[%c", arrows[i + 1]);
+            seq = buf;
+        }
+    static const UINT8 tilde[] = { 0x2D, 2, 0x2E, 3, 0x21, 5, 0x22, 6, 0x74, 15, 0x75, 17, 0x76, 18,
+                                   0x77, 19, 0x78, 20, 0x79, 21, 0x7A, 23, 0x7B, 24, 0 };
+    for (int i = 0; tilde[i]; i += 2)
+        if (tilde[i] == vk) {
+            if (mod > 1) ksnprintf(buf, sizeof(buf), "\x1b[%d;%d~", tilde[i + 1], mod);
+            else ksnprintf(buf, sizeof(buf), "\x1b[%d~", tilde[i + 1]);
+            seq = buf;
+        }
+    if (vk >= 0x70 && vk <= 0x73) {                     /* F1-F4 */
+        if (mod > 1) ksnprintf(buf, sizeof(buf), "\x1b[1;%d%c", mod, 'P' + (int)(vk - 0x70));
+        else ksnprintf(buf, sizeof(buf), "\x1bO%c", 'P' + (int)(vk - 0x70));
+        seq = buf;
+    }
+    if (vk == 0x09 && k->shift) seq = "\x1b[Z";
+    if (seq) {
+        for (; *seq; seq++) UmConsoleKey(con, 0, 0, (UINT8)*seq, 0, true);
+        return;
+    }
+    if (!ch) return;
+    if (k->alt && !k->ctrl) UmConsoleKey(con, 0, 0, 0x1B, 0, true);   /* Alt+x: ESC x */
+    UmConsoleKey(con, (UINT16)vk, k->scancode, (UINT16)ch, ctrl, true);
+}
+
 static void term_key(WND *w, const KeyEvent *k)
 {
     Term *t = w->user;
@@ -1370,6 +1714,12 @@ static void term_key(WND *w, const KeyEvent *k)
     if (k->ch || (k->extended && k->scancode != KEY_PGUP && k->scancode != KEY_PGDN)) t->has_sel = false;
     if (t->job.kind == JOB_PROC) {            /* keyboard goes to the program */
         Job *j = &t->job;
+        UINT32 mode = j->con ? UmConsoleInputMode(j->con) : CON_IN_DEFAULT;
+        bool ctrl_c = k->ctrl && (k->ch == 'c' || k->ch == 'C');
+        if (j->proc && !(mode & CON_ENABLE_LINE_INPUT) && !(ctrl_c && (mode & CON_ENABLE_PROCESSED_INPUT))) {
+            send_key(t, k);                   /* raw: every key as it is pressed */
+            return;
+        }
         if (k->ctrl && k->ch == 'c') {
             proc_output(t, "^C\n", 3);
             if (!j->proc) { job_end(t); return; }      /* still starting: give up on it */
@@ -1460,7 +1810,7 @@ static void term_close(WND *w)
     w->user = NULL;
 }
 
-static Term *term_new(RamNode *cwd)
+static Term *term_new_ex(RamNode *cwd, bool banner)
 {
     Term *t = kzalloc(sizeof(Term));
     if (!t) return NULL;
@@ -1477,10 +1827,45 @@ static Term *term_new(RamNode *cwd)
     w->rbutton  = true;                        /* right click pastes, the wheel scrolls */
     w->on_close = term_close;
     w->on_tick  = term_tick;
+    if (!banner) return t;
     tprint_ex(t, K_DIM, 0, "NovaOS Terminal [Version 0.9.8]");
     tprint_ex(t, K_DIM, 0, "Type 'help' to see what you can do.");
     tprint(t, "");
     return t;
+}
+
+static Term *term_new(RamNode *cwd) { return term_new_ex(cwd, true); }
+
+/* CreateProcess(CREATE_NEW_CONSOLE): a window of its own, its console the
+ * program's.  TerminalConsoleNew makes both (the console sized to the
+ * window; *con is referenced by the window) and returns the window's id
+ * (0: out of memory); TerminalConsoleAdopt hands it the started program,
+ * or closes it if @p is NULL (false: no window any more).  Desktop lock
+ * held. */
+int TerminalConsoleNew(const char *title, RamNode *cwd, UmConsole **con)
+{
+    Term *t = term_new_ex(cwd, false);
+    if (!t) return 0;
+    Job *j = &t->job;
+    j->con = UmConsoleNew();
+    if (!j->con) { WmDestroyWindow(t->w); return 0; }
+    UmConsoleSetSize(j->con, term_cols(t), term_rows(t));
+    j->kind = JOB_PROC;
+    j->adopted = true;
+    if (title && *title) WmSetTitle(t->w, title);
+    *con = j->con;
+    return t->w->id;
+}
+
+bool TerminalConsoleAdopt(int id, UmProcess *p)
+{
+    WND *w = WmWindowById(id);
+    if (!w || w->on_tick != term_tick) return false;        /* closed meanwhile */
+    Term *t = w->user;
+    if (!p) { WmDestroyWindow(w); return false; }
+    UmHold(p);
+    t->job.proc = p;
+    return true;
 }
 
 void TerminalOpen(void)
