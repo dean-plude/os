@@ -76,6 +76,7 @@
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
 #include "../hal/ioapic.h"
+#include "../hal/hpet.h"
 #include "../net/net.h"
 #include "../um/um.h"
 #include "kpcr.h"
@@ -240,6 +241,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     idt_init();
 
     kprintf("=== Phase 1: APIC ===\n");
+    HpetInit(rsdp);                       /* the reference clock for calibrating the timers */
     apic_init();
 
     /* ------------------------------------------------------------------

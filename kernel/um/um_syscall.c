@@ -2094,11 +2094,16 @@ static UINT64 sys_delay(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     INT64 iv = (INT64)v;
     UINT64 wait_100ns = iv < 0 ? (UINT64)(-iv) : (v > um_now_100ns() ? v - um_now_100ns() : 0);
     if (!wait_100ns) { sched_yield(); return ST_SUCCESS; }          /* Sleep(0): just yield */
-    UINT64 until = sched_ticks() + (wait_100ns + 99999) / 100000;
-    do {
+    /* A TSC deadline: the timer fires when it is due (sub-millisecond),
+     * looking at least once a tick whether the thread is being stopped */
+    UINT64 until = sched_tsc_after(wait_100ns);
+    for (;;) {
         if (um_stopping()) break;
-        sched_sleep_tick();
-    } while (sched_ticks() < until);
+        UINT64 now = rdtsc();
+        if (now >= until) break;
+        UINT64 nap = now + g_tsc_per_tick;
+        sched_sleep_until_tsc(NULL, until < nap ? until : nap);
+    }
     return ST_SUCCESS;
 }
 

@@ -232,7 +232,7 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
 `guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`,
-`powertest`, and last `crash kernel`, which halts the kernel on purpose and passes when the
+`sleeptest timer`, `powertest`, and last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
 install Mesa 3D` and `store install DXVK` (the archives are already in
@@ -279,6 +279,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
 | `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
+| `sleeptest timer` | How late `Sleep(1)`, `Sleep(5)` and a 1 ms wait timeout end, idle and with a busy thread on every CPU; passes when the 95th percentile under load is 1 ms or less and none ends early.  Plain `sleeptest` sleeps (S3) instead |
 | `powertest` | The lid and a thermal zone (`GetPwrCapabilities`, `ThermalInformation`, `LastSleepTime`/`LastWakeTime`): closing the lid sleeps; needs `tests/acpi/lid-thermal.asl` and the self-test's help (see above) |
 | `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |

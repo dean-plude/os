@@ -6,7 +6,8 @@
 
 Suites:
   core      (default) apitest, abitest, filetest, pipetest, proctest, guitest auto,
-            disptest, battery, soundtest, powertest (the lid, a thermal zone
+            disptest, battery, soundtest, sleeptest timer (Sleep and wait
+            timeouts within 1 ms under load), powertest (the lid, a thermal zone
             and sleep, driven from the QEMU monitor), and last "crash
             kernel" (a deliberate kernel fault must print a symbolized
             backtrace)
@@ -77,6 +78,13 @@ def close_lid(nova):
     nova.qmp.key('shift')                     # (the USB keyboard has QEMU's input; types nothing)
     time.sleep(1)
     nova.qmp.cmd('system_wakeup')
+    # The tests after this one type on that keyboard: wait until NovaOS has
+    # found it again after the wake (read from the file: run() owns the stream)
+    for _ in range(240):
+        log = open(nova.serial_path, 'rb').read().decode('latin-1')
+        if 'Woke up' in log and re.search(r'Woke up[\s\S]*\[USB\] port \d+: keyboard', log):
+            break
+        time.sleep(0.25)
 
 
 def set_temp(c):
@@ -99,6 +107,9 @@ CORE = [
                                 r'SystemBatteryState: present 1, AC 0, charging 0, discharging 1']),
     Test('soundtest tone', 'soundtest tone 440 1000', [r'played \d+ samples']),
     Test('soundtest wasapi', 'soundtest wasapi 660 1000', [r'played \d+ frames'], check=tones(440, 660)),
+    Test('sleeptest timer', 'sleeptest timer', [r'sleeptest: resolution \d+\.\d+ ms under load', r'sleeptest: PASS'],
+         boot_expect=[r'\[HPET\] At 0x[0-9a-f]+: \d+ Hz', r'calibrated against the HPET',
+                      r'\[APIC\] (One-shot|TSC-deadline) timer started']),
     Test('powertest', 'powertest', [r'powertest: \d+ passed, 0 failed', r'\[SHELL\] Lid closed: sleeping',
                                     r'\[SLEEP\] Woke up', r'\[ACPI\] Lid open',
                                     r'TZ00: 70\.0 C, at or above the passive trip point \(60\.0 C\): passive cooling on',
@@ -224,6 +235,9 @@ def main():
                 nova.qmp.type(t.cmd + '\n')
                 out, ok = nova.sr.wait('KERNEL PAGE FAULT', t.timeout)
                 out += nova.sr.wait('halting', 5)[0]
+                if not out.strip():                 # nothing at all: what the kernel said last
+                    out = '(no output; the serial log ends:)\n' + \
+                        open(nova.serial_path, 'rb').read().decode('latin-1')[-3000:]
             else:
                 out, ok = nova.run(t.cmd, t.timeout, shot=(t.shot, png) if t.shot else None, acts=t.acts)
             if t.crash:

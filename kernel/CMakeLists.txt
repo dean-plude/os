@@ -131,6 +131,7 @@ set(KERNEL_C_SOURCES
     hal/acpi.c
     hal/aml.c
     hal/ioapic.c
+    hal/hpet.c
     hal/display.c
     drivers/e1000.c
     drivers/ahci.c

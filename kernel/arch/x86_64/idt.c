@@ -362,6 +362,7 @@ void interrupt_dispatch(InterruptFrame *frame)
      * it), and switching the waiting thread out halfway would be wrong. */
     if (vector == IRQ_TIMER && KiGetCurrentKpcr()->LockWait) {
         apic_eoi();
+        sched_timer_rearm();                            /* (the timer is one-shot) */
         return;
     }
     KiGetCurrentKpcr()->Idle = 0;

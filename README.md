@@ -84,7 +84,9 @@ every part, phase by phase.
   processes and threads, virtual memory with sections and guard pages, I/O,
   registry, security tokens.  SMP with per-core scheduling and fine-grained
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
-  1903 numbers.
+  1903 numbers.  Timers are the local APIC's, one-shot or TSC-deadline and
+  calibrated against the HPET, so `Sleep(1)` and wait timeouts end within
+  a fraction of a millisecond even with every CPU busy.
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
   either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
   file ACLs, and other drives); Intel e1000/e1000e
@@ -269,7 +271,7 @@ os/
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
 │   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, xHCI USB core, hubs, HID, mass storage
-│   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, I/O APIC, ACPI (uACPI host)
+│   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, HPET, I/O APIC, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
 │   ├── wm/               # Window manager, desktop shell, input, clipboard

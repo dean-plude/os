@@ -134,8 +134,12 @@ named program or test demonstrates it.
   `_PRT` (Phase 18.6).  Still to do: CPU throttling for passive cooling;
   GPE blocks other than `\_GPE`; routing behind PCI bridges; USB wake
   tested only up to what QEMU emulates (it has no USB-to-platform wake);
-  display modes after S3 on adapters other than the Bochs/QEMU one; HPET
-  or TSC-deadline timers.
+  display modes after S3 on adapters other than the Bochs/QEMU one.
+- ~~HPET or TSC-deadline timers~~ Done (Phase 18.7): the HPET calibrates
+  the TSC and the APIC timer, which is one-shot (TSC-deadline where the
+  CPU has it), armed for the next tick or the earliest `Sleep` or wait
+  timeout; `sleeptest timer` checks 1 ms resolution under load.
+  Waitable timers (`SetWaitableTimer`) still fire on the 10 ms tick.
 - Boot and test on real hardware, not only QEMU.
 
 ---
