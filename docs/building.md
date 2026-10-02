@@ -1,4 +1,5 @@
 # Building NovaOS
+<!-- The regions between "BEGIN generated" and "END generated" markers are built from fragment files by tools/docgen.py: edit those files, not the regions (CONTRIBUTING.md). -->
 
 ## Prerequisites
 
@@ -89,7 +90,47 @@ To rebuild only the userland, for a quick check of a DLL:
 
 ```bash
 NOVA_NO_NETSURF=1 python3 tools/build_userland.py /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
+python3 tools/build_userland.py --check     # just load the manifests (CI runs this)
 ```
+
+### Adding a DLL or program
+
+There is no central list to edit: each DLL registers itself, so changes
+made in parallel add files rather than collide on the same lines.
+
+- **A DLL** is a directory `userland/NAME/` with its `.c` files and a
+  `dll.json`:
+
+  ```json
+  {
+    "deps": ["user32", "kernel32", "ntdll"],
+    "tlssup": true
+  }
+  ```
+
+  `deps` are the DLLs it links against (they are built first; a cycle or a
+  missing one stops the build).  Leave `base` and `base_x86` out: a new
+  DLL gets the first free 16 MiB slot at 0x7FFD00000000 (x64) and
+  0x97000000 (x86), and the build checks that no two DLLs overlap.  The
+  older DLLs keep the fixed addresses written in their `dll.json`.  Other
+  keys: `sources` (directories its `.c` files come from, default its own),
+  `entry` (`"DllMain"`), `x64_only`, and `ordinals` (`{"Name": 12}`, for
+  DLLs programs import from by number).
+- **When a DLL needs more** (a third-party library, extra flags, a
+  special link), put the code in `userland/NAME/build.py`, not in
+  `tools/build_userland.py`: it may define `cflags(b)` (flags for the
+  DLL's own sources), `objs(b, odir)` (extra objects; `b.compile_many`
+  compiles a library in parallel and reuses fresh objects) and `link(b,
+  odir, objs, deps, base)` (replaces the link; `b` is
+  `tools/build_userland.py` itself, with `b.ARCH`, `b.cflags()`, `b.cc`,
+  `b.run`, `b.link_dll`).  `userland/secur32/build.py` (Mbed TLS) and
+  `userland/msvcrt/build.py` (msvcrt.dll and ucrtbase.dll) are examples.
+- **A program** is `userland/programs/NAME.c` (or `.cpp`, and `NAME.rc`
+  for resources).  It goes to `C:\Programs`, 64-bit only, unless
+  `NAME.json` says otherwise: `{"x86": true}` builds it for 32 bits as
+  well, `"system": true` installs it in `C:\Windows\System32`, `"libs":
+  ["usp10"]` links more DLLs, and `"selftest": true` lists it among the
+  README's self-test programs.
 
 ### The ISO
 
@@ -226,17 +267,35 @@ Terminal.  A test passes when the program exits with code 0, prints no
 `FAIL` line or non-zero "failed" count, and prints what the test expects;
 a kernel panic stops the run.  `--out` (default `selftest-out/`) keeps the
 serial log, a screenshot after each test and `sound.wav`; `--summary FILE`
-appends a Markdown table and `--junit FILE` writes JUnit XML.  To add a test,
-add a line to `CORE` or `GRAPHICS` in `tools/selftest.py`.
+appends a Markdown table and `--junit FILE` writes JUnit XML.
+
+To add a test, add a file to `tests/selftest/core/` (or `graphics/`):
+tests run in file-name order, so the number prefix places it (the restart
+is at 130 and `crash kernel`, which halts NovaOS, stays last at 900).
+
+```python
+# tests/selftest/core/140-mytest.py
+DOC = '`mytest` (what it covers)'      # its entry in README's core-suite list
+TESTS = [
+    Test('mytest', 'mytest', [r'mytest: \d+ passed, 0 failed']),
+]
+```
+
+`python3 tools/selftest.py --list` prints the suite.  The nightly app
+corpus works the same way: one file per program in `tests/appcorpus/`
+defining `APP = App(...)` and `DOC` (Notepad++ stays last at 900).
 
 ### Self-test programs
 
 In `userland/programs/`, installed in `C:\Programs` and, as 32-bit builds,
 in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
-0 failed".
+0 failed".  Each row of this table is a file in `docs/selftests/` (a new
+program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
+
+<!-- BEGIN generated:selftest-table -->
 
 | Program | Covers |
-|---------|--------|
+|---|---|
 | `crttest` | The C runtime |
 | `filetest` | Files and directories; `RegNotifyChangeKeyValue` (values, subkeys, subtrees, deleted keys, synchronous); `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`.  `filetest install`, a restart and `filetest installed` check that a running program replaced at boot |
 | `sectest` (x64) | Hostile system calls refused (kernel pointers, bogus handles, bad descriptors); tokens and object security through the native API: a restricted or deny-only impersonation token is refused a protected named event |
@@ -260,6 +319,8 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
+
+<!-- END generated:selftest-table -->
 
 `crash` writes through a NULL pointer (only it dies); `crash kernel`
 crashes the kernel on purpose (`NtNovaBugCheck`) to show the backtrace.

@@ -1,4 +1,5 @@
 # NovaOS — Feature History, Phase by Phase
+<!-- The regions between "BEGIN generated" and "END generated" markers are built from fragment files by tools/docgen.py: edit those files, not the regions (CONTRIBUTING.md). -->
 
 This is the detailed record of what each phase of NovaOS added, in the
 order it landed.  The [README](../README.md) has the short version: what
@@ -35,6 +36,8 @@ Contents:
 [Runtimes](#language-runtimes-java-net-nodejs-python) ·
 [Installing NovaOS](#installing-novaos-on-a-disk) ·
 [Sound](#sound-intel-hd-audio-winmm-and-wasapi)
+
+<!-- BEGIN generated:history -->
 
 ## Phase 1 — Boot & Kernel Foundation
 - UEFI bootloader (PE32+ EFI application, loads kernel ELF from FAT32 ESP)
@@ -1358,102 +1361,6 @@ build machine, and DXVK is the faster, more complete path anyway.
   mWh on battery power (75%, 3 h left) and one in mAh charging on AC
   (25%); sleep and the power button pass as before.
 
-## Firefox (Floorp)
-
-Floorp 12.19, a Firefox build (the Firefox 157 engine), starts from the
-Terminal, creates its profile and draws its full browser window.  The
-browser is run as shipped; everything below is in NovaOS.
-
-- **Imports**: the C runtime pieces Gecko uses (`_wsetlocale` and the
-  rest), the delay-loaded DLLs it asks for, and cross-process
-  `NtQueryInformationProcess`.
-- **DirectWrite** (`userland/dwrite`): NovaOS's own `dwrite.dll`.  The
-  factory, the system font collection (scanned from `%WINDIR%\Fonts`,
-  with the common Windows family names mapped to the bundled fonts),
-  font families, fonts, font faces (metrics, glyph indices, advances,
-  kerning, outlines into a geometry sink, font tables), GDI interop and
-  glyph run analysis (aliased and ClearType alpha textures).  Fonts are
-  read with stb_truetype (public domain).  Text formats and text layouts
-  (`layout.c`, written in the Phase 19 work for Direct2D's `DrawText`)
-  break lines, handle bidirectional text, carry per-range font
-  attributes, and answer metrics and hit tests.  They shape with
-  HarfBuzz from `novatext.dll` when it is present, and with the font's
-  plain glyphs and advances otherwise.
-- **Kernel**: `NtQuerySection`, `MEM_RESET`/`MEM_RESET_UNDO`, a
-  per-process handle table of 4096 (Gecko keeps far more than the old
-  256 open), and `C:\AppData\Roaming`, `Local`, `LocalLow` and
-  `C:\ProgramData` made at boot.
-- **C runtime**: `_vsnwprintf` (the legacy option of
-  `__stdio_common_vswprintf`) now fills a buffer exactly, without the
-  terminator, when the output is exactly the buffer's size.  Gecko formats
-  its 16-digit install hash that way; returning -1 made the profile
-  service fail and Firefox show "Profile Missing".
-- **user32**: window class names up to 256 characters (Gecko's remote
-  window class contains the profile path).
-- **Debugging aids**: the kernel prints each new process's command line;
-  `tools/novarun.py` takes `!bg COMMAND` to leave a program running while
-  it waits and takes screenshots, and `NOVARUN_GDB=1` starts QEMU with a
-  gdb server so breakpoints can be set in a program's code.
-- **Sandbox** (Chromium's, which Firefox uses for its child processes):
-  - ntdll's system call exports have the Windows byte layout (see the
-    ABI conformance work below), so the sandbox can copy and patch them
-    to intercept calls in the child.
-  - Token handles know whether they are primary or impersonation tokens
-    and at which level; `SetThreadToken`, `OpenThreadToken`,
-    `ImpersonateSelf` and `RevertToSelf` track a token per thread.
-    `CreateWellKnownSid` covers every well-known SID type.
-  - New system calls: `NtOpenProcessToken(Ex)`, `NtOpenThreadToken(Ex)`,
-    `NtImpersonateAnonymousToken`, `NtQueryFullAttributesFile`,
-    `NtSetInformationProcess`, and the `ProcessHandleCount` and
-    `ProcessHandleTable` classes of `NtQueryInformationProcess`.
-  - `CREATE_SUSPENDED` really suspends a new process, so the parent can
-    patch the child before it runs.
-  - ntdll exports the heap and string functions the sandbox resolves in
-    the child (`RtlCreateHeap`, `NtSignalAndWaitForSingleObject`,
-    `_strnicmp`, `wcslen`...), and `GetProcessHeaps` includes an empty
-    csrss port heap the sandbox expects to find before it cuts a content
-    process off from csrss.
-  - A process can have 256 threads (was 64); Firefox's main process runs
-    more than 64.
-- **Overlapped I/O**: a pipe read or write that fails at once (a broken
-  pipe when a child process exits) no longer sets its event or queues a
-  completion packet or routine; Windows does none of these, and Firefox's
-  IPC and Rust I/O free the `OVERLAPPED` after such a failure, so the late
-  packet crashed the main process with a use-after-free.
-- **GDI**: `CreateDIBSection` with a file-mapping handle puts the pixels in
-  that mapping (Firefox's GPU process draws the browser into one shared
-  with the main process).
-- **Window handles across processes**: an `HWND` now names the same
-  window in every process, as on Windows.  user32 builds each handle from
-  a tag the kernel gives the process (unique among running processes), so
-  handles never collide, and tells the kernel each desktop window's handle
-  and client area.  `IsWindow`, `GetClientRect`, `GetWindowRect`,
-  `ClientToScreen`, `ScreenToClient`, `IsWindowVisible`, `IsIconic`,
-  `IsZoomed` and `GetWindowThreadProcessId` answer for another process's
-  window.  Firefox's GPU process sizes its frames from the main process's
-  window; before, it saw a 0 x 0 window and never drew, so the browser
-  showed white.  The full browser now draws through the GPU process.
-- **Locks that sleep**: `WaitOnAddress`, SRW locks and condition
-  variables park the thread until another wakes it, the way Windows 8
-  and later do: ntdll lists the waiters per address and they sleep in the
-  new `NtWaitForAlertByThreadId` system call until a waker calls
-  `NtAlertThreadByThreadId`.  They used to poll every 10 ms, which left
-  Firefox's main thread too slow to read its input.  Also
-  `SleepConditionVariableSRW`/`CS` return FALSE with `ERROR_TIMEOUT` when
-  they time out, as on Windows.
-- **Drawing from another thread**: `ReleaseDC` shows what was drawn at
-  once even while part of the window waits for `WM_PAINT` (Firefox
-  presents from its own thread while the window may never stop being
-  invalidated).
-- **Debugging aids**: Ctrl+Alt+F12 writes every program's threads to the
-  serial log (state, last system call and its first argument, return
-  addresses on the stack); the syscall trace shows the thread id
-  (`[TRACE] name pid/tid`); the standard error of a detached process
-  (Firefox's sandboxed children) goes to the serial log; and
-  `tools/novarun.py` takes `!click X Y`.
-- Not yet: a page's content (the tab area stays empty) and fetching a page
-  over the network.
-
 ## Regression gate: boot CI on every pull request
 
 - **GitHub Actions** (`.github/workflows/ci.yml`): every pull request and
@@ -1846,3 +1753,45 @@ permissive covers either, so both are written here from the file formats
   `cexp`...) the UCRT exports, and `AddDllDirectory` is a stub, so
   `os.add_dll_directory` paths are not searched.  `msvcp140.dll` (the C++
   standard library) is not provided.
+
+## One file per item: parallel changes without merge conflicts
+
+Up to seven pull requests were open at once, and nearly every one edited
+the same lines of the same files: the DLL table and program sets in
+`tools/build_userland.py`, the test lists in `tools/selftest.py` and
+`tools/appcorpus.py`, and the lists in the README, `docs/HISTORY.md`,
+`docs/ROADMAP.md` and `docs/building.md`.  Each merge left the others
+conflicted, and twice conflict markers reached main.  Those lists are now
+directories with one file per item, so changes add files instead of
+editing shared lines.  [CONTRIBUTING.md](../CONTRIBUTING.md) is the guide.
+
+- **DLLs**: `userland/NAME/dll.json` registers each DLL (dependencies,
+  load addresses, extra source directories, entry point, implicit TLS,
+  export ordinals); `tools/build_userland.py` finds them and links each
+  after its dependencies.  A DLL that needs more (Mbed TLS for secur32,
+  the msvcrt/ucrtbase double link) keeps that code in its own
+  `userland/NAME/build.py`.  The existing DLLs keep their addresses; a
+  new DLL leaves them out and gets a free 16 MiB slot, so two branches can
+  no longer pick the same address (three open ones had all chosen
+  0x7FFE50000000), and the build stops if two DLLs' images overlap.  The
+  userland it builds is byte-for-byte the same as before (link timestamps
+  aside).
+- **Programs**: `userland/programs/NAME.json` replaces the 32-bit and
+  System32 sets (`x86`, `system`, extra `libs`, `selftest`).
+- **Tests**: one file per self-test in `tests/selftest/core/` and
+  `graphics/`, one per program in `tests/appcorpus/`, run in file-name
+  order; `tools/selftest.py --list` prints a suite.
+- **Docs**: README's program table, "What is inside" list, licences,
+  core-suite and self-test lists, the roadmap's "What comes next" items,
+  building.md's self-test table and every HISTORY section are built by
+  `tools/docgen.py` from files in `docs/readme/`, `docs/roadmap/`,
+  `docs/selftests/` and `docs/history/` (and the tests' `DOC` strings).
+  Pull requests add fragments and leave the generated regions alone; the
+  Docs workflow (`.github/workflows/docs.yml`) rebuilds them on main after
+  each merge.
+- **CI**: a quick Checks job runs before the boot tests: no conflict
+  markers or stray branch-name lines (`tools/ci/check-conflict-markers.py`),
+  the manifests and test files load, and a pull request has not edited a
+  generated region by hand.
+
+<!-- END generated:history -->

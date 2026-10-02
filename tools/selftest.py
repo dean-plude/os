@@ -2,13 +2,12 @@
 """Boot NovaOS in QEMU, run the self-test programs and say which passed.
 
     tools/selftest.py [--suite core|graphics] [--img build/nova.img] [--out DIR]
-                      [--only NAME,...] [--junit FILE] [--summary FILE]
+                      [--only NAME,...] [--junit FILE] [--summary FILE] [--list]
 
-Suites:
-  core      (default) apitest, abitest, filetest, pipetest, proctest, sectest,
-            acltest, guitest auto, anitest, disptest, comtest, tlbtest (64-
-            and 32-bit), cppeh, battery, soundtest, an install finished by
-            a restart, and last "crash kernel" (a
+Suites (one file per test in tests/selftest/SUITE/, run in file-name
+order; --list prints them):
+  core      (default) the self-test programs (apitest, abitest, filetest...),
+            an install finished by a restart, and last "crash kernel" (a
             deliberate kernel fault must print a symbolized backtrace)
   graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
             tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
@@ -58,49 +57,32 @@ def tones(*hz):
     return check
 
 
-# The boot that runs the tests has an unplugged AC adapter and a battery
-# (tests/acpi/battery.asl) and an Intel HD Audio card recorded to a WAV.
-CORE = [
-    Test('apitest', 'apitest', [r'apitest: \d+ passed, 0 failed']),
-    Test('abitest', 'abitest', [r'abitest: \d+ passed, 0 failed']),
-    Test('filetest', 'filetest', [r'filetest: \d+ passed, 0 failed']),
-    Test('pipetest', 'pipetest', [r'pipetest: \d+ passed, 0 failed']),
-    Test('proctest', 'proctest', [r'proctest: \d+ passed, 0 failed']),
-    Test('sectest', 'sectest', [r'sectest: \d+ passed, 0 failed']),
-    Test('acltest', 'acltest', [r'acltest: \d+ passed, 0 failed']),
-    Test('acltest x86', r'C:\Programs\x86\acltest.exe', [r'acltest: \d+ passed, 0 failed']),
-    Test('guitest', 'guitest auto', [r'guitest: \d+ passed, 0 failed']),
-    Test('anitest', 'anitest', [r'anitest: \d+ passed, 0 failed']),
-    Test('disptest', 'disptest', [r'\d+ passed, 0 failed']),
-    Test('comtest', 'comtest', [r'comtest: \d+ passed, 0 failed']),
-    Test('tlbtest', 'tlbtest', [r'tlbtest: \d+ passed, 0 failed']),
-    Test('tlbtest x86', r'C:\Programs\x86\tlbtest.exe', [r'tlbtest: \d+ passed, 0 failed']),
-    Test('cppeh', 'cppeh', [r'cppeh: \d+ passed, 0 failed']),
-    Test('battery', 'battery', [r'Power source: battery', r'Battery: 75%', r'Time left: 3 h 00 min',
-                                r'SystemBatteryState: present 1, AC 0, charging 0, discharging 1']),
-    Test('soundtest tone', 'soundtest tone 440 1000', [r'played \d+ samples']),
-    Test('soundtest wasapi', 'soundtest wasapi 660 1000', [r'played \d+ frames'], check=tones(440, 660)),
-    # an installer replacing a running program: done at the next boot (MoveFileEx DELAY_UNTIL_REBOOT)
-    Test('install in use', 'filetest install', [r'filetest install: \d+ passed, 0 failed']),
-    Test('restart', 'shutdown /r', [r'Pending file operations at boot: 2 done, 0 failed'], reboot=True),
-    Test('installed', 'filetest installed', [r'filetest installed: \d+ passed, 0 failed']),
-    # last: crash.exe asks the kernel to fault, which must print a backtrace with names
-    Test('kernel backtrace', 'crash kernel', [r'Backtrace:\r?\n  #0 [0-9a-f]{16}  KeCrashTestFault\+0x[0-9a-f]+\r?\n'
-                                              r'  #1 [0-9a-f]{16}  KeCrashTest\+0x[0-9a-f]+\r?\n'
-                                              r'  #2 [0-9a-f]{16}  sys_nova_bugcheck\+0x[0-9a-f]+\r?\n'],
-         timeout=60, crash=True),
-]
+def load_suite(name):
+    """The tests in tests/selftest/NAME/*.py, in file-name order.  Each file
+    defines TESTS (a list of Test; Test and tones are given to it) and, for
+    the core suite, DOC: its entry in README's list (tools/docgen.py).  One
+    file per test, so changes adding tests add files instead of editing a
+    shared list; the number prefix places a test in the run."""
+    import glob
+    tests = []
+    for f in sorted(glob.glob(os.path.join(ROOT, 'tests', 'selftest', name, '*.py'))):
+        ns = {'Test': Test, 'tones': tones, '__file__': f}
+        exec(compile(open(f).read(), f, 'exec'), ns)
+        if not isinstance(ns.get('TESTS'), list) or not all(isinstance(t, Test) for t in ns['TESTS']):
+            sys.exit(f'{f}: TESTS must be a list of Test')
+        tests += ns['TESTS']
+    names = [t.name for t in tests]
+    dup = sorted({n for n in names if names.count(n) > 1})
+    if dup:
+        sys.exit(f'tests/selftest/{name}: more than one test named {", ".join(dup)}')
+    return tests
 
-# The graphics boot: 7-Zip in C:\Programs\7-Zip and the Mesa and DXVK
-# downloads in C:\Downloads, so the Store's button installs without a network
-GRAPHICS = [
-    Test('install Mesa 3D', 'store install Mesa 3D', store='Mesa 3D', timeout=1200),
-    Test('install DXVK', 'store install DXVK', store='DXVK', timeout=600),
-    Test('gltest x64', r'C:\Tests\gltest.exe 6', [r'gltest: 14 passed, 0 failed'], timeout=600, shot=r'GLSL '),
-    Test('gltest x86', r'C:\Tests\gltest32.exe 6', [r'gltest: 14 passed, 0 failed'], timeout=600, shot=r'GLSL '),
-    Test('d3dtest x64', r'C:\Tests\d3dtest.exe 6', [r'd3dtest: 17 passed, 0 failed'], timeout=900, shot=r'D3D9 pixels'),
-    Test('d3dtest x86', r'C:\Tests\d3dtest32.exe 6', [r'd3dtest: 17 passed, 0 failed'], timeout=900, shot=r'D3D9 pixels'),
-]
+
+# The core boot has an unplugged AC adapter and a battery
+# (tests/acpi/battery.asl) and an Intel HD Audio card recorded to a WAV.
+CORE = load_suite('core')
+# The graphics boot: 7-Zip and the Mesa and DXVK downloads on drive C:
+GRAPHICS = load_suite('graphics')
 
 
 def store_verdict(nova, t, out):
@@ -157,9 +139,14 @@ def main():
     ap.add_argument('--only')
     ap.add_argument('--junit')
     ap.add_argument('--summary')
+    ap.add_argument('--list', action='store_true', help='print the suite\'s tests and exit')
     a = ap.parse_args()
 
     suite = CORE if a.suite == 'core' else GRAPHICS
+    if a.list:
+        for t in suite:
+            print(f'{t.name:20s} {t.cmd}')
+        return 0
     tests = [t for t in suite if not a.only or t.name in a.only.split(',') or t.cmd.split()[0] in a.only.split(',')]
     os.makedirs(a.out, exist_ok=True)
     work = tempfile.mkdtemp(prefix='selftest')
