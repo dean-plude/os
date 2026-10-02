@@ -1,0 +1,5 @@
+{
+  "deps": ["vcruntime140"],
+  "base": "0x7FFE50000000",
+  "x64_only": true
+}

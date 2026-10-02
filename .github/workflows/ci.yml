@@ -10,6 +10,11 @@
 # puts that ISO on the rolling "latest" release:
 #   https://github.com/dean-plude/os/releases/latest/download/nova.iso
 # nova.iso is not committed to the repository.
+#
+# The checks job runs first, in seconds: no conflict markers left by a
+# merge, the DLL and program manifests and the self-test files load, and
+# (on a pull request) the generated doc regions were not edited by hand
+# (CONTRIBUTING.md).  The boot tests wait for it.
 name: CI
 
 on:
@@ -23,8 +28,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  checks:
+    name: Checks (conflict markers, manifests, generated docs)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2          # a pull request's merge commit and its base (HEAD^1)
+
+      - name: No merge conflict markers
+        run: python3 tools/ci/check-conflict-markers.py
+
+      - name: DLL and program manifests load
+        run: python3 tools/build_userland.py --check
+
+      - name: Self-test and app-corpus files load
+        run: |
+          python3 tools/selftest.py --list
+          python3 tools/selftest.py --suite graphics --list
+          python3 -c "import sys; sys.path.insert(0, 'tools'); import appcorpus; print(len(appcorpus.APPS), 'corpus programs')"
+
+      - name: Generated doc regions untouched, fragments build
+        if: github.event_name == 'pull_request' && github.head_ref != 'docs/regenerate'
+        run: python3 tools/docgen.py --check-pr HEAD^1
+
   boot-test:
     name: Build and boot-test
+    needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -71,6 +102,7 @@ jobs:
 
   graphics-test:
     name: Graphics tests (OpenGL, Direct3D)
+    needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
