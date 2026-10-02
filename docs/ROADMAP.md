@@ -104,6 +104,10 @@ named program or test demonstrates it.
   `RegNotifyChangeKeyValue` change events.
 - ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
   is waitable and the Terminal runs full-screen programs (Phase 17.2).
+- The Win32 console screen-buffer calls (`SetConsoleCursorPosition`,
+  `FillConsoleOutputCharacter`... are still no-ops), so programs that draw
+  through them rather than VT sequences work and `less` can be the real
+  one (git pages through NovaOS's own `less` today).
 - Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
   Windows Terminal-style hosts) exist only as functions that fail.
 - Move files, the registry, process creation and the console off the big
@@ -137,8 +141,10 @@ named program or test demonstrates it.
   a real interrupt through the I/O APIC and PCI interrupt routing from
   `_PRT` (Phase 18.6).  Still to do: CPU throttling for passive cooling;
   GPE blocks other than `\_GPE`; routing behind PCI bridges; USB wake
-  tested only up to what QEMU emulates (it has no USB-to-platform wake);
-  display modes after S3 on adapters other than the Bochs/QEMU one.
+  tested only up to what QEMU emulates (it has no USB-to-platform wake).
+  (Display modes after S3 are set again on every adapter NovaOS drives:
+  the VBE ones, QXL, virtio-vga, VMware SVGA and Cirrus.  Real GPUs have
+  no driver yet.)
 - ~~HPET or TSC-deadline timers~~ Done (Phase 18.7): the HPET calibrates
   the TSC and the APIC timer, which is one-shot (TSC-deadline where the
   CPU has it), armed for the next tick or the earliest `Sleep` or wait

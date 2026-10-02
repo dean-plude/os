@@ -929,7 +929,8 @@ MinGit's `git.exe` (2.47) runs: `--version`, `init`, `add`, `commit`,
     now finds it while any handle keeps it, as on Windows, so `waitpid`
     on a finished child gets its exit code.
 - Not yet: MinGit ships no `less`, git's default pager, so give `log` and
-  `config --list` `--no-pager` or `-c core.pager=more`.
+  `config --list` `--no-pager` or `-c core.pager=more`.  *(Since done:
+  NovaOS's own `less`, see [A pager for git](#a-pager-for-git-lessexe).)*
 
 ## The MSYS2 runtime: `sh.exe`, `clone`, `push`
 
@@ -1329,8 +1330,9 @@ build machine, and DXVK is the faster, more complete path anyway.
 - `sleeptest.exe` sleeps and then checks the clock, threads and files.
   Tested in QEMU (OVMF, q35) with 1, 2 and 4 CPUs, three sleeps in a row,
   and with a USB keyboard and mouse and HD Audio attached.
-- Not yet: wake devices such as USB keyboards, display modes on adapters
-  other than the Bochs/QEMU one.
+- Not yet: wake devices such as USB keyboards.  (Display modes on other
+  adapters came later: see "Display adapters: QXL, virtio, VMware, Cirrus,
+  and their modes after sleep".)
 
 ## ACPI namespace (uACPI): batteries and AC power
 
@@ -1472,6 +1474,35 @@ TLS already in the tree.
   encode, decoding it back, and streaming a WAV over HTTPS from the host
   with TLS 1.3 and with TLS 1.2; with `tls_verify` on (ffmpeg's default) a
   self-signed server is refused as an untrusted root.
+
+## A pager for git: `less.exe`
+
+`git log`, `diff` and `config --list` on the Terminal now page without
+`--no-pager`.  MinGit has no `less`, git's default pager, so git stopped
+with "unable to execute pager 'less'" (it does on Windows too).  NovaOS
+now ships `less.exe` in `C:\Windows\System32` (and SysWOW64), on `PATH`,
+where git finds it:
+
+- It shows a screenful (the console's rows), then asks `-- More --` and
+  takes single keys, through the per-key console input of Phase 17.2:
+  Space (or `f`, Page Down) the next page, Enter (or `j`, Down) one more
+  line, `d` half a page, `/text` and Enter skips to the next line
+  containing the text, `q` (or Esc) quits, and git then stops quietly.
+  The prompt is erased as the text moves on.  On a console that only
+  hands over whole lines it asks for a line instead (Enter, a number,
+  `/text` or `q`).
+- Output that fits on one screen goes straight through, as with git's
+  `LESS=FRX`, and so does everything when the output is not a console
+  (`git log | find` is unchanged).  Color escapes pass through, files
+  given as arguments (`less a.txt`) work, and options are accepted.
+- Why not the real `less`: its Windows build draws through the console
+  screen-buffer calls (`SetConsoleCursorPosition`, `FillConsoleOutput*`),
+  which are still no-ops, so it would draw garbage; it can come once they
+  drive the Terminal's screen.
+- The nightly corpus's `git log` test no longer passes `--no-pager`.
+- The test tools (`tools/selftest.py`, `appcorpus.py`) match a program's
+  expected output without the kernel's `[UM]`/`[SCHED]` log lines, which
+  share the serial port and could land mid-line (`[[UM] jq.exe ... 40,2]`).
 
 ## USB hubs and report-protocol HID (Phase 18.1)
 
@@ -1701,6 +1732,33 @@ and the kernel enforces those DACLs.
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,
   `$(...)` and redirections to `/dev/null`; the core self-tests pass.
+
+## Display adapters: QXL, virtio, VMware, Cirrus, and their modes after sleep
+
+- **More adapters with the DISPI registers** (`kernel/hal/display.c`): the
+  VBE driver now also drives QEMU's QXL (`-vga qxl`), virtio-vga
+  (`-vga virtio`) and VMware SVGA II (`-vga vmware`, whose VGA core has
+  them, with the framebuffer in BAR1) besides the standard VGA,
+  bochs-display and VirtualBox's VBoxVGA.  The adapter table follows
+  OVMF's QemuVideoDxe (BSD-2-Clause-Patent).  All of them get run-time
+  resolutions and Settings > Display names the adapter.
+- **Cirrus Logic GD5446** (`-vga cirrus`): 800x600 and 640x480 at 32 bpp,
+  set with QemuVideoDxe's VGA and Cirrus register tables.  The bootloader
+  now only picks 32-bit GOP modes, so Cirrus boots in 800x600 instead of
+  its 24-bit 1024x768 mode, which drew garbled.
+- **Modes after S3** (`DisplayResume`): the driver sets the current mode
+  again on wake from what it knows, not from registers saved through I/O
+  ports, so bochs-display (MMIO only) and Cirrus come back too; the page
+  that was on screen stays on screen, and the desktop is redrawn in case
+  video memory was lost.
+- `tools/novarun.py --display NAME` boots on another adapter (`cirrus`,
+  `vmware`, `qxl`, `virtio`, or a `-device` such as `bochs-display`).
+- Tested in QEMU on all six adapters: switch to a non-boot mode with
+  `disptest W H`, `sleeptest`, `system_wakeup`, and the desktop is back in
+  that mode; also with page flipping (`-global VGA.vgamem_mb=64`).
+- Not yet: real GPUs (Intel, AMD, NVIDIA) and virtio-gpu without VGA have
+  no driver, so they stay on the UEFI framebuffer, and after sleep they
+  show whatever the firmware's wake path sets up, which is often nothing.
 
 ## ACPI: SCI interrupt, lid, thermal zones, wake devices, _PRT (Phase 18.6)
 
