@@ -137,8 +137,10 @@ options, putting your own programs on the disk, and debugging.
 
 ### Bootable ISO and installing on a disk
 
-A ready-to-boot UEFI ISO, `nova.iso`, is committed at the repository root.
-It is also the installation disc: booted from it, NovaOS runs live and
+A ready-to-boot UEFI ISO, `nova.iso`, is built by CI rather than committed.
+Download the one built from `main` from the
+[latest release](https://github.com/dean-plude/os/releases/latest/download/nova.iso), or the `nova-iso` artifact of any pull request's
+CI run (the **Artifacts** list on the run's Summary page).  It is also the installation disc: booted from it, NovaOS runs live and
 opens **Install NovaOS**, which writes a GPT disk with an EFI System
 Partition and a data partition for drive C:.
 
@@ -163,8 +165,9 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -cdrom nova.iso -serial stdio
 ```
 
-Rebuild the ISO from a fresh build with
-`scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf`.
+To make the ISO yourself from a fresh build, run
+`scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf`
+(needs `xorriso`).  `*.iso` is in `.gitignore`: the ISO is never committed.
 
 ## Testing
 
@@ -189,7 +192,9 @@ Rebuild the ISO from a fresh build with
   while it draws.
 
 A failing test fails its check; each run's summary has a table of results,
-and the serial logs and screenshots are kept as artifacts.  Run the same
+and the serial logs and screenshots are kept as artifacts, along with the
+bootable ISO (`nova-iso`).  When a push to `main` passes both suites, the
+**Publish nova.iso** job puts that ISO on the `latest` release.  Run the same
 gates locally with `python3 tools/selftest.py` (and `--suite graphics`)
 after a build.
 
@@ -288,8 +293,7 @@ os/
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
 │                         #   make_icons.py, pe_imports.py, msitest/
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
-├── docs/                 # Building, roadmap, feature history, Phase 1 architecture
-└── nova.iso              # Prebuilt bootable/installation ISO
+└── docs/                 # Building, roadmap, feature history, Phase 1 architecture
 ```
 
 ## Key design decisions

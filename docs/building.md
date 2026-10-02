@@ -97,6 +97,11 @@ NOVA_NO_NETSURF=1 python3 tools/build_userland.py /tmp/ul /tmp/ul/gen.c kernel/k
 scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf
 ```
 
+The ISO is not committed (`*.iso` is in `.gitignore`).  CI builds it on
+every pull request and keeps it as the run's `nova-iso` artifact, and each
+push to `main` that passes CI replaces `nova.iso` on the `latest` release:
+<https://github.com/dean-plude/os/releases/latest/download/nova.iso>.
+
 The ISO is El Torito UEFI, no emulation: its EFI System Partition holds
 `\EFI\BOOT\BOOTX64.EFI` and `\EFI\NOVA\kernel.elf`.  Booted from it, NovaOS
 runs live and opens Install NovaOS (see the README).
