@@ -453,6 +453,8 @@ NTSTATUS NTAPI NtQueryVirtualMemory(HANDLE p, PVOID addr, int cls, PVOID buf, SI
 }
 
 NTSTATUS NTAPI NtNovaFlushView(PVOID base) { return SC(NtNovaFlushView, P(base)); }
+/* (INPUT_RECORD has the same layout in both) */
+NTSTATUS NTAPI NtNovaConsole(HANDLE h, ULONG op, PVOID buf, ULONG len, PULONG res) { return SC(NtNovaConsole, H(h), U(op), P(buf), U(len), P(res)); }
 
 /* The extended forms, without their address requirements (32-bit programs
  * have one small address space anyway) */

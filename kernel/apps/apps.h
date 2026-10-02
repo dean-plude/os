@@ -140,6 +140,10 @@ void AppUptime(char *buf, int cap);                     /* "1h 02m 05s" */
 void TerminalOpen(void);
 /* A new Terminal in @cwd (NULL: Documents) that runs @cmd as if typed */
 void TerminalRun(const char *cmd, RamNode *cwd);
+/* CREATE_NEW_CONSOLE (see terminal.c) */
+struct UmConsole; struct UmProcess;
+int  TerminalConsoleNew(const char *title, RamNode *cwd, struct UmConsole **con);
+bool TerminalConsoleAdopt(int id, struct UmProcess *p);
 
 /* Shortcuts (.lnk files) */
 typedef struct {
