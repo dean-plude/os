@@ -5,7 +5,7 @@
                       [--only NAME,...] [--junit FILE] [--summary FILE]
 
 Suites:
-  core      (default) apitest, abitest, filetest, pipetest, guitest auto,
+  core      (default) apitest, abitest, filetest, pipetest, proctest, guitest auto,
             disptest, icutest (64- and 32-bit), battery, soundtest, and last
             "crash kernel" (a deliberate kernel fault must print a symbolized
             backtrace)
@@ -62,6 +62,7 @@ CORE = [
     Test('abitest', 'abitest', [r'abitest: \d+ passed, 0 failed']),
     Test('filetest', 'filetest', [r'filetest: \d+ passed, 0 failed']),
     Test('pipetest', 'pipetest', [r'pipetest: \d+ passed, 0 failed']),
+    Test('proctest', 'proctest', [r'proctest: \d+ passed, 0 failed']),
     Test('guitest', 'guitest auto', [r'guitest: \d+ passed, 0 failed']),
     Test('disptest', 'disptest', [r'\d+ passed, 0 failed']),
     Test('icutest', 'icutest', [r'icutest: \d+ passed, 0 failed']),

@@ -33,11 +33,12 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 
 | Program | Kind | Tested on NovaOS |
 |---|---|---|
-| **7-Zip 26.03** (x64) | GUI installer, file manager, `7zG`, `7z.exe` | Installs; the file manager browses, opens archives, adds and extracts with the full dialogs; Options has all six pages.  The App Store uses `7z.exe` to unpack downloads. |
+| **7-Zip 26.03** (x64) | GUI installer, file manager, `7zG`, `7z.exe` | Installs; the file manager browses, opens archives, adds and extracts with the full dialogs, and drags files out of archives and folders onto other programs; Options has all six pages.  The App Store uses `7z.exe` to unpack downloads. |
 | **7-Zip self-extractors** (x86) | 32-bit console and GUI SFX | Unpack an archive. |
 | **NSIS installers** (x86, Modern UI) | 32-bit setup programs | Welcome, folder, progress and finish pages; files, registry, desktop and Start menu shortcuts; the uninstaller removes it all. |
 | **MinGit 2.47** | Git for Windows (console) | `init`, `add`, `commit`, `log`, `status`, `diff`, `checkout -b`, `merge`, `gc`, `fsck`, and `clone`/`fetch`/`push` between local repositories. |
-| **MSYS2 runtime** (MinGit's `usr\bin`) | `sh.exe` (bash), `ls`, `cat`, `wc`… | `sh -c` with pipes, `$(...)`, subshells, globbing, `fork`. |
+| **MSYS2 runtime** (MinGit's `usr\bin`) | `sh.exe` (bash), `ls`, `cat`, `wc`… | Interactive `sh --login -i` sessions in the Terminal (prompt, line editing, colours); `sh -c` with pipes, `$(...)`, subshells, globbing, `fork`, `/dev/null`. |
+| **Neovim 0.10 and 0.11** (x64 `.zip`) | Full-screen terminal editor (libuv, LuaJIT) | Opens a file, edits it, `:wq` saves it and exits with code 0; `nvim -l` scripts, `vim.system`, `jobstart` and RPC to an embedded `nvim`. |
 | **Eclipse Temurin 21** | Java JRE `.msi`, JDK `.zip` | `java -version`, a threads/exceptions/files stress test, `javac` compiling a program that then runs. |
 | **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes; globalization through ICU, so German and Japanese numbers, dates, names and sorting come out as on Windows (`tests/dotnet/culturetest.cs`). |
 | **Node.js 24** | `.msi`, `.zip` | `node -v`, `-e`, `npm -v`, a crypto/fs/JSON/timers test script. |
@@ -55,7 +56,8 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 - **Apps**: Terminal, File Explorer, Notepad, Settings, Calendar, Photos,
   the **App Store** and **Install NovaOS** (Setup).
 - **Web browser**: NetSurf 3.11, built from source as a Windows program,
-  with HTTPS (TLS 1.3/1.2) and JavaScript.
+  with HTTPS (TLS 1.3/1.2) and JavaScript, in a window you can resize,
+  maximize or snap (the page is laid out again to fit).
 - **Command line**: the Terminal's own commands (`dir`, `copy`, `ping`,
   `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
@@ -176,7 +178,7 @@ Rebuild the ISO from a fresh build with
 - **Build and boot-test** (core): `apitest`, `abitest` (the PEB, TEB,
   `KUSER_SHARED_DATA`, `CONTEXT` and loader layouts, ntdll's stubs and the
   system-call numbers, against Windows 10 1903 x64), `filetest`,
-  `pipetest`, `guitest auto`, `disptest`, `icutest` (ICU and kernel32's
+  `pipetest`, `proctest`, `guitest auto`, `disptest`, `icutest` (ICU and kernel32's
   locales, 64- and 32-bit), `battery` (against the battery in
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
   tones played), and last `crash kernel`, a deliberate kernel fault whose
@@ -202,7 +204,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
   `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `cliptest`, `disptest`, `icutest`, `smpstress`.  `soundtest`
+  `cppeh`, `shmtest`, `pipetest`, `proctest`, `cliptest`, `disptest`, `icutest`, `smpstress`.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
   `tools/novarun.py --wav out.wav` records what NovaOS plays and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest

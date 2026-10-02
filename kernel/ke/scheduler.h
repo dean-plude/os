@@ -87,6 +87,12 @@ typedef struct Thread {
     /* Future: pointer to owning KPROCESS */
     void           *process;
 
+    /* The ETHREAD this thread runs as (kernel/ps): the ETHREAD it is
+     * embedded in (PsCreateSystemThread), one Ps made for it on first use
+     * (PsGetCurrentThread), or NULL before that.  Never cast a Thread to
+     * an ETHREAD: most are not embedded in one. */
+    void           *ethread;
+
     /* User-mode threads (kernel/um): owning process and the state the
      * scheduler swaps for them.  NULL/0 for kernel threads. */
     void           *um;             /* UmProcess */
@@ -150,6 +156,8 @@ void sched_start_thread(Thread *t);
 void sched_exit_current(void) __attribute__((noreturn));
 bool sched_thread_gone(const Thread *t);
 void sched_free_thread(Thread *t);
+/* Called by sched_free_thread before @t goes (Ps drops its ETHREAD) */
+extern void (*sched_thread_free_hook)(Thread *t);
 
 /*
  * Yield the current thread's remaining time slice voluntarily.
