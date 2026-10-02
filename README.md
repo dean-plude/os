@@ -319,10 +319,13 @@ os/
 - **Drive C: in memory, saved to FAT**: the RAM disk is saved to a FAT32
   volume a second after each change and restored at boot.  System files
   come from the kernel image, so a new build always brings its own.
-- **SMP with a shrinking big kernel lock**: the scheduler, memory,
-  synchronization, sockets, the GUI and the program loader have their own
-  locks; files, the registry and process creation still take the big lock
-  (rules and lock order in `kernel/ke/smp.h`).
+- **SMP with fine-grained locks**: the scheduler, memory,
+  synchronization, sockets, the GUI, the program loader, files, the
+  registry, the console and starting processes have their own locks, and
+  file and registry throughput scale about 3x from one CPU to four
+  (`smpstress scaling 3`); the rest of the kernel keeps a big lock (rules
+  and lock order in `kernel/ke/smp.h`; the Terminal's `profile` command
+  shows where the CPUs spend their time).
 - **Kernel-helper syscalls (0x01F0–0x01FF)** are private to NovaOS's own
   DLLs and invisible to Windows programs.
 
