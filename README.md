@@ -179,7 +179,8 @@ To make the ISO yourself from a fresh build, run
 - **Build and boot-test** (core): `apitest`, `abitest` (the PEB, TEB,
   `KUSER_SHARED_DATA`, `CONTEXT` and loader layouts, ntdll's stubs and the
   system-call numbers, against Windows 10 1903 x64), `filetest`,
-  `pipetest`, `proctest`, `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `disptest`, `battery` (against the battery in
+  `pipetest`, `proctest`, `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `anitest` (animated cursors and
+  program pointers), `disptest`, `battery` (against the battery in
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
   tones played), an installer that replaces a running program and
   finishes after a restart (`filetest install`, `shutdown /r`, `filetest
@@ -210,7 +211,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
   `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `proctest`, `acltest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
+  `cppeh`, `shmtest`, `pipetest`, `proctest`, `acltest`, `cliptest`, `disptest`, `anitest`, `smpstress`.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
   `tools/novarun.py --wav out.wav` records what NovaOS plays and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
@@ -291,7 +292,7 @@ os/
 │   └── include/          # The Windows SDK headers NovaOS provides
 ├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), NetSurf, stb, fonts, 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
-│                         #   make_icons.py, pe_imports.py, msitest/
+│                         #   make_icons.py, mkani.py, pe_imports.py, msitest/
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
 └── docs/                 # Building, roadmap, feature history, Phase 1 architecture
 ```
@@ -308,7 +309,9 @@ os/
   call to the kernel's 64-bit form, the way Windows' WoW64 does.
 - **The window system lives in the program**: `user32` keeps each program's
   window tree; the kernel's window manager composites only top-level
-  windows, drawn from bitmaps the programs own.
+  windows, drawn from bitmaps the programs own.  The kernel also draws the
+  pointer: a program's `SetCursor` shape (animated .ani cursors included)
+  over its own windows, the desktop's arrow elsewhere.
 - **Software rendering**: GDI is a CPU rasterizer drawing into a back
   buffer in RAM at integer HiDPI scale.  On QEMU's standard VGA, QXL,
   virtio-vga and VMware adapters (and Bochs, VirtualBox's VBoxVGA) a VBE

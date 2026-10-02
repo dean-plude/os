@@ -465,6 +465,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         w->on_close_request = gui_close_request;
         w->on_tick = gui_tick;
         if (gc.flags & GUI_HIDDEN) WmShowWindow(w, false);
+        w->cursor = p->cursor;
         g->wnd = w;
         GdiRect c2 = WmClientRect(w);
         g->last_x = c2.x; g->last_y = c2.y;
@@ -687,7 +688,13 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *                   -2 the default (the user's) mode; ptr -> { width, height,
  *                   bits per pixel, frequency }.  0: no such mode
  *  16 SET_DISPLAY   ptr <- { width, height, CDS_* flags } (0 x 0: the default
- *                   mode); returns a DISP_CHANGE_* code */
+ *                   mode); returns a DISP_CHANGE_* code
+ * The pointer over this process's windows (hwnd may be 0):
+ *  19 SET_CURSOR    arg 0: the arrow, 1: none (hidden), 2: ptr <- { w, h,
+ *                   hot x, hot y, frames, steps }, then per step { frame,
+ *                   jiffies (1/60 s) }, then frames * w * h 0xAARRGGBB pixels
+ *  20 CURSOR_SHAPE  ptr -> { 1 if the pointer shows a program's shape,
+ *                   its w, h, frames, the step shown } (for tests) */
 #define CTL_WINDOW_AT    11
 #define CTL_ACCEPT_DROPS 12
 #define CTL_DROP         13
@@ -696,6 +703,8 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_SET_DISPLAY  16
 #define CTL_DROP_DONE    17
 #define CTL_DROP_STATUS  18
+#define CTL_SET_CURSOR   19
+#define CTL_CURSOR_SHAPE 20
 #define WM_NOVA_DROP     0x03FE
 #define WM_DISPLAYCHANGE 0x007E
 #define CDS_UPDATEREGISTRY 0x01
@@ -758,6 +767,53 @@ static GuiWin *win_by_id(UINT32 id)             /* any process's; under g_gui_lo
     return NULL;
 }
 
+/* The process's pointer becomes @c (NULL: the arrow) on all its windows */
+static void cursor_set(UmProcess *p, GdiCursorShape *c)
+{
+    DesktopLock();
+    GdiCursorShape *old = p->cursor;
+    p->cursor = c;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++)
+        if (g_win[i].used && g_win[i].proc == p && g_win[i].wnd) g_win[i].wnd->cursor = c;
+    WmCursorShapeChanged();
+    DesktopUnlock();
+    kfree(old);
+}
+
+static UINT64 cursor_from_user(UmProcess *p, UINT64 how, UINT64 ptr)
+{
+    if (how == 0) { cursor_set(p, NULL); return 1; }
+    INT32 hd[6] = { 0 };
+    if (how == 2 && !NT_SUCCESS(CopyFromUser(hd, (const void *)(uintptr_t)ptr, sizeof(hd)))) return 0;
+    int w = hd[0], h = hd[1], nf = hd[4], ns = hd[5];
+    if (how == 1) { w = h = 0; nf = ns = 0; }
+    else if (how != 2 || w < 1 || h < 1 || w > GDI_CURSOR_MAX || h > GDI_CURSOR_MAX ||
+             nf < 1 || nf > GDI_CURSOR_FRAMES || ns < 1 || ns > GDI_CURSOR_STEPS) return 0;
+    size_t npx = (size_t)nf * w * h;
+    GdiCursorShape *c = kzalloc(sizeof(GdiCursorShape) + npx * 4);
+    if (!c) return 0;
+    c->w = w; c->h = h; c->nframes = nf; c->nsteps = ns;
+    c->hidden = how == 1;
+    if (how == 2) {
+        c->hot_x = hd[2] < 0 ? 0 : hd[2] >= w ? w - 1 : hd[2];
+        c->hot_y = hd[3] < 0 ? 0 : hd[3] >= h ? h - 1 : hd[3];
+        UINT32 *st = kmalloc((size_t)ns * 8);
+        bool ok = st && NT_SUCCESS(CopyFromUser(st, (const void *)(uintptr_t)(ptr + sizeof(hd)), (size_t)ns * 8)) &&
+                  NT_SUCCESS(CopyFromUser(c->argb, (const void *)(uintptr_t)(ptr + sizeof(hd) + (size_t)ns * 8), npx * 4));
+        for (int i = 0; ok && i < ns; i++) {
+            UINT32 j = st[i * 2 + 1] ? st[i * 2 + 1] : 1;      /* jiffies: 1/60 s */
+            c->steps[i].frame = (UINT16)(st[i * 2] < (UINT32)nf ? st[i * 2] : 0);
+            c->steps[i].ticks = (j * 100 + 30) / 60;
+            if (!c->steps[i].ticks) c->steps[i].ticks = 1;
+            c->total += c->steps[i].ticks;
+        }
+        kfree(st);
+        if (!ok) { kfree(c); return 0; }
+    }
+    cursor_set(p, c);
+    return 1;
+}
+
 static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
@@ -773,6 +829,16 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, c, sizeof(c))) ? 1 : 0;
     }
     if (a2 == CTL_PRESENT) { WmInvalidate(); return 1; }
+    if (a2 == CTL_SET_CURSOR) return cursor_from_user(p, a3, a4);
+    if (a2 == CTL_CURSOR_SHAPE) {
+        INT32 out[5] = { 0 };
+        int step;
+        DesktopLock();
+        const GdiCursorShape *c = WmCursorCurrent(&step);
+        if (c && c == p->cursor) { out[0] = 1; out[1] = c->w; out[2] = c->h; out[3] = c->nframes; out[4] = step; }
+        DesktopUnlock();
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, out, sizeof(out))) ? 1 : 0;
+    }
     if (a2 == CTL_DISPLAY_MODE) return display_mode_info(a3, a4);
     if (a2 == CTL_SET_DISPLAY) return display_set(p, a4);
     if (a2 == CTL_WINDOW_AT) {
@@ -979,6 +1045,11 @@ void um_gui_process_gone(UmProcess *p)
         }
     }
     WmInvalidate();
+    if (p->cursor) {                          /* no window shows its pointer now */
+        WmCursorShapeChanged();
+        kfree(p->cursor);
+        p->cursor = NULL;
+    }
     if (g_fullscreen_proc == p) {             /* its full-screen mode ends with it */
         g_fullscreen_proc = NULL;
         DisplayMode m = DisplayDefaultMode();

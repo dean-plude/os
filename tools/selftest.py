@@ -6,7 +6,7 @@
 
 Suites:
   core      (default) apitest, abitest, filetest, pipetest, proctest, sectest,
-            acltest, guitest auto, disptest, battery, soundtest, an install
+            acltest, guitest auto, anitest, disptest, battery, soundtest, an install
             finished by a restart, and last "crash kernel" (a
             deliberate kernel fault must print a symbolized backtrace)
   graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
@@ -69,6 +69,7 @@ CORE = [
     Test('acltest', 'acltest', [r'acltest: \d+ passed, 0 failed']),
     Test('acltest x86', r'C:\Programs\x86\acltest.exe', [r'acltest: \d+ passed, 0 failed']),
     Test('guitest', 'guitest auto', [r'guitest: \d+ passed, 0 failed']),
+    Test('anitest', 'anitest', [r'anitest: \d+ passed, 0 failed']),
     Test('disptest', 'disptest', [r'\d+ passed, 0 failed']),
     Test('battery', 'battery', [r'Power source: battery', r'Battery: 75%', r'Time left: 3 h 00 min',
                                 r'SystemBatteryState: present 1, AC 0, charging 0, discharging 1']),

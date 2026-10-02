@@ -1003,8 +1003,8 @@ static const GdiPoint g_arrow[] = {
     GDI_PT(9.6, 18.4), GDI_PT(6.8, 12.2), GDI_PT(12.2, 12.2),
 };
 #define ARROW_N      ((int)(sizeof(g_arrow) / sizeof(g_arrow[0])))
-#define CUR_MAX_W    64
-#define CUR_MAX_H    64
+#define CUR_MAX_W    (GDI_CURSOR_MAX * GDI_MAX_SCALE)
+#define CUR_MAX_H    (GDI_CURSOR_MAX * GDI_MAX_SCALE)
 
 static UINT32 g_under[CUR_MAX_W * CUR_MAX_H];
 static int    g_under_x, g_under_y, g_under_w, g_under_h;
@@ -1047,6 +1047,36 @@ void GdiCursorDraw(int dx, int dy)
             px = blend(px, black, (UINT32)cov_of(sd));          /* outline */
             px = blend(px, white, (UINT32)cov_of(sd + bw));     /* fill    */
             row[x] = px;
+        }
+    }
+}
+
+void GdiCursorDrawShape(int dx, int dy, const GdiCursorShape *c, int frame)
+{
+    if (!g.ready) return;
+    g_under_w = g_under_h = 0;
+    if (!c || c->hidden || c->nframes <= 0) return;
+    if (frame < 0 || frame >= c->nframes) frame = 0;
+    int s = g.s;
+    int x0 = dx - c->hot_x * s, y0 = dy - c->hot_y * s;
+    int x1 = imin(x0 + c->w * s, g.dw), y1 = imin(y0 + c->h * s, g.dh);
+    int cx0 = imax(x0, 0), cy0 = imax(y0, 0);
+    g_under_x = cx0; g_under_y = cy0;
+    g_under_w = imax(imin(x1 - cx0, CUR_MAX_W), 0);
+    g_under_h = imax(imin(y1 - cy0, CUR_MAX_H), 0);
+    const UINT32 *px = c->argb + (size_t)frame * c->w * c->h;
+    for (int j = 0; j < g_under_h; j++) {
+        int y = cy0 + j;
+        UINT32 *row = g.vram + (size_t)y * g.vstride;
+        const UINT32 *src = px + (size_t)((y - y0) / s) * c->w;
+        for (int i = 0; i < g_under_w; i++) {
+            int x = cx0 + i;
+            UINT32 d = row[x];
+            g_under[j * CUR_MAX_W + i] = d;
+            UINT32 p = src[(x - x0) / s], a = p >> 24;
+            if (!a) continue;
+            GdiColor col = (GdiColor)(((p >> 16) & 0xFF) | (p & 0xFF00) | ((p & 0xFF) << 16));
+            row[x] = a == 255 ? pixof(col) : blend(d, pixof(col), a);
         }
     }
 }
