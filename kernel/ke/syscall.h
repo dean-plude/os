@@ -232,6 +232,9 @@
 #define SYSCALL_NtInitiatePowerAction             0x01D6
 #define SYSCALL_NtPowerInformation                0x01D7
 #define SYSCALL_NtQuerySection                    0x01D8
+#define SYSCALL_NtOpenProcessToken                0x01D9
+#define SYSCALL_NtImpersonateAnonymousToken       0x01DD
+#define SYSCALL_NtQueryFullAttributesFile         0x01DE
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x01A0
 #define SYSCALL_NtNovaGuiGetMessage               0x01A1

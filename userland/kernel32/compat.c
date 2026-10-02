@@ -2272,18 +2272,17 @@ K32 LONG WINAPI GetPackageFamilyName(HANDLE p, UINT32 *len, PWSTR name) { (void)
 
 K32 BOOL WINAPI GetProcessHandleCount(HANDLE p, PDWORD n)
 {
-    (void)p;
     if (!n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    *n = 32;
+    ULONG c = 0;
+    NTSTATUS s = NtQueryInformationProcess(p, 20 /* ProcessHandleCount */, &c, sizeof(c), 0);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    *n = c;
     return TRUE;
 }
 
-/* One heap per process */
-K32 DWORD WINAPI GetProcessHeaps(DWORD n, PHANDLE heaps)
-{
-    if (n && heaps) heaps[0] = GetProcessHeap();
-    return 1;
-}
+/* The process heap and the (empty) csrss port heap */
+ULONG NTAPI RtlGetProcessHeaps(ULONG n, PVOID *heaps);
+K32 DWORD WINAPI GetProcessHeaps(DWORD n, PHANDLE heaps) { return RtlGetProcessHeaps(n, heaps); }
 
 K32 DWORD WINAPI GetProcessIdOfThread(HANDLE t)
 {
@@ -2303,6 +2302,16 @@ K32 BOOL WINAPI GetProcessMitigationPolicy(HANDLE p, int policy, PVOID buf, SIZE
     return TRUE;
 }
 K32 BOOL WINAPI SetProcessMitigationPolicy(int policy, PVOID buf, SIZE_T n) { (void)policy; (void)buf; (void)n; return TRUE; }
+K32 BOOL WINAPI SetProcessInformation(HANDLE p, int cls, LPVOID info, DWORD n) { (void)p; (void)cls; (void)info; (void)n; return TRUE; }
+K32 BOOL WINAPI GetProcessInformation(HANDLE p, int cls, LPVOID info, DWORD n)
+{
+    (void)p; (void)cls;
+    if (!info) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    memset(info, 0, n);                            /* no memory priority, power throttling or protection */
+    return TRUE;
+}
+/* Control-flow enforcement (shadow stacks) is never on */
+K32 BOOL WINAPI IsUserCetAvailableInEnvironment(DWORD ctx) { (void)ctx; return FALSE; }
 
 /* Thread and process information classes (memory priority, power
  * throttling...): scheduling hints NovaOS's scheduler does not take */

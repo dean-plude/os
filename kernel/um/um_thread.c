@@ -411,6 +411,42 @@ static UINT64 sys_create_event(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return finish_create(o, name, a1);
 }
 
+/* Tokens: every program runs as the one user, so a token is just a handle
+ * (an event stands in for it; ntdll and advapi32 describe it).  They are
+ * system calls so that a sandbox can intercept them like Windows's. */
+static UINT64 new_token(UINT64 handle_ptr)
+{
+    UmObject *o = ob_new(UO_EVENT);
+    if (!o) return ST_NO_MEMORY;
+    o->manual = 1;
+    o->signaled = 1;
+    return finish_create(o, "", handle_ptr);
+}
+
+/* NtOpenProcessToken(HANDLE, ACCESS_MASK, PHANDLE) */
+static UINT64 sys_open_process_token(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{ (void)a1; (void)a2; (void)a4; return new_token(a3); }
+/* NtOpenProcessTokenEx(HANDLE, ACCESS_MASK, ULONG, PHANDLE) */
+static UINT64 sys_open_process_token_ex(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{ (void)a1; (void)a2; (void)a3; return new_token(a4); }
+
+/* NtOpenThreadToken(HANDLE, ACCESS_MASK, BOOLEAN, PHANDLE): no thread
+ * impersonates here (advapi32 keeps its own record of SetThreadToken) */
+static UINT64 sys_open_thread_token(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a1; (void)a2; (void)a3;
+    UINT64 none = 0;
+    if (a4 && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &none, 8))) return ST_ACCESS_VIOLATION;
+    return 0xC000007C;                                  /* STATUS_NO_TOKEN */
+}
+/* NtOpenThreadTokenEx(HANDLE, ACCESS_MASK, BOOLEAN, ULONG, PHANDLE) */
+static UINT64 sys_open_thread_token_ex(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{ (void)a4; return sys_open_thread_token(a1, a2, a3, um_stack_arg(5)); }
+
+/* NtImpersonateAnonymousToken(HANDLE thread) */
+static UINT64 sys_impersonate_anonymous(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{ (void)a1; (void)a2; (void)a3; (void)a4; return ST_SUCCESS; }
+
 static UINT64 event_op(UINT64 h, UINT64 prev_ptr, int op)
 {
     UmObject *o = um_handle_object(UmCurrent(), h, UO_EVENT);
@@ -636,6 +672,17 @@ static UINT64 sys_set_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 
 /* NtQueryInformationProcess(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG) */
 static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4);
+/* Mitigation policies, priorities and the like: accepted, none of them change anything here */
+static UINT64 sys_set_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    UmObject *ob;
+    UmProcess *p = um_proc_of(UmCurrent(), a1, &ob);
+    if (!p) return ST_INVALID_HANDLE;
+    if (ob) um_ob_unref(ob);
+    return ST_SUCCESS;
+}
+
 static UINT64 sys_query_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmObject *ob;
@@ -658,6 +705,22 @@ static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4)
         if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, sizeof(b)))) return ST_ACCESS_VIOLATION;
         UINT64 ret = um_stack_arg(5);
         return !ret || put_u32(ret, 36) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
+    }
+    if (a2 == 20 || a2 == 58) {                                /* ProcessHandleCount, ProcessHandleTable */
+        static UINT32 vals[UM_MAX_HANDLES];
+        static UmLock tlock;
+        um_lock(&tlock);
+        UINT32 n = 0;
+        um_lock(&p->lock);
+        for (UINT32 i = 0; i < UM_MAX_HANDLES; i++) if (p->handles[i].kind != H_FREE) vals[n++] = (i + 1) * 4;
+        um_unlock(&p->lock);
+        UINT32 need = a2 == 20 ? 4 : n * 4;
+        UINT64 st = ST_SUCCESS, ret = um_stack_arg(5);
+        if (a4 < need) st = ST_INFO_LENGTH_MISMATCH;
+        else if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, a2 == 20 ? &n : vals, need))) st = ST_ACCESS_VIOLATION;
+        um_unlock(&tlock);
+        if (ret && !put_u32(ret, need)) return ST_ACCESS_VIOLATION;
+        return st;
     }
     if (a2 != 0) return ST_INVALID_INFO_CLASS;                 /* ProcessBasicInformation */
     if (a4 < 48) return ST_INFO_LENGTH_MISMATCH;
@@ -1381,6 +1444,11 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtQuerySemaphore,          sys_query_semaphore);
     um_install(SYSCALL_NtQuerySection,            sys_query_section);
     um_install(SYSCALL_NtCreateEvent,             sys_create_event_oa);
+    um_install(SYSCALL_NtOpenProcessToken,        sys_open_process_token);
+    um_install(SYSCALL_NtOpenProcessTokenEx,      sys_open_process_token_ex);
+    um_install(SYSCALL_NtOpenThreadToken,         sys_open_thread_token);
+    um_install(SYSCALL_NtOpenThreadTokenEx,       sys_open_thread_token_ex);
+    um_install(SYSCALL_NtImpersonateAnonymousToken, sys_impersonate_anonymous);
     um_install(SYSCALL_NtCreateSection,           sys_create_section_oa);
     um_install(SYSCALL_NtOpenSection,             sys_open_section_oa);
     um_install(SYSCALL_NtMapViewOfSection,        sys_map_view);
@@ -1406,6 +1474,7 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtQueryInformationThread,  sys_query_info_thread);
     um_install(SYSCALL_NtSetInformationThread,    sys_set_info_thread);
     um_install(SYSCALL_NtQueryInformationProcess, sys_query_info_process);
+    um_install(SYSCALL_NtSetInformationProcess, sys_set_info_process);
     um_install(SYSCALL_NtDuplicateObject,         sys_duplicate_object);
     um_install(SYSCALL_NtNovaLoadDll,             sys_nova_load_dll);
     um_install(SYSCALL_NtNovaDebugPrint,          sys_nova_debug_print);

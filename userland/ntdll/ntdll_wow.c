@@ -381,6 +381,43 @@ NTSTATUS NTAPI NtQueryAttributesFile(POBJECT_ATTRIBUTES oa, FILE_BASIC_INFORMATI
     return SC(NtQueryAttributesFile, oa_in(&oc, oa), P(info));
 }
 
+NTSTATUS NTAPI NtQueryFullAttributesFile(POBJECT_ATTRIBUTES oa, PVOID info)
+{
+    OAC oc;
+    return SC(NtQueryFullAttributesFile, oa_in(&oc, oa), P(info));   /* the same layout in both */
+}
+
+/* Tokens */
+NTSTATUS NTAPI NtOpenProcessToken(HANDLE p, ACCESS_MASK access, PHANDLE token)
+{
+    Box hb;
+    NTSTATUS s = SC(NtOpenProcessToken, H(p), U(access), HBOX(hb, token));
+    box_out(&hb);
+    return s;
+}
+NTSTATUS NTAPI NtOpenProcessTokenEx(HANDLE p, ACCESS_MASK access, ULONG attrs, PHANDLE token)
+{
+    Box hb;
+    NTSTATUS s = SC(NtOpenProcessTokenEx, H(p), U(access), U(attrs), HBOX(hb, token));
+    box_out(&hb);
+    return s;
+}
+NTSTATUS NTAPI NtOpenThreadToken(HANDLE t, ACCESS_MASK access, BOOLEAN self, PHANDLE token)
+{
+    Box hb;
+    NTSTATUS s = SC(NtOpenThreadToken, H(t), U(access), U(self), HBOX(hb, token));
+    box_out(&hb);
+    return s;
+}
+NTSTATUS NTAPI NtOpenThreadTokenEx(HANDLE t, ACCESS_MASK access, BOOLEAN self, ULONG attrs, PHANDLE token)
+{
+    Box hb;
+    NTSTATUS s = SC(NtOpenThreadTokenEx, H(t), U(access), U(self), U(attrs), HBOX(hb, token));
+    box_out(&hb);
+    return s;
+}
+NTSTATUS NTAPI NtImpersonateAnonymousToken(HANDLE t) { return SC(NtImpersonateAnonymousToken, H(t)); }
+
 NTSTATUS NTAPI NtQueryDirectoryFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io,
                                     PVOID info, ULONG len, ULONG cls, BOOLEAN single,
                                     PUNICODE_STRING name, BOOLEAN restart)
@@ -602,6 +639,11 @@ NTSTATUS NTAPI NtQueryInformationThread(HANDLE h, ULONG cls, PVOID info, ULONG l
         if (ret) *ret = sizeof(*o);
     }
     return s;
+}
+
+NTSTATUS NTAPI NtSetInformationProcess(HANDLE h, ULONG cls, PVOID info, ULONG len)
+{
+    return SC(NtSetInformationProcess, H(h), U(cls), P(info), U(len));
 }
 
 NTSTATUS NTAPI NtSetInformationThread(HANDLE h, ULONG cls, PVOID info, ULONG len)

@@ -86,8 +86,8 @@ named program or test demonstrates it.
   "untested" portable ones (Notepad++, SumatraPDF, PuTTY, WinMerge), then
   the Qt and GTK applications (KeePassXC, Krita, Inkscape), then Firefox.
 - Firefox (tested with Floorp): the browser window opens; see
-  [Firefox](HISTORY.md#firefox-floorp).  Still open: the sandbox launching
-  child processes (`SpawnTarget` fails with `ERROR_INSUFFICIENT_BUFFER`),
+  [Firefox](HISTORY.md#firefox-floorp), and its sandboxed child processes
+  start.  Still open: a use-after-free crash in the main process,
   loading a page, DirectWrite text layout (`CreateTextFormat`,
   `CreateTextLayout`), `nssckbi.dll`.
 - Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the

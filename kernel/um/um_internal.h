@@ -12,7 +12,8 @@
 #define UM_MAX_HANDLES   4096
 #define UM_MAX_REGIONS   8192     /* (runtimes such as CoreCLR reserve thousands of ranges) */
 #define UM_MAX_MODULES   64
-#define UM_MAX_THREADS   64
+#define UM_MAX_THREADS   256      /* (a browser's main process runs well over 64) */
+#define UM32_MAX_THREADS 96       /* WoW: the TEB area must stay below KUSER_SHARED_DATA */
 
 /* Fixed user addresses for the per-process system areas:
  *   PEB (1 page) | loader info (3 pages) | process parameters (4 pages) |
@@ -28,7 +29,7 @@
 #define UM_MAX_STUBS     (0x1000 / UM_STUB_SIZE)
 #define UM_TEB_AREA      (UM_PEB_VA + 0x10000)
 #define UM_TEB_SIZE      0x2000
-#define UM_SYS_SIZE      (0x10000 + UM_MAX_THREADS * UM_TEB_SIZE)
+#define UM_SYS_SIZE(n)   (0x10000 + (UINT64)(n) * UM_TEB_SIZE)
 #define UM_STACK_TOP     UINT64_C(0x00007FFDE0000000)        /* first thread */
 #define UM_STACK_SIZE    (1024 * 1024)
 #define UM_THREAD_STACK  (256 * 1024)                         /* default for new threads */
@@ -50,6 +51,7 @@
 typedef struct {
     UINT64 peb, ldr_info, params, stubs, teb_area;
     UINT64 stack_top, alloc_min, alloc_max, dll_min, dll_max;
+    int max_threads;
 } UmLayout;
 
 /* NTSTATUS values used here */
@@ -296,6 +298,7 @@ typedef struct {
     UINT32          env_len;
     const UINT8    *runtime;            /* STARTUPINFO's lpReserved2 bytes (the C runtime's), or NULL */
     UINT32          runtime_len;
+    bool            suspended;          /* CREATE_SUSPENDED: the first thread waits for NtResumeThread */
 } UmSpawnOpts;
 UmProcess *um_spawn_ex(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
                        const UmSpawnOpts *o, char *err, int err_cap);

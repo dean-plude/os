@@ -412,11 +412,7 @@ static NTSTATUS new_token(PHANDLE out)
     return NtCreateEvent(out, 0x1F0003, 0, NotificationEvent, TRUE);
 }
 
-NTSYSAPI NTSTATUS NTAPI NtOpenProcessToken(HANDLE p, ACCESS_MASK access, PHANDLE token) { (void)p; (void)access; return new_token(token); }
-NTSYSAPI NTSTATUS NTAPI NtOpenProcessTokenEx(HANDLE p, ACCESS_MASK access, ULONG attrs, PHANDLE token) { (void)attrs; return NtOpenProcessToken(p, access, token); }
-/* a thread has no token of its own: nothing impersonates */
-NTSYSAPI NTSTATUS NTAPI NtOpenThreadToken(HANDLE t, ACCESS_MASK access, BOOLEAN self, PHANDLE token) { (void)t; (void)access; (void)self; *token = 0; return ST_NO_TOKEN; }
-NTSYSAPI NTSTATUS NTAPI NtOpenThreadTokenEx(HANDLE t, ACCESS_MASK access, BOOLEAN self, ULONG attrs, PHANDLE token) { (void)attrs; return NtOpenThreadToken(t, access, self, token); }
+/* NtOpenProcessToken(Ex), NtOpenThreadToken(Ex): system calls (ntdll.c) */
 NTSYSAPI NTSTATUS NTAPI NtDuplicateToken(HANDLE t, ACCESS_MASK access, POBJECT_ATTRIBUTES oa, BOOLEAN effective, ULONG type, PHANDLE out)
 {
     (void)t; (void)access; (void)oa; (void)effective; (void)type;
@@ -518,7 +514,8 @@ NTSYSAPI NTSTATUS NTAPI NtQueryInformationToken(HANDLE token, ULONG cls, PVOID b
         memset(st, 0, sizeof(st));
         *(ULONG *)st = 0x1000;                                          /* TokenId */
         *(ULONG *)(st + 8) = 0x3E7 + 1;                                 /* AuthenticationId */
-        *(ULONG *)(st + 32) = 1;                                        /* TokenType: primary */
+        *(ULONG *)(st + 24) = 1;                                        /* TokenType: primary */
+        *(ULONG *)(st + 28) = SecurityImpersonation;                    /* ImpersonationLevel */
         *(ULONG *)(st + 40) = 6;                                        /* GroupCount */
         *(ULONG *)(st + 44) = 1;                                        /* PrivilegeCount */
         return put_info(st, sizeof(st), buf, n, ret);

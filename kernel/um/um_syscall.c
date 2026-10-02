@@ -163,7 +163,7 @@ UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             char path[RAMFS_PATH_MAX] = "";
             RamNode *root;
             UINT64 oa = num == SYSCALL_NtCreateFile || num == SYSCALL_NtOpenFile ? a3 :
-                        num == SYSCALL_NtQueryAttributesFile ? a1 : 0;
+                        num == SYSCALL_NtQueryAttributesFile || num == SYSCALL_NtQueryFullAttributesFile ? a1 : 0;
             if (oa && get_path(t->proc, oa, path, sizeof(path), &root)) path[0] = 0;
             /* registry calls: the key or value name as given */
             UINT64 us = num == SYSCALL_NtOpenKey || num == SYSCALL_NtCreateKey || num == SYSCALL_NtOpenKeyEx ? 0 :
@@ -1028,6 +1028,32 @@ static UINT64 sys_query_attributes(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, b, 40)) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
 }
 
+/* NtQueryFullAttributesFile(POBJECT_ATTRIBUTES, PFILE_NETWORK_OPEN_INFORMATION) */
+static UINT64 sys_query_full_attributes(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a3; (void)a4;
+    UmProcess *p = UmCurrent();
+    char path[RAMFS_PATH_MAX];
+    RamNode *root;
+    UINT32 st = get_path(p, a1, path, sizeof(path), &root);
+    if (st) return st;
+    UINT8 b[56], basic[40];
+    memset(b, 0, sizeof(b));
+    DesktopLock();
+    RamNode *n = path[0] ? RamfsResolve(root, path) : root;
+    if (n) {
+        basic_info(basic, n);
+        UINT64 size = n->dir ? 0 : n->size, alloc = (size + 4095) & ~4095ULL;
+        memcpy(b, basic, 32);                                   /* the four times */
+        memcpy(b + 32, &alloc, 8);
+        memcpy(b + 40, &size, 8);
+        memcpy(b + 48, basic + 32, 4);                          /* FileAttributes */
+    }
+    DesktopUnlock();
+    if (!n) return ST_OBJECT_NAME_NOT_FOUND;
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, b, 56)) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
+}
+
 /* Wildcard match, case-insensitive: '*' any run, '?' one character. */
 static bool wild(const char *pat, const char *s)
 {
@@ -1570,6 +1596,7 @@ static void process_ob_destroy(UmObject *o)
  * shares the creator's console. */
 #define NCP_INHERIT    1u
 #define NCP_NO_CONSOLE 2u
+#define NCP_SUSPENDED  4u              /* CREATE_SUSPENDED */
 #define NCP_ENV_MAX    (64 * 1024)
 
 static bool std_kind(UmHandleKind k) { return k == H_FILE || k == H_CON_IN || k == H_CON_OUT || k == H_OBJECT || k == H_NULL; }
@@ -1652,6 +1679,7 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     opts.env_len = env_len;
     opts.runtime = rt;
     opts.runtime_len = rt ? rt_len : 0;
+    opts.suspended = (flags & NCP_SUSPENDED) != 0;
     if (!st) {
         c = um_spawn_finish(c, exe, cmd, &opts, err, sizeof(err));
         if (!c) {
@@ -2262,6 +2290,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtQueryInformationFile,     sys_query_info_file);
     um_install(SYSCALL_NtSetInformationFile,       sys_set_info_file);
     um_install(SYSCALL_NtQueryAttributesFile,      sys_query_attributes);
+    um_install(SYSCALL_NtQueryFullAttributesFile,  sys_query_full_attributes);
     um_install(SYSCALL_NtQueryDirectoryFile,       sys_query_directory);
     um_install(SYSCALL_NtQueryVolumeInformationFile, sys_query_volume);
     um_install(SYSCALL_NtAllocateVirtualMemory,    sys_alloc_vm);

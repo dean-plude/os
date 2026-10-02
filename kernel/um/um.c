@@ -1407,7 +1407,7 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
         put_u32(peb + L->peb_platform, 2);                  /* OSPlatformId: NT */
 
         UINT64 pv = p->lay.peb;
-        ok = ok && map_kusd(p) && um_region_add(p, pv, UM_SYS_SIZE, 0x04, false) &&
+        ok = ok && map_kusd(p) && um_region_add(p, pv, UM_SYS_SIZE(p->lay.max_threads), 0x04, false) &&
              um_commit(p, pv, (pva - pv) + UM_PARAMS_PAGES * PAGE_SIZE, 0x04) &&
              um_write(p, pv, peb, PAGE_SIZE) &&
              um_write(p, pva, pp, sz) &&
@@ -1487,7 +1487,7 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
 
     um_lock(&p->lock);
     int slot = -1;
-    for (int i = 0; i < UM_MAX_THREADS; i++) if (!p->threads[i]) { slot = i; break; }
+    for (int i = 0; i < p->lay.max_threads; i++) if (!p->threads[i]) { slot = i; break; }
     if (slot < 0 || p->kill_pending) {
         um_unlock(&p->lock);
         kfree(t); kernel_free_pages(fpu, 1);
@@ -1637,6 +1637,7 @@ void um_set_layout(UmProcess *p, bool wow)
     p->lay.alloc_max = wow ? UM32_ALLOC_MAX : UM_ALLOC_MAX;
     p->lay.dll_min = wow ? UM32_DLL_MIN : UM_DLL_MIN;
     p->lay.dll_max = wow ? UM32_DLL_MAX : UM_DLL_MAX;
+    p->lay.max_threads = wow ? UM32_MAX_THREADS : UM_MAX_THREADS;
 }
 
 UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
@@ -1753,7 +1754,7 @@ UmProcess *um_spawn_finish(UmProcess *p, RamNode *exe, const char *cmdline, cons
     if (stack < UM_STACK_SIZE) stack = UM_STACK_SIZE;
     if (stack > 8 * 1024 * 1024) stack = 8 * 1024 * 1024;
     UINT32 st;
-    if (!um_create_thread(p, entry, p->lay.peb, stack, false, &st)) {
+    if (!um_create_thread(p, entry, p->lay.peb, stack, o && o->suspended, &st)) {
         plock(); g_procs[slot] = NULL; punlock();
         destroy(p);
         ksnprintf(err, err_cap, "Out of memory");

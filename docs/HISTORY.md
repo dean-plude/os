@@ -1372,6 +1372,26 @@ browser is run as shipped; everything below is in NovaOS.
   `tools/novarun.py` takes `!bg COMMAND` to leave a program running while
   it waits and takes screenshots, and `NOVARUN_GDB=1` starts QEMU with a
   gdb server so breakpoints can be set in a program's code.
-- Not yet: the sandbox's `SpawnTarget` fails with
-  `ERROR_INSUFFICIENT_BUFFER`, so the GPU and network child processes
-  don't start; no page has been loaded yet.
+- **Sandbox** (Chromium's, which Firefox uses for its child processes):
+  - ntdll's system call exports now have the Windows byte layout
+    (`mov r10, rcx; mov eax, N; syscall; ret`), so the sandbox can copy
+    and patch them to intercept calls in the child.
+  - Token handles know whether they are primary or impersonation tokens
+    and at which level; `SetThreadToken`, `OpenThreadToken`,
+    `ImpersonateSelf` and `RevertToSelf` track a token per thread.
+    `CreateWellKnownSid` covers every well-known SID type.
+  - New system calls: `NtOpenProcessToken(Ex)`, `NtOpenThreadToken(Ex)`,
+    `NtImpersonateAnonymousToken`, `NtQueryFullAttributesFile`,
+    `NtSetInformationProcess`, and the `ProcessHandleCount` and
+    `ProcessHandleTable` classes of `NtQueryInformationProcess`.
+  - `CREATE_SUSPENDED` really suspends a new process, so the parent can
+    patch the child before it runs.
+  - ntdll exports the heap and string functions the sandbox resolves in
+    the child (`RtlCreateHeap`, `NtSignalAndWaitForSingleObject`,
+    `_strnicmp`, `wcslen`...), and `GetProcessHeaps` includes an empty
+    csrss port heap the sandbox expects to find before it cuts a content
+    process off from csrss.
+  - A process can have 256 threads (was 64); Firefox's main process runs
+    more than 64.
+- Not yet: no page has been loaded, and the main process can crash with
+  a use-after-free after a while.

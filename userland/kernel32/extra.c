@@ -943,7 +943,8 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
     NOVA_CREATE_PROCESS io;
     memset(&io, 0, sizeof(io));
     for (int i = 0; i < 3; i++) io.StdHandle[i] = std[i];
-    io.Flags = (inherit ? 1 : 0) | ((flags & (DETACHED_PROCESS | CREATE_NO_WINDOW)) ? 2 : 0);
+    io.Flags = (inherit ? 1 : 0) | ((flags & (DETACHED_PROCESS | CREATE_NO_WINDOW)) ? 2 : 0) |
+               ((flags & CREATE_SUSPENDED) ? 4 : 0);
     io.Environment = envb;
     io.EnvironmentSize = env_len;
     if (rt && rt_len) { io.RuntimeData = rt; io.RuntimeDataSize = rt_len; }
