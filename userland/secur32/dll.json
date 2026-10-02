@@ -1,0 +1,5 @@
+{
+  "deps": ["advapi32", "msvcrt", "kernel32", "ntdll"],
+  "base": "0x7FFBA0000000",
+  "base_x86": "0x7A000000"
+}

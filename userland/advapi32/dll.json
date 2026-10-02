@@ -1,0 +1,6 @@
+{
+  "deps": ["kernel32", "ntdll"],
+  "base": "0x7FFA80000000",
+  "base_x86": "0x68000000",
+  "sources": ["advapi32", "common"]
+}

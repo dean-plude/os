@@ -1,4 +1,5 @@
 # NovaOS — Windows-Compatible Operating System
+<!-- The regions between "BEGIN generated" and "END generated" markers are built from fragment files by tools/docgen.py: edit those files, not the regions (CONTRIBUTING.md). -->
 
 A clean-room, from-scratch x86-64 operating system that runs native Windows
 executables without emulation.  The programs' own machine code runs directly
@@ -31,6 +32,8 @@ itself on a disk from its live ISO.
 These are official release builds, run as shipped; every fix that made them
 work is in NovaOS.  "Tested" is what has been checked in QEMU.
 
+<!-- BEGIN generated:programs -->
+
 | Program | Kind | Tested on NovaOS |
 |---|---|---|
 | **7-Zip 26.03** (x64) | GUI installer, file manager, `7zG`, `7z.exe` | Installs; the file manager browses, opens archives, adds and extracts with the full dialogs, and drags files out of archives and folders onto other programs; Options has all six pages.  The App Store uses `7z.exe` to unpack downloads. |
@@ -47,6 +50,8 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **DXVK 2.5.3** | `d3d8`, `d3d9`, `d3d10core`, `d3d11`, `dxgi`, x64 and x86, from the App Store, on Mesa's Vulkan and NovaOS's own `vulkan-1.dll` | Direct3D 9 and 11: `tools/d3dtest` (device creation, a D3D9 triangle, D3D11 clear, read-back, animated `Present` in a window) passes as a 64-bit and a 32-bit program. |
 | **Notepad++ 8.7.9** (x64 portable) | Scintilla editor, static MSVC C++ runtime | Opens with its menus, toolbar, tab bar, editor and status bar, and takes typing. |
 | **ripgrep, fd, bat, jq, fzf** | Rust (MSVC), C (MinGW), Go | Searching, walking folders, printing files, filtering, from the Terminal. |
+
+<!-- END generated:programs -->
 
 ### Built in
 
@@ -77,6 +82,8 @@ above are the ones verified.  See [the App Store](docs/HISTORY.md#the-app-store)
 
 A one-paragraph tour; [docs/HISTORY.md](docs/HISTORY.md) has the details of
 every part, phase by phase.
+
+<!-- BEGIN generated:inside -->
 
 - **Boot**: a UEFI bootloader (a PE32+ EFI application) loads the ELF kernel
   from the EFI System Partition, or from a CD.
@@ -109,6 +116,8 @@ every part, phase by phase.
   API sets; x64 and x86 structured exceptions; registry saved to disk;
   COM in-process servers; drag and drop; a shared clipboard; `.lnk`
   shortcuts; Windows Installer packages.
+
+<!-- END generated:inside -->
 
 ## Quick start
 
@@ -176,16 +185,17 @@ To make the ISO yourself from a fresh build, run
 `build/nova.img`, boots it in QEMU with OVMF and runs two suites with
 `tools/selftest.py`:
 
-- **Build and boot-test** (core): `apitest`, `abitest` (the PEB, TEB,
-  `KUSER_SHARED_DATA`, `CONTEXT` and loader layouts, ntdll's stubs and the
-  system-call numbers, against Windows 10 1903 x64), `filetest`,
-  `pipetest`, `proctest`, `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `anitest` (animated cursors and
-  program pointers), `disptest`, `battery` (against the battery in
-  `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
-  tones played), an installer that replaces a running program and
-  finishes after a restart (`filetest install`, `shutdown /r`, `filetest
-  installed`), and last `crash kernel`, a deliberate kernel fault whose
-  serial log must show a backtrace with function names.
+- **Build and boot-test** (core): <!-- BEGIN generated:core-tests -->`apitest`, `abitest` (the PEB, TEB, `KUSER_SHARED_DATA`, `CONTEXT` and
+  loader layouts, ntdll's stubs and the system-call numbers, against
+  Windows 10 1903 x64), `filetest`, `pipetest`, `proctest`, `sectest`,
+  `acltest` (64- and 32-bit), `guitest auto`, `anitest` (animated
+  cursors and program pointers), `disptest`, `battery` (against the
+  battery in `tests/acpi/battery.asl`), `soundtest` (the recorded WAV
+  must hold the tones played), an installer that replaces a running
+  program and finishes after a restart (`filetest install`, `shutdown
+  /r`, `filetest installed`), and last `crash kernel`, a deliberate
+  kernel fault whose serial log must show a backtrace with function
+  names.<!-- END generated:core-tests -->
 - **Graphics tests**: installs Mesa 3D and DXVK with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
   stages the downloads), then runs `tools/gltest` (14 tests) and
@@ -201,17 +211,14 @@ after a build.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
-ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js and
-Notepad++, whose screenshot must match `tests/reference/notepad++.png`.
+<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js and Notepad++<!-- END generated:corpus -->, whose screenshot must match `tests/reference/notepad++.png`.
 It also checks NovaOS's own screens: `dir` on C: and on an NTFS drive D:
 (each with its own free space) and File Explorer's This PC listing both.
 It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
-  `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `proctest`, `acltest`, `cliptest`, `disptest`, `anitest`, `smpstress`.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `disptest`, `dlltest`, `filetest`, `pipetest`, `posixtest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
   `tools/novarun.py --wav out.wav` records what NovaOS plays and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
@@ -284,7 +291,7 @@ os/
 │   ├── ldr/              # Early PE loader and syscall thunk pages
 │   └── lib/              # Freestanding string and memory library
 ├── userland/             # The Windows userland, built with clang + lld-link:
-│   ├── ntdll/ kernel32/ user32/ gdi32/ ...   # one directory per system DLL
+│   ├── ntdll/ kernel32/ user32/ gdi32/ ...   # one directory per system DLL (dll.json)
 │   ├── msvcrt/ crt/      # C runtime (msvcrt.dll and ucrtbase.dll), program startup
 │   ├── msi/              # Windows Installer (msi.dll)
 │   ├── programs/         # cmd.exe, msiexec, reg, find..., samples and self-tests
@@ -292,9 +299,12 @@ os/
 │   └── include/          # The Windows SDK headers NovaOS provides
 ├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), NetSurf, stb, fonts, 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
-│                         #   make_icons.py, mkani.py, pe_imports.py, msitest/
+│                         #   make_icons.py, mkani.py, pe_imports.py, msitest/, docgen.py
+├── tests/                # CI self-tests and app corpus (one file per test), ACPI
+│                         #   tables, reference screenshots
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
-└── docs/                 # Building, roadmap, feature history, Phase 1 architecture
+└── docs/                 # Building, roadmap, feature history, Phase 1 architecture,
+                          #   and the fragments README and docs/*.md are built from
 ```
 
 ## Key design decisions
@@ -331,6 +341,9 @@ os/
 
 ## Documentation
 
+- [CONTRIBUTING.md](CONTRIBUTING.md): where a change goes (one file per
+  DLL, test and doc item, so parallel pull requests do not conflict) and
+  how to merge main into a branch.
 - [docs/building.md](docs/building.md): building, running, the data disk,
   tests, debugging.
 - [docs/macos.md](docs/macos.md): running and building on a Mac (Apple
@@ -345,10 +358,7 @@ os/
 
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
-code keeps its own permissive licence (lwIP: BSD 3-clause; Mbed TLS:
-Apache-2.0; uACPI: MIT; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu
-Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or
-MIT).  All Win32 API implementations are clean-room, based on public
+code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; uACPI: MIT; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,
 but independently written.
 

@@ -1,4 +1,5 @@
 # NovaOS — Roadmap to a Windows-Compatible Desktop OS
+<!-- The regions between "BEGIN generated" and "END generated" markers are built from fragment files by tools/docgen.py: edit those files, not the regions (CONTRIBUTING.md). -->
 
 **Goal:** a from-scratch x86-64 OS that runs **native Windows executables
 without emulation**: the binaries run directly on the CPU while NovaOS
@@ -67,6 +68,8 @@ Ordered by what unblocks the most real programs.  Each item ends when a
 named program or test demonstrates it.
 
 ### Graphics, 3D and media
+<!-- BEGIN generated:next-graphics -->
+
 - ~~**OpenGL**: a working `opengl32.dll`~~ Done: Mesa's llvmpipe from the
   App Store is the system `opengl32.dll` (OpenGL 4.5, 64- and 32-bit); see
   [OpenGL](HISTORY.md#opengl-mesa-as-the-system-opengl32dll).
@@ -81,7 +84,11 @@ named program or test demonstrates it.
 - Display: GPU-backed or at least faster blits; mode changes.
 - NetSurf: SVG; redrawing pages a script changes after layout.
 
+<!-- END generated:next-graphics -->
+
 ### Application coverage
+<!-- BEGIN generated:next-apps -->
+
 - Bring the App Store catalog up program by program, starting with the
   "untested" portable ones (Notepad++, SumatraPDF, PuTTY, WinMerge), then
   the Qt and GTK applications (KeePassXC, Krita, Inkscape), then Firefox.
@@ -96,7 +103,11 @@ named program or test demonstrates it.
 - Keep the App Store's per-app compatibility notes in step with what has
   been verified.
 
+<!-- END generated:next-apps -->
+
 ### Kernel and API compatibility
+<!-- BEGIN generated:next-kernel -->
+
 - ~~Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
   with a console of its own, file handles that share their position with
   the processes they are handed to~~ Done (Phase 17.3, `proctest`).
@@ -121,7 +132,11 @@ named program or test demonstrates it.
   checked on open (Phase 17.4, `sectest`, `acltest`).  Files' descriptors
   come with Phase 18.5.
 
+<!-- END generated:next-kernel -->
+
 ### Storage, network and hardware
+<!-- BEGIN generated:next-hardware -->
+
 - ~~NTFS read~~ Done: NTFS volumes mount read-only as drives D:, E:, ...;
   NTFS write, NVMe.
 - IPv6, HTTP/2.
@@ -138,6 +153,8 @@ named program or test demonstrates it.
   drives: the VBE ones, QXL, virtio-vga, VMware SVGA and Cirrus.  Real
   GPUs have no driver yet.)
 - Boot and test on real hardware, not only QEMU.
+
+<!-- END generated:next-hardware -->
 
 ---
 
@@ -159,6 +176,10 @@ named program or test demonstrates it.
 - **ABI conformance tests** (done): `abitest` asserts PEB/TEB/KUSER/CONTEXT
   offsets, ntdll's stub layout and every syscall number against Windows 10
   1903 x64, in CI.
+- **Parallel changes without conflicts** (done): DLLs, programs,
+  self-tests, the app corpus and the docs' lists are one file per item
+  (CONTRIBUTING.md), generated doc regions are rebuilt on main by
+  `tools/docgen.py`, and CI fails on leftover conflict markers.
 - **Test corpus:** every self-test program in `userland/programs/` is a
   permanent regression test, built for x64 and x86; `tools/pe_imports.py`
   shows what a new program needs before it is tried.

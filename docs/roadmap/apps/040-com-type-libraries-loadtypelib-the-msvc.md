@@ -1,0 +1,1 @@
+- COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception tables.
