@@ -939,6 +939,14 @@ void WmCursorMoveBy(int dx, int dy)
     cursor_show_dev(g_cx + dx * s, g_cy + dy * s);
 }
 
+void WmCursorMoveAbs(int nx, int ny)
+{
+    int s = GdiScale();
+    int w = GdiScreenW() * s, h = GdiScreenH() * s;
+    WmCursorHide();
+    cursor_show_dev((int)((INT64)nx * (w - 1) / 65535), (int)((INT64)ny * (h - 1) / 65535));
+}
+
 void WmCursorReshow(void)
 {
     /* A new frame was presented: the pointer and its save-under are gone.

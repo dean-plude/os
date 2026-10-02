@@ -131,6 +131,8 @@ set(KERNEL_C_SOURCES
     drivers/audio.c
     drivers/xhci.c
     drivers/usbhid.c
+    drivers/usbhub.c
+    drivers/usbmsc.c
     fs/block.c
     fs/fat.c
     fs/ntfs.c

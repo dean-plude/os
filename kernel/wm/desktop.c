@@ -1649,7 +1649,11 @@ void DesktopRun(void *arg)
         InputEvent ev;
         while (InputPoll(&ev)) {
             if (ev.type == INPUT_MOUSE) {
-                if (ev.dx || ev.dy) {
+                if (ev.absolute) {
+                    WmCursorMoveAbs(ev.dx, ev.dy);
+                    WmMouseMove(WmCursorX(), WmCursorY());
+                    desktop_hover(WmCursorX(), WmCursorY());
+                } else if (ev.dx || ev.dy) {
                     WmCursorMoveBy(ev.dx, ev.dy);
                     WmMouseMove(WmCursorX(), WmCursorY());
                     desktop_hover(WmCursorX(), WmCursorY());

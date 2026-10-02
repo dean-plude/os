@@ -27,6 +27,7 @@ typedef struct {
     UINT8 extended;    /* 1 = E0-prefixed key: arrows, Delete, Win... */
     INT32 dx, dy;      /* relative motion, +x right / +y down (INPUT_MOUSE) */
     INT32 dz;          /* wheel: +1 per notch away from the user (INPUT_MOUSE) */
+    UINT8 absolute;    /* dx, dy are a position: 0-65535 across the screen (tablets, touch) */
 } InputEvent;
 
 /* -----------------------------------------------------------------------

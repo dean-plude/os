@@ -208,6 +208,8 @@ void WmCursorHide(void);
 void WmCursorMove(int x, int y);
 /* Move by a relative mouse delta (one count = one logical pixel). */
 void WmCursorMoveBy(int dx, int dy);
+/* Move to a position given as 0-65535 across and down the screen (tablets) */
+void WmCursorMoveAbs(int nx, int ny);
 /* Re-show the cursor after a new frame was presented. */
 void WmCursorReshow(void);
 
