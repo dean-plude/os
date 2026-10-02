@@ -4,13 +4,15 @@
  *   less [-options] [+n] [file ...]
  *
  * git runs "less" (with LESS=FRX) to show `log`, `diff` and `config --list`
- * on a console, and MinGit ships none.  The Terminal hands a program whole
- * lines as Enter is pressed, so this pager asks for a line: Enter (or a
- * space) shows the next page, a number that many more lines, "/text" skips
- * to the next line containing text, "q" quits.  Input that fits on one
- * screen goes straight through, as with less -F, and so does everything
- * when the output is not a console.  Color and other escape sequences pass
- * through (less -R); options are accepted and otherwise ignored.
+ * on a console, and MinGit ships none.  After each screenful it asks what
+ * next and takes single keys, as less does: Space (or f, Page Down) the
+ * next page, Enter (or j, Down) one more line, d half a page, "/text" and
+ * Enter skips to the next line containing text, q (or Esc) quits.  On a
+ * console that only hands over whole lines, the answer ends with Enter
+ * (a number shows that many more lines).  Input that fits on one screen
+ * goes straight through, as with less -F, and so does everything when the
+ * output is not a console.  Color and other escape sequences pass through
+ * (less -R); options are accepted and otherwise ignored.
  */
 #include <windows.h>
 #include <stdio.h>
@@ -38,14 +40,27 @@ static int screen_rows(const char *s)
     return col <= g_cols ? 1 : (col + g_cols - 1) / g_cols;
 }
 
-/* Ask what next; returns the rows to show, 0 to quit, -1 for a search
- * (the text left in find) */
-static int ask(char *find, int cap)
+/* Console input records (the headers here are thin) */
+typedef struct {
+    WORD EventType;
+    union {
+        struct { BOOL bKeyDown; WORD wRepeatCount, wVirtualKeyCode, wVirtualScanCode;
+                 union { WCHAR UnicodeChar; CHAR AsciiChar; } uChar; DWORD dwControlKeyState; } Key;
+        BYTE pad[16];
+    } Event;
+} LESS_INPUT_RECORD;
+WINBASEAPI BOOL WINAPI ReadConsoleInputW(HANDLE h, LESS_INPUT_RECORD *rec, DWORD n, LPDWORD read);
+#define LESS_LINE_INPUT 0x2
+#define LESS_ECHO_INPUT 0x4
+
+#define PROMPT_KEYS "-- More -- (Space: next page, Enter: next line, /text: find, q: quit) "
+#define PROMPT_LINE "-- More -- (Enter: next page, /text: find, q: quit) "
+
+/* The answer typed as a line: Enter, a number, "/text" or q */
+static int ask_line(char *find, int cap)
 {
     char line[256];
     DWORD got = 0;
-    fputs("-- More -- (Enter: next page, /text: find, q: quit) ", stdout);
-    fflush(stdout);
     if (!ReadFile(g_in, line, sizeof(line) - 1, &got, NULL) || !got) return 0;
     line[got] = '\0';
     char *s = line;
@@ -59,6 +74,67 @@ static int ask(char *find, int cap)
     }
     if (*s >= '1' && *s <= '9') return atoi(s);
     return g_rows - 1;
+}
+
+/* One key pressed: its character, or a virtual key code + 0x10000; -1
+ * when the console is gone */
+static int read_key(void)
+{
+    for (;;) {
+        LESS_INPUT_RECORD r;
+        DWORD got = 0;
+        if (!ReadConsoleInputW(g_in, &r, 1, &got) || !got) return -1;
+        if (r.EventType != 1 || !r.Event.Key.bKeyDown) continue;          /* KEY_EVENT presses */
+        if (r.Event.Key.uChar.UnicodeChar) return r.Event.Key.uChar.UnicodeChar;
+        WORD vk = r.Event.Key.wVirtualKeyCode;
+        if (vk == VK_NEXT || vk == VK_DOWN || vk == VK_ESCAPE) return 0x10000 + vk;
+    }
+}
+
+/* Ask what next; returns the rows to show, 0 to quit, -1 for a search
+ * (the text left in find) */
+static int ask(char *find, int cap)
+{
+    DWORD mode = 0, now = 0;
+    bool keys = GetConsoleMode(g_in, &mode) &&
+                SetConsoleMode(g_in, mode & ~(DWORD)(LESS_LINE_INPUT | LESS_ECHO_INPUT)) &&
+                GetConsoleMode(g_in, &now) && !(now & LESS_LINE_INPUT);
+    if (!keys) {                                    /* whole lines only */
+        fputs(PROMPT_LINE, stdout);
+        fflush(stdout);
+        return ask_line(find, cap);
+    }
+    fputs(PROMPT_KEYS, stdout);
+    fflush(stdout);
+    int n = -2;
+    while (n == -2) {
+        int k = read_key();
+        switch (k) {
+        case -1: case 'q': case 'Q': case 0x10000 + VK_ESCAPE: n = 0; break;
+        case ' ': case 'f': case 0x10000 + VK_NEXT: n = g_rows - 1; break;
+        case '\r': case '\n': case 'j': case 0x10000 + VK_DOWN: n = 1; break;
+        case 'd': n = (g_rows - 1) / 2; break;
+        case '/':                                   /* the text, as a line */
+            fputs("\r\x1b[K/", stdout);
+            fflush(stdout);
+            SetConsoleMode(g_in, mode);
+            {
+                char line[256];
+                DWORD got = 0;
+                if (!ReadFile(g_in, line, sizeof(line) - 1, &got, NULL)) got = 0;
+                line[got] = '\0';
+                line[strcspn(line, "\r\n")] = '\0';
+                if (!line[0]) { n = g_rows - 1; break; }
+                strncpy(find, line, cap - 1);
+                find[cap - 1] = '\0';
+            }
+            return -1;
+        }
+    }
+    SetConsoleMode(g_in, mode);
+    fputs("\r\x1b[K", stdout);                      /* the prompt goes */
+    fflush(stdout);
+    return n;
 }
 
 /* Returns false when the reader quit */

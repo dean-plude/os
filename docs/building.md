@@ -201,8 +201,8 @@ tools/ci/stage-graphics.sh /tmp/gfx
 python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
 
-The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `guitest
-auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`, and
+The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
+`guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
@@ -240,6 +240,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `cppeh` | C++ exceptions and RTTI |
 | `shmtest` | Named and file-backed shared memory between processes |
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
+| `proctest` | `CreateProcess` flags: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` (`GetConsoleProcessList`), file positions shared with children and duplicates |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
 | `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
@@ -254,8 +255,15 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 crashes the kernel on purpose (`NtNovaBugCheck`) to show the backtrace.
 
 Interactive ones: `winhello` and `guitest` (windows, menus, dialogs,
-property sheets; `guitest auto` drives them itself and reports, as CI runs it), `droptest` (drag and drop), `cpus` (SMP speed-up), and
+property sheets; `guitest auto` drives them itself and reports, as CI runs it), `droptest` (drag and drop; its targets list each dropped file's size, or "missing"), `cpus` (SMP speed-up), and
 `hello`, `mandel`, `primes`, `wc`, `guess`.
+
+### Boot-time self-tests
+
+The kernel tests itself while it boots and prints the results to the serial
+log: `[PROBE]` (user-pointer validation) and `[PSTEST]`
+(`PsGetCurrentThread` on bare kernel threads).  `grep -a 'passed,'
+serial.log` lists them; each should end "0 failed".
 
 ### Real programs
 
@@ -287,6 +295,16 @@ To add a program, add an `App` to `APPS`.  Other third-party programs (the
 installers, Java, .NET) and test scripts such as `cmdtest.bat` for
 `cmd.exe` are tried by hand with `tools/novarun.py`: copy a program onto
 the data disk with `--put` and type its commands.
+
+Full-screen and interactive programs (Neovim, an MSYS2 `sh` session) are
+driven with `!type`, which types without waiting for the command to end
+(`\n` is Enter, `\e` Esc), and `!done N`, which waits up to N seconds for
+it to end:
+
+```bash
+python3 tools/novarun.py --put 'nvim-win64=C:\Apps\nvim' 'cd C:\Apps\nvim\bin' \
+    '!type nvim --clean t.txt\n' '!wait 40' '!type ihello\e:wq\n' '!done 60' 'type t.txt'
+```
 
 ### Sound
 
@@ -328,7 +346,8 @@ python3 tools/novarun.py --net --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' \
 - **Program crashes** are logged with the faulting module and offset, the
   process's exit code, and `OutputDebugString` output.
 - **`trace NAME`** in the Terminal logs the failing system calls (with file
-  names) of the program called NAME; `trace off` stops it.
+  names) of the program called NAME, each with its process id; `trace
+  +NAME` logs every call, not only the failing ones; `trace off` stops it.
 
 ### GDB
 

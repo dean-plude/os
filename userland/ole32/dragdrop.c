@@ -8,7 +8,8 @@
  * desktop (user32's NovaSendDrop) as a file list, taken from the data
  * object's CF_HDROP; on that side user32 hands it to our hook, which
  * wraps it in a data object for the window's IDropTarget, or to
- * WM_DROPFILES for a plain window.
+ * WM_DROPFILES for a plain window. NovaSendDrop returns once the other
+ * program has handled the drop, with the effect its target took.
  */
 #define NOVA_BUILD_OLE32
 #include <windows.h>
@@ -16,14 +17,14 @@
 
 #define DROP_PROP L"OleDropTargetInterface"
 
-typedef BOOL (WINAPI *DropHook)(HWND hwnd, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes);
+typedef BOOL (WINAPI *DropHook)(HWND hwnd, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes, DWORD *taken);
 __declspec(dllimport) void WINAPI NovaSetDropHook(void *fn);
 __declspec(dllimport) BOOL WINAPI NovaAcceptDrops(HWND h, DWORD mask, BOOL on);
 __declspec(dllimport) UINT32 WINAPI NovaWindowAt(POINT pt, DWORD *pid, DWORD *flags);
 __declspec(dllimport) HWND WINAPI NovaTopFromKid(UINT32 kid);
-__declspec(dllimport) BOOL WINAPI NovaSendDrop(UINT32 kid, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes);
+__declspec(dllimport) DWORD WINAPI NovaSendDrop(UINT32 kid, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes);
 
-static BOOL WINAPI drop_hook(HWND hwnd, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes);
+static BOOL WINAPI drop_hook(HWND hwnd, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes, DWORD *taken);
 
 /* the target registered on the window or an ancestor */
 static IDropTarget *target_of(HWND h, HWND *owner)
@@ -198,8 +199,9 @@ static WCHAR *hdrop_list(IDataObject *data, DWORD *bytes)
 }
 
 /* a drop from another program: to this window's (or an ancestor's) target */
-static BOOL WINAPI drop_hook(HWND hwnd, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes)
+static BOOL WINAPI drop_hook(HWND hwnd, POINT screen, DWORD effect, const WCHAR *files, DWORD bytes, DWORD *taken)
 {
+    *taken = DROPEFFECT_NONE;
     HWND owner = NULL;
     IDropTarget *t = target_of(hwnd, &owner);
     if (!t) return FALSE;
@@ -218,7 +220,7 @@ static BOOL WINAPI drop_hook(HWND hwnd, POINT screen, DWORD effect, const WCHAR 
         eff = allowed;
         t->lpVtbl->DragOver(t, keys, pt, &eff);
         eff = allowed;
-        t->lpVtbl->Drop(t, &d->iface, keys, pt, &eff);
+        if (SUCCEEDED(t->lpVtbl->Drop(t, &d->iface, keys, pt, &eff))) *taken = eff & allowed;
     }
     t->lpVtbl->Release(t);
     d->iface.lpVtbl->Release(&d->iface);
@@ -332,14 +334,16 @@ WINOLEAPI_(HRESULT) DoDragDrop(IDataObject *data, IDropSource *src, DWORD ok, DW
         } else if (remote) {
             DWORD bytes = 0;
             WCHAR *list = hdrop_list(data, &bytes);
-            if (list && NovaSendDrop(remote, pt, eff, list, bytes)) { /* delivered */ }
-            else eff = DROPEFFECT_NONE;
+            eff = list ? NovaSendDrop(remote, pt, eff, list, bytes) : DROPEFFECT_NONE;
             if (list) HeapFree(GetProcessHeap(), 0, list);
         } else eff = DROPEFFECT_NONE;
         r = eff == DROPEFFECT_NONE ? DRAGDROP_S_CANCEL : DRAGDROP_S_DROP;
     }
     if (target) target->lpVtbl->DragLeave(target);
-    if (GetCapture() == capture) ReleaseCapture();
+    /* Windows tracks the drag with a hidden window of its own and destroys
+     * it here, so no window keeps the mouse afterwards, even one that took
+     * it during the drop (7-Zip's panel does, while it extracts) */
+    if (GetCapture()) ReleaseCapture();
     if (effect) *effect = r == DRAGDROP_S_DROP ? eff : DROPEFFECT_NONE;
     src->lpVtbl->Release(src);
     data->lpVtbl->Release(data);

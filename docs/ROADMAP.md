@@ -97,15 +97,23 @@ named program or test demonstrates it.
   been verified.
 
 ### Kernel and API compatibility
-- Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
+- ~~Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
   with a console of its own, file handles that share their position with
-  the processes they are handed to.
+  the processes they are handed to~~ Done (Phase 17.3, `proctest`).
 - Files: hard links, `MoveFileEx` pending renames carried out at boot,
   `RegNotifyChangeKeyValue` change events.
+<<<<<<< HEAD
 - Interactive MSYS2 `sh` sessions (only `sh -c` and scripts are tested).
-- A console screen buffer with raw (per-key) input, so full-screen console
-  programs work and `less` can be the real one (git pages through NovaOS's
-  line-based `less` today).
+- The Win32 console screen-buffer calls (`SetConsoleCursorPosition`,
+  `FillConsoleOutputCharacter`... are still no-ops), so programs that draw
+  through them rather than VT sequences work and `less` can be the real
+  one (git pages through NovaOS's own `less` today).
+=======
+- ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
+  is waitable and the Terminal runs full-screen programs (Phase 17.2).
+- Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
+  Windows Terminal-style hosts) exist only as functions that fail.
+>>>>>>> origin/main
 - Move files, the registry, process creation and the console off the big
   kernel lock.
 - Security: enforce tokens and ACLs on objects (`AccessCheck` already
