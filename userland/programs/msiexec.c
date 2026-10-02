@@ -17,6 +17,7 @@
 #include "../msi/msi.h"
 
 __declspec(dllimport) LPWSTR *WINAPI CommandLineToArgvW(LPCWSTR cmdline, int *argc);
+__declspec(dllimport) int WINAPI MsiNovaCaServer(HANDLE req, HANDLE rep, unsigned session, LPCWSTR dll, LPCSTR entry);
 
 static void usage(bool gui)
 {
@@ -33,6 +34,14 @@ int main(void)
 {
     int argc = 0;
     WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    /* msiexec /novaca REQ REP SESSION ENTRY DLL: the custom-action server the
+     * installer starts to run a DLL custom action (see msi/api.c) */
+    if (argc == 7 && !_wcsicmp(argv[1], L"/novaca")) {
+        char entry[128];
+        WideCharToMultiByte(CP_UTF8, 0, argv[5], -1, entry, sizeof(entry), NULL, NULL);
+        return MsiNovaCaServer((HANDLE)(ULONG_PTR)wcstoul(argv[2], NULL, 10), (HANDLE)(ULONG_PTR)wcstoul(argv[3], NULL, 10),
+                               (unsigned)wcstoul(argv[4], NULL, 10), argv[6], entry);
+    }
     MsiRequest req;
     memset(&req, 0, sizeof(req));
     req.ui_level = MSIUI_FULL;

@@ -11,7 +11,8 @@ NovaOS's own WoW64 layer, as on 64-bit Windows.
 **Status:** Phases 1–15 are done.  NovaOS boots on UEFI machines (tested in
 QEMU with OVMF), uses every CPU core, keeps its files on a SATA disk, and
 runs unmodified Windows programs: 7-Zip, Git, NSIS installers, `.msi`
-packages, the Java, .NET, Node.js and Python runtimes, and OpenGL, Vulkan
+packages (with their own dialogs, custom actions, shortcuts and
+services), the Java, .NET, Node.js and Python runtimes, and OpenGL, Vulkan
 and Direct3D 8–11 programs through Mesa and DXVK.  It can install
 itself on a disk from its live ISO.
 
@@ -67,7 +68,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 - **Command line**: the Terminal's own commands (`dir`, `copy`, `ping`,
   `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
-  `more`, `less` (git's pager), `timeout`, `reg`, `regsvr32` and `msiexec`.
+  `more`, `less` (git's pager), `timeout`, `taskkill`, `reg`, `regsvr32` and `msiexec`.
 
 ### The App Store
 
@@ -260,7 +261,8 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   (not in this repository), driven by a QEMU harness that types, clicks and takes screenshots.
 - **On the host**: `tools/pe_imports.py PROGRAM.exe` lists the imports a
   Windows program needs that NovaOS's DLLs lack; `tools/msitest/` exercises
-  the Windows Installer's package readers.  `tools/gltest/`,
+  the Windows Installer's package readers and SQL, and builds test
+  packages (one with a service).  `tools/gltest/`,
   `tools/d3dtest/` and `tools/d2dtest/` are OpenGL, Direct3D 9/11 and
   Direct2D test programs, built with MinGW, for checking Mesa, DXVK and
   `d2d1.dll` on NovaOS.
