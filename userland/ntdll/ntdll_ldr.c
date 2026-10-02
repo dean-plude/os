@@ -288,6 +288,14 @@ static BOOL call_dllmain(Module *m, DWORD reason)
 /* -----------------------------------------------------------------------
  * Building the loader list from the kernel's info
  * ----------------------------------------------------------------------- */
+static void link_first(LIST_ENTRY *head, LIST_ENTRY *e)
+{
+    e->Flink = head->Flink;
+    e->Blink = head;
+    head->Flink->Blink = e;
+    head->Flink = e;
+}
+
 static void link(LIST_ENTRY *head, LIST_ENTRY *e)
 {
     e->Blink = head->Blink;
@@ -325,9 +333,16 @@ static int absorb_new_modules(void)
         { int n = 0; while (m->wpath[n]) n++; e->FullDllName.Length = (USHORT)(n * 2); e->FullDllName.MaximumLength = (USHORT)(n * 2 + 2); }
         e->Flags = m->is_dll ? LDRP_IMAGE_DLL : 0;
         e->LoadCount = 1;
-        link(&g_ldr.InLoadOrderModuleList, &e->InLoadOrderLinks);
-        link(&g_ldr.InMemoryOrderModuleList, &e->InMemoryOrderLinks);
-        link(&g_ldr.InInitializationOrderModuleList, &e->InInitializationOrderLinks);
+        if (m->is_dll) {
+            link(&g_ldr.InLoadOrderModuleList, &e->InLoadOrderLinks);
+            link(&g_ldr.InMemoryOrderModuleList, &e->InMemoryOrderLinks);
+            link(&g_ldr.InInitializationOrderModuleList, &e->InInitializationOrderLinks);
+        } else {                                     /* as on Windows: the program heads the */
+            link_first(&g_ldr.InLoadOrderModuleList, &e->InLoadOrderLinks);     /* load and memory */
+            link_first(&g_ldr.InMemoryOrderModuleList, &e->InMemoryOrderLinks); /* lists, and is not */
+            e->InInitializationOrderLinks.Flink = e->InInitializationOrderLinks.Blink =   /* initialized */
+                &e->InInitializationOrderLinks;
+        }
         g_nmod++;
     }
     /* TLS slots: the program's first, as on Windows: an .exe's code may
