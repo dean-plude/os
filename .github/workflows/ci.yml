@@ -1,6 +1,8 @@
 # Boot CI: every pull request builds NovaOS, boots it in QEMU and runs the
-# self-tests (tools/selftest.py).  A failing test fails the "boot-test"
-# check; make it a required status check on main to block the merge.
+# self-tests (tools/selftest.py): the core suite, and the graphics suite
+# (Mesa and DXVK from the App Store, then tools/gltest and tools/d3dtest).
+# A failing test fails its check; make both required status checks on main
+# to block the merge.
 name: CI
 
 on:
@@ -48,4 +50,48 @@ jobs:
         with:
           name: selftest-out
           path: selftest-out
+          if-no-files-found: ignore
+
+  graphics-test:
+    name: Graphics tests (OpenGL, Direct3D)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain and QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            cmake make nasm clang lld llvm gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
+            qemu-system-x86 ovmf mtools dosfstools acpica-tools p7zip-full curl
+
+      - name: Cache the Mesa, DXVK and 7-Zip downloads
+        uses: actions/cache@v4
+        with:
+          path: gfx-cache
+          key: gfx-${{ hashFiles('kernel/apps/store.c', 'tools/ci/stage-graphics.sh') }}
+
+      - name: Build NovaOS
+        run: |
+          cmake -S . -B build -G "Unix Makefiles"
+          make -C build -j"$(nproc)" || {
+            cat build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-err.log 2>/dev/null | tail -100
+            exit 1
+          }
+
+      - name: Stage 7-Zip, the downloads and the test programs
+        run: tools/ci/stage-graphics.sh gfx gfx-cache
+
+      - name: Install Mesa and DXVK from the App Store, run gltest and d3dtest
+        run: |
+          python3 tools/selftest.py --suite graphics --gfx gfx --img build/nova.img --out graphics-out \
+            --junit graphics-out/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the serial log and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphics-out
+          path: graphics-out
           if-no-files-found: ignore

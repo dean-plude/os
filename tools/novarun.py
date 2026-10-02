@@ -17,7 +17,7 @@ output QEMU records to PATH).
 
 Other tools (tools/selftest.py) import the Nova class to drive a boot.
 """
-import argparse, json, os, shutil, socket, subprocess, sys, tempfile, time
+import argparse, json, os, re, shutil, socket, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OVMF = next((p for p in ('/usr/share/ovmf/OVMF.fd', '/usr/share/OVMF/OVMF_CODE.fd',
@@ -162,11 +162,26 @@ class Nova:
             self.close()
             raise
 
-    def run(self, cmd, timeout=120):
-        """Type @cmd into the Terminal; returns (serial output, finished in time)"""
+    def run(self, cmd, timeout=120, shot=None):
+        """Type @cmd into the Terminal; returns (serial output, finished in time).
+        @shot = (regex, path): a screenshot 2 s after the output matches
+        regex (while the program is still drawing)"""
         self.sr.read_new()
         self.qmp.type(cmd + '\n')
-        got, ok = self.sr.wait('[TERM-DONE]', timeout)
+        got, ok, end = '', False, time.time() + timeout
+        if shot:
+            pat = re.compile(shot[0])
+            while time.time() < end and '[TERM-DONE]' not in got and not pat.search(got):
+                time.sleep(0.25)
+                got += self.sr.read_new()
+            if pat.search(got) and '[TERM-DONE]' not in got:
+                time.sleep(2)
+                self.shot(shot[1])
+            ok = '[TERM-DONE]' in got
+        if not ok:
+            more, ok = self.sr.wait('[TERM-DONE]', max(1, end - time.time()))
+            got += more
+            ok = '[TERM-DONE]' in got
         if not ok:                          # Ctrl+C: the kernel logs where its threads are
             self.qmp.key('ctrl', 'c')
             more, _ = self.sr.wait('[TERM-DONE]', 20)
