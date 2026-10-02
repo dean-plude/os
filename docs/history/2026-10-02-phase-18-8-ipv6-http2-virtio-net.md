@@ -18,6 +18,14 @@
   `%zone`, service names), and `inet_pton`/`inet_ntop`,
   `WSAStringToAddress`/`WSAAddressToString` and `getnameinfo` handle IPv6.
   `netcat` resolves with `getaddrinfo` and takes `-4`/`-6`/`-p`.
+- **Loopback** (for Firefox, whose processes talk over a socket pair):
+  lwIP's loopback interface is on, so 127.0.0.1, ::1 and the machine's own
+  addresses reach its own sockets (the net thread delivers them).  A
+  connection is given its socket as soon as it arrives, so bytes the client
+  sends before `accept` wait for it instead of being dropped, and closing a
+  listener no longer trips an lwIP assertion that stopped the network.
+  `getaddrinfo("localhost")` gives ::1 and 127.0.0.1 and `gethostbyname`
+  127.0.0.1, without DNS.  `looptest` checks all of it in the network suite.
 - **winhttp.dll** (`userland/winhttp`) became a real HTTP client: sessions,
   connections and requests, request headers, request bodies
   (`WinHttpWriteData`), `WinHttpQueryHeaders` (by index, name, number or

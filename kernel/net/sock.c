@@ -45,9 +45,9 @@ typedef struct {
     UINT16        unacked;        /* bytes received but not yet tcp_recved */
 
     /* UDP datagram source of the last recvfrom chunk boundary */
-    /* listener accept queue: pending accepted PCBs */
-    struct tcp_pcb *acc[ACCEPT_MAX];
-    NetSockAddr   acc_addr[ACCEPT_MAX];
+    /* listener accept queue: sockets for connections not yet accepted
+     * (they already receive, so a client may send before accept) */
+    int           acc[ACCEPT_MAX];
     volatile int  acc_head, acc_tail;
 
     int           family;         /* NET_AF_INET or NET_AF_INET6 */
@@ -179,16 +179,36 @@ static err_t tcp_connected_cb(void *arg, struct tcp_pcb *pcb, err_t err)
     return ERR_OK;
 }
 
+static int alloc_slot(void);
+
+static void tcp_callbacks(struct tcp_pcb *pcb, Sock *s)
+{
+    tcp_arg(pcb, s);
+    tcp_err(pcb, tcp_err_cb);
+    tcp_recv(pcb, tcp_recv_cb);
+    tcp_sent(pcb, tcp_sent_cb);
+}
+
+/* A new connection on a listener: its socket is made now, so data the
+ * client sends before accept() waits in its ring instead of being lost */
 static err_t tcp_accept_cb(void *arg, struct tcp_pcb *newpcb, err_t err)
 {
     Sock *s = arg;
     if (!s || err != ERR_OK || !newpcb) return ERR_VAL;
     int next = (s->acc_head + 1) % ACCEPT_MAX;
     if (next == s->acc_tail) return ERR_MEM;                 /* queue full */
+    int ni = alloc_slot();
+    if (ni < 0) return ERR_MEM;
+    Sock *ns = &g_sock[ni];
+    ns->tcp = newpcb;
+    ns->connected = true;
+    ns->family = s->family;
+    from_lwip(s, &newpcb->remote_ip, newpcb->remote_port, &ns->peer);
     tcp_backlog_delayed(newpcb);
-    s->acc[s->acc_head] = newpcb;
-    from_lwip(s, &newpcb->remote_ip, newpcb->remote_port, &s->acc_addr[s->acc_head]);
+    tcp_callbacks(newpcb, ns);
+    s->acc[s->acc_head] = ni;
     s->acc_head = next;
+    net_wake();
     return ERR_OK;
 }
 
@@ -239,10 +259,7 @@ int NetSockTcp(int family)
     s->family = family;
     s->tcp = tcp_new_ip_type(family == NET_AF_INET6 ? IPADDR_TYPE_ANY : IPADDR_TYPE_V4);
     if (!s->tcp) { s->used = false; net_unlock(); return -SOCK_ENOBUFS; }
-    tcp_arg(s->tcp, s);
-    tcp_err(s->tcp, tcp_err_cb);
-    tcp_recv(s->tcp, tcp_recv_cb);
-    tcp_sent(s->tcp, tcp_sent_cb);
+    tcp_callbacks(s->tcp, s);
     net_unlock();
     return i;
 }
@@ -447,22 +464,11 @@ int NetSockAccept(int sd, NetSockAddr *peer, SockCancelFn c, void *ca)
         UINT32 ng = net_gen();
         net_lock();
         if (s->acc_tail != s->acc_head) {
-            struct tcp_pcb *pcb = s->acc[s->acc_tail];
-            NetSockAddr raddr = s->acc_addr[s->acc_tail];
+            int ni = s->acc[s->acc_tail];
             s->acc_tail = (s->acc_tail + 1) % ACCEPT_MAX;
-            int ni = alloc_slot();
-            if (ni < 0) { tcp_abort(pcb); net_unlock(); return ni; }
             Sock *ns = &g_sock[ni];
-            ns->tcp = pcb;
-            ns->connected = true;
-            ns->family = s->family;
-            ns->peer = raddr;
-            tcp_backlog_accepted(pcb);
-            tcp_arg(pcb, ns);
-            tcp_err(pcb, tcp_err_cb);
-            tcp_recv(pcb, tcp_recv_cb);
-            tcp_sent(pcb, tcp_sent_cb);
-            if (peer) *peer = raddr;
+            if (ns->tcp) tcp_backlog_accepted(ns->tcp);
+            if (peer) *peer = ns->peer;
             net_unlock();
             return ni;
         }
@@ -484,26 +490,31 @@ int NetSockShutdown(int sd, int how)
     return 0;
 }
 
-void NetSockClose(int sd)
+static void close_locked(Sock *s)
 {
-    net_lock();
-    Sock *s = slot(sd);
-    if (!s) { net_unlock(); return; }
     if (s->udp && s->udp_pcb) udp_remove(s->udp_pcb);
     if (!s->udp && s->tcp) {
         tcp_arg(s->tcp, NULL);
-        tcp_recv(s->tcp, NULL);
-        tcp_sent(s->tcp, NULL);
-        tcp_err(s->tcp, NULL);
+        if (s->listening) tcp_accept(s->tcp, NULL);         /* (a listener has no recv/sent/err) */
+        else { tcp_recv(s->tcp, NULL); tcp_sent(s->tcp, NULL); tcp_err(s->tcp, NULL); }
         if (tcp_close(s->tcp) != ERR_OK) tcp_abort(s->tcp);
     }
     /* Drop any queued, not-yet-accepted connections */
     while (s->acc_tail != s->acc_head) {
-        tcp_abort(s->acc[s->acc_tail]);
+        Sock *ps = &g_sock[s->acc[s->acc_tail]];
         s->acc_tail = (s->acc_tail + 1) % ACCEPT_MAX;
+        if (ps->tcp) { tcp_arg(ps->tcp, NULL); tcp_err(ps->tcp, NULL); tcp_abort(ps->tcp); ps->tcp = NULL; }
+        close_locked(ps);
     }
     if (s->rx) { kfree(s->rx); s->rx = NULL; }
     s->used = false;
+}
+
+void NetSockClose(int sd)
+{
+    net_lock();
+    Sock *s = slot(sd);
+    if (s) close_locked(s);
     net_unlock();
 }
 

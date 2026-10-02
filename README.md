@@ -227,7 +227,8 @@ To make the ISO yourself from a fresh build, run
 - **Network** (in the boot-test job): two boots with a virtio-net card.
   On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
   `httptest suite` (winhttp with HTTP/2 by ALPN) against
-  `tools/h2server.js`; on an IPv6-only network that is `tools/v6peer.py`,
+  `tools/h2server.js`, and `looptest` (Winsock over 127.0.0.1 and ::1);
+  on an IPv6-only network that is `tools/v6peer.py`,
   SLAAC and RDNSS, `ping -6`, `curl -6` and Winsock over IPv6.
 - **Graphics tests**: `tools/d2dtest` (Direct2D geometry answers, and a
   scene that must match the reference `tools/d2dtest/reference.py` draws

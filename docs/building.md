@@ -308,7 +308,8 @@ card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 (Winsock over IPv4) and `httptest suite` (winhttp: HTTP/2 by ALPN, large
 bodies, POST, redirects, certificate checks, chunked HTTP/1.1, the
 asynchronous API) against `tools/h2server.js` with a throwaway self-signed
-certificate; on an IPv6-only network made by `tools/v6peer.py` it checks
+certificate, then `looptest` (socket pairs over 127.0.0.1 and ::1,
+`localhost`); on an IPv6-only network made by `tools/v6peer.py` it checks
 SLAAC and RDNSS (`ipconfig`), `ping -6`, `curl -6` and `netcat` over IPv6.
 
 It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
