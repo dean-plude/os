@@ -1339,3 +1339,19 @@ build machine, and DXVK is the faster, more complete path anyway.
 - Tested in QEMU with extra SSDTs (`-acpitable`) describing a battery in
   mWh on battery power (75%, 3 h left) and one in mAh charging on AC
   (25%); sleep and the power button pass as before.
+
+## Phase 17: kernel and API correctness
+
+- **Every thread has a real `ETHREAD`** (17.1): `PsGetCurrentThread` used
+  to cast the running scheduler `Thread` to an `ETHREAD`, which is only
+  true for threads made by `PsCreateSystemThread`.  Kernel threads from
+  `sched_create_thread`, Windows programs' threads and the idle threads
+  are bare `Thread`s, so writes through it (`PsInitialize` naming the boot
+  thread TID 4, `PsTerminateSystemThread`) landed past the end of the
+  structure.  `Thread.ethread` now leads to the thread's `ETHREAD`; a bare
+  thread gets one (a real Thread object in the System process) the first
+  time it asks, released when the scheduler frees it.  With interrupts
+  off the lookup returns NULL rather than touch the heap.  The boot-time
+  `[PSTEST]` self-test (`kernel/ps/ps_test.c`) checks it from plain
+  kernel threads, including `NtCurrentThread()`,
+  `PsLookupThreadByThreadId` and `PsTerminateSystemThread`.

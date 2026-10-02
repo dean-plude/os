@@ -218,6 +218,13 @@ Interactive ones: `winhello` and `guitest` (windows, menus, dialogs,
 property sheets), `droptest` (drag and drop), `cpus` (SMP speed-up), and
 `hello`, `mandel`, `primes`, `wc`, `guess`.
 
+### Boot-time self-tests
+
+The kernel tests itself while it boots and prints the results to the serial
+log: `[PROBE]` (user-pointer validation) and `[PSTEST]`
+(`PsGetCurrentThread` on bare kernel threads).  `grep -a 'passed,'
+serial.log` lists them; each should end "0 failed".
+
 ### Real programs
 
 Third-party programs (7-Zip, MinGit, the language runtimes, installers),
