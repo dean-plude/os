@@ -192,9 +192,24 @@ pull request (`.github/workflows/ci.yml`):
 
 ```bash
 sudo apt install acpica-tools          # iasl, for tests/acpi/battery.asl
-python3 tools/selftest.py              # all of them; exit status = failures
+python3 tools/selftest.py              # the core suite; exit status = failures
 python3 tools/selftest.py --only apitest,guitest --out /tmp/st
+
+# the graphics suite: 7-Zip, Mesa and DXVK downloads, gltest/d3dtest builds
+sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
+tools/ci/stage-graphics.sh /tmp/gfx
+python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
+
+The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `guitest
+auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`, and
+last `crash kernel`, which halts the kernel on purpose and passes when the
+serial log shows a symbolized backtrace (`KeCrashTestFault`,
+`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
+install Mesa 3D` and `store install DXVK` (the archives are already in
+`C:\Downloads`, so the App Store installs without a network) and then runs
+`gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
+of each while it draws.
 
 It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
 and the battery from `tests/acpi/battery.asl`, then types each test into the
@@ -220,6 +235,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `dlltest` | DLL loading, TLS, `DllMain` |
 | `posixtest` | The POSIX layer in msvcrt |
 | `apitest` | kernel32, advapi32, bcrypt, shell32, shlwapi, psapi, user32/gdi32, the registry |
+| `abitest` (x64) | The binary interface against Windows 10 1903 x64: TEB, PEB, process parameters, loader lists, `KUSER_SHARED_DATA`, `CONTEXT` and `EXCEPTION_RECORD` offsets, ntdll's stub bytes and every system-call number (`abitest_nt1903.h`), raw `syscall`s |
 | `comtest` | ole32/oleaut32, `IShellLink` |
 | `cppeh` | C++ exceptions and RTTI |
 | `shmtest` | Named and file-backed shared memory between processes |
@@ -233,6 +249,9 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
+
+`crash` writes through a NULL pointer (only it dies); `crash kernel`
+crashes the kernel on purpose (`NtNovaBugCheck`) to show the backtrace.
 
 Interactive ones: `winhello` and `guitest` (windows, menus, dialogs,
 property sheets; `guitest auto` drives them itself and reports, as CI runs it), `droptest` (drag and drop), `cpus` (SMP speed-up), and
