@@ -219,10 +219,14 @@ static void init_framebuffer(BootFramebuffer *fb)
         return;
     }
 
-    /* Try to find a mode with at least 1024x768. */
+    /* The largest mode with 32-bit pixels (the kernel draws nothing else:
+     * Cirrus's 1024x768 is a 24-bit PixelBitMask mode, for one). */
     UINT32 best_mode = gop->Mode->Mode;
     UINT32 best_w    = gop->Mode->Info->HorizontalResolution;
     UINT32 best_h    = gop->Mode->Info->VerticalResolution;
+    if (gop->Mode->Info->PixelFormat != PixelBlueGreenRedReserved8BitPerColor &&
+        gop->Mode->Info->PixelFormat != PixelRedGreenBlueReserved8BitPerColor)
+        best_w = best_h = 0;
 
     for (UINT32 m = 0; m < gop->Mode->MaxMode; m++) {
         EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info;
@@ -230,7 +234,8 @@ static void init_framebuffer(BootFramebuffer *fb)
         status = gop->QueryMode(gop, m, &info_size, &info);
         if (EFI_ERROR(status)) continue;
 
-        if (info->PixelFormat == PixelBltOnly) continue;
+        if (info->PixelFormat != PixelBlueGreenRedReserved8BitPerColor &&
+            info->PixelFormat != PixelRedGreenBlueReserved8BitPerColor) continue;
         if (info->HorizontalResolution > best_w ||
             (info->HorizontalResolution == best_w && info->VerticalResolution > best_h)) {
             best_mode = m;

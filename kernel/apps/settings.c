@@ -107,6 +107,7 @@ static void page_display(int x, int y, int w)
 
     GdiTextBold(x, y, "Display adapter", UI_TEXT);   y += 26;
     row(x, y, w, "Driver", DisplayDriverName());     y += 50;
+    if (DisplayAdapterName()) { row(x, y, w, "Adapter", DisplayAdapterName()); y += 50; }
     row(x, y, w, "Presentation", DisplayCanFlip() ? "Back buffer, page flipping" : "Back buffer, copied to the screen");
 }
 
