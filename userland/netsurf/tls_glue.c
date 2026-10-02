@@ -221,3 +221,8 @@ const mbedtls_ssl_config *nova_tls_config(int tls12_only)
 {
     return tls12_only ? &g_conf12 : &g_conf;
 }
+
+int nova_tls_client_config(mbedtls_ssl_config *c, int tls12_only)
+{
+    return g_ready ? conf_setup(c, tls12_only) : -1;
+}

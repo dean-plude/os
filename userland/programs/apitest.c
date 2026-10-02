@@ -236,6 +236,25 @@ int main(int argc, char **argv)
         del(f);
     }
 
+    /* ---- normaliz: IDN (Punycode); usp10: itemizing; ncrypt: the provider opens ---- */
+    {
+        int (WINAPI *to_ascii)(DWORD, LPCWSTR, int, LPWSTR, int) = (void *)fn("normaliz.dll", "IdnToAscii");
+        int (WINAPI *to_uni)(DWORD, LPCWSTR, int, LPWSTR, int) = (void *)fn("normaliz.dll", "IdnToUnicode");
+        WCHAR idn[64], back[64];
+        int k = to_ascii ? to_ascii(0, L"b\u00fccher.de", -1, idn, 64) : 0;
+        CHECK("IdnToAscii", k && !wcscmp(idn, L"xn--bcher-kva.de"));
+        CHECK("IdnToUnicode", to_uni && to_uni(0, idn, -1, back, 64) && !wcscmp(back, L"b\u00fccher.de"));
+        HRESULT (WINAPI *itemize)(const WCHAR *, int, int, const void *, const void *, void *, int *) =
+            (void *)fn("usp10.dll", "ScriptItemize");
+        int items[2 * 8], nitems = 0;
+        CHECK("ScriptItemize", itemize && !itemize(L"Hello, world", 12, 7, 0, 0, items, &nitems) && nitems >= 1 &&
+                               items[0] == 0 && items[2 * nitems] == 12);
+        LONG (WINAPI *open_prov)(ULONG_PTR *, LPCWSTR, DWORD) = (void *)fn("ncrypt.dll", "NCryptOpenStorageProvider");
+        LONG (WINAPI *free_obj)(ULONG_PTR) = (void *)fn("ncrypt.dll", "NCryptFreeObject");
+        ULONG_PTR prov = 0;
+        CHECK("NCryptOpenStorageProvider", open_prov && !open_prov(&prov, 0, 0) && prov && free_obj && !free_obj(prov));
+    }
+
     printf("apitest: %d passed, %d failed\n", pass, fail);
     return fail != 0;
 }

@@ -609,6 +609,12 @@ VOID NTAPI RtlRaiseException(PEXCEPTION_RECORD rec)
 {
     CONTEXT c;
     RtlCaptureContext(&c);
+    /* Report the caller's frame, so a handler that continues execution
+     * resumes after the call rather than raising again from in here */
+    DWORD64 base, est;
+    PVOID hd;
+    PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(c.Rip, &base, 0);
+    if (f) RtlVirtualUnwind(0, base, c.Rip, f, &c, &hd, &est, 0);
     rec->ExceptionAddress = (PVOID)c.Rip;
     NtRaiseException(rec, &c, TRUE);                 /* first chance: back through the dispatcher */
 }

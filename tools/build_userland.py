@@ -62,7 +62,7 @@ DLLS = [
     ('msi',      ['comctl32', 'shell32', 'user32', 'gdi32', 'advapi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB60000000),
     ('iphlpapi', ['kernel32', 'ntdll'],           0x7FFB80000000),
     ('netapi32', ['advapi32', 'kernel32', 'ntdll'], 0x7FFB90000000),
-    ('secur32',  ['advapi32', 'kernel32', 'ntdll'], 0x7FFBA0000000),
+    ('secur32',  ['advapi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFBA0000000),
     ('authz',    ['kernel32', 'ntdll'],           0x7FFBB0000000),
     ('dnsapi',   ['kernel32', 'ntdll'],           0x7FFBC0000000),
     ('pdh',      ['kernel32', 'ntdll'],           0x7FFBD0000000),
@@ -84,6 +84,11 @@ DLLS = [
     ('vulkan-1', ['advapi32', 'kernel32', 'ntdll'], 0x7FFCD0000000),
     ('mmdevapi', ['ole32', 'kernel32', 'ntdll'],  0x7FFCE0000000),
     ('avrt',     ['kernel32', 'ntdll'],           0x7FFCF0000000),
+    ('usp10',    ['gdi32', 'user32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFE00000000),
+    ('normaliz', ['user32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFE10000000),
+    ('ncrypt',   ['kernel32', 'ntdll'],           0x7FFE20000000),
+    ('avicap32', ['kernel32', 'ntdll'],           0x7FFE30000000),
+    ('d2d1',     ['msvcrt', 'kernel32', 'ntdll'], 0x7FFE40000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}
@@ -170,9 +175,45 @@ def dll_objs(odir, name, srcdirs):
         for src in sorted(os.listdir(srcdir)):
             if src.endswith('.c'):
                 obj = os.path.join(odir, f'{name}_{d}_{src[:-2]}.obj')
-                cc(os.path.join(srcdir, src), obj)
+                cc(os.path.join(srcdir, src), obj, DLL_CFLAGS.get(name, ()))
                 objs.append(obj)
     return objs
+
+# Mbed TLS (third_party/mbedtls), configured as for NetSurf
+# (userland/netsurf/mbedtls_user_config.h), and NetSurf's glue for it
+# (entropy, roots): secur32.dll's Schannel package is built on them
+MBEDTLS = os.path.join(os.path.dirname(HERE), 'third_party', 'mbedtls')
+TLS_GLUE = os.path.join(HERE, 'netsurf')
+MB_FLAGS = ['-I', os.path.join(MBEDTLS, 'include'), '-I', os.path.join(MBEDTLS, 'library'), '-I', TLS_GLUE,
+            '-DMBEDTLS_CONFIG_FILE="mbedtls_user_config.h"',
+            # as NetSurf builds it: Mbed TLS's POSIX/GCC paths, not MSVC's
+            '-std=gnu99', '-w', '-D_NOVAOS', '-DNOVA_POSIX', '-U_WIN32', '-U_WIN64', '-fgnuc-version=4.2.1']
+DLL_CFLAGS = {'secur32': MB_FLAGS}
+
+def mbedtls_objs(odir):
+    """Mbed TLS's library and the TLS glue for this architecture, compiled
+    in parallel; an object newer than its source and the configuration is
+    reused"""
+    from concurrent.futures import ThreadPoolExecutor
+    lib = os.path.join(MBEDTLS, 'library')
+    srcs = [os.path.join(lib, f) for f in sorted(os.listdir(lib)) if f.endswith('.c') and f != 'net_sockets.c']
+    srcs.append(os.path.join(TLS_GLUE, 'tls_glue.c'))
+    newest_h = max(os.stat(os.path.join(TLS_GLUE, h)).st_mtime for h in os.listdir(TLS_GLUE) if h.endswith('.h'))
+    jobs = []
+    for src in srcs:
+        obj = os.path.join(odir, 'mbedtls_' + os.path.basename(src)[:-2] + '.obj')
+        if not (os.path.exists(obj) and os.stat(obj).st_mtime > max(os.stat(src).st_mtime, newest_h)):
+            jobs.append((src, obj))
+    flags = cflags() + MB_FLAGS
+    def one(job):
+        r = subprocess.run(['clang'] + flags + ['-c', job[0], '-o', job[1]], capture_output=True, text=True)
+        return None if r.returncode == 0 else job[0] + ':\n' + r.stderr
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+        errors = [e for e in ex.map(one, jobs) if e]
+    if errors:
+        sys.stderr.write('\n'.join(errors[:4]))
+        sys.exit(1)
+    return [os.path.join(odir, 'mbedtls_' + os.path.basename(s)[:-2] + '.obj') for s in srcs]
 
 def flavor_obj(odir, legacy):
     """msvcrt.dll and ucrtbase.dll share the C runtime's objects; this one
@@ -313,6 +354,8 @@ def build_pass(arch):
         srcdirs = DLL_SOURCES.get(name, [name])
         objs = dll_objs(odir, name, srcdirs)
         extra = []
+        if name == 'secur32':
+            objs += mbedtls_objs(odir)
         if name in ('testdll', 'ws2_32', 'ole32', 'oleaut32'):
             objs.append(tlssup)
         if arch == 'x86':
@@ -385,6 +428,12 @@ TP = os.path.join(os.path.dirname(HERE), 'third_party')
 for src, dst in [('inter/Inter-Regular.ttf', 'inter.ttf'), ('inter/Inter-Bold.ttf', 'interbd.ttf'),
                  ('dejavu/DejaVuSansMono.ttf', 'dejavumono.ttf'), ('dejavu/DejaVuSansMono-Bold.ttf', 'dejavumonobd.ttf')]:
     built.append((f'\\Windows\\Fonts\\{dst}', os.path.join(TP, src)))
+
+# 3a1. the trusted roots secur32's Schannel checks certificates against
+# (the kernel's Mozilla list, as DER certificates back to back)
+roots = os.path.join(out, 'ca-bundle.der')
+build_netsurf.root_bundle(roots)
+built.append(('\\Windows\\System32\\ca-bundle.der', roots))
 
 # 3a. sample files for the user's folders (tools/make_icons.py draws the icons)
 samples = os.path.join(HERE, 'samples')

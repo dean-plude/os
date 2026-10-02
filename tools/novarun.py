@@ -127,6 +127,7 @@ def main():
     ap.add_argument('--keep')
     ap.add_argument('--img', default=os.path.join(ROOT, 'build', 'nova.img'))
     ap.add_argument('--wav')
+    ap.add_argument('--net', action='store_true', help='a network card on QEMU user networking (the host is 10.0.2.2)')
     ap.add_argument('commands', nargs='*')
     a = ap.parse_args()
 
@@ -143,7 +144,7 @@ def main():
                           '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
                           '-drive', f'format=raw,file={a.img},snapshot=on',
                           '-drive', f'format=raw,file={data}',
-                          '-serial', f'file:{serial}', '-vga', 'std', '-display', 'none', '-nic', 'none',
+                          '-serial', f'file:{serial}', '-vga', 'std', '-display', 'none', '-nic', 'user,model=e1000e' if a.net else 'none',
                           '-qmp', f'unix:{sock},server,nowait'] +
                          (['-audiodev', f'wav,id=snd0,path={os.path.abspath(a.wav)},out.frequency=48000',
                            '-device', 'intel-hda', '-device', 'hda-output,audiodev=snd0'] if a.wav else []))
