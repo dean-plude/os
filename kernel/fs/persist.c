@@ -286,6 +286,8 @@ static UINT64 dos_to_filetime(UINT32 dos)
     return ((UINT64)secs + UINT64_C(11644473600)) * 10000000ULL;
 }
 
+UINT64 PersistDosToFiletime(UINT32 dos) { return dos_to_filetime(dos); }
+
 static UINT32 filetime_to_dos(UINT64 ft)
 {
     if (!ft) return 0;

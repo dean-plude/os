@@ -35,6 +35,9 @@ void PersistWhere(char *buf, int cap);
 /* The volume's size and free space in bytes; false without one. */
 bool PersistSpace(UINT64 *free, UINT64 *total);
 
+/* A FAT (DOS) date and time as a FILETIME (100 ns since 1601) */
+UINT64 PersistDosToFiletime(UINT32 dos);
+
 /* For the installer (fs/setup.c) */
 #include "fat.h"
 /* The FAT volumes on @d (a whole-disk volume, or MBR/GPT partitions);

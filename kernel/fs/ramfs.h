@@ -94,12 +94,18 @@ RamNode *RamfsRoot(void);
 /* Mount the volume @vol (@total_bytes large), read by @src, as drive
  * @letter (D-Z); its root directory is @root_ref.  NULL if the letter is taken or memory is out. */
 RamNode *RamfsMountDrive(char letter, const RamfsSource *src, void *vol, UINT64 root_ref, const char *label,
-                         UINT64 total_bytes);
+                         const char *fs, UINT64 total_bytes);
+/* The volume behind drive @letter went away (a USB stick was pulled): the
+ * letter is free again.  Nodes still held from it stay valid but empty and
+ * read nothing more (RamfsDetached).  Returns its volume pointer. */
+void    *RamfsUnmountDrive(char letter);
+/* @n belongs to a drive that has been unmounted */
+bool     RamfsDetached(const RamNode *n);
 /* The root of drive @letter, or NULL */
 RamNode *RamfsDriveRoot(char letter);
 /* The drives there are: bit 0 for A:, bit 2 for C:, ... */
 UINT32   RamfsDriveMask(void);
-/* The volume label and file system name of the drive @n is on ("NTFS"),
+/* The volume label and file system name of the drive @n is on ("NTFS", "FAT32"),
  * its size in bytes; false for drive C: */
 bool     RamfsDriveInfo(const RamNode *n, const char **label, const char **fs, UINT64 *total);
 /* The letter of the drive @n is on ('C', 'D', ...) */

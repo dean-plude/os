@@ -29,6 +29,7 @@ typedef struct {
     const RamfsSource *src;
     void              *vol;
     char               label[64];
+    char               fs[8];
     UINT64             total;
 } Drive;
 
@@ -74,13 +75,13 @@ bool RamfsDriveInfo(const RamNode *n, const char **label, const char **fs, UINT6
     Drive *d = drive_of(n);
     if (!d) return false;
     if (label) *label = d->label;
-    if (fs) *fs = "NTFS";
+    if (fs) *fs = d->fs;
     if (total) *total = d->total;
     return true;
 }
 
 RamNode *RamfsMountDrive(char letter, const RamfsSource *src, void *vol, UINT64 root_ref, const char *label,
-                         UINT64 total_bytes)
+                         const char *fs, UINT64 total_bytes)
 {
     letter = (char)(letter & ~0x20);
     if (letter < 'D' || letter > 'Z' || g_drives[letter - 'A'].root) return NULL;
@@ -93,10 +94,34 @@ RamNode *RamfsMountDrive(char letter, const RamfsSource *src, void *vol, UINT64 
     Drive *d = &g_drives[letter - 'A'];
     d->src = src;
     d->vol = vol;
+    memset(d->label, 0, sizeof(d->label));
     strncpy(d->label, label ? label : "", sizeof(d->label) - 1);
+    memset(d->fs, 0, sizeof(d->fs));
+    strncpy(d->fs, fs ? fs : "", sizeof(d->fs) - 1);
     d->total = total_bytes;
     d->root = r;
     return r;
+}
+
+void *RamfsUnmountDrive(char letter)
+{
+    letter = (char)(letter & ~0x20);
+    if (letter < 'D' || letter > 'Z') return NULL;
+    Drive *d = &g_drives[letter - 'A'];
+    if (!d->root) return NULL;
+    void *vol = d->vol;
+    /* The old tree is cut loose: its root no longer names a drive, so
+     * nothing below it reads from the volume again (RamfsLoad fails).
+     * Its nodes stay allocated for whoever still holds one. */
+    d->root->drive = '?';
+    memset(d, 0, sizeof(*d));
+    return vol;
+}
+
+bool RamfsDetached(const RamNode *n)
+{
+    const RamNode *t = top_of(n);
+    return t && (t->xflags & RAMFS_X_EXTERN) && t->drive == '?';
 }
 
 /* -----------------------------------------------------------------------
@@ -198,7 +223,8 @@ static bool fill_add(const RamfsExtEntry *e, void *ctx)
 bool RamfsLoad(RamNode *n)
 {
     Drive *d;
-    if (!n || !(n->xflags & RAMFS_X_EXTERN) || !(d = drive_of(n))) return true;
+    if (!n || !(n->xflags & RAMFS_X_EXTERN)) return true;
+    if (!(d = drive_of(n)) || !d->src) return false;               /* (its drive was unmounted) */
     if (n->dir) {
         if (n->xflags & RAMFS_X_LISTED) return true;
         n->xflags |= RAMFS_X_LISTED;

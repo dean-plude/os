@@ -60,6 +60,24 @@ static GdiRect r_crumbs(GdiRect c)  { return RECT(84, 8, c.w - 84 - 382, 32); }
 static GdiRect r_list(GdiRect c) { return RECT(SIDE_W, TB_H + HDR_H, c.w - SIDE_W, c.h - TB_H - HDR_H - STATUS_H); }
 static int     rows_visible(GdiRect c) { int n = r_list(c).h / ROW_H; return n < 1 ? 1 : n; }
 
+/* "USB DRIVE (E:)": a drive's name, from its root */
+static void drive_name(RamNode *root, char *buf, int cap)
+{
+    const char *label = NULL;
+    char letter = RamfsDriveLetter(root);
+    if (letter == 'C' || !RamfsDriveInfo(root, &label, NULL, NULL)) { ksnprintf(buf, cap, "Local Disk (C:)"); return; }
+    ksnprintf(buf, cap, "%s (%c:)", label && *label ? label : "Local Disk", letter);
+}
+
+/* The drives after the places in the sidebar: D: to Z: as they are now */
+static int sidebar_drives(char *letters)
+{
+    int n = 0;
+    for (char l = 'D'; l <= 'Z'; l++)
+        if (RamfsDriveRoot(l)) letters[n++] = l;
+    return n;
+}
+
 static RamNode *child_at(RamNode *dir, int idx)
 {
     RamNode *c = dir->child;
@@ -73,8 +91,10 @@ static RamNode *child_at(RamNode *dir, int idx)
 static void update_title(WND *w, Explorer *e)
 {
     char t[WM_TITLE_MAX];
+    char dn[80];
+    if (!e->dir->parent && e->dir != RamfsRoot()) drive_name(e->dir, dn, sizeof(dn));
     ksnprintf(t, sizeof(t), "%s - File Explorer",
-              e->dir == RamfsRoot() ? "This PC" : e->dir->name);
+              e->dir == RamfsRoot() ? "This PC" : !e->dir->parent ? dn : e->dir->name);
     WmSetTitle(w, t);
 }
 
@@ -246,10 +266,13 @@ static void draw_crumbs(Explorer *e, GdiRect bar, GdiRect c)
     RamNode *dir[CRUMB_MAX];
     RamNode *chain[CRUMB_MAX];
     int depth = 0;
-    for (RamNode *d = e->dir; d && d != RamfsRoot() && depth < CRUMB_MAX - 2; d = d->parent) chain[depth++] = d;
+    RamNode *top = e->dir;
+    for (RamNode *d = e->dir; d && d->parent && depth < CRUMB_MAX - 2; d = d->parent) { chain[depth++] = d; top = d->parent; }
     int n = 0;
+    static char drive_label[80];
+    drive_name(top, drive_label, sizeof(drive_label));
     label[n] = "This PC";         dir[n++] = RamfsRoot();
-    label[n] = "Local Disk (C:)"; dir[n++] = RamfsRoot();
+    label[n] = drive_label;       dir[n++] = top;
     for (int i = depth - 1; i >= 0; i--) { label[n] = chain[i]->name; dir[n++] = chain[i]; }
 
     int chev = 18, avail = bar.w - 20;
@@ -301,6 +324,11 @@ static void exp_paint(WND *w)
 {
     Explorer *e = w->user;
     GdiRect c = WmClientRect(w);
+    if (RamfsDetached(e->dir)) {                    /* its drive was unplugged */
+        for (int i = 0; i < e->back_n; i++) RamfsUnref(e->back[i]);
+        e->back_n = 0;
+        set_dir(w, e, RamfsRoot());
+    }
 
     /* Command bar */
     GdiFillRect(RECT(c.x, c.y, c.w, TB_H), UI_PANEL);
@@ -326,6 +354,25 @@ static void exp_paint(WND *w)
         }
         AppDrawGlyph(g_places[i].glyph, c.x + 18, y + 7, 16, here ? UI_TEXT : UI_TEXT2);
         GdiTextT(c.x + 44, y + 7, g_places[i].label, here ? UI_TEXT : UI_TEXT2);
+    }
+    /* Then the other drives (NTFS volumes, USB sticks) */
+    char letters[26];
+    int nd = sidebar_drives(letters);
+    if (nd) GdiFillRect(RECT(c.x + 14, c.y + TB_H + 8 + N_PLACES * 32 + 3, SIDE_W - 28, 1), UI_LINE);
+    for (int i = 0; i < nd; i++) {
+        int y = c.y + TB_H + 16 + (N_PLACES + i) * 32;
+        RamNode *root = RamfsDriveRoot(letters[i]);
+        bool here = root == e->dir;
+        if (here) {
+            GdiRoundRect(RECT(c.x + 6, y, SIDE_W - 13, 30), 4, UI_HOVER, GDI_TRANSPARENT);
+            GdiRoundRect(RECT(c.x + 6, y + 8, 3, 14), 1, UI_ACCENT, GDI_TRANSPARENT);
+        }
+        char dn[80];
+        drive_name(root, dn, sizeof(dn));
+        AppDrawGlyph(GL_PC, c.x + 18, y + 7, 16, here ? UI_TEXT : UI_TEXT2);
+        GdiSetClip(RECT(c.x + 44, y, SIDE_W - 52, 30));
+        GdiTextT(c.x + 44, y + 7, dn, here ? UI_TEXT : UI_TEXT2);
+        GdiSetClip(c);
     }
 
     /* Column header */
@@ -394,8 +441,14 @@ static void exp_mouse(WND *w, WmMouseMsg msg, int x, int y)
 
     if (x < SIDE_W && y >= TB_H) {                 /* sidebar */
         int i = (y - TB_H - 8) / 32;
-        if (i >= 0 && i < N_PLACES)
+        if (i >= 0 && i < N_PLACES) {
             navigate(w, e, RamfsResolve(NULL, g_places[i].path));
+            return;
+        }
+        char letters[26];
+        int nd = sidebar_drives(letters);
+        int k = (y - TB_H - 16) / 32 - N_PLACES;
+        if (y - TB_H - 16 >= 0 && k >= 0 && k < nd) navigate(w, e, RamfsDriveRoot(letters[k]));
         return;
     }
     GdiRect lr = r_list(c);

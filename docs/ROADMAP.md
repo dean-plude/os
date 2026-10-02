@@ -114,7 +114,8 @@ named program or test demonstrates it.
 - IPv6, HTTP/2.
 - ~~USB (xHCI) with HID keyboards and mice~~ Done: keyboards, mice,
   tablets and touch screens in report protocol, on root ports or behind
-  hubs, with hot-plug.  Still to do: mass storage.
+  hubs, with hot-plug; USB mass storage (FAT and NTFS sticks as the next
+  drive letter, read-only).
 - ACPI beyond the MADT: ~~shutdown, reboot, sleep, batteries~~ Done:
   power-off (S5), sleep (S3), reset and the fixed power button from the
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,
