@@ -248,7 +248,8 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
-`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`,
+`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `comtest`,
+`tlbtest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`, `soundtest wasapi`,
 `filetest install` (an installer that must replace a running program
 schedules it for the next boot), a restart that must report `Pending file
 operations at boot: 2 done, 0 failed`, `filetest installed`, and
@@ -304,6 +305,7 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 | `apitest` | kernel32, advapi32, bcrypt, shell32, shlwapi, psapi, user32/gdi32, the registry |
 | `abitest` (x64) | The binary interface against Windows 10 1903 x64: TEB, PEB, process parameters, loader lists, `KUSER_SHARED_DATA`, `CONTEXT` and `EXCEPTION_RECORD` offsets, ntdll's stub bytes and every system-call number (`abitest_nt1903.h`), raw `syscall`s |
 | `comtest` | ole32/oleaut32, `IShellLink` |
+| `tlbtest` | COM type libraries: `LoadTypeLib` on `testdll.dll`'s embedded library, `ITypeLib`/`ITypeInfo`/`ITypeComp`, registration, `ITypeInfo::Invoke`, `DispCallFunc`, `CreateStdDispatch` |
 | `cppeh` | C++ exceptions and RTTI |
 | `shmtest` | Named and file-backed shared memory between processes |
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |

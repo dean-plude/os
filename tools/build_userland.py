@@ -47,6 +47,7 @@ def cflags():
 #             so two changes adding DLLs never pick the same address
 #   sources   directories its .c files come from (default: its own)
 #   entry     "DllMain" for DLLs with an entry point
+#             (and userland/NAME/NAME.rc, if there is one, is linked in)
 #   tlssup    true: link lib/tlssup.c (implicit TLS)
 #   x64_only  true: not built for SysWOW64
 #   ordinals  {name: ordinal}: Windows' export ordinals, for DLLs
@@ -336,6 +337,11 @@ def build_pass(arch):
             objs.append(tlssup)
         if arch == 'x86':
             objs.append(rt)
+        rc = os.path.join(HERE, m.get('sources', [name])[0], name + '.rc')   # NAME.rc: resources (testdll's type library)
+        if os.path.exists(rc):
+            res = os.path.join(odir, name + '.res')
+            run([build_netsurf.llvm_rc()] + (['/D', 'NOVA_X86'] if arch == 'x86' else []) + ['/FO', res, rc])
+            objs.append(res)
         if hook(name, 'link'):
             hook(name, 'link')(me, odir, objs, deps, base)
         else:

@@ -1,0 +1,6 @@
+/* testdll.rc — the type library of the sample COM class (idl/novacalc.idl) */
+#ifdef NOVA_X86
+1 TYPELIB "novacalc32.tlb"
+#else
+1 TYPELIB "novacalc64.tlb"
+#endif

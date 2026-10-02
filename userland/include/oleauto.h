@@ -1,4 +1,5 @@
-/* oleauto.h — OLE Automation: BSTR, VARIANT, SAFEARRAY, IDispatch, error info (oleaut32) */
+/* oleauto.h — OLE Automation: BSTR, VARIANT, SAFEARRAY, IDispatch, type
+ * libraries (ITypeLib/ITypeInfo), error info (oleaut32) */
 #pragma once
 #include <objbase.h>
 
@@ -232,6 +233,299 @@ DECLARE_INTERFACE_(ISupportErrorInfo, IUnknown)
 #define ICreateErrorInfo_QueryInterface(p, r, v) (p)->lpVtbl->QueryInterface(p, r, v)
 #define ICreateErrorInfo_Release(p)         (p)->lpVtbl->Release(p)
 #endif
+
+/* ---- type libraries: ITypeLib, ITypeInfo and their descriptions ---- */
+#define TYPE_E_BUFFERTOOSMALL   ((HRESULT)0x80028016L)
+#define TYPE_E_INVDATAREAD      ((HRESULT)0x80028018L)
+#define TYPE_E_UNSUPFORMAT      ((HRESULT)0x80028019L)
+#define TYPE_E_REGISTRYACCESS   ((HRESULT)0x8002801CL)
+#define TYPE_E_UNDEFINEDTYPE    ((HRESULT)0x80028027L)
+#define TYPE_E_QUALIFIEDNAMEDISALLOWED ((HRESULT)0x80028028L)
+#define TYPE_E_INVALIDSTATE     ((HRESULT)0x80028029L)
+#define TYPE_E_WRONGTYPEKIND    ((HRESULT)0x8002802AL)
+#define TYPE_E_AMBIGUOUSNAME    ((HRESULT)0x8002802CL)
+#define TYPE_E_BADMODULEKIND    ((HRESULT)0x800288BDL)
+#define TYPE_E_DLLFUNCTIONNOTFOUND ((HRESULT)0x8002802FL)
+#define TYPE_E_IOERROR          ((HRESULT)0x80028CA2L)
+#define TYPE_E_CANTCREATETMPFILE ((HRESULT)0x80028CA3L)
+
+typedef DWORD HREFTYPE;
+typedef LONG SCODE;
+#define MEMBERID_NIL DISPID_UNKNOWN
+
+typedef enum tagTYPEKIND {
+    TKIND_ENUM, TKIND_RECORD, TKIND_MODULE, TKIND_INTERFACE, TKIND_DISPATCH, TKIND_COCLASS, TKIND_ALIAS,
+    TKIND_UNION, TKIND_MAX
+} TYPEKIND;
+typedef enum tagSYSKIND { SYS_WIN16, SYS_WIN32, SYS_MAC, SYS_WIN64 } SYSKIND;
+typedef enum tagREGKIND { REGKIND_DEFAULT, REGKIND_REGISTER, REGKIND_NONE } REGKIND;
+typedef enum tagFUNCKIND { FUNC_VIRTUAL, FUNC_PUREVIRTUAL, FUNC_NONVIRTUAL, FUNC_STATIC, FUNC_DISPATCH } FUNCKIND;
+typedef enum tagINVOKEKIND {
+    INVOKE_FUNC = 1, INVOKE_PROPERTYGET = 2, INVOKE_PROPERTYPUT = 4, INVOKE_PROPERTYPUTREF = 8
+} INVOKEKIND;
+typedef enum tagCALLCONV {
+    CC_FASTCALL, CC_CDECL, CC_MSCPASCAL, CC_PASCAL = CC_MSCPASCAL, CC_MACPASCAL, CC_STDCALL,
+    CC_FPFASTCALL, CC_SYSCALL, CC_MPWCDECL, CC_MPWPASCAL, CC_MAX
+} CALLCONV;
+typedef enum tagVARKIND { VAR_PERINSTANCE, VAR_STATIC, VAR_CONST, VAR_DISPATCH } VARKIND;
+typedef enum tagDESCKIND {
+    DESCKIND_NONE, DESCKIND_FUNCDESC, DESCKIND_VARDESC, DESCKIND_TYPECOMP, DESCKIND_IMPLICITAPPOBJ, DESCKIND_MAX
+} DESCKIND;
+typedef enum tagLIBFLAGS { LIBFLAG_FRESTRICTED = 1, LIBFLAG_FCONTROL = 2, LIBFLAG_FHIDDEN = 4, LIBFLAG_FHASDISKIMAGE = 8 } LIBFLAGS;
+enum {
+    TYPEFLAG_FAPPOBJECT = 0x1, TYPEFLAG_FCANCREATE = 0x2, TYPEFLAG_FLICENSED = 0x4, TYPEFLAG_FPREDECLID = 0x8,
+    TYPEFLAG_FHIDDEN = 0x10, TYPEFLAG_FCONTROL = 0x20, TYPEFLAG_FDUAL = 0x40, TYPEFLAG_FNONEXTENSIBLE = 0x80,
+    TYPEFLAG_FOLEAUTOMATION = 0x100, TYPEFLAG_FRESTRICTED = 0x200, TYPEFLAG_FAGGREGATABLE = 0x400,
+    TYPEFLAG_FREPLACEABLE = 0x800, TYPEFLAG_FDISPATCHABLE = 0x1000, TYPEFLAG_FREVERSEBIND = 0x2000,
+    TYPEFLAG_FPROXY = 0x4000,
+};
+enum {
+    FUNCFLAG_FRESTRICTED = 0x1, FUNCFLAG_FSOURCE = 0x2, FUNCFLAG_FBINDABLE = 0x4, FUNCFLAG_FREQUESTEDIT = 0x8,
+    FUNCFLAG_FDISPLAYBIND = 0x10, FUNCFLAG_FDEFAULTBIND = 0x20, FUNCFLAG_FHIDDEN = 0x40,
+    FUNCFLAG_FUSESGETLASTERROR = 0x80, FUNCFLAG_FDEFAULTCOLLELEM = 0x100, FUNCFLAG_FUIDEFAULT = 0x200,
+    FUNCFLAG_FNONBROWSABLE = 0x400, FUNCFLAG_FREPLACEABLE = 0x800, FUNCFLAG_FIMMEDIATEBIND = 0x1000,
+};
+#define IMPLTYPEFLAG_FDEFAULT       0x1
+#define IMPLTYPEFLAG_FSOURCE        0x2
+#define IMPLTYPEFLAG_FRESTRICTED    0x4
+#define IMPLTYPEFLAG_FDEFAULTVTABLE 0x8
+#define PARAMFLAG_NONE         0x00
+#define PARAMFLAG_FIN          0x01
+#define PARAMFLAG_FOUT         0x02
+#define PARAMFLAG_FLCID        0x04
+#define PARAMFLAG_FRETVAL      0x08
+#define PARAMFLAG_FOPT         0x10
+#define PARAMFLAG_FHASDEFAULT  0x20
+#define PARAMFLAG_FHASCUSTDATA 0x40
+
+typedef struct tagTYPEDESC {
+    union { struct tagTYPEDESC *lptdesc; struct tagARRAYDESC *lpadesc; HREFTYPE hreftype; };
+    VARTYPE vt;
+} TYPEDESC;
+typedef struct tagARRAYDESC { TYPEDESC tdescElem; USHORT cDims; SAFEARRAYBOUND rgbounds[1]; } ARRAYDESC;
+typedef struct tagPARAMDESCEX { ULONG cBytes; VARIANTARG varDefaultValue; } PARAMDESCEX, *LPPARAMDESCEX;
+typedef struct tagPARAMDESC { LPPARAMDESCEX pparamdescex; USHORT wParamFlags; } PARAMDESC, *LPPARAMDESC;
+typedef struct tagIDLDESC { ULONG_PTR dwReserved; USHORT wIDLFlags; } IDLDESC, *LPIDLDESC;
+typedef struct tagELEMDESC { TYPEDESC tdesc; union { IDLDESC idldesc; PARAMDESC paramdesc; }; } ELEMDESC, *LPELEMDESC;
+typedef struct tagTYPEATTR {
+    GUID guid; LCID lcid; DWORD dwReserved; MEMBERID memidConstructor, memidDestructor;
+    LPOLESTR lpstrSchema; ULONG cbSizeInstance; TYPEKIND typekind; WORD cFuncs, cVars, cImplTypes, cbSizeVft,
+    cbAlignment, wTypeFlags, wMajorVerNum, wMinorVerNum; TYPEDESC tdescAlias; IDLDESC idldescType;
+} TYPEATTR, *LPTYPEATTR;
+typedef struct tagFUNCDESC {
+    MEMBERID memid; SCODE *lprgscode; ELEMDESC *lprgelemdescParam; FUNCKIND funckind; INVOKEKIND invkind;
+    CALLCONV callconv; SHORT cParams, cParamsOpt, oVft, cScodes; ELEMDESC elemdescFunc; WORD wFuncFlags;
+} FUNCDESC, *LPFUNCDESC;
+typedef struct tagVARDESC {
+    MEMBERID memid; LPOLESTR lpstrSchema; union { ULONG oInst; VARIANT *lpvarValue; };
+    ELEMDESC elemdescVar; WORD wVarFlags; VARKIND varkind;
+} VARDESC, *LPVARDESC;
+typedef struct tagTLIBATTR { GUID guid; LCID lcid; SYSKIND syskind; WORD wMajorVerNum, wMinorVerNum, wLibFlags; } TLIBATTR, *LPTLIBATTR;
+typedef struct tagCUSTDATAITEM { GUID guid; VARIANTARG varValue; } CUSTDATAITEM;
+typedef struct tagCUSTDATA { DWORD cCustData; CUSTDATAITEM *prgCustData; } CUSTDATA;
+typedef interface ITypeComp ITypeComp;
+typedef union tagBINDPTR { FUNCDESC *lpfuncdesc; VARDESC *lpvardesc; ITypeComp *lptcomp; } BINDPTR;
+
+#undef INTERFACE
+#define INTERFACE ITypeComp
+DECLARE_INTERFACE_(ITypeComp, IUnknown)
+{
+    BEGIN_INTERFACE
+#ifndef __cplusplus
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **ppv) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+#endif
+    STDMETHOD(Bind)(THIS_ LPOLESTR name, ULONG hash, WORD flags, ITypeInfo **ti, DESCKIND *kind, BINDPTR *bind) PURE;
+    STDMETHOD(BindType)(THIS_ LPOLESTR name, ULONG hash, ITypeInfo **ti, ITypeComp **tc) PURE;
+    END_INTERFACE
+};
+
+#undef INTERFACE
+#define INTERFACE ITypeInfo
+DECLARE_INTERFACE_(ITypeInfo, IUnknown)
+{
+    BEGIN_INTERFACE
+#ifndef __cplusplus
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **ppv) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+#endif
+    STDMETHOD(GetTypeAttr)(THIS_ TYPEATTR **attr) PURE;
+    STDMETHOD(GetTypeComp)(THIS_ ITypeComp **tc) PURE;
+    STDMETHOD(GetFuncDesc)(THIS_ UINT index, FUNCDESC **fd) PURE;
+    STDMETHOD(GetVarDesc)(THIS_ UINT index, VARDESC **vd) PURE;
+    STDMETHOD(GetNames)(THIS_ MEMBERID memid, BSTR *names, UINT max, UINT *n) PURE;
+    STDMETHOD(GetRefTypeOfImplType)(THIS_ UINT index, HREFTYPE *href) PURE;
+    STDMETHOD(GetImplTypeFlags)(THIS_ UINT index, INT *flags) PURE;
+    STDMETHOD(GetIDsOfNames)(THIS_ LPOLESTR *names, UINT n, MEMBERID *ids) PURE;
+    STDMETHOD(Invoke)(THIS_ PVOID obj, MEMBERID memid, WORD flags, DISPPARAMS *params, VARIANT *result,
+                      EXCEPINFO *ei, UINT *argerr) PURE;
+    STDMETHOD(GetDocumentation)(THIS_ MEMBERID memid, BSTR *name, BSTR *doc, DWORD *helpctx, BSTR *helpfile) PURE;
+    STDMETHOD(GetDllEntry)(THIS_ MEMBERID memid, INVOKEKIND kind, BSTR *dll, BSTR *name, WORD *ordinal) PURE;
+    STDMETHOD(GetRefTypeInfo)(THIS_ HREFTYPE href, ITypeInfo **ti) PURE;
+    STDMETHOD(AddressOfMember)(THIS_ MEMBERID memid, INVOKEKIND kind, PVOID *addr) PURE;
+    STDMETHOD(CreateInstance)(THIS_ IUnknown *outer, REFIID riid, PVOID *obj) PURE;
+    STDMETHOD(GetMops)(THIS_ MEMBERID memid, BSTR *mops) PURE;
+    STDMETHOD(GetContainingTypeLib)(THIS_ ITypeLib **tl, UINT *index) PURE;
+    STDMETHOD_(void, ReleaseTypeAttr)(THIS_ TYPEATTR *attr) PURE;
+    STDMETHOD_(void, ReleaseFuncDesc)(THIS_ FUNCDESC *fd) PURE;
+    STDMETHOD_(void, ReleaseVarDesc)(THIS_ VARDESC *vd) PURE;
+    END_INTERFACE
+};
+typedef ITypeInfo *LPTYPEINFO;
+
+#undef INTERFACE
+#define INTERFACE ITypeInfo2
+DECLARE_INTERFACE_(ITypeInfo2, ITypeInfo)
+{
+    BEGIN_INTERFACE
+#ifndef __cplusplus
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **ppv) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD(GetTypeAttr)(THIS_ TYPEATTR **attr) PURE;
+    STDMETHOD(GetTypeComp)(THIS_ ITypeComp **tc) PURE;
+    STDMETHOD(GetFuncDesc)(THIS_ UINT index, FUNCDESC **fd) PURE;
+    STDMETHOD(GetVarDesc)(THIS_ UINT index, VARDESC **vd) PURE;
+    STDMETHOD(GetNames)(THIS_ MEMBERID memid, BSTR *names, UINT max, UINT *n) PURE;
+    STDMETHOD(GetRefTypeOfImplType)(THIS_ UINT index, HREFTYPE *href) PURE;
+    STDMETHOD(GetImplTypeFlags)(THIS_ UINT index, INT *flags) PURE;
+    STDMETHOD(GetIDsOfNames)(THIS_ LPOLESTR *names, UINT n, MEMBERID *ids) PURE;
+    STDMETHOD(Invoke)(THIS_ PVOID obj, MEMBERID memid, WORD flags, DISPPARAMS *params, VARIANT *result,
+                      EXCEPINFO *ei, UINT *argerr) PURE;
+    STDMETHOD(GetDocumentation)(THIS_ MEMBERID memid, BSTR *name, BSTR *doc, DWORD *helpctx, BSTR *helpfile) PURE;
+    STDMETHOD(GetDllEntry)(THIS_ MEMBERID memid, INVOKEKIND kind, BSTR *dll, BSTR *name, WORD *ordinal) PURE;
+    STDMETHOD(GetRefTypeInfo)(THIS_ HREFTYPE href, ITypeInfo **ti) PURE;
+    STDMETHOD(AddressOfMember)(THIS_ MEMBERID memid, INVOKEKIND kind, PVOID *addr) PURE;
+    STDMETHOD(CreateInstance)(THIS_ IUnknown *outer, REFIID riid, PVOID *obj) PURE;
+    STDMETHOD(GetMops)(THIS_ MEMBERID memid, BSTR *mops) PURE;
+    STDMETHOD(GetContainingTypeLib)(THIS_ ITypeLib **tl, UINT *index) PURE;
+    STDMETHOD_(void, ReleaseTypeAttr)(THIS_ TYPEATTR *attr) PURE;
+    STDMETHOD_(void, ReleaseFuncDesc)(THIS_ FUNCDESC *fd) PURE;
+    STDMETHOD_(void, ReleaseVarDesc)(THIS_ VARDESC *vd) PURE;
+#endif
+    STDMETHOD(GetTypeKind)(THIS_ TYPEKIND *kind) PURE;
+    STDMETHOD(GetTypeFlags)(THIS_ ULONG *flags) PURE;
+    STDMETHOD(GetFuncIndexOfMemId)(THIS_ MEMBERID memid, INVOKEKIND kind, UINT *index) PURE;
+    STDMETHOD(GetVarIndexOfMemId)(THIS_ MEMBERID memid, UINT *index) PURE;
+    STDMETHOD(GetCustData)(THIS_ REFGUID guid, VARIANT *v) PURE;
+    STDMETHOD(GetFuncCustData)(THIS_ UINT index, REFGUID guid, VARIANT *v) PURE;
+    STDMETHOD(GetParamCustData)(THIS_ UINT func, UINT param, REFGUID guid, VARIANT *v) PURE;
+    STDMETHOD(GetVarCustData)(THIS_ UINT index, REFGUID guid, VARIANT *v) PURE;
+    STDMETHOD(GetImplTypeCustData)(THIS_ UINT index, REFGUID guid, VARIANT *v) PURE;
+    STDMETHOD(GetDocumentation2)(THIS_ MEMBERID memid, LCID lcid, BSTR *help, DWORD *ctx, BSTR *dll) PURE;
+    STDMETHOD(GetAllCustData)(THIS_ CUSTDATA *cd) PURE;
+    STDMETHOD(GetAllFuncCustData)(THIS_ UINT index, CUSTDATA *cd) PURE;
+    STDMETHOD(GetAllParamCustData)(THIS_ UINT func, UINT param, CUSTDATA *cd) PURE;
+    STDMETHOD(GetAllVarCustData)(THIS_ UINT index, CUSTDATA *cd) PURE;
+    STDMETHOD(GetAllImplTypeCustData)(THIS_ UINT index, CUSTDATA *cd) PURE;
+    END_INTERFACE
+};
+
+#undef INTERFACE
+#define INTERFACE ITypeLib
+DECLARE_INTERFACE_(ITypeLib, IUnknown)
+{
+    BEGIN_INTERFACE
+#ifndef __cplusplus
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **ppv) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+#endif
+    STDMETHOD_(UINT, GetTypeInfoCount)(THIS) PURE;
+    STDMETHOD(GetTypeInfo)(THIS_ UINT index, ITypeInfo **ti) PURE;
+    STDMETHOD(GetTypeInfoType)(THIS_ UINT index, TYPEKIND *kind) PURE;
+    STDMETHOD(GetTypeInfoOfGuid)(THIS_ REFGUID guid, ITypeInfo **ti) PURE;
+    STDMETHOD(GetLibAttr)(THIS_ TLIBATTR **attr) PURE;
+    STDMETHOD(GetTypeComp)(THIS_ ITypeComp **tc) PURE;
+    STDMETHOD(GetDocumentation)(THIS_ INT index, BSTR *name, BSTR *doc, DWORD *helpctx, BSTR *helpfile) PURE;
+    STDMETHOD(IsName)(THIS_ LPOLESTR name, ULONG hash, BOOL *found) PURE;
+    STDMETHOD(FindName)(THIS_ LPOLESTR name, ULONG hash, ITypeInfo **ti, MEMBERID *ids, USHORT *n) PURE;
+    STDMETHOD_(void, ReleaseTLibAttr)(THIS_ TLIBATTR *attr) PURE;
+    END_INTERFACE
+};
+typedef ITypeLib *LPTYPELIB;
+
+#undef INTERFACE
+#define INTERFACE ITypeLib2
+DECLARE_INTERFACE_(ITypeLib2, ITypeLib)
+{
+    BEGIN_INTERFACE
+#ifndef __cplusplus
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **ppv) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD_(UINT, GetTypeInfoCount)(THIS) PURE;
+    STDMETHOD(GetTypeInfo)(THIS_ UINT index, ITypeInfo **ti) PURE;
+    STDMETHOD(GetTypeInfoType)(THIS_ UINT index, TYPEKIND *kind) PURE;
+    STDMETHOD(GetTypeInfoOfGuid)(THIS_ REFGUID guid, ITypeInfo **ti) PURE;
+    STDMETHOD(GetLibAttr)(THIS_ TLIBATTR **attr) PURE;
+    STDMETHOD(GetTypeComp)(THIS_ ITypeComp **tc) PURE;
+    STDMETHOD(GetDocumentation)(THIS_ INT index, BSTR *name, BSTR *doc, DWORD *helpctx, BSTR *helpfile) PURE;
+    STDMETHOD(IsName)(THIS_ LPOLESTR name, ULONG hash, BOOL *found) PURE;
+    STDMETHOD(FindName)(THIS_ LPOLESTR name, ULONG hash, ITypeInfo **ti, MEMBERID *ids, USHORT *n) PURE;
+    STDMETHOD_(void, ReleaseTLibAttr)(THIS_ TLIBATTR *attr) PURE;
+#endif
+    STDMETHOD(GetCustData)(THIS_ REFGUID guid, VARIANT *v) PURE;
+    STDMETHOD(GetLibStatistics)(THIS_ ULONG *unique_names, ULONG *chars) PURE;
+    STDMETHOD(GetDocumentation2)(THIS_ INT index, LCID lcid, BSTR *help, DWORD *ctx, BSTR *dll) PURE;
+    STDMETHOD(GetAllCustData)(THIS_ CUSTDATA *cd) PURE;
+    END_INTERFACE
+};
+
+DEFINE_OLEGUID(IID_ITypeInfo,  0x00020401, 0, 0);
+DEFINE_OLEGUID(IID_ITypeLib,   0x00020402, 0, 0);
+DEFINE_OLEGUID(IID_ITypeComp,  0x00020403, 0, 0);
+DEFINE_OLEGUID(IID_ITypeInfo2, 0x00020412, 0, 0);
+DEFINE_OLEGUID(IID_ITypeLib2,  0x00020411, 0, 0);
+
+#ifndef __cplusplus
+#define ITypeLib_AddRef(p)                      (p)->lpVtbl->AddRef(p)
+#define ITypeLib_Release(p)                     (p)->lpVtbl->Release(p)
+#define ITypeLib_GetTypeInfoCount(p)            (p)->lpVtbl->GetTypeInfoCount(p)
+#define ITypeLib_GetTypeInfo(p, i, t)           (p)->lpVtbl->GetTypeInfo(p, i, t)
+#define ITypeLib_GetTypeInfoType(p, i, k)       (p)->lpVtbl->GetTypeInfoType(p, i, k)
+#define ITypeLib_GetTypeInfoOfGuid(p, g, t)     (p)->lpVtbl->GetTypeInfoOfGuid(p, g, t)
+#define ITypeLib_GetLibAttr(p, a)               (p)->lpVtbl->GetLibAttr(p, a)
+#define ITypeLib_GetDocumentation(p, i, n, d, c, f) (p)->lpVtbl->GetDocumentation(p, i, n, d, c, f)
+#define ITypeLib_ReleaseTLibAttr(p, a)          (p)->lpVtbl->ReleaseTLibAttr(p, a)
+#define ITypeInfo_AddRef(p)                     (p)->lpVtbl->AddRef(p)
+#define ITypeInfo_Release(p)                    (p)->lpVtbl->Release(p)
+#define ITypeInfo_GetTypeAttr(p, a)             (p)->lpVtbl->GetTypeAttr(p, a)
+#define ITypeInfo_GetFuncDesc(p, i, f)          (p)->lpVtbl->GetFuncDesc(p, i, f)
+#define ITypeInfo_GetVarDesc(p, i, v)           (p)->lpVtbl->GetVarDesc(p, i, v)
+#define ITypeInfo_GetNames(p, m, n, x, c)       (p)->lpVtbl->GetNames(p, m, n, x, c)
+#define ITypeInfo_GetRefTypeOfImplType(p, i, h) (p)->lpVtbl->GetRefTypeOfImplType(p, i, h)
+#define ITypeInfo_GetImplTypeFlags(p, i, f)     (p)->lpVtbl->GetImplTypeFlags(p, i, f)
+#define ITypeInfo_GetIDsOfNames(p, n, c, i)     (p)->lpVtbl->GetIDsOfNames(p, n, c, i)
+#define ITypeInfo_Invoke(p, o, m, f, d, r, e, a) (p)->lpVtbl->Invoke(p, o, m, f, d, r, e, a)
+#define ITypeInfo_GetDocumentation(p, m, n, d, c, f) (p)->lpVtbl->GetDocumentation(p, m, n, d, c, f)
+#define ITypeInfo_GetRefTypeInfo(p, h, t)       (p)->lpVtbl->GetRefTypeInfo(p, h, t)
+#define ITypeInfo_GetContainingTypeLib(p, l, i) (p)->lpVtbl->GetContainingTypeLib(p, l, i)
+#define ITypeInfo_ReleaseTypeAttr(p, a)         (p)->lpVtbl->ReleaseTypeAttr(p, a)
+#define ITypeInfo_ReleaseFuncDesc(p, f)         (p)->lpVtbl->ReleaseFuncDesc(p, f)
+#define ITypeInfo_ReleaseVarDesc(p, v)          (p)->lpVtbl->ReleaseVarDesc(p, v)
+#endif
+
+WINOLEAUTAPI_(HRESULT) LoadTypeLib(LPCOLESTR file, ITypeLib **out);
+WINOLEAUTAPI_(HRESULT) LoadTypeLibEx(LPCOLESTR file, REGKIND kind, ITypeLib **out);
+WINOLEAUTAPI_(HRESULT) LoadRegTypeLib(REFGUID guid, WORD maj, WORD min, LCID lcid, ITypeLib **out);
+WINOLEAUTAPI_(HRESULT) QueryPathOfRegTypeLib(REFGUID guid, USHORT maj, USHORT min, LCID lcid, BSTR *path);
+WINOLEAUTAPI_(HRESULT) RegisterTypeLib(ITypeLib *tl, LPCOLESTR path, LPCOLESTR helpdir);
+WINOLEAUTAPI_(HRESULT) UnRegisterTypeLib(REFGUID guid, WORD maj, WORD min, LCID lcid, SYSKIND kind);
+WINOLEAUTAPI_(HRESULT) RegisterTypeLibForUser(ITypeLib *tl, LPOLESTR path, LPOLESTR helpdir);
+WINOLEAUTAPI_(HRESULT) UnRegisterTypeLibForUser(REFGUID guid, WORD maj, WORD min, LCID lcid, SYSKIND kind);
+WINOLEAUTAPI_(ULONG)   LHashValOfNameSys(SYSKIND kind, LCID lcid, LPCOLESTR name);
+WINOLEAUTAPI_(ULONG)   LHashValOfNameSysA(SYSKIND kind, LCID lcid, LPCSTR name);
+#define LHashValOfName(lcid, name) LHashValOfNameSys(SYS_WIN32, lcid, name)
+WINOLEAUTAPI_(HRESULT) DispCallFunc(void *obj, ULONG_PTR ovft, CALLCONV cc, VARTYPE ret, UINT n,
+                                    VARTYPE *types, VARIANTARG **args, VARIANT *result);
+WINOLEAUTAPI_(HRESULT) DispGetIDsOfNames(ITypeInfo *ti, LPOLESTR *names, UINT n, DISPID *ids);
+WINOLEAUTAPI_(HRESULT) DispInvoke(void *obj, ITypeInfo *ti, DISPID id, WORD flags, DISPPARAMS *p,
+                                  VARIANT *res, EXCEPINFO *ei, UINT *argerr);
+WINOLEAUTAPI_(HRESULT) DispGetParam(DISPPARAMS *p, UINT pos, VARTYPE vt, VARIANT *out, UINT *argerr);
+WINOLEAUTAPI_(HRESULT) CreateStdDispatch(IUnknown *outer, void *obj, ITypeInfo *ti, IUnknown **out);
 
 /* ---- BSTR ---- */
 WINOLEAUTAPI_(BSTR)    SysAllocString(const OLECHAR *s);

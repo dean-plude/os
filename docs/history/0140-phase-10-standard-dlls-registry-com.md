@@ -54,5 +54,6 @@
   controls, file-open dialogs (they report "cancelled"), the MSVC FH4 C++
   exception tables, type libraries, `RegNotifyChangeKeyValue` events, audio,
   and a clipboard shared between programs.  *(Dialogs, menus and controls
-  came in Phase 12 and the shared clipboard after Phase 13; the rest is
-  still open.)*
+  came in Phase 12, the shared clipboard after Phase 13, audio with HD
+  Audio, and type libraries and FH4 in "COM type libraries and FH4 C++
+  exceptions" below; the rest is still open.)*

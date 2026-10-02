@@ -97,7 +97,8 @@ named program or test demonstrates it.
 - Windows Installer: custom actions that run code, the packages' own
   dialogs (`InstallUISequence`), the `Shortcut` table, services, merge
   modules; LZX cabinets tested against real packages.
-- COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception tables.
+- ~~COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception
+  tables~~ Done; see [Type libraries and FH4](HISTORY.md#com-type-libraries-and-fh4-c-exceptions).
 - .NET globalization through ICU, not only NLS for English and invariant
   cultures.
 - Keep the App Store's per-app compatibility notes in step with what has

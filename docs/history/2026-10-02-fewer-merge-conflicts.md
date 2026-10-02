@@ -14,7 +14,7 @@ editing shared lines.  [CONTRIBUTING.md](../CONTRIBUTING.md) is the guide.
   export ordinals); `tools/build_userland.py` finds them and links each
   after its dependencies.  A DLL that needs more (Mbed TLS for secur32,
   the msvcrt/ucrtbase double link) keeps that code in its own
-  `userland/NAME/build.py`.  The 53 existing DLLs keep their addresses; a
+  `userland/NAME/build.py`.  The existing DLLs keep their addresses; a
   new DLL leaves them out and gets a free 16 MiB slot, so two branches can
   no longer pick the same address (three open ones had all chosen
   0x7FFE50000000), and the build stops if two DLLs' images overlap.  The
