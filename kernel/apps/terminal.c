@@ -1055,12 +1055,27 @@ static bool screen_csi(const char *p, int n, char final)
     return false;
 }
 
+/* Program output to the screen grid.  As in a Windows console, a line feed
+ * also returns the carriage unless the program set DISABLE_NEWLINE_AUTO_RETURN. */
+static void vt_write(Job *j, const char *s, size_t n)
+{
+    if (j->con && (UmConsoleOutputMode(j->con) & 0x0008)) { vterm_input_write(j->vt, s, n); return; }
+    size_t from = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] != '\n') continue;
+        if (i > from) vterm_input_write(j->vt, s + from, i - from);
+        vterm_input_write(j->vt, "\r\n", 2);
+        from = i + 1;
+    }
+    if (n > from) vterm_input_write(j->vt, s + from, n - from);
+}
+
 static void proc_output(Term *t, const char *s, int n)
 {
     mirror(s, n);
     Job *j = &t->job;
     if (j->vt) {
-        vterm_input_write(j->vt, s, (size_t)n);
+        vt_write(j, s, (size_t)n);
         return;
     }
     int cols = term_cols(t);
@@ -1085,7 +1100,7 @@ static void proc_output(Term *t, const char *s, int n)
                     memcpy(seq + 2, j->csi, (size_t)j->csi_n);
                     seq[2 + j->csi_n] = c;
                     vterm_input_write(j->vt, seq, (size_t)j->csi_n + 3);
-                    if (k + 1 < n) vterm_input_write(j->vt, s + k + 1, (size_t)(n - k - 1));
+                    if (k + 1 < n) vt_write(j, s + k + 1, (size_t)(n - k - 1));
                     return;
                 }
                 if (c == 'G' && j->open_line) j->col = j->esc_arg > 0 ? j->esc_arg - 1 : 0;   /* column */

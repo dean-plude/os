@@ -137,6 +137,7 @@ static void um_lock_free_init(void)
 static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode **root);
 static UINT32 g_oa_attrs;               /* Attributes of the last get_path (under the big lock) */
 
+static int w2u(const UINT16 *w, UINT32 n, char *out, int cap);
 /* Terminal "trace NAME": log the failing system calls of programs named
  * NAME (a debugging aid for Windows programs that misbehave) */
 static char g_trace[32];
@@ -165,7 +166,21 @@ UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             RamNode *root;
             UINT64 oa = num == SYSCALL_NtCreateFile || num == SYSCALL_NtOpenFile ? a3 :
                         num == SYSCALL_NtQueryAttributesFile ? a1 : 0;
-            if (oa && get_path(t->proc, oa, path, sizeof(path), &root)) path[0] = 0;
+            if (oa && get_path(t->proc, oa, path, sizeof(path), &root)) {
+                /* not a path we resolve: the raw name and its root handle */
+                UINT64 o[3], us[2];
+                UINT16 w[96];
+                path[0] = 0;
+                if (NT_SUCCESS(CopyFromUser(o, (const void *)(uintptr_t)oa, sizeof(o))) && o[2] &&
+                    NT_SUCCESS(CopyFromUser(us, (const void *)(uintptr_t)o[2], sizeof(us)))) {
+                    UINT32 n = (UINT32)(us[0] & 0xFFFF) / 2;
+                    if (n > 96) n = 96;
+                    if (NT_SUCCESS(CopyFromUser(w, (const void *)(uintptr_t)us[1], 2 * n))) {
+                        int k = ksnprintf(path, sizeof(path), "(root %llx) ", (unsigned long long)o[1]);
+                        w2u(w, n, path + k, (int)sizeof(path) - k);
+                    }
+                }
+            }
             kprintf("[TRACE] %s %u: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
                     (unsigned)t->proc->pid, (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
                     (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r,
@@ -389,6 +404,10 @@ static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode 
     *root = p->cwd;
     if (oa[1]) {                                        /* RootDirectory handle */
         UmHandle *h = handle(p, oa[1]);
+        if (h && !out[0] && (h->kind == H_FILE || h->kind == H_DIR)) {
+            RamfsPath(h->node, out, cap);               /* no name: the handle's own file, opened again */
+            return ST_SUCCESS;
+        }
         if (!h || h->kind != H_DIR) return ST_INVALID_HANDLE;
         *root = h->node;
     }
@@ -412,6 +431,10 @@ static bool is_console_name(const char *s, UmHandleKind *kind)
     if (!strcmp(s, "CONOUT$") || !strcmp(s, "conout$") ||
         !strcmp(s, "CON") || !strcmp(s, "con")) { *kind = H_CON_OUT; return true; }
     if (!strcmp(s, "NUL") || !strcmp(s, "nul")) { *kind = H_NULL; return true; }     /* the null device */
+    static const char dev_null[] = "\\device\\null";              /* ... by its NT name */
+    int i = 0;
+    while (s[i] && dev_null[i] && ((s[i] >= 'A' && s[i] <= 'Z') ? s[i] + 32 : s[i]) == dev_null[i]) i++;
+    if (!s[i] && !dev_null[i]) { *kind = H_NULL; return true; }
     return false;
 }
 

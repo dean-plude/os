@@ -383,13 +383,28 @@ static UINT64 finish_create(UmObject *o, const char *name, UINT64 handle_ptr)
 }
 
 /* NtOpenEvent / NtOpenMutant / NtOpenSemaphore(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES) */
+/* The device objects that exist without being in the namespace table:
+ * opening one as another type is a type mismatch, not "not found" (Cygwin
+ * asks NtOpenSymbolicLinkObject whether \Device\Null exists). */
+static bool builtin_device(const char *name)
+{
+    static const char *const devs[] = { "\\device\\null", "\\device\\namedpipe", "\\device\\condrv",
+                                        "\\device\\afd", "\\device\\beep", "\\device\\mup" };
+    for (unsigned i = 0; i < sizeof(devs) / sizeof(devs[0]); i++) {
+        const char *a = name, *b = devs[i];
+        while (*a && *b && ((*a >= 'A' && *a <= 'Z') ? *a + 32 : *a) == *b) a++, b++;
+        if (!*a && !*b) return true;
+    }
+    return false;
+}
+
 static UINT64 open_named(UmObType type, UINT64 handle_ptr, UINT64 oa)
 {
     char name[NS_NAME_MAX];
     if (!ns_name(oa, name)) return ST_ACCESS_VIOLATION;
     if (!name[0]) return ST_INVALID_PARAMETER;
     UmObject *o = ns_lookup(name);
-    if (!o) return ST_OBJECT_NAME_NOT_FOUND;
+    if (!o) return builtin_device(name) ? ST_OBJECT_TYPE_MISMATCH : ST_OBJECT_NAME_NOT_FOUND;
     if (o->type != type) { um_ob_unref(o); return ST_OBJECT_TYPE_MISMATCH; }
     return new_handle(UmCurrent(), o, handle_ptr);
 }
