@@ -139,8 +139,8 @@ static LRESULT def_common(Wnd *w, HWND h, UINT msg, WPARAM wp, LPARAM lp, int wi
         if (wp == VK_F10) { g_alt_alone = 1; return 0; }
         return 0;
     case WM_SYSKEYUP: case WM_KEYUP:
-        if ((wp == VK_MENU || wp == VK_F10) && g_alt_alone) {
-            g_alt_alone = 0;
+        if ((wp == VK_MENU || wp == VK_F10) && g_alt_alone && g_alt_tap) {
+            g_alt_alone = g_alt_tap = 0;
             Wnd *t = top_of(w);
             if (t->menu) send_msg(t, WM_SYSCOMMAND, SC_KEYMENU, 0);
         }

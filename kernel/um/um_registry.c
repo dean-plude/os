@@ -356,6 +356,22 @@ static void defaults(void)
     if (!has_value(sl, "")) { kset_sz(sl, "", "shell32.dll", 1); kset_sz(sl, "ThreadingModel", "Both", 1); }
     RegKey *slc = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{00021401-0000-0000-C000-000000000046}", false);
     if (!has_value(slc, "")) kset_sz(slc, "", "Shortcut", 1);
+    /* the file dialogs (comdlg32's FileOpenDialog and FileSaveDialog) */
+    static const char *const fdlg[][2] = { { "{DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7}", "File Open Dialog" },
+                                           { "{C0B4E2F3-BA21-4773-8DBA-335EC946EB8B}", "File Save Dialog" } };
+    for (int i = 0; i < 2; i++) {
+        char k[96];
+        int n = 0;
+        for (const char *s = "Machine\\SOFTWARE\\Classes\\CLSID\\"; *s; s++) k[n++] = *s;
+        for (const char *s = fdlg[i][0]; *s; s++) k[n++] = *s;
+        k[n] = 0;
+        RegKey *c = kpath(k, false);
+        if (!has_value(c, "")) kset_sz(c, "", fdlg[i][1], 1);
+        for (const char *s = "\\InprocServer32"; *s; s++) k[n++] = *s;
+        k[n] = 0;
+        RegKey *ip = kpath(k, false);
+        if (!has_value(ip, "")) { kset_sz(ip, "", "comdlg32.dll", 1); kset_sz(ip, "ThreadingModel", "Apartment", 1); }
+    }
     /* the audio endpoints (mmdevapi's MMDeviceEnumerator) */
     RegKey *mmd = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{BCDE0395-E52F-467C-8E3D-C4579291692E}\\InprocServer32", false);
     if (!has_value(mmd, "")) { kset_sz(mmd, "", "mmdevapi.dll", 1); kset_sz(mmd, "ThreadingModel", "Both", 1); }

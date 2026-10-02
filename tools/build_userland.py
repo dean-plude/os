@@ -56,7 +56,7 @@ DLLS = [
     ('mpr',      ['kernel32'],           0x7FFB50000000),
     ('comctl32', ['user32', 'gdi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB00000000),
     ('shell32',  ['comctl32', 'gdi32', 'user32', 'kernel32', 'ntdll'], 0x7FFAC0000000),
-    ('comdlg32', ['kernel32', 'ntdll'],  0x7FFB10000000),
+    ('comdlg32', ['shell32', 'comctl32', 'user32', 'gdi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB10000000),
     ('ole32',    ['user32', 'advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
     ('oleaut32', ['ole32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAF0000000),
     ('msi',      ['comctl32', 'shell32', 'user32', 'gdi32', 'advapi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB60000000),
@@ -96,7 +96,7 @@ UCRT_BASE_X86 = 0x5F000000
 # 32-bit builds of these test programs go to C:\Programs\x86
 PROGRAMS_X86 = {'hello', 'crttest', 'filetest', 'threads', 'dlltest', 'apitest', 'posixtest', 'comtest',
                 'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh', 'cmd', 'pipetest',
-                'find', 'findstr', 'sort', 'more', 'less', 'timeout', 'cliptest', 'soundtest', 'disptest', 'acltest'}
+                'find', 'findstr', 'sort', 'more', 'less', 'timeout', 'cliptest', 'soundtest', 'disptest', 'acltest', 'dlgtest'}
 # programs that live in C:\Windows\System32 rather than C:\Programs
 SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'less', 'timeout', 'shutdown'}
 UCRT_BASE = 0x7FFA28000000
