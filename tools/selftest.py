@@ -5,10 +5,10 @@
                       [--only NAME,...] [--junit FILE] [--summary FILE]
 
 Suites:
-  core      (default) apitest, abitest, filetest, pipetest, guitest auto,
-            disptest, comtest, tlbtest (64- and 32-bit), cppeh, battery,
-            soundtest, and last "crash kernel" (a deliberate kernel fault
-            must print a symbolized backtrace)
+  core      (default) apitest, abitest, filetest, pipetest, proctest,
+            guitest auto, disptest, comtest, tlbtest (64- and 32-bit),
+            cppeh, battery, soundtest, and last "crash kernel" (a
+            deliberate kernel fault must print a symbolized backtrace)
   graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
             tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
             made by tools/ci/stage-graphics.sh: 7-Zip, the two downloads and
@@ -62,6 +62,7 @@ CORE = [
     Test('abitest', 'abitest', [r'abitest: \d+ passed, 0 failed']),
     Test('filetest', 'filetest', [r'filetest: \d+ passed, 0 failed']),
     Test('pipetest', 'pipetest', [r'pipetest: \d+ passed, 0 failed']),
+    Test('proctest', 'proctest', [r'proctest: \d+ passed, 0 failed']),
     Test('guitest', 'guitest auto', [r'guitest: \d+ passed, 0 failed']),
     Test('disptest', 'disptest', [r'\d+ passed, 0 failed']),
     Test('comtest', 'comtest', [r'comtest: \d+ passed, 0 failed']),

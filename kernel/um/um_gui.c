@@ -103,6 +103,7 @@ typedef struct {
     UINT32      accept;             /* drops it takes: 1 files (WM_DROPFILES), 2 an OLE drop target */
     void       *drop;               /* a drop delivered and not yet fetched (kmalloc) */
     UINT32      drop_len;
+    UINT32      drop_seq;           /* the drop delivered here that the source waits on (0: none) */
 } GuiWin;
 
 /* The table's slots (used, proc, id), the message queues, the quit flags
@@ -186,7 +187,7 @@ static void gui_paint(WND *w)
 
 /* Windows virtual-key code for a set-1 scan code (keypad keys as with
  * Num Lock off; E0-prefixed ones in the second table) */
-static UINT32 scancode_to_vk(UINT8 sc, bool ext)
+UINT32 UmScancodeToVk(UINT8 sc, bool ext)
 {
     static const UINT8 base[0x59] = {
         0, 0x1B, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 0xBD, 0xBB, 0x08, 0x09,
@@ -217,7 +218,7 @@ static void gui_key(WND *w, const KeyEvent *k)
 {
     GuiWin *g = w->user;
     if (!g) return;
-    UINT32 vk = scancode_to_vk(k->scancode, k->extended) & 0xFF;
+    UINT32 vk = UmScancodeToVk(k->scancode, k->extended) & 0xFF;
     bool repeat = k->pressed && g_keydown[vk];
     g_keydown[vk] = k->pressed;
     /* lParam as in Win32: repeat count 1, scan code in bits 16-23, bit 24
@@ -592,7 +593,7 @@ static void destroy_window(GuiWin *g)
     }
     IrqState s = spin_lock_irqsave(&g_gui_lock);
     void *drop = g->drop;
-    g->drop = NULL; g->drop_len = 0; g->accept = 0;
+    g->drop = NULL; g->drop_len = 0; g->accept = 0; g->drop_seq = 0;
     g->used = false;
     spin_unlock_irqrestore(&g_gui_lock, s);
     kfree(drop);
@@ -674,6 +675,13 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *  13 DROP        arg: the target's window id; ptr <- { x, y, effect, bytes,
  *                 then the UTF-16 file list }: queued to the target as WM_NOVA_DROP
  *  14 DROP_FETCH  ptr -> { x, y, effect, source pid, bytes, the list }, arg: room in bytes
+ *  17 DROP_DONE   the target has handled its drop; arg: the effect it took
+ *  18 DROP_STATUS arg: the number DROP returned; 0 while the target is still
+ *                 handling it, 1 + the effect once it has, ~0 if it never
+ *                 will (its window is gone or another drop replaced it)
+ * A drop is synchronous for the source, as on Windows: DoDragDrop returns
+ * once the target's Drop has run, so a source may delete what it dropped
+ * (7-Zip's temporary copies of files dragged out of an archive).
  * Display modes (hwnd may be 0):
  *  15 DISPLAY_MODE  arg: a mode index (0 = largest), -1 the current mode,
  *                   -2 the default (the user's) mode; ptr -> { width, height,
@@ -686,6 +694,8 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_DROP_FETCH   14
 #define CTL_DISPLAY_MODE 15
 #define CTL_SET_DISPLAY  16
+#define CTL_DROP_DONE    17
+#define CTL_DROP_STATUS  18
 #define WM_NOVA_DROP     0x03FE
 #define WM_DISPLAYCHANGE 0x007E
 #define CDS_UPDATEREGISTRY 0x01
@@ -735,6 +745,11 @@ void UmGuiDisplayChanged(int w, int h)
     waitq_wake(&g_guiq);
 }
 #define DROP_MAX         (64 * 1024)
+#define DROP_RESULTS     8
+
+/* drops their targets have finished: { number, effect }; under g_gui_lock */
+static UINT32 g_drop_seq;
+static UINT32 g_drop_done[DROP_RESULTS][2];
 
 static GuiWin *win_by_id(UINT32 id)             /* any process's; under g_gui_lock */
 {
@@ -792,16 +807,43 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         IrqState s = spin_lock_irqsave(&g_gui_lock);
         GuiWin *g = win_by_id((UINT32)a3);
         void *old = NULL;
+        UINT32 seq = 0;
         if (g) {
             old = g->drop;
             g->drop = buf; g->drop_len = 20 + bytes;
+            if (!++g_drop_seq) g_drop_seq = 1;
+            seq = g->drop_seq = g_drop_seq;
             enqueue_locked(g, WM_NOVA_DROP, bytes, (UINT64)(UINT32)hd[2], hd[0], hd[1]);
         }
         spin_unlock_irqrestore(&g_gui_lock, s);
         kfree(old);
         if (!g) { kfree(buf); return 0; }
         waitq_wake(&g_guiq);
-        return 1;
+        return seq;
+    }
+    if (a2 == CTL_DROP_DONE) {
+        static UINT32 next;
+        IrqState s = spin_lock_irqsave(&g_gui_lock);
+        GuiWin *g = win_of_handle(p, a1);
+        if (g && g->drop_seq) {
+            g_drop_done[next][0] = g->drop_seq;
+            g_drop_done[next][1] = (UINT32)a3;
+            next = (next + 1) % DROP_RESULTS;
+            g->drop_seq = 0;
+        }
+        spin_unlock_irqrestore(&g_gui_lock, s);
+        return g ? 1 : 0;
+    }
+    if (a2 == CTL_DROP_STATUS) {
+        UINT32 seq = (UINT32)a3;
+        UINT64 r = ~0ULL;
+        IrqState s = spin_lock_irqsave(&g_gui_lock);
+        for (int i = 0; seq && i < DROP_RESULTS; i++)
+            if (g_drop_done[i][0] == seq) { r = 1 + (UINT64)g_drop_done[i][1]; g_drop_done[i][0] = 0; break; }
+        for (int i = 0; seq && r == ~0ULL && i < GUI_MAX_WINDOWS; i++)
+            if (g_win[i].used && g_win[i].drop_seq == seq) r = 0;
+        spin_unlock_irqrestore(&g_gui_lock, s);
+        return r;
     }
     if (a2 == CTL_DROP_FETCH) {
         IrqState s = spin_lock_irqsave(&g_gui_lock);
@@ -930,7 +972,7 @@ void um_gui_process_gone(UmProcess *p)
             if (g->wnd) { g->wnd->user = NULL; WmDestroyWindow(g->wnd); g->wnd = NULL; }
             IrqState s = spin_lock_irqsave(&g_gui_lock);
             void *drop = g->drop;
-            g->drop = NULL; g->drop_len = 0; g->accept = 0;
+            g->drop = NULL; g->drop_len = 0; g->accept = 0; g->drop_seq = 0;
             g->used = false;
             spin_unlock_irqrestore(&g_gui_lock, s);
             kfree(drop);

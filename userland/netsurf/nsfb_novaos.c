@@ -10,6 +10,12 @@
  * applies shift itself — and mouse messages to motion and button events.
  * The desktop draws the mouse pointer, so the software cursor is never
  * plotted.
+ *
+ * Resizing: user32 keeps a top-level window's back buffer at a fixed
+ * address and stride (as wide and tall as the screen), so a new size only
+ * changes how much of it is the client area.  WM_SIZE becomes an
+ * NSFB_EVENT_RESIZE; the frontend then calls geometry, which re-reads the
+ * client area from a fresh DC, and lays the page out again.
  */
 #include <stdbool.h>
 #include <stdlib.h>
@@ -32,7 +38,11 @@ typedef struct {
     nsfb_event_t  pending[4];       /* events split from one message */
     int           npending;
     int           x, y;             /* last pointer position */
+    int           new_w, new_h;     /* client size from the last WM_SIZE */
+    bool          resized;          /* a resize event is owed */
 } NovaSurface;
+
+static NovaSurface *g_surface;      /* the one browser window */
 
 static const char *g_title = "NetSurf";
 
@@ -91,6 +101,15 @@ static LRESULT __stdcall wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_PAINT) { PAINTSTRUCT ps; BeginPaint(h, &ps); EndPaint(h, &ps); return 0; }
     if (msg == WM_ERASEBKGND) return 1;
     if (msg == WM_CLOSE) return 0;                  /* handled as a quit event */
+    if (msg == WM_SIZE && g_surface && g_surface->hwnd == h && wp != SIZE_MINIMIZED) {
+        int w = (short)LOWORD(lp), ht = (short)HIWORD(lp);
+        if (w > 0 && ht > 0) {
+            g_surface->new_w = w;
+            g_surface->new_h = ht;
+            g_surface->resized = true;              /* consecutive sizes coalesce into one */
+        }
+        return 0;
+    }
     return DefWindowProcA(h, msg, wp, lp);
 }
 
@@ -110,6 +129,22 @@ static int nova_defaults(nsfb_t *nsfb)
     return 0;
 }
 
+/* (Re)read the client area: where it starts in the window's back buffer
+ * and how big it is now */
+static bool attach_dc(NovaSurface *s)
+{
+    NOVA_DC *dc = (NOVA_DC *)GetDC(s->hwnd);
+    if (!dc) return false;
+    if (s->dc) ReleaseDC(s->hwnd, (HDC)s->dc);
+    s->dc = dc;
+    return true;
+}
+
+static DWORD *client_bits(NovaSurface *s)
+{
+    return s->dc->bits + (size_t)s->dc->base_y * s->dc->stride + s->dc->base_x;
+}
+
 static int nova_initialise(nsfb_t *nsfb)
 {
     if (nsfb->surface_priv) return -1;
@@ -124,18 +159,17 @@ static int nova_initialise(nsfb_t *nsfb)
     s->hwnd = CreateWindowA("NetSurfNovaOS", g_title, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                             nsfb->width, nsfb->height, NULL, NULL, NULL, NULL);
     if (!s->hwnd) { free(s); return -1; }
-    s->dc = (NOVA_DC *)GetDC(s->hwnd);
-    if (!s->dc || s->dc->w < nsfb->width || s->dc->h < nsfb->height) {
-        /* the desktop may have made it smaller than asked */
-        if (s->dc) { nsfb->width = s->dc->w; nsfb->height = s->dc->h; }
-    }
-    if (!s->dc) { DestroyWindow(s->hwnd); free(s); return -1; }
+    if (!attach_dc(s)) { DestroyWindow(s->hwnd); free(s); return -1; }
+    /* the desktop may have made it smaller than asked */
+    if (s->dc->w - s->dc->base_x < nsfb->width) nsfb->width = s->dc->w - s->dc->base_x;
+    if (s->dc->h - s->dc->base_y < nsfb->height) nsfb->height = s->dc->h - s->dc->base_y;
 
     nsfb->format = NSFB_FMT_XBGR8888;               /* COLORREF */
     select_plotters(nsfb);
-    nsfb->ptr = (uint8_t *)s->dc->bits;
+    nsfb->ptr = (uint8_t *)client_bits(s);
     nsfb->linelen = s->dc->stride * 4;
     nsfb->surface_priv = s;
+    g_surface = s;
 
     ShowWindow(s->hwnd, SW_SHOW);
     s->dirty = true;
@@ -147,7 +181,9 @@ static int nova_finalise(nsfb_t *nsfb)
 {
     NovaSurface *s = nsfb->surface_priv;
     if (!s) return 0;
+    if (s->dc) ReleaseDC(s->hwnd, (HDC)s->dc);
     DestroyWindow(s->hwnd);
+    if (g_surface == s) g_surface = NULL;
     free(s);
     nsfb->surface_priv = NULL;
     nsfb->ptr = NULL;
@@ -158,21 +194,33 @@ static int nova_geometry(nsfb_t *nsfb, int width, int height, enum nsfb_format_e
 {
     NovaSurface *s = nsfb->surface_priv;
     (void)format;
-    if (s) {
-        /* the window's bitmap is fixed: never grow past it */
-        if (width > s->dc->w) width = s->dc->w;
-        if (height > s->dc->h) height = s->dc->h;
+    if (s && attach_dc(s)) {
+        /* never draw past the client area the window has now */
+        if (width > s->dc->w - s->dc->base_x) width = s->dc->w - s->dc->base_x;
+        if (height > s->dc->h - s->dc->base_y) height = s->dc->h - s->dc->base_y;
     }
     if (width > 0) nsfb->width = width;
     if (height > 0) nsfb->height = height;
     nsfb->format = NSFB_FMT_XBGR8888;
     select_plotters(nsfb);
-    if (s) nsfb->linelen = s->dc->stride * 4;
+    if (s) {
+        nsfb->ptr = (uint8_t *)client_bits(s);
+        nsfb->linelen = s->dc->stride * 4;
+        s->dirty = true;
+    }
     return 0;
 }
 
 static bool pop_pending(NovaSurface *s, nsfb_event_t *event)
 {
+    if (s->resized && !s->npending) {
+        s->resized = false;
+        memset(event, 0, sizeof(*event));
+        event->type = NSFB_EVENT_RESIZE;
+        event->value.resize.w = s->new_w;
+        event->value.resize.h = s->new_h;
+        return true;
+    }
     if (!s->npending) return false;
     *event = s->pending[0];
     memmove(s->pending, s->pending + 1, (size_t)(--s->npending) * sizeof(nsfb_event_t));
@@ -253,7 +301,7 @@ static bool nova_input(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
             if (m.message == WM_QUIT) { translate(s, &m); break; }
             if (m.message != WM_TIMER) DispatchMessageA(&m);
             translate(s, &m);
-            if (s->npending) break;
+            if (s->npending || s->resized) break;
         }
         if (pop_pending(s, event)) return true;
         if (timeout == 0) return false;

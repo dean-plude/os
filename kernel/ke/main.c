@@ -352,6 +352,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
      * ------------------------------------------------------------------ */
     /* Validate user-pointer probing against a temporary user mapping */
     KiProbeSelfTest();
+    PsSelfTest();                         /* runs once threads do */
 
     kprintf("=== Creating test threads ===\n");
     sched_create_thread("thread_a",  thread_a,           NULL, 8);
