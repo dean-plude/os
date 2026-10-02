@@ -158,11 +158,24 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp) __attribute__(
 void UmNoteSyscallFrame(void *frame);
 
 /* -----------------------------------------------------------------------
- * The desktop lock: ramfs and the window system are used by the desktop
- * thread; program threads take this lock around file-system access.
+ * The desktop lock: the window system, used by the desktop thread and
+ * programs' window services.  It includes the file-system lock (ramfs),
+ * which the file services take alone.  Order: desktop, then files.
  * ----------------------------------------------------------------------- */
 void DesktopLock(void);
 void DesktopUnlock(void);
+/* The desktop lock without the file-system one: the desktop thread's loop,
+ * which takes FsLock only around the work that may touch files (input,
+ * drawing, built-in windows' timers), so programs' file I/O goes on
+ * meanwhile */
+void DesktopLockAlone(void);
+void DesktopUnlockAlone(void);
+void FsLock(void);
+void FsUnlock(void);
+/* Shared: reading and writing open files' contents, each under its own
+ * lock as well (um_syscall.c); never taken twice by one thread */
+void FsLockShared(void);
+void FsUnlockShared(void);
 struct Thread *DesktopLockOwner(void);     /* diagnostics */
 
 /* Save the registry and drive C: to disk now (before a restart or shutdown). */

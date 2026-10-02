@@ -13,6 +13,7 @@
 
 #include "../ke/smp.h"
 #include "wm.h"
+#include "../um/um.h"
 #include "../gdi/gdi.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
@@ -707,8 +708,11 @@ void WmTick(void)
     cursor_animate();
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
         WND *w = &g_windows[i];
-        if (g_used[i] && w->on_tick && w->on_tick(w))
-            mark_dirty();
+        if (!g_used[i] || !w->on_tick) continue;
+        bool files = !w->tick_lock_free;
+        if (files) FsLock();
+        if (w->on_tick(w)) mark_dirty();
+        if (files) FsUnlock();
     }
 }
 
