@@ -122,12 +122,16 @@ def verdict(t, out, ok, exe):
     bad = re.search(r'^(FAIL[^\n]*)', out, re.M) or re.search(r'\b([1-9]\d* failed)', out)
     if bad:
         return bad.group(1)
+    # the kernel's log shares the serial port with the Terminal's copy and
+    # can land in the middle of a line of output: match without it
+    text = KLOG.sub('', out)
     for e in t.expect:
-        if not re.search(e, out):
+        if not re.search(e, text):
             return f'missing "{e}"'
     return None
 
 
+KLOG = re.compile(r'\[(?:UM|SCHED)\] [^\n]*\n')
 PANIC = re.compile(r'KERNEL PANIC|KERNEL PAGE FAULT|DOUBLE FAULT|Unhandled kernel exception')
 
 

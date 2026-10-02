@@ -397,7 +397,7 @@ Contents:
 - **The standard DLLs**, all built from source in `userland/`:
   - `ucrtbase.dll` and the `api-ms-win-crt-*` API sets: the Universal C
     Runtime, from the same sources as `msvcrt.dll` (with musl's libm), each
-    with its own `printf` rounding; `vcruntime140.dll` has the MSVC **C++
+    with its own `printf` rounding; `vcruntime140.dll` has the MSVC **C
     exception** machinery (`__CxxFrameHandler3`, `_CxxThrowException`,
     RTTI) as well as `memcpy` and friends.
   - `kernel32.dll` grew I/O completion ports, overlapped and alertable I/O,
@@ -441,7 +441,7 @@ Contents:
   `disktest write` / `verify` across a restart (150 files, passing on FAT32
   and FAT16, with `fsck.fat` finding the volumes clean).
 - Not yet: dialog boxes, menus and child-window
-  controls, file-open dialogs (they report "cancelled"), the MSVC FH4 C++
+  controls, file-open dialogs (they report "cancelled"), the MSVC FH4 C
   exception tables, type libraries, `RegNotifyChangeKeyValue` events, audio,
   and a clipboard shared between programs.  *(Dialogs, menus and controls
   came in Phase 12 and the shared clipboard after Phase 13; the rest is
@@ -600,7 +600,7 @@ changed; every fix is in NovaOS.
   property sheet with a form page and a tree view page), `droptest.exe`,
   `shmtest.exe`, `ftprobe.exe` (what `FindFirstFile` reports).  Real
   programs are tested from a second disk image holding 7-Zip, Git, CMake,
-  Ninja, Neovim, Notepad++ and others, driven by a QEMU harness that types
+  Ninja, Neovim, Notepad and others, driven by a QEMU harness that types
   Terminal commands, clicks, drags and takes screenshots.
 - Drags from 7-Zip's file manager onto other programs work: one or more
   files from an archive or from a folder, onto a `WM_DROPFILES` window or
@@ -612,10 +612,10 @@ changed; every fix is in NovaOS.
 
 The dock's **App Store** (`kernel/apps/store.c`, also `start store` in the
 Terminal) is a catalog of free and open-source Windows programs: 7-Zip,
-VLC, Firefox, Thunderbird, Notepad++, GIMP, Inkscape, Krita, Audacity,
+VLC, Firefox, Thunderbird, Notepad, GIMP, Inkscape, Krita, Audacity,
 HandBrake, OBS Studio, LibreOffice, SumatraPDF, KeePassXC, qBittorrent,
 PuTTY, WinSCP, Git, Python, WinMerge and ShareX, plus a **Runtimes**
-category (.NET Desktop Runtime, Visual C++ Redistributable, OpenJDK,
+category (.NET Desktop Runtime, Visual C Redistributable, OpenJDK,
 Mesa 3D), by category, with a note on how far each gets on NovaOS today.
 
 - **64-bit packages where there are any.**  The store fetches each
@@ -623,7 +623,7 @@ Mesa 3D), by category, with a note on how far each gets on NovaOS today.
   installer, a Windows Installer `.msi`, or, for Firefox and Thunderbird,
   the full installer, which is a 7-Zip self-extracting archive.  Apps
   whose only download is a 32-bit setup program (GIMP, qBittorrent,
-  WinSCP, the Visual C++ Redistributable) now install through it too,
+  WinSCP, the Visual C Redistributable) now install through it too,
   since NovaOS runs 32-bit programs.
 - **Get** downloads over HTTPS (following redirects, with the bytes
   received shown while it runs) to `C:\Downloads`, using the same network
@@ -640,7 +640,7 @@ Mesa 3D), by category, with a note on how far each gets on NovaOS today.
   **Installed** view lists what is there; runtimes show "Installed".
 - Tested in QEMU with stand-in packages (the sandbox this was built in
   cannot reach the publishers): 7-Zip installed from its x64 installer;
-  a portable zip unpacked into `C:\Programs\Notepad++` and opened; a
+  a portable zip unpacked into `C:\Programs\Notepad` and opened; a
   7-Zip self-extracting installer unpacked like Firefox's and opened.
   The apps themselves mostly need more of Windows than NovaOS has (the
   note on each row).
@@ -715,7 +715,7 @@ the 64-bit kernel, and they get a 32-bit copy of the whole userland in
 - **x86 exceptions** (`exc_x86.h`): frames chained from `fs:[0]`,
   `RtlUnwind`, `RtlRaiseException`, and the `__try` handlers of MSVC and
   clang (`_except_handler3`, `_except_handler4_common`); vcruntime140
-  has x86 C++ exceptions (`__CxxFrameHandler3`, `_CxxThrowException`)
+  has x86 C exceptions (`__CxxFrameHandler3`, `_CxxThrowException`)
   and RTTI with absolute addresses; msvcrt has x86 `setjmp`/`longjmp`.
 - **Build**: `tools/build_userland.py` builds the userland twice, the
   second time with `--target=i686-pc-windows-msvc`.  Stdcall functions are
@@ -728,9 +728,9 @@ the 64-bit kernel, and they get a 32-bit copy of the whole userland in
   reports an x86 machine and `GetNativeSystemInfo` the AMD64 one,
   `GetSystemDirectory` is `SysWOW64`.
 - **Tested**: every self-test (crttest, filetest, threads/SEH, DLL/TLS,
-  posixtest, apitest, comtest, C++ exceptions, shared memory) passes as a
+  posixtest, apitest, comtest, C exceptions, shared memory) passes as a
   32-bit program as well as a 64-bit one; 32-bit GUI programs (winhello,
-  guitest); programs from the 32-bit MinGW toolchain (C, and C++ with
+  guitest); programs from the 32-bit MinGW toolchain (C, and C with
   exceptions); 7-Zip's own 32-bit self-extractors, console and GUI,
   unpacking an archive; and a real NSIS (Modern UI) installer going
   through its welcome, folder, progress and finish pages, installing
@@ -929,7 +929,8 @@ MinGit's `git.exe` (2.47) runs: `--version`, `init`, `add`, `commit`,
     now finds it while any handle keeps it, as on Windows, so `waitpid`
     on a finished child gets its exit code.
 - Not yet: MinGit ships no `less`, git's default pager, so give `log` and
-  `config --list` `--no-pager` or `-c core.pager=more`.
+  `config --list` `--no-pager` or `-c core.pager=more`.  *(Since done:
+  NovaOS's own `less`, see [A pager for git](#a-pager-for-git-lessexe).)*
 
 ## The MSYS2 runtime: `sh.exe`, `clone`, `push`
 
@@ -1133,14 +1134,14 @@ finds them.
 - Next: Direct3D on top of this (WineD3D to OpenGL, or DXVK on Mesa's
   lavapipe Vulkan).
 
-## App coverage: Notepad++, bat, fd
+## App coverage: Notepad, bat, fd
 
-- **Notepad++ 8.7.9** (64-bit portable) opens with its menus, toolbar and
+- **Notepad 8.7.9** (64-bit portable) opens with its menus, toolbar and
   editor, and takes typing.  What it needed: the `.exe`'s TLS slot is now
   always 0 (MSVC's thread-safe statics assume it), `GetFileAttributesEx`
   leaves its output alone when the file is missing, and `RtlUnwindEx`
   runs a consolidating unwind's callback, so `catch` blocks in programs
-  with the static MSVC C++ runtime run (a `throw` used to resume after
+  with the static MSVC C runtime run (a `throw` used to resume after
   the throw site).
 - **bat** (`CompareObjectHandles`, a new `NtCompareObjects` call) and
   **fd** (`GetModuleHandle` of an API set name) now run; rg and jq ran
@@ -1154,7 +1155,7 @@ finds them.
 - **`tools/novarun.py`** boots the image in QEMU with programs copied onto
   a data disk, types Terminal commands and takes screenshots:
   `python3 tools/novarun.py --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' 'x.exe' '!shot x.png'`.
-- Not yet: Notepad++'s status bar draws black and its toolbar is cut
+- Not yet: Notepad's status bar draws black and its toolbar is cut
   short; ~~Neovim hangs on exit (console input handles cannot be waited
   on)~~ fixed in Phase 17.2;
   ffmpeg needs `avrt`, `ncrypt`, `d2d1`, `dwrite` and more (see
@@ -1419,16 +1420,16 @@ build machine, and DXVK is the faster, more complete path anyway.
 
 - **`tools/appcorpus.py`** downloads the official Windows x64 releases of
   ripgrep, fd, jq, 7-Zip, MinGit, Python (the NuGet package), Node.js and
-  Notepad++ (portable), unpacks them into `C:\Apps` with a few sample files
+  Notepad (portable), unpacks them into `C:\Apps` with a few sample files
   and a bare git repository, boots once and types each program's commands:
   a search, a `find`, a JSON filter, an archive made and tested, `git
-  clone`, `log` and `status`, `python -c`, `node -e`.  Notepad++ opens a
-  file and its screenshot is compared with `tests/reference/notepad++.png`
+  clone`, `log` and `status`, `python -c`, `node -e`.  Notepad opens a
+  file and its screenshot is compared with `tests/reference/notepad.png`
   (scaled down; at most 3% of pixels may differ).
 - **`.github/workflows/nightly.yml`** runs it every night on main (and on
   pull requests that change the corpus) and posts the pass/fail table to
   the run's summary and as a comment on the "Nightly app corpus" issue.
-- Not yet: Notepad++'s tab bar and status bar still draw black; the
+- Not yet: Notepad's tab bar and status bar still draw black; the
   reference shows them so, and an improvement means updating it
   (`--update-reference`).
 
@@ -1473,6 +1474,35 @@ TLS already in the tree.
   encode, decoding it back, and streaming a WAV over HTTPS from the host
   with TLS 1.3 and with TLS 1.2; with `tls_verify` on (ffmpeg's default) a
   self-signed server is refused as an untrusted root.
+
+## A pager for git: `less.exe`
+
+`git log`, `diff` and `config --list` on the Terminal now page without
+`--no-pager`.  MinGit has no `less`, git's default pager, so git stopped
+with "unable to execute pager 'less'" (it does on Windows too).  NovaOS
+now ships `less.exe` in `C:\Windows\System32` (and SysWOW64), on `PATH`,
+where git finds it:
+
+- It shows a screenful (the console's rows), then asks `-- More --` and
+  takes single keys, through the per-key console input of Phase 17.2:
+  Space (or `f`, Page Down) the next page, Enter (or `j`, Down) one more
+  line, `d` half a page, `/text` and Enter skips to the next line
+  containing the text, `q` (or Esc) quits, and git then stops quietly.
+  The prompt is erased as the text moves on.  On a console that only
+  hands over whole lines it asks for a line instead (Enter, a number,
+  `/text` or `q`).
+- Output that fits on one screen goes straight through, as with git's
+  `LESS=FRX`, and so does everything when the output is not a console
+  (`git log | find` is unchanged).  Color escapes pass through, files
+  given as arguments (`less a.txt`) work, and options are accepted.
+- Why not the real `less`: its Windows build draws through the console
+  screen-buffer calls (`SetConsoleCursorPosition`, `FillConsoleOutput*`),
+  which are still no-ops, so it would draw garbage; it can come once they
+  drive the Terminal's screen.
+- The nightly corpus's `git log` test no longer passes `--no-pager`.
+- The test tools (`tools/selftest.py`, `appcorpus.py`) match a program's
+  expected output without the kernel's `[UM]`/`[SCHED]` log lines, which
+  share the serial port and could land mid-line (`[[UM] jq.exe ... 40,2]`).
 
 ## Phase 17: kernel and API correctness
 

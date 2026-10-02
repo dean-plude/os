@@ -107,6 +107,10 @@ named program or test demonstrates it.
   `RegNotifyChangeKeyValue` change events.
 - ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
   is waitable and the Terminal runs full-screen programs (Phase 17.2).
+- The Win32 console screen-buffer calls (`SetConsoleCursorPosition`,
+  `FillConsoleOutputCharacter`... are still no-ops), so programs that draw
+  through them rather than VT sequences work and `less` can be the real
+  one (git pages through NovaOS's own `less` today).
 - Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
   Windows Terminal-style hosts) exist only as functions that fail.
 - Move files, the registry, process creation and the console off the big
