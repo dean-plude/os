@@ -145,8 +145,9 @@ named program or test demonstrates it.
   one (git pages through NovaOS's own `less` today).
 - Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
   Windows Terminal-style hosts) exist only as functions that fail.
-- Move files, the registry, process creation and the console off the big
-  kernel lock.
+- ~~Move files, the registry, process creation and the console off the
+  big kernel lock~~ Done (Phase 17.7): file and registry throughput scale
+  about 3x from one CPU to four (`smpstress scaling 3`, run nightly).
 - ~~Security: enforce tokens and ACLs on objects~~ Done for named kernel
   objects: real tokens, restricted tokens, impersonation, and descriptors
   checked on open (Phase 17.4, `sectest`, `acltest`).  Files' descriptors
