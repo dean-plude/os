@@ -4,7 +4,9 @@
 
 #include "setup.h"
 #include "fat.h"
+#include "ntfs.h"
 #include "persist.h"
+#include "drives.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
@@ -52,22 +54,19 @@ int SetupListDisks(SetupDisk *out, int max)
         s->holds_c = d == cdev;
         FatVol *v[8];
         bool blank = false;
-        int nv = PersistFindVolumes(d, v, 8, &blank);
-        char labels[48] = "";
-        int ll = 0;
-        for (int k = 0; k < nv; k++) {
+        int nf = PersistFindVolumes(d, v, 8, &blank);
+        for (int k = 0; k < nf; k++) {
             FatEntry e;
             /* (from the disc, a disk with NovaOS on it is not what booted) */
             if (!g_live && FatLookupPath(v[k], "\\EFI\\NOVA\\kernel.elf", &e) && !e.dir) s->boot = true;
-            const char *l = FatLabel(v[k]);
-            if (*l && ll < (int)sizeof(labels) - 16)
-                ll += ksnprintf(labels + ll, sizeof(labels) - (size_t)ll, "%s%s", ll ? ", " : "", l);
             FatUnmount(v[k]);
         }
+        char labels[48];
+        int nv = PersistDiskLabels(d, labels, sizeof(labels), &blank);
         bool nova = strstr(labels, "NOVA_EFI") && strstr(labels, "NOVADATA");
         if (blank)             ksnprintf(s->contents, sizeof(s->contents), "Empty");
         else if (nova)         ksnprintf(s->contents, sizeof(s->contents), "NovaOS is installed on it");
-        else if (nv)           ksnprintf(s->contents, sizeof(s->contents), "FAT volumes: %s", labels[0] ? labels : "no label");
+        else if (nv)           ksnprintf(s->contents, sizeof(s->contents), "Volumes: %s", labels[0] ? labels : "no label");
         else                   ksnprintf(s->contents, sizeof(s->contents), "Unknown contents");
     }
     return n;
@@ -78,6 +77,7 @@ int SetupListDisks(SetupDisk *out, int max)
  * ------------------------------------------------------------------------- */
 static volatile SetupStatus g_status;
 static BlockDev *g_target;
+static bool      g_ntfs;                  /* drive C: on NTFS */
 
 void SetupGetStatus(SetupStatus *out)
 {
@@ -192,7 +192,7 @@ static bool write_gpt(BlockDev *d, UINT64 *esp_lba, UINT64 *esp_sectors, UINT64 
     UINT64 end = (last_usable + 1) & ~2047ull;                    /* align the end down to 1 MiB */
     if (end <= *data_lba + 131072) return false;
     *data_sectors = end - *data_lba;
-    if (*data_sectors > (1ull << 31)) *data_sectors = 1ull << 31; /* FAT32 with 4 KiB clusters: 1 TiB */
+    if (!g_ntfs && *data_sectors > (1ull << 31)) *data_sectors = 1ull << 31;   /* FAT32 with 4 KiB clusters: 1 TiB */
 
     UINT8 *buf = kzalloc((2 + GPT_TABLE_SEC) * BLOCK_SECTOR);
     if (!buf) return false;
@@ -302,6 +302,7 @@ static void setup_thread(void *arg)
         PersistDetach();
     }
 
+    DrivesDetach(d);                                             /* (its volumes are not D:, E:, ... any more) */
     step(10, "Creating partitions");
     UINT64 esp_lba = 2048, esp_sec, data_lba = esp_lba + SETUP_ESP_SECTORS, data_sec;
     if (!wipe(d, esp_lba, data_lba) || !write_gpt(d, &esp_lba, &esp_sec, &data_lba, &data_sec)) {
@@ -340,20 +341,24 @@ static void setup_thread(void *arg)
     FatUnmount(esp);
     if (!good) { failed("The copied system files did not read back correctly."); return; }
 
-    step(80, "Formatting the data partition for drive C:");
-    FatVol *data = FatFormat(d, data_lba, data_sec, "NOVADATA");
-    if (!data) { failed("Could not format the data partition."); return; }
-    UINT32 nova_dir;
-    FatMkdirPath(data, "\\NOVA\\C", &nova_dir);
-    FatSync(data);
+    if (g_ntfs) {
+        step(80, "Formatting the data partition for drive C: (NTFS)");
+        if (!NtfsFormat(d, data_lba, data_sec, "NOVADATA", rnd())) { failed("Could not format the data partition."); return; }
+    } else {
+        step(80, "Formatting the data partition for drive C: (FAT32)");
+        FatVol *data = FatFormat(d, data_lba, data_sec, "NOVADATA");
+        if (!data) { failed("Could not format the data partition."); return; }
+        UINT32 nova_dir;
+        FatMkdirPath(data, "\\NOVA\\C", &nova_dir);
+        FatSync(data);
+        FatUnmount(data);
+    }
 
     /* This session's files go to the new disk when C: has nowhere else to
      * be saved; a C: kept on another disk stays there */
     if (c_here || !had_c) {
         step(88, "Copying your files to the new disk");
-        g_status.moved_c = PersistAdopt(data);
-    } else {
-        FatUnmount(data);
+        g_status.moved_c = PersistAdopt(d, data_lba);
     }
     if (d->flush) d->flush(d);
     if (g_kernel_copy) { kfree(g_kernel_copy); g_kernel_copy = NULL; }
@@ -362,14 +367,15 @@ static void setup_thread(void *arg)
     g_status.state = SETUP_DONE;
 }
 
-bool SetupStart(BlockDev *dev)
+bool SetupStart(BlockDev *dev, bool ntfs)
 {
     if (g_status.state == SETUP_RUNNING || !dev) return false;
     memset((void *)&g_status, 0, sizeof(g_status));
     g_status.state = SETUP_RUNNING;
     g_target = dev;
-    kprintf("[SETUP] Installing NovaOS on %s (%s, %u MiB)\n", dev->name, dev->model,
-            (unsigned)(dev->sectors >> 11));
+    g_ntfs = ntfs;
+    kprintf("[SETUP] Installing NovaOS on %s (%s, %u MiB), drive C: on %s\n", dev->name, dev->model,
+            (unsigned)(dev->sectors >> 11), ntfs ? "NTFS" : "FAT32");
     if (!sched_create_thread("setup", setup_thread, NULL, 8)) {
         g_status.state = SETUP_FAILED;
         strncpy((char *)g_status.error, "Could not start the installer.", sizeof(g_status.error) - 1);

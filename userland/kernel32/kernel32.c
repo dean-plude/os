@@ -785,22 +785,6 @@ WINBASEAPI DWORD WINAPI GetFileType(HANDLE h)
            d.DeviceType == 0x22 ? FILE_TYPE_UNKNOWN : FILE_TYPE_DISK;
 }
 
-/* A console handle (not NUL, which is a character device too) */
-static BOOL is_console(HANDLE h)
-{
-    IO_STATUS_BLOCK io;
-    FILE_FS_DEVICE_INFORMATION d;
-    return NT_SUCCESS(NtQueryVolumeInformationFile(h, &io, &d, sizeof(d), FileFsDeviceInformation)) && d.DeviceType == 0x50;
-}
-
-WINBASEAPI BOOL WINAPI GetConsoleMode(HANDLE h, LPDWORD mode)
-{
-    if (!is_console(h)) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-    *mode = 0x7;                                            /* processed, line input, echo */
-    return TRUE;
-}
-
-WINBASEAPI BOOL WINAPI SetConsoleMode(HANDLE h, DWORD mode) { (void)mode; return is_console(h); }
 WINBASEAPI UINT WINAPI GetConsoleCP(void)             { return CP_UTF8; }
 WINBASEAPI UINT WINAPI GetConsoleOutputCP(void)       { return CP_UTF8; }
 WINBASEAPI BOOL WINAPI SetConsoleOutputCP(UINT cp)    { (void)cp; return TRUE; }
@@ -825,6 +809,7 @@ WINBASEAPI HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD share, LPS
     NtPath p;
     if (!nt_path(name, &p)) return INVALID_HANDLE_VALUE;
     if (sa && sa->bInheritHandle) p.oa.Attributes |= OBJ_INHERIT;
+    if (sa) p.oa.SecurityDescriptor = sa->lpSecurityDescriptor;   /* (a new file's own) */
     static const ULONG disp[6] = { 0, FILE_CREATE, FILE_OVERWRITE_IF, FILE_OPEN, FILE_OPEN_IF, FILE_OVERWRITE };
     if (disposition < 1 || disposition > 5) { SetLastError(ERROR_INVALID_PARAMETER); return INVALID_HANDLE_VALUE; }
     ULONG opts = FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT;
@@ -940,9 +925,9 @@ WINBASEAPI BOOL WINAPI DeleteFileW(LPCWSTR name)
 
 WINBASEAPI BOOL WINAPI CreateDirectoryA(LPCSTR name, LPSECURITY_ATTRIBUTES sa)
 {
-    (void)sa;
     NtPath p;
     if (!nt_path(name, &p)) return FALSE;
+    if (sa) p.oa.SecurityDescriptor = sa->lpSecurityDescriptor;
     HANDLE h;
     IO_STATUS_BLOCK io;
     NTSTATUS s = NtCreateFile(&h, FILE_LIST_DIRECTORY | SYNCHRONIZE, &p.oa, &io, 0, FILE_ATTRIBUTE_NORMAL,

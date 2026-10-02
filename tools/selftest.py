@@ -5,9 +5,12 @@
                       [--only NAME,...] [--junit FILE] [--summary FILE]
 
 Suites:
-  core      (default) apitest, abitest, filetest, pipetest, guitest auto,
-            disptest, battery, soundtest, and last "crash kernel" (a
-            deliberate kernel fault must print a symbolized backtrace)
+  core      (default) apitest, abitest, filetest, pipetest, proctest, guitest auto,
+            disptest, battery, soundtest, sleeptest timer (Sleep and wait
+            timeouts within 1 ms under load), powertest (the lid, a thermal zone
+            and sleep, driven from the QEMU monitor), and last "crash
+            kernel" (a deliberate kernel fault must print a symbolized
+            backtrace)
   graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
             tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
             made by tools/ci/stage-graphics.sh: 7-Zip, the two downloads and
@@ -34,10 +37,15 @@ class Test:
     wait for the App Store's "[STORE] @store: Installed" line.  @shot: take
     the screenshot 2 s after the output matches this regex (while the
     program draws).  @crash: the command halts the kernel on purpose; the
-    test passes when the serial log then shows @expect (it runs last)."""
-    def __init__(self, name, cmd, expect=(), timeout=180, check=None, store=None, shot=None, crash=False):
+    test passes when the serial log then shows @expect (it runs last).
+    @acts: (regex, function(nova)) pairs run when the output matches (the
+    program asks for something only the test can do).  @boot_expect: regexes
+    the whole serial log so far must match (what the kernel logged at boot)."""
+    def __init__(self, name, cmd, expect=(), timeout=180, check=None, store=None, shot=None, crash=False,
+                 acts=(), boot_expect=()):
         self.name, self.cmd, self.expect, self.timeout, self.check = name, cmd, expect, timeout, check
         self.store, self.shot, self.crash = store, shot, crash
+        self.acts, self.boot_expect = acts, boot_expect
 
 
 def tones(*hz):
@@ -54,19 +62,66 @@ def tones(*hz):
     return check
 
 
+def close_lid(nova):
+    """powertest asked: close the lid (pc-testdev port 0xE8, see
+    tests/acpi/lid-thermal.asl), and once NovaOS has gone to sleep open it,
+    press a key on the USB keyboard and wake the machine.  (QEMU 8.2 has no
+    USB remote-wakeup path to the platform: the key reaches the suspended
+    xHCI port, and system_wakeup stands in for its PME#.)"""
+    nova.hmp('o /b 0xe8 1')
+    for _ in range(240):
+        if nova.status() == 'suspended':
+            break
+        time.sleep(0.25)
+    time.sleep(2)
+    nova.hmp('o /b 0xe8 0')
+    nova.qmp.key('shift')                     # (the USB keyboard has QEMU's input; types nothing)
+    time.sleep(1)
+    nova.qmp.cmd('system_wakeup')
+    # The tests after this one type on that keyboard: wait until NovaOS has
+    # found it again after the wake (read from the file: run() owns the stream)
+    for _ in range(240):
+        log = open(nova.serial_path, 'rb').read().decode('latin-1')
+        if 'Woke up' in log and re.search(r'Woke up[\s\S]*\[USB\] port \d+: keyboard', log):
+            break
+        time.sleep(0.25)
+
+
+def set_temp(c):
+    return lambda nova: nova.hmp(f'o /b 0xe9 {c}')
+
+
 # The boot that runs the tests has an unplugged AC adapter and a battery
-# (tests/acpi/battery.asl) and an Intel HD Audio card recorded to a WAV.
+# (tests/acpi/battery.asl), a lid and a thermal zone (tests/acpi/lid-thermal.asl,
+# with pc-testdev as its embedded controller), a USB keyboard on an xHCI
+# controller at 00:05.0 and an Intel HD Audio card recorded to a WAV.
 CORE = [
     Test('apitest', 'apitest', [r'apitest: \d+ passed, 0 failed']),
     Test('abitest', 'abitest', [r'abitest: \d+ passed, 0 failed']),
     Test('filetest', 'filetest', [r'filetest: \d+ passed, 0 failed']),
     Test('pipetest', 'pipetest', [r'pipetest: \d+ passed, 0 failed']),
+    Test('proctest', 'proctest', [r'proctest: \d+ passed, 0 failed']),
     Test('guitest', 'guitest auto', [r'guitest: \d+ passed, 0 failed']),
     Test('disptest', 'disptest', [r'\d+ passed, 0 failed']),
     Test('battery', 'battery', [r'Power source: battery', r'Battery: 75%', r'Time left: 3 h 00 min',
                                 r'SystemBatteryState: present 1, AC 0, charging 0, discharging 1']),
     Test('soundtest tone', 'soundtest tone 440 1000', [r'played \d+ samples']),
     Test('soundtest wasapi', 'soundtest wasapi 660 1000', [r'played \d+ frames'], check=tones(440, 660)),
+    Test('sleeptest timer', 'sleeptest timer', [r'sleeptest: resolution \d+\.\d+ ms under load', r'sleeptest: PASS'],
+         boot_expect=[r'\[HPET\] At 0x[0-9a-f]+: \d+ Hz', r'calibrated against the HPET',
+                      r'\[APIC\] (One-shot|TSC-deadline) timer started']),
+    Test('powertest', 'powertest', [r'powertest: \d+ passed, 0 failed', r'\[SHELL\] Lid closed: sleeping',
+                                    r'\[SLEEP\] Woke up', r'\[ACPI\] Lid open',
+                                    r'TZ00: 70\.0 C, at or above the passive trip point \(60\.0 C\): passive cooling on',
+                                    r'TZ00: 45\.0 C, below the passive trip point \(60\.0 C\): passive cooling off'],
+         acts=[(r'powertest: close the lid', close_lid), (r'powertest: heat to 70 C', set_temp(70)),
+               (r'powertest: cool to 45 C', set_temp(45))],
+         boot_expect=[r'\[ACPI\] SCI on IRQ \d+ \(GSI \d+\)', r'\[ACPI\] PCI interrupt routing: \d+ entries',
+                      r'\[ACPI\] Lid \\_SB_\.LID0', r'\[ACPI\] Thermal zone \\_TZ_\.TZ00: 40\.0 C',
+                      r'\[ACPI\] Wake device \\_SB_\.LID0 \(lid\)',
+                      r'\[ACPI\] Wake device \\_SB_\.PCI0\.XHC0 \(USB controller\)',
+                      r'\[USB\] [^\n]*keyboard[^\n]*wakes the machine'],
+         timeout=300),
     # last: crash.exe asks the kernel to fault, which must print a backtrace with names
     Test('kernel backtrace', 'crash kernel', [r'Backtrace:\r?\n  #0 [0-9a-f]{16}  KeCrashTestFault\+0x[0-9a-f]+\r?\n'
                                               r'  #1 [0-9a-f]{16}  KeCrashTest\+0x[0-9a-f]+\r?\n'
@@ -142,9 +197,12 @@ def main():
     tests = [t for t in suite if not a.only or t.name in a.only.split(',') or t.cmd.split()[0] in a.only.split(',')]
     os.makedirs(a.out, exist_ok=True)
     work = tempfile.mkdtemp(prefix='selftest')
-    aml = os.path.join(work, 'battery.aml')
-    subprocess.run(['iasl', '-p', aml[:-4], os.path.join(ROOT, 'tests', 'acpi', 'battery.asl')],
-                   check=True, stdout=subprocess.DEVNULL)
+    tables = []
+    for asl in ('battery', 'lid-thermal'):
+        aml = os.path.join(work, asl + '.aml')
+        subprocess.run(['iasl', '-p', aml[:-4], os.path.join(ROOT, 'tests', 'acpi', asl + '.asl')],
+                       check=True, stdout=subprocess.DEVNULL)
+        tables += ['-acpitable', f'file={aml}']
     wav = os.path.join(a.out, 'sound.wav') if a.suite == 'core' else None
     puts, data_mb = [], 64
     if a.suite == 'graphics':
@@ -157,7 +215,8 @@ def main():
     t_boot = time.time()
     try:
         nova = Nova(a.img, work, puts, mem=4096 if a.suite == 'graphics' else 2048, data_mb=data_mb, wav=wav,
-                    extra_args=['-acpitable', f'file={aml}'])
+                    extra_args=tables + ['-device', 'pc-testdev', '-device', 'qemu-xhci,id=xhci,addr=0x5',
+                                         '-device', 'usb-kbd,id=usbkbd,bus=xhci.0'])
     except RuntimeError as e:
         print(e)
         shutil.copy(os.path.join(work, 'serial.log'), a.out)
@@ -176,8 +235,11 @@ def main():
                 nova.qmp.type(t.cmd + '\n')
                 out, ok = nova.sr.wait('KERNEL PAGE FAULT', t.timeout)
                 out += nova.sr.wait('halting', 5)[0]
+                if not out.strip():                 # nothing at all: what the kernel said last
+                    out = '(no output; the serial log ends:)\n' + \
+                        open(nova.serial_path, 'rb').read().decode('latin-1')[-3000:]
             else:
-                out, ok = nova.run(t.cmd, t.timeout, shot=(t.shot, png) if t.shot else None)
+                out, ok = nova.run(t.cmd, t.timeout, shot=(t.shot, png) if t.shot else None, acts=t.acts)
             if t.crash:
                 miss = [e for e in t.expect if not re.search(e, out)]
                 why = None if ok and not miss else ('no kernel fault' if not ok else 'no symbolized backtrace')
@@ -186,6 +248,10 @@ def main():
             else:
                 exe = re.split(r'[\\/]', t.cmd.split()[0])[-1]
                 why = verdict(t, out, ok, exe if exe.lower().endswith('.exe') else exe + '.exe')
+                whole = open(nova.serial_path, 'rb').read().decode('latin-1') if t.boot_expect else ''
+                for e in t.boot_expect:
+                    if not why and not re.search(e, whole):
+                        why = f'missing "{e}" in the serial log'
             full_log += out
             if PANIC.search(out) and not t.crash:
                 why = 'kernel panic'

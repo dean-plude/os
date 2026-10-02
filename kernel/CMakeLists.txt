@@ -86,6 +86,7 @@ set(CMAKE_ASM_NASM_FLAGS "-f elf64 -g -F dwarf")
 set(LWIP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lwip/src")
 set(MBEDTLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mbedtls")
 set(UACPI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/uacpi")
+set(VTERM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libvterm")
 
 set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -95,6 +96,7 @@ set(KERNEL_INCLUDE_DIRS
     "${LWIP_DIR}/include"
     "${MBEDTLS_DIR}/include"
     "${UACPI_DIR}/include"
+    "${VTERM_DIR}/include"
 )
 
 # -------------------------------------------------------------------------
@@ -128,6 +130,8 @@ set(KERNEL_C_SOURCES
     hal/pci.c
     hal/acpi.c
     hal/aml.c
+    hal/ioapic.c
+    hal/hpet.c
     hal/display.c
     drivers/e1000.c
     drivers/ahci.c
@@ -176,6 +180,7 @@ set(KERNEL_C_SOURCES
     ke/probe_test.c
     ob/ob.c
     ps/ps.c
+    ps/ps_test.c
     cm/cm.c
     se/se.c
     io/io.c
@@ -187,6 +192,7 @@ set(KERNEL_C_SOURCES
     fs/vfs.c
     fs/initrd.c
     fs/ramfs.c
+    fs/fsec.c
     gdi/gdi.c
     gdi/png.c
     gdi/icon.c
@@ -233,6 +239,13 @@ list(APPEND KERNEL_C_SOURCES ${MBEDTLS_SOURCES})
 file(GLOB UACPI_SOURCES "${UACPI_DIR}/source/*.c")
 set_source_files_properties(${UACPI_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 list(APPEND KERNEL_C_SOURCES ${UACPI_SOURCES})
+
+# libvterm 0.3.3 (third_party/libvterm, MIT): the Terminal's VT emulator for
+# full-screen console programs; the C library it uses is apps/vterm_libc.h
+file(GLOB VTERM_SOURCES "${VTERM_DIR}/src/*.c")
+set_source_files_properties(${VTERM_SOURCES} PROPERTIES COMPILE_OPTIONS
+    "-w;-include;${CMAKE_CURRENT_SOURCE_DIR}/apps/vterm_libc.h")
+list(APPEND KERNEL_C_SOURCES ${VTERM_SOURCES})
 
 # The Windows userland (userland/, tools/build_userland.py): system DLLs and
 # programs built with clang for x86_64-pc-windows-msvc, embedded as data and

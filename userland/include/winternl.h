@@ -307,6 +307,9 @@ NTSYSAPI NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base, 
 NTSYSAPI NTSTATUS NTAPI NtNovaDebugPrint(const char *s, ULONG len);
 NTSYSAPI NTSTATUS NTAPI NtNovaWatchDirectory(HANDLE dir, BOOLEAN subtree, HANDLE event, ULONG remove);
 NTSYSAPI NTSTATUS NTAPI NtNovaFlushView(PVOID base);
+/* Console handles: modes and input records (op: 0 get mode, 1 set mode,
+ * 2 read records, 3 peek, 4 write, 5 count, 6 flush, 7 size in cells) */
+NTSYSAPI NTSTATUS NTAPI NtNovaConsole(HANDLE h, ULONG op, PVOID buf, ULONG len, PULONG res);
 /* Fill buf with len (<= 4096) cryptographically random bytes from the kernel entropy pool */
 NTSYSAPI NTSTATUS NTAPI NtNovaGetRandom(void *buf, ULONG len);
 NTSYSAPI INT_PTR  NTAPI NtNovaSocket(ULONG type);

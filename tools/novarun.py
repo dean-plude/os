@@ -8,7 +8,9 @@ the --put trees, opens the Terminal (Win, "terminal", Enter), turns on
 "serial on" and types each COMMAND, waiting for the Terminal's end-of-command
 mark.  Prints each command's output.  A COMMAND of the form
 "!shot NAME.png" saves a screenshot, "!wait N" waits N seconds and
-"!keys a b ctrl-c" presses QEMU key names.
+"!keys a b ctrl-c" presses QEMU key names, "!type TEXT" types
+without waiting (\\n Enter, \\e Esc) and "!done N" waits up to N seconds
+for the running command to end.
 
 Options: --mem MiB (2048), --smp N (2), --timeout S per command (120),
 --keep DIR (keep the serial log, data disk and screenshots there),
@@ -164,13 +166,22 @@ class Nova:
             self.close()
             raise
 
-    def run(self, cmd, timeout=120, shot=None):
+    def run(self, cmd, timeout=120, shot=None, acts=()):
         """Type @cmd into the Terminal; returns (serial output, finished in time).
         @shot = (regex, path): a screenshot 2 s after the output matches
-        regex (while the program is still drawing)"""
+        regex (while the program is still drawing).  @acts: (regex, function)
+        pairs; each function is called with this Nova once the output
+        matches its regex (a program asking the test to do something)"""
         self.sr.read_new()
         self.qmp.type(cmd + '\n')
         got, ok, end = '', False, time.time() + timeout
+        pending = list(acts)
+        while pending and time.time() < end and '[TERM-DONE]' not in got:
+            time.sleep(0.25)
+            got += self.sr.read_new()
+            for a in [a for a in pending if re.search(a[0], got)]:
+                pending.remove(a)
+                a[1](self)
         if shot:
             pat = re.compile(shot[0])
             while time.time() < end and '[TERM-DONE]' not in got and not pat.search(got):
@@ -192,6 +203,13 @@ class Nova:
 
     def shot(self, path):
         self.qmp.cmd('screendump', filename=os.path.abspath(path), format='png')
+
+    def hmp(self, line):
+        """A QEMU monitor command (e.g. "o /b 0xe8 1": write an I/O port)"""
+        return self.qmp.cmd('human-monitor-command', **{'command-line': line}).get('return', '')
+
+    def status(self):
+        return self.qmp.cmd('query-status').get('return', {}).get('status')
 
     def keys(self, names):
         for k in names.split():
@@ -237,6 +255,20 @@ def main():
                 continue
             if c.startswith('!wait '):
                 time.sleep(float(c[6:]))
+                continue
+            if c.startswith('!type '):      # type without waiting (\n, \e: Enter, Esc)
+                text = c[6:].replace('\\n', '\n')
+                for i, part in enumerate(text.split('\\e')):
+                    if i:
+                        nova.qmp.key('esc')
+                        time.sleep(0.1)
+                    nova.qmp.type(part)
+                continue
+            if c.startswith('!done '):      # wait for the running command to end
+                t0 = time.time()
+                got, ok = nova.sr.wait('[TERM-DONE]', float(c[6:]))
+                print(got.replace('\n[TERM-DONE]\n', '').rstrip(), flush=True)
+                print(f'### {"done" if ok else "TIMEOUT"} in {time.time() - t0:.1f}s', flush=True)
                 continue
             if c.startswith('!keys '):
                 nova.keys(c[6:])

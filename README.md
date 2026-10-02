@@ -33,11 +33,12 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 
 | Program | Kind | Tested on NovaOS |
 |---|---|---|
-| **7-Zip 26.03** (x64) | GUI installer, file manager, `7zG`, `7z.exe` | Installs; the file manager browses, opens archives, adds and extracts with the full dialogs; Options has all six pages.  The App Store uses `7z.exe` to unpack downloads. |
+| **7-Zip 26.03** (x64) | GUI installer, file manager, `7zG`, `7z.exe` | Installs; the file manager browses, opens archives, adds and extracts with the full dialogs, and drags files out of archives and folders onto other programs; Options has all six pages.  The App Store uses `7z.exe` to unpack downloads. |
 | **7-Zip self-extractors** (x86) | 32-bit console and GUI SFX | Unpack an archive. |
 | **NSIS installers** (x86, Modern UI) | 32-bit setup programs | Welcome, folder, progress and finish pages; files, registry, desktop and Start menu shortcuts; the uninstaller removes it all. |
 | **MinGit 2.47** | Git for Windows (console) | `init`, `add`, `commit`, `log`, `status`, `diff`, `checkout -b`, `merge`, `gc`, `fsck`, and `clone`/`fetch`/`push` between local repositories. |
-| **MSYS2 runtime** (MinGit's `usr\bin`) | `sh.exe` (bash), `ls`, `cat`, `wc`… | `sh -c` with pipes, `$(...)`, subshells, globbing, `fork`. |
+| **MSYS2 runtime** (MinGit's `usr\bin`) | `sh.exe` (bash), `ls`, `cat`, `wc`… | Interactive `sh --login -i` sessions in the Terminal (prompt, line editing, colours); `sh -c` with pipes, `$(...)`, subshells, globbing, `fork`, `/dev/null`. |
+| **Neovim 0.10 and 0.11** (x64 `.zip`) | Full-screen terminal editor (libuv, LuaJIT) | Opens a file, edits it, `:wq` saves it and exits with code 0; `nvim -l` scripts, `vim.system`, `jobstart` and RPC to an embedded `nvim`. |
 | **Eclipse Temurin 21** | Java JRE `.msi`, JDK `.zip` | `java -version`, a threads/exceptions/files stress test, `javac` compiling a program that then runs. |
 | **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes. |
 | **Node.js 24** | `.msi`, `.zip` | `node -v`, `-e`, `npm -v`, a crypto/fs/JSON/timers test script. |
@@ -83,9 +84,12 @@ every part, phase by phase.
   processes and threads, virtual memory with sections and guard pages, I/O,
   registry, security tokens.  SMP with per-core scheduling and fine-grained
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
-  1903 numbers.
+  1903 numbers.  Timers are the local APIC's, one-shot or TSC-deadline and
+  calibrated against the HPET, so `Sleep(1)` and wait timeouts end within
+  a fraction of a millisecond even with every CPU busy.
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
-  either), FAT16/FAT32, GPT, NTFS (other drives, read and write); Intel e1000/e1000e
+  either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
+  file ACLs, and other drives); Intel e1000/e1000e
   network cards; Intel High Definition Audio (output) with a kernel mixer;
   PS/2 keyboards and mice; USB (xHCI, EHCI, OHCI and UHCI controllers, any
   number of each) with hubs and HID keyboards (lock-key LEDs included),
@@ -93,7 +97,9 @@ every part, phase by phase.
   NTFS, as the next drive letter, hot-plugged); CMOS clock; a Bochs/QEMU VBE
   display driver (resolutions switched at run time, page flipping) with the
   UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
-  sleep (S3), batteries and AC adapters (AML interpreted by uACPI).
+  sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
+  devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
+  a real interrupt through the I/O APIC).
 - **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
   TLS with the Mozilla root store.
 - **Windows userland** (`userland/`): about 35 system DLLs written from
@@ -176,9 +182,10 @@ Rebuild the ISO from a fresh build with
 - **Build and boot-test** (core): `apitest`, `abitest` (the PEB, TEB,
   `KUSER_SHARED_DATA`, `CONTEXT` and loader layouts, ntdll's stubs and the
   system-call numbers, against Windows 10 1903 x64), `filetest`,
-  `pipetest`, `guitest auto`, `disptest`, `battery` (against the battery in
+  `pipetest`, `proctest`, `guitest auto`, `disptest`, `battery` (against the battery in
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
-  tones played), and last `crash kernel`, a deliberate kernel fault whose
+  tones played), `powertest` (closing the lid in `tests/acpi/lid-thermal.asl`
+  sleeps, a USB key and the lid wake it, the thermal zone's readings), and last `crash kernel`, a deliberate kernel fault whose
   serial log must show a backtrace with function names.
 - **Graphics tests**: installs Mesa 3D and DXVK with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
@@ -201,7 +208,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
   `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
+  `cppeh`, `shmtest`, `pipetest`, `proctest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
   `tools/novarun.py --wav out.wav` records what NovaOS plays and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
@@ -265,7 +272,7 @@ os/
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
 │   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, USB core, xHCI/EHCI/OHCI/UHCI, hubs, HID, mass storage
-│   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, ACPI (uACPI host)
+│   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, HPET, I/O APIC, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
 │   ├── wm/               # Window manager, desktop shell, input, clipboard

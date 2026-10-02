@@ -117,6 +117,8 @@ typedef struct {
     bool (*pipe_reset)(UsbHc *hc, UsbPipe *p);
     /* Timer tick, g_usb_lock held: finish interrupt transfers, notice port changes */
     void (*poll)(UsbHc *hc);
+    /* Before S3 (may be NULL): arm the root ports to wake the machine */
+    void (*prepare_sleep)(UsbHc *hc);
     /* After S3: the controller lost its state; start it again (the core
      * then forgets every device and enumerates the ports afresh) */
     bool (*resume)(UsbHc *hc);

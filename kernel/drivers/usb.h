@@ -46,7 +46,10 @@ typedef struct {
 int  UsbInit(void);
 /* Timer tick, any CPU: finish interrupt transfers, repeat held keys */
 void UsbPoll(void);
-/* After waking from S3: restart the controllers and enumerate again */
+/* Before S3: arm the controllers (xHCI) to wake the machine */
+void UsbPrepareSleep(void);
+/* After waking from S3 (or a sleep that didn't happen): restart the
+ * controllers and enumerate again */
 void UsbResume(void);
 
 /* Speeds (xHCI port speed IDs) */

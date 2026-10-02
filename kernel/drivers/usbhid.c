@@ -279,7 +279,7 @@ typedef struct {
     UsbDev    *dev;
     UsbPipe   *pipe;
     HidLayout  L;
-    bool       keyboard, pointer, absolute, boot;
+    bool       keyboard, pointer, absolute, boot, wake;
     UINT8      kbd_id;               /* the report the keys come in */
     UINT8      keys[32];             /* keyboard usages held down (bitmap) */
     UINT8      repeat;
@@ -520,6 +520,11 @@ void *UsbHidProbe(UsbDev *d, const UsbIface *f)
     }
     if (!ok) { kfree(h); return NULL; }
     if (h->keyboard) UsbControl(d, 0x21, 0x0A, 0, f->number, 0, NULL);           /* SET_IDLE(0): reports on change only */
+    if (h->keyboard) {                    /* a key may wake the machine (if the device can) */
+        UINT8 cfg[9];
+        if (UsbControl(d, 0x80, 6, USB_DT_CONFIG << 8, 0, sizeof(cfg), cfg) == sizeof(cfg) && (cfg[7] & 0x20))
+            h->wake = UsbControl(d, 0x00, 3, 1, 0, 0, NULL) >= 0;               /* SET_FEATURE(DEVICE_REMOTE_WAKEUP) */
+    }
 
     UINT16 mps = (UINT16)((ep[4] | ep[5] << 8) & 0x7FF);
     h->pipe = UsbOpenPipe(d, ep, mps);
@@ -528,8 +533,8 @@ void *UsbHidProbe(UsbDev *d, const UsbIface *f)
     UsbBind(d, h, hid_gone);
     const char *kind = h->keyboard && h->pointer ? "keyboard + pointer" : h->keyboard ? "keyboard" :
                        h->absolute ? (h->L.app == 0x0D04 ? "touch screen" : "absolute pointer") : "mouse";
-    kprintf("[USB] %s: %s (%s protocol, %d fields)\n", UsbDevName(d), kind,
-            h->boot ? "boot" : "report", h->L.n);
+    kprintf("[USB] %s: %s (%s protocol, %d fields%s)\n", UsbDevName(d), kind,
+            h->boot ? "boot" : "report", h->L.n, h->wake ? ", wakes the machine" : "");
     UsbPipeListen(h->pipe, mps, on_report, h);
     return h;
 }

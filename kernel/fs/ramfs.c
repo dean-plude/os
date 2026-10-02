@@ -203,7 +203,7 @@ static void mark_moved(RamNode *n)
     for (RamNode *c = n->child; c; c = c->next) mark_moved(c);
 }
 
-void RamfsMarkChanged(RamNode *n) { if (n && !n->dir) mark(n, RAMFS_F_DIRTY); }
+void RamfsMarkChanged(RamNode *n) { if (n) mark(n, RAMFS_F_DIRTY); }
 
 /* Directories first, then case-insensitive by name */
 static bool sorts_before(const RamNode *a, const RamNode *b)
@@ -477,6 +477,7 @@ bool RamfsDelete(RamNode *n)
     mark(n->parent, RAMFS_F_DIRTYDIR);
     *pp = n->next;
     kfree(n->data);
+    kfree(n->sd);
     kfree(n);
     return true;
 }

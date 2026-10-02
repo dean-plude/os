@@ -382,27 +382,8 @@ NTSYSAPI NTSTATUS NTAPI RtlAbsoluteToSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PS
     return RtlMakeSelfRelativeSD(abs, rel, len);
 }
 
-/* The descriptor every object has: owned by the user, group Users, and no
- * DACL (full access for everyone) */
-static NTSTATUS default_sd(ULONG info, PSECURITY_DESCRIPTOR out, ULONG len, PULONG ret)
-{
-    SECURITY_DESCRIPTOR abs;
-    RtlCreateSecurityDescriptor(&abs, 1);
-    if (info & OWNER_SECURITY_INFORMATION) abs.Owner = (PSID)g_user_sid;
-    if (info & GROUP_SECURITY_INFORMATION) abs.Group = (PSID)g_users_sid;
-    if (info & DACL_SECURITY_INFORMATION) abs.Control |= SE_DACL_PRESENT;
-    ULONG n = len;
-    NTSTATUS s = RtlMakeSelfRelativeSD(&abs, out, &n);
-    if (ret) *ret = n;
-    return s;
-}
-
-NTSYSAPI NTSTATUS NTAPI NtQuerySecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd, ULONG len, PULONG ret)
-{
-    (void)h;
-    return default_sd(info, sd, len, ret);
-}
-NTSYSAPI NTSTATUS NTAPI NtSetSecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd) { (void)h; (void)info; (void)sd; return ST_SUCCESS; }
+/* (NtQuerySecurityObject and NtSetSecurityObject are system calls: files on
+ * drive C: keep their own descriptors) */
 
 /* -----------------------------------------------------------------------
  * Tokens
@@ -793,6 +774,46 @@ NTSYSAPI NTSTATUS NTAPI RtlUnicodeStringToAnsiString(NT_ANSI_STRING *dst, const 
     dst->Buffer[n] = 0;
     dst->Length = (USHORT)n;
     return ST_SUCCESS;
+}
+
+/* UTF-8 <-> UTF-16 with byte counts (invalid sequences become U+FFFD) */
+NTSYSAPI NTSTATUS NTAPI RtlUTF8ToUnicodeN(WCHAR *dst, ULONG dst_bytes, ULONG *out_bytes, const CHAR *src, ULONG src_bytes)
+{
+    if (!src || !out_bytes) return ST_INVALID_PARAMETER;
+    const unsigned char *s = (const unsigned char *)src;
+    ULONG o = 0, cap = dst ? dst_bytes / 2u : 0;
+    BOOL bad = FALSE, full = FALSE;
+    for (ULONG i = 0; i < src_bytes;) {
+        ULONG c = s[i], need = c < 0x80 ? 0 : c < 0xC2 ? 99 : c < 0xE0 ? 1 : c < 0xF0 ? 2 : c < 0xF5 ? 3 : 99;
+        if (need == 99 || i + need >= src_bytes) { c = 0xFFFD; i++; bad = TRUE; }
+        else {
+            if (need) c &= 0x3F >> need;
+            ULONG k = 1;
+            for (; k <= need; k++) { if ((s[i + k] & 0xC0) != 0x80) break; c = c << 6 | (s[i + k] & 0x3Fu); }
+            if (k <= need || (need == 2 && (c < 0x800 || (c >= 0xD800 && c < 0xE000))) || (need == 3 && (c < 0x10000 || c > 0x10FFFF)))
+                { c = 0xFFFD; i += k; bad = TRUE; }
+            else i += need + 1;
+        }
+        ULONG units = c >= 0x10000 ? 2 : 1;
+        if (dst) {
+            if (o + units > cap) { full = TRUE; break; }
+            if (units == 2) { dst[o] = (WCHAR)(0xD800 + ((c - 0x10000) >> 10)); dst[o + 1] = (WCHAR)(0xDC00 + ((c - 0x10000) & 0x3FF)); }
+            else dst[o] = (WCHAR)c;
+        }
+        o += units;
+    }
+    *out_bytes = o * 2;
+    if (full) return ST_BUFFER_TOO_SMALL;
+    return bad ? (NTSTATUS)0x00000107 /* STATUS_SOME_NOT_MAPPED */ : ST_SUCCESS;
+}
+
+NTSYSAPI NTSTATUS NTAPI RtlUnicodeToUTF8N(CHAR *dst, ULONG dst_bytes, ULONG *out_bytes, const WCHAR *src, ULONG src_bytes)
+{
+    if (!src || !out_bytes) return ST_INVALID_PARAMETER;
+    ULONG n = utf8_of(src, src_bytes / 2u, 0, 0);
+    if (!dst) { *out_bytes = n; return ST_SUCCESS; }
+    *out_bytes = utf8_of(src, src_bytes / 2u, dst, dst_bytes) > dst_bytes ? dst_bytes : n;
+    return n > dst_bytes ? ST_BUFFER_TOO_SMALL : ST_SUCCESS;
 }
 
 NTSYSAPI ULONG NTAPI RtlUnicodeStringToAnsiSize(const UNICODE_STRING *s) { return utf8_of(s->Buffer, s->Length / 2u, 0, 0) + 1; }

@@ -592,6 +592,13 @@ int UsbInit(void)
 /* After S3 every controller has lost its state, and the devices theirs:
  * start the controllers again, forget the devices and let the usb thread
  * enumerate what is plugged in (interrupts are off here). */
+void UsbPrepareSleep(void)
+{
+    if (!g_ready) return;
+    for (int i = 0; i < g_nhc; i++)
+        if (g_hcs[i]->ops->prepare_sleep) g_hcs[i]->ops->prepare_sleep(g_hcs[i]);
+}
+
 void UsbResume(void)
 {
     if (!g_ready) return;

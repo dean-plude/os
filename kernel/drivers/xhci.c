@@ -741,6 +741,31 @@ static bool xhci_resume(UsbHc *hc)
     return true;
 }
 
+/* Before S3: the root ports may wake the machine (a device connecting or
+ * leaving, over-current, a suspended device's remote wakeup), the ports
+ * with a device are suspended (U3) and the controller signals PME# */
+static void xhci_prepare_sleep(UsbHc *hc)
+{
+    Xhci *x = X(hc);
+    const PciDevice *pci = &x->pci;
+    for (int p = 1; p <= x->ports; p++) {
+        UINT32 sc = rd32(x->op, OP_PORTSC(p));
+        UINT32 w = (sc & PORT_PRESERVE) | (7u << 25);                    /* WCE WDE WOE */
+        wr32(x->op, OP_PORTSC(p), w);
+        if ((sc & PORT_CCS) && (sc & PORT_PED))
+            wr32(x->op, OP_PORTSC(p), (w & ~(0xFu << 5)) | (3u << 5) | (1u << 16));   /* PLS U3, LWS */
+    }
+    for (UINT8 cap = (UINT8)PciRead32(pci->bus, pci->dev, pci->func, 0x34) & 0xFC, n = 0; cap && n < 48; n++) {
+        UINT32 hdr = PciRead32(pci->bus, pci->dev, pci->func, cap);
+        if ((hdr & 0xFF) == 1) {                                        /* power management: PME_En, clear PME_Status */
+            UINT32 csr = PciRead32(pci->bus, pci->dev, pci->func, cap + 4);
+            PciWrite32(pci->bus, pci->dev, pci->func, cap + 4, (csr & ~3u) | (1u << 8) | (1u << 15));
+            break;
+        }
+        cap = (UINT8)(hdr >> 8) & 0xFC;
+    }
+}
+
 static const UsbHcOps g_xhci_ops = {
     .kind        = "xHCI",
     .port_status = xhci_port_status,
@@ -756,6 +781,7 @@ static const UsbHcOps g_xhci_ops = {
     .listen      = xhci_listen,
     .pipe_reset  = xhci_pipe_reset,
     .poll        = xhci_poll,
+    .prepare_sleep = xhci_prepare_sleep,
     .resume      = xhci_resume,
 };
 

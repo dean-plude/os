@@ -32,9 +32,9 @@ The details of each phase are in [HISTORY.md](HISTORY.md).
 
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
 NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound is
-output only (no recording, MIDI, DirectSound or XAudio2); drive
-C: is FAT, so there are no hard links or ACL enforcement on files (NTFS
-disks are read and written as drives D:, E:, ...); and most of the App Store's catalog (Qt, GTK and
+output only (no recording, MIDI, DirectSound or XAudio2); there
+are no hard links, and file ACLs are kept only when drive C: is on NTFS
+(the installer's default); and most of the App Store's catalog (Qt, GTK and
 multimedia programs) does not run yet.
 
 ---
@@ -97,12 +97,15 @@ named program or test demonstrates it.
   been verified.
 
 ### Kernel and API compatibility
-- Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
+- ~~Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
   with a console of its own, file handles that share their position with
-  the processes they are handed to.
+  the processes they are handed to~~ Done (Phase 17.3, `proctest`).
 - Files: hard links, `MoveFileEx` pending renames carried out at boot,
   `RegNotifyChangeKeyValue` change events.
-- Interactive MSYS2 `sh` sessions (only `sh -c` and scripts are tested).
+- ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
+  is waitable and the Terminal runs full-screen programs (Phase 17.2).
+- Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
+  Windows Terminal-style hosts) exist only as functions that fail.
 - Move files, the registry, process creation and the console off the big
   kernel lock.
 - Security: enforce tokens and ACLs on objects (`AccessCheck` already
@@ -111,8 +114,10 @@ named program or test demonstrates it.
 ### Storage, network and hardware
 - ~~NTFS read~~ ~~NTFS write~~ Done: NTFS volumes mount as drives D:, E:,
   ...; files on them are written, created, renamed and deleted (volumes
-  Windows left hibernated or unclean stay read-only).  NTFS as drive C: is
-  next.  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
+  Windows left hibernated or unclean stay read-only).  ~~NTFS as drive C:~~
+  Done: the installer formats C: as NTFS (or FAT32), and files there keep
+  security descriptors that opening, deleting and renaming obey.  Hard
+  links are still to do.  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
 - IPv6, HTTP/2.
 - ~~USB (xHCI) with HID keyboards and mice~~ Done: keyboards, mice,
   tablets and touch screens in report protocol, on root ports or behind
@@ -123,10 +128,20 @@ named program or test demonstrates it.
 - ACPI beyond the MADT: ~~shutdown, reboot, sleep, batteries~~ Done:
   power-off (S5), sleep (S3), reset and the fixed power button from the
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,
-  control-method power buttons and `_PTS`/`_WAK`.  Still to do: the lid
-  switch, thermal zones, wake devices (USB keyboards), a real SCI
-  interrupt and PCI interrupt routing from `_PRT`; display modes after S3
-  on adapters other than the Bochs/QEMU one; HPET or TSC-deadline timers.
+  control-method power buttons and `_PTS`/`_WAK`; the lid (closing it
+  sleeps), thermal zones (passive cooling reported, sleep at `_HOT`,
+  shutdown at `_CRT`), wake devices from `_PRW` (the lid, power buttons,
+  USB controllers, with USB keyboards set for remote wakeup), the SCI as
+  a real interrupt through the I/O APIC and PCI interrupt routing from
+  `_PRT` (Phase 18.6).  Still to do: CPU throttling for passive cooling;
+  GPE blocks other than `\_GPE`; routing behind PCI bridges; USB wake
+  tested only up to what QEMU emulates (it has no USB-to-platform wake);
+  display modes after S3 on adapters other than the Bochs/QEMU one.
+- ~~HPET or TSC-deadline timers~~ Done (Phase 18.7): the HPET calibrates
+  the TSC and the APIC timer, which is one-shot (TSC-deadline where the
+  CPU has it), armed for the next tick or the earliest `Sleep` or wait
+  timeout; `sleeptest timer` checks 1 ms resolution under load.
+  Waitable timers (`SetWaitableTimer`) still fire on the 10 ms tick.
 - Boot and test on real hardware, not only QEMU.
 
 ---

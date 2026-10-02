@@ -71,3 +71,22 @@ bool   NtfsCreate(NtfsVol *v, UINT64 dir, const char *name, bool is_dir, UINT64 
 bool   NtfsDelete(NtfsVol *v, UINT64 dir, UINT64 mft);
 /* Move @mft from @old_dir to @new_dir under @name. */
 bool   NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, UINT64 new_dir, const char *name);
+
+/* Find @name (UTF-8, any case) in directory @dir */
+bool   NtfsLookup(NtfsVol *v, UINT64 dir, const char *name, UINT64 *mft, bool *is_dir);
+/* Set @mft's creation and write times (0: leave as is) and its read-only,
+ * hidden, system and archive attributes */
+bool   NtfsSetInfo(NtfsVol *v, UINT64 mft, UINT64 ctime, UINT64 mtime, UINT32 attrs);
+
+/* Security descriptors (self-relative) are kept once each in $Secure and
+ * named by an id: the one file @mft has (0 if none), the descriptor with
+ * id @id (*len: its size, false if larger than @cap), the id of @sd
+ * (stored if new; 0 on failure), and giving @mft descriptor @id. */
+UINT32 NtfsSecurityId(NtfsVol *v, UINT64 mft);
+bool   NtfsSecurityById(NtfsVol *v, UINT32 id, void *buf, UINT32 cap, UINT32 *len);
+UINT32 NtfsAddSecurity(NtfsVol *v, const void *sd, UINT32 len);
+bool   NtfsSetSecurityId(NtfsVol *v, UINT64 mft, UINT32 id);
+
+/* Make a new, empty NTFS volume of @sectors at @lba on @dev, labelled
+ * @label (UTF-8), with serial number @serial. */
+bool   NtfsFormat(BlockDev *dev, UINT64 lba, UINT64 sectors, const char *label, UINT64 serial);

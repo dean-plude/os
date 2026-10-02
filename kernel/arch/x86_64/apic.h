@@ -77,7 +77,7 @@
  *   1. Disable the legacy 8259A PIC
  *   2. Map LAPIC MMIO into kernel virtual address space
  *   3. Enable the APIC via the spurious vector register
- *   4. Set up the APIC timer in periodic mode
+ *   4. Calibrate the APIC timer and start it (one-shot or TSC-deadline)
  */
 void apic_init(void);
 
@@ -99,7 +99,7 @@ uint32_t apic_timer_current(void);
  */
 uint8_t apic_id(void);
 
-/* Enable the calling (non-boot) CPU's LAPIC and start its 100 Hz timer. */
+/* Enable the calling (non-boot) CPU's LAPIC and start its timer. */
 void apic_init_ap(void);
 
 /* Send an inter-processor interrupt: @command is the ICR low word
@@ -110,7 +110,12 @@ void apic_send_ipi(uint32_t dest_apic_id, uint32_t command);
 #define APIC_IPI_INIT    0x4500u
 #define APIC_IPI_SIPI    0x4600u                /* | start page number */
 
-/* TSC ticks per 10 ms (measured against the PIT at boot) */
+/* TSC ticks per 10 ms (measured against the HPET or the PIT at boot) */
 extern uint64_t g_tsc_per_tick;
+
+/* Fire this CPU's timer interrupt when the TSC reaches @tsc (at once if it
+ * has; at most a second ahead in one-shot mode): it fires once per arming */
+void apic_timer_arm(uint64_t tsc);
+bool apic_timer_tsc_deadline(void);
 void apic_resume(void);           /* after S3: mask the legacy PIC again */
 void udelay(uint64_t us);

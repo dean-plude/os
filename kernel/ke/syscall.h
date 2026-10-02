@@ -181,6 +181,7 @@
 #define SYSCALL_NtNovaWatchDirectory              0x020F  /* NovaOS: FindFirstChangeNotification's kernel half */
 #define SYSCALL_NtNovaFlushView                   0x021B  /* NovaOS: FlushViewOfFile's kernel half */
 #define SYSCALL_NtNovaBugCheck                    0x021C  /* NovaOS: crash the kernel on purpose (crash.exe kernel) */
+#define SYSCALL_NtNovaConsole                     0x021D  /* NovaOS: console modes and input records */
 /* NovaOS sockets (ws2_32's kernel half) */
 #define SYSCALL_NtNovaSocket                      0x0210
 #define SYSCALL_NtNovaSockConnect                 0x0211
@@ -229,6 +230,8 @@
 #define SYSCALL_NtSetSystemPowerState             0x01A5
 #define SYSCALL_NtInitiatePowerAction             0x00FC
 #define SYSCALL_NtPowerInformation                0x005F
+#define SYSCALL_NtQuerySecurityObject             0x0155
+#define SYSCALL_NtSetSecurityObject               0x01A1
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x0220
 #define SYSCALL_NtNovaGuiGetMessage               0x0221

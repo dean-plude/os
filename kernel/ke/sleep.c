@@ -32,6 +32,7 @@
 #include "../arch/x86_64/gdt.h"
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
+#include "../hal/ioapic.h"
 #include "../hal/pci.h"
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
@@ -264,12 +265,18 @@ static UINT64 rtc_seconds(void)
     return (UINT64)days * 86400 + t.hour * 3600u + t.minute * 60u + t.second;
 }
 
+static UINT64 g_last_sleep, g_last_wake;
+UINT64 SleepLastSleepTime(void) { return g_last_sleep; }
+UINT64 SleepLastWakeTime(void) { return g_last_wake; }
+
 bool SleepEnter(void)
 {
     if (!SleepSupported()) return false;
+    g_last_sleep = sched_ticks() * 100000ULL;
 
     AmlPrepareSleep();                   /* \_PTS; only wake GPEs stay on */
     /* Devices: what only the driver knows */
+    UsbPrepareSleep();                   /* USB keyboards may wake it */
     FbSuspend();
     PciSaveAll();
     save_mtrrs();
@@ -309,6 +316,7 @@ bool SleepEnter(void)
         bkl_restore(bkl);
         if (frozen < others) kprintf("[SLEEP] %u of %u CPUs stopped: not sleeping\n", frozen, others);
         else kprintf("[SLEEP] The machine didn't enter S3\n");
+        UsbResume();                     /* (its ports were suspended) */
         AmlWake();
         return false;
     }
@@ -316,6 +324,7 @@ bool SleepEnter(void)
 
     /* Devices the platform powered off */
     AcpiResume();
+    IoApicResume();                      /* the SCI */
     AhciResume();
     NvmeResume();
     E1000Resume();
@@ -330,6 +339,7 @@ bool SleepEnter(void)
     UINT64 ticked = g_tsc_per_tick ? (rdtsc() - tsc_before) / g_tsc_per_tick * 100000ULL : 0;
     if (asleep > ticked) UmClockAdvance(asleep - ticked);
     kprintf("[SLEEP] Woke up after %llu s\n", (unsigned long long)(asleep / 10000000ULL));
+    g_last_wake = sched_ticks() * 100000ULL > g_last_sleep ? sched_ticks() * 100000ULL : g_last_sleep + 1;
     irq_restore(irq);
     bkl_restore(bkl);
     AmlWake();                           /* \_WAK; the runtime GPEs again */

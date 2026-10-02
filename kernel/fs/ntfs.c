@@ -82,6 +82,9 @@ struct NtfsVol {
     UINT32    upcase_n;
     UINT64    mirr_lcn;                    /* $MFTMirr */
     UINT32    mirr_n;
+    struct SecEnt *sec;                    /* $Secure's descriptors (as $SII lists them), once read */
+    UINT32    nsec;
+    bool      sec_read;
 };
 
 static UINT16 rd16(const UINT8 *p) { UINT16 v; memcpy(&v, p, 2); return v; }
@@ -564,6 +567,7 @@ void NtfsUnmount(NtfsVol *v)
     kfree(v->cmap);
     kfree(v->mmap);
     kfree(v->upcase);
+    kfree(v->sec);
     stream_free(&v->mft);
     kfree(v->bounce);
     kfree(v);
@@ -819,8 +823,14 @@ static bool alloc_clusters(NtfsVol *v, Stream *s, UINT64 vcn, UINT64 count)
 {
     UINT64 total = v->clusters;
     UINT32 first_new = s->nruns;
-    /* A single extent first, from the hint on */
     UINT64 start = 0, len = 0, found = SPARSE;
+    /* Right after the stream's last extent, so it stays in one piece */
+    if (s->nruns && s->runs[s->nruns - 1].lcn != SPARSE && s->runs[s->nruns - 1].vcn + s->runs[s->nruns - 1].len == vcn) {
+        UINT64 at = s->runs[s->nruns - 1].lcn + s->runs[s->nruns - 1].len, k = 0;
+        while (k < count && at + k < total && !bit(v->cmap, at + k)) k++;
+        if (k == count) found = at;
+    }
+    /* Else a single extent, from the hint on */
     for (UINT64 pass = 0, c = v->hint; pass < total && found == SPARSE; pass++, c++) {
         if (c >= total) { c = 0; len = 0; }
         if (bit(v->cmap, c)) { len = 0; continue; }
@@ -903,6 +913,25 @@ static void remove_attr(UINT8 *rec, UINT8 *a)
     wr32(rec + 0x18, used - len);
 }
 
+static UINT16 up(NtfsVol *v, UINT16 c);
+
+/* Attributes of one type are kept in the order of their names (upcased,
+ * then exactly; no name first) */
+static int attr_name_cmp(NtfsVol *v, const UINT8 *a, const UINT8 *b)
+{
+    UINT32 na = a[9], nb = b[9], n = na < nb ? na : nb;
+    const UINT8 *pa = a + rd16(a + 0xA), *pb = b + rd16(b + 0xA);
+    for (int exact = 0; exact < 2; exact++) {
+        for (UINT32 i = 0; i < n; i++) {
+            UINT16 x = rd16(pa + 2 * i), y = rd16(pb + 2 * i);
+            if (!exact) { x = up(v, x); y = up(v, y); }
+            if (x != y) return x < y ? -1 : 1;
+        }
+        if (na != nb) return na < nb ? -1 : 1;
+    }
+    return 0;
+}
+
 /* Insert attribute @attr (@len bytes, instance filled in) in type order;
  * NULL if the record has no room */
 static UINT8 *insert_attr(NtfsVol *v, UINT8 *rec, const UINT8 *attr, UINT32 len)
@@ -913,6 +942,7 @@ static UINT8 *insert_attr(NtfsVol *v, UINT8 *rec, const UINT8 *attr, UINT32 len)
     while (off + 8 <= used) {
         UINT32 t = rd32(rec + off);
         if (t == AT_END || t > type) break;
+        if (t == type && attr_name_cmp(v, rec + off, attr) > 0) break;   /* (same type: by name) */
         off += rd32(rec + off + 4);
     }
     memmove(rec + off + len, rec + off, used - off);
@@ -1030,14 +1060,15 @@ typedef struct {
     UINT32   block, vcn_unit;
     Ent     *ents;
     UINT32   n, cap;
+    UINT16   minkey;                       /* shortest valid key */
     bool     error;
 } Collect;
 
 static bool collect_add(Collect *c, const UINT8 *e)
 {
     UINT16 klen = rd16(e + 0xA);
-    UINT32 len = 0x10 + align8(klen);
-    if (klen < 0x42 || len > 0x10 + 0x42 + 2 * 255 + 8) return false;
+    UINT32 len = rd16(e + 8) - ((rd16(e + 0xC) & 1) ? 8u : 0u);
+    if (klen < c->minkey || 0x10 + (UINT32)klen > len || len > 0x10 + 0x42 + 2 * 255 + 8) return false;
     if (c->n == c->cap) {
         UINT32 cap = c->cap ? c->cap * 2 : 64;
         Ent *ne = kmalloc(cap * sizeof(Ent));
@@ -1049,7 +1080,7 @@ static bool collect_add(Collect *c, const UINT8 *e)
     }
     UINT8 *copy = kzalloc(len);
     if (!copy) return false;
-    memcpy(copy, e, 0x10 + klen);
+    memcpy(copy, e, len);
     wr16(copy + 8, (UINT16)len);
     wr16(copy + 0xC, 0);                                       /* leaf form: no subnode */
     c->ents[c->n++] = (Ent){ copy, len };
@@ -1091,26 +1122,34 @@ static void ents_free(Ent *e, UINT32 n)
     kfree(e);
 }
 
-/* Every entry of directory @dir's index, in order (@rec is its record) */
-static bool load_index(NtfsVol *v, UINT64 dir, UINT8 *rec, Ent **out, UINT32 *n)
+/* Every entry of index @name (4 characters) of record @mft, in order (@rec
+ * is the record), in leaf form */
+static bool load_index_named(NtfsVol *v, UINT64 mft, UINT8 *rec, const UINT16 *name, Ent **out, UINT32 *n)
 {
     Collect c;
     memset(&c, 0, sizeof(c));
     c.v = v;
-    UINT8 *root = find_attr(rec, v->rec_size, AT_INDEX_ROOT, I30, 4);
+    c.minkey = name == I30 ? 0x42 : 4;
+    UINT8 *root = find_attr(rec, v->rec_size, AT_INDEX_ROOT, name, 4);
     if (!root || root[8]) return false;
     const UINT8 *r = root + rd16(root + 0x14);
     UINT32 rlen = rd32(root + 0x10);
     if (rlen < 0x20) return false;
     c.block = rd32(r + 8);
     c.vcn_unit = c.block >= v->cluster ? v->cluster : 512;
-    if ((r[0x1C] & 1) && !open_stream(v, dir, AT_INDEX_ALLOCATION, I30, 4, &c.alloc)) return false;
+    if ((r[0x1C] & 1) && !open_stream(v, mft, AT_INDEX_ALLOCATION, name, 4, &c.alloc)) return false;
     collect_node(&c, r + 0x10, rlen - 0x10, 0);
     stream_free(&c.alloc);
     if (c.error) { ents_free(c.ents, c.n); return false; }
     *out = c.ents;
     *n = c.n;
     return true;
+}
+
+/* Every entry of directory @dir's index, in order (@rec is its record) */
+static bool load_index(NtfsVol *v, UINT64 dir, UINT8 *rec, Ent **out, UINT32 *n)
+{
+    return load_index_named(v, dir, rec, I30, out, n);
 }
 
 /* An entry with a subnode pointer (internal form) */
@@ -1219,11 +1258,11 @@ static void blocks_to_vcns(UINT8 *hdr, UINT32 vcn_per_block)
 
 static const UINT8 g_end_leaf[0x10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0x10, 0, 0, 0, 2, 0, 0, 0 };
 
-/* Write directory @dir's index anew from @ents (sorted, leaf form).
- * @rec is its record, updated and written. */
-static bool write_index(NtfsVol *v, UINT64 dir, UINT8 *rec, Ent *ents, UINT32 n)
+/* Write index @name of record @dir anew from @ents (sorted, leaf form).
+ * @rec is the record, updated and written. */
+static bool write_index_named(NtfsVol *v, UINT64 dir, UINT8 *rec, const UINT16 *name, Ent *ents, UINT32 n)
 {
-    UINT8 *root = find_attr(rec, v->rec_size, AT_INDEX_ROOT, I30, 4);
+    UINT8 *root = find_attr(rec, v->rec_size, AT_INDEX_ROOT, name, 4);
     if (!root || root[8]) return false;
     UINT8 rhead[0x10];
     memcpy(rhead, root + rd16(root + 0x14), 0x10);             /* type, collation, block size, clusters */
@@ -1234,9 +1273,9 @@ static bool write_index(NtfsVol *v, UINT64 dir, UINT8 *rec, Ent *ents, UINT32 n)
     /* The existing allocation (kept, and grown if needed) */
     Stream alloc;
     memset(&alloc, 0, sizeof(alloc));
-    UINT8 *aa = find_attr(rec, v->rec_size, AT_INDEX_ALLOCATION, I30, 4);
-    if (aa && !open_stream(v, dir, AT_INDEX_ALLOCATION, I30, 4, &alloc)) return false;
-    UINT8 *ba = find_attr(rec, v->rec_size, AT_BITMAP, I30, 4);
+    UINT8 *aa = find_attr(rec, v->rec_size, AT_INDEX_ALLOCATION, name, 4);
+    if (aa && !open_stream(v, dir, AT_INDEX_ALLOCATION, name, 4, &alloc)) return false;
+    UINT8 *ba = find_attr(rec, v->rec_size, AT_BITMAP, name, 4);
     if (ba && ba[8]) { stream_free(&alloc); return false; }     /* (a non-resident index bitmap: not handled) */
 
     /* Room for the root: the record without the root and index attributes */
@@ -1250,9 +1289,14 @@ static bool write_index(NtfsVol *v, UINT64 dir, UINT8 *rec, Ent *ents, UINT32 n)
     UINT32 ntop = n;
     UINT64 trail = ~0ull;
     bool large = false, ok = false;
-    if (other + root_fixed + total + 0x10 > v->rec_size) {
+    /* ($Secure holds two indexes and a stream that grows: each index root
+     * keeps to a quarter of the record) */
+    UINT32 cap = name == I30 ? v->rec_size : v->rec_size / 4;
+    if (other + root_fixed + total + 0x10 > v->rec_size || root_fixed + total + 0x10 > cap) {
         large = true;
-        UINT32 room = v->rec_size - other - root_fixed - 0x18 - 0x80 - 0x30;   /* (the allocation and bitmap attributes) */
+        INT32 room = (INT32)v->rec_size - (INT32)(other + root_fixed + 0x18 + 0x80 + 0x30);  /* (the allocation and bitmap attributes) */
+        if (room > (INT32)cap - (INT32)(root_fixed + 0x18)) room = (INT32)cap - (INT32)(root_fixed + 0x18);
+        if (room < 0) goto out;
         Ent *items = ents;
         UINT32 nitems = n;
         UINT64 t_in = ~0ull;
@@ -1264,7 +1308,7 @@ static bool write_index(NtfsVol *v, UINT64 dir, UINT8 *rec, Ent *ents, UINT32 n)
             items = seps; nitems = nseps; t_in = t;
             UINT32 sz = 0;
             for (UINT32 i = 0; i < nseps; i++) sz += seps[i].len;
-            if (sz <= room) break;
+            if (sz <= (UINT32)room) break;
         }
         top = items; ntop = nitems; trail = t_in;
     }
@@ -1274,6 +1318,8 @@ static bool write_index(NtfsVol *v, UINT64 dir, UINT8 *rec, Ent *ents, UINT32 n)
     if (large && alloc.size < need) {
         UINT64 have = alloc.resident ? 0 : alloc.size;
         UINT64 more = (need - have + v->cluster - 1) / v->cluster;
+        UINT64 slack = (have / 4 + bsize - 1) / bsize * bsize / v->cluster;   /* (grow by a quarter more: fewer pieces) */
+        if ((have + (more + slack) * v->cluster) / bsize <= 512) more += slack;
         if (alloc.resident) { stream_free(&alloc); }
         if (!alloc_clusters(v, &alloc, have / v->cluster, more)) goto out;
         alloc.size = alloc.init_size = have + more * v->cluster;
@@ -1306,14 +1352,14 @@ static bool write_index(NtfsVol *v, UINT64 dir, UINT8 *rec, Ent *ents, UINT32 n)
     UINT8 *buf = kmalloc(v->rec_size);
     if (!buf) { kfree(rv); goto out; }
     /* drop the old root and index attributes, then add the new ones */
-    remove_attr(rec, find_attr(rec, v->rec_size, AT_INDEX_ROOT, I30, 4));
-    if ((aa = find_attr(rec, v->rec_size, AT_INDEX_ALLOCATION, I30, 4))) remove_attr(rec, aa);
-    if ((ba = find_attr(rec, v->rec_size, AT_BITMAP, I30, 4))) remove_attr(rec, ba);
-    UINT32 len = make_resident(buf, AT_INDEX_ROOT, I30, 4, rv, rv_len, 0);
+    remove_attr(rec, find_attr(rec, v->rec_size, AT_INDEX_ROOT, name, 4));
+    if ((aa = find_attr(rec, v->rec_size, AT_INDEX_ALLOCATION, name, 4))) remove_attr(rec, aa);
+    if ((ba = find_attr(rec, v->rec_size, AT_BITMAP, name, 4))) remove_attr(rec, ba);
+    UINT32 len = make_resident(buf, AT_INDEX_ROOT, name, 4, rv, rv_len, 0);
     kfree(rv);
     bool fit = insert_attr(v, rec, buf, len) != NULL;
     if (fit && large) {
-        len = make_nonresident(v, buf, v->rec_size / 2, AT_INDEX_ALLOCATION, I30, 4, &alloc, alloc.size, alloc.size);
+        len = make_nonresident(v, buf, v->rec_size / 2, AT_INDEX_ALLOCATION, name, 4, &alloc, alloc.size, alloc.size);
         fit = len && insert_attr(v, rec, buf, len);
         UINT64 nblk = alloc.size / bsize;
         UINT8 bm[64];
@@ -1322,14 +1368,14 @@ static bool write_index(NtfsVol *v, UINT64 dir, UINT8 *rec, Ent *ents, UINT32 n)
         if (fit) {
             memset(bm, 0, sizeof(bm));
             for (UINT32 i = 0; i < b.n; i++) set_bit(bm, i, true);
-            len = make_resident(buf, AT_BITMAP, I30, 4, bm, bml, 0);
+            len = make_resident(buf, AT_BITMAP, name, 4, bm, bml, 0);
             fit = insert_attr(v, rec, buf, len) != NULL;
         }
     } else if (fit && !alloc.resident && alloc.nruns) {
         free_runs(v, alloc.runs, alloc.nruns);                   /* small again: give the blocks back */
     }
     kfree(buf);
-    if (!fit) { kprintf("[NTFS] directory %llu: its index does not fit its record\n", (unsigned long long)dir); goto out; }
+    if (!fit) { kprintf("[NTFS] record %llu: its index does not fit\n", (unsigned long long)dir); goto out; }
     ok = write_record(v, dir, rec);
 out:
     for (UINT32 i = 0; i < b.n; i++) kfree(b.blocks[i]);
@@ -1337,6 +1383,11 @@ out:
     if (level) ents_free(level, ntop);
     stream_free(&alloc);
     return ok;
+}
+
+static bool write_index(NtfsVol *v, UINT64 dir, UINT8 *rec, Ent *ents, UINT32 n)
+{
+    return write_index_named(v, dir, rec, I30, ents, n);
 }
 
 /* ---- enabling writes ---- */
@@ -1647,25 +1698,43 @@ static void touch_si(UINT8 *rec, UINT32 size, UINT64 t, bool data)
     wr64(val + 0x18, t);
 }
 
-/* Refresh the copy of @mft's sizes and times in its directory entries */
-static bool update_dir_entry(NtfsVol *v, UINT64 dir, UINT64 mft, UINT64 alloc, UINT64 size, UINT64 t)
+/* Refresh the copy of record @rec's (@mft's) sizes, times and attributes
+ * in the entries its directories hold for it */
+static bool update_dir_entries(NtfsVol *v, UINT64 mft, const UINT8 *rec)
 {
-    UINT8 *rec = kmalloc(v->rec_size);
-    Ent *ents = NULL;
-    UINT32 n = 0;
-    bool ok = rec && read_record(v, dir, rec) && load_index(v, dir, rec, &ents, &n);
-    bool any = false;
-    for (UINT32 i = 0; ok && i < n; i++) {
-        if ((rd64(ents[i].e) & REF_MASK) != mft) continue;
-        UINT8 *k = ents[i].e + 0x10;
-        wr64(k + 0x10, t); wr64(k + 0x18, t); wr64(k + 0x20, t);
-        wr64(k + 0x28, alloc);
-        wr64(k + 0x30, size);
-        any = true;
+    UINT64 alloc = 0, size = 0, ct = 0, mt = 0;
+    UINT32 attrs = 0;
+    bool is_dir = rd16(rec + 0x16) & REC_IS_DIR;
+    const UINT8 *si = next_attr(rec, v->rec_size, NULL, AT_STANDARD_INFO);
+    if (si && !si[8] && rd32(si + 0x10) >= 0x30) {
+        const UINT8 *val = si + rd16(si + 0x14);
+        ct = rd64(val); mt = rd64(val + 8);
+        attrs = rd32(val + 0x20);
     }
-    if (ok && any) ok = write_index(v, dir, rec, ents, n);
-    if (ents) ents_free(ents, n);
-    kfree(rec);
+    const UINT8 *da = is_dir ? NULL : find_attr((UINT8 *)rec, v->rec_size, AT_DATA, NULL, 0);
+    if (da && da[8]) { alloc = rd64(da + 0x28); size = rd64(da + 0x30); }
+    else if (da) { size = rd32(da + 0x10); alloc = align8((UINT32)size); }
+    bool ok = true;
+    for (const UINT8 *fa = NULL; (fa = next_attr(rec, v->rec_size, fa, AT_FILE_NAME)); ) {
+        UINT64 dir = rd64(fa + rd16(fa + 0x14)) & REF_MASK;
+        UINT8 *drec = kmalloc(v->rec_size);
+        Ent *ents = NULL;
+        UINT32 n = 0;
+        bool good = drec && read_record(v, dir, drec) && load_index(v, dir, drec, &ents, &n), any = false;
+        for (UINT32 i = 0; good && i < n; i++) {
+            if ((rd64(ents[i].e) & REF_MASK) != mft) continue;
+            UINT8 *k = ents[i].e + 0x10;
+            wr64(k + 0x08, ct); wr64(k + 0x10, mt); wr64(k + 0x18, mt); wr64(k + 0x20, mt);
+            wr64(k + 0x28, alloc);
+            wr64(k + 0x30, size);
+            wr32(k + 0x38, (attrs & 0x37FFu & ~0x10u) | (is_dir ? FN_DIR_FLAG : 0));
+            any = true;
+        }
+        if (good && any) good = write_index(v, dir, drec, ents, n);
+        if (ents) ents_free(ents, n);
+        kfree(drec);
+        ok = ok && good;
+    }
     return ok;
 }
 
@@ -1736,13 +1805,8 @@ bool NtfsWriteFile(NtfsVol *v, UINT64 mft, const void *data, UINT64 len)
     if (!write_record(v, mft, rec)) { stream_free(&old); goto out; }
     if (old.nruns) free_runs(v, old.runs, old.nruns);
     stream_free(&old);
-    /* the directory entries carry the size too */
-    ok = true;
-    for (const UINT8 *fa = NULL; (fa = next_attr(rec, v->rec_size, fa, AT_FILE_NAME)); ) {
-        if (fa[8]) continue;
-        UINT64 parent = rd64(fa + rd16(fa + 0x14)) & REF_MASK;
-        ok = update_dir_entry(v, parent, mft, alloc, len, t) && ok;
-    }
+    (void)alloc;
+    ok = update_dir_entries(v, mft, rec);                        /* (the directory entries carry the size too) */
 out:
     stream_free(&ns);
     kfree(rec); kfree(attr); kfree(keep);
@@ -1965,4 +2029,770 @@ out:
     if (ents) ents_free(ents, n);
     kfree(rec); kfree(drec); kfree(attr);
     return ok;
+}
+
+/* ---------------------------------------------------------------------------
+ * Formatting
+ *
+ * A new volume laid out as Windows and mkntfs lay theirs out: 4 KiB
+ * clusters, 1 KiB records, 4 KiB index blocks; the system files in
+ * records 0-11 ($MFT ... $Extend), 12-15 reserved, $Quota, $ObjId and
+ * $Reparse in 24-26 under $Extend.  Security descriptors are kept in
+ * $Secure: 0x100 for the system files (read-only to SYSTEM and
+ * Administrators), 0x101 for $Secure and $Extend, and 0x102 for the root
+ * directory and what is made under it (full control for SYSTEM,
+ * Administrators and whoever creates a file, change for Authenticated
+ * Users, read and run for Users, all inherited, as Windows sets C:\).  $LogFile starts empty (all 0xFF).
+ * ------------------------------------------------------------------------- */
+#include "ntfs_upcase.h"
+
+#define FMT_RECORDS     64                 /* the MFT's first records */
+#define SD_SYSTEM       0x100u
+#define SD_EXTEND       0x101u
+#define SD_ROOT         0x102u
+#define SDS_MIRROR      0x40000u           /* $SDS keeps each 256 KiB twice */
+
+static const UINT8 g_sid_system[]  = { 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0 };                 /* S-1-5-18 */
+static const UINT8 g_sid_admins[]  = { 1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 2, 0, 0 }; /* S-1-5-32-544 */
+static const UINT8 g_sid_users[]   = { 1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x21, 2, 0, 0 }; /* S-1-5-32-545 */
+static const UINT8 g_sid_authusr[] = { 1, 1, 0, 0, 0, 0, 0, 5, 11, 0, 0, 0 };                 /* S-1-5-11 */
+static const UINT8 g_sid_creator[] = { 1, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0 };                  /* S-1-3-0: CREATOR OWNER */
+
+typedef struct { UINT8 flags; UINT32 mask; const UINT8 *sid; UINT32 sid_len; } FmtAce;
+
+/* A self-relative security descriptor: owner and group Administrators, a DACL of @aces */
+static UINT32 build_sd(UINT8 *out, const FmtAce *aces, int n)
+{
+    UINT32 o = 0x14, acl = o;
+    o += 8;
+    for (int i = 0; i < n; i++) {
+        UINT32 sz = 8 + aces[i].sid_len;
+        out[o] = 0;                                              /* ACCESS_ALLOWED_ACE_TYPE */
+        out[o + 1] = aces[i].flags;
+        wr16(out + o + 2, (UINT16)sz);
+        wr32(out + o + 4, aces[i].mask);
+        memcpy(out + o + 8, aces[i].sid, aces[i].sid_len);
+        o += sz;
+    }
+    out[acl] = 2; out[acl + 1] = 0;                              /* ACL_REVISION */
+    wr16(out + acl + 2, (UINT16)(o - acl));
+    wr16(out + acl + 4, (UINT16)n);
+    wr16(out + acl + 6, 0);
+    UINT32 owner = o;
+    memcpy(out + o, g_sid_admins, sizeof(g_sid_admins)); o += sizeof(g_sid_admins);
+    UINT32 group = o;
+    memcpy(out + o, g_sid_admins, sizeof(g_sid_admins)); o += sizeof(g_sid_admins);
+    out[0] = 1; out[1] = 0;
+    wr16(out + 2, 0x8004);                                       /* SE_SELF_RELATIVE | SE_DACL_PRESENT */
+    wr32(out + 4, owner);
+    wr32(out + 8, group);
+    wr32(out + 0xC, 0);
+    wr32(out + 0x10, acl);
+    return o;
+}
+
+/* The hash $Secure indexes descriptors by */
+static UINT32 sd_hash(const UINT8 *sd, UINT32 len)
+{
+    UINT32 h = 0;
+    for (UINT32 i = 0; i + 4 <= len; i += 4) h = ((h << 3) | (h >> 29)) + rd32(sd + i);
+    return h;
+}
+
+/* A view index's root ($SDH, $SII, $O, $Q, $R): @entries already laid out */
+static UINT32 view_root(UINT8 *out, UINT32 collation, UINT32 bsize, const UINT8 *entries, UINT32 elen)
+{
+    memset(out, 0, 0x20 + elen + 0x10);
+    wr32(out, 0);                                                /* indexes no attribute */
+    wr32(out + 4, collation);
+    wr32(out + 8, bsize);
+    out[0xC] = 1;
+    wr32(out + 0x10, 0x10);
+    wr32(out + 0x14, 0x10 + elen + 0x10);
+    wr32(out + 0x18, 0x10 + elen + 0x10);
+    if (elen) memcpy(out + 0x20, entries, elen);
+    memcpy(out + 0x20 + elen, g_end_leaf, 0x10);
+    return 0x20 + elen + 0x10;
+}
+
+/* A view index entry: @key then @data, at @out; its length */
+static UINT32 view_entry(UINT8 *out, const void *key, UINT16 klen, const void *data, UINT16 dlen, UINT32 pad)
+{
+    UINT32 doff = 0x10 + klen, len = align8(doff + dlen + pad);
+    memset(out, 0, len);
+    wr16(out, (UINT16)doff);
+    wr16(out + 2, dlen);
+    wr16(out + 8, (UINT16)len);
+    wr16(out + 0xA, klen);
+    memcpy(out + 0x10, key, klen);
+    memcpy(out + doff, data, dlen);
+    return len;
+}
+
+/* A record header for record @r: in use with @flags (0: free) */
+static void fmt_record(NtfsVol *v, UINT8 *rec, UINT64 r, UINT16 flags, UINT16 seq, UINT16 links)
+{
+    memset(rec, 0, v->rec_size);
+    memcpy(rec, "FILE", 4);
+    wr16(rec + 4, 0x30);
+    wr16(rec + 6, (UINT16)(v->rec_size / BLOCK_SECTOR + 1));
+    wr16(rec + 0x10, seq);
+    wr16(rec + 0x12, links);
+    UINT16 aoff = (UINT16)align8(0x30 + 2 * (v->rec_size / BLOCK_SECTOR + 1));
+    wr16(rec + 0x14, aoff);
+    wr16(rec + 0x16, flags);
+    wr32(rec + aoff, AT_END);
+    wr32(rec + 0x18, aoff + 8u);
+    wr32(rec + 0x1C, v->rec_size);
+    wr32(rec + 0x2C, (UINT32)r);
+}
+
+static void fmt_si(NtfsVol *v, UINT8 *rec, UINT64 t, UINT32 attrs, UINT32 sec)
+{
+    UINT8 si[0x48], a[0x80];
+    memset(si, 0, sizeof(si));
+    wr64(si, t); wr64(si + 8, t); wr64(si + 0x10, t); wr64(si + 0x18, t);
+    wr32(si + 0x20, attrs);
+    wr32(si + 0x34, sec);
+    insert_attr(v, rec, a, make_resident(a, AT_STANDARD_INFO, NULL, 0, si, sizeof(si), 0));
+}
+
+/* The $FILE_NAME of a system file in @parent (Win32 and DOS name); its value in @fn */
+static UINT32 fmt_fn(NtfsVol *v, UINT8 *rec, UINT8 *fn, UINT64 parent_ref, const char *name, UINT32 flags,
+                     UINT64 t, UINT64 alloc, UINT64 size)
+{
+    UINT16 w[32];
+    int n = utf8_to_utf16(name, w, 32);
+    UINT32 len = make_fn(fn, parent_ref, w, (UINT32)n, false, t, alloc, size);
+    wr32(fn + 0x38, flags);
+    fn[0x41] = 3;
+    UINT8 a[0x100];
+    insert_attr(v, rec, a, make_resident(a, AT_FILE_NAME, NULL, 0, fn, len, 1));
+    return len;
+}
+
+/* A non-resident attribute for @s (all of it initialised) */
+static bool fmt_nonres(NtfsVol *v, UINT8 *rec, UINT32 type, const UINT16 *name, UINT32 nlen, const Stream *s,
+                       UINT64 size)
+{
+    UINT8 a[0x100];
+    UINT64 alloc = 0;
+    for (UINT32 i = 0; i < s->nruns; i++) alloc += s->runs[i].len * v->cluster;
+    UINT32 len = make_nonresident(v, a, sizeof(a), type, name, nlen, s, alloc, size);
+    return len && insert_attr(v, rec, a, len);
+}
+
+/* @n clusters at @lcn into @s (marked used) */
+static bool fmt_take(NtfsVol *v, Stream *s, UINT64 lcn, UINT64 n)
+{
+    for (UINT64 c = 0; c < n; c++) set_bit(v->cmap, lcn + c, true);
+    v->nfree -= n;
+    return add_run(s, 0, lcn, n);
+}
+
+static const struct { const char *name; UINT32 type, flags; INT64 min, max; } g_attrdef[] = {
+    { "$STANDARD_INFORMATION", 0x10,  0x40, 48, 72 },
+    { "$ATTRIBUTE_LIST",       0x20,  0x80, 0, -1 },
+    { "$FILE_NAME",            0x30,  0x42, 68, 578 },
+    { "$OBJECT_ID",            0x40,  0x40, 0, 256 },
+    { "$SECURITY_DESCRIPTOR",  0x50,  0x80, 0, -1 },
+    { "$VOLUME_NAME",          0x60,  0x40, 2, 256 },
+    { "$VOLUME_INFORMATION",   0x70,  0x40, 12, 12 },
+    { "$DATA",                 0x80,  0x00, 0, -1 },
+    { "$INDEX_ROOT",           0x90,  0x40, 0, -1 },
+    { "$INDEX_ALLOCATION",     0xA0,  0x80, 0, -1 },
+    { "$BITMAP",               0xB0,  0x80, 0, -1 },
+    { "$REPARSE_POINT",        0xC0,  0x80, 0, 16384 },
+    { "$EA_INFORMATION",       0xD0,  0x40, 8, 8 },
+    { "$EA",                   0xE0,  0x00, 0, 65536 },
+    { "$LOGGED_UTILITY_STREAM", 0x100, 0x80, 0, 65536 },
+};
+
+static const UINT16 g_name_sds[] = { '$', 'S', 'D', 'S' }, g_name_sdh[] = { '$', 'S', 'D', 'H' },
+                    g_name_sii[] = { '$', 'S', 'I', 'I' }, g_name_bad[] = { '$', 'B', 'a', 'd' },
+                    g_name_o[] = { '$', 'O' }, g_name_q[] = { '$', 'Q' }, g_name_r[] = { '$', 'R' };
+
+/* Write @len bytes of @data (zero-padded to whole clusters) to @s from its start */
+static bool fmt_write(NtfsVol *v, const Stream *s, const void *data, UINT64 len)
+{
+    UINT64 full = len - len % v->cluster;
+    if (full && !write_raw(v, s, 0, data, full)) return false;
+    if (len == full) return true;
+    UINT8 *tail = kzalloc(v->cluster);
+    if (!tail) return false;
+    memcpy(tail, (const UINT8 *)data + full, len - full);
+    bool ok = write_raw(v, s, full, tail, v->cluster);
+    kfree(tail);
+    return ok;
+}
+
+bool NtfsFormat(BlockDev *dev, UINT64 lba, UINT64 sectors, const char *label, UINT64 serial)
+{
+    const UINT32 cluster = 4096, rec_size = 1024, bsize = 4096;
+    if (sectors < (32ull << 20) / BLOCK_SECTOR || lba + sectors > dev->sectors) return false;
+    UINT64 clusters = (sectors - 1) * BLOCK_SECTOR / cluster;    /* (the last sector: the backup boot sector) */
+    NtfsVol *v = kzalloc(sizeof(NtfsVol));
+    UINT8 *rec = kmalloc(rec_size), *buf = NULL, *big = NULL;
+    bool ok = false;
+    Ent *ents = NULL;
+    UINT32 nents = 0;
+    Stream s_log, s_ad, s_up, s_sds, s_bad, s_boot, s_mirr;
+    memset(&s_log, 0, sizeof(Stream)); memset(&s_ad, 0, sizeof(Stream)); memset(&s_up, 0, sizeof(Stream));
+    memset(&s_sds, 0, sizeof(Stream)); memset(&s_bad, 0, sizeof(Stream)); memset(&s_boot, 0, sizeof(Stream));
+    memset(&s_mirr, 0, sizeof(Stream));
+    if (!v || !rec || !(v->bounce = kmalloc(BOUNCE)) || !(buf = kzalloc(64 * 1024))) goto out;
+    v->dev = dev; v->base = lba; v->cluster = cluster; v->rec_size = rec_size; v->idx_size = bsize;
+    v->total = clusters * cluster;
+    v->clusters = clusters;
+    v->nfree = clusters;
+    v->cbm.size = v->cbm.init_size = (clusters + 63) / 64 * 8;
+    if (!(v->cmap = kzalloc(v->cbm.size + cluster))) goto out;
+    v->upcase_n = 65536;
+    if (!(v->upcase = kmalloc(65536 * 2))) goto out;
+    for (UINT32 c = 0; c < 65536; c++) v->upcase[c] = (UINT16)c;
+    for (UINT32 i = 0; i < sizeof(g_ntfs_upcase) / sizeof(g_ntfs_upcase[0]); i++)
+        for (UINT32 c = g_ntfs_upcase[i].first; c <= g_ntfs_upcase[i].last; c += g_ntfs_upcase[i].stride)
+            v->upcase[c] = (UINT16)(c + g_ntfs_upcase[i].delta);
+
+    /* Where things go: $Boot 0-1, the MFT bitmap 2, the MFT from 4,
+     * $MFTMirr and $LogFile in the middle, the rest after the MFT */
+    UINT64 mft_lcn = 4, mft_clusters = FMT_RECORDS * rec_size / cluster;
+    UINT64 log_bytes = v->total / 100;
+    if (log_bytes < (2u << 20)) log_bytes = 2u << 20;
+    if (log_bytes > (64u << 20)) log_bytes = 64u << 20;
+    UINT64 log_clusters = log_bytes / cluster, mirr_lcn = clusters / 2;
+    if (!fmt_take(v, &s_boot, 0, 2) || !fmt_take(v, &v->mbm, 2, 1) || !fmt_take(v, &v->mft, mft_lcn, mft_clusters) ||
+        !fmt_take(v, &s_mirr, mirr_lcn, 1) || !fmt_take(v, &s_log, mirr_lcn + 1, log_clusters)) goto out;
+    v->hint = mft_lcn + mft_clusters;
+    UINT64 bm_clusters = (v->cbm.size + cluster - 1) / cluster;
+    UINT32 sds_used = 0;
+    UINT8 *sds = kzalloc(SDS_MIRROR + 4096);
+    if (!sds) goto out;
+    if (!alloc_clusters(v, &v->cbm, 0, bm_clusters) || !alloc_clusters(v, &s_ad, 0, 1) ||
+        !alloc_clusters(v, &s_up, 0, 65536 * 2 / cluster)) { kfree(sds); goto out; }
+    v->mft.size = v->mft.init_size = (UINT64)FMT_RECORDS * rec_size;
+    v->mbm.size = v->mbm.init_size = FMT_RECORDS / 8;
+    v->mmap_bytes = cluster;
+    v->mmap = kzalloc(cluster);
+    v->mirr_lcn = mirr_lcn;
+    v->mirr_n = 4;
+
+    /* $Secure's descriptors */
+    static const FmtAce sys_aces[] = {
+        { 0, 0x120089, g_sid_system, sizeof(g_sid_system) }, { 0, 0x120089, g_sid_admins, sizeof(g_sid_admins) } };
+    static const FmtAce ext_aces[] = {
+        { 0, 0x12019F, g_sid_system, sizeof(g_sid_system) }, { 0, 0x12019F, g_sid_admins, sizeof(g_sid_admins) } };
+    static const FmtAce root_aces[] = {
+        { 3, 0x1F01FF, g_sid_system, sizeof(g_sid_system) }, { 3, 0x1F01FF, g_sid_admins, sizeof(g_sid_admins) },
+        { 0xB, 0x10000000, g_sid_creator, sizeof(g_sid_creator) },     /* (inherit only: GENERIC_ALL) */
+        { 3, 0x1301BF, g_sid_authusr, sizeof(g_sid_authusr) }, { 3, 0x1200A9, g_sid_users, sizeof(g_sid_users) } };
+    struct { const FmtAce *a; int n; } sdl[3] = { { sys_aces, 2 }, { ext_aces, 2 }, { root_aces, 5 } };
+    UINT8 sii[3 * 0x30], sdh[3 * 0x38];
+    UINT32 sii_len = 0, sdh_len = 0;
+    UINT32 hashes[3], offs[3], lens[3];
+    for (int i = 0; i < 3; i++) {
+        UINT8 *e = sds + sds_used;
+        UINT32 n = build_sd(e + 0x14, sdl[i].a, sdl[i].n);
+        hashes[i] = sd_hash(e + 0x14, n);
+        offs[i] = sds_used;
+        lens[i] = 0x14 + n;
+        wr32(e, hashes[i]);
+        wr32(e + 4, SD_SYSTEM + (UINT32)i);
+        wr64(e + 8, sds_used);
+        wr32(e + 0x10, lens[i]);
+        sds_used = (sds_used + lens[i] + 15) & ~15u;
+    }
+    for (int i = 0; i < 3; i++) {                                /* $SII by id; $SDH by hash, then id */
+        UINT32 id = SD_SYSTEM + (UINT32)i;
+        sii_len += view_entry(sii + sii_len, &id, 4, sds + offs[i], 0x14, 0);
+    }
+    int order[3] = { 0, 1, 2 };
+    for (int i = 0; i < 3; i++)
+        for (int j = i + 1; j < 3; j++)
+            if (hashes[order[j]] < hashes[order[i]]) { int t = order[i]; order[i] = order[j]; order[j] = t; }
+    for (int k = 0; k < 3; k++) {
+        int i = order[k];
+        UINT32 key[2] = { hashes[i], SD_SYSTEM + (UINT32)i };
+        UINT32 at = sdh_len;
+        sdh_len += view_entry(sdh + sdh_len, key, 8, sds + offs[i], 0x14, 4);
+        wr16(sdh + at + 0x10 + 8 + 0x14, 'I');                   /* (the padding Windows writes: "II") */
+        wr16(sdh + at + 0x10 + 8 + 0x16, 'I');
+    }
+    UINT64 sds_size = SDS_MIRROR + sds_used;
+    memcpy(sds + SDS_MIRROR, sds, sds_used);
+    if (!alloc_clusters(v, &s_sds, 0, (sds_size + cluster - 1) / cluster)) { kfree(sds); goto out; }
+
+    /* $Bad: every cluster, sparse */
+    if (!add_run(&s_bad, 0, SPARSE, clusters)) { kfree(sds); goto out; }
+
+    /* The data of the system files */
+    UINT64 t = now_ft();
+    bool w = fmt_write(v, &s_sds, sds, sds_size);
+    kfree(sds);
+    big = kmalloc(65536 * 2 > 2560 ? 65536 * 2 : 2560);
+    if (!w || !big) goto out;
+    memcpy(big, v->upcase, 65536 * 2);
+    if (!fmt_write(v, &s_up, big, 65536 * 2)) goto out;
+    memset(big, 0, 2560);
+    for (UINT32 i = 0; i < sizeof(g_attrdef) / sizeof(g_attrdef[0]); i++) {
+        UINT8 *e = big + 160 * i;
+        for (int k = 0; g_attrdef[i].name[k]; k++) wr16(e + 2 * k, (UINT8)g_attrdef[i].name[k]);
+        wr32(e + 128, g_attrdef[i].type);
+        wr32(e + 140, g_attrdef[i].flags);
+        wr64(e + 144, (UINT64)g_attrdef[i].min);
+        wr64(e + 152, (UINT64)g_attrdef[i].max);
+    }
+    if (!fmt_write(v, &s_ad, big, 2560)) goto out;
+    memset(buf, 0xFF, 64 * 1024);
+    for (UINT64 o = 0; o < log_clusters * cluster; o += 64 * 1024)
+        if (!write_raw(v, &s_log, o, buf, log_clusters * cluster - o < 64 * 1024 ? log_clusters * cluster - o : 64 * 1024))
+            goto out;
+
+    /* The records */
+    UINT64 root_ref = 5 | (5ull << 48);
+    UINT8 fn[0x42 + 64];
+    struct { UINT64 r; const char *name; } names[12];
+    UINT32 nnames = 0;
+    for (UINT64 r = 0; r < FMT_RECORDS; r++) {
+        bool used = r < 16 || (r >= 24 && r <= 26);
+        UINT16 seq = r == 0 ? 1 : r < 16 ? (UINT16)r : 1;
+        UINT16 rflags = !used ? 0 : r == 5 || r == 11 ? 3 : r == 9 ? 9 : r >= 24 ? 0xD : 1;
+        fmt_record(v, rec, r, rflags, seq, used && (r < 12 || r >= 24) ? 1 : 0);
+        if (used) {
+            UINT32 sec = r == 5 ? SD_ROOT : r == 9 || r == 11 || r >= 24 ? SD_EXTEND : SD_SYSTEM;
+            UINT32 sattr = r == 9 ? 0x20000006u : r >= 24 ? 0x20000026u : 0x6u;
+            fmt_si(v, rec, t, sattr, sec);
+        }
+        const char *name = NULL;
+        UINT32 fflags = 0x6;
+        UINT64 alloc = 0, size = 0;
+        switch (r) {
+        case 0:  name = "$MFT"; alloc = size = (UINT64)FMT_RECORDS * rec_size; break;
+        case 1:  name = "$MFTMirr"; alloc = size = cluster; break;
+        case 2:  name = "$LogFile"; alloc = size = log_clusters * cluster; break;
+        case 3:  name = "$Volume"; break;
+        case 4:  name = "$AttrDef"; alloc = cluster; size = 2560; break;
+        case 5:  name = "."; fflags = 0x10000006u; break;
+        case 6:  name = "$Bitmap"; alloc = bm_clusters * cluster; size = v->cbm.size; break;
+        case 7:  name = "$Boot"; alloc = size = 2 * cluster; break;
+        case 8:  name = "$BadClus"; break;
+        case 9:  name = "$Secure"; fflags = 0x20000006u; break;
+        case 10: name = "$UpCase"; alloc = size = 65536 * 2; break;
+        case 11: name = "$Extend"; fflags = 0x10000006u; break;
+        case 24: name = "$Quota"; fflags = 0x20000026u; break;
+        case 25: name = "$ObjId"; fflags = 0x20000026u; break;
+        case 26: name = "$Reparse"; fflags = 0x20000026u; break;
+        }
+        UINT32 fnlen = 0;
+        if (name) fnlen = fmt_fn(v, rec, fn, r >= 24 ? (11 | (11ull << 48)) : root_ref, name, fflags, t, alloc, size);
+        UINT8 a[0x200];
+        bool good = true;
+        switch (r) {
+        case 0:  good = fmt_nonres(v, rec, AT_DATA, NULL, 0, &v->mft, v->mft.size) &&
+                        fmt_nonres(v, rec, AT_BITMAP, NULL, 0, &v->mbm, v->mbm.size); break;
+        case 1:  good = fmt_nonres(v, rec, AT_DATA, NULL, 0, &s_mirr, cluster); break;
+        case 2:  good = fmt_nonres(v, rec, AT_DATA, NULL, 0, &s_log, log_clusters * cluster); break;
+        case 3: {
+            UINT16 wl[64];
+            int ln = label ? utf8_to_utf16(label, wl, 32) : 0;
+            if (ln < 0) ln = 0;
+            insert_attr(v, rec, a, make_resident(a, AT_VOLUME_NAME, NULL, 0, wl, 2u * (UINT32)ln, 0));
+            UINT8 vi[12] = { 0 };
+            vi[8] = 3; vi[9] = 1;                                /* NTFS 3.1, not dirty */
+            insert_attr(v, rec, a, make_resident(a, AT_VOLUME_INFORMATION, NULL, 0, vi, 12, 0));
+            insert_attr(v, rec, a, make_resident(a, AT_DATA, NULL, 0, NULL, 0, 0));
+            break;
+        }
+        case 4:  good = fmt_nonres(v, rec, AT_DATA, NULL, 0, &s_ad, 2560); break;
+        case 6:  good = fmt_nonres(v, rec, AT_DATA, NULL, 0, &v->cbm, v->cbm.size); break;
+        case 7:  good = fmt_nonres(v, rec, AT_DATA, NULL, 0, &s_boot, 2 * cluster); break;
+        case 8:
+            insert_attr(v, rec, a, make_resident(a, AT_DATA, NULL, 0, NULL, 0, 0));
+            good = fmt_nonres(v, rec, AT_DATA, g_name_bad, 4, &s_bad, clusters * cluster);
+            break;
+        case 9: {
+            good = fmt_nonres(v, rec, AT_DATA, g_name_sds, 4, &s_sds, sds_size);
+            UINT8 rv[0x200];
+            UINT32 n = view_root(rv, 0x12, bsize, sdh, sdh_len);
+            good = good && insert_attr(v, rec, a, make_resident(a, AT_INDEX_ROOT, g_name_sdh, 4, rv, n, 0));
+            n = view_root(rv, 0x10, bsize, sii, sii_len);
+            good = good && insert_attr(v, rec, a, make_resident(a, AT_INDEX_ROOT, g_name_sii, 4, rv, n, 0));
+            break;
+        }
+        case 10: good = fmt_nonres(v, rec, AT_DATA, NULL, 0, &s_up, 65536 * 2); break;
+        case 5: case 11: {                                       /* empty for now: filled in below */
+            UINT8 rv[0x30];
+            memset(rv, 0, sizeof(rv));
+            wr32(rv, AT_FILE_NAME);
+            wr32(rv + 4, 1);                                     /* COLLATION_FILE_NAME */
+            wr32(rv + 8, bsize);
+            rv[0xC] = 1;
+            wr32(rv + 0x10, 0x10); wr32(rv + 0x14, 0x20); wr32(rv + 0x18, 0x20);
+            memcpy(rv + 0x20, g_end_leaf, 0x10);
+            good = insert_attr(v, rec, a, make_resident(a, AT_INDEX_ROOT, I30, 4, rv, 0x30, 0)) != NULL;
+            break;
+        }
+        case 12: case 13: case 14: case 15:
+            insert_attr(v, rec, a, make_resident(a, AT_DATA, NULL, 0, NULL, 0, 0));
+            break;
+        case 24: {                                               /* $Quota: the default limits, and Administrators */
+            UINT8 rv[0x200], e[0xC0], q[0x40];
+            UINT32 el = 0, owner = 0x100;
+            el += view_entry(e + el, g_sid_admins, sizeof(g_sid_admins), &owner, 4, 0);
+            UINT32 n = view_root(rv, 0x11, bsize, e, el);
+            good = insert_attr(v, rec, a, make_resident(a, AT_INDEX_ROOT, g_name_o, 2, rv, n, 0)) != NULL;
+            memset(q, 0, sizeof(q));
+            wr32(q, 2); wr32(q + 4, 1);                          /* version 2, default limits */
+            wr64(q + 0x10, t);
+            wr64(q + 0x18, ~0ull); wr64(q + 0x20, ~0ull);        /* no threshold, no limit */
+            el = 0;
+            UINT32 id = 1;
+            el += view_entry(e + el, &id, 4, q, 0x30, 0);
+            memcpy(q + 0x30, g_sid_admins, sizeof(g_sid_admins));
+            id = 0x100;
+            el += view_entry(e + el, &id, 4, q, 0x40, 0);
+            n = view_root(rv, 0x10, bsize, e, el);
+            good = good && insert_attr(v, rec, a, make_resident(a, AT_INDEX_ROOT, g_name_q, 2, rv, n, 0));
+            break;
+        }
+        case 25: case 26: {
+            UINT8 rv[0x40];
+            UINT32 n = view_root(rv, 0x13, bsize, NULL, 0);
+            good = insert_attr(v, rec, a, make_resident(a, AT_INDEX_ROOT, r == 25 ? g_name_o : g_name_r, 2, rv, n, 0))
+                   != NULL;
+            break;
+        }
+        }
+        if (!good || !write_record(v, r, rec)) goto out;
+        if (used) set_bit(v->mmap, r, true);
+        if (name && r < 24 && r != 5) { names[nnames].r = r; names[nnames].name = name; nnames++; }
+        (void)fnlen;
+    }
+
+    /* The root's and $Extend's indexes */
+    for (int pass = 0; pass < 2; pass++) {
+        UINT64 dir = pass ? 11 : 5;
+        nents = 0;
+        ents = NULL;
+        for (UINT64 r = 0; r < FMT_RECORDS; r++) {
+            bool child = pass ? r >= 24 && r <= 26 : (r < 12);
+            if (!child || !read_record_any(v, r, rec)) continue;
+            const UINT8 *fa = next_attr(rec, rec_size, NULL, AT_FILE_NAME);
+            if (!fa) continue;
+            Ent e = make_entry(seq_ref(rec, r), fa + rd16(fa + 0x14), rd32(fa + 0x10));
+            if (!e.e || !ents_insert(v, &ents, &nents, e)) { kfree(e.e); goto out; }
+        }
+        if (!read_record_any(v, dir, rec) || !write_index(v, dir, rec, ents, nents)) goto out;
+        ents_free(ents, nents);
+        ents = NULL;
+    }
+    (void)names;
+
+    /* The bitmaps, then the boot sectors */
+    if (!fmt_write(v, &v->cbm, v->cmap, v->cbm.size) || !write_raw(v, &v->mbm, 0, v->mmap, cluster)) goto out;
+    memset(buf, 0, BLOCK_SECTOR);
+    UINT8 *bs = buf;
+    bs[0] = 0xEB; bs[1] = 0x52; bs[2] = 0x90;
+    memcpy(bs + 3, "NTFS    ", 8);
+    wr16(bs + 0x0B, BLOCK_SECTOR);
+    bs[0x0D] = (UINT8)(cluster / BLOCK_SECTOR);
+    bs[0x15] = 0xF8;
+    wr16(bs + 0x18, 63);
+    wr16(bs + 0x1A, 255);
+    wr32(bs + 0x1C, (UINT32)lba);
+    wr32(bs + 0x24, 0x00800080);
+    wr64(bs + 0x28, sectors - 1);
+    wr64(bs + 0x30, mft_lcn);
+    wr64(bs + 0x38, mirr_lcn);
+    bs[0x40] = 0xF6;                                             /* records: 2^10 bytes */
+    bs[0x44] = 1;                                                /* index blocks: 1 cluster */
+    wr64(bs + 0x48, serial);
+    bs[0x54] = 0xF4; bs[0x55] = 0xEB; bs[0x56] = 0xFD;           /* (not bootable: hlt; jmp $-1) */
+    bs[510] = 0x55; bs[511] = 0xAA;
+    if (!dev->write(dev, lba, 1, bs) || !dev->write(dev, lba + sectors - 1, 1, bs)) goto out;
+    ok = !dev->flush || dev->flush(dev);
+    kprintf("[NTFS] %s: formatted \"%s\" at LBA %llu, %llu MiB\n", dev->name, label ? label : "",
+            (unsigned long long)lba, (unsigned long long)(v->total >> 20));
+out:
+    if (ents) ents_free(ents, nents);
+    stream_free(&s_log); stream_free(&s_ad); stream_free(&s_up); stream_free(&s_sds); stream_free(&s_bad);
+    stream_free(&s_boot); stream_free(&s_mirr);
+    if (v) {
+        stream_free(&v->cbm); stream_free(&v->mbm); stream_free(&v->mft);
+        kfree(v->cmap); kfree(v->mmap); kfree(v->upcase); kfree(v->bounce);
+        kfree(v);
+    }
+    kfree(rec); kfree(buf); kfree(big);
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
+ * Security descriptors and file information
+ *
+ * NTFS 3 keeps each distinct security descriptor once, in $Secure: its
+ * $SDS stream holds them (every 256 KiB twice, the copy right after), the
+ * $SII index finds one by id and $SDH by hash.  A file's $STANDARD_INFORMATION
+ * names its descriptor by id.
+ * ------------------------------------------------------------------------- */
+#define SECURE_MFT 9
+
+struct SecEnt { UINT32 id, hash, len; UINT64 off; };     /* len: with the 0x14-byte header */
+
+static bool sec_load(NtfsVol *v)
+{
+    if (v->sec_read) return true;
+    UINT8 *rec = kmalloc(v->rec_size);
+    Ent *ents = NULL;
+    UINT32 n = 0;
+    bool ok = rec && read_record(v, SECURE_MFT, rec) && load_index_named(v, SECURE_MFT, rec, g_name_sii, &ents, &n);
+    struct SecEnt *se = ok && n ? kmalloc(n * sizeof(struct SecEnt)) : NULL;
+    if (ok && n && !se) ok = false;
+    UINT32 k = 0;
+    for (UINT32 i = 0; ok && i < n; i++) {
+        const UINT8 *e = ents[i].e;
+        UINT16 doff = rd16(e), dlen = rd16(e + 2);
+        if (dlen < 0x14 || doff + dlen > ents[i].len) continue;
+        const UINT8 *d = e + doff;
+        se[k++] = (struct SecEnt){ rd32(d + 4), rd32(d), rd32(d + 0x10), rd64(d + 8) };
+    }
+    if (ents) ents_free(ents, n);
+    kfree(rec);
+    if (!ok) { kfree(se); return false; }
+    v->sec = se;
+    v->nsec = k;
+    v->sec_read = true;
+    return true;
+}
+
+static const struct SecEnt *sec_find(NtfsVol *v, UINT32 id)
+{
+    if (!sec_load(v)) return NULL;
+    for (UINT32 i = 0; i < v->nsec; i++)
+        if (v->sec[i].id == id) return &v->sec[i];
+    return NULL;
+}
+
+UINT32 NtfsSecurityId(NtfsVol *v, UINT64 mft)
+{
+    UINT8 *rec = kmalloc(v->rec_size);
+    UINT32 id = 0;
+    if (rec && read_record(v, mft, rec)) {
+        const UINT8 *si = next_attr(rec, v->rec_size, NULL, AT_STANDARD_INFO);
+        if (si && !si[8] && rd32(si + 0x10) >= 0x48) id = rd32(si + rd16(si + 0x14) + 0x34);
+    }
+    kfree(rec);
+    return id;
+}
+
+bool NtfsSecurityById(NtfsVol *v, UINT32 id, void *buf, UINT32 cap, UINT32 *len)
+{
+    const struct SecEnt *e = sec_find(v, id);
+    if (!e || e->len < 0x14 + 0x14) return false;
+    *len = e->len - 0x14;
+    if (*len > cap) return false;
+    Stream sds;
+    if (!open_stream(v, SECURE_MFT, AT_DATA, g_name_sds, 4, &sds)) return false;
+    bool ok = e->off + e->len <= sds.size && stream_read(v, &sds, e->off + 0x14, buf, *len);
+    stream_free(&sds);
+    return ok;
+}
+
+/* $SII's key order (a ULONG), and $SDH's (hash, then id) */
+static int sec_order(const UINT8 *k1, const UINT8 *k2, bool by_hash)
+{
+    for (int i = 0; i < (by_hash ? 2 : 1); i++) {
+        UINT32 a = rd32(k1 + 4 * i), b = rd32(k2 + 4 * i);
+        if (a != b) return a < b ? -1 : 1;
+    }
+    return 0;
+}
+
+static bool sec_insert(Ent **ents, UINT32 *n, Ent e, bool by_hash)
+{
+    UINT32 i = 0;
+    while (i < *n && sec_order((*ents)[i].e + 0x10, e.e + 0x10, by_hash) < 0) i++;
+    Ent *ne = kmalloc((*n + 1) * sizeof(Ent));
+    if (!ne) return false;
+    if (i) memcpy(ne, *ents, i * sizeof(Ent));
+    ne[i] = e;
+    if (*n > i) memcpy(ne + i + 1, *ents + i, (*n - i) * sizeof(Ent));
+    kfree(*ents);
+    *ents = ne;
+    (*n)++;
+    return true;
+}
+
+static Ent sec_entry(const void *key, UINT16 klen, const UINT8 *hdr, UINT32 pad)
+{
+    Ent e = { kzalloc(0x60), 0 };
+    if (e.e) e.len = view_entry(e.e, key, klen, hdr, 0x14, pad);
+    if (e.e && pad) { wr16(e.e + 0x10 + klen + 0x14, 'I'); wr16(e.e + 0x10 + klen + 0x16, 'I'); }   /* ($SDH: as Windows pads) */
+    return e;
+}
+
+UINT32 NtfsAddSecurity(NtfsVol *v, const void *sd, UINT32 len)
+{
+    if (!v->rw || len < 0x14 || len > 0x10000 || !sec_load(v)) return 0;
+    UINT32 hash = sd_hash(sd, len), id = 0x100;
+    UINT64 end = 0;
+    UINT8 *cmp = kmalloc(len);
+    if (!cmp) return 0;
+    for (UINT32 i = 0; i < v->nsec; i++) {                      /* already there? */
+        const struct SecEnt *e = &v->sec[i];
+        UINT32 got;
+        if (e->hash == hash && e->len == len + 0x14 && NtfsSecurityById(v, e->id, cmp, len, &got) && !memcmp(cmp, sd, len)) {
+            kfree(cmp);
+            return e->id;
+        }
+        if (e->id >= id) id = e->id + 1;
+        if (e->off + e->len > end) end = e->off + e->len;
+    }
+    kfree(cmp);
+
+    /* where it goes: after the last, not across a 256 KiB block (each is followed by its copy) */
+    UINT32 elen = 0x14 + len;
+    UINT64 off = (end + 15) & ~15ull;
+    if (off % (2 * SDS_MIRROR) + elen > SDS_MIRROR) off = (off / (2 * SDS_MIRROR) + 1) * (2 * SDS_MIRROR);
+    UINT64 size = off + SDS_MIRROR + ((elen + 15) & ~15u);
+    UINT8 *ent = kzalloc((elen + 15) & ~15u), *rec = kmalloc(v->rec_size), *attr = kmalloc(v->rec_size);
+    Stream sds;
+    memset(&sds, 0, sizeof(sds));
+    Ent *sii = NULL, *sdh = NULL;
+    UINT32 nsii = 0, nsdh = 0;
+    UINT64 grown_from = ~0ull;                                    /* (the first new cluster of $SDS, on failure) */
+    bool ok = false, kept = false;
+    if (!ent || !rec || !attr || !read_record(v, SECURE_MFT, rec)) goto out;
+    if (!open_stream(v, SECURE_MFT, AT_DATA, g_name_sds, 4, &sds) || sds.resident) goto out;
+    wr32(ent, hash); wr32(ent + 4, id); wr64(ent + 8, off); wr32(ent + 0x10, elen);
+    memcpy(ent + 0x14, sd, len);
+
+    /* grow $SDS, zeroing what it gains */
+    UINT64 have = sds.nruns ? (sds.runs[sds.nruns - 1].vcn + sds.runs[sds.nruns - 1].len) * v->cluster : 0;
+    grown_from = have / v->cluster;
+    if (size > have) {
+        UINT64 more = (size - have + 0xFFFF) / 0x10000 * 0x10000 / v->cluster;   /* (64 KiB at a time) */
+        if (!more) more = 1;
+        if (!alloc_clusters(v, &sds, have / v->cluster, more)) goto out;
+        UINT8 *z = kzalloc(v->cluster);
+        bool zw = z != NULL;
+        for (UINT64 c = 0; zw && c < more; c++) zw = write_raw(v, &sds, have + c * v->cluster, z, v->cluster);
+        kfree(z);
+        if (!zw) goto out;
+        have += more * v->cluster;
+    }
+    if (!write_raw(v, &sds, off, ent, elen) || !write_raw(v, &sds, off + SDS_MIRROR, ent, elen)) goto out;
+    UINT8 *old = find_attr(rec, v->rec_size, AT_DATA, g_name_sds, 4);
+    if (!old) goto out;
+    if (size > sds.size) {
+        UINT32 old_len = rd32(old + 4);
+        UINT8 *keep = kmalloc(old_len);
+        if (!keep) goto out;
+        memcpy(keep, old, old_len);
+        remove_attr(rec, old);
+        UINT32 alen = make_nonresident(v, attr, v->rec_size - rec_used(rec), AT_DATA, g_name_sds, 4, &sds, have, size);
+        if (!alen || !insert_attr(v, rec, attr, alen)) { insert_attr(v, rec, keep, old_len); kfree(keep); goto out; }
+        kfree(keep);
+        if (!write_record(v, SECURE_MFT, rec)) goto out;
+    }
+    kept = true;
+
+    /* the indexes */
+    UINT8 key[8];
+    wr32(key, hash); wr32(key + 4, id);
+    if (!load_index_named(v, SECURE_MFT, rec, g_name_sii, &sii, &nsii) ||
+        !load_index_named(v, SECURE_MFT, rec, g_name_sdh, &sdh, &nsdh)) goto out;
+    Ent e1 = sec_entry(key + 4, 4, ent, 0), e2 = sec_entry(key, 8, ent, 4);
+    if (!e1.e || !e2.e) { kfree(e1.e); kfree(e2.e); goto out; }
+    if (!sec_insert(&sii, &nsii, e1, false)) { kfree(e1.e); kfree(e2.e); goto out; }
+    if (!sec_insert(&sdh, &nsdh, e2, true)) { kfree(e2.e); goto out; }
+    if (!write_index_named(v, SECURE_MFT, rec, g_name_sii, sii, nsii) ||
+        !write_index_named(v, SECURE_MFT, rec, g_name_sdh, sdh, nsdh)) goto out;
+    struct SecEnt *ns = kmalloc((v->nsec + 1) * sizeof(struct SecEnt));
+    if (ns) {
+        if (v->nsec) memcpy(ns, v->sec, v->nsec * sizeof(struct SecEnt));
+        ns[v->nsec++] = (struct SecEnt){ id, hash, elen, off };
+        kfree(v->sec);
+        v->sec = ns;
+    } else {
+        v->sec_read = false;                                     /* (read again next time) */
+        kfree(v->sec);
+        v->sec = NULL;
+        v->nsec = 0;
+    }
+    ok = true;
+out:
+    if (!kept && grown_from != ~0ull) {                          /* give back the clusters $SDS did not keep */
+        for (UINT32 i = 0; i < sds.nruns; i++) {
+            Run r = sds.runs[i];
+            if (r.lcn == SPARSE || r.vcn + r.len <= grown_from) continue;
+            if (r.vcn < grown_from) { r.lcn += grown_from - r.vcn; r.len -= grown_from - r.vcn; r.vcn = grown_from; }
+            free_runs(v, &r, 1);
+        }
+    }
+    if (sii) ents_free(sii, nsii);
+    if (sdh) ents_free(sdh, nsdh);
+    stream_free(&sds);
+    kfree(ent); kfree(rec); kfree(attr);
+    return ok ? id : 0;
+}
+
+bool NtfsSetSecurityId(NtfsVol *v, UINT64 mft, UINT32 id)
+{
+    if (!v->rw || (mft < MFT_FIRST_USER && mft != NTFS_ROOT) || (id && !sec_find(v, id))) return false;
+    UINT8 *rec = kmalloc(v->rec_size);
+    bool ok = false;
+    if (rec && read_record(v, mft, rec)) {
+        UINT8 *si = find_attr(rec, v->rec_size, AT_STANDARD_INFO, NULL, 0);
+        if (si && !si[8] && rd32(si + 0x10) >= 0x48) {
+            UINT8 *val = si + rd16(si + 0x14);
+            if (rd32(val + 0x34) == id) ok = true;
+            else { wr32(val + 0x34, id); ok = write_record(v, mft, rec); }
+        }
+    }
+    kfree(rec);
+    return ok;
+}
+
+bool NtfsSetInfo(NtfsVol *v, UINT64 mft, UINT64 ctime, UINT64 mtime, UINT32 attrs)
+{
+    if (!v->rw || mft < MFT_FIRST_USER) return false;
+    UINT8 *rec = kmalloc(v->rec_size);
+    bool ok = false;
+    if (rec && read_record(v, mft, rec)) {
+        UINT8 *si = find_attr(rec, v->rec_size, AT_STANDARD_INFO, NULL, 0);
+        if (si && !si[8] && rd32(si + 0x10) >= 0x30) {
+            UINT8 *val = si + rd16(si + 0x14);
+            UINT32 a = (rd32(val + 0x20) & ~0x27u) | (attrs & 0x27u);    /* read-only, hidden, system, archive */
+            if (ctime) wr64(val, ctime);
+            if (mtime) { wr64(val + 8, mtime); wr64(val + 0x10, mtime); }
+            wr32(val + 0x20, a);
+            ok = write_record(v, mft, rec) && update_dir_entries(v, mft, rec);
+        }
+    }
+    kfree(rec);
+    return ok;
+}
+
+typedef struct { const char *name; UINT64 mft; bool dir, found; } Lookup;
+
+static int fold(int c) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
+
+static bool lookup_one(const NtfsEntry *e, void *ctx)
+{
+    Lookup *l = ctx;
+    const char *a = e->name, *b = l->name;
+    while (*a && fold((UINT8)*a) == fold((UINT8)*b)) { a++; b++; }
+    if (*a || *b) return true;
+    l->mft = e->mft;
+    l->dir = e->dir;
+    l->found = true;
+    return false;
+}
+
+bool NtfsLookup(NtfsVol *v, UINT64 dir, const char *name, UINT64 *mft, bool *is_dir)
+{
+    Lookup l = { name, 0, false, false };
+    if (!NtfsList(v, dir, lookup_one, &l) && !l.found) return false;
+    if (l.found) { *mft = l.mft; if (is_dir) *is_dir = l.dir; }
+    return l.found;
 }

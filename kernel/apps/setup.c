@@ -1,8 +1,9 @@
 /*
  * setup.c — "Install NovaOS": the installer's window
  *
- * Welcome, choose a disk, confirm that it will be erased, watch the
- * progress, then restart into the installed system.  The work happens in
+ * Welcome, choose a disk, confirm that it will be erased (and choose drive
+ * C:'s file system: NTFS, which keeps file permissions, or FAT32), watch
+ * the progress, then restart into the installed system.  The work happens in
  * fs/setup.c on its own thread; this window polls its status.
  */
 
@@ -30,6 +31,7 @@ typedef struct {
     SetupDisk disks[MAX_DISKS];
     int       ndisks;
     int       sel;                 /* chosen disk, or -1 */
+    bool      fat;                 /* drive C: on FAT32 (else NTFS) */
     SetupStatus st;
 } Setup;
 
@@ -41,6 +43,7 @@ static WND *g_setup;
 static GdiRect r_next(GdiRect c) { return RECT(c.w - PAD - BTN_W, c.h - PAD - BTN_H, BTN_W, BTN_H); }
 static GdiRect r_back(GdiRect c) { return RECT(c.w - PAD - 2 * BTN_W - 12, c.h - PAD - BTN_H, BTN_W, BTN_H); }
 static GdiRect r_row(int i)      { return RECT(SIDE_W + PAD, 104 + i * (ROW_H + 8), W - SIDE_W - 2 * PAD, ROW_H); }
+static GdiRect r_fs(int i)       { return RECT(SIDE_W + PAD, PAD + 170 + i * 28, W - SIDE_W - 2 * PAD, 26); }
 
 static GdiRect off(GdiRect r, GdiRect c) { r.x += c.x; r.y += c.y; return r; }
 
@@ -172,7 +175,17 @@ static void setup_paint(WND *w)
         GdiTextBold(card.x + 68, card.y + 18, buf, UI_TEXT);
         ksnprintf(buf, sizeof(buf), "%s: %s", d->dev->name, d->contents);
         GdiTextT(card.x + 68, card.y + 42, buf, UI_TEXT3);
-        int ny = wrap(x, y + 150, tw, "Everything on this disk will be deleted. This cannot be undone.",
+        GdiTextT(x, y + 144, "Drive C: is kept as", UI_TEXT2);
+        static const char *const fs[2] = { "NTFS: keeps file permissions (recommended)",
+                                           "FAT32: simpler, read by any system" };
+        for (int i = 0; i < 2; i++) {
+            GdiRect r = off(r_fs(i), c);
+            bool on = s->fat == (i == 1);
+            GdiFillCircle(r.x + 8, r.y + 12, 7, on ? UI_ACCENT : UI_LINE);
+            if (on) GdiFillCircle(r.x + 8, r.y + 12, 3, UI_BG);
+            GdiTextT(r.x + 24, r.y + 4, fs[i], on ? UI_TEXT : UI_TEXT2);
+        }
+        int ny = wrap(x, y + 236, tw, "Everything on this disk will be deleted. This cannot be undone.",
                       GDI_C(0xFF, 0xB0, 0x60));
         wrap(x, ny + 12, tw, d->holds_c || !PersistActive()
                                ? "The files you have on drive C: now are copied to the new installation."
@@ -235,7 +248,7 @@ static void next(WND *w)
     case PG_WELCOME:  refresh_disks(s); s->page = PG_DISK; break;
     case PG_DISK:     if (s->sel >= 0) s->page = PG_CONFIRM; break;
     case PG_CONFIRM:
-        if (SetupStart(s->disks[s->sel].dev)) { s->page = PG_PROGRESS; SetupGetStatus(&s->st); }
+        if (SetupStart(s->disks[s->sel].dev, !s->fat)) { s->page = PG_PROGRESS; SetupGetStatus(&s->st); }
         else { SetupGetStatus(&s->st); s->page = PG_FAILED; }
         break;
     case PG_DONE:     DesktopRestart(); break;
@@ -268,6 +281,9 @@ static void setup_mouse(WND *w, WmMouseMsg msg, int x, int y)
                 return;
             }
     }
+    if (s->page == PG_CONFIRM && msg == WM_MOUSE_DOWN)
+        for (int i = 0; i < 2; i++)
+            if (UiHit(r_fs(i), x, y)) { s->fat = i == 1; return; }
     if (msg != WM_MOUSE_UP || s->page == PG_PROGRESS) return;
     bool has_back = s->page != PG_FAILED;
     if (UiHit(r_next(cl), x, y)) { if (s->page != PG_DISK || s->sel >= 0) next(w); }
@@ -280,6 +296,10 @@ static void setup_key(WND *w, const KeyEvent *k)
     if (s->page == PG_PROGRESS) return;
     if (k->scancode == KEY_ENTER) { if (s->page != PG_CONFIRM) next(w); return; }   /* erasing needs a click */
     if (k->scancode == KEY_ESC) { if (s->page == PG_FAILED) next(w); else back(w); return; }
+    if (s->page == PG_CONFIRM && k->extended && (k->scancode == KEY_UP || k->scancode == KEY_DOWN)) {
+        s->fat = k->scancode == KEY_DOWN;
+        return;
+    }
     if (s->page == PG_DISK && k->extended && s->ndisks) {
         int d = k->scancode == KEY_UP ? -1 : k->scancode == KEY_DOWN ? 1 : 0;
         for (int i = s->sel + d; d && i >= 0 && i < s->ndisks; i += d)

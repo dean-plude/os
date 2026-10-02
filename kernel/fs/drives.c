@@ -175,7 +175,7 @@ static void record(BlockDev *d, char letter, bool ntfs, void *vol)
 static void try_mount(BlockDev *d, UINT64 lba)
 {
     char letter = free_letter();
-    if (!letter) return;
+    if (!letter || PersistOwns(d, lba)) return;                  /* (drive C:'s volume is not D: too) */
     NtfsVol *v = NtfsMount(d, lba);
     if (v) {
         NtfsSetClock(RamfsNow);

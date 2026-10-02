@@ -43,6 +43,8 @@ typedef struct RamNode {
     UINT8           xflags;       /* RAMFS_X_*: on a mounted volume */
     char            drive;        /* a drive's root: its letter ('C' for the root of C:) */
     UINT64          xref;         /* on a mounted volume: the node's number there */
+    UINT8          *sd;           /* its security descriptor (self-relative), or NULL: */
+    UINT32          sdlen;        /*   inherited from the nearest directory above with one (fs/fsec.c) */
 } RamNode;
 
 #define RAMFS_X_EXTERN   0x01     /* on a mounted (read-only) volume */
@@ -191,5 +193,5 @@ int      RamfsCount(const RamNode *dir);
  * until it is set, files get no times. */
 void RamfsSetClock(UINT64 (*now)(void));
 UINT64 RamfsNow(void);                          /* 0 until it is set */
-/* Record that @n's times or attributes changed (it is saved again) */
+/* Record that @n's times, attributes or security descriptor changed (it is saved again) */
 void RamfsMarkChanged(RamNode *n);
