@@ -296,7 +296,10 @@ Contents:
   surface whose framebuffer *is* the window's client bitmap, so NetSurf's
   plotters draw straight into the desktop window; keyboard (with key-up
   events, now delivered to program windows) and mouse come from the Win32
-  message queue.
+  message queue.  The browser window can be resized from any edge,
+  maximized, snapped to half the screen and restored: `WM_SIZE` becomes a
+  libnsfb resize event, the toolbar, scroll bars and status bar move, and
+  the page is laid out again for the new width.
 - **Text** (`userland/netsurf/font_nova.c`): anti-aliased TrueType text
   with sub-pixel positioning, rendered at run time by
   [stb_truetype](https://github.com/nothings/stb) from Inter (sans-serif)
@@ -314,7 +317,7 @@ Contents:
   default; `enable_javascript:0` in `C:\Programs\NetSurf\res\Choices`
   turns it off.  Like NetSurf 3.11 on every platform, changes a script makes
   to the page *after* it has been laid out are not redrawn yet.
-- Not yet: SVG, IPv6, and window resizing.
+- Not yet: SVG and IPv6.
 
 ## Desktop UX refresh
 - **Start menu** (`wm/desktop.c`): live search as you type (Win key, then
