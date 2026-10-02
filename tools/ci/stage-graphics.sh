@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Stage what tools/selftest.py --suite graphics puts on drive C::
+#   DIR/7zip       7-Zip (C:\Programs\7-Zip), which the App Store unpacks with
+#   DIR/downloads  the Mesa 3D and DXVK archives the App Store lists
+#                  (C:\Downloads: the Store installs them without a network)
+#   DIR/tests      tools/gltest and tools/d3dtest, 64- and 32-bit (C:\Tests)
+# Needs curl, 7z (p7zip-full) and MinGW-w64 (x86-64 and i686).
+#     tools/ci/stage-graphics.sh DIR [CACHE]
+# CACHE (default DIR/cache) keeps the downloads between runs.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+OUT="$1"
+CACHE="${2:-$OUT/cache}"
+mkdir -p "$OUT/7zip" "$OUT/downloads" "$OUT/tests" "$CACHE"
+
+# the URLs the App Store's catalog has (kernel/apps/store.c); 7-Zip from
+# its GitHub releases
+URLS=(
+  "https://github.com/ip7z/7zip/releases/download/26.03/7z2603-x64.exe"
+  "$(grep -o 'pal1000/mesa-dist-win/releases/download/[^"]*\.7z' "$ROOT/kernel/apps/store.c" | sed 's|^|https://github.com/|')"
+  "$(grep -o 'doitsujin/dxvk/releases/download/[^"]*\.tar\.gz' "$ROOT/kernel/apps/store.c" | sed 's|^|https://github.com/|')"
+)
+for u in "${URLS[@]}"; do
+  f="$CACHE/$(basename "$u")"
+  [ -s "$f" ] || curl -sSLf --retry 4 -o "$f" "$u"
+done
+7z x -y -o"$OUT/7zip" "$CACHE/$(basename "${URLS[0]}")" >/dev/null
+cp "$CACHE/$(basename "${URLS[1]}")" "$CACHE/$(basename "${URLS[2]}")" "$OUT/downloads/"
+
+for arch in x86_64 i686; do
+  sfx=$([ $arch = i686 ] && echo 32 || true)
+  $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/gltest$sfx.exe" "$ROOT/tools/gltest/gltest.c" \
+    -lopengl32 -lgdi32 -luser32 -lm
+  $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/d3dtest$sfx.exe" "$ROOT/tools/d3dtest/d3dtest.c" \
+    -ld3d9 -ld3d11 -ldxgi -luser32 -lgdi32 -lole32
+done
+ls -l "$OUT/downloads" "$OUT/tests"

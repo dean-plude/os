@@ -1147,12 +1147,16 @@ WINBASEAPI BOOL WINAPI QueryPerformanceFrequency(PLARGE_INTEGER f)
     return NT_SUCCESS(NtQueryPerformanceCounter(&c, f));
 }
 
+/* As on Windows: KUSER_SHARED_DATA's TickCount (0x320, a KSYSTEM_TIME the
+ * kernel advances every tick) times TickCountMultiplier (0x04) / 2^24, so
+ * GetTickCount and programs that read the shared page agree */
 WINBASEAPI ULONGLONG WINAPI GetTickCount64(void)
 {
-    LARGE_INTEGER c, f;
-    NtQueryPerformanceCounter(&c, &f);
-    if (!f.QuadPart) return 0;
-    return (ULONGLONG)(c.QuadPart / f.QuadPart) * 1000 + (ULONGLONG)(c.QuadPart % f.QuadPart) * 1000 / (ULONGLONG)f.QuadPart;
+    volatile ULONG *t = (volatile ULONG *)0x7FFE0320;
+    ULONG hi, lo;
+    do { hi = t[1]; lo = t[0]; } while (hi != t[2]);
+    ULONGLONG ticks = (ULONGLONG)hi << 32 | lo, mul = *(volatile ULONG *)0x7FFE0004;
+    return ((ticks >> 32) * mul << 8) + (((ticks & 0xFFFFFFFF) * mul) >> 24);
 }
 
 WINBASEAPI DWORD WINAPI GetTickCount(void) { return (DWORD)GetTickCount64(); }
