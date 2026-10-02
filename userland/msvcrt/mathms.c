@@ -68,29 +68,29 @@ __declspec(dllexport) int _dpcomp(double x, double y) { return isunordered(x, y)
 __declspec(dllexport) int _fdpcomp(float x, float y)  { return isunordered(x, y) ? 0 : x < y ? 1 : x == y ? 2 : 4; }
 
 /* -----------------------------------------------------------------------
- * <fenv.h>: exceptions and rounding live in MXCSR (SSE) and the x87
+ * <fenv.h> (exported: NumPy calls them): exceptions and rounding live in MXCSR (SSE) and the x87
  * status/control words; kept in step so either unit behaves the same
  * ----------------------------------------------------------------------- */
 #define FE_ALL 0x3D
 static unsigned mxcsr(void) { unsigned v; __asm__ volatile("stmxcsr %0" : "=m"(v)); return v; }
 static void set_mxcsr(unsigned v) { __asm__ volatile("ldmxcsr %0" : : "m"(v)); }
 
-int feclearexcept(int e)
+__declspec(dllexport) int feclearexcept(int e)
 {
     e &= FE_ALL;
     set_mxcsr(mxcsr() & ~(unsigned)e);
     if (e) __asm__ volatile("fnclex");
     return 0;
 }
-int fetestexcept(int e)
+__declspec(dllexport) int fetestexcept(int e)
 {
     unsigned short sw;
     __asm__ volatile("fnstsw %0" : "=m"(sw));
     return (int)((mxcsr() | sw) & (unsigned)e & FE_ALL);
 }
-int feraiseexcept(int e) { set_mxcsr(mxcsr() | ((unsigned)e & FE_ALL)); return 0; }
-int fegetround(void) { return (int)((mxcsr() >> 3) & 0xC00); }
-int fesetround(int r)
+__declspec(dllexport) int feraiseexcept(int e) { set_mxcsr(mxcsr() | ((unsigned)e & FE_ALL)); return 0; }
+__declspec(dllexport) int fegetround(void) { return (int)((mxcsr() >> 3) & 0xC00); }
+__declspec(dllexport) int fesetround(int r)
 {
     if (r & ~0xC00) return -1;
     set_mxcsr((mxcsr() & ~0x6000u) | ((unsigned)r << 3));
@@ -102,17 +102,17 @@ int fesetround(int r)
 }
 typedef struct { unsigned long control, status; } fenv_t;
 typedef unsigned long fexcept_t;
-int fegetenv(fenv_t *e) { e->control = mxcsr() & ~0x3Fu; e->status = mxcsr() & 0x3F; return 0; }
-int fesetenv(const fenv_t *e)
+__declspec(dllexport) int fegetenv(fenv_t *e) { e->control = mxcsr() & ~0x3Fu; e->status = mxcsr() & 0x3F; return 0; }
+__declspec(dllexport) int fesetenv(const fenv_t *e)
 {
     if (e == (const fenv_t *)0) { set_mxcsr(0x1F80); return 0; }        /* FE_DFL_ENV */
     set_mxcsr((unsigned)(e->control | e->status));
     return 0;
 }
-int feholdexcept(fenv_t *e) { fegetenv(e); set_mxcsr((mxcsr() | 0x1F80) & ~0x3Fu); return 0; }
-int feupdateenv(const fenv_t *e) { unsigned ex = mxcsr() & 0x3F; fesetenv(e); feraiseexcept((int)ex); return 0; }
-int fegetexceptflag(fexcept_t *f, int e) { *f = (fexcept_t)fetestexcept(e); return 0; }
-int fesetexceptflag(const fexcept_t *f, int e) { set_mxcsr((mxcsr() & ~((unsigned)e & FE_ALL)) | ((unsigned)*f & (unsigned)e & FE_ALL)); return 0; }
+__declspec(dllexport) int feholdexcept(fenv_t *e) { fegetenv(e); set_mxcsr((mxcsr() | 0x1F80) & ~0x3Fu); return 0; }
+__declspec(dllexport) int feupdateenv(const fenv_t *e) { unsigned ex = mxcsr() & 0x3F; fesetenv(e); feraiseexcept((int)ex); return 0; }
+__declspec(dllexport) int fegetexceptflag(fexcept_t *f, int e) { *f = (fexcept_t)fetestexcept(e); return 0; }
+__declspec(dllexport) int fesetexceptflag(const fexcept_t *f, int e) { set_mxcsr((mxcsr() & ~((unsigned)e & FE_ALL)) | ((unsigned)*f & (unsigned)e & FE_ALL)); return 0; }
 
 /* Microsoft's float control API over MXCSR */
 __declspec(dllexport) unsigned int _clearfp(void)  { unsigned s = mxcsr() & 0x3F; set_mxcsr(mxcsr() & ~0x3Fu); __asm__ volatile("fnclex"); return s; }

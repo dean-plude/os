@@ -6,8 +6,9 @@
 
 Suites:
   core      (default) apitest, abitest, filetest, pipetest, guitest auto,
-            disptest, battery, soundtest, and last "crash kernel" (a
-            deliberate kernel fault must print a symbolized backtrace)
+            disptest, comtest, tlbtest (64- and 32-bit), cppeh, battery,
+            soundtest, and last "crash kernel" (a deliberate kernel fault
+            must print a symbolized backtrace)
   graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
             tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
             made by tools/ci/stage-graphics.sh: 7-Zip, the two downloads and
@@ -63,6 +64,10 @@ CORE = [
     Test('pipetest', 'pipetest', [r'pipetest: \d+ passed, 0 failed']),
     Test('guitest', 'guitest auto', [r'guitest: \d+ passed, 0 failed']),
     Test('disptest', 'disptest', [r'\d+ passed, 0 failed']),
+    Test('comtest', 'comtest', [r'comtest: \d+ passed, 0 failed']),
+    Test('tlbtest', 'tlbtest', [r'tlbtest: \d+ passed, 0 failed']),
+    Test('tlbtest x86', r'C:\Programs\x86\tlbtest.exe', [r'tlbtest: \d+ passed, 0 failed']),
+    Test('cppeh', 'cppeh', [r'cppeh: \d+ passed, 0 failed']),
     Test('battery', 'battery', [r'Power source: battery', r'Battery: 75%', r'Time left: 3 h 00 min',
                                 r'SystemBatteryState: present 1, AC 0, charging 0, discharging 1']),
     Test('soundtest tone', 'soundtest tone 440 1000', [r'played \d+ samples']),
