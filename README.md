@@ -96,7 +96,8 @@ every part, phase by phase.
   as the next drive letter, hot-plugged); CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
-  flipping, the mode set again after sleep) and a Cirrus GD5446 one, with
+  flipping, the mode set again after sleep and kept across restarts) and a
+  Cirrus GD5446 one, with
   the UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
   sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
   devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
@@ -190,7 +191,8 @@ Rebuild the ISO from a fresh build with
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
   tones played), `powertest` (closing the lid in `tests/acpi/lid-thermal.asl`
   sleeps, a USB key and the lid wake it, the thermal zone's readings), and last `crash kernel`, a deliberate kernel fault whose
-  serial log must show a backtrace with function names.
+  serial log must show a backtrace with function names; then a second boot
+  on the same drive C: checks the display mode `disptest 1024 768` saved.
 - **Graphics tests**: installs Mesa 3D and DXVK with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
   stages the downloads), then runs `tools/gltest` (14 tests) and

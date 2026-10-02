@@ -48,12 +48,13 @@ class Test:
     program asks for something only the test can do).  @boot_expect: regexes
     the whole serial log so far must match (what the kernel logged at boot).
     @builtin: a Terminal command, not a program (no exit code; the output
-    decides)"""
+    decides).  @settle: seconds to wait afterwards (NovaOS saves drive C:
+    once it has been quiet for a second)"""
     def __init__(self, name, cmd, expect=(), timeout=180, check=None, store=None, shot=None, crash=False,
-                 acts=(), boot_expect=(), builtin=False):
+                 acts=(), boot_expect=(), builtin=False, settle=0):
         self.name, self.cmd, self.expect, self.timeout, self.check = name, cmd, expect, timeout, check
         self.store, self.shot, self.crash = store, shot, crash
-        self.acts, self.boot_expect, self.builtin = acts, boot_expect, builtin
+        self.acts, self.boot_expect, self.builtin, self.settle = acts, boot_expect, builtin, settle
 
 
 def tones(*hz):
@@ -130,11 +131,19 @@ CORE = [
                       r'\[ACPI\] Wake device \\_SB_\.PCI0\.XHC0 \(USB controller\)',
                       r'\[USB\] [^\n]*keyboard[^\n]*wakes the machine'],
          timeout=300),
+    # the next boot (RESTART below) must come up in this mode
+    Test('save display mode', 'disptest 1024 768', [r'ChangeDisplaySettings: 0', r'current 1024 x 768'], settle=5),
     # last: crash.exe asks the kernel to fault, which must print a backtrace with names
     Test('kernel backtrace', 'crash kernel', [r'Backtrace:\r?\n  #0 [0-9a-f]{16}  KeCrashTestFault\+0x[0-9a-f]+\r?\n'
                                               r'  #1 [0-9a-f]{16}  KeCrashTest\+0x[0-9a-f]+\r?\n'
                                               r'  #2 [0-9a-f]{16}  sys_nova_bugcheck\+0x[0-9a-f]+\r?\n'],
          timeout=60, crash=True),
+]
+# A second boot on the core boot's drive C: (its data disk), as after a
+# restart: the display mode saved there comes back
+RESTART = [
+    Test('mode after restart', 'disptest saved 1024 768', [r'\d+ passed, 0 failed'],
+         boot_expect=[r'\[DISPLAY\] Restored the saved mode 1024x768']),
 ]
 
 # The graphics boot: 7-Zip in C:\Programs\7-Zip and the Mesa and DXVK
@@ -299,10 +308,13 @@ def main():
                 (os.path.join(a.gfx, 'tests'), r'C:\Tests')]
         data_mb = 1024
     try:
-        results = run_boot(a, tests, work, None, puts=puts, mem=4096 if a.suite == 'graphics' else 2048,
-                           data_mb=data_mb, wav=wav,
-                           extra_args=tables + ['-device', 'pc-testdev', '-device', 'qemu-xhci,id=xhci,addr=0x5',
-                                                '-device', 'usb-kbd,id=usbkbd,bus=xhci.0'])
+        boot_args = dict(puts=puts, mem=4096 if a.suite == 'graphics' else 2048, data_mb=data_mb,
+                         extra_args=tables + ['-device', 'pc-testdev', '-device', 'qemu-xhci,id=xhci,addr=0x5',
+                                              '-device', 'usb-kbd,id=usbkbd,bus=xhci.0'])
+        results = run_boot(a, tests, work, None, wav=wav, **boot_args)
+        saved = [r for r in results if r[0] == 'save display mode']
+        if a.suite == 'core' and saved and not saved[0][1]:
+            results += run_boot(a, RESTART, work, 'restart', keep_data=True, **boot_args)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     report(a, results)
@@ -362,6 +374,8 @@ def run_boot(a, tests, work, label, **nova_args):
             print(f'{"PASS" if not why else "FAIL"}  {t.name:18s} {time.time() - t0:6.1f} s  {why or ""}', flush=True)
             if why:
                 print('    ' + '\n    '.join(l for l in out.splitlines() if not l.startswith('[SCHED]'))[-4000:])
+            if t.settle and not why:
+                time.sleep(t.settle)
             if why == 'kernel panic' or t.crash or nova.q.poll() is not None:
                 break
     finally:

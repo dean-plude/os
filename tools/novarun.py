@@ -126,14 +126,15 @@ class Nova:
     """One NovaOS boot in QEMU with its Terminal open and mirrored to serial"""
 
     def __init__(self, img=None, work=None, puts=(), mem=2048, smp=2, data_mb=1024, wav=None,
-                 extra_args=(), boot_timeout=300, net=False, vga=('-vga', 'std')):
+                 extra_args=(), boot_timeout=300, net=False, keep_data=False, vga=('-vga', 'std')):
         self.work = work or tempfile.mkdtemp(prefix='novarun')
         os.makedirs(self.work, exist_ok=True)
         data, self.serial_path, sock = (os.path.join(self.work, n) for n in ('data.img', 'serial.log', 'qmp.sock'))
         for p in (self.serial_path, sock):
             if os.path.exists(p):
                 os.unlink(p)
-        make_data(data, puts, data_mb)
+        if not (keep_data and os.path.exists(data)):     # keep_data: the drive C: an earlier boot saved
+            make_data(data, puts, data_mb)
         self.wav = wav
         self.qmp = None
         self.q = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35', '-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',

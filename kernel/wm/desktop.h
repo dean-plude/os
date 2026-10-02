@@ -45,6 +45,12 @@ bool DesktopPowerRequest(int what);
  * the desktop and its windows out again.  False: the mode is not
  * supported (nothing changed).  Takes the desktop lock. */
 bool DesktopSetDisplayMode(int w, int h);
+/* Make @w x @h the mode NovaOS returns to and boots in (saved in the
+ * registry, where Windows keeps it: ...\Control\Video\...\DefaultSettings.*) */
+void DesktopSaveDisplayMode(int w, int h);
+/* At boot, before the desktop starts: switch to the saved mode if the
+ * adapter has it */
+void DesktopRestoreDisplayMode(void);
 
 /* Toggle the Start menu open/closed. */
 void DesktopToggleStart(void);

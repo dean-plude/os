@@ -56,6 +56,11 @@ typedef struct WND {
     int        id;
     GdiRect    frame;        /* outer rect on screen (includes title bar) */
     GdiRect    restore;      /* frame to restore after maximize */
+    GdiRect    wanted;       /* the frame before a smaller display mode shrank or
+                              * moved it (w 0: none); it gets it back when the
+                              * mode grows again */
+    GdiRect    shrunk;       /* the frame that change left it with: moved or
+                              * resized since, it keeps the new one instead */
     char       title[WM_TITLE_MAX];
     UINT32     style;
     GdiColor   client_bg;

@@ -236,9 +236,11 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
 `guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`,
-`sleeptest timer`, `powertest`, and last `crash kernel`, which halts the kernel on purpose and passes when the
+`sleeptest timer`, `powertest`, `disptest 1024 768` (saves the mode), and last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
-`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
+`KeCrashTest`, `sys_nova_bugcheck`, ...).  A second boot on the same data
+disk (drive C: as the first boot saved it) then runs `disptest saved 1024
+768`: NovaOS must have come up in the saved mode.  The graphics suite types `store
 install Mesa 3D` and `store install DXVK` (the archives are already in
 `C:\Downloads`, so the App Store installs without a network) and then runs
 `gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
@@ -287,7 +289,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `proctest` | `CreateProcess` flags: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` (`GetConsoleProcessList`), file positions shared with children and duplicates |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
-| `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
+| `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE`, a window that 800x600 shrinks growing back to its size and place, `CDS_UPDATEREGISTRY` saving the mode in the registry.  `disptest W H` switches and saves; `disptest saved W H` checks the mode after a restart |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
 | `sleeptest timer` | How late `Sleep(1)`, `Sleep(5)` and a 1 ms wait timeout end, idle and with a busy thread on every CPU; passes when the 95th percentile under load is 1 ms or less and none ends early.  Plain `sleeptest` sleeps (S3) instead |
 | `powertest` | The lid and a thermal zone (`GetPwrCapabilities`, `ThermalInformation`, `LastSleepTime`/`LastWakeTime`): closing the lid sleeps; needs `tests/acpi/lid-thermal.asl` and the self-test's help (see above) |

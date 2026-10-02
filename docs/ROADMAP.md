@@ -78,7 +78,10 @@ named program or test demonstrates it.
   Still open: recording (`waveIn`, capture endpoints), `dsound.dll`
   (DirectSound), XAudio2, MIDI, endpoint volume (`IAudioEndpointVolume`),
   and testing VLC and Audacity on it.
-- Display: GPU-backed or at least faster blits; mode changes.
+- Display: GPU-backed or at least faster blits.  ~~Mode changes~~ Done:
+  run-time resolutions (Phase 12 onwards); the chosen one is kept across
+  restarts, and windows a smaller mode shrank grow back when it is undone
+  (Phase 18.9).
 - NetSurf: SVG; redrawing pages a script changes after layout.
 
 ### Application coverage
