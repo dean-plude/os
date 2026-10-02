@@ -159,6 +159,9 @@ RamNode *RamfsCreate(RamNode *dir, const char *name, bool is_dir);
 
 /* Replace a file's contents.  False if too large or out of memory. */
 bool     RamfsWrite(RamNode *file, const char *data, UINT32 len);
+/* The same with @buf (from kmalloc), which the file takes over: no copy.
+ * On failure @buf is still the caller's. */
+bool     RamfsWriteOwned(RamNode *file, char *buf, UINT32 len);
 
 /* Write @len bytes at @off, growing the file (zero-filled) as needed.
  * False if the result would exceed RAMFS_FILE_MAX or memory runs out. */

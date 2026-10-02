@@ -6,6 +6,7 @@ typedef struct {
     const char          *path;      /* e.g. "\\Windows\\System32\\kernel32.dll" */
     const unsigned char *data;
     unsigned int         size;
+    unsigned int         zsize;     /* 0: @data is the file; else @data is @zsize bytes of zlib */
 } UserlandFile;
 
 extern const UserlandFile g_userland_files[];

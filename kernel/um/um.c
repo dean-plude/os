@@ -41,6 +41,7 @@
 #include "../arch/x86_64/gdt.h"
 #include "../arch/x86_64/paging.h"
 #include "userland_files.h"
+#include "../gdi/png.h"
 
 static UmProcess     *g_procs[UM_MAX_PROCS];
 static UINT32         g_next_id = 100;
@@ -194,7 +195,16 @@ void UmInit(void)
             d = d ? RamfsCreate(d, part, true) : NULL;
         }
         RamNode *f = d ? RamfsCreate(d, slash + 1, false) : NULL;
-        if (f && RamfsWrite(f, (const char *)uf->data, uf->size)) installed++;
+        if (f && uf->zsize) {                       /* stored compressed (the big ones: ICU, NetSurf) */
+            char *buf = kmalloc(uf->size ? uf->size : 1);
+            if (buf && ZlibInflate(uf->data, uf->zsize, buf, uf->size) == (long)uf->size &&
+                RamfsWriteOwned(f, buf, uf->size))
+                installed++;
+            else {
+                kfree(buf);
+                kprintf("[UM] %s: could not unpack\n", uf->path);
+            }
+        } else if (f && RamfsWrite(f, (const char *)uf->data, uf->size)) installed++;
     }
     kprintf("[UM] User-mode subsystem ready: %d system files installed (C:\\Windows\\System32, C:\\Programs)\n",
             installed);

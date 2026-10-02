@@ -114,8 +114,8 @@ named program or test demonstrates it.
   services that start at boot.
 - ~~COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception
   tables~~ Done; see [Type libraries and FH4](HISTORY.md#com-type-libraries-and-fh4-c-exceptions).
-- .NET globalization through ICU, not only NLS for English and invariant
-  cultures.
+- ~~.NET globalization through ICU, not only NLS for English and invariant
+  cultures~~ Done; see [ICU](HISTORY.md#icu-net-globalization-and-kernel32s-locales).
 - Keep the App Store's per-app compatibility notes in step with what has
   been verified.
 - Firefox (tested with Floorp): the browser window opens and draws
@@ -152,6 +152,11 @@ named program or test demonstrates it.
   objects: real tokens, restricted tokens, impersonation, and descriptors
   checked on open (Phase 17.4, `sectest`, `acltest`).  Files' descriptors
   come with Phase 18.5.
+- Locales: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat` in
+  the requested locale (ICU already answers `GetLocaleInfoEx` for all of
+  them), and a user locale other than `en-US`.
+- .NET: an unhandled managed exception prints "Stack overflow." instead of
+  the exception and its stack trace (with NLS as well as ICU).
 
 <!-- END generated:next-kernel -->
 

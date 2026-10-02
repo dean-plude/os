@@ -438,6 +438,18 @@ bool RamfsWrite(RamNode *f, const char *data, UINT32 len)
     return true;
 }
 
+bool RamfsWriteOwned(RamNode *f, char *buf, UINT32 len)
+{
+    if (!f || f->dir || f->pins || len > RAMFS_FILE_MAX || RamfsReadOnly(f)) return false;
+    kfree(f->data);
+    f->data = buf;
+    f->size = len;
+    f->cap = len;
+    mark(f, RAMFS_F_DIRTY);
+    touch(f);
+    return true;
+}
+
 /* Grow capacity to at least @need (geometrically, so appends are cheap). */
 static bool reserve(RamNode *f, UINT32 need)
 {

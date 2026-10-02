@@ -35,10 +35,12 @@ SAMPLE = 'NovaOS app corpus\na needle in a haystack\nthe end\n'
 
 
 class App:
-    """@url's download, unpacked by @unpack into C:\\Apps\\@dir; @tests run in order"""
-    def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0):
+    """@url's download (and @extra's), unpacked by @unpack into
+    C:\\Apps\\@dir; @tests run in order.  @unpack may be a function
+    (app, [downloaded files], dest) for a program its file stages itself."""
+    def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=()):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
-        self.unpack, self.strip = unpack, strip
+        self.unpack, self.strip, self.extra = unpack, strip, list(extra)
 
 
 A = r'C:\Apps'
@@ -53,7 +55,7 @@ def load_apps():
     import glob
     apps = []
     for f in sorted(glob.glob(os.path.join(ROOT, 'tests', 'appcorpus', '*.py'))):
-        ns = {'App': App, 'Test': Test, 'A': A, 'DRIVE_LABEL': DRIVE_LABEL, '__file__': f}
+        ns = {'App': App, 'Test': Test, 'A': A, 'DRIVE_LABEL': DRIVE_LABEL, 'ROOT': ROOT, '__file__': f}
         exec(compile(open(f).read(), f, 'exec'), ns)
         if not isinstance(ns.get('APP'), App):
             sys.exit(f'{f}: APP must be an App')
@@ -180,7 +182,11 @@ def main():
     staged = []
     for app in apps:
         try:
-            stage(app, fetch(app.url, a.cache), os.path.join(apps_dir, app.dir))
+            if callable(app.unpack):
+                app.unpack(app, [fetch(u, a.cache) for u in [app.url] + app.extra],
+                           os.path.join(apps_dir, app.dir))
+            else:
+                stage(app, fetch(app.url, a.cache), os.path.join(apps_dir, app.dir))
             staged.append(app)
         except Exception as e:
             results[app.name] = (f'download or unpack failed: {e}', 0, [])
