@@ -67,7 +67,9 @@ All marked with _NOVAOS / WITH_NOVA_HTTP / FB_USE_NOVA_FONT or a comment:
   (userland/netsurf/fetch_nova.c) and makes the curl fetcher optional.
 - netsurf/frontends/framebuffer/gui.c: window size from the desktop,
   cookies in C:\Programs\NetSurf; fixes scrolling of content shorter than
-  the window (the top clamp is applied last).
+  the window (the top clamp is applied last); an area queued for redraw
+  before a window resize is clipped to the browser widget's new size, so
+  it never plots over the scroll bars.
 - netsurf/frontends/framebuffer/{font.h,font_nova.h,framebuffer.c,
   fbtk/text.c}: hooks for the TrueType font driver
   (userland/netsurf/font_nova.c).
