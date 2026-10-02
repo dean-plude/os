@@ -70,7 +70,7 @@ void um_unlock(UmLock *l);
  * take it shared too) or many readers, who must not take it twice. */
 typedef struct {
     UmLock       w;
-    volatile int readers;
+    struct { volatile int n; char pad[60]; } readers[16];   /* by CPU (MAX_CPUS): no shared line to bounce */
 } UmRwLock;
 void um_lock_shared(UmRwLock *l);
 void um_unlock_shared(UmRwLock *l);

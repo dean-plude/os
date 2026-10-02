@@ -90,12 +90,23 @@ void um_unlock(UmLock *l)
         } \
     } while (0)
 
+/* Readers count on their CPU's counter (and a thread that moved count down
+ * on another's): the writer waits for the sum to reach 0 */
+static volatile int *my_readers(UmRwLock *l) { return &l->readers[KiGetCurrentKpcr()->CpuNumber % MAX_CPUS].n; }
+
+static int readers_of(UmRwLock *l)
+{
+    int sum = 0;
+    for (int i = 0; i < MAX_CPUS; i++) sum += __atomic_load_n(&l->readers[i].n, __ATOMIC_SEQ_CST);
+    return sum;
+}
+
 void um_lock_excl(UmRwLock *l)
 {
     um_lock(&l->w);                             /* new readers stay out */
     if (l->w.depth > 1) return;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    UM_WAIT_UNTIL(__atomic_load_n(&l->readers, __ATOMIC_SEQ_CST) == 0);
+    UM_WAIT_UNTIL(readers_of(l) == 0);
 }
 
 void um_unlock_excl(UmRwLock *l) { um_unlock(&l->w); }
@@ -104,9 +115,10 @@ void um_lock_shared(UmRwLock *l)
 {
     if (l->w.owner == sched_current()) { l->w.depth++; return; }   /* the writer */
     for (;;) {
-        __atomic_add_fetch(&l->readers, 1, __ATOMIC_SEQ_CST);
+        volatile int *r = my_readers(l);
+        __atomic_add_fetch(r, 1, __ATOMIC_SEQ_CST);
         if (!__atomic_load_n(&l->w.v, __ATOMIC_SEQ_CST)) return;
-        __atomic_sub_fetch(&l->readers, 1, __ATOMIC_SEQ_CST);     /* a writer: let it go first */
+        __atomic_sub_fetch(r, 1, __ATOMIC_SEQ_CST);                /* a writer: let it go first */
         UM_WAIT_UNTIL(!__atomic_load_n(&l->w.v, __ATOMIC_RELAXED));
     }
 }
@@ -114,7 +126,7 @@ void um_lock_shared(UmRwLock *l)
 void um_unlock_shared(UmRwLock *l)
 {
     if (l->w.owner == sched_current()) { um_unlock(&l->w); return; }
-    __atomic_sub_fetch(&l->readers, 1, __ATOMIC_RELEASE);
+    __atomic_sub_fetch(my_readers(l), 1, __ATOMIC_RELEASE);
 }
 
 /* The desktop lock (recursive for its owner), and the file-system lock it

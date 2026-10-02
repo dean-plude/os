@@ -212,7 +212,8 @@ static double throughput(LPTHREAD_START_ROUTINE fn, int n)
 /* @fn's throughput by one thread and by one per CPU; false if it failed
  * or scaled by less than @want (0: no target) */
 /* Yardsticks for the two above: plain computation, and a system call that
- * touches nothing shared (reading the performance counter) */
+ * touches nothing shared (NtQuerySystemTime: kernel32 reads the time from
+ * shared memory instead) */
 static DWORD WINAPI cpu_worker(LPVOID arg)
 {
     (void)arg;
@@ -224,20 +225,9 @@ static DWORD WINAPI cpu_worker(LPVOID arg)
     return 0;
 }
 
-static DWORD WINAPI call_worker(LPVOID arg)
-{
-    (void)arg;
-    LARGE_INTEGER c;
-    while (!g_tp_stop) {
-        for (int i = 0; i < 16; i++) QueryPerformanceCounter(&c);
-        InterlockedIncrement(&g_tp_ops);
-    }
-    return 0;
-}
-
 typedef LONG (WINAPI *QST)(LARGE_INTEGER *);
 static QST g_qst;
-static DWORD WINAPI time_worker(LPVOID arg)
+static DWORD WINAPI call_worker(LPVOID arg)
 {
     (void)arg;
     LARGE_INTEGER c;
@@ -248,9 +238,13 @@ static DWORD WINAPI time_worker(LPVOID arg)
     return 0;
 }
 
+static int g_only_many;                             /* "smpstress throughput X NAME many|N": that many threads only */
+static int cpus_of(const SYSTEM_INFO *si) { return si->dwNumberOfProcessors > 16 ? 16 : (int)si->dwNumberOfProcessors; }
+
 static int scaling(const char *name, LPTHREAD_START_ROUTINE fn, int cpus, double want)
 {
     long bad0 = g_bad;
+    if (g_only_many) { printf("  %-16s %2d threads %8.0f/s\n", name, g_only_many, throughput(fn, g_only_many)); return 1; }
     double one = throughput(fn, 1), all = throughput(fn, cpus);
     double x = one > 0 ? all / one : 0;
     printf("  %-16s 1 thread %8.0f/s, %2d threads %8.0f/s: %.2fx\n", name, one, cpus, all, x);
@@ -341,13 +335,15 @@ throughput:
     CreateDirectoryA("C:\\Temp\\smpstress", NULL);
     int cpus = (int)si.dwNumberOfProcessors;
     if (cpus > 16) cpus = 16;
-    scaling("(computing)", cpu_worker, cpus, 0);
-    scaling("(system calls)", call_worker, cpus, 0);
+    const char *only = only_tp && argc > 3 ? argv[3] : NULL;    /* "smpstress throughput X files" */
+    g_only_many = only && argc > 4 ? (!strcmp(argv[4], "many") ? cpus_of(&si) : atoi(argv[4])) : 0;
     g_qst = (QST)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemTime");
-    scaling("(time)", time_worker, cpus, 0);
-    scaling("(time x2)", time_worker, 2, 0);
-    if (scaling("files", file_worker, cpus, want)) pass++; else fail++;
-    if (scaling("registry", reg_worker, cpus, want)) pass++; else fail++;
+    if (!only) {
+        scaling("(computing)", cpu_worker, cpus, 0);
+        if (g_qst) scaling("(system calls)", call_worker, cpus, 0);
+    }
+    if (!only || !strcmp(only, "files")) { if (scaling("files", file_worker, cpus, want)) pass++; else fail++; }
+    if (!only || !strcmp(only, "registry")) { if (scaling("registry", reg_worker, cpus, want)) pass++; else fail++; }
     if (want > 0) printf("  (target: %.1fx on %d CPUs)\n", want, cpus);
 
     printf("smpstress: %d passed, %d failed\n", pass, fail);

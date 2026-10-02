@@ -10,27 +10,59 @@
 #include "ksym.h"
 #include "printf.h"
 #include "../lib/string.h"
+#include "scheduler.h"
 
 #define PROF_MAX 32768
 enum { P_USER = 1, P_LOCKWAIT, P_IDLE };
 
 static volatile bool g_on;
+static UINT64 g_from, g_to;                 /* the window (ticks; g_to 0: open-ended) */
+static bool in_window(void);
 static volatile UINT32 g_n;
 static UINT64 g_rip[PROF_MAX], g_caller[PROF_MAX];
+#define PROF_CALLS 0x400                    /* system calls, then 0x300 + interrupt vectors */
+static UINT32 g_calls[PROF_CALLS];
 
-void ProfStart(void)
+void ProfStart(UINT64 delay, UINT64 len)
 {
     g_on = false;
     g_n = 0;
+    g_from = sched_ticks() + delay;
+    g_to = len ? g_from + len : 0;
+    memset(g_calls, 0, sizeof(g_calls));
     g_on = true;
+}
+
+void ProfInterrupt(UINT64 vector)
+{
+    if (vector < 256 && in_window()) __atomic_add_fetch(&g_calls[0x300 + vector], 1, __ATOMIC_RELAXED);
+}
+
+void ProfSyscall(UINT64 num)
+{
+    if (num < PROF_CALLS && in_window()) __atomic_add_fetch(&g_calls[num], 1, __ATOMIC_RELAXED);
+}
+
+static bool in_window(void)
+{
+    UINT64 t = sched_ticks();
+    return g_on && t >= g_from && (!g_to || t < g_to);
 }
 
 void ProfSample(UINT64 rip, UINT64 rbp, bool user, bool lock_wait, bool idle)
 {
-    if (!g_on) return;
+    if (!in_window()) return;
     UINT32 i = __atomic_fetch_add(&g_n, 1, __ATOMIC_RELAXED);
     if (i >= PROF_MAX) return;
     UINT64 caller = 0;
+    if (lock_wait) {                                        /* who wants the lock: past the lock's own frames */
+        for (int d = 0; d < 6 && rbp >= UINT64_C(0xFFFF800000000000) && !(rbp & 7); d++) {
+            UINT64 ret = ((const UINT64 *)(uintptr_t)rbp)[1], off;
+            const char *f = KsymLookup(ret, &off);
+            if (f && strncmp(f, "raw_", 4) && strncmp(f, "bkl_", 4)) { caller = ret; break; }
+            rbp = ((const UINT64 *)(uintptr_t)rbp)[0];
+        }
+    }
     if (user) rip = P_USER;
     else if (lock_wait) rip = P_LOCKWAIT;
     else if (idle) rip = P_IDLE;
@@ -77,7 +109,13 @@ void ProfReport(void (*out)(void *ctx, const char *line), void *ctx)
     UINT32 user = 0, wait = 0, idle = 0;
     for (UINT32 i = 0; i < n; i++) {
         if (g_rip[i] == P_USER) { user++; continue; }
-        if (g_rip[i] == P_LOCKWAIT) { wait++; continue; }
+        if (g_rip[i] == P_LOCKWAIT) {
+            wait++;
+            UINT64 off;
+            const char *b = g_caller[i] ? KsymLookup(g_caller[i], &off) : NULL;
+            np = add_row(pair, np, 1024, "(kernel lock)", b ? b : "?");
+            continue;
+        }
         if (g_rip[i] == P_IDLE) { idle++; continue; }
         UINT64 off;
         const char *a = KsymLookup(g_rip[i], &off), *b = g_caller[i] ? KsymLookup(g_caller[i], &off) : NULL;
@@ -93,4 +131,14 @@ void ProfReport(void (*out)(void *ctx, const char *line), void *ctx)
     top(fn, nf, 15, n, false, out, ctx);
     out(ctx, "Callers:");
     top(pair, np, 15, n, true, out, ctx);
+    out(ctx, "System calls (3xx: interrupt or exception xx under the kernel lock):");
+    for (int k = 0; k < 12; k++) {
+        UINT32 best = 0;
+        for (UINT32 i = 1; i < PROF_CALLS; i++) if (g_calls[i] > g_calls[best]) best = i;
+        if (!g_calls[best]) break;
+        ksnprintf(line, sizeof(line), best >= 0x300 ? "%8u  interrupt %u" : "%8u  %03x", g_calls[best], best >= 0x300 ? best - 0x300 : best);
+        kprintf("[PROF] %s\n", line);
+        out(ctx, line);
+        g_calls[best] = 0;
+    }
 }

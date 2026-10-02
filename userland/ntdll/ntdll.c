@@ -364,7 +364,7 @@ __declspec(dllexport) int strcmp(const char *a, const char *b)
  * ----------------------------------------------------------------------- */
 typedef struct Block {
     SIZE_T        size;        /* usable bytes (class size, or the large size) */
-    SIZE_T        tag;         /* HEAP_MAGIC | class, or HEAP_LARGE */
+    SIZE_T        tag;         /* HEAP_MAGIC with the class in its low byte, or HEAP_LARGE */
 #ifndef _WIN64
     SIZE_T        pad[2];      /* (32-bit: SSE code and JIT compilers such as
                                 * Mesa's expect 16-byte-aligned blocks too) */
@@ -474,7 +474,7 @@ NTSYSAPI PVOID NTAPI RtlAllocateHeap(PVOID heap, ULONG flags, SIZE_T n)
     hunlock();
     if (!b) return 0;
     b->size = class_size[c];
-    b->tag = HEAP_MAGIC | (SIZE_T)c;
+    b->tag = (HEAP_MAGIC & ~(SIZE_T)0xFF) | (SIZE_T)c;    /* (the magic's own low byte would hide the class) */
     if (flags & HEAP_ZERO_MEMORY) memset(b + 1, 0, class_size[c]);
     return b + 1;
 }

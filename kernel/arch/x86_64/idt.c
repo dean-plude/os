@@ -373,7 +373,7 @@ void interrupt_dispatch(InterruptFrame *frame)
     /* (a 32-bit program's system call takes the lock itself, like SYSCALL) */
     bool big = vector != IRQ_TIMER && vector != IRQ_SPURIOUS &&
                !(vector == VECTOR_SYSCALL && (frame->cs & ~3ULL) == GDT_USER_CODE32);
-    if (big) bkl_acquire();
+    if (big) { ProfInterrupt(vector); bkl_acquire(); }
     dispatch(frame);
     /* Returning to a user program that has been killed meanwhile? */
     if ((frame->cs & 3) && sched_current()->um) UmReturnToUserFrame(frame);

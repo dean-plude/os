@@ -1253,8 +1253,14 @@ static void run(Term *t, char *cmdline)
         done_mark();
         return;
     }
-    if (is(s, "profile on")) {                                 /* the sampling profiler (ke/prof.c) */
-        ProfStart();
+    if (!strncmp(s, "profile on", 10)) {                      /* the sampling profiler (ke/prof.c) */
+        const char *a = s + 10;                                 /* "profile on [DELAY LENGTH]" (ticks) */
+        UINT64 v[2] = { 0, 0 };
+        for (int i = 0; i < 2; i++) {
+            while (*a == ' ') a++;
+            while (*a >= '0' && *a <= '9') v[i] = v[i] * 10 + (UINT64)(*a++ - '0');
+        }
+        ProfStart(v[0], v[1]);
         tprint(t, "Profiling: \"profile\" shows where the time went.");
         done_mark();
         return;
