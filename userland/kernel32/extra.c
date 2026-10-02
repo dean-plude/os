@@ -192,6 +192,22 @@ void k32_io_done(HANDLE h, OVERLAPPED *o, NTSTATUS s, DWORD bytes)
     if (queued) ReleaseSemaphore(p->h, 1, 0);
 }
 
+/* A request that stayed pending completes to the port and key its handle
+ * was bound to when it was issued (by then the handle may be closed, and
+ * its value reused for another file) */
+static void io_done_to(HANDLE port, ULONG_PTR key, OVERLAPPED *o, NTSTATUS s, DWORD bytes)
+{
+    o->Internal = (ULONG_PTR)s;
+    o->InternalHigh = bytes;
+    ULONG_PTR ev = (ULONG_PTR)o->hEvent;
+    if (ev & ~(ULONG_PTR)1) SetEvent((HANDLE)(ev & ~(ULONG_PTR)1));
+    lock();
+    Port *p = find_port(port);
+    BOOL queued = p && post(p, bytes, key, o, s);
+    unlock();
+    if (queued) ReleaseSemaphore(port, 1, 0);
+}
+
 /* For ws2_32: finishes an overlapped operation on @h the way file I/O does
  * (the event, then a completion packet if @h is bound to a port). */
 __declspec(dllexport) void WINAPI NovaIoComplete(HANDLE h, OVERLAPPED *o, LONG status, DWORD bytes)
@@ -265,7 +281,7 @@ static BOOL run_apcs(void)
  * waits (ReadFileEx), a helper thread watches a private event instead and
  * then does what k32_io_done does at once for other requests.
  * ----------------------------------------------------------------------- */
-typedef struct Watch { struct Watch *next; HANDLE ev, h; OVERLAPPED *o; void *fn; DWORD tid; } Watch;
+typedef struct Watch { struct Watch *next; HANDLE ev, h, port; ULONG_PTR key; OVERLAPPED *o; void *fn; DWORD tid; } Watch;
 static Watch *g_watch;
 static HANDLE g_watch_wake;
 
@@ -279,7 +295,7 @@ static void watch_done(Watch *w)
     NTSTATUS s = (NTSTATUS)w->o->Internal;
     DWORD bytes = (DWORD)w->o->InternalHigh;
     if (w->fn) queue_apc(w->tid, 0, w->fn, apc_error(s), bytes, (ULONG_PTR)w->o);
-    else k32_io_done(w->h, w->o, s, bytes);
+    else io_done_to(w->port, w->key, w->o, s, bytes);
     CloseHandle(w->ev);
     zfree(w);
 }
@@ -291,11 +307,24 @@ static DWORD WINAPI watcher(LPVOID arg)
         HANDLE hs[MAXIMUM_WAIT_OBJECTS];
         Watch *ws[MAXIMUM_WAIT_OBJECTS];
         DWORD n = 0;
+        BOOL more = FALSE;
+        Watch *done = 0;
         hs[n++] = g_watch_wake;
         lock();
-        for (Watch *w = g_watch; w && n < MAXIMUM_WAIT_OBJECTS; w = w->next) { ws[n] = w; hs[n++] = w->ev; }
+        for (Watch *w = g_watch; w; w = w->next) {
+            if (n < MAXIMUM_WAIT_OBJECTS) { ws[n] = w; hs[n++] = w->ev; continue; }
+            more = TRUE;                                    /* past what one wait can hold: poll */
+            if (WaitForSingleObject(w->ev, 0) == WAIT_OBJECT_0) { done = w; break; }
+        }
         unlock();
-        DWORD r = WaitForMultipleObjects(n, hs, FALSE, n == 1 ? INFINITE : 100);
+        if (done) {
+            lock();
+            for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next) if (*pp == done) { *pp = done->next; break; }
+            unlock();
+            watch_done(done);
+            continue;
+        }
+        DWORD r = WaitForMultipleObjects(n, hs, FALSE, more ? 5 : n == 1 ? INFINITE : 100);
         if (r == WAIT_OBJECT_0 || r == WAIT_TIMEOUT || r >= WAIT_OBJECT_0 + n) continue;
         Watch *w = ws[r - WAIT_OBJECT_0];
         lock();
@@ -311,13 +340,15 @@ static Watch *watch_new(HANDLE h, OVERLAPPED *o, void *fn)
     lock();
     FileInfo *f = file_info(h, FALSE);
     BOOL port = f && f->port && !((ULONG_PTR)o->hEvent & 1);
+    HANDLE porth = port ? f->port->h : 0;
+    ULONG_PTR key = port ? f->key : 0;
     unlock();
     if (!port && !fn) return 0;
     Watch *w = zalloc(sizeof(*w));
     if (!w) return 0;
     w->ev = CreateEventW(0, TRUE, FALSE, 0);
     if (!w->ev) { zfree(w); return 0; }
-    w->h = h; w->o = o; w->fn = fn; w->tid = GetCurrentThreadId();
+    w->h = h; w->port = porth; w->key = key; w->o = o; w->fn = fn; w->tid = GetCurrentThreadId();
     return w;
 }
 
@@ -340,10 +371,14 @@ static void watch_start(Watch *w)
     SetEvent(g_watch_wake);
 }
 
-/* Finish a request that did not stay pending */
+/* Finish a request that did not stay pending.  One that failed at once
+ * (an error status, such as a broken pipe) completes nothing: no event, no
+ * completion packet, no completion routine, as on Windows.  Programs free
+ * the OVERLAPPED after such a failure. */
 static void finished_now(HANDLE h, OVERLAPPED *o, Watch *w, void *fn, NTSTATUS s)
 {
     if (w) { CloseHandle(w->ev); zfree(w); }
+    if ((ULONG)s >= 0xC0000000u) return;
     if (fn) queue_apc(GetCurrentThreadId(), 0, fn, apc_error(s), (DWORD)o->InternalHigh, (ULONG_PTR)o);
     else k32_io_done(h, o, s, (DWORD)o->InternalHigh);
 }
@@ -368,7 +403,7 @@ BOOL k32_overlapped(HANDLE h, OVERLAPPED *o, int op, PVOID buf, DWORD n, LPDWORD
     o->Internal = (ULONG_PTR)s;
     if (!NT_SUCCESS(s) && s != STATUS_END_OF_FILE && s != STATUS_BUFFER_OVERFLOW) o->InternalHigh = 0;
     finished_now(h, o, w, fn, s);
-    if (fn) { SetLastError(0); return NT_SUCCESS(s) || s == STATUS_END_OF_FILE || s == STATUS_BUFFER_OVERFLOW; }
+    if (fn && (ULONG)s < 0xC0000000u) { SetLastError(0); return TRUE; }   /* ReadFileEx: the routine is queued */
     if (done) *done = (DWORD)o->InternalHigh;
     if (s == STATUS_END_OF_FILE) { SetLastError(ERROR_HANDLE_EOF); return FALSE; }
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
@@ -383,9 +418,7 @@ NTSTATUS k32_overlapped_fsctl(HANDLE h, OVERLAPPED *o, ULONG code, PVOID in, DWO
     NTSTATUS s = NtFsControlFile(h, ev, 0, 0, (PIO_STATUS_BLOCK)o, code, in, in_len, out, out_len);
     if (s == STATUS_PENDING) { if (w) watch_start(w); return s; }
     o->Internal = (ULONG_PTR)s;
-    /* ConnectNamedPipe finding its client already there completes nothing */
-    if (s == (NTSTATUS)0xC00000B2) { if (w) { CloseHandle(w->ev); zfree(w); } return s; }
-    finished_now(h, o, w, 0, s);
+    finished_now(h, o, w, 0, s);         /* (ConnectNamedPipe finding its client there fails, completing nothing) */
     return s;
 }
 
