@@ -69,11 +69,14 @@ size_t klog_read(char *out, size_t cap);
 /*
  * Kernel assertion with descriptive panic message.
  */
+void KsymBacktraceHere(void);                 /* ke/ksym.c */
+
 #define KASSERT(cond)  do {                                          \
     if (__builtin_expect(!(cond), 0)) {                             \
         kprintf("ASSERTION FAILED: %s\n"                            \
                 "  at %s:%d in %s()\n",                             \
                 #cond, __FILE__, __LINE__, __func__);                \
+        KsymBacktraceHere();                                        \
         for (;;) { __asm__ volatile ("cli; hlt"); }                 \
     }                                                                \
 } while (0)
@@ -82,5 +85,6 @@ size_t klog_read(char *out, size_t cap);
     kprintf("\n*** KERNEL PANIC ***\n");                             \
     kprintf("  " fmt "\n", ##__VA_ARGS__);                          \
     kprintf("  at %s:%d in %s()\n", __FILE__, __LINE__, __func__);  \
+    KsymBacktraceHere();                                             \
     for (;;) { __asm__ volatile ("cli; hlt"); }                     \
 } while (0)

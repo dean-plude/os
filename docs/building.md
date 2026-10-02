@@ -215,7 +215,39 @@ counts and `$Secure`) and checks the files drivetest left behind.
 
 ## Tests
 
-There is no CI; tests run inside NovaOS under QEMU.
+Tests run inside NovaOS under QEMU.  `tools/selftest.py` boots
+`build/nova.img` and runs the regression gate, the same one CI runs on every
+pull request (`.github/workflows/ci.yml`):
+
+```bash
+sudo apt install acpica-tools          # iasl, for tests/acpi/battery.asl
+python3 tools/selftest.py              # the core suite; exit status = failures
+python3 tools/selftest.py --only apitest,guitest --out /tmp/st
+
+# the graphics suite: 7-Zip, Mesa and DXVK downloads, gltest/d3dtest builds
+sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
+tools/ci/stage-graphics.sh /tmp/gfx
+python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
+```
+
+The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
+`guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`, and
+last `crash kernel`, which halts the kernel on purpose and passes when the
+serial log shows a symbolized backtrace (`KeCrashTestFault`,
+`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
+install Mesa 3D` and `store install DXVK` (the archives are already in
+`C:\Downloads`, so the App Store installs without a network) and then runs
+`gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
+of each while it draws.
+
+It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
+and the battery from `tests/acpi/battery.asl`, then types each test into the
+Terminal.  A test passes when the program exits with code 0, prints no
+`FAIL` line or non-zero "failed" count, and prints what the test expects;
+a kernel panic stops the run.  `--out` (default `selftest-out/`) keeps the
+serial log, a screenshot after each test and `sound.wav`; `--summary FILE`
+appends a Markdown table and `--junit FILE` writes JUnit XML.  To add a test,
+add a line to `CORE` or `GRAPHICS` in `tools/selftest.py`.
 
 ### Self-test programs
 
@@ -232,28 +264,76 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `dlltest` | DLL loading, TLS, `DllMain` |
 | `posixtest` | The POSIX layer in msvcrt |
 | `apitest` | kernel32, advapi32, bcrypt, shell32, shlwapi, psapi, user32/gdi32, the registry |
+| `abitest` (x64) | The binary interface against Windows 10 1903 x64: TEB, PEB, process parameters, loader lists, `KUSER_SHARED_DATA`, `CONTEXT` and `EXCEPTION_RECORD` offsets, ntdll's stub bytes and every system-call number (`abitest_nt1903.h`), raw `syscall`s |
 | `comtest` | ole32/oleaut32, `IShellLink` |
 | `cppeh` | C++ exceptions and RTTI |
 | `shmtest` | Named and file-backed shared memory between processes |
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
+| `proctest` | `CreateProcess` flags: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` (`GetConsoleProcessList`), file positions shared with children and duplicates |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
+| `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
+| `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
+| `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
 | `acltest` | Access checks against DACLs (`AccessCheck`), and file ACLs on drive C:: denied writes, deletes and renames, inheritance, `CreateFile` with a descriptor; it leaves `C:\AclTest\kept.txt` and, run again after a restart, checks it kept its DACL (C: on NTFS) |
 | `drivetest` | Drive D: (NTFS: reading, then writing, renaming, deleting), with the disk from `scripts/make-ntfs-disk.sh`; then `scripts/check-ntfs-disk.sh` on the host |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
 
+`crash` writes through a NULL pointer (only it dies); `crash kernel`
+crashes the kernel on purpose (`NtNovaBugCheck`) to show the backtrace.
+
 Interactive ones: `winhello` and `guitest` (windows, menus, dialogs,
-property sheets), `droptest` (drag and drop), `cpus` (SMP speed-up), and
+property sheets; `guitest auto` drives them itself and reports, as CI runs it), `droptest` (drag and drop; its targets list each dropped file's size, or "missing"), `cpus` (SMP speed-up), and
 `hello`, `mandel`, `primes`, `wc`, `guess`.
+
+### Boot-time self-tests
+
+The kernel tests itself while it boots and prints the results to the serial
+log: `[PROBE]` (user-pointer validation) and `[PSTEST]`
+(`PsGetCurrentThread` on bare kernel threads).  `grep -a 'passed,'
+serial.log` lists them; each should end "0 failed".
 
 ### Real programs
 
-Third-party programs (7-Zip, MinGit, the language runtimes, installers),
-and test scripts such as `cmdtest.bat` for `cmd.exe`, are tested from a
-second disk image holding them (not in this repository), driven by a QEMU harness
-that types Terminal commands, clicks, drags and takes screenshots.  Copy a
-program onto the data disk as above and run it from the Terminal.
+`tools/appcorpus.py` is the nightly app corpus
+(`.github/workflows/nightly.yml`, which also runs on pull requests that
+change it): it downloads the official Windows x64 releases into a cache,
+unpacks them into `C:\Apps`, boots once and runs each one's commands.
+
+| Program | Checks |
+|---|---|
+| ripgrep 14.1.1 | `--version`, a search |
+| fd 10.2.0 | `--version`, finding `*.txt` |
+| jq 1.7.1 | `--version`, a filter over a JSON file |
+| 7-Zip 26.03 | `7z a`, `7z t` |
+| MinGit 2.51.0 | `git clone` of a bare repository, `log`, `status` |
+| Python 3.14.0 (NuGet package) | `-c` with `json` and `sys` |
+| Node.js 24.9.0 | `-v`, `-e` |
+| Notepad++ 8.8.3 (portable) | opens a file; the screenshot must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
+
+```bash
+sudo apt install p7zip-full python3-pil     # 7-Zip's installer, Pillow
+python3 tools/appcorpus.py                   # exit status = programs that failed
+python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
+python3 tools/appcorpus.py --only Notepad++ --update-reference   # after an intended change
+```
+
+A command passes as a self-test does (exit code 0, the output expected).
+To add a program, add an `App` to `APPS`.  Other third-party programs (the
+installers, Java, .NET) and test scripts such as `cmdtest.bat` for
+`cmd.exe` are tried by hand with `tools/novarun.py`: copy a program onto
+the data disk with `--put` and type its commands.
+
+Full-screen and interactive programs (Neovim, an MSYS2 `sh` session) are
+driven with `!type`, which types without waiting for the command to end
+(`\n` is Enter, `\e` Esc), and `!done N`, which waits up to N seconds for
+it to end:
+
+```bash
+python3 tools/novarun.py --put 'nvim-win64=C:\Apps\nvim' 'cd C:\Apps\nvim\bin' \
+    '!type nvim --clean t.txt\n' '!wait 40' '!type ihello\e:wq\n' '!done 60' 'type t.txt'
+```
 
 ### Sound
 
@@ -295,7 +375,8 @@ python3 tools/novarun.py --net --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' \
 - **Program crashes** are logged with the faulting module and offset, the
   process's exit code, and `OutputDebugString` output.
 - **`trace NAME`** in the Terminal logs the failing system calls (with file
-  names) of the program called NAME; `trace off` stops it.
+  names) of the program called NAME, each with its process id; `trace
+  +NAME` logs every call, not only the failing ones; `trace off` stops it.
 
 ### GDB
 

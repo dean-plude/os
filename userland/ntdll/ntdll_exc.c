@@ -456,6 +456,8 @@ __asm__(
     "movq %r14, 0xE8(%rcx)\n\t" "movq %r15, 0xF0(%rcx)\n\t"
     "movq (%rsp), %rax\n\t" "movq %rax, 0xF8(%rcx)\n\t"
     "pushfq\n\t" "popq %rax\n\t" "movl %eax, 0x44(%rcx)\n\t"
+    "movw %cs, 0x38(%rcx)\n\t" "movw %ds, 0x3A(%rcx)\n\t" "movw %es, 0x3C(%rcx)\n\t"
+    "movw %fs, 0x3E(%rcx)\n\t" "movw %gs, 0x40(%rcx)\n\t" "movw %ss, 0x42(%rcx)\n\t"
     "movq 0x78(%rcx), %rax\n\t"
     "stmxcsr 0x34(%rcx)\n\t"
     "movdqa %xmm0, 0x1A0(%rcx)\n\t" "movdqa %xmm1, 0x1B0(%rcx)\n\t"

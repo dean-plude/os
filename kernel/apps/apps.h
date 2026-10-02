@@ -140,6 +140,10 @@ void AppUptime(char *buf, int cap);                     /* "1h 02m 05s" */
 void TerminalOpen(void);
 /* A new Terminal in @cwd (NULL: Documents) that runs @cmd as if typed */
 void TerminalRun(const char *cmd, RamNode *cwd);
+/* CREATE_NEW_CONSOLE (see terminal.c) */
+struct UmConsole; struct UmProcess;
+int  TerminalConsoleNew(const char *title, RamNode *cwd, struct UmConsole **con);
+bool TerminalConsoleAdopt(int id, struct UmProcess *p);
 
 /* Shortcuts (.lnk files) */
 typedef struct {
@@ -165,5 +169,8 @@ void PhotosOpen(RamNode *file);
 void PlaceholderOpen(AppId id);
 /* App Store: a catalog of open-source Windows programs to download and run */
 void StoreOpen(void);
+/* Get or install the App Store program called @name, as its button would;
+ * returns what the Store says (the outcome is logged as "[STORE] ...") */
+const char *StoreInstall(const char *name);
 /* Install NovaOS on a disk */
 void SetupOpen(void);

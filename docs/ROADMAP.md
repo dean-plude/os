@@ -97,12 +97,15 @@ named program or test demonstrates it.
   been verified.
 
 ### Kernel and API compatibility
-- Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
+- ~~Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
   with a console of its own, file handles that share their position with
-  the processes they are handed to.
+  the processes they are handed to~~ Done (Phase 17.3, `proctest`).
 - Files: hard links, `MoveFileEx` pending renames carried out at boot,
   `RegNotifyChangeKeyValue` change events.
-- Interactive MSYS2 `sh` sessions (only `sh -c` and scripts are tested).
+- ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
+  is waitable and the Terminal runs full-screen programs (Phase 17.2).
+- Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
+  Windows Terminal-style hosts) exist only as functions that fail.
 - Move files, the registry, process creation and the console off the big
   kernel lock.
 - Security: enforce tokens and ACLs on objects (`AccessCheck` already
@@ -133,21 +136,27 @@ named program or test demonstrates it.
 
 ## Cross-cutting (maintain throughout)
 
-- **Automated boot CI** (not done yet): the QEMU + OVMF harness that types
-  commands, clicks and takes screenshots should run on every pull request,
-  with the self-test programs as the regression gate.
+- **Automated boot CI** (done): every pull request builds NovaOS, boots it
+  under QEMU + OVMF and runs the self-tests and the OpenGL/Direct3D tests
+  (`tools/selftest.py`, `.github/workflows/ci.yml`); a failing test fails
+  the check.
 - **Reproducible build:** CMake drives `nasm`, clang/lld and `lld-link`
   for the kernel, bootloader and Windows userland; `nova.iso` is rebuilt
   with `scripts/create-iso.sh`.
 - **Debugging:** the GDB stub over QEMU (`run-debug`), the serial log,
   crash reports naming the module and offset, and the Terminal's `trace
-  NAME` for a program's failing system calls.  Still wanted: symbolized
-  kernel backtraces.
-- **ABI conformance tests:** assert PEB/TEB/structure offsets and syscall
-  numbers against the target build so the hybrid path stays viable.
+  NAME` for a program's failing system calls, and symbolized kernel
+  backtraces (the kernel embeds its symbol table; faults, panics and
+  failed assertions print function+offset frames).
+- **ABI conformance tests** (done): `abitest` asserts PEB/TEB/KUSER/CONTEXT
+  offsets, ntdll's stub layout and every syscall number against Windows 10
+  1903 x64, in CI.
 - **Test corpus:** every self-test program in `userland/programs/` is a
   permanent regression test, built for x64 and x86; `tools/pe_imports.py`
   shows what a new program needs before it is tried.
+- **Nightly app corpus** (done): `tools/appcorpus.py` runs ripgrep, fd, jq,
+  7-Zip, MinGit, Python, Node.js and Notepad++ every night and posts a
+  pass/fail table per program.
 
 ## Reality check
 

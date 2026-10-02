@@ -20,6 +20,7 @@
 #include "../../ke/kpcr.h"
 #include "../../ke/smp.h"
 #include "../../ke/probe.h"
+#include "../../ke/ksym.h"
 
 /* Assembly stub address table (defined in isr_stubs.asm) */
 extern uintptr_t isr_stub_table[IDT_ENTRIES];
@@ -205,6 +206,7 @@ static void handle_page_fault(InterruptFrame *f)
 
     /* If this is a kernel-mode fault we can't recover — kernel bug */
     if (!user) {
+        KsymBacktrace(f->rip, f->rbp, f->rsp);
         kprintf("KERNEL PAGE FAULT — halting\n");
         cpu_halt_forever();
     }
@@ -251,6 +253,7 @@ static void dispatch(InterruptFrame *frame)
         kprintf("  Error code: 0x%lx\n", frame->error_code);
         dump_frame(frame);
 
+        if (!(frame->cs & 3)) KsymBacktrace(frame->rip, frame->rbp, frame->rsp);
         if (vector == EXC_DOUBLE_FAULT) {
             kprintf("DOUBLE FAULT — system halted\n");
             cpu_halt_forever();

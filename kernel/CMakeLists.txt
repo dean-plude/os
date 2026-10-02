@@ -59,6 +59,9 @@ set(KERNEL_CFLAGS
     -std=c11
     -O2
     -g
+    # frame pointers: kernel faults and panics print a backtrace (ke/ksym.c)
+    -fno-omit-frame-pointer
+    -mno-omit-leaf-frame-pointer
 )
 
 if(IS_CLANG)
@@ -83,6 +86,7 @@ set(CMAKE_ASM_NASM_FLAGS "-f elf64 -g -F dwarf")
 set(LWIP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lwip/src")
 set(MBEDTLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mbedtls")
 set(UACPI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/uacpi")
+set(VTERM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libvterm")
 
 set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -92,6 +96,7 @@ set(KERNEL_INCLUDE_DIRS
     "${LWIP_DIR}/include"
     "${MBEDTLS_DIR}/include"
     "${UACPI_DIR}/include"
+    "${VTERM_DIR}/include"
 )
 
 # -------------------------------------------------------------------------
@@ -112,6 +117,7 @@ set(KERNEL_ASM_SOURCES
 
 set(KERNEL_C_SOURCES
     arch/x86_64/gdt.c
+    ke/ksym.c
     arch/x86_64/idt.c
     arch/x86_64/apic.c
     arch/x86_64/paging.c
@@ -168,6 +174,7 @@ set(KERNEL_C_SOURCES
     ke/probe_test.c
     ob/ob.c
     ps/ps.c
+    ps/ps_test.c
     cm/cm.c
     se/se.c
     io/io.c
@@ -226,6 +233,13 @@ list(APPEND KERNEL_C_SOURCES ${MBEDTLS_SOURCES})
 file(GLOB UACPI_SOURCES "${UACPI_DIR}/source/*.c")
 set_source_files_properties(${UACPI_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 list(APPEND KERNEL_C_SOURCES ${UACPI_SOURCES})
+
+# libvterm 0.3.3 (third_party/libvterm, MIT): the Terminal's VT emulator for
+# full-screen console programs; the C library it uses is apps/vterm_libc.h
+file(GLOB VTERM_SOURCES "${VTERM_DIR}/src/*.c")
+set_source_files_properties(${VTERM_SOURCES} PROPERTIES COMPILE_OPTIONS
+    "-w;-include;${CMAKE_CURRENT_SOURCE_DIR}/apps/vterm_libc.h")
+list(APPEND KERNEL_C_SOURCES ${VTERM_SOURCES})
 
 # The Windows userland (userland/, tools/build_userland.py): system DLLs and
 # programs built with clang for x86_64-pc-windows-msvc, embedded as data and
@@ -308,19 +322,37 @@ set_target_properties(kernel_c_lib PROPERTIES
 )
 add_dependencies(kernel_c_lib kernel_objects)
 
-# Final link step — use the archive + ASM objects
+# Final link step — use the archive + ASM objects.  Twice: the first link
+# (no symbol table) gives tools/mkksyms.py the functions' addresses, the
+# second embeds them (.ksyms, after .text, so nothing in .text moves; the
+# --check proves it)
+set(KSYMS_S "${CMAKE_CURRENT_BINARY_DIR}/ksyms.S")
+set(KSYMS_O "${CMAKE_CURRENT_BINARY_DIR}/ksyms.o")
 add_custom_command(
     OUTPUT  "${CMAKE_CURRENT_BINARY_DIR}/kernel.elf"
+    COMMAND ${CMAKE_C_COMPILER}
+            ${KERNEL_LINK_FLAGS}
+            -o "${CMAKE_CURRENT_BINARY_DIR}/kernel_nosyms.elf"
+            ${ASM_OBJECTS}
+            "${CMAKE_CURRENT_BINARY_DIR}/libkernel_c.a"
+    COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/../tools/mkksyms.py"
+            "${CMAKE_CURRENT_BINARY_DIR}/kernel_nosyms.elf" "${KSYMS_S}"
+    COMMAND ${CMAKE_C_COMPILER} $<$<BOOL:${IS_CLANG}>:-target> $<$<BOOL:${IS_CLANG}>:x86_64-unknown-none-elf>
+            -c "${KSYMS_S}" -o "${KSYMS_O}"
     COMMAND ${CMAKE_C_COMPILER}
             ${KERNEL_LINK_FLAGS}
             -o "${CMAKE_CURRENT_BINARY_DIR}/kernel.elf"
             ${ASM_OBJECTS}
             "${CMAKE_CURRENT_BINARY_DIR}/libkernel_c.a"
+            "${KSYMS_O}"
+    COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/../tools/mkksyms.py" --check
+            "${CMAKE_CURRENT_BINARY_DIR}/kernel.elf" "${KSYMS_S}"
     DEPENDS
             ${ASM_OBJECTS}
             kernel_c_lib
             "${CMAKE_CURRENT_SOURCE_DIR}/linker.ld"
-    COMMENT "Linking kernel.elf"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tools/mkksyms.py"
+    COMMENT "Linking kernel.elf (twice: the second with its symbol table)"
     VERBATIM
 )
 

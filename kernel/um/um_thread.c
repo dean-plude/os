@@ -12,6 +12,7 @@
 #include "../ke/probe.h"
 #include "../ke/printf.h"
 #include "../ke/smp.h"
+#include "../ke/ksym.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../arch/x86_64/cpu.h"
@@ -383,13 +384,28 @@ static UINT64 finish_create(UmObject *o, const char *name, UINT64 handle_ptr)
 }
 
 /* NtOpenEvent / NtOpenMutant / NtOpenSemaphore(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES) */
+/* The device objects that exist without being in the namespace table:
+ * opening one as another type is a type mismatch, not "not found" (Cygwin
+ * asks NtOpenSymbolicLinkObject whether \Device\Null exists). */
+static bool builtin_device(const char *name)
+{
+    static const char *const devs[] = { "\\device\\null", "\\device\\namedpipe", "\\device\\condrv",
+                                        "\\device\\afd", "\\device\\beep", "\\device\\mup" };
+    for (unsigned i = 0; i < sizeof(devs) / sizeof(devs[0]); i++) {
+        const char *a = name, *b = devs[i];
+        while (*a && *b && ((*a >= 'A' && *a <= 'Z') ? *a + 32 : *a) == *b) a++, b++;
+        if (!*a && !*b) return true;
+    }
+    return false;
+}
+
 static UINT64 open_named(UmObType type, UINT64 handle_ptr, UINT64 oa)
 {
     char name[NS_NAME_MAX];
     if (!ns_name(oa, name)) return ST_ACCESS_VIOLATION;
     if (!name[0]) return ST_INVALID_PARAMETER;
     UmObject *o = ns_lookup(name);
-    if (!o) return ST_OBJECT_NAME_NOT_FOUND;
+    if (!o) return builtin_device(name) ? ST_OBJECT_TYPE_MISMATCH : ST_OBJECT_NAME_NOT_FOUND;
     if (o->type != type) { um_ob_unref(o); return ST_OBJECT_TYPE_MISMATCH; }
     return new_handle(UmCurrent(), o, handle_ptr);
 }
@@ -709,6 +725,7 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (ok) {
             src = sp->handles[a2 / 4 - 1];
             if (src.kind == H_FILE || src.kind == H_DIR) RamfsRef(src.node);
+            if (src.kind == H_FILE) um_fpos_ref(src.fp);         /* a duplicate shares the position */
             if (src.kind == H_OBJECT) um_ob_ref(src.obj);
         }
         um_unlock(&sp->lock);
@@ -724,6 +741,7 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         }
         if (ok && (!tp || st)) {                             /* not placed: drop the reference */
             if (src.kind == H_FILE || src.kind == H_DIR) RamfsUnref(src.node);
+            if (src.kind == H_FILE) um_fpos_unref(src.fp);
             if (src.kind == H_OBJECT) um_ob_unref(src.obj);
         }
         DesktopUnlock();
@@ -738,6 +756,7 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             if (h) memset(h, 0, sizeof(*h));
             um_unlock(&sp->lock);
             if (old.kind == H_FILE || old.kind == H_DIR) RamfsUnref(old.node);
+            if (old.kind == H_FILE) um_fpos_unref(old.fp);
             if (old.kind == H_OBJECT) um_ob_unref(old.obj);
             DesktopUnlock();
         }
@@ -765,6 +784,19 @@ static UINT64 sys_nova_load_dll(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (st) return st;
     UINT64 b = base;
     return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, &b, 8)) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
+}
+
+/* NtNovaBugCheck(ULONG Magic): crash the kernel on purpose ("crash
+ * kernel"), to check that a kernel fault prints a readable backtrace.
+ * Windows has the same idea in NotMyFault; here it takes 'NOVA' as the
+ * argument so no stray call does it. */
+static UINT64 sys_nova_bugcheck(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a2; (void)a3; (void)a4;
+    if ((UINT32)a1 != 0x4E4F5641u) return 0xC000000Du;      /* STATUS_INVALID_PARAMETER */
+    kprintf("[UM] %s (PID %u) asked for a kernel crash (NtNovaBugCheck)\n", UmCurrent()->name, UmCurrent()->pid);
+    KeCrashTest();
+    return 0;
 }
 
 /* NtNovaDebugPrint(PCSTR, ULONG Length): to the kernel log */
@@ -1382,6 +1414,7 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtDuplicateObject,         sys_duplicate_object);
     um_install(SYSCALL_NtNovaLoadDll,             sys_nova_load_dll);
     um_install(SYSCALL_NtNovaDebugPrint,          sys_nova_debug_print);
+    um_install(SYSCALL_NtNovaBugCheck,            sys_nova_bugcheck);
     um_install(SYSCALL_NtNovaGetRandom,           sys_nova_get_random);
     um_install(SYSCALL_NtNovaUnimplemented,       sys_nova_unimplemented);
 }

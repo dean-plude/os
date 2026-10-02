@@ -33,11 +33,12 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 
 | Program | Kind | Tested on NovaOS |
 |---|---|---|
-| **7-Zip 26.03** (x64) | GUI installer, file manager, `7zG`, `7z.exe` | Installs; the file manager browses, opens archives, adds and extracts with the full dialogs; Options has all six pages.  The App Store uses `7z.exe` to unpack downloads. |
+| **7-Zip 26.03** (x64) | GUI installer, file manager, `7zG`, `7z.exe` | Installs; the file manager browses, opens archives, adds and extracts with the full dialogs, and drags files out of archives and folders onto other programs; Options has all six pages.  The App Store uses `7z.exe` to unpack downloads. |
 | **7-Zip self-extractors** (x86) | 32-bit console and GUI SFX | Unpack an archive. |
 | **NSIS installers** (x86, Modern UI) | 32-bit setup programs | Welcome, folder, progress and finish pages; files, registry, desktop and Start menu shortcuts; the uninstaller removes it all. |
 | **MinGit 2.47** | Git for Windows (console) | `init`, `add`, `commit`, `log`, `status`, `diff`, `checkout -b`, `merge`, `gc`, `fsck`, and `clone`/`fetch`/`push` between local repositories. |
-| **MSYS2 runtime** (MinGit's `usr\bin`) | `sh.exe` (bash), `ls`, `cat`, `wc`… | `sh -c` with pipes, `$(...)`, subshells, globbing, `fork`. |
+| **MSYS2 runtime** (MinGit's `usr\bin`) | `sh.exe` (bash), `ls`, `cat`, `wc`… | Interactive `sh --login -i` sessions in the Terminal (prompt, line editing, colours); `sh -c` with pipes, `$(...)`, subshells, globbing, `fork`, `/dev/null`. |
+| **Neovim 0.10 and 0.11** (x64 `.zip`) | Full-screen terminal editor (libuv, LuaJIT) | Opens a file, edits it, `:wq` saves it and exits with code 0; `nvim -l` scripts, `vim.system`, `jobstart` and RPC to an embedded `nvim`. |
 | **Eclipse Temurin 21** | Java JRE `.msi`, JDK `.zip` | `java -version`, a threads/exceptions/files stress test, `javac` compiling a program that then runs. |
 | **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes. |
 | **Node.js 24** | `.msi`, `.zip` | `node -v`, `-e`, `npm -v`, a crypto/fs/JSON/timers test script. |
@@ -55,7 +56,8 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 - **Apps**: Terminal, File Explorer, Notepad, Settings, Calendar, Photos,
   the **App Store** and **Install NovaOS** (Setup).
 - **Web browser**: NetSurf 3.11, built from source as a Windows program,
-  with HTTPS (TLS 1.3/1.2) and JavaScript.
+  with HTTPS (TLS 1.3/1.2) and JavaScript, in a window you can resize,
+  maximize or snap (the page is laid out again to fit).
 - **Command line**: the Terminal's own commands (`dir`, `copy`, `ping`,
   `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
@@ -66,7 +68,8 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 The dock's App Store downloads the official 64-bit packages of 21 open-source
 programs (Firefox, VLC, LibreOffice, GIMP, Notepad++, PuTTY…) and five
 runtimes, and installs them with 7-Zip, NovaOS's Windows Installer or the
-program's own setup.  Most of those programs still need more of Windows than
+program's own setup.  `store install NAME` in the Terminal does what the
+row's button does (CI installs Mesa 3D and DXVK that way).  Most of those programs still need more of Windows than
 NovaOS has (more of the GUI); the ones in the table
 above are the ones verified.  See [the App Store](docs/HISTORY.md#the-app-store).
 
@@ -166,20 +169,48 @@ Rebuild the ISO from a fresh build with
 
 ## Testing
 
-There is no CI yet; testing is done in QEMU.
+**Every pull request is boot-tested.**  GitHub Actions
+(`.github/workflows/ci.yml`) builds the kernel, bootloader, userland and
+`build/nova.img`, boots it in QEMU with OVMF and runs two suites with
+`tools/selftest.py`:
+
+- **Build and boot-test** (core): `apitest`, `abitest` (the PEB, TEB,
+  `KUSER_SHARED_DATA`, `CONTEXT` and loader layouts, ntdll's stubs and the
+  system-call numbers, against Windows 10 1903 x64), `filetest`,
+  `pipetest`, `proctest`, `guitest auto`, `disptest`, `battery` (against the battery in
+  `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
+  tones played), and last `crash kernel`, a deliberate kernel fault whose
+  serial log must show a backtrace with function names.
+- **Graphics tests**: installs Mesa 3D and DXVK with the App Store
+  (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
+  stages the downloads), then runs `tools/gltest` (14 tests) and
+  `tools/d3dtest` (17 tests), 64- and 32-bit, with a screenshot of each
+  while it draws.
+
+A failing test fails its check; each run's summary has a table of results,
+and the serial logs and screenshots are kept as artifacts.  Run the same
+gates locally with `python3 tools/selftest.py` (and `--suite graphics`)
+after a build.
+
+**Every night, real programs.**  `.github/workflows/nightly.yml` builds
+main and runs `tools/appcorpus.py`: the official Windows x64 releases of
+ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js and
+Notepad++, whose screenshot must match `tests/reference/notepad++.png`.
+It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
-  `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
+  `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
+  `cppeh`, `shmtest`, `pipetest`, `proctest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
   `tools/novarun.py --wav out.wav` records what NovaOS plays and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
   write`, a restart and `disktest verify` check that drive C: survives a
   reboot.
-- **GUI and interactive checks**: `winhello`, `guitest`, `droptest`, `cpus`
-  (SMP speed-up).
+- **GUI and interactive checks**: `winhello`, `guitest` (`guitest auto`
+  drives its own menus, dialog, message box and property sheet and
+  reports), `droptest`, `cpus` (SMP speed-up).
 - **Real programs** are tested from a second disk image holding them
   (not in this repository), driven by a QEMU harness that types, clicks and takes screenshots.
 - **On the host**: `tools/pe_imports.py PROGRAM.exe` lists the imports a
@@ -189,7 +220,9 @@ There is no CI yet; testing is done in QEMU.
   MinGW, for checking Mesa and DXVK on NovaOS.
 - **Debugging**: the serial log (COM1) has every kernel message; the
   Terminal's `dmesg` shows it, and `trace NAME` logs a program's failing
-  system calls.
+  system calls.  A kernel fault, panic or failed assertion prints a
+  backtrace with function names and offsets (the kernel carries its own
+  symbol table); `crash kernel` shows one on purpose.
 
 See [docs/building.md#tests](docs/building.md#tests) for how to run them.
 
