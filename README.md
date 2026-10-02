@@ -39,7 +39,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **MinGit 2.47** | Git for Windows (console) | `init`, `add`, `commit`, `log`, `status`, `diff`, `checkout -b`, `merge`, `gc`, `fsck`, and `clone`/`fetch`/`push` between local repositories. |
 | **MSYS2 runtime** (MinGit's `usr\bin`) | `sh.exe` (bash), `ls`, `cat`, `wc`… | `sh -c` with pipes, `$(...)`, subshells, globbing, `fork`. |
 | **Eclipse Temurin 21** | Java JRE `.msi`, JDK `.zip` | `java -version`, a threads/exceptions/files stress test, `javac` compiling a program that then runs. |
-| **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes. |
+| **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes; globalization through ICU, so German and Japanese numbers, dates, names and sorting come out as on Windows (`tests/dotnet/culturetest.cs`). |
 | **Node.js 24** | `.msi`, `.zip` | `node -v`, `-e`, `npm -v`, a crypto/fs/JSON/timers test script. |
 | **Python 3.14** | NuGet package | `-c`, a hashlib/JSON/regex/threads/subprocess test script. |
 | **Mesa 3D 24.2.4** (mesa-dist-win) | `opengl32.dll` (llvmpipe) and the Vulkan driver (lavapipe), x64 and x86, from the App Store | OpenGL 4.5: `tools/gltest` (pixel formats, immediate mode, GLSL, read-back, animated `SwapBuffers`) passes as a 64-bit and a 32-bit program. |
@@ -100,6 +100,11 @@ every part, phase by phase.
   `winmm` and `mmdevapi` (sound: `waveOut`, `PlaySound`, WASAPI), `msi`,
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
   `usp10` (Uniscribe), `normaliz` (IDN), and more.
+- **ICU** as Windows 10 ships it: `icu.dll` (ICU 77.1, x64 and x86,
+  built by `tools/build_icu.py`) with its data in
+  `C:\Windows\Globalization\ICU`.  .NET does its globalization through
+  it, and kernel32 answers `GetLocaleInfoEx` from it for every one of the
+  864 Windows locales.
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions; registry saved to disk;
   COM in-process servers; drag and drop; a shared clipboard; `.lnk`
@@ -171,7 +176,8 @@ Rebuild the ISO from a fresh build with
 - **Build and boot-test** (core): `apitest`, `abitest` (the PEB, TEB,
   `KUSER_SHARED_DATA`, `CONTEXT` and loader layouts, ntdll's stubs and the
   system-call numbers, against Windows 10 1903 x64), `filetest`,
-  `pipetest`, `guitest auto`, `disptest`, `battery` (against the battery in
+  `pipetest`, `guitest auto`, `disptest`, `icutest` (ICU and kernel32's
+  locales, 64- and 32-bit), `battery` (against the battery in
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
   tones played), and last `crash kernel`, a deliberate kernel fault whose
   serial log must show a backtrace with function names.
@@ -188,15 +194,15 @@ after a build.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
-ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js and
-Notepad++, whose screenshot must match `tests/reference/notepad++.png`.
+ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js,
+.NET (German and Japanese formatting through ICU) and Notepad++, whose screenshot must match `tests/reference/notepad++.png`.
 It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
   `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
+  `cppeh`, `shmtest`, `pipetest`, `cliptest`, `disptest`, `icutest`, `smpstress`.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
   `tools/novarun.py --wav out.wav` records what NovaOS plays and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
@@ -275,7 +281,7 @@ os/
 │   ├── programs/         # cmd.exe, msiexec, reg, find..., samples and self-tests
 │   ├── netsurf/          # NetSurf port: fetcher, window surface, fonts
 │   └── include/          # The Windows SDK headers NovaOS provides
-├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), NetSurf, stb, fonts, 7-Zip installer
+├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), NetSurf, stb, fonts, ICU (icu.dll + data), 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
 │                         #   make_icons.py, pe_imports.py, msitest/
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
@@ -329,7 +335,8 @@ os/
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
 code keeps its own permissive licence (lwIP: BSD 3-clause; Mbed TLS:
-Apache-2.0; uACPI: MIT; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu
+Apache-2.0; uACPI: MIT; musl's libm: MIT; ICU: Unicode License v3
+(`third_party/icu/LICENSE`); kernel32's locale table, from .NET: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu
 Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or
 MIT).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,

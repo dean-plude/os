@@ -141,7 +141,16 @@ void UmUserException(void *frame, UINT64 cr2)
         int g = UmGuardFault(cr2);
         if (g == 1) return;                                      /* a stack grew */
         if (g == -1) code = 0x80000001u;                         /* STATUS_GUARD_PAGE_VIOLATION */
-        if (g == -2) code = 0xC00000FDu;                         /* STATUS_STACK_OVERFLOW */
+        if (g == -2) {                                           /* STATUS_STACK_OVERFLOW */
+            code = 0xC00000FDu;
+            /* programs often handle it themselves (the .NET runtime prints
+             * "Stack overflow." and exits): say where it happened */
+            const UmModule *m = um_module_at(p, f->rip);
+            if (m) kprintf("[UM] %s: stack overflow at %s+0x%llx\n", p->name, m->name,
+                           (unsigned long long)(f->rip - m->base));
+            else   kprintf("[UM] %s: stack overflow at 0x%llx\n", p->name, (unsigned long long)f->rip);
+            um_log_stack(p, f->rsp);
+        }
     }
     UINT64 addr = f->vector == 3 ? f->rip - 1 : f->rip;          /* int3: report the instruction */
 

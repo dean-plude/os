@@ -91,12 +91,15 @@ named program or test demonstrates it.
   dialogs (`InstallUISequence`), the `Shortcut` table, services, merge
   modules; LZX cabinets tested against real packages.
 - COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception tables.
-- .NET globalization through ICU, not only NLS for English and invariant
-  cultures.
 - Keep the App Store's per-app compatibility notes in step with what has
   been verified.
 
 ### Kernel and API compatibility
+- Locales: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat` in
+  the requested locale (ICU already answers `GetLocaleInfoEx` for all of
+  them), and a user locale other than `en-US`.
+- .NET: an unhandled managed exception prints "Stack overflow." instead of
+  the exception and its stack trace (with NLS as well as ICU).
 - Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
   with a console of its own, file handles that share their position with
   the processes they are handed to.

@@ -23,6 +23,7 @@ What each part is for:
 | `clang`, `lld` (`lld-link`) | **Required.** The Windows userland (`--target=x86_64-pc-windows-msvc` and `i686-pc-windows-msvc`), NetSurf, and the kernel and bootloader unless the alternatives below are installed |
 | `llvm` (`llvm-rc`) | Compiling programs' resource scripts (icons, dialogs) |
 | `python3` | `tools/build_userland.py`, `tools/build_netsurf.py` |
+| `g++-mingw-w64-x86-64`, `g++-mingw-w64-i686` | Only for `tools/build_icu.py` (rebuilding `icu.dll`) |
 | `mtools`, `dosfstools` | `nova.img` and putting files on the data disk |
 | `xorriso` | `scripts/create-iso.sh` |
 | `qemu-system-x86`, `ovmf` | Running NovaOS |
@@ -90,6 +91,24 @@ To rebuild only the userland, for a quick check of a DLL:
 ```bash
 NOVA_NO_NETSURF=1 python3 tools/build_userland.py /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
 ```
+
+Two pieces are built by their own tools and committed, so the normal build
+needs neither:
+
+- **ICU** (`third_party/icu`): `icu.dll` for x64 and x86, one DLL holding
+  ICU's C API under unversioned names as Windows 10's does, and the ICU
+  data both read from `C:\Windows\Globalization\ICU\icudt77l.dat`.
+  `tools/build_icu.py` downloads the ICU4C 77.1 source (checking its
+  SHA-256), builds ICU's host tools, cross-compiles ICU with MinGW-w64
+  (`sudo apt install g++-mingw-w64-x86-64 g++-mingw-w64-i686`) and trims the
+  data (legacy code-page converters, word-break dictionaries,
+  transliteration, unit names and character names: 18 MB instead of 31;
+  .NET's answers for all its cultures are the same with either).  Run it
+  again only to move to another ICU release.
+- **kernel32's locale table** (`userland/kernel32/locale_data.h`):
+  `tools/gen_locales.py` generates it from .NET's `IcuLocaleData.cs` (MIT),
+  .NET's record of the names, LCIDs, code pages and GEOIDs of the 864
+  locales Windows knows.
 
 ### The ISO
 
@@ -202,7 +221,7 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `guitest
-auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`, and
+auto`, `disptest`, `icutest` and `icutest` x86, `battery`, `soundtest tone`, `soundtest wasapi`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
@@ -242,6 +261,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
 | `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
+| `icutest` | The system ICU (`icu.dll`) as .NET loads it: German and Japanese names, numbers, currencies, dates, the Japanese calendar, collation, case, time-zone ids, IDNA, normalization, 8 threads at once; then kernel32's `GetLocaleInfoEx`, LCIDs and locale enumeration for those locales |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
 | `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
@@ -273,6 +293,7 @@ unpacks them into `C:\Apps`, boots once and runs each one's commands.
 | MinGit 2.51.0 | `git clone` of a bare repository, `log`, `status` |
 | Python 3.14.0 (NuGet package) | `-c` with `json` and `sys` |
 | Node.js 24.9.0 | `-v`, `-e` |
+| .NET 10.0.12 (runtime from NuGet, with the 8.0 host) | `--list-runtimes`; `tests/dotnet/culturetest.dll` formats German and Japanese through ICU |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
 
 ```bash
@@ -284,7 +305,7 @@ python3 tools/appcorpus.py --only Notepad++ --update-reference   # after an inte
 
 A command passes as a self-test does (exit code 0, the output expected).
 To add a program, add an `App` to `APPS`.  Other third-party programs (the
-installers, Java, .NET) and test scripts such as `cmdtest.bat` for
+installers, Java, Roslyn) and test scripts such as `cmdtest.bat` for
 `cmd.exe` are tried by hand with `tools/novarun.py`: copy a program onto
 the data disk with `--put` and type its commands.
 
