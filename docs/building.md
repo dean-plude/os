@@ -218,7 +218,7 @@ Terminal.  A test passes when the program exits with code 0, prints no
 a kernel panic stops the run.  `--out` (default `selftest-out/`) keeps the
 serial log, a screenshot after each test and `sound.wav`; `--summary FILE`
 appends a Markdown table and `--junit FILE` writes JUnit XML.  To add a test,
-add a line to `TESTS` in `tools/selftest.py`.
+add a line to `CORE` or `GRAPHICS` in `tools/selftest.py`.
 
 ### Self-test programs
 
@@ -259,11 +259,34 @@ property sheets; `guitest auto` drives them itself and reports, as CI runs it), 
 
 ### Real programs
 
-Third-party programs (7-Zip, MinGit, the language runtimes, installers),
-and test scripts such as `cmdtest.bat` for `cmd.exe`, are tested from a
-second disk image holding them (not in this repository), driven by a QEMU harness
-that types Terminal commands, clicks, drags and takes screenshots.  Copy a
-program onto the data disk as above and run it from the Terminal.
+`tools/appcorpus.py` is the nightly app corpus
+(`.github/workflows/nightly.yml`, which also runs on pull requests that
+change it): it downloads the official Windows x64 releases into a cache,
+unpacks them into `C:\Apps`, boots once and runs each one's commands.
+
+| Program | Checks |
+|---|---|
+| ripgrep 14.1.1 | `--version`, a search |
+| fd 10.2.0 | `--version`, finding `*.txt` |
+| jq 1.7.1 | `--version`, a filter over a JSON file |
+| 7-Zip 26.03 | `7z a`, `7z t` |
+| MinGit 2.51.0 | `git clone` of a bare repository, `log`, `status` |
+| Python 3.14.0 (NuGet package) | `-c` with `json` and `sys` |
+| Node.js 24.9.0 | `-v`, `-e` |
+| Notepad++ 8.8.3 (portable) | opens a file; the screenshot must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
+
+```bash
+sudo apt install p7zip-full python3-pil     # 7-Zip's installer, Pillow
+python3 tools/appcorpus.py                   # exit status = programs that failed
+python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
+python3 tools/appcorpus.py --only Notepad++ --update-reference   # after an intended change
+```
+
+A command passes as a self-test does (exit code 0, the output expected).
+To add a program, add an `App` to `APPS`.  Other third-party programs (the
+installers, Java, .NET) and test scripts such as `cmdtest.bat` for
+`cmd.exe` are tried by hand with `tools/novarun.py`: copy a program onto
+the data disk with `--put` and type its commands.
 
 ### Sound
 

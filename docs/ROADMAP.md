@@ -146,6 +146,9 @@ named program or test demonstrates it.
 - **Test corpus:** every self-test program in `userland/programs/` is a
   permanent regression test, built for x64 and x86; `tools/pe_imports.py`
   shows what a new program needs before it is tried.
+- **Nightly app corpus** (done): `tools/appcorpus.py` runs ripgrep, fd, jq,
+  7-Zip, MinGit, Python, Node.js and Notepad++ every night and posts a
+  pass/fail table per program.
 
 ## Reality check
 

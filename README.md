@@ -185,6 +185,12 @@ and the serial logs and screenshots are kept as artifacts.  Run the same
 gates locally with `python3 tools/selftest.py` (and `--suite graphics`)
 after a build.
 
+**Every night, real programs.**  `.github/workflows/nightly.yml` builds
+main and runs `tools/appcorpus.py`: the official Windows x64 releases of
+ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js and
+Notepad++, whose screenshot must match `tests/reference/notepad++.png`.
+It posts a pass/fail table per program to the "Nightly app corpus" issue.
+
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
