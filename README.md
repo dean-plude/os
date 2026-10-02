@@ -95,7 +95,8 @@ every part, phase by phase.
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.
 - **Drivers**: AHCI SATA disks, FAT16/FAT32, GPT; Intel e1000/e1000e
-  network cards; Intel High Definition Audio (output) with a kernel mixer;
+  network cards; Intel High Definition Audio (playback and recording) with a kernel
+  mixer;
   PS/2 and USB (xHCI) keyboards and mice; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
@@ -112,9 +113,25 @@ every part, phase by phase.
   `user32`/`gdi32` (a real window system, controls, menus, dialogs),
   `comctl32`, `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
   type libraries), `advapi32`, `ws2_32`,
-  `winmm` and `mmdevapi` (sound: `waveOut`, `PlaySound`, WASAPI), `msi`,
+  `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, WASAPI
+  playback and capture, endpoint volume), `msi`,
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
   `usp10` (Uniscribe), `normaliz` (IDN), and more.
+- **Text**: `novatext.dll`, the text core built once and shared, carries
+  HarfBuzz (shaping) and FreeType (fonts).  Uniscribe (`usp10`) itemizes
+  text by script and direction and shapes it with HarfBuzz, and GDI's
+  `ExtTextOut` sends complex scripts through it, as Windows' LPK does, so
+  Arabic, Hebrew and the Indic scripts join, reorder and run right to left.
+  Arabic and Devanagari draw with Noto Sans; GDI falls back to them by
+  script.
+- **2D drawing**: Direct2D (`d2d1.dll`) draws in software: geometries
+  (rectangles, ellipses, paths with Béziers and arcs, groups, transforms,
+  combining, widening, tessellation), strokes with caps, joins and dashes,
+  solid, gradient and bitmap brushes, layers and clips, on HWND, DC and
+  bitmap render targets.  Text goes through DirectWrite's text formats and
+  layouts.
+- **Media tools**: a current Windows build of ffmpeg runs unchanged and
+  converts H.264 and AAC to VP9 and Opus with all its threads.
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions; registry saved to disk;
   COM in-process servers and type libraries; drag and drop; a shared clipboard; `.lnk`
@@ -193,12 +210,17 @@ To make the ISO yourself from a fresh build, run
   Windows 10 1903 x64), `filetest`, `pipetest`, `proctest`, `sectest`,
   `acltest` (64- and 32-bit), `guitest auto`, `anitest` (animated
   cursors and program pointers), `disptest`, `comtest`, `tlbtest` (type
-  libraries, 64- and 32-bit), `cppeh`, `battery` (against the battery in
-  `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
-  tones played), an installer that replaces a running program and
-  finishes after a restart (`filetest install`, `shutdown /r`, `filetest
-  installed`), and last `crash kernel`, a deliberate kernel fault whose
-  serial log must show a backtrace with function names.<!-- END generated:core-tests -->
+  libraries, 64- and 32-bit), `usptest` (Arabic and Devanagari shaped
+  through Uniscribe and drawn by `ExtTextOut`, 64- and 32-bit), `cppeh`,
+  `battery` (against the battery in `tests/acpi/battery.asl`),
+  `soundtest` (the recorded WAV must hold the tones played), `soundtest
+  record`, `capture` and `volume` (`waveIn` and WASAPI capture must
+  record the tone the microphone hears, and a quarter of the endpoint
+  volume must sound 12 dB quieter), an installer that replaces a running
+  program and finishes after a restart (`filetest install`, `shutdown
+  /r`, `filetest installed`), and last `crash kernel`, a deliberate
+  kernel fault whose serial log must show a backtrace with function
+  names.<!-- END generated:core-tests -->
 - **Graphics tests**: `tools/d2dtest` (Direct2D geometry answers, and a
   scene that must match the reference `tools/d2dtest/reference.py` draws
   with Skia), then installs Mesa 3D and DXVK with the App Store
@@ -216,14 +238,14 @@ after a build.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
-<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js and Notepad++<!-- END generated:corpus -->, whose screenshot must match `tests/reference/notepad++.png`.
+<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, ffmpeg (an MP4 converted to WebM) and Notepad++<!-- END generated:corpus -->, whose screenshot must match `tests/reference/notepad++.png`.
 It also checks NovaOS's own screens: `dir` on C: and on an NTFS drive D:
 (each with its own free space) and File Explorer's This PC listing both.
 It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `disptest`, `dlltest`, `filetest`, `pipetest`, `posixtest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `disptest`, `dlltest`, `filetest`, `pipetest`, `posixtest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
   through `waveIn` and WASAPI capture;
   `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`
@@ -366,7 +388,7 @@ os/
 
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
-code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; uACPI: MIT; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
+code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; uACPI: MIT; musl's libm: MIT; HarfBuzz: MIT; FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,
 but independently written.
 

@@ -78,9 +78,21 @@ named program or test demonstrates it.
   `vulkan-1.dll`; see [Direct3D](HISTORY.md#direct3d-dxvk-on-mesas-vulkan).
 - ~~**Audio**: `winmm` wave output and WASAPI over a real sound device
   (QEMU's Intel HDA)~~ Done; see [Sound](HISTORY.md#sound-intel-hd-audio-winmm-and-wasapi).
-  Still open: recording (`waveIn`, capture endpoints), `dsound.dll`
-  (DirectSound), XAudio2, MIDI, endpoint volume (`IAudioEndpointVolume`),
-  and testing VLC and Audacity on it.
+  ~~Recording (`waveIn`, capture endpoints) and endpoint volume
+  (`IAudioEndpointVolume`)~~ Done (19.4); see
+  [Recording](HISTORY.md#recording-wavein-wasapi-capture-and-endpoint-volume).
+  Still open: `dsound.dll` (DirectSound), XAudio2, MIDI, and testing VLC
+  and Audacity on it.
+- ~~**Complex scripts**: Uniscribe shaping Arabic and the Indic scripts~~
+  Done (19.1): `usp10.dll` on HarfBuzz in `novatext.dll` (HarfBuzz +
+  FreeType, shared with DirectWrite and Direct2D), and GDI's `ExtTextOut`
+  draws complex text through it; see
+  [Complex text](HISTORY.md#complex-text-harfbuzz-freetype-and-uniscribe).
+- ~~**Direct2D** (`d2d1.dll`)~~ Done (19.2): a software Direct2D, with
+  text through DirectWrite's text layouts; see [Direct2D](HISTORY.md#direct2d).
+- ~~**ffmpeg's imports**~~ Done (19.3): see [ffmpeg](HISTORY.md#ffmpeg).
+  `ffmpeg -i in.mp4 out.webm` (H.264 and AAC to VP9 and Opus) completes,
+  and the nightly app corpus runs it.
 - Display: GPU-backed or at least faster blits; mode changes.
 - NetSurf: SVG; redrawing pages a script changes after layout.
 

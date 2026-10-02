@@ -1754,6 +1754,107 @@ permissive covers either, so both are written here from the file formats
   `os.add_dll_directory` paths are not searched.  `msvcp140.dll` (the C++
   standard library) is not provided.
 
+## Complex text: HarfBuzz, FreeType and Uniscribe
+
+Phase 19.1.  Arabic, Hebrew and the Indic scripts are shaped: letters join
+into their contextual forms, ligate, reorder and run right to left.
+
+- **`novatext.dll`** (`userland/novatext`) is the text core, built once and
+  shared by Uniscribe, DirectWrite and Direct2D: **HarfBuzz 11.2.1**
+  (`third_party/harfbuzz`, MIT) and **FreeType 2.13.3**
+  (`third_party/freetype`, the FreeType License; TrueType, OpenType/CFF,
+  Type 1, CID and `.fon` drivers, the smooth and mono rasterizers, the
+  auto-hinter and the stroker).  It exports both libraries' C APIs (`hb_*`,
+  `FT_*`).  No MIT Uniscribe or HarfBuzz-free shaper fitted, so this reuses
+  the standard pair.  HarfBuzz is C++: `tools/build_userland.py` compiles it
+  with clang against libc++'s headers (`libc++-dev`; nothing of libc++ is
+  linked, and HarfBuzz needs no C++ runtime).  For that, the userland's
+  `math.h` and `stdlib.h` gained the C++ overloads the Windows SDK's have,
+  `locale.h` Windows' full `lconv`, and `include/cxx/functional` a slim
+  `<functional>`.
+- **`usp10.dll`** (`userland/usp10/usp10.c`) is rewritten on it.
+  `ScriptItemize` splits text by script (HarfBuzz's Unicode data) and by
+  bidirectional level (a compact UAX #9: strong letters, European and
+  Arabic numbers, neutrals between them).  `ScriptShape` reads the DC's
+  font through `GetFontData`, shapes the run with HarfBuzz at gdi32's
+  pixel size and returns glyphs in visual order, logical clusters and
+  visual attributes; it reports `USP_E_SCRIPT_NOT_IN_FONT` when the font
+  lacks a complex script.  `ScriptPlace` hands out HarfBuzz's advances and
+  mark offsets, `ScriptTextOut` draws marks at their offsets, and
+  `ScriptCPtoX`, `ScriptXtoCP` and `ScriptGetLogicalWidths` handle
+  right-to-left clusters.  New: `ScriptShapeOpenType`,
+  `ScriptPlaceOpenType` (OpenType features), `ScriptItemizeOpenType`'s
+  real script tags, `ScriptGetFontScriptTags`, `ScriptStringGetOrder`.
+  The `ScriptString*` layer shapes each run with a fallback font when the
+  DC's lacks its script (`SSA_FALLBACK`), lays the runs out in visual
+  order and draws them all on the DC font's baseline.
+- **GDI**: `ExtTextOut`, `TextOut` and `GetTextExtentPoint32` send text
+  with complex-script characters through Uniscribe, as Windows' LPK does
+  (`ETO_GLYPH_INDEX` and `ETO_IGNORELANGUAGE` skip it; `ETO_RTLREADING`
+  makes the line right to left).  GDI gained the faces Noto Sans Arabic
+  and Noto Sans Devanagari (`C:\Windows\Fonts`), also under Windows'
+  names for those scripts (Traditional Arabic, Mangal, Nirmala UI...).
+- **`usptest`** (in the CI core suite, 64- and 32-bit) checks itemizing,
+  the Arabic contextual forms and lam-alef ligature, the Devanagari kssa
+  conjunct with its reordered i sign and a half form, against the glyphs
+  HarfBuzz gives on the build host, and that `ExtTextOut` draws mixed
+  Latin, Arabic and Devanagari lines pixel for pixel as `ScriptStringOut`
+  does.
+
+## Direct2D
+
+Phase 19.2.  `d2d1.dll` (`userland/d2d1`) is a software Direct2D.  No
+MIT, zlib or BSD Direct2D exists (Wine's is LGPL), and the permissive
+vector libraries (ThorVG, Blend2D, plutovg) could not be fetched here, so
+it is written for NovaOS on a small core of its own:
+
+- **Geometry** (`path.c`, `geometry.c`): figures of lines and cubic
+  Béziers; rectangles, rounded rectangles, ellipses, arcs (SVG's endpoint
+  form) and quadratic curves become them.  Path geometries and their
+  sinks, transformed geometries and groups.  `GetBounds` is exact (curve
+  extrema); `FillContainsPoint`, `ComputeLength`, `ComputePointAtLength`;
+  `Tessellate`, `ComputeArea`, `CompareWithGeometry`,
+  `CombineWithGeometry` (union, intersect, xor, exclude) and `Outline`
+  cut the flattened shapes into horizontal slabs and join the result back
+  into clean outlines.
+- **Strokes** (`stroke.c`): each figure is flattened, cut into dashes
+  (solid, dash, dot, dash-dot, dash-dot-dot and custom, with an offset),
+  and outlined: miter (with its limit, clipped or bevelled), bevel and
+  round joins; flat, square, round and triangle caps; separate start, end
+  and dash caps.  `Widen`, `GetWidenedBounds` and `StrokeContainsPoint`
+  use the same outline.
+- **Rasterizer** (`raster.c`): exact-area anti-aliasing (each edge adds
+  the area it covers to the cells it crosses, and a running sum gives
+  every pixel's coverage), nonzero and even-odd fills, aliased mode, in
+  bands.  Paint is source-over into premultiplied BGRA.
+- **Brushes** (`brush.c`): solid; linear and radial gradients (with the
+  gradient origin offset, clamp, wrap and mirror, sRGB or linear-light
+  interpolation, from a 256-entry table); bitmap brushes with nearest or
+  linear sampling and extend modes; bitmaps from memory or a WIC bitmap.
+- **Render targets** (`target.c`): HWND targets (a DIB section copied to
+  the window at `EndDraw`, `Resize`), DC targets (`BindDC`) and bitmap
+  targets (`CreateCompatibleRenderTarget`), with DPI, transforms,
+  axis-aligned clips, layers (opacity, geometric masks, opacity brushes),
+  `FillOpacityMask`, meshes, drawing state blocks and
+  `ID2D1GdiInteropRenderTarget`.
+- **Text** (`text.c`): `DrawGlyphRun` fills the outlines from
+  `IDWriteFontFace::GetGlyphRunOutline`; `DrawTextLayout` runs
+  `IDWriteTextLayout::Draw` with Direct2D's text renderer (drawing effects
+  that are brushes colour their ranges, underlines and strikethroughs are
+  drawn); `DrawText` lays the text out with the shared DirectWrite
+  factory first.
+- **`tools/d2dtest`** (MinGW, so it uses MinGW's `d2d1.h` like any
+  Windows program) checks geometry answers, draws a scene of fills,
+  strokes, gradients, a dashed path of arcs, a bitmap and a rotated
+  translucent rectangle, and compares it with the image
+  `tools/d2dtest/reference.py` draws with Skia: under QEMU the mean
+  difference is 0.24 of 255 per pixel.  It then checks layers, clips and
+  an HWND render target in a window.  It runs in the CI graphics suite,
+  64- and 32-bit.  Its text check draws "NovaOS" with `DrawText` and
+  saves it as `d2dtext.bmp`.  DirectWrite's text formats and layouts (on
+  HarfBuzz from `novatext.dll`) were written here and went in with the
+  Firefox work, and with them the check passes, 64- and 32-bit.
+
 ## One file per item: parallel changes without merge conflicts
 
 Up to seven pull requests were open at once, and nearly every one edited
@@ -1793,6 +1894,42 @@ editing shared lines.  [CONTRIBUTING.md](../CONTRIBUTING.md) is the guide.
   markers or stray branch-name lines (`tools/ci/check-conflict-markers.py`),
   the manifests and test files load, and a pull request has not edited a
   generated region by hand.
+
+## ffmpeg
+
+Phase 19.3.  `tools/pe_imports.py` on a current Windows ffmpeg build
+(BtbN's, statically linked, 168 MB) listed nine missing functions, now
+added:
+- gdi32: `ExtCreateRegion` (kept as a bounding box like every region),
+  `GetGraphicsMode`, `Get`/`Set`/`ModifyWorldTransform` (kept per DC and
+  reported back; drawing stays in device coordinates),
+  `GetOutlineTextMetricsA`/`W` (from the font's head, hhea, OS/2, post and
+  name tables) and `GetFontUnicodeRanges`.
+- The CRT: `getenv_s` and `_wgetenv_s`.
+- ws2_32: `WSASendMsg` (control data is not carried).
+The tenth, `DWriteCreateFactory`, is the Firefox branch's DirectWrite.
+
+Running it found three kernel bugs, all from ffmpeg's many threads:
+- **Thread stacks**: new threads got a fixed 256 KB stack.  They now get at
+  least the image's stack reserve, as on Windows (2 MB for ffmpeg, whose
+  H.264 decoder threads overflowed the smaller stack into each other's).
+- **Lost sleeps**: a thread woken early from a timed sleep stays on its
+  CPU's sleep list until that CPU's next tick drops it.  A thread that
+  exited in between was freed while still on the list, and every sleeper
+  after it was lost: their `Sleep` never returned.  An exiting thread now
+  leaves the list first, and a thread that moved to another CPU leaves the
+  old CPU's list before sleeping on the new one.
+- **Handles**: a process could hold 256 handles.  winpthreads makes events
+  and semaphores for every mutex and condition variable, so ffmpeg ran out
+  ("Cannot allocate memory", "Resource temporarily unavailable").  The
+  limit is 4096.
+
+`ffmpeg -i in.mp4 out.webm` (H.264 and AAC in, VP9 and Opus out) completes
+under QEMU with its default threads, as do MPEG-4 encoding and 16 decoder
+threads; the result plays on Linux.  The process dump on Ctrl+C now shows
+each thread's scheduler state.  The nightly app corpus runs Gyan's ffmpeg
+7.1.1 build (`tests/appcorpus/080-ffmpeg.py`): it makes an MP4 from its
+test sources, converts it to WebM, and ffprobe must find VP9 and Opus.
 
 ## Firefox (Floorp)
 
@@ -1894,5 +2031,47 @@ browser is run as shipped; everything below is in NovaOS.
   `tools/novarun.py` takes `!click X Y`.
 - Not yet: a page's content (the tab area stays empty) and fetching a page
   over the network.
+
+## Recording: waveIn, WASAPI capture and endpoint volume
+
+Phase 19.4.  The HD Audio driver now also programs an input stream: it
+picks the codec's first input pin, preferring a microphone, then line in,
+aux and CD, routes it through the mixer and selector widgets to an ADC,
+and records 48 kHz 16-bit stereo into a ring the mixer thread reads every
+tick.  The kernel mixer gained capture streams: each running one gets a
+copy of what was recorded (the oldest frames dropped and counted when a
+program falls behind), and the card records only while one runs.  Each
+direction has a master volume, applied as the mixer mixes or copies.
+`NtNovaAudioOpen` with its top bit set opens a capture stream, and
+`NtNovaAudioCtl` gained four operations: read frames, describe the
+recording device, and set and get the endpoint volume.
+
+On top of that:
+- winmm: `waveIn` (devices, capabilities, open with every callback kind,
+  prepare and add buffers, start, stop, reset, position).  A thread
+  converts the mixer's frames into each buffer in the program's format and
+  hands it back full (`WIM_DATA`); stop hands back a partly filled one.
+  The converter learned the reverse direction (any rate, 8 to 32-bit or
+  float, mono as the average of both sides).
+- mmdevapi: a second endpoint, the recording one ("Microphone (High
+  Definition Audio)", or "Line in"), in the enumerator's lists and as the
+  default `eCapture` device; its `IAudioClient` fills its buffer from a
+  capture stream and `IAudioCaptureClient` hands it out ten milliseconds
+  at a time, flagging a discontinuity when frames were dropped.  Both
+  endpoints have `IAudioEndpointVolume` (scalar and decibel levels from
+  -65.25 to 0 dB, per channel, mute, steps), kept in the kernel so every
+  program sees the same volume.
+
+To test it, `tools/novarun.py --rec FILE.wav` gives QEMU an `hda-micro`
+card on a private PulseAudio server: the microphone hears FILE played over
+and over into a null sink, and the speakers go to a second null sink
+(saved with `--wav`).  Null sinks run on a clock, so the guest records in
+real time; QEMU's ALSA backend with the file plugin delivered audio about
+ten times too fast.  The core self-tests now record 3 s through `waveIn`
+at 44.1 kHz mono and 3 s through WASAPI in the mix format, and
+`tools/wavcheck.py --tone 523 2500` must find the 523 Hz tone in each
+recording; the WASAPI test turns the recording volume down to a quarter
+half way and must measure the level a quarter as loud, and `soundtest
+volume` checks the volume controls on both endpoints.
 
 <!-- END generated:history -->
