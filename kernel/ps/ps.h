@@ -303,6 +303,11 @@ typedef struct _ETHREAD {
     /* Exit status */
     NTSTATUS   ExitStatus;
     bool       HasExited;
+
+    /* The scheduler thread this ETHREAD is: &Tcb.SchedulerThread for one
+     * made by PsCreateSystemThread, else a thread created directly by the
+     * scheduler that Ps gave this ETHREAD (Tcb.SchedulerThread unused). */
+    Thread    *Kthread;
 } ETHREAD, *PETHREAD;
 
 /* -----------------------------------------------------------------------
@@ -374,6 +379,8 @@ NTSTATUS PsLookupThreadByThreadId(UINT64 Tid, PETHREAD *Thread);
 /* Current context accessors (uses scheduler's current thread). */
 PEPROCESS PsGetCurrentProcess(void);
 PETHREAD  PsGetCurrentThread(void);
+/* Boot-time self-test of PsGetCurrentThread on bare kernel threads (ps_test.c) */
+void      PsSelfTest(void);
 PHANDLE_TABLE PsGetCurrentProcessHandleTable(void);
 
 /* The System process (PID 4, like Windows). */

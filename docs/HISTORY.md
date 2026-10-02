@@ -1154,7 +1154,8 @@ finds them.
   a data disk, types Terminal commands and takes screenshots:
   `python3 tools/novarun.py --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' 'x.exe' '!shot x.png'`.
 - Not yet: Notepad++'s status bar draws black and its toolbar is cut
-  short; Neovim hangs on exit (console input handles cannot be waited on);
+  short; ~~Neovim hangs on exit (console input handles cannot be waited
+  on)~~ fixed in Phase 17.2;
   ffmpeg needs `avrt`, `ncrypt`, `d2d1`, `dwrite` and more (see
   [More compatibility](#more-compatibility-schannel-uniscribe-idn-crt-gaps)).
 
@@ -1471,3 +1472,63 @@ TLS already in the tree.
   encode, decoding it back, and streaming a WAV over HTTPS from the host
   with TLS 1.3 and with TLS 1.2; with `tls_verify` on (ffmpeg's default) a
   self-signed server is refused as an untrusted root.
+
+## Phase 17: kernel and API correctness
+
+- **Every thread has a real `ETHREAD`** (17.1): `PsGetCurrentThread` used
+  to cast the running scheduler `Thread` to an `ETHREAD`, which is only
+  true for threads made by `PsCreateSystemThread`.  Kernel threads from
+  `sched_create_thread`, Windows programs' threads and the idle threads
+  are bare `Thread`s, so writes through it (`PsInitialize` naming the boot
+  thread TID 4, `PsTerminateSystemThread`) landed past the end of the
+  structure.  `Thread.ethread` now leads to the thread's `ETHREAD`; a bare
+  thread gets one (a real Thread object in the System process) the first
+  time it asks, released when the scheduler frees it.  With interrupts
+  off the lookup returns NULL rather than touch the heap.  The boot-time
+  `[PSTEST]` self-test (`kernel/ps/ps_test.c`) checks it from plain
+  kernel threads, including `NtCurrentThread()`,
+  `PsLookupThreadByThreadId` and `PsTerminateSystemThread`.
+- **Waitable console input and `WriteConsoleInputW`** (17.2): console
+  input is a kernel queue of `INPUT_RECORD`s (keys, window size changes,
+  what programs write into it) with a waitable object, so console input
+  handles work with `WaitForSingleObject`, `RegisterWaitForSingleObject`
+  and libuv.  `ReadConsoleInput`, `PeekConsoleInput`, `WriteConsoleInput`,
+  `GetNumberOfConsoleInputEvents`, `FlushConsoleInputBuffer` and the
+  console modes go through one NovaOS service, `NtNovaConsole`.  A program
+  that turns off line input gets its keys as records, or as xterm
+  sequences with `ENABLE_VIRTUAL_TERMINAL_INPUT`.
+- **Full-screen programs in the Terminal**: while a program is on the
+  alternate screen or reads raw input, its output goes to a libvterm 0.3.3
+  (MIT) screen grid that the Terminal paints in colour, and libvterm's
+  answers to terminal queries come back through console input.
+- **What Neovim needed besides**: completion packets for overlapped pipe
+  requests now go to the port the request started with, so closing a
+  handle still delivers the cancellation libuv waits for (Neovim, and any
+  `nvim -l` script, used to hang on exit); a `RegisterWaitForSingleObject`
+  callback may unregister itself; `CreatePseudoConsole` and friends exist
+  (and fail), which tells Neovim's `--embed` server to keep its RPC on the
+  pipes and use `CONIN$`/`CONOUT$` for the terminal; the CRT reuses closed
+  descriptors 0-2 first and moves the standard handles with them;
+  `RtlRunOnceExecuteOnce`, `RtlUTF8ToUnicodeN`, `RtlUnicodeToUTF8N`, and
+  UCRT `_o_` imports resolve to the plain functions.
+- **What MSYS2 `sh` needed**: `\Device\Null` opens as the null device and
+  counts as existing (Cygwin asks `NtOpenSymbolicLinkObject`); an empty
+  name relative to a file handle reopens that file; a line feed on the
+  screen grid also returns the carriage unless the program set
+  `DISABLE_NEWLINE_AUTO_RETURN`.
+- **Process creation flags** (17.3): `CREATE_SUSPENDED` starts the first
+  thread suspended until `ResumeThread` (the same change as the Firefox
+  work's).  `CREATE_NEW_CONSOLE` gives a console program a console of its
+  own in a Terminal window titled with its path; the window closes when
+  the program ends, and closing it ends the programs on that console.
+  GUI programs ignore the flag, as on Windows, and `cmd`'s `start` uses it
+  unless given `/B`.  `GetConsoleProcessList` now lists the processes on
+  the caller's console.  A file's position belongs to the open file, not
+  the handle: duplicates, inherited handles and handles passed as a
+  child's standard output share it, so a parent and child writing to one
+  log file follow each other instead of overwriting.  `proctest` covers
+  all three in the core suite.
+- Tested in QEMU: Neovim 0.10.4 and 0.11.4 open `t.txt`, take `ihello
+  world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
+  `sh --login -i` shows its coloured prompt and runs `ls`, pipes,
+  `$(...)` and redirections to `/dev/null`; the core self-tests pass.
