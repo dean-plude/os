@@ -231,3 +231,9 @@ UXAPI HANDLE WINAPI BeginBufferedAnimation(HWND w, HDC target, const RECT *r, in
 UXAPI HRESULT WINAPI EndBufferedAnimation(HANDLE h, BOOL update) { (void)h; (void)update; return S_OK; }
 UXAPI BOOL WINAPI BufferedPaintRenderAnimation(HWND w, HDC dc) { (void)w; (void)dc; return FALSE; }
 UXAPI HRESULT WINAPI BufferedPaintStopAllAnimations(HWND w) { (void)w; return S_OK; }
+
+/* Panning feedback (the window bouncing at a scroll limit under touch):
+ * there is no touch input, so nothing moves */
+UXAPI BOOL WINAPI BeginPanningFeedback(HWND h) { (void)h; return TRUE; }
+UXAPI BOOL WINAPI UpdatePanningFeedback(HWND h, LONG x, LONG y, BOOL inertia) { (void)h; (void)x; (void)y; (void)inertia; return TRUE; }
+UXAPI BOOL WINAPI EndPanningFeedback(HWND h, BOOL animate) { (void)h; (void)animate; return TRUE; }

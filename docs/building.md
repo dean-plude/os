@@ -1,4 +1,5 @@
 # Building NovaOS
+<!-- The regions between "BEGIN generated" and "END generated" markers are built from fragment files by tools/docgen.py: edit those files, not the regions (CONTRIBUTING.md). -->
 
 ## Prerequisites
 
@@ -90,13 +91,58 @@ To rebuild only the userland, for a quick check of a DLL:
 
 ```bash
 NOVA_NO_NETSURF=1 python3 tools/build_userland.py /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
+python3 tools/build_userland.py --check     # just load the manifests (CI runs this)
 ```
+
+### Adding a DLL or program
+
+There is no central list to edit: each DLL registers itself, so changes
+made in parallel add files rather than collide on the same lines.
+
+- **A DLL** is a directory `userland/NAME/` with its `.c` files and a
+  `dll.json`:
+
+  ```json
+  {
+    "deps": ["user32", "kernel32", "ntdll"],
+    "tlssup": true
+  }
+  ```
+
+  `deps` are the DLLs it links against (they are built first; a cycle or a
+  missing one stops the build).  Leave `base` and `base_x86` out: a new
+  DLL gets the first free 16 MiB slot at 0x7FFD00000000 (x64) and
+  0x97000000 (x86), and the build checks that no two DLLs overlap.  The
+  older DLLs keep the fixed addresses written in their `dll.json`.  Other
+  keys: `sources` (directories its `.c` files come from, default its own),
+  `entry` (`"DllMain"`), `x64_only`, and `ordinals` (`{"Name": 12}`, for
+  DLLs programs import from by number).
+- **When a DLL needs more** (a third-party library, extra flags, a
+  special link), put the code in `userland/NAME/build.py`, not in
+  `tools/build_userland.py`: it may define `cflags(b)` (flags for the
+  DLL's own sources), `objs(b, odir)` (extra objects; `b.compile_many`
+  compiles a library in parallel and reuses fresh objects) and `link(b,
+  odir, objs, deps, base)` (replaces the link; `b` is
+  `tools/build_userland.py` itself, with `b.ARCH`, `b.cflags()`, `b.cc`,
+  `b.run`, `b.link_dll`).  `userland/secur32/build.py` (Mbed TLS) and
+  `userland/msvcrt/build.py` (msvcrt.dll and ucrtbase.dll) are examples.
+- **A program** is `userland/programs/NAME.c` (or `.cpp`, and `NAME.rc`
+  for resources).  It goes to `C:\Programs`, 64-bit only, unless
+  `NAME.json` says otherwise: `{"x86": true}` builds it for 32 bits as
+  well, `"system": true` installs it in `C:\Windows\System32`, `"libs":
+  ["usp10"]` links more DLLs, and `"selftest": true` lists it among the
+  README's self-test programs.
 
 ### The ISO
 
 ```bash
 scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf
 ```
+
+The ISO is not committed (`*.iso` is in `.gitignore`).  CI builds it on
+every pull request and keeps it as the run's `nova-iso` artifact, and each
+push to `main` that passes CI replaces `nova.iso` on the `latest` release:
+<https://github.com/dean-plude/os/releases/latest/download/nova.iso>.
 
 The ISO is El Torito UEFI, no emulation: its EFI System Partition holds
 `\EFI\BOOT\BOOTX64.EFI` and `\EFI\NOVA\kernel.elf`.  Booted from it, NovaOS
@@ -204,9 +250,12 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
-`guitest auto`, `disptest`, `usptest` (64- and 32-bit), `battery`, `soundtest
-tone`, `soundtest wasapi`, `soundtest record`, `soundtest capture`, `soundtest
-volume`, and
+`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `comtest`,
+`tlbtest` (x64 and x86), `usptest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`,
+`soundtest wasapi`, `soundtest record`, `soundtest capture`, `soundtest volume`,
+`filetest install` (an installer that must replace a running program
+schedules it for the next boot), a restart that must report `Pending file
+operations at boot: 2 done, 0 failed`, `filetest installed`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite first runs
@@ -223,35 +272,53 @@ of each while it draws.
 It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
 whose microphone hears a 523 Hz tone (through a private PulseAudio server,
 so the host needs `pulseaudio`, `pulseaudio-utils` and QEMU's PulseAudio
-backend, `qemu-system-gui` on Ubuntu; without them the two recording tests
+backend, `qemu-system-gui` on Ubuntu; without them the recording tests
 fail and the rest run), and the battery from `tests/acpi/battery.asl`, then types each test into the
 Terminal.  A test passes when the program exits with code 0, prints no
 `FAIL` line or non-zero "failed" count, and prints what the test expects;
 a kernel panic stops the run.  `--out` (default `selftest-out/`) keeps the
 serial log, a screenshot after each test, `sound.wav` and the two
 recordings (`rec.wav`, `cap.wav`); `--summary FILE`
-appends a Markdown table and `--junit FILE` writes JUnit XML.  To add a test,
-add a line to `core()` or `GRAPHICS` in `tools/selftest.py`.
+appends a Markdown table and `--junit FILE` writes JUnit XML.
+
+To add a test, add a file to `tests/selftest/core/` (or `graphics/`):
+tests run in file-name order, so the number prefix places it (the restart
+is at 130 and `crash kernel`, which halts NovaOS, stays last at 900).
+
+```python
+# tests/selftest/core/140-mytest.py
+DOC = '`mytest` (what it covers)'      # its entry in README's core-suite list
+TESTS = [
+    Test('mytest', 'mytest', [r'mytest: \d+ passed, 0 failed']),
+]
+```
+
+`python3 tools/selftest.py --list` prints the suite.  The nightly app
+corpus works the same way: one file per program in `tests/appcorpus/`
+defining `APP = App(...)` and `DOC` (Notepad++ stays last at 900).
 
 ### Self-test programs
 
 In `userland/programs/`, installed in `C:\Programs` and, as 32-bit builds,
 in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
-0 failed".
+0 failed".  Each row of this table is a file in `docs/selftests/` (a new
+program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
+
+<!-- BEGIN generated:selftest-table -->
 
 | Program | Covers |
-|---------|--------|
+|---|---|
 | `crttest` | The C runtime |
-| `filetest` | Files and directories |
-| `sectest` | Sections and memory |
+| `filetest` | Files and directories; `RegNotifyChangeKeyValue` (values, subkeys, subtrees, deleted keys, synchronous); `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`.  `filetest install`, a restart and `filetest installed` check that a running program replaced at boot |
+| `sectest` (x64) | Hostile system calls refused (kernel pointers, bogus handles, bad descriptors); tokens and object security through the native API: a restricted or deny-only impersonation token is refused a protected named event |
 | `threads` | Threads, synchronization, SEH |
 | `dlltest` | DLL loading, TLS, `DllMain` |
 | `posixtest` | The POSIX layer in msvcrt |
 | `apitest` | kernel32, advapi32, bcrypt, shell32, shlwapi, psapi, user32/gdi32, the registry |
 | `abitest` (x64) | The binary interface against Windows 10 1903 x64: TEB, PEB, process parameters, loader lists, `KUSER_SHARED_DATA`, `CONTEXT` and `EXCEPTION_RECORD` offsets, ntdll's stub bytes and every system-call number (`abitest_nt1903.h`), raw `syscall`s |
 | `comtest` | ole32/oleaut32, `IShellLink` |
+| `tlbtest` | COM type libraries: `LoadTypeLib` on `testdll.dll`'s embedded library, `ITypeLib`/`ITypeInfo`/`ITypeComp`, registration, `ITypeInfo::Invoke`, `DispCallFunc`, `CreateStdDispatch` |
 | `cppeh` | C++ exceptions and RTTI |
-| `usptest` | Uniscribe on HarfBuzz: Arabic and Devanagari itemized, shaped (contextual forms, ligatures, reordering) and placed with the Noto fonts, and GDI `ExtTextOut` drawing complex text exactly as `ScriptStringOut` does; `usptest bmp FILE` saves sample lines as a bitmap |
 | `shmtest` | Named and file-backed shared memory between processes |
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `proctest` | `CreateProcess` flags: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` (`GetConsoleProcessList`), file positions shared with children and duplicates |
@@ -260,11 +327,12 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
 | `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
-| `acltest` | Access checks against DACLs (`AccessCheck`) |
+| `acltest` | Access checks against DACLs (`AccessCheck`) for our token and restricted, write-restricted and deny-only ones; `CheckTokenMembership`, impersonation; a named event with a DACL refused to a restricted token |
 | `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
-| `soundtest record FILE [MS]`, `capture FILE [MS]`, `volume` | Recording through `waveIn` and WASAPI capture into a WAV, and `IAudioEndpointVolume` (needs a card with an input) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
+
+<!-- END generated:selftest-table -->
 
 `crash` writes through a NULL pointer (only it dies); `crash kernel`
 crashes the kernel on purpose (`NtNovaBugCheck`) to show the backtrace.
@@ -293,16 +361,17 @@ unpacks them into `C:\Apps`, boots once and runs each one's commands.
 | fd 10.2.0 | `--version`, finding `*.txt` |
 | jq 1.7.1 | `--version`, a filter over a JSON file |
 | 7-Zip 26.03 | `7z a`, `7z t` |
-| MinGit 2.51.0 | `git clone` of a bare repository, `log`, `status` |
+| MinGit 2.51.0 | `git clone` of a bare repository, `log` (through the `less` pager), `status` |
 | Python 3.14.0 (NuGet package) | `-c` with `json` and `sys` |
 | Node.js 24.9.0 | `-v`, `-e` |
-| Notepad++ 8.8.3 (portable) | opens a file; the screenshot must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
+| NovaOS's own screens | `dir C:\` and `dir D:\` (an empty NTFS disk made with `mkntfs`) name their drive and give its own free space (`dir.png`); `start explorer` shows This PC with both drives, matching `tests/reference/this-pc.png` |
+| Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
 
 ```bash
-sudo apt install p7zip-full python3-pil     # 7-Zip's installer, Pillow
+sudo apt install p7zip-full python3-pil ntfs-3g   # 7-Zip's installer, Pillow, mkntfs (drive D:)
 python3 tools/appcorpus.py                   # exit status = programs that failed
 python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
-python3 tools/appcorpus.py --only Notepad++ --update-reference   # after an intended change
+python3 tools/appcorpus.py --only NovaOS,Notepad++ --update-reference   # after an intended change
 ```
 
 A command passes as a self-test does (exit code 0, the output expected).
@@ -319,6 +388,13 @@ it to end:
 ```bash
 python3 tools/novarun.py --put 'nvim-win64=C:\Apps\nvim' 'cd C:\Apps\nvim\bin' \
     '!type nvim --clean t.txt\n' '!wait 40' '!type ihello\e:wq\n' '!done 60' 'type t.txt'
+```
+
+`!reboot` restarts NovaOS (`shutdown /r`; drive C: on the data disk is
+kept) and opens the Terminal again, for what must survive a restart:
+
+```bash
+python3 tools/novarun.py 'filetest install' '!reboot' 'filetest installed'
 ```
 
 ### Sound

@@ -1,0 +1,11 @@
+## Phase 1 — Boot & Kernel Foundation
+- UEFI bootloader (PE32+ EFI application, loads kernel ELF from FAT32 ESP)
+- Physical memory manager (bitmap allocator, reads UEFI memory map)
+- Virtual memory (4-level paging, 64 GiB physmap, NX via EFER.NXE, CR4.PGE)
+- Kernel heap (slab allocator: kmalloc/kfree/kzalloc)
+- GDT/TSS with IST stacks for NMI, double fault, machine check
+- IDT with all 256 handlers (CPU exceptions, APIC IRQs, INT 0x2E syscall gate)
+- APIC timer at 100 Hz (legacy 8259A PIC disabled)
+- Preemptive round-robin kernel scheduler (kernel threads, context switch via callee-saved regs)
+- Serial console (COM1, 115200 baud) + GOP framebuffer text output
+- Boots in QEMU with OVMF (UEFI firmware)

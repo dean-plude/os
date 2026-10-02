@@ -131,6 +131,7 @@ WND *AppCreateWindow(AppId id, const char *title, int client_w, int client_h,
 
 /* Format helpers */
 void AppFormatSize(UINT64 bytes, char *buf, int cap);   /* "1.2 KB" */
+void AppDriveSpace(RamNode *n, UINT64 *total, UINT64 *free);   /* the size and free bytes of @n's drive */
 
 /* System information shared by Terminal and Settings */
 void AppCpuName(char *buf, int cap);                    /* CPUID brand string */

@@ -1,4 +1,5 @@
 # NovaOS — Roadmap to a Windows-Compatible Desktop OS
+<!-- The regions between "BEGIN generated" and "END generated" markers are built from fragment files by tools/docgen.py: edit those files, not the regions (CONTRIBUTING.md). -->
 
 **Goal:** a from-scratch x86-64 OS that runs **native Windows executables
 without emulation**: the binaries run directly on the CPU while NovaOS
@@ -67,6 +68,8 @@ Ordered by what unblocks the most real programs.  Each item ends when a
 named program or test demonstrates it.
 
 ### Graphics, 3D and media
+<!-- BEGIN generated:next-graphics -->
+
 - ~~**OpenGL**: a working `opengl32.dll`~~ Done: Mesa's llvmpipe from the
   App Store is the system `opengl32.dll` (OpenGL 4.5, 64- and 32-bit); see
   [OpenGL](HISTORY.md#opengl-mesa-as-the-system-opengl32dll).
@@ -75,28 +78,17 @@ named program or test demonstrates it.
   `vulkan-1.dll`; see [Direct3D](HISTORY.md#direct3d-dxvk-on-mesas-vulkan).
 - ~~**Audio**: `winmm` wave output and WASAPI over a real sound device
   (QEMU's Intel HDA)~~ Done; see [Sound](HISTORY.md#sound-intel-hd-audio-winmm-and-wasapi).
-  ~~Recording (`waveIn`, capture endpoints) and endpoint volume
-  (`IAudioEndpointVolume`)~~ Done (19.4); see
-  [Recording](HISTORY.md#recording-wavein-wasapi-capture-and-endpoint-volume).
-  Still open: `dsound.dll` (DirectSound), XAudio2, MIDI, and testing VLC
-  and Audacity on it.
-- ~~**Complex scripts**: Uniscribe shaping Arabic and the Indic scripts~~
-  Done (19.1): `usp10.dll` on HarfBuzz in `novatext.dll` (HarfBuzz +
-  FreeType, shared with DirectWrite and Direct2D), and GDI's `ExtTextOut`
-  draws complex text through it; see
-  [Complex text](HISTORY.md#complex-text-harfbuzz-freetype-and-uniscribe).
-- ~~**Direct2D** (`d2d1.dll`)~~ Done (19.2): a software Direct2D;
-  see [Direct2D](HISTORY.md#direct2d).  Still open: `d2dtest`'s text
-  check waits for DirectWrite's `CreateTextFormat` and `CreateTextLayout`,
-  which are written (on HarfBuzz) and land with the Firefox branch (PR #32).
-- ~~**ffmpeg's imports**~~ Done (19.3): see
-  [ffmpeg](HISTORY.md#ffmpeg).  `ffmpeg -i in.mp4 out.webm` (H.264 and AAC
-  to VP9 and Opus) completes; its one DirectWrite import comes with the
-  Firefox branch (PR #32), and the app corpus gets ffmpeg once that lands.
+  Still open: recording (`waveIn`, capture endpoints), `dsound.dll`
+  (DirectSound), XAudio2, MIDI, endpoint volume (`IAudioEndpointVolume`),
+  and testing VLC and Audacity on it.
 - Display: GPU-backed or at least faster blits; mode changes.
 - NetSurf: SVG; redrawing pages a script changes after layout.
 
+<!-- END generated:next-graphics -->
+
 ### Application coverage
+<!-- BEGIN generated:next-apps -->
+
 - Bring the App Store catalog up program by program, starting with the
   "untested" portable ones (Notepad++, SumatraPDF, PuTTY, WinMerge), then
   the Qt and GTK applications (KeePassXC, Krita, Inkscape), then Firefox.
@@ -105,28 +97,51 @@ named program or test demonstrates it.
 - Windows Installer: custom actions that run code, the packages' own
   dialogs (`InstallUISequence`), the `Shortcut` table, services, merge
   modules; LZX cabinets tested against real packages.
-- COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception tables.
+- ~~COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception
+  tables~~ Done; see [Type libraries and FH4](HISTORY.md#com-type-libraries-and-fh4-c-exceptions).
 - .NET globalization through ICU, not only NLS for English and invariant
   cultures.
 - Keep the App Store's per-app compatibility notes in step with what has
   been verified.
+- Firefox (tested with Floorp): the browser window opens and draws
+  through its GPU process, and its sandboxed child processes start; see
+  [Firefox](HISTORY.md#firefox-floorp).  Still open: showing a page's
+  content, fetching pages over the network, `nssckbi.dll`.
+
+<!-- END generated:next-apps -->
 
 ### Kernel and API compatibility
+<!-- BEGIN generated:next-kernel -->
+
 - ~~Processes: `CREATE_SUSPENDED` for `CreateProcess`, `CREATE_NEW_CONSOLE`
   with a console of its own, file handles that share their position with
   the processes they are handed to~~ Done (Phase 17.3, `proctest`).
-- Files: hard links, `MoveFileEx` pending renames carried out at boot,
-  `RegNotifyChangeKeyValue` change events.
+- ~~Small visible bugs: This PC lists D:, E:, ...; `dir` reports each
+  drive's own free space; Notepad++'s status bar draws~~ Done (Phase
+  17.6, screenshots in the nightly app corpus).
+- Files: hard links.  ~~`MoveFileEx` pending renames carried out at boot,
+  `RegNotifyChangeKeyValue` change events~~ Done (Phase 17.5, `filetest`
+  and a restart in the core suite).
 - ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
   is waitable and the Terminal runs full-screen programs (Phase 17.2).
+- The Win32 console screen-buffer calls (`SetConsoleCursorPosition`,
+  `FillConsoleOutputCharacter`... are still no-ops), so programs that draw
+  through them rather than VT sequences work and `less` can be the real
+  one (git pages through NovaOS's own `less` today).
 - Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
   Windows Terminal-style hosts) exist only as functions that fail.
 - Move files, the registry, process creation and the console off the big
   kernel lock.
-- Security: enforce tokens and ACLs on objects (`AccessCheck` already
-  evaluates the DACLs it is given).
+- ~~Security: enforce tokens and ACLs on objects~~ Done for named kernel
+  objects: real tokens, restricted tokens, impersonation, and descriptors
+  checked on open (Phase 17.4, `sectest`, `acltest`).  Files' descriptors
+  come with Phase 18.5.
+
+<!-- END generated:next-kernel -->
 
 ### Storage, network and hardware
+<!-- BEGIN generated:next-hardware -->
+
 - ~~NTFS read~~ Done: NTFS volumes mount read-only as drives D:, E:, ...;
   NTFS write, NVMe.
 - IPv6, HTTP/2.
@@ -138,9 +153,13 @@ named program or test demonstrates it.
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,
   control-method power buttons and `_PTS`/`_WAK`.  Still to do: the lid
   switch, thermal zones, wake devices (USB keyboards), a real SCI
-  interrupt and PCI interrupt routing from `_PRT`; display modes after S3
-  on adapters other than the Bochs/QEMU one; HPET or TSC-deadline timers.
+  interrupt and PCI interrupt routing from `_PRT`; HPET or TSC-deadline
+  timers.  (Display modes after S3 are set again on every adapter NovaOS
+  drives: the VBE ones, QXL, virtio-vga, VMware SVGA and Cirrus.  Real
+  GPUs have no driver yet.)
 - Boot and test on real hardware, not only QEMU.
+
+<!-- END generated:next-hardware -->
 
 ---
 
@@ -151,8 +170,9 @@ named program or test demonstrates it.
   (`tools/selftest.py`, `.github/workflows/ci.yml`); a failing test fails
   the check.
 - **Reproducible build:** CMake drives `nasm`, clang/lld and `lld-link`
-  for the kernel, bootloader and Windows userland; `nova.iso` is rebuilt
-  with `scripts/create-iso.sh`.
+  for the kernel, bootloader and Windows userland; CI builds `nova.iso`
+  with `scripts/create-iso.sh` (a run artifact on every pull request, the
+  `latest` release from `main`); the ISO is not committed.
 - **Debugging:** the GDB stub over QEMU (`run-debug`), the serial log,
   crash reports naming the module and offset, and the Terminal's `trace
   NAME` for a program's failing system calls, and symbolized kernel
@@ -161,12 +181,17 @@ named program or test demonstrates it.
 - **ABI conformance tests** (done): `abitest` asserts PEB/TEB/KUSER/CONTEXT
   offsets, ntdll's stub layout and every syscall number against Windows 10
   1903 x64, in CI.
+- **Parallel changes without conflicts** (done): DLLs, programs,
+  self-tests, the app corpus and the docs' lists are one file per item
+  (CONTRIBUTING.md), generated doc regions are rebuilt on main by
+  `tools/docgen.py`, and CI fails on leftover conflict markers.
 - **Test corpus:** every self-test program in `userland/programs/` is a
   permanent regression test, built for x64 and x86; `tools/pe_imports.py`
   shows what a new program needs before it is tried.
 - **Nightly app corpus** (done): `tools/appcorpus.py` runs ripgrep, fd, jq,
-  7-Zip, MinGit, Python, Node.js and Notepad++ every night and posts a
-  pass/fail table per program.
+  7-Zip, MinGit, Python, Node.js and Notepad++ every night, checks
+  NovaOS's own `dir` and This PC screens, and posts a pass/fail table per
+  program.
 
 ## Reality check
 

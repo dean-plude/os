@@ -109,6 +109,27 @@ MMAPI UINT WINAPI mixerGetNumDevs(void)   { return 0; }
 MMAPI UINT WINAPI auxGetNumDevs(void)     { return 0; }
 MMAPI MMRESULT WINAPI midiOutOpen(HANDLE *h, UINT dev, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
 { (void)dev; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
+/* MIDI: no ports to open, so every handle is invalid */
+MMAPI MMRESULT WINAPI midiInOpen(HANDLE *h, UINT dev, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
+{ (void)dev; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
+MMAPI MMRESULT WINAPI midiInGetDevCapsW(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
+MMAPI MMRESULT WINAPI midiOutGetDevCapsW(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
+static MMRESULT no_midi(void) { return 5; }                /* MMSYSERR_INVALHANDLE */
+MMAPI MMRESULT WINAPI midiInClose(HANDLE h) { (void)h; return no_midi(); }
+MMAPI MMRESULT WINAPI midiInStart(HANDLE h) { (void)h; return no_midi(); }
+MMAPI MMRESULT WINAPI midiInStop(HANDLE h) { (void)h; return no_midi(); }
+MMAPI MMRESULT WINAPI midiInReset(HANDLE h) { (void)h; return no_midi(); }
+MMAPI MMRESULT WINAPI midiInAddBuffer(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
+MMAPI MMRESULT WINAPI midiInPrepareHeader(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
+MMAPI MMRESULT WINAPI midiInUnprepareHeader(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
+MMAPI MMRESULT WINAPI midiInMessage(HANDLE h, UINT msg, DWORD_PTR a, DWORD_PTR b) { (void)h; (void)msg; (void)a; (void)b; return no_midi(); }
+MMAPI MMRESULT WINAPI midiOutClose(HANDLE h) { (void)h; return no_midi(); }
+MMAPI MMRESULT WINAPI midiOutReset(HANDLE h) { (void)h; return no_midi(); }
+MMAPI MMRESULT WINAPI midiOutShortMsg(HANDLE h, DWORD m) { (void)h; (void)m; return no_midi(); }
+MMAPI MMRESULT WINAPI midiOutLongMsg(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
+MMAPI MMRESULT WINAPI midiOutPrepareHeader(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
+MMAPI MMRESULT WINAPI midiOutUnprepareHeader(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
+MMAPI MMRESULT WINAPI midiOutMessage(HANDLE h, UINT msg, DWORD_PTR a, DWORD_PTR b) { (void)h; (void)msg; (void)a; (void)b; return no_midi(); }
 
 /* ---- joysticks: none ---- */
 MMAPI UINT WINAPI joyGetNumDevs(void) { return 16; }        /* slots; each reports "unplugged" */

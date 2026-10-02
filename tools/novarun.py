@@ -8,9 +8,11 @@ the --put trees, opens the Terminal (Win, "terminal", Enter), turns on
 "serial on" and types each COMMAND, waiting for the Terminal's end-of-command
 mark.  Prints each command's output.  A COMMAND of the form
 "!shot NAME.png" saves a screenshot, "!wait N" waits N seconds and
-"!keys a b ctrl-c" presses QEMU key names, "!type TEXT" types
-without waiting (\\n Enter, \\e Esc) and "!done N" waits up to N seconds
-for the running command to end.
+"!keys a b ctrl-c" presses QEMU key names, "!click X Y" clicks at a
+logical screen point (1280x800 at the default mode), "!type TEXT" types
+without waiting (\\n Enter, \\e Esc), "!done N" waits up to N seconds
+for the running command to end and "!reboot" restarts NovaOS
+("shutdown /r": the data disk keeps drive C:) and opens the Terminal again.
 
 Options: --mem MiB (2048), --smp N (2), --timeout S per command (120),
 --keep DIR (keep the serial log, data disk and screenshots there),
@@ -128,7 +130,7 @@ class Nova:
     """One NovaOS boot in QEMU with its Terminal open and mirrored to serial"""
 
     def __init__(self, img=None, work=None, puts=(), mem=2048, smp=2, data_mb=1024, wav=None,
-                 extra_args=(), boot_timeout=300, net=False, rec=None):
+                 extra_args=(), boot_timeout=300, net=False, vga=('-vga', 'std'), rec=None):
         self.work = work or tempfile.mkdtemp(prefix='novarun')
         os.makedirs(self.work, exist_ok=True)
         data, self.serial_path, sock = (os.path.join(self.work, n) for n in ('data.img', 'serial.log', 'qmp.sock'))
@@ -152,28 +154,44 @@ class Nova:
                                    '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
                                    '-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on',
                                    '-drive', f'format=raw,file={data}',
-                                   '-serial', f'file:{self.serial_path}', '-vga', 'std', '-display', 'none',
+                                   '-serial', f'file:{self.serial_path}'] + list(vga) + ['-display', 'none',
                                    '-nic', 'user,model=e1000e' if net else 'none',
                                    '-qmp', f'unix:{sock},server,nowait'] +
-                                  audio + list(extra_args), env=env)
+                                  audio +
+                                  (['-s'] if os.environ.get('NOVARUN_GDB') else []) +   # gdb server on :1234
+                                  list(extra_args), env=env)
         try:
             self.sr = Serial(self.serial_path)
-            out, ok = self.sr.wait('Entering kernel main loop', boot_timeout)
-            self.boot_log = out
-            if not ok:
-                raise RuntimeError('NovaOS did not boot:\n' + out[-3000:])
-            self.qmp = Qmp(sock)
-            time.sleep(2)
-            self.qmp.key('meta_l')
-            time.sleep(1)
-            self.qmp.type('terminal\n')
-            time.sleep(3)
-            self.sr.read_new()
-            self.qmp.type('serial on\n')
-            self.sr.wait('[TERM-DONE]', 30)
+            self.sock = sock
+            self.start(boot_timeout)
         except BaseException:
             self.close()
             raise
+
+    def start(self, boot_timeout=300):
+        """Wait for the desktop, then open the Terminal mirrored to serial"""
+        out, ok = self.sr.wait('Entering kernel main loop', boot_timeout)
+        self.boot_log = out
+        if not ok:
+            raise RuntimeError('NovaOS did not boot:\n' + out[-3000:])
+        if not self.qmp:
+            self.qmp = Qmp(self.sock)
+        time.sleep(2)
+        self.qmp.key('meta_l')
+        time.sleep(1)
+        self.qmp.type('terminal\n')
+        time.sleep(3)
+        self.sr.read_new()
+        self.qmp.type('serial on\n')
+        self.sr.wait('[TERM-DONE]', 30)
+
+    def reboot(self, boot_timeout=300):
+        """Restart NovaOS (shutdown /r) and open the Terminal again; the
+        boot's log (up to the desktop) is returned"""
+        self.sr.read_new()
+        self.qmp.type('shutdown /r\n')
+        self.start(boot_timeout)
+        return self.boot_log
 
     def run(self, cmd, timeout=120, shot=None):
         """Type @cmd into the Terminal; returns (serial output, finished in time).
@@ -250,6 +268,25 @@ class Nova:
     def shot(self, path):
         self.qmp.cmd('screendump', filename=os.path.abspath(path), format='png')
 
+    def click(self, x, y, button=1):
+        """Click at logical screen point (x, y): HMP relative moves from the top-left corner
+        (QMP input-send-event moves do nothing on this mouse)"""
+        hmp = lambda c: self.qmp.cmd('human-monitor-command', **{'command-line': c})
+        for _ in range(40):
+            hmp('mouse_move -100 -100')
+            time.sleep(0.01)
+        while x > 0 or y > 0:
+            dx, dy = min(x, 40), min(y, 40)
+            hmp(f'mouse_move {dx} {dy}')
+            time.sleep(0.02)
+            x -= dx
+            y -= dy
+        time.sleep(0.3)
+        hmp(f'mouse_button {button}')
+        time.sleep(0.1)
+        hmp('mouse_button 0')
+        time.sleep(0.3)
+
     def keys(self, names):
         for k in names.split():
             self.qmp.key(*k.split('-'))
@@ -269,6 +306,13 @@ class Nova:
             shutil.rmtree(self.work, ignore_errors=True)
 
 
+def vga_args(name):
+    """QEMU arguments for the display adapter @name: a -vga type, or a -device"""
+    if name in ('std', 'cirrus', 'vmware', 'qxl', 'virtio', 'none'):
+        return ('-vga', name)
+    return ('-vga', 'none', '-device', name)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--put', action='append', default=[])
@@ -281,11 +325,14 @@ def main():
     ap.add_argument('--wav')
     ap.add_argument('--rec', help='a WAV the guest\'s microphone hears (needs PulseAudio)')
     ap.add_argument('--net', action='store_true', help='a network card on QEMU user networking (the host is 10.0.2.2)')
+    ap.add_argument('--display', default='std',
+                    help='the display adapter: a -vga name (std, cirrus, vmware, qxl, virtio) or a -device name (bochs-display)')
     ap.add_argument('commands', nargs='*')
     a = ap.parse_args()
 
     try:
-        nova = Nova(a.img, a.keep, [p.split('=', 1) for p in a.put], a.mem, a.smp, a.data_mb, a.wav, net=a.net, rec=a.rec)
+        nova = Nova(a.img, a.keep, [p.split('=', 1) for p in a.put], a.mem, a.smp, a.data_mb, a.wav, net=a.net,
+                    vga=vga_args(a.display), rec=a.rec)
     except RuntimeError as e:
         sys.exit(str(e))
     try:
@@ -311,8 +358,21 @@ def main():
                 print(got.replace('\n[TERM-DONE]\n', '').rstrip(), flush=True)
                 print(f'### {"done" if ok else "TIMEOUT"} in {time.time() - t0:.1f}s', flush=True)
                 continue
+            if c.startswith('!click '):     # !click X Y: left click at a logical screen point
+                x, y = (int(v) for v in c[7:].split()[:2])
+                nova.click(x, y)
+                continue
+            if c.strip() == '!reboot':
+                print('### !reboot', flush=True)
+                print(nova.reboot(), flush=True)
+                continue
             if c.startswith('!keys '):
                 nova.keys(c[6:])
+                continue
+            if c.startswith('!bg '):       # type a command and leave it running
+                nova.sr.read_new()
+                print(f'### (running) {c[4:]}', flush=True)
+                nova.qmp.type(c[4:] + '\n')
                 continue
             print(f'### {c}', flush=True)
             t0 = time.time()

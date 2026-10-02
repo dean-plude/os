@@ -2,6 +2,7 @@
 """Build NovaOS's Windows userland and embed it into the kernel.
 
     tools/build_userland.py OUT_DIR GENERATED_C KERNEL_SYSCALL_H
+    tools/build_userland.py --check      (load the DLL and program manifests only)
 
 Compiles, with clang --target=x86_64-pc-windows-msvc and lld-link:
   ntdll.dll, kernel32.dll, msvcrt.dll, ...  -> C:\\Windows\\System32
@@ -19,95 +20,130 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_netsurf
 
 HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'userland')
-out, gen_c, syscall_h = sys.argv[1], sys.argv[2], sys.argv[3]
-os.makedirs(out, exist_ok=True)
-inc_gen = os.path.join(out, 'include')
-os.makedirs(inc_gen, exist_ok=True)
+CHECK = '--check' in sys.argv
+if CHECK:
+    out = gen_c = syscall_h = inc_gen = None
+else:
+    out, gen_c, syscall_h = sys.argv[1], sys.argv[2], sys.argv[3]
+    inc_gen = os.path.join(out, 'include')
+    os.makedirs(inc_gen, exist_ok=True)
 
 TARGETS = {'x64': 'x86_64-pc-windows-msvc', 'x86': 'i686-pc-windows-msvc'}
 COMMON_FLAGS = ['-O2', '-ffreestanding', '-nostdlibinc',
                 '-fno-stack-protector', '-mno-stack-arg-probe', '-fms-extensions', '-fasync-exceptions',
                 '-Wall', '-Wno-unused-function', '-Werror=implicit-function-declaration',
-                '-isystem', os.path.join(HERE, 'include', 'posix'), '-I', os.path.join(HERE, 'include'), '-I', inc_gen]
+                '-isystem', os.path.join(HERE, 'include', 'posix'), '-I', os.path.join(HERE, 'include'), '-I', str(inc_gen)]
 ARCH = 'x64'          # the pass being built: x64 (System32), then x86 (SysWOW64, for 32-bit programs)
 def cflags():
     extra = ['-msse2'] if ARCH == 'x86' else []
     return ['--target=' + TARGETS[ARCH]] + extra + COMMON_FLAGS
 
-# DLL load addresses (distinct, so no relocation is needed)
-DLLS = [
-    ('ntdll',    [],                     0x7FFA00000000),
-    ('kernel32', ['ntdll'],              0x7FFA10000000),
-    ('msvcrt',   ['kernel32', 'ntdll'],  0x7FFA20000000),
-    ('ws2_32',   ['kernel32', 'ntdll'],  0x7FFA30000000),
-    ('gdi32',    ['kernel32', 'ntdll'],  0x7FFA50000000),
-    ('user32',   ['gdi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFA60000000),
-    ('testdll',  ['kernel32', 'ntdll'],  0x7FFA40000000),
-    ('vcruntime140', ['kernel32', 'ntdll'], 0x7FFA70000000),
-    ('advapi32', ['kernel32', 'ntdll'],  0x7FFA80000000),
-    ('bcrypt',   ['kernel32', 'ntdll'],  0x7FFA90000000),
-    ('bcryptprimitives', ['kernel32', 'ntdll'], 0x7FFAA0000000),
-    ('userenv',  ['kernel32', 'ntdll'],  0x7FFAB0000000),
-    ('shlwapi',  ['msvcrt', 'kernel32', 'ntdll'], 0x7FFAD0000000),
-    ('psapi',    ['kernel32'],           0x7FFB40000000),
-    ('shfolder', [],                     0x7FFB70000000),
-    ('version',  ['kernel32', 'ntdll'],  0x7FFB20000000),
-    ('winmm',    ['kernel32', 'ntdll'],  0x7FFB30000000),
-    ('mpr',      ['kernel32'],           0x7FFB50000000),
-    ('comctl32', ['user32', 'gdi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB00000000),
-    ('shell32',  ['comctl32', 'gdi32', 'user32', 'kernel32', 'ntdll'], 0x7FFAC0000000),
-    ('comdlg32', ['kernel32', 'ntdll'],  0x7FFB10000000),
-    ('ole32',    ['user32', 'advapi32', 'kernel32', 'ntdll'], 0x7FFAE0000000),
-    ('oleaut32', ['ole32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAF0000000),
-    ('msi',      ['comctl32', 'shell32', 'user32', 'gdi32', 'advapi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFB60000000),
-    ('iphlpapi', ['kernel32', 'ntdll'],           0x7FFB80000000),
-    ('netapi32', ['advapi32', 'kernel32', 'ntdll'], 0x7FFB90000000),
-    ('secur32',  ['advapi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFBA0000000),
-    ('authz',    ['kernel32', 'ntdll'],           0x7FFBB0000000),
-    ('dnsapi',   ['kernel32', 'ntdll'],           0x7FFBC0000000),
-    ('pdh',      ['kernel32', 'ntdll'],           0x7FFBD0000000),
-    ('powrprof', ['kernel32', 'ntdll'],           0x7FFBE0000000),
-    ('winhttp',  ['kernel32', 'ntdll'],           0x7FFBF0000000),
-    ('mswsock',  ['ws2_32', 'kernel32', 'ntdll'], 0x7FFC00000000),
-    ('crypt32',  ['kernel32', 'ntdll'],           0x7FFC10000000),
-    ('dbghelp',  ['kernel32', 'ntdll'],           0x7FFC20000000),
-    ('rpcrt4',   ['kernel32', 'ntdll'],           0x7FFC30000000),
-    ('uxtheme',  ['gdi32', 'user32', 'kernel32', 'ntdll'], 0x7FFC40000000),
-    ('dwmapi',   ['user32', 'kernel32', 'ntdll'], 0x7FFC50000000),
-    ('imm32',    ['kernel32', 'ntdll'],           0x7FFC60000000),
-    ('wintrust', ['kernel32', 'ntdll'],           0x7FFC70000000),
-    ('sensapi',  ['ws2_32', 'kernel32', 'ntdll'], 0x7FFC80000000),
-    ('wininet',  ['kernel32', 'ntdll'],           0x7FFC90000000),
-    ('msimg32',  ['gdi32', 'kernel32', 'ntdll'],  0x7FFCA0000000),
-    ('cfgmgr32', ['advapi32', 'kernel32', 'ntdll'], 0x7FFCB0000000),
-    ('dxgi',     ['kernel32', 'ntdll'],           0x7FFCC0000000),
-    ('vulkan-1', ['advapi32', 'kernel32', 'ntdll'], 0x7FFCD0000000),
-    ('mmdevapi', ['ole32', 'kernel32', 'ntdll'],  0x7FFCE0000000),
-    ('avrt',     ['kernel32', 'ntdll'],           0x7FFCF0000000),
-    ('novatext', ['msvcrt', 'kernel32', 'ntdll'], 0x7FFE50000000),
-    ('usp10',    ['novatext', 'gdi32', 'user32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFE00000000),
-    ('normaliz', ['user32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFE10000000),
-    ('ncrypt',   ['kernel32', 'ntdll'],           0x7FFE20000000),
-    ('avicap32', ['kernel32', 'ntdll'],           0x7FFE30000000),
-    ('d2d1',     ['gdi32', 'user32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFE40000000),
-]
-# 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
-DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}
-UCRT_BASE_X86 = 0x5F000000
-# 32-bit builds of these test programs go to C:\Programs\x86
-PROGRAMS_X86 = {'hello', 'crttest', 'filetest', 'threads', 'dlltest', 'apitest', 'posixtest', 'comtest',
-                'shmtest', 'winhello', 'guitest', 'crash', 'primes', 'cppeh', 'cmd', 'pipetest',
-                'find', 'findstr', 'sort', 'more', 'timeout', 'cliptest', 'soundtest', 'disptest', 'usptest'}
-# DLLs a test program links against beyond the usual set
-PROGRAM_LIBS = {'usptest': ['usp10']}
-# programs that live in C:\Windows\System32 rather than C:\Programs
-SYSTEM_PROGRAMS = {'msiexec', 'cmd', 'find', 'findstr', 'sort', 'more', 'timeout', 'shutdown'}
-UCRT_BASE = 0x7FFA28000000
-# DLLs built from more than their own directory
-DLL_SOURCES = {
-    'advapi32': ['advapi32', 'common'],
-    'bcrypt':   ['bcrypt', 'common'],
-}
+# Each system DLL is registered by its own userland/NAME/dll.json (see
+# docs/building.md, "Adding a DLL or program"), so a new DLL is a new
+# directory, not an edit to a list here:
+#   deps      the DLLs it links against (built first)
+#   base      x64 load address; base_x86 the 32-bit one.  Leave both out
+#             and the DLL gets a free 16 MiB slot (AUTO_X64 / AUTO_X86),
+#             so two changes adding DLLs never pick the same address
+#   sources   directories its .c files come from (default: its own)
+#   entry     "DllMain" for DLLs with an entry point
+#             (and userland/NAME/NAME.rc, if there is one, is linked in)
+#   tlssup    true: link lib/tlssup.c (implicit TLS)
+#   x64_only  true: not built for SysWOW64
+#   ordinals  {name: ordinal}: Windows' export ordinals, for DLLs
+#             programs import from by number
+# and, when it needs more than that, userland/NAME/build.py (hooks the
+# build calls with this module: cflags(b), objs(b, odir) and link(b, odir,
+# objs, deps, base); see userland/secur32/build.py and msvcrt/build.py).
+# Programs (userland/programs/NAME.c or .cpp) may have a NAME.json:
+#   x86       true: also built for 32 bits (C:\Programs\x86)
+#   system    true: installed in C:\Windows\System32 (SysWOW64)
+#   libs      DLLs it links against beyond PROGRAM_LIBS
+#   selftest  true: a self-test program README lists
+import json
+SLOT = 0x01000000
+AUTO_X64 = (0x7FFD00000000, 0x7FFE00000000)
+AUTO_X86 = (0x97000000, 0xC0000000)
+
+def load_manifests():
+    """{name: manifest} for every userland/*/dll.json, in link order (each
+    DLL after the DLLs it depends on), bases filled in"""
+    found = {}
+    for d in sorted(os.listdir(HERE)):
+        f = os.path.join(HERE, d, 'dll.json')
+        if os.path.isfile(f):
+            try:
+                m = json.load(open(f))
+            except ValueError as e:
+                raise SystemExit(f'{f}: {e}')
+            for k in ('base', 'base_x86'):
+                if k in m:
+                    m[k] = int(m[k], 16)
+            hook = os.path.join(HERE, d, 'build.py')
+            m['hook'] = hook if os.path.isfile(hook) else None
+            found[d] = m
+    for arch, key, (lo, hi) in (('x64', 'base', AUTO_X64), ('x86', 'base_x86', AUTO_X86)):
+        taken = {}
+        for n, m in found.items():
+            if key in m:
+                if m[key] in taken:
+                    raise SystemExit(f'userland/{n}/dll.json: {key} {m[key]:#x} is also '
+                                     f'userland/{taken[m[key]]}\'s; leave it out to get a free one')
+                taken[m[key]] = n
+        slot = lo
+        for n in sorted(found):
+            if key in found[n]:
+                continue
+            while any(b <= slot < b + SLOT or slot <= b < slot + SLOT for b in taken):
+                slot += SLOT
+            if slot >= hi:
+                raise SystemExit(f'no free {arch} DLL slot left for {n}')
+            found[n][key] = slot
+            taken[slot] = n
+    order, state = [], {}
+    def visit(n, chain):
+        if state.get(n) == 'done':
+            return
+        if n not in found:
+            raise SystemExit(f'userland/{chain[-1]}/dll.json: no DLL "{n}" (no userland/{n}/dll.json)')
+        if state.get(n) == 'busy':
+            raise SystemExit('DLL dependency cycle: ' + ' -> '.join(chain + [n]))
+        state[n] = 'busy'
+        for dep in found[n].get('deps', []):
+            visit(dep, chain + [n])
+        state[n] = 'done'
+        order.append(n)
+    for n in sorted(found):
+        visit(n, [n])
+    return {n: found[n] for n in order}
+
+def load_programs():
+    """{name: NAME.json's settings} for userland/programs"""
+    progs = {}
+    for f in sorted(os.listdir(os.path.join(HERE, 'programs'))):
+        if f.endswith('.json'):
+            try:
+                progs[f[:-5]] = json.load(open(os.path.join(HERE, 'programs', f)))
+            except ValueError as e:
+                raise SystemExit(f'userland/programs/{f}: {e}')
+    return progs
+
+def load_hook(name, path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(f'nova_dll_{name.replace("-", "_")}', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+DLLS = load_manifests()
+PROGRAMS = load_programs()
+HOOKS = {n: load_hook(n, m['hook']) for n, m in DLLS.items() if m['hook']}
+# the DLLs every program links against
+PROGRAM_LIBS = ['msvcrt', 'kernel32', 'ntdll', 'ws2_32', 'user32', 'gdi32', 'testdll', 'vcruntime140',
+                'advapi32', 'ole32', 'oleaut32', 'comctl32', 'shell32', 'msi', 'winmm']
+if CHECK:                                 # CI: the manifests load (bases, dependencies), nothing is built
+    print(f'userland: {len(DLLS)} DLLs, {len(PROGRAMS)} program manifests: OK')
+    sys.exit(0)
 
 def run(cmd):
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -171,184 +207,40 @@ def undecorate(sym):
         return m.group(1) if m else sym
     return sym
 
+def hook(name, fn):
+    """userland/NAME/build.py's function @fn, or None"""
+    return getattr(HOOKS.get(name), fn, None)
+
 def dll_objs(odir, name, srcdirs):
     objs = []
+    extra = hook(name, 'cflags')(sys.modules[__name__]) if hook(name, 'cflags') else []
     for d in srcdirs:
         srcdir = os.path.join(HERE, d)
         for src in sorted(os.listdir(srcdir)):
             if src.endswith('.c'):
                 obj = os.path.join(odir, f'{name}_{d}_{src[:-2]}.obj')
-                cc(os.path.join(srcdir, src), obj, DLL_CFLAGS.get(name, ()))
+                cc(os.path.join(srcdir, src), obj, extra)
                 objs.append(obj)
     return objs
 
-# Mbed TLS (third_party/mbedtls), configured as for NetSurf
-# (userland/netsurf/mbedtls_user_config.h), and NetSurf's glue for it
-# (entropy, roots): secur32.dll's Schannel package is built on them
-MBEDTLS = os.path.join(os.path.dirname(HERE), 'third_party', 'mbedtls')
-TLS_GLUE = os.path.join(HERE, 'netsurf')
-MB_FLAGS = ['-I', os.path.join(MBEDTLS, 'include'), '-I', os.path.join(MBEDTLS, 'library'), '-I', TLS_GLUE,
-            '-DMBEDTLS_CONFIG_FILE="mbedtls_user_config.h"',
-            # as NetSurf builds it: Mbed TLS's POSIX/GCC paths, not MSVC's
-            '-std=gnu99', '-w', '-D_NOVAOS', '-DNOVA_POSIX', '-U_WIN32', '-U_WIN64', '-fgnuc-version=4.2.1']
-HB_INC = ['-I', os.path.join(os.path.dirname(HERE), 'third_party', 'harfbuzz', 'src')]
-DLL_CFLAGS = {'secur32': MB_FLAGS, 'usp10': HB_INC}
-
-def mbedtls_objs(odir):
-    """Mbed TLS's library and the TLS glue for this architecture, compiled
-    in parallel; an object newer than its source and the configuration is
-    reused"""
+def compile_many(srcs, odir, prefix, flags, headers=(), compiler='clang'):
+    """compile @srcs in parallel into ODIR/PREFIXNAME.obj (for a DLL's
+    build.py: third-party libraries); an object newer than its source and
+    every one of @headers is reused.  Returns the objects, in order"""
     from concurrent.futures import ThreadPoolExecutor
-    lib = os.path.join(MBEDTLS, 'library')
-    srcs = [os.path.join(lib, f) for f in sorted(os.listdir(lib)) if f.endswith('.c') and f != 'net_sockets.c']
-    srcs.append(os.path.join(TLS_GLUE, 'tls_glue.c'))
-    newest_h = max(os.stat(os.path.join(TLS_GLUE, h)).st_mtime for h in os.listdir(TLS_GLUE) if h.endswith('.h'))
-    jobs = []
-    for src in srcs:
-        obj = os.path.join(odir, 'mbedtls_' + os.path.basename(src)[:-2] + '.obj')
-        if not (os.path.exists(obj) and os.stat(obj).st_mtime > max(os.stat(src).st_mtime, newest_h)):
-            jobs.append((src, obj))
-    flags = cflags() + MB_FLAGS
+    newest_h = max([os.stat(h).st_mtime for h in headers] or [0])
+    objs = [os.path.join(odir, prefix + os.path.splitext(os.path.basename(s))[0] + '.obj') for s in srcs]
+    jobs = [(s, o) for s, o in zip(srcs, objs)
+            if not (os.path.exists(o) and os.stat(o).st_mtime > max(os.stat(s).st_mtime, newest_h))]
     def one(job):
-        r = subprocess.run(['clang'] + flags + ['-c', job[0], '-o', job[1]], capture_output=True, text=True)
+        r = subprocess.run([compiler] + list(flags) + ['-c', job[0], '-o', job[1]], capture_output=True, text=True)
         return None if r.returncode == 0 else job[0] + ':\n' + r.stderr
     with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
         errors = [e for e in ex.map(one, jobs) if e]
     if errors:
         sys.stderr.write('\n'.join(errors[:4]))
         sys.exit(1)
-    return [os.path.join(odir, 'mbedtls_' + os.path.basename(s)[:-2] + '.obj') for s in srcs]
-
-# novatext.dll: the text core Uniscribe, DirectWrite and Direct2D share.
-# HarfBuzz (third_party/harfbuzz, C++ against libc++'s headers, no C++
-# runtime) shapes text; FreeType (third_party/freetype) loads and
-# rasterizes fonts.  It exports both libraries' C APIs (hb_*, FT_*).
-TP_DIR = os.path.join(os.path.dirname(HERE), 'third_party')
-FT_DIR = os.path.join(TP_DIR, 'freetype')
-FT_SRCS = ['base/ftsystem.c', 'base/ftinit.c', 'base/ftdebug.c', 'base/ftbase.c', 'base/ftbbox.c', 'base/ftbitmap.c',
-           'base/ftglyph.c', 'base/ftsynth.c', 'base/ftmm.c', 'base/fttype1.c', 'base/ftstroke.c',
-           'base/ftgasp.c', 'base/ftcid.c', 'base/ftfstype.c', 'base/ftpatent.c', 'base/ftwinfnt.c',
-           'autofit/autofit.c', 'truetype/truetype.c', 'type1/type1.c', 'cff/cff.c', 'cid/type1cid.c',
-           'psaux/psaux.c', 'psnames/psnames.c', 'pshinter/pshinter.c', 'sfnt/sfnt.c', 'smooth/smooth.c',
-           'raster/raster.c', 'winfonts/winfnt.c']
-FT_FLAGS = ['-w', '-I', os.path.join(FT_DIR, 'include'), '-I', os.path.join(HERE, 'novatext'), '-DFT2_BUILD_LIBRARY',
-            '-DFT_CONFIG_MODULES_H=<nova_ftmodule.h>', '-DFT_CONFIG_OPTIONS_H=<nova_ftoption.h>']
-def find_libcxx():
-    """libc++'s headers: $NOVA_LIBCXX, next to the clang in use (Homebrew's
-    LLVM), or Debian/Ubuntu's libc++-dev"""
-    import shutil
-    cands = [os.environ.get('NOVA_LIBCXX', '')]
-    if shutil.which('clang'):
-        cands.append(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(shutil.which('clang')))),
-                                  'include', 'c++', 'v1'))
-    cands += ['/usr/lib/llvm-%d/include/c++/v1' % v for v in range(30, 13, -1)] + ['/usr/include/c++/v1']
-    return next((d for d in cands if d and os.path.isfile(os.path.join(d, '__config'))), None)
-LIBCXX = find_libcxx()
-HB_FLAGS = ['-std=c++17', '-fno-exceptions', '-fno-rtti', '-w', '-D_LIBCPP_NO_VCRUNTIME',
-            '-D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES', '-DHB_NO_MT', '-DHB_NO_MMAP', '-DHAVE_FREETYPE',
-            '-I', os.path.join(FT_DIR, 'include')]
-
-def cxx_flags():
-    """C++ against libc++'s headers: our <functional>, libc++, then the C headers"""
-    if not LIBCXX:
-        raise SystemExit("libc++'s headers not found (install libc++-dev)")
-    inc = os.path.join(HERE, 'include')
-    return ['--target=' + TARGETS[ARCH]] + (['-msse2'] if ARCH == 'x86' else []) + \
-        ['-O2', '-ffreestanding', '-nostdlibinc', '-fno-stack-protector', '-mno-stack-arg-probe', '-fms-extensions',
-         '-isystem', os.path.join(inc, 'cxx'), '-isystem', LIBCXX, '-isystem', os.path.join(inc, 'posix'),
-         '-isystem', inc, '-I', inc_gen]
-
-def novatext_objs(odir):
-    """FreeType and HarfBuzz for this architecture, compiled in parallel; an
-    object newer than its source is reused"""
-    from concurrent.futures import ThreadPoolExecutor
-    jobs = []
-    for f in FT_SRCS:
-        jobs.append((['clang'] + cflags() + FT_FLAGS, os.path.join(FT_DIR, 'src', f),
-                     os.path.join(odir, 'ft_' + os.path.basename(f)[:-2] + '.obj')))
-    jobs.append((['clang++'] + cxx_flags() + HB_FLAGS, os.path.join(TP_DIR, 'harfbuzz', 'src', 'harfbuzz.cc'),
-                 os.path.join(odir, 'harfbuzz.obj')))
-    cfg = max(os.stat(os.path.join(HERE, 'novatext', h)).st_mtime for h in os.listdir(os.path.join(HERE, 'novatext')))
-    def one(job):
-        flags, src, obj = job
-        if os.path.exists(obj) and os.stat(obj).st_mtime > max(os.stat(src).st_mtime, cfg):
-            return None
-        r = subprocess.run(flags + ['-c', src, '-o', obj], capture_output=True, text=True)
-        return None if r.returncode == 0 else src + ':\n' + r.stderr
-    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
-        errors = [e for e in ex.map(one, jobs) if e]
-    if errors:
-        sys.stderr.write('\n'.join(errors[:4]))
-        sys.exit(1)
-    return [j[2] for j in jobs]
-
-def novatext_def(odir, objs):
-    """export every hb_* and FT_* function the objects define"""
-    names = sorted(n for n in defined_names(objs) if n.startswith(('hb_', 'FT_')))
-    path = os.path.join(odir, 'novatext.def')
-    open(path, 'w').write('LIBRARY novatext.dll\nEXPORTS\n' + ''.join(f'  {n}\n' for n in names))
-    return ['/def:' + path]
-
-def flavor_obj(odir, legacy):
-    """msvcrt.dll and ucrtbase.dll share the C runtime's objects; this one
-    differs: legacy msvcrt behaviour (e.g. printf rounding) or the UCRT's"""
-    src = os.path.join(odir, 'crt_flavor.c')
-    obj = os.path.join(odir, f'crt_flavor{legacy}.obj')
-    open(src, 'w').write('const int __nova_crt_legacy = %d;\n' % legacy)
-    cc(src, obj)
-    return obj
-
-# Windows' export ordinals for DLLs programs import from by number
-# (oleaut32's BSTR and VARIANT calls, Winsock 1, comctl32's subclassing...)
-ORDINALS = {
-    'oleaut32': {'SysAllocString': 2, 'SysReAllocString': 3, 'SysAllocStringLen': 4, 'SysReAllocStringLen': 5,
-                 'SysFreeString': 6, 'SysStringLen': 7, 'VariantInit': 8, 'VariantClear': 9, 'VariantCopy': 10,
-                 'VariantCopyInd': 11, 'VariantChangeType': 12, 'VariantTimeToDosDateTime': 13,
-                 'DosDateTimeToVariantTime': 14, 'SafeArrayCreate': 15, 'SafeArrayDestroy': 16, 'SafeArrayGetDim': 17,
-                 'SafeArrayGetElemsize': 18, 'SafeArrayGetUBound': 19, 'SafeArrayGetLBound': 20, 'SafeArrayLock': 21,
-                 'SafeArrayUnlock': 22, 'SafeArrayAccessData': 23, 'SafeArrayUnaccessData': 24,
-                 'SafeArrayGetElement': 25, 'SafeArrayPutElement': 26, 'SafeArrayCopy': 27, 'DispGetParam': 28,
-                 'DispGetIDsOfNames': 29, 'DispInvoke': 30, 'CreateDispTypeInfo': 31, 'CreateStdDispatch': 32,
-                 'RegisterActiveObject': 33, 'RevokeActiveObject': 34, 'GetActiveObject': 35,
-                 'SafeArrayAllocDescriptor': 36, 'SafeArrayAllocData': 37, 'SafeArrayDestroyDescriptor': 38,
-                 'SafeArrayDestroyData': 39, 'SafeArrayRedim': 40, 'SafeArrayAllocDescriptorEx': 41,
-                 'SafeArrayCreateEx': 42, 'SafeArrayCreateVectorEx': 43, 'SafeArraySetRecordInfo': 44,
-                 'SafeArrayGetRecordInfo': 45, 'VarParseNumFromStr': 46, 'VarNumFromParseNum': 47,
-                 'SafeArraySetIID': 57, 'SafeArrayGetIID': 67, 'SafeArrayGetVartype': 77,
-                 'VarI4FromStr': 64, 'VarR8FromStr': 84, 'VarDateFromStr': 94, 'VarBstrFromI4': 110,
-                 'VarBstrFromR8': 112, 'VarBstrFromDate': 114, 'VarBoolFromStr': 125,
-                 'DispCallFunc': 146, 'VariantChangeTypeEx': 147, 'SafeArrayPtrOfIndex': 148,
-                 'SysStringByteLen': 149, 'SysAllocStringByteLen': 150, 'LoadTypeLib': 161, 'LoadRegTypeLib': 162,
-                 'RegisterTypeLib': 163, 'QueryPathOfRegTypeLib': 164, 'LoadTypeLibEx': 183,
-                 'SystemTimeToVariantTime': 184, 'VariantTimeToSystemTime': 185, 'UnRegisterTypeLib': 186,
-                 'GetErrorInfo': 200, 'SetErrorInfo': 201, 'CreateErrorInfo': 202,
-                 'SafeArrayCreateVector': 411},
-    'ws2_32': {'accept': 1, 'bind': 2, 'closesocket': 3, 'connect': 4, 'getpeername': 5, 'getsockname': 6,
-               'getsockopt': 7, 'htonl': 8, 'htons': 9, 'ioctlsocket': 10, 'inet_addr': 11, 'inet_ntoa': 12,
-               'listen': 13, 'ntohl': 14, 'ntohs': 15, 'recv': 16, 'recvfrom': 17, 'select': 18, 'send': 19,
-               'sendto': 20, 'setsockopt': 21, 'shutdown': 22, 'socket': 23, 'gethostbyaddr': 51,
-               'gethostbyname': 52, 'getprotobyname': 53, 'getprotobynumber': 54, 'getservbyname': 55,
-               'getservbyport': 56, 'gethostname': 57, 'WSAAsyncSelect': 101, 'WSAAsyncGetHostByAddr': 102,
-               'WSAAsyncGetHostByName': 103, 'WSACancelAsyncRequest': 108, 'WSASetBlockingHook': 109,
-               'WSAUnhookBlockingHook': 110, 'WSAGetLastError': 111, 'WSASetLastError': 112,
-               'WSACancelBlockingCall': 113, 'WSAIsBlocking': 114, 'WSAStartup': 115, 'WSACleanup': 116,
-               '__WSAFDIsSet': 151},
-    'comctl32': {'MenuHelp': 2, 'ShowHideMenuCtl': 3, 'GetEffectiveClientRect': 4, 'DrawStatusTextA': 5,
-                 'CreateStatusWindowA': 6, 'CreateToolbar': 7, 'CreateMappedBitmap': 8, 'MakeDragList': 13,
-                 'LBItemFromPt': 14, 'DrawInsert': 15, 'CreateUpDownControl': 16, 'InitCommonControls': 17,
-                 'Str_SetPtrW': 236, 'DSA_Create': 320, 'DSA_Destroy': 321, 'DSA_GetItem': 322,
-                 'DSA_GetItemPtr': 323, 'DSA_InsertItem': 324, 'DSA_SetItem': 325, 'DSA_DeleteItem': 326,
-                 'DSA_DeleteAllItems': 327, 'DPA_Create': 328, 'DPA_Destroy': 329, 'DPA_Grow': 330,
-                 'DPA_Clone': 331, 'DPA_GetPtr': 332, 'DPA_GetPtrIndex': 333, 'DPA_InsertPtr': 334,
-                 'DPA_SetPtr': 335, 'DPA_DeletePtr': 336, 'DPA_DeleteAllPtrs': 337, 'DPA_Sort': 338,
-                 'DPA_Search': 339, 'DPA_CreateEx': 340, 'LoadIconMetric': 380, 'LoadIconWithScaleDown': 381,
-                 'DPA_DestroyCallback': 385, 'DSA_DestroyCallback': 386, 'SetWindowSubclass': 410,
-                 'GetWindowSubclass': 411, 'RemoveWindowSubclass': 412, 'DefSubclassProc': 413},
-    'shell32': {'SHChangeNotifyRegister': 2, 'SHChangeNotifyDeregister': 4, 'ILFindLastID': 16,
-                'ILRemoveLastID': 17, 'ILClone': 18, 'ILCloneFirst': 19, 'ILIsEqual': 21, 'ILCombine': 25,
-                'ILGetSize': 152, 'ILGetNext': 153, 'ILFree': 155, 'ILCreateFromPathW': 190,
-                'SHCreateDirectory': 165, 'IsUserAnAdmin': 680, 'SHGetImageList': 727},
-}
+    return objs
 
 def defined_names(objs):
     r = subprocess.run([llvm_tool('llvm-nm'), '--defined-only', '--extern-only'] + objs, capture_output=True, text=True)
@@ -356,7 +248,7 @@ def defined_names(objs):
 
 def ordinal_exports(name, objs):
     """/export:NAME,@N for each ordinal-table name the DLL defines"""
-    table = ORDINALS.get(name)
+    table = DLLS.get(name, {}).get('ordinals')
     if not table or ARCH == 'x86':                # x86: in the .def (x86_def)
         return []
     defined = defined_names(objs)
@@ -373,7 +265,7 @@ def x86_def(odir, name, objs):
             d = re.match(r'^_([A-Za-z_]\w*)@\d+$', m.group(1))
             if d and d.group(1) not in names:
                 names.append(d.group(1))
-    table = ORDINALS.get(name, {})
+    table = DLLS.get(name, {}).get('ordinals') or {}
     defined = defined_names(objs) if table else set()
     lines = [f'  {n} @{table[n]}' if n in table and n in defined else f'  {n}' for n in names]
     lines += [f'  {n} @{o}' for n, o in sorted(table.items(), key=lambda x: x[1]) if n in defined and n not in names]
@@ -381,23 +273,35 @@ def x86_def(odir, name, objs):
     open(path, 'w').write(f'LIBRARY {name}.dll\nEXPORTS\n' + '\n'.join(lines) + '\n')
     return ['/def:' + path]
 
+def image_size(dll):
+    """a PE file's SizeOfImage"""
+    import struct
+    data = open(dll, 'rb').read(4096)
+    pe = struct.unpack_from('<I', data, 0x3C)[0]
+    return struct.unpack_from('<I', data, pe + 24 + 56)[0]
+
 def link_dll(odir, name, objs, deps, base, extra=()):
     extra = list(extra) + ordinal_exports(name, objs)
     if ARCH == 'x86':
-        extra += (x86_def(odir, name, objs) if name != 'novatext' else []) + ['/safeseh:no', '/machine:x86']
+        extra += x86_def(odir, name, objs) + ['/safeseh:no', '/machine:x86']
     dll = os.path.join(odir, f'{name}.dll')
-    entry = ['/entry:DllMain'] if name in ('testdll', 'comctl32') else ['/noentry']
+    entry = [f'/entry:{DLLS[name]["entry"]}'] if DLLS.get(name, {}).get('entry') else ['/noentry']
     run(['lld-link', '/dll', '/nodefaultlib', f'/base:{base:#x}'] + entry +
         [f'/out:{dll}', f'/implib:{os.path.join(odir, name + ".lib")}', f'/map:{os.path.join(odir, name + ".map")}'] +
         objs + list(extra) +
         [os.path.join(odir, d + '.lib') for d in deps])
     sysdir = 'System32' if ARCH == 'x64' else 'SysWOW64'
     built.append((f'\\Windows\\{sysdir}\\{name}.dll', dll))
+    placed.append((base, base + image_size(dll), name))
 
-CXX_FROM_VCRUNTIME = ['_CxxThrowException', '__CxxFrameHandler', '__CxxFrameHandler2', '__CxxFrameHandler3',
-                      '_purecall', '__RTDynamicCast', '__RTtypeid', '__RTCastToVoid', 'set_unexpected', 'unexpected',
-                      '__uncaught_exception', '_set_se_translator', '_is_exception_typeof',
-                      '__DestructExceptionObject', '__AdjustPointer']
+def check_overlaps():
+    """no two DLLs of this pass loaded over each other (each needs its own
+    range: they are linked without relocation in mind)"""
+    spans = sorted(placed)
+    for (b0, e0, n0), (b1, e1, n1) in zip(spans, spans[1:]):
+        if b1 < e0:
+            raise SystemExit(f'{ARCH}: {n0}.dll ({b0:#x}-{e0:#x}) overlaps {n1}.dll at {b1:#x}; '
+                             f'move one (its dll.json base) or leave its base out')
 
 def build_pass(arch):
     """the DLLs and programs for one architecture"""
@@ -405,70 +309,53 @@ def build_pass(arch):
     ARCH = arch
     odir = out if arch == 'x64' else os.path.join(out, 'x86')
     os.makedirs(odir, exist_ok=True)
+    me = sys.modules[__name__]
 
     # startup code + implicit-TLS support (needed by DLLs and programs)
     crt0 = os.path.join(odir, 'crt0.obj')
     cc(os.path.join(HERE, 'crt', 'crt0.c'), crt0)
     tlssup = os.path.join(odir, 'tlssup.obj')
     cc(os.path.join(HERE, 'lib', 'tlssup.c'), tlssup)
-    common = [tlssup]
     if arch == 'x86':                              # 64-bit division helpers the compiler calls
         rt = os.path.join(odir, 'x86rt.obj')
         cc(os.path.join(HERE, 'lib', 'x86rt.c'), rt)
-        common = [tlssup, rt]
         crt0_objs = [crt0, rt]
     else:
         crt0_objs = [crt0]
 
-    # system DLLs
-    math_objs, math_names = musl_math_objs(odir)
-    bases = {n: b for n, _, b in DLLS} if arch == 'x64' else DLL_BASES_X86
-    for name, deps, _ in DLLS:
-        base = bases[name]
-        srcdirs = DLL_SOURCES.get(name, [name])
-        objs = dll_objs(odir, name, srcdirs)
-        extra = []
-        if name == 'secur32':
-            objs += mbedtls_objs(odir)
-        if name == 'novatext':
-            objs += novatext_objs(odir)
-            extra = novatext_def(odir, objs)
-        if name in ('testdll', 'ws2_32', 'ole32', 'oleaut32'):
+    # system DLLs (userland/*/dll.json), each after its dependencies
+    del placed[:]
+    for name, m in DLLS.items():
+        if arch == 'x86' and m.get('x64_only'):
+            continue
+        base = m['base'] if arch == 'x64' else m['base_x86']
+        deps = m.get('deps', [])
+        objs = dll_objs(odir, name, m.get('sources', [name]))
+        if hook(name, 'objs'):
+            objs += hook(name, 'objs')(me, odir)
+        if m.get('tlssup'):
             objs.append(tlssup)
         if arch == 'x86':
             objs.append(rt)
-        if name == 'msvcrt':
-            objs += math_objs
-            rsp = os.path.join(odir, 'crt_exports.rsp')
-            fwd = ['/export:__C_specific_handler=ntdll.__C_specific_handler'] if arch == 'x64' else \
-                  [f'/export:{n}=ntdll.{n}' for n in ('_except_handler2', '_except_handler3', '_except_handler4_common',
-                                                      '_global_unwind2', '_local_unwind2', '_local_unwind4')]
-            open(rsp, 'w').write('\n'.join([f'/export:{n}' for n in math_names] + fwd))
-            extra = ['@' + rsp]
-            crt_objs, crt_extra = objs, extra
-            objs = objs + [flavor_obj(odir, 1)]
-            # the old msvcrt.dll also carried the C++ runtime (7-Zip and other
-            # programs built against it import exceptions and RTTI from it)
-            rsp2 = os.path.join(odir, 'msvcrt_cxx.rsp')
-            cxx = CXX_FROM_VCRUNTIME + (['??1type_info@@UEAA@XZ', '??_7type_info@@6B@', '_local_unwind']
-                                        if arch == 'x64' else ['??1type_info@@UAE@XZ', '??_7type_info@@6B@'])
-            open(rsp2, 'w').write('\n'.join([f'/export:{n}=vcruntime140.{n}' for n in cxx] +
-                                            ['/export:?terminate@@YAXXZ=terminate']))
-            extra = extra + ['@' + rsp2]
-        link_dll(odir, name, objs, deps, base, extra)
-        if name == 'msvcrt':
-            # the Universal C Runtime: the same C runtime under its Windows 10 name
-            # (programs reach it through the api-ms-win-crt-* API sets)
-            link_dll(odir, 'ucrtbase', crt_objs + [flavor_obj(odir, 0)], deps,
-                     UCRT_BASE if arch == 'x64' else UCRT_BASE_X86, crt_extra)
+        rc = os.path.join(HERE, m.get('sources', [name])[0], name + '.rc')   # NAME.rc: resources (testdll's type library)
+        if os.path.exists(rc):
+            res = os.path.join(odir, name + '.res')
+            run([build_netsurf.llvm_rc()] + (['/D', 'NOVA_X86'] if arch == 'x86' else []) + ['/FO', res, rc])
+            objs.append(res)
+        if hook(name, 'link'):
+            hook(name, 'link')(me, odir, objs, deps, base)
+        else:
+            link_dll(odir, name, objs, deps, base)
+    check_overlaps()
 
-    # programs
+    # programs (userland/programs/NAME.c or .cpp, settings in NAME.json)
     progdir = os.path.join(HERE, 'programs')
     for src in sorted(os.listdir(progdir)):
         if not src.endswith(('.c', '.cpp')):
             continue
         name = src.rsplit('.', 1)[0]
-        if arch == 'x86' and name not in PROGRAMS_X86:
+        prog = PROGRAMS.get(name, {})
+        if arch == 'x86' and not prog.get('x86'):
             continue
         obj = os.path.join(odir, f'prog_{name}.obj')
         if src.endswith('.cpp'):                  # C++ (exceptions, RTTI): vcruntime140
@@ -482,18 +369,17 @@ def build_pass(arch):
         if os.path.exists(rc):
             res = [os.path.join(odir, f'prog_{name}.res')]
             run([build_netsurf.llvm_rc(), '/FO', res[0], rc])
-        libs = ['msvcrt', 'kernel32', 'ntdll', 'ws2_32', 'user32', 'gdi32', 'testdll', 'vcruntime140',
-                'advapi32', 'ole32', 'oleaut32', 'comctl32', 'shell32', 'msi', 'winmm'] + PROGRAM_LIBS.get(name, [])
+        libs = PROGRAM_LIBS + [l for l in prog.get('libs', []) if l not in PROGRAM_LIBS]
         run(['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib'] +
             (['/safeseh:no', '/machine:x86'] if arch == 'x86' else []) +
             [f'/out:{exe}'] + crt0_objs + [tlssup, obj] + res + [os.path.join(odir, l + '.lib') for l in libs])
         if arch == 'x86':
-            folder = '\\Windows\\SysWOW64' if name in SYSTEM_PROGRAMS else '\\Programs\\x86'
-            built.append((f'{folder}\\{name}.exe', exe))
+            folder = '\\Windows\\SysWOW64' if prog.get('system') else '\\Programs\\x86'
         else:
-            folder = '\\Windows\\System32' if name in SYSTEM_PROGRAMS else '\\Programs'
-            built.append((f'{folder}\\{name}.exe', exe))
+            folder = '\\Windows\\System32' if prog.get('system') else '\\Programs'
+        built.append((f'{folder}\\{name}.exe', exe))
 
+placed = []                       # (start, end, name) of each DLL linked in this pass
 built = []
 build_pass('x64')
 if os.environ.get('NOVA_NO_WOW64') != '1':

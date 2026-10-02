@@ -1,8 +1,8 @@
 /*
  * oleaut32.dll — OLE Automation: BSTR strings, VARIANTs and conversions,
- * SAFEARRAYs, variant dates and per-thread error info.  Type libraries and
- * the standard IDispatch implementation (which needs them) are not
- * provided: those calls fail with TYPE_E_CANTLOADLIBRARY / E_NOTIMPL.
+ * SAFEARRAYs, variant dates and per-thread error info.  Type libraries are
+ * in typelib.c and typeinfo.c, Invoke, DispCallFunc and the standard
+ * IDispatch in invoke.c.
  */
 
 #define NOVA_BUILD_OLEAUT32
@@ -1078,52 +1078,6 @@ WINOLEAUTAPI_(HRESULT) GetErrorInfo(ULONG reserved, IErrorInfo **out)
     *out = t_error;
     t_error = 0;
     return *out ? S_OK : S_FALSE;
-}
-
-/* ---------------------------------------------------------------------------
- * Type libraries and the standard dispatch: not available
- * ------------------------------------------------------------------------- */
-WINOLEAUTAPI_(HRESULT) LoadTypeLib(LPCOLESTR file, ITypeLib **out) { (void)file; if (out) *out = 0; return TYPE_E_CANTLOADLIBRARY; }
-WINOLEAUTAPI_(HRESULT) LoadTypeLibEx(LPCOLESTR file, int kind, ITypeLib **out) { (void)kind; return LoadTypeLib(file, out); }
-WINOLEAUTAPI_(HRESULT) LoadRegTypeLib(REFGUID g, WORD maj, WORD min, LCID lcid, ITypeLib **out)
-{
-    (void)g; (void)maj; (void)min; (void)lcid;
-    if (out) *out = 0;
-    return TYPE_E_LIBNOTREGISTERED;
-}
-WINOLEAUTAPI_(HRESULT) RegisterTypeLib(ITypeLib *tl, LPCOLESTR path, LPCOLESTR help) { (void)tl; (void)path; (void)help; return E_NOTIMPL; }
-WINOLEAUTAPI_(HRESULT) RegisterTypeLibForUser(ITypeLib *tl, LPOLESTR path, LPOLESTR help) { (void)tl; (void)path; (void)help; return E_NOTIMPL; }
-WINOLEAUTAPI_(HRESULT) UnRegisterTypeLib(REFGUID g, WORD maj, WORD min, LCID lcid, int kind)
-{
-    (void)g; (void)maj; (void)min; (void)lcid; (void)kind;
-    return TYPE_E_LIBNOTREGISTERED;
-}
-WINOLEAUTAPI_(HRESULT) UnRegisterTypeLibForUser(REFGUID g, WORD maj, WORD min, LCID lcid, int kind)
-{
-    return UnRegisterTypeLib(g, maj, min, lcid, kind);
-}
-WINOLEAUTAPI_(HRESULT) QueryPathOfRegTypeLib(REFGUID g, USHORT maj, USHORT min, LCID lcid, BSTR *path)
-{
-    (void)g; (void)maj; (void)min; (void)lcid;
-    if (path) *path = 0;
-    return TYPE_E_LIBNOTREGISTERED;
-}
-WINOLEAUTAPI_(HRESULT) CreateStdDispatch(IUnknown *outer, void *obj, ITypeInfo *ti, IUnknown **out)
-{
-    (void)outer; (void)obj; (void)ti;
-    if (out) *out = 0;
-    return E_NOTIMPL;
-}
-WINOLEAUTAPI_(HRESULT) DispGetIDsOfNames(ITypeInfo *ti, LPOLESTR *names, UINT n, DISPID *ids)
-{
-    (void)ti; (void)names;
-    for (UINT i = 0; ids && i < n; i++) ids[i] = DISPID_UNKNOWN;
-    return DISP_E_UNKNOWNNAME;
-}
-WINOLEAUTAPI_(HRESULT) DispInvoke(void *obj, ITypeInfo *ti, DISPID id, WORD flags, DISPPARAMS *p, VARIANT *res, EXCEPINFO *ei, UINT *argerr)
-{
-    (void)obj; (void)ti; (void)id; (void)flags; (void)p; (void)res; (void)ei; (void)argerr;
-    return DISP_E_MEMBERNOTFOUND;
 }
 
 /* DispGetParam: argument @pos (0 = first), converted to @vt */

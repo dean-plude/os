@@ -1,0 +1,13 @@
+## Phase 5 — Process Isolation & User-Mode Foundation
+- Per-process page tables: each user process gets its own PML4 (`paging_create_process_pt`)
+- User-space mappings snapshotted into process PML4 at creation (`paging_clone_user_mappings`)
+- CR3 switch on every context switch in the scheduler (`perform_switch`)
+- KPCR (Kernel Processor Control Region): per-CPU GS-relative structure
+  - `KPCR.KernelRsp` holds the current thread's kernel stack top for the SYSCALL path
+  - Updated by the scheduler on every context switch
+- SWAPGS: on SYSCALL entry, GS → KPCR; on SYSRET, GS → user TEB
+- Kernel stack switch: `syscall_entry.asm` loads `gs:[KPCR_KERNEL_RSP]` before entering C
+- PEB64/TEB64 allocation: `PsAllocatePebTeb` maps one page each at fixed user VAs
+  - TEB.NtTib.Self initialized (GS:[0x30] self-pointer)
+  - TEB.ClientId (PID/TID) and PEB.ImageBaseAddress set
+- User GS base (`MSR_GS_BASE`) set to TEB VA before IRETQ so SWAPGS works on first syscall

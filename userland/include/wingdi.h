@@ -205,6 +205,7 @@ GDIAPI HGDIOBJ  GetCurrentObject(HDC dc, UINT type);
 GDIAPI HRGN     CreateRectRgn(int l, int t, int r, int b);
 GDIAPI int      SelectClipRgn(HDC dc, HRGN r);
 GDIAPI BOOL     SetViewportOrgEx(HDC dc, int x, int y, LPPOINT old);
+GDIAPI BOOL     OffsetViewportOrgEx(HDC dc, int x, int y, LPPOINT old);
 GDIAPI COLORREF GetPixel(HDC dc, int x, int y);
 GDIAPI COLORREF SetTextColor(HDC dc, COLORREF c);
 GDIAPI COLORREF SetBkColor(HDC dc, COLORREF c);

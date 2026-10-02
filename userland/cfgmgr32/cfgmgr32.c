@@ -88,3 +88,15 @@ CFGMGR32 DWORD WINAPI CM_MapCrToWin32Err(CONFIGRET cr, DWORD dflt)
     default:                 return dflt;
     }
 }
+
+/* Device arrival/removal notifications: with no device tree nothing ever
+ * arrives, so a registration is a token that is never called back */
+static LONG g_notify_tokens;
+CFGMGR32 CONFIGRET WINAPI CM_Register_Notification(PVOID filter, PVOID ctx, PVOID callback, HANDLE *out)
+{
+    (void)filter; (void)ctx;
+    if (!callback || !out) return CR_INVALID_POINTER;
+    *out = (HANDLE)(ULONG_PTR)(0x10000 + 4 * (ULONG)InterlockedIncrement(&g_notify_tokens));
+    return CR_SUCCESS;
+}
+CFGMGR32 CONFIGRET WINAPI CM_Unregister_Notification(HANDLE h) { (void)h; return CR_SUCCESS; }

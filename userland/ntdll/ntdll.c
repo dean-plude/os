@@ -26,6 +26,7 @@
 #define STUB(name, num)                                                     \
     __asm__(".globl " #name "\n"                                            \
             ".section .text$" #name ",\"xr\"\n"                             \
+            ".p2align 4\n"                                                  \
             #name ":\n\t"                                                   \
             ".byte 0x4C, 0x8B, 0xD1\n\t"          /* mov r10, rcx */         \
             ".byte 0xB8\n\t.long " #num "\n\t"    /* mov eax, num */         \
@@ -80,6 +81,8 @@ XSTUB(NtQuerySystemTime,            SYS_NtQuerySystemTime)
 XSTUB(NtQueryPerformanceCounter,    SYS_NtQueryPerformanceCounter)
 XSTUB(NtDelayExecution,             SYS_NtDelayExecution)
 XSTUB(NtYieldExecution,             SYS_NtYieldExecution)
+XSTUB(NtWaitForAlertByThreadId,     SYS_NtWaitForAlertByThreadId)
+XSTUB(NtAlertThreadByThreadId,      SYS_NtAlertThreadByThreadId)
 XSTUB(NtCreateThreadEx,             SYS_NtCreateThreadEx)
 XSTUB(NtTerminateThread,            SYS_NtTerminateThread)
 XSTUB(NtResumeThread,               SYS_NtResumeThread)
@@ -87,6 +90,7 @@ XSTUB(NtSuspendThread,              SYS_NtSuspendThread)
 XSTUB(NtQueryInformationThread,     SYS_NtQueryInformationThread)
 XSTUB(NtSetInformationThread,       SYS_NtSetInformationThread)
 XSTUB(NtQueryInformationProcess,    SYS_NtQueryInformationProcess)
+XSTUB(NtSetInformationProcess,      SYS_NtSetInformationProcess)
 XSTUB(NtCreateEvent,                SYS_NtCreateEvent)
 XSTUB(NtOpenEvent,                  SYS_NtOpenEvent)
 XSTUB(NtCreateSection,              SYS_NtCreateSection)
@@ -125,6 +129,8 @@ XSTUB(NtCancelTimer,                SYS_NtCancelTimer)
 XSTUB(NtQueryTimer,                 SYS_NtQueryTimer)
 XSTUB(NtQueryEvent,                 SYS_NtQueryEvent)
 XSTUB(NtQuerySemaphore,             SYS_NtQuerySemaphore)
+XSTUB(NtQuerySection,               SYS_NtQuerySection)
+XSTUB(NtQueryFullAttributesFile,    SYS_NtQueryFullAttributesFile)
 XSTUB(NtOpenThread,                 SYS_NtOpenThread)
 XSTUB(NtMapViewOfSectionEx,         SYS_NtMapViewOfSectionEx)
 XSTUB(NtCompareObjects,             SYS_NtCompareObjects)
@@ -167,6 +173,18 @@ XSTUB(NtNovaGuiMessageBox,             SYS_NtNovaGuiMessageBox)
 XSTUB(NtNovaGuiScreenSize,             SYS_NtNovaGuiScreenSize)
 XSTUB(NtNovaGuiPostMessage,            SYS_NtNovaGuiPostMessage)
 XSTUB(NtNovaGuiCtl,                    SYS_NtNovaGuiCtl)
+XSTUB(NtAccessCheck,                    SYS_NtAccessCheck)
+XSTUB(NtOpenProcessToken,               SYS_NtOpenProcessToken)
+XSTUB(NtOpenProcessTokenEx,             SYS_NtOpenProcessTokenEx)
+XSTUB(NtOpenThreadToken,                SYS_NtOpenThreadToken)
+XSTUB(NtOpenThreadTokenEx,              SYS_NtOpenThreadTokenEx)
+XSTUB(NtDuplicateToken,                 SYS_NtDuplicateToken)
+XSTUB(NtFilterToken,                    SYS_NtFilterToken)
+XSTUB(NtQueryInformationToken,          SYS_NtQueryInformationToken)
+XSTUB(NtQuerySecurityObject,            SYS_NtQuerySecurityObject)
+XSTUB(NtSetSecurityObject,              SYS_NtSetSecurityObject)
+XSTUB(NtImpersonateAnonymousToken,      SYS_NtImpersonateAnonymousToken)
+XSTUB(NtNotifyChangeKey,                SYS_NtNotifyChangeKey)
 #endif
 
 /* -----------------------------------------------------------------------
@@ -211,6 +229,113 @@ __declspec(dllexport) size_t strlen(const char *s)
     const char *p = s;
     while (*p) p++;
     return (size_t)(p - s);
+}
+
+static int lc(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+__declspec(dllexport) int _strnicmp(const char *a, const char *b, size_t n)
+{
+    for (; n; n--, a++, b++) {
+        int x = lc((unsigned char)*a), y = lc((unsigned char)*b);
+        if (x != y || !x) return x - y;
+    }
+    return 0;
+}
+
+__declspec(dllexport) int _stricmp(const char *a, const char *b) { return _strnicmp(a, b, (size_t)-1); }
+
+__declspec(dllexport) void *memchr(const void *s, int c, size_t n)
+{
+    const unsigned char *p = s;
+    for (; n; n--, p++) if (*p == (unsigned char)c) return (void *)p;
+    return 0;
+}
+
+__declspec(dllexport) char *strcpy(char *d, const char *s)
+{
+    char *r = d;
+    while ((*d++ = *s++)) {}
+    return r;
+}
+
+__declspec(dllexport) char *strrchr(const char *s, int c)
+{
+    const char *r = 0;
+    do { if (*s == (char)c) r = s; } while (*s++);
+    return (char *)r;
+}
+
+__declspec(dllexport) size_t wcslen(const WCHAR *s)
+{
+    const WCHAR *p = s;
+    while (*p) p++;
+    return (size_t)(p - s);
+}
+
+__declspec(dllexport) WCHAR *wcschr(const WCHAR *s, WCHAR c)
+{
+    do { if (*s == c) return (WCHAR *)s; } while (*s++);
+    return 0;
+}
+
+__declspec(dllexport) WCHAR *wcscpy(WCHAR *d, const WCHAR *s)
+{
+    WCHAR *r = d;
+    while ((*d++ = *s++)) {}
+    return r;
+}
+
+__declspec(dllexport) int wcscpy_s(WCHAR *d, size_t n, const WCHAR *s)
+{
+    if (!d || !n) return 22;                       /* EINVAL */
+    if (!s) { d[0] = 0; return 22; }
+    size_t len = wcslen(s);
+    if (len >= n) { d[0] = 0; return 34; }         /* ERANGE */
+    for (size_t i = 0; i <= len; i++) d[i] = s[i];
+    return 0;
+}
+
+__declspec(dllexport) int wcsncmp(const WCHAR *a, const WCHAR *b, size_t n)
+{
+    for (; n; n--, a++, b++) if (*a != *b || !*a) return (int)*a - (int)*b;
+    return 0;
+}
+
+__declspec(dllexport) WCHAR *wcspbrk(const WCHAR *s, const WCHAR *set)
+{
+    for (; *s; s++) for (const WCHAR *t = set; *t; t++) if (*s == *t) return (WCHAR *)s;
+    return 0;
+}
+
+__declspec(dllexport) WCHAR *wcstok_s(WCHAR *s, const WCHAR *delim, WCHAR **ctx)
+{
+    if (!s) s = *ctx;
+    while (*s && wcschr(delim, *s)) s++;
+    if (!*s) { *ctx = s; return 0; }
+    WCHAR *tok = s;
+    while (*s && !wcschr(delim, *s)) s++;
+    if (*s) *s++ = 0;
+    *ctx = s;
+    return tok;
+}
+
+__declspec(dllexport) unsigned long wcstoul(const WCHAR *s, WCHAR **end, int base)
+{
+    const WCHAR *p = s;
+    unsigned long v = 0;
+    int neg = 0;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p == '-' || *p == '+') neg = *p++ == '-';
+    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) { p += 2; base = 16; }
+    else if (base == 0) base = p[0] == '0' ? 8 : 10;
+    const WCHAR *start = p;
+    for (;; p++) {
+        int d = *p >= '0' && *p <= '9' ? *p - '0' : lc(*p) >= 'a' && lc(*p) <= 'z' ? lc(*p) - 'a' + 10 : 99;
+        if (d >= base) break;
+        v = v * (unsigned long)base + (unsigned long)d;
+    }
+    if (end) *end = (WCHAR *)(p == start ? s : p);
+    return neg ? (unsigned long)-(long)v : v;
 }
 
 /* -----------------------------------------------------------------------
@@ -315,6 +440,12 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
     case 0xC0000103: return ERROR_INVALID_NAME;           /* not a directory */
     case 0xC000011F: return ERROR_TOO_MANY_OPEN_FILES;
     case 0xC0000121: return ERROR_ACCESS_DENIED;
+    case 0xC0000024: return 6;                            /* OBJECT_TYPE_MISMATCH: ERROR_INVALID_HANDLE */
+    case 0xC000005C: return 1309;                         /* ERROR_NO_IMPERSONATION_TOKEN */
+    case 0xC0000078: return 1337;                         /* ERROR_INVALID_SID */
+    case 0xC0000079: return 1338;                         /* ERROR_INVALID_SECURITY_DESCR */
+    case 0xC000007C: return 1008;                         /* ERROR_NO_TOKEN */
+    case 0xC00000A8: return 1349;                         /* ERROR_BAD_TOKEN_TYPE */
     }
     return ERROR_INVALID_FUNCTION;
 }
@@ -488,6 +619,50 @@ NTSYSAPI SIZE_T NTAPI RtlSizeHeap(PVOID heap, ULONG flags, const VOID *p)
     return p ? ((const Block *)p - 1)->size : (SIZE_T)-1;
 }
 
+/* Private heaps share the process heap (HeapCreate does the same) */
+NTSYSAPI PVOID NTAPI RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserve, SIZE_T commit, PVOID lock, PVOID params)
+{
+    (void)flags; (void)base; (void)reserve; (void)commit; (void)lock; (void)params;
+    return RtlGetProcessHeap();
+}
+
+NTSYSAPI PVOID NTAPI RtlDestroyHeap(PVOID heap) { (void)heap; return 0; }
+
+/* The heap Windows shares with csrss.exe. Nothing allocates from it, but
+ * Chromium's sandbox finds it by its header (the segment and heap
+ * signatures, and heap class 8 in Flags) and destroys it before cutting a
+ * content process off from csrss, and gives up if it isn't there. */
+static __attribute__((aligned(16))) UCHAR csr_port_heap[0x100];
+
+static int csr_ready;
+
+static PVOID csr_heap(void)
+{
+    UCHAR *h = csr_port_heap;
+    if (!csr_ready) {
+        csr_ready = 1;
+#ifdef _WIN64
+        *(ULONG *)(h + 0x10) = 0xFFEEFFEE;          /* SegmentSignature */
+        *(PVOID *)(h + 0x28) = h;                   /* Heap */
+        *(ULONG *)(h + 0x70) = 0x8000 | 0x2;        /* Flags: HEAP_CLASS_8 | HEAP_GROWABLE */
+        *(ULONG *)(h + 0x98) = 0xEEFFEEFF;          /* Signature */
+#else
+        *(ULONG *)(h + 0x08) = 0xFFEEFFEE;
+        *(PVOID *)(h + 0x18) = h;
+        *(ULONG *)(h + 0x40) = 0x8000 | 0x2;
+        *(ULONG *)(h + 0x60) = 0xEEFFEEFF;
+#endif
+    }
+    return h;
+}
+
+NTSYSAPI ULONG NTAPI RtlGetProcessHeaps(ULONG n, PVOID *heaps)
+{
+    if (heaps && n >= 1) heaps[0] = RtlGetProcessHeap();
+    if (heaps && n >= 2) heaps[1] = csr_heap();
+    return 2;
+}
+
 NTSYSAPI PVOID NTAPI RtlReAllocateHeap(PVOID heap, ULONG flags, PVOID p, SIZE_T n)
 {
     if (!p) return RtlAllocateHeap(heap, flags, n);
@@ -498,4 +673,24 @@ NTSYSAPI PVOID NTAPI RtlReAllocateHeap(PVOID heap, ULONG flags, PVOID p, SIZE_T 
     memcpy(q, p, old < n ? old : n);
     RtlFreeHeap(heap, 0, p);
     return q;
+}
+
+/* Signal one object, then wait on another (the sandbox IPC client uses it) */
+NTSTATUS NTAPI NtSetEvent(HANDLE, PLONG);
+NTSTATUS NTAPI NtReleaseMutant(HANDLE, PLONG);
+NTSTATUS NTAPI NtReleaseSemaphore(HANDLE, LONG, PLONG);
+NTSYSAPI NTSTATUS NTAPI NtSignalAndWaitForSingleObject(HANDLE sig, HANDLE wait, BOOLEAN alertable, PLARGE_INTEGER timeout)
+{
+    if (!NT_SUCCESS(NtSetEvent(sig, 0)) && !NT_SUCCESS(NtReleaseMutant(sig, 0))) {
+        NTSTATUS s = NtReleaseSemaphore(sig, 1, 0);
+        if (!NT_SUCCESS(s)) return s;
+    }
+    return NtWaitForSingleObject(wait, alertable, timeout);
+}
+
+/* AppContainer capability SIDs: NovaOS has no AppContainers */
+NTSYSAPI NTSTATUS NTAPI RtlDeriveCapabilitySidsFromName(PVOID name, PVOID group_sid, PVOID sid)
+{
+    (void)name; (void)group_sid; (void)sid;
+    return 0xC00000BB;                             /* STATUS_NOT_SUPPORTED */
 }
