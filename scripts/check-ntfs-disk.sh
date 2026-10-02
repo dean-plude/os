@@ -3,9 +3,10 @@
 #
 # Usage: check-ntfs-disk.sh <disk.img>
 #
-# Runs ntfsfix -n (ntfs-3g) and scripts/ntfs-check.py (a chkdsk-style check
-# of bitmaps, records, indexes and link counts) on the NTFS partition, then
-# checks the files drivetest leaves in D:\WriteTest.  Needs ntfs-3g.
+# Runs ntfsfix -n and ntfssecaudit -a (ntfs-3g) and scripts/ntfs-check.py (a
+# chkdsk-style check of bitmaps, records, indexes, link counts and $Secure)
+# on the NTFS partition, then checks the files drivetest leaves in
+# D:\WriteTest.  Needs ntfs-3g.
 set -euo pipefail
 
 IMG="${1:?usage: check-ntfs-disk.sh <disk.img>}"
@@ -16,6 +17,7 @@ trap 'rm -rf "$WORK"' EXIT
 # The partition starts at LBA 2048 (make-ntfs-disk.sh)
 dd if="$IMG" of="$WORK/vol.img" bs=1M skip=1 status=none
 ntfsfix -n "$WORK/vol.img"
+ntfssecaudit -a "$WORK/vol.img" | tail -1 | grep -q "No errors were found" || { echo "ntfssecaudit found errors"; exit 1; }
 python3 "$HERE/ntfs-check.py" "$WORK/vol.img"
 test "$(ntfscat "$WORK/vol.img" WriteTest/kept.txt)" = "$(printf 'Written by NovaOS\r')"
 python3 - "$WORK/vol.img" <<'PY'

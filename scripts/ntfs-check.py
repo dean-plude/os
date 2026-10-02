@@ -105,11 +105,12 @@ for i in range(nrec):
     if struct.unpack_from('<I', r, 0x1C)[0] != rec_size: err(f'record {i}: allocated size field')
     at = attrs(r)
     if at is None: err(f'record {i}: attribute list corrupt'); continue
-    prev = 0
+    prev = (0, [])
     insts = set()
     for t, n, a in at:
-        if t < prev: err(f'record {i}: attributes out of order')
-        prev = t
+        k = (t, [up[ord(c)] if ord(c) < len(up) else ord(c) for c in n])
+        if k < prev: err(f'record {i}: attributes out of order (type, then name)')
+        prev = k
         inst = struct.unpack_from('<H', a, 0xE)[0]
         if inst in insts: err(f'record {i}: duplicate attribute instance {inst}')
         insts.add(inst)
@@ -233,6 +234,69 @@ for m, (r, at, fns) in recs.items():
         p = struct.unpack_from('<Q', fn, 0)[0] & ((1 << 48) - 1)
         name = key(fn).decode('utf-16le', 'replace')
         if (m, p, name) not in indexed and m != 5: err(f'record {m}: name {name} not in directory {p} index')
+
+# $Secure: $SII by id and $SDH by hash then id agree with the $SDS stream
+def view_index(d, name):
+    at = recs[d][1]
+    roots = [a for t, n, a in at if t == 0x90 and n == name]
+    if not roots: err(f'record {d}: no {name} index'); return []
+    rv = value(roots[0])
+    bsize = struct.unpack_from('<I', rv, 8)[0]
+    vunit = cl if bsize >= cl else 512
+    allocs = [a for t, n, a in at if t == 0xA0 and n == name]
+    bms = [a for t, n, a in at if t == 0xB0 and n == name]
+    alloc = value(allocs[0]) if allocs else b''
+    ibm = value(bms[0]) if bms else b''
+    out, depths = [], set()
+    def node(hdr, depth):
+        first, used = struct.unpack_from('<II', hdr, 0)
+        o = first
+        while o + 0x10 <= used:
+            e = hdr[o:]
+            doff, dlen, _, elen, klen, fl = struct.unpack_from('<HHIHHH', e, 0)
+            if fl & 1:
+                off = struct.unpack_from('<Q', e, elen - 8)[0] * vunit
+                blk = fixup(alloc[off:off+bsize], b'INDX') if off + bsize <= len(alloc) else None
+                if blk is None or not bit(ibm, off // bsize): err(f'{name}: bad subnode')
+                else: node(blk[0x18:], depth + 1)
+            if fl & 2:
+                if not fl & 1: depths.add(depth)
+                return
+            out.append((e[0x10:0x10+klen], e[doff:doff+dlen]))
+            o += elen
+        err(f'{name}: no END entry')
+    node(rv[0x10:], 0)
+    if len(depths) > 1: err(f'{name}: leaves at depths {depths}')
+    return out
+if 9 in recs:
+    sdsa = [a for t, n, a in recs[9][1] if t == 0x80 and n == '$SDS']
+    sds = value(sdsa[0]) if sdsa else b''
+    sii, sdh = view_index(9, '$SII'), view_index(9, '$SDH')
+    ids = {}
+    for i, (k, dat) in enumerate(sii):
+        sid = struct.unpack_from('<I', k)[0]
+        if i and struct.unpack_from('<I', sii[i-1][0])[0] >= sid: err('$SII: out of order')
+        h, sid2, off, ln = struct.unpack_from('<IIQI', dat)
+        if sid2 != sid: err(f'$SII {sid:#x}: data names id {sid2:#x}')
+        ent = sds[off:off+ln]
+        if ent[:0x14] != dat[:0x14]: err(f'$SII {sid:#x}: $SDS header at {off:#x} differs')
+        if sds[off+0x40000:off+0x40000+ln] != ent: err(f'$SII {sid:#x}: $SDS mirror differs')
+        if (off % 0x80000) + ln > 0x40000: err(f'$SII {sid:#x}: crosses a 256 KiB block')
+        sd = ent[0x14:]
+        hh = 0
+        for j in range(0, len(sd) - 3, 4): hh = (((hh << 3) | (hh >> 29)) + struct.unpack_from('<I', sd, j)[0]) & 0xFFFFFFFF
+        if hh != h: err(f'$SII {sid:#x}: hash')
+        ids[sid] = dat[:0x14]
+    keys = [struct.unpack_from('<II', k) for k, _ in sdh]
+    if keys != sorted(keys): err('$SDH: out of order')
+    if len(sdh) != len(sii): err(f'$SDH has {len(sdh)} entries, $SII {len(sii)}')
+    for (h, sid), (k, dat) in zip(keys, sdh):
+        if ids.get(sid) != dat[:0x14]: err(f'$SDH {h:#x}/{sid:#x}: not as in $SII')
+    for m, (r, at, fns) in recs.items():
+        si = [a for t, n, a in at if t == 0x10]
+        if si and len(value(si[0])) >= 0x48:
+            sid = struct.unpack_from('<I', value(si[0]), 0x34)[0]
+            if sid and sid not in ids: err(f'record {m}: security id {sid:#x} not in $Secure')
 
 lf = [a for t, n, a in recs[2][1] if t == 0x80][0]
 page = rd(runs(lf)[0][1] * cl, 512)

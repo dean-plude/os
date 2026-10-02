@@ -24,6 +24,7 @@
 #include "../wm/clipboard.h"
 #include "../wm/desktop.h"
 #include "../hal/aml.h"
+#include "../fs/fsec.h"
 
 #define ST_SUCCESS                 0x00000000u
 #define ST_PENDING                 0x00000103u
@@ -135,6 +136,7 @@ static void um_lock_free_init(void)
 
 static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode **root);
 static UINT32 g_oa_attrs;               /* Attributes of the last get_path (under the big lock) */
+static UINT64 g_oa_sd;                  /* and its SecurityDescriptor */
 
 /* Terminal "trace NAME": log the failing system calls of programs named
  * NAME (a debugging aid for Windows programs that misbehave) */
@@ -369,6 +371,7 @@ static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode 
         return UM_STATUS_ACCESS_VIOLATION;
     w2u(w, len, out, cap);
     g_oa_attrs = (UINT32)oa[3];
+    g_oa_sd = oa[4];
     if (oa[1]) {                                        /* relative to \Device\NamedPipe\ */
         UmHandle *h = handle(p, oa[1]);
         if (h && h->kind == H_NULL && h->npfs) {
@@ -445,6 +448,58 @@ static RamNode *parent_of(RamNode *root, char *path, const char **leaf)
 #define FILE_WRITE_DATA   0x0002u
 #define FILE_APPEND_DATA  0x0004u
 
+#define ST_BUFFER_TOO_SMALL 0xC0000023u
+
+/* A security descriptor from user memory (self-relative, or absolute in
+ * the x64 layout) as a self-relative copy (no SACL); NULL if not valid */
+static UINT8 *user_sd(UINT64 ptr, UINT32 *out_len)
+{
+    UINT8 hdr[20];
+    if (!ptr || !NT_SUCCESS(CopyFromUser(hdr, (const void *)(uintptr_t)ptr, 20)) || hdr[0] != 1) return NULL;
+    UINT16 ctl;
+    memcpy(&ctl, hdr + 2, 2);
+    UINT64 at[4];                                           /* owner, group, SACL, DACL: where they are */
+    if (ctl & 0x8000) {
+        for (int i = 0; i < 4; i++) { UINT32 o; memcpy(&o, hdr + 4 + 4 * i, 4); at[i] = o ? ptr + o : 0; }
+    } else {
+        UINT64 abs[5];
+        if (!NT_SUCCESS(CopyFromUser(abs, (const void *)(uintptr_t)ptr, 40))) return NULL;
+        memcpy(at, abs + 1, sizeof(at));
+    }
+    if (!(ctl & 0x0004)) at[3] = 0;                         /* no DACL present */
+    UINT32 len[4] = { 0, 0, 0, 0 }, total = 20;
+    for (int i = 0; i < 4; i++) {
+        UINT8 part[8];
+        if (i == 2 || !at[i]) continue;                     /* (the SACL is not kept) */
+        if (!NT_SUCCESS(CopyFromUser(part, (const void *)(uintptr_t)at[i], 8))) return NULL;
+        len[i] = i < 2 ? 8u + 4u * part[1] : (UINT32)(part[2] | part[3] << 8);
+        if (len[i] < 8 || len[i] > 0x10000) return NULL;
+        total += len[i];
+    }
+    UINT8 *sd = kzalloc(total);
+    if (!sd) return NULL;
+    sd[0] = 1;
+    UINT16 nctl = (UINT16)(0x8000 | (ctl & 0x0004) | (ctl & 0x1400));    /* self-relative; DACL present, protected, auto-inherited */
+    memcpy(sd + 2, &nctl, 2);
+    UINT32 o = 20;
+    static const int slot[4] = { 4, 8, 12, 16 };
+    for (int i = 0; i < 4; i++) {
+        if (!len[i]) continue;
+        if (!NT_SUCCESS(CopyFromUser(sd + o, (const void *)(uintptr_t)at[i], len[i]))) { kfree(sd); return NULL; }
+        memcpy(sd + slot[i], &o, 4);
+        o += len[i];
+    }
+    if (!FsecValid(sd, total, NULL)) { kfree(sd); return NULL; }
+    *out_len = total;
+    return sd;
+}
+
+/* The user may delete @n: DELETE on it, or DELETE_CHILD on its directory */
+static bool may_delete(RamNode *n)
+{
+    return FsecAccess(n, FSEC_DELETE, NULL) || (n->parent && FsecAccess(n->parent, FSEC_DELETE_CHILD, NULL));
+}
+
 static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 iosb_ptr,
                         UINT32 disposition, UINT32 options)
 {
@@ -503,6 +558,19 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
         return iosb(iosb_ptr, disposition == 2 ? ST_OBJECT_NAME_COLLISION : ST_MEDIA_WRITE_PROTECTED, 0);
     }
     if (node && !RamfsLoad(node)) { DesktopUnlock(); return iosb(iosb_ptr, ST_DISK_CORRUPT, 0); }
+    if (node && disposition != 2) {                             /* what its security descriptor allows */
+        UINT32 want = access, granted;
+        if (!node->dir && (disposition == 0 || disposition == 4 || disposition == 5)) want |= FILE_WRITE_DATA;
+        if (options & 0x1000) want |= FSEC_DELETE;
+        bool ok = FsecAccess(node, want, &granted);
+        if (!ok && (want & FSEC_DELETE) && node->parent && FsecAccess(node->parent, FSEC_DELETE_CHILD, NULL))
+            ok = FsecAccess(node, want & ~FSEC_DELETE, &granted);
+        if (!ok) { DesktopUnlock(); return iosb(iosb_ptr, ST_ACCESS_DENIED, 0); }
+        if (access & FSEC_MAXIMUM_ALLOWED) {
+            rd = rd || (granted & FILE_READ_DATA);
+            wr = wr || (!RamfsReadOnly(node) && (granted & (FILE_WRITE_DATA | FILE_APPEND_DATA)));
+        }
+    }
     if (node) {
         if (disposition == 2) { DesktopUnlock(); return iosb(iosb_ptr, ST_OBJECT_NAME_COLLISION, 4); }
         if (want_file && node->dir) { DesktopUnlock(); return iosb(iosb_ptr, ST_FILE_IS_A_DIRECTORY, 0); }
@@ -523,8 +591,16 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
         if (!dir || !dir->dir) { DesktopUnlock(); return iosb(iosb_ptr, ST_OBJECT_PATH_NOT_FOUND, 0); }
         if (!*leaf) { DesktopUnlock(); return iosb(iosb_ptr, ST_OBJECT_NAME_INVALID, 0); }
         if (RamfsReadOnly(dir)) { DesktopUnlock(); return iosb(iosb_ptr, ST_MEDIA_WRITE_PROTECTED, 0); }
+        if (!FsecAccess(dir, want_dir ? FSEC_ADD_SUBDIRECTORY : FSEC_ADD_FILE, NULL)) {
+            DesktopUnlock();
+            return iosb(iosb_ptr, ST_ACCESS_DENIED, 0);
+        }
+        UINT32 sdlen = 0;
+        UINT8 *sd = g_oa_sd ? user_sd(g_oa_sd, &sdlen) : NULL;  /* (one given: the new file's own) */
         node = RamfsCreate(dir, leaf, want_dir);
-        if (!node) { DesktopUnlock(); return iosb(iosb_ptr, ST_DISK_FULL, 0); }
+        if (!node) { kfree(sd); DesktopUnlock(); return iosb(iosb_ptr, ST_DISK_FULL, 0); }
+        if (sd && !RamfsReadOnly(node) && !node->sd) FsecSet(node, 7, sd, sdlen);
+        kfree(sd);
         info = 2;                                               /* FILE_CREATED */
     }
     um_lock(&p->lock);
@@ -961,6 +1037,10 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
         if (!dir || !dir->dir) return iosb(a2, ST_OBJECT_PATH_NOT_FOUND, 0);
         RamNode *old = RamfsFind(dir, leaf);
         if (old && old != h->node && !(hdr[0] & 0xFF)) return iosb(a2, 0xC0000035u, 0);   /* NAME_COLLISION */
+        if (!may_delete(h->node) ||                             /* (renaming takes DELETE, as on Windows) */
+            !FsecAccess(dir, h->node->dir ? FSEC_ADD_SUBDIRECTORY : FSEC_ADD_FILE, NULL) ||
+            (old && old != h->node && !may_delete(old)))
+            return iosb(a2, ST_ACCESS_DENIED, 0);
         if (!RamfsRename(h->node, dir, leaf, hdr[0] & 0xFF))
             return iosb(a2, old ? ST_ACCESS_DENIED : ST_OBJECT_NAME_INVALID, 0);
         return iosb(a2, ST_SUCCESS, 0);
@@ -973,6 +1053,8 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
         INT64 ct, wt;
         UINT32 attr;
         memcpy(&ct, bi, 8); memcpy(&wt, bi + 16, 8); memcpy(&attr, bi + 32, 4);
+        if ((ct > 0 || wt > 0 || attr) && !FsecAccess(h->node, 0x100, NULL))      /* FILE_WRITE_ATTRIBUTES */
+            return iosb(a2, ST_ACCESS_DENIED, 0);
         if (ct > 0) h->node->ctime = (UINT64)ct;            /* 0: unchanged, -1: stop updating */
         if (wt > 0) h->node->mtime = (UINT64)wt;
         if (attr) h->node->attrs = attr & 0x07;
@@ -985,10 +1067,63 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
         if (h->kind == H_DIR && flag && RamfsCount(h->node))
             return iosb(a2, ST_DIRECTORY_NOT_EMPTY, 0);
         if (h->kind != H_FILE && h->kind != H_DIR) return iosb(a2, ST_CANNOT_DELETE, 0);
+        if (flag && !may_delete(h->node)) return iosb(a2, ST_ACCESS_DENIED, 0);
         h->delete_on_close = flag;
         return iosb(a2, ST_SUCCESS, 0);
     }
     return iosb(a2, ST_INVALID_INFO_CLASS, 0);
+}
+
+/* NtQuerySecurityObject(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+ * ULONG Length, PULONG LengthNeeded): a file's or directory's own, and
+ * for other objects the one they all have (owned by the user, no DACL) */
+static UINT64 sys_query_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    UmProcess *p = UmCurrent();
+    UINT64 need_ptr = um_stack_arg(5);
+    DesktopLock();
+    um_lock(&p->lock);
+    UmHandle *h = handle(p, a1);
+    RamNode *n = h && (h->kind == H_FILE || h->kind == H_DIR) ? h->node : NULL;
+    um_unlock(&p->lock);
+    static RamNode none;                                        /* (no descriptor, nothing above) */
+    if (!n) n = &none;
+    UINT32 len = FsecQuery(n, (UINT32)a2, NULL, 0);
+    UINT8 *buf = len ? kmalloc(len) : NULL;
+    if (buf) FsecQuery(n, (UINT32)a2, buf, len);
+    DesktopUnlock();
+    if (!buf) return ST_NO_MEMORY;
+    UINT32 st = ST_SUCCESS;
+    if (need_ptr && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)need_ptr, &len, 4))) st = UM_STATUS_ACCESS_VIOLATION;
+    else if (a4 < len) st = ST_BUFFER_TOO_SMALL;
+    else if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, buf, len))) st = UM_STATUS_ACCESS_VIOLATION;
+    kfree(buf);
+    return st;
+}
+
+/* NtSetSecurityObject(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR):
+ * kept for files and directories on drive C: (others have nowhere to keep one) */
+static UINT64 sys_set_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a4;
+    UmProcess *p = UmCurrent();
+    UINT32 len;
+    UINT8 *sd = user_sd(a3, &len);
+    if (!sd) return 0xC0000079u;                                /* STATUS_INVALID_SECURITY_DESCR */
+    DesktopLock();
+    um_lock(&p->lock);
+    UmHandle *h = handle(p, a1);
+    RamNode *n = h && (h->kind == H_FILE || h->kind == H_DIR) ? h->node : NULL;
+    um_unlock(&p->lock);
+    UINT32 st = ST_SUCCESS, info = (UINT32)a2 & 7;
+    if (n && !RamfsReadOnly(n) && RamfsDriveLetter(n) == 'C' && info) {
+        UINT32 want = ((info & 4) ? 0x00040000u : 0) | ((info & 3) ? 0x00080000u : 0);   /* WRITE_DAC, WRITE_OWNER */
+        if (!FsecAccess(n, want, NULL)) st = ST_ACCESS_DENIED;
+        else if (!FsecSet(n, info, sd, len)) st = 0xC0000079u;
+    }
+    DesktopUnlock();
+    kfree(sd);
+    return st;
 }
 
 /* NtQueryAttributesFile(POBJECT_ATTRIBUTES, PFILE_BASIC_INFORMATION) */
@@ -2230,6 +2365,8 @@ void um_syscall_init(void)
 
     um_install(SYSCALL_NtCreateFile,               sys_create_file);
     um_install(SYSCALL_NtOpenFile,                 sys_open_file);
+    um_install(SYSCALL_NtQuerySecurityObject,      sys_query_security);
+    um_install(SYSCALL_NtSetSecurityObject,        sys_set_security);
     um_install(SYSCALL_NtClose,                    sys_close);
     um_install(SYSCALL_NtCompareObjects,           sys_compare_objects);
     um_install(SYSCALL_NtReadFile,                 sys_read_file);

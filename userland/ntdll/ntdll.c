@@ -35,6 +35,8 @@
 XSTUB(NtClose,                      SYS_NtClose)
 XSTUB(NtCreateFile,                 SYS_NtCreateFile)
 XSTUB(NtOpenFile,                   SYS_NtOpenFile)
+XSTUB(NtQuerySecurityObject,        SYS_NtQuerySecurityObject)
+XSTUB(NtSetSecurityObject,          SYS_NtSetSecurityObject)
 XSTUB(NtReadFile,                   SYS_NtReadFile)
 XSTUB(NtWriteFile,                  SYS_NtWriteFile)
 XSTUB(NtQueryInformationFile,       SYS_NtQueryInformationFile)

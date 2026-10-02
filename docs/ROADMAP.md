@@ -32,9 +32,9 @@ The details of each phase are in [HISTORY.md](HISTORY.md).
 
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
 NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound is
-output only (no recording, MIDI, DirectSound or XAudio2); drive
-C: is FAT, so there are no hard links or ACL enforcement on files (NTFS
-disks are read and written as drives D:, E:, ...); and most of the App Store's catalog (Qt, GTK and
+output only (no recording, MIDI, DirectSound or XAudio2); there
+are no hard links, and file ACLs are kept only when drive C: is on NTFS
+(the installer's default); and most of the App Store's catalog (Qt, GTK and
 multimedia programs) does not run yet.
 
 ---
@@ -111,8 +111,10 @@ named program or test demonstrates it.
 ### Storage, network and hardware
 - ~~NTFS read~~ ~~NTFS write~~ Done: NTFS volumes mount as drives D:, E:,
   ...; files on them are written, created, renamed and deleted (volumes
-  Windows left hibernated or unclean stay read-only).  NTFS as drive C: is
-  next.  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
+  Windows left hibernated or unclean stay read-only).  ~~NTFS as drive C:~~
+  Done: the installer formats C: as NTFS (or FAT32), and files there keep
+  security descriptors that opening, deleting and renaming obey.  Hard
+  links are still to do.  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
 - IPv6, HTTP/2.
 - ~~USB (xHCI) with HID keyboards and mice~~ Done: keyboards, mice,
   tablets and touch screens in report protocol, on root ports or behind

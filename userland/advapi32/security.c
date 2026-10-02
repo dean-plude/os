@@ -1,14 +1,14 @@
 /*
  * security.c — advapi32's security API.
  *
- * NovaOS has a single user and does not check access: every program runs
- * as that user, with full access to everything.  The functions here keep
- * programs that ask questions working with truthful answers for that
- * model: tokens name the user (S-1-5-21-…-1001, member of Users and
- * Administrators, not elevated), access checks evaluate the DACL they are
- * given against that token (ntdll's NtAccessCheck), objects are owned by
- * the user and have no DACL (full access), and impersonation changes
- * nothing.
+ * NovaOS has a single user: every program runs as that user.  Tokens name
+ * the user (S-1-5-21-…-1001, member of Users and Administrators, not
+ * elevated), access checks evaluate the DACL they are given against that
+ * token (ntdll's NtAccessCheck), and impersonation changes nothing.  Files
+ * and directories on drive C: keep security descriptors, which the kernel
+ * checks when they are opened (NtQuerySecurityObject and
+ * NtSetSecurityObject); other objects are owned by the user and have no
+ * DACL (full access).
  */
 
 #define NOVA_BUILD_ADVAPI32
@@ -17,6 +17,8 @@
 
 NTSYSAPI NTSTATUS NTAPI NtAccessCheck(PSECURITY_DESCRIPTOR sd, HANDLE token, ACCESS_MASK want, PGENERIC_MAPPING map,
                                       PPRIVILEGE_SET privs, PULONG privs_len, PACCESS_MASK granted, NTSTATUS *status);
+NTSYSAPI NTSTATUS NTAPI NtQuerySecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd, ULONG len, PULONG need);
+NTSYSAPI NTSTATUS NTAPI NtSetSecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd);
 void *memcpy(void *d, const void *s, size_t n);
 void *memset(void *d, int c, size_t n);
 
@@ -758,72 +760,128 @@ static PSECURITY_DESCRIPTOR default_sd(void)
     return sd;
 }
 
-static DWORD security_info(SECURITY_INFORMATION si, PSID *owner, PSID *group, PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
+/* A file or directory, opened to read or change its descriptor */
+static HANDLE open_named(LPCWSTR name, SECURITY_INFORMATION si, BOOL write)
 {
-    (void)si;
-    PSECURITY_DESCRIPTOR d = default_sd();
-    if (!d) return ERROR_NOT_ENOUGH_MEMORY;
+    DWORD access = !write ? 0x00020000 /* READ_CONTROL */
+                 : ((si & DACL_SECURITY_INFORMATION) ? 0x00040000 /* WRITE_DAC */ : 0) |
+                   ((si & (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION)) ? 0x00080000 /* WRITE_OWNER */ : 0);
+    return CreateFileW(name, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING,
+                       0x02000000 /* FILE_FLAG_BACKUP_SEMANTICS: directories too */, 0);
+}
+
+/* The descriptor of the object @h (LocalAlloc'd) */
+static DWORD query_sd(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR *out)
+{
+    ULONG need = 0;
+    NTSTATUS s = NtQuerySecurityObject(h, si & 7, 0, 0, &need);
+    if (s != (NTSTATUS)0xC0000023 /* STATUS_BUFFER_TOO_SMALL */ && !NT_SUCCESS(s)) return RtlNtStatusToDosError(s);
+    BYTE *sd = LocalAlloc(LMEM_ZEROINIT, need ? need : 20);
+    if (!sd) return ERROR_NOT_ENOUGH_MEMORY;
+    s = NtQuerySecurityObject(h, si & 7, sd, need, &need);
+    if (!NT_SUCCESS(s)) { LocalFree(sd); return RtlNtStatusToDosError(s); }
+    *out = sd;
+    return ERROR_SUCCESS;
+}
+
+static DWORD security_info(HANDLE h, SECURITY_INFORMATION si, PSID *owner, PSID *group, PACL *dacl, PACL *sacl,
+                           PSECURITY_DESCRIPTOR *sd)
+{
+    PSECURITY_DESCRIPTOR d;
+    DWORD e = query_sd(h, si, &d);
+    if (e) return e;
     if (owner) *owner = sd_part(d, 0);
     if (group) *group = sd_part(d, 1);
-    if (dacl) *dacl = 0;
+    if (dacl) *dacl = sd_part(d, 3);
     if (sacl) *sacl = 0;
     if (sd) *sd = d;
     else LocalFree(d);                      /* only the pointers were wanted: MSDN requires @sd with them */
     return ERROR_SUCCESS;
 }
 
+static DWORD named_info(LPCWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
+                        PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
+{
+    if (t != SE_FILE_OBJECT) return security_info(0, si, owner, group, dacl, sacl, sd);   /* (the default one) */
+    HANDLE h = open_named(name, si, FALSE);
+    if (h == INVALID_HANDLE_VALUE) return GetLastError();
+    DWORD e = security_info(h, si, owner, group, dacl, sacl, sd);
+    CloseHandle(h);
+    return e;
+}
+
 WINADVAPI DWORD WINAPI GetNamedSecurityInfoW(LPCWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
                                              PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
 {
-    if (t == SE_FILE_OBJECT && GetFileAttributesW(name) == INVALID_FILE_ATTRIBUTES) return GetLastError();
-    return security_info(si, owner, group, dacl, sacl, sd);
+    return named_info(name, t, si, owner, group, dacl, sacl, sd);
 }
 
 WINADVAPI DWORD WINAPI GetNamedSecurityInfoA(LPCSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
                                              PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
 {
-    if (t == SE_FILE_OBJECT && GetFileAttributesA(name) == INVALID_FILE_ATTRIBUTES) return GetLastError();
-    return security_info(si, owner, group, dacl, sacl, sd);
+    WCHAR w[MAX_PATH];
+    if (!MultiByteToWideChar(CP_ACP, 0, name, -1, w, MAX_PATH)) return ERROR_INVALID_NAME;
+    return named_info(w, t, si, owner, group, dacl, sacl, sd);
 }
 
 WINADVAPI DWORD WINAPI GetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
                                        PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
 {
-    (void)h; (void)t;
-    return security_info(si, owner, group, dacl, sacl, sd);
+    (void)t;
+    return security_info(h, si, owner, group, dacl, sacl, sd);
+}
+
+/* Give @h the parts @si names (a SACL is not kept) */
+static DWORD set_parts(HANDLE h, SECURITY_INFORMATION si, PSID o, PSID g, PACL d)
+{
+    SECURITY_DESCRIPTOR abs;
+    InitializeSecurityDescriptor(&abs, SECURITY_DESCRIPTOR_REVISION);
+    if (si & OWNER_SECURITY_INFORMATION) abs.Owner = o;
+    if (si & GROUP_SECURITY_INFORMATION) abs.Group = g;
+    if (si & DACL_SECURITY_INFORMATION) SetSecurityDescriptorDacl(&abs, TRUE, d, FALSE);
+    NTSTATUS s = NtSetSecurityObject(h, si & 7, &abs);
+    return NT_SUCCESS(s) ? ERROR_SUCCESS : RtlNtStatusToDosError(s);
 }
 
 WINADVAPI DWORD WINAPI SetNamedSecurityInfoW(LPWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
 {
-    (void)t; (void)si; (void)o; (void)g; (void)d; (void)s;
-    return GetFileAttributesW(name) == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
+    (void)s;
+    if (t != SE_FILE_OBJECT) return ERROR_SUCCESS;          /* (nowhere to keep one) */
+    if (!(si & 7)) return ERROR_SUCCESS;
+    HANDLE h = open_named(name, si, TRUE);
+    if (h == INVALID_HANDLE_VALUE) return GetLastError();
+    DWORD e = set_parts(h, si, o, g, d);
+    CloseHandle(h);
+    return e;
 }
 
 WINADVAPI DWORD WINAPI SetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
 {
-    (void)h; (void)t; (void)si; (void)o; (void)g; (void)d; (void)s;
-    return ERROR_SUCCESS;
+    (void)t; (void)s;
+    return (si & 7) ? set_parts(h, si, o, g, d) : ERROR_SUCCESS;
 }
 
 WINADVAPI BOOL WINAPI GetFileSecurityW(LPCWSTR name, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd, DWORD n, LPDWORD need)
 {
-    (void)si;
-    if (GetFileAttributesW(name) == INVALID_FILE_ATTRIBUTES) return FALSE;
-    PSECURITY_DESCRIPTOR d = default_sd();
-    if (!d) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
-    DWORD len = GetSecurityDescriptorLength(d);
+    HANDLE h = open_named(name, si, FALSE);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    ULONG len = 0;
+    NTSTATUS s = NtQuerySecurityObject(h, si & 7, sd, n, &len);
+    CloseHandle(h);
     *need = len;
-    BOOL ok = sd && n >= len;
-    if (ok) memcpy(sd, d, len);
-    else SetLastError(ERROR_INSUFFICIENT_BUFFER);
-    LocalFree(d);
-    return ok;
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    return TRUE;
 }
 
 WINADVAPI BOOL WINAPI SetFileSecurityW(LPCWSTR name, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd)
 {
-    (void)si; (void)sd;
-    return GetFileAttributesW(name) != INVALID_FILE_ATTRIBUTES;
+    if (!(si & 7)) return GetFileAttributesW(name) != INVALID_FILE_ATTRIBUTES;
+    HANDLE h = open_named(name, si, TRUE);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    NTSTATUS s = NtSetSecurityObject(h, si & 7, sd);
+    CloseHandle(h);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    return TRUE;
 }
 
 WINADVAPI BOOL WINAPI ConvertStringSecurityDescriptorToSecurityDescriptorW(LPCWSTR s, DWORD rev, PSECURITY_DESCRIPTOR *sd, PULONG n)

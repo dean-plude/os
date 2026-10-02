@@ -141,16 +141,27 @@ PulseAudio or PipeWire when it finds one; set `NOVA_AUDIO` (`pa`,
 
 ### Where your files are kept
 
-Drive C: lives in memory, and NovaOS saves every change to a FAT volume a
-second later (and before Restart / Shut down), restoring it at the next
-boot.  The files installed from the OS image (`C:\Windows\System32`,
+Drive C: lives in memory, and NovaOS saves every change to an NTFS or FAT
+volume a second later (and before Restart / Shut down), restoring it at
+the next boot.  The files installed from the OS image (`C:\Windows\System32`,
 `C:\Windows\SysWOW64`, `C:\Programs`) are never saved, so a newer image
 always brings its own.  It uses the first of:
 
-1. a FAT16/FAT32 volume labelled `NOVADATA` (on any SATA disk, including
-   the data partition Install NovaOS creates);
+1. an NTFS or FAT16/FAT32 volume labelled `NOVADATA` (on any SATA or NVMe
+   disk, including the data partition Install NovaOS creates);
 2. an empty disk (all zeros at the start), which it formats as FAT32 `NOVADATA`;
 3. the boot disk itself, under `\NOVA\C`.
+
+Install NovaOS asks which file system drive C: gets: NTFS (the default)
+or FAT32.  On NTFS, C: is the whole volume, and it keeps creation times
+and each file's security descriptor too, so ACLs set with
+`SetFileSecurity` or `SetNamedSecurityInfo` (or given to `CreateFile`) are
+enforced when files are opened, deleted and renamed, and survive a
+restart.  A file without a descriptor of its own inherits from its
+folders, as on Windows; the new volume's root gives the user full control
+of what they create.  On FAT, C: is the folder `\NOVA\C`, and ACLs last
+only until restart.  Files from the OS image keep no descriptor across a
+restart either way.
 
 `scripts/run-qemu.sh` attaches `build/nova-data.img` (256 MiB, created on
 first run), so your files survive rebuilds of `nova.img`.  In the Terminal,
@@ -196,9 +207,9 @@ host:
 scripts/check-ntfs-disk.sh build/nova-ntfs.img
 ```
 
-which runs `ntfsfix -n` and `scripts/ntfs-check.py` (a chkdsk-style check
-of the bitmaps, MFT records, directory indexes and link counts) and checks
-the files drivetest left behind.
+which runs `ntfsfix -n`, `ntfssecaudit -a` and `scripts/ntfs-check.py` (a
+chkdsk-style check of the bitmaps, MFT records, directory indexes, link
+counts and `$Secure`) and checks the files drivetest left behind.
 
 ---
 
@@ -227,7 +238,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
 | `smpstress` (x64) | Locks, events, semaphores and memory from many threads |
-| `acltest` | Access checks against DACLs (`AccessCheck`) |
+| `acltest` | Access checks against DACLs (`AccessCheck`), and file ACLs on drive C:: denied writes, deletes and renames, inheritance, `CreateFile` with a descriptor; it leaves `C:\AclTest\kept.txt` and, run again after a restart, checks it kept its DACL (C: on NTFS) |
 | `drivetest` | Drive D: (NTFS: reading, then writing, renaming, deleting), with the disk from `scripts/make-ntfs-disk.sh`; then `scripts/check-ntfs-disk.sh` on the host |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |

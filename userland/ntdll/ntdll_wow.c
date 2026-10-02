@@ -24,6 +24,8 @@ void *memset(void *d, int c, size_t n);
 
 typedef unsigned long long U64;
 
+NTSYSAPI NTSTATUS NTAPI RtlMakeSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PSECURITY_DESCRIPTOR rel, PULONG len);
+
 static U64 sysc(ULONG num, U64 *blk)
 {
     ULONG lo, hi;
@@ -58,7 +60,7 @@ typedef struct { USHORT Length, MaximumLength; ULONG pad; U64 Buffer; } US64;
 typedef struct { ULONG Length, pad; U64 RootDirectory, ObjectName; ULONG Attributes, pad2; U64 Sd, Sqos; } OA64;
 typedef struct { U64 Status, Information; } IOSB64;
 
-typedef struct { OA64 oa; US64 name; } OAC;
+typedef struct { OA64 oa; US64 name; BYTE sd[512]; } OAC;    /* (sd: a 32-bit absolute descriptor, made self-relative) */
 
 static U64 us_in(US64 *d, const UNICODE_STRING *s)
 {
@@ -77,6 +79,11 @@ static U64 oa_in(OAC *c, const OBJECT_ATTRIBUTES *oa)
     c->oa.ObjectName = us_in(&c->name, oa->ObjectName);
     c->oa.Attributes = oa->Attributes;
     c->oa.Sd = P(oa->SecurityDescriptor);
+    const SECURITY_DESCRIPTOR *sd = oa->SecurityDescriptor;
+    if (sd && !(sd->Control & SE_SELF_RELATIVE)) {            /* the kernel reads x64 layouts: pass it self-relative */
+        ULONG n = sizeof(c->sd);
+        c->oa.Sd = NT_SUCCESS(RtlMakeSelfRelativeSD((PSECURITY_DESCRIPTOR)sd, c->sd, &n)) ? P(c->sd) : 0;
+    }
     c->oa.Sqos = P(oa->SecurityQualityOfService);
     return P(&c->oa);
 }
@@ -223,6 +230,23 @@ static void record_to64(BYTE *x, const EXCEPTION_RECORD *r)
  * Files
  * ----------------------------------------------------------------------- */
 NTSTATUS NTAPI NtClose(HANDLE h) { return SC(NtClose, H(h)); }
+
+NTSYSAPI NTSTATUS NTAPI NtQuerySecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd, ULONG len, PULONG need)
+{
+    return SC(NtQuerySecurityObject, H(h), U(info), P(sd), U(len), P(need));
+}
+
+NTSYSAPI NTSTATUS NTAPI NtSetSecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd)
+{
+    BYTE rel[1024];
+    if (sd && !(((SECURITY_DESCRIPTOR *)sd)->Control & SE_SELF_RELATIVE)) {   /* (32-bit absolute: x64's differs) */
+        ULONG n = sizeof(rel);
+        NTSTATUS s = RtlMakeSelfRelativeSD(sd, rel, &n);
+        if (!NT_SUCCESS(s)) return s;
+        sd = rel;
+    }
+    return SC(NtSetSecurityObject, H(h), U(info), P(sd));
+}
 
 NTSTATUS NTAPI NtCreateFile(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, PIO_STATUS_BLOCK io,
                             PLARGE_INTEGER alloc, ULONG attrs, ULONG share, ULONG disposition,

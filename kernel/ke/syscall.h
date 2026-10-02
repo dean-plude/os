@@ -231,6 +231,8 @@
 #define SYSCALL_NtSetSystemPowerState             0x01D5
 #define SYSCALL_NtInitiatePowerAction             0x01D6
 #define SYSCALL_NtPowerInformation                0x01D7
+#define SYSCALL_NtQuerySecurityObject             0x01D8
+#define SYSCALL_NtSetSecurityObject               0x01D9
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x01A0
 #define SYSCALL_NtNovaGuiGetMessage               0x01A1

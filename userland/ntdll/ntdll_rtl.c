@@ -382,27 +382,8 @@ NTSYSAPI NTSTATUS NTAPI RtlAbsoluteToSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PS
     return RtlMakeSelfRelativeSD(abs, rel, len);
 }
 
-/* The descriptor every object has: owned by the user, group Users, and no
- * DACL (full access for everyone) */
-static NTSTATUS default_sd(ULONG info, PSECURITY_DESCRIPTOR out, ULONG len, PULONG ret)
-{
-    SECURITY_DESCRIPTOR abs;
-    RtlCreateSecurityDescriptor(&abs, 1);
-    if (info & OWNER_SECURITY_INFORMATION) abs.Owner = (PSID)g_user_sid;
-    if (info & GROUP_SECURITY_INFORMATION) abs.Group = (PSID)g_users_sid;
-    if (info & DACL_SECURITY_INFORMATION) abs.Control |= SE_DACL_PRESENT;
-    ULONG n = len;
-    NTSTATUS s = RtlMakeSelfRelativeSD(&abs, out, &n);
-    if (ret) *ret = n;
-    return s;
-}
-
-NTSYSAPI NTSTATUS NTAPI NtQuerySecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd, ULONG len, PULONG ret)
-{
-    (void)h;
-    return default_sd(info, sd, len, ret);
-}
-NTSYSAPI NTSTATUS NTAPI NtSetSecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd) { (void)h; (void)info; (void)sd; return ST_SUCCESS; }
+/* (NtQuerySecurityObject and NtSetSecurityObject are system calls: files on
+ * drive C: keep their own descriptors) */
 
 /* -----------------------------------------------------------------------
  * Tokens

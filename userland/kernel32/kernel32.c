@@ -825,6 +825,7 @@ WINBASEAPI HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD share, LPS
     NtPath p;
     if (!nt_path(name, &p)) return INVALID_HANDLE_VALUE;
     if (sa && sa->bInheritHandle) p.oa.Attributes |= OBJ_INHERIT;
+    if (sa) p.oa.SecurityDescriptor = sa->lpSecurityDescriptor;   /* (a new file's own) */
     static const ULONG disp[6] = { 0, FILE_CREATE, FILE_OVERWRITE_IF, FILE_OPEN, FILE_OPEN_IF, FILE_OVERWRITE };
     if (disposition < 1 || disposition > 5) { SetLastError(ERROR_INVALID_PARAMETER); return INVALID_HANDLE_VALUE; }
     ULONG opts = FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT;
@@ -940,9 +941,9 @@ WINBASEAPI BOOL WINAPI DeleteFileW(LPCWSTR name)
 
 WINBASEAPI BOOL WINAPI CreateDirectoryA(LPCSTR name, LPSECURITY_ATTRIBUTES sa)
 {
-    (void)sa;
     NtPath p;
     if (!nt_path(name, &p)) return FALSE;
+    if (sa) p.oa.SecurityDescriptor = sa->lpSecurityDescriptor;
     HANDLE h;
     IO_STATUS_BLOCK io;
     NTSTATUS s = NtCreateFile(&h, FILE_LIST_DIRECTORY | SYNCHRONIZE, &p.oa, &io, 0, FILE_ATTRIBUTE_NORMAL,
