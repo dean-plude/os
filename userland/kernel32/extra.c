@@ -959,7 +959,9 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
     NOVA_CREATE_PROCESS io;
     memset(&io, 0, sizeof(io));
     for (int i = 0; i < 3; i++) io.StdHandle[i] = std[i];
-    io.Flags = (inherit ? 1 : 0) | ((flags & (DETACHED_PROCESS | CREATE_NO_WINDOW)) ? 2 : 0);
+    io.Flags = (inherit ? 1 : 0) | ((flags & (DETACHED_PROCESS | CREATE_NO_WINDOW)) ? 2 : 0) |
+               ((flags & CREATE_SUSPENDED) ? 4 : 0);
+    if ((flags & CREATE_NEW_CONSOLE) && !(flags & DETACHED_PROCESS)) io.Flags |= 8;
     io.Environment = envb;
     io.EnvironmentSize = env_len;
     if (rt && rt_len) { io.RuntimeData = rt; io.RuntimeDataSize = rt_len; }
@@ -975,10 +977,12 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
 }
 
 /* The new process's standard handles: STARTUPINFO's when it says so,
- * else the creator's own (a console program's output goes where ours does) */
-static void std_handles(DWORD flags, HANDLE si_in, HANDLE si_out, HANDLE si_err, HANDLE std[3])
+ * else the creator's own (a console program's output goes where ours
+ * does), or with a console of its own, that console (0) */
+static void std_handles(DWORD flags, DWORD create, HANDLE si_in, HANDLE si_out, HANDLE si_err, HANDLE std[3])
 {
     if (flags & STARTF_USESTDHANDLES) { std[0] = si_in; std[1] = si_out; std[2] = si_err; return; }
+    if (create & CREATE_NEW_CONSOLE) { std[0] = std[1] = std[2] = 0; return; }
     std[0] = GetStdHandle(STD_INPUT_HANDLE);
     std[1] = GetStdHandle(STD_OUTPUT_HANDLE);
     std[2] = GetStdHandle(STD_ERROR_HANDLE);
@@ -991,7 +995,7 @@ WINBASEAPI BOOL WINAPI CreateProcessA(LPCSTR app, LPSTR cmd, LPSECURITY_ATTRIBUT
     (void)pa; (void)ta;
     HANDLE std[3];
     if (!app && !cmd) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    std_handles(si ? si->dwFlags : 0, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
+    std_handles(si ? si->dwFlags : 0, flags, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
     return create_process(app, cmd, dir, std, inherit, flags, env,
                           si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, pi);
 }
@@ -1009,7 +1013,7 @@ WINBASEAPI BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIB
         w2u(cmd, -1, c, n);
     }
     HANDLE std[3];
-    std_handles(si ? si->dwFlags : 0, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
+    std_handles(si ? si->dwFlags : 0, flags, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
     BOOL ok = create_process(app ? wide_to_temp(app, a, sizeof(a)) : 0, c, dir ? wide_to_temp(dir, d, sizeof(d)) : 0,
                              std, inherit, flags, env, si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, pi);
     zfree(c);

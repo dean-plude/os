@@ -65,6 +65,7 @@ typedef struct {
     UmProcess *proc;           /* JOB_PROC: a Windows program in this console */
     UmSpawnJob *starting;      /* JOB_PROC: being loaded (proc is NULL until then) */
     UmConsole *con;
+    bool    adopted;           /* JOB_PROC: CREATE_NEW_CONSOLE's program (held, not ours to release); the window closes when it ends */
     bool    open_line;         /* the last line is the program's unfinished line */
     int     col;               /* its output column (after '\r') */
     int     esc;               /* inside an escape sequence: 1 ESC, 2 CSI, 3 OSC */
@@ -520,9 +521,12 @@ static void done_mark(void)
 
 static void job_end(Term *t)
 {
-    done_mark();
+    if (!t->job.adopted) done_mark();             /* (a new console's window is not the command's) */
     NetRelease(t->job.op);
-    if (t->job.proc) UmRelease(t->job.proc);          /* (kills it if still running) */
+    if (t->job.proc && t->job.adopted) {
+        UmKillConsole(t->job.con, 1);                 /* closing the console ends its programs */
+        UmUnhold(t->job.proc);
+    } else if (t->job.proc) UmRelease(t->job.proc);   /* (kills it if still running) */
     UmSpawnAbandon(t->job.starting);
     if (t->job.con) UmConsoleRelease(t->job.con);
     if (t->job.vt) vterm_free(t->job.vt);
@@ -759,6 +763,7 @@ static bool term_tick(WND *w)
             if (!p) { terr(t, err); job_end(t); return true; }
             j->proc = p;
         }
+        if (!j->proc) return false;                    /* CREATE_NEW_CONSOLE: not handed over yet */
         screen_resize(t);
         /* a program reading keys one at a time gets the screen */
         if (!j->vt && !(UmConsoleInputMode(j->con) & CON_ENABLE_LINE_INPUT) && screen_enter(t)) changed = true;
@@ -771,6 +776,7 @@ static bool term_tick(WND *w)
         if (UmHasExited(j->proc, NULL, NULL, 0)) {
             int n;
             while ((n = UmConsoleRead(j->con, buf, sizeof(buf))) > 0) proc_output(t, buf, n);
+            if (j->adopted) { WmDestroyWindow(t->w); return true; }   /* as a Windows console window does */
             proc_finish(t);
             return true;
         }
@@ -1804,7 +1810,7 @@ static void term_close(WND *w)
     w->user = NULL;
 }
 
-static Term *term_new(RamNode *cwd)
+static Term *term_new_ex(RamNode *cwd, bool banner)
 {
     Term *t = kzalloc(sizeof(Term));
     if (!t) return NULL;
@@ -1821,10 +1827,45 @@ static Term *term_new(RamNode *cwd)
     w->rbutton  = true;                        /* right click pastes, the wheel scrolls */
     w->on_close = term_close;
     w->on_tick  = term_tick;
+    if (!banner) return t;
     tprint_ex(t, K_DIM, 0, "NovaOS Terminal [Version 0.9.8]");
     tprint_ex(t, K_DIM, 0, "Type 'help' to see what you can do.");
     tprint(t, "");
     return t;
+}
+
+static Term *term_new(RamNode *cwd) { return term_new_ex(cwd, true); }
+
+/* CreateProcess(CREATE_NEW_CONSOLE): a window of its own, its console the
+ * program's.  TerminalConsoleNew makes both (the console sized to the
+ * window; *con is referenced by the window) and returns the window's id
+ * (0: out of memory); TerminalConsoleAdopt hands it the started program,
+ * or closes it if @p is NULL (false: no window any more).  Desktop lock
+ * held. */
+int TerminalConsoleNew(const char *title, RamNode *cwd, UmConsole **con)
+{
+    Term *t = term_new_ex(cwd, false);
+    if (!t) return 0;
+    Job *j = &t->job;
+    j->con = UmConsoleNew();
+    if (!j->con) { WmDestroyWindow(t->w); return 0; }
+    UmConsoleSetSize(j->con, term_cols(t), term_rows(t));
+    j->kind = JOB_PROC;
+    j->adopted = true;
+    if (title && *title) WmSetTitle(t->w, title);
+    *con = j->con;
+    return t->w->id;
+}
+
+bool TerminalConsoleAdopt(int id, UmProcess *p)
+{
+    WND *w = WmWindowById(id);
+    if (!w || w->on_tick != term_tick) return false;        /* closed meanwhile */
+    Term *t = w->user;
+    if (!p) { WmDestroyWindow(w); return false; }
+    UmHold(p);
+    t->job.proc = p;
+    return true;
 }
 
 void TerminalOpen(void)

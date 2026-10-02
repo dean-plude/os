@@ -725,6 +725,7 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (ok) {
             src = sp->handles[a2 / 4 - 1];
             if (src.kind == H_FILE || src.kind == H_DIR) RamfsRef(src.node);
+            if (src.kind == H_FILE) um_fpos_ref(src.fp);         /* a duplicate shares the position */
             if (src.kind == H_OBJECT) um_ob_ref(src.obj);
         }
         um_unlock(&sp->lock);
@@ -740,6 +741,7 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         }
         if (ok && (!tp || st)) {                             /* not placed: drop the reference */
             if (src.kind == H_FILE || src.kind == H_DIR) RamfsUnref(src.node);
+            if (src.kind == H_FILE) um_fpos_unref(src.fp);
             if (src.kind == H_OBJECT) um_ob_unref(src.obj);
         }
         DesktopUnlock();
@@ -754,6 +756,7 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             if (h) memset(h, 0, sizeof(*h));
             um_unlock(&sp->lock);
             if (old.kind == H_FILE || old.kind == H_DIR) RamfsUnref(old.node);
+            if (old.kind == H_FILE) um_fpos_unref(old.fp);
             if (old.kind == H_OBJECT) um_ob_unref(old.obj);
             DesktopUnlock();
         }

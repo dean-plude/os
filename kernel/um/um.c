@@ -682,6 +682,16 @@ UINT16 um_pe_machine(const RamNode *f)
     return rd16(d + nt + 4);
 }
 
+/* IMAGE_SUBSYSTEM_*: 2 GUI, 3 console (0: not a PE image) */
+UINT16 um_pe_subsystem(RamNode *f)
+{
+    if (!RamfsLoad(f) || !um_pe_machine(f)) return 0;
+    const UINT8 *d = (const UINT8 *)f->data;
+    UINT32 nt = rd32(d + 0x3C);
+    if (nt + 24 + 70 > f->size) return 0;
+    return rd16(d + nt + 24 + 68);                      /* OptionalHeader.Subsystem (PE32 and PE32+) */
+}
+
 /* Find a DLL: a path as given, else the program's directory, then the
  * system folder (System32, or SysWOW64 for 32-bit programs) */
 /* A 32-bit program's C:\Windows\System32\... is C:\Windows\SysWOW64\...
@@ -1564,7 +1574,7 @@ static void handle_copy(UmHandle *d, const UmHandle *s)
     *d = *s;
     if (d->kind == H_FILE || d->kind == H_DIR) RamfsRef(d->node);
     else if (d->kind == H_OBJECT) um_ob_ref(d->obj);
-    if (d->kind == H_FILE) d->pos = s->pos;
+    if (d->kind == H_FILE) um_fpos_ref(d->fp);              /* the same position as the parent's */
 }
 
 static void destroy(UmProcess *p)
@@ -1735,7 +1745,7 @@ UmProcess *um_spawn_finish(UmProcess *p, RamNode *exe, const char *cmdline, cons
     if (stack < UM_STACK_SIZE) stack = UM_STACK_SIZE;
     if (stack > 8 * 1024 * 1024) stack = 8 * 1024 * 1024;
     UINT32 st;
-    if (!um_create_thread(p, entry, p->lay.peb, stack, false, &st)) {
+    if (!um_create_thread(p, entry, p->lay.peb, stack, o && o->suspended, &st)) {
         plock(); g_procs[slot] = NULL; punlock();
         destroy(p);
         ksnprintf(err, err_cap, "Out of memory");
@@ -2073,6 +2083,34 @@ void UmSpawnAbandon(UmSpawnJob *j)
 void UmDetach(UmProcess *p)
 {
     if (p) p->released = true;          /* reclaimed by UmPoll once it exits */
+}
+
+/* A process made by CreateProcess is released when its process object
+ * goes; holding that object keeps it */
+void UmHold(UmProcess *p)
+{
+    if (p && p->exit_ob) um_ob_ref(p->exit_ob);
+}
+
+void UmUnhold(UmProcess *p)
+{
+    if (p && p->exit_ob) um_ob_unref(p->exit_ob);
+}
+
+/* GetConsoleProcessList: the running processes attached to @c */
+int um_console_pids(UmConsole *c, UINT32 *out, int max)
+{
+    int n = 0;
+    if (!c) return 0;
+    plock();
+    for (int i = 0; i < UM_MAX_PROCS; i++) {
+        UmProcess *p = g_procs[i];
+        if (!p || p->con != c || p->exited) continue;
+        if (n < max) out[n] = p->pid;
+        n++;
+    }
+    punlock();
+    return n;
 }
 
 UINT32      UmPid(const UmProcess *p)  { return p->pid; }

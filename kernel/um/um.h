@@ -64,6 +64,10 @@ void       UmRelease(UmProcess *p);
 /* Let the process run on its own (started from the desktop, no console):
  * it is reclaimed when it exits. */
 void       UmDetach(UmProcess *p);
+/* Keep a process made by CreateProcess after its creator closes its
+ * handles (the Terminal window of a CREATE_NEW_CONSOLE program) */
+void       UmHold(UmProcess *p);
+void       UmUnhold(UmProcess *p);
 
 UINT32      UmPid(const UmProcess *p);
 const char *UmName(const UmProcess *p);

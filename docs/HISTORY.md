@@ -1504,6 +1504,18 @@ TLS already in the tree.
   name relative to a file handle reopens that file; a line feed on the
   screen grid also returns the carriage unless the program set
   `DISABLE_NEWLINE_AUTO_RETURN`.
+- **Process creation flags** (17.3): `CREATE_SUSPENDED` starts the first
+  thread suspended until `ResumeThread` (the same change as the Firefox
+  work's).  `CREATE_NEW_CONSOLE` gives a console program a console of its
+  own in a Terminal window titled with its path; the window closes when
+  the program ends, and closing it ends the programs on that console.
+  GUI programs ignore the flag, as on Windows, and `cmd`'s `start` uses it
+  unless given `/B`.  `GetConsoleProcessList` now lists the processes on
+  the caller's console.  A file's position belongs to the open file, not
+  the handle: duplicates, inherited handles and handles passed as a
+  child's standard output share it, so a parent and child writing to one
+  log file follow each other instead of overwriting.  `proctest` covers
+  all three in the core suite.
 - Tested in QEMU: Neovim 0.10.4 and 0.11.4 open `t.txt`, take `ihello
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,

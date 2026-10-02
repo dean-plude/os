@@ -23,6 +23,7 @@
 #include "../arch/x86_64/apic.h"
 #include "../wm/clipboard.h"
 #include "../wm/desktop.h"
+#include "../apps/apps.h"
 #include "../hal/aml.h"
 
 #define ST_SUCCESS                 0x00000000u
@@ -253,6 +254,29 @@ RamNode *um_handle_file(UmProcess *p, UINT64 h)
     return hd && hd->kind == H_FILE ? hd->node : NULL;
 }
 
+UmFilePos *um_fpos_new(void)
+{
+    UmFilePos *f = kzalloc(sizeof(*f));
+    if (f) f->refs = 1;
+    return f;
+}
+
+void um_fpos_ref(UmFilePos *f)
+{
+    if (f) __atomic_add_fetch(&f->refs, 1, __ATOMIC_RELAXED);
+}
+
+void um_fpos_unref(UmFilePos *f)
+{
+    if (f && __atomic_sub_fetch(&f->refs, 1, __ATOMIC_ACQ_REL) == 0) kfree(f);
+}
+
+/* A file handle's byte offset: the shared one */
+static UINT64 *hpos(UmHandle *h)
+{
+    return h->kind == H_FILE && h->fp ? &h->fp->pos : &h->pos;
+}
+
 static void handle_close(UmHandle *h)
 {
     if (h->kind == H_FILE || h->kind == H_DIR) {
@@ -260,6 +284,8 @@ static void handle_close(UmHandle *h)
         RamNode *n = h->node;
         bool del = h->delete_on_close;
         h->kind = H_FREE;
+        um_fpos_unref(h->fp);
+        h->fp = NULL;
         RamfsUnref(n);
         if (del) RamfsDelete(n);
         DesktopUnlock();
@@ -563,6 +589,7 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
     h->delete_on_close = options & 0x1000;
     h->inherit = inherit;
     h->async = !(options & 0x30);                               /* no FILE_SYNCHRONOUS_IO_* */
+    h->fp = node->dir ? NULL : um_fpos_new();                   /* (none: a position of its own) */
     RamfsRef(node);
     um_unlock(&p->lock);
     DesktopUnlock();
@@ -644,7 +671,7 @@ static UINT64 start_offset(UmHandle *h, UINT64 byte_offset_ptr)
     if (byte_offset_ptr && get_u64(byte_offset_ptr, &off) &&
         off != UINT64_C(0xFFFFFFFFFFFFFFFE) && off != UINT64_C(0xFFFFFFFFFFFFFFFF))
         return off;
-    return h->pos;
+    return *hpos(h);
 }
 
 /* NtReadFile(HANDLE, HANDLE Event, PIO_APC_ROUTINE, PVOID ApcContext,
@@ -690,7 +717,7 @@ static UINT64 sys_read_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         }
         done += chunk;
     }
-    h->pos = off + done;
+    *hpos(h) = off + done;
     DesktopUnlock();
     set_io_event(a2);
     return iosb(iosb_ptr, ST_SUCCESS, done);
@@ -742,7 +769,7 @@ static UINT64 sys_write_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         }
     }
     if (tmp != small) kfree(tmp);
-    if (file) { h->pos = off + done; DesktopUnlock(); }
+    if (file) { *hpos(h) = off + done; DesktopUnlock(); }
     set_io_event(a2);
     return iosb(iosb_ptr, st, done);
 }
@@ -855,7 +882,7 @@ static UINT64 sys_query_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
     }
     case 14:                                                    /* FilePositionInformation */
         need = 8;
-        memcpy(b, &h->pos, 8);
+        memcpy(b, hpos(h), 8);
         break;
     case 7:                                                     /* FileEaInformation: no extended attributes */
     case 17:                                                    /* FileAlignmentInformation: byte aligned */
@@ -914,7 +941,7 @@ static UINT64 sys_query_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         all[60] = h->delete_on_close; all[61] = h->kind == H_DIR;
         UINT64 id = (UINT64)(uintptr_t)h->node; memcpy(all + 64, &id, 8);
         UINT32 acc = 0x001F01FF; memcpy(all + 76, &acc, 4);
-        memcpy(all + 80, &h->pos, 8);
+        memcpy(all + 80, hpos(h), 8);
         UINT32 mode = h->async ? 0 : 0x20; memcpy(all + 88, &mode, 4);
         if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, all, 96))) return UM_STATUS_ACCESS_VIOLATION;
         /* then the name, as FileNameInformation */
@@ -945,7 +972,7 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
     switch (cls) {
     case 14:                                                    /* FilePositionInformation */
         if (a4 < 8 || !get_u64(a3, &v)) return iosb(a2, ST_INVALID_PARAMETER, 0);
-        h->pos = v;
+        *hpos(h) = v;
         return iosb(a2, ST_SUCCESS, 0);
     case 20: {                                                  /* FileEndOfFileInformation */
         if (h->kind != H_FILE || !h->write) return iosb(a2, ST_ACCESS_DENIED, 0);
@@ -1567,9 +1594,12 @@ static void process_ob_destroy(UmObject *o)
  * Environment + EnvironmentSize (UTF-8 "NAME=value\0...\0"; NULL: the
  * default), RuntimeData + RuntimeDataSize (STARTUPINFO.lpReserved2);
  * out: Process, Thread, ProcessId, ThreadId.  The new process
- * shares the creator's console. */
+ * shares the creator's console, or (flag 8) gets a new one in a Terminal
+ * window of its own. */
 #define NCP_INHERIT    1u
 #define NCP_NO_CONSOLE 2u
+#define NCP_SUSPENDED  4u              /* CREATE_SUSPENDED */
+#define NCP_NEW_CONSOLE 8u             /* CREATE_NEW_CONSOLE */
 #define NCP_ENV_MAX    (64 * 1024)
 
 static bool std_kind(UmHandleKind k) { return k == H_FILE || k == H_CON_IN || k == H_CON_OUT || k == H_OBJECT || k == H_NULL; }
@@ -1623,11 +1653,17 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     /* Map the images first, letting go of the desktop lock meanwhile (the
      * program stays pinned, the folder referenced) */
     bool pinned = false;
+    UmConsole *con = (flags & NCP_NO_CONSOLE) ? NULL : p->con;
+    int con_wnd = 0;                                /* CREATE_NEW_CONSOLE: console programs get a window */
+    if (!st && (flags & NCP_NEW_CONSOLE) && !(flags & NCP_NO_CONSOLE) && um_pe_subsystem(exe) == 3) {
+        con_wnd = TerminalConsoleNew(image, cwd, &con);
+        if (!con_wnd) st = ST_NO_MEMORY;
+    }
     if (!st) {
         RamfsPin(exe);
         RamfsRef(cwd);
         pinned = true;
-        c = um_spawn_image(exe, cwd, (flags & NCP_NO_CONSOLE) ? NULL : p->con, true, err, sizeof(err));
+        c = um_spawn_image(exe, cwd, con, true, err, sizeof(err));
         if (!c) {
             kprintf("[UM] %s (PID %u): CreateProcess(%s) failed: %s\n", p->name, p->pid, image, err);
             st = strstr(err, "not found") ? 0xC0000135u : strstr(err, "memory") ? ST_NO_MEMORY : 0xC000007Bu;
@@ -1652,6 +1688,7 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     opts.env_len = env_len;
     opts.runtime = rt;
     opts.runtime_len = rt ? rt_len : 0;
+    opts.suspended = (flags & NCP_SUSPENDED) != 0;
     if (!st) {
         c = um_spawn_finish(c, exe, cmd, &opts, err, sizeof(err));
         if (!c) {
@@ -1661,6 +1698,7 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     }
     um_unlock(&p->lock);
     if (pinned) { RamfsUnpin(exe); RamfsUnref(cwd); }
+    if (con_wnd && st) TerminalConsoleAdopt(con_wnd, NULL);   /* not started: close the window */
     DesktopUnlock();
     kfree(cmd);
     kfree(env);
@@ -1676,6 +1714,11 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     c->exit_ob = o;
     if (c->exited) o->signaled = true;
     ob_unlock(s);
+    if (con_wnd) {                                              /* the window holds the process */
+        DesktopLock();
+        if (!TerminalConsoleAdopt(con_wnd, c)) UmKill(c, 1);    /* (closed already) */
+        DesktopUnlock();
+    }
     UINT64 hp = um_handle_new_object(p, o);
     UmThread *t0 = c->threads[0];
     UINT64 ht = t0 ? um_handle_new_object(p, &t0->ob) : 0;
@@ -2134,13 +2177,24 @@ static bool clip_name(UINT64 ptr, char *name)
 
 /* NtNovaConsole(HANDLE, ULONG Op, PVOID Buffer, ULONG Length, PULONG Result):
  * the console calls of kernel32 on a console handle.  Records are
- * INPUT_RECORDs (UmConInput). */
+ * INPUT_RECORDs (UmConInput).  CON_PROCESS_LIST (no handle): the ids of
+ * the processes on the caller's console, in a DWORD[Length]; Result: how
+ * many there are. */
 enum { CON_GET_MODE, CON_SET_MODE, CON_READ_INPUT, CON_PEEK_INPUT, CON_WRITE_INPUT,
-       CON_COUNT_INPUT, CON_FLUSH_INPUT, CON_GET_SIZE };
+       CON_COUNT_INPUT, CON_FLUSH_INPUT, CON_GET_SIZE, CON_PROCESS_LIST };
 static UINT64 sys_nova_console(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
     UINT64 res_ptr = um_stack_arg(5);
+    if ((UINT32)a2 == CON_PROCESS_LIST) {
+        UINT32 ids[UM_MAX_PROCS];
+        int n = um_console_pids(p->con, ids, UM_MAX_PROCS);
+        UINT32 k = (UINT32)n < (UINT32)a4 ? (UINT32)n : (UINT32)a4, res = (UINT32)n;
+        if (k > UM_MAX_PROCS) k = UM_MAX_PROCS;
+        if (k && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, ids, (size_t)k * 4))) return UM_STATUS_ACCESS_VIOLATION;
+        if (res_ptr && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)res_ptr, &res, 4))) return UM_STATUS_ACCESS_VIOLATION;
+        return ST_SUCCESS;
+    }
     um_lock(&p->lock);
     UmHandle *h = handle(p, a1);
     UmHandleKind kind = h ? h->kind : H_FREE;

@@ -1694,8 +1694,11 @@ K32 LONG WINAPI ResizePseudoConsole(PVOID pc, COORD size) { (void)pc; (void)size
 K32 VOID WINAPI ClosePseudoConsole(PVOID pc) { (void)pc; }
 K32 DWORD WINAPI GetConsoleProcessList(LPDWORD list, DWORD n)
 {
-    if (n >= 1) list[0] = GetCurrentProcessId();
-    return 1;
+    DWORD count = 0;
+    if (!list || !n) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    if (!con_call(0, 8, list, n, &count)) return 0;         /* CON_PROCESS_LIST */
+    if (!count) SetLastError(ERROR_INVALID_HANDLE);         /* no console */
+    return count;
 }
 K32 BOOL WINAPI GetCurrentConsoleFontEx(HANDLE h, BOOL max, PVOID info)
 {

@@ -172,7 +172,7 @@ Rebuild the ISO from a fresh build with
 - **Build and boot-test** (core): `apitest`, `abitest` (the PEB, TEB,
   `KUSER_SHARED_DATA`, `CONTEXT` and loader layouts, ntdll's stubs and the
   system-call numbers, against Windows 10 1903 x64), `filetest`,
-  `pipetest`, `guitest auto`, `disptest`, `battery` (against the battery in
+  `pipetest`, `proctest`, `guitest auto`, `disptest`, `battery` (against the battery in
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
   tones played), and last `crash kernel`, a deliberate kernel fault whose
   serial log must show a backtrace with function names.
@@ -197,7 +197,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
   `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
+  `cppeh`, `shmtest`, `pipetest`, `proctest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
   `tools/novarun.py --wav out.wav` records what NovaOS plays and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest

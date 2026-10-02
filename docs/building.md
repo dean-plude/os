@@ -201,8 +201,8 @@ tools/ci/stage-graphics.sh /tmp/gfx
 python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
 
-The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `guitest
-auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`, and
+The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
+`guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
@@ -240,6 +240,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `cppeh` | C++ exceptions and RTTI |
 | `shmtest` | Named and file-backed shared memory between processes |
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
+| `proctest` | `CreateProcess` flags: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` (`GetConsoleProcessList`), file positions shared with children and duplicates |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
 | `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
