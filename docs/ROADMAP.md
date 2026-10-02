@@ -105,12 +105,12 @@ named program or test demonstrates it.
   `RegNotifyChangeKeyValue` change events.
 - ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
   is waitable and the Terminal runs full-screen programs (Phase 17.2).
-- Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
-  Windows Terminal-style hosts) exist only as functions that fail.
 - The Win32 console screen-buffer calls (`SetConsoleCursorPosition`,
   `FillConsoleOutputCharacter`... are still no-ops), so programs that draw
   through them rather than VT sequences work and `less` can be the real
   one (git pages through NovaOS's own `less` today).
+- Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
+  Windows Terminal-style hosts) exist only as functions that fail.
 - Move files, the registry, process creation and the console off the big
   kernel lock.
 - Security: enforce tokens and ACLs on objects (`AccessCheck` already
@@ -128,8 +128,10 @@ named program or test demonstrates it.
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,
   control-method power buttons and `_PTS`/`_WAK`.  Still to do: the lid
   switch, thermal zones, wake devices (USB keyboards), a real SCI
-  interrupt and PCI interrupt routing from `_PRT`; display modes after S3
-  on adapters other than the Bochs/QEMU one; HPET or TSC-deadline timers.
+  interrupt and PCI interrupt routing from `_PRT`; HPET or TSC-deadline
+  timers.  (Display modes after S3 are set again on every adapter NovaOS
+  drives: the VBE ones, QXL, virtio-vga, VMware SVGA and Cirrus.  Real
+  GPUs have no driver yet.)
 - Boot and test on real hardware, not only QEMU.
 
 ---
