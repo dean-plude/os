@@ -1330,8 +1330,9 @@ build machine, and DXVK is the faster, more complete path anyway.
 - `sleeptest.exe` sleeps and then checks the clock, threads and files.
   Tested in QEMU (OVMF, q35) with 1, 2 and 4 CPUs, three sleeps in a row,
   and with a USB keyboard and mouse and HD Audio attached.
-- Not yet: wake devices such as USB keyboards, display modes on adapters
-  other than the Bochs/QEMU one.
+- Not yet: wake devices such as USB keyboards.  (Display modes on other
+  adapters came later: see "Display adapters: QXL, virtio, VMware, Cirrus,
+  and their modes after sleep".)
 
 ## ACPI namespace (uACPI): batteries and AC power
 
@@ -1473,6 +1474,35 @@ TLS already in the tree.
   encode, decoding it back, and streaming a WAV over HTTPS from the host
   with TLS 1.3 and with TLS 1.2; with `tls_verify` on (ffmpeg's default) a
   self-signed server is refused as an untrusted root.
+
+## A pager for git: `less.exe`
+
+`git log`, `diff` and `config --list` on the Terminal now page without
+`--no-pager`.  MinGit has no `less`, git's default pager, so git stopped
+with "unable to execute pager 'less'" (it does on Windows too).  NovaOS
+now ships `less.exe` in `C:\Windows\System32` (and SysWOW64), on `PATH`,
+where git finds it:
+
+- It shows a screenful (the console's rows), then asks `-- More --` and
+  takes single keys, through the per-key console input of Phase 17.2:
+  Space (or `f`, Page Down) the next page, Enter (or `j`, Down) one more
+  line, `d` half a page, `/text` and Enter skips to the next line
+  containing the text, `q` (or Esc) quits, and git then stops quietly.
+  The prompt is erased as the text moves on.  On a console that only
+  hands over whole lines it asks for a line instead (Enter, a number,
+  `/text` or `q`).
+- Output that fits on one screen goes straight through, as with git's
+  `LESS=FRX`, and so does everything when the output is not a console
+  (`git log | find` is unchanged).  Color escapes pass through, files
+  given as arguments (`less a.txt`) work, and options are accepted.
+- Why not the real `less`: its Windows build draws through the console
+  screen-buffer calls (`SetConsoleCursorPosition`, `FillConsoleOutput*`),
+  which are still no-ops, so it would draw garbage; it can come once they
+  drive the Terminal's screen.
+- The nightly corpus's `git log` test no longer passes `--no-pager`.
+- The test tools (`tools/selftest.py`, `appcorpus.py`) match a program's
+  expected output without the kernel's `[UM]`/`[SCHED]` log lines, which
+  share the serial port and could land mid-line (`[[UM] jq.exe ... 40,2]`).
 
 ## USB hubs and report-protocol HID (Phase 18.1)
 
@@ -1643,34 +1673,6 @@ and the kernel enforces those DACLs.
   partition, nor on a host test volume with 5,100 descriptors.
 - **Not done**: hard links (`CreateHardLink`) are still to come.
 
-## A pager for git: `less.exe`
-
-`git log`, `diff` and `config --list` on the Terminal now page without
-`--no-pager`.  MinGit has no `less`, git's default pager, so git stopped
-with "unable to execute pager 'less'" (it does on Windows too).  NovaOS
-now ships `less.exe` in `C:\Windows\System32` (and SysWOW64), on `PATH`,
-where git finds it:
-
-- It shows a screenful (the console's rows), then asks `-- More --` and
-  takes single keys, through the per-key console input of Phase 17.2:
-  Space (or `f`, Page Down) the next page, Enter (or `j`, Down) one more
-  line, `d` half a page, `/text` and Enter skips to the next line
-  containing the text, `q` (or Esc) quits, and git then stops quietly.
-  The prompt is erased as the text moves on.  On a console that only
-  hands over whole lines it asks for a line instead (Enter, a number,
-  `/text` or `q`).
-- Output that fits on one screen goes straight through, as with git's
-  `LESS=FRX`, and so does everything when the output is not a console
-  (`git log | find` is unchanged).  Color escapes pass through, files
-  given as arguments (`less a.txt`) work, and options are accepted.
-- Why not the real `less`: its Windows build draws through the console
-  screen-buffer calls (`SetConsoleCursorPosition`, `FillConsoleOutput*`),
-  which are still no-ops, so it would draw garbage; it can come once they
-  drive the Terminal's screen.
-- The nightly corpus's `git log` test no longer passes `--no-pager`.
-- The test tools (`tools/selftest.py`, `appcorpus.py`) match a program's
-  expected output without the kernel's `[UM]`/`[SCHED]` log lines, which
-  share the serial port and could land mid-line (`[[UM] jq.exe ... 40,2]`).
 ## Phase 17: kernel and API correctness
 
 - **Every thread has a real `ETHREAD`** (17.1): `PsGetCurrentThread` used
@@ -1730,6 +1732,33 @@ where git finds it:
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,
   `$(...)` and redirections to `/dev/null`; the core self-tests pass.
+
+## Display adapters: QXL, virtio, VMware, Cirrus, and their modes after sleep
+
+- **More adapters with the DISPI registers** (`kernel/hal/display.c`): the
+  VBE driver now also drives QEMU's QXL (`-vga qxl`), virtio-vga
+  (`-vga virtio`) and VMware SVGA II (`-vga vmware`, whose VGA core has
+  them, with the framebuffer in BAR1) besides the standard VGA,
+  bochs-display and VirtualBox's VBoxVGA.  The adapter table follows
+  OVMF's QemuVideoDxe (BSD-2-Clause-Patent).  All of them get run-time
+  resolutions and Settings > Display names the adapter.
+- **Cirrus Logic GD5446** (`-vga cirrus`): 800x600 and 640x480 at 32 bpp,
+  set with QemuVideoDxe's VGA and Cirrus register tables.  The bootloader
+  now only picks 32-bit GOP modes, so Cirrus boots in 800x600 instead of
+  its 24-bit 1024x768 mode, which drew garbled.
+- **Modes after S3** (`DisplayResume`): the driver sets the current mode
+  again on wake from what it knows, not from registers saved through I/O
+  ports, so bochs-display (MMIO only) and Cirrus come back too; the page
+  that was on screen stays on screen, and the desktop is redrawn in case
+  video memory was lost.
+- `tools/novarun.py --display NAME` boots on another adapter (`cirrus`,
+  `vmware`, `qxl`, `virtio`, or a `-device` such as `bochs-display`).
+- Tested in QEMU on all six adapters: switch to a non-boot mode with
+  `disptest W H`, `sleeptest`, `system_wakeup`, and the desktop is back in
+  that mode; also with page flipping (`-global VGA.vgamem_mb=64`).
+- Not yet: real GPUs (Intel, AMD, NVIDIA) and virtio-gpu without VGA have
+  no driver, so they stay on the UEFI framebuffer, and after sleep they
+  show whatever the firmware's wake path sets up, which is often nothing.
 
 ## ACPI: SCI interrupt, lid, thermal zones, wake devices, _PRT (Phase 18.6)
 
@@ -1807,6 +1836,77 @@ where git finds it:
   exercise the one-shot mode; TSC-deadline mode is untested.
 - Not yet: waitable timers (`SetWaitableTimer`) still fire on the 10 ms
   tick.
+
+## IPv6, HTTP/2 and virtio-net (Phase 18.8)
+
+- **virtio-net** (`kernel/drivers/virtio_net.c`): virtio 1.0 network
+  adapters (QEMU `virtio-net-pci`), through the modern PCI capabilities;
+  one receive and one transmit queue of 64 buffers, polled like the e1000
+  driver.  The network stack tries the e1000 first, then virtio-net, and
+  sets either up again after sleep.
+- **IPv6** in lwIP: a link-local address, SLAAC addresses from router
+  advertisements, DNS servers from RDNSS (added beside DHCP's, not in their
+  place: a small change to `nd6.c`), MLD, and AAAA lookups (IPv6 first
+  when there is a global IPv6 address).  `ipconfig` shows the addresses,
+  `ping -6`, `curl -6` and `wget -6` force IPv6 (`-4` forces IPv4), and
+  `curl http://[addr]/` takes literals.
+- **Winsock over IPv6**: `AF_INET6` sockets (dual-stack: IPv4 peers show
+  as v4-mapped), `sockaddr_in6` in `connect`, `bind`, `accept`,
+  `sendto`/`recvfrom` and the name calls; `getaddrinfo` returns IPv6 and
+  IPv4 addresses (with `AI_V4MAPPED`, `AI_CANONNAME`, numeric hosts with
+  `%zone`, service names), and `inet_pton`/`inet_ntop`,
+  `WSAStringToAddress`/`WSAAddressToString` and `getnameinfo` handle IPv6.
+  `netcat` resolves with `getaddrinfo` and takes `-4`/`-6`/`-p`.
+- **winhttp.dll** (`userland/winhttp`) became a real HTTP client: sessions,
+  connections and requests, request headers, request bodies
+  (`WinHttpWriteData`), `WinHttpQueryHeaders` (by index, name, number or
+  date), `WinHttpQueryDataAvailable`/`WinHttpReadData`, redirects, Basic
+  credentials, `WinHttpCrackUrl`/`WinHttpCreateUrl`, options and time-outs,
+  and asynchronous sessions that report through the status callback.
+  HTTPS goes through Schannel (secur32); with
+  `WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL` it offers `h2` by ALPN and speaks
+  HTTP/2 through [nghttp2](https://nghttp2.org/) 1.64.0 (MIT, vendored in
+  `third_party/nghttp2`) when the server picks it
+  (`WINHTTP_OPTION_HTTP_PROTOCOL_USED` says which).  Each request opens its
+  own connection; there is no proxy support.
+- **Tests**: `tools/selftest.py --suite network` boots twice with a
+  virtio-net card.  On QEMU's user network it checks `ipconfig`, `ping`,
+  Winsock over IPv4 and `httptest suite` (`userland/programs/httptest.c`:
+  HTTP/2 negotiated, a 300 KB body, POST, redirects, a refused untrusted
+  certificate, chunked HTTP/1.1, the asynchronous API) against
+  `tools/h2server.js` (Node).  On an IPv6-only network, `tools/v6peer.py`
+  (a router, DNS and HTTP server reached through a QEMU datagram netdev,
+  so the host needs no IPv6) checks SLAAC and RDNSS, `ping -6`, `curl -6`
+  and Winsock over IPv6.
+- Also fixed: the USB hot-plug thread could be enumerating when the
+  machine went to sleep, so after the wake its command timed out and the
+  USB keyboard did not come back (an intermittent `powertest` failure).
+  Sleep now waits for it, and it stays idle until the controller is
+  running again.
+
+## Display persistence (Phase 18.9)
+
+- **The chosen resolution survives a restart.**  Choosing a mode in
+  Settings > Display, or `ChangeDisplaySettings` with
+  `CDS_UPDATEREGISTRY`, saves it where Windows keeps it,
+  `HKLM\SYSTEM\CurrentControlSet\Control\Video\{NovaOS-Display}\0000`
+  (`DefaultSettings.XResolution`, `YResolution`, `BitsPerPel`), which
+  reaches the disk with the rest of drive C:.  At boot, once drive C: and
+  the registry are loaded and before the desktop starts, the kernel
+  switches to that mode if the adapter has it (`[DISPLAY] Restored the
+  saved mode WxH`); on another adapter without it, NovaOS stays in the
+  boot mode.
+- **Windows grow back.**  A window a smaller mode shrank or pushed aside
+  remembers the frame it had and gets it back when a later mode has room
+  for it, unless it was moved or resized in between.  Maximized windows
+  already followed the work area.
+- `disptest` checks both (46 checks): a 1000x640 window shrinks to fit
+  800x600 and comes back to its size and place, and `CDS_UPDATEREGISTRY`
+  writes the registry values.  The core self-tests save 1024x768 with
+  `disptest 1024 768`, and a second boot on the same drive C: runs
+  `disptest saved 1024 768`, which passes only if NovaOS came up in that
+  mode.
+- Not yet: a per-monitor layout (NovaOS drives one display).
 
 ## Older USB controllers: EHCI, OHCI and UHCI
 

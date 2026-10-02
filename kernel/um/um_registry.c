@@ -311,6 +311,25 @@ void um_registry_set_dword(const char *path, const char *name, UINT32 val)
     um_unlock(&g_reg);
 }
 
+/* Read a REG_DWORD from the kernel: false when the key or value is
+ * missing or not a DWORD */
+bool um_registry_get_dword(const char *path, const char *name, UINT32 *out)
+{
+    UINT16 w[256], nm[128];
+    UINT32 n = 0, m = 0;
+    for (; path[n] && n < 255; n++) w[n] = (UINT8)path[n];
+    for (; name[m] && m < 127; m++) nm[m] = (UINT8)name[m];
+    bool ok = false;
+    um_lock(&g_reg);
+    RegKey *k = NULL;
+    if (walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) {
+        RegValue *v = find_value(k, nm, m);
+        if (v && v->type == 4 /* REG_DWORD */ && v->len == 4) { memcpy(out, v->data, 4); ok = true; }
+    }
+    um_unlock(&g_reg);
+    return ok;
+}
+
 static void defaults(void)
 {
     /* HKLM\SOFTWARE */

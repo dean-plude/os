@@ -40,6 +40,9 @@ static volatile bool g_ready;
 static volatile bool g_thread_up;
 static volatile bool g_hubs_pending;
 static volatile bool g_forget_all;       /* woke from S3: drop every device */
+static volatile int  g_work;             /* the usb thread is enumerating or removing */
+static volatile bool g_sleeping;         /* between UsbPrepareSleep and UsbResume */
+static bool          g_work_held;        /* UsbPrepareSleep took g_work */
 
 /* ---- helpers for the controller drivers ---- */
 
@@ -534,15 +537,22 @@ static void usb_thread(void *arg)
     g_thread_up = true;
     for (;;) {
         sched_sleep_until(NULL, sched_ticks() + 2);
+        if (g_sleeping) continue;
+        /* (sleep waits for this round to end, so no transfer is cut off by
+         * S3 and none runs while UsbResume resets the controllers) */
+        UsbFlagTake(&g_work);
+        if (g_sleeping) { UsbFlagDrop(&g_work); continue; }
         if (g_forget_all) {                /* after S3: the old devices are gone */
             g_forget_all = false;
             for (int i = 0; i < MAX_DEVS; i++)
                 if (g_devs[i] && !g_devs[i]->parent && g_devs[i]->gone) remove_dev(g_devs[i]);
         }
-        if (!g_ready) continue;
-        for (int i = 0; i < g_nhc; i++) scan_ports(g_hcs[i], false);
-        service_hubs();
-        UsbHidSyncLeds();
+        if (g_ready) {
+            for (int i = 0; i < g_nhc; i++) scan_ports(g_hcs[i], false);
+            service_hubs();
+            UsbHidSyncLeds();
+        }
+        UsbFlagDrop(&g_work);
     }
 }
 
@@ -595,13 +605,27 @@ int UsbInit(void)
 void UsbPrepareSleep(void)
 {
     if (!g_ready) return;
+    /* The usb thread finishes what it is doing and waits until the wake
+     * (bounded: a stuck enumeration must not keep the machine awake) */
+    g_sleeping = true;
+    for (UINT64 end = sched_ticks() + 300; !g_work_held && sched_ticks() < end;) {
+        if (!__atomic_exchange_n(&g_work, 1, __ATOMIC_ACQUIRE)) g_work_held = true;
+        else sched_yield();
+    }
+    if (!g_work_held) kprintf("[USB] still enumerating: sleeping anyway\n");
     for (int i = 0; i < g_nhc; i++)
         if (g_hcs[i]->ops->prepare_sleep) g_hcs[i]->ops->prepare_sleep(g_hcs[i]);
 }
 
+static void work_release(void)
+{
+    g_sleeping = false;
+    if (g_work_held) { g_work_held = false; UsbFlagDrop(&g_work); }
+}
+
 void UsbResume(void)
 {
-    if (!g_ready) return;
+    if (!g_ready) { work_release(); return; }
     g_ready = false;
     IrqState s = spin_lock_irqsave(&g_usb_lock);
     for (int i = 0; i < MAX_DEVS; i++) {
@@ -618,4 +642,5 @@ void UsbResume(void)
     }
     g_forget_all = true;
     g_ready = true;
+    work_release();
 }

@@ -842,11 +842,11 @@ NTSTATUS NTAPI NtNovaDebugPrint(const char *s, ULONG len) { return SC(NtNovaDebu
 NTSTATUS NTAPI NtNovaGetRandom(void *buf, ULONG len)      { return SC(NtNovaGetRandom, P(buf), U(len)); }
 
 /* sockets: handles are small numbers; results are counts or -errno */
-INT_PTR  NTAPI NtNovaSocket(ULONG type)                          { return SCP(NtNovaSocket, U(type)); }
-LONG_PTR NTAPI NtNovaSockConnect(INT_PTR h, ULONG ip, USHORT port) { return SCP(NtNovaSockConnect, S(h), U(ip), U(port)); }
+INT_PTR  NTAPI NtNovaSocket(ULONG type, ULONG family)            { return SCP(NtNovaSocket, U(type), U(family)); }
+LONG_PTR NTAPI NtNovaSockConnect(INT_PTR h, const void *sa, ULONG len) { return SCP(NtNovaSockConnect, S(h), P(sa), U(len)); }
 LONG_PTR NTAPI NtNovaSockSend(INT_PTR h, const void *buf, ULONG len) { return SCP(NtNovaSockSend, S(h), P(buf), U(len)); }
 LONG_PTR NTAPI NtNovaSockRecv(INT_PTR h, void *buf, ULONG len)   { return SCP(NtNovaSockRecv, S(h), P(buf), U(len)); }
-LONG_PTR NTAPI NtNovaSockBind(INT_PTR h, ULONG ip, USHORT port)  { return SCP(NtNovaSockBind, S(h), U(ip), U(port)); }
+LONG_PTR NTAPI NtNovaSockBind(INT_PTR h, const void *sa, ULONG len) { return SCP(NtNovaSockBind, S(h), P(sa), U(len)); }
 LONG_PTR NTAPI NtNovaSockListen(INT_PTR h, ULONG backlog)        { return SCP(NtNovaSockListen, S(h), U(backlog)); }
 INT_PTR  NTAPI NtNovaSockAccept(INT_PTR h, void *addr)           { return SCP(NtNovaSockAccept, S(h), P(addr)); }
 LONG_PTR NTAPI NtNovaSockCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out)
@@ -861,7 +861,7 @@ LONG_PTR NTAPI NtNovaSockRecvFrom(INT_PTR h, void *buf, ULONG len, void *addr)
 {
     return SCP(NtNovaSockRecvFrom, S(h), P(buf), U(len), P(addr));
 }
-LONG_PTR NTAPI NtNovaResolve(const char *name, ULONG *ip)        { return SCP(NtNovaResolve, P(name), P(ip)); }
+LONG_PTR NTAPI NtNovaResolve(const char *name, void *sa, ULONG max, ULONG family) { return SCP(NtNovaResolve, P(name), P(sa), U(max), U(family)); }
 INT_PTR  NTAPI NtNovaAudioOpen(ULONG frames)                      { return SCP(NtNovaAudioOpen, U(frames)); }
 LONG_PTR NTAPI NtNovaAudioWrite(INT_PTR h, const void *frames, ULONG n) { return SCP(NtNovaAudioWrite, S(h), P(frames), U(n)); }
 LONG_PTR NTAPI NtNovaAudioCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out)

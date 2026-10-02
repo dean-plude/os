@@ -979,12 +979,19 @@ void WmDisplayChanged(int old_w, int old_h, int old_s)
     g_cursor_shown = false;
 
     /* Windows: maximized ones fill the new work area, tiled ones go back
-     * to their own size, and everything is kept on screen */
+     * to their own size, and everything is kept on screen.  A window an
+     * earlier, smaller mode shrank or pushed aside grows back towards the
+     * frame it had (unless it was moved or resized since). */
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
         if (!g_used[i]) continue;
         WND *w = &g_windows[i];
         if (w->maximized) { w->frame = g_work; continue; }
         if (w->snapped) { w->frame = w->restore; w->snapped = false; }
+        if (w->wanted.w) {
+            if (memcmp(&w->frame, &w->shrunk, sizeof(GdiRect))) w->wanted.w = 0;   /* moved since */
+            else w->frame = w->wanted;
+        }
+        GdiRect before = w->frame;
         if (!w->fixed_size && !w->popup) {
             if (w->frame.w > g_work.w) w->frame.w = g_work.w;
             if (w->frame.h > g_work.h) w->frame.h = g_work.h;
@@ -992,6 +999,12 @@ void WmDisplayChanged(int old_w, int old_h, int old_s)
         if (w->frame.x + w->frame.w > nw) w->frame.x = nw - w->frame.w;
         if (w->frame.x < 0) w->frame.x = 0;
         if (!w->popup) clamp_to_work(w);
+        if (memcmp(&w->frame, &before, sizeof(GdiRect))) {
+            if (!w->wanted.w) w->wanted = before;
+            w->shrunk = w->frame;
+        } else {
+            w->wanted.w = 0;                  /* it has its own frame again */
+        }
     }
     GdiCacheInvalidate();
     mark_dirty();

@@ -1,11 +1,13 @@
 /*
  * display.h — display adapter driver: modes and page flipping
  *
- * Two back ends:
- *   - Bochs/QEMU VBE "DISPI" (QEMU -vga std, -device bochs-display,
- *     VirtualBox's VBoxVGA): any resolution the adapter's video memory
- *     holds, set at run time, and two pages of video memory flipped by
- *     the display start offset, so a frame is never seen half written.
+ * Three back ends:
+ *   - Bochs/QEMU VBE "DISPI" (QEMU -vga std, qxl, virtio and vmware,
+ *     -device bochs-display, VirtualBox's VBoxVGA): any resolution the
+ *     adapter's video memory holds, set at run time, and two pages of
+ *     video memory flipped by the display start offset, so a frame is
+ *     never seen half written.
+ *   - Cirrus Logic GD5446 (QEMU -vga cirrus): 800x600 and 640x480.
  *   - The UEFI GOP framebuffer the bootloader handed over: the boot mode
  *     only, no flipping (every other adapter).
  *
@@ -27,8 +29,12 @@ typedef struct {
 /* Probe the adapter (after PciInitialize).  Never changes the mode. */
 void DisplayInit(const BootFramebuffer *boot);
 
-/* "Bochs VBE", or "UEFI GOP framebuffer" */
+/* "Bochs VBE", "Cirrus Logic" or "UEFI GOP framebuffer" */
 const char *DisplayDriverName(void);
+
+/* The adapter the driver found ("QEMU QXL", "VMware SVGA II", ...);
+ * NULL on the GOP framebuffer */
+const char *DisplayAdapterName(void);
 
 /* The modes the adapter can show, largest first; 32 bits per pixel. */
 int  DisplayModeCount(void);
@@ -39,7 +45,8 @@ DisplayMode DisplayBootMode(void);
 
 /* The mode the user chose (Settings, or ChangeDisplaySettings with
  * CDS_UPDATEREGISTRY): what a temporary mode change returns to.  Starts
- * as the boot mode; kept until restart. */
+ * as the boot mode; DesktopSaveDisplayMode also keeps it in the registry
+ * for the next boot. */
 DisplayMode DisplayDefaultMode(void);
 void DisplaySetDefaultMode(int w, int h);
 
@@ -53,3 +60,9 @@ bool DisplaySetMode(int w, int h);
 bool    DisplayCanFlip(void);
 UINT32 *DisplayBackPage(void);
 void    DisplayFlip(void);
+
+/* After S3: the adapter lost its mode while powered off; set the current
+ * one again (video memory is not cleared; the caller redraws anyway, as
+ * real hardware may not keep it).  Nothing on the GOP framebuffer, which
+ * shows whatever the firmware's wake path set up. */
+void DisplayResume(void);

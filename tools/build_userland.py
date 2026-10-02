@@ -67,7 +67,7 @@ DLLS = [
     ('dnsapi',   ['kernel32', 'ntdll'],           0x7FFBC0000000),
     ('pdh',      ['kernel32', 'ntdll'],           0x7FFBD0000000),
     ('powrprof', ['kernel32', 'ntdll'],           0x7FFBE0000000),
-    ('winhttp',  ['kernel32', 'ntdll'],           0x7FFBF0000000),
+    ('winhttp',  ['secur32', 'ws2_32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFBF0000000),
     ('mswsock',  ['ws2_32', 'kernel32', 'ntdll'], 0x7FFC00000000),
     ('crypt32',  ['kernel32', 'ntdll'],           0x7FFC10000000),
     ('dbghelp',  ['kernel32', 'ntdll'],           0x7FFC20000000),
@@ -188,7 +188,10 @@ MB_FLAGS = ['-I', os.path.join(MBEDTLS, 'include'), '-I', os.path.join(MBEDTLS, 
             '-DMBEDTLS_CONFIG_FILE="mbedtls_user_config.h"',
             # as NetSurf builds it: Mbed TLS's POSIX/GCC paths, not MSVC's
             '-std=gnu99', '-w', '-D_NOVAOS', '-DNOVA_POSIX', '-U_WIN32', '-U_WIN64', '-fgnuc-version=4.2.1']
-DLL_CFLAGS = {'secur32': MB_FLAGS}
+# nghttp2 (third_party/nghttp2, MIT): winhttp.dll's HTTP/2
+NGHTTP2 = os.path.join(os.path.dirname(HERE), 'third_party', 'nghttp2', 'lib')
+NG_FLAGS = ['-I', os.path.join(NGHTTP2, 'includes'), '-DNGHTTP2_STATICLIB']
+DLL_CFLAGS = {'secur32': MB_FLAGS, 'winhttp': NG_FLAGS}
 
 def mbedtls_objs(odir):
     """Mbed TLS's library and the TLS glue for this architecture, compiled
@@ -214,6 +217,26 @@ def mbedtls_objs(odir):
         sys.stderr.write('\n'.join(errors[:4]))
         sys.exit(1)
     return [os.path.join(odir, 'mbedtls_' + os.path.basename(s)[:-2] + '.obj') for s in srcs]
+
+def nghttp2_objs(odir):
+    """nghttp2's library, compiled in parallel (an object newer than its
+    source and the library's headers is reused)"""
+    from concurrent.futures import ThreadPoolExecutor
+    srcs = [os.path.join(NGHTTP2, f) for f in sorted(os.listdir(NGHTTP2)) if f.endswith('.c')]
+    newest_h = max(os.stat(os.path.join(NGHTTP2, h)).st_mtime for h in os.listdir(NGHTTP2) if h.endswith('.h'))
+    objs = [os.path.join(odir, 'nghttp2_' + os.path.basename(s)[:-2] + '.obj') for s in srcs]
+    jobs = [(s, o) for s, o in zip(srcs, objs)
+            if not (os.path.exists(o) and os.stat(o).st_mtime > max(os.stat(s).st_mtime, newest_h))]
+    flags = cflags() + NG_FLAGS + ['-I', NGHTTP2, '-w', '-DWIN32', '-DHAVE_WINDOWS_H', '-DHAVE_GETTICKCOUNT64']
+    def one(job):
+        r = subprocess.run(['clang'] + flags + ['-c', job[0], '-o', job[1]], capture_output=True, text=True)
+        return None if r.returncode == 0 else job[0] + ':\n' + r.stderr
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+        errors = [e for e in ex.map(one, jobs) if e]
+    if errors:
+        sys.stderr.write('\n'.join(errors[:4]))
+        sys.exit(1)
+    return objs
 
 def flavor_obj(odir, legacy):
     """msvcrt.dll and ucrtbase.dll share the C runtime's objects; this one
@@ -356,6 +379,8 @@ def build_pass(arch):
         extra = []
         if name == 'secur32':
             objs += mbedtls_objs(odir)
+        if name == 'winhttp':
+            objs += nghttp2_objs(odir)
         if name in ('testdll', 'ws2_32', 'ole32', 'oleaut32'):
             objs.append(tlssup)
         if arch == 'x86':
@@ -406,7 +431,7 @@ def build_pass(arch):
             res = [os.path.join(odir, f'prog_{name}.res')]
             run([build_netsurf.llvm_rc(), '/FO', res[0], rc])
         libs = ['msvcrt', 'kernel32', 'ntdll', 'ws2_32', 'user32', 'gdi32', 'testdll', 'vcruntime140',
-                'advapi32', 'ole32', 'oleaut32', 'comctl32', 'shell32', 'msi', 'winmm']
+                'advapi32', 'ole32', 'oleaut32', 'comctl32', 'shell32', 'msi', 'winmm', 'winhttp']
         run(['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib'] +
             (['/safeseh:no', '/machine:x86'] if arch == 'x86' else []) +
             [f'/out:{exe}'] + crt0_objs + [tlssup, obj] + res + [os.path.join(odir, l + '.lib') for l in libs])

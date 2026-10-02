@@ -20,7 +20,7 @@ networking; the host is 10.0.2.2).
 
 Other tools (tools/selftest.py) import the Nova class to drive a boot.
 """
-import argparse, json, os, re, shutil, socket, subprocess, sys, tempfile, time
+import argparse, json, os, re, shlex, shutil, socket, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OVMF = next((p for p in ('/usr/share/ovmf/OVMF.fd', '/usr/share/OVMF/OVMF_CODE.fd',
@@ -126,14 +126,15 @@ class Nova:
     """One NovaOS boot in QEMU with its Terminal open and mirrored to serial"""
 
     def __init__(self, img=None, work=None, puts=(), mem=2048, smp=2, data_mb=1024, wav=None,
-                 extra_args=(), boot_timeout=300, net=False):
+                 extra_args=(), boot_timeout=300, net=False, keep_data=False, vga=('-vga', 'std')):
         self.work = work or tempfile.mkdtemp(prefix='novarun')
         os.makedirs(self.work, exist_ok=True)
         data, self.serial_path, sock = (os.path.join(self.work, n) for n in ('data.img', 'serial.log', 'qmp.sock'))
         for p in (self.serial_path, sock):
             if os.path.exists(p):
                 os.unlink(p)
-        make_data(data, puts, data_mb)
+        if not (keep_data and os.path.exists(data)):     # keep_data: the drive C: an earlier boot saved
+            make_data(data, puts, data_mb)
         self.wav = wav
         self.qmp = None
         self.q = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35', '-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
@@ -141,7 +142,7 @@ class Nova:
                                    '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
                                    '-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on',
                                    '-drive', f'format=raw,file={data}',
-                                   '-serial', f'file:{self.serial_path}', '-vga', 'std', '-display', 'none',
+                                   '-serial', f'file:{self.serial_path}'] + list(vga) + ['-display', 'none',
                                    '-nic', 'user,model=e1000e' if net else 'none',
                                    '-qmp', f'unix:{sock},server,nowait'] +
                                   (['-audiodev', f'wav,id=snd0,path={os.path.abspath(wav)},out.frequency=48000',
@@ -229,6 +230,13 @@ class Nova:
             shutil.rmtree(self.work, ignore_errors=True)
 
 
+def vga_args(name):
+    """QEMU arguments for the display adapter @name: a -vga type, or a -device"""
+    if name in ('std', 'cirrus', 'vmware', 'qxl', 'virtio', 'none'):
+        return ('-vga', name)
+    return ('-vga', 'none', '-device', name)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--put', action='append', default=[])
@@ -240,11 +248,15 @@ def main():
     ap.add_argument('--img', default=os.path.join(ROOT, 'build', 'nova.img'))
     ap.add_argument('--wav')
     ap.add_argument('--net', action='store_true', help='a network card on QEMU user networking (the host is 10.0.2.2)')
+    ap.add_argument('--display', default='std',
+                    help='the display adapter: a -vga name (std, cirrus, vmware, qxl, virtio) or a -device name (bochs-display)')
+    ap.add_argument('--extra', action='append', default=[], help='more QEMU arguments (split like a shell)')
     ap.add_argument('commands', nargs='*')
     a = ap.parse_args()
 
     try:
-        nova = Nova(a.img, a.keep, [p.split('=', 1) for p in a.put], a.mem, a.smp, a.data_mb, a.wav, net=a.net)
+        nova = Nova(a.img, a.keep, [p.split('=', 1) for p in a.put], a.mem, a.smp, a.data_mb, a.wav, net=a.net,
+                    vga=vga_args(a.display), extra_args=[x for e in a.extra for x in shlex.split(e)])
     except RuntimeError as e:
         sys.exit(str(e))
     try:

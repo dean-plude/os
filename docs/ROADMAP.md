@@ -78,7 +78,10 @@ named program or test demonstrates it.
   Still open: recording (`waveIn`, capture endpoints), `dsound.dll`
   (DirectSound), XAudio2, MIDI, endpoint volume (`IAudioEndpointVolume`),
   and testing VLC and Audacity on it.
-- Display: GPU-backed or at least faster blits; mode changes.
+- Display: GPU-backed or at least faster blits.  ~~Mode changes~~ Done:
+  run-time resolutions (Phase 12 onwards); the chosen one is kept across
+  restarts, and windows a smaller mode shrank grow back when it is undone
+  (Phase 18.9).
 - NetSurf: SVG; redrawing pages a script changes after layout.
 
 ### Application coverage
@@ -122,7 +125,11 @@ named program or test demonstrates it.
   Done: the installer formats C: as NTFS (or FAT32), and files there keep
   security descriptors that opening, deleting and renaming obey.  Hard
   links are still to do.  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
-- IPv6, HTTP/2.
+- ~~IPv6, HTTP/2~~ Done (Phase 18.8): lwIP's IPv6 (SLAAC, RDNSS, MLD),
+  dual-stack Winsock with `getaddrinfo`, `ping -6` and `curl -6`; a
+  virtio-net driver; `winhttp` on Schannel with HTTP/2 by ALPN (nghttp2).
+  The `network` self-test suite checks both.  Still to do: DHCPv6,
+  connection reuse in `winhttp`, WinHTTP WebSockets, HTTP/3.
 - ~~USB (xHCI) with HID keyboards and mice~~ Done: keyboards, mice,
   tablets and touch screens in report protocol, on root ports or behind
   hubs, with hot-plug; USB mass storage (FAT and NTFS sticks as the next
@@ -139,8 +146,10 @@ named program or test demonstrates it.
   a real interrupt through the I/O APIC and PCI interrupt routing from
   `_PRT` (Phase 18.6).  Still to do: CPU throttling for passive cooling;
   GPE blocks other than `\_GPE`; routing behind PCI bridges; USB wake
-  tested only up to what QEMU emulates (it has no USB-to-platform wake);
-  display modes after S3 on adapters other than the Bochs/QEMU one.
+  tested only up to what QEMU emulates (it has no USB-to-platform wake).
+  (Display modes after S3 are set again on every adapter NovaOS drives:
+  the VBE ones, QXL, virtio-vga, VMware SVGA and Cirrus.  Real GPUs have
+  no driver yet.)
 - ~~HPET or TSC-deadline timers~~ Done (Phase 18.7): the HPET calibrates
   the TSC and the APIC timer, which is one-shot (TSC-deadline where the
   CPU has it), armed for the next tick or the earliest `Sleep` or wait

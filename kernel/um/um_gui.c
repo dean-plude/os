@@ -730,7 +730,7 @@ static UINT64 display_set(UmProcess *p, UINT64 ptr)
     if (!DisplayModeSupported(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_BADMODE;
     if (flags & CDS_TEST) return DISP_CHANGE_SUCCESSFUL;
     if (!DesktopSetDisplayMode(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_FAILED;
-    if (flags & CDS_UPDATEREGISTRY) DisplaySetDefaultMode(m.w, m.h);
+    if (flags & CDS_UPDATEREGISTRY) DesktopSaveDisplayMode(m.w, m.h);
     g_fullscreen_proc = !reset && (flags & CDS_FULLSCREEN) && !(flags & CDS_UPDATEREGISTRY) ? p : NULL;
     return DISP_CHANGE_SUCCESSFUL;
 }

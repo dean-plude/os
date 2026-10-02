@@ -90,18 +90,24 @@ every part, phase by phase.
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
   either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
   file ACLs, and other drives); Intel e1000/e1000e
-  network cards; Intel High Definition Audio (output) with a kernel mixer;
+  and virtio-net network cards; Intel High Definition Audio (output) with a kernel mixer;
   PS/2 keyboards and mice; USB (xHCI, EHCI, OHCI and UHCI controllers, any
   number of each) with hubs and HID keyboards (lock-key LEDs included),
   mice, tablets and touch screens (report protocol) and USB sticks (FAT and
-  NTFS, as the next drive letter, hot-plugged); CMOS clock; a Bochs/QEMU VBE
-  display driver (resolutions switched at run time, page flipping) with the
-  UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
+  NTFS, as the next drive letter, hot-plugged); CMOS clock; a VBE display
+  driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
+  bochs-display and VirtualBox (resolutions switched at run time, page
+  flipping, the mode set again after sleep and kept across restarts) and a
+  Cirrus GD5446 one, with
+  the UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
   sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
   devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
   a real interrupt through the I/O APIC).
-- **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
-  TLS with the Mozilla root store.
+- **Networking**: lwIP (TCP/IP over IPv4 and IPv6: DHCP, SLAAC, DNS over
+  either), an HTTP/1.1 client, and Mbed TLS with the Mozilla root store.
+  Winsock (`ws2_32`) speaks IPv6 and dual-stack sockets with `getaddrinfo`;
+  `winhttp` is a real HTTP client over Schannel TLS, with HTTP/2 by ALPN
+  (nghttp2).
 - **Windows userland** (`userland/`): about 35 system DLLs written from
   scratch and compiled with clang for `x86_64-pc-windows-msvc`, and again
   for `i686` in `SysWOW64`: `ntdll`, `kernel32`, `msvcrt`/`ucrtbase` with
@@ -186,7 +192,8 @@ Rebuild the ISO from a fresh build with
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
   tones played), `powertest` (closing the lid in `tests/acpi/lid-thermal.asl`
   sleeps, a USB key and the lid wake it, the thermal zone's readings), and last `crash kernel`, a deliberate kernel fault whose
-  serial log must show a backtrace with function names.
+  serial log must show a backtrace with function names; then a second boot
+  on the same drive C: checks the display mode `disptest 1024 768` saved.
 - **Graphics tests**: installs Mesa 3D and DXVK with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
   stages the downloads), then runs `tools/gltest` (14 tests) and
@@ -271,7 +278,7 @@ os/
 │   ├── um/               # Windows programs: processes, threads, loader, NT services,
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
-│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, USB core, xHCI/EHCI/OHCI/UHCI, hubs, HID, mass storage
+│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, virtio-net, USB core, xHCI/EHCI/OHCI/UHCI, hubs, HID, mass storage
 │   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, HPET, I/O APIC, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
@@ -287,7 +294,7 @@ os/
 │   ├── programs/         # cmd.exe, msiexec, reg, find..., samples and self-tests
 │   ├── netsurf/          # NetSurf port: fetcher, window surface, fonts
 │   └── include/          # The Windows SDK headers NovaOS provides
-├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), NetSurf, stb, fonts, 7-Zip installer
+├── third_party/          # lwIP, Mbed TLS, nghttp2, uACPI, musl (libm), NetSurf, stb, fonts, 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
 │                         #   make_icons.py, pe_imports.py, msitest/
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
@@ -309,11 +316,12 @@ os/
   window tree; the kernel's window manager composites only top-level
   windows, drawn from bitmaps the programs own.
 - **Software rendering**: GDI is a CPU rasterizer drawing into a back
-  buffer in RAM at integer HiDPI scale.  On QEMU's standard VGA (and
-  Bochs, VirtualBox's VBoxVGA) a VBE "DISPI" driver sets the resolution at
-  run time (Settings > Display, `ChangeDisplaySettings`) and flips between
-  two pages of video memory when both fit; elsewhere frames are copied to
-  the UEFI framebuffer in the boot mode.  There is no 3D GPU driver.
+  buffer in RAM at integer HiDPI scale.  On QEMU's standard VGA, QXL,
+  virtio-vga and VMware adapters (and Bochs, VirtualBox's VBoxVGA) a VBE
+  "DISPI" driver sets the resolution at run time (Settings > Display,
+  `ChangeDisplaySettings`) and flips between two pages of video memory
+  when both fit; Cirrus gets 800x600 and 640x480; elsewhere frames are
+  copied to the UEFI framebuffer in the boot mode.  There is no 3D GPU driver.
 - **Drive C: in memory, saved to FAT**: the RAM disk is saved to a FAT32
   volume a second after each change and restored at boot.  System files
   come from the kernel image, so a new build always brings its own.
@@ -341,7 +349,7 @@ os/
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
 code keeps its own permissive licence (lwIP: BSD 3-clause; Mbed TLS:
-Apache-2.0; uACPI: MIT; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu
+Apache-2.0; nghttp2: MIT; uACPI: MIT; musl's libm: MIT; Inter and Cascadia Mono: SIL OFL 1.1; DejaVu
 Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or
 MIT).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,

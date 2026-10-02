@@ -1254,6 +1254,34 @@ void DesktopInitialize(void)
 
 bool DesktopAvailable(void) { return g_ready; }
 
+#define VIDEO_KEY "Machine\\SYSTEM\\CurrentControlSet\\Control\\Video\\{NovaOS-Display}\\0000"
+
+void DesktopSaveDisplayMode(int w, int h)
+{
+    DisplaySetDefaultMode(w, h);
+    um_registry_set_dword(VIDEO_KEY, "DefaultSettings.XResolution", (UINT32)w);
+    um_registry_set_dword(VIDEO_KEY, "DefaultSettings.YResolution", (UINT32)h);
+    um_registry_set_dword(VIDEO_KEY, "DefaultSettings.BitsPerPel", 32);
+}
+
+void DesktopRestoreDisplayMode(void)
+{
+    UINT32 w, h;
+    if (!um_registry_get_dword(VIDEO_KEY, "DefaultSettings.XResolution", &w) ||
+        !um_registry_get_dword(VIDEO_KEY, "DefaultSettings.YResolution", &h))
+        return;
+    DisplayMode cur = DisplayCurrentMode();
+    if (cur.w == (int)w && cur.h == (int)h) { DisplaySetDefaultMode(cur.w, cur.h); return; }
+    if (!DisplayModeSupported((int)w, (int)h)) {
+        kprintf("[DISPLAY] The saved mode %ux%u is not available on this adapter\n", w, h);
+        return;
+    }
+    if (DisplaySetMode((int)w, (int)h)) {
+        DisplaySetDefaultMode((int)w, (int)h);
+        kprintf("[DISPLAY] Restored the saved mode %ux%u\n", w, h);
+    }
+}
+
 bool DesktopSetDisplayMode(int w, int h)
 {
     if (!g_ready) return false;

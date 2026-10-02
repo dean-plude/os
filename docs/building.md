@@ -129,7 +129,8 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 ```
 
 QEMU's default user-mode network (an e1000e on q35) works out of the box;
-add `-nic user,model=e1000` to test the older card.  `-smp N` sets the core
+add `-nic user,model=e1000` to test the older card or
+`-nic user,model=virtio-net-pci` for virtio-net.  `-smp N` sets the core
 count (up to 16).
 
 USB devices need a controller: `-device qemu-xhci` (USB 3), `-device
@@ -231,6 +232,9 @@ sudo apt install acpica-tools          # iasl, for the tables in tests/acpi/
 python3 tools/selftest.py              # the core suite; exit status = failures
 python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 
+# the network suite: IPv4, IPv6 and winhttp's HTTP/2 (needs node and openssl)
+python3 tools/selftest.py --suite network
+
 # the graphics suite: 7-Zip, Mesa and DXVK downloads, gltest/d3dtest builds
 sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
 tools/ci/stage-graphics.sh /tmp/gfx
@@ -239,13 +243,21 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
 `guitest auto`, `disptest`, `battery`, `soundtest tone`, `soundtest wasapi`,
-`sleeptest timer`, `powertest`, and last `crash kernel`, which halts the kernel on purpose and passes when the
+`sleeptest timer`, `powertest`, `disptest 1024 768` (saves the mode), and last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
-`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
+`KeCrashTest`, `sys_nova_bugcheck`, ...).  A second boot on the same data
+disk (drive C: as the first boot saved it) then runs `disptest saved 1024
+768`: NovaOS must have come up in the saved mode.  The graphics suite types `store
 install Mesa 3D` and `store install DXVK` (the archives are already in
 `C:\Downloads`, so the App Store installs without a network) and then runs
 `gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
-of each while it draws.
+of each while it draws.  The network suite boots twice with a virtio-net
+card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
+(Winsock over IPv4) and `httptest suite` (winhttp: HTTP/2 by ALPN, large
+bodies, POST, redirects, certificate checks, chunked HTTP/1.1, the
+asynchronous API) against `tools/h2server.js` with a throwaway self-signed
+certificate; on an IPv6-only network made by `tools/v6peer.py` it checks
+SLAAC and RDNSS (`ipconfig`), `ping -6`, `curl -6` and `netcat` over IPv6.
 
 It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV,
 the battery from `tests/acpi/battery.asl`, the lid and thermal zone from
@@ -260,7 +272,7 @@ no USB-to-platform wake), then heats and cools the thermal zone.  A test passes 
 a kernel panic stops the run.  `--out` (default `selftest-out/`) keeps the
 serial log, a screenshot after each test and `sound.wav`; `--summary FILE`
 appends a Markdown table and `--junit FILE` writes JUnit XML.  To add a test,
-add a line to `CORE` or `GRAPHICS` in `tools/selftest.py`.
+add a line to `CORE`, `GRAPHICS`, `NET4` or `NET6` in `tools/selftest.py`.
 
 ### Self-test programs
 
@@ -284,7 +296,7 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `proctest` | `CreateProcess` flags: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` (`GetConsoleProcessList`), file positions shared with children and duplicates |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
-| `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
+| `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE`, a window that 800x600 shrinks growing back to its size and place, `CDS_UPDATEREGISTRY` saving the mode in the registry.  `disptest W H` switches and saves; `disptest saved W H` checks the mode after a restart |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
 | `sleeptest timer` | How late `Sleep(1)`, `Sleep(5)` and a 1 ms wait timeout end, idle and with a busy thread on every CPU; passes when the 95th percentile under load is 1 ms or less and none ends early.  Plain `sleeptest` sleeps (S3) instead |
 | `powertest` | The lid and a thermal zone (`GetPwrCapabilities`, `ThermalInformation`, `LastSleepTime`/`LastWakeTime`): closing the lid sleeps; needs `tests/acpi/lid-thermal.asl` and the self-test's help (see above) |
@@ -294,6 +306,8 @@ in `C:\Programs\x86`.  Type the name in the Terminal; each prints "N passed,
 | `drivetest` | Drive D: (NTFS: reading, then writing, renaming, deleting), with the disk from `scripts/make-ntfs-disk.sh`; then `scripts/check-ntfs-disk.sh` on the host |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
+| `httptest suite HTTPS-BASE HTTP-BASE` | winhttp against `tools/h2server.js`: HTTP/2 by ALPN, a 300 KB body, POST, a redirect, an untrusted certificate refused, chunked HTTP/1.1, the asynchronous API.  `httptest [-2] [-k] [-a] URL` fetches one URL |
+| `netcat [-4\|-6] [-p PORT] HOST [PATH]` | Winsock: `getaddrinfo`, IPv4 or IPv6 sockets, an HTTP/1.0 GET |
 
 `crash` writes through a NULL pointer (only it dies); `crash kernel`
 crashes the kernel on purpose (`NtNovaBugCheck`) to show the backtrace.
@@ -370,6 +384,19 @@ python3 tools/wavcheck.py /tmp/out.wav     # each tone: start, length, level, pi
 python3 tools/novarun.py --net --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' \
     'ffmpeg.exe -tls_verify 0 -i https://10.0.2.2:8443/tone.wav -f null -'
 ```
+
+For IPv6, `tools/v6peer.py` is a whole IPv6-only network (a router with
+SLAAC and RDNSS, DNS for `nova6.test`, an HTTP server) that QEMU reaches
+through a datagram netdev, so the host needs no IPv6 of its own:
+
+```bash
+python3 tools/v6peer.py &
+python3 tools/novarun.py --extra '-netdev dgram,id=v6,local.type=inet,local.host=127.0.0.1,local.port=10601,remote.type=inet,remote.host=127.0.0.1,remote.port=10600 -device virtio-net-pci,netdev=v6' \
+    ipconfig 'ping -6 nova6.test' 'curl -6 http://nova6.test/'
+```
+
+`tools/h2server.js CERT KEY` (Node) serves HTTPS with HTTP/2 on port 8443
+and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hello`).
 
 ### On the host
 

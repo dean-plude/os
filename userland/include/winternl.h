@@ -312,17 +312,17 @@ NTSYSAPI NTSTATUS NTAPI NtNovaFlushView(PVOID base);
 NTSYSAPI NTSTATUS NTAPI NtNovaConsole(HANDLE h, ULONG op, PVOID buf, ULONG len, PULONG res);
 /* Fill buf with len (<= 4096) cryptographically random bytes from the kernel entropy pool */
 NTSYSAPI NTSTATUS NTAPI NtNovaGetRandom(void *buf, ULONG len);
-NTSYSAPI INT_PTR  NTAPI NtNovaSocket(ULONG type);
-NTSYSAPI LONG_PTR NTAPI NtNovaSockConnect(INT_PTR h, ULONG ip, USHORT port);
+NTSYSAPI INT_PTR  NTAPI NtNovaSocket(ULONG type, ULONG family);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockConnect(INT_PTR h, const void *sockaddr, ULONG len);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockSend(INT_PTR h, const void *buf, ULONG len);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockRecv(INT_PTR h, void *buf, ULONG len);
-NTSYSAPI LONG_PTR NTAPI NtNovaSockBind(INT_PTR h, ULONG ip, USHORT port);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockBind(INT_PTR h, const void *sockaddr, ULONG len);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockListen(INT_PTR h, ULONG backlog);
 NTSYSAPI INT_PTR  NTAPI NtNovaSockAccept(INT_PTR h, void *addr);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockSendTo(INT_PTR h, const void *buf, ULONG len, const void *addr);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockRecvFrom(INT_PTR h, void *buf, ULONG len, void *addr);
-NTSYSAPI LONG_PTR NTAPI NtNovaResolve(const char *name, ULONG *ip);
+NTSYSAPI LONG_PTR NTAPI NtNovaResolve(const char *name, void *sockaddrs, ULONG max, ULONG family);
 /* Sound: streams of 48 kHz s16 stereo frames (kernel/um/um_audio.c) */
 NTSYSAPI INT_PTR  NTAPI NtNovaAudioOpen(ULONG frames);
 NTSYSAPI LONG_PTR NTAPI NtNovaAudioWrite(INT_PTR h, const void *frames, ULONG n);

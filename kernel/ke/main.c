@@ -394,6 +394,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     kprintf("=== SMP ===\n");
     um_registry_add_cpus(smp_start());
 
+    DesktopRestoreDisplayMode();          /* the resolution chosen before the restart */
     if (GdiInitialize()) {
         WmInitialize();
         DesktopInitialize();
