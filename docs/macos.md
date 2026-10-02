@@ -33,12 +33,13 @@ curl -LO https://github.com/dean-plude/os/releases/latest/download/nova.iso
 
 The firmware's variable store has to be writable, so copy it first.
 Homebrew ships one store file for both 32- and 64-bit x86
-(`edk2-i386-vars.fd`):
+(`edk2-i386-vars.fd`).  `disk.img` is an empty 1 GB disk to install onto,
+which also keeps drive C: across restarts:
 
 ```bash
 Q="$(brew --prefix qemu)/share/qemu"
 cp "$Q/edk2-i386-vars.fd" /tmp/nova-vars.fd
-qemu-img create -f raw disk.img 1G     # a disk to install onto / keep drive C:
+qemu-img create -f raw disk.img 1G
 
 qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -drive if=pflash,format=raw,unit=0,readonly=on,file="$Q/edk2-x86_64-code.fd" \
@@ -123,11 +124,12 @@ brew install cmake ninja nasm python \
 
 Homebrew's LLVM is "keg-only" (not on `PATH`, so Apple's `clang` would be
 found instead), and the GNU coreutils install with a `g` prefix.  Put both
-first on `PATH` in the shell you build from:
+first on `PATH` in the shell you build from, then check that `which` lists
+all three under `$(brew --prefix)`:
 
 ```bash
 export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$(brew --prefix coreutils)/libexec/gnubin:$PATH"
-which clang lld-link truncate      # should all be under $(brew --prefix)
+which clang lld-link truncate
 ```
 
 ### Building
@@ -186,15 +188,18 @@ run`, since that build directory was configured inside the container.
 
 ### Running your build
 
+`make run` runs `scripts/run-qemu.sh` with the firmware found above:
+
 ```bash
 cd build
-make run        # scripts/run-qemu.sh with the firmware found above
+make run
 ```
 
 `run-qemu.sh` uses 256 MiB, no network, sound through Core Audio, and the
 `nova-data.img` data disk beside `nova.img` (it needs GNU `truncate` the
 first time, from the `PATH` above).  For more memory, the network or HVF,
-run QEMU yourself:
+run QEMU yourself (on an Intel Mac, add `-accel hvf -cpu host` to the
+`qemu-system-x86_64` line):
 
 ```bash
 Q="$(brew --prefix qemu)/share/qemu"
@@ -205,7 +210,6 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -drive file=build/nova.img,format=raw \
   -drive file=build/nova-data.img,format=raw \
   -serial stdio
-# Intel Mac: add  -accel hvf -cpu host
 ```
 
 GDB: Homebrew's `gdb` does not run on Apple Silicon, but a remote debugger
@@ -228,10 +232,12 @@ Mac's own devices are mostly ones NovaOS has no driver for.
 ### Making the USB stick
 
 `nova.iso` is a hybrid image, so it can be written straight to a stick.
-**This erases the stick**; check the disk number carefully.
+**This erases the stick**; check the disk number carefully.  Find the
+stick in the `diskutil list` output (for example `/dev/disk4`) and use its
+number in the other three commands:
 
 ```bash
-diskutil list                          # find the stick, e.g. /dev/disk4
+diskutil list
 diskutil unmountDisk /dev/disk4
 sudo dd if=nova.iso of=/dev/rdisk4 bs=4m
 diskutil eject /dev/disk4

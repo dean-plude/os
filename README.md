@@ -151,17 +151,15 @@ every part, phase by phase.
 
 Linux (Ubuntu/Debian) is the build host; on Windows use WSL2.
 
+Install the prerequisites, build the bootloader, the kernel with the whole
+userland inside, and `nova.img`, then run it in QEMU:
+
 ```bash
-# Prerequisites
 sudo apt install cmake nasm clang lld llvm python3 \
                  qemu-system-x86 ovmf mtools dosfstools xorriso
-
-# Build (bootloader, kernel with the whole userland inside, nova.img)
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
-
-# Run in QEMU
 cmake --build . --target run
 ```
 
@@ -188,8 +186,10 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,unit=1,file=/tmp/OVMF_VARS.fd \
   -drive file=disk.img,format=raw -cdrom nova.iso
-# after installing: the same command without -cdrom starts from disk.img
 ```
+
+After installing, the same command without `-cdrom nova.iso` starts from
+`disk.img`.
 
 Give the machine 2 GB so downloaded installers fit in drive C: (which lives
 in memory and is saved to disk).  On macOS with Homebrew QEMU, the firmware

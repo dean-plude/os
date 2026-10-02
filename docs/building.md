@@ -33,13 +33,14 @@ What each part is for:
 ### Optional compilers
 
 - **Kernel**: CMake prefers an `x86_64-elf-gcc` cross-compiler when one is on
-  `PATH` and otherwise uses clang.  To build one with crosstool-ng:
+  `PATH` and otherwise uses clang.  To build one with crosstool-ng (it
+  installs into `~/x-tools/x86_64-unknown-elf`):
 
   ```bash
   git clone https://github.com/crosstool-ng/crosstool-ng
   cd crosstool-ng && ./bootstrap && ./configure --enable-local && make
   ./ct-ng x86_64-unknown-elf
-  ./ct-ng build          # installs into ~/x-tools/x86_64-unknown-elf
+  ./ct-ng build
   export PATH="$HOME/x-tools/x86_64-unknown-elf/bin:$PATH"
   ```
 
@@ -50,11 +51,14 @@ What each part is for:
 
 ## Building
 
+This uses Ninja; without it, run `cmake ..` (Unix Makefiles) and then
+`make -j$(nproc)` instead of the last two lines.
+
 ```bash
 git clone https://github.com/dean-plude/os
 cd os
 mkdir build && cd build
-cmake .. -G Ninja        # or: cmake ..  (Unix Makefiles), then make -j$(nproc)
+cmake .. -G Ninja
 ninja
 ```
 
@@ -88,11 +92,12 @@ Environment variables:
 | `NOVA_NO_NETSURF=1` | Leave the NetSurf browser out (the first build otherwise compiles about 800 files of it; later builds reuse them) |
 | `NOVA_NO_WOW64=1` | Skip the 32-bit (x86) pass: no `SysWOW64`, no `C:\Programs\x86` |
 
-To rebuild only the userland, for a quick check of a DLL:
+To rebuild only the userland, for a quick check of a DLL (the second
+command only loads the manifests, as CI does):
 
 ```bash
 NOVA_NO_NETSURF=1 python3 tools/build_userland.py /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
-python3 tools/build_userland.py --check     # just load the manifests (CI runs this)
+python3 tools/build_userland.py --check
 ```
 
 ### Adding a DLL or program
@@ -173,11 +178,17 @@ runs live and opens Install NovaOS (see the README).
 
 ## Running in QEMU
 
+From the build directory (`--target run-debug` instead also starts the GDB
+stub on port 1234):
+
 ```bash
 cd build
-cmake --build . --target run          # or: --target run-debug (GDB on :1234)
+cmake --build . --target run
+```
 
-# by hand:
+or by hand, from the top of the repository:
+
+```bash
 ./scripts/run-qemu.sh build/nova.img /usr/share/OVMF/OVMF_CODE.fd
 ```
 
@@ -257,14 +268,20 @@ then run `drivetest` in the Terminal.
 
 Tests run inside NovaOS under QEMU.  `tools/selftest.py` boots
 `build/nova.img` and runs the regression gate, the same one CI runs on every
-pull request (`.github/workflows/ci.yml`):
+pull request (`.github/workflows/ci.yml`).  The core suite needs `iasl`
+(from `acpica-tools`) for `tests/acpi/battery.asl`; its exit status is the
+number of failures:
 
 ```bash
-sudo apt install acpica-tools          # iasl, for tests/acpi/battery.asl
-python3 tools/selftest.py              # the core suite; exit status = failures
+sudo apt install acpica-tools
+python3 tools/selftest.py
 python3 tools/selftest.py --only apitest,guitest --out /tmp/st
+```
 
-# the graphics suite: 7-Zip, Mesa and DXVK downloads, gltest/d3dtest/d2dtest builds
+The graphics suite downloads 7-Zip, Mesa and DXVK and builds
+gltest/d3dtest/d2dtest:
+
+```bash
 sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
 tools/ci/stage-graphics.sh /tmp/gfx
 python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
@@ -399,11 +416,15 @@ would do).
 | NovaOS's own screens | `dir C:\` and `dir D:\` (an empty NTFS disk made with `mkntfs`) name their drive and give its own free space (`dir.png`); `start explorer` shows This PC with both drives, matching `tests/reference/this-pc.png` |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
 
+It needs 7-Zip's installer, Pillow, and `mkntfs` (for drive D:).  The exit
+status is the number of programs that failed; `--update-reference` rewrites
+the reference screenshots after an intended change:
+
 ```bash
-sudo apt install p7zip-full python3-pil ntfs-3g   # 7-Zip's installer, Pillow, mkntfs (drive D:)
-python3 tools/appcorpus.py                   # exit status = programs that failed
+sudo apt install p7zip-full python3-pil ntfs-3g
+python3 tools/appcorpus.py
 python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
-python3 tools/appcorpus.py --only NovaOS,Notepad++ --update-reference   # after an intended change
+python3 tools/appcorpus.py --only NovaOS,Notepad++ --update-reference
 ```
 
 A command passes as a self-test does (exit code 0, the output expected).
@@ -432,24 +453,25 @@ python3 tools/novarun.py 'filetest install' '!reboot' 'filetest installed'
 ### Sound
 
 `soundtest` plays sine tones through each path.  To check what came out,
-record it and measure it:
+record it and measure it (`wavcheck.py` prints each tone's start, length,
+level and pitch):
 
 ```bash
 python3 tools/novarun.py --wav /tmp/out.wav 'C:\Programs\soundtest.exe tone 440 1000' \
     'C:\Programs\soundtest.exe wasapi 523 800'
-python3 tools/wavcheck.py /tmp/out.wav     # each tone: start, length, level, pitch
+python3 tools/wavcheck.py /tmp/out.wav
 ```
 
 To test recording, `--rec FILE.wav` gives the card a microphone that hears
 FILE over and over (a private PulseAudio server with two null sinks, so the
 guest records and plays in real time; with `--wav` too, the playback is
 saved from the second sink).  Copy the recording off the data disk and
-check it:
+check it (`wavcheck.py` exits 0 when the tone is there):
 
 ```bash
 python3 tools/novarun.py --keep /tmp/rec --rec tone523.wav 'soundtest record C:\rec.wav 3000'
 mcopy -i /tmp/rec/data.img ::/NOVA/C/rec.wav /tmp/
-python3 tools/wavcheck.py /tmp/rec.wav --tone 523 2500   # exit 0: the tone is there
+python3 tools/wavcheck.py /tmp/rec.wav --tone 523 2500
 ```
 
 ### Network
@@ -495,15 +517,20 @@ python3 tools/novarun.py --net --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' \
 
 ### GDB
 
+In one terminal, start QEMU with the GDB stub (it waits for GDB):
+
 ```bash
-# Terminal 1: start QEMU with the GDB stub (waits for GDB)
 ./scripts/run-qemu.sh build/nova.img /usr/share/OVMF/OVMF_CODE.fd \
     /usr/share/OVMF/OVMF_VARS.fd --gdb
+```
 
-# Terminal 2
+In a second, attach GDB and set a hardware breakpoint at the kernel's C
+entry:
+
+```bash
 gdb build/kernel.elf
 (gdb) target remote :1234
-(gdb) hbreak KiSystemStartup     # Hardware breakpoint at the kernel's C entry
+(gdb) hbreak KiSystemStartup
 (gdb) continue
 ```
 

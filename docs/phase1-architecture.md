@@ -275,11 +275,15 @@ NovaOS Bootloader v0.1
 
 ### QEMU GDB Debugging
 
-```bash
-# Terminal 1: start QEMU in debug mode
-./scripts/run-qemu.sh build/nova.img /usr/share/OVMF/OVMF_CODE.fd --gdb
+In one terminal, start QEMU in debug mode:
 
-# Terminal 2: connect GDB
+```bash
+./scripts/run-qemu.sh build/nova.img /usr/share/OVMF/OVMF_CODE.fd --gdb
+```
+
+In a second, connect GDB:
+
+```bash
 gdb build/kernel.elf \
     -ex 'target remote :1234' \
     -ex 'hbreak KiSystemStartup' \
