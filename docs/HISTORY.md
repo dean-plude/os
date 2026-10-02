@@ -1629,5 +1629,8 @@ it is written for NovaOS on a small core of its own:
   `tools/d2dtest/reference.py` draws with Skia: under QEMU the mean
   difference is 0.24 of 255 per pixel.  It then checks layers, clips and
   an HWND render target in a window.  It runs in the CI graphics suite,
-  64- and 32-bit.  Its text check is skipped until DirectWrite can make
-  text formats and layouts.
+  64- and 32-bit.  Its text check draws "NovaOS" with `DrawText` and
+  saves it as `d2dtext.bmp`; it is skipped until DirectWrite can make
+  text formats and layouts.  DirectWrite's text layout (on HarfBuzz from
+  `novatext.dll`) is written for the Firefox branch, and with it the check
+  passes, 64- and 32-bit.

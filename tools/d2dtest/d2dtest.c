@@ -574,7 +574,10 @@ static void text_test(void)
                 else outside++;
             }
         }
-    printf("     text: %d blue pixels inside the box, %d outside\n", ink, outside);
+    char out[MAX_PATH];
+    path_beside(out, sizeof(out), "d2dtext.bmp");
+    save_bmp(out, &c);
+    printf("     text: %d blue pixels inside the box, %d outside (%s)\n", ink, outside, out);
     check(ink > 200 && !outside, "DrawText draws DirectWrite text in the brush's colour");
     if (blue) ID2D1SolidColorBrush_Release(blue);
     canvas_free(&c);
