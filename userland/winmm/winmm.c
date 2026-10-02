@@ -102,19 +102,13 @@ MMAPI MMRESULT WINAPI timeKillEvent(UINT id)
     return TIMERR_NOERROR;
 }
 
-/* ---- audio: playback is wave.c; no recording, MIDI or mixer devices ---- */
-MMAPI UINT WINAPI waveInGetNumDevs(void)  { return 0; }
+/* ---- audio: playback is wave.c, recording wavein.c; no MIDI or mixer devices ---- */
 MMAPI UINT WINAPI midiOutGetNumDevs(void) { return 0; }
 MMAPI UINT WINAPI midiInGetNumDevs(void)  { return 0; }
 MMAPI UINT WINAPI mixerGetNumDevs(void)   { return 0; }
 MMAPI UINT WINAPI auxGetNumDevs(void)     { return 0; }
-MMAPI MMRESULT WINAPI waveInOpen(HANDLE *h, UINT dev, const void *fmt, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
-{ (void)dev; (void)fmt; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
 MMAPI MMRESULT WINAPI midiOutOpen(HANDLE *h, UINT dev, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
 { (void)dev; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
-MMAPI MMRESULT WINAPI waveInGetDevCapsW(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
-MMAPI MMRESULT WINAPI waveInGetDevCapsA(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
-MMAPI MMRESULT WINAPI waveInMessage(HANDLE h, UINT msg, DWORD_PTR a, DWORD_PTR b) { (void)h; (void)msg; (void)a; (void)b; return MMSYSERR_BADDEVICEID; }
 /* MIDI: no ports to open, so every handle is invalid */
 MMAPI MMRESULT WINAPI midiInOpen(HANDLE *h, UINT dev, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
 { (void)dev; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }

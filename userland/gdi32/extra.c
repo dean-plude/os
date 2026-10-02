@@ -194,20 +194,10 @@ GDIAPI BOOL PolyBezierTo(HDC h, const POINT *p, DWORD n)
 GDIAPI BOOL SetMiterLimit(HDC h, float limit, float * old) { (void)h; (void)limit; if (old) *old = 10.0f; return TRUE; }
 GDIAPI BOOL GetMiterLimit(HDC h, float * limit) { (void)h; if (limit) *limit = 10.0f; return TRUE; }
 
-typedef struct { float eM11, eM12, eM21, eM22, eDx, eDy; } XFORM_;
-GDIAPI int GetGraphicsMode(HDC h) { (void)h; return 1; }        /* GM_COMPATIBLE */
-GDIAPI BOOL GetWorldTransform(HDC h, XFORM_ *x)
-{
-    (void)h;
-    if (!x) return FALSE;
-    x->eM11 = x->eM22 = 1.0f;
-    x->eM12 = x->eM21 = x->eDx = x->eDy = 0.0f;
-    return TRUE;
-}
-GDIAPI BOOL SetWorldTransform(HDC h, const XFORM_ *x) { (void)x; return h != 0; }
-GDIAPI BOOL ModifyWorldTransform(HDC h, const XFORM_ *x, DWORD mode) { (void)x; (void)mode; return h != 0; }
 
-/* RGNDATA: regions are their bounding rectangle */
+/* RGNDATA: regions are their bounding rectangle (ExtCreateRegion is in
+ * gdi32.c, the world transform calls too, and the outline metrics and
+ * Unicode ranges in text.c) */
 typedef struct { DWORD dwSize, iType, nCount, nRgnSize; RECT rcBound; } RGNDATAHEADER_;
 GDIAPI DWORD GetRegionData(HRGN rgn, DWORD n, RGNDATAHEADER_ *out)
 {
@@ -225,21 +215,6 @@ GDIAPI DWORD GetRegionData(HRGN rgn, DWORD n, RGNDATAHEADER_ *out)
     if (!empty) memcpy(out + 1, &r, sizeof(RECT));
     return need;
 }
-GDIAPI HRGN ExtCreateRegion(const void *xform, DWORD n, const RGNDATAHEADER_ *data)
-{
-    (void)xform; (void)n;
-    if (!data) return 0;
-    const RECT *rc = (const RECT *)(data + 1);
-    RECT b = { 0, 0, 0, 0 };
-    for (DWORD i = 0; i < data->nCount; i++) {
-        if (!i) { b = rc[i]; continue; }
-        if (rc[i].left < b.left) b.left = rc[i].left;
-        if (rc[i].top < b.top) b.top = rc[i].top;
-        if (rc[i].right > b.right) b.right = rc[i].right;
-        if (rc[i].bottom > b.bottom) b.bottom = rc[i].bottom;
-    }
-    return CreateRectRgn(b.left, b.top, b.right, b.bottom);
-}
 /* The system (visible) region: not tracked, so none (0) */
 GDIAPI int GetRandomRgn(HDC h, HRGN rgn, INT which) { (void)h; (void)rgn; (void)which; return 0; }
 
@@ -250,23 +225,4 @@ GDIAPI int ExtEscape(HDC h, int esc, int nin, LPCSTR in, int nout, LPSTR out) { 
 GDIAPI BOOL GetICMProfileW(HDC h, LPDWORD n, LPWSTR name) { (void)h; (void)n; (void)name; return FALSE; }
 GDIAPI BOOL GetICMProfileA(HDC h, LPDWORD n, LPSTR name) { (void)h; (void)n; (void)name; return FALSE; }
 
-/* GLYPHSET: the fonts cover Basic Multilingual Plane text NovaOS draws
- * (reported as one range, U+0020..U+FFFD) */
-typedef struct { DWORD cbThis, flAccel, cGlyphsSupported, cRanges; struct { WCHAR wcLow; USHORT cGlyphs; } ranges[1]; } GLYPHSET_;
-GDIAPI DWORD GetFontUnicodeRanges(HDC h, GLYPHSET_ *gs)
-{
-    (void)h;
-    if (gs) {
-        gs->cbThis = sizeof(GLYPHSET_);
-        gs->flAccel = 0;
-        gs->cGlyphsSupported = 0xFFFD - 0x20 + 1;
-        gs->cRanges = 1;
-        gs->ranges[0].wcLow = 0x20;
-        gs->ranges[0].cGlyphs = (USHORT)(0xFFFD - 0x20 + 1);
-    }
-    return sizeof(GLYPHSET_);
-}
 
-/* OUTLINETEXTMETRIC: the fonts are bitmapped from TrueType without its
- * outline metrics exposed, so the call fails as for a raster font */
-GDIAPI UINT GetOutlineTextMetricsA(HDC h, UINT n, void *otm) { (void)h; (void)n; (void)otm; return 0; }

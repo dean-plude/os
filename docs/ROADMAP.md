@@ -32,8 +32,8 @@ loader semantics, and the drivers they expect.
 The details of each phase are in [HISTORY.md](HISTORY.md).
 
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
-NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound is
-output only (no recording, MIDI, DirectSound or XAudio2); drive
+NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound has
+no MIDI, DirectSound or XAudio2 yet; drive
 C: is FAT, so there are no hard links or ACL enforcement on files (NTFS
 disks can be read, as drives D:, E:, ...); and most of the App Store's catalog (Qt, GTK and
 multimedia programs) does not run yet.

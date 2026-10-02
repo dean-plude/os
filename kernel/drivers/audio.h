@@ -1,5 +1,6 @@
 /*
- * audio.h — the system mixer: playback streams mixed into the sound card
+ * audio.h — the system mixer: playback streams mixed into the sound card,
+ * and capture streams fed from its recording
  *
  * Every stream carries 48 kHz, 16-bit stereo frames (winmm and mmdevapi
  * convert to that).  A kernel thread mixes the running streams into the
@@ -13,6 +14,8 @@
 #define AUDIO_RATE       48000
 #define AUDIO_MAX_FRAMES (AUDIO_RATE * 2)   /* the most a stream can queue (2 s) */
 
+/* (for a capture stream: written = frames recorded, consumed = frames
+ * read, played = frames dropped because the stream was full) */
 typedef struct {
     UINT64 written;     /* frames accepted since opening (or the last flush) */
     UINT64 consumed;    /* of those, frames mixed into the device's ring */
@@ -28,8 +31,17 @@ bool        AudioInit(void);
 bool        AudioPresent(void);
 const char *AudioDeviceName(void);
 
-/* A stream that can queue @frames (0: the default); -1 if none is free */
-int    AudioOpen(UINT32 frames);
+bool        AudioCanRecord(void);
+const char *AudioInputName(void);
+
+/* A stream that can queue @frames (0: the default), playing or (@capture)
+ * recording; -1 if none is free */
+int    AudioOpen(UINT32 frames, bool capture);
+/* Capture streams: take up to @n recorded frames; returns how many */
+UINT32 AudioRead(int s, INT16 *frames, UINT32 n);
+/* The endpoint volume of playback (0) or recording (1): 0..65536 a channel */
+void   AudioSetMaster(int capture, UINT32 left, UINT32 right, bool mute);
+void   AudioGetMaster(int capture, UINT32 *left, UINT32 *right, bool *mute);
 void   AudioClose(int s);
 /* Queue up to @n frames (paused streams keep them); returns how many fit */
 UINT32 AudioWrite(int s, const INT16 *frames, UINT32 n);

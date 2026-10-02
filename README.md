@@ -199,11 +199,13 @@ To make the ISO yourself from a fresh build, run
   finishes after a restart (`filetest install`, `shutdown /r`, `filetest
   installed`), and last `crash kernel`, a deliberate kernel fault whose
   serial log must show a backtrace with function names.<!-- END generated:core-tests -->
-- **Graphics tests**: installs Mesa 3D and DXVK with the App Store
+- **Graphics tests**: `tools/d2dtest` (Direct2D geometry answers, and a
+  scene that must match the reference `tools/d2dtest/reference.py` draws
+  with Skia), then installs Mesa 3D and DXVK with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
-  stages the downloads), then runs `tools/gltest` (14 tests) and
-  `tools/d3dtest` (17 tests), 64- and 32-bit, with a screenshot of each
-  while it draws.
+  stages the downloads) and runs `tools/gltest` (14 tests) and
+  `tools/d3dtest` (17 tests); each 64- and 32-bit, with a screenshot of
+  each while it draws.
 
 A failing test fails its check; each run's summary has a table of results,
 and the serial logs and screenshots are kept as artifacts, along with the
@@ -222,8 +224,10 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `disptest`, `dlltest`, `filetest`, `pipetest`, `posixtest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`<!-- END generated:selftest-programs -->.  `soundtest`
-  plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
-  `tools/novarun.py --wav out.wav` records what NovaOS plays and
+  plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
+  through `waveIn` and WASAPI capture;
+  `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`
+  feeds a WAV to its microphone, and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
   write`, a restart and `disktest verify` check that drive C: survives a
   reboot.
@@ -234,9 +238,10 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   (not in this repository), driven by a QEMU harness that types, clicks and takes screenshots.
 - **On the host**: `tools/pe_imports.py PROGRAM.exe` lists the imports a
   Windows program needs that NovaOS's DLLs lack; `tools/msitest/` exercises
-  the Windows Installer's package readers.  `tools/gltest/` and
-  `tools/d3dtest/` are OpenGL and Direct3D 9/11 test programs, built with
-  MinGW, for checking Mesa and DXVK on NovaOS.
+  the Windows Installer's package readers.  `tools/gltest/`,
+  `tools/d3dtest/` and `tools/d2dtest/` are OpenGL, Direct3D 9/11 and
+  Direct2D test programs, built with MinGW, for checking Mesa, DXVK and
+  `d2d1.dll` on NovaOS.
 - **Debugging**: the serial log (COM1) has every kernel message; the
   Terminal's `dmesg` shows it, and `trace NAME` logs a program's failing
   system calls.  A kernel fault, panic or failed assertion prints a
@@ -300,7 +305,7 @@ os/
 │   ├── programs/         # cmd.exe, msiexec, reg, find..., samples and self-tests
 │   ├── netsurf/          # NetSurf port: fetcher, window surface, fonts
 │   └── include/          # The Windows SDK headers NovaOS provides
-├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), NetSurf, stb, fonts, 7-Zip installer
+├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), HarfBuzz, FreeType, NetSurf, stb, fonts, 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
 │                         #   make_icons.py, mkani.py, pe_imports.py, msitest/, docgen.py
 ├── tests/                # CI self-tests and app corpus (one file per test), ACPI

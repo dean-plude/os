@@ -389,7 +389,9 @@ ARCH = 'x64'
 # 3a0. fonts gdi32 draws text with (C:\Windows\Fonts)
 TP = os.path.join(os.path.dirname(HERE), 'third_party')
 for src, dst in [('inter/Inter-Regular.ttf', 'inter.ttf'), ('inter/Inter-Bold.ttf', 'interbd.ttf'),
-                 ('dejavu/DejaVuSansMono.ttf', 'dejavumono.ttf'), ('dejavu/DejaVuSansMono-Bold.ttf', 'dejavumonobd.ttf')]:
+                 ('dejavu/DejaVuSansMono.ttf', 'dejavumono.ttf'), ('dejavu/DejaVuSansMono-Bold.ttf', 'dejavumonobd.ttf'),
+                 ('noto/NotoSansArabic-Regular.ttf', 'notosansarabic.ttf'),
+                 ('noto/NotoSansDevanagari-Regular.ttf', 'notosansdevanagari.ttf')]:
     built.append((f'\\Windows\\Fonts\\{dst}', os.path.join(TP, src)))
 
 # 3a1. the trusted roots secur32's Schannel checks certificates against

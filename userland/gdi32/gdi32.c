@@ -142,7 +142,71 @@ GDIAPI int SetStretchBltMode(HDC h, int m) { (void)h; (void)m; return 1; }
 GDIAPI int SetPolyFillMode(HDC h, int m) { (void)h; (void)m; return 1; }
 GDIAPI int SetMapMode(HDC h, int m) { (void)h; (void)m; return 1; /* MM_TEXT only */ }
 GDIAPI int GetMapMode(HDC h) { (void)h; return 1; }
-GDIAPI int SetGraphicsMode(HDC h, int m) { (void)h; (void)m; return 1; }
+/* The graphics mode and world transform are kept per DC and reported back;
+ * drawing itself stays in GM_COMPATIBLE device coordinates */
+GDIAPI int SetGraphicsMode(HDC h, int m)
+{
+    NOVA_DC *d = dc_of(h);
+    if (!d || (m != GM_COMPATIBLE && m != GM_ADVANCED)) return 0;
+    int old = d->gmode == GM_ADVANCED ? GM_ADVANCED : GM_COMPATIBLE;
+    if (m == GM_COMPATIBLE && d->xform[0] && (d->xform[0] != 1 || d->xform[1] || d->xform[2] || d->xform[3] != 1 ||
+                                              d->xform[4] || d->xform[5]))
+        return 0;                                           /* Windows refuses while a transform is set */
+    d->gmode = m == GM_ADVANCED ? GM_ADVANCED : 0;
+    return old;
+}
+GDIAPI int GetGraphicsMode(HDC h)
+{
+    NOVA_DC *d = dc_of(h);
+    return !d ? 0 : d->gmode == GM_ADVANCED ? GM_ADVANCED : GM_COMPATIBLE;
+}
+static void xform_get(NOVA_DC *d, XFORM *x)
+{
+    if (!d->xform[0] && !d->xform[1] && !d->xform[2] && !d->xform[3]) {
+        x->eM11 = 1; x->eM12 = 0; x->eM21 = 0; x->eM22 = 1; x->eDx = 0; x->eDy = 0;
+    } else memcpy(x, d->xform, sizeof(*x));
+}
+static void xform_mul(XFORM *r, const XFORM *a, const XFORM *b)   /* r = a then b */
+{
+    XFORM t;
+    t.eM11 = a->eM11 * b->eM11 + a->eM12 * b->eM21;
+    t.eM12 = a->eM11 * b->eM12 + a->eM12 * b->eM22;
+    t.eM21 = a->eM21 * b->eM11 + a->eM22 * b->eM21;
+    t.eM22 = a->eM21 * b->eM12 + a->eM22 * b->eM22;
+    t.eDx = a->eDx * b->eM11 + a->eDy * b->eM21 + b->eDx;
+    t.eDy = a->eDx * b->eM12 + a->eDy * b->eM22 + b->eDy;
+    *r = t;
+}
+GDIAPI BOOL GetWorldTransform(HDC h, LPXFORM x)
+{
+    NOVA_DC *d = dc_of(h);
+    if (!d || !x) return FALSE;
+    xform_get(d, x);
+    return TRUE;
+}
+GDIAPI BOOL SetWorldTransform(HDC h, const XFORM *x)
+{
+    NOVA_DC *d = dc_of(h);
+    if (!d || !x || d->gmode != GM_ADVANCED) return FALSE;
+    if (x->eM11 * x->eM22 - x->eM12 * x->eM21 == 0) return FALSE;     /* not invertible */
+    memcpy(d->xform, x, sizeof(*x));
+    return TRUE;
+}
+GDIAPI BOOL ModifyWorldTransform(HDC h, const XFORM *x, DWORD mode)
+{
+    NOVA_DC *d = dc_of(h);
+    if (!d || d->gmode != GM_ADVANCED) return FALSE;
+    XFORM cur;
+    xform_get(d, &cur);
+    if (mode == MWT_IDENTITY) { memset(d->xform, 0, sizeof(d->xform)); return TRUE; }
+    if (!x) return FALSE;
+    if (mode == MWT_LEFTMULTIPLY) xform_mul(&cur, x, &cur);
+    else if (mode == MWT_RIGHTMULTIPLY) xform_mul(&cur, &cur, x);
+    else return FALSE;
+    if (cur.eM11 * cur.eM22 - cur.eM12 * cur.eM21 == 0) return FALSE;
+    memcpy(d->xform, &cur, sizeof(cur));
+    return TRUE;
+}
 
 GDIAPI BOOL SetViewportOrgEx(HDC h, int x, int y, LPPOINT old)
 {
@@ -919,6 +983,37 @@ GDIAPI HRGN CreateRectRgn(int l, int t, int r, int b)
 GDIAPI HRGN CreateRectRgnIndirect(const RECT *r) { return CreateRectRgn(r->left, r->top, r->right, r->bottom); }
 GDIAPI HRGN CreateRoundRectRgn(int l, int t, int r, int b, int w, int h) { (void)w; (void)h; return CreateRectRgn(l, t, r, b); }
 GDIAPI HRGN CreateEllipticRgn(int l, int t, int r, int b) { return CreateRectRgn(l, t, r, b); }
+/* A region from rectangles, kept as their bounding box like every region here
+ * (after @x, when given, moves the corners) */
+GDIAPI HRGN ExtCreateRegion(const XFORM *x, DWORD n, const RGNDATA *data)
+{
+    if (!data || data->rdh.dwSize < sizeof(RGNDATAHEADER) || data->rdh.iType != 1 /* RDH_RECTANGLES */) return NULL;
+    DWORD count = data->rdh.nCount;
+    if (n < sizeof(RGNDATAHEADER) + count * sizeof(RECT)) count = n > sizeof(RGNDATAHEADER) ? (n - sizeof(RGNDATAHEADER)) / sizeof(RECT) : 0;
+    const RECT *rc = (const RECT *)((const char *)data + data->rdh.dwSize);
+    float l = 0, t = 0, r = 0, b = 0;
+    int any = 0;
+    for (DWORD i = 0; i < count; i++) {
+        if (rc[i].right <= rc[i].left || rc[i].bottom <= rc[i].top) continue;
+        float cx[4] = { (float)rc[i].left, (float)rc[i].right, (float)rc[i].left, (float)rc[i].right };
+        float cy[4] = { (float)rc[i].top, (float)rc[i].top, (float)rc[i].bottom, (float)rc[i].bottom };
+        for (int k = 0; k < 4; k++) {
+            float px = cx[k], py = cy[k];
+            if (x) {
+                px = cx[k] * x->eM11 + cy[k] * x->eM21 + x->eDx;
+                py = cx[k] * x->eM12 + cy[k] * x->eM22 + x->eDy;
+            }
+            if (!any || px < l) l = px;
+            if (!any || px > r) r = px;
+            if (!any || py < t) t = py;
+            if (!any || py > b) b = py;
+            any = 1;
+        }
+    }
+    if (!any) return CreateRectRgn(0, 0, 0, 0);
+    return CreateRectRgn((int)(l < 0 ? l - 0.5f : l + 0.5f), (int)(t < 0 ? t - 0.5f : t + 0.5f),
+                         (int)(r < 0 ? r - 0.5f : r + 0.5f), (int)(b < 0 ? b - 0.5f : b + 0.5f));
+}
 GDIAPI int GetRgnBox(HRGN h, LPRECT r) { GObj *o = obj_of(h); if (!o) return 0; *r = o->rc; return 2; }
 GDIAPI int CombineRgn(HRGN dst, HRGN a, HRGN b, int mode)
 {

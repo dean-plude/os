@@ -1975,6 +1975,10 @@ static void dump_threads(UmProcess *p)
         UINT64 word = 0;
         if (t->park == 1 && t->last_sys == SYSCALL_NtWaitForAlertByThreadId && um_read(p, t->last_a1, &word, 8))
             kprintf("[UM]     the address holds %llx\n", (unsigned long long)word);
+        if (t->kt)
+            kprintf("[UM]     kernel: state %d cpu %u on_cpu %d sleeping %d (cpu %u) wake tick %llu, now %llu\n",
+                    (int)t->kt->state, t->kt->cpu, (int)t->kt->on_cpu, (int)t->kt->in_sleepers, t->kt->sleep_cpu,
+                    (unsigned long long)t->kt->wake_tick, (unsigned long long)sched_ticks());
         for (int k = 0; k < t->wait_n && k < 4 && t->wait_objs; k++) {
             UmObject *wo = t->wait_objs[k];
             char nm[96];
