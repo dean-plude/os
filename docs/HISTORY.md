@@ -296,7 +296,10 @@ Contents:
   surface whose framebuffer *is* the window's client bitmap, so NetSurf's
   plotters draw straight into the desktop window; keyboard (with key-up
   events, now delivered to program windows) and mouse come from the Win32
-  message queue.
+  message queue.  The browser window can be resized from any edge,
+  maximized, snapped to half the screen and restored: `WM_SIZE` becomes a
+  libnsfb resize event, the toolbar, scroll bars and status bar move, and
+  the page is laid out again for the new width.
 - **Text** (`userland/netsurf/font_nova.c`): anti-aliased TrueType text
   with sub-pixel positioning, rendered at run time by
   [stb_truetype](https://github.com/nothings/stb) from Inter (sans-serif)
@@ -314,7 +317,7 @@ Contents:
   default; `enable_javascript:0` in `C:\Programs\NetSurf\res\Choices`
   turns it off.  Like NetSurf 3.11 on every platform, changes a script makes
   to the page *after* it has been laid out are not redrawn yet.
-- Not yet: SVG, IPv6, and window resizing.
+- Not yet: SVG and IPv6.
 
 ## Desktop UX refresh
 - **Start menu** (`wm/desktop.c`): live search as you type (Win key, then
@@ -572,7 +575,13 @@ changed; every fix is in NovaOS.
   which window is under the pointer and carries the dropped file list to
   the other program; there it reaches the registered `IDropTarget` (as a
   `CF_HDROP` data object) or arrives as `WM_DROPFILES`.  `droptest.exe`
-  has a source window and both kinds of target.
+  has a source window and both kinds of target.  As on Windows the drop
+  is synchronous: the dragging program's `DoDragDrop` returns only once
+  the target has handled it, with the effect the target took, and no
+  window keeps the mouse afterwards.  7-Zip's file manager depends on
+  both: files dragged out of an archive are extracted to a temporary
+  folder that 7-Zip deletes as soon as `DoDragDrop` returns, and its panel
+  takes the mouse while it extracts.
 - **Directory change notifications** (`FindFirstChangeNotification`): the
   kernel signals a program's event when a directory or its subtree
   changes.
@@ -593,8 +602,11 @@ changed; every fix is in NovaOS.
   programs are tested from a second disk image holding 7-Zip, Git, CMake,
   Ninja, Neovim, Notepad++ and others, driven by a QEMU harness that types
   Terminal commands, clicks, drags and takes screenshots.
-- Not yet: drags from 7-Zip's own file manager onto other programs are
-  untested.  (Pipes, `cmd.exe` and the clipboard: see below.)
+- Drags from 7-Zip's file manager onto other programs work: one or more
+  files from an archive or from a folder, onto a `WM_DROPFILES` window or
+  an OLE drop target (tested with both `droptest` targets; each reports
+  the dropped files' sizes, so a file that has already gone shows as
+  missing).  (Pipes, `cmd.exe` and the clipboard: see below.)
 
 ## The App Store
 
@@ -1142,8 +1154,10 @@ finds them.
   a data disk, types Terminal commands and takes screenshots:
   `python3 tools/novarun.py --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' 'x.exe' '!shot x.png'`.
 - Not yet: Notepad++'s status bar draws black and its toolbar is cut
-  short; Neovim hangs on exit (console input handles cannot be waited on);
-  ffmpeg needs `avrt`, `ncrypt`, `d2d1`, `dwrite` and more.
+  short; ~~Neovim hangs on exit (console input handles cannot be waited
+  on)~~ fixed in Phase 17.2;
+  ffmpeg needs `avrt`, `ncrypt`, `d2d1`, `dwrite` and more (see
+  [More compatibility](#more-compatibility-schannel-uniscribe-idn-crt-gaps)).
 
 ## ACPI power: shut down, restart, power button
 
@@ -1373,9 +1387,9 @@ browser is run as shipped; everything below is in NovaOS.
   it waits and takes screenshots, and `NOVARUN_GDB=1` starts QEMU with a
   gdb server so breakpoints can be set in a program's code.
 - **Sandbox** (Chromium's, which Firefox uses for its child processes):
-  - ntdll's system call exports now have the Windows byte layout
-    (`mov r10, rcx; mov eax, N; syscall; ret`), so the sandbox can copy
-    and patch them to intercept calls in the child.
+  - ntdll's system call exports have the Windows byte layout (see the
+    ABI conformance work below), so the sandbox can copy and patch them
+    to intercept calls in the child.
   - Token handles know whether they are primary or impersonation tokens
     and at which level; `SetThreadToken`, `OpenThreadToken`,
     `ImpersonateSelf` and `RevertToSelf` track a token per thread.
@@ -1393,5 +1407,192 @@ browser is run as shipped; everything below is in NovaOS.
     process off from csrss.
   - A process can have 256 threads (was 64); Firefox's main process runs
     more than 64.
-- Not yet: no page has been loaded, and the main process can crash with
-  a use-after-free after a while.
+- **Overlapped I/O**: a pipe read or write that fails at once (a broken
+  pipe when a child process exits) no longer sets its event or queues a
+  completion packet or routine; Windows does none of these, and Firefox's
+  IPC and Rust I/O free the `OVERLAPPED` after such a failure, so the late
+  packet crashed the main process with a use-after-free.
+- **GDI**: `CreateDIBSection` with a file-mapping handle puts the pixels in
+  that mapping (Firefox's GPU process draws the browser into one shared
+  with the main process).
+- Not yet: the window shows white instead of the browser, and no page has
+  been loaded.
+
+## Regression gate: boot CI on every pull request
+
+- **GitHub Actions** (`.github/workflows/ci.yml`): every pull request and
+  every push to main builds the kernel, bootloader, userland and
+  `build/nova.img` on Ubuntu 24.04, boots it in QEMU (q35, OVMF, TCG) and
+  runs the self-tests.  A failing test fails the "Build and boot-test"
+  check; the step summary has a table of results and the serial log,
+  screenshots and sound recording are kept as an artifact.
+- **`tools/selftest.py`**: one boot, then each test typed into the
+  Terminal.  A test passes on exit code 0, no `FAIL` line, no non-zero
+  "failed" count and the output it expects; a kernel panic ends the run.
+  The boot has an HD Audio card recorded to a WAV, which must hold the
+  tones `soundtest` played, and the battery in `tests/acpi/battery.asl`
+  (75%, 3 h left), which `battery` must report.
+- **`guitest auto`** drives its own menus, edit and list boxes, the
+  resource dialog, a message box and the property sheet, and reports.
+- `tools/novarun.py`'s boot-and-type logic is now a `Nova` class that
+  other tools import.
+
+## Graphics tests in CI, ABI conformance, kernel backtraces
+
+- **Graphics in CI**: a second CI job stages 7-Zip and the Mesa 3D and DXVK
+  archives (`tools/ci/stage-graphics.sh`), installs both with the App
+  Store, and runs `tools/gltest` (14) and `tools/d3dtest` (17), 64- and
+  32-bit, with a screenshot of each while it draws.  The Terminal's new
+  `store install NAME` presses a program's App Store button; the outcome
+  goes to the serial log as `[STORE] NAME: Installed ...`.
+- **`abitest`** checks NovaOS's binary interface against Windows 10 1903
+  x64, each offset written out as Windows has it: the TEB, PEB, process
+  parameters and loader lists, `KUSER_SHARED_DATA`, `CONTEXT` and
+  `EXCEPTION_RECORD` (at compile time and at run time, through an
+  exception handler that edits `Rip` and `Rax`, and `GetThreadContext` on a
+  suspended thread), ntdll's stubs and all 464 system-call numbers, plus
+  raw `syscall` instructions that bypass ntdll.  What it found and fixed:
+  - 42 services had NovaOS numbers rather than 1903's (`NtQuerySystemTime`
+    0x52 instead of 0x5A, `NtTerminateThread`, `NtResumeThread`, the
+    registry, timer, directory and symbolic-link services, ...).  Every
+    service Windows has is now at its 1903 number; NovaOS's own services
+    moved to 0x200 and up.
+  - ntdll's stubs are now Windows's bytes (`mov r10, rcx; mov eax, N; test
+    byte [7FFE0308h], 1; jne; syscall; ret; int 2Eh; ret`), which
+    sandboxes and hooking libraries parse.
+  - The program now heads `InLoadOrderModuleList` and
+    `InMemoryOrderModuleList` and is not in the initialization-order list.
+  - `KUSER_SHARED_DATA.NtBuildNumber` said 19045; it is 18362, as the PEB
+    and registry say.  `GetTickCount` reads the shared page's tick count,
+    as on Windows, so both agree.
+  - `RtlCaptureContext` fills in the segment registers.
+  - `GetThreadContext` on a thread just suspended while running in user
+    mode failed: the kernel waited a number of yields for it to stop, which
+    can pass in microseconds; it now waits up to a second.
+- **Symbolized kernel backtraces**: the kernel is linked twice; the first
+  link's functions (`tools/mkksyms.py`) become a `.ksyms` table that the
+  second link embeds after `.text`, so no function moves (the build checks).
+  The kernel is built with frame pointers; a kernel page fault, exception,
+  `KPANIC` or `KASSERT` prints `Backtrace:` and `#N address function+offset`
+  frames on the serial log.  `crash kernel` (a new `NtNovaBugCheck`
+  service, guarded by a magic argument) faults three calls deep to show
+  it; CI checks the frames.
+
+## Nightly app corpus
+
+- **`tools/appcorpus.py`** downloads the official Windows x64 releases of
+  ripgrep, fd, jq, 7-Zip, MinGit, Python (the NuGet package), Node.js and
+  Notepad++ (portable), unpacks them into `C:\Apps` with a few sample files
+  and a bare git repository, boots once and types each program's commands:
+  a search, a `find`, a JSON filter, an archive made and tested, `git
+  clone`, `log` and `status`, `python -c`, `node -e`.  Notepad++ opens a
+  file and its screenshot is compared with `tests/reference/notepad++.png`
+  (scaled down; at most 3% of pixels may differ).
+- **`.github/workflows/nightly.yml`** runs it every night on main (and on
+  pull requests that change the corpus) and posts the pass/fail table to
+  the run's summary and as a comment on the "Nightly app corpus" issue.
+- Not yet: Notepad++'s tab bar and status bar still draw black; the
+  reference shows them so, and an improvement means updating it
+  (`--update-reference`).
+
+## More compatibility: Schannel, Uniscribe, IDN, CRT gaps
+
+Driven by ffmpeg's imports (`tools/pe_imports.py`).  Before writing each
+DLL we looked for an MIT, BSD or zlib licensed one to reuse; none existed
+for these, so the new ones are written here, and Schannel reuses the Mbed
+TLS already in the tree.
+
+- **Schannel** (`userland/secur32/schannel.c`): `InitializeSecurityContext`,
+  `EncryptMessage`, `DecryptMessage`, `QueryContextAttributes` (stream
+  sizes, connection info, ALPN), `ApplyControlToken` (shutdown) and the
+  `InitSecurityInterface` tables, on Mbed TLS with the Mozilla roots
+  (`C:\Windows\System32\ca-bundle.der`).  It takes `SCHANNEL_CRED` and
+  `SCH_CREDENTIALS`, SNI, ALPN, manual validation and
+  `SCH_CRED_NO_SERVERNAME_CHECK`, and reports untrusted roots, expired
+  certificates and name mismatches as Windows does.  Client side only.
+- **New DLLs**: `usp10` (Uniscribe for left-to-right scripts:
+  `ScriptItemize`, `ScriptShape`, `ScriptPlace`, `ScriptTextOut`,
+  `ScriptBreak`, `ScriptString*`…), `normaliz` (`IdnToAscii`/`IdnToUnicode`,
+  RFC 3492 Punycode), `ncrypt` (the provider opens; there are no stored
+  keys), `avicap32` (no capture devices), `d2d1` (the matrix helpers;
+  factories report `E_NOTIMPL`).
+- **More of existing DLLs**: the CRT's `mbstowcs_s`/`wcstombs_s`, the
+  `_nolock` functions, `freopen_s`, `tmpnam_s`, `_utime64`, `_wspawnvp`
+  and the single-byte `_mbs*` set; `ws2_32` `getservbyname`/`getservbyport`,
+  `gethostbyaddr` and `WSAPoll`; `winmm` `waveIn*` (no recording devices);
+  `dnsapi` `DnsQuery_UTF8`; `iphlpapi` `GetIpForwardTable2` and friends;
+  `advapi32` `RegLoadMUIStringW`; `shlwapi` `SHCreateStreamOnFileEx` and
+  `StrRetTo*`; `ole32` `CreateBindCtx`, `ReadClassStm`/`WriteClassStm`,
+  `OleSaveToStream`/`OleLoadFromStream`; `gdi32` DIB colour tables.
+- **Loader**: a program's own TLS callbacks now run (process and thread
+  attach and detach), not only those of DLLs; GLib checks for this.
+- **Exceptions**: `RtlRaiseException` reports its caller's frame, so a
+  handler that continues execution (the "set thread name" exception
+  `0x406D1388`) resumes after the call instead of raising again forever.
+- **`tools/novarun.py --net`** gives the guest a network card on QEMU's
+  user network (the host is `10.0.2.2`).
+- Tested with an FFmpeg nightly (BtbN's static x64 build) in QEMU, with
+  the GDI and DirectWrite functions of the Firefox work in place: an x264
+  encode, decoding it back, and streaming a WAV over HTTPS from the host
+  with TLS 1.3 and with TLS 1.2; with `tls_verify` on (ffmpeg's default) a
+  self-signed server is refused as an untrusted root.
+
+## Phase 17: kernel and API correctness
+
+- **Every thread has a real `ETHREAD`** (17.1): `PsGetCurrentThread` used
+  to cast the running scheduler `Thread` to an `ETHREAD`, which is only
+  true for threads made by `PsCreateSystemThread`.  Kernel threads from
+  `sched_create_thread`, Windows programs' threads and the idle threads
+  are bare `Thread`s, so writes through it (`PsInitialize` naming the boot
+  thread TID 4, `PsTerminateSystemThread`) landed past the end of the
+  structure.  `Thread.ethread` now leads to the thread's `ETHREAD`; a bare
+  thread gets one (a real Thread object in the System process) the first
+  time it asks, released when the scheduler frees it.  With interrupts
+  off the lookup returns NULL rather than touch the heap.  The boot-time
+  `[PSTEST]` self-test (`kernel/ps/ps_test.c`) checks it from plain
+  kernel threads, including `NtCurrentThread()`,
+  `PsLookupThreadByThreadId` and `PsTerminateSystemThread`.
+- **Waitable console input and `WriteConsoleInputW`** (17.2): console
+  input is a kernel queue of `INPUT_RECORD`s (keys, window size changes,
+  what programs write into it) with a waitable object, so console input
+  handles work with `WaitForSingleObject`, `RegisterWaitForSingleObject`
+  and libuv.  `ReadConsoleInput`, `PeekConsoleInput`, `WriteConsoleInput`,
+  `GetNumberOfConsoleInputEvents`, `FlushConsoleInputBuffer` and the
+  console modes go through one NovaOS service, `NtNovaConsole`.  A program
+  that turns off line input gets its keys as records, or as xterm
+  sequences with `ENABLE_VIRTUAL_TERMINAL_INPUT`.
+- **Full-screen programs in the Terminal**: while a program is on the
+  alternate screen or reads raw input, its output goes to a libvterm 0.3.3
+  (MIT) screen grid that the Terminal paints in colour, and libvterm's
+  answers to terminal queries come back through console input.
+- **What Neovim needed besides**: completion packets for overlapped pipe
+  requests now go to the port the request started with, so closing a
+  handle still delivers the cancellation libuv waits for (Neovim, and any
+  `nvim -l` script, used to hang on exit); a `RegisterWaitForSingleObject`
+  callback may unregister itself; `CreatePseudoConsole` and friends exist
+  (and fail), which tells Neovim's `--embed` server to keep its RPC on the
+  pipes and use `CONIN$`/`CONOUT$` for the terminal; the CRT reuses closed
+  descriptors 0-2 first and moves the standard handles with them;
+  `RtlRunOnceExecuteOnce`, `RtlUTF8ToUnicodeN`, `RtlUnicodeToUTF8N`, and
+  UCRT `_o_` imports resolve to the plain functions.
+- **What MSYS2 `sh` needed**: `\Device\Null` opens as the null device and
+  counts as existing (Cygwin asks `NtOpenSymbolicLinkObject`); an empty
+  name relative to a file handle reopens that file; a line feed on the
+  screen grid also returns the carriage unless the program set
+  `DISABLE_NEWLINE_AUTO_RETURN`.
+- **Process creation flags** (17.3): `CREATE_SUSPENDED` starts the first
+  thread suspended until `ResumeThread` (the same change as the Firefox
+  work's).  `CREATE_NEW_CONSOLE` gives a console program a console of its
+  own in a Terminal window titled with its path; the window closes when
+  the program ends, and closing it ends the programs on that console.
+  GUI programs ignore the flag, as on Windows, and `cmd`'s `start` uses it
+  unless given `/B`.  `GetConsoleProcessList` now lists the processes on
+  the caller's console.  A file's position belongs to the open file, not
+  the handle: duplicates, inherited handles and handles passed as a
+  child's standard output share it, so a parent and child writing to one
+  log file follow each other instead of overwriting.  `proctest` covers
+  all three in the core suite.
+- Tested in QEMU: Neovim 0.10.4 and 0.11.4 open `t.txt`, take `ihello
+  world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
+  `sh --login -i` shows its coloured prompt and runs `ls`, pipes,
+  `$(...)` and redirections to `/dev/null`; the core self-tests pass.
