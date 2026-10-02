@@ -575,7 +575,13 @@ changed; every fix is in NovaOS.
   which window is under the pointer and carries the dropped file list to
   the other program; there it reaches the registered `IDropTarget` (as a
   `CF_HDROP` data object) or arrives as `WM_DROPFILES`.  `droptest.exe`
-  has a source window and both kinds of target.
+  has a source window and both kinds of target.  As on Windows the drop
+  is synchronous: the dragging program's `DoDragDrop` returns only once
+  the target has handled it, with the effect the target took, and no
+  window keeps the mouse afterwards.  7-Zip's file manager depends on
+  both: files dragged out of an archive are extracted to a temporary
+  folder that 7-Zip deletes as soon as `DoDragDrop` returns, and its panel
+  takes the mouse while it extracts.
 - **Directory change notifications** (`FindFirstChangeNotification`): the
   kernel signals a program's event when a directory or its subtree
   changes.
@@ -596,8 +602,11 @@ changed; every fix is in NovaOS.
   programs are tested from a second disk image holding 7-Zip, Git, CMake,
   Ninja, Neovim, Notepad++ and others, driven by a QEMU harness that types
   Terminal commands, clicks, drags and takes screenshots.
-- Not yet: drags from 7-Zip's own file manager onto other programs are
-  untested.  (Pipes, `cmd.exe` and the clipboard: see below.)
+- Drags from 7-Zip's file manager onto other programs work: one or more
+  files from an archive or from a folder, onto a `WM_DROPFILES` window or
+  an OLE drop target (tested with both `droptest` targets; each reports
+  the dropped files' sizes, so a file that has already gone shows as
+  missing).  (Pipes, `cmd.exe` and the clipboard: see below.)
 
 ## The App Store
 
