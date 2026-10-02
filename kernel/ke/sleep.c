@@ -35,11 +35,12 @@
 #include "../hal/pci.h"
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
-#include "../hal/framebuffer.h"
+#include "../hal/display.h"
 #include "../drivers/ahci.h"
 #include "../drivers/e1000.h"
 #include "../drivers/hda.h"
 #include "../drivers/xhci.h"
+#include "../wm/wm.h"
 #include "../lib/string.h"
 
 void UmClockAdvance(UINT64 delta_100ns);
@@ -269,7 +270,6 @@ bool SleepEnter(void)
 
     AmlPrepareSleep();                   /* \_PTS; only wake GPEs stay on */
     /* Devices: what only the driver knows */
-    FbSuspend();
     PciSaveAll();
     save_mtrrs();
     UINT64 rtc_before = rtc_seconds(), tsc_before = rdtsc();
@@ -320,7 +320,8 @@ bool SleepEnter(void)
     XhciResume();
     HdaResume();
     ps2_resume();
-    FbResume();
+    DisplayResume();
+    WmInvalidate();                      /* video memory may not have kept the picture */
     /* The wall clock follows the tick count; add what the ticks missed
      * (all of the sleep where the TSC stopped, nothing where it ran on) */
     UINT64 rtc_after = rtc_seconds();

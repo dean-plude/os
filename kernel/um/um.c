@@ -121,6 +121,7 @@ void UmInit(void)
             installed);
     PersistLoad();                                  /* the user's files (and the registry hive) from disk */
     um_registry_init();
+    um_registry_pending_renames();                  /* before any program runs */
 }
 
 UmThread *UmCurrentThread(void)
@@ -580,6 +581,7 @@ typedef struct {
     UINT32     bkl;                 /* the big lock's depth, let go of while loading (0: not) */
     RamNode   *pins[UM_MAX_MODULES];/* the files being loaded, pinned until the loader is done */
     int        npins;
+    bool       keep;                /* loaded: the process holds the files while it runs */
 } Loader;
 
 static UINT16 rd16(const UINT8 *b) { return (UINT16)(b[0] | b[1] << 8); }
@@ -1065,7 +1067,17 @@ static void loader_free(Loader *L)
     for (int i = 0; i < UM_MAX_MODULES; i++) kfree(L->img[i].img);
     if (L->npins) {
         DesktopLock();
-        for (int i = 0; i < L->npins; i++) RamfsUnpin(L->pins[i]);
+        UmProcess *p = L->p;
+        for (int i = 0; i < L->npins; i++) {
+            RamNode *f = L->pins[i];
+            bool held = false;
+            for (int k = 0; k < p->nimages; k++) held |= p->images[k] == f;
+            if (L->keep && !L->data && !held && p->nimages < UM_MAX_MODULES) {   /* as Windows: a running image stays */
+                RamfsRef(f);
+                p->images[p->nimages++] = f;
+            }
+            RamfsUnpin(f);
+        }
         DesktopUnlock();
     }
     kfree(L);
@@ -1143,6 +1155,7 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags)
         if (!write_ldr_info(p, ninit) || !write_stubs(p)) st = 0xC0000017u;
     }
     um_unlock(&p->lock);
+    L->keep = !st;
     loader_free(L);
     um_unlock(&p->ldr_lock);
     return st;
@@ -1577,12 +1590,21 @@ static void handle_copy(UmHandle *d, const UmHandle *s)
     if (d->kind == H_FILE) um_fpos_ref(d->fp);              /* the same position as the parent's */
 }
 
+/* Let go of the program's and DLLs' files (under the desktop lock) */
+static void release_images(UmProcess *p)
+{
+    for (int i = 0; i < p->nimages; i++) RamfsUnref(p->images[i]);
+    p->nimages = 0;
+}
+
 static void destroy(UmProcess *p)
 {
+    release_images(p);
     um_close_all_handles(p);
     if (p->pml4) free_address_space(p->pml4);
     um_release_views(p);
     if (p->con) UmConsoleRelease(p->con);
+    if (p->token) um_ob_unref(p->token);
     kfree(p->stub_names);
     kfree(p->regions);
     kfree(p);
@@ -1663,6 +1685,7 @@ UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield
     p->cwd = cwd ? cwd : RamfsRoot();
     p->exe_dir = exe->parent;
     p->con = um_console_ref(con);
+    p->token = um_token_for_process(UmCurrent());        /* its creator's user (the desktop's: the default) */
     um_set_layout(p, um_pe_machine(exe) == 0x014C);
 
     /* Map the program, ntdll (every process has it) and their imports */
@@ -1681,6 +1704,7 @@ UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield
     }
     bkl_restore(L->bkl);
     L->bkl = 0;
+    L->keep = m >= 0;
     loader_free(L);
     if (yield) DesktopLock();
     if (m < 0) { destroy(p); return NULL; }
@@ -1788,6 +1812,7 @@ void um_exit_thread(UINT32 status)
     UINT32 code = p->exit_status;
     ob_unlock(s);
     um_unlock(&p->lock);
+    um_thread_drop_token(t);
     if (last) kprintf("[UM] %s (PID %u) exited with code %u (0x%x)\n", p->name, p->pid, code, code);
     sched_exit_current();
 }
@@ -2155,6 +2180,8 @@ void UmPoll(void)
         if (!p->exited || left) continue;
         if (!p->reclaimed) {
             um_gui_process_gone(p);
+            um_registry_process_gone(p);
+            release_images(p);
             um_pipe_process_gone(p);            /* before its memory goes */
             um_close_all_handles(p);
             free_address_space(p->pml4);
@@ -2170,6 +2197,7 @@ void UmPoll(void)
             if (p->exit_ob) { p->exit_ob->count = (INT32)p->exit_status; p->exit_ob->proc = NULL; p->exit_ob = NULL; }
             ob_unlock(st);
             if (p->con) UmConsoleRelease(p->con);
+            if (p->token) um_ob_unref(p->token);
             kfree(p->stub_names);
             kfree(p->regions);
             kfree(p);

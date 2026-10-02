@@ -36,21 +36,16 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **7-Zip 26.03** (x64) | GUI installer, file manager, `7zG`, `7z.exe` | Installs; the file manager browses, opens archives, adds and extracts with the full dialogs, and drags files out of archives and folders onto other programs; Options has all six pages.  The App Store uses `7z.exe` to unpack downloads. |
 | **7-Zip self-extractors** (x86) | 32-bit console and GUI SFX | Unpack an archive. |
 | **NSIS installers** (x86, Modern UI) | 32-bit setup programs | Welcome, folder, progress and finish pages; files, registry, desktop and Start menu shortcuts; the uninstaller removes it all. |
-<<<<<<< HEAD
 | **MinGit 2.47** | Git for Windows (console) | `init`, `add`, `commit`, `log` and `diff` (paged by NovaOS's `less`), `status`, `checkout -b`, `merge`, `gc`, `fsck`, and `clone`/`fetch`/`push` between local repositories. |
-| **MSYS2 runtime** (MinGit's `usr\bin`) | `sh.exe` (bash), `ls`, `cat`, `wc`… | `sh -c` with pipes, `$(...)`, subshells, globbing, `fork`. |
-=======
-| **MinGit 2.47** | Git for Windows (console) | `init`, `add`, `commit`, `log`, `status`, `diff`, `checkout -b`, `merge`, `gc`, `fsck`, and `clone`/`fetch`/`push` between local repositories. |
 | **MSYS2 runtime** (MinGit's `usr\bin`) | `sh.exe` (bash), `ls`, `cat`, `wc`… | Interactive `sh --login -i` sessions in the Terminal (prompt, line editing, colours); `sh -c` with pipes, `$(...)`, subshells, globbing, `fork`, `/dev/null`. |
 | **Neovim 0.10 and 0.11** (x64 `.zip`) | Full-screen terminal editor (libuv, LuaJIT) | Opens a file, edits it, `:wq` saves it and exits with code 0; `nvim -l` scripts, `vim.system`, `jobstart` and RPC to an embedded `nvim`. |
->>>>>>> origin/main
 | **Eclipse Temurin 21** | Java JRE `.msi`, JDK `.zip` | `java -version`, a threads/exceptions/files stress test, `javac` compiling a program that then runs. |
 | **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes. |
 | **Node.js 24** | `.msi`, `.zip` | `node -v`, `-e`, `npm -v`, a crypto/fs/JSON/timers test script. |
 | **Python 3.14** | NuGet package | `-c`, a hashlib/JSON/regex/threads/subprocess test script. |
 | **Mesa 3D 24.2.4** (mesa-dist-win) | `opengl32.dll` (llvmpipe) and the Vulkan driver (lavapipe), x64 and x86, from the App Store | OpenGL 4.5: `tools/gltest` (pixel formats, immediate mode, GLSL, read-back, animated `SwapBuffers`) passes as a 64-bit and a 32-bit program. |
 | **DXVK 2.5.3** | `d3d8`, `d3d9`, `d3d10core`, `d3d11`, `dxgi`, x64 and x86, from the App Store, on Mesa's Vulkan and NovaOS's own `vulkan-1.dll` | Direct3D 9 and 11: `tools/d3dtest` (device creation, a D3D9 triangle, D3D11 clear, read-back, animated `Present` in a window) passes as a 64-bit and a 32-bit program. |
-| **Notepad++ 8.7.9** (x64 portable) | Scintilla editor, static MSVC C++ runtime | Opens with its menus, toolbar and editor, and takes typing. |
+| **Notepad++ 8.7.9** (x64 portable) | Scintilla editor, static MSVC C++ runtime | Opens with its menus, toolbar, tab bar, editor and status bar, and takes typing. |
 | **ripgrep, fd, bat, jq, fzf** | Rust (MSVC), C (MinGW), Go | Searching, walking folders, printing files, filtering, from the Terminal. |
 
 ### Built in
@@ -87,14 +82,17 @@ every part, phase by phase.
   from the EFI System Partition, or from a CD.
 - **Kernel** (`kernel/`): NT-style executive: object manager and handles,
   processes and threads, virtual memory with sections and guard pages, I/O,
-  registry, security tokens.  SMP with per-core scheduling and fine-grained
+  registry, security tokens (restricted tokens, impersonation) and
+  security descriptors checked when named objects are opened.  SMP with per-core scheduling and fine-grained
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.
 - **Drivers**: AHCI SATA disks, FAT16/FAT32, GPT; Intel e1000/e1000e
   network cards; Intel High Definition Audio (output) with a kernel mixer;
-  PS/2 and USB (xHCI) keyboards and mice; CMOS clock; a Bochs/QEMU VBE
-  display driver (resolutions switched at run time, page flipping) with the
-  UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
+  PS/2 and USB (xHCI) keyboards and mice; CMOS clock; a VBE display
+  driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
+  bochs-display and VirtualBox (resolutions switched at run time, page
+  flipping, the mode set again after sleep) and a Cirrus GD5446 one, with
+  the UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
   sleep (S3), batteries and AC adapters (AML interpreted by uACPI).
 - **Networking**: lwIP (TCP/IP, DHCP, DNS), an HTTP/1.1 client, and Mbed
   TLS with the Mozilla root store.
@@ -181,9 +179,11 @@ To make the ISO yourself from a fresh build, run
 - **Build and boot-test** (core): `apitest`, `abitest` (the PEB, TEB,
   `KUSER_SHARED_DATA`, `CONTEXT` and loader layouts, ntdll's stubs and the
   system-call numbers, against Windows 10 1903 x64), `filetest`,
-  `pipetest`, `proctest`, `guitest auto`, `disptest`, `battery` (against the battery in
+  `pipetest`, `proctest`, `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `disptest`, `battery` (against the battery in
   `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
-  tones played), and last `crash kernel`, a deliberate kernel fault whose
+  tones played), an installer that replaces a running program and
+  finishes after a restart (`filetest install`, `shutdown /r`, `filetest
+  installed`), and last `crash kernel`, a deliberate kernel fault whose
   serial log must show a backtrace with function names.
 - **Graphics tests**: installs Mesa 3D and DXVK with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
@@ -202,13 +202,15 @@ after a build.
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
 ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js and
 Notepad++, whose screenshot must match `tests/reference/notepad++.png`.
+It also checks NovaOS's own screens: `dir` on C: and on an NTFS drive D:
+(each with its own free space) and File Explorer's This PC listing both.
 It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": `crttest`, `filetest`,
   `sectest`, `threads`, `dlltest`, `posixtest`, `apitest`, `abitest`, `comtest`,
-  `cppeh`, `shmtest`, `pipetest`, `proctest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
+  `cppeh`, `shmtest`, `pipetest`, `proctest`, `acltest`, `cliptest`, `disptest`, `smpstress`.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`;
   `tools/novarun.py --wav out.wav` records what NovaOS plays and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
@@ -308,11 +310,12 @@ os/
   window tree; the kernel's window manager composites only top-level
   windows, drawn from bitmaps the programs own.
 - **Software rendering**: GDI is a CPU rasterizer drawing into a back
-  buffer in RAM at integer HiDPI scale.  On QEMU's standard VGA (and
-  Bochs, VirtualBox's VBoxVGA) a VBE "DISPI" driver sets the resolution at
-  run time (Settings > Display, `ChangeDisplaySettings`) and flips between
-  two pages of video memory when both fit; elsewhere frames are copied to
-  the UEFI framebuffer in the boot mode.  There is no 3D GPU driver.
+  buffer in RAM at integer HiDPI scale.  On QEMU's standard VGA, QXL,
+  virtio-vga and VMware adapters (and Bochs, VirtualBox's VBoxVGA) a VBE
+  "DISPI" driver sets the resolution at run time (Settings > Display,
+  `ChangeDisplaySettings`) and flips between two pages of video memory
+  when both fit; Cirrus gets 800x600 and 640x480; elsewhere frames are
+  copied to the UEFI framebuffer in the boot mode.  There is no 3D GPU driver.
 - **Drive C: in memory, saved to FAT**: the RAM disk is saved to a FAT32
   volume a second after each change and restored at boot.  System files
   come from the kernel image, so a new build always brings its own.
