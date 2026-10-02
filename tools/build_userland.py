@@ -400,6 +400,12 @@ roots = os.path.join(out, 'ca-bundle.der')
 build_netsurf.root_bundle(roots)
 built.append(('\\Windows\\System32\\ca-bundle.der', roots))
 
+# 3a2. the General MIDI soundfont winmm's synthesizer plays (generated)
+sf2 = os.path.join(out, 'gm.sf2')
+run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'make_gm_soundfont.py'), sf2])
+built.append(('\\Windows\\System32\\drivers\\gm.sf2', sf2))
+built.append(('\\Windows\\SysWOW64\\drivers\\gm.sf2', sf2))     # (where WOW64 redirects 32-bit programs)
+
 # 3a. sample files for the user's folders (tools/make_icons.py draws the icons)
 samples = os.path.join(HERE, 'samples')
 for n in sorted(os.listdir(samples)):
