@@ -49,8 +49,10 @@ typedef struct _SECURITY_QUALITY_OF_SERVICE {
     BYTE ContextTrackingMode;
     BOOLEAN EffectiveOnly;
 } SECURITY_QUALITY_OF_SERVICE;
-typedef enum { SidTypeUser = 1, SidTypeGroup, SidTypeDomain, SidTypeAlias, SidTypeWellKnownGroup } SID_NAME_USE, *PSID_NAME_USE;
-typedef enum { SE_UNKNOWN_OBJECT_TYPE, SE_FILE_OBJECT, SE_SERVICE, SE_PRINTER, SE_REGISTRY_KEY } SE_OBJECT_TYPE;
+typedef enum { SidTypeUser = 1, SidTypeGroup, SidTypeDomain, SidTypeAlias, SidTypeWellKnownGroup, SidTypeDeletedAccount,
+               SidTypeInvalid, SidTypeUnknown, SidTypeComputer, SidTypeLabel } SID_NAME_USE, *PSID_NAME_USE;
+typedef enum { SE_UNKNOWN_OBJECT_TYPE, SE_FILE_OBJECT, SE_SERVICE, SE_PRINTER, SE_REGISTRY_KEY,
+               SE_LMSHARE, SE_KERNEL_OBJECT, SE_WINDOW_OBJECT } SE_OBJECT_TYPE;
 
 #define TOKEN_QUERY              0x0008
 #define TOKEN_ADJUST_PRIVILEGES  0x0020

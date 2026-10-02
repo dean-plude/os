@@ -559,8 +559,7 @@ int WSAStringToAddressW(WCHAR *str, int family, void *info, struct sockaddr *sa,
 }
 
 /* WSASendMsg: the message's buffers to its address (or the connected peer) */
-typedef struct { struct sockaddr *name; int namelen; LPWSABUF lpBuffers; ULONG dwBufferCount; WSABUF Control; ULONG dwFlags; } WSAMSG_;
-__declspec(dllexport) int WSAAPI WSASendMsg(SOCKET s, WSAMSG_ *msg, DWORD flags, LPDWORD sent, LPWSAOVERLAPPED ov,
+__declspec(dllexport) int WSAAPI WSASendMsg(SOCKET s, LPWSAMSG msg, DWORD flags, LPDWORD sent, LPWSAOVERLAPPED ov,
                                             LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
     if (!msg) { set_err(WSAEFAULT); return SOCKET_ERROR; }

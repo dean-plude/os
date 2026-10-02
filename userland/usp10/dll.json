@@ -1,5 +1,12 @@
 {
-  "deps": ["gdi32", "user32", "msvcrt", "kernel32", "ntdll"],
+  "deps": [
+    "novatext",
+    "gdi32",
+    "user32",
+    "msvcrt",
+    "kernel32",
+    "ntdll"
+  ],
   "base": "0x7FFE00000000",
   "base_x86": "0x90000000"
 }

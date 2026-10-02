@@ -1,5 +1,11 @@
 {
-  "deps": ["msvcrt", "kernel32", "ntdll"],
+  "deps": [
+    "gdi32",
+    "user32",
+    "msvcrt",
+    "kernel32",
+    "ntdll"
+  ],
   "base": "0x7FFE40000000",
   "base_x86": "0x94000000"
 }

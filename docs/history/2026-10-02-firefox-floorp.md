@@ -30,6 +30,11 @@ browser is run as shipped; everything below is in NovaOS.
   service fail and Firefox show "Profile Missing".
 - **user32**: window class names up to 256 characters (Gecko's remote
   window class contains the profile path).
+- **Window station security**: the sandbox's alternate desktop reads and
+  sets the window station's and desktop's security with `GetSecurityInfo`
+  and `SetSecurityInfo` (`SE_WINDOW_OBJECT`).  Those are user32 pseudo
+  handles, so they answer with the default descriptor instead of failing;
+  the failure had left the broker without a desktop and crashed it.
 - **Debugging aids**: the kernel prints each new process's command line;
   `tools/novarun.py` takes `!bg COMMAND` to leave a program running while
   it waits and takes screenshots, and `NOVARUN_GDB=1` starts QEMU with a

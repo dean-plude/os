@@ -12,59 +12,9 @@
 #include <winternl.h>
 #include "audioconv.h"
 
-#define MMAPI __declspec(dllexport)
+#include "mmwave.h"
+
 int _fltused = 1;                  /* floats are used (the converter) */
-typedef UINT MMRESULT;
-#define MMSYSERR_NOERROR      0
-#define MMSYSERR_ERROR        1
-#define MMSYSERR_BADDEVICEID  2
-#define MMSYSERR_ALLOCATED    4
-#define MMSYSERR_INVALHANDLE  5
-#define MMSYSERR_NODRIVER     6
-#define MMSYSERR_NOMEM        7
-#define MMSYSERR_NOTSUPPORTED 8
-#define MMSYSERR_INVALFLAG    10
-#define MMSYSERR_INVALPARAM   11
-#define WAVERR_BADFORMAT      32
-#define WAVERR_STILLPLAYING   33
-#define WAVERR_UNPREPARED     34
-
-#define WAVE_MAPPER         ((UINT)-1)
-#define WAVE_FORMAT_QUERY   0x0001
-#define CALLBACK_TYPEMASK   0x00070000
-#define CALLBACK_WINDOW     0x00010000
-#define CALLBACK_THREAD     0x00020000
-#define CALLBACK_FUNCTION   0x00030000
-#define CALLBACK_EVENT      0x00050000
-#define WOM_OPEN            0x3BB
-#define WOM_CLOSE           0x3BC
-#define WOM_DONE            0x3BD
-
-#define WHDR_DONE       0x01
-#define WHDR_PREPARED   0x02
-#define WHDR_BEGINLOOP  0x04
-#define WHDR_ENDLOOP    0x08
-#define WHDR_INQUEUE    0x10
-
-typedef struct wavehdr_tag {
-    LPSTR lpData;
-    DWORD dwBufferLength, dwBytesRecorded;
-    DWORD_PTR dwUser;
-    DWORD dwFlags, dwLoops;
-    struct wavehdr_tag *lpNext;
-    DWORD_PTR reserved;
-} WAVEHDR;
-
-typedef struct { UINT wType; union { DWORD ms, sample, cb, ticks; struct { BYTE hour, min, sec, frame, fps, dummy, pad[2]; } smpte; } u; } MMTIME;
-#define TIME_MS      0x01
-#define TIME_SAMPLES 0x02
-#define TIME_BYTES   0x04
-
-/* the kernel's AudioStatus (kernel/drivers/audio.h) */
-typedef struct {
-    ULONGLONG written, consumed, played;
-    UINT32 queued, capacity, running, latency;
-} StreamStatus;
 
 static BOOL device_present(void)
 {
@@ -83,7 +33,7 @@ static ULONGLONG played_frames(INT_PTR s)
 }
 
 /* user32, for window and thread callbacks (winmm does not import it) */
-static BOOL post(BOOL thread, DWORD_PTR target, UINT msg, WPARAM wp, LPARAM lp)
+BOOL mm_post(BOOL thread, DWORD_PTR target, UINT msg, WPARAM wp, LPARAM lp)
 {
     static BOOL (WINAPI *pm)(HWND, UINT, WPARAM, LPARAM);
     static BOOL (WINAPI *ptm)(DWORD, UINT, WPARAM, LPARAM);
@@ -133,8 +83,8 @@ static void notify(WaveOut *w, UINT msg, DWORD_PTR p1)
     case CALLBACK_FUNCTION:
         if (w->cb) ((void (CALLBACK *)(HANDLE, UINT, DWORD_PTR, DWORD_PTR, DWORD_PTR))w->cb)((HANDLE)w, msg, w->inst, p1, 0);
         break;
-    case CALLBACK_WINDOW: post(FALSE, w->cb, msg, (WPARAM)w, (LPARAM)p1); break;
-    case CALLBACK_THREAD: post(TRUE, w->cb, msg, (WPARAM)w, (LPARAM)p1); break;
+    case CALLBACK_WINDOW: mm_post(FALSE, w->cb, msg, (WPARAM)w, (LPARAM)p1); break;
+    case CALLBACK_THREAD: mm_post(TRUE, w->cb, msg, (WPARAM)w, (LPARAM)p1); break;
     case CALLBACK_EVENT:  SetEvent((HANDLE)w->cb); break;
     }
 }
@@ -494,7 +444,7 @@ MMAPI MMRESULT WINAPI waveOutMessage(HANDLE h, UINT msg, DWORD_PTR p1, DWORD_PTR
     return MMSYSERR_NOTSUPPORTED;
 }
 
-static const char *error_text(MMRESULT e)
+const char *mm_error_text(MMRESULT e)
 {
     switch (e) {
     case MMSYSERR_NOERROR:      return "The specified command was carried out.";
@@ -515,7 +465,7 @@ static const char *error_text(MMRESULT e)
 MMAPI MMRESULT WINAPI waveOutGetErrorTextW(MMRESULT e, LPWSTR buf, UINT n)
 {
     if (!buf || !n) return MMSYSERR_INVALPARAM;
-    MultiByteToWideChar(CP_UTF8, 0, error_text(e), -1, buf, (int)n);
+    MultiByteToWideChar(CP_UTF8, 0, mm_error_text(e), -1, buf, (int)n);
     buf[n - 1] = 0;
     return MMSYSERR_NOERROR;
 }
@@ -523,7 +473,7 @@ MMAPI MMRESULT WINAPI waveOutGetErrorTextW(MMRESULT e, LPWSTR buf, UINT n)
 MMAPI MMRESULT WINAPI waveOutGetErrorTextA(MMRESULT e, LPSTR buf, UINT n)
 {
     if (!buf || !n) return MMSYSERR_INVALPARAM;
-    lstrcpynA(buf, error_text(e), (int)n);
+    lstrcpynA(buf, mm_error_text(e), (int)n);
     return MMSYSERR_NOERROR;
 }
 

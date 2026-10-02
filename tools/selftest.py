@@ -18,7 +18,10 @@ Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
 printed no "FAIL" line and no "N failed" count above zero, and prints what
 the test expects.  A kernel panic fails the run.  The serial log, a
-screenshot after each test and the sound recording are kept in --out.
+screenshot after each test and the sound recordings are kept in --out.
+The core boot's sound card hears a 523 Hz tone (novarun --rec, so the
+host needs PulseAudio; without it the tests that record are reported as
+failed and the rest run).
 
 The exit status is the number of failed tests (0: all passed), so CI can
 gate on it.  --summary appends a Markdown table (GitHub's step summary).
@@ -57,6 +60,27 @@ def tones(*hz):
     return check
 
 
+REC_HZ = 523          # what the core boot's microphone hears
+OUT = 'selftest-out'  # --out
+
+
+def recording(guest, hz, ms):
+    """A check on a WAV a test recorded at @guest (C:\\...): a tone of @hz
+    for @ms or longer (tools/wavcheck.py).  The file is copied to --out."""
+    def check(nova):
+        local = os.path.join(OUT, guest.replace('\\', '/').split('/')[-1])
+        src = '::/NOVA/C/' + guest[3:].replace('\\', '/')
+        r = subprocess.run(['mcopy', '-o', '-i', os.path.join(nova.work, 'data.img'), src, local], capture_output=True)
+        if r.returncode:
+            return f'no {guest} on the data disk'
+        if wavcheck.has_tone(local, hz, ms):
+            return None
+        return f'no {hz} Hz tone of {ms} ms in {guest} (heard: ' + \
+            ', '.join(f'{s[3]:.0f} Hz for {s[1]:.0f} ms' for s in wavcheck.segments(local)) + ')'
+    check.needs_mic = True
+    return check
+
+
 def load_suite(name):
     """The tests in tests/selftest/NAME/*.py, in file-name order.  Each file
     defines TESTS (a list of Test; Test and tones are given to it) and, for
@@ -66,7 +90,7 @@ def load_suite(name):
     import glob
     tests = []
     for f in sorted(glob.glob(os.path.join(ROOT, 'tests', 'selftest', name, '*.py'))):
-        ns = {'Test': Test, 'tones': tones, '__file__': f}
+        ns = {'Test': Test, 'tones': tones, 'recording': recording, 'REC_HZ': REC_HZ, '__file__': f}
         exec(compile(open(f).read(), f, 'exec'), ns)
         if not isinstance(ns.get('TESTS'), list) or not all(isinstance(t, Test) for t in ns['TESTS']):
             sys.exit(f'{f}: TESTS must be a list of Test')
@@ -149,11 +173,28 @@ def main():
         return 0
     tests = [t for t in suite if not a.only or t.name in a.only.split(',') or t.cmd.split()[0] in a.only.split(',')]
     os.makedirs(a.out, exist_ok=True)
+    global OUT
+    OUT = a.out
     work = tempfile.mkdtemp(prefix='selftest')
     aml = os.path.join(work, 'battery.aml')
     subprocess.run(['iasl', '-p', aml[:-4], os.path.join(ROOT, 'tests', 'acpi', 'battery.asl')],
                    check=True, stdout=subprocess.DEVNULL)
     wav = os.path.join(a.out, 'sound.wav') if a.suite == 'core' else None
+    rec, results = None, []
+    if a.suite == 'core' and not shutil.which('pulseaudio'):
+        print('PulseAudio is not installed: the tests that record cannot run', flush=True)
+        results = [(t.name, 'needs PulseAudio on the host (novarun --rec)', 0, '') for t in tests
+                   if getattr(t.check, 'needs_mic', False)]
+        tests = [t for t in tests if not getattr(t.check, 'needs_mic', False)]
+    elif a.suite == 'core':                                 # the microphone's tone
+        import math, struct, wave
+        rec = os.path.join(work, 'mic.wav')
+        with wave.open(rec, 'wb') as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(48000)
+            w.writeframes(b''.join(struct.pack('<hh', v, v) for v in
+                                   (int(12000 * math.sin(2 * math.pi * REC_HZ * i / 48000)) for i in range(48000 * 10))))
     puts, data_mb = [], 64
     if a.suite == 'graphics':
         if not a.gfx:
@@ -161,11 +202,10 @@ def main():
         puts = [(os.path.join(a.gfx, '7zip'), r'C:\Programs\7-Zip'), (os.path.join(a.gfx, 'downloads'), r'C:\Downloads'),
                 (os.path.join(a.gfx, 'tests'), r'C:\Tests')]
         data_mb = 1024
-    results = []
     t_boot = time.time()
     try:
         nova = Nova(a.img, work, puts, mem=4096 if a.suite == 'graphics' else 2048, data_mb=data_mb, wav=wav,
-                    extra_args=['-acpitable', f'file={aml}'])
+                    extra_args=['-acpitable', f'file={aml}'], rec=rec)
     except RuntimeError as e:
         print(e)
         shutil.copy(os.path.join(work, 'serial.log'), a.out)
@@ -219,13 +259,13 @@ def main():
         nova.close()
         with open(os.path.join(a.out, 'serial.log'), 'w') as f:
             f.write(full_log + nova.sr.read_new())
+        for i, t in deferred:                               # e.g. the sound recording, now complete
+            why = t.check(nova)
+            if why:
+                name, _, secs, out = results[i]
+                results[i] = (name, why, secs, out)
+                print(f'FAIL  {t.name:18s} {why}', flush=True)
         shutil.rmtree(work, ignore_errors=True)
-    for i, t in deferred:                                   # e.g. the sound recording, now complete
-        why = t.check(nova)
-        if why:
-            name, _, secs, out = results[i]
-            results[i] = (name, why, secs, out)
-            print(f'FAIL  {t.name:18s} {why}', flush=True)
     ran = {r[0] for r in results}
     results += [(t.name, 'not run (an earlier test stopped NovaOS)', 0, '') for t in tests if t.name not in ran]
     report(a, results)

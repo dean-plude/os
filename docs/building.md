@@ -10,7 +10,7 @@ Linux VM.  On a Mac, see [macos.md](macos.md).
 sudo apt update
 sudo apt install -y \
     cmake ninja-build nasm python3 \
-    clang lld llvm \
+    clang lld llvm libc++-dev \
     mtools dosfstools xorriso \
     qemu-system-x86 ovmf
 ```
@@ -21,6 +21,7 @@ What each part is for:
 |------|----------|
 | `cmake`, `ninja-build` (or make) | The build |
 | `nasm` | Kernel assembly (entry, interrupt stubs, SMP trampoline, syscall entry) |
+| `libc++-dev` | libc++'s C++ headers, for HarfBuzz in `novatext.dll` (nothing of libc++ is linked; set `NOVA_LIBCXX` to use headers elsewhere) |
 | `clang`, `lld` (`lld-link`) | **Required.** The Windows userland (`--target=x86_64-pc-windows-msvc` and `i686-pc-windows-msvc`), NetSurf, and the kernel and bootloader unless the alternatives below are installed |
 | `llvm` (`llvm-rc`) | Compiling programs' resource scripts (icons, dialogs) |
 | `python3` | `tools/build_userland.py`, `tools/build_netsurf.py` |
@@ -178,7 +179,8 @@ QEMU's default user-mode network (an e1000e on q35) works out of the box;
 add `-nic user,model=e1000` to test the older card.  `-smp N` sets the core
 count (up to 16).
 
-For sound add `-device intel-hda -device hda-output` (or `hda-duplex`);
+For sound add `-device intel-hda -device hda-output` (or `hda-duplex` or
+`hda-micro`, which add a line in or a microphone to record from);
 `-audiodev wav,id=snd0,path=out.wav,out.frequency=48000` with
 `-device hda-output,audiodev=snd0` records it instead of playing it.
 `cmake --build . --target run` adds the card, playing through the host's
@@ -241,7 +243,7 @@ sudo apt install acpica-tools          # iasl, for tests/acpi/battery.asl
 python3 tools/selftest.py              # the core suite; exit status = failures
 python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 
-# the graphics suite: 7-Zip, Mesa and DXVK downloads, gltest/d3dtest builds
+# the graphics suite: 7-Zip, Mesa and DXVK downloads, gltest/d3dtest/d2dtest builds
 sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
 tools/ci/stage-graphics.sh /tmp/gfx
 python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
@@ -249,24 +251,34 @@ python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
 `sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `comtest`,
-`tlbtest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`, `soundtest wasapi`,
+`tlbtest` (x64 and x86), `usptest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`,
+`soundtest wasapi`, `soundtest record`, `soundtest capture`, `soundtest volume`,
 `filetest install` (an installer that must replace a running program
 schedules it for the next boot), a restart that must report `Pending file
 operations at boot: 2 done, 0 failed`, `filetest installed`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
-`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite types `store
+`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite first runs
+`d2dtest`, x64 and x86: it checks geometry computations, draws a scene into
+a DC render target and compares it with `d2dref.bmp`, the image
+`tools/d2dtest/reference.py` draws with Skia (`pip install skia-python`;
+re-run it when the scene changes), then shows the scene in a window.  It
+then types `store
 install Mesa 3D` and `store install DXVK` (the archives are already in
 `C:\Downloads`, so the App Store installs without a network) and then runs
 `gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
 of each while it draws.
 
 It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
-and the battery from `tests/acpi/battery.asl`, then types each test into the
+whose microphone hears a 523 Hz tone (through a private PulseAudio server,
+so the host needs `pulseaudio`, `pulseaudio-utils` and QEMU's PulseAudio
+backend, `qemu-system-gui` on Ubuntu; without them the recording tests
+fail and the rest run), and the battery from `tests/acpi/battery.asl`, then types each test into the
 Terminal.  A test passes when the program exits with code 0, prints no
 `FAIL` line or non-zero "failed" count, and prints what the test expects;
 a kernel panic stops the run.  `--out` (default `selftest-out/`) keeps the
-serial log, a screenshot after each test and `sound.wav`; `--summary FILE`
+serial log, a screenshot after each test, `sound.wav` and the two
+recordings (`rec.wav`, `cap.wav`); `--summary FILE`
 appends a Markdown table and `--junit FILE` writes JUnit XML.
 
 To add a test, add a file to `tests/selftest/core/` (or `graphics/`):
@@ -307,6 +319,7 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 | `comtest` | ole32/oleaut32, `IShellLink` |
 | `tlbtest` | COM type libraries: `LoadTypeLib` on `testdll.dll`'s embedded library, `ITypeLib`/`ITypeInfo`/`ITypeComp`, registration, `ITypeInfo::Invoke`, `DispCallFunc`, `CreateStdDispatch` |
 | `cppeh` | C++ exceptions and RTTI |
+| `usptest` | Uniscribe on HarfBuzz: Arabic and Devanagari itemized, shaped (contextual forms, ligatures, reordering) and placed with the Noto fonts, and GDI `ExtTextOut` drawing complex text exactly as `ScriptStringOut` does; `usptest bmp FILE` saves sample lines as a bitmap |
 | `shmtest` | Named and file-backed shared memory between processes |
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `proctest` | `CreateProcess` flags: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` (`GetConsoleProcessList`), file positions shared with children and duplicates |
@@ -318,6 +331,7 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 | `acltest` | Access checks against DACLs (`AccessCheck`) for our token and restricted, write-restricted and deny-only ones; `CheckTokenMembership`, impersonation; a named event with a DACL refused to a restricted token |
 | `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
+| `soundtest record FILE [MS]`, `capture FILE [MS]`, `volume` | Recording through `waveIn` and WASAPI capture into a WAV, and `IAudioEndpointVolume` (needs a card with an input) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
 
 <!-- END generated:selftest-table -->
@@ -401,6 +415,18 @@ record it and measure it:
 python3 tools/novarun.py --wav /tmp/out.wav 'C:\Programs\soundtest.exe tone 440 1000' \
     'C:\Programs\soundtest.exe wasapi 523 800'
 python3 tools/wavcheck.py /tmp/out.wav     # each tone: start, length, level, pitch
+```
+
+To test recording, `--rec FILE.wav` gives the card a microphone that hears
+FILE over and over (a private PulseAudio server with two null sinks, so the
+guest records and plays in real time; with `--wav` too, the playback is
+saved from the second sink).  Copy the recording off the data disk and
+check it:
+
+```bash
+python3 tools/novarun.py --keep /tmp/rec --rec tone523.wav 'soundtest record C:\rec.wav 3000'
+mcopy -i /tmp/rec/data.img ::/NOVA/C/rec.wav /tmp/
+python3 tools/wavcheck.py /tmp/rec.wav --tone 523 2500   # exit 0: the tone is there
 ```
 
 ### Network

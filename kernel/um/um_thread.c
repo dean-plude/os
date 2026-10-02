@@ -620,8 +620,12 @@ static UINT64 sys_create_thread_ex(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UINT64 stack = um_stack_arg(10) ? um_stack_arg(10) : um_stack_arg(9);
     if (!start) return ST_INVALID_PARAMETER;
     UINT32 st;
-    UmThread *t = um_create_thread(p, start, arg, stack ? stack : UM_THREAD_STACK, true, &st);
-    if (!t) return st;
+    /* As on Windows, a thread's stack is at least the image's stack reserve
+     * (programs built to need 1 or 2 MB overflow a smaller one) */
+    if (stack < p->stack_reserve) stack = p->stack_reserve;
+    if (stack < UM_THREAD_STACK) stack = UM_THREAD_STACK;
+    UmThread *t = um_create_thread(p, start, arg, stack, true, &st);
+    if (!t) { kprintf("[UM] %s: no new thread (%08x, stack %llu KB)\n", p->name, st, (unsigned long long)(stack >> 10)); return st; }
     UINT64 h = um_handle_new_object(p, &t->ob);
     if (!h || !put_handle(a1, h)) {
         if (h) um_close_handle(h);

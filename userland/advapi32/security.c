@@ -191,16 +191,57 @@ static BOOL string_to_sid(const char *s, PSID *out)
     return TRUE;
 }
 
-WINADVAPI BOOL WINAPI ConvertStringSidToSidA(LPCSTR s, PSID *out) { return string_to_sid(s, out); }
+WINADVAPI BOOL WINAPI ConvertStringSidToSidA(LPCSTR s, PSID *out)
+{
+    if (!s || !out) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!string_to_sid(s, out)) return FALSE;
+    SetLastError(ERROR_SUCCESS);            /* Windows clears it; some callers test GetLastError alone */
+    return TRUE;
+}
 
 WINADVAPI BOOL WINAPI ConvertStringSidToSidW(LPCWSTR s, PSID *out)
 {
     char a[200];
     int i = 0;
+    if (!s || !out) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     for (; s[i] && i < 199; i++) a[i] = (char)s[i];
     a[i] = 0;
-    return string_to_sid(a, out);
+    return ConvertStringSidToSidA(a, out);
 }
+
+/* The accounts well-known SIDs name (LookupAccountSid) */
+static const struct { const char *sid, *domain, *name; SID_NAME_USE use; } g_accounts[] = {
+    { "S-1-0-0",      "",             "NULL SID",            SidTypeWellKnownGroup },
+    { "S-1-1-0",      "",             "Everyone",            SidTypeWellKnownGroup },
+    { "S-1-2-0",      "",             "LOCAL",               SidTypeWellKnownGroup },
+    { "S-1-3-0",      "",             "CREATOR OWNER",       SidTypeWellKnownGroup },
+    { "S-1-3-1",      "",             "CREATOR GROUP",       SidTypeWellKnownGroup },
+    { "S-1-5-1",      "NT AUTHORITY", "DIALUP",              SidTypeWellKnownGroup },
+    { "S-1-5-2",      "NT AUTHORITY", "NETWORK",             SidTypeWellKnownGroup },
+    { "S-1-5-3",      "NT AUTHORITY", "BATCH",               SidTypeWellKnownGroup },
+    { "S-1-5-4",      "NT AUTHORITY", "INTERACTIVE",         SidTypeWellKnownGroup },
+    { "S-1-5-6",      "NT AUTHORITY", "SERVICE",             SidTypeWellKnownGroup },
+    { "S-1-5-7",      "NT AUTHORITY", "ANONYMOUS LOGON",     SidTypeWellKnownGroup },
+    { "S-1-5-10",     "NT AUTHORITY", "SELF",                SidTypeWellKnownGroup },
+    { "S-1-5-11",     "NT AUTHORITY", "Authenticated Users", SidTypeWellKnownGroup },
+    { "S-1-5-13",     "NT AUTHORITY", "TERMINAL SERVER USER", SidTypeWellKnownGroup },
+    { "S-1-5-18",     "NT AUTHORITY", "SYSTEM",              SidTypeWellKnownGroup },
+    { "S-1-5-19",     "NT AUTHORITY", "LOCAL SERVICE",       SidTypeWellKnownGroup },
+    { "S-1-5-20",     "NT AUTHORITY", "NETWORK SERVICE",     SidTypeWellKnownGroup },
+    { "S-1-5-32",     "BUILTIN",      "BUILTIN",             SidTypeDomain },
+    { "S-1-5-32-544", "BUILTIN",      "Administrators",      SidTypeAlias },
+    { "S-1-5-32-545", "BUILTIN",      "Users",               SidTypeAlias },
+    { "S-1-5-32-546", "BUILTIN",      "Guests",              SidTypeAlias },
+    { "S-1-5-32-547", "BUILTIN",      "Power Users",         SidTypeAlias },
+    { "S-1-5-32-551", "BUILTIN",      "Backup Operators",    SidTypeAlias },
+    { "S-1-5-32-555", "BUILTIN",      "Remote Desktop Users", SidTypeAlias },
+    { "S-1-5-32-556", "BUILTIN",      "Network Configuration Operators", SidTypeAlias },
+    { "S-1-5-32-558", "BUILTIN",      "Performance Monitor Users", SidTypeAlias },
+    { "S-1-5-32-559", "BUILTIN",      "Performance Log Users", SidTypeAlias },
+    { "S-1-16-8192",  "Mandatory Label", "Medium Mandatory Level", SidTypeLabel },
+    { "S-1-16-12288", "Mandatory Label", "High Mandatory Level", SidTypeLabel },
+    { "S-1-16-16384", "Mandatory Label", "System Mandatory Level", SidTypeLabel },
+};
 
 /* well-known SID types (WELL_KNOWN_SID_TYPE) */
 /* WELL_KNOWN_SID_TYPE: identifier authority and sub-authorities; dom marks
@@ -273,20 +314,20 @@ WINADVAPI BOOL WINAPI IsWellKnownSid(PSID sid, int type)
 
 static const char *account_of(PSID sid, const char **domain, SID_NAME_USE *use)
 {
-    *domain = "BUILTIN";
-    *use = SidTypeAlias;
+    if (!sid || !IsValidSid(sid)) return 0;
     if (EqualSid(sid, (PSID)g_user_sid)) { *domain = "NOVAOS"; *use = SidTypeUser; return user_name(); }
     static const BYTE domain_sid[] = { 1, 4, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 0xE8, 3, 0, 0, 0xD0, 7, 0, 0, 0xB8, 0x0B, 0, 0 };
     if (EqualSid(sid, (PSID)domain_sid)) { *domain = "NOVAOS"; *use = SidTypeDomain; return "NOVAOS"; }
-    if (EqualSid(sid, (PSID)g_admins_sid)) return "Administrators";
-    if (EqualSid(sid, (PSID)g_users_sid)) return "Users";
-    *domain = "";
-    *use = SidTypeWellKnownGroup;
-    if (EqualSid(sid, (PSID)g_everyone_sid)) return "Everyone";
-    *domain = "NT AUTHORITY";
-    if (EqualSid(sid, (PSID)g_auth_users_sid)) return "Authenticated Users";
-    if (EqualSid(sid, (PSID)g_interactive_sid)) return "INTERACTIVE";
-    if (EqualSid(sid, (PSID)g_system_sid)) return "SYSTEM";
+    char str[200];
+    if (!sid_to_string(sid, str, sizeof(str))) return 0;
+    for (unsigned i = 0; i < sizeof(g_accounts) / sizeof(g_accounts[0]); i++) {
+        const char *a = g_accounts[i].sid, *b = str;
+        while (*a && *a == *b) { a++; b++; }
+        if (*a || *b) continue;
+        *domain = g_accounts[i].domain;
+        *use = g_accounts[i].use;
+        return g_accounts[i].name;
+    }
     return 0;
 }
 
@@ -303,6 +344,7 @@ WINADVAPI BOOL WINAPI LookupAccountSidA(LPCSTR sys, PSID sid, LPSTR name, LPDWOR
     memcpy(dom, d, ld + 1);
     *nn = ln; *nd = ld;
     if (use) *use = u;
+    SetLastError(ERROR_SUCCESS);
     return TRUE;
 }
 
@@ -319,6 +361,7 @@ WINADVAPI BOOL WINAPI LookupAccountSidW(LPCWSTR sys, PSID sid, LPWSTR name, LPDW
     for (DWORD i = 0; i <= ld; i++) dom[i] = (WCHAR)(BYTE)d[i];
     *nn = ln; *nd = ld;
     if (use) *use = u;
+    SetLastError(ERROR_SUCCESS);
     return TRUE;
 }
 
@@ -871,7 +914,9 @@ static DWORD object_sd(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR *
 WINADVAPI DWORD WINAPI GetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
                                        PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
 {
-    (void)t;
+    /* NovaOS's one window station and desktop are user32 pseudo handles,
+     * not kernel objects: they carry the default descriptor */
+    if (t == SE_WINDOW_OBJECT) return security_info(si, owner, group, dacl, sacl, sd);
     PSECURITY_DESCRIPTOR d;
     DWORD e = object_sd(h, si, &d);
     if (e) return e;
@@ -902,7 +947,8 @@ WINADVAPI DWORD WINAPI SetNamedSecurityInfoW(LPWSTR name, SE_OBJECT_TYPE t, SECU
 
 WINADVAPI DWORD WINAPI SetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
 {
-    (void)t; (void)s;                       /* (SACLs are not kept) */
+    (void)s;                                /* (SACLs are not kept) */
+    if (t == SE_WINDOW_OBJECT) return ERROR_SUCCESS;    /* (see GetSecurityInfo) */
     SECURITY_DESCRIPTOR sd;
     InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
     if (si & OWNER_SECURITY_INFORMATION) sd.Owner = o;

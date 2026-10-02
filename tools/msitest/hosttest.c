@@ -6,7 +6,7 @@
  *   gcc -I userland/msi -o msitest tools/msitest/hosttest.c \
  *       userland/msi/{cfb,msidb,cab,lzx,cond}.c && ./msitest package.msi
  *
- * tools/msitest/make_packages.sh builds test packages with msitools.
+ * tools/msitest/make_package.sh builds test packages with msitools.
  */
 #include "msi_int.h"
 static const char *prop(void *ctx, const char *n) { (void)ctx; if (!strcmp(n,"ProductVersion")) return "1.2.3"; if (!strcmp(n,"Installed")) return ""; if (!strcmp(n,"VersionNT")) return "1000"; return ""; }
@@ -43,8 +43,11 @@ int main(int argc, char **argv)
     printf("folders %d files %d\n", c.nfolders, c.nfiles);
     for (int i = 0; i < c.nfiles; i++) printf("  %s size %u off %u folder %d\n", c.files[i].name, c.files[i].size, c.files[i].folder_off, c.files[i].folder);
     CabReader r; if (!cab_reader_start(&r, &c, 0)) { printf("reader: %s\n", r.error); return 1; }
-    uint8_t *all = malloc(1 << 20); uint32_t n = 0;
-    while (cab_reader_next(&r)) { memcpy(all + n, r.out, r.out_len); n += r.out_len; }
+    uint32_t cap = 1 << 20, n = 0; uint8_t *all = malloc(cap);
+    while (cab_reader_next(&r)) {
+        if (n + r.out_len > cap) { cap *= 2; all = realloc(all, cap); }
+        memcpy(all + n, r.out, r.out_len); n += r.out_len;
+    }
     printf("decompressed %u bytes (%s)\n", n, r.error);
     for (int i = 0; i < c.nfiles; i++) { char p[300]; snprintf(p, 300, "out_%s", c.files[i].name); FILE *o = fopen(p, "wb"); fwrite(all + c.files[i].folder_off, 1, c.files[i].size, o); fclose(o); }
     msidb_close(&db);

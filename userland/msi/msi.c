@@ -221,15 +221,39 @@ MSIAPI MsiVerifyPackageA(LPCSTR package)
     return MsiVerifyPackageW(w);
 }
 
-/* Things bootstrappers ask about and NovaOS answers simply */
-__declspec(dllexport) DWORD WINAPI MsiGetSummaryInformationW(HANDLE db, LPCWSTR path, UINT count, HANDLE *out)
+/* Registered products sharing an upgrade code */
+MSIAPI MsiEnumRelatedProductsW(LPCWSTR upgrade, DWORD reserved, DWORD index, LPWSTR buf)
 {
-    (void)db; (void)path; (void)count; (void)out;
-    return ERROR_CALL_NOT_IMPLEMENTED;
+    (void)reserved;
+    if (!upgrade) return ERROR_INVALID_PARAMETER;
+    HKEY h;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\NovaOS\\Installer\\Products", 0, KEY_READ, &h)) return ERROR_NO_MORE_ITEMS;
+    DWORD found = 0;
+    UINT r = ERROR_NO_MORE_ITEMS;
+    for (DWORD i = 0; ; i++) {
+        WCHAR name[64], up[64];
+        DWORD n = 64, type, size = sizeof(up);
+        if (RegEnumKeyExW(h, i, name, &n, NULL, NULL, NULL, NULL)) break;
+        HKEY p;
+        if (RegOpenKeyExW(h, name, 0, KEY_READ, &p)) continue;
+        LONG q = RegQueryValueExW(p, L"UpgradeCode", NULL, &type, (BYTE *)up, &size);
+        RegCloseKey(p);
+        if (q || _wcsicmp(up, upgrade)) continue;
+        if (found++ == index) { if (buf) wcscpy(buf, name); r = ERROR_SUCCESS; break; }
+    }
+    RegCloseKey(h);
+    return r;
 }
 
-MSIAPI MsiCloseHandle(HANDLE h) { (void)h; return ERROR_SUCCESS; }
-MSIAPI MsiCloseAllHandles(void) { return 0; }
+MSIAPI MsiEnumRelatedProductsA(LPCSTR upgrade, DWORD reserved, DWORD index, LPSTR buf)
+{
+    WCHAR u[64], w[64];
+    if (!upgrade) return ERROR_INVALID_PARAMETER;
+    MultiByteToWideChar(CP_ACP, 0, upgrade, -1, u, 64);
+    UINT r = MsiEnumRelatedProductsW(u, reserved, index, w);
+    if (!r && buf) WideCharToMultiByte(CP_ACP, 0, w, -1, buf, 39, NULL, NULL);
+    return r;
+}
 
 __declspec(dllexport) int WINAPI MsiSetExternalUIRecord(void *handler, DWORD filter, void *ctx, void **prev)
 {
