@@ -1,0 +1,54 @@
+/*
+ * novacalc.idl — the type library of testdll.dll's sample COM class
+ * (novacalc.h), embedded in testdll.dll as its TYPELIB resource 1.
+ * tlbtest.exe and comtest.exe check what oleaut32 reads from it.
+ *
+ * The compiled libraries (novacalc32.tlb and novacalc64.tlb, one per
+ * architecture) are checked in; make_tlb.sh rebuilds them with widl
+ * (Debian/Ubuntu: mingw-w64-tools).
+ */
+import "base.idl";
+
+[uuid(6E6F7661-4341-4C43-8001-000000000010), version(1.2), helpstring("NovaOS sample type library")]
+library NovaCalcLib
+{
+    importlib("stdole2.tlb");
+
+    typedef [uuid(6E6F7661-4341-4C43-8001-000000000011)] enum ShapeKind {
+        ShapeCircle = 1, ShapeSquare = 2, ShapeStar = 5
+    } ShapeKind;
+
+    typedef [uuid(6E6F7661-4341-4C43-8001-000000000012)] struct NovaPoint {
+        long x;
+        long y;
+        double weight;
+    } NovaPoint;
+
+    [uuid(6E6F7661-4341-4C43-8001-000000000002), dual, oleautomation, helpstring("Nova calculator")]
+    interface ICalc : IDispatch {
+        [id(1), helpstring("Adds two numbers")] HRESULT Add([in] long a, [in] long b, [out, retval] long *sum);
+        [id(2), propget] HRESULT Count([out, retval] long *n);
+        [id(3)] HRESULT Scale([in] double x, [in, optional, defaultvalue(2)] long factor, [out, retval] double *r);
+        [id(4)] HRESULT Greet([in] BSTR who, [out, retval] BSTR *s);
+        [id(5), propget] HRESULT Name([out, retval] BSTR *s);
+        [id(5), propput] HRESULT Name([in] BSTR s);
+        [id(6)] HRESULT Describe([in] VARIANT v, [out, retval] BSTR *s);
+        [id(7)] HRESULT Fail([in] long code);
+        [id(8)] HRESULT Sum6([in] long a, [in] double b, [in] float c, [in] long d, [in] double e, [in] short f, [out, retval] double *r);
+        [id(9)] HRESULT Swap([in, out] long *a, [in, out] BSTR *b);
+    };
+
+    [uuid(6E6F7661-4341-4C43-8001-000000000003)]
+    dispinterface DCalcEvents {
+        properties:
+        [id(1)] long Last;
+        methods:
+        [id(2)] void Changed([in] long n);
+    };
+
+    [uuid(6E6F7661-4341-4C43-8001-000000000001), helpstring("Nova calculator class")]
+    coclass NovaCalc {
+        [default] interface ICalc;
+        [default, source] dispinterface DCalcEvents;
+    };
+};

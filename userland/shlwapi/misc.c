@@ -405,3 +405,22 @@ LWSTDAPI_(HRESULT) QISearch(void *self, const QITAB *tab, REFIID riid, void **ou
     *out = 0;
     return E_NOINTERFACE_;
 }
+
+/* shcore's per-monitor DPI (api-ms-win-shcore-scaling): every monitor is
+ * 96 DPI, 100% scale, as user32's GetDpiForWindow reports */
+__declspec(dllexport) HRESULT __stdcall GetDpiForMonitor(HANDLE mon, int type, UINT *x, UINT *y)
+{
+    (void)mon; (void)type;
+    if (!x || !y) return E_INVALIDARG_;
+    *x = *y = 96;
+    return S_OK_;
+}
+__declspec(dllexport) HRESULT __stdcall GetScaleFactorForMonitor(HANDLE mon, int *scale)
+{
+    (void)mon;
+    if (!scale) return E_INVALIDARG_;
+    *scale = 100;                                   /* SCALE_100_PERCENT */
+    return S_OK_;
+}
+__declspec(dllexport) HRESULT __stdcall SetProcessDpiAwareness(int v) { (void)v; return S_OK_; }
+__declspec(dllexport) HRESULT __stdcall GetProcessDpiAwareness(HANDLE p, int *v) { (void)p; if (!v) return E_INVALIDARG_; *v = 2; return S_OK_; }

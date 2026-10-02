@@ -67,11 +67,14 @@ WINADVAPI BOOL WINAPI DeregisterEventSource(HANDLE h) { (void)h; return TRUE; }
 
 WINADVAPI BOOL WINAPI ReportEventW(HANDLE h, WORD type, WORD cat, DWORD id, PSID sid, WORD n, DWORD size, LPCWSTR *strings, LPVOID data)
 {
-    (void)h; (void)cat; (void)id; (void)sid; (void)size; (void)data;
+    (void)h; (void)cat; (void)sid; (void)size; (void)data;
     char line[256];
     int o = 0;
     const char *kind = type == 1 ? "error" : type == 2 ? "warning" : "event";
     while (*kind && o < 40) line[o++] = *kind++;
+    line[o++] = ' ';
+    static const char hex[] = "0123456789abcdef";      /* the event ID (often an HRESULT) */
+    for (int k = 28; k >= 0; k -= 4) line[o++] = hex[(id >> k) & 15];
     line[o++] = ':';
     for (WORD i = 0; i < n && strings && o < 250; i++) {
         line[o++] = ' ';
@@ -145,4 +148,23 @@ WINADVAPI BOOL WINAPI AllocateLocallyUniqueId(PLUID luid)
     if (!luid) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     NtAllocateLocallyUniqueId(luid);
     return TRUE;
+}
+
+/* Transacted registry calls (ktmw32): the change is made at once, and the
+ * transaction's commit (CommitTransaction) has nothing left to do */
+WINADVAPI LSTATUS WINAPI RegCreateKeyTransactedW(HKEY key, LPCWSTR sub, DWORD reserved, LPWSTR cls, DWORD options, REGSAM sam,
+                                                 LPSECURITY_ATTRIBUTES sa, PHKEY out, LPDWORD disposition, HANDLE trans, PVOID ext)
+{
+    (void)trans; (void)ext;
+    return RegCreateKeyExW(key, sub, reserved, cls, options, sam, sa, out, disposition);
+}
+WINADVAPI LSTATUS WINAPI RegOpenKeyTransactedW(HKEY key, LPCWSTR sub, DWORD options, REGSAM sam, PHKEY out, HANDLE trans, PVOID ext)
+{
+    (void)trans; (void)ext;
+    return RegOpenKeyExW(key, sub, options, sam, out);
+}
+WINADVAPI LSTATUS WINAPI RegDeleteKeyTransactedW(HKEY key, LPCWSTR sub, REGSAM sam, DWORD reserved, HANDLE trans, PVOID ext)
+{
+    (void)trans; (void)ext;
+    return RegDeleteKeyExW(key, sub, sam, reserved);
 }

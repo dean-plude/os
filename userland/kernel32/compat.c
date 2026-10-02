@@ -2278,3 +2278,231 @@ K32 BOOL WINAPI HeapWalk(HANDLE heap, LPVOID entry)
 }
 K32 BOOL WINAPI HeapLock(HANDLE heap)   { (void)heap; return TRUE; }
 K32 BOOL WINAPI HeapUnlock(HANDLE heap) { (void)heap; return TRUE; }
+
+/* -----------------------------------------------------------------------
+ * Calls Firefox makes at startup (launcher process, mozglue, xul)
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    DWORD dwSize, dwFileAttributes, dwFileFlags, dwSecurityQosFlags;
+    LPSECURITY_ATTRIBUTES lpSecurityAttributes;
+    HANDLE hTemplateFile;
+} CREATEFILE2_EXTENDED_PARAMETERS_;
+K32 HANDLE WINAPI CreateFile2(LPCWSTR name, DWORD access, DWORD share, DWORD disposition, CREATEFILE2_EXTENDED_PARAMETERS_ *x)
+{
+    return CreateFileW(name, access, share, x ? x->lpSecurityAttributes : 0, disposition,
+                       x ? x->dwFileAttributes | x->dwFileFlags | x->dwSecurityQosFlags : FILE_ATTRIBUTE_NORMAL,
+                       x ? x->hTemplateFile : 0);
+}
+
+WINBASEAPI HANDLE WINAPI CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access);
+K32 HANDLE WINAPI CreateWaitableTimerExA(LPSECURITY_ATTRIBUTES sa, LPCSTR name, DWORD flags, DWORD access)
+{
+    WCHAR w[MAX_PATH];
+    if (name) MultiByteToWideChar(CP_ACP, 0, name, -1, w, MAX_PATH);
+    return CreateWaitableTimerExW(sa, name ? w : 0, flags, access);
+}
+
+WINBASEAPI BOOL WINAPI ReplaceFileW(LPCWSTR repl, LPCWSTR with, LPCWSTR backup, DWORD flags, LPVOID a, LPVOID b);
+K32 BOOL WINAPI ReplaceFileA(LPCSTR repl, LPCSTR with, LPCSTR backup, DWORD flags, LPVOID a, LPVOID b)
+{
+    WCHAR r[MAX_PATH], w[MAX_PATH], k[MAX_PATH];
+    MultiByteToWideChar(CP_ACP, 0, repl, -1, r, MAX_PATH);
+    MultiByteToWideChar(CP_ACP, 0, with, -1, w, MAX_PATH);
+    if (backup) MultiByteToWideChar(CP_ACP, 0, backup, -1, k, MAX_PATH);
+    return ReplaceFileW(r, w, backup ? k : 0, flags, a, b);
+}
+
+/* Packaged (MSIX) apps: NovaOS runs none, so no process has a package */
+#define APPMODEL_ERROR_NO_PACKAGE     15700
+#define APPMODEL_ERROR_NO_APPLICATION 15703
+K32 LONG WINAPI GetCurrentPackageFullName(UINT32 *len, PWSTR name) { (void)name; if (len) *len = 0; return APPMODEL_ERROR_NO_PACKAGE; }
+K32 LONG WINAPI GetCurrentPackageId(UINT32 *len, BYTE *buf) { (void)buf; if (len) *len = 0; return APPMODEL_ERROR_NO_PACKAGE; }
+K32 LONG WINAPI GetCurrentPackageFamilyName(UINT32 *len, PWSTR name) { (void)name; if (len) *len = 0; return APPMODEL_ERROR_NO_PACKAGE; }
+K32 LONG WINAPI GetCurrentPackagePath(UINT32 *len, PWSTR path) { (void)path; if (len) *len = 0; return APPMODEL_ERROR_NO_PACKAGE; }
+K32 LONG WINAPI GetCurrentApplicationUserModelId(UINT32 *len, PWSTR id) { (void)id; if (len) *len = 0; return APPMODEL_ERROR_NO_APPLICATION; }
+K32 LONG WINAPI GetApplicationUserModelId(HANDLE p, UINT32 *len, PWSTR id) { (void)p; (void)id; if (len) *len = 0; return APPMODEL_ERROR_NO_APPLICATION; }
+K32 LONG WINAPI GetPackageFullName(HANDLE p, UINT32 *len, PWSTR name) { (void)p; (void)name; if (len) *len = 0; return APPMODEL_ERROR_NO_PACKAGE; }
+K32 LONG WINAPI GetPackageFamilyName(HANDLE p, UINT32 *len, PWSTR name) { (void)p; (void)name; if (len) *len = 0; return APPMODEL_ERROR_NO_PACKAGE; }
+
+K32 BOOL WINAPI GetProcessHandleCount(HANDLE p, PDWORD n)
+{
+    if (!n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    ULONG c = 0;
+    NTSTATUS s = NtQueryInformationProcess(p, 20 /* ProcessHandleCount */, &c, sizeof(c), 0);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    *n = c;
+    return TRUE;
+}
+
+/* The process heap and the (empty) csrss port heap */
+ULONG NTAPI RtlGetProcessHeaps(ULONG n, PVOID *heaps);
+K32 DWORD WINAPI GetProcessHeaps(DWORD n, PHANDLE heaps) { return RtlGetProcessHeaps(n, heaps); }
+
+K32 DWORD WINAPI GetProcessIdOfThread(HANDLE t)
+{
+    THREAD_BASIC_INFORMATION tbi;
+    if (!NT_SUCCESS(NtQueryInformationThread(t, 0, &tbi, sizeof(tbi), 0))) { SetLastError(ERROR_INVALID_HANDLE); return 0; }
+    return (DWORD)(ULONG_PTR)tbi.ClientId.UniqueProcess;
+}
+
+/* Exploit mitigations (DEP, ASLR, CFG, signature and image-load policies):
+ * NovaOS enforces none of them, so every policy reads as all-off and
+ * setting one is accepted */
+K32 BOOL WINAPI GetProcessMitigationPolicy(HANDLE p, int policy, PVOID buf, SIZE_T n)
+{
+    (void)p; (void)policy;
+    if (!buf || !n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    memset(buf, 0, n);
+    return TRUE;
+}
+K32 BOOL WINAPI SetProcessMitigationPolicy(int policy, PVOID buf, SIZE_T n) { (void)policy; (void)buf; (void)n; return TRUE; }
+K32 BOOL WINAPI SetProcessInformation(HANDLE p, int cls, LPVOID info, DWORD n) { (void)p; (void)cls; (void)info; (void)n; return TRUE; }
+K32 BOOL WINAPI GetProcessInformation(HANDLE p, int cls, LPVOID info, DWORD n)
+{
+    (void)p; (void)cls;
+    if (!info) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    memset(info, 0, n);                            /* no memory priority, power throttling or protection */
+    return TRUE;
+}
+/* Control-flow enforcement (shadow stacks) is never on */
+K32 BOOL WINAPI IsUserCetAvailableInEnvironment(DWORD ctx) { (void)ctx; return FALSE; }
+
+/* Thread and process information classes (memory priority, power
+ * throttling...): scheduling hints NovaOS's scheduler does not take */
+K32 BOOL WINAPI SetThreadInformation(HANDLE t, int cls, LPVOID buf, DWORD n) { (void)t; (void)cls; (void)buf; (void)n; return TRUE; }
+K32 BOOL WINAPI GetThreadInformation(HANDLE t, int cls, LPVOID buf, DWORD n) { (void)t; (void)cls; if (buf) memset(buf, 0, n); return TRUE; }
+K32 BOOL WINAPI SetProcessShutdownParameters(DWORD level, DWORD flags) { (void)level; (void)flags; return TRUE; }
+K32 BOOL WINAPI GetProcessShutdownParameters(LPDWORD level, LPDWORD flags)
+{
+    if (level) *level = 0x280;
+    if (flags) *flags = 0;
+    return TRUE;
+}
+
+/* SYSTEM_CPU_SET_INFORMATION: one CPU set per processor */
+typedef struct {
+    DWORD Size, Type;
+    DWORD Id;
+    WORD Group;
+    BYTE LogicalProcessorIndex, CoreIndex, LastLevelCacheIndex, NumaNodeIndex, EfficiencyClass, AllFlags;
+    DWORD SchedulingClass;
+    DWORD64 AllocationTag;
+} CPU_SET_INFO_;
+K32 BOOL WINAPI GetSystemCpuSetInformation(PVOID info, ULONG len, PULONG ret, HANDLE p, ULONG flags)
+{
+    (void)p; (void)flags;
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    ULONG need = si.dwNumberOfProcessors * (ULONG)sizeof(CPU_SET_INFO_);
+    if (ret) *ret = need;
+    if (!info || len < need) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    CPU_SET_INFO_ *c = info;
+    memset(c, 0, need);
+    for (DWORD i = 0; i < si.dwNumberOfProcessors; i++) {
+        c[i].Size = sizeof(CPU_SET_INFO_);
+        c[i].Type = 0;                              /* CpuSetInformation */
+        c[i].Id = 0x100 + i;
+        c[i].LogicalProcessorIndex = (BYTE)i;
+        c[i].CoreIndex = (BYTE)i;
+    }
+    return TRUE;
+}
+K32 BOOL WINAPI GetProcessDefaultCpuSets(HANDLE p, PULONG ids, ULONG n, PULONG need) { (void)p; (void)ids; (void)n; if (need) *need = 0; return TRUE; }
+K32 BOOL WINAPI SetProcessDefaultCpuSets(HANDLE p, const ULONG *ids, ULONG n) { (void)p; (void)ids; (void)n; return TRUE; }
+K32 BOOL WINAPI SetThreadSelectedCpuSets(HANDLE t, const ULONG *ids, ULONG n) { (void)t; (void)ids; (void)n; return TRUE; }
+
+#ifndef PAGE_WRITECOPY
+#define PAGE_WRITECOPY         0x08
+#define PAGE_EXECUTE_WRITECOPY 0x80
+#endif
+#ifndef PAGE_GUARD
+#define PAGE_GUARD             0x100
+#endif
+/* Whether @n bytes at @p are not all readable (committed, not a guard
+ * or no-access page) */
+static BOOL bad_ptr(const void *p, UINT_PTR n, DWORD ok)
+{
+    if (!n) return FALSE;
+    if (!p) return TRUE;
+    const BYTE *a = p, *end = a + n;
+    if (end < a) return TRUE;
+    while (a < end) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery(a, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+            (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) || !(mbi.Protect & ok)) return TRUE;
+        a = (const BYTE *)mbi.BaseAddress + mbi.RegionSize;
+    }
+    return FALSE;
+}
+K32 BOOL WINAPI IsBadReadPtr(const void *p, UINT_PTR n)
+{
+    return bad_ptr(p, n, PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY);
+}
+K32 BOOL WINAPI IsBadWritePtr(void *p, UINT_PTR n)
+{
+    return bad_ptr(p, n, PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY);
+}
+K32 BOOL WINAPI IsBadCodePtr(FARPROC p) { return bad_ptr((const void *)p, 1, PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY); }
+
+/* The working set: NovaOS does not track which pages are resident */
+K32 BOOL WINAPI K32QueryWorkingSet(HANDLE p, PVOID buf, DWORD n)
+{
+    (void)p;
+    if (!buf || n < sizeof(ULONG_PTR)) { SetLastError(ERROR_BAD_LENGTH); return FALSE; }
+    *(ULONG_PTR *)buf = 0;
+    return TRUE;
+}
+K32 BOOL WINAPI K32QueryWorkingSetEx(HANDLE p, PVOID buf, DWORD n) { (void)p; (void)buf; (void)n; return TRUE; }
+
+/* Power requests (keep the display or system awake): nothing sleeps on
+ * NovaOS by itself, so a request is a handle with nothing behind it */
+K32 HANDLE WINAPI PowerCreateRequest(PVOID reason) { (void)reason; return CreateEventW(0, TRUE, FALSE, 0); }
+K32 BOOL WINAPI PowerSetRequest(HANDLE h, int type) { (void)type; return h != 0 && h != INVALID_HANDLE_VALUE; }
+K32 BOOL WINAPI PowerClearRequest(HANDLE h, int type) { (void)type; return h != 0 && h != INVALID_HANDLE_VALUE; }
+
+/* One session: the console's */
+K32 DWORD WINAPI WTSGetActiveConsoleSessionId(void) { return 1; }
+
+/* PathCchCanonicalize(Ex): "." and ".." resolved */
+K32 HRESULT WINAPI PathCchCanonicalizeEx(LPWSTR out, SIZE_T cch, LPCWSTR in, ULONG flags)
+{
+    if (!in) return E_INVALIDARG;
+    return PathCchCombineEx(out, cch, in, 0, flags);
+}
+K32 HRESULT WINAPI PathCchCanonicalize(LPWSTR out, SIZE_T cch, LPCWSTR in) { return PathCchCanonicalizeEx(out, cch, in, 0); }
+
+/* API-set names Firefox imports from kernel32 whose code lives elsewhere */
+__asm__(".section .drectve,\"yn\"\n\t"
+        ".ascii \" /EXPORT:OpenProcessToken=advapi32.OpenProcessToken\"\n\t"
+        ".ascii \" /EXPORT:OpenThreadToken=advapi32.OpenThreadToken\"\n\t"
+        ".ascii \" /EXPORT:RtlCompareMemory=ntdll.RtlCompareMemory\"\n\t"
+        ".ascii \" /EXPORT:GetFileVersionInfoSizeW=version.GetFileVersionInfoSizeW\"\n\t"
+        ".ascii \" /EXPORT:GetFileVersionInfoW=version.GetFileVersionInfoW\"\n\t"
+        ".ascii \" /EXPORT:GetFileVersionInfoSizeExW=version.GetFileVersionInfoSizeExW\"\n\t"
+        ".ascii \" /EXPORT:GetFileVersionInfoExW=version.GetFileVersionInfoExW\"\n\t"
+        ".ascii \" /EXPORT:VerQueryValueW=version.VerQueryValueW\"\n\t"
+        ".text\n");
+
+/* Where Windows' threads start their routine (ntdll's RtlUserThreadStart
+ * calls it); programs look it up to hook thread creation */
+K32 VOID WINAPI BaseThreadInitThunk(DWORD unused, LPTHREAD_START_ROUTINE start, LPVOID arg)
+{
+    (void)unused;
+    ExitThread(start(arg));
+}
+
+/* DEP is always on for 64-bit processes; 32-bit ones may ask */
+K32 BOOL WINAPI SetProcessDEPPolicy(DWORD flags) { (void)flags; return TRUE; }
+K32 BOOL WINAPI GetProcessDEPPolicy(HANDLE p, LPDWORD flags, PBOOL permanent)
+{
+    (void)p;
+    if (flags) *flags = 1;                          /* PROCESS_DEP_ENABLE */
+    if (permanent) *permanent = TRUE;
+    return TRUE;
+}
+
+/* kernelbase carries CommandLineToArgvW on Windows 8 and later (programs
+ * look for it there before shell32) */
+__asm__(".section .drectve,\"yn\"\n\t"
+        ".ascii \" /EXPORT:CommandLineToArgvW=shell32.CommandLineToArgvW\"\n\t"
+        ".text\n");

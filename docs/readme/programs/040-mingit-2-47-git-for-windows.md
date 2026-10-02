@@ -1,0 +1,1 @@
+| **MinGit 2.47** | Git for Windows (console) | `init`, `add`, `commit`, `log` and `diff` (paged by NovaOS's `less`), `status`, `checkout -b`, `merge`, `gc`, `fsck`, and `clone`/`fetch`/`push` between local repositories. |

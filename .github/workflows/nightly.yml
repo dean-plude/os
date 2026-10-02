@@ -1,6 +1,6 @@
 # Nightly app corpus: boots NovaOS built from main and runs unmodified
 # Windows programs (ripgrep, fd, jq, 7-Zip, MinGit, Python, Node.js,
-# Notepad++) with tools/appcorpus.py.  The pass/fail table goes to the run's
+# Notepad++; one file each in tests/appcorpus/) with tools/appcorpus.py.  The pass/fail table goes to the run's
 # summary and, as a comment, to the "Nightly app corpus" issue (opened on
 # the first run).  Pull requests that change the corpus run it as well.
 name: Nightly app corpus
@@ -10,7 +10,7 @@ on:
     - cron: '17 3 * * *'
   workflow_dispatch:
   pull_request:                 # a change to the corpus itself runs it too (no issue comment)
-    paths: [tools/appcorpus.py, .github/workflows/nightly.yml, tests/reference/**]
+    paths: [tools/appcorpus.py, tests/appcorpus/**, .github/workflows/nightly.yml, tests/reference/**]
 
 permissions:
   contents: read
@@ -32,14 +32,14 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            cmake make nasm clang lld llvm gcc-mingw-w64-x86-64 \
-            qemu-system-x86 ovmf mtools dosfstools p7zip-full curl python3-pil
+            cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
+            qemu-system-x86 ovmf mtools dosfstools p7zip-full curl python3-pil ntfs-3g
 
       - name: Cache the program downloads
         uses: actions/cache@v4
         with:
           path: appcorpus-cache
-          key: appcorpus-${{ hashFiles('tools/appcorpus.py') }}
+          key: appcorpus-${{ hashFiles('tools/appcorpus.py', 'tests/appcorpus/*.py') }}
 
       - name: Build NovaOS
         run: |

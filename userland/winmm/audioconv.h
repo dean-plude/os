@@ -4,6 +4,8 @@
  * Shared by winmm (waveOut, PlaySound) and mmdevapi (WASAPI).  Takes 8, 16,
  * 24 or 32-bit integer PCM or 32-bit float, 1 to 8 channels (the first two
  * are kept; mono plays on both), at any rate (linear interpolation).
+ * Recording runs the other way (AudioCapConv): the mixer's frames become
+ * the program's format (mono is the average; channels past two are silent).
  */
 
 #pragma once
@@ -13,6 +15,7 @@
 void *memcpy(void *d, const void *s, size_t n);         /* from ntdll */
 void *memset(void *d, int c, size_t n);
 int   memcmp(const void *a, const void *b, size_t n);
+void *memmove(void *d, const void *s, size_t n);
 
 #define AC_RATE 48000
 
@@ -122,5 +125,76 @@ static inline UINT ac_convert(AudioConv *c, const void *src, UINT n, SHORT *out,
     c->prev[0] = last[0];
     c->prev[1] = last[1];
     c->pos -= n;                                             /* now relative to the next call (prev = -1) */
+    return k;
+}
+
+/* -----------------------------------------------------------------------
+ * Recording: 48 kHz s16 stereo to a program's format
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    AudioConv f;                        /* the program's format (f.step and f.pos unused) */
+    double    step, pos;                /* mixer frames per program frame; position */
+    SHORT     prev[2];
+} AudioCapConv;
+
+static inline BOOL acc_init(AudioCapConv *c, const void *fmt)
+{
+    if (!ac_init(&c->f, fmt)) return FALSE;
+    c->step = (double)AC_RATE / c->f.rate;
+    c->pos = 0;
+    c->prev[0] = c->prev[1] = 0;
+    return TRUE;
+}
+
+static inline void acc_put(const AudioConv *c, BYTE *p, float v)
+{
+    if (v > 1.0f) v = 1.0f;
+    if (v < -1.0f) v = -1.0f;
+    switch (c->kind) {
+    case AC_U8:  *p = (BYTE)(int)(v * 127.0f + 128.0f); break;
+    case AC_S16: *(SHORT *)p = ac_s16(v); break;
+    case AC_S24: { INT32 x = (INT32)(v * 8388607.0f); p[0] = (BYTE)x; p[1] = (BYTE)(x >> 8); p[2] = (BYTE)(x >> 16); break; }
+    case AC_S32: *(INT32 *)p = (INT32)((double)v * 2147483647.0); break;
+    case AC_F32: *(float *)p = v; break;
+    }
+}
+
+/* The most mixer frames that convert into at most @out program frames */
+static inline UINT acc_src_for(const AudioCapConv *c, UINT out)
+{
+    double n = (out > 2 ? out - 2 : 0) * c->step;
+    return n < 1 ? 1 : (UINT)n;
+}
+
+/* Convert @n mixer frames into at most @cap program frames at @out (call
+ * with n <= acc_src_for(cap)); returns the program frame count */
+static inline UINT acc_convert(AudioCapConv *c, const SHORT *src, UINT n, void *out, UINT cap)
+{
+    UINT k = 0, bytes = c->f.block / c->f.channels;
+    BYTE *o = out;
+    if (!n) return 0;
+    while (k < cap) {
+        LONG i = (LONG)c->pos;
+        if ((double)i > c->pos) i--;
+        if (i + 1 > (LONG)n - 1) break;
+        float fr = (float)(c->pos - i), v[2];
+        for (int ch = 0; ch < 2; ch++) {
+            float a = (i < 0 ? c->prev[ch] : src[i * 2 + ch]) / 32768.0f, b = src[(i + 1) * 2 + ch] / 32768.0f;
+            v[ch] = a + (b - a) * fr;
+        }
+        BYTE *p = o + (size_t)k * c->f.block;
+        if (c->f.channels == 1) {
+            acc_put(&c->f, p, (v[0] + v[1]) * 0.5f);
+        } else {
+            acc_put(&c->f, p, v[0]);
+            acc_put(&c->f, p + bytes, v[1]);
+            for (UINT ch = 2; ch < c->f.channels; ch++) acc_put(&c->f, p + ch * bytes, 0);
+        }
+        k++;
+        c->pos += c->step;
+    }
+    c->prev[0] = src[(n - 1) * 2];
+    c->prev[1] = src[(n - 1) * 2 + 1];
+    c->pos -= n;
     return k;
 }

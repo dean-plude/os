@@ -1,4 +1,5 @@
 # NovaOS — Feature History, Phase by Phase
+<!-- The regions between "BEGIN generated" and "END generated" markers are built from fragment files by tools/docgen.py: edit those files, not the regions (CONTRIBUTING.md). -->
 
 This is the detailed record of what each phase of NovaOS added, in the
 order it landed.  The [README](../README.md) has the short version: what
@@ -35,6 +36,8 @@ Contents:
 [Runtimes](#language-runtimes-java-net-nodejs-python) ·
 [Installing NovaOS](#installing-novaos-on-a-disk) ·
 [Sound](#sound-intel-hd-audio-winmm-and-wasapi)
+
+<!-- BEGIN generated:history -->
 
 ## Phase 1 — Boot & Kernel Foundation
 - UEFI bootloader (PE32+ EFI application, loads kernel ELF from FAT32 ESP)
@@ -386,7 +389,8 @@ Contents:
 - Not yet: `LoadIcon`/`DrawIcon` and `WM_SETICON` for programs (a window
   shows its program's first icon), and animated cursors.  *(Phase 12's
   user32 has icons from `.ico` files and PE resources and `WM_SETICON`;
-  animated cursors are still missing.)*
+  animated cursors came with "Program pointers and animated cursors"
+  below.)*
 
 ## Phase 10 — Standard DLLs, registry, COM and persistent storage
 - **Unmodified Windows programs run**: stock release builds of ripgrep and
@@ -444,8 +448,9 @@ Contents:
   controls, file-open dialogs (they report "cancelled"), the MSVC FH4 C++
   exception tables, type libraries, `RegNotifyChangeKeyValue` events, audio,
   and a clipboard shared between programs.  *(Dialogs, menus and controls
-  came in Phase 12 and the shared clipboard after Phase 13; the rest is
-  still open.)*
+  came in Phase 12, the shared clipboard after Phase 13, audio with HD
+  Audio, and type libraries and FH4 in "COM type libraries and FH4 C++
+  exceptions" below; the rest is still open.)*
 
 ## Phase 11 — Multiprocessor (SMP)
 
@@ -684,8 +689,10 @@ Install button all go through it, and programs can call
   `/qb`, `/passive`, `/l*v FILE` and `PROPERTY=value` overrides, and
   shows the familiar progress window with Cancel (full UI adds the
   completion message box).  Logs also go to the kernel log (`dmesg`).
-- Custom actions, the packages' own dialogs, shortcuts, services and LZX
-  on real packages came later; see "Windows Installer depth" below.
+- Not yet: the packages' own dialogs (`InstallUISequence`), the
+  `Shortcut` table, services, environment variables, and
+  merge modules.  LZX decoding is written to the specification but has
+  only been exercised with MSZIP cabinets so far.
 
 ## Phase 13 — 32-bit Windows programs (WoW64)
 
@@ -1043,9 +1050,8 @@ finds `java` and `node`.  What it took:
   UCRT (`_create_locale`, conio, `_wspawnve`...).
 - **Windows Installer**: the string pool's encoding of strings of 64 KB
   or more (Node's licence text), which shifted every later string id.
-- Not yet: .NET has no ICU (globalization works through NLS for English
-  and invariant cultures).  (MSI custom actions run since "Windows
-  Installer depth".)
+- Not yet: MSI custom actions still do not run, and .NET has no ICU
+  (globalization works through NLS for English and invariant cultures).
 
 ## Installing NovaOS on a disk
 
@@ -1329,8 +1335,9 @@ build machine, and DXVK is the faster, more complete path anyway.
 - `sleeptest.exe` sleeps and then checks the clock, threads and files.
   Tested in QEMU (OVMF, q35) with 1, 2 and 4 CPUs, three sleeps in a row,
   and with a USB keyboard and mouse and HD Audio attached.
-- Not yet: wake devices such as USB keyboards, display modes on adapters
-  other than the Bochs/QEMU one.
+- Not yet: wake devices such as USB keyboards.  (Display modes on other
+  adapters came later: see "Display adapters: QXL, virtio, VMware, Cirrus,
+  and their modes after sleep".)
 
 ## ACPI namespace (uACPI): batteries and AC power
 
@@ -1557,113 +1564,514 @@ where git finds it:
   child's standard output share it, so a parent and child writing to one
   log file follow each other instead of overwriting.  `proctest` covers
   all three in the core suite.
+- **Security on objects** (17.4): tokens are kernel objects.  Each process
+  has a primary token, inherited from the process that started it (the
+  desktop user's otherwise: a standard user in Users, with Administrators
+  only for denying since nothing is elevated), and a thread can
+  impersonate an impersonation token.  `NtOpenProcessToken(Ex)`,
+  `NtOpenThreadToken(Ex)`, `NtDuplicateToken`, `NtFilterToken`,
+  `NtQueryInformationToken`, `NtImpersonateAnonymousToken`,
+  `NtAccessCheck` and `NtQuery/SetSecurityObject` moved from ntdll into
+  the kernel at their Windows 10 1903 numbers, and
+  `NtSetInformationThread(ThreadImpersonationToken)` sets or ends
+  impersonation.  `NtFilterToken` (advapi32's `CreateRestrictedToken`)
+  makes SIDs deny-only, removes privileges and adds restricting SIDs, and
+  can make the token write-restricted.  A named event, mutex, semaphore,
+  timer, section, directory or symbolic link keeps the security descriptor
+  it was created with (`SECURITY_ATTRIBUTES`), and opening it, or creating
+  an existing name, checks the access asked for against it as the calling
+  thread: the DACL in order, deny-only groups only in deny ACEs, the
+  owner's implicit `READ_CONTROL | WRITE_DAC`, and for a restricted token a
+  second pass with its restricting SIDs.  kernel32's `OpenEvent`,
+  `OpenMutex` and `OpenSemaphore` pass the access asked for, not all.
+  `GetKernelObjectSecurity`, `SetKernelObjectSecurity`, `GetSecurityInfo`
+  and `SetSecurityInfo` read and change the descriptor; `CheckTokenMembership`,
+  `ImpersonateSelf`, `RevertToSelf`, `SetThreadToken` and
+  `ImpersonateLoggedOnUser` work on real tokens.  Files keep no
+  descriptor yet: the file system takes that part in Phase 18 (18.5), on
+  the same check (`um_access_check_sd`).  `sectest` and `acltest` (also
+  32-bit) show a restricted token refused a protected event.
+- **Registry change events and pending renames** (17.5):
+  `RegNotifyChangeKeyValue` works, on the new `NtNotifyChangeKey`: a watch
+  on a key (optionally with its subkeys) signals its event once when a
+  value is set or deleted, a subkey is added, deleted or renamed, or the
+  key itself is deleted, as its filter asks; without `async` the call
+  waits for that.  `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` writes full
+  `\??\` paths to Session Manager's `PendingFileRenameOperations` (with
+  `!` for `MOVEFILE_REPLACE_EXISTING`), and the kernel now carries the
+  list out at boot, after loading the registry and before any program
+  runs, then deletes it.  A running program's files (its `.exe` and DLLs)
+  are now held while it runs, as on Windows, so they cannot be deleted or
+  replaced until it ends (renaming them still works).  The core suite
+  runs an installer that has to replace a running program, restarts
+  (`tools/novarun.py` and `tools/selftest.py` can restart NovaOS) and
+  checks the replacement happened.  Hard links are still to come.
+- **Small visible bugs** (17.6): File Explorer's This PC is now a list of
+  the drives (C: and each mounted volume, D:, E:, ...) with their free
+  space and size, and opening `C:\` or the desktop's This PC shows it; the
+  up button and Backspace go from a drive's root back to This PC.  The
+  Terminal's `dir` and cmd's `dir` name the drive they list and give that
+  drive's own free space (cmd always asked C: before), and
+  `GetDiskFreeSpaceEx` asks each volume (`FileFsFullSizeInformation`),
+  C: included, whose free space is the free memory it lives in.
+  Notepad++'s tab bar and status bar drew black: it double-buffers them by
+  sending `WM_PRINT` into a memory DC, which `DefWindowProc` ignored.
+  `WM_PRINT` now erases, sends `WM_PRINTCLIENT` and prints the children;
+  the status bar, tab control and progress bar draw on `WM_PRINTCLIENT`;
+  and the tab control lets its parent draw `TCS_OWNERDRAWFIXED` tabs
+  (`WM_DRAWITEM`), sizes tabs from their text, icon and `TCM_SETPADDING`
+  (`TCM_SETITEMSIZE`'s width only with `TCS_FIXEDWIDTH`) and takes
+  `TCM_SETMINTABWIDTH`.  The nightly app corpus now boots with an empty
+  NTFS drive D: and keeps screenshots of `dir C:\` and `dir D:\` (each
+  with its own free space), This PC and Notepad++ (the last two compared
+  with references in `tests/reference/`).
 - Tested in QEMU: Neovim 0.10.4 and 0.11.4 open `t.txt`, take `ihello
   world<Esc>:wq` and exit with code 0 leaving the file written; MinGit's
   `sh --login -i` shows its coloured prompt and runs `ls`, pipes,
   `$(...)` and redirections to `/dev/null`; the core self-tests pass.
 
-## Windows Installer depth: custom actions, dialogs, shortcuts, services
+## Display adapters: QXL, virtio, VMware, Cirrus, and their modes after sleep
 
-Roadmap step 20.5.  Before writing anything we looked for a permissive
-(MIT, BSD, zlib) Windows Installer to reuse; there is none (Wine's is
-LGPL), so the engine stays NovaOS's own, with `stb_image` (public domain
-or MIT) for the dialogs' pictures.
+- **More adapters with the DISPI registers** (`kernel/hal/display.c`): the
+  VBE driver now also drives QEMU's QXL (`-vga qxl`), virtio-vga
+  (`-vga virtio`) and VMware SVGA II (`-vga vmware`, whose VGA core has
+  them, with the framebuffer in BAR1) besides the standard VGA,
+  bochs-display and VirtualBox's VBoxVGA.  The adapter table follows
+  OVMF's QemuVideoDxe (BSD-2-Clause-Patent).  All of them get run-time
+  resolutions and Settings > Display names the adapter.
+- **Cirrus Logic GD5446** (`-vga cirrus`): 800x600 and 640x480 at 32 bpp,
+  set with QemuVideoDxe's VGA and Cirrus register tables.  The bootloader
+  now only picks 32-bit GOP modes, so Cirrus boots in 800x600 instead of
+  its 24-bit 1024x768 mode, which drew garbled.
+- **Modes after S3** (`DisplayResume`): the driver sets the current mode
+  again on wake from what it knows, not from registers saved through I/O
+  ports, so bochs-display (MMIO only) and Cirrus come back too; the page
+  that was on screen stays on screen, and the desktop is redrawn in case
+  video memory was lost.
+- `tools/novarun.py --display NAME` boots on another adapter (`cirrus`,
+  `vmware`, `qxl`, `virtio`, or a `-device` such as `bochs-display`).
+- Tested in QEMU on all six adapters: switch to a non-boot mode with
+  `disptest W H`, `sleeptest`, `system_wakeup`, and the desktop is back in
+  that mode; also with page flipping (`-global VGA.vgamem_mb=64`).
+- Not yet: real GPUs (Intel, AMD, NVIDIA) and virtio-gpu without VGA have
+  no driver, so they stay on the UEFI framebuffer, and after sleep they
+  show whatever the firmware's wake path sets up, which is often nothing.
 
-- **Custom actions that run code.**  DLL actions (types 1 and 17) run out
-  of process, as on Windows: `msiexec /novaca` is a custom-action server
-  that loads the DLL and calls its entry point, and a 32-bit DLL (WiX's
-  `WixCA` usually is, even in x64 packages) runs in `SysWOW64`'s
-  `msiexec`.  Its `MsiGetProperty`, `MsiDatabaseOpenView`,
-  `MsiProcessMessage`... calls cross a pipe back to the installation.
-  EXE actions (2, 18, 34, 50) start the program from the Binary table, an
-  installed file, a folder or a property; type 19 shows its error; 35 and
-  51 set folders and properties.  The flags are honoured: continue on
-  error, asynchronous, run once, deferred with `CustomActionData`, commit
-  actions after `InstallFinalize`; rollback actions are kept unused (there
-  is no rollback yet).  Script actions (VBScript, JScript) and nested
-  installs are logged and skipped.
-- **The MSIHANDLE API** (`userland/msi/api.c`), exported at Windows'
-  ordinals: records, views with an SQL engine (`sql.c`: `SELECT ... WHERE
-  ... ORDER BY`, joins, `INSERT`/`UPDATE`/`DELETE`, `CREATE TABLE` and
-  temporary rows through `MsiViewModify`), properties, formatted strings
-  (`[Prop]`, `[#File]`, `[!File]`, `[$Comp]`, `[%ENV]`, `[1]`, `{...}`
-  groups), feature and component states, target and source paths,
-  `MsiDoAction`, `MsiSequence`, `MsiEvaluateCondition`, the summary
-  information stream, `MsiGetMode` and `MsiSetMode`.
-- **The packages' own dialogs.**  At full UI a package with an
-  `InstallUISequence` shows its own wizard (`dialog.c`): the Dialog,
-  Control, ControlEvent, ControlCondition, EventMapping, TextStyle,
-  RadioButton, CheckBox, ListBox and ComboBox tables; text, bitmaps (BMP,
-  PNG, JPEG), icons, lines and group boxes painted in place; push buttons,
-  check boxes, edit and path fields, radio groups, the licence's RTF,
-  progress bars, the feature tree (with check boxes), folder lists and
-  combos, volume lists, list and combo boxes as real controls.  Events:
-  property changes, `NewDialog`, `SpawnDialog`, `EndDialog`, `DoAction`,
-  `SetTargetPath`, `Reset`, `AddLocal`, `Remove`, `SetInstallLevel`,
-  `SelectionBrowse` and the folder-list events; the progress dialog
-  follows `ActionText`, `ActionData` and `SetProgress`; Cancel asks first.
-  The success, cancel and failure dialogs (-1, -2, -3) end it.  Packages
-  without dialogs keep the progress window.
-- **Shortcuts**: the Shortcut table (`IShellLink`, with arguments,
-  working folder, description, show command and icons from the Icon
-  table, saved under `C:\Windows\Installer\{ProductCode}`), into the
-  Start menu (`C:\AppData\Roaming\Start Menu\Programs`) and the
-  desktop; `msiexec /x` removes them.  shell32 gains the
-  InternetShortcut class (`.url` files with `IUniformResourceLocator`,
-  `IPersistFile` and its property set) that WiX's internet shortcuts use.
-- **Services**: `ServiceInstall` and `ServiceControl` (install, start,
-  stop, delete, on install and on uninstall), on a **service control
-  manager** in `advapi32` (`service.c`).  Services live under
-  `HKLM\SYSTEM\CurrentControlSet\Services` as on Windows;
-  `StartService` runs the image, whose `StartServiceCtrlDispatcher` runs
-  `ServiceMain` on a thread and takes controls on a pipe; `ControlService`,
-  `QueryServiceStatus(Ex)`, `QueryServiceConfig(2)`, `ChangeServiceConfig(2)`,
-  `EnumServicesStatus(Ex)`, `DeleteService` and the A forms work.
-  `tools/msitest/make_service_package.sh` builds a package around a test
-  service (`svc.c`).  Services marked automatic do not start at boot yet.
-- **AppSearch** follows DrLocator (with Parent chains and Depth) and the
-  Signature table (file names, minimum and maximum versions and sizes),
-  besides RegLocator, whose directory and file types now check the
-  signature too.
-- **Smaller pieces**: `CostingComplete`, empty files missing from the
-  cabinet are created, `MsiEnumRelatedProducts`, the features installed
-  are remembered so maintenance runs and removals know them, and
-  `ADDLOCAL`/`REMOVE` follow the dialogs' feature choices.  New:
-  `activeds.dll` (ADSI; binding fails, as on a machine in no domain),
-  which WiX's util custom actions import.  `advapi32` names all the usual
-  well-known SIDs (`LOCAL SERVICE`, `Guests`, `Performance Log Users`...)
-  and clears the last error on success where callers look at it.
-- **FAT**: creating a file whose 8.3 alias was taken walked the folder
-  once per `~N` tried, so a folder of a thousand similar names (CMake's
-  documentation) froze the desktop while drive C: was saved.  One walk
-  now marks the taken numbers.
-- **Merge modules** are merged into a package's own tables when it is
-  built (the `Module*` tables only record what came from where), so the
-  engine installs them like any other component; none of the packages
-  tested here carries one, so that is untested.
-- **LZX on real packages**: 7-Zip's MSI (LZX:21) extracts byte for byte
-  as `cabextract` does, and Node.js, CMake, Temurin and KeePassXC
-  install.
-- **`taskkill.exe`** (`/IM`, `/PID`, `/F`), which WiX's quiet-exec
-  actions run to close a program before it is replaced.
-- **C runtime**: MinGW programs lock a stream themselves, entering the
-  critical section Microsoft's CRT keeps after each `FILE` (`_FILEX`) and
-  setting a flag in `_flag` for the standard three.  msvcrt now allocates
-  streams that way and keeps its flags where `_flag` sits, so a MinGW
-  `fprintf` to a file no longer hangs (the test service's `ServiceMain`
-  did).
-- Tested in QEMU: 7-Zip and CMake through their own wizards (welcome,
-  licence, options, folder, ready, progress, finish; CMake's
-  `ValidatePath` and `DetectNsisOverwrite` DLL actions run from its
-  dialogs); 7-Zip's two Start menu shortcuts; with `/qn`, CMake
-  (`cmake --version`), Node.js (64-bit and 32-bit WiX custom actions,
-  `node -e`, Start menu and internet shortcuts) and Temurin (the
-  `WixRemoveFoldersEx` action, `java -version`) installed, ran and were
-  removed with `/x`; KeePassXC (32-bit `WixQuietExec` running
-  `taskkill`) installed and was removed, though it needs `MSVCP140.dll`
-  (the Visual C++ runtime) to start; the test service installed,
-  started, wrote its state, stopped and was deleted.  PowerShell 7 stops
-  at its own launch condition: it wants Windows' `pwrshplugin.dll`
-  (WinRM remoting), which NovaOS lacks.
-- Not yet: rollback, script custom actions, nested installs, patches
-  (`.msp`) and transforms (`.mst`), advertised features, services at boot.
+## Program pointers and animated cursors (.ani)
+
+Until now `SetCursor` only remembered its argument: the desktop always
+drew its own arrow.  The pointer is now the program's, and animated
+cursors play.  No MIT, BSD or zlib licensed .ani reader was found (Wine's
+is LGPL), so the parser is written here; the format is a small RIFF file.
+
+- **The kernel draws a program's pointer** (`kernel/wm/wm.c`,
+  `kernel/gdi/gdi.c`): `NtNovaGuiCtl` op 19 hands it a shape (up to
+  64 x 64 logical pixels, its hot spot, up to 64 frames and 256 steps,
+  each step's time in jiffies), or asks for the arrow or no pointer.  It
+  shows over the client area of that process's windows, and anywhere while
+  one of them has the mouse captured; the desktop, title bars, borders and
+  window drags keep the arrow.  The desktop's tick steps animated shapes
+  (100 Hz against the .ani's 60 Hz jiffies) and redraws the pointer when
+  the window under it changes.  Op 20 reports what the pointer shows, for
+  tests.
+- **user32**: `SetCursor` sends the cursor to the kernel when it changes
+  (the system `IDC_*` cursors are the arrow; `NULL` hides the pointer),
+  `ShowCursor` below zero hides it, and `GetCursorInfo` says whether it
+  shows.
+- **Animated cursors** (`userland/user32/res.c`): RIFF `ACON` files with
+  `anih`, `rate`, `seq ` and the `fram` list of .cur/.ico frames, from
+  `LoadCursorFromFile`, `LoadImage(LR_LOADFROMFILE)`,
+  `CreateIconFromResourceEx` and `ANICURSOR`/`ANIICON` resources
+  (`LoadCursor`, `LoadImage`).  `DrawIconEx` draws the frame of the step it
+  is given, and `GetCursorFrameInfo` reports each step's frame and rate.
+  `LoadCursorFromFile` loads .cur files too, and returns `NULL` for a
+  missing file as Windows does (it used to return the arrow).
+- **`anitest.exe`** (in the core self-tests) loads a spinner
+  (`userland/programs/anitest.ani`, made by `tools/mkani.py`: 8 frames
+  played in a custom order with two rates) from its resource, from memory
+  and from a file, checks the steps, rates, hot spot and each step's
+  drawing, then makes it the pointer over a window and checks the desktop
+  shows it and steps through at least 6 of the 8 frames in 1.5 s, that
+  `SetCursor(NULL)` hides it and the arrow comes back.  `anitest show N`
+  keeps the window up for N seconds.  It runs as a 32-bit program too
+  (`C:\Programs\x86\anitest`).
+- Not yet: the system cursors themselves (I-beam, resize arrows, the
+  busy and "working in background" animations) are all the arrow;
+  `SetSystemCursor` does nothing; `CopyIcon` of an animated cursor keeps
+  only its first frame; at 200 % the pointer is scaled up by nearest
+  neighbour.
+
+## COM type libraries and FH4 C++ exceptions
+
+Two items left open since Phase 10.  We looked for MIT, BSD or zlib
+licensed code first: Wine's typelib and FH4 code are LGPL, and nothing
+permissive covers either, so both are written here from the file formats
+(checked against `widl` output and real MSVC binaries).
+
+- **Type libraries** (`userland/oleaut32/typelib.c`, `typeinfo.c`,
+  `invoke.c`): `LoadTypeLib`/`LoadTypeLibEx` read MSFT-format libraries
+  from `.tlb` files and from the `TYPELIB` resources of DLLs and EXEs
+  (`file.dll\2` picks a resource), with `stdole2.tlb` built in (`IUnknown`,
+  `IDispatch`, `IEnumVARIANT`).  `ITypeLib2`, `ITypeInfo2` and `ITypeComp`
+  cover enums, records, coclasses, interfaces and dispinterfaces,
+  including both views of a dual interface (`href -1`), default values,
+  references into imported libraries and documentation strings (aliases
+  and modules are read too, but no test library has them yet).
+  `RegisterTypeLib`, `UnRegisterTypeLib` (and the `ForUser` forms), `QueryPathOfRegTypeLib` and `LoadRegTypeLib` keep
+  `HKCR\TypeLib` and the interfaces' `ProxyStubClsid32` keys.
+  `LHashValOfNameSys` gives a case-insensitive hash, not Windows' exact
+  values (the lookups here compare names, so the hash is never needed).
+- **Calling through type information**: `ITypeInfo::Invoke` (and so
+  `DispInvoke`, `DispGetIDsOfNames` and `CreateStdDispatch`) converts
+  DISPPARAMS to each method's own argument types, with named arguments,
+  `[optional]` and `[defaultvalue]`, `[in, out]` by reference, `[retval]`
+  and property puts, calls the vtable, and turns a failing HRESULT into
+  `DISP_E_EXCEPTION` with the object's error info.  `DispCallFunc` calls
+  any function or vtable slot (x64 register and stack arguments, x86
+  stdcall and cdecl, floating-point and structure returns).
+- **FH4** (`userland/vcruntime140/eh.c`, `vcruntime140_1.dll`):
+  `__CxxFrameHandler4`, the compressed exception tables that MSVC has
+  emitted for x64 since Visual Studio 2019, decoded into the same state
+  machine as `__CxxFrameHandler3` (unwind maps, try blocks, catch
+  continuations, separated code, `noexcept` functions).  The new
+  `vcruntime140_1.dll` forwards to `vcruntime140.dll`, as Microsoft's does.
+- **The sample COM server** (`testdll.dll`, `Nova.Calc`) now embeds its
+  type library (`userland/testdll/idl/novacalc.idl`, compiled with `widl`
+  by `make_tlb.sh`); its `IDispatch` is `DispInvoke` over that library and
+  `DllRegisterServer` registers it.  DLLs can now carry an `.rc` file.
+- **CRT**: the `<fenv.h>` functions (`fetestexcept`, `feclearexcept`,
+  `fegetround`...) are exported from `msvcrt.dll` and `ucrtbase.dll`.
+- Tests: the new `tlbtest` passes 110/110, 64- and 32-bit; `comtest`
+  59/59 and `cppeh` 17/17, both architectures, all in the CI core suite
+  now.  Python 3.14 with the kiwisolver 1.5.1 wheel, run against NovaOS's
+  own `vcruntime140.dll` and `vcruntime140_1.dll` (Microsoft's copies
+  removed from the Python folder), raises and catches kiwisolver's C++
+  exceptions (`DuplicateConstraint`, `UnsatisfiableConstraint`,
+  `UnknownConstraint`, `UnknownEditVariable`) through FH4 tables and gets
+  the same results as on Linux.
+- Not yet: NumPy still stops at the C99 complex functions (`cabs`,
+  `cexp`...) the UCRT exports, and `AddDllDirectory` is a stub, so
+  `os.add_dll_directory` paths are not searched.  `msvcp140.dll` (the C++
+  standard library) is not provided.
+
+## Complex text: HarfBuzz, FreeType and Uniscribe
+
+Phase 19.1.  Arabic, Hebrew and the Indic scripts are shaped: letters join
+into their contextual forms, ligate, reorder and run right to left.
+
+- **`novatext.dll`** (`userland/novatext`) is the text core, built once and
+  shared by Uniscribe, DirectWrite and Direct2D: **HarfBuzz 11.2.1**
+  (`third_party/harfbuzz`, MIT) and **FreeType 2.13.3**
+  (`third_party/freetype`, the FreeType License; TrueType, OpenType/CFF,
+  Type 1, CID and `.fon` drivers, the smooth and mono rasterizers, the
+  auto-hinter and the stroker).  It exports both libraries' C APIs (`hb_*`,
+  `FT_*`).  No MIT Uniscribe or HarfBuzz-free shaper fitted, so this reuses
+  the standard pair.  HarfBuzz is C++: `tools/build_userland.py` compiles it
+  with clang against libc++'s headers (`libc++-dev`; nothing of libc++ is
+  linked, and HarfBuzz needs no C++ runtime).  For that, the userland's
+  `math.h` and `stdlib.h` gained the C++ overloads the Windows SDK's have,
+  `locale.h` Windows' full `lconv`, and `include/cxx/functional` a slim
+  `<functional>`.
+- **`usp10.dll`** (`userland/usp10/usp10.c`) is rewritten on it.
+  `ScriptItemize` splits text by script (HarfBuzz's Unicode data) and by
+  bidirectional level (a compact UAX #9: strong letters, European and
+  Arabic numbers, neutrals between them).  `ScriptShape` reads the DC's
+  font through `GetFontData`, shapes the run with HarfBuzz at gdi32's
+  pixel size and returns glyphs in visual order, logical clusters and
+  visual attributes; it reports `USP_E_SCRIPT_NOT_IN_FONT` when the font
+  lacks a complex script.  `ScriptPlace` hands out HarfBuzz's advances and
+  mark offsets, `ScriptTextOut` draws marks at their offsets, and
+  `ScriptCPtoX`, `ScriptXtoCP` and `ScriptGetLogicalWidths` handle
+  right-to-left clusters.  New: `ScriptShapeOpenType`,
+  `ScriptPlaceOpenType` (OpenType features), `ScriptItemizeOpenType`'s
+  real script tags, `ScriptGetFontScriptTags`, `ScriptStringGetOrder`.
+  The `ScriptString*` layer shapes each run with a fallback font when the
+  DC's lacks its script (`SSA_FALLBACK`), lays the runs out in visual
+  order and draws them all on the DC font's baseline.
+- **GDI**: `ExtTextOut`, `TextOut` and `GetTextExtentPoint32` send text
+  with complex-script characters through Uniscribe, as Windows' LPK does
+  (`ETO_GLYPH_INDEX` and `ETO_IGNORELANGUAGE` skip it; `ETO_RTLREADING`
+  makes the line right to left).  GDI gained the faces Noto Sans Arabic
+  and Noto Sans Devanagari (`C:\Windows\Fonts`), also under Windows'
+  names for those scripts (Traditional Arabic, Mangal, Nirmala UI...).
+- **`usptest`** (in the CI core suite, 64- and 32-bit) checks itemizing,
+  the Arabic contextual forms and lam-alef ligature, the Devanagari kssa
+  conjunct with its reordered i sign and a half form, against the glyphs
+  HarfBuzz gives on the build host, and that `ExtTextOut` draws mixed
+  Latin, Arabic and Devanagari lines pixel for pixel as `ScriptStringOut`
+  does.
+
+## Direct2D
+
+Phase 19.2.  `d2d1.dll` (`userland/d2d1`) is a software Direct2D.  No
+MIT, zlib or BSD Direct2D exists (Wine's is LGPL), and the permissive
+vector libraries (ThorVG, Blend2D, plutovg) could not be fetched here, so
+it is written for NovaOS on a small core of its own:
+
+- **Geometry** (`path.c`, `geometry.c`): figures of lines and cubic
+  Béziers; rectangles, rounded rectangles, ellipses, arcs (SVG's endpoint
+  form) and quadratic curves become them.  Path geometries and their
+  sinks, transformed geometries and groups.  `GetBounds` is exact (curve
+  extrema); `FillContainsPoint`, `ComputeLength`, `ComputePointAtLength`;
+  `Tessellate`, `ComputeArea`, `CompareWithGeometry`,
+  `CombineWithGeometry` (union, intersect, xor, exclude) and `Outline`
+  cut the flattened shapes into horizontal slabs and join the result back
+  into clean outlines.
+- **Strokes** (`stroke.c`): each figure is flattened, cut into dashes
+  (solid, dash, dot, dash-dot, dash-dot-dot and custom, with an offset),
+  and outlined: miter (with its limit, clipped or bevelled), bevel and
+  round joins; flat, square, round and triangle caps; separate start, end
+  and dash caps.  `Widen`, `GetWidenedBounds` and `StrokeContainsPoint`
+  use the same outline.
+- **Rasterizer** (`raster.c`): exact-area anti-aliasing (each edge adds
+  the area it covers to the cells it crosses, and a running sum gives
+  every pixel's coverage), nonzero and even-odd fills, aliased mode, in
+  bands.  Paint is source-over into premultiplied BGRA.
+- **Brushes** (`brush.c`): solid; linear and radial gradients (with the
+  gradient origin offset, clamp, wrap and mirror, sRGB or linear-light
+  interpolation, from a 256-entry table); bitmap brushes with nearest or
+  linear sampling and extend modes; bitmaps from memory or a WIC bitmap.
+- **Render targets** (`target.c`): HWND targets (a DIB section copied to
+  the window at `EndDraw`, `Resize`), DC targets (`BindDC`) and bitmap
+  targets (`CreateCompatibleRenderTarget`), with DPI, transforms,
+  axis-aligned clips, layers (opacity, geometric masks, opacity brushes),
+  `FillOpacityMask`, meshes, drawing state blocks and
+  `ID2D1GdiInteropRenderTarget`.
+- **Text** (`text.c`): `DrawGlyphRun` fills the outlines from
+  `IDWriteFontFace::GetGlyphRunOutline`; `DrawTextLayout` runs
+  `IDWriteTextLayout::Draw` with Direct2D's text renderer (drawing effects
+  that are brushes colour their ranges, underlines and strikethroughs are
+  drawn); `DrawText` lays the text out with the shared DirectWrite
+  factory first.
+- **`tools/d2dtest`** (MinGW, so it uses MinGW's `d2d1.h` like any
+  Windows program) checks geometry answers, draws a scene of fills,
+  strokes, gradients, a dashed path of arcs, a bitmap and a rotated
+  translucent rectangle, and compares it with the image
+  `tools/d2dtest/reference.py` draws with Skia: under QEMU the mean
+  difference is 0.24 of 255 per pixel.  It then checks layers, clips and
+  an HWND render target in a window.  It runs in the CI graphics suite,
+  64- and 32-bit.  Its text check draws "NovaOS" with `DrawText` and
+  saves it as `d2dtext.bmp`.  DirectWrite's text formats and layouts (on
+  HarfBuzz from `novatext.dll`) were written here and went in with the
+  Firefox work, and with them the check passes, 64- and 32-bit.
+
+## One file per item: parallel changes without merge conflicts
+
+Up to seven pull requests were open at once, and nearly every one edited
+the same lines of the same files: the DLL table and program sets in
+`tools/build_userland.py`, the test lists in `tools/selftest.py` and
+`tools/appcorpus.py`, and the lists in the README, `docs/HISTORY.md`,
+`docs/ROADMAP.md` and `docs/building.md`.  Each merge left the others
+conflicted, and twice conflict markers reached main.  Those lists are now
+directories with one file per item, so changes add files instead of
+editing shared lines.  [CONTRIBUTING.md](../CONTRIBUTING.md) is the guide.
+
+- **DLLs**: `userland/NAME/dll.json` registers each DLL (dependencies,
+  load addresses, extra source directories, entry point, implicit TLS,
+  export ordinals); `tools/build_userland.py` finds them and links each
+  after its dependencies.  A DLL that needs more (Mbed TLS for secur32,
+  the msvcrt/ucrtbase double link) keeps that code in its own
+  `userland/NAME/build.py`.  The existing DLLs keep their addresses; a
+  new DLL leaves them out and gets a free 16 MiB slot, so two branches can
+  no longer pick the same address (three open ones had all chosen
+  0x7FFE50000000), and the build stops if two DLLs' images overlap.  The
+  userland it builds is byte-for-byte the same as before (link timestamps
+  aside).
+- **Programs**: `userland/programs/NAME.json` replaces the 32-bit and
+  System32 sets (`x86`, `system`, extra `libs`, `selftest`).
+- **Tests**: one file per self-test in `tests/selftest/core/` and
+  `graphics/`, one per program in `tests/appcorpus/`, run in file-name
+  order; `tools/selftest.py --list` prints a suite.
+- **Docs**: README's program table, "What is inside" list, licences,
+  core-suite and self-test lists, the roadmap's "What comes next" items,
+  building.md's self-test table and every HISTORY section are built by
+  `tools/docgen.py` from files in `docs/readme/`, `docs/roadmap/`,
+  `docs/selftests/` and `docs/history/` (and the tests' `DOC` strings).
+  Pull requests add fragments and leave the generated regions alone; the
+  Docs workflow (`.github/workflows/docs.yml`) rebuilds them on main after
+  each merge.
+- **CI**: a quick Checks job runs before the boot tests: no conflict
+  markers or stray branch-name lines (`tools/ci/check-conflict-markers.py`),
+  the manifests and test files load, and a pull request has not edited a
+  generated region by hand.
+
+## ffmpeg
+
+Phase 19.3.  `tools/pe_imports.py` on a current Windows ffmpeg build
+(BtbN's, statically linked, 168 MB) listed nine missing functions, now
+added:
+- gdi32: `ExtCreateRegion` (kept as a bounding box like every region),
+  `GetGraphicsMode`, `Get`/`Set`/`ModifyWorldTransform` (kept per DC and
+  reported back; drawing stays in device coordinates),
+  `GetOutlineTextMetricsA`/`W` (from the font's head, hhea, OS/2, post and
+  name tables) and `GetFontUnicodeRanges`.
+- The CRT: `getenv_s` and `_wgetenv_s`.
+- ws2_32: `WSASendMsg` (control data is not carried).
+The tenth, `DWriteCreateFactory`, is the Firefox branch's DirectWrite.
+
+Running it found three kernel bugs, all from ffmpeg's many threads:
+- **Thread stacks**: new threads got a fixed 256 KB stack.  They now get at
+  least the image's stack reserve, as on Windows (2 MB for ffmpeg, whose
+  H.264 decoder threads overflowed the smaller stack into each other's).
+- **Lost sleeps**: a thread woken early from a timed sleep stays on its
+  CPU's sleep list until that CPU's next tick drops it.  A thread that
+  exited in between was freed while still on the list, and every sleeper
+  after it was lost: their `Sleep` never returned.  An exiting thread now
+  leaves the list first, and a thread that moved to another CPU leaves the
+  old CPU's list before sleeping on the new one.
+- **Handles**: a process could hold 256 handles.  winpthreads makes events
+  and semaphores for every mutex and condition variable, so ffmpeg ran out
+  ("Cannot allocate memory", "Resource temporarily unavailable").  The
+  limit is 4096.
+
+`ffmpeg -i in.mp4 out.webm` (H.264 and AAC in, VP9 and Opus out) completes
+under QEMU with its default threads, as do MPEG-4 encoding and 16 decoder
+threads; the result plays on Linux.  The process dump on Ctrl+C now shows
+each thread's scheduler state.  The nightly app corpus runs Gyan's ffmpeg
+7.1.1 build (`tests/appcorpus/080-ffmpeg.py`): it makes an MP4 from its
+test sources, converts it to WebM, and ffprobe must find VP9 and Opus.
+
+## Firefox (Floorp)
+
+Floorp 12.19, a Firefox build (the Firefox 157 engine), starts from the
+Terminal, creates its profile and draws its full browser window.  The
+browser is run as shipped; everything below is in NovaOS.
+
+- **Imports**: the C runtime pieces Gecko uses (`_wsetlocale` and the
+  rest), the delay-loaded DLLs it asks for, and cross-process
+  `NtQueryInformationProcess`.
+- **DirectWrite** (`userland/dwrite`): NovaOS's own `dwrite.dll`.  The
+  factory, the system font collection (scanned from `%WINDIR%\Fonts`,
+  with the common Windows family names mapped to the bundled fonts),
+  font families, fonts, font faces (metrics, glyph indices, advances,
+  kerning, outlines into a geometry sink, font tables), GDI interop and
+  glyph run analysis (aliased and ClearType alpha textures).  Fonts are
+  read with stb_truetype (public domain).  Text formats and text layouts
+  (`layout.c`, written in the Phase 19 work for Direct2D's `DrawText`)
+  break lines, handle bidirectional text, carry per-range font
+  attributes, and answer metrics and hit tests.  They shape with
+  HarfBuzz from `novatext.dll` when it is present, and with the font's
+  plain glyphs and advances otherwise.
+- **Kernel**: `NtQuerySection`, `MEM_RESET`/`MEM_RESET_UNDO`, a
+  per-process handle table of 4096 (Gecko keeps far more than the old
+  256 open), and `C:\AppData\Roaming`, `Local`, `LocalLow` and
+  `C:\ProgramData` made at boot.
+- **C runtime**: `_vsnwprintf` (the legacy option of
+  `__stdio_common_vswprintf`) now fills a buffer exactly, without the
+  terminator, when the output is exactly the buffer's size.  Gecko formats
+  its 16-digit install hash that way; returning -1 made the profile
+  service fail and Firefox show "Profile Missing".
+- **user32**: window class names up to 256 characters (Gecko's remote
+  window class contains the profile path).
+- **Window station security**: the sandbox's alternate desktop reads and
+  sets the window station's and desktop's security with `GetSecurityInfo`
+  and `SetSecurityInfo` (`SE_WINDOW_OBJECT`).  Those are user32 pseudo
+  handles, so they answer with the default descriptor instead of failing;
+  the failure had left the broker without a desktop and crashed it.
+- **Debugging aids**: the kernel prints each new process's command line;
+  `tools/novarun.py` takes `!bg COMMAND` to leave a program running while
+  it waits and takes screenshots, and `NOVARUN_GDB=1` starts QEMU with a
+  gdb server so breakpoints can be set in a program's code.
+- **Sandbox** (Chromium's, which Firefox uses for its child processes):
+  - ntdll's system call exports have the Windows byte layout (see the
+    ABI conformance work below), so the sandbox can copy and patch them
+    to intercept calls in the child.
+  - Token handles know whether they are primary or impersonation tokens
+    and at which level; `SetThreadToken`, `OpenThreadToken`,
+    `ImpersonateSelf` and `RevertToSelf` track a token per thread.
+    `CreateWellKnownSid` covers every well-known SID type.
+  - New system calls: `NtOpenProcessToken(Ex)`, `NtOpenThreadToken(Ex)`,
+    `NtImpersonateAnonymousToken`, `NtQueryFullAttributesFile`,
+    `NtSetInformationProcess`, and the `ProcessHandleCount` and
+    `ProcessHandleTable` classes of `NtQueryInformationProcess`.
+  - `CREATE_SUSPENDED` really suspends a new process, so the parent can
+    patch the child before it runs.
+  - ntdll exports the heap and string functions the sandbox resolves in
+    the child (`RtlCreateHeap`, `NtSignalAndWaitForSingleObject`,
+    `_strnicmp`, `wcslen`...), and `GetProcessHeaps` includes an empty
+    csrss port heap the sandbox expects to find before it cuts a content
+    process off from csrss.
+  - A process can have 256 threads (was 64); Firefox's main process runs
+    more than 64.
+- **Overlapped I/O**: a pipe read or write that fails at once (a broken
+  pipe when a child process exits) no longer sets its event or queues a
+  completion packet or routine; Windows does none of these, and Firefox's
+  IPC and Rust I/O free the `OVERLAPPED` after such a failure, so the late
+  packet crashed the main process with a use-after-free.
+- **GDI**: `CreateDIBSection` with a file-mapping handle puts the pixels in
+  that mapping (Firefox's GPU process draws the browser into one shared
+  with the main process).
+- **Window handles across processes**: an `HWND` now names the same
+  window in every process, as on Windows.  user32 builds each handle from
+  a tag the kernel gives the process (unique among running processes), so
+  handles never collide, and tells the kernel each desktop window's handle
+  and client area.  `IsWindow`, `GetClientRect`, `GetWindowRect`,
+  `ClientToScreen`, `ScreenToClient`, `IsWindowVisible`, `IsIconic`,
+  `IsZoomed` and `GetWindowThreadProcessId` answer for another process's
+  window.  Firefox's GPU process sizes its frames from the main process's
+  window; before, it saw a 0 x 0 window and never drew, so the browser
+  showed white.  The full browser now draws through the GPU process.
+- **Locks that sleep**: `WaitOnAddress`, SRW locks and condition
+  variables park the thread until another wakes it, the way Windows 8
+  and later do: ntdll lists the waiters per address and they sleep in the
+  new `NtWaitForAlertByThreadId` system call until a waker calls
+  `NtAlertThreadByThreadId`.  They used to poll every 10 ms, which left
+  Firefox's main thread too slow to read its input.  Also
+  `SleepConditionVariableSRW`/`CS` return FALSE with `ERROR_TIMEOUT` when
+  they time out, as on Windows.
+- **Drawing from another thread**: `ReleaseDC` shows what was drawn at
+  once even while part of the window waits for `WM_PAINT` (Firefox
+  presents from its own thread while the window may never stop being
+  invalidated).
+- **Debugging aids**: Ctrl+Alt+F12 writes every program's threads to the
+  serial log (state, last system call and its first argument, return
+  addresses on the stack); the syscall trace shows the thread id
+  (`[TRACE] name pid/tid`); the standard error of a detached process
+  (Firefox's sandboxed children) goes to the serial log; and
+  `tools/novarun.py` takes `!click X Y`.
+- Not yet: a page's content (the tab area stays empty) and fetching a page
+  over the network.
+
+## Recording: waveIn, WASAPI capture and endpoint volume
+
+Phase 19.4.  The HD Audio driver now also programs an input stream: it
+picks the codec's first input pin, preferring a microphone, then line in,
+aux and CD, routes it through the mixer and selector widgets to an ADC,
+and records 48 kHz 16-bit stereo into a ring the mixer thread reads every
+tick.  The kernel mixer gained capture streams: each running one gets a
+copy of what was recorded (the oldest frames dropped and counted when a
+program falls behind), and the card records only while one runs.  Each
+direction has a master volume, applied as the mixer mixes or copies.
+`NtNovaAudioOpen` with its top bit set opens a capture stream, and
+`NtNovaAudioCtl` gained four operations: read frames, describe the
+recording device, and set and get the endpoint volume.
+
+On top of that:
+- winmm: `waveIn` (devices, capabilities, open with every callback kind,
+  prepare and add buffers, start, stop, reset, position).  A thread
+  converts the mixer's frames into each buffer in the program's format and
+  hands it back full (`WIM_DATA`); stop hands back a partly filled one.
+  The converter learned the reverse direction (any rate, 8 to 32-bit or
+  float, mono as the average of both sides).
+- mmdevapi: a second endpoint, the recording one ("Microphone (High
+  Definition Audio)", or "Line in"), in the enumerator's lists and as the
+  default `eCapture` device; its `IAudioClient` fills its buffer from a
+  capture stream and `IAudioCaptureClient` hands it out ten milliseconds
+  at a time, flagging a discontinuity when frames were dropped.  Both
+  endpoints have `IAudioEndpointVolume` (scalar and decibel levels from
+  -65.25 to 0 dB, per channel, mute, steps), kept in the kernel so every
+  program sees the same volume.
+
+To test it, `tools/novarun.py --rec FILE.wav` gives QEMU an `hda-micro`
+card on a private PulseAudio server: the microphone hears FILE played over
+and over into a null sink, and the speakers go to a second null sink
+(saved with `--wav`).  Null sinks run on a clock, so the guest records in
+real time; QEMU's ALSA backend with the file plugin delivered audio about
+ten times too fast.  The core self-tests now record 3 s through `waveIn`
+at 44.1 kHz mono and 3 s through WASAPI in the mix format, and
+`tools/wavcheck.py --tone 523 2500` must find the 523 Hz tone in each
+recording; the WASAPI test turns the recording volume down to a quarter
+half way and must measure the level a quarter as loud, and `soundtest
+volume` checks the volume controls on both endpoints.
+
+<!-- END generated:history -->

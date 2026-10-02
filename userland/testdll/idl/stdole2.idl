@@ -1,0 +1,10 @@
+/* stdole2.idl — just enough of stdole2.tlb for widl to import IUnknown and
+ * IDispatch from (oleaut32 has the real one built in).  See make_tlb.sh. */
+import "base.idl";
+
+[uuid(00020430-0000-0000-C000-000000000046), version(2.0), helpstring("OLE Automation")]
+library stdole
+{
+    interface IUnknown;
+    interface IDispatch;
+};

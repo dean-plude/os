@@ -2,11 +2,12 @@
 """Boot NovaOS in QEMU, run the self-test programs and say which passed.
 
     tools/selftest.py [--suite core|graphics] [--img build/nova.img] [--out DIR]
-                      [--only NAME,...] [--junit FILE] [--summary FILE]
+                      [--only NAME,...] [--junit FILE] [--summary FILE] [--list]
 
-Suites:
-  core      (default) apitest, abitest, filetest, pipetest, proctest, guitest auto,
-            disptest, battery, soundtest, and last "crash kernel" (a
+Suites (one file per test in tests/selftest/SUITE/, run in file-name
+order; --list prints them):
+  core      (default) the self-test programs (apitest, abitest, filetest...),
+            an install finished by a restart, and last "crash kernel" (a
             deliberate kernel fault must print a symbolized backtrace)
   graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
             tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
@@ -17,7 +18,10 @@ Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
 printed no "FAIL" line and no "N failed" count above zero, and prints what
 the test expects.  A kernel panic fails the run.  The serial log, a
-screenshot after each test and the sound recording are kept in --out.
+screenshot after each test and the sound recordings are kept in --out.
+The core boot's sound card hears a 523 Hz tone (novarun --rec, so the
+host needs PulseAudio; without it the tests that record are reported as
+failed and the rest run).
 
 The exit status is the number of failed tests (0: all passed), so CI can
 gate on it.  --summary appends a Markdown table (GitHub's step summary).
@@ -34,10 +38,12 @@ class Test:
     wait for the App Store's "[STORE] @store: Installed" line.  @shot: take
     the screenshot 2 s after the output matches this regex (while the
     program draws).  @crash: the command halts the kernel on purpose; the
-    test passes when the serial log then shows @expect (it runs last)."""
-    def __init__(self, name, cmd, expect=(), timeout=180, check=None, store=None, shot=None, crash=False):
+    test passes when the serial log then shows @expect (it runs last).
+    @reboot: restart NovaOS ("shutdown /r", drive C: kept) and pass when
+    the new boot's log shows @expect; later tests run in that boot."""
+    def __init__(self, name, cmd, expect=(), timeout=180, check=None, store=None, shot=None, crash=False, reboot=False):
         self.name, self.cmd, self.expect, self.timeout, self.check = name, cmd, expect, timeout, check
-        self.store, self.shot, self.crash = store, shot, crash
+        self.store, self.shot, self.crash, self.reboot = store, shot, crash, reboot
 
 
 def tones(*hz):
@@ -54,37 +60,53 @@ def tones(*hz):
     return check
 
 
-# The boot that runs the tests has an unplugged AC adapter and a battery
-# (tests/acpi/battery.asl) and an Intel HD Audio card recorded to a WAV.
-CORE = [
-    Test('apitest', 'apitest', [r'apitest: \d+ passed, 0 failed']),
-    Test('abitest', 'abitest', [r'abitest: \d+ passed, 0 failed']),
-    Test('filetest', 'filetest', [r'filetest: \d+ passed, 0 failed']),
-    Test('pipetest', 'pipetest', [r'pipetest: \d+ passed, 0 failed']),
-    Test('proctest', 'proctest', [r'proctest: \d+ passed, 0 failed']),
-    Test('guitest', 'guitest auto', [r'guitest: \d+ passed, 0 failed']),
-    Test('disptest', 'disptest', [r'\d+ passed, 0 failed']),
-    Test('battery', 'battery', [r'Power source: battery', r'Battery: 75%', r'Time left: 3 h 00 min',
-                                r'SystemBatteryState: present 1, AC 0, charging 0, discharging 1']),
-    Test('soundtest tone', 'soundtest tone 440 1000', [r'played \d+ samples']),
-    Test('soundtest wasapi', 'soundtest wasapi 660 1000', [r'played \d+ frames'], check=tones(440, 660)),
-    # last: crash.exe asks the kernel to fault, which must print a backtrace with names
-    Test('kernel backtrace', 'crash kernel', [r'Backtrace:\r?\n  #0 [0-9a-f]{16}  KeCrashTestFault\+0x[0-9a-f]+\r?\n'
-                                              r'  #1 [0-9a-f]{16}  KeCrashTest\+0x[0-9a-f]+\r?\n'
-                                              r'  #2 [0-9a-f]{16}  sys_nova_bugcheck\+0x[0-9a-f]+\r?\n'],
-         timeout=60, crash=True),
-]
+REC_HZ = 523          # what the core boot's microphone hears
+OUT = 'selftest-out'  # --out
 
-# The graphics boot: 7-Zip in C:\Programs\7-Zip and the Mesa and DXVK
-# downloads in C:\Downloads, so the Store's button installs without a network
-GRAPHICS = [
-    Test('install Mesa 3D', 'store install Mesa 3D', store='Mesa 3D', timeout=1200),
-    Test('install DXVK', 'store install DXVK', store='DXVK', timeout=600),
-    Test('gltest x64', r'C:\Tests\gltest.exe 6', [r'gltest: 14 passed, 0 failed'], timeout=600, shot=r'GLSL '),
-    Test('gltest x86', r'C:\Tests\gltest32.exe 6', [r'gltest: 14 passed, 0 failed'], timeout=600, shot=r'GLSL '),
-    Test('d3dtest x64', r'C:\Tests\d3dtest.exe 6', [r'd3dtest: 17 passed, 0 failed'], timeout=900, shot=r'D3D9 pixels'),
-    Test('d3dtest x86', r'C:\Tests\d3dtest32.exe 6', [r'd3dtest: 17 passed, 0 failed'], timeout=900, shot=r'D3D9 pixels'),
-]
+
+def recording(guest, hz, ms):
+    """A check on a WAV a test recorded at @guest (C:\\...): a tone of @hz
+    for @ms or longer (tools/wavcheck.py).  The file is copied to --out."""
+    def check(nova):
+        local = os.path.join(OUT, guest.replace('\\', '/').split('/')[-1])
+        src = '::/NOVA/C/' + guest[3:].replace('\\', '/')
+        r = subprocess.run(['mcopy', '-o', '-i', os.path.join(nova.work, 'data.img'), src, local], capture_output=True)
+        if r.returncode:
+            return f'no {guest} on the data disk'
+        if wavcheck.has_tone(local, hz, ms):
+            return None
+        return f'no {hz} Hz tone of {ms} ms in {guest} (heard: ' + \
+            ', '.join(f'{s[3]:.0f} Hz for {s[1]:.0f} ms' for s in wavcheck.segments(local)) + ')'
+    check.needs_mic = True
+    return check
+
+
+def load_suite(name):
+    """The tests in tests/selftest/NAME/*.py, in file-name order.  Each file
+    defines TESTS (a list of Test; Test and tones are given to it) and, for
+    the core suite, DOC: its entry in README's list (tools/docgen.py).  One
+    file per test, so changes adding tests add files instead of editing a
+    shared list; the number prefix places a test in the run."""
+    import glob
+    tests = []
+    for f in sorted(glob.glob(os.path.join(ROOT, 'tests', 'selftest', name, '*.py'))):
+        ns = {'Test': Test, 'tones': tones, 'recording': recording, 'REC_HZ': REC_HZ, '__file__': f}
+        exec(compile(open(f).read(), f, 'exec'), ns)
+        if not isinstance(ns.get('TESTS'), list) or not all(isinstance(t, Test) for t in ns['TESTS']):
+            sys.exit(f'{f}: TESTS must be a list of Test')
+        tests += ns['TESTS']
+    names = [t.name for t in tests]
+    dup = sorted({n for n in names if names.count(n) > 1})
+    if dup:
+        sys.exit(f'tests/selftest/{name}: more than one test named {", ".join(dup)}')
+    return tests
+
+
+# The core boot has an unplugged AC adapter and a battery
+# (tests/acpi/battery.asl) and an Intel HD Audio card recorded to a WAV.
+CORE = load_suite('core')
+# The graphics boot: 7-Zip and the Mesa and DXVK downloads on drive C:
+GRAPHICS = load_suite('graphics')
 
 
 def store_verdict(nova, t, out):
@@ -141,16 +163,38 @@ def main():
     ap.add_argument('--only')
     ap.add_argument('--junit')
     ap.add_argument('--summary')
+    ap.add_argument('--list', action='store_true', help='print the suite\'s tests and exit')
     a = ap.parse_args()
 
     suite = CORE if a.suite == 'core' else GRAPHICS
+    if a.list:
+        for t in suite:
+            print(f'{t.name:20s} {t.cmd}')
+        return 0
     tests = [t for t in suite if not a.only or t.name in a.only.split(',') or t.cmd.split()[0] in a.only.split(',')]
     os.makedirs(a.out, exist_ok=True)
+    global OUT
+    OUT = a.out
     work = tempfile.mkdtemp(prefix='selftest')
     aml = os.path.join(work, 'battery.aml')
     subprocess.run(['iasl', '-p', aml[:-4], os.path.join(ROOT, 'tests', 'acpi', 'battery.asl')],
                    check=True, stdout=subprocess.DEVNULL)
     wav = os.path.join(a.out, 'sound.wav') if a.suite == 'core' else None
+    rec, results = None, []
+    if a.suite == 'core' and not shutil.which('pulseaudio'):
+        print('PulseAudio is not installed: the tests that record cannot run', flush=True)
+        results = [(t.name, 'needs PulseAudio on the host (novarun --rec)', 0, '') for t in tests
+                   if getattr(t.check, 'needs_mic', False)]
+        tests = [t for t in tests if not getattr(t.check, 'needs_mic', False)]
+    elif a.suite == 'core':                                 # the microphone's tone
+        import math, struct, wave
+        rec = os.path.join(work, 'mic.wav')
+        with wave.open(rec, 'wb') as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(48000)
+            w.writeframes(b''.join(struct.pack('<hh', v, v) for v in
+                                   (int(12000 * math.sin(2 * math.pi * REC_HZ * i / 48000)) for i in range(48000 * 10))))
     puts, data_mb = [], 64
     if a.suite == 'graphics':
         if not a.gfx:
@@ -158,11 +202,10 @@ def main():
         puts = [(os.path.join(a.gfx, '7zip'), r'C:\Programs\7-Zip'), (os.path.join(a.gfx, 'downloads'), r'C:\Downloads'),
                 (os.path.join(a.gfx, 'tests'), r'C:\Tests')]
         data_mb = 1024
-    results = []
     t_boot = time.time()
     try:
         nova = Nova(a.img, work, puts, mem=4096 if a.suite == 'graphics' else 2048, data_mb=data_mb, wav=wav,
-                    extra_args=['-acpitable', f'file={aml}'])
+                    extra_args=['-acpitable', f'file={aml}'], rec=rec)
     except RuntimeError as e:
         print(e)
         shutil.copy(os.path.join(work, 'serial.log'), a.out)
@@ -181,11 +224,19 @@ def main():
                 nova.qmp.type(t.cmd + '\n')
                 out, ok = nova.sr.wait('KERNEL PAGE FAULT', t.timeout)
                 out += nova.sr.wait('halting', 5)[0]
+            elif t.reboot:
+                try:
+                    out, ok = nova.reboot(t.timeout), True
+                except RuntimeError as e:
+                    out, ok = str(e), False
             else:
                 out, ok = nova.run(t.cmd, t.timeout, shot=(t.shot, png) if t.shot else None)
             if t.crash:
                 miss = [e for e in t.expect if not re.search(e, out)]
                 why = None if ok and not miss else ('no kernel fault' if not ok else 'no symbolized backtrace')
+            elif t.reboot:
+                miss = [e for e in t.expect if not re.search(e, out)]
+                why = 'did not boot again' if not ok else f'missing "{miss[0]}"' if miss else None
             elif t.store:
                 why, out = store_verdict(nova, t, out)
             else:
@@ -208,13 +259,13 @@ def main():
         nova.close()
         with open(os.path.join(a.out, 'serial.log'), 'w') as f:
             f.write(full_log + nova.sr.read_new())
+        for i, t in deferred:                               # e.g. the sound recording, now complete
+            why = t.check(nova)
+            if why:
+                name, _, secs, out = results[i]
+                results[i] = (name, why, secs, out)
+                print(f'FAIL  {t.name:18s} {why}', flush=True)
         shutil.rmtree(work, ignore_errors=True)
-    for i, t in deferred:                                   # e.g. the sound recording, now complete
-        why = t.check(nova)
-        if why:
-            name, _, secs, out = results[i]
-            results[i] = (name, why, secs, out)
-            print(f'FAIL  {t.name:18s} {why}', flush=True)
     ran = {r[0] for r in results}
     results += [(t.name, 'not run (an earlier test stopped NovaOS)', 0, '') for t in tests if t.name not in ran]
     report(a, results)
