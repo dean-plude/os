@@ -198,6 +198,30 @@ CRTEXP errno_t _wputenv_s(const wchar_t *name, const wchar_t *value)
 {
     return SetEnvironmentVariableW(name, value && *value ? value : 0) || !(value && *value) ? 0 : EINVAL;
 }
+CRTEXP errno_t getenv_s(size_t *len, char *buf, size_t size, const char *name)
+{
+    if (!len || !name || (!buf && size)) return EINVAL;
+    *len = 0;
+    if (buf && size) buf[0] = 0;
+    DWORD n = GetEnvironmentVariableA(name, 0, 0);       /* with the terminator */
+    if (!n) return 0;
+    *len = n;
+    if (n > size) return buf ? ERANGE : 0;
+    GetEnvironmentVariableA(name, buf, (DWORD)size);
+    return 0;
+}
+CRTEXP errno_t _wgetenv_s(size_t *len, wchar_t *buf, size_t size, const wchar_t *name)
+{
+    if (!len || !name || (!buf && size)) return EINVAL;
+    *len = 0;
+    if (buf && size) buf[0] = 0;
+    DWORD n = GetEnvironmentVariableW(name, 0, 0);
+    if (!n) return 0;
+    *len = n;
+    if (n > size) return buf ? ERANGE : 0;
+    GetEnvironmentVariableW(name, buf, (DWORD)size);
+    return 0;
+}
 CRTEXP errno_t _dupenv_s(char **buf, size_t *len, const char *name)
 {
     if (!buf || !name) return EINVAL;

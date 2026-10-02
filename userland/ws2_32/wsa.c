@@ -557,3 +557,13 @@ int WSAStringToAddressW(WCHAR *str, int family, void *info, struct sockaddr *sa,
     a[i] = 0;
     return WSAStringToAddressA(str ? a : 0, family, info, sa, len);
 }
+
+/* sendmsg: the buffers to the message's address; control data (IP_PKTINFO and
+ * the like) is not carried */
+int WSASendMsg(SOCKET s, LPWSAMSG msg, DWORD flags, LPDWORD sent, LPWSAOVERLAPPED ov,
+               LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
+{
+    if (!msg) { set_err(WSAEFAULT); return SOCKET_ERROR; }
+    return WSASendTo(s, msg->lpBuffers, msg->dwBufferCount, sent, flags, msg->namelen ? msg->name : NULL,
+                     msg->namelen, ov, cr);
+}

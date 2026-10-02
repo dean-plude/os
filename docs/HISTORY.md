@@ -1634,3 +1634,20 @@ it is written for NovaOS on a small core of its own:
   text formats and layouts.  DirectWrite's text layout (on HarfBuzz from
   `novatext.dll`) is written for the Firefox branch, and with it the check
   passes, 64- and 32-bit.
+
+## ffmpeg's imports
+
+Phase 19.3, in progress.  `tools/pe_imports.py` on a current Windows ffmpeg
+build listed nine missing functions, now added:
+- gdi32: `ExtCreateRegion` (kept as a bounding box like every region),
+  `GetGraphicsMode`, `Get`/`Set`/`ModifyWorldTransform` (kept per DC and
+  reported back; drawing stays in device coordinates),
+  `GetOutlineTextMetricsA`/`W` (from the font's head, hhea, OS/2, post and
+  name tables) and `GetFontUnicodeRanges`.
+- The CRT: `getenv_s` and `_wgetenv_s`.
+- ws2_32: `WSASendMsg` (control data is not carried).
+
+New threads now get at least the program's stack reserve from its image
+header, as on Windows, instead of a fixed 256 KB: ffmpeg's H.264 decoder
+threads overflowed the smaller stack and corrupted each other's data.
+
