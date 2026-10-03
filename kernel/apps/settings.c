@@ -16,7 +16,13 @@
 #define SIDE_W 200
 #define ITEM_H 36
 
-typedef struct { int page; UINT32 net_sig; } Settings;
+typedef struct {
+    int page; UINT32 net_sig;
+    int mon;                         /* Display page: the monitor chosen */
+    bool drag, moved;                /* a monitor being dragged in the arrangement */
+    int drag_dx, drag_dy;            /* the press inside it (diagram px) */
+    int drag_x, drag_y;              /* its top left now (diagram px) */
+} Settings;
 
 static const char *g_pages[] = { "System", "Display", "Personalization", "Storage", "Network", "About" };
 static const Glyph g_page_glyphs[] = { GL_PC, GL_WINDOWS, GL_PICTURES, GL_FOLDER, GL_NETWORK, GL_NOVA };
@@ -66,12 +72,20 @@ static void page_system(int x, int y, int w)
     row(x, y, w, "Uptime", up);
 }
 
-/* Display page: the resolution buttons (chips) sit MODES_DY below the
- * page's top; set_mouse finds them with the same numbers */
+/* Display page: with more than one monitor, an arrangement of them on top
+ * (drag one to move it; click one to choose it), then the chosen one's
+ * resolution buttons (chips), modes_dy() below the page's top; set_mouse
+ * finds them with the same numbers */
 #define CHIP_W   116
 #define CHIP_H   32
 #define CHIP_GAP 8
-#define MODES_DY (26 + 50 + 50 + 26)
+#define ARR_H    150
+#define ARR_DY   26
+#define SNAP     48                  /* logical px: edges this close line up */
+
+static bool multi(void) { return GdiMonitorCount() > 1; }
+
+static int modes_dy(void) { return multi() ? ARR_DY + ARR_H + 16 + 26 + 50 + 26 : 26 + 50 + 50 + 26; }
 
 static int chip_cols(int w)
 {
@@ -79,24 +93,72 @@ static int chip_cols(int w)
     return n < 1 ? 1 : n;
 }
 
-static void page_display(int x, int y, int w)
-{
-    char res[32], scale[48], s1[32];
-    int s = GdiScale();
-    DisplayMode cur = DisplayCurrentMode();
-    ksnprintf(res, sizeof(res), "%d x %d", cur.w, cur.h);
-    ksnprintf(scale, sizeof(scale), "%d%% (desktop %d x %d)", s * 100, GdiScreenW(), GdiScreenH());
-    int top = y;
-    GdiTextBold(x, y, "Scale & layout", UI_TEXT);   y += 26;
-    row(x, y, w, "Display resolution", res);         y += 50;
-    row(x, y, w, "Scale", scale);                    y += 50;
+static int chosen(Settings *st) { return st->mon >= 0 && st->mon < GdiMonitorCount() ? st->mon : 0; }
 
-    GdiTextBold(x, top + MODES_DY - 26, "Resolution", UI_TEXT);
-    y = top + MODES_DY;
-    int cols = chip_cols(w), n = DisplayModeCount();
+/* The arrangement: the virtual desktop scaled into the card at @top (page
+ * coordinates x, w), with room around for a monitor to be dragged */
+typedef struct { int ox, oy, num, den; GdiRect v; } Arr;
+
+static Arr arr_of(int x, int top, int w)
+{
+    Arr a;
+    a.v = GdiVirtualRect();
+    GdiRect v = a.v;
+    int bw = v.w + 2 * 1280 / 2, bh = v.h + 400;             /* the desktop and a margin */
+    a.num = 1; a.den = 1;
+    int aw = w - 32, ah = ARR_H - 24;
+    if ((INT64)bw * ah > (INT64)bh * aw) { a.num = aw; a.den = bw; } else { a.num = ah; a.den = bh; }
+    a.ox = x + 16 + (aw - v.w * a.num / a.den) / 2 - v.x * a.num / a.den;
+    a.oy = top + 12 + (ah - v.h * a.num / a.den) / 2 - v.y * a.num / a.den;
+    return a;
+}
+
+static GdiRect arr_rect(const Arr *a, GdiRect m)
+{
+    return RECT(a->ox + m.x * a->num / a->den, a->oy + m.y * a->num / a->den,
+                m.w * a->num / a->den, m.h * a->num / a->den);
+}
+
+static void page_display(Settings *st, int x, int y, int w)
+{
+    char res[96], scale[48], s1[32];
+    int mon = chosen(st);
+    DisplayMode cur = DisplayHeadMode(mon);
+    int top = y;
+    if (multi()) {
+        GdiTextBold(x, y, "Arrange displays", UI_TEXT);
+        GdiRoundRect(RECT(x, y + ARR_DY, w, ARR_H), 8, UI_CARD, GDI_TRANSPARENT);
+        Arr a = arr_of(x, y + ARR_DY, w);
+        for (int i = 0; i < GdiMonitorCount(); i++) {
+            GdiRect r = arr_rect(&a, GdiMonitorRect(i));
+            if (st->drag && i == mon) { r.x = st->drag_x; r.y = st->drag_y; }
+            GdiRoundRect(RECT(r.x + 1, r.y + 1, r.w - 2, r.h - 2), 4, i == mon ? UI_ACCENT : UI_HOVER,
+                         i == mon ? GDI_WHITE : UI_LINE);
+            ksnprintf(s1, sizeof(s1), "%d", i + 1);
+            GdiTextLarge(r.x + (r.w - GdiTextLargeW(s1)) / 2, r.y + r.h / 2 - 15, s1, i == mon ? GDI_WHITE : UI_TEXT);
+        }
+        y += ARR_DY + ARR_H + 16;
+        GdiRect m = GdiMonitorRect(mon);
+        ksnprintf(s1, sizeof(s1), "Display %d%s", mon + 1, mon == 0 ? " (main display)" : "");
+        GdiTextBold(x, y, s1, UI_TEXT);              y += 26;
+        ksnprintf(res, sizeof(res), "%d x %d, %d%%, at (%d, %d) - %s", cur.w, cur.h, GdiMonitorScale(mon) * 100,
+                  m.x, m.y, DisplayHeadName(mon) ? DisplayHeadName(mon) : "");
+        row(x, y, w, "Resolution", res);
+    } else {
+        int s = GdiScale();
+        ksnprintf(res, sizeof(res), "%d x %d", cur.w, cur.h);
+        ksnprintf(scale, sizeof(scale), "%d%% (desktop %d x %d)", s * 100, GdiScreenW(), GdiScreenH());
+        GdiTextBold(x, y, "Scale & layout", UI_TEXT);   y += 26;
+        row(x, y, w, "Display resolution", res);         y += 50;
+        row(x, y, w, "Scale", scale);
+    }
+
+    GdiTextBold(x, top + modes_dy() - 26, "Resolution", UI_TEXT);
+    y = top + modes_dy();
+    int cols = chip_cols(w), n = DisplayHeadModeCount(mon);
     for (int i = 0; i < n; i++) {
         DisplayMode m;
-        DisplayModeAt(i, &m);
+        DisplayHeadModeAt(mon, i, &m);
         int cx = x + (i % cols) * (CHIP_W + CHIP_GAP), cy = y + (i / cols) * (CHIP_H + CHIP_GAP);
         bool on = m.w == cur.w && m.h == cur.h;
         GdiRoundRect(RECT(cx, cy, CHIP_W, CHIP_H), 6, on ? UI_ACCENT : UI_CARD, GDI_TRANSPARENT);
@@ -109,6 +171,45 @@ static void page_display(int x, int y, int w)
     row(x, y, w, "Driver", DisplayDriverName());     y += 50;
     if (DisplayAdapterName()) { row(x, y, w, "Adapter", DisplayAdapterName()); y += 50; }
     row(x, y, w, "Presentation", DisplayCanFlip() ? "Back buffer, page flipping" : "Back buffer, copied to the screen");
+}
+
+/* Where a monitor dropped with its top left at (x, y) goes: touching
+ * another monitor along the nearest edge, overlapping none, and lined up
+ * with an edge of it when that is close */
+static void snap_place(int mon, int *px, int *py)
+{
+    GdiRect me = GdiMonitorRect(mon);
+    int bx = *px, by = *py;
+    INT64 best = -1;
+    for (int j = 0; j < GdiMonitorCount(); j++) {
+        if (j == mon) continue;
+        GdiRect o = GdiMonitorRect(j);
+        for (int side = 0; side < 4; side++) {
+            int x = *px, y = *py;
+            if (side < 2) {                          /* left or right of it */
+                x = side == 0 ? o.x - me.w : o.x + o.w;
+                if (y < o.y - me.h + 1) y = o.y - me.h + 1;
+                if (y > o.y + o.h - 1) y = o.y + o.h - 1;
+                if (y - o.y < SNAP && y - o.y > -SNAP) y = o.y;
+                else if (y + me.h - (o.y + o.h) < SNAP && y + me.h - (o.y + o.h) > -SNAP) y = o.y + o.h - me.h;
+            } else {                                 /* above or below it */
+                y = side == 2 ? o.y - me.h : o.y + o.h;
+                if (x < o.x - me.w + 1) x = o.x - me.w + 1;
+                if (x > o.x + o.w - 1) x = o.x + o.w - 1;
+                if (x - o.x < SNAP && x - o.x > -SNAP) x = o.x;
+                else if (x + me.w - (o.x + o.w) < SNAP && x + me.w - (o.x + o.w) > -SNAP) x = o.x + o.w - me.w;
+            }
+            bool clash = false;
+            for (int k = 0; k < GdiMonitorCount() && !clash; k++) {
+                GdiRect q = GdiMonitorRect(k);
+                if (k != mon && x < q.x + q.w && q.x < x + me.w && y < q.y + q.h && q.y < y + me.h) clash = true;
+            }
+            if (clash) continue;
+            INT64 d = (INT64)(x - *px) * (x - *px) + (INT64)(y - *py) * (y - *py);
+            if (best < 0 || d < best) { best = d; bx = x; by = y; }
+        }
+    }
+    *px = bx; *py = by;
 }
 
 static void page_storage(int x, int y, int w)
@@ -261,7 +362,7 @@ static void set_paint(WND *w)
     y += 52;
     switch (st->page) {
     case SETTINGS_SYSTEM:      page_system(x, y, w2);     break;
-    case SETTINGS_DISPLAY:     page_display(x, y, w2);    break;
+    case SETTINGS_DISPLAY:     page_display(st, x, y, w2); break;
     case SETTINGS_PERSONALIZE: page_personalize(x, y, w2); break;
     case SETTINGS_STORAGE:     page_storage(x, y, w2);    break;
     case SETTINGS_NETWORK:     page_network(x, y, w2);    break;
@@ -272,20 +373,50 @@ static void set_paint(WND *w)
 static void set_mouse(WND *w, WmMouseMsg msg, int x, int y)
 {
     Settings *st = w->user;
+    GdiRect c = WmClientRect(w);
+    if (st->page == SETTINGS_DISPLAY && multi()) {
+        /* the arrangement (layout matches set_paint + page_display) */
+        Arr a = arr_of(SIDE_W + 28, 20 + 52 + ARR_DY, c.w - SIDE_W - 56);
+        if (msg == WM_MOUSE_DOWN) {
+            for (int i = GdiMonitorCount() - 1; i >= 0; i--) {
+                GdiRect r = arr_rect(&a, GdiMonitorRect(i));
+                if (x < r.x || y < r.y || x >= r.x + r.w || y >= r.y + r.h) continue;
+                st->mon = i;
+                st->drag = i > 0;                   /* the main display stays at (0, 0) */
+                st->moved = false;
+                st->drag_dx = x - r.x; st->drag_dy = y - r.y;
+                st->drag_x = r.x + c.x; st->drag_y = r.y + c.y;
+                return;
+            }
+        } else if (msg == WM_MOUSE_MOVE && st->drag) {
+            st->drag_x = x - st->drag_dx + c.x;
+            st->drag_y = y - st->drag_dy + c.y;
+            st->moved = true;
+            return;
+        } else if (msg == WM_MOUSE_UP && st->drag) {
+            st->drag = false;
+            if (!st->moved) return;                 /* a click: just chose it */
+            int mx = (x - st->drag_dx - a.ox) * a.den / a.num, my = (y - st->drag_dy - a.oy) * a.den / a.num;
+            snap_place(st->mon, &mx, &my);
+            GdiRect m = GdiMonitorRect(st->mon);
+            if (mx != m.x || my != m.y) DesktopSetMonitorOrigin(st->mon, mx, my, true);
+            return;
+        }
+    }
     if (msg != WM_MOUSE_DOWN) return;
     if (x >= SIDE_W) {
-        GdiRect c = WmClientRect(w);
         if (st->page == SETTINGS_DISPLAY) {
             /* resolution chips (layout matches set_paint + page_display) */
-            int px = SIDE_W + 28, py = 20 + 52 + MODES_DY, pw = c.w - SIDE_W - 56;
+            int px = SIDE_W + 28, py = 20 + 52 + modes_dy(), pw = c.w - SIDE_W - 56;
             int cols = chip_cols(pw);
             if (x < px || y < py) return;
             int col = (x - px) / (CHIP_W + CHIP_GAP), r = (y - py) / (CHIP_H + CHIP_GAP);
             if (col >= cols || (x - px) % (CHIP_W + CHIP_GAP) >= CHIP_W ||
                 (y - py) % (CHIP_H + CHIP_GAP) >= CHIP_H) return;
             DisplayMode m;
-            if (!DisplayModeAt(r * cols + col, &m)) return;
-            if (DesktopSetDisplayMode(m.w, m.h)) DesktopSaveDisplayMode(m.w, m.h);
+            int mon = chosen(st);
+            if (!DisplayHeadModeAt(mon, r * cols + col, &m)) return;
+            if (DesktopSetHeadMode(mon, m.w, m.h)) DesktopSaveHeadMode(mon, m.w, m.h);
             return;
         }
         /* theme cards (layout matches set_paint + page_personalize) */

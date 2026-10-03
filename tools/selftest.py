@@ -9,7 +9,8 @@ order; --list prints them):
   core      (default) the self-test programs (apitest, abitest, filetest...),
             an install finished by a restart, and last "crash kernel" (a
             deliberate kernel fault must print a symbolized backtrace)
-  graphics  installs "Mesa 3D" and "DXVK" with the App Store, then runs
+  graphics  on two monitors (a QEMU secondary-vga is the second; montest),
+            installs "Mesa 3D" and "DXVK" with the App Store, then runs
             tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
             made by tools/ci/stage-graphics.sh: 7-Zip, the two downloads and
             the four test programs
@@ -312,9 +313,11 @@ def main():
                 (os.path.join(a.gfx, 'tests'), r'C:\Tests')]
         data_mb = 1024
     try:
+        # the graphics boot has a second monitor (montest): a QEMU secondary-vga
+        heads = ['-device', 'secondary-vga,id=head2'] if a.suite == 'graphics' else []
         boot_args = dict(puts=puts, mem=4096 if a.suite == 'graphics' else 2048, data_mb=data_mb, rec=rec,
                          extra_args=tables + ['-device', 'pc-testdev', '-device', 'qemu-xhci,id=xhci,addr=0x5',
-                                              '-device', 'usb-kbd,id=usbkbd,bus=xhci.0'])
+                                              '-device', 'usb-kbd,id=usbkbd,bus=xhci.0'] + heads)
         results += run_boot(a, tests, work, None, wav=wav, **boot_args)
     finally:
         shutil.rmtree(work, ignore_errors=True)

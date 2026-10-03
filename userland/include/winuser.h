@@ -283,6 +283,11 @@ USERAPI BOOL     UpdateWindow(HWND h);
 #define IDI_APPLICATION ((LPCSTR)32512)
 #define SM_CXSCREEN 0
 #define SM_CYSCREEN 1
+#define SM_XVIRTUALSCREEN 76
+#define SM_YVIRTUALSCREEN 77
+#define SM_CXVIRTUALSCREEN 78
+#define SM_CYVIRTUALSCREEN 79
+#define SM_CMONITORS 80
 
 /* -----------------------------------------------------------------------
  * The rest of USER's vocabulary (messages, styles, controls, structures)
@@ -1738,6 +1743,25 @@ USERAPI int GetAwarenessFromDpiAwarenessContext(HANDLE ctx);
 USERAPI BOOL AreDpiAwarenessContextsEqual(HANDLE a, HANDLE b);
 USERAPI BOOL IsValidDpiAwarenessContext(HANDLE ctx);
 USERAPI BOOL EnableNonClientDpiScaling(HWND h);
+typedef HANDLE HMONITOR;
+typedef BOOL (CALLBACK *MONITORENUMPROC)(HMONITOR, HDC, LPRECT, LPARAM);
+typedef struct { DWORD cbSize; RECT rcMonitor, rcWork; DWORD dwFlags; } MONITORINFO, *LPMONITORINFO;
+typedef struct { DWORD cbSize; RECT rcMonitor, rcWork; DWORD dwFlags; CHAR szDevice[32]; } MONITORINFOEXA, *LPMONITORINFOEXA;
+typedef struct { DWORD cbSize; RECT rcMonitor, rcWork; DWORD dwFlags; WCHAR szDevice[32]; } MONITORINFOEXW, *LPMONITORINFOEXW;
+#define MONITORINFOF_PRIMARY      0x00000001
+#define MONITOR_DEFAULTTONULL     0x00000000
+#define MONITOR_DEFAULTTOPRIMARY  0x00000001
+#define MONITOR_DEFAULTTONEAREST  0x00000002
+typedef struct { DWORD cb; CHAR DeviceName[32]; CHAR DeviceString[128]; DWORD StateFlags;
+                 CHAR DeviceID[128]; CHAR DeviceKey[128]; } DISPLAY_DEVICEA, *PDISPLAY_DEVICEA;
+typedef struct { DWORD cb; WCHAR DeviceName[32]; WCHAR DeviceString[128]; DWORD StateFlags;
+                 WCHAR DeviceID[128]; WCHAR DeviceKey[128]; } DISPLAY_DEVICEW, *PDISPLAY_DEVICEW;
+#define DISPLAY_DEVICE_ATTACHED_TO_DESKTOP 0x00000001
+#define DISPLAY_DEVICE_PRIMARY_DEVICE      0x00000004
+#define DISPLAY_DEVICE_ACTIVE              0x00000001
+#define DISPLAY_DEVICE_ATTACHED            0x00000002
+USERAPI BOOL EnumDisplayMonitors(HDC dc, LPCRECT clip, MONITORENUMPROC fn, LPARAM lp);
+USERAPI BOOL EnumDisplayDevicesA(LPCSTR dev, DWORD i, void *dd, DWORD flags);
 USERAPI HANDLE MonitorFromWindow(HWND h, DWORD f);
 USERAPI HANDLE MonitorFromPoint(POINT p, DWORD f);
 USERAPI HANDLE MonitorFromRect(const RECT *r, DWORD f);
@@ -1783,6 +1807,7 @@ typedef struct {
 #define DM_PELSHEIGHT          0x00100000
 #define DM_DISPLAYFLAGS        0x00200000
 #define DM_DISPLAYFREQUENCY    0x00400000
+#define DM_POSITION            0x00000020
 #define ENUM_CURRENT_SETTINGS  ((DWORD)-1)
 #define ENUM_REGISTRY_SETTINGS ((DWORD)-2)
 #define CDS_UPDATEREGISTRY     0x00000001
@@ -1791,6 +1816,7 @@ typedef struct {
 #define DISP_CHANGE_SUCCESSFUL 0
 #define DISP_CHANGE_FAILED     (-1)
 #define DISP_CHANGE_BADMODE    (-2)
+#define DISP_CHANGE_BADPARAM   (-5)
 #ifndef WM_DISPLAYCHANGE
 #define WM_DISPLAYCHANGE       0x007E
 #endif

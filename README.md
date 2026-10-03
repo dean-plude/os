@@ -101,7 +101,7 @@ every part, phase by phase.
   a fraction of a millisecond even with every CPU busy.
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
   either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
-  file ACLs, and other drives); Intel e1000/e1000e and virtio-net network
+  file ACLs and hard links, and other drives); Intel e1000/e1000e and virtio-net network
   cards; Intel High Definition Audio (playback and recording) with a kernel
   mixer;
   PS/2 keyboards and mice; USB (xHCI, EHCI, OHCI and UHCI controllers, any
@@ -110,8 +110,9 @@ every part, phase by phase.
   NTFS, as the next drive letter, hot-plugged); CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
-  flipping, the mode set again after sleep and kept across restarts) and a
-  Cirrus GD5446 one, with
+  flipping, the mode set again after sleep and kept across restarts; more
+  adapters, such as QEMU's secondary-vga, are more monitors of one
+  desktop, arranged in Settings) and a Cirrus GD5446 one, with
   the UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
   sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
   devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
@@ -120,7 +121,8 @@ every part, phase by phase.
   either), an HTTP/1.1 client, and Mbed TLS with the Mozilla root store.
   The loopback interface carries 127.0.0.1 and ::1 (and traffic to the
   machine's own addresses), and `localhost` resolves to both without DNS.
-  Winsock (`ws2_32`) speaks IPv6 and dual-stack sockets with `getaddrinfo`;
+  Winsock (`ws2_32`, and `wsock32` with Winsock 1.1's ordinals) speaks IPv6
+  and dual-stack sockets with `getaddrinfo`;
   `winhttp` is a real HTTP client over Schannel TLS, with HTTP/2 by ALPN
   (nghttp2).
 - **Windows userland** (`userland/`): about 35 system DLLs written from
@@ -231,25 +233,27 @@ To make the ISO yourself from a fresh build, run
 
 - **Build and boot-test** (core): <!-- BEGIN generated:core-tests -->`apitest`, `abitest` (the PEB, TEB, `KUSER_SHARED_DATA`, `CONTEXT` and
   loader layouts, ntdll's stubs and the system-call numbers, against
-  Windows 10 1903 x64), `filetest`, `pipetest`, `proctest`, `sectest`,
-  `acltest` (64- and 32-bit), `guitest auto`, `anitest` (animated
-  cursors and program pointers), `disptest`, `icutest` (ICU and locales,
-  64- and 32-bit), `comtest`, `tlbtest` (type libraries, 64- and
-  32-bit), `usptest` (Arabic and Devanagari shaped through Uniscribe and
-  drawn by `ExtTextOut`, 64- and 32-bit), `cppeh`, `battery` (against
-  the battery in `tests/acpi/battery.asl`), `soundtest` (the recorded
-  WAV must hold the tones played), `soundtest record`, `capture` and
-  `volume` (`waveIn` and WASAPI capture must record the tone the
-  microphone hears, and a quarter of the endpoint volume must sound 12
-  dB quieter), `sleeptest timer` (`Sleep(1)` and 1 ms wait timeouts end
-  within a millisecond with every CPU busy), `powertest` (closing the
-  lid in `tests/acpi/lid-thermal.asl` sleeps, a USB key and the lid wake
-  it, the thermal zone's readings), `disptest 1024 768` (saves the mode
-  the restart must keep), an installer that replaces a running program
-  and finishes after a restart (`filetest install`, `shutdown /r`,
-  `filetest installed`), `disptest saved 1024 768` (the restart kept the
-  saved display mode), and last `crash kernel`, a deliberate kernel
-  fault whose serial log must show a backtrace with function names.<!-- END generated:core-tests -->
+  Windows 10 1903 x64), `filetest`, `linktest`, `pipetest`, `proctest`,
+  `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `anitest`
+  (animated cursors and program pointers), `disptest`, `icutest` (ICU
+  and locales, 64- and 32-bit), `comtest`, `tlbtest` (type libraries,
+  64- and 32-bit), `usptest` (Arabic and Devanagari shaped through
+  Uniscribe and drawn by `ExtTextOut`, 64- and 32-bit), `cppeh`,
+  `battery` (against the battery in `tests/acpi/battery.asl`),
+  `soundtest` (the recorded WAV must hold the tones played), `soundtest
+  record`, `capture` and `volume` (`waveIn` and WASAPI capture must
+  record the tone the microphone hears, and a quarter of the endpoint
+  volume must sound 12 dB quieter), `sleeptest timer` (`Sleep(1)` and 1
+  ms wait timeouts end within a millisecond with every CPU busy),
+  `powertest` (closing the lid in `tests/acpi/lid-thermal.asl` sleeps, a
+  USB key and the lid wake it, the thermal zone's readings), `disptest
+  1024 768` (saves the mode the restart must keep), an installer that
+  replaces a running program and finishes after a restart (`filetest
+  install`, `shutdown /r`, `filetest installed`), `disptest saved 1024
+  768` (the restart kept the saved display mode), hard links kept across
+  a restart (`linktest restarted`), and last `crash kernel`, a
+  deliberate kernel fault whose serial log must show a backtrace with
+  function names.<!-- END generated:core-tests -->
 - **Network** (in the boot-test job): two boots with a virtio-net card.
   On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
   `httptest suite` (winhttp with HTTP/2 by ALPN) against
@@ -263,6 +267,11 @@ To make the ISO yourself from a fresh build, run
   stages the downloads) and runs `tools/gltest` (14 tests) and
   `tools/d3dtest` (17 tests); each 64- and 32-bit, with a screenshot of
   each while it draws.
+
+The build compiles through ccache, and the boot-test job saves the cache
+after each build, so a pull request recompiles only what it changed.  A pull
+request that changes only Markdown, `docs/` or `LICENSE` skips the build and
+boot jobs (GitHub counts a skipped job as passing a required check).
 
 A failing test fails its check; each run's summary has a table of results,
 and the serial logs and screenshots are kept as artifacts, along with the
@@ -280,7 +289,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `disptest`, `dlltest`, `filetest`, `httptest`, `icutest`, `looptest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `disptest`, `dlltest`, `filetest`, `httptest`, `icutest`, `linktest`, `looptest`, `montest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
   through `waveIn` and WASAPI capture;
   `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`

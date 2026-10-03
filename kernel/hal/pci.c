@@ -102,6 +102,20 @@ bool PciFind(UINT16 vendor, const UINT16 *ids, int n, PciDevice *out)
     return false;
 }
 
+bool PciFindNth(UINT16 vendor, const UINT16 *ids, int n, int index, PciDevice *out)
+{
+    for (int i = 0; i < g_count; i++) {
+        if (g_devices[i].vendor != vendor) continue;
+        for (int j = 0; j < n; j++) {
+            if (g_devices[i].device == ids[j] && index-- == 0) {
+                if (out) *out = g_devices[i];
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 UINT64 PciBarAddress(const PciDevice *d, int bar)
 {
     UINT8 off = (UINT8)(0x10 + bar * 4);
