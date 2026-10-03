@@ -103,7 +103,8 @@ typedef struct Thread {
 
     /* User-mode threads (kernel/um): owning process and the state the
      * scheduler swaps for them.  NULL/0 for kernel threads. */
-    void           *um;             /* UmProcess */
+    void           *um;             /* UmThread */
+    void           *um_proc;        /* its UmProcess (sched_set_foreground compares it) */
     uint8_t        *fpu;            /* 512-byte FXSAVE area, 16-byte aligned */
     uint64_t        gs_base;        /* user GS (the TEB): MSR_KERNEL_GS_BASE while in the kernel */
     uint64_t        fs_base;        /* user FS: the 32-bit TEB of a 32-bit program's thread */
@@ -131,11 +132,30 @@ typedef struct Thread {
 /* The system threads programs must never hold up: above anything a
  * program can ask for without SeIncreaseBasePriorityPrivilege (15:
  * THREAD_PRIORITY_TIME_CRITICAL, or HIGH_PRIORITY_CLASS + HIGHEST) and
- * any boost.  The desktop (input, window management, drawing) at 16; the
- * device poll thread (input devices) and the audio mixer above it, so a
- * long redraw never delays a sound buffer or a key press. */
-#define PRIO_DESKTOP       16
-#define PRIO_DEVICE        17
+ * any boost, as Windows runs its system threads in the real-time range.
+ * Among them, the shorter and more urgent the work, the higher:
+ *   19  the device poll thread (keyboards, mice, touch) and the audio
+ *       mixer: a few microseconds each tick, and a key press or a sound
+ *       buffer must never wait;
+ *   18  the network stack (receive, lwIP's timers) and the USB thread
+ *       (ports, hubs, plugging devices in): device work programs wait on;
+ *   17  the desktop (input, window management, drawing; 50-100 ms a
+ *       redraw without KVM) and starting programs (under its lock);
+ *   16  bulk work: saving drive C: (writeback), ACPI (batteries, thermal
+ *       zones, buttons; AML can run long), Setup copying NovaOS to a disk.
+ * Every one blocks or sleeps when it has nothing to do (they never spin),
+ * and gives way to any thread when it waits for a device (sched_yield).
+ * Kernel threads at 8 or below are only boot-time tests, and csrss's
+ * stub, which never runs. */
+#define PRIO_SERVICE       16
+#define PRIO_DESKTOP       17
+#define PRIO_DEVICE_IO     18
+#define PRIO_DEVICE        19
+
+/* NT's foreground boost (PsPrioritySeparation, 2 on client Windows): a
+ * thread of the process owning the active window, woken from a wait, gets
+ * this on top of the waker's increment (still never above 15) */
+#define BOOST_FOREGROUND   2
 
 /* Wake-up boosts: how far above its base a thread woken by each kind of
  * waker runs (NT's increments from wdm.h and Windows Internals) */
@@ -206,6 +226,9 @@ extern void (*sched_thread_free_hook)(Thread *t);
  * This is equivalent to NT's NtYieldExecution().
  */
 void sched_yield(void);
+/* Only threads of lower priority than the caller are queued on its CPU (a
+ * yield would let one run a whole time slice) */
+bool sched_yield_goes_lower(void);
 /* True when a foreground thread (priority above 4) is waiting to run. */
 bool sched_foreground_ready(void);
 /* Sleep until the next timer tick (10 ms): for threads waiting on something. */
@@ -270,6 +293,11 @@ void sched_unblock_boost(Thread *t, int boost);
  * ended, preempting or giving way at once as its new rank says.  Program
  * threads get theirs from SetThreadPriority/SetPriorityClass (kernel/um). */
 void sched_set_base_priority(Thread *t, uint8_t base);
+/* The foreground process (Thread.um_proc of its threads; NULL: none), whose
+ * woken threads get BOOST_FOREGROUND.  Set by the desktop as the active
+ * window changes (UmUpdateForeground). */
+void sched_set_foreground(void *um);
+void *sched_foreground(void);
 /* IPI_WAKE (interrupt context): switch if sched_unblock asked this CPU to */
 void sched_resched_ipi(void);
 /* On the way back to a program: a switch asked for while this CPU halted

@@ -697,8 +697,8 @@ static UINT64 sys_suspend_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (
  * classes, 16 and 31 for REALTIME; a base is never outside that range.
  * REALTIME needs SeIncreaseBasePriorityPrivilege, which only an
  * administrator's token holds (kernel32 falls back to HIGH without it, as
- * on Windows), so a program never gets above 15 — or ahead of the
- * desktop, the device poll thread or the mixer (scheduler.h).  Wake-up
+ * on Windows), so a program never gets above 15 — or ahead of any of
+ * the kernel's own threads (16-19, scheduler.h).  Wake-up
  * boosts start from and decay back to the thread's own base (scheduler.c).
  * ----------------------------------------------------------------------- */
 #define PRIO_INCR_SATURATE 16                  /* (HIGH_PRIORITY + 1) / 2 */
@@ -913,7 +913,7 @@ static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a2 == 18 || a2 == 33) {                                /* ProcessPriorityClass, ProcessPriorityBoost */
         UINT32 need = a2 == 18 ? 2 : 4;
         if (a4 < need) return ST_INFO_LENGTH_MISMATCH;
-        UINT8 v[4] = { 0, (UINT8)(p->prio_class ? p->prio_class : 2), 0, 0 };   /* { Foreground, PriorityClass } */
+        UINT8 v[4] = { sched_foreground() == p, (UINT8)(p->prio_class ? p->prio_class : 2), 0, 0 };   /* { Foreground, PriorityClass } */
         if (a2 == 33) v[0] = p->no_boost, v[1] = 0;
         if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, v, need))) return ST_ACCESS_VIOLATION;
         UINT64 ret = um_stack_arg(5);

@@ -14,5 +14,7 @@
   decays back one level per quantum; a balance set lifts threads that
   have starved for 3 s.  Priority classes and thread priorities
   (`SetPriorityClass`, `SetThreadPriority`) set NT's base priorities;
-  the desktop, input and audio threads stay above anything a program
-  can ask for.
+  every kernel thread (input, audio, the network, USB, the desktop,
+  saving drive C:) stays above anything a program can ask for, and the
+  process whose window is active gets NT's foreground boost (+2 after
+  every wait).

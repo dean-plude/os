@@ -1974,6 +1974,7 @@ void DesktopRun(void *arg)
 
         WmTick();                               /* (takes the file-system lock as needed) */
         UmPoll();                               /* reclaim exited programs */
+        UmUpdateForeground();                   /* (the active window's process) */
 
         rtc_read(&t);
         if (t.minute != last_min) {

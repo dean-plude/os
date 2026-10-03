@@ -29,6 +29,8 @@ typedef struct UmConsole UmConsole;
 void UmInit(void);
 /* Reclaim exited processes (call regularly from the desktop loop). */
 void UmPoll(void);
+/* The active window's process gets the foreground boost (desktop loop). */
+void UmUpdateForeground(void);
 /* The display mode changed: WM_DISPLAYCHANGE to every program window */
 void UmGuiDisplayChanged(int w, int h);
 void UmGuiDpiChanged(void);            /* a monitor's DPI changed: WM_NOVA_DPI to every window */

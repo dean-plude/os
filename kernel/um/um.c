@@ -1810,6 +1810,7 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
     if (kt) {
         t->no_boost = kt->no_boost = p->no_boost;      /* (NT: a new thread takes its process's) */
         kt->um = t;
+        kt->um_proc = p;
         kt->cr3 = p->pml4;
         kt->fpu = fpu;
         kt->gs_base = t->teb;                              /* user GS = TEB */
@@ -2348,7 +2349,7 @@ static UmSpawnJob *spawn_start(RamNode *exe, const char *cmdline, RamNode *cwd, 
     j->detached = detached;
     RamfsPin(exe);
     RamfsRef(j->cwd);
-    if (!sched_create_thread_ex("spawn", spawn_thread, j, 8, 64 * 1024)) {
+    if (!sched_create_thread_ex("spawn", spawn_thread, j, PRIO_DESKTOP, 64 * 1024)) {
         DesktopLock();                      /* no thread: start it here */
         spawn_run(j, false);
         DesktopUnlock();
