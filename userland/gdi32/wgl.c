@@ -141,4 +141,3 @@ GDIAPI BOOL SwapBuffers(HDC h)
     return r;
 }
 
-

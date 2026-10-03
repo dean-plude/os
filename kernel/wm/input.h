@@ -12,7 +12,11 @@
 typedef enum {
     INPUT_MOUSE = 1,   /* relative motion + button state */
     INPUT_KEY   = 2,   /* keyboard make/break */
+    INPUT_TOUCH = 3,   /* a touch contact: where it is, or that it lifted; or a frame's end */
 } InputType;
+
+#define TOUCH_MAX     10   /* contacts tracked at once (slots 0-9) */
+#define TOUCH_FRAME   0xFF /* InputEvent.contact of the event that ends a frame */
 
 /* Mouse button bitmask */
 #define MOUSE_LEFT    (1u << 0)
@@ -31,6 +35,9 @@ typedef struct {
     INT32 dz;          /* wheel: +1 per notch away from the user (INPUT_MOUSE) */
     UINT8 absolute;    /* dx, dy are a position: 0-65535 across the screen (tablets, touch) */
     INT32 dw;          /* horizontal wheel: +1 per notch to the right (INPUT_MOUSE) */
+    UINT8 contact;     /* INPUT_TOUCH: the contact's slot (0..TOUCH_MAX-1), or TOUCH_FRAME:
+                        * every contact of the frame (one device report) has been posted.
+                        * dx, dy: where (0-65535 across the screen); pressed: touching */
 } InputEvent;
 
 /* -----------------------------------------------------------------------
@@ -108,3 +115,7 @@ UINT32 InputLockState(void);
 void InputPost(const InputEvent *ev);
 /* Consumer (WM). Returns false if empty. */
 bool InputPoll(InputEvent *out);
+/* A touch screen with @contacts contacts was found (drivers); and the most
+ * contacts any touch screen found has (0: none) */
+void   InputTouchScreen(int contacts);
+int    InputTouchContacts(void);

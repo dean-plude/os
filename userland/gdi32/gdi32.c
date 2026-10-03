@@ -291,7 +291,7 @@ GDIAPI BOOL GetViewportOrgEx(HDC h, LPPOINT p) { NOVA_DC *d = dc_of(h); if (!d) 
 GDIAPI BOOL SetWindowOrgEx(HDC h, int x, int y, LPPOINT old) { return SetViewportOrgEx(h, -x, -y, old); }
 GDIAPI BOOL SetBrushOrgEx(HDC h, int x, int y, LPPOINT old) { (void)h; (void)x; (void)y; if (old) old->x = old->y = 0; return TRUE; }
 
-void fill(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c)
+static void fill_one(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c)
 {
     if (!d->bits) return;
     RECT r = { x0 + d->org_x, y0 + d->org_y, x1 + d->org_x, y1 + d->org_y };
@@ -302,6 +302,15 @@ void fill(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c)
         if (d->rop2) for (int x = r.left; x < r.right; x++) row[x] = rop_apply(d, row[x], v);
         else for (int x = r.left; x < r.right; x++) row[x] = v;
     }
+}
+
+void fill(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c)
+{
+    int n = clip_pieces(d);
+    if (!n) { fill_one(d, x0, y0, x1, y1, c); return; }
+    RECT box = d->clip;                                     /* a piece of the clip region at a time */
+    for (int i = 0; i < n; i++) { d->clip = d->clip_rects[i]; fill_one(d, x0, y0, x1, y1, c); }
+    d->clip = box;
 }
 
 /* -----------------------------------------------------------------------
@@ -423,6 +432,54 @@ GDIAPI BOOL Ellipse(HDC h, int l, int t, int r, int b)
     return TRUE;
 }
 
+/* Arcs: the ellipse in (l, t, r, b) from the ray through (xs, ys) to the
+ * ray through (xe, ye), counterclockwise as GDI draws by default; as a
+ * polyline of up to 256 points.  @shape 0 Arc, 1 Pie (to the centre and
+ * filled), 2 Chord (closed by a straight line and filled). */
+static double nsqrt(double v)
+{
+    if (v <= 0) return 0;
+    double r = v > 1 ? v : 1;
+    for (int i = 0; i < 40; i++) r = 0.5 * (r + v / r);
+    return r;
+}
+
+static BOOL arc_shape(HDC h, int l, int t, int r, int b, int xs, int ys, int xe, int ye, int shape)
+{
+    NOVA_DC *d = dc_of(h); if (!d) return FALSE;
+    double ax = (r - l) / 2.0, ay = (b - t) / 2.0, cx = (l + r) / 2.0, cy = (t + b) / 2.0;
+    if (ax <= 0 || ay <= 0) return TRUE;
+    /* the rays as unit vectors on the circle the ellipse is a stretch of */
+    double u = (xs - cx) / ax, v = (ys - cy) / ay, eu = (xe - cx) / ax, ev = (ye - cy) / ay;
+    double n = nsqrt(u * u + v * v), en = nsqrt(eu * eu + ev * ev);
+    if (n == 0) { u = 1; v = 0; } else { u /= n; v /= n; }
+    if (en == 0) { eu = 1; ev = 0; } else { eu /= en; ev /= en; }
+    static const double C = 0.99969881869620425, S = 0.024541228522912288;  /* cos, sin of 2 pi / 256 */
+    POINT pt[260];
+    int k = 0;
+    if (shape == 1) { pt[k].x = (int)(cx + 0.5); pt[k].y = (int)(cy + 0.5); k++; }
+    pt[k].x = (int)(cx + u * ax + 0.5); pt[k].y = (int)(cy + v * ay + 0.5); k++;
+    for (int i = 0; i < 256; i++) {
+        double nu = u * C + v * S, nv = -u * S + v * C;      /* one step counterclockwise (y down) */
+        /* past the end ray: it lies between the old and the new direction */
+        double before = u * ev - v * eu, after = nu * ev - nv * eu;
+        int crossed = before < 0 && after >= 0 && (u * eu + v * ev) > 0;
+        u = nu; v = nv;
+        if (crossed || i == 255) { u = eu; v = ev; }
+        pt[k].x = (int)(cx + u * ax + 0.5); pt[k].y = (int)(cy + v * ay + 0.5); k++;
+        if (crossed) break;
+    }
+    if (!shape) return Polyline(h, pt, k);
+    return Polygon(h, pt, k);
+}
+
+GDIAPI BOOL Arc(HDC h, int l, int t, int r, int b, int xs, int ys, int xe, int ye)
+{ return arc_shape(h, l, t, r, b, xs, ys, xe, ye, 0); }
+GDIAPI BOOL Pie(HDC h, int l, int t, int r, int b, int xs, int ys, int xe, int ye)
+{ return arc_shape(h, l, t, r, b, xs, ys, xe, ye, 1); }
+GDIAPI BOOL Chord(HDC h, int l, int t, int r, int b, int xs, int ys, int xe, int ye)
+{ return arc_shape(h, l, t, r, b, xs, ys, xe, ye, 2); }
+
 GDIAPI BOOL RoundRect(HDC h, int l, int t, int r, int b, int ew, int eh)
 {
     NOVA_DC *d = dc_of(h); if (!d) return FALSE;
@@ -497,6 +554,12 @@ GDIAPI HBITMAP CreateBitmap(int w, int h, UINT planes, UINT bpp, const void *bit
             o->bits[(size_t)y * w + x] = c;
         }
     return (HBITMAP)o;
+}
+
+GDIAPI HBITMAP CreateBitmapIndirect(const BITMAP *bm)
+{
+    if (!bm) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    return CreateBitmap(bm->bmWidth, bm->bmHeight, bm->bmPlanes, bm->bmBitsPixel, bm->bmBits);
 }
 
 GDIAPI HBITMAP CreateDIBSection(HDC h, const BITMAPINFO *bi, UINT usage, void **bits, HANDLE section, DWORD offset)
@@ -597,7 +660,7 @@ static void flush_window(NOVA_DC *d, int x, int y, int w, int h);
 
 /* An unscaled copy between two 32-bit DCs, a row at a time (presenting
  * frames: Vulkan's software swap chain blits its DIB to the window) */
-static void blit_fast(NOVA_DC *dd, int x, int y, int w, int h, NOVA_DC *sd, int sx, int sy)
+static void blit_fast_one(NOVA_DC *dd, int x, int y, int w, int h, NOVA_DC *sd, int sx, int sy)
 {
     RECT r = { x + dd->org_x, y + dd->org_y, x + dd->org_x + w, y + dd->org_y + h };
     if (!dev_clip(dd, &r)) return;
@@ -615,6 +678,15 @@ static void blit_fast(NOVA_DC *dd, int x, int y, int w, int h, NOVA_DC *sd, int 
         else
             for (int i = 0; i < n; i++) t[i] = to_native(dd, from_native(sd, s[i]));
     }
+}
+
+static void blit_fast(NOVA_DC *dd, int x, int y, int w, int h, NOVA_DC *sd, int sx, int sy)
+{
+    int n = clip_pieces(dd);
+    if (!n) { blit_fast_one(dd, x, y, w, h, sd, sx, sy); return; }
+    RECT box = dd->clip;
+    for (int i = 0; i < n; i++) { dd->clip = dd->clip_rects[i]; blit_fast_one(dd, x, y, w, h, sd, sx, sy); }
+    dd->clip = box;
 }
 
 /* Can blit() take the row-copy path? */
@@ -741,7 +813,7 @@ static void flush_window(NOVA_DC *d, int x, int y, int w, int h)
 }
 
 /* An unscaled 32-bit DIB copied straight into the DC (presenting frames) */
-static int blit_dib32(NOVA_DC *d, int x, int y, int w, int h, int sx, int sy, const void *bits, const BITMAPINFO *bi)
+static int blit_dib32_one(NOVA_DC *d, int x, int y, int w, int h, int sx, int sy, const void *bits, const BITMAPINFO *bi)
 {
     const BITMAPINFOHEADER *bh = &bi->bmiHeader;
     int bw = bh->biWidth, bht = bh->biHeight < 0 ? -bh->biHeight : bh->biHeight;
@@ -766,46 +838,64 @@ static int blit_dib32(NOVA_DC *d, int x, int y, int w, int h, int sx, int sy, co
     return 1;
 }
 
-/* @sy is the source rectangle's top row counted from the DIB's top */
+static int blit_dib32(NOVA_DC *d, int x, int y, int w, int h, int sx, int sy, const void *bits, const BITMAPINFO *bi)
+{
+    int n = clip_pieces(d);
+    if (!n) return blit_dib32_one(d, x, y, w, h, sx, sy, bits, bi);
+    RECT box = d->clip;
+    for (int i = 0; i < n; i++) { d->clip = d->clip_rects[i]; blit_dib32_one(d, x, y, w, h, sx, sy, bits, bi); }
+    d->clip = box;
+    return 1;
+}
+
+/* Copy a DIB rectangle (sy counted from the image's top) into the DC.
+ * Negative extents work as on Windows: x, -w covers x-w+1..x, and the
+ * image is mirrored only when a destination and source extent differ in sign */
 static int stretch_dib(NOVA_DC *d, int x, int y, int w, int hh, int sx, int sy, int sw, int sh, const void *bits,
                        const BITMAPINFO *bi, DWORD rop)
 {
+    int mx = (w < 0) != (sw < 0), my = (hh < 0) != (sh < 0);
+    if (w < 0) { x += w + 1; w = -w; }
+    if (hh < 0) { y += hh + 1; hh = -hh; }
+    if (sw < 0) { sx += sw + 1; sw = -sw; }
+    if (sh < 0) { sy += sh + 1; sh = -sh; }
     const BITMAPINFOHEADER *bih = &bi->bmiHeader;
-    if (w > 0 && hh > 0 && w == sw && hh == sh && bih->biBitCount == 32 && rop == SRCCOPY && !d->rop2 &&
+    if (!mx && !my && w == sw && hh == sh && bih->biBitCount == 32 && rop == SRCCOPY && !d->rop2 &&
         (bih->biCompression == BI_RGB || bih->biCompression == 3 /* BI_BITFIELDS, the usual masks */) && d->bits) {
         blit_dib32(d, x, y, w, hh, sx, sy, bits, bi);
         flush_window(d, x, y, w, hh);
         dc_sync(d);
         return hh;
     }
-    int bh = bi->bmiHeader.biHeight < 0 ? -bi->bmiHeader.biHeight : bi->bmiHeader.biHeight;
-    for (int j = 0; j < (hh < 0 ? -hh : hh); j++) {
-        int syy = sy + j * sh / (hh < 0 ? -hh : hh);
+    int bh = bih->biHeight < 0 ? -bih->biHeight : bih->biHeight;
+    for (int j = 0; j < hh; j++) {
+        int syy = sy + (my ? hh - 1 - j : j) * sh / hh;
         if (syy < 0 || syy >= bh) continue;
-        for (int i = 0; i < (w < 0 ? -w : w); i++) {
-            int sxx = sx + i * sw / (w < 0 ? -w : w);
-            if (sxx < 0 || sxx >= bi->bmiHeader.biWidth) continue;
-            put(d, w < 0 ? x - i : x + i, hh < 0 ? y - j : y + j, dib_pixel(bi, bits, sxx, syy));
+        for (int i = 0; i < w; i++) {
+            int sxx = sx + (mx ? w - 1 - i : i) * sw / w;
+            if (sxx < 0 || sxx >= bih->biWidth) continue;
+            put(d, x + i, y + j, dib_pixel(bi, bits, sxx, syy));
         }
     }
+    flush_window(d, x, y, w, hh);
     dc_sync(d);
-    return hh < 0 ? -hh : hh;
+    return hh;
 }
 
-/* The source rectangle's y is measured from the bottom of a bottom-up DIB
- * (its origin is the lower-left corner) and from the top of a top-down one.
- * wxWidgets blits a window's part of a larger shared buffer this way: a
- * top-down reading drew the buffer's empty bottom rows instead. */
 GDIAPI int StretchDIBits(HDC h, int x, int y, int w, int hh, int sx, int sy, int sw, int sh, const void *bits,
                          const BITMAPINFO *bi, UINT usage, DWORD rop)
 {
     (void)usage;
     NOVA_DC *d = dc_of(h);
     if (!d || !bits || !w || !hh || !sw || !sh) return 0;
+    /* The source y counts from the bottom of the image, top-down DIBs
+     * included (cairo's win32 backend relies on this; wxWidgets blits a
+     * window's part of a larger shared buffer this way, and a top-down
+     * reading drew the buffer's empty bottom rows instead) */
     int bh = bi->bmiHeader.biHeight < 0 ? -bi->bmiHeader.biHeight : bi->bmiHeader.biHeight;
-    int top = bi->bmiHeader.biHeight > 0 ? bh - sy - (sh < 0 ? -sh : sh) : sy;
-    return stretch_dib(d, x, y, w, hh, sx, top, sw, sh, bits, bi, rop);
+    return stretch_dib(d, x, y, w, hh, sx, bh - sy - sh, sw, sh, bits, bi, rop);
 }
+
 
 GDIAPI int SetDIBitsToDevice(HDC h, int x, int y, DWORD w, DWORD hh, int sx, int sy, UINT start, UINT lines,
                              const void *bits, const BITMAPINFO *bi, UINT usage)
@@ -1020,6 +1110,7 @@ GDIAPI BOOL DeleteObject(HGDIOBJ obj)
             o->view24 = o->last24 = NULL;
             o->view_owned = 0;
         }
+        if (o->kind == K_REGION) rgn_free(o);
         o->used = 0;
     }
     return TRUE;
@@ -1113,159 +1204,8 @@ GDIAPI int SetLayout(HDC h, DWORD l) { (void)h; (void)l; return 0; }
 GDIAPI UINT GetNearestColor(HDC h, COLORREF c) { (void)h; return c & 0xFFFFFF; }
 
 /* -----------------------------------------------------------------------
- * Regions: rectangles; clipping is not applied
+ * Regions and the clip region: region.c
  * ----------------------------------------------------------------------- */
-GDIAPI HRGN CreateRectRgn(int l, int t, int r, int b)
-{
-    GObj *o = new_obj(K_REGION);
-    if (o) { o->rc.left = l; o->rc.top = t; o->rc.right = r; o->rc.bottom = b; }
-    return (HRGN)o;
-}
-GDIAPI HRGN CreateRectRgnIndirect(const RECT *r) { return CreateRectRgn(r->left, r->top, r->right, r->bottom); }
-GDIAPI HRGN CreateRoundRectRgn(int l, int t, int r, int b, int w, int h) { (void)w; (void)h; return CreateRectRgn(l, t, r, b); }
-GDIAPI HRGN CreateEllipticRgn(int l, int t, int r, int b) { return CreateRectRgn(l, t, r, b); }
-/* A region from rectangles, kept as their bounding box like every region here
- * (after @x, when given, moves the corners) */
-GDIAPI HRGN ExtCreateRegion(const XFORM *x, DWORD n, const RGNDATA *data)
-{
-    if (!data || data->rdh.dwSize < sizeof(RGNDATAHEADER) || data->rdh.iType != 1 /* RDH_RECTANGLES */) return NULL;
-    DWORD count = data->rdh.nCount;
-    if (n < sizeof(RGNDATAHEADER) + count * sizeof(RECT)) count = n > sizeof(RGNDATAHEADER) ? (n - sizeof(RGNDATAHEADER)) / sizeof(RECT) : 0;
-    const RECT *rc = (const RECT *)((const char *)data + data->rdh.dwSize);
-    float l = 0, t = 0, r = 0, b = 0;
-    int any = 0;
-    for (DWORD i = 0; i < count; i++) {
-        if (rc[i].right <= rc[i].left || rc[i].bottom <= rc[i].top) continue;
-        float cx[4] = { (float)rc[i].left, (float)rc[i].right, (float)rc[i].left, (float)rc[i].right };
-        float cy[4] = { (float)rc[i].top, (float)rc[i].top, (float)rc[i].bottom, (float)rc[i].bottom };
-        for (int k = 0; k < 4; k++) {
-            float px = cx[k], py = cy[k];
-            if (x) {
-                px = cx[k] * x->eM11 + cy[k] * x->eM21 + x->eDx;
-                py = cx[k] * x->eM12 + cy[k] * x->eM22 + x->eDy;
-            }
-            if (!any || px < l) l = px;
-            if (!any || px > r) r = px;
-            if (!any || py < t) t = py;
-            if (!any || py > b) b = py;
-            any = 1;
-        }
-    }
-    if (!any) return CreateRectRgn(0, 0, 0, 0);
-    return CreateRectRgn((int)(l < 0 ? l - 0.5f : l + 0.5f), (int)(t < 0 ? t - 0.5f : t + 0.5f),
-                         (int)(r < 0 ? r - 0.5f : r + 0.5f), (int)(b < 0 ? b - 0.5f : b + 0.5f));
-}
-GDIAPI int GetRgnBox(HRGN h, LPRECT r) { GObj *o = obj_of(h); if (!o) return 0; *r = o->rc; return 2; }
-GDIAPI int CombineRgn(HRGN dst, HRGN a, HRGN b, int mode)
-{
-    GObj *d = obj_of(dst), *x = obj_of(a), *y = obj_of(b);
-    if (!d || !x) return 0;
-    RECT r = x->rc;
-    if (y && mode == 1) {                                   /* RGN_AND */
-        if (y->rc.left > r.left) r.left = y->rc.left;
-        if (y->rc.top > r.top) r.top = y->rc.top;
-        if (y->rc.right < r.right) r.right = y->rc.right;
-        if (y->rc.bottom < r.bottom) r.bottom = y->rc.bottom;
-    } else if (y && mode == 2) {                            /* RGN_OR: the bounding box */
-        if (y->rc.left < r.left) r.left = y->rc.left;
-        if (y->rc.top < r.top) r.top = y->rc.top;
-        if (y->rc.right > r.right) r.right = y->rc.right;
-        if (y->rc.bottom > r.bottom) r.bottom = y->rc.bottom;
-    }
-    d->rc = r;
-    return r.right > r.left && r.bottom > r.top ? 2 : 1;
-}
-GDIAPI BOOL SetRectRgn(HRGN h, int l, int t, int r, int b) { GObj *o = obj_of(h); if (!o) return FALSE; o->rc.left = l; o->rc.top = t; o->rc.right = r; o->rc.bottom = b; return TRUE; }
-GDIAPI BOOL PtInRegion(HRGN h, int x, int y) { GObj *o = obj_of(h); return o && x >= o->rc.left && x < o->rc.right && y >= o->rc.top && y < o->rc.bottom; }
-GDIAPI int OffsetRgn(HRGN h, int x, int y) { GObj *o = obj_of(h); if (!o) return 0; o->rc.left += x; o->rc.right += x; o->rc.top += y; o->rc.bottom += y; return 2; }
-/* The clip region is kept as its bounding box, in device pixels */
-GDIAPI int ExtSelectClipRgn(HDC h, HRGN rgn, int mode)
-{
-    NOVA_DC *d = dc_of(h);
-    if (!d) return 0;
-    GObj *o = obj_of(rgn);
-    if (!o) {                                               /* NULL: no clipping (RGN_COPY) */
-        if (mode == 5 || !rgn) d->has_clip = 0;
-        return 2;
-    }
-    RECT r = o->rc;                                         /* device units from the window's origin */
-    r.left += d->base_x; r.right += d->base_x; r.top += d->base_y; r.bottom += d->base_y;
-    if (mode == 1 && d->has_clip) {                         /* RGN_AND */
-        if (d->clip.left > r.left) r.left = d->clip.left;
-        if (d->clip.top > r.top) r.top = d->clip.top;
-        if (d->clip.right < r.right) r.right = d->clip.right;
-        if (d->clip.bottom < r.bottom) r.bottom = d->clip.bottom;
-    } else if (mode == 2 && d->has_clip) {                  /* RGN_OR: the bounding box */
-        if (d->clip.left < r.left) r.left = d->clip.left;
-        if (d->clip.top < r.top) r.top = d->clip.top;
-        if (d->clip.right > r.right) r.right = d->clip.right;
-        if (d->clip.bottom > r.bottom) r.bottom = d->clip.bottom;
-    } else if (mode == 4 && d->has_clip) {                  /* RGN_DIFF: only whole strips come off */
-        RECT c = d->clip;
-        if (r.top <= c.top && r.bottom >= c.bottom) { if (r.left <= c.left && r.right > c.left) c.left = r.right; else if (r.right >= c.right && r.left < c.right) c.right = r.left; }
-        else if (r.left <= c.left && r.right >= c.right) { if (r.top <= c.top && r.bottom > c.top) c.top = r.bottom; else if (r.bottom >= c.bottom && r.top < c.bottom) c.bottom = r.top; }
-        r = c;
-    }
-    d->clip = r;
-    d->has_clip = 1;
-    return r.right > r.left && r.bottom > r.top ? 2 : 1;
-}
-GDIAPI int SelectClipRgn(HDC h, HRGN r) { return ExtSelectClipRgn(h, r, 5 /* RGN_COPY */); }
-GDIAPI int IntersectClipRect(HDC h, int l, int t, int r, int b)
-{
-    NOVA_DC *d = dc_of(h);
-    if (!d) return 0;
-    RECT n = { l + d->org_x, t + d->org_y, r + d->org_x, b + d->org_y };
-    if (d->has_clip) {
-        if (d->clip.left > n.left) n.left = d->clip.left;
-        if (d->clip.top > n.top) n.top = d->clip.top;
-        if (d->clip.right < n.right) n.right = d->clip.right;
-        if (d->clip.bottom < n.bottom) n.bottom = d->clip.bottom;
-    }
-    d->clip = n;
-    d->has_clip = 1;
-    return n.right > n.left && n.bottom > n.top ? 2 : 1;
-}
-GDIAPI int ExcludeClipRect(HDC h, int l, int t, int r, int b)
-{
-    NOVA_DC *d = dc_of(h);
-    if (!d) return 0;
-    if (!d->has_clip) { d->clip.left = 0; d->clip.top = 0; d->clip.right = d->w; d->clip.bottom = d->h; d->has_clip = 1; }
-    GObj tmp;
-    memset(&tmp, 0, sizeof(tmp));
-    RECT x = { l + d->org_x, t + d->org_y, r + d->org_x, b + d->org_y };
-    RECT c = d->clip;
-    if (x.top <= c.top && x.bottom >= c.bottom) { if (x.left <= c.left && x.right > c.left) c.left = x.right; else if (x.right >= c.right && x.left < c.right) c.right = x.left; }
-    else if (x.left <= c.left && x.right >= c.right) { if (x.top <= c.top && x.bottom > c.top) c.top = x.bottom; else if (x.bottom >= c.bottom && x.top < c.bottom) c.bottom = x.top; }
-    d->clip = c;
-    return 2;
-}
-GDIAPI int OffsetClipRgn(HDC h, int x, int y)
-{
-    NOVA_DC *d = dc_of(h);
-    if (!d) return 0;
-    if (d->has_clip) { d->clip.left += x; d->clip.right += x; d->clip.top += y; d->clip.bottom += y; }
-    return 2;
-}
-GDIAPI int GetClipBox(HDC h, LPRECT r)
-{
-    NOVA_DC *d = dc_of(h);
-    if (!d) return 0;
-    RECT e = { 0, 0, d->w, d->h };
-    int k = dev_clip(d, &e);
-    r->left = e.left - d->org_x; r->top = e.top - d->org_y; r->right = e.right - d->org_x; r->bottom = e.bottom - d->org_y;
-    return k ? 2 : 1;
-}
-GDIAPI int GetClipRgn(HDC h, HRGN r)
-{
-    NOVA_DC *d = dc_of(h);
-    GObj *o = obj_of(r);
-    if (!d || !o) return -1;
-    if (!d->has_clip) return 0;
-    o->rc = d->clip;
-    o->rc.left -= d->base_x; o->rc.right -= d->base_x; o->rc.top -= d->base_y; o->rc.bottom -= d->base_y;
-    return 1;
-}
 GDIAPI BOOL RectVisible(HDC h, const RECT *r)
 {
     NOVA_DC *d = dc_of(h);
@@ -1274,13 +1214,4 @@ GDIAPI BOOL RectVisible(HDC h, const RECT *r)
     return dev_clip(d, &e);
 }
 GDIAPI BOOL PtVisible(HDC h, int x, int y) { NOVA_DC *d = dc_of(h); return d && dev_visible(d, x + d->org_x, y + d->org_y); }
-GDIAPI BOOL FillRgn(HDC h, HRGN r, HBRUSH b)
-{
-    NOVA_DC *d = dc_of(h);
-    GObj *o = obj_of(r), *br = obj_of(b);
-    if (!d || !o) return FALSE;
-    fill(d, o->rc.left, o->rc.top, o->rc.right, o->rc.bottom, br ? br->color : 0);
-    return TRUE;
-}
-GDIAPI BOOL PaintRgn(HDC h, HRGN r) { NOVA_DC *d = dc_of(h); GObj *o = obj_of(r); if (!d || !o) return FALSE; fill(d, o->rc.left, o->rc.top, o->rc.right, o->rc.bottom, d->brush_color); return TRUE; }
 

@@ -47,17 +47,7 @@ static void free_file(FILE *f)
 
 static void set_errno_from_win32(void)
 {
-    switch (GetLastError()) {
-    case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: errno = ENOENT; break;
-    case ERROR_ACCESS_DENIED:  errno = EACCES; break;
-    case ERROR_ALREADY_EXISTS: case ERROR_FILE_EXISTS: errno = EEXIST; break;
-    case ERROR_TOO_MANY_OPEN_FILES: errno = EMFILE; break;
-    case ERROR_NOT_ENOUGH_MEMORY: errno = ENOMEM; break;
-    case ERROR_DISK_FULL:      errno = ENOSPC; break;
-    case ERROR_DIR_NOT_EMPTY:  errno = ENOTEMPTY; break;
-    case ERROR_INVALID_HANDLE: errno = EBADF; break;
-    default:                   errno = EINVAL; break;
-    }
+    __nova_set_errno_win32();                       /* posix.c: errno and _doserrno */
 }
 
 static void init_std(FILE *f, DWORD which, int flags)

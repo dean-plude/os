@@ -2434,6 +2434,21 @@ WINBASEAPI BOOL WINAPI GetCPInfoExW(UINT cp, DWORD flags, LPVOID out)
     return TRUE;
 }
 
+typedef struct { UINT MaxCharSize; BYTE DefaultChar[2]; BYTE LeadByte[12]; WCHAR UnicodeDefaultChar; UINT CodePage; CHAR CodePageName[260]; } CPINFOEXA_;
+WINBASEAPI BOOL WINAPI GetCPInfoExA(UINT cp, DWORD flags, LPVOID out)
+{
+    CPINFOEXW_ w;
+    CPINFOEXA_ *a = out;
+    if (!GetCPInfoExW(cp, flags, &w)) return FALSE;
+    memset(a, 0, sizeof(*a));
+    a->MaxCharSize = w.MaxCharSize;
+    memcpy(a->DefaultChar, w.DefaultChar, sizeof(a->DefaultChar));
+    a->UnicodeDefaultChar = w.UnicodeDefaultChar;
+    a->CodePage = w.CodePage;
+    for (int i = 0; i < 259 && w.CodePageName[i]; i++) a->CodePageName[i] = (CHAR)w.CodePageName[i];
+    return TRUE;
+}
+
 WINBASEAPI UINT WINAPI GetOEMCP(void)                  { return CP_UTF8; }
 WINBASEAPI BOOL WINAPI IsDBCSLeadByte(BYTE c)          { (void)c; return FALSE; }
 WINBASEAPI BOOL WINAPI IsDBCSLeadByteEx(UINT cp, BYTE c) { (void)cp; (void)c; return FALSE; }

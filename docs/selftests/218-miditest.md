@@ -1,0 +1,1 @@
+| `miditest [DIR]` | MIDI: the `midiOut` device and a GM reset sent with `midiOutLongMsg`, then a flute note; a `midiStream` buffer with a tempo and time division, `MOM_POSITIONCB` and `MOM_DONE` callbacks and the stream position; and a MIDI file written to DIR and played through the MCI sequencer (`open`, `status length`, `play wait`, `status mode`) |

@@ -6,6 +6,14 @@
  * directory sectors) goes through a small write-back sector cache that
  * FatSync writes out, mirroring FAT sectors to every FAT copy; file data
  * moves straight between the caller's buffer and the disk.
+ *
+ * Writes are ordered so that a crash leaves each file as it was or as it
+ * was last written, never half of each: a file's data reaches the disk
+ * before the FAT links that chain it, and those before the directory
+ * entry that points at it (a dirty directory sector is written only after
+ * every dirty FAT sector); a replaced or deleted file's clusters are not
+ * freed, so not reused, until FatSync has put the entries that no longer
+ * use them on the disk.
  */
 
 #include "fat.h"
@@ -37,6 +45,9 @@ struct FatVol {
     INT64     free_count;       /* -1: not counted yet */
     char      label[12];
     UINT32    clock;
+    UINT32    stamp;            /* FatSetStamp */
+    UINT32   *pending;          /* chains to free at the next FatSync (replaced or deleted files) */
+    UINT32    npending, pending_cap;
     CacheEnt  cache[CACHE_N];
     UINT8    *cbuf;             /* one cluster */
     /* the last position found in a directory's cluster chain */
@@ -49,11 +60,26 @@ struct FatVol {
 static bool dev_read(FatVol *v, UINT32 lba, UINT32 n, void *buf) { return v->dev->read(v->dev, v->base + lba, n, buf); }
 static bool dev_write(FatVol *v, UINT32 lba, UINT32 n, const void *buf) { return v->dev->write(v->dev, v->base + lba, n, buf); }
 
+static bool is_fat_sector(FatVol *v, UINT32 lba) { return lba >= v->reserved && lba < v->reserved + v->fat_sectors; }
+
+static bool cache_writeback(FatVol *v, CacheEnt *c);
+
+/* Every dirty FAT sector to the disk (before any directory sector: the
+ * chains an entry points at are on the disk before the entry) */
+static bool fat_writeback(FatVol *v)
+{
+    bool ok = true;
+    for (int i = 0; i < CACHE_N; i++)
+        if (v->cache[i].valid && v->cache[i].dirty && is_fat_sector(v, v->cache[i].lba)) ok = cache_writeback(v, &v->cache[i]) && ok;
+    return ok;
+}
+
 static bool cache_writeback(FatVol *v, CacheEnt *c)
 {
     if (!c->valid || !c->dirty) return true;
+    if (!is_fat_sector(v, c->lba) && !fat_writeback(v)) return false;
     bool ok = dev_write(v, c->lba, 1, c->data);
-    if (c->lba >= v->reserved && c->lba < v->reserved + v->fat_sectors)       /* mirror the FAT */
+    if (is_fat_sector(v, c->lba))                                              /* mirror the FAT */
         for (UINT32 k = 1; k < v->nfats; k++) ok = dev_write(v, c->lba + k * v->fat_sectors, 1, c->data) && ok;
     if (ok) c->dirty = false;
     return ok;
@@ -87,10 +113,20 @@ static void cache_invalidate(FatVol *v, UINT32 lba, UINT32 n)
         if (v->cache[i].valid && v->cache[i].lba >= lba && v->cache[i].lba < lba + n) v->cache[i].valid = false;
 }
 
+static void free_chain(FatVol *v, UINT32 c);
+
 bool FatSync(FatVol *v)
 {
     bool ok = true;
     for (int i = 0; i < CACHE_N; i++) ok = cache_writeback(v, &v->cache[i]) && ok;
+    if (v->npending) {                    /* the entries are on the disk: free what they let go of */
+        if (v->dev->flush) ok = v->dev->flush(v->dev) && ok;
+        if (ok) {
+            for (UINT32 i = 0; i < v->npending; i++) free_chain(v, v->pending[i]);
+            v->npending = 0;
+            for (int i = 0; i < CACHE_N; i++) ok = cache_writeback(v, &v->cache[i]) && ok;
+        }
+    }
     if (v->fsinfo) {
         CacheEnt *c = cache_get(v, v->fsinfo, true);
         if (c && *(UINT32 *)c->data == 0x41615252u) {
@@ -159,6 +195,22 @@ static UINT32 alloc_cluster(FatVol *v, UINT32 prev)
         return c;
     }
     return 0;
+}
+
+/* Free chain @c at the next FatSync (an entry pointed at it until now) */
+static void free_later(FatVol *v, UINT32 c)
+{
+    if (c < 2) return;
+    if (v->npending == v->pending_cap) {
+        UINT32 cap = v->pending_cap ? 2 * v->pending_cap : 32;
+        UINT32 *np = kmalloc(sizeof(UINT32) * cap);
+        if (!np) { free_chain(v, c); return; }            /* (out of memory: free it now, as before) */
+        if (v->npending) memcpy(np, v->pending, sizeof(UINT32) * v->npending);
+        kfree(v->pending);
+        v->pending = np;
+        v->pending_cap = cap;
+    }
+    v->pending[v->npending++] = c;
 }
 
 static void free_chain(FatVol *v, UINT32 c)
@@ -494,16 +546,15 @@ static bool make_alias(FatVol *v, UINT32 dir, const char *name, UINT8 *sfn)
     return true;
 }
 
-static UINT32 g_stamp;
-void FatSetStamp(UINT32 dos_time) { g_stamp = dos_time; }
+void FatSetStamp(FatVol *v, UINT32 dos_time) { v->stamp = dos_time; }
 
-static void stamp(UINT8 *e, bool create)
+static void stamp(FatVol *v, UINT8 *e, bool create)
 {
     RtcTime t;
     rtc_read(&t);
     UINT16 date = (UINT16)((t.year >= 1980 ? t.year - 1980 : 0) << 9 | t.month << 5 | t.day);
     UINT16 time = (UINT16)(t.hour << 11 | t.minute << 5 | t.second / 2);
-    if (g_stamp) { date = (UINT16)(g_stamp >> 16); time = (UINT16)g_stamp; }
+    if (v->stamp) { date = (UINT16)(v->stamp >> 16); time = (UINT16)v->stamp; }
     if (create) {
         *(UINT16 *)(e + 14) = time;
         *(UINT16 *)(e + 16) = date;
@@ -564,7 +615,7 @@ static bool create_entry(FatVol *v, UINT32 dir, const char *name, UINT8 attr, UI
     memcpy(e, sfn, 11);
     if (e[0] == 0xE5) e[0] = 0x05;
     e[11] = attr;
-    stamp(e, true);
+    stamp(v, e, true);
     set_cluster(v, e, cluster);
     *(UINT32 *)(e + 28) = size;
     ce->dirty = true;
@@ -661,8 +712,10 @@ bool FatWriteFile(FatVol *v, UINT32 dir, const char *name, const void *data, UIN
     FatEntry fe;
     bool exists = FatLookup(v, dir, name, &fe);
     if (exists && fe.dir) return false;
-    UINT32 first;
-    if (exists) {                                          /* free the old contents first: room for the new */
+    UINT32 first, need = (len + v->cluster_bytes - 1) / v->cluster_bytes;
+    count_free(v);
+    if (need > v->free_count && v->npending) FatSync(v);   /* (frees what earlier writes let go of) */
+    if (exists && need > v->free_count) {                  /* no room for both: free the old contents first */
         free_chain(v, fe.cluster);
         CacheEnt *ce;
         UINT8 *e = dir_entry(v, dir, fe.index, false, &ce);
@@ -679,12 +732,14 @@ bool FatWriteFile(FatVol *v, UINT32 dir, const char *name, const void *data, UIN
     }
     CacheEnt *ce;
     UINT8 *e = dir_entry(v, dir, fe.index, false, &ce);
-    if (!e) return false;
+    if (!e) { free_chain(v, first); return false; }
+    UINT32 old = entry_cluster(v, e);                      /* (0 if freed above) */
     set_cluster(v, e, first);
     *(UINT32 *)(e + 28) = len;
     e[11] |= 0x20;                                         /* archive */
-    stamp(e, false);
+    stamp(v, e, false);
     ce->dirty = true;
+    free_later(v, old);                                    /* (the old contents stay until the entry is on the disk) */
     return true;
 }
 
@@ -705,13 +760,13 @@ bool FatMkdir(FatVol *v, UINT32 dir, const char *name, UINT32 *out)
     memset(e, ' ', 11);
     e[0] = '.';
     e[11] = 0x10;
-    stamp(e, true);
+    stamp(v, e, true);
     set_cluster(v, e, c);
     e += 32;
     memset(e, ' ', 11);
     e[0] = e[1] = '.';
     e[11] = 0x10;
-    stamp(e, true);
+    stamp(v, e, true);
     set_cluster(v, e, dir == FAT_ROOT ? 0 : dir);
     ce->dirty = true;
     if (!create_entry(v, dir, name, 0x10, c, 0)) { free_chain(v, c); return false; }
@@ -766,7 +821,7 @@ static bool delete_entry(FatVol *v, const FatEntry *fe, int depth)
     UINT8 *e = dir_entry(v, fe->dir_cluster, fe->index, false, &c);
     if (!e) return false;
     erase_entry(v, fe);
-    if (fe->cluster != FAT_ROOT) free_chain(v, fe->cluster);
+    if (fe->cluster != FAT_ROOT) free_later(v, fe->cluster);
     return true;
 }
 
@@ -865,6 +920,7 @@ void FatUnmount(FatVol *v)
 {
     if (!v) return;
     FatSync(v);
+    kfree(v->pending);
     kfree(v->cbuf);
     kfree(v);
 }

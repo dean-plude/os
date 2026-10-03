@@ -668,6 +668,13 @@ SHSTDAPI_(UINT) ExtractIconExW(LPCWSTR file, int i, HICON *large, HICON *small, 
     for (UINT k = 0; k < n; k++) { if (large) large[k] = 0; if (small) small[k] = 0; }
     return 0;
 }
+SHSTDAPI_(UINT) ExtractIconExA(LPCSTR file, int i, HICON *large, HICON *small, UINT n)
+{
+    (void)file;
+    return ExtractIconExW(NULL, i, large, small, n);
+}
+/* No taskbar app bars (GTK asks whether the taskbar auto-hides) */
+SHSTDAPI_(UINT_PTR) SHAppBarMessage(DWORD msg, void *data) { (void)msg; (void)data; return 0; }
 SHSTDAPI_(HICON) ExtractAssociatedIconW(HINSTANCE h, LPWSTR path, WORD *i) { (void)h; (void)path; (void)i; return 0; }
 
 /* -----------------------------------------------------------------------

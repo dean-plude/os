@@ -242,7 +242,10 @@ void um_ob_wake(UmObject *o)
         for (int i = 0; i < w->wait_n; i++) {
             if (w->wait_objs[i] != o) continue;
             w->wake = 1;
-            if (w->kt) sched_unblock(w->kt);
+            if (w->kt) {                                    /* (a timer's waiter runs at once: scheduler.h) */
+                if (o->type == UO_TIMER) sched_unblock_timer(w->kt);
+                else sched_unblock(w->kt);
+            }
             break;
         }
     }
@@ -1096,15 +1099,24 @@ static UINT64 sys_query_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 static UINT64 sys_open_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_named(UO_SECTION, a1, a3, (UINT32)a2); }
 
 /* NtMapViewOfSection(HANDLE Section, HANDLE Process, PVOID *Base, ULONG_PTR ZeroBits, SIZE_T CommitSize,
- *                    PLARGE_INTEGER Offset, PSIZE_T ViewSize, InheritDisposition, AllocationType, Win32Protect) */
-static UINT64 map_view(UINT64 a1, UINT64 a3, UINT64 off_ptr, UINT64 size_ptr, UINT32 prot, UINT64 lo, UINT64 hi, UINT64 align);
+ *                    PLARGE_INTEGER Offset, PSIZE_T ViewSize, InheritDisposition, AllocationType, Win32Protect)
+ * The process may be another one (a process handle): Firefox's launcher
+ * shares a section with the browser process it starts suspended, writes
+ * its DLL blocklist hooks' trampolines through its own view and maps the
+ * section into the child near ntdll. */
+static UINT64 map_view(UmProcess *p, UINT64 a1, UINT64 a3, UINT64 off_ptr, UINT64 size_ptr, UINT32 prot,
+                       UINT64 lo, UINT64 hi, UINT64 align);
 
 static UINT64 sys_map_view(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a4;
-    UmProcess *p = UmCurrent();
-    if (a2 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_NOT_SUPPORTED_;
-    return map_view(a1, a3, um_stack_arg(6), um_stack_arg(7), (UINT32)um_stack_arg(10), p->lay.alloc_min, p->lay.alloc_max, 0);
+    UmObject *ob;
+    UmProcess *p = um_proc_of(UmCurrent(), a2, &ob);
+    if (!p) return ST_INVALID_HANDLE;
+    UINT64 r = map_view(p, a1, a3, um_stack_arg(6), um_stack_arg(7), (UINT32)um_stack_arg(10),
+                        p->lay.alloc_min, p->lay.alloc_max, 0);
+    if (ob) um_ob_unref(ob);
+    return r;
 }
 
 /* NtMapViewOfSectionEx(HANDLE Section, HANDLE Process, PVOID *Base, PLARGE_INTEGER Offset,
@@ -1112,20 +1124,24 @@ static UINT64 sys_map_view(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *                      MEM_EXTENDED_PARAMETER *, ULONG Count): an address range too */
 static UINT64 sys_map_view_ex(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    UmProcess *p = UmCurrent();
-    if (a2 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_NOT_SUPPORTED_;
-    UINT64 lo = p->lay.alloc_min, hi = p->lay.alloc_max, align = 0;
-    if (!um_addr_requirements(um_stack_arg(8), (UINT32)um_stack_arg(9), &lo, &hi, &align)) return ST_ACCESS_VIOLATION;
-    return map_view(a1, a3, a4, um_stack_arg(5), (UINT32)um_stack_arg(7), lo, hi, align);
+    UmObject *ob;
+    UmProcess *p = um_proc_of(UmCurrent(), a2, &ob);
+    if (!p) return ST_INVALID_HANDLE;
+    UINT64 lo = p->lay.alloc_min, hi = p->lay.alloc_max, align = 0, r;
+    if (!um_addr_requirements(um_stack_arg(8), (UINT32)um_stack_arg(9), &lo, &hi, &align)) r = ST_ACCESS_VIOLATION;
+    else r = map_view(p, a1, a3, a4, um_stack_arg(5), (UINT32)um_stack_arg(7), lo, hi, align);
+    if (ob) um_ob_unref(ob);
+    return r;
 }
 
-static UINT64 map_view(UINT64 a1, UINT64 a3, UINT64 off_ptr, UINT64 size_ptr, UINT32 prot, UINT64 lo, UINT64 hi, UINT64 align)
+/* Map section @a1 (the caller's handle) into process @p; the pointers are the caller's */
+static UINT64 map_view(UmProcess *p, UINT64 a1, UINT64 a3, UINT64 off_ptr, UINT64 size_ptr, UINT32 prot,
+                       UINT64 lo, UINT64 hi, UINT64 align)
 {
-    UmProcess *p = UmCurrent();
     UINT64 base = 0, off = 0, view = 0;
     if (!get_u64_(a3, &base) || !get_u64_(size_ptr, &view)) return ST_ACCESS_VIOLATION;
     if (off_ptr && !get_u64_(off_ptr, &off)) return ST_ACCESS_VIOLATION;
-    UmObject *o = um_handle_object(p, a1, UO_SECTION);
+    UmObject *o = um_handle_object(UmCurrent(), a1, UO_SECTION);
     if (!o) return ST_INVALID_HANDLE;
     UmSection *sec = o->ptr;
     if (off & 0xFFF) { um_ob_unref(o); return ST_INVALID_PARAMETER; }
@@ -1165,15 +1181,17 @@ static UINT64 map_view(UINT64 a1, UINT64 a3, UINT64 off_ptr, UINT64 size_ptr, UI
 static UINT64 sys_unmap_view(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
-    UmProcess *p = UmCurrent();
-    if (a1 != UINT64_C(0xFFFFFFFFFFFFFFFF)) return ST_NOT_SUPPORTED_;
+    UmObject *ob;
+    UmProcess *p = um_proc_of(UmCurrent(), a1, &ob);       /* this process or another */
+    if (!p) return ST_INVALID_HANDLE;
     um_lock_excl(&p->lock);
     UmRegion *r = um_region_find(p, a2);
-    if (!r || !r->section) { um_unlock_excl(&p->lock); return ST_NOT_MAPPED_VIEW; }
+    if (!r || !r->section) { um_unlock_excl(&p->lock); if (ob) um_ob_unref(ob); return ST_NOT_MAPPED_VIEW; }
     UmObject *o = r->section;
     um_unmap_frames(p, r->base, r->size / PAGE_SIZE);
     um_region_remove(p, r);
     um_unlock_excl(&p->lock);
+    if (ob) um_ob_unref(ob);
     section_writeback(o->ptr);
     um_ob_unref(o);
     return ST_SUCCESS;

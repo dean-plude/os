@@ -14,6 +14,12 @@
  * queue where it is: that ends a bulk or interrupt transfer, and moves a
  * control transfer on to its status stage.
  *
+ * Isochronous packets are TDs too, put straight into the frame list: the
+ * TD for the packet due in frame f goes in front of whatever entry f
+ * holds (other isochronous TDs, then the skeleton), and comes out again
+ * once the frame has passed.  Each pipe has a TD per packet of the core's
+ * transfer ring, at a fixed place.
+ *
  * Polled: the controller's interrupts stay off; poll() looks at the
  * interrupt TDs every tick, and a waited-for transfer is spun on.
  */
@@ -63,6 +69,7 @@
 #define TD_STALLED      (1u << 22)
 #define TD_ERRORS       (0x7Eu << 16)     /* stalled, buffer, babble, NAK, CRC/timeout, bitstuff */
 #define TD_IOC          (1u << 24)
+#define TD_IOS          (1u << 25)
 #define TD_LS           (1u << 26)
 #define TD_CERR3        (3u << 27)
 #define TD_SPD          (1u << 29)
@@ -75,6 +82,7 @@
 
 #define TD_SIZE         32
 #define MAX_LISTEN      64
+#define MAX_ISO         16
 
 typedef struct __attribute__((packed, aligned(16))) {
     UINT32 link, ctl, token, buf;
@@ -107,6 +115,15 @@ typedef struct {
     UQueue *ep0;
 } UDev;
 
+/* An isochronous pipe: a TD per packet of the transfer ring, and the
+ * transfers in flight, oldest first */
+typedef struct {
+    Td     *td;                           /* (td.pad[0]: its frame, 11 bits) */
+    int     pages;
+    UINT16  frame;                        /* the next packet's frame */
+    int     fifo[128], head, count;
+} UIso;
+
 typedef struct {
     UsbHc            *hc;
     UINT16            io;
@@ -114,6 +131,7 @@ typedef struct {
     UINT32           *frames;
     QPage            *skel;               /* skeleton queue heads (interrupt, control, bulk) */
     UsbPipe          *listening[MAX_LISTEN];
+    UsbPipe          *streaming[MAX_ISO];
     PciDevice         pci;
 } Uhci;
 
@@ -228,6 +246,122 @@ static QState queue_state(UQueue *uq, int from, int to, UINT32 *moved, int *last
 /* The toggle after TD @i went through */
 static inline bool toggle_after(UQueue *uq, int i) { return !(uq->q->td[i].token & TOK_TOGGLE); }
 
+/* ---- isochronous ---- */
+
+static inline UINT16 frame_now(Uhci *u) { return (UINT16)(inw((UINT16)(u->io + REG_FRNUM)) & 0x7FF); }
+/* Frame @f (11 bits) is over */
+static inline bool frame_past(UINT16 now, UINT16 f) { UINT16 d = (UINT16)((now - f) & 0x7FF); return d && d < 0x400; }
+
+/* Take a TD out of its frame's list (lock held) */
+static void iso_td_unlink(Uhci *u, Td *td)
+{
+    UINT32 me = p32(td);
+    volatile UINT32 *at = &u->frames[td->pad[0] & 1023];
+    for (int guard = 0; guard < 256 && !(*at & (LP_T | LP_QH)); guard++) {
+        if (*at == me) { *at = td->link; break; }
+        at = &((Td *)UsbVirt(*at & ~0xFu))->link;
+    }
+    td->ctl &= ~TD_ACTIVE;
+}
+
+/* Put transfer @k's packets in the frames after the last one's (lock held) */
+static void iso_submit(Uhci *u, UsbPipe *p, int k)
+{
+    UIso *ui = p->hcd;
+    UsbDev *d = p->dev;
+    UINT16 now = frame_now(u), step = (UINT16)(UsbPipePeriod(p) / 8);
+    UINT16 ahead = (UINT16)((ui->frame - now) & 0x7FF);
+    if (ahead < 2 || ahead >= 0x400) ui->frame = (UINT16)((now + 3) & 0x7FF);   /* (fell behind: catch up) */
+    for (int i = 0; i < p->iso_packets; i++) {
+        int pk = k * p->iso_packets + i;
+        Td *td = &ui->td[pk];
+        UINT32 len = p->iso_len[pk];
+        td->ctl = TD_ACTIVE | TD_IOS;
+        td->token = (p->in ? PID_IN : PID_OUT) | ((UINT32)d->addr << 8) | ((UINT32)(p->addr & 0xF) << 15) |
+                    ((len ? len - 1 : 0x7FFu) << 21);
+        td->buf = (UINT32)(UsbPhys(p->dma) + (UINT64)pk * p->iso_psize);
+        td->len = len;
+        td->pad[0] = ui->frame;
+        volatile UINT32 *slot = &u->frames[ui->frame & 1023];
+        td->link = *slot;
+        mfence();
+        *slot = p32(td);
+        ui->frame = (UINT16)((ui->frame + step) & 0x7FF);
+    }
+    ui->fifo[(ui->head + ui->count++) % 128] = k;
+}
+
+static bool uhci_iso_start(UsbHc *hc, UsbPipe *p)
+{
+    Uhci *u = U(hc);
+    UIso *ui = p->hcd;
+    if (!ui || p->iso_xfers * p->iso_packets > ui->pages * (int)(PAGE_SIZE / TD_SIZE)) return false;
+    int at = -1;
+    for (int i = 0; i < MAX_ISO && at < 0; i++) if (!u->streaming[i]) at = i;
+    if (at < 0) return false;
+    ui->head = ui->count = 0;
+    ui->frame = (UINT16)((frame_now(u) + 3) & 0x7FF);
+    for (int k = 0; k < p->iso_xfers; k++) iso_submit(u, p, k);
+    u->streaming[at] = p;
+    return true;
+}
+
+/* Out of the frame list with everything in flight (lock held) */
+static void iso_unlink_all(Uhci *u, UsbPipe *p)
+{
+    UIso *ui = p->hcd;
+    for (int i = 0; i < MAX_ISO; i++) if (u->streaming[i] == p) u->streaming[i] = NULL;
+    for (; ui->count; ui->count--, ui->head = (ui->head + 1) % 128) {
+        int k = ui->fifo[ui->head];
+        for (int i = 0; i < p->iso_packets; i++) iso_td_unlink(u, &ui->td[k * p->iso_packets + i]);
+    }
+}
+
+static void uhci_iso_stop(UsbHc *hc, UsbPipe *p)
+{
+    if (!p->hcd) return;
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    iso_unlink_all(U(hc), p);
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    UsbDelay(2);                          /* (the controller is past any frame that had them) */
+}
+
+/* Transfers whose frames have all passed (lock held) */
+static void iso_poll(Uhci *u)
+{
+    UINT16 now = frame_now(u);
+    for (int s = 0; s < MAX_ISO; s++) {
+        UsbPipe *p = u->streaming[s];
+        if (!p || !p->iso_cb || !p->hcd) continue;
+        UIso *ui = p->hcd;
+        while (ui->count) {
+            int k = ui->fifo[ui->head], n = p->iso_packets;
+            if (!frame_past(now, (UINT16)ui->td[k * n + n - 1].pad[0])) break;
+            for (int i = 0; i < n; i++) {
+                Td *td = &ui->td[k * n + i];
+                UINT32 c = td->ctl;
+                iso_td_unlink(u, td);
+                if (p->in) p->iso_len[k * n + i] = (UINT16)(c & (TD_ACTIVE | TD_ERRORS) ? 0 : TD_ACTLEN(c));
+            }
+            ui->head = (ui->head + 1) % 128;
+            ui->count--;
+            if (UsbIsoDone(p, k)) iso_submit(u, p, k);
+        }
+    }
+}
+
+static void iso_free(Uhci *u, UsbPipe *p)
+{
+    UIso *ui = p->hcd;
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    iso_unlink_all(u, p);
+    p->hcd = NULL;
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    UsbDelay(2);
+    UsbDmaFree(ui->td, ui->pages);
+    kfree(ui);
+}
+
 /* ---- devices and transfers ---- */
 
 static int uhci_control(UsbHc *hc, UsbDev *d, const UsbSetup *s, bool *stalled)
@@ -298,6 +432,15 @@ static int uhci_control(UsbHc *hc, UsbDev *d, const UsbSetup *s, bool *stalled)
 
 static bool uhci_pipe_add(UsbHc *hc, UsbPipe *p)
 {
+    if (p->xfer == 1) {
+        UIso *ui = kzalloc(sizeof(UIso));
+        if (!ui) return false;
+        ui->pages = 1;                    /* 128 packets in flight at most (usb.c) */
+        ui->td = UsbDmaAlloc(ui->pages);
+        if (!ui->td) { kfree(ui); return false; }
+        p->hcd = ui;
+        return true;
+    }
     /* Bulk: a TD per packet of the largest transfer (the pool grows when
      * the pipe's buffer is known); interrupt: one TD */
     UQueue *uq = queue_new(U(hc), p->xfer == 3 ? 2 : 1, p->xfer == 3 ? 4 : 64);
@@ -377,10 +520,23 @@ static bool uhci_listen(UsbHc *hc, UsbPipe *p)
     return true;
 }
 
-/* Interrupt IN transfers that finished */
+static void uhci_pipe_drop(UsbHc *hc, UsbPipe *p)
+{
+    Uhci *u = U(hc);
+    if (p->xfer == 1) { iso_free(u, p); return; }
+    UQueue *uq = p->hcd;
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    for (int k = 0; k < MAX_LISTEN; k++) if (u->listening[k] == p) u->listening[k] = NULL;
+    p->hcd = NULL;
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    queue_free(u, uq);
+}
+
+/* Interrupt IN and isochronous transfers that finished */
 static void uhci_poll(UsbHc *hc)
 {
     Uhci *u = U(hc);
+    iso_poll(u);
     for (int i = 0; i < MAX_LISTEN; i++) {
         UsbPipe *p = u->listening[i];
         if (!p || !p->cb || !p->hcd) continue;
@@ -416,13 +572,7 @@ static void uhci_dev_remove(UsbHc *hc, UsbDev *d)
     Uhci *u = U(hc);
     for (int i = 0; i < 32; i++) {
         UsbPipe *p = d->pipes[i];
-        if (!p || !p->hcd) continue;
-        UQueue *uq = p->hcd;
-        IrqState s = spin_lock_irqsave(&g_usb_lock);
-        for (int k = 0; k < MAX_LISTEN; k++) if (u->listening[k] == p) u->listening[k] = NULL;
-        p->hcd = NULL;
-        spin_unlock_irqrestore(&g_usb_lock, s);
-        queue_free(u, uq);
+        if (p && p->hcd) uhci_pipe_drop(hc, p);
     }
     UDev *ud = d->hcd;
     if (ud) {
@@ -512,6 +662,7 @@ static bool uhci_resume(UsbHc *hc)
 {
     Uhci *u = U(hc);
     for (int i = 0; i < MAX_LISTEN; i++) u->listening[i] = NULL;
+    for (int i = 0; i < MAX_ISO; i++) u->streaming[i] = NULL;
     return controller_program(u);
 }
 
@@ -520,10 +671,13 @@ static const UsbHcOps g_uhci_ops = {
     .port_status = uhci_port_status,
     .port_reset  = uhci_port_reset,
     .pipe_add    = uhci_pipe_add,
+    .pipe_drop   = uhci_pipe_drop,
     .dev_remove  = uhci_dev_remove,
     .control     = uhci_control,
     .bulk        = uhci_bulk,
     .listen      = uhci_listen,
+    .iso_start   = uhci_iso_start,
+    .iso_stop    = uhci_iso_stop,
     .pipe_reset  = uhci_pipe_reset,
     .poll        = uhci_poll,
     .resume      = uhci_resume,

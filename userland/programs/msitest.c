@@ -8,6 +8,9 @@
  *   msitest rollback      a package that fails half-way leaves nothing behind
  *   msitest service       installs an automatic service (started on install)
  *   msitest service-boot  after a restart: services.exe started it; uninstall
+ *   msitest script        JScript and VBScript custom actions (types 5, 6, 21,
+ *                         22, 37, 38, 53, 54) set properties, read them back
+ *                         and write files; a failing script fails the install
  *
  * and, as the packages' own program:
  *   msitest mark FILE     writes FILE (the rollback custom action)
@@ -15,6 +18,7 @@
  *                         the NovaMsiTestSvc service, appending to svc.txt
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 #include <winsvc.h>
@@ -36,6 +40,8 @@ __declspec(dllimport) int WINAPI MsiSetInternalUI(int level, HWND *phwnd);
 #define BASE      "{6E1D0C3A-5A1B-4C2D-8E3F-00000000B001}"
 #define RB        "{6E1D0C3A-5A1B-4C2D-8E3F-00000000F001}"
 #define SVC       "{6E1D0C3A-5A1B-4C2D-8E3F-000000005001}"
+#define SCRIPT    "{6E1D0C3A-5A1B-4C2D-8E3F-00000000C001}"
+#define SCRIPT_FAIL "{6E1D0C3A-5A1B-4C2D-8E3F-00000000C002}"
 #define SVC_NAME  "NovaMsiTestSvc"
 #define UNINSTALL "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
 #define MSIEXEC   "C:\\Windows\\System32\\msiexec.exe"
@@ -81,6 +87,25 @@ static const char *slurp(const char *path)
     buf[n] = 0;
     fclose(f);
     return buf;
+}
+
+/* does the file (a log, of any size) contain @text */
+static bool file_has(const char *path, const char *text)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)n + 1);
+    bool found = false;
+    if (buf) {
+        buf[fread(buf, 1, (size_t)n, f)] = 0;
+        found = strstr(buf, text) != NULL;
+        free(buf);
+    }
+    fclose(f);
+    return found;
 }
 
 static bool exists(const char *path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
@@ -268,6 +293,49 @@ static int t_service_boot(void)
     return done("service-boot");
 }
 
+static int t_script(void)
+{
+    static const char *outs[] = { "script-js.txt", "script-vbs.txt", "script-jsfile.txt", "script-vbsfile.txt" };
+    char path[MAX_PATH];
+    CreateDirectoryA("C:\\Tests\\MsiOut", NULL);
+    for (int i = 0; i < 4; i++) { snprintf(path, sizeof(path), OUT "%s", outs[i]); DeleteFileA(path); }
+    RegDeleteTreeA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NovaScriptShell");
+
+    CHECK_EQ(msiexec("/i " PKG "script.msi /qn /l*v " OUT "script.log"), 0);
+    /* properties the scripts set, as the Registry table wrote them */
+    CHECK(!strcmp(reg("SOFTWARE\\NovaScriptTest", "JsProp"), "from JScript"));               /* type 5 */
+    CHECK(!strcmp(reg("SOFTWARE\\NovaScriptTest", "VbsProp"), "from VBScript"));             /* type 6 */
+    CHECK(!strcmp(reg("SOFTWARE\\NovaScriptTest", "JsInline"), "from JScript!"));            /* type 37 */
+    CHECK(!strcmp(reg("SOFTWARE\\NovaScriptTest", "VbsInline"), "from VBScript!"));          /* type 38 */
+    CHECK(!strcmp(reg("SOFTWARE\\NovaScriptTest", "JsFromProperty"), "yes 1.0.0"));         /* type 53 */
+    CHECK(!strcmp(reg("SOFTWARE\\NovaScriptTest", "VbsFromProperty"), "yes 1.0.0"));        /* type 54 */
+    /* what they read back and wrote */
+    CHECK(!strcmp(slurp(OUT "script-js.txt"),
+                  "JS_PROP=from JScript\r\nProductName=Nova Script Test\r\n"
+                  "INSTALLDIR=C:\\Programs\\NovaScriptTest\\\r\nComplete=3\r\n"));
+    CHECK(!strcmp(slurp(OUT "script-vbs.txt"), "VBS_PROP=from VBScript\r\nProductName=NOVA SCRIPT TEST\r\nWords=3\r\n"));
+    CHECK(!strcmp(slurp(OUT "script-jsfile.txt"), "CustomActionData=from JScript!"));            /* type 21 */
+    CHECK(!strcmp(slurp(OUT "script-vbsfile.txt"),
+                  "CustomActionData=from VBScript! shell=from VBScript!"));                      /* type 22 */
+    CHECK(!strcmp(reg("SOFTWARE\\NovaScriptShell", "FromVbsFile"), "from VBScript!"));
+    CHECK(file_has(OUT "script.log", "JScript says: from JScript"));
+    CHECK(file_has(OUT "script.log", "VBScript says: from VBScript"));
+
+    CHECK_EQ(msiexec("/x " SCRIPT " /qn"), 0);
+    CHECK(!key_exists("SOFTWARE\\NovaScriptTest"));
+    CHECK(!key_exists(UNINSTALL SCRIPT));
+    RegDeleteTreeA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NovaScriptShell");
+
+    /* a script that fails fails the installation (the one marked "may
+     * fail" is ignored), and it is rolled back */
+    CHECK_EQ(msiexec("/i " PKG "scriptfail.msi /qn /l*v " OUT "scriptfail.log"), 1603);
+    CHECK(!key_exists(UNINSTALL SCRIPT_FAIL));
+    CHECK(!exists("C:\\Programs\\NovaScriptFail\\a.txt"));
+    CHECK(file_has(OUT "scriptfail.log", "This script fails on purpose"));
+    CHECK(file_has(OUT "scriptfail.log", "this failure is ignored"));
+    return done("script");
+}
+
 /* ------------------------------------------------------------------ */
 /* the service itself */
 
@@ -323,6 +391,7 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "rollback")) return t_rollback();
     if (!strcmp(cmd, "service")) return t_service();
     if (!strcmp(cmd, "service-boot")) return t_service_boot();
-    printf("usage: msitest transform | patch | rollback | service | service-boot\n");
+    if (!strcmp(cmd, "script")) return t_script();
+    printf("usage: msitest transform | patch | rollback | service | service-boot | script\n");
     return 2;
 }

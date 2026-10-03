@@ -32,10 +32,9 @@ loader semantics, and the drivers they expect.
 The details of each phase are in [HISTORY.md](HISTORY.md).
 
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
-NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound has
-no MIDI, DirectSound or XAudio2 yet; file
-ACLs are kept only when drive C: is on NTFS (the installer's default); and most of the App Store's catalog (Qt, GTK and
-multimedia programs) does not run yet.
+NovaOS's own clean-room code); there is no GPU (3D runs on the CPU); file
+ACLs are kept only when drive C: is on NTFS (the installer's default); and most of the App Store's catalog (multimedia programs, Qt ones beyond
+KeePassXC, and GTK ones beyond an older Inkscape) does not run yet.
 
 ---
 
@@ -106,17 +105,24 @@ named program or test demonstrates it.
 ### Application coverage
 <!-- BEGIN generated:next-apps -->
 
-- Bring the App Store catalog up program by program, starting with the
-  "untested" portable ones (Notepad++, SumatraPDF, PuTTY, WinMerge), then
-  the Qt and GTK applications (KeePassXC, Krita, Inkscape), then Firefox.
-- Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the
-  `IFileDialog` interfaces (today they report "cancelled").
+- Bring the App Store catalog up program by program: ~~the "untested"
+  portable ones (Notepad++, SumatraPDF, PuTTY, WinMerge)~~ Done (Phase
+  20.2, in the nightly corpus); the Qt applications: ~~KeePassXC~~ Done
+  (Phase 20.3, unlocks a database in the nightly corpus; see
+  [Qt programs](HISTORY.md#qt-programs-keepassxc)), Krita next; the
+  GTK ones: ~~Inkscape~~ Done (Phase 20.4, Inkscape 0.91, the GTK 2 build
+  from conda-forge, opens a new document in the nightly corpus; see
+  [GTK programs](HISTORY.md#gtk-programs-inkscape)); then Firefox.
+- ~~Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the
+  `IFileDialog` interfaces~~ Done (Phase 20.1, `dlgtest`); see
+  [Phase 20](HISTORY.md#phase-20-common-dialogs-and-portable-programs).
 - ~~Windows Installer: custom actions that run code, the packages' own
   dialogs (`InstallUISequence`), the `Shortcut` table, services, merge
   modules; LZX cabinets tested against real packages~~ Done; see
   [Windows Installer depth](HISTORY.md#windows-installer-depth-custom-actions-dialogs-shortcuts-services).
-  Still to come: rollback, script custom actions, patches and transforms,
-  services that start at boot.
+  Rollback, transforms, patches and services at boot followed in
+  [Windows Installer rollback, transforms, patches](HISTORY.md#windows-installer-rollback-transforms-patches-services-at-boot).
+  Still to come: script custom actions (VBScript, JScript).
 - ~~COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception
   tables~~ Done; see [Type libraries and FH4](HISTORY.md#com-type-libraries-and-fh4-c-exceptions).
 - ~~.NET globalization through ICU, not only NLS for English and invariant
@@ -126,8 +132,9 @@ named program or test demonstrates it.
 - Firefox (tested with Floorp): the browser window opens and draws
   through its GPU process, and its sandboxed child processes start; see
   [Firefox](HISTORY.md#firefox-floorp), and it loads and shows web pages
-  over HTTP.  Still open: HTTPS, scrolling and typing into forms,
-  `nssckbi.dll`.
+  over HTTP; it completes TLS handshakes for HTTPS, scrolls and takes
+  typing in forms.  Still open: a page from a publicly trusted HTTPS
+  site (the test network has no internet).
 
 <!-- END generated:next-apps -->
 
@@ -166,6 +173,9 @@ named program or test demonstrates it.
   language and kept in the registry across restarts (`nlstest`).
 - .NET: an unhandled managed exception prints "Stack overflow." instead of
   the exception and its stack trace (with NLS as well as ICU).
+- ~~Scheduler: a thread woken by a timer preempts the running thread
+  instead of waiting up to a 20 ms time slice~~ Done (`sleeptest timer`
+  holds the timer queue case to 1 ms under load).
 
 <!-- END generated:next-kernel -->
 

@@ -5,7 +5,9 @@
  * every AHCI controller becomes a block device (block.h).  Commands are
  * issued one at a time on slot 0 and completed by polling, so no
  * interrupt routing is needed; transfers go through a physically
- * contiguous bounce buffer, so callers may pass any buffer.
+ * contiguous bounce buffer, so callers may pass any buffer.  Each disk
+ * has its own lock (AhciDisk.busy), so callers need not hold the big
+ * kernel lock (saving drive C: writes without it, fs/persist.c).
  */
 
 #include "ahci.h"
@@ -14,6 +16,7 @@
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
+#include "../ke/scheduler.h"
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/apic.h"
 
@@ -87,6 +90,7 @@ typedef struct {
     UINT8            *fis;               /* received FIS area (256 B aligned) */
     CmdTable         *ct;                /* command table for slot 0 */
     UINT8            *bounce;            /* BOUNCE_SECTORS * 512 bytes */
+    volatile int      busy;              /* a command is in flight (the port and bounce buffer are taken) */
 } AhciDisk;
 
 static AhciDisk g_disks[MAX_DISKS];
@@ -120,7 +124,17 @@ static void port_start(AhciDisk *d)
     pwr32(d, PX_CMD, prd32(d, PX_CMD) | CMD_ST);
 }
 
-/* Issue one command on slot 0 and poll for completion.  @bytes of data
+/* The disk's lock: one transfer at a time, whatever the caller holds */
+static void take(volatile int *f)
+{
+    while (__atomic_exchange_n(f, 1, __ATOMIC_ACQUIRE)) {
+        if (interrupts_enabled()) sched_yield();
+        else pause_cpu();
+    }
+}
+static void drop(volatile int *f) { __atomic_store_n(f, 0, __ATOMIC_RELEASE); }
+
+/* Issue one command on slot 0 and poll for completion (the disk taken).  @bytes of data
  * move between the device and the bounce buffer. */
 static bool issue(AhciDisk *d, UINT8 cmd, UINT64 lba, UINT32 count, UINT32 bytes, bool write)
 {
@@ -181,15 +195,18 @@ static bool ahci_read(BlockDev *bd, UINT64 lba, UINT32 count, void *buf)
     AhciDisk *d = bd->ctx;
     if (lba + count > bd->sectors) return false;
     UINT8 *out = buf;
-    while (count) {
+    bool ok = true;
+    take(&d->busy);
+    while (count && ok) {
         UINT32 n = count > BOUNCE_SECTORS ? BOUNCE_SECTORS : count;
-        if (!issue(d, ATA_READ_DMA_EXT, lba, n, n * BLOCK_SECTOR, false)) return false;
-        memcpy(out, d->bounce, n * BLOCK_SECTOR);
+        ok = issue(d, ATA_READ_DMA_EXT, lba, n, n * BLOCK_SECTOR, false);
+        if (ok) memcpy(out, d->bounce, n * BLOCK_SECTOR);
         out += n * BLOCK_SECTOR;
         lba += n;
         count -= n;
     }
-    return true;
+    drop(&d->busy);
+    return ok;
 }
 
 static bool ahci_write(BlockDev *bd, UINT64 lba, UINT32 count, const void *buf)
@@ -197,20 +214,27 @@ static bool ahci_write(BlockDev *bd, UINT64 lba, UINT32 count, const void *buf)
     AhciDisk *d = bd->ctx;
     if (lba + count > bd->sectors) return false;
     const UINT8 *in = buf;
-    while (count) {
+    bool ok = true;
+    take(&d->busy);
+    while (count && ok) {
         UINT32 n = count > BOUNCE_SECTORS ? BOUNCE_SECTORS : count;
         memcpy(d->bounce, in, n * BLOCK_SECTOR);
-        if (!issue(d, ATA_WRITE_DMA_EXT, lba, n, n * BLOCK_SECTOR, true)) return false;
+        ok = issue(d, ATA_WRITE_DMA_EXT, lba, n, n * BLOCK_SECTOR, true);
         in += n * BLOCK_SECTOR;
         lba += n;
         count -= n;
     }
-    return true;
+    drop(&d->busy);
+    return ok;
 }
 
 static bool ahci_flush(BlockDev *bd)
 {
-    return issue(bd->ctx, ATA_FLUSH_CACHE_EXT, 0, 0, 0, false);
+    AhciDisk *d = bd->ctx;
+    take(&d->busy);
+    bool ok = issue(d, ATA_FLUSH_CACHE_EXT, 0, 0, 0, false);
+    drop(&d->busy);
+    return ok;
 }
 
 /* Point the port at its command list and FIS area and start it */

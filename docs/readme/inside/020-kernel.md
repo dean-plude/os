@@ -6,4 +6,6 @@
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.  Timers are the local APIC's, one-shot or TSC-deadline and
   calibrated against the HPET, so `Sleep(1)`, wait timeouts and waitable
-  timers end within a fraction of a millisecond even with every CPU busy.
+  timers end within a fraction of a millisecond even with every CPU busy;
+  a thread woken by a timer preempts the running one instead of waiting
+  for its time slice to end.

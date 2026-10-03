@@ -849,10 +849,12 @@ static bool known_dll(const char *name)
  * path without an extension gets ".dll", as LoadLibrary adds it) */
 static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
 {
-    if (strchr(name, '\\') || strchr(name, ':')) {
+    if (strchr(name, '\\') || strchr(name, '/') || strchr(name, ':')) {
         char path[RAMFS_PATH_MAX];
         strncpy(path, name, sizeof(path) - 5);
         path[sizeof(path) - 5] = '\0';
+        for (char *c = path; *c; c++)       /* GTK's module caches use forward slashes */
+            if (*c == '/') *c = '\\';
         um_wow_path(p, path);
         const char *leaf = strrchr(path, '\\');
         if (!strchr(leaf ? leaf : path, '.')) strcat(path, ".dll");
@@ -1334,9 +1336,10 @@ const UmModule *um_module_at(UmProcess *p, UINT64 va)
  * The loader-info page read by ntdll (see NOVA_LDR_INFO in winternl.h):
  *   UINT32 count, UINT32 reserved, then per module in initialization
  *   order: UINT64 base, size; UINT32 entry_rva, flags (1 = DLL);
- *   char name[64], path[96]  (256 entries fit the 48 KiB area)
+ *   char name[64], path[96]  (UM_MAX_MODULES entries fit the 188 KiB area)
  * ----------------------------------------------------------------------- */
 #define LDR_ENTRY_SIZE 184
+_Static_assert(8 + UM_MAX_MODULES * LDR_ENTRY_SIZE <= UM_LDR_INFO_SIZE, "loader info area too small");
 
 static bool write_ldr_info(UmProcess *p, int from)
 {

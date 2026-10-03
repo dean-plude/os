@@ -2,23 +2,27 @@
  * Windows Runtime strings (HSTRING) and activation, the part of combase
  * (api-ms-win-core-winrt-*) Win32 programs touch: they make HSTRINGs to
  * name runtime classes, and ask for activation factories, which NovaOS
- * has none of (REGDB_E_CLASSNOTREG, as for a class Windows lacks).
+ * has few of (winrt_classes.c; others give REGDB_E_CLASSNOTREG, as for a
+ * class Windows lacks).
  */
 #define NOVA_BUILD_OLE32
 #include <objbase.h>
 
 typedef struct HSTRING_ *HSTRING;
-/* An HSTRING is one of these; a reference string lives in the caller's
- * HSTRING_HEADER (24 bytes on x64, 20 on x86), a heap one is followed by
- * its characters */
+/* An HSTRING is one of these, laid out as Windows lays them out: C++/WinRT
+ * builds HSTRINGs itself (reference ones, and heap ones with the count
+ * after the header and the characters after that, from the process heap)
+ * and hands them to these functions.  A reference string lives in the
+ * caller's HSTRING_HEADER (24 bytes on x64, 20 on x86), without a count. */
 typedef struct {
     UINT32 flags;                       /* 1: a reference (not owned) */
     UINT32 length;
+    UINT32 pad1, pad2;
     const WCHAR *chars;
-    LONG refs;
+    LONG refs;                          /* heap strings only */
 } HStr;
 typedef struct { BYTE b[sizeof(void *) == 8 ? 24 : 20]; } HSTRING_HEADER;
-_Static_assert(sizeof(HStr) <= sizeof(HSTRING_HEADER), "HSTRING_HEADER holds a reference string");
+_Static_assert(__builtin_offsetof(HStr, refs) == sizeof(HSTRING_HEADER), "HSTRING_HEADER holds a reference string");
 
 #define HSTR_REF 1
 #define E_STRING_NOT_NULL_TERMINATED ((HRESULT)0x80000017L)
@@ -36,6 +40,7 @@ WINOLEAPI_(HRESULT) WindowsCreateString(const WCHAR *src, UINT32 len, HSTRING *o
     c[len] = 0;
     s->flags = 0;
     s->length = len;
+    s->pad1 = s->pad2 = 0;
     s->chars = c;
     s->refs = 1;
     *out = (HSTRING)s;
@@ -52,8 +57,8 @@ WINOLEAPI_(HRESULT) WindowsCreateStringReference(const WCHAR *src, UINT32 len, H
     HStr *s = (HStr *)hdr;
     s->flags = HSTR_REF;
     s->length = len;
+    s->pad1 = s->pad2 = 0;
     s->chars = src;
-    s->refs = 0;
     *out = (HSTRING)s;
     return S_OK;
 }
@@ -119,13 +124,23 @@ WINOLEAPI_(HRESULT) WindowsConcatString(HSTRING a, HSTRING b, HSTRING *out)
     return hr;
 }
 
-/* Activation: no runtime classes are installed */
+/* Activation: only the classes in winrt_classes.c */
+HRESULT ole32_winrt_factory(const WCHAR *name, UINT32 len, REFIID iid, void **out);
 WINOLEAPI_(HRESULT) RoInitialize(int type) { return CoInitializeEx(0, type == 0 ? COINIT_APARTMENTTHREADED : COINIT_MULTITHREADED); }
 WINOLEAPI_(void) RoUninitialize(void) { CoUninitialize(); }
-WINOLEAPI_(HRESULT) RoGetActivationFactory(HSTRING cls, REFIID iid, void **f) { (void)cls; (void)iid; if (f) *f = 0; return REGDB_E_CLASSNOTREG; }
+WINOLEAPI_(HRESULT) RoGetActivationFactory(HSTRING cls, REFIID iid, void **f)
+{
+    if (!f) return E_POINTER;
+    UINT32 len;
+    const WCHAR *name = WindowsGetStringRawBuffer(cls, &len);
+    return ole32_winrt_factory(name, len, iid, f);
+}
 WINOLEAPI_(HRESULT) RoActivateInstance(HSTRING cls, void **inst) { (void)cls; if (inst) *inst = 0; return REGDB_E_CLASSNOTREG; }
 WINOLEAPI_(BOOL) RoOriginateErrorW(HRESULT hr, UINT32 len, const WCHAR *msg) { (void)hr; (void)len; (void)msg; return FALSE; }
 WINOLEAPI_(BOOL) RoOriginateError(HRESULT hr, HSTRING msg) { (void)hr; (void)msg; return FALSE; }
+/* C++/WinRT's hresult_error reports through this before it throws; there is
+ * no debugger to tell, so the error is only thrown (FALSE: not reported) */
+WINOLEAPI_(BOOL) RoOriginateLanguageException(HRESULT hr, HSTRING msg, IUnknown *e) { (void)hr; (void)msg; (void)e; return FALSE; }
 
 /* Agile references: every object here can be used from any thread, so
  * the reference holds the object and Resolve is a QueryInterface */

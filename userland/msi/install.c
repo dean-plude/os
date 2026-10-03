@@ -2518,6 +2518,75 @@ static UINT run_dll(Inst *in, const WCHAR *dll, const char *entry)
     return (UINT)r;
 }
 
+/* Script actions (JScript 5/21/37/53, VBScript 6/22/38/54) run in this
+ * process on msiscript.dll, as Windows runs them in-process with its
+ * script engines; the script reaches the session through the msi.dll API */
+typedef UINT (WINAPI *RunScriptFn)(unsigned long session, int vbscript, const char *src, unsigned len, const char *entry,
+                                   void (*log)(void *, const char *), void *ctx);
+
+static void script_log(void *ctx, const char *text) { logf((Inst *)ctx, "%s", text); }
+
+static UINT run_script(Inst *in, const char *name, int kind, const char *source, const char *target)
+{
+    bool vbs = (kind & 7) == 6;
+    const char *lang = vbs ? "VBScript" : "JScript";
+    void *data = NULL;
+    size_t size = 0;
+    const char *entry = target;
+    switch (kind & 0x30) {
+    case 0x00: {                               /* in the Binary table */
+        char sname[128];
+        snprintf(sname, sizeof(sname), "Binary.%s", source);
+        data = msidb_read_stream(&in->db, sname, &size);
+        if (!data) { logf(in, "Custom action %s: Binary %s is missing", name, source); return ERROR_INSTALL_FAILURE; }
+        logf(in, "Custom action %s: %s %s in Binary %s", name, lang, entry, source);
+        break;
+    }
+    case 0x10: {                               /* a file the package installs */
+        char path[MAX_PATH * 2];
+        WCHAR wpath[MAX_PATH];
+        file_path(in, source, path, sizeof(path));
+        to_w(path, wpath, MAX_PATH);
+        HANDLE h = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD n = GetFileSize(h, NULL), got = 0;
+            data = malloc((size_t)n + 1);
+            if (data && ReadFile(h, data, n, &got, NULL)) size = got;
+            else { free(data); data = NULL; }
+            CloseHandle(h);
+        }
+        if (!data) { logf(in, "Custom action %s: cannot read %s", name, path); return ERROR_INSTALL_FAILURE; }
+        logf(in, "Custom action %s: %s %s in %s", name, lang, entry, path);
+        break;
+    }
+    case 0x20:                                 /* the text is the Target */
+        data = strdup(target);
+        size = strlen(target);
+        entry = "";
+        logf(in, "Custom action %s: %s text", name, lang);
+        break;
+    default:                                   /* the text is a property's value */
+        data = strdup(get_prop(in, source));
+        size = strlen(data);
+        logf(in, "Custom action %s: %s %s in property %s", name, lang, entry, source);
+        break;
+    }
+    HMODULE engine = LoadLibraryW(L"msiscript.dll");
+    RunScriptFn run = engine ? (RunScriptFn)(void *)GetProcAddress(engine, "NovaRunScript") : NULL;
+    if (!run) {
+        logf(in, "Custom action %s: no script engine (msiscript.dll)", name);
+        free(data);
+        return ERROR_INSTALL_FAILURE;
+    }
+    unsigned mark = api_handle_mark();
+    unsigned long session = api_session_handle(in);
+    UINT r = run(session, vbs, data, (unsigned)size, entry, script_log, in);
+    api_close_handles_since(mark);
+    free(data);
+    logf(in, "Custom action %s: the script returned %u", name, r);
+    return r;
+}
+
 static bool run_custom_action(Inst *in, const char *name)
 {
     MsiTable *t = msidb_table(&in->db, "CustomAction");
@@ -2631,8 +2700,7 @@ static bool run_custom_action(Inst *in, const char *name)
         break;
     }
     case 5: case 6: case 21: case 22: case 37: case 38: case 53: case 54:
-        logf(in, "Custom action %s is a %s script: NovaOS has no script engine, skipped", name,
-             (kind & 7) == 5 ? "JScript" : "VBScript");
+        result = run_script(in, name, kind, source, raw_target);
         break;
     default:
         logf(in, "Custom action %s (type %d) skipped: nested installations are not supported", name, type);

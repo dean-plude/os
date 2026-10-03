@@ -15,7 +15,10 @@ C: and D: (an empty NTFS disk made with mkntfs, from the ntfs-3g package)
 must name each drive and give its own free space, and File Explorer's This
 PC must list both drives.  The windowed programs (App(gui=True)) run last,
 one at a time (each takes the keyboard): SumatraPDF opens a PDF, WinMerge
-compares two files, Notepad++ opens a file and PuTTY makes a raw connection
+compares two files, KeePassXC unlocks a password database, Firefox is
+installed by the App Store from Mozilla's installer and loads a page from
+an HTTPS server this script runs on the host, Notepad++ opens a file and
+PuTTY makes a raw connection
 to an echo server this script runs on the host (10.0.2.2 on QEMU's user
 network) and types a line, which the server must receive.  Each one's
 screenshot (and This PC's) must match tests/reference/NAME.png
@@ -31,11 +34,11 @@ The exit status is the number of programs that failed.  --summary appends
 a Markdown pass/fail table, one row per program (the nightly workflow,
 .github/workflows/nightly.yml, posts it).
 """
-import argparse, math, os, re, shutil, socket, struct, subprocess, sys, tempfile, threading, time, zipfile
+import argparse, http.server, math, os, re, shutil, socket, ssl, struct, subprocess, sys, tempfile, threading, time, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from novarun import Nova, ROOT
-from selftest import Test, verdict, PANIC, REC_HZ
+from selftest import Test, verdict, store_verdict, PANIC, REC_HZ
 import wavcheck
 
 REFERENCES = os.path.join(ROOT, 'tests', 'reference')
@@ -43,6 +46,9 @@ DRIVE_LABEL = 'NOVACORPUS'
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
 SAMPLE = 'NovaOS app corpus\na needle in a haystack\nthe end\n'
 ECHO_PORT = 2323                    # the echo server PuTTY connects to (on the host)
+HTTPS_PORT = 8443                   # the HTTPS server Firefox loads a page from (on the host)
+STORE_C = os.path.join(ROOT, 'kernel', 'apps', 'store.c')
+SEVENZIP = 'https://github.com/ip7z/7zip/releases/download/26.03/7z2603-x64.exe'   # unpacks App Store archives
 
 
 class App:
@@ -55,14 +61,30 @@ class App:
     screenshot (typing into it) and returns why it failed, or None.  A
     windowed program's tests whose command does not start a program run in
     the Terminal after its window closed.  @net gives NovaOS QEMU's user
-    network and starts the echo server.  @mic: the program hears a tone of
-    REC_HZ (523 Hz) on the microphone; @sound=(hz, ms): it must play a tone
-    of @hz for @ms, checked in the sound NovaOS played once the run ends."""
+    network and starts the echo server; @https also starts the HTTPS
+    server (https://10.0.2.2:8443/ in NovaOS) and sets app.ca to its CA
+    certificate's file before @unpack runs.  @mic: the program hears a tone
+    of REC_HZ (523 Hz) on the microphone; @sound=(hz, ms): it must play a
+    tone of @hz for @ms, checked in the sound NovaOS played once the run
+    ends.
+
+    @store: the program's name in the App Store's catalog
+    (kernel/apps/store.c), whose download @url must be.  The download is
+    put in C:\\Downloads under the catalog's file name and 7-Zip in
+    C:\\Programs\\7-Zip, so a test with Test(store=NAME) installs it with
+    the Store's own button and no network; @unpack (a function) then gets
+    the folder that becomes C:\\Programs, for settings the program reads.
+    @processes: a windowed program of many processes of one executable
+    (Firefox: a launcher that exits once the browser is up, child
+    processes the browser ends itself), so only a crash fails it before
+    the screenshot."""
     def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=(),
-                 gui=False, net=False, interact=None, mic=False, sound=None):
+                 gui=False, net=False, interact=None, https=False, store=None, processes=False,
+                 mic=False, sound=None):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
         self.unpack, self.strip, self.extra = unpack, strip, list(extra)
         self.gui, self.net, self.interact = gui, net, interact
+        self.https, self.store, self.ca, self.processes = https, store, None, processes
         self.mic, self.sound = mic, sound
 
 
@@ -79,7 +101,7 @@ def load_apps():
     apps = []
     for f in sorted(glob.glob(os.path.join(ROOT, 'tests', 'appcorpus', '*.py'))):
         ns = {'App': App, 'Test': Test, 'A': A, 'DRIVE_LABEL': DRIVE_LABEL, 'ROOT': ROOT, 'ECHO_PORT': ECHO_PORT,
-              '__file__': f}
+              'HTTPS_PORT': HTTPS_PORT, '__file__': f}
         exec(compile(open(f).read(), f, 'exec'), ns)
         if not isinstance(ns.get('APP'), App):
             sys.exit(f'{f}: APP must be an App')
@@ -127,6 +149,81 @@ def stage(app, archive, dest):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with z.open(m) as src, open(path, 'wb') as out:
                 shutil.copyfileobj(src, out)
+
+
+def catalog_file(app):
+    """The file name the App Store saves @app.store's download as; its
+    catalog entry must have @app.url as the download"""
+    m = re.search(r'\{ "' + re.escape(app.store) + r'", "[^"]*", "[^"]*",\s*CAT_\w+, (GH )?"([^"]+)", "([^"]+)"',
+                  open(STORE_C).read())
+    if not m or ('https://github.com/' if m.group(1) else '') + m.group(2) != app.url:
+        raise RuntimeError(f'the App Store has no "{app.store}" downloading {app.url}')
+    return m.group(3)
+
+
+def stage_store(app, files, work):
+    """@app's download in Downloads (C:\\Downloads) and 7-Zip in
+    Programs\\7-Zip, so the Store can install it without a network"""
+    downloads, programs = os.path.join(work, 'Downloads'), os.path.join(work, 'Programs')
+    os.makedirs(downloads, exist_ok=True)
+    shutil.copy(files[0], os.path.join(downloads, catalog_file(app)))
+    if not os.path.exists(os.path.join(programs, '7-Zip')):
+        subprocess.run(['7z', 'x', '-y', '-o' + os.path.join(programs, '7-Zip'), files[-1]],
+                       check=True, stdout=subprocess.DEVNULL)
+    if callable(app.unpack):
+        app.unpack(app, files[:-1], programs)
+
+
+class HttpsServer:
+    """What Firefox loads: a page over HTTPS, with a certificate for
+    10.0.2.2 from a test CA made for this run (openssl); .ca is the CA's
+    certificate (PEM) and .requests the paths asked for"""
+    PAGE = ('<!DOCTYPE html>\n<html><head><meta charset="utf-8"><title>NovaOS app corpus</title></head>\n'
+            '<body style="font-family: sans-serif; background: #f4f6fb">\n'
+            '<h1 style="color: #2a5db0">Hello from NovaOS</h1>\n'
+            "<p>This page came over <b>HTTPS</b> from the app corpus's test server.</p>\n"
+            '<ul><li>a needle in a haystack</li><li>the end</li></ul>\n</body></html>\n')
+
+    def __init__(self, work, port=HTTPS_PORT):
+        d = os.path.join(work, 'pki')
+        os.makedirs(d)
+        self.ca, key, csr, cert = (os.path.join(d, n) for n in ('ca.pem', 'ca.key', 'srv.csr', 'srv.pem'))
+        skey, ext = os.path.join(d, 'srv.key'), os.path.join(d, 'ext')
+        ssl_cmd = lambda *a: subprocess.run(['openssl', *a], check=True, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL)
+        ssl_cmd('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', self.ca, '-days', '30',
+                '-subj', '/CN=NovaOS app corpus test CA', '-addext', 'basicConstraints=critical,CA:TRUE',
+                '-addext', 'keyUsage=critical,keyCertSign,cRLSign')
+        ssl_cmd('req', '-newkey', 'rsa:2048', '-nodes', '-keyout', skey, '-out', csr, '-subj', '/CN=10.0.2.2')
+        with open(ext, 'w') as f:
+            f.write('subjectAltName=IP:10.0.2.2\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n')
+        ssl_cmd('x509', '-req', '-in', csr, '-CA', self.ca, '-CAkey', key, '-CAcreateserial', '-out', cert,
+                '-days', '30', '-extfile', ext)
+        self.requests = []
+        server = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                server.requests.append(self.path)
+                body = (server.PAGE if self.path == '/' else 'not found\n').encode()
+                self.send_response(200 if self.path == '/' else 404)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.httpd = http.server.ThreadingHTTPServer(('0.0.0.0', port), Handler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, skey)
+        self.httpd.socket = ctx.wrap_socket(self.httpd.socket, server_side=True)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
 
 
 def make_pdf(path, lines):
@@ -269,9 +366,13 @@ def main():
     apps_dir = os.path.join(work, 'Apps')
     results = {}                    # app name -> (why it failed or None, seconds, [(test, why)])
     staged = []
+    https = HttpsServer(work) if any(x.https for x in apps) else None
     for app in apps:
+        app.ca = https and https.ca
         try:
-            if callable(app.unpack):
+            if app.store:
+                stage_store(app, [fetch(u, a.cache) for u in [app.url] + app.extra + [SEVENZIP]], work)
+            elif callable(app.unpack):
                 app.unpack(app, [fetch(u, a.cache) for u in [app.url] + app.extra],
                            os.path.join(apps_dir, app.dir))
             else:
@@ -294,11 +395,13 @@ def main():
                 results[app.name] = (SKIPPED + ': pulseaudio is not installed', 0, [])
                 print(f'SKIP  {app.name:10s} {results[app.name][0]}', flush=True)
             staged = [x for x in staged if not (x.mic or x.sound)]
+    puts = [(apps_dir, A)] + [(os.path.join(work, d), 'C:\\' + d) for d in ('Downloads', 'Programs')
+                              if os.path.isdir(os.path.join(work, d))]
     t_boot = time.time()
     try:
-        nova = Nova(a.img, os.path.join(work, 'boot'), [(apps_dir, A)], mem=4096, data_mb=2048,
-                    extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [], net=echo is not None,
-                    rec=rec, wav=wav)
+        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=4096, data_mb=2048,
+                    extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [],
+                    net=echo is not None or https is not None, rec=rec, wav=wav)
     except RuntimeError as e:
         print(e)
         for app in staged:
@@ -316,7 +419,10 @@ def main():
             t0, steps, why = time.time(), [], None
             for t in app.tests:
                 ts = time.time()
-                if app.gui and t.cmd.startswith('start '):
+                if t.store:
+                    out, _ = nova.run(t.cmd, 30)
+                    w, out = store_verdict(nova, t, out)
+                elif app.gui and t.cmd.startswith('start '):
                     out, w = gui(nova, t, a, app, echo, close=app is not staged[-1] or len(app.tests) > 1)
                 elif app.name == 'NovaOS':
                     out, w = screen(nova, t, a, ntfs)
@@ -342,6 +448,8 @@ def main():
         nova.close()
         if echo:
             echo.close()
+        if https:
+            https.close()
         with open(os.path.join(a.out, 'serial.log'), 'w') as f:
             f.write(log + nova.sr.read_new())
         shutil.rmtree(work, ignore_errors=True)
@@ -381,12 +489,13 @@ def gui(nova, t, a, app, echo, close):
     closes the window after it (Alt+F4) so the next program gets the
     keyboard"""
     out, ok = nova.run(t.cmd, 30)
-    exe = re.escape(re.split(r'[\\/]', t.cmd.split()[1])[-1])
+    exe = re.escape(re.search(r'([^\\/" ]+\.exe)', t.cmd, re.I).group(1))   # paths may be quoted
     m = None
     for _ in range(t.timeout):
         time.sleep(1)
         out += nova.sr.read_new()
-        m = re.search(rf'\[UM\] {exe} \(PID \d+\) (exited|crashed|terminated)[^\n]*', out, re.I)
+        ends = 'crashed' if app.processes else '(exited|crashed|terminated)'
+        m = re.search(rf'\[UM\] {exe} \(PID \d+\) {ends}[^\n]*', out, re.I)
         if m:
             break
     if m:

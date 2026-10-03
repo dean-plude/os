@@ -113,45 +113,9 @@ MMAPI MMRESULT WINAPI timeKillEvent(UINT id)
     return TIMERR_NOERROR;
 }
 
-/* ---- audio: playback is wave.c, recording wavein.c; no MIDI or mixer devices ---- */
-MMAPI UINT WINAPI midiOutGetNumDevs(void) { return 0; }
-MMAPI UINT WINAPI midiInGetNumDevs(void)  { return 0; }
+/* ---- audio: playback is wave.c, recording wavein.c, MIDI and MCI midi.c; no mixer devices ---- */
 MMAPI UINT WINAPI mixerGetNumDevs(void)   { return 0; }
 MMAPI UINT WINAPI auxGetNumDevs(void)     { return 0; }
-MMAPI MMRESULT WINAPI midiOutOpen(HANDLE *h, UINT dev, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
-{ (void)dev; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
-/* MIDI: no ports to open, so every handle is invalid */
-MMAPI MMRESULT WINAPI midiInOpen(HANDLE *h, UINT dev, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
-{ (void)dev; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
-MMAPI MMRESULT WINAPI midiInGetDevCapsW(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
-MMAPI MMRESULT WINAPI midiOutGetDevCapsW(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
-MMAPI MMRESULT WINAPI midiInGetDevCapsA(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
-MMAPI MMRESULT WINAPI midiOutGetDevCapsA(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
-static MMRESULT no_midi(void) { return 5; }                /* MMSYSERR_INVALHANDLE */
-MMAPI MMRESULT WINAPI midiStreamOpen(HANDLE *h, UINT *dev, DWORD n, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
-{ (void)dev; (void)n; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
-MMAPI MMRESULT WINAPI midiStreamClose(HANDLE h) { (void)h; return no_midi(); }
-MMAPI MMRESULT WINAPI midiStreamOut(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
-MMAPI MMRESULT WINAPI midiStreamPosition(HANDLE h, void *t, UINT n) { (void)h; (void)t; (void)n; return no_midi(); }
-MMAPI MMRESULT WINAPI midiStreamProperty(HANDLE h, LPBYTE prop, DWORD flags) { (void)h; (void)prop; (void)flags; return no_midi(); }
-MMAPI MMRESULT WINAPI midiStreamRestart(HANDLE h) { (void)h; return no_midi(); }
-MMAPI MMRESULT WINAPI midiStreamStop(HANDLE h) { (void)h; return no_midi(); }
-MMAPI MMRESULT WINAPI midiStreamPause(HANDLE h) { (void)h; return no_midi(); }
-MMAPI MMRESULT WINAPI midiInClose(HANDLE h) { (void)h; return no_midi(); }
-MMAPI MMRESULT WINAPI midiInStart(HANDLE h) { (void)h; return no_midi(); }
-MMAPI MMRESULT WINAPI midiInStop(HANDLE h) { (void)h; return no_midi(); }
-MMAPI MMRESULT WINAPI midiInReset(HANDLE h) { (void)h; return no_midi(); }
-MMAPI MMRESULT WINAPI midiInAddBuffer(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
-MMAPI MMRESULT WINAPI midiInPrepareHeader(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
-MMAPI MMRESULT WINAPI midiInUnprepareHeader(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
-MMAPI MMRESULT WINAPI midiInMessage(HANDLE h, UINT msg, DWORD_PTR a, DWORD_PTR b) { (void)h; (void)msg; (void)a; (void)b; return no_midi(); }
-MMAPI MMRESULT WINAPI midiOutClose(HANDLE h) { (void)h; return no_midi(); }
-MMAPI MMRESULT WINAPI midiOutReset(HANDLE h) { (void)h; return no_midi(); }
-MMAPI MMRESULT WINAPI midiOutShortMsg(HANDLE h, DWORD m) { (void)h; (void)m; return no_midi(); }
-MMAPI MMRESULT WINAPI midiOutLongMsg(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
-MMAPI MMRESULT WINAPI midiOutPrepareHeader(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
-MMAPI MMRESULT WINAPI midiOutUnprepareHeader(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
-MMAPI MMRESULT WINAPI midiOutMessage(HANDLE h, UINT msg, DWORD_PTR a, DWORD_PTR b) { (void)h; (void)msg; (void)a; (void)b; return no_midi(); }
 
 MMAPI MMRESULT WINAPI midiInGetErrorTextW(MMRESULT e, LPWSTR buf, UINT n)
 {
@@ -167,8 +131,6 @@ MMAPI MMRESULT WINAPI midiInGetErrorTextA(MMRESULT e, LPSTR buf, UINT n)
     lstrcpynA(buf, e == 0 ? "The specified command was carried out." : e == 2 ? "The specified device ID is out of range." : "There is no MIDI device.", (int)n);
     return MMSYSERR_NOERROR;
 }
-MMAPI MMRESULT WINAPI midiOutGetErrorTextW(MMRESULT e, LPWSTR buf, UINT n) { return midiInGetErrorTextW(e, buf, n); }
-MMAPI MMRESULT WINAPI midiOutGetErrorTextA(MMRESULT e, LPSTR buf, UINT n) { return midiInGetErrorTextA(e, buf, n); }
 
 /* ---- mixers: none (the endpoint volume is mmdevapi's) ---- */
 MMAPI MMRESULT WINAPI mixerOpen(HANDLE *h, UINT id, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
@@ -200,25 +162,4 @@ MMAPI MMRESULT WINAPI joyGetPosEx(UINT id, void *info) { (void)id; (void)info; r
 MMAPI MMRESULT WINAPI joyGetPos(UINT id, void *info) { (void)id; (void)info; return JOYERR_UNPLUGGED; }
 MMAPI MMRESULT WINAPI joyGetDevCapsW(UINT_PTR id, void *caps, UINT n) { (void)id; (void)caps; (void)n; return JOYERR_UNPLUGGED; }
 
-/* ---- MCI ---- */
-MMAPI DWORD WINAPI mciSendStringW(LPCWSTR cmd, LPWSTR ret, UINT n, HWND cb)
-{
-    (void)cmd; (void)cb;
-    if (ret && n) ret[0] = 0;
-    return MCIERR_DEVICE_NOT_INSTALLED;
-}
-MMAPI DWORD WINAPI mciSendStringA(LPCSTR cmd, LPSTR ret, UINT n, HWND cb)
-{
-    (void)cmd; (void)cb;
-    if (ret && n) ret[0] = 0;
-    return MCIERR_DEVICE_NOT_INSTALLED;
-}
-MMAPI DWORD WINAPI mciSendCommandW(UINT id, UINT msg, DWORD_PTR p1, DWORD_PTR p2) { (void)id; (void)msg; (void)p1; (void)p2; return MCIERR_DEVICE_NOT_INSTALLED; }
-MMAPI BOOL WINAPI mciGetErrorStringW(DWORD e, LPWSTR buf, UINT n)
-{
-    const char *t = e == MCIERR_DEVICE_NOT_INSTALLED ? "The specified device is not installed." : "Unknown MCI error.";
-    if (!buf || !n) return FALSE;
-    MultiByteToWideChar(CP_UTF8, 0, t, -1, buf, (int)n);
-    buf[n - 1] = 0;
-    return TRUE;
-}
+

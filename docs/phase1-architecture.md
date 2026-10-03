@@ -194,11 +194,38 @@ At every timer interrupt the scheduler re-arms it for whichever comes
 first: the CPU's next 10 ms tick (on one grid shared by all CPUs) or the
 earliest TSC deadline among the threads sleeping on that CPU
 (`sched_sleep_until_tsc`, used by `NtDelayExecution` and timed waits).
+A new sleep only ever arms the timer sooner, never later: a deadline
+that has gone by may not have fired yet (the one-shot count runs a
+little off the TSC, and a virtual CPU's timer fires late), so it is armed
+for that deadline again and fires at once.
 A thread woken by its TSC deadline goes to the front of the run queue and
 preempts the running thread when its priority is at least as high, so
 `Sleep(1)` ends within a fraction of a millisecond even with every CPU
 busy (`sleeptest timer`).  Tick work (the tick count, input polling, time
 slices) still happens once per 10 ms.
+
+A thread woken from a wait by another thread (`sched_unblock`) preempts
+the running thread when its priority is higher, or the same and a timer
+woke it (`sched_unblock_timer`: the waitable timer it waits on was set).
+It goes first in its CPU's run queue; a halted CPU takes it if one is
+free, otherwise the waker sends the thread's CPU `IPI_WAKE` with a
+reschedule flag set, and that CPU switches in the interrupt (unless it is
+halted waiting for the kernel lock: then its next timer tick switches).
+A thread a timer woke (its deadline or its timer) goes first in the queue
+even when a thread of higher priority runs just then, so it runs as soon
+as that one is done.  The thread preempted for a woken one, at a timer
+tick or an `IPI_WAKE`, goes back after the woken threads but ahead of the
+rest, and keeps what it has used of its slice.  Other wakes (an event
+set, a lock released, no priority difference) queue the thread last and
+wait for the running thread's slice: preempting a lock's releaser makes
+lock convoys.
+
+A CPU halted waiting for the kernel lock wakes none of its sleepers.  The
+timer interrupt it takes meanwhile (`sched_timer_rearm`) hands a due
+TSC-deadline sleeper that doesn't hold the lock to another CPU, as a
+timer wake: the device poll thread then keeps draining the keyboard while
+another CPU holds the lock for long.  (Saving drive C: used to hold it for
+seconds; it now runs on its own thread without it, see `fs/persist.c`.)
 
 ### Scheduler Design
 

@@ -176,6 +176,13 @@ GDIAPI int GetStretchBltMode(HDC h) { (void)h; return 1; }            /* BLACKON
 /* printer escapes: none are supported (QUERYESCSUPPORT says so) */
 GDIAPI int Escape(HDC h, int code, int n, LPCSTR in, LPVOID out) { (void)h; (void)code; (void)n; (void)in; (void)out; return 0; }
 
+/* Metafiles are not recorded (see shapes.c); the ANSI reader fails like the wide one */
+GDIAPI HMETAFILE GetMetaFileA(LPCSTR file) { (void)file; SetLastError(ERROR_NOT_SUPPORTED); return 0; }
+
+/* ResetDC: a DC's device mode cannot change, the DC stays as it is */
+GDIAPI HDC ResetDCW(HDC h, const void *mode) { (void)mode; return h; }
+GDIAPI HDC ResetDCA(HDC h, const void *mode) { (void)mode; return h; }
+
 GDIAPI BOOL GetCharABCWidthsFloatA(HDC h, UINT first, UINT last, void *out)
 {
     BOOL WINAPI GetCharABCWidthsFloatW(HDC, UINT, UINT, void *);
@@ -225,26 +232,6 @@ GDIAPI BOOL SetMiterLimit(HDC h, float limit, float * old) { (void)h; (void)limi
 GDIAPI BOOL GetMiterLimit(HDC h, float * limit) { (void)h; if (limit) *limit = 10.0f; return TRUE; }
 
 
-/* RGNDATA: regions are their bounding rectangle (ExtCreateRegion is in
- * gdi32.c, the world transform calls too, and the outline metrics and
- * Unicode ranges in text.c) */
-typedef struct { DWORD dwSize, iType, nCount, nRgnSize; RECT rcBound; } RGNDATAHEADER_;
-GDIAPI DWORD GetRegionData(HRGN rgn, DWORD n, RGNDATAHEADER_ *out)
-{
-    RECT r;
-    if (!GetRgnBox(rgn, &r)) return 0;
-    int empty = r.right <= r.left || r.bottom <= r.top;
-    DWORD need = (DWORD)sizeof(RGNDATAHEADER_) + (empty ? 0 : (DWORD)sizeof(RECT));
-    if (!out) return need;
-    if (n < need) return 0;
-    out->dwSize = sizeof(RGNDATAHEADER_);
-    out->iType = 1;                                 /* RDH_RECTANGLES */
-    out->nCount = empty ? 0 : 1;
-    out->nRgnSize = empty ? 0 : sizeof(RECT);
-    out->rcBound = r;
-    if (!empty) memcpy(out + 1, &r, sizeof(RECT));
-    return need;
-}
 /* The system (visible) region: not tracked, so none (0) */
 GDIAPI int GetRandomRgn(HDC h, HRGN rgn, INT which) { (void)h; (void)rgn; (void)which; return 0; }
 

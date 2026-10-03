@@ -111,6 +111,8 @@ typedef struct Thread {
     uint32_t        sleep_cpu;      /* whose timed-sleep list that is */
     volatile uint32_t cpu;          /* the CPU whose run queue it belongs to */
     volatile bool   on_cpu;         /* running, or not yet fully switched out */
+    bool            preempted;      /* preempted for a woken thread: goes on with its slice */
+    bool            woken;          /* queued first as woken from a wait (until it runs) */
 } Thread;
 
 /* Default kernel stack size for new threads */
@@ -212,9 +214,15 @@ Thread *sched_current(void);
 void sched_block(void);
 
 /*
- * Unblock a thread (move from WAITING to READY state).
+ * Unblock a thread (move from WAITING to READY state).  It preempts the
+ * thread running on its CPU at once (through IPI_WAKE) if it has a higher
+ * priority — or the same, when a timer woke it (sched_unblock_timer: the
+ * timer it waits on was set or went off); otherwise it is queued last.
  */
 void sched_unblock(Thread *t);
+void sched_unblock_timer(Thread *t);
+/* IPI_WAKE (interrupt context): switch if sched_unblock asked this CPU to */
+void sched_resched_ipi(void);
 
 /*
  * Print scheduler state to the debug console (for diagnostics).

@@ -895,6 +895,10 @@ static void **sd_slot(UINT64 h, UmObject **ob, const UINT32 **map, bool *valid)
     UmProcess *p = UmCurrent();
     *ob = NULL;
     *map = g_file_map;
+    if (h == (UINT64)-1 || h == (UINT64)-2 || h == 0xFFFFFFFFull || h == 0xFFFFFFFEull) {
+        *valid = true;                  /* the current process or thread: its descriptor is not kept yet */
+        return NULL;
+    }
     int kind = um_handle_kind(p, h);
     *valid = kind > 0;
     UmObject *o = um_handle_object(p, h, 0);

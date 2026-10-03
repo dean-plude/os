@@ -12,10 +12,13 @@
  * at 1 ms or less, and when none returns early.  The same goes for
  * waitable timers: a 1 ms SetWaitableTimer waited for, a 5 ms periodic
  * one (each firing against its place on the timer's grid) and a 1 ms
- * timer's completion routine in SleepEx.  A 1 ms timer queue timer is
- * measured but not judged: its worker thread is already waiting when the
- * timer is set, and under load a thread woken that way waits for the
- * running thread's time slice (up to 20 ms).
+ * timer's completion routine in SleepEx, and a 1 ms timer queue timer
+ * (its worker thread is already waiting when the timer is set: woken by
+ * a timer, it preempts the running thread, as a thread woken by its own
+ * deadline does).  Last, how soon a thread already waiting on an event
+ * runs once another thread sets it: reported, not judged, since a woken
+ * thread of the same priority preempts only for a timer (scheduler.h), so
+ * under load it waits for the running thread's time slice.
  */
 #include <windows.h>
 #include <stdio.h>
@@ -116,6 +119,45 @@ static LONGLONG measure_timer(const char *label, int kind, int *early)
     return p95;
 }
 
+/* Event wake-ups: a thread waits on @go, this one sets it and notes when;
+ * the waiter notes how long it took to run (95th percentile, us) */
+static HANDLE g_go, g_back;
+static LARGE_INTEGER g_set_at;
+static LONGLONG g_woke[ROUNDS];
+static DWORD WINAPI waiter(LPVOID p)
+{
+    (void)p;
+    LARGE_INTEGER f, b;
+    QueryPerformanceFrequency(&f);
+    for (int i = 0; i < ROUNDS; i++) {
+        WaitForSingleObject(g_go, INFINITE);
+        QueryPerformanceCounter(&b);
+        g_woke[i] = (b.QuadPart - g_set_at.QuadPart) * 1000000 / f.QuadPart;
+        SetEvent(g_back);
+    }
+    return 0;
+}
+
+static LONGLONG measure_wake(const char *label)
+{
+    g_go = CreateEventA(NULL, FALSE, FALSE, NULL);
+    g_back = CreateEventA(NULL, FALSE, FALSE, NULL);
+    HANDLE w = CreateThread(NULL, 0, waiter, NULL, 0, NULL);
+    for (int i = 0; i < ROUNDS; i++) {
+        Sleep(1);                                   /* (the waiter is waiting by now) */
+        QueryPerformanceCounter(&g_set_at);
+        SetEvent(g_go);
+        WaitForSingleObject(g_back, 5000);
+    }
+    WaitForSingleObject(w, 5000);
+    CloseHandle(w); CloseHandle(g_go); CloseHandle(g_back);
+    qsort(g_woke, ROUNDS, sizeof(g_woke[0]), cmp_ll);
+    LONGLONG p95 = g_woke[ROUNDS * 95 / 100];
+    printf("  %-22s runs after: min %lld us, median %lld us, 95%% %lld us, max %lld us\n", label,
+           g_woke[0], g_woke[ROUNDS / 2], p95, g_woke[ROUNDS - 1]);
+    return p95;
+}
+
 static int timer_test(void)
 {
     SYSTEM_INFO si;
@@ -137,7 +179,8 @@ static int timer_test(void)
         p = measure_timer("1 ms waitable timer", WT_WAIT, &wt_early); if (load && p > wt_worst) wt_worst = p;
         p = measure_timer("5 ms periodic timer", WT_PERIODIC, &wt_early); if (load && p > wt_worst) wt_worst = p;
         p = measure_timer("1 ms timer APC", WT_APC, &wt_early); if (load && p > wt_worst) wt_worst = p;
-        measure_timer("1 ms timer queue timer", WT_QUEUE, &wt_early);   /* (not judged: see above) */
+        p = measure_timer("1 ms timer queue timer", WT_QUEUE, &wt_early); if (load && p > wt_worst) wt_worst = p;
+        measure_wake("Event set (waiter)");        /* (not judged: see above) */
         g_stop = 1;
         WaitForMultipleObjects(n, th, TRUE, 5000);
         for (DWORD i = 0; i < n; i++) CloseHandle(th[i]);

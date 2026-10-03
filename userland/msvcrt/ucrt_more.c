@@ -12,6 +12,7 @@
 #include <ctype.h>
 #include <windows.h>
 #include "msvcrt_internal.h"
+#include "ptd.h"
 
 #define CRTEXP __declspec(dllexport)
 typedef int errno_t;
@@ -148,16 +149,16 @@ CRTEXP errno_t tmpnam_s(char *buf, size_t cap)
     if (e) { buf[0] = 0; errno = e; }
     return e;
 }
-static char g_tmpnam[MAX_PATH * 3];
-static wchar_t g_wtmpnam[MAX_PATH + 24];
+/* tmpnam(NULL) fills a per-thread buffer, as on Windows */
 CRTEXP char *tmpnam(char *buf)
 {
-    if (!buf) buf = g_tmpnam;
-    return tmpnam_s(buf, buf == g_tmpnam ? sizeof(g_tmpnam) : MAX_PATH) ? 0 : buf;
+    size_t n = MAX_PATH;
+    if (!buf) { buf = __nova_ptd()->tmpnam; n = sizeof(__nova_ptd()->tmpnam); }
+    return tmpnam_s(buf, n) ? 0 : buf;
 }
 CRTEXP wchar_t *_wtmpnam(wchar_t *buf)
 {
-    if (!buf) buf = g_wtmpnam;
+    if (!buf) buf = __nova_ptd()->wtmpnam;
     return _wtmpnam_s(buf, MAX_PATH) ? 0 : buf;
 }
 
@@ -296,7 +297,6 @@ CRTEXP int _ismbstrail(const uc *s, const uc *p) { (void)s; (void)p; return 0; }
 /* -----------------------------------------------------------------------
  * MinGW programs: its CRT start-up and a few older msvcrt names (VLC)
  * ----------------------------------------------------------------------- */
-CRTEXP void __lconv_init(void) {}                   /* (the locale table is ready already) */
 CRTEXP int _setmaxstdio(int n) { return n >= 20 && n <= 8192 ? n : -1; }
 CRTEXP int _getmaxstdio(void) { return 512; }
 int __stdio_common_vsnprintf_s(unsigned long long opt, char *buf, size_t count, size_t max, const char *fmt, void *loc, va_list ap);

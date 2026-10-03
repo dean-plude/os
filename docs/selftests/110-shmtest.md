@@ -1,1 +1,1 @@
-| `shmtest` | Named and file-backed shared memory between processes |
+| `shmtest` | Named and file-backed shared memory between processes; a reserved section committed through its own view and mapped into a suspended child near ntdll (`MapViewOfFile3`, `NtMapViewOfSection` with a process handle), as Firefox's launcher does |

@@ -57,6 +57,7 @@
 #define WM_XBUTTONUP      0x020C
 #define WM_MOUSEHWHEEL    0x020E
 #define WM_MOUSELEAVE     0x02A3
+#define WM_NOVA_TOUCH     0x03FD   /* user32's u32.h: a touch contact (gui_touch) */
 
 #define GUI_MAX_WINDOWS   64
 #define GUI_QUEUE         256
@@ -302,6 +303,19 @@ static void gui_mouse(WND *w, WmMouseMsg msg, int x, int y)
     }
 }
 
+/* Touch contacts that went down in the client area: one WM_NOVA_TOUCH per
+ * contact, wParam = slot | WM_TOUCH_* << 8 | 0x10000 on the frame's last,
+ * lParam = its screen position; user32 makes WM_POINTER* or WM_TOUCH */
+static void gui_touch(WND *w, const WmTouch *t, int n)
+{
+    GuiWin *g = w->user;
+    if (!g) return;
+    GdiRect c = WmClientRect(w);
+    for (int i = 0; i < n; i++)
+        enqueue(g, WM_NOVA_TOUCH, (UINT64)t[i].id | ((UINT64)t[i].flags << 8) | (i == n - 1 ? 0x10000ull : 0),
+                packxy(t[i].x, t[i].y), t[i].x - c.x, t[i].y - c.y);
+}
+
 /* Every pass of the desktop loop: timers, and what the user did to the
  * window (resized, moved, focused, minimized) */
 static bool gui_tick(WND *w)
@@ -388,15 +402,33 @@ typedef struct {
     UINT64 owner;                   /* handle of the owner window (0: none) */
 } GuiCreate;
 
+/* The desktop's fonts cover ASCII only: punctuation outside it gets its
+ * nearest ASCII form, as Windows' best-fit code pages do ("Page — Mozilla
+ * Firefox" shows as "Page - Mozilla Firefox"); anything else is '?' */
+static const char *ascii_fit(UINT16 c)
+{
+    if (c >= 0x2010 && c <= 0x2015) return "-";         /* hyphens, en and em dashes */
+    switch (c) {
+    case 0x00A0: case 0x2002: case 0x2003: case 0x2009: case 0x202F: return " ";
+    case 0x2018: case 0x2019: case 0x201A: case 0x2032: return "'";
+    case 0x201C: case 0x201D: case 0x201E: case 0x2033: return "\"";
+    case 0x2022: case 0x00B7: return "*";
+    case 0x2026: return "...";
+    case 0x2212: return "-";
+    }
+    return "?";
+}
+
 static void utf16_to_ascii(UmProcess *p, UINT64 va, char *out, int cap)
 {
     out[0] = '\0';
     if (!va) return;
-    UINT16 w[128];
+    UINT16 w;
     int n = 0;
-    for (; n < cap - 1 && n < 128; n++) {
-        if (!um_read(p, va + (UINT64)n * 2, &w[0], 2) || !w[0]) break;
-        out[n] = w[0] < 0x80 ? (char)w[0] : '?';
+    for (int i = 0; n < cap - 1 && i < 128; i++) {
+        if (!um_read(p, va + (UINT64)i * 2, &w, 2) || !w) break;
+        if (w < 0x80) { out[n++] = (char)w; continue; }
+        for (const char *f = ascii_fit(w); *f && n < cap - 1; f++) out[n++] = *f;
     }
     out[n] = '\0';
 }
@@ -493,6 +525,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         w->on_key = gui_key;
         w->key_releases = true;             /* WM_KEYUP */
         w->on_mouse = gui_mouse;
+        w->on_touch = popup ? NULL : gui_touch;   /* (menus: the touch works the mouse) */
         w->on_close = gui_close;
         w->on_close_request = gui_close_request;
         w->on_tick = gui_tick;
@@ -782,6 +815,8 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_MONITOR      24
 #define CTL_HEAD_MODE    25
 #define CTL_SET_HEAD     26
+/*  29 TOUCH      returns the contacts the touch screens have (0: none) */
+#define CTL_TOUCH        29
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
 #define GUI_TAG_SHIFT    14
@@ -1180,6 +1215,7 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         return r;
     }
     if (a2 == CTL_HWND_TAG) return hwnd_tag(p);
+    if (a2 == CTL_TOUCH) return (UINT64)InputTouchContacts();
     if (a2 == CTL_FOREIGN) return hwnd_foreign((UINT32)a3, a4);
     if (a2 == CTL_SET_HWND) {
         INT32 uc[4] = { 0 };

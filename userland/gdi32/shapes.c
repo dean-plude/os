@@ -68,15 +68,6 @@ static int arc_points(int l, int t, int r, int b, int x1, int y1, int x2, int y2
 #define ARC_CAP 4096
 static POINT *arc_buf(void) { return HeapAlloc(GetProcessHeap(), 0, ARC_CAP * sizeof(POINT)); }
 
-GDIAPI BOOL Arc(HDC h, int l, int t, int r, int b, int x1, int y1, int x2, int y2)
-{
-    NOVA_DC *d = dc_of(h); if (!d) return FALSE;
-    POINT *pt = arc_buf(); if (!pt) return FALSE;
-    int n = arc_points(l, t, r, b, x1, y1, x2, y2, pt, ARC_CAP);
-    if (d->has_pen) for (int i = 1; i < n; i++) line(d, pt[i - 1].x, pt[i - 1].y, pt[i].x, pt[i].y, d->pen_color, d->pen_width);
-    HeapFree(GetProcessHeap(), 0, pt);
-    return TRUE;
-}
 
 GDIAPI BOOL ArcTo(HDC h, int l, int t, int r, int b, int x1, int y1, int x2, int y2)
 {
@@ -91,33 +82,7 @@ GDIAPI BOOL ArcTo(HDC h, int l, int t, int r, int b, int x1, int y1, int x2, int
     return TRUE;
 }
 
-GDIAPI BOOL Pie(HDC h, int l, int t, int r, int b, int x1, int y1, int x2, int y2)
-{
-    NOVA_DC *d = dc_of(h); if (!d) return FALSE;
-    POINT *pt = arc_buf(); if (!pt) return FALSE;
-    int n = arc_points(l, t, r, b, x1, y1, x2, y2, pt, ARC_CAP - 1);
-    if (n) {
-        pt[n].x = (l + r) / 2; pt[n].y = (t + b) / 2;      /* close through the centre */
-        n++;
-        if (d->has_brush && n >= 3) fill_polygon(d, pt, n, d->brush_color);
-        if (d->has_pen) for (int i = 0; i < n; i++) line(d, pt[i].x, pt[i].y, pt[(i + 1) % n].x, pt[(i + 1) % n].y, d->pen_color, d->pen_width);
-    }
-    HeapFree(GetProcessHeap(), 0, pt);
-    return TRUE;
-}
 
-GDIAPI BOOL Chord(HDC h, int l, int t, int r, int b, int x1, int y1, int x2, int y2)
-{
-    NOVA_DC *d = dc_of(h); if (!d) return FALSE;
-    POINT *pt = arc_buf(); if (!pt) return FALSE;
-    int n = arc_points(l, t, r, b, x1, y1, x2, y2, pt, ARC_CAP);
-    if (n) {
-        if (d->has_brush && n >= 3) fill_polygon(d, pt, n, d->brush_color);
-        if (d->has_pen) for (int i = 0; i < n; i++) line(d, pt[i].x, pt[i].y, pt[(i + 1) % n].x, pt[(i + 1) % n].y, d->pen_color, d->pen_width);
-    }
-    HeapFree(GetProcessHeap(), 0, pt);
-    return TRUE;
-}
 
 /* Cubic Bézier curves, each flattened to 16 segments */
 static void bezier(NOVA_DC *d, const POINT *p, int move_first)
@@ -281,22 +246,7 @@ GDIAPI HRGN CreatePolyPolygonRgn(const POINT *pt, const INT *counts, int n, int 
     return CreatePolygonRgn(pt, total, mode);
 }
 
-GDIAPI BOOL EqualRgn(HRGN a, HRGN b)
-{
-    GObj *x = obj_of(a), *y = obj_of(b);
-    if (!x || !y || x->kind != K_REGION || y->kind != K_REGION) return FALSE;
-    int ex = x->rc.right <= x->rc.left || x->rc.bottom <= x->rc.top;
-    int ey = y->rc.right <= y->rc.left || y->rc.bottom <= y->rc.top;
-    if (ex || ey) return ex && ey;
-    return x->rc.left == y->rc.left && x->rc.top == y->rc.top && x->rc.right == y->rc.right && x->rc.bottom == y->rc.bottom;
-}
 
-GDIAPI BOOL RectInRegion(HRGN h, const RECT *r)
-{
-    GObj *o = obj_of(h);
-    if (!o || o->kind != K_REGION || !r) return FALSE;
-    return r->left < o->rc.right && r->right > o->rc.left && r->top < o->rc.bottom && r->bottom > o->rc.top;
-}
 
 /* -----------------------------------------------------------------------
  * Mapping (MM_TEXT: the extents are 1:1), layout (left to right)
@@ -307,11 +257,6 @@ GDIAPI BOOL ScaleViewportExtEx(HDC h, int xn, int xd, int yn, int yd, LPSIZE old
 GDIAPI BOOL ScaleWindowExtEx(HDC h, int xn, int xd, int yn, int yd, LPSIZE old) { (void)xn; (void)xd; (void)yn; (void)yd; return SetWindowExtEx(h, 1, 1, old); }
 GDIAPI DWORD GetLayout(HDC h) { return dc_of(h) ? 0 : GDI_ERROR; }
 
-GDIAPI HBITMAP CreateBitmapIndirect(const BITMAP *bm)
-{
-    if (!bm) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
-    return CreateBitmap(bm->bmWidth, bm->bmHeight, bm->bmPlanes, bm->bmBitsPixel, bm->bmBits);
-}
 
 /* -----------------------------------------------------------------------
  * Palettes.  Entries are PALETTEENTRYs packed in DWORDs (red in the low

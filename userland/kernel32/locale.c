@@ -15,13 +15,17 @@
  *
  * The user's locale is HKCU\Control Panel\International's LocaleName
  * (written by intl.exe and the Settings app's "Time & language" page), read
- * once per process; the system locale stays en-US.
+ * once per process; the system locale stays en-US.  The classic values
+ * beside it (sShortDate, sDecimal, iCurrency...) are the user's overrides:
+ * GetLocaleInfo answers them for the user's locale unless the caller asks
+ * for LOCALE_NOUSEROVERRIDE, and SetLocaleInfo writes them.
  */
 #define NOVA_BUILD_KERNEL32
 #include <winternl.h>
 #include <winreg.h>
 #include "k32.h"
 #include "locale_data.h"
+#include "nls.h"
 
 void *memcpy(void *d, const void *s, size_t n);
 void *memset(void *d, int c, size_t n);
@@ -46,9 +50,6 @@ size_t strlen(const char *s);
 #endif
 typedef DWORD LCTYPE_;
 
-/* special "indexes" besides the table's */
-#define LOC_INVARIANT (-2)
-#define LOC_NONE      (-1)
 
 static int wlen(const WCHAR *s) { int n = 0; if (s) while (s[n]) n++; return n; }
 static char lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c; }
@@ -372,6 +373,7 @@ static const char *english_value(int loc, DWORD t)
     case 0x7A: return "ENU";                                     /* LOCALE_SOPENTYPELANGUAGETAG */
     case 0x7B: return "";                                        /* LOCALE_SSORTLOCALE */
     case 0x1006: return "MMMM yyyy";                             /* LOCALE_SYEARMONTH */
+    case 0x1005: return "0";                                     /* LOCALE_ITIMEMARKPOSN: AM/PM after the time */
     case 0x1009: return "1";                                     /* LOCALE_ICALENDARTYPE: Gregorian */
     case 0x100B: return "0";                                     /* LOCALE_IOPTIONALCALENDAR */
     case 0x100D: return "0";                                     /* LOCALE_IFIRSTWEEKOFYEAR */
@@ -442,6 +444,12 @@ enum { UNUM_MAX_FRACTION_DIGITS = 6, UNUM_GROUPING_SIZE = 10, UNUM_SECONDARY_GRO
     X(void *, ucal_open, (const WCHAR *, int, const char *, int, UErrorCode *)) \
     X(void, ucal_close, (void *)) \
     X(int, ucal_getAttribute, (const void *, int)) \
+    X(void, ucal_setMillis, (void *, double, UErrorCode *)) \
+    X(int, ucal_get, (const void *, int, UErrorCode *)) \
+    X(void *, ucal_getKeywordValuesForLocale, (const char *, const char *, signed char, UErrorCode *)) \
+    X(const char *, uenum_next, (void *, int *, UErrorCode *)) \
+    X(void, uenum_close, (void *)) \
+    X(int, uloc_getDisplayKeywordValue, (const char *, const char *, const char *, WCHAR *, int, UErrorCode *)) \
     X(int, ulocdata_getMeasurementSystem, (const char *, UErrorCode *)) \
     X(void, ulocdata_getPaperSize, (const char *, int *, int *, UErrorCode *)) \
     X(int, ucurr_forLocale, (const char *, WCHAR *, int, UErrorCode *)) \
@@ -822,11 +830,19 @@ static int icu_value(int idx, DWORD t, DWORD flags, WCHAR *out, int cap)
         if (icu_pattern(loc, UDAT_FULL, UDAT_NONE, p, 128) > 0) n = dec_out(date_order(p), out, cap);
         break;
     }
-    case 0x1E: case 0x23: case 0x25: {
+    case 0x1E: case 0x23: case 0x25: case 0x1005: {
         WCHAR p[128];
         if (icu_pattern(loc, UDAT_NONE, UDAT_MEDIUM, p, 128) <= 0) break;
         if (t == 0x1E) n = separator(p, out, cap);
         else if (t == 0x23) n = ascii_out(has(p, "H") ? "1" : "0", out, cap);
+        else if (t == 0x1005) {                              /* LOCALE_ITIMEMARKPOSN: "tt" before the hour */
+            int tt = -1, h = -1;
+            for (int c = 0; p[c]; c++) {
+                if (p[c] == 't' && tt < 0) tt = c;
+                if ((p[c] == 'h' || p[c] == 'H') && h < 0) h = c;
+            }
+            n = ascii_out(tt >= 0 && h >= 0 && tt < h ? "1" : "0", out, cap);
+        }
         else n = ascii_out(has(p, "HH") || has(p, "hh") ? "1" : "0", out, cap);
         break;
     }
@@ -919,15 +935,25 @@ static int table_value(int i, DWORD t, WCHAR *out, int cap)
     case 0x7A: return ascii_out(l->abbrev, out, cap);        /* (OpenType tags are mostly the same) */
     case 0x50: return ascii_out("", out, cap);               /* LOCALE_SPOSITIVESIGN */
     case 0x11: return ascii_out("2", out, cap);              /* LOCALE_IDIGITS */
-    case 0x1009: return ascii_out("1", out, cap);            /* LOCALE_ICALENDARTYPE: Gregorian */
+    case 0x1009: case 0x100B: {                              /* LOCALE_ICALENDARTYPE, IOPTIONALCALENDAR */
+        DWORD c[8];
+        int k = nls_calendars(i, c, 8);
+        return dec_out(t == 0x1009 ? (int)c[0] : k > 1 ? (int)c[1] : 0, out, cap);
+    }
     }
     return -1;
 }
 
 /* LOCALE_* @type of locale @idx (a table index or LOC_INVARIANT) into @out */
+static int override_value(DWORD t, WCHAR *out, int cap);
+
 static int locale_info(int idx, DWORD type, WCHAR *out, int cap)
 {
     DWORD t = type & 0xFFFF;
+    if (!(type & LOCALE_NOUSEROVERRIDE_) && idx >= 0 && idx == user_locale()) {
+        int n = override_value(t, out, cap);
+        if (n >= 0) return n;
+    }
     int en = idx == LOC_INVARIANT ? LOC_INV : idx == en_us() ? LOC_EN_US :
              !cmp_lower(g_locales[idx].name, "en") ? LOC_EN : -1;
     if (en < 0) {
@@ -1019,4 +1045,255 @@ int nls_era(int idx, WCHAR *out, int cap)
     if (n < 0 || n >= cap) n = u2w("A.D.", -1, out, cap - 1);
     out[n] = 0;
     return n;
+}
+
+/* -----------------------------------------------------------------------
+ * The user's overrides: the classic values under
+ * HKCU\Control Panel\International (sShortDate, sDecimal...), which
+ * intl.exe writes for the chosen locale and SetLocaleInfo changes one at a
+ * time.  Read once per process, the first time the user's locale is asked
+ * about; SetLocaleInfo keeps this process's copy current.
+ * ----------------------------------------------------------------------- */
+static const struct { const WCHAR *name; WORD type; BYTE max; } g_ovr_names[] = {
+    { L"sList", 0x0C, 3 },            { L"iMeasure", 0x0D, 1 },        { L"sDecimal", 0x0E, 3 },
+    { L"sThousand", 0x0F, 3 },        { L"sGrouping", 0x10, 9 },       { L"iDigits", 0x11, 2 },
+    { L"iLZero", 0x12, 1 },           { L"sNativeDigits", 0x13, 10 },  { L"sCurrency", 0x14, 12 },
+    { L"sMonDecimalSep", 0x16, 3 },   { L"sMonThousandSep", 0x17, 3 }, { L"sMonGrouping", 0x18, 9 },
+    { L"iCurrDigits", 0x19, 2 },      { L"iCurrency", 0x1B, 1 },       { L"iNegCurr", 0x1C, 2 },
+    { L"sDate", 0x1D, 3 },            { L"sTime", 0x1E, 3 },           { L"sShortDate", 0x1F, 80 },
+    { L"sLongDate", 0x20, 80 },       { L"iDate", 0x21, 1 },           { L"iTime", 0x23, 1 },
+    { L"iTLZero", 0x25, 1 },          { L"s1159", 0x28, 15 },          { L"s2359", 0x29, 15 },
+    { L"sPositiveSign", 0x50, 4 },    { L"sNegativeSign", 0x51, 4 },   { L"sShortTime", 0x79, 80 },
+    { L"sTimeFormat", 0x1003, 80 },   { L"iTimePrefix", 0x1005, 1 },   { L"sYearMonth", 0x1006, 80 },
+    { L"iCalendarType", 0x1009, 2 },  { L"iPaperSize", 0x100A, 2 },    { L"iFirstDayOfWeek", 0x100C, 1 },
+    { L"iFirstWeekOfYear", 0x100D, 1 }, { L"iNegNumber", 0x1010, 1 },  { L"NumShape", 0x1014, 1 },
+};
+#define NOVR ((int)(sizeof(g_ovr_names) / sizeof(g_ovr_names[0])))
+#define OVR_CAP 81
+static WCHAR g_ovr[NOVR][OVR_CAP];
+static BOOL g_ovr_set[NOVR];
+static volatile LONG g_ovr_read;
+static SRWLOCK g_ovr_lock = SRWLOCK_INIT;
+
+static int ovr_slot(DWORD t)
+{
+    for (int i = 0; i < NOVR; i++) if (g_ovr_names[i].type == t) return i;
+    return -1;
+}
+
+static void ovr_load(void)
+{
+    if (g_ovr_read) return;
+    AcquireSRWLockExclusive(&g_ovr_lock);
+    if (!g_ovr_read) {
+        HKEY k;
+        if (!RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\International", 0, KEY_READ, &k)) {
+            for (int i = 0; i < NOVR; i++) {
+                DWORD type, n = (OVR_CAP - 1) * sizeof(WCHAR);
+                if (!RegQueryValueExW(k, g_ovr_names[i].name, NULL, &type, (BYTE *)g_ovr[i], &n) && type == REG_SZ) {
+                    g_ovr[i][n / 2] = 0;
+                    g_ovr_set[i] = TRUE;
+                }
+            }
+            RegCloseKey(k);
+        }
+        InterlockedExchange(&g_ovr_read, 1);
+    }
+    ReleaseSRWLockExclusive(&g_ovr_lock);
+}
+
+static int override_value(DWORD t, WCHAR *out, int cap)
+{
+    int i = ovr_slot(t), n = -1;
+    if (i < 0) return -1;
+    ovr_load();
+    AcquireSRWLockShared(&g_ovr_lock);
+    if (g_ovr_set[i] && (n = wlen(g_ovr[i])) < cap) memcpy(out, g_ovr[i], 2 * (SIZE_T)(n + 1));
+    else n = -1;
+    ReleaseSRWLockShared(&g_ovr_lock);
+    return n;
+}
+
+/* one override into the registry and this process's copy */
+static BOOL ovr_store(int i, const WCHAR *v)
+{
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Control Panel\\International", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &k, NULL))
+        return FALSE;
+    int n = wlen(v);
+    LONG e = RegSetValueExW(k, g_ovr_names[i].name, 0, REG_SZ, (const BYTE *)v, (DWORD)(n + 1) * 2);
+    RegCloseKey(k);
+    if (e) return FALSE;
+    AcquireSRWLockExclusive(&g_ovr_lock);
+    memcpy(g_ovr[i], v, 2 * (SIZE_T)(n + 1));
+    g_ovr_set[i] = TRUE;
+    ReleaseSRWLockExclusive(&g_ovr_lock);
+    return TRUE;
+}
+
+static BOOL set_value(DWORD t, const WCHAR *v)
+{
+    int i = ovr_slot(t);
+    return i >= 0 && ovr_store(i, v);
+}
+
+/* @pic with every unquoted @from (a separator) replaced by @to */
+static void swap_separator(const WCHAR *pic, const WCHAR *from, const WCHAR *to, WCHAR *out, int cap)
+{
+    int k = 0, nf = wlen(from), nt = wlen(to);
+    BOOL q = FALSE;
+    for (int i = 0; pic[i] && k < cap - 1; ) {
+        if (pic[i] == '\'') q = !q;
+        if (!q && nf && pic[i] != '\'') {
+            int j = 0;
+            while (j < nf && pic[i + j] == from[j]) j++;
+            if (j == nf) {
+                for (int c = 0; c < nt && k < cap - 1; c++) out[k++] = to[c];
+                i += nf;
+                continue;
+            }
+        }
+        out[k++] = pic[i++];
+    }
+    out[k] = 0;
+}
+
+/* SetLocaleInfo: the user's override of @t, and the values Windows derives
+ * from it (a short date sets sDate and iDate, a time format sTime, iTime
+ * and iTLZero; a new sDate or sTime is put into the format) */
+static BOOL set_locale_info(LCID lcid, DWORD t, const WCHAR *v)
+{
+    t &= ~(LOCALE_USE_CP_ACP_ | LOCALE_NOUSEROVERRIDE_);
+    int i = ovr_slot(t);
+    if (lcid_index(lcid) == LOC_NONE || !v) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (i < 0) { SetLastError(1004 /* ERROR_INVALID_FLAGS */); return FALSE; }
+    int n = wlen(v);
+    if (n > g_ovr_names[i].max) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    for (int c = 0; c < n && g_ovr_names[i].name[0] == 'i'; c++)
+        if (v[c] < '0' || v[c] > '9') { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    WCHAR old[OVR_CAP], buf[OVR_CAP];
+    int u = user_locale();
+    if (t == 0x1D || t == 0x1E) {                            /* LOCALE_SDATE, STIME */
+        DWORD fmt = t == 0x1D ? 0x1F : 0x1003;
+        if (nls_info(u, t, old, OVR_CAP) < 0 || nls_info(u, fmt, buf, OVR_CAP) < 0) old[0] = buf[0] = 0;
+        WCHAR pic[OVR_CAP];
+        swap_separator(buf, old, v, pic, OVR_CAP);
+        if (buf[0] && !set_value(fmt, pic)) goto fail;
+        if (t == 0x1E) {                                     /* (the short time too) */
+            if (nls_info(u, 0x79, buf, OVR_CAP) >= 0) {
+                swap_separator(buf, old, v, pic, OVR_CAP);
+                if (!set_value(0x79, pic)) goto fail;
+            }
+        }
+    }
+    if (!ovr_store(i, v)) goto fail;
+    if (t == 0x1F) {                                         /* LOCALE_SSHORTDATE */
+        if (separator(v, buf, OVR_CAP) > 0 && !set_value(0x1D, buf)) goto fail;
+        dec_out(date_order(v), buf, OVR_CAP);
+        if (!set_value(0x21, buf)) goto fail;
+    } else if (t == 0x1003) {                                /* LOCALE_STIMEFORMAT */
+        if (separator(v, buf, OVR_CAP) > 0 && !set_value(0x1E, buf)) goto fail;
+        if (!set_value(0x23, has(v, "H") ? L"1" : L"0")) goto fail;
+        if (!set_value(0x25, has(v, "HH") || has(v, "hh") ? L"1" : L"0")) goto fail;
+        int tt = -1, h = -1;
+        for (int c = 0; v[c]; c++) {
+            if (v[c] == 't' && tt < 0) tt = c;
+            if ((v[c] == 'h' || v[c] == 'H') && h < 0) h = c;
+        }
+        if (!set_value(0x1005, tt >= 0 && h >= 0 && tt < h ? L"1" : L"0")) goto fail;
+    }
+    return TRUE;
+fail:
+    SetLastError(ERROR_ACCESS_DENIED);
+    return FALSE;
+}
+
+K32 BOOL WINAPI SetLocaleInfoW(LCID lcid, LCTYPE_ type, LPCWSTR v)
+{
+    return set_locale_info(lcid, type, v);
+}
+
+K32 BOOL WINAPI SetLocaleInfoA(LCID lcid, LCTYPE_ type, LPCSTR v)
+{
+    WCHAR w[OVR_CAP + 1];
+    int n = v ? u2w(v, -1, w, OVR_CAP) : -1;
+    if (n < 0) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    w[n] = 0;
+    return set_locale_info(lcid, type, w);
+}
+
+/* -----------------------------------------------------------------------
+ * For the calendars (calendar.c): ICU's calendars, names and patterns
+ * ----------------------------------------------------------------------- */
+int nls_user(void)  { return user_locale(); }
+int nls_en_us(void) { return en_us(); }
+BOOL nls_is_english(int idx) { return idx == LOC_INVARIANT || idx == en_us() || (idx >= 0 && !cmp_lower(g_locales[idx].name, "en")); }
+
+/* "de_DE@calendar=gregorian" for locale @idx (the invariant locale and
+ * English: en_US); FALSE without ICU */
+BOOL nls_icu_loc(int idx, const char *cal, char *out)
+{
+    if (!icu_load()) return FALSE;
+    if (idx < 0) memcpy(out, "en_US", 6);
+    else icu_id(idx, out);
+    if (cal) {
+        int k = (int)strlen(out);
+        memcpy(out + k, "@calendar=", 10);
+        memcpy(out + k + 10, cal, strlen(cal) + 1);
+    }
+    return TRUE;
+}
+
+/* a UDAT_* date style's pattern in Windows' notation */
+int nls_icu_pattern(const char *loc, int style, WCHAR *out, int cap)  { return icu_pattern(loc, style, UDAT_NONE, out, cap); }
+int nls_icu_skeleton(const char *loc, const WCHAR *skel, WCHAR *out, int cap) { return icu_skeleton(loc, skel, out, cap); }
+int nls_icu_symbol(const char *loc, int type, int index, WCHAR *out, int cap)
+{
+    int n = date_symbol(loc, type, index, out, cap);
+    if (n < 0 || n >= cap) return -1;
+    out[n] = 0;
+    return n;
+}
+
+/* the date @ms (milliseconds since 1970, UTC) in @loc's calendar: era,
+ * year, month (from 0) and day */
+BOOL nls_icu_date(const char *loc, double ms, int f[4])
+{
+    UErrorCode e = 0;
+    void *c = icu.ucal_open(L"UTC", 3, loc, 0 /* UCAL_TRADITIONAL */, &e);
+    if (!U_FAILURE(e)) icu.ucal_setMillis(c, ms, &e);
+    static const int field[4] = { 0 /* UCAL_ERA */, 1 /* YEAR */, 2 /* MONTH */, 5 /* DATE */ };
+    for (int i = 0; i < 4 && !U_FAILURE(e); i++) f[i] = icu.ucal_get(c, field[i], &e);
+    if (c) icu.ucal_close(c);
+    return !U_FAILURE(e);
+}
+
+/* the calendar @cal's name in @loc's language ("Gregorianischer Kalender") */
+int nls_icu_calname(const char *loc, WCHAR *out, int cap)
+{
+    UErrorCode e = 0;
+    int n = icu.uloc_getDisplayKeywordValue(loc, "calendar", loc, out, cap, &e);
+    if (U_FAILURE(e) || n <= 0 || n >= cap) return -1;
+    out[n] = 0;
+    return n;
+}
+
+/* the calendars commonly used where locale @idx is, preferred first
+ * (ICU's "calendar" keyword values: "gregorian", "japanese"...) */
+int nls_icu_calendars(int idx, char (*out)[24], int max)
+{
+    char loc[32];
+    if (idx < 0 || !icu_load()) return 0;
+    icu_id(idx, loc);
+    UErrorCode e = 0;
+    void *en = icu.ucal_getKeywordValuesForLocale("calendar", loc, 1, &e);
+    int k = 0;
+    const char *s;
+    int len;
+    while (!U_FAILURE(e) && k < max && (s = icu.uenum_next(en, &len, &e)) && len < 24) {
+        memcpy(out[k], s, (SIZE_T)len);
+        out[k++][len] = 0;
+    }
+    if (en) icu.uenum_close(en);
+    return k;
 }
