@@ -185,8 +185,31 @@ push to `main` that passes CI replaces `nova.iso` on the `latest` release:
 <https://github.com/dean-plude/os/releases/latest/download/nova.iso>.
 
 The ISO is El Torito UEFI, no emulation: its EFI System Partition holds
-`\EFI\BOOT\BOOTX64.EFI` and `\EFI\NOVA\kernel.elf`.  Booted from it, NovaOS
-runs live and opens Install NovaOS (see the README).
+`\EFI\BOOT\BOOTX64.EFI`, `\EFI\NOVA\kernel.elf` and `\EFI\NOVA\bootlog.txt`
+(1 MiB set aside for the boot log).  The same ESP is partition 2 of a GPT
+behind a protective MBR, so the ISO written to a USB stick starts too.
+Booted from either, NovaOS runs live and opens Install NovaOS (see the
+README); the bootloader tells the installation media from an installed
+disk by `bootlog.txt`, which the installer does not copy.  Started from a
+stick, the kernel writes its log into `bootlog.txt` in place
+(`kernel/fs/bootlog.c`): what was logged since boot when the stick
+appears, then the rest at most once a second, before a restart and after
+a kernel fault.  To try the stick in QEMU, with only the firmware's
+framebuffer for a display as on a laptop:
+
+```bash
+cp nova.iso stick.img
+truncate -s 2G stick.img
+qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/OVMF.fd \
+  -vga none -device ramfb -device qemu-xhci,id=xhci \
+  -drive if=none,id=stick,format=raw,file=stick.img \
+  -device usb-storage,bus=xhci.0,drive=stick -serial stdio
+```
+
+The devices suite's `usbboot` boot does this and reads the log back
+from the stick image with mtools; `cdboot` starts from the ISO as a
+disc.
 
 ---
 

@@ -62,6 +62,11 @@ static CHAR16 KERNEL_PATH[] = { '\\','E','F','I','\\','N','O','V','A',
                                  '\\','k','e','r','n','e','l','.','e','l','f', 0 };
 static CHAR16 LOADER_PATH[] = { '\\','E','F','I','\\','B','O','O','T',
                                  '\\','B','O','O','T','X','6','4','.','E','F','I', 0 };
+/* The boot log file: only the ISO's EFI System Partition has it (the
+ * installer copies the kernel and the loader, not this), so it also marks
+ * the installation media when the ISO was written to a USB stick */
+static CHAR16 BOOTLOG_PATH[] = { '\\','E','F','I','\\','N','O','V','A',
+                                 '\\','b','o','o','t','l','o','g','.','t','x','t', 0 };
 
 /* The device we booted from, kept for detecting installation media */
 static EFI_HANDLE g_boot_device;
@@ -69,13 +74,17 @@ static EFI_HANDLE g_boot_device;
 /* Device path nodes: Type, SubType, Length (LE16), then node data */
 #define EFI_DEVICE_PATH_PROTOCOL_GUID \
     { 0x09576e91, 0x6d3f, 0x11d2, { 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } }
+#define DP_TYPE_MESSAGING 0x03
+#define DP_SUB_USB        0x05
+#define DP_SUB_USB_CLASS  0x0F
+#define DP_SUB_USB_WWID   0x10
 #define DP_TYPE_MEDIA    0x04
 #define DP_SUB_CDROM     0x02
 #define DP_TYPE_END      0x7F
 
-/* True when the boot device's path has a CD-ROM media node (an El Torito
- * boot image on a CD/DVD): NovaOS is running from its installation disc */
-static BOOLEAN booted_from_cd(void)
+/* Whether the boot device's path has a node of @type with one of the
+ * subtypes @sub[0..n-1] */
+static BOOLEAN boot_path_has(UINT8 type, const UINT8 *sub, int n)
 {
     EFI_GUID dp_guid = EFI_DEVICE_PATH_PROTOCOL_GUID;
     UINT8 *dp = NULL;
@@ -83,14 +92,45 @@ static BOOLEAN booted_from_cd(void)
         EFI_ERROR(g_bs->OpenProtocol(g_boot_device, &dp_guid, (VOID **)&dp, g_image_handle, NULL,
                                      EFI_OPEN_PROTOCOL_GET_PROTOCOL)) || !dp)
         return FALSE;
-    for (int n = 0; n < 64; n++) {
-        UINT8 type = dp[0], sub = dp[1];
+    for (int k = 0; k < 64; k++) {
         UINT16 len = (UINT16)(dp[2] | dp[3] << 8);
-        if (type == DP_TYPE_END || len < 4) break;
-        if (type == DP_TYPE_MEDIA && sub == DP_SUB_CDROM) return TRUE;
+        if (dp[0] == DP_TYPE_END || len < 4) break;
+        for (int i = 0; i < n; i++)
+            if (dp[0] == type && dp[1] == sub[i]) return TRUE;
         dp += len;
     }
     return FALSE;
+}
+
+/* A CD-ROM media node: an El Torito boot image on a CD/DVD */
+static BOOLEAN booted_from_cd(void)
+{
+    static const UINT8 cd[] = { DP_SUB_CDROM };
+    return boot_path_has(DP_TYPE_MEDIA, cd, 1);
+}
+
+/* A USB node: a USB stick (or a USB CD drive) */
+static BOOLEAN booted_from_usb(void)
+{
+    static const UINT8 usb[] = { DP_SUB_USB, DP_SUB_USB_CLASS, DP_SUB_USB_WWID };
+    return boot_path_has(DP_TYPE_MESSAGING, usb, 3);
+}
+
+/* Whether @path exists on the boot volume */
+static BOOLEAN boot_file_exists(CHAR16 *path)
+{
+    EFI_GUID fs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs;
+    EFI_FILE_PROTOCOL *root, *file;
+    if (EFI_ERROR(g_bs->OpenProtocol(g_boot_device, &fs_guid, (VOID **)&fs, g_image_handle, NULL,
+                                     EFI_OPEN_PROTOCOL_GET_PROTOCOL)) ||
+        EFI_ERROR(fs->OpenVolume(fs, &root)))
+        return FALSE;
+    EFI_STATUS status = root->Open(root, &file, path, EFI_FILE_MODE_READ, 0);
+    root->Close(root);
+    if (EFI_ERROR(status)) return FALSE;
+    file->Close(file);
+    return TRUE;
 }
 
 /* Read a whole file from the boot volume into EfiLoaderData pages (the
@@ -459,17 +499,22 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(
     mem_zero(&fb, sizeof(fb));
     init_framebuffer(&fb);
 
-    /* 2b. Installation media: from a CD, hand the boot files to the
-     *     kernel so its installer can copy them to a disk ---------------- */
+    /* 2b. Installation media (the ISO, on a CD or written to a USB
+     *     stick): hand the boot files to the kernel so its installer can
+     *     copy them to a disk ------------------------------------------- */
     UINT64 boot_flags = 0, media_kernel = 0, media_kernel_size = 0, media_loader = 0, media_loader_size = 0;
-    if (booted_from_cd()) {
+    if (booted_from_cd() || boot_file_exists(BOOTLOG_PATH)) {
         boot_flags |= BOOT_FLAG_LIVE_MEDIA;
+        if (booted_from_usb()) {
+            boot_flags |= BOOT_FLAG_LIVE_USB;
+            console_printf("Booted from a USB stick\r\n");
+        }
         if (EFI_ERROR(read_boot_file(KERNEL_PATH, &media_kernel, &media_kernel_size)) ||
             EFI_ERROR(read_boot_file(LOADER_PATH, &media_loader, &media_loader_size))) {
             console_printf("WARNING: could not read the installation files\r\n");
             media_kernel = media_kernel_size = media_loader = media_loader_size = 0;
         } else {
-            console_printf("Installation disc: kernel %u bytes, loader %u bytes\r\n",
+            console_printf("Installation media: kernel %u bytes, loader %u bytes\r\n",
                            media_kernel_size, media_loader_size);
         }
     }

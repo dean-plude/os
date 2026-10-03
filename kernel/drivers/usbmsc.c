@@ -13,6 +13,7 @@
 #include "usb.h"
 #include "../fs/block.h"
 #include "../fs/drives.h"
+#include "../fs/bootlog.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
@@ -286,6 +287,7 @@ void *UsbMscProbe(UsbDev *d, const UsbIface *f)
     kprintf("[USB] %s: mass storage \"%s\", %llu MiB\n", UsbDevName(d), model,
             (unsigned long long)(blocks * bsize >> 20));
     BlockRegister(&m->dev);
+    BootLogAttach(&m->dev);               /* (the stick NovaOS started from: its log goes there) */
     DrivesAttach(&m->dev);
     return m;
 }

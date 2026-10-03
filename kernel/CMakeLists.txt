@@ -157,6 +157,7 @@ set(KERNEL_C_SOURCES
     fs/drives.c
     fs/persist.c
     fs/setup.c
+    fs/bootlog.c
     net/net.c
     net/tls.c
     net/tls_roots.c
