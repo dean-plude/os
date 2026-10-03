@@ -1580,24 +1580,69 @@ static const EnvLayout g_env32 = { 4, 0x18, 0x1C, 0x20, 0x24, 0x30, 0x38, 0x40, 
 /* A pointer-sized field */
 static void put_ptr(UINT8 *b, UINT64 v, bool wow) { if (wow) put_u32(b, (UINT32)v); else wr64(b, v); }
 
+/* UTF-8 @s as UTF-16 code units: into @d when it is not NULL; the count */
+static UINT32 utf8_to_utf16(const char *s, UINT8 *d)
+{
+    UINT32 n = 0;
+    while (*s) {
+        UINT32 c = (UINT8)*s++;
+        if (c >= 0xC0) {
+            int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1;
+            c &= 0x3F >> more;
+            while (more-- && ((UINT8)*s & 0xC0) == 0x80) c = c << 6 | ((UINT8)*s++ & 0x3F);
+        }
+        if (c >= 0x10000) {
+            c -= 0x10000;
+            if (d) { put_u16(d + 2 * n, (UINT16)(0xD800 + (c >> 10))); put_u16(d + 2 * n + 2, (UINT16)(0xDC00 + (c & 0x3FF))); }
+            n += 2;
+        } else {
+            if (d) put_u16(d + 2 * n, (UINT16)c);
+            n++;
+        }
+    }
+    return n;
+}
+
+/* Fill the UNICODE_STRING at @us for @n units at user address @va */
+static void put_us(UINT8 *us, UINT32 n, UINT64 va, const EnvLayout *lay, bool wow)
+{
+    put_u16(us, (UINT16)(2 * n));
+    put_u16(us + 2, (UINT16)(2 * n + 2));
+    put_ptr(us + lay->us_buf, va, wow);
+}
+
 /* Append an ASCII/UTF-8 string as UTF-16 (NUL-terminated) at *off; fill
  * the UNICODE_STRING at @us (whose buffer pointer is at @us_buf; the
  * parameters are at user address @va).  False if it doesn't fit. */
 static bool put_ustr(UINT8 *buf, UINT32 cap, UINT32 *off, UINT8 *us, const char *s,
                      UINT64 va, const EnvLayout *lay, bool wow)
 {
-    UINT32 n = (UINT32)strlen(s);
+    UINT32 n = utf8_to_utf16(s, NULL);
     if (*off + 2 * (n + 1) > cap) return false;
     UINT8 *d = buf + *off;
-    for (UINT32 i = 0; i < n; i++) put_u16(d + 2 * i, (UINT8)s[i]);
+    utf8_to_utf16(s, d);
     put_u16(d + 2 * n, 0);
-    if (us) {
-        put_u16(us, (UINT16)(2 * n));
-        put_u16(us + 2, (UINT16)(2 * n + 2));
-        put_ptr(us + lay->us_buf, va + *off, wow);
-    }
+    if (us) put_us(us, n, va + *off, lay, wow);
     *off += (2 * (n + 1) + 7) & ~7U;
     return true;
+}
+
+/* A string too long for the parameters' pages (a command line of up to
+ * 32,766 characters, as Windows takes): in a region of its own */
+static bool put_ustr_region(UmProcess *p, UINT8 *us, const char *s, const EnvLayout *lay, bool wow)
+{
+    UINT32 n = utf8_to_utf16(s, NULL);
+    if (n > UM_CMDLINE_MAX) return false;
+    UINT64 size = ((UINT64)(n + 1) * 2 + PAGE_SIZE - 1) & ~(UINT64)(PAGE_SIZE - 1);
+    UINT8 *b = kzalloc(size);
+    if (!b) return false;
+    utf8_to_utf16(s, b);
+    UINT64 va = um_find_free(p, size, p->lay.alloc_min, p->lay.alloc_max);
+    bool ok = va && um_region_add(p, va, size, 0x04, false) && um_commit(p, va, size, 0x04) &&
+              um_write(p, va, b, size);
+    kfree(b);
+    if (ok) put_us(us, n, va, lay, wow);
+    return ok;
 }
 
 /* The environment block (UTF-16) in a region of its own: @env holds
@@ -1767,7 +1812,8 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
              put_ustr(pp, sz, &off, pp + L->dll_path, w ? "C:\\Windows\\SysWOW64" : "C:\\Windows\\System32",
                       pva, L, w) &&                                                   /* DllPath */
              put_ustr(pp, sz, &off, pp + L->image, image_path, pva, L, w) &&          /* ImagePathName */
-             put_ustr(pp, sz, &off, pp + L->cmdline, cmdline, pva, L, w);             /* CommandLine */
+             (put_ustr(pp, sz, &off, pp + L->cmdline, cmdline, pva, L, w) ||         /* CommandLine */
+              put_ustr_region(p, pp + L->cmdline, cmdline, L, w));
         /* Environment block: the creator's, or the default one */
         char ncpu[32];
         ksnprintf(ncpu, sizeof(ncpu), "NUMBER_OF_PROCESSORS=%u", (unsigned)g_cpu_count);

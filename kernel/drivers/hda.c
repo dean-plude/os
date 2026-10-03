@@ -17,6 +17,30 @@
  * path to an input pin that has something attached (a microphone first,
  * then line in) records into a second ring, 48 kHz 16-bit stereo too, on
  * the first input stream.
+ *
+ * Laptops (Phase 21.4, the ThinkPad T14 Gen 4): Intel's controllers from
+ * Skylake on sit next to an audio DSP, and with the DSP switched on in
+ * the firmware they report PCI class 04.01 ("audio device") instead of
+ * 04.03, with the same HD Audio registers; those are taken by device ID,
+ * or by their HD Audio version registers when the ID is not in the list
+ * (an AC'97 controller, also class 04.01, has I/O BARs and is left
+ * alone).  Before their reset the clock gating of the link is turned off
+ * (CGCTL.MISCBDCGE, as Linux and the Intel datasheets do), and traffic
+ * class 0 and snooped DMA are chosen.  Their digital microphones hang off
+ * the DSP, not the codec, and stay silent here.
+ *
+ * Speakers and headphones: a laptop codec has a speaker pin and a
+ * headphone jack that can tell whether something is plugged in (pin
+ * sense).  HdaPollJacks() reads the jacks twice a second and turns the
+ * speaker pins off while headphones are in, on again when they come out.
+ * Realtek's ALC256 family (ALC256, ALC257 as in the T14, ALC236) gets the
+ * one vendor setting Linux's driver makes for it at start: processing
+ * coefficient 0x36 = 0x5757, which takes pin 0x1A off the PC-beep
+ * loopback that otherwise reaches every output.
+ *
+ * HdaSelfCheck() runs the codec setup and the jack handling against a
+ * modelled ALC257 (QEMU's codecs have no pin sense and no Realtek
+ * registers) and the controller matching against the T14's IDs.
  */
 
 #include "hda.h"
@@ -71,8 +95,13 @@
 #define VERB_SET_PIN_CTL    0x707
 #define VERB_SET_EAPD       0x70C
 #define VERB_GET_CONFIG     0xF1C
+#define VERB_GET_SUBSYSTEM  0xF20
+#define VERB_EXEC_SENSE     0x709
+#define VERB_GET_PIN_SENSE  0xF09
 #define VERB4_SET_FORMAT    0x2
 #define VERB4_SET_AMP       0x3
+#define VERB4_SET_COEF      0x4         /* Realtek: processing coefficient (on NID 0x20) */
+#define VERB4_SET_COEF_IDX  0x5
 
 #define PAR_VENDOR      0x00
 #define PAR_NODES       0x04
@@ -94,6 +123,8 @@
 #define WCAP_CONN_LIST  (1u << 8)
 #define WCAP_POWER      (1u << 10)
 
+#define PINCAP_TRIGGER  (1u << 1)        /* pin sense must be triggered first */
+#define PINCAP_PRESENCE (1u << 2)        /* presence detect */
 #define PINCAP_OUT      (1u << 4)
 #define PINCAP_IN       (1u << 5)
 #define PINCAP_HP       (1u << 3)
@@ -102,6 +133,18 @@
 #define STREAM_TAG  1
 #define IN_STREAM_TAG 2
 #define FMT_48K_16_STEREO 0x0011        /* base 48 kHz, x1 /1, 16 bits, 2 channels */
+
+/* PCI configuration registers of Intel's controllers */
+#define INTEL_TCSEL      0x44           /* traffic class select (bits 2:0) */
+#define INTEL_CGCTL      0x48           /* clock gating control (Skylake on) */
+#define CGCTL_MISCBDCGE  (1u << 6)      /*   miscellaneous backbone dynamic clock gating */
+#define INTEL_DEVC       0x78           /* device control */
+#define DEVC_NOSNOOP     (1u << 11)
+
+#define DEV_SPEAKER 0x1                 /* pin configuration default: device */
+#define DEV_HP      0x2
+
+#define MAX_JACKS   8
 
 #define RING_ENTRIES 16                 /* BDL entries, a page each: 64 KiB = 341 ms */
 #define RING_BYTES   (RING_ENTRIES * PAGE_SIZE)
@@ -122,7 +165,14 @@ typedef struct {
     bool   used;                        /* on a configured path */
 } Widget;
 
-static struct {
+/* An output pin the jack handling looks after: a speaker (muted while
+ * headphones are in) or a headphone jack that can sense a plug */
+typedef struct {
+    UINT8 cad, nid, dev;
+    bool  trigger;                      /* sense needs an Execute first */
+} Jack;
+
+typedef struct {
     bool            present;
     char            name[96];
     volatile UINT8 *mmio;
@@ -141,7 +191,20 @@ static struct {
     INT16          *iring;
     bool            irunning;
     char            iname[48];          /* what is recorded: "Microphone", "Line in" */
-} g;
+    /* speakers and headphone jacks */
+    Jack            jacks[MAX_JACKS];
+    int             njacks;
+    int             hp_in;              /* headphones plugged in (-1: not read yet) */
+    /* HdaSelfCheck: commands go to a modelled codec instead */
+    bool          (*model)(UINT32 verb, UINT32 *resp);
+} HdaState;
+
+static HdaState g;
+
+static int g_busy;                      /* codec commands in progress (setup, jacks, the check) */
+
+static void lock_codecs(void)   { while (__atomic_exchange_n(&g_busy, 1, __ATOMIC_ACQUIRE)) pause_cpu(); }
+static void unlock_codecs(void) { __atomic_store_n(&g_busy, 0, __ATOMIC_RELEASE); }
 
 static inline UINT8  rd8(UINT32 r)            { return *(volatile UINT8 *)(g.mmio + r); }
 static inline UINT16 rd16(UINT32 r)           { return *(volatile UINT16 *)(g.mmio + r); }
@@ -166,6 +229,7 @@ static void delay_ms(int ms)
  * ----------------------------------------------------------------------- */
 static bool cmd(UINT32 verb, UINT32 *resp)
 {
+    if (g.model) return g.model(verb, resp);
     UINT16 wp = (UINT16)((rd16(CORBWP) + 1) & 0xFF);
     g.corb[wp] = verb;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
@@ -320,6 +384,27 @@ static void setup_input(int cad, int ws, int wn)
         }
 }
 
+/* Realtek's ALC256 family: coefficient 0x36 = 0x5757 (pin 0x1A is not
+ * PC beep and loops back into no output), as Linux's alc256_init() */
+static void realtek_init(int cad, UINT32 vendor)
+{
+    if (vendor != 0x10EC0256 && vendor != 0x10EC0257 && vendor != 0x10EC0236) return;
+    verb4(cad, 0x20, VERB4_SET_COEF_IDX, 0x36);
+    verb4(cad, 0x20, VERB4_SET_COEF, 0x5757);
+}
+
+static void add_jack(int cad, int nid, UINT32 dev)
+{
+    Widget *w = &g.w[nid];
+    if (g.njacks == MAX_JACKS) return;
+    if (dev == DEV_HP) {                /* a jack that senses a plug */
+        if ((w->config >> 30) != 0 || !(w->pincaps & PINCAP_PRESENCE) || (w->config & (1u << 8))) return;
+    } else if (dev != DEV_SPEAKER) {
+        return;
+    }
+    g.jacks[g.njacks++] = (Jack){ (UINT8)cad, (UINT8)nid, (UINT8)dev, (w->pincaps & PINCAP_TRIGGER) != 0 };
+}
+
 static void setup_codec(int cad)
 {
     UINT32 vendor = param(cad, 0, PAR_VENDOR);
@@ -328,6 +413,8 @@ static void setup_codec(int cad)
     for (int fg = start; fg < start + count; fg++) {
         if ((param(cad, fg, PAR_FG_TYPE) & 0xFF) != 1) continue;     /* audio function group */
         verb12(cad, fg, VERB_SET_POWER, 0);
+        UINT32 subsys = verb12(cad, fg, VERB_GET_SUBSYSTEM, 0);
+        realtek_init(cad, vendor);
         UINT32 sub = param(cad, fg, PAR_NODES);
         int ws = (int)((sub >> 16) & 0xFF), wn = (int)(sub & 0xFF);
         memset(g.w, 0, sizeof(g.w));
@@ -353,15 +440,55 @@ static void setup_codec(int cad)
             verb12(cad, nid, VERB_SET_PIN_CTL, 0x40 | ((w->pincaps & PINCAP_HP) && dev == 2 ? 0x80 : 0));
             if (w->pincaps & PINCAP_EAPD) verb12(cad, nid, VERB_SET_EAPD, 0x02);
             unmute_out(cad, nid);
+            add_jack(cad, nid, dev);
             routed++;
         }
         int had = g.inputs;
         setup_input(cad, ws, wn);
-        kprintf("[HDA] Codec %d (%04x:%04x): %d output%s%s%s\n", cad, vendor >> 16, vendor & 0xFFFF,
-                routed, routed == 1 ? "" : "s", g.inputs > had ? ", recording from " : "",
-                g.inputs > had ? g.iname : "");
+        int spk = 0, hp = 0;
+        for (int j = 0; j < g.njacks; j++)
+            if (g.jacks[j].cad == cad) { if (g.jacks[j].dev == DEV_HP) hp++; else spk++; }
+        kprintf("[HDA] Codec %d (%04x:%04x, subsystem %04x:%04x): %d output%s%s%s%s\n", cad, vendor >> 16,
+                vendor & 0xFFFF, subsys >> 16, subsys & 0xFFFF, routed, routed == 1 ? "" : "s",
+                spk && hp ? ", speakers muted while headphones are in" : "",
+                g.inputs > had ? ", recording from " : "", g.inputs > had ? g.iname : "");
         g.outputs += routed;
     }
+}
+
+/* -----------------------------------------------------------------------
+ * Jacks: speakers off while headphones are plugged in
+ * ----------------------------------------------------------------------- */
+static void poll_jacks(bool quiet)
+{
+    int hp = 0, any = 0;
+    for (int j = 0; j < g.njacks; j++) {
+        Jack *k = &g.jacks[j];
+        if (k->dev != DEV_HP) continue;
+        any = 1;
+        if (k->trigger) verb12(k->cad, k->nid, VERB_EXEC_SENSE, 0);
+        if (verb12(k->cad, k->nid, VERB_GET_PIN_SENSE, 0) & (1u << 31)) hp = 1;
+    }
+    if (!any || hp == g.hp_in) return;
+    int had = g.hp_in;
+    g.hp_in = hp;
+    int muted = 0;
+    for (int j = 0; j < g.njacks; j++) {
+        Jack *k = &g.jacks[j];
+        if (k->dev != DEV_SPEAKER) continue;
+        verb12(k->cad, k->nid, VERB_SET_PIN_CTL, hp ? 0x00 : 0x40);
+        muted++;
+    }
+    if (!quiet && muted && (had >= 0 || hp))
+        kprintf("[HDA] Headphones %s: speakers %s\n", hp ? "plugged in" : "unplugged", hp ? "off" : "on");
+}
+
+void HdaPollJacks(void)
+{
+    if (!g.present || !g.njacks) return;
+    if (__atomic_exchange_n(&g_busy, 1, __ATOMIC_ACQUIRE)) return;    /* (setup or the check has the codecs) */
+    poll_jacks(false);
+    unlock_codecs();
 }
 
 /* -----------------------------------------------------------------------
@@ -466,40 +593,137 @@ static bool start_stream(UINT16 gcap)
     return true;
 }
 
+/* Intel's controllers by device ID; "dsp": Skylake and later, which have
+ * the audio DSP beside them (class 04.01 when it is on) and clock gating
+ * to turn off around the reset.  IDs from FreeBSD's hdac (BSD licence). */
+static const struct { UINT16 id; bool dsp; const char *name; } g_intel[] = {
+    { 0x2668, false, "Intel 82801FB (ICH6)" },   { 0x293E, false, "Intel 82801I (ICH9)" },
+    { 0x9D70, true,  "Intel Sunrise Point-LP" }, { 0x9D71, true,  "Intel Kaby Lake-LP" },
+    { 0xA170, true,  "Intel Sunrise Point" },    { 0xA348, true,  "Intel Coffee Lake" },
+    { 0x9DC8, true,  "Intel Cannon Lake" },      { 0x02C8, true,  "Intel Comet Lake-LP" },
+    { 0x06C8, true,  "Intel Comet Lake-H" },     { 0xA3F0, true,  "Intel Comet Lake-S" },
+    { 0x34C8, true,  "Intel Ice Lake" },         { 0xA0C8, true,  "Intel Tiger Lake" },
+    { 0x43C8, true,  "Intel Tiger Lake-H" },     { 0x4DC8, true,  "Intel Jasper Lake" },
+    { 0x7AD0, true,  "Intel Alder Lake" },       { 0x51C8, true,  "Intel Alder Lake-P" },
+    { 0x51C9, true,  "Intel Alder Lake-PS" },    { 0x51CC, true,  "Intel Alder Lake-M" },
+    { 0x51CD, true,  "Intel Alder Lake-P" },     { 0x54C8, true,  "Intel Alder Lake-N" },
+    { 0x51CA, true,  "Intel Raptor Lake-P" },    { 0x51CB, true,  "Intel Raptor Lake-P" },
+    { 0x51CE, true,  "Intel Raptor Lake-P" },    { 0x51CF, true,  "Intel Raptor Lake-P" },
+    { 0x7A50, true,  "Intel Raptor Lake-S" },    { 0x7E28, true,  "Intel Meteor Lake-P" },
+};
+
+static int intel_index(UINT16 vendor, UINT16 device)
+{
+    if (vendor != 0x8086) return -1;
+    for (unsigned i = 0; i < sizeof(g_intel) / sizeof(g_intel[0]); i++)
+        if (g_intel[i].id == device) return (int)i;
+    return -1;
+}
+
+int HdaPciMatch(UINT16 vendor, UINT16 device, UINT8 cls, UINT8 sub)
+{
+    if (cls != 0x04) return HDA_MATCH_NONE;
+    if (sub == 0x03) return HDA_MATCH_CLASS;
+    if (sub != 0x01 || vendor != 0x8086) return HDA_MATCH_NONE;
+    return intel_index(vendor, device) >= 0 ? HDA_MATCH_DSP : HDA_MATCH_PROBE;
+}
+
+/* A class 04.01 function that HdaPciMatch() could not decide: HD Audio if
+ * BAR0 is memory and the version registers read 1.0 with an output stream */
+static bool looks_like_hda(const PciDevice *d)
+{
+    if (PciRead32(d->bus, d->dev, d->func, 0x10) & 1) return false;         /* an I/O BAR: AC'97 */
+    volatile UINT8 *m = PciMapBar(d, 0);
+    if (!m) return false;
+    PciEnableDevice(d);
+    UINT16 gcap = *(volatile UINT16 *)(m + GCAP);
+    return m[0x03] == 1 && m[0x02] == 0 && ((gcap >> 12) & 0xF) != 0;      /* VMAJ, VMIN, OSS */
+}
+
+static bool find_controller(PciDevice *out, int *how)
+{
+    PciDevice d;
+    for (int i = 0; PciAt(i, &d, NULL); i++) {
+        int m = HdaPciMatch(d.vendor, d.device, d.class_code, d.subclass);
+        if (m == HDA_MATCH_NONE || (m == HDA_MATCH_PROBE && !looks_like_hda(&d))) continue;
+        *out = d;
+        *how = m;
+        return true;
+    }
+    return false;
+}
+
+/* Intel: TC0, snooped DMA; clock gating off around the reset (Skylake on) */
+static void intel_quirks(const PciDevice *d, bool dsp, bool before_reset)
+{
+    if (d->vendor != 0x8086 || d->device == 0x2668 || d->device == 0x293E) return;   /* (QEMU's ICH6/ICH9) */
+    UINT8 b = d->bus, v = d->dev, f = d->func;
+    if (before_reset) {
+        PciWrite32(b, v, f, INTEL_TCSEL, PciRead32(b, v, f, INTEL_TCSEL) & ~7u);
+        PciWrite32(b, v, f, INTEL_DEVC, PciRead32(b, v, f, INTEL_DEVC) & ~DEVC_NOSNOOP);
+    }
+    if (!dsp) return;
+    UINT32 cg = PciRead32(b, v, f, INTEL_CGCTL);
+    PciWrite32(b, v, f, INTEL_CGCTL, before_reset ? cg & ~CGCTL_MISCBDCGE : cg | CGCTL_MISCBDCGE);
+}
+
+static PciDevice g_dev;
+static bool      g_dsp;                 /* Skylake or later (or class 04.01) */
+
+/* Codec addresses that answered: wait up to 100 ms for them after the reset */
+static UINT16 codec_mask(void)
+{
+    UINT16 codecs = 0;
+    for (int i = 0; i < 100 && !(codecs = rd16(STATESTS)); i++) delay_ms(1);
+    wr16(STATESTS, codecs);
+    return codecs;
+}
+
 bool HdaInit(void)
 {
     PciDevice d;
-    if (!PciFindClass(0x04, 0x03, 0x00, 0, &d)) {
+    int how = HDA_MATCH_NONE;
+    if (!find_controller(&d, &how)) {
         kprintf("[HDA] No HD Audio controller\n");
         return false;
     }
     UINT64 bar = PciBarAddress(&d, 0);
     if (!bar) { kprintf("[HDA] BAR0 is not a memory BAR\n"); return false; }
     PciEnableDevice(&d);
-    g.mmio = (volatile UINT8 *)(uintptr_t)(PHYSMAP_BASE + bar);
+    g.mmio = (volatile UINT8 *)PciMapBar(&d, 0);
+    if (!g.mmio) { kprintf("[HDA] BAR0 can't be mapped\n"); return false; }
+    int ix = intel_index(d.vendor, d.device);
+    g_dev = d;
+    g_dsp = how == HDA_MATCH_DSP || how == HDA_MATCH_PROBE || (ix >= 0 && g_intel[ix].dsp);
+    g.hp_in = -1;
 
-    if (!reset_controller()) { kprintf("[HDA] Controller did not leave reset\n"); return false; }
+    lock_codecs();
+    intel_quirks(&d, g_dsp, true);
+    bool up = reset_controller();
+    intel_quirks(&d, g_dsp, false);
+    if (!up) { unlock_codecs(); kprintf("[HDA] Controller did not leave reset\n"); return false; }
     wr32(INTCTL, 0);                                /* polled */
     wr32(DPLBASE, 0);
     setup_rings();
 
-    UINT16 codecs = rd16(STATESTS);
-    wr16(STATESTS, codecs);
+    UINT16 codecs = codec_mask();
     for (int cad = 0; cad < 15; cad++)
         if (codecs & (1u << cad)) setup_codec(cad);
+    poll_jacks(true);
+    unlock_codecs();
     if (!g.outputs) { kprintf("[HDA] No codec output to play through\n"); return false; }
 
     UINT16 gcap = rd16(GCAP);
     if (!start_stream(gcap)) { kprintf("[HDA] No output stream\n"); return false; }
 
-    const char *chip = d.vendor == 0x8086 && d.device == 0x2668 ? "Intel 82801FB (ICH6)" :
-                       d.vendor == 0x8086 && d.device == 0x293E ? "Intel 82801I (ICH9)" : 0;
-    if (chip) ksnprintf(g.name, sizeof(g.name), "High Definition Audio (%s)", chip);
+    if (ix >= 0) ksnprintf(g.name, sizeof(g.name), "High Definition Audio (%s)", g_intel[ix].name);
     else ksnprintf(g.name, sizeof(g.name), "High Definition Audio (%04x:%04x)", d.vendor, d.device);
     g.present = true;
     PciClaim(&d, "HD Audio");
-    kprintf("[HDA] %s at %02x:%02x.%x, %d output stream%s, playing 48 kHz 16-bit stereo\n",
-            g.name, d.bus, d.dev, d.func, (gcap >> 12) & 0xF, ((gcap >> 12) & 0xF) == 1 ? "" : "s");
+    kprintf("[HDA] %s at %02x:%02x.%x%s, %d output stream%s, playing 48 kHz 16-bit stereo%s\n",
+            g.name, d.bus, d.dev, d.func, d.subclass == 0x01 ? " (class 04.01: the audio DSP is on)" : "",
+            (gcap >> 12) & 0xF, ((gcap >> 12) & 0xF) == 1 ? "" : "s",
+            g.hp_in > 0 ? ", headphones plugged in" : "");
     return true;
 }
 
@@ -509,16 +733,23 @@ bool HdaInit(void)
 void HdaResume(void)
 {
     if (!g.present) return;
-    if (!reset_controller()) { kprintf("[HDA] Controller did not leave reset after sleep\n"); return; }
+    lock_codecs();
+    intel_quirks(&g_dev, g_dsp, true);
+    bool up = reset_controller();
+    intel_quirks(&g_dev, g_dsp, false);
+    if (!up) { unlock_codecs(); kprintf("[HDA] Controller did not leave reset after sleep\n"); return; }
     wr32(INTCTL, 0);
     wr32(DPLBASE, 0);
     setup_rings();
-    UINT16 codecs = rd16(STATESTS);
-    wr16(STATESTS, codecs);
+    UINT16 codecs = codec_mask();
     g.outputs = 0;
     g.inputs = 0;
+    g.njacks = 0;
+    g.hp_in = -1;
     for (int cad = 0; cad < 15; cad++)
         if (codecs & (1u << cad)) setup_codec(cad);
+    poll_jacks(true);
+    unlock_codecs();
     program_stream();
 }
 
@@ -559,4 +790,151 @@ UINT32 HdaCapturePosition(void)
     if (!HdaCanRecord()) return 0;
     UINT32 p = rd32(g.isd + SD_LPIB);
     return p < RING_BYTES ? p & ~3u : 0;
+}
+
+/* -----------------------------------------------------------------------
+ * HdaSelfCheck: a modelled ALC257
+ *
+ * The widget graph of a Realtek ALC257 as a ThinkPad sets it up: DACs 0x02
+ * and 0x03, ADCs 0x08 and 0x09 behind input mixers 0x23 and 0x22, the
+ * internal speaker on pin 0x14 (EAPD), the headphone jack on 0x21 and the
+ * headset microphone on 0x19 (both sensing a plug), the digital
+ * microphones' pins 0x12/0x13 unused (they are on the DSP), the PC-beep
+ * pin 0x1D, and the vendor widget 0x20 with the processing coefficients.
+ * It answers the verbs the driver sends and remembers what it was told.
+ * ----------------------------------------------------------------------- */
+typedef struct { UINT8 nid; UINT32 caps, pincaps, config, outamp, inamp; UINT8 conn[8]; } ModelWidget;
+
+static const ModelWidget g_alc257[] = {
+    { 0x02, 0x00041D, 0, 0, 0x00025757, 0, { 0 } },
+    { 0x03, 0x00041D, 0, 0, 0x00025757, 0, { 0 } },
+    { 0x08, 0x10051B, 0, 0, 0, 0x80023F17, { 0x23 } },
+    { 0x09, 0x10051B, 0, 0, 0, 0x80023F17, { 0x22 } },
+    { 0x0B, 0x20010B, 0, 0, 0, 0x80051F17, { 0x18, 0x19, 0x1A, 0x1B, 0x1D } },
+    { 0x12, 0x40000B, 0x00000020, 0x40000000, 0, 0, { 0 } },
+    { 0x13, 0x40000B, 0x00000020, 0x40000000, 0, 0, { 0 } },
+    { 0x14, 0x40058D, 0x00010010, 0x90170110, 0x80000000, 0, { 0x02, 0x03 } },
+    { 0x18, 0x40048B, 0x00003724, 0x411111F0, 0, 0x00270300, { 0 } },
+    { 0x19, 0x40048B, 0x00003724, 0x04A11030, 0, 0x00270300, { 0 } },
+    { 0x1A, 0x40048B, 0x00003724, 0x411111F0, 0, 0x00270300, { 0 } },
+    { 0x1B, 0x40058F, 0x0001373C, 0x411111F0, 0x80000000, 0x00270300, { 0x02, 0x03 } },
+    { 0x1D, 0x400400, 0x00000020, 0x40661B45, 0, 0, { 0 } },
+    { 0x1E, 0x400781, 0x00000014, 0x411111F0, 0, 0, { 0x06 } },
+    { 0x20, 0xF00040, 0, 0, 0, 0, { 0 } },
+    { 0x21, 0x40058D, 0x0001001C, 0x04211020, 0x80000000, 0, { 0x02, 0x03 } },
+    { 0x22, 0x20010B, 0, 0, 0, 0x80000000, { 0x18, 0x19, 0x1A, 0x1B, 0x1D, 0x0B } },
+    { 0x23, 0x20010B, 0, 0, 0, 0x80000000, { 0x18, 0x19, 0x1A, 0x1B, 0x1D, 0x12, 0x13 } },
+};
+
+static struct {
+    bool   hp, mic;                     /* headphones / headset plugged in */
+    UINT8  pinctl[MAX_NODES], eapd[MAX_NODES], stream[MAX_NODES];
+    UINT16 coef_idx;
+    UINT16 coef[0x80];
+} g_m;
+
+static const ModelWidget *model_widget(int nid)
+{
+    for (unsigned i = 0; i < sizeof(g_alc257) / sizeof(g_alc257[0]); i++)
+        if (g_alc257[i].nid == nid) return &g_alc257[i];
+    return NULL;
+}
+
+static bool model_cmd(UINT32 v, UINT32 *resp)
+{
+    int cad = (int)(v >> 28), nid = (int)((v >> 20) & 0x7F);
+    UINT32 id4 = (v >> 16) & 0xF, verb = (v >> 8) & 0xFFF, pl = v & 0xFF, r = 0;
+    if (cad != 0) return false;                                      /* (no such codec: no answer) */
+    const ModelWidget *w = model_widget(nid);
+    if (id4 == 0x2 || id4 == 0x3) {                                  /* format, amp: accepted */
+    } else if (id4 == 0x5) {
+        if (nid == 0x20) g_m.coef_idx = (UINT16)(v & 0xFFFF);
+    } else if (id4 == 0x4) {
+        if (nid == 0x20 && g_m.coef_idx < 0x80) g_m.coef[g_m.coef_idx] = (UINT16)(v & 0xFFFF);
+    } else if (verb == VERB_GET_PARAM) {
+        switch (pl) {
+        case PAR_VENDOR: r = nid == 0 ? 0x10EC0257 : 0; break;
+        case PAR_NODES:  r = nid == 0 ? 0x00010001 : nid == 1 ? 0x00020022 : 0; break;
+        case PAR_FG_TYPE: r = nid == 1 ? 0x00000101 : 0; break;
+        case PAR_WCAPS:  r = w ? w->caps : 0; break;
+        case PAR_PINCAPS: r = w ? w->pincaps : 0; break;
+        case PAR_OUT_AMP: r = w ? w->outamp : 0; break;
+        case PAR_IN_AMP: r = w ? w->inamp : 0; break;
+        case PAR_CONN_LEN: { int n = 0; while (w && n < 8 && w->conn[n]) n++; r = (UINT32)n; break; }
+        }
+    } else if (verb == VERB_GET_CONN_LIST) {
+        for (int k = 0; k < 4 && w && pl + k < 8; k++) r |= (UINT32)w->conn[pl + k] << (8 * k);
+    } else if (verb == VERB_GET_CONFIG) {
+        r = w ? w->config : 0;
+    } else if (verb == VERB_GET_SUBSYSTEM) {
+        r = nid == 1 ? 0x17AA0000 : 0;
+    } else if (verb == VERB_GET_PIN_SENSE) {
+        r = (nid == 0x21 && g_m.hp) || (nid == 0x19 && g_m.mic) ? 0x80000000u : 0;
+    } else if (verb == VERB_SET_PIN_CTL) {
+        g_m.pinctl[nid] = (UINT8)pl;
+    } else if (verb == VERB_SET_EAPD) {
+        g_m.eapd[nid] = (UINT8)pl;
+    } else if (verb == VERB_SET_STREAM) {
+        g_m.stream[nid] = (UINT8)pl;
+    }
+    if (resp) *resp = r;
+    return true;
+}
+
+int HdaSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
+{
+    int failed = 0;
+    char line[160];
+#define CHECK(ok, ...) do { bool ok_ = (ok); ksnprintf(line, sizeof(line), __VA_ARGS__); \
+                            char out_[176]; ksnprintf(out_, sizeof(out_), "%s %s", ok_ ? "ok  " : "FAIL", line); \
+                            say(ctx, out_); if (!ok_) failed++; } while (0)
+
+    /* Controllers: the T14 Gen 4's (Raptor Lake-P) with the DSP on and
+     * off, QEMU's, and class 04.01 functions that are not HD Audio */
+    CHECK(HdaPciMatch(0x8086, 0x51CA, 0x04, 0x01) == HDA_MATCH_DSP, "Raptor Lake-P 8086:51ca, class 04.01 (DSP on): HD Audio by ID");
+    CHECK(HdaPciMatch(0x8086, 0x51CA, 0x04, 0x03) == HDA_MATCH_CLASS, "Raptor Lake-P 8086:51ca, class 04.03 (DSP off): HD Audio by class");
+    CHECK(HdaPciMatch(0x8086, 0x2668, 0x04, 0x03) == HDA_MATCH_CLASS, "QEMU ICH6 8086:2668, class 04.03: HD Audio by class");
+    CHECK(HdaPciMatch(0x8086, 0x2415, 0x04, 0x01) == HDA_MATCH_PROBE, "AC'97 8086:2415, class 04.01: only if its registers are HD Audio's");
+    CHECK(HdaPciMatch(0x1022, 0x15E3, 0x04, 0x01) == HDA_MATCH_NONE, "1022:15e3, class 04.01, not Intel: not taken");
+    CHECK(HdaPciMatch(0x8086, 0x51C8, 0x04, 0x80) == HDA_MATCH_NONE, "8086:51c8, class 04.80: not taken");
+
+    /* The modelled ALC257 through the real setup */
+    static HdaState saved;
+    lock_codecs();
+    saved = g;
+    memset(&g_m, 0, sizeof(g_m));
+    g.model = model_cmd;
+    g.outputs = 0;
+    g.inputs = 0;
+    g.njacks = 0;
+    g.hp_in = -1;
+    g.iname[0] = '\0';
+    setup_codec(0);
+    poll_jacks(true);
+    int outputs = g.outputs, njacks = g.njacks;
+    bool speaker_on = g_m.pinctl[0x14] == 0x40 && g_m.eapd[0x14] == 0x02;
+    bool hp_pin = g_m.pinctl[0x21] == 0xC0;
+    bool dac = g_m.stream[0x02] == STREAM_TAG << 4;
+    bool unused_off = g_m.pinctl[0x12] == 0 && g_m.pinctl[0x1D] == 0 && g_m.pinctl[0x18] == 0;
+    bool mic = g.inputs == 1 && strcmp(g.iname, "Microphone") == 0 && g_m.pinctl[0x19] == 0x20;
+    UINT16 coef36 = g_m.coef[0x36];
+    g_m.hp = true;                                    /* headphones in */
+    poll_jacks(true);
+    bool muted = g_m.pinctl[0x14] == 0x00 && g_m.pinctl[0x21] == 0xC0;
+    g_m.hp = false;                                   /* and out again */
+    poll_jacks(true);
+    bool back = g_m.pinctl[0x14] == 0x40;
+    g = saved;
+    unlock_codecs();
+
+    CHECK(outputs == 2 && njacks == 2, "ALC257: speaker 0x14 and headphone jack 0x21 routed (%d outputs, %d watched)", outputs, njacks);
+    CHECK(speaker_on && dac, "ALC257: speaker pin out with EAPD on, DAC 0x02 on the output stream");
+    CHECK(hp_pin, "ALC257: headphone pin out with its amplifier");
+    CHECK(unused_off, "ALC257: unused pins (DMIC 0x12, PC beep 0x1D, 0x18) left off");
+    CHECK(mic, "ALC257: records from the headset microphone 0x19");
+    CHECK(coef36 == 0x5757, "ALC257: coefficient 0x36 = 0x%04x (want 0x5757: no PC-beep loopback)", coef36);
+    CHECK(muted, "ALC257: headphones plugged in: speaker pin off, headphones on");
+    CHECK(back, "ALC257: headphones unplugged: speaker pin on again");
+#undef CHECK
+    return failed;
 }
