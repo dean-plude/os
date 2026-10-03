@@ -42,7 +42,15 @@ typedef struct {
                         * dx, dy: where (0-65535 across the screen); pressed: touching */
     UINT16 pressure;   /* INPUT_PEN: 0..TABLET_PRESSURE; dx, dy absolute; buttons: bit 0 the
                         * tip, 1-2 the barrel buttons; pressed: in range; extended: eraser */
+    INT16  tilt_x, tilt_y; /* INPUT_PEN: tenths of a degree from upright, -900..900: + is the
+                        * pen's top leaning right (x) or toward the user (y), as Windows' */
+    UINT16 twist;      /* INPUT_PEN: barrel rotation, tenths of a degree clockwise, 0..3599 */
+    UINT8  pen_has;    /* INPUT_PEN: PEN_HAS_*, what the device reports (others are 0) */
 } InputEvent;
+
+/* InputEvent.pen_has */
+#define PEN_HAS_TILT  1
+#define PEN_HAS_TWIST 2
 
 /* -----------------------------------------------------------------------
  * Keyboard translation

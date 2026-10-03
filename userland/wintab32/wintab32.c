@@ -9,7 +9,13 @@
  * present WTInfo(0, 0, NULL) is 0, which programs read as "no Wintab", and
  * WTOpen fails.  With one, there is one device with two cursors (0 the pen
  * tip, 1 its eraser), X and Y 0-65535 (Y up, as on a tablet), pressure
- * 0-1023 and three buttons (the tip and two barrel buttons).
+ * 0-1023 and three buttons (the tip and two barrel buttons).  When a pen
+ * present reports tilt (USB pens' X/Y Tilt, evdev pens' ABS_TILT_X/Y,
+ * synthetic pens' tiltX/tiltY), DVC_ORIENTATION has azimuth (0-3599,
+ * clockwise from the tablet's top) and altitude (-900..900, negative for
+ * the eraser) axes and each packet's ORIENTATION carries them; with barrel
+ * rotation, the twist axis (0-3599) too.  Without, those axes are empty
+ * and the orientation stays upright (azimuth 0, altitude 900, twist 0).
  *
  * A context opened with WTOpen gets the packets that come while it is
  * enabled and one of this process's windows is in front, in its own queue
@@ -181,10 +187,17 @@ typedef struct {
     UINT32 serial, time;
     INT32  x, y;                     /* 0-65535 across the desktop, y down */
     UINT16 pressure;                 /* 0-1023 */
-    UINT8  buttons, flags;           /* flags: 1 in range, 2 eraser */
+    UINT8  buttons, flags;           /* flags: 1 in range, 2 eraser, 4 tilt given, 8 twist given */
+    INT16  tilt_x, tilt_y;           /* tenths of a degree: + right, + toward the user */
+    UINT16 twist, reserved;          /* tenths of a degree clockwise */
 } KPacket;
+#define KP_TILT  4
+#define KP_TWIST 8
+#define CAP_TILT  1                  /* op 5's answer */
+#define CAP_TWIST 2
 
 static int devices(void) { return (int)NtNovaGuiCtl(0, CTL_TABLET, 0, NULL); }
+static int caps(void) { return (int)NtNovaGuiCtl(0, CTL_TABLET, 5, NULL); }
 
 /* ---- the tablet as Wintab describes it ------------------------------ */
 #define EXT        65536             /* tablet units across X and Y */
@@ -197,6 +210,59 @@ static int devices(void) { return (int)NtNovaGuiCtl(0, CTL_TABLET, 0, NULL); }
 static const AXIS g_axis_xy = { 0, EXT - 1, TU_INCHES, 6553u << 16 };   /* a 10-inch-wide tablet */
 static const AXIS g_axis_np = { 0, NPRESS, TU_NONE, 0 };
 static const AXIS g_axis_none = { 0, 0, TU_NONE, 0 };
+static const AXIS g_axis_azimuth = { 0, 3599, TU_CIRCLE, 3600u << 16 };     /* tenths of a degree */
+static const AXIS g_axis_altitude = { -900, 900, TU_CIRCLE, 3600u << 16 };
+static const AXIS g_axis_twist = { 0, 3599, TU_CIRCLE, 3600u << 16 };
+
+/* ---- tilt to azimuth and altitude (no C runtime here) ---------------- */
+int _fltused = 0x9875;                           /* floating point in use (the compiler references it) */
+#define PI 3.14159265358979323846
+
+static double sin_(double x)                     /* |x| <= pi/2 */
+{
+    double x2 = x * x, t = x, r = x;
+    for (int k = 1; k < 9; k++) { t *= -x2 / ((2 * k) * (2 * k + 1)); r += t; }
+    return r;
+}
+static double cos_(double x) { return sin_(PI / 2 - (x < 0 ? -x : x)); }
+
+static double atan_(double x)                    /* Abramowitz and Stegun 4.4.49, |x| <= 1 */
+{
+    double x2 = x * x;
+    return x * (0.9998660 + x2 * (-0.3302995 + x2 * (0.1801410 + x2 * (-0.0851330 + x2 * 0.0208351))));
+}
+static double atan2_(double y, double x)
+{
+    double ay = y < 0 ? -y : y, ax = x < 0 ? -x : x;
+    if (ax == 0 && ay == 0) return 0;
+    double a = ay <= ax ? atan_(ay / ax) : PI / 2 - atan_(ax / ay);
+    if (x < 0) a = PI - a;
+    return y < 0 ? -a : a;
+}
+static double sqrt_(double v)
+{
+    if (v <= 0) return 0;
+    double r = v > 1 ? v : 1;
+    for (int i = 0; i < 40; i++) r = 0.5 * (r + v / r);
+    return r;
+}
+
+/* Tilt X and Y (tenths of a degree from upright; + right, + toward the
+ * user) as Wintab's azimuth (clockwise from the top) and altitude (from the
+ * tablet's surface), in tenths: Qt's conversion turned around */
+static void tilt_orientation(int tx10, int ty10, int *az, int *alt)
+{
+    if (tx10 > 899) tx10 = 899;
+    if (tx10 < -899) tx10 = -899;
+    if (ty10 > 899) ty10 = 899;
+    if (ty10 < -899) ty10 = -899;
+    double ax = tx10 * PI / 1800, ay = ty10 * PI / 1800;
+    double tx = sin_(ax) / cos_(ax), ty = sin_(ay) / cos_(ay);
+    double r = sqrt_(tx * tx + ty * ty);
+    int a = (int)(atan2_(tx, -ty) * 1800 / PI + (tx >= 0 ? 0.5 : -0.5));
+    *az = r == 0 ? 0 : (a + 3600) % 3600;
+    *alt = (int)(atan2_(1, r) * 1800 / PI + 0.5);
+}
 
 /* A packet with every field, before a context picks its own */
 typedef struct {
@@ -219,6 +285,7 @@ typedef struct Ctx {
     DWORD        last_buttons;
     int          last_press, last_cursor, near;
     LONG         last_x, last_y;
+    int          last_orient[3];
 } Ctx;
 #define CTX_MAGIC 0x78744357        /* "WCtx" */
 
@@ -348,7 +415,14 @@ static UINT info(UINT cat, UINT idx, int wide, Answer *r)
         case DVC_X: case DVC_Y: put(r, &g_axis_xy, sizeof(AXIS)); break;
         case DVC_Z: case DVC_TPRESSURE: put(r, &g_axis_none, sizeof(AXIS)); break;
         case DVC_NPRESSURE: put(r, &g_axis_np, sizeof(AXIS)); break;
-        case DVC_ORIENTATION: case DVC_ROTATION: {          /* no tilt or rotation */
+        case DVC_ORIENTATION: {                             /* azimuth, altitude, twist: what the pens can report */
+            int c = caps();
+            AXIS a[3] = { c & CAP_TILT ? g_axis_azimuth : g_axis_none, c & CAP_TILT ? g_axis_altitude : g_axis_none,
+                          c & CAP_TWIST ? g_axis_twist : g_axis_none };
+            put(r, a, sizeof(a));
+            break;
+        }
+        case DVC_ROTATION: {                                /* (a 3D cursor's pitch, roll and yaw: none) */
             AXIS a[3] = { g_axis_none, g_axis_none, g_axis_none };
             put(r, a, sizeof(a));
             break;
@@ -432,7 +506,10 @@ static Pkt make_packet(Ctx *c, const KPacket *k)
     LONG tx = k->x, ty = EXT - 1 - k->y;                    /* the tablet's Y is up */
     p.x = scale(tx, c->lc.lcInOrgX, c->lc.lcInExtX, c->lc.lcOutOrgX, c->lc.lcOutExtX);
     p.y = scale(ty, c->lc.lcInOrgY, c->lc.lcInExtY, c->lc.lcOutOrgY, c->lc.lcOutExtY);
-    p.orient[1] = 900;                                      /* upright */
+    p.orient[1] = 900;                                      /* upright (a pen without tilt) */
+    if (k->flags & KP_TILT) tilt_orientation(k->tilt_x, k->tilt_y, &p.orient[0], &p.orient[1]);
+    if (k->flags & 2) p.orient[1] = -p.orient[1];            /* the eraser end: negative altitude */
+    if (k->flags & KP_TWIST) p.orient[2] = k->twist % 3600;
     DWORD b = k->buttons, before = c->last_buttons;
     if (c->lc.lcPktMode & PK_BUTTONS) {                     /* relative: one button's change a packet */
         DWORD ch = b ^ c->last_buttons;
@@ -449,11 +526,14 @@ static Pkt make_packet(Ctx *c, const KPacket *k)
     }
     p.npress = c->lc.lcPktMode & PK_NORMAL_PRESSURE ? k->pressure - c->last_press : k->pressure;
     p.changed = (p.x != c->last_x ? PK_X : 0) | (p.y != c->last_y ? PK_Y : 0) |
+                (p.orient[0] != c->last_orient[0] || p.orient[1] != c->last_orient[1] || p.orient[2] != c->last_orient[2] ?
+                 PK_ORIENTATION : 0) |
                 (k->pressure != c->last_press ? PK_NORMAL_PRESSURE : 0) |
                 ((int)p.cursor != c->last_cursor ? PK_CURSOR : 0) | (c->last_buttons != before ? PK_BUTTONS : 0) |
                 PK_SERIAL_NUMBER | PK_TIME;
     c->last_press = k->pressure;
     c->last_x = p.x; c->last_y = p.y;
+    for (int i = 0; i < 3; i++) c->last_orient[i] = p.orient[i];
     return p;
 }
 
