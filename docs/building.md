@@ -785,6 +785,9 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
 
 - **Serial log**: every kernel message goes to COM1 (your terminal under
   `run`).  In NovaOS, the Terminal's `dmesg` shows it.
+- **`devices`** in the Terminal lists the PCI devices and the driver
+  each one has (missing drivers in red); on a real PC this is the first
+  thing to check ([hardware.md](hardware.md)).
 - **Program crashes** are logged with the faulting module and offset, the
   process's exit code, and `OutputDebugString` output.
 - **`trace NAME`** in the Terminal logs the failing system calls (with file
