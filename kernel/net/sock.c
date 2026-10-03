@@ -37,6 +37,7 @@ typedef struct {
     bool          reset;          /* connection error */
     bool          listening;
     bool          send_shut;
+    bool          recv_shut;      /* shutdown(SD_RECEIVE): incoming data is dropped */
     struct tcp_pcb *tcp;
     struct udp_pcb *udp_pcb;
 
@@ -138,9 +139,9 @@ static void tcp_err_cb(void *arg, err_t err)
 {
     Sock *s = arg;
     if (!s) return;
-    (void)err;
     s->tcp = NULL;                 /* lwIP already freed the pcb */
-    s->reset = true;
+    if (err == ERR_CLSD) s->peer_closed = true;              /* closed in order after our FIN */
+    else s->reset = true;
     s->connecting = false;
 }
 
@@ -149,8 +150,8 @@ static err_t tcp_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t e
     Sock *s = arg;
     if (!s) { if (p) pbuf_free(p); return ERR_OK; }
     if (err != ERR_OK) { if (p) pbuf_free(p); s->reset = true; return ERR_OK; }
-    (void)pcb;
     if (!p) { s->peer_closed = true; return ERR_OK; }        /* FIN */
+    if (s->recv_shut) { tcp_recved(pcb, p->tot_len); pbuf_free(p); return ERR_OK; }
     /* All or nothing: when the ring cannot hold it, the data goes back to
      * lwIP untouched (ERR_MEM keeps it as "refused" data, delivered again
      * once the program reads; it must not be freed here).  The window is
@@ -173,8 +174,10 @@ static err_t tcp_connected_cb(void *arg, struct tcp_pcb *pcb, err_t err)
 {
     Sock *s = arg;
     if (!s) return ERR_OK;
-    (void)pcb;
-    if (err == ERR_OK) { s->connected = true; s->connecting = false; }
+    if (err == ERR_OK) {                                     /* the peer, for getpeername after a non-blocking connect */
+        from_lwip(s, &pcb->remote_ip, pcb->remote_port, &s->peer);
+        s->connected = true; s->connecting = false;
+    }
     else { s->reset = true; s->connecting = false; }
     return ERR_OK;
 }
@@ -306,7 +309,6 @@ int NetSockConnect(int sd, const NetSockAddr *to, SockCancelFn c, void *ca)
         net_wait(ng);
     }
     if (s->reset || !s->connected) return -SOCK_ECONNREFUSED;
-    from_lwip(s, &ip, lwip_ntohs(to->port_be), &s->peer);
     return 0;
 }
 
@@ -356,7 +358,7 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
     for (;;) {
         UINT32 ng = net_gen();
         net_lock();
-        UINT32 avail = rx_used(s);
+        UINT32 avail = s->recv_shut ? 0 : rx_used(s);
         if (avail) {
             int n = rx_get(s, buf, len);
             if (s->tcp && !s->udp) {
@@ -366,7 +368,7 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
             net_unlock();
             return n;
         }
-        bool closed = s->peer_closed, reset = s->reset;
+        bool closed = s->peer_closed || s->recv_shut, reset = s->reset;
         net_unlock();
         if (reset) return -SOCK_ECONNRESET;
         if (closed) return 0;                                /* orderly shutdown */
@@ -485,8 +487,19 @@ int NetSockShutdown(int sd, int how)
     net_lock();
     Sock *s = slot(sd);
     if (!s || !s->tcp) { net_unlock(); return -SOCK_ENOTSOCK; }
-    tcp_shutdown(s->tcp, how == 0 || how == 2, how == 1 || how == 2);
-    if (how == 1 || how == 2) s->send_shut = true;
+    /* The receive side is shut here, not in lwIP: a pcb with its receive
+     * side closed is freed without a word once the connection ends (no
+     * error callback), which would leave s->tcp dangling for close.  The
+     * send side's FIN keeps the pcb, and lwIP reports its end through
+     * tcp_err_cb (ERR_CLSD). */
+    if ((how == 0 || how == 2) && !s->recv_shut) {
+        UINT32 n = rx_used(s);
+        s->recv_shut = true;
+        s->rx_tail = s->rx_head;                             /* what was not read is dropped... */
+        while (n) { u16_t k = n > 0xFFFF ? 0xFFFF : (u16_t)n; tcp_recved(s->tcp, k); n -= k; }   /* ...and its window reopened */
+        if (s->tcp->refused_data) tcp_process_refused_data(s->tcp);
+    }
+    if ((how == 1 || how == 2) && !s->send_shut) { tcp_shutdown(s->tcp, 0, 1); s->send_shut = true; }
     net_unlock();
     return 0;
 }
