@@ -223,12 +223,25 @@ void pmm_init(const BootInfo *info)
 /* -----------------------------------------------------------------------
  * pmm_alloc_page
  * ----------------------------------------------------------------------- */
+/* Running out of physical memory is logged (the first time, then every
+ * 4096th failure), with the request: programs only see a failed
+ * allocation, and what they do next rarely names it */
+static void out_of_memory(size_t count)
+{
+    static uint64_t failures;
+    uint64_t n = __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
+    if (n & 4095) return;
+    kprintf("[PMM] out of memory: %zu page(s) wanted, %zu MiB free (%lu failure(s) so far)\n",
+            count, (pmm.free_pages * PAGE_SIZE) >> 20, (unsigned long)(n + 1));
+}
+
 uintptr_t pmm_alloc_page(void)
 {
     lock_acquire(&pmm.lock);
 
     if (pmm.free_pages == 0) {
         lock_release(&pmm.lock);
+        out_of_memory(1);
         return 0;
     }
 
@@ -252,6 +265,7 @@ uintptr_t pmm_alloc_page(void)
     }
 
     lock_release(&pmm.lock);
+    out_of_memory(1);
     return 0;
 }
 
@@ -294,6 +308,7 @@ uintptr_t pmm_alloc_pages(size_t count)
     }
 
     lock_release(&pmm.lock);
+    out_of_memory(count);
     return 0;
 }
 

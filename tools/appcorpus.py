@@ -440,6 +440,8 @@ def main():
                     print('    ' + '\n    '.join(l for l in out.splitlines() if not l.startswith('[SCHED]'))[-3000:])
                     why = why or f'{t.name}: {w}'
                     break
+            if app.store:                    # the App Store window stays out of the next screenshots
+                log += nova.run('store close', 15)[0]
             results[app.name] = (why, time.time() - t0, steps)
             print(f'{"PASS" if not why else "FAIL"}  {app.name:10s} {time.time() - t0:6.1f} s', flush=True)
             if nova.q.poll() is not None:
@@ -487,7 +489,8 @@ def gui(nova, t, a, app, echo, close):
     up, or it dies), run its interaction (PuTTY types a line the echo
     server must receive).  The screenshot must match the reference; @close
     closes the window after it (Alt+F4) so the next program gets the
-    keyboard"""
+    keyboard.  Either way the next program starts only once every process
+    this one started has ended (settle)."""
     out, ok = nova.run(t.cmd, 30)
     exe = re.escape(re.search(r'([^\\/" ]+\.exe)', t.cmd, re.I).group(1))   # paths may be quoted
     m = None
@@ -499,14 +502,40 @@ def gui(nova, t, a, app, echo, close):
         if m:
             break
     if m:
+        out, _ = settle(nova, out)
         return out, m.group(0).split(') ', 1)[1]
     w = app.interact(nova, echo) if app.interact else None
     time.sleep(3)
     w = check_shot(nova, a, app.name.lower() + '.png') or w
     if close:
         nova.keys('alt-f4')
-        time.sleep(3)
+        out, why = settle(nova, out)
+        w = w or why
     return out, w
+
+
+def settle(nova, out, wait=120):
+    """Wait (up to @wait seconds) for every process started in @out to end,
+    stop any still running (taskkill) and check the Terminal has the
+    keyboard again.  Keys typed while a closing program still has the
+    focus (Firefox takes a while to shut down its processes) never reach
+    the Terminal, and the next program's Alt+F4 would close the Terminal
+    instead.  Returns (the log, why the Terminal is not usable or None)."""
+    started = set(re.findall(r'\[UM\] Started [^\n]*? \(PID (\d+)\)', out))
+    end = time.time() + wait
+    while True:
+        ended = set(re.findall(r'\[UM\] [^\n]*? \(PID (\d+)\) exited', out))
+        if started <= ended or time.time() > end:
+            break
+        time.sleep(1)
+        out += nova.sr.read_new()
+    for pid in sorted(started - ended, key=int):
+        o, _ = nova.run(f'taskkill /PID {pid}', 15)
+        out += o
+    o, ok = nova.run('echo ready', 15)
+    out += o
+    return out, None if ok else 'the Terminal did not get the keyboard back after the program ended'
+
 
 
 def check_shot(nova, a, name):

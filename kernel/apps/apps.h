@@ -205,5 +205,6 @@ void StoreOpen(void);
 /* Get or install the App Store program called @name, as its button would;
  * returns what the Store says (the outcome is logged as "[STORE] ...") */
 const char *StoreInstall(const char *name);
+const char *StoreClose(void);
 /* Install NovaOS on a disk */
 void SetupOpen(void);

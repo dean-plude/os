@@ -2420,6 +2420,71 @@ K32 BOOL WINAPI GetProcessDEPPolicy(HANDLE p, LPDWORD flags, PBOOL permanent)
     return TRUE;
 }
 
+/* AppContainer monikers (kernelbase on Windows; the Chromium sandbox in
+ * Firefox binds them with GetProcAddress and stops the browser when one
+ * is missing).  NovaOS runs no AppContainers: a registration is kept for
+ * this process only, so a moniker registered can be looked up again. */
+NTSYSAPI ULONG   NTAPI RtlLengthSid(PSID sid);
+NTSYSAPI BOOLEAN NTAPI RtlEqualSid(PSID a, PSID b);
+#define AC_MAX 16
+static struct { BYTE sid[68]; WCHAR moniker[128]; } g_ac[AC_MAX];
+static int g_ac_n;
+static CRITICAL_SECTION g_ac_lock;
+static INIT_ONCE g_ac_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK ac_init(PINIT_ONCE o, PVOID p, PVOID *c) { (void)o; (void)p; (void)c; InitializeCriticalSection(&g_ac_lock); return TRUE; }
+
+static int ac_find(PSID sid)
+{
+    for (int i = 0; i < g_ac_n; i++) if (RtlEqualSid(g_ac[i].sid, sid)) return i;
+    return -1;
+}
+
+K32 HRESULT WINAPI AppContainerRegisterSid(PSID sid, LPCWSTR moniker, LPCWSTR display_name)
+{
+    (void)display_name;
+    ULONG n = sid ? RtlLengthSid(sid) : 0;
+    if (!n || n > sizeof(g_ac[0].sid) || !moniker) return E_INVALIDARG;
+    InitOnceExecuteOnce(&g_ac_once, ac_init, NULL, NULL);
+    EnterCriticalSection(&g_ac_lock);
+    int i = ac_find(sid);
+    if (i < 0 && g_ac_n < AC_MAX) i = g_ac_n++;
+    if (i >= 0) {
+        memcpy(g_ac[i].sid, sid, n);
+        int k = 0;
+        for (; moniker[k] && k < 127; k++) g_ac[i].moniker[k] = moniker[k];
+        g_ac[i].moniker[k] = 0;
+    }
+    LeaveCriticalSection(&g_ac_lock);
+    return i >= 0 ? S_OK : E_OUTOFMEMORY;
+}
+
+K32 HRESULT WINAPI AppContainerUnregisterSid(PSID sid)
+{
+    if (!sid) return E_INVALIDARG;
+    InitOnceExecuteOnce(&g_ac_once, ac_init, NULL, NULL);
+    EnterCriticalSection(&g_ac_lock);
+    int i = ac_find(sid);
+    if (i >= 0) g_ac[i] = g_ac[--g_ac_n];
+    LeaveCriticalSection(&g_ac_lock);
+    return S_OK;
+}
+
+K32 HRESULT WINAPI AppContainerLookupMoniker(PSID sid, LPWSTR *moniker)
+{
+    if (!sid || !moniker) return E_INVALIDARG;
+    InitOnceExecuteOnce(&g_ac_once, ac_init, NULL, NULL);
+    EnterCriticalSection(&g_ac_lock);
+    int i = ac_find(sid), k = 0;
+    LPWSTR m = i < 0 ? NULL : RtlAllocateHeap(GetProcessHeap(), 0, sizeof(g_ac[0].moniker));
+    if (m) { for (; g_ac[i].moniker[k]; k++) m[k] = g_ac[i].moniker[k]; m[k] = 0; }
+    LeaveCriticalSection(&g_ac_lock);
+    *moniker = m;
+    return m ? S_OK : i < 0 ? HRESULT_FROM_WIN32(ERROR_NOT_FOUND) : E_OUTOFMEMORY;
+}
+
+K32 void WINAPI AppContainerFreeMemory(void *p) { if (p) RtlFreeHeap(GetProcessHeap(), 0, p); }
+
 /* kernelbase carries CommandLineToArgvW on Windows 8 and later (programs
  * look for it there before shell32) */
 __asm__(".section .drectve,\"yn\"\n\t"

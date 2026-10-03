@@ -290,6 +290,7 @@ UmRegion  *um_region_add(UmProcess *p, UINT64 base, UINT64 size, UINT32 protect,
 UmRegion  *um_region_find(UmProcess *p, UINT64 va);
 void       um_region_remove(UmProcess *p, UmRegion *r);
 bool       um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect);
+bool       um_map_image_page(UmProcess *p, UINT64 va, const void *content, UINT32 protect);
 bool       um_is_guard(UmProcess *p, UINT64 va);            /* a PAGE_GUARD page */
 void       um_decommit(UmProcess *p, UINT64 va, UINT64 size);
 bool       um_is_committed(UmProcess *p, UINT64 va);
