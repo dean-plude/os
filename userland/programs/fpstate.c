@@ -58,6 +58,30 @@ static DWORD WINAPI spinner(void *arg)
 
 static int seh_filter(DWORD code, DWORD *seen) { *seen = code; return EXCEPTION_EXECUTE_HANDLER; }
 
+static volatile DWORD g_seen;
+/* a floating-point fault: note it and resume with every exception masked */
+static LONG WINAPI fp_veh(EXCEPTION_POINTERS *ep)
+{
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code < 0xC000008D || code > 0xC0000093) return EXCEPTION_CONTINUE_SEARCH;
+    g_seen = code;
+    CONTEXT *c = ep->ContextRecord;
+#ifdef _WIN64
+    c->FltSave.ControlWord |= 0x3F;
+    c->FltSave.StatusWord &= ~0x80FF;
+    c->MxCsr = (c->MxCsr | 0x1F80) & ~0x3Fu;
+#else
+    c->FloatSave.ControlWord |= 0x3F;
+    c->FloatSave.StatusWord &= ~0x80FFu;
+    WORD *fx = (WORD *)c->ExtendedRegisters;        /* the FXSAVE image NtContinue loads */
+    fx[0] |= 0x3F;
+    fx[1] &= ~0x80FF;
+    DWORD *mx = (DWORD *)(c->ExtendedRegisters + 24);
+    *mx = (*mx | 0x1F80) & ~0x3Fu;
+#endif
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
 int main(void)
 {
     /* the state a program starts with */
@@ -143,37 +167,32 @@ int main(void)
     q = g_one / g_zero;
     CHECK("SSE 1/0 masked gives infinity", q > 1e308);
 
-    /* an x87 divide by zero the program unmasked: FLT_DIVIDE_BY_ZERO */
-    seen = 0;
+    /* an x87 divide by zero the program unmasked: FLT_DIVIDE_BY_ZERO.
+     * A vectored handler sees it and masks the exception again in the
+     * CONTEXT, so the faulting instruction runs once more and goes through
+     * (no __try here: clang's -fasync-exceptions __try around inline asm
+     * misses faults or hangs the compiler) */
+    PVOID veh = AddVectoredExceptionHandler(1, fp_veh);
+    g_seen = 0;
     __asm__ volatile("fnclex");
-    __try {
-#ifdef _WIN64
-        /* in line: clang gives x87_div no unwind data, which would hide the __try */
-        double a = g_one, b = g_zero, r;
-        unsigned short cw = 0x27F & ~0x4;           /* unmask ZE */
-        __asm__ volatile("fldcw %3\n\tfldl %1\n\tfdivl %2\n\tfstpl %0\n\tfwait" : "=m"(r) : "m"(a), "m"(b), "m"(cw));
-        q = r;
-#else
-        set_fcw(0x27F & ~0x4);                      /* unmask ZE */
-        q = x87_div(g_one, g_zero);                 /* a call: clang's 32-bit __try covers calls */
-#endif
-    } __except (seh_filter(GetExceptionCode(), &seen)) {
-    }
+    set_fcw(0x27F & ~0x4);                          /* unmask ZE */
+    q = x87_div(g_one, g_zero);
     __asm__ volatile("fnclex");
     set_fcw(0x27F);
-    CHECK("x87 divide by zero: EXCEPTION_FLT_DIVIDE_BY_ZERO", seen == EXCEPTION_FLT_DIVIDE_BY_ZERO);
+    CHECK("x87 divide by zero: EXCEPTION_FLT_DIVIDE_BY_ZERO", g_seen == EXCEPTION_FLT_DIVIDE_BY_ZERO);
+    CHECK("x87 divide by zero resumed", q == q);    /* (an unmasked fault leaves the operand: 1.0) */
 
     /* an SSE divide by zero the program unmasked (traps under KVM and on
      * real hardware; QEMU's TCG never raises SSE exceptions) */
-    seen = 0;
-    __try {
-        set_mxcsr(0x1F80 & ~0x200);                 /* unmask ZM */
-        q = g_one / g_zero;
-    } __except (seh_filter(GetExceptionCode(), &seen)) {
-    }
+    g_seen = 0;
+    set_mxcsr(0x1F80 & ~0x200);                     /* unmask ZM */
+    q = g_one / g_zero;
     set_mxcsr(0x1F80);
-    CHECK("SSE divide by zero: EXCEPTION_FLT_DIVIDE_BY_ZERO or no trap", seen == 0 || seen == EXCEPTION_FLT_DIVIDE_BY_ZERO);
-    printf("fpstate: SSE exceptions %s\n", seen ? "trap" : "do not trap (TCG)");
+    RemoveVectoredExceptionHandler(veh);
+    DWORD seen2 = g_seen;
+    CHECK("SSE divide by zero: EXCEPTION_FLT_DIVIDE_BY_ZERO or no trap", seen2 == 0 || seen2 == EXCEPTION_FLT_DIVIDE_BY_ZERO);
+    CHECK("SSE divide by zero resumed with infinity", q > 1e308);
+    printf("fpstate: SSE exceptions %s\n", seen2 ? "trap" : "do not trap (TCG)");
 
     printf("fpstate: %d passed, %d failed\n", pass, fail);
     return fail;
