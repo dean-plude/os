@@ -8,7 +8,9 @@ TESTS = [
     Test('msi patch', 'msitest patch', [r'msitest patch: \d+ passed, 0 failed']),
     Test('msi rollback', 'msitest rollback', [r'msitest rollback: \d+ passed, 0 failed']),
     Test('msi service', 'msitest service', [r'msitest service: \d+ passed, 0 failed']),
-    Test('services at boot', 'shutdown /r', [r'\[SVC\] NovaMsiTestSvc: started', r'\[SVC\] Started \d+ of \d+ automatic services'],
-         reboot=True),
-    Test('msi service at boot', 'msitest service-boot', [r'msitest service-boot: \d+ passed, 0 failed']),
+    Test('services at boot', 'shutdown /r', [r'command line: services /autostart'], reboot=True),
+    # (services.exe may still be starting it when the Terminal is back:
+    # its log lines are checked after msitest has waited for the service)
+    Test('msi service at boot', 'msitest service-boot', [r'msitest service-boot: \d+ passed, 0 failed'],
+         boot_expect=[r'\[SVC\] NovaMsiTestSvc: started', r'\[SVC\] Started \d+ of \d+ automatic services']),
 ]
