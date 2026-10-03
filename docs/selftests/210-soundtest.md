@@ -1,1 +1,1 @@
-| `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
+| `soundtest info` (the device IDs, device 0 the default, and the preferred IDs), `tone` (`rate=N` for another rate than 22.05 kHz), `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |

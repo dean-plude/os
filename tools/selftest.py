@@ -317,12 +317,19 @@ def usbheadset_boot(work):
     microphone hears 988 Hz), then a 44.1 kHz USB Audio 2.0 surround
     headset (port 10705: six speaker channels whose front two surround.wav
     gets, four microphone channels hearing 1175 Hz) and a full-speed USB
-    Audio 1.0 speaker (port 10706, spk.wav) for the device picker
-    (tests/selftest/devices/usbheadset)"""
+    Audio 1.0 speaker (port 10706, spk.wav) for the device picker, and two
+    speakers on their own clocks that say so through a feedback endpoint:
+    a full-speed USB Audio 1.0 one at 48,500 frames a second (port 10707,
+    async1.wav) and a high-speed USB Audio 2.0 one at 47,600 (port 10708,
+    async2.wav) (tests/selftest/devices/usbheadset)"""
     procs = [peer(work, 10700, '--speaker', os.path.join(work, 'headset.wav'), '--mic', str(REC_HZ))]
     for n, hz in ((1, 784), (2, 659), (3, 880)):
         procs.append(peer(work, 10700 + n, '--speed', 'full', '--mic', str(hz)))
     procs.append(peer(work, 10704, '--uac2', '--speaker', os.path.join(work, 'uac2.wav'), '--mic', '988'))
+    procs.append(peer(work, 10707, '--speed', 'full', '--feedback', '48500', '--product', 'Test Async Speaker',
+                      '--speaker', os.path.join(work, 'async1.wav')))
+    procs.append(peer(work, 10708, '--uac2', '--feedback', '47600', '--product', 'Test Async Headset',
+                      '--speaker', os.path.join(work, 'async2.wav')))
     procs.append(peer(work, 10705, '--uac2', '--rates', '44100', '--channels', '6', '--mic-channels', '4',
                       '--product', 'Test Surround Headset', '--speaker', os.path.join(work, 'surround.wav'), '--mic', '1175'))
     procs.append(peer(work, 10706, '--speed', 'full', '--product', 'Test Speaker', '--speaker', os.path.join(work, 'spk.wav')))
@@ -474,7 +481,7 @@ def main():
             finally:
                 for p in procs:
                     p.kill()
-                for log in ['h2server.log', 'v6peer.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10707)]:
+                for log in ['h2server.log', 'v6peer.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10709)]:
                     if os.path.exists(os.path.join(work, log)):
                         shutil.copy(os.path.join(work, log), a.out)
                 shutil.rmtree(work, ignore_errors=True)

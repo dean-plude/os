@@ -1,10 +1,14 @@
 /*
  * audio.c — the system mixer
  *
- * Streams are rings of 48 kHz s16 stereo frames.  The mixer thread wakes
- * every tick (10 ms) and, for every attached output, reads how far its
- * device has played its ring and mixes the running streams that play on
- * it into the ring up to LEAD bytes ahead of that.  Outputs are attached
+ * Streams are rings of s16 stereo frames, each at its own rate (48 kHz
+ * unless its program set another).  The mixer thread wakes every tick
+ * (10 ms) and, for every attached output, reads how far its device has
+ * played its ring and mixes the running streams that play on it into the
+ * ring up to 80 ms ahead of that, at the output's own rate: a stream at
+ * that rate is copied, any other converted to it by linear interpolation
+ * as it is mixed (so a sound reaches a device converted once at most, and
+ * a 44.1 kHz sound on a 44.1 kHz USB headset arrives sample for sample).  Outputs are attached
  * by their drivers: the HD Audio card at boot, a USB audio device when it
  * is plugged in.  One is the default: the one attached last, until the
  * user chooses another in Settings (AudioSetDefault); when it leaves, the
@@ -12,7 +16,7 @@
  * program chose a device (AudioRoute: a waveOut device ID, a WASAPI
  * endpoint); a stream whose device leaves goes to the default.  Behind
  * what it mixed, the mixer keeps the rest of each ring silent, so a mixer
- * held up for longer than LEAD (a busy machine) leaves a gap rather than
+ * held up for longer than its 80 ms lead (a busy machine) leaves a gap rather than
  * replaying the ring's last lap; an output nothing plays on gets silence
  * the same way (what was mixed for it before the default moved still
  * plays, and then it is quiet, not its ring's last 341 ms over and over).
@@ -25,7 +29,8 @@
  * stream records from the default or the input its program chose.  While
  * any running capture stream records from an input, that input is
  * recording into its ring, and every tick the new frames are copied into
- * each of those streams (the oldest dropped when a stream is full).
+ * each of those streams (the oldest dropped when a stream is full),
+ * converted from the input's rate to the stream's where they differ.
  *
  * Each device has its own volume and mute (the endpoint volume programs
  * set through IAudioEndpointVolume, and Settings' sliders), applied to
@@ -51,9 +56,11 @@
 
 #define MAX_STREAMS   32
 #define FRAME         4                               /* bytes: s16 x 2 */
-#define LEAD          (AUDIO_RATE * FRAME * 80 / 1000) /* mix 80 ms ahead of the hardware */
+#define LEAD_MS       80                              /* mix 80 ms ahead of the hardware */
 #define CHUNK_FRAMES  1024
-#define TICK_FRAMES   (AUDIO_RATE / 100)              /* recorded frames arrive a tick at a time */
+#define TICK_MS       10                              /* recorded frames arrive a tick at a time */
+#define MIN_RATE      8000
+#define MAX_RATE      384000
 
 typedef struct {
     bool    used, running, capture;
@@ -66,6 +73,12 @@ typedef struct {
     UINT64  last_end;                                 /* that output's absolute byte position after them */
     UINT32  vol_l, vol_r;                             /* 0..65536 */
     UINT64  dropped;                                  /* capture: frames lost to a full stream */
+    UINT32  rate;                                     /* its frames' rate */
+    /* converting to (from) the device's rate: playback emits frames
+     * between the frames @a and @b it took last, @phase / (device rate) of
+     * the way; capture between the last frame recorded (@a) and the next */
+    UINT32  phase;
+    INT32   a[2], b[2];
 } Stream;
 
 #define MAX_OUTPUTS   4
@@ -78,6 +91,7 @@ typedef struct { UINT32 l, r; bool mute; } Master;
 typedef struct {
     const AudioOutput *o;
     UINT32 id, rank;                                  /* (rank: when it was attached or chosen; the highest is the default) */
+    UINT32 rate, lead;                                /* its rate, and the bytes mixed ahead (LEAD_MS of them) */
     Master vol;                                       /* its endpoint volume */
     UINT32 last_pos;
     UINT64 base;                                      /* absolute byte count at the ring's start */
@@ -89,6 +103,7 @@ typedef struct {
 typedef struct {
     const AudioInput *i;
     UINT32 id, rank;
+    UINT32 rate;
     Master vol;
     UINT32 cpos;
     bool   run;
@@ -168,15 +183,45 @@ static void mix_chunk(int k, UINT64 at, UINT32 n)
     for (int i = 0; i < MAX_STREAMS; i++) {
         Stream *s = &g.s[i];
         if (!s->used || s->capture || !s->running || !s->queued || out_of(s) != k) continue;
-        UINT32 m = s->queued < n ? s->queued : n;
-        for (UINT32 f = 0; f < m; f++) {
-            const INT16 *src = s->buf + (size_t)s->rd * 2;
-            g.acc[f * 2]     += (INT32)(((INT64)src[0] * s->vol_l) >> 16);
-            g.acc[f * 2 + 1] += (INT32)(((INT64)src[1] * s->vol_r) >> 16);
-            if (++s->rd == s->cap) s->rd = 0;
+        UINT32 m = 0;
+        if (s->rate == t->rate) {                     /* the device's rate: copied */
+            m = s->queued < n ? s->queued : n;
+            for (UINT32 f = 0; f < m; f++) {
+                const INT16 *src = s->buf + (size_t)s->rd * 2;
+                g.acc[f * 2]     += (INT32)(((INT64)src[0] * s->vol_l) >> 16);
+                g.acc[f * 2 + 1] += (INT32)(((INT64)src[1] * s->vol_r) >> 16);
+                if (++s->rd == s->cap) s->rd = 0;
+            }
+            s->queued -= m;
+            s->consumed += m;
+            if (m) {                                  /* (where conversion would go on from) */
+                const INT16 *last = s->buf + (size_t)(s->rd ? s->rd - 1 : s->cap - 1) * 2;
+                s->a[0] = s->b[0] = last[0];
+                s->a[1] = s->b[1] = last[1];
+                s->phase = t->rate;
+            }
+        } else {                                      /* converted: each output frame between the last two taken */
+            for (; m < n; m++) {
+                while (s->phase >= t->rate) {
+                    if (!s->queued) goto out;
+                    const INT16 *src = s->buf + (size_t)s->rd * 2;
+                    s->a[0] = s->b[0];
+                    s->a[1] = s->b[1];
+                    s->b[0] = src[0];
+                    s->b[1] = src[1];
+                    if (++s->rd == s->cap) s->rd = 0;
+                    s->queued--;
+                    s->consumed++;
+                    s->phase -= t->rate;
+                }
+                INT32 l = s->a[0] + (INT32)((INT64)(s->b[0] - s->a[0]) * s->phase / t->rate);
+                INT32 r = s->a[1] + (INT32)((INT64)(s->b[1] - s->a[1]) * s->phase / t->rate);
+                g.acc[m * 2]     += (INT32)(((INT64)l * s->vol_l) >> 16);
+                g.acc[m * 2 + 1] += (INT32)(((INT64)r * s->vol_r) >> 16);
+                s->phase += s->rate;
+            }
+        out:;
         }
-        s->queued -= m;
-        s->consumed += m;
         s->mixed_on = t->id;
         s->last_end = at + (UINT64)m * FRAME;
     }
@@ -187,10 +232,10 @@ static void mix_chunk(int k, UINT64 at, UINT32 n)
     }
 }
 
-/* Every output: mix its streams LEAD bytes ahead of its device (an output
+/* Every output: mix its streams 80 ms ahead of its device (an output
  * nothing plays on gets silence: it still streams its ring), then silence
  * the rest of its ring up to where the device is, which holds the last
- * lap, so that if the mixer is held up for longer than LEAD the device
+ * lap, so that if the mixer is held up for longer than that the device
  * plays a gap, not what it played a lap ago */
 static void mix_ahead(void)
 {
@@ -200,7 +245,7 @@ static void mix_ahead(void)
         UINT32 bytes = t->o->bytes;
         UINT64 hw = hw_abs(t);
         if (t->write < hw) t->write = hw;             /* fell behind: skip what was missed */
-        UINT64 target = hw + LEAD;
+        UINT64 target = hw + t->lead;
         while (t->write < target) {
             UINT32 off = (UINT32)(t->write % bytes);
             UINT64 n = (target - t->write) / FRAME;
@@ -240,6 +285,21 @@ static void capture_sync(void)
     }
 }
 
+/* One recorded frame into capture stream @s (the oldest dropped when it is full) */
+static void put_frame(Stream *s, INT32 l, INT32 r)
+{
+    if (s->queued == s->cap) {
+        if (++s->rd == s->cap) s->rd = 0;
+        s->queued--;
+        s->dropped++;
+    }
+    INT16 *d = s->buf + (size_t)((s->rd + s->queued) % s->cap) * 2;
+    d[0] = (INT16)l;
+    d[1] = (INT16)r;
+    s->queued++;
+    s->written++;
+}
+
 /* Copy what each recording input recorded since the last tick into the
  * running capture streams that record from it */
 static void pull_capture(void)
@@ -261,17 +321,22 @@ static void pull_capture(void)
                 UINT32 vl = mc->mute ? 0 : (UINT32)(((UINT64)mc->l * s->vol_l) >> 16);
                 UINT32 vr = mc->mute ? 0 : (UINT32)(((UINT64)mc->r * s->vol_r) >> 16);
                 for (UINT32 f = 0; f < n; f++) {
-                    if (s->queued == s->cap) {                    /* full: drop the oldest */
-                        if (++s->rd == s->cap) s->rd = 0;
-                        s->queued--;
-                        s->dropped++;
+                    INT32 l = (INT32)(((INT32)src[f * 2] * (INT64)vl) >> 16);
+                    INT32 r = (INT32)(((INT32)src[f * 2 + 1] * (INT64)vr) >> 16);
+                    if (s->rate == t->rate) {
+                        put_frame(s, l, r);
+                        continue;
                     }
-                    INT16 *d = s->buf + (size_t)((s->rd + s->queued) % s->cap) * 2;
-                    d[0] = (INT16)(((INT32)src[f * 2] * (INT64)vl) >> 16);
-                    d[1] = (INT16)(((INT32)src[f * 2 + 1] * (INT64)vr) >> 16);
-                    s->queued++;
+                    /* each stream frame that falls between the last input
+                     * frame and this one (s->phase: 1/(stream rate) of an
+                     * input frame) */
+                    for (; s->phase < s->rate; s->phase += t->rate)
+                        put_frame(s, s->a[0] + (INT32)((INT64)(l - s->a[0]) * s->phase / s->rate),
+                                  s->a[1] + (INT32)((INT64)(r - s->a[1]) * s->phase / s->rate));
+                    s->phase -= s->rate;
+                    s->a[0] = l;
+                    s->a[1] = r;
                 }
-                s->written += n;
             }
             t->cpos = end == in->bytes ? 0 : end;
         }
@@ -345,7 +410,9 @@ bool AudioOutputAttach(const AudioOutput *o)
         UINT32 rank = attach_rank(false, okey(o), o->name);
         Out *t = &g.outs[g.nouts++];
         UINT32 pos = o->position(o->ctx);
-        *t = (Out){ .o = o, .id = g.next_id++, .rank = rank, .vol = vol, .last_pos = pos, .write = pos, .clear = pos };
+        UINT32 rate = o->rate ? o->rate : AUDIO_RATE;
+        *t = (Out){ .o = o, .id = g.next_id++, .rank = rank, .rate = rate, .lead = rate * LEAD_MS / 1000 * FRAME,
+                    .vol = vol, .last_pos = pos, .write = pos, .clear = pos };
         now_default = def_out() == g.nouts - 1;
     }
     spin_unlock_irqrestore(&g.lock, st);
@@ -386,7 +453,7 @@ bool AudioInputAttach(const AudioInput *i)
     bool ok = g.nins < MAX_OUTPUTS, now_default = false;
     if (ok) {
         UINT32 rank = attach_rank(true, ikey(i), i->name);
-        g.ins[g.nins++] = (In){ .i = i, .id = g.next_id++, .rank = rank, .vol = vol };
+        g.ins[g.nins++] = (In){ .i = i, .id = g.next_id++, .rank = rank, .rate = i->rate ? i->rate : AUDIO_RATE, .vol = vol };
         now_default = def_in() == g.nins - 1;
         capture_sync();                               /* (default streams move to it) */
     }
@@ -424,6 +491,7 @@ int AudioDevices(bool capture, AudioDevice *out, int max)
         out[k].is_default = k == d;
         out[k].volume = m->l > m->r ? m->l : m->r;
         out[k].mute = m->mute;
+        out[k].rate = capture ? g.ins[k].rate : g.outs[k].rate;
         strncpy(out[k].name, capture ? g.ins[k].i->name : g.outs[k].o->name, sizeof(out[k].name) - 1);
         out[k].name[sizeof(out[k].name) - 1] = 0;
     }
@@ -560,6 +628,18 @@ const char *AudioDeviceName(void)
     return d >= 0 ? g.outs[d].o->name : "";
 }
 
+UINT32 AudioDeviceRate(void)
+{
+    int d = def_out();
+    return d >= 0 ? g.outs[d].rate : AUDIO_RATE;
+}
+
+UINT32 AudioInputRate(void)
+{
+    int d = def_in();
+    return d >= 0 ? g.ins[d].rate : AUDIO_RATE;
+}
+
 int AudioOpen(UINT32 frames, bool capture)
 {
     if (capture ? !AudioCanRecord() : !AudioPresent()) return -1;
@@ -580,6 +660,7 @@ int AudioOpen(UINT32 frames, bool capture)
         s->cap = frames;
         s->capture = capture;
         s->vol_l = s->vol_r = 65536;
+        s->rate = AUDIO_RATE;
         spin_unlock_irqrestore(&g.lock, st);
         return i;
     }
@@ -589,6 +670,26 @@ int AudioOpen(UINT32 frames, bool capture)
 }
 
 static Stream *get(int s) { return s >= 0 && s < MAX_STREAMS && g.s[s].used ? &g.s[s] : NULL; }
+
+/* Start converting stream @s afresh (lock held) */
+static void conv_reset(Stream *s)
+{
+    s->phase = 0;
+    s->a[0] = s->a[1] = s->b[0] = s->b[1] = 0;
+}
+
+bool AudioSetRate(int i, UINT32 rate)
+{
+    if (rate < MIN_RATE || rate > MAX_RATE) return false;
+    IrqState st = spin_lock_irqsave(&g.lock);
+    Stream *s = get(i);
+    if (s) {
+        s->rate = rate;
+        conv_reset(s);
+    }
+    spin_unlock_irqrestore(&g.lock, st);
+    return s != NULL;
+}
 
 void AudioClose(int i)
 {
@@ -719,6 +820,7 @@ void AudioFlush(int i)
         s->rd = s->queued = 0;
         s->written = s->consumed = s->dropped = 0;
         s->last_end = 0;
+        conv_reset(s);
     }
     spin_unlock_irqrestore(&g.lock, st);
 }
@@ -754,13 +856,13 @@ bool AudioGetStatus(int i, AudioStatus *out)
         out->queued = s->queued;
         out->capacity = s->cap;
         out->running = s->running;
-        out->latency = TICK_FRAMES;
+        out->latency = s->rate * TICK_MS / 1000;
     } else if (s) {
-        UINT64 ahead = 0;
+        UINT64 ahead = 0;                             /* (in the stream's frames) */
         for (int k = 0; k < g.nouts; k++) {
             if (g.outs[k].id != s->mixed_on) continue;
             UINT64 hw = hw_abs(&g.outs[k]);
-            ahead = s->last_end > hw ? (s->last_end - hw) / FRAME : 0;
+            ahead = s->last_end > hw ? (s->last_end - hw) / FRAME * s->rate / g.outs[k].rate : 0;
         }
         out->written = s->written;
         out->consumed = s->consumed;
@@ -768,7 +870,7 @@ bool AudioGetStatus(int i, AudioStatus *out)
         out->queued = s->queued;
         out->capacity = s->cap;
         out->running = s->running;
-        out->latency = LEAD / FRAME;
+        out->latency = s->rate * LEAD_MS / 1000;
     }
     spin_unlock_irqrestore(&g.lock, st);
     return s != NULL;

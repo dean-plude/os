@@ -11,7 +11,8 @@
   multi-touch screens (report protocol), USB sticks (FAT and NTFS, as
   the next drive letter, hot-plugged) and USB speakers, headsets and
   microphones (USB Audio Class 1 and 2 over isochronous transfers, at the
-  device's own sampling rate and channel count, played on and recorded
+  device's own sampling rate and channel count, which the mixer runs at,
+  asynchronous devices' rate feedback followed, played on and recorded
   from as soon as they are plugged in, or chosen in Settings' Sound page,
   each with its own volume; the choice and the levels are kept across
   restarts); virtio multi-touch screens,

@@ -4,6 +4,7 @@ QEMU usb-redir device.
 
     tools/usbredirpeer.py --port 10700 [--speed high|full] [--uac2] [--speaker OUT.wav] [--mic HZ]
                           [--rates 44100,96000] [--channels N] [--mic-channels N] [--product NAME]
+                          [--feedback HZ]
 
 QEMU's usb-redir device forwards everything the guest sends a USB device
 over a chardev, in the usbredir protocol, to a program that is the device:
@@ -43,6 +44,16 @@ microphone's first channel and second (if any) hear the sine and the
 others a 300 Hz one, which the host must not take.  --product names the
 device (its product string).
 
+--feedback makes the speaker's endpoint asynchronous, with a feedback
+endpoint (0x81) through which the device says it plays HZ frames a
+second, as a device on its own clock does: at full speed in 10.14 fixed
+point frames a millisecond (Audio 1.0: an endpoint the speaker's
+bSynchAddress names), at high speed in 16.16 frames a microframe (Audio
+2.0: an endpoint of usage "feedback"), sent every millisecond.  The host
+must then fill each packet with HZ / packets-a-second frames on average
+instead of the nominal rate's: OUT.wav.fb gets the packets and frames
+received once the feedback has been running for half a second.
+
 The protocol is usbredir's (usbredirproto.h in spice/usbredir): packets of
 a header (type, length, id) and a type-specific header and data.  QEMU
 answers SET_ADDRESS itself and turns SET_CONFIGURATION and SET_INTERFACE
@@ -67,7 +78,7 @@ SPEED_FULL, SPEED_HIGH = 1, 2
 OK, STALL = 0, 4
 RATE = 48000
 
-EP_SPK, EP_MIC = 0x01, 0x82
+EP_SPK, EP_MIC, EP_FB = 0x01, 0x82, 0x81
 CLOCK, SELECTOR = 0x10, 0x11        # Audio 2.0 clock source and selector IDs
 
 
@@ -82,9 +93,11 @@ def rate3(v):
 class Headset:
     """The descriptors and state of one device"""
 
-    def __init__(self, speed, speaker, mic, uac2=False, rates=(RATE,), channels=2, mic_channels=1, product=None):
+    def __init__(self, speed, speaker, mic, uac2=False, rates=(RATE,), channels=2, mic_channels=1, product=None,
+                 feedback=0):
         self.speed, self.speaker, self.mic, self.uac2 = speed, speaker, mic, uac2
         self.rates, self.channels, self.mic_channels, self.product_name = list(rates), channels, mic_channels, product
+        self.feedback = feedback if speaker else 0
         high = speed == SPEED_HIGH
         # (bInterval, microframes or frames between packets, bytes a packet)
         self.spk_int = 1                                   # every microframe / every frame
@@ -93,7 +106,10 @@ class Headset:
         self.mic_per_s = 8000 if high and uac2 else 1000
         self.spk_sub, self.mic_sub, self.bits = (4, 3, 24) if uac2 else (2, 2, 16)   # bytes a sample, its bits
         top = max(self.rates)                              # (a frame more where packets vary)
-        self.spk_mps = (-(-top // self.spk_per_s) + (top % self.spk_per_s != 0)) * channels * self.spk_sub
+        spk_top = top * 9 // 8 if self.feedback else top   # (room for the feedback's eighth either way)
+        self.spk_mps = (-(-spk_top // self.spk_per_s) + (spk_top % self.spk_per_s != 0)) * channels * self.spk_sub
+        self.fb_mps = 4 if high else 3                     # 16.16 a microframe / 10.14 a millisecond
+        self.fb_int = 4 if high else 1                     # every millisecond (8 microframes / 1 frame)
         self.mic_mps = (-(-top // self.mic_per_s) + (top % self.mic_per_s != 0)) * mic_channels * self.mic_sub
         self.rate = 0                                      # what the host set the clock (2.0) or endpoint (1.0) to
         self.config, self.alt = 0, {}
@@ -124,14 +140,17 @@ class Headset:
         for n in streaming:
             spk = n == 1
             d += bytes([9, 4, n, 0, 0, 1, 2, 0, 0])                         # alt 0: no bandwidth
-            d += bytes([9, 4, n, 1, 1, 1, 2, 0, 0])
+            fb = spk and self.feedback
+            d += bytes([9, 4, n, 1, 2 if fb else 1, 1, 2, 0, 0])
             d += bytes([7, 0x24, 1, 1 if spk else 6, 1]) + le16(1)          # PCM
             d += bytes([8 + 3 * len(self.rates), 0x24, 2, 1, self.channels if spk else self.mic_channels, 2, 16,
                         len(self.rates)]) + b''.join(rate3(r) for r in self.rates)
-            ep, attrs = (EP_SPK, 0x09) if spk else (EP_MIC, 0x05)            # adaptive OUT, asynchronous IN
+            ep, attrs = (EP_SPK, 0x05 if fb else 0x09) if spk else (EP_MIC, 0x05)   # adaptive (or async) OUT, async IN
             d += bytes([9, 5, ep, attrs]) + le16(self.spk_mps if spk else self.mic_mps) + \
-                bytes([self.spk_int if spk else self.mic_int, 0, 0])
+                bytes([self.spk_int if spk else self.mic_int, 0, EP_FB if fb else 0])   # (bSynchAddress)
             d += bytes([7, 0x25, 1, 0x01, 0]) + le16(0)                     # sampling frequency control
+            if fb:                                                          # the synch endpoint: refreshed every 2 ms
+                d += bytes([9, 5, EP_FB, 0x01]) + le16(self.fb_mps) + bytes([self.fb_int, 1, 0])
         return bytes([9, 2]) + le16(9 + len(d)) + bytes([len(self.ifaces), 1, 0, 0x80, 50]) + d
 
     def _config2(self, streaming):
@@ -155,14 +174,17 @@ class Headset:
         for n in streaming:
             spk = n == 1
             d += bytes([9, 4, n, 0, 0, 1, 2, 0x20, 0])                      # alt 0: no bandwidth
-            d += bytes([9, 4, n, 1, 1, 1, 2, 0x20, 0])
+            fb = spk and self.feedback
+            d += bytes([9, 4, n, 1, 2 if fb else 1, 1, 2, 0x20, 0])
             d += bytes([16, 0x24, 1, 1 if spk else 6, 0, 1]) + struct.pack('<I', 1) + \
                 bytes([self.channels if spk else self.mic_channels]) + struct.pack('<I', 3 if spk else 0) + bytes([0])   # PCM
             d += bytes([6, 0x24, 2, 1, self.spk_sub if spk else self.mic_sub, self.bits])
-            ep, attrs = (EP_SPK, 0x09) if spk else (EP_MIC, 0x05)            # adaptive OUT, asynchronous IN
+            ep, attrs = (EP_SPK, 0x05 if fb else 0x09) if spk else (EP_MIC, 0x05)   # adaptive (or async) OUT, async IN
             d += bytes([7, 5, ep, attrs]) + le16(self.spk_mps if spk else self.mic_mps) + \
                 bytes([self.spk_int if spk else self.mic_int])
             d += bytes([8, 0x25, 1, 0, 0, 0]) + le16(0)
+            if fb:                                                          # explicit feedback (usage 01)
+                d += bytes([7, 5, EP_FB, 0x11]) + le16(self.fb_mps) + bytes([self.fb_int])
         return bytes([9, 2]) + le16(9 + len(d)) + bytes([len(self.ifaces), 1, 0, 0x80, 50]) + d
 
     def product(self):
@@ -189,6 +211,8 @@ class Headset:
         if self.config:
             if self.speaker and self.alt.get(1):
                 eps.append((EP_SPK, 1, self.spk_int if self.speed == SPEED_HIGH else 1, 1, self.spk_mps))
+                if self.feedback:
+                    eps.append((EP_FB, 1, (1 << (self.fb_int - 1)) if self.speed == SPEED_HIGH else 1, 1, self.fb_mps))
             if self.mic and self.alt.get(2):
                 eps.append((EP_MIC, 1, (1 << (self.mic_int - 1)) if self.speed == SPEED_HIGH else 1, 2, self.mic_mps))
         return eps
@@ -237,6 +261,9 @@ class Conn:
         self.mic_on = False
         self.mic_phase = 0
         self.mic_rate = 0
+        self.fb_on = False
+        self.fb_since = None                           # when feedback started (for the counts)
+        self.fb_packets = self.fb_frames = 0
 
     def make_mic_wave(self):
         """A second of the microphone's frames at its rate (a whole number of
@@ -311,6 +338,34 @@ class Conn:
                 return
             sent = due
             time.sleep(0.002)
+
+    def fb_value(self):
+        """The feedback endpoint's value: the frames the device plays, at high
+        speed in 16.16 a microframe, at full speed in 10.14 a millisecond"""
+        if self.dev.speed == SPEED_HIGH:
+            return struct.pack('<I', round(self.dev.feedback * 65536 / 8000))
+        return struct.pack('<I', round(self.dev.feedback * 16384 / 1000))[:3]
+
+    def fb_loop(self):
+        """Send the feedback every millisecond while its stream runs"""
+        t0, sent, pkt = time.monotonic(), 0, self.fb_value()
+        self.fb_since = t0
+        while self.fb_on:
+            due = int((time.monotonic() - t0) * 1000)
+            if due - sent > 200:
+                sent = due - 20
+            try:
+                for _ in range(due - sent):
+                    self.send(ISO_PACKET, struct.pack('<BBH', EP_FB, OK, len(pkt)), pkt)
+            except OSError:
+                return
+            sent = due
+            time.sleep(0.002)
+
+    def fb_sync(self):
+        if self.wav and self.dev.feedback:
+            with open(self.wav.path + '.fb', 'w') as f:
+                f.write(f'{self.fb_packets} {self.fb_frames}\n')
 
     def control(self, pid, hdr, data):
         ep, req, rtype, _, value, index, length = struct.unpack('<BBBBHHH', hdr)
@@ -397,15 +452,25 @@ class Conn:
                     if body[0] == EP_MIC and not self.mic_on:
                         self.mic_on = True
                         threading.Thread(target=self.mic_loop, daemon=True).start()
+                    if body[0] == EP_FB and not self.fb_on:
+                        self.fb_on = True
+                        threading.Thread(target=self.fb_loop, daemon=True).start()
                 elif ptype == STOP_ISO_STREAM:
                     if body[0] == EP_MIC:
                         self.mic_on = False
+                    if body[0] == EP_FB:
+                        self.fb_on = False
                     self.send(ISO_STREAM_STATUS, bytes([OK, body[0]]), pid=pid)
                 elif ptype == ISO_PACKET:
                     ep, st, n = struct.unpack('<BBH', body[:4])
                     if ep == EP_SPK and self.wav:
                         pcm = body[4:4 + n]
                         sub, ch = self.dev.spk_sub, self.dev.channels
+                        if self.fb_since and time.monotonic() - self.fb_since > 0.5:
+                            self.fb_packets += 1
+                            self.fb_frames += n // (sub * ch)
+                            if self.fb_packets % 500 == 0:
+                                self.fb_sync()
                         if sub != 2:                   # the top 16 bits of each sample
                             pcm = b''.join(pcm[i + sub - 2:i + sub] for i in range(0, len(pcm) - sub + 1, sub))
                         if ch != 2:                    # the first two channels (mono: twice); count the rest
@@ -419,9 +484,10 @@ class Conn:
         except (EOFError, ConnectionError):
             pass
         finally:
-            self.mic_on = False
+            self.mic_on = self.fb_on = False
             if self.wav:
                 self.wav.sync()
+                self.fb_sync()
 
 
 def main():
@@ -435,6 +501,7 @@ def main():
     ap.add_argument('--channels', type=int, default=2, help="the speaker's channels")
     ap.add_argument('--mic-channels', type=int, default=1, help="the microphone's channels")
     ap.add_argument('--product', help='its product string')
+    ap.add_argument('--feedback', type=int, default=0, help="the speaker's own rate, sent on a feedback endpoint (Hz)")
     a = ap.parse_args()
     rates = [int(r) for r in a.rates.split(',')]
     if not a.speaker and not a.mic:
@@ -463,7 +530,7 @@ def main():
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         print('usbredirpeer: QEMU connected', flush=True)
         dev = Headset(SPEED_HIGH if a.speed == 'high' else SPEED_FULL, bool(a.speaker), bool(a.mic), a.uac2,
-                      rates, a.channels, a.mic_channels, a.product)
+                      rates, a.channels, a.mic_channels, a.product, a.feedback)
         Conn(s, dev, wav, a.mic or 0).run()
         print('usbredirpeer: QEMU disconnected', flush=True)
 

@@ -1,10 +1,13 @@
 /*
  * soundtest — exercise NovaOS's sound output
  *
- *   soundtest info              the playback device (waveOutGetDevCaps)
+ *   soundtest info              the waveOut and waveIn devices
+ *                               (waveOutGetDevCaps; device 0 is the
+ *                               default) and the preferred device IDs
+ *                               (DRVM_MAPPER_PREFERRED_GET)
  *   soundtest tone [HZ] [MS]    a sine through waveOut, 22.05 kHz mono 16-bit
- *                               (the converter's resampling path), 4 buffers
- *                               cycled through CALLBACK_EVENT
+ *                               (rate=N: at N Hz), 4 buffers cycled through
+ *                               CALLBACK_EVENT
  *   soundtest float [HZ] [MS]   the same as 48 kHz stereo 32-bit float
  *   soundtest play FILE         PlaySound(FILE, SND_FILENAME | SND_SYNC)
  *   soundtest ding              PlaySound(SystemAsterisk) (the default sound)
@@ -45,6 +48,7 @@
  *   soundtest dsenum            DirectSoundEnumerate and
  *                               DirectSoundCaptureEnumerate
  *
+ * rate=N anywhere on the line plays tone at N Hz instead of 22.05 kHz.
  * dev=NAME anywhere on the line makes tone, float, record, wasapi,
  * capture, dsound and dscapture use the device whose name holds NAME (a
  * waveOut/waveIn device ID, a WASAPI endpoint from EnumAudioEndpoints, a
@@ -111,9 +115,12 @@ __declspec(dllimport) MMRESULT WINAPI waveInReset(HANDLE);
 __declspec(dllimport) MMRESULT WINAPI waveInClose(HANDLE);
 __declspec(dllimport) MMRESULT WINAPI waveInGetPosition(HANDLE, MMTIME *, UINT);
 __declspec(dllimport) BOOL WINAPI PlaySoundW(LPCWSTR, HMODULE, DWORD);
+__declspec(dllimport) MMRESULT WINAPI waveOutMessage(HANDLE, UINT, DWORD_PTR, DWORD_PTR);
+__declspec(dllimport) MMRESULT WINAPI waveInMessage(HANDLE, UINT, DWORD_PTR, DWORD_PTR);
 __declspec(dllimport) BOOL WINAPI Beep(DWORD, DWORD);
 
 static const char *g_dev;          /* dev=NAME: the device to use (NULL: the default) */
+static DWORD g_rate = 22050;       /* rate=N: tone's sampling rate */
 
 #define CALLBACK_EVENT 0x00050000
 #define WHDR_DONE      1
@@ -137,6 +144,11 @@ static int info(void)
         MMRESULT r = waveInGetDevCapsW(i, &c, sizeof(c));
         printf("  %u: r=%u \"%ls\" channels=%u formats=%05lx\n", i, r, c.szPname, c.wChannels, c.dwFormats);
     }
+    DWORD po = 99, pi = 99, fo = 0, fi = 0;                    /* DRVM_MAPPER_PREFERRED_GET */
+    MMRESULT ro = waveOutMessage((HANDLE)(UINT_PTR)-1, 0x2015, (DWORD_PTR)&po, (DWORD_PTR)&fo);
+    MMRESULT ri = waveInMessage((HANDLE)(UINT_PTR)-1, 0x2015, (DWORD_PTR)&pi, (DWORD_PTR)&fi);
+    printf("preferred waveOut device: %ld (r=%u), waveIn device: %ld (r=%u)\n", ro ? -1L : (long)po, ro,
+           ri ? -1L : (long)pi, ri);
     return n ? 0 : 1;
 }
 
@@ -237,7 +249,7 @@ static int record(const char *path, DWORD ms)
  * float stereo at 48 kHz */
 static int tone(double hz, DWORD ms, BOOL flt)
 {
-    WAVEFORMATEX f = { flt ? 3 : 1, flt ? 2 : 1, flt ? 48000 : 22050, 0, 0, flt ? 32 : 16, 0 };
+    WAVEFORMATEX f = { flt ? 3 : 1, flt ? 2 : 1, flt ? 48000 : g_rate, 0, 0, flt ? 32 : 16, 0 };
     f.nBlockAlign = f.nChannels * f.wBitsPerSample / 8;
     f.nAvgBytesPerSec = f.nSamplesPerSec * f.nBlockAlign;
     HANDLE ev = CreateEventW(0, FALSE, FALSE, 0), wo;
@@ -970,13 +982,14 @@ static DWORD WINAPI wasapi_thread(LPVOID p) { (void)p; return (DWORD)wasapi(g_hz
 
 int main(int argc, char **argv)
 {
-    for (int i = 1; i < argc; i++)                  /* dev=NAME: taken out of the line */
-        if (!strncmp(argv[i], "dev=", 4)) {
-            g_dev = argv[i] + 4;
-            for (int j = i; j < argc - 1; j++) argv[j] = argv[j + 1];
-            argc--;
-            break;
-        }
+    for (int i = 1; i < argc; i++) {                /* dev=NAME, rate=N: taken out of the line */
+        if (!strncmp(argv[i], "dev=", 4)) g_dev = argv[i] + 4;
+        else if (!strncmp(argv[i], "rate=", 5)) g_rate = (DWORD)atoi(argv[i] + 5);
+        else continue;
+        for (int j = i; j < argc - 1; j++) argv[j] = argv[j + 1];
+        argc--;
+        i--;
+    }
     const char *cmd = argc > 1 ? argv[1] : "info";
     double hz = argc > 2 ? atof(argv[2]) : 440;
     DWORD ms = argc > 3 ? (DWORD)atoi(argv[3]) : 1000;
@@ -1033,6 +1046,6 @@ int main(int argc, char **argv)
     printf("usage: soundtest info | tone [HZ] [MS] | float [HZ] [MS] | play FILE | ding | wasapi [HZ] [MS] | beep [HZ] [MS]\n"
            "       | record FILE [MS] | capture FILE [MS] | volume | dsound [HZ] [MS] | dscapture FILE [MS]\n"
            "       | endpoints | default out|in NAME | level out|in [LEVEL] | wovolume | dsenum\n"
-           "       (dev=NAME: use that device)\n");
+           "       (dev=NAME: use that device; rate=N: tone at N Hz)\n");
     return 1;
 }
