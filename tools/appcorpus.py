@@ -15,7 +15,8 @@ C: and D: (an empty NTFS disk made with mkntfs, from the ntfs-3g package)
 must name each drive and give its own free space, and File Explorer's This
 PC must list both drives.  The windowed programs (App(gui=True)) run last,
 one at a time (each takes the keyboard): SumatraPDF opens a PDF, WinMerge
-compares two files, Notepad++ opens a file and PuTTY makes a raw connection
+compares two files, KeePassXC unlocks a password database, Notepad++
+opens a file and PuTTY makes a raw connection
 to an echo server this script runs on the host (10.0.2.2 on QEMU's user
 network) and types a line, which the server must receive.  Each one's
 screenshot (and This PC's) must match tests/reference/NAME.png

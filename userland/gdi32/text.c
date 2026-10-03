@@ -1163,3 +1163,122 @@ GDIAPI DWORD GetFontUnicodeRanges(HDC h, LPGLYPHSET gs)
     }
     return need;
 }
+
+/* -----------------------------------------------------------------------
+ * GetGlyphOutline: a glyph's metrics, its coverage bitmap (GGO_BITMAP,
+ * GGO_GRAY2/4/8_BITMAP) or its outline (GGO_NATIVE, quadratic splines in
+ * 16.16 pixels).  Qt's GDI font engine measures and draws through it;
+ * wglUseFontOutlines builds display lists from the outline.  The
+ * transform (@mat) is taken as the identity.
+ * ----------------------------------------------------------------------- */
+typedef struct { UINT bbx, bby; LONG ox, oy; short incx, incy; } GGO_METRICS_;
+typedef struct { WORD fract; short value; } FIXED_;
+
+static void put_fx(BYTE *p, float v)
+{
+    LONG f = (LONG)(v * 65536.0f + (v < 0 ? -0.5f : 0.5f));
+    memcpy(p, &f, 4);                           /* FIXED: fract, then value */
+}
+
+/* GGO_NATIVE: TTPOLYGONHEADER per contour, then one TTPOLYCURVE per segment */
+static DWORD glyph_native(Size *z, int gi, DWORD size, BYTE *buf)
+{
+    stbtt_vertex *v = 0;
+    int nv = stbtt_GetGlyphShape(&z->f->info, gi, &v);
+    float sc = z->scale;
+    DWORD need = 0, hdr = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        DWORD at = 0;
+        for (int i = 0; i < nv; i++) {
+            if (v[i].type == STBTT_vmove) {
+                if (pass && hdr != (DWORD)-1) { DWORD cb = at - hdr; memcpy(buf + hdr, &cb, 4); }
+                hdr = at;
+                if (pass) {
+                    DWORD type = 24;                    /* TT_POLYGON_TYPE */
+                    memcpy(buf + at + 4, &type, 4);
+                    put_fx(buf + at + 8, v[i].x * sc);
+                    put_fx(buf + at + 12, v[i].y * sc);
+                }
+                at += 16;
+                continue;
+            }
+            int q = v[i].type == STBTT_vline ? 1 : v[i].type == STBTT_vcurve ? 2 : 3;
+            WORD npt = (WORD)(q == 1 ? 1 : q == 2 ? 2 : 3);
+            if (pass) {
+                WORD t = (WORD)q;
+                memcpy(buf + at, &t, 2);
+                memcpy(buf + at + 2, &npt, 2);
+                BYTE *pt = buf + at + 4;
+                if (q == 2) { put_fx(pt, v[i].cx * sc); put_fx(pt + 4, v[i].cy * sc); pt += 8; }
+                if (q == 3) {
+                    put_fx(pt, v[i].cx * sc);  put_fx(pt + 4, v[i].cy * sc);
+                    put_fx(pt + 8, v[i].cx1 * sc); put_fx(pt + 12, v[i].cy1 * sc);
+                    pt += 16;
+                }
+                put_fx(pt, v[i].x * sc); put_fx(pt + 4, v[i].y * sc);
+            }
+            at += 4 + 8u * npt;
+        }
+        if (!pass) {
+            need = at;
+            if (!buf || !size) break;
+            if (size < need) { need = (DWORD)-1; break; }
+        } else if (nv) {
+            DWORD cb = at - hdr;
+            memcpy(buf + hdr, &cb, 4);
+        }
+    }
+    if (v) stbtt_FreeShape(&z->f->info, v);
+    return need;
+}
+
+GDIAPI DWORD GetGlyphOutlineW(HDC h, UINT c, UINT fmt, void *gm_out, DWORD size, void *buf, const void *mat)
+{
+    (void)mat;
+    Size *z = dc_size(dc_of(h), 0);
+    if (!z || !gm_out) return GDI_ERROR;
+    UINT kind = fmt & 0x7F;                          /* without GGO_GLYPH_INDEX, GGO_UNHINTED */
+    UINT32 key = fmt & 0x80 ? (c | 0x80000000u) : c;
+    Glyph *g = glyph(z, key);
+    if (!g) return GDI_ERROR;
+    GGO_METRICS_ gm;
+    gm.bbx = g->w ? (UINT)g->w : 1;
+    gm.bby = g->h ? (UINT)g->h : 1;
+    gm.ox = g->w ? g->x0 : 0;
+    gm.oy = g->h ? -g->y0 : 0;
+    gm.incx = g->adv;
+    gm.incy = 0;
+    memcpy(gm_out, &gm, sizeof(gm));
+    if (kind == 0) return 1;                         /* GGO_METRICS: non-zero on success */
+    if (kind == 2) {                                 /* GGO_NATIVE */
+        int gi = key & 0x80000000u ? (int)c : stbtt_FindGlyphIndex(&z->f->info, (int)c);
+        return glyph_native(z, gi, size, buf);
+    }
+    if (kind != 1 && (kind < 4 || kind > 6)) return GDI_ERROR;
+    if (!g->w || !g->h) return 0;                    /* blank glyph: no bitmap */
+    DWORD pitch = kind == 1 ? (((DWORD)g->w + 31) / 32) * 4 : (((DWORD)g->w + 3) & ~3u);
+    DWORD need = pitch * (DWORD)g->h;
+    if (!buf || !size) return need;
+    if (size < need) return GDI_ERROR;
+    BYTE *o = buf;
+    memset(o, 0, need);
+    int levels = kind == 4 ? 4 : kind == 5 ? 16 : 64;
+    for (int y = 0; y < g->h; y++)
+        for (int x = 0; x < g->w; x++) {
+            unsigned cov = g->bmp ? g->bmp[y * g->w + x] : 0;
+            if (kind == 1) { if (cov >= 128) o[y * pitch + x / 8] |= (BYTE)(0x80 >> (x & 7)); }
+            else o[y * pitch + x] = (BYTE)((cov * levels + 127) / 255);
+        }
+    return need;
+}
+
+GDIAPI DWORD GetGlyphOutlineA(HDC h, UINT c, UINT fmt, void *gm, DWORD size, void *buf, const void *mat)
+{
+    if (!(fmt & 0x80) && c < 0x100) {
+        char ch = (char)c;
+        WCHAR w = 0;
+        MultiByteToWideChar(CP_ACP, 0, &ch, 1, &w, 1);
+        c = w;
+    }
+    return GetGlyphOutlineW(h, c, fmt, gm, size, buf, mat);
+}

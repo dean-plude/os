@@ -1,0 +1,1 @@
+| `qttest` | What Qt programs (KeePassXC) need: `GetGlyphOutline` metrics, gray bitmaps and outlines; `HSTRING`s built in Windows' layout by the caller, as C++/WinRT does; `Windows.Security.Credentials.KeyCredentialManager` activating with Windows Hello not supported; `SetSecurityInfo` on `GetCurrentProcess()` |
