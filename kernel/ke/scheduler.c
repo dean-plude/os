@@ -109,6 +109,13 @@ static void ready_wake(RunQueue *rq, Thread *t)
     smp_kick(t->cpu);
 }
 
+/* A thread woken from a wait (sched_unblock) that should run before the
+ * one running on its CPU: that CPU switches at its next interrupt, which
+ * the waker sends it (IPI_WAKE, to itself too) — rather than at the end
+ * of the running thread's 20 ms time slice.  Set under the CPU's queue
+ * lock, cleared by the CPU's next switch. */
+static volatile bool g_resched[MAX_CPUS];
+
 /* Threads above this priority are "foreground" (the desktop, programs, the
  * network); the idle threads and csrss run only when none of those is ready. */
 #define BACKGROUND_PRIO 4
@@ -429,6 +436,7 @@ static void switch_locked(RunQueue *rq)
 {
     PKPCR kpcr = KiGetCurrentKpcr();
     Thread *prev = current_thread;
+    g_resched[kpcr->CpuNumber] = false;             /* (this switch is the one asked for) */
     Thread *next = rq_dequeue(rq);
     /* Nothing queued here, and this CPU would go idle: take work waiting
      * on another CPU (a busy CPU doesn't: threads would bounce between
@@ -646,8 +654,9 @@ void sched_tick(void)
     if (tick && current_thread->idle)
         for (uint32_t c = 0; c < g_cpu_count && !steal_now; c++)
             steal_now = __atomic_load_n(&g_rq[c].head, __ATOMIC_RELAXED) != NULL;
-    /* A sleeper that is due runs now; or the time slice expired */
-    if (preempt || steal_now || current_thread->ticks_slice >= TICKS_PER_SLICE)
+    /* A sleeper that is due runs now, or a thread woken for this CPU
+     * (sched_unblock); or the time slice expired */
+    if (preempt || steal_now || g_resched[cpu] || current_thread->ticks_slice >= TICKS_PER_SLICE)
         perform_switch();
 }
 
@@ -792,16 +801,49 @@ void sched_block(void)
     RunQueue *rq = my_rq();
     spin_lock(&rq->lock);
     current_thread->state = THREAD_WAITING;
+    current_thread->wake_tsc = 0;                   /* (no deadline: see wake_preempts) */
     switch_locked(rq);
     irq_restore(irq);
+}
+
+/* Whether @t, woken in its CPU's queue (locked), should preempt the thread
+ * running there: one of higher priority does, and so does one of the same
+ * priority waiting with a TSC deadline (a program's wait or Sleep: what
+ * NT's wait boost gives an event's or a timer's waiter), as when the
+ * deadline itself wakes it (wake_sleepers).  An idle CPU needs no preempting
+ * (ready_wake's kick). */
+static bool wake_preempts(const Thread *t)
+{
+    PKPCR k = &g_kpcr[t->cpu];
+    Thread *cur = (Thread *)__atomic_load_n(&k->CurrentThread, __ATOMIC_RELAXED);
+    if (!k->Online || !cur || cur == t || cur->idle) return false;
+    return t->priority > cur->priority || (t->wake_tsc && t->priority >= cur->priority);
 }
 
 void sched_unblock(Thread *t)
 {
     IrqState irq;
     RunQueue *rq = lock_thread_rq(t, &irq);
-    if (t->state == THREAD_WAITING) ready_wake(rq, t);
+    if (t->state == THREAD_WAITING) {
+        if (wake_preempts(t)) {
+            /* First in its CPU's queue; a halted CPU takes it if there is
+             * one, else its own CPU switches to it at the IPI */
+            rq_enqueue_front(rq, t);
+            if (!smp_kick(t->cpu)) {
+                g_resched[t->cpu] = true;
+                apic_send_ipi(g_kpcr[t->cpu].ApicId, APIC_IPI_FIXED | IPI_WAKE);
+            }
+        } else {
+            ready_wake(rq, t);
+        }
+    }
     spin_unlock_irqrestore(&rq->lock, irq);
+}
+
+void sched_resched_ipi(void)
+{
+    uint32_t cpu = this_cpu();
+    if (g_resched[cpu] && current_thread) perform_switch();
 }
 
 /* -----------------------------------------------------------------------

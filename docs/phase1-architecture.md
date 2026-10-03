@@ -200,6 +200,15 @@ preempts the running thread when its priority is at least as high, so
 busy (`sleeptest timer`).  Tick work (the tick count, input polling, time
 slices) still happens once per 10 ms.
 
+A thread woken from a wait by another thread (`sched_unblock`: an event
+set, a timer signalled, a wait satisfied) gets the same treatment: it goes
+to the front of its CPU's run queue and preempts the running thread when
+its priority is higher, or the same and it was waiting with a TSC
+deadline (every program's wait).  A halted CPU takes it if one is free;
+otherwise the waker sends the thread's CPU `IPI_WAKE` with a reschedule
+flag set, and that CPU switches in the interrupt (unless it is halted
+waiting for the kernel lock: then its next timer tick switches).
+
 ### Scheduler Design
 
 **Algorithm**: Round-robin with fixed 20ms time quantum

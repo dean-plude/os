@@ -212,9 +212,13 @@ Thread *sched_current(void);
 void sched_block(void);
 
 /*
- * Unblock a thread (move from WAITING to READY state).
+ * Unblock a thread (move from WAITING to READY state).  One that should run
+ * before the thread running on its CPU (higher priority, or the same and
+ * waiting with a TSC deadline) preempts it at once, through IPI_WAKE.
  */
 void sched_unblock(Thread *t);
+/* IPI_WAKE (interrupt context): switch if sched_unblock asked this CPU to */
+void sched_resched_ipi(void);
 
 /*
  * Print scheduler state to the debug console (for diagnostics).
