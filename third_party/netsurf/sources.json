@@ -486,6 +486,18 @@
   "src/surface/ram.c",
   "src/surface/surface.c"
  ],
+ "libexpat": [
+  "lib/xmlparse.c",
+  "lib/xmlrole.c",
+  "lib/xmltok.c"
+ ],
+ "libsvgtiny": [
+  "src/svgtiny.c",
+  "src/svgtiny_gradient.c",
+  "src/svgtiny_list.c",
+  "src/svgtiny_parse.c",
+  "src/svgtiny_path.c"
+ ],
  "netsurf": [
   "build/Linux-framebuffer/image-caret_image.c",
   "build/Linux-framebuffer/image-hand_image.c",

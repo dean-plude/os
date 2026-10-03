@@ -11,7 +11,8 @@ order; --list prints them):
             deliberate kernel fault must print a symbolized backtrace)
   graphics  on two monitors (a QEMU secondary-vga is the second; montest),
             installs "Mesa 3D" and "DXVK" with the App Store, then runs
-            tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
+            tools/gltest and tools/d3dtest, 64- and 32-bit, and NetSurf
+            on a page with an SVG and a script (nstest).  Needs --gfx DIR,
             made by tools/ci/stage-graphics.sh: 7-Zip, the two downloads and
             the four test programs
   network   two boots with a virtio-net adapter (tests/selftest/network4

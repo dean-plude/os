@@ -57,6 +57,7 @@
 #include "javascript/js.h"
 #include "desktop/gui_internal.h"
 
+#include "css/select.h"
 #include "html/html.h"
 #include "html/private.h"
 #include "html/dom_event.h"
@@ -337,6 +338,224 @@ static void html_get_dimensions(html_content *htmlc)
 	htmlc->unit_len_ctx.font_size_minimum = f_min;
 }
 
+#ifdef _NOVAOS
+/*
+ * NovaOS: pages a script changes after layout.  Upstream NetSurf builds
+ * the box tree once ("NS layout is static"), so a DOM change made by a
+ * script after the page was laid out (a new element, new text, a changed
+ * style or class attribute, a new stylesheet) never showed.  Here any such
+ * change schedules html_relayout, which throws the box tree away and
+ * builds it again from the DOM in one go, then reformats and redraws the
+ * page.  Changes made in one go by a script coalesce into one rebuild.
+ * Form controls keep their state (it lives in the DOM and the form
+ * structures, not in the boxes) and images carry on in the new boxes; the
+ * text selection, a drag or the caret in a text field are dropped.  Pages with frames or iframes keep upstream's
+ * static layout (their child browser windows hang off the boxes).
+ */
+
+/** delay before a rebuild, so a burst of changes coalesces (ms) */
+#define HTML_RELAYOUT_DELAY 20
+
+static void html_relayout(void *p);
+
+/** whether the content has a laid-out box tree a rebuild can replace */
+static bool html_can_relayout(html_content *htmlc)
+{
+	content_status status = content__get_status(&htmlc->base);
+
+	return htmlc->layout != NULL &&
+		htmlc->box_conversion_context == NULL &&
+		htmlc->had_initial_layout &&
+		htmlc->aborted == false &&
+		htmlc->frameset == NULL &&
+		htmlc->iframe == NULL &&
+		(status == CONTENT_STATUS_READY || status == CONTENT_STATUS_DONE);
+}
+
+/* exported function documented in html/private.h */
+void html_schedule_relayout(html_content *htmlc)
+{
+	if (!html_can_relayout(htmlc))
+		return;
+	guit->misc->schedule(HTML_RELAYOUT_DELAY, html_relayout, htmlc);
+}
+
+/** forget every node's box (the old tree's boxes are about to go) and
+ * what libcss cached on it (its style is selected again) */
+static void html_relayout_forget_boxes(dom_node *root)
+{
+	dom_node *n = dom_node_ref(root);
+
+	while (n != NULL) {
+		dom_node *next = NULL;
+		void *old = NULL;
+		dom_node_type type;
+
+		if (dom_node_get_node_type(n, &type) == DOM_NO_ERR &&
+				type == DOM_ELEMENT_NODE) {
+			dom_node_set_user_data(n,
+					corestring_dom___ns_key_box_node_data,
+					NULL, NULL, &old);
+			nscss_forget_node_data(n);
+			dom_node_get_first_child(n, &next);
+		}
+		/* next in document order, never leaving root */
+		while (next == NULL && n != NULL) {
+			if (n == root) {
+				dom_node_unref(n);
+				n = NULL;
+				break;
+			}
+			dom_node_get_next_sibling(n, &next);
+			if (next == NULL) {
+				dom_node *parent = NULL;
+				dom_node_get_parent_node(n, &parent);
+				dom_node_unref(n);
+				n = parent;
+			}
+		}
+		if (n != NULL) {
+			dom_node_unref(n);
+			n = next;
+		}
+	}
+}
+
+/** detach the form controls from the old boxes */
+static void html_relayout_forget_controls(html_content *htmlc)
+{
+	struct form *f;
+	struct form_control *ctl;
+
+	for (f = htmlc->forms; f != NULL; f = f->prev) {
+		for (ctl = f->controls; ctl != NULL; ctl = ctl->next) {
+			ctl->box = NULL;
+			switch (ctl->type) {
+			case GADGET_TEXTAREA:
+			case GADGET_TEXTBOX:
+			case GADGET_PASSWORD:
+				/* the new box makes a new text area from
+				 * the value in the DOM */
+				if (ctl->data.text.ta != NULL) {
+					textarea_destroy(ctl->data.text.ta);
+					ctl->data.text.ta = NULL;
+				}
+				break;
+			case GADGET_SELECT: {
+				/* the new box adds the options again */
+				struct form_option *o, *next;
+				if (ctl->data.select.menu != NULL)
+					form_free_select_menu(ctl);
+				for (o = ctl->data.select.items; o != NULL; o = next) {
+					next = o->next;
+					free(o->text);
+					free(o->value);
+					free(o);
+				}
+				ctl->data.select.items = NULL;
+				ctl->data.select.last_item = NULL;
+				ctl->data.select.current = NULL;
+				ctl->data.select.num_items = 0;
+				ctl->data.select.num_selected = 0;
+				break;
+			}
+			default:
+				break;
+			}
+		}
+	}
+}
+
+static bool html_relayout_ok;
+
+static void html_relayout_done(html_content *htmlc, bool success)
+{
+	(void)htmlc;
+	html_relayout_ok = success;
+}
+
+/** rebuild the box tree from the DOM, reformat and redraw */
+static void html_relayout(void *p)
+{
+	html_content *htmlc = p;
+	union html_drag_owner no_drag = { .no_owner = true };
+	union html_focus_owner self_focus = { .self = true };
+	union html_selection_owner no_sel = { .none = true };
+	css_select_ctx *select_ctx = NULL;
+	dom_node *html = NULL;
+	int *old_bctx;
+	nserror err;
+
+	if (!html_can_relayout(htmlc) || htmlc->base.locked)
+		return;
+	if (htmlc->visible_select_menu != NULL || htmlc->reflowing) {
+		/* a select menu is open (it points into the boxes): later */
+		guit->misc->schedule(100, html_relayout, htmlc);
+		return;
+	}
+	if (dom_document_get_document_element(htmlc->document,
+			(void *) &html) != DOM_NO_ERR || html == NULL)
+		return;
+
+	/* a new selection context: stylesheets a script added count now */
+	err = html_css_new_selection_context(htmlc, &select_ctx);
+	if (err != NSERROR_OK) {
+		dom_node_unref(html);
+		return;
+	}
+
+	NSLOG(netsurf, INFO, "rebuilding the box tree after a DOM change (%p)",
+			htmlc);
+
+	/* drop everything that points into the old tree */
+	if (htmlc->drag_type != HTML_DRAG_NONE)
+		html_set_drag_type(htmlc, HTML_DRAG_NONE, no_drag, NULL);
+	if (htmlc->focus_type != HTML_FOCUS_SELF)
+		html_set_focus(htmlc, HTML_FOCUS_SELF, self_focus, true,
+				0, 0, 0, NULL);
+	if (htmlc->selection_type != HTML_SELECTION_NONE)
+		html_set_selection(htmlc, HTML_SELECTION_NONE, no_sel, true);
+	selection_clear(htmlc->sel, false);
+	html_relayout_forget_controls(htmlc);
+	html_object_stash_box_objects(htmlc);
+	imagemap_destroy(htmlc);
+	html_relayout_forget_boxes(html);
+
+	if (htmlc->select_ctx != NULL)
+		css_select_ctx_destroy(htmlc->select_ctx);
+	htmlc->select_ctx = select_ctx;
+
+	/* build the new tree in a talloc context of its own */
+	old_bctx = htmlc->bctx;
+	htmlc->bctx = NULL;
+	htmlc->layout = NULL;
+	html_relayout_ok = false;
+	err = dom_to_box_sync(html, htmlc, html_relayout_done);
+	dom_node_unref(html);
+	html_object_drop_stash(htmlc);
+	talloc_free(old_bctx);
+	if (err != NSERROR_OK || !html_relayout_ok || htmlc->layout == NULL) {
+		NSLOG(netsurf, ERROR, "box tree rebuild failed");
+		content_broadcast_error(&htmlc->base, NSERROR_BOX_CONVERT, NULL);
+		content_set_error(&htmlc->base);
+		return;
+	}
+	imagemap_extract(htmlc);
+
+	/* lay out at the size the page had, and redraw it all */
+	content__reformat(&htmlc->base, false, htmlc->base.available_width,
+			htmlc->base.available_height);
+	html_proceed_to_done(htmlc);
+}
+
+/** stop a scheduled rebuild (the content goes away) */
+static void html_cancel_relayout(html_content *htmlc)
+{
+	guit->misc->schedule(-1, html_relayout, htmlc);
+}
+#endif
+
+
 /* exported function documented in html/html_internal.h */
 void html_finish_conversion(html_content *htmlc)
 {
@@ -363,8 +582,13 @@ void html_finish_conversion(html_content *htmlc)
 	 * would break badly.
 	 */
 	if (htmlc->select_ctx != NULL) {
+#ifdef _NOVAOS
+		/* NovaOS: lay the page out again with the new stylesheet */
+		html_schedule_relayout(htmlc);
+#else
 		NSLOG(netsurf, INFO,
 				"Ignoring style change: NS layout is static.");
+#endif
 		return;
 	}
 
@@ -1205,6 +1429,10 @@ static void html_destroy(struct content *c)
 	struct form *f, *g;
 
 	NSLOG(netsurf, INFO, "content %p", c);
+
+#ifdef _NOVAOS
+	html_cancel_relayout(html);
+#endif
 
 	/* If we're still converting a layout, cancel it */
 	if (html->box_conversion_context != NULL) {

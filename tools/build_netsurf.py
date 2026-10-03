@@ -29,7 +29,7 @@ BASE = ['clang', '--target=x86_64-pc-windows-msvc', '-O2', '-ffreestanding', '-n
         '-isystem', os.path.join(SDK, 'posix'), '-isystem', SDK]
 
 LIBS = ('libwapcaplet', 'libparserutils', 'libcss', 'libhubbub', 'libdom', 'libnsbmp', 'libnsgif',
-        'libnsutils', 'libutf8proc', 'libnspsl', 'libnsfb')
+        'libnsutils', 'libutf8proc', 'libnspsl', 'libnsfb', 'libsvgtiny')
 
 def pub_inc():
     # every library's public headers (never another library's private src/)
@@ -37,6 +37,7 @@ def pub_inc():
     for n in LIBS:
         out += ['-I', os.path.join(TP, n, 'include')]
     out += ['-I', os.path.join(TP, 'libutf8proc', 'include', 'libutf8proc')]
+    out += ['-I', os.path.join(TP, 'libexpat', 'lib')]
     return out
 
 def own_inc(name):
@@ -51,6 +52,7 @@ INSTALL_DIR = '\\Programs\\NetSurf'
 RESPATH = '/Programs/NetSurf/res'
 NS_DEFS = ['-Dnsframebuffer', '-Dsmall', '-DSTMTEXPR=1', '-DWITH_BMP', '-DWITH_GIF', '-DWITH_PNG',
            '-DWITH_JPEG',                   # userland/netsurf/jpeg_stb.c (stb_image)
+           '-DWITH_NS_SVG',                 # SVG images: libsvgtiny on libdom's XML parser (expat)
            '-DWITH_NSPSL', '-DWITH_UTF8PROC', '-DWITH_NOVA_HTTP', '-DUTF8PROC_STATIC',
            '-DDUK_OPT_HAVE_CUSTOM_H',        # JavaScript: Duktape (content/handlers/javascript/duktape)
            '-DNETSURF_HOMEPAGE="about:welcome"', '-DNETSURF_LOG_LEVEL=WARNING',
@@ -60,14 +62,15 @@ NS_DEFS = ['-Dnsframebuffer', '-Dsmall', '-DSTMTEXPR=1', '-DWITH_BMP', '-DWITH_G
            '-DNETSURF_BUILTIN_LOG_FILTER="(level:WARNING)"',
            '-DNETSURF_BUILTIN_VERBOSE_FILTER="(level:VERBOSE)"']
 
+PV_FLAGS = ['-I', os.path.join(ROOT, 'third_party', 'plutovg', 'include'), '-DPLUTOVG_BUILD_STATIC', '-DPLUTOVG_BUILD',
+            '-DSTBI_NO_THREAD_LOCALS']
+
 def components():
     lists = json.load(open(os.path.join(TP, 'sources.json')))
     comps = []
     drop = {
-        'libdom': {'bindings/xml/expat_xmlparser.c'},
         'libnsfb': set(),
-        'netsurf': {'content/handlers/image/svg.c', 'content/handlers/image/nssprite.c',
-                    'desktop/font_haru.c'},
+        'netsurf': {'content/handlers/image/nssprite.c', 'desktop/font_haru.c'},
     }
     for name, srcs in lists.items():
         base = os.path.join(TP, name)
@@ -81,11 +84,14 @@ def components():
         if name == 'netsurf':
             flags = ['-I', base, '-I', os.path.join(base, 'include'), '-I', os.path.join(base, 'frontends'),
                      '-I', os.path.join(base, 'content', 'handlers'), '-I', os.path.join(base, 'generated'),
-                     '-I', GLUE] + pub_inc() + ['-I', os.path.join(TP, 'libpng'), '-I', os.path.join(TP, 'zlib')] + NS_DEFS
+                     '-I', GLUE] + pub_inc() + ['-I', os.path.join(TP, 'libpng'), '-I', os.path.join(TP, 'zlib')] + \
+                    PV_FLAGS[:3] + NS_DEFS
         elif name == 'libdom':
             flags = own_inc(name) + ['-I', os.path.join(base, 'bindings')]
         elif name == 'libutf8proc':
             flags = own_inc(name) + ['-DUTF8PROC_STATIC']
+        elif name == 'libexpat':
+            flags = ['-I', base + '/lib', '-DHAVE_EXPAT_CONFIG_H', '-DXML_STATIC']
         elif name == 'libparserutils':
             flags = own_inc(name) + ['-DWITHOUT_ICONV_FILTER']
         else:
@@ -101,6 +107,11 @@ def components():
             'pngrutil', 'pngset', 'pngtrans', 'pngwio', 'pngwrite', 'pngwtran', 'pngwutil']
     comps.append(('libpng', [os.path.join(p, s + '.c') for s in psrc],
                   ['-I', p, '-I', z, '-DPNG_ARM_NEON_OPT=0', '-DPNG_INTEL_SSE_OPT=0']))
+    # plutovg (MIT): the framebuffer's path plotter (SVG shapes) in
+    # frontends/framebuffer/framebuffer.c
+    pv = os.path.join(ROOT, 'third_party', 'plutovg')
+    comps.append(('plutovg', sorted(os.path.join(pv, 'source', f) for f in os.listdir(os.path.join(pv, 'source'))
+                                    if f.endswith('.c')), PV_FLAGS + ['-D_WIN32']))   # (its font file loader's Win32 branch)
     # Mbed TLS (for https), configured by userland/netsurf/mbedtls_user_config.h
     mb = os.path.join(ROOT, 'third_party', 'mbedtls')
     mb_flags = ['-I', os.path.join(mb, 'include'), '-I', os.path.join(mb, 'library'), '-I', GLUE,
@@ -124,7 +135,7 @@ def header_epoch():
     """Newest header under the trees we compile against: part of every
     object's cache key, so editing a header rebuilds everything."""
     newest = 0
-    for top in (TP, SDK, GLUE, os.path.join(ROOT, 'third_party', 'mbedtls')):
+    for top in (TP, SDK, GLUE, os.path.join(ROOT, 'third_party', 'mbedtls'), os.path.join(ROOT, 'third_party', 'plutovg')):
         for d, _, files in os.walk(top):
             for f in files:
                 if f.endswith('.h'):

@@ -1729,6 +1729,22 @@ css_error ua_default_for_property(void *pw, uint32_t property, css_hint *hint)
 	return CSS_OK;
 }
 
+#ifdef _NOVAOS
+/* exported function documented in css/select.h */
+void nscss_forget_node_data(dom_node *n)
+{
+	void *data = NULL;
+
+	if (dom_node_get_user_data(n, corestring_dom___ns_key_libcss_node_data,
+			&data) != DOM_NO_ERR || data == NULL)
+		return;
+	dom_node_set_user_data(n, corestring_dom___ns_key_libcss_node_data,
+			NULL, NULL, &data);
+	css_libcss_node_data_handler(&selection_handler, CSS_NODE_DELETED,
+			NULL, n, NULL, data);
+}
+#endif
+
 css_error set_libcss_node_data(void *pw, void *node, void *libcss_node_data)
 {
 	dom_node *n = node;
