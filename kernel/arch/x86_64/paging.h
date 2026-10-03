@@ -53,6 +53,10 @@
  * is PTE_LAZY too; backed it is present but not USER, so the program's
  * first touch faults, lifts the guard and is reported (or grows a stack) */
 #define PTE_GUARD     (UINT64_C(1) << 11)
+/* Software bit (user pages, ignored by the MMU): a read-only page of a
+ * loaded module whose frame every process with the same bytes there
+ * shares (kernel/um/um.c, image pages); never writable */
+#define PTE_IMAGE     (UINT64_C(1) << 52)
 
 /* Address mask (strips flag bits from PTE) */
 #define PTE_ADDR_MASK UINT64_C(0x000FFFFFFFFFF000)

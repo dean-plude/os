@@ -264,6 +264,120 @@ static bool is_current(UmProcess *p) { return read_cr3() == p->pml4; }
 /* Committed pages are backed on first touch (demand-zero): until then the
  * entry is not present and carries PTE_LAZY with the page's flags. */
 
+/* -----------------------------------------------------------------------
+ * Image pages: the read-only pages of loaded modules (headers, code,
+ * read-only data) are shared by every process whose page holds the same
+ * bytes, as Windows shares image sections.  A browser starts many
+ * processes of one 160 MB DLL; each private copy would cost that much
+ * memory again.  The frames are counted in a table keyed by their
+ * contents, so a module relocated or bound differently in one process
+ * shares every page that still matches.  PTE_IMAGE marks them; they are
+ * never writable: making one writable, or writing to it from outside
+ * (another process's WriteProcessMemory), gives the process its own copy
+ * first.
+ * ----------------------------------------------------------------------- */
+typedef struct ImgPage {
+    struct ImgPage *by_hash, *by_frame;                 /* bucket chains */
+    UINT64 hash;
+    PADDR  frame;
+    UINT32 refs;
+} ImgPage;
+#define IMG_BUCKETS 16384
+static ImgPage *g_img_hash[IMG_BUCKETS], *g_img_frame[IMG_BUCKETS];
+static KSpinLock g_img_lock = KSPINLOCK_INIT;
+
+static UINT64 page_hash(const void *pg)
+{
+    const UINT64 *w = pg;
+    UINT64 h = UINT64_C(0x9E3779B97F4A7C15);
+    for (int i = 0; i < (int)(PAGE_SIZE / 8); i += 2) {
+        h ^= w[i] * UINT64_C(0xFF51AFD7ED558CCD) + w[i + 1];
+        h = ((h << 29) | (h >> 35)) * UINT64_C(0xC4CEB9FE1A85EC53);
+    }
+    return h ^ (h >> 31);
+}
+
+static unsigned frame_bucket(PADDR f) { return (unsigned)((f >> 12) % IMG_BUCKETS); }
+
+/* A shared frame holding @content's page (one more reference), or 0 when
+ * memory ran out */
+static PADDR img_get(const void *content)
+{
+    UINT64 h = page_hash(content);
+    ImgPage **hb = &g_img_hash[h % IMG_BUCKETS];
+    IrqState s = spin_lock_irqsave(&g_img_lock);
+    for (ImgPage *i = *hb; i; i = i->by_hash)
+        if (i->hash == h && !memcmp(um_frame_ptr(i->frame), content, PAGE_SIZE)) {
+            i->refs++;
+            spin_unlock_irqrestore(&g_img_lock, s);
+            return i->frame;
+        }
+    spin_unlock_irqrestore(&g_img_lock, s);
+    ImgPage *n = kzalloc(sizeof(*n));
+    PADDR f = n ? pmm_alloc_page() : 0;
+    if (!f) { kfree(n); return 0; }
+    memcpy(um_frame_ptr(f), content, PAGE_SIZE);
+    n->hash = h; n->frame = f; n->refs = 1;
+    s = spin_lock_irqsave(&g_img_lock);
+    n->by_hash = *hb; *hb = n;                          /* (a twin added meanwhile only costs a page) */
+    ImgPage **fb = &g_img_frame[frame_bucket(f)];
+    n->by_frame = *fb; *fb = n;
+    spin_unlock_irqrestore(&g_img_lock, s);
+    return f;
+}
+
+/* One reference to the shared frame @f fewer; the last frees it */
+static void img_put(PADDR f)
+{
+    IrqState s = spin_lock_irqsave(&g_img_lock);
+    ImgPage **pp = &g_img_frame[frame_bucket(f)];
+    while (*pp && (*pp)->frame != f) pp = &(*pp)->by_frame;
+    ImgPage *i = *pp;
+    if (!i || --i->refs) { spin_unlock_irqrestore(&g_img_lock, s); return; }
+    *pp = i->by_frame;
+    for (ImgPage **hp = &g_img_hash[i->hash % IMG_BUCKETS]; *hp; hp = &(*hp)->by_hash)
+        if (*hp == i) { *hp = i->by_hash; break; }
+    spin_unlock_irqrestore(&g_img_lock, s);
+    pmm_free_page(f);
+    kfree(i);
+}
+
+/* The module page at @va (not committed yet) maps the shared frame with
+ * @content, read-only (@protect must not be writable) */
+bool um_map_image_page(UmProcess *p, UINT64 va, const void *content, UINT32 protect)
+{
+    pte_t *e = walk(p->pml4, va, true);
+    if (!e || (*e & (PTE_PRESENT | PTE_LAZY))) return false;
+    PADDR f = img_get(content);
+    if (!f) return false;
+    *e = f | (pte_flags(protect) & ~PTE_WRITE) | PTE_IMAGE;
+    p->commit++;
+    __atomic_add_fetch(&p->pages, 1, __ATOMIC_RELAXED);
+    return true;
+}
+
+/* The shared page at @e (@va) becomes the process's own copy, keeping
+ * the entry's flags; false when memory ran out.  (Two threads may race
+ * here: the entry only changes by compare-and-swap, and the loser's copy
+ * goes back.) */
+static bool img_privatize(UmProcess *p, UINT64 va, pte_t *e)
+{
+    pte_t v = __atomic_load_n(e, __ATOMIC_ACQUIRE);
+    if (!(v & PTE_IMAGE)) return true;
+    PADDR old = v & PTE_ADDR_MASK, f = pmm_alloc_page();
+    if (!f) return false;
+    memcpy(um_frame_ptr(f), um_frame_ptr(old), PAGE_SIZE);
+    pte_t nv = f | (v & ~(PTE_ADDR_MASK | PTE_IMAGE));
+    if (!__atomic_compare_exchange_n(e, &v, nv, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        pmm_free_page(f);
+        return !(__atomic_load_n(e, __ATOMIC_ACQUIRE) & PTE_IMAGE);
+    }
+    if (is_current(p)) invlpg(va);
+    smp_tlb_flush(p->pml4);
+    img_put(old);
+    return true;
+}
+
 bool um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect)
 {
     UINT64 f = pte_flags(protect);
@@ -273,8 +387,13 @@ bool um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect)
         pte_t *e = walk(p->pml4, a, true);
         if (!e) { ok = false; break; }
         if ((*e & PTE_PRESENT) && (*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* stays read-only */
+        if ((*e & PTE_IMAGE) && (f & PTE_WRITE)) {       /* a shared module page made writable: its own copy */
+            if (!img_privatize(p, a, e)) { ok = false; break; }
+        }
         if (*e & PTE_PRESENT) {                         /* re-commit: new protection */
-            *e = (*e & (PTE_ADDR_MASK | PTE_SHARED)) | (guard ? (f & ~PTE_USER) | PTE_GUARD : f);
+            UINT64 nf = guard ? (f & ~PTE_USER) | PTE_GUARD : f;
+            if (*e & PTE_IMAGE) nf &= ~PTE_WRITE;      /* (read-only: shared) */
+            *e = (*e & (PTE_ADDR_MASK | PTE_SHARED | PTE_IMAGE)) | nf;
             if (is_current(p)) invlpg(a);
             changed = true;
             continue;
@@ -353,6 +472,12 @@ int UmGuardFault(UINT64 va)
 
 /* Pages are freed only after every CPU has dropped them from its TLB: until
  * then another thread of the program could still write to them. */
+static void free_frame(PADDR f)
+{
+    if (f & 1) img_put(f & ~(PADDR)1);
+    else pmm_free_page(f);
+}
+
 void um_decommit(UmProcess *p, UINT64 va, UINT64 size)
 {
     PADDR batch[64];
@@ -366,19 +491,19 @@ void um_decommit(UmProcess *p, UINT64 va, UINT64 size)
             continue;
         }
         if ((*e & PTE_ADDR_MASK) == g_kusd_pa) continue;   /* the shared page stays */
-        batch[n++] = *e & PTE_ADDR_MASK;
+        batch[n++] = (*e & PTE_ADDR_MASK) | ((*e & PTE_IMAGE) ? 1 : 0);   /* (bit 0: a shared module page) */
         *e = 0;
         p->pages--;
         p->commit--;
         if (is_current(p)) invlpg(a);
         if (n == 64) {
             smp_tlb_flush(p->pml4);
-            while (n) pmm_free_page(batch[--n]);
+            while (n) free_frame(batch[--n]);
         }
     }
     if (n) {
         smp_tlb_flush(p->pml4);
-        while (n) pmm_free_page(batch[--n]);
+        while (n) free_frame(batch[--n]);
     }
 }
 
@@ -473,6 +598,7 @@ static bool copy_pages(UmProcess *p, UINT64 va, void *buf, UINT64 n, bool to_use
             }
             if (!back_page(p, e)) return false;
         }
+        if (to_user && (*e & PTE_IMAGE) && !img_privatize(p, va, e)) return false;
         UINT8 *k = (UINT8 *)(uintptr_t)(PHYSMAP_BASE + (*e & PTE_ADDR_MASK) + off);
         if (to_user) memcpy(k, b, chunk); else memcpy(b, k, chunk);
         va += chunk; b += chunk; n -= chunk;
@@ -564,7 +690,9 @@ static void free_address_space(UINT64 pml4)
                 if (!(l2[k] & PTE_PRESENT)) continue;
                 pte_t *l1 = PT(l2[k]);
                 for (int m = 0; m < 512; m++)
-                    if ((l1[m] & PTE_PRESENT) && !(l1[m] & PTE_SHARED) && (l1[m] & PTE_ADDR_MASK) != g_kusd_pa)
+                    if (l1[m] & PTE_IMAGE)
+                        img_put(l1[m] & PTE_ADDR_MASK);
+                    else if ((l1[m] & PTE_PRESENT) && !(l1[m] & PTE_SHARED) && (l1[m] & PTE_ADDR_MASK) != g_kusd_pa)
                         pmm_free_page(l1[m] & PTE_ADDR_MASK);
                 pmm_free_page(l2[k] & PTE_ADDR_MASK);
             }
@@ -1248,18 +1376,34 @@ static int bind_module(Loader *L, int m)
     }
     L->dep_dir = NULL;
 
-    /* Commit and copy in; then per-section protection */
-    if (!um_commit(p, base, im->size, 0x04) || !um_write(p, base, im->img, im->size))
-        return fail(L, "Out of memory loading %s", name);
-    um_commit(p, base, hdr, 0x02);                         /* headers: read-only */
+    /* Each page's protection: the headers read-only, then each section's
+     * (a page two sections share takes the later one's), the rest
+     * read/write.  Read-only pages map the frames every process loading
+     * the same bytes shares (image pages); the others are copied in. */
+    UINT32 npages = im->size >> 12;
+    UINT8 *prot = kmalloc(npages);
+    if (!prot) return fail(L, "Out of memory loading %s", name);
+    memset(prot, 0x04, npages);
+    for (UINT32 a = 0; a < hdr; a += PAGE_SIZE) prot[a >> 12] = 0x02;
     for (int i = 0; i < nsec; i++) {
         const UINT8 *s = sec + 40 * i;
         UINT32 va = rd32(s + 12), vsz = rd32(s + 8), ch = rd32(s + 36);
         if (!vsz) vsz = rd32(s + 16);
         bool x = ch & 0x20000000, w = ch & 0x80000000;
-        UINT32 prot = x ? (w ? 0x40 : 0x20) : (w ? 0x04 : 0x02);
-        if (va < im->size) um_commit(p, base + va, vsz > im->size - va ? im->size - va : vsz, prot);
+        UINT32 end = vsz > im->size - va ? im->size : va + vsz;
+        if (va < im->size)
+            for (UINT32 a = va & ~0xFFFU; a < end; a += PAGE_SIZE) prot[a >> 12] = x ? (w ? 0x40 : 0x20) : (w ? 0x04 : 0x02);
     }
+    bool ok = true;
+    for (UINT32 i = 0; ok && i < npages; i++) {
+        UINT64 va = base + ((UINT64)i << 12);
+        const UINT8 *pg = im->img + ((UINT64)i << 12);
+        ok = prot[i] == 0x04 || prot[i] == 0x40
+             ? um_commit(p, va, PAGE_SIZE, prot[i]) && um_write(p, va, pg, PAGE_SIZE)
+             : um_map_image_page(p, va, pg, prot[i]);
+    }
+    kfree(prot);
+    if (!ok) return fail(L, "Out of memory loading %s", name);
     return m;
 }
 

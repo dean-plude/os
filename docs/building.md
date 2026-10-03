@@ -617,7 +617,11 @@ would do).
 | PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
 
 The windowed programs run last, one at a time (each takes the keyboard and
-is closed with Alt+F4 before the next).  Building PuTTY needs `cmake` and
+is closed with Alt+F4 before the next).  The next one starts only once
+every process the last one started has ended (any still running after
+two minutes is stopped with `taskkill`) and the Terminal answers again;
+after Firefox, `store close` closes the App Store window its install
+opened.  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
 It needs 7-Zip's installer, Pillow, `openssl` (for Firefox's test

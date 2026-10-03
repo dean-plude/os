@@ -833,6 +833,15 @@ const char *StoreInstall(const char *name)
     return s->msg[i][0] ? s->msg[i] : "Started.";
 }
 
+/* "store close" in the Terminal: close the App Store's window (one
+ * "store install" opened in the background), as its close button would */
+const char *StoreClose(void)
+{
+    if (!g_store) return "The App Store is not open.";
+    WmRequestClose(g_store);
+    return "Closed the App Store.";
+}
+
 void StoreOpen(void)
 {
     if (g_store) { WmSetActive(g_store); return; }
