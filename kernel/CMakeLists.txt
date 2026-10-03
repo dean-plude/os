@@ -136,6 +136,7 @@ set(KERNEL_C_SOURCES
     hal/display.c
     drivers/e1000.c
     drivers/virtio_net.c
+    drivers/virtio_input.c
     drivers/ahci.c
     drivers/hda.c
     drivers/audio.c

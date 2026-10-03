@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Boot NovaOS in QEMU, run the self-test programs and say which passed.
 
-    tools/selftest.py [--suite core|graphics|network] [--img build/nova.img] [--out DIR]
+    tools/selftest.py [--suite core|graphics|network|devices] [--img build/nova.img] [--out DIR]
                       [--only NAME,...] [--junit FILE] [--summary FILE] [--list]
 
 Suites (one file per test in tests/selftest/SUITE/, run in file-name
@@ -20,6 +20,9 @@ order; --list prints them):
             tools/h2server.js (needs node and openssl).  IPv6 on an IPv6-only
             network that is tools/v6peer.py: SLAAC and RDNSS (ipconfig),
             ping -6, curl -6 and Winsock over IPv6 (netcat)
+  devices   a boot per device QEMU has that the core boot hasn't
+            (tests/selftest/devices/NAME/): "touch", a virtio multi-touch
+            screen (touchtest)
 
 Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
@@ -163,6 +166,10 @@ GRAPHICS = load_suite('graphics')
 # QEMU datagram netdev.
 NET4 = load_suite('network4')
 NET6 = load_suite('network6')
+# The devices suite: a boot for each device the core boot doesn't have
+# (one that takes QEMU's input, like a touch screen, would take it from the
+# core boot's mouse)
+TOUCH = load_suite('devices/touch')
 
 
 def net4_boot(work):
@@ -182,6 +189,18 @@ def net6_boot(work):
     return ['-netdev', 'dgram,id=v6,local.type=inet,local.host=127.0.0.1,local.port=10601,'
                        'remote.type=inet,remote.host=127.0.0.1,remote.port=10600',
             '-device', 'virtio-net-pci,netdev=v6'], [peer]
+
+
+def touch_boot(work):
+    """A virtio multi-touch screen (QEMU's input-send-event "mtt" events)"""
+    return ['-device', 'virtio-multitouch-pci'], []
+
+
+# The suites that boot once per entry: (label, tests, setup(work) -> (QEMU arguments, processes))
+BOOTS = {
+    'network': [('ipv4', NET4, net4_boot), ('ipv6', NET6, net6_boot)],
+    'devices': [('touch', TOUCH, touch_boot)],
+}
 
 
 def store_verdict(nova, t, out):
@@ -239,7 +258,7 @@ PANIC = re.compile(r'KERNEL PANIC|KERNEL PAGE FAULT|DOUBLE FAULT|Unhandled kerne
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--suite', choices=('core', 'graphics', 'network'), default='core')
+    ap.add_argument('--suite', choices=('core', 'graphics') + tuple(BOOTS), default='core')
     ap.add_argument('--gfx', help='the graphics suite\'s files (tools/ci/stage-graphics.sh)')
     ap.add_argument('--img', default=os.path.join(ROOT, 'build', 'nova.img'))
     ap.add_argument('--out', default='selftest-out')
@@ -249,7 +268,8 @@ def main():
     ap.add_argument('--list', action='store_true', help='print the suite\'s tests and exit')
     a = ap.parse_args()
 
-    suite = CORE if a.suite == 'core' else GRAPHICS if a.suite == 'graphics' else NET4 + NET6
+    suite = CORE if a.suite == 'core' else GRAPHICS if a.suite == 'graphics' else \
+        [t for _, tests, _ in BOOTS[a.suite] for t in tests]
     if a.list:
         for t in suite:
             print(f'{t.name:20s} {t.cmd}')
@@ -260,9 +280,9 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     global OUT
     OUT = a.out
-    if a.suite == 'network':
+    if a.suite in BOOTS:
         results = []
-        for name, suite, setup in (('ipv4', NET4, net4_boot), ('ipv6', NET6, net6_boot)):
+        for name, suite, setup in BOOTS[a.suite]:
             tests = chosen(suite)
             if not tests:
                 continue

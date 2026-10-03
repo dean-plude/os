@@ -1,0 +1,1 @@
+| `touchtest` | Multi-touch: `WM_TOUCH` with `GetTouchInputInfo` in a `RegisterTouchWindow` window, `WM_POINTERDOWN`/`UP`, `GetPointerInfo`, `GetPointerType`, `GetPointerFrameTouchInfo` and the mouse messages `DefWindowProc` makes of them in another, `SM_DIGITIZER`; needs the devices suite's virtio multi-touch screen and its help (see above) |

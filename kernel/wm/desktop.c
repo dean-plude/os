@@ -39,6 +39,7 @@
 #include "../apps/apps.h"
 #include "../net/net.h"
 #include "../drivers/audio.h"
+#include "../drivers/virtio_input.h"
 
 /* -----------------------------------------------------------------------
  * Themes
@@ -1618,6 +1619,88 @@ static void start_key(const KeyEvent *k)
     WmInvalidate();
 }
 
+/* ---- Touch screens ----
+ *
+ * The drivers post each contact that changed (INPUT_TOUCH, in slots) and
+ * then the frame's end.  A contact belongs to the window it touched down
+ * on: in a program's client area (WND.on_touch) the program gets it
+ * (WM_POINTER* or WM_TOUCH, user32 decides); anywhere else the primary
+ * contact (the first one down) works the mouse, its left button held
+ * while it touches, so the dock, menus and the built-in apps work by
+ * touch. */
+static struct { bool changed, down; INT32 rx, ry; } g_tnew[TOUCH_MAX];
+typedef struct { bool down, primary, prog; int win; int x, y; INT32 rx, ry; } TouchContact;
+static TouchContact g_tc[TOUCH_MAX];
+
+static void touch_frame(void)
+{
+    WmTouch out[TOUCH_MAX];
+    int wins[TOUCH_MAX], n = 0;
+    bool any_down = false;
+    for (int s = 0; s < TOUCH_MAX; s++) if (g_tc[s].down) any_down = true;
+    int sw = GdiScreenW(), sh = GdiScreenH();
+    for (int s = 0; s < TOUCH_MAX; s++) {
+        if (!g_tnew[s].changed) continue;
+        g_tnew[s].changed = false;
+        TouchContact *c = &g_tc[s];
+        bool down = g_tnew[s].down;
+        UINT8 flags;
+        if (down) {
+            c->rx = g_tnew[s].rx; c->ry = g_tnew[s].ry;
+            c->x = (int)((INT64)c->rx * (sw - 1) / 65535);
+            c->y = (int)((INT64)c->ry * (sh - 1) / 65535);
+        }
+        if (down && !c->down) {
+            bool caption;
+            WND *w = WmWindowAt(c->x, c->y, &caption);
+            c->primary = !any_down;
+            any_down = true;
+            c->prog = w && !caption && w->on_touch && !w->disabled;
+            c->win = c->prog ? w->id : 0;
+            if (c->prog && !w->no_activate && (!w->active || !w->visible)) WmSetActive(w);
+            flags = WM_TOUCH_DOWN;
+        } else if (down) {
+            flags = WM_TOUCH_MOVE;
+        } else if (c->down) {
+            flags = WM_TOUCH_UP;
+        } else {
+            continue;
+        }
+        c->down = down;
+        if (c->primary) flags |= WM_TOUCH_PRIMARY;
+        if (c->prog) {
+            out[n].id = (UINT8)s; out[n].flags = flags; out[n].x = c->x; out[n].y = c->y;
+            wins[n++] = c->win;
+        } else if (c->primary) {                 /* the mouse, where it is */
+            InputEvent m;
+            memset(&m, 0, sizeof(m));
+            m.type = INPUT_MOUSE;
+            m.absolute = 1;
+            m.dx = c->rx; m.dy = c->ry;
+            m.buttons = down ? MOUSE_LEFT : 0;
+            InputPost(&m);
+        }
+    }
+    /* Each window gets its own contacts, in one call */
+    for (int i = 0; i < n; i++) {
+        if (!wins[i]) continue;
+        WmTouch mine[TOUCH_MAX];
+        int k = 0, win = wins[i];
+        for (int j = i; j < n; j++) if (wins[j] == win) { mine[k++] = out[j]; wins[j] = 0; }
+        WND *w = WmWindowById(win);
+        if (w && w->on_touch) w->on_touch(w, mine, k);
+    }
+}
+
+static void touch_event(const InputEvent *ev)
+{
+    if (ev->contact == TOUCH_FRAME) { touch_frame(); return; }
+    if (ev->contact >= TOUCH_MAX) return;
+    g_tnew[ev->contact].changed = true;
+    g_tnew[ev->contact].down = ev->pressed != 0;
+    if (ev->pressed) { g_tnew[ev->contact].rx = ev->dx; g_tnew[ev->contact].ry = ev->dy; }
+}
+
 /* Volume and power keys (USB consumer and system control, or PS/2 E0
  * codes) act system-wide, as Windows' shell makes them; the volume keys
  * still reach the focused program too (VK_VOLUME_*, WM_APPCOMMAND) */
@@ -1748,6 +1831,7 @@ void DesktopRun(void *arg)
     update_clock();
     /* Started from the installation disc: offer to install */
     if (SetupIsLive()) AppLaunch(APP_SETUP);
+    VirtioInputInit();                          /* touch screens (polled here) */
     WmComposite();
     WmCursorShow(GdiScreenW() / 2, GdiScreenH() / 2);
 
@@ -1766,6 +1850,7 @@ void DesktopRun(void *arg)
          * threads take around file access) only for what may use files */
         DesktopLockAlone();
         ps2_poll();
+        VirtioInputPoll();
         power_poll();
         /* C:\\Desktop changed (an installer made a shortcut)? redraw the icons */
         if (g_desktop_beat - last_desk_check >= 50) {
@@ -1820,6 +1905,8 @@ void DesktopRun(void *arg)
                 if (!right && prev_right) WmMouseOther(x, y, WM_MOUSE_RUP, 0);
                 prev_left = left;
                 prev_right = right;
+            } else if (ev.type == INPUT_TOUCH) {
+                touch_event(&ev);
             } else if (ev.type == INPUT_KEY) {
                 KeyEvent k;
                 if (InputTranslateKey(&ev, &k)) desktop_key(&k);

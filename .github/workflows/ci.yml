@@ -74,6 +74,7 @@ jobs:
           python3 tools/selftest.py --list
           python3 tools/selftest.py --suite graphics --list
           python3 tools/selftest.py --suite network --list
+          python3 tools/selftest.py --suite devices --list
           python3 -c "import sys; sys.path.insert(0, 'tools'); import appcorpus; print(len(appcorpus.APPS), 'corpus programs')"
 
       - name: Generated doc regions untouched, fragments build
@@ -142,6 +143,12 @@ jobs:
         run: |
           python3 tools/selftest.py --suite network --img build/nova.img --out selftest-out/network \
             --junit selftest-out/network/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the device self-tests (touch screen)
+        if: success() || failure()
+        run: |
+          python3 tools/selftest.py --suite devices --img build/nova.img --out selftest-out/devices \
+            --junit selftest-out/devices/junit.xml --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the serial log and screenshots
         if: always()

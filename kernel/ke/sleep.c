@@ -42,6 +42,7 @@
 #include "../net/net.h"
 #include "../drivers/hda.h"
 #include "../drivers/usb.h"
+#include "../drivers/virtio_input.h"
 #include "../wm/wm.h"
 #include "../lib/string.h"
 
@@ -329,6 +330,7 @@ bool SleepEnter(void)
     NvmeResume();
     NetResume();                         /* the network adapter */
     UsbResume();
+    VirtioInputResume();                 /* touch screens */
     HdaResume();
     ps2_resume();
     DisplayResume();

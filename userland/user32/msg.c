@@ -681,6 +681,22 @@ static void route_mouse(Wnd *top, const MSG *km)
     }
 }
 
+Wnd *input_hit(Wnd *top, POINT pt, int *hit) { return hit_window(top, pt, hit); }
+void input_queue(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, DWORD time) { queue_input(w, msg, wp, lp, time); }
+
+/* A mouse message made from a touch (DefWindowProc's promotion): routed as
+ * if the desktop had sent it */
+void input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt)
+{
+    MSG km;
+    memset(&km, 0, sizeof(km));
+    km.message = msg;
+    km.wParam = mk;
+    km.lParam = MAKELPARAM(pt.x - top->bmp.x, pt.y - top->bmp.y);
+    km.time = GetTickCount();
+    route_mouse(top, &km);
+}
+
 static void route_key(Wnd *top, const MSG *km)
 {
     UINT msg = km->message;
@@ -718,6 +734,7 @@ static void from_kernel(const MSG *km)
     case WM_PAINT: case WM_TIMER: break;
     case WM_MOUSELEAVE: leave_check(NULL, GetTickCount()); break;
     case WM_NOVA_DROP: drop_from_kernel(top, km); break;
+    case WM_NOVA_TOUCH: touch_from_kernel(top, km); break;
     case WM_DISPLAYCHANGE: send_msg(top, WM_DISPLAYCHANGE, km->wParam, km->lParam); break;
     case WM_CHAR: case WM_SYSCHAR: break;                  /* TranslateMessage makes these, as on Windows */
     case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:

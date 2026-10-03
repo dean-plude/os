@@ -331,6 +331,15 @@ and `openssl`:
 python3 tools/selftest.py --suite network
 ```
 
+The devices suite boots once for each device that would get in the core
+boot's way (a touch screen takes QEMU's mouse buttons from the PS/2
+mouse): a virtio multi-touch screen for `touchtest`, which QEMU's
+`input-send-event` touches where the program asks:
+
+```bash
+python3 tools/selftest.py --suite devices
+```
+
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
 `sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `icutest` (x64 and x86), `comtest`,
 `tlbtest` (x64 and x86), `usptest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`,
