@@ -789,6 +789,10 @@ static bool wake_sleepers(RunQueue *rq, uint64_t *soonest)
 void sched_block(void)
 {
     IrqState irq = irq_save();
+    /* Still on a sleep list from an earlier timed sleep (woken early):
+     * leave it, or that CPU's tick would find this thread waiting and
+     * queue it there while a sched_unblock queued it here as well */
+    leave_sleepers(current_thread);
     RunQueue *rq = my_rq();
     spin_lock(&rq->lock);
     current_thread->state = THREAD_WAITING;

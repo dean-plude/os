@@ -1,0 +1,61 @@
+# Temporary (kernel-under-KVM work): boot the core and network suites
+# under KVM several times in parallel and print the kernel's last words.
+name: KVM soak
+
+on:
+  pull_request:
+
+concurrency:
+  group: kvm-soak-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    name: KVM soak ${{ matrix.n }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the toolchain and QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
+            qemu-system-x86 qemu-system-gui ovmf mtools dosfstools acpica-tools xorriso \
+            pulseaudio pulseaudio-utils ccache
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+      - name: Let QEMU use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.run_id }}
+          restore-keys: ccache-
+      - name: Build
+        run: |
+          cmake -S . -B build -G "Unix Makefiles"
+          make -C build -j"$(nproc)" > /dev/null
+      - name: Core suite
+        run: python3 tools/selftest.py --img build/nova.img --out out
+      - name: Network suite
+        if: success() || failure()
+        run: python3 tools/selftest.py --suite network --img build/nova.img --out out/network
+      - name: Kernel trouble in the serial logs
+        if: always()
+        run: |
+          for f in $(find out -name 'serial*.log'); do
+            echo "== $f"
+            grep -n -B5 -A40 -E 'EXCEPTION|GS MISMATCH|Bug:|BUG|panic|halting' "$f" | head -300 || true
+            echo "-- last lines"
+            tail -40 "$f"
+          done
