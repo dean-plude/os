@@ -279,9 +279,13 @@ USERAPI int GetSystemMetrics(int index)
     ULONG w = 0, h = 0;
     NtNovaGuiScreenSize(&w, &h);
     switch (index) {
-    case 0: case 16: case 78: case 61: return (int)w;       /* CXSCREEN, CXFULLSCREEN, CXVIRTUALSCREEN, CXMAXIMIZED */
-    case 1: case 17: case 79: case 62: return (int)h;
-    case 76: case 77: return 0;                             /* XVIRTUALSCREEN, YVIRTUALSCREEN */
+    case 0: case 16: case 61: return (int)w;                /* CXSCREEN, CXFULLSCREEN, CXMAXIMIZED */
+    case 1: case 17: case 62: return (int)h;
+    case 76: case 77: case 78: case 79: {                   /* XVIRTUALSCREEN ... CYVIRTUALSCREEN */
+        RECT v;
+        u32_virtual_screen(&v);
+        return index == 76 ? v.left : index == 77 ? v.top : index == 78 ? v.right - v.left : v.bottom - v.top;
+    }
     case 2: case 3: case 20: case 21: return 17;            /* scroll bars */
     case 4: return FRAME_TITLE - 1;                         /* CYCAPTION (the desktop's title bar) */
     case 5: case 6: return 1;                               /* CXBORDER, CYBORDER */
@@ -300,7 +304,7 @@ USERAPI int GetSystemMetrics(int index)
     case 67: return 0;                                      /* CLEANBOOT */
     case 68: case 69: return 4;                             /* CXDRAG, CYDRAG */
     case 75: return 1;                                      /* MOUSEWHEELPRESENT */
-    case 80: return 1;                                      /* CMONITORS */
+    case 80: return u32_monitor_count();                    /* CMONITORS */
     case 81: return 1;                                      /* SAMEDISPLAYFORMAT */
     case 0x1000: return 0;                                  /* REMOTESESSION */
     case 34: return 136; case 35: return 40;                /* CXMINTRACK, CYMINTRACK */
@@ -410,66 +414,7 @@ USERAPI BOOL AreDpiAwarenessContextsEqual(HANDLE a, HANDLE b) { return a == b; }
 USERAPI BOOL IsValidDpiAwarenessContext(HANDLE ctx) { return ctx != 0; }
 USERAPI BOOL EnableNonClientDpiScaling(HWND h) { (void)h; return TRUE; }
 
-/* Monitors: one */
-#define THE_MONITOR ((HANDLE)(ULONG_PTR)0x10001)
-USERAPI HANDLE MonitorFromWindow(HWND h, DWORD f) { (void)h; (void)f; return THE_MONITOR; }
-USERAPI HANDLE MonitorFromPoint(POINT p, DWORD f) { (void)p; (void)f; return THE_MONITOR; }
-USERAPI HANDLE MonitorFromRect(const RECT *r, DWORD f) { (void)r; (void)f; return THE_MONITOR; }
-USERAPI BOOL GetMonitorInfoW(HANDLE m, void *mi)
-{
-    if (m != THE_MONITOR) return FALSE;
-    DWORD *p = mi;                                          /* cbSize, rcMonitor, rcWork, dwFlags, [szDevice] */
-    RECT *mon = (RECT *)(p + 1), *work = (RECT *)(p + 5);
-    SetRect(mon, 0, 0, GetSystemMetrics(0), GetSystemMetrics(1));
-    *work = *mon;
-    p[9] = 1;                                               /* MONITORINFOF_PRIMARY */
-    if (p[0] >= 104) u8_to_w("\\\\.\\DISPLAY1", (WCHAR *)(p + 10), 32);
-    return TRUE;
-}
-USERAPI BOOL GetMonitorInfoA(HANDLE m, void *mi)
-{
-    DWORD *p = mi;
-    DWORD size = p[0];
-    p[0] = 40;
-    BOOL ok = GetMonitorInfoW(m, mi);
-    p[0] = size;
-    if (ok && size >= 72) memcpy(p + 10, "\\\\.\\DISPLAY1", 13);
-    return ok;
-}
-typedef BOOL (CALLBACK *MONITORENUMPROC)(HANDLE, HDC, LPRECT, LPARAM);
-USERAPI BOOL EnumDisplayMonitors(HDC dc, const RECT *clip, MONITORENUMPROC fn, LPARAM lp)
-{
-    (void)clip;
-    RECT r;
-    SetRect(&r, 0, 0, GetSystemMetrics(0), GetSystemMetrics(1));
-    fn(THE_MONITOR, dc, &r, lp);
-    return TRUE;
-}
-USERAPI BOOL EnumDisplayDevicesW(LPCWSTR dev, DWORD i, void *dd, DWORD flags)
-{
-    (void)dev; (void)flags;
-    if (i) return FALSE;
-    BYTE *b = dd;                                           /* cb, DeviceName[32], DeviceString[128], StateFlags, ... */
-    DWORD cb = *(DWORD *)b;
-    memset(b + 4, 0, cb - 4);
-    u8_to_w("\\\\.\\DISPLAY1", (WCHAR *)(b + 4), 32);
-    u8_to_w("NovaOS Display Adapter", (WCHAR *)(b + 68), 128);
-    *(DWORD *)(b + 324) = 0x5;                              /* ATTACHED_TO_DESKTOP | PRIMARY_DEVICE */
-    return TRUE;
-}
-USERAPI BOOL EnumDisplayDevicesA(LPCSTR dev, DWORD i, void *dd, DWORD flags)
-{
-    (void)dev; (void)flags;
-    if (i) return FALSE;
-    BYTE *b = dd;                                           /* cb, DeviceName[32], DeviceString[128], StateFlags, ... */
-    DWORD cb = *(DWORD *)b;
-    if (cb < 168) return FALSE;
-    memset(b + 4, 0, cb - 4);
-    strcpy((char *)(b + 4), "\\\\.\\DISPLAY1");
-    strcpy((char *)(b + 36), "NovaOS Display Adapter");
-    *(DWORD *)(b + 164) = 0x5;                              /* ATTACHED_TO_DESKTOP | PRIMARY_DEVICE */
-    return TRUE;
-}
+/* Monitors, EnumDisplayDevices: display.c */
 
 /* The display configuration API (paths, modes, monitor names): not
  * provided; callers fall back to EnumDisplayDevices/EnumDisplaySettings */

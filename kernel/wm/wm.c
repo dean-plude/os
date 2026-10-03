@@ -50,6 +50,7 @@ enum { EDGE_L = 1, EDGE_R = 2, EDGE_T = 4, EDGE_B = 8 };
 static WND *g_drag;                 /* window being dragged by its title */
 static int  g_drag_dx, g_drag_dy;   /* cursor offset from frame origin */
 static int  g_snap_zone;            /* WM_SNAP_* the drag would tile to (0: none) */
+static GdiRect g_snap_work;         /* ... in this work area */
 static WND *g_resize;               /* window being resized by an edge */
 static int  g_resize_edges;
 static GdiRect g_resize_start;
@@ -102,6 +103,18 @@ void WmInitialize(void)
 void WmSetIconPainter(WmIconFn fn) { g_icon_fn = fn; }
 void WmSetWorkArea(GdiRect r) { g_work = r; }
 GdiRect WmWorkArea(void)      { return g_work; }
+
+/* The primary monitor's work area leaves out the dock; the others have
+ * none, so theirs is the whole monitor */
+GdiRect WmMonitorWork(int i)
+{
+    if (i <= 0 || i >= GdiMonitorCount()) return g_work;
+    return GdiMonitorRect(i);
+}
+
+GdiRect WmWorkAreaFor(GdiRect r) { return WmMonitorWork(GdiMonitorNearest(r)); }
+
+static GdiRect work_at(int x, int y) { return WmWorkAreaFor(RECT(x, y, 1, 1)); }
 
 void WmInvalidate(void)           { mark_dirty(); }
 void WmInvalidateBackground(void) { GdiCacheInvalidate(); mark_dirty(); }
@@ -313,9 +326,18 @@ static bool tileable(const WND *w)
 
 static void clamp_to_work(WND *w);
 
+static void snap_in(WND *w, int where, GdiRect a);
+
 void WmSnap(WND *w, int where)
 {
     if (!tileable(w)) return;
+    snap_in(w, where, WmWorkAreaFor(w->frame));
+}
+
+/* Tile in work area @a (the monitor the window is on, or the one a drag
+ * ends on) */
+static void snap_in(WND *w, int where, GdiRect a)
+{
     bool tiled = w->maximized || w->snapped;
     if (where == WM_SNAP_RESTORE) {
         if (tiled) w->frame = w->restore;
@@ -325,7 +347,6 @@ void WmSnap(WND *w, int where)
         return;
     }
     if (!tiled) w->restore = w->frame;
-    GdiRect a = g_work;
     if (where == WM_SNAP_MAX) {
         w->frame = a;
         w->maximized = true;
@@ -513,14 +534,21 @@ static void to_client(WND *w, WmMouseMsg msg, int x, int y)
     mark_dirty();
 }
 
-static void clamp_to_work(WND *w)
+/* Keep the title bar in work area @a, enough of it to grab */
+static void clamp_in(WND *w, GdiRect a)
 {
     GdiRect *f = &w->frame;
     int keep = 120;                                   /* stays grabbable */
-    if (f->y < g_work.y) f->y = g_work.y;
-    if (f->y > g_work.y + g_work.h - WM_TITLEBAR_H) f->y = g_work.y + g_work.h - WM_TITLEBAR_H;
-    if (f->x + f->w < g_work.x + keep) f->x = g_work.x + keep - f->w;
-    if (f->x > g_work.x + g_work.w - keep) f->x = g_work.x + g_work.w - keep;
+    if (f->y < a.y) f->y = a.y;
+    if (f->y > a.y + a.h - WM_TITLEBAR_H) f->y = a.y + a.h - WM_TITLEBAR_H;
+    if (f->x + f->w < a.x + keep) f->x = a.x + keep - f->w;
+    if (f->x > a.x + a.w - keep) f->x = a.x + a.w - keep;
+}
+
+/* ... of the monitor the title bar is on */
+static void clamp_to_work(WND *w)
+{
+    clamp_in(w, WmWorkAreaFor(RECT(w->frame.x, w->frame.y, w->frame.w, WM_TITLEBAR_H)));
 }
 
 bool WmMouseButton(int x, int y, WmMouseMsg msg)
@@ -531,7 +559,7 @@ bool WmMouseButton(int x, int y, WmMouseMsg msg)
     }
     if (msg == WM_MOUSE_UP) {
         if (g_drag) {
-            if (g_snap_zone) WmSnap(g_drag, g_snap_zone);
+            if (g_snap_zone && tileable(g_drag)) snap_in(g_drag, g_snap_zone, g_snap_work);
             g_drag = NULL;
             g_snap_zone = 0;
             mark_dirty();
@@ -616,22 +644,25 @@ bool WmMouseButton(int x, int y, WmMouseMsg msg)
 void WmMouseMove(int x, int y)
 {
     if (g_drag) {
+        /* The window goes with the pointer onto whichever monitor it is on */
+        GdiRect a = work_at(x, y);
         g_drag->frame.x = x - g_drag_dx;
         g_drag->frame.y = y - g_drag_dy;
-        clamp_to_work(g_drag);
+        clamp_in(g_drag, a);
         /* Dragging to an edge offers to tile the window there */
         int zone = 0;
         if (tileable(g_drag)) {
-            if (y <= g_work.y + 1)                      zone = WM_SNAP_MAX;
-            else if (x <= g_work.x + 1)                 zone = WM_SNAP_LEFT;
-            else if (x >= g_work.x + g_work.w - 2)      zone = WM_SNAP_RIGHT;
+            if (y <= a.y + 1)                      zone = WM_SNAP_MAX;
+            else if (x <= a.x + 1)                 zone = WM_SNAP_LEFT;
+            else if (x >= a.x + a.w - 2)           zone = WM_SNAP_RIGHT;
         }
+        g_snap_work = a;
         g_snap_zone = zone;
         mark_dirty();
         return;
     }
     if (g_resize) {
-        GdiRect f = g_resize_start;
+        GdiRect f = g_resize_start, wa = WmWorkAreaFor(g_resize_start);
         int dx = x - g_resize_x, dy = y - g_resize_y;
         if (g_resize_edges & EDGE_L) {
             int nw = f.w - dx;
@@ -643,12 +674,12 @@ void WmMouseMove(int x, int y)
         if (g_resize_edges & EDGE_T) {
             int nh = f.h - dy;
             if (nh < MIN_H) nh = MIN_H;
-            if (f.y + f.h - nh < g_work.y) nh = f.y + f.h - g_work.y;
+            if (f.y + f.h - nh < wa.y) nh = f.y + f.h - wa.y;
             f.y += f.h - nh;
             f.h = nh;
         }
         if (g_resize_edges & EDGE_B) { f.h += dy; if (f.h < MIN_H) f.h = MIN_H; }
-        if (f.y + f.h > g_work.y + g_work.h) f.h = g_work.y + g_work.h - f.y;
+        if (f.y + f.h > wa.y + wa.h) f.h = wa.y + wa.h - f.y;
         g_resize->frame = f;
         mark_dirty();
         return;
@@ -871,7 +902,7 @@ void WmComposite(void)
 
     /* Where a window being dragged to a screen edge would be tiled */
     if (g_drag && g_snap_zone) {
-        GdiRect a = g_work, p = a;
+        GdiRect a = g_snap_work, p = a;
         if (g_snap_zone == WM_SNAP_LEFT)  p = RECT(a.x, a.y, a.w / 2, a.h);
         if (g_snap_zone == WM_SNAP_RIGHT) p = RECT(a.x + a.w / 2, a.y, a.w - a.w / 2, a.h);
         p = RECT(p.x + 8, p.y + 8, p.w - 16, p.h - 16);
@@ -902,8 +933,16 @@ static int  g_cx, g_cy;            /* device pixels */
 static bool g_cursor_shown;
 static bool g_cursor_started;      /* shown once: every frame redraws it */
 
-int WmCursorX(void) { return g_cx / GdiScale(); }
-int WmCursorY(void) { return g_cy / GdiScale(); }
+/* Logical from device px, rounding down (left of or above the primary
+ * monitor they are negative) */
+static int to_logical(int d)
+{
+    int s = GdiScale();
+    return d >= 0 ? d / s : -((-d + s - 1) / s);
+}
+
+int WmCursorX(void) { return to_logical(g_cx); }
+int WmCursorY(void) { return to_logical(g_cy); }
 
 /* A program's own pointer (WND.cursor) replaces the arrow over its client
  * area, or anywhere while it has the mouse captured; animated ones step
@@ -937,8 +976,7 @@ static int step_of(const GdiCursorShape *c, UINT64 now)
 
 static void cursor_draw_here(void)
 {
-    int s = GdiScale();
-    const GdiCursorShape *c = shape_at(g_cx / s, g_cy / s);
+    const GdiCursorShape *c = shape_at(to_logical(g_cx), to_logical(g_cy));
     UINT64 now = sched_ticks();
     if (c != g_shape_drawn) g_shape_since = now;
     int step = step_of(c, now);
@@ -961,12 +999,12 @@ void WmCursorShapeChanged(void)
 
 static void cursor_show_dev(int dx, int dy)
 {
-    int s = GdiScale();
-    int maxx = GdiScreenW() * s - 1, maxy = GdiScreenH() * s - 1;
-    if (dx < 0) dx = 0;
-    if (dx > maxx) dx = maxx;
-    if (dy < 0) dy = 0;
-    if (dy > maxy) dy = maxy;
+    /* The pointer moves freely between monitors that touch, and stops at
+     * the desktop's outer edges */
+    int s = GdiScale(), lx = to_logical(dx), ly = to_logical(dy), cx = lx, cy = ly;
+    GdiClampToMonitors(&cx, &cy);
+    if (cx != lx) dx = cx * s + (cx < lx ? s - 1 : 0);
+    if (cy != ly) dy = cy * s + (cy < ly ? s - 1 : 0);
     g_cx = dx;
     g_cy = dy;
     cursor_draw_here();
@@ -1003,10 +1041,12 @@ void WmCursorMoveBy(int dx, int dy)
 
 void WmCursorMoveAbs(int nx, int ny)
 {
+    /* Across the whole desktop, every monitor, as on Windows */
     int s = GdiScale();
-    int w = GdiScreenW() * s, h = GdiScreenH() * s;
+    GdiRect v = GdiVirtualRect();
+    int w = v.w * s, h = v.h * s;
     WmCursorHide();
-    cursor_show_dev((int)((INT64)nx * (w - 1) / 65535), (int)((INT64)ny * (h - 1) / 65535));
+    cursor_show_dev(v.x * s + (int)((INT64)nx * (w - 1) / 65535), v.y * s + (int)((INT64)ny * (h - 1) / 65535));
 }
 
 void WmCursorReshow(void)
@@ -1023,8 +1063,7 @@ void WmCursorReshow(void)
 static void cursor_animate(void)
 {
     if (!g_cursor_shown) return;
-    int s = GdiScale();
-    const GdiCursorShape *c = shape_at(g_cx / s, g_cy / s);
+    const GdiCursorShape *c = shape_at(to_logical(g_cx), to_logical(g_cy));
     if (c == g_shape_drawn && step_of(c, sched_ticks()) == g_step_drawn) return;
     WmCursorHide();
     cursor_show_dev(g_cx, g_cy);
@@ -1045,12 +1084,17 @@ void WmDisplayChanged(int old_w, int old_h, int old_s)
     /* The pointer keeps its place in proportion; its save-under belonged
      * to the old surface */
     int nw = GdiScreenW(), nh = GdiScreenH(), s = GdiScale();
-    if (old_w > 0 && old_h > 0 && old_s > 0) {
-        g_cx = (int)((INT64)(g_cx / old_s) * nw / old_w) * s;
-        g_cy = (int)((INT64)(g_cy / old_s) * nh / old_h) * s;
+    int ox = g_cx >= 0 ? g_cx / old_s : -1, oy = g_cy >= 0 ? g_cy / old_s : -1;
+    if (old_w > 0 && old_h > 0 && old_s > 0 && ox < old_w && oy < old_h && ox >= 0 && oy >= 0) {
+        g_cx = (int)((INT64)ox * nw / old_w) * s;     /* on the primary monitor */
+        g_cy = (int)((INT64)oy * nh / old_h) * s;
+    } else if (old_s > 0) {
+        g_cx = g_cx / old_s * s;                      /* on another: the same logical spot */
+        g_cy = g_cy / old_s * s;
     }
-    if (g_cx > nw * s - 1) g_cx = nw * s - 1;
-    if (g_cy > nh * s - 1) g_cy = nh * s - 1;
+    int lx = to_logical(g_cx), ly = to_logical(g_cy);
+    GdiClampToMonitors(&lx, &ly);
+    if (GdiMonitorAt(to_logical(g_cx), to_logical(g_cy)) < 0) { g_cx = lx * s; g_cy = ly * s; }
     g_cursor_shown = false;
 
     /* Windows: maximized ones fill the new work area, tiled ones go back
@@ -1060,7 +1104,8 @@ void WmDisplayChanged(int old_w, int old_h, int old_s)
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
         if (!g_used[i]) continue;
         WND *w = &g_windows[i];
-        if (w->maximized) { w->frame = g_work; continue; }
+        GdiRect a = WmWorkAreaFor(w->frame);           /* its monitor, in the new layout */
+        if (w->maximized) { w->frame = a; continue; }
         if (w->snapped) { w->frame = w->restore; w->snapped = false; }
         if (w->wanted.w) {
             if (memcmp(&w->frame, &w->shrunk, sizeof(GdiRect))) w->wanted.w = 0;   /* moved since */
@@ -1068,12 +1113,12 @@ void WmDisplayChanged(int old_w, int old_h, int old_s)
         }
         GdiRect before = w->frame;
         if (!w->fixed_size && !w->popup) {
-            if (w->frame.w > g_work.w) w->frame.w = g_work.w;
-            if (w->frame.h > g_work.h) w->frame.h = g_work.h;
+            if (w->frame.w > a.w) w->frame.w = a.w;
+            if (w->frame.h > a.h) w->frame.h = a.h;
         }
-        if (w->frame.x + w->frame.w > nw) w->frame.x = nw - w->frame.w;
-        if (w->frame.x < 0) w->frame.x = 0;
-        if (!w->popup) clamp_to_work(w);
+        if (w->frame.x + w->frame.w > a.x + a.w) w->frame.x = a.x + a.w - w->frame.w;
+        if (w->frame.x < a.x) w->frame.x = a.x;
+        if (!w->popup) clamp_in(w, a);
         if (memcmp(&w->frame, &before, sizeof(GdiRect))) {
             if (!w->wanted.w) w->wanted = before;
             w->shrunk = w->frame;

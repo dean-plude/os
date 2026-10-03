@@ -1222,6 +1222,8 @@ void DesktopDrawThemePreview(int i, GdiRect r)
 static void shell_background(void)
 {
     draw_wallpaper_in(TH, RECT(0, 0, GdiScreenW(), GdiScreenH()));
+    for (int i = 1; i < GdiMonitorCount(); i++)        /* the other monitors: wallpaper only */
+        draw_wallpaper_in(TH, GdiMonitorRect(i));
     draw_desktop_icons();
 }
 
@@ -1255,61 +1257,112 @@ void DesktopInitialize(void)
 
 bool DesktopAvailable(void) { return g_ready; }
 
-#define VIDEO_KEY "Machine\\SYSTEM\\CurrentControlSet\\Control\\Video\\{NovaOS-Display}\\0000"
+/* Where Windows keeps each display's settings: ...\Video\{GUID}\0000 for the
+ * first, 0001 for the second, ... (DefaultSettings.* and, for the others,
+ * Attach.RelativeX/Y: the position next to the primary) */
+#define VIDEO_KEY "Machine\\SYSTEM\\CurrentControlSet\\Control\\Video\\{NovaOS-Display}\\000"
 
-void DesktopSaveDisplayMode(int w, int h)
+static void video_key(int head, char *out, int n)
 {
-    DisplaySetDefaultMode(w, h);
-    um_registry_set_dword(VIDEO_KEY, "DefaultSettings.XResolution", (UINT32)w);
-    um_registry_set_dword(VIDEO_KEY, "DefaultSettings.YResolution", (UINT32)h);
-    um_registry_set_dword(VIDEO_KEY, "DefaultSettings.BitsPerPel", 32);
+    ksnprintf(out, n, "%s%d", VIDEO_KEY, head);
 }
+
+void DesktopSaveHeadMode(int head, int w, int h)
+{
+    char key[96];
+    video_key(head, key, sizeof(key));
+    DisplayHeadSetDefaultMode(head, w, h);
+    um_registry_set_dword(key, "DefaultSettings.XResolution", (UINT32)w);
+    um_registry_set_dword(key, "DefaultSettings.YResolution", (UINT32)h);
+    um_registry_set_dword(key, "DefaultSettings.BitsPerPel", 32);
+}
+
+void DesktopSaveDisplayMode(int w, int h) { DesktopSaveHeadMode(0, w, h); }
 
 void DesktopRestoreDisplayMode(void)
 {
-    UINT32 w, h;
-    if (!um_registry_get_dword(VIDEO_KEY, "DefaultSettings.XResolution", &w) ||
-        !um_registry_get_dword(VIDEO_KEY, "DefaultSettings.YResolution", &h))
-        return;
-    DisplayMode cur = DisplayCurrentMode();
-    if (cur.w == (int)w && cur.h == (int)h) { DisplaySetDefaultMode(cur.w, cur.h); return; }
-    if (!DisplayModeSupported((int)w, (int)h)) {
-        kprintf("[DISPLAY] The saved mode %ux%u is not available on this adapter\n", w, h);
-        return;
-    }
-    if (DisplaySetMode((int)w, (int)h)) {
-        DisplaySetDefaultMode((int)w, (int)h);
-        kprintf("[DISPLAY] Restored the saved mode %ux%u\n", w, h);
+    for (int head = 0; head < DisplayHeadCount(); head++) {
+        char key[96];
+        UINT32 w, h, x, y;
+        video_key(head, key, sizeof(key));
+        if (head > 0 && um_registry_get_dword(key, "Attach.RelativeX", &x) &&
+            um_registry_get_dword(key, "Attach.RelativeY", &y)) {
+            GdiSetMonitorOrigin(head, (int)x, (int)y);
+            kprintf("[DISPLAY] Display %d goes at (%d, %d)\n", head + 1, (int)x, (int)y);
+        }
+        if (!um_registry_get_dword(key, "DefaultSettings.XResolution", &w) ||
+            !um_registry_get_dword(key, "DefaultSettings.YResolution", &h))
+            continue;
+        DisplayMode cur = DisplayHeadMode(head);
+        if (cur.w == (int)w && cur.h == (int)h) { DisplayHeadSetDefaultMode(head, cur.w, cur.h); continue; }
+        if (!DisplayHeadModeSupported(head, (int)w, (int)h)) {
+            kprintf("[DISPLAY] The saved mode %ux%u is not available on display %d\n", w, h, head + 1);
+            continue;
+        }
+        if (DisplayHeadSetMode(head, (int)w, (int)h)) {
+            DisplayHeadSetDefaultMode(head, (int)w, (int)h);
+            if (head == 0) kprintf("[DISPLAY] Restored the saved mode %ux%u\n", w, h);
+            else kprintf("[DISPLAY] Restored the saved mode %ux%u on display %d\n", w, h, head + 1);
+        }
     }
 }
 
-bool DesktopSetDisplayMode(int w, int h)
+/* After a mode or layout change (under the desktop lock): the GDI reads
+ * the screens again and the shell and the windows are laid out anew.
+ * @ow, @oh, @os: the primary's logical size and the scale before. */
+static void relayout(int ow, int oh, int os)
 {
-    if (!g_ready) return false;
-    DesktopLock();
-    DisplayMode cur = DisplayCurrentMode();
-    if (cur.w == w && cur.h == h) { DesktopUnlock(); return true; }
-    int ow = GdiScreenW(), oh = GdiScreenH(), os = GdiScale();
-    WmCursorHide();
-    bool ok = DisplaySetMode(w, h);
-    if (!GdiDisplayChanged()) {               /* cannot happen: the old mode is back */
-        DesktopUnlock();
-        return false;
-    }
-    /* Lay the shell out for the new size, then refit the windows into it */
+    GdiDisplayChanged();
     g_start_open = false;
     dock_layout();
     WmSetWorkArea(RECT(0, 0, GdiScreenW(), L_dock.y - 8));
     WmDisplayChanged(ow, oh, os);
     WmInvalidateBackground();
+}
+
+bool DesktopSetHeadMode(int head, int w, int h)
+{
+    if (!g_ready) return false;
+    DesktopLock();
+    DisplayMode cur = DisplayHeadMode(head);
+    if (cur.w == w && cur.h == h) { DesktopUnlock(); return true; }
+    int ow = GdiScreenW(), oh = GdiScreenH(), os = GdiScale();
+    WmCursorHide();
+    bool ok = DisplayHeadSetMode(head, w, h);
+    relayout(ow, oh, os);                     /* on failure the old mode is back */
     DesktopUnlock();
     if (ok) {
         DisplayMode m = DisplayCurrentMode();
         UmGuiDisplayChanged(m.w, m.h);        /* WM_DISPLAYCHANGE to programs */
     }
-    kprintf("[SHELL] Display mode %dx%d %s (desktop %dx%d)\n", w, h, ok ? "set" : "refused",
+    kprintf("[SHELL] Display %d mode %dx%d %s (desktop %dx%d)\n", head + 1, w, h, ok ? "set" : "refused",
             GdiScreenW(), GdiScreenH());
     return ok;
+}
+
+bool DesktopSetDisplayMode(int w, int h) { return DesktopSetHeadMode(0, w, h); }
+
+bool DesktopSetMonitorOrigin(int i, int x, int y, bool save)
+{
+    if (!g_ready || i <= 0 || i >= GdiMonitorCount()) return false;
+    DesktopLock();
+    int ow = GdiScreenW(), oh = GdiScreenH(), os = GdiScale();
+    WmCursorHide();
+    GdiSetMonitorOrigin(i, x, y);
+    relayout(ow, oh, os);
+    GdiRect r = GdiMonitorRect(i);
+    DesktopUnlock();
+    if (save) {
+        char key[96];
+        video_key(i, key, sizeof(key));
+        um_registry_set_dword(key, "Attach.RelativeX", (UINT32)r.x);
+        um_registry_set_dword(key, "Attach.RelativeY", (UINT32)r.y);
+        um_registry_set_dword(key, "Attach.ToDesktop", 1);
+    }
+    DisplayMode m = DisplayCurrentMode();
+    UmGuiDisplayChanged(m.w, m.h);
+    kprintf("[SHELL] Display %d at (%d, %d)%s\n", i + 1, r.x, r.y, r.x == x && r.y == y ? "" : " (moved to touch the others)");
+    return r.x == x && r.y == y;
 }
 
 void DesktopToggleStart(void) { start_open(!g_start_open); }
@@ -1598,8 +1651,8 @@ static void desktop_key(const KeyEvent *k)
         g_win_used = true;
         WND *a = WmActiveWindow();
         if (k->extended) {
-            if (a && k->scancode == KEY_LEFT)  WmSnap(a, a->snapped && a->frame.x > WmWorkArea().x ? WM_SNAP_RESTORE : WM_SNAP_LEFT);
-            if (a && k->scancode == KEY_RIGHT) WmSnap(a, a->snapped && a->frame.x == WmWorkArea().x ? WM_SNAP_RESTORE : WM_SNAP_RIGHT);
+            if (a && k->scancode == KEY_LEFT)  WmSnap(a, a->snapped && a->frame.x > WmWorkAreaFor(a->frame).x ? WM_SNAP_RESTORE : WM_SNAP_LEFT);
+            if (a && k->scancode == KEY_RIGHT) WmSnap(a, a->snapped && a->frame.x == WmWorkAreaFor(a->frame).x ? WM_SNAP_RESTORE : WM_SNAP_RIGHT);
             if (a && k->scancode == KEY_UP)    WmSnap(a, WM_SNAP_MAX);
             if (a && k->scancode == KEY_DOWN) {
                 if (a->maximized || a->snapped) WmSnap(a, WM_SNAP_RESTORE);

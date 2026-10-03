@@ -33,9 +33,8 @@ The details of each phase are in [HISTORY.md](HISTORY.md).
 
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
 NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound has
-no MIDI, DirectSound or XAudio2 yet; there
-are no hard links, and file ACLs are kept only when drive C: is on NTFS
-(the installer's default); and most of the App Store's catalog (Qt, GTK and
+no MIDI, DirectSound or XAudio2 yet; file
+ACLs are kept only when drive C: is on NTFS (the installer's default); and most of the App Store's catalog (Qt, GTK and
 multimedia programs) does not run yet.
 
 ---
@@ -96,7 +95,10 @@ named program or test demonstrates it.
 - Display: GPU-backed or at least faster blits.  ~~Mode changes~~ Done:
   run-time resolutions (Phase 12 onwards); the chosen one is kept across
   restarts, and windows a smaller mode shrank grow back when it is undone
-  (Phase 18.9).
+  (Phase 18.9).  ~~More than one
+  monitor~~ Done: one desktop across several display adapters, arranged in
+  Settings and kept across restarts, with the Win32 monitor calls
+  reporting it.
 - NetSurf: SVG; redrawing pages a script changes after layout.
 
 <!-- END generated:next-graphics -->
@@ -123,8 +125,9 @@ named program or test demonstrates it.
   been verified.
 - Firefox (tested with Floorp): the browser window opens and draws
   through its GPU process, and its sandboxed child processes start; see
-  [Firefox](HISTORY.md#firefox-floorp).  Still open: showing a page's
-  content, fetching pages over the network, `nssckbi.dll`.
+  [Firefox](HISTORY.md#firefox-floorp), and it loads and shows web pages
+  over HTTP.  Still open: HTTPS, scrolling and typing into forms,
+  `nssckbi.dll`.
 
 <!-- END generated:next-apps -->
 
@@ -137,9 +140,9 @@ named program or test demonstrates it.
 - ~~Small visible bugs: This PC lists D:, E:, ...; `dir` reports each
   drive's own free space; Notepad++'s status bar draws~~ Done (Phase
   17.6, screenshots in the nightly app corpus).
-- Files: hard links.  ~~`MoveFileEx` pending renames carried out at boot,
-  `RegNotifyChangeKeyValue` change events~~ Done (Phase 17.5, `filetest`
-  and a restart in the core suite).
+- ~~Files: hard links.  `MoveFileEx` pending renames carried out at boot,
+  `RegNotifyChangeKeyValue` change events~~ Done (Phase 17.5, `filetest`,
+  `linktest` and a restart in the core suite).
 - ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
   is waitable and the Terminal runs full-screen programs (Phase 17.2).
 - The Win32 console screen-buffer calls (`SetConsoleCursorPosition`,
@@ -192,8 +195,8 @@ named program or test demonstrates it.
   USB controllers, with USB keyboards set for remote wakeup), the SCI as
   a real interrupt through the I/O APIC and PCI interrupt routing from
   `_PRT` (Phase 18.6).  Still to do: CPU throttling for passive cooling;
-  GPE blocks other than `\_GPE`; routing behind PCI bridges; USB wake
-  tested only up to what QEMU emulates (it has no USB-to-platform wake).
+  GPE blocks other than `\_GPE`; routing behind PCI bridges.  (USB wake
+  from S3 is confirmed on a real PC; QEMU can't emulate it.)
   (Display modes after S3 are set again on every adapter NovaOS drives:
   the VBE ones, QXL, virtio-vga, VMware SVGA and Cirrus.  Real GPUs have
   no driver yet.)

@@ -45,6 +45,7 @@ static void pair(int family, const char *name)
 
     SOCKET c = socket(family, SOCK_STREAM, 0);
     u_long nb = 1;
+    ioctlsocket(l, FIONBIO, &nb);
     ioctlsocket(c, FIONBIO, &nb);
     int r = connect(c, (struct sockaddr *)&a, len);
     snprintf(what, sizeof(what), "%s: a non-blocking connect is under way", name);
@@ -61,6 +62,8 @@ static void pair(int family, const char *name)
     char b[8] = { 0 };
     snprintf(what, sizeof(what), "%s: the bytes sent before accept arrive", name);
     check(what, wait_for(s, 0, 2000) == 1 && recv(s, b, sizeof(b), 0) == 4 && !memcmp(b, "ping", 4));
+    snprintf(what, sizeof(what), "%s: the accepted socket is non-blocking like its listener (NSPR's socket pair)", name);
+    check(what, recv(s, b, sizeof(b), 0) == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK);
     snprintf(what, sizeof(what), "%s: and the other way", name);
     check(what, send(s, "pong", 4, 0) == 4 && wait_for(c, 0, 2000) == 1 && recv(c, b, sizeof(b), 0) == 4 &&
                 !memcmp(b, "pong", 4));
@@ -99,6 +102,30 @@ static void localhost(void)
           he && *(ULONG *)he->h_addr_list[0] == htonl(INADDR_LOOPBACK));
 }
 
+/* Winsock 1.1 (wsock32.dll): NSPR imports it by ordinal, and three of its
+ * ordinals differ from ws2_32's (inet_addr 10, inet_ntoa 11, ioctlsocket 12) */
+static void winsock11(void)
+{
+    HMODULE m = LoadLibraryA("wsock32.dll"), w2 = GetModuleHandleA("ws2_32.dll");
+    check("wsock32.dll loads", m != 0);
+    if (!m) return;
+    check("wsock32 ordinal 12 is ioctlsocket (ws2_32's is 10)",
+          GetProcAddress(m, (LPCSTR)12) == GetProcAddress(m, "ioctlsocket") &&
+          GetProcAddress(w2, (LPCSTR)10) == GetProcAddress(w2, "ioctlsocket"));
+    check("wsock32 ordinals 10, 11 and 23 are inet_addr, inet_ntoa and socket",
+          GetProcAddress(m, (LPCSTR)10) == GetProcAddress(m, "inet_addr") &&
+          GetProcAddress(m, (LPCSTR)11) == GetProcAddress(m, "inet_ntoa") &&
+          GetProcAddress(m, (LPCSTR)23) == GetProcAddress(m, "socket"));
+    SOCKET (WSAAPI *sock)(int, int, int) = (SOCKET (WSAAPI *)(int, int, int))GetProcAddress(m, (LPCSTR)23);
+    int (WSAAPI *ioctl)(SOCKET, long, u_long *) = (int (WSAAPI *)(SOCKET, long, u_long *))GetProcAddress(m, (LPCSTR)12);
+    int (WSAAPI *cls)(SOCKET) = (int (WSAAPI *)(SOCKET))GetProcAddress(m, (LPCSTR)3);
+    u_long one = 1;
+    SOCKET s = sock && ioctl && cls ? sock(AF_INET, SOCK_STREAM, 0) : INVALID_SOCKET;
+    check("a socket goes non-blocking through wsock32 ordinals 23, 12 and 3 (NSPR's way)",
+          s != INVALID_SOCKET && ioctl(s, FIONBIO, &one) == 0 && cls(s) == 0);
+    FreeLibrary(m);
+}
+
 int main(void)
 {
     WSADATA w;
@@ -106,6 +133,7 @@ int main(void)
     pair(AF_INET, "127.0.0.1");
     pair(AF_INET6, "::1");
     localhost();
+    winsock11();
     printf("looptest: %d passed, %d failed\n", passed, failed);
     return failed != 0;
 }
