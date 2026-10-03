@@ -1,6 +1,6 @@
 /* looptest.exe — Winsock over the loopback interface, as Firefox uses it:
  * a socket pair over 127.0.0.1 and ::1 (bind to port 0, listen,
- * getsockname, a non-blocking connect, accept), data sent before accept,
+ * getsockname, a non-blocking connect, getpeername, accept), data sent before accept,
  * closing a listener with a connection still queued, and "localhost"
  * resolving to ::1 and 127.0.0.1 without DNS. */
 #include <stdio.h>
@@ -52,6 +52,11 @@ static void pair(int family, const char *name)
     check(what, r == 0 || WSAGetLastError() == WSAEWOULDBLOCK);
     snprintf(what, sizeof(what), "%s: it becomes writable (connected)", name);
     check(what, wait_for(c, 1, 2000) == 1);
+    struct sockaddr_storage pn; int pl = sizeof(pn);
+    memset(&pn, 0, sizeof(pn));
+    snprintf(what, sizeof(what), "%s: getpeername names the peer after a non-blocking connect (NSS's TLS start)", name);
+    check(what, getpeername(c, (struct sockaddr *)&pn, &pl) == 0 && pn.ss_family == family &&
+                ntohs(((struct sockaddr_in *)&pn)->sin_port) == port);
     snprintf(what, sizeof(what), "%s: the client sends before accept", name);
     check(what, send(c, "ping", 4, 0) == 4);
     snprintf(what, sizeof(what), "%s: the listener is readable", name);
@@ -80,6 +85,40 @@ static void pair(int family, const char *name)
     snprintf(what, sizeof(what), "%s: closing a listener with a queued connection", name);
     check(what, 1);                                     /* (it used to stop the network) */
     closesocket(c2);
+}
+
+/* shutdown(SD_BOTH) with data unread, then the peer closes: the
+ * connection ends while its socket is still open (it once left the kernel
+ * holding a freed lwIP pcb, which corrupted the network on close) */
+static void shutdown_both(void)
+{
+    struct sockaddr_in a;
+    int len = sizeof(a);
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    SOCKET l = socket(AF_INET, SOCK_STREAM, 0);
+    bind(l, (struct sockaddr *)&a, len);
+    listen(l, 5);
+    getsockname(l, (struct sockaddr *)&a, &len);
+    for (int round = 0; round < 3; round++) {
+        SOCKET c = socket(AF_INET, SOCK_STREAM, 0);
+        int ok = connect(c, (struct sockaddr *)&a, len) == 0;
+        SOCKET s = accept(l, 0, 0);
+        char b[8];
+        ok = ok && s != INVALID_SOCKET && send(s, "unread", 6, 0) == 6;
+        Sleep(50);
+        ok = ok && shutdown(c, SD_BOTH) == 0;
+        ok = ok && wait_for(s, 0, 2000) == 1 && recv(s, b, sizeof(b), 0) == 0;   /* the client's FIN */
+        ok = ok && recv(c, b, sizeof(b), 0) == 0;                               /* nothing more to read */
+        closesocket(s);
+        Sleep(100);                                     /* the connection ends with c still open */
+        closesocket(c);
+        char what[96];
+        snprintf(what, sizeof(what), "shutdown(SD_BOTH) with unread data, then the peer closes (round %d)", round + 1);
+        check(what, ok);
+    }
+    closesocket(l);
 }
 
 static void localhost(void)
@@ -132,6 +171,7 @@ int main(void)
     if (WSAStartup(MAKEWORD(2, 2), &w) != 0) { printf("WSAStartup failed\n"); return 1; }
     pair(AF_INET, "127.0.0.1");
     pair(AF_INET6, "::1");
+    shutdown_both();
     localhost();
     winsock11();
     printf("looptest: %d passed, %d failed\n", passed, failed);
