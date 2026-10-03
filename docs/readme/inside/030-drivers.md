@@ -15,7 +15,9 @@
   flipping, the mode set again after sleep and kept across restarts; more
   adapters, such as QEMU's secondary-vga, are more monitors of one
   desktop, arranged in Settings) and a Cirrus GD5446 one, with
-  the UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
+  the UEFI framebuffer as the fallback; a 2D virtio GPU driver for
+  QEMU's virtio-vga and virtio-gpu-pci, whose outputs are several
+  monitors on one card, plugged in and unplugged while NovaOS runs; ACPI power-off, reset, power buttons,
   sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
   devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
   a real interrupt through the I/O APIC).

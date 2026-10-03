@@ -74,6 +74,9 @@ void    GdiClampToMonitors(int *x, int *y);
  * monitor before it without overlapping any, else it goes to the right
  * of them.  Takes effect at the next GdiDisplayChanged(). */
 void    GdiSetMonitorOrigin(int i, int x, int y);
+/* Monitor @i (>= 1) was unplugged: the places set for the later ones move
+ * up with them (call GdiDisplayChanged() after) */
+void    GdiForgetMonitor(int i);
 
 /* Copy the back buffer to the screen (whole frame).  With page flipping
  * it lands on the page off screen: anything drawn straight to the screen
@@ -191,6 +194,9 @@ int  GdiMonoCellW256(void);
  * ----------------------------------------------------------------------- */
 void GdiCursorDraw (int dev_x, int dev_y);
 void GdiCursorErase(int dev_x, int dev_y);
+/* The screen the pointer was drawn on went away (a monitor unplugged):
+ * forget what was under it instead of putting it back */
+void GdiCursorForget(void);
 /* System pointer @id (OCR_*, syscursor.h) with its hot spot at the device
  * pixel; @phase turns the busy ring */
 void GdiCursorDrawSys(int dev_x, int dev_y, int id, int phase);

@@ -61,5 +61,20 @@ bool FatMkdirPath(FatVol *v, const char *path, UINT32 *out);
 /* Delete @name from @dir; directories are deleted with their contents. */
 bool FatDelete(FatVol *v, UINT32 dir, const char *name);
 
+/* What FatReclaim did */
+typedef struct {
+    bool   scanned;                 /* false: the volume was closed cleanly, nothing to look for */
+    UINT32 reclaimed;               /* clusters marked as used that nothing reached, now free */
+    UINT32 crossed;                 /* chains that ran into clusters already reached (left alone) */
+    UINT32 free;                    /* free clusters afterwards */
+} FatReclaimInfo;
+/* If @v was not closed cleanly (its clean-shutdown bit was clear at mount,
+ * as a crash in the middle of a save leaves it) or @force: free every
+ * cluster marked as used that no file or directory reaches, then mark the
+ * volume clean.  Shared or looping chains stay as they are.  False if it
+ * could not finish (a read error, out of memory); nothing is freed then. */
+bool FatReclaim(FatVol *v, bool force, FatReclaimInfo *info);
+UINT32 FatClusterBytes(const FatVol *v);
+
 /* Write cached metadata to the disk and flush the disk's write cache. */
 bool FatSync(FatVol *v);
