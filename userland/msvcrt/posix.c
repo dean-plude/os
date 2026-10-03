@@ -92,7 +92,9 @@ void *__nova_fd_handle(int fd)
 
 void __nova_set_errno_win32(void)
 {
-    switch (GetLastError()) {
+    DWORD e = GetLastError();
+    _set_doserrno(e);                               /* as the CRT's _dosmaperr does */
+    switch (e) {
     case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: errno = ENOENT; break;
     case ERROR_ACCESS_DENIED:  errno = EACCES; break;
     case ERROR_ALREADY_EXISTS: case ERROR_FILE_EXISTS: errno = EEXIST; break;

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include "ptd.h"
 #include <limits.h>
 #include <stdio.h>
 #include <time.h>
@@ -103,8 +104,7 @@ wchar_t *wcstok(wchar_t *s, const wchar_t *delim, wchar_t **ctx)
 }
 wchar_t *_wcstok(wchar_t *s, const wchar_t *delim)
 {
-    static wchar_t *ctx;
-    return wcstok(s, delim, &ctx);
+    return wcstok(s, delim, &__nova_ptd()->wtok);
 }
 wchar_t *_wcsdup(const wchar_t *s)
 {

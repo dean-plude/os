@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
+#include "ptd.h"
 
 time_t time(time_t *t)
 {
@@ -35,24 +36,24 @@ static long long days_from_civil(long long y, int m, int d)
 
 struct tm *gmtime(const time_t *t)
 {
-    static struct tm tm;
+    struct tm *r = &__nova_ptd()->tm;
     long long s = *t, days = s / 86400, rem = s % 86400;
     if (rem < 0) { rem += 86400; days--; }
-    tm.tm_hour = (int)(rem / 3600);
-    tm.tm_min = (int)(rem % 3600 / 60);
-    tm.tm_sec = (int)(rem % 60);
-    tm.tm_wday = (int)(((days % 7) + 11) % 7);
+    r->tm_hour = (int)(rem / 3600);
+    r->tm_min = (int)(rem % 3600 / 60);
+    r->tm_sec = (int)(rem % 60);
+    r->tm_wday = (int)(((days % 7) + 11) % 7);
     long long z = days + 719468, era = (z >= 0 ? z : z - 146096) / 146097;
     long long doe = z - era * 146097, yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
     long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;
     int d = (int)(doy - (153 * mp + 2) / 5 + 1), m = (int)(mp < 10 ? mp + 3 : mp - 9);
     long long y = yoe + era * 400 + (m <= 2);
-    tm.tm_year = (int)(y - 1900);
-    tm.tm_mon = m - 1;
-    tm.tm_mday = d;
-    tm.tm_yday = (int)(days - days_from_civil(y, 1, 1));
-    tm.tm_isdst = 0;
-    return &tm;
+    r->tm_year = (int)(y - 1900);
+    r->tm_mon = m - 1;
+    r->tm_mday = d;
+    r->tm_yday = (int)(days - days_from_civil(y, 1, 1));
+    r->tm_isdst = 0;
+    return r;
 }
 
 struct tm *localtime(const time_t *t) { return gmtime(t); }
@@ -118,8 +119,8 @@ size_t strftime(char *s, size_t n, const char *f, const struct tm *tm)
 
 char *asctime(const struct tm *tm)
 {
-    static char buf[32];
-    snprintf(buf, sizeof(buf), "%.3s %.3s %2d %02d:%02d:%02d %d\n", wday[tm->tm_wday % 7], mon[tm->tm_mon % 12],
+    char *buf = __nova_ptd()->asc;
+    snprintf(buf, sizeof(__nova_ptd()->asc), "%.3s %.3s %2d %02d:%02d:%02d %d\n", wday[tm->tm_wday % 7], mon[tm->tm_mon % 12],
              tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec, tm->tm_year + 1900);
     return buf;
 }
