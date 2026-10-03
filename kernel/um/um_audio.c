@@ -4,7 +4,9 @@
  *
  * Each stream is a UO_AUDIO handle object wrapping a mixer stream
  * (drivers/audio.c), so closing the handle, or the program ending, stops
- * its sound.  Streams take 48 kHz s16 stereo frames; the DLLs convert.
+ * its sound.  Streams take s16 stereo frames at 48 kHz, or at the rate
+ * the program set (op 13: the mixer converts to the device's own rate);
+ * the DLLs convert every other format.
  * The services are NovaOS-private: Windows' audio stack talks to the
  * AudioSrv service and kernel-streaming drivers, which NovaOS omits.
  */
@@ -87,6 +89,8 @@ static UINT64 sys_write(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *     oldest first (waveOut/waveIn device IDs and WASAPI endpoints in that order)
  *  11 make device @arg the default (h unused; @out = capture, as a number): Settings' choice
  *  12 play stream @h on (or record it from) device @arg (0: the default)
+ *  13 stream @h's frames are at @arg Hz (8,000 to 384,000; 48,000 until set)
+ * (5 and 7 give the default device's own rate.)
  * Returns 0, or -1 for a bad handle or buffer. */
 static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
@@ -94,7 +98,7 @@ static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         struct { UINT32 present, rate; char name[96]; } info;
         memset(&info, 0, sizeof(info));
         info.present = AudioCanRecord();
-        info.rate = AUDIO_RATE;
+        info.rate = AudioInputRate();
         if (info.present) ksnprintf(info.name, sizeof(info.name), "%s", AudioInputName());
         return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &info, sizeof(info))) ? 0 : (UINT64)(INT64)-1;
     }
@@ -128,7 +132,7 @@ static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         struct { UINT32 present, rate; char name[96]; } info;
         memset(&info, 0, sizeof(info));
         info.present = AudioPresent();
-        info.rate = AUDIO_RATE;
+        info.rate = AudioDeviceRate();
         strncpy(info.name, AudioDeviceName(), sizeof(info.name) - 1);
         return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &info, sizeof(info))) ? 0 : (UINT64)(INT64)-1;
     }
@@ -142,6 +146,7 @@ static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     case 1: AudioRun(s, a3 != 0); return 0;
     case 12: return AudioRoute(s, (UINT32)a3) ? 0 : (UINT64)(INT64)-1;
+    case 13: return a3 <= 0xFFFFFFFFu && AudioSetRate(s, (UINT32)a3) ? 0 : (UINT64)(INT64)-1;
     case 6: {
         INT16 *tmp = kmalloc(BOUNCE_FRAMES * 4);
         if (!tmp) return 0;

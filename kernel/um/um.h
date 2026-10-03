@@ -162,8 +162,17 @@ void um_registry_set_dword(const char *path, const char *name, UINT32 val);   /*
 bool um_registry_get_dword(const char *path, const char *name, UINT32 *out);
 void um_registry_set_sz(const char *path, const char *name, const char *val);
 bool um_registry_get_sz(const char *path, const char *name, char *out, int cap);
+/* The first-boot setup's answers (apps/welcome.c): UserName, FirstBootDone */
+#define UM_SETUP_KEY "Machine\\SOFTWARE\\NovaOS\\Setup"
 void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
 void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp) __attribute__((noreturn));
+/* Crash reports in C:\NovaOS\Crashes (um_crash.c) */
+#define UM_CRASH_PATH 80
+const char *UmCrashReport(const UmProcess *p);   /* the crashed program's report ("" if none) */
+void UmCrashPoll(void);                 /* write the reports waiting (desktop thread, from UmPoll) */
+RamNode *UmCrashNewest(void);           /* the newest report, under the file-system lock (or NULL) */
+void UmCrashKernel(void);               /* a kernel fault is halting this CPU: save its report on the disk */
+void UmCrashKernelFound(const char *text, UINT32 len);   /* at boot: the last start's kernel crash report */
 /* A 32-bit program's system call (int 0x2E) keeps its registers in @frame */
 void UmNoteSyscallFrame(void *frame);
 

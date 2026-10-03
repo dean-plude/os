@@ -50,7 +50,8 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 ```
 
 NovaOS boots live from the CD and opens **Install NovaOS**.  Install onto
-`disk.img`, then drop `-cdrom nova.iso` to start from the disk.  Files you
+`disk.img`, then drop `-cdrom nova.iso` to start from the disk; the first
+start from it asks for your name and a display resolution.  Files you
 create are kept on `disk.img` across restarts.
 
 Additions to the command line:
@@ -80,8 +81,8 @@ it is progressing.  `-smp` higher than 4 rarely helps there.
 4. Create a 1 GB drive.  Before saving, tick **Open VM Settings** and set:
    - **System → UEFI Boot**: on.
    - **Drives**: interface **IDE** for the disk (on Q35 that is the AHCI
-     SATA controller, the one NovaOS has a driver for; VirtIO and NVMe
-     disks are not seen).
+     SATA controller) or **NVMe**; NovaOS drives both, but VirtIO disks
+     are not seen.
    - **Display**: emulated display card **VGA** (`VGA`, the Bochs adapter
      NovaOS sets resolutions on); `virtio-vga`, `qxl-vga` and
      `vmware-svga` work as well, but not `virtio-gpu` (no VGA).
@@ -115,7 +116,7 @@ brew install cmake ninja nasm python \
 |---------|----------|
 | `llvm`, `lld` | `clang`, `clang++`, `lld-link`, `llvm-rc`, `llvm-nm`: the Windows userland and NetSurf; LLVM's libc++ headers, which the build finds next to `clang`, for HarfBuzz in `novatext.dll` |
 | `x86_64-elf-gcc` | The kernel (CMake prefers it over clang) |
-| `mingw-w64` | The UEFI bootloader (`x86_64-w64-mingw32-gcc`) |
+| `mingw-w64` | The UEFI bootloader (`x86_64-w64-mingw32-gcc`), and MinGW-w64's headers, which `msvcp140.dll` is compiled against |
 | `nasm` | Kernel assembly |
 | `mtools`, `dosfstools` | `nova.img` (`mkfs.fat` / `mkdosfs` and `mformat`, `mcopy`) |
 | `xorriso` | `scripts/create-iso.sh` |
@@ -177,7 +178,8 @@ unchanged.  With Docker Desktop, [OrbStack](https://orbstack.dev) or
 docker run --rm -it -v "$PWD":/src -w /src ubuntu:24.04 bash -c '
   apt-get update &&
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
-      cmake make nasm clang lld llvm libc++-dev python3 mtools dosfstools xorriso &&
+      cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 python3 \
+      mtools dosfstools xorriso &&
   NOVA_NO_NETSURF=1 scripts/build.sh'
 ```
 

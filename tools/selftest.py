@@ -8,13 +8,16 @@ Suites (one file per test in tests/selftest/SUITE/, run in file-name
 order; --list prints them):
   core      (default) the self-test programs (apitest, abitest, filetest...),
             an install finished by a restart, and last "crash kernel" (a
-            deliberate kernel fault must print a symbolized backtrace)
+            deliberate kernel fault must print a symbolized backtrace;
+            the machine is then reset and the next start must turn the
+            fault into a report in C:\\NovaOS\\Crashes)
   graphics  on two monitors (a 3D virtio-gpu with Venus is the first, a
             QEMU secondary-vga the second; montest), installs "Mesa 3D",
             "DXVK" and "Venus" with the App Store, then runs tools/gltest
-            (on Mesa's llvmpipe) and tools/d3dtest (DXVK on Venus, which runs
-            Vulkan on this machine's GPU), 64- and 32-bit, d3dtest's
-            frame-rate test (Venus against lavapipe), and NetSurf on a page
+            (on Mesa's virgl, which runs OpenGL on this machine's GPU, and
+            on llvmpipe) and tools/d3dtest (DXVK on Venus, which runs
+            Vulkan there), 64- and 32-bit, the frame-rate tests (virgl
+            against llvmpipe, Venus against lavapipe), and NetSurf on a page
             with an SVG and a script (nstest).  Needs --gfx DIR, made by
             tools/ci/stage-graphics.sh: 7-Zip, the three downloads and the
             test programs; and a QEMU with Venus with an OpenGL display
@@ -75,7 +78,9 @@ class Test:
     wait for the App Store's "[STORE] @store: Installed" line.  @shot: take
     the screenshot 2 s after the output matches this regex (while the
     program draws).  @crash: the command halts the kernel on purpose; the
-    test passes when the serial log then shows @expect (it runs last).
+    test passes when the serial log then shows @expect (it runs last,
+    unless @restart: then the machine is reset and later tests run in the
+    new boot, as after a crash on a real PC).
     @reboot: restart NovaOS ("shutdown /r", drive C: kept) and pass when
     the new boot's log shows @expect; later tests run in that boot.
     @acts: (regex, function(nova)) pairs run when the output matches (the
@@ -84,13 +89,16 @@ class Test:
     @builtin: a Terminal command, not a program (no exit code; the output
     decides).  @settle: seconds to wait afterwards (NovaOS saves drive C:
     once it has been quiet for a second).  @before: function(nova) run
-    before the command is typed (e.g. plug a device in)."""
+    before the command is typed (e.g. plug a device in).  @quotes_panic: the
+    output may quote a kernel panic's log (a crash report shown), which is
+    then not taken for a panic of this boot."""
     def __init__(self, name, cmd, expect=(), timeout=180, check=None, store=None, shot=None, crash=False, reboot=False,
-                 acts=(), boot_expect=(), builtin=False, settle=0, before=None):
+                 acts=(), boot_expect=(), builtin=False, settle=0, before=None, restart=False,
+                 quotes_panic=False):
         self.name, self.cmd, self.expect, self.timeout, self.check = name, cmd, expect, timeout, check
         self.store, self.shot, self.crash, self.reboot = store, shot, crash, reboot
         self.acts, self.boot_expect, self.builtin, self.settle = acts, boot_expect, builtin, settle
-        self.before = before
+        self.before, self.restart, self.quotes_panic = before, restart, quotes_panic
 
 
 def tones(*hz, wav=None, only=False):
@@ -324,12 +332,19 @@ def usbheadset_boot(work):
     microphone hears 988 Hz), then a 44.1 kHz USB Audio 2.0 surround
     headset (port 10705: six speaker channels whose front two surround.wav
     gets, four microphone channels hearing 1175 Hz) and a full-speed USB
-    Audio 1.0 speaker (port 10706, spk.wav) for the device picker
-    (tests/selftest/devices/usbheadset)"""
+    Audio 1.0 speaker (port 10706, spk.wav) for the device picker, and two
+    speakers on their own clocks that say so through a feedback endpoint:
+    a full-speed USB Audio 1.0 one at 48,500 frames a second (port 10707,
+    async1.wav) and a high-speed USB Audio 2.0 one at 47,600 (port 10708,
+    async2.wav) (tests/selftest/devices/usbheadset)"""
     procs = [peer(work, 10700, '--speaker', os.path.join(work, 'headset.wav'), '--mic', str(REC_HZ))]
     for n, hz in ((1, 784), (2, 659), (3, 880)):
         procs.append(peer(work, 10700 + n, '--speed', 'full', '--mic', str(hz)))
     procs.append(peer(work, 10704, '--uac2', '--speaker', os.path.join(work, 'uac2.wav'), '--mic', '988'))
+    procs.append(peer(work, 10707, '--speed', 'full', '--feedback', '48500', '--product', 'Test Async Speaker',
+                      '--speaker', os.path.join(work, 'async1.wav')))
+    procs.append(peer(work, 10708, '--uac2', '--feedback', '47600', '--product', 'Test Async Headset',
+                      '--speaker', os.path.join(work, 'async2.wav')))
     procs.append(peer(work, 10705, '--uac2', '--rates', '44100', '--channels', '6', '--mic-channels', '4',
                       '--product', 'Test Surround Headset', '--speaker', os.path.join(work, 'surround.wav'), '--mic', '1175'))
     procs.append(peer(work, 10706, '--speed', 'full', '--product', 'Test Speaker', '--speaker', os.path.join(work, 'spk.wav')))
@@ -454,9 +469,12 @@ def verdict(t, out, ok, exe):
         return bad.group(1)
     # the kernel's log shares the serial port with the Terminal's copy and
     # can land in the middle of a line of output: match without it
+    # (a program's line can also land in the middle of a kernel log line,
+    # such as "[UM]   command line: ..." of a 1,100-character command, and
+    # then goes with it: look in the whole output if it is not in the rest)
     text = KLOG.sub('', out)
     for e in t.expect:
-        if not re.search(e, text):
+        if not re.search(e, text) and not re.search(e, out):
             return f'missing "{e}"'
     return None
 
@@ -505,7 +523,7 @@ def main():
             finally:
                 for p in procs:
                     p.kill()
-                for log in ['h2server.log', 'v6peer.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10707)]:
+                for log in ['h2server.log', 'v6peer.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10709)]:
                     if os.path.exists(os.path.join(work, log)):
                         shutil.copy(os.path.join(work, log), a.out)
                 shutil.rmtree(work, ignore_errors=True)
@@ -611,7 +629,7 @@ def run_boot(a, tests, work, label, **nova_args):
                     if not why and not re.search(e, whole):
                         why = f'missing "{e}" in the serial log'
             full_log += out
-            if PANIC.search(out) and not t.crash:
+            if PANIC.search(out) and not t.crash and not t.quotes_panic:
                 why = 'kernel panic'
             if nova.q.poll() is None and not (t.shot and os.path.exists(png)):
                 nova.shot(png)
@@ -623,6 +641,14 @@ def run_boot(a, tests, work, label, **nova_args):
                 print('    ' + '\n    '.join(l for l in out.splitlines() if not l.startswith('[SCHED]'))[-4000:])
             if t.settle and not why:
                 time.sleep(t.settle)
+            if t.crash and t.restart and not why and nova.q.poll() is None:
+                try:                                        # reset the halted machine, as a person would
+                    nova.qmp.cmd('system_reset')
+                    nova.start()
+                    full_log += nova.boot_log
+                    continue
+                except RuntimeError as e:
+                    print(f'    did not start again after the crash: {str(e).splitlines()[0]}', flush=True)
             if why == 'kernel panic' or t.crash or nova.q.poll() is not None:
                 break
     finally:

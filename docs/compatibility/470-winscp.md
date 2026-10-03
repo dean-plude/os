@@ -1,0 +1,1 @@
+| **WinSCP** (App Store) | Untested | | — |

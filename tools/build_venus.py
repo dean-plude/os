@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
-"""Cross-build Mesa's Venus Vulkan driver (vulkan_virtio.dll) for NovaOS.
+"""Cross-build Mesa's drivers for the virtio GPU for NovaOS: Venus (Vulkan) and virgl (OpenGL).
 
     tools/build_venus.py OUT_DIR [--work DIR] [--tarball FILE] [--arch x64|x86]
 
-Venus is Mesa's Vulkan driver for virtio-gpu: it encodes a program's
-Vulkan calls and the host's renderer (virglrenderer under QEMU) runs them
-on the host's GPU.  NovaOS's own back end (third_party/mesa-venus) talks to
-the kernel's virtio-gpu driver through NtNovaGpuCtl.  This script fetches
-the Mesa release named below (or takes --tarball), checks its SHA-256,
-applies third_party/mesa-venus/novaos.patch, adds vn_renderer_nova.c and
-builds the driver with MinGW-w64 through Meson, 64- and 32-bit.
+Venus is Mesa's Vulkan driver for virtio-gpu and virgl its OpenGL one:
+they encode a program's Vulkan or OpenGL calls and the host's renderer
+(virglrenderer under QEMU) runs them on the host's GPU.  NovaOS's own back
+ends (third_party/mesa-venus: vn_renderer_nova.c for Venus,
+virgl_nova_winsys.c for virgl) talk to the kernel's virtio-gpu driver
+through NtNovaGpuCtl.  This script fetches the Mesa release named below
+(or takes --tarball), checks its SHA-256, applies
+third_party/mesa-venus/novaos.patch, adds the back ends and builds both
+drivers with MinGW-w64 through Meson, 64- and 32-bit.
 
 OUT_DIR receives venus.7z, which is what the App Store's "Venus" entry
 installs: x64\\vulkan_virtio.dll with x64\\virtio_icd.x86_64.json, and
-x86\\vulkan_virtio.dll with x86\\virtio_icd.x86.json (kernel/apps/store.c).
-The CI publishes it beside nova.iso on the "latest" release.
+x64\\opengl32_virgl.dll with x64\\libgallium_virgl.dll (Mesa's opengl32
+and its gallium library: NovaOS's own opengl32.dll loads it on a 3D
+virtio-gpu), and the same for x86 with virtio_icd.x86.json
+(kernel/apps/store.c).  The CI publishes it beside nova.iso on the
+"latest" release.
 
 Needs meson (1.4 or newer), ninja, Python's mako and yaml modules,
 glslangValidator, bison, flex, 7z, and MinGW-w64 gcc and g++ for x86-64
@@ -31,10 +36,11 @@ SHA256 = 'bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9'
 URLS = [f'https://archive.mesa3d.org/mesa-{VERSION}.tar.xz',
         f'http://archive.ubuntu.com/ubuntu/pool/main/m/mesa/mesa_{VERSION}.orig.tar.xz']
 
-# Only Venus: no OpenGL, no other drivers, no LLVM, no optional libraries
+# Only Venus and virgl (desktop OpenGL through WGL): no other drivers, no
+# LLVM, no optional libraries
 OPTIONS = ['--wrap-mode=nofallback', '-Dbuildtype=release', '-Db_ndebug=true',
-           '-Dplatforms=windows', '-Dvulkan-drivers=virtio', '-Dgallium-drivers=',
-           '-Dopengl=false', '-Dgles1=disabled', '-Dgles2=disabled', '-Degl=disabled', '-Dglx=disabled',
+           '-Dplatforms=windows', '-Dvulkan-drivers=virtio', '-Dgallium-drivers=virgl',
+           '-Dgallium-wgl-dll-name=libgallium_virgl', '-Dopengl=true', '-Dgles1=disabled', '-Dgles2=disabled', '-Degl=disabled', '-Dglx=disabled',
            '-Dllvm=disabled', '-Dvideo-codecs=', '-Dbuild-tests=false', '-Dzlib=disabled',
            '-Dzstd=disabled', '-Dxmlconfig=disabled', '-Dexpat=disabled', '-Dshader-cache=disabled',
            # (vk_icdNegotiateLoaderICDInterfaceVersion declines when there is no 3D GPU)
@@ -75,7 +81,7 @@ def fetch(work):
 def source(work, tarball):
     """The patched Mesa tree, extracted again when the patch or back end changed"""
     stamp = hashlib.sha256()
-    for f in ('novaos.patch', 'vn_renderer_nova.c'):
+    for f in ('novaos.patch', 'vn_renderer_nova.c', 'virgl_nova_winsys.c'):
         stamp.update(open(os.path.join(TP, f), 'rb').read())
     stamp = stamp.hexdigest()
     src = os.path.join(work, f'mesa-{VERSION}')
@@ -89,6 +95,7 @@ def source(work, tarball):
         t.extractall(work, filter='tar')
     subprocess.run(['patch', '-p1', '-s', '-i', os.path.join(TP, 'novaos.patch')], cwd=src, check=True)
     shutil.copy(os.path.join(TP, 'vn_renderer_nova.c'), os.path.join(src, 'src', 'virtio', 'vulkan'))
+    shutil.copy(os.path.join(TP, 'virgl_nova_winsys.c'), os.path.join(src, 'src', 'gallium', 'winsys', 'virgl', 'nova'))
     open(mark, 'w').write(stamp)
     return src
 
@@ -110,14 +117,20 @@ cpu_family = '{family}'
 cpu = '{family}'
 endian = 'little'
 """)
-        if arch == 'x86':    # export vk_icd* undecorated (no @N), as the loader looks them up
-            f.write("[built-in options]\nc_link_args = ['-Wl,--kill-at']\ncpp_link_args = ['-Wl,--kill-at']\n")
+        if arch == 'x86':    # export vk_icd*, gl* and wgl* undecorated (no @N), as Windows' DLLs do
+            # (--add-stdcall-alias, not --kill-at: opengl32 links with
+            # libgallium_virgl's import library, which needs the @N names)
+            f.write("[built-in options]\nc_link_args = ['-Wl,--add-stdcall-alias']\n"
+                    "cpp_link_args = ['-Wl,--add-stdcall-alias']\n")
     bdir = os.path.join(work, f'build-{arch}')
     if not os.path.exists(os.path.join(bdir, 'build.ninja')):
         shutil.rmtree(bdir, ignore_errors=True)
         subprocess.run(['meson', 'setup', bdir, src, f'--cross-file={cross}'] + OPTIONS, check=True)
-    subprocess.run(['ninja', '-C', bdir, 'src/virtio/vulkan/libvulkan_virtio.dll'], check=True)
-    return os.path.join(bdir, 'src', 'virtio', 'vulkan', 'libvulkan_virtio.dll')
+    dlls = {'vulkan_virtio.dll': 'src/virtio/vulkan/libvulkan_virtio.dll',
+            'opengl32_virgl.dll': 'src/gallium/targets/libgl-gdi/opengl32.dll',
+            'libgallium_virgl.dll': 'src/gallium/targets/wgl/libgallium_virgl.dll'}
+    subprocess.run(['ninja', '-C', bdir] + list(dlls.values()), check=True)
+    return {name: os.path.join(bdir, path) for name, path in dlls.items()}
 
 
 def main():
@@ -134,9 +147,10 @@ def main():
     shutil.rmtree(stage, ignore_errors=True)
     for arch in a.arch or ARCHES:
         triplet, _, manifest, bits = ARCHES[arch]
-        dll = build(src, work, arch)
+        dlls = build(src, work, arch)
         os.makedirs(os.path.join(stage, arch))
-        subprocess.run([f'{triplet}-strip', '-o', os.path.join(stage, arch, 'vulkan_virtio.dll'), dll], check=True)
+        for name, dll in dlls.items():
+            subprocess.run([f'{triplet}-strip', '-o', os.path.join(stage, arch, name), dll], check=True)
         with open(os.path.join(stage, arch, manifest), 'w') as f:
             f.write('{\n    "file_format_version": "1.0.1",\n    "ICD": {\n'
                     '        "library_path": "vulkan_virtio.dll",\n'

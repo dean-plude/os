@@ -5,6 +5,18 @@ to one real PC, the **reference machine**: one widely available model
 whose devices get drivers first, so "boots on real hardware" has a
 concrete meaning and a machine anyone can buy to check it.
 
+## Where NovaOS runs today
+
+| Machine | Status |
+|---|---|
+| **QEMU** (Linux with or without KVM, macOS, Windows through WSL2) | Supported and tested on every pull request: a q35 machine with OVMF firmware, as [building.md](building.md#running-in-qemu) and [macos.md](macos.md) start it |
+| **Other virtual machines** (VirtualBox, VMware, Hyper-V, UTM) | Untested; UTM is QEMU underneath ([macos.md](macos.md)).  NovaOS needs UEFI, an AHCI SATA or NVMe disk, and an Intel e1000/e1000e or virtio-net network card |
+| **Real PCs** | **Not yet checked on any machine.**  NovaOS should start on a UEFI PC with Secure Boot off from a USB stick, on the firmware's framebuffer; the reference machine below is the first one to be checked, by hand ([install-and-power.md](install-and-power.md#checks-on-the-t14)) |
+| **Macs** | Intel Macs from a USB stick, untested and with few drivers ([macos.md](macos.md#on-a-real-intel-mac--untested)); Apple Silicon Macs only in QEMU |
+
+The tables below list, device by device, what NovaOS drives on the
+reference machine and in general.
+
 ## The reference machine: Lenovo ThinkPad T14 Gen 4 (Intel)
 
 The model with integrated graphics only (Intel Iris Xe; the GeForce MX550

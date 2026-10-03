@@ -602,6 +602,9 @@ static bool copy_pages(UmProcess *p, UINT64 va, void *buf, UINT64 n, bool to_use
             if (!back_page(p, e)) return false;
         }
         if (to_user && (*e & PTE_IMAGE) && !img_privatize(p, va, e)) return false;
+        /* device memory mapped into the program (a GPU's host-visible
+         * region) is beyond the physmap: the kernel can't reach it there */
+        if ((*e & PTE_ADDR_MASK) >= PHYSMAP_SIZE) return false;
         UINT8 *k = (UINT8 *)(uintptr_t)(PHYSMAP_BASE + (*e & PTE_ADDR_MASK) + off);
         if (to_user) memcpy(k, b, chunk); else memcpy(b, k, chunk);
         va += chunk; b += chunk; n -= chunk;
@@ -1815,8 +1818,10 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
              (put_ustr(pp, sz, &off, pp + L->cmdline, cmdline, pva, L, w) ||         /* CommandLine */
               put_ustr_region(p, pp + L->cmdline, cmdline, L, w));
         /* Environment block: the creator's, or the default one */
-        char ncpu[32];
+        char ncpu[32], user[48] = "USERNAME=";
         ksnprintf(ncpu, sizeof(ncpu), "NUMBER_OF_PROCESSORS=%u", (unsigned)g_cpu_count);
+        if (!um_registry_get_sz(UM_SETUP_KEY, "UserName", user + 9, (int)sizeof(user) - 9) || !user[9])
+            strcpy(user + 9, "dean");               /* the name given at first boot (apps/welcome.c) */
         const char *env[] = {
             "ALLUSERSPROFILE=C:\\ProgramData", "APPDATA=C:\\AppData\\Roaming", "COMPUTERNAME=NOVA-PC",
             "ComSpec=C:\\Windows\\System32\\cmd.exe",
@@ -1826,7 +1831,7 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
             w ? "PROCESSOR_ARCHITEW6432=AMD64" : "ProgramW6432=C:\\Programs",
             "ProgramData=C:\\ProgramData", "ProgramFiles=C:\\Programs", "ProgramFiles(x86)=C:\\Programs",
             "PROMPT=$P$G", "SystemDrive=C:", "SystemRoot=C:\\Windows",
-            "TEMP=C:\\Temp", "TMP=C:\\Temp", "USERNAME=dean", "USERPROFILE=C:\\", "windir=C:\\Windows", NULL
+            "TEMP=C:\\Temp", "TMP=C:\\Temp", user, "USERPROFILE=C:\\", "windir=C:\\Windows", NULL
         };
         char *def = NULL;
         if (!envp) {
@@ -2403,6 +2408,7 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
                         code[10], code[11], (unsigned long long)sp);
         }
         um_log_stack(p, sp);                        /* where it came from (serial log only) */
+        um_crash_report(p, what, status, rip, addr, sp);    /* and C:\NovaOS\Crashes */
     }
     um_exit_process(status);
 }
@@ -2670,6 +2676,7 @@ void UmSaveAll(void)
 void UmPoll(void)
 {
     um_registry_poll();
+    UmCrashPoll();
     PersistPoll();
     DrivesPoll();
     BootLogPoll();

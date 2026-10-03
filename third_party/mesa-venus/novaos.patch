@@ -1,3 +1,152 @@
+Binary files mesa-26.2.4/src/compiler/__pycache__/builtin_types.cpython-313.pyc and ../mesa-26.2.4/src/compiler/__pycache__/builtin_types.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/compiler/nir/__pycache__/nir_algebraic.cpython-313.pyc and ../mesa-26.2.4/src/compiler/nir/__pycache__/nir_algebraic.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/compiler/nir/__pycache__/nir_intrinsics.cpython-313.pyc and ../mesa-26.2.4/src/compiler/nir/__pycache__/nir_intrinsics.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/compiler/nir/__pycache__/nir_opcodes.cpython-313.pyc and ../mesa-26.2.4/src/compiler/nir/__pycache__/nir_opcodes.cpython-313.pyc differ
+--- a/src/gallium/drivers/virgl/meson.build
++++ b/src/gallium/drivers/virgl/meson.build
+@@ -28,6 +28,8 @@
+ if not with_platform_windows
+   virgl_deps += libvirgldrm
+   virgl_deps += libvirglvtest
++else
++  virgl_deps += libvirglnova
+ endif
+ 
+ driver_virgl = declare_dependency(
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -173,6 +173,8 @@
+   if not with_platform_windows
+     subdir('winsys/virgl/drm')
+     subdir('winsys/virgl/vtest')
++  else
++    subdir('winsys/virgl/nova')
+   endif
+   subdir('drivers/virgl')
+ else
+--- a/src/gallium/targets/wgl/meson.build
++++ b/src/gallium/targets/wgl/meson.build
+@@ -16,7 +16,7 @@
+   ['wgl.c'],
+   vs_module_defs : wgl_def,
+   include_directories : [
+-    inc_include, inc_src, inc_mesa, inc_gallium, inc_gallium_aux, inc_wgl, inc_gallium_winsys, inc_gallium_winsys_sw, inc_gallium_drivers,
++    inc_include, inc_src, inc_mesa, inc_gallium, inc_gallium_aux, inc_wgl, inc_gallium_winsys, inc_gallium_winsys_sw, inc_gallium_drivers, inc_virtio,
+   ],
+   link_whole : [libwgl],
+   link_with : [
+@@ -24,7 +24,7 @@
+   ],
+   dependencies : [
+     dep_ws2_32, idep_nir, idep_mesautil, driver_swrast,
+-    driver_d3d12, driver_zink, winsys_d3d12_wgl
++    driver_d3d12, driver_zink, driver_virgl, winsys_d3d12_wgl
+   ],
+   link_args : gallium_wgl_link_args,
+   name_prefix : '',
+--- a/src/gallium/targets/wgl/wgl.c
++++ b/src/gallium/targets/wgl/wgl.c
+@@ -63,6 +63,12 @@
+ #include "zink/zink_public.h"
+ #endif
+ 
++#ifdef GALLIUM_VIRGL
++#include "virgl/virgl_public.h"
++#include "virgl/nova/virgl_nova_public.h"
++static bool use_virgl = false;
++#endif
++
+ #ifdef GALLIUM_LLVMPIPE
+ static bool use_llvmpipe = false;
+ #endif
+@@ -101,6 +107,16 @@
+          use_zink = true;
+    }
+ #endif
++#ifdef GALLIUM_VIRGL
++   /* (NovaOS: OpenGL on a virtio GPU with 3D, frames shown through @winsys) */
++   if (strcmp(driver, "virgl") == 0) {
++      struct virgl_winsys *vws = virgl_nova_winsys_wrap(winsys);
++      if (vws)
++         screen = virgl_create_screen(vws, NULL);
++      if (screen)
++         use_virgl = true;
++   }
++#endif
+ #ifdef GALLIUM_SOFTPIPE
+    if (strcmp(driver, "softpipe") == 0) {
+       screen = softpipe_create_screen(winsys);
+@@ -122,6 +138,9 @@
+ 
+    const char *const drivers[] = {
+       debug_get_option("GALLIUM_DRIVER", ""),
++#ifdef GALLIUM_VIRGL
++      sw_only ? "" : "virgl",
++#endif
+ #ifdef GALLIUM_D3D12
+       sw_only ? "" : "d3d12",
+ #endif
+@@ -196,6 +215,13 @@
+       screen->flush_frontbuffer(screen, ctx, res, 0, 0, hDC, 0, NULL);
+       return;
+    }
++#endif
++
++#ifdef GALLIUM_VIRGL
++   if (use_virgl) {
++      screen->flush_frontbuffer(screen, ctx, res, 0, 0, hDC, 0, NULL);
++      return;
++   }
+ #endif
+ 
+ #ifdef GALLIUM_SOFTPIPE
+--- a/src/gallium/winsys/virgl/nova/meson.build
++++ b/src/gallium/winsys/virgl/nova/meson.build
+@@ -0,0 +1,10 @@
++# Copyright 2026 NovaOS contributors
++# SPDX-License-Identifier: MIT
++
++libvirglnova = static_library(
++  'virglnova',
++  'virgl_nova_winsys.c',
++  include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux, inc_gallium_drivers, inc_virtio],
++  dependencies : [dep_libvirglcommon, idep_mesautil, idep_nir_headers],
++  gnu_symbol_visibility : 'hidden',
++)
+--- a/src/gallium/winsys/virgl/nova/virgl_nova_public.h
++++ b/src/gallium/winsys/virgl/nova/virgl_nova_public.h
+@@ -0,0 +1,18 @@
++/*
++ * Copyright 2026 NovaOS contributors
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef VIRGL_NOVA_PUBLIC_H
++#define VIRGL_NOVA_PUBLIC_H
++
++#include <stdbool.h>
++
++struct virgl_winsys;
++struct sw_winsys;
++
++/* A NovaOS virtio GPU with 3D is there */
++bool virgl_nova_present(void);
++/* A virgl winsys on it, showing frames through @sws (NULL: no such GPU) */
++struct virgl_winsys *virgl_nova_winsys_wrap(struct sw_winsys *sws);
++
++#endif
+Binary files mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/apiexec.cpython-313.pyc and ../mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/apiexec.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/glX_XML.cpython-313.pyc and ../mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/glX_XML.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/gl_XML.cpython-313.pyc and ../mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/gl_XML.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/license.cpython-313.pyc and ../mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/license.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/marshal_XML.cpython-313.pyc and ../mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/marshal_XML.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/static_data.cpython-313.pyc and ../mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/static_data.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/typeexpr.cpython-313.pyc and ../mesa-26.2.4/src/mesa/glapi/glapi/gen/__pycache__/typeexpr.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/mesa/main/__pycache__/format_parser.cpython-313.pyc and ../mesa-26.2.4/src/mesa/main/__pycache__/format_parser.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/mesa/main/__pycache__/get_hash_params.cpython-313.pyc and ../mesa-26.2.4/src/mesa/main/__pycache__/get_hash_params.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/util/__pycache__/drirc_gen.cpython-313.pyc and ../mesa-26.2.4/src/util/__pycache__/drirc_gen.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/util/format/__pycache__/u_format_pack.cpython-313.pyc and ../mesa-26.2.4/src/util/format/__pycache__/u_format_pack.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/util/format/__pycache__/u_format_parse.cpython-313.pyc and ../mesa-26.2.4/src/util/format/__pycache__/u_format_parse.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/util/perf/__pycache__/u_trace.cpython-313.pyc and ../mesa-26.2.4/src/util/perf/__pycache__/u_trace.cpython-313.pyc differ
 --- a/src/virtio/vulkan/meson.build
 +++ b/src/virtio/vulkan/meson.build
 @@ -124,6 +124,8 @@
@@ -83,6 +232,9 @@
     /* For the full details on loader interface versioning, see
      * <https://github.com/KhronosGroup/Vulkan-LoaderAndValidationLayers/blob/master/loader/LoaderAndLayerInterface.md>.
      * What follows is a condensed summary, to help you navigate the large and
+Binary files mesa-26.2.4/src/vulkan/util/__pycache__/vk_entrypoints.cpython-313.pyc and ../mesa-26.2.4/src/vulkan/util/__pycache__/vk_entrypoints.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/vulkan/util/__pycache__/vk_extensions.cpython-313.pyc and ../mesa-26.2.4/src/vulkan/util/__pycache__/vk_extensions.cpython-313.pyc differ
+Binary files mesa-26.2.4/src/vulkan/util/__pycache__/vk_physical_device_features_gen.cpython-313.pyc and ../mesa-26.2.4/src/vulkan/util/__pycache__/vk_physical_device_features_gen.cpython-313.pyc differ
 --- a/src/vulkan/wsi/wsi_common_win32.cpp
 +++ b/src/vulkan/wsi/wsi_common_win32.cpp
 @@ -37,8 +37,8 @@
