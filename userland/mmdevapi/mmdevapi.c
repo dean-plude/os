@@ -13,8 +13,10 @@
  * holds beyond the engine's 100 ms lead; on the recording endpoint the client buffer fills from a kernel
  * capture stream and IAudioCaptureClient hands it out a device period at a
  * time.  In event mode a helper thread sets the client's event every
- * device period while the stream runs.  IAudioEndpointVolume is each
- * endpoint's master volume, kept in the kernel for every program.
+ * device period while the stream runs.  IAudioEndpointVolume is the
+ * endpoint's device's own volume, kept in the kernel for every program
+ * (and across restarts); a stream plays (records) at the volume of the
+ * device it is on.
  *
  * No exclusive mode and no loopback capture.
  */
@@ -154,14 +156,9 @@ static LPWSTR co_str(LPCWSTR s)
 
 /* An endpoint's ID: "{0.0.0.00000000}.{6e6f7661-6864-6100-0000-0000000000NN}"
  * (0.0.1: capture), NN its device id: 1 is the sound card's speakers and 2
- * its microphone, the IDs NovaOS had before there were more devices */
-static void device_id(int flow, UINT32 id, WCHAR *out)
-{
-    lstrcpyW(out, flow ? L"{0.0.1.00000000}.{6e6f7661-6864-6100-0000-000000000000}"
-                       : L"{0.0.0.00000000}.{6e6f7661-6864-6100-0000-000000000000}");
-    WCHAR *d = out + lstrlenW(out) - 2;                         /* the last hex digit */
-    for (; id; id >>= 4, d--) *d = L"0123456789abcdef"[id & 15];
-}
+ * its microphone, the IDs NovaOS had before there were more devices
+ * (audiodev.h; DirectSound and XAudio2 use the same) */
+static void device_id(int flow, UINT32 id, WCHAR *out) { audio_endpoint_id(flow, id, out); }
 
 /* Where " (" starts in @s; NULL if nowhere */
 static const char *paren(const char *s)
@@ -942,20 +939,21 @@ static const struct { void *qi, *addref, *release, *count, *get_at, *get, *set, 
     ps_qi, static_addref, static_release, ps_count, ps_get_at, ps_get, ps_set, ps_commit,
 };
 
-/* IAudioEndpointVolume: the kernel's master volume for the flow (0..65536
- * a channel); scalars are amplitudes, levels their decibels */
-static void ev_read(int flow, float ch[2], BOOL *mute)
+/* IAudioEndpointVolume: the kernel's volume for the endpoint's device
+ * (0..65536 a channel; each device has its own, kept across restarts);
+ * scalars are amplitudes, levels their decibels */
+static void ev_read(Static *s, float ch[2], BOOL *mute)
 {
     UINT32 v[3] = { 65536, 65536, 0 };
-    NtNovaAudioCtl(0, 9, (ULONG_PTR)flow, v);
+    audio_get_volume(s->flow, g_ep[s->flow][s->slot].id, v);
     ch[0] = v[0] / 65536.0f;
     ch[1] = v[1] / 65536.0f;
     if (mute) *mute = v[2] != 0;
 }
-static void ev_write(int flow, const float ch[2], BOOL mute)
+static void ev_write(Static *s, const float ch[2], BOOL mute)
 {
     UINT32 v[3] = { (UINT32)(ch[0] * 65536.0f + 0.5f), (UINT32)(ch[1] * 65536.0f + 0.5f), (UINT32)!!mute };
-    NtNovaAudioCtl(0, 8, (ULONG_PTR)flow, v);
+    audio_set_volume(s->flow, g_ep[s->flow][s->slot].id, v);
 }
 static HRESULT STDMETHODCALLTYPE ev_qi(Static *s, REFIID riid, void **ppv)
 {
@@ -971,7 +969,7 @@ static HRESULT ev_set_scalar(Static *s, int ch, float v)        /* ch -1: both (
     if (v < 0 || v > 1) return E_INVALIDARG;
     float c[2];
     BOOL mute;
-    ev_read(s->flow, c, &mute);
+    ev_read(s, c, &mute);
     if (ch < 0) {                                               /* keeps the balance */
         float top = c[0] > c[1] ? c[0] : c[1];
         if (top > 0) { c[0] = c[0] / top * v; c[1] = c[1] / top * v; }
@@ -979,13 +977,13 @@ static HRESULT ev_set_scalar(Static *s, int ch, float v)        /* ch -1: both (
     } else {
         c[ch] = v;
     }
-    ev_write(s->flow, c, mute);
+    ev_write(s, c, mute);
     return S_OK;
 }
 static float ev_get_scalar(Static *s, int ch)
 {
     float c[2];
-    ev_read(s->flow, c, 0);
+    ev_read(s, c, 0);
     return ch < 0 ? (c[0] > c[1] ? c[0] : c[1]) : c[ch];
 }
 static HRESULT STDMETHODCALLTYPE ev_set_level(Static *s, float db, const GUID *ctx)
@@ -1006,11 +1004,11 @@ static HRESULT STDMETHODCALLTYPE ev_set_mute(Static *s, BOOL m, const GUID *ctx)
     (void)ctx;
     float c[2];
     BOOL was;
-    ev_read(s->flow, c, &was);
-    ev_write(s->flow, c, m);
+    ev_read(s, c, &was);
+    ev_write(s, c, m);
     return !!was == !!m ? S_FALSE : S_OK;
 }
-static HRESULT STDMETHODCALLTYPE ev_get_mute(Static *s, BOOL *m) { float c[2]; if (!m) return E_POINTER; ev_read(s->flow, c, m); return S_OK; }
+static HRESULT STDMETHODCALLTYPE ev_get_mute(Static *s, BOOL *m) { float c[2]; if (!m) return E_POINTER; ev_read(s, c, m); return S_OK; }
 #define VOL_STEPS 100
 static HRESULT STDMETHODCALLTYPE ev_step_info(Static *s, UINT *step, UINT *count)
 {

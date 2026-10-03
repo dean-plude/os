@@ -33,10 +33,23 @@
  *                               IDs, which is the default)
  *   soundtest default out|in NAME  make the device whose name holds NAME
  *                               the default (what Settings' Sound page does)
+ *   soundtest level out|in [LEVEL]  every endpoint's volume
+ *                               (IAudioEndpointVolume), after setting the
+ *                               chosen one's (dev=NAME, else the default) to
+ *                               LEVEL (0..1): each device has its own
+ *   soundtest wovolume          waveOutSetVolume on the device ID dev=NAME
+ *                               chooses, then waveOutGetVolume of every
+ *                               device ID and WAVE_MAPPER: only that one
+ *                               (and the mapper while it is the default)
+ *                               changes
+ *   soundtest dsenum            DirectSoundEnumerate and
+ *                               DirectSoundCaptureEnumerate
  *
- * dev=NAME anywhere on the line makes tone, float, record, wasapi and
- * capture use the device whose name holds NAME (a waveOut/waveIn device
- * ID, a WASAPI endpoint from EnumAudioEndpoints) instead of the default.
+ * dev=NAME anywhere on the line makes tone, float, record, wasapi,
+ * capture, dsound and dscapture use the device whose name holds NAME (a
+ * waveOut/waveIn device ID, a WASAPI endpoint from EnumAudioEndpoints, a
+ * DirectSound device GUID from DirectSoundEnumerate) instead of the
+ * default.
  */
 
 #include <windows.h>
@@ -632,6 +645,86 @@ static int volume(void)
     return bad;
 }
 
+/* Every endpoint of @flow with its volume; first, with @set >= 0, the
+ * chosen one's (dev=NAME, else the default) set to @set */
+static int level(int flow, double set)
+{
+    if (set >= 0) {
+        void *vol = 0, *dev = endpoint(flow, &vol);
+        if (!dev) return 1;
+        WCHAR name[64];
+        friendly_name(dev, name);
+        HRESULT hr = CALL(vol, EpVolVtbl, SetMasterVolumeLevelScalar, (float)set, 0);
+        if (FAILED(hr)) { printf("FAIL SetMasterVolumeLevelScalar: %08lx\n", hr); return 1; }
+        printf("set \"%ls\" to %.0f%%\n", name, set * 100);
+        ((IUnk *)vol)->v->Release(vol);
+        ((IUnk *)dev)->v->Release(dev);
+    }
+    void *en = 0, *col = 0, *def = 0;
+    LPWSTR def_id = 0;
+    UINT n = 0;
+    HRESULT hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, 0, CLSCTX_ALL, &IID_IMMDeviceEnumerator, &en);
+    if (FAILED(hr)) { printf("FAIL CoCreateInstance(MMDeviceEnumerator): %08lx\n", hr); return 1; }
+    if (SUCCEEDED(CALL(en, EnumVtbl, GetDefaultAudioEndpoint, flow, 0, &def))) {
+        CALL(def, DeviceVtbl, GetId, &def_id);
+        ((IUnk *)def)->v->Release(def);
+    }
+    hr = CALL(en, EnumVtbl, EnumAudioEndpoints, flow, 1, &col);
+    if (FAILED(hr)) { printf("FAIL EnumAudioEndpoints: %08lx\n", hr); return 1; }
+    CALL(col, CollectionVtbl, GetCount, &n);
+    printf("%s endpoint volumes:\n", flow ? "capture" : "render");
+    for (UINT i = 0; i < n; i++) {
+        void *d = 0, *vol = 0;
+        LPWSTR id = 0;
+        WCHAR name[64];
+        float v = -1;
+        BOOL mute = FALSE;
+        if (FAILED(CALL(col, CollectionVtbl, Item, i, &d))) continue;
+        friendly_name(d, name);
+        CALL(d, DeviceVtbl, GetId, &id);
+        if (SUCCEEDED(CALL(d, DeviceVtbl, Activate, &IID_IAudioEndpointVolume, CLSCTX_ALL, 0, &vol))) {
+            CALL(vol, EpVolVtbl, GetMasterVolumeLevelScalar, &v);
+            CALL(vol, EpVolVtbl, GetMute, &mute);
+            ((IUnk *)vol)->v->Release(vol);
+        }
+        printf("  \"%ls\" %.0f%%%s%s\n", name, v * 100, mute ? " muted" : "",
+               id && def_id && !lstrcmpW(id, def_id) ? " (default)" : "");
+        CoTaskMemFree(id);
+        ((IUnk *)d)->v->Release(d);
+    }
+    CoTaskMemFree(def_id);
+    ((IUnk *)col)->v->Release(col);
+    ((IUnk *)en)->v->Release(en);
+    return n ? 0 : 1;
+}
+
+__declspec(dllimport) MMRESULT WINAPI waveOutSetVolume(HANDLE, DWORD);
+__declspec(dllimport) MMRESULT WINAPI waveOutGetVolume(HANDLE, DWORD *);
+
+/* waveOutSetVolume on the device ID dev=NAME chooses (a quarter, left
+ * louder), then every device ID's and the mapper's volume */
+static int wovolume(void)
+{
+    UINT id = wave_id(FALSE);
+    if (id == (UINT)-2 || id == (UINT)-1) { if (id == (UINT)-1) printf("FAIL wovolume needs dev=NAME\n"); return 1; }
+    MMRESULT r = waveOutSetVolume((HANDLE)(UINT_PTR)id, 0x40004000);
+    if (r) { printf("FAIL waveOutSetVolume(%u): %u\n", id, r); return 1; }
+    UINT n = waveOutGetNumDevs();
+    int bad = 0;
+    for (UINT i = 0; i <= n; i++) {
+        UINT d = i < n ? i : (UINT)-1;
+        DWORD v = 0;
+        r = waveOutGetVolume((HANDLE)(UINT_PTR)d, &v);
+        WAVEOUTCAPSW c;
+        waveOutGetDevCapsW(d, &c, sizeof(c));
+        BOOL want = d == id;
+        printf("  %s%u \"%ls\": %08lx\n", i < n ? "" : "mapper ", i < n ? i : 0, c.szPname, v);
+        if (i < n && (r || (want ? v != 0x40004000 : v == 0x40004000))) { printf("FAIL device %u\n", i); bad = 1; }
+    }
+    if (!bad) printf("waveOut volume set on device %u only\n", id);
+    return bad;
+}
+
 /* -----------------------------------------------------------------------
  * DirectSound (declared here: the userland headers have no dsound.h)
  * ----------------------------------------------------------------------- */
@@ -692,6 +785,53 @@ static const GUID IID_IDirectSoundNotify = { 0xB0210783, 0x89CD, 0x11D0, { 0xAF,
 static const GUID CLSID_DirectSoundCapture8 = { 0xE4BCAC13, 0x7F99, 0x4908, { 0x9A, 0x8E, 0x74, 0xE3, 0xBF, 0x24, 0xB6, 0xE1 } };
 static const GUID IID_IDirectSoundCapture = { 0xB0210781, 0x89CD, 0x11D0, { 0xAF, 0x08, 0x00, 0xA0, 0xC9, 0x25, 0xCD, 0x16 } };
 __declspec(dllimport) HRESULT WINAPI DirectSoundCreate8(const GUID *, void **, void *);
+typedef BOOL (CALLBACK *DSENUMW)(GUID *, LPCWSTR, LPCWSTR, void *);
+__declspec(dllimport) HRESULT WINAPI DirectSoundEnumerateW(DSENUMW, void *);
+__declspec(dllimport) HRESULT WINAPI DirectSoundCaptureEnumerateW(DSENUMW, void *);
+
+/* DirectSound's devices: print each (@ctx NULL), or find the one whose
+ * name holds dev=NAME (@ctx a struct ds_find) */
+struct ds_find { GUID guid; BOOL found; };
+static BOOL CALLBACK ds_enum_cb(GUID *g, LPCWSTR desc, LPCWSTR module, void *ctx)
+{
+    struct ds_find *f = ctx;
+    if (!f) {
+        if (g) printf("  {%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x} \"%ls\" %ls\n", g->Data1, g->Data2, g->Data3,
+                      g->Data4[0], g->Data4[1], g->Data4[2], g->Data4[3], g->Data4[4], g->Data4[5], g->Data4[6],
+                      g->Data4[7], desc, module);
+        else printf("  (null) \"%ls\"\n", desc);
+        return TRUE;
+    }
+    WCHAR want[64];
+    MultiByteToWideChar(CP_ACP, 0, g_dev, -1, want, 64);
+    if (!g || !wcsstr(desc, want)) return TRUE;
+    printf("dsound device: \"%ls\"\n", desc);
+    f->guid = *g;
+    f->found = TRUE;
+    return FALSE;
+}
+
+static int dsenum(void)
+{
+    printf("DirectSoundEnumerate:\n");
+    HRESULT a = DirectSoundEnumerateW(ds_enum_cb, 0);
+    printf("DirectSoundCaptureEnumerate:\n");
+    HRESULT b = DirectSoundCaptureEnumerateW(ds_enum_cb, 0);
+    return FAILED(a) || FAILED(b);
+}
+
+/* The device GUID for dev=NAME (NULL without it: the default); FALSE (said
+ * why) if no device has that name */
+static BOOL ds_device(BOOL capture, const GUID **g, struct ds_find *f)
+{
+    *g = 0;
+    if (!g_dev) return TRUE;
+    memset(f, 0, sizeof(*f));
+    (capture ? DirectSoundCaptureEnumerateW : DirectSoundEnumerateW)(ds_enum_cb, f);
+    if (!f->found) { printf("FAIL no DirectSound%s device named like \"%s\"\n", capture ? "Capture" : "", g_dev); return FALSE; }
+    *g = &f->guid;
+    return TRUE;
+}
 
 /* Write @bytes of the sine (16-bit mono, phase @*n samples) at @off of @buf */
 static void ds_fill(void *buf, DWORD off, DWORD bytes, double hz, DWORD rate, DWORD *n, DWORD total)
@@ -711,7 +851,10 @@ static void ds_fill(void *buf, DWORD off, DWORD bytes, double hz, DWORD rate, DW
 static int dsound(double hz, DWORD ms)
 {
     void *ds = 0, *buf = 0, *nt = 0, *st = 0;
-    HRESULT hr = DirectSoundCreate8(0, &ds, 0);
+    struct ds_find f0;
+    const GUID *dev;
+    if (!ds_device(FALSE, &dev, &f0)) return 1;
+    HRESULT hr = DirectSoundCreate8(dev, &ds, 0);
     if (FAILED(hr)) { printf("FAIL DirectSoundCreate8: %08lx\n", hr); return 1; }
     CALL(ds, DSVtbl, SetCooperativeLevel, GetDesktopWindow(), 2 /* DSSCL_PRIORITY */);
     WAVEFORMATEX f = { 1, 1, 22050, 44100, 2, 16, 0 };
@@ -779,7 +922,10 @@ static int dscapture(const char *path, DWORD ms)
     CoInitialize(0);
     HRESULT hr = CoCreateInstance(&CLSID_DirectSoundCapture8, 0, CLSCTX_INPROC_SERVER, &IID_IDirectSoundCapture, &dc);
     if (FAILED(hr)) { printf("FAIL CoCreateInstance(DirectSoundCapture8): %08lx\n", hr); return 1; }
-    hr = CALL(dc, DSCVtbl, Initialize, 0);
+    struct ds_find f0;
+    const GUID *dev;
+    if (!ds_device(TRUE, &dev, &f0)) return 1;
+    hr = CALL(dc, DSCVtbl, Initialize, dev);
     if (FAILED(hr)) { printf("FAIL Initialize: %08lx\n", hr); return 1; }
     WAVEFORMATEX f = { 1, 1, 44100, 88200, 2, 16, 0 };
     DSCBUFFERDESC d = { sizeof(d), 0, f.nAvgBytesPerSec, 0, &f };
@@ -844,6 +990,12 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "endpoints")) return endpoints();
     if (!strcmp(cmd, "default") && argc > 3 && (!strcmp(argv[2], "out") || !strcmp(argv[2], "in")))
         return set_default(!strcmp(argv[2], "in"), argv[3]);
+    if (!strcmp(cmd, "level") && argc > 2 && (!strcmp(argv[2], "out") || !strcmp(argv[2], "in"))) {
+        CoInitializeEx(0, COINIT_MULTITHREADED);
+        return level(!strcmp(argv[2], "in"), argc > 3 ? atof(argv[3]) : -1);
+    }
+    if (!strcmp(cmd, "wovolume")) return wovolume();
+    if (!strcmp(cmd, "dsenum")) return dsenum();
     if (!strcmp(cmd, "dsound")) return dsound(hz, ms);
     if (!strcmp(cmd, "dscapture") && argc > 2) return dscapture(argv[2], argc > 3 ? (DWORD)atoi(argv[3]) : 2000);
     if (!strcmp(cmd, "both")) {
@@ -880,6 +1032,7 @@ int main(int argc, char **argv)
     }
     printf("usage: soundtest info | tone [HZ] [MS] | float [HZ] [MS] | play FILE | ding | wasapi [HZ] [MS] | beep [HZ] [MS]\n"
            "       | record FILE [MS] | capture FILE [MS] | volume | dsound [HZ] [MS] | dscapture FILE [MS]\n"
-           "       | endpoints | default out|in NAME   (dev=NAME: use that device)\n");
+           "       | endpoints | default out|in NAME | level out|in [LEVEL] | wovolume | dsenum\n"
+           "       (dev=NAME: use that device)\n");
     return 1;
 }

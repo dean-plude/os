@@ -5,7 +5,8 @@
 # hands playback back to speaker 2.  Each tone must be in its speaker's WAV
 # (isochronous OUT on all three controllers; QEMU has no isochronous IN
 # device), and nothing else: a speaker another one took over from goes
-# quiet once what was mixed for it has played.
+# quiet once what was mixed for it has played.  (020 goes on with speakers
+# 1 and 2.)
 import re
 import time
 
@@ -36,7 +37,8 @@ def unplug(n):
 
 
 TESTS = [
-    Test('usbaudio xhci', 'soundtest tone 440 1000', [r'played \d+ samples'], check=tones(440, wav='usb1.wav', only=True),
+    # (usb1.wav is checked by 020, which plays on speaker 1 again)
+    Test('usbaudio xhci', 'soundtest tone 440 1000', [r'played \d+ samples'],
          boot_expect=[r'\[USB\] [^\n]*: audio output, 48 kHz 16-bit stereo', r'\[AUDIO\] Playing on Speakers \(']),
     Test('usbaudio ohci', 'soundtest tone 550 1000', [r'played \d+ samples'], before=plug(2, 'ohci.0', 'OHCI'),
          check=tones(550, wav='usb2.wav')),

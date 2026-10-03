@@ -88,8 +88,10 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 - **Desktop**: a Windows 11-style shell with a Start menu (live search over
   apps, settings and files), dock, tray, snapping and resizing windows,
   Alt+Tab, right-click menus, three wallpapers.
-- **Apps**: Terminal, File Explorer, Notepad, Settings, Calendar, Photos,
-  the **App Store** and **Install NovaOS** (Setup).
+- **Apps**: Terminal, File Explorer, Notepad, Settings (its Sound page
+  chooses the output and input and sets each device's volume, kept across
+  restarts), Calendar, Photos, the **App Store** and **Install NovaOS**
+  (Setup).
 - **Web browser**: NetSurf 3.11, built from source as a Windows program,
   with HTTPS (TLS 1.3/1.2), JavaScript (pages a script changes are laid
   out again) and SVG (image files and `<svg>` written inline in a page),
@@ -418,8 +420,9 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `bmpcurtest`, `boosttest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `crtthreads`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `dpitest`, `errnotest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `msitest`, `nlstest`, `nstest`, `pipetest`, `posixtest`, `powertest`, `prioritytest`, `proctest`, `qttest`, `rttest`, `savetest`, `sectest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `threads`, `touchtest`, `usptest`, `wintabtest`<!-- END generated:selftest-programs -->.  `soundtest`
-  plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
-  through `waveIn` and WASAPI capture;
+  plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, records
+  through `waveIn` and WASAPI capture, and lists the sound devices,
+  chooses the default and sets each device's own volume;
   `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`
   feeds a WAV to its microphone, and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest

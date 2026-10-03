@@ -25,9 +25,18 @@
  * stream records from the default or the input its program chose.  While
  * any running capture stream records from an input, that input is
  * recording into its ring, and every tick the new frames are copied into
- * each of those streams (the oldest dropped when a stream is full).  Each
- * direction has a master volume and mute (the endpoint volume programs
- * set through IAudioEndpointVolume).
+ * each of those streams (the oldest dropped when a stream is full).
+ *
+ * Each device has its own volume and mute (the endpoint volume programs
+ * set through IAudioEndpointVolume, and Settings' sliders), applied to
+ * everything mixed for it or recorded from it.  The choice of default and
+ * the volumes are kept in the registry (HKLM\SOFTWARE\NovaOS\Audio, on
+ * drive C:), each device by its key (a USB device's vendor, product and
+ * port; the sound card's "HDA"), so they survive a restart and a device
+ * plugged in again: a device keeps its level, and while the chosen default
+ * is attached a device plugged in after it does not take over (it does
+ * when the chosen one is absent, so an unplugged favourite falls back to
+ * the newest device, as before).
  */
 
 #include "audio.h"
@@ -38,6 +47,7 @@
 #include "../ke/scheduler.h"
 #include "../ke/smp.h"
 #include "../ke/spinlock.h"
+#include "../um/um.h"
 
 #define MAX_STREAMS   32
 #define FRAME         4                               /* bytes: s16 x 2 */
@@ -61,12 +71,14 @@ typedef struct {
 #define MAX_OUTPUTS   4
 
 typedef struct { UINT32 l, r; bool mute; } Master;
+#define FULL ((Master){ 65536, 65536, false })
 
 /* An attached output: where its device is, as an absolute byte count,
  * how far ahead of that its ring has been mixed, and silenced */
 typedef struct {
     const AudioOutput *o;
     UINT32 id, rank;                                  /* (rank: when it was attached or chosen; the highest is the default) */
+    Master vol;                                       /* its endpoint volume */
     UINT32 last_pos;
     UINT64 base;                                      /* absolute byte count at the ring's start */
     UINT64 write;                                     /* mixed up to here */
@@ -77,6 +89,7 @@ typedef struct {
 typedef struct {
     const AudioInput *i;
     UINT32 id, rank;
+    Master vol;
     UINT32 cpos;
     bool   run;
 } In;
@@ -90,8 +103,15 @@ static struct {
     int        nins;
     UINT32     next_id, next_rank;
     INT32      acc[CHUNK_FRAMES * 2];
-    Master     master[2];                             /* render, capture */
-} g = { .lock = KSPINLOCK_INIT, .next_id = 1, .master = { { 65536, 65536, false }, { 65536, 65536, false } } };
+    char       pref[2][96];                           /* the key of the default chosen (render, capture); "" none */
+    char       pref_name[2][96];                      /* and its name then */
+    bool       reg;                                   /* the registry is up (AudioLoadSettings) */
+} g = { .lock = KSPINLOCK_INIT, .next_id = 1 };
+
+/* What the choices are kept under, and a device's identity there */
+#define REG_AUDIO "Machine\\SOFTWARE\\NovaOS\\Audio\\"
+static const char *okey(const AudioOutput *o) { return o->key ? o->key : o->name; }
+static const char *ikey(const AudioInput *i)  { return i->key ? i->key : i->name; }
 
 /* Output @k's device position as an absolute byte count (lock held) */
 static UINT64 hw_abs(Out *t)
@@ -144,7 +164,7 @@ static void mix_chunk(int k, UINT64 at, UINT32 n)
 {
     Out *t = &g.outs[k];
     memset(g.acc, 0, n * 2 * sizeof(INT32));
-    Master *mr = &g.master[0];
+    Master *mr = &t->vol;
     for (int i = 0; i < MAX_STREAMS; i++) {
         Stream *s = &g.s[i];
         if (!s->used || s->capture || !s->running || !s->queued || out_of(s) != k) continue;
@@ -225,11 +245,11 @@ static void capture_sync(void)
 static void pull_capture(void)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
-    Master *mc = &g.master[1];
     for (int k = 0; k < g.nins; k++) {
         In *t = &g.ins[k];
         const AudioInput *in = t->i;
         if (!t->run) continue;
+        Master *mc = &t->vol;
         UINT32 pos = in->position(in->ctx);
         while (t->cpos != pos) {
             UINT32 end = pos > t->cpos ? pos : in->bytes;         /* up to the wrap first */
@@ -270,17 +290,67 @@ static void mixer_thread(void *arg)
     }
 }
 
+/* A device's saved volume (full when none is saved, or before the
+ * registry is up) */
+static Master saved_vol(bool capture, const char *key)
+{
+    Master m = FULL;
+    char path[200];
+    UINT32 v;
+    if (!g.reg) return m;
+    ksnprintf(path, sizeof(path), REG_AUDIO "%s\\%s", capture ? "Capture" : "Render", key);
+    if (um_registry_get_dword(path, "VolumeLeft", &v))  m.l = v > 65536 ? 65536 : v;
+    if (um_registry_get_dword(path, "VolumeRight", &v)) m.r = v > 65536 ? 65536 : v;
+    if (um_registry_get_dword(path, "Mute", &v))        m.mute = v != 0;
+    return m;
+}
+
+static void save_vol(bool capture, const char *key, Master m)
+{
+    char path[200];
+    ksnprintf(path, sizeof(path), REG_AUDIO "%s\\%s", capture ? "Capture" : "Render", key);
+    um_registry_set_dword(path, "VolumeLeft", m.l);
+    um_registry_set_dword(path, "VolumeRight", m.r);
+    um_registry_set_dword(path, "Mute", m.mute);
+}
+
+/* Whether the device with @key and @name is the default chosen for its
+ * direction (by its key, or else by its name) */
+static bool preferred(bool capture, const char *key, const char *name)
+{
+    return g.pref[capture][0] && (!strcmp(key, g.pref[capture]) || !strcmp(name, g.pref_name[capture]));
+}
+
+/* The rank of a device of @capture attached now (lock held): the newest
+ * becomes the default, unless the default chosen in Settings is attached
+ * and this is another device, which then goes just below it */
+static UINT32 attach_rank(bool capture, const char *key, const char *name)
+{
+    int d = capture ? def_in() : def_out();
+    if (d < 0 || preferred(capture, key, name)) return ++g.next_rank;
+    const char *dk = capture ? ikey(g.ins[d].i) : okey(g.outs[d].o);
+    const char *dn = capture ? g.ins[d].i->name : g.outs[d].o->name;
+    if (!preferred(capture, dk, dn)) return ++g.next_rank;
+    UINT32 r = ++g.next_rank;
+    if (capture) g.ins[d].rank = ++g.next_rank; else g.outs[d].rank = ++g.next_rank;
+    return r;
+}
+
 bool AudioOutputAttach(const AudioOutput *o)
 {
+    Master vol = saved_vol(false, okey(o));
     IrqState st = spin_lock_irqsave(&g.lock);
-    bool ok = g.nouts < MAX_OUTPUTS;
+    bool ok = g.nouts < MAX_OUTPUTS, now_default = false;
     if (ok) {
+        UINT32 rank = attach_rank(false, okey(o), o->name);
         Out *t = &g.outs[g.nouts++];
         UINT32 pos = o->position(o->ctx);
-        *t = (Out){ .o = o, .id = g.next_id++, .rank = ++g.next_rank, .last_pos = pos, .write = pos, .clear = pos };
+        *t = (Out){ .o = o, .id = g.next_id++, .rank = rank, .vol = vol, .last_pos = pos, .write = pos, .clear = pos };
+        now_default = def_out() == g.nouts - 1;
     }
     spin_unlock_irqrestore(&g.lock, st);
-    if (ok) kprintf("[AUDIO] Playing on %s\n", o->name);
+    if (ok && now_default) kprintf("[AUDIO] Playing on %s\n", o->name);
+    else if (ok) kprintf("[AUDIO] Attached %s (the chosen default stays)\n", o->name);
     return ok;
 }
 
@@ -311,14 +381,18 @@ void AudioOutputDetach(const AudioOutput *o)
 
 bool AudioInputAttach(const AudioInput *i)
 {
+    Master vol = saved_vol(true, ikey(i));
     IrqState st = spin_lock_irqsave(&g.lock);
-    bool ok = g.nins < MAX_OUTPUTS;
+    bool ok = g.nins < MAX_OUTPUTS, now_default = false;
     if (ok) {
-        g.ins[g.nins++] = (In){ .i = i, .id = g.next_id++, .rank = ++g.next_rank };
+        UINT32 rank = attach_rank(true, ikey(i), i->name);
+        g.ins[g.nins++] = (In){ .i = i, .id = g.next_id++, .rank = rank, .vol = vol };
+        now_default = def_in() == g.nins - 1;
         capture_sync();                               /* (default streams move to it) */
     }
     spin_unlock_irqrestore(&g.lock, st);
-    if (ok) kprintf("[AUDIO] Recording from %s\n", i->name);
+    if (ok && now_default) kprintf("[AUDIO] Recording from %s\n", i->name);
+    else if (ok) kprintf("[AUDIO] Attached %s (the chosen default stays)\n", i->name);
     return ok;
 }
 
@@ -345,8 +419,11 @@ int AudioDevices(bool capture, AudioDevice *out, int max)
     IrqState st = spin_lock_irqsave(&g.lock);
     int n = capture ? g.nins : g.nouts, d = capture ? def_in() : def_out();
     for (int k = 0; k < n && k < max; k++) {
+        Master *m = capture ? &g.ins[k].vol : &g.outs[k].vol;
         out[k].id = capture ? g.ins[k].id : g.outs[k].id;
         out[k].is_default = k == d;
+        out[k].volume = m->l > m->r ? m->l : m->r;
+        out[k].mute = m->mute;
         strncpy(out[k].name, capture ? g.ins[k].i->name : g.outs[k].o->name, sizeof(out[k].name) - 1);
         out[k].name[sizeof(out[k].name) - 1] = 0;
     }
@@ -358,12 +435,13 @@ bool AudioSetDefault(bool capture, UINT32 id)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
     bool found = false;
-    const char *name = NULL;
+    const char *name = NULL, *key = NULL;
     if (capture) {
         for (int k = 0; k < g.nins && !found; k++) {
             if (g.ins[k].id != id) continue;
             g.ins[k].rank = ++g.next_rank;
             name = g.ins[k].i->name;
+            key = ikey(g.ins[k].i);
             found = true;
         }
         if (found) capture_sync();
@@ -372,19 +450,79 @@ bool AudioSetDefault(bool capture, UINT32 id)
             if (g.outs[k].id != id) continue;
             g.outs[k].rank = ++g.next_rank;
             name = g.outs[k].o->name;
+            key = okey(g.outs[k].o);
             found = true;
         }
     }
+    char pk[96], pn[96];
+    if (found) {
+        strncpy(g.pref[capture], key, sizeof(g.pref[0]) - 1);
+        strncpy(g.pref_name[capture], name, sizeof(g.pref_name[0]) - 1);
+        memcpy(pk, g.pref[capture], sizeof(pk));
+        memcpy(pn, g.pref_name[capture], sizeof(pn));
+    }
+    bool reg = g.reg;
     spin_unlock_irqrestore(&g.lock, st);
-    if (found) kprintf(capture ? "[AUDIO] Recording from %s (chosen)\n" : "[AUDIO] Playing on %s (chosen)\n", name);
-    return found;
+    if (!found) return false;
+    kprintf(capture ? "[AUDIO] Recording from %s (chosen)\n" : "[AUDIO] Playing on %s (chosen)\n", pn);
+    if (reg) {
+        um_registry_set_sz(capture ? REG_AUDIO "Capture" : REG_AUDIO "Render", "Default", pk);
+        um_registry_set_sz(capture ? REG_AUDIO "Capture" : REG_AUDIO "Render", "DefaultName", pn);
+    }
+    return true;
+}
+
+void AudioLoadSettings(void)
+{
+    char pk[2][96], pn[2][96];
+    for (int c = 0; c < 2; c++) {
+        const char *path = c ? REG_AUDIO "Capture" : REG_AUDIO "Render";
+        if (!um_registry_get_sz(path, "Default", pk[c], sizeof(pk[c]))) pk[c][0] = 0;
+        if (!um_registry_get_sz(path, "DefaultName", pn[c], sizeof(pn[c]))) pn[c][0] = 0;
+    }
+    /* the devices attached before the registry was up (the sound card's):
+     * their saved volumes */
+    struct { const void *dev; bool capture; Master vol; } got[MAX_OUTPUTS * 2];
+    const void *devs[MAX_OUTPUTS * 2];
+    bool caps[MAX_OUTPUTS * 2];
+    int n = 0;
+    IrqState st = spin_lock_irqsave(&g.lock);
+    g.reg = true;
+    for (int k = 0; k < g.nouts; k++) { devs[n] = g.outs[k].o; caps[n++] = false; }
+    for (int k = 0; k < g.nins; k++)  { devs[n] = g.ins[k].i;  caps[n++] = true; }
+    spin_unlock_irqrestore(&g.lock, st);
+    for (int k = 0; k < n; k++) {
+        got[k].dev = devs[k];
+        got[k].capture = caps[k];
+        got[k].vol = saved_vol(caps[k], caps[k] ? ikey((const AudioInput *)devs[k]) : okey((const AudioOutput *)devs[k]));
+    }
+    const char *chosen[2] = { NULL, NULL };
+    st = spin_lock_irqsave(&g.lock);
+    for (int c = 0; c < 2; c++) {
+        memcpy(g.pref[c], pk[c], sizeof(g.pref[c]));
+        memcpy(g.pref_name[c], pn[c], sizeof(g.pref_name[c]));
+    }
+    for (int j = 0; j < n; j++) {
+        for (int k = 0; k < g.nouts; k++)
+            if (!got[j].capture && g.outs[k].o == got[j].dev) g.outs[k].vol = got[j].vol;
+        for (int k = 0; k < g.nins; k++)
+            if (got[j].capture && g.ins[k].i == got[j].dev) g.ins[k].vol = got[j].vol;
+    }
+    for (int k = 0; k < g.nouts; k++)
+        if (preferred(false, okey(g.outs[k].o), g.outs[k].o->name)) { g.outs[k].rank = ++g.next_rank; chosen[0] = g.outs[k].o->name; }
+    for (int k = 0; k < g.nins; k++)
+        if (preferred(true, ikey(g.ins[k].i), g.ins[k].i->name)) { g.ins[k].rank = ++g.next_rank; chosen[1] = g.ins[k].i->name; }
+    capture_sync();
+    spin_unlock_irqrestore(&g.lock, st);
+    if (pk[0][0]) kprintf("[AUDIO] Saved default output: %s%s\n", pn[0][0] ? pn[0] : pk[0], chosen[0] ? "" : " (not attached)");
+    if (pk[1][0]) kprintf("[AUDIO] Saved default input: %s%s\n", pn[1][0] ? pn[1] : pk[1], chosen[1] ? "" : " (not attached)");
 }
 
 static UINT32 hda_position(void *ctx) { (void)ctx; return HdaPosition(); }
-static AudioOutput g_hda_out = { .position = hda_position };
+static AudioOutput g_hda_out = { .key = "HDA", .position = hda_position };
 static UINT32 hda_cposition(void *ctx) { (void)ctx; return HdaCapturePosition(); }
 static void hda_crun(void *ctx, bool on) { (void)ctx; HdaCapture(on); }
-static AudioInput g_hda_in = { .position = hda_cposition, .run = hda_crun };
+static AudioInput g_hda_in = { .key = "HDA", .position = hda_cposition, .run = hda_crun };
 static char g_hda_in_name[96];
 
 bool AudioInit(void)
@@ -484,22 +622,47 @@ UINT32 AudioRead(int i, INT16 *frames, UINT32 n)
     return done;
 }
 
-void AudioSetMaster(int capture, UINT32 left, UINT32 right, bool mute)
+/* Device @id of @capture (lock held): its volume, and its key; NULL if
+ * there is no such device (0: the default) */
+static Master *vol_of(bool capture, UINT32 id, const char **key)
 {
-    IrqState st = spin_lock_irqsave(&g.lock);
-    Master *m = &g.master[capture ? 1 : 0];
-    m->l = left > 65536 ? 65536 : left;
-    m->r = right > 65536 ? 65536 : right;
-    m->mute = mute;
-    spin_unlock_irqrestore(&g.lock, st);
+    int n = capture ? g.nins : g.nouts, d = capture ? def_in() : def_out();
+    for (int k = 0; k < n; k++) {
+        if (id ? (capture ? g.ins[k].id : g.outs[k].id) != id : k != d) continue;
+        *key = capture ? ikey(g.ins[k].i) : okey(g.outs[k].o);
+        return capture ? &g.ins[k].vol : &g.outs[k].vol;
+    }
+    return NULL;
 }
 
-void AudioGetMaster(int capture, UINT32 *left, UINT32 *right, bool *mute)
+bool AudioSetMaster(int capture, UINT32 id, UINT32 left, UINT32 right, bool mute)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
-    Master *m = &g.master[capture ? 1 : 0];
-    *left = m->l; *right = m->r; *mute = m->mute;
+    const char *k = NULL;
+    Master *m = vol_of(capture != 0, id, &k), now = FULL;
+    char key[96];
+    if (m) {
+        m->l = left > 65536 ? 65536 : left;
+        m->r = right > 65536 ? 65536 : right;
+        m->mute = mute;
+        now = *m;
+        strncpy(key, k, sizeof(key) - 1);
+        key[sizeof(key) - 1] = 0;
+    }
+    bool reg = g.reg;
     spin_unlock_irqrestore(&g.lock, st);
+    if (m && reg) save_vol(capture != 0, key, now);
+    return m != NULL;
+}
+
+bool AudioGetMaster(int capture, UINT32 id, UINT32 *left, UINT32 *right, bool *mute)
+{
+    IrqState st = spin_lock_irqsave(&g.lock);
+    const char *k;
+    Master *m = vol_of(capture != 0, id, &k), v = m ? *m : FULL;
+    spin_unlock_irqrestore(&g.lock, st);
+    *left = v.l; *right = v.r; *mute = v.mute;
+    return m != NULL;
 }
 
 UINT32 AudioWrite(int i, const INT16 *frames, UINT32 n)

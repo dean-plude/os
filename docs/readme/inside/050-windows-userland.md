@@ -17,9 +17,11 @@
   `comctl32`, `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
   type libraries), `advapi32`, `ws2_32`, `oleacc`,
   `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
-  WASAPI playback and capture, endpoint volume, a device ID or endpoint
-  for each sound device), `dsound` (DirectSound),
-  `xaudio2_7`/`xaudio2_8`/`xaudio2_9` and `x3daudio1_7` (on FAudio), `msi`
+  WASAPI playback and capture, a device ID or endpoint for each sound
+  device, each with its own endpoint volume), `dsound` (DirectSound, with
+  every device enumerated and openable by its GUID),
+  `xaudio2_7`/`xaudio2_8`/`xaudio2_9` and `x3daudio1_7` (on FAudio; every
+  output listed and openable by its device ID), `msi`
   (with `msiscript` running JScript and VBScript custom actions on the
   ISC-licensed mujs),
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),

@@ -244,7 +244,9 @@ USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
 -device qemu-xhci -device usb-audio,audiodev=usbsnd` (or on `pci-ohci` or
 `piix3-usb-uhci`; QEMU's `usb-audio` is full speed only, so not on a
 plain `usb-ehci`).  The newest sound output and input are the defaults
-(Settings' Sound page chooses others, and programs can pick a device).  QEMU has no USB microphone and no high-speed audio device:
+(Settings' Sound page chooses others and sets each device's volume, and
+programs can pick a device); the chosen default and the volumes are kept
+in the registry on drive C:, so they hold after a restart.  QEMU has no USB microphone and no high-speed audio device:
 `tools/usbredirpeer.py` is one (a USB Audio Class 1 headset or microphone
 behind a `usb-redir` device, or with `--uac2` a USB Audio Class 2.0 one:
 a programmable clock behind a clock selector, 24-bit samples and, at
@@ -428,7 +430,10 @@ from boot; the test plugs the second into an OHCI and the third into a
 UHCI controller while NovaOS runs, plays `soundtest tone` after each, then
 unplugs the third and plays again, which the second must hear.  Each
 speaker's WAV must hold its tones and nothing else: a speaker another one
-took over from has to go quiet.  A third boot has no HD Audio card and a
+took over from has to go quiet.  Then the first speaker is made the
+default and set to half volume (the second stays at full), and after
+`shutdown /r` it must be the default again, although both attach at
+boot, and still play at half volume.  A third boot has no HD Audio card and a
 high-speed USB headset on an EHCI controller (`tools/usbredirpeer.py`
 behind a `usb-redir` device; its speaker writes `headset.wav`, its
 microphone hears 523 Hz): `soundtest tone` must sound in `headset.wav`
@@ -450,7 +455,15 @@ pitch.  Last for sound, a full-speed USB speaker (`spk.wav`) for the
 device picker: with it the default, `soundtest ... dev=NAME` must play
 on (or record from) the named device through `waveOut`, `waveIn` and
 WASAPI, and `soundtest default out|in NAME` (what Settings' Sound page
-does) must move the default.  Last, one
+does) must move the default.  Then each device's own volume (`soundtest
+level`: a quarter on the surround headset leaves the others at full, and
+its tone must sound a quarter as loud; `soundtest wovolume`: a program's
+`waveOutSetVolume` on one device ID), DirectSound's device list
+(`soundtest dsenum`) and playing and recording on a device named by its
+GUID, XAudio2's device list and a mastering voice on a named device
+(`xa2test devices`), and, after `shutdown /r`, the surround headset
+still the default output (although the speaker attaches again too) and
+still at a quarter.  Last, one
 `virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
 connects a monitor to the second and third outputs and disconnects them
 again while NovaOS runs, through a VNC server QEMU has on each (an RFB
