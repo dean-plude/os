@@ -77,15 +77,18 @@ class App:
     @processes: a windowed program of many processes of one executable
     (Firefox: a launcher that exits once the browser is up, child
     processes the browser ends itself), so only a crash fails it before
-    the screenshot."""
+    the screenshot.  @runtimes: names of App Store runtimes (such as
+    "Mesa 3D") whose downloads are put in C:\\Downloads the same way, for
+    the program's tests to install first with Test(store=NAME)."""
     def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=(),
                  gui=False, net=False, interact=None, https=False, store=None, processes=False,
-                 mic=False, sound=None):
+                 mic=False, sound=None, runtimes=()):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
         self.unpack, self.strip, self.extra = unpack, strip, list(extra)
         self.gui, self.net, self.interact = gui, net, interact
         self.https, self.store, self.ca, self.processes = https, store, None, processes
         self.mic, self.sound = mic, sound
+        self.runtimes = list(runtimes)
 
 
 A = r'C:\Apps'
@@ -151,14 +154,30 @@ def stage(app, archive, dest):
                 shutil.copyfileobj(src, out)
 
 
+def catalog_entry(name):
+    """(download URL, file name) of @name in the App Store's catalog"""
+    m = re.search(r'\{ "' + re.escape(name) + r'", "[^"]*", "[^"]*",\s*CAT_\w+, (GH )?"([^"]+)", "([^"]+)"',
+                  open(STORE_C).read())
+    if not m:
+        raise RuntimeError(f'the App Store has no "{name}"')
+    return ('https://github.com/' if m.group(1) else '') + m.group(2), m.group(3)
+
+
 def catalog_file(app):
     """The file name the App Store saves @app.store's download as; its
     catalog entry must have @app.url as the download"""
-    m = re.search(r'\{ "' + re.escape(app.store) + r'", "[^"]*", "[^"]*",\s*CAT_\w+, (GH )?"([^"]+)", "([^"]+)"',
-                  open(STORE_C).read())
-    if not m or ('https://github.com/' if m.group(1) else '') + m.group(2) != app.url:
+    url, file = catalog_entry(app.store)
+    if url != app.url:
         raise RuntimeError(f'the App Store has no "{app.store}" downloading {app.url}')
-    return m.group(3)
+    return file
+
+
+def stage_7zip(work, sevenzip):
+    """7-Zip in Programs\\7-Zip, which the Store unpacks archives with"""
+    programs = os.path.join(work, 'Programs')
+    if not os.path.exists(os.path.join(programs, '7-Zip')):
+        subprocess.run(['7z', 'x', '-y', '-o' + os.path.join(programs, '7-Zip'), sevenzip],
+                       check=True, stdout=subprocess.DEVNULL)
 
 
 def stage_store(app, files, work):
@@ -167,11 +186,20 @@ def stage_store(app, files, work):
     downloads, programs = os.path.join(work, 'Downloads'), os.path.join(work, 'Programs')
     os.makedirs(downloads, exist_ok=True)
     shutil.copy(files[0], os.path.join(downloads, catalog_file(app)))
-    if not os.path.exists(os.path.join(programs, '7-Zip')):
-        subprocess.run(['7z', 'x', '-y', '-o' + os.path.join(programs, '7-Zip'), files[-1]],
-                       check=True, stdout=subprocess.DEVNULL)
+    stage_7zip(work, files[-1])
     if callable(app.unpack):
         app.unpack(app, files[:-1], programs)
+
+
+def stage_runtimes(app, cache, work):
+    """The downloads of @app.runtimes in Downloads and 7-Zip, so the Store
+    can install them without a network"""
+    downloads = os.path.join(work, 'Downloads')
+    os.makedirs(downloads, exist_ok=True)
+    for name in app.runtimes:
+        url, file = catalog_entry(name)
+        shutil.copy(fetch(url, cache), os.path.join(downloads, file))
+    stage_7zip(work, fetch(SEVENZIP, cache))
 
 
 class HttpsServer:
@@ -370,6 +398,8 @@ def main():
     for app in apps:
         app.ca = https and https.ca
         try:
+            if app.runtimes:
+                stage_runtimes(app, a.cache, work)
             if app.store:
                 stage_store(app, [fetch(u, a.cache) for u in [app.url] + app.extra + [SEVENZIP]], work)
             elif callable(app.unpack):
@@ -399,7 +429,7 @@ def main():
                               if os.path.isdir(os.path.join(work, d))]
     t_boot = time.time()
     try:
-        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=4096, data_mb=2048,
+        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=4096, data_mb=3072,
                     extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [],
                     net=echo is not None or https is not None, rec=rec, wav=wav)
     except RuntimeError as e:
