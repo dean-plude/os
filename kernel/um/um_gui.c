@@ -182,15 +182,16 @@ static void enqueue_locked(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, i
 }
 
 /* Wake the threads waiting for messages; the one @tid (0: all of them)
- * gets NT's boost for @msg: +6 for keyboard and mouse input (the thread
- * with the focus or the pointer: the foreground), +2 for other window
- * messages (win32k's windowing boost) */
+ * gets win32k's windowing boost, +2, for every message, keyboard and
+ * mouse input included.  (NT's +6 for keyboard and mouse is the I/O
+ * increment a driver gives the thread reading the device: the device
+ * poll thread here.  Given to a window's thread, it lifted a foreground
+ * program's NORMAL thread to 15 with the foreground boost on top, level
+ * with the TIME_CRITICAL threads that record and play sound.) */
 static void gui_wake(UINT32 tid, UINT32 msg)
 {
-    int boost = msg >= WM_KEYFIRST && msg <= WM_KEYLAST ? BOOST_KEYBOARD
-              : (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) || msg == WM_MOUSELEAVE || msg == WM_NOVA_TOUCH ? BOOST_MOUSE
-              : BOOST_GUI;
-    waitq_wake_boost(&g_guiq, boost, tid);
+    (void)msg;
+    waitq_wake_boost(&g_guiq, BOOST_GUI, tid);
 }
 
 static void enqueue(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, int y)

@@ -10,6 +10,7 @@
  */
 
 #include <windows.h>
+#include <avrt.h>
 #include <winternl.h>
 #include "audioconv.h"
 
@@ -168,6 +169,8 @@ static void wo_retire(WaveOut *w)
 static DWORD WINAPI wo_thread(LPVOID p)
 {
     WaveOut *w = p;
+    DWORD mm = 0;
+    AvSetMmThreadCharacteristicsW(L"Playback", &mm);   /* (MMCSS: above any busy or boosted program thread) */
     while (!w->quit) {
         EnterCriticalSection(&w->lock);
         if (!w->paused) wo_feed(w);

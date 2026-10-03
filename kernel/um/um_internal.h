@@ -14,6 +14,7 @@
 #define UM_MAX_MODULES   1024     /* (Audacity loads about 150, VLC every plugin: about 410) */
 #define UM_MAX_DLL_DIRS  16       /* AddDllDirectory's folders */
 #define UM_MAX_THREADS   256      /* (a browser's main process runs well over 64) */
+#define UM_THREAD_MMCSS  0x4E4D   /* NtSetInformationThread class: avrt.dll's MMCSS (um_thread.c) */
 #define UM32_MAX_THREADS 96       /* WoW: the TEB area must stay below KUSER_SHARED_DATA */
 
 /* Fixed user addresses for the per-process system areas:
@@ -151,6 +152,7 @@ struct UmThread {
      * or bottom of the class's range, TIME_CRITICAL and IDLE) */
     INT8            prio_incr;
     bool            no_boost;       /* SetThreadPriorityBoost(TRUE) */
+    UINT8           mm_priority;    /* registered with MMCSS (avrt.dll): its real-time priority, else 0 */
 };
 
 UmObject *um_ob_ref(UmObject *o);
