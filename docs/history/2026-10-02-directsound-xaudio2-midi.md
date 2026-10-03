@@ -30,3 +30,10 @@ New self-tests play and record each one, on x64 and x86, and check that the
 recording has the tones: `soundtest dsound` and `soundtest dscapture`,
 `xa2test` (XAudio2 2.9 with callbacks and a volume meter, 2.7 through COM
 with a submix voice, and X3DAudio panning) and `miditest`.
+
+The first CI runs of this work never got past the build: with
+`-fasync-exceptions`, clang 18 inlined the `__try` that checks a MIDI
+handle into `midiOutClose` along with the synthesizer's cleanup, and its
+x86-64 instruction selector never finished that function.  The check is now
+kept out of line (`__declspec(noinline)`), and `midi.c` compiles in about
+two seconds.
