@@ -51,6 +51,10 @@ def record(nova, echo):
     time.sleep(10)
     nova.click(205, 96)                             # Stop
     time.sleep(10)
+    r, g, b = pixel(nova, 640, 272)                 # a dark title bar mid-screen: the dropout warning
+    if max(r, g, b) < 60:                           # (a slow machine lost samples); OK keeps the recording
+        nova.click(789, 453)
+        time.sleep(3)
     for _ in range(12):                             # Save is enabled once the recording is finished
         nova.keys('ctrl-s')
         time.sleep(5)
