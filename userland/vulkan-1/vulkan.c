@@ -7,8 +7,11 @@
  * HKLM\SOFTWARE\Khronos\Vulkan\Drivers (each value a driver's JSON
  * manifest, enabled when its DWORD is 0; VK_DRIVER_FILES or
  * VK_ICD_FILENAMES override), loads the first that works, and hands its
- * commands to the program directly.  There are no layers, and one driver
- * at a time (Mesa's lavapipe, from the App Store's Mesa 3D).
+ * commands to the program directly.  Drivers on a GPU come before ones
+ * that draw on the CPU, as the Khronos loader sorts its physical devices:
+ * Venus (the App Store's "Venus", Vulkan on the host's GPU through a QEMU
+ * virtio-gpu; it declines to load without one) before lavapipe (the App
+ * Store's Mesa 3D).  There are no layers, and one driver at a time.
  *
  * The exports are the Khronos loader's (vk_exports.h): each is a jump
  * through a pointer filled from the driver when the program creates its
@@ -100,8 +103,20 @@ static int json_string(const char *j, const char *key, char *out, int size)
     return 0;
 }
 
-/* Load the driver a JSON manifest names; true if it is usable */
-static int try_manifest(const char *path)
+/* The drivers that draw on the CPU (tried after the others) */
+static int software(const char *lib)
+{
+    const char *leaf = lib;
+    for (const char *c = lib; *c; c++) if (*c == '\\' || *c == '/') leaf = c + 1;
+    static const char *const cpu[] = { "vulkan_lvp.dll" };
+    for (int i = 0; i < (int)(sizeof(cpu) / sizeof(cpu[0])); i++)
+        if (!lstrcmpiA(leaf, cpu[i])) return 1;
+    return 0;
+}
+
+/* Load the driver a JSON manifest names; true if it is usable.  @pass 0
+ * takes only GPU drivers, 1 only CPU ones, -1 either */
+static int try_manifest(const char *path, int pass)
 {
     HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) return 0;
@@ -114,6 +129,7 @@ static int try_manifest(const char *path)
 
     char lib[MAX_PATH], arch[8], full[2 * MAX_PATH];
     if (!json_string(j, "library_path", lib, sizeof(lib))) return 0;
+    if (pass >= 0 && software(lib) != pass) return 0;
     if (json_string(j, "library_arch", arch, sizeof(arch)) && !streq(arch, sizeof(void *) == 8 ? "64" : "32"))
         return 0;
     int slash = 0;
@@ -154,7 +170,7 @@ static int try_list(char *list)
         while (*next && *next != ';') next++;
         if (*next) *next++ = 0;
         else next = NULL;
-        if (*p && try_manifest(p)) return 1;
+        if (*p && try_manifest(p, -1)) return 1;
     }
     return 0;
 }
@@ -168,12 +184,13 @@ static BOOL CALLBACK find_driver(PINIT_ONCE once, PVOID param, PVOID *ctx)
         return TRUE;
     HKEY k;
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Khronos\\Vulkan\\Drivers", 0, KEY_READ, &k)) return TRUE;
-    for (DWORD i = 0; ; i++) {
-        char name[MAX_PATH];
-        DWORD n = sizeof(name), type = 0, val = 1, size = sizeof(val);
-        if (RegEnumValueA(k, i, name, &n, NULL, &type, (BYTE *)&val, &size)) break;
-        if (type == REG_DWORD && val == 0 && try_manifest(name)) break;
-    }
+    for (int pass = 0; pass < 2 && !g_gipa; pass++)
+        for (DWORD i = 0; ; i++) {
+            char name[MAX_PATH];
+            DWORD n = sizeof(name), type = 0, val = 1, size = sizeof(val);
+            if (RegEnumValueA(k, i, name, &n, NULL, &type, (BYTE *)&val, &size)) break;
+            if (type == REG_DWORD && val == 0 && try_manifest(name, pass)) break;
+        }
     RegCloseKey(k);
     return TRUE;
 }

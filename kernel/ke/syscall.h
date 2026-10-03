@@ -203,6 +203,8 @@
 #define SYSCALL_NtNovaAudioOpen                   0x0260
 #define SYSCALL_NtNovaAudioWrite                  0x0261
 #define SYSCALL_NtNovaAudioCtl                    0x0262
+/* NovaOS 3D (the Venus Vulkan driver's kernel half, um_gpu.c) */
+#define SYSCALL_NtNovaGpuCtl                      0x0263
 /* Registry services Windows 10 numbers elsewhere */
 #define SYSCALL_NtDeleteKey                       0x00CF
 #define SYSCALL_NtDeleteValueKey                  0x00D2

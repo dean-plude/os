@@ -127,6 +127,20 @@ def make_data(path, puts, size_mb):
             subprocess.run(['mcopy', '-o', '-i', path, host, target], check=True, env=env)
 
 
+def qemu_binary():
+    """The QEMU to run: NOVARUN_QEMU, or qemu-system-x86_64 from PATH"""
+    return os.environ.get('NOVARUN_QEMU', 'qemu-system-x86_64')
+
+
+def display_args(args):
+    """QEMU's -display: none, but a GPU with 3D (virtio-vga-gl, virtio-gpu-gl-pci)
+    needs an OpenGL display; on a host without a screen that is SDL on Xvfb
+    (DISPLAY set; NOVARUN_GL_DISPLAY overrides)"""
+    if any(re.match(r'virtio-(?:vga|gpu)-gl', a) for a in args):
+        return ['-display', os.environ.get('NOVARUN_GL_DISPLAY', 'sdl,gl=on')]
+    return ['-display', 'none']
+
+
 def accel_args():
     """KVM when /dev/kvm is usable, TCG otherwise.  NOVARUN_ACCEL=tcg|kvm forces one."""
     want = os.environ.get('NOVARUN_ACCEL', 'auto')
@@ -168,12 +182,12 @@ class Nova:
                      '-device', 'intel-hda', '-device', 'hda-output,audiodev=snd0']
         else:
             audio = []
-        self.q = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35'] + accel_args() + ['-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
+        self.q = subprocess.Popen([qemu_binary(), '-machine', 'q35'] + accel_args() + ['-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
                                    '-m', str(mem), '-smp', str(smp),
                                    '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
                                    '-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on',
                                    '-drive', f'format=raw,file={data}',
-                                   '-serial', f'file:{self.serial_path}'] + list(vga) + ['-display', 'none',
+                                   '-serial', f'file:{self.serial_path}'] + list(vga) + display_args(list(vga) + list(extra_args)) + [
                                    '-nic', 'user,model=e1000e' if net else 'none',
                                    '-qmp', f'unix:{sock},server,nowait'] +
                                   audio +

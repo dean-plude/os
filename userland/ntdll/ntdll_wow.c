@@ -914,6 +914,11 @@ LONG_PTR NTAPI NtNovaAudioCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out)
 {
     return SCP(NtNovaAudioCtl, S(h), U(op), U(arg), P(out));
 }
+/* (its structures keep pointers as 64-bit fields already) */
+LONG_PTR NTAPI NtNovaGpuCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *ptr)
+{
+    return SCP(NtNovaGpuCtl, S(h), U(op), U(arg), P(ptr));
+}
 
 /* windows: the creation block is laid out with 64-bit fields already */
 LONG_PTR NTAPI NtNovaGuiCreate(void *info)                       { return SCP(NtNovaGuiCreate, P(info)); }

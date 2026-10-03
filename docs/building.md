@@ -261,6 +261,18 @@ connects an output when its display window or a VNC client on it
 (`-vnc :1,display=gpu,head=1`) asks for a size, and a VNC client asking
 for 0 x 0 disconnects it, while NovaOS runs.
 
+A 3D GPU: with QEMU 9.2 or newer and a virglrenderer built with Venus,
+`-vga none -device virtio-vga-gl,venus=on,blob=on,hostmem=1G` and an
+OpenGL display (`-display sdl,gl=on` or `gtk,gl=on`) give NovaOS a
+virtio-gpu whose Vulkan runs on the host's GPU.  Install **Venus** from
+the App Store (Runtimes), next to Mesa 3D and DXVK: Vulkan programs, and
+Direct3D ones through DXVK, then run there (`d3dtest` prints `D3D9
+adapter  Virtio-GPU Venus (...)`), and without such a GPU they keep using
+lavapipe.  OpenGL stays on llvmpipe.  `tools/ci/build-qemu-venus.sh
+PREFIX` builds such a QEMU (Ubuntu 24.04's has no Venus), and
+`tools/build_venus.py OUT` builds the App Store's `venus.7z` (Mesa's
+Venus with NovaOS's back end, `third_party/mesa-venus`) with MinGW-w64.
+
 ### Where your files are kept
 
 Drive C: lives in memory, and NovaOS saves every change to an NTFS or FAT
@@ -368,14 +380,28 @@ graphics suites pass, and the core suite passes except `sleeptest timer`,
 where a few timed waits end up to 10 ms late (history entry "Kernel under
 KVM").  Switching CI to KVM waits for that.
 
-The graphics suite downloads 7-Zip, Mesa and DXVK and builds
-gltest/d3dtest/d2dtest/dwtest:
+The graphics suite downloads 7-Zip, Mesa and DXVK, builds Venus
+(`tools/build_venus.py`) and gltest/d3dtest/d2dtest/dwtest, and runs on a
+QEMU with Venus (`tools/ci/build-qemu-venus.sh`; without one the first
+monitor is a standard VGA and the Venus tests fail) with an OpenGL display,
+so on a machine without a screen it runs under `xvfb-run`:
 
 ```bash
-sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
+sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 g++-mingw-w64-x86-64 g++-mingw-w64-i686 \
+  ninja-build pkg-config libglib2.0-dev libpixman-1-dev libsdl2-dev libepoxy-dev libgbm-dev libdrm-dev \
+  libvulkan-dev glslang-tools bison flex python3-mako python3-yaml mesa-vulkan-drivers seabios ipxe-qemu xvfb
+pip install --user 'meson>=1.5' pycotap
+sudo install -d -o "$USER" /opt/qv
+tools/ci/build-qemu-venus.sh /opt/qv
 tools/ci/stage-graphics.sh /tmp/gfx
-python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
+NOVARUN_QEMU=/opt/qv/bin/qemu-system-x86_64 LD_LIBRARY_PATH=/opt/qv/lib/x86_64-linux-gnu \
+  xvfb-run -a -s '-screen 0 1280x1024x24' python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
+
+`NOVARUN_QEMU` names the QEMU that `tools/novarun.py` runs (default
+`qemu-system-x86_64` from `PATH`); it opens an SDL window with OpenGL
+(`NOVARUN_GL_DISPLAY` to change it) when a `virtio-vga-gl` or
+`virtio-gpu-gl-pci` is among its devices, and no window otherwise.
 
 The network suite tests IPv4, IPv6 and winhttp's HTTP/2, and needs `node`
 and `openssl`:
@@ -434,10 +460,17 @@ re-run it when the scene changes), then shows the scene in a window.  Next
 with DirectWrite from a Latin-only font and checks the fallback fonts, the
 shaping, the direction and the drawing, and shows the line in a window.  It
 then types `store
-install Mesa 3D` and `store install DXVK` (the archives are already in
-`C:\Downloads`, so the App Store installs without a network) and then runs
-`gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
-of each while it draws.  The graphics boot has a second monitor (a QEMU
+install Mesa 3D`, `store install DXVK` and `store install Venus` (the
+archives are already in `C:\Downloads`, so the App Store installs without
+a network) and then runs `gltest` (on llvmpipe) and `d3dtest` (on Venus:
+the first monitor is a 3D virtio-gpu, `virtio-vga-gl,venus=on`, and the
+test expects the Venus adapter), x64 and x86, from `C:\Tests`, taking a
+screenshot of each while it draws.  Last, `d3dtest fps 10` draws a
+Direct3D 9 scene that keeps the rasterizer busy (64 blended quads over a
+640x480 window) for 10 s on Venus and 10 s on lavapipe, each in a child
+process whose `VK_DRIVER_FILES` names the driver, and passes when Venus
+draws more frames per second (under TCG: 14 to 17 against about 0.13).  The
+graphics boot has a second monitor (a QEMU
 `secondary-vga`): between the installs and `gltest` it runs `montest 2`,
 which checks the monitor calls and layout changes; when it asks, the test
 pushes the pointer across onto the second monitor, and the screenshot is

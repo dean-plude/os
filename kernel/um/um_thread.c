@@ -980,6 +980,8 @@ typedef struct {
     PADDR *frames;
     RamNode *file;                  /* file-backed: written back on unmap, flush and destruction */
     bool writable;
+    void (*release)(void *);        /* foreign frames (device memory): not ours to free; */
+    void *release_ctx;              /* release(release_ctx) when the section goes */
 } UmSection;
 
 /* File-backed sections hold a copy of the file: it is filled at creation
@@ -1021,9 +1023,38 @@ static void section_destroy(UmObject *o)
     if (!sec) return;
     section_writeback(sec);
     if (sec->file) { DesktopLock(); RamfsUnref(sec->file); DesktopUnlock(); }
-    um_free_frames(sec->frames, sec->npages);
+    if (sec->release) {
+        kfree(sec->frames);
+        sec->release(sec->release_ctx);
+    } else
+        um_free_frames(sec->frames, sec->npages);
     kfree(sec);
     o->ptr = NULL;
+}
+
+/* A section over @size bytes of device memory at @pa (a GPU's blob, see
+ * um_gpu.c), with a handle in process @p; release(ctx) when it goes (its
+ * last view unmapped and handle closed).  The handle, or 0. */
+UINT64 um_section_foreign(UmProcess *p, UINT64 pa, UINT64 size, void (*release)(void *), void *ctx)
+{
+    UINT64 n = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    UmSection *sec = kzalloc(sizeof(*sec));
+    PADDR *f = sec ? kmalloc(sizeof(PADDR) * n) : NULL;
+    UmObject *o = f ? ob_new(UO_SECTION) : NULL;
+    if (!o) { kfree(f); kfree(sec); return 0; }
+    for (UINT64 i = 0; i < n; i++) f[i] = pa + i * PAGE_SIZE;
+    sec->size = size;
+    sec->npages = n;
+    sec->frames = f;
+    sec->writable = true;
+    sec->release = release;
+    sec->release_ctx = ctx;
+    o->ptr = sec;
+    o->destroy = section_destroy;
+    o->free_unlocked = true;
+    UINT64 h = um_handle_new_object(p, o);
+    um_ob_unref(o);                                         /* (the handle's reference, or gone) */
+    return h;
 }
 
 void um_flush_view_at(UmProcess *p, UINT64 va)
