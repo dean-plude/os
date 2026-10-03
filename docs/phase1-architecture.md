@@ -272,12 +272,17 @@ While data is moving and programs wait for its CPU, it lets them run for
 0.2 ms at a time, `sched_yield_goes_lower`.)
 
 The process whose window is active is the foreground process
-(`UmUpdateForeground`, from the desktop loop each tick): its threads get
-NT's foreground boost, PsPrioritySeparation (2 on client Windows), on top
-of every wake-up boost, still never above 15, so they run ahead of the
-background processes' threads of the same class.  `ProcessPriorityClass`
-reports it in `Foreground`.  Windows' other foreground mechanism, longer
-time slices (quantum stretching), is not done.
+(`UmUpdateForeground`, from the desktop loop each tick), and so is the
+console program running in a Terminal while that Terminal is active (as
+Windows treats a console's programs while their console window is):
+its threads get NT's foreground boost, PsPrioritySeparation (2 on client
+Windows), on top of every wake-up boost, still never above 15, so they
+run ahead of the background processes' threads of the same class.
+`ProcessPriorityClass` reports it in `Foreground`.  They also get
+Windows' other foreground mechanism, quantum stretching ("Programs" in
+System Properties): a time slice three times as long, 6 ticks (60 ms)
+against the background's 2 (20 ms), as client Windows gives 6 clock
+intervals against 2.  The boost decay stays one level per 20 ms.
 
 A CPU halted waiting for the kernel lock wakes none of its sleepers.  The
 timer interrupt it takes meanwhile (`sched_timer_rearm`) hands a due
@@ -288,8 +293,8 @@ seconds; it now runs on its own thread without it, see `fs/persist.c`.)
 
 ### Scheduler Design
 
-**Algorithm**: Priority round-robin with a 20ms time quantum and NT's
-wake-up boosts (see above)
+**Algorithm**: Priority round-robin with a 20ms time quantum (60 ms for
+the foreground process) and NT's wake-up boosts (see above)
 
 ```
 Ready queue: Circular doubly-linked list

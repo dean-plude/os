@@ -734,24 +734,27 @@ void UsbPoll(void)
     spin_unlock_irqrestore(&g_usb_lock, s);
 }
 
-static int probe_class(UINT8 prog_if, bool (*probe)(const PciDevice *))
+static int probe_class(UINT8 prog_if, bool (*probe)(const PciDevice *), const char *driver)
 {
     int n = 0;
     PciDevice pci;
     for (int i = 0; i < MAX_HCS && PciFindClass(0x0C, 0x03, prog_if, i, &pci); i++)
-        if (probe(&pci)) n++;
+        if (probe(&pci)) {
+            PciClaim(&pci, driver);
+            n++;
+        }
     return n;
 }
 
 int UsbInit(void)
 {
-    probe_class(0x30, XhciProbe);
+    probe_class(0x30, XhciProbe, "xHCI");
     int first_companion_hc = g_nhc;
-    probe_class(0x20, EhciProbe);
+    probe_class(0x20, EhciProbe, "EHCI");
     int ehcis = g_nhc - first_companion_hc;
     first_companion_hc = g_nhc;
-    probe_class(0x10, OhciProbe);
-    probe_class(0x00, UhciProbe);
+    probe_class(0x10, OhciProbe, "OHCI");
+    probe_class(0x00, UhciProbe, "UHCI");
     if (!g_nhc) return 0;
 
     UsbDelay(20);                          /* (ports were just powered: let devices connect) */

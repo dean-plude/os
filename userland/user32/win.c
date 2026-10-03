@@ -1608,7 +1608,16 @@ static BOOL foreign_rect(HWND h, int client, LPRECT r)
     if (!r || foreign_info(h, f) != 2) { SetLastError(ERROR_INVALID_WINDOW_HANDLE); return FALSE; }
     if (client) SetRect(r, f[3], f[4], f[3] + f[5], f[4] + f[6]);
     else SetRect(r, f[7], f[8], f[7] + f[9], f[8] + f[10]);
+    dpi_rect_to_proc(r);                                    /* (the desktop's are logical) */
     return TRUE;
+}
+
+/* The window's (client) origin on screen as the calling thread sees it:
+ * a window of another DPI awareness is converted, as on Windows */
+static void seen_origin(Wnd *w, int client, POINT *p)
+{
+    wnd_screen_origin(w, client, p);
+    dpi_wnd_to_thread(w, p);
 }
 
 USERAPI BOOL GetWindowRect(HWND h, LPRECT r)
@@ -1617,8 +1626,9 @@ USERAPI BOOL GetWindowRect(HWND h, LPRECT r)
     if (!w) return foreign_rect(h, 0, r);
     if (!r) return FALSE;
     POINT o;
-    wnd_screen_origin(w, 0, &o);
-    SetRect(r, o.x, o.y, o.x + w->rect.right - w->rect.left, o.y + w->rect.bottom - w->rect.top);
+    seen_origin(w, 0, &o);
+    SetRect(r, o.x, o.y, o.x + dpi_len_to_thread(w, w->rect.right - w->rect.left),
+            o.y + dpi_len_to_thread(w, w->rect.bottom - w->rect.top));
     return TRUE;
 }
 
@@ -1631,7 +1641,7 @@ USERAPI BOOL GetClientRect(HWND h, LPRECT r)
         return TRUE;
     }
     if (!r) return FALSE;
-    SetRect(r, 0, 0, w->client.right - w->client.left, w->client.bottom - w->client.top);
+    SetRect(r, 0, 0, dpi_len_to_thread(w, w->client.right - w->client.left), dpi_len_to_thread(w, w->client.bottom - w->client.top));
     return TRUE;
 }
 
@@ -1645,7 +1655,7 @@ USERAPI BOOL ClientToScreen(HWND h, LPPOINT p)
         return TRUE;
     }
     POINT o;
-    wnd_screen_origin(w, 1, &o);
+    seen_origin(w, 1, &o);
     p->x += o.x; p->y += o.y;
     return TRUE;
 }
@@ -1660,7 +1670,7 @@ USERAPI BOOL ScreenToClient(HWND h, LPPOINT p)
         return TRUE;
     }
     POINT o;
-    wnd_screen_origin(w, 1, &o);
+    seen_origin(w, 1, &o);
     p->x -= o.x; p->y -= o.y;
     return TRUE;
 }
@@ -1669,8 +1679,8 @@ USERAPI int MapWindowPoints(HWND from, HWND to, LPPOINT p, UINT n)
 {
     POINT a = { 0, 0 }, b = { 0, 0 };
     Wnd *f = from ? W_quiet(from) : NULL, *t = to ? W_quiet(to) : NULL;
-    if (f && f != desktop()) wnd_screen_origin(f, 1, &a);
-    if (t && t != desktop()) wnd_screen_origin(t, 1, &b);
+    if (f && f != desktop()) seen_origin(f, 1, &a);
+    if (t && t != desktop()) seen_origin(t, 1, &b);
     int dx = a.x - b.x, dy = a.y - b.y;
     for (UINT i = 0; i < n; i++) { p[i].x += dx; p[i].y += dy; }
     SetLastError(0);
@@ -1683,8 +1693,9 @@ USERAPI BOOL GetWindowInfo(HWND h, PWINDOWINFO wi)
     if (!w || !wi) return FALSE;
     GetWindowRect(h, &wi->rcWindow);
     POINT o;
-    wnd_screen_origin(w, 1, &o);
-    SetRect(&wi->rcClient, o.x, o.y, o.x + w->client.right - w->client.left, o.y + w->client.bottom - w->client.top);
+    seen_origin(w, 1, &o);
+    SetRect(&wi->rcClient, o.x, o.y, o.x + dpi_len_to_thread(w, w->client.right - w->client.left),
+            o.y + dpi_len_to_thread(w, w->client.bottom - w->client.top));
     wi->dwStyle = w->style; wi->dwExStyle = w->exstyle;
     wi->dwWindowStatus = g_active == h ? 1 : 0;
     wi->cxWindowBorders = wi->cyWindowBorders = (UINT)border_width(w);
@@ -1729,9 +1740,13 @@ USERAPI BOOL SetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy, UINT
 {
     Wnd *w = W(h);
     if (!w) return FALSE;
-    if (!w->parent && !(flags & SWP_NOMOVE)) {
-        /* x, y are screen coordinates */
+    /* the calling thread's coordinates: a window of another DPI awareness
+     * gets them converted, as GetWindowRect gives them */
+    if (!(flags & SWP_NOMOVE)) {
+        if (!w->parent) { POINT p = { x, y }; dpi_thread_to_wnd(w, &p); x = p.x; y = p.y; }
+        else { x = dpi_len_to_wnd(w, x); y = dpi_len_to_wnd(w, y); }
     }
+    if (!(flags & SWP_NOSIZE)) { cx = dpi_len_to_wnd(w, cx); cy = dpi_len_to_wnd(w, cy); }
     wnd_set_pos(w, after, x, y, cx, cy, flags);
     return TRUE;
 }
@@ -1768,8 +1783,12 @@ USERAPI BOOL GetWindowPlacement(HWND h, WINDOWPLACEMENT *p)
     p->showCmd = w->minimized ? SW_SHOWMINIMIZED : w->maximized ? SW_SHOWMAXIMIZED : (w->style & WS_VISIBLE) ? SW_SHOWNORMAL : SW_HIDE;
     p->ptMinPosition.x = p->ptMinPosition.y = -1;
     p->ptMaxPosition.x = p->ptMaxPosition.y = -1;
-    if (w->maximized && !IsRectEmpty(&w->normal)) p->rcNormalPosition = w->normal;
-    else {
+    if (w->maximized && !IsRectEmpty(&w->normal)) {
+        RECT n = w->normal;
+        POINT a = { n.left, n.top };
+        dpi_wnd_to_thread(w, &a);
+        SetRect(&p->rcNormalPosition, a.x, a.y, a.x + dpi_len_to_thread(w, n.right - n.left), a.y + dpi_len_to_thread(w, n.bottom - n.top));
+    } else {
         GetWindowRect(h, &p->rcNormalPosition);
         if ((w->style & WS_CHILD) && w->parent) MapWindowPoints(NULL, w->parent->h, (POINT *)&p->rcNormalPosition, 2);   /* a child's: in its parent's client area */
     }
@@ -1819,16 +1838,21 @@ USERAPI HWND ChildWindowFromPoint(HWND h, POINT pt) { return ChildWindowFromPoin
 
 USERAPI HWND RealChildWindowFromPoint(HWND h, POINT pt) { return ChildWindowFromPointEx(h, pt, CWP_SKIPINVISIBLE); }
 
-/* The deepest visible window at a screen point */
-Wnd *window_at(POINT pt)
+/* The deepest visible window at a screen point (@conv: the calling
+ * thread's coordinates, each top-level window's own otherwise) */
+static Wnd *window_at_ex(POINT pt, int conv)
 {
     Wnd *t = NULL;
+    POINT q = pt;
     for (Wnd *c = desktop()->child; c; c = c->next) {
         if (!(c->style & WS_VISIBLE) || !c->kid || c->minimized) continue;
+        q = pt;
+        if (conv) dpi_thread_to_wnd(c, &q);
         RECT b = { c->bmp.x, c->bmp.y, c->bmp.x + c->bw, c->bmp.y + c->bh };
-        if (PtInRect(&b, pt)) { t = c; break; }
+        if (PtInRect(&b, q)) { t = c; break; }
     }
     if (!t) return NULL;
+    pt = q;
     Wnd *w = t;
     for (;;) {
         POINT o;
@@ -1843,9 +1867,11 @@ Wnd *window_at(POINT pt)
     return w;
 }
 
+Wnd *window_at(POINT pt) { return window_at_ex(pt, 0); }
+
 USERAPI HWND WindowFromPoint(POINT pt)
 {
-    Wnd *w = window_at(pt);
+    Wnd *w = window_at_ex(pt, 1);
     return w ? w->h : 0;
 }
 

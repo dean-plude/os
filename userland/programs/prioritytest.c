@@ -17,7 +17,16 @@
  * (it preempts a busy thread of lower priority), and only once a busy
  * thread's 20 ms time slice ends when it is NORMAL like them.
  *
- * Then the foreground boost: with a window of its own active, this process
+ * Then the foreground process.  Run from the Terminal (the Terminal
+ * active), this console program is the foreground process without a
+ * window of its own, as a console's programs are on Windows.  Its threads
+ * get three times the time slice: with twice as many busy NORMAL threads
+ * as processors, each timing its turns with the performance counter, they
+ * run 60 ms at a time, a background copy's ("prioritytest slices") 20 ms
+ * (NT's quantum stretching, "Programs" in System Properties).
+ *
+ * Then the foreground boost, as the Terminal's console program and again
+ * with a window of its own active: this process
  * is the foreground one (NtQueryInformationProcess(ProcessPriorityClass)
  * says so), and a thread of it woken by an event gets 2 more on top of the
  * event's boost (NT's PsPrioritySeparation on client Windows).  A copy of
@@ -316,18 +325,21 @@ static int background(void)
  * 8 + 1 + 2 = 11 and preempts them at once; the background process's
  * NORMAL thread, at 8 + 1 = 9, waits until the balance set lifts it
  * (seconds). */
-static int check_foreground(void)
+static int check_foreground(int own_window)
 {
-    WNDCLASSA wc;
-    memset(&wc, 0, sizeof(wc));
-    wc.lpfnWndProc = fg_proc;
-    wc.hInstance = GetModuleHandleA(NULL);
-    wc.lpszClassName = "PriorityTestFg";
-    RegisterClassA(&wc);
-    HWND h = CreateWindowExA(0, "PriorityTestFg", "prioritytest (foreground)", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                             100, 100, 320, 160, NULL, NULL, wc.hInstance, NULL);
-    SetForegroundWindow(h);
-    pump(200);                                              /* (the desktop notices at its next tick) */
+    HWND h = NULL;
+    if (own_window) {
+        WNDCLASSA wc;
+        memset(&wc, 0, sizeof(wc));
+        wc.lpfnWndProc = fg_proc;
+        wc.hInstance = GetModuleHandleA(NULL);
+        wc.lpszClassName = "PriorityTestFg";
+        RegisterClassA(&wc);
+        h = CreateWindowExA(0, "PriorityTestFg", "prioritytest (foreground)", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                            100, 100, 320, 160, NULL, NULL, wc.hInstance, NULL);
+        SetForegroundWindow(h);
+        pump(200);                                          /* (the desktop notices at its next tick) */
+    }
     int fg = is_foreground();
 
     HANDLE ready = CreateEventA(NULL, FALSE, FALSE, "prioritytest-ready");
@@ -349,7 +361,7 @@ static int check_foreground(void)
     si.cb = sizeof(si);
     if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
         printf("  CreateProcess(%s) failed: %lu\n", cmd, GetLastError());
-        DestroyWindow(h);
+        if (h) DestroyWindow(h);
         return 0;
     }
     LONGLONG med = -1, p95 = -1, bg = -1;
@@ -378,15 +390,17 @@ static int check_foreground(void)
     WaitForSingleObject(pi.hProcess, 30000);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    DestroyWindow(h);
-    pump(50);
-    printf("  this process: Foreground %d (and %d after); its NORMAL waiter (priority %ld) runs after: "
-           "median %lld us, 95%% %lld us\n", fg, still_fg, prio, med, p95);
+    CloseHandle(ready);
+    CloseHandle(done); CloseHandle(bg_ev); CloseHandle(bg_back); CloseHandle(g_ev); CloseHandle(g_back);
+    if (h) { DestroyWindow(h); pump(200); }
+    printf("  this process (%s): Foreground %d (and %d after); its NORMAL waiter (priority %ld) runs after: "
+           "median %lld us, 95%% %lld us\n", own_window ? "its own window active" : "a console program, its Terminal active",
+           fg, still_fg, prio, med, p95);
     printf("  the background process's NORMAL waiter runs after %lld us\n", bg);
     int ok = fg == 1 && still_fg == 1 && prio == 8 && p95 >= 0 && p95 <= 3000 && (bg < 0 || bg >= 100000);
-    printf("prioritytest: the foreground process's woken thread runs within %lld.%03lld ms against busy "
+    printf("prioritytest: the foreground %s's woken thread runs within %lld.%03lld ms against busy "
            "priority-10 threads of a background process (its own: %lld ms)\n",
-           p95 / 1000, p95 % 1000, bg < 0 ? -1 : bg / 1000);
+           own_window ? "process" : "console program", p95 / 1000, p95 % 1000, bg < 0 ? -1 : bg / 1000);
     return ok;
 }
 
@@ -456,11 +470,117 @@ static int check_network(void)
     return ok;
 }
 
+/* -------------------------------------------------------------------- */
+/* Time slices: twice as many busy NORMAL threads as processors, each
+ * timing itself with the performance counter.  A gap of over 5 ms is
+ * another busy thread's turn, so a stretch between two gaps is one of
+ * this thread's slices (shorter interruptions, a kernel thread's, count
+ * as running: a thread preempted goes on with its slice).  The median
+ * slice of the foreground process's threads is 60 ms (NT's quantum
+ * stretching: three times the background's 20 ms).  (A processor left
+ * with one busy thread gives it no gaps, and no slices to count.) */
+#define SLICE_MS   1500
+#define SLICE_GAP  5000             /* us */
+#define SLICE_MAX  128
+static volatile LONG g_go;
+static LONGLONG g_slices[MAX_SPIN][SLICE_MAX];
+static int g_nslices[MAX_SPIN];
+
+static DWORD WINAPI slicer(LPVOID p)
+{
+    int i = (int)(INT_PTR)p;
+    while (!g_go) {}
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    LONGLONG prev = t.QuadPart, end = prev + g_freq.QuadPart * SLICE_MS / 1000, gap = g_freq.QuadPart * SLICE_GAP / 1000000;
+    LONGLONG since = -1;                    /* the current slice's start (-1: before the first gap) */
+    int n = 0;
+    while (prev < end) {
+        QueryPerformanceCounter(&t);
+        if (t.QuadPart - prev > gap) {
+            if (since >= 0 && n < SLICE_MAX) g_slices[i][n++] = (prev - since) * 1000000 / g_freq.QuadPart;
+            since = t.QuadPart;
+        }
+        prev = t.QuadPart;
+    }
+    g_nslices[i] = n;
+    return 0;
+}
+
+/* This process's threads' median time slice, in microseconds (-1: no
+ * thread waited for another) */
+static LONGLONG measure_slices(void)
+{
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    int n = 2 * (int)si.dwNumberOfProcessors;
+    if (n > MAX_SPIN) n = MAX_SPIN;
+    HANDLE th[MAX_SPIN];
+    g_go = 0;
+    for (int i = 0; i < n; i++) { g_nslices[i] = 0; th[i] = CreateThread(NULL, 0, slicer, (LPVOID)(INT_PTR)i, 0, NULL); }
+    Sleep(50);
+    g_go = 1;
+    WaitForMultipleObjects(n, th, TRUE, 30000);
+    static LONGLONG all[MAX_SPIN * SLICE_MAX];
+    int total = 0;
+    for (int i = 0; i < n; i++) {
+        for (int k = 0; k < g_nslices[i]; k++) all[total++] = g_slices[i][k];
+        CloseHandle(th[i]);
+    }
+    if (!total) return -1;
+    qsort(all, total, sizeof(all[0]), cmp_ll);
+    return all[total / 2];
+}
+
+/* The background copy ("prioritytest slices"): its slice in microseconds
+ * as its exit code (1: it was the foreground process, which it must not be) */
+static int background_slices(void)
+{
+    if (is_foreground() != 0) return 1;
+    LONGLONG us = measure_slices();
+    return us < 2 ? 2 : (int)us;
+}
+
+static int check_slices(void)
+{
+    LONGLONG fg = measure_slices(), bg = -1;
+    char exe[MAX_PATH], cmd[MAX_PATH + 16];
+    GetModuleFileNameA(NULL, exe, sizeof(exe));
+    snprintf(cmd, sizeof(cmd), "\"%s\" slices", exe);
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        DWORD code = 0;
+        if (WaitForSingleObject(pi.hProcess, 30000) == WAIT_OBJECT_0 && GetExitCodeProcess(pi.hProcess, &code))
+            bg = code == 1 ? -2 : (LONGLONG)code;
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    printf("  this process (foreground): %lld us a slice; a background process: %lld us%s\n", fg, bg,
+           bg == -2 ? " (it was the foreground process)" : "");
+    int ok = fg >= 40000 && bg > 0 && bg <= 30000 && fg >= 2 * bg;
+    printf("prioritytest: the foreground process's threads run %lld ms at a time, a background process's %lld ms\n",
+           fg / 1000, bg / 1000);
+    return ok;
+}
+
+/* The Terminal is active, so this console program is the foreground
+ * process (wait for the desktop to see it started) */
+static int wait_foreground(void)
+{
+    int fg = 0;
+    for (int i = 0; i < 100 && (fg = is_foreground()) != 1; i++) Sleep(10);
+    return fg;
+}
+
 int main(int argc, char **argv)
 {
     g_qit = (NtQitFn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread");
     QueryPerformanceFrequency(&g_freq);
     if (argc > 1 && !strcmp(argv[1], "bg")) return background();
+    if (argc > 1 && !strcmp(argv[1], "slices")) return background_slices();
     if (argc > 1 && !strcmp(argv[1], "net")) {
         printf("The network thread against a busy HIGH_PRIORITY_CLASS thread on every processor:\n");
         int ok = check_network();
@@ -472,9 +592,18 @@ int main(int argc, char **argv)
     int ok = check_queries();
     printf("Scheduling, wake-up boosts off, a busy NORMAL thread on every processor:\n");
     ok &= check_scheduling();
-    printf("The foreground boost, a busy HIGHEST thread of a background process on every processor:\n");
+    int con_fg = wait_foreground();
+    printf("A console program in the Terminal, the Terminal active: Foreground %d\n", con_fg);
+    ok &= con_fg == 1;
+    printf("Time slices, twice as many busy NORMAL threads as processors:\n");
     fflush(stdout);
-    ok &= check_foreground();
+    ok &= check_slices();
+    printf("The foreground boost of the Terminal's console program, a busy HIGHEST thread of a background process on every processor:\n");
+    fflush(stdout);
+    ok &= check_foreground(0);
+    printf("The foreground boost, its own window active, a busy HIGHEST thread of a background process on every processor:\n");
+    fflush(stdout);
+    ok &= check_foreground(1);
     printf("prioritytest: %s\n", ok ? "PASS" : "FAIL");
     fflush(stdout);
     return ok ? 0 : 1;

@@ -221,6 +221,7 @@ bool VirtioNetInit(void)
         return false;
     }
     g.present = true;
+    PciClaim(&g.pci, "virtio-net");
     kprintf("[VIRTIO] Network adapter at %02x:%02x.%x, MAC %02x:%02x:%02x:%02x:%02x:%02x, "
             "queues %u/%u, link %s\n", g.pci.bus, g.pci.dev, g.pci.func,
             g.mac[0], g.mac[1], g.mac[2], g.mac[3], g.mac[4], g.mac[5],

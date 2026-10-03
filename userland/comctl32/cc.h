@@ -43,6 +43,7 @@ static inline LRESULT cc_notify(HWND h, UINT code, NMHDR *nm)
 
 HFONT cc_font(void);                                /* the UI font */
 HFONT cc_font_for(HWND h);                          /* ...at the window's DPI */
+int   cc_k(HWND h);                                 /* the window's DPI / 96: fixed sizes scale by it */
 void  cc_fill(HDC dc, const RECT *r, COLORREF c);
 void  cc_frame(HDC dc, const RECT *r, COLORREF c);
 void  cc_arrow(HDC dc, const RECT *r, int dir, COLORREF c);   /* 0 up 1 down 2 left 3 right */

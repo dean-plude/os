@@ -37,7 +37,14 @@
  * and an aware thread of an unaware one makes windows with 192 DPI pixels.
  * user32's own controls, fonts and non-client parts are sized by their
  * top-level window's DPI (dpi_k); GetSystemMetrics and the stock fonts by
- * the system DPI the thread sees.
+ * the system DPI the thread sees.  When a window's DPI changes its built-in
+ * controls measure their default font again (WM_NOVA_RESCALE), and a
+ * per-monitor v2 dialog's controls and font scale with it (dialog.c).
+ *
+ * A thread asking about a window of another awareness (GetWindowRect,
+ * ClientToScreen, SetWindowPos, WindowFromPoint, ...) gets the window's
+ * coordinates converted to its own, around the window's monitor
+ * (dpi_wnd_to_thread and friends), as on Windows.
  */
 #include "u32.h"
 
@@ -448,6 +455,66 @@ static void to_logical(int m, POINT *p)
 void dpi_to_proc(POINT *p) { to_proc(thread_mode(NULL), p); }
 void dpi_to_logical(POINT *p) { to_logical(thread_mode(NULL), p); }
 
+/* Awareness @m's coordinates on monitor @i: where it starts, and its
+ * pixels per logical pixel (as to_proc counts them) */
+static void mode_frame(int m, int i, POINT *o, int *k)
+{
+    const RECT *r = &g_mon[i].r;
+    int D = m == DPI_UNAWARE ? 1 : m == DPI_SYSTEM_AWARE ? sys_k() : g_dmax;
+    *k = m == DPI_UNAWARE ? 1 : m == DPI_SYSTEM_AWARE ? sys_k() : g_mon[i].d;
+    o->x = r->left * D;
+    o->y = r->top * D;
+}
+
+/* How the calling thread sees window @w's coordinates (a window of another
+ * awareness: an unaware window seen by an aware thread is scaled up, as on
+ * Windows), around the monitor the window is on: 0 if they are the same */
+typedef struct { POINT ow, ot; int kw, kt; } WndMap;
+
+static int wnd_map(Wnd *w, WndMap *mp)
+{
+    if (!w || w->h == GetDesktopWindow()) return 0;          /* (the desktop's is the thread's already) */
+    int wm = wnd_mode(w, NULL), tm = thread_mode(NULL);
+    if (wm == tm) return 0;
+    have();
+    Wnd *t = top_of(w);
+    if (!t) return 0;
+    POINT c = { (t->rect.left + t->rect.right) / 2, (t->rect.top + t->rect.bottom) / 2 };
+    to_logical(wm, &c);
+    int i = mon_at(DPI_UNAWARE, c, 0);
+    mode_frame(wm, i, &mp->ow, &mp->kw);
+    mode_frame(tm, i, &mp->ot, &mp->kt);
+    return mp->ow.x != mp->ot.x || mp->ow.y != mp->ot.y || mp->kw != mp->kt;
+}
+
+void dpi_wnd_to_thread(Wnd *w, POINT *p)
+{
+    WndMap m;
+    if (!wnd_map(w, &m)) return;
+    p->x = m.ot.x + floordiv((p->x - m.ow.x) * m.kt, m.kw);
+    p->y = m.ot.y + floordiv((p->y - m.ow.y) * m.kt, m.kw);
+}
+
+void dpi_thread_to_wnd(Wnd *w, POINT *p)
+{
+    WndMap m;
+    if (!wnd_map(w, &m)) return;
+    p->x = m.ow.x + floordiv((p->x - m.ot.x) * m.kw, m.kt);
+    p->y = m.ow.y + floordiv((p->y - m.ot.y) * m.kw, m.kt);
+}
+
+int dpi_len_to_thread(Wnd *w, int v)
+{
+    WndMap m;
+    return wnd_map(w, &m) ? floordiv(v * m.kt, m.kw) : v;
+}
+
+int dpi_len_to_wnd(Wnd *w, int v)
+{
+    WndMap m;
+    return wnd_map(w, &m) ? floordiv(v * m.kw, m.kt) : v;
+}
+
 /* The scale a new top-level window made by this thread for @owner (or
  * on the primary monitor) gets: dialog fonts are made at it */
 int dpi_new_k(Wnd *owner)
@@ -581,6 +648,19 @@ int dpi_apply_scale(Wnd *w, int k)
     return got;
 }
 
+/* The built-in controls measure their default font again (line and item
+ * heights, a combo box's field) at their window's new DPI */
+static void rescale_controls(Wnd *w)
+{
+    for (Wnd *c = w->child; c; c = c->next) {
+        HWND h = c->h;
+        rescale_controls(c);
+        if (!W_quiet(h)) return;
+        if (c->cls && c->cls->system) send_msg(c, WM_NOVA_RESCALE, 0, 0);
+        if (!W_quiet(h)) return;
+    }
+}
+
 static void children_notify(Wnd *w, UINT msg)
 {
     for (Wnd *c = w->child; c; c = c->next) {
@@ -618,6 +698,7 @@ static void dpi_changed(Wnd *w, int nk, const INT32 r[9])
         g_in_change--;
         return;
     }
+    int ok = w->dpi_k > 1 ? w->dpi_k : 1;
     w->dpi_k = nk;
     RECT before = w->rect;
     RECT pass = sug;
@@ -626,7 +707,9 @@ static void dpi_changed(Wnd *w, int nk, const INT32 r[9])
         wnd_set_pos(w, 0, sug.left, sug.top, sug.right - sug.left, sug.bottom - sug.top, SWP_NOZORDER | SWP_NOACTIVATE);
     if (W_quiet(h)) {
         top_resized(w);                                     /* every pixel is drawn anew */
-        if (v2) children_notify(w, WM_DPICHANGED_AFTERPARENT_);
+        if (v2) dlg_dpi_changed(w, ok, nk);                 /* per-monitor v2 dialogs: their controls scale */
+        if (W_quiet(h)) rescale_controls(w);
+        if (v2 && W_quiet(h)) children_notify(w, WM_DPICHANGED_AFTERPARENT_);
     }
     g_in_change--;
 }

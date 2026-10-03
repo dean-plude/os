@@ -81,14 +81,14 @@ static void icon_size(LV *s, int which, int *cx, int *cy)
     if (s->il[which]) ImageList_GetIconSize(s->il[which], cx, cy);
 }
 
-static int row_h(LV *s)
+static int row_h(HWND hw, LV *s)
 {
-    int ix, iy;
+    int ix, iy, k = cc_k(hw);
     icon_size(s, LVSIL_SMALL, &ix, &iy);
-    int h = s->fh + 6;
-    if (s->il[LVSIL_SMALL] && iy + 4 > h) h = iy + 4;
-    if (s->il[LVSIL_STATE]) { int sx, sy; icon_size(s, LVSIL_STATE, &sx, &sy); if (sy + 4 > h) h = sy + 4; }
-    return h < 18 ? 18 : h;
+    int h = s->fh + 6 * k;
+    if (s->il[LVSIL_SMALL] && iy + 4 * k > h) h = iy + 4 * k;
+    if (s->il[LVSIL_STATE]) { int sx, sy; icon_size(s, LVSIL_STATE, &sx, &sy); if (sy + 4 * k > h) h = sy + 4 * k; }
+    return h < 18 * k ? 18 * k : h;
 }
 
 static int hdr_h(HWND h, LV *s)
@@ -234,25 +234,25 @@ static void grid(HWND h, LV *s, Grid *g)
 {
     RECT c;
     client(h, &c);
-    int v = view_of(h), ix, iy;
+    int v = view_of(h), ix, iy, k = cc_k(h);
     if (v == LVS_ICON) {
         icon_size(s, LVSIL_NORMAL, &ix, &iy);
-        g->cw = MAX(ix + 44, 76);
-        g->ch = iy + 8 + 2 * s->fh + 6;
+        g->cw = MAX(ix + 44 * k, 76 * k);
+        g->ch = iy + 8 * k + 2 * s->fh + 6 * k;
         g->per = MAX(1, (c.right - c.left) / g->cw);
     } else if (v == LVS_SMALLICON) {
         icon_size(s, LVSIL_SMALL, &ix, &iy);
-        g->cw = MIN(max_label_w(h, s), 300) + ix + 16;
-        g->ch = row_h(s);
+        g->cw = MIN(max_label_w(h, s), 300 * k) + ix + 16 * k;
+        g->ch = row_h(h, s);
         g->per = MAX(1, (c.right - c.left) / g->cw);
     } else if (v == LVS_LIST) {
         icon_size(s, LVSIL_SMALL, &ix, &iy);
-        g->cw = MIN(max_label_w(h, s), 300) + ix + 16;
-        g->ch = row_h(s);
+        g->cw = MIN(max_label_w(h, s), 300 * k) + ix + 16 * k;
+        g->ch = row_h(h, s);
         g->per = MAX(1, (c.bottom - c.top) / g->ch);
     } else {
         g->cw = total_width(s);
-        g->ch = row_h(s);
+        g->ch = row_h(h, s);
         g->per = 1;
     }
 }
@@ -287,26 +287,26 @@ static BOOL item_part(HWND h, LV *s, int i, int part, RECT *out)
 {
     RECT b;
     if (!item_bounds(h, s, i, &b)) return FALSE;
-    int v = view_of(h), ix, iy, sw = 0, sh;
-    if (s->il[LVSIL_STATE]) { icon_size(s, LVSIL_STATE, &sw, &sh); sw += 2; }
-    else if (s->ex & LVS_EX_CHECKBOXES) sw = 18;
+    int v = view_of(h), ix, iy, sw = 0, sh, k = cc_k(h);
+    if (s->il[LVSIL_STATE]) { icon_size(s, LVSIL_STATE, &sw, &sh); sw += 2 * k; }
+    else if (s->ex & LVS_EX_CHECKBOXES) sw = 18 * k;
     RECT icon, label;
     if (v == LVS_ICON) {
         icon_size(s, LVSIL_NORMAL, &ix, &iy);
-        SetRect(&icon, (b.left + b.right - ix) / 2, b.top + 4, (b.left + b.right + ix) / 2, b.top + 4 + iy);
-        SetRect(&label, b.left + 2, icon.bottom + 2, b.right - 2, b.bottom - 2);
+        SetRect(&icon, (b.left + b.right - ix) / 2, b.top + 4 * k, (b.left + b.right + ix) / 2, b.top + 4 * k + iy);
+        SetRect(&label, b.left + 2 * k, icon.bottom + 2 * k, b.right - 2 * k, b.bottom - 2 * k);
     } else {
         icon_size(s, LVSIL_SMALL, &ix, &iy);
-        int x = b.left + 2 + sw;
+        int x = b.left + 2 * k + sw;
         if (v == LVS_REPORT) {
             int c0 = s->ncol ? col_x(s, 0) : 0;
-            x = -s->sx + c0 + 2 + sw;
+            x = -s->sx + c0 + 2 * k + sw;
             if (!ownerdata(h)) x += s->it[i].indent * ix;
         }
         if (!s->il[LVSIL_SMALL]) ix = 0;
         SetRect(&icon, x, b.top, x + ix, b.bottom);
         int right = v == LVS_REPORT ? -s->sx + (s->ncol ? col_x(s, 0) + s->col[0].cx : total_width(s)) : b.right;
-        SetRect(&label, icon.right + (ix ? 4 : 2), b.top, right - 2, b.bottom);
+        SetRect(&label, icon.right + (ix ? 4 : 2) * k, b.top, right - 2 * k, b.bottom);
         if (label.right < label.left) label.right = label.left;
     }
     switch (part) {
@@ -364,7 +364,7 @@ static int hit_test(HWND h, LV *s, POINT pt, UINT *flags, int *sub)
     RECT icon, label, st;
     item_part(h, s, i, LVIR_ICON, &icon);
     item_part(h, s, i, LVIR_LABEL, &label);
-    SetRect(&st, icon.left - 18, icon.top, icon.left, icon.bottom);
+    SetRect(&st, icon.left - 18 * cc_k(h), icon.top, icon.left, icon.bottom);
     UINT f = 0;
     if (PtInRect(&icon, pt)) f = LVHT_ONITEMICON;
     else if (PtInRect(&st, pt) && (s->il[LVSIL_STATE] || (s->ex & LVS_EX_CHECKBOXES))) f = LVHT_ONITEMSTATEICON;
@@ -394,7 +394,7 @@ static int rows_visible(HWND h, LV *s)
 {
     RECT c;
     client(h, &c);
-    int n = (c.bottom - hdr_h(h, s)) / row_h(s);
+    int n = (c.bottom - hdr_h(h, s)) / row_h(h, s);
     return n < 1 ? 1 : n;
 }
 
@@ -506,7 +506,7 @@ static void on_scroll(HWND h, LV *s, int bar, int code)
 {
     SCROLLINFO si = { sizeof(si), SIF_ALL, 0, 0, 0, 0, 0 };
     GetScrollInfo(h, bar, &si);
-    int v = view_of(h), line = (v == LVS_REPORT && bar == SB_VERT) || v == LVS_LIST ? 1 : v == LVS_REPORT ? 16 : row_h(s);
+    int v = view_of(h), line = (v == LVS_REPORT && bar == SB_VERT) || v == LVS_LIST ? 1 : v == LVS_REPORT ? 16 : row_h(h, s);
     int pos = si.nPos;
     switch (code) {
     case SB_LINEUP: pos -= line; break;
@@ -890,18 +890,19 @@ static BOOL set_column_width(HWND h, LV *s, int i, int cx)
         for (int k = 0; k < n; k++) { int t = cc_text_w(dc, item_text(h, s, k, s->col[i].sub, b, 520), -1); if (t > w) w = t; }
         SelectObject(dc, of);
         ReleaseDC(h, dc);
-        w += 12;
+        int ck = cc_k(h);
+        w += 12 * ck;
         if (i == 0) {
             int ix, iy;
             icon_size(s, LVSIL_SMALL, &ix, &iy);
-            if (s->il[LVSIL_SMALL]) w += ix + 4;
-            if (s->ex & LVS_EX_CHECKBOXES) w += 18;
+            if (s->il[LVSIL_SMALL]) w += ix + 4 * ck;
+            if (s->ex & LVS_EX_CHECKBOXES) w += 18 * ck;
         }
         if (cx == LVSCW_AUTOSIZE_USEHEADER) {
             WCHAR t[260] = { 0 };
             HDITEMW hi; memset(&hi, 0, sizeof(hi)); hi.mask = HDI_TEXT; hi.pszText = t; hi.cchTextMax = 260;
             if (s->hdr) SendMessageW(s->hdr, HDM_GETITEMW, (WPARAM)i, (LPARAM)&hi);
-            int hw = text_px(h, s, t) + 16;
+            int hw = text_px(h, s, t) + 16 * ck;
             if (hw > w) w = hw;
             int *o = col_order(s);
             if (o && o[s->ncol - 1] == i) {                 /* the last column fills the rest */
@@ -1027,14 +1028,14 @@ static void type_search(HWND h, LV *s, WCHAR ch)
 static COLORREF c_bk(LV *s) { return s->bk == CLR_NONE || s->bk == CLR_DEFAULT ? GetSysColor(COLOR_WINDOW) : s->bk; }
 static COLORREF c_text(LV *s) { return s->text == CLR_DEFAULT ? GetSysColor(COLOR_WINDOWTEXT) : s->text; }
 
-static void draw_check(HDC dc, int x, int y, BOOL on)
+static void draw_check(HDC dc, int x, int y, BOOL on, int s)    /* s: the DPI scale */
 {
-    RECT b = { x, y, x + 13, y + 13 };
+    RECT b = { x, y, x + 13 * s, y + 13 * s };
     cc_fill(dc, &b, RGB(255, 255, 255));
     cc_frame(dc, &b, RGB(51, 51, 51));
     if (on) {
-        for (int k = 0; k < 3; k++) { RECT r = { x + 3 + k, y + 6 + k, x + 4 + k, y + 8 + k }; cc_fill(dc, &r, RGB(0, 0, 0)); }
-        for (int k = 0; k < 5; k++) { RECT r = { x + 6 + k, y + 7 - k, x + 7 + k, y + 9 - k }; cc_fill(dc, &r, RGB(0, 0, 0)); }
+        for (int k = 0; k < 3; k++) { RECT r = { x + (3 + k) * s, y + (6 + k) * s, x + (4 + k) * s, y + (8 + k) * s }; cc_fill(dc, &r, RGB(0, 0, 0)); }
+        for (int k = 0; k < 5; k++) { RECT r = { x + (6 + k) * s, y + (7 - k) * s, x + (7 + k) * s, y + (9 - k) * s }; cc_fill(dc, &r, RGB(0, 0, 0)); }
     }
 }
 
@@ -1045,9 +1046,9 @@ static void draw_state_image(HWND h, LV *s, HDC dc, int i, const RECT *icon)
         if (!st) return;
         int sw, sh;
         icon_size(s, LVSIL_STATE, &sw, &sh);
-        il_draw(s->il[LVSIL_STATE], (int)st - 1, dc, icon->left - sw - 2, (icon->top + icon->bottom - sh) / 2, ILD_TRANSPARENT);
+        il_draw(s->il[LVSIL_STATE], (int)st - 1, dc, icon->left - sw - 2 * cc_k(h), (icon->top + icon->bottom - sh) / 2, ILD_TRANSPARENT);
     } else if (s->ex & LVS_EX_CHECKBOXES) {
-        draw_check(dc, icon->left - 16, (icon->top + icon->bottom - 13) / 2, st == 2);
+        draw_check(dc, icon->left - 16 * cc_k(h), (icon->top + icon->bottom - 13 * cc_k(h)) / 2, st == 2, cc_k(h));
     }
 }
 
@@ -1112,8 +1113,8 @@ static void paint_item(HWND h, LV *s, HDC dc, int i, BOOL want_item, BOOL has_fo
         WCHAR b[520];
         int tw = cc_text_w(mdc, item_text(h, s, i, 0, b, 520), -1);
         selr = label;
-        selr.right = MIN(label.left + tw + 6, bounds.right - 2);
-        selr.left -= 2;
+        selr.right = MIN(label.left + tw + 6 * cc_k(h), bounds.right - 2 * cc_k(h));
+        selr.left -= 2 * cc_k(h);
     }
     if (textbk != CLR_NONE && !show_sel) {
         RECT r = v == LVS_REPORT ? bounds : selr;
@@ -1139,11 +1140,11 @@ static void paint_item(HWND h, LV *s, HDC dc, int i, BOOL want_item, BOOL has_fo
     if (v == LVS_ICON) {
         RECT m = label;
         DrawTextW(dc, t, -1, &m, DT_CALCRECT | DT_CENTER | DT_WORDBREAK | DT_NOPREFIX | DT_EDITCONTROL);
-        int lh = MIN(m.bottom - m.top, 2 * s->fh + 2);
-        RECT box = { label.left, label.top, label.right, label.top + lh + 2 };
+        int k = cc_k(h), lh = MIN(m.bottom - m.top, 2 * s->fh + 2 * k);
+        RECT box = { label.left, label.top, label.right, label.top + lh + 2 * k };
         int tw = MIN(m.right - m.left, label.right - label.left);
-        box.left = (label.left + label.right - tw) / 2 - 2;
-        box.right = box.left + tw + 4;
+        box.left = (label.left + label.right - tw) / 2 - 2 * k;
+        box.right = box.left + tw + 4 * k;
         if (show_sel) cc_fill(dc, &box, selbg);
         RECT tr = { label.left, label.top + 1, label.right, label.top + 1 + lh };
         if (i != s->edit_item || !s->edit) draw_text_in(dc, t, &tr, 0, TRUE);
@@ -1151,7 +1152,7 @@ static void paint_item(HWND h, LV *s, HDC dc, int i, BOOL want_item, BOOL has_fo
         return;
     }
     RECT tr = label;
-    tr.left += 2;
+    tr.left += 2 * cc_k(h);
     if (!(s->edit && i == s->edit_item)) {
         if (want_sub) {
             LRESULT r = custom_draw(h, CDDS_ITEMPREPAINT | CDDS_SUBITEM, dc, &label, i, 0, 0, &cd);
@@ -1165,7 +1166,7 @@ static void paint_item(HWND h, LV *s, HDC dc, int i, BOOL want_item, BOOL has_fo
             RECT r;
             subitem_rect(h, s, i, k, LVIR_BOUNDS, &r);
             if (r.right <= 0 || r.left >= c.right || r.right - r.left < 4) continue;
-            RECT tr2 = { r.left + 6, r.top, r.right - 6, r.bottom };
+            RECT tr2 = { r.left + 6 * cc_k(h), r.top, r.right - 6 * cc_k(h), r.bottom };
             if ((s->ex & LVS_EX_SUBITEMIMAGES) && il) {
                 LVITEMW q; WCHAR qb[2];
                 if (ownerdata(h) || s->it[i].nsub <= k || s->it[i].sub[k] == LPSTR_TEXTCALLBACKW) {
@@ -1593,7 +1594,6 @@ LRESULT CALLBACK ListViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         s->ansi = p && SendMessageW(p, WM_NOTIFYFORMAT, (WPARAM)h, NF_QUERY_) == NFR_ANSI;
         s->hdr = CreateWindowExW(0, WC_HEADERW, NULL, WS_CHILD | HDS_HORZ | HDS_BUTTONS | HDS_FULLDRAG | ((style_of(h) & LVS_NOSORTHEADER) ? 0 : 0),
                                  0, 0, 0, 0, h, (HMENU)0, NULL, NULL);
-        if (s->hdr) SendMessageW(s->hdr, WM_SETFONT, (WPARAM)cc_font_for(h), 0);
         refresh(h, s);
         return 0;
     }
@@ -1629,6 +1629,10 @@ LRESULT CALLBACK ListViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
     case WM_SETFONT: set_font(h, s, (HFONT)wp); return 0;
+    case WM_DPICHANGED_AFTERPARENT:                          /* the window's DPI changed: the defaults' sizes */
+        if (!s->font) set_font(h, s, NULL);
+        else refresh(h, s);
+        return 0;
     case WM_GETFONT: return (LRESULT)s->font;
     case WM_SETFOCUS:
         InvalidateRect(h, NULL, TRUE);
@@ -1648,7 +1652,7 @@ LRESULT CALLBACK ListViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (v == LVS_LIST) { scroll_to(h, s, SB_HORZ, s->top - (d > 0 ? 1 : -1)); return 0; }
         SCROLLINFO si = { sizeof(si), SIF_ALL, 0, 0, 0, 0, 0 };
         GetScrollInfo(h, SB_VERT, &si);
-        int pos = si.nPos - d * (v == LVS_REPORT ? 1 : row_h(s));
+        int pos = si.nPos - d * (v == LVS_REPORT ? 1 : row_h(h, s));
         int mx = si.nMax - MAX((int)si.nPage - 1, 0);
         if (pos > mx) pos = mx;
         if (pos < 0) pos = 0;
@@ -1849,7 +1853,7 @@ LRESULT CALLBACK ListViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case LVM_SCROLL: {
         int v = view_of(h);
         if (v == LVS_REPORT) {
-            if ((int)lp) scroll_to(h, s, SB_VERT, s->top + (int)lp / row_h(s));
+            if ((int)lp) scroll_to(h, s, SB_VERT, s->top + (int)lp / row_h(h, s));
             if ((int)wp) scroll_to(h, s, SB_HORZ, s->sx + (int)wp);
         } else if (v == LVS_LIST) {
             Grid g; grid(h, s, &g);

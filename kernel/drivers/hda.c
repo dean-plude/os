@@ -497,6 +497,7 @@ bool HdaInit(void)
     if (chip) ksnprintf(g.name, sizeof(g.name), "High Definition Audio (%s)", chip);
     else ksnprintf(g.name, sizeof(g.name), "High Definition Audio (%04x:%04x)", d.vendor, d.device);
     g.present = true;
+    PciClaim(&d, "HD Audio");
     kprintf("[HDA] %s at %02x:%02x.%x, %d output stream%s, playing 48 kHz 16-bit stereo\n",
             g.name, d.bus, d.dev, d.func, (gcap >> 12) & 0xF, ((gcap >> 12) & 0xF) == 1 ? "" : "s");
     return true;

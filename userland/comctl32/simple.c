@@ -19,7 +19,7 @@ static void prog_paint(HWND h, Prog *p, HDC dc)
     cc_fill(dc, &r, p->bk != CLR_DEFAULT ? p->bk : 0xE6E6E6);
     if (!(st & WS_BORDER) && !(GetWindowLongW(h, GWL_EXSTYLE) & (WS_EX_CLIENTEDGE | WS_EX_STATICEDGE))) cc_frame(dc, &r, 0xBCBCBC);
     RECT in = r;
-    InflateRect(&in, -1, -1);
+    InflateRect(&in, -cc_k(h), -cc_k(h));
     COLORREF bar = p->bar != CLR_DEFAULT ? p->bar : p->state == PBST_ERROR ? 0x2B26E6 : p->state == PBST_PAUSED ? 0x00B6DA : 0x25B006;
     int vert = (st & PBS_VERTICAL) != 0;
     int len = vert ? in.bottom - in.top : in.right - in.left;
@@ -94,7 +94,7 @@ LRESULT CALLBACK ProgressProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
  * ======================================================================= */
 typedef struct { int n; int right[256]; WCHAR *text[256]; UINT flags[256]; HICON icon[256]; int simple; WCHAR *stext; HFONT font; int minh; } Stat;
 
-static int stat_height(HWND h, Stat *s) { int fh = cc_font_h(s->font ? s->font : cc_font_for(h)); return MAX(fh + 8, s->minh); }
+static int stat_height(HWND h, Stat *s) { int fh = cc_font_h(s->font ? s->font : cc_font_for(h)); return MAX(fh + 8 * cc_k(h), s->minh); }
 
 static void stat_layout(HWND h, Stat *s)
 {
@@ -114,32 +114,33 @@ static void stat_part_rect(HWND h, Stat *s, int i, RECT *r)
     GetClientRect(h, &c);
     int left = i ? s->right[i - 1] : 0;
     int right = s->right[i] < 0 || s->right[i] > c.right ? c.right : s->right[i];
-    SetRect(r, left, c.top + 2, right, c.bottom);
+    SetRect(r, left, c.top + 2 * cc_k(h), right, c.bottom);
 }
 
 static void stat_paint(HWND h, Stat *s, HDC dc)
 {
     RECT c;
     GetClientRect(h, &c);
+    int k = cc_k(h);
     cc_fill(dc, &c, 0xF0F0F0);
-    RECT top = { c.left, c.top, c.right, c.top + 1 };
+    RECT top = { c.left, c.top, c.right, c.top + k };
     cc_fill(dc, &top, 0xDADADA);
     HGDIOBJ of = SelectObject(dc, wfont(h, s->font));
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
     if (s->simple) {
         RECT r = c;
-        r.left += 6;
+        r.left += 6 * k;
         DrawTextW(dc, s->stext ? s->stext : L"", -1, &r, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
     } else {
         for (int i = 0; i < s->n; i++) {
             RECT r;
             stat_part_rect(h, s, i, &r);
-            if (i + 1 < s->n && !(s->flags[i] & SBT_NOBORDERS)) { RECT sep = { r.right - 1, r.top + 3, r.right, r.bottom - 3 }; cc_fill(dc, &sep, 0xC8C8C8); }
+            if (i + 1 < s->n && !(s->flags[i] & SBT_NOBORDERS)) { RECT sep = { r.right - k, r.top + 3 * k, r.right, r.bottom - 3 * k }; cc_fill(dc, &sep, 0xC8C8C8); }
             RECT t = r;
-            t.left += 6;
-            t.right -= 4;
-            if (s->icon[i]) { DrawIconEx(dc, t.left, r.top + (r.bottom - r.top - 16) / 2, s->icon[i], 16, 16, 0, NULL, DI_NORMAL); t.left += 20; }
+            t.left += 6 * k;
+            t.right -= 4 * k;
+            if (s->icon[i]) { DrawIconEx(dc, t.left, r.top + (r.bottom - r.top - 16 * k) / 2, s->icon[i], 16 * k, 16 * k, 0, NULL, DI_NORMAL); t.left += 20 * k; }
             if (s->flags[i] & SBT_OWNERDRAW) {
                 DRAWITEMSTRUCT di;
                 memset(&di, 0, sizeof(di));
@@ -158,7 +159,7 @@ static void stat_paint(HWND h, Stat *s, HDC dc)
         }
     }
     if (GetWindowLongW(h, GWL_STYLE) & SBARS_SIZEGRIP) {
-        RECT g = { c.right - 14, c.bottom - 14, c.right, c.bottom };
+        RECT g = { c.right - 14 * k, c.bottom - 14 * k, c.right, c.bottom };
         DrawFrameControl(dc, &g, DFC_SCROLL, DFCS_SCROLLSIZEGRIP);
     }
     SelectObject(dc, of);
@@ -202,6 +203,7 @@ LRESULT CALLBACK StatusProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); stat_paint(h, s, dc); EndPaint(h, &ps); return 0; }
     case WM_PRINTCLIENT: stat_paint(h, s, (HDC)wp); return 0;
     case WM_SETFONT: s->font = (HFONT)wp; if (lp) InvalidateRect(h, NULL, TRUE); return 0;
+    case WM_DPICHANGED_AFTERPARENT: stat_layout(h, s); InvalidateRect(h, NULL, FALSE); return 0;
     case WM_GETFONT: return (LRESULT)s->font;
     case WM_SETTEXT: set_str(&s->text[0], (const WCHAR *)lp, 1); InvalidateRect(h, NULL, FALSE); return TRUE;
     case WM_GETTEXT: { int n = MIN(wlen(s->text[0]), (int)wp - 1); if (n < 0) return 0; memcpy((void *)lp, s->text[0] ? s->text[0] : L"", 2 * (size_t)n); ((WCHAR *)lp)[n] = 0; return n; }
@@ -212,7 +214,7 @@ LRESULT CALLBACK StatusProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             RECT c; GetClientRect(h, &c);
             POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
             ScreenToClient(h, &pt);
-            if (pt.x >= c.right - 14 && pt.y >= c.bottom - 14) return HTBOTTOMRIGHT;
+            if (pt.x >= c.right - 14 * cc_k(h) && pt.y >= c.bottom - 14 * cc_k(h)) return HTBOTTOMRIGHT;
         }
         return r;
     }
@@ -261,7 +263,7 @@ LRESULT CALLBACK StatusProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case SB_SIMPLE: s->simple = wp != 0; InvalidateRect(h, NULL, FALSE); return 0;
     case SB_ISSIMPLE: return s->simple;
     case SB_GETRECT: { int i = (int)wp; if (i < 0 || i >= s->n) return FALSE; stat_part_rect(h, s, i, (RECT *)lp); return TRUE; }
-    case SB_GETBORDERS: { int *b = (int *)lp; if (b) { b[0] = 0; b[1] = 2; b[2] = 2; } return TRUE; }
+    case SB_GETBORDERS: { int *b = (int *)lp; if (b) { b[0] = 0; b[1] = 2 * cc_k(h); b[2] = 2 * cc_k(h); } return TRUE; }
     case SB_SETMINHEIGHT: s->minh = (int)wp; return 0;
     case SB_SETTIPTEXTW: case SB_GETTIPTEXTW: return 0;
     case SB_SETBKCOLOR: return CLR_DEFAULT;
@@ -311,7 +313,7 @@ static void ud_attach(HWND h, UD *u)
     RECT br;
     GetWindowRect(u->buddy, &br);
     MapWindowPoints(NULL, GetParent(h), (POINT *)&br, 2);
-    int w = 17;
+    int w = 17 * cc_k(h);
     if (st & UDS_ALIGNRIGHT) {
         SetWindowPos(u->buddy, 0, 0, 0, br.right - br.left - w, br.bottom - br.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         SetWindowPos(h, 0, br.right - w, br.top, w, br.bottom - br.top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -432,19 +434,19 @@ typedef struct { int lo, hi, pos, page, line, drag, focus; } TB;
 static void tb_geo(HWND h, TB *t, RECT *chan, RECT *thumb)
 {
     RECT c; GetClientRect(h, &c);
-    int vert = (GetWindowLongW(h, GWL_STYLE) & TBS_VERT) != 0;
+    int vert = (GetWindowLongW(h, GWL_STYLE) & TBS_VERT) != 0, k = cc_k(h);
     if (vert) {
         int x = (c.left + c.right) / 2;
-        SetRect(chan, x - 2, c.top + 8, x + 2, c.bottom - 8);
+        SetRect(chan, x - 2 * k, c.top + 8 * k, x + 2 * k, c.bottom - 8 * k);
         int len = chan->bottom - chan->top;
         int y = t->hi > t->lo ? chan->top + (int)((long long)(t->pos - t->lo) * len / (t->hi - t->lo)) : chan->top;
-        SetRect(thumb, x - 10, y - 5, x + 10, y + 5);
+        SetRect(thumb, x - 10 * k, y - 5 * k, x + 10 * k, y + 5 * k);
     } else {
         int y = (c.top + c.bottom) / 2;
-        SetRect(chan, c.left + 8, y - 2, c.right - 8, y + 2);
+        SetRect(chan, c.left + 8 * k, y - 2 * k, c.right - 8 * k, y + 2 * k);
         int len = chan->right - chan->left;
         int x = t->hi > t->lo ? chan->left + (int)((long long)(t->pos - t->lo) * len / (t->hi - t->lo)) : chan->left;
-        SetRect(thumb, x - 5, y - 10, x + 5, y + 10);
+        SetRect(thumb, x - 5 * k, y - 10 * k, x + 5 * k, y + 10 * k);
     }
 }
 
@@ -549,9 +551,13 @@ LRESULT CALLBACK TrackbarProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 /* =======================================================================
  * Tab control
  * ======================================================================= */
-typedef struct { int n; WCHAR *text[64]; LPARAM param[64]; int image[64]; int cur, focus; HFONT font; HIMAGELIST il; int fixw, fixh, padx, pady, minw; } Tab;
+typedef struct { int n; WCHAR *text[64]; LPARAM param[64]; int image[64]; int cur, focus; HFONT font; HIMAGELIST il; int fixw, fixh, padx, pady, pad_set, minw; } Tab;
 
 /* The image list's icon size (0 without one) */
+/* TCM_SETPADDING's, else 6 x 3 at 96 DPI */
+static int tab_padx(HWND h, Tab *t) { return t->pad_set ? t->padx : 6 * cc_k(h); }
+static int tab_pady(HWND h, Tab *t) { return t->pad_set ? t->pady : 3 * cc_k(h); }
+
 static void tab_icon(Tab *t, int *cx, int *cy)
 {
     *cx = *cy = 0;
@@ -563,21 +569,22 @@ static int tab_row_h(HWND h, Tab *t)
     if (t->fixh) return t->fixh;
     int ix, iy, fh = cc_font_h(t->font ? t->font : cc_font_for(h));
     tab_icon(t, &ix, &iy);
-    return (iy > fh ? iy : fh) + 2 * t->pady + 4;
+    return (iy > fh ? iy : fh) + 2 * tab_pady(h, t) + 4 * cc_k(h);
 }
 
 static void tab_rect(HWND h, Tab *t, int i, RECT *r)
 {
     HDC dc = GetDC(NULL);
     HGDIOBJ of = SelectObject(dc, wfont(h, t->font));
-    int x = 2, fixed = (GetWindowLongW(h, GWL_STYLE) & TCS_FIXEDWIDTH) && t->fixw;   /* TCM_SETITEMSIZE's width */
+    int ck = cc_k(h), px = tab_padx(h, t);
+    int x = 2 * ck, fixed = (GetWindowLongW(h, GWL_STYLE) & TCS_FIXEDWIDTH) && t->fixw;   /* TCM_SETITEMSIZE's width */
     for (int k = 0; k <= i && k < t->n; k++) {
         int ix, iy;                     /* text, the image list's icon width and padding, padding on both sides */
         tab_icon(t, &ix, &iy);
-        int w = fixed ? t->fixw : cc_text_w(dc, t->text[k] ? t->text[k] : L"", -1) + 2 * t->padx +
-                                    (ix ? ix + t->padx : 0);
+        int w = fixed ? t->fixw : cc_text_w(dc, t->text[k] ? t->text[k] : L"", -1) + 2 * px +
+                                    (ix ? ix + px : 0);
         if (!fixed && w < t->minw) w = t->minw;
-        if (k == i) { SetRect(r, x, 2, x + w, 2 + tab_row_h(h, t)); break; }
+        if (k == i) { SetRect(r, x, 2 * ck, x + w, 2 * ck + tab_row_h(h, t)); break; }
         x += w;
     }
     SelectObject(dc, of);
@@ -591,8 +598,8 @@ static void tab_paint(HWND h, Tab *t, HDC dc)
     RECT c; GetClientRect(h, &c);
     HBRUSH bg = (HBRUSH)SendMessageW(GetParent(h), WM_CTLCOLORDLG, (WPARAM)dc, (LPARAM)h);
     if (bg) FillRect(dc, &c, bg); else cc_fill(dc, &c, GetSysColor(COLOR_3DFACE));
-    int rh = tab_row_h(h, t);
-    RECT body = { c.left, c.top + rh + 1, c.right, c.bottom };
+    int rh = tab_row_h(h, t), k = cc_k(h);
+    RECT body = { c.left, c.top + rh + k, c.right, c.bottom };
     cc_fill(dc, &body, 0xFFFFFF);
     cc_frame(dc, &body, 0xD9D9D9);
     HGDIOBJ of = SelectObject(dc, wfont(h, t->font));
@@ -611,12 +618,12 @@ static void tab_paint(HWND h, Tab *t, HDC dc)
             SendMessageW(GetParent(h), WM_DRAWITEM, di.CtlID, (LPARAM)&di);
             continue;
         }
-        if (sel) { r.top -= 2; r.bottom += 1; }
+        if (sel) { r.top -= 2 * k; r.bottom += k; }
         cc_fill(dc, &r, sel ? 0xFFFFFF : 0xF0F0F0);
         RECT fr = r;
-        if (sel) fr.bottom -= 1;
+        if (sel) fr.bottom -= k;
         cc_frame(dc, &fr, 0xD9D9D9);
-        if (sel) { RECT cover = { r.left + 1, r.bottom - 2, r.right - 1, r.bottom }; cc_fill(dc, &cover, 0xFFFFFF); }
+        if (sel) { RECT cover = { r.left + 1, r.bottom - 2 * k, r.right - 1, r.bottom }; cc_fill(dc, &cover, 0xFFFFFF); }
         SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
         DrawTextW(dc, t->text[i] ? t->text[i] : L"", -1, &r, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_HIDEPREFIX);
     }
@@ -632,7 +639,6 @@ LRESULT CALLBACK TabProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         t = calloc(1, sizeof(Tab));
         if (!t) return FALSE;
         t->cur = -1;
-        t->padx = 6; t->pady = 3;
         ctl_set(h, t);
         return DefWindowProcW(h, msg, wp, lp);
     case WM_NCDESTROY:
@@ -731,7 +737,7 @@ LRESULT CALLBACK TabProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case TCM_SETITEMSIZE: { LRESULT o = MAKELONG(t->fixw, t->fixh); t->fixw = LOWORD(lp); t->fixh = HIWORD(lp); return o; }
     case TCM_SETIMAGELIST: { HIMAGELIST o = t->il; t->il = (HIMAGELIST)lp; return (LRESULT)o; }
     case TCM_SETMINTABWIDTH: { int o = t->minw; t->minw = (int)lp < 0 ? 0 : (int)lp; return o; }
-    case TCM_SETPADDING: t->padx = (short)LOWORD(lp); t->pady = (short)HIWORD(lp); InvalidateRect(h, NULL, TRUE); return 0;
+    case TCM_SETPADDING: t->padx = (short)LOWORD(lp); t->pady = (short)HIWORD(lp); t->pad_set = 1; InvalidateRect(h, NULL, TRUE); return 0;
     case TCM_GETIMAGELIST: return (LRESULT)t->il;
     case TCM_HITTEST: {
         TCHITTESTINFO *hi = (TCHITTESTINFO *)lp;
@@ -741,9 +747,9 @@ LRESULT CALLBACK TabProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
     case TCM_ADJUSTRECT: {
         RECT *r = (RECT *)lp;
-        int rh = tab_row_h(h, t) + 2;
-        if (wp) { r->top -= rh; r->left -= 3; r->right += 3; r->bottom += 3; }
-        else { r->top += rh + 2; r->left += 3; r->right -= 3; r->bottom -= 3; }
+        int k = cc_k(h), rh = tab_row_h(h, t) + 2 * k;
+        if (wp) { r->top -= rh; r->left -= 3 * k; r->right += 3 * k; r->bottom += 3 * k; }
+        else { r->top += rh + 2 * k; r->left += 3 * k; r->right -= 3 * k; r->bottom -= 3 * k; }
         return 0;
     }
     }

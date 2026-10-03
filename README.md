@@ -96,7 +96,8 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
   in a window you can resize, maximize or snap (the page is laid out
   again to fit).
 - **Command line**: the Terminal's own commands (`dir`, `copy`, `ping`,
-  `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`…)
+  `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`,
+  `devices`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
   `more`, `less` (git's pager), `timeout`, `taskkill`, `reg`, `regsvr32`, `msiexec` and
   `intl` (the user's regional format).
@@ -107,7 +108,7 @@ The dock's App Store downloads the official 64-bit packages of 21 open-source
 programs (Firefox, VLC, LibreOffice, GIMP, Notepad++, PuTTY…) and six
 runtimes, and installs them with 7-Zip, NovaOS's Windows Installer or the
 program's own setup.  `store install NAME` in the Terminal does what the
-row's button does (CI installs Mesa 3D, DXVK and Venus that way).  Most of those programs still need more of Windows than
+row's button does (CI installs Mesa 3D, DXVK and Venus that way), and `store open` opens it.  Its list scrolls with the same scroll bar as File Explorer's.  Most of those programs still need more of Windows than
 NovaOS has (more of the GUI); the ones in the table
 above are the ones verified.  See [the App Store](docs/HISTORY.md#the-app-store).
 
@@ -561,6 +562,9 @@ os/
   Silicon and Intel).
 - [docs/ROADMAP.md](docs/ROADMAP.md): the compatibility strategy and what
   comes next.
+- [docs/hardware.md](docs/hardware.md): the reference PC for real
+  hardware, which of its devices NovaOS drives, and every driver NovaOS
+  has.
 - [docs/HISTORY.md](docs/HISTORY.md): what every phase added, in detail.
 - [docs/phase1-architecture.md](docs/phase1-architecture.md): the boot flow,
   address-space layout and early kernel design.

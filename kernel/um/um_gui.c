@@ -229,8 +229,10 @@ static void gui_paint(WND *w)
 /* The foreground process: the one whose window is active (an owned
  * dialog's, a modal one's), which the scheduler gives NT's foreground
  * boost (scheduler.h, BOOST_FOREGROUND).  Not a process of the IDLE class,
- * as on Windows; none while a built-in app (the Terminal, Settings) or the
- * desktop itself is active.  Desktop thread, DesktopLock held: called
+ * as on Windows.  While a Terminal is active, the console program running
+ * in it (a console's programs are foreground while their console window
+ * is, on Windows); none while another built-in app (Settings, File
+ * Explorer) or the desktop itself is active.  Desktop thread, DesktopLock held: called
  * every pass of its loop (each tick), so it follows every way the active
  * window changes (a click, Alt+Tab, a window closed or minimized). */
 void UmUpdateForeground(void)
@@ -239,8 +241,11 @@ void UmUpdateForeground(void)
     UmProcess *p = NULL;
     if (w && w->on_paint == gui_paint && w->user) {
         GuiWin *g = w->user;
-        if (g->proc && !g->proc->exited && g->proc->prio_class != 1 /* PROCESS_PRIORITY_CLASS_IDLE */) p = g->proc;
+        p = g->proc;
+    } else {
+        p = TerminalProgram(w);                 /* a console program while its Terminal is active */
     }
+    if (p && (p->exited || p->prio_class == 1 /* PROCESS_PRIORITY_CLASS_IDLE */)) p = NULL;
     if (sched_foreground() != p) sched_set_foreground(p);
 }
 

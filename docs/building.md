@@ -501,7 +501,12 @@ script builds, an SVG without a size and an iframe holding a frameset
 page: the test checks the SVGs' colours and sizes (the unsized one at the
 default 300 x 150), the list items and both frames on the screen, clicks the page's box (a script changes it) and
 checks the page was redrawn with it changed and the rest still there (`nstest-before.png`,
-`nstest-after.png`), then closes NetSurf with Alt+F4.  Last, `explorer
+`nstest-after.png`), then closes NetSurf with Alt+F4.  Then `store scroll
+bar` runs `store open` and checks, from the `[STORE] view:` lines the App
+Store logs when its view changes, that All apps has a vertical scroll bar
+and that the wheel, Home, Page Down, End, a click on the bar's down arrow,
+one in its trough and a drag of its thumb each scroll the list, then
+closes the Store with Esc.  Last, `explorer
 scroll bars` opens File Explorer on `C:\Windows\System32` (more files than
 fit) and checks, from the `[EXPLORER]` lines it logs when its view
 changes, that the list has a vertical scroll bar and that the wheel, Page
@@ -780,6 +785,9 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
 
 - **Serial log**: every kernel message goes to COM1 (your terminal under
   `run`).  In NovaOS, the Terminal's `dmesg` shows it.
+- **`devices`** in the Terminal lists the PCI devices and the driver
+  each one has (missing drivers in red); on a real PC this is the first
+  thing to check ([hardware.md](hardware.md)).
 - **Program crashes** are logged with the faulting module and offset, the
   process's exit code, and `OutputDebugString` output.
 - **`trace NAME`** in the Terminal logs the failing system calls (with file
