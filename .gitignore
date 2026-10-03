@@ -5,3 +5,5 @@ __pycache__/
 /nova.iso
 *.iso
 selftest-out/
+# Self-test screenshots and logs (tools/selftest.py output)
+/selftest-out/

@@ -44,7 +44,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **MSYS2 runtime** (MinGit's `usr\bin`) | `sh.exe` (bash), `ls`, `cat`, `wc`… | Interactive `sh --login -i` sessions in the Terminal (prompt, line editing, colours); `sh -c` with pipes, `$(...)`, subshells, globbing, `fork`, `/dev/null`. |
 | **Neovim 0.10 and 0.11** (x64 `.zip`) | Full-screen terminal editor (libuv, LuaJIT) | Opens a file, edits it, `:wq` saves it and exits with code 0; `nvim -l` scripts, `vim.system`, `jobstart` and RPC to an embedded `nvim`. |
 | **Eclipse Temurin 21** | Java JRE `.msi`, JDK `.zip` | `java -version`, a threads/exceptions/files stress test, `javac` compiling a program that then runs. |
-| **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes. |
+| **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes; globalization through ICU, so German and Japanese numbers, dates, names and sorting come out as on Windows (`tests/dotnet/culturetest.cs`). |
 | **Node.js 24** | `.msi`, `.zip` | `node -v`, `-e`, `npm -v`, a crypto/fs/JSON/timers test script; the `.msi` runs its 64-bit and 32-bit custom actions, makes its Start menu shortcuts and uninstalls. |
 | **Windows Installer packages** | 7-Zip, CMake, Node.js, Temurin, KeePassXC `.msi` | 7-Zip and CMake install through their own wizards (licence, options, feature tree, progress), CMake's dialogs running its DLL custom actions; custom-action DLLs run in 64-bit and 32-bit custom-action servers; shortcuts and a test service are created and removed again by `msiexec /x`. |
 | **Python 3.14** | NuGet package | `-c`, a hashlib/JSON/regex/threads/subprocess test script. |
@@ -134,6 +134,11 @@ every part, phase by phase.
   layouts.
 - **Media tools**: a current Windows build of ffmpeg runs unchanged and
   converts H.264 and AAC to VP9 and Opus with all its threads.
+- **ICU** as Windows 10 ships it: `icu.dll` (ICU 77.1, x64 and x86,
+  built by `tools/build_icu.py`) with its data in
+  `C:\Windows\Globalization\ICU`.  .NET does its globalization through
+  it, and kernel32 answers `GetLocaleInfoEx` from it for every one of the
+  864 Windows locales.
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions; registry saved to disk;
   COM in-process servers and type libraries; drag and drop; a shared clipboard; `.lnk`
@@ -212,18 +217,18 @@ To make the ISO yourself from a fresh build, run
   loader layouts, ntdll's stubs and the system-call numbers, against
   Windows 10 1903 x64), `filetest`, `pipetest`, `proctest`, `sectest`,
   `acltest` (64- and 32-bit), `guitest auto`, `anitest` (animated
-  cursors and program pointers), `disptest`, `comtest`, `tlbtest` (type
-  libraries, 64- and 32-bit), `usptest` (Arabic and Devanagari shaped
-  through Uniscribe and drawn by `ExtTextOut`, 64- and 32-bit), `cppeh`,
-  `battery` (against the battery in `tests/acpi/battery.asl`),
-  `soundtest` (the recorded WAV must hold the tones played), `soundtest
-  record`, `capture` and `volume` (`waveIn` and WASAPI capture must
-  record the tone the microphone hears, and a quarter of the endpoint
-  volume must sound 12 dB quieter), an installer that replaces a running
-  program and finishes after a restart (`filetest install`, `shutdown
-  /r`, `filetest installed`), and last `crash kernel`, a deliberate
-  kernel fault whose serial log must show a backtrace with function
-  names.<!-- END generated:core-tests -->
+  cursors and program pointers), `disptest`, `icutest` (ICU and locales,
+  64- and 32-bit), `comtest`, `tlbtest` (type libraries, 64- and
+  32-bit), `usptest` (Arabic and Devanagari shaped through Uniscribe and
+  drawn by `ExtTextOut`, 64- and 32-bit), `cppeh`, `battery` (against
+  the battery in `tests/acpi/battery.asl`), `soundtest` (the recorded
+  WAV must hold the tones played), `soundtest record`, `capture` and
+  `volume` (`waveIn` and WASAPI capture must record the tone the
+  microphone hears, and a quarter of the endpoint volume must sound 12
+  dB quieter), an installer that replaces a running program and finishes
+  after a restart (`filetest install`, `shutdown /r`, `filetest
+  installed`), and last `crash kernel`, a deliberate kernel fault whose
+  serial log must show a backtrace with function names.<!-- END generated:core-tests -->
 - **Graphics tests**: `tools/d2dtest` (Direct2D geometry answers, and a
   scene that must match the reference `tools/d2dtest/reference.py` draws
   with Skia), then installs Mesa 3D and DXVK with the App Store
@@ -241,14 +246,14 @@ after a build.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
-<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, ffmpeg (an MP4 converted to WebM) and Notepad++<!-- END generated:corpus -->, whose screenshot must match `tests/reference/notepad++.png`.
+<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM) and Notepad++<!-- END generated:corpus -->, whose screenshot must match `tests/reference/notepad++.png`.
 It also checks NovaOS's own screens: `dir` on C: and on an NTFS drive D:
 (each with its own free space) and File Explorer's This PC listing both.
 It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `disptest`, `dlltest`, `filetest`, `pipetest`, `posixtest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `disptest`, `dlltest`, `filetest`, `icutest`, `pipetest`, `posixtest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
   through `waveIn` and WASAPI capture;
   `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`
@@ -331,7 +336,7 @@ os/
 │   ├── programs/         # cmd.exe, msiexec, reg, find..., samples and self-tests
 │   ├── netsurf/          # NetSurf port: fetcher, window surface, fonts
 │   └── include/          # The Windows SDK headers NovaOS provides
-├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), HarfBuzz, FreeType, NetSurf, stb, fonts, 7-Zip installer
+├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), HarfBuzz, FreeType, NetSurf, stb, fonts, ICU (icu.dll + data), 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
 │                         #   make_icons.py, mkani.py, pe_imports.py, msitest/, docgen.py
 ├── tests/                # CI self-tests and app corpus (one file per test), ACPI
@@ -395,7 +400,7 @@ os/
 
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
-code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; uACPI: MIT; musl's libm: MIT; HarfBuzz: MIT; FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
+code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; uACPI: MIT; musl's libm: MIT; ICU: Unicode License v3 (`third_party/icu/LICENSE`); kernel32's locale table, from .NET: MIT; HarfBuzz: MIT; FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,
 but independently written.
 

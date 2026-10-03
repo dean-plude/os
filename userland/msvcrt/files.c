@@ -223,9 +223,14 @@ CRTEXP void _wassert(const wchar_t *expr, const wchar_t *file, unsigned line)
  * Time: _time64 and friends (time_t is already 64-bit), _time32 & co.,
  * and the time zone (NovaOS keeps UTC)
  * ----------------------------------------------------------------------- */
-static int   g_daylight;
-static long  g_timezone;
-static char *g_tzname[2] = { "UTC", "UTC" };
+/* the variables themselves are exported too (old msvcrt.dll programs and
+ * MinGW-built DLLs such as icu.dll import them as data) */
+CRTEXP int   _daylight;
+CRTEXP long  _timezone;
+CRTEXP char *_tzname[2] = { "UTC", "UTC" };
+#define g_daylight _daylight
+#define g_timezone _timezone
+#define g_tzname   _tzname
 CRTEXP int   *__daylight(void) { return &g_daylight; }
 CRTEXP long  *__timezone(void) { return &g_timezone; }
 CRTEXP char **__tzname(void)   { return g_tzname; }

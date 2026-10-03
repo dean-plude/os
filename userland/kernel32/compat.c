@@ -1087,7 +1087,6 @@ K32 BOOL WINAPI GetStringTypeExA(LCID lcid, DWORD type, LPCSTR src, int n, LPWOR
 
 typedef BOOL (CALLBACK *LOCALE_ENUMPROCA_)(LPSTR);
 typedef BOOL (CALLBACK *LOCALE_ENUMPROCW_)(LPWSTR);
-K32 BOOL WINAPI EnumSystemLocalesA(LOCALE_ENUMPROCA_ fn, DWORD flags) { (void)flags; fn("00000409"); return TRUE; }
 
 /* -----------------------------------------------------------------------
  * Resources
@@ -1595,20 +1594,6 @@ static int idn_copy(LPCWSTR src, int n, LPWSTR dst, int cap)
 }
 K32 int WINAPI IdnToAscii(DWORD flags, LPCWSTR src, int n, LPWSTR dst, int cap) { (void)flags; return idn_copy(src, n, dst, cap); }
 K32 int WINAPI IdnToUnicode(DWORD flags, LPCWSTR src, int n, LPWSTR dst, int cap) { (void)flags; return idn_copy(src, n, dst, cap); }
-WINBASEAPI BOOL WINAPI IsValidLocaleName(LPCWSTR n);
-/* The specific locale for a name: "en" and en-US resolve to en-US, the
- * invariant one to itself, an unknown name to nothing */
-K32 int WINAPI ResolveLocaleName(LPCWSTR name, LPWSTR out, int cap)
-{
-    static const WCHAR en[] = L"en-US";
-    if (name && !name[0]) { if (out && cap) out[0] = 0; return 1; }
-    if (name && !IsValidLocaleName(name)) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
-    if (!out || !cap) return 6;
-    if (cap < 6) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
-    memcpy(out, en, sizeof(en));
-    return 6;
-}
-
 /* -----------------------------------------------------------------------
  * Console: the terminal is a stream of text; input records are made from
  * the characters typed, the screen buffer is the one the terminal shows
