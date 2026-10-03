@@ -1,7 +1,10 @@
-# nstest: NetSurf (Phase 19.8) shows an SVG image and redraws a page a
-# script changes after layout.  nstest writes the page and starts NetSurf;
-# this test looks at the screen: the SVG's red circle, blue rectangle and
-# green outline and the page's yellow box, then clicks the box (its script
+# nstest: NetSurf (Phase 19.8) shows an SVG image, an svg element written
+# inline in the HTML and a list a script builds, and redraws a page a script
+# changes after layout.  nstest writes the page and starts NetSurf; this
+# test looks at the screen: the SVG's red circle, blue rectangle and green
+# outline, the inline SVG's magenta square and cyan circle (at the size its
+# width, height and viewBox give), the three list items (orange, purple,
+# teal) and the page's yellow box, then clicks the box (its script
 # turns it green and bigger) and waits for the green box with the yellow
 # one gone, then closes NetSurf with Alt+F4 (nstest passes when NetSurf
 # exits normally).  A screenshot of each state is kept in --out.
@@ -51,7 +54,14 @@ COLOURS = {                 # name: test on (r, g, b)
     'outline': lambda r, g, b: g > 140 and g < 180 and r < 25 and b < 25,
     'yellow': lambda r, g, b: r > 235 and g > 235 and b < 20,
     'green': lambda r, g, b: g > 235 and r < 20 and b < 20,
+    'magenta': lambda r, g, b: r > 235 and b > 235 and g < 20,
+    'cyan': lambda r, g, b: g > 235 and b > 235 and r < 20,
+    'orange': lambda r, g, b: r > 235 and 110 < g < 145 and b < 20,
+    'purple': lambda r, g, b: 110 < r < 145 and g < 20 and b > 235,
+    'teal': lambda r, g, b: r < 20 and 110 < g < 145 and 110 < b < 145,
 }
+INLINE = ('magenta', 'cyan')
+LIST = ('orange', 'purple', 'teal')
 
 
 def census(path):
@@ -89,10 +99,22 @@ def look_and_click(nova):
     SEEN['why'] = None
     out = os.path.join(getattr(sys.modules['__main__'], 'OUT', '.'), 'nstest')   # selftest.py's --out
     before = wait_for(nova, out + '-before.png',
-                      lambda c: all(c[k][0] > 200 for k in ('red', 'blue', 'yellow')) and c['outline'][0] > 50, 240)
+                      lambda c: all(c[k][0] > 200 for k in ('red', 'blue', 'yellow') + INLINE + LIST)
+                      and c['outline'][0] > 50, 240)
     miss = [k for k in ('red', 'blue', 'outline', 'yellow') if before[k][0] < (50 if k == 'outline' else 200)]
+    # (one census sample is one logical pixel: the inline SVG's square is
+    # 20 viewBox units = 80 pixels a side, its circle 64 pixels across; a
+    # list item is 100 x 20 pixels)
+    sq, circ = before['magenta'][0], before['cyan'][0]
     if miss:
         SEEN['why'] = 'no ' + ', '.join(miss) + ' on the screen (the SVG image or the page did not show)'
+    elif not sq or not circ:
+        SEEN['why'] = 'no inline SVG on the screen (magenta %d, cyan %d pixels)' % (sq, circ)
+    elif not (5000 < sq < 8000 and 2600 < circ < 4000):
+        SEEN['why'] = 'the inline SVG has the wrong size (magenta %d of 6400, cyan %d of 3217 pixels)' % (sq, circ)
+    elif [k for k in LIST if not 1500 < before[k][0] < 2500]:
+        SEEN['why'] = 'the script-built list is wrong (%s of 2000 pixels each)' % \
+            ', '.join('%s %d' % (k, before[k][0]) for k in LIST)
     elif before['green'][0] > 50:
         SEEN['why'] = 'the box was green before the click'
     else:
@@ -105,6 +127,8 @@ def look_and_click(nova):
                 (after['green'][0], after['yellow'][0])
         elif after['red'][0] < 200 or after['blue'][0] < 200:
             SEEN['why'] = 'the SVG image went missing when the page was laid out again'
+        elif [k for k in INLINE + LIST if after[k][0] < 1000]:
+            SEEN['why'] = 'the inline SVG or the list went missing when the page was laid out again'
     time.sleep(1)
     nova.qmp.key('alt', 'f4')
 

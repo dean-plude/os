@@ -1,18 +1,22 @@
 /*
- * nstest.exe — the NetSurf browser shows SVG images and redraws a page a
- *              script changes after layout (Phase 19.8)
+ * nstest.exe — the NetSurf browser shows SVG images, inline SVG and a
+ *              script-built list, and redraws a page a script changes after
+ *              layout (Phase 19.8)
  *
  *   nstest      writes a test page and an SVG image to C:\Temp\nstest,
  *               starts C:\Programs\NetSurf\netsurf.exe on the page and
  *               waits for the browser to quit
  *
  * The page shows the SVG (a blue rectangle with a green outline and a red
- * circle, drawn by NetSurf's path plotter) and a yellow box; clicking the
- * box runs a script that turns it green, makes it bigger and adds text
- * (an attribute and a new text node, after the page was laid out).  The
- * self-test (tests/selftest/graphics/060-nstest.py) looks at the screen:
- * the SVG's colours and the yellow box, then clicks the box and waits for
- * the green one, then closes the browser with Alt+F4.  nstest passes when
+ * circle, drawn by NetSurf's path plotter), an svg element written inline
+ * in the HTML (a magenta square and a cyan circle, its viewBox scaled 4x),
+ * a list a script builds (three items in orange, purple and teal) and a
+ * yellow box; clicking the box runs a script that turns it green, makes it
+ * bigger and adds text (an attribute and a new text node, after the page
+ * was laid out).  The self-test (tests/selftest/graphics/060-nstest.py)
+ * looks at the screen: the SVG's colours, the inline SVG's, the list items
+ * and the yellow box, then clicks the box and waits for the green one,
+ * then closes the browser with Alt+F4.  nstest passes when
  * NetSurf exits normally (code 0) within the time limit.
  */
 #include <windows.h>
@@ -32,6 +36,20 @@ static const char PAGE[] =
     "</head><body>\n"
     "<p>An SVG image:</p>\n"
     "<img src=\"shape.svg\" width=\"200\" height=\"120\">\n"
+    "<p>Inline SVG:</p>\n"
+    "<svg width=\"160\" height=\"80\" viewBox=\"0 0 40 20\">\n"
+    "  <rect x=\"0\" y=\"0\" width=\"20\" height=\"20\" fill=\"#ff00ff\"/>\n"
+    "  <circle cx=\"30\" cy=\"10\" r=\"8\" fill=\"#00ffff\"/>\n"
+    "</svg>\n"
+    "<ul id=\"list\"></ul>\n"
+    "<script>\n"
+    "var colours = ['#ff8000', '#8000ff', '#008080'];\n"
+    "for (var i = 0; i < colours.length; i++) {\n"
+    "  var li = document.createElement('li');\n"
+    "  li.setAttribute('style', 'background: ' + colours[i] + '; width: 100px; height: 20px');\n"
+    "  document.getElementById('list').appendChild(li);\n"
+    "}\n"
+    "</script>\n"
     "<div id=\"box\" onclick=\"change()\">click me</div>\n"
     "<script>\n"
     "function change() {\n"

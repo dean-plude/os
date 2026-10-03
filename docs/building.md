@@ -441,8 +441,9 @@ of each while it draws.  The graphics boot has a second monitor (a QEMU
 which checks the monitor calls and layout changes; when it asks, the test
 pushes the pointer across onto the second monitor, and the screenshot is
 one PNG per monitor (`montest.png`, `montest-2.png`).  Then `nstest`
-starts NetSurf on a page with an SVG image: the test checks the image's
-colours on the screen, clicks the page's box (a script changes it) and
+starts NetSurf on a page with an SVG image, an inline `<svg>` and a list a
+script builds: the test checks the SVGs' colours and sizes and the list
+items on the screen, clicks the page's box (a script changes it) and
 checks the page was redrawn with it changed (`nstest-before.png`,
 `nstest-after.png`), then closes NetSurf with Alt+F4.  The network suite (`tests/selftest/network4` and
 `network6`) boots twice with a virtio-net
