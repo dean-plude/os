@@ -242,7 +242,10 @@ void um_ob_wake(UmObject *o)
         for (int i = 0; i < w->wait_n; i++) {
             if (w->wait_objs[i] != o) continue;
             w->wake = 1;
-            if (w->kt) sched_unblock(w->kt);
+            if (w->kt) {                                    /* (a timer's waiter runs at once: scheduler.h) */
+                if (o->type == UO_TIMER) sched_unblock_timer(w->kt);
+                else sched_unblock(w->kt);
+            }
             break;
         }
     }

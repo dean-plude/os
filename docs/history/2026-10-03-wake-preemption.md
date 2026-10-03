@@ -1,30 +1,39 @@
-## Woken threads preempt the running one
+## Timer wake-ups preempt the running thread
 
-A thread already waiting on an event, a timer or another object used to
-wait for the running thread's 20 ms time slice to end once another thread
-signalled it, when every CPU was busy.  It now runs at once.
+A thread already waiting on a waitable timer when another thread set the
+timer (a timer queue's worker, say) used to wait for the running thread's
+20 ms time slice to end before it could look at the new due time, when
+every CPU was busy.  Now it runs at once, as a thread woken by its own
+deadline already did.
 
-- **The scheduler** (`kernel/ke/scheduler.c`): `sched_unblock` puts a
-  woken thread first in its CPU's run queue and preempts the thread
-  running there when the woken one has a higher priority, or the same
-  priority and a TSC-deadline wait (every wait and `Sleep` of a program),
-  which is what NT's wait boost gives an event's or a timer's waiter.  A
-  halted CPU takes the thread if there is one; otherwise the waker sends
-  the thread's CPU an `IPI_WAKE` (itself too, taken once it re-enables
-  interrupts) and that CPU switches in the interrupt.  This is the same
-  rule a thread woken by its own deadline already had.
-- **Fair turns**: the preempted thread goes back first in the queue (as
-  on NT), not last, so a waker its wakee preempts doesn't wait out every
-  other thread's slice.  A time slice starts anew only when a thread is
-  queued last: one woken or preempted often keeps the ticks it has used,
-  and once its slice is used up a wake no longer puts it first, so the
-  threads queued behind it cannot starve.
-- **A CPU halted waiting for the kernel lock** does not switch in the
-  middle of that wait (as with the timer); its next timer tick does.
+- **The scheduler** (`kernel/ke/scheduler.c`): a thread woken from a wait
+  preempts the running thread when it has a higher priority, or the same
+  priority and a timer woke it (`sched_unblock_timer`, which `um_ob_wake`
+  uses for a timer object's waiters).  It goes first in its CPU's run
+  queue; a halted CPU takes it if there is one, otherwise the waker sends
+  the thread's CPU `IPI_WAKE` (itself too, taken once it re-enables
+  interrupts) with a reschedule flag, and that CPU switches in the
+  interrupt.  A CPU halted waiting for the kernel lock doesn't switch in
+  the middle of that wait; its next timer tick does.
+- **The preempted thread** goes back after the woken threads but ahead of
+  the rest (as on NT), not last, so a waker its wakee preempts doesn't
+  wait out every other thread's slice; and it keeps what it has used of
+  its slice, so one preempted often still reaches the end of it and the
+  threads behind it are not starved.
+- **Other wakes are as they were.**  An event set or a lock released with
+  no priority difference doesn't preempt, and the thread is queued last:
+  preempting there made lock convoys (smpstress's critical section shared
+  by 8 threads took about 3 times as long).  Wider versions of this change
+  also starved the desktop thread for 3 s once, and let a waiter woken
+  while a higher-priority thread ran wait behind the thread it had
+  preempted, which CI's `sleeptest timer` caught.
 - **Measured** with `sleeptest timer` on two CPUs in QEMU, a busy thread
-  on each: a thread waiting on an event ran 8.96 ms (95th percentile,
-  median 8.8 ms) after another thread set it; now 0.05 to 0.06 ms.  The
-  1 ms timer queue timer (its worker already waiting when the timer is
-  set), which could be up to 20 ms late, is 0.22 to 0.31 ms.  `sleeptest
-  timer` gains the event case ("Event set (waiter)") and now judges the
-  timer queue case too, both held to 1 ms like the others.
+  on each: the 1 ms timer queue timer was 9 to 19 ms late (95th
+  percentile) and is now 0.21 to 0.44 ms late over twenty runs.
+  `sleeptest timer` now judges the timer queue case, and reports (without
+  judging) how soon a thread waiting on an event runs once another thread
+  sets it (9 to 19 ms under load, as before).
+- **Not changed**: under load in QEMU the timer interrupt itself sometimes
+  fires 1 to 10 ms late (a debug count found as many late fires with the
+  old scheduler), so a rare `sleeptest timer` run can still slip past
+  1 ms on one case.

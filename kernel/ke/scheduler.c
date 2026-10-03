@@ -83,9 +83,7 @@ static uint64_t tsc_at_boot;
  * Run queues (the queue's lock held)
  * ----------------------------------------------------------------------- */
 
-/* Queue @t last: it starts a new time slice when it runs (one queued first,
- * rq_enqueue_front, keeps what it has used of its last: see wake_preempts) */
-static void rq_insert(RunQueue *rq, Thread *t)
+static void rq_enqueue(RunQueue *rq, Thread *t)
 {
     t->state = THREAD_READY;
     if (!rq->head) {
@@ -103,13 +101,36 @@ static void rq_insert(RunQueue *rq, Thread *t)
     rq->count++;
 }
 
-static void rq_enqueue(RunQueue *rq, Thread *t)
+/* A woken thread that should run now: first in the queue */
+static void rq_enqueue_front(RunQueue *rq, Thread *t)
 {
-    t->ticks_slice = 0;
-    rq_insert(rq, t);
+    rq_enqueue(rq, t);
+    rq->head = t;                                   /* (the circle's tail, now its head) */
+    t->woken = true;
 }
 
-static void rq_enqueue_front(RunQueue *rq, Thread *t);
+/* A thread preempted for one woken by a timer (sched_unblock_timer): after
+ * the woken threads queued first, but ahead of the threads waiting their
+ * turn, as on NT, not last (else a waker its wakee preempts would wait out
+ * every other thread's slice) */
+static void rq_enqueue_preempted(RunQueue *rq, Thread *t)
+{
+    Thread *c = rq->head;
+    size_t n = 0;
+    while (n < rq->count && c->woken) { c = c->next; n++; }
+    t->preempted = true;
+    if (!c || n == rq->count) {                     /* (none waiting their turn: last) */
+        rq_enqueue(rq, t);
+        return;
+    }
+    t->state = THREAD_READY;
+    t->next = c;                                    /* before c */
+    t->prev = c->prev;
+    c->prev->next = t;
+    c->prev = t;
+    if (c == rq->head) rq->head = t;
+    rq->count++;
+}
 
 /* A thread became runnable (not merely preempted or yielding): let a
  * halted CPU run it — its own, or any idle one, which will steal it */
@@ -125,15 +146,13 @@ static void ready_wake(RunQueue *rq, Thread *t)
  * of the running thread's 20 ms time slice.  Set under the CPU's queue
  * lock, cleared by the CPU's next switch. */
 static volatile bool g_resched[MAX_CPUS];
-/* The switch about to happen on a CPU preempts its thread for a woken one
- * before its time slice ends: the preempted thread goes back first in the
- * queue, as on NT, not last (else a waker its wakee preempts would wait
- * out every other thread's slice) */
+/* The switch about to happen on a CPU is the one g_resched asked for, before
+ * the running thread's slice ends (rq_enqueue_preempted) */
 static bool g_preempting[MAX_CPUS];
-/* (A thread queued first keeps the ticks of its slice it has used, even
- * across waits: so one woken often, or preempted often, still reaches the
- * end of its slice and goes last, and the threads queued behind cannot
- * starve.) */
+/* (The preempted thread also keeps the ticks of its slice it has used,
+ * Thread.preempted: given a new slice at each preemption, one preempted
+ * often would never reach the end of one, and the threads queued behind
+ * it would starve.  A thread that waited starts a new slice.) */
 
 /* Threads above this priority are "foreground" (the desktop, programs, the
  * network); the idle threads and csrss run only when none of those is ready. */
@@ -472,6 +491,8 @@ static void switch_locked(RunQueue *rq)
     if (prev == next) {
         next->state       = THREAD_RUNNING;
         if (!preempted) next->ticks_slice = 0;
+        next->preempted   = false;
+        next->woken       = false;
         spin_unlock(&rq->lock);
         return;
     }
@@ -480,7 +501,7 @@ static void switch_locked(RunQueue *rq)
      * idle thread only ever runs as the fallback above) */
     if (prev->state == THREAD_RUNNING) {
         if (prev->idle) prev->state = THREAD_READY;
-        else if (preempted) rq_enqueue_front(rq, prev);
+        else if (preempted) rq_enqueue_preempted(rq, prev);
         else rq_enqueue(rq, prev);
     }
     /* (a thread is queued only once switched out, under the lock of the
@@ -489,6 +510,9 @@ static void switch_locked(RunQueue *rq)
     next->on_cpu        = true;
     next->cpu           = this_cpu();
     next->state         = THREAD_RUNNING;
+    if (!next->preempted) next->ticks_slice = 0;    /* (a preempted one goes on with its slice) */
+    next->preempted     = false;
+    next->woken         = false;
     kpcr->CurrentThread = next;
     kpcr->Idle          = 0;
     kpcr->PrevThread    = prev;
@@ -678,7 +702,7 @@ void sched_tick(void)
     /* A sleeper that is due runs now, or a thread woken for this CPU
      * (sched_unblock); or the time slice expired */
     bool slice_over = current_thread->ticks_slice >= TICKS_PER_SLICE;
-    if ((preempt || g_resched[cpu]) && !slice_over) g_preempting[cpu] = true;
+    if (g_resched[cpu] && !slice_over) g_preempting[cpu] = true;
     if (preempt || steal_now || g_resched[cpu] || slice_over)
         perform_switch();
 }
@@ -783,12 +807,6 @@ void sched_wait(void)
  * ready again.  One woken by its TSC deadline goes to the front of the
  * queue, and the result says to switch to it now, when it has at least the
  * current thread's priority.  *soonest: the earliest TSC deadline left. */
-static void rq_enqueue_front(RunQueue *rq, Thread *t)
-{
-    rq_insert(rq, t);
-    rq->head = t;                                   /* (the circle's tail, now its head) */
-}
-
 static bool wake_sleepers(RunQueue *rq, uint64_t *soonest)
 {
     bool preempt = false;
@@ -824,33 +842,33 @@ void sched_block(void)
     RunQueue *rq = my_rq();
     spin_lock(&rq->lock);
     current_thread->state = THREAD_WAITING;
-    current_thread->wake_tsc = 0;                   /* (no deadline: see wake_preempts) */
     switch_locked(rq);
     irq_restore(irq);
 }
 
 /* Whether @t, woken in its CPU's queue (locked), should preempt the thread
  * running there: one of higher priority does, and so does one of the same
- * priority waiting with a TSC deadline (a program's wait or Sleep: what
- * NT's wait boost gives an event's or a timer's waiter), as when the
- * deadline itself wakes it (wake_sleepers).  An idle CPU needs no preempting
- * (ready_wake's kick). */
-static bool wake_preempts(const Thread *t)
+ * priority woken by a timer (@timer: the timer it waits on was set or went
+ * off), as when its own deadline wakes it (wake_sleepers).  Other wakes of
+ * the same priority (an event set, a lock released) don't, and are queued
+ * last as before: preempting there makes lock convoys (smpstress's
+ * critical section shared by 8 threads took about 3 times as long).  An
+ * idle CPU needs no preempting (smp_kick). */
+static bool wake_preempts(const Thread *t, bool timer)
 {
     PKPCR k = &g_kpcr[t->cpu];
     Thread *cur = (Thread *)__atomic_load_n(&k->CurrentThread, __ATOMIC_RELAXED);
     if (!k->Online || !cur || cur == t || cur->idle) return false;
-    if (t->ticks_slice >= TICKS_PER_SLICE) return false;   /* (its slice is used up: last in line) */
-    return t->priority > cur->priority || (t->wake_tsc && t->priority >= cur->priority);
+    return t->priority > cur->priority || (timer && t->priority >= cur->priority);
 }
 
-void sched_unblock(Thread *t)
+static void unblock(Thread *t, bool timer)
 {
     IrqState irq;
     RunQueue *rq = lock_thread_rq(t, &irq);
     if (t->state == THREAD_WAITING) {
-        if (wake_preempts(t)) {
-            /* First in its CPU's queue; a halted CPU takes it if there is
+        if (wake_preempts(t, timer)) {
+            /* First in its CPU's queue: a halted CPU takes it if there is
              * one, else its own CPU switches to it at the IPI */
             rq_enqueue_front(rq, t);
             if (!smp_kick(t->cpu)) {
@@ -863,6 +881,9 @@ void sched_unblock(Thread *t)
     }
     spin_unlock_irqrestore(&rq->lock, irq);
 }
+
+void sched_unblock(Thread *t)       { unblock(t, false); }
+void sched_unblock_timer(Thread *t) { unblock(t, true); }
 
 void sched_resched_ipi(void)
 {

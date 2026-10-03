@@ -1,7 +1,7 @@
-# sleeptest timer: Sleep, wait timeouts and waitable timers end, and a thread
-# waiting on an event runs once another sets it, within 1 ms under load (the
-# HPET-calibrated one-shot or TSC-deadline APIC timer, and wake preemption)
-DOC = '`sleeptest timer` (`Sleep(1)`, 1 ms wait timeouts and waitable timers (periodic ones, their completion routines and timer queue timers too) end, and a woken event waiter runs, within a millisecond with every CPU busy)'
+# sleeptest timer: Sleep, wait timeouts and waitable timers (timer queue
+# timers too) end within 1 ms under load (the HPET-calibrated one-shot or
+# TSC-deadline APIC timer, and timer wake-ups preempting the running thread)
+DOC = '`sleeptest timer` (`Sleep(1)`, 1 ms wait timeouts and waitable timers (periodic ones, their completion routines and timer queue timers too) end within a millisecond with every CPU busy)'
 TESTS = [
     Test('sleeptest timer', 'sleeptest timer', [r'sleeptest: resolution \d+\.\d+ ms under load',
                                          r'sleeptest: waitable timers \d+\.\d+ ms under load', r'sleeptest: PASS'],

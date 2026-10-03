@@ -33,8 +33,8 @@ timers still fired on the 10 ms tick.  They now end on the TSC too.
   already waits on it can be late by up to a 20 ms time slice when every
   CPU is busy: a thread woken that way waits for the running thread's
   slice (the scheduler gives woken threads no boost).  `sleeptest timer`
-  reports the timer queue case without judging it.  (Fixed the same day
-  by wake preemption, see "Woken threads preempt the running one": the
-  timer queue case is judged now.)  `NtSetTimer`'s own APC
+  reports the timer queue case without judging it.  (Fixed the same day,
+  see "Timer wake-ups preempt the running thread": the timer queue case
+  is judged now.)  `NtSetTimer`'s own APC
   routine (native callers) is still ignored, and `NtSetTimerEx` is not
   implemented.

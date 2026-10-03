@@ -200,18 +200,18 @@ preempts the running thread when its priority is at least as high, so
 busy (`sleeptest timer`).  Tick work (the tick count, input polling, time
 slices) still happens once per 10 ms.
 
-A thread woken from a wait by another thread (`sched_unblock`: an event
-set, a timer signalled, a wait satisfied) gets the same treatment: it goes
-to the front of its CPU's run queue and preempts the running thread when
-its priority is higher, or the same and it was waiting with a TSC
-deadline (every program's wait).  A halted CPU takes it if one is free;
-otherwise the waker sends the thread's CPU `IPI_WAKE` with a reschedule
-flag set, and that CPU switches in the interrupt (unless it is halted
-waiting for the kernel lock: then its next timer tick switches).  The
-preempted thread goes back first in the queue, and a time slice starts
-anew only when a thread is queued last, so a thread woken often still
-reaches the end of its slice (then a wake no longer puts it first) and
-the threads behind it are not starved.
+A thread woken from a wait by another thread (`sched_unblock`) preempts
+the running thread when its priority is higher, or the same and a timer
+woke it (`sched_unblock_timer`: the waitable timer it waits on was set).
+It goes first in its CPU's run queue; a halted CPU takes it if one is
+free, otherwise the waker sends the thread's CPU `IPI_WAKE` with a
+reschedule flag set, and that CPU switches in the interrupt (unless it is
+halted waiting for the kernel lock: then its next timer tick switches).
+The preempted thread goes back after the woken threads but ahead of the
+rest, and keeps what it has used of its slice.  Other wakes (an event
+set, a lock released, no priority difference) queue the thread last and
+wait for the running thread's slice: preempting a lock's releaser makes
+lock convoys.
 
 ### Scheduler Design
 
