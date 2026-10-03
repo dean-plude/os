@@ -999,7 +999,7 @@ static void acpi_thread(void *arg)
 void AmlInitialize(void)
 {
     if (!AcpiRsdpAddress()) return;
-    g_thread = sched_create_thread("acpi", acpi_thread, NULL, 8);
+    g_thread = sched_create_thread("acpi", acpi_thread, NULL, PRIO_SERVICE);   /* (above programs: scheduler.h) */
 }
 
 bool AmlReady(void) { return g_ready; }

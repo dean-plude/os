@@ -535,6 +535,9 @@ static void check_timeouts(void)
     }
 }
 
+#define NET_POLL_100NS 10000                /* 1 ms: a program waits for data */
+#define NET_BUSY_100NS 2000                 /* 0.2 ms: busy, programs waiting for the CPU */
+
 static void net_thread(void *arg)
 {
     (void)arg;
@@ -585,8 +588,16 @@ static void net_thread(void *arg)
         /* Nothing arriving, no operation under way and nobody waiting for
          * the network: poll again at the next tick instead of keeping a CPU
          * busy.  (The adapter is polled, so replies to a waiting program
-         * are picked up only as fast as this loop comes round.) */
-        if (busy || g_netq.sleepers) sched_yield(); else sched_sleep_tick();
+         * are picked up only as fast as this loop comes round.)  A program
+         * waiting: poll every millisecond, not round and round giving way.
+         * Busy: go round again at once, unless programs are waiting for
+         * this CPU; then let them have it briefly (above programs, a yield
+         * would hand it to one for its whole time slice, and a timed
+         * wake-up preempts it). */
+        if (busy && sched_yield_goes_lower()) sched_sleep_until_tsc(NULL, sched_tsc_after(NET_BUSY_100NS));
+        else if (busy) sched_yield();
+        else if (g_netq.sleepers) sched_sleep_until_tsc(NULL, sched_tsc_after(NET_POLL_100NS));
+        else sched_sleep_tick();
     }
 }
 
@@ -627,7 +638,7 @@ bool NetInitialize(void)
     if (g_nic != &g_none && dhcp_start(&g_netif) != ERR_OK) kprintf("[NET] DHCP could not start\n");
     g_up = true;
 
-    sched_create_thread_ex("net", net_thread, NULL, 8, NET_STACK);
+    sched_create_thread_ex("net", net_thread, NULL, PRIO_DEVICE_IO, NET_STACK);   /* (above programs: scheduler.h) */
     if (g_nic == &g_none) kprintf("[NET] lwIP %s ready; no network adapter, loopback only\n", LWIP_VERSION_STRING);
     else kprintf("[NET] lwIP %s ready; requesting an address via DHCP\n", LWIP_VERSION_STRING);
     return true;

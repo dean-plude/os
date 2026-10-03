@@ -1359,7 +1359,7 @@ void PersistPoll(void)
     if (t - g_seen_tick < 100) return;                    /* wait for a quiet second */
     if (g_failed && t < g_retry_tick) return;
     if (g_save_asked || g_saving) return;                 /* (asked already, or saving) */
-    if (!g_saver) g_saver = sched_create_thread("persist", saver_thread, NULL, 8);
+    if (!g_saver) g_saver = sched_create_thread("persist", saver_thread, NULL, PRIO_SERVICE);   /* (writeback: above programs, below the rest) */
     if (!g_saver) {                                       /* (no thread: save here) */
         g_failed = !save();
         if (g_failed) g_retry_tick = t + 3000;

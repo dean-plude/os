@@ -220,6 +220,24 @@ static void gui_paint(WND *w)
     }
 }
 
+/* The foreground process: the one whose window is active (an owned
+ * dialog's, a modal one's), which the scheduler gives NT's foreground
+ * boost (scheduler.h, BOOST_FOREGROUND).  Not a process of the IDLE class,
+ * as on Windows; none while a built-in app (the Terminal, Settings) or the
+ * desktop itself is active.  Desktop thread, DesktopLock held: called
+ * every pass of its loop (each tick), so it follows every way the active
+ * window changes (a click, Alt+Tab, a window closed or minimized). */
+void UmUpdateForeground(void)
+{
+    WND *w = WmActiveWindow();
+    UmProcess *p = NULL;
+    if (w && w->on_paint == gui_paint && w->user) {
+        GuiWin *g = w->user;
+        if (g->proc && !g->proc->exited && g->proc->prio_class != 1 /* PROCESS_PRIORITY_CLASS_IDLE */) p = g->proc;
+    }
+    if (sched_foreground() != p) sched_set_foreground(p);
+}
+
 /* Windows virtual-key code for a set-1 scan code (keypad keys as with
  * Num Lock off; E0-prefixed ones in the second table) */
 UINT32 UmScancodeToVk(UINT8 sc, bool ext)

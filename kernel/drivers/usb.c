@@ -741,7 +741,7 @@ int UsbInit(void)
     if (ehcis) UsbDelay(20);               /* (devices EHCI passed on show up on the companions) */
     for (int i = first_companion_hc; i < g_nhc; i++) scan_ports(g_hcs[i], true);
     service_hubs();                        /* devices behind hubs */
-    sched_create_thread("usb", usb_thread, NULL, 8);
+    sched_create_thread("usb", usb_thread, NULL, PRIO_DEVICE_IO);   /* (above programs: scheduler.h) */
 
     int n = 0;
     for (int i = 0; i < MAX_DEVS; i++) if (g_devs[i]) n++;
