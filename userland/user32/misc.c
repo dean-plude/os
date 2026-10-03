@@ -345,6 +345,8 @@ USERAPI BOOL SystemParametersInfoW(UINT action, UINT uparam, PVOID p, UINT winin
 {
     (void)uparam; (void)winini;
     switch (action) {
+    case 0x0057:                                            /* SPI_SETCURSORS: NovaOS's own back */
+        return NtNovaGuiCtl(0, CTL_SET_SYSCURSOR, 0, NULL) ? TRUE : FALSE;
     case 0x0030: {                                          /* SPI_GETWORKAREA */
         RECT *r = p;
         r->left = r->top = 0; r->right = GetSystemMetrics(0); r->bottom = GetSystemMetrics(1);
@@ -840,7 +842,6 @@ USERAPI BOOL GetCursorInfo(PCURSORINFO ci)
     GetCursorPos(&ci->ptScreenPos);
     return TRUE;
 }
-USERAPI BOOL SetSystemCursor(HCURSOR c, DWORD id) { (void)c; (void)id; return TRUE; }
 USERAPI BOOL GetUserObjectInformationA(HANDLE h, int index, PVOID p, DWORD n, LPDWORD need)
 {
     if (index != 2) return GetUserObjectInformationW(h, index, p, n, need);

@@ -197,6 +197,7 @@ set(KERNEL_C_SOURCES
     fs/ramfs.c
     fs/fsec.c
     gdi/gdi.c
+    gdi/syscursor.c
     gdi/png.c
     gdi/icon.c
     gdi/font_inter.c
