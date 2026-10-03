@@ -1,6 +1,8 @@
 /* cppeh.exe — C++ exceptions and RTTI through vcruntime140.dll */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <windows.h>
 
 void *operator new(size_t n) { return malloc(n); }
 void operator delete(void *p) noexcept { free(p); }
@@ -36,6 +38,35 @@ __declspec(noinline) static int deep(int n)
     if (!n) throw Err(100);
     return deep(n - 1) + 1;
 }
+
+/* Zeros below the stack pointer: the CONTEXT a catch resumes with lands
+ * on them, so a floating-point state it never filled in would come back
+ * as an MXCSR and x87 control word of 0, every exception unmasked */
+__declspec(noinline) static void zero_stack()
+{
+    volatile char pad[65536];
+    for (unsigned i = 0; i < sizeof(pad); i++) pad[i] = 0;
+}
+
+#ifdef _WIN64
+/* RtlCaptureContext fills in the FltSave area (x87 control word, MXCSR) it
+ * marks valid with CONTEXT_FLOATING_POINT: NtContinue, as on Windows,
+ * reloads the floating-point state from it */
+static bool capture_fills_fltsave()
+{
+    typedef VOID (WINAPI *Capture)(PCONTEXT);
+    Capture cap = (Capture)GetProcAddress(GetModuleHandleA("ntdll.dll"), "RtlCaptureContext");
+    static CONTEXT c;
+    memset(&c, 0, sizeof(c));
+    if (!cap) return false;
+    cap(&c);
+    return (c.ContextFlags & CONTEXT_FLOATING_POINT) != CONTEXT_FLOATING_POINT ||
+           ((c.FltSave.ControlWord & 0x3F) == 0x3F && c.FltSave.MxCsr == c.MxCsr && (c.MxCsr & 0x1F80) == 0x1F80);
+}
+#endif
+
+static unsigned mxcsr() { unsigned m; __asm__ volatile ("stmxcsr %0" : "=m"(m)); return m; }
+static unsigned short fpu_cw() { unsigned short w; __asm__ volatile ("fnstcw %0" : "=m"(w)); return w; }
 
 int main()
 {
@@ -97,6 +128,17 @@ int main()
         try { if (i % 3 == 0) throw i; after++; } catch (int) { }
     }
     CHECK("loop of throws", after == 66);
+
+    /* the floating-point control state survives a catch */
+    unsigned mx0 = mxcsr() & 0x1F80;
+    unsigned short cw0 = fpu_cw() & 0x3F;
+    zero_stack();
+    try { thrower(8); } catch (Err &e) { CHECK("catch over a zeroed stack", e.v == 8); }
+    CHECK("MXCSR masks after a catch", (mxcsr() & 0x1F80) == mx0);
+    CHECK("x87 control word after a catch", (fpu_cw() & 0x3F) == cw0);
+#ifdef _WIN64
+    CHECK("RtlCaptureContext fills FltSave", capture_fills_fltsave());
+#endif
 
     printf("cppeh: %d passed, %d failed\n", pass, fail);
     return fail != 0;

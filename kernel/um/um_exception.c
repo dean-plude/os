@@ -245,7 +245,7 @@ static bool load_context(const UINT8 *c, Regs *r)
         if (!mask) mask = 0xFFBF;
         memcpy(g_fx, c + C_FLT, 512);
         UINT32 mx;
-        memcpy(&mx, g_fx + 24, 4);
+        memcpy(&mx, c + C_MXCSR, 4);                             /* (Windows takes CONTEXT.MxCsr, not FltSave's) */
         mx &= mask;                                              /* reserved bits would #GP */
         memcpy(g_fx + 24, &mx, 4);
         memcpy(g_fx + 28, &mask, 4);

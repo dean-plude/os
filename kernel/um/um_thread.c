@@ -16,7 +16,6 @@
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../arch/x86_64/cpu.h"
-#include "../net/net_internal.h"      /* net_lock: the net thread stirs the entropy pool */
 #include "../net/tls.h"
 
 #define ST_SUCCESS                0x00000000u
@@ -1132,9 +1131,7 @@ static UINT64 sys_nova_get_random(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a2 > 4096) return ST_INVALID_PARAMETER;
     for (UINT64 off = 0; off < a2; off += sizeof(buf)) {
         UINT64 n = a2 - off < sizeof(buf) ? a2 - off : sizeof(buf);
-        net_lock();
-        TlsEntropyOutput(buf, n);
-        net_unlock();
+        TlsEntropyOutput(buf, n);                                /* (the pool has its own lock) */
         if (!NT_SUCCESS(CopyToUser((UINT8 *)(uintptr_t)a1 + off, buf, n))) {
             memset(buf, 0, sizeof(buf));
             return ST_ACCESS_VIOLATION;
