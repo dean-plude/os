@@ -706,13 +706,43 @@ static UINT64 sys_query_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return put_u32(um_stack_arg(5), 48) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }
 
-/* NtSetInformationThread: priorities, names, hiding from debuggers — accepted, ignored */
+/* ThreadZeroTlsCell: the TLS index TlsFree gave back reads zero again in
+ * every thread of the process, from the TEB's TlsSlots (0-63) or the
+ * thread's TlsExpansionSlots array (64-1087, when it has one).  ntdll
+ * holds its TLS lock around the call, so no array is freed under it. */
+static UINT32 zero_tls_cell(UmProcess *p, UINT64 buf, UINT64 len)
+{
+    UINT32 i;
+    if (len != 4) return ST_INFO_LENGTH_MISMATCH;
+    if (!NT_SUCCESS(CopyFromUser(&i, (const void *)(uintptr_t)buf, 4))) return ST_ACCESS_VIOLATION;
+    if (i >= 64 + 1024) return ST_INVALID_PARAMETER;
+    UINT32 w = p->wow ? 4 : 8;
+    UINT64 o_slots = p->wow ? 0xE10 : 0x1480, o_exp = p->wow ? 0xF94 : 0x1780, zero = 0;
+    um_lock_excl(&p->lock);                       /* (an ending thread's TEB goes under it) */
+    for (int k = 0; k < UM_MAX_THREADS; k++) {
+        UmThread *t = p->threads[k];
+        if (!t || t->exited) continue;
+        if (i < 64) {
+            um_write(p, t->teb + o_slots + (UINT64)i * w, &zero, w);
+            continue;
+        }
+        UINT64 arr = 0;
+        if (um_read(p, t->teb + o_exp, &arr, w) && arr)
+            um_write(p, arr + (UINT64)(i - 64) * w, &zero, w);
+    }
+    um_unlock_excl(&p->lock);
+    return ST_SUCCESS;
+}
+
+/* NtSetInformationThread: impersonation and ThreadZeroTlsCell; priorities,
+ * names, hiding from debuggers — accepted, ignored */
 static UINT64 sys_set_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmObject *o = um_handle_object(UmCurrent(), a1, UO_THREAD);
     if (!o) return ST_INVALID_HANDLE;
     UINT32 st = ST_SUCCESS;
     if (a2 == 5) st = um_set_thread_token((UmThread *)o, a3, (UINT32)a4);   /* ThreadImpersonationToken */
+    if (a2 == 10) st = zero_tls_cell(((UmThread *)o)->proc, a3, a4);         /* ThreadZeroTlsCell */
     um_ob_unref(o);
     return st;
 }

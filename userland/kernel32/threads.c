@@ -454,44 +454,35 @@ BOOL WINAPI InitOnceExecuteOnce(PINIT_ONCE once, PINIT_ONCE_FN fn, PVOID param, 
 }
 
 /* -----------------------------------------------------------------------
- * Thread-local storage (TEB slots)
+ * Thread-local storage: 64 TEB slots and 1024 expansion slots (ntdll_tls.c)
  * ----------------------------------------------------------------------- */
-static volatile long g_tls_bitmap[2];               /* 64 slots */
-
 DWORD WINAPI TlsAlloc(void)
 {
-    for (int i = 0; i < 64; i++) {
-        long word = g_tls_bitmap[i / 32];
-        if (!(word & (1L << (i % 32)))) {
-            if ((InterlockedOr(&g_tls_bitmap[i / 32], 1L << (i % 32)) & (1L << (i % 32))) == 0) {
-                *(void **)(teb() + TEB_TLS_SLOTS + (SIZE_T)i * 8) = 0;
-                return (DWORD)i;
-            }
-        }
-    }
-    set_error(STATUS_NO_MEMORY);
-    return TLS_OUT_OF_INDEXES;
+    ULONG i;
+    NTSTATUS s = RtlTlsAlloc(&i);
+    if (!NT_SUCCESS(s)) { set_error(s); return TLS_OUT_OF_INDEXES; }
+    return i;
 }
 
 BOOL WINAPI TlsFree(DWORD i)
 {
-    if (i >= 64) { set_error(STATUS_INVALID_PARAMETER); return FALSE; }
-    InterlockedAnd(&g_tls_bitmap[i / 32], ~(1L << (i % 32)));
-    return TRUE;
+    NTSTATUS s = RtlTlsFree(i);
+    return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE);
 }
 
 LPVOID WINAPI TlsGetValue(DWORD i)
 {
-    if (i >= 64) { set_error(STATUS_INVALID_PARAMETER); return 0; }
+    if (i >= TLS_MINIMUM_AVAILABLE + TLS_EXPANSION_SLOTS) { set_error(STATUS_INVALID_PARAMETER); return 0; }
     set_error(STATUS_SUCCESS);
-    return *(void **)(teb() + TEB_TLS_SLOTS + (SIZE_T)i * 8);
+    if (i < TLS_MINIMUM_AVAILABLE) return ((void **)(teb() + TEB_TLS_SLOTS))[i];
+    void **a = *(void ***)(teb() + TEB_TLS_EXPANSION);
+    return a ? a[i - TLS_MINIMUM_AVAILABLE] : 0;
 }
 
 BOOL WINAPI TlsSetValue(DWORD i, LPVOID v)
 {
-    if (i >= 64) { set_error(STATUS_INVALID_PARAMETER); return FALSE; }
-    *(void **)(teb() + TEB_TLS_SLOTS + (SIZE_T)i * 8) = v;
-    return TRUE;
+    NTSTATUS s = RtlTlsSetValue(i, v);
+    return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE);
 }
 
 /* Fiber-local storage: ntdll's own slots and callbacks (ntdll_fls.c) */

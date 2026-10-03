@@ -397,6 +397,9 @@ NTSYSAPI NTSTATUS NTAPI RtlFlsFree(ULONG index);
 NTSYSAPI NTSTATUS NTAPI RtlFlsGetValue(ULONG index, PVOID *value);
 NTSYSAPI NTSTATUS NTAPI RtlFlsSetValue(ULONG index, PVOID value);
 NTSYSAPI VOID     NTAPI RtlProcessFlsData(PVOID data, ULONG flags);
+NTSYSAPI NTSTATUS NTAPI RtlTlsAlloc(ULONG *index);
+NTSYSAPI NTSTATUS NTAPI RtlTlsFree(ULONG index);
+NTSYSAPI NTSTATUS NTAPI RtlTlsSetValue(ULONG index, PVOID value);
 
 /* Exceptions */
 NTSYSAPI VOID     NTAPI RtlCaptureContext(PCONTEXT ctx);
