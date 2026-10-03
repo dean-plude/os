@@ -11,7 +11,8 @@
  * every 100 ms when there is no I/O APIC to route the SCI).
  *
  * The thread also reads the lid and the thermal zones, routes PCI
- * interrupts from _PRT and arms the wake devices (_PRW) before S3.
+ * interrupts from _PRT, arms the wake devices (_PRW) before S3 and finds
+ * the I2C-HID devices (touchpads) and their controllers for i2chid.c.
  *
  * Battery readings are cached by that thread (every 5 s, and when the
  * firmware notifies a change), so system calls never run AML.
@@ -899,6 +900,131 @@ static void report_wake(void)
 }
 
 /* -----------------------------------------------------------------------
+ * I2C-HID devices (PNP0C50): the I2C address and controller from _CRS
+ * (I2cSerialBus), the HID descriptor register from _DSM function 1 of
+ * 3cdff6f7-4267-4555-ad05-b30a3d8938de (Microsoft's "HID over I2C
+ * Protocol Specification" v1.0, section 13), the controller's PCI function
+ * from its _ADR and its bus timings from FMCN/SSCN
+ * ----------------------------------------------------------------------- */
+static AmlI2cHid g_i2c[AML_MAX_I2C_HID];
+static int       g_ni2c;
+
+static const UINT8 g_i2chid_dsm[16] = {           /* the GUID as a buffer (mixed endian) */
+    0xF7, 0xF6, 0xDF, 0x3C, 0x67, 0x42, 0x55, 0x45, 0xAD, 0x05, 0xB3, 0x0A, 0x3D, 0x89, 0x38, 0xDE };
+
+typedef struct { AmlI2cHid *d; uacpi_namespace_node *dev; uacpi_namespace_node *bus; bool i2c; } I2cScan;
+
+static uacpi_iteration_decision i2c_resource(void *user, uacpi_resource *r)
+{
+    I2cScan *sc = user;
+    if (r->type == UACPI_RESOURCE_TYPE_SERIAL_I2C_CONNECTION && !sc->i2c) {
+        uacpi_resource_i2c_connection *c = &r->i2c_connection;
+        sc->i2c = true;
+        sc->d->addr = c->slave_address;
+        sc->d->speed = c->connection_speed;
+        if (c->common.source.string) {
+            strncpy(sc->d->bus, c->common.source.string, sizeof(sc->d->bus) - 1);
+            uacpi_namespace_node_resolve_from_aml_namepath(sc->dev, c->common.source.string, &sc->bus);
+        }
+    } else if (r->type == UACPI_RESOURCE_TYPE_GPIO_CONNECTION && r->gpio_connection.type == 0 &&
+               r->gpio_connection.pin_table_length && !sc->d->gpio_int) {
+        sc->d->gpio_int = true;                                        /* GpioInt */
+        sc->d->gpio_pin = r->gpio_connection.pin_table[0];
+    }
+    return UACPI_ITERATION_DECISION_CONTINUE;
+}
+
+static bool i2c_timings(uacpi_namespace_node *bus, const char *method, UINT16 out[3])
+{
+    uacpi_object *o = NULL;
+    uacpi_object_array a;
+    bool ok = false;
+    if (uacpi_eval_simple_package(bus, method, &o) != UACPI_STATUS_OK) return false;
+    if (uacpi_object_get_package(o, &a) == UACPI_STATUS_OK && a.count >= 3) {
+        ok = true;
+        for (int i = 0; i < 3; i++) {
+            uacpi_u64 v = 0;
+            if (uacpi_object_get_integer(a.objects[i], &v) != UACPI_STATUS_OK) ok = false;
+            out[i] = (UINT16)v;
+        }
+    }
+    uacpi_object_unref(o);
+    return ok;
+}
+
+/* _DSM(GUID, revision 1, function 1): the HID descriptor's register */
+static bool i2c_desc_reg(uacpi_namespace_node *dev, UINT16 *reg)
+{
+    uacpi_object *args[4] = {
+        uacpi_object_create_buffer((uacpi_data_view){ .const_bytes = g_i2chid_dsm, .length = 16 }),
+        uacpi_object_create_integer(1), uacpi_object_create_integer(1),
+        uacpi_object_create_package((uacpi_object_array){ NULL, 0 }) };
+    uacpi_object_array a = { args, 4 };
+    uacpi_object *ret = NULL;
+    uacpi_u64 v = 0;
+    bool ok = uacpi_eval(dev, "_DSM", &a, &ret) == UACPI_STATUS_OK && ret &&
+              uacpi_object_get_integer(ret, &v) == UACPI_STATUS_OK;
+    if (ok) *reg = (UINT16)v;
+    uacpi_object_unref(ret);
+    for (int i = 0; i < 4; i++) uacpi_object_unref(args[i]);
+    return ok;
+}
+
+static uacpi_iteration_decision found_i2c_hid(void *user, uacpi_namespace_node *node, uacpi_u32 depth)
+{
+    (void)user; (void)depth;
+    if (g_ni2c == AML_MAX_I2C_HID) return UACPI_ITERATION_DECISION_BREAK;
+    AmlI2cHid *d = &g_i2c[g_ni2c];
+    memset(d, 0, sizeof(*d));
+    const uacpi_char *path = uacpi_namespace_node_generate_absolute_path(node);
+    strncpy(d->path, path ? path : "?", sizeof(d->path) - 1);
+    uacpi_free_absolute_path(path);
+    for (int i = 0; i < g_ni2c; i++)                              /* (found as PNP0C50 and as ACPI0C50) */
+        if (strcmp(g_i2c[i].path, d->path) == 0) return UACPI_ITERATION_DECISION_CONTINUE;
+    uacpi_u32 sta = 0;
+    if (uacpi_eval_sta(node, &sta) != UACPI_STATUS_OK || !(sta & 1))  /* (a model the machine lacks) */
+        return UACPI_ITERATION_DECISION_CONTINUE;
+    uacpi_id_string *hid = NULL;
+    if (uacpi_eval_hid(node, &hid) == UACPI_STATUS_OK && hid) {
+        strncpy(d->hid, hid->value, sizeof(d->hid) - 1);
+        uacpi_free_id_string(hid);
+    }
+    I2cScan sc = { d, node, NULL, false };
+    uacpi_for_each_device_resource(node, "_CRS", i2c_resource, &sc);
+    if (!sc.i2c) {
+        kprintf("[ACPI] I2C-HID device %s (%s): no I2cSerialBus resource\n", d->path, d->hid);
+        return UACPI_ITERATION_DECISION_CONTINUE;
+    }
+    d->has_desc = i2c_desc_reg(node, &d->desc_reg);
+    if (sc.bus) {
+        uacpi_u64 adr;
+        if (uacpi_eval_adr(sc.bus, &adr) == UACPI_STATUS_OK && (adr >> 16) < 32 && (adr & 0xFFFF) < 8) {
+            d->bus_pci = true;
+            d->bus_dev = (UINT8)(adr >> 16);
+            d->bus_fn = (UINT8)adr;
+        }
+        d->has_fmcn = i2c_timings(sc.bus, "FMCN", d->fmcn);
+        d->has_sscn = i2c_timings(sc.bus, "SSCN", d->sscn);
+        uacpi_execute(sc.bus, "_PS0", NULL);                       /* power both up (D0) */
+    }
+    uacpi_execute(node, "_PS0", NULL);
+    char pci[24] = "not a PCI function";
+    if (d->bus_pci) ksnprintf(pci, sizeof(pci), "PCI 00:%02x.%x", d->bus_dev, d->bus_fn);
+    kprintf("[ACPI] I2C-HID device %s (%s): address 0x%02x at %u kHz on %s (%s), HID descriptor %s0x%04x%s\n",
+            d->path, d->hid, d->addr, d->speed / 1000, d->bus[0] ? d->bus : "?", pci,
+            d->has_desc ? "at " : "register unknown, ", d->desc_reg, d->gpio_int ? ", GPIO interrupt" : "");
+    g_ni2c++;
+    return UACPI_ITERATION_DECISION_CONTINUE;
+}
+
+int AmlI2cHidDevices(AmlI2cHid *out, int max)
+{
+    int n = g_ni2c < max ? g_ni2c : max;
+    for (int i = 0; i < n; i++) out[i] = g_i2c[i];
+    return n;
+}
+
+/* -----------------------------------------------------------------------
  * Sleep
  * ----------------------------------------------------------------------- */
 static bool g_slept;
@@ -950,6 +1076,8 @@ static bool load(void)
     uacpi_find_devices("PNP0C0A", found_battery, NULL);
     uacpi_find_devices("ACPI0003", found_adapter, NULL);
     uacpi_find_devices("PNP0C0D", found_lid, NULL);
+    uacpi_find_devices("PNP0C50", found_i2c_hid, NULL);
+    uacpi_find_devices("ACPI0C50", found_i2c_hid, NULL);
     uacpi_namespace_for_each_child(uacpi_namespace_root(), found_zone, NULL,
                                    UACPI_OBJECT_THERMAL_ZONE_BIT, UACPI_MAX_DEPTH_ANY, NULL);
     if (IoApicPresent()) {               /* (in PIC mode _PRT names ISA IRQs, which nothing routes) */

@@ -20,6 +20,8 @@
 #include "../net/net.h"
 #include "../drivers/usb.h"
 #include "../drivers/virtio_input.h"
+#include "../drivers/hda.h"
+#include "../drivers/i2chid.h"
 #include "../um/um.h"
 #include "../fs/persist.h"
 #include "../hal/serial.h"
@@ -234,6 +236,7 @@ static void cmd_help(Term *t)
         "  store close         close the App Store window\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  devices             the PCI devices and the driver each one has (also: lspci)\n"
+        "  hwcheck             test the laptop drivers on modelled devices (codec, touchpad)\n"
         "  vol  sync           where drive C: is saved; save it now\n"
         "  ipconfig            show the network configuration\n"
         "  ping [-4|-6] <host> [-n N]  test a connection (ICMP echo)\n"
@@ -593,6 +596,18 @@ static void cmd_usbcheck(Term *t)
     int vfailed = VirtioInputSelfCheck(usbcheck_say, t);
     failed = failed < 0 || vfailed < 0 ? -1 : failed + vfailed;
     tprintf(t, "usbcheck: %s, %d failed", failed ? "done" : "all passed", failed < 0 ? 1 : failed);
+}
+
+/* hwcheck: the drivers for the reference laptop's devices QEMU can't
+ * show (Phase 21.4), against modelled devices: the HD Audio controller
+ * matching and a Realtek ALC257 codec with its headphone jack, and an
+ * I2C-HID touchpad */
+static void cmd_hwcheck(Term *t)
+{
+    int failed = HdaSelfCheck(usbcheck_say, t);
+    int ifailed = I2cHidSelfCheck(usbcheck_say, t);
+    failed = failed < 0 || ifailed < 0 ? -1 : failed + ifailed;
+    tprintf(t, "hwcheck: %s, %d failed", failed ? "done" : "all passed", failed < 0 ? 1 : failed);
 }
 
 static void cmd_ipconfig(Term *t)
@@ -1535,6 +1550,7 @@ static void run_cmd(Term *t, char *cmdline)
     else if (is(c, "cls") || is(c, "clear"))    t->count = 0;
     else if (is(c, "tasklist"))                 cmd_tasklist(t);
     else if (is(c, "usbcheck"))                 cmd_usbcheck(t);
+    else if (is(c, "hwcheck"))                  cmd_hwcheck(t);
     else if (is(c, "devices") || is(c, "lspci")) cmd_devices(t);
     else if (is(c, "taskkill"))                 cmd_taskkill(t, argc, argv);
     else if (is(c, "exit"))                     WmDestroyWindow(t->w);

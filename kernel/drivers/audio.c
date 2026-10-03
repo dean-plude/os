@@ -283,10 +283,11 @@ static void mixer_thread(void *arg)
 {
     (void)arg;
     bkl_release();                                    /* runs under its own lock */
-    for (;;) {
+    for (UINT32 n = 0;; n++) {
         sched_sleep_tick();
         mix_ahead();
         pull_capture();
+        if (n % 50 == 0) HdaPollJacks();              /* headphones in or out (twice a second) */
     }
 }
 
