@@ -1,12 +1,8 @@
-# Docs: after a push to main, rebuild the generated regions of README.md,
-# docs/ROADMAP.md, docs/HISTORY.md and docs/building.md from their fragment
-# files (tools/docgen.py; CONTRIBUTING.md explains the layout) and commit
-# the result to main.  Pull requests only add fragments, so they never
-# collide on those files.
-#
-# If main is protected against direct pushes, the job instead pushes the
-# rebuilt files to the docs/regenerate branch and opens (or refreshes) a
-# pull request from it; give the workflow a bypass to avoid that step.
+# Docs: after a push to main, report which generated regions of README.md,
+# docs/ROADMAP.md, docs/HISTORY.md and docs/building.md are behind their
+# fragment files (tools/docgen.py; CONTRIBUTING.md explains the layout).
+# Read-only: main only takes pull requests, so the daily "Docs sync" pull
+# request rebuilds them and the docs check accepts exact regenerations.
 name: Docs
 
 on:
@@ -15,47 +11,20 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
-
-concurrency:
-  group: docs-regenerate
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  regenerate:
-    name: Rebuild generated docs
+  report:
+    name: Report stale generated docs
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: main               # the newest main, not the pushed commit: runs queue up
 
-      - name: Rebuild the generated regions
-        run: python3 tools/docgen.py
-
-      - name: Commit them to main
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: List stale generated files
         run: |
-          if git diff --quiet; then
-            echo "generated docs already up to date"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "Rebuild generated docs from fragments (tools/docgen.py)"
-          for i in 1 2 3; do
-            if git push origin HEAD:main; then exit 0; fi
-            # main moved (another merge): rebuild on top of it
-            git fetch origin main && git reset --hard origin/main && python3 tools/docgen.py
-            git diff --quiet && exit 0
-            git commit -am "Rebuild generated docs from fragments (tools/docgen.py)"
-          done
-          echo "::warning::could not push to main (protected?); opening a pull request instead"
-          git push -f origin HEAD:refs/heads/docs/regenerate
-          if [ -z "$(gh pr list --head docs/regenerate --state open --json number --jq '.[].number')" ]; then
-            gh pr create --head docs/regenerate --base main --title "Rebuild generated docs" \
-              --body "tools/docgen.py rebuilt README.md and docs/ from their fragment files (.github/workflows/docs.yml)."
+          if python3 tools/docgen.py --check; then
+            echo "generated docs are up to date"
+          else
+            echo "::notice::generated docs are behind main's fragments; the next daily Docs sync pull request rebuilds them"
           fi
