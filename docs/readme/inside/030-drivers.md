@@ -9,8 +9,9 @@
   NTFS, as the next drive letter, hot-plugged); CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
-  flipping, the mode set again after sleep and kept across restarts) and a
-  Cirrus GD5446 one, with
+  flipping, the mode set again after sleep and kept across restarts; more
+  adapters, such as QEMU's secondary-vga, are more monitors of one
+  desktop, arranged in Settings) and a Cirrus GD5446 one, with
   the UEFI framebuffer as the fallback; ACPI power-off, reset, power buttons,
   sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
   devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
