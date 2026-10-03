@@ -7,7 +7,8 @@
  * the keys held down (an array of usages, or a bitmap), mice relative X/Y,
  * the wheels (vertical, and horizontal as Consumer "AC Pan") and up to five
  * buttons, tablets and touch screens absolute X/Y with a button or a tip
- * switch.  Media, browser and launch keys come as Consumer Control usages
+ * switch, and pens (digitizer pens: tip pressure, barrel buttons, eraser,
+ * in range) INPUT_PEN events for wintab32 too (wm/tablet.h).  Media, browser and launch keys come as Consumer Control usages
  * (page 0x0C), and the Power, Sleep and Wake keys as System Control
  * (Generic Desktop 0x81-0x83), usually in reports of their own or on an
  * interface of their own; both become the E0-prefixed scancodes a PS/2
@@ -22,6 +23,7 @@
 
 #include "usb.h"
 #include "../wm/input.h"
+#include "../wm/tablet.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
@@ -294,7 +296,7 @@ typedef struct {
     UsbDev    *dev;
     UsbPipe   *pipe;
     HidLayout  L;
-    bool       keyboard, pointer, absolute, boot, wake, media, touch;
+    bool       keyboard, pointer, absolute, boot, wake, media, touch, pen;
     UINT8      kbd_id;               /* the report the keys come in */
     UINT8      keys[32];             /* keyboard usages held down (bitmap) */
     UINT16     cc[MAX_CC];           /* media and system keys held down (set-1 codes) */
@@ -501,16 +503,31 @@ static void pointer_report(Hid *h, UINT8 id, const UINT8 *r, int len)
     bool have_x = false, have_y = false, any = false, abs = false;
     UINT8 buttons = 0;
     bool tip_seen = false;
+    /* a pen's: pressure (0..TABLET_PRESSURE), barrel buttons, in range, eraser */
+    INT32 pressure = 0;
+    UINT8 pen_buttons = 0;
+    bool in_range = false, eraser = false, pen_seen = false, have_pressure = false;
     for (int i = 0; i < h->L.n; i++) {
         const HidField *f = &h->L.f[i];
         if (f->id != id || f->array) continue;
         INT32 v = get_bits(r, len, f->bit, f->size, f->lmin);
+        if (h->pen && f->page == PAGE_DIGITIZER) {
+            pen_seen = true;
+            switch (f->usage) {
+            case 0x30: have_pressure = true; pressure = f->lmax > f->lmin ? (INT32)((INT64)(v < f->lmin ? 0 : v - f->lmin) * TABLET_PRESSURE / (f->lmax - f->lmin)) : 0; break;
+            case 0x32: in_range = v != 0; break;                          /* In Range */
+            case 0x44: if (v) { pen_buttons |= 2; buttons |= MOUSE_RIGHT; } break;   /* Barrel Switch */
+            case 0x5A: if (v) pen_buttons |= 4; break;                     /* Secondary Barrel Switch */
+            case 0x3C: if (v) eraser = true; break;                        /* Invert: the eraser end is near */
+            case 0x45: if (v) { eraser = true; pen_buttons |= 1; buttons |= MOUSE_LEFT; any = true; } break;   /* Eraser touching */
+            }
+        }
         if (f->page == PAGE_BUTTON && f->usage >= 1 && f->usage <= 5) {
             if (v) buttons |= (UINT8)(1u << (f->usage - 1));         /* 1 left, 2 right, 3 middle, 4 back, 5 forward */
             any = true;
         } else if (f->page == PAGE_DIGITIZER && f->usage == 0x42 && !tip_seen) {   /* tip switch: the first contact */
             tip_seen = true;
-            if (v) buttons |= MOUSE_LEFT;
+            if (v) { buttons |= MOUSE_LEFT; pen_buttons |= 1; }
             any = true;
         } else if (f->page == PAGE_DESKTOP && f->usage == 0x30 && !have_x) {
             have_x = true; any = true;
@@ -536,6 +553,18 @@ static void pointer_report(Hid *h, UINT8 id, const UINT8 *r, int len)
     ev.absolute = abs && have_x && have_y;
     if (abs && !ev.absolute) { ev.dx = ev.dy = 0; }  /* (half an absolute position: buttons only) */
     hid_post(h, &ev);
+    if (pen_seen && ev.absolute) {
+        InputEvent pe;
+        memset(&pe, 0, sizeof(pe));
+        pe.type     = INPUT_PEN;
+        pe.absolute = 1;
+        pe.dx = x; pe.dy = y;
+        pe.pressure = (UINT16)(!(pen_buttons & 1) ? 0 : have_pressure ? pressure : TABLET_PRESSURE);
+        pe.buttons  = pen_buttons;
+        pe.pressed  = in_range || pen_buttons;      /* (pens without In Range: while touching) */
+        pe.extended = eraser;
+        hid_post(h, &pe);
+    }
 }
 
 /* ---- multi-touch (HID digitizers: Windows' touch-screen descriptors) ----
@@ -695,6 +724,7 @@ static void hid_gone(void *inst)
     }
     for (int i = 0; i < h->ncc; i++) post_key(h, h->cc[i], false);
     h->ncc = 0;
+    if (h->pen) TabletDevice(NULL, -1);
     if (h->touch) {                                  /* lift every contact */
         for (int s = 0; s < TOUCH_MAX; s++) h->t_seen[s] = false;
         touch_frame_end(h);
@@ -714,12 +744,14 @@ static void classify(Hid *h)
         if (f->page == PAGE_KEYBOARD && !h->keyboard) { h->keyboard = true; h->kbd_id = f->id; }
         if (cc_field(f)) h->media = true;
         if (f->page == PAGE_DIGITIZER && f->usage == 0x51) h->touch = true;    /* Contact Identifier */
+        if (f->page == PAGE_DIGITIZER && f->usage == 0x30) h->pen = true;      /* Tip Pressure */
         if (f->page == PAGE_DESKTOP && (f->usage == 0x30 || f->usage == 0x31)) {
             h->pointer = true;
             if (!f->relative) h->absolute = true;
         }
     }
-    if (h->touch) for (int s = 0; s < TOUCH_MAX; s++) h->t_cid[s] = -1;
+    if (h->L.app == 0x0D02) h->pen = true;                                    /* a Pen collection */
+    if (h->touch) { h->pen = false; for (int s = 0; s < TOUCH_MAX; s++) h->t_cid[s] = -1; }
 }
 
 void *UsbHidProbe(UsbDev *d, const UsbIface *f)
@@ -787,7 +819,8 @@ void *UsbHidProbe(UsbDev *d, const UsbIface *f)
         }
         InputTouchScreen(most > fingers ? most : fingers);
     }
-    const char *kind = h->touch ? "multi-touch screen" :
+    if (h->pen) TabletDevice(NULL, 1);
+    const char *kind = h->touch ? "multi-touch screen" : h->pen ? "pen tablet" :
                        h->keyboard && h->pointer ? "keyboard + pointer" : h->keyboard ? "keyboard" :
                        !h->pointer ? "media keys" :
                        h->absolute ? (h->L.app == 0x0D04 ? "touch screen" : "absolute pointer") : "mouse";
@@ -839,6 +872,13 @@ static const UINT8 g_chk_touch[] = {        /* a touch screen, two fingers a rep
     0x09, 0x54, 0x25, 0x0A, 0x75, 0x08, 0x95, 0x01, 0x81, 0x02, 0xC0,
 };
 #undef FINGER
+static const UINT8 g_chk_pen[] = {          /* a pen: tip, barrel, eraser, invert, in range, X, Y, pressure (ID 2) */
+    0x05, 0x0D, 0x09, 0x02, 0xA1, 0x01, 0x85, 0x02, 0x09, 0x20, 0xA1, 0x00,
+    0x09, 0x42, 0x09, 0x44, 0x09, 0x45, 0x09, 0x3C, 0x09, 0x32, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01,
+    0x95, 0x05, 0x81, 0x02, 0x95, 0x03, 0x81, 0x03,
+    0x05, 0x01, 0x09, 0x30, 0x26, 0xFF, 0x7F, 0x75, 0x10, 0x95, 0x01, 0x81, 0x02, 0x09, 0x31, 0x81, 0x02,
+    0x05, 0x0D, 0x09, 0x30, 0x26, 0xFF, 0x0F, 0x81, 0x02, 0xC0, 0xC0,
+};
 
 typedef struct { const char *what; const UINT8 *desc; int dlen; const char *kind; UINT8 rep[4][16]; int rlen; int nrep;
                  const char *want; } HidCheck;
@@ -856,6 +896,9 @@ static void describe(char *out, int cap)
             n += ksnprintf(out + n, cap - n, "%st%d+%d", i ? " " : "", e->contact, e->dx * 100 / 65536);
         else if (e->type == INPUT_TOUCH)
             n += ksnprintf(out + n, cap - n, "%st%d-", i ? " " : "", e->contact);
+        else if (e->type == INPUT_PEN)
+            n += ksnprintf(out + n, cap - n, "%sp%d,%X%s%s", i ? " " : "", e->pressure, e->buttons,
+                           e->pressed ? "r" : "", e->extended ? "e" : "");
         else if (e->type == INPUT_KEY)
             n += ksnprintf(out + n, cap - n, "%s%c%s%02X", i ? " " : "", e->pressed ? '+' : '-', e->extended ? "E0 " : "", e->scancode);
         else
@@ -888,6 +931,12 @@ int UsbHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
             { 1, 1, 9, 0x00, 0x60, 0x00, 0x30, 0, 0, 0, 0, 0, 0, 0 },
             { 1, 0, 5, 0x00, 0x40, 0x00, 0x20, 1, 7, 0x00, 0x30, 0x00, 0x10, 2 } }, 14, 3,
           "t0+50 t1+25 t2+75 | t0- t1+37 t2- |" },
+        /* hovering, the tip at half pressure with the barrel button, the
+         * eraser pressed hard, out of range */
+        { "pen pressure, barrel and eraser", g_chk_pen, sizeof(g_chk_pen), "pen",
+          { { 2, 0x10, 0x00, 0x40, 0x00, 0x20, 0x00, 0x00 }, { 2, 0x13, 0x00, 0x40, 0x00, 0x20, 0x00, 0x08 },
+            { 2, 0x1C, 0x00, 0x40, 0x00, 0x20, 0xFF, 0x0F }, { 2, 0x00, 0x00, 0x40, 0x00, 0x20, 0x00, 0x00 } }, 8, 4,
+          "m0,0,0 p0,0r m3,0,0 p511,3r m1,0,0 p1023,1re m0,0,0 p0,0" },
     };
     int failed = 0;
     for (unsigned c = 0; c < sizeof(checks) / sizeof(checks[0]); c++) {
@@ -897,7 +946,7 @@ int UsbHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
         h->leds = 0xFF;
         bool ok = parse_report_desc(k->desc, k->dlen, &h->L);
         if (ok) classify(h);
-        const char *kind = h->touch ? "touch" : h->keyboard ? "keyboard" : h->pointer ? "pointer" : h->media ? "media" : "nothing";
+        const char *kind = h->touch ? "touch" : h->pen ? "pen" : h->keyboard ? "keyboard" : h->pointer ? "pointer" : h->media ? "media" : "nothing";
         char got[160], line[256];
         if (!ok || strcmp(kind, k->kind) != 0) {
             ksnprintf(line, sizeof(line), "FAIL %s: read as %s, not %s", k->what, kind, k->kind);

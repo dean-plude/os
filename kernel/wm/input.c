@@ -1,14 +1,15 @@
 /*
  * input.c — input event ring buffer
  *
- * Producers (PS/2 IRQ/poll) call InputPost; the WM event loop calls
- * InputPoll.  Head/tail are updated with atomics so the queue is safe even
+ * Producers (PS/2 IRQ/poll, USB and virtio input, injected pen input) call
+ * InputPost; the WM event loop calls InputPoll.  Head/tail are updated with atomics so the queue is safe even
  * once input moves to a real interrupt handler in a later phase.
  */
 
 #include "input.h"
 #include "../lib/string.h"
 #include "../um/um.h"
+#include "../ke/spinlock.h"
 
 #define INPUT_QUEUE_SIZE 256   /* must be a power of two */
 
@@ -23,16 +24,22 @@ void InputInit(void)
     g_tail = 0;
 }
 
+/* Producers are many (the PS/2 and virtio polls on the desktop thread, USB
+ * drivers' threads, programs injecting pen input): they take turns */
+static KSpinLock g_post_lock = KSPINLOCK_INIT;
+
 void InputPost(const InputEvent *ev)
 {
     if (!ev) return;
+    IrqState s = spin_lock_irqsave(&g_post_lock);
     UINT32 head = __atomic_load_n(&g_head, __ATOMIC_ACQUIRE);
     UINT32 tail = __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE);
     UINT32 next = (head + 1) & (INPUT_QUEUE_SIZE - 1);
-    if (next == (tail & (INPUT_QUEUE_SIZE - 1)))
-        return;   /* full — drop */
-    g_queue[head & (INPUT_QUEUE_SIZE - 1)] = *ev;
-    __atomic_store_n(&g_head, next, __ATOMIC_RELEASE);
+    if (next != (tail & (INPUT_QUEUE_SIZE - 1))) {          /* (full: dropped) */
+        g_queue[head & (INPUT_QUEUE_SIZE - 1)] = *ev;
+        __atomic_store_n(&g_head, next, __ATOMIC_RELEASE);
+    }
+    spin_unlock_irqrestore(&g_post_lock, s);
 }
 
 bool InputPoll(InputEvent *out)

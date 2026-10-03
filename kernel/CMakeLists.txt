@@ -208,6 +208,7 @@ set(KERNEL_C_SOURCES
     wm/desktop.c
     wm/clipboard.c
     wm/input.c
+    wm/tablet.c
     apps/apps.c
     apps/terminal.c
     apps/explorer.c
