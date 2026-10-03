@@ -162,7 +162,10 @@ every part, phase by phase.
   built by `tools/build_icu.py`) with its data in
   `C:\Windows\Globalization\ICU`.  .NET does its globalization through
   it, and kernel32 answers `GetLocaleInfoEx` from it for every one of the
-  864 Windows locales.
+  864 Windows locales and formats dates, times, numbers and money in them
+  (`GetDateFormat`, `GetTimeFormat`, `GetNumberFormat`,
+  `GetCurrencyFormat`).  The user's regional format is set with
+  `intl NAME` or Settings > Time & language and kept in the registry.
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions; registry saved to disk;
   COM in-process servers and type libraries; drag and drop; a shared clipboard; `.lnk`
@@ -244,25 +247,28 @@ To make the ISO yourself from a fresh build, run
   (side buttons, horizontal wheel, volume keys), `usbcheck` (media keys,
   AC Pan), `anitest` (animated cursors and program pointers),
   `disptest`, `icutest` (ICU and locales, 64- and 32-bit), `comtest`,
-  `tlbtest` (type libraries, 64- and 32-bit), `usptest` (Arabic and
-  Devanagari shaped through Uniscribe and drawn by `ExtTextOut`, 64- and
-  32-bit), `cppeh`, `delaytest` (the DLLs Firefox delay-loads),
-  `battery` (against the battery in `tests/acpi/battery.asl`),
-  `soundtest` (the recorded WAV must hold the tones played), `soundtest
-  record`, `capture` and `volume` (`waveIn` and WASAPI capture must
-  record the tone the microphone hears, and a quarter of the endpoint
-  volume must sound 12 dB quieter), `sleeptest timer` (`Sleep(1)`, 1 ms
-  wait timeouts and waitable timers (periodic ones and their completion
-  routines too) end within a millisecond with every CPU busy),
-  `powertest` (closing the lid in `tests/acpi/lid-thermal.asl` sleeps, a
-  USB key and the lid wake it, the thermal zone's readings), `disptest
-  1024 768` (saves the mode the restart must keep), an installer that
-  replaces a running program and finishes after a restart (`filetest
-  install`, `shutdown /r`, `filetest installed`), `disptest saved 1024
-  768` (the restart kept the saved display mode), hard links kept across
-  a restart (`linktest restarted`), and last `crash kernel`, a
-  deliberate kernel fault whose serial log must show a backtrace with
-  function names.<!-- END generated:core-tests -->
+  `nlstest` (date, time, number and currency formats in German and
+  Japanese, 64- and 32-bit; `nlstest user`), `tlbtest` (type libraries,
+  64- and 32-bit), `usptest` (Arabic and Devanagari shaped through
+  Uniscribe and drawn by `ExtTextOut`, 64- and 32-bit), `cppeh`,
+  `delaytest` (the DLLs Firefox delay-loads), `battery` (against the
+  battery in `tests/acpi/battery.asl`), `soundtest` (the recorded WAV
+  must hold the tones played), `soundtest record`, `capture` and
+  `volume` (`waveIn` and WASAPI capture must record the tone the
+  microphone hears, and a quarter of the endpoint volume must sound 12
+  dB quieter), `sleeptest timer` (`Sleep(1)`, 1 ms wait timeouts and
+  waitable timers (periodic ones and their completion routines too) end
+  within a millisecond with every CPU busy), `powertest` (closing the
+  lid in `tests/acpi/lid-thermal.asl` sleeps, a USB key and the lid wake
+  it, the thermal zone's readings), `disptest 1024 768` (saves the mode
+  the restart must keep), `nlstest set ja-JP` (the user locale the
+  restart must keep), an installer that replaces a running program and
+  finishes after a restart (`filetest install`, `shutdown /r`, `filetest
+  installed`), `nlstest after-restart ja-JP` (the restart kept the user
+  locale), `disptest saved 1024 768` (the restart kept the saved display
+  mode), hard links kept across a restart (`linktest restarted`), and
+  last `crash kernel`, a deliberate kernel fault whose serial log must
+  show a backtrace with function names.<!-- END generated:core-tests -->
 - **Network** (in the boot-test job): two boots with a virtio-net card.
   On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
   `httptest suite` (winhttp with HTTP/2 by ALPN) against
@@ -298,7 +304,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `delaytest`, `disptest`, `dlltest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `delaytest`, `disptest`, `dlltest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `nlstest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
   through `waveIn` and WASAPI capture;
   `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`

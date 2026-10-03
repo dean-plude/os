@@ -158,9 +158,12 @@ named program or test demonstrates it.
   objects: real tokens, restricted tokens, impersonation, and descriptors
   checked on open (Phase 17.4, `sectest`, `acltest`).  Files' descriptors
   come with Phase 18.5.
-- Locales: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat` in
-  the requested locale (ICU already answers `GetLocaleInfoEx` for all of
-  them), and a user locale other than `en-US`.
+- ~~Locales: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat` in
+  the requested locale, and a user locale other than `en-US`~~ Done:
+  `GetDateFormat`, `GetTimeFormat`, `GetNumberFormat` and
+  `GetCurrencyFormat` (A, W, Ex) format in any of the 864 locales from ICU's
+  data, and the user locale is set with `intl NAME` or Settings > Time &
+  language and kept in the registry across restarts (`nlstest`).
 - .NET: an unhandled managed exception prints "Stack overflow." instead of
   the exception and its stack trace (with NLS as well as ICU).
 
