@@ -13,6 +13,7 @@
 #include "../arch/x86_64/cpu.h"
 #include "../ke/printf.h"
 #include "../wm/input.h"
+#include "../lib/string.h"
 
 #define PS2_DATA    0x60
 #define PS2_STATUS  0x64
@@ -175,6 +176,7 @@ static void handle_mouse_byte(UINT8 b)
 
     static UINT8 side;                      /* buttons 4 and 5 (Explorer packets) */
     InputEvent ev;
+    memset(&ev, 0, sizeof(ev));             /* (from_pen and the rest stay 0: the PS/2 mouse is no pen) */
     ev.type     = INPUT_MOUSE;
     ev.scancode = 0;
     ev.pressed  = 0;

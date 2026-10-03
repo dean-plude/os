@@ -22,14 +22,18 @@ typedef struct Sent {
     int notify;                     /* SendNotifyMessage: nobody waits */
 } Sent;
 
+/* A queued message and its extra information (GetMessageExtraInfo) */
+typedef struct { MSG m; ULONG_PTR extra; } QM;
+
 typedef struct TQ {
     DWORD tid;
-    MSG  *q;
+    QM   *q;
     int   head, count, cap;
     Sent *sent;
     int   quit, quit_code;
     int   in_send;                  /* processing a message another thread sent */
     int   paints;                   /* BeginPaint calls (DispatchMessage checks WM_PAINT was handled) */
+    ULONG_PTR extra;                /* the extra information of the message taken last */
 } TQ;
 
 #define MAX_TQ 64
@@ -57,23 +61,25 @@ static void wake(DWORD tid)
     if (tid != GetCurrentThreadId()) NtNovaGuiCtl(0, CTL_WAKE, tid, NULL);
 }
 
-static BOOL q_push(TQ *q, const MSG *m)
+static BOOL q_push_x(TQ *q, const MSG *m, ULONG_PTR extra)
 {
     LOCK();
     if (q->count == q->cap) {
         int nc = q->cap ? q->cap * 2 : 64;
         if (nc > 65536) { UNLOCK(); return FALSE; }
-        MSG *n = malloc(sizeof(MSG) * (size_t)nc);
+        QM *n = malloc(sizeof(QM) * (size_t)nc);
         if (!n) { UNLOCK(); return FALSE; }
         for (int i = 0; i < q->count; i++) n[i] = q->q[(q->head + i) % q->cap];
         free(q->q);
         q->q = n; q->cap = nc; q->head = 0;
     }
-    q->q[(q->head + q->count) % q->cap] = *m;
+    q->q[(q->head + q->count) % q->cap].m = *m;
+    q->q[(q->head + q->count) % q->cap].extra = extra;
     q->count++;
     UNLOCK();
     return TRUE;
 }
+static BOOL q_push(TQ *q, const MSG *m) { return q_push_x(q, m, 0); }
 
 static int filter_ok(const MSG *m, HWND h, UINT mn, UINT mx)
 {
@@ -95,9 +101,10 @@ static int q_take(TQ *q, MSG *out, HWND h, UINT mn, UINT mx, int remove)
     int found = 0;
     LOCK();
     for (int i = 0; i < q->count; i++) {
-        MSG *m = &q->q[(q->head + i) % q->cap];
+        MSG *m = &q->q[(q->head + i) % q->cap].m;
         if (!filter_ok(m, h, mn, mx)) continue;
         *out = *m;
+        q->extra = q->q[(q->head + i) % q->cap].extra;
         found = 1;
         if (remove) {
             for (int k = i; k > 0; k--) q->q[(q->head + k) % q->cap] = q->q[(q->head + k - 1) % q->cap];
@@ -117,8 +124,8 @@ void remove_window_messages(HWND h)
     LOCK();
     int o = 0;
     for (int i = 0; i < q->count; i++) {
-        MSG m = q->q[(q->head + i) % q->cap];
-        if (m.hwnd != h) q->q[(q->head + o++) % q->cap] = m;
+        QM m = q->q[(q->head + i) % q->cap];
+        if (m.m.hwnd != h) q->q[(q->head + o++) % q->cap] = m;
     }
     q->count = o;
     UNLOCK();
@@ -598,14 +605,15 @@ void track_mouse_leave(HWND h, int nc) { g_track_leave = h; g_track_nc = nc; }
 void cancel_track_mouse(HWND h) { if (g_track_leave == h) g_track_leave = 0; }
 HWND tracked_mouse(int *nc) { if (nc) *nc = g_track_nc; return g_track_leave; }
 
-static void queue_input(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, DWORD time)
+static void queue_input_x(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, DWORD time, ULONG_PTR extra)
 {
     TQ *q = tq_for(w->tid, 1);
     if (!q) return;
     MSG m;
     m.hwnd = w->h; m.message = msg; m.wParam = wp; m.lParam = lp; m.time = time; m.pt = g_cursor;
-    q_push(q, &m);
+    q_push_x(q, &m, extra);
 }
+static void queue_input(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, DWORD time) { queue_input_x(w, msg, wp, lp, time, 0); }
 
 static void leave_check(Wnd *now_over, DWORD time)
 {
@@ -643,10 +651,13 @@ static Wnd *hit_window(Wnd *top, POINT pt, int *hit)
 }
 
 /* @pen: the pen packet behind it (0: the mouse; PEN_PROMOTED: DefWindowProc
- * made it of a pointer message, so it stays a mouse message) */
+ * made it of a pointer message, so it stays a mouse message, with @extra
+ * as its GetMessageExtraInfo) */
 #define PEN_PROMOTED 0xFFFFFFFFu
-static void route_mouse(Wnd *top, const MSG *km, UINT32 pen)
+static void route_mouse(Wnd *top, const MSG *km, UINT32 pen, ULONG_PTR extra)
 {
+    /* a pen's mouse messages say so (Windows' MI_WP_SIGNATURE) */
+    if (pen != PEN_PROMOTED) extra = pen ? MI_PEN_SIGNATURE : 0;
     UINT msg = km->message;
     POINT pt;
     if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) { pt.x = (short)LOWORD(km->lParam); pt.y = (short)HIWORD(km->lParam); }
@@ -671,15 +682,16 @@ static void route_mouse(Wnd *top, const MSG *km, UINT32 pen)
     }
     leave_check(target, time);
     if (!W_quiet(target->h)) return;
-    /* a pen's (or, with EnableMouseInPointer, the mouse's) in the client
-     * area: WM_POINTER* instead, which DefWindowProc turns back into this */
-    if ((hit == HTCLIENT || cap) && pen != PEN_PROMOTED && pointer_from_mouse(target, msg, mk, pt, time, pen)) return;
+    /* a pen's (or, with EnableMouseInPointer, the mouse's): WM_POINTER*
+     * (WM_NCPOINTER* outside the client area) instead, which DefWindowProc
+     * turns back into this */
+    if (pen != PEN_PROMOTED && pointer_from_mouse(target, msg, mk, pt, time, pen, cap ? HTCLIENT : hit)) return;
 
     if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) {
         Wnd *f = W_quiet(g_focus);
         Wnd *dest = target;
         if (!dest && f) dest = f;
-        queue_input(dest, msg, km->wParam, MAKELPARAM(pt.x, pt.y), time);
+        queue_input_x(dest, msg, km->wParam, MAKELPARAM(pt.x, pt.y), time, extra);
         return;
     }
     if (msg == WM_MOUSEMOVE || msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN) {
@@ -702,10 +714,11 @@ static void route_mouse(Wnd *top, const MSG *km, UINT32 pen)
     if (hit == HTCLIENT || cap) {
         POINT o;
         wnd_screen_origin(target, 1, &o);
-        queue_input(target, msg, mk | ((WPARAM)xb << 16), MAKELPARAM(pt.x - o.x, pt.y - o.y), time);
+        queue_input_x(target, msg, mk | ((WPARAM)xb << 16), MAKELPARAM(pt.x - o.x, pt.y - o.y), time, extra);
     } else {
         /* (WM_XBUTTON* - WM_MOUSEMOVE + WM_NCMOUSEMOVE is WM_NCXBUTTON*, with the button in HIWORD) */
-        queue_input(target, msg - WM_MOUSEMOVE + WM_NCMOUSEMOVE, (WPARAM)hit | ((WPARAM)xb << 16), MAKELPARAM(pt.x, pt.y), time);
+        queue_input_x(target, msg - WM_MOUSEMOVE + WM_NCMOUSEMOVE, (WPARAM)hit | ((WPARAM)xb << 16), MAKELPARAM(pt.x, pt.y), time,
+                      extra);
     }
 }
 
@@ -713,8 +726,9 @@ Wnd *input_hit(Wnd *top, POINT pt, int *hit) { return hit_window(top, pt, hit); 
 void input_queue(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, DWORD time) { queue_input(w, msg, wp, lp, time); }
 
 /* A mouse message made from a touch, a pen or the mouse as a pointer
- * (DefWindowProc's promotion): routed as if the desktop had sent it */
-void input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt)
+ * (DefWindowProc's promotion): routed as if the desktop had sent it, with
+ * @extra (MI_PEN_SIGNATURE, MI_TOUCH_SIGNATURE or 0) for GetMessageExtraInfo */
+void input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt, ULONG_PTR extra)
 {
     MSG km;
     memset(&km, 0, sizeof(km));
@@ -722,7 +736,7 @@ void input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt)
     km.wParam = mk;
     km.lParam = MAKELPARAM(pt.x - top->bmp.x, pt.y - top->bmp.y);
     km.time = GetTickCount();
-    route_mouse(top, &km, PEN_PROMOTED);
+    route_mouse(top, &km, PEN_PROMOTED, extra);
 }
 
 static void route_key(Wnd *top, const MSG *km)
@@ -801,7 +815,7 @@ static void from_kernel_(Wnd *top, const MSG *kmsg, UINT32 pen)
         route_key(top, km);
         break;
     default:
-        if ((km->message >= WM_MOUSEFIRST && km->message <= WM_MOUSELAST) || km->message == WM_MOUSEWHEEL) route_mouse(top, km, pen);
+        if ((km->message >= WM_MOUSEFIRST && km->message <= WM_MOUSELAST) || km->message == WM_MOUSEWHEEL) route_mouse(top, km, pen, 0);
         break;
     }
 }
@@ -881,12 +895,13 @@ static int pump_take(MSG *m, HWND h, UINT mn, UINT mx, UINT flags, int wait, DWO
                 if ((pw = next_paint(tid, h && h != (HWND)-1 ? h : 0))) {
                     memset(m, 0, sizeof(*m));
                     m->hwnd = pw->h; m->message = WM_PAINT; m->time = GetTickCount(); m->pt = g_cursor;
+                    q->extra = 0;
                     return 1;
                 }
             }
         }
         caret_blink();
-        if (take_timer(tid, m, h, mn, mx, remove)) { if (remove) track(m); return 1; }
+        if (take_timer(tid, m, h, mn, mx, remove)) { q->extra = 0; if (remove) track(m); return 1; }
         present_thread(tid);
         if (!wait) return 0;
         ULONGLONG now = GetTickCount64();
@@ -949,7 +964,7 @@ static UINT queue_status(void)
     drain_kernel();
     UINT st = 0;
     LOCK();
-    for (int i = 0; i < q->count; i++) st |= qs_kind(q->q[(q->head + i) % q->cap].message);
+    for (int i = 0; i < q->count; i++) st |= qs_kind(q->q[(q->head + i) % q->cap].m.message);
     if (q->sent) st |= QS_SENDMESSAGE;
     ULONGLONG now = GetTickCount64();
     for (int i = 0; i < MAX_TIMERS; i++)
@@ -972,8 +987,18 @@ USERAPI DWORD GetQueueStatus(UINT flags)
 USERAPI BOOL GetInputState(void) { return GetQueueStatus(QS_INPUT) != 0; }
 USERAPI LONG GetMessageTime(void) { return (LONG)g_msg_time; }
 USERAPI DWORD GetMessagePos(void) { return (DWORD)MAKELONG((SHORT)g_msg_pt.x, (SHORT)g_msg_pt.y); }
-USERAPI LPARAM GetMessageExtraInfo(void) { return 0; }
-USERAPI LPARAM SetMessageExtraInfo(LPARAM lp) { (void)lp; return 0; }
+/* The extra information of the message the thread took last: a pen's or a
+ * touch's mouse messages carry MI_PEN_SIGNATURE / MI_TOUCH_SIGNATURE, as
+ * Windows' do (masked with 0xFFFFFF00 it is 0xFF515700) */
+USERAPI LPARAM GetMessageExtraInfo(void) { TQ *q = my_tq(); return q ? (LPARAM)q->extra : 0; }
+USERAPI LPARAM SetMessageExtraInfo(LPARAM lp)
+{
+    TQ *q = my_tq();
+    if (!q) return 0;
+    LPARAM old = (LPARAM)q->extra;
+    q->extra = (ULONG_PTR)lp;
+    return old;
+}
 USERAPI BOOL SetMessageQueue(int n) { (void)n; return TRUE; }
 
 USERAPI DWORD MsgWaitForMultipleObjectsEx(DWORD n, const HANDLE *hs, DWORD ms, DWORD wake_mask, DWORD flags)
@@ -1016,7 +1041,7 @@ static void q_push_front(TQ *q, const MSG *m)
 {
     if (!q_push(q, m)) return;                              /* grows the queue; then rotate it to the front */
     LOCK();
-    MSG t = q->q[(q->head + q->count - 1) % q->cap];
+    QM t = q->q[(q->head + q->count - 1) % q->cap];
     for (int k = q->count - 1; k > 0; k--) q->q[(q->head + k) % q->cap] = q->q[(q->head + k - 1) % q->cap];
     q->q[q->head] = t;
     UNLOCK();

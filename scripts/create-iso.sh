@@ -7,6 +7,16 @@
 # Partition is a FAT image laid out as:
 #       /EFI/BOOT/BOOTX64.EFI   — bootloader (auto-discovered by UEFI firmware)
 #       /EFI/NOVA/kernel.elf    — kernel ELF (loaded by the bootloader)
+#       /EFI/NOVA/bootlog.txt   — 1 MiB set aside for the boot log: started
+#                                 from the ISO written to a USB stick, NovaOS
+#                                 writes its log into this file on the stick
+#                                 (the file also tells the bootloader that it
+#                                 started from the installation media)
+#
+# Write the ISO to a USB stick as it is (dd, or a tool such as Rufus in
+# "DD image" mode, balenaEtcher or the GNOME Disks "Restore Disk Image"):
+# the ESP is also a GPT partition (step 3), so UEFI firmware starts it from
+# the stick as it does from a disc.
 #
 # The same files are also placed in the ISO9660 tree so they are visible
 # when the disc is mounted normally.
@@ -39,7 +49,8 @@ mkdir -p "$ROOT/EFI/BOOT" "$ROOT/EFI/NOVA"
 # -------------------------------------------------------------------------
 # 1. Build the EFI System Partition (FAT) image, sized to fit the payload.
 # -------------------------------------------------------------------------
-PAYLOAD_KB=$(( ( $(stat -c%s "$BOOTLOADER") + $(stat -c%s "$KERNEL") ) / 1024 ))
+BOOTLOG_KB=1024
+PAYLOAD_KB=$(( ( $(stat -c%s "$BOOTLOADER") + $(stat -c%s "$KERNEL") ) / 1024 + BOOTLOG_KB ))
 ESP_KB=$(( PAYLOAD_KB + 2048 ))           # payload + ~2 MiB slack
 ESP_KB=$(( (ESP_KB + 1023) / 1024 * 1024 ))   # round up to whole MiB
 
@@ -52,6 +63,14 @@ mformat -i "$ESP" -v NOVA_EFI ::
 mmd     -i "$ESP" ::/EFI ::/EFI/BOOT ::/EFI/NOVA
 mcopy   -i "$ESP" "$BOOTLOADER" ::/EFI/BOOT/BOOTX64.EFI
 mcopy   -i "$ESP" "$KERNEL"     ::/EFI/NOVA/kernel.elf
+# The boot log's space: one line saying what the file is, then blank lines
+# (written last, into an empty ESP's free space, so its clusters follow one
+# another, which is what the kernel needs to write it in place)
+{
+    printf 'NovaOS writes its boot log here when it starts from this USB stick.\n'
+    head -c $(( BOOTLOG_KB * 1024 - 68 )) /dev/zero | tr '\0' '\n'
+} > "$WORK/bootlog.txt"
+mcopy   -i "$ESP" "$WORK/bootlog.txt" ::/EFI/NOVA/bootlog.txt
 
 # -------------------------------------------------------------------------
 # 2. Stage the ESP image (as the El Torito EFI boot image) plus copies of
@@ -63,8 +82,15 @@ cp "$KERNEL"     "$ROOT/EFI/NOVA/kernel.elf"
 
 # -------------------------------------------------------------------------
 # 3. Author the ISO. The FAT ESP (efiboot.img) is registered as a
-#    no-emulation UEFI El Torito boot image — the form OVMF/real firmware
-#    mounts to find \EFI\BOOT\BOOTX64.EFI.
+#    no-emulation UEFI El Torito boot image, the form OVMF/real firmware
+#    mounts to find \EFI\BOOT\BOOTX64.EFI on a disc, and the same
+#    sectors are a partition of a GPT (type EFI System, partition 2:
+#    xorriso fills the gaps before and after it with partitions 1 and 3;
+#    behind a protective MBR), which is how firmware finds it on a stick.
+#    (-isohybrid-gpt-basdat alone wrote no partition table: the ISO booted
+#    only as a disc.  An appended partition is not it either: firmware
+#    sizes a disc's El Torito image from the ISO9660 volume, which an
+#    appended partition lies outside.)
 # -------------------------------------------------------------------------
 echo "Authoring ISO: $ISO_OUT"
 xorriso -as mkisofs \
@@ -72,7 +98,8 @@ xorriso -as mkisofs \
     -o "$ISO_OUT" \
     -e efiboot.img \
     -no-emul-boot \
-    -isohybrid-gpt-basdat \
+    -efi-boot-part --efi-boot-image \
+    --protective-msdos-label \
     "$ROOT"
 
 echo ""

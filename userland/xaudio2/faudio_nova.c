@@ -6,6 +6,12 @@
  * The engine mixes 32-bit float at 48 kHz in the mastering voice's channel
  * count; a thread keeps one kernel mixer stream about three engine passes
  * ahead, folding surround channels into stereo on the way.
+ *
+ * The devices (GetDeviceCount/GetDeviceDetails in XAudio2 2.7, and the
+ * IDs CreateMasteringVoice takes in 2.8 and 2.9) are NovaOS's sound
+ * outputs (audiodev.h): index 0 is the default (FAudio's convention, which
+ * follows Settings' choice), then each output oldest first with its
+ * Windows name and its WASAPI endpoint ID.
  */
 
 #include <windows.h>
@@ -13,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "FAudio_internal.h"
+#include "../winmm/audiodev.h"
 
 #define RATE 48000
 
@@ -100,10 +107,31 @@ static DWORD WINAPI mixer_thread(LPVOID p)
 void FAudio_PlatformAddRef(void) {}
 void FAudio_PlatformRelease(void) {}
 
-static BOOL device_present(void)
+/* The kernel's id of device @index (0: the default, which follows
+ * Settings), in *id; FALSE if there is no such device */
+static BOOL device_at(uint32_t index, UINT32 *id)
 {
-    struct { UINT32 present, rate; char name[96]; } info = { 0 };
-    return NtNovaAudioCtl(0, 5, 0, &info) == 0 && info.present;
+    AudioDeviceList l;
+    UINT n = audio_devices(0, &l);
+    *id = 0;
+    if (!n || index > n) return FALSE;
+    if (index) *id = l.dev[index - 1].id;
+    return TRUE;
+}
+
+/* The device index of a WASAPI endpoint ID (XAudio2 2.8's
+ * CreateMasteringVoice); 0 (the default) for NULL or ""; -1 if it names no
+ * output attached now */
+int nova_device_index(const WCHAR *endpoint)
+{
+    if (!endpoint || !endpoint[0]) return 0;
+    int capture = 0;
+    UINT32 id = audio_endpoint_parse(endpoint, &capture);
+    AudioDeviceList l;
+    UINT n = audio_devices(0, &l);
+    for (UINT i = 0; id && !capture && i < n; i++)
+        if (l.dev[i].id == id) return (int)i + 1;
+    return -1;
 }
 
 void FAudio_PlatformInit(FAudio *audio, uint32_t flags, uint32_t deviceIndex, FAudioWaveFormatExtensible *mixFormat,
@@ -111,7 +139,8 @@ void FAudio_PlatformInit(FAudio *audio, uint32_t flags, uint32_t deviceIndex, FA
 {
     *platformDevice = NULL;
     FAudio_INTERNAL_InitSIMDFunctions(1, 0);
-    if (deviceIndex != 0 || !device_present()) return;
+    UINT32 devid;
+    if (!device_at(deviceIndex, &devid)) return;
     UINT32 ch = mixFormat->Format.nChannels ? mixFormat->Format.nChannels : 2;
     if (ch > 8) return;
     /* the engine resamples every voice to the device's rate */
@@ -127,6 +156,13 @@ void FAudio_PlatformInit(FAudio *audio, uint32_t flags, uint32_t deviceIndex, FA
     d->stream = NtNovaAudioOpen(d->quantum * 8);
     if (!d->mix || !d->out || !d->stream) {
         if (d->stream) NtClose((HANDLE)d->stream);
+        free(d->mix);
+        free(d->out);
+        free(d);
+        return;
+    }
+    if (devid && !audio_route(d->stream, devid)) {  /* (unplugged meanwhile) */
+        NtClose((HANDLE)d->stream);
         free(d->mix);
         free(d->out);
         free(d);
@@ -153,16 +189,30 @@ void FAudio_PlatformQuit(void *platformDevice)
     free(d);
 }
 
-uint32_t FAudio_PlatformGetDeviceCount(void) { return device_present() ? 1 : 0; }
+uint32_t FAudio_PlatformGetDeviceCount(void)
+{
+    AudioDeviceList l;
+    UINT n = audio_devices(0, &l);
+    return n ? n + 1 : 0;
+}
 
+/* Index 0: the default device (its name and ID, the default role); then
+ * every output */
 uint32_t FAudio_PlatformGetDeviceDetails(uint32_t index, FAudioDeviceDetails *details)
 {
     memset(details, 0, sizeof(*details));
-    if (index >= FAudio_PlatformGetDeviceCount()) return FAUDIO_E_INVALID_CALL;
-    static const WCHAR name[] = L"Speakers (High Definition Audio)", id[] = L"{0.0.0.00000000}.{6e6f7661-6864-6100-0000-000000000001}";
+    AudioDeviceList l;
+    UINT n = audio_devices(0, &l), k = n;
+    if (!n || index > n) return FAUDIO_E_INVALID_CALL;
+    for (UINT i = 0; i < n; i++)
+        if (index ? i == index - 1 : l.dev[i].is_default) k = i;
+    if (k == n) return FAUDIO_E_INVALID_CALL;
+    WCHAR id[56], name[96];
+    audio_endpoint_id(0, l.dev[k].id, id);
+    audio_friendly_name(0, l.dev[k].name, name, 96);
     memcpy(details->DeviceID, id, sizeof(id));
-    memcpy(details->DisplayName, name, sizeof(name));
-    details->Role = FAudioGlobalDefaultDevice;
+    lstrcpynW((WCHAR *)details->DisplayName, name, sizeof(details->DisplayName) / sizeof(details->DisplayName[0]));
+    details->Role = !index ? FAudioGlobalDefaultDevice : FAudioNotDefaultDevice;
     WriteWaveFormatExtensible(&details->OutputFormat, 2, RATE, &DATAFORMAT_SUBTYPE_IEEE_FLOAT);
     return 0;
 }

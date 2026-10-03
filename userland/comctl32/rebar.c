@@ -19,7 +19,7 @@
 #define RB_SETPARENT_    (WM_USER + 7)
 #define RB_SETUNICODEFORMAT_ 0x2005
 #define RB_GETUNICODEFORMAT_ 0x2006
-#define GRIPPER 10
+#define GRIPPER (10 * cc_k(h))
 
 typedef struct {
     UINT style, id;
@@ -54,13 +54,13 @@ static int header_w(HWND h, RB *s, Band *b)
     if (b->text && b->text[0]) {
         HDC dc = GetDC(h);
         HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
-        w += cc_text_w(dc, b->text, -1) + 8;
+        w += cc_text_w(dc, b->text, -1) + 8 * cc_k(h);
         SelectObject(dc, of);
         ReleaseDC(h, dc);
     }
-    if (s->il && b->image >= 0) { int ix, iy; ImageList_GetIconSize(s->il, &ix, &iy); w += ix + 4; }
+    if (s->il && b->image >= 0) { int ix, iy; ImageList_GetIconSize(s->il, &ix, &iy); w += ix + 4 * cc_k(h); }
     if (b->cx_header) w = (int)b->cx_header;
-    return w + 2;
+    return w + 2 * cc_k(h);
 }
 
 static void layout(HWND h, RB *s)
@@ -70,8 +70,8 @@ static void layout(HWND h, RB *s)
     RECT c;
     GetClientRect(h, &c);
     int width = c.right;
-    int y = 0, i = 0;
-    int border = (style_of(h) & RBS_BANDBORDERS) ? 1 : 0;
+    int y = 0, i = 0, pk = cc_k(h);
+    int border = (style_of(h) & RBS_BANDBORDERS) ? pk : 0;
     while (i < s->n) {
         /* one row: from band i up to the next break */
         int first = i, last = i, rowh = 0;
@@ -81,9 +81,9 @@ static void layout(HWND h, RB *s)
             last = k;
             int ch = (int)s->b[k].cy_min;
             if (style_of(h) & RBS_VARHEIGHT) ch = MAX(ch, (int)s->b[k].cy_child);
-            rowh = MAX(rowh, ch + 4);
+            rowh = MAX(rowh, ch + 4 * pk);
         }
-        if (rowh == 0) rowh = 4;
+        if (rowh == 0) rowh = 4 * pk;
         int x = 0;
         int lastvis = -1;
         for (int k = first; k <= last; k++) if (!(s->b[k].style & RBBS_HIDDEN)) lastvis = k;
@@ -91,13 +91,13 @@ static void layout(HWND h, RB *s)
             Band *b = &s->b[k];
             if (b->style & RBBS_HIDDEN) { SetRectEmpty(&b->r); SetRectEmpty(&b->cr); continue; }
             int hw = header_w(h, s, b);
-            int want = MAX((int)b->cx, hw + (int)b->cx_min + 4);
-            if (b->cx_ideal) want = MAX(want, hw + (int)b->cx_ideal + 4);
+            int want = MAX((int)b->cx, hw + (int)b->cx_min + 4 * pk);
+            if (b->cx_ideal) want = MAX(want, hw + (int)b->cx_ideal + 4 * pk);
             int w = k == lastvis ? MAX(width - x, hw + (int)b->cx_min) : want;
             SetRect(&b->r, x, y, x + w, y + rowh);
-            int cy = (style_of(h) & RBS_VARHEIGHT) ? MAX((int)b->cy_min, MIN((int)b->cy_child ? (int)b->cy_child : (int)b->cy_min, rowh - 4)) : (int)b->cy_min;
-            if (!cy) cy = rowh - 4;
-            int cleft = x + hw, cright = x + w - 2 - border;
+            int cy = (style_of(h) & RBS_VARHEIGHT) ? MAX((int)b->cy_min, MIN((int)b->cy_child ? (int)b->cy_child : (int)b->cy_min, rowh - 4 * pk)) : (int)b->cy_min;
+            if (!cy) cy = rowh - 4 * pk;
+            int cleft = x + hw, cright = x + w - 2 * pk - border;
             if (b->style & RBBS_FIXEDSIZE) cright = MIN(cright, cleft + (int)b->cx_min);
             SetRect(&b->cr, cleft, y + (rowh - cy) / 2, MAX(cleft, cright), y + (rowh - cy) / 2 + cy);
             x += w;
@@ -212,21 +212,21 @@ static void paint(HWND h, RB *s, HDC dc)
     cc_fill(dc, &c, bk);
     HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
     SetBkMode(dc, TRANSPARENT);
-    int borders = (style_of(h) & RBS_BANDBORDERS) != 0;
+    int borders = (style_of(h) & RBS_BANDBORDERS) != 0, pk = cc_k(h);
     for (int k = 0; k < s->n; k++) {
         Band *b = &s->b[k];
         if (IsRectEmpty(&b->r)) continue;
         if (b->back != CLR_DEFAULT && (b->back != 0 || b->fore != 0)) {}
-        int x = b->r.left + 2;
+        int x = b->r.left + 2 * pk;
         if (!(b->style & RBBS_NOGRIPPER) && (!(style_of(h) & RBS_FIXEDORDER) || (b->style & RBBS_GRIPPERALWAYS))) {
-            for (int y = b->r.top + 4; y + 2 <= b->r.bottom - 3; y += 4) { RECT d = { x + 2, y, x + 4, y + 2 }; cc_fill(dc, &d, RGB(170, 170, 170)); }
+            for (int y = b->r.top + 4 * pk; y + 2 * pk <= b->r.bottom - 3 * pk; y += 4 * pk) { RECT d = { x + 2 * pk, y, x + 4 * pk, y + 2 * pk }; cc_fill(dc, &d, RGB(170, 170, 170)); }
             x += GRIPPER;
         }
         if (s->il && b->image >= 0) {
             int ix, iy;
             ImageList_GetIconSize(s->il, &ix, &iy);
             il_draw(s->il, b->image, dc, x, (b->r.top + b->r.bottom - iy) / 2, ILD_TRANSPARENT);
-            x += ix + 4;
+            x += ix + 4 * pk;
         }
         if (b->text && b->text[0]) {
             SetTextColor(dc, s->text == CLR_DEFAULT ? GetSysColor(COLOR_BTNTEXT) : s->text);
@@ -234,9 +234,9 @@ static void paint(HWND h, RB *s, HDC dc)
             DrawTextW(dc, b->text, -1, &t, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
         }
         if (borders) {
-            RECT v = { b->r.right - 1, b->r.top + 2, b->r.right, b->r.bottom - 2 };
+            RECT v = { b->r.right - pk, b->r.top + 2 * pk, b->r.right, b->r.bottom - 2 * pk };
             cc_fill(dc, &v, RGB(215, 215, 215));
-            RECT u = { b->r.left, b->r.bottom, b->r.right, b->r.bottom + 1 };
+            RECT u = { b->r.left, b->r.bottom, b->r.right, b->r.bottom + pk };
             cc_fill(dc, &u, RGB(215, 215, 215));
         }
     }
@@ -286,6 +286,7 @@ LRESULT CALLBACK RebarProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_PRINTCLIENT: paint(h, s, (HDC)wp); return 0;
     case WM_SIZE: if (!s->in_layout) layout(h, s); return 0;
     case WM_SETFONT: s->font = (HFONT)wp; layout(h, s); return 0;
+    case WM_DPICHANGED_AFTERPARENT: layout(h, s); InvalidateRect(h, NULL, TRUE); return 0;
     case WM_GETFONT: return (LRESULT)s->font;
     case WM_NOTIFY: case WM_COMMAND: case WM_DRAWITEM: case WM_MEASUREITEM: case WM_CTLCOLOREDIT: case WM_CTLCOLORSTATIC: case WM_CTLCOLORLISTBOX: {
         HWND p = s->parent ? s->parent : GetParent(h);

@@ -315,6 +315,7 @@ int AhciInit(void)
         *(volatile UINT32 *)(abar + HBA_GHC) |= GHC_AE;
         UINT32 pi = *(volatile UINT32 *)(abar + HBA_PI);
         kprintf("[AHCI] controller %02x:%02x.%d, ports %08x\n", pci.bus, pci.dev, pci.func, pi);
+        PciClaim(&pci, "AHCI");
         for (int p = 0; p < 32; p++)
             if (pi & (1u << p)) probe_port(abar, p);
     }

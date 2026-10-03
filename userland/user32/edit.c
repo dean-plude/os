@@ -734,6 +734,12 @@ LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_PRINTCLIENT: paint(w, e, (HDC)wp); return 0;
+    case WM_NOVA_RESCALE:                                   /* its window's DPI changed: the default font's size */
+        if (w->font) return 0;
+        setup_font(w, e);
+        if (e->focus) { DestroyCaret(); CreateCaret(h, 0, 1, e->lh); place_caret(w, e); ShowCaret(h); }
+        invalidate(w, NULL, TRUE, 0);
+        return 0;
     case WM_SETFONT:
         w->font = (HFONT)wp;
         setup_font(w, e);

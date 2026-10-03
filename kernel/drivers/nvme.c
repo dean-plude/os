@@ -323,6 +323,7 @@ static void probe(const PciDevice *pci)
     kprintf("[NVME] %02x:%02x.%d: \"%s\", NVMe %u.%u, %u namespace(s)\n", pci->bus, pci->dev, pci->func,
             model, vs >> 16, (vs >> 8) & 0xFF, nn);
     g_nctrl++;
+    PciClaim(pci, "NVMe");
 
     /* The active namespaces (NVMe 1.1+), or every ID up to NN */
     UINT32 ids[MAX_NS], nids = 0;

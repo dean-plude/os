@@ -13,6 +13,13 @@
  * DirectSoundCapture records from the kernel's capture stream into a
  * circular buffer in the program's format.
  *
+ * The devices are NovaOS's sound devices (audiodev.h): DirectSoundEnumerate
+ * and DirectSoundCaptureEnumerate list the "Primary Sound Driver" (the
+ * default, which follows Settings) and then every device by its Windows
+ * name, each with its endpoint's GUID (PKEY_AudioEndpoint_GUID), and a
+ * program that passes one of those GUIDs plays on (records from) that
+ * device.
+ *
  * The primary buffer takes a format and a volume but cannot be locked
  * (DSSCL_WRITEPRIMARY is refused), and there is no hardware mixing or FX.
  */
@@ -21,6 +28,7 @@
 #include <winternl.h>
 #include <objbase.h>
 #include "../winmm/audioconv.h"
+#include "../winmm/audiodev.h"
 
 int _fltused = 1;
 #define EXPORT __declspec(dllexport)
@@ -47,9 +55,6 @@ DEFINE_GUID(DSDEVID_DefaultPlayback,     0xDEF00000, 0x9C6D, 0x47ED, 0xAA, 0xF1,
 DEFINE_GUID(DSDEVID_DefaultCapture,      0xDEF00001, 0x9C6D, 0x47ED, 0xAA, 0xF1, 0x4D, 0xDA, 0x8F, 0x2B, 0x5C, 0x03);
 DEFINE_GUID(DSDEVID_DefaultVoicePlayback, 0xDEF00002, 0x9C6D, 0x47ED, 0xAA, 0xF1, 0x4D, 0xDA, 0x8F, 0x2B, 0x5C, 0x03);
 DEFINE_GUID(DSDEVID_DefaultVoiceCapture, 0xDEF00003, 0x9C6D, 0x47ED, 0xAA, 0xF1, 0x4D, 0xDA, 0x8F, 0x2B, 0x5C, 0x03);
-/* NovaOS's two devices */
-DEFINE_GUID(NOVA_PLAYBACK,               0x6E6F7661, 0x6864, 0x6100, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01);
-DEFINE_GUID(NOVA_CAPTURE,                0x6E6F7661, 0x6864, 0x6100, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02);
 
 #define DS_OK                   S_OK
 #define DSERR_ALLOCATED         ((HRESULT)0x8878000A)
@@ -159,33 +164,22 @@ static float sqrt_(float x)
     return r;
 }
 
-static BOOL out_present(void)
+/* The device @g names for playback (or @capture: recording): 0 for the
+ * default (NULL, GUID_NULL and the DSDEVID_Default* GUIDs), else a
+ * device's id; FALSE if there is no such device attached */
+static BOOL find_device(const GUID *g, BOOL capture, UINT32 *id)
 {
-    static LONG known = -1;
-    if (known < 0) {
-        struct { UINT32 present, rate; char name[96]; } info = { 0 };
-        known = NtNovaAudioCtl(0, 5, 0, &info) == 0 && info.present;
-    }
-    return known;
-}
-static BOOL in_present(void)
-{
-    static LONG known = -1;
-    if (known < 0) {
-        struct { UINT32 present, rate; char name[96]; } info = { 0 };
-        known = NtNovaAudioCtl(0, 7, 0, &info) == 0 && info.present;
-    }
-    return known;
-}
-
-static BOOL is_device(const GUID *g, BOOL capture)
-{
-    if (!g) return TRUE;
-    if (capture)
-        return IsEqualGUID(g, &DSDEVID_DefaultCapture) || IsEqualGUID(g, &DSDEVID_DefaultVoiceCapture) ||
-               IsEqualGUID(g, &NOVA_CAPTURE);
-    return IsEqualGUID(g, &DSDEVID_DefaultPlayback) || IsEqualGUID(g, &DSDEVID_DefaultVoicePlayback) ||
-           IsEqualGUID(g, &NOVA_PLAYBACK) || IsEqualGUID(g, &GUID_NULL);
+    AudioDeviceList l;
+    UINT n = audio_devices(capture, &l);
+    *id = 0;
+    if (!n) return FALSE;
+    if (!g || IsEqualGUID(g, &GUID_NULL)) return TRUE;
+    if (capture ? IsEqualGUID(g, &DSDEVID_DefaultCapture) || IsEqualGUID(g, &DSDEVID_DefaultVoiceCapture)
+                : IsEqualGUID(g, &DSDEVID_DefaultPlayback) || IsEqualGUID(g, &DSDEVID_DefaultVoicePlayback)) return TRUE;
+    UINT32 want = audio_guid_device(g);
+    for (UINT i = 0; want && i < n; i++)
+        if (l.dev[i].id == want) { *id = want; return TRUE; }
+    return FALSE;
 }
 
 /* -----------------------------------------------------------------------
@@ -224,6 +218,7 @@ struct Device {
     BOOL        init;
     CRITICAL_SECTION lock;
     INT_PTR     stream;
+    UINT32      devid;              /* the device it plays on (0: the default) */
     HANDLE      thread, quit;
     Buffer     *buffers;            /* secondary buffers */
     Buffer     *primary;            /* while the program holds it */
@@ -823,10 +818,14 @@ static HRESULT STDMETHODCALLTYPE dev_set_speaker(Device *d, DWORD c) { if (!d->i
 static HRESULT STDMETHODCALLTYPE dev_initialize(Device *d, const GUID *dev)
 {
     if (d->init) return DSERR_ALREADYINITIALIZED;
-    if (!is_device(dev, FALSE)) return DSERR_NODRIVER;
-    if (!out_present()) return DSERR_NODRIVER;
+    if (!find_device(dev, FALSE, &d->devid)) return DSERR_NODRIVER;
     d->stream = NtNovaAudioOpen(AHEAD * 4);
     if (!d->stream) return DSERR_ALLOCATED;
+    if (d->devid && !audio_route(d->stream, d->devid)) {         /* (unplugged meanwhile) */
+        NtClose((HANDLE)d->stream);
+        d->stream = 0;
+        return DSERR_NODRIVER;
+    }
     NtNovaAudioCtl(d->stream, 1, 1, 0);
     d->quit = CreateEventW(0, TRUE, FALSE, 0);
     d->thread = CreateThread(0, 64 * 1024, mixer_thread, d, 0, 0);
@@ -927,7 +926,7 @@ typedef struct Capture Capture;
 typedef struct CBuffer CBuffer;
 typedef struct { const void *vtbl; CBuffer *c; } CSub;
 
-struct Capture { const void *vtbl; LONG refs; BOOL init; CBuffer *buffer; };
+struct Capture { const void *vtbl; LONG refs; BOOL init; UINT32 devid; CBuffer *buffer; };
 
 struct CBuffer {
     const void *vtbl;
@@ -1158,6 +1157,10 @@ static HRESULT STDMETHODCALLTYPE cap_create_buffer(Capture *cap, const DSCBUFFER
     c->size = c->frames * c->conv.f.block;
     c->data = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, c->size);
     c->stream = c->data ? NtNovaAudioOpen(0x80000000u | AC_RATE) : 0;
+    if (c->stream && cap->devid && !audio_route(c->stream, cap->devid)) {   /* (unplugged meanwhile) */
+        NtClose((HANDLE)c->stream);
+        c->stream = 0;
+    }
     if (!c->stream) {
         if (c->data) HeapFree(GetProcessHeap(), 0, c->data);
         HeapFree(GetProcessHeap(), 0, c);
@@ -1188,7 +1191,7 @@ static HRESULT STDMETHODCALLTYPE cap_get_caps(Capture *c, DSCCAPS *caps)
 static HRESULT STDMETHODCALLTYPE cap_initialize(Capture *c, const GUID *dev)
 {
     if (c->init) return DSERR_ALREADYINITIALIZED;
-    if (!is_device(dev, TRUE) || !in_present()) return DSERR_NODRIVER;
+    if (!find_device(dev, TRUE, &c->devid)) return DSERR_NODRIVER;
     c->init = TRUE;
     return DS_OK;
 }
@@ -1254,48 +1257,50 @@ EXPORT HRESULT WINAPI DirectSoundFullDuplexCreate(const GUID *cdev, const GUID *
     return DSERR_UNSUPPORTED;
 }
 
-/* Enumeration: the "Primary Sound Driver" (NULL GUID), then the device */
+/* Enumeration: the "Primary Sound Driver" (NULL GUID: the default), then
+ * each device, oldest first, as Windows lists them: its endpoint's GUID,
+ * its name ("Speakers (Product)") and its endpoint ID as the module */
 typedef BOOL (CALLBACK *ENUMA)(GUID *, LPCSTR, LPCSTR, void *);
 typedef BOOL (CALLBACK *ENUMW)(GUID *, LPCWSTR, LPCWSTR, void *);
-EXPORT HRESULT WINAPI DirectSoundEnumerateA(ENUMA cb, void *ctx)
+static HRESULT enumerate(BOOL capture, ENUMA cba, ENUMW cbw, void *ctx)
 {
-    if (!cb) return DSERR_INVALIDPARAM;
-    if (!out_present()) return DS_OK;
-    GUID g = NOVA_PLAYBACK;
-    if (cb(0, "Primary Sound Driver", "", ctx)) cb(&g, "Speakers (High Definition Audio)", "{0.0.0.00000000}", ctx);
+    if (!cba && !cbw) return DSERR_INVALIDPARAM;
+    AudioDeviceList l;
+    UINT n = audio_devices(capture, &l);
+    if (!n) return DS_OK;
+    const WCHAR *primary = capture ? L"Primary Sound Capture Driver" : L"Primary Sound Driver";
+    char a1[96], a2[64];
+    WideCharToMultiByte(CP_ACP, 0, primary, -1, a1, sizeof(a1), 0, 0);
+    if (cbw ? !cbw(0, primary, L"", ctx) : !cba(0, a1, "", ctx)) return DS_OK;
+    for (UINT i = 0; i < n; i++) {
+        GUID g = audio_device_guid(l.dev[i].id);
+        WCHAR name[96], module[56];
+        audio_friendly_name(capture, l.dev[i].name, name, 96);
+        audio_endpoint_id(capture, l.dev[i].id, module);
+        WideCharToMultiByte(CP_ACP, 0, name, -1, a1, sizeof(a1), 0, 0);
+        WideCharToMultiByte(CP_ACP, 0, module, -1, a2, sizeof(a2), 0, 0);
+        if (cbw ? !cbw(&g, name, module, ctx) : !cba(&g, a1, a2, ctx)) break;
+    }
     return DS_OK;
 }
-EXPORT HRESULT WINAPI DirectSoundEnumerateW(ENUMW cb, void *ctx)
-{
-    if (!cb) return DSERR_INVALIDPARAM;
-    if (!out_present()) return DS_OK;
-    GUID g = NOVA_PLAYBACK;
-    if (cb(0, L"Primary Sound Driver", L"", ctx)) cb(&g, L"Speakers (High Definition Audio)", L"{0.0.0.00000000}", ctx);
-    return DS_OK;
-}
-EXPORT HRESULT WINAPI DirectSoundCaptureEnumerateA(ENUMA cb, void *ctx)
-{
-    if (!cb) return DSERR_INVALIDPARAM;
-    if (!in_present()) return DS_OK;
-    GUID g = NOVA_CAPTURE;
-    if (cb(0, "Primary Sound Capture Driver", "", ctx)) cb(&g, "Microphone (High Definition Audio)", "{0.0.1.00000000}", ctx);
-    return DS_OK;
-}
-EXPORT HRESULT WINAPI DirectSoundCaptureEnumerateW(ENUMW cb, void *ctx)
-{
-    if (!cb) return DSERR_INVALIDPARAM;
-    if (!in_present()) return DS_OK;
-    GUID g = NOVA_CAPTURE;
-    if (cb(0, L"Primary Sound Capture Driver", L"", ctx)) cb(&g, L"Microphone (High Definition Audio)", L"{0.0.1.00000000}", ctx);
-    return DS_OK;
-}
+EXPORT HRESULT WINAPI DirectSoundEnumerateA(ENUMA cb, void *ctx) { return cb ? enumerate(FALSE, cb, 0, ctx) : DSERR_INVALIDPARAM; }
+EXPORT HRESULT WINAPI DirectSoundEnumerateW(ENUMW cb, void *ctx) { return cb ? enumerate(FALSE, 0, cb, ctx) : DSERR_INVALIDPARAM; }
+EXPORT HRESULT WINAPI DirectSoundCaptureEnumerateA(ENUMA cb, void *ctx) { return cb ? enumerate(TRUE, cb, 0, ctx) : DSERR_INVALIDPARAM; }
+EXPORT HRESULT WINAPI DirectSoundCaptureEnumerateW(ENUMW cb, void *ctx) { return cb ? enumerate(TRUE, 0, cb, ctx) : DSERR_INVALIDPARAM; }
 
+/* The GUID of the device a default GUID stands for now (others as they are) */
 EXPORT HRESULT WINAPI GetDeviceID(const GUID *src, GUID *dst)
 {
     if (!src || !dst) return DSERR_INVALIDPARAM;
-    if (IsEqualGUID(src, &DSDEVID_DefaultPlayback) || IsEqualGUID(src, &DSDEVID_DefaultVoicePlayback)) *dst = NOVA_PLAYBACK;
-    else if (IsEqualGUID(src, &DSDEVID_DefaultCapture) || IsEqualGUID(src, &DSDEVID_DefaultVoiceCapture)) *dst = NOVA_CAPTURE;
-    else *dst = *src;
+    int capture = IsEqualGUID(src, &DSDEVID_DefaultCapture) || IsEqualGUID(src, &DSDEVID_DefaultVoiceCapture);
+    if (capture || IsEqualGUID(src, &DSDEVID_DefaultPlayback) || IsEqualGUID(src, &DSDEVID_DefaultVoicePlayback)) {
+        AudioDeviceList l;
+        UINT n = audio_devices(capture, &l);
+        for (UINT i = 0; i < n; i++)
+            if (l.dev[i].is_default) { *dst = audio_device_guid(l.dev[i].id); return DS_OK; }
+        return DSERR_NODRIVER;
+    }
+    *dst = *src;
     return DS_OK;
 }
 

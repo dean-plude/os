@@ -7,10 +7,11 @@
 # own download host keeps only the current release.  VLC offers the decoder its hardware
 # formats first and the display rejects each (no Direct3D converter), which
 # takes seconds without KVM, so the screenshot waits for the colour bars to
-# show in the window.  Not run with -vv: VLC's verbose log (a line per
-# message through the kernel log) slows a TCG machine enough for its audio
-# to run late.  Windowed: runs after the console programs (870), takes the
-# keyboard.
+# show in the window.  Run with -vv: VLC's verbose log (some 1,200 lines
+# while the clip starts, each written twice, to stderr and to
+# OutputDebugString, both through the kernel log) must not make its audio
+# run late, so the sound check still wants an unbroken tone.  Windowed:
+# runs after the console programs (870), takes the keyboard.
 import os, shutil, subprocess, tempfile, time
 
 DOC = 'VLC (plays an H.264 and AAC MP4 with sound)'
@@ -27,24 +28,33 @@ def unpack(app, files, dest):
 
 def settled(nova, echo):
     """Wait for the colour bars to reach VLC's window (the video area shows
-    the cone until the software decoder's pictures arrive), then let the
-    sound run"""
-    end = time.time() + 90
+    the cone until the software decoder's pictures arrive), let the sound
+    run, and wait for the bars again: the clip may have looped meanwhile,
+    and VLC shows the cone again while it starts over"""
     shot = os.path.join(tempfile.mkdtemp(prefix='vlc-shot'), 'shot.png')
-    while time.time() < end:
-        nova.shot(shot)
+
+    def bars(secs):
         from PIL import Image
-        im = Image.open(shot).convert('RGB')
-        k = im.width // 1280                        # the screen's scale
-        r, g, b = im.getpixel((480 * k, 330 * k))   # inside the bars, left of the cone
-        if max(r, g, b) > 60:
-            time.sleep(6)
-            return None
-        time.sleep(2)
-    return 'VLC did not show the video (the window stayed dark)'
+        end = time.time() + secs
+        while time.time() < end:
+            nova.shot(shot)
+            im = Image.open(shot).convert('RGB')
+            k = im.width // 1280                        # the screen's scale
+            r, g, b = im.getpixel((480 * k, 330 * k))   # inside the bars, left of the cone
+            if max(r, g, b) > 60:
+                return True
+            time.sleep(2)
+        return False
+
+    if not bars(90):
+        return 'VLC did not show the video (the window stayed dark)'
+    time.sleep(6)
+    if not bars(60):
+        return 'VLC stopped showing the video'
+    return None
 
 
 APP = App('VLC', '3.0.21', 'https://downloads.sourceforge.net/project/portableapps/VLC%20Media%20Player%20Portable/VLCPortable_3.0.21.paf.exe',
-          'VLC', [Test('play an MP4', rf'start {A}\VLC\vlc.exe --no-qt-privacy-ask --no-qt-updates-notif '
+          'VLC', [Test('play an MP4', rf'start {A}\VLC\vlc.exe -vv --no-qt-privacy-ask --no-qt-updates-notif '
                        rf'--avcodec-hw=none --loop --no-video-title-show {A}\in.mp4', timeout=45)],
           unpack=unpack, gui=True, sound=(440, 3000), interact=settled)

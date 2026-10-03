@@ -120,6 +120,7 @@ typedef struct {
     bool           v2;                        /* USB Audio 2.0 */
     UaStream       play, rec;
     char           name[96], iname[96];
+    char           key[64];                   /* its identity for saved settings (AudioOutput.key) */
 } Ua;
 
 /* A streaming interface's setting we can use */
@@ -647,9 +648,13 @@ void *UsbAudioProbe(UsbDev *d, const UsbIface *f)
     UsbBind(d, u, ua_gone);
     char product[48];
     if (!UsbDevProductName(d, product, sizeof(product))) strcpy(product, "USB Audio Device");
+    /* (what its volume and its being the default are kept under: the same
+     * device on the same port next time) */
+    ksnprintf(u->key, sizeof(u->key), "VID_%04X&PID_%04X at %s", UsbDevVendor(d), UsbDevProduct(d), UsbDevName(d));
     if (play) {
         name_device(u, u->name, sizeof(u->name), "Speakers", product);
         u->out.name = u->name;
+        u->out.key = u->key;
         u->out.ring = u->play.ring;
         u->out.bytes = RING_BYTES;
         u->out.position = position;
@@ -659,6 +664,7 @@ void *UsbAudioProbe(UsbDev *d, const UsbIface *f)
     if (rec) {
         name_device(u, u->iname, sizeof(u->iname), "Microphone", product);
         u->in.name = u->iname;
+        u->in.key = u->key;
         u->in.ring = u->rec.ring;
         u->in.bytes = RING_BYTES;
         u->in.position = position;

@@ -176,7 +176,7 @@ static int find_volumes(BlockDev *d, Cand *out, int max, bool *blank)
             UINT64 table = *(UINT64 *)(s + BLOCK_SECTOR + 72);
             UINT32 count = *(UINT32 *)(s + BLOCK_SECTOR + 80), esize = *(UINT32 *)(s + BLOCK_SECTOR + 84);
             UINT8 *ent = kmalloc(BLOCK_SECTOR);
-            if (esize >= 128 && esize <= BLOCK_SECTOR && count <= 128 && ent) {
+            if (esize >= 128 && esize <= BLOCK_SECTOR && count <= 1024 && ent) {   /* (128 entries is usual; xorriso writes 248) */
                 UINT32 per = BLOCK_SECTOR / esize;
                 for (UINT32 i = 0; i < count && n < max; i++) {
                     if (i % per == 0 && !d->read(d, table + i / per, 1, ent)) break;
