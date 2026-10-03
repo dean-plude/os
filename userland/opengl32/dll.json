@@ -1,4 +1,4 @@
 {
-  "deps": ["kernel32", "ntdll"],
+  "deps": ["kernel32", "ntdll", "user32", "gdi32"],
   "entry": "DllMain"
 }
