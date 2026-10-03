@@ -43,7 +43,7 @@ def ps2_mouse(nova):
 
 
 def volume_keys(nova):
-    for k in ('volumeup', 'volumedown', 'audiomute', 'audiomute'):
+    for k in ('volumedown', 'volumeup', 'audiomute', 'audiomute'):   # (the volume ends where it was)
         nova.qmp.key(k)
         time.sleep(0.3)
 
@@ -54,5 +54,5 @@ TESTS = [
                                     r'\[SHELL\] Volume muted', r'\[SHELL\] Volume unmuted'],
          boot_expect=[r'\[PS2\] [^\n]*5-button wheel mouse'],
          acts=[(r'inputtest: plug in a USB mouse', usb_mouse), (r'inputtest: unplug it', ps2_mouse),
-               (r'inputtest: press volume up', volume_keys)]),
+               (r'inputtest: press volume', volume_keys)]),
 ]

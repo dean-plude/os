@@ -9,7 +9,7 @@
  *   "inputtest: unplug it, scroll right and left, press back"
  *        it is unplugged again; the PS/2 mouse (IntelliMouse Explorer)
  *        turns its horizontal wheel and presses button 4
- *   "inputtest: press volume up, volume down, mute twice"
+ *   "inputtest: press volume down, volume up, mute twice"
  *        on the USB keyboard
  * and checks the messages a full-screen window gets: WM_XBUTTONDOWN/UP,
  * WM_APPCOMMAND from DefWindowProc (back and forward from the mouse, the
@@ -127,7 +127,7 @@ int main(void)
     check("PS/2 mouse: WM_MOUSEHWHEEL to the left (negative)", hwheel_left >= 1);
     check("PS/2 mouse: WM_XBUTTONUP for XBUTTON1", xup[1] >= 2);
 
-    printf("inputtest: press volume up, volume down, mute twice\n");
+    printf("inputtest: press volume down, volume up, mute twice\n");
     fflush(stdout);
     pump(keys_done, 30);
     check("USB keyboard: WM_KEYDOWN VK_VOLUME_UP, VK_VOLUME_DOWN, VK_VOLUME_MUTE",
