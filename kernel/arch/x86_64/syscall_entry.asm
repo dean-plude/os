@@ -88,7 +88,6 @@ KiSystemCall64:
     call    KiSystemCallEntry      ; takes the kernel lock around the dispatch
     ; RAX = return value (interrupts are disabled again here)
 
-
     ; -----------------------------------------------------------------------
     ; Return path
     ; -----------------------------------------------------------------------

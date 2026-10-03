@@ -230,7 +230,6 @@ static Thread *steal(void)
         if (t) {
             if (t->in_sleepers) rq_drop_sleeper(v, t);
             __atomic_store_n(&t->cpu, me, __ATOMIC_RELEASE);   /* ours now */
-            t->dbg_how |= 0x40;                     /* KVMDBG */
         }
         spin_unlock(&v->lock);
         if (t) return t;
@@ -501,7 +500,6 @@ static void switch_locked(RunQueue *rq)
         if (!preempted) next->ticks_slice = 0;
         next->preempted   = false;
         next->woken       = false;
-        next->dbg_run     = rdtsc();            /* KVMDBG */
         spin_unlock(&rq->lock);
         return;
     }
@@ -527,7 +525,6 @@ static void switch_locked(RunQueue *rq)
     if (!next->preempted) next->ticks_slice = 0;    /* (a preempted one goes on with its slice) */
     next->preempted     = false;
     next->woken         = false;
-    next->dbg_run       = rdtsc();              /* KVMDBG */
     kpcr->CurrentThread = next;
     kpcr->Idle          = 0;
     kpcr->PrevThread    = prev;
@@ -672,7 +669,6 @@ static void hand_off_due(RunQueue *rq, uint32_t cpu, uint64_t tsc)
         t->sleep_next = NULL;
         t->in_sleepers = false;
         __atomic_store_n(&t->cpu, c, __ATOMIC_RELEASE);
-        t->dbg_rdy = rdtsc(); t->dbg_from = cpu; t->dbg_how = 4 | (c << 8);   /* KVMDBG */
         if (wake_preempts(t, true)) {
             rq_enqueue_front(to, t);
             if (!smp_kick(c)) {
@@ -879,8 +875,6 @@ static bool wake_sleepers(RunQueue *rq, uint64_t *soonest)
             t->sleep_next = NULL;
             t->in_sleepers = false;
             if (!due || t->state != THREAD_WAITING) continue;
-            t->dbg_rdy = tsc; t->dbg_from = this_cpu();   /* KVMDBG */
-            t->dbg_how = 3 | ((t->wake_tsc && cur && t->priority >= cur->priority) ? 0x10 : 0) | (cur ? (cur->priority << 16) : 0) | ((uint32_t)t->priority << 24);
             if (t->wake_tsc && cur && t->priority >= cur->priority) {
                 rq_enqueue_front(rq, t);
                 preempt = true;
@@ -931,12 +925,6 @@ static void unblock(Thread *t, bool timer)
     IrqState irq;
     RunQueue *rq = lock_thread_rq(t, &irq);
     if (t->state == THREAD_WAITING) {
-        t->dbg_rdy = rdtsc(); t->dbg_from = this_cpu();   /* KVMDBG */
-        {
-            Thread *c0 = (Thread *)g_kpcr[t->cpu].CurrentThread;
-            t->dbg_how = (timer ? 2 : 1) | (wake_preempts(t, timer) ? 0x10 : 0) | (t->cpu << 8) |
-                         ((c0 ? c0->priority : 0xFF) << 16) | ((uint32_t)t->priority << 24) | (c0 && c0->idle ? 0x20 : 0);
-        }
         if (wake_preempts(t, timer)) {
             /* First in its CPU's queue: a halted CPU takes it if there is
              * one, else its own CPU switches to it at the IPI */
