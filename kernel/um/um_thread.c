@@ -720,16 +720,21 @@ UINT8 um_thread_base(const UmProcess *p, int incr)
     return (UINT8)(b < lo ? lo : b > hi ? hi : b);
 }
 
+/* (@p's lock held) @kt's base: its own, or MMCSS's real-time priority */
+static void apply_priority(UmProcess *p, UmThread *t, Thread *kt)
+{
+    kt->no_boost = t->no_boost;
+    if (t->mm_priority || kt->mm_priority) sched_set_mmcss(kt, t->mm_priority, um_thread_base(p, t->prio_incr));
+    else sched_set_base_priority(kt, um_thread_base(p, t->prio_incr));
+}
+
 /* Give @t's scheduler thread the base (and boost setting) it has now */
 static void thread_apply_priority(UmThread *t)
 {
     UmProcess *p = t->proc;
     um_lock_shared(&p->lock);                  /* (reap_threads frees t->kt under it) */
     Thread *kt = t->exited ? NULL : t->kt;
-    if (kt) {
-        kt->no_boost = t->no_boost;
-        sched_set_base_priority(kt, um_thread_base(p, t->prio_incr));
-    }
+    if (kt) apply_priority(p, t, kt);
     um_unlock_shared(&p->lock);
 }
 
@@ -740,8 +745,7 @@ static void process_apply_priority(UmProcess *p)
     for (int i = 0; i < UM_MAX_THREADS; i++) {
         UmThread *t = p->threads[i];
         if (!t || t->exited || !t->kt) continue;
-        t->kt->no_boost = t->no_boost;
-        sched_set_base_priority(t->kt, um_thread_base(p, t->prio_incr));
+        apply_priority(p, t, t->kt);
     }
     um_unlock_shared(&p->lock);
 }
@@ -753,7 +757,12 @@ static bool get_u32(UINT64 ptr, UINT32 *v)
 
 /* NtSetInformationThread's priority classes: ThreadPriority (2, an
  * absolute KPRIORITY), ThreadBasePriority (3, the increment that
- * SetThreadPriority passes) and ThreadPriorityBoost (14, disable) */
+ * SetThreadPriority passes), ThreadPriorityBoost (14, disable) and
+ * NovaOS's ThreadNovaMmcss (UM_THREAD_MMCSS: avrt.dll registers the thread
+ * with the Multimedia Class Scheduler at PRIO_MMCSS or PRIO_MMCSS_AUDIO,
+ * or 0 to unregister; no privilege needed, as MMCSS's own service sets
+ * the priority on Windows, and the scheduler holds such a thread to 80%
+ * of a processor) */
 static UINT32 set_thread_priority(UmThread *t, UINT64 cls, UINT64 buf, UINT64 len)
 {
     UINT32 v;
@@ -763,6 +772,9 @@ static UINT32 set_thread_priority(UmThread *t, UINT64 cls, UINT64 buf, UINT64 le
     if (t->exited) return ST_SUCCESS;              /* (its process may be gone) */
     if (cls == 14) {
         t->no_boost = v != 0;
+    } else if (cls == UM_THREAD_MMCSS) {
+        if (x != 0 && x != PRIO_MMCSS && x != PRIO_MMCSS_AUDIO) return ST_INVALID_PARAMETER;
+        t->mm_priority = (UINT8)x;
     } else if (cls == 2) {
         if (x < 1 || x > 31) return ST_INVALID_PARAMETER;
         if (x >= PRIO_LOW_REALTIME && !um_privilege_held(SE_INC_BASE_PRIORITY)) return ST_PRIVILEGE_NOT_HELD;
@@ -878,7 +890,7 @@ static UINT64 sys_set_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!o) return ST_INVALID_HANDLE;
     UINT32 st = ST_SUCCESS;
     if (a2 == 5) st = um_set_thread_token((UmThread *)o, a3, (UINT32)a4);   /* ThreadImpersonationToken */
-    if (a2 == 2 || a2 == 3 || a2 == 14) st = set_thread_priority((UmThread *)o, a2, a3, a4);
+    if (a2 == 2 || a2 == 3 || a2 == 14 || a2 == UM_THREAD_MMCSS) st = set_thread_priority((UmThread *)o, a2, a3, a4);
     if (a2 == 10) st = zero_tls_cell(((UmThread *)o)->proc, a3, a4);         /* ThreadZeroTlsCell */
     um_ob_unref(o);
     return st;
