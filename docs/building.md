@@ -25,6 +25,7 @@ What each part is for:
 | `clang`, `lld` (`lld-link`) | **Required.** The Windows userland (`--target=x86_64-pc-windows-msvc` and `i686-pc-windows-msvc`), NetSurf, and the kernel and bootloader unless the alternatives below are installed |
 | `llvm` (`llvm-rc`) | Compiling programs' resource scripts (icons, dialogs) |
 | `python3` | `tools/build_userland.py`, `tools/build_netsurf.py` |
+| `mingw-w64-common` (comes with `gcc-mingw-w64-x86-64`) | **Required.** MinGW-w64's C and Windows headers, which `msvcp140.dll` (Microsoft's STL, `userland/msvcp140/build.py`) compiles against; set `NOVA_MINGW_INCLUDE` to use headers elsewhere |
 | `g++-mingw-w64-x86-64`, `g++-mingw-w64-i686` | Only for `tools/build_icu.py` (rebuilding `icu.dll`) |
 | `mtools`, `dosfstools` | `nova.img` and putting files on the data disk |
 | `xorriso` | `scripts/create-iso.sh` |
@@ -136,8 +137,10 @@ made in parallel add files rather than collide on the same lines.
   for resources).  It goes to `C:\Programs`, 64-bit only, unless
   `NAME.json` says otherwise: `{"x86": true}` builds it for 32 bits as
   well, `"system": true` installs it in `C:\Windows\System32`, `"libs":
-  ["usp10"]` links more DLLs, and `"selftest": true` lists it among the
-  README's self-test programs.
+  ["usp10"]` links more DLLs, `"msstl": true` builds a `.cpp` against
+  Microsoft's STL headers and `msvcp140.dll`, as Visual Studio builds a
+  program (`userland/programs/stltest.cpp`), and `"selftest": true` lists
+  it among the README's self-test programs.
 
 Two pieces are built by their own tools and committed, so the normal build
 needs neither:

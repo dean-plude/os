@@ -56,6 +56,11 @@ u_short htons(u_short v) { return (u_short)((v << 8) | (v >> 8)); }
 u_short ntohs(u_short v) { return htons(v); }
 u_long  htonl(u_long v) { return ((v & 0xFF) << 24) | ((v & 0xFF00) << 8) | ((v >> 8) & 0xFF00) | ((v >> 24) & 0xFF); }
 u_long  ntohl(u_long v) { return htonl(v); }
+/* the WSA forms take the socket (whose byte order is always the network's) */
+__declspec(dllexport) int WSAAPI WSAHtonl(SOCKET s, u_long v, u_long *out) { (void)s; if (!out) return SOCKET_ERROR; *out = htonl(v); return 0; }
+__declspec(dllexport) int WSAAPI WSAHtons(SOCKET s, u_short v, u_short *out) { (void)s; if (!out) return SOCKET_ERROR; *out = htons(v); return 0; }
+__declspec(dllexport) int WSAAPI WSANtohl(SOCKET s, u_long v, u_long *out) { (void)s; if (!out) return SOCKET_ERROR; *out = ntohl(v); return 0; }
+__declspec(dllexport) int WSAAPI WSANtohs(SOCKET s, u_short v, u_short *out) { (void)s; if (!out) return SOCKET_ERROR; *out = ntohs(v); return 0; }
 
 unsigned long inet_addr(const char *cp)
 {

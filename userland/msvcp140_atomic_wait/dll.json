@@ -1,0 +1,3 @@
+{
+  "deps": ["msvcp140", "advapi32"]
+}
