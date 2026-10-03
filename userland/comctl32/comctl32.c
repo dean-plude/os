@@ -17,7 +17,8 @@ static HFONT font_k(int k)
 HFONT cc_font(void) { return font_k(1); }
 
 /* The UI font at the window's DPI (twice the size in a 192 DPI window) */
-HFONT cc_font_for(HWND h) { return font_k(h && GetDpiForWindow(h) >= 192 ? 2 : 1); }
+int cc_k(HWND h) { return h && GetDpiForWindow(h) >= 192 ? 2 : 1; }
+HFONT cc_font_for(HWND h) { return font_k(cc_k(h)); }
 
 void cc_fill(HDC dc, const RECT *r, COLORREF c)
 {
