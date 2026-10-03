@@ -2118,7 +2118,8 @@ the invariant culture.  NovaOS now ships ICU the way Windows 10 does.
   sorts `ä` with `a`, Japanese compares kana and widths, all through ICU.
 - Not yet: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat`
   still format the English way for every locale, and the user's locale is
-  always `en-US`.
+  always `en-US`.  (Both came with "Locale formatting and the user
+  locale".)
 
 ## Older USB controllers: EHCI, OHCI and UHCI
 
@@ -2677,6 +2678,17 @@ or MIT) for the dialogs' pictures.
 - Not yet: rollback, script custom actions, nested installs, patches
   (`.msp`) and transforms (`.mst`), advertised features, services at boot.
 
+## Run CI on merge queue groups
+
+GitHub's merge queue builds each queued pull request on a temporary
+merge-group branch and only starts workflows that listen for the
+`merge_group` event.  `.github/workflows/ci.yml` now does, so the three
+required checks (Checks, Build and boot-test, Graphics tests) run for
+queued pull requests.  The job names are unchanged.  The generated-docs
+check stays pull-request only, since the pull request already passed it;
+the other jobs have no conditions that depend on a pull request, and the
+concurrency group falls back to the merge-group ref.
+
 ## Faster CI: ccache and docs-only pull requests
 
 A pull request's CI took about 12 minutes, and half of that was building
@@ -2697,6 +2709,51 @@ libm) one at a time through `tools/build_userland.py`.
 Next candidates, each its own change: compiling in parallel inside
 `tools/build_userland.py` (the cached build is now mostly its serial
 work), and running the test VMs with KVM, which the runners offer.
+
+## Firefox's delay-loaded DLLs and DirectWrite fallback
+
+Two Phase 16 steps for Firefox (tested with Floorp 12.19): every DLL
+`xul.dll` delay-loads now exists (16.2), and DirectWrite's font fallback
+has a test (16.1).  No MIT, BSD or zlib implementation of these DLLs
+exists (Wine's are LGPL, and the only HLSL compilers are LGPL too), so
+they are NovaOS's own.
+
+- **`d3d11.dll`** (`userland/d3d11`): NovaOS's own front for Direct3D 11.
+  With DXVK installed from the App Store, which now installs DXVK's
+  `d3d11` as `d3d11_dxvk.dll`, every entry point hands the call to DXVK
+  (DXVK's `d3d10core` reaches it through `D3D11CoreCreateDevice`).
+  Without DXVK, device creation fails with `DXGI_ERROR_UNSUPPORTED`, as
+  on a PC with no Direct3D 11 driver, so programs use their software
+  path.
+- **`urlmon.dll`**: `CreateUri` (an `IUri` with every string and number
+  property, IPv4/IPv6/DNS host types and default ports) and
+  `CoInternetParseUrl` (scheme, domain, document, anchor, canonicalize,
+  and path and URL conversion through shlwapi).
+- **`winspool.drv`**: the print spooler's client, built and installed
+  under its `.drv` name (`userland/winspool/build.py`), with Windows'
+  ordinals for the default-printer calls (Firefox imports
+  `GetDefaultPrinterW` as ordinal 203).  There are no printers yet: the
+  lists are empty and opening a printer fails.
+- **`credui.dll`**: the credential prompts report that the user
+  cancelled, since NovaOS has no credential dialog yet.
+- **`dhcpcsvc.dll`**: `DhcpRequestParams` finds no extra DHCP options, so
+  a WPAD lookup moves on.
+- **`d3dcompiler_47.dll`**: blobs (`D3DCreateBlob`, `D3DStripShader`),
+  and a `D3DCompile` that fails with a message in its error blob.
+- **`tools/pe_imports.py`** now checks delay-loaded imports, marked
+  "(delay)", counts DLLs shipped beside a program, and reads `.drv`
+  files.  It reports `0 missing` for Floorp's `xul.dll`.
+- **Tests**: the new `delaytest` self-test exercises every one of these
+  DLLs (31 checks, 64- and 32-bit).  The new `tools/dwtest`, in the
+  graphics suite, lays out "Hello", an Arabic word and a Devanagari word
+  in one line from a Latin-only font.  It checks that each script falls
+  back to a font that has it, that the Arabic is joined and runs right to
+  left, that the Devanagari conjunct forms, and that every run draws, and
+  it shows the line in a window for the screenshot.
+- `profapi.dll`, also on the 16.2 list, is not added.  Only
+  `Microsoft.Internal.FrameworkUdk.dll` imports it, and that DLL also
+  needs `Bcp47Langs`, `CoreMessaging` and `dcomp`.  It is Windows App SDK
+  code Floorp runs without.
 
 ## Firefox loads pages: wsock32.dll (Phase 16.4)
 
@@ -2724,6 +2781,56 @@ failure, and every socket was closed before use.
   non-blocking the way NSPR does, and checks the inherited mode.
 - With it, Floorp fetches and renders `http://` pages served to QEMU's
   guest network.
+
+## Locale formatting and the user locale
+
+Until now `GetDateFormat`, `GetTimeFormat`, `GetNumberFormat` and
+`GetCurrencyFormat` formatted the English way whatever locale a program
+asked for, and the user's locale was always `en-US`.
+
+- **Formatting in the locale asked for** (`userland/kernel32/nlsformat.c`):
+  `GetDateFormat`, `GetTimeFormat`, `GetNumberFormat` and
+  `GetCurrencyFormat`, A, W and Ex (the A number functions are new), take
+  their pictures, names, separators, grouping and orders from
+  `GetLocaleInfo`, which answers every locale other than English from ICU
+  (PR #45).  `de-DE` gives `02.10.2026`, `Freitag, 2. Oktober 2026`,
+  `14:05:09`, `1.234.567,89` and `1.234.567,89 €`; `ja-JP` gives
+  `2026/10/02`, `2026年10月2日`, `9:05:09`, `1,234,567.89` and `¥1,234,568`,
+  as Windows does.  The picture rules are Windows': `d`…`dddd`, `M`…`MMMM`
+  (the genitive month when the picture has a day number), `y`, `yy`,
+  `yyyy`, `g`, `h`/`H`, `m`, `s`, `t`/`tt` and `'quoted'` text;
+  `DATE_LONGDATE`, `DATE_YEARMONTH`, `DATE_MONTHDAY`, `TIME_NOSECONDS`,
+  `TIME_NOMINUTESORSECONDS`, `TIME_NOTIMEMARKER` and
+  `TIME_FORCE24HOURFORMAT`; `NUMBERFMT` and `CURRENCYFMT` with all five
+  negative-number and sixteen negative-currency orders, Indian-style
+  grouping, rounding half away from zero, and Windows' errors (a value
+  that is not a number, flags beside a format, 30 February, a short
+  buffer).
+- **Closer to Windows' locale data**: Japanese and Chinese long dates have
+  no weekday (`yyyy年M月d日`, where ICU's full date ends in one), and the
+  yen sign is Windows' narrow `¥` rather than ICU's full-width one.
+- **The user locale** is `LocaleName` under
+  `HKCU\Control Panel\International`, read once per process by
+  `GetUserDefaultLocaleName`, `GetUserDefaultLCID`, `GetUserDefaultLangID`,
+  `GetThreadLocale`, `LOCALE_USER_DEFAULT` and a `NULL` locale name.  The
+  system locale and the UI language stay `en-US`.  The registry is saved
+  to drive C:, so the choice lasts across restarts.
+- **`intl.exe`** (System32) shows the user's format (`intl`), lists the
+  locales (`intl /list`) and sets one (`intl de-DE`; a neutral name such
+  as `ja` becomes `ja-JP`), writing `LocaleName`, `Locale` and the classic
+  values beside them (`sShortDate`, `sDecimal`, `iCurrency`…) for programs
+  that read the registry themselves.
+- **Settings > Time & language** shows the regional format and offers
+  fifteen common ones; a click runs `intl.exe`.
+- **Tests**: `nlstest` (core suite, 64- and 32-bit) checks the four
+  functions in German, Japanese and English against Windows' output;
+  `nlstest user` sets `de-DE`, `ja` and `en-US` with `intl.exe` and checks
+  that new processes follow; `nlstest set ja-JP` before the suite's
+  restart and `nlstest after-restart ja-JP` after it check the choice
+  lasts.
+- Not yet: user overrides (a changed `sShortDate` alone is not read back),
+  `GetDurationFormat`, alternative calendars (`DATE_USE_ALT_CALENDAR`,
+  the Japanese era calendar), and native digits in the output.
 
 ## Media keys, side buttons and the horizontal wheel
 
@@ -2893,5 +3000,24 @@ timers still fired on the 10 ms tick.  They now end on the TSC too.
   reports the timer queue case without judging it.  `NtSetTimer`'s own APC
   routine (native callers) is still ignored, and `NtSetTimerEx` is not
   implemented.
+
+## WASAPI: the engine keeps a 100 ms lead
+
+The core suite's `soundtest wasapi` recording check failed on some CI runs
+and passed on others: the 660 Hz tone came out with silent gaps (the
+zero-crossing pitch read 580 to 620 Hz).  A shared-mode client fills its
+own buffer, 30 ms at the least, and `mmdevapi` passed every released frame
+straight to the kernel mixer stream and reported the stream's queue as the
+padding, so the client never had more than its buffer's worth queued.  On a
+loaded host (GitHub's runners) the client's 10 ms wakeups came late by more
+than that and the mixer ran dry.
+
+`mmdevapi` now keeps an engine lead, as Windows' audio engine has a buffer
+of its own: the kernel stream holds the client buffer plus 100 ms, and the
+padding is what the stream holds beyond that lead.  The client therefore
+writes 100 ms ahead of the mixer and a late wakeup does not starve it.
+`GetStreamLatency` reports the lead with the mixer's 80 ms.  Under a CPU
+load that split the tone before, the recording now holds one unbroken
+1010 ms tone.
 
 <!-- END generated:history -->

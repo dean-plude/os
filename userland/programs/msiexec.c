@@ -3,7 +3,10 @@
  *
  *   msiexec /i PACKAGE.msi [PROPERTY=value ...]   install
  *   msiexec /x PACKAGE.msi | /x {ProductCode}     uninstall
+ *   msiexec /p PATCH.msp [PROPERTY=value ...]     patch the product it is for
+ *   msiexec /uninstall PATCH.msp                  take a patch off again
  *   msiexec PACKAGE.msi                           install
+ *   TRANSFORMS=a.mst;b.mst  PATCH=a.msp           with /i: transforms, patches
  *   /qn  no UI    /qb  progress only    /passive  progress only
  *   /l*v FILE  or  /log FILE            write a log
  *
@@ -24,7 +27,8 @@ static void usage(bool gui)
     const WCHAR *text =
         L"Windows Installer (NovaOS)\n\n"
         L"msiexec /i package.msi [PROPERTY=value ...]\n"
-        L"msiexec /x package.msi | /x {ProductCode}\n\n"
+        L"msiexec /x package.msi | /x {ProductCode}\n"
+        L"msiexec /p patch.msp   msiexec /uninstall patch.msp\n\n"
         L"Options: /qn (no UI)  /qb, /passive (progress only)  /l*v file (log)";
     if (gui) MessageBoxW(NULL, text, L"Windows Installer", MB_OK | MB_ICONINFORMATION);
     else wprintf(L"%s\n", text);
@@ -52,7 +56,14 @@ int main(void)
         const WCHAR *a = argv[i];
         if (a[0] == L'/' || a[0] == L'-') {
             WCHAR opt = (WCHAR)towlower(a[1]);
-            if (opt == L'i' || opt == L'f' || opt == L'p') {
+            if (!_wcsicmp(a + 1, L"update") || (opt == L'p' && !iswalpha(a[2]))) {
+                if (opt == L'p' && a[2]) req.patch = a + 2; else if (i + 1 < argc) req.patch = argv[++i];
+            } else if (!_wcsicmp(a + 1, L"package")) {
+                if (i + 1 < argc) package = argv[++i];
+            } else if (!_wcsicmp(a + 1, L"uninstall")) {
+                req.remove = true;
+                if (i + 1 < argc) package = argv[++i];
+            } else if (opt == L'i' || opt == L'f') {
                 if (a[2]) package = a + 2; else if (i + 1 < argc) package = argv[++i];
             } else if (opt == L'x') {
                 req.remove = true;
@@ -85,9 +96,17 @@ int main(void)
             package = a;
         }
     }
-    if (help || (!package && !req.remove)) { usage(req.ui_level > MSIUI_NONE); return help ? 0 : 1639; }
-    if (!package) { usage(req.ui_level > MSIUI_NONE); return 1639; }
-    if (package[0] == L'{') req.product_code = package; else req.package = package;
+    /* /uninstall PATCH.msp: the patch comes off its product */
+    size_t plen = package ? wcslen(package) : 0;
+    if (req.remove && plen > 4 && !_wcsicmp(package + plen - 4, L".msp")) { req.patch = package; package = NULL; }
+    if (help || (!package && !req.patch)) { usage(req.ui_level > MSIUI_NONE); return help ? 0 : 1639; }
+    if (package && package[0] == L'{') req.product_code = package; else req.package = package;
+    if (req.patch && package && !req.remove) {      /* /i PACKAGE /p PATCH: install with the patch */
+        size_t n = wcslen(props);
+        _snwprintf(props + n, 4096 - n, L"%sPATCH=\"%s\"", n ? L" " : L"", req.patch);
+        req.patch = NULL;
+    }
+
     req.properties = props;
     req.logfile = logfile[0] ? logfile : NULL;
     char err[256];

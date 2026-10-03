@@ -22,6 +22,8 @@
 #define MSI_ERROR_PACKAGE_OPEN    1619
 #define MSI_ERROR_PACKAGE_INVALID 1620
 #define MSI_ERROR_UNKNOWN_PRODUCT 1605
+#define MSI_ERROR_TRANSFORM       1624
+#define MSI_ERROR_PATCH_TARGET    1642
 
 typedef struct {
     const WCHAR *package;        /* .msi path (install), or NULL */
@@ -30,6 +32,8 @@ typedef struct {
     bool         remove;         /* uninstall */
     int          ui_level;       /* MSIUI_* */
     const WCHAR *logfile;        /* /l*v FILE, or NULL */
+    const WCHAR *patch;          /* /p PATCH.msp: apply it to the product it is for
+                                    (with remove: /uninstall PATCH.msp takes it off) */
 } MsiRequest;
 
 /* Run an installation; @err (may be NULL) gets a description on failure */

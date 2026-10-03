@@ -643,6 +643,7 @@ static const struct { const char *name; const char *keys; int page; } g_setting_
     { "Personalization", "personalization wallpaper background theme colors", SETTINGS_PERSONALIZE },
     { "Storage",         "storage disk drive space memory ram",               SETTINGS_STORAGE },
     { "Network",         "network ethernet internet ip dns wifi certificates", SETTINGS_NETWORK },
+    { "Time & language", "time language region regional format locale date number currency", SETTINGS_TIME_LANGUAGE },
     { "About",           "about version fonts licence",                       SETTINGS_ABOUT },
 };
 #define N_SETTING_ITEMS ((int)(sizeof(g_setting_items) / sizeof(g_setting_items[0])))
@@ -1831,6 +1832,12 @@ void DesktopRun(void *arg)
     update_clock();
     /* Started from the installation disc: offer to install */
     if (SetupIsLive()) AppLaunch(APP_SETUP);
+    else {
+        /* An installed system starts its automatic services (services.c) */
+        RamNode *svc = RamfsResolve(NULL, "\\Windows\\System32\\services.exe");
+        if (!svc || !UmSpawnDetached(svc, "services /autostart", svc->parent))
+            kprintf("[SVC] Cannot start services.exe: %s\n", svc ? "out of memory" : "not installed");
+    }
     VirtioInputInit();                          /* touch screens (polled here) */
     WmComposite();
     WmCursorShow(GdiScreenW() / 2, GdiScreenH() / 2);

@@ -4,4 +4,6 @@
   `ExtTextOut` sends complex scripts through it, as Windows' LPK does, so
   Arabic, Hebrew and the Indic scripts join, reorder and run right to left.
   Arabic and Devanagari draw with Noto Sans; GDI falls back to them by
-  script.
+  script.  DirectWrite (`dwrite`) lays text out on the same core, with
+  font fallback: `tools/dwtest` draws Latin, Arabic and Devanagari in one
+  line from a Latin-only font.

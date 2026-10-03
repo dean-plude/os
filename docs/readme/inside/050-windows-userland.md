@@ -9,4 +9,6 @@
   `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, WASAPI
   playback and capture, endpoint volume), `msi`,
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
-  `usp10` (Uniscribe), `normaliz` (IDN), and more.
+  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`), and
+  the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
+  `dhcpcsvc`, `d3dcompiler_47`), and more.
