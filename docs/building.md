@@ -362,11 +362,10 @@ python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 `tools/novarun.py` (and so `tools/selftest.py`) starts QEMU with `-accel kvm`
 when `/dev/kvm` is readable and writable, and with TCG otherwise.  Set
 `NOVARUN_ACCEL=tcg` or `NOVARUN_ACCEL=kvm` to force one.  The CPU model stays
-`qemu64` with the same feature flags under both.  CI pins every job to TCG
-(`NOVARUN_ACCEL=tcg`).  Under KVM the kernel boots and the network, device and
-graphics suites pass, and the core suite passes except `sleeptest timer`,
-where a few timed waits end up to 10 ms late (history entry "Kernel under
-KVM").  Switching CI to KVM waits for that.
+`qemu64` with the same feature flags under both.  CI runs the test VMs under
+KVM: each job's `tools/ci/enable-kvm.sh` step opens `/dev/kvm` to the runner
+user and sets `NOVARUN_ACCEL=kvm`, or sets `tcg` with a warning when the runner
+has no usable `/dev/kvm` (history entry "Kernel under KVM" has the timings).
 
 The graphics suite downloads 7-Zip, Mesa and DXVK and builds
 gltest/d3dtest/d2dtest/dwtest:

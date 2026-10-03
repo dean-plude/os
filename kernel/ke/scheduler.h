@@ -84,6 +84,7 @@ typedef struct Thread {
     uint8_t         base_priority;
     uint8_t         boost_ticks;    /* ticks run while boosted since the last decay step */
     bool            balance_boost;  /* raised for starving (sched_tick): back to base after a quantum */
+    bool            no_boost;       /* no wake-up boosts (SetThreadPriorityBoost) */
     uint64_t        ready_tick;     /* when it was last queued (the balance-set boost) */
 
     /* Page table root (CR3 physical address) for this thread's process.
@@ -126,6 +127,15 @@ typedef struct Thread {
  * 16-31 real-time (never boosted, as on NT) */
 #define PRIO_MAX_DYNAMIC   15
 #define PRIO_LOW_REALTIME  16
+
+/* The system threads programs must never hold up: above anything a
+ * program can ask for without SeIncreaseBasePriorityPrivilege (15:
+ * THREAD_PRIORITY_TIME_CRITICAL, or HIGH_PRIORITY_CLASS + HIGHEST) and
+ * any boost.  The desktop (input, window management, drawing) at 16; the
+ * device poll thread (input devices) and the audio mixer above it, so a
+ * long redraw never delays a sound buffer or a key press. */
+#define PRIO_DESKTOP       16
+#define PRIO_DEVICE        17
 
 /* Wake-up boosts: how far above its base a thread woken by each kind of
  * waker runs (NT's increments from wdm.h and Windows Internals) */
@@ -256,6 +266,10 @@ void sched_unblock_timer(Thread *t);
  * priority, preempting one if that is what runs on its CPU.  It decays
  * one level per quantum (20 ms) the thread runs, back to its base. */
 void sched_unblock_boost(Thread *t, int boost);
+/* Give @t a new base priority (1-31): it runs at it from now on, boost
+ * ended, preempting or giving way at once as its new rank says.  Program
+ * threads get theirs from SetThreadPriority/SetPriorityClass (kernel/um). */
+void sched_set_base_priority(Thread *t, uint8_t base);
 /* IPI_WAKE (interrupt context): switch if sched_unblock asked this CPU to */
 void sched_resched_ipi(void);
 /* On the way back to a program: a switch asked for while this CPU halted

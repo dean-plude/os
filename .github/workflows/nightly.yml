@@ -26,8 +26,8 @@ env:                            # ccache, as in ci.yml
   CCACHE_COMPILERCHECK: content
   CCACHE_MAXSIZE: 500M
 
-concurrency:
-  group: nightly-app-corpus
+concurrency:                    # a queued run is replaced by a newer queued run in the same group:
+  group: nightly-app-corpus-${{ github.event_name }}-${{ github.ref }}   # keep manual and scheduled runs apart from pull requests
   cancel-in-progress: false
 
 jobs:
@@ -35,12 +35,11 @@ jobs:
     name: App corpus
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    env:
-      # KVM crashes the core boot (a #GP in uACPI's GPE code) and times out
-      # the network suite; see docs/history/2026-10-03-ci-kvm.md
-      NOVARUN_ACCEL: tcg
     steps:
       - uses: actions/checkout@v4
+
+      - name: Enable KVM (TCG when the runner has no /dev/kvm)
+        run: tools/ci/enable-kvm.sh
 
       - name: Install the toolchain and QEMU
         run: |
