@@ -308,7 +308,9 @@ class Nova:
         """A screenshot of the primary display at @path; with more monitors,
         each further one's at PATH-2.png, PATH-3.png, ... (an output with no
         monitor on it has none)"""
-        self.qmp.cmd('screendump', filename=os.path.abspath(path), format='png')
+        r = self.qmp.cmd('screendump', filename=os.path.abspath(path), format='png')
+        if 'error' in r:
+            raise RuntimeError(f"screendump: {r['error'].get('desc', r['error'])}")
         for i, (dev, head) in enumerate(self.heads):
             self.qmp.cmd('screendump', filename=os.path.abspath(re.sub(r'(\.png)?$', f'-{i + 2}.png', path, count=1)),
                          format='png', device=dev, **({'head': head} if head else {}))

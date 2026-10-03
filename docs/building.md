@@ -390,7 +390,7 @@ so on a machine without a screen it runs under `xvfb-run`:
 ```bash
 sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 g++-mingw-w64-x86-64 g++-mingw-w64-i686 \
   ninja-build pkg-config libglib2.0-dev libpixman-1-dev libsdl2-dev libepoxy-dev libgbm-dev libdrm-dev \
-  libvulkan-dev glslang-tools bison flex python3-mako python3-yaml mesa-vulkan-drivers seabios ipxe-qemu xvfb
+  libvulkan-dev libpng-dev glslang-tools bison flex python3-mako python3-yaml mesa-vulkan-drivers seabios ipxe-qemu xvfb
 pip install --user 'meson>=1.5' pycotap
 sudo install -d -o "$USER" /opt/qv
 tools/ci/build-qemu-venus.sh /opt/qv

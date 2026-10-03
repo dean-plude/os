@@ -188,7 +188,7 @@ jobs:
             qemu-system-x86 ovmf mtools dosfstools acpica-tools p7zip-full curl ccache \
             xvfb xauth mesa-vulkan-drivers libgl1-mesa-dri libegl1 seabios ipxe-qemu \
             ninja-build pkg-config libglib2.0-dev libpixman-1-dev libsdl2-dev libepoxy-dev libgbm-dev \
-            libdrm-dev libvulkan-dev glslang-tools bison flex python3-mako python3-yaml python3-venv
+            libdrm-dev libvulkan-dev libpng-dev glslang-tools bison flex python3-mako python3-yaml python3-venv
           pip install --user --break-system-packages -q 'meson==1.9.0' pycotap
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo /usr/lib/ccache >> "$GITHUB_PATH"

@@ -13,7 +13,7 @@
 # come from the seabios, ipxe-qemu and ovmf packages instead).
 # Needs: meson (1.5 or newer) and pycotap from pip; ninja-build, pkg-config,
 # libglib2.0-dev, libpixman-1-dev, libsdl2-dev, libepoxy-dev, libgbm-dev,
-# libdrm-dev, libvulkan-dev, glslang-tools, seabios and ipxe-qemu.
+# libdrm-dev, libvulkan-dev, libpng-dev (screendump's PNGs), glslang-tools, seabios and ipxe-qemu.
 set -euo pipefail
 PREFIX="$(realpath -m "$1")"
 CACHE="$(realpath -m "${2:-$PREFIX/src}")"
@@ -43,7 +43,7 @@ cd qemu-10.2.1
 sed -i 's/^\( *\)unpack_edk2_blobs = .*/\1unpack_edk2_blobs = false/' meson.build
 sed -i "s/^subdir('dtb')/# subdir('dtb')/" pc-bios/meson.build
 PKG_CONFIG_PATH="$PREFIX/lib/x86_64-linux-gnu/pkgconfig" ./configure --prefix="$PREFIX" \
-  --target-list=x86_64-softmmu --enable-opengl --enable-sdl --enable-virglrenderer \
+  --target-list=x86_64-softmmu --enable-opengl --enable-sdl --enable-virglrenderer --enable-png \
   --disable-gtk --disable-docs --disable-install-blobs
 make -j"$(nproc)" install
 mkdir -p "$PREFIX/share/qemu"
