@@ -466,9 +466,12 @@ NTSTATUS NTAPI LdrGetProcedureAddress(PVOID base, const char *name, ULONG ordina
 /* -----------------------------------------------------------------------
  * Thread and process teardown callbacks (called from RtlExit*)
  * ----------------------------------------------------------------------- */
+extern void nova_fls_thread_exit(int stage);   /* ntdll_fls.c */
+extern void nova_tls_thread_exit(void);         /* ntdll_tls.c */
+BOOLEAN g_shutdown;                             /* RtlDllShutdownInProgress (ntdll_rtl.c) */
+
 void nova_run_thread_detach(void)
 {
-    extern void nova_fls_thread_exit(int stage);   /* ntdll_fls.c */
     if (!g_process_ready) return;
     nova_fls_thread_exit(0);
     for (int i = g_nmod - 1; i >= 0; i--) {
@@ -479,12 +482,18 @@ void nova_run_thread_detach(void)
         }
     }
     free_thread_tls();
+    nova_tls_thread_exit();
     nova_fls_thread_exit(1);
 }
 
+/* Process exit: the exiting thread's FLS callbacks, then every module's
+ * DLL_PROCESS_DETACH (other threads' FLS values reach their callbacks
+ * when a DLL frees its index there, as on Windows) */
 void nova_run_process_detach(void)
 {
     if (!g_process_ready) return;
+    g_shutdown = TRUE;
+    nova_fls_thread_exit(0);
     for (int i = g_nmod - 1; i >= 0; i--) {
         Module *m = &g_mod[i];
         if (!m->attached) continue;
