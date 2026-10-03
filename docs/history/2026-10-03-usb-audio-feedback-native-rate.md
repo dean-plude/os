@@ -39,6 +39,10 @@ device, as on Windows.
   default does); `waveOutMessage` and `waveInMessage` answer
   `DRVM_MAPPER_PREFERRED_GET` and `DRVM_MAPPER_CONSOLEVOICECOM_GET` with
   device 0.  `WAVE_MAPPER` still follows the default wherever it moves.
+- **Eight devices each way**: the mixer takes up to eight outputs and
+  eight inputs (it was four, so a fifth USB speaker was silently left
+  out; one past eight is now logged), as many as the device lists give
+  programs.
 - **Tests**: `soundtest tone ... rate=N` plays at N Hz, `soundtest info`
   prints the preferred device IDs, and `tools/usbredirpeer.py
   --feedback HZ` makes the test speaker asynchronous.  The devices

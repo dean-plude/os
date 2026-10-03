@@ -354,7 +354,7 @@ static bool find_setting(UsbDev *d, UINT8 as, bool in, bool v2, UaSetting *out)
 {
     int total;
     const UINT8 *cfg = UsbDevConfig(d, &total);
-    bool ours = false, pcm = false;
+    bool ours = false, pcm = false, out_seen = false;
     UaSetting cur = { 0 };
     for (int off = 0; off + 2 <= total && cfg[off] >= 2; off += cfg[off]) {
         const UINT8 *p = &cfg[off];
@@ -362,11 +362,14 @@ static bool find_setting(UsbDev *d, UINT8 as, bool in, bool v2, UaSetting *out)
             if (ours && setting_ok(&cur, pcm, in)) break;
             ours = p[2] == as && p[3] != 0 && p[5] == 1 && p[6] == SUB_STREAMING;
             pcm = false;
+            out_seen = false;
             memset(&cur, 0, sizeof(cur));
             cur.as = as;
             cur.alt = p[3];
         } else if (!ours) {
             continue;
+        } else if (p[1] == USB_DT_ENDPOINT && p[0] >= 7 && (p[3] & 3) == 1 && !(p[2] & 0x80) && in) {
+            out_seen = true;                             /* (an IN endpoint after it is its feedback) */
         } else if (p[1] == USB_DT_CS_INTERFACE && p[2] == AS_GENERAL) {
             if (v2 && p[0] >= 16) {                      /* format type I, bmFormats has PCM */
                 pcm = p[5] == 1 && (le32(&p[6]) & 1);
@@ -383,6 +386,9 @@ static bool find_setting(UsbDev *d, UINT8 as, bool in, bool v2, UaSetting *out)
                 cur.sub = p[5];
                 cur.bits = p[6];
             }
+        } else if (p[1] == USB_DT_ENDPOINT && p[0] >= 7 && (p[3] & 3) == 1 && (p[2] & 0x80) && in &&
+                   ((p[3] >> 4 & 3) == 1 || out_seen)) {
+            continue;                                    /* a playing setting's feedback endpoint: not a recording */
         } else if (p[1] == USB_DT_ENDPOINT && p[0] >= 7 && (p[3] & 3) == 1 && !(p[2] & 0x80) == !in && !cur.ep) {
             cur.ep = p;
         } else if (p[1] == USB_DT_ENDPOINT && p[0] >= 7 && (p[3] & 3) == 1 && (p[2] & 0x80) && !in && cur.ep &&
@@ -635,6 +641,8 @@ void *UsbAudioProbe(UsbDev *d, const UsbIface *f)
     for (int k = 0; k < 2; k++)
         for (int i = 0; i < nas && !dir[k].found; i++)
             find_setting(d, as[i], k == 1, v2, &dir[k]);
+    if (dir[0].found && dir[1].found && dir[0].as == dir[1].as)
+        dir[1].found = false;                                /* (one interface streams one way) */
     if (!dir[0].found && !dir[1].found) {
         kprintf("[USB] %s: audio device has no output or input NovaOS can use\n", UsbDevName(d));
         return NULL;

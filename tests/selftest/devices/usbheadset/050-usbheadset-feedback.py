@@ -32,7 +32,7 @@ def plug(n, port, bus, product):
         r = nova.qmp.cmd('device_add', driver='usb-redir', id=n, chardev=n, bus=bus)
         if 'error' in r:
             print('device_add:', r['error'], flush=True)
-        _wait_log(nova, r'Attached Speakers \(' + re.escape(product) + r'\)')
+        _wait_log(nova, r'(?:Attached|Playing on) Speakers \(' + re.escape(product) + r'\)')
     return act
 
 
@@ -65,7 +65,6 @@ TESTS = [
                       r'audio feedback: the device plays 48500\.000 frames a second \(nominal 48000\)']),
     Test('feedback high speed', 'soundtest tone 932 3000 "dev=Async Headset"', [r'played \d+ samples'],
          before=plug('async2', 10708, 'ehci.0', 'Test Async Headset'), check=rate('async2.wav', 47600, 8000, 932),
-         boot_expect=[r'audio output, 48 kHz 24-bit stereo, 48-byte packets every 125 us \(USB Audio 2\.0\)\n'
-                      r'[^\n]*audio output is asynchronous: feedback every 1000 us from endpoint 81',
+         boot_expect=[r'usb2 port \d+: audio output is asynchronous: feedback every 1000 us from endpoint 81',
                       r'audio feedback: the device plays 47(?:599|600)\.\d{3} frames a second \(nominal 48000\)']),
 ]

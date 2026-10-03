@@ -81,7 +81,7 @@ typedef struct {
     INT32   a[2], b[2];
 } Stream;
 
-#define MAX_OUTPUTS   4
+#define MAX_OUTPUTS   8                               /* (each way: what the device lists hold) */
 
 typedef struct { UINT32 l, r; bool mute; } Master;
 #define FULL ((Master){ 65536, 65536, false })
@@ -418,6 +418,7 @@ bool AudioOutputAttach(const AudioOutput *o)
     spin_unlock_irqrestore(&g.lock, st);
     if (ok && now_default) kprintf("[AUDIO] Playing on %s\n", o->name);
     else if (ok) kprintf("[AUDIO] Attached %s (the chosen default stays)\n", o->name);
+    else kprintf("[AUDIO] %s not attached: %d outputs already\n", o->name, MAX_OUTPUTS);
     return ok;
 }
 
@@ -460,6 +461,7 @@ bool AudioInputAttach(const AudioInput *i)
     spin_unlock_irqrestore(&g.lock, st);
     if (ok && now_default) kprintf("[AUDIO] Recording from %s\n", i->name);
     else if (ok) kprintf("[AUDIO] Attached %s (the chosen default stays)\n", i->name);
+    else kprintf("[AUDIO] %s not attached: %d inputs already\n", i->name, MAX_OUTPUTS);
     return ok;
 }
 
