@@ -2,13 +2,16 @@
  * audio.h — the system mixer: playback streams mixed into the sound card,
  * and capture streams fed from its recording
  *
- * Every stream carries 48 kHz, 16-bit stereo frames (winmm and mmdevapi
- * convert to that; a USB device running at another rate or with other
- * channels converts in usbaudio.c).  A kernel thread mixes the running
- * streams into their output's ring a little ahead of the hardware: the HD
- * Audio card's DMA ring, or a USB audio device's (usbaudio.c).  Capture
- * streams are fed from their input's ring the same way: the HD Audio
- * card's, or a USB microphone's.  Each stream uses the default device of
+ * Every stream carries 16-bit stereo frames at its own rate: 48 kHz
+ * unless its program set another (AudioSetRate: winmm plays a program's
+ * sound at the rate it comes in).  Every device runs at its own rate too:
+ * the HD Audio card at 48 kHz, a USB device at the rate it was set to
+ * (usbaudio.c).  A kernel thread mixes the running streams into their
+ * output's ring at that output's rate, a little ahead of the hardware,
+ * converting each stream whose rate differs (once, and not at all when
+ * the rates match): the HD Audio card's DMA ring, or a USB audio device's.
+ * Capture streams are fed from their input's ring the same way, converted
+ * from the input's rate to theirs.  Each stream uses the default device of
  * its direction, or the one its program chose.
  */
 
@@ -31,8 +34,9 @@ typedef struct {
     UINT32 latency;     /* frames the device plays ahead of the mixer */
 } AudioStatus;
 
-/* A playback device: a ring of @bytes of interleaved 48 kHz s16 stereo
- * frames that the mixer keeps filled ahead of where the device reads.
+/* A playback device: a ring of @bytes of interleaved s16 stereo frames at
+ * @rate (0: 48 kHz) that the mixer keeps filled ahead of where the device
+ * reads.
  * @position: the device's read offset in the ring (bytes, a whole frame).
  * @key (may be NULL: the name): what the device's saved volume and the
  * choice of default are kept under, the same each time it is attached
@@ -42,12 +46,13 @@ typedef struct {
     const char *key;
     INT16      *ring;
     UINT32      bytes;
+    UINT32      rate;
     UINT32    (*position)(void *ctx);
     void       *ctx;
 } AudioOutput;
 
-/* A recording device: a ring of @bytes of interleaved 48 kHz s16 stereo
- * frames that the device writes.  @position: how far it has written
+/* A recording device: a ring of @bytes of interleaved s16 stereo frames
+ * at @rate (0: 48 kHz) that the device writes.  @position: how far it has written
  * (bytes, a whole frame).  @run (may be NULL): start or stop recording;
  * the mixer reads on from the position it finds after starting it. */
 typedef struct {
@@ -55,6 +60,7 @@ typedef struct {
     const char *key;                    /* (as an output's) */
     INT16      *ring;
     UINT32      bytes;
+    UINT32      rate;
     UINT32    (*position)(void *ctx);
     void      (*run)(void *ctx, bool on);
     void       *ctx;
@@ -67,6 +73,7 @@ typedef struct {
     bool   is_default;
     bool   mute;
     UINT32 volume;                      /* its endpoint volume (the louder channel), 0..65536 */
+    UINT32 rate;                        /* the rate it runs at */
     char   name[96];
 } AudioDevice;
 
@@ -81,9 +88,10 @@ bool        AudioInit(void);
  * touches @o's ring. */
 bool        AudioOutputAttach(const AudioOutput *o);
 void        AudioOutputDetach(const AudioOutput *o);
-/* Whether there is an output, and the default one's name */
+/* Whether there is an output, and the default one's name and rate */
 bool        AudioPresent(void);
 const char *AudioDeviceName(void);
+UINT32      AudioDeviceRate(void);
 
 /* Make @i (kept until detached) the default input from now on, as
  * Windows switches to a USB microphone when it is plugged in; detaching
@@ -91,9 +99,10 @@ const char *AudioDeviceName(void);
  * mixer no longer reads @i's ring. */
 bool        AudioInputAttach(const AudioInput *i);
 void        AudioInputDetach(const AudioInput *i);
-/* Whether there is an input, and the default one's name */
+/* Whether there is an input, and the default one's name and rate */
 bool        AudioCanRecord(void);
 const char *AudioInputName(void);
+UINT32      AudioInputRate(void);
 
 /* The attached outputs (or @capture: inputs), oldest first, up to @max;
  * returns how many */
@@ -106,8 +115,11 @@ bool        AudioSetDefault(bool capture, UINT32 id);
 void        AudioLoadSettings(void);
 
 /* A stream that can queue @frames (0: the default), playing or (@capture)
- * recording; -1 if none is free */
+ * recording; -1 if none is free.  It runs at 48 kHz until AudioSetRate. */
 int    AudioOpen(UINT32 frames, bool capture);
+/* The rate stream @s's frames are at (8 kHz to 384 kHz; best set before
+ * any are queued); false if out of range */
+bool   AudioSetRate(int s, UINT32 rate);
 /* Capture streams: take up to @n recorded frames; returns how many */
 UINT32 AudioRead(int s, INT16 *frames, UINT32 n);
 /* The endpoint volume of output (or @capture: input) device @id (0: the

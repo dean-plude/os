@@ -18,7 +18,9 @@
   type libraries), `advapi32`, `ws2_32`, `oleacc`,
   `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
   WASAPI playback and capture, a device ID or endpoint for each sound
-  device, each with its own endpoint volume), `dsound` (DirectSound, with
+  device, device 0 being the default as on Windows, each with its own
+  endpoint volume; sound plays at its own rate and is converted once, by
+  the mixer, to the device's), `dsound` (DirectSound, with
   every device enumerated and openable by its GUID),
   `xaudio2_7`/`xaudio2_8`/`xaudio2_9` and `x3daudio1_7` (on FAudio; every
   output listed and openable by its device ID), `msi`

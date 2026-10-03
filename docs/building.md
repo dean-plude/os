@@ -280,7 +280,9 @@ behind a `usb-redir` device, or with `--uac2` a USB Audio Class 2.0 one:
 a programmable clock behind a clock selector, 24-bit samples and, at
 high speed, a packet every microframe; `--rates`, `--channels`,
 `--mic-channels` and `--product` give it other sampling rates, channel
-counts and a name), e.g. a high-speed headset on EHCI whose
+counts and a name, and `--feedback HZ` makes its speaker asynchronous,
+on its own clock, saying through a feedback endpoint that it plays HZ
+frames a second), e.g. a high-speed headset on EHCI whose
 microphone hears 523 Hz:
 
 ```bash
@@ -496,7 +498,17 @@ its tone must sound a quarter as loud; `soundtest wovolume`: a program's
 GUID, XAudio2's device list and a mastering voice on a named device
 (`xa2test devices`), and, after `shutdown /r`, the surround headset
 still the default output (although the speaker attaches again too) and
-still at a quarter.  Last, one
+still at a quarter.  Before the restart a 44.1 kHz tone (`soundtest tone
+... rate=44100`) on the 44.1 kHz surround headset must arrive sample for
+sample (nothing converted: the mixer runs at the device's rate); after
+it, the default output and input must be `waveOut` and `waveIn` device
+0, with `DRVM_MAPPER_PREFERRED_GET` naming device 0, and device 0 must
+follow the default when it moves.  Then two asynchronous speakers
+(`usbredirpeer.py --feedback`): a full-speed USB Audio 1.0 one saying it
+plays 48,500 frames a second (10.14 feedback) and a high-speed USB Audio
+2.0 one saying 47,600 (16.16): NovaOS must send 48.5 frames a packet to
+the first and 5.95 to the second on average, not the nominal 48 and 6.
+Last, one
 `virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
 connects a monitor to the second and third outputs and disconnects them
 again while NovaOS runs, through a VNC server QEMU has on each (an RFB

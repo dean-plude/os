@@ -55,7 +55,7 @@ TESTS = [
     Test('picker endpoints', 'soundtest endpoints',
          [r'render endpoints: 3', r'"Speakers \(Test Speaker\)" \{0\.0\.0\.00000000\}\.\{[0-9a-f-]+\} \(default\)',
           r'capture endpoints: 4', r'"Microphone \(Test Surround Headset\)" [^\n]* \(default\)']),
-    Test('picker waveout', 'soundtest tone 392 1000 dev=Surround', [r'waveOut device 1: "Speakers \(Test Surround', r'played \d+ samples']),
+    Test('picker waveout', 'soundtest tone 392 1000 dev=Surround', [r'waveOut device 2: "Speakers \(Test Surround', r'played \d+ samples']),
     Test('picker wasapi', 'soundtest wasapi 330 1000 dev=Surround', [r'endpoint 1: "Speakers \(Test Surround', r'played \d+ frames']),
     Test('picker wavein', r'soundtest record C:\pick.wav 2000 dev=2-', [r'waveIn device \d: "Microphone \(2- Test Microphone',
                                                                          r'recorded 88200 samples'],

@@ -11,12 +11,14 @@
  * IN endpoint does: one to eight channels, samples of 16 to 32 bits in
  * 2-, 3- or 4-byte slots (the mixer's own 16 bits go in the top two
  * bytes of the slot, and are taken from there).  Of the sampling rates
- * the device offers it takes 48 kHz, the mixer's own, where it can;
- * otherwise the lowest rate above it (nothing is lost converting up), or
- * failing that the highest below it.  For each it sets the sampling
- * rate, switches to that setting and attaches itself to the mixer
- * (audio.h): as an output, and as an input; the newest of each becomes
- * the default, as on Windows.  The feature units are unmuted and set to
+ * the device offers it takes 48 kHz, what programs mostly play, where it
+ * can; otherwise the lowest rate above it (nothing is lost converting
+ * up), or failing that the highest below it.  For each it sets the
+ * sampling rate, switches to that setting and attaches itself to the
+ * mixer (audio.h) at that rate: as an output, and as an input; the newest
+ * of each becomes the default, as on Windows.  The mixer converts what
+ * plays and records to and from the device's rate, so the device's
+ * frames go to and come from its ring as they are.  The feature units are unmuted and set to
  * 0 dB.  The devices are named after their product string, as Windows
  * names an endpoint after its device.
  *
@@ -38,25 +40,34 @@
  *    High-speed devices usually take a packet every microframe (125 us,
  *    6 frames at 48 kHz) rather than every millisecond.
  *
- * Playback: the mixer fills a 64 KiB ring ahead of the device, as for HD
- * Audio.  The pipe streams a ring of isochronous transfers (usb.h), one
- * packet per service interval; each finished transfer is refilled from the
- * mixer's ring, and how far that has got is the output's position.  Each
- * packet takes exactly 48 frames a millisecond from the ring
- * (asynchronous endpoints' feedback is not used).  A device at another
- * rate gets them converted by linear interpolation, so its packets carry
- * a varying whole number of frames that averages its rate (44 or 45 a
- * millisecond at 44.1 kHz); a device with other than two channels gets
- * the mixer's left and right in its first two (front left and right, as
- * Windows plays stereo on surround speakers) and silence in the rest, or
- * their average on a mono speaker.
+ * Playback: the mixer fills a ring of about a third of a second ahead of
+ * the device, as for HD Audio, at the device's rate.  The pipe streams a
+ * ring of isochronous transfers (usb.h), one packet per service interval;
+ * each finished transfer is refilled from the mixer's ring, and how far
+ * that has got is the output's position.  Packets carry a whole number of
+ * frames that averages the device's rate (44 or 45 a millisecond at 44.1
+ * kHz), counted in 1/65536 of a frame.  An asynchronous endpoint runs on
+ * the device's own clock, which is never exactly the host's: it has a
+ * feedback endpoint (the second endpoint of the setting, or the one its
+ * bSynchAddress names) through which it says how many frames it is
+ * really playing a (micro)frame, at full speed in 10.14 fixed point
+ * (three bytes, frames a millisecond) and at high speed in 16.16 (four,
+ * frames a microframe).  That pipe streams too, and the packets carry
+ * what it last said instead, so the device neither runs dry nor
+ * overflows however long it plays; the mixer follows, since it mixes up
+ * to wherever the packets have got.  (A value further than an eighth from
+ * the nominal rate is ignored, after trying the other format: some
+ * full-speed devices send 16.16.)  A device with other than two channels
+ * gets the mixer's left and right in its first two (front left and right,
+ * as Windows plays stereo on surround speakers) and silence in the rest,
+ * or their average on a mono speaker.
  *
  * Recording: the IN stream runs from the moment the microphone is plugged
- * in; each packet that arrives is copied into a 64 KiB ring (a mono
- * microphone's samples twice, as stereo; of more channels, the first two),
- * converted to 48 kHz first where the device runs at another rate, and
- * how far that has got is the input's position, which the mixer reads
- * from while something records.
+ * in; each packet that arrives is copied into a ring of the same size (a
+ * mono microphone's samples twice, as stereo; of more channels, the first
+ * two), and how far that has got is the input's position, which the mixer
+ * reads from (converting to the rate each program records at) while
+ * something records.
  */
 
 #include "usb.h"
@@ -87,8 +98,7 @@
 #define RANGE           0x02                  /* Audio 2.0: a control's RANGE (GET) */
 #define CX_SELECTOR     0x01                  /* a clock selector's CX_CLOCK_SELECTOR_CONTROL */
 
-#define RING_PAGES      16                    /* 64 KiB: 341 ms, like HD Audio's ring */
-#define RING_BYTES      (RING_PAGES * PAGE_SIZE)
+#define RING_MS         333                   /* a ring holds 341 ms at 48 kHz (64 KiB), like HD Audio's */
 #define FRAME           4                     /* s16 stereo */
 #define QUEUED_US       64000                 /* streamed ahead: well over a timer tick */
 #define MAX_UA          8
@@ -100,14 +110,19 @@
 /* One direction's stream */
 typedef struct {
     UsbPipe        *pipe;
+    UsbPipe        *fb;                       /* playback: the feedback pipe of an asynchronous endpoint (or NULL) */
+    UsbDev         *usb;
     UINT8           as;                       /* the streaming interface */
     UINT8           channels;                 /* on the device */
     UINT8           sub, bits;                /* bytes a sample takes on the device, and its bits */
     UINT32          rate;                     /* the device's sampling rate */
-    UINT32          frames;                   /* the mixer's (48 kHz) frames a packet (playback) */
-    UINT32          phase;                    /* converting rates: the next output frame's place between */
-    INT32           prev[2];                  /*   the last input frame and the next, and that last frame */
+    UINT32          us;                       /* microseconds between packets */
+    UINT32          nominal;                  /* playback: frames a packet at the rate, in 1/65536 */
+    volatile UINT32 fpp;                      /*   and what the device's feedback asks for (the nominal without) */
+    UINT32          acc;                      /*   the fraction of a frame owed */
+    bool            fb_seen;                  /*   feedback has come (logged once) */
     INT16          *ring;
+    UINT32          bytes, pages;             /* the ring's */
     volatile UINT32 pos;                      /* playback: where the next packet comes from; recording: written up to */
     bool            attached;
 } UaStream;
@@ -128,6 +143,7 @@ typedef struct {
     bool         found, freq_ctl;             /* (freq_ctl: Audio 1.0, the endpoint has a rate control) */
     UINT8        as, alt, terminal;           /* (terminal: the one the setting is linked to) */
     const UINT8 *ep;
+    const UINT8 *fb;                          /* an asynchronous OUT endpoint's feedback endpoint */
     int          channels, sub, bits;
     UINT32       rates[MAX_RATES];           /* (Audio 1.0) the rates it offers */
     int          nrates;
@@ -151,7 +167,7 @@ static void rates_add(UINT32 *list, int *n, UINT32 lo, UINT32 hi, UINT32 step)
     }
 }
 
-/* The rate to run at, of @n offered: the mixer's 48 kHz; else the lowest
+/* The rate to run at, of @n offered: 48 kHz (what programs mostly play); else the lowest
  * above it; else the highest below it.  0: none */
 static UINT32 pick_rate(const UINT32 *list, int n)
 {
@@ -184,56 +200,9 @@ static Ua *g_ua[MAX_UA];                      /* for the streaming interfaces' p
 
 static UINT32 le32(const UINT8 *p) { return (UINT32)p[0] | (UINT32)p[1] << 8 | (UINT32)p[2] << 16 | (UINT32)p[3] << 24; }
 
-/* Refill a transfer with the next packets of the mixer's ring (from the
- * controller's poll, interrupts off) */
-static void fill(UsbPipe *p, UINT8 *data, UINT16 *lens, int packets, void *ctx)
-{
-    UaStream *s = ctx;
-    UINT32 psize = UsbIsoPacketSize(p), n = s->frames * FRAME, sub = s->sub;
-    for (int i = 0; i < packets; i++) {
-        UINT8 *dst = data + (UINT32)i * psize;
-        UINT32 pos = s->pos;
-        if (sub == 2) {                                  /* the mixer's format: copied */
-            UINT32 first = RING_BYTES - pos < n ? RING_BYTES - pos : n;
-            memcpy(dst, (UINT8 *)s->ring + pos, first);
-            if (first < n) memcpy(dst + first, s->ring, n - first);
-        } else {                                         /* in the top two bytes of wider slots */
-            for (UINT32 k = 0; k < 2 * s->frames; k++, dst += sub) {
-                UINT16 v = (UINT16)s->ring[((pos + k * 2) % RING_BYTES) / 2];
-                memset(dst, 0, sub - 2);
-                dst[sub - 2] = (UINT8)v;
-                dst[sub - 1] = (UINT8)(v >> 8);
-            }
-        }
-        s->pos = (pos + n) % RING_BYTES;
-        lens[i] = (UINT16)(2 * s->frames * sub);
-    }
-}
-
-/* Copy the packets a transfer brought into the recording ring (from the
- * controller's poll, interrupts off) */
-static void drain(UsbPipe *p, UINT8 *data, UINT16 *lens, int packets, void *ctx)
-{
-    UaStream *s = ctx;
-    UINT32 psize = UsbIsoPacketSize(p), sub = s->sub, in_frame = sub * s->channels;
-    UINT32 pos = s->pos, right = (s->channels - 1u) * sub;
-    for (int i = 0; i < packets; i++) {
-        const UINT8 *src = data + (UINT32)i * psize;
-        UINT32 frames = lens[i] / in_frame;
-        for (UINT32 f = 0; f < frames; f++, src += in_frame) {
-            INT16 *dst = (INT16 *)((UINT8 *)s->ring + pos);
-            dst[0] = (INT16)(src[sub - 2] | src[sub - 1] << 8);
-            dst[1] = (INT16)(src[right + sub - 2] | src[right + sub - 1] << 8);
-            pos = (pos + FRAME) % RING_BYTES;
-        }
-    }
-    s->pos = pos;
-}
-
 /* A sample into a device slot of @sub bytes (in its top two), and back */
 static void slot_put(UINT8 *dst, UINT32 sub, INT32 v)
 {
-    v = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
     memset(dst, 0, sub - 2);
     dst[sub - 2] = (UINT8)v;
     dst[sub - 1] = (UINT8)((UINT16)v >> 8);
@@ -241,58 +210,43 @@ static void slot_put(UINT8 *dst, UINT32 sub, INT32 v)
 
 static INT32 slot_get(const UINT8 *src, UINT32 sub) { return (INT16)(src[sub - 2] | src[sub - 1] << 8); }
 
-/* Rate conversion by linear interpolation, one input frame (@l, @r) at a
- * time: emits each output frame that falls between the last input frame
- * and this one.  @in and @out are the rates; s->phase counts in 1/@out of
- * an input frame (exact, so the output averages exactly @out). */
-#define CONVERT(s, l, r, in, out, EMIT)                                                     \
-    do {                                                                                    \
-        while ((s)->phase < (out)) {                                                        \
-            INT32 el = (s)->prev[0] + (INT32)((INT64)((l) - (s)->prev[0]) * (s)->phase / (out)); \
-            INT32 er = (s)->prev[1] + (INT32)((INT64)((r) - (s)->prev[1]) * (s)->phase / (out)); \
-            EMIT;                                                                           \
-            (s)->phase += (in);                                                             \
-        }                                                                                   \
-        (s)->phase -= (out);                                                                \
-        (s)->prev[0] = (l);                                                                 \
-        (s)->prev[1] = (r);                                                                 \
-    } while (0)
-
-/* Refill a transfer for a device at another rate or with other than two
- * channels: each packet takes s->frames frames of the mixer's ring and
- * carries what they convert to (from the controller's poll) */
-static void fill_convert(UsbPipe *p, UINT8 *data, UINT16 *lens, int packets, void *ctx)
+/* Refill a transfer with the next packets of the mixer's ring, each
+ * carrying the frames the device takes in a service interval (from the
+ * controller's poll, interrupts off) */
+static void fill(UsbPipe *p, UINT8 *data, UINT16 *lens, int packets, void *ctx)
 {
     UaStream *s = ctx;
     UINT32 psize = UsbIsoPacketSize(p), sub = s->sub, ch = s->channels, fb = sub * ch, room = psize / fb;
     for (int i = 0; i < packets; i++) {
         UINT8 *dst = data + (UINT32)i * psize;
-        UINT32 pos = s->pos, n = 0;
-        for (UINT32 f = 0; f < s->frames; f++, pos = (pos + FRAME) % RING_BYTES) {
-            const INT16 *x = (const INT16 *)((UINT8 *)s->ring + pos);
-            CONVERT(s, x[0], x[1], AUDIO_RATE, s->rate, {
-                if (n < room) {
-                    UINT8 *fr = dst + n * fb;
-                    if (ch == 1) {
-                        slot_put(fr, sub, (el + er) / 2);
-                    } else {
-                        slot_put(fr, sub, el);
-                        slot_put(fr + sub, sub, er);
-                        memset(fr + 2 * sub, 0, (ch - 2) * sub);    /* (rear, centre, LFE: silent) */
-                    }
-                    n++;
+        s->acc += s->fpp;
+        UINT32 n = s->acc >> 16, pos = s->pos;
+        s->acc &= 0xFFFF;
+        if (n > room) n = room;
+        if (sub == 2 && ch == 2) {                       /* the mixer's format: copied */
+            UINT32 bytes = n * FRAME, first = s->bytes - pos < bytes ? s->bytes - pos : bytes;
+            memcpy(dst, (UINT8 *)s->ring + pos, first);
+            if (first < bytes) memcpy(dst + first, s->ring, bytes - first);
+        } else {
+            for (UINT32 f = 0; f < n; f++, dst += fb) {
+                const INT16 *x = (const INT16 *)((UINT8 *)s->ring + (pos + f * FRAME) % s->bytes);
+                if (ch == 1) {
+                    slot_put(dst, sub, (x[0] + x[1]) / 2);
+                } else {
+                    slot_put(dst, sub, x[0]);
+                    slot_put(dst + sub, sub, x[1]);
+                    memset(dst + 2 * sub, 0, (ch - 2) * sub);    /* (rear, centre, LFE: silent) */
                 }
-            });
+            }
         }
-        s->pos = pos;
+        s->pos = (pos + n * FRAME) % s->bytes;
         lens[i] = (UINT16)(n * fb);
     }
 }
 
-/* Copy the packets of a microphone at another rate or with more than two
- * channels into the recording ring, converted to 48 kHz stereo (from the
- * controller's poll) */
-static void drain_convert(UsbPipe *p, UINT8 *data, UINT16 *lens, int packets, void *ctx)
+/* Copy the packets a transfer brought into the recording ring, as stereo
+ * (from the controller's poll, interrupts off) */
+static void drain(UsbPipe *p, UINT8 *data, UINT16 *lens, int packets, void *ctx)
 {
     UaStream *s = ctx;
     UINT32 psize = UsbIsoPacketSize(p), sub = s->sub, ch = s->channels, fb = sub * ch, pos = s->pos;
@@ -300,23 +254,59 @@ static void drain_convert(UsbPipe *p, UINT8 *data, UINT16 *lens, int packets, vo
         const UINT8 *src = data + (UINT32)i * psize;
         UINT32 frames = lens[i] / fb;
         for (UINT32 f = 0; f < frames; f++, src += fb) {
-            INT32 l = slot_get(src, sub), r = ch > 1 ? slot_get(src + sub, sub) : l;
-            CONVERT(s, l, r, s->rate, AUDIO_RATE, {
-                INT16 *dst = (INT16 *)((UINT8 *)s->ring + pos);
-                dst[0] = (INT16)el;
-                dst[1] = (INT16)er;
-                pos = (pos + FRAME) % RING_BYTES;
-            });
+            INT16 *dst = (INT16 *)((UINT8 *)s->ring + pos);
+            dst[0] = (INT16)slot_get(src, sub);
+            dst[1] = (INT16)(ch > 1 ? slot_get(src + sub, sub) : dst[0]);
+            pos = (pos + FRAME) % s->bytes;
         }
     }
     s->pos = pos;
+}
+
+/* Frames a packet, in 1/65536, from what a feedback packet of @len bytes
+ * says (@v); 0 if it is not within an eighth of the nominal rate.  Tried
+ * as the speed's own format first (full speed: 10.14 frames a
+ * millisecond; high speed: 16.16 a microframe), then the others. */
+static UINT32 feedback_fpp(const UaStream *s, UINT32 v, int len)
+{
+    UINT64 as[3] = { (UINT64)v * 4 * s->us / 1000,       /* 10.14 a millisecond */
+                     (UINT64)v * s->us / 125,            /* 16.16 a microframe */
+                     (UINT64)v * s->us / 1000 };         /* 16.16 a millisecond */
+    int order[3] = { len >= 4 ? 1 : 0, len >= 4 ? 0 : 1, 2 };
+    for (int k = 0; k < 3; k++) {
+        UINT64 f = as[order[k]];
+        if (f >= s->nominal - s->nominal / 8 && f <= s->nominal + s->nominal / 8) return (UINT32)f;
+    }
+    return 0;
+}
+
+/* The feedback endpoint's packets: the rate the device really plays at
+ * (from the controller's poll, interrupts off) */
+static void feedback(UsbPipe *p, UINT8 *data, UINT16 *lens, int packets, void *ctx)
+{
+    UaStream *s = ctx;
+    UINT32 psize = UsbIsoPacketSize(p);
+    for (int i = 0; i < packets; i++) {
+        const UINT8 *b = data + (UINT32)i * psize;
+        if (lens[i] < 3) continue;                       /* (lost, or nothing new) */
+        UINT32 v = lens[i] >= 4 ? le32(b) : (UINT32)b[0] | (UINT32)b[1] << 8 | (UINT32)b[2] << 16;
+        UINT32 f = feedback_fpp(s, v, lens[i]);
+        if (!f) continue;
+        s->fpp = f;
+        if (!s->fb_seen) {
+            s->fb_seen = true;
+            UINT64 hz = (UINT64)f * 1000000 / s->us;
+            kprintf("[USB] %s: audio feedback: the device plays %u.%03u frames a second (nominal %u)\n",
+                    UsbDevName(s->usb), (UINT32)(hz >> 16), (UINT32)((hz & 0xFFFF) * 1000 >> 16), s->rate);
+        }
+    }
 }
 
 static UINT32 position(void *ctx) { return ((UaStream *)ctx)->pos; }
 
 static void stream_free(UaStream *s)
 {
-    if (s->ring) kernel_free_pages(s->ring, RING_PAGES);
+    if (s->ring) kernel_free_pages(s->ring, s->pages);
     s->ring = NULL;
 }
 
@@ -364,7 +354,7 @@ static bool find_setting(UsbDev *d, UINT8 as, bool in, bool v2, UaSetting *out)
 {
     int total;
     const UINT8 *cfg = UsbDevConfig(d, &total);
-    bool ours = false, pcm = false;
+    bool ours = false, pcm = false, out_seen = false;
     UaSetting cur = { 0 };
     for (int off = 0; off + 2 <= total && cfg[off] >= 2; off += cfg[off]) {
         const UINT8 *p = &cfg[off];
@@ -372,11 +362,14 @@ static bool find_setting(UsbDev *d, UINT8 as, bool in, bool v2, UaSetting *out)
             if (ours && setting_ok(&cur, pcm, in)) break;
             ours = p[2] == as && p[3] != 0 && p[5] == 1 && p[6] == SUB_STREAMING;
             pcm = false;
+            out_seen = false;
             memset(&cur, 0, sizeof(cur));
             cur.as = as;
             cur.alt = p[3];
         } else if (!ours) {
             continue;
+        } else if (p[1] == USB_DT_ENDPOINT && p[0] >= 7 && (p[3] & 3) == 1 && !(p[2] & 0x80) && in) {
+            out_seen = true;                             /* (an IN endpoint after it is its feedback) */
         } else if (p[1] == USB_DT_CS_INTERFACE && p[2] == AS_GENERAL) {
             if (v2 && p[0] >= 16) {                      /* format type I, bmFormats has PCM */
                 pcm = p[5] == 1 && (le32(&p[6]) & 1);
@@ -393,8 +386,15 @@ static bool find_setting(UsbDev *d, UINT8 as, bool in, bool v2, UaSetting *out)
                 cur.sub = p[5];
                 cur.bits = p[6];
             }
+        } else if (p[1] == USB_DT_ENDPOINT && p[0] >= 7 && (p[3] & 3) == 1 && (p[2] & 0x80) && in &&
+                   ((p[3] >> 4 & 3) == 1 || out_seen)) {
+            continue;                                    /* a playing setting's feedback endpoint: not a recording */
         } else if (p[1] == USB_DT_ENDPOINT && p[0] >= 7 && (p[3] & 3) == 1 && !(p[2] & 0x80) == !in && !cur.ep) {
             cur.ep = p;
+        } else if (p[1] == USB_DT_ENDPOINT && p[0] >= 7 && (p[3] & 3) == 1 && (p[2] & 0x80) && !in && cur.ep &&
+                   !cur.fb && (cur.ep[3] >> 2 & 3) == 1 &&       /* an asynchronous OUT endpoint's feedback: */
+                   ((p[3] >> 4 & 3) == 1 || (cur.ep[0] >= 9 && cur.ep[8] == p[2]))) {   /* by usage, or bSynchAddress */
+            cur.fb = p;
         } else if (!v2 && p[1] == USB_DT_CS_ENDPOINT && p[0] >= 4 && p[2] == EP_GENERAL && cur.ep) {
             cur.freq_ctl = (p[3] & 1) != 0;
         }
@@ -522,56 +522,72 @@ static void unmute(UsbDev *d, const UsbIface *f, bool v2)
 static bool stream_start(Ua *u, const UsbIface *ac, UaStream *s, bool in, const UaSetting *st)
 {
     UsbDev *d = u->usb;
+    s->usb = d;
     s->as = st->as;
     s->channels = (UINT8)st->channels;
     s->sub = (UINT8)st->sub;
     s->bits = (UINT8)st->bits;
     s->rate = u->v2 ? 0 : pick_rate(st->rates, st->nrates);
-    s->phase = 0;
-    s->prev[0] = s->prev[1] = 0;
     if (u->v2 && !set_clock(d, ac, st->terminal, &s->rate)) return false;
-    s->ring = kernel_alloc_pages(RING_PAGES);
+    /* the ring: RING_MS at the device's rate, whole pages */
+    s->pages = (UINT32)(((UINT64)s->rate * FRAME * RING_MS / 1000 + PAGE_SIZE - 1) / PAGE_SIZE);
+    s->bytes = s->pages * PAGE_SIZE;
+    s->ring = kernel_alloc_pages(s->pages);
     if (!s->ring) return false;
-    memset(s->ring, 0, RING_BYTES);
+    memset(s->ring, 0, s->bytes);
     if (!UsbSetInterface(d, s->as, st->alt) || !(s->pipe = UsbOpenPipe(d, st->ep, 0))) {
         kprintf("[USB] %s: could not open the audio %s stream\n", UsbDevName(d), in ? "input" : "output");
         goto fail;
     }
-    /* The mixer's frames a packet (whole: intervals are 125 us steps),
-     * and the most the device's take (a frame more where the rate has
-     * them vary) */
-    UINT32 us = UsbIsoIntervalUs(s->pipe);
-    UINT32 frames = (UINT32)((UINT64)AUDIO_RATE * us / 1000000);
-    UINT64 dev = (UINT64)s->rate * us;
+    /* The frames a packet (1/65536 of one), and the most a packet takes
+     * (a frame more where the rate has them vary) */
+    s->us = UsbIsoIntervalUs(s->pipe);
+    UINT64 dev = (UINT64)s->rate * s->us;
     UINT32 most = (UINT32)(dev / 1000000) + (dev % 1000000 ? 2 : 0);
     UINT32 need = most * s->channels * s->sub;
     char rate[16], chans[16];
     rate_text(rate, sizeof(rate), s->rate);
     channels_text(chans, sizeof(chans), s->channels);
-    if ((UINT64)AUDIO_RATE * us % 1000000 || !frames || !need || need > UsbIsoPacketSize(s->pipe)) {
+    if (!need || need > UsbIsoPacketSize(s->pipe)) {
         kprintf("[USB] %s: audio endpoint (%u bytes every %u us) cannot carry %s %s\n",
-                UsbDevName(d), UsbIsoPacketSize(s->pipe), us, rate, chans);
+                UsbDevName(d), UsbIsoPacketSize(s->pipe), s->us, rate, chans);
         goto fail_alt;
     }
-    s->frames = frames;
+    s->nominal = s->fpp = (UINT32)((dev << 16) / 1000000);
+    s->acc = 0;
+    s->fb_seen = false;
     if (st->freq_ctl) {
         UINT8 r3[3] = { s->rate & 0xFF, (s->rate >> 8) & 0xFF, (UINT8)(s->rate >> 16) };
         UsbControl(d, 0x22, SET_CUR, SAMPLING_FREQ << 8, st->ep[2], 3, r3);
     }
-    /* The mixer's own format is copied; anything else is converted */
-    bool same = s->rate == AUDIO_RATE && (in ? s->channels <= 2 : s->channels == 2);
 
     /* Transfers of about 8 ms, QUEUED_US of them in flight */
-    int packets = (int)(8000 / us) ? (int)(8000 / us) : 1;
-    int xfers = (int)(QUEUED_US / (us * (UINT32)packets));
+    int packets = (int)(8000 / s->us) ? (int)(8000 / s->us) : 1;
+    int xfers = (int)(QUEUED_US / (s->us * (UINT32)packets));
     if (xfers * packets > 128) xfers = 128 / packets;
     if (xfers < 2) xfers = 2;
-    if (!UsbIsoStart(s->pipe, xfers, packets, in ? (same ? drain : drain_convert) : (same ? fill : fill_convert), s)) {
+    if (!UsbIsoStart(s->pipe, xfers, packets, in ? drain : fill, s)) {
         kprintf("[USB] %s: the controller cannot stream %s the audio device\n", UsbDevName(d), in ? "from" : "to");
         goto fail_alt;
     }
     kprintf("[USB] %s: audio %s, %s %u-bit %s, %u-byte packets every %u us%s\n", UsbDevName(d),
-            in ? "input" : "output", rate, s->bits, chans, need, us, u->v2 ? " (USB Audio 2.0)" : "");
+            in ? "input" : "output", rate, s->bits, chans, need, s->us, u->v2 ? " (USB Audio 2.0)" : "");
+
+    /* An asynchronous endpoint's feedback (without it the nominal rate
+     * plays on, as before) */
+    s->fb = st->fb ? UsbOpenPipe(d, st->fb, 0) : NULL;
+    if (s->fb) {
+        UINT32 fus = UsbIsoIntervalUs(s->fb);
+        int fpk = (int)(8000 / fus) ? (int)(8000 / fus) : 1;
+        if (fpk > 32) fpk = 32;
+        if (UsbIsoStart(s->fb, 2, fpk, feedback, s))
+            kprintf("[USB] %s: audio output is asynchronous: feedback every %u us from endpoint %02x\n",
+                    UsbDevName(d), fus, st->fb[2]);
+        else {
+            kprintf("[USB] %s: the controller cannot stream the audio feedback: the nominal rate plays\n", UsbDevName(d));
+            s->fb = NULL;
+        }
+    }
     return true;
 
 fail_alt:
@@ -625,6 +641,8 @@ void *UsbAudioProbe(UsbDev *d, const UsbIface *f)
     for (int k = 0; k < 2; k++)
         for (int i = 0; i < nas && !dir[k].found; i++)
             find_setting(d, as[i], k == 1, v2, &dir[k]);
+    if (dir[0].found && dir[1].found && dir[0].as == dir[1].as)
+        dir[1].found = false;                                /* (one interface streams one way) */
     if (!dir[0].found && !dir[1].found) {
         kprintf("[USB] %s: audio device has no output or input NovaOS can use\n", UsbDevName(d));
         return NULL;
@@ -656,7 +674,8 @@ void *UsbAudioProbe(UsbDev *d, const UsbIface *f)
         u->out.name = u->name;
         u->out.key = u->key;
         u->out.ring = u->play.ring;
-        u->out.bytes = RING_BYTES;
+        u->out.bytes = u->play.bytes;
+        u->out.rate = u->play.rate;
         u->out.position = position;
         u->out.ctx = &u->play;
         u->play.attached = AudioOutputAttach(&u->out);
@@ -666,7 +685,8 @@ void *UsbAudioProbe(UsbDev *d, const UsbIface *f)
         u->in.name = u->iname;
         u->in.key = u->key;
         u->in.ring = u->rec.ring;
-        u->in.bytes = RING_BYTES;
+        u->in.bytes = u->rec.bytes;
+        u->in.rate = u->rec.rate;
         u->in.position = position;
         u->in.ctx = &u->rec;
         u->rec.attached = AudioInputAttach(&u->in);

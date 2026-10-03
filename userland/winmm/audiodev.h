@@ -28,6 +28,24 @@ static inline UINT32 audio_devices(int capture, AudioDeviceList *l)
     return l->count;
 }
 
+/* The devices as winmm numbers them (waveOut/waveIn device IDs): the
+ * default first, as on Windows (device 0 is where WAVE_MAPPER plays, and
+ * what DRVM_MAPPER_PREFERRED_GET names), then the others oldest first.
+ * The IDs move when the default does, as they do on Windows. */
+static inline UINT32 audio_wave_devices(int capture, AudioDeviceList *l)
+{
+    UINT32 n = audio_devices(capture, l);
+    for (UINT32 k = 1; k < n; k++) {
+        if (!l->dev[k].is_default) continue;
+        AudioDeviceList t;
+        t.dev[0] = l->dev[k];
+        memmove(&l->dev[1], &l->dev[0], k * sizeof(l->dev[0]));
+        l->dev[0] = t.dev[0];
+        break;
+    }
+    return n;
+}
+
 /* The id of device @index (oldest first) of a direction; 0 if none */
 static inline UINT32 audio_device_id(int capture, UINT index)
 {

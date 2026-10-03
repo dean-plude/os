@@ -2,8 +2,9 @@
  * wave.c — waveOut and PlaySound on NovaOS's mixer
  *
  * Each waveOut device handle owns a kernel stream (NtNovaAudioOpen) and a
- * thread that converts the queued WAVEHDR buffers to 48 kHz s16 stereo,
- * keeps the stream fed, and returns each buffer (WHDR_DONE, WOM_DONE) once
+ * thread that converts the queued WAVEHDR buffers to s16 stereo at their
+ * own rate (the kernel's mixer converts that to the device's rate, once,
+ * or plays it as it is on a device at that rate), keeps the stream fed, and returns each buffer (WHDR_DONE, WOM_DONE) once
  * the hardware has played its last frame.  PlaySound plays a RIFF WAVE
  * file, resource or memory image on a stream of its own.
  */
@@ -16,6 +17,16 @@
 #include "audiodev.h"
 
 int _fltused = 1;                  /* floats are used (the converter) */
+
+/* A stream for sound in @c's format, at its rate (@c then converts only
+ * the format), or else at the mixer's 48 kHz; 0 if there is none */
+static INT_PTR open_stream(AudioConv *c)
+{
+    INT_PTR st = NtNovaAudioOpen(c->rate / 4);                 /* 250 ms queued at most */
+    if (st && NtNovaAudioCtl(st, 13, c->rate, 0) == 0) c->step = 1;
+    else if (st) { CloseHandle((HANDLE)st); st = NtNovaAudioOpen(AC_RATE / 4); }
+    return st;
+}
 
 /* (asked each time: a USB speaker can be plugged in or out) */
 static BOOL device_present(void)
@@ -167,12 +178,13 @@ static DWORD WINAPI wo_thread(LPVOID p)
     return 0;
 }
 
-/* One device ID for each output NovaOS has, oldest first (Settings lists
- * them in the same order); WAVE_MAPPER plays on the default one */
+/* One device ID for each output NovaOS has: the default is device 0, as
+ * on Windows, then the others oldest first (as Settings lists them);
+ * WAVE_MAPPER plays on the default one, wherever it moves */
 MMAPI UINT WINAPI waveOutGetNumDevs(void)
 {
     AudioDeviceList l;
-    return audio_devices(0, &l);
+    return audio_wave_devices(0, &l);
 }
 
 typedef struct {
@@ -198,7 +210,7 @@ typedef struct {
 static BOOL check_id(UINT32 id)
 {
     AudioDeviceList l;
-    for (UINT i = 0, n = audio_devices(0, &l); i < n; i++)
+    for (UINT i = 0, n = audio_wave_devices(0, &l); i < n; i++)
         if (l.dev[i].id == id) return TRUE;
     return FALSE;
 }
@@ -206,7 +218,7 @@ static BOOL check_id(UINT32 id)
 static MMRESULT check_device(UINT_PTR dev)
 {
     AudioDeviceList l;
-    UINT n = audio_devices(0, &l);
+    UINT n = audio_wave_devices(0, &l);
     if (!n) return MMSYSERR_NODRIVER;
     if (dev < n || dev == WAVE_MAPPER || dev == (UINT_PTR)-1 || wo_get((HANDLE)dev)) return MMSYSERR_NOERROR;
     return MMSYSERR_BADDEVICEID;
@@ -221,7 +233,7 @@ static void fill_caps(WAVEOUTCAPSW *c, UINT_PTR dev)
     c->wPid = mapper ? 2 : 100;                     /* MM_WAVE_MAPPER / generic */
     c->vDriverVersion = 0x0600;
     AudioDeviceList l;
-    UINT n = audio_devices(0, &l), k = w ? n : (UINT)dev;
+    UINT n = audio_wave_devices(0, &l), k = w ? n : (UINT)dev;
     for (UINT i = 0; w && i < n; i++)               /* (a handle: its device) */
         if (l.dev[i].id == w->device || (!w->device && l.dev[i].is_default)) k = i;
     const char *name = mapper ? "Microsoft Sound Mapper" : k < n ? l.dev[k].name : "Speakers";
@@ -262,7 +274,7 @@ MMAPI MMRESULT WINAPI waveOutOpen(HANDLE *out, UINT dev, const AcWaveFormat *fmt
 {
     if (out) *out = 0;
     AudioDeviceList l;
-    UINT n = audio_devices(0, &l);
+    UINT n = audio_wave_devices(0, &l);
     if (!n) return MMSYSERR_NODRIVER;
     if (dev >= n && dev != WAVE_MAPPER) return MMSYSERR_BADDEVICEID;
     if (!fmt) return MMSYSERR_INVALPARAM;
@@ -276,7 +288,7 @@ MMAPI MMRESULT WINAPI waveOutOpen(HANDLE *out, UINT dev, const AcWaveFormat *fmt
 
     WaveOut *w = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*w));
     if (!w) return MMSYSERR_NOMEM;
-    w->stream = NtNovaAudioOpen(AC_RATE / 4);                  /* 250 ms queued at most */
+    w->stream = open_stream(&conv);
     if (!w->stream) { HeapFree(GetProcessHeap(), 0, w); return MMSYSERR_ALLOCATED; }
     w->device = dev == WAVE_MAPPER ? 0 : l.dev[dev].id;        /* (the mapper: the default, wherever it moves) */
     if (w->device && !audio_route(w->stream, w->device)) {     /* (unplugged meanwhile) */
@@ -450,7 +462,7 @@ MMAPI MMRESULT WINAPI waveOutGetPosition(HANDLE h, MMTIME *t, UINT n)
 static UINT32 device_of(UINT_PTR dev, UINT32 *def)
 {
     AudioDeviceList l;
-    UINT n = audio_devices(0, &l);
+    UINT n = audio_wave_devices(0, &l);
     *def = 0;
     for (UINT i = 0; i < n; i++)
         if (l.dev[i].is_default) *def = l.dev[i].id;
@@ -511,10 +523,21 @@ MMAPI MMRESULT WINAPI waveOutGetPitch(HANDLE h, LPDWORD v) { (void)v; return wo_
 MMAPI MMRESULT WINAPI waveOutSetPitch(HANDLE h, DWORD v) { (void)v; return wo_get(h) ? MMSYSERR_NOTSUPPORTED : MMSYSERR_INVALHANDLE; }
 MMAPI MMRESULT WINAPI waveOutGetPlaybackRate(HANDLE h, LPDWORD v) { (void)v; return wo_get(h) ? MMSYSERR_NOTSUPPORTED : MMSYSERR_INVALHANDLE; }
 MMAPI MMRESULT WINAPI waveOutSetPlaybackRate(HANDLE h, DWORD v) { (void)v; return wo_get(h) ? MMSYSERR_NOTSUPPORTED : MMSYSERR_INVALHANDLE; }
+/* DRVM_MAPPER_PREFERRED_GET and DRVM_MAPPER_CONSOLEVOICECOM_GET: the
+ * preferred device's ID, which is device 0 (shared with waveInMessage) */
+MMRESULT wave_mapper_message(UINT msg, DWORD_PTR p1, DWORD_PTR p2)
+{
+    if (msg != 0x2015 && msg != 0x2017) return MMSYSERR_NOTSUPPORTED;
+    if (!p1 || !p2) return MMSYSERR_INVALPARAM;
+    *(DWORD *)p1 = 0;
+    *(DWORD *)p2 = 0;
+    return MMSYSERR_NOERROR;
+}
+
 MMAPI MMRESULT WINAPI waveOutMessage(HANDLE h, UINT msg, DWORD_PTR p1, DWORD_PTR p2)
 {
-    (void)h; (void)msg; (void)p1; (void)p2;
-    return MMSYSERR_NOTSUPPORTED;
+    (void)h;
+    return audio_wave_devices(0, &(AudioDeviceList){ 0 }) ? wave_mapper_message(msg, p1, p2) : MMSYSERR_NODRIVER;
 }
 
 const char *mm_error_text(MMRESULT e)
@@ -698,7 +721,7 @@ static void free_sound(Sound *s) { if (s->mem) HeapFree(GetProcessHeap(), 0, s->
 static void play(Sound *s)
 {
     AudioConv c;
-    INT_PTR st = ac_init(&c, s->fmt) ? NtNovaAudioOpen(AC_RATE / 4) : 0;
+    INT_PTR st = ac_init(&c, s->fmt) ? open_stream(&c) : 0;
     if (st) {
         SHORT buf[CHUNK * 2];
         NtNovaAudioCtl(st, 1, 1, 0);
