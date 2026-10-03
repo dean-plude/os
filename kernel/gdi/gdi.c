@@ -737,13 +737,20 @@ void GdiRoundBorderAlpha(GdiRect r, int rad, GdiColor c, int alpha)
     RBox b = rbox_of(r, rad);
     UINT32 n = pixof(c);
     int w = g.s * FX;                             /* one logical pixel wide */
-    for (int y = imax(b.y0, g.cy0); y < imin(b.y1, g.cy1); y++)
+    /* Pixels further than the radius and the stroke inside every edge
+     * are all "well inside" (below): their rows skip from ix0 to ix1 */
+    int m = b.r + g.s + 2;
+    int ix0 = b.x0 + m, ix1 = b.x1 - m, iy0 = b.y0 + m, iy1 = b.y1 - m;
+    for (int y = imax(b.y0, g.cy0); y < imin(b.y1, g.cy1); y++) {
+        bool hole = ix0 < ix1 && y >= iy0 && y < iy1;
         for (int x = imax(b.x0, g.cx0); x < imin(b.x1, g.cx1); x++) {
+            if (hole && x >= ix0 && x < ix1) { x = ix1 - 1; continue; }
             int sd = rbox_sd(&b, x, y);
             if (sd < -w - FX) continue;           /* well inside: nothing to draw */
             int cv = cov_of(sd) - cov_of(sd + w);
             if (cv > 0) plot(x, y, n, cv * alpha / 255);
         }
+    }
 }
 
 void GdiRoundGradV(GdiRect r, int rad, GdiColor top, GdiColor bottom)

@@ -103,7 +103,10 @@ typedef struct WND {
 
     WndPaintFn on_paint;     /* draw the client area (clip is set) */
     bool       paint_lock_free; /* on_paint needs only the desktop lock (else it
-                              * runs under the big kernel lock: smp.h) */
+                              * runs under the big kernel lock: smp.h, and the
+                              * file-system lock) */
+    bool       paint_fs_free; /* on_paint reads no files, or takes the file-system
+                              * lock itself around what does (a built-in app's) */
     WndKeyFn   on_key;       /* key pressed while focused */
     bool       key_releases; /* on_key also gets releases (pressed = false) */
     WndMouseFn on_mouse;     /* mouse in / captured by the client area */

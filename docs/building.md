@@ -370,12 +370,14 @@ card, QEMU `usb-audio` speakers, each recorded to its own WAV (kept in
 `--out` as `usb1.wav` to `usb3.wav`).  The first is on an xHCI controller
 from boot; the test plugs the second into an OHCI and the third into a
 UHCI controller while NovaOS runs, plays `soundtest tone` after each, then
-unplugs the third and plays again, which the second must hear; and one
-`virtio-vga` card with three outputs and a monitor only on the first, for
-`montest hotplug`: the test connects a monitor to the second and third
-outputs and disconnects them again while NovaOS runs, through a VNC
-server QEMU has on each (an RFB `SetDesktopSize` asks for a monitor of
-that size there; 0 x 0 takes it away):
+unplugs the third and plays again, which the second must hear.  Each
+speaker's WAV must hold its tones and nothing else: a speaker another one
+took over from has to go quiet.  Last, one `virtio-vga` card with three
+outputs and a monitor only on the first, for `montest hotplug`: the test
+connects a monitor to the second and third outputs and disconnects them
+again while NovaOS runs, through a VNC server QEMU has on each (an RFB
+`SetDesktopSize` asks for a monitor of that size there; 0 x 0 takes it
+away):
 
 ```bash
 python3 tools/selftest.py --suite devices

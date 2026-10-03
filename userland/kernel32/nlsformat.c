@@ -1,6 +1,7 @@
 /*
- * nlsformat.c — GetDateFormat, GetTimeFormat, GetNumberFormat and
- * GetCurrencyFormat (A, W and Ex) in the locale asked for.
+ * nlsformat.c — GetDateFormat, GetTimeFormat, GetNumberFormat,
+ * GetCurrencyFormat (A, W and Ex) and GetDurationFormat in the locale asked
+ * for.
  *
  * The pictures, symbols and orders come from GetLocaleInfo's answers
  * (locale.c: the English tables, or ICU for every other locale), so
@@ -9,6 +10,11 @@
  * Windows.  The picture rules (d dd ddd dddd, M... MMMM with the genitive
  * month when the picture has a day number, y yy yyyy, g gg, h hh H HH m mm s ss
  * t tt, '...' quoting) and the number orders are Windows' documented ones.
+ * Without LOCALE_NOUSEROVERRIDE the user's locale formats with the user's
+ * overrides (locale.c).  Dates are written in the locale's calendar
+ * (LOCALE_ICALENDARTYPE: th-TH's Buddhist years, ar-SA's Um Al Qura months),
+ * or its alternative one with DATE_USE_ALT_CALENDAR (ja-JP's eras); the
+ * conversions and names are calendar.c's.
  */
 #define NOVA_BUILD_KERNEL32
 #include <winternl.h>
@@ -18,13 +24,8 @@ void *memcpy(void *d, const void *s, size_t n);
 
 #define K32 __declspec(dllexport)
 
-/* locale.c */
-int nls_lcid(LCID lcid);
-int nls_name(LPCWSTR name);
-int nls_info(int idx, DWORD type, WCHAR *out, int cap);
-int nls_era(int idx, WCHAR *out, int cap);
+#include "nls.h"
 
-#define LOC_NONE (-1)
 #define LOCALE_USE_CP_ACP_     0x40000000u
 #define LOCALE_RETURN_GENITIVE_NAMES_ 0x10000000u
 
@@ -41,12 +42,12 @@ static void add_w(Out *o, const WCHAR *s, int max)
 {
     for (int i = 0; s[i] && (max < 0 || i < max); i++) add_c(o, s[i]);
 }
-static void add_num(Out *o, unsigned v, int digits)
+static void add_num(Out *o, ULONGLONG v, int digits)
 {
-    WCHAR t[12];
+    WCHAR t[24];
     int k = 0;
     do { t[k++] = (WCHAR)('0' + v % 10); v /= 10; } while (v);
-    while (k < digits) t[k++] = '0';
+    while (k < digits && k < 24) t[k++] = '0';
     while (k) add_c(o, t[--k]);
 }
 
@@ -121,18 +122,22 @@ static int weekday(int y, int m, int d)
 typedef struct { WCHAR c; int run; int at, len; } Item;     /* c 0: text @at/@len in Pic.text */
 typedef struct { Item it[64]; int n; WCHAR text[CAP]; int tn; } Pic;
 
-static BOOL is_field(WCHAR c, BOOL time)
+#define DATE_FIELDS     "dMyg"
+#define TIME_FIELDS     "hHmst"
+#define DURATION_FIELDS "dhHmsf"
+
+static BOOL is_field(WCHAR c, const char *set)
 {
-    return time ? c == 'h' || c == 'H' || c == 'm' || c == 's' || c == 't'
-                : c == 'd' || c == 'M' || c == 'y' || c == 'g';
+    for (; *set; set++) if (c == (WCHAR)*set) return TRUE;
+    return FALSE;
 }
 
-static void split(const WCHAR *p, BOOL time, Pic *pic)
+static void split(const WCHAR *p, const char *set, Pic *pic)
 {
     pic->n = pic->tn = 0;
     while (*p && pic->n < 64) {
         Item *it = &pic->it[pic->n];
-        if (is_field(*p, time)) {
+        if (is_field(*p, set)) {
             it->c = *p;
             it->run = 0;
             while (p[it->run] == *p) it->run++;
@@ -142,7 +147,7 @@ static void split(const WCHAR *p, BOOL time, Pic *pic)
         }
         it->c = 0;
         it->at = pic->tn;
-        while (*p && !is_field(*p, time)) {
+        while (*p && !is_field(*p, set)) {
             if (*p == '\'') {                                /* 'text', '' for a quote */
                 p++;
                 if (*p == '\'') { if (pic->tn < CAP) pic->text[pic->tn++] = '\''; p++; continue; }
@@ -172,10 +177,27 @@ static void drop(Pic *pic, int i)
     pic->n -= k;
 }
 
-static int render(int idx, const SYSTEMTIME *st, const WCHAR *picture, BOOL time, DWORD tflags, Out *o)
+/* a date in a calendar, for render() */
+typedef struct {
+    int idx;
+    DWORD uo;                                                /* LOCALE_NOUSEROVERRIDE or 0 */
+    DWORD cal;
+    CalDate cd;
+} DateCtx;
+
+static void add_hebrew(Out *o, int v)
+{
+    WCHAR w[16];
+    nls_hebrew_number(v, w, 16);
+    add_w(o, w, -1);
+}
+
+static int render(const DateCtx *dc, const SYSTEMTIME *st, const WCHAR *picture, BOOL time, DWORD tflags, Out *o)
 {
     Pic pic;
-    split(picture, time, &pic);
+    int idx = dc->idx;
+    const CalDate *cd = &dc->cd;
+    split(picture, time ? TIME_FIELDS : DATE_FIELDS, &pic);
     if (time) {
         for (int i = pic.n - 1; i >= 0; i--) {
             WCHAR c = pic.it[i].c;
@@ -200,27 +222,30 @@ static int render(int idx, const SYSTEMTIME *st, const WCHAR *picture, BOOL time
             for (int k = 0; k < it->len; k++) add_c(o, pic.text[it->at + k]);
             break;
         case 'd':
-            if (r <= 2) add_num(o, st->wDay, r);
-            else {
+            if (r <= 2) {
+                if (dc->cal == 8) add_hebrew(o, cd->day);
+                else add_num(o, (unsigned)cd->day, r);
+            } else {
                 int mon = (weekday(st->wYear, st->wMonth, st->wDay) + 6) % 7;   /* Monday 0 */
-                info(idx, (r == 3 ? 0x31 /* LOCALE_SABBREVDAYNAME1 */ : 0x2A /* LOCALE_SDAYNAME1 */) + (DWORD)mon, w);
+                if (nls_cal_day(idx, dc->cal, mon, r == 3, w, CAP) < 0) w[0] = 0;
                 add_w(o, w, -1);
             }
             break;
         case 'M':
-            if (r <= 2) add_num(o, st->wMonth, r);
+            if (r <= 2) add_num(o, (unsigned)cd->month, r);
             else {
-                DWORD t = (r == 3 ? 0x44 /* LOCALE_SABBREVMONTHNAME1 */ : 0x38 /* LOCALE_SMONTHNAME1 */) + st->wMonth - 1u;
-                info(idx, t | (genitive && r > 3 ? LOCALE_RETURN_GENITIVE_NAMES_ : 0), w);
+                if (nls_cal_month(idx, dc->cal, cd->month, cd->leap, r == 3, genitive && r > 3, w, CAP) < 0) w[0] = 0;
                 add_w(o, w, -1);
             }
             break;
         case 'y':
-            if (r <= 2) add_num(o, st->wYear % 100, r);
-            else add_num(o, st->wYear, 4);
+            if (dc->cal == 8) add_hebrew(o, cd->year);
+            else if (dc->cal == 3 || dc->cal == 4) add_num(o, (unsigned)cd->year, r == 2 ? 2 : 1);  /* the year of the era */
+            else if (r <= 2) add_num(o, (unsigned)cd->year % 100, r);
+            else add_num(o, (unsigned)cd->year, 4);
             break;
         case 'g':
-            nls_era(idx, w, CAP);
+            if (nls_cal_era(idx, dc->cal, cd, w, CAP) < 0) w[0] = 0;
             add_w(o, w, -1);
             break;
         case 'h': {
@@ -234,7 +259,7 @@ static int render(int idx, const SYSTEMTIME *st, const WCHAR *picture, BOOL time
         case 'm': add_num(o, st->wMinute, r > 1 ? 2 : 1); break;
         case 's': add_num(o, st->wSecond, r > 1 ? 2 : 1); break;
         case 't':
-            info(idx, st->wHour < 12 ? 0x28 /* LOCALE_S1159 */ : 0x29 /* LOCALE_S2359 */, w);
+            info(idx, (st->wHour < 12 ? 0x28 /* LOCALE_S1159 */ : 0x29 /* LOCALE_S2359 */) | dc->uo, w);
             add_w(o, w, r == 1 ? 1 : -1);
             break;
         }
@@ -256,14 +281,23 @@ static int date_format(int idx, DWORD flags, const SYSTEMTIME *st, LPCWSTR fmt, 
     SYSTEMTIME now;
     if (!st) { GetLocalTime(&now); st = &now; }
     else if (!date_ok(st)) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    /* the calendar: the locale's (or the user's choice), or with
+     * DATE_USE_ALT_CALENDAR its alternative in that calendar's own format */
+    DateCtx dc = { idx, flags & LOCALE_NOUSEROVERRIDE, 0 };
+    if (flags & DATE_USE_ALT_CALENDAR) {
+        dc.cal = (DWORD)info_int(idx, 0x100B /* LOCALE_IOPTIONALCALENDAR */ | LOCALE_NOUSEROVERRIDE);
+        if (dc.cal) dc.uo = LOCALE_NOUSEROVERRIDE;
+    }
+    if (!dc.cal) dc.cal = (DWORD)info_int(idx, 0x1009 /* LOCALE_ICALENDARTYPE */ | dc.uo);
+    if (!nls_cal_date(dc.cal, st, &dc.cd)) { dc.cal = 1; nls_cal_date(1, st, &dc.cd); }
     WCHAR pic[CAP];
     if (!fmt) {
-        DWORD t = kinds == DATE_LONGDATE ? 0x20 : kinds == DATE_YEARMONTH ? 0x1006 :
-                  kinds == DATE_MONTHDAY ? 0x78 : 0x1F;     /* LOCALE_SLONGDATE, SYEARMONTH, SMONTHDAY, SSHORTDATE */
-        info(idx, t, pic);
+        int kind = kinds == DATE_LONGDATE ? CALPAT_LONG : kinds == DATE_YEARMONTH ? CALPAT_YEARMONTH :
+                   kinds == DATE_MONTHDAY ? CALPAT_MONTHDAY : CALPAT_SHORT;
+        if (nls_cal_pattern(idx, dc.cal, kind, dc.uo, pic, CAP) < 0) pic[0] = 0;
         fmt = pic;
     }
-    render(idx, st, fmt, FALSE, 0, o);
+    render(&dc, st, fmt, FALSE, 0, o);
     return 1;
 }
 
@@ -279,9 +313,10 @@ static int time_format(int idx, DWORD flags, const SYSTEMTIME *st, LPCWSTR fmt, 
     SYSTEMTIME now;
     if (!st) { GetLocalTime(&now); st = &now; }
     else if (!time_ok(st)) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    DateCtx dc = { idx, flags & LOCALE_NOUSEROVERRIDE, 1 };
     WCHAR pic[CAP];
-    if (!fmt) { info(idx, 0x1003 /* LOCALE_STIMEFORMAT */, pic); fmt = pic; }
-    render(idx, st, fmt, TRUE, flags, o);
+    if (!fmt) { info(idx, 0x1003 /* LOCALE_STIMEFORMAT */ | dc.uo, pic); fmt = pic; }
+    render(&dc, st, fmt, TRUE, flags, o);
     return 1;
 }
 
@@ -373,9 +408,9 @@ static void copy_sep(WCHAR *to, int cap, const WCHAR *from)
     to[i] = 0;
 }
 
-static BOOL spec_of(int idx, const NumFmtW *f, BOOL currency, Spec *sp)
+static BOOL spec_of(int idx, DWORD uo, const NumFmtW *f, BOOL currency, Spec *sp)
 {
-    info(idx, 0x51 /* LOCALE_SNEGATIVESIGN */, sp->sym);
+    info(idx, 0x51 /* LOCALE_SNEGATIVESIGN */ | uo, sp->sym);
     copy_sep(sp->neg, 8, sp->sym);
     sp->sym[0] = 0;
     if (f) {
@@ -394,18 +429,18 @@ static BOOL spec_of(int idx, const NumFmtW *f, BOOL currency, Spec *sp)
         return TRUE;
     }
     WCHAR w[CAP];
-    sp->digits = info_int(idx, currency ? 0x19 /* LOCALE_ICURRDIGITS */ : 0x11 /* LOCALE_IDIGITS */);
-    sp->lzero = info_int(idx, 0x12 /* LOCALE_ILZERO */);
-    info(idx, currency ? 0x18 /* LOCALE_SMONGROUPING */ : 0x10 /* LOCALE_SGROUPING */, w);
+    sp->digits = info_int(idx, (currency ? 0x19 /* LOCALE_ICURRDIGITS */ : 0x11 /* LOCALE_IDIGITS */) | uo);
+    sp->lzero = info_int(idx, 0x12 /* LOCALE_ILZERO */ | uo);
+    info(idx, (currency ? 0x18 /* LOCALE_SMONGROUPING */ : 0x10 /* LOCALE_SGROUPING */) | uo, w);
     groups_of(w, sp);
-    info(idx, currency ? 0x16 /* LOCALE_SMONDECIMALSEP */ : 0x0E /* LOCALE_SDECIMAL */, w);
+    info(idx, (currency ? 0x16 /* LOCALE_SMONDECIMALSEP */ : 0x0E /* LOCALE_SDECIMAL */) | uo, w);
     copy_sep(sp->dec, 8, w);
-    info(idx, currency ? 0x17 /* LOCALE_SMONTHOUSANDSEP */ : 0x0F /* LOCALE_STHOUSAND */, w);
+    info(idx, (currency ? 0x17 /* LOCALE_SMONTHOUSANDSEP */ : 0x0F /* LOCALE_STHOUSAND */) | uo, w);
     copy_sep(sp->thou, 8, w);
-    sp->negorder = info_int(idx, currency ? 0x1C /* LOCALE_INEGCURR */ : 0x1010 /* LOCALE_INEGNUMBER */);
+    sp->negorder = info_int(idx, (currency ? 0x1C /* LOCALE_INEGCURR */ : 0x1010 /* LOCALE_INEGNUMBER */) | uo);
     if (currency) {
-        sp->posorder = info_int(idx, 0x1B /* LOCALE_ICURRENCY */);
-        info(idx, 0x14 /* LOCALE_SCURRENCY */, w);
+        sp->posorder = info_int(idx, 0x1B /* LOCALE_ICURRENCY */ | uo);
+        info(idx, 0x14 /* LOCALE_SCURRENCY */ | uo, w);
         copy_sep(sp->sym, 16, w);
     }
     if (sp->digits > 9) sp->digits = 9;
@@ -493,7 +528,7 @@ static int number_format(int idx, DWORD flags, LPCWSTR value, const NumFmtW *f, 
     Spec sp;
     Out num;
     BOOL neg;
-    if (!spec_of(idx, f, currency, &sp) || !digits_of(value, &sp, &num, &neg)) {
+    if (!spec_of(idx, flags & LOCALE_NOUSEROVERRIDE, f, currency, &sp) || !digits_of(value, &sp, &num, &neg)) {
         SetLastError(ERROR_INVALID_PARAMETER);
         return 0;
     }
@@ -562,4 +597,75 @@ K32 int WINAPI GetNumberFormatA(LCID lcid, DWORD flags, LPCSTR value, const NUMB
 K32 int WINAPI GetCurrencyFormatA(LCID lcid, DWORD flags, LPCSTR value, const CURRENCYFMTA *fmt, LPSTR out, int cap)
 {
     return number_a(lcid, flags, value, fmt, TRUE, out, cap);
+}
+
+/* -----------------------------------------------------------------------
+ * Durations
+ * ----------------------------------------------------------------------- */
+/* GetDurationFormat: @ticks (100 ns) or @d's hours, minutes, seconds and
+ * milliseconds in the picture's d (days), h/H (hours), m, s and f...
+ * (fractions of a second, up to nine); the largest unit in the picture
+ * takes what does not fit the next one ("h:mm" of a day and a half is
+ * "36:00").  No picture: LOCALE_SDURATION. */
+static int duration_format(int idx, DWORD flags, const SYSTEMTIME *d, ULONGLONG ticks, LPCWSTR fmt, Out *o)
+{
+    static const ULONGLONG unit[4] = { 864000000000ull, 36000000000ull, 600000000ull, 10000000ull };
+    if (idx == LOC_NONE) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    if ((flags & ~LOCALE_NOUSEROVERRIDE) || (fmt && flags)) { SetLastError(ERROR_INVALID_FLAGS); return 0; }
+    if (d) {
+        if (!time_ok(d)) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+        ticks = ((((ULONGLONG)d->wHour * 60 + d->wMinute) * 60 + d->wSecond) * 1000 + d->wMilliseconds) * 10000;
+    }
+    WCHAR pic[CAP];
+    if (!fmt) { info(idx, 0x5D /* LOCALE_SDURATION */ | flags, pic); fmt = pic; }
+    Pic p;
+    split(fmt, DURATION_FIELDS, &p);
+    BOOL used[4] = { FALSE };
+    for (int i = 0; i < p.n; i++) {
+        WCHAR c = p.it[i].c;
+        if (c == 'd') used[0] = TRUE;
+        else if (c == 'h' || c == 'H') used[1] = TRUE;
+        else if (c == 'm') used[2] = TRUE;
+        else if (c == 's') used[3] = TRUE;
+    }
+    ULONGLONG v[4] = { 0 }, rest = ticks;
+    for (int u = 0; u < 4; u++) if (used[u]) { v[u] = rest / unit[u]; rest %= unit[u]; }
+    unsigned frac = (unsigned)(ticks % 10000000ull);         /* seven digits */
+    o->n = 0;
+    o->over = FALSE;
+    for (int i = 0; i < p.n; i++) {
+        const Item *it = &p.it[i];
+        int r = it->run;
+        switch (it->c) {
+        case 0: for (int k = 0; k < it->len; k++) add_c(o, p.text[it->at + k]); break;
+        case 'd': add_num(o, v[0], r); break;
+        case 'h': case 'H': add_num(o, v[1], r > 1 ? 2 : 1); break;
+        case 'm': add_num(o, v[2], r > 1 ? 2 : 1); break;
+        case 's': add_num(o, v[3], r > 1 ? 2 : 1); break;
+        case 'f': {
+            if (r > 9) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+            WCHAR t[10];
+            unsigned f = frac;
+            for (int k = 6; k >= 0; k--) { t[k] = (WCHAR)('0' + f % 10); f /= 10; }
+            t[7] = t[8] = '0';
+            for (int k = 0; k < r; k++) add_c(o, t[k]);
+            break;
+        }
+        }
+    }
+    o->s[o->n] = 0;
+    return 1;
+}
+
+K32 int WINAPI GetDurationFormatEx(LPCWSTR loc, DWORD flags, const SYSTEMTIME *d, ULONGLONG ticks, LPCWSTR fmt,
+                                   LPWSTR out, int cap)
+{
+    Out o;
+    return duration_format(nls_name(loc), flags, d, ticks, fmt, &o) ? give(&o, out, cap) : 0;
+}
+K32 int WINAPI GetDurationFormat(LCID lcid, DWORD flags, const SYSTEMTIME *d, ULONGLONG ticks, LPCWSTR fmt,
+                                 LPWSTR out, int cap)
+{
+    Out o;
+    return duration_format(nls_lcid(lcid), flags, d, ticks, fmt, &o) ? give(&o, out, cap) : 0;
 }

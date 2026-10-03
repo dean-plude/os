@@ -70,10 +70,12 @@ class Test:
         self.before = before
 
 
-def tones(*hz, wav=None):
+def tones(*hz, wav=None, only=False):
     """A check on the sound recording: a tone near each of @hz, in order.
     @wav: instead of the sound card's recording, a WAV file a QEMU audiodev
-    of the boot wrote in its work directory (copied to --out)"""
+    of the boot wrote in its work directory (copied to --out).  @only:
+    nothing else sounds in it, not even briefly (a speaker that stopped
+    playing must go quiet, not repeat what its ring last held)"""
     def check(nova):                       # (run after QEMU quit: the WAV is complete)
         path = nova.wav
         if wav:
@@ -87,8 +89,14 @@ def tones(*hz, wav=None):
         for h in heard:
             if want and abs(h - want[0]) < want[0] * 0.05:
                 want.pop(0)
-        return None if not want else f'no {want[0]} Hz tone in the recording (heard: ' + \
-            ', '.join(f'{h:.0f} Hz' for h in heard) + ')'
+        if want:
+            return f'no {want[0]} Hz tone in the recording (heard: ' + \
+                ', '.join(f'{h:.0f} Hz' for h in heard) + ')'
+        other = [s for s in segs if s[1] < 300 or not any(abs(s[3] - h) < h * 0.05 for h in hz)]
+        if only and other:
+            return f'{len(other)} other sound(s) in the recording besides the tones (first: ' + \
+                f'{other[0][1]:.0f} ms at {other[0][0]:.2f} s, ~{other[0][3]:.0f} Hz)'
+        return None
     return check
 
 

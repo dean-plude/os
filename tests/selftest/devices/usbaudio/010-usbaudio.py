@@ -4,7 +4,8 @@
 # one while NovaOS runs.  The newest speaker plays; unplugging speaker 3
 # hands playback back to speaker 2.  Each tone must be in its speaker's WAV
 # (isochronous OUT on all three controllers; QEMU has no isochronous IN
-# device).
+# device), and nothing else: a speaker another one took over from goes
+# quiet once what was mixed for it has played.
 import re
 import time
 
@@ -35,12 +36,12 @@ def unplug(n):
 
 
 TESTS = [
-    Test('usbaudio xhci', 'soundtest tone 440 1000', [r'played \d+ samples'], check=tones(440, wav='usb1.wav'),
+    Test('usbaudio xhci', 'soundtest tone 440 1000', [r'played \d+ samples'], check=tones(440, wav='usb1.wav', only=True),
          boot_expect=[r'\[USB\] [^\n]*: audio output, 48 kHz 16-bit stereo', r'\[AUDIO\] Playing on USB Audio Device']),
     Test('usbaudio ohci', 'soundtest tone 550 1000', [r'played \d+ samples'], before=plug(2, 'ohci.0', 'OHCI'),
          check=tones(550, wav='usb2.wav')),
     Test('usbaudio uhci', 'soundtest tone 660 1000', [r'played \d+ samples'], before=plug(3, 'uhci.0', 'UHCI'),
-         check=tones(660, wav='usb3.wav')),
+         check=tones(660, wav='usb3.wav', only=True)),
     Test('usbaudio unplug', 'soundtest tone 770 1000', [r'played \d+ samples'], before=unplug(3),
-         check=tones(550, 770, wav='usb2.wav')),
+         check=tones(550, 770, wav='usb2.wav', only=True)),
 ]
