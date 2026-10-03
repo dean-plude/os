@@ -15,13 +15,19 @@ static WaitQueue    g_q = WAITQ_INIT;
 static TabletPacket g_ring[TABLET_RING];
 static UINT32       g_serial;                 /* the newest packet's number */
 static int          g_hw;                     /* hardware pens */
+static int          g_hw_tilt, g_hw_twist;    /* ... of them with tilt, with barrel rotation */
 static struct { void *owner; int n; } g_synth[MAX_SYNTH];
 
-void TabletDevice(void *owner, int delta)
+static int add(int n, int delta) { return n + delta < 0 ? 0 : n + delta; }
+
+void TabletDevice(void *owner, int delta, int caps)
 {
     IrqState s = spin_lock_irqsave(&g_lock);
-    if (!owner) g_hw = g_hw + delta < 0 ? 0 : g_hw + delta;
-    else {
+    if (!owner) {
+        g_hw = add(g_hw, delta);
+        if (caps & TABLET_CAP_TILT) g_hw_tilt = add(g_hw_tilt, delta);
+        if (caps & TABLET_CAP_TWIST) g_hw_twist = add(g_hw_twist, delta);
+    } else {
         int k = -1;
         for (int i = 0; i < MAX_SYNTH; i++) if (g_synth[i].owner == owner) { k = i; break; }
         if (k < 0 && delta > 0)
@@ -60,6 +66,18 @@ int TabletDevices(void)
     return n;
 }
 
+int TabletCaps(void)
+{
+    IrqState s = spin_lock_irqsave(&g_lock);
+    int synth = 0;
+    for (int i = 0; i < MAX_SYNTH; i++) synth += g_synth[i].n;
+    int caps = (g_hw_tilt || synth ? TABLET_CAP_TILT : 0) | (g_hw_twist || synth ? TABLET_CAP_TWIST : 0);
+    spin_unlock_irqrestore(&g_lock, s);
+    return caps;
+}
+
+static INT16 tilt(INT16 v) { return v < -900 ? -900 : v > 900 ? 900 : v; }
+
 void TabletPacketIn(const InputEvent *ev)
 {
     TabletPacket p;
@@ -68,7 +86,12 @@ void TabletPacketIn(const InputEvent *ev)
     p.y = ev->dy < 0 ? 0 : ev->dy > 65535 ? 65535 : ev->dy;
     p.pressure = ev->pressure > TABLET_PRESSURE ? TABLET_PRESSURE : ev->pressure;
     p.buttons = ev->buttons & 7;
-    p.flags = (ev->pressed ? TABLET_INRANGE : 0) | (ev->extended ? TABLET_ERASER : 0);
+    p.flags = (ev->pressed ? TABLET_INRANGE : 0) | (ev->extended ? TABLET_ERASER : 0) |
+              (ev->pen_has & PEN_HAS_TILT ? TABLET_TILT : 0) | (ev->pen_has & PEN_HAS_TWIST ? TABLET_TWIST : 0);
+    p.tilt_x = ev->pen_has & PEN_HAS_TILT ? tilt(ev->tilt_x) : 0;
+    p.tilt_y = ev->pen_has & PEN_HAS_TILT ? tilt(ev->tilt_y) : 0;
+    p.twist = ev->pen_has & PEN_HAS_TWIST ? ev->twist % 3600 : 0;
+    p.reserved = 0;
     IrqState s = spin_lock_irqsave(&g_lock);
     p.serial = ++g_serial;
     g_ring[p.serial % TABLET_RING] = p;

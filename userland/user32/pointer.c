@@ -354,11 +354,15 @@ USERAPI BOOL GetGestureConfig(HWND h, DWORD r, DWORD f, PUINT n, void *cfg, UINT
 /* Synthetic pens (Windows 10 1809's pointer injection): a pen device the
  * desktop counts as a tablet (wintab32 reports it, SM_DIGITIZER has
  * NID_EXTERNAL_PEN); its input moves the pointer, the tip clicks, and the
- * packets with their pressure reach wintab32.  Synthetic touch is not there. */
+ * packets with their pressure, tilt and rotation (penMask) reach wintab32.
+ * Synthetic touch is not there. */
 #define PT_PEN               3
 #define PEN_FLAG_BARREL      1
 #define PEN_FLAG_INVERTED    2
 #define PEN_FLAG_ERASER      4
+#define PEN_MASK_ROTATION    2
+#define PEN_MASK_TILT_X      4
+#define PEN_MASK_TILT_Y      8
 
 typedef struct {
     PointerInfo pointerInfo;
@@ -410,12 +414,18 @@ USERAPI BOOL InjectSyntheticPointerInput(HANDLE dev, const void *info, UINT32 n)
         int contact = (f & POINTER_FLAG_INCONTACT) != 0 && !(f & POINTER_FLAG_UP);
         int eraser = (p->penFlags & (PEN_FLAG_ERASER | PEN_FLAG_INVERTED)) != 0;
         UINT32 pr = p->pressure > 1024 ? 1024 : p->pressure;
-        INT32 pkt[5] = {
+        int tilt = (p->penMask & (PEN_MASK_TILT_X | PEN_MASK_TILT_Y)) != 0, rot = (p->penMask & PEN_MASK_ROTATION) != 0;
+        INT32 tx = p->penMask & PEN_MASK_TILT_X ? p->tiltX : 0, ty = p->penMask & PEN_MASK_TILT_Y ? p->tiltY : 0;
+        INT32 pkt[8] = {
             desk_coord(p->pointerInfo.ptPixelLocation.x, v.left, v.right - v.left),
             desk_coord(p->pointerInfo.ptPixelLocation.y, v.top, v.bottom - v.top),
             contact ? (INT32)(pr * 1023 / 1024) : 0,
             (contact ? 1 : 0) | (p->penFlags & PEN_FLAG_BARREL ? 2 : 0),
-            (f & (POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT) ? 1 : 0) | (eraser ? 2 : 0),   /* (lifted, still hovering) */
+            (f & (POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT) ? 1 : 0) | (eraser ? 2 : 0) |   /* (lifted, still hovering) */
+            (tilt ? 4 : 0) | (rot ? 8 : 0),
+            (tx < -90 ? -90 : tx > 90 ? 90 : tx) * 10,                 /* degrees to the desktop's tenths */
+            (ty < -90 ? -90 : ty > 90 ? 90 : ty) * 10,
+            rot ? (INT32)(p->rotation % 360) * 10 : 0,
         };
         if (!NtNovaGuiCtl(0, CTL_TABLET, 4, pkt)) { SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
     }

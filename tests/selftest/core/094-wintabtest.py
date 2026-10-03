@@ -1,5 +1,5 @@
 # wintabtest: pen tablets through wintab32.dll, with a synthetic pen (tools/selftest.py's core suite)
-DOC = '`wintabtest` (wintab32 with no pen and with a synthetic one: contexts, packets, pressure)'
+DOC = '`wintabtest` (wintab32 with no pen and with a synthetic one: contexts, packets, pressure, tilt and rotation)'
 TESTS = [
     Test('wintabtest', 'wintabtest', [r'wintabtest: \d+ passed, 0 failed']),
 ]

@@ -898,8 +898,13 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *                2 / 3 this process makes / drops a synthetic pen;
  *                4 ptr -> { x, y (0-65535 across the desktop), pressure
  *                  (0-1023), buttons (bit 0 tip, 1-2 barrel), flags (1 in
- *                  range, 2 eraser) }: a synthetic pen's input (the pointer
- *                  follows it while in range); 0 if the process has no pen */
+ *                  range, 2 eraser, 4 tilt given, 8 twist given), tilt x,
+ *                  tilt y (tenths of a degree, -900..900), twist (tenths of
+ *                  a degree, 0..3599) }: a synthetic pen's input (the
+ *                  pointer follows it while in range); 0 if the process has
+ *                  no pen;
+ *                5 returns what the pens present report: 1 tilt, 2 barrel
+ *                  rotation (TABLET_CAP_*) */
 #define CTL_TABLET       30
 /* Per-monitor DPI (user32's DPI awareness):
  *  31 SET_DPI     ptr <- { head, DPI (96 or 192; 0: 96), CDS_* flags }: the
@@ -1073,10 +1078,11 @@ static UINT64 tablet_ctl(UmProcess *p, UINT64 op, UINT64 ptr)
         kfree(buf);
         return r;
     }
-    case 2: TabletDevice(p, 1); return 1;
-    case 3: TabletDevice(p, -1); return 1;
+    case 2: TabletDevice(p, 1, TABLET_CAP_TILT | TABLET_CAP_TWIST); return 1;
+    case 3: TabletDevice(p, -1, TABLET_CAP_TILT | TABLET_CAP_TWIST); return 1;
+    case 5: return (UINT64)TabletCaps();
     case 4: {
-        INT32 in[5];
+        INT32 in[8];
         if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return 0;
         if (!TabletOwns(p)) return 0;
         InputEvent ev;
@@ -1094,6 +1100,12 @@ static UINT64 tablet_ctl(UmProcess *p, UINT64 op, UINT64 ptr)
         ev.pressure = (UINT16)(in[2] < 0 ? 0 : in[2] > TABLET_PRESSURE ? TABLET_PRESSURE : in[2]);
         ev.pressed = (in[4] & 1) != 0;
         ev.extended = (in[4] & 2) != 0;
+        ev.pen_has = (in[4] & 4 ? PEN_HAS_TILT : 0) | (in[4] & 8 ? PEN_HAS_TWIST : 0);
+        if (in[4] & 4) {
+            ev.tilt_x = (INT16)(in[5] < -900 ? -900 : in[5] > 900 ? 900 : in[5]);
+            ev.tilt_y = (INT16)(in[6] < -900 ? -900 : in[6] > 900 ? 900 : in[6]);
+        }
+        if (in[4] & 8) ev.twist = (UINT16)(((in[7] % 3600) + 3600) % 3600);
         InputPost(&ev);
         return 1;
     }

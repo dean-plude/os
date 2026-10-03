@@ -222,8 +222,9 @@ def net6_boot(work):
 
 
 def touch_boot(work):
-    """A virtio multi-touch screen (QEMU's input-send-event "mtt" events)"""
-    return ['-device', 'virtio-multitouch-pci'], []
+    """A virtio multi-touch screen (QEMU's input-send-event "mtt" events) and
+    a virtio tablet (an absolute pointer)"""
+    return ['-device', 'virtio-multitouch-pci', '-device', 'virtio-tablet-pci'], []
 
 
 def usbaudio_boot(work):

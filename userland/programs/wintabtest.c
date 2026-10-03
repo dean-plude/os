@@ -14,6 +14,10 @@
  *    and its tip clicks the window;
  *  - a second context in absolute mode reads its queue with
  *    WTQueuePacketsEx, WTDataPeek and WTPacketsGet;
+ *  - the pen's tilt and barrel rotation (penMask's PEN_MASK_TILT_X/Y and
+ *    ROTATION) come out as each packet's ORIENTATION: azimuth, altitude
+ *    (negative for the eraser) and twist, and DVC_ORIENTATION says the
+ *    device reports all three;
  *  - when the pen goes, so does the tablet.
  */
 #include <windows.h>
@@ -53,6 +57,7 @@ typedef struct { int orAzimuth, orAltitude, orTwist; } ORIENTATION;
 #define DVC_X         12
 #define DVC_Y         13
 #define DVC_NPRESSURE 15
+#define DVC_ORIENTATION 17
 #define CSR_NAME      1
 #define CSR_ACTIVE    2
 #define CSR_TYPE      20
@@ -179,8 +184,14 @@ static void pump(DWORD ms)
 static Inject_t pInject;
 static HANDLE g_pen;
 
-/* One pen report at screen (x, y) */
+/* One pen report at screen (x, y), upright or tilted and turned */
+static void pen_tilted(int x, int y, UINT32 flags, UINT32 pressure, UINT32 penflags, UINT32 mask, int tx, int ty, UINT32 rot);
 static void pen(int x, int y, UINT32 flags, UINT32 pressure, UINT32 penflags)
+{
+    pen_tilted(x, y, flags, pressure, penflags, 1, 0, 0, 0);    /* PEN_MASK_PRESSURE */
+}
+
+static void pen_tilted(int x, int y, UINT32 flags, UINT32 pressure, UINT32 penflags, UINT32 mask, int tx, int ty, UINT32 rot)
 {
     PTR_TYPE_INFO in;
     memset(&in, 0, sizeof(in));
@@ -191,7 +202,10 @@ static void pen(int x, int y, UINT32 flags, UINT32 pressure, UINT32 penflags)
     in.penInfo.pointerInfo.ptPixelLocation.y = y;
     in.penInfo.penFlags = penflags;
     in.penInfo.pressure = pressure;
-    in.penInfo.penMask = 1;                                  /* PEN_MASK_PRESSURE */
+    in.penInfo.penMask = mask;
+    in.penInfo.tiltX = tx;
+    in.penInfo.tiltY = ty;
+    in.penInfo.rotation = rot;
     if (!pInject(g_pen, &in, 1)) printf("  InjectSyntheticPointerInput failed (%lu)\n", (unsigned long)GetLastError());
     pump(120);
 }
@@ -236,7 +250,7 @@ int main(void)
     check(GetSystemMetrics(94) & 0x08, "SM_DIGITIZER: NID_EXTERNAL_PEN");
     UINT ndev = 0, ncsr = 0, first = 99, ncsrtypes = 0, act = 0, type0 = 0, type1 = 0;
     WORD spec = 0;
-    AXIS ax = { 0 }, ay = { 0 }, ap = { 0 };
+    AXIS ax = { 0 }, ay = { 0 }, ap = { 0 }, ao[3];
     char name[64] = "", c0[64] = "", c1[64] = "";
     check(pInfo(0, 0, NULL) >= sizeof(LOGCONTEXTA), "a pen: WTInfo(0, 0, NULL) gives the largest answer's size");
     pInfo(WTI_INTERFACE, IFC_SPECVERSION, &spec);
@@ -248,6 +262,8 @@ int main(void)
     pInfo(WTI_DEVICES, DVC_X, &ax);
     pInfo(WTI_DEVICES, DVC_Y, &ay);
     pInfo(WTI_DEVICES, DVC_NPRESSURE, &ap);
+    memset(ao, 0, sizeof(ao));
+    UINT osz = pInfo(WTI_DEVICES, DVC_ORIENTATION, ao);
     pInfo(WTI_CURSORS + 0, CSR_NAME, c0);
     pInfo(WTI_CURSORS + 1, CSR_NAME, c1);
     pInfo(WTI_CURSORS + 0, CSR_ACTIVE, &act);
@@ -258,6 +274,10 @@ int main(void)
     check(ax.axMax == 65535 && ay.axMax == 65535 && ap.axMin == 0 && ap.axMax == 1023, "X and Y 0-65535, pressure 0-1023");
     check(act && c0[0] && c1[0] && type0 == 0x0802 && type1 == 0x080A, "the cursors: an active pen and its eraser");
     check(pInfo(WTI_DSCTXS, 0, &lc) == sizeof(lc) && (lc.lcOptions & CXO_SYSTEM), "the device's system context");
+    printf("  orientation axes: azimuth %ld-%ld, altitude %ld-%ld, twist %ld-%ld\n", ao[0].axMin, ao[0].axMax,
+           ao[1].axMin, ao[1].axMax, ao[2].axMin, ao[2].axMax);
+    check(osz == sizeof(ao) && ao[0].axMin == 0 && ao[0].axMax == 3599 && ao[1].axMin == -900 && ao[1].axMax == 900 &&
+          ao[2].axMax == 3599, "DVC_ORIENTATION: azimuth, altitude and twist (a synthetic pen has tilt and rotation)");
 
     /* 3. A window and GTK's context */
     WNDCLASSW wc;
@@ -357,6 +377,31 @@ int main(void)
         check(pPacketsGet(abs, 8, ap2) == 0, "the queue is empty after");
         pClose(abs);
     }
+    /* 4b. Tilted and turned: leaning 30 degrees right turned a quarter,
+     * 45 away (toward the tablet's top), 30 right and 30 toward the user
+     * with the eraser turned 359 degrees */
+    g_np = 0;
+    pen_tilted(p0.x, p0.y, POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_DOWN, 300, 0, 1 | 2 | 4 | 8, 30, 0, 90);
+    pen_tilted(p0.x + 10, p0.y, POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_UPDATE, 300, 0, 1 | 2 | 4 | 8, 0, -45, 0);
+    pen_tilted(p0.x + 20, p0.y, POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_UPDATE, 300, PEN_FLAG_ERASER, 1 | 2 | 4 | 8, 30, 30, 359);
+    pen(p0.x + 20, p0.y, 0, 0, 0);
+    pump(300);
+    for (int i = 0; i < g_np; i++)
+        printf("  tilted packet %d: cursor %u pressure %u azimuth %d altitude %d twist %d\n", i, g_pk[i].pkCursor,
+               g_pk[i].pkNormalPressure, g_pk[i].pkOrientation.orAzimuth, g_pk[i].pkOrientation.orAltitude,
+               g_pk[i].pkOrientation.orTwist);
+    check(g_np == 3, "a WT_PACKET for each tilted report");
+    if (g_np >= 3) {
+        const ORIENTATION *o0 = &g_pk[0].pkOrientation, *o1 = &g_pk[1].pkOrientation, *o2 = &g_pk[2].pkOrientation;
+        check(o0->orAzimuth == 900 && o0->orAltitude == 600 && o0->orTwist == 900,
+              "30 degrees right: azimuth 90 (east), altitude 60, twist 90");
+        check((o1->orAzimuth == 0 || o1->orAzimuth == 3599) && o1->orAltitude >= 449 && o1->orAltitude <= 451 && o1->orTwist == 0,
+              "45 degrees toward the top: azimuth 0 (north), altitude 45, no twist");
+        check(g_pk[2].pkCursor == 1 && o2->orAzimuth >= 1348 && o2->orAzimuth <= 1352 && o2->orAltitude <= -506 &&
+              o2->orAltitude >= -510 && o2->orTwist == 3590,
+              "the eraser leaning right and toward the user: azimuth 135, altitude -50.8 (negative), twist 359");
+    }
+
     check(pClose(g_ctx), "WTClose");
 
     /* 5. The pen goes */
