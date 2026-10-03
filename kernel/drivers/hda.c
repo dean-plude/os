@@ -27,7 +27,7 @@
  * alone).  Before their reset the clock gating of the link is turned off
  * (CGCTL.MISCBDCGE, as Linux and the Intel datasheets do), and traffic
  * class 0 and snooped DMA are chosen.  Their digital microphones hang off
- * the DSP, not the codec, and stay silent here.
+ * the DSP, not the codec: sof.c boots the DSP for them.
  *
  * Speakers and headphones: a laptop codec has a speaker pin and a
  * headphone jack that can tell whether something is plugged in (pin
@@ -754,6 +754,18 @@ void HdaResume(void)
 }
 
 const char *HdaName(void) { return g.present ? g.name : "No audio device"; }
+
+bool HdaDspHost(HdaHost *out)
+{
+    if (!g.present) return false;
+    int ix = intel_index(g_dev.vendor, g_dev.device);
+    out->dev = g_dev;
+    out->mmio = g.mmio;
+    out->gcap = rd16(GCAP);
+    out->dsp_on = g_dev.vendor == 0x8086 && g_dev.subclass == 0x01;
+    out->chip = ix >= 0 ? g_intel[ix].name : NULL;
+    return true;
+}
 
 INT16 *HdaRing(UINT32 *size)
 {

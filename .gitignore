@@ -7,3 +7,5 @@ __pycache__/
 selftest-out/
 # Self-test screenshots and logs (tools/selftest.py output)
 /selftest-out/
+# The audio DSP firmware tools/fetch_sof_firmware.py downloads
+/third_party/sof-bin/

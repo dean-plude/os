@@ -589,6 +589,15 @@ run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'make_gm_sound
 built.append(('\\Windows\\System32\\drivers\\gm.sf2', sf2))
 built.append(('\\Windows\\SysWOW64\\drivers\\gm.sf2', sf2))     # (where WOW64 redirects 32-bit programs)
 
+# 3a4. the audio DSP's Sound Open Firmware, when tools/fetch_sof_firmware.py
+# fetched it (it is not in the repository; kernel/drivers/sof.c loads it)
+SOF = os.path.join(TP, 'sof-bin')
+if os.path.isdir(SOF):
+    built.append(('\\Windows\\Firmware\\Intel\\LICENCE.Intel', os.path.join(SOF, 'LICENCE.Intel')))
+    for plat in sorted(os.listdir(os.path.join(SOF, 'sof-ipc4'))):
+        built.append((f'\\Windows\\Firmware\\Intel\\sof-ipc4\\{plat}\\sof-{plat}.ri',
+                      os.path.join(SOF, 'sof-ipc4', plat, f'sof-{plat}.ri')))
+
 # 3a. sample files for the user's folders (tools/make_icons.py draws the icons)
 samples = os.path.join(HERE, 'samples')
 for n in sorted(os.listdir(samples)):
