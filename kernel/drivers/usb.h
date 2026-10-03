@@ -4,8 +4,8 @@
  * The core (usb.c) enumerates devices on the root ports of every host
  * controller (xHCI, EHCI, OHCI and UHCI: usb_hc.h) and on hubs, sets their
  * configuration and offers each interface to the class drivers: hubs
- * (usbhub.c), HID keyboards, mice, tablets and touch screens (usbhid.c)
- * and mass storage (usbmsc.c).  A driver that takes an
+ * (usbhub.c), HID keyboards, mice, tablets and touch screens (usbhid.c),
+ * mass storage (usbmsc.c) and audio (usbaudio.c).  A driver that takes an
  * interface opens pipes to its endpoints and keeps an instance; when the
  * device goes away its gone() callback runs and the pipes stop.
  *
@@ -36,6 +36,8 @@ typedef struct {
 #define USB_DT_CONFIG     2
 #define USB_DT_INTERFACE  4
 #define USB_DT_ENDPOINT   5
+#define USB_DT_CS_INTERFACE 0x24
+#define USB_DT_CS_ENDPOINT  0x25
 #define USB_DT_HID        0x21
 #define USB_DT_REPORT     0x22
 #define USB_DT_HUB        0x29
@@ -68,6 +70,10 @@ bool   UsbDevGone(const UsbDev *d);
 /* A short name for logs, e.g. "port 3.2" */
 const char *UsbDevName(const UsbDev *d);
 
+/* The active configuration descriptor, every interface and alternate
+ * setting of it; *@len its bytes */
+const UINT8 *UsbDevConfig(const UsbDev *d, int *len);
+
 /* Find the next descriptor of @type in an interface's descriptors after
  * offset *@off (start at 0); NULL when there are no more. */
 const UINT8 *UsbIfaceFind(const UsbIface *f, UINT8 type, int *off);
@@ -76,9 +82,10 @@ const UINT8 *UsbIfaceFind(const UsbIface *f, UINT8 type, int *off);
  * the device; up to 4096 bytes.  Returns the bytes moved, or -1. */
 int UsbControl(UsbDev *d, UINT8 type, UINT8 req, UINT16 value, UINT16 index, UINT16 len, void *data);
 
-/* Open a pipe to the endpoint an endpoint descriptor describes (interrupt
- * or bulk, either direction); @buf_bytes of DMA buffer come with it.
- * NULL on failure. */
+/* Open a pipe to the endpoint an endpoint descriptor describes (interrupt,
+ * bulk or isochronous, either direction, of the interface's current
+ * alternate setting); @buf_bytes of DMA buffer come with it.  NULL on
+ * failure. */
 UsbPipe *UsbOpenPipe(UsbDev *d, const UINT8 *ep_desc, UINT32 buf_bytes);
 UINT16   UsbPipeMaxPacket(const UsbPipe *p);
 
@@ -92,6 +99,26 @@ bool UsbPipeListen(UsbPipe *p, int len, UsbInCallback cb, void *ctx);
  * bytes moved, or -1 on an error (*stalled: the endpoint halted, see
  * UsbPipeReset). */
 int  UsbBulk(UsbPipe *p, void *buf, UINT32 len, UINT32 timeout_ms, bool *stalled);
+/* SET_INTERFACE: switch interface @iface to alternate setting @alt.  The
+ * pipes of its old setting close (stop their streams first; don't use
+ * them again) and those of the new one can be opened. */
+bool UsbSetInterface(UsbDev *d, UINT8 iface, UINT8 alt);
+
+/* Isochronous streaming.  The pipe keeps @xfers transfers of @packets
+ * packets queued, one packet per service interval (a frame or
+ * microframe), back to back.  Packet i of transfer k has room for
+ * UsbIsoPacketSize() bytes at data + i * that; @lens[i] is its length.
+ * OUT: @cb fills a transfer (data and lengths) before it is queued, at
+ * the start and each time it finishes.  IN: @cb gets each finished
+ * transfer (lengths received; 0 for a packet lost), which is then queued
+ * again.  @cb runs from the controller's poll with interrupts off: be
+ * quick, issue no transfers. */
+typedef void (*UsbIsoCallback)(UsbPipe *p, UINT8 *data, UINT16 *lens, int packets, void *ctx);
+bool   UsbIsoStart(UsbPipe *p, int xfers, int packets, UsbIsoCallback cb, void *ctx);
+void   UsbIsoStop(UsbPipe *p);
+UINT32 UsbIsoPacketSize(const UsbPipe *p);         /* bytes a packet can carry */
+UINT32 UsbIsoIntervalUs(const UsbPipe *p);         /* microseconds between packets */
+
 /* Recover a halted endpoint: Reset Endpoint, rewind its ring and clear
  * the device's ENDPOINT_HALT. */
 bool UsbPipeReset(UsbPipe *p);
@@ -124,3 +151,4 @@ void  UsbHidSyncLeds(void);                            /* usb thread: lock-key L
  * QEMU has no device for; says a line per check, returns how many failed */
 int   UsbHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx);
 void *UsbMscProbe(UsbDev *d, const UsbIface *f);      /* usbmsc.c */
+void *UsbAudioProbe(UsbDev *d, const UsbIface *f);    /* usbaudio.c */

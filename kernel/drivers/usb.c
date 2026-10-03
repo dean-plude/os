@@ -5,8 +5,11 @@
  * controller driver, a hub's port in usbhub.c), give the device an address
  * (SET_ADDRESS, or xHCI's Address Device), learn endpoint 0's packet size,
  * read the device and configuration descriptors, make a pipe for every
- * endpoint of the configuration, SET_CONFIGURATION, and offer each
- * interface to the class drivers (usb.h).
+ * endpoint of the configuration (each interface's first alternate
+ * setting), SET_CONFIGURATION, and offer each interface to the class
+ * drivers (usb.h).  A driver may switch an interface to another
+ * alternate setting (UsbSetInterface), whose endpoints then get pipes:
+ * audio and video devices keep their isochronous endpoints there.
  *
  * Root ports are watched by a small "usb" kernel thread, which is also
  * the only one that enumerates: a port that changed is looked at again,
@@ -117,6 +120,12 @@ bool   UsbDevGone(const UsbDev *d)    { return d->gone; }
 const char *UsbDevName(const UsbDev *d) { return d->name; }
 UINT16 UsbPipeMaxPacket(const UsbPipe *p) { return p->mps; }
 
+const UINT8 *UsbDevConfig(const UsbDev *d, int *len)
+{
+    *len = d->cfg ? d->cfg_len : 0;
+    return d->cfg;
+}
+
 const UINT8 *UsbIfaceFind(const UsbIface *f, UINT8 type, int *off)
 {
     int o = *off;
@@ -217,6 +226,74 @@ void UsbPipeListenFailed(UsbPipe *p, int code)
     p->cb = NULL;
 }
 
+UINT32 UsbPipePeriod(const UsbPipe *p)
+{
+    UINT32 b = p->interval ? p->interval : 1;
+    if (p->dev->speed == USB_SPEED_HIGH || p->dev->speed == USB_SPEED_SUPER || p->xfer == 1)
+        b = 1u << ((b > 16 ? 16 : b) - 1);             /* 2^(bInterval-1) (micro)frames */
+    return p->dev->speed == USB_SPEED_HIGH || p->dev->speed == USB_SPEED_SUPER ? b : b * 8;
+}
+
+UINT32 UsbIsoPacketSize(const UsbPipe *p) { return (UINT32)p->mps * (1u + p->mult); }
+UINT32 UsbIsoIntervalUs(const UsbPipe *p) { return UsbPipePeriod(p) * 125; }
+
+bool UsbIsoStart(UsbPipe *p, int xfers, int packets, UsbIsoCallback cb, void *ctx)
+{
+    UsbDev *d = p->dev;
+    if (p->dead || d->gone || p->xfer != 1 || p->iso_cb || xfers < 2 || packets < 1 || xfers * packets > 128 ||
+        !d->hc->ops->iso_start)
+        return false;
+    UINT32 psize = UsbIsoPacketSize(p);
+    UINT32 need = (UINT32)(xfers * packets) * psize;
+    if (need > p->dma_size) {
+        int pages = (int)((need + PAGE_SIZE - 1) / PAGE_SIZE);
+        UINT8 *buf = UsbDmaAlloc(pages);
+        if (!buf) return false;
+        UsbDmaFree(p->dma, (int)(p->dma_size / PAGE_SIZE));
+        p->dma = buf;
+        p->dma_size = (UINT32)pages * PAGE_SIZE;
+    }
+    kfree(p->iso_len);
+    p->iso_len = kzalloc((size_t)(xfers * packets) * sizeof(UINT16));
+    if (!p->iso_len) return false;
+    p->iso_xfers = xfers;
+    p->iso_packets = packets;
+    p->iso_psize = psize;
+    p->iso_ctx = ctx;
+    for (int k = 0; k < xfers; k++) {
+        UINT16 *lens = p->iso_len + k * packets;
+        if (p->in) for (int i = 0; i < packets; i++) lens[i] = (UINT16)psize;
+        else cb(p, p->dma + (UINT32)(k * packets) * psize, lens, packets, ctx);
+    }
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    p->iso_cb = cb;
+    bool ok = !d->gone && d->hc->ops->iso_start(d->hc, p);
+    if (!ok) p->iso_cb = NULL;
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    return ok;
+}
+
+bool UsbIsoDone(UsbPipe *p, int k)
+{
+    UsbIsoCallback cb = p->iso_cb;
+    if (!cb || p->dead || p->dev->gone || k < 0 || k >= p->iso_xfers) return false;
+    int n = p->iso_packets;
+    UINT16 *lens = p->iso_len + k * n;
+    cb(p, p->dma + (UINT32)(k * n) * p->iso_psize, lens, n, p->iso_ctx);
+    if (p->in) for (int i = 0; i < n; i++) lens[i] = (UINT16)p->iso_psize;
+    return p->iso_cb != NULL;
+}
+
+void UsbIsoStop(UsbPipe *p)
+{
+    UsbDev *d = p->dev;
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    bool was = p->iso_cb != NULL;
+    p->iso_cb = NULL;
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    if (was && !p->dead && p->hcd && d->hc->ops->iso_stop) d->hc->ops->iso_stop(d->hc, p);
+}
+
 int UsbBulk(UsbPipe *p, void *buf, UINT32 len, UINT32 timeout_ms, bool *stalled)
 {
     if (stalled) *stalled = false;
@@ -287,7 +364,7 @@ static void remove_dev(UsbDev *d)
     d->gone = true;
     IrqState s = spin_lock_irqsave(&g_usb_lock);
     for (int i = 0; i < 32; i++)
-        if (d->pipes[i]) d->pipes[i]->cb = NULL;
+        if (d->pipes[i]) d->pipes[i]->cb = NULL, d->pipes[i]->iso_cb = NULL;
     spin_unlock_irqrestore(&g_usb_lock, s);
     for (int i = d->nbind - 1; i >= 0; i--)
         if (d->bind[i].gone) d->bind[i].gone(d->bind[i].inst);
@@ -300,48 +377,120 @@ static void remove_dev(UsbDev *d)
         p->dead = true;
         UsbDmaFree(p->dma, (int)(p->dma_size / PAGE_SIZE));
         p->dma = NULL;
+        kfree(p->iso_len);
+        p->iso_len = NULL;
         d->pipes[i] = NULL;
     }
     UsbDmaFree(d->buf, 1);
     d->buf = NULL;
+    kfree(d->cfg);
+    d->cfg = NULL;
     free_address(d->hc, d->addr);
     for (int i = 0; i < MAX_DEVS; i++)
         if (g_devs[i] == d) g_devs[i] = NULL;
 }
 
-/* Make a pipe for every interrupt and bulk endpoint of each interface's
- * first alternate setting */
+/* A pipe for the endpoint descriptor @p of interface @iface, in
+ * d->pipes; its idx bit, or 0 */
+static UINT32 new_pipe(UsbDev *d, const UINT8 *p, UINT8 iface)
+{
+    UINT8 xfer = p[3] & 3;
+    if (xfer == 0) return 0;                            /* (control: endpoint 0 only) */
+    UINT8 addr = p[2];
+    UINT8 idx = (UINT8)((addr & 0xF) * 2 + ((addr & 0x80) ? 1 : 0));
+    if (idx < 2 || idx > 31 || d->pipes[idx]) return 0;
+    UsbPipe *pp = kzalloc(sizeof(UsbPipe));
+    if (!pp) return 0;
+    UINT16 wmps = (UINT16)(p[4] | p[5] << 8);
+    pp->dev = d;
+    pp->idx = idx;
+    pp->addr = addr;
+    pp->xfer = xfer;
+    pp->in = (addr & 0x80) != 0;
+    pp->mps = (UINT16)(wmps & 0x7FF);
+    pp->mult = d->speed == USB_SPEED_HIGH && xfer & 1 ? (UINT8)((wmps >> 11) & 3) : 0;
+    if (pp->mult > 2) pp->mult = 2;
+    pp->interval = p[6];
+    pp->iface = iface;
+    if (!pp->mps || !d->hc->ops->pipe_add(d->hc, pp)) {
+        if (pp->mps) kprintf("[USB] %s: endpoint %02x not usable\n", d->name, addr);
+        kfree(pp);
+        return 0;                                       /* (zero-bandwidth: nothing to open) */
+    }
+    d->pipes[idx] = pp;
+    return 1u << idx;
+}
+
+/* Make a pipe for every endpoint of each interface's first alternate
+ * setting */
 static int make_pipes(UsbDev *d, const UINT8 *cfg, int total)
 {
     int n = 0;
     bool alt0 = false;
+    UINT8 iface = 0;
     for (int off = 0; off + 2 <= total && cfg[off] >= 2; off += cfg[off]) {
         const UINT8 *p = &cfg[off];
-        if (p[1] == USB_DT_INTERFACE && p[0] >= 9) alt0 = p[3] == 0;
+        if (p[1] == USB_DT_INTERFACE && p[0] >= 9) { alt0 = p[3] == 0; iface = p[2]; }
         if (p[1] != USB_DT_ENDPOINT || p[0] < 7 || !alt0) continue;
-        UINT8 xfer = p[3] & 3;
-        if (xfer == 0 || xfer == 1) continue;           /* (control, isochronous: not supported) */
-        UINT8 addr = p[2];
-        UINT8 idx = (UINT8)((addr & 0xF) * 2 + ((addr & 0x80) ? 1 : 0));
-        if (idx < 2 || idx > 31 || d->pipes[idx]) continue;
-        UsbPipe *pp = kzalloc(sizeof(UsbPipe));
-        if (!pp) continue;
-        pp->dev = d;
-        pp->idx = idx;
-        pp->addr = addr;
-        pp->xfer = xfer;
-        pp->in = (addr & 0x80) != 0;
-        pp->mps = (UINT16)((p[4] | p[5] << 8) & 0x7FF);
-        pp->interval = p[6];
-        if (!pp->mps || !d->hc->ops->pipe_add(d->hc, pp)) {
-            kprintf("[USB] %s: endpoint %02x not usable\n", d->name, addr);
-            kfree(pp);
-            continue;
-        }
-        d->pipes[idx] = pp;
-        n++;
+        if (new_pipe(d, p, iface)) n++;
     }
     return n;
+}
+
+/* Close a pipe of an alternate setting being left */
+static void drop_pipe(UsbDev *d, UsbPipe *p)
+{
+    if (p->iso_xfers) UsbIsoStop(p);
+    if (p->hcd && d->hc->ops->pipe_drop) d->hc->ops->pipe_drop(d->hc, p);
+    p->dead = true;
+    UsbDmaFree(p->dma, (int)(p->dma_size / PAGE_SIZE));
+    kfree(p->iso_len);
+    kfree(p);
+}
+
+bool UsbSetInterface(UsbDev *d, UINT8 iface, UINT8 alt)
+{
+    if (d->gone || !d->cfg) return false;
+    const UINT8 *cfg = d->cfg;
+    int total = d->cfg_len, at = -1;
+    for (int off = 0; off + 2 <= total && cfg[off] >= 2; off += cfg[off])
+        if (cfg[off + 1] == USB_DT_INTERFACE && cfg[off] >= 9 && cfg[off + 2] == iface && cfg[off + 3] == alt) {
+            at = off;
+            break;
+        }
+    if (at < 0) return false;
+
+    /* The old setting's pipes leave d->pipes, the new one's come in; the
+     * controller learns of both at once (xHCI's Configure Endpoint) */
+    UsbPipe *old[32] = { 0 };
+    UINT32 drop = 0, add = 0;
+    for (int i = 2; i < 32; i++)
+        if (d->pipes[i] && d->pipes[i]->iface == iface && d->pipes[i]->iso_xfers) UsbIsoStop(d->pipes[i]);
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    for (int i = 2; i < 32; i++) {
+        UsbPipe *p = d->pipes[i];
+        if (!p || p->iface != iface) continue;
+        p->cb = NULL;
+        old[i] = p;
+        d->pipes[i] = NULL;
+        drop |= 1u << i;
+    }
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    for (int off = at + cfg[at]; off + 2 <= total && cfg[off] >= 2 && cfg[off + 1] != USB_DT_INTERFACE; off += cfg[off])
+        if (cfg[off + 1] == USB_DT_ENDPOINT && cfg[off] >= 7) add |= new_pipe(d, &cfg[off], iface);
+    bool ok = !d->hc->ops->iface_config || (!drop && !add) || d->hc->ops->iface_config(d->hc, d, drop, add);
+    for (int i = 2; i < 32; i++)
+        if (old[i]) drop_pipe(d, old[i]);
+    if (!ok) kprintf("[USB] %s: the controller refused interface %d's endpoints\n", d->name, iface);
+    if (ok && UsbControl(d, 0x01, 11, alt, iface, 0, NULL) < 0) ok = false;     /* SET_INTERFACE */
+    if (!ok)
+        for (int i = 2; i < 32; i++)
+            if (add & (1u << i)) {
+                UsbPipe *p = d->pipes[i];
+                d->pipes[i] = NULL;
+                drop_pipe(d, p);
+            }
+    return ok;
 }
 
 static const char *speed_name(UINT8 s)
@@ -433,12 +582,13 @@ static UsbDev *enumerate(UsbHc *hc, UsbDev *parent, UINT8 hub_port, UINT8 root, 
     memcpy(cfg, d->buf, (size_t)total);
     UINT8 config = cfg[5];
 
+    d->cfg = cfg;
+    d->cfg_len = total;
     if (make_pipes(d, cfg, total) && hc->ops->dev_config && !hc->ops->dev_config(hc, d)) {
         kprintf("[USB] %s: the controller refused the endpoints\n", d->name);
-        kfree(cfg);
         goto fail;
     }
-    if (control_locked(d, 0x00, 9, config, 0, 0) < 0) { kfree(cfg); goto fail; }   /* SET_CONFIGURATION */
+    if (control_locked(d, 0x00, 9, config, 0, 0) < 0) goto fail;   /* SET_CONFIGURATION */
 
     kprintf("[USB] %s: device %04x:%04x class %02x (%s speed, %s, address %d)\n",
             d->name, d->vid, d->pid, dev_class, speed_name(speed), hc->ops->kind, d->addr);
@@ -458,11 +608,11 @@ static UsbDev *enumerate(UsbHc *hc, UsbDev *parent, UINT8 hub_port, UINT8 root, 
         if (f.cls == 9)       inst = UsbHubProbe(d, &f);
         else if (f.cls == 3)  inst = UsbHidProbe(d, &f);
         else if (f.cls == 8)  inst = UsbMscProbe(d, &f);
+        else if (f.cls == 1)  inst = UsbAudioProbe(d, &f);
         if (!inst)
             kprintf("[USB] %s: interface %d (class %02x/%02x/%02x) not used\n",
                     d->name, f.number, f.cls, f.sub, f.proto);
     }
-    kfree(cfg);
     return d;
 
 fail:

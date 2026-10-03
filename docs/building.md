@@ -229,6 +229,10 @@ For sound add `-device intel-hda -device hda-output` (or `hda-duplex` or
 `cmake --build . --target run` adds the card, playing through the host's
 PulseAudio or PipeWire when it finds one; set `NOVA_AUDIO` (`pa`,
 `pipewire`, `alsa`, `none`, `wav,path=out.wav`) to pick QEMU's backend.
+USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
+-device qemu-xhci -device usb-audio,audiodev=usbsnd` (or on `pci-ohci` or
+`piix3-usb-uhci`; QEMU's EHCI and NovaOS's EHCI driver have no
+isochronous transfers).  The newest sound output plays.
 
 ### Where your files are kept
 
@@ -342,8 +346,14 @@ python3 tools/selftest.py --suite network
 
 The devices suite boots once for each device that would get in the core
 boot's way (a touch screen takes QEMU's mouse buttons from the PS/2
-mouse): a virtio multi-touch screen for `touchtest`, which QEMU's
-`input-send-event` touches where the program asks:
+mouse, and USB speakers are heard instead of the HD Audio card): a
+virtio multi-touch screen for `touchtest`, which QEMU's
+`input-send-event` touches where the program asks; and, with no HD Audio
+card, QEMU `usb-audio` speakers, each recorded to its own WAV (kept in
+`--out` as `usb1.wav` to `usb3.wav`).  The first is on an xHCI controller
+from boot; the test plugs the second into an OHCI and the third into a
+UHCI controller while NovaOS runs, plays `soundtest tone` after each, then
+unplugs the third and plays again, which the second must hear:
 
 ```bash
 python3 tools/selftest.py --suite devices

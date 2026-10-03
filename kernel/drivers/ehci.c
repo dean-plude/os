@@ -18,7 +18,9 @@
  * controller (UHCI or OHCI) that shares the port: they are recognised at
  * reset and the port is passed over.  Behind a high-speed hub they are
  * reached with split transactions through the hub's transaction
- * translator.
+ * translator.  Isochronous endpoints (iTDs, siTDs) are not supported:
+ * their pipes are refused, so a high-speed audio device works only on
+ * xHCI, and a full-speed one on the companion controller.
  *
  * Polled: the controller's interrupts stay off; poll() looks at the
  * interrupt qTDs every tick, and a waited-for transfer is spun on.
@@ -361,6 +363,7 @@ static int ehci_control(UsbHc *hc, UsbDev *d, const UsbSetup *s, bool *stalled)
 
 static bool ehci_pipe_add(UsbHc *hc, UsbPipe *p)
 {
+    if (p->xfer == 1) return false;              /* isochronous (iTD/siTD): not supported */
     EQueue *eq = queue_new(E(hc), p->dev, p->addr, p->mps, false, p->xfer == 3);
     if (!eq) return false;
     p->hcd = eq;
@@ -469,6 +472,18 @@ static void ehci_dev_remove(UsbHc *hc, UsbDev *d)
         kfree(ed);
         d->hcd = NULL;
     }
+}
+
+/* A pipe of an alternate setting being left */
+static void ehci_pipe_drop(UsbHc *hc, UsbPipe *p)
+{
+    Ehci *e = E(hc);
+    EQueue *eq = p->hcd;
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    for (int k = 0; k < MAX_LISTEN; k++) if (e->listening[k] == p) e->listening[k] = NULL;
+    p->hcd = NULL;
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    if (eq) queue_free(e, eq);
 }
 
 /* ---- root ports ---- */
@@ -597,6 +612,7 @@ static const UsbHcOps g_ehci_ops = {
     .port_status = ehci_port_status,
     .port_reset  = ehci_port_reset,
     .pipe_add    = ehci_pipe_add,
+    .pipe_drop   = ehci_pipe_drop,
     .dev_remove  = ehci_dev_remove,
     .control     = ehci_control,
     .bulk        = ehci_bulk,
