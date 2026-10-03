@@ -53,7 +53,9 @@ USERAPI BOOL SubtractRect(LPRECT d, const RECT *a, const RECT *b)
 /* -----------------------------------------------------------------------
  * Keyboard
  * ----------------------------------------------------------------------- */
-USERAPI SHORT GetKeyState(int vk) { BYTE s = g_keys[vk & 0xFF]; return (SHORT)((s & 0x80 ? 0x8000 : 0) | (s & 1)); }
+/* A key that is down reads 0xFF80 (0xFF81 toggled), not just 0x8000: Qt and
+ * others test "GetKeyState(vk) & 0x80" */
+USERAPI SHORT GetKeyState(int vk) { BYTE s = g_keys[vk & 0xFF]; return (SHORT)((s & 0x80 ? 0xFF80 : 0) | (s & 1)); }
 extern BYTE g_async[256];
 USERAPI SHORT GetAsyncKeyState(int vk) { return (SHORT)(g_async[vk & 0xFF] & 0x80 ? 0x8000 : 0); }
 USERAPI BOOL GetKeyboardState(PBYTE keys) { memcpy(keys, g_keys, 256); return TRUE; }

@@ -1,4 +1,6 @@
-# usbheadset: no HD Audio card.  A high-speed USB headset (speaker and
+# usbheadset: no HD Audio card, but an AC'97 card (class 04.01 from Intel,
+# like a laptop's HD Audio controller with its DSP on, so the HD Audio
+# driver must look at it and leave it alone).  A high-speed USB headset (speaker and
 # microphone) on an EHCI controller at boot, and full-speed USB
 # microphones plugged into the xHCI, OHCI and UHCI controllers while
 # NovaOS runs: each is tools/usbredirpeer.py behind a QEMU usb-redir
@@ -47,7 +49,7 @@ TESTS = [
          check=tones(440, wav='headset.wav', only=True),
          boot_expect=[r'high speed, EHCI', r'audio output, 48 kHz 16-bit stereo, 24-byte packets every 125 us',
                       r'audio input, 48 kHz 16-bit mono, 96-byte packets every 1000 us',
-                      r'\[AUDIO\] Recording from Microphone \(']),
+                      r'\[AUDIO\] Recording from Microphone \(', r'\[HDA\] No HD Audio controller']),
     Test('usbheadset record', r'soundtest record C:\hs.wav 3000', [r'recorded 132300 samples'],
          check=recording(r'C:\hs.wav', REC_HZ, 2500)),
     Test('usbheadset capture', r'soundtest capture C:\hscap.wav 1500', [r'captured 144000 frames .* at -12\.0 dB'],

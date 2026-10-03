@@ -115,6 +115,8 @@ typedef struct {
 
 #define BOOT_FLAG_LIVE_MEDIA  (1u << 0)    /* booted from the installation media (the ISO, on a CD/DVD or a USB stick) */
 #define BOOT_FLAG_LIVE_USB    (1u << 1)    /* ... and that is a USB device (the ISO written to a stick) */
+#define BOOT_FLAG_BOOT_ENTRY  (1u << 2)    /* an installed disk: the firmware has a "NovaOS" boot entry for it */
+#define BOOT_FLAG_ENTRY_ADDED (1u << 3)    /* ... which this boot added */
 
 /* Sanity check: kernel entry function signature */
 typedef void (*KernelEntryFn)(const BootInfo *info);

@@ -13,7 +13,11 @@
  * (page 0x0C), and the Power, Sleep and Wake keys as System Control
  * (Generic Desktop 0x81-0x83), usually in reports of their own or on an
  * interface of their own; both become the E0-prefixed scancodes a PS/2
- * keyboard sends for those keys.  A boot-class device whose report descriptor can't be
+ * keyboard sends for those keys.  Touchpads (a Touch Pad application
+ * collection, Windows precision touchpads) run in their default mouse
+ * mode: the pointer comes from their mouse collection and the finger
+ * reports are left alone.  The same parser serves I2C-HID devices
+ * (i2chid.c) through HidAttach() and HidInput().  A boot-class device whose report descriptor can't be
  * read or understood is put in boot protocol and parsed with the boot
  * descriptors from appendix B instead.
  *
@@ -23,6 +27,7 @@
  */
 
 #include "usb.h"
+#include "hid.h"
 #include "../wm/input.h"
 #include "../wm/tablet.h"
 #include "../mm/vmm.h"
@@ -114,6 +119,7 @@ typedef struct {
     INT32  pmin, pmax;         /* the physical range (both 0: the logical one) */
     INT8   uexp;               /* the unit exponent */
     UINT8  coll;               /* the innermost collection it is in (numbered from 1 in order) */
+    UINT16 app;                /* its application collection: page << 8 | usage */
 } HidField;
 
 typedef struct {
@@ -121,6 +127,7 @@ typedef struct {
     int      n;
     bool     ids;              /* reports start with an ID byte */
     UINT16   app;              /* the first application collection: page << 8 | usage */
+    bool     touchpad;         /* one of them is a Touch Pad (digitizer 0x05) */
     /* Keyboard LEDs: Num Lock, Caps Lock, Scroll Lock in output report
      * @led_id (@led_bytes long, without the ID byte) */
     INT16    led_bit[3];       /* -1: no such LED */
@@ -159,6 +166,7 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
     L->led_bit[0] = L->led_bit[1] = L->led_bit[2] = -1;
     int depth = 0;
     UINT8 colls = 0, cstack[16] = { 0 };   /* collections so far; the open ones */
+    UINT16 app = 0;                     /* the application collection we are in */
 
     for (int i = 0; i < len;) {
         UINT8 b = d[i];
@@ -190,6 +198,7 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
                         HidField *f = &L->f[L->n++];
                         f->id = g.id;
                         f->coll = depth ? cstack[depth < 16 ? depth - 1 : 15] : 0;
+                        f->app = app;
                         f->page = (u >> 16) ? (UINT16)(u >> 16) : g.page;
                         f->usage = (UINT16)u;
                         f->bit = (UINT16)(*pos + k * g.size);
@@ -204,6 +213,7 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
                     UINT32 first = have_range ? umin : nusage ? usages[0] : 0;
                     f->id = g.id;
                     f->coll = depth ? cstack[depth < 16 ? depth - 1 : 15] : 0;
+                    f->app = app;
                     f->page = (first >> 16) ? (UINT16)(first >> 16) : g.page;
                     f->usage = (UINT16)first;
                     f->usage_max = have_range ? (UINT16)umax : (UINT16)first;
@@ -243,8 +253,11 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
             nusage = 0; have_range = false;
             break;
         case 0xA0:                                       /* Collection */
-            if (depth == 0 && item_u(v, n) == 1 && !L->app && nusage)
-                L->app = (UINT16)((((usages[0] >> 16) ? (usages[0] >> 16) : g.page) << 8) | (usages[0] & 0xFF));
+            if (depth == 0 && item_u(v, n) == 1 && nusage) {
+                app = (UINT16)((((usages[0] >> 16) ? (usages[0] >> 16) : g.page) << 8) | (usages[0] & 0xFF));
+                if (!L->app) L->app = app;
+                if (app == 0x0D05) L->touchpad = true;
+            }
             if (depth < 16) cstack[depth] = ++colls;
             depth++;
             nusage = 0; have_range = false;
@@ -308,6 +321,7 @@ typedef struct {
     UsbPipe   *pipe;
     HidLayout  L;
     bool       keyboard, pointer, absolute, boot, wake, media, touch, pen;
+    bool       touchpad;             /* a precision touchpad in mouse mode */
     int        pen_caps;             /* TABLET_CAP_*: the pen's X/Y Tilt, Twist */
     UINT8      kbd_id;               /* the report the keys come in */
     UINT8      keys[32];             /* keyboard usages held down (bitmap) */
@@ -542,6 +556,7 @@ static void pointer_report(Hid *h, UINT8 id, const UINT8 *r, int len)
     for (int i = 0; i < h->L.n; i++) {
         const HidField *f = &h->L.f[i];
         if (f->id != id || f->array) continue;
+        if (h->touchpad && (f->app >> 8) == PAGE_DIGITIZER) continue;   /* (its finger reports) */
         INT32 v = get_bits(r, len, f->bit, f->size, f->lmin);
         if (h->pen && f->page == PAGE_DIGITIZER) {
             pen_seen = true;
@@ -735,7 +750,7 @@ void UsbHidSyncLeds(void)
     UINT32 want = InputLockState();
     for (int i = 0; i < MAX_HID; i++) {
         Hid *h = g_hids[i];
-        if (!h || h->dead || !h->keyboard || h->leds == want || !h->L.led_bytes) continue;
+        if (!h || h->dead || !h->dev || !h->keyboard || h->leds == want || !h->L.led_bytes) continue;
         bool any = false;
         UINT8 rep[9];
         memset(rep, 0, sizeof(rep));
@@ -758,6 +773,7 @@ void UsbHidSyncLeds(void)
 static void hid_gone(void *inst)
 {
     Hid *h = inst;
+    if (!h->dev) return;                             /* (not a USB device) */
     if (h->keyboard) {                               /* release every key it still holds */
         UINT8 none[32];
         memset(none, 0, sizeof(none));
@@ -780,8 +796,13 @@ static void hid_gone(void *inst)
 
 static void classify(Hid *h)
 {
+    if (h->L.touchpad) {                 /* a touchpad: its mouse collection, if it has one */
+        for (int i = 0; i < h->L.n; i++)
+            if (h->L.f[i].app == 0x0102 && h->L.f[i].page == PAGE_DESKTOP && h->L.f[i].relative) h->touchpad = true;
+    }
     for (int i = 0; i < h->L.n; i++) {
         const HidField *f = &h->L.f[i];
+        if (h->touchpad && (f->app >> 8) == PAGE_DIGITIZER) continue;
         if (f->page == PAGE_KEYBOARD && !h->keyboard) { h->keyboard = true; h->kbd_id = f->id; }
         if (cc_field(f)) h->media = true;
         if (f->page == PAGE_DIGITIZER && f->usage == 0x51) h->touch = true;    /* Contact Identifier */
@@ -864,7 +885,7 @@ void *UsbHidProbe(UsbDev *d, const UsbIface *f)
         InputTouchScreen(most > fingers ? most : fingers);
     }
     if (h->pen) TabletDevice(NULL, 1, h->pen_caps);
-    const char *kind = h->touch ? "multi-touch screen" : h->pen ? "pen tablet" :
+    const char *kind = h->touchpad ? "touchpad (mouse mode)" : h->touch ? "multi-touch screen" : h->pen ? "pen tablet" :
                        h->keyboard && h->pointer ? "keyboard + pointer" : h->keyboard ? "keyboard" :
                        !h->pointer ? "media keys" :
                        h->absolute ? (h->L.app == 0x0D04 ? "touch screen" : "absolute pointer") : "mouse";
@@ -873,6 +894,63 @@ void *UsbHidProbe(UsbDev *d, const UsbIface *f)
             h->wake ? ", wakes the machine" : "");
     UsbPipeListen(h->pipe, mps, on_report, h);
     return h;
+}
+
+/* ---------------------------------------------------------------------------
+ * HID devices on other buses (I2C-HID): the same parser and decoding
+ * ------------------------------------------------------------------------- */
+
+void *HidAttach(const UINT8 *desc, int len, const char **kind)
+{
+    Hid *h = kzalloc(sizeof(Hid));
+    if (!h) return NULL;
+    h->leds = 0xFF;
+    if (!parse_report_desc(desc, len, &h->L)) { kfree(h); return NULL; }
+    classify(h);
+    if (!h->keyboard && !h->pointer && !h->media) { kfree(h); return NULL; }
+    if (kind) *kind = h->touchpad ? "touchpad (mouse mode)" : h->touch ? "multi-touch screen" : h->pen ? "pen tablet" :
+                      h->keyboard ? "keyboard" : !h->pointer ? "media keys" : h->absolute ? "absolute pointer" : "mouse";
+    return h;
+}
+
+/* A device HidAttach() made goes live: touch screens and pens announce
+ * themselves, keyboards repeat keys */
+void HidStart(void *hid)
+{
+    Hid *h = hid;
+    if (!h) return;
+    for (int i = 0; i < MAX_HID; i++)
+        if (!g_hids[i]) { g_hids[i] = h; break; }
+    if (h->touch) {
+        int fingers = 0, most = 0;
+        for (int i = 0; i < h->L.n; i++) {
+            const HidField *t = &h->L.f[i];
+            if (t->page != PAGE_DIGITIZER || t->array) continue;
+            if (t->usage == 0x42 && t->id == h->L.f[0].id) fingers++;
+            if (t->usage == 0x54 && t->lmax > most) most = t->lmax;
+        }
+        InputTouchScreen(most > fingers ? most : fingers);
+    }
+    if (h->pen) TabletDevice(NULL, 1, h->pen_caps);
+}
+
+void HidInput(void *hid, const UINT8 *report, int len)
+{
+    if (hid) on_report(NULL, report, len, hid);
+}
+
+void HidCaptureBegin(void *hid)
+{
+    g_check_n = 0;
+    __atomic_store_n(&g_check_hid, hid, __ATOMIC_RELEASE);
+}
+
+int HidCaptureEnd(InputEvent *out, int max)
+{
+    __atomic_store_n(&g_check_hid, NULL, __ATOMIC_RELEASE);
+    int n = g_check_n < max ? g_check_n : max;
+    for (int i = 0; i < n; i++) out[i] = g_check_ev[i];
+    return n;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1013,7 +1091,7 @@ int UsbHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
         h->leds = 0xFF;
         bool ok = parse_report_desc(k->desc, k->dlen, &h->L);
         if (ok) classify(h);
-        const char *kind = h->touch ? "touch" : h->pen ? "pen" : h->keyboard ? "keyboard" : h->pointer ? "pointer" : h->media ? "media" : "nothing";
+        const char *kind = h->touchpad ? "touchpad" : h->touch ? "touch" : h->pen ? "pen" : h->keyboard ? "keyboard" : h->pointer ? "pointer" : h->media ? "media" : "nothing";
         char got[160], line[256];
         if (!ok || strcmp(kind, k->kind) != 0) {
             ksnprintf(line, sizeof(line), "FAIL %s: read as %s, not %s", k->what, kind, k->kind);

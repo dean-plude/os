@@ -210,6 +210,25 @@ __declspec(dllexport) void WINAPI NovaIoComplete(HANDLE h, OVERLAPPED *o, LONG s
     k32_io_done(h, o, status, bytes);
 }
 
+/* For ws2_32's pending socket requests: the completion port and key @h is
+ * bound to now (the request completes there even if the socket is closed
+ * and its handle value reused before it ends, as on Windows), and the
+ * completion itself on that port */
+__declspec(dllexport) HANDLE WINAPI NovaIoPort(HANDLE h, ULONG_PTR *key)
+{
+    lock();
+    FileInfo *f = file_info(h, FALSE);
+    HANDLE port = f && f->port ? f->port->h : 0;
+    *key = f ? f->key : 0;
+    unlock();
+    return port;
+}
+
+__declspec(dllexport) void WINAPI NovaIoCompletePort(HANDLE port, ULONG_PTR key, OVERLAPPED *o, LONG status, DWORD bytes)
+{
+    io_done_port(port, key, o, status, bytes);
+}
+
 WINBASEAPI BOOL WINAPI SetFileCompletionNotificationModes(HANDLE h, UCHAR flags)
 {
     lock();
@@ -449,8 +468,15 @@ WINBASEAPI BOOL WINAPI GetOverlappedResult(HANDLE h, LPOVERLAPPED ov, LPDWORD by
     return GetOverlappedResultEx(h, ov, bytes, wait ? INFINITE : 0, FALSE);
 }
 
+/* ws2_32 keeps its own pending socket requests (overlapped WSARecv,
+ * AcceptEx...) and registers how to cancel them: it returns TRUE when it
+ * cancelled one of @h's (all of them for a NULL @ov) */
+static BOOL (WINAPI *g_sock_cancel)(HANDLE h, LPOVERLAPPED ov);
+__declspec(dllexport) void WINAPI NovaSetSocketCancel(BOOL (WINAPI *fn)(HANDLE, LPOVERLAPPED)) { g_sock_cancel = fn; }
+
 WINBASEAPI BOOL WINAPI CancelIo(HANDLE h)
 {
+    if (g_sock_cancel && g_sock_cancel(h, 0)) return TRUE;
     IO_STATUS_BLOCK io;
     NTSTATUS s = NtCancelIoFile(h, &io);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
@@ -458,6 +484,7 @@ WINBASEAPI BOOL WINAPI CancelIo(HANDLE h)
 
 WINBASEAPI BOOL WINAPI CancelIoEx(HANDLE h, LPOVERLAPPED ov)
 {
+    if (g_sock_cancel && g_sock_cancel(h, ov)) return TRUE;
     IO_STATUS_BLOCK io;
     NTSTATUS s = ov ? NtCancelIoFileEx(h, (PIO_STATUS_BLOCK)ov, &io) : NtCancelIoFile(h, &io);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);

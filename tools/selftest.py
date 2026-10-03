@@ -44,7 +44,12 @@ order; --list prints them):
             only the firmware's GOP for a display: it must start live,
             write its boot log into EFI/NOVA/bootlog.txt on the stick,
             and a kernel fault must reach that file too; "cdboot", the
-            same ISO as a disc in a SATA DVD drive, which must start live
+            same ISO as a disc in a SATA DVD drive, which must start live;
+            "laptop", a laptop without S3 whose lid, battery and AC adapter
+            are behind an embedded controller (tests/acpi/laptop.asl): the
+            battery, the lid sleeping it in low-power S0 idle and waking
+            it, then NovaOS installed from a USB stick onto an NVMe disk
+            and started from there
 
 Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
@@ -249,6 +254,7 @@ USBHEADSET = load_suite('devices/usbheadset')
 MONITORS = load_suite('devices/monitors')
 USBBOOT = load_suite('devices/usbboot')
 CDBOOT = load_suite('devices/cdboot')
+LAPTOP = load_suite('devices/laptop')
 
 
 def net4_boot(work):
@@ -308,7 +314,8 @@ def peer(work, port, *args):
 
 
 def usbheadset_boot(work):
-    """No HD Audio card: a high-speed USB headset (tools/usbredirpeer.py:
+    """No HD Audio card (an AC'97 card instead, which the HD Audio driver
+    must not take): a high-speed USB headset (tools/usbredirpeer.py:
     its speaker writes headset.wav in the work directory, its microphone
     hears REC_HZ) on an EHCI controller, and an xHCI, an OHCI and a UHCI
     controller for the full-speed microphones the tests plug in (ports
@@ -328,7 +335,8 @@ def usbheadset_boot(work):
     procs.append(peer(work, 10706, '--speed', 'full', '--product', 'Test Speaker', '--speaker', os.path.join(work, 'spk.wav')))
     return ['-chardev', 'socket,id=headset,host=127.0.0.1,port=10700', '-device', 'usb-ehci,id=ehci',
             '-device', 'usb-redir,id=headset,chardev=headset,bus=ehci.0', '-device', 'qemu-xhci,id=xhci',
-            '-device', 'pci-ohci,id=ohci', '-device', 'piix3-usb-uhci,id=uhci'], procs
+            '-device', 'pci-ohci,id=ohci', '-device', 'piix3-usb-uhci,id=uhci',
+            '-audiodev', 'none,id=ac97snd', '-device', 'AC97,audiodev=ac97snd'], procs
 
 
 def monitors_boot(work):
@@ -370,6 +378,29 @@ def usbboot_boot(work):
             '-device', 'usb-storage,bus=xhci.0,drive=stick,bootindex=0'], [], {'img': False, 'vga': ('-vga', 'none', '-device', 'ramfb')}
 
 
+def laptop_boot(work):
+    """A Modern Standby laptop (tests/selftest/devices/laptop): QEMU without
+    \\_S3 or an HPET, and with tests/acpi/laptop.asl (its embedded controller, lid,
+    battery and LPS0 device) and pc-testdev for the lid; nova.iso on a USB
+    stick (build/nova.iso, or one made from the build) and an empty 2 GiB
+    NVMe disk that is the first boot device (OVMF passes over it until
+    NovaOS is installed there); the firmware's GOP for a display"""
+    aml = os.path.join(work, 'laptop.aml')
+    subprocess.run(['iasl', '-p', aml[:-4], os.path.join(ROOT, 'tests', 'acpi', 'laptop.asl')],
+                   check=True, stdout=subprocess.DEVNULL)
+    stick, nvme = os.path.join(work, 'stick.img'), os.path.join(work, 'nvme.img')
+    shutil.copy(iso_path(work), stick)
+    with open(stick, 'r+b') as f:
+        f.truncate(2 << 30)
+    with open(nvme, 'wb') as f:
+        f.truncate(2 << 30)
+    return ['-machine', 'hpet=off', '-global', 'ICH9-LPC.disable_s3=1', '-acpitable', f'file={aml}', '-device', 'pc-testdev',
+            '-drive', f'if=none,id=nvm,format=raw,file={nvme}', '-device', 'nvme,drive=nvm,serial=nova0,bootindex=0',
+            '-device', 'qemu-xhci,id=xhci', '-drive', f'if=none,id=stick,format=raw,file={stick}',
+            '-device', 'usb-storage,bus=xhci.0,drive=stick,bootindex=1'], [], \
+        {'img': False, 'vga': ('-vga', 'none', '-device', 'ramfb')}
+
+
 # The suites that boot once per entry: (label, tests, setup(work) -> (QEMU arguments, processes[,
 # more Nova arguments]))
 BOOTS = {
@@ -377,7 +408,7 @@ BOOTS = {
     'devices': [('touch', TOUCH, touch_boot), ('usbaudio', USBAUDIO, usbaudio_boot),
                 ('usbheadset', USBHEADSET, usbheadset_boot),
                 ('monitors', MONITORS, monitors_boot), ('usbboot', USBBOOT, usbboot_boot),
-                ('cdboot', CDBOOT, cdboot_boot)],
+                ('cdboot', CDBOOT, cdboot_boot), ('laptop', LAPTOP, laptop_boot)],
 }
 
 
@@ -484,7 +515,7 @@ def main():
     tests = chosen(suite)
     work = tempfile.mkdtemp(prefix='selftest')
     tables = []
-    for asl in ('battery', 'lid-thermal'):
+    for asl in ('battery', 'lid-thermal', 'i2c-touchpad'):
         aml = os.path.join(work, asl + '.aml')
         subprocess.run(['iasl', '-p', aml[:-4], os.path.join(ROOT, 'tests', 'acpi', asl + '.asl')],
                        check=True, stdout=subprocess.DEVNULL)

@@ -102,7 +102,8 @@ SOCKET socket(int af, int type, int protocol)
     return (SOCKET)h;
 }
 
-int closesocket(SOCKET s) { NtClose((HANDLE)s); return 0; }
+void ws_cancel_socket(SOCKET s);                 /* overlapped.c: pending requests end */
+int closesocket(SOCKET s) { ws_cancel_socket(s); NtClose((HANDLE)s); return 0; }
 
 /* The kernel takes and gives Winsock's own SOCKADDR_IN / SOCKADDR_IN6 */
 static int addr_ok(const struct sockaddr *sa, int len)

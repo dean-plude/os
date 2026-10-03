@@ -13,8 +13,10 @@
  *
  * 3. APIC timer calibration: The APIC timer's frequency is derived from
  *    the internal bus clock.  We calibrate it, and the TSC, against the
- *    HPET's main counter (hpet.c), or the PIT (8254 timer) where there is
- *    no HPET.
+ *    HPET's main counter (hpet.c).  Where the firmware hides the HPET (and
+ *    may gate the 8254's clock too, as recent Intel laptops do), the CPU
+ *    reports both clocks in CPUID leaf 0x15 (or 0x16); the PIT (8254
+ *    timer) is the last resort, with a time limit.
  *
  * 4. The timer is one-shot: the scheduler arms it for the next 10 ms tick
  *    or the earliest timed sleeper on this CPU, whichever comes first
@@ -138,9 +140,17 @@ static uint32_t calibrate_apic_timer(void)
     outb(PIT_GATE2, inb(PIT_GATE2) | 0x01);
     uint64_t tsc0 = rdtsc();
 
-    /* Wait for PIT channel 2 to expire (bit 5 of Port B goes high) */
-    while (!(inb(PIT_GATE2) & 0x20))
+    /* Wait for PIT channel 2 to expire (bit 5 of Port B goes high); a
+     * gated 8254 never does, so give up after 2^34 TSC ticks (seconds at
+     * any clock rate) */
+    while (!(inb(PIT_GATE2) & 0x20)) {
+        if (rdtsc() - tsc0 > (1ull << 34)) {
+            lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED);
+            g_tsc_per_tick = 0;
+            return 0;
+        }
         pause_cpu();
+    }
     g_tsc_per_tick = rdtsc() - tsc0;          /* the TSC over the same 10 ms */
 
     /* Stop APIC timer and read how far it counted in 10ms */
@@ -164,6 +174,27 @@ static uint32_t calibrate_apic_timer_hpet(void)
     lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED);
     lapic_write(LAPIC_TIMER_INIT, 0);
     return ticks_in_10ms;
+}
+
+/* Without an HPET: the clocks the CPU reports (Intel, CPUID leaf 0x15:
+ * the core crystal's frequency and the TSC/crystal ratio; leaf 0x16's base
+ * frequency when the crystal isn't given, as Linux's native_calibrate_tsc
+ * does).  The local APIC timer runs from the crystal.  0: not reported. */
+static uint32_t calibrate_from_cpuid(uint64_t *crystal_hz)
+{
+    if (cpuid(0, 0).eax < 0x15) return 0;
+    CpuidResult r = cpuid(0x15, 0);
+    if (!r.eax || !r.ebx) return 0;
+    uint64_t crystal = r.ecx;
+    if (!crystal && cpuid(0, 0).eax >= 0x16) {
+        uint64_t base_mhz = cpuid(0x16, 0).eax & 0xFFFF;
+        crystal = base_mhz * 1000000ull * r.eax / r.ebx;
+    }
+    if (!crystal) return 0;
+    uint64_t tsc_hz = crystal * r.ebx / r.eax;
+    g_tsc_per_tick = tsc_hz / 100;
+    *crystal_hz = crystal;
+    return (uint32_t)(crystal / 100 / 16);         /* the APIC timer at div/16 */
 }
 
 /* -----------------------------------------------------------------------
@@ -229,12 +260,29 @@ void apic_init(void)
             ((apic_ver >> 16) & 0xFF) + 1,
             lapic_read(LAPIC_ID) >> 24);
 
-    /* 7. Calibrate the APIC timer and the TSC against the HPET, or the PIT */
-    bool hpet = HpetPresent();
-    uint32_t ticks_10ms = hpet ? calibrate_apic_timer_hpet() : calibrate_apic_timer();
+    /* 7. Calibrate the APIC timer and the TSC against the HPET, else take
+     *    them from CPUID, else measure them against the PIT */
+    uint64_t crystal = 0;
+    uint32_t ticks_10ms;
+    const char *source;
+    if (HpetPresent()) {
+        ticks_10ms = calibrate_apic_timer_hpet();
+        source = "calibrated against the HPET";
+    } else if ((ticks_10ms = calibrate_from_cpuid(&crystal)) != 0) {
+        source = "from CPUID 0x15 (no HPET)";
+    } else if ((ticks_10ms = calibrate_apic_timer()) != 0) {
+        source = "calibrated against the PIT (no HPET)";
+    } else {
+        /* nothing to measure against: a guess that keeps the machine going */
+        g_tsc_per_tick = 20000000;                 /* 2 GHz */
+        ticks_10ms = 62500;                        /* a 100 MHz bus at div/16 */
+        source = "guessed: no HPET, no CPUID 0x15 and the PIT never counted down";
+    }
     uint32_t ticks_per_sec = ticks_10ms * 100;
-    kprintf("[APIC] Timer: %u ticks/10ms = ~%u Hz (div/16), calibrated against the %s\n",
-            ticks_10ms, ticks_per_sec, hpet ? "HPET" : "PIT");
+    kprintf("[APIC] Timer: %u ticks/10ms = ~%u Hz (div/16), %s\n", ticks_10ms, ticks_per_sec, source);
+    if (crystal)
+        kprintf("[APIC] CPUID: core crystal %llu Hz, TSC %llu Hz\n",
+                (unsigned long long)crystal, (unsigned long long)g_tsc_per_tick * 100);
 
     /* 8. Start the timer: TSC-deadline mode where the CPU has it, else
      *    one-shot; the scheduler re-arms it at each interrupt */

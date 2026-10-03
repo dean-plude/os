@@ -364,12 +364,27 @@ static void probe(const PciDevice *pci)
     }
 }
 
+/* Intel Volume Management Device: with VMD on (the RAID or "Intel RST"
+ * setting of many laptops' firmware) the NVMe disks sit behind it and
+ * don't show on the PCI bus.  NovaOS has no VMD driver; the firmware
+ * setting turns it off.  (Device IDs from Linux's and FreeBSD's VMD lists.) */
+static const UINT16 g_vmd_ids[] = { 0x201d, 0x28c0, 0x467f, 0x4c3d, 0x7d0b, 0x9a0b, 0xa77f, 0xad0b, 0xb60b };
+static PciDevice g_vmd;
+static bool      g_vmd_found;
+
 int NvmeInit(void)
 {
     PciDevice pci;
     for (int i = 0; PciFindClass(0x01, 0x08, 0x02, i, &pci); i++) probe(&pci);
+    if (PciFind(0x8086, g_vmd_ids, (int)(sizeof(g_vmd_ids) / sizeof(g_vmd_ids[0])), &g_vmd)) {
+        g_vmd_found = true;
+        kprintf("[NVME] Intel VMD at %02x:%02x.%d (8086:%04x) hides the NVMe disks behind it: "
+                "turn VMD (Intel RST) off in the firmware setup\n", g_vmd.bus, g_vmd.dev, g_vmd.func, g_vmd.device);
+    }
     return g_ndisks;
 }
+
+bool NvmeBehindVmd(void) { return g_vmd_found; }
 
 void NvmeResume(void)
 {

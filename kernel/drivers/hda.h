@@ -31,3 +31,22 @@ const char *HdaInputName(void);
 INT16      *HdaCaptureRing(UINT32 *size);
 void        HdaCapture(bool run);
 UINT32      HdaCapturePosition(void);
+
+/* Read the headphone jacks (twice a second, from the mixer thread): the
+ * speakers are off while headphones are plugged in */
+void        HdaPollJacks(void);
+
+/* Whether a PCI function is an HD Audio controller: HDA_MATCH_CLASS
+ * (class 04.03), HDA_MATCH_DSP (an Intel controller with its audio DSP
+ * on, class 04.01, known by ID), HDA_MATCH_PROBE (another Intel class
+ * 04.01 function: HD Audio only if its registers say so), or none */
+#define HDA_MATCH_NONE  0
+#define HDA_MATCH_CLASS 1
+#define HDA_MATCH_DSP   2
+#define HDA_MATCH_PROBE 3
+int         HdaPciMatch(UINT16 vendor, UINT16 device, UINT8 cls, UINT8 sub);
+
+/* hwcheck: the controller matching on real machines' IDs, and the codec
+ * setup and jack handling against a modelled Realtek ALC257 (the T14 Gen
+ * 4's codec); one line per check through @say, returns the failures */
+int         HdaSelfCheck(void (*say)(void *ctx, const char *line), void *ctx);

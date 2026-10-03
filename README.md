@@ -98,7 +98,9 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
   out again) and SVG (image files and `<svg>` written inline in a page),
   in a window you can resize, maximize or snap (the page is laid out
   again to fit).
-- **Command line**: the Terminal's own commands (`dir`, `copy`, `ping`,
+- **Command line**: the Terminal (command lines of up to 8,191
+  characters, wrapped at the window's width; programs get up to 32,766
+  through `CreateProcess`, as on Windows), its own commands (`dir`, `copy`, `ping`,
   `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`,
   `devices`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
@@ -593,6 +595,9 @@ os/
   has.
 - [docs/ethernet.md](docs/ethernet.md): the Intel Ethernet driver, the
   I219 IDs it takes and how it brings one up.
+- [docs/install-and-power.md](docs/install-and-power.md): installing on a
+  laptop's NVMe disk, its embedded controller, sleep without S3, and the
+  checks to run on the reference ThinkPad.
 - [docs/HISTORY.md](docs/HISTORY.md): what every phase added, in detail.
 - [docs/phase1-architecture.md](docs/phase1-architecture.md): the boot flow,
   address-space layout and early kernel design.
