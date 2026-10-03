@@ -2,7 +2,10 @@
   scratch and compiled with clang for `x86_64-pc-windows-msvc`, and again
   for `i686` in `SysWOW64`: `ntdll`, `kernel32`, `msvcrt`/`ucrtbase` with
   the `api-ms-win-crt-*` API sets (`errno` and the rest of the C
-  runtime's per-thread state kept per thread, as on Windows), `vcruntime140`/`vcruntime140_1` (C++
+  runtime's per-thread state kept per thread, as on Windows, with
+  `_configthreadlocale` per-thread locales and `getenv` results other
+  threads cannot overwrite; `ntdll` gives fiber-local storage its own
+  slots and runs `FlsAlloc` callbacks when a thread ends), `vcruntime140`/`vcruntime140_1` (C++
   exceptions, FH3 and FH4 tables), `msvcp140` and its satellites (the C++
   standard library: Microsoft's own STL, compiled with clang),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs, MDI,

@@ -412,10 +412,10 @@ FILE *_fdopen(int fd, const char *mode)
 
 FILE *tmpfile(void)
 {
-    static unsigned n;
+    static volatile LONG n;
     char name[64];
     for (int tries = 0; tries < 100; tries++) {
-        snprintf(name, sizeof(name), "C:\\Temp\\tmp%u_%u.tmp", (unsigned)GetCurrentProcessId(), n++);
+        snprintf(name, sizeof(name), "C:\\Temp\\tmp%u_%u.tmp", (unsigned)GetCurrentProcessId(), (unsigned)InterlockedIncrement(&n));
         CreateDirectoryA("C:\\Temp", 0);
         HANDLE h = CreateFileA(name, GENERIC_READ | GENERIC_WRITE, 0, 0, CREATE_NEW,
                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, 0);

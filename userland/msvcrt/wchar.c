@@ -8,6 +8,7 @@
 #define NOVA_BUILD_MSVCRT
 #include <wchar.h>
 #include <wctype.h>
+#include <windows.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -500,20 +501,21 @@ int _wrename(const wchar_t *a, const wchar_t *b)
     free(x); free(y);
     return r;
 }
+void *__nova_env_copy(int wide, const void *name, size_t nlen, void *val, size_t vlen);  /* stdlib.c */
 wchar_t *_wgetenv(const wchar_t *name)
 {
-    /* one cached result per name is enough for programs that read, not keep */
-    static wchar_t *last;
-    char *n = w2a(name);
-    const char *v = n ? getenv(n) : NULL;
-    free(n);
-    if (!v) return NULL;
-    size_t len = mbstowcs(NULL, v, 0);
-    if (len == (size_t)-1) return NULL;
-    free(last);
-    last = malloc((len + 1) * sizeof(wchar_t));
-    if (last) mbstowcs(last, v, len + 1);
-    return last;
+    if (!name) return NULL;
+    for (;;) {
+        DWORD n = GetEnvironmentVariableW(name, NULL, 0);
+        if (!n) return NULL;
+        wchar_t *v = malloc(n * sizeof(wchar_t));
+        if (!v) return NULL;
+        DWORD got = GetEnvironmentVariableW(name, v, n);
+        if (!got) { free(v); return NULL; }
+        if (got < n)
+            return __nova_env_copy(1, name, (wcslen(name) + 1) * sizeof(wchar_t), v, ((size_t)got + 1) * sizeof(wchar_t));
+        free(v);
+    }
 }
 
 size_t wcsftime(wchar_t *s, size_t n, const wchar_t *fmt, const struct tm *t)
