@@ -3,6 +3,7 @@
 QEMU usb-redir device.
 
     tools/usbredirpeer.py --port 10700 [--speed high|full] [--uac2] [--speaker OUT.wav] [--mic HZ]
+                          [--rates 44100,96000] [--channels N] [--mic-channels N] [--product NAME]
 
 QEMU's usb-redir device forwards everything the guest sends a USB device
 over a chardev, in the usbredir protocol, to a program that is the device:
@@ -27,6 +28,20 @@ selector (the host must set 48 kHz on it), 24-bit samples in 4-byte
 slots for the speaker (the WAV gets their top 16 bits) and in 3-byte
 slots for the microphone, and at high speed both endpoints polled every
 microframe (6 frames a packet).
+
+--rates lists the sampling rates the device offers instead of 48 kHz
+alone (Audio 2.0: its clock's RANGE, one subrange a rate, and setting the
+clock to any other rate stalls; Audio 1.0: the format's rate list and the
+endpoint's rate control); the speaker's WAV is written at the rate the
+host chose, and the microphone's sine is made at it, packets carrying a
+varying whole number of frames (5 or 6 a microframe at 44.1 kHz).
+--channels and --mic-channels give the speaker and the microphone more
+(or fewer) than two and one channels: the WAV holds the speaker's first
+two (front left and right; a mono speaker's one twice), and any sample
+of the others that is not silent is counted into OUT.wav.extra; the
+microphone's first channel and second (if any) hear the sine and the
+others a 300 Hz one, which the host must not take.  --product names the
+device (its product string).
 
 The protocol is usbredir's (usbredirproto.h in spice/usbredir): packets of
 a header (type, length, id) and a type-specific header and data.  QEMU
@@ -67,8 +82,9 @@ def rate3(v):
 class Headset:
     """The descriptors and state of one device"""
 
-    def __init__(self, speed, speaker, mic, uac2=False):
+    def __init__(self, speed, speaker, mic, uac2=False, rates=(RATE,), channels=2, mic_channels=1, product=None):
         self.speed, self.speaker, self.mic, self.uac2 = speed, speaker, mic, uac2
+        self.rates, self.channels, self.mic_channels, self.product_name = list(rates), channels, mic_channels, product
         high = speed == SPEED_HIGH
         # (bInterval, microframes or frames between packets, bytes a packet)
         self.spk_int = 1                                   # every microframe / every frame
@@ -76,9 +92,10 @@ class Headset:
         self.spk_per_s = 8000 if high else 1000
         self.mic_per_s = 8000 if high and uac2 else 1000
         self.spk_sub, self.mic_sub, self.bits = (4, 3, 24) if uac2 else (2, 2, 16)   # bytes a sample, its bits
-        self.spk_mps = RATE // self.spk_per_s * 2 * self.spk_sub
-        self.mic_mps = RATE // self.mic_per_s * self.mic_sub
-        self.rate = 0                                      # what the host set the clock to (2.0)
+        top = max(self.rates)                              # (a frame more where packets vary)
+        self.spk_mps = (-(-top // self.spk_per_s) + (top % self.spk_per_s != 0)) * channels * self.spk_sub
+        self.mic_mps = (-(-top // self.mic_per_s) + (top % self.mic_per_s != 0)) * mic_channels * self.mic_sub
+        self.rate = 0                                      # what the host set the clock (2.0) or endpoint (1.0) to
         self.config, self.alt = 0, {}
         proto = 0x20 if uac2 else 0
         self.ifaces = [(0, 1, 1, proto)]                   # (number, class, subclass, protocol)
@@ -94,11 +111,11 @@ class Headset:
     def _config(self, streaming):
         ac = b''
         if self.speaker:   # USB streaming in (1) -> feature unit (2) -> speaker (3)
-            ac += bytes([12, 0x24, 2, 1]) + le16(0x0101) + bytes([0, 2]) + le16(3) + bytes([0, 0])
+            ac += bytes([12, 0x24, 2, 1]) + le16(0x0101) + bytes([0, self.channels]) + le16(3) + bytes([0, 0])
             ac += bytes([10, 0x24, 6, 2, 1, 1, 0x03, 0, 0, 0])
             ac += bytes([9, 0x24, 3, 3]) + le16(0x0301) + bytes([0, 2, 0])
         if self.mic:       # microphone (4) -> feature unit (5) -> USB streaming out (6)
-            ac += bytes([12, 0x24, 2, 4]) + le16(0x0201) + bytes([0, 1]) + le16(0) + bytes([0, 0])
+            ac += bytes([12, 0x24, 2, 4]) + le16(0x0201) + bytes([0, self.mic_channels]) + le16(0) + bytes([0, 0])
             ac += bytes([9, 0x24, 6, 5, 4, 1, 0x03, 0, 0])
             ac += bytes([9, 0x24, 3, 6]) + le16(0x0101) + bytes([0, 5, 0])
         hdr_len = 8 + len(streaming)
@@ -109,7 +126,8 @@ class Headset:
             d += bytes([9, 4, n, 0, 0, 1, 2, 0, 0])                         # alt 0: no bandwidth
             d += bytes([9, 4, n, 1, 1, 1, 2, 0, 0])
             d += bytes([7, 0x24, 1, 1 if spk else 6, 1]) + le16(1)          # PCM
-            d += bytes([11, 0x24, 2, 1, 2 if spk else 1, 2, 16, 1]) + rate3(RATE)
+            d += bytes([8 + 3 * len(self.rates), 0x24, 2, 1, self.channels if spk else self.mic_channels, 2, 16,
+                        len(self.rates)]) + b''.join(rate3(r) for r in self.rates)
             ep, attrs = (EP_SPK, 0x09) if spk else (EP_MIC, 0x05)            # adaptive OUT, asynchronous IN
             d += bytes([9, 5, ep, attrs]) + le16(self.spk_mps if spk else self.mic_mps) + \
                 bytes([self.spk_int if spk else self.mic_int, 0, 0])
@@ -122,12 +140,12 @@ class Headset:
         ac = bytes([8, 0x24, 0x0A, CLOCK, 0x03, 0x07, 0, 0])            # internal programmable; rate rw, valid r
         ac += bytes([8, 0x24, 0x0B, SELECTOR, 1, CLOCK, 0x03, 0])       # one input; selector rw
         if self.speaker:   # USB streaming in (1) -> feature unit (2) -> speaker (3)
-            ac += bytes([17, 0x24, 2, 1]) + le16(0x0101) + bytes([0, SELECTOR, 2]) + struct.pack('<I', 3) + \
+            ac += bytes([17, 0x24, 2, 1]) + le16(0x0101) + bytes([0, SELECTOR, self.channels]) + struct.pack('<I', 3) + \
                 bytes([0]) + le16(0) + bytes([0])
             ac += bytes([18, 0x24, 6, 2, 1]) + struct.pack('<III', 0x0F, 0, 0) + bytes([0])   # master mute+volume rw
             ac += bytes([12, 0x24, 3, 3]) + le16(0x0301) + bytes([0, 2, SELECTOR]) + le16(0) + bytes([0])
         if self.mic:       # microphone (4) -> feature unit (5) -> USB streaming out (6)
-            ac += bytes([17, 0x24, 2, 4]) + le16(0x0201) + bytes([0, SELECTOR, 1]) + struct.pack('<I', 0) + \
+            ac += bytes([17, 0x24, 2, 4]) + le16(0x0201) + bytes([0, SELECTOR, self.mic_channels]) + struct.pack('<I', 0) + \
                 bytes([0]) + le16(0) + bytes([0])
             ac += bytes([14, 0x24, 6, 5, 4]) + struct.pack('<II', 0x0F, 0) + bytes([0])
             ac += bytes([12, 0x24, 3, 6]) + le16(0x0101) + bytes([0, 5, SELECTOR]) + le16(0) + bytes([0])
@@ -139,7 +157,7 @@ class Headset:
             d += bytes([9, 4, n, 0, 0, 1, 2, 0x20, 0])                      # alt 0: no bandwidth
             d += bytes([9, 4, n, 1, 1, 1, 2, 0x20, 0])
             d += bytes([16, 0x24, 1, 1 if spk else 6, 0, 1]) + struct.pack('<I', 1) + \
-                bytes([2 if spk else 1]) + struct.pack('<I', 3 if spk else 0) + bytes([0])   # PCM
+                bytes([self.channels if spk else self.mic_channels]) + struct.pack('<I', 3 if spk else 0) + bytes([0])   # PCM
             d += bytes([6, 0x24, 2, 1, self.spk_sub if spk else self.mic_sub, self.bits])
             ep, attrs = (EP_SPK, 0x09) if spk else (EP_MIC, 0x05)            # adaptive OUT, asynchronous IN
             d += bytes([7, 5, ep, attrs]) + le16(self.spk_mps if spk else self.mic_mps) + \
@@ -158,7 +176,7 @@ class Headset:
     def string(self, i):
         if i == 0:
             return bytes([4, 3]) + le16(0x0409)
-        s = {1: 'NovaOS', 2: ('Test Headset' if self.speaker else 'Test Microphone') +
+        s = {1: 'NovaOS', 2: self.product_name or ('Test Headset' if self.speaker else 'Test Microphone') +
              (' (USB Audio 2.0)' if self.uac2 else '')}.get(i)
         if s is None:
             return None
@@ -177,18 +195,23 @@ class Headset:
 
 
 class Wav:
-    """A 48 kHz 16-bit stereo WAV file, its header kept current"""
+    """A 16-bit stereo WAV file (48 kHz until the host sets another rate),
+    its header kept current; @extra counts the speaker's samples beyond its
+    first two channels that are not silent (written to PATH.extra)"""
 
     def __init__(self, path):
         self.f = open(path, 'wb')
+        self.path = path
         self.n = 0
+        self.rate = RATE
+        self.extra = 0
         self.lock = threading.Lock()
         self._header()
 
     def _header(self):
         self.f.seek(0)
         self.f.write(b'RIFF' + struct.pack('<I', 36 + self.n) + b'WAVEfmt ' +
-                     struct.pack('<IHHIIHH', 16, 1, 2, RATE, RATE * 4, 4, 16) + b'data' + struct.pack('<I', self.n))
+                     struct.pack('<IHHIIHH', 16, 1, 2, self.rate, self.rate * 4, 4, 16) + b'data' + struct.pack('<I', self.n))
         self.f.seek(0, 2)
 
     def write(self, data):
@@ -200,6 +223,8 @@ class Wav:
         with self.lock:
             self._header()
             self.f.flush()
+            with open(self.path + '.extra', 'w') as x:
+                x.write(f'{self.extra}\n')
 
 
 class Conn:
@@ -211,11 +236,24 @@ class Conn:
         self.ids64 = False
         self.mic_on = False
         self.mic_phase = 0
-        # a second of the microphone's sine (a whole number of cycles for a whole HZ),
-        # 16-bit samples in the top bytes of the device's sample slots
-        sub = dev.mic_sub
-        self.mic_wave = b''.join(struct.pack('<i', int(12000 * math.sin(2 * math.pi * mic_hz * i / RATE)) << 16)[4 - sub:]
-                                 for i in range(RATE))
+        self.mic_rate = 0
+
+    def make_mic_wave(self):
+        """A second of the microphone's frames at its rate (a whole number of
+        cycles for a whole HZ): the sine on its first two channels, 300 Hz on
+        any others; 16-bit samples in the top bytes of the device's slots"""
+        d, sub = self.dev, self.dev.mic_sub
+        rate = d.rate or RATE
+        if self.mic_rate == rate:
+            return
+        def slot(v):
+            return struct.pack('<i', int(v) << 16)[4 - sub:]
+        frames = []
+        for i in range(rate):
+            a = slot(12000 * math.sin(2 * math.pi * self.mic_hz * i / rate))
+            b = slot(12000 * math.sin(2 * math.pi * 300 * i / rate))
+            frames.append(a * min(2, d.mic_channels) + b * max(0, d.mic_channels - 2))
+        self.mic_wave, self.mic_rate, self.mic_phase, self.mic_acc = b''.join(frames), rate, 0, 0
 
     def send(self, ptype, hdr=b'', data=b'', pid=0):
         h = struct.pack('<II', ptype, len(hdr) + len(data)) + struct.pack('<Q' if self.ids64 else '<I', pid)
@@ -243,12 +281,20 @@ class Conn:
         self.send(EP_INFO, bytes(types) + bytes(intervals) + bytes(ifs) + struct.pack('<32H', *mps))
 
     def mic_packets(self, n):
-        """The next @n packets of the microphone's sine"""
+        """The next @n packets of the microphone's sine (a whole number of
+        frames each, averaging its rate)"""
         out = []
-        frames, sub = RATE // self.dev.mic_per_s, self.dev.mic_sub
+        self.make_mic_wave()
+        rate, per_s, fb = self.mic_rate, self.dev.mic_per_s, self.dev.mic_sub * self.dev.mic_channels
         for _ in range(n):
-            out.append(self.mic_wave[self.mic_phase * sub:(self.mic_phase + frames) * sub])
-            self.mic_phase = (self.mic_phase + frames) % RATE
+            self.mic_acc += rate
+            frames, self.mic_acc = self.mic_acc // per_s, self.mic_acc % per_s
+            a, b = self.mic_phase, self.mic_phase + frames
+            pkt = self.mic_wave[a * fb:b * fb]
+            if b > rate:
+                pkt += self.mic_wave[:(b - rate) * fb]
+            out.append(pkt)
+            self.mic_phase = b % rate
         return out
 
     def mic_loop(self):
@@ -278,30 +324,40 @@ class Conn:
         elif rtype == 0x80 and req == 0:               # GET_STATUS
             reply = b'\0\0'
         elif d.uac2 and rtype == 0xA1 and value == 0x0100 and index >> 8 == CLOCK:   # clock rate CUR / RANGE
-            reply = struct.pack('<I', d.rate or RATE) if req == 1 else struct.pack('<HIII', 1, RATE, RATE, 0)
+            reply = struct.pack('<I', d.rate or d.rates[0]) if req == 1 else \
+                struct.pack('<H', len(d.rates)) + b''.join(struct.pack('<III', r, r, 0) for r in d.rates)
         elif d.uac2 and rtype == 0xA1 and req == 1 and index >> 8 == SELECTOR:
             reply = bytes([1])
         elif rtype & 0x80:                             # class GET_CUR/MIN/MAX/RES: zeros
             reply = bytes(length)
         elif d.uac2 and rtype == 0x21 and req == 1 and value == 0x0100 and index >> 8 == CLOCK:
             rate = struct.unpack('<I', data[:4])[0] if len(data) >= 4 else 0
-            if rate != RATE:
+            if rate not in d.rates:
                 status = STALL
             else:
-                d.rate = rate
+                self.set_rate(rate)
                 print(f'usbredirpeer: clock set to {rate} Hz', flush=True)
         elif d.uac2 and rtype == 0x21 and req == 1 and index >> 8 == SELECTOR and data[:1] != b'\x01':
             status = STALL
         elif rtype == 0x22 and req == 1 and value >> 8 == 1 and len(data) >= 3:      # SET_CUR sampling frequency
             rate = data[0] | data[1] << 8 | data[2] << 16
-            if rate != RATE:
+            if rate not in d.rates:
                 status = STALL
+            else:
+                self.set_rate(rate)
         if rtype & 0x80:
             reply = reply[:length]
         self.send(CONTROL_PACKET, struct.pack('<BBBBHHH', ep, req, rtype, status, value, index,
                                               len(reply) if rtype & 0x80 else length), reply, pid)
 
+    def set_rate(self, rate):
+        self.dev.rate = rate
+        if self.wav:
+            self.wav.rate = rate
+
     def run(self):
+        if self.wav:
+            self.wav.rate = self.dev.rates[0]           # (until the host sets one)
         self.send(HELLO, b'novaos usbredirpeer'.ljust(64, b'\0') + struct.pack('<I', CAPS))
         connected = False
         try:
@@ -349,9 +405,13 @@ class Conn:
                     ep, st, n = struct.unpack('<BBH', body[:4])
                     if ep == EP_SPK and self.wav:
                         pcm = body[4:4 + n]
-                        sub = self.dev.spk_sub
+                        sub, ch = self.dev.spk_sub, self.dev.channels
                         if sub != 2:                   # the top 16 bits of each sample
                             pcm = b''.join(pcm[i + sub - 2:i + sub] for i in range(0, len(pcm) - sub + 1, sub))
+                        if ch != 2:                    # the first two channels (mono: twice); count the rest
+                            frames = [pcm[i:i + 2 * ch] for i in range(0, len(pcm) - 2 * ch + 1, 2 * ch)]
+                            self.wav.extra += sum(1 for f in frames for k in range(2, ch) if f[2 * k:2 * k + 2] != b'\0\0')
+                            pcm = b''.join(f[:4] if ch > 1 else f[:2] * 2 for f in frames)
                         self.wav.write(pcm)
                 elif ptype == RESET:
                     self.dev.alt = {}
@@ -371,7 +431,12 @@ def main():
     ap.add_argument('--speaker', help='the WAV file the speaker writes')
     ap.add_argument('--mic', type=float, help='the tone the microphone hears (Hz)')
     ap.add_argument('--uac2', action='store_true', help='a USB Audio Class 2.0 device')
+    ap.add_argument('--rates', default=str(RATE), help='the sampling rates it offers (comma-separated)')
+    ap.add_argument('--channels', type=int, default=2, help="the speaker's channels")
+    ap.add_argument('--mic-channels', type=int, default=1, help="the microphone's channels")
+    ap.add_argument('--product', help='its product string')
     a = ap.parse_args()
+    rates = [int(r) for r in a.rates.split(',')]
     if not a.speaker and not a.mic:
         sys.exit('a --speaker, a --mic or both')
     wav = Wav(a.speaker) if a.speaker else None
@@ -397,7 +462,8 @@ def main():
         s, _ = srv.accept()
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         print('usbredirpeer: QEMU connected', flush=True)
-        dev = Headset(SPEED_HIGH if a.speed == 'high' else SPEED_FULL, bool(a.speaker), bool(a.mic), a.uac2)
+        dev = Headset(SPEED_HIGH if a.speed == 'high' else SPEED_FULL, bool(a.speaker), bool(a.mic), a.uac2,
+                      rates, a.channels, a.mic_channels, a.product)
         Conn(s, dev, wav, a.mic or 0).run()
         print('usbredirpeer: QEMU disconnected', flush=True)
 

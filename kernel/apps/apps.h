@@ -98,7 +98,7 @@ void AppDrawFolderKindIcon(FolderKind k, int x, int y, int size);
 typedef enum {
     GL_PC, GL_DOCUMENTS, GL_DOWNLOADS, GL_PICTURES, GL_PERSON, GL_CODE, GL_WINDOWS,
     GL_FOLDER, GL_FILE, GL_PLUS, GL_SEARCH, GL_NETWORK, GL_NETWORK_OFF, GL_CHEVRON,
-    GL_BACK, GL_UP, GL_NOVA, GL_GEAR, GL_POWER,
+    GL_BACK, GL_UP, GL_NOVA, GL_GEAR, GL_POWER, GL_SPEAKER,
 } Glyph;
 void AppDrawGlyph(Glyph g, int x, int y, int size, GdiColor c);
 
@@ -191,7 +191,7 @@ void ExplorerOpen(RamNode *dir);
 void NotepadOpen(RamNode *file);
 void SettingsOpen(void);
 /* Settings pages (for SettingsOpenPage) */
-enum { SETTINGS_SYSTEM, SETTINGS_DISPLAY, SETTINGS_PERSONALIZE, SETTINGS_STORAGE,
+enum { SETTINGS_SYSTEM, SETTINGS_DISPLAY, SETTINGS_SOUND, SETTINGS_PERSONALIZE, SETTINGS_STORAGE,
        SETTINGS_NETWORK, SETTINGS_TIME_LANGUAGE, SETTINGS_ABOUT };
 /* Open Settings (or focus the open window) at page @page */
 void SettingsOpenPage(int page);

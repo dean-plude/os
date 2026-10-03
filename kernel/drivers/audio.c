@@ -2,27 +2,32 @@
  * audio.c — the system mixer
  *
  * Streams are rings of 48 kHz s16 stereo frames.  The mixer thread wakes
- * every tick (10 ms), reads how far the hardware has played the playing
- * output's ring, and mixes the running streams into the ring up to LEAD
- * bytes ahead of that.  Outputs are attached by their drivers: the HD
- * Audio card at boot, a USB audio device when it is plugged in.  The one
- * attached last plays; when it leaves, the one before it takes over.
- * Behind what it mixed, the mixer keeps the rest of the ring silent, so a
- * mixer held up for longer than LEAD (a busy machine) leaves a gap rather
- * than replaying the ring's last lap.
- * The others keep streaming their rings, so the mixer keeps silence ahead
- * of them the same way: what was mixed for an output before another took
- * over still plays, and then it is quiet (not its ring's last 341 ms
- * over and over).  Everything a stream has is guarded by one spinlock;
- * the mixing itself runs under it too (a few thousand frames per tick).
+ * every tick (10 ms) and, for every attached output, reads how far its
+ * device has played its ring and mixes the running streams that play on
+ * it into the ring up to LEAD bytes ahead of that.  Outputs are attached
+ * by their drivers: the HD Audio card at boot, a USB audio device when it
+ * is plugged in.  One is the default: the one attached last, until the
+ * user chooses another in Settings (AudioSetDefault); when it leaves, the
+ * one before it takes over.  A stream plays on the default unless its
+ * program chose a device (AudioRoute: a waveOut device ID, a WASAPI
+ * endpoint); a stream whose device leaves goes to the default.  Behind
+ * what it mixed, the mixer keeps the rest of each ring silent, so a mixer
+ * held up for longer than LEAD (a busy machine) leaves a gap rather than
+ * replaying the ring's last lap; an output nothing plays on gets silence
+ * the same way (what was mixed for it before the default moved still
+ * plays, and then it is quiet, not its ring's last 341 ms over and over).
+ * Everything a stream has is guarded by one spinlock; the mixing itself
+ * runs under it too (a few thousand frames per tick and output).
  *
  * Capture streams run the other way: inputs are attached like outputs
  * (the HD Audio card's microphone or line in at boot, a USB microphone
- * when it is plugged in), and the newest records.  While any capture
- * stream is running the input is recording into its ring, and every tick
- * the new frames are copied into each running capture stream (the oldest
- * dropped when a stream is full).  Each direction has a master volume and mute (the endpoint
- * volume programs set through IAudioEndpointVolume).
+ * when it is plugged in), with a default chosen the same way, and a
+ * stream records from the default or the input its program chose.  While
+ * any running capture stream records from an input, that input is
+ * recording into its ring, and every tick the new frames are copied into
+ * each of those streams (the oldest dropped when a stream is full).  Each
+ * direction has a master volume and mute (the endpoint volume programs
+ * set through IAudioEndpointVolume).
  */
 
 #include "audio.h"
@@ -46,7 +51,9 @@ typedef struct {
     UINT32  pages;
     UINT32  cap, rd, queued;                          /* frames */
     UINT64  written, consumed;
-    UINT64  last_end;                                 /* ring byte position (absolute) after its last mixed frame */
+    UINT32  dev;                                      /* the device chosen for it (0: the default) */
+    UINT32  mixed_on;                                 /* playback: the output its last frames went to */
+    UINT64  last_end;                                 /* that output's absolute byte position after them */
     UINT32  vol_l, vol_r;                             /* 0..65536 */
     UINT64  dropped;                                  /* capture: frames lost to a full stream */
 } Stream;
@@ -55,55 +62,92 @@ typedef struct {
 
 typedef struct { UINT32 l, r; bool mute; } Master;
 
-/* Where an output is: its position as an absolute byte count, and how
- * far ahead of it its ring has been written */
+/* An attached output: where its device is, as an absolute byte count,
+ * how far ahead of that its ring has been mixed, and silenced */
 typedef struct {
+    const AudioOutput *o;
+    UINT32 id, rank;                                  /* (rank: when it was attached or chosen; the highest is the default) */
     UINT32 last_pos;
     UINT64 base;                                      /* absolute byte count at the ring's start */
-    UINT64 write;
-} Track;
+    UINT64 write;                                     /* mixed up to here */
+    UINT64 clear;                                     /* and the ring silenced up to here */
+} Out;
+
+/* An attached input: whether it records, and how far the mixer has read */
+typedef struct {
+    const AudioInput *i;
+    UINT32 id, rank;
+    UINT32 cpos;
+    bool   run;
+} In;
 
 static struct {
     KSpinLock  lock;
     Stream     s[MAX_STREAMS];
-    const AudioOutput *outs[MAX_OUTPUTS];             /* attached, oldest first */
-    Track      idle[MAX_OUTPUTS];                     /* each one not playing: silenced up to where */
+    Out        outs[MAX_OUTPUTS];                     /* attached, oldest first */
     int        nouts;
-    const AudioOutput *out;                           /* playing: the last of outs */
-    INT16     *ring;
-    UINT32     ring_bytes;
-    UINT32     last_pos;
-    UINT64     hw_base;                               /* absolute byte count at the ring's start */
-    UINT64     write_abs;                             /* mixed up to here */
-    UINT64     clear_abs;                             /* and the ring silenced up to here */
+    In         ins[MAX_OUTPUTS];                      /* attached, oldest first */
+    int        nins;
+    UINT32     next_id, next_rank;
     INT32      acc[CHUNK_FRAMES * 2];
     Master     master[2];                             /* render, capture */
-    /* recording */
-    const AudioInput *ins[MAX_OUTPUTS];               /* attached, oldest first */
-    int        nins;
-    const AudioInput *in;                             /* recording: the last of ins */
-    UINT32     cpos;                                  /* read up to here in its ring */
-    bool       crun;
-} g = { .lock = KSPINLOCK_INIT, .master = { { 65536, 65536, false }, { 65536, 65536, false } } };
+} g = { .lock = KSPINLOCK_INIT, .next_id = 1, .master = { { 65536, 65536, false }, { 65536, 65536, false } } };
 
-/* The hardware position as an absolute byte count (lock held, an output
- * playing) */
-static UINT64 hw_abs(void)
+/* Output @k's device position as an absolute byte count (lock held) */
+static UINT64 hw_abs(Out *t)
 {
-    UINT32 pos = g.out->position(g.out->ctx);
-    if (pos < g.last_pos) g.hw_base += g.ring_bytes;
-    g.last_pos = pos;
-    return g.hw_base + pos;
+    UINT32 pos = t->o->position(t->o->ctx);
+    if (pos < t->last_pos) t->base += t->o->bytes;
+    t->last_pos = pos;
+    return t->base + pos;
 }
 
-/* Mix @n frames into the ring at absolute byte offset @at (lock held) */
-static void mix_chunk(UINT64 at, UINT32 n)
+/* The default output and input (lock held): the one attached or chosen
+ * last, so that when it leaves the one that was the default before it
+ * takes over; -1 if there is none */
+static int def_out(void)
 {
+    int d = -1;
+    for (int k = 0; k < g.nouts; k++)
+        if (d < 0 || g.outs[k].rank > g.outs[d].rank) d = k;
+    return d;
+}
+
+static int def_in(void)
+{
+    int d = -1;
+    for (int k = 0; k < g.nins; k++)
+        if (d < 0 || g.ins[k].rank > g.ins[d].rank) d = k;
+    return d;
+}
+
+/* The output a playback stream plays on (lock held): the one chosen for
+ * it while attached, else the default; -1 if there is none */
+static int out_of(const Stream *s)
+{
+    for (int k = 0; s->dev && k < g.nouts; k++)
+        if (g.outs[k].id == s->dev) return k;
+    return def_out();
+}
+
+/* The input a capture stream records from (lock held), the same way */
+static int in_of(const Stream *s)
+{
+    for (int k = 0; s->dev && k < g.nins; k++)
+        if (g.ins[k].id == s->dev) return k;
+    return def_in();
+}
+
+/* Mix @n frames of the running streams that play on output @k into its
+ * ring at absolute byte offset @at (lock held) */
+static void mix_chunk(int k, UINT64 at, UINT32 n)
+{
+    Out *t = &g.outs[k];
     memset(g.acc, 0, n * 2 * sizeof(INT32));
     Master *mr = &g.master[0];
     for (int i = 0; i < MAX_STREAMS; i++) {
         Stream *s = &g.s[i];
-        if (!s->used || s->capture || !s->running || !s->queued) continue;
+        if (!s->used || s->capture || !s->running || !s->queued || out_of(s) != k) continue;
         UINT32 m = s->queued < n ? s->queued : n;
         for (UINT32 f = 0; f < m; f++) {
             const INT16 *src = s->buf + (size_t)s->rd * 2;
@@ -113,108 +157,87 @@ static void mix_chunk(UINT64 at, UINT32 n)
         }
         s->queued -= m;
         s->consumed += m;
+        s->mixed_on = t->id;
         s->last_end = at + (UINT64)m * FRAME;
     }
-    INT16 *dst = (INT16 *)((UINT8 *)g.ring + at % g.ring_bytes);
-    for (UINT32 k = 0; k < n * 2; k++) {
-        INT32 v = mr->mute ? 0 : (INT32)(((INT64)g.acc[k] * (k & 1 ? mr->r : mr->l)) >> 16);
-        dst[k] = (INT16)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+    INT16 *dst = (INT16 *)((UINT8 *)t->o->ring + at % t->o->bytes);
+    for (UINT32 j = 0; j < n * 2; j++) {
+        INT32 v = mr->mute ? 0 : (INT32)(((INT64)g.acc[j] * (j & 1 ? mr->r : mr->l)) >> 16);
+        dst[j] = (INT16)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
     }
 }
 
-/* Keep silence LEAD bytes ahead of each attached output that is not
- * playing: it still streams its ring (lock held) */
-static void silence_idle(void)
-{
-    for (int i = 0; i < g.nouts; i++) {
-        const AudioOutput *o = g.outs[i];
-        if (o == g.out) continue;
-        Track *t = &g.idle[i];
-        UINT32 pos = o->position(o->ctx);
-        if (pos < t->last_pos) t->base += o->bytes;
-        t->last_pos = pos;
-        UINT64 hw = t->base + pos;
-        if (t->write < hw) t->write = hw;
-        UINT64 target = hw + LEAD;
-        while (t->write < target) {
-            UINT32 off = (UINT32)(t->write % o->bytes);
-            UINT64 n = target - t->write;
-            if (n > o->bytes - off) n = o->bytes - off;
-            memset((UINT8 *)o->ring + off, 0, (size_t)n);
-            t->write += n;
-        }
-    }
-}
-
+/* Every output: mix its streams LEAD bytes ahead of its device (an output
+ * nothing plays on gets silence: it still streams its ring), then silence
+ * the rest of its ring up to where the device is, which holds the last
+ * lap, so that if the mixer is held up for longer than LEAD the device
+ * plays a gap, not what it played a lap ago */
 static void mix_ahead(void)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
-    silence_idle();
-    if (!g.out) { spin_unlock_irqrestore(&g.lock, st); return; }
-    UINT64 hw = hw_abs();
-    if (g.write_abs < hw) g.write_abs = hw;           /* fell behind: skip what was missed */
-    UINT64 target = hw + LEAD;
-    while (g.write_abs < target) {
-        UINT32 off = (UINT32)(g.write_abs % g.ring_bytes);
-        UINT64 n = (target - g.write_abs) / FRAME;
-        UINT32 room = (g.ring_bytes - off) / FRAME;
-        if (n > room) n = room;
-        if (n > CHUNK_FRAMES) n = CHUNK_FRAMES;
-        if (!n) break;
-        mix_chunk(g.write_abs, (UINT32)n);
-        g.write_abs += n * FRAME;
-    }
-    /* The rest of the ring, up to where the device is, holds the last
-     * lap: silence it, so that if the mixer is held up for longer than
-     * LEAD the device plays a gap, not what it played a lap ago */
-    if (g.clear_abs < g.write_abs) g.clear_abs = g.write_abs;
-    UINT64 lap = hw + g.ring_bytes;
-    while (g.clear_abs < lap) {
-        UINT32 off = (UINT32)(g.clear_abs % g.ring_bytes);
-        UINT64 n = lap - g.clear_abs;
-        if (n > g.ring_bytes - off) n = g.ring_bytes - off;
-        memset((UINT8 *)g.ring + off, 0, (size_t)n);
-        g.clear_abs += n;
+    for (int k = 0; k < g.nouts; k++) {
+        Out *t = &g.outs[k];
+        UINT32 bytes = t->o->bytes;
+        UINT64 hw = hw_abs(t);
+        if (t->write < hw) t->write = hw;             /* fell behind: skip what was missed */
+        UINT64 target = hw + LEAD;
+        while (t->write < target) {
+            UINT32 off = (UINT32)(t->write % bytes);
+            UINT64 n = (target - t->write) / FRAME;
+            UINT32 room = (bytes - off) / FRAME;
+            if (n > room) n = room;
+            if (n > CHUNK_FRAMES) n = CHUNK_FRAMES;
+            if (!n) break;
+            mix_chunk(k, t->write, (UINT32)n);
+            t->write += n * FRAME;
+        }
+        if (t->clear < t->write) t->clear = t->write;
+        UINT64 lap = hw + bytes;
+        while (t->clear < lap) {
+            UINT32 off = (UINT32)(t->clear % bytes);
+            UINT64 n = lap - t->clear;
+            if (n > bytes - off) n = bytes - off;
+            memset((UINT8 *)t->o->ring + off, 0, (size_t)n);
+            t->clear += n;
+        }
     }
     spin_unlock_irqrestore(&g.lock, st);
 }
 
-/* Start or stop the recording input (lock held) */
-static void input_run(bool on)
-{
-    const AudioInput *in = g.in;
-    if (!in) return;
-    if (in->run) in->run(in->ctx, on);
-    if (on) g.cpos = in->position(in->ctx);
-}
-
-/* Start or stop recording to match the running capture streams (lock held) */
+/* Start or stop each input to match the running capture streams that
+ * record from it (lock held) */
 static void capture_sync(void)
 {
-    bool want = false;
-    for (int i = 0; i < MAX_STREAMS && !want; i++)
-        want = g.s[i].used && g.s[i].capture && g.s[i].running;
-    if (want == g.crun) return;
-    g.crun = want;
-    input_run(want);
+    for (int k = 0; k < g.nins; k++) {
+        In *t = &g.ins[k];
+        bool want = false;
+        for (int i = 0; i < MAX_STREAMS && !want; i++)
+            want = g.s[i].used && g.s[i].capture && g.s[i].running && in_of(&g.s[i]) == k;
+        if (want == t->run) continue;
+        t->run = want;
+        if (t->i->run) t->i->run(t->i->ctx, want);
+        if (want) t->cpos = t->i->position(t->i->ctx);   /* reads on from here */
+    }
 }
 
-/* Copy what the card recorded since the last tick into the running
- * capture streams */
+/* Copy what each recording input recorded since the last tick into the
+ * running capture streams that record from it */
 static void pull_capture(void)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
-    const AudioInput *in = g.in;
-    if (g.crun && in) {
+    Master *mc = &g.master[1];
+    for (int k = 0; k < g.nins; k++) {
+        In *t = &g.ins[k];
+        const AudioInput *in = t->i;
+        if (!t->run) continue;
         UINT32 pos = in->position(in->ctx);
-        Master *mc = &g.master[1];
-        while (g.cpos != pos) {
-            UINT32 end = pos > g.cpos ? pos : in->bytes;          /* up to the wrap first */
-            UINT32 n = (end - g.cpos) / FRAME;
-            const INT16 *src = (const INT16 *)((UINT8 *)in->ring + g.cpos);
+        while (t->cpos != pos) {
+            UINT32 end = pos > t->cpos ? pos : in->bytes;         /* up to the wrap first */
+            UINT32 n = (end - t->cpos) / FRAME;
+            const INT16 *src = (const INT16 *)((UINT8 *)in->ring + t->cpos);
             for (int i = 0; i < MAX_STREAMS; i++) {
                 Stream *s = &g.s[i];
-                if (!s->used || !s->capture || !s->running) continue;
+                if (!s->used || !s->capture || !s->running || in_of(s) != k) continue;
                 UINT32 vl = mc->mute ? 0 : (UINT32)(((UINT64)mc->l * s->vol_l) >> 16);
                 UINT32 vr = mc->mute ? 0 : (UINT32)(((UINT64)mc->r * s->vol_r) >> 16);
                 for (UINT32 f = 0; f < n; f++) {
@@ -230,7 +253,7 @@ static void pull_capture(void)
                 }
                 s->written += n;
             }
-            g.cpos = end == in->bytes ? 0 : end;
+            t->cpos = end == in->bytes ? 0 : end;
         }
     }
     spin_unlock_irqrestore(&g.lock, st);
@@ -247,72 +270,43 @@ static void mixer_thread(void *arg)
     }
 }
 
-/* Play on @o from its current position on (lock held; NULL: nothing plays) */
-static void switch_output(const AudioOutput *o)
-{
-    for (int i = 0; i < g.nouts && g.out && g.out != o; i++) {
-        if (g.outs[i] != g.out) continue;
-        /* Still attached: what was mixed for it plays, the rest of its
-         * ring (a lap old) is cleared now, not at the next tick, which a
-         * busy machine may run after the device has got there */
-        UINT64 hw = hw_abs(), at = g.write_abs > hw ? g.write_abs : hw, end = hw + g.ring_bytes;
-        while (at < end) {
-            UINT32 off = (UINT32)(at % g.ring_bytes);
-            UINT64 n = end - at;
-            if (n > g.ring_bytes - off) n = g.ring_bytes - off;
-            memset((UINT8 *)g.ring + off, 0, (size_t)n);
-            at += n;
-        }
-        g.idle[i] = (Track){ .last_pos = g.last_pos, .base = g.hw_base, .write = end };
-    }
-    g.out = o;
-    if (!o) return;
-    g.ring = o->ring;
-    g.ring_bytes = o->bytes;
-    g.last_pos = o->position(o->ctx);
-    g.hw_base = 0;
-    g.write_abs = g.last_pos;                         /* mix_ahead starts at the device */
-    g.clear_abs = g.write_abs;
-    for (int i = 0; i < MAX_STREAMS; i++) g.s[i].last_end = 0;
-}
-
 bool AudioOutputAttach(const AudioOutput *o)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
     bool ok = g.nouts < MAX_OUTPUTS;
     if (ok) {
-        g.outs[g.nouts++] = o;
-        switch_output(o);
+        Out *t = &g.outs[g.nouts++];
+        UINT32 pos = o->position(o->ctx);
+        *t = (Out){ .o = o, .id = g.next_id++, .rank = ++g.next_rank, .last_pos = pos, .write = pos, .clear = pos };
     }
     spin_unlock_irqrestore(&g.lock, st);
     if (ok) kprintf("[AUDIO] Playing on %s\n", o->name);
     return ok;
 }
 
+/* Remove entry @k of @arr (@n entries of @size bytes) */
+static void remove_at(void *arr, int *n, int k, size_t size)
+{
+    UINT8 *a = arr;
+    memmove(a + (size_t)k * size, a + (size_t)(k + 1) * size, (size_t)(*n - k - 1) * size);
+    (*n)--;
+}
+
 void AudioOutputDetach(const AudioOutput *o)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
-    bool found = false;
-    for (int i = 0; i < g.nouts; i++) {
-        if (g.outs[i] != o) continue;
-        for (int j = i + 1; j < g.nouts; j++) g.outs[j - 1] = g.outs[j], g.idle[j - 1] = g.idle[j];
-        g.nouts--;
+    bool found = false, was_default = false;
+    for (int k = 0; k < g.nouts && !found; k++) {
+        if (g.outs[k].o != o) continue;
+        was_default = k == def_out();
+        remove_at(g.outs, &g.nouts, k, sizeof(Out));
         found = true;
-        break;
     }
-    const AudioOutput *now = g.nouts ? g.outs[g.nouts - 1] : NULL;
-    if (found && g.out != now) switch_output(now);
+    int d = def_out();
+    const AudioOutput *now = d >= 0 ? g.outs[d].o : NULL;
     spin_unlock_irqrestore(&g.lock, st);
-    if (found && now) kprintf("[AUDIO] Playing on %s\n", now->name);
-    else if (found) kprintf("[AUDIO] No sound output left\n");
-}
-
-/* Record from @i from now on (lock held; NULL: nothing records) */
-static void switch_input(const AudioInput *i)
-{
-    if (g.crun && g.in && g.in->run) g.in->run(g.in->ctx, false);
-    g.in = i;
-    if (g.crun) input_run(true);
+    if (found && was_default && now) kprintf("[AUDIO] Playing on %s\n", now->name);
+    else if (found && !now) kprintf("[AUDIO] No sound output left\n");
 }
 
 bool AudioInputAttach(const AudioInput *i)
@@ -320,8 +314,8 @@ bool AudioInputAttach(const AudioInput *i)
     IrqState st = spin_lock_irqsave(&g.lock);
     bool ok = g.nins < MAX_OUTPUTS;
     if (ok) {
-        g.ins[g.nins++] = i;
-        switch_input(i);
+        g.ins[g.nins++] = (In){ .i = i, .id = g.next_id++, .rank = ++g.next_rank };
+        capture_sync();                               /* (default streams move to it) */
     }
     spin_unlock_irqrestore(&g.lock, st);
     if (ok) kprintf("[AUDIO] Recording from %s\n", i->name);
@@ -331,22 +325,59 @@ bool AudioInputAttach(const AudioInput *i)
 void AudioInputDetach(const AudioInput *i)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
-    bool found = false;
-    for (int k = 0; k < g.nins; k++) {
-        if (g.ins[k] != i) continue;
-        for (int j = k + 1; j < g.nins; j++) g.ins[j - 1] = g.ins[j];
-        g.nins--;
+    bool found = false, was_default = false;
+    for (int k = 0; k < g.nins && !found; k++) {
+        if (g.ins[k].i != i) continue;               /* (gone: not stopped through it) */
+        was_default = k == def_in();
+        remove_at(g.ins, &g.nins, k, sizeof(In));
         found = true;
-        break;
     }
-    const AudioInput *now = g.nins ? g.ins[g.nins - 1] : NULL;
-    if (found && g.in != now) {
-        if (g.in == i) g.in = NULL;                   /* (gone: not stopped through it) */
-        switch_input(now);
+    if (found) capture_sync();                        /* its streams move to the default */
+    int d = def_in();
+    const AudioInput *now = d >= 0 ? g.ins[d].i : NULL;
+    spin_unlock_irqrestore(&g.lock, st);
+    if (found && was_default && now) kprintf("[AUDIO] Recording from %s\n", now->name);
+    else if (found && !now) kprintf("[AUDIO] No sound input left\n");
+}
+
+int AudioDevices(bool capture, AudioDevice *out, int max)
+{
+    IrqState st = spin_lock_irqsave(&g.lock);
+    int n = capture ? g.nins : g.nouts, d = capture ? def_in() : def_out();
+    for (int k = 0; k < n && k < max; k++) {
+        out[k].id = capture ? g.ins[k].id : g.outs[k].id;
+        out[k].is_default = k == d;
+        strncpy(out[k].name, capture ? g.ins[k].i->name : g.outs[k].o->name, sizeof(out[k].name) - 1);
+        out[k].name[sizeof(out[k].name) - 1] = 0;
     }
     spin_unlock_irqrestore(&g.lock, st);
-    if (found && now) kprintf("[AUDIO] Recording from %s\n", now->name);
-    else if (found) kprintf("[AUDIO] No sound input left\n");
+    return n < max ? n : max;
+}
+
+bool AudioSetDefault(bool capture, UINT32 id)
+{
+    IrqState st = spin_lock_irqsave(&g.lock);
+    bool found = false;
+    const char *name = NULL;
+    if (capture) {
+        for (int k = 0; k < g.nins && !found; k++) {
+            if (g.ins[k].id != id) continue;
+            g.ins[k].rank = ++g.next_rank;
+            name = g.ins[k].i->name;
+            found = true;
+        }
+        if (found) capture_sync();
+    } else {
+        for (int k = 0; k < g.nouts && !found; k++) {
+            if (g.outs[k].id != id) continue;
+            g.outs[k].rank = ++g.next_rank;
+            name = g.outs[k].o->name;
+            found = true;
+        }
+    }
+    spin_unlock_irqrestore(&g.lock, st);
+    if (found) kprintf(capture ? "[AUDIO] Recording from %s (chosen)\n" : "[AUDIO] Playing on %s (chosen)\n", name);
+    return found;
 }
 
 static UINT32 hda_position(void *ctx) { (void)ctx; return HdaPosition(); }
@@ -375,19 +406,20 @@ bool AudioInit(void)
     return true;
 }
 
-bool        AudioPresent(void)    { return g.out != NULL; }
-bool        AudioCanRecord(void)  { return g.in != NULL; }
+bool        AudioPresent(void)    { return g.nouts > 0; }
+bool        AudioCanRecord(void)  { return g.nins > 0; }
 
+/* (the name stays valid while the device is attached, as before) */
 const char *AudioInputName(void)
 {
-    const AudioInput *i = g.in;
-    return i ? i->name : "";
+    int d = def_in();
+    return d >= 0 ? g.ins[d].i->name : "";
 }
 
 const char *AudioDeviceName(void)
 {
-    const AudioOutput *o = g.out;
-    return o ? o->name : "";
+    int d = def_out();
+    return d >= 0 ? g.outs[d].o->name : "";
 }
 
 int AudioOpen(UINT32 frames, bool capture)
@@ -501,6 +533,21 @@ void AudioRun(int i, bool run)
     spin_unlock_irqrestore(&g.lock, st);
 }
 
+bool AudioRoute(int i, UINT32 id)
+{
+    IrqState st = spin_lock_irqsave(&g.lock);
+    Stream *s = get(i);
+    bool ok = s && !id;
+    for (int k = 0; s && id && !ok && k < (s->capture ? g.nins : g.nouts); k++)
+        ok = (s->capture ? g.ins[k].id : g.outs[k].id) == id;
+    if (ok) {
+        s->dev = id;
+        if (s->capture) capture_sync();
+    }
+    spin_unlock_irqrestore(&g.lock, st);
+    return ok;
+}
+
 void AudioFlush(int i)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
@@ -546,8 +593,12 @@ bool AudioGetStatus(int i, AudioStatus *out)
         out->running = s->running;
         out->latency = TICK_FRAMES;
     } else if (s) {
-        UINT64 hw = g.out ? hw_abs() : s->last_end;
-        UINT64 ahead = s->last_end > hw ? (s->last_end - hw) / FRAME : 0;
+        UINT64 ahead = 0;
+        for (int k = 0; k < g.nouts; k++) {
+            if (g.outs[k].id != s->mixed_on) continue;
+            UINT64 hw = hw_abs(&g.outs[k]);
+            ahead = s->last_end > hw ? (s->last_end - hw) / FRAME : 0;
+        }
         out->written = s->written;
         out->consumed = s->consumed;
         out->played = s->consumed > ahead ? s->consumed - ahead : 0;

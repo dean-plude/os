@@ -645,6 +645,7 @@ static int g_nres;
 static const struct { const char *name; const char *keys; int page; } g_setting_items[] = {
     { "System",          "system about pc processor memory uptime",           SETTINGS_SYSTEM },
     { "Display",         "display screen resolution scale monitor",           SETTINGS_DISPLAY },
+    { "Sound",           "sound audio speakers headphones headset microphone output input device usb", SETTINGS_SOUND },
     { "Personalization", "personalization wallpaper background theme colors", SETTINGS_PERSONALIZE },
     { "Storage",         "storage disk drive space memory ram",               SETTINGS_STORAGE },
     { "Network",         "network ethernet internet ip dns wifi certificates", SETTINGS_NETWORK },

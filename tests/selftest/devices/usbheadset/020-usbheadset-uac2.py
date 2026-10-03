@@ -28,7 +28,7 @@ def plug_uac2(nova):
     r = nova.qmp.cmd('device_add', driver='usb-redir', id='uac2', chardev='uac2', bus='xhci.0')
     if 'error' in r:
         print('device_add:', r['error'], flush=True)
-    _wait_log(nova, r'high speed, xHCI[^\n]*\n(?:[^\n]*\n)*?\[AUDIO\] Recording from USB Microphone')
+    _wait_log(nova, r'high speed, xHCI[^\n]*\n(?:[^\n]*\n)*?\[AUDIO\] Recording from Microphone \(')
 
 
 def unplug_uac2(nova):

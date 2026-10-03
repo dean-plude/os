@@ -283,11 +283,18 @@ def usbheadset_boot(work):
     controller for the full-speed microphones the tests plug in (ports
     10701-10703), and a high-speed USB Audio 2.0 headset the tests plug
     into the xHCI controller (port 10704: its speaker writes uac2.wav, its
-    microphone hears 988 Hz; tests/selftest/devices/usbheadset)"""
+    microphone hears 988 Hz), then a 44.1 kHz USB Audio 2.0 surround
+    headset (port 10705: six speaker channels whose front two surround.wav
+    gets, four microphone channels hearing 1175 Hz) and a full-speed USB
+    Audio 1.0 speaker (port 10706, spk.wav) for the device picker
+    (tests/selftest/devices/usbheadset)"""
     procs = [peer(work, 10700, '--speaker', os.path.join(work, 'headset.wav'), '--mic', str(REC_HZ))]
     for n, hz in ((1, 784), (2, 659), (3, 880)):
         procs.append(peer(work, 10700 + n, '--speed', 'full', '--mic', str(hz)))
     procs.append(peer(work, 10704, '--uac2', '--speaker', os.path.join(work, 'uac2.wav'), '--mic', '988'))
+    procs.append(peer(work, 10705, '--uac2', '--rates', '44100', '--channels', '6', '--mic-channels', '4',
+                      '--product', 'Test Surround Headset', '--speaker', os.path.join(work, 'surround.wav'), '--mic', '1175'))
+    procs.append(peer(work, 10706, '--speed', 'full', '--product', 'Test Speaker', '--speaker', os.path.join(work, 'spk.wav')))
     return ['-chardev', 'socket,id=headset,host=127.0.0.1,port=10700', '-device', 'usb-ehci,id=ehci',
             '-device', 'usb-redir,id=headset,chardev=headset,bus=ehci.0', '-device', 'qemu-xhci,id=xhci',
             '-device', 'pci-ohci,id=ohci', '-device', 'piix3-usb-uhci,id=uhci'], procs
@@ -402,7 +409,7 @@ def main():
             finally:
                 for p in procs:
                     p.kill()
-                for log in ['h2server.log', 'v6peer.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10705)]:
+                for log in ['h2server.log', 'v6peer.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10707)]:
                     if os.path.exists(os.path.join(work, log)):
                         shutil.copy(os.path.join(work, log), a.out)
                 shutil.rmtree(work, ignore_errors=True)

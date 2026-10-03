@@ -243,12 +243,14 @@ PulseAudio or PipeWire when it finds one; set `NOVA_AUDIO` (`pa`,
 USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
 -device qemu-xhci -device usb-audio,audiodev=usbsnd` (or on `pci-ohci` or
 `piix3-usb-uhci`; QEMU's `usb-audio` is full speed only, so not on a
-plain `usb-ehci`).  The newest sound output plays, and the newest input
-records.  QEMU has no USB microphone and no high-speed audio device:
+plain `usb-ehci`).  The newest sound output and input are the defaults
+(Settings' Sound page chooses others, and programs can pick a device).  QEMU has no USB microphone and no high-speed audio device:
 `tools/usbredirpeer.py` is one (a USB Audio Class 1 headset or microphone
 behind a `usb-redir` device, or with `--uac2` a USB Audio Class 2.0 one:
 a programmable clock behind a clock selector, 24-bit samples and, at
-high speed, a packet every microframe), e.g. a high-speed headset on EHCI whose
+high speed, a packet every microframe; `--rates`, `--channels`,
+`--mic-channels` and `--product` give it other sampling rates, channel
+counts and a name), e.g. a high-speed headset on EHCI whose
 microphone hears 523 Hz:
 
 ```bash
@@ -439,7 +441,16 @@ plugs a high-speed USB Audio 2.0 headset (`usbredirpeer.py --uac2`,
 writing `uac2.wav`, its microphone hearing 988 Hz) into the xHCI
 controller: `soundtest tone` must sound in `uac2.wav` alone, `soundtest
 record` and `capture` must hear 988 Hz, and once it is unplugged
-recording must go back to the OHCI microphone.  Last, one
+recording must go back to the OHCI microphone.  Then a USB Audio 2.0
+surround headset whose clock offers only 44.1 kHz (`usbredirpeer.py
+--rates 44100 --channels 6 --mic-channels 4`, writing `surround.wav`):
+the tone must sound at its pitch in its front two channels with the
+other four silent, and its microphone's 1175 Hz must be recorded at its
+pitch.  Last for sound, a full-speed USB speaker (`spk.wav`) for the
+device picker: with it the default, `soundtest ... dev=NAME` must play
+on (or record from) the named device through `waveOut`, `waveIn` and
+WASAPI, and `soundtest default out|in NAME` (what Settings' Sound page
+does) must move the default.  Last, one
 `virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
 connects a monitor to the second and third outputs and disconnects them
 again while NovaOS runs, through a VNC server QEMU has on each (an RFB
