@@ -1,0 +1,122 @@
+# Release: pushing a version tag (v0.1.0, v0.1.1, ...) publishes a NovaOS
+# release (docs/releasing.md).
+#
+#   1. The tag must name the version the kernel carries (NOVA_VERSION in
+#      kernel/ke/version.h): v0.1.0 for "0.1.0".
+#   2. The whole CI workflow (ci.yml) runs on the tagged commit with
+#      release: true, so the audio DSP firmware is fetched before the build
+#      and every suite (core, network, devices, graphics) tests the image
+#      the release ships; the devices suite also starts NovaOS from the ISO.
+#   3. Only when all of that passes, the GitHub release for the tag is made
+#      with the ISO the boot-test job built and kept:
+#        nova.iso, nova.iso.sha256         the bootable ISO (also a USB stick image)
+#        kernel.elf, bootx64.efi,          the update channel (tools/mkupdate.py) that
+#        novaos-update.txt                 installed NovaOS reads from the newest release
+#        SHA256SUMS                        the SHA-256 of every file above
+#      and release notes from docs/releases/VERSION.md and the docs/history/
+#      sections added since the previous release (tools/release_notes.py).
+#      A version with a suffix (v0.1.1-rc1) is published as a pre-release,
+#      which never becomes "Latest" and so never reaches the update channel.
+#
+# Running it again for the same tag (re-run from the Actions page) replaces
+# the files and notes of the release already there.
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: write               # the release, and ci.yml's publish job (which a tag skips)
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Tag matches the kernel's version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: v
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          kernel=$(sed -n 's/^#define NOVA_VERSION "\(.*\)"$/\1/p' kernel/ke/version.h)
+          if [ "v$kernel" != "$tag" ]; then
+            echo "::error::tag $tag but kernel/ke/version.h says NOVA_VERSION \"$kernel\": tag v$kernel, or change the version first"
+            exit 1
+          fi
+          test -f "docs/releases/$kernel.md" || {
+            echo "::error::no release notes: write docs/releases/$kernel.md first (docs/releasing.md)"
+            exit 1
+          }
+          echo "version=$kernel" >> "$GITHUB_OUTPUT"
+          case "$kernel" in *-*) echo prerelease=true ;; *) echo prerelease=false ;; esac >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: CI
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    with:
+      release: true
+
+  publish:
+    name: Publish the release
+    needs: [version, ci]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # the earlier tags, for the notes' "since" list
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nova-iso
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nova-boot
+          path: boot
+
+      - name: Make the update channel, checksums and notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 tools/mkupdate.py dist --kernel boot/kernel.elf --loader boot/bootx64.efi \
+            --notes "NovaOS $VERSION: https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME"
+          grep -qx "version $VERSION" dist/novaos-update.txt || {
+            echo "::error::the built kernel is not version $VERSION"; cat dist/novaos-update.txt; exit 1
+          }
+          cd dist
+          sha256sum nova.iso > nova.iso.sha256
+          sha256sum nova.iso kernel.elf bootx64.efi novaos-update.txt > SHA256SUMS
+          cd ..
+          python3 tools/release_notes.py "$VERSION" --tag "$GITHUB_REF_NAME" --dist dist \
+            --repo "$GITHUB_REPOSITORY" > notes.md
+          cat dist/SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          files=(dist/nova.iso dist/nova.iso.sha256 dist/kernel.elf dist/bootx64.efi
+                 dist/novaos-update.txt dist/SHA256SUMS)
+          if [ "$PRERELEASE" = true ]; then mark=(--prerelease --latest=false); else mark=(--latest); fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "NovaOS $VERSION" --notes-file notes.md "${mark[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag \
+              --title "NovaOS $VERSION" --notes-file notes.md "${mark[@]}"
+          fi
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"

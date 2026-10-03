@@ -128,8 +128,12 @@ makes `update-out/kernel.elf`, `update-out/bootx64.efi` and
 are what the default channel,
 `https://github.com/dean-plude/os/releases/latest/download/novaos-update.txt`,
 finds: GitHub sends that address to the newest release's file, and the
-files named in it are fetched from the same place.  (Publishing the
-release is Phase 22.5.)
+files named in it are fetched from the same place.  A release made from a
+version tag carries them: `.github/workflows/release.yml` runs
+`tools/mkupdate.py` on the build its CI tested ([releasing.md](releasing.md)).
+Pre-releases (a version like `0.1.1-rc1`) and the `latest` build of
+`main` never carry the "Latest" mark once a release exists, so installed
+systems only see releases.
 
 ## The self-test
 
