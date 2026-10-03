@@ -141,6 +141,7 @@ set(KERNEL_C_SOURCES
     drivers/virtio_gpu.c
     drivers/ahci.c
     drivers/hda.c
+    drivers/sof.c
     drivers/i2c_dw.c
     drivers/i2chid.c
     drivers/audio.c

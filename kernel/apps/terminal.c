@@ -21,6 +21,7 @@
 #include "../drivers/usb.h"
 #include "../drivers/virtio_input.h"
 #include "../drivers/hda.h"
+#include "../drivers/sof.h"
 #include "../drivers/i2chid.h"
 #include "../um/um.h"
 #include "../fs/persist.h"
@@ -252,7 +253,7 @@ static void cmd_help(Term *t)
         "  store close         close the App Store window\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  devices             the PCI devices and the driver each one has (also: lspci)\n"
-        "  hwcheck             test the laptop drivers on modelled devices (codec, touchpad)\n"
+        "  hwcheck             test the laptop drivers on modelled devices (codec, DSP, touchpad)\n"
         "  vol  sync           where drive C: is saved; save it now\n"
         "  install [disk] [/fat]  install NovaOS on a disk (no disk: list them)\n"
         "  ipconfig            show the network configuration\n"
@@ -671,13 +672,16 @@ static void cmd_usbcheck(Term *t)
 
 /* hwcheck: the drivers for the reference laptop's devices QEMU can't
  * show (Phase 21.4), against modelled devices: the HD Audio controller
- * matching and a Realtek ALC257 codec with its headphone jack, and an
- * I2C-HID touchpad */
+ * matching and a Realtek ALC257 codec with its headphone jack, the audio
+ * DSP's boot (NHLT, SOF firmware, IPC4) on a modelled DSP, and an I2C-HID
+ * touchpad; then what the real DSP did at boot */
 static void cmd_hwcheck(Term *t)
 {
     int failed = HdaSelfCheck(usbcheck_say, t);
+    int sfailed = SofSelfCheck(usbcheck_say, t);
     int ifailed = I2cHidSelfCheck(usbcheck_say, t);
-    failed = failed < 0 || ifailed < 0 ? -1 : failed + ifailed;
+    failed = failed < 0 || sfailed < 0 || ifailed < 0 ? -1 : failed + sfailed + ifailed;
+    tprintf(t, "     audio DSP on this machine: %s", SofStatus());
     tprintf(t, "hwcheck: %s, %d failed", failed ? "done" : "all passed", failed < 0 ? 1 : failed);
 }
 

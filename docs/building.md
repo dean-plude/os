@@ -294,6 +294,13 @@ usb-ehci,id=ehci -device usb-redir,chardev=ur,bus=ehci.0` (`--speed full`
 for a full-speed one on the other controllers; the speaker's sound goes
 to `headset.wav`).
 
+Laptops whose built-in microphones sit behind Intel's audio DSP (Tiger
+Lake to Raptor Lake, as on the reference ThinkPad) need the DSP's Sound
+Open Firmware built in; `python3 tools/fetch_sof_firmware.py` before the
+build downloads it into `third_party/sof-bin`, which is not committed
+([hardware.md](hardware.md#the-digital-microphones-behind-the-audio-dsp)).
+QEMU has no such DSP, so nothing here needs it.
+
 More monitors: each further display adapter is one (`-device
 secondary-vga`), and so is each output of a virtio GPU with a monitor on
 it, e.g. `-vga none -device virtio-vga,max_outputs=2,id=gpu`.  QEMU

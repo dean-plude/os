@@ -67,7 +67,7 @@ driver that runs the same device there.
 | **Storage** | M.2 2280 NVMe SSD, PCIe 4.0 x4 | `nvme` | supported | NVMe driver by class 01.08.02 (Phase 18.3); install to it is step 21.5 |
 | **Ethernet** | Intel I219-V or I219-LM (vPro) | `e1000e` | supported | the I219 is the chipset's built-in MAC with its PHY on a separate bus; NovaOS's `e1000e` drives it since step 21.3 (PR #136), not yet run on the machine |
 | **Wi-Fi + Bluetooth** | Intel AX211 or Qualcomm NFA725A | `iwlwifi` / `ath11k` | missing | not needed for Phase 21: the gate goes online over Ethernet |
-| **Audio** | Intel HD Audio controller (Raptor Lake-P, with an audio DSP), Realtek ALC3287 codec, two speakers, a headset jack, digital microphones | `snd_hda_intel` / `sof-audio-pci-intel-tgl` | partial | the HD Audio driver takes this controller with the DSP on (class 04.01) as well as off, plays through the speakers and the headphone jack, turns the speakers off while headphones are plugged in, and records from a headset's microphone (step 21.4); the digital microphones are reached only through the DSP and stay silent; checked on a modelled codec, not yet on the machine |
+| **Audio** | Intel HD Audio controller (Raptor Lake-P, with an audio DSP), Realtek ALC3287 codec, two speakers, a headset jack, digital microphones | `snd_hda_intel` / `sof-audio-pci-intel-tgl` | partial | the HD Audio driver takes this controller with the DSP on (class 04.01) as well as off, plays through the speakers and the headphone jack, turns the speakers off while headphones are plugged in, and records from a headset's microphone (step 21.4); the digital microphones are reached only through the DSP: NovaOS reads them from the ACPI NHLT table and boots the DSP with Sound Open Firmware, but does not record from them yet ([below](#the-digital-microphones-behind-the-audio-dsp)); checked on a modelled codec and DSP, not yet on the machine |
 | **USB** | Raptor Lake-P xHCI (USB-A ports), Thunderbolt 4 xHCI (USB-C ports) | `xhci_hcd` | supported | xHCI driver by class 0C.03.30, with hubs, HID, mass storage and audio (Phases 18.1, 18.2) |
 | **Thunderbolt 4 / USB4** | Intel Thunderbolt 4 controller | `thunderbolt` | missing | USB devices on the USB-C ports work through the xHCI controller; Thunderbolt docks and PCIe tunnelling do not |
 | **Keyboard** | built-in keyboard on the i8042 controller | `atkbd` | supported | PS/2 keyboard driver |
@@ -153,6 +153,66 @@ devices: 7 PCI functions, 4 with a driver, 2 bridges, 1 without a driver
 On another PC, the same list shows which of its devices NovaOS runs and
 which it does not; reports from other machines are welcome as issues.
 
+## The digital microphones, behind the audio DSP
+
+The T14's built-in microphones are digital microphones (DMICs) wired to
+the audio DSP inside the HD Audio controller, not to the Realtek codec,
+so the codec path that plays sound and records from a headset cannot
+hear them.  The DSP has to run firmware that clocks the microphones and
+passes their samples to NovaOS over an HD Audio stream.  NovaOS uses
+Intel's signed build of Sound Open Firmware (SOF), which the SOF project
+publishes at <https://github.com/thesofproject/sof-bin/releases>
+(BSD-3-Clause with Intel's firmware licence, which allows
+redistribution).  The firmware is not in the repository: building it in
+takes one command before the build, which downloads the pinned release
+(v2026.09.1), checks its SHA-256 and puts the Raptor Lake firmware in
+`third_party/sof-bin` (`--all` takes every Tiger Lake to Raptor Lake
+one):
+
+```bash
+python3 tools/fetch_sof_firmware.py
+```
+
+The build then puts it at
+`C:\Windows\Firmware\Intel\sof-ipc4\rpl\sof-rpl.ri` (with
+`LICENCE.Intel` beside it).  Without it NovaOS builds and runs as before
+and the boot log says the firmware is missing.
+
+Where it stands (`kernel/drivers/sof.c`):
+
+1. Done: at boot, on an Intel controller with its DSP on (class 04.01) of
+   the Tiger Lake to Raptor Lake generation (cAVS 2.5), NovaOS reads the
+   ACPI NHLT table for digital microphones (how many, their formats and
+   the configuration the firmware needs for them), checks the firmware
+   file, powers the DSP's first core, has its ROM load the firmware from
+   a host DMA stream, takes the firmware's FW_READY message and asks it
+   for its version over IPC4.  It happens in the background and leaves
+   the speakers, headphones and headset microphone alone; if a step
+   fails, the DSP is switched off again and the boot log says which.
+2. Next: the capture pipeline: through IPC4, a pipeline with a copier
+   module reading the DMIC gateway (configured with NHLT's blob for the
+   chosen format) and a copier writing to a host input stream, bound
+   and set running.
+3. Then: that input stream as a recording device in the mixer
+   ("Microphone Array"), so that the Sound settings, `waveIn` and
+   Audacity can pick it; and the DSP booted again after sleep.
+
+QEMU has no audio DSP, so the Terminal's `hwcheck` runs the NHLT reader,
+the firmware's manifest and the whole boot against a modelled DSP (core
+self-test `hwcheck dsp`).  On the T14, from a stick built after
+`tools/fetch_sof_firmware.py` (unverified on hardware: nothing has run on
+a real T14 yet):
+
+1. In the Terminal, `hwcheck`: its line `audio DSP on this machine:`
+   should read `firmware 2.12.0.1 running, 2 digital microphones (not yet
+   recording)` (the version is the firmware's; the count is NHLT's).
+2. If it names a failed step instead, shut down and read
+   `EFI\NOVA\bootlog.txt`: the `[DSP]` lines give the NHLT contents, the
+   firmware's version and size, the stream the code loader used and the
+   ROM's status and error codes, which is what a fix needs.
+3. Speakers, headphones and the headset microphone work as in the check
+   above, whatever the DSP line says.
+
 ## Devices NovaOS drives
 
 For reference, every driver NovaOS has, by device:
@@ -162,7 +222,7 @@ For reference, every driver NovaOS has, by device:
 | Display | UEFI GOP framebuffer (any PC); Bochs VBE (QEMU `std`, `bochs-display`, `secondary-vga`), QXL, VMware SVGA II, Cirrus CL-GD5446, virtio-gpu (2D, and 3D through Venus and virgl) |
 | Storage | AHCI SATA (class 01.06.01), NVMe (class 01.08.02), USB mass storage; FAT and NTFS |
 | Network | Intel 82540EM, 82544 and 82545EM (`e1000`), Intel 82574L and I219-LM/I219-V (`e1000e`), virtio-net |
-| Audio | Intel HD Audio (class 04.03, and Intel's class 04.01 controllers with the audio DSP on), with headphone-jack sensing; USB Audio 1.0 and 2.0 |
+| Audio | Intel HD Audio (class 04.03, and Intel's class 04.01 controllers with the audio DSP on), with headphone-jack sensing; the audio DSP of Tiger Lake to Raptor Lake (boots Sound Open Firmware; no recording through it yet); USB Audio 1.0 and 2.0 |
 | USB | xHCI, EHCI, OHCI, UHCI host controllers; hubs, HID keyboards, mice, tablets, touch screens and pens, mass storage, audio |
 | Input | PS/2 keyboard and mouse, I2C-HID touchpads (mouse mode) on Intel LPSS I2C controllers, virtio-input tablets, touch screens and pens |
 | Platform | ACPI through uACPI (power button, S3 and S5, batteries, AC, lid, thermal zones), HPET, TSC-deadline APIC timer, COM1 |

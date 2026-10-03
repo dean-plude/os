@@ -9,6 +9,7 @@
 #pragma once
 
 #include "../include/types.h"
+#include "../hal/pci.h"
 
 #define HDA_RATE      48000
 #define HDA_CHANNELS  2
@@ -45,6 +46,18 @@ void        HdaPollJacks(void);
 #define HDA_MATCH_DSP   2
 #define HDA_MATCH_PROBE 3
 int         HdaPciMatch(UINT16 vendor, UINT16 device, UINT8 cls, UINT8 sub);
+
+/* The audio DSP beside the controller (sof.c): the controller's PCI
+ * function, its registers (BAR0), the stream counts, and whether the DSP
+ * is switched on (class 04.01).  False when HdaInit() found no controller. */
+typedef struct {
+    PciDevice       dev;
+    volatile UINT8 *mmio;
+    UINT16          gcap;
+    bool            dsp_on;
+    const char     *chip;               /* "Intel Raptor Lake-P", or NULL when the ID is not known */
+} HdaHost;
+bool        HdaDspHost(HdaHost *out);
 
 /* hwcheck: the controller matching on real machines' IDs, and the codec
  * setup and jack handling against a modelled Realtek ALC257 (the T14 Gen
