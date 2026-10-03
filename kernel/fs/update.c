@@ -109,11 +109,15 @@ static NetOp *fetch(const char *url, const char **body, UINT32 *blen, bool progr
     bool https;
     if (!NetParseUrl(url, host, sizeof(host), &port, path, sizeof(path), &https)) { fail("Bad address: %s", url); return NULL; }
     /* Just after a start the network may not have an address yet (DHCP):
-     * give it up to 30 seconds */
+     * give it up to 30 seconds.  A channel at an IPv4 address needs an IPv4
+     * one: a global IPv6 address can arrive before the DHCP lease, and a check
+     * made in between failed with "Could not connect". */
+    UINT32 literal;
+    bool v4_only = NetParseIp(host, &literal);
     for (UINT64 until = sched_ticks() + 3000; sched_ticks() < until; sched_sleep_tick()) {
         NetStatus ns;
         NetGetStatus(&ns);
-        if (ns.configured || ns.ip || NetHasIp6()) break;
+        if (ns.configured || ns.ip || (!v4_only && NetHasIp6())) break;
     }
     for (int redirects = 0; redirects < 8; redirects++) {
         NetOp *op = NetResolve(host);
