@@ -15,6 +15,7 @@
 #include "wm.h"
 #include "../um/um.h"
 #include "../gdi/gdi.h"
+#include "../gdi/syscursor.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
@@ -948,16 +949,58 @@ int WmCursorY(void) { return to_logical(g_cy); }
  * area, or anywhere while it has the mouse captured; animated ones step
  * through their frames as the ticks go by (cursor_animate). */
 static const GdiCursorShape *g_shape_drawn;     /* compared, never dereferenced */
-static int    g_step_drawn;
+static int    g_step_drawn, g_sys_drawn;
 static UINT64 g_shape_since;                    /* tick the animation started */
+
+/* The system pointers the desktop shows itself: the arrow and, over a
+ * window's resize edges and while dragging one, the resize arrows */
+static const GdiCursorShape g_sys_we   = { .sys = OCR_SIZEWE };
+static const GdiCursorShape g_sys_ns   = { .sys = OCR_SIZENS };
+static const GdiCursorShape g_sys_nwse = { .sys = OCR_SIZENWSE };
+static const GdiCursorShape g_sys_nesw = { .sys = OCR_SIZENESW };
+
+static const GdiCursorShape *resize_shape(int e)
+{
+    bool h = e & (EDGE_L | EDGE_R), v = e & (EDGE_T | EDGE_B);
+    if (h && v) return ((e & EDGE_L) != 0) == ((e & EDGE_T) != 0) ? &g_sys_nwse : &g_sys_nesw;
+    return h ? &g_sys_we : v ? &g_sys_ns : NULL;
+}
+
+/* SetSystemCursor's replacements, by OCR_* number */
+#define SYS_OVERRIDES 16
+static struct { int id; GdiCursorShape *c; } g_sys_over[SYS_OVERRIDES];
+
+static GdiCursorShape *sys_override(int id)
+{
+    for (int i = 0; i < SYS_OVERRIDES; i++)
+        if (g_sys_over[i].c && g_sys_over[i].id == id) return g_sys_over[i].c;
+    return NULL;
+}
+
+GdiCursorShape *WmSetSystemCursor(int id, GdiCursorShape *c)
+{
+    GdiCursorShape *old = NULL;
+    int slot = -1;
+    for (int i = 0; i < SYS_OVERRIDES; i++) {
+        if (g_sys_over[i].c && g_sys_over[i].id == id) { old = g_sys_over[i].c; slot = i; break; }
+        if (!g_sys_over[i].c && slot < 0) slot = i;
+    }
+    if (slot < 0) return c;                     /* full: the caller frees @c */
+    g_sys_over[slot].id = id;
+    g_sys_over[slot].c = c;
+    WmCursorShapeChanged();
+    return old;
+}
 
 static const GdiCursorShape *shape_at(int x, int y)
 {
-    if (g_drag || g_resize) return NULL;
+    if (g_drag) return NULL;
+    if (g_resize) return resize_shape(g_resize_edges);
     WND *w = WmGetCapture();
     if (!w) {
         int part;
         w = hit(x, y, &part);
+        if (part == HT_RESIZE) return resize_shape(g_hit_edges);
         if (!w || part != HT_CLIENT) return NULL;
     }
     return w->cursor;
@@ -965,6 +1008,11 @@ static const GdiCursorShape *shape_at(int x, int y)
 
 static int step_of(const GdiCursorShape *c, UINT64 now)
 {
+    if (c && c->sys) {                          /* the busy ring: a turn in 1.28 s */
+        GdiCursorShape *o = sys_override(SysCursorCanon(c->sys));
+        if (!o) return SysCursorAnimated(c->sys) ? (int)((now - g_shape_since) / 2 % SYSCUR_PHASES) : 0;
+        c = o;
+    }
     if (!c || c->nsteps <= 1 || !c->total) return 0;
     UINT64 t = (now - g_shape_since) % c->total;
     for (int i = 0; i < c->nsteps; i++) {
@@ -980,10 +1028,14 @@ static void cursor_draw_here(void)
     UINT64 now = sched_ticks();
     if (c != g_shape_drawn) g_shape_since = now;
     int step = step_of(c, now);
-    if (c) GdiCursorDrawShape(g_cx, g_cy, c, c->steps[step].frame);
-    else GdiCursorDraw(g_cx, g_cy);
+    int sys = !c ? OCR_NORMAL : c->sys ? SysCursorCanon(c->sys) : 0;
+    const GdiCursorShape *o = sys ? sys_override(sys) : NULL;
+    if (o) GdiCursorDrawShape(g_cx, g_cy, o, o->steps[step < o->nsteps ? step : 0].frame);
+    else if (sys) GdiCursorDrawSys(g_cx, g_cy, sys, step);
+    else GdiCursorDrawShape(g_cx, g_cy, c, c->steps[step].frame);
     g_shape_drawn = c;
     g_step_drawn = step;
+    g_sys_drawn = o ? -sys : sys;
 }
 
 const GdiCursorShape *WmCursorCurrent(int *step)
@@ -991,6 +1043,8 @@ const GdiCursorShape *WmCursorCurrent(int *step)
     if (step) *step = g_step_drawn;
     return g_shape_drawn;
 }
+
+int WmCursorSysCurrent(void) { return g_sys_drawn; }
 
 void WmCursorShapeChanged(void)
 {

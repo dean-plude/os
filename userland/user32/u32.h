@@ -41,7 +41,8 @@ typedef struct {
 enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CTL_ENABLE, CTL_SHOW, CTL_PRESENT,
        CTL_WORKAREA, CTL_WAKE, CTL_WINDOW_AT, CTL_ACCEPT_DROPS, CTL_DROP, CTL_DROP_FETCH,
        CTL_DISPLAY_MODE, CTL_SET_DISPLAY, CTL_DROP_DONE, CTL_DROP_STATUS, CTL_SET_CURSOR, CTL_CURSOR_SHAPE,
-       CTL_HWND_TAG, CTL_SET_HWND, CTL_FOREIGN, CTL_MONITOR, CTL_HEAD_MODE, CTL_SET_HEAD };
+       CTL_HWND_TAG, CTL_SET_HWND, CTL_FOREIGN, CTL_MONITOR, CTL_HEAD_MODE, CTL_SET_HEAD,
+       CTL_SET_SYSCURSOR, CTL_SYSCURSOR_IMAGE };
 /* display.c: the monitors (GetSystemMetrics' virtual screen) */
 int  u32_monitor_count(void);
 void u32_virtual_screen(RECT *r);
@@ -277,6 +278,7 @@ typedef struct Icon { DWORD magic; int w, h; int cursor; int shared; POINT hot; 
 Icon  *icon_of(HICON h);
 Icon  *icon_step(Icon *ic, UINT step);  /* the frame an animated icon shows at @step */
 void   cursor_to_kernel(HCURSOR c, int hidden);  /* the pointer over our windows */
+int    display_scale(void);              /* device pixels per logical pixel */
 HICON  load_icon_res(HINSTANCE inst, LPCWSTR name, int cx, int cy, int cursor);
 HBITMAP load_bitmap_res(HINSTANCE inst, LPCWSTR name, UINT flags);
 HICON  sys_icon(int which);          /* IDI_* */

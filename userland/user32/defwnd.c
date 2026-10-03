@@ -105,6 +105,14 @@ static LRESULT def_common(Wnd *w, HWND h, UINT msg, WPARAM wp, LPARAM lp, int wi
     case WM_SETCURSOR:
         if ((w->style & WS_CHILD) && w->parent && send_msg(w->parent, msg, wp, lp)) return TRUE;
         if (LOWORD(lp) == HTCLIENT && w->cls && w->cls->cursor) { SetCursor(w->cls->cursor); return TRUE; }
+        switch ((short)LOWORD(lp)) {                        /* a program's own frame (WM_NCHITTEST) */
+        case HTLEFT: case HTRIGHT: SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_SIZEWE)); return TRUE;
+        case HTTOP: case HTBOTTOM: SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_SIZENS)); return TRUE;
+        case HTTOPLEFT: case HTBOTTOMRIGHT: SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_SIZENWSE)); return TRUE;
+        case HTTOPRIGHT: case HTBOTTOMLEFT: SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_SIZENESW)); return TRUE;
+        case HTERROR: return FALSE;
+        }
+        if (LOWORD(lp) != HTCLIENT) { SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_ARROW)); return TRUE; }
         return FALSE;
     case WM_MOUSEACTIVATE:
         if ((w->style & WS_CHILD) && w->parent) {

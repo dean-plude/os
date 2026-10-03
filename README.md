@@ -415,7 +415,9 @@ os/
   window tree; the kernel's window manager composites only top-level
   windows, drawn from bitmaps the programs own.  The kernel also draws the
   pointer: a program's `SetCursor` shape (animated .ani cursors included)
-  over its own windows, the desktop's arrow elsewhere.
+  over its own windows, the desktop's arrow elsewhere, and the system
+  pointers (I-beam, busy ring, resize arrows on window edges, hand, cross,
+  "no" and the rest of `IDC_*`) from vector outlines, sharp at 200 %.
 - **Software rendering**: GDI is a CPU rasterizer drawing into a back
   buffer in RAM at integer HiDPI scale.  On QEMU's standard VGA, QXL,
   virtio-vga and VMware adapters (and Bochs, VirtualBox's VBoxVGA) a VBE
