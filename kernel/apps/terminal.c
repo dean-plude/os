@@ -16,6 +16,7 @@
 #include "../hal/rtc.h"
 #include "../ke/scheduler.h"
 #include "../net/net.h"
+#include "../drivers/usb.h"
 #include "../um/um.h"
 #include "../fs/persist.h"
 #include "../hal/serial.h"
@@ -516,6 +517,16 @@ static void cmd_start(Term *t, int argc, char **argv)
  * Network commands
  * ----------------------------------------------------------------------- */
 static void ip_str(UINT32 ip, char *buf) { NetFormatIp(ip, buf, 16); }
+
+/* usbcheck: the USB HID report parser on devices QEMU doesn't have
+ * (media keys, five-button mice with a horizontal wheel) */
+static void usbcheck_say(void *ctx, const char *line) { tprint((Term *)ctx, line); }
+
+static void cmd_usbcheck(Term *t)
+{
+    int failed = UsbHidSelfCheck(usbcheck_say, t);
+    tprintf(t, "usbcheck: %s, %d failed", failed ? "done" : "all passed", failed < 0 ? 1 : failed);
+}
 
 static void cmd_ipconfig(Term *t)
 {
@@ -1454,6 +1465,7 @@ static void run_cmd(Term *t, char *cmdline)
     else if (is(c, "curl"))                     cmd_fetch(t, argc, argv, false);
     else if (is(c, "cls") || is(c, "clear"))    t->count = 0;
     else if (is(c, "tasklist"))                 cmd_tasklist(t);
+    else if (is(c, "usbcheck"))                 cmd_usbcheck(t);
     else if (is(c, "taskkill"))                 cmd_taskkill(t, argc, argv);
     else if (is(c, "exit"))                     WmDestroyWindow(t->w);
     else {

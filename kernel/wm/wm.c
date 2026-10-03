@@ -691,7 +691,7 @@ bool WmMouseOther(int x, int y, WmMouseMsg msg, int dz)
     WND *w = hit(x, y, &part);
     if (!w || part != HT_CLIENT || !w->rbutton) return false;
     if (w->disabled) {
-        if (msg != WM_MOUSE_WHEEL) { WND *t = input_target(w); if (t) WmSetActive(t); }
+        if (msg != WM_MOUSE_WHEEL && msg != WM_MOUSE_HWHEEL) { WND *t = input_target(w); if (t) WmSetActive(t); }
         return true;
     }
     if ((msg == WM_MOUSE_RDOWN || msg == WM_MOUSE_MDOWN) && !w->no_activate && (!w->active || topmost(NULL) != w))

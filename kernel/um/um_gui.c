@@ -51,6 +51,9 @@
 #define WM_MBUTTONDOWN    0x0207
 #define WM_MBUTTONUP      0x0208
 #define WM_MOUSEWHEEL     0x020A
+#define WM_XBUTTONDOWN    0x020B
+#define WM_XBUTTONUP      0x020C
+#define WM_MOUSEHWHEEL    0x020E
 #define WM_MOUSELEAVE     0x02A3
 
 #define GUI_MAX_WINDOWS   64
@@ -210,6 +213,13 @@ UINT32 UmScancodeToVk(UINT8 sc, bool ext)
         case 0x4B: return 0x25; case 0x4D: return 0x27; case 0x4F: return 0x23;
         case 0x50: return 0x28; case 0x51: return 0x22; case 0x52: return 0x2D; case 0x53: return 0x2E;
         case 0x5B: return 0x5B; case 0x5C: return 0x5C; case 0x5D: return 0x5D;
+        /* media, browser and launch keys: VK_MEDIA_*, VK_VOLUME_*, VK_BROWSER_*, VK_LAUNCH_*, VK_SLEEP */
+        case 0x19: return 0xB0; case 0x10: return 0xB1; case 0x24: return 0xB2; case 0x22: return 0xB3;
+        case 0x20: return 0xAD; case 0x2E: return 0xAE; case 0x30: return 0xAF;
+        case 0x6A: return 0xA6; case 0x69: return 0xA7; case 0x67: return 0xA8; case 0x68: return 0xA9;
+        case 0x65: return 0xAA; case 0x66: return 0xAB; case 0x32: return 0xAC;
+        case 0x6C: return 0xB4; case 0x6D: return 0xB5; case 0x6B: return 0xB6; case 0x21: return 0xB7;
+        case 0x5F: return 0x5F;
         }
         return 0;
     }
@@ -250,7 +260,8 @@ static void gui_key(WND *w, const KeyEvent *k)
 static UINT64 mk_flags(void)
 {
     UINT32 b = WmButtons(), m = InputModifiers();
-    return (b & 1 ? 0x01 : 0) | (b & 2 ? 0x02 : 0) | (b & 4 ? 0x10 : 0) | (m & 1 ? 0x04 : 0) | (m & 2 ? 0x08 : 0);
+    return (b & 1 ? 0x01 : 0) | (b & 2 ? 0x02 : 0) | (b & 4 ? 0x10 : 0) | (b & 8 ? 0x20 : 0) | (b & 16 ? 0x40 : 0) |
+           (m & 1 ? 0x04 : 0) | (m & 2 ? 0x08 : 0);
 }
 
 static void gui_mouse(WND *w, WmMouseMsg msg, int x, int y)
@@ -273,6 +284,18 @@ static void gui_mouse(WND *w, WmMouseMsg msg, int x, int y)
         enqueue(g, WM_MOUSEWHEEL, (d << 16) | mk, packxy(x + c.x, y + c.y), x, y);
         break;
     }
+    case WM_MOUSE_HWHEEL: {                                 /* + is to the right, as on Windows */
+        GdiRect c = WmClientRect(w);
+        UINT64 d = (UINT64)(UINT16)(INT16)(WmWheelDelta() * 120);
+        enqueue(g, WM_MOUSEHWHEEL, (d << 16) | mk, packxy(x + c.x, y + c.y), x, y);
+        break;
+    }
+    case WM_MOUSE_XDOWN:                                    /* HIWORD(wParam): XBUTTON1 or 2 */
+        enqueue(g, WM_XBUTTONDOWN, ((UINT64)WmWheelDelta() << 16) | mk, lp, x, y);
+        break;
+    case WM_MOUSE_XUP:
+        enqueue(g, WM_XBUTTONUP, ((UINT64)WmWheelDelta() << 16) | mk, lp, x, y);
+        break;
     case WM_MOUSE_LEAVE:  enqueue(g, WM_MOUSELEAVE, 0, 0, 0, 0); break;
     }
 }

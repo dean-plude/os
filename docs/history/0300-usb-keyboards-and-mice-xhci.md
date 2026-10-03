@@ -24,6 +24,7 @@
   over USB alone, and a keyboard added and removed with `device_add` /
   `device_del` while running.
 - Not yet: a keyboard's media keys and a mouse's extra buttons.  (Done
-  since: hubs, absolute pointers and report protocol in Phase 18.1, USB
+  since: media keys and side buttons under "Media keys, side buttons and
+  the horizontal wheel"; hubs, absolute pointers and report protocol in Phase 18.1, USB
   mass storage in 18.2, and keyboard LEDs, several controllers and the
   older UHCI/OHCI/EHCI controllers under "Older USB controllers".)

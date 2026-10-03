@@ -38,6 +38,7 @@
 #include "../arch/x86_64/cpu.h"
 #include "../apps/apps.h"
 #include "../net/net.h"
+#include "../drivers/audio.h"
 
 /* -----------------------------------------------------------------------
  * Themes
@@ -1564,8 +1565,42 @@ static void start_key(const KeyEvent *k)
     WmInvalidate();
 }
 
+/* Volume and power keys (USB consumer and system control, or PS/2 E0
+ * codes) act system-wide, as Windows' shell makes them; the volume keys
+ * still reach the focused program too (VK_VOLUME_*, WM_APPCOMMAND) */
+static void system_key(const KeyEvent *k)
+{
+    if (!k->pressed || !k->extended) return;
+    UINT32 l, r;
+    bool mute;
+    switch (k->scancode) {
+    case KEY_VOL_UP: case KEY_VOL_DOWN: {
+        AudioGetMaster(0, &l, &r, &mute);
+        INT32 v = (INT32)(l > r ? l : r) + (k->scancode == KEY_VOL_UP ? 1311 : -1311);   /* 2% a press */
+        if (v < 0) v = 0;
+        if (v > 65536) v = 65536;
+        AudioSetMaster(0, (UINT32)v, (UINT32)v, false);
+        kprintf("[SHELL] Volume %d%%\n", (int)((v * 100 + 32768) / 65536));
+        break;
+    }
+    case KEY_MUTE:
+        AudioGetMaster(0, &l, &r, &mute);
+        AudioSetMaster(0, l, r, !mute);
+        kprintf("[SHELL] Volume %s\n", mute ? "unmuted" : "muted");
+        break;
+    case KEY_SLEEP:
+        if (SleepSupported()) __atomic_store_n(&g_power_req, POWER_SLEEP, __ATOMIC_RELEASE);
+        break;
+    case KEY_POWER:
+        kprintf("[SHELL] Power key pressed\n");
+        __atomic_store_n(&g_power_req, POWER_SHUTDOWN, __ATOMIC_RELEASE);
+        break;
+    }
+}
+
 static void desktop_key(const KeyEvent *k)
 {
+    system_key(k);
     bool win_key = k->extended && k->scancode == KEY_LWIN;
 
     if (!k->pressed) {
@@ -1666,6 +1701,7 @@ void DesktopRun(void *arg)
     RtcTime t; rtc_read(&t);
     int    last_min  = t.minute;
     bool   prev_left = false, prev_right = false, prev_mid = false;
+    UINT8  prev_side = 0;
     UINT64 last_press = 0;
     int    last_px = -100, last_py = -100;
 
@@ -1705,10 +1741,17 @@ void DesktopRun(void *arg)
                 bool right = (ev.buttons & MOUSE_RIGHT) != 0;
                 bool mid = (ev.buttons & MOUSE_MIDDLE) != 0;
                 int  x = WmCursorX(), y = WmCursorY();
-                WmSetButtons(ev.buttons & 7);
+                WmSetButtons(ev.buttons & 0x1F);
                 if (ev.dz) WmMouseOther(x, y, WM_MOUSE_WHEEL, ev.dz);
+                if (ev.dw) WmMouseOther(x, y, WM_MOUSE_HWHEEL, ev.dw);
                 if (mid != prev_mid) WmMouseOther(x, y, mid ? WM_MOUSE_MDOWN : WM_MOUSE_MUP, 0);
                 prev_mid = mid;
+                UINT8 side = ev.buttons & (MOUSE_X1 | MOUSE_X2);
+                for (int b = 0; b < 2; b++) {           /* back, forward */
+                    UINT8 bit = b ? MOUSE_X2 : MOUSE_X1;
+                    if ((side ^ prev_side) & bit) WmMouseOther(x, y, side & bit ? WM_MOUSE_XDOWN : WM_MOUSE_XUP, b + 1);
+                }
+                prev_side = side;
                 if (left && !prev_left) {
                     UINT64 now = sched_ticks();
                     bool dbl = now - last_press <= 45 &&

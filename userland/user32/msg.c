@@ -554,6 +554,10 @@ static void key_state(BYTE *keys, UINT msg, WPARAM wp)
     case WM_RBUTTONUP: case WM_NCRBUTTONUP: keys[VK_RBUTTON] &= ~0x80; break;
     case WM_MBUTTONDOWN: case WM_MBUTTONDBLCLK: keys[VK_MBUTTON] |= 0x80; break;
     case WM_MBUTTONUP: keys[VK_MBUTTON] &= ~0x80; break;
+    case WM_XBUTTONDOWN: case WM_XBUTTONDBLCLK: case WM_NCXBUTTONDOWN: case WM_NCXBUTTONDBLCLK:
+        keys[HIWORD(wp) == XBUTTON2 ? VK_XBUTTON2 : VK_XBUTTON1] |= 0x80;
+        break;
+    case WM_XBUTTONUP: case WM_NCXBUTTONUP: keys[HIWORD(wp) == XBUTTON2 ? VK_XBUTTON2 : VK_XBUTTON1] &= ~0x80; break;
     }
 }
 
@@ -566,7 +570,7 @@ Wnd *top_by_kid(UINT32 kid)
 static HWND g_track_leave;           /* TrackMouseEvent(TME_LEAVE) */
 static int  g_track_nc;
 static HWND g_last_mouse;            /* the window the pointer was last over */
-static struct { HWND h; UINT msg; DWORD time; POINT pt; } g_last_click;
+static struct { HWND h; UINT msg; WORD xb; DWORD time; POINT pt; } g_last_click;
 
 void track_mouse_leave(HWND h, int nc) { g_track_leave = h; g_track_nc = nc; }
 void cancel_track_mouse(HWND h) { if (g_track_leave == h) g_track_leave = 0; }
@@ -625,6 +629,7 @@ static void route_mouse(Wnd *top, const MSG *km)
     g_cursor = pt;
     DWORD time = km->time ? km->time : GetTickCount();
     WPARAM mk = km->wParam & 0xFFFF;
+    WORD xb = (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP || msg == WM_XBUTTONDBLCLK) ? HIWORD(km->wParam) : 0;
     key_state(g_async, msg, km->wParam);
     if (msg == WM_LBUTTONDBLCLK) msg = WM_LBUTTONDOWN;      /* user32 decides what is a double click */
 
@@ -649,28 +654,30 @@ static void route_mouse(Wnd *top, const MSG *km)
         queue_input(dest, msg, km->wParam, MAKELPARAM(pt.x, pt.y), time);
         return;
     }
-    if (msg == WM_MOUSEMOVE || msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN) {
+    if (msg == WM_MOUSEMOVE || msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN) {
         if (!cap) send_msg(target, WM_SETCURSOR, (WPARAM)target->h, MAKELPARAM(hit, msg));
         if (!W_quiet(target->h)) return;
     }
     /* double clicks */
-    if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN) {
-        int dbl = g_last_click.h == target->h && g_last_click.msg == msg && time - g_last_click.time <= GetDoubleClickTime() &&
+    if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN) {
+        int dbl = g_last_click.h == target->h && g_last_click.msg == msg && g_last_click.xb == xb &&
+                  time - g_last_click.time <= GetDoubleClickTime() &&
                   abs(pt.x - g_last_click.pt.x) <= 4 && abs(pt.y - g_last_click.pt.y) <= 4;
         if (dbl && (hit != HTCLIENT || (target->cls && (target->cls->style & CS_DBLCLKS)))) {
             msg += WM_LBUTTONDBLCLK - WM_LBUTTONDOWN;
             g_last_click.h = 0;
         } else {
-            g_last_click.h = target->h; g_last_click.msg = msg; g_last_click.time = time; g_last_click.pt = pt;
+            g_last_click.h = target->h; g_last_click.msg = msg; g_last_click.xb = xb; g_last_click.time = time; g_last_click.pt = pt;
         }
     }
     g_last_mouse = target->h;
     if (hit == HTCLIENT || cap) {
         POINT o;
         wnd_screen_origin(target, 1, &o);
-        queue_input(target, msg, mk, MAKELPARAM(pt.x - o.x, pt.y - o.y), time);
+        queue_input(target, msg, mk | ((WPARAM)xb << 16), MAKELPARAM(pt.x - o.x, pt.y - o.y), time);
     } else {
-        queue_input(target, msg - WM_MOUSEMOVE + WM_NCMOUSEMOVE, (WPARAM)hit, MAKELPARAM(pt.x, pt.y), time);
+        /* (WM_XBUTTON* - WM_MOUSEMOVE + WM_NCMOUSEMOVE is WM_NCXBUTTON*, with the button in HIWORD) */
+        queue_input(target, msg - WM_MOUSEMOVE + WM_NCMOUSEMOVE, (WPARAM)hit | ((WPARAM)xb << 16), MAKELPARAM(pt.x, pt.y), time);
     }
 }
 

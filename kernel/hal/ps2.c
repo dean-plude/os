@@ -33,6 +33,7 @@
 
 static bool g_have_mouse;
 static int  g_packet = 3;         /* 4 with a wheel (IntelliMouse) */
+static bool g_explorer;           /* IntelliMouse Explorer: buttons 4 and 5, horizontal wheel */
 static volatile bool g_ready;     /* ps2_init done: polling allowed */
 
 /* ---- low-level helpers ---- */
@@ -104,13 +105,21 @@ bool ps2_init(void)
      * the device then reports ID 3 and sends 4-byte packets */
     static const UINT8 knock[3] = { 200, 100, 80 };
     for (int i = 0; i < 3; i++) { mouse_cmd(0xF3); mouse_cmd(knock[i]); }
-    if (mouse_cmd(0xF2) == 0xFA && read_data() == 3) g_packet = 4;
+    if (mouse_cmd(0xF2) == 0xFA && read_data() == 3) {
+        g_packet = 4;
+        /* IntelliMouse Explorer: then 200, 200, 80 give ID 4, with the side
+         * buttons and the horizontal wheel in the fourth byte */
+        static const UINT8 knock2[3] = { 200, 200, 80 };
+        for (int i = 0; i < 3; i++) { mouse_cmd(0xF3); mouse_cmd(knock2[i]); }
+        if (mouse_cmd(0xF2) == 0xFA && read_data() == 4) g_explorer = true;
+        mouse_cmd(0xF3); mouse_cmd(100);
+    }
     UINT8 a2 = mouse_cmd(0xF4);    /* enable data reporting */
     g_have_mouse = (a1 == 0xFA || a2 == 0xFA);
 
     flush_output();
     kprintf("[PS2] Controller ready (keyboard + %s)\n",
-            !g_have_mouse ? "no mouse" : g_packet == 4 ? "wheel mouse" : "mouse");
+            !g_have_mouse ? "no mouse" : g_explorer ? "5-button wheel mouse" : g_packet == 4 ? "wheel mouse" : "mouse");
     g_ready = true;
     return true;
 }
@@ -138,7 +147,7 @@ static void handle_key(UINT8 sc)
     InputEvent ev;
     ev.type     = INPUT_KEY;
     ev.buttons  = 0;
-    ev.dx = ev.dy = ev.dz = 0;
+    ev.dx = ev.dy = ev.dz = ev.dw = 0;
     ev.absolute = 0;
     ev.pressed  = (sc & 0x80) ? 0 : 1;   /* high bit set = break (release) */
     ev.scancode = (UINT8)(sc & 0x7F);
@@ -164,16 +173,34 @@ static void handle_mouse_byte(UINT8 b)
     int dx = (int)pkt[1] - ((flags & 0x10) ? 256 : 0);
     int dy = (int)pkt[2] - ((flags & 0x20) ? 256 : 0);
 
+    static UINT8 side;                      /* buttons 4 and 5 (Explorer packets) */
     InputEvent ev;
     ev.type     = INPUT_MOUSE;
     ev.scancode = 0;
     ev.pressed  = 0;
     ev.extended = 0;
     ev.absolute = 0;
-    ev.buttons  = (UINT8)(flags & 0x07);   /* L|R|M */
     ev.dx       = dx;
     ev.dy       = -dy;                      /* PS/2 +y is up; screen +y down */
     ev.dz       = g_packet == 4 ? -(int)(INT8)pkt[3] : 0;   /* the device counts toward the user */
+    ev.dw       = 0;
+    if (g_explorer) {
+        /* Fourth byte: bits 6-7 00 (or 11) wheel in bits 0-3 and buttons 4,
+         * 5 in bits 4, 5; 01 a horizontal and 10 a vertical 6-bit wheel
+         * (the buttons then stay as they were).  Counts are toward the
+         * user and to the left. */
+        UINT8 b = pkt[3];
+        int six = (b & 0x20) ? (int)(b & 0x3F) - 64 : (int)(b & 0x3F);
+        switch (b & 0xC0) {
+        case 0x40: ev.dz = 0; ev.dw = -six; break;
+        case 0x80: ev.dz = -six; break;
+        default:
+            ev.dz = -((b & 8) ? (int)(b & 0xF) - 16 : (int)(b & 0xF));
+            side = (UINT8)(((b >> 4) & 3) << 3);
+            break;
+        }
+    }
+    ev.buttons  = (UINT8)((flags & 0x07) | side);   /* L|R|M, back, forward */
     InputPost(&ev);
 }
 
