@@ -80,6 +80,7 @@ struct UsbDev {
     bool             mtt;          /* (a hub) one TT per port */
     bool             is_hub;
     UINT16           vid, pid;
+    UINT8            iproduct;     /* the product's string descriptor (0: none) */
     UINT16           ep0_mps;
     char             name[32];
     UINT8           *buf;          /* control-transfer data (USB_CTL_BUF bytes, below 4 GiB) */

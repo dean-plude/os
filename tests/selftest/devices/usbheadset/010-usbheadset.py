@@ -31,7 +31,7 @@ def plug_mic(n, bus, kind):
         r = nova.qmp.cmd('device_add', driver='usb-redir', id=f'mic{n}', chardev=f'mic{n}', bus=bus)
         if 'error' in r:
             print('device_add:', r['error'], flush=True)
-        _wait_log(nova, r'full speed, ' + kind + r'[^\n]*\n(?:[^\n]*\n)*?\[AUDIO\] Recording from USB Microphone')
+        _wait_log(nova, r'full speed, ' + kind + r'[^\n]*\n(?:[^\n]*\n)*?\[AUDIO\] Recording from Microphone \(')
     return act
 
 
@@ -47,7 +47,7 @@ TESTS = [
          check=tones(440, wav='headset.wav', only=True),
          boot_expect=[r'high speed, EHCI', r'audio output, 48 kHz 16-bit stereo, 24-byte packets every 125 us',
                       r'audio input, 48 kHz 16-bit mono, 96-byte packets every 1000 us',
-                      r'\[AUDIO\] Recording from USB Microphone']),
+                      r'\[AUDIO\] Recording from Microphone \(']),
     Test('usbheadset record', r'soundtest record C:\hs.wav 3000', [r'recorded 132300 samples'],
          check=recording(r'C:\hs.wav', REC_HZ, 2500)),
     Test('usbheadset capture', r'soundtest capture C:\hscap.wav 1500', [r'captured 144000 frames .* at -12\.0 dB'],

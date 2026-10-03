@@ -13,6 +13,7 @@
 #include <winternl.h>
 #include "audioconv.h"
 #include "mmwave.h"
+#include "audiodev.h"
 
 #define WI_MAGIC  0x4957564E        /* "NVWI" */
 #define CHUNK     960               /* mixer frames read at a time (20 ms) */
@@ -20,6 +21,7 @@
 typedef struct WaveIn {
     DWORD       magic;
     INT_PTR     stream;
+    UINT32      device;             /* the device chosen (0: the default) */
     AudioCapConv conv;
     DWORD       cbtype;
     DWORD_PTR   cb, inst;
@@ -34,16 +36,6 @@ typedef struct WaveIn {
 
 static WaveIn *g_waveins;
 static SRWLOCK g_wi_lock;
-
-static BOOL input_present(void)
-{
-    static LONG known = -1;
-    if (known < 0) {
-        struct { UINT32 present, rate; char name[96]; } info = { 0 };
-        known = NtNovaAudioCtl(0, 7, 0, &info) == 0 && info.present;
-    }
-    return known;
-}
 
 static void notify(WaveIn *w, UINT msg, DWORD_PTR p1)
 {
@@ -116,7 +108,13 @@ static DWORD WINAPI wi_thread(LPVOID p)
     return 0;
 }
 
-MMAPI UINT WINAPI waveInGetNumDevs(void) { return input_present() ? 1 : 0; }
+/* One device ID for each input NovaOS has, oldest first; WAVE_MAPPER
+ * records from the default one */
+MMAPI UINT WINAPI waveInGetNumDevs(void)
+{
+    AudioDeviceList l;
+    return audio_devices(1, &l);
+}
 
 typedef struct {
     WORD wMid, wPid;
@@ -137,8 +135,10 @@ typedef struct {
 
 static MMRESULT check_device(UINT_PTR dev)
 {
-    if (!input_present()) return MMSYSERR_NODRIVER;
-    if (dev == 0 || dev == WAVE_MAPPER || dev == (UINT_PTR)-1 || wi_get((HANDLE)dev)) return MMSYSERR_NOERROR;
+    AudioDeviceList l;
+    UINT n = audio_devices(1, &l);
+    if (!n) return MMSYSERR_NODRIVER;
+    if (dev < n || dev == WAVE_MAPPER || dev == (UINT_PTR)-1 || wi_get((HANDLE)dev)) return MMSYSERR_NOERROR;
     return MMSYSERR_BADDEVICEID;
 }
 
@@ -149,9 +149,12 @@ static void fill_caps(WAVEINCAPSW *c, UINT_PTR dev)
     c->wMid = 1;                                    /* MM_MICROSOFT */
     c->wPid = mapper ? 3 : 101;                     /* MM_WAVE_MAPPER (input) / generic */
     c->vDriverVersion = 0x0600;
-    char name[96] = "Microsoft Sound Mapper";
-    struct { UINT32 present, rate; char name[96]; } info = { 0 };
-    if (!mapper && NtNovaAudioCtl(0, 7, 0, &info) == 0 && info.present) memcpy(name, info.name, sizeof(name));
+    WaveIn *w = mapper ? NULL : wi_get((HANDLE)dev);
+    AudioDeviceList l;
+    UINT n = audio_devices(1, &l), k = w ? n : (UINT)dev;
+    for (UINT i = 0; w && i < n; i++)               /* (a handle: its device) */
+        if (l.dev[i].id == w->device || (!w->device && l.dev[i].is_default)) k = i;
+    const char *name = mapper ? "Microsoft Sound Mapper" : k < n ? l.dev[k].name : "Microphone";
     for (int i = 0; name[i] && i < 31; i++) c->szPname[i] = (WCHAR)(BYTE)name[i];
     c->dwFormats = 0x000FFFFF;
     c->wChannels = 2;
@@ -187,8 +190,10 @@ MMAPI MMRESULT WINAPI waveInGetDevCapsA(UINT_PTR dev, WAVEINCAPSA *caps, UINT n)
 MMAPI MMRESULT WINAPI waveInOpen(HANDLE *out, UINT dev, const AcWaveFormat *fmt, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
 {
     if (out) *out = 0;
-    if (!input_present()) return MMSYSERR_NODRIVER;
-    if (dev != 0 && dev != WAVE_MAPPER) return MMSYSERR_BADDEVICEID;
+    AudioDeviceList l;
+    UINT n = audio_devices(1, &l);
+    if (!n) return MMSYSERR_NODRIVER;
+    if (dev >= n && dev != WAVE_MAPPER) return MMSYSERR_BADDEVICEID;
     if (!fmt) return MMSYSERR_INVALPARAM;
     AudioCapConv conv;
     if (!acc_init(&conv, fmt)) return WAVERR_BADFORMAT;
@@ -202,6 +207,12 @@ MMAPI MMRESULT WINAPI waveInOpen(HANDLE *out, UINT dev, const AcWaveFormat *fmt,
     if (!w) return MMSYSERR_NOMEM;
     w->stream = NtNovaAudioOpen(0x80000000u | AC_RATE);          /* records; holds 1 s */
     if (!w->stream) { HeapFree(GetProcessHeap(), 0, w); return MMSYSERR_ALLOCATED; }
+    w->device = dev == WAVE_MAPPER ? 0 : l.dev[dev].id;        /* (the mapper: the default, wherever it moves) */
+    if (w->device && !audio_route(w->stream, w->device)) {     /* (unplugged meanwhile) */
+        CloseHandle((HANDLE)w->stream);
+        HeapFree(GetProcessHeap(), 0, w);
+        return MMSYSERR_BADDEVICEID;
+    }
     w->magic = WI_MAGIC;
     w->conv = conv;
     w->cbtype = cbtype;
