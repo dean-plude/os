@@ -83,7 +83,9 @@ static uint64_t tsc_at_boot;
  * Run queues (the queue's lock held)
  * ----------------------------------------------------------------------- */
 
-static void rq_enqueue(RunQueue *rq, Thread *t)
+/* Queue @t last: it starts a new time slice when it runs (one queued first,
+ * rq_enqueue_front, keeps what it has used of its last: see wake_preempts) */
+static void rq_insert(RunQueue *rq, Thread *t)
 {
     t->state = THREAD_READY;
     if (!rq->head) {
@@ -101,6 +103,14 @@ static void rq_enqueue(RunQueue *rq, Thread *t)
     rq->count++;
 }
 
+static void rq_enqueue(RunQueue *rq, Thread *t)
+{
+    t->ticks_slice = 0;
+    rq_insert(rq, t);
+}
+
+static void rq_enqueue_front(RunQueue *rq, Thread *t);
+
 /* A thread became runnable (not merely preempted or yielding): let a
  * halted CPU run it — its own, or any idle one, which will steal it */
 static void ready_wake(RunQueue *rq, Thread *t)
@@ -115,6 +125,15 @@ static void ready_wake(RunQueue *rq, Thread *t)
  * of the running thread's 20 ms time slice.  Set under the CPU's queue
  * lock, cleared by the CPU's next switch. */
 static volatile bool g_resched[MAX_CPUS];
+/* The switch about to happen on a CPU preempts its thread for a woken one
+ * before its time slice ends: the preempted thread goes back first in the
+ * queue, as on NT, not last (else a waker its wakee preempts would wait
+ * out every other thread's slice) */
+static bool g_preempting[MAX_CPUS];
+/* (A thread queued first keeps the ticks of its slice it has used, even
+ * across waits: so one woken often, or preempted often, still reaches the
+ * end of its slice and goes last, and the threads queued behind cannot
+ * starve.) */
 
 /* Threads above this priority are "foreground" (the desktop, programs, the
  * network); the idle threads and csrss run only when none of those is ready. */
@@ -437,6 +456,8 @@ static void switch_locked(RunQueue *rq)
     PKPCR kpcr = KiGetCurrentKpcr();
     Thread *prev = current_thread;
     g_resched[kpcr->CpuNumber] = false;             /* (this switch is the one asked for) */
+    bool preempted = g_preempting[kpcr->CpuNumber];
+    g_preempting[kpcr->CpuNumber] = false;
     Thread *next = rq_dequeue(rq);
     /* Nothing queued here, and this CPU would go idle: take work waiting
      * on another CPU (a busy CPU doesn't: threads would bounce between
@@ -450,7 +471,7 @@ static void switch_locked(RunQueue *rq)
 
     if (prev == next) {
         next->state       = THREAD_RUNNING;
-        next->ticks_slice = 0;
+        if (!preempted) next->ticks_slice = 0;
         spin_unlock(&rq->lock);
         return;
     }
@@ -459,6 +480,7 @@ static void switch_locked(RunQueue *rq)
      * idle thread only ever runs as the fallback above) */
     if (prev->state == THREAD_RUNNING) {
         if (prev->idle) prev->state = THREAD_READY;
+        else if (preempted) rq_enqueue_front(rq, prev);
         else rq_enqueue(rq, prev);
     }
     /* (a thread is queued only once switched out, under the lock of the
@@ -467,7 +489,6 @@ static void switch_locked(RunQueue *rq)
     next->on_cpu        = true;
     next->cpu           = this_cpu();
     next->state         = THREAD_RUNNING;
-    next->ticks_slice   = 0;
     kpcr->CurrentThread = next;
     kpcr->Idle          = 0;
     kpcr->PrevThread    = prev;
@@ -656,7 +677,9 @@ void sched_tick(void)
             steal_now = __atomic_load_n(&g_rq[c].head, __ATOMIC_RELAXED) != NULL;
     /* A sleeper that is due runs now, or a thread woken for this CPU
      * (sched_unblock); or the time slice expired */
-    if (preempt || steal_now || g_resched[cpu] || current_thread->ticks_slice >= TICKS_PER_SLICE)
+    bool slice_over = current_thread->ticks_slice >= TICKS_PER_SLICE;
+    if ((preempt || g_resched[cpu]) && !slice_over) g_preempting[cpu] = true;
+    if (preempt || steal_now || g_resched[cpu] || slice_over)
         perform_switch();
 }
 
@@ -762,7 +785,7 @@ void sched_wait(void)
  * current thread's priority.  *soonest: the earliest TSC deadline left. */
 static void rq_enqueue_front(RunQueue *rq, Thread *t)
 {
-    rq_enqueue(rq, t);
+    rq_insert(rq, t);
     rq->head = t;                                   /* (the circle's tail, now its head) */
 }
 
@@ -817,6 +840,7 @@ static bool wake_preempts(const Thread *t)
     PKPCR k = &g_kpcr[t->cpu];
     Thread *cur = (Thread *)__atomic_load_n(&k->CurrentThread, __ATOMIC_RELAXED);
     if (!k->Online || !cur || cur == t || cur->idle) return false;
+    if (t->ticks_slice >= TICKS_PER_SLICE) return false;   /* (its slice is used up: last in line) */
     return t->priority > cur->priority || (t->wake_tsc && t->priority >= cur->priority);
 }
 
@@ -843,7 +867,9 @@ void sched_unblock(Thread *t)
 void sched_resched_ipi(void)
 {
     uint32_t cpu = this_cpu();
-    if (g_resched[cpu] && current_thread) perform_switch();
+    if (!g_resched[cpu] || !current_thread) return;
+    g_preempting[cpu] = current_thread->ticks_slice < TICKS_PER_SLICE;
+    perform_switch();
 }
 
 /* -----------------------------------------------------------------------
