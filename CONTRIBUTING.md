@@ -22,6 +22,7 @@ and merge cleanly in either order.
 | a "What is inside" item, or extending one | `docs/readme/inside/NNN-slug.md` | the list in `README.md` |
 | a bundled licence | `docs/readme/licenses/NNN-slug.md` (one "Name: licence" line) | the licence sentence in `README.md` |
 | a row in building.md's self-test program table | `docs/selftests/NNN-name.md` | the table in `docs/building.md` |
+| a program in the compatibility list, or a change to its status | `docs/compatibility/NNN-slug.md` | the table in `docs/compatibility.md` |
 
 Files are taken in name order, so the prefix places the item: pick a number
 between its neighbours (`045` between `040` and `050`).  Two changes that
@@ -36,8 +37,8 @@ give their DLLs the same address (three open branches once all chose
 
 ## Generated text: leave it alone in pull requests
 
-`README.md`, `docs/ROADMAP.md`, `docs/HISTORY.md` and `docs/building.md`
-have regions between `<!-- BEGIN generated:NAME -->` and
+`README.md`, `docs/ROADMAP.md`, `docs/HISTORY.md`, `docs/building.md` and
+`docs/compatibility.md` have regions between `<!-- BEGIN generated:NAME -->` and
 `<!-- END generated:NAME -->`.  `tools/docgen.py` builds them from the
 fragment files above (and from the self-test and app-corpus files' `DOC`
 strings, and the programs' `"selftest": true`).  In a pull request:

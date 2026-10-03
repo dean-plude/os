@@ -1,0 +1,1 @@
+| **GIMP** (App Store) | Untested | | — |

@@ -1,0 +1,1 @@
+| **LibreOffice** (App Store) | Untested | | — |

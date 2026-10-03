@@ -10,10 +10,14 @@ Linux VM.  On a Mac, see [macos.md](macos.md).
 sudo apt update
 sudo apt install -y \
     cmake ninja-build nasm python3 \
-    clang lld llvm libc++-dev \
+    clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
     mtools dosfstools xorriso \
-    qemu-system-x86 ovmf
+    qemu-system-x86 ovmf acpica-tools
 ```
+
+That is everything the build, `cmake --build . --target run` and the
+self-tests need; it was last checked on Ubuntu 24.04 (October 2026) by
+following this page from the top.
 
 What each part is for:
 
@@ -30,6 +34,7 @@ What each part is for:
 | `mtools`, `dosfstools` | `nova.img` and putting files on the data disk |
 | `xorriso` | `scripts/create-iso.sh` |
 | `qemu-system-x86`, `ovmf` | Running NovaOS |
+| `acpica-tools` (`iasl`) | Only for the core self-tests, which compile the ACPI tables in `tests/acpi/` |
 
 ### Optional compilers
 
