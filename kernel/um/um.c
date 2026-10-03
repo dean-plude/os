@@ -27,6 +27,7 @@
 #include "../fs/persist.h"
 #include "../fs/drives.h"
 #include "../drivers/audio.h"
+#include "../fs/bootlog.h"
 #include "../arch/x86_64/idt.h"
 #include "um_internal.h"
 #include "../ke/syscall.h"
@@ -2606,6 +2607,7 @@ void UmSaveAll(void)
     um_registry_flush();
     if (!PersistSync()) kprintf("[PERSIST] Saving drive C: failed\n");
     if (!DrivesSync()) kprintf("[DRIVES] Writing changed files to the drives failed\n");
+    BootLogSync();
 }
 
 void UmPoll(void)
@@ -2613,6 +2615,7 @@ void UmPoll(void)
     um_registry_poll();
     PersistPoll();
     DrivesPoll();
+    BootLogPoll();
     for (int i = 0; i < UM_MAX_PROCS; i++) {
         UmProcess *p = g_procs[i];
         if (!p) continue;

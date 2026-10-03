@@ -502,6 +502,7 @@ static void heads_probe(const BootFramebuffer *boot)
         if (!head_set_mode(h, start.w, start.h, true)) continue;
         h->def = h->cur;
         g_nheads++;
+        PciClaim(&pci, "Bochs VBE (second monitor)");
         kprintf("[DISPLAY] Head %d: %s at %02x:%02x.%x, %llu MB video memory, %dx%d, %d mode(s)\n",
                 g_nheads, h->name, pci.bus, pci.dev, pci.func,
                 (unsigned long long)(h->vram_size >> 20), h->cur.w, h->cur.h, h->nmodes);
@@ -714,6 +715,21 @@ static void virtio_takeover(void)
     }
 }
 
+/* The display function whose memory BAR holds the boot framebuffer is
+ * the one this driver (or the GOP framebuffer) draws through */
+static void claim_boot_display(UINT64 base)
+{
+    PciDevice pci;
+    for (int i = 0; PciAt(i, &pci, NULL); i++) {
+        if (pci.class_code != 0x03) continue;
+        for (int bar = 0; bar < 6; bar++)
+            if (PciBarAddress(&pci, bar) == base) {
+                PciClaim(&pci, DisplayDriverName());
+                return;
+            }
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Public API
  * ----------------------------------------------------------------------- */
@@ -751,6 +767,7 @@ void DisplayInit(const BootFramebuffer *boot)
         add_mode(d.boot.w, d.boot.h);
     }
     g_boot_fb = boot->base;
+    claim_boot_display(boot->base);
     VgpuInit();
     if (d.kind == DRV_BOCHS) virtio_takeover();
     kprintf("[DISPLAY] %s: %dx%d, %d mode(s), %s\n", DisplayDriverName(), d.cur.w, d.cur.h,

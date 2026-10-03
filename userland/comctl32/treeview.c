@@ -38,7 +38,8 @@ typedef struct {
     HIMAGELIST il, sil;
     HFONT font;
     int fh;
-    int indent, item_h;
+    int indent, item_h;                 /* indent 0: 19 at 96 DPI; item_set: TVM_SETITEMHEIGHT's */
+    int item_set;
     COLORREF bk, text, line, insmark;
     TItem *sel, *drop, *hot;
     TItem **vis;                        /* the rows: items whose ancestors are expanded */
@@ -210,13 +211,14 @@ static int item_children(HWND h, TV *s, TItem *it)
  * Layout
  * ----------------------------------------------------------------------- */
 static int row_h(TV *s) { return s->item_h; }
+static int indent(HWND h, TV *s) { return s->indent ? s->indent : 19 * cc_k(h); }
 
 static int default_item_h(HWND h, TV *s)
 {
     int ih = 0, iw;
     if (s->il) ImageList_GetIconSize(s->il, &iw, &ih);
-    int r = MAX(s->fh + 4, ih + 2);
-    if (r < 16) r = 16;
+    int k = cc_k(h), r = MAX(s->fh + 4 * k, ih + 2 * k);
+    if (r < 16 * k) r = 16 * k;
     if (!(style_of(h) & TVS_NONEVENHEIGHT) && (r & 1)) r++;
     return r;
 }
@@ -246,8 +248,8 @@ static int content_x(HWND h, TV *s, int level)
 {
     DWORD st = style_of(h);
     int glyph = (st & (TVS_HASBUTTONS | TVS_HASLINES)) != 0;
-    int x = level * s->indent;
-    if (glyph && (st & TVS_LINESATROOT)) x += s->indent;
+    int x = level * indent(h, s);
+    if (glyph && (st & TVS_LINESATROOT)) x += indent(h, s);
     return x - s->sx;
 }
 
@@ -264,18 +266,19 @@ static BOOL parts(HWND h, TV *s, TItem *it, Parts *p)
     int y = (it->row - s->top) * rh;
     int x = content_x(h, s, it->level);
     SetRect(&p->row, 0, y, c.right, y + rh);
-    SetRect(&p->button, x - s->indent, y, x, y + rh);
+    SetRect(&p->button, x - indent(h, s), y, x, y + rh);
+    int k = cc_k(h);
     int sw = 0, sh = 0;
     if (s->sil) ImageList_GetIconSize(s->sil, &sw, &sh);
-    else if (style_of(h) & TVS_CHECKBOXES) { sw = 16; sh = 16; }
-    SetRect(&p->state, x, y, x + (sw ? sw + 2 : 0), y + rh);
+    else if (style_of(h) & TVS_CHECKBOXES) { sw = 16 * k; sh = 16 * k; }
+    SetRect(&p->state, x, y, x + (sw ? sw + 2 * k : 0), y + rh);
     x = p->state.right;
     int iw = 0, ih = 0;
     if (s->il) ImageList_GetIconSize(s->il, &iw, &ih);
-    SetRect(&p->icon, x, y, x + (iw ? iw + 3 : 0), y + rh);
+    SetRect(&p->icon, x, y, x + (iw ? iw + 3 * k : 0), y + rh);
     x = p->icon.right;
     int tw = text_w(h, s, it);
-    SetRect(&p->label, x, y, x + tw + 6, y + rh);
+    SetRect(&p->label, x, y, x + tw + 6 * k, y + rh);
     return TRUE;
 }
 
@@ -289,7 +292,7 @@ static int content_width(HWND h, TV *s)
         if (parts(h, s, s->vis[i], &p) && p.label.right > w) w = p.label.right;
     }
     s->sx = save;
-    return w + 4;
+    return w + 4 * cc_k(h);
 }
 
 static void update_scroll(HWND h, TV *s)
@@ -675,26 +678,26 @@ static void dotted_v(HDC dc, int x, int y0, int y1, COLORREF c)
     for (int y = y0 + ((x + y0) & 1); y < y1; y += 2) { RECT r = { x, y, x + 1, y + 1 }; cc_fill(dc, &r, c); }
 }
 
-static void draw_check(HDC dc, int x, int y, BOOL on)
+static void draw_check(HDC dc, int x, int y, BOOL on, int s)    /* s: the DPI scale */
 {
-    RECT b = { x, y, x + 13, y + 13 };
+    RECT b = { x, y, x + 13 * s, y + 13 * s };
     cc_fill(dc, &b, RGB(255, 255, 255));
     cc_frame(dc, &b, RGB(51, 51, 51));
     if (on) {
-        for (int k = 0; k < 3; k++) { RECT r = { x + 3 + k, y + 6 + k, x + 4 + k, y + 8 + k }; cc_fill(dc, &r, RGB(0, 0, 0)); }
-        for (int k = 0; k < 5; k++) { RECT r = { x + 6 + k, y + 7 - k, x + 7 + k, y + 9 - k }; cc_fill(dc, &r, RGB(0, 0, 0)); }
+        for (int k = 0; k < 3; k++) { RECT r = { x + (3 + k) * s, y + (6 + k) * s, x + (4 + k) * s, y + (8 + k) * s }; cc_fill(dc, &r, RGB(0, 0, 0)); }
+        for (int k = 0; k < 5; k++) { RECT r = { x + (6 + k) * s, y + (7 - k) * s, x + (7 + k) * s, y + (9 - k) * s }; cc_fill(dc, &r, RGB(0, 0, 0)); }
     }
 }
 
-static void draw_button(HDC dc, const RECT *r, BOOL expanded, BOOL hot)
+static void draw_button(HDC dc, const RECT *r, BOOL expanded, BOOL hot, int s)
 {
     int cx = (r->left + r->right) / 2, cy = (r->top + r->bottom) / 2;
     /* a small triangle: right for collapsed, down-right for expanded */
     COLORREF c = hot ? RGB(28, 151, 234) : expanded ? RGB(38, 38, 38) : RGB(150, 150, 150);
     if (!expanded) {
-        for (int i = 0; i < 4; i++) { RECT l = { cx - 1 + i, cy - 3 + i, cx + i, cy + 4 - i }; cc_fill(dc, &l, c); }
+        for (int i = 0; i < 4; i++) { RECT l = { cx + (i - 1) * s, cy + (i - 3) * s, cx + i * s, cy + (4 - i) * s }; cc_fill(dc, &l, c); }
     } else {
-        for (int i = 0; i < 4; i++) { RECT l = { cx - 3 + i, cy - 1 + i, cx + 2, cy + i }; cc_fill(dc, &l, c); }
+        for (int i = 0; i < 4; i++) { RECT l = { cx + (i - 3) * s, cy + (i - 1) * s, cx + 2 * s, cy + i * s }; cc_fill(dc, &l, c); }
     }
 }
 
@@ -737,7 +740,7 @@ static void paint_item(HWND h, TV *s, HDC dc, TItem *it, BOOL want_item, BOOL fo
         }
         int x = cx;
         for (TItem *a = it->parent; a && a != &s->root; a = a->parent) {
-            x -= s->indent;
+            x -= indent(h, s);
             if (a->next) dotted_v(dc, x, p.row.top, p.row.bottom, lc);
         }
     }
@@ -745,8 +748,8 @@ static void paint_item(HWND h, TV *s, HDC dc, TItem *it, BOOL want_item, BOOL fo
     if ((st & TVS_HASBUTTONS) && has_children(it) && (it->level > 0 || (st & TVS_LINESATROOT) || !(st & TVS_HASLINES))) {
         if (it->level > 0 || (st & TVS_LINESATROOT) || !(st & TVS_HASLINES)) {
             RECT b = p.button;
-            if (st & TVS_HASLINES) { int cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2; RECT bg = { cx - 5, cy - 5, cx + 6, cy + 6 }; cc_fill(dc, &bg, c_bk(s)); }
-            draw_button(dc, &b, (it->state & TVIS_EXPANDED) != 0, it == s->hot);
+            if (st & TVS_HASLINES) { int cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2; int k = cc_k(h); RECT bg = { cx - 5 * k, cy - 5 * k, cx + 6 * k, cy + 6 * k }; cc_fill(dc, &bg, c_bk(s)); }
+            draw_button(dc, &b, (it->state & TVIS_EXPANDED) != 0, it == s->hot, cc_k(h));
         }
     }
     /* selection background */
@@ -760,7 +763,7 @@ static void paint_item(HWND h, TV *s, HDC dc, TItem *it, BOOL want_item, BOOL fo
     if (s->sil) {
         if (si) { int sw, sh; ImageList_GetIconSize(s->sil, &sw, &sh); il_draw(s->sil, (int)si - 1, dc, p.state.left, (p.row.top + p.row.bottom - sh) / 2, ILD_TRANSPARENT); }
     } else if (st & TVS_CHECKBOXES) {
-        draw_check(dc, p.state.left + 1, (p.row.top + p.row.bottom - 13) / 2, si == 2);
+        draw_check(dc, p.state.left + cc_k(h), (p.row.top + p.row.bottom - 13 * cc_k(h)) / 2, si == 2, cc_k(h));
     }
     /* image */
     if (s->il) {
@@ -783,7 +786,7 @@ static void paint_item(HWND h, TV *s, HDC dc, TItem *it, BOOL want_item, BOOL fo
         }
         HGDIOBJ of = SelectObject(dc, bold ? bold : f);
         SetTextColor(dc, (it->state & TVIS_CUT) ? GetSysColor(COLOR_GRAYTEXT) : text);
-        RECT tr = { p.label.left + 3, p.label.top, p.label.right - 3, p.label.bottom };
+        RECT tr = { p.label.left + 3 * cc_k(h), p.label.top, p.label.right - 3 * cc_k(h), p.label.bottom };
         DrawTextW(dc, t, -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_NOCLIP);
         SelectObject(dc, of);
         if (bold) DeleteObject(bold);
@@ -1130,7 +1133,6 @@ LRESULT CALLBACK TreeViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         s->root.magic = TV_MAGIC;
         s->root.row = -1;
         s->root.state = TVIS_EXPANDED;
-        s->indent = 19;
         s->bk = s->text = s->line = s->insmark = CLR_DEFAULT;
         s->fh = cc_font_h(cc_font_for(h));
         s->item_h = 0;
@@ -1155,6 +1157,11 @@ LRESULT CALLBACK TreeViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); paint(h, s, dc, &ps.rcPaint); EndPaint(h, &ps); return 0; }
     case WM_PRINTCLIENT: { RECT c; GetClientRect(h, &c); paint(h, s, (HDC)wp, &c); return 0; }
     case WM_SIZE: update_scroll(h, s); InvalidateRect(h, NULL, TRUE); return 0;
+    case WM_DPICHANGED_AFTERPARENT:                          /* the window's DPI changed: the defaults' sizes */
+        if (!s->font) s->fh = cc_font_h(cc_font_for(h));
+        if (!s->item_set) s->item_h = default_item_h(h, s);
+        refresh(h, s);
+        return 0;
     case WM_SETFONT:
         s->font = (HFONT)wp;
         s->fh = cc_font_h(s->font ? s->font : cc_font_for(h));
@@ -1218,7 +1225,7 @@ LRESULT CALLBACK TreeViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return TRUE;
     }
     case TVM_GETCOUNT: return s->count;
-    case TVM_GETINDENT: return s->indent;
+    case TVM_GETINDENT: return indent(h, s);
     case TVM_SETINDENT: s->indent = MAX((int)wp, 5); refresh(h, s); return 0;
     case TVM_GETIMAGELIST: return (LRESULT)(wp == TVSIL_STATE ? s->sil : s->il);
     case TVM_SETIMAGELIST: {
@@ -1302,6 +1309,7 @@ LRESULT CALLBACK TreeViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         int o = s->item_h;
         int v = (int)wp;
         s->item_h = v <= 0 ? default_item_h(h, s) : v;
+        s->item_set = v > 0;
         if (!(style_of(h) & TVS_NONEVENHEIGHT) && (s->item_h & 1)) s->item_h++;
         refresh(h, s);
         return o;

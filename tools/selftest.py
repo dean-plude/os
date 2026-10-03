@@ -36,7 +36,12 @@ order; --list prints them):
             tools/usbredirpeer.py behind a QEMU usb-redir device (soundtest
             tone, record and capture); "monitors", one virtio-vga card with
             three outputs, whose monitors the test plugs in and unplugs
-            while NovaOS runs (montest hotplug)
+            while NovaOS runs (montest hotplug); "usbboot", nova.iso
+            written to a USB stick and nothing else to start from, with
+            only the firmware's GOP for a display: it must start live,
+            write its boot log into EFI/NOVA/bootlog.txt on the stick,
+            and a kernel fault must reach that file too; "cdboot", the
+            same ISO as a disc in a SATA DVD drive, which must start live
 
 Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
@@ -128,9 +133,12 @@ def close_lid(nova):
     nova.qmp.cmd('system_wakeup')
     # The tests after this one type on that keyboard: wait until NovaOS has
     # found it again after the wake (read from the file: run() owns the stream)
+    # (NovaOS logs the keyboard coming back before or after "Woke up": the
+    # xHCI port is re-enumerated while it resumes, so either order is fine)
     for _ in range(240):
         log = open(nova.serial_path, 'rb').read().decode('latin-1')
-        if 'Woke up' in log and re.search(r'Woke up[\s\S]*\[USB\] port \d+: keyboard', log):
+        log = log[log.rfind('Lid closed: sleeping'):]
+        if 'Woke up' in log and re.search(r'keyboard removed[\s\S]*\[USB\] port \d+: keyboard \(report protocol', log):
             break
         time.sleep(0.25)
 
@@ -225,6 +233,8 @@ TOUCH = load_suite('devices/touch')
 USBAUDIO = load_suite('devices/usbaudio')
 USBHEADSET = load_suite('devices/usbheadset')
 MONITORS = load_suite('devices/monitors')
+USBBOOT = load_suite('devices/usbboot')
+CDBOOT = load_suite('devices/cdboot')
 
 
 def net4_boot(work):
@@ -309,12 +319,44 @@ def monitors_boot(work):
         [x for n in (1, 2) for x in ('-vnc', f'unix:{os.path.join(work, f"vnc{n}.sock")},id=vnc{n},display=gpu,head={n}')], []
 
 
-# The suites that boot once per entry: (label, tests, setup(work) -> (QEMU arguments, processes))
+def iso_path(work):
+    """build/nova.iso, or one made from the build in @work"""
+    iso = os.path.join(ROOT, 'build', 'nova.iso')
+    if not os.path.exists(iso):
+        iso = os.path.join(work, 'nova.iso')
+        subprocess.run([os.path.join(ROOT, 'scripts', 'create-iso.sh'), iso,
+                        os.path.join(ROOT, 'build', 'bootx64.efi'), os.path.join(ROOT, 'build', 'kernel.elf')],
+                       check=True, stdout=subprocess.DEVNULL)
+    return iso
+
+
+def cdboot_boot(work):
+    """No boot disk: nova.iso in a SATA DVD drive (tests/selftest/devices/cdboot)"""
+    return ['-cdrom', iso_path(work)], [], {'img': False}
+
+
+def usbboot_boot(work):
+    """No boot disk: nova.iso written to a 2 GiB USB stick (work/stick.img)
+    on an xHCI controller, and no display adapter NovaOS has a driver for
+    (QEMU's ramfb, which only the firmware's GOP drives), as on a laptop
+    with integrated graphics.  build/nova.iso, or one made from the build
+    (tests/selftest/devices/usbboot)"""
+    stick = os.path.join(work, 'stick.img')
+    shutil.copy(iso_path(work), stick)
+    with open(stick, 'r+b') as f:
+        f.truncate(2 << 30)
+    return ['-device', 'qemu-xhci,id=xhci', '-drive', f'if=none,id=stick,format=raw,file={stick}',
+            '-device', 'usb-storage,bus=xhci.0,drive=stick,bootindex=0'], [], {'img': False, 'vga': ('-vga', 'none', '-device', 'ramfb')}
+
+
+# The suites that boot once per entry: (label, tests, setup(work) -> (QEMU arguments, processes[,
+# more Nova arguments]))
 BOOTS = {
     'network': [('ipv4', NET4, net4_boot), ('ipv6', NET6, net6_boot)],
     'devices': [('touch', TOUCH, touch_boot), ('usbaudio', USBAUDIO, usbaudio_boot),
                 ('usbheadset', USBHEADSET, usbheadset_boot),
-                ('monitors', MONITORS, monitors_boot)],
+                ('monitors', MONITORS, monitors_boot), ('usbboot', USBBOOT, usbboot_boot),
+                ('cdboot', CDBOOT, cdboot_boot)],
 }
 
 
@@ -404,8 +446,8 @@ def main():
             work = tempfile.mkdtemp(prefix='selftest')
             procs = []
             try:
-                args, procs = setup(work)
-                results += run_boot(a, tests, work, name, extra_args=args, data_mb=64)
+                args, procs, *more = setup(work)
+                results += run_boot(a, tests, work, name, extra_args=args, data_mb=64, **(more[0] if more else {}))
             finally:
                 for p in procs:
                     p.kill()
@@ -468,7 +510,7 @@ def run_boot(a, tests, work, label, **nova_args):
     log_name = f'serial-{label}.log' if label else 'serial.log'
     t_boot = time.time()
     try:
-        nova = Nova(a.img, work, **nova_args)
+        nova = Nova(nova_args.pop('img', a.img), work, **nova_args)
     except RuntimeError as e:
         print(e)
         shutil.copy(os.path.join(work, 'serial.log'), os.path.join(a.out, log_name))

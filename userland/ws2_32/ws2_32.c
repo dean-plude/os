@@ -206,14 +206,99 @@ int ioctlsocket(SOCKET s, long cmd, u_long *argp)
     return SOCKET_ERROR;
 }
 
+/* Socket options: the kernel's SOCKOPT_* (kernel/net/sock.h) for a level
+ * and name, 0 for one NovaOS accepts and ignores (IPV6_V6ONLY, the
+ * AcceptEx/ConnectEx context updates, SO_EXCLUSIVEADDRUSE...), as it
+ * accepted every option before */
+enum { KO_RCVBUF = 1, KO_SNDBUF, KO_REUSEADDR, KO_KEEPALIVE, KO_BROADCAST, KO_NODELAY, KO_RCVTIMEO,
+       KO_SNDTIMEO, KO_LINGER, KO_TTL, KO_TYPE, KO_ERROR, KO_ACCEPTCONN };
+static int kernel_opt(int level, int opt)
+{
+    if (level == SOL_SOCKET) switch (opt) {
+        case SO_RCVBUF: return KO_RCVBUF;       case SO_SNDBUF: return KO_SNDBUF;
+        case SO_REUSEADDR: return KO_REUSEADDR; case SO_KEEPALIVE: return KO_KEEPALIVE;
+        case SO_BROADCAST: return KO_BROADCAST; case SO_RCVTIMEO: return KO_RCVTIMEO;
+        case SO_SNDTIMEO: return KO_SNDTIMEO;   case SO_LINGER: case SO_DONTLINGER: return KO_LINGER;
+        case SO_TYPE: return KO_TYPE;           case SO_ERROR: return KO_ERROR;
+        case SO_ACCEPTCONN: return KO_ACCEPTCONN;
+    }
+    if (level == IPPROTO_TCP && opt == TCP_NODELAY) return KO_NODELAY;
+    if ((level == IPPROTO_IP && opt == IP_TTL) || (level == IPPROTO_IPV6 && opt == IPV6_UNICAST_HOPS)) return KO_TTL;
+    return 0;
+}
+
+/* A BOOL or DWORD option's value: 4 bytes, or 1 (Windows takes a BOOL
+ * option given as one byte) */
+static int opt_value(const char *val, int len, DWORD *v)
+{
+    if (!val) { set_err(WSAEFAULT); return 0; }
+    if (len >= 4) { memcpy(v, val, 4); return 1; }
+    if (len >= 1) { *v = (BYTE)val[0]; return 1; }
+    set_err(WSAEFAULT);
+    return 0;
+}
+
 int setsockopt(SOCKET s, int level, int opt, const char *val, int len)
-{ (void)s; (void)level; (void)opt; (void)val; (void)len; return 0; }   /* accepted, ignored */
+{
+    int ko = kernel_opt(level, opt);
+    if (!ko) return 0;                                      /* accepted, ignored */
+    if (ko == KO_TYPE || ko == KO_ERROR || ko == KO_ACCEPTCONN) { set_err(WSAENOPROTOOPT); return SOCKET_ERROR; }
+    DWORD v;
+    if (ko == KO_LINGER && opt == SO_LINGER) {
+        if (!val || len < (int)sizeof(struct linger)) { set_err(WSAEFAULT); return SOCKET_ERROR; }
+        struct linger l;
+        memcpy(&l, val, sizeof(l));
+        v = (l.l_onoff ? 1u : 0u) | ((DWORD)(l.l_linger > 0x7FFF ? 0x7FFF : l.l_linger) << 16);
+    } else {
+        if (!opt_value(val, len, &v)) return SOCKET_ERROR;
+        if (ko == KO_LINGER) {                              /* SO_DONTLINGER: off, the timeout kept */
+            long cur = NtNovaSockCtl((INT_PTR)s, 10, KO_LINGER, 0);
+            if (cur < 0) return sock_err(cur);
+            v = (v ? 0u : 1u) | ((DWORD)cur & 0xFFFF0000u);
+        } else if (v > 0x7FFFFFFF) {
+            v = 0x7FFFFFFF;
+        }
+    }
+    long r = NtNovaSockCtl((INT_PTR)s, 9, (ULONG_PTR)ko, (void *)(ULONG_PTR)v);
+    if (r < 0) {
+        if (r == -7 /* SOCK_EINVAL */) { set_err(ko == KO_TTL ? WSAEINVAL : WSAENOPROTOOPT); return SOCKET_ERROR; }
+        return sock_err(r);
+    }
+    return 0;
+}
+
+/* SOCK_E* codes (SO_ERROR) as WSA errors, as sock_err maps them */
+static int wsa_of(long e)
+{
+    if (!e) return 0;
+    sock_err(-e);
+    return WSAGetLastError();
+}
 
 int getsockopt(SOCKET s, int level, int opt, char *val, int *len)
 {
-    (void)s; (void)level;
-    if (opt == SO_ERROR && val && len && *len >= 4) { *(int *)val = 0; *len = 4; return 0; }
-    if (val && len && *len >= 4) { *(int *)val = 0; *len = 4; }
+    if (!val || !len) { set_err(WSAEFAULT); return SOCKET_ERROR; }
+    int ko = kernel_opt(level, opt);
+    if (!ko) {                                              /* (one NovaOS ignores: 0, as before) */
+        if (*len >= 4) { *(int *)val = 0; *len = 4; }
+        return 0;
+    }
+    DWORD saved = WSAGetLastError();
+    long r = NtNovaSockCtl((INT_PTR)s, 10, (ULONG_PTR)ko, 0);
+    if (r < 0) return sock_err(r);
+    if (ko == KO_LINGER && opt == SO_LINGER) {
+        if (*len < (int)sizeof(struct linger)) { set_err(WSAEFAULT); return SOCKET_ERROR; }
+        struct linger l = { (USHORT)(r & 0xFFFF), (USHORT)(r >> 16) };
+        memcpy(val, &l, sizeof(l));
+        *len = sizeof(l);
+        return 0;
+    }
+    DWORD v = (DWORD)r;
+    if (ko == KO_LINGER) v = !(r & 0xFFFF);                 /* SO_DONTLINGER */
+    if (ko == KO_ERROR) { v = (DWORD)wsa_of(r); set_err((int)saved); }
+    if (*len >= 4) { memcpy(val, &v, 4); *len = 4; }
+    else if (*len >= 1 && v <= 0xFF) { val[0] = (char)v; *len = 1; }   /* (a BOOL in one byte) */
+    else { set_err(WSAEFAULT); return SOCKET_ERROR; }
     return 0;
 }
 

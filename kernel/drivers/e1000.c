@@ -211,6 +211,7 @@ bool E1000Init(void)
     hw_setup(false);
 
     g.present = true;
+    PciClaim(&d, g.eerd_82574 ? "e1000e" : "e1000");
     kprintf("[E1000] %s at %02x:%02x.%x, MAC %02x:%02x:%02x:%02x:%02x:%02x, link %s\n",
             g.name, d.bus, d.dev, d.func, g.mac[0], g.mac[1], g.mac[2], g.mac[3],
             g.mac[4], g.mac[5], E1000LinkUp() ? "up" : "down");

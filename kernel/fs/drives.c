@@ -247,7 +247,7 @@ static void scan(BlockDev *d)
         memcpy(&count, s + BLOCK_SECTOR + 80, 4);
         memcpy(&esize, s + BLOCK_SECTOR + 84, 4);
         UINT8 *ent = kmalloc(BLOCK_SECTOR);
-        if (ent && esize >= 128 && esize <= BLOCK_SECTOR && count <= 128) {
+        if (ent && esize >= 128 && esize <= BLOCK_SECTOR && count <= 1024) {   /* (128 entries is usual; xorriso writes 248) */
             UINT32 per = BLOCK_SECTOR / esize;
             for (UINT32 i = 0; i < count; i++) {
                 if (i % per == 0 && !d->read(d, table + i / per, 1, ent)) break;

@@ -185,8 +185,31 @@ push to `main` that passes CI replaces `nova.iso` on the `latest` release:
 <https://github.com/dean-plude/os/releases/latest/download/nova.iso>.
 
 The ISO is El Torito UEFI, no emulation: its EFI System Partition holds
-`\EFI\BOOT\BOOTX64.EFI` and `\EFI\NOVA\kernel.elf`.  Booted from it, NovaOS
-runs live and opens Install NovaOS (see the README).
+`\EFI\BOOT\BOOTX64.EFI`, `\EFI\NOVA\kernel.elf` and `\EFI\NOVA\bootlog.txt`
+(1 MiB set aside for the boot log).  The same ESP is partition 2 of a GPT
+behind a protective MBR, so the ISO written to a USB stick starts too.
+Booted from either, NovaOS runs live and opens Install NovaOS (see the
+README); the bootloader tells the installation media from an installed
+disk by `bootlog.txt`, which the installer does not copy.  Started from a
+stick, the kernel writes its log into `bootlog.txt` in place
+(`kernel/fs/bootlog.c`): what was logged since boot when the stick
+appears, then the rest at most once a second, before a restart and after
+a kernel fault.  To try the stick in QEMU, with only the firmware's
+framebuffer for a display as on a laptop:
+
+```bash
+cp nova.iso stick.img
+truncate -s 2G stick.img
+qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/OVMF.fd \
+  -vga none -device ramfb -device qemu-xhci,id=xhci \
+  -drive if=none,id=stick,format=raw,file=stick.img \
+  -device usb-storage,bus=xhci.0,drive=stick -serial stdio
+```
+
+The devices suite's `usbboot` boot does this and reads the log back
+from the stick image with mtools; `cdboot` starts from the ISO as a
+disc.
 
 ---
 
@@ -514,7 +537,12 @@ script builds, an SVG without a size and an iframe holding a frameset
 page: the test checks the SVGs' colours and sizes (the unsized one at the
 default 300 x 150), the list items and both frames on the screen, clicks the page's box (a script changes it) and
 checks the page was redrawn with it changed and the rest still there (`nstest-before.png`,
-`nstest-after.png`), then closes NetSurf with Alt+F4.  Last, `explorer
+`nstest-after.png`), then closes NetSurf with Alt+F4.  Then `store scroll
+bar` runs `store open` and checks, from the `[STORE] view:` lines the App
+Store logs when its view changes, that All apps has a vertical scroll bar
+and that the wheel, Home, Page Down, End, a click on the bar's down arrow,
+one in its trough and a drag of its thumb each scroll the list, then
+closes the Store with Esc.  Last, `explorer
 scroll bars` opens File Explorer on `C:\Windows\System32` (more files than
 fit) and checks, from the `[EXPLORER]` lines it logs when its view
 changes, that the list has a vertical scroll bar and that the wheel, Page
@@ -793,6 +821,9 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
 
 - **Serial log**: every kernel message goes to COM1 (your terminal under
   `run`).  In NovaOS, the Terminal's `dmesg` shows it.
+- **`devices`** in the Terminal lists the PCI devices and the driver
+  each one has (missing drivers in red); on a real PC this is the first
+  thing to check ([hardware.md](hardware.md)).
 - **Program crashes** are logged with the faulting module and offset, the
   process's exit code, and `OutputDebugString` output.
 - **`trace NAME`** in the Terminal logs the failing system calls (with file

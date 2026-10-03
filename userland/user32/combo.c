@@ -336,6 +336,13 @@ LRESULT CALLBACK ComboProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_PRINTCLIENT: paint(w, c, (HDC)wp); return 0;
+    case WM_NOVA_RESCALE:                                   /* its window's DPI changed: the field's height */
+        if (c->list && !is_child_of(w, W_quiet(c->list))) SendMessageW(c->list, WM_NOVA_RESCALE, 0, 0);
+        measure_field(w, c);
+        if (CBTYPE(w) != CBS_SIMPLE) wnd_set_pos(w, 0, 0, 0, w->rect.right - w->rect.left, c->field_h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        layout(w, c);
+        invalidate(w, NULL, TRUE, 1);
+        return 0;
     case WM_SETFONT:
         w->font = (HFONT)wp;
         if (c->edit) SendMessageW(c->edit, WM_SETFONT, wp, lp);

@@ -98,7 +98,8 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
   in a window you can resize, maximize or snap (the page is laid out
   again to fit).
 - **Command line**: the Terminal's own commands (`dir`, `copy`, `ping`,
-  `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`…)
+  `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`,
+  `devices`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
   `more`, `less` (git's pager), `timeout`, `taskkill`, `reg`, `regsvr32`, `msiexec` and
   `intl` (the user's regional format).
@@ -109,7 +110,7 @@ The dock's App Store downloads the official 64-bit packages of 21 open-source
 programs (Firefox, VLC, LibreOffice, GIMP, Notepad++, PuTTY…) and six
 runtimes, and installs them with 7-Zip, NovaOS's Windows Installer or the
 program's own setup.  `store install NAME` in the Terminal does what the
-row's button does (CI installs Mesa 3D, DXVK and Venus that way).  Most of those programs still need more of Windows than
+row's button does (CI installs Mesa 3D, DXVK and Venus that way), and `store open` opens it.  Its list scrolls with the same scroll bar as File Explorer's.  Most of those programs still need more of Windows than
 NovaOS has (more of the GUI); the ones in the table
 above are the ones verified.  See [the App Store](docs/HISTORY.md#the-app-store).
 
@@ -292,6 +293,24 @@ FW="$(brew --prefix qemu)/share/qemu/edk2-x86_64-code.fd"
 qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -drive if=pflash,format=raw,readonly=on,file="$FW" \
   -cdrom nova.iso -serial stdio
+```
+
+The same ISO starts a real PC from a USB stick (UEFI, Secure Boot off;
+the display is the firmware's framebuffer).  Writing it erases the stick:
+on Linux, find the stick with `lsblk` (here `/dev/sdX`) and run the
+commands below; on Windows use Rufus in "DD image" mode or balenaEtcher,
+and on a Mac see [docs/macos.md](docs/macos.md).  Started from the stick,
+NovaOS runs live as from the disc and writes its log into
+`EFI\NOVA\bootlog.txt` on the stick's EFI partition (partition 2,
+labelled `NOVA_EFI`), so a PC without a serial port still leaves a log to
+read on another computer.  Linux mounts that partition as it is; macOS
+with `diskutil mount` (`disk4s2` for a stick at `disk4`); Windows gives
+an EFI partition no drive letter by itself, so assign one in `diskpart`
+(`list volume`, `select volume N`, `assign letter=Z`).
+
+```bash
+sudo dd if=nova.iso of=/dev/sdX bs=4M conv=fsync status=progress
+sync
 ```
 
 To make the ISO yourself from a fresh build, run
@@ -564,6 +583,9 @@ os/
   Silicon and Intel).
 - [docs/ROADMAP.md](docs/ROADMAP.md): the compatibility strategy and what
   comes next.
+- [docs/hardware.md](docs/hardware.md): the reference PC for real
+  hardware, which of its devices NovaOS drives, and every driver NovaOS
+  has.
 - [docs/HISTORY.md](docs/HISTORY.md): what every phase added, in detail.
 - [docs/phase1-architecture.md](docs/phase1-architecture.md): the boot flow,
   address-space layout and early kernel design.

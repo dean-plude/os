@@ -402,6 +402,7 @@ static LRESULT lb_proc(Wnd *w, HWND h, UINT msg, WPARAM wp, LPARAM lp, int combo
         return 0;
     }
     case WM_PRINTCLIENT: paint(w, l, (HDC)wp); return 0;
+    case WM_NOVA_RESCALE: setup_height(w, l); for (int i = 0; i < l->n; i++) measure(w, l, i); update_sb(w, l); redraw(w, l); return 0;
     case WM_SETFONT: w->font = (HFONT)wp; setup_height(w, l); for (int i = 0; i < l->n; i++) measure(w, l, i); update_sb(w, l); if (lp) redraw(w, l); return 0;
     case WM_GETFONT: return (LRESULT)w->font;
     case WM_SETREDRAW: l->no_redraw = !wp; if (wp) { update_sb(w, l); invalidate(w, NULL, TRUE, 0); } return 0;
