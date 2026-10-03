@@ -15,7 +15,9 @@
 # The checks job runs first, in seconds: no conflict markers left by a
 # merge, the DLL and program manifests and the self-test files load, and
 # (on a pull request) the generated doc regions were not edited by hand
-# (CONTRIBUTING.md).  The boot tests wait for it.
+# (CONTRIBUTING.md).  The boot tests wait for it.  The merge queue runs the
+# same jobs on its temporary merge-group branches (the generated-docs check
+# was already done on the pull request, so it is skipped there).
 #
 # Speed: the build compiles through ccache, whose cache the boot-test job
 # saves after each build (main's cache is shared with every pull request), so
@@ -26,6 +28,7 @@ name: CI
 
 on:
   pull_request:
+  merge_group:
   push:
     branches: [main]
   workflow_dispatch:
