@@ -468,6 +468,7 @@ int NetSockAccept(int sd, NetSockAddr *peer, SockCancelFn c, void *ca)
             s->acc_tail = (s->acc_tail + 1) % ACCEPT_MAX;
             Sock *ns = &g_sock[ni];
             if (ns->tcp) tcp_backlog_accepted(ns->tcp);
+            ns->nonblock = s->nonblock;               /* as on Windows: the listener's mode is inherited */
             if (peer) *peer = ns->peer;
             net_unlock();
             return ni;
