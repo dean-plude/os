@@ -44,7 +44,7 @@ enum {
     F_DB_COMMIT, F_DB_STATE, F_OPEN_DATABASE, F_GET_PROP, F_SET_PROP, F_GET_MODE, F_SET_MODE,
     F_LANGUAGE, F_GET_TARGET, F_SET_TARGET, F_GET_SOURCE, F_DO_ACTION, F_SEQUENCE, F_EVAL_COND,
     F_MESSAGE, F_FEATURE_STATE, F_SET_FEATURE_STATE, F_COMP_STATE, F_SET_COMP_STATE,
-    F_SET_INSTALL_LEVEL, F_SUMINFO, F_SUMINFO_GET, F_SUMINFO_COUNT,
+    F_SET_INSTALL_LEVEL, F_SUMINFO, F_SUMINFO_GET, F_SUMINFO_COUNT, F_APPLY_TRANSFORM,
 };
 
 typedef struct {
@@ -473,6 +473,25 @@ static void serve(Call *c)
         return;
     }
     case F_DB_COMMIT: c->ret = db_of(h) ? 0 : ERROR_INVALID_HANDLE; return;
+    case F_APPLY_TRANSFORM: {                                          /* MsiDatabaseApplyTransform */
+        DbObj *d = db_of(h);
+        if (!d) return;
+        WCHAR w[MAX_PATH];
+        MultiByteToWideChar(CP_UTF8, 0, c->s[0] ? c->s[0] : "", -1, w, MAX_PATH);
+        HANDLE f = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        c->ret = 1624;                                                 /* ERROR_INSTALL_TRANSFORM_FAILURE */
+        if (f == INVALID_HANDLE_VALUE) return;
+        DWORD sz = GetFileSize(f, NULL), rd = 0;
+        void *data = malloc(sz ? sz : 1);
+        bool ok = data && ReadFile(f, data, sz, &rd, NULL) && rd == sz;
+        CloseHandle(f);
+        MsiFile *mf = ok ? msifile_load(data, sz) : (free(data), NULL);
+        if (!mf) return;
+        char err[256];
+        c->ret = (uint32_t)msidb_apply_transform(d->pdb, mf, NULL, (int)c->in[1], err, sizeof(err));
+        msifile_release(mf);
+        return;
+    }
     case F_DB_STATE: c->ret = 0; return;                               /* MSIDBSTATE_READ */
     case F_GET_PROP: {
         Inst *in = session_of(h);
@@ -1026,6 +1045,9 @@ MSIAPI MsiDatabaseGetPrimaryKeysA(MSIHANDLE db, LPCSTR table, MSIHANDLE *out) { 
 __declspec(dllexport) int WINAPI MsiDatabaseIsTablePersistentW(MSIHANDLE db, LPCWSTR t) { return (int)simple(F_TABLE_PERSISTENT, db, 0, 0, w2u(t), NULL); }
 __declspec(dllexport) int WINAPI MsiDatabaseIsTablePersistentA(MSIHANDLE db, LPCSTR t) { return (int)simple(F_TABLE_PERSISTENT, db, 0, 0, a2u(t), NULL); }
 MSIAPI MsiDatabaseCommit(MSIHANDLE db) { return simple(F_DB_COMMIT, db, 0, 0, NULL, NULL); }
+MSIAPI MsiDatabaseApplyTransformW(MSIHANDLE db, LPCWSTR path, int errors) { return simple(F_APPLY_TRANSFORM, db, (uint32_t)errors, 0, w2u(path), NULL); }
+MSIAPI MsiDatabaseApplyTransformA(MSIHANDLE db, LPCSTR path, int errors) { return simple(F_APPLY_TRANSFORM, db, (uint32_t)errors, 0, a2u(path), NULL); }
+
 __declspec(dllexport) int WINAPI MsiGetDatabaseState(MSIHANDLE db) { return (int)simple(F_DB_STATE, db, 0, 0, NULL, NULL); }
 
 /* -----------------------------------------------------------------------

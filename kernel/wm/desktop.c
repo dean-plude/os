@@ -1749,6 +1749,12 @@ void DesktopRun(void *arg)
     update_clock();
     /* Started from the installation disc: offer to install */
     if (SetupIsLive()) AppLaunch(APP_SETUP);
+    else {
+        /* An installed system starts its automatic services (services.c) */
+        RamNode *svc = RamfsResolve(NULL, "\\Windows\\System32\\services.exe");
+        if (!svc || !UmSpawnDetached(svc, "services /autostart", svc->parent))
+            kprintf("[SVC] Cannot start services.exe: %s\n", svc ? "out of memory" : "not installed");
+    }
     WmComposite();
     WmCursorShow(GdiScreenW() / 2, GdiScreenH() / 2);
 
