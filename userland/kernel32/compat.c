@@ -813,8 +813,91 @@ K32 VOID WINAPI CloseThreadpoolWait(PVOID p)
     zfree(w);
 }
 
+/* Threadpool timers and timer queue timers: a worker thread per timer
+ * waits on a kernel waitable timer (to the TSC, not the 10 ms tick;
+ * periodic ones on their own grid, so they don't drift) and calls the
+ * callback.  A freed timer's worker waits for the next one: a new thread
+ * would start late on a busy machine, and its first callback with it. */
+typedef struct Worker {
+    struct Worker *next;            /* (the idle list) */
+    HANDLE timer, thread;
+    SRWLOCK lock;                   /* the callback below */
+    void (*call)(void *a, void *b, void *c);   /* NULL: no timer uses it */
+    void *a, *b, *c;
+    volatile LONG busy;             /* in a callback */
+    DWORD tid;
+} Worker;
+static Worker *g_idle_workers;
+static SRWLOCK g_worker_lock;
+
+static DWORD WINAPI worker_thread(LPVOID p)
+{
+    Worker *w = p;
+    w->tid = GetCurrentThreadId();
+    for (;;) {
+        if (WaitForSingleObject(w->timer, INFINITE) != WAIT_OBJECT_0) { Sleep(10); continue; }
+        AcquireSRWLockExclusive(&w->lock);
+        void (*call)(void *, void *, void *) = w->call;
+        void *a = w->a, *b = w->b, *c = w->c;
+        if (call) w->busy = 1;
+        ReleaseSRWLockExclusive(&w->lock);
+        if (!call) continue;
+        call(a, b, c);
+        w->busy = 0;
+    }
+}
+
+static Worker *worker_get(void (*call)(void *, void *, void *), void *a, void *b, void *c)
+{
+    AcquireSRWLockExclusive(&g_worker_lock);
+    Worker *w = g_idle_workers;
+    if (w) g_idle_workers = w->next;
+    ReleaseSRWLockExclusive(&g_worker_lock);
+    if (!w) {
+        w = zalloc(sizeof(*w));
+        if (!w) return 0;
+        w->timer = CreateWaitableTimerW(0, FALSE, 0);
+        w->thread = w->timer ? CreateThread(0, 64 * 1024, worker_thread, w, 0, 0) : 0;
+        if (!w->thread) { if (w->timer) CloseHandle(w->timer); zfree(w); return 0; }
+    }
+    AcquireSRWLockExclusive(&w->lock);
+    w->call = call; w->a = a; w->b = b; w->c = c;
+    ReleaseSRWLockExclusive(&w->lock);
+    return w;
+}
+
+/* @due: 100 ns units, negative relative (as SetWaitableTimer); @period ms */
+static void worker_set(Worker *w, LONGLONG due, DWORD period)
+{
+    LARGE_INTEGER d;
+    d.QuadPart = due;
+    SetWaitableTimer(w->timer, &d, (LONG)period, 0, 0, FALSE);
+}
+
+/* No more callbacks; when @wait, a running one has finished too (unless
+ * it is the caller) */
+static void worker_quiet(Worker *w, BOOL wait)
+{
+    CancelWaitableTimer(w->timer);
+    AcquireSRWLockExclusive(&w->lock);
+    w->call = 0;
+    ReleaseSRWLockExclusive(&w->lock);
+    if (wait && w->tid != GetCurrentThreadId()) while (w->busy) Sleep(1);
+}
+
+static void worker_put(Worker *w, BOOL wait)
+{
+    worker_quiet(w, wait);
+    AcquireSRWLockExclusive(&g_worker_lock);
+    w->next = g_idle_workers;
+    g_idle_workers = w;
+    ReleaseSRWLockExclusive(&g_worker_lock);
+}
+
 typedef VOID (WINAPI *TpTimerFn)(PVOID instance, PVOID ctx, PVOID timer);
-typedef struct { DWORD magic; TpTimerFn fn; PVOID ctx; HANDLE thread, stop; LONGLONG due; DWORD period; volatile LONG armed; } TpTimer;
+typedef struct { DWORD magic; TpTimerFn fn; PVOID ctx; Worker *w; BOOL set; } TpTimer;
+
+static void tp_timer_call(void *fn, void *ctx, void *t) { ((TpTimerFn)fn)(0, ctx, t); }
 
 K32 PVOID WINAPI CreateThreadpoolTimer(TpTimerFn fn, PVOID ctx, PVOID env)
 {
@@ -822,45 +905,112 @@ K32 PVOID WINAPI CreateThreadpoolTimer(TpTimerFn fn, PVOID ctx, PVOID env)
     TpTimer *t = zalloc(sizeof(*t));
     if (!t) return 0;
     t->magic = 0x54505449; t->fn = fn; t->ctx = ctx;
-    t->stop = CreateEventW(0, FALSE, FALSE, 0);
+    t->w = worker_get(tp_timer_call, (void *)fn, ctx, t);
+    if (!t->w) { zfree(t); return 0; }
     return t;
-}
-
-static DWORD WINAPI tp_timer_thread(LPVOID p)
-{
-    TpTimer *t = p;
-    DWORD wait = (DWORD)t->due;
-    for (;;) {
-        if (WaitForSingleObject(t->stop, wait) != WAIT_TIMEOUT) break;
-        t->fn(0, t->ctx, t);
-        if (!t->period) break;
-        wait = t->period;
-    }
-    return 0;
 }
 
 K32 VOID WINAPI SetThreadpoolTimer(PVOID p, PFILETIME due, DWORD period, DWORD window)
 {
     (void)window;
     TpTimer *t = p;
-    if (t->thread) { SetEvent(t->stop); WaitForSingleObject(t->thread, INFINITE); CloseHandle(t->thread); t->thread = 0; ResetEvent(t->stop); }
-    if (!due) return;
+    if (!due) { CancelWaitableTimer(t->w->timer); t->set = FALSE; return; }
     LONGLONG d = ft(due);
-    if (d < 0) t->due = -d / 10000;
-    else { FILETIME now; GetSystemTimeAsFileTime(&now); LONGLONG x = d - ft(&now); t->due = x > 0 ? x / 10000 : 0; }
-    t->period = period;
-    t->thread = CreateThread(0, 0, tp_timer_thread, t, 0, 0);
+    worker_set(t->w, d ? d : -1, period);           /* (0 is "now"; as an absolute time it is long gone) */
+    t->set = TRUE;
 }
-K32 BOOL WINAPI IsThreadpoolTimerSet(PVOID p) { return ((TpTimer *)p)->thread != 0; }
-K32 VOID WINAPI WaitForThreadpoolTimerCallbacks(PVOID p, BOOL cancel) { (void)p; (void)cancel; }
+K32 BOOL WINAPI IsThreadpoolTimerSet(PVOID p) { return ((TpTimer *)p)->set; }
+K32 VOID WINAPI WaitForThreadpoolTimerCallbacks(PVOID p, BOOL cancel)
+{
+    TpTimer *t = p;
+    if (cancel) SetThreadpoolTimer(t, 0, 0, 0);
+    if (t->w->tid != GetCurrentThreadId()) while (t->w->busy) Sleep(1);
+}
 K32 VOID WINAPI CloseThreadpoolTimer(PVOID p)
 {
     TpTimer *t = p;
-    SetThreadpoolTimer(t, 0, 0, 0);
-    CloseHandle(t->stop);
+    worker_put(t->w, FALSE);
     t->magic = 0;
     zfree(t);
 }
+
+/* Timer queues (CreateTimerQueueTimer): the timers above, in a list per
+ * queue (NULL: the default queue) */
+typedef struct QueueTimer { struct QueueTimer *next; Worker *w; struct TimerQueue *q; } QueueTimer;
+typedef struct TimerQueue { DWORD magic; QueueTimer *timers; } TimerQueue;
+static TimerQueue g_default_queue;
+static SRWLOCK g_queue_lock;
+
+static void queue_timer_call(void *fn, void *param, void *unused) { (void)unused; ((WAITORTIMERCALLBACK)fn)(param, TRUE); }
+
+K32 HANDLE WINAPI CreateTimerQueue(void)
+{
+    TimerQueue *q = zalloc(sizeof(*q));
+    if (!q) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    q->magic = 0x51524D54;
+    return q;
+}
+
+K32 BOOL WINAPI CreateTimerQueueTimer(PHANDLE out, HANDLE queue, WAITORTIMERCALLBACK fn, PVOID param,
+                                      DWORD due, DWORD period, ULONG flags)
+{
+    TimerQueue *q = queue ? queue : &g_default_queue;
+    QueueTimer *t = zalloc(sizeof(*t));
+    if (t) t->w = worker_get(queue_timer_call, (void *)fn, param, 0);
+    if (!t || !t->w) { zfree(t); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    t->q = q;
+    AcquireSRWLockExclusive(&g_queue_lock);
+    t->next = q->timers;
+    q->timers = t;
+    ReleaseSRWLockExclusive(&g_queue_lock);
+    worker_set(t->w, -(LONGLONG)due * 10000, flags & WT_EXECUTEONLYONCE ? 0 : period);
+    *out = t;
+    return TRUE;
+}
+
+K32 BOOL WINAPI ChangeTimerQueueTimer(HANDLE queue, HANDLE timer, ULONG due, ULONG period)
+{
+    (void)queue;
+    if (!timer) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    worker_set(((QueueTimer *)timer)->w, -(LONGLONG)due * 10000, period);
+    return TRUE;
+}
+
+/* @completion: INVALID_HANDLE_VALUE waits for a running callback; an
+ * event is set once it has finished; NULL returns at once */
+static void queue_timer_free(QueueTimer *t, HANDLE completion)
+{
+    worker_put(t->w, completion != 0);
+    if (completion && completion != INVALID_HANDLE_VALUE) SetEvent(completion);
+    zfree(t);
+}
+
+K32 BOOL WINAPI DeleteTimerQueueTimer(HANDLE queue, HANDLE timer, HANDLE completion)
+{
+    QueueTimer *t = timer;
+    if (!t) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    (void)queue;
+    AcquireSRWLockExclusive(&g_queue_lock);
+    for (QueueTimer **pp = &t->q->timers; *pp; pp = &(*pp)->next)
+        if (*pp == t) { *pp = t->next; break; }
+    ReleaseSRWLockExclusive(&g_queue_lock);
+    queue_timer_free(t, completion);
+    return TRUE;
+}
+
+K32 BOOL WINAPI DeleteTimerQueueEx(HANDLE queue, HANDLE completion)
+{
+    TimerQueue *q = queue ? queue : &g_default_queue;
+    AcquireSRWLockExclusive(&g_queue_lock);
+    QueueTimer *list = q->timers;
+    q->timers = 0;
+    ReleaseSRWLockExclusive(&g_queue_lock);
+    for (QueueTimer *t = list, *n; t; t = n) { n = t->next; queue_timer_free(t, completion ? INVALID_HANDLE_VALUE : 0); }
+    if (completion && completion != INVALID_HANDLE_VALUE) SetEvent(completion);
+    if (q != &g_default_queue) { q->magic = 0; zfree(q); }
+    return TRUE;
+}
+K32 BOOL WINAPI DeleteTimerQueue(HANDLE queue) { return DeleteTimerQueueEx(queue, 0); }
 
 /* Pools and environments: one pool, the calls just succeed */
 K32 PVOID WINAPI CreateThreadpool(PVOID r) { (void)r; static int pool; return &pool; }
