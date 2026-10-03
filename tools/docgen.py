@@ -5,9 +5,9 @@ docs/HISTORY.md and docs/building.md from one-file-per-item fragments.
     tools/docgen.py                 rewrite the generated regions in place
     tools/docgen.py --check         exit 1 if a region is out of date
     tools/docgen.py --check-pr REV  exit 1 if this tree's regions differ from
-                                    REV's (a change edited generated text by
-                                    hand instead of adding or editing a
-                                    fragment)
+                                    REV's without being byte-identical to a
+                                    fresh run on this tree (a hand edit); an
+                                    exact regeneration is accepted
     tools/docgen.py --list          print each region and its sources
 
 Parallel pull requests used to collide on the same lines of these files
@@ -168,15 +168,17 @@ def main():
             if old is None:
                 continue
             a, b = regions_of(old), regions_of(mine)
+            fresh = regions_of(render(target, mine))
             for name in sorted(set(a) & set(b)):  # (a change adding or retiring a region is exempt)
-                if a[name] != b[name]:
+                if a[name] != b[name] and b[name] != fresh[name]:
                     src = REGIONS[target].get(name, (None, '?'))[1]
-                    print(f'::error file={target}::{target}: the generated region "{name}" was edited by hand. '
-                          f'Put the change in {src} instead and keep {target} as on main; '
-                          f'tools/docgen.py rebuilds it after the merge (CONTRIBUTING.md).')
+                    print(f'::error file={target}::{target}: the generated region "{name}" differs from '
+                          f'both main and a fresh tools/docgen.py run. Put the change in {src} and either '
+                          f'keep the region as on main or run tools/docgen.py to regenerate it exactly '
+                          f'(CONTRIBUTING.md).')
                     bad += 1
         if not bad:
-            print('generated regions untouched; fragments build: OK')
+            print('generated regions untouched or exact regenerations; fragments build: OK')
         return 1 if bad else 0
     stale = 0
     for target in REGIONS:
