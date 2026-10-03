@@ -17,10 +17,13 @@ during the tone).  When the ring held only a little of the tone, the
 speaker repeated 100 ms bursts of it every 341 ms, which the check did
 not look at.
 
-- `kernel/drivers/audio.c`: every tick the mixer keeps 80 ms of silence
-  ahead of each attached output that is not playing, starting where its
-  last mix ended, so what was mixed for it before the switch still plays
-  and then it is quiet.  This also applies to the HD Audio card when a USB
+- `kernel/drivers/audio.c`: at the switch the mixer clears the old
+  output's ring beyond what was mixed for it, and from then on keeps
+  80 ms of silence ahead of each attached output that is not playing, so
+  what was mixed before the switch still plays and then it is quiet.
+  (Clearing only from the next tick on was not enough: on a CI runner
+  the mixer had fallen behind at the switch and 30 ms of the old lap
+  still played.)  This also applies to the HD Audio card when a USB
   headset takes over.
 - `tools/selftest.py`: `tones(..., only=True)` also fails when anything
   else sounds in the recording.  The `usbaudio xhci`, `usbaudio uhci` and

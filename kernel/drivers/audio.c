@@ -223,9 +223,21 @@ static void mixer_thread(void *arg)
 /* Play on @o from its current position on (lock held; NULL: nothing plays) */
 static void switch_output(const AudioOutput *o)
 {
-    for (int i = 0; i < g.nouts && g.out && g.out != o; i++)
-        if (g.outs[i] == g.out)                       /* still attached: silence it after what was mixed */
-            g.idle[i] = (Track){ .last_pos = g.last_pos, .base = g.hw_base, .write = g.write_abs };
+    for (int i = 0; i < g.nouts && g.out && g.out != o; i++) {
+        if (g.outs[i] != g.out) continue;
+        /* Still attached: what was mixed for it plays, the rest of its
+         * ring (a lap old) is cleared now, not at the next tick, which a
+         * busy machine may run after the device has got there */
+        UINT64 hw = hw_abs(), at = g.write_abs > hw ? g.write_abs : hw, end = hw + g.ring_bytes;
+        while (at < end) {
+            UINT32 off = (UINT32)(at % g.ring_bytes);
+            UINT64 n = end - at;
+            if (n > g.ring_bytes - off) n = g.ring_bytes - off;
+            memset((UINT8 *)g.ring + off, 0, (size_t)n);
+            at += n;
+        }
+        g.idle[i] = (Track){ .last_pos = g.last_pos, .base = g.hw_base, .write = end };
+    }
     g.out = o;
     if (!o) return;
     g.ring = o->ring;
