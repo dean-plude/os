@@ -46,7 +46,7 @@ def wake(nova):
 
 
 TESTS = [
-    Test('e1000e', 'ipconfig', [r'Intel 82574L', r'IPv4 Address[ .]*: 10\.0\.2\.15'], builtin=True,
+    Test('e1000e', 'ipconfig', [r'Intel 82574L', r'IPv4 Address[ .]*: 10\.0\.2\.15'], builtin=True, before=address_back('[E1000] Intel 82574L'),
          boot_expect=[r'\[E1000\] Intel 82574L [^\n]* at [0-9a-f:.]+, MAC [0-9a-f:]+',
                       r'\[E1000\] PHY [0-9a-f]{4}:[0-9a-f]{4}, auto-negotiating',
                       r'\[E1000\] Link up at 1000 Mb/s, full duplex']),
