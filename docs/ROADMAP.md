@@ -82,11 +82,13 @@ named program or test demonstrates it.
 - NetSurf: SVG; redrawing pages a script changes after layout.
 
 ### Application coverage
-- Bring the App Store catalog up program by program, starting with the
-  "untested" portable ones (Notepad++, SumatraPDF, PuTTY, WinMerge), then
-  the Qt and GTK applications (KeePassXC, Krita, Inkscape), then Firefox.
-- Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the
-  `IFileDialog` interfaces (today they report "cancelled").
+- Bring the App Store catalog up program by program: ~~the "untested"
+  portable ones (Notepad++, SumatraPDF, PuTTY, WinMerge)~~ Done (Phase
+  20.2, in the nightly corpus); then the Qt and GTK applications
+  (KeePassXC, Krita, Inkscape), then Firefox.
+- ~~Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the
+  `IFileDialog` interfaces~~ Done (Phase 20.1, `dlgtest`); see
+  [Phase 20](HISTORY.md#phase-20-common-dialogs-and-portable-programs).
 - Windows Installer: custom actions that run code, the packages' own
   dialogs (`InstallUISequence`), the `Shortcut` table, services, merge
   modules; LZX cabinets tested against real packages.
@@ -164,7 +166,8 @@ named program or test demonstrates it.
   permanent regression test, built for x64 and x86; `tools/pe_imports.py`
   shows what a new program needs before it is tried.
 - **Nightly app corpus** (done): `tools/appcorpus.py` runs ripgrep, fd, jq,
-  7-Zip, MinGit, Python, Node.js and Notepad++ every night, checks
+  7-Zip, MinGit, Python, Node.js, SumatraPDF, WinMerge, Notepad++ and
+  PuTTY every night, checks
   NovaOS's own `dir` and This PC screens, and posts a pass/fail table per
   program.
 

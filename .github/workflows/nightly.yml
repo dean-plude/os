@@ -1,6 +1,6 @@
 # Nightly app corpus: boots NovaOS built from main and runs unmodified
 # Windows programs (ripgrep, fd, jq, 7-Zip, MinGit, Python, Node.js,
-# Notepad++) with tools/appcorpus.py.  The pass/fail table goes to the run's
+# SumatraPDF, WinMerge, Notepad++, PuTTY) with tools/appcorpus.py.  The pass/fail table goes to the run's
 # summary and, as a comment, to the "Nightly app corpus" issue (opened on
 # the first run).  Pull requests that change the corpus run it as well.
 name: Nightly app corpus

@@ -292,13 +292,20 @@ unpacks them into `C:\Apps`, boots once and runs each one's commands.
 | Python 3.14.0 (NuGet package) | `-c` with `json` and `sys` |
 | Node.js 24.9.0 | `-v`, `-e` |
 | NovaOS's own screens | `dir C:\` and `dir D:\` (an empty NTFS disk made with `mkntfs`) name their drive and give its own free space (`dir.png`); `start explorer` shows This PC with both drives, matching `tests/reference/this-pc.png` |
+| SumatraPDF 3.4.6 (the official 32-bit build, from the npm package `pdf-to-printer`) | opens a PDF the script generates; the screenshot must match `tests/reference/sumatrapdf.png` |
+| WinMerge 2.16.50 | compares `hello.txt` with `hello2.txt`; the screenshot must match `tests/reference/winmerge.png` |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
+| PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
+
+The windowed programs run last, one at a time (each takes the keyboard and
+is closed with Alt+F4 before the next).  Building PuTTY needs `cmake` and
+`gcc-mingw-w64-x86-64`.
 
 ```bash
 sudo apt install p7zip-full python3-pil ntfs-3g   # 7-Zip's installer, Pillow, mkntfs (drive D:)
 python3 tools/appcorpus.py                   # exit status = programs that failed
 python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
-python3 tools/appcorpus.py --only NovaOS,Notepad++ --update-reference   # after an intended change
+python3 tools/appcorpus.py --only NovaOS,SumatraPDF,WinMerge,Notepad++,PuTTY --update-reference   # after an intended change
 ```
 
 A command passes as a self-test does (exit code 0, the output expected).
