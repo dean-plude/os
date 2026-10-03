@@ -1294,6 +1294,11 @@ void DesktopRestoreDisplayMode(void)
         char key[96];
         UINT32 w, h, x, y;
         video_key(head, key, sizeof(key));
+        UINT32 dpi;
+        if (um_registry_get_dword(key, "LogPixels", &dpi) && dpi != 96) {
+            GdiSetMonitorDpi(head, (int)dpi);
+            kprintf("[DISPLAY] Display %d: %u DPI for DPI-aware programs\n", head + 1, dpi);
+        }
         if (head > 0 && um_registry_get_dword(key, "Attach.RelativeX", &x) &&
             um_registry_get_dword(key, "Attach.RelativeY", &y)) {
             GdiSetMonitorOrigin(head, (int)x, (int)y);
@@ -1392,6 +1397,21 @@ bool DesktopSetMonitorOrigin(int i, int x, int y, bool save)
     UmGuiDisplayChanged(m.w, m.h);
     kprintf("[SHELL] Display %d at (%d, %d)%s\n", i + 1, r.x, r.y, r.x == x && r.y == y ? "" : " (moved to touch the others)");
     return r.x == x && r.y == y;
+}
+
+void DesktopSetMonitorDpi(int head, int dpi, bool save)
+{
+    DesktopLock();
+    GdiSetMonitorDpi(head, dpi);
+    int now = GdiMonitorDpi(head);
+    DesktopUnlock();
+    if (save) {
+        char key[96];
+        video_key(head, key, sizeof(key));
+        um_registry_set_dword(key, "LogPixels", (UINT32)(dpi >= 144 ? 192 : 96));
+    }
+    UmGuiDpiChanged();
+    kprintf("[SHELL] Display %d: %d DPI for DPI-aware programs (asked for %d)\n", head + 1, now, dpi);
 }
 
 void DesktopToggleStart(void) { start_open(!g_start_open); }

@@ -220,6 +220,7 @@ static Wnd *desktop(void)
         d->wide = 1;
         d->proc = DesktopProc;
     }
+    if (dpi_aware()) { dpi_desktop_rect(&d->rect); d->client = d->rect; }   /* the primary, as we see it */
     return d;
 }
 
@@ -548,8 +549,8 @@ static int framed(Wnd *w)
 static void kernel_insets(Wnd *w, RECT *r)
 {
     if (!framed(w)) { SetRectEmpty(r); return; }
-    int b = w->maximized ? 0 : FRAME_BORDER;
-    SetRect(r, b, FRAME_TITLE, b, b);
+    int k = dpi_k(w), b = w->maximized ? 0 : FRAME_BORDER * k;
+    SetRect(r, b, FRAME_TITLE * k, b, b);
 }
 
 /* The window's own border, drawn by user32 (children; frameless top-level) */
@@ -675,11 +676,22 @@ void update_kernel_rect(Wnd *w)
     int resized = nw != w->bw || nh != w->bh;
     w->bmp.x = b.left; w->bmp.y = b.top;
     w->bw = nw; w->bh = nh;
-    if (w->kid) {
+    if (w->kid && dpi_aware()) {
+        /* in logical pixels; what the desktop already has is not sent again
+         * (that would end a maximized or snapped state it chose) */
+        RECT nb = { b.left, b.top, b.left + nw, b.top + nh };
+        INT32 in[4];
+        dpi_to_kernel(w, &nb, in);
+        if (memcmp(in, w->klog, sizeof(in))) {
+            memcpy(w->klog, in, sizeof(in));
+            NtNovaGuiCtl(w->kid, CTL_SET_RECT, 3, in);
+        }
+    } else if (w->kid) {
         INT32 in[4] = { b.left, b.top, nw, nh };
         NtNovaGuiCtl(w->kid, CTL_SET_RECT, 3, in);
     }
     if (resized) top_resized(w);
+    if (w->kid) dpi_check(w, NULL);                         /* moved to a monitor of another DPI */
 }
 
 /* The desktop moved, resized, minimized or maximized the window */
@@ -687,14 +699,20 @@ void top_sync_from_kernel(Wnd *w, int sized)
 {
     INT32 r[9];
     if (!w->kid || !NtNovaGuiCtl(w->kid, CTL_GET_RECT, 0, r)) return;
+    memcpy(w->klog, r, sizeof(w->klog));
     RECT old = w->rect, oldc = w->client;
     int was_min = w->minimized, was_max = w->maximized;
     w->minimized = (r[8] & 4) != 0;
     w->maximized = (r[8] & 8) != 0;
-    SetRect(&w->rect, r[4], r[5], r[4] + r[6], r[5] + r[7]);
-    w->bmp.x = r[0]; w->bmp.y = r[1];
-    int resized = r[2] != w->bw || r[3] != w->bh;
-    w->bw = r[2]; w->bh = r[3];
+    if (dpi_check(w, r)) return;                            /* on a monitor of another DPI now */
+    RECT nr;
+    POINT nb;
+    int nw, nh;
+    dpi_from_kernel(w, r, dpi_k(w), &nr, &nb, &nw, &nh);
+    w->rect = nr;
+    w->bmp = nb;
+    int resized = nw != w->bw || nh != w->bh;
+    w->bw = nw; w->bh = nh;
     wnd_calc_client(w);
     if (resized) top_resized(w);
     if (!EqualRect(&old, &w->rect) || !EqualRect(&oldc, &w->client) || was_min != w->minimized || was_max != w->maximized || sized) {
@@ -784,6 +802,12 @@ static int kernel_window(Wnd *w)
     gc.x = b.left; gc.y = b.top; gc.w = b.right - b.left; gc.h = b.bottom - b.top;
     gc.title = (UINT64)(ULONG_PTR)(w->text ? w->text : L"");
     gc.flags = GUI_HIDDEN | GUI_HOVER;
+    if (dpi_aware()) {                                      /* logical pixels for the desktop */
+        INT32 l[4];
+        dpi_to_kernel(w, &b, l);
+        gc.x = l[0]; gc.y = l[1]; gc.w = l[2]; gc.h = l[3];
+        memcpy(w->klog, l, sizeof(l));
+    }
     gc.style = w->tid;                                      /* its thread gets its input */
     int popup_like = (w->flags & WF_MENU_TRACK) || (w->exstyle & (WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE));
     if (!framed(w)) gc.flags |= popup_like ? GUI_POPUP : GUI_NOFRAME;
@@ -801,14 +825,27 @@ static int kernel_window(Wnd *w)
     publish_client(w);
     if (w->drop_accept) NtNovaGuiCtl(w->kid, CTL_ACCEPT_DROPS, (w->drop_accept | (w->drop_accept >> 2)) & 3, NULL);
     w->front = (DWORD *)(ULONG_PTR)gc.bitmap;
+    int ostride = w->stride, omaxh = w->maxh;
     w->stride = (int)gc.stride / 4;
     w->maxw = w->stride;
     ULONG sw = 0, sh = 0;
     NtNovaGuiScreenSize(&sw, &sh);
-    w->maxh = (int)sh;
+    w->maxh = gc.rows ? (int)gc.rows : (int)sh;
+    if (w->back && (ostride != w->stride || omaxh != w->maxh)) {
+        /* the back buffer (made before the window was shown) is the
+         * bitmap's shape: copy what is drawn into one that is */
+        DWORD *nb = VirtualAlloc(NULL, (SIZE_T)w->stride * w->maxh * 4, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (nb) {
+            int cw = MIN(ostride, w->stride), ch = MIN(omaxh, w->maxh);
+            for (int y = 0; y < ch; y++) memcpy(nb + (size_t)y * w->stride, w->back + (size_t)y * ostride, (size_t)cw * 4);
+            VirtualFree(w->back, 0, MEM_RELEASE);
+            w->back = nb;
+        }
+    }
     if (!w->back) {
         w->back = VirtualAlloc(NULL, (SIZE_T)w->stride * w->maxh * 4, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     }
+    if (w->dpi_k > 1) w->dpi_k = dpi_apply_scale(w, w->dpi_k);   /* a 192 DPI window: a bitmap that size */
     top_sync_from_kernel(w, 0);
     /* the whole bitmap is new */
     RECT all = { 0, 0, w->bw, w->bh };
@@ -840,7 +877,7 @@ int ensure_back(Wnd *t)
 static void work_area(RECT *r)
 {
     INT32 wa[4];
-    if (NtNovaGuiCtl(0, CTL_WORKAREA, 0, wa)) SetRect(r, wa[0], wa[1], wa[0] + wa[2], wa[1] + wa[3]);
+    if (NtNovaGuiCtl(0, CTL_WORKAREA, 0, wa)) { SetRect(r, wa[0], wa[1], wa[0] + wa[2], wa[1] + wa[3]); dpi_rect_to_proc(r); }
     else *r = desktop()->rect;
 }
 
@@ -932,6 +969,8 @@ static HWND create_window(DWORD ex, WClass *cls, LPCWSTR title, DWORD style, int
         if (cx == CW_USEDEFAULT) cx = cy = 0;
     }
     SetRect(&w->rect, x, y, x + cx, y + cy);
+    w->dpi_ctx = dpi_thread_context();
+    if (!parent) dpi_new_window(w, &w->rect);              /* its scale: its monitor's DPI */
     LOCK();
     link_wnd(w, parent ? (Wnd *)1 : NULL);
     UNLOCK();
@@ -1640,29 +1679,34 @@ USERAPI BOOL GetWindowInfo(HWND h, PWINDOWINFO wi)
 
 USERAPI BOOL AdjustWindowRectEx(LPRECT r, DWORD style, BOOL menu, DWORD ex)
 {
+    return adjust_window_rect(r, style, menu, ex, dpi_sys_k());
+}
+
+/* The frame the desktop draws is @k times as big at k times 96 DPI */
+BOOL adjust_window_rect(LPRECT r, DWORD style, BOOL menu, DWORD ex, int k)
+{
     Wnd tmp;
     memset(&tmp, 0, sizeof(tmp));
     tmp.style = style; tmp.exstyle = ex;
     if (style & WS_CHILD) tmp.parent = desktop();          /* only "is it a child" matters */
-    RECT k = { 0, 0, 0, 0 };
+    RECT f = { 0, 0, 0, 0 };
     if ((style & WS_CAPTION) == WS_CAPTION || (!(style & WS_POPUP) && !(style & WS_CHILD))) {
-        if (!(style & WS_CHILD)) SetRect(&k, FRAME_BORDER, FRAME_TITLE, FRAME_BORDER, FRAME_BORDER);
+        if (!(style & WS_CHILD)) SetRect(&f, FRAME_BORDER * k, FRAME_TITLE * k, FRAME_BORDER * k, FRAME_BORDER * k);
     }
     int b = 0;
-    if (!k.top) {
+    if (!f.top) {
         if (style & WS_THICKFRAME) b += (style & WS_CHILD) ? 3 : 1;
         else if ((style & WS_CAPTION) == WS_DLGFRAME || (ex & WS_EX_DLGMODALFRAME)) b += (style & WS_CHILD) ? 3 : 1;
         else if (style & WS_BORDER) b += 1;
     }
     if (ex & WS_EX_CLIENTEDGE) b += 2;
     if (ex & WS_EX_STATICEDGE) b += 1;
-    r->left -= k.left + b; r->top -= k.top + b; r->right += k.right + b; r->bottom += k.bottom + b;
+    r->left -= f.left + b; r->top -= f.top + b; r->right += f.right + b; r->bottom += f.bottom + b;
     if (menu) r->top -= GetSystemMetrics(SM_CYMENU);
     return TRUE;
 }
 
 USERAPI BOOL AdjustWindowRect(LPRECT r, DWORD style, BOOL menu) { return AdjustWindowRectEx(r, style, menu, 0); }
-USERAPI BOOL AdjustWindowRectExForDpi(LPRECT r, DWORD style, BOOL menu, DWORD ex, UINT dpi) { (void)dpi; return AdjustWindowRectEx(r, style, menu, ex); }
 
 USERAPI BOOL SetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy, UINT flags)
 {
@@ -2050,10 +2094,6 @@ USERAPI BOOL SetWindowContextHelpId(HWND h, DWORD id) { (void)h; (void)id; retur
 USERAPI DWORD GetWindowContextHelpId(HWND h) { (void)h; return 0; }
 USERAPI BOOL IsWindowArranged(HWND h) { (void)h; return FALSE; }
 USERAPI UINT ArrangeIconicWindows(HWND h) { (void)h; return 0; }
-USERAPI BOOL LogicalToPhysicalPoint(HWND h, LPPOINT p) { (void)h; (void)p; return TRUE; }
-USERAPI BOOL PhysicalToLogicalPoint(HWND h, LPPOINT p) { (void)h; (void)p; return TRUE; }
-USERAPI BOOL LogicalToPhysicalPointForPerMonitorDPI(HWND h, LPPOINT p) { (void)h; (void)p; return TRUE; }
-USERAPI BOOL PhysicalToLogicalPointForPerMonitorDPI(HWND h, LPPOINT p) { (void)h; (void)p; return TRUE; }
 USERAPI BOOL GetTitleBarInfo(HWND h, void *ti) { (void)h; (void)ti; return FALSE; }
 USERAPI BOOL DragDetect(HWND h, POINT pt) { (void)h; (void)pt; return FALSE; }
 USERAPI HWND GetTopLevelWindow_(HWND h) { return GetAncestor(h, GA_ROOT); }

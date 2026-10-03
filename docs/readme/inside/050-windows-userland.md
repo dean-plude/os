@@ -6,7 +6,7 @@
   exceptions, FH3 and FH4 tables), `msvcp140` and its satellites (the C++
   standard library: Microsoft's own STL, compiled with clang),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs, MDI,
-  hooks), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
+  hooks, per-monitor DPI awareness with `WM_DPICHANGED`), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
   `comctl32`, `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
   type libraries), `advapi32`, `ws2_32`, `oleacc`,
