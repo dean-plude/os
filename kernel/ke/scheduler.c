@@ -629,6 +629,47 @@ static uint64_t next_grid_tick(uint64_t tsc)
     return sched_tick_tsc((tsc - tsc_at_boot) / g_tsc_per_tick + 1);
 }
 
+static bool wake_preempts(const Thread *t, bool timer);
+
+/* This CPU waits for the kernel lock (sched_timer_rearm, @rq locked): a
+ * TSC-deadline sleeper that is due and does not hold the lock runs on
+ * another CPU instead, as a timer wake (sched_unblock_timer) — else it
+ * waits as long as the lock's holder keeps it, which writing drive C:
+ * (PersistSync) does for seconds, and the device poll thread with it:
+ * keystrokes the PS/2 controller could not hand over meanwhile were lost. */
+static void hand_off_due(RunQueue *rq, uint32_t cpu, uint64_t tsc)
+{
+    for (Thread **pp = &rq->sleepers; *pp;) {
+        Thread *t = *pp;
+        if (!t->wake_tsc || t->wake_tsc > tsc || t->state != THREAD_WAITING || t->bkl_depth) {
+            pp = &t->sleep_next;
+            continue;
+        }
+        RunQueue *to = NULL;
+        uint32_t c = cpu;
+        for (uint32_t n = 1; n < g_cpu_count && !to; n++) {
+            c = (cpu + n) % g_cpu_count;
+            if (!g_kpcr[c].Online || g_kpcr[c].LockWait) continue;
+            if (spin_trylock(&g_rq[c].lock)) to = &g_rq[c];   /* (trylock: no waiting on each other) */
+        }
+        if (!to) return;
+        *pp = t->sleep_next;
+        t->sleep_next = NULL;
+        t->in_sleepers = false;
+        __atomic_store_n(&t->cpu, c, __ATOMIC_RELEASE);
+        if (wake_preempts(t, true)) {
+            rq_enqueue_front(to, t);
+            if (!smp_kick(c)) {
+                g_resched[c] = true;
+                apic_send_ipi(g_kpcr[c].ApicId, APIC_IPI_FIXED | IPI_WAKE);
+            }
+        } else {
+            ready_wake(to, t);
+        }
+        spin_unlock(&to->lock);
+    }
+}
+
 /* A timer interrupt taken while this CPU halts waiting for the kernel
  * lock (KPCR.LockWait): the waiting thread cannot be switched out, so no
  * sleeper is woken, but the one-shot timer is re-armed for the soonest
@@ -645,6 +686,7 @@ void sched_timer_rearm(void)
     if (rq->sleepers) {
         uint64_t soonest = UINT64_MAX;
         if (spin_trylock(&rq->lock)) {
+            hand_off_due(rq, cpu, tsc);
             for (Thread *t = rq->sleepers; t; t = t->sleep_next)
                 if (t->wake_tsc && t->state == THREAD_WAITING && t->wake_tsc < soonest)
                     soonest = t->wake_tsc;
