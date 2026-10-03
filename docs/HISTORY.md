@@ -217,7 +217,8 @@ Contents:
   fed by RDRAND (when present), TSC jitter and packet timing.
 - **Terminal**: `curl`/`wget` take several URLs (`curl URL URL ...`) and show
   the protocol, cipher suite, reused connections and resumed sessions.
-- Not yet: IPv6 and HTTP/2.  (The web browser arrived in Phase 9.5.)
+- Not yet: IPv6 and HTTP/2.  (The web browser arrived in Phase 9.5; IPv6
+  and HTTP/2 came with "IPv6, HTTP/2 and virtio-net (Phase 18.8)".)
 
 ## Phase 9 — Windows programs (ring 3)
 - **Real PE32+ `.exe` files run in ring 3** (`kernel/um/`): each program has
@@ -320,7 +321,8 @@ Contents:
   default; `enable_javascript:0` in `C:\Programs\NetSurf\res\Choices`
   turns it off.  Like NetSurf 3.11 on every platform, changes a script makes
   to the page *after* it has been laid out are not redrawn yet.
-- Not yet: SVG and IPv6.
+- Not yet: SVG and IPv6.  *(IPv6 came with "IPv6, HTTP/2 and virtio-net
+  (Phase 18.8)".)*
 
 ## Desktop UX refresh
 - **Start menu** (`wm/desktop.c`): live search as you type (Win key, then
@@ -751,7 +753,9 @@ the 64-bit kernel, and they get a 32-bit copy of the whole userland in
   exists (`SHGetFolderPath`, which NSIS takes from it); msvcrt exports
   `_controlfp`, `_control87`, `__p___initenv` and friends.  The
   Terminal's `trace` now shows the file name of file system calls.
-- Not yet: pending renames are not carried out at the next start.
+- Not yet: pending renames are not carried out at the next start.  *(Since
+  done: Session Manager's `PendingFileRenameOperations` run at boot, see
+  "Phase 17: kernel and API correctness".)*
 
 ## Shortcuts (.lnk) and overlapping controls
 
@@ -861,6 +865,8 @@ the 64-bit kernel, and they get a 32-bit copy of the whole userland in
 - Not yet: `CREATE_SUSPENDED` is ignored and `CREATE_NEW_CONSOLE` shares
   the console; a file handed to a child has its own position (cmd.exe
   opens redirection targets for appending so output lands in order).
+  *(Since done: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` windows and shared
+  file positions came with "Phase 17: kernel and API correctness".)*
 
 ## The clipboard
 
@@ -985,7 +991,8 @@ C: work.  What the runtime needed from NovaOS:
   and input calls...).
 - Not yet: hard links (drive C: behaves like FAT, so git renames), and
   interactive `sh` sessions have not been tried; `sh -c` and scripts
-  are what is tested.
+  are what is tested.  *(Since done: `sh --login -i` runs interactively since
+  Phase 17.2; hard links are still to come.)*
 
 ## Language runtimes: Java, .NET, Node.js, Python
 
@@ -1158,8 +1165,8 @@ finds them.
 - **`tools/novarun.py`** boots the image in QEMU with programs copied onto
   a data disk, types Terminal commands and takes screenshots:
   `python3 tools/novarun.py --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' 'x.exe' '!shot x.png'`.
-- Not yet: Notepad++'s status bar draws black and its toolbar is cut
-  short; ~~Neovim hangs on exit (console input handles cannot be waited
+- Not yet: ~~Notepad++'s status bar draws black and its toolbar is cut
+  short~~ (fixed in Phase 17.6); ~~Neovim hangs on exit (console input handles cannot be waited
   on)~~ fixed in Phase 17.2;
   ffmpeg needs `avrt`, `ncrypt`, `d2d1`, `dwrite` and more (see
   [More compatibility](#more-compatibility-schannel-uniscribe-idn-crt-gaps)).
@@ -1336,7 +1343,8 @@ build machine, and DXVK is the faster, more complete path anyway.
   and with a USB keyboard and mouse and HD Audio attached.
 - Not yet: wake devices such as USB keyboards.  (Display modes on other
   adapters came later: see "Display adapters: QXL, virtio, VMware, Cirrus,
-  and their modes after sleep".)
+  and their modes after sleep"; USB wake came with "ACPI: SCI interrupt, lid,
+  thermal zones, wake devices, _PRT (Phase 18.6)".)
 
 ## ACPI namespace (uACPI): batteries and AC power
 
@@ -1435,7 +1443,8 @@ build machine, and DXVK is the faster, more complete path anyway.
   the run's summary and as a comment on the "Nightly app corpus" issue.
 - Not yet: Notepad++'s tab bar and status bar still draw black; the
   reference shows them so, and an improvement means updating it
-  (`--update-reference`).
+  (`--update-reference`).  *(Since done: the bars draw since Phase 17.6, see
+  "Phase 17: kernel and API correctness", and the reference was updated.)*
 
 ## More compatibility: Schannel, Uniscribe, IDN, CRT gaps
 
