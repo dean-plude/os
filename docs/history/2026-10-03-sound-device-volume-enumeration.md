@@ -51,6 +51,13 @@ chosen in Settings are still the defaults after a restart, as on Windows.
   default and restarts: it must be the default and at a quarter again.
   The `usbaudio` boot (020) does the same with QEMU's speakers at half
   volume.
+- **xHCI event ring** (`kernel/drivers/xhci.c`): 4,096 events instead
+  of 255.  Isochronous streams post an event per packet (16 a
+  millisecond for a high-speed headset playing and recording), so with
+  three USB sound devices attaching at boot the ring could fill while the
+  driver enumerated the next one; the controller then drops every later
+  event, so a command timed out and a stream stalled for good.  A full
+  ring is now logged ("[USB] xHCI event ring full").
 - Not yet: siTDs (full-speed isochronous behind a high-speed hub on
   EHCI), asynchronous endpoints' rate feedback, and a mixer running at
   the device's own rate (it stays 48 kHz and converts).

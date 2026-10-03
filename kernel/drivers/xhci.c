@@ -96,6 +96,7 @@
 #define TRB_EV_TRANSFER 32
 #define TRB_EV_CMD      33
 #define TRB_EV_PORT     34
+#define TRB_EV_HC       37
 
 #define TRB_CYCLE       (1u << 0)
 #define TRB_TC          (1u << 1)         /* link: toggle cycle */
@@ -112,6 +113,7 @@
 #define CC_SUCCESS      1
 #define CC_STALL        6
 #define CC_SHORT_PACKET 13
+#define CC_EVENT_RING_FULL 21
 
 /* Endpoint types (endpoint context dword 1) */
 #define EP_ISOCH_OUT    1
@@ -123,6 +125,8 @@
 #define EP_INTR_IN      7
 
 #define RING_TRBS       256               /* one page; the last is the link */
+#define EVT_PAGES       16                /* event ring: 4,096 TRBs (the most one segment holds) */
+#define EVT_TRBS        (EVT_PAGES * PAGE_SIZE / 16)
 #define SPIN_LONG       20000000
 #define MAX_TD_TRBS     16                /* a bulk transfer: 16 x 64 KiB at most */
 
@@ -349,10 +353,15 @@ static void process_events(Xhci *x)
             x->cmd_done = true;
             break;
         case TRB_EV_PORT: on_port(x, e); break;
+        case TRB_EV_HC:
+            /* (Event Ring Full: events after it, a command's or a
+             * transfer's completion among them, are lost for good) */
+            if ((UINT8)(e->status >> 24) == CC_EVENT_RING_FULL) kprintf("[USB] xHCI event ring full\n");
+            break;
         default: break;
         }
         any = true;
-        if (++x->evt_deq == RING_TRBS) { x->evt_deq = 0; x->evt_ccs ^= 1; }
+        if (++x->evt_deq == EVT_TRBS) { x->evt_deq = 0; x->evt_ccs ^= 1; }
     }
     if (any) wr64(x->rt, IR_ERDP, phys(&x->evt[x->evt_deq]) | ERDP_EHB);
 }
@@ -795,7 +804,7 @@ static bool controller_program(Xhci *x)
     x->cmd.cycle = 1;
     wr64(x->op, OP_CRCR, phys(x->cmd.trbs) | 1);
 
-    memset((void *)x->evt, 0, PAGE_SIZE);
+    memset((void *)x->evt, 0, EVT_PAGES * PAGE_SIZE);
     x->evt_deq = 0;
     x->evt_ccs = 1;
     wr32(x->rt, IR_ERSTSZ, 1);
@@ -931,12 +940,15 @@ bool XhciProbe(const PciDevice *pci)
     }
     if (!ring_init(&x->cmd)) goto fail;
 
-    /* One-segment event ring */
+    /* One-segment event ring, large enough that isochronous streams (an
+     * event per packet: 16 a millisecond for a high-speed headset playing
+     * and recording) do not fill it while the driver is busy elsewhere,
+     * such as enumerating the next device at boot */
     x->erst = UsbDmaAlloc(1);
-    x->evt = UsbDmaAlloc(1);
+    x->evt = UsbDmaAlloc(EVT_PAGES);
     if (!x->erst || !x->evt) goto fail;
     x->erst[0] = phys(x->evt);
-    x->erst[1] = RING_TRBS;
+    x->erst[1] = EVT_TRBS;
 
     if (!controller_program(x)) goto fail;
     power_ports(x);
