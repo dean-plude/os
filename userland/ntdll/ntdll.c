@@ -416,6 +416,12 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
     case 0xC00000B5: return 121;                          /* ERROR_SEM_TIMEOUT */
     case 0xC000014B: return 109;                          /* ERROR_BROKEN_PIPE */
     case 0xC0000120: return 995;                          /* ERROR_OPERATION_ABORTED */
+    case 0xC0000236: return 1225;                         /* STATUS_CONNECTION_REFUSED: ERROR_CONNECTION_REFUSED */
+    case 0xC000020D: case 0xC000013B: return 64;          /* connection reset, local disconnect: ERROR_NETNAME_DELETED */
+    case 0xC0000241: return 1236;                         /* ERROR_CONNECTION_ABORTED */
+    case 0xC000023C: return 1231;                         /* ERROR_NETWORK_UNREACHABLE */
+    case 0xC000023D: return 1232;                         /* ERROR_HOST_UNREACHABLE */
+    case 0xC00000B6: return 1236;                         /* STATUS_FILE_FORCED_CLOSED */
     case 0xC0000225: return 1168;                         /* ERROR_NOT_FOUND */
     case 0xC000004F: return 282;                          /* ERROR_EAS_NOT_SUPPORTED */
     case 0xC0000135: return 126;                          /* ERROR_MOD_NOT_FOUND */

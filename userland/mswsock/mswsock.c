@@ -47,18 +47,22 @@ MSWSOCKAPI BOOL WINAPI TransmitFile(SOCKET s, HANDLE f, DWORD total, DWORD per, 
     return ok;
 }
 
-/* AcceptEx and friends: the extension functions come from WSAIoctl, which
- * says they are not available, so programs fall back to accept() */
+/* AcceptEx and GetAcceptExSockaddrs: ws2_32's (the ones WSAIoctl's
+ * SIO_GET_EXTENSION_FUNCTION_POINTER hands out) */
+typedef BOOL (WINAPI *AcceptEx_t)(SOCKET, SOCKET, PVOID, DWORD, DWORD, DWORD, LPDWORD, LPOVERLAPPED);
 MSWSOCKAPI BOOL WINAPI AcceptEx(SOCKET l, SOCKET a, PVOID buf, DWORD n, DWORD ll, DWORD rl, LPDWORD got, LPOVERLAPPED ov)
 {
-    (void)l; (void)a; (void)buf; (void)n; (void)ll; (void)rl; (void)got; (void)ov;
-    WSASetLastError(WSAEOPNOTSUPP);
-    return FALSE;
+    static const GUID id = { 0xb5367df1, 0xcbac, 0x11cf, { 0x95, 0xca, 0x00, 0x80, 0x5f, 0x48, 0xa1, 0x92 } };
+    AcceptEx_t f = 0;
+    DWORD r;
+    if (WSAIoctl(l, SIO_GET_EXTENSION_FUNCTION_POINTER, (void *)&id, sizeof(id), &f, sizeof(f), &r, 0, 0)) return FALSE;
+    return f(l, a, buf, n, ll, rl, got, ov);
 }
 MSWSOCKAPI VOID WINAPI GetAcceptExSockaddrs(PVOID buf, DWORD n, DWORD ll, DWORD rl, struct sockaddr **la, LPINT lal,
                                            struct sockaddr **ra, LPINT ral)
 {
-    (void)n;
-    *la = (struct sockaddr *)buf; *lal = (INT)ll;
-    *ra = (struct sockaddr *)((char *)buf + ll); *ral = (INT)rl;
+    *la = (struct sockaddr *)((char *)buf + n);
+    *ra = (struct sockaddr *)((char *)buf + n + ll);
+    *lal = (*la)->sa_family == AF_INET6 ? (INT)sizeof(struct sockaddr_in6) : (INT)sizeof(struct sockaddr_in);
+    *ral = (*ra)->sa_family == AF_INET6 ? (INT)sizeof(struct sockaddr_in6) : (INT)sizeof(struct sockaddr_in);
 }

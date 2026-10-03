@@ -3,10 +3,11 @@
  * To/From forms), events, WSAIoctl, the wide name functions, inet_pton.
  *
  * NovaOS sockets are synchronous underneath, so an overlapped operation
- * runs to completion inside the call: its OVERLAPPED is filled in, its
- * event set and, when the socket is bound to an I/O completion port, a
- * completion packet posted (by kernel32, as for files); a completion
- * routine is called before the function returns.
+ * that can finish at once runs to completion inside the call: its
+ * OVERLAPPED is filled in, its event set and, when the socket is bound to
+ * an I/O completion port, a completion packet posted (by kernel32, as for
+ * files); a completion routine is called before the function returns.
+ * One that would wait stays pending (overlapped.c).
  */
 #define WS2_EXPORT
 #define NOVA_BUILD_KERNEL32
@@ -22,6 +23,9 @@ WINBASEAPI BOOL WINAPI HeapFree(HANDLE, DWORD, LPVOID);
 WINBASEAPI BOOL WINAPI SetEvent(HANDLE);
 WINBASEAPI BOOL WINAPI ResetEvent(HANDLE);
 __declspec(dllimport) void WINAPI NovaIoComplete(HANDLE h, OVERLAPPED *o, LONG status, DWORD bytes);
+int ws_pend_io(SOCKET s, int send_, LPWSABUF bufs, DWORD n, DWORD flags, struct sockaddr *from, int *fromlen,
+               LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);      /* overlapped.c */
+int ws_extension(const void *in, DWORD inlen, void *out, DWORD outlen, LPDWORD ret);
 
 static void set_err(int e) { *(DWORD *)(NtCurrentTebBytes() + TEB_LAST_ERROR) = (DWORD)e; }
 
@@ -55,6 +59,8 @@ static int complete(SOCKET s, LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROU
 
 int WSASend(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD sent, DWORD flags, LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
+    int p = ws_pend_io(s, 1, bufs, n, flags, 0, 0, ov, cr);
+    if (p != 1) { if (sent) *sent = 0; return p; }
     DWORD total = 0;
     for (DWORD i = 0; i < n; i++) {
         ULONG off = 0;
@@ -75,6 +81,8 @@ done:
 
 int WSARecv(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD got, LPDWORD flags, LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
+    int p = ws_pend_io(s, 0, bufs, n, flags ? *flags : 0, 0, 0, ov, cr);
+    if (p != 1) { if (got) *got = 0; return p; }
     DWORD total = 0;
     int f = flags ? (int)*flags : 0;
     for (DWORD i = 0; i < n; i++) {
@@ -113,6 +121,8 @@ int WSARecvFrom(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD got, LPDWORD flags, st
                 LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
     if (!n) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    int p = ws_pend_io(s, 0, bufs, 1, flags ? *flags : 0, from, fromlen, ov, cr);
+    if (p != 1) { if (got) *got = 0; return p; }
     int r = recvfrom(s, bufs[0].buf, (int)bufs[0].len, flags ? (int)*flags : 0, from, fromlen);
     if (r == SOCKET_ERROR) return complete(s, ov, cr, 1, 0);
     if (got) *got = (DWORD)r;
@@ -130,16 +140,25 @@ BOOL WSAGetOverlappedResult(SOCKET s, LPWSAOVERLAPPED ov, LPDWORD bytes, BOOL wa
     }
     if (bytes) *bytes = (DWORD)ov->InternalHigh;
     if (flags) *flags = 0;
-    if (ov->Internal) { set_err(WSAECONNRESET); return FALSE; }
-    return TRUE;
+    switch ((ULONG)ov->Internal) {
+    case 0: return TRUE;
+    case 0xC0000120: set_err(995 /* WSA_OPERATION_ABORTED */); return FALSE;
+    case 0xC0000236: set_err(WSAECONNREFUSED); return FALSE;
+    case 0xC00000B5: set_err(WSAETIMEDOUT); return FALSE;
+    default: set_err(WSAECONNRESET); return FALSE;
+    }
 }
 
 int WSAIoctl(SOCKET s, DWORD code, LPVOID in, DWORD inlen, LPVOID out, DWORD outlen, LPDWORD ret,
              LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
-    (void)inlen; (void)out; (void)outlen;
     if (ret) *ret = 0;
     switch (code) {
+    case SIO_GET_EXTENSION_FUNCTION_POINTER: {    /* AcceptEx, ConnectEx... (overlapped.c) */
+        int e = ws_extension(in, inlen, out, outlen, ret);
+        if (e) { set_err(e); return SOCKET_ERROR; }
+        return complete(s, ov, cr, 0, ret ? *ret : 0);
+    }
     case 0x8004667E: {                            /* FIONBIO */
         u_long v = in ? *(u_long *)in : 0;
         if (ioctlsocket(s, (long)code, &v)) return SOCKET_ERROR;
@@ -147,7 +166,7 @@ int WSAIoctl(SOCKET s, DWORD code, LPVOID in, DWORD inlen, LPVOID out, DWORD out
     }
     case SIO_KEEPALIVE_VALS:
         return complete(s, ov, cr, 0, 0);
-    default:                                      /* AcceptEx, ConnectEx... and the rest: not available */
+    default:                                      /* the rest: not available */
         set_err(WSAEOPNOTSUPP);
         return SOCKET_ERROR;
     }
