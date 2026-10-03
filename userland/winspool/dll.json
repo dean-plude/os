@@ -1,0 +1,9 @@
+{
+  "deps": ["kernel32", "ntdll"],
+  "ordinals": {
+    "GetDefaultPrinterA": 201,
+    "SetDefaultPrinterA": 202,
+    "GetDefaultPrinterW": 203,
+    "SetDefaultPrinterW": 204
+  }
+}
