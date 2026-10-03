@@ -184,7 +184,9 @@ static UINT64 sys_accept(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *   0 set non-blocking (arg=0/1); 1 shutdown (arg=how);
  *   2 getpeername; 3 getsockname; 4 poll (outptr gets 3 bytes r/w/e);
  *   9 setsockopt (arg = SOCKOPT_*, outptr = the value itself);
- *   10 getsockopt (arg = SOCKOPT_*; returns the value, below 2^31, or -err) */
+ *   10 getsockopt (arg = SOCKOPT_*; returns the value, below 2^31, or -err);
+ *   11 AcceptEx's accept (arg = the listening handle; the connection
+ *   replaces this handle's socket) */
 static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     /* 6: the network generation (select reads it before looking);
@@ -232,6 +234,20 @@ static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         UINT32 v = 0;
         int r = NetSockGetOpt(s, (int)a3, &v);
         return r < 0 ? (UINT64)(INT64)r : (UINT64)(v & 0x7FFFFFFF);
+    }
+    case 11: {                                               /* AcceptEx: a connection from listening handle a3 becomes this socket; a4 gets the peer */
+        UmProcess *p = UmCurrent();
+        int ls = handle_sock(p, a3);
+        if (ls < 0) return (UINT64)(INT64)-SOCK_ENOTSOCK;
+        int ns = NetSockAccept(ls, &na, sock_cancel, NULL);
+        if (ns < 0) return (UINT64)(INT64)ns;
+        UmObject *o = um_handle_object(p, a1, UO_SOCKET);
+        if (!o) { NetSockClose(ns); return (UINT64)(INT64)-SOCK_ENOTSOCK; }
+        int old = o->sock;
+        o->sock = ns;
+        um_ob_unref(o);
+        NetSockClose(old);
+        return a4 && !sa_to_user(a4, &na) ? (UINT64)(INT64)-SOCK_EFAULT : 0;
     }
     case 4: {
         bool rd, wr, er; NetSockPoll(s, &rd, &wr, &er);

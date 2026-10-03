@@ -358,6 +358,20 @@ class Nova:
         hmp('mouse_button 0')
         time.sleep(0.3)
 
+    def drag(self, x0, y0, x1, y1, steps=24, button=1):
+        """Press @button at (x0, y0), move to (x1, y1) in @steps, release (a stroke)"""
+        self.move_to(x0, y0)
+        self.hmp(f'mouse_button {button}')
+        time.sleep(0.3)
+        for i in range(1, steps + 1):
+            dx = round((x1 - x0) * i / steps) - round((x1 - x0) * (i - 1) / steps)
+            dy = round((y1 - y0) * i / steps) - round((y1 - y0) * (i - 1) / steps)
+            self.hmp(f'mouse_move {dx} {dy}')
+            time.sleep(0.15)
+        time.sleep(0.3)
+        self.hmp('mouse_button 0')
+        time.sleep(0.3)
+
     def keys(self, names):
         for k in names.split():
             self.qmp.key(*k.split('-'))
