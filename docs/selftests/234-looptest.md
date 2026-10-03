@@ -1,1 +1,1 @@
-| `looptest` | Winsock over the loopback interface: a socket pair over 127.0.0.1 and ::1 (port 0, `getsockname`, a non-blocking connect, data sent before `accept`), closing a listener with a queued connection, `localhost`, and `wsock32.dll`'s Winsock 1.1 ordinals |
+| `looptest` | Winsock over the loopback interface: a socket pair over 127.0.0.1 and ::1 (port 0, `getsockname`, a non-blocking connect, data sent before `accept`, the accepted socket inheriting non-blocking mode), closing a listener with a queued connection, `localhost`, and `wsock32.dll`'s Winsock 1.1 ordinals |

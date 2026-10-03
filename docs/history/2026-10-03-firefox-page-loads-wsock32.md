@@ -16,7 +16,11 @@ failure, and every socket was closed before use.
   1.1's ordinals, calling `ws2_32`'s functions, plus the old blocking-hook
   calls (`WSAIsBlocking` and friends, which never block).  The alias in
   the kernel loader, `ntdll` and `tools/pe_imports.py` is gone.
-- `looptest` (network suite) checks `wsock32`'s ordinals and takes a
-  socket non-blocking the way NSPR does.
+- A socket `accept` gives is non-blocking when its listener is, as on
+  Windows.  NSPR's socket pair (the socket thread's wake-up) counts on
+  that: with a blocking accepted end, the socket thread stalled in `recv`
+  holding a lock the main thread then waited for.
+- `looptest` (network suite) checks `wsock32`'s ordinals, takes a socket
+  non-blocking the way NSPR does, and checks the inherited mode.
 - With it, Floorp fetches and renders `http://` pages served to QEMU's
   guest network.

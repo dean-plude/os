@@ -45,6 +45,7 @@ static void pair(int family, const char *name)
 
     SOCKET c = socket(family, SOCK_STREAM, 0);
     u_long nb = 1;
+    ioctlsocket(l, FIONBIO, &nb);
     ioctlsocket(c, FIONBIO, &nb);
     int r = connect(c, (struct sockaddr *)&a, len);
     snprintf(what, sizeof(what), "%s: a non-blocking connect is under way", name);
@@ -61,6 +62,8 @@ static void pair(int family, const char *name)
     char b[8] = { 0 };
     snprintf(what, sizeof(what), "%s: the bytes sent before accept arrive", name);
     check(what, wait_for(s, 0, 2000) == 1 && recv(s, b, sizeof(b), 0) == 4 && !memcmp(b, "ping", 4));
+    snprintf(what, sizeof(what), "%s: the accepted socket is non-blocking like its listener (NSPR's socket pair)", name);
+    check(what, recv(s, b, sizeof(b), 0) == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK);
     snprintf(what, sizeof(what), "%s: and the other way", name);
     check(what, send(s, "pong", 4, 0) == 4 && wait_for(c, 0, 2000) == 1 && recv(c, b, sizeof(b), 0) == 4 &&
                 !memcmp(b, "pong", 4));
