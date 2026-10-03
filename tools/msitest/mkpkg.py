@@ -18,6 +18,15 @@ tools/build_userland.py runs it and puts what it writes in C:\\Tests\\Msi:
   service.msi "Nova Service Test": svc.exe (msitest again, run as
               "svc.exe service") installed as the automatic service
               NovaMsiTestSvc and started on install
+  script.msi  "Nova Script Test": script custom actions, JScript and
+              VBScript, from the Binary table (5, 6), as text in the
+              CustomAction table (37, 38), in a property (53, 54) and in
+              installed files (21, 22, deferred); scripts/ holds them.  They
+              set properties the Registry table then writes to
+              HKLM\\SOFTWARE\\NovaScriptTest, and write C:\\Tests\\MsiOut\\script-*.txt
+  scriptfail.msi "Nova Script Failure": a JScript action that throws but
+              may fail (0x40, ignored), then a VBScript one that raises an
+              error: the installation fails and is rolled back
 
 Each package is written by mkmsi.py; nothing here needs msitools.
 """
@@ -70,6 +79,63 @@ def service(exe):
     return db
 
 
+SCRIPT = '{6E1D0C3A-5A1B-4C2D-8E3F-00000000C001}'
+SCRIPT_UP = '{6E1D0C3A-5A1B-4C2D-8E3F-00000000C0F1}'
+SCRIPT_FAIL = '{6E1D0C3A-5A1B-4C2D-8E3F-00000000C002}'
+SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts')
+# the CustomAction table with a long Target (inline scripts)
+CA_LONG = [('Action', 's72*'), ('Type', 'i2'), ('Source', 'S72'), ('Target', 'S0')]
+
+
+def script_text(name):
+    return open(os.path.join(SCRIPTS, name), 'rb').read()
+
+
+def script():
+    db = mkmsi.package('Nova Script Test', '1.0.0', SCRIPT, SCRIPT_UP, 'NovaScriptTest',
+                       [('checkjs', 'check.js', script_text('check.js')), ('checkvbs', 'check.vbs', script_text('check.vbs'))],
+                       extra_props=[
+                           ('JS_CODE', 'function Main() { Session.Property("JS_FROM_PROPERTY") = "yes " + Session.Property("ProductVersion"); }'),
+                           ('VBS_CODE', 'Sub Main() : Session.Property("VBS_FROM_PROPERTY") = "yes " & Session.Property("ProductVersion") : End Sub'),
+                       ])
+    db.table('CustomAction', CA_LONG)
+    db.add('Binary', ('SetupJs', script_text('setup.js')), ('SetupVbs', script_text('setup.vbs')))
+    for name, value in [('JsProp', '[JS_PROP]'), ('VbsProp', '[VBS_PROP]'), ('JsInline', '[JS_INLINE]'),
+                        ('VbsInline', '[VBS_INLINE]'), ('JsFromProperty', '[JS_FROM_PROPERTY]'),
+                        ('VbsFromProperty', '[VBS_FROM_PROPERTY]')]:
+        db.add('Registry', ('Reg' + name, HKLM, 'SOFTWARE\\NovaScriptTest', name, value, 'C_checkjs'))
+    # 5/6 a function in the Binary table, 37/38 the script text itself,
+    # 53/54 a function in a property's value, 21/22 a function in an
+    # installed file (0x400: deferred, after InstallFiles; 51 sets their
+    # CustomActionData)
+    db.add('CustomAction',
+           ('JsBinary', 5, 'SetupJs', 'SetUp'),
+           ('VbsBinary', 6, 'SetupVbs', 'SetUp'),
+           ('JsInline', 37, None, 'Session.Property("JS_INLINE") = Session.Property("JS_PROP") + "!";'),
+           ('VbsInline', 38, None, 'Session.Property("VBS_INLINE") = Session.Property("VBS_PROP") & "!"'),
+           ('JsProperty', 53, 'JS_CODE', 'Main'),
+           ('VbsProperty', 54, 'VBS_CODE', 'Main'),
+           ('SetJsFile', 51, 'JsFile', 'C:\\Tests\\MsiOut\\|[JS_INLINE]'),
+           ('SetVbsFile', 51, 'VbsFile', 'C:\\Tests\\MsiOut\\|[VBS_INLINE]'),
+           ('JsFile', 21 | 0x400, 'checkjs', 'Check'),
+           ('VbsFile', 22 | 0x400, 'checkvbs', 'Check'))
+    for seq, a in enumerate(['JsBinary', 'VbsBinary', 'JsInline', 'VbsInline', 'JsProperty', 'VbsProperty',
+                             'SetJsFile', 'SetVbsFile'], 1100):
+        db.add('InstallExecuteSequence', (a, 'NOT Installed', seq))
+    db.add('InstallExecuteSequence', ('JsFile', 'NOT Installed', 4100), ('VbsFile', 'NOT Installed', 4110))
+    return db
+
+
+def script_fail():
+    db = mkmsi.package('Nova Script Failure', '1.0.0', SCRIPT_FAIL, SCRIPT_FAIL, 'NovaScriptFail', [('a.txt', 'a.txt', b'x\n')])
+    db.table('CustomAction', CA_LONG)
+    db.add('CustomAction',
+           ('JsMayFail', 37 | 0x40, None, 'throw new Error("this failure is ignored (0x40)");'),
+           ('VbsFails', 38, None, 'Err.Raise 5, "scriptfail.msi", "This script fails on purpose"'))
+    db.add('InstallExecuteSequence', ('JsMayFail', None, 4100), ('VbsFails', None, 4200))
+    return db
+
+
 def main():
     out, exe = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -82,6 +148,8 @@ def main():
     mkmsi.patch(b, base('1.0.1', b'two\n'), PATCH, {'a.txt': b'two\n'}, os.path.join(out, 'patch.msp'))
     rollback(tool).write(os.path.join(out, 'rollback.msi'))
     service(tool).write(os.path.join(out, 'service.msi'))
+    script().write(os.path.join(out, 'script.msi'))
+    script_fail().write(os.path.join(out, 'scriptfail.msi'))
 
 
 if __name__ == '__main__':

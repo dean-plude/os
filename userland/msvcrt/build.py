@@ -42,4 +42,4 @@ def link(b, odir, objs, deps, base):
     b.link_dll(odir, 'msvcrt', objs + [flavor_obj(b, odir, 1)], deps, base, extra + ['@' + rsp2])
     # the Universal C Runtime: the same C runtime under its Windows 10 name
     b.link_dll(odir, 'ucrtbase', objs + [flavor_obj(b, odir, 0)], deps,
-               UCRT_BASE if x64 else UCRT_BASE_X86, extra)
+               UCRT_BASE if x64 else UCRT_BASE_X86, extra, entry='DllMain')

@@ -4,6 +4,7 @@
 #include <math.h>
 #include <float.h>
 #include <stdint.h>
+#include "ptd.h"
 
 __declspec(dllexport) int _fltused = 0x9875;   /* floating point in use (the compiler references it) */
 
@@ -150,4 +151,4 @@ __declspec(dllexport) int __control87_2(unsigned int newv, unsigned int mask, un
     return 1;
 }
 __declspec(dllexport) void _fpreset(void) { set_mxcsr(0x1F80); __asm__ volatile("fninit"); }
-__declspec(dllexport) int *__fpecode(void) { static int c; return &c; }
+__declspec(dllexport) int *__fpecode(void) { return &__nova_ptd()->fpecode; }

@@ -363,7 +363,9 @@ card, QEMU `usb-audio` speakers, each recorded to its own WAV (kept in
 `--out` as `usb1.wav` to `usb3.wav`).  The first is on an xHCI controller
 from boot; the test plugs the second into an OHCI and the third into a
 UHCI controller while NovaOS runs, plays `soundtest tone` after each, then
-unplugs the third and plays again, which the second must hear:
+unplugs the third and plays again, which the second must hear.  Each
+speaker's WAV must hold its tones and nothing else: a speaker another one
+took over from has to go quiet.
 
 ```bash
 python3 tools/selftest.py --suite devices
@@ -540,6 +542,7 @@ would do).
 | NovaOS's own screens | `dir C:\` and `dir D:\` (an empty NTFS disk made with `mkntfs`) name their drive and give its own free space (`dir.png`); `start explorer` shows This PC with both drives, matching `tests/reference/this-pc.png` |
 | SumatraPDF 3.4.6 (the official 32-bit build, from the npm package `pdf-to-printer`) | opens a PDF the script generates; the screenshot must match `tests/reference/sumatrapdf.png` (at most 3% of pixels differ, for every screenshot) |
 | WinMerge 2.16.50 | compares `hello.txt` with `hello2.txt`; the screenshot must match `tests/reference/winmerge.png` |
+| Firefox 157.0 (Mozilla's full installer, the App Store's download) | `store install Firefox`: the Store unpacks the installer from `C:\Downloads` with 7-Zip (staged in `C:\Programs\7-Zip`), as its Install button does; then Firefox loads a page from an HTTPS server the script runs on the host (https://10.0.2.2:8443/, a certificate from a CA made for the run with `openssl` and trusted through Firefox's `distribution\policies.json`); the screenshot must match `tests/reference/firefox.png` |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` |
 | PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
 
@@ -547,7 +550,8 @@ The windowed programs run last, one at a time (each takes the keyboard and
 is closed with Alt+F4 before the next).  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
-It needs 7-Zip's installer, Pillow, and `mkntfs` (for drive D:).  The exit
+It needs 7-Zip's installer, Pillow, `openssl` (for Firefox's test
+server) and `mkntfs` (for drive D:).  The exit
 status is the number of programs that failed; `--update-reference` rewrites
 the reference screenshots after an intended change:
 

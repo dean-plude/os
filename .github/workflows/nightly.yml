@@ -1,6 +1,7 @@
 # Nightly app corpus: boots NovaOS built from main and runs unmodified
 # Windows programs (ripgrep, fd, jq, 7-Zip, MinGit, Python, Node.js,
-# SumatraPDF, WinMerge, KeePassXC, Notepad++, PuTTY; one file each in
+# SumatraPDF, WinMerge, KeePassXC, Firefox (installed by the App Store), Notepad++,
+# PuTTY; one file each in
 # tests/appcorpus/) with
 # tools/appcorpus.py, then smpstress on 4 CPUs (locking under load: no deadlocks,
 # and how file and registry throughput scale).  The pass/fail table goes to the run's
