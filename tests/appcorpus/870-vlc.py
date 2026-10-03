@@ -3,7 +3,8 @@
 # with its Qt interface: its screenshot must match tests/reference/vlc.png
 # and the sound NovaOS played must hold the tone (App(sound=...)).  The
 # 32-bit PortableApps package (an NSIS installer 7z unpacks; only App/vlc,
-# the program itself, is kept).  VLC offers the decoder its hardware
+# the program itself, is kept), from PortableApps' SourceForge archive: its
+# own download host keeps only the current release.  VLC offers the decoder its hardware
 # formats first and the display rejects each (no Direct3D converter), which
 # takes seconds without KVM, so the screenshot waits for the colour bars to
 # show in the window.  Not run with -vv: VLC's verbose log (a line per
@@ -43,7 +44,7 @@ def settled(nova, echo):
     return 'VLC did not show the video (the window stayed dark)'
 
 
-APP = App('VLC', '3.0.21', 'https://download2.portableapps.com/portableapps/VLCPortable/VLCPortable_3.0.21.paf.exe',
+APP = App('VLC', '3.0.21', 'https://downloads.sourceforge.net/project/portableapps/VLC%20Media%20Player%20Portable/VLCPortable_3.0.21.paf.exe',
           'VLC', [Test('play an MP4', rf'start {A}\VLC\vlc.exe --no-qt-privacy-ask --no-qt-updates-notif '
                        rf'--avcodec-hw=none --loop --no-video-title-show {A}\in.mp4', timeout=45)],
           unpack=unpack, gui=True, sound=(440, 3000), interact=settled)

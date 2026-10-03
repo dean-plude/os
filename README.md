@@ -151,9 +151,13 @@ every part, phase by phase.
   scratch and compiled with clang for `x86_64-pc-windows-msvc`, and again
   for `i686` in `SysWOW64`: `ntdll`, `kernel32`, `msvcrt`/`ucrtbase` with
   the `api-ms-win-crt-*` API sets (`errno` and the rest of the C
-  runtime's per-thread state kept per thread, as on Windows), `vcruntime140`/`vcruntime140_1` (C++
+  runtime's per-thread state kept per thread, as on Windows, with
+  `_configthreadlocale` per-thread locales and `getenv` results other
+  threads cannot overwrite; `ntdll` gives fiber-local storage its own
+  slots and runs `FlsAlloc` callbacks when a thread ends), `vcruntime140`/`vcruntime140_1` (C++
   exceptions, FH3 and FH4 tables), `msvcp140` and its satellites (the C++
-  standard library: Microsoft's own STL, compiled with clang),
+  standard library: Microsoft's own STL, compiled with clang, with
+  Boost.Math under `msvcp140_2`'s special math functions),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs, MDI,
   hooks), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
@@ -326,16 +330,19 @@ To make the ISO yourself from a fresh build, run
   (`msitest transform`, `patch`, `rollback`, `service`, `shutdown /r`,
   `msitest service-boot`), Windows Installer JScript and VBScript custom
   actions setting and reading properties and writing files, and a
-  failing script rolling its install back (`msitest script`),
-  `errnotest` (errno and the other C runtime per-thread state belong to
-  each thread, 64- and 32-bit), a power cut in the middle of saving
-  drive C: (the FAT holds chains no file reaches; at the next boot
-  NovaOS frees them and has as much free space as `fsck.fat` finds),
-  `boosttest` (a woken thread is boosted above its base priority and
-  runs within 2 ms while threads of the same priority spin on every
-  processor; the boost decays back to base, 64- and 32-bit), and last
-  `crash kernel`, a deliberate kernel fault whose serial log must show a
-  backtrace with function names.<!-- END generated:core-tests -->
+  failing script rolling its install back (`msitest script`), `smftest`
+  (the C++17 special math functions in `msvcp140_2.dll`, 64- and
+  32-bit), `errnotest` (errno and the other C runtime per-thread state
+  belong to each thread, 64- and 32-bit), a power cut in the middle of
+  saving drive C: (the FAT holds chains no file reaches; at the next
+  boot NovaOS frees them and has as much free space as `fsck.fat`
+  finds), `boosttest` (a woken thread is boosted above its base priority
+  and runs within 2 ms while threads of the same priority spin on every
+  processor; the boost decays back to base, 64- and 32-bit),
+  `crtthreads` (FLS callbacks, per-thread locale and thread-safe
+  `getenv`, 64- and 32-bit), and last `crash kernel`, a deliberate
+  kernel fault whose serial log must show a backtrace with function
+  names.<!-- END generated:core-tests -->
 - **Network** (in the boot-test job): two boots with a virtio-net card.
   On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
   `httptest suite` (winhttp with HTTP/2 by ALPN) against
@@ -376,7 +383,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `bmpcurtest`, `boosttest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `errnotest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `msitest`, `nlstest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `qttest`, `rttest`, `savetest`, `sectest`, `shmtest`, `smpstress`, `stltest`, `threads`, `touchtest`, `usptest`, `wintabtest`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `bmpcurtest`, `boosttest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `crtthreads`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `errnotest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `msitest`, `nlstest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `qttest`, `rttest`, `savetest`, `sectest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `threads`, `touchtest`, `usptest`, `wintabtest`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
   through `waveIn` and WASAPI capture;
   `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`
@@ -528,7 +535,7 @@ os/
 
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
-code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; nghttp2: MIT; mujs: ISC; uACPI: MIT; musl's libm and complex functions: MIT; ICU: Unicode License v3 (`third_party/icu/LICENSE`); kernel32's locale table, from .NET: MIT; HarfBuzz: MIT; FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Microsoft's C++ standard library (STL): Apache-2.0 WITH LLVM-exception; plutovg: MIT (with FreeType-licensed rasteriser and stroker files); Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT; FAudio: zlib; TinySoundFont: MIT<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
+code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; nghttp2: MIT; mujs: ISC; uACPI: MIT; musl's libm and complex functions: MIT; ICU: Unicode License v3 (`third_party/icu/LICENSE`); kernel32's locale table, from .NET: MIT; HarfBuzz: MIT; FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Boost.Math (the C++17 special math functions in `msvcp140_2.dll`): Boost Software License 1.0; Microsoft's C++ standard library (STL): Apache-2.0 WITH LLVM-exception; plutovg: MIT (with FreeType-licensed rasteriser and stroker files); Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT; FAudio: zlib; TinySoundFont: MIT<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,
 but independently written.
 

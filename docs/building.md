@@ -512,7 +512,9 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 | `cppeh` | C++ exceptions and RTTI |
 | `stltest` | The C++ standard library (`msvcp140.dll`, `msvcp140_1`, `msvcp140_atomic_wait`) built as Visual Studio builds a program: strings, containers, streams and locales, exceptions and `exception_ptr`, threads, mutexes, condition variables, `std::async`, atomic waits, `pmr`, `std::filesystem` and `fstream`, `to_chars`, `std::format`, `std::regex` |
 | `rttest` | The UCRT's C99 complex functions with MSVC's `_Dcomplex`/`_Fcomplex` (as NumPy calls them), `_cprintf`/`_cputs`, and the DLL search directories: `AddDllDirectory`, `RemoveDllDirectory`, `SetDllDirectory` |
+| `crtthreads` | The per-thread pieces beyond `errno`: `FlsAlloc` callbacks run once on each value when its thread ends (on that thread), on every live thread's value at `FlsFree`, and on a fiber's own values at `DeleteFiber`; a new fiber starts with no values; FLS slots leave the TLS slots alone; `_configthreadlocale` gives a thread its own `setlocale` names in `msvcrt.dll` and `ucrtbase.dll` while the process's change underneath; `getenv`/`_wgetenv` results stay whole while another thread rewrites the variable, and values past 512 bytes come back (64- and 32-bit) |
 | `errnotest` | The C runtime's per-thread data in `msvcrt.dll` and `ucrtbase.dll`: six threads fail in different ways (`fopen` of a missing file, an overflowing `strtol`, `_set_errno`) and each still reads its own `errno` and `_doserrno` afterwards, along with its own `strtok` position, `gmtime` buffer and `rand` seed; new threads start with `errno` 0; reading `errno` leaves `GetLastError` alone (64- and 32-bit) |
+| `smftest` | The C++17 special math functions of `<cmath>` (`msvcp140_2.dll`: the STL's `special_math.cpp` over Boost.Math), 64- and 32-bit: Bessel and Neumann functions, elliptic integrals, `beta`, `expint`, `riemann_zeta`, Legendre, Laguerre and Hermite polynomials, their `f` and `l` forms, against known values, and `EDOM` with NaN outside the domain |
 | `usptest` | Uniscribe on HarfBuzz: Arabic and Devanagari itemized, shaped (contextual forms, ligatures, reordering) and placed with the Noto fonts, and GDI `ExtTextOut` drawing complex text exactly as `ScriptStringOut` does; `usptest bmp FILE` saves sample lines as a bitmap |
 | `dlgtest` | The common file dialogs without showing them: `GetOpenFileName`/`GetSaveFileName` argument checks, the `IFileOpenDialog`/`IFileSaveDialog` objects' options, folders, file types, file name and events; `dlgtest open`, `multi`, `save`, `ifd`, `ifdsave` and `folder` show each dialog for a look |
 | `delaytest` | the DLLs Firefox delay-loads: urlmon (`CreateUri`, `CoInternetParseUrl`), winspool.drv, credui, dhcpcsvc, d3dcompiler_47, d3d11 |
@@ -606,14 +608,15 @@ is closed with Alt+F4 before the next).  Building PuTTY needs `cmake` and
 
 It needs 7-Zip's installer, Pillow, `openssl` (for Firefox's test
 server), `mkntfs` (for drive D:) and, for the two programs that need
-sound, PulseAudio (NovaOS then boots with a microphone that hears a tone
-and its output recorded, as the core self-tests do; without it those two
+sound, PulseAudio and QEMU's PulseAudio backend, `qemu-system-gui` on
+Ubuntu (NovaOS then boots with a microphone that hears a tone and its
+output recorded, as the core self-tests do; without PulseAudio those two
 are skipped, not failed).  The exit
 status is the number of programs that failed; `--update-reference` rewrites
 the reference screenshots after an intended change:
 
 ```bash
-sudo apt install p7zip-full python3-pil ntfs-3g pulseaudio pulseaudio-utils
+sudo apt install p7zip-full python3-pil ntfs-3g pulseaudio pulseaudio-utils qemu-system-gui
 python3 tools/appcorpus.py
 python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
 python3 tools/appcorpus.py --only NovaOS,SumatraPDF,WinMerge,VLC,Audacity,Notepad++,PuTTY --update-reference

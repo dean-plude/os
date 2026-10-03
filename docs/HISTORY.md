@@ -2754,6 +2754,38 @@ check stays pull-request only, since the pull request already passed it;
 the other jobs have no conditions that depend on a pull request, and the
 concurrency group falls back to the merge-group ref.
 
+## The C++17 special math functions (`msvcp140_2.dll`)
+
+The last satellite of the C++ standard library the
+[msvcp140 work](#the-c-standard-library-c99-complex-math-and-dll-directories)
+left out.  Programs built by Visual Studio that call `<cmath>`'s special
+functions (`std::cyl_bessel_j`, `std::expint`, `std::riemann_zeta`...)
+import them from `msvcp140_2.dll` as `__std_smf_*`, and did not load on
+NovaOS.  Nothing new was written: Microsoft builds the DLL from one STL
+source, `special_math.cpp`, a thin wrapper over Boost.Math (Boost
+Software License), and NovaOS now does the same.
+
+- **`third_party/msstl/src/special_math.cpp`** joins the vendored STL
+  (same `vs-2022-17.13` tag), and **`third_party/boost-math`** holds the
+  110 Boost.Math headers it reaches, from the commit that STL tag pins,
+  unchanged, with Boost's licence.  `userland/msvcp140_2/build.py`
+  compiles it like the other satellites, with
+  `BOOST_MATH_STANDALONE=1` as Microsoft's build does (no other Boost
+  libraries needed).
+- **The DLL exports the 44 `__std_smf_*` functions** (`double` and `f`
+  forms; the `l` forms are inline in `<cmath>` and call the `double`
+  ones) at ordinals 1 to 44 in name order, as the linker numbers
+  Microsoft's, for 64- and 32-bit programs.  Outside a function's domain
+  it returns NaN and sets the Universal C Runtime's `errno` to `EDOM`.
+- **Self-test `smftest`** (64- and 32-bit) checks 28 values against
+  closed forms and published constants (ζ(2) = π²/6, B(2, 3) = 1/12,
+  J₀(1), K(0.5)...) and the `EDOM` case.  None of the nightly corpus
+  programs or App Store downloads imports `msvcp140_2.dll` today, so the
+  self-test is the proof.
+- **Build fix**: changing a C++ program (`userland/**/*.cpp`) now
+  rebuilds the userland; before, only C sources, headers and manifests
+  were tracked.
+
 ## The C++ standard library, C99 complex math and DLL directories
 
 Three gaps the Python and Qt programs ran into, all closed.  Before
@@ -2823,6 +2855,44 @@ two of the three are existing open-source code shipped as OS components.
 - Not yet: Qt's widgets draw their shapes and icons in KeePassXC but not
   their text; `msvcp140_2.dll`.
 
+## Fiber-local storage callbacks, per-thread locales and thread-safe getenv
+
+The C runtime's per-thread block (`errno` and friends) left a few pieces
+shared by the whole process.  They now behave as on Windows.
+
+- **Fiber-local storage.**  `FlsAlloc` used to hand out TLS slots and
+  store its callback without ever calling it, so a runtime that keeps its
+  per-thread data in FLS (Microsoft's `vcruntime140.dll` and
+  `ucrtbase.dll`, which programs ship next to themselves) leaked that data
+  for every thread that ended.  FLS now lives in `ntdll`
+  (`userland/ntdll/ntdll_fls.c`, with `RtlFlsAlloc`, `RtlFlsFree`,
+  `RtlFlsGetValue`, `RtlFlsSetValue` and `RtlProcessFlsData`): 128 slots
+  of its own, so FLS no longer uses up the 64 TLS slots, and a block of
+  values per fiber reached from the TEB's `FlsData` field.  A slot's
+  callback runs on each value still set when a thread ends (before the
+  DLLs' `DLL_THREAD_DETACH`, as on Windows), on every live thread's value
+  when the slot is freed, and on a fiber's values when `DeleteFiber`
+  deletes it.  `SwitchToFiber` swaps `FlsData` with the fiber, so each
+  fiber has its own values.
+- **Per-thread locale.**  `_configthreadlocale(_ENABLE_PER_THREAD_LOCALE)`
+  gives the calling thread its own copy of the locale names in
+  `msvcrt.dll` and `ucrtbase.dll`; its `setlocale`/`_wsetlocale` calls
+  change only that copy and other threads' calls no longer reach it,
+  until `_DISABLE_PER_THREAD_LOCALE` puts it back on the process's
+  locale.  It returns the previous setting and rejects unknown values
+  with -1.  The text rules themselves are still those of the "C" locale.
+- **getenv.**  `getenv` kept 16 rotating 512-byte buffers, rewritten in
+  place, and `_wgetenv` one buffer freed on the next call, so a thread
+  could read a value another thread was overwriting, or a freed one.
+  Both now return the runtime's own copy per variable, kept until the
+  value changes (a replaced copy is never freed, as another thread may
+  hold it), with no length limit.  `GetEnvironmentVariableW` no longer
+  returns an unfilled buffer when another thread lengthens the value
+  between its two internal reads.  `tmpfile`'s name counter is atomic.
+- **Still process-wide.**  The internal `mbstate_t` of `mbrtowc` and
+  `wcrtomb` (static on Windows too).
+- **Test.**  Core self-test `crtthreads` (64- and 32-bit).
+
 ## The desktop's redraws no longer hold the file-system lock
 
 The [save without locks](#saving-drive-c-without-holding-the-locks) work
@@ -2864,6 +2934,25 @@ it is byte-identical to a fresh `tools/docgen.py` run on the pull request's
 tree, and still rejects a hand edit.  The Docs workflow only reports stale
 files.  The daily "Docs sync" pull request regenerates the regions and
 lands through auto-merge.
+
+## soundtest dscapture: the recording buffer was half its size
+
+With CI's test VMs on KVM, the core suite's `soundtest dscapture` crashed
+after recording ("access violation at ntdll.dll+0x1e9f", that is
+`RtlFreeHeap`, with a non-canonical address), while every TCG run passed.
+It was not a DirectSound start-up race: `dsound`'s capture and mixer
+threads start only after their buffer or device is fully set up.  The
+fault was in the test program.  `dscapture` gathered its samples into
+`calloc(total + half, 1)`, a size in bytes, then copied `total` 16-bit
+samples into it, writing about 88 KB past the block.  What the overrun hit
+depended on where the heap placed that block: on the TCG runs, memory
+nobody used again; on the KVM run, the capture buffer's own `CBuffer`, so
+releasing it freed pointers made of recorded samples.
+
+Under TCG the crash reproduces by freeing a 200 KB block just before
+`CreateCaptureBuffer`, so the recording buffer reuses that lower block and
+`CBuffer` lies inside the overrun.  The buffer is now
+`calloc(total, sizeof(short))`, and the same placement no longer crashes.
 
 ## Faster CI: ccache and docs-only pull requests
 
@@ -4114,7 +4203,7 @@ dialog.  The nightly app corpus runs both (`tests/appcorpus/870-vlc.py`,
 a 523 Hz tone and keeps what NovaOS played in `sound.wav` (`App(mic=True)`,
 `App(sound=(hz, ms))`), as the core self-tests do, so VLC's 440 Hz tone is
 checked after the run; without PulseAudio those two are skipped rather than
-failed.  The ffmpeg test's clip is now thirty seconds of SMPTE colour bars with
+failed (the nightly workflow installs it, with QEMU's PulseAudio backend).  The ffmpeg test's clip is now thirty seconds of SMPTE colour bars with
 the tone, which VLC loops; VLC offers the decoder its Direct3D formats
 first and the display rejects each for want of a converter, which takes
 seconds without KVM, so the screenshot waits for the colour bars to show

@@ -9,7 +9,7 @@ dialog.  The nightly app corpus runs both (`tests/appcorpus/870-vlc.py`,
 a 523 Hz tone and keeps what NovaOS played in `sound.wav` (`App(mic=True)`,
 `App(sound=(hz, ms))`), as the core self-tests do, so VLC's 440 Hz tone is
 checked after the run; without PulseAudio those two are skipped rather than
-failed.  The ffmpeg test's clip is now thirty seconds of SMPTE colour bars with
+failed (the nightly workflow installs it, with QEMU's PulseAudio backend).  The ffmpeg test's clip is now thirty seconds of SMPTE colour bars with
 the tone, which VLC loops; VLC offers the decoder its Direct3D formats
 first and the display rejects each for want of a converter, which takes
 seconds without KVM, so the screenshot waits for the colour bars to show
