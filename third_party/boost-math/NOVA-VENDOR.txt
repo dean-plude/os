@@ -1,0 +1,16 @@
+Boost.Math, vendored for NovaOS
+===============================
+
+Source: https://github.com/boostorg/math, commit
+4d0885ae44f7d4ce94568339b2ae5501eb234e8f (2024-03-03), the commit
+Microsoft's STL tag vs-2022-17.13 pins as its boost-math submodule.
+Kept: LICENSE and only the 110 headers under include/boost/math that
+third_party/msstl/src/special_math.cpp includes, directly or through
+other headers, on x64 and x86; the files are unchanged.
+
+userland/msvcp140_2/build.py compiles special_math.cpp against them with
+BOOST_MATH_STANDALONE=1 (no other Boost libraries), as the STL's own
+build does, into msvcp140_2.dll.  To add a header after an update, build
+and copy what the compiler reports missing from the same commit.
+
+Licence: Boost Software License 1.0 (LICENSE).

@@ -367,7 +367,7 @@ def build_pass(arch):
             m = HOOKS['msvcp140']
             run(['clang++'] + m.program_flags(me) + ['-c', os.path.join(progdir, src), '-o', obj])
             stl = m.program_objs(me, odir) + [os.path.join(odir, l + '.lib') for l in
-                                                ('msvcp140', 'msvcp140_1', 'msvcp140_atomic_wait')]
+                                                ('msvcp140', 'msvcp140_1', 'msvcp140_2', 'msvcp140_atomic_wait')]
         elif src.endswith('.cpp'):                # C++ (exceptions, RTTI): vcruntime140
             run(['clang++'] + cflags() + ['-fcxx-exceptions', '-fexceptions', '-std=c++17',
                  '-c', os.path.join(progdir, src), '-o', obj])

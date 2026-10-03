@@ -5,7 +5,7 @@
 # and vcruntime's headers; NovaOS gives them MinGW-w64's C and Windows
 # headers (public domain) plus the small set in userland/msvcp140/inc
 # (vcruntime.h, eh.h, ppltasks.h...).  The satellite DLLs
-# (userland/msvcp140_1, _atomic_wait, _codecvt_ids) use the helpers here.
+# (userland/msvcp140_1, _2, _atomic_wait, _codecvt_ids) use the helpers here.
 import os, re, shutil, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -95,8 +95,9 @@ def source_text(n):
     return text
 
 
-def compile_stl(b, odir, names, prefix, defines=()):
-    """third_party/msstl/src/NAME.cpp for each name, into ODIR/PREFIXNAME.obj,
+def compile_stl(b, odir, names, prefix, defines=(), extra=()):
+    """third_party/msstl/src/NAME.cpp for each name, into ODIR/PREFIXNAME.obj
+    (with the compiler flags @extra),
     compiled from ODIR/PREFIXsrc (the sources as source_text gives them,
     side by side, since some include others: ushcerr.cpp has wcerr.cpp)"""
     sdir = os.path.join(odir, prefix + 'src')
@@ -114,7 +115,7 @@ def compile_stl(b, odir, names, prefix, defines=()):
             srcs.append(src)
         todo += re.findall(r'^\s*#\s*include\s+"(\w+)\.cpp"', text, re.M)
     headers = [os.path.join(SHIM, h) for h in os.listdir(SHIM)] + [os.path.abspath(__file__)]
-    return b.compile_many(srcs, odir, prefix, cxx_flags(b, defines), headers, compiler='clang++')
+    return b.compile_many(srcs, odir, prefix, cxx_flags(b, defines) + list(extra), headers, compiler='clang++')
 
 
 def static_lib(b, odir):
