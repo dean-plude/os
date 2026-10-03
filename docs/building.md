@@ -86,6 +86,13 @@ and `lld-link`, twice: once for x64 into `C:\Windows\System32` and
 NetSurf browser, are embedded in `kernel.elf` and placed on drive C: at
 boot.
 
+Independent DLLs, programs and objects build concurrently, with at most
+`--jobs N` (or `-j N`) compiler and linker processes running at once; the
+default is the number of CPUs and `--jobs 1` builds one step at a time.  A
+DLL still links after the DLLs it depends on, and the files and their order
+in the image are the same whatever `N` is.  CMake runs the script without
+the flag, so the kernel build uses every core.
+
 Environment variables:
 
 | Variable | Effect |
@@ -97,7 +104,7 @@ To rebuild only the userland, for a quick check of a DLL (the second
 command only loads the manifests, as CI does):
 
 ```bash
-NOVA_NO_NETSURF=1 python3 tools/build_userland.py /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
+NOVA_NO_NETSURF=1 python3 tools/build_userland.py --jobs 4 /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
 python3 tools/build_userland.py --check
 ```
 
