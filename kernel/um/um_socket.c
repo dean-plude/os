@@ -182,7 +182,9 @@ static UINT64 sys_accept(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 
 /* NtNovaSockCtl(h, op, arg, outptr):
  *   0 set non-blocking (arg=0/1); 1 shutdown (arg=how);
- *   2 getpeername; 3 getsockname; 4 poll (outptr gets 3 bytes r/w/e) */
+ *   2 getpeername; 3 getsockname; 4 poll (outptr gets 3 bytes r/w/e);
+ *   9 setsockopt (arg = SOCKOPT_*, outptr = the value itself);
+ *   10 getsockopt (arg = SOCKOPT_*; returns the value, below 2^31, or -err) */
 static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     /* 6: the network generation (select reads it before looking);
@@ -224,6 +226,12 @@ static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (n == 0 && closed) return 0;
         if (n == 0) return (UINT64)(INT64)-SOCK_EWOULDBLOCK;
         return (UINT64)(INT64)n;
+    }
+    case 9: return (UINT64)(INT64)NetSockSetOpt(s, (int)a3, (UINT32)a4);
+    case 10: {
+        UINT32 v = 0;
+        int r = NetSockGetOpt(s, (int)a3, &v);
+        return r < 0 ? (UINT64)(INT64)r : (UINT64)(v & 0x7FFFFFFF);
     }
     case 4: {
         bool rd, wr, er; NetSockPoll(s, &rd, &wr, &er);

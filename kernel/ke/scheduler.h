@@ -294,8 +294,9 @@ void sched_unblock_boost(Thread *t, int boost);
  * threads get theirs from SetThreadPriority/SetPriorityClass (kernel/um). */
 void sched_set_base_priority(Thread *t, uint8_t base);
 /* The foreground process (Thread.um_proc of its threads; NULL: none), whose
- * woken threads get BOOST_FOREGROUND.  Set by the desktop as the active
- * window changes (UmUpdateForeground). */
+ * woken threads get BOOST_FOREGROUND and whose time slices are three times
+ * as long (60 ms).  Set by the desktop as the active window changes
+ * (UmUpdateForeground). */
 void sched_set_foreground(void *um);
 void *sched_foreground(void);
 /* IPI_WAKE (interrupt context): switch if sched_unblock asked this CPU to */

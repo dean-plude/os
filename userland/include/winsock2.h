@@ -37,7 +37,15 @@ typedef UINT_PTR SOCKET;
 #define SO_RCVBUF    0x1002
 #define SO_ERROR     0x1007
 #define SO_TYPE      0x1008
+#define SO_ACCEPTCONN 0x0002
+#define SO_DONTLINGER ((int)(~SO_LINGER))
+#define SO_SNDTIMEO  0x1005
+#define SO_RCVTIMEO  0x1006
 #define TCP_NODELAY  0x0001
+#define IPPROTO_IP   0
+#define IP_TTL       4
+struct linger { USHORT l_onoff; USHORT l_linger; };
+typedef struct linger LINGER, *PLINGER, *LPLINGER;
 #define FIONBIO      0x8004667e
 #define FIONREAD     0x4004667f
 
@@ -73,6 +81,7 @@ typedef UINT_PTR SOCKET;
 #define WSAEINVAL          10022
 #define WSAEMFILE          10024
 #define WSAEAFNOSUPPORT    10047
+#define WSAENOPROTOOPT     10042
 
 typedef struct in_addr { union { struct { UCHAR s_b1,s_b2,s_b3,s_b4; } S_un_b; ULONG S_addr; } S_un;
 #define s_addr S_un.S_addr
@@ -98,6 +107,7 @@ static const struct in6_addr in6addr_loopback = IN6ADDR_LOOPBACK_INIT;
 #define IN6_IS_ADDR_LINKLOCAL(a) ((a)->s6_addr[0] == 0xFE && ((a)->s6_addr[1] & 0xC0) == 0x80)
 #define IPPROTO_IPV6     41
 #define IPV6_V6ONLY      27
+#define IPV6_UNICAST_HOPS 4
 #define INET6_ADDRSTRLEN 65
 typedef struct sockaddr SOCKADDR, *PSOCKADDR, *LPSOCKADDR;
 typedef struct sockaddr_in SOCKADDR_IN, *PSOCKADDR_IN;

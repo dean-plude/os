@@ -12,7 +12,10 @@
  * case passes when its 95th percentile is 2 ms or less.
  *
  * Then the boost itself: the woken thread reads its own priority
- * (NtQueryInformationThread), which must be its base plus the increment,
+ * (NtQueryInformationThread), which must be its base plus the increment
+ * (plus NT's foreground boost, 2, when this is the foreground process: run
+ * from the Terminal, it is; one level may already have decayed, as the
+ * quantum a boost lasts counts across the thread's short runs),
  * spins for 200 ms, and reads it again: the boost decays one level per
  * quantum it runs, so it must be back at its base, and every busy thread
  * must have run meanwhile (a boosted thread doesn't starve the others).
@@ -123,6 +126,15 @@ static DWORD WINAPI waiter(LPVOID p)
     return 0;
 }
 
+/* NT's foreground boost when this is the foreground process
+ * (PROCESS_PRIORITY_CLASS.Foreground) */
+static int fg_boost(void)
+{
+    UCHAR v[2] = { 0, 0 };
+    ULONG got = 0;
+    return g_qip && g_qip(GetCurrentProcess(), 18, v, sizeof(v), &got) >= 0 && v[0] ? 2 : 0;
+}
+
 /* One case: the 95th percentile wake-up in microseconds; *ok cleared on a
  * failed check */
 static LONGLONG measure(int kind, int incr, int load, int nspin, int *ok)
@@ -160,9 +172,12 @@ static LONGLONG measure(int kind, int incr, int load, int nspin, int *ok)
     if (!load) return p95;
     LONGLONG least = -1;
     for (int s = 0; s < nspin; s++) if (least < 0 || g_spun[s] < least) least = g_spun[s];
-    printf("  %-20s priority %ld on waking (base %ld, +%d expected), %ld after 200 ms busy; busy threads ran %s\n", "",
-           g_prio_woken, g_base, incr, g_prio_after, least > 0 ? "meanwhile" : "NOT AT ALL");
-    if (p95 > 2000 || g_prio_woken != g_base + incr || g_prio_after != g_base || least <= 0) *ok = 0;
+    int fg = fg_boost();
+    LONG want = g_base + incr + fg > 15 ? 15 : g_base + incr + fg;
+    printf("  %-20s priority %ld on waking (base %ld, +%d%s expected), %ld after 200 ms busy; busy threads ran %s\n", "",
+           g_prio_woken, g_base, incr, fg ? " +2 foreground" : "", g_prio_after, least > 0 ? "meanwhile" : "NOT AT ALL");
+    if (p95 > 2000 || g_prio_woken > want || g_prio_woken < want - 1 || g_prio_woken <= g_base ||
+        g_prio_after != g_base || least <= 0) *ok = 0;
     return p95;
 }
 
