@@ -161,15 +161,20 @@ REC_HZ = 523          # what the core boot's microphone hears
 OUT = 'selftest-out'  # --out
 
 
-def recording(guest, hz, ms):
+def recording(guest, hz, ms, gapless=False):
     """A check on a WAV a test recorded at @guest (C:\\...): a tone of @hz
-    for @ms or longer (tools/wavcheck.py).  The file is copied to --out."""
+    for @ms or longer (tools/wavcheck.py), and with @gapless one that never
+    skips (no frames lost; wavcheck.gaps).  The file is copied to --out."""
     def check(nova):
         local = os.path.join(OUT, guest.replace('\\', '/').split('/')[-1])
         src = '::/NOVA/C/' + guest[3:].replace('\\', '/')
         r = subprocess.run(['mcopy', '-o', '-i', os.path.join(nova.work, 'data.img'), src, local], capture_output=True)
         if r.returncode:
             return f'no {guest} on the data disk'
+        skips = wavcheck.gaps(local, hz) if gapless else []
+        if skips:
+            return f'{guest} skips {len(skips)} time(s): frames went missing at ' + \
+                ', '.join(f'{t:.3f} s' for t, _ in skips[:5])
         if wavcheck.has_tone(local, hz, ms):
             return None
         return f'no {hz} Hz tone of {ms} ms in {guest} (heard: ' + \
