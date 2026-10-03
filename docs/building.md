@@ -415,7 +415,7 @@ python3 tools/selftest.py --suite devices
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
-`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `icutest` (x64 and x86), `comtest`,
+`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `dpitest` (per-monitor DPI), `icutest` (x64 and x86), `comtest`,
 `tlbtest` (x64 and x86), `usptest` (x64 and x86), `delaytest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`,
 `soundtest wasapi`, `soundtest record`, `soundtest capture`, `soundtest volume`,
 `sleeptest timer`, `powertest`, `disptest 1024 768` (saves the mode),
@@ -441,7 +441,11 @@ of each while it draws.  The graphics boot has a second monitor (a QEMU
 `secondary-vga`): between the installs and `gltest` it runs `montest 2`,
 which checks the monitor calls and layout changes; when it asks, the test
 pushes the pointer across onto the second monitor, and the screenshot is
-one PNG per monitor (`montest.png`, `montest-2.png`).  The network suite (`tests/selftest/network4` and
+one PNG per monitor (`montest.png`, `montest-2.png`).  Then `nstest`
+starts NetSurf on a page with an SVG image: the test checks the image's
+colours on the screen, clicks the page's box (a script changes it) and
+checks the page was redrawn with it changed (`nstest-before.png`,
+`nstest-after.png`), then closes NetSurf with Alt+F4.  The network suite (`tests/selftest/network4` and
 `network6`) boots twice with a virtio-net
 card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 (Winsock over IPv4) and `httptest suite` (winhttp: HTTP/2 by ALPN, large

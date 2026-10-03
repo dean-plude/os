@@ -738,10 +738,21 @@ static void route_key(Wnd *top, const MSG *km)
 }
 
 /* One message from the desktop: most become queued messages */
-static void from_kernel(const MSG *km)
+static void from_kernel(const MSG *kmsg)
 {
-    Wnd *top = top_by_kid((UINT32)(ULONG_PTR)km->hwnd);
+    Wnd *top = top_by_kid((UINT32)(ULONG_PTR)kmsg->hwnd);
     if (!top) return;
+    MSG conv = *kmsg;
+    const MSG *km = &conv;
+    if (dpi_aware()) {
+        /* positions in this process's pixels: the desktop's are logical,
+         * relative to the client area (km->pt) or on the screen */
+        int k = dpi_k(top), m = (int)km->message;
+        if (m == WM_MOUSEWHEEL || m == WM_MOUSEHWHEEL || m == WM_NOVA_TOUCH)
+            conv.lParam = MAKELPARAM(top->bmp.x + km->pt.x * k, top->bmp.y + km->pt.y * k);
+        else if ((m >= WM_MOUSEFIRST && m <= WM_MOUSELAST) && m != WM_MOUSELEAVE)
+            conv.lParam = MAKELPARAM((short)LOWORD(km->lParam) * k, (short)HIWORD(km->lParam) * k);
+    }
     switch (km->message) {
     case WM_SIZE: top_sync_from_kernel(top, 1); break;
     case WM_MOVE: top_sync_from_kernel(top, 0); break;
@@ -753,7 +764,11 @@ static void from_kernel(const MSG *km)
     case WM_MOUSELEAVE: leave_check(NULL, GetTickCount()); break;
     case WM_NOVA_DROP: drop_from_kernel(top, km); break;
     case WM_NOVA_TOUCH: touch_from_kernel(top, km); break;
-    case WM_DISPLAYCHANGE: send_msg(top, WM_DISPLAYCHANGE, km->wParam, km->lParam); break;
+    case WM_DISPLAYCHANGE:
+        if (dpi_aware()) dpi_monitors_changed(top);
+        if (W_quiet(top->h)) send_msg(top, WM_DISPLAYCHANGE, km->wParam, km->lParam);
+        break;
+    case WM_NOVA_DPI: if (dpi_aware()) dpi_monitors_changed(top); break;
     case WM_CHAR: case WM_SYSCHAR: break;                  /* TranslateMessage makes these, as on Windows */
     case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
         route_key(top, km);

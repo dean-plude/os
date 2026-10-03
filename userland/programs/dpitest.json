@@ -1,0 +1,4 @@
+{
+  "selftest": true,
+  "libs": ["shlwapi"]
+}

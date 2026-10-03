@@ -700,6 +700,31 @@ dom_default_action_DOMNodeInsertedIntoDocument_cb(struct dom_event *evt,
 }
 
 
+#ifdef _NOVAOS
+/**
+ * Whether a node is part of the content's document (a script also builds
+ * and changes subtrees it hasn't inserted yet).
+ */
+static bool node_in_document(html_content *htmlc, dom_node *node)
+{
+	dom_node *n = dom_node_ref(node);
+
+	while (n != NULL) {
+		dom_node *parent = NULL;
+
+		if (n == (dom_node *)htmlc->document) {
+			dom_node_unref(n);
+			return true;
+		}
+		dom_node_get_parent_node(n, &parent);
+		dom_node_unref(n);
+		n = parent;
+	}
+	return false;
+}
+#endif
+
+
 /**
  * callback for DOMSubtreeModified end type
  */
@@ -743,6 +768,22 @@ dom_default_action_DOMSubtreeModified_cb(struct dom_event *evt, void *pw)
 			default:
 				break;
 			}
+#ifdef _NOVAOS
+			/* NovaOS: a change to what the page shows, after
+			 * layout, lays the page out again (form fields and
+			 * scripts update themselves; the title isn't drawn) */
+			switch (tag_type) {
+			case DOM_HTML_ELEMENT_TYPE_TEXTAREA:
+			case DOM_HTML_ELEMENT_TYPE_INPUT:
+			case DOM_HTML_ELEMENT_TYPE_SCRIPT:
+			case DOM_HTML_ELEMENT_TYPE_TITLE:
+				break;
+			default:
+				if (node_in_document(htmlc, (dom_node *)node))
+					html_schedule_relayout(htmlc);
+				break;
+			}
+#endif
 		}
 		dom_node_unref(node);
 	}

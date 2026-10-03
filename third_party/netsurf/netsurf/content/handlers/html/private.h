@@ -210,6 +210,11 @@ typedef struct html_content {
 	 */
 	struct form_control *visible_select_menu;
 
+#ifdef _NOVAOS
+	/** Objects of the box tree being replaced (html_relayout) */
+	struct content_html_object *relayout_stash;
+#endif
+
 } html_content;
 
 /**
@@ -235,6 +240,16 @@ void html__redraw_a_box(html_content *htmlc, struct box *box);
  * \param htmlc Content to convert
  */
 void html_finish_conversion(html_content *htmlc);
+
+#ifdef _NOVAOS
+/**
+ * Rebuild the box tree soon: a script changed the DOM after layout
+ * (NovaOS; does nothing before the first layout or on pages with frames).
+ *
+ * \param htmlc The html content whose DOM changed
+ */
+void html_schedule_relayout(html_content *htmlc);
+#endif
 
 
 /**

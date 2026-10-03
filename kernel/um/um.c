@@ -985,6 +985,7 @@ static void map_api_set(char *lname, int cap)
         { "api-ms-win-eventing-",         "advapi32.dll" },
         { "api-ms-win-shell-",            "shell32.dll" },
         { "api-ms-win-shcore-",           "shlwapi.dll" },
+        { "shcore.dll",                   "shlwapi.dll" },    /* GetDpiForMonitor, SHCreateStreamOnFileEx, ... */
         { "ext-ms-win-",                  "kernel32.dll" },
         { "api-ms-win-",                  "kernel32.dll" },   /* any other set: what exists is there */
         { "msvcrt40.dll",                 "msvcrt.dll" },

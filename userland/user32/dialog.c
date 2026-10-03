@@ -196,7 +196,7 @@ static HFONT make_font(const DlgHdr *h)
 {
     if (!h->has_font) return NULL;
     if (h->pt == 0x7FFF) return gui_font();
-    int height = -MulDiv(h->pt, 96, 72);
+    int height = -MulDiv(h->pt, 96 * dpi_sys_k(), 72);        /* the system DPI a DPI-aware program sees */
     const WCHAR *face = h->face;
     if (!face || !*face || !wcsicmp_(face, L"MS Shell Dlg") || !wcsicmp_(face, L"MS Shell Dlg 2") || !wcsicmp_(face, L"MS Sans Serif"))
         face = L"Segoe UI";
@@ -236,7 +236,7 @@ static HWND create_dialog(HINSTANCE inst, const void *tmpl, HWND hparent, DLGPRO
     if (!(style & WS_CHILD)) {
         INT32 wa[4];
         RECT work = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
-        if (NtNovaGuiCtl(0, CTL_WORKAREA, 0, wa)) SetRect(&work, wa[0], wa[1], wa[0] + wa[2], wa[1] + wa[3]);
+        if (NtNovaGuiCtl(0, CTL_WORKAREA, 0, wa)) { SetRect(&work, wa[0], wa[1], wa[0] + wa[2], wa[1] + wa[3]); dpi_rect_to_proc(&work); }
         Wnd *o = owner ? W_quiet(owner) : NULL;
         if (style & (DS_CENTER | DS_CENTERMOUSE) || (hd.x == 0 && hd.y == 0)) {
             RECT c = work;

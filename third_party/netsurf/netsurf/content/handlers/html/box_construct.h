@@ -84,6 +84,17 @@
 nserror dom_to_box(struct dom_node *n, struct html_content *c, box_construct_complete_cb cb, void **box_conversion_context);
 
 
+#ifdef _NOVAOS
+/**
+ * Convert a DOM tree to a box tree at once, without yielding to the
+ * scheduler (NovaOS: rebuilding the tree after a script changed the DOM;
+ * html_relayout in html.c).  @cb is called before this returns.
+ */
+nserror dom_to_box_sync(struct dom_node *n, struct html_content *c,
+		box_construct_complete_cb cb);
+#endif
+
+
 /**
  * aborts any ongoing box construction
  */

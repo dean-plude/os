@@ -117,6 +117,7 @@ static const char *api_set_host(const char *name)
         { "api-ms-win-eventing-",   "advapi32.dll" },
         { "api-ms-win-shell-",      "shell32.dll" },
         { "api-ms-win-shcore-",     "shlwapi.dll" },
+        { "shcore",                 "shlwapi.dll" },
         { "ext-ms-win-",            "kernel32.dll" },
         { "kernelbase",             "kernel32.dll" },
         { "api-ms-win-",            "kernel32.dll" },
