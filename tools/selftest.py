@@ -12,9 +12,10 @@ order; --list prints them):
   graphics  on two monitors (a 3D virtio-gpu with Venus is the first, a
             QEMU secondary-vga the second; montest), installs "Mesa 3D",
             "DXVK" and "Venus" with the App Store, then runs tools/gltest
-            (on Mesa's llvmpipe) and tools/d3dtest (DXVK on Venus, which runs
-            Vulkan on this machine's GPU), 64- and 32-bit, d3dtest's
-            frame-rate test (Venus against lavapipe), and NetSurf on a page
+            (on Mesa's virgl, which runs OpenGL on this machine's GPU, and
+            on llvmpipe) and tools/d3dtest (DXVK on Venus, which runs
+            Vulkan there), 64- and 32-bit, the frame-rate tests (virgl
+            against llvmpipe, Venus against lavapipe), and NetSurf on a page
             with an SVG and a script (nstest).  Needs --gfx DIR, made by
             tools/ci/stage-graphics.sh: 7-Zip, the three downloads and the
             test programs; and a QEMU with Venus with an OpenGL display

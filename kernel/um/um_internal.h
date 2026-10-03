@@ -414,6 +414,8 @@ void       um_socket_syscalls_init(void);
 void       um_audio_syscalls_init(void);
 void       um_gpu_syscalls_init(void);
 UINT64     um_section_foreign(UmProcess *p, UINT64 pa, UINT64 size, void (*release)(void *), void *ctx);
+UINT64     um_section_frames(UmProcess *p, const PADDR *frames, UINT64 n, UINT64 size,
+                             void (*release)(void *), void *ctx);
 void       um_gui_syscalls_init(void);
 void       um_gui_process_gone(UmProcess *p);   /* destroy the process's windows */
 /* Wait until @o is signaled (acquiring it), @timeout_100ns passes (-1:

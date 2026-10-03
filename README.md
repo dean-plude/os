@@ -366,12 +366,14 @@ To make the ISO yourself from a fresh build, run
   scene that must match the reference `tools/d2dtest/reference.py` draws
   with Skia), then installs Mesa 3D, DXVK and Venus with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
-  stages the downloads) and runs `tools/gltest` (14 tests) and
-  `tools/d3dtest` (17 tests, on Venus: the first monitor is a QEMU 3D
-  virtio-gpu, `virtio-vga-gl,venus=on`, whose Vulkan is the runner's
-  lavapipe); each 64- and 32-bit, with a screenshot of each while it
-  draws; then `d3dtest fps`, which draws the same Direct3D 9 scene on
-  Venus and on lavapipe inside NovaOS and needs Venus to be faster.
+  stages the downloads) and runs `tools/gltest` (15 tests, on virgl and
+  on llvmpipe) and `tools/d3dtest` (17 tests, on Venus: the first monitor
+  is a QEMU 3D virtio-gpu, `virtio-vga-gl,venus=on`, whose Vulkan and
+  OpenGL are the runner's lavapipe and llvmpipe); each 64- and 32-bit,
+  with a screenshot of each while it draws; then `gltest fps` and
+  `d3dtest fps`, which draw the same OpenGL scene on virgl and on
+  llvmpipe, and the same Direct3D 9 scene on Venus and on lavapipe,
+  inside NovaOS and need the GPU to be faster.
 
 The build compiles through ccache, and the boot-test job saves the cache
 after each build, so a pull request recompiles only what it changed.  A pull

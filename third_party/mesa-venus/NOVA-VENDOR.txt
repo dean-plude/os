@@ -1,9 +1,12 @@
-Venus, Mesa's Vulkan driver for virtio-gpu (src/virtio/vulkan), from Mesa
-26.2.4 (https://mesa3d.org/), used under the MIT licence.  Not vendored
-whole: tools/build_venus.py fetches the release tarball (checking its
-SHA-256), applies novaos.patch, adds vn_renderer_nova.c and builds
-vulkan_virtio.dll, 64- and 32-bit, with MinGW-w64.  The result, venus.7z,
-is the App Store's "Venus" (the CI publishes it beside nova.iso).
+Venus, Mesa's Vulkan driver for virtio-gpu (src/virtio/vulkan), and
+virgl, its OpenGL one (src/gallium/drivers/virgl, through Mesa's WGL
+opengl32), from Mesa 26.2.4 (https://mesa3d.org/), used under the MIT
+licence.  Not vendored whole: tools/build_venus.py fetches the release
+tarball (checking its SHA-256), applies novaos.patch, adds
+vn_renderer_nova.c and virgl_nova_winsys.c and builds vulkan_virtio.dll,
+opengl32.dll (shipped as opengl32_virgl.dll) and libgallium_virgl.dll,
+64- and 32-bit, with MinGW-w64.  The result, venus.7z, is the App Store's
+"Venus" (the CI publishes it beside nova.iso).
 
 vn_renderer_nova.c (MIT, NovaOS's own): Venus's renderer back end for
 NovaOS, in place of Linux's virtgpu (DRM) and vtest ones.  It asks the
@@ -14,6 +17,15 @@ blobs (a mappable one comes back as a section that NtMapViewOfSection
 maps) and uses the kernel's timelines for Vulkan's timeline semaphores and
 fences.  It also stubs three SPIR-V specialization helpers the Windows
 link wants but Venus never calls.
+
+virgl_nova_winsys.c (MIT; follows Mesa's virgl_vtest_winsys.c, Red Hat,
+MIT): virgl's winsys for NovaOS, in place of Linux's DRM and vtest ones.
+It opens a 3D context on the VIRGL2 capability set, creates classic 3D
+resources with guest pages (mapped as sections) or, for persistent and
+coherent maps, host blobs, sends command streams and transfers, each
+fenced on one timeline the context numbers in submission order, and
+shows frames through the WGL display target (gdi_sw_winsys) after reading
+the front buffer back.
 
 novaos.patch changes:
 - src/virtio/vulkan/meson.build: build vn_renderer_nova.c on Windows.
@@ -32,5 +44,14 @@ novaos.patch changes:
   are presented through GDI), and a present on a GPU's CPU image waits for
   the copy into it to finish (Mesa waits only on a software device).
 
-The 32-bit build links with --kill-at, so the vk_icd* exports have no
-stdcall @N suffix (Mesa's own .def files do that for its other drivers).
+- src/gallium/meson.build, src/gallium/drivers/virgl/meson.build and the
+  new src/gallium/winsys/virgl/nova/ (meson.build, virgl_nova_public.h):
+  build virgl_nova_winsys.c into virgl on Windows.
+- src/gallium/targets/wgl/wgl.c and meson.build: the WGL target tries
+  virgl first (GALLIUM_DRIVER=virgl, or the default when the GPU is
+  there) and presents through the screen's flush_frontbuffer.
+
+The 32-bit build links with --add-stdcall-alias, so the vk_icd*, gl* and
+wgl* exports also have names without the stdcall @N suffix (Mesa's own
+.def files do that for its other drivers; --kill-at would strip the @N
+names opengl32 links against in libgallium_virgl's import library).

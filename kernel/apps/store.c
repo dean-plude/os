@@ -134,11 +134,11 @@ static const StoreApp g_catalog[] = {
       "Java\\**\\bin\\java.exe", KIND_ARCHIVE, 190, "64-bit zip; Java (Temurin 21) runs on NovaOS; this build is untested", "Jv", GDI_C(0xE7, 0x6F, 0x00) },
     { "Mesa 3D", "Mesa / mesa-dist-win", "Software OpenGL and Vulkan for programs that need 3D without a GPU driver",
       CAT_RUNTIMES, GH "pal1000/mesa-dist-win/releases/download/24.2.4/mesa3d-24.2.4-release-msvc.7z", "mesa3d-24.2.4-release-msvc.7z", "Mesa3D",
-      "\\Windows\\System32\\opengl32.dll", KIND_ARCHIVE, 90,
+      "\\Windows\\System32\\opengl32_mesa.dll", KIND_ARCHIVE, 90,
       "The system OpenGL 4.5 and Vulkan 1.3, drawn on the CPU (llvmpipe, lavapipe), for 64- and 32-bit programs",
       "GL", GDI_C(0x3B, 0x5B, 0xA0),
-      "x64\\opengl32.dll x64\\libgallium_wgl.dll x64\\libglapi.dll x64\\vulkan_lvp.dll x64\\lvp_icd.x86_64.json "
-      "x86\\opengl32.dll x86\\libgallium_wgl.dll x86\\libglapi.dll x86\\vulkan_lvp.dll x86\\lvp_icd.x86.json" },
+      "x64\\opengl32.dll>opengl32_mesa.dll x64\\libgallium_wgl.dll x64\\libglapi.dll x64\\vulkan_lvp.dll x64\\lvp_icd.x86_64.json "
+      "x86\\opengl32.dll>opengl32_mesa.dll x86\\libgallium_wgl.dll x86\\libglapi.dll x86\\vulkan_lvp.dll x86\\lvp_icd.x86.json" },
     { "DXVK", "Philip Rebohle / DXVK", "Direct3D 8, 9, 10 and 11 on Vulkan, for games and 3D programs",
       CAT_RUNTIMES, GH "doitsujin/dxvk/releases/download/v2.5.3/dxvk-2.5.3.tar.gz", "dxvk-2.5.3.tar.gz", "DXVK",
       "\\Windows\\System32\\d3d11_dxvk.dll", KIND_ARCHIVE, 10,
@@ -149,13 +149,14 @@ static const StoreApp g_catalog[] = {
       "dxvk-2.5.3\\x32\\d3d8.dll dxvk-2.5.3\\x32\\d3d9.dll dxvk-2.5.3\\x32\\d3d10core.dll dxvk-2.5.3\\x32\\d3d11.dll>d3d11_dxvk.dll "
       "dxvk-2.5.3\\x32\\dxgi.dll>dxgi_dxvk.dll" },
     /* Built by tools/build_venus.py; the CI publishes it beside nova.iso */
-    { "Venus", "Mesa / NovaOS", "Vulkan on the host's GPU when NovaOS runs in QEMU with a 3D virtio-gpu",
+    { "Venus", "Mesa / NovaOS", "Vulkan and OpenGL on the host's GPU when NovaOS runs in QEMU with a 3D virtio-gpu",
       CAT_RUNTIMES, GH "dean-plude/os/releases/download/latest/venus.7z", "venus.7z", "Venus",
-      "\\Windows\\System32\\vulkan_virtio.dll", KIND_ARCHIVE, 3,
-      "Mesa's Venus for 64- and 32-bit programs: Vulkan, and Direct3D through DXVK, run on the host's GPU "
-      "(QEMU: -device virtio-vga-gl,venus=on,blob=on,hostmem=1G); without that GPU programs keep using Mesa 3D",
+      "\\Windows\\System32\\opengl32_virgl.dll", KIND_ARCHIVE, 8,
+      "Mesa's Venus and virgl for 64- and 32-bit programs: Vulkan, Direct3D through DXVK, and OpenGL run on the "
+      "host's GPU (QEMU: -device virtio-vga-gl,venus=on,blob=on,hostmem=1G); without that GPU programs keep using Mesa 3D",
       "VN", GDI_C(0xC0, 0x30, 0x40),
-      "x64\\vulkan_virtio.dll x64\\virtio_icd.x86_64.json x86\\vulkan_virtio.dll x86\\virtio_icd.x86.json" },
+      "x64\\vulkan_virtio.dll x64\\virtio_icd.x86_64.json x64\\opengl32_virgl.dll x64\\libgallium_virgl.dll "
+      "x86\\vulkan_virtio.dll x86\\virtio_icd.x86.json x86\\opengl32_virgl.dll x86\\libgallium_virgl.dll" },
 };
 #undef GH
 #define N_APPS ((int)(sizeof(g_catalog) / sizeof(g_catalog[0])))

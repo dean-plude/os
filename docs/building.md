@@ -270,14 +270,19 @@ for 0 x 0 disconnects it, while NovaOS runs.
 A 3D GPU: with QEMU 9.2 or newer and a virglrenderer built with Venus,
 `-vga none -device virtio-vga-gl,venus=on,blob=on,hostmem=1G` and an
 OpenGL display (`-display sdl,gl=on` or `gtk,gl=on`) give NovaOS a
-virtio-gpu whose Vulkan runs on the host's GPU.  Install **Venus** from
-the App Store (Runtimes), next to Mesa 3D and DXVK: Vulkan programs, and
-Direct3D ones through DXVK, then run there (`d3dtest` prints `D3D9
-adapter  Virtio-GPU Venus (...)`), and without such a GPU they keep using
-lavapipe.  OpenGL stays on llvmpipe.  `tools/ci/build-qemu-venus.sh
+virtio-gpu whose Vulkan and OpenGL run on the host's GPU.  Install
+**Venus** from the App Store (Runtimes), next to Mesa 3D and DXVK: Vulkan
+programs, Direct3D ones through DXVK, and OpenGL ones then run there
+(`d3dtest` prints `D3D9 adapter  Virtio-GPU Venus (...)`, `gltest`
+`GL_RENDERER virgl (...)`), and without such a GPU they keep using
+lavapipe and llvmpipe.  NovaOS's `opengl32.dll` picks Mesa's virgl
+(`opengl32_virgl.dll`, from Venus) on that GPU and Mesa 3D's llvmpipe
+(`opengl32_mesa.dll`) otherwise; `GALLIUM_DRIVER=virgl` or
+`GALLIUM_DRIVER=llvmpipe` chooses one.  `tools/ci/build-qemu-venus.sh
 PREFIX` builds such a QEMU (Ubuntu 24.04's has no Venus), and
 `tools/build_venus.py OUT` builds the App Store's `venus.7z` (Mesa's
-Venus with NovaOS's back end, `third_party/mesa-venus`) with MinGW-w64.
+Venus and virgl with NovaOS's back ends, `third_party/mesa-venus`) with
+MinGW-w64.
 
 ### Where your files are kept
 
@@ -472,10 +477,15 @@ shaping, the direction and the drawing, and shows the line in a window.  It
 then types `store
 install Mesa 3D`, `store install DXVK` and `store install Venus` (the
 archives are already in `C:\Downloads`, so the App Store installs without
-a network) and then runs `gltest` (on llvmpipe) and `d3dtest` (on Venus:
+a network) and then runs `gltest` (on virgl and, with
+`GALLIUM_DRIVER=llvmpipe`, on llvmpipe) and `d3dtest` (on Venus:
 the first monitor is a 3D virtio-gpu, `virtio-vga-gl,venus=on`, and the
 test expects the Venus adapter), x64 and x86, from `C:\Tests`, taking a
-screenshot of each while it draws.  Last, `d3dtest fps 10` draws a
+screenshot of each while it draws.  `gltest fps 10` draws an OpenGL
+scene that keeps the rasterizer busy (64 blended quads over a 640x480
+window) for 10 s on virgl and 10 s on llvmpipe, each in a child process
+whose `GALLIUM_DRIVER` names the driver, and passes when virgl draws more
+frames per second (under TCG: 12.6 to 15.9 against 0.24).  Last, `d3dtest fps 10` draws a
 Direct3D 9 scene that keeps the rasterizer busy (64 blended quads over a
 640x480 window) for 10 s on Venus and 10 s on lavapipe, each in a child
 process whose `VK_DRIVER_FILES` names the driver, and passes when Venus

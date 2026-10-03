@@ -46,6 +46,7 @@
 #include "../ke/spinlock.h"
 #include "../arch/x86_64/cpu.h"
 #include "../ke/scheduler.h"
+#include "../mm/pmm.h"
 
 #define CAP_COMMON   1
 #define CAP_NOTIFY   2
@@ -93,6 +94,10 @@
 #define CMD_RESOURCE_CREATE_BLOB 0x010C
 #define CMD_CTX_CREATE           0x0200
 #define CMD_CTX_DESTROY          0x0201
+#define CMD_CTX_ATTACH_RESOURCE  0x0202
+#define CMD_RESOURCE_CREATE_3D   0x0204
+#define CMD_TRANSFER_TO_HOST_3D  0x0205
+#define CMD_TRANSFER_FROM_HOST_3D 0x0206
 #define CMD_SUBMIT_3D            0x0207
 #define CMD_RESOURCE_MAP_BLOB    0x0208
 #define CMD_RESOURCE_UNMAP_BLOB  0x0209
@@ -663,6 +668,8 @@ struct VgpuBlob {
     UINT32  res;
     UINT64  size;
     INT64   shm_off;                      /* where it is mapped in the host-visible region (-1: not) */
+    PADDR  *frames;                       /* a virgl resource's guest memory (NULL: a blob) */
+    UINT64  nframes;
 };
 
 static Vgpu *dev3d(void)
@@ -825,42 +832,53 @@ static void *payload(const void *cs, UINT32 size, size_t *pages)
     return p;
 }
 
-bool VgpuCtxSubmit(VgpuCtx *c, const void *cs, UINT32 size, UINT32 ring, int n, const UINT32 *syncs, const UINT64 *vals)
+static void fence_drop(Fence *f)
 {
-    Vgpu *v = c->v;
-    Fence *f = NULL;
-    if (n > 0) {
-        f = kzalloc(sizeof(Fence) + (size_t)n * (sizeof(VgpuSync *) + sizeof(UINT64)));
-        if (!f) return false;
-        f->sync = (VgpuSync **)(f + 1);
-        f->value = (UINT64 *)(f->sync + n);
-        IrqState s = spin_lock_irqsave(&g_lock);
-        for (int k = 0; k < n; k++) {
-            UINT32 id = syncs[k];
-            if (!id || (int)id > c->nsync || !c->sync[id - 1]) {
-                for (int j = 0; j < f->n; j++) sync_unref_locked(f->sync[j]);
-                spin_unlock_irqrestore(&g_lock, s);
-                kfree(f);
-                return false;
-            }
-            f->sync[k] = c->sync[id - 1];
-            f->sync[k]->refs++;
-            f->value[k] = vals[k];
-            f->n++;
-        }
-        spin_unlock_irqrestore(&g_lock, s);
-    }
-    size_t pages = 0;
-    void *p = size ? payload(cs, size, &pages) : NULL;
-    if (size && !p) {
-        if (f) {
-            IrqState s = spin_lock_irqsave(&g_lock);
+    if (!f) return;
+    IrqState s = spin_lock_irqsave(&g_lock);
+    for (int j = 0; j < f->n; j++) sync_unref_locked(f->sync[j]);
+    spin_unlock_irqrestore(&g_lock, s);
+    kfree(f);
+}
+
+/* What completing a fenced command does to @c's timelines: @syncs[k]
+ * reaches @vals[k] (NULL when n == 0 or a timeline is bad; *ok says which) */
+static Fence *fence_make(VgpuCtx *c, int n, const UINT32 *syncs, const UINT64 *vals, bool *ok)
+{
+    *ok = true;
+    if (n <= 0) return NULL;
+    Fence *f = kzalloc(sizeof(Fence) + (size_t)n * (sizeof(VgpuSync *) + sizeof(UINT64)));
+    if (!f) { *ok = false; return NULL; }
+    f->sync = (VgpuSync **)(f + 1);
+    f->value = (UINT64 *)(f->sync + n);
+    IrqState s = spin_lock_irqsave(&g_lock);
+    for (int k = 0; k < n; k++) {
+        UINT32 id = syncs[k];
+        if (!id || (int)id > c->nsync || !c->sync[id - 1]) {
             for (int j = 0; j < f->n; j++) sync_unref_locked(f->sync[j]);
             spin_unlock_irqrestore(&g_lock, s);
             kfree(f);
+            *ok = false;
+            return NULL;
         }
-        return false;
+        f->sync[k] = c->sync[id - 1];
+        f->sync[k]->refs++;
+        f->value[k] = vals[k];
+        f->n++;
     }
+    spin_unlock_irqrestore(&g_lock, s);
+    return f;
+}
+
+bool VgpuCtxSubmit(VgpuCtx *c, const void *cs, UINT32 size, UINT32 ring, int n, const UINT32 *syncs, const UINT64 *vals)
+{
+    Vgpu *v = c->v;
+    bool ok;
+    Fence *f = fence_make(c, n, syncs, vals, &ok);
+    if (!ok) return false;
+    size_t pages = 0;
+    void *p = size ? payload(cs, size, &pages) : NULL;
+    if (size && !p) { fence_drop(f); return false; }
     int i = slot3d(v, CMD_SUBMIT_3D, c->id, sizeof(Submit3d));
     Submit3d *q = (Submit3d *)v->slot[i].page;
     q->size = size;
@@ -884,6 +902,7 @@ typedef struct __attribute__((packed)) {
     Hdr h; UINT32 res, blob_mem, blob_flags, nr_entries; UINT64 blob_id, size;
 } CreateBlob;
 typedef struct __attribute__((packed)) { Hdr h; UINT32 res, pad; UINT64 offset; } MapBlob;
+typedef struct __attribute__((packed)) { Hdr h; UINT32 res, pad; } CtxResource;
 typedef struct __attribute__((packed)) { Hdr h; UINT32 map_info, pad; } MapInfo;
 
 VgpuBlob *VgpuBlobCreate(VgpuCtx *c, UINT32 blob_mem, UINT32 flags, UINT64 blob_id, UINT64 size,
@@ -915,10 +934,127 @@ VgpuBlob *VgpuBlobCreate(VgpuCtx *c, UINT32 blob_mem, UINT32 flags, UINT64 blob_
         kfree(b);
         return NULL;
     }
+    /* (as Linux does for every resource a context sees: virgl's command
+     * streams name the blob by its resource number) */
+    i = slot3d(v, CMD_CTX_ATTACH_RESOURCE, c->id, sizeof(CtxResource));
+    ((CtxResource *)v->slot[i].page)->res = b->res;
+    post3d(v, i, sizeof(CtxResource), 0);
     return b;
 }
 
 UINT32 VgpuBlobId(VgpuBlob *b) { return b->res; }
+
+typedef struct __attribute__((packed)) {
+    Hdr h; UINT32 res, target, format, bind, width, height, depth, array_size, last_level, nr_samples, flags, pad;
+} Create3d;
+typedef struct __attribute__((packed)) {
+    Hdr h; UINT32 x, y, z, w, h2, d; UINT64 offset; UINT32 res, level, stride, layer_stride;
+} Transfer3d;
+
+VgpuBlob *VgpuRes3dCreate(VgpuCtx *c, const UINT32 *p, PADDR *frames, UINT64 nframes)
+{
+    Vgpu *v = c->v;
+    VgpuBlob *b = kzalloc(sizeof(*b));
+    UINT64 *ent = NULL;
+    if (!b) return NULL;
+    b->v = v;
+    b->refs = 1;
+    b->shm_off = -1;
+    b->size = nframes * PAGE_SIZE;
+    IrqState s = spin_lock_irqsave(&g_lock);
+    b->res = ++v->next_id;
+    spin_unlock_irqrestore(&g_lock, s);
+    int i = slot3d(v, CMD_RESOURCE_CREATE_3D, c->id, sizeof(Create3d));
+    Create3d *q = (Create3d *)v->slot[i].page;
+    q->res = b->res;
+    memcpy(&q->target, p, 10 * sizeof(UINT32));
+    UINT32 t = call3d(v, i, sizeof(Create3d), 0, NULL, sizeof(Hdr));
+    if (t != RESP_OK_NODATA) {
+        kprintf("[VGPU] %s: a %ux%u resource (format %u, bind %x) was refused (%x)\n", v->name,
+                p[3], p[4], p[1], p[2], t);
+        kfree(b);
+        return NULL;
+    }
+    if (nframes) {
+        /* its memory: one entry per run of consecutive pages */
+        UINT32 n = 0;
+        ent = kmalloc(nframes * 16);
+        if (!ent) goto fail;
+        for (UINT64 k = 0; k < nframes; k++) {
+            if (n && ent[2 * (n - 1)] + (ent[2 * (n - 1) + 1] & 0xFFFFFFFF) == frames[k] &&
+                (ent[2 * (n - 1) + 1] & 0xFFFFFFFF) < (1u << 30)) {
+                ent[2 * (n - 1) + 1] += PAGE_SIZE;
+                continue;
+            }
+            ent[2 * n] = frames[k];
+            ent[2 * n + 1] = PAGE_SIZE;
+            n++;
+        }
+        size_t pages;
+        void *pl = payload(ent, n * 16, &pages);
+        kfree(ent);
+        ent = NULL;
+        if (!pl) goto fail;
+        i = slot3d(v, CMD_ATTACH_BACKING, 0, sizeof(Attach));
+        Attach *a = (Attach *)v->slot[i].page;
+        a->id = b->res;
+        a->n = n;
+        v->slot[i].ext = pl;
+        v->slot[i].ext_pages = pages;
+        t = call3d(v, i, sizeof(Hdr) + 8, n * 16, NULL, sizeof(Hdr));
+        if (t != RESP_OK_NODATA) {
+            kprintf("[VGPU] %s: resource %u refused its memory (%x)\n", v->name, b->res, t);
+            goto fail;
+        }
+        b->frames = frames;
+        b->nframes = nframes;
+    }
+    i = slot3d(v, CMD_CTX_ATTACH_RESOURCE, c->id, sizeof(CtxResource));
+    ((CtxResource *)v->slot[i].page)->res = b->res;
+    post3d(v, i, sizeof(CtxResource), 0);
+    return b;
+fail:
+    kfree(ent);
+    i = slot3d(v, CMD_RESOURCE_UNREF, 0, sizeof(Unref));
+    ((Unref *)v->slot[i].page)->id = b->res;
+    call3d(v, i, sizeof(Unref), 0, NULL, sizeof(Hdr));
+    kfree(b);
+    return NULL;
+}
+
+bool VgpuBlobFrames(VgpuBlob *b, const PADDR **frames, UINT64 *n)
+{
+    if (!b->frames) return false;
+    *frames = b->frames;
+    *n = b->nframes;
+    return true;
+}
+
+bool VgpuTransfer3d(VgpuCtx *c, VgpuBlob *b, bool to_host, const UINT32 *box, UINT64 offset, UINT32 level,
+                    UINT32 stride, UINT32 layer_stride, UINT32 sync, UINT64 value)
+{
+    Vgpu *v = c->v;
+    bool ok;
+    Fence *f = fence_make(c, sync ? 1 : 0, &sync, &value, &ok);
+    if (!ok) return false;
+    int i = slot3d(v, to_host ? CMD_TRANSFER_TO_HOST_3D : CMD_TRANSFER_FROM_HOST_3D, c->id, sizeof(Transfer3d));
+    Transfer3d *q = (Transfer3d *)v->slot[i].page;
+    memcpy(&q->x, box, 6 * sizeof(UINT32));
+    q->offset = offset;
+    q->res = b->res;
+    q->level = level;
+    q->stride = stride;
+    q->layer_stride = layer_stride;
+    if (f) q->h.flags = FLAG_FENCE | FLAG_INFO_RING_IDX;
+    IrqState s = spin_lock_irqsave(&g_lock);
+    if (f) q->h.fence = ++v->fence_seq;
+    v->slot[i].fence = f;
+    v->slot[i].autofree = true;
+    slot_send(v, i, sizeof(Transfer3d), 0, sizeof(Hdr));
+    spin_unlock_irqrestore(&g_lock, s);
+    kick(v);
+    return true;
+}
 
 /* Map @b into the host-visible region (once); its physical address */
 bool VgpuBlobMap(VgpuBlob *b, UINT64 *pa, UINT64 *size)
@@ -986,7 +1122,14 @@ void VgpuBlobUnref(VgpuBlob *b)
     }
     int i = slot3d(v, CMD_RESOURCE_UNREF, 0, sizeof(Unref));
     ((Unref *)v->slot[i].page)->id = b->res;
-    post3d(v, i, sizeof(Unref), 0);
+    if (b->frames) {
+        /* (the card is done with the pages once it answers: it runs the
+         * queue's commands in order, transfers included) */
+        call3d(v, i, sizeof(Unref), 0, NULL, sizeof(Hdr));
+        for (UINT64 k = 0; k < b->nframes; k++) pmm_free_page(b->frames[k]);
+        kfree(b->frames);
+    } else
+        post3d(v, i, sizeof(Unref), 0);
     kfree(b);
 }
 

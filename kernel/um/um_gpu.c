@@ -1,14 +1,18 @@
 /*
- * um_gpu.c — the kernel half of the Vulkan driver for virtio GPUs
+ * um_gpu.c — the kernel half of the Vulkan and OpenGL drivers for virtio GPUs
  *
- * Mesa's Venus (vulkan_virtio.dll) encodes a program's Vulkan calls and
- * sends them to the host's renderer through the GPU; this is what Linux's
+ * Mesa's Venus (vulkan_virtio.dll) encodes a program's Vulkan calls, and
+ * Mesa's virgl (opengl32_virgl.dll) its OpenGL calls, and sends them to
+ * the host's renderer through the GPU; this is what Linux's
  * virtio-gpu DRM driver gives it there (DRM_IOCTL_VIRTGPU_*), as one
  * NovaOS-private service on a UO_GPU handle: one 3D context per handle,
  * its blobs (numbered from 1 within the handle) and its timelines.  A
  * mappable blob is mapped by making it a section (um_section_foreign) that
  * the program maps with NtMapViewOfSection, so its views go away with the
- * program like any other.  Every structure keeps pointers as 64-bit fields,
+ * program like any other.  virgl's resources are the classic kind: the
+ * kernel gives each one pages of guest memory (mapped the same way, as a
+ * section over those pages) and copies between them and the host's copy
+ * with fenced transfers.  Every structure keeps pointers as 64-bit fields,
  * so 32-bit programs pass the same ones.
  */
 
@@ -93,6 +97,8 @@ typedef struct { UINT32 id, version, size, pad; UINT64 out; } GpuCapset;
 typedef struct { UINT64 cs; UINT32 size, ring; UINT32 nsync, pad; UINT64 syncs, values; } GpuSubmit;
 typedef struct { UINT32 blob_mem, flags; UINT64 blob_id, size, cs; UINT32 cs_size, res; } GpuBlobCreate;
 typedef struct { UINT32 id, op; UINT64 value; } GpuSyncOp;
+typedef struct { UINT32 p[10]; UINT32 res; UINT32 pad; UINT64 size; } GpuRes3d;
+typedef struct { UINT64 blob, offset; UINT32 to_host, level, stride, layer_stride; UINT32 box[6]; UINT32 sync, pad; UINT64 value; } GpuTransfer;
 typedef struct { UINT32 n, any; UINT64 timeout_ns, ids, values; } GpuWaitArgs;
 
 static UINT64 do_submit(Gpu *g, UINT64 ptr)
@@ -125,16 +131,51 @@ static UINT64 do_blob_create(Gpu *g, UINT64 ptr)
     return n;
 }
 
+static UINT64 do_res_create(Gpu *g, UINT64 ptr)
+{
+    GpuRes3d a;
+    if (!NT_SUCCESS(CopyFromUser(&a, (const void *)(uintptr_t)ptr, sizeof(a)))) return FAIL;
+    UINT64 n = (a.size + PAGE_SIZE - 1) / PAGE_SIZE;
+    PADDR *f = NULL;
+    if (n && !(f = um_alloc_frames(n))) return 0;
+    VgpuBlob *b = VgpuRes3dCreate(g->ctx, a.p, f, n);
+    if (!b) { um_free_frames(f, n); return 0; }
+    UINT64 k = add_blob(g, b);
+    if (!k) { VgpuBlobUnref(b); return 0; }
+    a.res = VgpuBlobId(b);
+    CopyToUser((void *)(uintptr_t)ptr, &a, sizeof(a));
+    return k;
+}
+
+static UINT64 do_transfer(Gpu *g, UINT64 ptr)
+{
+    GpuTransfer a;
+    if (!NT_SUCCESS(CopyFromUser(&a, (const void *)(uintptr_t)ptr, sizeof(a)))) return FAIL;
+    VgpuBlob *b = get_blob(g, a.blob, false);
+    if (!b) return FAIL;
+    bool ok = VgpuTransfer3d(g->ctx, b, a.to_host != 0, a.box, a.offset, a.level, a.stride, a.layer_stride,
+                             a.sync, a.value);
+    VgpuBlobUnref(b);
+    return ok ? 0 : FAIL;
+}
+
 static void blob_release(void *b) { VgpuBlobUnref(b); }
 
 static UINT64 do_blob_map(Gpu *g, UINT64 n, UINT64 size_ptr)
 {
     VgpuBlob *b = get_blob(g, n, false);
     if (!b) return 0;
-    UINT64 pa, size;
-    if (!VgpuBlobMap(b, &pa, &size)) { VgpuBlobUnref(b); return 0; }
-    UINT64 h = um_section_foreign(UmCurrent(), pa, size, blob_release, b);   /* (the section owns our reference) */
-    if (!h) return 0;
+    UINT64 pa, size, h;
+    const PADDR *f;
+    UINT64 nf;
+    if (VgpuBlobFrames(b, &f, &nf)) {                 /* a virgl resource: its guest pages */
+        size = nf * PAGE_SIZE;
+        h = um_section_frames(UmCurrent(), f, nf, size, blob_release, b);
+    } else {
+        if (!VgpuBlobMap(b, &pa, &size)) { VgpuBlobUnref(b); return 0; }
+        h = um_section_foreign(UmCurrent(), pa, size, blob_release, b);   /* (the section owns our reference) */
+    }
+    if (!h) { VgpuBlobUnref(b); return 0; }
     if (size_ptr) CopyToUser((void *)(uintptr_t)size_ptr, &size, sizeof(size));
     return h;
 }
@@ -161,6 +202,8 @@ static UINT64 do_wait(Gpu *g, UINT64 ptr)
  *   8 destroy timeline @arg                                  9 timeline op: GpuSyncOp at @ptr (0 read,
  *                                                              1 write, 2 reset)
  *  10 wait: GpuWaitArgs at @ptr: 0 reached, 1 timed out
+ *  11 create a virgl resource: GpuRes3d at @ptr (res filled in); its number, like a blob's (0: refused)
+ *  12 transfer: GpuTransfer at @ptr
  * Returns 0 (or as said), or -1 for a bad handle or argument. */
 static UINT64 sys_gpu(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
@@ -217,6 +260,8 @@ static UINT64 sys_gpu(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         break;
     }
     case 10: r = do_wait(g, a4); break;
+    case 11: r = do_res_create(g, a4); break;
+    case 12: r = do_transfer(g, a4); break;
     }
     um_ob_unref(ob);
     return r;
