@@ -454,9 +454,12 @@ def verdict(t, out, ok, exe):
         return bad.group(1)
     # the kernel's log shares the serial port with the Terminal's copy and
     # can land in the middle of a line of output: match without it
+    # (a program's line can also land in the middle of a kernel log line,
+    # such as "[UM]   command line: ..." of a 1,100-character command, and
+    # then goes with it: look in the whole output if it is not in the rest)
     text = KLOG.sub('', out)
     for e in t.expect:
-        if not re.search(e, text):
+        if not re.search(e, text) and not re.search(e, out):
             return f'missing "{e}"'
     return None
 
