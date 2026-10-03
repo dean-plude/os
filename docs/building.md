@@ -335,8 +335,9 @@ python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 `tools/novarun.py` (and so `tools/selftest.py`) starts QEMU with `-accel kvm`
 when `/dev/kvm` is readable and writable, and with TCG otherwise.  Set
 `NOVARUN_ACCEL=tcg` or `NOVARUN_ACCEL=kvm` to force one.  The CPU model stays
-`qemu64` with the same feature flags under both.  CI pins every job to TCG (`NOVARUN_ACCEL=tcg`) until the KVM failures in the
-history entry "Test VMs under KVM in CI" are fixed.
+`qemu64` with the same feature flags under both.  CI runs the test VMs under KVM: each job's `tools/ci/enable-kvm.sh` step opens
+`/dev/kvm` to the runner user and sets `NOVARUN_ACCEL=kvm`, or sets `tcg` with
+a warning when the runner has no usable `/dev/kvm`.
 
 The graphics suite downloads 7-Zip, Mesa and DXVK and builds
 gltest/d3dtest/d2dtest/dwtest:
