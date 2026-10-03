@@ -1,6 +1,6 @@
 /*
  * settings.c — Settings: live system, display, personalization, storage,
- *               network and about pages
+ *               network, time & language and about pages
  */
 
 #include "apps.h"
@@ -12,6 +12,7 @@
 #include "../wm/desktop.h"
 #include "../fs/persist.h"
 #include "../hal/display.h"
+#include "../um/um.h"
 
 #define SIDE_W 200
 #define ITEM_H 36
@@ -22,10 +23,11 @@ typedef struct {
     bool drag, moved;                /* a monitor being dragged in the arrangement */
     int drag_dx, drag_dy;            /* the press inside it (diagram px) */
     int drag_x, drag_y;              /* its top left now (diagram px) */
+    char locale[32];                 /* Time & language: the user locale shown */
 } Settings;
 
-static const char *g_pages[] = { "System", "Display", "Personalization", "Storage", "Network", "About" };
-static const Glyph g_page_glyphs[] = { GL_PC, GL_WINDOWS, GL_PICTURES, GL_FOLDER, GL_NETWORK, GL_NOVA };
+static const char *g_pages[] = { "System", "Display", "Personalization", "Storage", "Network", "Time & language", "About" };
+static const Glyph g_page_glyphs[] = { GL_PC, GL_WINDOWS, GL_PICTURES, GL_FOLDER, GL_NETWORK, GL_GEAR, GL_NOVA };
 #define N_PAGES ((int)(sizeof(g_pages) / sizeof(g_pages[0])))
 
 /* A labelled row inside a card: "Label ........ value" */
@@ -287,10 +289,20 @@ static void page_network(int x, int y, int w)
     row(x, y, w, "Trusted root certificates (HTTPS)", roots);
 }
 
-/* Repaint the Network page when the connection state changes */
+static void current_locale(char *out, int cap);
+
+/* Repaint the Network page when the connection state changes (and Time &
+ * language when the user locale does) */
 static bool set_tick(WND *w)
 {
     Settings *st = w->user;
+    if (st && st->page == SETTINGS_TIME_LANGUAGE) {           /* intl.exe has written the choice */
+        char cur[32];
+        current_locale(cur, sizeof(cur));
+        if (!strcmp(cur, st->locale)) return false;
+        strcpy(st->locale, cur);
+        return true;
+    }
     if (!st || st->page != SETTINGS_NETWORK) return false;
     NetStatus ns;
     NetGetStatus(&ns);
@@ -327,6 +339,72 @@ static void page_personalize(int x, int y, int w)
     }
     y += THEME_CARD_H + 60;
     row(x, y, w, "Accent colour", "Follows the theme");
+}
+
+/* Time & language: the user's regional format (the user locale).  A
+ * choice runs intl.exe, which writes HKCU\Control Panel\International
+ * (LocaleName and the values beside it) from kernel32's locale data;
+ * programs started afterwards format dates, times, numbers and money that
+ * way.  "intl NAME" in the Terminal sets any of the Windows locales. */
+#define INTL_KEY "User\\S-1-5-21-1000-2000-3000-1001\\Control Panel\\International"
+#define LOC_CHIP_W 184
+#define LOCALES_DY (26 + 50 + 34 + 26)
+static const struct { const char *name, *label; } g_formats[] = {
+    { "en-US", "English (United States)" }, { "en-GB", "English (United Kingdom)" },
+    { "de-DE", "German (Germany)" },        { "fr-FR", "French (France)" },
+    { "es-ES", "Spanish (Spain)" },         { "it-IT", "Italian (Italy)" },
+    { "nl-NL", "Dutch (Netherlands)" },     { "pt-BR", "Portuguese (Brazil)" },
+    { "pl-PL", "Polish (Poland)" },         { "sv-SE", "Swedish (Sweden)" },
+    { "ru-RU", "Russian (Russia)" },        { "tr-TR", "Turkish (Turkey)" },
+    { "ja-JP", "Japanese (Japan)" },        { "zh-CN", "Chinese (China)" },
+    { "ko-KR", "Korean (Korea)" },
+};
+#define N_FORMATS ((int)(sizeof(g_formats) / sizeof(g_formats[0])))
+
+static void current_locale(char *out, int cap)
+{
+    if (!um_registry_get_sz(INTL_KEY, "LocaleName", out, cap) || !out[0]) strcpy(out, "en-US");
+}
+
+static int loc_cols(int w)
+{
+    int n = (w + CHIP_GAP) / (LOC_CHIP_W + CHIP_GAP);
+    return n < 1 ? 1 : n;
+}
+
+static void page_time_language(int x, int y, int w)
+{
+    char cur[32], value[64];
+    current_locale(cur, sizeof(cur));
+    const char *label = cur;
+    for (int i = 0; i < N_FORMATS; i++) if (!strcmp(g_formats[i].name, cur)) label = g_formats[i].label;
+    if (label != cur) ksnprintf(value, sizeof(value), "%s  (%s)", label, cur);
+    else ksnprintf(value, sizeof(value), "%s", cur);
+    int top = y;
+    GdiTextBold(x, y, "Region", UI_TEXT);              y += 26;
+    row(x, y, w, "Regional format", value);            y += 50;
+    GdiTextT(x, y, "Dates, times, numbers and currency in programs started from now on", UI_TEXT2);
+
+    GdiTextBold(x, top + LOCALES_DY - 26, "Choose a format", UI_TEXT);
+    y = top + LOCALES_DY;
+    int cols = loc_cols(w);
+    for (int i = 0; i < N_FORMATS; i++) {
+        int cx = x + (i % cols) * (LOC_CHIP_W + CHIP_GAP), cy = y + (i / cols) * (CHIP_H + CHIP_GAP);
+        bool on = !strcmp(g_formats[i].name, cur);
+        GdiRoundRect(RECT(cx, cy, LOC_CHIP_W, CHIP_H), 6, on ? UI_ACCENT : UI_CARD, GDI_TRANSPARENT);
+        GdiTextCenter(cx, cy + 8, LOC_CHIP_W, g_formats[i].label, on ? GDI_WHITE : UI_TEXT);
+    }
+    y += ((N_FORMATS + cols - 1) / cols) * (CHIP_H + CHIP_GAP) + 10;
+    GdiTextT(x, y, "Other locales: intl NAME in the Terminal (intl /list shows them)", UI_TEXT2);
+}
+
+static void set_locale(const char *name)
+{
+    RamNode *exe = RamfsResolve(NULL, "\\Windows\\System32\\intl.exe");
+    char cmd[48];
+    ksnprintf(cmd, sizeof(cmd), "intl %s", name);
+    if (!exe || !UmSpawnDetached(exe, cmd, exe->parent))
+        kprintf("[SETTINGS] Cannot start intl.exe: %s\n", exe ? "out of memory" : "not installed");
 }
 
 static void page_about(int x, int y, int w)
@@ -366,6 +444,7 @@ static void set_paint(WND *w)
     case SETTINGS_PERSONALIZE: page_personalize(x, y, w2); break;
     case SETTINGS_STORAGE:     page_storage(x, y, w2);    break;
     case SETTINGS_NETWORK:     page_network(x, y, w2);    break;
+    case SETTINGS_TIME_LANGUAGE: page_time_language(x, y, w2); break;
     case SETTINGS_ABOUT:       page_about(x, y, w2);      break;
     }
 }
@@ -417,6 +496,17 @@ static void set_mouse(WND *w, WmMouseMsg msg, int x, int y)
             int mon = chosen(st);
             if (!DisplayHeadModeAt(mon, r * cols + col, &m)) return;
             if (DesktopSetHeadMode(mon, m.w, m.h)) DesktopSaveHeadMode(mon, m.w, m.h);
+            return;
+        }
+        if (st->page == SETTINGS_TIME_LANGUAGE) {
+            /* format chips (layout matches set_paint + page_time_language) */
+            int px = SIDE_W + 28, py = 20 + 52 + LOCALES_DY, pw = c.w - SIDE_W - 56;
+            int cols = loc_cols(pw);
+            if (x < px || y < py) return;
+            int col = (x - px) / (LOC_CHIP_W + CHIP_GAP), r = (y - py) / (CHIP_H + CHIP_GAP), i = r * cols + col;
+            if (col >= cols || (x - px) % (LOC_CHIP_W + CHIP_GAP) >= LOC_CHIP_W ||
+                (y - py) % (CHIP_H + CHIP_GAP) >= CHIP_H || i >= N_FORMATS) return;
+            set_locale(g_formats[i].name);
             return;
         }
         /* theme cards (layout matches set_paint + page_personalize) */

@@ -357,6 +357,31 @@ bool um_registry_get_dword(const char *path, const char *name, UINT32 *out)
     return ok;
 }
 
+/* Read a REG_SZ from the kernel as ASCII (other characters as '?'):
+ * false when the key or value is missing or not a string */
+bool um_registry_get_sz(const char *path, const char *name, char *out, int cap)
+{
+    UINT16 w[256], nm[128];
+    UINT32 n = 0, m = 0;
+    for (; path[n] && n < 255; n++) w[n] = (UINT8)path[n];
+    for (; name[m] && m < 127; m++) nm[m] = (UINT8)name[m];
+    bool ok = false;
+    um_lock_shared(&g_reg);
+    RegKey *k = NULL;
+    if (cap > 0 && walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) {
+        RegValue *v = find_value(k, nm, m);
+        if (v && (v->type == 1 /* REG_SZ */ || v->type == 2 /* REG_EXPAND_SZ */)) {
+            const UINT16 *d = (const UINT16 *)v->data;
+            int i = 0;
+            for (; i < cap - 1 && i < (int)(v->len / 2) && d[i]; i++) out[i] = d[i] < 0x80 ? (char)d[i] : '?';
+            out[i] = 0;
+            ok = true;
+        }
+    }
+    um_unlock_shared(&g_reg);
+    return ok;
+}
+
 static void defaults(void)
 {
     /* HKLM\SOFTWARE */

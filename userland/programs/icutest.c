@@ -187,7 +187,7 @@ static void nls(void)
     info(L"de-DE", 0x20, L"dddd, d. MMMM yyyy", "de-DE long date");
     info(L"de-DE", 0x1003, L"HH:mm:ss", "de-DE time format");
     info(L"ja-JP", 0x1F, L"yyyy/MM/dd", "ja-JP short date");
-    info(L"ja-JP", 0x20, L"yyyy\x5e74M\x6708" L"d\x65e5" L"dddd", "ja-JP long date");
+    info(L"ja-JP", 0x20, L"yyyy\x5e74M\x6708" L"d\x65e5", "ja-JP long date (no weekday, as on Windows)");
     info(L"de-DE", 0x3A, L"M\x00e4rz", "de-DE month name");
     info(L"ja-JP", 0x2E, L"\x91d1\x66dc\x65e5", "ja-JP day name (Friday)");
     info(L"de-DE", 0x100C, L"0", "de-DE week starts on Monday");

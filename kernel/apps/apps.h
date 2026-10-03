@@ -160,7 +160,7 @@ void NotepadOpen(RamNode *file);
 void SettingsOpen(void);
 /* Settings pages (for SettingsOpenPage) */
 enum { SETTINGS_SYSTEM, SETTINGS_DISPLAY, SETTINGS_PERSONALIZE, SETTINGS_STORAGE,
-       SETTINGS_NETWORK, SETTINGS_ABOUT };
+       SETTINGS_NETWORK, SETTINGS_TIME_LANGUAGE, SETTINGS_ABOUT };
 /* Open Settings (or focus the open window) at page @page */
 void SettingsOpenPage(int page);
 void CalendarOpen(void);
