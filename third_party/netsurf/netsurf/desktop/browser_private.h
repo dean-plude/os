@@ -240,6 +240,12 @@ struct browser_window {
 
 	/** iframe parent box */
 	struct box *box;
+#ifdef _NOVAOS
+	/** iframe's element and src while its page's boxes are rebuilt
+	 * (browser_window_unlink_iframes) */
+	struct dom_node *relayout_node;
+	struct nsurl *relayout_url;
+#endif
 
 	/** [cols * rows] children */
 	struct browser_window *children;
