@@ -26,9 +26,29 @@
  *    FW_CONFIG, which returns its version) to show the channel works both
  *    ways.
  *
- * Not yet: the capture pipeline (IPC4 copier modules from the DMIC gateway,
- * configured with the NHLT blob, to a host input stream) and the recording
- * device audio.c would offer for it; docs/hardware.md lists those steps.
+ *  - the capture pipeline: an IPC4 pipeline holding two copier modules,
+ *    the first on the DMIC gateway (configured with the NHLT blob), bound
+ *    to the second on a host input DMA gateway, which writes the
+ *    microphones' samples into a ring of an HD Audio input stream the
+ *    kernel owns (decoupled from the link, so the DSP's DMA fills it).
+ *    SofCaptureRing() and SofCapturePosition() give that ring to audio.c.
+ *
+ *  - the recording device: "Microphone Array (DSP)", an input of audio.c
+ *    over that ring (the microphones' rate and channel count; audio.c
+ *    makes 48 kHz stereo of them), the default input from then on, as on
+ *    Windows.  The pipeline runs only while a program records: a thread
+ *    pauses it (SET_PIPELINE_STATE PAUSED, the host DMA stopped) when the
+ *    last recorder stops and runs it again when one starts;
+ *  - sleep: S3 takes the DSP's power, its memory and with them the
+ *    firmware and the pipeline.  SofResume() (after HdaResume) has that
+ *    thread boot the DSP again from the same firmware file and build the
+ *    pipeline again; the recording device stays, its ring re-read from
+ *    where the DSP starts writing.
+ *
+ * `hwcheck mic` gives QEMU, which has no such DSP, a live modelled one
+ * whose DMA writes a 1 kHz tone: the same boot, pipeline, device, pause
+ * and run, and a boot again after a modelled sleep, under the programs
+ * that record (soundtest record, capture, dscapture; Audacity).
  *
  * Register and message layouts follow Intel's public documents (the HD
  * Audio specification with its processing-pipe and software-position-in-
@@ -43,6 +63,7 @@
 
 #include "sof.h"
 #include "hda.h"
+#include "audio.h"
 #include "../hal/pci.h"
 #include "../hal/acpi.h"
 #include "../mm/vmm.h"
@@ -59,6 +80,7 @@
 #define SD_SIZE     0x20
 #define SD_CTL      0x00
 #define SD_STS      0x03
+#define SD_LPIB     0x04
 #define SD_CBL      0x08
 #define SD_LVI      0x0C
 #define SD_FMT      0x12
@@ -116,6 +138,26 @@
 #define FW_PARAM_FW_CONFIG 7
 #define FW_CFG_FW_VERSION  0
 
+/* The capture pipeline (SOF's src/include/ipc4/pipeline.h, module.h,
+ * gateway.h and src/audio/copier/copier.h, BSD-3-Clause) */
+#define GLB_CREATE_PIPELINE    17       /* pri: 10:0 pages, 15:11 priority, 23:16 pipeline */
+#define GLB_DELETE_PIPELINE    18       /* pri: 23:16 pipeline */
+#define GLB_SET_PIPELINE_STATE 19       /* pri: 15:0 state, 23:16 pipeline */
+#define PPL_RESET              2
+#define PPL_PAUSED             3
+#define PPL_RUNNING            4
+#define MOD_INIT_INSTANCE      0        /* pri: 15:0 module, 23:16 instance; ext: 15:0 dwords, 23:16 pipeline, 27:24 core */
+#define MOD_BIND               5        /* ext: 15:0 module, 23:16 instance, 26:24 its queue, 29:27 ours */
+#define NODE_HOST_INPUT        1        /* gateway node id: 7:0 index, 12:8 class */
+#define NODE_DMIC_INPUT        11
+#define NODE_ID(cls, i)        ((UINT32)(cls) << 8 | (UINT32)(i))
+#define FMT_LSB_INTEGER        1        /* (ipc4_sample_type) */
+#define FMT_DWORDS             6        /* ipc4_audio_format */
+#define COPIER_CFG_SIZE        (4 * (4 + FMT_DWORDS + FMT_DWORDS + 1 + 3))   /* base, out_fmt, features, gateway */
+#define CAP_PIPELINE           0
+#define CAP_PAGES              32       /* the host ring: 128 KiB */
+#define CAP_DEPTH              16       /* what lands in it: 48 kHz s16, the microphones' channels */
+
 typedef struct __attribute__((packed)) {
     UINT64 addr;
     UINT32 len;
@@ -128,7 +170,8 @@ typedef struct {
     int          mics;                  /* microphones (0: no DMIC endpoint) */
     int          formats;
     UINT32       rate;                  /* the first format */
-    UINT16       bits, channels;
+    UINT16       bits, valid, channels;
+    UINT8        vbus;                  /* the endpoint's virtual bus: the DMIC gateway's index */
     UINT32       blob_size;             /* its DMIC configuration */
     const UINT8 *blob;
 } NhltDmic;
@@ -158,11 +201,25 @@ static struct {
     UINT32       tag;                   /* the stream the purge named */
     bool         purge_pending;
     bool         got_image, bad_image, l1sen_was_off;
-    int          requests;
+    int          fw_configs;
+    /* the capture pipeline */
+    int          copier;                /* the copier's module ID */
+    const UINT8 *blob;                  /* the DMIC configuration it must get */
+    UINT32       blob_size;
+    int          pipe;                  /* 0 none, 1 created, then PPL_* */
+    bool         dmic_ok, host_ok, bound;
+    int          host_index, deleted;
+    int          requests, refuse;      /* pipeline requests; refuse the n-th (0: none) */
+    const char  *wrong;                 /* the first thing the model refused */
+    UINT32       frames;                /* frames its DMA wrote into the host ring */
+    int          boots;                 /* images it received (a boot again after sleep: 2) */
+    bool         live;                  /* hwcheck mic: the recording device's feed is its DMA */
 } g_m;
 
 static void model_tick(void);
 static void model_w4(UINT32 off, UINT32 v);
+static UINT32 model_pipeline(UINT32 m, UINT32 x);
+static void model_capture(void);
 
 static inline UINT32 r0(UINT32 o)            { return *(volatile UINT32 *)(d.hb + o); }
 static inline void   w0(UINT32 o, UINT32 v)  { *(volatile UINT32 *)(d.hb + o) = v; }
@@ -238,6 +295,8 @@ static bool nhlt_parse(const UINT8 *t, UINT32 len, NhltDmic *o)
                     o->channels = get16(wf + 2);
                     o->rate = get32(wf + 4);
                     o->bits = get16(wf + 14);
+                    o->valid = get16(wf + 18) ? get16(wf + 18) : o->bits;
+                    o->vbus = ep[18];
                     o->blob = wf + 44;
                     o->blob_size = bsz;
                 }
@@ -344,7 +403,10 @@ static UINT32 find_cap(UINT32 id)
     return 0;
 }
 
-static bool stream_prepare(DspStream *s, int index, UINT32 tag, const UINT8 *data, UINT32 size)
+/* @spib: the DSP stops at @size (the code loader); without it the stream
+ * is a ring the DSP goes round (capture) */
+static bool stream_prepare(DspStream *s, int index, UINT32 tag, const UINT8 *data, UINT32 size, UINT16 fmt,
+                           bool spib)
 {
     memset(s, 0, sizeof(*s));
     s->index = index;
@@ -374,10 +436,10 @@ static bool stream_prepare(DspStream *s, int index, UINT32 tag, const UINT8 *dat
     w0(s->sd + SD_BDPU, (UINT32)(phys(s->bdl) >> 32));
     w0(s->sd + SD_CBL, total);
     w0w(s->sd + SD_LVI, (UINT16)(s->pages - 1));
-    w0w(s->sd + SD_FMT, CL_FORMAT);
+    w0w(s->sd + SD_FMT, fmt);
     w0(s->sd + SD_CTL, tag << 20);
     w0(d.pp + PPCTL, r0(d.pp + PPCTL) | (1u << index));          /* decoupled: the DSP's DMA */
-    if (d.spb) {                                                  /* stop at the image's end */
+    if (d.spb && spib) {                                          /* stop at the image's end */
         w0(d.spb + SPBFCCTL, r0(d.spb + SPBFCCTL) | (1u << index));
         w0(d.spb + SPB_SPIB(index), size);
     }
@@ -493,11 +555,11 @@ static bool boot(const SofImage *img, UINT16 ver[4], char *why, int cap)
     w0(EM2, em2 & ~EM2_L1SEN);                      /* no link power saving while loading */
     /* A decoupled input stream held while the DSP boots, so that the
      * platform grants the DSP its full current (ICCMAX) */
-    if (d.iss && !stream_prepare(&icc, d.iss - 1, (UINT32)d.iss, NULL, PAGE_SIZE)) {
+    if (d.iss && !stream_prepare(&icc, d.iss - 1, (UINT32)d.iss, NULL, PAGE_SIZE, CL_FORMAT, true)) {
         ksnprintf(why, cap, "out of memory");
         goto out;
     }
-    if (!stream_prepare(&cl, cl_index, tag, img->image, img->size)) {
+    if (!stream_prepare(&cl, cl_index, tag, img->image, img->size, CL_FORMAT, true)) {
         ksnprintf(why, cap, "out of memory for the %u-byte image", img->size);
         goto out;
     }
@@ -549,8 +611,175 @@ out:
     return ok;
 }
 
-/* Everything from the NHLT table to the running firmware; @status says
- * how far it got */
+/* -----------------------------------------------------------------------
+ * The capture pipeline: pipeline 0 holds copier instance 0 on the DMIC
+ * gateway (its input; the NHLT blob is the gateway's configuration) bound
+ * to copier instance 1 on the host input gateway of the last input stream
+ * (its output), which writes 48 kHz s16 frames into that stream's ring.
+ * The stream is decoupled (the processing pipe) and runs as a ring with
+ * no SPIB: its LPIB says how far the DSP has written.
+ * ----------------------------------------------------------------------- */
+static struct {
+    DspStream s;                        /* the host input stream the DSP fills */
+    bool      created;                  /* pipeline 0 exists */
+    bool      running;                  /* (false while paused: no program records) */
+    bool      broken;                   /* a pause or run the firmware refused: left as it is */
+    UINT32    rate, channels;
+} g_cap;
+
+/* A request whose reply carries no data: false (and @why) unless the
+ * firmware answers status 0 */
+static bool request(UINT32 pri, UINT32 ext, const char *what, char *why, int cap)
+{
+    UINT32 p, e;
+    if (!ipc4(pri, ext, &p, &e)) { ksnprintf(why, cap, "no reply to %s", what); return false; }
+    ipc_done();
+    if (p & 0xFFFFFF) { ksnprintf(why, cap, "%s refused (status %u)", what, p & 0xFFFFFF); return false; }
+    return true;
+}
+
+static bool set_state(UINT32 state, const char *what, char *why, int cap)
+{
+    return request(IPC4_TYPE(GLB_SET_PIPELINE_STATE) | (UINT32)CAP_PIPELINE << 16 | state, 0, what, why, cap);
+}
+
+/* ipc4_audio_format: interleaved little-endian integers, channel i in
+ * nibble i of the map */
+static UINT32 *put_fmt(UINT32 *p, UINT32 rate, UINT32 depth, UINT32 valid, UINT32 ch)
+{
+    UINT32 map = 0xFFFFFFFFu;
+    for (UINT32 i = 0; i < ch && i < 8; i++) map = (map & ~(0xFu << (4 * i))) | i << (4 * i);
+    *p++ = rate;
+    *p++ = depth;
+    *p++ = map;
+    *p++ = ch <= 1 ? 0 : ch == 2 ? 1 : ch == 3 ? 3 : ch == 4 ? 5 : 12;   /* mono, stereo, 3.0, quatro, 7.1 */
+    *p++ = 0;
+    *p++ = ch | valid << 8 | FMT_LSB_INTEGER << 16;
+    return p;
+}
+
+/* ipc4_copier_module_cfg: the base config (on the input format, 1 ms
+ * buffers), the output format, no features, then the gateway: node,
+ * DMA buffer (two output or input milliseconds), configuration */
+static UINT32 copier_cfg(UINT32 *out, UINT32 rate, UINT32 ch, UINT32 in_depth, UINT32 in_valid,
+                         UINT32 out_depth, UINT32 node, const UINT8 *blob, UINT32 blob_size)
+{
+    UINT32 ibs = rate / 1000 * ch * (in_depth / 8), obs = rate / 1000 * ch * (out_depth / 8);
+    UINT32 *p = out;
+    *p++ = 0;                                       /* cycles per chunk: the firmware's own figure */
+    *p++ = ibs;
+    *p++ = obs;
+    *p++ = 0;
+    p = put_fmt(p, rate, in_depth, in_valid, ch);
+    p = put_fmt(p, rate, out_depth, out_depth, ch);
+    *p++ = 0;
+    *p++ = node;
+    *p++ = 2 * ((node >> 8) == NODE_HOST_INPUT ? obs : ibs);
+    UINT32 dw = (blob_size + 3) / 4;
+    *p++ = dw;
+    if (dw) {
+        p[dw - 1] = 0;
+        memcpy(p, blob, blob_size);
+        p += dw;
+    }
+    return (UINT32)(p - out);
+}
+
+static void box_write(UINT32 box, const UINT32 *v, UINT32 dwords)
+{
+    for (UINT32 i = 0; i < dwords; i++) w4(box + 4 * i, v[i]);
+}
+
+/* Pause, stop the host DMA, reset and delete the pipeline, give the
+ * stream back to the link */
+static void capture_stop(void)
+{
+    char why[96];
+    if (g_cap.running) set_state(PPL_PAUSED, "SET_PIPELINE_STATE PAUSED", why, sizeof(why));
+    if (g_cap.s.bdl) stream_run(&g_cap.s, false);
+    if (g_cap.created) {
+        set_state(PPL_RESET, "SET_PIPELINE_STATE RESET", why, sizeof(why));
+        request(IPC4_TYPE(GLB_DELETE_PIPELINE) | (UINT32)CAP_PIPELINE << 16, 0, "DELETE_PIPELINE", why, sizeof(why));
+    }
+    stream_free(&g_cap.s);
+    memset(&g_cap, 0, sizeof(g_cap));
+}
+
+static bool capture_start(const NhltDmic *dm, int copier, char *why, int cap)
+{
+    static UINT32 cfg[BOX_SIZE / 4];
+    UINT32 ch = dm->channels ? dm->channels : 2, depth = dm->bits, valid = dm->valid;
+    UINT16 fmt;
+    if (copier < 0) { ksnprintf(why, cap, "the firmware has no COPIER module"); return false; }
+    if (d.iss < 1) { ksnprintf(why, cap, "the controller has no input stream"); return false; }
+    if (dm->rate == 48000) fmt = 0x0000;            /* SD_FMT: 48 kHz base, */
+    else if (dm->rate == 16000) fmt = 0x0200;       /*   divided by 3 */
+    else { ksnprintf(why, cap, "the microphones' %u Hz is not supported yet", dm->rate); return false; }
+    if ((depth != 16 && depth != 32) || ch > 8 || !dm->blob_size) {
+        ksnprintf(why, cap, "the microphones' format (%u-bit, %u channels) is not supported yet", depth, ch);
+        return false;
+    }
+    if (dm->blob_size > BOX_SIZE - COPIER_CFG_SIZE) { ksnprintf(why, cap, "the DMIC configuration is too big"); return false; }
+    fmt |= (UINT16)(1u << 4 | (ch - 1));            /* 16-bit samples, @ch channels */
+
+    int index = d.iss - 1;                          /* the last input stream (hda.c records on the first) */
+    memset(&g_cap, 0, sizeof(g_cap));
+    if (!stream_prepare(&g_cap.s, index, (UINT32)index + 1, NULL, CAP_PAGES * PAGE_SIZE, fmt, false)) {
+        ksnprintf(why, cap, "out of memory for the capture ring");
+        stream_free(&g_cap.s);
+        return false;
+    }
+    UINT32 mod = IPC4_MODULE | (UINT32)copier;
+    if (!request(IPC4_TYPE(GLB_CREATE_PIPELINE) | (UINT32)CAP_PIPELINE << 16 | 2, 0, "CREATE_PIPELINE", why, cap))
+        goto fail;
+    g_cap.created = true;
+    UINT32 n = copier_cfg(cfg, dm->rate, ch, depth, valid, depth, NODE_ID(NODE_DMIC_INPUT, dm->vbus),
+                          dm->blob, dm->blob_size);
+    box_write(INBOX, cfg, n);
+    if (!request(mod | IPC4_TYPE(MOD_INIT_INSTANCE) | 0u << 16, n | (UINT32)CAP_PIPELINE << 16,
+                 "INIT_INSTANCE of the DMIC copier", why, cap))
+        goto fail;
+    n = copier_cfg(cfg, dm->rate, ch, depth, valid, CAP_DEPTH, NODE_ID(NODE_HOST_INPUT, index), NULL, 0);
+    box_write(INBOX, cfg, n);
+    if (!request(mod | IPC4_TYPE(MOD_INIT_INSTANCE) | 1u << 16, n | (UINT32)CAP_PIPELINE << 16,
+                 "INIT_INSTANCE of the host copier", why, cap))
+        goto fail;
+    if (!request(mod | IPC4_TYPE(MOD_BIND) | 0u << 16, (UINT32)copier | 1u << 16 | 0u << 24 | 0u << 27,
+                 "BIND", why, cap))
+        goto fail;
+    if (!set_state(PPL_PAUSED, "SET_PIPELINE_STATE PAUSED", why, cap)) goto fail;
+    stream_run(&g_cap.s, true);
+    if (!set_state(PPL_RUNNING, "SET_PIPELINE_STATE RUNNING", why, cap)) goto fail;
+    g_cap.running = true;
+    g_cap.rate = dm->rate;
+    g_cap.channels = ch;
+    if (!g_m.on)
+        kprintf("[DSP] Capture pipeline running: DMIC %u -> copier %d -> input stream %d (tag %d), %u Hz %u-bit %u channel%s\n",
+                dm->vbus, copier, index, index + 1, dm->rate, depth, ch, ch == 1 ? "" : "s");
+    return true;
+fail:
+    capture_stop();
+    return false;
+}
+
+/* The loudest sample of the last 100 ms in the ring, in percent of full
+ * scale; -1 when nothing is recording */
+static int capture_level(void)
+{
+    if (!g_cap.running) return -1;
+    UINT32 size = CAP_PAGES * PAGE_SIZE, n = g_cap.rate / 10 * g_cap.channels * 2;
+    UINT32 pos = r0(g_cap.s.sd + SD_LPIB) % size;
+    int peak = 0;
+    for (UINT32 k = 0; k < n; k += 2) {
+        INT16 v = *(volatile INT16 *)(g_cap.s.buf + (pos + size - n + k) % size);
+        int a = v < 0 ? -(int)v : v;
+        if (a > peak) peak = a;
+    }
+    return peak * 100 / 32768;
+}
+
+/* Everything from the NHLT table to the running firmware and its capture
+ * pipeline; @status says how far it got.  True when the firmware runs. */
 static bool start(const HdaHost *h, const UINT8 *nhlt, UINT32 nhlt_len, const UINT8 *fw, UINT32 fw_len,
                   const char *fw_path)
 {
@@ -594,16 +823,164 @@ static bool start(const HdaHost *h, const UINT8 *nhlt, UINT32 nhlt_len, const UI
         ksnprintf(d.status, sizeof(d.status), "%d digital microphones; DSP boot failed: %s", dm.mics, why);
         return false;
     }
-    ksnprintf(d.status, sizeof(d.status), "firmware %u.%u.%u.%u running, %d digital microphones (not yet recording)",
-              ver[0], ver[1], ver[2], ver[3], dm.mics);
+    if (!capture_start(&dm, img.copier, why, sizeof(why)))
+        ksnprintf(d.status, sizeof(d.status), "firmware %u.%u.%u.%u running, %d digital microphones; capture pipeline failed: %s",
+                  ver[0], ver[1], ver[2], ver[3], dm.mics, why);
+    else
+        ksnprintf(d.status, sizeof(d.status), "firmware %u.%u.%u.%u running, %d digital microphones (%u Hz, %u channel%s)",
+                  ver[0], ver[1], ver[2], ver[3], dm.mics, g_cap.rate, g_cap.channels, g_cap.channels == 1 ? "" : "s");
     return true;
 }
 
-static HdaHost g_host;
-static int     g_busy;                  /* the boot or the self-check owns d and g_m */
+/* What the DSP was started from, to start it again after sleep */
+typedef struct {
+    const HdaHost *h;
+    const UINT8   *nhlt, *fw;
+    UINT32         nhlt_len, fw_len;
+    const char    *path;
+} SofSource;
+
+static HdaHost   g_host;
+static SofSource g_src;
+static int       g_busy;                /* the boot, the thread or the self-check owns d, g_cap and g_m */
 
 static void lock(void)   { while (__atomic_exchange_n(&g_busy, 1, __ATOMIC_ACQUIRE)) sched_sleep_until(NULL, sched_ticks() + 1); }
+static bool trylock(void) { return !__atomic_exchange_n(&g_busy, 1, __ATOMIC_ACQUIRE); }
 static void unlock(void) { __atomic_store_n(&g_busy, 0, __ATOMIC_RELEASE); }
+
+static void model_lose_power(void);
+static void model_feed(void);
+
+/* -----------------------------------------------------------------------
+ * The recording device over the capture ring.  audio.c reads it through
+ * these copies, not through d and g_cap, which the self-check borrows.
+ * ----------------------------------------------------------------------- */
+static struct {
+    AudioInput      in;
+    char            name[48];
+    bool            attached;
+    bool            model;              /* the live model of hwcheck mic feeds it */
+    volatile UINT8 *hb;                 /* the controller's registers (or the model's) */
+    UINT32          sd, size, fb;       /* the stream's registers, ring bytes, frame bytes */
+    volatile bool   want;               /* a program records from it (audio.c's run) */
+    volatile bool   restarting;         /* the DSP is being started again: no new frames */
+    volatile bool   feeding;            /* the model's DMA runs (the pipeline is RUNNING) */
+    volatile int    resume;             /* SofResume(): start the DSP again */
+    UINT32          last;               /* the position last given */
+    UINT64          fed_tick;           /* the model's DMA: written up to this tick */
+    UINT32          phase;              /*   and where in its tone */
+    int             pauses, runs, restarts;
+} g_mic;
+
+static UINT32 mic_position(void *ctx)
+{
+    (void)ctx;
+    if (g_mic.restarting) return g_mic.last;
+    if (g_mic.model) model_feed();
+    UINT32 p = *(volatile UINT32 *)(g_mic.hb + g_mic.sd + SD_LPIB) % g_mic.size;
+    g_mic.last = p - p % g_mic.fb;
+    return g_mic.last;
+}
+
+/* (audio.c's lock is held: the thread does the pausing) */
+static void mic_run(void *ctx, bool on) { (void)ctx; g_mic.want = on; }
+
+/* The capture ring as an input of audio.c (lock held) */
+static bool mic_attach(bool model)
+{
+    UINT32 fb = g_cap.channels * 2, size = CAP_PAGES * PAGE_SIZE;
+    if (size % fb) {
+        kprintf("[DSP] %u channels do not fit the ring: no recording device\n", g_cap.channels);
+        return false;
+    }
+    ksnprintf(g_mic.name, sizeof(g_mic.name), model ? "Microphone Array (DSP model)" : "Microphone Array (DSP)");
+    g_mic.model = model;
+    g_mic.hb = d.hb;
+    g_mic.sd = g_cap.s.sd;
+    g_mic.size = size;
+    g_mic.fb = fb;
+    g_mic.in = (AudioInput){ .name = g_mic.name, .key = model ? "DSP model" : "DSP", .ring = (INT16 *)g_cap.s.buf,
+                             .bytes = size, .rate = g_cap.rate, .channels = g_cap.channels,
+                             .position = mic_position, .run = mic_run };
+    return true;
+}
+
+/* Pause the pipeline when no program records, run it again when one does */
+static void capture_pause(bool pause)
+{
+    char why[96];
+    if (pause) {
+        g_mic.feeding = false;
+        bool ok = set_state(PPL_PAUSED, "SET_PIPELINE_STATE PAUSED", why, sizeof(why));
+        stream_run(&g_cap.s, false);
+        g_cap.running = false;
+        g_cap.broken = !ok;
+    } else {
+        stream_run(&g_cap.s, true);
+        bool ok = set_state(PPL_RUNNING, "SET_PIPELINE_STATE RUNNING", why, sizeof(why));
+        if (!ok) stream_run(&g_cap.s, false);
+        g_cap.running = ok;
+        g_cap.broken = !ok;
+        g_mic.feeding = ok;
+    }
+    if (g_cap.broken) kprintf("[DSP] %s: the microphones stay as they are\n", why);
+}
+
+/* After sleep: the DSP lost the firmware and the pipeline with its
+ * memory.  Forget them without asking it, and start it again from the
+ * same firmware file (lock held).  True when the pipeline is back. */
+static bool reboot(const SofSource *src)
+{
+    if (g_m.on) model_lose_power();
+    g_cap.created = g_cap.running = false;
+    capture_stop();                                 /* (the stream given back; no requests) */
+    return start(src->h, src->nhlt, src->nhlt_len, src->fw, src->fw_len, src->path) && g_cap.created;
+}
+
+/* The recording device's thread: pause and run the pipeline as programs
+ * record, and start the DSP again after sleep */
+static void mic_service(void)
+{
+    for (;;) {
+        sched_sleep_until(NULL, sched_ticks() + 1);
+        if (__atomic_exchange_n(&g_mic.resume, 0, __ATOMIC_ACQUIRE)) {
+            /* (the mixer reads nothing more from the old ring after this) */
+            AudioInputRestart(&g_mic.in, g_mic.in.ring, g_mic.in.bytes);
+            lock();
+            g_mic.feeding = false;
+            bool ok = reboot(&g_src);
+            INT16 *ring = (INT16 *)g_cap.s.buf;
+            if (ok) {
+                g_mic.hb = d.hb;
+                g_mic.sd = g_cap.s.sd;
+                g_mic.last = 0;                     /* (the new stream writes from its start) */
+                g_mic.restarts++;
+            }
+            char st[128];
+            strncpy(st, d.status, sizeof(st) - 1);
+            st[sizeof(st) - 1] = '\0';
+            if (g_mic.model) ksnprintf(d.status, sizeof(d.status), "%s (the modelled DSP of hwcheck mic)", st);
+            unlock();
+            kprintf("[DSP] After sleep: %s\n", st);
+            if (!ok) {
+                kprintf("[DSP] %s records nothing until the next start\n", g_mic.name);
+                continue;
+            }
+            AudioInputRestart(&g_mic.in, ring, CAP_PAGES * PAGE_SIZE);
+            g_mic.restarting = false;
+            g_mic.feeding = true;                   /* (start() left the pipeline RUNNING) */
+            continue;
+        }
+        if (g_mic.restarting || g_mic.want == g_cap.running) continue;
+        lock();
+        if (g_cap.created && !g_cap.broken && g_mic.want != g_cap.running) {
+            capture_pause(!g_mic.want);
+            if (g_mic.want) g_mic.runs++;
+            else g_mic.pauses++;
+        }
+        unlock();
+    }
+}
 
 static void sof_thread(void *arg)
 {
@@ -611,18 +988,33 @@ static void sof_thread(void *arg)
     bkl_release();
     const char *plat = platform(g_host.dev.device);
     const UINT8 *nhlt = AcpiFindTable("NHLT");
-    char path[96] = "";
+    static char path[96] = "";
     UINT32 fw_len = 0;
     const UINT8 *fw = plat ? firmware_file(plat, &fw_len, path, sizeof(path)) : NULL;
+    bool mic = false;
     if (!plat) {
         ksnprintf(d.status, sizeof(d.status), "this DSP generation (%04x) is not supported yet", g_host.dev.device);
     } else {
+        g_src = (SofSource){ &g_host, nhlt, fw, nhlt ? get32(nhlt + 4) : 0, fw_len, path };
         lock();
-        start(&g_host, nhlt, nhlt ? get32(nhlt + 4) : 0, fw, fw_len, path);
+        mic = start(g_src.h, g_src.nhlt, g_src.nhlt_len, g_src.fw, g_src.fw_len, g_src.path) && g_cap.created &&
+              mic_attach(false);
         unlock();
     }
     kprintf("[DSP] %s\n", d.status);
+    if (mic && AudioInputAttach(&g_mic.in)) {
+        g_mic.attached = true;
+        mic_service();
+    }
     sched_exit_current();
+}
+
+/* hwcheck mic's: the same service for the live model */
+static void sof_thread_model(void *arg)
+{
+    (void)arg;
+    bkl_release();
+    mic_service();
 }
 
 void SofStart(void)
@@ -637,7 +1029,41 @@ void SofStart(void)
         ksnprintf(d.status, sizeof(d.status), "could not start its thread");
 }
 
-const char *SofStatus(void) { return d.status[0] ? d.status : "no HD Audio controller"; }
+void SofResume(void)
+{
+    if (!g_mic.attached) return;
+    g_mic.restarting = true;
+    __atomic_store_n(&g_mic.resume, 1, __ATOMIC_RELEASE);
+}
+
+const char *SofStatus(void)
+{
+    static char line[192];
+    if (!d.status[0]) return "no HD Audio controller";
+    if (!trylock()) return d.status;                /* (not while the boot, a restart or the self-check runs) */
+    int level = capture_level();
+    bool paused = g_cap.created && !g_cap.running;
+    unlock();
+    if (level >= 0) ksnprintf(line, sizeof(line), "%s, recording, level %d%%", d.status, level);
+    else if (paused) ksnprintf(line, sizeof(line), "%s, paused while no program records", d.status);
+    else return d.status;
+    return line;
+}
+
+bool SofCaptureRing(const INT16 **ring, UINT32 *size, UINT32 *rate, UINT32 *channels)
+{
+    if (!g_cap.running) return false;
+    *ring = (const INT16 *)g_cap.s.buf;
+    *size = CAP_PAGES * PAGE_SIZE;
+    *rate = g_cap.rate;
+    *channels = g_cap.channels;
+    return true;
+}
+
+UINT32 SofCapturePosition(void)
+{
+    return g_cap.running ? r0(g_cap.s.sd + SD_LPIB) % (CAP_PAGES * PAGE_SIZE) : 0;
+}
 
 /* -----------------------------------------------------------------------
  * SofSelfCheck: a modelled NHLT table, firmware image and DSP
@@ -699,6 +1125,7 @@ static void model_dma(void)
         g_m.got_image = same && got == want;
         g_m.bad_image = !g_m.got_image;
         if (g_m.got_image) {
+            g_m.boots++;
             *(volatile UINT32 *)(d.db + FW_STATUS) = ST_FW_ENTERED;
             model_send(IPC4_TYPE(GLB_NOTIFICATION) | ((UINT32)NOTIFY_FW_READY << 16), 0);
             g_m.phase = 2;
@@ -731,7 +1158,6 @@ static void model_tick(void)
     } else if (g_m.phase == 3 && g_m.purge_pending && !(r4(HIPCTDR) & IPC_BUSY)) {
         UINT32 m = r4(HIPCIDR), x = r4(HIPCIDD);
         g_m.purge_pending = false;
-        g_m.requests++;
         *(volatile UINT32 *)(d.db + HIPCIDR) = m & ~IPC_BUSY;
         *(volatile UINT32 *)(d.db + HIPCIDA) = IPC_DONE;
         UINT32 reply = (m & ~IPC_BUSY & 0x7F000000u) | IPC4_REPLY, size = 0;
@@ -742,11 +1168,284 @@ static void model_tick(void)
             for (unsigned i = 0; i < sizeof(tlv) / sizeof(tlv[0]); i++)
                 *(volatile UINT32 *)(d.db + OUTBOX + 4 * i) = tlv[i];
             size = sizeof(tlv);
+            g_m.fw_configs++;
         } else {
-            reply |= 1;                                           /* (an error status) */
+            reply |= model_pipeline(m, x);
         }
         model_send(reply, size);
     }
+    if (g_m.phase == 3 && !g_m.live) model_capture();
+}
+
+/* The capture pipeline's requests (SOF's IPC4 layouts): the reply's
+ * status, 0 when the model takes it */
+static UINT32 refuse(const char *what)
+{
+    if (!g_m.wrong) g_m.wrong = what;
+    return 1;
+}
+
+/* The host input stream the host copier names: tag index + 1, decoupled,
+ * a ring (no SPIB), and running when @run */
+static bool model_host_stream(bool run)
+{
+    int i = g_m.host_index;
+    if (i >= d.iss) return false;
+    UINT32 sd = SD_BASE + (UINT32)i * SD_SIZE, c = r0(sd + SD_CTL), pp = r0(d.pp + PPCTL);
+    if (((c >> 20) & 0xF) != (UINT32)i + 1 || !(pp & (1u << i)) || !(pp & PPCTL_GPROCEN)) return false;
+    if (d.spb && (r0(d.spb + SPBFCCTL) & (1u << i))) return false;
+    return !run || (c & SD_CTL_RUN);
+}
+
+/* INIT_INSTANCE of a copier: ipc4_copier_module_cfg in the inbox
+ * (dwords: 0-3 base, 4-9 input format, 10-15 output format, 16 features,
+ * 17 node, 18 DMA buffer, 19 configuration length, then the configuration) */
+static UINT32 model_copier(UINT32 id, UINT32 inst, UINT32 x)
+{
+    const UINT32 *c = (const UINT32 *)(uintptr_t)(d.db + INBOX);
+    UINT32 dw = x & 0xFFFF;
+    if (id != (UINT32)g_m.copier) return refuse("INIT_INSTANCE of a module that is not the copier");
+    if (((x >> 16) & 0xFF) != CAP_PIPELINE || !g_m.pipe) return refuse("a copier outside pipeline 0");
+    if (dw * 4 < COPIER_CFG_SIZE || dw * 4 > BOX_SIZE || dw != 20 + c[19])
+        return refuse("a copier payload whose size does not match its gateway configuration");
+    if (c[4] != 48000 || c[10] != 48000 || (c[9] & 0xFF) != 2 || (c[15] & 0xFF) != 2 || c[6] != 0xFFFFFF10 || c[7] != 1)
+        return refuse("a copier format other than the microphones' 48000 Hz stereo");
+    if (c[1] != 48 * 2 * c[5] / 8 || c[2] != 48 * 2 * c[11] / 8 || ((c[9] >> 16) & 0xFF) != FMT_LSB_INTEGER)
+        return refuse("copier buffers not 1 ms of integer samples");
+    if (inst == 0) {
+        if (c[17] != NODE_ID(NODE_DMIC_INPUT, 0)) return refuse("the first copier not on DMIC gateway 0");
+        if (c[5] != 16 || c[11] != 16) return refuse("the DMIC copier not in NHLT's 16-bit format");
+        if (c[19] != (g_m.blob_size + 3) / 4 || memcmp(c + 20, g_m.blob, g_m.blob_size) != 0)
+            return refuse("the DMIC copier without the NHLT blob");
+        g_m.dmic_ok = true;
+    } else if (inst == 1) {
+        if ((c[17] >> 8) != NODE_HOST_INPUT) return refuse("the second copier not on a host input gateway");
+        g_m.host_index = (int)(c[17] & 0xFF);
+        if (!model_host_stream(false)) return refuse("the host copier's stream is not a decoupled ring with tag index + 1");
+        if (c[11] != CAP_DEPTH || c[19]) return refuse("the host copier not writing 16-bit samples, or configured");
+        g_m.host_ok = true;
+    } else {
+        return refuse("a third copier");
+    }
+    return 0;
+}
+
+static UINT32 model_pipeline(UINT32 m, UINT32 x)
+{
+    bool mod = m & IPC4_MODULE;
+    UINT32 type = IPC4_TYPE_OF(m), lo = m & 0xFFFF, hi = (m >> 16) & 0xFF;
+    if (++g_m.requests == g_m.refuse) return 7;
+    if (!mod && type == GLB_CREATE_PIPELINE) {
+        if (g_m.pipe || hi != CAP_PIPELINE || !(lo & 0x7FF)) return refuse("CREATE_PIPELINE twice or without memory");
+        g_m.pipe = 1;
+        return 0;
+    }
+    if (!mod && type == GLB_SET_PIPELINE_STATE) {
+        if (!g_m.pipe || hi != CAP_PIPELINE) return refuse("SET_PIPELINE_STATE of a pipeline that does not exist");
+        if (lo == PPL_PAUSED && !g_m.bound) return refuse("PAUSED before the copiers were bound");
+        if (lo == PPL_RUNNING && (g_m.pipe != PPL_PAUSED || !model_host_stream(true)))
+            return refuse("RUNNING other than from PAUSED with the host DMA on");
+        if (lo == PPL_RESET && g_m.pipe == PPL_RUNNING) return refuse("RESET while RUNNING");
+        if (lo != PPL_RESET && lo != PPL_PAUSED && lo != PPL_RUNNING) return refuse("an unknown pipeline state");
+        g_m.pipe = (int)lo;
+        return 0;
+    }
+    if (!mod && type == GLB_DELETE_PIPELINE) {
+        if (!g_m.pipe || hi != CAP_PIPELINE || g_m.pipe == PPL_RUNNING) return refuse("DELETE_PIPELINE while RUNNING");
+        g_m.pipe = 0;
+        g_m.dmic_ok = g_m.host_ok = g_m.bound = false;
+        g_m.deleted++;
+        return 0;
+    }
+    if (mod && type == MOD_INIT_INSTANCE) return model_copier(lo, hi, x);
+    if (mod && type == MOD_BIND) {
+        if (lo != (UINT32)g_m.copier || hi != 0 || (x & 0xFFFF) != (UINT32)g_m.copier || ((x >> 16) & 0xFF) != 1 ||
+            ((x >> 24) & 0x3F) != 0 || !g_m.dmic_ok || !g_m.host_ok)
+            return refuse("BIND other than DMIC copier queue 0 to host copier queue 0");
+        g_m.bound = true;
+        return 0;
+    }
+    return refuse("an unknown request");
+}
+
+/* The DSP's host DMA while RUNNING: 10 ms of a 1 kHz square wave at a
+ * quarter of full scale into the ring at LPIB, through the BDL */
+static void model_capture(void)
+{
+    if (g_m.pipe != PPL_RUNNING || !model_host_stream(true)) return;
+    UINT32 sd = SD_BASE + (UINT32)g_m.host_index * SD_SIZE, cbl = r0(sd + SD_CBL), pos = r0(sd + SD_LPIB);
+    BdlEntry *bdl = (BdlEntry *)(uintptr_t)(PHYSMAP_BASE + ((UINT64)r0(sd + SD_BDPU) << 32 | r0(sd + SD_BDPL)));
+    for (int f = 0; f < 480; f++, g_m.frames++)
+        for (int ch = 0; ch < 2; ch++) {
+            UINT32 at = pos, k = 0;
+            while (at >= bdl[k].len) at -= bdl[k++].len;
+            *(INT16 *)(uintptr_t)(PHYSMAP_BASE + bdl[k].addr + at) = (g_m.frames / 24) & 1 ? 8192 : -8192;
+            pos = (pos + 2) % cbl;
+        }
+    w0(sd + SD_LPIB, pos);
+}
+
+/* S3 as the DSP sees it: its memory and state gone, the processing pipe
+ * and the link's power saving as at power-on */
+static void model_lose_power(void)
+{
+    memset((void *)d.db, 0, BAR4_SPAN);
+    g_m.phase = 0;
+    g_m.tag = 0;
+    g_m.purge_pending = g_m.got_image = g_m.bad_image = false;
+    g_m.pipe = 0;
+    g_m.dmic_ok = g_m.host_ok = g_m.bound = false;
+    if (d.pp) w0(d.pp + PPCTL, 0);
+    w0(EM2, EM2_L1SEN);
+}
+
+/* hwcheck mic: the live model's host DMA, run from the mixer's look at
+ * the position (audio.c's lock held): a 1 kHz sine at a quarter of full
+ * scale on every channel, as much as the ticks since the last look hold */
+static const INT16 g_sine[48] = {
+    0, 1069, 2120, 3135, 4096, 4987, 5793, 6499, 7094, 7568, 7913, 8122, 8192, 8122, 7913, 7568,
+    7094, 6499, 5793, 4987, 4096, 3135, 2120, 1069, 0, -1069, -2120, -3135, -4096, -4987, -5793, -6499,
+    -7094, -7568, -7913, -8122, -8192, -8122, -7913, -7568, -7094, -6499, -5793, -4987, -4096, -3135, -2120, -1069,
+};
+
+static void model_feed(void)
+{
+    UINT64 now = sched_ticks();
+    UINT64 ticks = now - g_mic.fed_tick;
+    g_mic.fed_tick = now;
+    if (!g_mic.feeding || !ticks) return;
+    if (ticks > 10) ticks = 10;                     /* (100 ms at most: a ring's worth is 680) */
+    volatile UINT32 *lpib = (volatile UINT32 *)(g_mic.hb + g_mic.sd + SD_LPIB);
+    UINT32 pos = *lpib % g_mic.size, ch = g_mic.fb / 2;
+    UINT8 *ring = (UINT8 *)g_mic.in.ring;
+    for (UINT32 f = 0; f < (UINT32)ticks * 480; f++) {
+        for (UINT32 c = 0; c < ch; c++) {
+            *(INT16 *)(ring + pos) = g_sine[g_mic.phase];
+            pos = (pos + 2) % g_mic.size;
+        }
+        if (++g_mic.phase == 48) g_mic.phase = 0;
+    }
+    *lpib = pos;
+}
+
+/* A table like a two-microphone laptop's (model_nhlt), a small firmware
+ * file (model_firmware) and the controller's registers, kept for the
+ * live model */
+static UINT8   g_live_table[512];
+static UINT8  *g_live_fw, *g_live_bar0, *g_live_bar4;
+static HdaHost g_live_host;
+
+static UINT32 model_nhlt(UINT8 *t);
+static UINT32 model_firmware(UINT8 *f);
+
+int SofModelMicrophones(void (*say)(void *ctx, const char *line), void *ctx)
+{
+    char line[224];
+    if (g_mic.attached) {
+        ksnprintf(line, sizeof(line), "ok   DSP model: %s is attached already: %s", g_mic.name, SofStatus());
+        say(ctx, line);
+        return 0;
+    }
+    if (g_host.dsp_on) {
+        say(ctx, "FAIL DSP model: this machine has an audio DSP of its own (see hwcheck)");
+        return 1;
+    }
+    UINT32 fpages = (0x40 + 3 * PAGE_SIZE + 100 + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (!g_live_fw) {
+        g_live_fw = kernel_alloc_pages(fpages);
+        g_live_bar0 = kernel_alloc_pages(2);
+        g_live_bar4 = kernel_alloc_pages(BAR4_SPAN / PAGE_SIZE);
+        if (!g_live_fw || !g_live_bar0 || !g_live_bar4) {
+            say(ctx, "FAIL DSP model: out of memory for the model");
+            return 1;
+        }
+    }
+    UINT32 tlen = model_nhlt(g_live_table), flen = model_firmware(g_live_fw);
+    NhltDmic dm;
+    SofImage img;
+    char why[112];
+    if (!nhlt_parse(g_live_table, tlen, &dm) || !fw_parse(g_live_fw, flen, &img, why, sizeof(why))) {
+        say(ctx, "FAIL DSP model: the modelled table or firmware does not parse");
+        return 1;
+    }
+    memset(g_live_bar0, 0, 2 * PAGE_SIZE);
+    *(UINT16 *)(g_live_bar0 + 0x00) = (UINT16)(9 << 12 | 7 << 8);   /* GCAP: 7 in, 9 out (as Raptor Lake) */
+    *(UINT32 *)(g_live_bar0 + LLCH) = 0x800;
+    *(UINT32 *)(g_live_bar0 + 0x800) = CAP_PP << 16 | 0x700;
+    *(UINT32 *)(g_live_bar0 + 0x700) = CAP_SPB << 16;
+    *(UINT32 *)(g_live_bar0 + EM2) = EM2_L1SEN;
+    memset(&g_live_host, 0, sizeof(g_live_host));
+    g_live_host.mmio = g_live_bar0;
+    g_live_host.gcap = *(UINT16 *)g_live_bar0;
+    g_live_host.dsp_on = true;
+
+    lock();
+    memset(g_live_bar4, 0, BAR4_SPAN);
+    memset(&g_m, 0, sizeof(g_m));
+    g_m.on = g_m.live = true;
+    g_m.expect = img.image;
+    g_m.expect_size = img.size;
+    g_m.copier = img.copier;
+    g_m.blob = dm.blob;
+    g_m.blob_size = dm.blob_size;
+    d.db = g_live_bar4;
+    g_src = (SofSource){ &g_live_host, g_live_table, g_live_fw, tlen, flen, "(model)" };
+    bool ok = start(g_src.h, g_src.nhlt, g_src.nhlt_len, g_src.fw, g_src.fw_len, g_src.path) && g_cap.created &&
+              mic_attach(true);
+    char status[128];
+    strncpy(status, d.status, sizeof(status) - 1);
+    status[sizeof(status) - 1] = '\0';
+    if (ok) {
+        ksnprintf(d.status, sizeof(d.status), "%s (the modelled DSP of hwcheck mic)", status);
+        g_mic.fed_tick = sched_ticks();
+        g_mic.feeding = true;
+    }
+    unlock();
+    if (!ok) {
+        ksnprintf(line, sizeof(line), "FAIL DSP model: %s%s%s", status, g_m.wrong ? ": " : "", g_m.wrong ? g_m.wrong : "");
+        say(ctx, line);
+        return 1;
+    }
+    if (!AudioInputAttach(&g_mic.in)) {
+        say(ctx, "FAIL DSP model: audio.c has no room for another input");
+        return 1;
+    }
+    g_mic.attached = true;
+    if (!sched_create_thread("dsp", sof_thread_model, NULL, PRIO_DEVICE_IO)) {
+        say(ctx, "FAIL DSP model: could not start its thread");
+        return 1;
+    }
+    ksnprintf(line, sizeof(line), "ok   DSP model: %s attached (%u Hz, %u channels): %s", g_mic.name, g_cap.rate,
+              g_cap.channels, status);
+    say(ctx, line);
+    return 0;
+}
+
+/* hwcheck mic sleep: the live model loses its power as in S3, and the
+ * resume path boots it again */
+int SofModelSleep(void (*say)(void *ctx, const char *line), void *ctx)
+{
+    char line[256];
+    if (!g_mic.attached || !g_mic.model) {
+        say(ctx, "FAIL DSP model: no modelled microphones (hwcheck mic first)");
+        return 1;
+    }
+    int boots = g_m.boots, restarts = g_mic.restarts;
+    SofResume();                                    /* (the thread takes its power first, as S3 does) */
+    for (int i = 0; i < 300 && (g_mic.restarting || g_mic.restarts == restarts); i++)
+        sched_sleep_until(NULL, sched_ticks() + 1);
+    for (int i = 0; i < 50 && !g_mic.want && g_cap.running; i++)      /* (paused again: nothing records) */
+        sched_sleep_until(NULL, sched_ticks() + 1);
+    bool ok = !g_mic.restarting && g_mic.restarts == restarts + 1 && g_m.boots == boots + 1 && g_cap.created &&
+              !g_m.wrong;
+    ksnprintf(line, sizeof(line), "%s DSP model: after sleep the firmware booted again (boot %d) and the pipeline "
+              "came back: %s%s%s", ok ? "ok  " : "FAIL", g_m.boots, SofStatus(), g_m.wrong ? ": " : "",
+              g_m.wrong ? g_m.wrong : "");
+    say(ctx, line);
+    ksnprintf(line, sizeof(line), "     DSP model: paused %d times, run %d times as programs recorded", g_mic.pauses,
+              g_mic.runs);
+    say(ctx, line);
+    return ok ? 0 : 1;
 }
 
 /* A table like a two-microphone laptop's: an SSP endpoint (a Bluetooth
@@ -860,60 +1559,120 @@ int SofSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
         say(ctx, "     DSP: no SOF firmware built in (tools/fetch_sof_firmware.py fetches it)");
     }
 
-    /* The boot against the modelled DSP */
+    /* The boot against the modelled DSP, then the capture pipeline */
     lock();
-    static UINT8 saved[sizeof(d)];
+    static UINT8 saved[sizeof(d)], saved_cap[sizeof(g_cap)], saved_m[sizeof(g_m)];
     memcpy(saved, &d, sizeof(d));
+    memcpy(saved_cap, &g_cap, sizeof(g_cap));
+    memcpy(saved_m, &g_m, sizeof(g_m));                 /* (hwcheck mic's live model) */
+    memset(&g_cap, 0, sizeof(g_cap));
     memset(bar0, 0, 2 * PAGE_SIZE);
-    memset(bar4, 0, BAR4_SPAN);
-    memset(&g_m, 0, sizeof(g_m));
     *(UINT16 *)(bar0 + 0x00) = (UINT16)(9 << 12 | 7 << 8);   /* GCAP: 7 in, 9 out (as Raptor Lake) */
     *(UINT32 *)(bar0 + LLCH) = 0x800;
     *(UINT32 *)(bar0 + 0x800) = CAP_PP << 16 | 0x700;        /* processing pipe, then SPB */
     *(UINT32 *)(bar0 + 0x700) = CAP_SPB << 16;
-    *(UINT32 *)(bar0 + EM2) = EM2_L1SEN;
-    g_m.on = true;
-    g_m.expect = img.image;
-    g_m.expect_size = img.size;
-    d.db = bar4;
     HdaHost h;
     memset(&h, 0, sizeof(h));
     h.mmio = bar0;
     h.gcap = *(UINT16 *)bar0;
     h.dsp_on = true;
-    bool ran = start(&h, table, model_nhlt(table), fw, flen, "(model)");
+    /* (a fresh modelled DSP: BAR4 cleared, EM2 and the processing pipe as at power-on) */
+#define MODEL(image_size, refuse_nth) do {                                           \
+        memset(bar4, 0, BAR4_SPAN);                                                  \
+        memset(&g_m, 0, sizeof(g_m));                                                \
+        *(UINT32 *)(bar0 + EM2) = EM2_L1SEN;                                         \
+        *(UINT32 *)(bar0 + 0x800 + PPCTL) = 0;                                       \
+        g_m.on = true;                                                               \
+        g_m.expect = img.image;                                                      \
+        g_m.expect_size = (image_size);                                              \
+        g_m.copier = img.copier;                                                     \
+        g_m.blob = dm.blob;                                                          \
+        g_m.blob_size = dm.blob_size;                                                \
+        g_m.refuse = (refuse_nth);                                                   \
+        d.db = bar4;                                                                 \
+    } while (0)
+    tlen = model_nhlt(table);
+    nhlt_parse(table, tlen, &dm);
+    MODEL(img.size, 0);
+    bool ran = start(&h, table, tlen, fw, flen, "(model)");
     char status[128];
     strncpy(status, d.status, sizeof(status) - 1);
     status[sizeof(status) - 1] = '\0';
-    bool cl_freed = !(r0(d.pp + PPCTL) & 0x3FFFFFFF) && !(r0(d.spb + SPBFCCTL));
+    UINT32 pp = r0(d.pp + PPCTL);
+    bool cl_freed = !(pp & (1u << (7 + 9 - 1))) && !(r0(d.spb + SPBFCCTL));
     bool l1 = (r0(EM2) & EM2_L1SEN) && g_m.l1sen_was_off;
     UINT32 cs = r4(ADSPCS);
-    g_m.on = false;
-    memcpy(&d, saved, sizeof(d));
 
     CHECK(g_m.tag == 9, "DSP: core 0 powered, the ROM told to load from output stream tag %u (want 9, the last)", g_m.tag);
     CHECK(g_m.got_image, "DSP: the ROM read the whole image through the code loader's BDL (%u bytes, 4 pages)", img.size);
     CHECK(cl_freed && l1, "DSP: code loader stream recoupled, SPIB off, L1 power saving off while loading and back on");
-    CHECK(ran && (cs & CS_CPA(0)) && g_m.phase == 3 && g_m.requests == 1,
+    CHECK(ran && (cs & CS_CPA(0)) && g_m.fw_configs == 1,
           "DSP: FW_READY answered, IPC4 FW_CONFIG request: %s", status);
+    CHECK(g_m.dmic_ok, "DSP: capture: copier (module %d) on DMIC gateway 0 with the NHLT blob, 48000 Hz 16-bit stereo%s%s",
+          img.copier, g_m.wrong ? ": " : "", g_m.wrong ? g_m.wrong : "");
+    CHECK(g_m.host_ok && g_m.host_index == 6 && (pp & (1u << 6)) && g_cap.s.pages == CAP_PAGES,
+          "DSP: capture: copier on host input gateway %d, its stream decoupled, a %u KiB ring with no SPIB",
+          g_m.host_index, CAP_PAGES * PAGE_SIZE / 1024);
+    CHECK(g_m.bound && g_m.pipe == PPL_RUNNING && g_cap.running && strstr(status, "microphones (48000 Hz, 2 channels)"),
+          "DSP: capture: CREATE_PIPELINE, two INIT_INSTANCE, BIND, PAUSED, host DMA on, RUNNING");
+    for (int k = 0; k < 20; k++) model_tick();                  /* (200 ms of the modelled DMA) */
+    UINT32 pos = 0, rsize = 0, rrate = 0, rch = 0;
+    const INT16 *ring = NULL;
+    bool have = SofCaptureRing(&ring, &rsize, &rrate, &rch);
+    pos = SofCapturePosition();
+    int level = capture_level();
+    CHECK(have && rsize == CAP_PAGES * PAGE_SIZE && rrate == 48000 && rch == 2 && pos == g_m.frames * 4 % rsize &&
+          level == 25 && ring[0] == -8192,
+          "DSP: capture: samples in the host ring, position %u, level %d%% (a quarter-scale square wave)", pos, level);
+    /* No program records: paused with the host DMA off; one starts: RUNNING again */
+    capture_pause(true);
+    UINT32 frames = g_m.frames;
+    for (int k = 0; k < 5; k++) model_tick();
+    bool paused = g_m.pipe == PPL_PAUSED && !model_host_stream(true) && g_m.frames == frames && !g_cap.running;
+    capture_pause(false);
+    for (int k = 0; k < 5; k++) model_tick();
+    CHECK(paused && g_m.pipe == PPL_RUNNING && g_cap.running && g_m.frames > frames && !g_m.wrong,
+          "DSP: capture: PAUSED with the host DMA off while no program records, RUNNING again when one does%s%s",
+          g_m.wrong ? ": " : "", g_m.wrong ? g_m.wrong : "");
+    /* Sleep: the DSP's memory gone; the same firmware booted again and the
+     * pipeline built again (what SofResume has the thread do) */
+    SofSource src = { &h, table, fw, tlen, flen, "(model)" };
+    bool back = reboot(&src);
+    for (int k = 0; k < 5; k++) model_tick();
+    CHECK(back && g_m.boots == 2 && g_m.pipe == PPL_RUNNING && g_cap.running && model_host_stream(true) && !g_m.wrong,
+          "DSP: after sleep: the firmware booted again (boot %d), the capture pipeline RUNNING again%s%s", g_m.boots,
+          g_m.wrong ? ": " : "", g_m.wrong ? g_m.wrong : "");
+    capture_stop();
+    pp = r0(d.pp + PPCTL);
+    CHECK(g_m.deleted == 1 && !g_m.pipe && !g_m.wrong && !(pp & (1u << 6)) && !g_cap.running,
+          "DSP: capture stop: PAUSED, host DMA off, RESET, DELETE_PIPELINE, the stream recoupled%s%s",
+          g_m.wrong ? ": " : "", g_m.wrong ? g_m.wrong : "");
+    g_m.on = false;
+    memcpy(&d, saved, sizeof(d));
 
     /* A firmware that never reports FW_ENTERED: the core goes off again */
-    memset(bar4, 0, BAR4_SPAN);
-    memset(&g_m, 0, sizeof(g_m));
-    *(UINT32 *)(bar0 + EM2) = EM2_L1SEN;
-    *(UINT32 *)(bar0 + 0x800 + PPCTL) = 0;           /* (the processing pipe off again, as at power-on) */
-    g_m.on = true;
-    g_m.expect = img.image;
-    g_m.expect_size = img.size - 1;                  /* (so the image does not match) */
-    d.db = bar4;
-    ran = start(&h, table, model_nhlt(table), fw, flen, "(model)");
-    strncpy(status, d.status, sizeof(status) - 1);
+    MODEL(img.size - 1, 0);                          /* (so the image does not match) */
+    ran = start(&h, table, tlen, fw, flen, "(model)");
     cs = r4(ADSPCS);
-    UINT32 pp = r0(d.pp + PPCTL);
+    pp = r0(d.pp + PPCTL);
     g_m.on = false;
     memcpy(&d, saved, sizeof(d));
     CHECK(!ran && !(cs & CS_SPA(0)) && (cs & CS_CRST(0)) && pp == 0,
           "DSP: a bad image: boot fails, core 0 off and in reset, processing pipe as before");
+
+    /* A firmware that refuses the host copier: the pipeline goes, the stream too */
+    MODEL(img.size, 3);
+    ran = start(&h, table, tlen, fw, flen, "(model)");
+    strncpy(status, d.status, sizeof(status) - 1);
+    pp = r0(d.pp + PPCTL);
+    g_m.on = false;
+    memcpy(&d, saved, sizeof(d));
+    CHECK(ran && !g_cap.running && !g_cap.s.bdl && g_m.deleted == 1 && !(pp & (1u << 6)) &&
+          strstr(status, "capture pipeline failed: INIT_INSTANCE of the host copier refused"),
+          "DSP: a refused copier: the pipeline deleted, the stream recoupled, the firmware left running");
+#undef MODEL
+    memcpy(&g_cap, saved_cap, sizeof(g_cap));
+    memcpy(&g_m, saved_m, sizeof(g_m));
 
     unlock();
     kernel_free_pages(fw, fpages);

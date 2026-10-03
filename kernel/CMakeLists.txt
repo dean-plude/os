@@ -135,6 +135,7 @@ set(KERNEL_C_SOURCES
     hal/ioapic.c
     hal/hpet.c
     hal/display.c
+    hal/firmware.c
     drivers/e1000.c
     drivers/virtio_net.c
     drivers/virtio_input.c
@@ -190,6 +191,7 @@ set(KERNEL_C_SOURCES
     ke/kpcr.c
     ke/smp.c
     ke/sleep.c
+    ke/timezone.c
     ke/waitq.c
     ke/probe.c
     ke/probe_test.c
@@ -217,6 +219,7 @@ set(KERNEL_C_SOURCES
     wm/desktop.c
     wm/clipboard.c
     wm/input.c
+    wm/kbdlayout.c
     wm/tablet.c
     apps/apps.c
     apps/terminal.c

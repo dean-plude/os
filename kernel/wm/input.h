@@ -68,6 +68,7 @@ typedef struct {
 #define KEY_LSHIFT     0x2A
 #define KEY_RSHIFT     0x36
 #define KEY_ALT        0x38
+#define KEY_SPACE      0x39
 #define KEY_CAPSLOCK   0x3A
 #define KEY_NUMLOCK    0x45
 #define KEY_SCROLLLOCK 0x46
@@ -113,7 +114,11 @@ typedef struct {
     bool  extended;
     bool  pressed;
     bool  shift, ctrl, alt;
+    bool  altgr;       /* AltGr held (right Alt, or Ctrl+Alt, in a layout that has it) */
     char  ch;          /* printable ASCII, '\n', '\t', '\b', or 0 */
+    UINT16 wch;        /* the character the key types in the user's layout (UTF-16: ch, or
+                        * a letter like ä or é; 0 for a dead key, whose accent goes on
+                        * the next letter); with an AltGr character ctrl and alt are false */
 } KeyEvent;
 
 /* Update modifier state from a key event and translate it.  Returns false

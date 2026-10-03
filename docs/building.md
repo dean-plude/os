@@ -177,6 +177,16 @@ needs neither:
   `tools/gen_locales.py` generates it from .NET's `IcuLocaleData.cs` (MIT),
   .NET's record of the names, LCIDs, code pages and GEOIDs of the 864
   locales Windows knows.
+- **The time zone table** (`kernel/ke/tzdata.inc`):
+  `tools/gen_timezones.py` generates it from Unicode CLDR's
+  `windowsZones.xml` (the Windows zone names and their cities) and the
+  IANA tz database through Python's `zoneinfo` (`pip install tzdata` has
+  the old zone names CLDR uses).  Run it again when a country changes its
+  rules.
+- **The keyboard layouts** (`userland/include/kbdlayouts.h`, read by the
+  kernel and user32): `tools/gen_keyboards.py` generates them from
+  xkeyboard-config (MIT/X11) through libxkbcommon
+  (`sudo apt install xkb-data libxkbcommon0`).
 
 ### The ISO
 
@@ -186,7 +196,10 @@ scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf
 
 The ISO is not committed (`*.iso` is in `.gitignore`).  CI builds it on
 every pull request and keeps it as the run's `nova-iso` artifact, and each
-push to `main` that passes CI replaces `nova.iso` on the `latest` release:
+push to `main` that passes CI replaces `nova.iso` on the `latest` build
+(<https://github.com/dean-plude/os/releases/download/latest/nova.iso>).
+A version tag makes a release with the tested ISO, its checksums and the
+update files ([releasing.md](releasing.md)); the newest one is always at
 <https://github.com/dean-plude/os/releases/latest/download/nova.iso>.
 
 The ISO is El Torito UEFI, no emulation: its EFI System Partition holds

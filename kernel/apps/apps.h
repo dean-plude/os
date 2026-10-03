@@ -215,12 +215,14 @@ const char *StoreClose(void);
 void StoreShowUpdates(void);
 /* Install NovaOS on a disk */
 void SetupOpen(void);
-/* "Welcome to NovaOS", the first-boot setup (welcome.c): the user's name
- * and the display resolution.  WelcomeNeeded: an installed system that
+/* "Welcome to NovaOS", the first-boot setup (welcome.c): the user's name,
+ * time zone, keyboard layout and display resolution.  WelcomeNeeded: an installed system that
  * has not been through it yet; WelcomeFirstBoot opens it for that (it
  * cannot be cancelled), WelcomeOpen to go through it again by hand. */
 bool WelcomeNeeded(void);
 void WelcomeFirstBoot(void);
 void WelcomeOpen(void);
+void WelcomeTimeZone(void);       /* the time zone page alone (Settings) */
+void WelcomeKeyboard(void);       /* the keyboard layout page alone (Settings) */
 /* The user's name given at first boot ("Dean Plude" until then) */
 void AppUserName(char *out, int cap);

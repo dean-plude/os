@@ -1757,11 +1757,31 @@ USERAPI int TranslateAcceleratorA(HWND h, HACCEL ha, LPMSG m);
 USERAPI BOOL CopyRect(LPRECT d, const RECT *s);
 USERAPI BOOL GetKeyboardState(PBYTE keys);
 USERAPI BOOL SetKeyboardState(PBYTE keys);
-USERAPI HANDLE GetKeyboardLayout(DWORD tid);
-USERAPI int GetKeyboardLayoutList(int n, HANDLE *list);
-USERAPI HANDLE LoadKeyboardLayoutW(LPCWSTR id, UINT f);
-USERAPI HANDLE ActivateKeyboardLayout(HANDLE h, UINT f);
+typedef HANDLE HKL;
+#define KL_NAMELENGTH 9
+#define KLF_ACTIVATE 0x00000001
+#define HKL_PREV 0
+#define HKL_NEXT 1
+#define MAPVK_VK_TO_VSC 0
+#define MAPVK_VSC_TO_VK 1
+#define MAPVK_VK_TO_CHAR 2
+#define MAPVK_VSC_TO_VK_EX 3
+#define WM_SYSDEADCHAR 0x0107
+#define WM_INPUTLANGCHANGE 0x0051
+#define SPI_GETDEFAULTINPUTLANG 0x0059
+#define SPI_SETDEFAULTINPUTLANG 0x005A
+USERAPI HKL GetKeyboardLayout(DWORD tid);
+USERAPI int GetKeyboardLayoutList(int n, HKL *list);
+USERAPI HKL LoadKeyboardLayoutW(LPCWSTR id, UINT f);
+USERAPI HKL LoadKeyboardLayoutA(LPCSTR id, UINT f);
+USERAPI BOOL UnloadKeyboardLayout(HKL h);
+USERAPI HKL ActivateKeyboardLayout(HKL h, UINT f);
 USERAPI BOOL GetKeyboardLayoutNameW(LPWSTR name);
+USERAPI BOOL GetKeyboardLayoutNameA(LPSTR name);
+USERAPI UINT MapVirtualKeyExA(UINT code, UINT type, HKL hkl);
+USERAPI SHORT VkKeyScanExA(CHAR c, HKL hkl);
+USERAPI int ToAsciiEx(UINT vk, UINT sc, const BYTE *keys, LPWORD out, UINT flags, HKL hkl);
+USERAPI int GetKeyNameTextA(LONG lp, LPSTR buf, int n);
 USERAPI int GetKeyboardType(int what);
 USERAPI UINT MapVirtualKeyW(UINT code, UINT type);
 USERAPI UINT MapVirtualKeyA(UINT code, UINT type);

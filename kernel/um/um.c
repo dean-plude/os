@@ -27,6 +27,7 @@
 #include "../fs/persist.h"
 #include "../fs/drives.h"
 #include "../drivers/audio.h"
+#include "../wm/kbdlayout.h"
 #include "../fs/bootlog.h"
 #include "../arch/x86_64/idt.h"
 #include "um_internal.h"
@@ -212,6 +213,7 @@ void UmInit(void)
             installed);
     PersistLoad();                                  /* the user's files (and the registry hive) from disk */
     um_registry_init();
+    KbdLoad();                                      /* the user's keyboard layout */
     AudioLoadSettings();                            /* the sound devices' saved volumes and default */
     um_registry_pending_renames();                  /* before any program runs */
 }
@@ -633,6 +635,8 @@ static void kusd_time(UINT32 off, UINT64 v)       /* KSYSTEM_TIME: High2, Low, t
     t[1] = (UINT32)(v >> 32);
 }
 
+static UINT32 g_kbd_hkl = 0x04090409;               /* (set before the page exists: kept for it) */
+
 static void kusd_init(void)
 {
     g_kusd = kernel_alloc_pages(1);
@@ -652,7 +656,14 @@ static void kusd_init(void)
     static const int features[] = { 2, 6, 8, 10, 12, 13, 14 };   /* cmpxchg8b/16b, SSE, SSE2, SSE3, RDTSC, NX */
     for (unsigned i = 0; i < sizeof(features) / sizeof(features[0]); i++) g_kusd[0x274 + features[i]] = 1;
     UmCpuCountChanged();
+    UmSharedKeyboard(g_kbd_hkl);
     UmTimerTick(sched_ticks());
+}
+
+void UmSharedKeyboard(UINT32 hkl)
+{
+    g_kbd_hkl = hkl;
+    if (g_kusd) *(volatile UINT32 *)(g_kusd + UM_KUSD_KBD_HKL) = hkl;
 }
 
 /* A CPU came online (smp.c) */

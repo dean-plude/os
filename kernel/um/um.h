@@ -162,8 +162,14 @@ void um_registry_set_dword(const char *path, const char *name, UINT32 val);   /*
 bool um_registry_get_dword(const char *path, const char *name, UINT32 *out);
 void um_registry_set_sz(const char *path, const char *name, const char *val);
 bool um_registry_get_sz(const char *path, const char *name, char *out, int cap);
+/* Changes with every key or value written: a cheap "has anything changed?" */
+UINT32 um_registry_generation(void);
+void um_registry_set_bin(const char *path, const char *name, const void *data, UINT32 len);
+int  um_registry_get_bin(const char *path, const char *name, void *out, int cap);   /* its length, or -1 */
 /* The first-boot setup's answers (apps/welcome.c): UserName, FirstBootDone */
 #define UM_SETUP_KEY "Machine\\SOFTWARE\\NovaOS\\Setup"
+/* The user's SID: HKEY_CURRENT_USER is "User\\" UM_USER_SID */
+#define UM_USER_SID "S-1-5-21-1000-2000-3000-1001"
 void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
 void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp) __attribute__((noreturn));
 /* Crash reports in C:\NovaOS\Crashes (um_crash.c) */
@@ -201,6 +207,11 @@ struct Thread *DesktopLockOwner(void);     /* diagnostics */
 void UmSaveAll(void);
 /* Timer tick: advances the clocks in KUSER_SHARED_DATA. */
 void UmTimerTick(UINT64 ticks);
+/* The keyboard layout in effect (wm/kbdlayout.c): its HKL, published in
+ * KUSER_SHARED_DATA at UM_KUSD_KBD_HKL (past Windows' own fields: a
+ * NovaOS one), where user32 reads it on every key */
+#define UM_KUSD_KBD_HKL 0xF00
+void UmSharedKeyboard(UINT32 hkl);
 /* The number of online CPUs changed: update what programs see. */
 void UmCpuCountChanged(void);
 /* Log every program thread's state (serial), for diagnosing hangs. */

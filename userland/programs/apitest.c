@@ -216,6 +216,30 @@ int main(int argc, char **argv)
     CHECK("advapi32 forwarder", adv_open && !adv_open(HKEY_CURRENT_USER, "Software\\NovaTest\\Sub", 0, KEY_READ, &rk) && !RegCloseKey(rk));
     CHECK("RegDeleteTree", !RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\NovaTest") &&
                            RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\NovaTest", 0, KEY_READ, &rk) == ERROR_FILE_NOT_FOUND);
+    CHECK("RegOpenKeyEx below a missing key: ERROR_FILE_NOT_FOUND, as on Windows",
+          RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\NovaTest\\Sub\\Deeper", 0, KEY_READ, &rk) == ERROR_FILE_NOT_FOUND);
+
+    /* ---- firmware tables (SMBIOS, ACPI) ---- */
+    UINT (WINAPI *fwget)(DWORD, DWORD, PVOID, DWORD) = (void *)fn("kernel32.dll", "GetSystemFirmwareTable");
+    UINT (WINAPI *fwenum)(DWORD, PVOID, DWORD) = (void *)fn("kernel32.dll", "EnumSystemFirmwareTables");
+    CHECK("GetSystemFirmwareTable, EnumSystemFirmwareTables", fwget && fwenum);
+    if (fwget && fwenum) {
+        UINT need = fwget(0x52534D42 /* 'RSMB' */, 0, NULL, 0);
+        BYTE *sm = need ? HeapAlloc(GetProcessHeap(), 0, need) : NULL;
+        /* RawSMBIOSData: version, then Length bytes of structures, the first a type 0 (BIOS) or 1 (system) */
+        CHECK("GetSystemFirmwareTable('RSMB'): the SMBIOS tables", sm && fwget(0x52534D42 /* 'RSMB' */, 0, sm, need) == need &&
+              sm[1] >= 2 && *(DWORD *)(sm + 4) + 8 == need && sm[8] <= 1);
+        if (sm) HeapFree(GetProcessHeap(), 0, sm);
+        DWORD ids[64];
+        UINT n = fwenum(0x41435049 /* 'ACPI' */, ids, sizeof(ids));
+        BOOL facp = FALSE;
+        for (UINT i = 0; i < n / 4 && i < 64; i++) facp |= !memcmp(&ids[i], "FACP", 4);
+        CHECK("EnumSystemFirmwareTables('ACPI') lists the FADT", n >= 8 && facp);
+        BYTE fadt[512];
+        need = fwget(0x41435049, 0x50434146 /* 'PCAF': "FACP" in memory */, fadt, sizeof(fadt));
+        CHECK("GetSystemFirmwareTable('ACPI', 'PCAF'): the FADT", need >= 36 && need <= sizeof(fadt) && !memcmp(fadt, "FACP", 4));
+    }
+    CHECK("ntdll exports each Nt function as Zw too", fn("ntdll.dll", "ZwClose") && fn("ntdll.dll", "ZwClose") == fn("ntdll.dll", "NtClose"));
 
     /* ---- fibers ---- */
     LPVOID (WINAPI *conv)(LPVOID) = (void *)fn("kernel32.dll", "ConvertThreadToFiber");

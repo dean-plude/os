@@ -222,32 +222,49 @@ CRTEXP void _wassert(const wchar_t *expr, const wchar_t *file, unsigned line)
 
 /* -----------------------------------------------------------------------
  * Time: _time64 and friends (time_t is already 64-bit), _time32 & co.,
- * and the time zone (NovaOS keeps UTC)
+ * and the time zone (kernel32's: GetTimeZoneInformation; _tzset fills
+ * the variables, and runs once by itself on first use)
  * ----------------------------------------------------------------------- */
 /* the variables themselves are exported too (old msvcrt.dll programs and
  * MinGW-built DLLs such as icu.dll import them as data) */
 CRTEXP int   _daylight;
 CRTEXP long  _timezone;
-CRTEXP char *_tzname[2] = { "UTC", "UTC" };
+static char g_std_name[64] = "UTC", g_dst_name[64] = "UTC";
+CRTEXP char *_tzname[2] = { g_std_name, g_dst_name };
+static long g_dstbias;
+static volatile LONG g_tz_done;
 #define g_daylight _daylight
 #define g_timezone _timezone
 #define g_tzname   _tzname
-CRTEXP int   *__daylight(void) { return &g_daylight; }
-CRTEXP long  *__timezone(void) { return &g_timezone; }
-CRTEXP char **__tzname(void)   { return g_tzname; }
-CRTEXP long  *__dstbias(void)  { static long b; return &b; }
-CRTEXP int _get_daylight(int *v) { *v = g_daylight; return 0; }
-CRTEXP int _get_timezone(long *v) { *v = g_timezone; return 0; }
-CRTEXP int _get_dstbias(long *v) { *v = 0; return 0; }
+CRTEXP void _tzset(void)
+{
+    TIME_ZONE_INFORMATION tz;
+    GetTimeZoneInformation(&tz);
+    g_timezone = (tz.Bias + tz.StandardBias) * 60L;
+    g_daylight = tz.DaylightDate.wMonth != 0;
+    g_dstbias = (tz.DaylightBias - tz.StandardBias) * 60L;
+    WideCharToMultiByte(CP_ACP, 0, tz.StandardName, -1, g_std_name, sizeof(g_std_name), NULL, NULL);
+    WideCharToMultiByte(CP_ACP, 0, tz.DaylightName, -1, g_dst_name, sizeof(g_dst_name), NULL, NULL);
+    g_tz_done = 1;
+}
+CRTEXP void tzset(void) { _tzset(); }
+static void tz_once(void) { if (!g_tz_done) _tzset(); }
+
+CRTEXP int   *__daylight(void) { tz_once(); return &g_daylight; }
+CRTEXP long  *__timezone(void) { tz_once(); return &g_timezone; }
+CRTEXP char **__tzname(void)   { tz_once(); return g_tzname; }
+CRTEXP long  *__dstbias(void)  { tz_once(); return &g_dstbias; }
+CRTEXP int _get_daylight(int *v) { tz_once(); *v = g_daylight; return 0; }
+CRTEXP int _get_timezone(long *v) { tz_once(); *v = g_timezone; return 0; }
+CRTEXP int _get_dstbias(long *v) { tz_once(); *v = g_dstbias; return 0; }
 CRTEXP int _get_tzname(size_t *ret, char *buf, size_t n, int i)
 {
+    tz_once();
     const char *s = g_tzname[i ? 1 : 0];
     if (ret) *ret = strlen(s) + 1;
     if (buf && n) { strncpy(buf, s, n - 1); buf[n - 1] = 0; }
     return 0;
 }
-CRTEXP void _tzset(void) { }
-CRTEXP void tzset(void) { }
 
 CRTEXP time_t _time64(time_t *t) { return time(t); }
 CRTEXP long   _time32(long *t) { long v = (long)time(NULL); if (t) *t = v; return v; }
@@ -263,16 +280,24 @@ CRTEXP int _gmtime64_s(struct tm *r, const time_t *t)
     *r = *g;
     return 0;
 }
-CRTEXP int _localtime64_s(struct tm *r, const time_t *t) { return _gmtime64_s(r, t); }
+CRTEXP int _localtime64_s(struct tm *r, const time_t *t)
+{
+    if (!r || !t) return EINVAL;
+    struct tm *l = localtime(t);
+    if (!l) return EINVAL;
+    *r = *l;
+    return 0;
+}
 CRTEXP int _gmtime32_s(struct tm *r, const long *t) { time_t v = *t; return _gmtime64_s(r, &v); }
-CRTEXP int _localtime32_s(struct tm *r, const long *t) { time_t v = *t; return _gmtime64_s(r, &v); }
+CRTEXP int _localtime32_s(struct tm *r, const long *t) { time_t v = *t; return _localtime64_s(r, &v); }
 CRTEXP struct tm *gmtime_r(const time_t *t, struct tm *r) { return _gmtime64_s(r, t) ? NULL : r; }
-CRTEXP struct tm *localtime_r(const time_t *t, struct tm *r) { return _gmtime64_s(r, t) ? NULL : r; }
+CRTEXP struct tm *localtime_r(const time_t *t, struct tm *r) { return _localtime64_s(r, t) ? NULL : r; }
 CRTEXP time_t _mktime64(struct tm *tm) { return mktime(tm); }
 CRTEXP long   _mktime32(struct tm *tm) { return (long)mktime(tm); }
-CRTEXP time_t _mkgmtime64(struct tm *tm) { return mktime(tm); }         /* local time is UTC */
-CRTEXP long   _mkgmtime32(struct tm *tm) { return (long)mktime(tm); }
-CRTEXP time_t timegm(struct tm *tm) { return mktime(tm); }
+time_t __nova_timegm(struct tm *tm);           /* (time.c) */
+CRTEXP time_t _mkgmtime64(struct tm *tm) { return __nova_timegm(tm); }
+CRTEXP long   _mkgmtime32(struct tm *tm) { return (long)__nova_timegm(tm); }
+CRTEXP time_t timegm(struct tm *tm) { return __nova_timegm(tm); }
 CRTEXP double _difftime64(time_t a, time_t b) { return difftime(a, b); }
 CRTEXP double _difftime32(long a, long b) { return (double)(a - b); }
 CRTEXP char *_ctime64(const time_t *t) { return ctime(t); }
@@ -294,13 +319,13 @@ CRTEXP int _timespec64_get(struct timespec *ts, int base) { return timespec_get(
 CRTEXP char *_strdate(char *buf)
 {
     time_t t = time(NULL);
-    strftime(buf, 9, "%m/%d/%y", gmtime(&t));
+    strftime(buf, 9, "%m/%d/%y", localtime(&t));
     return buf;
 }
 CRTEXP char *_strtime(char *buf)
 {
     time_t t = time(NULL);
-    strftime(buf, 9, "%H:%M:%S", gmtime(&t));
+    strftime(buf, 9, "%H:%M:%S", localtime(&t));
     return buf;
 }
 struct __timeb64 { long long time; unsigned short millitm; short timezone, dstflag; };
@@ -310,8 +335,11 @@ CRTEXP void _ftime64(struct __timeb64 *tb)
     timespec_get(&ts, 1);
     tb->time = ts.tv_sec;
     tb->millitm = (unsigned short)(ts.tv_nsec / 1000000);
-    tb->timezone = 0;
-    tb->dstflag = 0;
+    int dst = localtime(&ts.tv_sec)->tm_isdst;
+    long tz;
+    _get_timezone(&tz);
+    tb->timezone = (short)(tz / 60);
+    tb->dstflag = (short)dst;
 }
 CRTEXP void _ftime(struct __timeb64 *tb) { _ftime64(tb); }
 CRTEXP int _ftime64_s(struct __timeb64 *tb) { _ftime64(tb); return 0; }

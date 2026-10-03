@@ -10,6 +10,7 @@
 #include "../lib/string.h"
 #include "../um/um.h"
 #include "../ke/spinlock.h"
+#include "kbdlayout.h"
 
 #define INPUT_QUEUE_SIZE 256   /* must be a power of two */
 
@@ -55,7 +56,9 @@ bool InputPoll(InputEvent *out)
 }
 
 /* -----------------------------------------------------------------------
- * Keyboard translation (US layout, scancode set 1)
+ * Keyboard translation (scancode set 1): the keys every layout shares
+ * here (Esc, Backspace, Tab, Enter, Space, keypad *), the typing keys
+ * from the user's layout (kbdlayout.c)
  * ----------------------------------------------------------------------- */
 static const char g_keymap[0x3A] = {
     0,  27, '1','2','3','4','5','6','7','8','9','0','-','=','\b','\t',
@@ -70,7 +73,8 @@ static const char g_keymap_shift[0x3A] = {
     'B','N','M','<','>','?', 0, '*', 0, ' ',
 };
 
-static bool g_lshift, g_rshift, g_ctrl, g_alt, g_caps, g_num, g_scroll;
+static bool g_lshift, g_rshift, g_ctrl, g_alt, g_ralt, g_caps, g_num, g_scroll;
+static UINT16 g_dead;                       /* a dead key's accent, waiting for its letter */
 
 UINT32 InputModifiers(void)
 {
@@ -108,6 +112,7 @@ bool InputTranslateKey(const InputEvent *ev, KeyEvent *out)
     }
     if (sc == KEY_CTRL) g_ctrl = down;       /* left or right */
     if (sc == KEY_ALT)  g_alt  = down;
+    if (sc == KEY_ALT && ev->extended) g_ralt = down;
     /* Ctrl+Alt+F12: where every program's threads are (serial log), for a
      * program that hangs */
     if (sc == KEY_F12 && !ev->extended && down && g_ctrl && g_alt) UmDumpAll();
@@ -118,14 +123,33 @@ bool InputTranslateKey(const InputEvent *ev, KeyEvent *out)
     out->shift    = g_lshift || g_rshift;
     out->ctrl     = g_ctrl;
     out->alt      = g_alt;
+    out->altgr    = KbdHasAltGr() && (g_ralt || (g_ctrl && g_alt));
     out->ch       = 0;
+    out->wch      = 0;
 
+    UINT16 c = 0, lc;
+    bool dead;
     if (!ev->extended && sc < sizeof(g_keymap)) {
-        char c = out->shift ? g_keymap_shift[sc] : g_keymap[sc];
-        if (g_caps && c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
-        else if (g_caps && c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        c = (UINT8)(out->shift ? g_keymap_shift[sc] : g_keymap[sc]);
         if (c == 27) c = 0;                   /* Esc: use the scancode */
-        out->ch = c;
     }
+    if (!ev->extended && KbdKeyChar(sc, (out->shift ? 1 : 0) + (out->altgr ? 2 : 0), g_caps, &lc, &dead)) {
+        c = lc;
+        if (dead && lc) {                     /* an accent: kept for the next letter */
+            if (down) g_dead = g_dead == lc ? 0 : lc;
+            c = 0;
+            if (down && !g_dead) c = lc;      /* (the same accent twice: the accent itself) */
+        } else if (down && lc && g_dead) {
+            UINT16 a = KbdComposeChar(g_dead, lc);
+            if (a) c = a;
+            g_dead = 0;
+        }
+        if (out->altgr && c) out->ctrl = out->alt = false;   /* an AltGr character is typed as such */
+    } else if (down && sc == KEY_SPACE && !ev->extended && g_dead) {
+        c = g_dead;                           /* accent, space: the accent itself */
+        g_dead = 0;
+    }
+    out->wch = c;
+    out->ch  = c < 0x80 ? (char)c : 0;
     return true;
 }

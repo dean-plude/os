@@ -73,6 +73,7 @@
 #include "../fs/setup.h"
 #include "../fs/ramfs.h"
 #include "../hal/pci.h"
+#include "../hal/firmware.h"
 #include "../drivers/usb.h"
 #include "../drivers/i2chid.h"
 #include "../hal/acpi.h"
@@ -235,6 +236,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
      * ------------------------------------------------------------------ */
     kprintf("=== Phase 1: Memory Manager ===\n");
     pmm_init(info);
+    FirmwareBootInfo(info);               /* the bootloader's SMBIOS copy */
     smp_early(info);                      /* before the memory map can be reused */
     UINT64 rsdp = info->rsdp_physical;    /* for AcpiInitialize, once paging is up */
     SetupBootInfo(info);                  /* installation media (booted from the disc) */

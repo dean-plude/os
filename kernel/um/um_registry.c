@@ -22,6 +22,8 @@
 #include "../ke/probe.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
+#include "../ke/timezone.h"
+#include "../wm/kbdlayout.h"
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "../fs/ramfs.h"
@@ -46,7 +48,7 @@
 #define VALUE_NAME_MAX 16383
 #define DATA_MAX       (1024u * 1024u)
 #define HIVE_PATH      "\\Windows\\System32\\config\\REGISTRY.DAT"
-#define USER_SID       "S-1-5-21-1000-2000-3000-1001"
+#define USER_SID       UM_USER_SID
 
 typedef struct RegValue {
     struct RegValue *next;
@@ -80,6 +82,7 @@ static UmLock g_key_lock[KEY_LOCKS];
 static UmLock *key_lock(const RegKey *k) { return &g_key_lock[((uintptr_t)k / 64) % KEY_LOCKS]; }
 static volatile bool g_dirty;
 static UINT64 g_dirty_ticks;
+static volatile UINT32 g_generation;      /* counts changes (um_registry_generation) */
 
 /* -----------------------------------------------------------------------
  * The tree
@@ -110,6 +113,7 @@ static UINT16 *dup16(const UINT16 *s, UINT32 n)
 static void touch(RegKey *k)
 {
     k->wtime = um_now_100ns();
+    g_generation++;
     if (!k->vol) { g_dirty = true; g_dirty_ticks = sched_ticks(); }
 }
 
@@ -233,11 +237,10 @@ static UINT32 walk(RegKey *k, const UINT16 *path, UINT32 n, bool create, bool vo
         if (len > NAME_MAX_CHARS) return ST_OBJECT_NAME_INVALID;
         RegKey *c = find_child(k, path + s, len);
         if (!c) {
-            if (!create) {
-                /* the last component missing: NAME_NOT_FOUND, else PATH_NOT_FOUND */
-                while (i < n && path[i] == '\\') i++;
-                return i >= n ? ST_OBJECT_NAME_NOT_FOUND : ST_OBJECT_PATH_NOT_FOUND;
-            }
+            /* Any component missing, the last or one on the way:
+             * NAME_NOT_FOUND, as Windows' registry answers (RegOpenKeyEx's
+             * ERROR_FILE_NOT_FOUND; Roblox's installer stops on anything else) */
+            if (!create) return ST_OBJECT_NAME_NOT_FOUND;
             c = add_child(k, path + s, len, vol);
             if (!c) return ST_NO_MEMORY;
             if (created) *created = true;
@@ -331,6 +334,8 @@ void um_registry_add_cpus(UINT32 n)
 
 /* Set a REG_DWORD from the kernel (an installer's registration): @path
  * from the root, e.g. "Machine\\SOFTWARE\\...", the key created if need be */
+UINT32 um_registry_generation(void) { return g_generation; }
+
 void um_registry_set_dword(const char *path, const char *name, UINT32 val)
 {
     um_lock_excl(&g_reg);
@@ -388,6 +393,79 @@ bool um_registry_get_sz(const char *path, const char *name, char *out, int cap)
     }
     um_unlock_shared(&g_reg);
     return ok;
+}
+
+/* Set a REG_BINARY from the kernel, the key created if need be */
+void um_registry_set_bin(const char *path, const char *name, const void *data, UINT32 len)
+{
+    UINT16 nm[128];
+    UINT32 n = 0;
+    for (; name[n] && n < 127; n++) nm[n] = (UINT8)name[n];
+    um_lock_excl(&g_reg);
+    RegKey *k = kpath(path, false);
+    if (k) set_value(k, nm, n, 3 /* REG_BINARY */, data, len);
+    um_unlock_excl(&g_reg);
+}
+
+/* Read a REG_BINARY from the kernel: its length (at most @cap bytes
+ * copied), or -1 when the key or value is missing or not binary */
+int um_registry_get_bin(const char *path, const char *name, void *out, int cap)
+{
+    UINT16 w[256], nm[128];
+    UINT32 n = 0, m = 0;
+    for (; path[n] && n < 255; n++) w[n] = (UINT8)path[n];
+    for (; name[m] && m < 127; m++) nm[m] = (UINT8)name[m];
+    int len = -1;
+    um_lock_shared(&g_reg);
+    RegKey *k = NULL;
+    if (walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) {
+        RegValue *v = find_value(k, nm, m);
+        if (v && v->type == 3 /* REG_BINARY */) {
+            len = (int)v->len;
+            memcpy(out, v->data, (size_t)(len < cap ? len : cap));
+        }
+    }
+    um_unlock_shared(&g_reg);
+    return len;
+}
+
+/* HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Time Zones: one key
+ * per zone NovaOS knows (ke/timezone.c), as Windows has them; rebuilt
+ * every boot (volatile), so the hive on drive C: does not carry them */
+static void time_zones(void)
+{
+    for (int i = 0; i < TzCount(); i++) {
+        const TzZone *z = TzAt(i);
+        char path[160];
+        ksnprintf(path, sizeof(path), "Machine\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\%s", z->key);
+        RegKey *k = kpath(path, true);
+        if (!k) continue;
+        kset_sz(k, "Display", z->display, 1);
+        kset_sz(k, "Std", z->std, 1);
+        kset_sz(k, "Dlt", z->dlt, 1);
+        TzTzi tzi;
+        TzToTzi(z, &tzi);
+        UINT16 nm[3] = { 'T', 'Z', 'I' };
+        set_value(k, nm, 3, 3 /* REG_BINARY */, &tzi, sizeof(tzi));
+    }
+}
+
+/* HKLM\SYSTEM\CurrentControlSet\Control\Keyboard Layouts: one key per
+ * layout NovaOS has (wm/kbdlayout.c), volatile like the time zones */
+static void keyboard_layouts(void)
+{
+    for (int i = 0; i < KbdCount(); i++) {
+        char path[128];
+        ksnprintf(path, sizeof(path), "Machine\\SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts\\%s", KbdKlid(i));
+        RegKey *k = kpath(path, true);
+        if (!k) continue;
+        kset_sz(k, "Layout Text", KbdName(i), 1);
+        if (KbdHkl(i) >> 28 == 0xF) {                     /* a variant (Dvorak): its Layout Id */
+            char id[8];
+            ksnprintf(id, sizeof(id), "%04x", (unsigned)((KbdHkl(i) >> 16) & 0x0FFF));
+            kset_sz(k, "Layout Id", id, 1);
+        }
+    }
 }
 
 static void defaults(void)
@@ -492,7 +570,24 @@ static void defaults(void)
     RegKey *cn = kpath("Machine\\SYSTEM\\CurrentControlSet\\Control\\ComputerName\\ComputerName", false);
     if (!has_value(cn, "ComputerName")) kset_sz(cn, "ComputerName", "NOVA-PC", 1);
     RegKey *tz = kpath("Machine\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation", false);
-    if (!has_value(tz, "TimeZoneKeyName")) { kset_sz(tz, "TimeZoneKeyName", "UTC", 1); kset_dword(tz, "Bias", 0); }
+    if (!has_value(tz, "StandardStart")) {                /* (older hives held only the first two) */
+        const TzZone *utc = TzAt(TzFind("UTC"));
+        TzTzi tzi;
+        TzToTzi(utc, &tzi);
+        kset_sz(tz, "TimeZoneKeyName", utc->key, 1);
+        kset_dword(tz, "Bias", (UINT32)tzi.bias);
+        kset_sz(tz, "StandardName", utc->std, 1);
+        kset_dword(tz, "StandardBias", 0);
+        kset_sz(tz, "DaylightName", utc->dlt, 1);
+        kset_dword(tz, "DaylightBias", 0);
+        UINT16 ss[13] = { 'S','t','a','n','d','a','r','d','S','t','a','r','t' };
+        UINT16 ds[13] = { 'D','a','y','l','i','g','h','t','S','t','a','r','t' };
+        set_value(tz, ss, 13, 3 /* REG_BINARY */, &tzi.std_date, sizeof(tzi.std_date));
+        set_value(tz, ds, 13, 3 /* REG_BINARY */, &tzi.dst_date, sizeof(tzi.dst_date));
+        kset_dword(tz, "DynamicDaylightTimeDisabled", 0);
+    }
+    time_zones();
+    keyboard_layouts();
     RegKey *nls = kpath("Machine\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage", false);
     if (!has_value(nls, "ACP")) { kset_sz(nls, "ACP", "65001", 1); kset_sz(nls, "OEMCP", "65001", 1); }
     kpath("Machine\\SYSTEM\\CurrentControlSet\\Services", false);
@@ -524,6 +619,9 @@ static void defaults(void)
             kset_sz(intl, "sTimeFormat", "h:mm:ss tt", 1);
             kset_sz(intl, "sCountry", "United States", 1);
         }
+        ksnprintf(p, sizeof(p), "%s\\Keyboard Layout\\Preload", users[i]);
+        RegKey *pre = kpath(p, false);
+        if (!has_value(pre, "1")) kset_sz(pre, "1", "00000409", 1);
         ksnprintf(p, sizeof(p), "%s\\Control Panel\\Desktop", users[i]);
         RegKey *desk = kpath(p, false);
         if (!has_value(desk, "WheelScrollLines")) { kset_sz(desk, "WheelScrollLines", "3", 1); kset_dword(desk, "LogPixels", 96); }

@@ -7,6 +7,7 @@
 #include "../mm/vmm.h"
 #include "../ke/printf.h"
 #include "../hal/rtc.h"
+#include "../ke/timezone.h"
 
 #define LEFT_W  230
 #define CELL    52
@@ -52,7 +53,7 @@ static void cal_paint(WND *w)
     Calendar *cal = w->user;
     GdiRect c = WmClientRect(w);
     RtcTime now;
-    rtc_read(&now);
+    TzLocalNow(&now);
 
     /* Clock panel */
     GdiFillRect(RECT(c.x, c.y, LEFT_W, c.h), UI_PANEL);
@@ -121,7 +122,7 @@ static void cal_key(WND *w, const KeyEvent *k)
     if (k->scancode == KEY_LEFT || k->scancode == KEY_PGUP)  step(cal, -1);
     if (k->scancode == KEY_RIGHT || k->scancode == KEY_PGDN) step(cal, +1);
     if (k->scancode == KEY_HOME) {
-        RtcTime now; rtc_read(&now);
+        RtcTime now; TzLocalNow(&now);
         cal->year = now.year; cal->month = now.month;
     }
 }
@@ -133,7 +134,7 @@ void CalendarOpen(void)
     Calendar *cal = kzalloc(sizeof(Calendar));
     if (!cal) return;
     RtcTime now;
-    rtc_read(&now);
+    TzLocalNow(&now);
     cal->year = now.year;
     cal->month = (now.month >= 1 && now.month <= 12) ? now.month : 1;
     WND *w = AppCreateWindow(APP_CALENDAR, "Calendar", LEFT_W + 24 + 7 * CELL + 24, 420, UI_BG);

@@ -16,6 +16,7 @@
 #include "../ke/kpcr.h"
 #include "../ke/printf.h"
 #include "../hal/rtc.h"
+#include "../ke/timezone.h"
 #include "../ke/scheduler.h"
 #include "../net/net.h"
 #include "../drivers/usb.h"
@@ -256,6 +257,7 @@ static void cmd_help(Term *t)
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  devices             the PCI devices and the driver each one has (also: lspci)\n"
         "  hwcheck             test the laptop drivers on modelled devices (codec, DSP, touchpad)\n"
+        "  hwcheck mic [sleep] a modelled audio DSP as a live microphone array (then a sleep)\n"
         "  vol  sync           where drive C: is saved; save it now\n"
         "  install [disk] [/fat]  install NovaOS on a disk (no disk: list them)\n"
         "  update [install]    check for a newer NovaOS (and install it)\n"
@@ -484,7 +486,7 @@ static void cmd_mem(Term *t)
 static void cmd_date(Term *t, bool time)
 {
     RtcTime r;
-    rtc_read(&r);
+    TzLocalNow(&r);                             /* local time, as cmd.exe shows it */
     if (time) tprintf(t, "The current time is: %02u:%02u:%02u",
                       r.hour, r.minute, r.second);
     else      tprintf(t, "The current date is: %04u-%02u-%02u",
@@ -678,9 +680,16 @@ static void cmd_usbcheck(Term *t)
  * show (Phase 21.4), against modelled devices: the HD Audio controller
  * matching and a Realtek ALC257 codec with its headphone jack, the audio
  * DSP's boot (NHLT, SOF firmware, IPC4) on a modelled DSP, and an I2C-HID
- * touchpad; then what the real DSP did at boot */
-static void cmd_hwcheck(Term *t)
+ * touchpad; then what the real DSP did at boot.  hwcheck mic [sleep]:
+ * SofModelMicrophones, SofModelSleep */
+static void cmd_hwcheck(Term *t, const char *a1, const char *a2)
 {
+    if (a1 && is(a1, "mic")) {                      /* the modelled DSP live, as a recording device */
+        bool sleep = a2 && is(a2, "sleep");
+        int failed = sleep ? SofModelSleep(usbcheck_say, t) : SofModelMicrophones(usbcheck_say, t);
+        tprintf(t, "hwcheck mic%s: %s, %d failed", sleep ? " sleep" : "", failed ? "done" : "all passed", failed);
+        return;
+    }
     int failed = HdaSelfCheck(usbcheck_say, t);
     int sfailed = SofSelfCheck(usbcheck_say, t);
     int ifailed = I2cHidSelfCheck(usbcheck_say, t);
@@ -1766,7 +1775,7 @@ static void run_cmd_line(Term *t, char *cmdline, const char *original)
     else if (is(c, "tasklist"))                 cmd_tasklist(t);
     else if (is(c, "crashes"))                  cmd_crashes(t, a1);
     else if (is(c, "usbcheck"))                 cmd_usbcheck(t);
-    else if (is(c, "hwcheck"))                  cmd_hwcheck(t);
+    else if (is(c, "hwcheck"))                  cmd_hwcheck(t, argc > 1 ? argv[1] : NULL, argc > 2 ? argv[2] : NULL);
     else if (is(c, "devices") || is(c, "lspci")) cmd_devices(t);
     else if (is(c, "install"))                  cmd_install(t, argc, argv);
     else if (is(c, "update"))                   cmd_update(t, argc, argv);
@@ -1920,6 +1929,7 @@ static void paste(Term *t)
         memset(&k, 0, sizeof(k));
         k.pressed = true;
         k.ch = c;
+        k.wch = (UINT8)c;
         term_key(w, &k);
         if (WmWindowById(id) != w) break;          /* "exit" closed it */
     }
@@ -2118,8 +2128,8 @@ static void send_key(Term *t, const KeyEvent *k)
     UmConsole *con = t->job.con;
     UINT32 vk = UmScancodeToVk(k->scancode, k->extended) & 0xFF;
     if (vk == 0x10 || vk == 0x11 || vk == 0x12 || vk == 0x14) return;   /* modifiers alone */
-    if (!vk && !k->ch) return;                          /* (pasted text has characters only) */
-    UINT32 ch = (UINT8)k->ch;
+    if (!vk && !k->wch) return;                         /* (pasted text has characters only) */
+    UINT32 ch = k->wch;                                 /* (in the user's layout: ä, é...) */
     if (ch == '\n') ch = '\r';
     if (vk == 0x1B) ch = 0x1B;
     if (vk == 0x08) ch = 0x08;

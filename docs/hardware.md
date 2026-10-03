@@ -67,7 +67,7 @@ driver that runs the same device there.
 | **Storage** | M.2 2280 NVMe SSD, PCIe 4.0 x4 | `nvme` | supported | NVMe driver by class 01.08.02 (Phase 18.3); the Terminal's `install` copies NovaOS to it and adds a firmware boot entry (step 21.5, [install-and-power.md](install-and-power.md)); the BIOS's Intel VMD option must be off or the disk is hidden (NovaOS logs it); install checked in QEMU only |
 | **Ethernet** | Intel I219-V or I219-LM (vPro) | `e1000e` | supported, unverified on hardware | the I219 is the chipset's built-in MAC with its PHY on a separate bus; NovaOS's `e1000e` drives it since step 21.3 (PR #136), tested only on QEMU's 82574L, not yet run on the machine |
 | **Wi-Fi + Bluetooth** | Intel AX211 or Qualcomm NFA725A | `iwlwifi` / `ath11k` | missing | not needed for Phase 21: the gate goes online over Ethernet |
-| **Audio** | Intel HD Audio controller (Raptor Lake-P, with an audio DSP), Realtek ALC3287 codec, two speakers, a headset jack, digital microphones | `snd_hda_intel` / `sof-audio-pci-intel-tgl` | partial | the HD Audio driver takes this controller with the DSP on (class 04.01) as well as off, plays through the speakers and the headphone jack, turns the speakers off while headphones are plugged in, and records from a headset's microphone (step 21.4); the digital microphones are reached only through the DSP: NovaOS reads them from the ACPI NHLT table and boots the DSP with Sound Open Firmware, but does not record from them yet ([below](#the-digital-microphones-behind-the-audio-dsp)); checked on a modelled codec and DSP, not yet on the machine |
+| **Audio** | Intel HD Audio controller (Raptor Lake-P, with an audio DSP), Realtek ALC3287 codec, two speakers, a headset jack, digital microphones | `snd_hda_intel` / `sof-audio-pci-intel-tgl` | partial | the HD Audio driver takes this controller with the DSP on (class 04.01) as well as off, plays through the speakers and the headphone jack, turns the speakers off while headphones are plugged in, and records from a headset's microphone (step 21.4); the digital microphones are reached only through the DSP: NovaOS reads them from the ACPI NHLT table, boots the DSP with Sound Open Firmware and runs its capture pipeline, which records them into an input stream NovaOS owns, offered to programs as the recording device "Microphone Array (DSP)", booted again after sleep ([below](#the-digital-microphones-behind-the-audio-dsp)); checked on a modelled codec and DSP, not yet on the machine |
 | **USB** | Raptor Lake-P xHCI (USB-A ports), Thunderbolt 4 xHCI (USB-C ports) | `xhci_hcd` | supported | xHCI driver by class 0C.03.30, with hubs, HID, mass storage and audio (Phases 18.1, 18.2) |
 | **Thunderbolt 4 / USB4** | Intel Thunderbolt 4 controller | `thunderbolt` | missing | USB devices on the USB-C ports work through the xHCI controller; Thunderbolt docks and PCIe tunnelling do not |
 | **Keyboard** | built-in keyboard on the i8042 controller | `atkbd` | supported | PS/2 keyboard driver |
@@ -189,28 +189,66 @@ Where it stands (`kernel/drivers/sof.c`):
    for its version over IPC4.  It happens in the background and leaves
    the speakers, headphones and headset microphone alone; if a step
    fails, the DSP is switched off again and the boot log says which.
-2. Next: the capture pipeline: through IPC4, a pipeline with a copier
-   module reading the DMIC gateway (configured with NHLT's blob for the
-   chosen format) and a copier writing to a host input stream, bound
-   and set running.
-3. Then: that input stream as a recording device in the mixer
-   ("Microphone Array"), so that the Sound settings, `waveIn` and
-   Audacity can pick it; and the DSP booted again after sleep.
+2. Done: the capture pipeline.  Once the firmware runs, NovaOS asks it
+   over IPC4 for a pipeline with two copier modules: one reading the
+   DMIC gateway, configured with NHLT's blob for the first format, bound
+   to one writing through a host input gateway into the last HD Audio
+   input stream, decoupled from the link (the codec's recording keeps
+   the first).  The pipeline is paused, the stream's DMA started and the
+   pipeline set running, so the microphones' samples (48 kHz or 16 kHz
+   as NHLT says, 16-bit, one channel per microphone) flow into a 128 KiB
+   ring in memory.  If the firmware refuses a step, the pipeline is
+   deleted and the stream given back; the firmware stays running.
+3. Done: the recording device.  The ring is an input of the mixer,
+   "Microphone Array (DSP)", the default input from then on (as on
+   Windows; Settings > Sound can choose the headset microphone instead),
+   listed by Settings > Sound, `waveIn`, WASAPI and DirectSound, so
+   Audacity and any other program can record from it.  The mixer turns
+   the microphones' rate and channel count (two or four; the even ones
+   left, the odd ones right) into what the program asked for.  The
+   pipeline runs only while a program records: when the last one stops
+   the DSP's thread pauses it (SET_PIPELINE_STATE PAUSED, the stream's
+   DMA stopped), and runs it again when one starts.  Sleep takes the
+   DSP's power and with it the firmware and the pipeline, so after a
+   wake the thread boots the DSP again from the same firmware file and
+   builds the pipeline again; the device stays, and a program recording
+   across the sleep goes on recording.
 
 QEMU has no audio DSP, so the Terminal's `hwcheck` runs the NHLT reader,
-the firmware's manifest and the whole boot against a modelled DSP (core
-self-test `hwcheck dsp`).  On the T14, from a stick built after
+the firmware's manifest, the whole boot, the capture pipeline (pausing
+and running it again too) and a boot again after a modelled sleep against
+a modelled DSP that checks each IPC4 message and fills the ring with a
+test tone (core self-test `hwcheck dsp`).  `hwcheck mic` boots such a
+model live, whose DMA writes a 1 kHz tone, and attaches it as
+"Microphone Array (DSP model)", so programs can record from it in QEMU;
+`hwcheck mic sleep` takes its power as S3 does and has the resume path
+boot it again (core self-test `hwcheck mic`: `waveIn`, WASAPI and
+DirectSound list it, and `soundtest record` and `capture` hear the tone
+before and after the sleep).  On the T14, from a stick built after
 `tools/fetch_sof_firmware.py` (unverified on hardware: nothing has run on
 a real T14 yet):
 
 1. In the Terminal, `hwcheck`: its line `audio DSP on this machine:`
-   should read `firmware 2.12.0.1 running, 2 digital microphones (not yet
-   recording)` (the version is the firmware's; the count is NHLT's).
-2. If it names a failed step instead, shut down and read
+   should read `firmware 2.12.0.1 running, 2 digital microphones (48000
+   Hz, 2 channels), paused while no program records` (the version is
+   the firmware's; the count, rate and channels are NHLT's).
+2. Settings > Sound lists "Microphone Array (DSP)" under the recording
+   devices, chosen as the default.  In the Terminal, `soundtest record
+   C:\mic.wav 5000` while talking near the laptop, then `soundtest play
+   C:\mic.wav`: the speakers play back what was said.  While a recording
+   runs, `hwcheck` in a second Terminal says `recording, level N%`, the
+   level rising above the quiet room's when someone talks.
+3. Audacity: pick "Microphone Array (DSP)" as the recording device,
+   record a few seconds of speech and play it back.
+4. Close the lid to sleep, open it to wake the laptop, and repeat step 2:
+   the boot log gets a `[DSP] After sleep: firmware ... running` line and
+   the recording works as before.
+5. If step 1 names a failed step instead, shut down and read
    `EFI\NOVA\bootlog.txt`: the `[DSP]` lines give the NHLT contents, the
-   firmware's version and size, the stream the code loader used and the
-   ROM's status and error codes, which is what a fix needs.
-3. Speakers, headphones and the headset microphone work as in the check
+   firmware's version and size, the stream the code loader used, the
+   ROM's status and error codes, and the capture pipeline's step the
+   firmware refused (with its status), which is what a fix needs.
+6. Speakers, headphones and the headset microphone work as in the check
    above, whatever the DSP line says.
 
 ## Devices NovaOS drives
@@ -222,7 +260,7 @@ For reference, every driver NovaOS has, by device:
 | Display | UEFI GOP framebuffer (any PC); Bochs VBE (QEMU `std`, `bochs-display`, `secondary-vga`), QXL, VMware SVGA II, Cirrus CL-GD5446, virtio-gpu (2D, and 3D through Venus and virgl) |
 | Storage | AHCI SATA (class 01.06.01), NVMe (class 01.08.02), USB mass storage; FAT and NTFS |
 | Network | Intel 82540EM, 82544 and 82545EM (`e1000`), Intel 82574L and I219-LM/I219-V (`e1000e`), virtio-net |
-| Audio | Intel HD Audio (class 04.03, and Intel's class 04.01 controllers with the audio DSP on), with headphone-jack sensing; the audio DSP of Tiger Lake to Raptor Lake (boots Sound Open Firmware; no recording through it yet); USB Audio 1.0 and 2.0 |
+| Audio | Intel HD Audio (class 04.03, and Intel's class 04.01 controllers with the audio DSP on), with headphone-jack sensing; the audio DSP of Tiger Lake to Raptor Lake (boots Sound Open Firmware and records the digital microphones through it, as the "Microphone Array (DSP)" recording device); USB Audio 1.0 and 2.0 |
 | USB | xHCI, EHCI, OHCI, UHCI host controllers; hubs, HID keyboards, mice, tablets, touch screens and pens, mass storage, audio |
 | Input | PS/2 keyboard and mouse, I2C-HID touchpads (mouse mode) on Intel LPSS I2C controllers, virtio-input tablets, touch screens and pens |
 | Platform | ACPI through uACPI (power button, S3 and S5, low-power S0 idle, batteries, AC, lid, thermal zones, embedded controller), HPET or CPUID-calibrated TSC-deadline APIC timer, COM1 |

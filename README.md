@@ -97,7 +97,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
   chooses the output and input and sets each device's volume, kept across
   restarts), Calendar, Photos, the **App Store**, **Install NovaOS**
   (Setup) and **Welcome to NovaOS**, the first-boot setup of an installed
-  system (your name and the display resolution).
+  system (your name, time zone, keyboard layout and the display resolution).
 - **Web browser**: NetSurf 3.11, built from source as a Windows program,
   with HTTPS (TLS 1.3/1.2), JavaScript (pages a script changes are laid
   out again) and SVG (image files and `<svg>` written inline in a page),
@@ -109,7 +109,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
   `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`,
   `devices`, `crashes`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
-  `more`, `less` (git's pager), `timeout`, `taskkill`, `whoami`, `reg`, `regsvr32`, `msiexec` and
+  `more`, `less` (git's pager), `timeout`, `taskkill`, `whoami`, `tzutil`, `reg`, `regsvr32`, `msiexec` and
   `intl` (the user's regional format).
 
 ### The App Store
@@ -274,9 +274,11 @@ options, putting your own programs on the disk, and debugging.
 ### Bootable ISO and installing on a disk
 
 A ready-to-boot UEFI ISO, `nova.iso`, is built by CI rather than committed.
-Download the one built from `main` from the
-[latest release](https://github.com/dean-plude/os/releases/latest/download/nova.iso), or the `nova-iso` artifact of any pull request's
-CI run (the **Artifacts** list on the run's Summary page).  It is also the installation disc: booted from it, NovaOS runs live and
+Download it from the [newest release](https://github.com/dean-plude/os/releases/latest)
+with its checksum (`sha256sum -c nova.iso.sha256`), take the one built
+from `main` from the [`latest` build](https://github.com/dean-plude/os/releases/download/latest/nova.iso),
+or the `nova-iso` artifact of any pull request's CI run (the
+**Artifacts** list on the run's Summary page).  It is also the installation disc: booted from it, NovaOS runs live and
 opens **Install NovaOS**, which writes a GPT disk with an EFI System
 Partition and a data partition for drive C:.
 
@@ -291,8 +293,8 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 
 After installing, the same command without `-cdrom nova.iso` starts from
 `disk.img`.  The first start from it opens **Welcome to NovaOS**, which
-asks for your name and a display resolution before the desktop
-(`start welcome` in the Terminal goes through it again).
+asks for your name, your time zone, your keyboard layout and a display
+resolution before the desktop (`start welcome` in the Terminal goes through it again).
 
 Give the machine 2 GB so downloaded installers fit in drive C: (which lives
 in memory and is saved to disk).  On macOS with Homebrew QEMU, the firmware
@@ -434,7 +436,10 @@ boot jobs (GitHub counts a skipped job as passing a required check).
 A failing test fails its check; each run's summary has a table of results,
 and the serial logs and screenshots are kept as artifacts, along with the
 bootable ISO (`nova-iso`).  When a push to `main` passes both suites, the
-**Publish nova.iso** job puts that ISO on the `latest` release.  Run the same
+**Publish nova.iso** job puts that ISO on the `latest` build.  Pushing a
+version tag (`v0.1.0`) runs the same suites on the tagged commit and
+publishes a release with that ISO, its checksums, the update channel's
+files and notes from the history ([docs/releasing.md](docs/releasing.md)).  Run the same
 gates locally with `python3 tools/selftest.py` (and `--suite network`, `--suite graphics`)
 after a build.
 
@@ -517,7 +522,7 @@ os/
 ├── include/              # Headers shared by bootloader and kernel (boot_protocol.h)
 ├── kernel/               # NT-style kernel (freestanding ELF64)
 │   ├── arch/x86_64/      # GDT, IDT, APIC, paging, SMP trampoline, syscall entry
-│   ├── ke/               # Startup, scheduler, SMP, wait queues, KPCR, syscall table
+│   ├── ke/               # Startup, scheduler, SMP, wait queues, KPCR, syscall table, time zones
 │   ├── mm/               # Physical pages, kernel heap, VMAs, sections
 │   ├── ob/ ps/ se/ cm/ io/  # Object, process, security, configuration, I/O managers
 │   ├── um/               # Windows programs: processes, threads, loader, NT services,
@@ -527,7 +532,7 @@ os/
 │   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, HPET, I/O APIC, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
-│   ├── wm/               # Window manager, desktop shell, input, clipboard
+│   ├── wm/               # Window manager, desktop shell, input, keyboard layouts, clipboard
 │   ├── apps/             # Built-in apps: Terminal, Explorer, Notepad, Settings,
 │   │                     #   Calendar, Photos, App Store, Setup
 │   ├── ldr/              # Early PE loader and syscall thunk pages
@@ -541,12 +546,13 @@ os/
 │   └── include/          # The Windows SDK headers NovaOS provides
 ├── third_party/          # lwIP, Mbed TLS, nghttp2, uACPI, musl (libm), HarfBuzz, FreeType, NetSurf, stb, fonts, ICU (icu.dll + data), 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
-│                         #   make_icons.py, mkani.py, pe_imports.py, msitest/, docgen.py
+│                         #   make_icons.py, mkani.py, pe_imports.py, msitest/, docgen.py,
+│                         #   mkupdate.py and release_notes.py (releases)
 ├── tests/                # CI self-tests and app corpus (one file per test), ACPI
 │                         #   tables, reference screenshots
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
-└── docs/                 # Building, roadmap, feature history, Phase 1 architecture,
-                          #   and the fragments README and docs/*.md are built from
+└── docs/                 # Building, releasing, roadmap, feature history, Phase 1 architecture,
+                          #   release notes (releases/), and the fragments README and docs/*.md are built from
 ```
 
 ## Key design decisions

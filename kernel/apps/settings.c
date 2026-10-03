@@ -9,8 +9,10 @@
 #include "../mm/pmm.h"
 #include "../ke/version.h"
 #include "../ke/printf.h"
+#include "../ke/timezone.h"
 #include "../net/net.h"
 #include "../wm/desktop.h"
+#include "../wm/kbdlayout.h"
 #include "../fs/persist.h"
 #include "../hal/display.h"
 #include "../um/um.h"
@@ -26,6 +28,8 @@ typedef struct {
     int drag_dx, drag_dy;            /* the press inside it (diagram px) */
     int drag_x, drag_y;              /* its top left now (diagram px) */
     char locale[32];                 /* Time & language: the user locale shown */
+    int tz;                          /* ... and the time zone */
+    int kbd;                         /* ... and the keyboard layout */
     UINT32 sound_sig;                /* Sound: the devices shown (repainted when they change) */
 } Settings;
 
@@ -429,8 +433,11 @@ static bool set_tick(WND *w)
     if (st && st->page == SETTINGS_TIME_LANGUAGE) {           /* intl.exe has written the choice */
         char cur[32];
         current_locale(cur, sizeof(cur));
-        if (!strcmp(cur, st->locale)) return false;
+        int tz = TzCurrent(), kbd = KbdCurrent();
+        if (!strcmp(cur, st->locale) && tz == st->tz && kbd == st->kbd) return false;
         strcpy(st->locale, cur);
+        st->tz = tz;
+        st->kbd = kbd;
         return true;
     }
     if (st && st->page == SETTINGS_SOUND) {                   /* a device plugged in or out */
@@ -480,10 +487,18 @@ static void page_personalize(int x, int y, int w)
  * choice runs intl.exe, which writes HKCU\Control Panel\International
  * (LocaleName and the values beside it) from kernel32's locale data;
  * programs started afterwards format dates, times, numbers and money that
- * way.  "intl NAME" in the Terminal sets any of the Windows locales. */
-#define INTL_KEY "User\\S-1-5-21-1000-2000-3000-1001\\Control Panel\\International"
+ * way.  "intl NAME" in the Terminal sets any of the Windows locales.
+ * The time zone row's Change opens the first-boot setup's time zone page
+ * (welcome.c); tzutil /s NAME in the Terminal sets it too.  The keyboard
+ * row's Change opens its keyboard layout page (wm/kbdlayout.c). */
+#define INTL_KEY "User\\" UM_USER_SID "\\Control Panel\\International"
 #define LOC_CHIP_W 184
-#define LOCALES_DY (26 + 50 + 34 + 26)
+#define TZ_ROW_DY  (26 + 50 + 34)
+#define KBD_ROW_DY (TZ_ROW_DY + 52)
+#define LOCALES_DY (KBD_ROW_DY + 54 + 26)
+#define TZ_BTN_W   96
+static GdiRect r_tz_change(int x, int y, int w) { return RECT(x + w - 8 - TZ_BTN_W, y + TZ_ROW_DY + 6, TZ_BTN_W, 32); }
+static GdiRect r_kbd_change(int x, int y, int w) { return RECT(x + w - 8 - TZ_BTN_W, y + KBD_ROW_DY + 6, TZ_BTN_W, 32); }
 static const struct { const char *name, *label; } g_formats[] = {
     { "en-US", "English (United States)" }, { "en-GB", "English (United Kingdom)" },
     { "de-DE", "German (Germany)" },        { "fr-FR", "French (France)" },
@@ -519,6 +534,18 @@ static void page_time_language(int x, int y, int w)
     GdiTextBold(x, y, "Region", UI_TEXT);              y += 26;
     row(x, y, w, "Regional format", value);            y += 50;
     GdiTextT(x, y, "Dates, times, numbers and currency in programs started from now on", UI_TEXT2);
+    GdiRoundRect(RECT(x, top + TZ_ROW_DY, w, 44), 6, UI_CARD, GDI_TRANSPARENT);
+    GdiTextT(x + 16, top + TZ_ROW_DY + 14, "Time zone", UI_TEXT);
+    const char *zone = TzAt(TzCurrent())->display;
+    GdiRect b = r_tz_change(x, top, w);
+    GdiTextT(b.x - 16 - GdiTextW(zone), top + TZ_ROW_DY + 14, zone, UI_TEXT2);
+    UiButton(b, "Change", false);
+    GdiRoundRect(RECT(x, top + KBD_ROW_DY, w, 44), 6, UI_CARD, GDI_TRANSPARENT);
+    GdiTextT(x + 16, top + KBD_ROW_DY + 14, "Keyboard", UI_TEXT);
+    const char *layout = KbdName(KbdCurrent());
+    b = r_kbd_change(x, top, w);
+    GdiTextT(b.x - 16 - GdiTextW(layout), top + KBD_ROW_DY + 14, layout, UI_TEXT2);
+    UiButton(b, "Change", false);
 
     GdiTextBold(x, top + LOCALES_DY - 26, "Choose a format", UI_TEXT);
     y = top + LOCALES_DY;
@@ -648,8 +675,10 @@ static void set_mouse(WND *w, WmMouseMsg msg, int x, int y)
             return;
         }
         if (st->page == SETTINGS_TIME_LANGUAGE) {
-            /* format chips (layout matches set_paint + page_time_language) */
+            /* the time zone's Change, format chips (layout matches set_paint + page_time_language) */
             int px = SIDE_W + 28, py = 20 + 52 + LOCALES_DY, pw = c.w - SIDE_W - 56;
+            if (UiHit(r_tz_change(px, 20 + 52, pw), x, y)) { WelcomeTimeZone(); return; }
+            if (UiHit(r_kbd_change(px, 20 + 52, pw), x, y)) { WelcomeKeyboard(); return; }
             int cols = loc_cols(pw);
             if (x < px || y < py) return;
             int col = (x - px) / (LOC_CHIP_W + CHIP_GAP), r = (y - py) / (CHIP_H + CHIP_GAP), i = r * cols + col;
