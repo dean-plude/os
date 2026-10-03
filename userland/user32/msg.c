@@ -1064,7 +1064,7 @@ USERAPI DWORD MsgWaitForMultipleObjects(DWORD n, const HANDLE *hs, BOOL all, DWO
     return MsgWaitForMultipleObjectsEx(n, hs, ms, wake, all ? MWMO_WAITALL : 0);
 }
 
-/* WM_KEYDOWN -> WM_CHAR (and WM_SYSKEYDOWN -> WM_SYSCHAR), next in the queue */
+/* WM_KEYDOWN -> WM_CHAR (and WM_SYSKEYDOWN -> WM_SYSCHAR; a dead key's WM_DEADCHAR), next in the queue */
 static void q_push_front(TQ *q, const MSG *m)
 {
     if (!q_push(q, m)) return;                              /* grows the queue; then rotate it to the front */
@@ -1083,9 +1083,16 @@ USERAPI BOOL TranslateMessage(const MSG *m)
     memcpy(keys, g_keys, 256);
     if (m->message == WM_SYSKEYDOWN) keys[VK_CONTROL] &= ~0x80;
     int n = ToUnicode((UINT)m->wParam, (UINT)(m->lParam >> 16) & 0xFF, keys, c, 4, 0);
-    if (n <= 0) return FALSE;
+    if (!n) return FALSE;
     TQ *q = my_tq();
     if (!q) return FALSE;
+    if (n < 0) {                                            /* a dead key: WM_DEADCHAR with its accent */
+        MSG cm = *m;
+        cm.message = m->message == WM_SYSKEYDOWN ? WM_SYSDEADCHAR : WM_DEADCHAR;
+        cm.wParam = c[0];
+        q_push_front(q, &cm);
+        return TRUE;
+    }
     for (int i = n - 1; i >= 0; i--) {
         MSG cm = *m;
         cm.message = m->message == WM_SYSKEYDOWN ? WM_SYSCHAR : WM_CHAR;

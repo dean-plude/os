@@ -25,6 +25,7 @@
 #include "../fs/setup.h"
 #include "wm.h"
 #include "input.h"
+#include "kbdlayout.h"
 #include "tablet.h"
 #include "../gdi/gdi.h"
 #include "../ke/printf.h"
@@ -2005,6 +2006,7 @@ void DesktopRun(void *arg)
         WmTick();                               /* (takes the file-system lock as needed) */
         UmPoll();                               /* reclaim exited programs */
         UmUpdateForeground();                   /* (the active window's process) */
+        KbdCurrent();                           /* follow a program's change to the keyboard layout */
 
         rtc_read(&t);
         if (t.minute != last_min) {
