@@ -116,6 +116,120 @@ static BOOLEAN booted_from_usb(void)
     return boot_path_has(DP_TYPE_MESSAGING, usb, 3);
 }
 
+/* -----------------------------------------------------------------------
+ * The firmware's boot entry for an installed disk.  The installer only
+ * writes the removable-media path \EFI\BOOT\BOOTX64.EFI, which firmware
+ * starts from a disk it has no entry for (or from its boot menu); the
+ * first boot from the disk then adds a "NovaOS" Boot#### variable for
+ * itself and puts it first in BootOrder, so the machine keeps starting
+ * NovaOS after the USB stick comes out (UEFI 2.10, 3.1 Boot Manager).
+ * ----------------------------------------------------------------------- */
+typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_GET_VARIABLE)(CHAR16 *name, EFI_GUID *vendor, UINT32 *attrs,
+                                                              UINTN *size, VOID *data);
+typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_SET_VARIABLE)(CHAR16 *name, EFI_GUID *vendor, UINT32 attrs,
+                                                              UINTN size, VOID *data);
+typedef struct {
+    UINT64 Signature;
+    UINT32 Revision, HeaderSize, CRC32, Reserved;
+    VOID  *GetTime, *SetTime, *GetWakeupTime, *SetWakeupTime, *SetVirtualAddressMap, *ConvertPointer;
+    EFI_GET_VARIABLE GetVariable;
+    VOID  *GetNextVariableName;
+    EFI_SET_VARIABLE SetVariable;
+} EFI_RUNTIME_SERVICES_VARS;
+
+#define EFI_GLOBAL_VARIABLE_GUID \
+    { 0x8be4df61, 0x93ca, 0x11d2, { 0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c } }
+#define VAR_NV_BS_RT 7u                    /* non-volatile, boot service and runtime access */
+#define LOAD_OPTION_ACTIVE 1u
+
+static const CHAR16 NOVA_DESC[] = { 'N','o','v','a','O','S', 0 };
+
+static UINTN dp_size(const UINT8 *dp)       /* up to and including the end node */
+{
+    UINTN n = 0;
+    for (int k = 0; k < 64; k++) {
+        UINT16 len = (UINT16)(dp[n + 2] | dp[n + 3] << 8);
+        if (len < 4) return 0;
+        n += len;
+        if (dp[n - len] == DP_TYPE_END && dp[n - len + 1] == 0xFF) return n;
+    }
+    return 0;
+}
+
+static void boot_var_name(CHAR16 *out, UINT16 num)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    const char *b = "Boot";
+    for (int i = 0; i < 4; i++) out[i] = (CHAR16)b[i];
+    for (int i = 0; i < 4; i++) out[4 + i] = (CHAR16)hex[(num >> (12 - 4 * i)) & 15];
+    out[8] = 0;
+}
+
+static BOOLEAN bytes_equal(const UINT8 *a, const UINT8 *b, UINTN n)
+{
+    for (UINTN i = 0; i < n; i++) if (a[i] != b[i]) return FALSE;
+    return TRUE;
+}
+
+/* BOOT_FLAG_BOOT_ENTRY (| BOOT_FLAG_ENTRY_ADDED), or 0 if there is none */
+static UINT64 ensure_boot_entry(void)
+{
+    EFI_RUNTIME_SERVICES_VARS *rt = (EFI_RUNTIME_SERVICES_VARS *)g_st->RuntimeServices;
+    EFI_GUID li_guid = EFI_LOADED_IMAGE_PROTOCOL_GUID, dp_guid = EFI_DEVICE_PATH_PROTOCOL_GUID;
+    EFI_GUID gv = EFI_GLOBAL_VARIABLE_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL *li;
+    UINT8 *dev = NULL;
+    if (!rt || EFI_ERROR(g_bs->OpenProtocol(g_image_handle, &li_guid, (VOID **)&li, g_image_handle, NULL,
+                                            EFI_OPEN_PROTOCOL_GET_PROTOCOL)) || !li->FilePath ||
+        EFI_ERROR(g_bs->OpenProtocol(li->DeviceHandle, &dp_guid, (VOID **)&dev, g_image_handle, NULL,
+                                     EFI_OPEN_PROTOCOL_GET_PROTOCOL)) || !dev)
+        return 0;
+    UINTN dsz = dp_size(dev), fsz = dp_size((const UINT8 *)li->FilePath);
+    if (dsz < 4 || fsz < 4) return 0;
+
+    /* The load option: attributes, the path's length, the description,
+     * then the device's path (without its end node) and the file's */
+    static UINT8 opt[1024], cur[1024];
+    UINTN path_len = dsz - 4 + fsz, desc_len = sizeof(NOVA_DESC);
+    UINTN opt_len = 6 + desc_len + path_len;
+    if (opt_len > sizeof(opt)) return 0;
+    UINT32 attrs = LOAD_OPTION_ACTIVE;
+    mem_copy(opt, &attrs, 4);
+    opt[4] = (UINT8)path_len;
+    opt[5] = (UINT8)(path_len >> 8);
+    mem_copy(opt + 6, NOVA_DESC, desc_len);
+    mem_copy(opt + 6 + desc_len, dev, dsz - 4);
+    mem_copy(opt + 6 + desc_len + dsz - 4, li->FilePath, fsz);
+
+    /* An entry that already starts this file on this disk? */
+    CHAR16 name[9];
+    UINT32 va;
+    int free_num = -1;
+    for (int num = 0; num < 0x100; num++) {
+        boot_var_name(name, (UINT16)num);
+        UINTN sz = sizeof(cur);
+        EFI_STATUS st = rt->GetVariable(name, &gv, &va, &sz, cur);
+        if (st == EFI_NOT_FOUND) { if (free_num < 0) free_num = num; continue; }
+        if (!EFI_ERROR(st) && sz == opt_len && bytes_equal(cur + 4, opt + 4, opt_len - 4)) return BOOT_FLAG_BOOT_ENTRY;
+    }
+    if (free_num < 0) return 0;
+
+    boot_var_name(name, (UINT16)free_num);
+    if (EFI_ERROR(rt->SetVariable(name, &gv, VAR_NV_BS_RT, opt_len, opt))) {
+        console_printf("Could not add a firmware boot entry for NovaOS\r\n");
+        return 0;
+    }
+    /* First in BootOrder */
+    static UINT16 order[256];
+    UINTN osz = sizeof(order) - sizeof(UINT16);
+    CHAR16 bo[] = { 'B','o','o','t','O','r','d','e','r', 0 };
+    if (EFI_ERROR(rt->GetVariable(bo, &gv, &va, &osz, order + 1))) osz = 0;
+    order[0] = (UINT16)free_num;
+    rt->SetVariable(bo, &gv, VAR_NV_BS_RT, osz + sizeof(UINT16), order);
+    console_printf("Added the firmware boot entry Boot%x \"NovaOS\" for this disk\r\n", (UINT64)free_num);
+    return BOOT_FLAG_BOOT_ENTRY | BOOT_FLAG_ENTRY_ADDED;
+}
+
 /* Whether @path exists on the boot volume */
 static BOOLEAN boot_file_exists(CHAR16 *path)
 {
@@ -517,6 +631,9 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(
             console_printf("Installation media: kernel %u bytes, loader %u bytes\r\n",
                            media_kernel_size, media_loader_size);
         }
+    }
+    else {
+        boot_flags |= ensure_boot_entry();   /* an installed disk */
     }
 
     /* 3. Find ACPI RSDP ----------------------------------------------- */

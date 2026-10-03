@@ -19,6 +19,10 @@
  * saved: the others return from the NMI; the CPU that asked returns from
  * SleepEnter, which brings the devices back (disks, network, keyboard and
  * mouse, display) and moves the wall clock on by the time spent asleep.
+ *
+ * Firmware without S3 (laptops sold for Modern Standby, the ThinkPad T14
+ * Gen 4 among them, have no \_S3): sleeping is low-power S0 idle instead
+ * (idle_sleep below).
  */
 
 #include "sleep.h"
@@ -44,6 +48,8 @@
 #include "../drivers/usb.h"
 #include "../drivers/virtio_input.h"
 #include "../wm/wm.h"
+#include "../wm/input.h"
+#include "../hal/framebuffer.h"
 #include "../lib/string.h"
 
 void UmClockAdvance(UINT64 delta_100ns);
@@ -251,9 +257,17 @@ void SleepFreezeCpu(void)
     /* thawed, or woken up: back to what was interrupted */
 }
 
+/* Low-power S0 idle: the FADT says the platform is built for it, or the
+ * firmware has an LPS0 device to tell (and no \_S3) */
+static bool s0_idle(void)
+{
+    return !AcpiSleepSupported() && (AcpiLowPowerS0() || AmlLps0Present());
+}
+
 bool SleepSupported(void)
 {
-    return AcpiSleepSupported() && smp_trampoline(resume_entry, g_resume_stack[0] + sizeof(g_resume_stack[0]), 0);
+    if (!AcpiSleepSupported()) return s0_idle();
+    return smp_trampoline(resume_entry, g_resume_stack[0] + sizeof(g_resume_stack[0]), 0) != 0;
 }
 
 static UINT64 rtc_seconds(void)
@@ -271,9 +285,57 @@ static UINT64 g_last_sleep, g_last_wake;
 UINT64 SleepLastSleepTime(void) { return g_last_sleep; }
 UINT64 SleepLastWakeTime(void) { return g_last_wake; }
 
+/* -----------------------------------------------------------------------
+ * Sleep without S3: low-power S0 idle.  The screen goes black, the LPS0
+ * device's _DSM tells the platform (aml.c), and the desktop thread waits,
+ * the CPUs halting in the idle loop between interrupts, until the lid
+ * opens or the power button is pressed (or, if the lid was open, a key or
+ * the mouse is used).  Devices stay powered and programs keep running, so
+ * it saves less than S3: the screen's contents, not its backlight, which
+ * only a graphics driver could turn off.
+ * ----------------------------------------------------------------------- */
+static bool idle_sleep(void)
+{
+    g_last_sleep = sched_ticks() * 100000ULL;
+    UINT64 start = sched_ticks();
+    bool lid_closed = AmlLidPresent() && AmlLidClosed();
+    kprintf("[SLEEP] No S3 on this machine: sleeping in low-power S0 idle\n");
+
+    FbRawSurface fb;
+    fb_get_raw(&fb);
+    if (fb.vram) {
+        for (int y = 0; y < fb.height; y++) memset(fb.vram + (UINT64)y * fb.stride, 0, (UINT64)fb.width * 4);
+        DisplayHeadDamage(0, 0, 0, fb.width, fb.height);
+    }
+    AmlS0IdleEnter();
+
+    InputEvent ev;
+    while (InputPoll(&ev)) {}            /* (what came before) */
+    (void)AcpiPowerButtonPressed();
+    const char *why = NULL;
+    while (!why) {
+        sched_sleep_tick();
+        ps2_poll();
+        VirtioInputPoll();
+        bool input = InputPoll(&ev);
+        while (InputPoll(&ev)) {}        /* (the key that wakes it goes nowhere) */
+        if (AcpiPowerButtonPressed()) why = "the power button";
+        else if (lid_closed && !AmlLidClosed()) why = "the lid opened";
+        else if (!lid_closed && input) why = "a key or the mouse";
+    }
+
+    AmlS0IdleExit();
+    UINT64 secs = (sched_ticks() - start) / 100;
+    kprintf("[SLEEP] Woke up after %llu s (%s)\n", (unsigned long long)secs, why);
+    g_last_wake = sched_ticks() * 100000ULL > g_last_sleep ? sched_ticks() * 100000ULL : g_last_sleep + 1;
+    WmInvalidate();
+    return true;
+}
+
 bool SleepEnter(void)
 {
     if (!SleepSupported()) return false;
+    if (!AcpiSleepSupported()) return idle_sleep();
     g_last_sleep = sched_ticks() * 100000ULL;
 
     AmlPrepareSleep();                   /* \_PTS; only wake GPEs stay on */

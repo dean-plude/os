@@ -4,7 +4,9 @@
  * acpi.c reads what it can straight from the tables; what the firmware
  * only describes in AML (batteries, AC adapters, control-method power
  * buttons, lids, thermal zones, PCI interrupt routing, wake devices, \_PTS
- * and \_WAK) goes through the interpreter here.  It loads on its own
+ * and \_WAK, the LPS0 device of firmware without S3) goes through the
+ * interpreter here, and the embedded controller most of them sit behind
+ * through ec.c.  It loads on its own
  * kernel thread after boot.  The SCI is a real interrupt (through the I/O
  * APIC) whose handler wakes that thread to run the GPE and Notify work it
  * queued; without an I/O APIC the thread polls the events instead.
@@ -28,6 +30,12 @@ bool AmlPowerButtonPressed(void);
  * runtime GPEs after.  No-ops before the namespace is loaded. */
 void AmlPrepareSleep(void);
 void AmlWake(void);
+
+/* Low-power S0 idle (firmware without S3): the LPS0 device's _DSM
+ * functions, around the time the OS idles with the screen off */
+bool AmlLps0Present(void);
+void AmlS0IdleEnter(void);
+void AmlS0IdleExit(void);
 
 /* All batteries together, as Windows reports them (SYSTEM_BATTERY_STATE) */
 typedef struct {

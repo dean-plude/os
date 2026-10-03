@@ -131,6 +131,7 @@ set(KERNEL_C_SOURCES
     hal/pci.c
     hal/acpi.c
     hal/aml.c
+    hal/ec.c
     hal/ioapic.c
     hal/hpet.c
     hal/display.c

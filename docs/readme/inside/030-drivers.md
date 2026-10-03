@@ -28,6 +28,8 @@
   which on a 3D one (`virtio-vga-gl`) gives Mesa's Venus (App Store) its
   contexts, host-visible blobs and fences, so Vulkan and DXVK run on the
   host's GPU; ACPI power-off, reset, power buttons,
-  sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
-  devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
-  a real interrupt through the I/O APIC).
+  sleep (S3, or low-power S0 idle on firmware without it), batteries and
+  AC adapters, the lid, thermal zones, wake devices and PCI interrupt
+  routing (AML interpreted by uACPI, with the SCI a real interrupt
+  through the I/O APIC), and the embedded controller laptops keep their
+  lid and battery behind.
