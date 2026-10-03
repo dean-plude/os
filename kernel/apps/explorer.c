@@ -9,6 +9,11 @@
  *
  * This PC (no folder: e->dir is NULL) lists the drives, C: and every
  * mounted volume, with their free space and size.
+ *
+ * The list has a vertical scroll bar when its rows don't fit and a
+ * horizontal one when the window is narrower than its columns need; the
+ * sidebar has one when its places and drives don't fit (UiScroll, the
+ * apps' version of user32's scroll bars).
  */
 
 #include "apps.h"
@@ -25,11 +30,18 @@
 #define HIST_MAX 16
 
 #define CRUMB_MAX 12
+#define SIDE_ROW 32
+#define COLS_W   250         /* the Size and Type columns, at the right */
+#define LIST_MIN_W (48 + 200 + COLS_W)   /* narrower than this, the list scrolls sideways */
+#define WHEEL_ROWS 3         /* rows a wheel notch scrolls (Windows' default) */
 
 typedef struct {
     RamNode *dir;            /* NULL: This PC */
     int      sel;            /* selected row, -1 = none */
-    int      top;            /* first visible row */
+    UiScroll vbar;           /* the list: rows (pos: the first row shown) */
+    UiScroll hbar;           /* the list: pixels across */
+    UiScroll sbar;           /* the sidebar: pixels down */
+    int      logged[9];      /* the view last written to the log */
     RamNode *back[HIST_MAX];
     int      back_n;
     /* breadcrumb segments as last drawn (client-relative), for clicks */
@@ -61,7 +73,7 @@ static GdiRect r_copy(GdiRect c)    { return RECT(c.w - 372, 8, 84, 32); }
 static GdiRect r_paste(GdiRect c)   { return RECT(c.w - 284, 8, 84, 32); }
 static GdiRect r_crumbs(GdiRect c)  { return RECT(84, 8, c.w - 84 - 382, 32); }
 static GdiRect r_list(GdiRect c) { return RECT(SIDE_W, TB_H + HDR_H, c.w - SIDE_W, c.h - TB_H - HDR_H - STATUS_H); }
-static int     rows_visible(GdiRect c) { int n = r_list(c).h / ROW_H; return n < 1 ? 1 : n; }
+static GdiRect r_side(GdiRect c) { return RECT(0, TB_H, SIDE_W - 1, c.h - TB_H); }
 
 /* "USB DRIVE (E:)": a drive's name, from its root */
 static void drive_name(RamNode *root, char *buf, int cap)
@@ -114,6 +126,73 @@ static RamNode *row_at(const Explorer *e, int idx)
 }
 
 /* -----------------------------------------------------------------------
+ * Scrolling
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    GdiRect list;            /* the rows' view, less the scroll bars (client-relative) */
+    int     vis;             /* whole rows in it */
+    int     cw;              /* the columns' width (wider than the view: scrolls sideways) */
+    int     n;               /* rows */
+} Layout;
+
+/* The view for client @c, with the bars' ranges set: each bar is shown
+ * when its content doesn't fit, which takes room from the other way */
+static Layout layout(Explorer *e, GdiRect c)
+{
+    Layout L;
+    GdiRect lr = r_list(c);
+    L.n = rows_of(e);
+    bool vb = false, hb = false;
+    for (int pass = 0; pass < 2; pass++) {
+        hb = LIST_MIN_W > lr.w - (vb ? UI_SB_W : 0);
+        vb = L.n > (lr.h - (hb ? UI_SB_W : 0)) / ROW_H;
+    }
+    L.list = RECT(lr.x, lr.y, lr.w - (vb ? UI_SB_W : 0), lr.h - (hb ? UI_SB_W : 0));
+    L.vis = L.list.h / ROW_H < 1 ? 1 : L.list.h / ROW_H;
+    L.cw = L.list.w > LIST_MIN_W ? L.list.w : LIST_MIN_W;
+    e->vbar.vert = true;
+    e->vbar.line = 1;
+    UiScrollSet(&e->vbar, L.n, L.vis);
+    e->hbar.line = 20;
+    UiScrollSet(&e->hbar, L.cw, L.list.w);
+
+    char letters[26];
+    int nd = sidebar_drives(letters);
+    e->sbar.vert = true;
+    e->sbar.line = SIDE_ROW;
+    UiScrollSet(&e->sbar, 8 + N_PLACES * SIDE_ROW + (nd ? 8 + nd * SIDE_ROW : 0) + 8, r_side(c).h);
+    return L;
+}
+
+static void ensure_visible(Explorer *e, const Layout *L)
+{
+    if (e->sel < 0) return;
+    if (e->sel < e->vbar.pos) UiScrollTo(&e->vbar, e->sel);
+    if (e->sel >= e->vbar.pos + L->vis) UiScrollTo(&e->vbar, e->sel - L->vis + 1);
+}
+
+/* One line in the serial log when the view changes (what the self-test
+ * reads): the folder, the rows shown, the bars and where they are */
+static void log_view(WND *w, Explorer *e, const Layout *L)
+{
+    if (e->vbar.held != UI_SB_NONE || e->hbar.held != UI_SB_NONE || e->sbar.held != UI_SB_NONE) return;
+    GdiRect c = WmClientRect(w);
+    int now[9] = { (int)(UINT64)e->dir, e->vbar.pos, L->n, e->hbar.pos, UiScrollNeeded(&e->vbar),
+                   UiScrollNeeded(&e->hbar), UiScrollNeeded(&e->sbar), c.x + L->list.x, c.y + L->list.y };
+    if (!memcmp(now, e->logged, sizeof(now))) return;
+    memcpy(e->logged, now, sizeof(now));
+    char path[RAMFS_PATH_MAX];
+    if (e->dir) RamfsPath(e->dir, path, sizeof(path));
+    else ksnprintf(path, sizeof(path), "This PC");
+    int last = e->vbar.pos + L->vis < L->n ? e->vbar.pos + L->vis : L->n;
+    kprintf("[EXPLORER] %s: rows %d-%d of %d, scrolled %d px; bars:%s%s%s; list %d,%d %dx%d\n", path,
+            L->n ? e->vbar.pos + 1 : 0, last, L->n, e->hbar.pos,
+            UiScrollNeeded(&e->vbar) ? " vertical" : "", UiScrollNeeded(&e->hbar) ? " horizontal" : "",
+            UiScrollNeeded(&e->sbar) ? " sidebar" : "",
+            c.x + L->list.x, c.y + L->list.y, L->list.w, L->list.h);
+}
+
+/* -----------------------------------------------------------------------
  * Navigation
  * ----------------------------------------------------------------------- */
 static void update_title(WND *w, Explorer *e)
@@ -132,7 +211,7 @@ static void set_dir(WND *w, Explorer *e, RamNode *d)
     RamfsRef(d);
     e->dir = d;
     e->sel = rows_of(e) ? 0 : -1;
-    e->top = 0;
+    e->vbar.pos = e->hbar.pos = 0;
     e->status[0] = 0;
     update_title(w, e);
 }
@@ -182,15 +261,8 @@ static void make_new(WND *w, Explorer *e, bool dir)
     int idx = 0;
     for (RamNode *c = e->dir->child; c && c != n; c = c->next) idx++;
     e->sel = idx;
-    (void)w;
-}
-
-static void ensure_visible(Explorer *e, GdiRect c)
-{
-    int vis = rows_visible(c);
-    if (e->sel < e->top) e->top = e->sel;
-    if (e->sel >= e->top + vis) e->top = e->sel - vis + 1;
-    if (e->top < 0) e->top = 0;
+    Layout L = layout(e, WmClientRect(w));
+    ensure_visible(e, &L);
 }
 
 /* -----------------------------------------------------------------------
@@ -374,14 +446,21 @@ static void exp_paint(WND *w)
     cmd_button(off(r_newdir(c), c), GL_PLUS, "Folder", e->dir != NULL);
     cmd_button(off(r_newfile(c), c), GL_PLUS, "File", e->dir != NULL);
 
-    /* Sidebar: places with line glyphs, divided from the list */
+    Layout L = layout(e, c);
+
+    /* Sidebar: places with line glyphs, divided from the list; it scrolls
+     * when they and the drives don't fit */
+    GdiRect sv = off(r_side(c), c);
+    int sw = SIDE_W - (UiScrollNeeded(&e->sbar) ? UI_SB_W : 0);   /* its items' room */
     GdiFillRect(RECT(c.x, c.y + TB_H, SIDE_W, c.h - TB_H), UI_PANEL);
     GdiFillRect(RECT(c.x + SIDE_W - 1, c.y + TB_H, 1, c.h - TB_H), UI_LINE);
+    GdiSetClip(sv);
+    int sy = c.y + TB_H - e->sbar.pos;
     for (int i = 0; i < N_PLACES; i++) {
-        int y = c.y + TB_H + 8 + i * 32;
+        int y = sy + 8 + i * SIDE_ROW;
         bool here = g_places[i].path ? e->dir && RamfsResolve(NULL, g_places[i].path) == e->dir : !e->dir;
         if (here) {
-            GdiRoundRect(RECT(c.x + 6, y, SIDE_W - 13, 30), 4, UI_HOVER, GDI_TRANSPARENT);
+            GdiRoundRect(RECT(c.x + 6, y, sw - 13, 30), 4, UI_HOVER, GDI_TRANSPARENT);
             GdiRoundRect(RECT(c.x + 6, y + 8, 3, 14), 1, UI_ACCENT, GDI_TRANSPARENT);
         }
         AppDrawGlyph(g_places[i].glyph, c.x + 18, y + 7, 16, here ? UI_TEXT : UI_TEXT2);
@@ -390,43 +469,49 @@ static void exp_paint(WND *w)
     /* Then the other drives (NTFS volumes, USB sticks) */
     char letters[26];
     int nd = sidebar_drives(letters);
-    if (nd) GdiFillRect(RECT(c.x + 14, c.y + TB_H + 8 + N_PLACES * 32 + 3, SIDE_W - 28, 1), UI_LINE);
+    if (nd) GdiFillRect(RECT(c.x + 14, sy + 8 + N_PLACES * SIDE_ROW + 3, sw - 28, 1), UI_LINE);
     for (int i = 0; i < nd; i++) {
-        int y = c.y + TB_H + 16 + (N_PLACES + i) * 32;
+        int y = sy + 16 + (N_PLACES + i) * SIDE_ROW;
         RamNode *root = RamfsDriveRoot(letters[i]);
         bool here = root && root == e->dir;
         if (here) {
-            GdiRoundRect(RECT(c.x + 6, y, SIDE_W - 13, 30), 4, UI_HOVER, GDI_TRANSPARENT);
+            GdiRoundRect(RECT(c.x + 6, y, sw - 13, 30), 4, UI_HOVER, GDI_TRANSPARENT);
             GdiRoundRect(RECT(c.x + 6, y + 8, 3, 14), 1, UI_ACCENT, GDI_TRANSPARENT);
         }
         char dn[80];
         drive_name(root, dn, sizeof(dn));
         AppDrawGlyph(GL_PC, c.x + 18, y + 7, 16, here ? UI_TEXT : UI_TEXT2);
-        GdiSetClip(RECT(c.x + 44, y, SIDE_W - 52, 30));
+        GdiSetClip(RECT(c.x + 44, y > sv.y ? y : sv.y, sw - 52, 30 - (y > sv.y ? 0 : sv.y - y)));
         GdiTextT(c.x + 44, y + 7, dn, here ? UI_TEXT : UI_TEXT2);
-        GdiSetClip(c);
+        GdiSetClip(sv);
     }
+    GdiSetClip(c);
+    UiScrollDraw(&e->sbar, RECT(SIDE_W - 1 - UI_SB_W, TB_H, UI_SB_W, r_side(c).h), c);
 
-    /* Column header */
-    int lx = c.x + SIDE_W;
-    int size_x = c.x + c.w - 250, type_x = c.x + c.w - 150;
+    /* Column header: it scrolls sideways with the rows */
+    GdiRect lr = off(L.list, c);
+    int lx = lr.x - e->hbar.pos;                    /* the columns' left edge */
+    int size_x = lx + L.cw - COLS_W, type_x = lx + L.cw - COLS_W + 100;
+    int name_w = size_x - 12 - lr.x;                /* the Name column's room, from the view's edge */
+    if (name_w < 0) name_w = 0;
+    GdiSetClip(RECT(lr.x, c.y + TB_H, lr.w, HDR_H));
     GdiTextT(lx + 48, c.y + TB_H + 6, "Name", UI_TEXT2);
     GdiTextT(size_x, c.y + TB_H + 6, e->dir ? "Size" : "Free space", UI_TEXT2);
     GdiTextT(type_x, c.y + TB_H + 6, e->dir ? "Type" : "Total size", UI_TEXT2);
-    GdiFillRect(RECT(lx, c.y + TB_H + HDR_H - 1, c.w - SIDE_W, 1), UI_LINE);
+    GdiSetClip(c);
+    GdiFillRect(RECT(c.x + SIDE_W, c.y + TB_H + HDR_H - 1, c.w - SIDE_W, 1), UI_LINE);
 
-    /* Rows */
-    GdiRect lr = off(r_list(c), c);
+    /* Rows: the whole ones in view and the part of the next */
     GdiSetClip(lr);
-    int vis = rows_visible(c), idx = 0, n = 0;
+    int top = e->vbar.pos, idx = 0, n = 0;
     RamNode *roots[27];
     int nroots = e->dir ? 0 : pc_drives(roots);
     for (int i = 0; i < nroots; i++, idx++) {       /* This PC: the drives */
         n++;
-        if (idx < e->top || idx >= e->top + vis) continue;
-        int y = lr.y + (idx - e->top) * ROW_H;
+        if (idx < top || idx > top + L.vis) continue;
+        int y = lr.y + (idx - top) * ROW_H;
         if (idx == e->sel)
-            GdiRoundRect(RECT(lx + 6, y + 1, c.w - SIDE_W - 12, ROW_H - 2), 4,
+            GdiRoundRect(RECT(lx + 6, y + 1, L.cw - 12, ROW_H - 2), 4,
                          w->active ? UI_SELECT : UI_HOVER, GDI_TRANSPARENT);
         AppDrawGlyph(GL_PC, lx + 20, y + 6, 16, UI_TEXT);
         char dn[80], fs[24], ts[24];
@@ -435,7 +520,7 @@ static void exp_paint(WND *w)
         AppDriveSpace(roots[i], &total, &free);
         AppFormatSize(free, fs, sizeof(fs));
         AppFormatSize(total, ts, sizeof(ts));
-        GdiSetClip(RECT(lr.x, lr.y, size_x - lr.x - 12, lr.h));
+        GdiSetClip(RECT(lr.x, lr.y, name_w, lr.h));
         GdiTextT(lx + 48, y + 6, dn, UI_TEXT);
         GdiSetClip(lr);
         GdiTextT(size_x, y + 6, fs, UI_TEXT2);
@@ -443,13 +528,13 @@ static void exp_paint(WND *w)
     }
     for (RamNode *f = e->dir ? e->dir->child : NULL; f; f = f->next, idx++) {
         n++;
-        if (idx < e->top || idx >= e->top + vis) continue;
-        int y = lr.y + (idx - e->top) * ROW_H;
+        if (idx < top || idx > top + L.vis) continue;
+        int y = lr.y + (idx - top) * ROW_H;
         if (idx == e->sel)
-            GdiRoundRect(RECT(lx + 6, y + 1, c.w - SIDE_W - 12, ROW_H - 2), 4,
+            GdiRoundRect(RECT(lx + 6, y + 1, L.cw - 12, ROW_H - 2), 4,
                          w->active ? UI_SELECT : UI_HOVER, GDI_TRANSPARENT);
         row_icon(f, lx + 18, y + 4);
-        GdiSetClip(RECT(lr.x, lr.y, size_x - lr.x - 12, lr.h));
+        GdiSetClip(RECT(lr.x, lr.y, name_w, lr.h));
         GdiTextT(lx + 48, y + 6, f->name, UI_TEXT);
         GdiSetClip(lr);
         if (!f->dir) {
@@ -462,6 +547,13 @@ static void exp_paint(WND *w)
     if (!n) GdiTextCenter(lr.x, lr.y + 40, lr.w, "This folder is empty.", UI_TEXT3);
     GdiSetClip(c);
 
+    /* The list's scroll bars, and the corner between them */
+    GdiRect full = r_list(c);
+    UiScrollDraw(&e->vbar, RECT(full.x + full.w - UI_SB_W, full.y, UI_SB_W, L.list.h), c);
+    UiScrollDraw(&e->hbar, RECT(full.x, full.y + full.h - UI_SB_W, L.list.w, UI_SB_W), c);
+    if (UiScrollNeeded(&e->vbar) && UiScrollNeeded(&e->hbar))
+        GdiFillRect(RECT(c.x + full.x + L.list.w, c.y + full.y + L.list.h, UI_SB_W, UI_SB_W), UI_PANEL);
+
     /* Status bar */
     GdiFillRect(RECT(c.x + SIDE_W, c.y + c.h - STATUS_H, c.w - SIDE_W, STATUS_H), UI_PANEL);
     GdiFillRect(RECT(c.x + SIDE_W, c.y + c.h - STATUS_H, c.w - SIDE_W, 1), UI_LINE);
@@ -469,6 +561,7 @@ static void exp_paint(WND *w)
     ksnprintf(st, sizeof(st), "%d item%s", n, n == 1 ? "" : "s");
     GdiTextT(c.x + SIDE_W + 12, c.y + c.h - STATUS_H + 5, st, UI_TEXT2);
     if (e->status[0]) GdiTextT(c.x + SIDE_W + 110, c.y + c.h - STATUS_H + 5, e->status, UI_TEXT3);
+    log_view(w, e, &L);
 }
 
 /* -----------------------------------------------------------------------
@@ -478,6 +571,22 @@ static void exp_mouse(WND *w, WmMouseMsg msg, int x, int y)
 {
     Explorer *e = w->user;
     GdiRect c = WmClientRect(w);
+    Layout L = layout(e, c);
+
+    /* the scroll bars first: a press on one, and its drag until release */
+    UiScroll *bars[3] = { &e->vbar, &e->hbar, &e->sbar };
+    for (int i = 0; i < 3; i++)
+        if (UiScrollMouse(bars[i], msg, x, y)) return;
+
+    if (msg == WM_MOUSE_WHEEL || msg == WM_MOUSE_HWHEEL) {
+        int d = WmWheelDelta();                    /* + = away from the user (up), or right */
+        if (msg == WM_MOUSE_HWHEEL)    UiScrollTo(&e->hbar, e->hbar.pos + d * e->hbar.line * 2);
+        else if (x < SIDE_W)           UiScrollTo(&e->sbar, e->sbar.pos - d * WHEEL_ROWS * SIDE_ROW);
+        else if (UiScrollNeeded(&e->vbar) || !UiScrollNeeded(&e->hbar))
+                                       UiScrollTo(&e->vbar, e->vbar.pos - d * WHEEL_ROWS);
+        else                           UiScrollTo(&e->hbar, e->hbar.pos - d * e->hbar.line * 2);
+        return;
+    }
 
     if (msg == WM_MOUSE_UP) {
         if (UiHit(r_back(), x, y))        go_back(w, e);
@@ -494,22 +603,23 @@ static void exp_mouse(WND *w, WmMouseMsg msg, int x, int y)
     if (msg != WM_MOUSE_DOWN && msg != WM_MOUSE_DBLCLK) return;
 
     if (x < SIDE_W && y >= TB_H) {                 /* sidebar */
-        int i = (y - TB_H - 8) / 32;
-        if (i >= 0 && i < N_PLACES) {
+        int sy = y + e->sbar.pos;                   /* in its content */
+        int i = (sy - TB_H - 8) / SIDE_ROW;
+        if (sy - TB_H - 8 >= 0 && i < N_PLACES) {
             navigate(w, e, g_places[i].path ? RamfsResolve(NULL, g_places[i].path) : NULL);
             return;
         }
         char letters[26];
         int nd = sidebar_drives(letters);
-        int k = (y - TB_H - 16) / 32 - N_PLACES;
-        if (y - TB_H - 16 >= 0 && k >= 0 && k < nd) navigate(w, e, RamfsDriveRoot(letters[k]));
+        int k = (sy - TB_H - 16) / SIDE_ROW - N_PLACES;
+        if (sy - TB_H - 16 >= 0 && k >= 0 && k < nd) navigate(w, e, RamfsDriveRoot(letters[k]));
         return;
     }
-    GdiRect lr = r_list(c);
-    if (UiHit(lr, x, y)) {
-        int idx = e->top + (y - lr.y) / ROW_H;
-        if (idx < rows_of(e)) {
+    if (UiHit(L.list, x, y)) {
+        int idx = e->vbar.pos + (y - L.list.y) / ROW_H;
+        if (idx < L.n) {
             e->sel = idx;
+            ensure_visible(e, &L);                  /* (the part-shown row at the bottom) */
             if (msg == WM_MOUSE_DBLCLK) open_sel(w, e);
         } else {
             e->sel = -1;
@@ -517,25 +627,48 @@ static void exp_mouse(WND *w, WmMouseMsg msg, int x, int y)
     }
 }
 
+/* A held scroll bar arrow or trough repeats */
+static bool exp_tick(WND *w)
+{
+    Explorer *e = w->user;
+    if (!e) return false;
+    bool moved = UiScrollTick(&e->vbar);
+    moved = UiScrollTick(&e->hbar) || moved;
+    return UiScrollTick(&e->sbar) || moved;
+}
+
 static void exp_key(WND *w, const KeyEvent *k)
 {
     Explorer *e = w->user;
-    int n = rows_of(e);
+    Layout L = layout(e, WmClientRect(w));
+    int n = L.n;
     if (k->ctrl && (k->ch == 'c' || k->ch == 'C')) { clip_copy(e, false); return; }
     if (k->ctrl && (k->ch == 'x' || k->ch == 'X')) { clip_copy(e, true); return; }
     if (k->ctrl && (k->ch == 'v' || k->ch == 'V')) { clip_paste(e); return; }
     if (k->ctrl && (k->ch == 'a' || k->ch == 'A')) return;
     if (k->extended) {
+        int top = e->vbar.pos, bottom = top + L.vis - 1;
         if (k->scancode == KEY_UP   && e->sel > 0)     e->sel--;
         if (k->scancode == KEY_DOWN && e->sel < n - 1) e->sel++;
         if (k->scancode == KEY_HOME && n) e->sel = 0;
         if (k->scancode == KEY_END  && n) e->sel = n - 1;
+        /* Page Down: to the last row in view, then a page on (and Page Up
+         * the same way up), as a Windows list view does */
+        if (k->scancode == KEY_PGDN && n)
+            e->sel = e->sel < bottom ? bottom : e->sel + L.vis - 1;
+        if (k->scancode == KEY_PGUP && n)
+            e->sel = e->sel > top ? top : e->sel - (L.vis - 1);
+        if (e->sel >= n) e->sel = n - 1;
+        if (e->sel < 0 && n && (k->scancode == KEY_PGUP || k->scancode == KEY_PGDN)) e->sel = 0;
+        if (k->scancode == KEY_LEFT)  UiScrollTo(&e->hbar, e->hbar.pos - e->hbar.line);
+        if (k->scancode == KEY_RIGHT) UiScrollTo(&e->hbar, e->hbar.pos + e->hbar.line);
         if (k->scancode == KEY_DELETE && e->dir && e->sel >= 0) {
             RamNode *victim = child_at(e->dir, e->sel);
             if (victim && RamfsDelete(victim) && e->sel >= RamfsCount(e->dir))
                 e->sel = RamfsCount(e->dir) - 1;
+            L = layout(e, WmClientRect(w));
         }
-        ensure_visible(e, WmClientRect(w));
+        if (k->scancode != KEY_LEFT && k->scancode != KEY_RIGHT) ensure_visible(e, &L);
         return;
     }
     if (k->ch == '\n')      open_sel(w, e);
@@ -562,5 +695,8 @@ void ExplorerOpen(RamNode *dir)
     w->on_mouse = exp_mouse;
     w->on_key   = exp_key;
     w->on_close = exp_close;
+    w->on_tick  = exp_tick;
+    w->tick_lock_free = true;                 /* (the bars only: no files) */
+    w->rbutton  = true;                       /* the wheel scrolls */
     set_dir(w, e, dir && dir->dir && dir != RamfsRoot() ? dir : NULL);   /* C:\\ itself opens This PC */
 }
