@@ -3590,6 +3590,46 @@ the way Windows hands them out: `WM_TOUCH` or `WM_POINTER*`.
   a monitor plugged in or out while running, and per-monitor DPI that
   programs see: they all get 96 DPI logical pixels, as before.
 
+## NetSurf: SVG and pages scripts change
+
+Phase 19.8.  NetSurf shows SVG images, and a page a script changes after
+it was laid out is laid out and drawn again.
+
+- **SVG** through NetSurf's own libsvgtiny 0.1.8 (MIT,
+  `third_party/netsurf/libsvgtiny`), which parses with libdom's XML binding
+  on expat 2.7.1 (MIT, `third_party/netsurf/libexpat`): `<img>`,
+  `<object>`, CSS backgrounds and `.svg` files opened directly.  Upstream's
+  framebuffer frontend had no path plotter ("path unimplemented"), so the
+  shapes never showed; NovaOS's (`frontends/framebuffer/framebuffer.c`)
+  fills and strokes each path with plutovg (MIT, already in the tree for
+  GDI+), anti-aliased, in a scratch surface the size of the shape within
+  the clip rectangle, and blends it onto the window's bitmap.
+- **Pages a script changes**: NetSurf 3.11 builds the box tree once ("NS
+  layout is static"), so text, elements, `style` or `class` attributes or
+  stylesheets a script changed after layout never showed.  Now a change to
+  the document (libdom's `DOMSubtreeModified`, outside form fields,
+  scripts and the title) or a stylesheet arriving late schedules a rebuild
+  (`html_relayout` in `content/handlers/html/html.c`): a burst of changes
+  coalesces, the box tree is thrown away and built again from the DOM in
+  one go (`dom_to_box_sync`), with a fresh CSS selection context and
+  libcss's per-node caches dropped, then the page is reformatted at its
+  width and redrawn.  Form fields keep their values (they live in the DOM);
+  images are fetched again from the cache; the text selection, a drag and
+  the caret are dropped.  Pages with frames or iframes keep the static
+  layout.
+- **SVG images parsed again** on each reformat (a window resize) went
+  into the old diagram, so every shape was drawn once more each time;
+  now each parse starts from an empty diagram.
+- **Alt+F4** closes NetSurf: the window's `WM_CLOSE` (which `SC_CLOSE`
+  sends rather than posts) is a quit event now, not only a posted one
+  (`userland/netsurf/nsfb_novaos.c`).
+- **Test**: `nstest` in the graphics self-tests
+  (`tests/selftest/graphics/060-nstest.py`) opens a page with an SVG and a
+  box whose `onclick` script changes it; the test checks the screen before
+  and after clicking it.
+- Not yet: inline `<svg>` elements in HTML (NetSurf draws only SVG files),
+  and SVG text, which libsvgtiny places but NetSurf draws in a fixed size.
+
 ## A parallel userland build
 
 `tools/build_userland.py` compiled and linked the 80 DLLs and 56
@@ -3618,6 +3658,62 @@ starts when the tasks it needs are done, on a pool of threads:
 
 Cold build of the userland without NetSurf on a 4-core machine: 6 min 16 s
 before, 3 min 39 s after (CPU time unchanged, 9 min 41 s).
+
+## Per-monitor DPI
+
+- **A monitor can show DPI-aware programs its real density.**  The desktop
+  works in logical pixels (96 DPI) and draws them at each monitor's scale,
+  so a 2560x1600 screen shows a 1280x800 desktop twice as sharp.  Until
+  now every program saw 96 DPI and drew at that size.  Now a monitor at
+  scale 2 can be set to 192 DPI for DPI-aware programs: in Settings >
+  Display ("DPI for DPI-aware apps"), kept in the registry as `LogPixels`
+  under `...\Video\{NovaOS-Display}\000N`, or with `NtNovaGuiCtl`
+  `CTL_SET_DPI` (op 31).  96, the default, changes nothing for anyone.
+- **Programs get the awareness they ask for.**  user32 reads the
+  manifest's `dpiAwareness` (`PerMonitorV2`, `PerMonitor`, `System`,
+  `Unaware`, first known value wins) and `dpiAware` (`true`, `true/pm`,
+  `per monitor`), the compatibility layer (`__COMPAT_LAYER` with
+  `DpiUnaware`, `GdiDpiScaling` or `HighDpiAware`, as Windows' "override
+  high DPI scaling" setting writes it), and `SetProcessDpiAwarenessContext`,
+  `SetProcessDPIAware` and shcore's `SetProcessDpiAwareness` (which fail
+  with access denied once the manifest or an earlier call decided, or a
+  window exists).  Programs without either are unaware, as on Windows.
+  `GetThreadDpiAwarenessContext`/`SetThreadDpiAwarenessContext`,
+  `GetWindowDpiAwarenessContext`, `GetAwarenessFromDpiAwarenessContext`,
+  `AreDpiAwarenessContextsEqual` and `GetDpiFromDpiAwarenessContext`
+  report it.  `shcore.dll`, which programs that link `shcore.lib` import
+  by name, now loads (as shlwapi, where its functions are).
+- **What each kind sees.**  Unaware programs keep 96 DPI and logical
+  pixels everywhere and are scaled up as before.  System-aware ones see
+  the primary monitor's DPI as it was when they started, everywhere.
+  Per-monitor-aware ones see each monitor's own: `GetDpiForMonitor`
+  (shcore), `GetDpiForWindow`, window and client rectangles, mouse
+  positions, `GetCursorPos`, monitor rectangles and work areas,
+  `SM_CXSCREEN` and the virtual screen are in the screen's own pixels.
+  `GetDpiForSystem`, `LOGPIXELSX/Y`, `AdjustWindowRectEx` (and
+  `...ForDpi`), `GetSystemMetricsForDpi`, `SystemParametersInfoForDpi`
+  and dialog fonts follow the DPI too.  The desktop gives an aware
+  window's bitmap two pixels per logical pixel and shows them one to one
+  on the screen, so its text and lines are as sharp as the desktop's own.
+- **`WM_DPICHANGED`.**  When a per-monitor-aware window goes to a monitor
+  of another DPI (dragged there, or moved with `SetWindowPos`), or its
+  monitor's DPI changes, it gets `WM_DPICHANGED` with the new DPI and the
+  suggested rectangle (the same place and size on the screen); a program
+  that leaves it to `DefWindowProc` is put there anyway.  Per-monitor v2
+  programs also get `WM_GETDPISCALEDSIZE` first and
+  `WM_DPICHANGED_BEFOREPARENT`/`AFTERPARENT` on their child windows.
+- `dpitest` (core self-tests) is per-monitor aware v2 by its manifest: it
+  sets the boot's monitor to 192 DPI and back and checks
+  `WM_DPICHANGED`, the suggested rectangle, its window's and the monitor's
+  rectangles, and that an unaware and a system-aware child (started with
+  `__COMPAT_LAYER`) see 96 and 192 DPI.  With a second monitor it moves
+  its window there and back.
+- Not yet: user32's own controls, menus and scroll bars drawn at 192 DPI
+  for an aware program (they keep their 96 DPI sizes in its pixels), the
+  stock fonts at the system DPI, threads of one process in different
+  awareness contexts (coordinates follow the process), and DPI scaling of
+  another process's window coordinates (`GetWindowRect` on a window of a
+  program with another awareness).
 
 ## errno per thread in the C runtime
 

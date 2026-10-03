@@ -133,7 +133,8 @@ every part, phase by phase.
   bochs-display and VirtualBox (resolutions switched at run time, page
   flipping, the mode set again after sleep and kept across restarts; more
   adapters, such as QEMU's secondary-vga, are more monitors of one
-  desktop, arranged in Settings) and a Cirrus GD5446 one, with
+  desktop, arranged in Settings, each able to show DPI-aware programs
+  its own DPI) and a Cirrus GD5446 one, with
   the UEFI framebuffer as the fallback; a 2D virtio GPU driver for
   QEMU's virtio-vga and virtio-gpu-pci, whose outputs are several
   monitors on one card, plugged in and unplugged while NovaOS runs; ACPI power-off, reset, power buttons,
@@ -160,7 +161,7 @@ every part, phase by phase.
   standard library: Microsoft's own STL, compiled with clang, with
   Boost.Math under `msvcp140_2`'s special math functions),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs, MDI,
-  hooks), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
+  hooks, per-monitor DPI awareness with `WM_DPICHANGED`), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
   `comctl32`, `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
   type libraries), `advapi32`, `ws2_32`, `oleacc`,
@@ -290,7 +291,11 @@ To make the ISO yourself from a fresh build, run
   the display scale), `bmpcurtest` (1-, 4-, 8- and 16-bit DIB sections,
   cursors from bitmaps with alpha or monochrome masks), `wintabtest`
   (wintab32 with no pen and with a synthetic one: contexts, packets,
-  pressure), `disptest`, `icutest` (ICU and locales, 64- and 32-bit),
+  pressure), `dpitest` (per-monitor DPI: the manifest's `dpiAwareness`,
+  `GetDpiForMonitor`, `GetDpiForWindow`, `WM_DPICHANGED` and its
+  suggested rectangle when the monitor goes to 192 DPI and back, and the
+  window and monitor coordinates an aware, an unaware and a system-aware
+  process see), `disptest`, `icutest` (ICU and locales, 64- and 32-bit),
   `comtest`, `nlstest` (date, time, number and currency formats in
   German and Japanese, 64- and 32-bit; `nlstest user`), `nlstest
   calendars` (Japanese eras, Buddhist, Taiwan, Tangun, Hebrew, Hijri, Um
@@ -384,7 +389,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `bmpcurtest`, `boosttest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `crtthreads`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `errnotest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `msitest`, `nlstest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `qttest`, `rttest`, `savetest`, `sectest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `threads`, `touchtest`, `usptest`, `wintabtest`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `bmpcurtest`, `boosttest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `crtthreads`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `dpitest`, `errnotest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `msitest`, `nlstest`, `nstest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `qttest`, `rttest`, `savetest`, `sectest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `threads`, `touchtest`, `usptest`, `wintabtest`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
   through `waveIn` and WASAPI capture;
   `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`
