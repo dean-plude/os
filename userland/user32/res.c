@@ -889,7 +889,8 @@ USERAPI HICON CreateIconIndirect(PICONINFO ii)
     int any_alpha = 0;
     if (ii->hbmColor) {
         GetDIBits(dc, ii->hbmColor, 0, (UINT)h, ic->argb, &bi, DIB_RGB_COLORS);
-        for (int i = 0; i < w * h; i++) if (ic->argb[i] >> 24) { any_alpha = 1; break; }
+        if (bm.bmBitsPixel == 32)                           /* (fewer bits: no alpha; the mask decides) */
+            for (int i = 0; i < w * h; i++) if (ic->argb[i] >> 24) { any_alpha = 1; break; }
     }
     if (!any_alpha) {
         DWORD *mask = malloc((size_t)w * h * 4 * (mono ? 2 : 1));

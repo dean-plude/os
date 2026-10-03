@@ -238,6 +238,37 @@ static void check_pixbuf_cursor(HCURSOR c)
     if (in != 0xFF0000 || out != 0x808080) printf("  drawn: %06lX %06lX %06lX\n", (unsigned long)in, (unsigned long)out, (unsigned long)half);
 }
 
+/* GDK's cursor from a pixbuf without alpha: a 24-bit image and a 1-bit mask */
+static void check_rgb_with_mask(void)
+{
+    BITMAPINFO bi;
+    memset(&bi, 0, sizeof(bi));
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = 32; bi.bmiHeader.biHeight = 32; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 24;
+    BYTE *rgb = NULL;
+    HBITMAP hc = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, (void **)&rgb, NULL, 0);
+    struct { BITMAPINFOHEADER h; RGBQUAD c[2]; } mi;
+    memset(&mi, 0, sizeof(mi));
+    mi.h = bi.bmiHeader;
+    mi.h.biBitCount = 1;
+    mi.c[1].rgbRed = mi.c[1].rgbGreen = mi.c[1].rgbBlue = 0xFF;
+    BYTE *mask = NULL;
+    HBITMAP hm = CreateDIBSection(NULL, (BITMAPINFO *)&mi, DIB_RGB_COLORS, (void **)&mask, NULL, 0);
+    if (!hc || !hm) { check(0, "a 24-bit image and a 1-bit mask"); return; }
+    for (int y = 0; y < 32; y++)                             /* green on the left half, the right half masked out */
+        for (int x = 0; x < 32; x++) {
+            BYTE *q = rgb + (31 - y) * 96 + 3 * x;
+            q[1] = x < 16 ? 0xFF : 0;
+            if (x >= 16) mask[(31 - y) * 4 + x / 8] |= (BYTE)(0x80 >> (x & 7));
+        }
+    ICONINFO ii = { FALSE, 0, 0, hm, hc };
+    HCURSOR c = (HCURSOR)CreateIconIndirect(&ii);
+    DeleteObject(hc);
+    DeleteObject(hm);
+    check(c && drawn(c, 4, 4) == 0x00FF00 && drawn(c, 20, 4) == 0x808080, "a 24-bit image's mask decides what is clear");
+    if (c) DestroyCursor(c);
+}
+
 /* GDK's X cursor shapes: CreateCursor with AND and XOR planes (32 x 32,
  * rows of 4 bytes); a white pixel, a black one, a clear one */
 static void check_planes(void)
@@ -364,6 +395,7 @@ int main(int argc, char **argv)
     check_mono_section();
     check_palette_sections();
     check_pixbuf_cursor(c);
+    check_rgb_with_mask();
     check_planes();
     check_pointer(c);
     if (c) DestroyCursor(c);
