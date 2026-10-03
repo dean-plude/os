@@ -292,3 +292,46 @@ CRTEXP int _ismbblead(unsigned c) { (void)c; return 0; }
 CRTEXP int _ismbbtrail(unsigned c) { (void)c; return 0; }
 CRTEXP int _ismbslead(const uc *s, const uc *p) { (void)s; (void)p; return 0; }
 CRTEXP int _ismbstrail(const uc *s, const uc *p) { (void)s; (void)p; return 0; }
+
+/* -----------------------------------------------------------------------
+ * MinGW programs: its CRT start-up and a few older msvcrt names (VLC)
+ * ----------------------------------------------------------------------- */
+CRTEXP void __lconv_init(void) {}                   /* (the locale table is ready already) */
+CRTEXP int _setmaxstdio(int n) { return n >= 20 && n <= 8192 ? n : -1; }
+CRTEXP int _getmaxstdio(void) { return 512; }
+int __stdio_common_vsnprintf_s(unsigned long long opt, char *buf, size_t count, size_t max, const char *fmt, void *loc, va_list ap);
+CRTEXP int _vsnprintf_s(char *buf, size_t size, size_t count, const char *fmt, va_list ap)
+{
+    return __stdio_common_vsnprintf_s(0, buf, size, count, fmt, 0, ap);
+}
+CRTEXP wchar_t *_wtempnam(const wchar_t *dir, const wchar_t *prefix)
+{
+    wchar_t d[MAX_PATH];
+    if (!dir || !*dir || GetFileAttributesW(dir) == INVALID_FILE_ATTRIBUTES) {
+        if (!GetTempPathW(MAX_PATH, d)) return 0;
+        dir = d;
+    }
+    for (unsigned i = 0; i < 10000; i++) {
+        size_t n = wcslen(dir) + (prefix ? wcslen(prefix) : 0) + 16;
+        wchar_t *p = malloc(n * sizeof(wchar_t));
+        if (!p) return 0;
+        swprintf(p, n, L"%ls%ls%ls%u", dir, dir[wcslen(dir) - 1] == L'\\' ? L"" : L"\\", prefix ? prefix : L"",
+                 GetTickCount() % 100000 + i);
+        if (GetFileAttributesW(p) == INVALID_FILE_ATTRIBUTES) return p;
+        free(p);
+    }
+    return 0;
+}
+CRTEXP char *_tempnam(const char *dir, const char *prefix)
+{
+    wchar_t wd[MAX_PATH], wp[64];
+    if (dir) MultiByteToWideChar(CP_UTF8, 0, dir, -1, wd, MAX_PATH);
+    if (prefix) MultiByteToWideChar(CP_UTF8, 0, prefix, -1, wp, 64);
+    wchar_t *w = _wtempnam(dir ? wd : 0, prefix ? wp : 0);
+    if (!w) return 0;
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, 0, 0, 0, 0);
+    char *p = malloc((size_t)n);
+    if (p) WideCharToMultiByte(CP_UTF8, 0, w, -1, p, n, 0, 0);
+    free(w);
+    return p;
+}

@@ -110,6 +110,13 @@ static inline DWORD rop_apply(NOVA_DC *d, DWORD dst, DWORD src)
 /* Logical coordinates: clipped, through the ROP */
 void put(NOVA_DC *d, int x, int y, COLORREF c);
 void fill(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c);
+void line(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c, int width);
+void fill_polygon(NOVA_DC *d, const POINT *pt, int n, COLORREF c);      /* even-odd scanline fill */
+void ellipse(NOVA_DC *d, int l, int t, int r, int b, BOOL do_fill, BOOL do_edge);
+
+/* The 20 colours of the default palette (DEFAULT_PALETTE), as PALETTEENTRYs
+ * (peRed, peGreen, peBlue, peFlags packed little-endian) */
+extern const DWORD g_default_palette[20];
 
 /* Blend @c over device pixel (x, y) with coverage @a (0-255); clipped */
 static inline void blend(NOVA_DC *d, int x, int y, COLORREF c, int a)

@@ -14,6 +14,8 @@ typedef UINT MMRESULT;
 #define MMSYSERR_BADDEVICEID 2
 #define MMSYSERR_NODRIVER   6
 #define MMSYSERR_INVALPARAM 11
+#define MMSYSERR_INVALHANDLE 5
+#define MMSYSERR_NOERROR 0
 #define JOYERR_UNPLUGGED    167
 #define MCIERR_DEVICE_NOT_INSTALLED 275
 
@@ -114,7 +116,18 @@ MMAPI MMRESULT WINAPI midiInOpen(HANDLE *h, UINT dev, DWORD_PTR cb, DWORD_PTR in
 { (void)dev; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
 MMAPI MMRESULT WINAPI midiInGetDevCapsW(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
 MMAPI MMRESULT WINAPI midiOutGetDevCapsW(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
+MMAPI MMRESULT WINAPI midiInGetDevCapsA(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
+MMAPI MMRESULT WINAPI midiOutGetDevCapsA(UINT_PTR dev, void *caps, UINT n) { (void)dev; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
 static MMRESULT no_midi(void) { return 5; }                /* MMSYSERR_INVALHANDLE */
+MMAPI MMRESULT WINAPI midiStreamOpen(HANDLE *h, UINT *dev, DWORD n, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
+{ (void)dev; (void)n; (void)cb; (void)inst; (void)flags; if (h) *h = 0; return MMSYSERR_NODRIVER; }
+MMAPI MMRESULT WINAPI midiStreamClose(HANDLE h) { (void)h; return no_midi(); }
+MMAPI MMRESULT WINAPI midiStreamOut(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
+MMAPI MMRESULT WINAPI midiStreamPosition(HANDLE h, void *t, UINT n) { (void)h; (void)t; (void)n; return no_midi(); }
+MMAPI MMRESULT WINAPI midiStreamProperty(HANDLE h, LPBYTE prop, DWORD flags) { (void)h; (void)prop; (void)flags; return no_midi(); }
+MMAPI MMRESULT WINAPI midiStreamRestart(HANDLE h) { (void)h; return no_midi(); }
+MMAPI MMRESULT WINAPI midiStreamStop(HANDLE h) { (void)h; return no_midi(); }
+MMAPI MMRESULT WINAPI midiStreamPause(HANDLE h) { (void)h; return no_midi(); }
 MMAPI MMRESULT WINAPI midiInClose(HANDLE h) { (void)h; return no_midi(); }
 MMAPI MMRESULT WINAPI midiInStart(HANDLE h) { (void)h; return no_midi(); }
 MMAPI MMRESULT WINAPI midiInStop(HANDLE h) { (void)h; return no_midi(); }
@@ -131,7 +144,48 @@ MMAPI MMRESULT WINAPI midiOutPrepareHeader(HANDLE h, void *hdr, UINT n) { (void)
 MMAPI MMRESULT WINAPI midiOutUnprepareHeader(HANDLE h, void *hdr, UINT n) { (void)h; (void)hdr; (void)n; return no_midi(); }
 MMAPI MMRESULT WINAPI midiOutMessage(HANDLE h, UINT msg, DWORD_PTR a, DWORD_PTR b) { (void)h; (void)msg; (void)a; (void)b; return no_midi(); }
 
+MMAPI MMRESULT WINAPI midiInGetErrorTextW(MMRESULT e, LPWSTR buf, UINT n)
+{
+    if (!buf || !n) return MMSYSERR_INVALPARAM;
+    const char *t = e == 0 ? "The specified command was carried out." : e == 2 ? "The specified device ID is out of range." : "There is no MIDI device.";
+    MultiByteToWideChar(CP_UTF8, 0, t, -1, buf, (int)n);
+    buf[n - 1] = 0;
+    return MMSYSERR_NOERROR;
+}
+MMAPI MMRESULT WINAPI midiInGetErrorTextA(MMRESULT e, LPSTR buf, UINT n)
+{
+    if (!buf || !n) return MMSYSERR_INVALPARAM;
+    lstrcpynA(buf, e == 0 ? "The specified command was carried out." : e == 2 ? "The specified device ID is out of range." : "There is no MIDI device.", (int)n);
+    return MMSYSERR_NOERROR;
+}
+MMAPI MMRESULT WINAPI midiOutGetErrorTextW(MMRESULT e, LPWSTR buf, UINT n) { return midiInGetErrorTextW(e, buf, n); }
+MMAPI MMRESULT WINAPI midiOutGetErrorTextA(MMRESULT e, LPSTR buf, UINT n) { return midiInGetErrorTextA(e, buf, n); }
+
+/* ---- mixers: none (the endpoint volume is mmdevapi's) ---- */
+MMAPI MMRESULT WINAPI mixerOpen(HANDLE *h, UINT id, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
+{
+    (void)id; (void)cb; (void)inst; (void)flags;
+    if (h) *h = 0;
+    return MMSYSERR_BADDEVICEID;
+}
+MMAPI MMRESULT WINAPI mixerClose(HANDLE h) { (void)h; return MMSYSERR_INVALHANDLE; }
+MMAPI MMRESULT WINAPI mixerGetDevCapsW(UINT_PTR id, void *caps, UINT n) { (void)id; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
+MMAPI MMRESULT WINAPI mixerGetDevCapsA(UINT_PTR id, void *caps, UINT n) { (void)id; (void)caps; (void)n; return MMSYSERR_BADDEVICEID; }
+MMAPI MMRESULT WINAPI mixerGetID(HANDLE h, UINT *id, DWORD flags) { (void)h; (void)flags; if (id) *id = (UINT)-1; return MMSYSERR_INVALHANDLE; }
+MMAPI MMRESULT WINAPI mixerGetLineInfoW(HANDLE h, void *line, DWORD flags) { (void)h; (void)line; (void)flags; return MMSYSERR_INVALHANDLE; }
+MMAPI MMRESULT WINAPI mixerGetLineInfoA(HANDLE h, void *line, DWORD flags) { (void)h; (void)line; (void)flags; return MMSYSERR_INVALHANDLE; }
+MMAPI MMRESULT WINAPI mixerGetLineControlsW(HANDLE h, void *ctl, DWORD flags) { (void)h; (void)ctl; (void)flags; return MMSYSERR_INVALHANDLE; }
+MMAPI MMRESULT WINAPI mixerGetLineControlsA(HANDLE h, void *ctl, DWORD flags) { (void)h; (void)ctl; (void)flags; return MMSYSERR_INVALHANDLE; }
+MMAPI MMRESULT WINAPI mixerGetControlDetailsW(HANDLE h, void *det, DWORD flags) { (void)h; (void)det; (void)flags; return MMSYSERR_INVALHANDLE; }
+MMAPI MMRESULT WINAPI mixerGetControlDetailsA(HANDLE h, void *det, DWORD flags) { (void)h; (void)det; (void)flags; return MMSYSERR_INVALHANDLE; }
+MMAPI MMRESULT WINAPI mixerSetControlDetails(HANDLE h, void *det, DWORD flags) { (void)h; (void)det; (void)flags; return MMSYSERR_INVALHANDLE; }
+MMAPI DWORD WINAPI mixerMessage(HANDLE h, UINT msg, DWORD_PTR a, DWORD_PTR b) { (void)h; (void)msg; (void)a; (void)b; return MMSYSERR_INVALHANDLE; }
+
 /* ---- joysticks: none ---- */
+MMAPI MMRESULT WINAPI joyGetThreshold(UINT id, UINT *t) { (void)id; if (t) *t = 0; return JOYERR_UNPLUGGED; }
+MMAPI MMRESULT WINAPI joySetThreshold(UINT id, UINT t) { (void)id; (void)t; return JOYERR_UNPLUGGED; }
+MMAPI MMRESULT WINAPI joySetCapture(HWND w, UINT id, UINT period, BOOL changed) { (void)w; (void)id; (void)period; (void)changed; return JOYERR_UNPLUGGED; }
+MMAPI MMRESULT WINAPI joyReleaseCapture(UINT id) { (void)id; return JOYERR_UNPLUGGED; }
 MMAPI UINT WINAPI joyGetNumDevs(void) { return 16; }        /* slots; each reports "unplugged" */
 MMAPI MMRESULT WINAPI joyGetPosEx(UINT id, void *info) { (void)id; (void)info; return JOYERR_UNPLUGGED; }
 MMAPI MMRESULT WINAPI joyGetPos(UINT id, void *info) { (void)id; (void)info; return JOYERR_UNPLUGGED; }

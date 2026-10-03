@@ -756,6 +756,70 @@ GDIAPI BOOL GetCharABCWidthsW(HDC h, UINT first, UINT last, ABC *out)
     return TRUE;
 }
 GDIAPI BOOL GetCharABCWidthsA(HDC h, UINT first, UINT last, ABC *out) { return GetCharABCWidthsW(h, first, last, out); }
+
+GDIAPI BOOL GetCharABCWidthsI(HDC h, UINT first, UINT n, LPWORD gi, ABC *out)
+{
+    Size *z = dc_size(dc_of(h), 0);
+    if (!z || !out) return FALSE;
+    for (UINT i = 0; i < n; i++) {
+        Glyph *g = glyph(z, (gi ? gi[i] : first + i) | 0x80000000u);
+        ABC *a = &out[i];
+        if (!g) { a->abcA = 0; a->abcB = 0; a->abcC = 0; continue; }
+        a->abcA = g->w ? g->x0 : 0;
+        a->abcB = (UINT)(g->w ? g->w : g->adv);
+        a->abcC = g->adv - a->abcA - (int)a->abcB;
+    }
+    return TRUE;
+}
+
+/* GetGlyphOutline: a glyph's metrics and its bitmap (1-bit, or 2/4/8-bit
+ * grey levels 0..4/16/64) from the glyph cache; no outlines (GGO_NATIVE,
+ * GGO_BEZIER), as the fonts are drawn from bitmaps.  Qt's GDI font engine
+ * measures and renders every glyph this way. */
+typedef struct { UINT gmBlackBoxX, gmBlackBoxY; POINT gmptGlyphOrigin; short gmCellIncX, gmCellIncY; } GLYPHMETRICS;
+GDIAPI DWORD GetGlyphOutlineW(HDC h, UINT c, UINT fmt, GLYPHMETRICS *gm, DWORD size, void *buf, const void *mat)
+{
+    (void)mat;
+    UINT kind = fmt & 0x7F;
+    Size *z = dc_size(dc_of(h), 0);
+    if (!z || kind == 2 || kind == 3 || kind > 6) return GDI_ERROR;
+    Glyph *g = glyph(z, fmt & 0x80 /* GGO_GLYPH_INDEX */ ? (c | 0x80000000u) : c);
+    if (!g) return GDI_ERROR;
+    if (gm) {
+        gm->gmBlackBoxX = g->w ? (UINT)g->w : 1;
+        gm->gmBlackBoxY = g->h ? (UINT)g->h : 1;
+        gm->gmptGlyphOrigin.x = g->x0;
+        gm->gmptGlyphOrigin.y = -g->y0;
+        gm->gmCellIncX = g->adv;
+        gm->gmCellIncY = 0;
+    }
+    if (kind == 0 /* GGO_METRICS */) return 0;
+    if (!g->w || !g->h) return 0;                       /* blank: no bitmap */
+    int stride = kind == 1 ? ((g->w + 31) / 32) * 4 : ((g->w + 3) / 4) * 4;
+    DWORD need = (DWORD)stride * g->h;
+    if (!buf) return need;
+    if (size < need) return GDI_ERROR;
+    memset(buf, 0, need);
+    int levels = kind == 4 ? 4 : kind == 5 ? 16 : 64;
+    for (int y = 0; y < g->h; y++) {
+        const unsigned char *row = g->bmp + (size_t)y * g->w;
+        unsigned char *out = (unsigned char *)buf + (size_t)y * stride;
+        for (int x = 0; x < g->w; x++) {
+            if (kind == 1) { if (row[x] >= 128) out[x / 8] |= (unsigned char)(0x80 >> (x % 8)); }
+            else out[x] = (unsigned char)((row[x] * levels + 127) / 255);
+        }
+    }
+    return need;
+}
+GDIAPI DWORD GetGlyphOutlineA(HDC h, UINT c, UINT fmt, GLYPHMETRICS *gm, DWORD size, void *buf, const void *mat)
+{
+    if (!(fmt & 0x80) && c >= 0x80) {
+        WCHAR w[2];
+        char a = (char)c;
+        if (MultiByteToWideChar(CP_ACP, 0, &a, 1, w, 2) == 1) c = w[0];
+    }
+    return GetGlyphOutlineW(h, c, fmt, gm, size, buf, mat);
+}
 GDIAPI BOOL GetCharABCWidthsFloatW(HDC h, UINT first, UINT last, void *out)
 {
     float *f = out;

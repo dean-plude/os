@@ -1,6 +1,6 @@
 /*
  * extra.c — the rest of kernel32: completion ports and overlapped I/O,
- * file mapping, waitable timers, WaitOnAddress, processes, file
+ * file mapping, waitable timers, processes, file
  * information, national language support, console, time zones,
  * interlocked lists and error messages.
  *
@@ -748,22 +748,6 @@ void k32_forget_handle(HANDLE h)
     }
     zfree(timer);
 }
-
-/* -----------------------------------------------------------------------
- * WaitOnAddress: ntdll's (RtlWaitOnAddress), as on Windows
- * ----------------------------------------------------------------------- */
-WINBASEAPI BOOL WINAPI WaitOnAddress(volatile VOID *addr, PVOID cmp, SIZE_T size, DWORD ms)
-{
-    LARGE_INTEGER t;
-    t.QuadPart = -(LONGLONG)ms * 10000;
-    NTSTATUS s = RtlWaitOnAddress(addr, cmp, size, ms == INFINITE ? NULL : &t);
-    if (s == (NTSTATUS)STATUS_TIMEOUT) { SetLastError(1460 /* ERROR_TIMEOUT */); return FALSE; }
-    if (!NT_SUCCESS(s)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    return TRUE;
-}
-
-WINBASEAPI VOID WINAPI WakeByAddressAll(PVOID addr)    { RtlWakeAddressAll(addr); }
-WINBASEAPI VOID WINAPI WakeByAddressSingle(PVOID addr) { RtlWakeAddressSingle(addr); }
 
 /* -----------------------------------------------------------------------
  * Interlocked singly linked lists (a spin lock keeps them simple)
@@ -2928,3 +2912,68 @@ WINBASEAPI VOID    WINAPI GlobalMemoryStatus(LPVOID p)
     s[0] = (SIZE_T)ms.ullTotalPhys; s[1] = (SIZE_T)ms.ullAvailPhys; s[2] = (SIZE_T)ms.ullTotalPageFile;
     s[3] = (SIZE_T)ms.ullAvailPageFile; s[4] = (SIZE_T)ms.ullTotalVirtual; s[5] = (SIZE_T)ms.ullAvailVirtual;
 }
+
+/* ---- odds and ends VLC and Audacity import ---------------------------- */
+
+static DWORD g_exec_state = 0x80000000;         /* ES_CONTINUOUS */
+WINBASEAPI DWORD WINAPI SetThreadExecutionState(DWORD flags)
+{
+    DWORD old = g_exec_state;
+    if (flags & 0x80000000) g_exec_state = flags;       /* (no display or sleep timers to hold off) */
+    return old;
+}
+WINBASEAPI BOOL WINAPI IsValidLanguageGroup(DWORD group, DWORD flags) { (void)flags; return group >= 1 && group <= 17; }
+WINBASEAPI BOOL WINAPI CheckRemoteDebuggerPresent(HANDLE process, PBOOL present)
+{
+    (void)process;
+    if (!present) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    *present = FALSE;
+    return TRUE;
+}
+BOOL WINAPI GetCurrentConsoleFontEx(HANDLE h, BOOL max, PVOID info);
+WINBASEAPI BOOL WINAPI GetCurrentConsoleFont(HANDLE h, BOOL max, PVOID info)
+{
+    BYTE ex[84];
+    *(DWORD *)ex = 84;
+    if (!GetCurrentConsoleFontEx(h, max, ex)) return FALSE;
+    memcpy(info, ex + 4, 8);                            /* CONSOLE_FONT_INFO: nFont, dwFontSize */
+    return TRUE;
+}
+WINBASEAPI DWORD WINAPI GetLargestConsoleWindowSize(HANDLE h)
+{
+    (void)h;
+    return (DWORD)240 | ((DWORD)80 << 16);              /* COORD {X=240, Y=80} */
+}
+
+/* The console's screen buffer cannot be read back: ReadConsoleOutput
+ * reports blanks (compat.c), and so do the character reads */
+WINBASEAPI BOOL WINAPI ReadConsoleOutputCharacterW(HANDLE h, LPWSTR buf, DWORD n, COORD at, LPDWORD read)
+{
+    (void)h; (void)at;
+    if (!buf) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    for (DWORD i = 0; i < n; i++) buf[i] = L' ';
+    if (read) *read = n;
+    return TRUE;
+}
+WINBASEAPI BOOL WINAPI ReadConsoleOutputCharacterA(HANDLE h, LPSTR buf, DWORD n, COORD at, LPDWORD read)
+{
+    (void)h; (void)at;
+    if (!buf) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    for (DWORD i = 0; i < n; i++) buf[i] = ' ';
+    if (read) *read = n;
+    return TRUE;
+}
+WINBASEAPI BOOL WINAPI ReadConsoleOutputAttribute(HANDLE h, LPWORD buf, DWORD n, COORD at, LPDWORD read)
+{
+    (void)h; (void)at;
+    if (!buf) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    for (DWORD i = 0; i < n; i++) buf[i] = 7;
+    if (read) *read = n;
+    return TRUE;
+}
+
+/* win.ini: the profile calls write C:\Windows\win.ini (profile.c) */
+WINBASEAPI BOOL WINAPI WritePrivateProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR value, LPCWSTR file);
+WINBASEAPI BOOL WINAPI WriteProfileStringW(LPCWSTR app, LPCWSTR key, LPCWSTR value) { return WritePrivateProfileStringW(app, key, value, L"win.ini"); }
+WINBASEAPI BOOL WINAPI WritePrivateProfileStringA(LPCSTR app, LPCSTR key, LPCSTR value, LPCSTR file);
+WINBASEAPI BOOL WINAPI WriteProfileStringA(LPCSTR app, LPCSTR key, LPCSTR value) { return WritePrivateProfileStringA(app, key, value, "win.ini"); }

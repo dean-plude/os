@@ -168,3 +168,63 @@ WINADVAPI LSTATUS WINAPI RegDeleteKeyTransactedW(HKEY key, LPCWSTR sub, REGSAM s
     (void)trans; (void)ext;
     return RegDeleteKeyExW(key, sub, sam, reserved);
 }
+
+/* -----------------------------------------------------------------------
+ * EXPLICIT_ACCESS helpers (aclapi): the trustee names an account; the
+ * descriptor built from a set of entries carries no DACL, since nothing
+ * here checks access by ACL (see security.c)
+ * ----------------------------------------------------------------------- */
+typedef struct NOVA_TRUSTEE_W {
+    struct NOVA_TRUSTEE_W *pMultipleTrustee;
+    int MultipleTrusteeOperation, TrusteeForm, TrusteeType;
+    LPWSTR ptstrName;
+} NOVA_TRUSTEE_W;
+typedef struct { DWORD grfAccessPermissions; int grfAccessMode; DWORD grfInheritance; NOVA_TRUSTEE_W Trustee; } NOVA_EXPLICIT_ACCESS_W;
+
+WINADVAPI void WINAPI BuildTrusteeWithNameW(NOVA_TRUSTEE_W *t, LPWSTR name)
+{
+    if (!t) return;
+    t->pMultipleTrustee = 0; t->MultipleTrusteeOperation = 0;
+    t->TrusteeForm = 1 /* TRUSTEE_IS_NAME */; t->TrusteeType = 0 /* TRUSTEE_IS_UNKNOWN */;
+    t->ptstrName = name;
+}
+WINADVAPI void WINAPI BuildTrusteeWithNameA(NOVA_TRUSTEE_W *t, LPSTR name) { BuildTrusteeWithNameW(t, (LPWSTR)name); }
+WINADVAPI void WINAPI BuildExplicitAccessWithNameW(NOVA_EXPLICIT_ACCESS_W *ea, LPWSTR name, DWORD perms, int mode, DWORD inherit)
+{
+    if (!ea) return;
+    ea->grfAccessPermissions = perms; ea->grfAccessMode = mode; ea->grfInheritance = inherit;
+    BuildTrusteeWithNameW(&ea->Trustee, name);
+}
+WINADVAPI void WINAPI BuildExplicitAccessWithNameA(NOVA_EXPLICIT_ACCESS_W *ea, LPSTR name, DWORD perms, int mode, DWORD inherit)
+{
+    BuildExplicitAccessWithNameW(ea, (LPWSTR)name, perms, mode, inherit);
+}
+
+/* A self-relative descriptor (freed with LocalFree) with no owner, group
+ * or DACL: the entries are accepted and not kept */
+static DWORD build_sd(ULONG n, PULONG size, PSECURITY_DESCRIPTOR *out)
+{
+    (void)n;
+    if (!out) return ERROR_INVALID_PARAMETER;
+    DWORD len = sizeof(SECURITY_DESCRIPTOR);
+    PSECURITY_DESCRIPTOR sd = LocalAlloc(LMEM_FIXED | LMEM_ZEROINIT, len);
+    if (!sd) return ERROR_NOT_ENOUGH_MEMORY;
+    InitializeSecurityDescriptor(sd, SECURITY_DESCRIPTOR_REVISION);
+    ((BYTE *)sd)[2] |= 0x80;                                  /* SE_SELF_RELATIVE: no owner, group or ACL offsets */
+    if (size) *size = len;
+    *out = sd;
+    return ERROR_SUCCESS;
+}
+WINADVAPI DWORD WINAPI BuildSecurityDescriptorW(NOVA_TRUSTEE_W *owner, NOVA_TRUSTEE_W *group, ULONG n, NOVA_EXPLICIT_ACCESS_W *access,
+                                                ULONG naudit, NOVA_EXPLICIT_ACCESS_W *audit, PSECURITY_DESCRIPTOR old, PULONG size,
+                                                PSECURITY_DESCRIPTOR *out)
+{
+    (void)owner; (void)group; (void)access; (void)naudit; (void)audit; (void)old;
+    return build_sd(n, size, out);
+}
+WINADVAPI DWORD WINAPI BuildSecurityDescriptorA(NOVA_TRUSTEE_W *owner, NOVA_TRUSTEE_W *group, ULONG n, NOVA_EXPLICIT_ACCESS_W *access,
+                                                ULONG naudit, NOVA_EXPLICIT_ACCESS_W *audit, PSECURITY_DESCRIPTOR old, PULONG size,
+                                                PSECURITY_DESCRIPTOR *out)
+{
+    return BuildSecurityDescriptorW(owner, group, n, access, naudit, audit, old, size, out);
+}

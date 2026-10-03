@@ -884,3 +884,11 @@ WINOLEAPI_(HRESULT) CoGetMarshalSizeMax(ULONG *size, REFIID riid, IUnknown *unk,
     return E_NOTIMPL;
 }
 WINOLEAPI_(HRESULT) CoReleaseMarshalData(IStream *stm) { (void)stm; return E_NOTIMPL; }
+
+/* Running objects: every object here runs the moment it exists, so these
+ * have nothing to do (IRunnableObject is not asked for) */
+WINOLEAPI_(HRESULT) OleRun(IUnknown *obj) { return obj ? S_OK : E_INVALIDARG; }
+WINOLEAPI_(BOOL) OleIsRunning(IUnknown *obj) { return obj != NULL; }
+WINOLEAPI_(HRESULT) OleLockRunning(IUnknown *obj, BOOL lock, BOOL last_unlock_closes) { (void)lock; (void)last_unlock_closes; return obj ? S_OK : E_INVALIDARG; }
+WINOLEAPI_(HRESULT) OleSetContainedObject(IUnknown *obj, BOOL contained) { (void)contained; return obj ? S_OK : E_INVALIDARG; }
+WINOLEAPI_(HRESULT) OleNoteObjectVisible(IUnknown *obj, BOOL visible) { (void)visible; return obj ? S_OK : E_INVALIDARG; }

@@ -64,6 +64,7 @@ typedef struct NOVA_DC {
 #define SYSTEM_FONT    13
 #define DEVICE_DEFAULT_FONT 14
 #define SYSTEM_FIXED_FONT 16
+#define DEFAULT_PALETTE 15
 #define DEFAULT_GUI_FONT 17
 
 #define PS_SOLID 0

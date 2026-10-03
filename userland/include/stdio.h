@@ -3,28 +3,31 @@
 #include <stddef.h>
 #include <stdarg.h>
 _NOVA_BEGIN
-/* 48 bytes, the size of Microsoft's FILE: programs built with other
- * headers (MinGW) find stdout/stderr as &__iob_func()[1] and [2] */
+/* 48 bytes (32 in 32-bit programs), the size of Microsoft's FILE: programs
+ * built with other headers (MinGW) find stdout/stderr as &__iob_func()[1]
+ * and [2], and three of Microsoft's fields keep their offsets: _cnt stays
+ * 0 so MinGW's inline _getc_nolock/_putc_nolock (--_cnt >= 0 ? ... :
+ * _filbuf/_flsbuf) always call msvcrt; _base is our buffer; _flag holds
+ * our flags (MinGW's static _lock_file sets and clears 0x8000 there) */
 typedef struct _iobuf {
-    void  *_handle;        /* Win32 HANDLE */
-    char  *_buf;           /* buffer (NULL: unbuffered) */
-    long long _offset;     /* file offset of _buf[0] */
+    void  *_handle;        /* Win32 HANDLE (Microsoft's _ptr: never read, as _cnt <= 0) */
+    int    _cnt;           /* Microsoft's _cnt: 0 */
 #ifdef __x86_64__
-    /* _flags sits where Microsoft's _flag does (offset 24): MinGW's static
-     * _lock_file sets and clears 0x8000 (_IOLOCKED) there on stdin/out/err */
-    int    _flags;
-    int    _pos, _len;     /* read: next/valid bytes; write: pending bytes */
     int    _bufsize;
-    int    _ungot;         /* ungetc character, or -1 */
+    char  *_buf;           /* buffer (NULL: unbuffered) */
+    int    _flags : 16;
+    int    _ungot : 16;    /* ungetc character, or -1 */
     int    _fd;            /* POSIX descriptor, once one is made */
-#else                      /* 32 bytes in 32-bit programs; Microsoft's _flag
-                            * (offset 12) is the high half of _offset, unused */
-    int    _bufsize;
-    int    _pos, _len;
-    int    _flags : 14;
-    int    _ungot : 10;
-    int    _fd : 8;
+    int    _pos, _len;     /* read: next/valid bytes; write: pending bytes */
+#else
+    char  *_buf;
+    int    _flags : 16;
+    int    _ungot : 16;
+    short  _fd;
+    short  _bufsize;       /* (buffers stay under 32 KiB in 32-bit programs) */
+    short  _pos, _len;
 #endif
+    long long _offset;     /* file offset of _buf[0] */
 } FILE;
 #ifdef __x86_64__
 _Static_assert(sizeof(FILE) == 48, "FILE must match Microsoft's layout size");

@@ -141,14 +141,4 @@ GDIAPI BOOL SwapBuffers(HDC h)
     return r;
 }
 
-/* Glyph outlines (wglUseFontOutlines): NovaOS's fonts are bitmaps */
-GDIAPI DWORD GetGlyphOutlineA(HDC h, UINT c, UINT fmt, void *gm, DWORD size, void *buf, const void *mat)
-{
-    (void)h; (void)c; (void)fmt; (void)gm; (void)size; (void)buf; (void)mat;
-    return (DWORD)-1;                               /* GDI_ERROR */
-}
-GDIAPI DWORD GetGlyphOutlineW(HDC h, UINT c, UINT fmt, void *gm, DWORD size, void *buf, const void *mat)
-{
-    return GetGlyphOutlineA(h, c, fmt, gm, size, buf, mat);
-}
 

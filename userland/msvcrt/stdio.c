@@ -471,6 +471,9 @@ int setvbuf(FILE *f, char *buf, int mode, size_t size)
     f->_bufsize = 0;
     if (mode == _IONBF) { f->_flags |= F_NOBUF; return 0; }
     if (mode == _IOLBF) f->_flags |= F_LINEBUF;
+#ifndef __x86_64__
+    if (size > 32767) size = 32767;                   /* (_bufsize is 16 bits there) */
+#endif
     if (buf && size) { f->_buf = buf; f->_bufsize = (int)size; }
     return 0;
 }
@@ -508,3 +511,16 @@ void perror(const char *s)
 }
 
 /* conio: ucrt_extra.c */
+
+/* MinGW's inline _getc_nolock/_putc_nolock land here on every character
+ * (see FILE in stdio.h): _cnt went to -1, put it back */
+__declspec(dllexport) int _filbuf(FILE *f) { f->_cnt = 0; return fgetc(f); }
+__declspec(dllexport) int _flsbuf(int c, FILE *f) { f->_cnt = 0; return fputc(c, f); }
+
+int fputws(const wchar_t *s, FILE *f);
+__declspec(dllexport) void _wperror(const wchar_t *s)
+{
+    if (s && *s) { fputws(s, stderr); fputs(": ", stderr); }
+    fputs(strerror(errno), stderr);
+    fputc('\n', stderr);
+}

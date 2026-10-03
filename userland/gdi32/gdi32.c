@@ -35,7 +35,11 @@ void stock_init(void)
     g_stock[WHITE_PEN]    = (GObj){ K_PEN, 0xFFFFFF, 1 };
     g_stock[BLACK_PEN]    = (GObj){ K_PEN, 0x000000, 1 };
     g_stock[NULL_PEN]     = (GObj){ K_NULLPEN, 0, 0 };
+    g_stock[DEFAULT_PALETTE] = (GObj){ K_PALETTE, 0, 0 };
+    g_stock[DEFAULT_PALETTE].bits = (DWORD *)g_default_palette;
+    g_stock[DEFAULT_PALETTE].bw = 20;
     for (int i = OEM_FIXED_FONT; i <= DEFAULT_GUI_FONT; i++) {   /* the stock fonts */
+        if (i == DEFAULT_PALETTE) continue;
         g_stock[i].kind = K_FONT;
         g_stock[i].weight = 400;
         const char *f;
@@ -250,7 +254,7 @@ GDIAPI BOOL MoveToEx(HDC h, int x, int y, LPPOINT old)
 
 GDIAPI BOOL GetCurrentPositionEx(HDC h, LPPOINT p) { NOVA_DC *d = dc_of(h); if (!d) return FALSE; p->x = d->cx; p->y = d->cy; return TRUE; }
 
-static void line(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c, int width)
+void line(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c, int width)
 {
     int dx = x1 - x0, dy = y1 - y0;
     int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
@@ -289,7 +293,7 @@ GDIAPI BOOL PolylineTo(HDC h, const POINT *pt, DWORD n)
 }
 
 /* Scanline polygon fill (even-odd) */
-static void fill_polygon(NOVA_DC *d, const POINT *pt, int n, COLORREF c)
+void fill_polygon(NOVA_DC *d, const POINT *pt, int n, COLORREF c)
 {
     int miny = pt[0].y, maxy = pt[0].y;
     for (int i = 1; i < n; i++) { if (pt[i].y < miny) miny = pt[i].y; if (pt[i].y > maxy) maxy = pt[i].y; }
@@ -325,7 +329,7 @@ GDIAPI BOOL Rectangle(HDC h, int l, int t, int r, int b)
     return TRUE;
 }
 
-static void ellipse(NOVA_DC *d, int l, int t, int r, int b, BOOL do_fill, BOOL do_edge)
+void ellipse(NOVA_DC *d, int l, int t, int r, int b, BOOL do_fill, BOOL do_edge)
 {
     long ax = (r - l) / 2, ay = (b - t) / 2, cx = (l + r) / 2, cy = (t + b) / 2;
     if (ax <= 0 || ay <= 0) return;
@@ -884,6 +888,7 @@ GDIAPI BOOL DeleteObject(HGDIOBJ obj)
     if (o >= g_pool && o < g_pool + POOL) {                 /* stock objects are not freed */
         if (o->kind == K_BITMAP && o->owns == 1 && o->bits) VirtualFree(o->bits, 0, MEM_RELEASE);
         if (o->kind == K_BITMAP && o->owns == 2) UnmapViewOfFile(o->view);
+        if (o->kind == K_PALETTE && o->bits) HeapFree(GetProcessHeap(), 0, o->bits);
         o->used = 0;
     }
     return TRUE;

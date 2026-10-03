@@ -11,25 +11,29 @@
 #define UM_MAX_PROCS     32
 #define UM_MAX_HANDLES   4096
 #define UM_MAX_REGIONS   8192     /* (runtimes such as CoreCLR reserve thousands of ranges) */
-#define UM_MAX_MODULES   64
+#define UM_MAX_MODULES   1024     /* (Audacity loads about 150, VLC every plugin: about 410) */
 #define UM_MAX_THREADS   256      /* (a browser's main process runs well over 64) */
 #define UM32_MAX_THREADS 96       /* WoW: the TEB area must stay below KUSER_SHARED_DATA */
 
 /* Fixed user addresses for the per-process system areas:
- *   PEB (1 page) | loader info (3 pages) | process parameters (4 pages) |
- *   stubs for unimplemented imports (1 page) | ... |
- *   TEBs (2 pages each, one slot per thread) */
+ *   PEB (1 page) | loader info (47 pages) | process parameters (4 pages) |
+ *   stubs for unimplemented imports (4 pages) | TEBs (2 pages each, one
+ *   slot per thread) */
 #define UM_PEB_VA        UINT64_C(0x00007FFDF0000000)
 #define UM_LDR_INFO_VA   (UM_PEB_VA + 0x1000)
-#define UM_LDR_INFO_SIZE 0x3000
-#define UM_PARAMS_VA     (UM_PEB_VA + 0x4000)
+#define UM_LDR_INFO_SIZE 0x2F000                                /* 8 + 184 * UM_MAX_MODULES, rounded up */
+#define UM_PARAMS_OFF    0x30000
+#define UM_PARAMS_VA     (UM_PEB_VA + UM_PARAMS_OFF)
 #define UM_PARAMS_PAGES  4
-#define UM_STUBS_VA      (UM_PEB_VA + 0x8000)
+#define UM_STUBS_OFF     0x34000
+#define UM_STUBS_VA      (UM_PEB_VA + UM_STUBS_OFF)
+#define UM_STUBS_PAGES   4
 #define UM_STUB_SIZE     16
-#define UM_MAX_STUBS     (0x1000 / UM_STUB_SIZE)
-#define UM_TEB_AREA      (UM_PEB_VA + 0x10000)
+#define UM_MAX_STUBS     (UM_STUBS_PAGES * 0x1000 / UM_STUB_SIZE)
+#define UM_TEB_OFF       0x38000
+#define UM_TEB_AREA      (UM_PEB_VA + UM_TEB_OFF)
 #define UM_TEB_SIZE      0x2000
-#define UM_SYS_SIZE(n)   (0x10000 + (UINT64)(n) * UM_TEB_SIZE)
+#define UM_SYS_SIZE(n)   (UM_TEB_OFF + (UINT64)(n) * UM_TEB_SIZE)
 #define UM_STACK_TOP     UINT64_C(0x00007FFDE0000000)        /* first thread */
 #define UM_STACK_SIZE    (1024 * 1024)
 #define UM_THREAD_STACK  (256 * 1024)                         /* default for new threads */
@@ -40,7 +44,7 @@
 
 /* 32-bit programs (WoW): the same areas, all below 2 GiB (0x7FFE0000 is
  * KUSER_SHARED_DATA in both) */
-#define UM32_PEB_VA      UINT64_C(0x7FF00000)
+#define UM32_PEB_VA      UINT64_C(0x7FEE0000)     /* its system areas end below KUSER_SHARED_DATA (0x7FFE0000) */
 #define UM32_STACK_TOP   UINT64_C(0x7FE00000)
 #define UM32_ALLOC_MIN   UINT64_C(0x00110000)
 #define UM32_ALLOC_MAX   UINT64_C(0x7FD00000)
@@ -214,7 +218,7 @@ struct UmProcess {
     int         nmodules;
     RamNode    *images[UM_MAX_MODULES];   /* its program and DLL files, held (in use: not deleted or replaced) */
     int         nimages;
-    UINT8       init_order[UM_MAX_MODULES];   /* dependencies first */
+    UINT16      init_order[UM_MAX_MODULES];   /* dependencies first */
     int         ninit;
     volatile UINT32 pages;      /* resident user pages (backed by memory) */
     UINT32      commit;         /* committed user pages (resident or backed on first touch) */

@@ -186,11 +186,6 @@ GDIAPI BOOL StrokeAndFillPath(HDC h) { return h != 0; }
 GDIAPI BOOL WidenPath(HDC h) { return h != 0; }
 GDIAPI BOOL FlattenPath(HDC h) { return h != 0; }
 GDIAPI BOOL SelectClipPath(HDC h, int mode) { (void)mode; return h != 0; }
-GDIAPI BOOL PolyBezierTo(HDC h, const POINT *p, DWORD n)
-{
-    for (DWORD i = 2; i < n; i += 3) LineTo(h, p[i].x, p[i].y);    /* through the end points */
-    return TRUE;
-}
 GDIAPI BOOL SetMiterLimit(HDC h, float limit, float * old) { (void)h; (void)limit; if (old) *old = 10.0f; return TRUE; }
 GDIAPI BOOL GetMiterLimit(HDC h, float * limit) { (void)h; if (limit) *limit = 10.0f; return TRUE; }
 
