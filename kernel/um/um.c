@@ -602,6 +602,9 @@ static bool copy_pages(UmProcess *p, UINT64 va, void *buf, UINT64 n, bool to_use
             if (!back_page(p, e)) return false;
         }
         if (to_user && (*e & PTE_IMAGE) && !img_privatize(p, va, e)) return false;
+        /* device memory mapped into the program (a GPU's host-visible
+         * region) is beyond the physmap: the kernel can't reach it there */
+        if ((*e & PTE_ADDR_MASK) >= PHYSMAP_SIZE) return false;
         UINT8 *k = (UINT8 *)(uintptr_t)(PHYSMAP_BASE + (*e & PTE_ADDR_MASK) + off);
         if (to_user) memcpy(k, b, chunk); else memcpy(b, k, chunk);
         va += chunk; b += chunk; n -= chunk;

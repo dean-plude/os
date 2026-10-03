@@ -1211,17 +1211,17 @@ static void section_destroy(UmObject *o)
     o->ptr = NULL;
 }
 
-/* A section over @size bytes of device memory at @pa (a GPU's blob, see
- * um_gpu.c), with a handle in process @p; release(ctx) when it goes (its
- * last view unmapped and handle closed).  The handle, or 0. */
-UINT64 um_section_foreign(UmProcess *p, UINT64 pa, UINT64 size, void (*release)(void *), void *ctx)
+/* A section over the pages @f (@n of them; copied) holding @size bytes
+ * (a GPU's blob or resource, see um_gpu.c), with a handle in process @p;
+ * release(ctx) when it goes (its last view unmapped and handle closed).
+ * The pages stay the caller's.  The handle, or 0. */
+UINT64 um_section_frames(UmProcess *p, const PADDR *frames, UINT64 n, UINT64 size, void (*release)(void *), void *ctx)
 {
-    UINT64 n = (size + PAGE_SIZE - 1) / PAGE_SIZE;
     UmSection *sec = kzalloc(sizeof(*sec));
     PADDR *f = sec ? kmalloc(sizeof(PADDR) * n) : NULL;
     UmObject *o = f ? ob_new(UO_SECTION) : NULL;
     if (!o) { kfree(f); kfree(sec); return 0; }
-    for (UINT64 i = 0; i < n; i++) f[i] = pa + i * PAGE_SIZE;
+    memcpy(f, frames, sizeof(PADDR) * n);
     sec->size = size;
     sec->npages = n;
     sec->frames = f;
@@ -1233,6 +1233,18 @@ UINT64 um_section_foreign(UmProcess *p, UINT64 pa, UINT64 size, void (*release)(
     o->free_unlocked = true;
     UINT64 h = um_handle_new_object(p, o);
     um_ob_unref(o);                                         /* (the handle's reference, or gone) */
+    return h;
+}
+
+/* The same over @size bytes of device memory at @pa */
+UINT64 um_section_foreign(UmProcess *p, UINT64 pa, UINT64 size, void (*release)(void *), void *ctx)
+{
+    UINT64 n = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    PADDR *f = kmalloc(sizeof(PADDR) * (n ? n : 1));
+    if (!f) return 0;
+    for (UINT64 i = 0; i < n; i++) f[i] = pa + i * PAGE_SIZE;
+    UINT64 h = um_section_frames(p, f, n, size, release, ctx);
+    kfree(f);
     return h;
 }
 

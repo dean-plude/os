@@ -45,7 +45,8 @@ void VgpuResume(void);
 
 /* 3D (a card with VIRGL, blobs, context capability sets and host-visible
  * memory, e.g. QEMU's virtio-vga-gl,venus=on,blob=on,hostmem=...): what a
- * Vulkan driver in a program (Mesa's Venus) needs, through um_gpu.c.
+ * Vulkan driver in a program (Mesa's Venus) and an OpenGL one (Mesa's
+ * virgl) need, through um_gpu.c.
  * A context belongs to one program; its timelines are numbered from 1. */
 typedef struct VgpuCtx VgpuCtx;
 typedef struct VgpuBlob VgpuBlob;
@@ -68,6 +69,19 @@ UINT32    VgpuBlobId(VgpuBlob *b);
 bool      VgpuBlobMap(VgpuBlob *b, UINT64 *pa, UINT64 *size);
 void      VgpuBlobRef(VgpuBlob *b);
 void      VgpuBlobUnref(VgpuBlob *b);
+/* A virgl resource (RESOURCE_CREATE_3D: @p = target, format, bind, width,
+ * height, depth, array_size, last_level, nr_samples, flags) whose guest
+ * memory is the pages @frames (nframes == 0: none; on success it takes
+ * them and frees them when it goes), attached to @c; one reference, the
+ * caller's */
+VgpuBlob *VgpuRes3dCreate(VgpuCtx *c, const UINT32 *p, PADDR *frames, UINT64 nframes);
+/* A virgl resource's pages (false: a blob) */
+bool      VgpuBlobFrames(VgpuBlob *b, const PADDR **frames, UINT64 *n);
+/* Copy @box (x, y, z, w, h, d) of mip level @level between resource @b
+ * and its guest memory at @offset (@to_host: into the resource); when
+ * done, timeline @sync (0: none) reaches @value */
+bool      VgpuTransfer3d(VgpuCtx *c, VgpuBlob *b, bool to_host, const UINT32 *box, UINT64 offset, UINT32 level,
+                         UINT32 stride, UINT32 layer_stride, UINT32 sync, UINT64 value);
 UINT32    VgpuSyncCreate(VgpuCtx *c, UINT64 value);
 void      VgpuSyncDestroy(VgpuCtx *c, UINT32 id);
 bool      VgpuSyncAccess(VgpuCtx *c, UINT32 id, int op, UINT64 *value);
