@@ -1,95 +1,73 @@
 /*
- * d3d11.dll — Direct3D 11, NovaOS's own front for DXVK's.
+ * d3d11.dll — Direct3D 11, NovaOS's own front.
  *
- * Programs often import d3d11.dll whether or not they draw with it (Qt's
- * GUI library does, so KeePassXC needs it to start).  NovaOS has no
- * Direct3D of its own, so without DXVK every entry point answers
- * DXGI_ERROR_UNSUPPORTED, as Windows does on a machine with no Direct3D 11
- * device, and the program takes its other drawing path.  When the App
- * Store's DXVK is installed (its d3d11.dll as d3d11_dxvk.dll beside this
- * one), the calls go to DXVK.
+ * NovaOS has no display adapter driver of its own.  When DXVK is installed
+ * from the App Store (as d3d11_dxvk.dll beside this one), every entry point
+ * hands the call to DXVK, so Direct3D 11 runs on Mesa's lavapipe; without
+ * it, device creation fails the way Windows does when no adapter supports
+ * Direct3D 11, and programs fall back to their software paths.
  */
 #include <windows.h>
 
 #define D3D11API __declspec(dllexport)
 #define DXGI_ERROR_UNSUPPORTED_ ((HRESULT)0x887A0004L)
 
-static HMODULE dxvk(void)
+static FARPROC dxvk(const char *fn)
 {
     static HMODULE m;
-    static LONG looked;
-    if (!InterlockedCompareExchange(&looked, 1, 0)) {
-        char path[MAX_PATH];
-        UINT n = GetSystemDirectoryA(path, MAX_PATH - 20);
-        if (n && n < MAX_PATH - 20) {
-            lstrcatA(path, "\\d3d11_dxvk.dll");
-            m = LoadLibraryA(path);
-        }
-        InterlockedExchange(&looked, 2);
-    }
-    while (looked == 1) Sleep(0);
-    return m;
+    static LONG tried;
+    if (!InterlockedExchange(&tried, 1)) m = LoadLibraryW(L"d3d11_dxvk.dll");
+    return m ? GetProcAddress(m, fn) : NULL;
 }
 
-static FARPROC dxvk_proc(const char *name)
-{
-    HMODULE m = dxvk();
-    return m ? GetProcAddress(m, name) : NULL;
-}
+typedef HRESULT (WINAPI *CreateDevice_t)(void *, UINT, HMODULE, UINT, const UINT *, UINT, UINT, void **, UINT *, void **);
+typedef HRESULT (WINAPI *CreateDeviceAndSwapChain_t)(void *, UINT, HMODULE, UINT, const UINT *, UINT, UINT, const void *,
+                                                     void **, void **, UINT *, void **);
+typedef HRESULT (WINAPI *CoreCreateDevice_t)(void *, void *, UINT, const UINT *, UINT, void **);
+typedef HRESULT (WINAPI *On12CreateDevice_t)(void *, UINT, const UINT *, UINT, void *const *, UINT, UINT, void **, void **, UINT *);
 
-/* the out-pointers a failed call must clear */
-static void clear(void **a, void **b, void **c)
+static void none(void **a, void **b, UINT *level)
 {
     if (a) *a = NULL;
     if (b) *b = NULL;
-    if (c) *c = NULL;
+    if (level) *level = 0;
 }
 
-typedef HRESULT (WINAPI *CreateDeviceFn)(void *, UINT, HMODULE, UINT, const UINT *, UINT, UINT, void **, UINT *,
-                                         void **);
-D3D11API HRESULT WINAPI D3D11CreateDevice(void *adapter, UINT type, HMODULE sw, UINT flags, const UINT *levels,
-                                          UINT nlevels, UINT sdk, void **device, UINT *level, void **context)
+D3D11API HRESULT WINAPI D3D11CreateDevice(void *adapter, UINT type, HMODULE sw, UINT flags, const UINT *levels, UINT n,
+                                          UINT sdk, void **device, UINT *level, void **context)
 {
-    CreateDeviceFn fn = (CreateDeviceFn)dxvk_proc("D3D11CreateDevice");
-    if (fn) return fn(adapter, type, sw, flags, levels, nlevels, sdk, device, level, context);
-    clear(device, context, NULL);
-    if (level) *level = 0;
+    CreateDevice_t f = (CreateDevice_t)dxvk("D3D11CreateDevice");
+    if (f) return f(adapter, type, sw, flags, levels, n, sdk, device, level, context);
+    none(device, context, level);
     return DXGI_ERROR_UNSUPPORTED_;
 }
 
-typedef HRESULT (WINAPI *CreateDeviceSwapFn)(void *, UINT, HMODULE, UINT, const UINT *, UINT, UINT, const void *,
-                                             void **, void **, UINT *, void **);
-D3D11API HRESULT WINAPI D3D11CreateDeviceAndSwapChain(void *adapter, UINT type, HMODULE sw, UINT flags,
-                                                      const UINT *levels, UINT nlevels, UINT sdk, const void *desc,
-                                                      void **swap, void **device, UINT *level, void **context)
+D3D11API HRESULT WINAPI D3D11CreateDeviceAndSwapChain(void *adapter, UINT type, HMODULE sw, UINT flags, const UINT *levels,
+                                                      UINT n, UINT sdk, const void *desc, void **swapchain, void **device,
+                                                      UINT *level, void **context)
 {
-    CreateDeviceSwapFn fn = (CreateDeviceSwapFn)dxvk_proc("D3D11CreateDeviceAndSwapChain");
-    if (fn) return fn(adapter, type, sw, flags, levels, nlevels, sdk, desc, swap, device, level, context);
-    clear(swap, device, context);
-    if (level) *level = 0;
+    CreateDeviceAndSwapChain_t f = (CreateDeviceAndSwapChain_t)dxvk("D3D11CreateDeviceAndSwapChain");
+    if (f) return f(adapter, type, sw, flags, levels, n, sdk, desc, swapchain, device, level, context);
+    if (swapchain) *swapchain = NULL;
+    none(device, context, level);
     return DXGI_ERROR_UNSUPPORTED_;
 }
 
-/* (d3d10core.dll's way in) */
-typedef HRESULT (WINAPI *CoreCreateDeviceFn)(void *, void *, UINT, const UINT *, UINT, void **);
-D3D11API HRESULT WINAPI D3D11CoreCreateDevice(void *factory, void *adapter, UINT flags, const UINT *levels,
-                                              UINT nlevels, void **device)
+/* (DXVK's d3d10core.dll creates its devices through this one) */
+D3D11API HRESULT WINAPI D3D11CoreCreateDevice(void *factory, void *adapter, UINT flags, const UINT *levels, UINT n,
+                                              void **device)
 {
-    CoreCreateDeviceFn fn = (CoreCreateDeviceFn)dxvk_proc("D3D11CoreCreateDevice");
-    if (fn) return fn(factory, adapter, flags, levels, nlevels, device);
-    clear(device, NULL, NULL);
+    CoreCreateDevice_t f = (CoreCreateDevice_t)dxvk("D3D11CoreCreateDevice");
+    if (f) return f(factory, adapter, flags, levels, n, device);
+    none(device, NULL, NULL);
     return DXGI_ERROR_UNSUPPORTED_;
 }
 
-typedef HRESULT (WINAPI *On12CreateDeviceFn)(void *, UINT, const UINT *, UINT, void *const *, UINT, UINT, void **,
-                                             void **, UINT *);
-D3D11API HRESULT WINAPI D3D11On12CreateDevice(void *d3d12, UINT flags, const UINT *levels, UINT nlevels,
-                                              void *const *queues, UINT nqueues, UINT mask, void **device,
-                                              void **context, UINT *level)
+D3D11API HRESULT WINAPI D3D11On12CreateDevice(void *d3d12, UINT flags, const UINT *levels, UINT n, void *const *queues,
+                                              UINT nq, UINT mask, void **device, void **context, UINT *level)
 {
-    On12CreateDeviceFn fn = (On12CreateDeviceFn)dxvk_proc("D3D11On12CreateDevice");
-    if (fn) return fn(d3d12, flags, levels, nlevels, queues, nqueues, mask, device, context, level);
-    clear(device, context, NULL);
-    if (level) *level = 0;
+    On12CreateDevice_t f = (On12CreateDevice_t)dxvk("D3D11On12CreateDevice");
+    if (f) return f(d3d12, flags, levels, n, queues, nq, mask, device, context, level);
+    none(device, context, level);
     return DXGI_ERROR_UNSUPPORTED_;
 }

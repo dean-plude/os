@@ -292,3 +292,124 @@ LWAPI HRESULT WINAPI StrRetToBufA(STRRET_ *sr, const void *pidl, LPSTR buf, UINT
     LocalFree(a);
     return S_OK_;
 }
+
+/* -----------------------------------------------------------------------
+ * SHCreateMemStream: an IStream over a growing block of memory
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    IStream iface;
+    LONG refs;
+    BYTE *data;
+    ULONG size, cap, pos;
+} MStream;
+
+static HRESULT STDMETHODCALLTYPE ms_qi(IStream *This, REFIID riid, void **ppv) { return fs_qi(This, riid, ppv); }
+static ULONG STDMETHODCALLTYPE ms_addref(IStream *This) { return (ULONG)InterlockedIncrement(&((MStream *)This)->refs); }
+static ULONG STDMETHODCALLTYPE ms_release(IStream *This)
+{
+    MStream *s = (MStream *)This;
+    LONG r = InterlockedDecrement(&s->refs);
+    if (!r) { HeapFree(GetProcessHeap(), 0, s->data); HeapFree(GetProcessHeap(), 0, s); }
+    return (ULONG)r;
+}
+static BOOL ms_reserve(MStream *s, ULONG n)
+{
+    if (n <= s->cap) return TRUE;
+    ULONG cap = s->cap ? s->cap : 256;
+    while (cap < n) { if (cap > 0x7FFFFFFF / 2) return FALSE; cap *= 2; }
+    BYTE *d = s->data ? HeapReAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, s->data, cap) : HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, cap);
+    if (!d) return FALSE;
+    s->data = d;
+    s->cap = cap;
+    return TRUE;
+}
+static HRESULT STDMETHODCALLTYPE ms_read(IStream *This, void *buf, ULONG n, ULONG *got)
+{
+    MStream *s = (MStream *)This;
+    ULONG k = s->pos < s->size ? s->size - s->pos : 0;
+    if (k > n) k = n;
+    for (ULONG i = 0; i < k; i++) ((BYTE *)buf)[i] = s->data[s->pos + i];
+    s->pos += k;
+    if (got) *got = k;
+    return k == n ? S_OK_ : S_FALSE;
+}
+static HRESULT STDMETHODCALLTYPE ms_write(IStream *This, const void *buf, ULONG n, ULONG *done)
+{
+    MStream *s = (MStream *)This;
+    if (!ms_reserve(s, s->pos + n)) return STG_E_MEDIUMFULL;
+    for (ULONG i = 0; i < n; i++) s->data[s->pos + i] = ((const BYTE *)buf)[i];
+    s->pos += n;
+    if (s->pos > s->size) s->size = s->pos;
+    if (done) *done = n;
+    return S_OK_;
+}
+static HRESULT STDMETHODCALLTYPE ms_seek(IStream *This, LARGE_INTEGER d, DWORD how, ULARGE_INTEGER *np)
+{
+    MStream *s = (MStream *)This;
+    LONGLONG base = how == STREAM_SEEK_SET ? 0 : how == STREAM_SEEK_CUR ? (LONGLONG)s->pos : (LONGLONG)s->size;
+    LONGLONG p = base + d.QuadPart;
+    if (how > STREAM_SEEK_END) return STG_E_INVALIDFUNCTION;
+    if (p < 0) return STG_E_INVALIDFUNCTION;
+    s->pos = (ULONG)p;
+    if (np) np->QuadPart = s->pos;
+    return S_OK_;
+}
+static HRESULT STDMETHODCALLTYPE ms_setsize(IStream *This, ULARGE_INTEGER n)
+{
+    MStream *s = (MStream *)This;
+    if (n.QuadPart > 0x7FFFFFFF || !ms_reserve(s, (ULONG)n.QuadPart)) return STG_E_MEDIUMFULL;
+    s->size = (ULONG)n.QuadPart;
+    return S_OK_;
+}
+static HRESULT STDMETHODCALLTYPE ms_copyto(IStream *This, IStream *to, ULARGE_INTEGER n, ULARGE_INTEGER *rd, ULARGE_INTEGER *wr)
+{
+    MStream *s = (MStream *)This;
+    ULONG k = s->pos < s->size ? s->size - s->pos : 0, done = 0;
+    if (n.QuadPart < k) k = (ULONG)n.QuadPart;
+    HRESULT hr = to->lpVtbl->Write(to, s->data + s->pos, k, &done);
+    s->pos += k;
+    if (rd) rd->QuadPart = k;
+    if (wr) wr->QuadPart = done;
+    return hr;
+}
+static HRESULT STDMETHODCALLTYPE ms_commit(IStream *This, DWORD f) { (void)This; (void)f; return S_OK_; }
+static HRESULT STDMETHODCALLTYPE ms_revert(IStream *This) { (void)This; return S_OK_; }
+static HRESULT STDMETHODCALLTYPE ms_lock(IStream *This, ULARGE_INTEGER o, ULARGE_INTEGER n, DWORD t)
+{ (void)This; (void)o; (void)n; (void)t; return STG_E_INVALIDFUNCTION; }
+static HRESULT STDMETHODCALLTYPE ms_stat(IStream *This, STATSTG *st, DWORD flags)
+{
+    (void)flags;
+    if (!st) return E_INVALIDARG_;
+    for (size_t i = 0; i < sizeof *st; i++) ((BYTE *)st)[i] = 0;
+    st->type = STGTY_STREAM;
+    st->cbSize.QuadPart = ((MStream *)This)->size;
+    st->grfMode = STGM_READWRITE_;
+    return S_OK_;
+}
+static HRESULT STDMETHODCALLTYPE ms_clone(IStream *This, IStream **out);
+static IStreamVtbl g_ms_vtbl = { ms_qi, ms_addref, ms_release, ms_read, ms_write, ms_seek, ms_setsize, ms_copyto,
+                                 ms_commit, ms_revert, ms_lock, ms_lock, ms_stat, ms_clone };
+
+LWAPI IStream *WINAPI SHCreateMemStream(const BYTE *init, UINT n)
+{
+    MStream *s = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *s);
+    if (!s) return NULL;
+    s->iface.lpVtbl = &g_ms_vtbl;
+    s->refs = 1;
+    if (init && n) {
+        if (!ms_reserve(s, n)) { HeapFree(GetProcessHeap(), 0, s); return NULL; }
+        for (UINT i = 0; i < n; i++) s->data[i] = init[i];
+        s->size = n;
+    }
+    return &s->iface;
+}
+static HRESULT STDMETHODCALLTYPE ms_clone(IStream *This, IStream **out)
+{
+    MStream *s = (MStream *)This;
+    if (!out) return E_INVALIDARG_;
+    IStream *c = SHCreateMemStream(s->data, s->size);
+    if (!c) return E_OUTOFMEMORY_;
+    ((MStream *)c)->pos = s->pos;
+    *out = c;
+    return S_OK_;
+}

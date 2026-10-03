@@ -48,9 +48,20 @@ bool DesktopSetDisplayMode(int w, int h);
 /* Make @w x @h the mode NovaOS returns to and boots in (saved in the
  * registry, where Windows keeps it: ...\Control\Video\...\DefaultSettings.*) */
 void DesktopSaveDisplayMode(int w, int h);
-/* At boot, before the desktop starts: switch to the saved mode if the
- * adapter has it */
+/* At boot, before the desktop starts: switch every display to its saved
+ * mode if the adapter has it, and place the other monitors where they
+ * were arranged */
 void DesktopRestoreDisplayMode(void);
+
+/* The same for display @head (hal/display.h; 0 is the primary) */
+bool DesktopSetHeadMode(int head, int w, int h);
+void DesktopSaveHeadMode(int head, int w, int h);
+/* Arrange: put monitor @i (>= 1) with its top left at (x, y) on the
+ * virtual desktop (logical px; gdi.h GdiSetMonitorOrigin) and lay
+ * everything out again; @save keeps it in the registry
+ * (...\Video\{NovaOS-Display}\000N, Attach.RelativeX/Y).  False if it
+ * had to go elsewhere (it would overlap, or touch no other monitor). */
+bool DesktopSetMonitorOrigin(int i, int x, int y, bool save);
 
 /* Toggle the Start menu open/closed. */
 void DesktopToggleStart(void);

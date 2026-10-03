@@ -420,6 +420,14 @@ roots = os.path.join(out, 'ca-bundle.der')
 build_netsurf.root_bundle(roots)
 built.append(('\\Windows\\System32\\ca-bundle.der', roots))
 
+# 3a2. the Windows Installer packages the msitest self-test installs
+# (tools/msitest/mkpkg.py writes them; their programs are copies of msitest)
+msipkg = os.path.join(out, 'msitest')
+run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'msitest', 'mkpkg.py'), msipkg,
+     os.path.join(out, 'msitest.exe')])
+for n in sorted(os.listdir(msipkg)):
+    built.append((f'\\Tests\\Msi\\{n}', os.path.join(msipkg, n)))
+
 # 3a. sample files for the user's folders (tools/make_icons.py draws the icons)
 samples = os.path.join(HERE, 'samples')
 for n in sorted(os.listdir(samples)):

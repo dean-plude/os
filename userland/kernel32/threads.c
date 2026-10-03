@@ -104,22 +104,31 @@ DWORD WINAPI GetThreadId(HANDLE t)
  * ----------------------------------------------------------------------- */
 /* An alertable wait runs this thread's queued APCs (WAIT_IO_COMPLETION):
  * those already queued, and those queued while it waits (looked for
- * between slices of the wait) */
+ * between slices of the wait).  A slice also ends when one of the
+ * thread's waitable timers is due to run its completion routine, so that
+ * routine runs on time.  @n 0: SleepEx. */
 BOOL k32_run_apcs(void);
-static DWORD alertable_wait(DWORD n, const HANDLE *h, BOOL all, DWORD ms)
+ULONGLONG k32_now_100ns(void);
+ULONGLONG k32_timer_apc_slice(ULONGLONG slice);
+DWORD k32_alertable_wait(DWORD n, const HANDLE *h, BOOL all, DWORD ms)
 {
-    ULONGLONG until = ms == INFINITE ? ~0ULL : GetTickCount64() + ms;
+    ULONGLONG until = ms == INFINITE ? ~0ULL : k32_now_100ns() + (ULONGLONG)ms * 10000;
     for (;;) {
         if (k32_run_apcs()) return WAIT_IO_COMPLETION;
-        ULONGLONG now = GetTickCount64();
-        DWORD slice = until == ~0ULL || until - now > 50 ? 50 : (DWORD)(until - now);
+        ULONGLONG now = k32_now_100ns();
+        ULONGLONG slice = until <= now ? 0 : until - now > 500000 ? 500000 : until - now;    /* (50 ms) */
+        slice = k32_timer_apc_slice(slice);
         LARGE_INTEGER li;
-        NTSTATUS s = n == 1 ? NtWaitForSingleObject(h[0], TRUE, ms_timeout(&li, slice))
-                            : NtWaitForMultipleObjects(n, h, all ? WaitAll : WaitAny, TRUE, ms_timeout(&li, slice));
-        DWORD r = wait_status(s);
-        if (r != WAIT_TIMEOUT || GetTickCount64() >= until) return r;
+        li.QuadPart = -(LONGLONG)slice;
+        NTSTATUS s = n == 0 ? NtDelayExecution(TRUE, &li)
+                   : n == 1 ? NtWaitForSingleObject(h[0], TRUE, &li)
+                            : NtWaitForMultipleObjects(n, h, all ? WaitAll : WaitAny, TRUE, &li);
+        DWORD r = n ? wait_status(s) : WAIT_TIMEOUT;
+        if (r != WAIT_TIMEOUT) return r;
+        if (until != ~0ULL && k32_now_100ns() >= until) return k32_run_apcs() ? WAIT_IO_COMPLETION : WAIT_TIMEOUT;
     }
 }
+#define alertable_wait k32_alertable_wait
 
 DWORD WINAPI WaitForSingleObjectEx(HANDLE h, DWORD ms, BOOL alertable)
 {
@@ -293,6 +302,47 @@ __declspec(dllexport) HANDLE WINAPI OpenMutexA(DWORD access, BOOL inherit, LPCST
     NTSTATUS st = NtOpenMutant(&h, access, oa);
     return opened(st, h);
 }
+/* Waitable timers: kernel timer objects, which end the waits on them when
+ * they are due (to the TSC, not the 10 ms tick).  SetWaitableTimer and the
+ * completion routines are in extra.c. */
+__declspec(dllexport) HANDLE WINAPI CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access)
+{
+    ObName n;
+    HANDLE h = 0;
+    NTSTATUS s = NtCreateTimer(&h, access ? access : 0x1F0003 /* TIMER_ALL_ACCESS */, ob_attrs(&n, ob_name_w(&n, name), sa),
+                               flags & 1 /* CREATE_WAITABLE_TIMER_MANUAL_RESET */ ? 0 /* NotificationTimer */ : 1);
+    return created(s, h);
+}
+__declspec(dllexport) HANDLE WINAPI CreateWaitableTimerW(LPSECURITY_ATTRIBUTES sa, BOOL manual, LPCWSTR name)
+{
+    return CreateWaitableTimerExW(sa, name, manual ? 1 : 0, 0);
+}
+__declspec(dllexport) HANDLE WINAPI CreateWaitableTimerA(LPSECURITY_ATTRIBUTES sa, BOOL manual, LPCSTR name)
+{
+    ObName n;
+    HANDLE h = 0;
+    NTSTATUS s = NtCreateTimer(&h, 0x1F0003, ob_attrs(&n, ob_name_a(&n, name), sa), manual ? 0 : 1);
+    return created(s, h);
+}
+__declspec(dllexport) HANDLE WINAPI OpenWaitableTimerW(DWORD access, BOOL inherit, LPCWSTR name)
+{
+    ObName n;
+    HANDLE h = 0;
+    POBJECT_ATTRIBUTES oa = ob_name_w(&n, name);
+    if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    oa = ob_inherit(&n, oa, inherit);
+    return opened(NtOpenTimer(&h, access, oa), h);
+}
+__declspec(dllexport) HANDLE WINAPI OpenWaitableTimerA(DWORD access, BOOL inherit, LPCSTR name)
+{
+    ObName n;
+    HANDLE h = 0;
+    POBJECT_ATTRIBUTES oa = ob_name_a(&n, name);
+    if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    oa = ob_inherit(&n, oa, inherit);
+    return opened(NtOpenTimer(&h, access, oa), h);
+}
+
 BOOL WINAPI ReleaseMutex(HANDLE h) { NTSTATUS s = NtReleaseMutant(h, 0); return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE); }
 
 HANDLE WINAPI CreateSemaphoreW(LPSECURITY_ATTRIBUTES sa, LONG init, LONG max, LPCWSTR name)

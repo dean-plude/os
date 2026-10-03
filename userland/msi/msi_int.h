@@ -31,15 +31,19 @@ typedef struct {
     uint8_t       *ministream;        /* the root entry's stream */
     size_t         ministream_size;
     int            nentries;          /* directory entries */
+    int            root;              /* the storage this Cfb looks in (0: the file's root) */
+    bool           borrowed;          /* a storage opened inside another Cfb: shares its tables */
 } Cfb;
 
 bool  cfb_open(Cfb *c, const void *data, size_t size);
 void  cfb_close(Cfb *c);
-/* Directory entry i: its decoded MSI name ("!Property" for tables, the
- * plain name for other streams); false past the end */
-bool  cfb_entry(const Cfb *c, int i, char *name, int cap, bool *is_stream);
-/* Read a stream by decoded name; malloc'd, NULL if missing */
+/* Read a stream of this storage by decoded name; malloc'd, NULL if missing */
 void *cfb_read(const Cfb *c, const char *name, size_t *size);
+/* A storage inside this one (by decoded name) as a Cfb of its own; it
+ * shares @parent's memory, so it is used while @parent is open */
+bool  cfb_open_storage(const Cfb *parent, const char *name, Cfb *out);
+/* The streams and storages of this storage, by decoded name */
+void  cfb_list(const Cfb *c, void (*fn)(void *ctx, const char *name, bool is_stream), void *ctx);
 
 /* -----------------------------------------------------------------------
  * The database: string pool and tables
@@ -64,6 +68,7 @@ typedef struct {
 } MsiTable;
 
 struct MsiTemp;                       /* sql.c: rows and tables added at run time */
+struct MsiOverlay;                    /* msidb.c: storages whose streams count as the database's */
 
 typedef struct {
     Cfb       cfb;
@@ -74,6 +79,9 @@ typedef struct {
     MsiTable *tables;
     int       ntables;
     struct MsiTemp *temp;
+    struct MsiOverlay *overlays;      /* transforms' and patches' storages, newest last */
+    int       noverlays;
+    int      *hash, hash_cap;         /* the pool by text, for adding strings */
 } MsiDb;
 
 /* A stream column ('v0': string type, no length): the cell refers to the
@@ -91,6 +99,23 @@ const char *msidb_str(const MsiDb *db, const MsiTable *t, int row, int col, char
 int         msidb_int(const MsiDb *db, const MsiTable *t, int row, int col, bool *null);
 /* Row whose column @col equals @value, from @from; -1 if none */
 int         msidb_find(const MsiDb *db, const MsiTable *t, int col, const char *value, int from);
+
+/* A compound file in memory (malloc'd @data, owned from here), shared by
+ * the storages opened in it: a transform, a patch */
+typedef struct MsiFile MsiFile;
+MsiFile    *msifile_load(void *data, size_t size);
+const Cfb  *msifile_cfb(const MsiFile *f);
+void        msifile_release(MsiFile *f);
+/* The streams of storage @storage (NULL: the root) of @f count as @db's */
+bool        msidb_add_streams(MsiDb *db, MsiFile *f, const char *storage);
+/* A stream of the database, or of a transform or patch applied to it */
+void       *msidb_read_stream(const MsiDb *db, const char *name, size_t *size);
+/* Apply the transform in storage @storage (NULL: the file is one) to the
+ * tables; @suppress: the MSITRANSFORM_ERROR_* conditions to ignore.
+ * Returns 0, or 1624 (ERROR_INSTALL_TRANSFORM_FAILURE) with @err set. */
+int         msidb_apply_transform(MsiDb *db, MsiFile *f, const char *storage, int suppress, char *err, int errcap);
+/* A summary information property of storage @c (strings into @str, numbers into @ival) */
+bool        msi_suminfo_get(const Cfb *c, int pid, char *str, int cap, int *ival);
 
 /* -----------------------------------------------------------------------
  * Records and SQL views (sql.c), the data behind MSIHANDLEs

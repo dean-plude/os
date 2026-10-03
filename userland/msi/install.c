@@ -61,7 +61,18 @@ struct Inst {
     char      action_template[512];  /* ActionText template of the running action */
     long long prog_total, prog_done; /* progress ticks from MsiProcessMessage */
     int       sequence_depth;
+    const WCHAR *cmdline;            /* the command line's properties */
+    struct RbOp *rb;                 /* the rollback journal */
+    int       nrb, rb_cap, rb_serial;
+    bool      rb_on;                 /* changes are journaled */
+    bool      rolling_back;
+    char     *xforms;                /* transforms applied: their paths, ';' separated */
+    char     *patches;               /* patches applied: their paths, ';' separated */
+    char      patch_remove[64];      /* MSIPATCHREMOVE: the patch this run takes off */
+    char      removed_patch[MAX_PATH]; /* ... and its kept copy, deleted once it is off */
 };
+
+static void cache_changes(Inst *in, HKEY h);
 
 static void logf(Inst *in, const char *fmt, ...)
 {
@@ -659,25 +670,413 @@ static void ui_action(Inst *in, const char *action)
 }
 
 /* -----------------------------------------------------------------------
- * Files
+ * Rollback
+ *
+ * While InstallExecuteSequence runs, every change to the machine is noted
+ * first in a journal: a file written over or removed is moved to
+ * C:\Config.Msi (as Windows keeps .rbf files there), a new file or folder
+ * or registry key is remembered, a registry value's old contents are kept,
+ * a key the product registration or a service lives in is copied whole,
+ * services created, started or stopped are listed, and the package's
+ * rollback custom actions are scheduled with their CustomActionData.  If
+ * the installation fails or is cancelled before InstallFinalize, the
+ * journal is played backwards and the machine is as it was; at
+ * InstallFinalize the backups are deleted.  DISABLEROLLBACK=1 or the
+ * DisableRollback action turn it off.
  * ----------------------------------------------------------------------- */
-static bool make_dirs(const char *path)
+typedef void *SC_H;
+__declspec(dllimport) SC_H WINAPI OpenSCManagerW(LPCWSTR, LPCWSTR, DWORD);
+__declspec(dllimport) SC_H WINAPI OpenServiceW(SC_H, LPCWSTR, DWORD);
+__declspec(dllimport) SC_H WINAPI CreateServiceW(SC_H, LPCWSTR, LPCWSTR, DWORD, DWORD, DWORD, DWORD, LPCWSTR, LPCWSTR,
+                                                 LPDWORD, LPCWSTR, LPCWSTR, LPCWSTR);
+__declspec(dllimport) BOOL WINAPI ChangeServiceConfigW(SC_H, DWORD, DWORD, DWORD, LPCWSTR, LPCWSTR, LPDWORD, LPCWSTR,
+                                                       LPCWSTR, LPCWSTR, LPCWSTR);
+__declspec(dllimport) BOOL WINAPI ChangeServiceConfig2W(SC_H, DWORD, LPVOID);
+__declspec(dllimport) BOOL WINAPI StartServiceW(SC_H, DWORD, LPCWSTR *);
+__declspec(dllimport) BOOL WINAPI ControlService(SC_H, DWORD, LPVOID);
+__declspec(dllimport) BOOL WINAPI DeleteService(SC_H);
+__declspec(dllimport) BOOL WINAPI CloseServiceHandle(SC_H);
+__declspec(dllimport) BOOL WINAPI QueryServiceStatus(SC_H, LPVOID);
+
+#define SVC_ALL_ACCESS 0xF01FF
+#define SCM_ALL_ACCESS 0xF003F
+#define SVC_NO_CHANGE  0xFFFFFFFF
+#define SERVICES_KEY   L"SYSTEM\\CurrentControlSet\\Services\\"
+
+enum {
+    RB_FILE_NEW,          /* a: a file that was not there */
+    RB_FILE_SAVED,        /* a: a file replaced or removed; b: its copy in C:\Config.Msi */
+    RB_DIR_NEW,           /* a: a folder created */
+    RB_DIR_REMOVED,       /* a: a folder removed */
+    RB_VALUE,             /* root, a: key, b: value name (NULL: default); old: its contents, if it existed */
+    RB_KEY_NEW,           /* root, a: a key created */
+    RB_KEY_SAVED,         /* root, a: a key's values, all kept (or none: it did not exist) */
+    RB_SERVICE_NEW,       /* a: a service created */
+    RB_SERVICE_STARTED,   /* a: a service started */
+    RB_SERVICE_STOPPED,   /* a: a service stopped */
+    RB_ACTION,            /* a: a rollback custom action; b: its CustomActionData */
+};
+
+typedef struct { WCHAR *name; DWORD type, size; BYTE *data; } RbValue;
+
+typedef struct RbOp {
+    int      kind;
+    HKEY     root;
+    char    *a, *b;
+    WCHAR   *wa, *wb;
+    bool     existed;
+    RbValue *vals;
+    int      nvals;
+} RbOp;
+
+static bool run_custom_action(Inst *in, const char *name);
+
+static WCHAR *wdup(const WCHAR *s)
 {
-    /* create every folder on the way */
+    if (!s) return NULL;
+    size_t n = wcslen(s) + 1;
+    WCHAR *d = malloc(n * sizeof(WCHAR));
+    if (d) memcpy(d, s, n * sizeof(WCHAR));
+    return d;
+}
+
+static RbOp *rb_add(Inst *in, int kind)
+{
+    if (!in || !in->rb_on || in->rolling_back) return NULL;
+    if (in->nrb == in->rb_cap) {
+        int cap = in->rb_cap ? in->rb_cap * 2 : 64;
+        RbOp *n = realloc(in->rb, (size_t)cap * sizeof(RbOp));
+        if (!n) return NULL;
+        in->rb = n;
+        in->rb_cap = cap;
+    }
+    RbOp *o = &in->rb[in->nrb++];
+    memset(o, 0, sizeof(*o));
+    o->kind = kind;
+    return o;
+}
+
+static void rb_free_op(RbOp *o)
+{
+    free(o->a); free(o->b); free(o->wa); free(o->wb);
+    for (int i = 0; i < o->nvals; i++) { free(o->vals[i].name); free(o->vals[i].data); }
+    free(o->vals);
+}
+
+/* A file is about to be written: keep what is there */
+static void rb_file(Inst *in, const WCHAR *path)
+{
+    if (!in || !in->rb_on || in->rolling_back) return;
+    DWORD a = GetFileAttributesW(path);
+    if (a == INVALID_FILE_ATTRIBUTES) {
+        RbOp *o = rb_add(in, RB_FILE_NEW);
+        if (o) o->wa = wdup(path);
+        return;
+    }
+    if (a & FILE_ATTRIBUTE_DIRECTORY) return;
+    CreateDirectoryW(L"C:\\Config.Msi", NULL);
+    WCHAR bak[MAX_PATH];
+    _snwprintf(bak, MAX_PATH, L"C:\\Config.Msi\\%08lx%04x.rbf", (unsigned long)GetTickCount(), ++in->rb_serial & 0xFFFF);
+    SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL);
+    /* a move when it can (the file is gone after it), else a copy */
+    if (!MoveFileExW(path, bak, MOVEFILE_REPLACE_EXISTING) && !CopyFileW(path, bak, FALSE)) {
+        logf(in, "Rollback: could not keep a copy of a file (error %lu)", GetLastError());
+        return;
+    }
+    RbOp *o = rb_add(in, RB_FILE_SAVED);
+    if (o) { o->wa = wdup(path); o->wb = wdup(bak); }
+}
+
+/* Remove a file, keeping it for a rollback */
+static bool rb_delete_file(Inst *in, const WCHAR *path)
+{
+    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return false;
+    if (in && in->rb_on && !in->rolling_back) {
+        rb_file(in, path);
+        return GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES || DeleteFileW(path);
+    }
+    SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL);
+    return DeleteFileW(path);
+}
+
+static bool rb_remove_dir(Inst *in, const WCHAR *path)
+{
+    if (!RemoveDirectoryW(path)) return false;
+    RbOp *o = rb_add(in, RB_DIR_REMOVED);
+    if (o) o->wa = wdup(path);
+    return true;
+}
+
+static bool make_dirs(Inst *in, const char *path)
+{
+    /* create every folder on the way (and note the new ones) */
     WCHAR w[MAX_PATH];
     to_w(path, w, MAX_PATH);
-    for (int i = 3; w[i]; i++) {
-        if (w[i] != L'\\') continue;
-        w[i] = 0;
-        CreateDirectoryW(w, NULL);
-        w[i] = L'\\';
-    }
     size_t n = wcslen(w);
-    if (n && w[n - 1] != L'\\') CreateDirectoryW(w, NULL);
+    for (size_t i = 3; i <= n; i++) {
+        if (w[i] != L'\\' && w[i] != 0) continue;
+        if (i == n && n && w[n - 1] == L'\\') break;
+        WCHAR save = w[i];
+        w[i] = 0;
+        if (CreateDirectoryW(w, NULL)) { RbOp *o = rb_add(in, RB_DIR_NEW); if (o) o->wa = wdup(w); }
+        w[i] = save;
+    }
     DWORD a = GetFileAttributesW(w);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+static bool read_value(HKEY h, const WCHAR *name, RbValue *v)
+{
+    DWORD type, size = 0;
+    if (RegQueryValueExW(h, name, NULL, &type, NULL, &size)) return false;
+    v->data = malloc(size ? size : 1);
+    if (!v->data || RegQueryValueExW(h, name, NULL, &type, v->data, &size)) { free(v->data); v->data = NULL; return false; }
+    v->type = type;
+    v->size = size;
+    v->name = wdup(name);
+    return true;
+}
+
+/* A registry value is about to change (be set or deleted) */
+static void rb_value(Inst *in, HKEY root, const WCHAR *key, const WCHAR *name)
+{
+    RbOp *o = rb_add(in, RB_VALUE);
+    if (!o) return;
+    o->root = root;
+    o->wa = wdup(key);
+    o->wb = wdup(name);
+    HKEY h;
+    if (RegOpenKeyExW(root, key, 0, KEY_READ, &h)) return;
+    RbValue v;
+    memset(&v, 0, sizeof(v));
+    if (read_value(h, name, &v)) {
+        o->existed = true;
+        o->vals = malloc(sizeof(RbValue));
+        if (o->vals) { o->vals[0] = v; o->nvals = 1; }
+        else { free(v.name); free(v.data); }
+    }
+    RegCloseKey(h);
+}
+
+/* Create a key, noting each key on the way that did not exist */
+static LSTATUS rb_create_key(Inst *in, HKEY root, const WCHAR *key, HKEY *out)
+{
+    WCHAR k[512];
+    wcsncpy(k, key, 511);
+    k[511] = 0;
+    size_t n = wcslen(k);
+    for (size_t i = 0; i <= n; i++) {
+        if (k[i] != L'\\' && k[i] != 0) continue;
+        WCHAR save = k[i];
+        k[i] = 0;
+        HKEY h;
+        if (RegOpenKeyExW(root, k, 0, KEY_READ, &h)) {
+            RbOp *o = rb_add(in, RB_KEY_NEW);
+            if (o) { o->root = root; o->wa = wdup(k); }
+        } else RegCloseKey(h);
+        k[i] = save;
+    }
+    return RegCreateKeyExW(root, key, 0, NULL, 0, KEY_ALL_ACCESS, NULL, out, NULL);
+}
+
+/* A whole key is about to be rewritten or deleted: keep its values */
+static void rb_key(Inst *in, HKEY root, const WCHAR *key)
+{
+    RbOp *o = rb_add(in, RB_KEY_SAVED);
+    if (!o) return;
+    o->root = root;
+    o->wa = wdup(key);
+    HKEY h;
+    if (RegOpenKeyExW(root, key, 0, KEY_READ, &h)) return;
+    o->existed = true;
+    for (DWORD i = 0; ; i++) {
+        WCHAR name[256];
+        DWORD nl = 256;
+        if (RegEnumValueW(h, i, name, &nl, NULL, NULL, NULL, NULL)) break;
+        RbValue *nv = realloc(o->vals, (size_t)(o->nvals + 1) * sizeof(RbValue));
+        if (!nv) break;
+        o->vals = nv;
+        memset(&o->vals[o->nvals], 0, sizeof(RbValue));
+        if (read_value(h, name, &o->vals[o->nvals])) o->nvals++;
+    }
+    RegCloseKey(h);
+}
+
+static void clear_values(HKEY h)
+{
+    WCHAR name[256];
+    for (int guard = 0; guard < 4096; guard++) {
+        DWORD nl = 256;
+        if (RegEnumValueW(h, 0, name, &nl, NULL, NULL, NULL, NULL)) break;
+        if (RegDeleteValueW(h, name)) break;
+    }
+}
+
+static void rb_note(Inst *in, int kind, const char *a, const char *b)
+{
+    RbOp *o = rb_add(in, kind);
+    if (!o) return;
+    o->a = a ? strdup(a) : NULL;
+    o->b = b ? strdup(b) : NULL;
+}
+
+static void rb_begin(Inst *in)
+{
+    in->rb_on = !prop_set(in, "DISABLEROLLBACK");
+    if (!in->rb_on) logf(in, "Rollback is disabled (DISABLEROLLBACK)");
+}
+
+/* Success (InstallFinalize) or DisableRollback: the backups go */
+static void rb_commit(Inst *in)
+{
+    for (int i = 0; i < in->nrb; i++) {
+        if (in->rb[i].kind == RB_FILE_SAVED && in->rb[i].wb) DeleteFileW(in->rb[i].wb);
+        rb_free_op(&in->rb[i]);
+    }
+    free(in->rb);
+    in->rb = NULL;
+    in->nrb = in->rb_cap = 0;
+    in->rb_on = false;
+    RemoveDirectoryW(L"C:\\Config.Msi");                    /* (if empty) */
+}
+
+static void stop_service(const WCHAR *name, bool remove)
+{
+    SC_H scm = OpenSCManagerW(NULL, NULL, SCM_ALL_ACCESS);
+    SC_H svc = scm ? OpenServiceW(scm, name, SVC_ALL_ACCESS) : NULL;
+    if (svc) {
+        DWORD st[7];
+        if (ControlService(svc, 1 /* SERVICE_CONTROL_STOP */, st))
+            for (int i = 0; i < 100 && QueryServiceStatus(svc, st) && st[1] != 1 /* SERVICE_STOPPED */; i++) Sleep(100);
+        if (remove) DeleteService(svc);
+        CloseServiceHandle(svc);
+    }
+    if (scm) CloseServiceHandle(scm);
+}
+
+/* Failure: undo, newest first */
+/* Delete a file during rollback: a program a rollback action just ran may
+ * still be mapped for a moment after it exits, so try for a while, then
+ * leave it to the next boot */
+static bool rb_unlink(Inst *in, const WCHAR *path, const char *u8)
+{
+    SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL);
+    for (int i = 0; i < 30; i++) {
+        DeleteFileW(path);
+        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return true;   /* (gone, not only "deleted") */
+        Sleep(100);
+    }
+    logf(in, "Rollback: %s is in use (error %lu); it goes at the next boot", u8, GetLastError());
+    MoveFileExW(path, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+    return false;
+}
+
+static void rb_run(Inst *in)
+{
+    if (!in->nrb) { in->rb_on = false; return; }
+    logf(in, "Rolling back %d changes", in->nrb);
+    ui_action_text(in, "Rolling back action:");
+    in->rolling_back = true;
+    in->modes[RUNMODE_ROLLBACK] = true;
+    int undone = 0;
+    for (int i = in->nrb - 1; i >= 0; i--) {
+        RbOp *o = &in->rb[i];
+        char u8[MAX_PATH * 2] = "";
+        if (o->wa) to_u8(o->wa, u8, sizeof(u8));
+        switch (o->kind) {
+        case RB_FILE_NEW:
+            if (GetFileAttributesW(o->wa) != INVALID_FILE_ATTRIBUTES && rb_unlink(in, o->wa, u8)) logf(in, "Rollback: removed %s", u8);
+            break;
+        case RB_FILE_SAVED:
+            if (GetFileAttributesW(o->wa) != INVALID_FILE_ATTRIBUTES && !rb_unlink(in, o->wa, u8)) {
+                logf(in, "Rollback: could not restore %s", u8);
+                break;
+            }
+            if (MoveFileExW(o->wb, o->wa, MOVEFILE_REPLACE_EXISTING)) logf(in, "Rollback: restored %s", u8);
+            else logf(in, "Rollback: could not restore %s (error %lu)", u8, GetLastError());
+            break;
+        case RB_DIR_NEW:
+            if (RemoveDirectoryW(o->wa)) logf(in, "Rollback: removed folder %s", u8);
+            break;
+        case RB_DIR_REMOVED:
+            CreateDirectoryW(o->wa, NULL);
+            break;
+        case RB_VALUE: {
+            HKEY h;
+            if (o->existed && o->nvals) {
+                if (!RegCreateKeyExW(o->root, o->wa, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &h, NULL)) {
+                    RegSetValueExW(h, o->wb, 0, o->vals[0].type, o->vals[0].data, o->vals[0].size);
+                    RegCloseKey(h);
+                }
+            } else if (!RegOpenKeyExW(o->root, o->wa, 0, KEY_ALL_ACCESS, &h)) {
+                RegDeleteValueW(h, o->wb);
+                RegCloseKey(h);
+            }
+            break;
+        }
+        case RB_KEY_NEW:
+            RegDeleteKeyW(o->root, o->wa);
+            logf(in, "Rollback: removed registry key %s", u8);
+            break;
+        case RB_KEY_SAVED: {
+            HKEY h;
+            if (!o->existed) {
+                if (!RegOpenKeyExW(o->root, o->wa, 0, KEY_ALL_ACCESS, &h)) { clear_values(h); RegCloseKey(h); }
+                RegDeleteKeyW(o->root, o->wa);
+            } else if (!RegCreateKeyExW(o->root, o->wa, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &h, NULL)) {
+                clear_values(h);
+                for (int k = 0; k < o->nvals; k++)
+                    RegSetValueExW(h, o->vals[k].name, 0, o->vals[k].type, o->vals[k].data, o->vals[k].size);
+                RegCloseKey(h);
+            }
+            logf(in, "Rollback: registry key %s %s", u8, o->existed ? "restored" : "removed");
+            break;
+        }
+        case RB_SERVICE_NEW:
+        case RB_SERVICE_STARTED: {
+            WCHAR w[256];
+            to_w(o->a, w, 256);
+            stop_service(w, o->kind == RB_SERVICE_NEW);
+            logf(in, "Rollback: service %s %s", o->a, o->kind == RB_SERVICE_NEW ? "stopped and deleted" : "stopped");
+            break;
+        }
+        case RB_SERVICE_STOPPED: {
+            WCHAR w[256];
+            to_w(o->a, w, 256);
+            SC_H scm = OpenSCManagerW(NULL, NULL, SCM_ALL_ACCESS);
+            SC_H svc = scm ? OpenServiceW(scm, w, SVC_ALL_ACCESS) : NULL;
+            if (svc) { StartServiceW(svc, 0, NULL); CloseServiceHandle(svc); }
+            if (scm) CloseServiceHandle(scm);
+            logf(in, "Rollback: service %s started again", o->a);
+            break;
+        }
+        case RB_ACTION: {
+            char *saved = strdup(get_prop(in, o->a));
+            set_prop(in, o->a, o->b ? o->b : "");
+            logf(in, "Rollback: custom action %s", o->a);
+            run_custom_action(in, o->a);
+            set_prop(in, o->a, saved);
+            free(saved);
+            break;
+        }
+        }
+        undone++;
+        eng_pump(in);
+    }
+    in->rolling_back = false;
+    in->modes[RUNMODE_ROLLBACK] = false;
+    for (int i = 0; i < in->nrb; i++) rb_free_op(&in->rb[i]);
+    free(in->rb);
+    in->rb = NULL;
+    in->nrb = in->rb_cap = 0;
+    in->rb_on = false;
+    RemoveDirectoryW(L"C:\\Config.Msi");
+    logf(in, "Rollback complete: %d changes undone", undone);
+}
+
+/* -----------------------------------------------------------------------
+ * Files
+ * ----------------------------------------------------------------------- */
 typedef struct {
     int      row;                    /* File table row */
     char     key[80];
@@ -732,7 +1131,7 @@ static bool load_cab(Inst *in, int m, OpenCab *oc)
     snprintf(oc->name, sizeof(oc->name), "%s", cabname);
     if (!*cabname) { fail(in, MSI_ERROR_PACKAGE_INVALID, "Media %d has no cabinet", m); return false; }
     if (cabname[0] == '#') {
-        oc->data = cfb_read(&in->db.cfb, cabname + 1, &oc->size);
+        oc->data = msidb_read_stream(&in->db, cabname + 1, &oc->size);
         if (!oc->data) { fail(in, MSI_ERROR_PACKAGE_INVALID, "Cabinet stream %s is missing", cabname + 1); return false; }
     } else {
         char path[MAX_PATH];
@@ -781,10 +1180,11 @@ static bool open_writer(Inst *in, Writer *w)
     char dir[MAX_PATH];
     snprintf(dir, sizeof(dir), "%s", w->pf->target);
     char *bs = strrchr(dir, '\\');
-    if (bs) { bs[1] = 0; make_dirs(dir); }
+    if (bs) { bs[1] = 0; make_dirs(in, dir); }
     WCHAR wp[MAX_PATH];
     to_w(w->pf->target, wp, MAX_PATH);
     SetFileAttributesW(wp, FILE_ATTRIBUTE_NORMAL);
+    rb_file(in, wp);
     w->h = CreateFileW(wp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (w->h == INVALID_HANDLE_VALUE) {
         fail(in, MSI_ERROR_FAILURE, "Could not create %s (error %lu)", w->pf->target, GetLastError());
@@ -811,6 +1211,20 @@ static void close_writer(Inst *in, Writer *w)
 
 /* Extract one cabinet set (starting at Media row @m) for the planned
  * files it holds; continues into following cabinets when a folder spans */
+/* The Media row a file's sequence number puts it on: the one with the
+ * smallest LastSequence at or above it (a patch's files, at 10000 and
+ * up, come from its own cabinet even when the product's has an entry
+ * with the same key) */
+static int media_of(Inst *in, int sequence)
+{
+    int col = msidb_col(in->media, "LastSequence"), best = -1, best_last = 0;
+    for (int m = 0; in->media && m < in->media->nrows; m++) {
+        int last = msidb_int(&in->db, in->media, m, col, NULL);
+        if (last >= sequence && (best < 0 || last < best_last)) { best = m; best_last = last; }
+    }
+    return best;
+}
+
 static bool extract_media(Inst *in, int m, PlanFile *pf, int npf)
 {
     OpenCab oc;
@@ -826,7 +1240,7 @@ static bool extract_media(Inst *in, int m, PlanFile *pf, int npf)
             if (cf->folder != fo) continue;
             if (cf->continued_next) spans = true;
             PlanFile *p = plan_by_key(pf, npf, cf->name);
-            if (!p || p->done) continue;
+            if (!p || p->done || media_of(in, p->sequence) != m) continue;
             ws[nw].pf = p;
             ws[nw].start = cf->folder_off;
             ws[nw].end = cf->folder_off + cf->size;
@@ -895,8 +1309,9 @@ static bool copy_uncompressed(Inst *in, PlanFile *p)
     char dir[MAX_PATH];
     snprintf(dir, sizeof(dir), "%s", p->target);
     char *bs = strrchr(dir, '\\');
-    if (bs) { bs[1] = 0; make_dirs(dir); }
+    if (bs) { bs[1] = 0; make_dirs(in, dir); }
     logf(in, "Copying %s to %s", src, p->target);
+    if (GetFileAttributesW(ws) != INVALID_FILE_ATTRIBUTES) rb_file(in, wd);
     if (!CopyFileW(ws, wd, FALSE)) { fail(in, MSI_ERROR_PACKAGE_OPEN, "Source file %s is missing", src); return false; }
     p->done = true;
     in->done_work++;
@@ -939,9 +1354,10 @@ static bool action_install_files(Inst *in)
             char dir[MAX_PATH];
             snprintf(dir, sizeof(dir), "%s", pf[i].target);
             char *slash = strrchr(dir, '\\');
-            if (slash) { slash[1] = 0; make_dirs(dir); }
+            if (slash) { slash[1] = 0; make_dirs(in, dir); }
             WCHAR wt[MAX_PATH];
             to_w(pf[i].target, wt, MAX_PATH);
+            rb_file(in, wt);
             HANDLE h = CreateFileW(wt, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
             if (h != INVALID_HANDLE_VALUE) { CloseHandle(h); pf[i].done = true; continue; }
         }
@@ -959,8 +1375,7 @@ static bool action_remove_files(Inst *in)
     for (int i = 0; i < n; i++) {
         WCHAR w[MAX_PATH];
         to_w(pf[i].target, w, MAX_PATH);
-        SetFileAttributesW(w, FILE_ATTRIBUTE_NORMAL);
-        if (DeleteFileW(w)) logf(in, "Removed %s", pf[i].target);
+        if (rb_delete_file(in, w)) logf(in, "Removed %s", pf[i].target);
         else if (GetFileAttributesW(w) != INVALID_FILE_ATTRIBUTES) logf(in, "Could not remove %s", pf[i].target);
         in->done_work++;
         ui_progress(in, in->done_work, in->total_work);
@@ -976,7 +1391,7 @@ static void action_create_folders(Inst *in)
     for (int r = 0; t && r < t->nrows; r++) {
         if (!comp_enabled(in, msidb_str(&in->db, t, r, 1, b))) continue;
         dir_path(in, msidb_str(&in->db, t, r, 0, b), path, sizeof(path));
-        make_dirs(path);
+        make_dirs(in, path);
         logf(in, "Created folder %s", path);
     }
 }
@@ -996,7 +1411,7 @@ static void remove_folder_chain(Inst *in, const char *path)
             return;
         WCHAR w[MAX_PATH];
         to_w(p, w, MAX_PATH);
-        if (!RemoveDirectoryW(w)) return;
+        if (!rb_remove_dir(in, w)) return;
         logf(in, "Removed folder %s", p);
         char *bs = strrchr(p, '\\');
         if (!bs) return;
@@ -1043,12 +1458,13 @@ static void write_registry_row(Inst *in, MsiTable *t, int r)
     to_w(key, wkey, 512);
     to_w(name, wname, 256);
     HKEY h;
-    if (RegCreateKeyExW(root_key(in, root), wkey, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &h, NULL)) {
+    if (rb_create_key(in, root_key(in, root), wkey, &h)) {
         logf(in, "Could not create registry key %s", key);
         return;
     }
     if (!strcmp(name, "*") || !strcmp(name, "+") || !strcmp(name, "-")) { RegCloseKey(h); return; }
     const WCHAR *vname = name[0] ? wname : NULL;
+    rb_value(in, root_key(in, root), wkey, vname);
     if (raw[0] == '#' && raw[1] == 'x') {                          /* REG_BINARY */
         BYTE bin[1024];
         int n = 0;
@@ -1127,10 +1543,11 @@ static void action_remove_registry(Inst *in)
         WCHAR wkey[512], wname[256];
         to_w(key, wkey, 512);
         to_w(name, wname, 256);
-        if (!strcmp(name, "*") || !strcmp(name, "-")) { RegDeleteKeyW(root_key(in, root), wkey); continue; }
+        if (!strcmp(name, "*") || !strcmp(name, "-")) { rb_key(in, root_key(in, root), wkey); RegDeleteKeyW(root_key(in, root), wkey); continue; }
         if (!strcmp(name, "+")) continue;
         HKEY h;
         if (RegOpenKeyExW(root_key(in, root), wkey, 0, KEY_ALL_ACCESS, &h)) continue;
+        rb_value(in, root_key(in, root), wkey, name[0] ? wname : NULL);
         RegDeleteValueW(h, name[0] ? wname : NULL);
         RegCloseKey(h);
         RegDeleteKeyW(root_key(in, root), wkey);   /* goes only if empty */
@@ -1208,6 +1625,7 @@ static void action_write_env(Inst *in)
         to_w(f.name, wname, 128);
         HKEY h = env_key(f.sys, true);
         if (!h) continue;
+        rb_value(in, f.sys ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, f.sys ? ENV_SYS_KEY : ENV_USER_KEY, wname);
         if (f.remove_on_install) { RegDeleteValueW(h, wname); RegCloseKey(h); n++; continue; }
         char cur[2048], pre[2048], post[2048], val[4096];
         env_read(h, wname, cur, sizeof(cur));
@@ -1250,6 +1668,7 @@ static void action_remove_env(Inst *in)
         if (!h) continue;
         char cur[2048], pre[2048], post[2048];
         env_read(h, wname, cur, sizeof(cur));
+        rb_value(in, f.sys ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, f.sys ? ENV_SYS_KEY : ENV_USER_KEY, wname);
         if (env_parts(in, raw, pre, post, sizeof(pre)) && !f.remove_on_uninstall) {
             char out[2048];
             const char *piece = pre[0] ? pre : post;
@@ -1294,6 +1713,7 @@ static void action_register_product(Inst *in)
     to_w(code, wc, 64);
     _snwprintf(key, 300, L"%s\\%s", UNINSTALL_KEY, wc);
     HKEY h;
+    rb_key(in, HKEY_LOCAL_MACHINE, key);
     if (!RegCreateKeyExW(HKEY_LOCAL_MACHINE, key, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &h, NULL)) {
         set_sz(h, L"DisplayName", get_prop(in, "ProductName"));
         set_sz(h, L"DisplayVersion", get_prop(in, "ProductVersion"));
@@ -1335,12 +1755,16 @@ static void action_register_product(Inst *in)
         RegCloseKey(h);
     }
     /* the cached package, for uninstalling */
-    make_dirs("C:\\Windows\\Installer\\");
+    make_dirs(in, "C:\\Windows\\Installer\\");
     WCHAR cache[MAX_PATH];
     _snwprintf(cache, MAX_PATH, L"C:\\Windows\\Installer\\%s.msi", wc);
-    if (!CopyFileW(in->pkg_path, cache, FALSE)) logf(in, "Could not cache the package");
+    if (_wcsicmp(in->pkg_path, cache)) {                     /* (a repair runs from the cached copy) */
+        rb_file(in, cache);
+        if (!CopyFileW(in->pkg_path, cache, FALSE)) logf(in, "Could not cache the package");
+    }
     _snwprintf(key, 300, L"%s\\%s", NOVA_INSTALLER_KEY, wc);
-    if (!RegCreateKeyExW(HKEY_LOCAL_MACHINE, key, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &h, NULL)) {
+    rb_key(in, HKEY_LOCAL_MACHINE, key);
+    if (!rb_create_key(in, HKEY_LOCAL_MACHINE, key, &h)) {
         RegSetValueExW(h, L"LocalPackage", 0, REG_SZ, (const BYTE *)cache, (DWORD)(wcslen(cache) + 1) * 2);
         set_sz(h, L"ProductName", get_prop(in, "ProductName"));
         set_sz(h, L"UpgradeCode", get_prop(in, "UpgradeCode"));
@@ -1356,6 +1780,7 @@ static void action_register_product(Inst *in)
             snprintf(feats + n, sizeof(feats) - n, "%s,", msidb_str(&in->db, in->feature, i, 0, b));
         }
         set_sz(h, L"Features", feats);
+        cache_changes(in, h);
         RegCloseKey(h);
     }
     logf(in, "Registered product %s (%s)", get_prop(in, "ProductName"), code);
@@ -1368,12 +1793,30 @@ static void action_unregister_product(Inst *in)
     WCHAR wc[64], key[300];
     to_w(code, wc, 64);
     _snwprintf(key, 300, L"%s\\%s", UNINSTALL_KEY, wc);
+    rb_key(in, HKEY_LOCAL_MACHINE, key);
     RegDeleteKeyW(HKEY_LOCAL_MACHINE, key);
     _snwprintf(key, 300, L"%s\\%s", NOVA_INSTALLER_KEY, wc);
+    rb_key(in, HKEY_LOCAL_MACHINE, key);
     RegDeleteKeyW(HKEY_LOCAL_MACHINE, key);
     WCHAR cache[MAX_PATH];
     _snwprintf(cache, MAX_PATH, L"C:\\Windows\\Installer\\%s.msi", wc);
-    DeleteFileW(cache);
+    rb_delete_file(in, cache);
+    /* the copies of its transforms and patches */
+    WCHAR dir[MAX_PATH], pat[MAX_PATH];
+    _snwprintf(dir, MAX_PATH, L"C:\\Windows\\Installer\\%s", wc);
+    _snwprintf(pat, MAX_PATH, L"%s\\*", dir);
+    WIN32_FIND_DATAW fd;
+    HANDLE f = FindFirstFileW(pat, &fd);
+    if (f != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            WCHAR p[MAX_PATH];
+            _snwprintf(p, MAX_PATH, L"%s\\%s", dir, fd.cFileName);
+            rb_delete_file(in, p);
+        } while (FindNextFileW(f, &fd));
+        FindClose(f);
+    }
+    rb_remove_dir(in, dir);
     logf(in, "Unregistered product %s", code);
 }
 
@@ -1599,7 +2042,7 @@ static void action_app_search(Inst *in)
     }
 }
 
-static int run_product(const WCHAR *code, bool remove, int ui_level, MsiUi *ui, char *err, int cap);
+static int run_product(const WCHAR *code, bool remove, int ui_level, MsiUi *ui, const WCHAR *props, char *err, int cap);
 
 static void action_find_related(Inst *in)
 {
@@ -1654,7 +2097,7 @@ static void action_remove_existing(Inst *in)
             to_w(p, wc, 64);
             logf(in, "Removing the earlier version %s", p);
             char err[256];
-            run_product(wc, true, MSIUI_NONE, in->ui, err, sizeof(err));
+            run_product(wc, true, MSIUI_NONE, in->ui, NULL, err, sizeof(err));
             if (!e) break;
             p = e + 1;
         }
@@ -1735,14 +2178,15 @@ static bool save_icon(Inst *in, const char *icon, char *out, int cap)
     char sname[128];
     snprintf(sname, sizeof(sname), "Icon.%s", icon);
     size_t size = 0;
-    void *data = cfb_read(&in->db.cfb, sname, &size);
+    void *data = msidb_read_stream(&in->db, sname, &size);
     if (!data) return false;
     snprintf(out, (size_t)cap, "C:\\Windows\\Installer\\%s\\", get_prop(in, "ProductCode"));
-    make_dirs(out);
+    make_dirs(in, out);
     size_t n = strlen(out);
     snprintf(out + n, (size_t)cap - n, "%s", icon);
     WCHAR w[MAX_PATH];
     to_w(out, w, MAX_PATH);
+    rb_file(in, w);
     HANDLE h = CreateFileW(w, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     bool ok = false;
     if (h != INVALID_HANDLE_VALUE) {
@@ -1805,11 +2249,12 @@ static void action_create_shortcuts(Inst *in)
         char dir[MAX_PATH];
         snprintf(dir, sizeof(dir), "%s", lnk);
         char *bs = strrchr(dir, '\\');
-        if (bs) { bs[1] = 0; make_dirs(dir); }
+        if (bs) { bs[1] = 0; make_dirs(in, dir); }
         PFile *pf = NULL;
         HRESULT hr = E_FAIL;
         if (SUCCEEDED(link->v->QueryInterface(link, &IID_IPersistFile_, (void **)&pf)) && pf) {
             to_w(lnk, w, MAX_PATH * 2);
+            rb_file(in, w);
             hr = pf->v->Save(pf, w, TRUE);
             pf->v->Release(pf);
         }
@@ -1829,7 +2274,7 @@ static void action_remove_shortcuts(Inst *in)
         shortcut_path(in, t, r, lnk, sizeof(lnk));
         WCHAR w[MAX_PATH];
         to_w(lnk, w, MAX_PATH);
-        if (DeleteFileW(w)) logf(in, "Removed shortcut %s", lnk);
+        if (rb_delete_file(in, w)) logf(in, "Removed shortcut %s", lnk);
         char *bs = strrchr(lnk, '\\');
         if (bs) { *bs = 0; remove_folder_chain(in, lnk); }
     }
@@ -1846,34 +2291,19 @@ static void action_remove_shortcuts(Inst *in)
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
             WCHAR p[MAX_PATH];
             _snwprintf(p, MAX_PATH, L"%s\\%s", wd, fd.cFileName);
-            DeleteFileW(p);
+            size_t pl = wcslen(p);
+            if (pl > 4 && (!_wcsicmp(p + pl - 4, L".mst") || !_wcsicmp(p + pl - 4, L".msp"))) continue;  /* (kept with the product) */
+            rb_delete_file(in, p);
         } while (FindNextFileW(f, &fd));
         FindClose(f);
     }
-    RemoveDirectoryW(wd);
+    rb_remove_dir(in, wd);
 }
 
 /* -----------------------------------------------------------------------
  * Services: ServiceInstall registers them with the service control
  * manager (advapi32), ServiceControl starts, stops and deletes them.
  * ----------------------------------------------------------------------- */
-typedef void *SC_H;
-__declspec(dllimport) SC_H WINAPI OpenSCManagerW(LPCWSTR, LPCWSTR, DWORD);
-__declspec(dllimport) SC_H WINAPI OpenServiceW(SC_H, LPCWSTR, DWORD);
-__declspec(dllimport) SC_H WINAPI CreateServiceW(SC_H, LPCWSTR, LPCWSTR, DWORD, DWORD, DWORD, DWORD, LPCWSTR, LPCWSTR,
-                                                 LPDWORD, LPCWSTR, LPCWSTR, LPCWSTR);
-__declspec(dllimport) BOOL WINAPI ChangeServiceConfigW(SC_H, DWORD, DWORD, DWORD, LPCWSTR, LPCWSTR, LPDWORD, LPCWSTR,
-                                                       LPCWSTR, LPCWSTR, LPCWSTR);
-__declspec(dllimport) BOOL WINAPI ChangeServiceConfig2W(SC_H, DWORD, LPVOID);
-__declspec(dllimport) BOOL WINAPI StartServiceW(SC_H, DWORD, LPCWSTR *);
-__declspec(dllimport) BOOL WINAPI ControlService(SC_H, DWORD, LPVOID);
-__declspec(dllimport) BOOL WINAPI DeleteService(SC_H);
-__declspec(dllimport) BOOL WINAPI CloseServiceHandle(SC_H);
-__declspec(dllimport) BOOL WINAPI QueryServiceStatus(SC_H, LPVOID);
-
-#define SVC_ALL_ACCESS 0xF01FF
-#define SCM_ALL_ACCESS 0xF003F
-#define SVC_NO_CHANGE  0xFFFFFFFF
 
 static void action_install_services(Inst *in)
 {
@@ -1926,7 +2356,11 @@ static void action_install_services(Inst *in)
         SC_H svc = CreateServiceW(scm, wname, disp[0] ? wdisp : wname, SVC_ALL_ACCESS, (DWORD)type, (DWORD)start, (DWORD)errc,
                                   wcmd, group[0] ? wgroup : NULL, NULL, nd > 2 ? wdeps : NULL,
                                   user[0] ? wuser : NULL, pass[0] ? wpass : NULL);
-        if (!svc && GetLastError() == 1073 /* ERROR_SERVICE_EXISTS */) {
+        if (svc) rb_note(in, RB_SERVICE_NEW, name, NULL);
+        else if (GetLastError() == 1073 /* ERROR_SERVICE_EXISTS */) {
+            WCHAR skey[300];
+            _snwprintf(skey, 300, L"%s%s", SERVICES_KEY, wname);
+            rb_key(in, HKEY_LOCAL_MACHINE, skey);
             svc = OpenServiceW(scm, wname, SVC_ALL_ACCESS);
             if (svc) ChangeServiceConfigW(svc, (DWORD)type, (DWORD)start, (DWORD)errc, wcmd, group[0] ? wgroup : NULL, NULL,
                                           nd > 2 ? wdeps : NULL, user[0] ? wuser : NULL, pass[0] ? wpass : NULL,
@@ -1975,11 +2409,14 @@ static void service_control(Inst *in, int what)
             const WCHAR *argv[1] = { wargs };
             BOOL ok = StartServiceW(svc, args[0] ? 1 : 0, args[0] ? argv : NULL);
             logf(in, "Start service %s: %s", name, ok ? "started" : "failed");
+            if (ok) rb_note(in, RB_SERVICE_STARTED, name, NULL);
             if (!ok && GetLastError() != 1056 /* already running */ && wait)
                 logf(in, "Service %s did not start (error %lu)", name, GetLastError());
         } else if (what == 2) {
             DWORD st[7];
+            bool running = QueryServiceStatus(svc, st) && st[1] != 1 /* SERVICE_STOPPED */;
             if (ControlService(svc, 1 /* SERVICE_CONTROL_STOP */, st)) {
+                if (running) rb_note(in, RB_SERVICE_STOPPED, name, NULL);
                 for (int i = 0; wait && i < 300; i++) {
                     if (!QueryServiceStatus(svc, st) || st[1] == 1 /* SERVICE_STOPPED */) break;
                     eng_pump(in);
@@ -1988,6 +2425,9 @@ static void service_control(Inst *in, int what)
                 logf(in, "Stopped service %s", name);
             }
         } else if (what == 8) {
+            WCHAR skey[300];
+            _snwprintf(skey, 300, L"%s%s", SERVICES_KEY, wname);
+            rb_key(in, HKEY_LOCAL_MACHINE, skey);
             if (DeleteService(svc)) logf(in, "Deleted service %s", name);
         }
         CloseServiceHandle(svc);
@@ -2030,9 +2470,9 @@ static bool binary_to_file(Inst *in, const char *key, const char *ext, WCHAR *ou
     char sname[128];
     snprintf(sname, sizeof(sname), "Binary.%s", key);
     size_t size = 0;
-    void *data = cfb_read(&in->db.cfb, sname, &size);
+    void *data = msidb_read_stream(&in->db, sname, &size);
     if (!data) { logf(in, "Binary %s is missing", key); return false; }
-    make_dirs("C:\\Windows\\Installer\\");
+    make_dirs(in, "C:\\Windows\\Installer\\");
     static unsigned counter;
     WCHAR wext[16];
     to_w(ext, wext, 16);
@@ -2097,7 +2537,13 @@ static bool run_custom_action(Inst *in, const char *name)
         return true;
     }
     mark_ran(in, name);
-    if ((type & CA_ROLLBACK) == CA_ROLLBACK) { logf(in, "Rollback action %s kept for an error (not needed)", name); return true; }
+    if ((type & 0x700) == CA_ROLLBACK && !in->rolling_back) {
+        /* a rollback action: it runs only if the installation fails, with
+         * the CustomActionData it has now */
+        if (in->rb_on) { rb_note(in, RB_ACTION, name, get_prop(in, name)); logf(in, "Rollback action %s scheduled", name); }
+        else logf(in, "Rollback action %s skipped: rollback is off", name);
+        return true;
+    }
     if ((type & CA_COMMIT) == CA_COMMIT && in->sequence_depth >= 0 && !in->modes[RUNMODE_COMMIT]) {
         in->commit = realloc(in->commit, (size_t)(in->ncommit + 1) * sizeof(char *));
         in->commit[in->ncommit++] = strdup(name);
@@ -2247,7 +2693,7 @@ static bool is_noop_action(const char *a)
         "UnregisterExtensionInfo", "RegisterMIMEInfo", "UnregisterMIMEInfo", "RegisterClassInfo", "UnregisterClassInfo",
         "MoveFiles", "InstallAdminPackage", "InstallSFPCatalogFile", "InstallExecute", "InstallExecuteAgain",
         "RMCCPSearch", "CCPSearch", "MsiPublishAssemblies", "MsiUnpublishAssemblies", "PublishComponents",
-        "MsiConfigureServices", "SetupProgress", "ResolveSource", "LaunchConditions_", "DisableRollback",
+        "MsiConfigureServices", "SetupProgress", "ResolveSource", "LaunchConditions_",
         "PrepareDlg_", "MsiUnpublishAssemblies_", "RemoveFile_",
     };
     for (size_t i = 0; i < sizeof(noop) / sizeof(noop[0]); i++) if (!strcmp(a, noop[i])) return true;
@@ -2270,6 +2716,17 @@ static void pass_feature_choices(Inst *in)
     logf(in, "Features chosen: ADDLOCAL=%s", add);
 }
 
+/* InstallExecuteSequence, journaled: a failure before InstallFinalize
+ * (which commits) puts everything back */
+static bool execute_sequence(Inst *in)
+{
+    rb_begin(in);
+    bool ok = run_sequence(in, "InstallExecuteSequence");
+    if (!ok) rb_run(in);
+    else rb_commit(in);
+    return ok;
+}
+
 static bool action_execute(Inst *in)
 {
     in->executed = true;
@@ -2278,7 +2735,7 @@ static bool action_execute(Inst *in)
     bool was_ui = in->in_ui;
     in->in_ui = false;
     logf(in, "Running InstallExecuteSequence");
-    bool ok = run_sequence(in, "InstallExecuteSequence");
+    bool ok = execute_sequence(in);
     in->in_ui = was_ui;
     in->stop_sequence = false;
     return ok;
@@ -2317,9 +2774,11 @@ static bool run_action(Inst *in, const char *a)
             if (!in->removed_folders) action_remove_folders(in);
             action_unregister_product(in);
         }
+        rb_commit(in);                                       /* no rollback from here on */
         run_commit_actions(in);
         return true;
     }
+    if (!strcmp(a, "DisableRollback")) { logf(in, "Rollback disabled by the package"); rb_commit(in); return true; }
     if (is_noop_action(a)) return true;
     if (in->dlg && dlg_exists(in->dlg, a)) {
         int r = dlg_run(in->dlg, a);
@@ -2471,7 +2930,7 @@ bool eng_get_mode(Inst *in, int mode)
 {
     switch (mode) {
     case RUNMODE_MAINTENANCE:     return in->installed;
-    case RUNMODE_ROLLBACKENABLED: return true;
+    case RUNMODE_ROLLBACKENABLED: return !prop_set(in, "DISABLEROLLBACK");
     case RUNMODE_LOGENABLED:      return in->log != NULL;
     case RUNMODE_CABINET:         return in->media != NULL;
     default:                      return mode >= 0 && mode < 32 && in->modes[mode];
@@ -2639,6 +3098,300 @@ int eng_message(Inst *in, int type, const MsiRec *rec)
 }
 
 /* -----------------------------------------------------------------------
+ * Transforms and patches, applied to the tables before anything reads
+ * them.  TRANSFORMS lists .mst files (beside the package unless the path
+ * is full; ":Name" is a transform stored inside the package).  A patch
+ * (.msp, from PATCH or msiexec /p) names the products it fits in its
+ * summary (Template), and the transform pairs it carries (LastAuthor:
+ * ":T1;:#T1"): the first changes the product, the "#" one adds the
+ * patch's Media row, whose cabinet is a stream of the patch.  Patches that
+ * ship whole files work; binary deltas (the Patch table, mspatcha) are
+ * refused before anything changes.  What was applied is recorded with the
+ * product, from copies under C:\Windows\Installer, so repairs, later
+ * patches and the removal see the same tables.
+ * ----------------------------------------------------------------------- */
+#define MSITRANSFORM_VALIDATE_PRODUCT     0x0002
+#define MSITRANSFORM_VALIDATE_UPGRADECODE 0x0800
+#define ERROR_PATCH_TARGET_NOT_FOUND      1642
+#define ERROR_INSTALL_TRANSFORM_FAILURE   1624
+#define ERROR_PATCH_PACKAGE_INVALID       1636
+
+/* A value of the command line's properties (before the Inst has them) */
+static void cmdline_value(const WCHAR *cmd, const char *name, char *out, int cap)
+{
+    Inst tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    parse_cmdline_props(&tmp, cmd);
+    snprintf(out, (size_t)cap, "%s", get_prop(&tmp, name));
+    for (int i = 0; i < tmp.nprops; i++) { free(tmp.props[i].name); free(tmp.props[i].value); }
+    free(tmp.props);
+}
+
+/* A value the product's registration keeps (Transforms, Patches) */
+static void registered_value(const char *code, const WCHAR *value, char *out, int cap)
+{
+    WCHAR key[300], wc[64], buf[4096];
+    out[0] = 0;
+    to_w(code, wc, 64);
+    _snwprintf(key, 300, L"%s\\%s", NOVA_INSTALLER_KEY, wc);
+    HKEY h;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key, 0, KEY_READ, &h)) return;
+    DWORD type, size = sizeof(buf) - 2;
+    if (!RegQueryValueExW(h, value, NULL, &type, (BYTE *)buf, &size)) { buf[size / 2] = 0; to_u8(buf, out, cap); }
+    RegCloseKey(h);
+}
+
+static void list_add(char **list, const char *item)
+{
+    size_t n = *list ? strlen(*list) : 0;
+    char *nl = realloc(*list, n + strlen(item) + 2);
+    if (!nl) return;
+    snprintf(nl + n, strlen(item) + 2, "%s%s", n ? ";" : "", item);
+    *list = nl;
+}
+
+static MsiFile *load_msifile(const char *path)
+{
+    WCHAR w[MAX_PATH];
+    to_w(path, w, MAX_PATH);
+    HANDLE h = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    DWORD sz = GetFileSize(h, NULL), rd = 0;
+    void *data = malloc(sz ? sz : 1);
+    if (!data || !ReadFile(h, data, sz, &rd, NULL) || rd != sz) { CloseHandle(h); free(data); return NULL; }
+    CloseHandle(h);
+    return msifile_load(data, sz);
+}
+
+/* A Property table value of the package as it stands */
+static void table_prop(Inst *in, const char *name, char *out, int cap)
+{
+    MsiTable *pt = msidb_table(&in->db, "Property");
+    int r = pt ? msidb_find(&in->db, pt, 0, name, 0) : -1;
+    char b[16];
+    snprintf(out, (size_t)cap, "%s", r >= 0 ? msidb_str(&in->db, pt, r, 1, b) : "");
+}
+
+/* Does the transform in @c fit this package?  Its validation flags (the
+ * high word of Characters) say what to compare; Revision Number holds
+ * "{product}version;{product}version;{upgrade code}" */
+static bool transform_fits(Inst *in, const Cfb *c, int *suppress, char *why, int cap)
+{
+    int flags = 0;
+    msi_suminfo_get(c, 16 /* PID_CHARCOUNT */, NULL, 0, &flags);
+    *suppress = flags & 0xFFFF;
+    int validate = (flags >> 16) & 0xFFFF;
+    char rev[512], code[64], upgrade[64];
+    msi_suminfo_get(c, 9 /* PID_REVNUMBER */, rev, sizeof(rev), NULL);
+    table_prop(in, "ProductCode", code, sizeof(code));
+    table_prop(in, "UpgradeCode", upgrade, sizeof(upgrade));
+    if ((validate & MSITRANSFORM_VALIDATE_PRODUCT) && _strnicmp(rev, code, 38)) {
+        snprintf(why, (size_t)cap, "it is for product %.38s, not %s", rev, code);
+        return false;
+    }
+    if (validate & MSITRANSFORM_VALIDATE_UPGRADECODE) {
+        const char *last = strrchr(rev, ';');
+        if (!last || _strnicmp(last + 1, upgrade, 38)) { snprintf(why, (size_t)cap, "its upgrade code is not %s", upgrade); return false; }
+    }
+    return true;
+}
+
+static bool apply_transform(Inst *in, MsiFile *f, const char *storage, const char *what, bool must_fit)
+{
+    Cfb view;
+    const Cfb *c = msifile_cfb(f);
+    if (storage) {
+        if (!cfb_open_storage(c, storage, &view)) { fail(in, ERROR_INSTALL_TRANSFORM_FAILURE, "%s: no transform %s in it", what, storage); return false; }
+        c = &view;
+    }
+    int suppress;
+    char why[256], err[256];
+    if (!transform_fits(in, c, &suppress, why, sizeof(why))) {
+        if (must_fit) fail(in, ERROR_INSTALL_TRANSFORM_FAILURE, "The transform %s does not fit this package: %s", what, why);
+        else logf(in, "Transform %s%s%s skipped: %s", what, storage ? ":" : "", storage ? storage : "", why);
+        return false;
+    }
+    int rc = msidb_apply_transform(&in->db, f, storage, suppress, err, sizeof(err));
+    if (rc) { fail(in, rc, "The transform %s could not be applied: %s", what, err); return false; }
+    logf(in, "Applied transform %s%s%s", what, storage ? ":" : "", storage ? storage : "");
+    return true;
+}
+
+/* The path of a transform or patch named on the command line */
+static void source_relative(Inst *in, const char *spec, char *out, int cap)
+{
+    if (spec[0] == '@' || spec[0] == '|') spec++;          /* secure-at-source, secure-full-path */
+    if (spec[0] && (spec[1] == ':' || spec[0] == '\\')) snprintf(out, (size_t)cap, "%s", spec);
+    else snprintf(out, (size_t)cap, "%s%s", in->source_dir, spec);
+}
+
+static bool apply_transforms(Inst *in, const char *list)
+{
+    char buf[4096];
+    snprintf(buf, sizeof(buf), "%s", list);
+    char *save = NULL;
+    for (char *p = strtok_s(buf, ";", &save); p; p = strtok_s(NULL, ";", &save)) {
+        while (*p == ' ') p++;
+        if (!*p) continue;
+        MsiFile *f;
+        const char *storage = NULL;
+        char path[MAX_PATH];
+        if (p[0] == ':') {                                   /* inside the package */
+            void *copy = malloc(in->pkg_size ? in->pkg_size : 1);
+            if (!copy) { fail(in, MSI_ERROR_FAILURE, "Out of memory"); return false; }
+            memcpy(copy, in->pkg, in->pkg_size);
+            f = msifile_load(copy, in->pkg_size);
+            storage = p + 1;
+            snprintf(path, sizeof(path), "%s", p);
+        } else {
+            source_relative(in, p, path, sizeof(path));
+            f = load_msifile(path);
+        }
+        if (!f) { fail(in, ERROR_INSTALL_TRANSFORM_FAILURE, "The transform %s could not be opened", path); return false; }
+        bool ok = apply_transform(in, f, storage, path, true);
+        msifile_release(f);
+        if (!ok) return false;
+        list_add(&in->xforms, path);
+    }
+    return true;
+}
+
+/* A patch: does it fit, which transforms, then its cabinets */
+static bool apply_patch(Inst *in, const char *path)
+{
+    MsiFile *f = load_msifile(path);
+    if (!f) { fail(in, ERROR_PATCH_PACKAGE_INVALID, "The patch %s could not be opened", path); return false; }
+    const Cfb *c = msifile_cfb(f);
+    char targets[2048], xforms[1024], code[64], pcode[64];
+    msi_suminfo_get(c, 7 /* PID_TEMPLATE */, targets, sizeof(targets), NULL);
+    msi_suminfo_get(c, 8 /* PID_LASTAUTHOR */, xforms, sizeof(xforms), NULL);
+    msi_suminfo_get(c, 9 /* PID_REVNUMBER */, pcode, sizeof(pcode), NULL);
+    pcode[38] = 0;
+    table_prop(in, "ProductCode", code, sizeof(code));
+    if (in->patch_remove[0] && !_stricmp(in->patch_remove, pcode)) {
+        logf(in, "Patch %s (%s) is being removed: not applied", pcode, path);
+        snprintf(in->removed_patch, sizeof(in->removed_patch), "%s", path);
+        msifile_release(f);
+        return true;
+    }
+    if (!strstr(targets, code)) {
+        fail(in, ERROR_PATCH_TARGET_NOT_FOUND, "The patch %s is not for %s (it is for %s)", path, code, targets);
+        msifile_release(f);
+        return false;
+    }
+    MsiTable *pt = msidb_table(&in->db, "Patch");
+    int deltas_before = pt ? pt->nrows : 0;
+    int applied = 0;
+    char list[1024];
+    snprintf(list, sizeof(list), "%s", xforms);
+    char *save = NULL;
+    for (char *p = strtok_s(list, ";", &save); p; p = strtok_s(NULL, ";", &save)) {
+        if (*p == ':') p++;
+        if (*p == '#' || !*p) continue;                      /* (applied with its partner) */
+        char partner[128];
+        snprintf(partner, sizeof(partner), "#%s", p);
+        if (!apply_transform(in, f, p, path, false)) {
+            if (in->result) { msifile_release(f); return false; }
+            continue;
+        }
+        if (!apply_transform(in, f, partner, path, false) && in->result) { msifile_release(f); return false; }
+        applied++;
+    }
+    if (!applied) {
+        fail(in, ERROR_PATCH_TARGET_NOT_FOUND, "None of the transforms in the patch %s fits %s %s", path, code, get_prop(in, "ProductVersion"));
+        msifile_release(f);
+        return false;
+    }
+    pt = msidb_table(&in->db, "Patch");
+    if (pt && pt->nrows > deltas_before) {
+        fail(in, MSI_ERROR_FAILURE, "The patch %s changes files with binary deltas (its Patch table), which NovaOS cannot apply yet; "
+             "a patch that ships whole files works", path);
+        msifile_release(f);
+        return false;
+    }
+    msidb_add_streams(&in->db, f, NULL);                     /* its cabinets */
+    msifile_release(f);
+    logf(in, "Applied patch %s (%s)", pcode, path);
+    list_add(&in->patches, path);
+    return true;
+}
+
+static bool apply_patches(Inst *in, const char *list)
+{
+    char buf[4096];
+    snprintf(buf, sizeof(buf), "%s", list);
+    char *save = NULL;
+    for (char *p = strtok_s(buf, ";", &save); p; p = strtok_s(NULL, ";", &save)) {
+        while (*p == ' ') p++;
+        if (!*p) continue;
+        char path[MAX_PATH];
+        source_relative(in, p, path, sizeof(path));
+        if (in->patches && strstr(in->patches, path)) continue;  /* registered and named again */
+        if (!apply_patch(in, path)) return false;
+    }
+    return true;
+}
+
+/* What changes the tables: the product's recorded transforms and patches
+ * when it is installed, then those the command line names */
+static bool apply_changes(Inst *in)
+{
+    char code[64], xf[4096], pa[4096], reg_xf[4096], reg_pa[4096];
+    table_prop(in, "ProductCode", code, sizeof(code));
+    cmdline_value(in->cmdline, "TRANSFORMS", xf, sizeof(xf));
+    cmdline_value(in->cmdline, "PATCH", pa, sizeof(pa));
+    cmdline_value(in->cmdline, "MSIPATCHREMOVE", in->patch_remove, sizeof(in->patch_remove));
+    registered_value(code, L"Transforms", reg_xf, sizeof(reg_xf));
+    registered_value(code, L"Patches", reg_pa, sizeof(reg_pa));
+    if (!apply_transforms(in, reg_xf[0] ? reg_xf : xf)) return false;
+    if (!apply_patches(in, reg_pa) || !apply_patches(in, pa)) return false;
+    /* the patches' property */
+    if (in->patches) set_prop(in, "PATCH", in->patches);
+    return true;
+}
+
+/* At RegisterProduct: copies of the transforms and patches under
+ * C:\Windows\Installer, and their list with the product */
+static void cache_changes(Inst *in, HKEY h)
+{
+    const char *code = get_prop(in, "ProductCode");
+    char dir[MAX_PATH], kept[4096];
+    snprintf(dir, sizeof(dir), "C:\\Windows\\Installer\\%s\\", code);
+    for (int pass = 0; pass < 2; pass++) {
+        const char *list = pass ? in->patches : in->xforms;
+        kept[0] = 0;
+        char buf[4096];
+        snprintf(buf, sizeof(buf), "%s", list ? list : "");
+        char *save = NULL;
+        for (char *p = strtok_s(buf, ";", &save); p; p = strtok_s(NULL, ";", &save)) {
+            char cached[MAX_PATH];
+            if (!_strnicmp(p, "C:\\Windows\\Installer\\", 21) || p[0] == ':') snprintf(cached, sizeof(cached), "%s", p);
+            else {
+                const char *base = strrchr(p, '\\');
+                make_dirs(in, dir);
+                snprintf(cached, sizeof(cached), "%s%s", dir, base ? base + 1 : p);
+                WCHAR ws[MAX_PATH], wd[MAX_PATH];
+                to_w(p, ws, MAX_PATH);
+                to_w(cached, wd, MAX_PATH);
+                rb_file(in, wd);
+                if (!CopyFileW(ws, wd, FALSE)) { logf(in, "Could not keep a copy of %s", p); continue; }
+
+            }
+            size_t n = strlen(kept);
+            snprintf(kept + n, sizeof(kept) - n, "%s%s", n ? ";" : "", cached);
+        }
+        set_sz(h, pass ? L"Patches" : L"Transforms", kept);
+    }
+    if (in->removed_patch[0] && !_strnicmp(in->removed_patch, "C:\\Windows\\Installer\\", 21)) {
+        WCHAR w[MAX_PATH];
+        to_w(in->removed_patch, w, MAX_PATH);
+        rb_delete_file(in, w);
+        logf(in, "Patch %s removed from the product", in->patch_remove);
+    }
+
+}
+
+/* -----------------------------------------------------------------------
  * Entry points
  * ----------------------------------------------------------------------- */
 static bool load_package(Inst *in, const WCHAR *path)
@@ -2659,6 +3412,7 @@ static bool load_package(Inst *in, const WCHAR *path)
     snprintf(in->source_dir, sizeof(in->source_dir), "%s", u8);
     char *bs = strrchr(in->source_dir, '\\');
     if (bs) bs[1] = 0;
+    if (!apply_changes(in)) return false;                   /* transforms and patches */
     in->feature   = msidb_table(&in->db, "Feature");
     in->component = msidb_table(&in->db, "Component");
     in->file      = msidb_table(&in->db, "File");
@@ -2674,12 +3428,15 @@ static bool load_package(Inst *in, const WCHAR *path)
 
 static void inst_free(Inst *in)
 {
+    if (in->nrb) { if (in->result) rb_run(in); else rb_commit(in); }
     for (int i = 0; i < in->nprops; i++) { free(in->props[i].name); free(in->props[i].value); }
     free(in->props);
     free(in->feature_on);
     free(in->comp_on);
     free(in->dir_explicit);
     free(in->installed_features);
+    free(in->xforms);
+    free(in->patches);
     for (int i = 0; i < in->nran; i++) free(in->ran[i]);
     free(in->ran);
     for (int i = 0; i < in->ncommit; i++) free(in->commit[i]);
@@ -2714,6 +3471,7 @@ static int run(Inst *in, const MsiRequest *req, bool *dialogs_shown)
         in->log = _wfopen(req->logfile, L"wb");
         if (!in->log) logf(in, "Could not open the log file");
     }
+    in->cmdline = req->properties;
     if (!load_package(in, in->pkg_path)) return in->result;
     /* properties: package, system, command line (which wins) */
     system_properties(in);
@@ -2760,12 +3518,13 @@ static int run(Inst *in, const MsiRequest *req, bool *dialogs_shown)
         snprintf(title, sizeof(title), "%s", get_prop(in, "ProductName"));
         msiui_begin(in->ui, title, in->remove);
     }
-    run_sequence(in, "InstallExecuteSequence");
+    execute_sequence(in);
+
     if (!in->result) logf(in, "%s completed successfully", in->remove ? "Removal" : "Installation");
     return in->result;
 }
 
-static int run_product(const WCHAR *code, bool remove, int ui_level, MsiUi *ui, char *err, int cap)
+static int run_product(const WCHAR *code, bool remove, int ui_level, MsiUi *ui, const WCHAR *props, char *err, int cap)
 {
     char u8[64];
     to_u8(code, u8, sizeof(u8));
@@ -2779,6 +3538,7 @@ static int run_product(const WCHAR *code, bool remove, int ui_level, MsiUi *ui, 
     req.package = pkg;
     req.remove = remove;
     req.ui_level = ui_level;
+    req.properties = props;
     Inst *in = calloc(1, sizeof(Inst));
     in->remove = remove;
     in->ui_level = ui_level;
@@ -2792,14 +3552,52 @@ static int run_product(const WCHAR *code, bool remove, int ui_level, MsiUi *ui, 
     return r;
 }
 
+/* msiexec /p (apply a patch to the installed product it names) and
+ * /uninstall patch.msp (take it off again): a repair of the product with
+ * PATCH or MSIPATCHREMOVE */
+static int run_patch(const MsiRequest *req, MsiUi *ui, char *err, int cap)
+{
+    WCHAR full[MAX_PATH];
+    if (!GetFullPathNameW(req->patch, MAX_PATH, full, NULL)) wcsncpy(full, req->patch, MAX_PATH);
+    char path[MAX_PATH], targets[2048] = "", pcode[64] = "";
+    to_u8(full, path, sizeof(path));
+    MsiFile *f = load_msifile(path);
+    if (!f) { snprintf(err, (size_t)cap, "The patch %s could not be opened", path); return ERROR_PATCH_PACKAGE_INVALID; }
+    msi_suminfo_get(msifile_cfb(f), 7, targets, sizeof(targets), NULL);
+    msi_suminfo_get(msifile_cfb(f), 9, pcode, sizeof(pcode), NULL);
+    msifile_release(f);
+    pcode[38] = 0;
+    /* the first of its target products that is installed */
+    char code[64] = "";
+    for (const char *p = targets; *p; ) {
+        const char *e = strchr(p, ';');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        char one[64];
+        snprintf(one, sizeof(one), "%.*s", (int)(l < 63 ? l : 63), p);
+        if (one[0] && product_registered(one, NULL, 0)) { snprintf(code, sizeof(code), "%s", one); break; }
+        if (!e) break;
+        p = e + 1;
+    }
+    if (!code[0]) { snprintf(err, (size_t)cap, "None of the products this patch updates (%s) is installed", targets); return ERROR_PATCH_TARGET_NOT_FOUND; }
+    WCHAR props[4096 + MAX_PATH], wcode[64], wpcode[64];
+    to_w(pcode, wpcode, 64);
+    if (req->remove) _snwprintf(props, 4096 + MAX_PATH, L"MSIPATCHREMOVE=%s REINSTALL=ALL REINSTALLMODE=omus %s", wpcode, req->properties ? req->properties : L"");
+
+    else _snwprintf(props, 4096 + MAX_PATH, L"PATCH=\"%s\" REINSTALL=ALL REINSTALLMODE=omus %s", full, req->properties ? req->properties : L"");
+    to_w(code, wcode, 64);
+    return run_product(wcode, false, req->ui_level > MSIUI_BASIC ? MSIUI_BASIC : req->ui_level, ui, props, err, cap);
+}
+
 int MsiRunInstall(const MsiRequest *req, char *err, int err_cap)
 {
     if (err && err_cap) err[0] = 0;
     MsiUi *ui = req->ui_level > MSIUI_NONE ? msiui_create() : NULL;
     int r;
     bool dialogs = false;
-    if (req->product_code && !req->package) {
-        r = run_product(req->product_code, req->remove, req->ui_level, ui, err, err_cap);
+    if (req->patch && !req->package && !req->product_code) {
+        r = run_patch(req, ui, err, err_cap);
+    } else if (req->product_code && !req->package) {
+        r = run_product(req->product_code, req->remove, req->ui_level, ui, req->properties, err, err_cap);
     } else {
         Inst *in = calloc(1, sizeof(Inst));
         in->remove = req->remove;

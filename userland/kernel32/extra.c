@@ -248,10 +248,12 @@ void k32_queue_user_apc(DWORD tid, PAPCFUNC fn, ULONG_PTR arg) { queue_apc(tid, 
 
 BOOL k32_run_apcs(void) { return run_apcs(); }
 
+static void timers_due(void);
 static BOOL run_apcs(void)
 {
     DWORD me = GetCurrentThreadId();
     BOOL ran = FALSE;
+    timers_due();
     for (;;) {
         lock();
         Apc **pp = &g_apcs, *x = 0;
@@ -467,17 +469,11 @@ WINBASEAPI BOOL WINAPI ReadFileEx(HANDLE h, LPVOID buf, DWORD n, LPOVERLAPPED ov
 WINBASEAPI BOOL WINAPI WriteFileEx(HANDLE h, LPCVOID buf, DWORD n, LPOVERLAPPED ov, LPOVERLAPPED_COMPLETION_ROUTINE fn)
 { return k32_overlapped(h, ov, 1, (PVOID)buf, n, 0, (PVOID)fn); }
 
+DWORD k32_alertable_wait(DWORD n, const HANDLE *h, BOOL all, DWORD ms);
 WINBASEAPI DWORD WINAPI SleepEx(DWORD ms, BOOL alertable)
 {
     if (!alertable) { Sleep(ms); return 0; }
-    ULONGLONG until = ms == INFINITE ? ~0ULL : GetTickCount64() + ms;
-    for (;;) {
-        if (run_apcs()) return WAIT_IO_COMPLETION;
-        ULONGLONG now = GetTickCount64();
-        if (now >= until) return 0;
-        ULONGLONG left = until - now;
-        Sleep(left > 10 ? 10 : (DWORD)left);
-    }
+    return k32_alertable_wait(0, 0, FALSE, ms) == WAIT_IO_COMPLETION ? WAIT_IO_COMPLETION : 0;
 }
 
 /* -----------------------------------------------------------------------
@@ -615,111 +611,118 @@ WINBASEAPI BOOL WINAPI UnmapViewOfFile(LPCVOID p)
 }
 
 /* -----------------------------------------------------------------------
- * Waitable timers
+ * Waitable timers' completion routines
+ *
+ * The timers are kernel objects (threads.c), which end the waits on them
+ * when they are due.  SetWaitableTimer's routine runs on the thread that
+ * set it, when that thread waits alertably (as on Windows): the timer's
+ * due time is kept here as well, on the performance counter, and an
+ * alertable wait ends when the earliest of its thread's timers is due
+ * (k32_timer_apc_slice), so the routine runs on time too.
  * ----------------------------------------------------------------------- */
 typedef struct Timer {
     struct Timer *next;
-    HANDLE h;                       /* the event the waiters see */
-    BOOL armed;
-    ULONGLONG due;                  /* GetTickCount64 time */
-    LONG period;
-    void *fn; LPVOID arg; DWORD tid;
+    HANDLE h;
+    ULONGLONG due, period;          /* k32_now_100ns time; 100 ns units (0: once) */
+    void *fn; LPVOID arg; DWORD tid; /* fn 0: no routine (or not set) */
 } Timer;
 static Timer *g_timers;
-static HANDLE g_timer_wake, g_timer_thread;
 
-static DWORD WINAPI timer_thread(LPVOID unused)
+/* 100 ns units since boot, from the performance counter */
+ULONGLONG k32_now_100ns(void)
 {
-    (void)unused;
-    for (;;) {
-        ULONGLONG now = GetTickCount64(), next = ~0ULL;
-        lock();
-        for (Timer *t = g_timers; t; t = t->next) {
-            if (!t->armed) continue;
-            if (t->due <= now) {
-                SetEvent(t->h);
-                if (t->fn) {
-                    FILETIME ft;
-                    GetSystemTimeAsFileTime(&ft);
-                    queue_apc(t->tid, 1, t->fn, (ULONG_PTR)t->arg, ft.dwLowDateTime, ft.dwHighDateTime);
-                }
-                if (t->period > 0) {
-                    t->due += (ULONGLONG)t->period;
-                    if (t->due <= now) t->due = now + (ULONGLONG)t->period;
-                } else {
-                    t->armed = FALSE;
-                    continue;
-                }
-            }
-            if (t->due < next) next = t->due;
-        }
-        unlock();
-        DWORD wait = next == ~0ULL ? INFINITE : (DWORD)(next - now > 0x7FFFFFFF ? 0x7FFFFFFF : next - now);
-        WaitForSingleObject(g_timer_wake, wait);
-    }
+    static LONGLONG freq;
+    LARGE_INTEGER c, f;
+    if (!freq) { QueryPerformanceFrequency(&f); freq = f.QuadPart > 0 ? f.QuadPart : -1; }
+    if (freq < 0) return GetTickCount64() * 10000;
+    QueryPerformanceCounter(&c);
+    ULONGLONG q = (ULONGLONG)c.QuadPart, hz = (ULONGLONG)freq;
+    return q / hz * 10000000ULL + q % hz * 10000000ULL / hz;
 }
 
-WINBASEAPI HANDLE WINAPI CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access)
+/* Under lock(): the entry for timer @h (a new one when @make) */
+static Timer *timer_entry(HANDLE h, BOOL make)
 {
-    (void)access; (void)name;
+    for (Timer *t = g_timers; t; t = t->next) if (t->h == h) return t;
+    if (!make) return 0;
     Timer *t = zalloc(sizeof(*t));
-    HANDLE h = t ? CreateEventW(sa, flags & 1 /* MANUAL_RESET */, FALSE, 0) : 0;
-    if (!h) { zfree(t); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    if (!t) return 0;
     t->h = h;
-    lock();
     t->next = g_timers;
     g_timers = t;
+    return t;
+}
+
+/* Queue the routines of this thread's timers that are due (one for each
+ * timer, however many periods went by: Windows queues its APC once) */
+static void timers_due(void)
+{
+    DWORD me = GetCurrentThreadId();
+    struct { void *fn; LPVOID arg; } due[16];
+    int n = 0;
+    ULONGLONG now = k32_now_100ns();
+    lock();
+    for (Timer *t = g_timers; t && n < 16; t = t->next) {
+        if (!t->fn || t->tid != me || t->due > now) continue;
+        due[n].fn = t->fn; due[n].arg = t->arg; n++;
+        if (t->period) t->due += ((now - t->due) / t->period + 1) * t->period;
+        else t->fn = 0;
+    }
     unlock();
-    return h;
+    if (!n) return;
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    for (int i = 0; i < n; i++) queue_apc(me, 1, due[i].fn, (ULONG_PTR)due[i].arg, ft.dwLowDateTime, ft.dwHighDateTime);
 }
 
-WINBASEAPI HANDLE WINAPI CreateWaitableTimerW(LPSECURITY_ATTRIBUTES sa, BOOL manual, LPCWSTR name)
+/* @slice (100 ns units), cut short where one of this thread's timer
+ * routines is due */
+ULONGLONG k32_timer_apc_slice(ULONGLONG slice)
 {
-    return CreateWaitableTimerExW(sa, name, manual ? 1 : 0, 0);
-}
-
-WINBASEAPI HANDLE WINAPI CreateWaitableTimerA(LPSECURITY_ATTRIBUTES sa, BOOL manual, LPCSTR name)
-{
-    (void)name;
-    return CreateWaitableTimerExW(sa, 0, manual ? 1 : 0, 0);
+    DWORD me = GetCurrentThreadId();
+    ULONGLONG now = k32_now_100ns();
+    lock();
+    for (Timer *t = g_timers; t; t = t->next) {
+        if (!t->fn || t->tid != me) continue;
+        ULONGLONG left = t->due > now ? t->due - now : 0;
+        if (left < slice) slice = left;
+    }
+    unlock();
+    return slice;
 }
 
 WINBASEAPI BOOL WINAPI SetWaitableTimer(HANDLE h, const LARGE_INTEGER *due, LONG period, LPVOID fn, LPVOID arg, BOOL resume)
 {
-    (void)resume;
-    ULONGLONG now = GetTickCount64(), at;
-    if (due->QuadPart < 0) {
-        at = now + (ULONGLONG)(-due->QuadPart + 9999) / 10000;
-    } else {
+    LARGE_INTEGER d = *due;
+    NTSTATUS s = NtSetTimer(h, &d, 0, 0, (BOOLEAN)(resume != 0), period, 0);
+    if (!NT_SUCCESS(s)) return fail_status(s);
+    ULONGLONG now = k32_now_100ns(), rel;
+    if (d.QuadPart < 0) rel = (ULONGLONG)-d.QuadPart;
+    else {
         FILETIME ft;
         GetSystemTimeAsFileTime(&ft);
         ULONGLONG t = (ULONGLONG)ft.dwHighDateTime << 32 | ft.dwLowDateTime;
-        at = now + ((ULONGLONG)due->QuadPart > t ? ((ULONGLONG)due->QuadPart - t + 9999) / 10000 : 0);
+        rel = (ULONGLONG)d.QuadPart > t ? (ULONGLONG)d.QuadPart - t : 0;
     }
     lock();
-    Timer *t = g_timers;
-    while (t && t->h != h) t = t->next;
+    Timer *t = timer_entry(h, fn != 0);
     if (t) {
-        ResetEvent(h);
-        t->due = at; t->period = period; t->armed = TRUE;
+        t->due = now + rel;
+        t->period = period > 0 ? (ULONGLONG)period * 10000 : 0;
         t->fn = fn; t->arg = arg; t->tid = GetCurrentThreadId();
-        if (!g_timer_wake) g_timer_wake = CreateEventW(0, FALSE, FALSE, 0);
-        if (g_timer_wake && !g_timer_thread) g_timer_thread = CreateThread(0, 64 * 1024, timer_thread, 0, 0, 0);
     }
     unlock();
-    if (!t) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-    if (g_timer_wake) SetEvent(g_timer_wake);
     return TRUE;
 }
 
 WINBASEAPI BOOL WINAPI CancelWaitableTimer(HANDLE h)
 {
+    NTSTATUS s = NtCancelTimer(h, 0);
+    if (!NT_SUCCESS(s)) return fail_status(s);
     lock();
-    Timer *t = g_timers;
-    while (t && t->h != h) t = t->next;
-    if (t) t->armed = FALSE;
+    Timer *t = timer_entry(h, FALSE);
+    if (t) t->fn = 0;
     unlock();
-    if (!t) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
     return TRUE;
 }
 
@@ -1240,8 +1243,9 @@ WINBASEAPI BOOL WINAPI GetFileInformationByHandleEx(HANDLE h, FILE_INFO_BY_HANDL
     return FALSE;
 }
 
-/* FILE_RENAME_INFORMATION for the kernel: { BOOLEAN; HANDLE; ULONG; WCHAR[] } */
-static NTSTATUS rename_handle(HANDLE h, const char *to, BOOL replace)
+/* FILE_RENAME_INFORMATION (class 10) or FILE_LINK_INFORMATION (11) for the
+ * kernel: { BOOLEAN; HANDLE; ULONG; WCHAR[] } */
+static NTSTATUS name_handle(HANDLE h, const char *to, BOOL replace, ULONG cls)
 {
     NtPath p;
     if (!nt_path(to, &p)) return STATUS_OBJECT_NAME_INVALID;
@@ -1254,8 +1258,30 @@ static NTSTATUS rename_handle(HANDLE h, const char *to, BOOL replace)
     ri->FileNameLength = len;
     memcpy(ri->FileName, p.buf, len);
     IO_STATUS_BLOCK io;
-    return NtSetInformationFile(h, &io, buf, (ULONG)__builtin_offsetof(RenameInfo, FileName) + len,
-                                10 /* FileRenameInformation */);
+    return NtSetInformationFile(h, &io, buf, (ULONG)__builtin_offsetof(RenameInfo, FileName) + len, cls);
+}
+static NTSTATUS rename_handle(HANDLE h, const char *to, BOOL replace) { return name_handle(h, to, replace, 10); }
+
+/* A hard link: another name for an existing file (never a directory) */
+WINBASEAPI BOOL WINAPI CreateHardLinkA(LPCSTR link, LPCSTR target, LPSECURITY_ATTRIBUTES sa)
+{
+    (void)sa;
+    if (!link || !target) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    HANDLE h = CreateFileA(target, 0, 7, 0, OPEN_EXISTING, 0x02000000 /* BACKUP_SEMANTICS */, 0);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    NTSTATUS s = name_handle(h, link, FALSE, 11 /* FileLinkInformation */);
+    CloseHandle(h);
+    if (s == (NTSTATUS)0xC0000035) { SetLastError(ERROR_ALREADY_EXISTS); return FALSE; }
+    if (s == (NTSTATUS)0xC00000D4) { SetLastError(17 /* ERROR_NOT_SAME_DEVICE */); return FALSE; }
+    if (s == (NTSTATUS)0xC00000BA) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }   /* a directory, as Windows says */
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+
+WINBASEAPI BOOL WINAPI CreateHardLinkW(LPCWSTR link, LPCWSTR target, LPSECURITY_ATTRIBUTES sa)
+{
+    char a[MAX_PATH * 3], b[MAX_PATH * 3];
+    if (!wide_to_temp(link, a, sizeof(a)) || !wide_to_temp(target, b, sizeof(b))) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
+    return CreateHardLinkA(a, b, sa);
 }
 
 WINBASEAPI BOOL WINAPI SetFileInformationByHandle(HANDLE h, FILE_INFO_BY_HANDLE_CLASS c, LPVOID buf, DWORD n)
@@ -1383,16 +1409,26 @@ WINBASEAPI BOOL WINAPI GetFileAttributesExW(LPCWSTR name, GET_FILEEX_INFO_LEVELS
     return attr_data(a, info);
 }
 
+/* The read-only, hidden and system bits are kept (FileBasicInformation,
+ * times left alone); the others are not stored */
 WINBASEAPI BOOL WINAPI SetFileAttributesA(LPCSTR name, DWORD attr)
 {
-    (void)attr;                             /* attributes are not stored */
-    return GetFileAttributesA(name) != INVALID_FILE_ATTRIBUTES;
+    HANDLE h = CreateFileA(name, 0x100 /* FILE_WRITE_ATTRIBUTES */, 7, 0, OPEN_EXISTING, 0x02000000 /* BACKUP_SEMANTICS */, 0);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    FILE_BASIC_INFORMATION b;
+    memset(&b, 0, sizeof(b));
+    b.FileAttributes = (attr & 0x07) ? (attr & 0x07) : FILE_ATTRIBUTE_NORMAL;
+    IO_STATUS_BLOCK io;
+    NTSTATUS s = NtSetInformationFile(h, &io, &b, sizeof(b), FileBasicInformation);
+    CloseHandle(h);
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
 WINBASEAPI BOOL WINAPI SetFileAttributesW(LPCWSTR name, DWORD attr)
 {
-    (void)attr;
-    return GetFileAttributesW(name) != INVALID_FILE_ATTRIBUTES;
+    char n[MAX_PATH * 3];
+    if (!wide_to_temp(name, n, sizeof(n))) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
+    return SetFileAttributesA(n, attr);
 }
 
 WINBASEAPI HANDLE WINAPI FindFirstFileExW(LPCWSTR name, FINDEX_INFO_LEVELS l, LPVOID data, FINDEX_SEARCH_OPS op, LPVOID filter, DWORD flags)
@@ -1673,7 +1709,7 @@ WINBASEAPI BOOL WINAPI GetVolumeInformationW(LPCWSTR root, LPWSTR name, DWORD nn
     if (name && nn) put_utf8_as_w("NovaOS", name, nn);
     if (serial) *serial = VOLUME_SERIAL;
     if (maxlen) *maxlen = 47;
-    if (flags) *flags = 0x2 | 0x4;          /* CASE_PRESERVED_NAMES | UNICODE_ON_DISK */
+    if (flags) *flags = 0x2 | 0x4 | 0x400000;   /* CASE_PRESERVED_NAMES | UNICODE_ON_DISK | SUPPORTS_HARD_LINKS */
     if (fs && nfs) put_utf8_as_w("RAMFS", fs, nfs);
     return TRUE;
 }
@@ -1789,6 +1825,8 @@ WINBASEAPI BOOL WINAPI RemoveDllDirectory(PVOID cookie)
     if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
     return TRUE;
 }
+/* the search for SearchPath already skips the current directory's place in line */
+WINBASEAPI BOOL WINAPI SetSearchPathMode(DWORD flags) { (void)flags; return TRUE; }
 WINBASEAPI BOOL WINAPI DisableThreadLibraryCalls(HMODULE m) { (void)m; return TRUE; }
 
 WINBASEAPI SIZE_T WINAPI VirtualQuery(LPCVOID p, PMEMORY_BASIC_INFORMATION mbi, SIZE_T n)
@@ -2972,3 +3010,71 @@ WINBASEAPI VOID    WINAPI GlobalMemoryStatus(LPVOID p)
     s[0] = (SIZE_T)ms.ullTotalPhys; s[1] = (SIZE_T)ms.ullAvailPhys; s[2] = (SIZE_T)ms.ullTotalPageFile;
     s[3] = (SIZE_T)ms.ullAvailPageFile; s[4] = (SIZE_T)ms.ullTotalVirtual; s[5] = (SIZE_T)ms.ullAvailVirtual;
 }
+
+/* -----------------------------------------------------------------------
+ * Activation contexts.  NovaOS has one version of each system DLL (common
+ * controls 6 included), so a manifest has nothing to redirect: contexts are
+ * counted handles that activate and deactivate cleanly, and section lookups
+ * find nothing, as for a manifest without the entry.
+ * ----------------------------------------------------------------------- */
+typedef struct { LONG refs; DWORD flags; } ActCtx;
+static volatile LONG g_actctx_cookie;
+
+static HANDLE new_actctx(DWORD flags)
+{
+    ActCtx *a = HeapAlloc(GetProcessHeap(), 0, sizeof *a);
+    if (!a) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return INVALID_HANDLE_VALUE; }
+    a->refs = 1;
+    a->flags = flags;
+    return a;
+}
+WINBASEAPI HANDLE WINAPI CreateActCtxW(const void *ctx)
+{
+    if (!ctx) { SetLastError(ERROR_INVALID_PARAMETER); return INVALID_HANDLE_VALUE; }
+    return new_actctx(((const DWORD *)ctx)[1]);         /* ACTCTX: cbSize, dwFlags, ... */
+}
+WINBASEAPI HANDLE WINAPI CreateActCtxA(const void *ctx) { return CreateActCtxW(ctx); }
+WINBASEAPI void WINAPI AddRefActCtx(HANDLE h) { if (h && h != INVALID_HANDLE_VALUE) InterlockedIncrement(&((ActCtx *)h)->refs); }
+WINBASEAPI void WINAPI ReleaseActCtx(HANDLE h)
+{
+    if (h && h != INVALID_HANDLE_VALUE && !InterlockedDecrement(&((ActCtx *)h)->refs)) HeapFree(GetProcessHeap(), 0, h);
+}
+WINBASEAPI BOOL WINAPI ZombifyActCtx(HANDLE h) { (void)h; return TRUE; }
+WINBASEAPI BOOL WINAPI ActivateActCtx(HANDLE h, ULONG_PTR *cookie)
+{
+    (void)h;
+    if (cookie) *cookie = (ULONG_PTR)InterlockedIncrement(&g_actctx_cookie);
+    return TRUE;
+}
+WINBASEAPI BOOL WINAPI DeactivateActCtx(DWORD flags, ULONG_PTR cookie) { (void)flags; (void)cookie; return TRUE; }
+WINBASEAPI BOOL WINAPI GetCurrentActCtx(HANDLE *h) { if (!h) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; } *h = NULL; return TRUE; }
+WINBASEAPI BOOL WINAPI QueryActCtxW(DWORD flags, HANDLE h, PVOID sub, ULONG cls, PVOID buf, SIZE_T len, SIZE_T *ret)
+{
+    (void)flags; (void)sub;
+    if (cls == 1) {                                     /* ActivationContextBasicInformation */
+        struct { HANDLE ctx; DWORD flags; } info = { (flags & 4) ? NULL : h, 0 };   /* 4: the context is an HMODULE */
+        if (ret) *ret = sizeof info;
+        if (!buf || len < sizeof info) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+        memcpy(buf, &info, sizeof info);
+        return TRUE;
+    }
+    if (ret) *ret = 0;
+    SetLastError(ERROR_INVALID_PARAMETER);
+    return FALSE;
+}
+WINBASEAPI BOOL WINAPI FindActCtxSectionStringW(DWORD flags, const GUID *ext, ULONG section, LPCWSTR name, void *data)
+{
+    (void)flags; (void)ext; (void)section; (void)name; (void)data;
+    SetLastError(14007);                                /* ERROR_SXS_KEY_NOT_FOUND */
+    return FALSE;
+}
+WINBASEAPI BOOL WINAPI FindActCtxSectionStringA(DWORD flags, const GUID *ext, ULONG section, LPCSTR name, void *data)
+{ (void)name; return FindActCtxSectionStringW(flags, ext, section, NULL, data); }
+WINBASEAPI BOOL WINAPI FindActCtxSectionGuid(DWORD flags, const GUID *ext, ULONG section, const GUID *g, void *data)
+{ (void)g; return FindActCtxSectionStringW(flags, ext, section, NULL, data); }
+
+/* a thread's UI language: the user's (0 asks which it is) */
+WINBASEAPI LANGID WINAPI SetThreadUILanguage(LANGID lang) { return lang ? lang : GetUserDefaultUILanguage(); }
+
+/* no sleep timer to hold off: report the state as continuous */
+WINBASEAPI DWORD WINAPI SetThreadExecutionState(DWORD flags) { (void)flags; return 0x80000000u; }   /* ES_CONTINUOUS */

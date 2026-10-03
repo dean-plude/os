@@ -52,6 +52,29 @@ int  GdiScreenW(void);     /* logical size */
 int  GdiScreenH(void);
 int  GdiScale(void);       /* device pixels per logical pixel (1 or 2) */
 
+/* -----------------------------------------------------------------------
+ * Monitors: one per display head (hal/display.h).  They share one logical
+ * coordinate space, the virtual desktop: monitor 0, the primary, is at
+ * (0, 0) and GdiScreenW/H are its size; the others sit next to it (left
+ * or above it means negative coordinates).  Each has its own scale; the
+ * desktop is drawn at GdiScale(), the largest, and a monitor at half of
+ * it shows each 2x2 block averaged.
+ * ----------------------------------------------------------------------- */
+#define GDI_MAX_MONITORS 4
+int     GdiMonitorCount(void);
+GdiRect GdiMonitorRect(int i);            /* logical */
+int     GdiMonitorScale(int i);           /* 1 (96 DPI) or 2 (192 DPI) */
+GdiRect GdiVirtualRect(void);             /* the union of the monitors */
+int     GdiMonitorAt(int x, int y);       /* the monitor holding a point, or -1 */
+/* The monitor a rectangle overlaps most, or the one nearest to it */
+int     GdiMonitorNearest(GdiRect r);
+/* Move a point that is on no monitor to the nearest point that is */
+void    GdiClampToMonitors(int *x, int *y);
+/* Place monitor @i (>= 1) with its top left at (x, y); it must touch a
+ * monitor before it without overlapping any, else it goes to the right
+ * of them.  Takes effect at the next GdiDisplayChanged(). */
+void    GdiSetMonitorOrigin(int i, int x, int y);
+
 /* Copy the back buffer to the screen (whole frame).  With page flipping
  * it lands on the page off screen: anything drawn straight to the screen
  * after it (the pointer) goes there too, and GdiFlip() shows the page. */
@@ -168,18 +191,24 @@ int  GdiMonoCellW256(void);
  * ----------------------------------------------------------------------- */
 void GdiCursorDraw (int dev_x, int dev_y);
 void GdiCursorErase(int dev_x, int dev_y);
+/* System pointer @id (OCR_*, syscursor.h) with its hot spot at the device
+ * pixel; @phase turns the busy ring */
+void GdiCursorDrawSys(int dev_x, int dev_y, int id, int phase);
 
 /* A program's pointer (SetCursor): w x h logical pixels with its hot spot,
  * one or more frames (animated cursors, .ani) shown in the order of
  * steps[], each for its own number of scheduler ticks.  Pixels are
  * 0xAARRGGBB, not premultiplied, frame after frame.  hidden: no pointer
- * (SetCursor(NULL), ShowCursor below zero). */
+ * (SetCursor(NULL), ShowCursor below zero).  dev: the pixels and hot spot
+ * are device pixels (an image made for the display's scale), drawn 1:1.
+ * sys: no pixels; the system pointer with that OCR_* number. */
 #define GDI_CURSOR_MAX     64       /* logical pixels, either side */
 #define GDI_CURSOR_FRAMES  64
 #define GDI_CURSOR_STEPS   256
 typedef struct GdiCursorShape {
     int     w, h, hot_x, hot_y;
-    bool    hidden;
+    bool    hidden, dev;
+    int     sys;
     int     nframes, nsteps;
     UINT32  total;                  /* ticks for one pass of the steps */
     struct { UINT16 frame; UINT32 ticks; } steps[GDI_CURSOR_STEPS];

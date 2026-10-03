@@ -45,6 +45,8 @@
     "SetWindowSubclass": 410,
     "GetWindowSubclass": 411,
     "RemoveWindowSubclass": 412,
-    "DefSubclassProc": 413
+    "DefSubclassProc": 413,
+    "TaskDialog": 344,
+    "TaskDialogIndirect": 345
   }
 }

@@ -19,8 +19,8 @@
 - **`tools/novarun.py`** boots the image in QEMU with programs copied onto
   a data disk, types Terminal commands and takes screenshots:
   `python3 tools/novarun.py --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' 'x.exe' '!shot x.png'`.
-- Not yet: Notepad++'s status bar draws black and its toolbar is cut
-  short; ~~Neovim hangs on exit (console input handles cannot be waited
+- Not yet: ~~Notepad++'s status bar draws black and its toolbar is cut
+  short~~ (fixed in Phase 17.6); ~~Neovim hangs on exit (console input handles cannot be waited
   on)~~ fixed in Phase 17.2;
   ffmpeg needs `avrt`, `ncrypt`, `d2d1`, `dwrite` and more (see
   [More compatibility](#more-compatibility-schannel-uniscribe-idn-crt-gaps)).

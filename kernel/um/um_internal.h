@@ -104,8 +104,8 @@ typedef struct UmObject {
     UmProcess      *proc;           /* UO_PROCESS: signaled when it has exited */
     void           *ptr;            /* UO_KEY: the registry key; UO_DIRECTORY: its name;
                                        UO_SYMLINK: its target (UmLinkTarget) */
-    UINT64          due;            /* UO_TIMER: the tick it fires at (0: not set) */
-    UINT32          period;         /* UO_TIMER: ticks between firings (0: once) */
+    UINT64          due;            /* UO_TIMER: the TSC it fires at (0: not set) */
+    UINT64          period;         /* UO_TIMER: TSC cycles between firings (0: once) */
     void          (*destroy)(struct UmObject *o);   /* extra cleanup (sockets, windows) */
     void           *sd;             /* its security descriptor (um_security.c), or NULL: open to all */
 } UmObject;

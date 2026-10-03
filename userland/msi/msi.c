@@ -70,7 +70,33 @@ MSIAPI MsiInstallProductW(LPCWSTR package, LPCWSTR cmdline)
     return (UINT)MsiRunInstall(&req, NULL, 0);
 }
 
+/* MsiApplyPatch: a patch on the installed product it names (@product, a
+ * product code or package, picks nothing here: the patch says) */
+MSIAPI MsiApplyPatchW(LPCWSTR patch, LPCWSTR product, int type, LPCWSTR cmdline)
+{
+    (void)product; (void)type;
+    if (!patch) return ERROR_INVALID_PARAMETER;
+    MsiRequest req;
+    memset(&req, 0, sizeof(req));
+    req.patch = patch;
+    req.properties = cmdline;
+    req.ui_level = g_ui_level;
+    req.logfile = g_logfile[0] ? g_logfile : NULL;
+    return (UINT)MsiRunInstall(&req, NULL, 0);
+}
+
+MSIAPI MsiApplyPatchA(LPCSTR patch, LPCSTR product, int type, LPCSTR cmdline)
+{
+    WCHAR p[MAX_PATH], c[2048];
+    (void)product;
+    if (!patch) return ERROR_INVALID_PARAMETER;
+    MultiByteToWideChar(CP_ACP, 0, patch, -1, p, MAX_PATH);
+    if (cmdline) MultiByteToWideChar(CP_ACP, 0, cmdline, -1, c, 2048);
+    return MsiApplyPatchW(p, NULL, type, cmdline ? c : NULL);
+}
+
 MSIAPI MsiInstallProductA(LPCSTR package, LPCSTR cmdline)
+
 {
     WCHAR p[MAX_PATH], c[2048];
     if (!package) return ERROR_INVALID_PARAMETER;

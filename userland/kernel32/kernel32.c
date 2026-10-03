@@ -678,9 +678,6 @@ WINBASEAPI BOOL WINAPI CheckRemoteDebuggerPresent(HANDLE p, PBOOL present)
     *present = FALSE;
     return TRUE;
 }
-/* SearchPath's order (safe mode puts the current directory later): NovaOS's
- * SearchPath has one order, so the choice is accepted and has no effect */
-WINBASEAPI BOOL WINAPI SetSearchPathMode(DWORD flags) { (void)flags; return TRUE; }
 
 WINBASEAPI BOOL WINAPI WriteFile(HANDLE h, LPCVOID buf, DWORD n, LPDWORD written, LPVOID ov);
 WINBASEAPI HANDLE WINAPI GetStdHandle(DWORD which);

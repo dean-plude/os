@@ -4,7 +4,10 @@
  * Streams are found by their MSI names: the directory names are UTF-16
  * in a "compressed" encoding (two 6-bit characters per code unit in the
  * 0x3800-0x47FF range, one in 0x4800-0x483F, and 0x4840 marking a table),
- * decoded here to ASCII with '!' standing for the table marker.
+ * decoded here to ASCII with '!' standing for the table marker.  Names
+ * are looked up in a storage's red-black tree of children, so a storage
+ * inside the file (a transform in a patch, or in a package) opens as a
+ * Cfb of its own.
  */
 #include "msi_int.h"
 
@@ -149,6 +152,7 @@ bool cfb_open(Cfb *c, const void *data, size_t size)
 
 void cfb_close(Cfb *c)
 {
+    if (c->borrowed) { memset(c, 0, sizeof(*c)); return; }   /* a storage inside another: shares its tables */
     free(c->fat);
     free(c->minifat);
     free(c->ministream);
@@ -186,32 +190,74 @@ static void decode_name(const uint8_t *raw, int nbytes, char *out, int cap)
     out[n] = '\0';
 }
 
-bool cfb_entry(const Cfb *c, int i, char *name, int cap, bool *is_stream)
+/* The children of storage entry @storage, through its red-black tree;
+ * @fn returns true to stop.  Returns the entry it stopped at, or -1. */
+static int walk(const Cfb *c, uint32_t node, int depth, bool (*fn)(void *, int, const char *, int), void *ctx)
 {
-    if (i < 0 || i >= c->nentries) return false;
-    const uint8_t *e = dir_entry(c, i);
-    if (!e) return false;
-    int type = e[0x42];
-    if (type == 0) { name[0] = '\0'; *is_stream = false; return true; }
+    if (node >= (uint32_t)c->nentries || depth > 64) return -1;
+    const uint8_t *e = dir_entry(c, (int)node);
+    if (!e) return -1;
+    int r = walk(c, rd32(e + 0x44), depth + 1, fn, ctx);
+    if (r >= 0) return r;
+    char name[128];
     int nlen = rd16(e + 0x40);
     if (nlen > 64) nlen = 64;
-    decode_name(e, nlen - 2 > 0 ? nlen - 2 : 0, name, cap);
-    *is_stream = type == 2;
-    return true;
+    decode_name(e, nlen - 2 > 0 ? nlen - 2 : 0, name, sizeof(name));
+    if (e[0x42] && fn(ctx, (int)node, name, e[0x42])) return (int)node;
+    return walk(c, rd32(e + 0x48), depth + 1, fn, ctx);
+}
+
+static int children(const Cfb *c, bool (*fn)(void *, int, const char *, int), void *ctx)
+{
+    const uint8_t *e = dir_entry(c, c->root);
+    return e ? walk(c, rd32(e + 0x4C), 0, fn, ctx) : -1;
+}
+
+typedef struct { const char *name; int type; } Want;
+
+static bool match(void *ctx, int i, const char *name, int type)
+{
+    (void)i;
+    const Want *w = ctx;
+    return type == w->type && !strcmp(name, w->name);
 }
 
 void *cfb_read(const Cfb *c, const char *name, size_t *size)
 {
-    char n[128];
-    bool stream;
-    for (int i = 0; cfb_entry(c, i, n, sizeof(n), &stream); i++) {
-        if (!stream || strcmp(n, name)) continue;
-        const uint8_t *e = dir_entry(c, i);
-        size_t len = rd32(e + 0x78);
-        uint32_t start = rd32(e + 0x74);
-        void *buf = len < c->mini_cutoff ? read_mini_chain(c, start, len) : read_chain(c, start, len);
-        if (buf && size) *size = len;
-        return buf;
-    }
-    return NULL;
+    Want w = { name, 2 };
+    int i = children(c, match, &w);
+    if (i < 0) return NULL;
+    const uint8_t *e = dir_entry(c, i);
+    size_t len = rd32(e + 0x78);
+    uint32_t start = rd32(e + 0x74);
+    void *buf = len < c->mini_cutoff ? read_mini_chain(c, start, len) : read_chain(c, start, len);
+    if (buf && size) *size = len;
+    return buf;
+}
+
+bool cfb_open_storage(const Cfb *parent, const char *name, Cfb *out)
+{
+    Want w = { name, 1 };
+    int i = children(parent, match, &w);
+    if (i < 0) return false;
+    *out = *parent;
+    out->root = i;
+    out->borrowed = true;
+    return true;
+}
+
+typedef struct { void (*fn)(void *, const char *, bool); void *ctx; } Lister;
+
+static bool list_one(void *ctx, int i, const char *name, int type)
+{
+    (void)i;
+    const Lister *l = ctx;
+    l->fn(l->ctx, name, type == 2);
+    return false;
+}
+
+void cfb_list(const Cfb *c, void (*fn)(void *ctx, const char *name, bool is_stream), void *ctx)
+{
+    Lister l = { fn, ctx };
+    children(c, list_one, &l);
 }

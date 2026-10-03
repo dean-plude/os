@@ -60,3 +60,5 @@ int  NetSockLocalName(int s, NetSockAddr *out);
 int  NetSockPeerName(int s, NetSockAddr *out);
 /* select-style readiness (no block); *rd/*wr set if ready.  ex unused. */
 void NetSockPoll(int s, bool *readable, bool *writable, bool *error);
+int NetSockPeek(int s, void *buf, int len, bool *closed);
+bool NetSockListening(int s);

@@ -267,7 +267,7 @@ static void load_stream(MsiDb *db, const TTable *t, int r, int c, MsiField *out)
         n += snprintf(name + n, sizeof(name) - (size_t)n, ".%s", msidb_str(db, t->base, r, k, b));
     }
     size_t size = 0;
-    void *data = cfb_read(&db->cfb, name, &size);
+    void *data = msidb_read_stream(db, name, &size);
     if (!data) { out->type = MSIF_NULL; return; }
     out->type = MSIF_STREAM;
     out->data = data;

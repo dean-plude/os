@@ -194,10 +194,12 @@ static bool ob_ready(UmObject *o, UmThread *me)
     case UO_MUTANT:    return !o->owner || o->owner == me;
     case UO_THREAD:    return o->signaled;
     case UO_TIMER:
-        if (o->due && sched_ticks() >= o->due) {            /* fired (checked lazily) */
+        if (o->due && rdtsc() >= o->due) {                  /* fired (checked lazily) */
             o->signaled = true;
-            if (o->period) { UINT64 now = sched_ticks(); while (o->due <= now) o->due += o->period; }
-            else o->due = 0;
+            if (o->period) {                                /* (on its own grid, so it doesn't drift) */
+                UINT64 now = rdtsc();
+                o->due += (now - o->due) / o->period * o->period + o->period;
+            } else o->due = 0;
         }
         return o->signaled;
     default:           return o->signaled;
@@ -292,7 +294,7 @@ static UINT32 wait_objects(UmObject **o, int n, bool all, INT64 timeout_100ns)
         ob_unlock(s);
         UINT64 nap = sched_tick_tsc(sched_ticks() + 10);
         for (int i = 0; i < n; i++)                         /* a timer wakes it when due */
-            if (o[i]->type == UO_TIMER && o[i]->due && sched_tick_tsc(o[i]->due) < nap) nap = sched_tick_tsc(o[i]->due);
+            if (o[i]->type == UO_TIMER && o[i]->due && o[i]->due < nap) nap = o[i]->due;
         sched_sleep_until_tsc(&me->wake, until < nap ? until : nap);
         s = ob_lock();
         waiter_unlink(me);
@@ -1394,8 +1396,25 @@ static UINT64 sys_create_timer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 }
 static UINT64 sys_open_timer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_named(UO_TIMER, a1, a3, (UINT32)a2); }
 
+/* Timers keep TSC deadlines, so a wait on one ends when it is due (the
+ * one-shot or TSC-deadline APIC timer of Phase 18.7), not at the next
+ * 10 ms tick.  TSC cycles in @t100ns 100 ns units, and back. */
+static UINT64 tsc_per_tick(void) { return sched_tick_tsc(1) - sched_tick_tsc(0); }
+static UINT64 tsc_of_100ns(UINT64 t100ns)
+{
+    UINT64 k = tsc_per_tick();
+    if (t100ns > UINT64_C(1000000000000000)) t100ns = UINT64_C(1000000000000000);   /* (about 3 years) */
+    return t100ns / 100000 * k + t100ns % 100000 * k / 100000;
+}
+static UINT64 tsc_to_100ns(UINT64 tsc)
+{
+    UINT64 k = tsc_per_tick();
+    return k ? tsc / k * 100000 + tsc % k * 100000 / k : 0;
+}
+
 /* NtSetTimer(HANDLE, PLARGE_INTEGER DueTime, PTIMER_APC_ROUTINE, PVOID, BOOLEAN Resume,
- *            LONG Period (ms), PBOOLEAN PreviousState).  (No APC routine.) */
+ *            LONG Period (ms), PBOOLEAN PreviousState).  (No APC routine: kernel32
+ *            runs SetWaitableTimer's completion routines itself.) */
 static UINT64 sys_set_timer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
@@ -1410,11 +1429,11 @@ static UINT64 sys_set_timer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     IrqState s = ob_lock();
     UINT8 prev = o->signaled;
     o->signaled = false;
-    o->due = sched_ticks() + (rel + 99999) / 100000;
-    if (!rel) o->due = sched_ticks();
+    o->due = rdtsc() + tsc_of_100ns(rel);
     if (!o->due) o->due = 1;
-    o->period = period > 0 ? ((UINT32)period + 9) / 10 : 0;
-    if (!rel) um_ob_wake(o);
+    o->period = period > 0 ? tsc_of_100ns((UINT64)period * 10000) : 0;
+    if (period > 0 && !o->period) o->period = 1;
+    um_ob_wake(o);                                          /* (its waiters look again: due now, or when to wake) */
     ob_unlock(s);
     um_ob_unref(o);
     UINT64 pp = um_stack_arg(7);
@@ -1451,7 +1470,7 @@ static UINT64 query_object_state(UmObType type, UINT64 a1, UINT64 a2, UINT64 a3,
     IrqState s = ob_lock();
     if (type == UO_TIMER) {
         ob_ready(o, NULL);
-        UINT64 left = o->due > sched_ticks() ? (o->due - sched_ticks()) * 100000 : 0;
+        UINT64 now = rdtsc(), left = o->due > now ? tsc_to_100ns(o->due - now) : 0;
         b[0] = (UINT32)left; b[1] = (UINT32)(left >> 32);
         b[2] = o->signaled;
     } else if (type == UO_EVENT) {

@@ -53,4 +53,5 @@ the invariant culture.  NovaOS now ships ICU the way Windows 10 does.
   sorts `ä` with `a`, Japanese compares kana and widths, all through ICU.
 - Not yet: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat`
   still format the English way for every locale, and the user's locale is
-  always `en-US`.
+  always `en-US`.  (Both came with "Locale formatting and the user
+  locale".)

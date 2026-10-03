@@ -378,6 +378,65 @@ USERAPI HWND WindowFromDC(HDC dc)
     return 0;
 }
 
+/* Our DCs draw without clipping, so a parent's painting reaches over its
+ * children.  A WS_CLIPCHILDREN parent's painting must not show on them:
+ * BeginPaint keeps the pixels of the children that are up to date and
+ * EndPaint puts them back, where without the style the children repaint
+ * (cascade).  Repainting them instead would loop when a child's painting
+ * invalidates its parent, as SumatraPDF's tab bar does to its caption. */
+typedef struct Kept {
+    struct Kept *next;
+    Wnd *c;
+    RECT r;                         /* top-level bitmap coordinates */
+    DWORD px[];
+} Kept;
+
+static void keep_children(Wnd *w, const RECT *rc)
+{
+    Wnd *t = top_of(w);
+    if (!t || !t->back || !(w->style & WS_CLIPCHILDREN)) return;
+    POINT o;
+    wnd_to_bitmap(w, 1, &o);
+    RECT pr = *rc;
+    OffsetRect(&pr, o.x, o.y);
+    for (Wnd *c = w->child; c; c = c->next) {
+        if (!(c->style & WS_VISIBLE) || c->has_upd || c->nc_paint) continue;
+        RECT v, r;
+        visible_rect(c, 0, &v);
+        if (!IntersectRect(&r, &v, &pr)) continue;
+        int cw = r.right - r.left, ch = r.bottom - r.top;
+        Kept *k = malloc(sizeof(Kept) + (size_t)cw * ch * 4);
+        if (!k) continue;
+        k->c = c;
+        k->r = r;
+        for (int y = 0; y < ch; y++)
+            memcpy(k->px + (size_t)y * cw, t->back + (size_t)(r.top + y) * t->stride + r.left, (size_t)cw * 4);
+        k->next = w->kept;
+        w->kept = k;
+    }
+}
+
+void paint_drop_kept(Wnd *w)
+{
+    for (Kept *k = w->kept, *n; k; k = n) { n = k->next; free(k); }
+    w->kept = NULL;
+}
+
+/* back the kept children's pixels; whether @c was kept */
+static int restore_kept(Wnd *w, Wnd *c)
+{
+    Wnd *t = top_of(w);
+    for (Kept *k = w->kept; k; k = k->next) {
+        if (k->c != c) continue;
+        if (!t || !t->back || c->has_upd || c->nc_paint) return 0;   /* changed meanwhile: repaint it */
+        int cw = k->r.right - k->r.left, ch = k->r.bottom - k->r.top;
+        for (int y = 0; y < ch; y++)
+            memcpy(t->back + (size_t)(k->r.top + y) * t->stride + k->r.left, k->px + (size_t)y * cw, (size_t)cw * 4);
+        return 1;
+    }
+    return 0;
+}
+
 USERAPI HDC BeginPaint(HWND h, LPPAINTSTRUCT ps)
 {
     Wnd *w = W(h);
@@ -397,6 +456,8 @@ USERAPI HDC BeginPaint(HWND h, LPPAINTSTRUCT ps)
     HDC dc = wnd_dc(w, 1, 0);
     if (!dc) return 0;
     IntersectClipRect(dc, rc.left, rc.top, rc.right, rc.bottom);
+    paint_drop_kept(w);
+    keep_children(w, &rc);
     ps->hdc = dc;
     ps->rcPaint = rc;
     w->paint_dc = dc;
@@ -413,6 +474,7 @@ static void cascade(Wnd *w, const RECT *rc)
         if (!(c->style & WS_VISIBLE)) continue;
         RECT o;
         if (!IntersectRect(&o, rc, &c->rect)) continue;
+        if (restore_kept(w, c)) continue;
         OffsetRect(&o, -c->client.left, -c->client.top);
         invalidate(c, &o, TRUE, 0);
         if (!EqualRect(&c->rect, &c->client)) invalidate_nc(c);
@@ -438,6 +500,7 @@ USERAPI BOOL EndPaint(HWND h, const PAINTSTRUCT *ps)
     if (ps) release_dc(ps->hdc);
     if (!w) return TRUE;
     if (ps) cascade(w, &ps->rcPaint);
+    paint_drop_kept(w);
     caret_restore();
     Wnd *t = top_of(w);
     if (!top_needs_paint(t)) present(t);

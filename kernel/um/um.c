@@ -843,14 +843,17 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
         strncpy(path, name, sizeof(path) - 5);
         path[sizeof(path) - 5] = '\0';
         um_wow_path(p, path);
-        RamNode *n = RamfsResolve(p->cwd, path);
-        if (!n) {
-            const char *leaf = strrchr(path, '\\');
-            if (!strchr(leaf ? leaf : path, '.')) {
-                strcat(path, ".dll");
-                n = RamfsResolve(p->cwd, path);
-            }
+        const char *leaf = strrchr(path, '\\');
+        if (!strchr(leaf ? leaf : path, '.')) strcat(path, ".dll");
+        /* a relative path ("Merge7z\\Merge7z.dll") goes by the search order
+         * too: the program's folder first, then the current one */
+        bool relative = path[0] != '\\' && path[0] != '/' && !strchr(path, ':');
+        RamNode *n = NULL;
+        if (relative && p->exe_dir) {
+            n = RamfsResolve(p->exe_dir, path);
+            if (n && n->dir) n = NULL;
         }
+        if (!n) n = RamfsResolve(p->cwd, path);
         return n && !n->dir ? n : NULL;
     }
     RamNode *sys = RamfsResolve(NULL, p->wow ? "\\Windows\\SysWOW64" : "\\Windows\\System32");
@@ -966,7 +969,6 @@ static void map_api_set(char *lname, int cap)
         { "kernelbase.dll",               "kernel32.dll" },
         { "api-ms-win-",                  "kernel32.dll" },   /* any other set: what exists is there */
         { "msvcrt40.dll",                 "msvcrt.dll" },
-        { "wsock32.dll",                  "ws2_32.dll" },     /* Winsock 1.1: the same functions and ordinals */
     };
     for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++)
         if (!strncmp(lname, sets[i].prefix, strlen(sets[i].prefix))) {

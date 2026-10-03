@@ -12,9 +12,14 @@
  * from ICU (icu.dll, loaded the first time such a locale is asked about),
  * the way .NET derives the same values on Linux.  A field ICU cannot
  * answer falls back to the en-US value.
+ *
+ * The user's locale is HKCU\Control Panel\International's LocaleName
+ * (written by intl.exe and the Settings app's "Time & language" page), read
+ * once per process; the system locale stays en-US.
  */
 #define NOVA_BUILD_KERNEL32
 #include <winternl.h>
+#include <winreg.h>
 #include "k32.h"
 #include "locale_data.h"
 
@@ -73,12 +78,52 @@ static int find_ascii(const char *name)
 
 static int en_us(void) { static int i = -3; if (i == -3) i = find_ascii("en-US"); return i; }
 
+/* The user's locale: LocaleName under HKCU\Control Panel\International
+ * (or, without it, the LCID in "Locale"), read the first time it is needed;
+ * en-US when neither names a locale.  A specific locale only: a neutral
+ * name ("de") becomes its default ("de-DE"). */
+static int lcid_index(LCID lcid);
+static int locale_index(LPCWSTR w);
+static volatile LONG g_user = -3;
+
+static int user_locale(void)
+{
+    int i = g_user;
+    if (i != -3) return i;
+    i = LOC_NONE;
+    HKEY k;
+    if (!RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\International", 0, KEY_READ, &k)) {
+        WCHAR v[LOCALE_NAME_MAX_LENGTH + 1];
+        DWORD type, n = sizeof(v) - sizeof(WCHAR);
+        if (!RegQueryValueExW(k, L"LocaleName", NULL, &type, (BYTE *)v, &n) && type == REG_SZ && n >= 4) {
+            v[n / 2] = 0;
+            i = locale_index(v);
+        }
+        n = sizeof(v) - sizeof(WCHAR);
+        if (i < 0 && !RegQueryValueExW(k, L"Locale", NULL, &type, (BYTE *)v, &n) && type == REG_SZ) {
+            v[n / 2] = 0;
+            LCID l = 0;
+            for (const WCHAR *c = v; *c; c++) {
+                int d = *c >= '0' && *c <= '9' ? *c - '0' : (*c | 0x20) >= 'a' && (*c | 0x20) <= 'f' ? (*c | 0x20) - 'a' + 10 : -1;
+                if (d < 0) { l = 0; break; }
+                l = l * 16 + (LCID)d;
+            }
+            if (l) i = lcid_index(l);
+        }
+        RegCloseKey(k);
+    }
+    if (i >= 0 && g_locales[i].specific >= 0) i = g_locales[i].specific;
+    if (i < 0 || g_locales[i].lcid == LOCALE_CUSTOM_UNSPECIFIED_) i = en_us();
+    InterlockedExchange(&g_user, i);
+    return i;
+}
+
 /* a locale name (NULL: the user's; "": invariant) -> a table index */
 static int locale_index(LPCWSTR w)
 {
     static const char sysdef[] = "!x-sys-default-locale";
     char a[LOCALE_NAME_MAX_LENGTH + 1];
-    if (!w) return en_us();                                  /* LOCALE_NAME_USER_DEFAULT */
+    if (!w) return user_locale();                            /* LOCALE_NAME_USER_DEFAULT */
     if (!w[0]) return LOC_INVARIANT;
     int n = wlen(w);
     if (n > LOCALE_NAME_MAX_LENGTH) return LOC_NONE;
@@ -101,8 +146,9 @@ static int locale_index(LPCWSTR w)
 static int lcid_index(LCID lcid)
 {
     if (lcid == LOCALE_INVARIANT) return LOC_INVARIANT;
-    if (lcid == 0 || lcid == LOCALE_USER_DEFAULT || lcid == LOCALE_SYSTEM_DEFAULT ||
-        lcid == 0x0C00 /* LOCALE_CUSTOM_DEFAULT */ || lcid == 0x1400 /* LOCALE_CUSTOM_UI_DEFAULT */)
+    if (lcid == 0 || lcid == LOCALE_USER_DEFAULT || lcid == 0x0C00 /* LOCALE_CUSTOM_DEFAULT */)
+        return user_locale();
+    if (lcid == LOCALE_SYSTEM_DEFAULT || lcid == 0x1400 /* LOCALE_CUSTOM_UI_DEFAULT */)
         return en_us();
     if (lcid == LOCALE_CUSTOM_UNSPECIFIED_) return LOC_NONE;
     int legacy = LOC_NONE;
@@ -175,15 +221,19 @@ K32 int WINAPI ResolveLocaleName(LPCWSTR name, LPWSTR out, int cap)
     return put_name(g_locales[i].name, out, cap);
 }
 
-K32 LCID WINAPI GetUserDefaultLCID(void)       { return 0x409; }
+/* (the user interface itself is English: the UI languages stay en-US) */
+K32 LCID WINAPI GetUserDefaultLCID(void)       { return g_locales[user_locale()].lcid; }
 K32 LCID WINAPI GetSystemDefaultLCID(void)     { return 0x409; }
-K32 LCID WINAPI GetThreadLocale(void)          { return 0x409; }
+K32 LCID WINAPI GetThreadLocale(void)          { return GetUserDefaultLCID(); }
 K32 BOOL WINAPI SetThreadLocale(LCID lcid)     { return IsValidLocale(lcid, 0); }
-K32 WORD WINAPI GetUserDefaultLangID(void)     { return 0x409; }
+K32 WORD WINAPI GetUserDefaultLangID(void)     { return (WORD)GetUserDefaultLCID(); }
 K32 WORD WINAPI GetSystemDefaultLangID(void)   { return 0x409; }
 K32 WORD WINAPI GetUserDefaultUILanguage(void) { return 0x409; }
 K32 WORD WINAPI GetSystemDefaultUILanguage(void) { return 0x409; }
-K32 int  WINAPI GetUserDefaultLocaleName(LPWSTR n, int cap)   { return put_name("en-US", n, cap ? cap : 1); }
+K32 int  WINAPI GetUserDefaultLocaleName(LPWSTR n, int cap)
+{
+    return put_name(g_locales[user_locale()].name, n, cap ? cap : 1);
+}
 K32 int  WINAPI GetSystemDefaultLocaleName(LPWSTR n, int cap) { return put_name("en-US", n, cap ? cap : 1); }
 
 /* LOCALE_WINDOWS 1, LOCALE_SUPPLEMENTAL 2, LOCALE_ALTERNATE_SORTS 4,
@@ -674,7 +724,10 @@ static int icu_value(int idx, DWORD t, DWORD flags, WCHAR *out, int cap)
     case 0x0F: n = symbol(loc, UNUM_DECIMAL, 1, out, cap); break;
     case 0x16: n = symbol(loc, UNUM_CURRENCY, 10, out, cap); break;
     case 0x17: n = symbol(loc, UNUM_CURRENCY, 17, out, cap); break;
-    case 0x14: n = symbol(loc, UNUM_CURRENCY, 8, out, cap); break;
+    case 0x14:                                               /* LOCALE_SCURRENCY */
+        n = symbol(loc, UNUM_CURRENCY, 8, out, cap);
+        if (n == 1 && out[0] == 0xFFE5) out[0] = 0xA5;       /* Windows' yen sign is the narrow one */
+        break;
     case 0x15: n = symbol(loc, UNUM_CURRENCY, 9, out, cap); break;
     case 0x51: n = symbol(loc, UNUM_DECIMAL, 6, out, cap); break;
     case 0x76: n = symbol(loc, UNUM_DECIMAL, 3, out, cap); break;
@@ -741,7 +794,15 @@ static int icu_value(int idx, DWORD t, DWORD flags, WCHAR *out, int cap)
             n += 2;
         }
         break;
-    case 0x20: n = icu_pattern(loc, UDAT_FULL, UDAT_NONE, out, cap); break;
+    case 0x20:                                               /* LOCALE_SLONGDATE */
+        n = icu_pattern(loc, UDAT_FULL, UDAT_NONE, out, cap);
+        /* Windows' long dates for Chinese and Japanese have no weekday
+         * ("yyyy年M月d日"): where ICU's full date ends in one glued to the
+         * day, as there, take its long date instead */
+        if (n > 4 && out[n - 1] == 'd' && out[n - 2] == 'd' && out[n - 3] == 'd' && out[n - 4] == 'd' &&
+            out[n - 5] != ' ' && out[n - 5] != ',' && out[n - 5] != '\'')
+            n = icu_pattern(loc, UDAT_LONG, UDAT_NONE, out, cap);
+        break;
     case 0x1003: n = icu_pattern(loc, UDAT_NONE, UDAT_MEDIUM, out, cap); break;
     case 0x79: n = icu_pattern(loc, UDAT_NONE, UDAT_SHORT, out, cap); break;
     case 0x1006: n = icu_skeleton(loc, L"yMMMM", out, cap); break;
@@ -926,4 +987,35 @@ K32 int WINAPI GetLocaleInfoA(LCID lcid, LCTYPE_ type, LPSTR buf, int n)
         return 4;
     }
     return WideCharToMultiByte(CP_ACP, 0, w, -1, buf, n, NULL, NULL);
+}
+
+/* -----------------------------------------------------------------------
+ * For the formatting functions (nlsformat.c)
+ * ----------------------------------------------------------------------- */
+int nls_lcid(LCID lcid)        { return lcid_index(lcid); }
+int nls_name(LPCWSTR name)     { return locale_index(name); }
+
+/* LOCALE_* @type of locale @idx into @out (cap 256 is plenty): its length,
+ * or -1 */
+int nls_info(int idx, DWORD type, WCHAR *out, int cap)
+{
+    if (idx == LOC_NONE) return -1;
+    int n = locale_info(idx, type, out, cap);
+    if (n < 0 || n >= cap) return -1;
+    out[n] = 0;
+    return n;
+}
+
+/* the Gregorian era's abbreviation ("A.D.", "n. Chr.", "西暦") */
+int nls_era(int idx, WCHAR *out, int cap)
+{
+    int n = -1;
+    if (idx >= 0 && idx != en_us() && cmp_lower(g_locales[idx].name, "en") && icu_load()) {
+        char loc[32];
+        icu_id(idx, loc);
+        n = date_symbol(loc, 0 /* UDAT_ERAS */, 1, out, cap);
+    }
+    if (n < 0 || n >= cap) n = u2w("A.D.", -1, out, cap - 1);
+    out[n] = 0;
+    return n;
 }
