@@ -95,6 +95,7 @@
 #define CMD_CTX_CREATE           0x0200
 #define CMD_CTX_DESTROY          0x0201
 #define CMD_CTX_ATTACH_RESOURCE  0x0202
+#define CAPSET_VENUS             4
 #define CMD_RESOURCE_CREATE_3D   0x0204
 #define CMD_TRANSFER_TO_HOST_3D  0x0205
 #define CMD_TRANSFER_FROM_HOST_3D 0x0206
@@ -660,6 +661,7 @@ struct VgpuCtx {
     UINT32     id;
     VgpuSync **sync;                      /* timeline N at sync[N - 1] */
     int        nsync;
+    UINT32     capset;
 };
 
 struct VgpuBlob {
@@ -794,6 +796,7 @@ VgpuCtx *VgpuCtxCreate(UINT32 capset, const char *name)
     c->v = v;
     IrqState s = spin_lock_irqsave(&g_lock);
     c->id = ++v->next_ctx;
+    c->capset = capset & 0xFF;
     spin_unlock_irqrestore(&g_lock, s);
     int i = slot3d(v, CMD_CTX_CREATE, c->id, sizeof(CtxCreate));
     CtxCreate *cc = (CtxCreate *)v->slot[i].page;
@@ -934,11 +937,15 @@ VgpuBlob *VgpuBlobCreate(VgpuCtx *c, UINT32 blob_mem, UINT32 flags, UINT64 blob_
         kfree(b);
         return NULL;
     }
-    /* (as Linux does for every resource a context sees: virgl's command
-     * streams name the blob by its resource number) */
-    i = slot3d(v, CMD_CTX_ATTACH_RESOURCE, c->id, sizeof(CtxResource));
-    ((CtxResource *)v->slot[i].page)->res = b->res;
-    post3d(v, i, sizeof(CtxResource), 0);
+    /* virgl's command streams name the blob by its resource number, so
+     * its context must know it.  Not Venus's: there the host would import
+     * a second copy of a blob the context made (its ring and reply
+     * buffers among them), and programs then hang now and again */
+    if (c->capset != CAPSET_VENUS) {
+        i = slot3d(v, CMD_CTX_ATTACH_RESOURCE, c->id, sizeof(CtxResource));
+        ((CtxResource *)v->slot[i].page)->res = b->res;
+        post3d(v, i, sizeof(CtxResource), 0);
+    }
     return b;
 }
 

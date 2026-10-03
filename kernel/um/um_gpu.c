@@ -175,7 +175,7 @@ static UINT64 do_blob_map(Gpu *g, UINT64 n, UINT64 size_ptr)
         if (!VgpuBlobMap(b, &pa, &size)) { VgpuBlobUnref(b); return 0; }
         h = um_section_foreign(UmCurrent(), pa, size, blob_release, b);   /* (the section owns our reference) */
     }
-    if (!h) { VgpuBlobUnref(b); return 0; }
+    if (!h) return 0;                                 /* (the section, if made, released it) */
     if (size_ptr) CopyToUser((void *)(uintptr_t)size_ptr, &size, sizeof(size));
     return h;
 }
