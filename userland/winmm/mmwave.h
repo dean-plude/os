@@ -67,3 +67,4 @@ typedef struct {
 /* Post a window or thread callback message (wave.c) */
 BOOL mm_post(BOOL thread, DWORD_PTR target, UINT msg, WPARAM wp, LPARAM lp);
 const char *mm_error_text(MMRESULT e);
+MMRESULT    wave_mapper_message(UINT msg, DWORD_PTR p1, DWORD_PTR p2);

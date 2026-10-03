@@ -8,13 +8,18 @@ ABI, the Win32 API, the loader, a GUI, and the drivers underneath.  64-bit
 (x64, PE32+) programs run natively, and 32-bit (x86, PE32) ones run through
 NovaOS's own WoW64 layer, as on 64-bit Windows.
 
-**Status:** Phases 1–15 are done.  NovaOS boots on UEFI machines (tested in
-QEMU with OVMF), uses every CPU core, keeps its files on a SATA disk, and
-runs unmodified Windows programs: 7-Zip, Git, NSIS installers, `.msi`
-packages (with their own dialogs, custom actions, shortcuts and
-services), the Java, .NET, Node.js and Python runtimes, and OpenGL, Vulkan
-and Direct3D 8–11 programs through Mesa and DXVK.  It can install
-itself on a disk from its live ISO.
+**Status:** working towards the first release, 0.1 (Phase 22 of the
+roadmap).  NovaOS boots on UEFI machines (tested in QEMU with OVMF; no
+real PC has been checked yet, see [docs/hardware.md](docs/hardware.md)),
+uses every CPU core, keeps its files on a SATA or NVMe disk, and runs
+unmodified Windows programs: 7-Zip, Git, Notepad++, Firefox, VLC,
+Audacity, KeePassXC, Inkscape, NSIS installers, `.msi` packages (with
+their own dialogs, custom actions, shortcuts and services), the Java,
+.NET, Node.js and Python runtimes, and OpenGL, Vulkan and Direct3D 8–11
+programs through Mesa and DXVK.  It can install itself on a disk from its
+live ISO.  New to NovaOS?  Start with the
+[user guide](docs/user-guide.md); [docs/compatibility.md](docs/compatibility.md)
+lists the programs that run.
 
 - [Screenshots](#screenshots)
 - [What runs today](#what-runs-today)
@@ -101,7 +106,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
   characters, wrapped at the window's width; programs get up to 32,766
   through `CreateProcess`, as on Windows), its own commands (`dir`, `copy`, `ping`,
   `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`,
-  `devices`…)
+  `devices`, `crashes`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
   `more`, `less` (git's pager), `timeout`, `taskkill`, `reg`, `regsvr32`, `msiexec` and
   `intl` (the user's regional format).
@@ -250,8 +255,8 @@ Install the prerequisites, build the bootloader, the kernel with the whole
 userland inside, and `nova.img`, then run it in QEMU:
 
 ```bash
-sudo apt install cmake nasm clang lld llvm python3 \
-                 qemu-system-x86 ovmf mtools dosfstools xorriso
+sudo apt install cmake nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
+                 python3 qemu-system-x86 ovmf mtools dosfstools xorriso
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
@@ -409,12 +414,14 @@ To make the ISO yourself from a fresh build, run
   scene that must match the reference `tools/d2dtest/reference.py` draws
   with Skia), then installs Mesa 3D, DXVK and Venus with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
-  stages the downloads) and runs `tools/gltest` (14 tests) and
-  `tools/d3dtest` (17 tests, on Venus: the first monitor is a QEMU 3D
-  virtio-gpu, `virtio-vga-gl,venus=on`, whose Vulkan is the runner's
-  lavapipe); each 64- and 32-bit, with a screenshot of each while it
-  draws; then `d3dtest fps`, which draws the same Direct3D 9 scene on
-  Venus and on lavapipe inside NovaOS and needs Venus to be faster.
+  stages the downloads) and runs `tools/gltest` (15 tests, on virgl and
+  on llvmpipe) and `tools/d3dtest` (17 tests, on Venus: the first monitor
+  is a QEMU 3D virtio-gpu, `virtio-vga-gl,venus=on`, whose Vulkan and
+  OpenGL are the runner's lavapipe and llvmpipe); each 64- and 32-bit,
+  with a screenshot of each while it draws; then `gltest fps` and
+  `d3dtest fps`, which draw the same OpenGL scene on virgl and on
+  llvmpipe, and the same Direct3D 9 scene on Venus and on lavapipe,
+  inside NovaOS and need the GPU to be faster.
 
 The build compiles through ccache, and the boot-test job saves the cache
 after each build, so a pull request recompiles only what it changed.  A pull
@@ -467,7 +474,10 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   Terminal's `dmesg` shows it, and `trace NAME` logs a program's failing
   system calls.  A kernel fault, panic or failed assertion prints a
   backtrace with function names and offsets (the kernel carries its own
-  symbol table); `crash kernel` shows one on purpose.
+  symbol table); `crash kernel` shows one on purpose.  A crashed program
+  or kernel leaves a text report in `C:\NovaOS\Crashes` to attach to an
+  issue (a kernel fault's at the next start); the Terminal's `crashes`
+  lists them and `crashes last` shows the newest.
 
 See [docs/building.md#tests](docs/building.md#tests) for how to run them.
 
@@ -578,6 +588,11 @@ os/
 
 ## Documentation
 
+- [docs/user-guide.md](docs/user-guide.md): using NovaOS: trying it in a
+  virtual machine, installing it, the desktop and its apps, installing
+  programs.
+- [docs/compatibility.md](docs/compatibility.md): which Windows programs
+  run, how well, and how each was checked.
 - [CONTRIBUTING.md](CONTRIBUTING.md): where a change goes (one file per
   DLL, test and doc item, so parallel pull requests do not conflict) and
   how to merge main into a branch.

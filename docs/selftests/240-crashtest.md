@@ -1,0 +1,1 @@
+| `crashtest` | Crash reports: starts `crash.exe` (from its own folder, so the 32-bit build starts the 32-bit one), checks it ended with `STATUS_ACCESS_VIOLATION`, and reads its report in `C:\NovaOS\Crashes`: program and PID, exception, `crash.exe+offset`, address 0, return addresses, the module list and the end of the kernel's log |

@@ -47,6 +47,8 @@
 #define NTFS_META     "$NovaOS"              /* NTFS: the root folder that holds it */
 #define NTFS_DELETED  "Deleted.txt"
 #define DATA_LABEL    "NOVADATA"
+#define PANIC_FILE    "PANIC.TXT"            /* in \NOVA (FAT): set aside for a kernel crash report (um/um_crash.c) */
+#define PANIC_BYTES   (64 * 1024)
 
 static UINT64 tsc_us(UINT64 tsc) { return g_tsc_per_tick ? tsc * 10000 / g_tsc_per_tick : 0; }
 
@@ -311,8 +313,67 @@ bool PersistOwns(BlockDev *d, UINT64 lba) { return have_vol() && PersistDevice()
 
 BlockDev *PersistDevice(void) { return g_dev; }
 
+/* ---------------------------------------------------------------------------
+ * The kernel crash slot (FAT): \NOVA\PANIC.TXT, PANIC_BYTES of zeros whose
+ * clusters follow one another.  A kernel fault writes its report into
+ * those sectors with the disk driver alone (no FAT changes, nothing
+ * allocated: PersistPanicWrite); the next start hands it to
+ * UmCrashKernelFound and blanks the file again.
+ * ------------------------------------------------------------------------- */
+static BlockDev *volatile g_panic_dev;          /* NULL: no slot */
+static UINT64  g_panic_lba;
+static UINT8  *g_panic_buf;                     /* PANIC_BYTES, allocated with the slot */
+static volatile int g_panic_busy;
+
+/* (FAT, \NOVA known; at boot or under the save lock) @take: pass on what it holds first */
+static void panic_slot(bool take)
+{
+    g_panic_dev = NULL;
+    FatEntry e;
+    bool have = FatLookup(g_vol, (UINT32)g_nova_dir, PANIC_FILE, &e) && !e.dir;
+    bool blank = have && e.size == PANIC_BYTES;
+    if (!g_panic_buf && !(g_panic_buf = kmalloc(PANIC_BYTES))) return;
+    if (have && e.size && e.size <= PANIC_BYTES && FatRead(g_vol, &e, g_panic_buf)) {
+        UINT32 len = 0;
+        while (len < e.size && g_panic_buf[len]) len++;
+        if (len) {
+            if (take) UmCrashKernelFound((const char *)g_panic_buf, len);
+            blank = false;
+        }
+    }
+    UINT64 lba;
+    if (!blank) {
+        memset(g_panic_buf, 0, PANIC_BYTES);
+        if (!FatWriteFile(g_vol, (UINT32)g_nova_dir, PANIC_FILE, g_panic_buf, PANIC_BYTES) ||
+            !FatLookup(g_vol, (UINT32)g_nova_dir, PANIC_FILE, &e) || !FatSync(g_vol)) {
+            kprintf("[PERSIST] Could not set aside \\NOVA\\%s for kernel crash reports\n", PANIC_FILE);
+            return;
+        }
+    }
+    if (!FatContiguous(g_vol, &e, &lba)) {
+        kprintf("[PERSIST] \\NOVA\\%s is fragmented: kernel crash reports are not saved\n", PANIC_FILE);
+        return;
+    }
+    g_panic_lba = lba;
+    __atomic_store_n(&g_panic_dev, g_dev, __ATOMIC_RELEASE);
+}
+
+bool PersistPanicReady(void) { return __atomic_load_n(&g_panic_dev, __ATOMIC_ACQUIRE) != NULL; }
+
+bool PersistPanicWrite(const char *text, UINT32 len)
+{
+    BlockDev *d = __atomic_load_n(&g_panic_dev, __ATOMIC_ACQUIRE);
+    if (!d || d->gone || __atomic_exchange_n(&g_panic_busy, 1, __ATOMIC_ACQUIRE)) return false;
+    if (len > PANIC_BYTES - 1) len = PANIC_BYTES - 1;
+    memcpy(g_panic_buf, text, len);
+    memset(g_panic_buf + len, 0, PANIC_BYTES - len);
+    UINT32 sectors = (len + BLOCK_SECTOR) / BLOCK_SECTOR;     /* (the text and a zero after it) */
+    return d->write(d, g_panic_lba, sectors, g_panic_buf) && (!d->flush || d->flush(d));
+}
+
 static void drop_vol(void)
 {
+    g_panic_dev = NULL;
     if (g_vol) FatUnmount(g_vol);
     if (g_ntfs) NtfsUnmount(g_ntfs);
     g_vol = NULL;
@@ -370,6 +431,11 @@ bool PersistAdopt(BlockDev *d, UINT64 lba)
     mark_all(RamfsRoot());
     g_removed_dirty = g_removed != NULL;
     bool ok = save_locked();                                      /* (lets go of both locks) */
+    if (ok && g_vol) {                                            /* a kernel crash slot on the new volume */
+        save_lock();
+        if (g_vol) panic_slot(false);
+        save_unlock();
+    }
     char desc[96];
     PersistDescribe(desc, sizeof(desc));
     kprintf("[PERSIST] Drive C: is now saved to %s%s\n", desc, ok ? "" : " (the first save failed)");
@@ -859,6 +925,7 @@ void PersistLoad(void)
             load_links();
         }
         kprintf("[PERSIST] Restored %d file(s) to drive C:\n", g_restored);
+        if (g_nova_dir) panic_slot(true);
     } else if (g_ntfs) {
         RamfsSetMode(RAMFS_LOADING);
         RamNode *root = RamfsRoot();

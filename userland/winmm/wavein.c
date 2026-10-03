@@ -108,12 +108,13 @@ static DWORD WINAPI wi_thread(LPVOID p)
     return 0;
 }
 
-/* One device ID for each input NovaOS has, oldest first; WAVE_MAPPER
- * records from the default one */
+/* One device ID for each input NovaOS has: the default first, then the
+ * others oldest first (waveOut's order); WAVE_MAPPER records from the
+ * default one */
 MMAPI UINT WINAPI waveInGetNumDevs(void)
 {
     AudioDeviceList l;
-    return audio_devices(1, &l);
+    return audio_wave_devices(1, &l);
 }
 
 typedef struct {
@@ -136,7 +137,7 @@ typedef struct {
 static MMRESULT check_device(UINT_PTR dev)
 {
     AudioDeviceList l;
-    UINT n = audio_devices(1, &l);
+    UINT n = audio_wave_devices(1, &l);
     if (!n) return MMSYSERR_NODRIVER;
     if (dev < n || dev == WAVE_MAPPER || dev == (UINT_PTR)-1 || wi_get((HANDLE)dev)) return MMSYSERR_NOERROR;
     return MMSYSERR_BADDEVICEID;
@@ -151,7 +152,7 @@ static void fill_caps(WAVEINCAPSW *c, UINT_PTR dev)
     c->vDriverVersion = 0x0600;
     WaveIn *w = mapper ? NULL : wi_get((HANDLE)dev);
     AudioDeviceList l;
-    UINT n = audio_devices(1, &l), k = w ? n : (UINT)dev;
+    UINT n = audio_wave_devices(1, &l), k = w ? n : (UINT)dev;
     for (UINT i = 0; w && i < n; i++)               /* (a handle: its device) */
         if (l.dev[i].id == w->device || (!w->device && l.dev[i].is_default)) k = i;
     const char *name = mapper ? "Microsoft Sound Mapper" : k < n ? l.dev[k].name : "Microphone";
@@ -191,7 +192,7 @@ MMAPI MMRESULT WINAPI waveInOpen(HANDLE *out, UINT dev, const AcWaveFormat *fmt,
 {
     if (out) *out = 0;
     AudioDeviceList l;
-    UINT n = audio_devices(1, &l);
+    UINT n = audio_wave_devices(1, &l);
     if (!n) return MMSYSERR_NODRIVER;
     if (dev >= n && dev != WAVE_MAPPER) return MMSYSERR_BADDEVICEID;
     if (!fmt) return MMSYSERR_INVALPARAM;
@@ -380,8 +381,8 @@ MMAPI MMRESULT WINAPI waveInGetID(HANDLE h, UINT *id)
 
 MMAPI MMRESULT WINAPI waveInMessage(HANDLE h, UINT msg, DWORD_PTR p1, DWORD_PTR p2)
 {
-    (void)h; (void)msg; (void)p1; (void)p2;
-    return MMSYSERR_NOTSUPPORTED;
+    (void)h;
+    return audio_wave_devices(1, &(AudioDeviceList){ 0 }) ? wave_mapper_message(msg, p1, p2) : MMSYSERR_NODRIVER;
 }
 
 /* the same texts as waveOut's */

@@ -116,6 +116,7 @@ ExternalProject_Add(bootloader_build
         -DCMAKE_SOURCE_DIR=${CMAKE_SOURCE_DIR}
     BUILD_ALWAYS  TRUE
     INSTALL_COMMAND ""
+    BUILD_BYPRODUCTS "${CMAKE_BINARY_DIR}/bootloader_build/bootx64.efi"
     LOG_CONFIGURE TRUE
     LOG_BUILD     TRUE
 )

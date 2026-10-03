@@ -29,6 +29,7 @@ _CRTIMP long long llabs(long long x);
 _CRTIMP div_t  div(int a, int b);
 _CRTIMP ldiv_t ldiv(long a, long b);
 _CRTIMP void   qsort(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *));
+_CRTIMP void   qsort_s(void *base, size_t n, size_t size, int (*cmp)(void *, const void *, const void *), void *ctx);
 _CRTIMP void  *bsearch(const void *key, const void *base, size_t n, size_t size,
                        int (*cmp)(const void *, const void *));
 _CRTIMP int    rand(void);

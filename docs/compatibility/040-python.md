@@ -1,0 +1,1 @@
+| **Python 3.14** (NuGet package) and **NumPy 2.5.3** | Works | Scripts with hashlib, JSON, regular expressions, threads and subprocesses; NumPy gives the same results as on Linux | nightly corpus (Python), by hand (NumPy) |

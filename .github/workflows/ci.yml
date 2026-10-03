@@ -2,8 +2,8 @@
 # self-tests (tools/selftest.py): the core suite, the network suite (IPv4,
 # IPv6 and winhttp's HTTP/2 over virtio-net) and the graphics suite (Mesa,
 # DXVK and Venus from the App Store, then tools/gltest and tools/d3dtest on
-# a 3D virtio-gpu: a QEMU built with Venus, on Xvfb, whose Vulkan is the
-# runner's lavapipe).
+# a 3D virtio-gpu: a QEMU built with Venus, on Xvfb, whose Vulkan and OpenGL
+# are the runner's lavapipe and llvmpipe).
 # A failing test fails its check; make both required status checks on main
 # to block the merge.
 #
@@ -216,7 +216,7 @@ jobs:
           }
           ccache -s
 
-      # Venus (tools/build_venus.py) and a QEMU with Venus
+      # Venus and virgl (tools/build_venus.py) and a QEMU with Venus
       # (tools/ci/build-qemu-venus.sh) are built when their sources change
       - name: Cache Venus
         id: venus-cache
@@ -225,7 +225,7 @@ jobs:
           path: venus-out/venus.7z
           key: venus-${{ hashFiles('tools/build_venus.py', 'third_party/mesa-venus/**') }}
 
-      - name: Build Venus (Mesa's Vulkan driver for the virtio-gpu)
+      - name: Build Venus and virgl (Mesa's Vulkan and OpenGL drivers for the virtio-gpu)
         if: steps.venus-cache.outputs.cache-hit != 'true'
         run: python3 tools/build_venus.py venus-out --work "$RUNNER_TEMP/venus-work"
 
@@ -250,7 +250,7 @@ jobs:
       - name: Stage 7-Zip, the downloads and the test programs
         run: VENUS_7Z=venus-out/venus.7z tools/ci/stage-graphics.sh gfx gfx-cache
 
-      - name: Run d2dtest, install Mesa, DXVK and Venus from the App Store, run gltest, d3dtest and the frame-rate test
+      - name: Run d2dtest, install Mesa, DXVK and Venus from the App Store, run gltest, d3dtest and the frame-rate tests
         run: |
           export NOVARUN_QEMU="$HOME/qv/bin/qemu-system-x86_64" LD_LIBRARY_PATH="$HOME/qv/lib/x86_64-linux-gnu"
           xvfb-run -a -s '-screen 0 1280x1024x24' \

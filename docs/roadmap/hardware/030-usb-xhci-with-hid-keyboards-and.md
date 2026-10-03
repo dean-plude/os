@@ -11,6 +11,8 @@
   headsets and microphones at the rates their clocks offer and with up
   to eight channels, as the sound output and input the mixer switches to
   when they are plugged in, or that Settings' Sound page or a program
-  chooses.  Still to do: siTDs (full-speed isochronous behind a
-  high-speed hub on EHCI), asynchronous endpoints' rate feedback,
-  webcams.
+  chooses; the mixer runs at each device's own rate, and asynchronous
+  devices' rate feedback is followed.  Still to do: siTDs (full-speed
+  isochronous behind a high-speed hub on EHCI; QEMU cannot test them,
+  and Intel chipsets since 2015, the reference ThinkPad's included, have xHCI
+  only), webcams.

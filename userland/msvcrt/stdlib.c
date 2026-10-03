@@ -181,39 +181,52 @@ ldiv_t ldiv(long a, long b) { ldiv_t r = { a / b, a % b }; return r; }
  * ----------------------------------------------------------------------- */
 static void swap_bytes(char *a, char *b, size_t n) { while (n--) { char t = *a; *a++ = *b; *b++ = t; } }
 
-static void qsort_r(char *base, size_t n, size_t size, int (*cmp)(const void *, const void *))
+static void qsort_r(char *base, size_t n, size_t size, int (*cmp)(void *, const void *, const void *), void *ctx)
 {
     while (n > 1) {
         if (n < 12) {                                       /* insertion sort */
             for (size_t i = 1; i < n; i++)
-                for (size_t j = i; j > 0 && cmp(base + (j - 1) * size, base + j * size) > 0; j--)
+                for (size_t j = i; j > 0 && cmp(ctx, base + (j - 1) * size, base + j * size) > 0; j--)
                     swap_bytes(base + (j - 1) * size, base + j * size, size);
             return;
         }
         /* median of three pivot → position 0 */
         char *a = base, *m = base + (n / 2) * size, *z = base + (n - 1) * size;
-        if (cmp(m, a) < 0) swap_bytes(m, a, size);
-        if (cmp(z, a) < 0) swap_bytes(z, a, size);
-        if (cmp(z, m) < 0) swap_bytes(z, m, size);
+        if (cmp(ctx, m, a) < 0) swap_bytes(m, a, size);
+        if (cmp(ctx, z, a) < 0) swap_bytes(z, a, size);
+        if (cmp(ctx, z, m) < 0) swap_bytes(z, m, size);
         swap_bytes(a, m, size);
         size_t i = 1, j = n - 1;
         for (;;) {
-            while (i <= j && cmp(base + i * size, base) < 0) i++;
-            while (j >= i && cmp(base + j * size, base) > 0) j--;
+            while (i <= j && cmp(ctx, base + i * size, base) < 0) i++;
+            while (j >= i && cmp(ctx, base + j * size, base) > 0) j--;
             if (i >= j) break;
             swap_bytes(base + i * size, base + j * size, size);
             i++; j--;
         }
         swap_bytes(base, base + j * size, size);
         /* recurse into the smaller part, loop on the larger */
-        if (j < n - j - 1) { qsort_r(base, j, size, cmp); base += (j + 1) * size; n -= j + 1; }
-        else { qsort_r(base + (j + 1) * size, n - j - 1, size, cmp); n = j; }
+        if (j < n - j - 1) { qsort_r(base, j, size, cmp, ctx); base += (j + 1) * size; n -= j + 1; }
+        else { qsort_r(base + (j + 1) * size, n - j - 1, size, cmp, ctx); n = j; }
     }
+}
+
+/* (qsort's comparison, called the way qsort_s calls its own) */
+static int plain_cmp(void *f, const void *a, const void *b)
+{
+    return ((int (*)(const void *, const void *))f)(a, b);
 }
 
 void qsort(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *))
 {
-    qsort_r(base, n, size, cmp);
+    qsort_r(base, n, size, plain_cmp, (void *)cmp);
+}
+
+/* The secure-CRT form: the comparison gets @ctx first (Mesa calls it) */
+void qsort_s(void *base, size_t n, size_t size, int (*cmp)(void *, const void *, const void *), void *ctx)
+{
+    if (!cmp || (n && !base) || !size) { errno = EINVAL; return; }
+    qsort_r(base, n, size, cmp, ctx);
 }
 
 void *bsearch(const void *key, const void *base, size_t n, size_t size, int (*cmp)(const void *, const void *))

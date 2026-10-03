@@ -10,10 +10,14 @@ Linux VM.  On a Mac, see [macos.md](macos.md).
 sudo apt update
 sudo apt install -y \
     cmake ninja-build nasm python3 \
-    clang lld llvm libc++-dev \
+    clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
     mtools dosfstools xorriso \
-    qemu-system-x86 ovmf
+    qemu-system-x86 ovmf acpica-tools
 ```
+
+That is everything the build, `cmake --build . --target run` and the
+self-tests need; it was last checked on Ubuntu 24.04 (October 2026) by
+following this page from the top.
 
 What each part is for:
 
@@ -30,6 +34,7 @@ What each part is for:
 | `mtools`, `dosfstools` | `nova.img` and putting files on the data disk |
 | `xorriso` | `scripts/create-iso.sh` |
 | `qemu-system-x86`, `ovmf` | Running NovaOS |
+| `acpica-tools` (`iasl`) | Only for the core self-tests, which compile the ACPI tables in `tests/acpi/` |
 
 ### Optional compilers
 
@@ -275,7 +280,9 @@ behind a `usb-redir` device, or with `--uac2` a USB Audio Class 2.0 one:
 a programmable clock behind a clock selector, 24-bit samples and, at
 high speed, a packet every microframe; `--rates`, `--channels`,
 `--mic-channels` and `--product` give it other sampling rates, channel
-counts and a name), e.g. a high-speed headset on EHCI whose
+counts and a name, and `--feedback HZ` makes its speaker asynchronous,
+on its own clock, saying through a feedback endpoint that it plays HZ
+frames a second), e.g. a high-speed headset on EHCI whose
 microphone hears 523 Hz:
 
 ```bash
@@ -297,14 +304,19 @@ for 0 x 0 disconnects it, while NovaOS runs.
 A 3D GPU: with QEMU 9.2 or newer and a virglrenderer built with Venus,
 `-vga none -device virtio-vga-gl,venus=on,blob=on,hostmem=1G` and an
 OpenGL display (`-display sdl,gl=on` or `gtk,gl=on`) give NovaOS a
-virtio-gpu whose Vulkan runs on the host's GPU.  Install **Venus** from
-the App Store (Runtimes), next to Mesa 3D and DXVK: Vulkan programs, and
-Direct3D ones through DXVK, then run there (`d3dtest` prints `D3D9
-adapter  Virtio-GPU Venus (...)`), and without such a GPU they keep using
-lavapipe.  OpenGL stays on llvmpipe.  `tools/ci/build-qemu-venus.sh
+virtio-gpu whose Vulkan and OpenGL run on the host's GPU.  Install
+**Venus** from the App Store (Runtimes), next to Mesa 3D and DXVK: Vulkan
+programs, Direct3D ones through DXVK, and OpenGL ones then run there
+(`d3dtest` prints `D3D9 adapter  Virtio-GPU Venus (...)`, `gltest`
+`GL_RENDERER virgl (...)`), and without such a GPU they keep using
+lavapipe and llvmpipe.  NovaOS's `opengl32.dll` picks Mesa's virgl
+(`opengl32_virgl.dll`, from Venus) on that GPU and Mesa 3D's llvmpipe
+(`opengl32_mesa.dll`) otherwise; `GALLIUM_DRIVER=virgl` or
+`GALLIUM_DRIVER=llvmpipe` chooses one.  `tools/ci/build-qemu-venus.sh
 PREFIX` builds such a QEMU (Ubuntu 24.04's has no Venus), and
 `tools/build_venus.py OUT` builds the App Store's `venus.7z` (Mesa's
-Venus with NovaOS's back end, `third_party/mesa-venus`) with MinGW-w64.
+Venus and virgl with NovaOS's back ends, `third_party/mesa-venus`) with
+MinGW-w64.
 
 ### Where your files are kept
 
@@ -486,7 +498,17 @@ its tone must sound a quarter as loud; `soundtest wovolume`: a program's
 GUID, XAudio2's device list and a mastering voice on a named device
 (`xa2test devices`), and, after `shutdown /r`, the surround headset
 still the default output (although the speaker attaches again too) and
-still at a quarter.  Last, one
+still at a quarter.  Before the restart a 44.1 kHz tone (`soundtest tone
+... rate=44100`) on the 44.1 kHz surround headset must arrive sample for
+sample (nothing converted: the mixer runs at the device's rate); after
+it, the default output and input must be `waveOut` and `waveIn` device
+0, with `DRVM_MAPPER_PREFERRED_GET` naming device 0, and device 0 must
+follow the default when it moves.  Then two asynchronous speakers
+(`usbredirpeer.py --feedback`): a full-speed USB Audio 1.0 one saying it
+plays 48,500 frames a second (10.14 feedback) and a high-speed USB Audio
+2.0 one saying 47,600 (16.16): NovaOS must send 48.5 frames a packet to
+the first and 5.95 to the second on average, not the nominal 48 and 6.
+Last, one
 `virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
 connects a monitor to the second and third outputs and disconnects them
 again while NovaOS runs, through a VNC server QEMU has on each (an RFB
@@ -516,9 +538,11 @@ The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
 schedules it for the next boot), a restart that must report `Pending file
 operations at boot: 2 done, 0 failed` and come up in the saved mode
 (`disptest saved 1024 768`), `filetest installed`, and
-last `crash kernel`, which halts the kernel on purpose and passes when the
+`crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
-`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite first runs
+`KeCrashTest`, `sys_nova_bugcheck`, ...); the machine is then reset, and
+last the next start must have moved the fault's report into
+`C:\NovaOS\Crashes` (`crashes last` shows the backtrace).  The graphics suite first runs
 `d2dtest`, x64 and x86: it checks geometry computations, draws a scene into
 a DC render target and compares it with `d2dref.bmp`, the image
 `tools/d2dtest/reference.py` draws with Skia (`pip install skia-python`;
@@ -529,10 +553,15 @@ shaping, the direction and the drawing, and shows the line in a window.  It
 then types `store
 install Mesa 3D`, `store install DXVK` and `store install Venus` (the
 archives are already in `C:\Downloads`, so the App Store installs without
-a network) and then runs `gltest` (on llvmpipe) and `d3dtest` (on Venus:
+a network) and then runs `gltest` (on virgl and, with
+`GALLIUM_DRIVER=llvmpipe`, on llvmpipe) and `d3dtest` (on Venus:
 the first monitor is a 3D virtio-gpu, `virtio-vga-gl,venus=on`, and the
 test expects the Venus adapter), x64 and x86, from `C:\Tests`, taking a
-screenshot of each while it draws.  Last, `d3dtest fps 10` draws a
+screenshot of each while it draws.  `gltest fps 10` draws an OpenGL
+scene that keeps the rasterizer busy (64 blended quads over a 640x480
+window) for 10 s on virgl and 10 s on llvmpipe, each in a child process
+whose `GALLIUM_DRIVER` names the driver, and passes when virgl draws more
+frames per second (under TCG: 12.6 to 15.9 against 0.24).  Last, `d3dtest fps 10` draws a
 Direct3D 9 scene that keeps the rasterizer busy (64 blended quads over a
 640x480 window) for 10 s on Venus and 10 s on lavapipe, each in a child
 process whose `VK_DRIVER_FILES` names the driver, and passes when Venus
@@ -602,7 +631,9 @@ appends a Markdown table and `--junit FILE` writes JUnit XML.
 
 To add a test, add a file to `tests/selftest/core/` (or `graphics/`):
 tests run in file-name order, so the number prefix places it (the restart
-is at 130 and `crash kernel`, which halts NovaOS, stays last at 900).
+is at 130; `crash kernel`, which halts NovaOS, is at 900 with `restart=True`,
+which resets the machine, and only tests that check what the crash left
+come after it, at 905).
 
 ```python
 # tests/selftest/core/140-mytest.py
@@ -688,8 +719,9 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 
 <!-- END generated:selftest-table -->
 
-`crash` writes through a NULL pointer (only it dies); `crash kernel`
-crashes the kernel on purpose (`NtNovaBugCheck`) to show the backtrace.
+`crash` writes through a NULL pointer (only it dies, and it leaves a
+report in `C:\NovaOS\Crashes`); `crash kernel` crashes the kernel on
+purpose (`NtNovaBugCheck`) to show the backtrace.
 
 Interactive ones: `winhello` and `guitest` (windows, menus, dialogs,
 property sheets; `guitest auto` drives them itself and reports, as CI runs it), `droptest` (drag and drop; its targets list each dropped file's size, or "missing"), `cpus` (SMP speed-up), and
@@ -853,6 +885,17 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
   thing to check ([hardware.md](hardware.md)).
 - **Program crashes** are logged with the faulting module and offset, the
   process's exit code, and `OutputDebugString` output.
+- **Crash reports**: a program that crashes leaves
+  `C:\NovaOS\Crashes\NAME-YYYYMMDD-HHMMSS-PID.txt` (the exception, the
+  module and offset, the address it touched, the return addresses on its
+  stack, its modules and the end of the kernel's log), and the Terminal
+  names the file under the crash line.  A kernel fault writes its log and
+  backtrace into `\NOVA\PANIC.TXT` on the disk that keeps drive C: (FAT;
+  64 KiB set aside at boot, written with the disk driver alone), and the
+  next start moves it to `C:\NovaOS\Crashes\kernel-YYYYMMDD-HHMMSS.txt`.
+  The Terminal's `crashes` lists the reports and `crashes last` shows the
+  newest; attach the file to an issue.  At most 100 are kept: delete old
+  ones to make room.
 - **`trace NAME`** in the Terminal logs the failing system calls (with file
   names) of the program called NAME, each with its process id; `trace
   +NAME` logs every call, not only the failing ones; `trace off` stops it.

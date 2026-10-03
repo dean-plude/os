@@ -23,7 +23,7 @@ import struct
 import time
 import wavcheck
 
-SURROUND = (523, 392, 330, 294, 349, 440, 880, 587, 466)     # in the order played (030, then here)
+SURROUND = (523, 392, 330, 294, 698, 349, 440, 880, 587, 466)   # in the order played (030, 035, then here)
 
 
 def _wait_log(nova, pattern, secs=90):
