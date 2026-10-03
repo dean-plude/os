@@ -41,6 +41,9 @@ typedef enum {
     WM_MOUSE_MUP,
     WM_MOUSE_WHEEL,        /* the wheel turned: WmWheelDelta() notches (+ = away from the user) */
     WM_MOUSE_LEAVE,        /* the pointer left the client area (hover windows) */
+    WM_MOUSE_XDOWN,        /* a side button: WmWheelDelta() is which, 1 (back) or 2 (forward) */
+    WM_MOUSE_XUP,
+    WM_MOUSE_HWHEEL,       /* the horizontal wheel: WmWheelDelta() notches (+ = to the right) */
 } WmMouseMsg;
 
 struct WND;
@@ -162,9 +165,15 @@ WND *WmWindowById(int id);
 typedef bool (*WmIconFn)(const WND *w, int x, int y, int size);
 void WmSetIconPainter(WmIconFn fn);
 
-/* Area windows may occupy (the screen minus the dock). */
+/* Area windows may occupy on the primary monitor (the screen minus the
+ * dock). */
 void WmSetWorkArea(GdiRect r);
 GdiRect WmWorkArea(void);
+/* The work area of monitor @i (gdi.h; the others have no dock: the whole
+ * monitor), and of the monitor a rectangle is on (most of it, or nearest).
+ * Maximizing, snapping and keeping windows on screen use the window's. */
+GdiRect WmMonitorWork(int i);
+GdiRect WmWorkAreaFor(GdiRect r);
 
 /* -----------------------------------------------------------------------
  * Input routing (called by the desktop event loop)
@@ -175,12 +184,12 @@ GdiRect WmWorkArea(void);
 bool WmMouseButton(int x, int y, WmMouseMsg msg);
 /* Mouse moved to (x, y): drags, hover highlights, captured client moves. */
 void WmMouseMove(int x, int y);
-/* Right/middle button or wheel (@msg: WM_MOUSE_R*, M*, WHEEL with @dz
- * notches) for a window that takes them; false if none did (the desktop's
- * own menus then). */
+/* Right/middle/side button or wheel (@msg: WM_MOUSE_R*, M*, X* with @dz
+ * the side button, WHEEL or HWHEEL with @dz notches) for a window that
+ * takes them; false if none did (the desktop's own menus then). */
 bool WmMouseOther(int x, int y, WmMouseMsg msg, int dz);
 int  WmWheelDelta(void);
-/* The buttons held (bit 0 left, 1 right, 2 middle), kept by the desktop */
+/* The buttons held (bit 0 left, 1 right, 2 middle, 3 back, 4 forward), kept by the desktop */
 void   WmSetButtons(UINT32 b);
 UINT32 WmButtons(void);
 /* Run every window's on_tick hook (called by the desktop loop). */

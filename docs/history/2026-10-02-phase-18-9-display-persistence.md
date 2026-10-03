@@ -19,4 +19,5 @@
   writes the registry values.  The core self-tests save 1024x768 with
   `disptest 1024 768`, and after the suite's restart (`shutdown /r`)
   `disptest saved 1024 768` passes only if NovaOS came up in that mode.
-- Not yet: a per-monitor layout (NovaOS drives one display).
+- Not yet: a per-monitor layout (NovaOS drives one display).  (Done since:
+  "More than one monitor".)

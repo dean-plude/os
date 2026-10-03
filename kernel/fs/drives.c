@@ -32,11 +32,19 @@ static bool ntfs_create(void *vol, UINT64 dir, const char *name, bool is_dir, UI
 {
     return NtfsCreate(vol, dir, name, is_dir, ref) && NtfsSync(vol);
 }
-static bool ntfs_remove(void *vol, UINT64 dir, UINT64 ref) { return NtfsDelete(vol, dir, ref) && NtfsSync(vol); }
-static bool ntfs_rename(void *vol, UINT64 dir, UINT64 ref, UINT64 to, const char *name)
+static bool ntfs_remove(void *vol, UINT64 dir, UINT64 ref, const char *name)
 {
-    return NtfsRename(vol, dir, ref, to, name) && NtfsSync(vol);
+    return NtfsDelete(vol, dir, ref, name) && NtfsSync(vol);
 }
+static bool ntfs_rename(void *vol, UINT64 dir, UINT64 ref, const char *old_name, UINT64 to, const char *name)
+{
+    return NtfsRename(vol, dir, ref, old_name, to, name) && NtfsSync(vol);
+}
+static bool ntfs_link(void *vol, UINT64 ref, UINT64 dir, const char *name)
+{
+    return NtfsLink(vol, ref, dir, name) && NtfsSync(vol);
+}
+static UINT32 ntfs_links(void *vol, UINT64 ref) { return NtfsLinks(vol, ref); }
 static bool ntfs_write(void *vol, UINT64 ref, const void *data, UINT64 len)
 {
     return NtfsWriteFile(vol, ref, data, len) && NtfsSync(vol);
@@ -45,9 +53,10 @@ static bool ntfs_write(void *vol, UINT64 ref, const void *data, UINT64 len)
 static UINT64 ntfs_free(void *vol) { return NtfsFreeBytes(vol); }
 static bool ntfs_can_write(void *vol, UINT64 ref) { return NtfsCanWrite(vol, ref); }
 
-static const RamfsSource g_ntfs_source = { ntfs_list, ntfs_size, ntfs_read, NULL, NULL, NULL, NULL, NULL, NULL };
+static const RamfsSource g_ntfs_source = { ntfs_list, ntfs_size, ntfs_read, NULL, NULL, NULL, NULL, NULL, NULL,
+                                           NULL, ntfs_links };
 static const RamfsSource g_ntfs_rw_source = { ntfs_list, ntfs_size, ntfs_read, ntfs_create, ntfs_remove,
-                                              ntfs_rename, ntfs_write, ntfs_free, ntfs_can_write };
+                                              ntfs_rename, ntfs_write, ntfs_free, ntfs_can_write, ntfs_link, ntfs_links };
 
 typedef struct { bool (*add)(const RamfsExtEntry *e, void *ctx); void *ctx; } ListCtx;
 
@@ -141,7 +150,7 @@ static bool fat_read(void *vol, UINT64 ref, UINT64 off, void *buf, UINT64 len)
     return ok;
 }
 
-static const RamfsSource g_fat_source = { fat_list, fat_size, fat_read, NULL, NULL, NULL, NULL, NULL, NULL };
+static const RamfsSource g_fat_source = { fat_list, fat_size, fat_read, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 
 /* ---- mounting ---- */
 

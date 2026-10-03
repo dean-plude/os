@@ -18,6 +18,8 @@ typedef enum {
 #define MOUSE_LEFT    (1u << 0)
 #define MOUSE_RIGHT   (1u << 1)
 #define MOUSE_MIDDLE  (1u << 2)
+#define MOUSE_X1      (1u << 3)   /* the side buttons: back */
+#define MOUSE_X2      (1u << 4)   /*   and forward */
 
 typedef struct {
     UINT8 type;        /* InputType */
@@ -28,6 +30,7 @@ typedef struct {
     INT32 dx, dy;      /* relative motion, +x right / +y down (INPUT_MOUSE) */
     INT32 dz;          /* wheel: +1 per notch away from the user (INPUT_MOUSE) */
     UINT8 absolute;    /* dx, dy are a position: 0-65535 across the screen (tablets, touch) */
+    INT32 dw;          /* horizontal wheel: +1 per notch to the right (INPUT_MOUSE) */
 } InputEvent;
 
 /* -----------------------------------------------------------------------
@@ -59,6 +62,29 @@ typedef struct {
 #define KEY_INSERT     0x52   /* extended */
 #define KEY_DELETE     0x53   /* extended */
 #define KEY_LWIN       0x5B   /* extended */
+/* Media, browser and launch keys (all extended), as PS/2 keyboards send
+ * them and USB consumer-control usages are translated to */
+#define KEY_PREV_TRACK 0x10
+#define KEY_NEXT_TRACK 0x19
+#define KEY_MUTE       0x20
+#define KEY_CALCULATOR 0x21
+#define KEY_PLAY_PAUSE 0x22
+#define KEY_MEDIA_STOP 0x24
+#define KEY_VOL_DOWN   0x2E
+#define KEY_VOL_UP     0x30
+#define KEY_WWW_HOME   0x32
+#define KEY_POWER      0x5E
+#define KEY_SLEEP      0x5F
+#define KEY_WAKE       0x63
+#define KEY_WWW_SEARCH 0x65
+#define KEY_WWW_FAVORITES 0x66
+#define KEY_WWW_REFRESH 0x67
+#define KEY_WWW_STOP   0x68
+#define KEY_WWW_FORWARD 0x69
+#define KEY_WWW_BACK   0x6A
+#define KEY_MY_COMPUTER 0x6B
+#define KEY_MAIL       0x6C
+#define KEY_MEDIA_SELECT 0x6D
 
 typedef struct {
     UINT8 scancode;

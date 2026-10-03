@@ -51,6 +51,9 @@
 #define WM_MBUTTONDOWN    0x0207
 #define WM_MBUTTONUP      0x0208
 #define WM_MOUSEWHEEL     0x020A
+#define WM_XBUTTONDOWN    0x020B
+#define WM_XBUTTONUP      0x020C
+#define WM_MOUSEHWHEEL    0x020E
 #define WM_MOUSELEAVE     0x02A3
 
 #define GUI_MAX_WINDOWS   64
@@ -210,6 +213,13 @@ UINT32 UmScancodeToVk(UINT8 sc, bool ext)
         case 0x4B: return 0x25; case 0x4D: return 0x27; case 0x4F: return 0x23;
         case 0x50: return 0x28; case 0x51: return 0x22; case 0x52: return 0x2D; case 0x53: return 0x2E;
         case 0x5B: return 0x5B; case 0x5C: return 0x5C; case 0x5D: return 0x5D;
+        /* media, browser and launch keys: VK_MEDIA_*, VK_VOLUME_*, VK_BROWSER_*, VK_LAUNCH_*, VK_SLEEP */
+        case 0x19: return 0xB0; case 0x10: return 0xB1; case 0x24: return 0xB2; case 0x22: return 0xB3;
+        case 0x20: return 0xAD; case 0x2E: return 0xAE; case 0x30: return 0xAF;
+        case 0x6A: return 0xA6; case 0x69: return 0xA7; case 0x67: return 0xA8; case 0x68: return 0xA9;
+        case 0x65: return 0xAA; case 0x66: return 0xAB; case 0x32: return 0xAC;
+        case 0x6C: return 0xB4; case 0x6D: return 0xB5; case 0x6B: return 0xB6; case 0x21: return 0xB7;
+        case 0x5F: return 0x5F;
         }
         return 0;
     }
@@ -250,7 +260,8 @@ static void gui_key(WND *w, const KeyEvent *k)
 static UINT64 mk_flags(void)
 {
     UINT32 b = WmButtons(), m = InputModifiers();
-    return (b & 1 ? 0x01 : 0) | (b & 2 ? 0x02 : 0) | (b & 4 ? 0x10 : 0) | (m & 1 ? 0x04 : 0) | (m & 2 ? 0x08 : 0);
+    return (b & 1 ? 0x01 : 0) | (b & 2 ? 0x02 : 0) | (b & 4 ? 0x10 : 0) | (b & 8 ? 0x20 : 0) | (b & 16 ? 0x40 : 0) |
+           (m & 1 ? 0x04 : 0) | (m & 2 ? 0x08 : 0);
 }
 
 static void gui_mouse(WND *w, WmMouseMsg msg, int x, int y)
@@ -273,6 +284,18 @@ static void gui_mouse(WND *w, WmMouseMsg msg, int x, int y)
         enqueue(g, WM_MOUSEWHEEL, (d << 16) | mk, packxy(x + c.x, y + c.y), x, y);
         break;
     }
+    case WM_MOUSE_HWHEEL: {                                 /* + is to the right, as on Windows */
+        GdiRect c = WmClientRect(w);
+        UINT64 d = (UINT64)(UINT16)(INT16)(WmWheelDelta() * 120);
+        enqueue(g, WM_MOUSEHWHEEL, (d << 16) | mk, packxy(x + c.x, y + c.y), x, y);
+        break;
+    }
+    case WM_MOUSE_XDOWN:                                    /* HIWORD(wParam): XBUTTON1 or 2 */
+        enqueue(g, WM_XBUTTONDOWN, ((UINT64)WmWheelDelta() << 16) | mk, lp, x, y);
+        break;
+    case WM_MOUSE_XUP:
+        enqueue(g, WM_XBUTTONUP, ((UINT64)WmWheelDelta() << 16) | mk, lp, x, y);
+        break;
     case WM_MOUSE_LEAVE:  enqueue(g, WM_MOUSELEAVE, 0, 0, 0, 0); break;
     }
 }
@@ -392,6 +415,11 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     GuiCreate gc;
     if (!NT_SUCCESS(CopyFromUser(&gc, (const void *)(uintptr_t)a1, sizeof(gc)))) return 0;
     int maxw = GdiScreenW(), maxh = GdiScreenH();
+    for (int i = 1; i < GdiMonitorCount(); i++) {     /* as large as the largest monitor */
+        GdiRect m = GdiMonitorRect(i);
+        if (m.w > maxw) maxw = m.w;
+        if (m.h > maxh) maxh = m.h;
+    }
     if (maxw > GUI_MAX_W) maxw = GUI_MAX_W;
     if (maxh > GUI_MAX_H) maxh = GUI_MAX_H;
     int cw = gc.w, ch = gc.h;
@@ -724,6 +752,20 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_HWND_TAG     21
 #define CTL_SET_HWND     22
 #define CTL_FOREIGN      23
+/* More than one monitor (hwnd may be 0); display N is head N - 1
+ * (hal/display.h), monitor N - 1 of the GDI:
+ *  24 MONITOR     arg: monitor index; ptr -> { count, x, y, w, h, work x, y,
+ *                 w, h, scale (1 = 96 DPI) }, logical px on the virtual
+ *                 desktop.  0: no such monitor
+ *  25 HEAD_MODE   ptr <- { head, mode as DISPLAY_MODE's arg } -> { width,
+ *                 height, bits per pixel, frequency }.  0: no such mode
+ *  26 SET_HEAD    ptr <- { head, width, height, CDS_* flags, has position,
+ *                 x, y } (0 x 0: the default mode; a position moves monitor
+ *                 head, not the primary, on the virtual desktop); returns a
+ *                 DISP_CHANGE_* code */
+#define CTL_MONITOR      24
+#define CTL_HEAD_MODE    25
+#define CTL_SET_HEAD     26
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
 #define GUI_TAG_SHIFT    14
@@ -763,6 +805,62 @@ static UINT64 display_set(UmProcess *p, UINT64 ptr)
     if (!DesktopSetDisplayMode(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_FAILED;
     if (flags & CDS_UPDATEREGISTRY) DesktopSaveDisplayMode(m.w, m.h);
     g_fullscreen_proc = !reset && (flags & CDS_FULLSCREEN) && !(flags & CDS_UPDATEREGISTRY) ? p : NULL;
+    return DISP_CHANGE_SUCCESSFUL;
+}
+
+static UINT64 monitor_info(UINT64 which, UINT64 ptr)
+{
+    INT32 i = (INT32)which, out[10] = { 0 };
+    DesktopLock();
+    int n = GdiMonitorCount();
+    if (i >= 0 && i < n) {
+        GdiRect r = GdiMonitorRect(i), wa = WmMonitorWork(i);
+        INT32 v[10] = { n, r.x, r.y, r.w, r.h, wa.x, wa.y, wa.w, wa.h, GdiMonitorScale(i) };
+        memcpy(out, v, sizeof(out));
+    }
+    DesktopUnlock();
+    if (!out[0]) return 0;
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, out, sizeof(out))) ? 1 : 0;
+}
+
+static UINT64 head_mode_info(UINT64 ptr)
+{
+    INT32 in[2];
+    if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return 0;
+    DisplayMode m;
+    if (in[0] < 0 || in[0] >= DisplayHeadCount()) return 0;
+    if (in[1] == -1) m = DisplayHeadMode(in[0]);
+    else if (in[1] == -2) m = DisplayHeadDefaultMode(in[0]);
+    else if (!DisplayHeadModeAt(in[0], in[1], &m)) return 0;
+    UINT32 out[4] = { (UINT32)m.w, (UINT32)m.h, 32, 60 };
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, out, sizeof(out))) ? 1 : 0;
+}
+
+static UINT64 head_set(UmProcess *p, UINT64 ptr)
+{
+    INT32 in[7];
+    if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+    int head = in[0];
+    UINT32 flags = (UINT32)in[3];
+    if (head == 0 && !in[4]) {                        /* the primary's mode: SET_DISPLAY */
+        INT32 d[3] = { in[1], in[2], in[3] };
+        bool reset = d[0] == 0 && d[1] == 0;
+        DisplayMode m = reset ? DisplayDefaultMode() : (DisplayMode){ d[0], d[1] };
+        if (!DisplayModeSupported(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_BADMODE;
+        if (flags & CDS_TEST) return DISP_CHANGE_SUCCESSFUL;
+        if (!DesktopSetDisplayMode(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+        if (flags & CDS_UPDATEREGISTRY) DesktopSaveDisplayMode(m.w, m.h);
+        g_fullscreen_proc = !reset && (flags & CDS_FULLSCREEN) && !(flags & CDS_UPDATEREGISTRY) ? p : NULL;
+        return DISP_CHANGE_SUCCESSFUL;
+    }
+    if (head < 0 || head >= DisplayHeadCount()) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+    if (in[4] && head == 0) return (UINT64)(INT64)DISP_CHANGE_BADMODE;  /* the primary stays at (0, 0) */
+    DisplayMode m = in[1] == 0 && in[2] == 0 ? DisplayHeadDefaultMode(head) : (DisplayMode){ in[1], in[2] };
+    if (!DisplayHeadModeSupported(head, m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_BADMODE;
+    if (flags & CDS_TEST) return DISP_CHANGE_SUCCESSFUL;
+    if (!DesktopSetHeadMode(head, m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+    if (flags & CDS_UPDATEREGISTRY) DesktopSaveHeadMode(head, m.w, m.h);
+    if (in[4]) DesktopSetMonitorOrigin(head, in[5], in[6], (flags & CDS_UPDATEREGISTRY) != 0);
     return DISP_CHANGE_SUCCESSFUL;
 }
 
@@ -913,6 +1011,9 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     if (a2 == CTL_DISPLAY_MODE) return display_mode_info(a3, a4);
     if (a2 == CTL_SET_DISPLAY) return display_set(p, a4);
+    if (a2 == CTL_MONITOR) return monitor_info(a3, a4);
+    if (a2 == CTL_HEAD_MODE) return head_mode_info(a4);
+    if (a2 == CTL_SET_HEAD) return head_set(p, a4);
     if (a2 == CTL_WINDOW_AT) {
         INT32 pt[2], out[4] = { 0, 0, 0, 0 };
         if (!NT_SUCCESS(CopyFromUser(pt, (const void *)(uintptr_t)a4, sizeof(pt)))) return 0;

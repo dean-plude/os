@@ -18,6 +18,12 @@ permissions:
   contents: read
   issues: write
 
+env:                            # ccache, as in ci.yml
+  CCACHE_BASEDIR: ${{ github.workspace }}
+  CCACHE_NOHASHDIR: 'true'
+  CCACHE_COMPILERCHECK: content
+  CCACHE_MAXSIZE: 500M
+
 concurrency:
   group: nightly-app-corpus
   cancel-in-progress: false
@@ -35,7 +41,16 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
-            qemu-system-x86 ovmf mtools dosfstools p7zip-full curl python3-pil ntfs-3g
+            qemu-system-x86 ovmf mtools dosfstools p7zip-full curl python3-pil ntfs-3g ccache
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+
+      - name: Restore the compiler cache (saved by CI's boot-test job)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.run_id }}
+          restore-keys: ccache-
 
       - name: Cache the program downloads
         uses: actions/cache@v4

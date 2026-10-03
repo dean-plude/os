@@ -91,6 +91,14 @@ static LRESULT def_common(Wnd *w, HWND h, UINT msg, WPARAM wp, LPARAM lp, int wi
         send_msg(w, WM_CONTEXTMENU, (WPARAM)h, MAKELPARAM(pt.x, pt.y));
         return 0;
     }
+    case WM_XBUTTONUP: case WM_NCXBUTTONUP:
+        /* the side buttons are Back and Forward (XBUTTON1 and 2 are
+         * APPCOMMAND_BROWSER_BACKWARD and _FORWARD) */
+        if (HIWORD(wp) == XBUTTON1 || HIWORD(wp) == XBUTTON2)
+            send_msg(w, WM_APPCOMMAND, (WPARAM)h, MAKELPARAM(msg == WM_XBUTTONUP ? LOWORD(wp) : 0, FAPPCOMMAND_MOUSE | HIWORD(wp)));
+        return TRUE;
+    case WM_XBUTTONDOWN: case WM_XBUTTONDBLCLK: case WM_NCXBUTTONDOWN: case WM_NCXBUTTONDBLCLK:
+        return TRUE;
     case WM_CONTEXTMENU: case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL: case WM_APPCOMMAND: case WM_HELP:
         if ((w->style & WS_CHILD) && w->parent) return send_msg(w->parent, msg, wp, lp);
         return 0;
@@ -134,10 +142,17 @@ static LRESULT def_common(Wnd *w, HWND h, UINT msg, WPARAM wp, LPARAM lp, int wi
         g_alt_alone = 0;
         if (wp == VK_F4 && (lp & (1 << 29))) { post_msg(top_of(w), top_of(w)->h, WM_SYSCOMMAND, SC_CLOSE, 0); return 0; }
         return 0;
-    case WM_KEYDOWN:
+    case WM_KEYDOWN: {
         g_alt_alone = 0;
         if (wp == VK_F10) { g_alt_alone = 1; return 0; }
+        /* Browser, volume, media and launch keys: APPCOMMAND_* 1-18 in
+         * the order of their virtual keys (VK_BROWSER_BACK..VK_LAUNCH_APP2) */
+        if (wp >= VK_BROWSER_BACK && wp <= VK_LAUNCH_APP2) {
+            WORD mk = (GetKeyState(VK_SHIFT) < 0 ? MK_SHIFT : 0) | (GetKeyState(VK_CONTROL) < 0 ? MK_CONTROL : 0);
+            send_msg(w, WM_APPCOMMAND, (WPARAM)h, MAKELPARAM(mk, FAPPCOMMAND_KEY | (wp - VK_BROWSER_BACK + 1)));
+        }
         return 0;
+    }
     case WM_SYSKEYUP: case WM_KEYUP:
         if ((wp == VK_MENU || wp == VK_F10) && g_alt_alone && g_alt_tap) {
             g_alt_alone = g_alt_tap = 0;

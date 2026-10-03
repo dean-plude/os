@@ -1,6 +1,9 @@
 {
   "deps": ["msvcrt", "kernel32", "ntdll"],
   "ordinals": {
-    "GetDefaultPrinterW": 203
+    "GetDefaultPrinterA": 201,
+    "SetDefaultPrinterA": 202,
+    "GetDefaultPrinterW": 203,
+    "SetDefaultPrinterW": 204
   }
 }
