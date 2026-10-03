@@ -101,6 +101,7 @@ API_SETS = [
     ('api-ms-win-eventing-', 'advapi32.dll'),
     ('api-ms-win-shell-', 'shell32.dll'),
     ('api-ms-win-shcore-', 'shlwapi.dll'),
+    ('shcore.dll', 'shlwapi.dll'),
     ('ext-ms-win-', 'kernel32.dll'),
     ('kernelbase.dll', 'kernel32.dll'),
     ('api-ms-win-', 'kernel32.dll'),

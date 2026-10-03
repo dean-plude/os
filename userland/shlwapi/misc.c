@@ -413,24 +413,29 @@ LWSTDAPI_(HRESULT) QISearch(void *self, const QITAB *tab, REFIID riid, void **ou
     return E_NOINTERFACE_;
 }
 
-/* shcore's per-monitor DPI (api-ms-win-shcore-scaling): every monitor is
- * 96 DPI, 100% scale, as user32's GetDpiForWindow reports */
+/* shcore's per-monitor DPI (api-ms-win-shcore-scaling): user32 keeps the
+ * process's DPI awareness and each monitor's DPI (user32's dpi.c) */
+__declspec(dllimport) BOOL __stdcall GetDpiForMonitorInternal(HANDLE mon, UINT type, UINT *x, UINT *y);
+__declspec(dllimport) HRESULT __stdcall SetProcessDpiAwarenessInternal(int v);
+__declspec(dllimport) BOOL __stdcall GetProcessDpiAwarenessInternal(HANDLE p, int *v);
 __declspec(dllexport) HRESULT __stdcall GetDpiForMonitor(HANDLE mon, int type, UINT *x, UINT *y)
 {
-    (void)mon; (void)type;
-    if (!x || !y) return E_INVALIDARG_;
-    *x = *y = 96;
-    return S_OK_;
+    if (!x || !y || type < 0 || type > 2) return E_INVALIDARG_;
+    return GetDpiForMonitorInternal(mon, (UINT)type, x, y) ? S_OK_ : E_INVALIDARG_;
 }
 __declspec(dllexport) HRESULT __stdcall GetScaleFactorForMonitor(HANDLE mon, int *scale)
 {
-    (void)mon;
+    UINT x, y;
     if (!scale) return E_INVALIDARG_;
-    *scale = 100;                                   /* SCALE_100_PERCENT */
+    *scale = GetDpiForMonitorInternal(mon, 0, &x, &y) && x >= 192 ? 200 : 100;   /* SCALE_200_PERCENT, SCALE_100_PERCENT */
     return S_OK_;
 }
-__declspec(dllexport) HRESULT __stdcall SetProcessDpiAwareness(int v) { (void)v; return S_OK_; }
-__declspec(dllexport) HRESULT __stdcall GetProcessDpiAwareness(HANDLE p, int *v) { (void)p; if (!v) return E_INVALIDARG_; *v = 2; return S_OK_; }
+__declspec(dllexport) HRESULT __stdcall SetProcessDpiAwareness(int v) { return SetProcessDpiAwarenessInternal(v); }
+__declspec(dllexport) HRESULT __stdcall GetProcessDpiAwareness(HANDLE p, int *v)
+{
+    if (!v) return E_INVALIDARG_;
+    return GetProcessDpiAwarenessInternal(p, v) ? S_OK_ : E_INVALIDARG_;
+}
 
 /* shcore.dll (whose API set the loader maps here) forwards this to shell32 */
 __asm__(".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:CommandLineToArgvW=shell32.CommandLineToArgvW\"\n\t.text\n");

@@ -60,6 +60,7 @@ typedef struct {
 static Monitor g_mon[GDI_MAX_MONITORS];
 static int     g_nmon;
 static struct { int x, y; bool set; } g_origin[GDI_MAX_MONITORS];
+static int     g_dpi[GDI_MAX_MONITORS];     /* the DPI programs are told (0: 96) */
 
 static inline int imin(int a, int b) { return a < b ? a : b; }
 static inline int imax(int a, int b) { return a > b ? a : b; }
@@ -340,8 +341,23 @@ void GdiClampToMonitors(int *x, int *y)
 void GdiForgetMonitor(int i)
 {
     if (i <= 0 || i >= GDI_MAX_MONITORS) return;
-    for (int j = i; j < GDI_MAX_MONITORS - 1; j++) g_origin[j] = g_origin[j + 1];
+    for (int j = i; j < GDI_MAX_MONITORS - 1; j++) { g_origin[j] = g_origin[j + 1]; g_dpi[j] = g_dpi[j + 1]; }
     g_origin[GDI_MAX_MONITORS - 1].set = false;
+    g_dpi[GDI_MAX_MONITORS - 1] = 0;
+}
+
+void GdiSetMonitorDpi(int i, int dpi)
+{
+    if (i < 0 || i >= GDI_MAX_MONITORS) return;
+    g_dpi[i] = dpi >= 144 ? 192 : 96;
+}
+
+/* 192 only where the monitor shows two device pixels per logical one:
+ * a program drawing at 192 DPI there gets one bitmap pixel per screen pixel */
+int GdiMonitorDpi(int i)
+{
+    if (!g.ready || i < 0 || i >= g_nmon) return 96;
+    return g_dpi[i] == 192 && g_mon[i].s >= 2 ? 192 : 96;
 }
 
 void GdiSetMonitorOrigin(int i, int x, int y)
@@ -528,7 +544,23 @@ void GdiPutPixel(int x, int y, GdiColor c)
  * Used to composite a user program's window bitmap. */
 void GdiBlitBGRA(GdiRect dst, const UINT32 *src, int src_stride)
 {
-    if (!g.ready || !src) return;
+    GdiBlitBGRAScaled(dst, src, src_stride, 1);
+}
+
+void GdiBlitBGRAScaled(GdiRect dst, const UINT32 *src, int src_stride, int k)
+{
+    if (!g.ready || !src || k < 1) return;
+    if (k > 1) {                                /* device px (x, y) shows source px (x, y) * k / s */
+        int sc = g.s, ox = dst.x * sc, oy = dst.y * sc;
+        int x0 = imax(ox, g.cx0), y0 = imax(oy, g.cy0);
+        int x1 = imin(ox + dst.w * sc, g.cx1), y1 = imin(oy + dst.h * sc, g.cy1);
+        for (int y = y0; y < y1; y++) {
+            const UINT32 *row = src + (size_t)((y - oy) * k / sc) * src_stride;
+            UINT32 *out = g.buf + (INT64)y * g.bstride;
+            for (int x = x0; x < x1; x++) out[x] = pixof(row[(x - ox) * k / sc]);
+        }
+        return;
+    }
     int sc = g.s;
     int x0 = imax(dst.x * sc, g.cx0), y0 = imax(dst.y * sc, g.cy0);
     int x1 = imin((dst.x + dst.w) * sc, g.cx1), y1 = imin((dst.y + dst.h) * sc, g.cy1);

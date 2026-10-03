@@ -415,7 +415,7 @@ python3 tools/selftest.py --suite devices
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
-`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `icutest` (x64 and x86), `comtest`,
+`sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `dpitest` (per-monitor DPI), `icutest` (x64 and x86), `comtest`,
 `tlbtest` (x64 and x86), `usptest` (x64 and x86), `delaytest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`,
 `soundtest wasapi`, `soundtest record`, `soundtest capture`, `soundtest volume`,
 `sleeptest timer`, `powertest`, `disptest 1024 768` (saves the mode),

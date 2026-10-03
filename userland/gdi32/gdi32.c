@@ -1225,11 +1225,28 @@ GDIAPI BOOL RestoreDC(HDC h, int which)
     return TRUE;
 }
 
+/* The system DPI / 96 the process sees (user32's DPI awareness: 1 for
+ * DPI-unaware programs, and without user32) */
+static int sys_dpi_k(void)
+{
+    static UINT (WINAPI *get)(void);
+    static int tried;
+    if (!tried) {
+        HMODULE u = GetModuleHandleA("user32.dll");
+        if (u) get = (UINT (WINAPI *)(void))GetProcAddress(u, "GetDpiForSystem");
+        tried = u != NULL;
+    }
+    UINT dpi = get ? get() : 96;
+    return dpi >= 192 ? 2 : 1;
+}
+
 GDIAPI int GetDeviceCaps(HDC h, int index)
 {
     NOVA_DC *d = dc_of(h);
     ULONG sw = 1280, sh = 800;
     NtNovaGuiScreenSize(&sw, &sh);
+    int k = index == 8 || index == 10 || index == 88 || index == 90 || index == 117 || index == 118 ? sys_dpi_k() : 1;
+    sw *= (ULONG)k; sh *= (ULONG)k;                         /* a DPI-aware program's pixels */
     switch (index) {
     case 2:   return 0x0600;                                /* DRIVERVERSION */
     case 4:   return (int)(sw * 254 / 960);                 /* HORZSIZE (mm at 96 dpi) */
@@ -1240,7 +1257,7 @@ GDIAPI int GetDeviceCaps(HDC h, int index)
     case 14:  return 1;                                     /* PLANES */
     case 24:  return -1;                                    /* NUMCOLORS */
     case 38:  return 0x7E99;                                /* RASTERCAPS: BITBLT, STRETCHBLT, DIBTODEV, ... */
-    case 88: case 90: return 96;                            /* LOGPIXELSX/Y */
+    case 88: case 90: return 96 * k;                        /* LOGPIXELSX/Y */
     case 104: return 0;                                     /* SIZEPALETTE */
     case 108: return 32;                                    /* COLORRES */
     case 116: return 60;                                    /* VREFRESH */

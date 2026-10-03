@@ -89,6 +89,15 @@ static bool multi(void) { return GdiMonitorCount() > 1; }
 
 static int modes_dy(void) { return multi() ? ARR_DY + ARR_H + 16 + 26 + 50 + 26 : 26 + 50 + 50 + 26; }
 
+static int chip_cols(int w);
+/* The "DPI-aware apps" chips (96 and 192 DPI), on a monitor at scale 2:
+ * their top, below the resolution chips (page coordinates) */
+static int dpi_chips_dy(int mon, int w)
+{
+    int cols = chip_cols(w), n = DisplayHeadModeCount(mon);
+    return modes_dy() + ((n + cols - 1) / cols) * (CHIP_H + CHIP_GAP) + 18 + 26;
+}
+
 static int chip_cols(int w)
 {
     int n = (w + CHIP_GAP) / (CHIP_W + CHIP_GAP);
@@ -168,6 +177,18 @@ static void page_display(Settings *st, int x, int y, int w)
         GdiTextCenter(cx, cy + 8, CHIP_W, s1, on ? GDI_WHITE : UI_TEXT);
     }
     y += ((n + cols - 1) / cols) * (CHIP_H + CHIP_GAP) + 18;
+
+    if (GdiMonitorScale(mon) >= 2) {                 /* what DPI-aware programs see (user32's dpi.c) */
+        GdiTextBold(x, y, "DPI for DPI-aware apps", UI_TEXT);
+        y = top + dpi_chips_dy(mon, w);
+        for (int i = 0; i < 2; i++) {
+            int cx = x + i * (CHIP_W + CHIP_GAP);
+            bool on = GdiMonitorDpi(mon) == (i ? 192 : 96);
+            GdiRoundRect(RECT(cx, y, CHIP_W, CHIP_H), 6, on ? UI_ACCENT : UI_CARD, GDI_TRANSPARENT);
+            GdiTextCenter(cx, y + 8, CHIP_W, i ? "192 (200%)" : "96 (100%)", on ? GDI_WHITE : UI_TEXT);
+        }
+        y += CHIP_H + CHIP_GAP + 18;
+    }
 
     GdiTextBold(x, y, "Display adapter", UI_TEXT);   y += 26;
     row(x, y, w, "Driver", DisplayDriverName());     y += 50;
@@ -488,6 +509,12 @@ static void set_mouse(WND *w, WmMouseMsg msg, int x, int y)
             /* resolution chips (layout matches set_paint + page_display) */
             int px = SIDE_W + 28, py = 20 + 52 + modes_dy(), pw = c.w - SIDE_W - 56;
             int cols = chip_cols(pw);
+            int mon0 = chosen(st), dy = 20 + 52 + dpi_chips_dy(mon0, pw);
+            if (GdiMonitorScale(mon0) >= 2 && y >= dy && y < dy + CHIP_H && x >= px &&
+                (x - px) % (CHIP_W + CHIP_GAP) < CHIP_W && (x - px) / (CHIP_W + CHIP_GAP) < 2) {
+                DesktopSetMonitorDpi(mon0, (x - px) / (CHIP_W + CHIP_GAP) ? 192 : 96, true);
+                return;
+            }
             if (x < px || y < py) return;
             int col = (x - px) / (CHIP_W + CHIP_GAP), r = (y - py) / (CHIP_H + CHIP_GAP);
             if (col >= cols || (x - px) % (CHIP_W + CHIP_GAP) >= CHIP_W ||

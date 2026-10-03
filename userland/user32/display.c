@@ -9,7 +9,8 @@
  * time, other adapters only report the boot mode.  The monitors are the
  * desktop's (CTL_MONITOR): \\.\DISPLAY1 is the primary at (0, 0), and
  * the others sit around it on the virtual screen.  Coordinates are the
- * desktop's logical pixels, as everywhere else in NovaOS's user32.
+ * desktop's logical pixels for DPI-unaware programs, and the screens' own
+ * pixels for DPI-aware ones on a monitor set above 96 DPI (dpi.c).
  */
 #include "u32.h"
 
@@ -20,25 +21,24 @@ int __cdecl wsprintfA(LPSTR buf, LPCSTR fmt, ...);
  * ----------------------------------------------------------------------- */
 #define MON_BASE 0x10001
 
-typedef struct { int count; RECT r, work; int scale; } MonInfo;
+typedef struct { int count; RECT r, work; int dpi; } MonInfo;
 
 static BOOL mon_info(int i, MonInfo *m)
 {
-    INT32 v[10];
-    if (i < 0 || !NtNovaGuiCtl(0, CTL_MONITOR, (ULONG_PTR)i, v)) {
+    int n = dpi_monitor_raw(i, &m->r, &m->work, NULL, &m->dpi);
+    if (!n) {
         if (i == 0) {                                       /* (no desktop: one screen) */
             m->count = 1;
             SetRect(&m->r, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
             m->work = m->r;
-            m->scale = 1;
+            m->dpi = 96;
             return TRUE;
         }
         return FALSE;
     }
-    m->count = v[0];
-    SetRect(&m->r, v[1], v[2], v[1] + v[3], v[2] + v[4]);
-    SetRect(&m->work, v[5], v[6], v[5] + v[7], v[6] + v[8]);
-    m->scale = v[9];
+    m->count = n;
+    dpi_monitor_to_proc(i, &m->r, &m->work);               /* a DPI-aware process's coordinates */
+    m->dpi = dpi_monitor_dpi(i);
     return TRUE;
 }
 

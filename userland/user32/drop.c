@@ -51,6 +51,7 @@ USERAPI BOOL NovaAcceptDrops(HWND h, DWORD mask, BOOL on)
 /* the program window under a screen point: its desktop id, or 0 */
 USERAPI UINT32 NovaWindowAt(POINT pt, DWORD *pid, DWORD *flags)
 {
+    dpi_to_logical(&pt);                                    /* the desktop's pixels */
     INT32 io[4] = { pt.x, pt.y, 0, 0 };
     if (!NtNovaGuiCtl(0, CTL_WINDOW_AT, 0, io)) { if (pid) *pid = 0; if (flags) *flags = 0; return 0; }
     if (pid) *pid = (DWORD)io[1];
@@ -77,6 +78,7 @@ USERAPI DWORD NovaSendDrop(UINT32 kid, POINT screen, DWORD effect, const WCHAR *
     if (bytes > 60000) return DROPEFFECT_NONE;
     INT32 *buf = malloc(16 + bytes);
     if (!buf) return DROPEFFECT_NONE;
+    dpi_to_logical(&screen);                                /* the target converts it to its own */
     buf[0] = screen.x; buf[1] = screen.y; buf[2] = (INT32)effect; buf[3] = (INT32)bytes;
     memcpy(buf + 4, files, bytes);
     ULONG_PTR seq = (ULONG_PTR)NtNovaGuiCtl(0, CTL_DROP, kid, buf);
@@ -105,6 +107,7 @@ void drop_from_kernel(Wnd *top, const MSG *km)
     DWORD taken = DROPEFFECT_NONE;
     if (got < 20) { free(buf); NtNovaGuiCtl(top->kid, CTL_DROP_DONE, taken, NULL); return; }
     POINT pt = { (INT32)buf[0], (INT32)buf[1] };
+    dpi_to_proc(&pt);
     DWORD effect = buf[2], bytes = buf[4];
     const WCHAR *files = (const WCHAR *)(buf + 5);
     /* the child under the point */

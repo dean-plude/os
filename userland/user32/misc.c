@@ -285,6 +285,11 @@ USERAPI int GetSystemMetrics(int index)
 {
     ULONG w = 0, h = 0;
     NtNovaGuiScreenSize(&w, &h);
+    if (dpi_aware() && (index <= 1 || index == 16 || index == 17 || index == 61 || index == 62)) {
+        RECT r = { 0, 0, (LONG)w, (LONG)h };               /* the primary, as this process sees it */
+        dpi_desktop_rect(&r);
+        w = (ULONG)(r.right - r.left); h = (ULONG)(r.bottom - r.top);
+    }
     switch (index) {
     case 0: case 16: case 61: return (int)w;                /* CXSCREEN, CXFULLSCREEN, CXMAXIMIZED */
     case 1: case 17: case 62: return (int)h;
@@ -344,7 +349,18 @@ USERAPI int GetSystemMetrics(int index)
     }
     return 0;
 }
-USERAPI int GetSystemMetricsForDpi(int index, UINT dpi) { (void)dpi; return GetSystemMetrics(index); }
+/* Sizes (not counts or flags) grow with the DPI */
+USERAPI int GetSystemMetricsForDpi(int index, UINT dpi)
+{
+    static const BYTE sizes[] = { 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 28, 29, 30, 31, 32, 33,
+                                  34, 35, 36, 37, 38, 39, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 57, 58,
+                                  71, 72, 83, 84, 92 };
+    int v = GetSystemMetrics(index);
+    if (!dpi) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    for (unsigned i = 0; i < sizeof(sizes); i++)
+        if (sizes[i] == index) return MulDiv(v, (int)dpi, 96);
+    return v;
+}
 
 typedef struct { UINT cbSize; int iBorderWidth, iScrollWidth, iScrollHeight, iCaptionWidth, iCaptionHeight; LOGFONTW lfCaptionFont;
                  int iSmCaptionWidth, iSmCaptionHeight; LOGFONTW lfSmCaptionFont; int iMenuWidth, iMenuHeight;
@@ -413,21 +429,22 @@ USERAPI BOOL SystemParametersInfoA(UINT action, UINT uparam, PVOID p, UINT winin
     }
     return SystemParametersInfoW(action, uparam, p, winini);
 }
-USERAPI BOOL SystemParametersInfoForDpi(UINT action, UINT uparam, PVOID p, UINT winini, UINT dpi) { (void)dpi; return SystemParametersInfoW(action, uparam, p, winini); }
+/* The fonts and sizes of SPI_GETNONCLIENTMETRICS / SPI_GETICONTITLELOGFONT at @dpi */
+USERAPI BOOL SystemParametersInfoForDpi(UINT action, UINT uparam, PVOID p, UINT winini, UINT dpi)
+{
+    if (action != 0x0029 && action != 0x001F) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!p || !dpi || !SystemParametersInfoW(action, uparam, p, winini)) return FALSE;
+    if (action == 0x001F) { ((LOGFONTW *)p)->lfHeight = MulDiv(((LOGFONTW *)p)->lfHeight, (int)dpi, 96); return TRUE; }
+    NONCLIENTMETRICSW_ *m = p;
+    int *sz[] = { &m->iBorderWidth, &m->iScrollWidth, &m->iScrollHeight, &m->iCaptionWidth, &m->iCaptionHeight,
+                  &m->iSmCaptionWidth, &m->iSmCaptionHeight, &m->iMenuWidth, &m->iMenuHeight };
+    for (unsigned i = 0; i < sizeof(sz) / sizeof(sz[0]); i++) *sz[i] = MulDiv(*sz[i], (int)dpi, 96);
+    LOGFONTW *f[] = { &m->lfCaptionFont, &m->lfSmCaptionFont, &m->lfMenuFont, &m->lfStatusFont, &m->lfMessageFont };
+    for (unsigned i = 0; i < 5; i++) f[i]->lfHeight = MulDiv(f[i]->lfHeight, (int)dpi, 96);
+    return TRUE;
+}
 
-/* DPI: everything is at 96 (the desktop scales logical pixels itself) */
-USERAPI UINT GetDpiForWindow(HWND h) { (void)h; return 96; }
-USERAPI UINT GetDpiForSystem(void) { return 96; }
-USERAPI BOOL SetProcessDPIAware(void) { return TRUE; }
-USERAPI BOOL IsProcessDPIAware(void) { return TRUE; }
-USERAPI BOOL SetProcessDpiAwarenessContext(HANDLE ctx) { (void)ctx; return TRUE; }
-USERAPI HANDLE SetThreadDpiAwarenessContext(HANDLE ctx) { (void)ctx; return (HANDLE)(LONG_PTR)-4; }
-USERAPI HANDLE GetThreadDpiAwarenessContext(void) { return (HANDLE)(LONG_PTR)-4; }
-USERAPI HANDLE GetWindowDpiAwarenessContext(HWND h) { (void)h; return (HANDLE)(LONG_PTR)-4; }
-USERAPI int GetAwarenessFromDpiAwarenessContext(HANDLE ctx) { (void)ctx; return 2; }
-USERAPI BOOL AreDpiAwarenessContextsEqual(HANDLE a, HANDLE b) { return a == b; }
-USERAPI BOOL IsValidDpiAwarenessContext(HANDLE ctx) { return ctx != 0; }
-USERAPI BOOL EnableNonClientDpiScaling(HWND h) { (void)h; return TRUE; }
+/* DPI awareness and GetDpiFor*: dpi.c */
 
 /* Monitors, EnumDisplayDevices: display.c */
 
@@ -771,7 +788,7 @@ USERAPI BOOL GetCursorPos(LPPOINT p)
 {
     if (!p) return FALSE;
     INT32 c[3];
-    if (NtNovaGuiCtl(0, CTL_CURSOR, 0, c)) { p->x = c[0]; p->y = c[1]; g_cursor = *p; }
+    if (NtNovaGuiCtl(0, CTL_CURSOR, 0, c)) { p->x = c[0]; p->y = c[1]; dpi_to_proc(p); g_cursor = *p; }
     else *p = g_cursor;
     return TRUE;
 }
