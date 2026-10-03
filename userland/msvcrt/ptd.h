@@ -15,6 +15,8 @@ typedef struct NovaPtd {
     wchar_t        wcserr[128];     /* _wcserror result */
     char           tmpnam[260 * 3]; /* tmpnam(NULL) result */
     wchar_t        wtmpnam[260 + 24];
+    int            ownloc;          /* _configthreadlocale: uses its own locale names */
+    void          *loc;             /* those names (locale.c), kept once made */
 } NovaPtd;
 
 NovaPtd *__nova_ptd(void);          /* never NULL */

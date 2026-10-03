@@ -467,7 +467,9 @@ NTSTATUS NTAPI LdrGetProcedureAddress(PVOID base, const char *name, ULONG ordina
  * ----------------------------------------------------------------------- */
 void nova_run_thread_detach(void)
 {
+    extern void nova_fls_thread_exit(int stage);   /* ntdll_fls.c */
     if (!g_process_ready) return;
+    nova_fls_thread_exit(0);
     for (int i = g_nmod - 1; i >= 0; i--) {
         Module *m = &g_mod[i];
         if (m->attached && !m->no_thread_calls) {
@@ -476,6 +478,7 @@ void nova_run_thread_detach(void)
         }
     }
     free_thread_tls();
+    nova_fls_thread_exit(1);
 }
 
 void nova_run_process_detach(void)
