@@ -20,7 +20,8 @@
   `GetThreadDpiAwarenessContext`/`SetThreadDpiAwarenessContext`,
   `GetWindowDpiAwarenessContext`, `GetAwarenessFromDpiAwarenessContext`,
   `AreDpiAwarenessContextsEqual` and `GetDpiFromDpiAwarenessContext`
-  report it.
+  report it.  `shcore.dll`, which programs that link `shcore.lib` import
+  by name, now loads (as shlwapi, where its functions are).
 - **What each kind sees.**  Unaware programs keep 96 DPI and logical
   pixels everywhere and are scaled up as before.  System-aware ones see
   the primary monitor's DPI as it was when they started, everywhere.

@@ -261,6 +261,8 @@ int main(int argc, char **argv)
     printf("primary monitor: %d x %d logical pixels\n", mw, mh);
     checkv((long)monitor_dpi(mon), 96, "GetDpiForMonitor at 96 DPI");
     checkv((long)GetDpiForSystem(), 96, "GetDpiForSystem");
+    HMODULE shcore = LoadLibraryA("shcore.dll");      /* (programs that link shcore.lib import it by name) */
+    check(shcore && GetProcAddress(shcore, "GetDpiForMonitor"), "shcore.dll GetDpiForMonitor");
     HWND hw = make_window(100, 100, 400, 300);
     check_window(hw, 1, 100, 100, 400, 300, "at 96 DPI");
     check(AreDpiAwarenessContextsEqual(GetWindowDpiAwarenessContext(hw), DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2),
