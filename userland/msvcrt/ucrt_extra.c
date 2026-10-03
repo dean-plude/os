@@ -9,6 +9,8 @@
 #include <string.h>
 #include <wchar.h>
 #include <wctype.h>
+#include <ctype.h>
+#include <limits.h>
 #include <errno.h>
 #include <time.h>
 #include <windows.h>
@@ -301,6 +303,47 @@ CRTEXP void *_create_locale(int category, const char *name) { (void)category; (v
 CRTEXP void *_wcreate_locale(int category, const wchar_t *name) { (void)category; (void)name; return &g_c_locale; }
 CRTEXP void *_get_current_locale(void) { return &g_c_locale; }
 CRTEXP void _free_locale(void *l) { (void)l; }
+
+/* The _l forms take a _locale_t; there is only the "C" locale (LLVM's
+ * libc++ calls these for every std::locale facet) */
+size_t strxfrm(char *d, const char *s, size_t n);
+CRTEXP int _isctype(int c, int mask) { return c >= -1 && c < 256 ? ctype_table()[c] & mask : 0; }
+CRTEXP int _isctype_l(int c, int mask, void *l) { (void)l; return _isctype(c, mask); }
+CRTEXP int _tolower_l(int c, void *l) { (void)l; return tolower(c); }
+CRTEXP int _toupper_l(int c, void *l) { (void)l; return toupper(c); }
+CRTEXP wint_t _towlower_l(wint_t c, void *l) { (void)l; return towlower(c); }
+CRTEXP wint_t _towupper_l(wint_t c, void *l) { (void)l; return towupper(c); }
+CRTEXP int _iswalpha_l(wint_t c, void *l) { (void)l; return iswalpha(c); }
+CRTEXP int _iswcntrl_l(wint_t c, void *l) { (void)l; return iswcntrl(c); }
+CRTEXP int _iswdigit_l(wint_t c, void *l) { (void)l; return iswdigit(c); }
+CRTEXP int _iswlower_l(wint_t c, void *l) { (void)l; return iswlower(c); }
+CRTEXP int _iswprint_l(wint_t c, void *l) { (void)l; return iswprint(c); }
+CRTEXP int _iswpunct_l(wint_t c, void *l) { (void)l; return iswpunct(c); }
+CRTEXP int _iswspace_l(wint_t c, void *l) { (void)l; return iswspace(c); }
+CRTEXP int _iswupper_l(wint_t c, void *l) { (void)l; return iswupper(c); }
+CRTEXP int _iswxdigit_l(wint_t c, void *l) { (void)l; return iswxdigit(c); }
+CRTEXP size_t _strxfrm_l(char *d, const char *s, size_t n, void *l) { (void)l; return strxfrm(d, s, n); }
+CRTEXP int _wcscoll_l(const wchar_t *a, const wchar_t *b, void *l) { (void)l; return wcscoll(a, b); }
+CRTEXP size_t _wcsxfrm_l(wchar_t *d, const wchar_t *s, size_t n, void *l) { (void)l; return wcsxfrm(d, s, n); }
+CRTEXP int _mbtowc_l(wchar_t *pwc, const char *s, size_t n, void *l) { (void)l; return mbtowc(pwc, s, n); }
+CRTEXP double _strtod_l(const char *s, char **e, void *l) { (void)l; return strtod(s, e); }
+CRTEXP long _strtol_l(const char *s, char **e, int b, void *l) { (void)l; return strtol(s, e, b); }
+CRTEXP long long _strtoi64_l(const char *s, char **e, int b, void *l) { (void)l; return strtoll(s, e, b); }
+CRTEXP unsigned long long _strtoui64_l(const char *s, char **e, int b, void *l) { (void)l; return strtoull(s, e, b); }
+CRTEXP errno_t wcrtomb_s(size_t *ret, char *s, size_t n, wchar_t wc, mbstate_t *ps)
+{
+    char tmp[MB_LEN_MAX];
+    size_t r = wcrtomb(s ? tmp : NULL, wc, ps);
+    if (r == (size_t)-1) { if (ret) *ret = r; return errno = EILSEQ; }
+    if (s && r > n) { if (n) s[0] = 0; if (ret) *ret = (size_t)-1; return errno = ERANGE; }
+    if (s) memcpy(s, tmp, r);
+    if (ret) *ret = r;
+    return 0;
+}
+CRTEXP void _swab(char *src, char *dst, int n)
+{
+    for (int i = 0; i + 1 < n; i += 2) { char a = src[i], b = src[i + 1]; dst[i] = b; dst[i + 1] = a; }
+}
 
 CRTEXP int iswascii(wint_t c) { return c < 0x80; }
 CRTEXP errno_t _ltow_s(long v, wchar_t *buf, size_t n, int radix)
