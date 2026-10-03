@@ -13,6 +13,7 @@
 #include "../ke/printf.h"
 #include "../ke/smp.h"
 #include "../ke/ksym.h"
+#include "../ke/kpcr.h"   /* KVMDBG */
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../arch/x86_64/cpu.h"
@@ -298,7 +299,24 @@ static UINT32 wait_objects(UmObject **o, int n, bool all, INT64 timeout_100ns)
         UINT64 nap = sched_tick_tsc(sched_ticks() + 10);
         for (int i = 0; i < n; i++)                         /* a timer wakes it when due */
             if (o[i]->type == UO_TIMER && o[i]->due && o[i]->due < nap) nap = o[i]->due;
-        sched_sleep_until_tsc(&me->wake, until < nap ? until : nap);
+        UINT64 target = until < nap ? until : nap, sl0 = rdtsc();   /* KVMDBG */
+        bool tmr = false;
+        for (int i = 0; i < n; i++) if (o[i]->type == UO_TIMER && o[i]->due == target) tmr = true;
+        sched_sleep_until_tsc(&me->wake, target);
+        {   /* KVMDBG: a timer's waiter running late */
+            extern uint64_t g_tsc_per_tick;
+            Thread *kt = sched_current();
+            UINT64 now = rdtsc();
+            UINT64 base = me->wake && kt->dbg_rdy > sl0 && kt->dbg_rdy < target ? kt->dbg_rdy : target;
+            if (tmr && g_tsc_per_tick && now > base + g_tsc_per_tick / 5) {
+                #define US(x) ((unsigned long)((x) * 10000 / g_tsc_per_tick))
+                kprintf("[KVMDBG] tid %lu %s late %lu us (wake %u tmr %d): ready +%ld us how %x from cpu %u, ran +%ld us on cpu %u, sleep cpu %u, slept %lu us\n",
+                        (unsigned long)kt->tid, kt->name, US(now - base), me->wake, tmr,
+                        (long)(kt->dbg_rdy > base ? (long)US(kt->dbg_rdy - base) : -(long)US(base - kt->dbg_rdy)), kt->dbg_how, kt->dbg_from,
+                        (long)(kt->dbg_run > kt->dbg_rdy ? (long)US(kt->dbg_run - kt->dbg_rdy) : -1), (unsigned)KiGetCurrentKpcr()->CpuNumber, kt->sleep_cpu, US(now - sl0));
+                #undef US
+            }
+        }
         s = ob_lock();
         waiter_unlink(me);
         ob_unlock(s);

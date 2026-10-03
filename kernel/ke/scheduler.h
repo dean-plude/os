@@ -113,6 +113,8 @@ typedef struct Thread {
     volatile bool   on_cpu;         /* running, or not yet fully switched out */
     bool            preempted;      /* preempted for a woken thread: goes on with its slice */
     bool            woken;          /* queued first as woken from a wait (until it runs) */
+    uint64_t        dbg_rdy, dbg_run;   /* KVMDBG */
+    uint32_t        dbg_how, dbg_from;  /* KVMDBG */
 } Thread;
 
 /* Default kernel stack size for new threads */
