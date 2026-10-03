@@ -154,6 +154,16 @@ Sound plays through the newest output device; Settings > Sound picks
 another and sets each device's volume, and the choices are kept across
 restarts.
 
+## Updating NovaOS
+
+An installed NovaOS updates itself: the App Store's **Updates** page
+(or `update` in the Terminal) checks for a newer version, **Update**
+downloads and checks it, and **Restart** starts it.  If the new version
+does not start, the next start goes back to the one you had and the
+Updates page says so.  NovaOS running from the ISO or a USB stick is not
+updated; download the newer ISO instead.  [updates.md](updates.md) has
+the details.
+
 ## Sleep, restart and shut down
 
 Start's power menu sleeps (where the machine supports it), restarts and

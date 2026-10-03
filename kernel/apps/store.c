@@ -8,6 +8,8 @@
  * uses; "Install" runs the downloaded installer; "Open" starts the
  * program once its executable exists under C:\Programs.  The list
  * scrolls with the built-in apps' scroll bar (UiScroll, as File Explorer's).
+ * The Updates page updates NovaOS itself from its update channel
+ * (fs/update.c): check, download and stage, then restart.
  */
 
 #include "apps.h"
@@ -16,16 +18,18 @@
 #include "../ke/printf.h"
 #include "../net/net.h"
 #include "../um/um.h"
+#include "../fs/update.h"
+#include "../wm/desktop.h"
 
 /* -----------------------------------------------------------------------
  * Catalog
  * ----------------------------------------------------------------------- */
 enum { CAT_ALL, CAT_UTILITIES, CAT_INTERNET, CAT_MEDIA, CAT_GRAPHICS, CAT_OFFICE,
-       CAT_DEVELOPER, CAT_RUNTIMES, CAT_INSTALLED, CAT_COUNT };
+       CAT_DEVELOPER, CAT_RUNTIMES, CAT_INSTALLED, CAT_UPDATES, CAT_COUNT };
 
 static const char *g_cat_name[CAT_COUNT] = {
     "All apps", "Utilities", "Internet", "Media", "Graphics", "Office", "Developer",
-    "Runtimes", "Installed",
+    "Runtimes", "Installed", "Updates",
 };
 
 /* What the downloaded file is, and how it is installed */
@@ -188,6 +192,9 @@ typedef struct {
     int     unpack_i;              /* catalog index, or -1 */
     char    tar[RAMFS_PATH_MAX];   /* a .tar.gz's .tar: unpacked next, then deleted */
     bool    tar_layer;             /* 7-Zip is taking the .gz layer off */
+    /* the Updates page */
+    UpdateStatus upd;              /* as last painted */
+    bool    upd_pressed;
 } Store;
 
 #define SIDE_W   180
@@ -249,6 +256,7 @@ static bool in_category(const StoreApp *a, int cat)
 {
     if (cat == CAT_ALL) return true;
     if (cat == CAT_INSTALLED) return installed_exe(a) || (a->kind == KIND_PORTABLE && downloaded_file(a));
+    if (cat == CAT_UPDATES) return false;                /* (NovaOS itself: paint_updates) */
     return a->category == cat;
 }
 
@@ -370,6 +378,7 @@ static void dl_done(Store *s)
 }
 
 static bool unpack_tick(Store *s);
+static bool upd_changed(const Store *s);
 
 /* The download in flight and 7-Zip's unpacking: true if a row changed */
 static bool dl_tick(Store *s)
@@ -411,7 +420,8 @@ static bool store_tick(WND *w)
     Store *s = w->user;
     if (!s) return false;
     bool moved = UiScrollTick(&s->bar);       /* a held arrow or trough repeats */
-    return dl_tick(s) || moved;
+    bool upd = s->cat == CAT_UPDATES && upd_changed(s);
+    return dl_tick(s) || moved || upd;
 }
 
 /* -----------------------------------------------------------------------
@@ -691,6 +701,108 @@ static void app_tile(const StoreApp *a, int x, int y, int sz)
     GdiTextCenter(x, y + (sz - GDI_FONT_H) / 2, sz, a->label, GDI_WHITE);
 }
 
+/* -----------------------------------------------------------------------
+ * The Updates page: NovaOS itself (fs/update.c)
+ * ----------------------------------------------------------------------- */
+typedef enum { UB_NONE, UB_CHECK, UB_UPDATE, UB_RESTART } UpdBtn;
+
+#define UPD_H 112
+
+static UpdBtn upd_button(const UpdateStatus *u)
+{
+    if (u->busy) return UB_NONE;
+    if (u->state == UPDATE_AVAILABLE) return UB_UPDATE;
+    if (u->state == UPDATE_READY) return UB_RESTART;
+    return UB_CHECK;
+}
+
+static GdiRect r_upd_card(GdiRect lr) { return RECT(lr.x + 20, lr.y + 6, lr.w - 40, UPD_H); }
+static GdiRect r_upd_btn(GdiRect lr)
+{
+    GdiRect c = r_upd_card(lr);
+    return RECT(c.x + c.w - BTN_W - 14, c.y + (UPD_H - BTN_H) / 2, BTN_W, BTN_H);
+}
+
+/* What the page says about the update, and whether that is a failure */
+static bool upd_line(const UpdateStatus *u, char *line, int cap)
+{
+    char a[24], b[24];
+    if (u->busy && u->state == UPDATE_DOWNLOADING) {
+        AppFormatSize(u->got, a, sizeof(a));
+        AppFormatSize(u->size, b, sizeof(b));
+        ksnprintf(line, (size_t)cap, "%s  -  %s of %s", u->step, a, b);
+    } else if (u->busy) {
+        ksnprintf(line, (size_t)cap, "Checking for a newer NovaOS...");
+    } else switch (u->state) {
+    case UPDATE_CURRENT:   ksnprintf(line, (size_t)cap, "NovaOS %s is up to date.", NovaVersion()); break;
+    case UPDATE_AVAILABLE:
+        AppFormatSize(u->size, a, sizeof(a));
+        ksnprintf(line, (size_t)cap, "NovaOS %s is available (%s)%s%s", u->version, a, u->notes[0] ? ": " : ".", u->notes);
+        break;
+    case UPDATE_READY:     ksnprintf(line, (size_t)cap, "NovaOS %s is ready: restart to finish the update.", u->version); break;
+    case UPDATE_FAILED:    ksnprintf(line, (size_t)cap, "%s", u->error); return true;
+    default:               ksnprintf(line, (size_t)cap, "Check whether a newer NovaOS is out."); break;
+    }
+    return false;
+}
+
+static void paint_updates(Store *s, GdiRect lr)
+{
+    UpdateGetStatus(&s->upd);
+    const UpdateStatus *u = &s->upd;
+    GdiRect card = r_upd_card(lr);
+    GdiRoundRect(card, 6, UI_CARD, GDI_TRANSPARENT);
+    GdiRoundGradV(RECT(card.x + 14, card.y + 14, TILE, TILE), TILE * 22 / 100,
+                  GDI_C(0x3A, 0x8A, 0xF0), GDI_C(0x2A, 0xC8, 0xC8));
+    GdiTextCenter(card.x + 14, card.y + 14 + (TILE - GDI_FONT_H) / 2, TILE, "N", GDI_WHITE);
+    int tx = card.x + 14 + TILE + 16;
+    char line[256];
+    GdiTextBold(tx, card.y + 12, "NovaOS", UI_TEXT);
+    ksnprintf(line, sizeof(line), "This PC has NovaOS %s", NovaVersion());
+    GdiTextT(tx + GdiTextBoldW("NovaOS") + 10, card.y + 12, line, UI_TEXT3);
+    GdiSetClip(RECT(lr.x, lr.y, card.x + card.w - BTN_W - 28 - lr.x, lr.h));
+    bool bad = upd_line(u, line, sizeof(line));
+    GdiTextT(tx, card.y + 36, line, bad ? GDI_C(0xFF, 0x8A, 0x80) : UI_TEXT2);
+    GdiTextT(tx, card.y + 62, "An update replaces the system at the next restart; if the new", UI_TEXT3);
+    GdiTextT(tx, card.y + 82, "version does not start, NovaOS goes back to this one.", UI_TEXT3);
+    GdiSetClip(lr);
+    static const char *labels[] = { "", "Check", "Update", "Restart" };
+    UpdBtn b = upd_button(u);
+    GdiRect br = r_upd_btn(lr);
+    if (s->upd_pressed) br.y += 1;
+    if (b == UB_NONE) GdiTextCenter(br.x, br.y + (br.h - GDI_FONT_H) / 2, br.w,
+                                    u->state == UPDATE_DOWNLOADING ? "Updating" : "Checking", UI_TEXT3);
+    else UiButton(br, labels[b], b != UB_CHECK);
+    int y = card.y + UPD_H + 18;
+    if (UpdateBootNotice()[0]) {
+        GdiTextT(card.x + 4, y, UpdateBootNotice(), UI_TEXT2);
+        y += 24;
+    }
+    char ch[512];
+    UpdateGetChannel(ch, sizeof(ch));
+    ksnprintf(line, sizeof(line), "Updates come from %s", ch);
+    GdiTextT(card.x + 4, y, line, UI_TEXT3);
+}
+
+/* The status changed in a way the page shows */
+static bool upd_changed(const Store *s)
+{
+    UpdateStatus u;
+    UpdateGetStatus(&u);
+    return u.state != s->upd.state || u.busy != s->upd.busy || (u.got >> 20) != (s->upd.got >> 20) ||
+           strcmp(u.step, s->upd.step);
+}
+
+static void upd_press(Store *s)
+{
+    switch (upd_button(&s->upd)) {
+    case UB_CHECK:   UpdateCheck(); break;
+    case UB_UPDATE:  UpdateInstall(); break;
+    case UB_RESTART: DesktopRestart(); break;
+    case UB_NONE:    break;
+    }
+}
+
 static void store_paint(WND *w)
 {
     Store *s = w->user;
@@ -719,14 +831,15 @@ static void store_paint(WND *w)
     int n = visible(s, idx);
     char cnt[32];
     ksnprintf(cnt, sizeof(cnt), "%d app%s", n, n == 1 ? "" : "s");
-    GdiTextT(c.x + c.w - 20 - GdiTextW(cnt), c.y + 22, cnt, UI_TEXT3);
+    if (s->cat != CAT_UPDATES) GdiTextT(c.x + c.w - 20 - GdiTextW(cnt), c.y + 22, cnt, UI_TEXT3);
     GdiFillRect(RECT(c.x + SIDE_W, c.y + HEAD_H - 1, c.w - SIDE_W, 1), UI_LINE);
 
     /* Rows */
     GdiRect lr = r_list(s, c);
     lr.x += c.x; lr.y += c.y;
     GdiSetClip(lr);
-    if (!n) {
+    if (s->cat == CAT_UPDATES) paint_updates(s, lr);
+    else if (!n) {
         GdiTextT(lr.x + 24, lr.y + 20, s->cat == CAT_INSTALLED ? "Nothing from the store is installed yet."
                                                                 : "No apps here.", UI_TEXT2);
     }
@@ -799,10 +912,25 @@ static void store_mouse(WND *w, WmMouseMsg msg, int x, int y)
     case WM_MOUSE_DOWN:
     case WM_MOUSE_DBLCLK:
         for (int i = 0; i < CAT_COUNT; i++)
-            if (UiHit(r_cat(i), x, y)) { s->cat = i; UiScrollTo(&s->bar, 0); return; }
+            if (UiHit(r_cat(i), x, y)) {
+                s->cat = i;
+                UiScrollTo(&s->bar, 0);
+                UpdateGetStatus(&s->upd);
+                if (i == CAT_UPDATES && s->upd.state == UPDATE_IDLE && !s->upd.busy) UpdateCheck();   /* (the first look checks) */
+                return;
+            }
+        if (s->cat == CAT_UPDATES) {
+            s->upd_pressed = upd_button(&s->upd) != UB_NONE && UiHit(r_upd_btn(r_list(s, c)), x, y);
+            return;
+        }
         s->pressed = button_at(s, c, x, y);
         break;
     case WM_MOUSE_UP: {
+        if (s->cat == CAT_UPDATES) {
+            if (s->upd_pressed && UiHit(r_upd_btn(r_list(s, c)), x, y)) upd_press(s);
+            s->upd_pressed = false;
+            break;
+        }
         int i = button_at(s, c, x, y);
         if (i >= 0 && i == s->pressed) press(s, i);
         s->pressed = -1;
@@ -875,6 +1003,17 @@ const char *StoreClose(void)
     if (!g_store) return "The App Store is not open.";
     WmRequestClose(g_store);
     return "Closed the App Store.";
+}
+
+void StoreShowUpdates(void)
+{
+    StoreOpen();
+    if (!g_store) return;
+    Store *s = g_store->user;
+    s->cat = CAT_UPDATES;
+    UiScrollTo(&s->bar, 0);
+    UpdateGetStatus(&s->upd);
+    if (s->upd.state == UPDATE_IDLE && !s->upd.busy) UpdateCheck();
 }
 
 void StoreOpen(void)

@@ -28,6 +28,7 @@
 #include "../hal/serial.h"
 #include "../hal/pci.h"
 #include "../fs/setup.h"
+#include "../fs/update.h"
 #include "../drivers/nvme.h"
 #include "vterm.h"
 
@@ -55,7 +56,7 @@ static void mirror(const char *s, int n)
 }
 
 /* A network command in progress (advanced by term_tick) */
-typedef enum { JOB_NONE, JOB_PING, JOB_LOOKUP, JOB_FETCH, JOB_PROC, JOB_SETUP } JobKind;
+typedef enum { JOB_NONE, JOB_PING, JOB_LOOKUP, JOB_FETCH, JOB_PROC, JOB_SETUP, JOB_UPDATE } JobKind;
 enum { PH_RESOLVE, PH_SEND, PH_WAIT, PH_SLEEP, PH_FETCH };
 
 typedef struct {
@@ -251,11 +252,14 @@ static void cmd_help(Term *t)
         "  store install <name>  get a program from the App Store\n"
         "  store open          open the App Store window\n"
         "  store close         close the App Store window\n"
+        "  store updates       open the App Store's updates for NovaOS\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  devices             the PCI devices and the driver each one has (also: lspci)\n"
         "  hwcheck             test the laptop drivers on modelled devices (codec, DSP, touchpad)\n"
         "  vol  sync           where drive C: is saved; save it now\n"
         "  install [disk] [/fat]  install NovaOS on a disk (no disk: list them)\n"
+        "  update [install]    check for a newer NovaOS (and install it)\n"
+        "  update channel [url]  where updates come from\n"
         "  ipconfig            show the network configuration\n"
         "  ping [-4|-6] <host> [-n N]  test a connection (ICMP echo)\n"
         "  nslookup <host>     look up a host name (DNS)\n"
@@ -510,7 +514,7 @@ static void cmd_sysinfo(Term *t)
     char b[8][96];
     ksnprintf(b[0], 96, "dean@nova-pc");
     ksnprintf(b[1], 96, "------------");
-    ksnprintf(b[2], 96, "OS:      NovaOS " NOVA_VERSION " x86_64");
+    ksnprintf(b[2], 96, "OS:      NovaOS %s x86_64", NovaVersion());
     ksnprintf(b[3], 96, "Kernel:  Nova (NT-compatible), SMP %s, %u CPU%s",
               g_cpu_count > 1 ? "on" : "off", (unsigned)g_cpu_count, g_cpu_count == 1 ? "" : "s");
     ksnprintf(b[4], 96, "Uptime:  %s", up);
@@ -787,6 +791,42 @@ static void cmd_install(Term *t, int argc, char **argv)
     memset(j, 0, sizeof(*j));
     j->kind = JOB_SETUP;
     tprintf(t, "Installing NovaOS on %s (everything on it is erased)...", pick->dev->name);
+}
+
+/* update [check | install | channel [<url> | default]]: NovaOS's own
+ * updates (fs/update.c), as the App Store's Updates page has them */
+static void cmd_update(Term *t, int argc, char **argv)
+{
+    const char *sub = argc > 1 ? argv[1] : "check";
+    char ch[512];
+    if (is(sub, "channel")) {
+        if (argc > 2) UpdateSetChannel(is(argv[2], "default") ? NULL : argv[2]);
+        UpdateGetChannel(ch, sizeof(ch));
+        tprintf(t, "Update channel: %s", ch);
+        return;
+    }
+    if (!is(sub, "check") && !is(sub, "install")) {
+        terr(t, "Usage: update [check | install | channel [<url> | default]]");
+        return;
+    }
+    if (UpdateBootNotice()[0]) tprint(t, UpdateBootNotice());
+    UpdateStatus st;
+    UpdateGetStatus(&st);
+    if (st.state == UPDATE_READY) {
+        tprintf(t, "NovaOS %s is ready: restart to finish the update (shutdown /r).", st.version);
+        return;
+    }
+    bool inst = is(sub, "install");
+    if (!(inst ? UpdateInstall() : UpdateCheck())) {
+        UpdateGetStatus(&st);
+        terr(t, st.error[0] ? st.error : "The updater is busy.");
+        return;
+    }
+    UpdateGetChannel(ch, sizeof(ch));
+    tprintf(t, "This is NovaOS %s. Checking %s ...", NovaVersion(), ch);
+    Job *j = &t->job;
+    memset(j, 0, sizeof(*j));
+    j->kind = JOB_UPDATE;
 }
 
 static void cmd_ping(Term *t, int argc, char **argv)
@@ -1067,6 +1107,35 @@ static bool term_tick_files(WND *w)
             return true;
         }
         return changed;
+    }
+    if (j->kind == JOB_UPDATE) {
+        UpdateStatus st;
+        UpdateGetStatus(&st);
+        if (st.busy) {
+            if (st.state != UPDATE_DOWNLOADING || !st.step[0] || !strcmp(st.step, j->path)) return false;
+            strncpy(j->path, st.step, sizeof(j->path) - 1);
+            tprint(t, st.step);
+            return true;
+        }
+        char sz[24];
+        switch (st.state) {
+        case UPDATE_CURRENT:
+            tprintf(t, "NovaOS %s is up to date.", NovaVersion());
+            break;
+        case UPDATE_AVAILABLE:
+            AppFormatSize(st.size, sz, sizeof(sz));
+            tprintf(t, "NovaOS %s is available (%s)%s%s", st.version, sz, st.notes[0] ? ": " : ".", st.notes);
+            tprint(t, "Type 'update install' to install it.");
+            break;
+        case UPDATE_READY:
+            tprintf(t, "NovaOS %s is ready: restart to finish the update (shutdown /r).", st.version);
+            break;
+        default:
+            terr(t, st.error[0] ? st.error : "The update failed.");
+            break;
+        }
+        job_end(t);
+        return true;
     }
     if (j->kind == JOB_SETUP) {
         SetupStatus st;
@@ -1668,7 +1737,7 @@ static void run_cmd_line(Term *t, char *cmdline, const char *original)
         UmSaveAll();
         tprint(t, PersistActive() ? "Drive C: and the registry are saved." : "There is no disk to save to.");
     }
-    else if (is(c, "ver"))                      tprint(t, "NovaOS [Version " NOVA_VERSION "]");
+    else if (is(c, "ver"))                      tprintf(t, "NovaOS [Version %s]", NovaVersion());
     else if (is(c, "whoami"))                   cmd_whoami(t);
     else if (is(c, "sysinfo") || is(c, "neofetch")) cmd_sysinfo(t);
     else if (is(c, "dmesg"))                    cmd_dmesg(t);
@@ -1676,7 +1745,8 @@ static void run_cmd_line(Term *t, char *cmdline, const char *original)
     else if (is(c, "store")) {
         if (argc == 2 && is(argv[1], "close")) tprint(t, StoreClose());
         else if (argc == 2 && is(argv[1], "open")) { StoreOpen(); tprint(t, "Opened the App Store."); }
-        else if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name> | store open | store close");
+        else if (argc == 2 && is(argv[1], "updates")) { StoreShowUpdates(); tprint(t, "Opened the App Store's updates."); }
+        else if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name> | store open | store updates | store close");
         else {
             char name[64];
             int n = 0;
@@ -1699,6 +1769,7 @@ static void run_cmd_line(Term *t, char *cmdline, const char *original)
     else if (is(c, "hwcheck"))                  cmd_hwcheck(t);
     else if (is(c, "devices") || is(c, "lspci")) cmd_devices(t);
     else if (is(c, "install"))                  cmd_install(t, argc, argv);
+    else if (is(c, "update"))                   cmd_update(t, argc, argv);
     else if (is(c, "taskkill"))                 cmd_taskkill(t, argc, argv);
     else if (is(c, "exit"))                     WmDestroyWindow(t->w);
     else {
@@ -2222,7 +2293,9 @@ static Term *term_new_ex(RamNode *cwd, bool banner)
     w->on_tick  = term_tick;
     w->tick_lock_free = true;
     if (!banner) return t;
-    tprint_ex(t, K_DIM, 0, "NovaOS Terminal [Version " NOVA_VERSION "]");
+    char ver[64];
+    ksnprintf(ver, sizeof(ver), "NovaOS Terminal [Version %s]", NovaVersion());
+    tprint_ex(t, K_DIM, 0, ver);
     tprint_ex(t, K_DIM, 0, "Type 'help' to see what you can do.");
     tprint(t, "");
     return t;

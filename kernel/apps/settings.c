@@ -69,7 +69,9 @@ static void page_system(int x, int y, int w)
     GdiRoundRect(RECT(x, y, w, 96), 8, UI_CARD, GDI_TRANSPARENT);
     GdiRoundGradV(RECT(x + 20, y + 20, 88, 56), 6, GDI_C(0x3A, 0x8A, 0xF0), GDI_C(0x2A, 0xC8, 0xC8));
     GdiTextLarge(x + 128, y + 20, "NOVA-PC", UI_TEXT);
-    GdiTextT(x + 128, y + 54, "NovaOS " NOVA_VERSION "  -  desktop", UI_TEXT2);
+    char ver[64];
+    ksnprintf(ver, sizeof(ver), "NovaOS %s  -  desktop", NovaVersion());
+    GdiTextT(x + 128, y + 54, ver, UI_TEXT2);
     y += 112;
     row(x, y, w, "Processor", cpu);           y += 50;
     row(x, y, w, "Installed memory", mem);    y += 50;
@@ -543,7 +545,9 @@ static void set_locale(const char *name)
 static void page_about(int x, int y, int w)
 {
     GdiTextLarge(x, y, "NovaOS", UI_TEXT);             y += 40;
-    GdiTextT(x, y, "Version " NOVA_VERSION "  -  a Windows-compatible OS research project", UI_TEXT2); y += 34;
+    char ver[96];
+    ksnprintf(ver, sizeof(ver), "Version %s  -  a Windows-compatible OS research project", NovaVersion());
+    GdiTextT(x, y, ver, UI_TEXT2); y += 34;
     row(x, y, w, "Kernel", "Nova, NT-style syscalls (Win10 1903 ABI)"); y += 50;
     row(x, y, w, "Desktop", "Kernel GDI + window manager");            y += 50;
     row(x, y, w, "UI font", "Inter 4.1 (SIL OFL 1.1)");                 y += 50;

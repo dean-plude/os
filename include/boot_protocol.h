@@ -117,6 +117,14 @@ typedef struct {
 #define BOOT_FLAG_LIVE_USB    (1u << 1)    /* ... and that is a USB device (the ISO written to a stick) */
 #define BOOT_FLAG_BOOT_ENTRY  (1u << 2)    /* an installed disk: the firmware has a "NovaOS" boot entry for it */
 #define BOOT_FLAG_ENTRY_ADDED (1u << 3)    /* ... which this boot added */
+/* An installed disk with an update staged (kernel/fs/update.c): the
+ * bootloader started the new kernel, \EFI\NOVA\kernel.new, for the first
+ * time; the kernel finishes the update once it has reached the desktop */
+#define BOOT_FLAG_UPDATE_TRIAL  (1u << 4)
+/* ... or the new kernel was started last time and never finished the
+ * update (it stopped, or the PC was reset), or it is not a kernel: this
+ * is the previous kernel again, and the update is to be thrown away */
+#define BOOT_FLAG_UPDATE_FAILED (1u << 5)
 
 /* Sanity check: kernel entry function signature */
 typedef void (*KernelEntryFn)(const BootInfo *info);

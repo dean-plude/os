@@ -211,6 +211,8 @@ void StoreOpen(void);
  * returns what the Store says (the outcome is logged as "[STORE] ...") */
 const char *StoreInstall(const char *name);
 const char *StoreClose(void);
+/* Open the App Store on its Updates page (NovaOS's own updates) */
+void StoreShowUpdates(void);
 /* Install NovaOS on a disk */
 void SetupOpen(void);
 /* "Welcome to NovaOS", the first-boot setup (welcome.c): the user's name

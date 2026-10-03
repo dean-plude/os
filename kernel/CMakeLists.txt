@@ -161,6 +161,7 @@ set(KERNEL_C_SOURCES
     fs/drives.c
     fs/persist.c
     fs/setup.c
+    fs/update.c
     fs/bootlog.c
     net/net.c
     net/tls.c
@@ -182,6 +183,7 @@ set(KERNEL_C_SOURCES
     um/um_crash.c
     um/um_security.c
     ke/main.c
+    ke/version.c
     ke/printf.c
     ke/scheduler.c
     ke/syscall.c
