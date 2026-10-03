@@ -78,7 +78,7 @@ int TabletCaps(void)
 
 static INT16 tilt(INT16 v) { return v < -900 ? -900 : v > 900 ? 900 : v; }
 
-void TabletPacketIn(const InputEvent *ev)
+UINT32 TabletPacketIn(const InputEvent *ev)
 {
     TabletPacket p;
     p.time = (UINT32)(sched_ticks() * 10);
@@ -97,6 +97,7 @@ void TabletPacketIn(const InputEvent *ev)
     g_ring[p.serial % TABLET_RING] = p;
     spin_unlock_irqrestore(&g_lock, s);
     waitq_wake(&g_q);
+    return p.serial;
 }
 
 int TabletRead(UINT32 after, TabletPacket *out, int max, UINT64 wait_ticks, UINT32 *newest)

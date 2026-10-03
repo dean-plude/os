@@ -7,7 +7,7 @@
   number of each) with hubs and HID keyboards (lock-key LEDs and media
   keys included), mice (five buttons and both wheels), tablets, pens
   (pressure, X/Y tilt, barrel rotation, barrel buttons and eraser, for
-  Wintab) and
+  Wintab and as `WM_POINTER` pen messages) and
   multi-touch screens (report protocol), USB sticks (FAT and NTFS, as
   the next drive letter, hot-plugged) and USB speakers, headsets and
   microphones (USB Audio Class 1 and 2 over isochronous transfers, played on and

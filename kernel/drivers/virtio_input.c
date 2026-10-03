@@ -17,7 +17,7 @@
  *
  * Pens (a device with absolute X/Y and BTN_TOOL_PEN or ABS_PRESSURE, as
  * Linux's evdev pens and QEMU's virtio-input-host passing one through)
- * post the pointer's motion and an INPUT_PEN event a frame, as a USB pen
+ * post an INPUT_PEN event a frame and then the pointer's motion, as a USB pen
  * does: BTN_TOOL_PEN / BTN_TOOL_RUBBER say it is in range (with its tip or
  * its eraser), BTN_TOUCH is the tip, BTN_STYLUS / BTN_STYLUS2 the barrel
  * buttons, ABS_PRESSURE the pressure, ABS_TILT_X / ABS_TILT_Y the tilt
@@ -391,11 +391,6 @@ static void pen_frame(Vin *v)
     }
     bool near = v->has_tool ? v->pen || v->rubber : v->touch;   /* (no BTN_TOOL_*: in range while touching) */
     UINT8 pb = (UINT8)((v->touch ? 1 : 0) | (v->buttons & 6));
-    if (near || pb) {                                    /* the pointer follows the pen in range */
-        ev.type = INPUT_MOUSE;
-        ev.buttons = (UINT8)((pb & 1 ? MOUSE_LEFT : 0) | (pb & 2 ? MOUSE_RIGHT : 0));
-        post(v, &ev);
-    }
     ev.type = INPUT_PEN;
     ev.buttons = pb;
     ev.pressure = (UINT16)(!(pb & 1) ? 0 : !v->has_pressure ? TABLET_PRESSURE :
@@ -413,6 +408,16 @@ static void pen_frame(Vin *v)
         ev.twist = (UINT16)(((t + 1800) % 3600 + 3600) % 3600);
     }
     post(v, &ev);
+    if (near || pb) {                                    /* the pointer follows the pen in range */
+        InputEvent m;
+        memset(&m, 0, sizeof(m));
+        m.type = INPUT_MOUSE;
+        m.absolute = 1;
+        m.dx = ev.dx; m.dy = ev.dy;
+        m.buttons = (UINT8)((pb & 1 ? MOUSE_LEFT : 0) | (pb & 2 ? MOUSE_RIGHT : 0));
+        m.from_pen = 1;
+        post(v, &m);
+    }
 }
 
 static void pen_event(Vin *v, const Event *e)
@@ -564,8 +569,8 @@ int VirtioInputSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
     #undef E
     static const struct { const char *what; int kind; const Event *ev; int n; const char *want; } checks[] = {
         { "virtio pen: pressure, tilt, rotation, eraser", VIN_PEN, pen, sizeof(pen) / sizeof(pen[0]),
-          "m0,0 p0,0r/0,0,0 @25,50 m1,0 p511,1r/302,201,900 @25,50 m3,0 p1023,3r/-643,201,900 @25,50 "
-          "m0,0 p0,0re/0,0,0 @25,50 p0,0/0,0,0 @25,50" },
+          "p0,0r/0,0,0 @25,50 m0,0 p511,1r/302,201,900 @25,50 m1,0 p1023,3r/-643,201,900 @25,50 m3,0 "
+          "p0,0re/0,0,0 @25,50 m0,0 p0,0/0,0,0 @25,50" },
         { "virtio tablet: absolute pointer", VIN_POINTER, tablet, sizeof(tablet) / sizeof(tablet[0]),
           "m0,0 m1,0 m0,-1" },
     };

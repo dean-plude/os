@@ -14,7 +14,8 @@ typedef enum {
     INPUT_KEY   = 2,   /* keyboard make/break */
     INPUT_TOUCH = 3,   /* a touch contact: where it is, or that it lifted; or a frame's end */
     INPUT_PEN   = 4,   /* a pen tablet's report (tablet.h): where, pressure, buttons; it does
-                        * not move the pointer (the device posts INPUT_MOUSE for that too) */
+                        * not move the pointer (the device posts INPUT_MOUSE with from_pen
+                        * for that too, right after it, while the pen is in range) */
 } InputType;
 
 #define TOUCH_MAX     10   /* contacts tracked at once (slots 0-9) */
@@ -46,6 +47,8 @@ typedef struct {
                         * pen's top leaning right (x) or toward the user (y), as Windows' */
     UINT16 twist;      /* INPUT_PEN: barrel rotation, tenths of a degree clockwise, 0..3599 */
     UINT8  pen_has;    /* INPUT_PEN: PEN_HAS_*, what the device reports (others are 0) */
+    UINT8  from_pen;   /* INPUT_MOUSE: a pen's motion and tip; its INPUT_PEN came just before
+                        * (programs get WM_POINTER* for it, user32's pointer.c) */
 } InputEvent;
 
 /* InputEvent.pen_has */

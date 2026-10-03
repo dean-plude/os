@@ -366,6 +366,8 @@ NTSYSAPI LONG_PTR NTAPI NtNovaAudioWrite(INT_PTR h, const void *frames, ULONG n)
 NTSYSAPI LONG_PTR NTAPI NtNovaAudioCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out);
 NTSYSAPI LONG_PTR NTAPI NtNovaGpuCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *ptr);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiCreate(void *info);
+/* @msg: a MSG and a ULONG after it, which gets a mouse message's pen packet
+ * number (0: the mouse); a 64-bit MSG's padding after message has it too */
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiGetMessage(ULONG_PTR hwnd, void *msg, ULONG wait);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiInvalidate(ULONG_PTR hwnd);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiSetText(ULONG_PTR hwnd, const void *title16);
