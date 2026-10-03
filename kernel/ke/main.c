@@ -73,6 +73,7 @@
 #include "../fs/ramfs.h"
 #include "../hal/pci.h"
 #include "../drivers/usb.h"
+#include "../drivers/i2chid.h"
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
 #include "../hal/ioapic.h"
@@ -422,6 +423,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
         InputInit();
         ps2_init();
         UsbInit();                        /* USB keyboards, mice, hubs and sticks */
+        I2cHidInit();                     /* touchpads on I2C (a thread, once ACPI is loaded) */
         sched_create_thread("devpoll", device_poll_thread, NULL, PRIO_DEVICE);   /* (above programs and the desktop) */
         sched_create_thread("desktop", DesktopRun, NULL, PRIO_DESKTOP);   /* (above any program thread, boosted or not) */
         kprintf_set_fb_enabled(false);    /* WM owns the screen; logs → serial */

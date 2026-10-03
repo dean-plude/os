@@ -74,3 +74,25 @@ bool AmlPciIrq(UINT8 dev, UINT8 pin, UINT32 *gsi, bool *level, bool *low);
 
 /* The SCI is an interrupt (false: polled) */
 bool AmlSciIsInterrupt(void);
+
+/* I2C-HID devices (touchpads, PNP0C50 / ACPI0C50) the namespace describes
+ * and reports present, with the I2C controller each sits on: what
+ * i2chid.c needs to reach them.  Filled before AmlReady(). */
+typedef struct {
+    char   path[48];                   /* the device: \_SB.PC00.I2C1.TPD0 */
+    char   hid[12];                    /* its _HID: SYNA8018, ELAN06FA */
+    UINT16 addr;                       /* 7-bit I2C address */
+    UINT32 speed;                      /* bus speed it asks for, Hz */
+    UINT16 desc_reg;                   /* HID descriptor register (_DSM function 1) */
+    bool   has_desc;                   /*   (the _DSM answered) */
+    char   bus[48];                    /* the controller's path */
+    bool   bus_pci;                    /* the controller is PCI function bus_dev.bus_fn on bus 0 (_ADR) */
+    UINT8  bus_dev, bus_fn;
+    UINT16 fmcn[3], sscn[3];           /* the controller's fast/standard mode timings (FMCN, SSCN): */
+    bool   has_fmcn, has_sscn;         /*   SCL high count, SCL low count, SDA hold */
+    bool   gpio_int;                   /* its interrupt is a GPIO pin (read by polling here) */
+    UINT16 gpio_pin;
+} AmlI2cHid;
+
+#define AML_MAX_I2C_HID 4
+int AmlI2cHidDevices(AmlI2cHid *out, int max);

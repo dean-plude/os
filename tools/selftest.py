@@ -308,7 +308,8 @@ def peer(work, port, *args):
 
 
 def usbheadset_boot(work):
-    """No HD Audio card: a high-speed USB headset (tools/usbredirpeer.py:
+    """No HD Audio card (an AC'97 card instead, which the HD Audio driver
+    must not take): a high-speed USB headset (tools/usbredirpeer.py:
     its speaker writes headset.wav in the work directory, its microphone
     hears REC_HZ) on an EHCI controller, and an xHCI, an OHCI and a UHCI
     controller for the full-speed microphones the tests plug in (ports
@@ -328,7 +329,8 @@ def usbheadset_boot(work):
     procs.append(peer(work, 10706, '--speed', 'full', '--product', 'Test Speaker', '--speaker', os.path.join(work, 'spk.wav')))
     return ['-chardev', 'socket,id=headset,host=127.0.0.1,port=10700', '-device', 'usb-ehci,id=ehci',
             '-device', 'usb-redir,id=headset,chardev=headset,bus=ehci.0', '-device', 'qemu-xhci,id=xhci',
-            '-device', 'pci-ohci,id=ohci', '-device', 'piix3-usb-uhci,id=uhci'], procs
+            '-device', 'pci-ohci,id=ohci', '-device', 'piix3-usb-uhci,id=uhci',
+            '-audiodev', 'none,id=ac97snd', '-device', 'AC97,audiodev=ac97snd'], procs
 
 
 def monitors_boot(work):
@@ -484,7 +486,7 @@ def main():
     tests = chosen(suite)
     work = tempfile.mkdtemp(prefix='selftest')
     tables = []
-    for asl in ('battery', 'lid-thermal'):
+    for asl in ('battery', 'lid-thermal', 'i2c-touchpad'):
         aml = os.path.join(work, asl + '.aml')
         subprocess.run(['iasl', '-p', aml[:-4], os.path.join(ROOT, 'tests', 'acpi', asl + '.asl')],
                        check=True, stdout=subprocess.DEVNULL)

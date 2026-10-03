@@ -42,6 +42,7 @@
 #include "../net/net.h"
 #include "../drivers/hda.h"
 #include "../drivers/usb.h"
+#include "../drivers/i2chid.h"
 #include "../drivers/virtio_input.h"
 #include "../wm/wm.h"
 #include "../lib/string.h"
@@ -279,6 +280,7 @@ bool SleepEnter(void)
     AmlPrepareSleep();                   /* \_PTS; only wake GPEs stay on */
     /* Devices: what only the driver knows */
     UsbPrepareSleep();                   /* USB keyboards may wake it */
+    I2cHidPrepareSleep();                /* no touchpad transfer under way */
     PciSaveAll();
     save_mtrrs();
     UINT64 rtc_before = rtc_seconds(), tsc_before = rdtsc();
@@ -318,6 +320,7 @@ bool SleepEnter(void)
         if (frozen < others) kprintf("[SLEEP] %u of %u CPUs stopped: not sleeping\n", frozen, others);
         else kprintf("[SLEEP] The machine didn't enter S3\n");
         UsbResume();                     /* (its ports were suspended) */
+        I2cHidResume();
         AmlWake();
         return false;
     }
@@ -332,6 +335,7 @@ bool SleepEnter(void)
     UsbResume();
     VirtioInputResume();                 /* touch screens */
     HdaResume();
+    I2cHidResume();                      /* (its thread sets the controllers up again) */
     ps2_resume();
     DisplayResume();
     WmInvalidate();                      /* video memory may not have kept the picture */
