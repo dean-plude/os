@@ -550,7 +550,11 @@ def settle(nova, out, wait=120):
     keyboard again.  Keys typed while a closing program still has the
     focus (Firefox takes a while to shut down its processes) never reach
     the Terminal, and the next program's Alt+F4 would close the Terminal
-    instead.  Returns (the log, why the Terminal is not usable or None)."""
+    instead.  A program that keeps the focus (VLC failing to open its file
+    raises an error box that Alt+F4 closes and its --loop opens again)
+    would take every later program's keys too, so when the Terminal does
+    not answer a new one is opened from Start (reopen_terminal) to stop it.
+    Returns (the log, why the Terminal was not usable or None)."""
     started = set(re.findall(r'\[UM\] Started [^\n]*? \(PID (\d+)\)', out))
     end = time.time() + wait
     while True:
@@ -559,12 +563,39 @@ def settle(nova, out, wait=120):
             break
         time.sleep(1)
         out += nova.sr.read_new()
+    why = None
+    if started - ended:
+        o, ok = nova.run('echo ready', 15)
+        out += o
+        if not ok:
+            why = 'the Terminal did not get the keyboard back after the program ended'
+            out += reopen_terminal(nova)
     for pid in sorted(started - ended, key=int):
         o, _ = nova.run(f'taskkill /PID {pid}', 15)
         out += o
     o, ok = nova.run('echo ready', 15)
     out += o
-    return out, None if ok else 'the Terminal did not get the keyboard back after the program ended'
+    if not ok:
+        why = 'the Terminal did not get the keyboard back after the program ended'
+        out += reopen_terminal(nova)
+        out += nova.run('echo ready', 15)[0]
+    return out, why
+
+
+def reopen_terminal(nova):
+    """A new Terminal window from Start (the Windows key, then "terminal"),
+    copying its output to the serial port as the first one does
+    (Nova.start); the Windows key reaches Start whichever window has the
+    focus"""
+    nova.keys('esc')
+    nova.qmp.key('meta_l')
+    time.sleep(1)
+    nova.qmp.type('terminal\n')
+    time.sleep(3)
+    out = nova.sr.read_new()
+    nova.qmp.type('serial on\n')
+    more, _ = nova.sr.wait('[TERM-DONE]', 30)
+    return out + more.replace('\n[TERM-DONE]\n', '')
 
 
 

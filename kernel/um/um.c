@@ -2100,6 +2100,17 @@ UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield
     L->bkl = bkl_drop();                     /* nor the big lock: the process is ours alone */
     int nt = load_module(L, NULL, "ntdll.dll", false);
     int m = nt < 0 ? -1 : load_module(L, exe, exe->name, true);
+    /* kernelbase.dll is in every Windows process (kernel32 forwards to it),
+     * so GetModuleHandle of an API set it hosts finds it even when the
+     * program imports nothing from it: Rust's standard library looks up
+     * WaitOnAddress through "api-ms-win-core-synch-l1-2-0" and, finding
+     * no module, parks threads on keyed events instead */
+    char kname[64];
+    if (m >= 0 && module_index(p, "kernel32.dll", kname, sizeof(kname), false) >= 0) {
+        char saved = err_cap > 0 ? err[0] : 0;
+        load_module(L, NULL, "kernelbase.dll", false);    /* (a missing one is no error) */
+        if (err_cap > 0) err[0] = saved;
+    }
     UINT64 base = 0, entry = 0;
     if (m >= 0) {
         base = p->modules[m].base;

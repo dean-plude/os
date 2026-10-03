@@ -678,8 +678,11 @@ would do).
 The windowed programs run last, one at a time (each takes the keyboard and
 is closed with Alt+F4 before the next).  The next one starts only once
 every process the last one started has ended (any still running after
-two minutes is stopped with `taskkill`) and the Terminal answers again;
-after Firefox, `store close` closes the App Store window its install
+two minutes is stopped with `taskkill`) and the Terminal answers again.
+When it does not (a program that failed keeps the keyboard, as VLC does
+with its error box when its file is missing), the script opens a new
+Terminal from Start, stops the program from there and carries on, so one
+failure does not fail every program after it.  After Firefox, `store close` closes the App Store window its install
 opened.  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
