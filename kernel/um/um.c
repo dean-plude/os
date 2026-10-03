@@ -26,6 +26,7 @@
 
 #include "../fs/persist.h"
 #include "../fs/drives.h"
+#include "../drivers/audio.h"
 #include "../fs/bootlog.h"
 #include "../arch/x86_64/idt.h"
 #include "um_internal.h"
@@ -211,6 +212,7 @@ void UmInit(void)
             installed);
     PersistLoad();                                  /* the user's files (and the registry hive) from disk */
     um_registry_init();
+    AudioLoadSettings();                            /* the sound devices' saved volumes and default */
     um_registry_pending_renames();                  /* before any program runs */
 }
 

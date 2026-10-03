@@ -241,11 +241,17 @@ static void snap_place(int mon, int *px, int *py)
 /* Sound: the outputs, then the inputs, one row each (the default one's
  * circle filled); clicking a row makes that device the default, as
  * Windows' "Choose where to play sound" does.  Programs that chose a
- * device keep it.  Rows are SOUND_ROW apart; sound_rows() places them for
- * set_paint and set_mouse alike. */
-#define SOUND_ROW  50
-#define SOUND_HEAD 26
-#define SOUND_GAP  16
+ * device keep it.  Each row has the device's own volume slider at its
+ * right (clicking the slider sets that device's level, as each device's
+ * slider in Windows' Sound settings does).  The choice and the levels are
+ * kept across restarts (drivers/audio.c).  Rows are SOUND_ROW apart;
+ * sound_rows() places them for set_paint and set_mouse alike. */
+#define SOUND_ROW    50
+#define SOUND_HEAD   26
+#define SOUND_GAP    16
+#define SOUND_SLIDER 160                 /* the slider's track, ending 72 px from the row's right */
+
+static int slider_x(int x, int w) { return x + w - 72 - SOUND_SLIDER; }
 
 typedef struct { AudioDevice out[8], in[8]; int nout, nin; } SoundDevs;
 
@@ -264,8 +270,10 @@ static int sound_in_dy(const SoundDevs *d)
 static UINT32 sound_sig(const SoundDevs *d)
 {
     UINT32 sig = (UINT32)(d->nout * 31 + d->nin);
-    for (int i = 0; i < d->nout; i++) sig = sig * 131 + d->out[i].id * 2 + d->out[i].is_default;
-    for (int i = 0; i < d->nin; i++) sig = sig * 137 + d->in[i].id * 2 + d->in[i].is_default;
+    for (int i = 0; i < d->nout; i++)
+        sig = sig * 131 + d->out[i].id * 2 + d->out[i].is_default + d->out[i].volume * 7 + d->out[i].mute;
+    for (int i = 0; i < d->nin; i++)
+        sig = sig * 137 + d->in[i].id * 2 + d->in[i].is_default + d->in[i].volume * 7 + d->in[i].mute;
     return sig;
 }
 
@@ -276,7 +284,32 @@ static void sound_row(int x, int y, int w, const AudioDevice *a)
     GdiRoundRect(RECT(x + 18, y + 16, 12, 12), 6, UI_CARD, GDI_TRANSPARENT);
     if (a->is_default) GdiRoundRect(RECT(x + 20, y + 18, 8, 8), 4, UI_ACCENT, GDI_TRANSPARENT);
     GdiTextT(x + 44, y + 14, a->name, UI_TEXT);
-    if (a->is_default) GdiTextT(x + w - 16 - GdiTextW("Default"), y + 14, "Default", UI_TEXT2);
+    int sx = slider_x(x, w), fill = (int)((UINT64)SOUND_SLIDER * a->volume / 65536);
+    int lx = sx - 20 - GdiTextW("Default");                   /* (left out where a long name reaches it) */
+    if (a->is_default && lx >= x + 44 + GdiTextW(a->name) + 16) GdiTextT(lx, y + 14, "Default", UI_TEXT2);
+    GdiRoundRect(RECT(sx, y + 20, SOUND_SLIDER, 4), 2, UI_LINE, GDI_TRANSPARENT);
+    if (fill > 0) GdiRoundRect(RECT(sx, y + 20, fill, 4), 2, a->mute ? UI_TEXT2 : UI_ACCENT, GDI_TRANSPARENT);
+    GdiRoundRect(RECT(sx + fill - 7, y + 15, 14, 14), 7, a->mute ? UI_TEXT2 : UI_ACCENT, GDI_TRANSPARENT);
+    char pct[16];
+    if (a->mute) strcpy(pct, "Muted");
+    else ksnprintf(pct, sizeof(pct), "%u%%", (unsigned)((a->volume * 100ull + 32768) / 65536));
+    GdiTextT(x + w - 16 - GdiTextW(pct), y + 14, pct, UI_TEXT2);
+}
+
+/* A click at @dx on a row of device @a: on its slider, set its volume
+ * there; elsewhere, make it the default */
+static void sound_row_click(bool capture, const AudioDevice *a, int dx, int w)
+{
+    int sx = slider_x(0, w);
+    if (dx >= sx - 8 && dx <= sx + SOUND_SLIDER + 8) {
+        int v = dx - sx;
+        v = v < 0 ? 0 : v > SOUND_SLIDER ? SOUND_SLIDER : v;
+        UINT32 vol = (UINT32)((UINT64)v * 65536 / SOUND_SLIDER);
+        AudioSetMaster(capture, a->id, vol, vol, false);
+        kprintf("[SETTINGS] %s volume %u%%\n", a->name, (unsigned)((vol * 100ull + 32768) / 65536));
+        return;
+    }
+    AudioSetDefault(capture, a->id);
 }
 
 static void page_sound(Settings *st, int x, int y, int w)
@@ -301,12 +334,12 @@ static void sound_click(int dx, int dy, int w)
     if (dx < 0 || dx >= w) return;
     int r = (dy - SOUND_HEAD) / SOUND_ROW;
     if (dy >= SOUND_HEAD && (dy - SOUND_HEAD) % SOUND_ROW < 44 && r < d.nout) {
-        AudioSetDefault(false, d.out[r].id);
+        sound_row_click(false, &d.out[r], dx, w);
         return;
     }
     int iy = dy - sound_in_dy(&d) - SOUND_HEAD;
     r = iy / SOUND_ROW;
-    if (iy >= 0 && iy % SOUND_ROW < 44 && r < d.nin) AudioSetDefault(true, d.in[r].id);
+    if (iy >= 0 && iy % SOUND_ROW < 44 && r < d.nin) sound_row_click(true, &d.in[r], dx, w);
 }
 
 static void page_storage(int x, int y, int w)

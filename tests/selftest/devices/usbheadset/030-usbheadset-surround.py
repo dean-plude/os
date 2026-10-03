@@ -12,9 +12,9 @@
 # names it (dev=), waveIn and WASAPI capture record from a named
 # microphone, and "soundtest default" makes a device the default the way
 # Settings' Sound page does.  spk.wav must hold only the tone played after
-# it was made the default again.
+# it was made the default again.  (040 goes on with these devices and
+# checks surround.wav.)
 import re
-import struct
 import time
 
 
@@ -38,26 +38,6 @@ def plug(n, port, bus, wait):
             print('device_add:', r['error'], flush=True)
         _wait_log(nova, wait)
     return act
-
-
-def surround(*hz):
-    """surround.wav: the tones @hz in order and nothing else, written at
-    44.1 kHz, and nothing on the four channels beyond the front two"""
-    inner = tones(*hz, wav='surround.wav', only=True)
-
-    def check(nova):
-        bad = inner(nova)
-        if bad:
-            return bad
-        path = nova.work + '/surround.wav'
-        rate = struct.unpack('<I', open(path, 'rb').read(28)[24:28])[0]
-        if rate != 44100:
-            return f'surround.wav was written at {rate} Hz, not 44100'
-        extra = int(open(path + '.extra').read() or 0)
-        if extra:
-            return f'{extra} samples sounded on the surround channels (only the front two should)'
-        return None
-    return check
 
 
 TESTS = [
@@ -90,5 +70,5 @@ TESTS = [
          check=recording(r'C:\defin.wav', REC_HZ, 1500)),
     Test('default back', 'soundtest default out "Test Speaker"', [r'default output: "Speakers \(Test Speaker\)" chosen']),
     Test('default speaker', 'soundtest tone 262 1000', [r'played \d+ samples'],
-         check=lambda nova: surround(523, 392, 330, 294)(nova) or tones(262, wav='spk.wav', only=True)(nova)),
+         check=lambda nova: tones(262, wav='spk.wav', only=True)(nova)),    # (surround.wav: 040, which plays on it again)
 ]

@@ -80,8 +80,9 @@ static UINT64 sys_write(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *   4 get volume -> UINT32[2] (0..65536)  5 the device (h unused) -> { UINT32 present, rate; char name[96]; }
  *   6 read up to @arg recorded frames into @out (a capture stream): returns how many
  *   7 the recording device (h unused) -> { UINT32 present, rate; char name[96]; }
- *   8 set the endpoint volume (h unused, arg = capture) from @out: UINT32[3] { left, right (0..65536), mute }
- *   9 get the endpoint volume (h unused, arg = capture) -> UINT32[3] { left, right (0..65536), mute }
+ *   8 set the endpoint volume (h unused, arg = capture | device id << 1, id 0: the default) from @out:
+ *     UINT32[3] { left, right (0..65536), mute }; -1 if there is no such device
+ *   9 get the endpoint volume (h unused, arg as for 8) -> UINT32[3] { left, right (0..65536), mute }
  *  10 the devices (h unused, arg = capture) -> { UINT32 count; { UINT32 id, is_default; char name[96]; } [8] },
  *     oldest first (waveOut/waveIn device IDs and WASAPI endpoints in that order)
  *  11 make device @arg the default (h unused; @out = capture, as a number): Settings' choice
@@ -100,13 +101,13 @@ static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a2 == 8) {
         UINT32 v[3];
         if (!NT_SUCCESS(CopyFromUser(v, (const void *)(uintptr_t)a4, sizeof(v)))) return (UINT64)(INT64)-1;
-        AudioSetMaster((int)(a3 & 1), v[0] > 65536 ? 65536 : v[0], v[1] > 65536 ? 65536 : v[1], v[2] != 0);
-        return 0;
+        return AudioSetMaster((int)(a3 & 1), (UINT32)(a3 >> 1), v[0] > 65536 ? 65536 : v[0],
+                              v[1] > 65536 ? 65536 : v[1], v[2] != 0) ? 0 : (UINT64)(INT64)-1;
     }
     if (a2 == 9) {
         UINT32 v[3];
         bool mute;
-        AudioGetMaster((int)(a3 & 1), &v[0], &v[1], &mute);
+        AudioGetMaster((int)(a3 & 1), (UINT32)(a3 >> 1), &v[0], &v[1], &mute);
         v[2] = mute;
         return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, v, sizeof(v))) ? 0 : (UINT64)(INT64)-1;
     }

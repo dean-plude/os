@@ -1761,17 +1761,17 @@ static void system_key(const KeyEvent *k)
     bool mute;
     switch (k->scancode) {
     case KEY_VOL_UP: case KEY_VOL_DOWN: {
-        AudioGetMaster(0, &l, &r, &mute);
+        AudioGetMaster(0, 0, &l, &r, &mute);
         INT32 v = (INT32)(l > r ? l : r) + (k->scancode == KEY_VOL_UP ? 1311 : -1311);   /* 2% a press */
         if (v < 0) v = 0;
         if (v > 65536) v = 65536;
-        AudioSetMaster(0, (UINT32)v, (UINT32)v, false);
+        AudioSetMaster(0, 0, (UINT32)v, (UINT32)v, false);
         kprintf("[SHELL] Volume %d%%\n", (int)((v * 100 + 32768) / 65536));
         break;
     }
     case KEY_MUTE:
-        AudioGetMaster(0, &l, &r, &mute);
-        AudioSetMaster(0, l, r, !mute);
+        AudioGetMaster(0, 0, &l, &r, &mute);
+        AudioSetMaster(0, 0, l, r, !mute);
         kprintf("[SHELL] Volume %s\n", mute ? "unmuted" : "muted");
         break;
     case KEY_SLEEP:

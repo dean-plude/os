@@ -12,7 +12,9 @@
   the next drive letter, hot-plugged) and USB speakers, headsets and
   microphones (USB Audio Class 1 and 2 over isochronous transfers, at the
   device's own sampling rate and channel count, played on and recorded
-  from as soon as they are plugged in, or chosen in Settings' Sound page); virtio multi-touch screens,
+  from as soon as they are plugged in, or chosen in Settings' Sound page,
+  each with its own volume; the choice and the levels are kept across
+  restarts); virtio multi-touch screens,
   pens (pressure, tilt, rotation) and tablets; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page

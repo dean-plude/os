@@ -13,6 +13,14 @@
  *    Initialize): a 100 ms buffer of 1.5 x HZ looped four more times
  *    through a submix voice; OnLoopEnd must fire four times.
  * 3. X3DAudio: an emitter to the listener's right must pan right.
+ *
+ *   xa2test devices [NAME HZ MS]
+ *
+ * The devices XAudio2 2.7 lists (GetDeviceCount, GetDeviceDetails: index
+ * 0 the default, then every output); with NAME, a sine of HZ for MS
+ * through XAudio2 2.9 on the device whose name holds NAME, its mastering
+ * voice made with that device's ID (CreateMasteringVoice's szDeviceId,
+ * the WASAPI endpoint ID GetDeviceDetails gives).
  */
 
 #include <windows.h>
@@ -20,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 #include <math.h>
 
 #define PI 3.14159265358979
@@ -40,6 +49,7 @@ typedef struct { UINT32 EffectCount; XFXDESC *pEffectDescriptors; } XCHAIN;
 typedef struct { UINT32 Flags; void *pOutputVoice; } XSEND;
 typedef struct { UINT32 OutputCount; void **pOutputVoices; } XSENDS27;
 typedef struct { float *pPeakLevels, *pRMSLevels; UINT32 ChannelCount; } XMETER;
+typedef struct { WCHAR DeviceID[256], DisplayName[256]; int Role; BYTE OutputFormat[40]; } XDETAILS;
 typedef struct { float x, y, z; } V3;
 typedef struct { V3 OrientFront, OrientTop, Position, Velocity; void *pCone; } X3DLISTENER;
 typedef struct {
@@ -261,8 +271,73 @@ static int test3d(void)
     return 0;
 }
 
+/* -----------------------------------------------------------------------
+ * The devices
+ * ----------------------------------------------------------------------- */
+static int devices(const char *name, double hz, DWORD ms)
+{
+    void *xa = 0;
+    CoInitialize(0);
+    HRESULT hr = CoCreateInstance(&CLSID_XAudio2_27, 0, CLSCTX_INPROC_SERVER, &IID_IXAudio2_27, &xa);
+    if (FAILED(hr)) { printf("FAIL CoCreateInstance(XAudio2 2.7): %08lx\n", hr); return 1; }
+    UINT32 n = 0;
+    M(xa, 3, HRESULT (STDMETHODCALLTYPE *)(void *, UINT32 *))(xa, &n);
+    printf("2.7: %u device(s)\n", n);
+    WCHAR want[64], id[256] = { 0 }, found[256] = { 0 };
+    if (name) MultiByteToWideChar(CP_ACP, 0, name, -1, want, 64);
+    int bad = !n;
+    for (UINT32 i = 0; i < n; i++) {
+        XDETAILS d;
+        memset(&d, 0, sizeof(d));
+        hr = M(xa, 4, HRESULT (STDMETHODCALLTYPE *)(void *, UINT32, XDETAILS *))(xa, i, &d);
+        if (FAILED(hr)) { printf("FAIL GetDeviceDetails(%u): %08lx\n", i, hr); bad = 1; continue; }
+        printf("  %u: \"%ls\" %ls role %d\n", i, d.DisplayName, d.DeviceID, d.Role);
+        if (name && i && !id[0] && wcsstr(d.DisplayName, want)) { lstrcpyW(id, d.DeviceID); lstrcpyW(found, d.DisplayName); }
+    }
+    ((IUnknown *)xa)->lpVtbl->Release((IUnknown *)xa);
+    if (!name) return bad;
+    if (!id[0]) { printf("FAIL no device named like \"%s\"\n", name); return 1; }
+
+    HMODULE m = LoadLibraryA("xaudio2_9.dll");
+    XAudio2CreateFn create = m ? (XAudio2CreateFn)GetProcAddress(m, "XAudio2Create") : 0;
+    if (!create) { printf("FAIL xaudio2_9.dll\n"); return 1; }
+    void *mv = 0, *sv = 0;
+    hr = create(&xa, 0, 1);
+    if (FAILED(hr)) { printf("FAIL XAudio2Create: %08lx\n", hr); return 1; }
+    hr = M(xa, 7, HRESULT (STDMETHODCALLTYPE *)(void *, void **, UINT32, UINT32, UINT32, LPCWSTR, const XCHAIN *, int))
+        (xa, &mv, 0, 0, 0, id, NULL, 6);
+    if (FAILED(hr)) { printf("FAIL CreateMasteringVoice(%ls): %08lx\n", id, hr); return 1; }
+    WFX f = { 1, 1, 44100, 88200, 2, 16, 0 };
+    hr = M(xa, 5, HRESULT (STDMETHODCALLTYPE *)(void *, void **, const WFX *, UINT32, float, void *, const void *, const XCHAIN *))
+        (xa, &sv, &f, 0, 2.0f, &voice_cb, NULL, NULL);
+    if (FAILED(hr)) { printf("FAIL CreateSourceVoice: %08lx\n", hr); return 1; }
+    UINT32 total = f.nSamplesPerSec * ms / 1000;
+    short *pcm = sine(hz, f.nSamplesPerSec, total);
+    XBUF b = { 0x40, total * 2, (const BYTE *)pcm, 0, 0, 0, 0, 0, 0 };
+    g_stream_ends = 0;
+    ResetEvent(g_done);
+    M(sv, 21, HRESULT (STDMETHODCALLTYPE *)(void *, const XBUF *, const void *))(sv, &b, NULL);
+    DWORD t0 = GetTickCount();
+    M(sv, 19, HRESULT (STDMETHODCALLTYPE *)(void *, UINT32, UINT32))(sv, 0, 0);
+    DWORD w = WaitForSingleObject(g_done, ms + 3000);
+    Sleep(200);                                     /* (what the engine queued plays out) */
+    printf("2.9 on \"%ls\": %.0f Hz for %lu ms\n", found, hz, GetTickCount() - t0);
+    if (w != WAIT_OBJECT_0) { printf("FAIL no OnStreamEnd\n"); bad = 1; }
+    M(sv, 18, void (STDMETHODCALLTYPE *)(void *))(sv);
+    M(mv, 18, void (STDMETHODCALLTYPE *)(void *))(mv);
+    ((IUnknown *)xa)->lpVtbl->Release((IUnknown *)xa);
+    free(pcm);
+    return bad;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "devices")) {
+        g_done = CreateEventW(0, FALSE, FALSE, 0);
+        int bad = devices(argc > 2 ? argv[2] : NULL, argc > 3 ? atof(argv[3]) : 440, argc > 4 ? (DWORD)atoi(argv[4]) : 1000);
+        printf("%s\n", bad ? "FAILED" : "XAudio2 devices passed");
+        return bad != 0;
+    }
     double hz = argc > 1 ? atof(argv[1]) : 440;
     DWORD ms = argc > 2 ? (DWORD)atoi(argv[2]) : 1000;
     g_done = CreateEventW(0, FALSE, FALSE, 0);
