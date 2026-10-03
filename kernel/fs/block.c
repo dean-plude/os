@@ -17,3 +17,15 @@ void BlockRegister(BlockDev *d)
 
 int BlockCount(void) { return g_ndevs; }
 BlockDev *BlockGet(int i) { return i >= 0 && i < g_ndevs ? g_devs[i] : NULL; }
+
+void BlockUnregister(BlockDev *d)
+{
+    d->gone = true;
+    for (int i = 0; i < g_ndevs; i++) {
+        if (g_devs[i] != d) continue;
+        for (int k = i; k + 1 < g_ndevs; k++) g_devs[k] = g_devs[k + 1];
+        g_ndevs--;
+        kprintf("[BLOCK] %s removed\n", d->name);
+        return;
+    }
+}

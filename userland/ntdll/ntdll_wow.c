@@ -24,6 +24,8 @@ void *memset(void *d, int c, size_t n);
 
 typedef unsigned long long U64;
 
+NTSYSAPI NTSTATUS NTAPI RtlMakeSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PSECURITY_DESCRIPTOR rel, PULONG len);
+
 static U64 sysc(ULONG num, U64 *blk)
 {
     ULONG lo, hi;
@@ -58,7 +60,7 @@ typedef struct { USHORT Length, MaximumLength; ULONG pad; U64 Buffer; } US64;
 typedef struct { ULONG Length, pad; U64 RootDirectory, ObjectName; ULONG Attributes, pad2; U64 Sd, Sqos; } OA64;
 typedef struct { U64 Status, Information; } IOSB64;
 
-typedef struct { OA64 oa; US64 name; } OAC;
+typedef struct { OA64 oa; US64 name; BYTE sd[512]; } OAC;    /* (sd: a 32-bit absolute descriptor, made self-relative) */
 
 static U64 us_in(US64 *d, const UNICODE_STRING *s)
 {
@@ -77,6 +79,11 @@ static U64 oa_in(OAC *c, const OBJECT_ATTRIBUTES *oa)
     c->oa.ObjectName = us_in(&c->name, oa->ObjectName);
     c->oa.Attributes = oa->Attributes;
     c->oa.Sd = P(oa->SecurityDescriptor);
+    const SECURITY_DESCRIPTOR *sd = oa->SecurityDescriptor;
+    if (sd && !(sd->Control & SE_SELF_RELATIVE)) {            /* the kernel reads x64 layouts: pass it self-relative */
+        ULONG n = sizeof(c->sd);
+        c->oa.Sd = NT_SUCCESS(RtlMakeSelfRelativeSD((PSECURITY_DESCRIPTOR)sd, c->sd, &n)) ? P(c->sd) : 0;
+    }
     c->oa.Sqos = P(oa->SecurityQualityOfService);
     return P(&c->oa);
 }
@@ -223,6 +230,23 @@ static void record_to64(BYTE *x, const EXCEPTION_RECORD *r)
  * Files
  * ----------------------------------------------------------------------- */
 NTSTATUS NTAPI NtClose(HANDLE h) { return SC(NtClose, H(h)); }
+
+NTSYSAPI NTSTATUS NTAPI NtQuerySecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd, ULONG len, PULONG need)
+{
+    return SC(NtQuerySecurityObject, H(h), U(info), P(sd), U(len), P(need));
+}
+
+NTSYSAPI NTSTATUS NTAPI NtSetSecurityObject(HANDLE h, ULONG info, PSECURITY_DESCRIPTOR sd)
+{
+    BYTE rel[1024];
+    if (sd && !(((SECURITY_DESCRIPTOR *)sd)->Control & SE_SELF_RELATIVE)) {   /* (32-bit absolute: x64's differs) */
+        ULONG n = sizeof(rel);
+        NTSTATUS s = RtlMakeSelfRelativeSD(sd, rel, &n);
+        if (!NT_SUCCESS(s)) return s;
+        sd = rel;
+    }
+    return SC(NtSetSecurityObject, H(h), U(info), P(sd));
+}
 
 NTSTATUS NTAPI NtCreateFile(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, PIO_STATUS_BLOCK io,
                             PLARGE_INTEGER alloc, ULONG attrs, ULONG share, ULONG disposition,
@@ -762,7 +786,20 @@ NTSTATUS NTAPI NtSetSystemPowerState(ULONG action, ULONG min_state, ULONG flags)
 NTSTATUS NTAPI NtInitiatePowerAction(ULONG action, ULONG min_state, ULONG flags, BOOLEAN async)
 { return SC(NtInitiatePowerAction, U(action), U(min_state), U(flags), U(async)); }
 NTSTATUS NTAPI NtPowerInformation(ULONG level, PVOID in, ULONG inlen, PVOID out, ULONG outlen)
-{ return SC(NtPowerInformation, U(level), P(in), U(inlen), P(out), U(outlen)); }
+{
+    if (level == 12) {                       /* THERMAL_INFORMATION: KAFFINITY is 4 bytes here */
+        ULONG t[22];                         /* the 64-bit layout */
+        NTSTATUS st = SC(NtPowerInformation, U(level), P(in), U(inlen), P(t), U(sizeof(t)));
+        if (st < 0) return st;
+        if (!out || outlen < 76) return (NTSTATUS)0xC0000023L;
+        ULONG *o = out;
+        o[0] = t[0]; o[1] = t[1]; o[2] = t[2];           /* stamp, constants */
+        o[3] = t[4];                                     /* processors */
+        memcpy(o + 4, t + 6, 76 - 16);                   /* period, temperatures, active trip points */
+        return st;
+    }
+    return SC(NtPowerInformation, U(level), P(in), U(inlen), P(out), U(outlen));
+}
 
 NTSTATUS NTAPI NtSetValueKey(HANDLE key, PUNICODE_STRING name, ULONG title, ULONG type, PVOID data, ULONG size)
 {
@@ -837,11 +874,11 @@ NTSTATUS NTAPI NtNovaDebugPrint(const char *s, ULONG len) { return SC(NtNovaDebu
 NTSTATUS NTAPI NtNovaGetRandom(void *buf, ULONG len)      { return SC(NtNovaGetRandom, P(buf), U(len)); }
 
 /* sockets: handles are small numbers; results are counts or -errno */
-INT_PTR  NTAPI NtNovaSocket(ULONG type)                          { return SCP(NtNovaSocket, U(type)); }
-LONG_PTR NTAPI NtNovaSockConnect(INT_PTR h, ULONG ip, USHORT port) { return SCP(NtNovaSockConnect, S(h), U(ip), U(port)); }
+INT_PTR  NTAPI NtNovaSocket(ULONG type, ULONG family)            { return SCP(NtNovaSocket, U(type), U(family)); }
+LONG_PTR NTAPI NtNovaSockConnect(INT_PTR h, const void *sa, ULONG len) { return SCP(NtNovaSockConnect, S(h), P(sa), U(len)); }
 LONG_PTR NTAPI NtNovaSockSend(INT_PTR h, const void *buf, ULONG len) { return SCP(NtNovaSockSend, S(h), P(buf), U(len)); }
 LONG_PTR NTAPI NtNovaSockRecv(INT_PTR h, void *buf, ULONG len)   { return SCP(NtNovaSockRecv, S(h), P(buf), U(len)); }
-LONG_PTR NTAPI NtNovaSockBind(INT_PTR h, ULONG ip, USHORT port)  { return SCP(NtNovaSockBind, S(h), U(ip), U(port)); }
+LONG_PTR NTAPI NtNovaSockBind(INT_PTR h, const void *sa, ULONG len) { return SCP(NtNovaSockBind, S(h), P(sa), U(len)); }
 LONG_PTR NTAPI NtNovaSockListen(INT_PTR h, ULONG backlog)        { return SCP(NtNovaSockListen, S(h), U(backlog)); }
 INT_PTR  NTAPI NtNovaSockAccept(INT_PTR h, void *addr)           { return SCP(NtNovaSockAccept, S(h), P(addr)); }
 LONG_PTR NTAPI NtNovaSockCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out)
@@ -856,7 +893,7 @@ LONG_PTR NTAPI NtNovaSockRecvFrom(INT_PTR h, void *buf, ULONG len, void *addr)
 {
     return SCP(NtNovaSockRecvFrom, S(h), P(buf), U(len), P(addr));
 }
-LONG_PTR NTAPI NtNovaResolve(const char *name, ULONG *ip)        { return SCP(NtNovaResolve, P(name), P(ip)); }
+LONG_PTR NTAPI NtNovaResolve(const char *name, void *sa, ULONG max, ULONG family) { return SCP(NtNovaResolve, P(name), P(sa), U(max), U(family)); }
 INT_PTR  NTAPI NtNovaAudioOpen(ULONG frames)                      { return SCP(NtNovaAudioOpen, U(frames)); }
 LONG_PTR NTAPI NtNovaAudioWrite(INT_PTR h, const void *frames, ULONG n) { return SCP(NtNovaAudioWrite, S(h), P(frames), U(n)); }
 LONG_PTR NTAPI NtNovaAudioCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out)
@@ -942,10 +979,6 @@ NTSYSAPI NTSTATUS NTAPI NtAccessCheck(PVOID sd, HANDLE t, ACCESS_MASK want, PVOI
 {
     return SC(NtAccessCheck, P(sd), H(t), U(want), P(map), P(privs), P(privs_len), P(granted), P(status));
 }
-NTSYSAPI NTSTATUS NTAPI NtQuerySecurityObject(HANDLE h, ULONG info, PVOID sd, ULONG len, PULONG ret)
-{
-    return SC(NtQuerySecurityObject, H(h), U(info), P(sd), U(len), P(ret));
-}
 /* (the kernel writes a synchronous call's 32-bit IO_STATUS_BLOCK itself) */
 NTSYSAPI NTSTATUS NTAPI NtNotifyChangeKey(HANDLE key, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG filter,
                                           BOOLEAN tree, PVOID buf, ULONG len, BOOLEAN async)
@@ -953,9 +986,5 @@ NTSYSAPI NTSTATUS NTAPI NtNotifyChangeKey(HANDLE key, HANDLE ev, PVOID apc, PVOI
     return SC(NtNotifyChangeKey, H(key), H(ev), P(apc), P(ctx), P(io), U(filter), U(tree), P(buf), U(len), U(async));
 }
 NTSYSAPI NTSTATUS NTAPI NtImpersonateAnonymousToken(HANDLE th) { return SC(NtImpersonateAnonymousToken, H(th)); }
-NTSYSAPI NTSTATUS NTAPI NtSetSecurityObject(HANDLE h, ULONG info, PVOID sd)
-{
-    return SC(NtSetSecurityObject, H(h), U(info), P(sd));
-}
 
 #endif /* !_WIN64 */

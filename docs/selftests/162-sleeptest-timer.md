@@ -1,0 +1,1 @@
+| `sleeptest timer` | How late `Sleep(1)`, `Sleep(5)` and a 1 ms wait timeout end, idle and with a busy thread on every CPU; passes when the 95th percentile under load is 1 ms or less and none ends early.  Plain `sleeptest` sleeps (S3) instead |

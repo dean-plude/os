@@ -1,7 +1,8 @@
 /*
  * powrprof.dll — power management.  NovaOS runs every processor at one
- * fixed speed, with the "Balanced" scheme active; battery readings come
- * from the kernel (NtPowerInformation).
+ * fixed speed, with the "Balanced" scheme active; batteries, the lid,
+ * thermal zones and the last sleep and wake come from the kernel
+ * (NtPowerInformation).
  */
 #include <windows.h>
 #include <winternl.h>
@@ -39,6 +40,10 @@ POWRPROF LONG WINAPI CallNtPowerInformation(int level, PVOID in, ULONG inlen, PV
     case 5:                                          /* SystemBatteryState: the ACPI batteries */
         if (!out || outlen < sizeof(BATTERY_STATE_)) return STATUS_BUFFER_TOO_SMALL_;
         return NtPowerInformation(5, in, inlen, out, outlen);
+    case 4:                                          /* SystemPowerCapabilities */
+    case 12:                                         /* ThermalInformation */
+    case 14: case 15:                                /* LastWakeTime, LastSleepTime */
+        return NtPowerInformation(level, in, inlen, out, outlen);
     default:
         if (out && outlen) ZeroMemory(out, outlen);
         return out ? STATUS_SUCCESS_ : STATUS_INVALID_PARAMETER_;
@@ -64,17 +69,14 @@ POWRPROF DWORD WINAPI PowerReadDCValueIndex(HKEY root, const GUID *s, const GUID
 POWRPROF DWORD WINAPI PowerRegisterSuspendResumeNotification(DWORD flags, HANDLE recipient, PVOID *h)
 { (void)flags; (void)recipient; *h = (PVOID)(ULONG_PTR)0x5E01; return ERROR_SUCCESS; }
 POWRPROF DWORD WINAPI PowerUnregisterSuspendResumeNotification(PVOID h) { (void)h; return ERROR_SUCCESS; }
-/* SYSTEM_POWER_CAPABILITIES: a power button, S3, S5 and the batteries */
+/* SYSTEM_POWER_CAPABILITIES: a power button, the lid, S3, S5, thermal
+ * control and the batteries, as the kernel finds them */
 POWRPROF BOOLEAN WINAPI GetPwrCapabilities(PVOID caps)
 {
-    BOOLEAN *b = caps;
-    BATTERY_STATE_ bs;
-    ZeroMemory(caps, 76);
-    b[0] = TRUE;                          /* PowerButtonPresent */
-    b[5] = TRUE;                          /* SystemS3 */
-    b[7] = TRUE;                          /* SystemS5 */
-    if (NtPowerInformation(5, NULL, 0, &bs, sizeof(bs)) >= 0 && bs.BatteryPresent)
-        b[30] = TRUE;                     /* SystemBatteriesPresent */
+    if (NtPowerInformation(4, NULL, 0, caps, 76) < 0) {
+        SetLastError(ERROR_GEN_FAILURE);
+        return FALSE;
+    }
     return TRUE;
 }
 /* S3 where the firmware offers it (SetSuspendState fails where it doesn't);

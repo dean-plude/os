@@ -285,7 +285,7 @@ static void set_mouse(WND *w, WmMouseMsg msg, int x, int y)
                 (y - py) % (CHIP_H + CHIP_GAP) >= CHIP_H) return;
             DisplayMode m;
             if (!DisplayModeAt(r * cols + col, &m)) return;
-            if (DesktopSetDisplayMode(m.w, m.h)) DisplaySetDefaultMode(m.w, m.h);
+            if (DesktopSetDisplayMode(m.w, m.h)) DesktopSaveDisplayMode(m.w, m.h);
             return;
         }
         /* theme cards (layout matches set_paint + page_personalize) */

@@ -9,7 +9,8 @@
  * two partitions:
  *
  *   1. EFI System Partition, FAT32 "NOVA_EFI", 128 MiB: the boot files
- *   2. Basic data, FAT32 "NOVADATA", the rest: drive C: is saved here
+ *   2. Basic data, NTFS (or FAT32) "NOVADATA", the rest: drive C: is saved
+ *      here (on NTFS with its files' security descriptors)
  *
  * The firmware finds \EFI\BOOT\BOOTX64.EFI on the ESP by itself, so no
  * boot entry needs to be written.
@@ -41,8 +42,9 @@ typedef struct {
 /* The disks NovaOS could be installed on; returns how many (<= max) */
 int SetupListDisks(SetupDisk *out, int max);
 
-/* Start installing on @dev in the background; false if one is running */
-bool SetupStart(BlockDev *dev);
+/* Start installing on @dev in the background, with drive C: on NTFS (or
+ * FAT32); false if one is running */
+bool SetupStart(BlockDev *dev, bool ntfs);
 
 typedef enum { SETUP_IDLE, SETUP_RUNNING, SETUP_DONE, SETUP_FAILED } SetupState;
 typedef struct {

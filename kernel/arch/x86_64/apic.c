@@ -12,16 +12,23 @@
  *    the software-enable bit set.  The spurious vector is set to 0xFF.
  *
  * 3. APIC timer calibration: The APIC timer's frequency is derived from
- *    the internal bus clock.  We calibrate it using the PIT (8254 timer)
- *    as a reference, then configure a periodic interrupt at ~100 Hz.
- *    Without HPET/TSC-invariant support (Phase 3), PIT is the simplest
- *    calibration reference.
+ *    the internal bus clock.  We calibrate it, and the TSC, against the
+ *    HPET's main counter (hpet.c), or the PIT (8254 timer) where there is
+ *    no HPET.
+ *
+ * 4. The timer is one-shot: the scheduler arms it for the next 10 ms tick
+ *    or the earliest timed sleeper on this CPU, whichever comes first
+ *    (apic_timer_arm), so a sleep ends when it is due rather than at the
+ *    next tick.  Where the CPU has it (CPUID.1:ECX[24]) the timer runs in
+ *    TSC-deadline mode, taking the TSC value to fire at; otherwise it
+ *    counts down from a count worked out from the calibration.
  */
 
 #include "apic.h"
 #include "cpu.h"
 #include "idt.h"
 #include "../../hal/serial.h"
+#include "../../hal/hpet.h"
 #include "../../ke/printf.h"
 #include "../../include/types.h"
 
@@ -32,6 +39,7 @@ static volatile uint32_t *lapic_base;
 /* Timer count for 10 ms, and TSC ticks per 10 ms, measured on the boot CPU */
 static uint32_t g_timer_10ms;
 uint64_t g_tsc_per_tick;
+static bool g_tsc_deadline;           /* the timer runs in TSC-deadline mode */
 
 /* -----------------------------------------------------------------------
  * LAPIC register access
@@ -142,6 +150,50 @@ static uint32_t calibrate_apic_timer(void)
     return ticks_in_10ms;
 }
 
+/* The same against the HPET: 10 ms of its main counter */
+static uint32_t calibrate_apic_timer_hpet(void)
+{
+    uint64_t n = HpetFrequency() / 100;
+    lapic_write(LAPIC_TIMER_DIV,  LAPIC_TIMER_DIV_16);
+    uint64_t h0 = HpetCounter();
+    lapic_write(LAPIC_TIMER_INIT, 0xFFFFFFFF);
+    uint64_t tsc0 = rdtsc();
+    while (((HpetCounter() - h0) & 0xFFFFFFFFull) < n) pause_cpu();
+    g_tsc_per_tick = rdtsc() - tsc0;
+    uint32_t ticks_in_10ms = 0xFFFFFFFF - lapic_read(LAPIC_TIMER_CURR);
+    lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED);
+    lapic_write(LAPIC_TIMER_INIT, 0);
+    return ticks_in_10ms;
+}
+
+/* -----------------------------------------------------------------------
+ * The timer: one-shot or TSC-deadline, armed for a TSC value
+ * ----------------------------------------------------------------------- */
+void apic_timer_arm(uint64_t tsc)
+{
+    if (g_tsc_deadline) {
+        wrmsr(MSR_IA32_TSC_DEADLINE, tsc ? tsc : 1);   /* (0 would disarm it; a past value fires at once) */
+        return;
+    }
+    uint64_t now = rdtsc(), d = tsc > now ? tsc - now : 0;
+    if (d > g_tsc_per_tick * 100) d = g_tsc_per_tick * 100;   /* at most a second ahead */
+    uint64_t count = g_tsc_per_tick ? d * g_timer_10ms / g_tsc_per_tick : g_timer_10ms;
+    if (count < 1) count = 1;
+    if (count > 0xFFFFFFFFull) count = 0xFFFFFFFFull;
+    lapic_write(LAPIC_TIMER_INIT, (uint32_t)count);
+}
+
+/* Set this CPU's timer going: the first tick 10 ms from now */
+static void timer_start(void)
+{
+    lapic_write(LAPIC_TIMER_DIV, LAPIC_TIMER_DIV_16);
+    lapic_write(LAPIC_LVT_TIMER, (g_tsc_deadline ? LAPIC_TIMER_TSC_DL : LAPIC_TIMER_ONESHOT) | IRQ_TIMER);
+    if (g_tsc_deadline) __asm__ volatile ("mfence" ::: "memory");   /* (the mode before the MSR, SDM 10.5.4.1) */
+    apic_timer_arm(rdtsc() + g_tsc_per_tick);
+}
+
+bool apic_timer_tsc_deadline(void) { return g_tsc_deadline; }
+
 /* -----------------------------------------------------------------------
  * apic_init
  * ----------------------------------------------------------------------- */
@@ -177,25 +229,26 @@ void apic_init(void)
             ((apic_ver >> 16) & 0xFF) + 1,
             lapic_read(LAPIC_ID) >> 24);
 
-    /* 7. Calibrate APIC timer against PIT */
-    uint32_t ticks_10ms = calibrate_apic_timer();
+    /* 7. Calibrate the APIC timer and the TSC against the HPET, or the PIT */
+    bool hpet = HpetPresent();
+    uint32_t ticks_10ms = hpet ? calibrate_apic_timer_hpet() : calibrate_apic_timer();
     uint32_t ticks_per_sec = ticks_10ms * 100;
-    kprintf("[APIC] Timer: %u ticks/10ms = ~%u Hz (div/16)\n",
-            ticks_10ms, ticks_per_sec);
+    kprintf("[APIC] Timer: %u ticks/10ms = ~%u Hz (div/16), calibrated against the %s\n",
+            ticks_10ms, ticks_per_sec, hpet ? "HPET" : "PIT");
 
-    /* 8. Set up the APIC timer for periodic interrupts at 100 Hz
-     *    (10ms period = scheduler tick rate for Phase 1) */
+    /* 8. Start the timer: TSC-deadline mode where the CPU has it, else
+     *    one-shot; the scheduler re-arms it at each interrupt */
     g_timer_10ms = ticks_10ms;
-    lapic_write(LAPIC_TIMER_DIV,  LAPIC_TIMER_DIV_16);
-    lapic_write(LAPIC_LVT_TIMER,  LAPIC_TIMER_PERIODIC | IRQ_TIMER);
-    lapic_write(LAPIC_TIMER_INIT, ticks_10ms);
+    g_tsc_deadline = (cpuid(1, 0).ecx >> 24) & 1;
+    timer_start();
 
-    kprintf("[APIC] Periodic timer started at 100 Hz (vector 0x%x), TSC %llu per 10 ms\n",
-            IRQ_TIMER, (unsigned long long)g_tsc_per_tick);
+    kprintf("[APIC] %s timer started (vector 0x%x), TSC %llu per 10 ms\n",
+            g_tsc_deadline ? "TSC-deadline" : "One-shot", IRQ_TIMER,
+            (unsigned long long)g_tsc_per_tick);
 }
 
 /* -----------------------------------------------------------------------
- * apic_init_ap — enable the calling CPU's LAPIC and its 100 Hz timer
+ * apic_init_ap — enable the calling CPU's LAPIC and its timer
  * (the other CPUs reuse the boot CPU's calibration)
  * ----------------------------------------------------------------------- */
 /* After S3: the firmware set the legacy PIC up again; mask it (no
@@ -211,9 +264,7 @@ void apic_init_ap(void)
     lapic_write(LAPIC_TPR, 0);
     lapic_write(LAPIC_ESR, 0);
     lapic_write(LAPIC_ESR, 0);
-    lapic_write(LAPIC_TIMER_DIV,  LAPIC_TIMER_DIV_16);
-    lapic_write(LAPIC_LVT_TIMER,  LAPIC_TIMER_PERIODIC | IRQ_TIMER);
-    lapic_write(LAPIC_TIMER_INIT, g_timer_10ms);
+    timer_start();
 }
 
 /* -----------------------------------------------------------------------

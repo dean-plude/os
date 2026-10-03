@@ -33,6 +33,7 @@
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
 #include "../hal/acpi.h"
+#include "../hal/aml.h"
 #include "../ke/sleep.h"
 #include "../arch/x86_64/cpu.h"
 #include "../apps/apps.h"
@@ -479,13 +480,22 @@ bool DesktopPowerRequest(int what)
     return g_slept;
 }
 
-/* The desktop loop: a pending request, or the power button (which shuts
- * down, as Windows does by default) */
+/* The desktop loop: a pending request, the power button (which shuts
+ * down, as Windows does by default), closing the lid (which sleeps) or a
+ * thermal zone that got too hot (sleep at _HOT, shut down at _CRT) */
 static void power_poll(void)
 {
     if (AcpiPowerButtonPressed()) {
         kprintf("[SHELL] Power button pressed\n");
         power_shutdown();
+    }
+    int heat = AmlThermalRequest();
+    if (heat == AML_THERMAL_SHUTDOWN) power_shutdown();
+    if (AmlLidClosedEvent() && SleepSupported()) {
+        kprintf("[SHELL] Lid closed: sleeping\n");
+        g_slept = power_sleep();
+    } else if (heat == AML_THERMAL_SLEEP && SleepSupported()) {
+        g_slept = power_sleep();
     }
     int req = __atomic_exchange_n(&g_power_req, POWER_NONE, __ATOMIC_ACQ_REL);
     if (req == POWER_RESTART) power_restart();
@@ -1244,6 +1254,34 @@ void DesktopInitialize(void)
 
 bool DesktopAvailable(void) { return g_ready; }
 
+#define VIDEO_KEY "Machine\\SYSTEM\\CurrentControlSet\\Control\\Video\\{NovaOS-Display}\\0000"
+
+void DesktopSaveDisplayMode(int w, int h)
+{
+    DisplaySetDefaultMode(w, h);
+    um_registry_set_dword(VIDEO_KEY, "DefaultSettings.XResolution", (UINT32)w);
+    um_registry_set_dword(VIDEO_KEY, "DefaultSettings.YResolution", (UINT32)h);
+    um_registry_set_dword(VIDEO_KEY, "DefaultSettings.BitsPerPel", 32);
+}
+
+void DesktopRestoreDisplayMode(void)
+{
+    UINT32 w, h;
+    if (!um_registry_get_dword(VIDEO_KEY, "DefaultSettings.XResolution", &w) ||
+        !um_registry_get_dword(VIDEO_KEY, "DefaultSettings.YResolution", &h))
+        return;
+    DisplayMode cur = DisplayCurrentMode();
+    if (cur.w == (int)w && cur.h == (int)h) { DisplaySetDefaultMode(cur.w, cur.h); return; }
+    if (!DisplayModeSupported((int)w, (int)h)) {
+        kprintf("[DISPLAY] The saved mode %ux%u is not available on this adapter\n", w, h);
+        return;
+    }
+    if (DisplaySetMode((int)w, (int)h)) {
+        DisplaySetDefaultMode((int)w, (int)h);
+        kprintf("[DISPLAY] Restored the saved mode %ux%u\n", w, h);
+    }
+}
+
 bool DesktopSetDisplayMode(int w, int h)
 {
     if (!g_ready) return false;
@@ -1654,7 +1692,11 @@ void DesktopRun(void *arg)
         if (files) FsLock();                    /* (a click may open a file) */
         for (; input; input = InputPoll(&ev)) {
             if (ev.type == INPUT_MOUSE) {
-                if (ev.dx || ev.dy) {
+                if (ev.absolute) {
+                    WmCursorMoveAbs(ev.dx, ev.dy);
+                    WmMouseMove(WmCursorX(), WmCursorY());
+                    desktop_hover(WmCursorX(), WmCursorY());
+                } else if (ev.dx || ev.dy) {
                     WmCursorMoveBy(ev.dx, ev.dy);
                     WmMouseMove(WmCursorX(), WmCursorY());
                     desktop_hover(WmCursorX(), WmCursorY());
