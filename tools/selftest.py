@@ -11,7 +11,8 @@ order; --list prints them):
             deliberate kernel fault must print a symbolized backtrace)
   graphics  on two monitors (a QEMU secondary-vga is the second; montest),
             installs "Mesa 3D" and "DXVK" with the App Store, then runs
-            tools/gltest and tools/d3dtest, 64- and 32-bit.  Needs --gfx DIR,
+            tools/gltest and tools/d3dtest, 64- and 32-bit, and NetSurf
+            on a page with an SVG and a script (nstest).  Needs --gfx DIR,
             made by tools/ci/stage-graphics.sh: 7-Zip, the two downloads and
             the four test programs
   network   two boots with a virtio-net adapter (tests/selftest/network4
@@ -24,8 +25,9 @@ order; --list prints them):
             (tests/selftest/devices/NAME/): "touch", a virtio multi-touch
             screen (touchtest); "usbaudio", USB speakers on xHCI, OHCI and
             UHCI and no HD Audio card (soundtest; each speaker's WAV must
-            hold its tones); "usbheadset", a high-speed USB headset on EHCI
-            and USB microphones plugged into xHCI, OHCI and UHCI, each
+            hold its tones); "usbheadset", a high-speed USB headset on EHCI,
+            USB microphones plugged into xHCI, OHCI and UHCI and a
+            high-speed USB Audio 2.0 headset plugged into xHCI, each
             tools/usbredirpeer.py behind a QEMU usb-redir device (soundtest
             tone, record and capture); "monitors", one virtio-vga card with
             three outputs, whose monitors the test plugs in and unplugs
@@ -253,10 +255,13 @@ def usbheadset_boot(work):
     its speaker writes headset.wav in the work directory, its microphone
     hears REC_HZ) on an EHCI controller, and an xHCI, an OHCI and a UHCI
     controller for the full-speed microphones the tests plug in (ports
-    10701-10703; tests/selftest/devices/usbheadset)"""
+    10701-10703), and a high-speed USB Audio 2.0 headset the tests plug
+    into the xHCI controller (port 10704: its speaker writes uac2.wav, its
+    microphone hears 988 Hz; tests/selftest/devices/usbheadset)"""
     procs = [peer(work, 10700, '--speaker', os.path.join(work, 'headset.wav'), '--mic', str(REC_HZ))]
     for n, hz in ((1, 784), (2, 659), (3, 880)):
         procs.append(peer(work, 10700 + n, '--speed', 'full', '--mic', str(hz)))
+    procs.append(peer(work, 10704, '--uac2', '--speaker', os.path.join(work, 'uac2.wav'), '--mic', '988'))
     return ['-chardev', 'socket,id=headset,host=127.0.0.1,port=10700', '-device', 'usb-ehci,id=ehci',
             '-device', 'usb-redir,id=headset,chardev=headset,bus=ehci.0', '-device', 'qemu-xhci,id=xhci',
             '-device', 'pci-ohci,id=ohci', '-device', 'piix3-usb-uhci,id=uhci'], procs
@@ -371,7 +376,7 @@ def main():
             finally:
                 for p in procs:
                     p.kill()
-                for log in ['h2server.log', 'v6peer.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10704)]:
+                for log in ['h2server.log', 'v6peer.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10705)]:
                     if os.path.exists(os.path.join(work, log)):
                         shutil.copy(os.path.join(work, log), a.out)
                 shutil.rmtree(work, ignore_errors=True)

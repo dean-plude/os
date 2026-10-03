@@ -137,6 +137,18 @@ static void svg_reformat(struct content *c, int width, int height)
 	if (width != svg->current_width || height != svg->current_height) {
 		source_data = content__get_source_data(c, &source_size);
 
+#ifdef _NOVAOS
+		/* NovaOS: svgtiny_parse adds the shapes to the diagram's,
+		 * so parse into an empty one (a window resize would
+		 * otherwise draw every shape once more each time) */
+		{
+			struct svgtiny_diagram *fresh = svgtiny_create();
+			if (fresh != NULL) {
+				svgtiny_free(svg->diagram);
+				svg->diagram = fresh;
+			}
+		}
+#endif
 		svgtiny_parse(svg->diagram,
 			      (const char *)source_data,
 			      source_size,

@@ -59,4 +59,13 @@ css_error named_ancestor_node(void *pw, void *node,
 
 css_error node_is_visited(void *pw, void *node, bool *match);
 
+#ifdef _NOVAOS
+/**
+ * Drop what libcss cached on a node from the last selection (NovaOS: the
+ * box tree is rebuilt after a script changed the DOM, so every node's
+ * style is selected again)
+ */
+void nscss_forget_node_data(struct dom_node *n);
+#endif
+
 #endif

@@ -242,7 +242,9 @@ USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
 plain `usb-ehci`).  The newest sound output plays, and the newest input
 records.  QEMU has no USB microphone and no high-speed audio device:
 `tools/usbredirpeer.py` is one (a USB Audio Class 1 headset or microphone
-behind a `usb-redir` device), e.g. a high-speed headset on EHCI whose
+behind a `usb-redir` device, or with `--uac2` a USB Audio Class 2.0 one:
+a programmable clock behind a clock selector, 24-bit samples and, at
+high speed, a packet every microframe), e.g. a high-speed headset on EHCI whose
 microphone hears 523 Hz:
 
 ```bash
@@ -362,11 +364,10 @@ python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 `tools/novarun.py` (and so `tools/selftest.py`) starts QEMU with `-accel kvm`
 when `/dev/kvm` is readable and writable, and with TCG otherwise.  Set
 `NOVARUN_ACCEL=tcg` or `NOVARUN_ACCEL=kvm` to force one.  The CPU model stays
-`qemu64` with the same feature flags under both.  CI pins every job to TCG
-(`NOVARUN_ACCEL=tcg`).  Under KVM the kernel boots and the network, device and
-graphics suites pass, and the core suite passes except `sleeptest timer`,
-where a few timed waits end up to 10 ms late (history entry "Kernel under
-KVM").  Switching CI to KVM waits for that.
+`qemu64` with the same feature flags under both.  CI runs the test VMs under
+KVM: each job's `tools/ci/enable-kvm.sh` step opens `/dev/kvm` to the runner
+user and sets `NOVARUN_ACCEL=kvm`, or sets `tcg` with a warning when the runner
+has no usable `/dev/kvm` (history entry "Kernel under KVM" has the timings).
 
 The graphics suite downloads 7-Zip, Mesa and DXVK and builds
 gltest/d3dtest/d2dtest/dwtest:
@@ -403,7 +404,12 @@ alone, and `soundtest record` and `capture` must record the microphone's
 tone.  The test then plugs full-speed USB microphones (more
 `usbredirpeer.py`s, each hearing its own tone) into an xHCI, an OHCI and
 a UHCI controller, records after each (the newest microphone must be
-heard), unplugs the UHCI one and records the OHCI one again.  Last, one
+heard), unplugs the UHCI one and records the OHCI one again.  Then it
+plugs a high-speed USB Audio 2.0 headset (`usbredirpeer.py --uac2`,
+writing `uac2.wav`, its microphone hearing 988 Hz) into the xHCI
+controller: `soundtest tone` must sound in `uac2.wav` alone, `soundtest
+record` and `capture` must hear 988 Hz, and once it is unplugged
+recording must go back to the OHCI microphone.  Last, one
 `virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
 connects a monitor to the second and third outputs and disconnects them
 again while NovaOS runs, through a VNC server QEMU has on each (an RFB
@@ -441,7 +447,11 @@ of each while it draws.  The graphics boot has a second monitor (a QEMU
 `secondary-vga`): between the installs and `gltest` it runs `montest 2`,
 which checks the monitor calls and layout changes; when it asks, the test
 pushes the pointer across onto the second monitor, and the screenshot is
-one PNG per monitor (`montest.png`, `montest-2.png`).  The network suite (`tests/selftest/network4` and
+one PNG per monitor (`montest.png`, `montest-2.png`).  Then `nstest`
+starts NetSurf on a page with an SVG image: the test checks the image's
+colours on the screen, clicks the page's box (a script changes it) and
+checks the page was redrawn with it changed (`nstest-before.png`,
+`nstest-after.png`), then closes NetSurf with Alt+F4.  The network suite (`tests/selftest/network4` and
 `network6`) boots twice with a virtio-net
 card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 (Winsock over IPv4) and `httptest suite` (winhttp: HTTP/2 by ALPN, large

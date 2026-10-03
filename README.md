@@ -70,8 +70,9 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 - **Apps**: Terminal, File Explorer, Notepad, Settings, Calendar, Photos,
   the **App Store** and **Install NovaOS** (Setup).
 - **Web browser**: NetSurf 3.11, built from source as a Windows program,
-  with HTTPS (TLS 1.3/1.2) and JavaScript, in a window you can resize,
-  maximize or snap (the page is laid out again to fit).
+  with HTTPS (TLS 1.3/1.2), JavaScript (pages a script changes are laid
+  out again) and SVG images, in a window you can resize, maximize or snap
+  (the page is laid out again to fit).
 - **Command line**: the Terminal's own commands (`dir`, `copy`, `ping`,
   `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
