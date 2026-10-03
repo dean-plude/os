@@ -551,28 +551,42 @@ def settle(nova, out, wait=120):
     focus (Firefox takes a while to shut down its processes) never reach
     the Terminal, and the next program's Alt+F4 would close the Terminal
     instead.  A program that keeps the focus (VLC failing to open its file
-    raises an error box that Alt+F4 closes and its --loop opens again)
-    would take every later program's keys too, so when the Terminal does
-    not answer a new one is opened from Start (reopen_terminal) to stop it.
+    raises an error box that Alt+F4 closes and its --loop opens again; VLC
+    hanging as it exits) would take every later program's keys too, so
+    when the Terminal does not answer a second one is opened from Start
+    (reopen_terminal) to stop it, then closed (`exit`) so the first one
+    has the keyboard again and later screenshots show the usual desktop.
+    A program that keeps opening windows (VLC's error box, again on every
+    pass of --loop) can still take the new Terminal's keys: three tries.
     Returns (the log, why the Terminal was not usable or None)."""
     started = set(re.findall(r'\[UM\] Started [^\n]*? \(PID (\d+)\)', out))
     end = time.time() + wait
     while True:
-        ended = set(re.findall(r'\[UM\] [^\n]*? \(PID (\d+)\) exited', out))
+        ended = set(re.findall(r'\[UM\] [^\n]*? \(PID (\d+)\) (?:exited|crashed|terminated)', out))
         if started <= ended or time.time() > end:
             break
         time.sleep(1)
         out += nova.sr.read_new()
-    why = None
+    why, second = None, False
     if started - ended:
         o, ok = nova.run('echo ready', 15)
         out += o
         if not ok:
             why = 'the Terminal did not get the keyboard back after the program ended'
-            out += reopen_terminal(nova)
+            for _ in range(3):                      # (a window the program opens meanwhile takes the keys)
+                out += reopen_terminal(nova)
+                o, ok = nova.run('echo ready', 10)
+                out += o
+                if ok:
+                    break
+            second = ok                             # (only that one is closed again)
     for pid in sorted(started - ended, key=int):
         o, _ = nova.run(f'taskkill /PID {pid}', 15)
         out += o
+    if second:
+        time.sleep(3)                               # (the stopped program's windows go)
+        nova.qmp.type('exit\n')
+        time.sleep(2)
     o, ok = nova.run('echo ready', 15)
     out += o
     if not ok:
@@ -583,10 +597,10 @@ def settle(nova, out, wait=120):
 
 
 def reopen_terminal(nova):
-    """A new Terminal window from Start (the Windows key, then "terminal"),
-    copying its output to the serial port as the first one does
-    (Nova.start); the Windows key reaches Start whichever window has the
-    focus"""
+    """A new Terminal window from Start (the Windows key, then "terminal");
+    the Windows key reaches Start whichever window has the focus.  Copying
+    to the serial port is one switch for every Terminal (Nova.start turned
+    it on), said again here so the new one reports [TERM-DONE]"""
     nova.keys('esc')
     nova.qmp.key('meta_l')
     time.sleep(1)
