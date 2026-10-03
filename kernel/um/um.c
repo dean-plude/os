@@ -774,9 +774,16 @@ static UINT64 find_export(Loader *L, int m, const char *name, UINT32 ordinal, in
         fn[sizeof(fn) - 1] = '\0';
         /* map the target (the loop in load_module binds it; re-entering
          * load_module here would bind modules under a bind in progress and
-         * lose that one's error, leaving it mapped but never committed) */
+         * lose that one's error, leaving it mapped but never committed).
+         * The target is a dependency of the forwarding module: it goes on
+         * the initialization list before it, and ntdll learns of it even
+         * when no module imports it directly (msvcrt forwards the C++
+         * exception entry points to vcruntime140, whose unwind information
+         * every throw needs). */
         int fm = map_module(L, NULL, dll, false);
-        return fm < 0 ? 0 : find_export(L, fm, fn, 0, depth + 1);
+        if (fm < 0) return 0;
+        im->deps[fm / 64] |= UINT64_C(1) << (fm % 64);
+        return find_export(L, fm, fn, 0, depth + 1);
     }
     return im->base + rva;
 }
@@ -1293,6 +1300,8 @@ static int load_module(Loader *L, RamNode *file, const char *name, bool top)
     for (int i = 0; i < p->nmodules; i++)              /* (nmodules grows as DLLs are mapped) */
         if (L->img[i].mapped && !L->img[i].bound && bind_module(L, i) < 0) return -1;
     order_modules(L, m);
+    for (int i = 0; i < p->nmodules; i++)              /* a module nothing lists as a dependency (a */
+        if (L->img[i].mapped) order_modules(L, i);     /* forwarder's target) is still on the list */
     return m;
 }
 

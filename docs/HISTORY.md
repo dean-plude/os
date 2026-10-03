@@ -4240,8 +4240,12 @@ and accepts back, as wxWidgets restores it.
 
 Getting the two to start took more: the kernel's loader holds 1024 modules
 (VLC loads every plugin, about 410), initialises them in dependency order
-with an explicit stack, and the loader lock is a critical section the PEB
-publishes as `LoaderLock` (Crashpad checks whether its thread owns it);
+with an explicit stack (a DLL reached only through another's forwarded
+export counts as that one's dependency, so `vcruntime140`, which `msvcrt`
+forwards the C++ exception entry points to, is on the list `ntdll` reads
+and every throw finds its unwind information), and the loader lock is a
+critical section the PEB publishes as `LoaderLock` (Crashpad checks
+whether its thread owns it);
 `WaitOnAddress` moved to `kernelbase.dll`, where VLC expects not to find it
 in `kernel32`; with no network adapter lwIP still runs for 127.0.0.1 and
 ::1 (Audacity's plugin scanner talks to itself over loopback); `gdiplus`
