@@ -97,7 +97,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
   chooses the output and input and sets each device's volume, kept across
   restarts), Calendar, Photos, the **App Store**, **Install NovaOS**
   (Setup) and **Welcome to NovaOS**, the first-boot setup of an installed
-  system (your name, time zone and the display resolution).
+  system (your name, time zone, keyboard layout and the display resolution).
 - **Web browser**: NetSurf 3.11, built from source as a Windows program,
   with HTTPS (TLS 1.3/1.2), JavaScript (pages a script changes are laid
   out again) and SVG (image files and `<svg>` written inline in a page),
@@ -291,8 +291,8 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 
 After installing, the same command without `-cdrom nova.iso` starts from
 `disk.img`.  The first start from it opens **Welcome to NovaOS**, which
-asks for your name, your time zone and a display resolution before the
-desktop (`start welcome` in the Terminal goes through it again).
+asks for your name, your time zone, your keyboard layout and a display
+resolution before the desktop (`start welcome` in the Terminal goes through it again).
 
 Give the machine 2 GB so downloaded installers fit in drive C: (which lives
 in memory and is saved to disk).  On macOS with Homebrew QEMU, the firmware
@@ -527,7 +527,7 @@ os/
 │   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, HPET, I/O APIC, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
-│   ├── wm/               # Window manager, desktop shell, input, clipboard
+│   ├── wm/               # Window manager, desktop shell, input, keyboard layouts, clipboard
 │   ├── apps/             # Built-in apps: Terminal, Explorer, Notepad, Settings,
 │   │                     #   Calendar, Photos, App Store, Setup
 │   ├── ldr/              # Early PE loader and syscall thunk pages

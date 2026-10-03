@@ -75,10 +75,16 @@ The first time NovaOS starts from the disk it was installed on,
    the page shows the time there now.  The clock, the Terminal's `date`
    and `time`, Calendar and Windows programs show local time from then on,
    with daylight saving time where the zone has it.
-3. **The display resolution.**  Picking one switches to it at once.
+3. **Your keyboard layout**: US, UK, US Dvorak, German, Swiss German,
+   French, Swiss French, Canadian French, Spanish, Italian, Portuguese,
+   Brazilian, Swedish, Finnish, Norwegian or Danish.  Picking one switches
+   to it at once; try it in the box under the list.  AltGr (the right Alt
+   key) types the third character printed on a key, and accent keys (´ ^
+   ¨ on a German keyboard) put their accent on the next letter.
+4. **The display resolution.**  Picking one switches to it at once.
 
-Settings changes the time zone (Time & language) and the resolution
-later, `tzutil /s "NAME"` in the Terminal sets a zone by its Windows name
+Settings changes the time zone and the keyboard layout (Time & language)
+and the resolution later, `tzutil /s "NAME"` in the Terminal sets a zone by its Windows name
 (`tzutil /l` lists them), and `start welcome` goes through all the pages
 again.
 
@@ -128,7 +134,8 @@ Keyboard shortcuts:
 - **Settings** has the System, Display (resolution, scale, several
   monitors), Sound (which speakers and microphone, and their volumes),
   Personalization (wallpaper), Storage, Network, Time & language (the
-  regional format for dates and numbers, and the time zone) and About pages.
+  regional format for dates and numbers, the time zone and the keyboard
+  layout) and About pages.
 - **App Store** downloads and installs open-source Windows programs (see
   below).
 - **Notepad**, **Photos** (pictures and icons), **Calendar**, and

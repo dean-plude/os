@@ -237,6 +237,7 @@ BOOL  post_thread(DWORD tid, UINT msg, WPARAM wp, LPARAM lp);
 int   pump_one(MSG *m, HWND h, UINT mn, UINT mx, UINT flags, int wait, DWORD timeout);
 void  process_sent(void);
 extern BYTE g_keys[256];
+BOOL kbd_set_default(HKL hkl);       /* kbd.c: SPI_SETDEFAULTINPUTLANG */
 extern int g_alt_tap;              /* msg.c: Alt pressed alone so far */
 extern POINT g_cursor;
 void  kill_window_timers(HWND h);

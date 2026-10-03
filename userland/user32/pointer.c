@@ -941,17 +941,6 @@ USERAPI UINT GetRawInputData(HANDLE raw, UINT cmd, LPVOID data, PUINT size, UINT
 /* Every thread can own windows */
 USERAPI BOOL IsGUIThread(BOOL convert) { (void)convert; return TRUE; }
 
-/* Keyboard layouts, ANSI forms: US English only */
-USERAPI BOOL GetKeyboardLayoutNameA(LPSTR name)
-{
-    if (!name) return FALSE;
-    const char *s = "00000409";
-    for (int i = 0; i < 9; i++) name[i] = s[i];
-    return TRUE;
-}
-USERAPI HANDLE LoadKeyboardLayoutA(LPCSTR id, UINT f) { (void)id; (void)f; return (HANDLE)(ULONG_PTR)0x04090409; }
-USERAPI BOOL UnloadKeyboardLayout(HANDLE h) { (void)h; return TRUE; }
-
 /* PrintWindow: ask the window to paint itself into @hdc */
 USERAPI BOOL PrintWindow(HWND h, HDC hdc, UINT flags)
 {

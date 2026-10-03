@@ -183,6 +183,10 @@ needs neither:
   IANA tz database through Python's `zoneinfo` (`pip install tzdata` has
   the old zone names CLDR uses).  Run it again when a country changes its
   rules.
+- **The keyboard layouts** (`userland/include/kbdlayouts.h`, read by the
+  kernel and user32): `tools/gen_keyboards.py` generates them from
+  xkeyboard-config (MIT/X11) through libxkbcommon
+  (`sudo apt install xkb-data libxkbcommon0`).
 
 ### The ISO
 

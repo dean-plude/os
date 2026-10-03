@@ -1921,6 +1921,7 @@ static void paste(Term *t)
         memset(&k, 0, sizeof(k));
         k.pressed = true;
         k.ch = c;
+        k.wch = (UINT8)c;
         term_key(w, &k);
         if (WmWindowById(id) != w) break;          /* "exit" closed it */
     }
@@ -2119,8 +2120,8 @@ static void send_key(Term *t, const KeyEvent *k)
     UmConsole *con = t->job.con;
     UINT32 vk = UmScancodeToVk(k->scancode, k->extended) & 0xFF;
     if (vk == 0x10 || vk == 0x11 || vk == 0x12 || vk == 0x14) return;   /* modifiers alone */
-    if (!vk && !k->ch) return;                          /* (pasted text has characters only) */
-    UINT32 ch = (UINT8)k->ch;
+    if (!vk && !k->wch) return;                         /* (pasted text has characters only) */
+    UINT32 ch = k->wch;                                 /* (in the user's layout: ä, é...) */
     if (ch == '\n') ch = '\r';
     if (vk == 0x1B) ch = 0x1B;
     if (vk == 0x08) ch = 0x08;

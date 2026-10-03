@@ -23,6 +23,7 @@
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
 #include "../ke/timezone.h"
+#include "../wm/kbdlayout.h"
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "../fs/ramfs.h"
@@ -47,7 +48,7 @@
 #define VALUE_NAME_MAX 16383
 #define DATA_MAX       (1024u * 1024u)
 #define HIVE_PATH      "\\Windows\\System32\\config\\REGISTRY.DAT"
-#define USER_SID       "S-1-5-21-1000-2000-3000-1001"
+#define USER_SID       UM_USER_SID
 
 typedef struct RegValue {
     struct RegValue *next;
@@ -81,6 +82,7 @@ static UmLock g_key_lock[KEY_LOCKS];
 static UmLock *key_lock(const RegKey *k) { return &g_key_lock[((uintptr_t)k / 64) % KEY_LOCKS]; }
 static volatile bool g_dirty;
 static UINT64 g_dirty_ticks;
+static volatile UINT32 g_generation;      /* counts changes (um_registry_generation) */
 
 /* -----------------------------------------------------------------------
  * The tree
@@ -111,6 +113,7 @@ static UINT16 *dup16(const UINT16 *s, UINT32 n)
 static void touch(RegKey *k)
 {
     k->wtime = um_now_100ns();
+    g_generation++;
     if (!k->vol) { g_dirty = true; g_dirty_ticks = sched_ticks(); }
 }
 
@@ -332,6 +335,8 @@ void um_registry_add_cpus(UINT32 n)
 
 /* Set a REG_DWORD from the kernel (an installer's registration): @path
  * from the root, e.g. "Machine\\SOFTWARE\\...", the key created if need be */
+UINT32 um_registry_generation(void) { return g_generation; }
+
 void um_registry_set_dword(const char *path, const char *name, UINT32 val)
 {
     um_lock_excl(&g_reg);
@@ -443,6 +448,24 @@ static void time_zones(void)
         TzToTzi(z, &tzi);
         UINT16 nm[3] = { 'T', 'Z', 'I' };
         set_value(k, nm, 3, 3 /* REG_BINARY */, &tzi, sizeof(tzi));
+    }
+}
+
+/* HKLM\SYSTEM\CurrentControlSet\Control\Keyboard Layouts: one key per
+ * layout NovaOS has (wm/kbdlayout.c), volatile like the time zones */
+static void keyboard_layouts(void)
+{
+    for (int i = 0; i < KbdCount(); i++) {
+        char path[128];
+        ksnprintf(path, sizeof(path), "Machine\\SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts\\%s", KbdKlid(i));
+        RegKey *k = kpath(path, true);
+        if (!k) continue;
+        kset_sz(k, "Layout Text", KbdName(i), 1);
+        if (KbdHkl(i) >> 28 == 0xF) {                     /* a variant (Dvorak): its Layout Id */
+            char id[8];
+            ksnprintf(id, sizeof(id), "%04x", (unsigned)((KbdHkl(i) >> 16) & 0x0FFF));
+            kset_sz(k, "Layout Id", id, 1);
+        }
     }
 }
 
@@ -565,6 +588,7 @@ static void defaults(void)
         kset_dword(tz, "DynamicDaylightTimeDisabled", 0);
     }
     time_zones();
+    keyboard_layouts();
     RegKey *nls = kpath("Machine\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage", false);
     if (!has_value(nls, "ACP")) { kset_sz(nls, "ACP", "65001", 1); kset_sz(nls, "OEMCP", "65001", 1); }
     kpath("Machine\\SYSTEM\\CurrentControlSet\\Services", false);
@@ -596,6 +620,9 @@ static void defaults(void)
             kset_sz(intl, "sTimeFormat", "h:mm:ss tt", 1);
             kset_sz(intl, "sCountry", "United States", 1);
         }
+        ksnprintf(p, sizeof(p), "%s\\Keyboard Layout\\Preload", users[i]);
+        RegKey *pre = kpath(p, false);
+        if (!has_value(pre, "1")) kset_sz(pre, "1", "00000409", 1);
         ksnprintf(p, sizeof(p), "%s\\Control Panel\\Desktop", users[i]);
         RegKey *desk = kpath(p, false);
         if (!has_value(desk, "WheelScrollLines")) { kset_sz(desk, "WheelScrollLines", "3", 1); kset_dword(desk, "LogPixels", 96); }
