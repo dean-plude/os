@@ -94,7 +94,7 @@ static void paint(Wnd *w, HDC dc)
     /* text */
     if (bg && !(w->exstyle & WS_EX_TRANSPARENT)) FillRect(dc, &r, bg);
     if (st & SS_SUNKEN) { DrawEdge(dc, &r, BDR_SUNKENOUTER, BF_RECT | BF_ADJUST); }
-    HGDIOBJ of = SelectObject(dc, w->font ? w->font : gui_font());
+    HGDIOBJ of = SelectObject(dc, ctl_font(w));
     SetBkMode(dc, TRANSPARENT);
     if (disabled) SetTextColor(dc, sys_color(COLOR_GRAYTEXT));
     UINT fmt = DT_EXPANDTABS | DT_HIDEPREFIX;

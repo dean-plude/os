@@ -1829,6 +1829,21 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 typedef enum { DPI_AWARENESS_INVALID = -1, DPI_AWARENESS_UNAWARE = 0, DPI_AWARENESS_SYSTEM_AWARE = 1,
                DPI_AWARENESS_PER_MONITOR_AWARE = 2 } DPI_AWARENESS;
 USERAPI UINT GetDpiFromDpiAwarenessContext(HANDLE ctx);
+typedef enum { DPI_HOSTING_BEHAVIOR_INVALID = -1, DPI_HOSTING_BEHAVIOR_DEFAULT = 0, DPI_HOSTING_BEHAVIOR_MIXED = 1 } DPI_HOSTING_BEHAVIOR;
+USERAPI int SetThreadDpiHostingBehavior(int v);
+USERAPI int GetThreadDpiHostingBehavior(void);
+USERAPI int GetWindowDpiHostingBehavior(HWND h);
+#define SPI_GETICONTITLELOGFONT 0x001F
+#define SPI_GETNONCLIENTMETRICS 0x0029
+#define SPI_GETICONMETRICS      0x002D
+typedef struct { UINT cbSize; int iBorderWidth, iScrollWidth, iScrollHeight, iCaptionWidth, iCaptionHeight; LOGFONTW lfCaptionFont;
+                 int iSmCaptionWidth, iSmCaptionHeight; LOGFONTW lfSmCaptionFont; int iMenuWidth, iMenuHeight;
+                 LOGFONTW lfMenuFont, lfStatusFont, lfMessageFont; int iPaddedBorderWidth; } NONCLIENTMETRICSW, *LPNONCLIENTMETRICSW;
+typedef struct { UINT cbSize; int iBorderWidth, iScrollWidth, iScrollHeight, iCaptionWidth, iCaptionHeight; LOGFONTA lfCaptionFont;
+                 int iSmCaptionWidth, iSmCaptionHeight; LOGFONTA lfSmCaptionFont; int iMenuWidth, iMenuHeight;
+                 LOGFONTA lfMenuFont, lfStatusFont, lfMessageFont; int iPaddedBorderWidth; } NONCLIENTMETRICSA, *LPNONCLIENTMETRICSA;
+typedef struct { UINT cbSize; int iHorzSpacing, iVertSpacing, iTitleWrap; LOGFONTW lfFont; } ICONMETRICSW, *LPICONMETRICSW;
+typedef struct { UINT cbSize; int iHorzSpacing, iVertSpacing, iTitleWrap; LOGFONTA lfFont; } ICONMETRICSA, *LPICONMETRICSA;
 USERAPI UINT GetSystemDpiForProcess(HANDLE p);
 typedef HANDLE HMONITOR;
 typedef BOOL (CALLBACK *MONITORENUMPROC)(HMONITOR, HDC, LPRECT, LPARAM);

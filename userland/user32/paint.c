@@ -794,10 +794,11 @@ void nc_paint(Wnd *w)
     HDC dc = wnd_dc(w, 0, 0);
     if (!dc) return;
     RECT r = { 0, 0, ww, wh };
+    int k = dpi_k(w);                                       /* every line k pixels at k times 96 DPI */
     int top_framed = !w->parent && ((w->style & WS_CAPTION) == WS_CAPTION || !(w->style & WS_POPUP)) && !(w->flags & WF_MENU_TRACK);
     if (top_framed) {
-        r.left += w->maximized ? 0 : FRAME_BORDER; r.right -= w->maximized ? 0 : FRAME_BORDER;
-        r.top += FRAME_TITLE; r.bottom -= w->maximized ? 0 : FRAME_BORDER;
+        r.left += w->maximized ? 0 : FRAME_BORDER * k; r.right -= w->maximized ? 0 : FRAME_BORDER * k;
+        r.top += FRAME_TITLE * k; r.bottom -= w->maximized ? 0 : FRAME_BORDER * k;
     } else {
         int b = 0;
         if (w->style & WS_THICKFRAME) b = w->parent ? 3 : 1;
@@ -806,22 +807,22 @@ void nc_paint(Wnd *w)
         if (b) {
             COLORREF c = (w->style & WS_BORDER) && b == 1 && w->parent ? 0x646464 : sys_color(COLOR_3DSHADOW);
             if (!w->parent) c = 0xB0B0B0;
-            for (int i = 0; i < b; i++) {
-                frame_rect(dc, &r, i == 0 ? c : sys_color(COLOR_3DFACE));
+            for (int i = 0; i < b * k; i++) {
+                frame_rect(dc, &r, i < k ? c : sys_color(COLOR_3DFACE));
                 InflateRect(&r, -1, -1);
             }
         }
     }
-    if (w->exstyle & WS_EX_CLIENTEDGE) {
-        frame_rect(dc, &r, 0xA0A0A0);
-        InflateRect(&r, -1, -1);
-        frame_rect(dc, &r, sys_color(COLOR_WINDOW));
-        InflateRect(&r, -1, -1);
-    }
-    if (w->exstyle & WS_EX_STATICEDGE) {
-        frame_rect(dc, &r, sys_color(COLOR_3DSHADOW));
-        InflateRect(&r, -1, -1);
-    }
+    if (w->exstyle & WS_EX_CLIENTEDGE)
+        for (int i = 0; i < 2 * k; i++) {
+            frame_rect(dc, &r, i < k ? 0xA0A0A0 : sys_color(COLOR_WINDOW));
+            InflateRect(&r, -1, -1);
+        }
+    if (w->exstyle & WS_EX_STATICEDGE)
+        for (int i = 0; i < k; i++) {
+            frame_rect(dc, &r, sys_color(COLOR_3DSHADOW));
+            InflateRect(&r, -1, -1);
+        }
     if (!w->parent && w->menu && !(w->style & WS_CHILD)) {
         int mh = menu_bar_height(w, r.right - r.left);
         RECT mb = { r.left, r.top, r.right, r.top + mh };

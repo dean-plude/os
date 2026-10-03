@@ -86,7 +86,7 @@ static int text_w(HWND h, TB *s, const WCHAR *t)
 {
     if (!t || !t[0]) return 0;
     HDC dc = GetDC(h);
-    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font());
+    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
     RECT r = { 0, 0, 0, 0 };
     DrawTextW(dc, t, -1, &r, DT_CALCRECT | DT_SINGLELINE | ((style_of(h) & TBSTYLE_NOPREFIX) ? DT_NOPREFIX : 0));
     SelectObject(dc, of);
@@ -99,7 +99,7 @@ static void base_size(HWND h, TB *s, int *bw, int *bh)
 {
     int iw, ih;
     image_size(s, &iw, &ih);
-    int fh = cc_font_h(s->font);
+    int fh = cc_font_h(s->font ? s->font : cc_font_for(h));
     int text = has_text(s);
     DWORD st = style_of(h);
     if (st & TBSTYLE_LIST) {
@@ -361,7 +361,7 @@ static void paint(HWND h, TB *s, HDC dc)
         cc_fill(dc, &c, GetSysColor(COLOR_BTNFACE));
     }
     if (!(st & CCS_NODIVIDER)) { RECT d = { 0, 0, c.right, 1 }; cc_fill(dc, &d, RGB(225, 225, 225)); }
-    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font());
+    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
     SetBkMode(dc, TRANSPARENT);
     int iw, ih;
     image_size(s, &iw, &ih);

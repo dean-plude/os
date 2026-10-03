@@ -4,7 +4,7 @@
  */
 #include "cc.h"
 
-static HFONT wfont(HWND h, HFONT f) { (void)h; return f ? f : cc_font(); }
+static HFONT wfont(HWND h, HFONT f) { (void)h; return f ? f : cc_font_for(h); }
 
 /* =======================================================================
  * Progress bar
@@ -94,7 +94,7 @@ LRESULT CALLBACK ProgressProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
  * ======================================================================= */
 typedef struct { int n; int right[256]; WCHAR *text[256]; UINT flags[256]; HICON icon[256]; int simple; WCHAR *stext; HFONT font; int minh; } Stat;
 
-static int stat_height(Stat *s) { int fh = cc_font_h(s->font); return MAX(fh + 8, s->minh); }
+static int stat_height(HWND h, Stat *s) { int fh = cc_font_h(s->font ? s->font : cc_font_for(h)); return MAX(fh + 8, s->minh); }
 
 static void stat_layout(HWND h, Stat *s)
 {
@@ -103,7 +103,7 @@ static void stat_layout(HWND h, Stat *s)
     if (!p || (st & CCS_NORESIZE)) return;
     RECT pr;
     GetClientRect(p, &pr);
-    int sh = stat_height(s);
+    int sh = stat_height(h, s);
     if (st & CCS_TOP) SetWindowPos(h, 0, 0, 0, pr.right, sh, SWP_NOZORDER | SWP_NOACTIVATE);
     else SetWindowPos(h, 0, 0, pr.bottom - sh, pr.right, sh, SWP_NOZORDER | SWP_NOACTIVATE);
 }
@@ -558,10 +558,10 @@ static void tab_icon(Tab *t, int *cx, int *cy)
     if (t->il) ImageList_GetIconSize(t->il, cx, cy);
 }
 
-static int tab_row_h(Tab *t)
+static int tab_row_h(HWND h, Tab *t)
 {
     if (t->fixh) return t->fixh;
-    int ix, iy, fh = cc_font_h(t->font);
+    int ix, iy, fh = cc_font_h(t->font ? t->font : cc_font_for(h));
     tab_icon(t, &ix, &iy);
     return (iy > fh ? iy : fh) + 2 * t->pady + 4;
 }
@@ -577,7 +577,7 @@ static void tab_rect(HWND h, Tab *t, int i, RECT *r)
         int w = fixed ? t->fixw : cc_text_w(dc, t->text[k] ? t->text[k] : L"", -1) + 2 * t->padx +
                                     (ix ? ix + t->padx : 0);
         if (!fixed && w < t->minw) w = t->minw;
-        if (k == i) { SetRect(r, x, 2, x + w, 2 + tab_row_h(t)); break; }
+        if (k == i) { SetRect(r, x, 2, x + w, 2 + tab_row_h(h, t)); break; }
         x += w;
     }
     SelectObject(dc, of);
@@ -591,7 +591,7 @@ static void tab_paint(HWND h, Tab *t, HDC dc)
     RECT c; GetClientRect(h, &c);
     HBRUSH bg = (HBRUSH)SendMessageW(GetParent(h), WM_CTLCOLORDLG, (WPARAM)dc, (LPARAM)h);
     if (bg) FillRect(dc, &c, bg); else cc_fill(dc, &c, GetSysColor(COLOR_3DFACE));
-    int rh = tab_row_h(t);
+    int rh = tab_row_h(h, t);
     RECT body = { c.left, c.top + rh + 1, c.right, c.bottom };
     cc_fill(dc, &body, 0xFFFFFF);
     cc_frame(dc, &body, 0xD9D9D9);
@@ -741,7 +741,7 @@ LRESULT CALLBACK TabProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
     case TCM_ADJUSTRECT: {
         RECT *r = (RECT *)lp;
-        int rh = tab_row_h(t) + 2;
+        int rh = tab_row_h(h, t) + 2;
         if (wp) { r->top -= rh; r->left -= 3; r->right += 3; r->bottom += 3; }
         else { r->top += rh + 2; r->left += 3; r->right -= 3; r->bottom -= 3; }
         return 0;
@@ -782,7 +782,7 @@ LRESULT CALLBACK LinkProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (bg) FillRect(dc, &c, bg); else cc_fill(dc, &c, GetSysColor(COLOR_3DFACE));
         WCHAR out[1024];
         link_text(h, out);
-        HGDIOBJ of = SelectObject(dc, cc_font());
+        HGDIOBJ of = SelectObject(dc, cc_font_for(h));
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, 0xCC6600);
         DrawTextW(dc, out, -1, &c, DT_WORDBREAK | DT_NOPREFIX);
@@ -795,7 +795,7 @@ LRESULT CALLBACK LinkProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         WCHAR out[1024];
         link_text(h, out);
         HDC dc = GetDC(h);
-        HGDIOBJ of = SelectObject(dc, cc_font());
+        HGDIOBJ of = SelectObject(dc, cc_font_for(h));
         RECT r = { 0, 0, wp ? (LONG)wp : 1 << 20, 0 };
         DrawTextW(dc, out[0] ? out : L" ", -1, &r, DT_CALCRECT | DT_NOPREFIX | (wp ? DT_WORDBREAK : 0));
         SelectObject(dc, of);
