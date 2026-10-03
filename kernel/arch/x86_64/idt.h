@@ -59,6 +59,7 @@
 #define IRQ_BASE       0x30    /* IRQs start at vector 0x30 (48) */
 #define IRQ_TIMER      (IRQ_BASE + 0)
 #define IRQ_KEYBOARD   (IRQ_BASE + 1)
+#define IRQ_SCI        (IRQ_BASE + 2)    /* the ACPI SCI, through the I/O APIC */
 #define IRQ_SPURIOUS   0xFF
 
 /* NT syscall vector */

@@ -5,14 +5,23 @@
  * changed: a changed file is written whole, a directory whose entries
  * changed has the disk entries it no longer holds deleted, and a moved
  * directory is written out in full.  Starter files the user deletes are
- * listed in \NOVA\DELETED.TXT so they stay deleted after a restart.
+ * listed in a file (\NOVA\DELETED.TXT on FAT, \$NovaOS\Deleted.txt on
+ * NTFS) so they stay deleted after a restart.
+ *
+ * On FAT, C: is the folder \NOVA\C and keeps names, contents, write times
+ * and the read-only, hidden and system attributes.  On NTFS, C: is the
+ * whole volume and also keeps creation times and security descriptors: a
+ * node with its own descriptor gets it in $Secure, one that inherits gets
+ * the root directory's (and reads back as inheriting).
  */
 
 #include "persist.h"
 #include "fat.h"
+#include "ntfs.h"
 #include "ramfs.h"
 #include "block.h"
 #include "../drivers/ahci.h"
+#include "../drivers/nvme.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
@@ -21,16 +30,25 @@
 
 #define DATA_ROOT     "\\NOVA\\C"
 #define DELETED_FILE  "DELETED.TXT"          /* in \NOVA */
+#define NTFS_META     "$NovaOS"              /* NTFS: the root folder that holds it */
+#define NTFS_DELETED  "Deleted.txt"
 #define DATA_LABEL    "NOVADATA"
 
-static FatVol *g_vol;
-static UINT32  g_root_dir;                    /* the cluster of \NOVA\C (created on first save) */
+/* The volume: FAT or NTFS */
+static FatVol  *g_vol;
+static NtfsVol *g_ntfs;
+static BlockDev *g_ntfs_dev;
+static UINT64  g_lba;                         /* where the volume starts */
+static UINT32  g_root_secid;                  /* NTFS: the root's descriptor (what inheriting nodes get) */
+static UINT64  g_root_dir;                    /* \NOVA\C's cluster (FAT), the root (NTFS) */
 static bool    g_root_known;
-static UINT32  g_nova_dir;
+static UINT64  g_nova_dir;                    /* where the deleted-files list is */
 static bool    g_loaded;
 static UINT32  g_saved_changes, g_seen_changes;
 static UINT64  g_seen_tick, g_retry_tick;
 static bool    g_failed;
+
+static bool have_vol(void) { return g_vol || g_ntfs; }
 
 /* ---------------------------------------------------------------------------
  * Deleted starter files
@@ -66,7 +84,7 @@ static void removed_hook(const char *path) { add_removed(path); }
 /* ---------------------------------------------------------------------------
  * Choosing the volume
  * ------------------------------------------------------------------------- */
-typedef struct { FatVol *vol; BlockDev *dev; } Cand;
+typedef struct { FatVol *vol; NtfsVol *ntfs; BlockDev *dev; UINT64 lba; } Cand;
 
 static bool is_zero(const UINT8 *p, int n)
 {
@@ -74,15 +92,32 @@ static bool is_zero(const UINT8 *p, int n)
     return true;
 }
 
+static bool mount_at(BlockDev *d, UINT64 lba, Cand *c)
+{
+    FatVol *v = FatMount(d, lba);
+    if (v) { *c = (Cand){ v, NULL, d, lba }; return true; }
+    NtfsVol *n = NtfsMount(d, lba);
+    if (n) { *c = (Cand){ NULL, n, d, lba }; return true; }
+    return false;
+}
+
+static void cand_free(Cand *c)
+{
+    if (c->vol) FatUnmount(c->vol);
+    if (c->ntfs) NtfsUnmount(c->ntfs);
+}
+
+static const char *cand_label(const Cand *c) { return c->vol ? FatLabel(c->vol) : NtfsLabel(c->ntfs); }
+
+/* The FAT and NTFS volumes on @d (a whole-disk volume, or MBR/GPT partitions) */
 static int find_volumes(BlockDev *d, Cand *out, int max, bool *blank)
 {
     UINT8 *s = kmalloc(2 * BLOCK_SECTOR);
     int n = 0;
     *blank = false;
     if (!s || !d->read(d, 0, 2, s)) { kfree(s); return 0; }
-    FatVol *v = FatMount(d, 0);                                   /* a whole-disk volume */
-    if (v) {
-        out[n++] = (Cand){ v, d };
+    if (mount_at(d, 0, &out[n])) {                                /* a whole-disk volume */
+        n++;
     } else if (is_zero(s, 2 * BLOCK_SECTOR)) {
         *blank = true;
     } else if (s[510] == 0x55 && s[511] == 0xAA) {
@@ -91,7 +126,7 @@ static int find_volumes(BlockDev *d, Cand *out, int max, bool *blank)
             const UINT8 *e = s + 446 + 16 * i;
             UINT32 lba = *(const UINT32 *)(e + 8);
             if (e[4] == 0xEE) gpt = true;
-            else if (e[4] && lba && (v = FatMount(d, lba))) out[n++] = (Cand){ v, d };
+            else if (e[4] && lba && mount_at(d, lba, &out[n])) n++;
         }
         if (gpt && !memcmp(s + BLOCK_SECTOR, "EFI PART", 8)) {
             UINT64 table = *(UINT64 *)(s + BLOCK_SECTOR + 72);
@@ -104,7 +139,7 @@ static int find_volumes(BlockDev *d, Cand *out, int max, bool *blank)
                     const UINT8 *e = ent + (i % per) * esize;
                     if (is_zero(e, 16)) continue;
                     UINT64 first = *(const UINT64 *)(e + 32);
-                    if ((v = FatMount(d, first))) out[n++] = (Cand){ v, d };
+                    if (mount_at(d, first, &out[n])) n++;
                 }
             }
             kfree(ent);
@@ -117,9 +152,25 @@ static int find_volumes(BlockDev *d, Cand *out, int max, bool *blank)
 int PersistFindVolumes(BlockDev *d, FatVol **out, int max, bool *blank)
 {
     Cand c[16];
-    if (max > 16) max = 16;
-    int n = find_volumes(d, c, max, blank);
-    for (int i = 0; i < n; i++) out[i] = c[i].vol;
+    int n = find_volumes(d, c, 16, blank), k = 0;
+    for (int i = 0; i < n; i++) {
+        if (c[i].vol && k < max) { out[k++] = c[i].vol; c[i].vol = NULL; }
+        cand_free(&c[i]);
+    }
+    return k;
+}
+
+int PersistDiskLabels(BlockDev *d, char *out, int cap, bool *blank)
+{
+    Cand c[16];
+    int n = find_volumes(d, c, 16, blank), len = 0;
+    if (cap) out[0] = '\0';
+    for (int i = 0; i < n; i++) {
+        const char *l = cand_label(&c[i]);
+        if (*l && len < cap - 16)
+            len += ksnprintf(out + len, (size_t)(cap - len), "%s%s", len ? ", " : "", l);
+        cand_free(&c[i]);
+    }
     return n;
 }
 
@@ -145,9 +196,20 @@ static FatVol *format_blank(BlockDev *d)
     return FatFormat(d, 2048, size, DATA_LABEL);
 }
 
+/* Take NTFS volume @v for C: (it must be writable) */
+static bool use_ntfs(NtfsVol *v, BlockDev *d)
+{
+    NtfsSetClock(RamfsNow);
+    if (!NtfsEnableWrite(v)) return false;
+    g_ntfs = v;
+    g_ntfs_dev = d;
+    return true;
+}
+
 void PersistInit(void)
 {
     AhciInit();
+    NvmeInit();
     Cand c[16];
     int n = 0;
     BlockDev *blank = NULL;
@@ -158,17 +220,19 @@ void PersistInit(void)
     }
     int pick = -1;
     for (int i = 0; i < n && pick < 0; i++)
-        if (path_eq(FatLabel(c[i].vol), DATA_LABEL)) pick = i;
+        if (path_eq(cand_label(&c[i]), DATA_LABEL) && (c[i].vol || use_ntfs(c[i].ntfs, c[i].dev))) pick = i;
     if (pick < 0 && blank) g_vol = format_blank(blank);
     for (int i = 0; i < n && pick < 0 && !g_vol; i++) {
         FatEntry e;
-        if (FatLookupPath(c[i].vol, "\\EFI\\NOVA\\kernel.elf", &e)) pick = i;
+        if (c[i].vol && FatLookupPath(c[i].vol, "\\EFI\\NOVA\\kernel.elf", &e)) pick = i;
     }
-    if (pick >= 0) g_vol = c[pick].vol;
+    if (pick >= 0 && c[pick].vol) g_vol = c[pick].vol;
+    if (pick >= 0) g_lba = c[pick].lba;
+    else if (g_vol) g_lba = 2048;                                 /* (format_blank's partition) */
     for (int i = 0; i < n; i++)
-        if (i != pick) FatUnmount(c[i].vol);
+        if (i != pick) cand_free(&c[i]);
     RamfsSetRemovedHook(removed_hook);
-    if (g_vol) {
+    if (have_vol()) {
         char d[96];
         PersistDescribe(d, sizeof(d));
         kprintf("[PERSIST] Drive C: is saved to %s\n", d);
@@ -177,19 +241,27 @@ void PersistInit(void)
     }
 }
 
-bool PersistActive(void) { return g_vol != NULL; }
+bool PersistActive(void) { return have_vol(); }
 
-BlockDev *PersistDevice(void) { return g_vol ? FatDevice(g_vol) : NULL; }
+bool PersistOwns(BlockDev *d, UINT64 lba) { return have_vol() && PersistDevice() == d && g_lba == lba; }
+
+BlockDev *PersistDevice(void) { return g_vol ? FatDevice(g_vol) : g_ntfs ? g_ntfs_dev : NULL; }
+
+static void drop_vol(void)
+{
+    if (g_vol) FatUnmount(g_vol);
+    if (g_ntfs) NtfsUnmount(g_ntfs);
+    g_vol = NULL;
+    g_ntfs = NULL;
+    g_ntfs_dev = NULL;
+    g_root_known = false;
+}
 
 void PersistDetach(void)
 {
     DesktopLock();
-    if (g_vol) {
-        kprintf("[PERSIST] Stopped saving to %s\n", FatDevice(g_vol)->name);
-        FatUnmount(g_vol);
-    }
-    g_vol = NULL;
-    g_root_known = false;
+    if (have_vol()) kprintf("[PERSIST] Stopped saving to %s\n", PersistDevice()->name);
+    drop_vol();
     DesktopUnlock();
 }
 
@@ -204,65 +276,227 @@ static void mark_all(RamNode *n)
     }
 }
 
-bool PersistAdopt(FatVol *vol)
+bool PersistAdopt(BlockDev *d, UINT64 lba)
 {
+    Cand c;
+    if (!mount_at(d, lba, &c)) return false;
     DesktopLock();
-    if (g_vol && g_vol != vol) FatUnmount(g_vol);
-    g_vol = vol;
-    g_root_known = false;
+    drop_vol();
+    g_lba = lba;
+    if (c.vol) g_vol = c.vol;
+    else if (!use_ntfs(c.ntfs, d)) { NtfsUnmount(c.ntfs); DesktopUnlock(); return false; }
+    if (g_ntfs) {                                                 /* the new volume's root descriptor goes with it */
+        RamNode *root = RamfsRoot();
+        g_root_secid = NtfsSecurityId(g_ntfs, NTFS_ROOT);
+        UINT8 *sd = kmalloc(4096);
+        UINT32 len;
+        if (!root->sd && sd && g_root_secid && NtfsSecurityById(g_ntfs, g_root_secid, sd, 4096, &len)) {
+            root->sd = sd; root->sdlen = len; sd = NULL;
+        }
+        kfree(sd);
+    }
     g_loaded = true;
     mark_all(RamfsRoot());
     g_removed_dirty = g_removed != NULL;
     DesktopUnlock();
     bool ok = PersistSync();
-    char d[96];
-    PersistDescribe(d, sizeof(d));
-    kprintf("[PERSIST] Drive C: is now saved to %s%s\n", d, ok ? "" : " (the first save failed)");
+    char desc[96];
+    PersistDescribe(desc, sizeof(desc));
+    kprintf("[PERSIST] Drive C: is now saved to %s%s\n", desc, ok ? "" : " (the first save failed)");
     return ok;
 }
 
 bool PersistSpace(UINT64 *free, UINT64 *total)
 {
-    if (!g_vol) return false;
-    *free = FatFreeBytes(g_vol);
-    *total = FatTotalBytes(g_vol);
-    return true;
+    if (g_vol) { *free = FatFreeBytes(g_vol); *total = FatTotalBytes(g_vol); return true; }
+    if (g_ntfs) { *free = NtfsFreeBytes(g_ntfs); *total = NtfsTotalBytes(g_ntfs); return true; }
+    return false;
 }
 
 void PersistWhere(char *buf, int cap)
 {
-    if (!g_vol) { ksnprintf(buf, (size_t)cap, "memory only"); return; }
-    ksnprintf(buf, (size_t)cap, "%s (%s)", FatDevice(g_vol)->name, FatLabel(g_vol));
+    if (!have_vol()) { ksnprintf(buf, (size_t)cap, "memory only"); return; }
+    ksnprintf(buf, (size_t)cap, "%s (%s)", PersistDevice()->name, g_vol ? FatLabel(g_vol) : NtfsLabel(g_ntfs));
 }
 
 void PersistDescribe(char *buf, int cap)
 {
-    if (!g_vol) { ksnprintf(buf, (size_t)cap, "memory only (no disk found)"); return; }
-    ksnprintf(buf, (size_t)cap, "%s FAT%d \"%s\", %u MiB free of %u MiB", FatDevice(g_vol)->name, FatType(g_vol),
-              FatLabel(g_vol), (unsigned)(FatFreeBytes(g_vol) >> 20), (unsigned)(FatTotalBytes(g_vol) >> 20));
+    if (!have_vol()) { ksnprintf(buf, (size_t)cap, "memory only (no disk found)"); return; }
+    UINT64 free, total;
+    PersistSpace(&free, &total);
+    char fs[8];
+    if (g_vol) ksnprintf(fs, sizeof(fs), "FAT%d", FatType(g_vol));
+    else ksnprintf(fs, sizeof(fs), "NTFS");
+    ksnprintf(buf, (size_t)cap, "%s %s \"%s\", %u MiB free of %u MiB", PersistDevice()->name, fs,
+              g_vol ? FatLabel(g_vol) : NtfsLabel(g_ntfs), (unsigned)(free >> 20), (unsigned)(total >> 20));
 }
 
-/* ---------------------------------------------------------------------------
- * Restoring
- * ------------------------------------------------------------------------- */
-typedef struct { FatEntry *e; int n, cap; } EntList;
+static UINT32 filetime_to_dos(UINT64 ft);
 
-static bool collect(const FatEntry *e, void *ctx)
+/* ---------------------------------------------------------------------------
+ * The volume's files, FAT or NTFS
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    char     name[RAMFS_NAME_MAX];
+    bool     dir;
+    UINT64   ref;                    /* FAT: a directory's first cluster; NTFS: the record */
+    UINT64   size, ctime, mtime;
+    UINT32   attrs;
+    FatEntry fe;                     /* FAT: the entry itself */
+} PEnt;
+
+typedef struct { PEnt *e; int n, cap; } EntList;
+
+static PEnt *list_add(EntList *l)
 {
-    EntList *l = ctx;
     if (l->n == l->cap) {
         int cap = l->cap ? l->cap * 2 : 16;
-        FatEntry *ne = kmalloc(sizeof(FatEntry) * (size_t)cap);
-        if (!ne) return false;
-        if (l->n) memcpy(ne, l->e, sizeof(FatEntry) * (size_t)l->n);
+        PEnt *ne = kmalloc(sizeof(PEnt) * (size_t)cap);
+        if (!ne) return NULL;
+        if (l->n) memcpy(ne, l->e, sizeof(PEnt) * (size_t)l->n);
         kfree(l->e);
         l->e = ne;
         l->cap = cap;
     }
-    l->e[l->n++] = *e;
+    PEnt *e = &l->e[l->n++];
+    memset(e, 0, sizeof(*e));
+    return e;
+}
+
+static bool collect_fat(const FatEntry *f, void *ctx)
+{
+    if (strlen(f->name) >= RAMFS_NAME_MAX) return true;           /* never loaded: left be */
+    PEnt *e = list_add(ctx);
+    if (!e) return false;
+    strcpy(e->name, f->name);
+    e->dir = f->dir;
+    e->ref = f->cluster;
+    e->size = f->size;
+    e->ctime = e->mtime = PersistDosToFiletime(f->wtime);
+    e->attrs = f->attr & 0x07;
+    e->fe = *f;
     return true;
 }
 
+static bool collect_ntfs(const NtfsEntry *f, void *ctx)
+{
+    if (strlen(f->name) >= RAMFS_NAME_MAX) return true;
+    PEnt *e = list_add(ctx);
+    if (!e) return false;
+    strcpy(e->name, f->name);
+    e->dir = f->dir;
+    e->ref = f->mft;
+    e->size = f->size;
+    e->ctime = f->ctime;
+    e->mtime = f->mtime;
+    e->attrs = f->attrs & 0x07;
+    return true;
+}
+
+/* Folders at the root of an NTFS C: that are not the user's files: ours,
+ * and what Windows makes on every volume it sees */
+static bool reserved(UINT64 dir, const char *name)
+{
+    return g_ntfs && dir == NTFS_ROOT &&
+           (path_eq(name, NTFS_META) || path_eq(name, "System Volume Information") || path_eq(name, "$RECYCLE.BIN"));
+}
+
+static void vol_list(UINT64 dir, EntList *l)
+{
+    if (g_vol) FatList(g_vol, (UINT32)dir, collect_fat, l);
+    else NtfsList(g_ntfs, dir, collect_ntfs, l);
+    int k = 0;
+    for (int i = 0; i < l->n; i++)
+        if (!reserved(dir, l->e[i].name)) l->e[k++] = l->e[i];
+    l->n = k;
+}
+
+static bool vol_read(const PEnt *e, void *buf)
+{
+    if (g_vol) return FatRead(g_vol, &e->fe, buf);
+    return !e->size || NtfsRead(g_ntfs, e->ref, 0, buf, e->size);
+}
+
+static bool vol_lookup(UINT64 dir, const char *name, UINT64 *ref, bool *is_dir)
+{
+    if (g_vol) {
+        FatEntry e;
+        if (!FatLookup(g_vol, (UINT32)dir, name, &e)) return false;
+        *ref = e.cluster;
+        *is_dir = e.dir;
+        return true;
+    }
+    return NtfsLookup(g_ntfs, dir, name, ref, is_dir);
+}
+
+/* NTFS: give record @ref @n's times, attributes and descriptor */
+static bool ntfs_info(UINT64 ref, const RamNode *n)
+{
+    UINT32 id = g_root_secid;
+    if (n->sd && n != RamfsRoot()) id = NtfsAddSecurity(g_ntfs, n->sd, n->sdlen);
+    bool ok = n == RamfsRoot() || NtfsSetInfo(g_ntfs, ref, n->ctime, n->mtime, n->attrs & 0x07);
+    if (id) ok = NtfsSetSecurityId(g_ntfs, ref, id) && ok;
+    else if (n->sd) ok = false;
+    return ok;
+}
+
+static bool vol_mkdir(UINT64 dir, const RamNode *n, UINT64 *sub)
+{
+    if (g_vol) {
+        UINT32 c;
+        if (!FatMkdir(g_vol, (UINT32)dir, n->name, &c)) return false;
+        *sub = c;
+        return true;
+    }
+    return NtfsCreate(g_ntfs, dir, n->name, true, sub);
+}
+
+static bool vol_write(UINT64 dir, const RamNode *n)
+{
+    if (g_vol) {
+        FatSetStamp(filetime_to_dos(n->mtime));
+        bool ok = FatWriteFile(g_vol, (UINT32)dir, n->name, n->data, n->size);
+        FatSetStamp(0);
+        return ok;
+    }
+    UINT64 ref;
+    bool is_dir;
+    if (!NtfsLookup(g_ntfs, dir, n->name, &ref, &is_dir)) {
+        if (!NtfsCreate(g_ntfs, dir, n->name, false, &ref)) return false;
+    } else if (is_dir) return false;
+    return NtfsWriteFile(g_ntfs, ref, n->data, n->size) && ntfs_info(ref, n);
+}
+
+/* Delete @e from @dir: a directory with everything in it */
+static bool vol_delete(UINT64 dir, const PEnt *e, int depth)
+{
+    if (g_vol) return FatDelete(g_vol, (UINT32)dir, e->name);
+    if (e->dir) {
+        if (depth > 24) return false;
+        EntList l = { 0 };
+        NtfsList(g_ntfs, e->ref, collect_ntfs, &l);
+        bool ok = true;
+        for (int i = 0; i < l.n; i++) ok = vol_delete(e->ref, &l.e[i], depth + 1) && ok;
+        kfree(l.e);
+        if (!ok) return false;
+    }
+    return NtfsDelete(g_ntfs, dir, e->ref);
+}
+
+static bool vol_write_meta(UINT64 dir, const char *name, const void *data, UINT32 len)
+{
+    if (g_vol) return FatWriteFile(g_vol, (UINT32)dir, name, data, len);
+    UINT64 ref;
+    bool is_dir;
+    if (!NtfsLookup(g_ntfs, dir, name, &ref, &is_dir) && !NtfsCreate(g_ntfs, dir, name, false, &ref)) return false;
+    return NtfsWriteFile(g_ntfs, ref, data, len);
+}
+
+static bool vol_sync(void) { return g_vol ? FatSync(g_vol) : NtfsSync(g_ntfs); }
+
+/* ---------------------------------------------------------------------------
+ * Restoring
+ * ------------------------------------------------------------------------- */
 static int g_restored;
 
 /* File times: RAM nodes keep FILETIMEs (100 ns since 1601), FAT keeps DOS
@@ -286,6 +520,8 @@ static UINT64 dos_to_filetime(UINT32 dos)
     return ((UINT64)secs + UINT64_C(11644473600)) * 10000000ULL;
 }
 
+UINT64 PersistDosToFiletime(UINT32 dos) { return dos_to_filetime(dos); }
+
 static UINT32 filetime_to_dos(UINT64 ft)
 {
     if (!ft) return 0;
@@ -306,30 +542,56 @@ static UINT32 filetime_to_dos(UINT64 ft)
     return date << 16 | time;
 }
 
-static void load_dir(UINT32 fdir, RamNode *rdir, int depth)
+/* NTFS: the descriptor of record @ref, unless it is the root's (inherited) */
+static void load_sd(RamNode *n, UINT64 ref)
+{
+    UINT32 id = NtfsSecurityId(g_ntfs, ref), len;
+    if (!id || id == g_root_secid) return;
+    UINT8 *sd = kmalloc(4096);
+    if (sd && NtfsSecurityById(g_ntfs, id, sd, 4096, &len)) {
+        kfree(n->sd);
+        n->sd = sd;
+        n->sdlen = len;
+        return;
+    }
+    kfree(sd);
+}
+
+static void load_dir(UINT64 vdir, RamNode *rdir, int depth)
 {
     if (depth > 24) return;
     EntList l = { 0 };
-    FatList(g_vol, fdir, collect, &l);
+    vol_list(vdir, &l);
     for (int i = 0; i < l.n; i++) {
-        const FatEntry *e = &l.e[i];
-        if (strlen(e->name) >= RAMFS_NAME_MAX) continue;
+        const PEnt *e = &l.e[i];
         RamNode *have = RamfsFind(rdir, e->name);
         if (have && (have->dir != e->dir || ((have->pflags & RAMFS_F_SEALED) && !have->dir))) continue;
         if (e->dir) {
             RamNode *d = RamfsCreate(rdir, e->name, true);
-            if (d) load_dir(e->cluster, d, depth + 1);
+            if (!d) continue;
+            if (g_ntfs) {
+                load_sd(d, e->ref);
+                if (e->ctime) d->ctime = e->ctime;
+                if (e->mtime) d->mtime = e->mtime;
+                d->attrs = e->attrs;
+            }
+            load_dir(e->ref, d, depth + 1);
             continue;
         }
-        if (e->size > RAMFS_FILE_MAX) continue;
-        char *buf = e->size ? kmalloc(e->size) : NULL;
-        if (e->size && !buf) continue;
+        UINT64 size = e->size;
+        if (g_ntfs && !NtfsSize(g_ntfs, e->ref, &size)) continue;   /* (the index may lag behind) */
+        if (size > RAMFS_FILE_MAX) continue;
+        PEnt real = *e;
+        real.size = size;
+        char *buf = size ? kmalloc(size) : NULL;
+        if (size && !buf) continue;
         RamNode *f = RamfsCreate(rdir, e->name, false);
-        if (f && FatRead(g_vol, e, buf) && RamfsWrite(f, buf, e->size)) {
+        if (f && vol_read(&real, buf) && RamfsWrite(f, buf, (UINT32)size)) {
             g_restored++;
-            UINT64 t = dos_to_filetime(e->wtime);
-            if (t) f->mtime = f->ctime = t;
-            f->attrs = e->attr & 0x07;                      /* read-only, hidden, system */
+            if (e->mtime) f->mtime = e->mtime;
+            f->ctime = e->ctime ? e->ctime : f->mtime;
+            f->attrs = e->attrs;
+            if (g_ntfs) load_sd(f, e->ref);
         }
         kfree(buf);
     }
@@ -338,12 +600,21 @@ static void load_dir(UINT32 fdir, RamNode *rdir, int depth)
 
 static void load_removed(void)
 {
-    FatEntry e;
-    if (!FatLookup(g_vol, g_nova_dir, DELETED_FILE, &e) || e.dir || e.size > 256 * 1024) return;
-    char *text = kmalloc(e.size + 1);
-    if (!text) return;
-    if (FatRead(g_vol, &e, text)) {
-        text[e.size] = '\0';
+    UINT64 ref;
+    bool is_dir;
+    const char *name = g_vol ? DELETED_FILE : NTFS_DELETED;
+    if (!vol_lookup(g_nova_dir, name, &ref, &is_dir) || is_dir) return;
+    EntList l = { 0 };
+    vol_list(g_nova_dir, &l);
+    const PEnt *e = NULL;
+    for (int i = 0; i < l.n && !e; i++) if (path_eq(l.e[i].name, name)) e = &l.e[i];
+    UINT64 size = e ? e->size : 0;
+    if (e && g_ntfs) NtfsSize(g_ntfs, e->ref, &size);
+    char *text = e && size <= 256 * 1024 ? kmalloc(size + 1) : NULL;
+    PEnt real;
+    if (e) { real = *e; real.size = size; }
+    if (text && vol_read(&real, text)) {
+        text[size] = '\0';
         for (char *line = text, *next; line && *line; line = next) {
             next = strchr(line, '\n');
             if (next) *next++ = '\0';
@@ -359,6 +630,7 @@ static void load_removed(void)
         }
     }
     kfree(text);
+    kfree(l.e);
     g_removed_dirty = false;
 }
 
@@ -369,7 +641,7 @@ void PersistLoad(void)
         FatEntry nova, root;
         if (FatLookupPath(g_vol, "\\NOVA", &nova) && nova.dir) {
             g_nova_dir = nova.cluster;
-            if (FatLookup(g_vol, g_nova_dir, "C", &root) && root.dir) {
+            if (FatLookup(g_vol, (UINT32)g_nova_dir, "C", &root) && root.dir) {
                 g_root_dir = root.cluster;
                 g_root_known = true;
                 load_dir(g_root_dir, RamfsRoot(), 0);
@@ -377,6 +649,24 @@ void PersistLoad(void)
             load_removed();
         }
         kprintf("[PERSIST] Restored %d file(s) to drive C:\n", g_restored);
+    } else if (g_ntfs) {
+        RamfsSetMode(RAMFS_LOADING);
+        RamNode *root = RamfsRoot();
+        g_root_secid = NtfsSecurityId(g_ntfs, NTFS_ROOT);
+        load_sd(root, NTFS_ROOT);
+        if (!root->sd && g_root_secid) {                          /* (load_sd leaves the root's own out) */
+            UINT8 *sd = kmalloc(4096);
+            UINT32 len;
+            if (sd && NtfsSecurityById(g_ntfs, g_root_secid, sd, 4096, &len)) { root->sd = sd; root->sdlen = len; }
+            else kfree(sd);
+        }
+        g_root_dir = NTFS_ROOT;
+        bool is_dir;
+        UINT64 meta;
+        if (vol_lookup(NTFS_ROOT, NTFS_META, &meta, &is_dir) && is_dir) { g_nova_dir = meta; g_root_known = true; }
+        load_dir(NTFS_ROOT, root, 0);
+        if (g_root_known) load_removed();
+        kprintf("[PERSIST] Restored %d file(s) to drive C: (NTFS)\n", g_restored);
     }
     g_loaded = true;
     RamfsSetMode(RAMFS_TRACK);
@@ -398,35 +688,31 @@ static void save_error(const char *what, const RamNode *n)
 
 static const UINT8 CLEAR = RAMFS_F_DIRTY | RAMFS_F_DIRTYDIR | RAMFS_F_SUB;
 
-/* Brings the disk directory @fdir in line with the RAM directory @r. */
-static void save_dir(RamNode *r, UINT32 fdir, bool fresh, int depth)
+/* Brings the disk directory @vdir in line with the RAM directory @r. */
+static void save_dir(RamNode *r, UINT64 vdir, bool fresh, int depth)
 {
     if (depth > 24) return;
     if ((r->pflags & RAMFS_F_DIRTYDIR) && !fresh) {
         EntList l = { 0 };
-        FatList(g_vol, fdir, collect, &l);
+        vol_list(vdir, &l);
         for (int i = 0; i < l.n; i++) {
-            if (strlen(l.e[i].name) >= RAMFS_NAME_MAX) continue;       /* never loaded: leave it be */
             RamNode *c = RamfsFind(r, l.e[i].name);
             if (!c || c->dir != l.e[i].dir || (!c->dir && (c->pflags & RAMFS_F_SEALED)))
-                if (!FatDelete(g_vol, fdir, l.e[i].name)) save_error("delete failed", r);
+                if (!vol_delete(vdir, &l.e[i], 0)) save_error("delete failed", r);
         }
         kfree(l.e);
     }
     for (RamNode *c = r->child; c; c = c->next) {
         if (!(c->pflags & CLEAR)) continue;
         if (c->dir) {
-            FatEntry have;
-            bool existed = !fresh && FatLookup(g_vol, fdir, c->name, &have) && have.dir;
-            UINT32 sub;
-            if (existed) sub = have.cluster;
-            else if (!FatMkdir(g_vol, fdir, c->name, &sub)) { save_error("disk full?", c); continue; }
+            UINT64 sub;
+            bool is_dir = false;
+            bool existed = !fresh && vol_lookup(vdir, c->name, &sub, &is_dir) && is_dir;
+            if (!existed && !vol_mkdir(vdir, c, &sub)) { save_error("disk full?", c); continue; }
+            if (g_ntfs && (!existed || (c->pflags & RAMFS_F_DIRTY)) && !ntfs_info(sub, c)) save_error("its details", c);
             save_dir(c, sub, !existed, depth + 1);
         } else if (c->pflags & RAMFS_F_DIRTY) {
-            FatSetStamp(filetime_to_dos(c->mtime));
-            bool ok = (c->pflags & RAMFS_F_SEALED) || FatWriteFile(g_vol, fdir, c->name, c->data, c->size);
-            FatSetStamp(0);
-            if (!ok) {
+            if (!(c->pflags & RAMFS_F_SEALED) && !vol_write(vdir, c)) {
                 save_error("disk full?", c);
                 continue;
             }
@@ -453,27 +739,51 @@ static void save_removed(void)
     char *text = kmalloc(len + 1), *p = text;
     if (!text) return;
     for (Removed *r = g_removed; r; r = r->next) p += ksnprintf(p, (size_t)(len + 1 - (UINT32)(p - text)), "%s\r\n", r->path);
-    if (FatWriteFile(g_vol, g_nova_dir, DELETED_FILE, text, (UINT32)(p - text))) g_removed_dirty = false;
+    if (vol_write_meta(g_nova_dir, g_vol ? DELETED_FILE : NTFS_DELETED, text, (UINT32)(p - text))) g_removed_dirty = false;
     kfree(text);
+}
+
+/* Where the files go: \NOVA\C on FAT, the root on NTFS (with \$NovaOS for the list) */
+static bool find_root(void)
+{
+    if (g_vol) {
+        UINT32 nova, root;
+        if (!FatMkdirPath(g_vol, "\\NOVA", &nova) || !FatMkdirPath(g_vol, DATA_ROOT, &root)) return false;
+        g_nova_dir = nova;
+        g_root_dir = root;
+        return true;
+    }
+    UINT64 meta;
+    bool is_dir;
+    if (!vol_lookup(NTFS_ROOT, NTFS_META, &meta, &is_dir)) {
+        if (!NtfsCreate(g_ntfs, NTFS_ROOT, NTFS_META, true, &meta)) return false;
+        NtfsSetInfo(g_ntfs, meta, 0, 0, 0x06);                     /* hidden, system */
+    } else if (!is_dir) return false;
+    g_nova_dir = meta;
+    g_root_dir = NTFS_ROOT;
+    return true;
 }
 
 bool PersistSync(void)
 {
-    if (!g_vol || !g_loaded) return g_vol == NULL;
+    if (!have_vol() || !g_loaded) return !have_vol();
     DesktopLock();
     UINT32 changes = RamfsChanges();
     g_error = false;
     if (!g_root_known) {
-        if (FatMkdirPath(g_vol, "\\NOVA", &g_nova_dir) && FatMkdirPath(g_vol, DATA_ROOT, &g_root_dir))
-            g_root_known = true;
+        if (find_root()) g_root_known = true;
         else g_error = true;
     }
     if (g_root_known) {
         RamNode *root = RamfsRoot();
+        if (g_ntfs && (root->pflags & RAMFS_F_DIRTY) && root->sd) {    /* the root's own descriptor changed */
+            UINT32 id = NtfsAddSecurity(g_ntfs, root->sd, root->sdlen);
+            if (!id || !NtfsSetSecurityId(g_ntfs, NTFS_ROOT, id)) save_error("its descriptor", root);
+        }
         if (root->pflags & CLEAR) save_dir(root, g_root_dir, false, 0);
         save_removed();
     }
-    bool ok = FatSync(g_vol) && !g_error;
+    bool ok = vol_sync() && !g_error;
     g_saved_changes = changes;
     DesktopUnlock();
     return ok;
@@ -481,7 +791,7 @@ bool PersistSync(void)
 
 void PersistPoll(void)
 {
-    if (!g_vol || !g_loaded) return;
+    if (!have_vol() || !g_loaded) return;
     UINT32 now = RamfsChanges();
     UINT64 t = sched_ticks();
     if (now != g_seen_changes) { g_seen_changes = now; g_seen_tick = t; }

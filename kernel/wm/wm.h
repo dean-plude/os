@@ -56,6 +56,11 @@ typedef struct WND {
     int        id;
     GdiRect    frame;        /* outer rect on screen (includes title bar) */
     GdiRect    restore;      /* frame to restore after maximize */
+    GdiRect    wanted;       /* the frame before a smaller display mode shrank or
+                              * moved it (w 0: none); it gets it back when the
+                              * mode grows again */
+    GdiRect    shrunk;       /* the frame that change left it with: moved or
+                              * resized since, it keeps the new one instead */
     char       title[WM_TITLE_MAX];
     UINT32     style;
     GdiColor   client_bg;
@@ -213,6 +218,8 @@ void WmCursorHide(void);
 void WmCursorMove(int x, int y);
 /* Move by a relative mouse delta (one count = one logical pixel). */
 void WmCursorMoveBy(int dx, int dy);
+/* Move to a position given as 0-65535 across and down the screen (tablets) */
+void WmCursorMoveAbs(int nx, int ny);
 /* Re-show the cursor after a new frame was presented. */
 void WmCursorReshow(void);
 /* A window's cursor shape changed (or was freed): redraw the pointer at

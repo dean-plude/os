@@ -1,6 +1,10 @@
-/* drivetest.exe — drives beyond C: (read-only NTFS volumes on disk)
+/* drivetest.exe — drives beyond C: (NTFS volumes on disk)
  *
  * Expects the disk scripts/make-ntfs-disk.sh makes, attached as drive D:.
+ * Reads what the script put there, then writes: files, a large one,
+ * overwrites, appends, renames and moves, a folder of 300 files, deletes.
+ * It leaves D:\WriteTest\kept.txt and D:\WriteTest\kept.bin behind for
+ * the host to check (scripts/check-ntfs-disk.sh), and can run again.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,9 +18,6 @@
 UINT WINAPI GetDriveTypeA(LPCSTR root);
 BOOL WINAPI GetVolumeInformationA(LPCSTR root, LPSTR name, DWORD nn, LPDWORD serial, LPDWORD maxlen, LPDWORD flags,
                                   LPSTR fs, DWORD nfs);
-#endif
-#ifndef ERROR_WRITE_PROTECT
-#define ERROR_WRITE_PROTECT 19
 #endif
 #ifndef FILE_READ_ONLY_VOLUME
 #define FILE_READ_ONLY_VOLUME 0x00080000
@@ -40,6 +41,82 @@ static char *read_all(const char *path, DWORD *n)
     return b;
 }
 
+static BOOL write_file(const char *path, const void *data, DWORD n, DWORD how)
+{
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, 0, how, 0, 0);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    DWORD put = 0;
+    if (how == OPEN_ALWAYS) SetFilePointer(h, 0, 0, FILE_END);
+    BOOL ok = WriteFile(h, data, n, &put, 0) && put == n;
+    return CloseHandle(h) && ok;
+}
+
+static BOOL same(const char *path, const void *data, DWORD n)
+{
+    DWORD got;
+    char *s = read_all(path, &got);
+    BOOL ok = s && got == n && !memcmp(s, data, n);
+    free(s);
+    return ok;
+}
+
+static void write_tests(void)
+{
+    char path[MAX_PATH];
+    /* (left over from an earlier run) */
+    DeleteFileA("D:\\WriteTest\\kept.txt");
+    DeleteFileA("D:\\WriteTest\\kept.bin");
+    RemoveDirectoryA("D:\\WriteTest");
+    CHECK("make D:\\WriteTest", CreateDirectoryA("D:\\WriteTest", 0));
+    CHECK("write a small file", write_file("D:\\WriteTest\\a.txt", "first\r\n", 7, CREATE_NEW));
+    CHECK("read it back", same("D:\\WriteTest\\a.txt", "first\r\n", 7));
+    CHECK("append to it", write_file("D:\\WriteTest\\a.txt", "second\r\n", 8, OPEN_ALWAYS));
+    CHECK("read the appended file", same("D:\\WriteTest\\a.txt", "first\r\nsecond\r\n", 15));
+
+    DWORD big = 700000;
+    unsigned char *b = malloc(big);
+    for (DWORD i = 0; i < big; i++) b[i] = (unsigned char)(pattern(i) ^ 0x5A);
+    CHECK("write a 700 KB file", b && write_file("D:\\WriteTest\\big.bin", b, big, CREATE_ALWAYS));
+    CHECK("read the 700 KB file back", b && same("D:\\WriteTest\\big.bin", b, big));
+    CHECK("overwrite it with a small one", write_file("D:\\WriteTest\\big.bin", "small", 5, CREATE_ALWAYS));
+    CHECK("read the small one back", same("D:\\WriteTest\\big.bin", "small", 5));
+    CHECK("make the large one again", b && write_file("D:\\WriteTest\\kept.bin", b, big, CREATE_ALWAYS));
+
+    CHECK("rename a file", MoveFileA("D:\\WriteTest\\a.txt", "D:\\WriteTest\\b.txt") &&
+          GetFileAttributesA("D:\\WriteTest\\a.txt") == INVALID_FILE_ATTRIBUTES);
+    CHECK("make a subfolder", CreateDirectoryA("D:\\WriteTest\\Sub", 0));
+    CHECK("move a file into it", MoveFileA("D:\\WriteTest\\b.txt", "D:\\WriteTest\\Sub\\c.txt") &&
+          same("D:\\WriteTest\\Sub\\c.txt", "first\r\nsecond\r\n", 15));
+    CHECK("change a name's case", MoveFileA("D:\\WriteTest\\Sub\\c.txt", "D:\\WriteTest\\Sub\\C.TXT"));
+    CHECK("a folder that is not empty stays", !RemoveDirectoryA("D:\\WriteTest\\Sub"));
+
+    CreateDirectoryA("D:\\WriteTest\\Lots", 0);
+    BOOL ok = TRUE;
+    for (int i = 0; i < 300 && ok; i++) {
+        sprintf(path, "D:\\WriteTest\\Lots\\entry %03d with a longer name.txt", i);
+        ok = write_file(path, path, (DWORD)strlen(path), CREATE_NEW);
+    }
+    CHECK("make 300 files in one folder", ok);
+    WIN32_FIND_DATAA fd;
+    int count = 0;
+    HANDLE f = FindFirstFileA("D:\\WriteTest\\Lots\\*.txt", &fd);
+    if (f != INVALID_HANDLE_VALUE) { do count++; while (FindNextFileA(f, &fd)); FindClose(f); }
+    CHECK("list the 300 files", count == 300);
+    CHECK("read one of them", same("D:\\WriteTest\\Lots\\entry 150 with a longer name.txt",
+                                   "D:\\WriteTest\\Lots\\entry 150 with a longer name.txt", 50));
+    for (int i = 0; i < 300 && ok; i++) {
+        sprintf(path, "D:\\WriteTest\\Lots\\entry %03d with a longer name.txt", i);
+        ok = DeleteFileA(path);
+    }
+    CHECK("delete the 300 files", ok);
+    CHECK("remove their folder", RemoveDirectoryA("D:\\WriteTest\\Lots"));
+    CHECK("delete a file", DeleteFileA("D:\\WriteTest\\Sub\\C.TXT") && DeleteFileA("D:\\WriteTest\\big.bin"));
+    CHECK("remove an empty folder", RemoveDirectoryA("D:\\WriteTest\\Sub") &&
+          GetFileAttributesA("D:\\WriteTest\\Sub") == INVALID_FILE_ATTRIBUTES);
+    CHECK("write the file the host checks", write_file("D:\\WriteTest\\kept.txt", "Written by NovaOS\r\n", 18, CREATE_NEW));
+    free(b);
+}
+
 int main(void)
 {
     DWORD drives = GetLogicalDrives();
@@ -56,7 +133,7 @@ int main(void)
     CHECK("GetVolumeInformation(D:)", ok);
     CHECK("D: is labelled NOVATEST", ok && !strcmp(label, "NOVATEST"));
     CHECK("D: is NTFS", ok && !strcmp(fs, "NTFS"));
-    CHECK("D: is read-only", ok && (flags & FILE_READ_ONLY_VOLUME));
+    CHECK("D: is writable", ok && !(flags & FILE_READ_ONLY_VOLUME));
     ULARGE_INTEGER avail, total, freeb;
     CHECK("GetDiskFreeSpaceEx(D:)", GetDiskFreeSpaceExA("D:\\", &avail, &total, &freeb) && total.QuadPart > (100ull << 20));
 
@@ -91,15 +168,14 @@ int main(void)
     if (ok) { do if (fd.cFileName[0] == '$') meta = TRUE; while (FindNextFileA(f, &fd)); FindClose(f); }
     CHECK("the root lists no metafiles ($MFT ...)", ok && !meta);
     DWORD attr = GetFileAttributesA("D:\\hello.txt");
-    CHECK("files on D: are read-only", attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY));
+    CHECK("files on D: are writable", attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_READONLY));
     CHECK("D:\\Dir is a directory", GetFileAttributesA("D:\\Dir") & FILE_ATTRIBUTE_DIRECTORY);
+    attr = GetFileAttributesA("D:\\Compressed\\words.txt");
+    CHECK("a compressed file is read-only", attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY));
+    HANDLE h = CreateFileA("D:\\Compressed\\words.txt", GENERIC_WRITE, 0, 0, OPEN_EXISTING, 0, 0);
+    CHECK("writing a compressed file fails", h == INVALID_HANDLE_VALUE);
 
-    HANDLE h = CreateFileA("D:\\new.txt", GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
-    CHECK("creating a file on D: fails", h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_WRITE_PROTECT);
-    h = CreateFileA("D:\\hello.txt", GENERIC_WRITE, 0, 0, OPEN_EXISTING, 0, 0);
-    CHECK("writing a file on D: fails", h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_WRITE_PROTECT);
-    CHECK("deleting a file on D: fails", !DeleteFileA("D:\\hello.txt") && GetFileAttributesA("D:\\hello.txt") != INVALID_FILE_ATTRIBUTES);
-    CHECK("making a folder on D: fails", !CreateDirectoryA("D:\\NewDir", 0));
+    write_tests();
 
     CHECK("SetCurrentDirectory(D:\\Dir)", SetCurrentDirectoryA("D:\\Dir"));
     s = read_all("Nested\\data.bin", &n);

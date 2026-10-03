@@ -210,7 +210,7 @@ To make the ISO yourself from a fresh build, run
 
 **Every pull request is boot-tested.**  GitHub Actions
 (`.github/workflows/ci.yml`) builds the kernel, bootloader, userland and
-`build/nova.img`, boots it in QEMU with OVMF and runs two suites with
+`build/nova.img`, boots it in QEMU with OVMF and runs three suites with
 `tools/selftest.py`:
 
 - **Build and boot-test** (core): <!-- BEGIN generated:core-tests -->`apitest`, `abitest` (the PEB, TEB, `KUSER_SHARED_DATA`, `CONTEXT` and
@@ -229,6 +229,12 @@ To make the ISO yourself from a fresh build, run
   after a restart (`filetest install`, `shutdown /r`, `filetest
   installed`), and last `crash kernel`, a deliberate kernel fault whose
   serial log must show a backtrace with function names.<!-- END generated:core-tests -->
+- **Network** (in the boot-test job): two boots with a virtio-net card.
+  On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
+  `httptest suite` (winhttp with HTTP/2 by ALPN) against
+  `tools/h2server.js`, and `looptest` (Winsock over 127.0.0.1 and ::1);
+  on an IPv6-only network that is `tools/v6peer.py`,
+  SLAAC and RDNSS, `ping -6`, `curl -6` and Winsock over IPv6.
 - **Graphics tests**: `tools/d2dtest` (Direct2D geometry answers, and a
   scene that must match the reference `tools/d2dtest/reference.py` draws
   with Skia), then installs Mesa 3D and DXVK with the App Store
@@ -241,7 +247,7 @@ A failing test fails its check; each run's summary has a table of results,
 and the serial logs and screenshots are kept as artifacts, along with the
 bootable ISO (`nova-iso`).  When a push to `main` passes both suites, the
 **Publish nova.iso** job puts that ISO on the `latest` release.  Run the same
-gates locally with `python3 tools/selftest.py` (and `--suite graphics`)
+gates locally with `python3 tools/selftest.py` (and `--suite network`, `--suite graphics`)
 after a build.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
@@ -320,8 +326,8 @@ os/
 │   ├── um/               # Windows programs: processes, threads, loader, NT services,
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
-│   ├── drivers/          # AHCI (SATA), e1000/e1000e, xHCI USB + HID
-│   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, ACPI (uACPI host)
+│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, virtio-net, xHCI USB core, hubs, HID, mass storage
+│   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, HPET, I/O APIC, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
 │   ├── wm/               # Window manager, desktop shell, input, clipboard
@@ -336,7 +342,7 @@ os/
 │   ├── programs/         # cmd.exe, msiexec, reg, find..., samples and self-tests
 │   ├── netsurf/          # NetSurf port: fetcher, window surface, fonts
 │   └── include/          # The Windows SDK headers NovaOS provides
-├── third_party/          # lwIP, Mbed TLS, uACPI, musl (libm), HarfBuzz, FreeType, NetSurf, stb, fonts, ICU (icu.dll + data), 7-Zip installer
+├── third_party/          # lwIP, Mbed TLS, nghttp2, uACPI, musl (libm), HarfBuzz, FreeType, NetSurf, stb, fonts, ICU (icu.dll + data), 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
 │                         #   make_icons.py, mkani.py, pe_imports.py, msitest/, docgen.py
 ├── tests/                # CI self-tests and app corpus (one file per test), ACPI

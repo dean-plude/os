@@ -37,6 +37,8 @@ bool AcpiEnterS3(UINT32 real_vector, UINT32 pm32_vector);
 
 /* After waking: ACPI mode and the power button again */
 void AcpiResume(void);
+/* PM1 status as the machine woke (bit 8: the power button, 10: the RTC alarm) */
+UINT16 AcpiWakeStatus(void);
 
 /* Reset the machine: the FADT's reset register, then port 0xCF9, then
  * the 8042, then a triple fault.  Never returns. */

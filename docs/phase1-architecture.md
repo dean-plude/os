@@ -151,7 +151,8 @@ exactly, which simplifies STAR MSR configuration for Phase 4.
 |-----------|--------------------------------------|
 | 0–31      | CPU exceptions (#DE, #PF, #GP, etc.) |
 | 32–47     | APIC hardware IRQs (remapped PIC)    |
-| 0x30      | APIC timer (scheduler tick)          |
+| 0x30      | APIC timer (tick and sleep deadlines)|
+| 0x32      | ACPI SCI, routed through the I/O APIC (the only device interrupt; the other drivers poll) |
 | 0x2E      | NT syscall (int 0x2E)                |
 | 0xFF      | APIC spurious interrupt              |
 
@@ -175,12 +176,29 @@ and calls `interrupt_dispatch()`.
 ### APIC Timer Calibration
 
 The APIC timer frequency is proportional to the CPU bus clock, which varies
-by CPU model. We calibrate against the PIT (8254 timer) channel 2:
+by CPU model. We calibrate it, and the TSC, against the HPET's main
+counter (`kernel/hal/hpet.c`, found through the ACPI `HPET` table before
+the rest of ACPI starts), or against the PIT (8254 timer) channel 2 where
+there is no HPET:
 
-1. Set PIT channel 2 for a 10ms one-shot count
-2. Start APIC timer counting down from 0xFFFFFFFF
-3. Wait for PIT channel 2 to expire
-4. APIC ticks counted in 10ms = calibration value
+1. Start APIC timer counting down from 0xFFFFFFFF
+2. Wait 10 ms on the HPET counter (or a 10 ms one-shot PIT count)
+3. APIC ticks and TSC ticks counted in those 10 ms = calibration values
+
+### One-shot and TSC-deadline timer (Phase 18.7)
+
+Each CPU's APIC timer is one-shot: in TSC-deadline mode where CPUID.1:ECX
+bit 24 says the CPU has it (writing `IA32_TSC_DEADLINE` arms it for a TSC
+value), else counting down from a count worked out from the calibration.
+At every timer interrupt the scheduler re-arms it for whichever comes
+first: the CPU's next 10 ms tick (on one grid shared by all CPUs) or the
+earliest TSC deadline among the threads sleeping on that CPU
+(`sched_sleep_until_tsc`, used by `NtDelayExecution` and timed waits).
+A thread woken by its TSC deadline goes to the front of the run queue and
+preempts the running thread when its priority is at least as high, so
+`Sleep(1)` ends within a fraction of a millisecond even with every CPU
+busy (`sleeptest timer`).  Tick work (the tick count, input polling, time
+slices) still happens once per 10 ms.
 
 ### Scheduler Design
 
@@ -264,7 +282,9 @@ NovaOS Bootloader v0.1
 [PAGING] NX enabled
 [GDT] GDT/TSS initialized
 [IDT] Initialized: 256 gates
-[APIC] APIC timer started at 100 Hz
+[HPET] At 0xfed00000: 100000000 Hz, 64-bit main counter, 3 comparators
+[APIC] Timer: 628349 ticks/10ms = ~62834900 Hz (div/16), calibrated against the HPET
+[APIC] One-shot timer started (vector 0x30), TSC 20989080 per 10 ms
 [SCHED] Scheduler initialized
 [Thread A] iteration 0 (TID=2)
 [Thread B] iteration 0 (TID=3)
@@ -290,7 +310,7 @@ gdb build/kernel.elf \
 
 ## Known Limitations (Phase 1)
 
-Everything Phase 1 left out has since been built, except NTFS:
+Everything Phase 1 left out has since been built:
 
 | Component | At Phase 1 | Landed in |
 |-----------|------------|-----------|
@@ -298,7 +318,7 @@ Everything Phase 1 left out has since been built, except NTFS:
 | NT syscall dispatcher | Stub only | Phase 2 (table), Phase 9 (real services) |
 | Registry | Not implemented | Phase 2 (bootstrap), Phase 10 (real, saved to disk) |
 | IRP-based I/O | Not implemented | Phase 3 |
-| NTFS driver | Not implemented | Not yet (drive C: is FAT; see [ROADMAP.md](ROADMAP.md)) |
+| NTFS driver | Not implemented | Phase 18 (read, write and format; drive C: on NTFS with file ACLs, and other drives) |
 | PE loader | Not implemented | Phase 3, ring 3 in Phase 9 |
 | Win32 API (kernel32, ntdll) | Not implemented | Phase 9 onward |
 | Window Manager / GDI | Not implemented | Phase 7, Win32 window system in Phase 12 |

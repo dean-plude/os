@@ -54,7 +54,8 @@ typedef struct {
     NetOp  *op;
     char    host[128], path[256];
     UINT16  port;
-    UINT32  ip;
+    NetIp   addr;
+    int     family;            /* -4 / -6: only that address family (0: either) */
     int     count, sent, got, rtt_min, rtt_max, rtt_sum;
     UINT16  seq;
     UINT64  wake;              /* ticks */
@@ -226,10 +227,10 @@ static void cmd_help(Term *t)
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  vol  sync           where drive C: is saved; save it now\n"
         "  ipconfig            show the network configuration\n"
-        "  ping <host> [-n N]  test a connection (ICMP echo)\n"
+        "  ping [-4|-6] <host> [-n N]  test a connection (ICMP echo)\n"
         "  nslookup <host>     look up a host name (DNS)\n"
         "  wget <url> [url...] download web pages to C:\\Downloads\n"
-        "  curl <url> [url...] fetch web pages and print them\n"
+        "  curl <url> [url...] fetch web pages and print them (-4/-6: IPv4/IPv6 only)\n"
         "  certutil            list trusted root certificates\n"
         "  tasklist            list running programs\n"
         "  taskkill /PID <n>   stop a program\n"
@@ -526,15 +527,34 @@ static void cmd_ipconfig(Term *t)
     tprintf(t, "   Physical Address. . : %02x-%02x-%02x-%02x-%02x-%02x",
             st.mac[0], st.mac[1], st.mac[2], st.mac[3], st.mac[4], st.mac[5]);
     if (!st.link) { tprint(t, "   Media State . . . . : Media disconnected"); return; }
-    if (!st.configured) { tprint(t, "   IPv4 Address. . . . : (waiting for DHCP)"); return; }
-    char a[16], m[16], g[16], d0[16], d1[16];
-    ip_str(st.ip, a); ip_str(st.mask, m); ip_str(st.gw, g);
-    ip_str(st.dns[0], d0); ip_str(st.dns[1], d1);
-    tprintf(t, "   IPv4 Address. . . . : %s", a);
-    tprintf(t, "   Subnet Mask . . . . : %s", m);
-    tprintf(t, "   Default Gateway . . : %s", g);
-    tprintf(t, "   DNS Servers . . . . : %s", d0);
-    if (st.dns[1]) tprintf(t, "                         %s", d1);
+    for (int i = 0; i < st.ip6_count; i++) {                 /* (as Windows: IPv6 first) */
+        NetIp x = { .v6 = true };
+        memcpy(x.a, st.ip6[i], 16);
+        char a6[48];
+        NetFormatAddr(&x, a6, sizeof(a6));
+        bool ll = st.ip6[i][0] == 0xFE && (st.ip6[i][1] & 0xC0) == 0x80;
+        if (ll) tprintf(t, "   Link-local IPv6 Address : %s%%%u%s", a6, (unsigned)st.if_index,
+                        st.ip6_preferred[i] ? "" : " (tentative)");
+        else    tprintf(t, "   IPv6 Address. . . . : %s%s", a6, st.ip6_preferred[i] ? "" : " (tentative)");
+    }
+    if (!st.configured) tprint(t, "   IPv4 Address. . . . : (waiting for DHCP)");
+    else {
+        char a[16], m[16], g[16];
+        ip_str(st.ip, a); ip_str(st.mask, m); ip_str(st.gw, g);
+        tprintf(t, "   IPv4 Address. . . . : %s", a);
+        tprintf(t, "   Subnet Mask . . . . : %s", m);
+        tprintf(t, "   Default Gateway . . : %s", g);
+    }
+    bool first = true;
+    for (int i = 0; i < 3; i++) {
+        NetIp *d = &st.dns_all[i];
+        static const UINT8 zero[16];
+        if (!memcmp(d->a, zero, 16)) continue;
+        char ds[48];
+        NetFormatAddr(d, ds, sizeof(ds));
+        tprintf(t, first ? "   DNS Servers . . . . : %s" : "                         %s", ds);
+        first = false;
+    }
 }
 
 static bool g_marked;          /* this command's end was marked already */
@@ -560,7 +580,7 @@ static void job_end(Term *t)
 
 static bool job_resolve(Term *t, const char *host)
 {
-    t->job.op = NetResolve(host);
+    t->job.op = NetResolveEx(host, t->job.family);
     t->job.phase = PH_RESOLVE;
     if (!t->job.op) { terr(t, "The network is busy; try again."); job_end(t); return false; }
     return true;
@@ -568,18 +588,22 @@ static bool job_resolve(Term *t, const char *host)
 
 static void cmd_ping(Term *t, int argc, char **argv)
 {
-    if (argc < 2) { terr(t, "Usage: ping <host> [-n count]"); return; }
     Job *j = &t->job;
     memset(j, 0, sizeof(*j));
     j->kind  = JOB_PING;
     j->count = 4;
-    for (int i = 2; i + 1 < argc; i++)
-        if (!strcmp(argv[i], "-n")) {
+    const char *host = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-n") && i + 1 < argc) {
             int n = 0;
-            for (const char *s = argv[i + 1]; *s >= '0' && *s <= '9'; s++) n = n * 10 + (*s - '0');
+            for (const char *s = argv[++i]; *s >= '0' && *s <= '9'; s++) n = n * 10 + (*s - '0');
             if (n > 0 && n <= 100) j->count = n;
-        }
-    strncpy(j->host, argv[1], sizeof(j->host) - 1);
+        } else if (!strcmp(argv[i], "-4")) j->family = 4;
+        else if (!strcmp(argv[i], "-6")) j->family = 6;
+        else if (!host) host = argv[i];
+    }
+    if (!host) { terr(t, "Usage: ping [-4 | -6] [-n count] <host>"); return; }
+    strncpy(j->host, host, sizeof(j->host) - 1);
     j->rtt_min = 1 << 30;
     job_resolve(t, j->host);
 }
@@ -593,8 +617,8 @@ static void cmd_nslookup(Term *t, const char *host)
     strncpy(j->host, host, sizeof(j->host) - 1);
     NetStatus st;
     NetGetStatus(&st);
-    char d[16];
-    ip_str(st.dns[0], d);
+    char d[48];
+    NetFormatAddr(&st.dns_all[0], d, sizeof(d));
     tprintf(t, "Server:  %s", d);
     job_resolve(t, j->host);
 }
@@ -669,14 +693,20 @@ static void fetch_next(Term *t)
 
 static void cmd_fetch(Term *t, int argc, char **argv, bool save)
 {
-    if (argc < 2) { terr(t, save ? "Usage: wget <url> [url...]" : "Usage: curl <url> [url...]"); return; }
     Job *j = &t->job;
     memset(j, 0, sizeof(*j));
     j->kind = JOB_FETCH;
     j->save = save;
     for (int i = 1; i < argc && j->nurls < 8; i++) {
+        if (!strcmp(argv[i], "-4")) { j->family = 4; continue; }
+        if (!strcmp(argv[i], "-6")) { j->family = 6; continue; }
         strncpy(j->urls[j->nurls], argv[i], sizeof(j->urls[0]) - 1);
         j->nurls++;
+    }
+    if (!j->nurls) {
+        terr(t, save ? "Usage: wget [-4 | -6] <url> [url...]" : "Usage: curl [-4 | -6] <url> [url...]");
+        memset(j, 0, sizeof(*j));
+        return;
     }
     j->cur = -1;
     fetch_next(t);
@@ -836,7 +866,7 @@ static bool term_tick_files(WND *w)
         return changed;
     }
     NetOp *op = j->op;
-    char a[16];
+    char a[48];
 
     if (j->phase == PH_RESOLVE) {
         if (op->state == NET_PENDING) return false;
@@ -848,10 +878,10 @@ static bool term_tick_files(WND *w)
             if (j->kind == JOB_FETCH) fetch_next(t); else job_end(t);
             return true;
         }
-        j->ip = op->ip;
+        j->addr = op->addr;
         NetRelease(op);
         j->op = NULL;
-        ip_str(j->ip, a);
+        NetFormatAddr(&j->addr, a, sizeof(a));
         if (j->kind == JOB_LOOKUP) {
             tprintf(t, "Name:    %s\nAddress: %s", j->host, a);
             job_end(t);
@@ -859,7 +889,7 @@ static bool term_tick_files(WND *w)
             tprintf(t, "Pinging %s [%s] with 32 bytes of data:", j->host, a);
             j->phase = PH_SEND;
         } else {
-            j->op = NetHttpGet(j->ip, j->port, j->host, j->path, j->https);
+            j->op = NetHttpGetAddr(&j->addr, j->port, j->host, j->path, j->https);
             j->phase = PH_FETCH;
             if (!j->op) { terr(t, "The network is busy; try again."); job_end(t); return true; }
             if (j->op->reused)
@@ -872,7 +902,7 @@ static bool term_tick_files(WND *w)
 
     if (j->kind == JOB_PING) {
         if (j->phase == PH_SEND) {
-            j->op = NetPing(j->ip, ++j->seq);
+            j->op = NetPingAddr(&j->addr, ++j->seq);
             j->sent++;
             j->phase = PH_WAIT;
             if (!j->op) { terr(t, "The network is busy; try again."); job_end(t); return true; }
@@ -880,14 +910,18 @@ static bool term_tick_files(WND *w)
         }
         if (j->phase == PH_WAIT) {
             if (op->state == NET_PENDING) return false;
-            ip_str(j->ip, a);
+            NetFormatAddr(&j->addr, a, sizeof(a));
             if (op->state == NET_DONE) {
                 j->got++;
                 j->rtt_sum += op->rtt_ms;
                 if (op->rtt_ms < j->rtt_min) j->rtt_min = op->rtt_ms;
                 if (op->rtt_ms > j->rtt_max) j->rtt_max = op->rtt_ms;
-                tprintf(t, "Reply from %s: bytes=32 time%s%dms TTL=%d", a,
-                        op->rtt_ms < 10 ? "<" : "=", op->rtt_ms < 10 ? 10 : op->rtt_ms, op->ttl);
+                if (j->addr.v6)                      /* (Windows shows no hop limit for IPv6) */
+                    tprintf(t, "Reply from %s: time%s%dms", a,
+                            op->rtt_ms < 10 ? "<" : "=", op->rtt_ms < 10 ? 10 : op->rtt_ms);
+                else
+                    tprintf(t, "Reply from %s: bytes=32 time%s%dms TTL=%d", a,
+                            op->rtt_ms < 10 ? "<" : "=", op->rtt_ms < 10 ? 10 : op->rtt_ms, op->ttl);
             } else {
                 tprint(t, op->error[0] ? op->error : "Request timed out.");
             }

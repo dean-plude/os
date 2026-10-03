@@ -8,7 +8,7 @@ menu and `start setup` in the Terminal opens it, to copy NovaOS to
 another disk.
 
 - **Welcome, choose a disk, confirm, install, finish.**  Setup lists the
-  SATA disks with their size and what is on them, marks the one NovaOS
+  SATA, NVMe and USB disks with their size and what is on them, marks the one NovaOS
   started from and the one drive C: is kept on, and asks before erasing
   anything.  Disks under 256 MB are shown but cannot be picked.
 - **What it writes**: a GPT (protective MBR, primary and backup headers
