@@ -49,6 +49,7 @@ int  u32_monitor_count(void);
 void u32_virtual_screen(RECT *r);
 #define WM_NOVA_TOUCH 0x03FD                    /* from the desktop: a touch contact (pointer.c) */
 #define WM_NOVA_DPI   0x03FC                    /* from the desktop: a monitor's DPI changed (dpi.c) */
+#define WM_NOVA_RESCALE 0x03FB                  /* to a built-in control: its window's DPI changed (dpi.c) */
 
 /* dpi.c: DPI awareness and the coordinates a DPI-aware process sees */
 enum { DPI_UNAWARE = 0, DPI_SYSTEM_AWARE = 1, DPI_PER_MONITOR_AWARE = 2 };
@@ -76,6 +77,13 @@ void dpi_monitors_changed(Wnd *top);
 int  dpi_new_window(Wnd *w, const RECT *b);
 int  dpi_apply_scale(Wnd *w, int k);  /* CTL_SET_SCALE and the bitmap it gives: the scale set */
 HANDLE dpi_thread_context(void);
+/* Window @w's coordinates (its awareness's) and the calling thread's: a
+ * screen point either way, and a length (client coordinates, sizes) */
+void dpi_wnd_to_thread(Wnd *w, POINT *p);
+void dpi_thread_to_wnd(Wnd *w, POINT *p);
+int  dpi_len_to_thread(Wnd *w, int v);
+int  dpi_len_to_wnd(Wnd *w, int v);
+void dlg_dpi_changed(Wnd *w, int ok, int nk);   /* dialog.c: a per-monitor v2 dialog's controls and font */
 BOOL adjust_window_rect(LPRECT r, DWORD style, BOOL menu, DWORD ex, int k);   /* win.c */
 #define WM_NOVA_DROP 0x03FE                     /* from the desktop: a drop from another program (drop.c) */
 #define FRAME_TITLE 32                          /* the desktop's title bar */

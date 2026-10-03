@@ -18,7 +18,7 @@
 #define TB_SETUNICODEFORMAT_ 0x2005
 #define TB_GETUNICODEFORMAT_ 0x2006
 #define TBN_GETBUTTONINFOW_ (TBN_FIRST - 20)
-#define DDARROW 14                          /* the drop-down arrow part */
+#define DDARROW (14 * cc_k(h))              /* the drop-down arrow part */
 
 typedef struct {
     int image, cmd;
@@ -45,9 +45,12 @@ typedef struct {
     int max_rows;
     HWND parent;                            /* where commands go */
     HWND tips;
-    int pad_x, pad_y;
+    int pad_x, pad_y, pad_set;              /* TB_SETPADDING's (pad_set), else 7 x 3 at 96 DPI */
     int spacing_x, spacing_y;               /* between buttons (TB_SETMETRICS) */
 } TB;
+
+static int padx(HWND h, TB *s) { return s->pad_set ? s->pad_x : 7 * cc_k(h); }
+static int pady(HWND h, TB *s) { return s->pad_set ? s->pad_y : 3 * cc_k(h); }
 
 static DWORD style_of(HWND h) { return (DWORD)GetWindowLongW(h, GWL_STYLE); }
 static HWND notify_target(HWND h, TB *s) { return s->parent ? s->parent : GetParent(h); }
@@ -103,13 +106,13 @@ static void base_size(HWND h, TB *s, int *bw, int *bh)
     int text = has_text(s);
     DWORD st = style_of(h);
     if (st & TBSTYLE_LIST) {
-        *bh = MAX(ih, text ? fh : 0) + 2 * s->pad_y;
-        *bw = iw + 2 * s->pad_x;
+        *bh = MAX(ih, text ? fh : 0) + 2 * pady(h, s);
+        *bw = iw + 2 * padx(h, s);
     } else {
         int tw = 0;
         for (int i = 0; text && i < s->n; i++) if (!(s->b[i].style & BTNS_SEP)) tw = MAX(tw, text_w(h, s, btn_text(s, &s->b[i])));
-        *bw = MAX(iw, tw) + 2 * s->pad_x;
-        *bh = ih + (text ? fh + 2 : 0) + 2 * s->pad_y;
+        *bw = MAX(iw, tw) + 2 * padx(h, s);
+        *bh = ih + (text ? fh + 2 * cc_k(h) : 0) + 2 * pady(h, s);
     }
     if (s->btn_w) *bw = MAX(*bw, s->btn_w);
     if (s->btn_h) *bh = MAX(*bh, s->btn_h);
@@ -117,21 +120,21 @@ static void base_size(HWND h, TB *s, int *bw, int *bh)
 
 static int btn_width(HWND h, TB *s, TBtn *b, int bw)
 {
-    if (b->style & BTNS_SEP) return b->cx ? b->cx : b->image > 0 ? b->image : 8;   /* TBIF_SIZE sizes a separator too */
+    if (b->style & BTNS_SEP) return b->cx ? b->cx : b->image > 0 ? b->image : 8 * cc_k(h);   /* TBIF_SIZE sizes a separator too */
     if (b->cx) return b->cx;
     int w = bw;
     DWORD st = style_of(h);
     const WCHAR *t = btn_text(s, b);
     if (st & TBSTYLE_LIST) {
         int show = t && t[0] && (!(s->ex & TBSTYLE_EX_MIXEDBUTTONS) || (b->style & BTNS_SHOWTEXT));
-        if (show) w += text_w(h, s, t) + 6;
+        if (show) w += text_w(h, s, t) + 6 * cc_k(h);
     } else if (b->style & BTNS_AUTOSIZE) {
         int iw, ih;
         image_size(s, &iw, &ih);
-        w = MAX(iw, text_w(h, s, t)) + 2 * s->pad_x;
+        w = MAX(iw, text_w(h, s, t)) + 2 * padx(h, s);
     }
     if ((b->style & BTNS_DROPDOWN) && (s->ex & TBSTYLE_EX_DRAWDDARROWS) && !(b->style & BTNS_WHOLEDROPDOWN)) w += DDARROW;
-    else if (b->style & BTNS_WHOLEDROPDOWN) w += DDARROW - 4;
+    else if (b->style & BTNS_WHOLEDROPDOWN) w += DDARROW - 4 * cc_k(h);
     return w;
 }
 
@@ -145,15 +148,15 @@ static void layout_ex(HWND h, TB *s, int allow_wrap)
     GetClientRect(h, &c);
     if (g_layout_width >= 0) c.right = g_layout_width;
     int wrap = allow_wrap && (style_of(h) & TBSTYLE_WRAPABLE) && c.right > 0;
-    int x = s->indent, y = 0;
+    int x = s->indent, y = 0, k = cc_k(h);
     for (int i = 0; i < s->n; i++) {
         TBtn *b = &s->b[i];
         if (b->state & TBSTATE_HIDDEN) { SetRectEmpty(&b->r); continue; }
         int w = btn_width(h, s, b, bw);
-        if (wrap && x > s->indent && x + w > c.right && !(b->style & BTNS_SEP)) { x = s->indent; y += bh + 2; }
+        if (wrap && x > s->indent && x + w > c.right && !(b->style & BTNS_SEP)) { x = s->indent; y += bh + 2 * k; }
         SetRect(&b->r, x, y, x + w, y + bh);
         x += w + s->spacing_x;
-        if (b->state & TBSTATE_WRAP) { x = s->indent; y += bh + ((b->style & BTNS_SEP) ? 8 : 2); }
+        if (b->state & TBSTATE_WRAP) { x = s->indent; y += bh + ((b->style & BTNS_SEP) ? 8 : 2) * k; }
     }
 }
 
@@ -189,7 +192,7 @@ static void autosize(HWND h, TB *s)
     g_layout_width = !(st & CCS_NOPARENTALIGN) && p ? pc.right : wr.right - wr.left;
     total_size(h, s, &sz);
     g_layout_width = -1;
-    int height = sz.cy + ((st & CCS_NODIVIDER) ? 0 : 2) + 2;
+    int height = sz.cy + (((st & CCS_NODIVIDER) ? 0 : 2) + 2) * cc_k(h);
     if (!(st & CCS_NOPARENTALIGN) && p) {
         int y = (st & CCS_BOTTOM) == CCS_BOTTOM ? pc.bottom - height : 0;
         UINT fl = SWP_NOZORDER | SWP_NOACTIVATE;
@@ -396,10 +399,10 @@ static void paint(HWND h, TB *s, HDC dc)
         HIMAGELIST il = !enabled && s->dis_il ? s->dis_il : hot && s->hot_il ? s->hot_il : s->il;
         int ix, iy;
         if (st & TBSTYLE_LIST) {
-            ix = content.left + s->pad_x; iy = (content.top + content.bottom - ih) / 2;
+            ix = content.left + padx(h, s); iy = (content.top + content.bottom - ih) / 2;
         } else {
             ix = (content.left + content.right - iw) / 2;
-            iy = content.top + s->pad_y;
+            iy = content.top + pady(h, s);
             if (!show_text) iy = (content.top + content.bottom - ih) / 2;
         }
         if (il && b->image >= 0 && b->image != -2) il_draw(il, b->image, dc, ix, iy, ILD_TRANSPARENT | (!enabled && !s->dis_il ? ILD_BLEND50 : 0));
@@ -407,7 +410,7 @@ static void paint(HWND h, TB *s, HDC dc)
             SetTextColor(dc, enabled ? GetSysColor(COLOR_BTNTEXT) : GetSysColor(COLOR_GRAYTEXT));
             RECT tr = content;
             UINT fl = DT_SINGLELINE | DT_END_ELLIPSIS | ((st & TBSTYLE_NOPREFIX) || (b->style & BTNS_NOPREFIX) ? DT_NOPREFIX : 0);
-            if (st & TBSTYLE_LIST) { tr.left = (il && b->image >= 0) ? ix + iw + 4 : content.left + s->pad_x; fl |= DT_VCENTER | DT_LEFT; }
+            if (st & TBSTYLE_LIST) { tr.left = (il && b->image >= 0) ? ix + iw + 4 * cc_k(h) : content.left + padx(h, s); fl |= DT_VCENTER | DT_LEFT; }
             else { tr.top = iy + ih + 1; tr.bottom = content.bottom - 1; fl |= DT_CENTER | DT_TOP; }
             DrawTextW(dc, t, -1, &tr, fl);
         }
@@ -506,7 +509,6 @@ LRESULT CALLBACK ToolbarProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         s->bmp_w = 16; s->bmp_h = 15;
         s->hot = s->pressed = -1;
         s->max_rows = 1;
-        s->pad_x = 7; s->pad_y = 3;
         ctl_set(h, s);
         return DefWindowProcW(h, msg, wp, lp);
     case WM_CREATE: autosize(h, s); return 0;
@@ -523,6 +525,7 @@ LRESULT CALLBACK ToolbarProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_PRINTCLIENT: paint(h, s, (HDC)wp); return 0;
     case WM_SIZE: layout(h, s); InvalidateRect(h, NULL, TRUE); return 0;
     case WM_SETFONT: s->font = (HFONT)wp; layout(h, s); if (lp) InvalidateRect(h, NULL, TRUE); return 0;
+    case WM_DPICHANGED_AFTERPARENT: autosize(h, s); return 0;     /* the window's DPI changed: the default padding's */
     case WM_GETFONT: return (LRESULT)s->font;
     case WM_MOUSEMOVE: {
         POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
@@ -671,12 +674,12 @@ LRESULT CALLBACK ToolbarProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
     case TB_GETHOTITEM: return s->hot;
     case TB_SETHOTITEM: { int o = s->hot; s->hot = (int)wp; redraw_btn(h, s, o); redraw_btn(h, s, s->hot); return o; }
-    case TB_SETPADDING: { LRESULT o = MAKELONG(s->pad_x * 2, s->pad_y * 2); s->pad_x = LOWORD(lp) / 2; s->pad_y = HIWORD(lp) / 2; layout(h, s); return o; }
-    case TB_GETPADDING: return MAKELONG(s->pad_x * 2, s->pad_y * 2);
+    case TB_SETPADDING: { LRESULT o = MAKELONG(padx(h, s) * 2, pady(h, s) * 2); s->pad_x = LOWORD(lp) / 2; s->pad_y = HIWORD(lp) / 2; s->pad_set = 1; layout(h, s); return o; }
+    case TB_GETPADDING: return MAKELONG(padx(h, s) * 2, pady(h, s) * 2);
     case TB_GETMETRICS: {
         TBMETRICS *m = (TBMETRICS *)lp;
         if (!m) return 0;
-        if (m->dwMask & TBMF_PAD) { m->cxPad = s->pad_x * 2; m->cyPad = s->pad_y * 2; }
+        if (m->dwMask & TBMF_PAD) { m->cxPad = padx(h, s) * 2; m->cyPad = pady(h, s) * 2; }
         if (m->dwMask & TBMF_BARPAD) { m->cxBarPad = 0; m->cyBarPad = 0; }
         if (m->dwMask & TBMF_BUTTONSPACING) { m->cxButtonSpacing = s->spacing_x; m->cyButtonSpacing = s->spacing_y; }
         return 0;
@@ -684,7 +687,7 @@ LRESULT CALLBACK ToolbarProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case TB_SETMETRICS: {
         const TBMETRICS *m = (const TBMETRICS *)lp;
         if (!m) return 0;
-        if (m->dwMask & TBMF_PAD) { s->pad_x = m->cxPad / 2; s->pad_y = m->cyPad / 2; }
+        if (m->dwMask & TBMF_PAD) { s->pad_x = m->cxPad / 2; s->pad_y = m->cyPad / 2; s->pad_set = 1; }
         if (m->dwMask & TBMF_BUTTONSPACING) { s->spacing_x = m->cxButtonSpacing; s->spacing_y = m->cyButtonSpacing; }
         layout(h, s);
         InvalidateRect(h, NULL, TRUE);
