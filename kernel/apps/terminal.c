@@ -229,6 +229,7 @@ static void cmd_help(Term *t)
         "  copy <src> <dst>    copy a file (also: cp)\n"
         "  start <app> [file]  open notepad, explorer, settings, calendar, browser\n"
         "  store install <name>  get a program from the App Store\n"
+        "  store open          open the App Store window\n"
         "  store close         close the App Store window\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  vol  sync           where drive C: is saved; save it now\n"
@@ -1457,7 +1458,8 @@ static void run_cmd(Term *t, char *cmdline)
     else if (is(c, "start") || is(c, "open"))   cmd_start(t, argc, argv);
     else if (is(c, "store")) {
         if (argc == 2 && is(argv[1], "close")) tprint(t, StoreClose());
-        else if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name> | store close");
+        else if (argc == 2 && is(argv[1], "open")) { StoreOpen(); tprint(t, "Opened the App Store."); }
+        else if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name> | store open | store close");
         else {
             char name[64];
             int n = 0;

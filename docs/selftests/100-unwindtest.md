@@ -1,0 +1,1 @@
+| `unwindtest` (x64) | `RtlUnwindEx` as MinGW's C++ runtimes (LLVM's libunwind, GCC's libgcc) use it: a throw caught two frames up through a collided unwind to the landing pad with an unfilled CONTEXT (no trap flag, the frame's registers, RAX and RDX for the landing pad), a cleanup frame in between, and `_Unwind_Resume`'s unwind from no handler |

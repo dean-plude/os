@@ -496,11 +496,17 @@ graphics boot has a second monitor (a QEMU
 which checks the monitor calls and layout changes; when it asks, the test
 pushes the pointer across onto the second monitor, and the screenshot is
 one PNG per monitor (`montest.png`, `montest-2.png`).  Then `nstest`
-starts NetSurf on a page with an SVG image, an inline `<svg>` and a list a
-script builds: the test checks the SVGs' colours and sizes and the list
-items on the screen, clicks the page's box (a script changes it) and
-checks the page was redrawn with it changed (`nstest-before.png`,
-`nstest-after.png`), then closes NetSurf with Alt+F4.  Last, `explorer
+starts NetSurf on a page with an SVG image, an inline `<svg>`, a list a
+script builds, an SVG without a size and an iframe holding a frameset
+page: the test checks the SVGs' colours and sizes (the unsized one at the
+default 300 x 150), the list items and both frames on the screen, clicks the page's box (a script changes it) and
+checks the page was redrawn with it changed and the rest still there (`nstest-before.png`,
+`nstest-after.png`), then closes NetSurf with Alt+F4.  Then `store scroll
+bar` runs `store open` and checks, from the `[STORE] view:` lines the App
+Store logs when its view changes, that All apps has a vertical scroll bar
+and that the wheel, Home, Page Down, End, a click on the bar's down arrow,
+one in its trough and a drag of its thumb each scroll the list, then
+closes the Store with Esc.  Last, `explorer
 scroll bars` opens File Explorer on `C:\Windows\System32` (more files than
 fit) and checks, from the `[EXPLORER]` lines it logs when its view
 changes, that the list has a vertical scroll bar and that the wheel, Page

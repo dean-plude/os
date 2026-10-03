@@ -6,7 +6,8 @@
  * installed program ends up).  "Get" fetches the installer over HTTP(S)
  * with the same asynchronous network operations the Terminal's wget
  * uses; "Install" runs the downloaded installer; "Open" starts the
- * program once its executable exists under C:\Programs.
+ * program once its executable exists under C:\Programs.  The list
+ * scrolls with the built-in apps' scroll bar (UiScroll, as File Explorer's).
  */
 
 #include "apps.h"
@@ -81,8 +82,8 @@ static const StoreApp g_catalog[] = {
       CAT_GRAPHICS, "https://inkscape.org/release/inkscape-1.4.2/windows/64-bit/compressed-7z/dl/", "inkscape-1.4.2-x64.7z", "Inkscape",
       "Inkscape\\**\\inkscape.exe", KIND_ARCHIVE, 110, "64-bit 7z archive; GTK application, untested", "Ik", GDI_C(0x2A, 0x2A, 0x2A) },
     { "Krita", "Krita Foundation", "Digital painting and illustration",
-      CAT_GRAPHICS, "https://download.kde.org/stable/krita/5.2.9/krita-x64-5.2.9.zip", "krita-x64-5.2.9.zip", "Krita",
-      "Krita\\**\\krita.exe", KIND_ARCHIVE, 190, "64-bit portable zip; Qt application, untested", "Kr", GDI_C(0x9C, 0x3A, 0x8A) },
+      CAT_GRAPHICS, "https://download.kde.org/stable/krita/5.3.4/krita-x64-5.3.4.zip", "krita-x64-5.3.4.zip", "Krita",
+      "Krita\\**\\krita.exe", KIND_ARCHIVE, 220, "64-bit portable zip; starts on NovaOS (nightly corpus); needs Mesa 3D (see Runtimes)", "Kr", GDI_C(0x9C, 0x3A, 0x8A) },
     { "Audacity", "Audacity Team", "Multi-track audio editor and recorder",
       CAT_MEDIA, GH "audacity/audacity/releases/download/Audacity-3.7.4/audacity-win-3.7.4-64bit.zip", "audacity-win-3.7.4-64bit.zip", "Audacity",
       "Audacity\\**\\Audacity.exe", KIND_ARCHIVE, 20, "64-bit zip; records, edits and saves audio on NovaOS (nightly corpus)", "Au", GDI_C(0x1C, 0x1C, 0x60) },
@@ -167,7 +168,8 @@ enum { DL_NONE, DL_RESOLVE, DL_FETCH, DL_FAILED };
 
 typedef struct {
     int     cat;                   /* selected category */
-    int     scroll;                /* list offset, pixels */
+    UiScroll bar;                  /* the list's scroll bar: pixels down */
+    int     logged[8];             /* the view last logged (log_view) */
     int     pressed;               /* catalog index whose button is held, or -1 */
     /* the one download in flight */
     int     dl;                    /* catalog index, or -1 */
@@ -368,9 +370,9 @@ static void dl_done(Store *s)
 
 static bool unpack_tick(Store *s);
 
-static bool store_tick(WND *w)
+/* The download in flight and 7-Zip's unpacking: true if a row changed */
+static bool dl_tick(Store *s)
 {
-    Store *s = w->user;
     bool changed = unpack_tick(s);
     if (s->dl < 0 || !s->op) return changed;
     NetOp *op = s->op;
@@ -401,6 +403,14 @@ static bool store_tick(WND *w)
         return true;
     }
     return false;
+}
+
+static bool store_tick(WND *w)
+{
+    Store *s = w->user;
+    if (!s) return false;
+    bool moved = UiScrollTick(&s->bar);       /* a held arrow or trough repeats */
+    return dl_tick(s) || moved;
 }
 
 /* -----------------------------------------------------------------------
@@ -635,9 +645,14 @@ static void press(Store *s, int i)
 /* -----------------------------------------------------------------------
  * Layout and painting (client-relative rectangles)
  * ----------------------------------------------------------------------- */
-static GdiRect r_list(GdiRect c) { return RECT(SIDE_W, HEAD_H, c.w - SIDE_W, c.h - HEAD_H); }
+/* The list, less the scroll bar's room when its rows don't fit */
+static GdiRect r_list(const Store *s, GdiRect c)
+{
+    return RECT(SIDE_W, HEAD_H, c.w - SIDE_W - (UiScrollNeeded(&s->bar) ? UI_SB_W : 0), c.h - HEAD_H);
+}
+static GdiRect r_bar(GdiRect c)  { return RECT(c.w - UI_SB_W, HEAD_H, UI_SB_W, c.h - HEAD_H); }
 static GdiRect r_cat(int i)      { return RECT(8, 56 + i * 36, SIDE_W - 16, 32); }
-static GdiRect r_btn(GdiRect c, int row_y) { return RECT(c.w - BTN_W - 20, row_y + (ROW_H - BTN_H) / 2, BTN_W, BTN_H); }
+static GdiRect r_btn(GdiRect lr, int row_y) { return RECT(lr.x + lr.w - BTN_W - 20, row_y + (ROW_H - BTN_H) / 2, BTN_W, BTN_H); }
 
 static int list_height(const Store *s)
 {
@@ -645,12 +660,28 @@ static int list_height(const Store *s)
     return visible(s, idx) * ROW_H + 12;
 }
 
-static void clamp_scroll(Store *s, GdiRect c)
+/* The scroll bar's range: the rows' height, a page of the list's in view */
+static void set_bar(Store *s, GdiRect c)
 {
-    int max = list_height(s) - r_list(c).h;
-    if (max < 0) max = 0;
-    if (s->scroll > max) s->scroll = max;
-    if (s->scroll < 0) s->scroll = 0;
+    s->bar.vert = true;
+    s->bar.line = ROW_H;
+    UiScrollSet(&s->bar, list_height(s), c.h - HEAD_H);
+}
+
+/* One line in the serial log when the view changes (what the self-test
+ * reads): the category, how far the list is scrolled, the bar and where
+ * the list is on the screen */
+static void log_view(Store *s, GdiRect c)
+{
+    if (s->bar.held != UI_SB_NONE) return;
+    GdiRect lr = r_list(s, c);
+    int maxpos = s->bar.max > s->bar.page ? s->bar.max - s->bar.page : 0;
+    int now[8] = { s->cat, s->bar.pos, maxpos, s->bar.page, c.x + lr.x, c.y + lr.y, lr.w, lr.h };
+    if (!memcmp(now, s->logged, sizeof(now))) return;
+    memcpy(s->logged, now, sizeof(now));
+    kprintf("[STORE] view: %s: scrolled %d of %d px, page %d; bar:%s; list %d,%d %dx%d\n", g_cat_name[s->cat],
+            s->bar.pos, maxpos, s->bar.page, UiScrollNeeded(&s->bar) ? " vertical" : "",
+            c.x + lr.x, c.y + lr.y, lr.w, lr.h);
 }
 
 static void app_tile(const StoreApp *a, int x, int y, int sz)
@@ -663,7 +694,7 @@ static void store_paint(WND *w)
 {
     Store *s = w->user;
     GdiRect c = WmClientRect(w);
-    clamp_scroll(s, c);
+    set_bar(s, c);
 
     /* Sidebar */
     GdiFillRect(RECT(c.x, c.y, SIDE_W, c.h), UI_PANEL);
@@ -691,7 +722,7 @@ static void store_paint(WND *w)
     GdiFillRect(RECT(c.x + SIDE_W, c.y + HEAD_H - 1, c.w - SIDE_W, 1), UI_LINE);
 
     /* Rows */
-    GdiRect lr = r_list(c);
+    GdiRect lr = r_list(s, c);
     lr.x += c.x; lr.y += c.y;
     GdiSetClip(lr);
     if (!n) {
@@ -701,7 +732,7 @@ static void store_paint(WND *w)
     for (int k = 0; k < n; k++) {
         int i = idx[k];
         const StoreApp *a = &g_catalog[i];
-        int y = lr.y + 6 + k * ROW_H - s->scroll;
+        int y = lr.y + 6 + k * ROW_H - s->bar.pos;
         if (y + ROW_H < lr.y || y > lr.y + lr.h) continue;
         int x = lr.x + 20;
         GdiRoundRect(RECT(x, y, lr.w - 40, ROW_H - 8), 6, UI_CARD, GDI_TRANSPARENT);
@@ -711,7 +742,7 @@ static void store_paint(WND *w)
         int nw = GdiTextBoldW(a->name);
         GdiTextT(tx + nw + 10, y + 10, a->publisher, UI_TEXT3);
         /* the description, cut to the room before the button */
-        GdiSetClip(RECT(lr.x, lr.y, c.x + c.w - BTN_W - 32 - lr.x, lr.h));
+        GdiSetClip(RECT(lr.x, lr.y, lr.w - BTN_W - 32, lr.h));
         GdiTextT(tx, y + 30, a->summary, UI_TEXT2);
         /* status: the download's progress or result, else size + note */
         char line[96];
@@ -729,21 +760,14 @@ static void store_paint(WND *w)
         GdiSetClip(lr);
         static const char *labels[] = { "Get", "Cancel", "Install", "Run", "Open", "" };
         BtnKind b = row_button(s, i);
-        GdiRect br = r_btn(c, y - c.y);
-        br.x += c.x; br.y += c.y;
+        GdiRect br = r_btn(lr, y);
         if (s->pressed == i) { br.y += 1; }
         if (b == BTN_NONE) GdiTextCenter(br.x, br.y + (br.h - GDI_FONT_H) / 2, br.w, no_button_text(s, i), UI_TEXT3);
         else UiButton(br, labels[b], b == BTN_GET || b == BTN_INSTALL || b == BTN_OPEN);
     }
-    /* scrollbar */
-    int total = list_height(s);
-    if (total > lr.h) {
-        int th = lr.h * lr.h / total;
-        if (th < 24) th = 24;
-        int ty = lr.y + (lr.h - th) * s->scroll / (total - lr.h);
-        GdiRoundRect(RECT(lr.x + lr.w - 8, ty, 4, th), 2, UI_TEXT3, GDI_TRANSPARENT);
-    }
     GdiSetClip(c);
+    UiScrollDraw(&s->bar, r_bar(c), c);
+    log_view(s, c);
 }
 
 /* -----------------------------------------------------------------------
@@ -752,13 +776,13 @@ static void store_paint(WND *w)
 /* The catalog index whose button is at client point (x, y), or -1 */
 static int button_at(const Store *s, GdiRect c, int x, int y)
 {
-    GdiRect lr = r_list(c);
+    GdiRect lr = r_list(s, c);
     if (!UiHit(lr, x, y)) return -1;
     int idx[N_APPS];
     int n = visible(s, idx);
     for (int k = 0; k < n; k++) {
-        int ry = lr.y + 6 + k * ROW_H - s->scroll;
-        if (UiHit(r_btn(c, ry), x, y)) return row_button(s, idx[k]) == BTN_NONE ? -1 : idx[k];
+        int ry = lr.y + 6 + k * ROW_H - s->bar.pos;
+        if (UiHit(r_btn(lr, ry), x, y)) return row_button(s, idx[k]) == BTN_NONE ? -1 : idx[k];
     }
     return -1;
 }
@@ -767,11 +791,14 @@ static void store_mouse(WND *w, WmMouseMsg msg, int x, int y)
 {
     Store *s = w->user;
     GdiRect c = WmClientRect(w);
+    set_bar(s, c);
+    /* the scroll bar first: a press on it, and its drag until release */
+    if (UiScrollMouse(&s->bar, msg, x, y)) return;
     switch (msg) {
     case WM_MOUSE_DOWN:
     case WM_MOUSE_DBLCLK:
         for (int i = 0; i < CAT_COUNT; i++)
-            if (UiHit(r_cat(i), x, y)) { s->cat = i; s->scroll = 0; return; }
+            if (UiHit(r_cat(i), x, y)) { s->cat = i; UiScrollTo(&s->bar, 0); return; }
         s->pressed = button_at(s, c, x, y);
         break;
     case WM_MOUSE_UP: {
@@ -780,8 +807,7 @@ static void store_mouse(WND *w, WmMouseMsg msg, int x, int y)
         s->pressed = -1;
         break; }
     case WM_MOUSE_WHEEL:
-        s->scroll -= WmWheelDelta() * ROW_H;
-        clamp_scroll(s, c);
+        UiScrollTo(&s->bar, s->bar.pos - WmWheelDelta() * ROW_H);
         break;
     default:
         break;
@@ -794,15 +820,15 @@ static void store_key(WND *w, const KeyEvent *k)
     GdiRect c = WmClientRect(w);
     if (k->scancode == KEY_ESC) { WmDestroyWindow(w); return; }
     if (!k->extended) return;
+    set_bar(s, c);
     switch (k->scancode) {
-    case KEY_UP:   s->scroll -= ROW_H; break;
-    case KEY_DOWN: s->scroll += ROW_H; break;
-    case KEY_PGUP: s->scroll -= r_list(c).h; break;
-    case KEY_PGDN: s->scroll += r_list(c).h; break;
-    case KEY_HOME: s->scroll = 0; break;
-    case KEY_END:  s->scroll = list_height(s); break;
+    case KEY_UP:   UiScrollTo(&s->bar, s->bar.pos - ROW_H); break;
+    case KEY_DOWN: UiScrollTo(&s->bar, s->bar.pos + ROW_H); break;
+    case KEY_PGUP: UiScrollTo(&s->bar, s->bar.pos - s->bar.page); break;
+    case KEY_PGDN: UiScrollTo(&s->bar, s->bar.pos + s->bar.page); break;
+    case KEY_HOME: UiScrollTo(&s->bar, 0); break;
+    case KEY_END:  UiScrollTo(&s->bar, s->bar.max); break;
     }
-    clamp_scroll(s, c);
 }
 
 static void store_close(WND *w)
@@ -852,7 +878,12 @@ const char *StoreClose(void)
 
 void StoreOpen(void)
 {
-    if (g_store) { WmSetActive(g_store); return; }
+    if (g_store) {
+        Store *s = g_store->user;
+        memset(s->logged, 0xFF, sizeof(s->logged));   /* log the view again */
+        WmSetActive(g_store);
+        return;
+    }
     Store *s = kzalloc(sizeof(Store));
     if (!s) return;
     s->dl = -1;

@@ -1,6 +1,7 @@
 /*
  * nstest.exe — the NetSurf browser shows SVG images, inline SVG and a
- *              script-built list, and redraws a page a script changes after
+ *              script-built list, frames in an iframe and an SVG at its
+ *              default size, and redraws a page a script changes after
  *              layout (Phase 19.8)
  *
  *   nstest      writes a test page and an SVG image to C:\Temp\nstest,
@@ -11,11 +12,16 @@
  * circle, drawn by NetSurf's path plotter), an svg element written inline
  * in the HTML (a magenta square and a cyan circle, its viewBox scaled 4x),
  * a list a script builds (three items in orange, purple and teal) and a
- * yellow box; clicking the box runs a script that turns it green, makes it
+ * yellow box, and at the right an SVG image without width or height (an
+ * olive rectangle filling its viewBox, drawn at the default 300 x 150) and
+ * an iframe showing a frameset page (a brown frame and a pink frame);
+ * clicking the box runs a script that turns it green, makes it
  * bigger and adds text (an attribute and a new text node, after the page
  * was laid out).  The self-test (tests/selftest/graphics/060-nstest.py)
- * looks at the screen: the SVG's colours, the inline SVG's, the list items
- * and the yellow box, then clicks the box and waits for the green one,
+ * looks at the screen: the SVG's colours, the inline SVG's, the list items,
+ * the default-size SVG, the two frames and the yellow box, then clicks the
+ * box and waits for the green one (with the frames and images still there:
+ * only the body's boxes were built again, and the iframe kept its window),
  * then closes the browser with Alt+F4.  nstest passes when
  * NetSurf exits normally (code 0) within the time limit.
  */
@@ -29,11 +35,28 @@ static const char SVG[] =
     "  <circle cx=\"75\" cy=\"30\" r=\"20\" fill=\"#ff0000\"/>\n"
     "</svg>\n";
 
+/* no width or height: drawn at the default 300 x 150 (the viewBox's 2:1) */
+static const char NOSIZE[] =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 50\">\n"
+    "  <rect x=\"0\" y=\"0\" width=\"100\" height=\"50\" fill=\"#808000\"/>\n"
+    "</svg>\n";
+
+static const char FRAMES[] =
+    "<html><head><title>frames</title></head>\n"
+    "<frameset cols=\"50%,50%\"><frame src=\"left.html\"><frame src=\"right.html\"></frameset>\n"
+    "</html>\n";
+static const char LEFT[] = "<html><body style=\"background: #804000\"></body></html>\n";
+static const char RIGHT[] = "<html><body style=\"background: #ff0080\"></body></html>\n";
+
 static const char PAGE[] =
     "<html><head><title>nstest</title>\n"
     "<style>body { margin: 0; background: #ffffff }\n"
     "#box { background: #ffff00; width: 200px; height: 60px }</style>\n"
     "</head><body>\n"
+    "<div style=\"position: absolute; left: 520px; top: 10px\">\n"
+    "<img src=\"nosize.svg\"><br>\n"
+    "<iframe src=\"frames.html\" width=\"300\" height=\"100\"></iframe>\n"
+    "</div>\n"
     "<p>An SVG image:</p>\n"
     "<img src=\"shape.svg\" width=\"200\" height=\"120\">\n"
     "<p>Inline SVG:</p>\n"
@@ -75,7 +98,9 @@ int main(void)
     int pass = 0, fail = 0;
     CreateDirectoryA("C:\\Temp", NULL);
     CreateDirectoryA("C:\\Temp\\nstest", NULL);
-    if (!put("C:\\Temp\\nstest\\shape.svg", SVG) || !put("C:\\Temp\\nstest\\page.html", PAGE)) {
+    if (!put("C:\\Temp\\nstest\\shape.svg", SVG) || !put("C:\\Temp\\nstest\\page.html", PAGE) ||
+        !put("C:\\Temp\\nstest\\nosize.svg", NOSIZE) || !put("C:\\Temp\\nstest\\frames.html", FRAMES) ||
+        !put("C:\\Temp\\nstest\\left.html", LEFT) || !put("C:\\Temp\\nstest\\right.html", RIGHT)) {
         printf("FAIL: could not write the test page to C:\\Temp\\nstest\n");
         return 1;
     }

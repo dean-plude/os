@@ -213,6 +213,13 @@ typedef struct html_content {
 #ifdef _NOVAOS
 	/** Objects of the box tree being replaced (html_relayout) */
 	struct content_html_object *relayout_stash;
+	/** The lowest node above every change a script made since the
+	 * last relayout, or NULL (html_schedule_relayout_node) */
+	struct dom_node *relayout_node;
+	/** The next relayout rebuilds the whole box tree */
+	bool relayout_full;
+	/** Talloc contexts of subtrees built again (html_relayout) */
+	struct html_relayout_chunk *relayout_chunks;
 #endif
 
 } html_content;
@@ -244,11 +251,29 @@ void html_finish_conversion(html_content *htmlc);
 #ifdef _NOVAOS
 /**
  * Rebuild the box tree soon: a script changed the DOM after layout
- * (NovaOS; does nothing before the first layout or on pages with frames).
+ * (NovaOS; does nothing before the first layout or on frameset pages).
  *
  * \param htmlc The html content whose DOM changed
  */
 void html_schedule_relayout(html_content *htmlc);
+
+/**
+ * Lay out again soon the part of the page below @node: a script changed
+ * @node's children or text (NovaOS).  Only the box subtree of the lowest
+ * block above every change since the last relayout is built again; a
+ * change in the head needs nothing.
+ *
+ * \param htmlc The html content whose DOM changed
+ * \param node  The node whose children changed (for a change to an
+ *		element's attributes, the element's parent)
+ */
+void html_schedule_relayout_node(html_content *htmlc, struct dom_node *node);
+
+/**
+ * A node leaves the page (NovaOS): it and the nodes below it forget their
+ * boxes and styles, which go at the next relayout.
+ */
+void html_relayout_node_removed(html_content *htmlc, struct dom_node *node);
 #endif
 
 
