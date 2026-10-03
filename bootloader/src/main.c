@@ -359,6 +359,63 @@ static UINT64 find_rsdp(void)
 }
 
 /* -----------------------------------------------------------------------
+ * Copy the SMBIOS tables (SMBIOS 3.x entry point first, else 2.x) into
+ * EfiLoaderData pages as Windows' RawSMBIOSData, for the kernel's
+ * GetSystemFirmwareTable('RSMB').  The kernel then needs no mapping of
+ * wherever the firmware keeps them.
+ * ----------------------------------------------------------------------- */
+static void copy_smbios(UINT64 *base_out, UINT64 *size_out)
+{
+    EFI_GUID g3 = SMBIOS3_TABLE_GUID, g2 = SMBIOS_TABLE_GUID;
+    const UINT8 *ep3 = NULL, *ep2 = NULL;
+    for (UINTN i = 0; i < g_st->NumberOfTableEntries; i++) {
+        EFI_CONFIGURATION_TABLE *ct = &g_st->ConfigurationTable[i];
+        if (EFI_GUID_EQ(ct->VendorGuid, g3)) ep3 = (const UINT8 *)ct->VendorTable;
+        else if (EFI_GUID_EQ(ct->VendorGuid, g2)) ep2 = (const UINT8 *)ct->VendorTable;
+    }
+    UINT8 major, minor, dmi;
+    UINT64 table;
+    UINT32 len;
+    if (ep3 && ep3[0] == '_' && ep3[1] == 'S' && ep3[2] == 'M' && ep3[3] == '3' && ep3[4] == '_') {
+        major = ep3[7]; minor = ep3[8]; dmi = ep3[9];
+        len   = *(const UINT32 *)(ep3 + 0x0C);           /* maximum size */
+        table = *(const UINT64 *)(ep3 + 0x10);
+    } else if (ep2 && ep2[0] == '_' && ep2[1] == 'S' && ep2[2] == 'M' && ep2[3] == '_') {
+        major = ep2[6]; minor = ep2[7]; dmi = ep2[0x1E] ? ep2[0x1E] : (UINT8)((ep2[6] << 4) | ep2[7]);
+        len   = *(const UINT16 *)(ep2 + 0x16);
+        table = *(const UINT32 *)(ep2 + 0x18);
+    } else {
+        return;
+    }
+    if (!table || !len || len > 0x100000) return;
+    /* An SMBIOS 3 length is an upper bound: stop after the end-of-table
+     * structure (type 127) */
+    const UINT8 *t = (const UINT8 *)(UINTN)table;
+    UINT32 off = 0;
+    while (off + 4 <= len) {
+        UINT8 type = t[off], hl = t[off + 1];
+        if (hl < 4) break;
+        UINT32 k = off + hl;
+        while (k + 1 < len && (t[k] || t[k + 1])) k++;  /* the strings, ended by two zeros */
+        k += 2;
+        if (k > len) break;
+        off = k;
+        if (type == 127) break;
+    }
+    if (!off) return;
+    UINT64 phys = 0;
+    if (EFI_ERROR(g_bs->AllocatePages(AllocateAnyPages, EfiLoaderData, (8 + off + 4095) / 4096, &phys)))
+        return;
+    UINT8 *d = (UINT8 *)(UINTN)phys;
+    d[0] = 0; d[1] = major; d[2] = minor; d[3] = dmi;
+    *(UINT32 *)(d + 4) = off;
+    mem_copy(d + 8, t, off);
+    *base_out = phys;
+    *size_out = 8 + off;
+    console_printf("SMBIOS %u.%u: %u bytes\r\n", major, minor, off);
+}
+
+/* -----------------------------------------------------------------------
  * Find the best GOP mode (prefer native/largest resolution)
  * ----------------------------------------------------------------------- */
 static BOOLEAN gop_linear(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop)
@@ -639,6 +696,8 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(
     /* 3. Find ACPI RSDP ----------------------------------------------- */
     UINT64 rsdp = find_rsdp();
     console_printf("RSDP physical: 0x%x\r\n", rsdp);
+    UINT64 smbios = 0, smbios_size = 0;
+    copy_smbios(&smbios, &smbios_size);
 
     /* 4. Build page tables -------------------------------------------- */
     UINT64 new_cr3 = 0;
@@ -683,6 +742,8 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(
     bi->media_kernel_size    = media_kernel_size;
     bi->media_loader_base    = media_loader;
     bi->media_loader_size    = media_loader_size;
+    bi->smbios_base          = smbios;
+    bi->smbios_size          = smbios_size;
 
     /* 9. The kernel entry expects the PHYSICAL address of BootInfo and
      *    derefs it through the physmap itself (PHYSMAP_BASE + phys).  All

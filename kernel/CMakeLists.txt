@@ -135,6 +135,7 @@ set(KERNEL_C_SOURCES
     hal/ioapic.c
     hal/hpet.c
     hal/display.c
+    hal/firmware.c
     drivers/e1000.c
     drivers/virtio_net.c
     drivers/virtio_input.c
