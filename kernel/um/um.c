@@ -1818,8 +1818,10 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
              (put_ustr(pp, sz, &off, pp + L->cmdline, cmdline, pva, L, w) ||         /* CommandLine */
               put_ustr_region(p, pp + L->cmdline, cmdline, L, w));
         /* Environment block: the creator's, or the default one */
-        char ncpu[32];
+        char ncpu[32], user[48] = "USERNAME=";
         ksnprintf(ncpu, sizeof(ncpu), "NUMBER_OF_PROCESSORS=%u", (unsigned)g_cpu_count);
+        if (!um_registry_get_sz(UM_SETUP_KEY, "UserName", user + 9, (int)sizeof(user) - 9) || !user[9])
+            strcpy(user + 9, "dean");               /* the name given at first boot (apps/welcome.c) */
         const char *env[] = {
             "ALLUSERSPROFILE=C:\\ProgramData", "APPDATA=C:\\AppData\\Roaming", "COMPUTERNAME=NOVA-PC",
             "ComSpec=C:\\Windows\\System32\\cmd.exe",
@@ -1829,7 +1831,7 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
             w ? "PROCESSOR_ARCHITEW6432=AMD64" : "ProgramW6432=C:\\Programs",
             "ProgramData=C:\\ProgramData", "ProgramFiles=C:\\Programs", "ProgramFiles(x86)=C:\\Programs",
             "PROMPT=$P$G", "SystemDrive=C:", "SystemRoot=C:\\Windows",
-            "TEMP=C:\\Temp", "TMP=C:\\Temp", "USERNAME=dean", "USERPROFILE=C:\\", "windir=C:\\Windows", NULL
+            "TEMP=C:\\Temp", "TMP=C:\\Temp", user, "USERPROFILE=C:\\", "windir=C:\\Windows", NULL
         };
         char *def = NULL;
         if (!envp) {

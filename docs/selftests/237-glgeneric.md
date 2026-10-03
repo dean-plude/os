@@ -1,0 +1,1 @@
+| `glgeneric` | With no OpenGL driver installed (before the App Store's Mesa 3D), `opengl32.dll` falls back to its own OpenGL 1.1, as Windows does without a display driver's OpenGL: a double-buffered RGBA pixel format, a context made current on a window, `glGetString` saying "GDI Generic" and 1.1, `glClear` read back with `glReadPixels`, and `SwapBuffers` (64- and 32-bit) |

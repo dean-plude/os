@@ -24,6 +24,8 @@ typedef enum {
     APP_STORE, APP_PHOTOS,
     /* The installer: puts NovaOS on a disk */
     APP_SETUP,
+    /* The first-boot setup of an installed system: name, display */
+    APP_WELCOME,
     /* Placeholders for apps NovaOS cannot run yet */ APP_XBOX, APP_SKYPE, APP_PHOTOSHOP,
     APP_ILLUSTRATOR, APP_CLIPCHAMP, APP_VSTUDIO, APP_PAINT, APP_TIPS,
     APP_POWERPOINT, APP_BLENDER, APP_BING, APP_SOLITAIRE, APP_TODO,
@@ -213,3 +215,12 @@ const char *StoreClose(void);
 void StoreShowUpdates(void);
 /* Install NovaOS on a disk */
 void SetupOpen(void);
+/* "Welcome to NovaOS", the first-boot setup (welcome.c): the user's name
+ * and the display resolution.  WelcomeNeeded: an installed system that
+ * has not been through it yet; WelcomeFirstBoot opens it for that (it
+ * cannot be cancelled), WelcomeOpen to go through it again by hand. */
+bool WelcomeNeeded(void);
+void WelcomeFirstBoot(void);
+void WelcomeOpen(void);
+/* The user's name given at first boot ("Dean Plude" until then) */
+void AppUserName(char *out, int cap);

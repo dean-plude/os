@@ -21,6 +21,7 @@
 #include "../drivers/usb.h"
 #include "../drivers/virtio_input.h"
 #include "../drivers/hda.h"
+#include "../drivers/sof.h"
 #include "../drivers/i2chid.h"
 #include "../um/um.h"
 #include "../fs/persist.h"
@@ -254,7 +255,7 @@ static void cmd_help(Term *t)
         "  store updates       open the App Store's updates for NovaOS\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  devices             the PCI devices and the driver each one has (also: lspci)\n"
-        "  hwcheck             test the laptop drivers on modelled devices (codec, touchpad)\n"
+        "  hwcheck             test the laptop drivers on modelled devices (codec, DSP, touchpad)\n"
         "  vol  sync           where drive C: is saved; save it now\n"
         "  install [disk] [/fat]  install NovaOS on a disk (no disk: list them)\n"
         "  update [install]    check for a newer NovaOS (and install it)\n"
@@ -490,6 +491,17 @@ static void cmd_date(Term *t, bool time)
                       r.year, r.month, r.day);
 }
 
+/* whoami: as Windows prints it, nova-pc\name in lower case (USERNAME: the
+ * name given at first boot, apps/welcome.c) */
+static void cmd_whoami(Term *t)
+{
+    char user[40] = "dean", line[64];
+    um_registry_get_sz(UM_SETUP_KEY, "UserName", user, sizeof(user));
+    ksnprintf(line, sizeof(line), "nova-pc\\%s", user[0] ? user : "dean");
+    for (char *p = line; *p; p++) if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
+    tprint(t, line);
+}
+
 static void cmd_sysinfo(Term *t)
 {
     char cpu[64], up[32];
@@ -664,13 +676,16 @@ static void cmd_usbcheck(Term *t)
 
 /* hwcheck: the drivers for the reference laptop's devices QEMU can't
  * show (Phase 21.4), against modelled devices: the HD Audio controller
- * matching and a Realtek ALC257 codec with its headphone jack, and an
- * I2C-HID touchpad */
+ * matching and a Realtek ALC257 codec with its headphone jack, the audio
+ * DSP's boot (NHLT, SOF firmware, IPC4) on a modelled DSP, and an I2C-HID
+ * touchpad; then what the real DSP did at boot */
 static void cmd_hwcheck(Term *t)
 {
     int failed = HdaSelfCheck(usbcheck_say, t);
+    int sfailed = SofSelfCheck(usbcheck_say, t);
     int ifailed = I2cHidSelfCheck(usbcheck_say, t);
-    failed = failed < 0 || ifailed < 0 ? -1 : failed + ifailed;
+    failed = failed < 0 || sfailed < 0 || ifailed < 0 ? -1 : failed + sfailed + ifailed;
+    tprintf(t, "     audio DSP on this machine: %s", SofStatus());
     tprintf(t, "hwcheck: %s, %d failed", failed ? "done" : "all passed", failed < 0 ? 1 : failed);
 }
 
@@ -1723,7 +1738,7 @@ static void run_cmd_line(Term *t, char *cmdline, const char *original)
         tprint(t, PersistActive() ? "Drive C: and the registry are saved." : "There is no disk to save to.");
     }
     else if (is(c, "ver"))                      tprintf(t, "NovaOS [Version %s]", NovaVersion());
-    else if (is(c, "whoami"))                   tprint(t, "nova-pc\\dean");
+    else if (is(c, "whoami"))                   cmd_whoami(t);
     else if (is(c, "sysinfo") || is(c, "neofetch")) cmd_sysinfo(t);
     else if (is(c, "dmesg"))                    cmd_dmesg(t);
     else if (is(c, "start") || is(c, "open"))   cmd_start(t, argc, argv);

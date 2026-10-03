@@ -46,6 +46,7 @@
 
 #include "audio.h"
 #include "hda.h"
+#include "sof.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
@@ -603,6 +604,7 @@ bool AudioInit(void)
         return false;
     }
     if (!HdaInit()) return false;
+    SofStart();                                     /* the laptop's digital microphones, behind the audio DSP */
     g_hda_out.name = HdaName();
     g_hda_out.ring = HdaRing(&g_hda_out.bytes);
     AudioOutputAttach(&g_hda_out);

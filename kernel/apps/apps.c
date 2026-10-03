@@ -23,6 +23,7 @@ static const AppInfo g_apps[APP_COUNT] = {
     [APP_STORE]       = { "App Store",              "",   GDI_C(0x18,0x6A,0xD8), true,  false },
     [APP_PHOTOS]      = { "Photos",                 "",   GDI_C(0x2E,0xA0,0x8A), true,  true  },
     [APP_SETUP]       = { "Install NovaOS",         "",   GDI_C(0x1C,0x6E,0xC8), true,  false },
+    [APP_WELCOME]     = { "Welcome to NovaOS",      "",   GDI_C(0x2A,0x9A,0x7A), true,  false },
     [APP_XBOX]        = { "Xbox",                   "X",  GDI_C(0x10,0x7C,0x10), false, false },
     [APP_SKYPE]       = { "Skype",                  "S",  GDI_C(0x1E,0x9A,0xE0), false, false },
     [APP_PHOTOSHOP]   = { "Adobe Photoshop 2025",   "Ps", GDI_C(0x05,0x1A,0x2E), false, false },
@@ -94,6 +95,7 @@ void AppLaunch(AppId id)
     case APP_PHOTOS:   PhotosOpen(NULL); break;
     case APP_STORE:    StoreOpen(); break;
     case APP_SETUP:    SetupOpen(); break;
+    case APP_WELCOME:  WelcomeOpen(); break;
     default:           PlaceholderOpen(id); break;
     }
 }
@@ -118,6 +120,7 @@ bool AppByName(const char *name, AppId *out)
         { "photos",   APP_PHOTOS   }, { "pictures", APP_PHOTOS },
         { "store",    APP_STORE    }, { "appstore", APP_STORE },
         { "setup",    APP_SETUP    }, { "installer", APP_SETUP },
+        { "welcome",  APP_WELCOME  }, { "oobe", APP_WELCOME },
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         const char *a = names[i].cmd, *b = name;
@@ -985,6 +988,13 @@ void AppDrawIcon(AppId id, int x, int y, int s)
         static const P arrow[] = { {50,16}, {50,48} }, head[] = { {38,36}, {50,48}, {62,36} };
         poly(arrow, 2, false, x, y, s, w);
         poly(head, 3, false, x, y, s, w);
+        break; }
+    case APP_WELCOME: {
+        /* a person: setting up who uses this PC */
+        static const P shoulders[] = { {24,82}, {28,66}, {40,58}, {60,58}, {72,66}, {76,82} };
+        tile(x, y, s, GDI_C(0x5C, 0xD6, 0xA8), GDI_C(0x1E, 0x8A, 0x6A));
+        ring(x, y, s, 50, 34, 13, 13, w);
+        poly(shoulders, 6, false, x, y, s, w);
         break; }
     case APP_STORE: {
         /* a shopping bag */
