@@ -235,9 +235,30 @@ level per quantum the thread runs (two ticks, counted across its waits),
 back to its base; a thread whose slice ends goes on running while every
 queued foreground thread has a lower priority.  Once a second the balance
 set raises a thread that has been ready for 3 s without running to 15 for
-one quantum.  The device poll and audio mixer threads run at 16, above
-any boost; the desktop at 9, so a +1 boost doesn't put programs ahead of
-it.
+one quantum.
+
+A program thread's base priority is NT's (`kernel/um/um_thread.c`): its
+process's priority class base (IDLE 4, BELOW_NORMAL 6, NORMAL 8,
+ABOVE_NORMAL 10, HIGH 13, REALTIME 24) plus the thread's increment from
+`SetThreadPriority` (-2 to 2), kept within 1-15, with
+`THREAD_PRIORITY_IDLE` and `TIME_CRITICAL` saturating at 1 and 15 (16
+and 31 for REALTIME).  `SetPriorityClass` and `SetThreadPriority` go
+through `NtSetInformationProcess(ProcessPriorityClass)` and
+`NtSetInformationThread(ThreadBasePriority)`; a new base takes effect at
+once (`sched_set_base_priority`: the thread is requeued, preempts or
+gives way) and ends any boost, which from then on decays back to the new
+base.  REALTIME and absolute priorities of 16 and up need
+SeIncreaseBasePriorityPrivilege, which only an administrator's token
+holds; kernel32 gives HIGH instead, as Windows does, so a program never
+gets above 15.  `SetThreadPriorityBoost` and `SetProcessPriorityBoost`
+switch wake-up boosts off.  A new process is NORMAL, or IDLE or
+BELOW_NORMAL when its creator is, unless `CreateProcess` names a class.
+`THREAD_BASIC_INFORMATION.BasePriority` is the increment, as on NT.
+
+The system threads programs must never hold up run in the real-time
+range, above anything a program can ask for: the desktop (input, window
+management, drawing) at 16, the device poll and audio mixer threads at 17,
+so a long redraw doesn't delay a key press or a sound buffer either.
 
 A CPU halted waiting for the kernel lock wakes none of its sleepers.  The
 timer interrupt it takes meanwhile (`sched_timer_rearm`) hands a due
