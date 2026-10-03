@@ -53,6 +53,17 @@ typedef struct {
 
     int           family;         /* NET_AF_INET or NET_AF_INET6 */
     NetSockAddr   peer;           /* connected peer */
+
+    /* Options (NetSockSetOpt), kept here as well as in the PCB: a
+     * listener's go to the connections it accepts, and they read back
+     * after lwIP has freed a PCB */
+    UINT32        rcvbuf, sndbuf;         /* SO_RCVBUF/SO_SNDBUF: read back (the ring stays RXBUF) */
+    UINT32        rcvtimeo, sndtimeo;     /* ms, 0: wait for ever */
+    bool          nodelay;                /* TCP_NODELAY: Nagle's algorithm off */
+    bool          linger_on;              /* SO_LINGER */
+    UINT16        linger_s;
+    UINT8         so_options;             /* lwIP SOF_* (REUSEADDR, KEEPALIVE, BROADCAST) */
+    UINT8         ttl;
 } Sock;
 
 static Sock g_sock[NSOCK];
@@ -85,6 +96,18 @@ static int rx_get(Sock *s, UINT8 *d, int cap)
 static Sock *slot(int s) { return (s >= 0 && s < NSOCK && g_sock[s].used) ? &g_sock[s] : NULL; }
 
 static bool wait_cancel(SockCancelFn c, void *a) { return c && c(a); }
+
+/* SO_RCVTIMEO/SO_SNDTIMEO: the tick a blocking call gives up at (0: never) */
+static UINT64 deadline_of(UINT32 ms) { return ms ? sched_ticks() + (ms + 9) / 10 : 0; }
+static bool past(UINT64 deadline)    { return deadline && sched_ticks() >= deadline; }
+
+/* net_wait, but no later than @deadline */
+static void wait_until(UINT32 gen, UINT64 deadline)
+{
+    if (!deadline) { net_wait(gen); return; }
+    UINT64 now = sched_ticks(), left = deadline > now ? deadline - now : 1;
+    net_wait_ticks(gen, left < 10 ? left : 10);
+}
 
 /* -----------------------------------------------------------------------
  * Addresses.  An IPv6 socket's lwIP PCB takes either family (dual-stack):
@@ -206,6 +229,14 @@ static err_t tcp_accept_cb(void *arg, struct tcp_pcb *newpcb, err_t err)
     ns->tcp = newpcb;
     ns->connected = true;
     ns->family = s->family;
+    /* the listener's options, as Winsock's accept() gives them */
+    ns->rcvbuf = s->rcvbuf; ns->sndbuf = s->sndbuf;
+    ns->rcvtimeo = s->rcvtimeo; ns->sndtimeo = s->sndtimeo;
+    ns->nodelay = s->nodelay; ns->linger_on = s->linger_on; ns->linger_s = s->linger_s;
+    ns->so_options = s->so_options; ns->ttl = s->ttl;
+    newpcb->so_options = s->so_options;
+    newpcb->ttl = s->ttl;
+    if (s->nodelay) tcp_nagle_disable(newpcb);
     from_lwip(s, &newpcb->remote_ip, newpcb->remote_port, &ns->peer);
     tcp_backlog_delayed(newpcb);
     tcp_callbacks(newpcb, ns);
@@ -245,6 +276,8 @@ static int alloc_slot(void)
         if (!rx) return -SOCK_ENOBUFS;
         memset(&g_sock[i], 0, sizeof(Sock));
         g_sock[i].rx = rx;
+        g_sock[i].rcvbuf = RXBUF;
+        g_sock[i].sndbuf = TCP_SND_BUF;
         g_sock[i].used = true;
         return i;
     }
@@ -263,6 +296,7 @@ int NetSockTcp(int family)
     s->tcp = tcp_new_ip_type(family == NET_AF_INET6 ? IPADDR_TYPE_ANY : IPADDR_TYPE_V4);
     if (!s->tcp) { s->used = false; net_unlock(); return -SOCK_ENOBUFS; }
     tcp_callbacks(s->tcp, s);
+    s->ttl = s->tcp->ttl;
     net_unlock();
     return i;
 }
@@ -280,6 +314,7 @@ int NetSockUdp(int family)
     s->udp_pcb = udp_new_ip_type(family == NET_AF_INET6 ? IPADDR_TYPE_ANY : IPADDR_TYPE_V4);
     if (!s->udp_pcb) { s->used = false; net_unlock(); return -SOCK_ENOBUFS; }
     udp_recv(s->udp_pcb, udp_recv_cb, s);
+    s->ttl = s->udp_pcb->ttl;
     net_unlock();
     return i;
 }
@@ -322,6 +357,7 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
     if (len <= 0) return 0;
     const UINT8 *p = buf;
     int sent = 0;
+    UINT64 deadline = deadline_of(s->sndtimeo);
     while (sent < len) {
         UINT32 ng = net_gen();
         net_lock();
@@ -330,8 +366,8 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
         if (space == 0) {
             net_unlock();
             if (s->nonblock) return sent ? sent : -SOCK_EWOULDBLOCK;
-            if (wait_cancel(c, ca)) return sent ? sent : -SOCK_ETIMEDOUT;
-            net_wait(ng);
+            if (wait_cancel(c, ca) || past(deadline)) return sent ? sent : -SOCK_ETIMEDOUT;
+            wait_until(ng, deadline);
             continue;
         }
         int chunk = len - sent;
@@ -341,7 +377,8 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
         net_unlock();
         if (e == ERR_MEM) {
             if (s->nonblock) return sent ? sent : -SOCK_EWOULDBLOCK;
-            net_wait(ng);
+            if (past(deadline)) return sent ? sent : -SOCK_ETIMEDOUT;
+            wait_until(ng, deadline);
         } else if (e != ERR_OK) {
             return sent ? sent : -SOCK_ECONNRESET;
         }
@@ -355,6 +392,7 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
     Sock *s = slot(sd);
     if (!s) return -SOCK_ENOTSOCK;
     if (len <= 0) return 0;
+    UINT64 deadline = deadline_of(s->rcvtimeo);
     for (;;) {
         UINT32 ng = net_gen();
         net_lock();
@@ -374,8 +412,8 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
         if (closed) return 0;                                /* orderly shutdown */
         if (!s->connected && !s->connecting) return -SOCK_ENOTCONN;
         if (s->nonblock) return -SOCK_EWOULDBLOCK;
-        if (wait_cancel(c, ca)) return -SOCK_ETIMEDOUT;
-        net_wait(ng);
+        if (wait_cancel(c, ca) || past(deadline)) return -SOCK_ETIMEDOUT;
+        wait_until(ng, deadline);
     }
 }
 
@@ -402,6 +440,7 @@ int NetSockRecvFrom(int sd, void *buf, int len, NetSockAddr *from, SockCancelFn 
 {
     Sock *s = slot(sd);
     if (!s || !s->udp) return -SOCK_ENOTSOCK;
+    UINT64 deadline = deadline_of(s->rcvtimeo);
     for (;;) {
         UINT32 ng = net_gen();
         net_lock();
@@ -418,8 +457,8 @@ int NetSockRecvFrom(int sd, void *buf, int len, NetSockAddr *from, SockCancelFn 
         }
         net_unlock();
         if (s->nonblock) return -SOCK_EWOULDBLOCK;
-        if (wait_cancel(c, ca)) return -SOCK_ETIMEDOUT;
-        net_wait(ng);
+        if (wait_cancel(c, ca) || past(deadline)) return -SOCK_ETIMEDOUT;
+        wait_until(ng, deadline);
     }
 }
 
@@ -511,7 +550,10 @@ static void close_locked(Sock *s)
         tcp_arg(s->tcp, NULL);
         if (s->listening) tcp_accept(s->tcp, NULL);         /* (a listener has no recv/sent/err) */
         else { tcp_recv(s->tcp, NULL); tcp_sent(s->tcp, NULL); tcp_err(s->tcp, NULL); }
-        if (tcp_close(s->tcp) != ERR_OK) tcp_abort(s->tcp);
+        /* SO_LINGER on with a zero timeout: a hard close, a reset to the
+         * peer and what was not sent dropped, as on Windows */
+        if (!s->listening && s->linger_on && !s->linger_s) tcp_abort(s->tcp);
+        else if (tcp_close(s->tcp) != ERR_OK) tcp_abort(s->tcp);
     }
     /* Drop any queued, not-yet-accepted connections */
     while (s->acc_tail != s->acc_head) {
@@ -598,4 +640,95 @@ void NetSockPoll(int sd, bool *readable, bool *writable, bool *error)
     if (readable) *readable = rd;
     if (writable) *writable = wr;
     if (error) *error = er;
+}
+
+/* -----------------------------------------------------------------------
+ * Options
+ * ----------------------------------------------------------------------- */
+/* The PCB's own option bits and TTL (an IPv4/IPv6 PCB or a listener: all
+ * start with lwIP's IP_PCB fields) */
+static void apply_ip_opts(Sock *s)
+{
+    if (s->udp && s->udp_pcb) { s->udp_pcb->so_options = s->so_options; s->udp_pcb->ttl = s->ttl; }
+    else if (s->tcp) {
+        if (s->listening) {
+            struct tcp_pcb_listen *lp = (struct tcp_pcb_listen *)s->tcp;
+            lp->so_options = s->so_options; lp->ttl = s->ttl;
+        } else {
+            s->tcp->so_options = s->so_options; s->tcp->ttl = s->ttl;
+        }
+    }
+}
+
+int NetSockSetOpt(int sd, int opt, UINT32 v)
+{
+    net_lock();
+    Sock *s = slot(sd);
+    if (!s) { net_unlock(); return -SOCK_ENOTSOCK; }
+    int r = 0;
+    UINT8 bit = opt == SOCKOPT_REUSEADDR ? SOF_REUSEADDR : opt == SOCKOPT_KEEPALIVE ? SOF_KEEPALIVE :
+                opt == SOCKOPT_BROADCAST ? SOF_BROADCAST : 0;
+    switch (opt) {
+    case SOCKOPT_RCVBUF:   s->rcvbuf = v; break;
+    case SOCKOPT_SNDBUF:   s->sndbuf = v; break;
+    case SOCKOPT_RCVTIMEO: s->rcvtimeo = v; break;
+    case SOCKOPT_SNDTIMEO: s->sndtimeo = v; break;
+    case SOCKOPT_REUSEADDR:
+    case SOCKOPT_KEEPALIVE:
+    case SOCKOPT_BROADCAST:
+        if (opt == SOCKOPT_KEEPALIVE && s->udp) { r = -SOCK_EINVAL; break; }
+        s->so_options = v ? (UINT8)(s->so_options | bit) : (UINT8)(s->so_options & ~bit);
+        apply_ip_opts(s);
+        break;
+    case SOCKOPT_TTL:
+        if (v < 1 || v > 255) { r = -SOCK_EINVAL; break; }
+        s->ttl = (UINT8)v;
+        apply_ip_opts(s);
+        break;
+    case SOCKOPT_NODELAY:
+        if (s->udp) { r = -SOCK_EINVAL; break; }
+        s->nodelay = v != 0;
+        if (s->tcp && !s->listening) {                  /* (a listener's goes to what it accepts) */
+            if (s->nodelay) tcp_nagle_disable(s->tcp);
+            else tcp_nagle_enable(s->tcp);
+            if (s->nodelay) tcp_output(s->tcp);         /* what Nagle held back goes now */
+        }
+        break;
+    case SOCKOPT_LINGER:
+        if (s->udp) { r = -SOCK_EINVAL; break; }
+        s->linger_on = (v & 0xFFFF) != 0;
+        s->linger_s = (UINT16)(v >> 16);
+        break;
+    default: r = -SOCK_EINVAL;
+    }
+    net_unlock();
+    return r;
+}
+
+int NetSockGetOpt(int sd, int opt, UINT32 *v)
+{
+    net_lock();
+    Sock *s = slot(sd);
+    if (!s) { net_unlock(); return -SOCK_ENOTSOCK; }
+    int r = 0;
+    switch (opt) {
+    case SOCKOPT_RCVBUF:     *v = s->rcvbuf; break;
+    case SOCKOPT_SNDBUF:     *v = s->sndbuf; break;
+    case SOCKOPT_RCVTIMEO:   *v = s->rcvtimeo; break;
+    case SOCKOPT_SNDTIMEO:   *v = s->sndtimeo; break;
+    case SOCKOPT_REUSEADDR:  *v = (s->so_options & SOF_REUSEADDR) != 0; break;
+    case SOCKOPT_KEEPALIVE:  *v = (s->so_options & SOF_KEEPALIVE) != 0; break;
+    case SOCKOPT_BROADCAST:  *v = (s->so_options & SOF_BROADCAST) != 0; break;
+    case SOCKOPT_TTL:        *v = s->ttl; break;
+    case SOCKOPT_NODELAY:    *v = s->nodelay; break;
+    case SOCKOPT_LINGER:     *v = (UINT32)s->linger_on | ((UINT32)s->linger_s << 16); break;
+    case SOCKOPT_TYPE:       *v = s->udp ? 2 : 1; break;
+    case SOCKOPT_ACCEPTCONN: *v = s->listening; break;
+    case SOCKOPT_ERROR:      /* a failed connect, or a connection reset */
+        *v = !s->reset ? 0 : s->connected ? SOCK_ECONNRESET : SOCK_ECONNREFUSED;
+        break;
+    default: r = -SOCK_EINVAL;
+    }
+    net_unlock();
+    return r;
 }
