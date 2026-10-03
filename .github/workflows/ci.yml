@@ -18,6 +18,7 @@
 # (CONTRIBUTING.md).  The boot tests wait for it.  The merge queue runs the
 # same jobs on its temporary merge-group branches (the generated-docs check
 # was already done on the pull request, so it is skipped there).
+# (CONTRIBUTING.md).  The boot tests wait for it.
 #
 # Speed: the build compiles through ccache, whose cache the boot-test job
 # saves after each build (main's cache is shared with every pull request), so
