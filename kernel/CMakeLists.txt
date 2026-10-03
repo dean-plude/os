@@ -224,6 +224,7 @@ set(KERNEL_C_SOURCES
     apps/photos.c
     apps/store.c
     apps/setup.c
+    apps/welcome.c
     lib/string.c
 )
 

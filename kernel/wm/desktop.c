@@ -99,8 +99,6 @@ static void glass(GdiRect r, int rad)
 
 static bool g_ready;
 
-/* User identity shown on the Start menu bar. */
-static const char *USER_NAME = "Dean Plude";
 
 static bool pt_in(GdiRect r, int x, int y)
 {
@@ -914,10 +912,17 @@ static void draw_start_menu(void)
     RtcTime t;
     rtc_read(&t);
     const char *greet = t.hour < 12 ? "Good morning" : t.hour < 18 ? "Good afternoon" : "Good evening";
+    char user[32], initials[3] = "";
+    AppUserName(user, sizeof(user));              /* the name given at first boot */
+    for (int i = 0, n = 0; user[i] && n < 2; i++) {   /* "Dean Plude": "DP" */
+        if (user[i] == ' ' || (i && user[i - 1] != ' ')) continue;
+        initials[n++] = user[i] >= 'a' && user[i] <= 'z' ? (char)(user[i] - 32) : user[i];
+        initials[n] = '\0';
+    }
     GdiFillCircle(cx + 18, by + 31, 17, GDI_C(0x6A, 0x4A, 0xC8));
-    GdiTextCenter(cx + 1, by + 24, 36, "DP", GDI_WHITE);
+    GdiTextCenter(cx + 1, by + 24, 36, initials, GDI_WHITE);
     GdiTextT(cx + 46, by + 14, greet, SH_TEXT2);
-    GdiTextBold(cx + 46, by + 31, USER_NAME, SH_TEXT);
+    GdiTextBold(cx + 46, by + 31, user, SH_TEXT);
 
     /* Files, Settings and power: line glyphs, 20px in 36px targets */
     static const struct { Glyph g; ActKind k; int arg; } foot[] = {
@@ -1882,6 +1887,8 @@ void DesktopRun(void *arg)
     /* Started from the installation disc: offer to install */
     if (SetupIsLive()) AppLaunch(APP_SETUP);
     else {
+        /* Installed and started for the first time: the first-boot setup */
+        if (WelcomeNeeded()) WelcomeFirstBoot();
         /* An installed system starts its automatic services (services.c) */
         RamNode *svc = RamfsResolve(NULL, "\\Windows\\System32\\services.exe");
         if (!svc || !UmSpawnDetached(svc, "services /autostart", svc->parent))
