@@ -264,6 +264,11 @@ To make the ISO yourself from a fresh build, run
   `tools/d3dtest` (17 tests); each 64- and 32-bit, with a screenshot of
   each while it draws.
 
+The build compiles through ccache, and the boot-test job saves the cache
+after each build, so a pull request recompiles only what it changed.  A pull
+request that changes only Markdown, `docs/` or `LICENSE` skips the build and
+boot jobs (GitHub counts a skipped job as passing a required check).
+
 A failing test fails its check; each run's summary has a table of results,
 and the serial logs and screenshots are kept as artifacts, along with the
 bootable ISO (`nova-iso`).  When a push to `main` passes both suites, the
