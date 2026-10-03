@@ -687,6 +687,7 @@ void sched_sleep_until(volatile uint32_t *flag, uint64_t deadline)
 void sched_sleep_until_tsc(volatile uint32_t *flag, uint64_t tsc)
 {
     IrqState irq = irq_save();
+    if (current_thread->sleep_cpu != this_cpu()) leave_sleepers(current_thread);   /* (see sched_sleep_until) */
     RunQueue *rq = my_rq();
     spin_lock(&rq->lock);
     uint64_t now = rdtsc();
@@ -702,6 +703,7 @@ void sched_sleep_until_tsc(volatile uint32_t *flag, uint64_t tsc)
         t->sleep_next = rq->sleepers;
         rq->sleepers = t;
         t->in_sleepers = true;
+        t->sleep_cpu = this_cpu();
     }
     /* Sooner than this CPU's timer is armed for (or that was armed before
      * a restart and has gone by): arm it for this */
