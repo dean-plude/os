@@ -185,7 +185,8 @@ class Nova:
         self.q = subprocess.Popen([qemu_binary(), '-machine', 'q35'] + accel_args() + ['-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
                                    '-m', str(mem), '-smp', str(smp),
                                    '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
-                                   '-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on',
+                                   *([] if img is False else      # img=False: no boot disk (the boot device is in extra_args)
+                                     ['-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on']),
                                    '-drive', f'format=raw,file={data}',
                                    '-serial', f'file:{self.serial_path}'] + list(vga) + display_args(list(vga) + list(extra_args)) + [
                                    '-nic', 'user,model=e1000e' if net else 'none',

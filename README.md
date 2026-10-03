@@ -293,6 +293,24 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -cdrom nova.iso -serial stdio
 ```
 
+The same ISO starts a real PC from a USB stick (UEFI, Secure Boot off;
+the display is the firmware's framebuffer).  Writing it erases the stick:
+on Linux, find the stick with `lsblk` (here `/dev/sdX`) and run the
+commands below; on Windows use Rufus in "DD image" mode or balenaEtcher,
+and on a Mac see [docs/macos.md](docs/macos.md).  Started from the stick,
+NovaOS runs live as from the disc and writes its log into
+`EFI\NOVA\bootlog.txt` on the stick's EFI partition (partition 2,
+labelled `NOVA_EFI`), so a PC without a serial port still leaves a log to
+read on another computer.  Linux mounts that partition as it is; macOS
+with `diskutil mount` (`disk4s2` for a stick at `disk4`); Windows gives
+an EFI partition no drive letter by itself, so assign one in `diskpart`
+(`list volume`, `select volume N`, `assign letter=Z`).
+
+```bash
+sudo dd if=nova.iso of=/dev/sdX bs=4M conv=fsync status=progress
+sync
+```
+
 To make the ISO yourself from a fresh build, run
 `scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf`
 (needs `xorriso`).  `*.iso` is in `.gitignore`: the ISO is never committed.

@@ -123,12 +123,13 @@ static void setup_paint(WND *w)
     case PG_WELCOME: {
         GdiTextLarge(x, y, "Install NovaOS", UI_TEXT);
         int ny;
-        if (SetupIsLive())
-            ny = wrap(x, y + 48, tw, "You are running NovaOS from the installation disc. Everything works, but "
-                                "nothing you do is kept once the PC restarts.\n"
-                                "Setup copies NovaOS to a disk in this PC so it starts from there, with "
-                                "drive C: saved on the same disk.", UI_TEXT2);
-        else
+        if (SetupIsLive()) {
+            ksnprintf(buf, sizeof(buf), "You are running NovaOS from the installation %s. Everything works, but "
+                      "nothing you do is kept once the PC restarts.\n"
+                      "Setup copies NovaOS to a disk in this PC so it starts from there, with "
+                      "drive C: saved on the same disk.", SetupMediaName());
+            ny = wrap(x, y + 48, tw, buf, UI_TEXT2);
+        } else
             ny = wrap(x, y + 48, tw, "Setup copies this NovaOS to another disk, so that disk can start the PC on "
                                 "its own, with drive C: saved on it.", UI_TEXT2);
         wrap(x, ny + 14, tw, "The disk you choose is erased. It needs at least 256 MB.", UI_TEXT3);
@@ -214,8 +215,9 @@ static void setup_paint(WND *w)
         ksnprintf(msg, sizeof(msg), "%s%s%s", buf,
                   s->st.moved_c ? "Your files from this session were copied to it, and drive C: is saved there from now on.\n"
                                 : "Drive C: will be saved there once you start from it.\n",
-                  SetupIsLive() ? "Remove the installation disc, then restart to start NovaOS from the disk."
-                                : "Restart and choose that disk in the firmware's boot menu to start from it.");
+                  !SetupIsLive() ? "Restart and choose that disk in the firmware's boot menu to start from it."
+                  : strcmp(SetupMediaName(), "disc") ? "Remove the installation USB stick, then restart to start NovaOS from the disk."
+                  : "Remove the installation disc, then restart to start NovaOS from the disk.");
         wrap(x, y + 48, tw, msg, UI_TEXT2);
         button(off(r_next(c), c), "Restart now", true, true);
         button(off(r_back(c), c), "Close", false, true);

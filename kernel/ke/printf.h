@@ -69,6 +69,12 @@ void kprintf_set_fb_enabled(bool enabled);
  * into out; returns the number of bytes copied. */
 size_t klog_read(char *out, size_t cap);
 
+/* The kernel's output from the start, whole up to KLOG_BOOT_SIZE bytes
+ * (later output is not kept there): its text and, in *len, its length so
+ * far.  Text up to that length never changes. */
+#define KLOG_BOOT_SIZE (1024 * 1024 - 4096)
+const char *klog_boot_text(size_t *len);
+
 /*
  * Kernel assertion with descriptive panic message.
  */
