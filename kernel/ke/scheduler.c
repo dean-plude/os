@@ -635,8 +635,9 @@ static bool wake_preempts(const Thread *t, bool timer);
  * TSC-deadline sleeper that is due and does not hold the lock runs on
  * another CPU instead, as a timer wake (sched_unblock_timer) — else it
  * waits as long as the lock's holder keeps it, which writing drive C:
- * (PersistSync) does for seconds, and the device poll thread with it:
- * keystrokes the PS/2 controller could not hand over meanwhile were lost. */
+ * once did for seconds (fs/persist.c now writes without it), and the
+ * device poll thread with it: keystrokes the PS/2 controller could not
+ * hand over meanwhile were lost. */
 static void hand_off_due(RunQueue *rq, uint32_t cpu, uint64_t tsc)
 {
     for (Thread **pp = &rq->sleepers; *pp;) {

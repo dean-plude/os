@@ -50,8 +50,8 @@ bool FatLookupPath(FatVol *v, const char *path, FatEntry *out);
 
 /* Read a whole file into @buf (at least e->size bytes). */
 bool FatRead(FatVol *v, const FatEntry *e, void *buf);
-/* The time the next entries written get (DOS date << 16 | time; 0: now) */
-void FatSetStamp(UINT32 dos_time);
+/* The time the next entries written on @v get (DOS date << 16 | time; 0: now) */
+void FatSetStamp(FatVol *v, UINT32 dos_time);
 /* Create or replace the file @name in @dir with @len bytes of @data. */
 bool FatWriteFile(FatVol *v, UINT32 dir, const char *name, const void *data, UINT32 len);
 /* Create the directory @name in @dir (or find it); its cluster in *out. */
