@@ -4,4 +4,5 @@
   [Windows Installer depth](HISTORY.md#windows-installer-depth-custom-actions-dialogs-shortcuts-services).
   Rollback, transforms, patches and services at boot followed in
   [Windows Installer rollback, transforms, patches](HISTORY.md#windows-installer-rollback-transforms-patches-services-at-boot).
-  Still to come: script custom actions (VBScript, JScript).
+  Script custom actions (JScript and VBScript) followed in
+  [Windows Installer script custom actions](HISTORY.md#windows-installer-script-custom-actions-jscript-and-vbscript).
