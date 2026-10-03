@@ -48,4 +48,5 @@ C: work.  What the runtime needed from NovaOS:
   and input calls...).
 - Not yet: hard links (drive C: behaves like FAT, so git renames), and
   interactive `sh` sessions have not been tried; `sh -c` and scripts
-  are what is tested.
+  are what is tested.  *(Since done: `sh --login -i` runs interactively since
+  Phase 17.2; hard links are still to come.)*

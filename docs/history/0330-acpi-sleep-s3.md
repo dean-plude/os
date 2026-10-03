@@ -22,4 +22,5 @@
   and with a USB keyboard and mouse and HD Audio attached.
 - Not yet: wake devices such as USB keyboards.  (Display modes on other
   adapters came later: see "Display adapters: QXL, virtio, VMware, Cirrus,
-  and their modes after sleep".)
+  and their modes after sleep"; USB wake came with "ACPI: SCI interrupt, lid,
+  thermal zones, wake devices, _PRT (Phase 18.6)".)
