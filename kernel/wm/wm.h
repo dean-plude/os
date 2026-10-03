@@ -250,6 +250,12 @@ void WmCursorReshow(void);
 void WmCursorShapeChanged(void);
 /* The pointer's current frame and step: shape (NULL = the arrow), step */
 const GdiCursorShape *WmCursorCurrent(int *step);
+/* The system pointer shown: its OCR_* number, minus that if it is a
+ * SetSystemCursor replacement, 0 for a program's own shape */
+int  WmCursorSysCurrent(void);
+/* Replaces system pointer @id (NULL: back to NovaOS's own); returns the
+ * shape to free (the old one, or @c if there is no room).  Desktop lock. */
+GdiCursorShape *WmSetSystemCursor(int id, GdiCursorShape *c);
 
 /* The display mode changed (GdiDisplayChanged done, work area set): refit
  * the windows and the pointer.  @old_w/@old_h/@old_s: the old logical

@@ -671,6 +671,13 @@ WINBASEAPI BOOL WINAPI GetComputerNameA(LPSTR buf, LPDWORD size)
 }
 
 WINBASEAPI BOOL WINAPI IsDebuggerPresent(void) { return FALSE; }
+WINBASEAPI BOOL WINAPI CheckRemoteDebuggerPresent(HANDLE p, PBOOL present)
+{
+    (void)p;
+    if (!present) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    *present = FALSE;
+    return TRUE;
+}
 
 WINBASEAPI BOOL WINAPI WriteFile(HANDLE h, LPCVOID buf, DWORD n, LPDWORD written, LPVOID ov);
 WINBASEAPI HANDLE WINAPI GetStdHandle(DWORD which);

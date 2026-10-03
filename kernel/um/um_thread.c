@@ -866,10 +866,24 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  * The loader's kernel half, debug output
  * ----------------------------------------------------------------------- */
 /* NtNovaLoadDll(PCSTR Name, ULONG Length, PVOID *Base, ULONG Flags): Flags are
- * LoadLibraryEx's (AS_DATAFILE / AS_IMAGE_RESOURCE map the module as data) */
+ * LoadLibraryEx's (AS_DATAFILE / AS_IMAGE_RESOURCE map the module as data).
+ * With NOVA_LDR_DIR_OP (0x80000000) it changes the search path instead:
+ * Flags & 3 is um_dll_directory's operation, Name the folder and *Base the
+ * cookie (AddDllDirectory gets it, RemoveDllDirectory passes it) */
 static UINT64 sys_nova_load_dll(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     char name[RAMFS_PATH_MAX];
+    if (a4 & 0x80000000u) {
+        UINT64 cookie = 0;
+        UINT32 op = (UINT32)a4 & 3;
+        if (a2 >= sizeof(name) || op == 3 || (op == 0 && !a2)) return ST_INVALID_PARAMETER;
+        if (a2 && !NT_SUCCESS(CopyFromUser(name, (const void *)(uintptr_t)a1, a2))) return ST_ACCESS_VIOLATION;
+        name[a2] = '\0';
+        if (op == 1 && !NT_SUCCESS(CopyFromUser(&cookie, (const void *)(uintptr_t)a3, 8))) return ST_ACCESS_VIOLATION;
+        UINT32 st = um_dll_directory(UmCurrent(), op, name, &cookie);
+        if (st || op != 0) return st;
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, &cookie, 8)) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
+    }
     if (!a2 || a2 >= sizeof(name)) return ST_INVALID_PARAMETER;
     if (!NT_SUCCESS(CopyFromUser(name, (const void *)(uintptr_t)a1, a2))) return ST_ACCESS_VIOLATION;
     name[a2] = '\0';

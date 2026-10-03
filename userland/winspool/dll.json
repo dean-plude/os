@@ -1,5 +1,5 @@
 {
-  "deps": ["kernel32", "ntdll"],
+  "deps": ["msvcrt", "kernel32", "ntdll"],
   "ordinals": {
     "GetDefaultPrinterA": 201,
     "SetDefaultPrinterA": 202,

@@ -22,6 +22,8 @@
 #include "../lib/string.h"
 #include "../wm/wm.h"
 #include "../gdi/gdi.h"
+#include "../gdi/syscursor.h"
+#include "../gdi/font.h"
 #include "../apps/apps.h"
 #include "../ke/waitq.h"
 #include "../wm/desktop.h"
@@ -739,8 +741,20 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *  19 SET_CURSOR    arg 0: the arrow, 1: none (hidden), 2: ptr <- { w, h,
  *                   hot x, hot y, frames, steps }, then per step { frame,
  *                   jiffies (1/60 s) }, then frames * w * h 0xAARRGGBB pixels
+ *                   (logical pixels, scaled up on a 2x display); 3: system
+ *                   pointer ptr (an OCR_* number); 4: as 2, in device pixels
+ *                   (an image made for the display's scale, up to 128 x 128)
  *  20 CURSOR_SHAPE  ptr -> { 1 if the pointer shows a program's shape,
- *                   its w, h, frames, the step shown } (for tests) */
+ *                   its w, h, frames, the step shown }, and with arg 1 also
+ *                   { the system pointer shown: OCR_*, -OCR_* for a
+ *                   SetSystemCursor replacement, 0 none } (for tests)
+ *  27 SET_SYSCURSOR arg: an OCR_* number (0: every one), | 0x10000 if the
+ *                   pixels are device pixels; ptr <- a shape as 19's arg 2,
+ *                   or 0 to put NovaOS's own pointer back (SetSystemCursor,
+ *                   SPI_SETCURSORS).  For every process.
+ *  28 SYSCURSOR_IMAGE arg: an OCR_* number | scale << 16; ptr -> { w, h,
+ *                   hot x, hot y }, then w * h 0xAARRGGBB pixels: NovaOS's
+ *                   drawing of it (w = h = 32 * scale) */
 #define CTL_WINDOW_AT    11
 #define CTL_ACCEPT_DROPS 12
 #define CTL_DROP         13
@@ -751,6 +765,8 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_DROP_STATUS  18
 #define CTL_SET_CURSOR   19
 #define CTL_CURSOR_SHAPE 20
+#define CTL_SET_SYSCURSOR 27
+#define CTL_SYSCURSOR_IMAGE 28
 /* Window handles other processes can use.  On Windows an HWND names the
  * same window in every process; a GPU or plugin process sizes and draws
  * into its parent's window.  user32 builds its handles from a tag that is
@@ -781,8 +797,8 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_MONITOR      24
 #define CTL_HEAD_MODE    25
 #define CTL_SET_HEAD     26
-/*  27 TOUCH      returns the contacts the touch screens have (0: none) */
-#define CTL_TOUCH        27
+/*  29 TOUCH      returns the contacts the touch screens have (0: none) */
+#define CTL_TOUCH        29
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
 #define GUI_TAG_SHIFT    14
@@ -967,38 +983,101 @@ static void cursor_set(UmProcess *p, GdiCursorShape *c)
     kfree(old);
 }
 
+/* A shape from user space: SET_CURSOR's blob (how 2, logical pixels, or
+ * 4, device pixels); NULL if it is malformed */
+static GdiCursorShape *shape_from_user(UINT64 how, UINT64 ptr)
+{
+    INT32 hd[6] = { 0 };
+    if (!NT_SUCCESS(CopyFromUser(hd, (const void *)(uintptr_t)ptr, sizeof(hd)))) return NULL;
+    int w = hd[0], h = hd[1], nf = hd[4], ns = hd[5];
+    int max = how == 4 ? GDI_CURSOR_MAX * GDI_MAX_SCALE : GDI_CURSOR_MAX;
+    if (w < 1 || h < 1 || w > max || h > max ||
+        nf < 1 || nf > GDI_CURSOR_FRAMES || ns < 1 || ns > GDI_CURSOR_STEPS) return NULL;
+    size_t npx = (size_t)nf * w * h;
+    GdiCursorShape *c = kzalloc(sizeof(GdiCursorShape) + npx * 4);
+    if (!c) return NULL;
+    c->w = w; c->h = h; c->nframes = nf; c->nsteps = ns;
+    c->dev = how == 4;
+    c->hot_x = hd[2] < 0 ? 0 : hd[2] >= w ? w - 1 : hd[2];
+    c->hot_y = hd[3] < 0 ? 0 : hd[3] >= h ? h - 1 : hd[3];
+    UINT32 *st = kmalloc((size_t)ns * 8);
+    bool ok = st && NT_SUCCESS(CopyFromUser(st, (const void *)(uintptr_t)(ptr + sizeof(hd)), (size_t)ns * 8)) &&
+              NT_SUCCESS(CopyFromUser(c->argb, (const void *)(uintptr_t)(ptr + sizeof(hd) + (size_t)ns * 8), npx * 4));
+    for (int i = 0; ok && i < ns; i++) {
+        UINT32 j = st[i * 2 + 1] ? st[i * 2 + 1] : 1;      /* jiffies: 1/60 s */
+        c->steps[i].frame = (UINT16)(st[i * 2] < (UINT32)nf ? st[i * 2] : 0);
+        c->steps[i].ticks = (j * 100 + 30) / 60;
+        if (!c->steps[i].ticks) c->steps[i].ticks = 1;
+        c->total += c->steps[i].ticks;
+    }
+    kfree(st);
+    if (!ok) { kfree(c); return NULL; }
+    return c;
+}
+
 static UINT64 cursor_from_user(UmProcess *p, UINT64 how, UINT64 ptr)
 {
     if (how == 0) { cursor_set(p, NULL); return 1; }
-    INT32 hd[6] = { 0 };
-    if (how == 2 && !NT_SUCCESS(CopyFromUser(hd, (const void *)(uintptr_t)ptr, sizeof(hd)))) return 0;
-    int w = hd[0], h = hd[1], nf = hd[4], ns = hd[5];
-    if (how == 1) { w = h = 0; nf = ns = 0; }
-    else if (how != 2 || w < 1 || h < 1 || w > GDI_CURSOR_MAX || h > GDI_CURSOR_MAX ||
-             nf < 1 || nf > GDI_CURSOR_FRAMES || ns < 1 || ns > GDI_CURSOR_STEPS) return 0;
-    size_t npx = (size_t)nf * w * h;
-    GdiCursorShape *c = kzalloc(sizeof(GdiCursorShape) + npx * 4);
-    if (!c) return 0;
-    c->w = w; c->h = h; c->nframes = nf; c->nsteps = ns;
-    c->hidden = how == 1;
-    if (how == 2) {
-        c->hot_x = hd[2] < 0 ? 0 : hd[2] >= w ? w - 1 : hd[2];
-        c->hot_y = hd[3] < 0 ? 0 : hd[3] >= h ? h - 1 : hd[3];
-        UINT32 *st = kmalloc((size_t)ns * 8);
-        bool ok = st && NT_SUCCESS(CopyFromUser(st, (const void *)(uintptr_t)(ptr + sizeof(hd)), (size_t)ns * 8)) &&
-                  NT_SUCCESS(CopyFromUser(c->argb, (const void *)(uintptr_t)(ptr + sizeof(hd) + (size_t)ns * 8), npx * 4));
-        for (int i = 0; ok && i < ns; i++) {
-            UINT32 j = st[i * 2 + 1] ? st[i * 2 + 1] : 1;      /* jiffies: 1/60 s */
-            c->steps[i].frame = (UINT16)(st[i * 2] < (UINT32)nf ? st[i * 2] : 0);
-            c->steps[i].ticks = (j * 100 + 30) / 60;
-            if (!c->steps[i].ticks) c->steps[i].ticks = 1;
-            c->total += c->steps[i].ticks;
-        }
-        kfree(st);
-        if (!ok) { kfree(c); return 0; }
+    GdiCursorShape *c;
+    if (how == 1 || how == 3) {
+        int id = how == 3 ? SysCursorCanon((int)ptr) : 0;
+        if (how == 3 && !id) return 0;
+        c = kzalloc(sizeof(GdiCursorShape));
+        if (!c) return 0;
+        c->hidden = how == 1;
+        c->sys = id;
+    } else if (how == 2 || how == 4) {
+        c = shape_from_user(how, ptr);
+        if (!c) return 0;
+    } else {
+        return 0;
     }
     cursor_set(p, c);
     return 1;
+}
+
+/* SetSystemCursor: replace (or, with no shape, restore) a system pointer */
+static UINT64 syscursor_set(UINT64 arg, UINT64 ptr)
+{
+    int id = (int)(arg & 0xFFFF) ? SysCursorCanon((int)(arg & 0xFFFF)) : 0;
+    if ((arg & 0xFFFF) && !id) return 0;
+    if (!id) {                                  /* every one back */
+        if (ptr) return 0;
+        static const int all[] = { OCR_NORMAL, OCR_IBEAM, OCR_WAIT, OCR_CROSS, OCR_UP, OCR_SIZENWSE,
+                                   OCR_SIZENESW, OCR_SIZEWE, OCR_SIZENS, OCR_SIZEALL, OCR_NO, OCR_HAND,
+                                   OCR_APPSTARTING, OCR_HELP };
+        for (UINT32 i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+            DesktopLock();
+            GdiCursorShape *old = WmSetSystemCursor(all[i], NULL);
+            DesktopUnlock();
+            kfree(old);
+        }
+        return 1;
+    }
+    GdiCursorShape *c = NULL;
+    if (ptr && !(c = shape_from_user(arg & 0x10000 ? 4 : 2, ptr))) return 0;
+    DesktopLock();
+    GdiCursorShape *old = WmSetSystemCursor(id, c);
+    DesktopUnlock();
+    kfree(old);
+    return old != c || !c ? 1 : 0;
+}
+
+static UINT64 syscursor_image(UINT64 arg, UINT64 ptr)
+{
+    int id = SysCursorCanon((int)(arg & 0xFFFF)), s = (int)(arg >> 16 & 0xFF);
+    if (!id || s < 1 || s > GDI_MAX_SCALE) return 0;
+    int side = SYSCUR_BOX * s;
+    UINT32 *px = kmalloc((size_t)side * side * 4 + 16);
+    void *scratch = kmalloc(SYSCUR_SCRATCH);
+    if (!px || !scratch) { kfree(px); kfree(scratch); return 0; }
+    INT32 hx, hy;
+    SysCursorRender(id, s, 0, false, px + 4, &hx, &hy, scratch);   /* no desktop lock: see syscursor.h */
+    kfree(scratch);
+    px[0] = (UINT32)side; px[1] = (UINT32)side; px[2] = (UINT32)hx; px[3] = (UINT32)hy;
+    bool ok = NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, px, (size_t)side * side * 4 + 16));
+    kfree(px);
+    return ok ? 1 : 0;
 }
 
 static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -1017,14 +1096,18 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     if (a2 == CTL_PRESENT) { WmInvalidate(); return 1; }
     if (a2 == CTL_SET_CURSOR) return cursor_from_user(p, a3, a4);
+    if (a2 == CTL_SET_SYSCURSOR) return syscursor_set(a3, a4);
+    if (a2 == CTL_SYSCURSOR_IMAGE) return syscursor_image(a3, a4);
     if (a2 == CTL_CURSOR_SHAPE) {
-        INT32 out[5] = { 0 };
+        INT32 out[6] = { 0 };
         int step;
         DesktopLock();
         const GdiCursorShape *c = WmCursorCurrent(&step);
-        if (c && c == p->cursor) { out[0] = 1; out[1] = c->w; out[2] = c->h; out[3] = c->nframes; out[4] = step; }
+        if (c && c == p->cursor && !c->sys) { out[0] = 1; out[1] = c->w; out[2] = c->h; out[3] = c->nframes; out[4] = step; }
+        out[5] = WmCursorSysCurrent();
+        if (out[5]) out[4] = step;                /* the busy ring's phase */
         DesktopUnlock();
-        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, out, sizeof(out))) ? 1 : 0;
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, out, a3 == 1 ? 6 * sizeof(INT32) : 5 * sizeof(INT32))) ? 1 : 0;
     }
     if (a2 == CTL_DISPLAY_MODE) return display_mode_info(a3, a4);
     if (a2 == CTL_SET_DISPLAY) return display_set(p, a4);

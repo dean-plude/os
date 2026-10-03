@@ -534,10 +534,20 @@ static int is_timer_proc(HWND h, UINT_PTR id, LPARAM fn)
 /* Key state: g_keys is as of the last input message taken from the queue
  * (GetKeyState); g_async is what the keyboard is doing now */
 BYTE g_async[256];
+/* Alt (or F10) went down and no other key or button has since: only then
+ * does its release open the menu bar, so Ctrl+Alt+S leaves the menu alone */
+int g_alt_tap;
 
 static void key_state(BYTE *keys, UINT msg, WPARAM wp)
 {
     BYTE vk = (BYTE)wp;
+    if (keys == g_keys) {
+        if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
+            if (vk == VK_MENU || vk == VK_F10) { if (!(keys[vk] & 0x80)) g_alt_tap = !(keys[VK_CONTROL] & 0x80) && !(keys[VK_SHIFT] & 0x80); }
+            else g_alt_tap = 0;
+        } else if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN ||
+                   msg == WM_NCLBUTTONDOWN || msg == WM_NCRBUTTONDOWN) g_alt_tap = 0;
+    }
     switch (msg) {
     case WM_KEYDOWN: case WM_SYSKEYDOWN:
         if (!(keys[vk] & 0x80)) keys[vk] ^= 1;
@@ -701,8 +711,16 @@ static void route_key(Wnd *top, const MSG *km)
 {
     UINT msg = km->message;
     key_state(g_async, msg, km->wParam);
-    if (top->style & WS_DISABLED) return;
     Wnd *f = W_quiet(g_focus);
+    if (top->style & WS_DISABLED) {
+        /* a modal dialog went up between the key going down and coming up (Ctrl+Alt+S
+         * opening Save As): the dialog gets the keys, so Ctrl and Alt don't stay held */
+        Wnd *a = W_quiet(g_active);
+        Wnd *alt = f && !(top_of(f)->style & WS_DISABLED) ? top_of(f) : a && !(a->style & WS_DISABLED) ? a : NULL;
+        if (alt && alt->tid == top->tid) top = alt;
+        else if (msg == WM_KEYUP || msg == WM_SYSKEYUP) { queue_input(top, msg, km->wParam, km->lParam, km->time ? km->time : GetTickCount()); return; }
+        else return;
+    }
     Wnd *target = f && top_of(f) == top ? f : NULL;
     if (!target) {
         /* the focus is elsewhere (a popup menu) or nowhere: the active window */
@@ -1031,6 +1049,21 @@ USERAPI BOOL UnhookWindowsHook(int id, HOOKPROC fn)
     for (int i = 0; i < 32; i++) if (g_hooks[i].used && g_hooks[i].id == id && g_hooks[i].fn == fn) g_hooks[i].used = 0;
     return TRUE;
 }
+/* WH_CBT: the hooks of this thread (and the global ones) see a window
+ * being created or destroyed; a non-zero answer stops it.  MFC's
+ * _AfxCbtFilterHook ties its CWnd object to the new window here.  Each
+ * hook is called in turn (CallNextHookEx leaves the chaining to us). */
+LRESULT cbt_hook(int code, WPARAM wp, LPARAM lp)
+{
+    DWORD tid = GetCurrentThreadId();
+    for (int i = 31; i >= 0; i--)
+        if (g_hooks[i].used && g_hooks[i].id == WH_CBT && (!g_hooks[i].tid || g_hooks[i].tid == tid)) {
+            HOOKPROC fn = g_hooks[i].fn;
+            if (fn(code, wp, lp)) return 1;
+        }
+    return 0;
+}
+
 USERAPI LRESULT CallNextHookEx(HHOOK h, int code, WPARAM wp, LPARAM lp) { (void)h; (void)code; (void)wp; (void)lp; return 0; }
 USERAPI BOOL CallMsgFilterW(LPMSG m, int code)
 {

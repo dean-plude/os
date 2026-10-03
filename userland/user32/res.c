@@ -375,13 +375,37 @@ HICON sys_icon(int which)
     return (HICON)cache[k][0];
 }
 
+/* NovaOS's drawing of system pointer @which at @scale (the kernel draws
+ * the same outlines on the screen), or NULL if there is no such pointer */
+static Icon *sys_cursor_image(int which, int scale)
+{
+    int side = 32 * scale;
+    DWORD *buf = malloc(16 + (size_t)side * side * 4);
+    if (!buf) return NULL;
+    Icon *ic = NULL;
+    if (NtNovaGuiCtl(0, CTL_SYSCURSOR_IMAGE, (ULONG_PTR)(which | scale << 16), buf) && (int)buf[0] == side) {
+        ic = new_icon(side, side);
+        if (ic) {
+            memcpy(ic->argb, buf + 4, (size_t)side * side * 4);
+            ic->hot.x = (LONG)buf[2]; ic->hot.y = (LONG)buf[3];
+            ic->cursor = 1; ic->shared = 1; ic->sys = which;
+        }
+    }
+    free(buf);
+    return ic;
+}
+
+/* IDC_* (32512..32672): 32 x 32, with a 64 x 64 image for 2x displays */
 static HCURSOR sys_cursor(int which)
 {
-    static Icon *cache[32];
-    int k = (which - 32512) & 31;
+    static Icon *cache[192];
+    if (which < 32512 || which >= 32512 + 192) which = 32512;
+    int k = which - 32512;
     if (!cache[k]) {
-        cache[k] = new_icon(1, 1);
-        if (cache[k]) { cache[k]->cursor = 1; cache[k]->shared = 1; cache[k]->sys = 32512 + k; }
+        Icon *ic = sys_cursor_image(which, 1);
+        if (!ic) return which == 32512 ? NULL : sys_cursor(32512);
+        ic->more = sys_cursor_image(which, 2);
+        cache[k] = ic;
     }
     return (HCURSOR)cache[k];
 }
@@ -604,40 +628,98 @@ static Icon *nearest(Icon *ic, int cx, int cy)
     return best;
 }
 
-void cursor_to_kernel(HCURSOR c, int hidden)
+int display_scale(void)
 {
-    static DWORD sent_serial = ~0u;
-    static int sent_hidden = -1;
-    Icon *ic = icon_of(c);
-    DWORD serial = ic ? ic->serial : 0;
-    hidden = hidden || !c;
-    if (serial == sent_serial && hidden == sent_hidden) return;
-    sent_serial = serial; sent_hidden = hidden;
-    if (hidden) { NtNovaGuiCtl(0, CTL_SET_CURSOR, 1, NULL); return; }
-    if (!ic || ic->sys) { NtNovaGuiCtl(0, CTL_SET_CURSOR, 0, NULL); return; }
+    INT32 m[4];
+    int lw = GetSystemMetrics(SM_CXSCREEN);
+    if (lw <= 0 || !NtNovaGuiCtl(0, CTL_DISPLAY_MODE, (ULONG_PTR)(LONG_PTR)-1, m)) return 1;
+    int s = m[0] / lw;
+    return s < 1 ? 1 : s > 2 ? 2 : s;
+}
+
+/* @fi resampled to w x h into @out: averaged (premultiplied) when it
+ * grows, so a 32 x 32 cursor on a 2x display is smooth, not blocky */
+static void resample(const Icon *fi, DWORD *out, int w, int h)
+{
+    if (fi->w == w && fi->h == h) { memcpy(out, fi->argb, (size_t)w * h * 4); return; }
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            if (fi->w >= w) { out[y * w + x] = fi->argb[(size_t)(y * fi->h / h) * fi->w + x * fi->w / w]; continue; }
+            /* source position of this pixel's centre, in 1/256 */
+            int sx = ((2 * x + 1) * fi->w * 128) / w - 128, sy = ((2 * y + 1) * fi->h * 128) / h - 128;
+            if (sx < 0) sx = 0;
+            if (sy < 0) sy = 0;
+            int x0 = sx >> 8, y0 = sy >> 8, fx = sx & 255, fy = sy & 255;
+            int x1 = x0 + 1 < fi->w ? x0 + 1 : x0, y1 = y0 + 1 < fi->h ? y0 + 1 : y0;
+            DWORD q[4] = { fi->argb[y0 * fi->w + x0], fi->argb[y0 * fi->w + x1], fi->argb[y1 * fi->w + x0], fi->argb[y1 * fi->w + x1] };
+            int wt[4] = { (256 - fx) * (256 - fy), fx * (256 - fy), (256 - fx) * fy, fx * fy };
+            unsigned a = 0, r = 0, g = 0, b = 0;
+            for (int i = 0; i < 4; i++) {
+                unsigned qa = q[i] >> 24, k = (unsigned)wt[i] * qa;
+                a += k; r += ((q[i] >> 16) & 255) * k; g += ((q[i] >> 8) & 255) * k; b += (q[i] & 255) * k;
+            }
+            out[y * w + x] = a ? (a >> 16) << 24 | (r / a) << 16 | (g / a) << 8 | (b / a) : 0;
+        }
+}
+
+/* SET_CURSOR's shape for @ic at display scale @s (device pixels when s > 1) */
+static INT32 *cursor_blob(Icon *ic, int s)
+{
     int nf = ic->ani ? ic->ani->nframes : 1, ns = ic->ani ? ic->ani->nsteps : 1;
     if (nf > 64) nf = 64;
     if (ns > 256) ns = 256;
     Icon *f0 = nearest(ic, GetSystemMetrics(SM_CXCURSOR), GetSystemMetrics(SM_CYCURSOR));
-    int w = f0->w > 64 ? 64 : f0->w, h = f0->h > 64 ? 64 : f0->h;
+    int w = (f0->w > 64 ? 64 : f0->w) * s, h = (f0->h > 64 ? 64 : f0->h) * s;
     INT32 *buf = malloc(24 + (size_t)ns * 8 + (size_t)nf * w * h * 4);
-    if (!buf) { NtNovaGuiCtl(0, CTL_SET_CURSOR, 0, NULL); return; }
-    POINT hot = ic->cursor ? f0->hot : (POINT){ f0->w / 2, f0->h / 2 };
-    buf[0] = w; buf[1] = h; buf[2] = hot.x * w / f0->w; buf[3] = hot.y * h / f0->h; buf[4] = nf; buf[5] = ns;
+    if (!buf) return NULL;
+    Icon *d0 = nearest(ic, w, h);                   /* the image used at this scale */
+    POINT hot = ic->cursor ? d0->hot : (POINT){ d0->w / 2, d0->h / 2 };
+    buf[0] = w; buf[1] = h; buf[2] = hot.x * w / d0->w; buf[3] = hot.y * h / d0->h; buf[4] = nf; buf[5] = ns;
     DWORD *st = (DWORD *)(buf + 6), *px = st + ns * 2;
     for (int i = 0; i < ns; i++) {
         DWORD fr = ic->ani ? ic->ani->seq[i] : 0;
         st[i * 2] = fr < (DWORD)nf ? fr : 0;
         st[i * 2 + 1] = ic->ani ? ic->ani->rate[i] : 0;
     }
-    for (int k = 0; k < nf; k++) {                  /* each frame at the first one's size */
-        Icon *fi = nearest(ic->ani ? ic->ani->frames[k] : ic, w, h);
-        DWORD *out = px + (size_t)k * w * h;
-        for (int y = 0; y < h; y++)
-            for (int x = 0; x < w; x++) out[y * w + x] = fi->argb[(size_t)(y * fi->h / h) * fi->w + x * fi->w / w];
+    for (int k = 0; k < nf; k++)                    /* each frame at the first one's size */
+        resample(nearest(ic->ani ? ic->ani->frames[k] : ic, w, h), px + (size_t)k * w * h, w, h);
+    return buf;
+}
+
+void cursor_to_kernel(HCURSOR c, int hidden)
+{
+    static DWORD sent_serial = ~0u;
+    static int sent_hidden = -1, sent_scale;
+    Icon *ic = icon_of(c);
+    DWORD serial = ic ? ic->serial : 0;
+    int s = ic && !ic->sys ? display_scale() : 1;
+    hidden = hidden || !c;
+    if (serial == sent_serial && hidden == sent_hidden && s == sent_scale) return;
+    sent_serial = serial; sent_hidden = hidden; sent_scale = s;
+    if (hidden) { NtNovaGuiCtl(0, CTL_SET_CURSOR, 1, NULL); return; }
+    if (!ic || ic->sys == 32512) { NtNovaGuiCtl(0, CTL_SET_CURSOR, 0, NULL); return; }
+    if (ic->sys) {                                  /* the kernel draws it, sharp at any scale */
+        if (!NtNovaGuiCtl(0, CTL_SET_CURSOR, 3, (PVOID)(ULONG_PTR)ic->sys)) NtNovaGuiCtl(0, CTL_SET_CURSOR, 0, NULL);
+        return;
     }
-    if (!NtNovaGuiCtl(0, CTL_SET_CURSOR, 2, buf)) NtNovaGuiCtl(0, CTL_SET_CURSOR, 0, NULL);
+    INT32 *buf = cursor_blob(ic, s);
+    if (!buf || !NtNovaGuiCtl(0, CTL_SET_CURSOR, s > 1 ? 4 : 2, buf)) NtNovaGuiCtl(0, CTL_SET_CURSOR, 0, NULL);
     free(buf);
+}
+
+/* Replaces system pointer @id for every program, and destroys @c as
+ * Windows does */
+USERAPI BOOL SetSystemCursor(HCURSOR c, DWORD id)
+{
+    Icon *ic = icon_of(c);
+    if (!ic) { SetLastError(1402 /* ERROR_INVALID_CURSOR_HANDLE */); return FALSE; }
+    int s = display_scale();
+    INT32 *buf = cursor_blob(ic, s);
+    BOOL ok = buf && NtNovaGuiCtl(0, CTL_SET_SYSCURSOR, id | (s > 1 ? 0x10000 : 0), buf);
+    free(buf);
+    if (!ok) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    DestroyCursor(c);
+    return TRUE;
 }
 
 /* -----------------------------------------------------------------------
@@ -645,11 +727,24 @@ void cursor_to_kernel(HCURSOR c, int hidden)
  * ----------------------------------------------------------------------- */
 static HBITMAP dib_from_info(const BITMAPINFO *bi, const void *bits_in, UINT flags)
 {
-    (void)flags;
     const BITMAPINFOHEADER *h = &bi->bmiHeader;
     int w = h->biWidth, ht = h->biHeight < 0 ? -h->biHeight : h->biHeight;
     if (w <= 0 || ht <= 0) return 0;
     BITMAPINFO out;
+    if ((flags & LR_CREATEDIBSECTION) && h->biBitCount == 24 && h->biCompression == BI_RGB) {
+        /* the program wants the DIB as stored: a 24-bit section in the
+         * resource's row order, whose bits it reads back with GetObject */
+        memset(&out, 0, sizeof(out));
+        out.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        out.bmiHeader.biWidth = w; out.bmiHeader.biHeight = h->biHeight;
+        out.bmiHeader.biPlanes = 1; out.bmiHeader.biBitCount = 24;
+        void *v;
+        HBITMAP bm = CreateDIBSection(NULL, &out, DIB_RGB_COLORS, &v, NULL, 0);
+        if (!bm) return 0;
+        const BYTE *src = bits_in ? bits_in : (const BYTE *)bi + h->biSize + (h->biClrUsed ? h->biClrUsed * 4 : 0);
+        memcpy(v, src, (size_t)(((w * 3) + 3) & ~3) * ht);
+        return bm;
+    }
     memset(&out, 0, sizeof(out));
     out.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     out.bmiHeader.biWidth = w; out.bmiHeader.biHeight = -ht;
@@ -732,7 +827,7 @@ USERAPI HANDLE LoadImageW(HINSTANCE inst, LPCWSTR name, UINT type, int cx, int c
         return icon_from_file(name, cx ? cx : 32, cy ? cy : 32, type == IMAGE_CURSOR);
     }
     switch (type) {
-    case IMAGE_BITMAP: return LoadBitmapW(inst, name);
+    case IMAGE_BITMAP: { HBITMAP b = inst ? load_bitmap_res(inst, name, flags) : 0; if (!b) SetLastError(ERROR_RESOURCE_NAME_NOT_FOUND); return b; }
     case IMAGE_ICON: case IMAGE_CURSOR: {
         if (!inst && (ULONG_PTR)name < 0x10000) return type == IMAGE_ICON ? sys_icon((int)(ULONG_PTR)name) : sys_cursor((int)(ULONG_PTR)name);
         int w = cx ? cx : 32, h = cy ? cy : 32;

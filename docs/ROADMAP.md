@@ -34,8 +34,8 @@ The details of each phase are in [HISTORY.md](HISTORY.md).
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
 NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound has
 no MIDI, DirectSound or XAudio2 yet; file
-ACLs are kept only when drive C: is on NTFS (the installer's default); and most of the App Store's catalog (Qt, GTK and
-multimedia programs) does not run yet.
+ACLs are kept only when drive C: is on NTFS (the installer's default); and most of the App Store's catalog (GTK and
+multimedia programs, and Qt ones beyond KeePassXC) does not run yet.
 
 ---
 
@@ -243,7 +243,8 @@ named program or test demonstrates it.
   permanent regression test, built for x64 and x86; `tools/pe_imports.py`
   shows what a new program needs before it is tried.
 - **Nightly app corpus** (done): `tools/appcorpus.py` runs ripgrep, fd, jq,
-  7-Zip, MinGit, Python, Node.js and Notepad++ every night, checks
+  7-Zip, MinGit, Python, Node.js, SumatraPDF, WinMerge, Notepad++ and
+  PuTTY every night, checks
   NovaOS's own `dir` and This PC screens, and posts a pass/fail table per
   program.
 

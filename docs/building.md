@@ -25,6 +25,7 @@ What each part is for:
 | `clang`, `lld` (`lld-link`) | **Required.** The Windows userland (`--target=x86_64-pc-windows-msvc` and `i686-pc-windows-msvc`), NetSurf, and the kernel and bootloader unless the alternatives below are installed |
 | `llvm` (`llvm-rc`) | Compiling programs' resource scripts (icons, dialogs) |
 | `python3` | `tools/build_userland.py`, `tools/build_netsurf.py` |
+| `mingw-w64-common` (comes with `gcc-mingw-w64-x86-64`) | **Required.** MinGW-w64's C and Windows headers, which `msvcp140.dll` (Microsoft's STL, `userland/msvcp140/build.py`) compiles against; set `NOVA_MINGW_INCLUDE` to use headers elsewhere |
 | `g++-mingw-w64-x86-64`, `g++-mingw-w64-i686` | Only for `tools/build_icu.py` (rebuilding `icu.dll`) |
 | `mtools`, `dosfstools` | `nova.img` and putting files on the data disk |
 | `xorriso` | `scripts/create-iso.sh` |
@@ -136,8 +137,10 @@ made in parallel add files rather than collide on the same lines.
   for resources).  It goes to `C:\Programs`, 64-bit only, unless
   `NAME.json` says otherwise: `{"x86": true}` builds it for 32 bits as
   well, `"system": true` installs it in `C:\Windows\System32`, `"libs":
-  ["usp10"]` links more DLLs, and `"selftest": true` lists it among the
-  README's self-test programs.
+  ["usp10"]` links more DLLs, `"msstl": true` builds a `.cpp` against
+  Microsoft's STL headers and `msvcp140.dll`, as Visual Studio builds a
+  program (`userland/programs/stltest.cpp`), and `"selftest": true` lists
+  it among the README's self-test programs.
 
 Two pieces are built by their own tools and committed, so the normal build
 needs neither:
@@ -315,6 +318,12 @@ python3 tools/selftest.py
 python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 ```
 
+`tools/novarun.py` (and so `tools/selftest.py`) starts QEMU with `-accel kvm`
+when `/dev/kvm` is readable and writable, and with TCG otherwise.  Set
+`NOVARUN_ACCEL=tcg` or `NOVARUN_ACCEL=kvm` to force one.  The CPU model stays
+`qemu64` with the same feature flags under both.  CI pins every job to TCG (`NOVARUN_ACCEL=tcg`) until the KVM failures in the
+history entry "Test VMs under KVM in CI" are fixed.
+
 The graphics suite downloads 7-Zip, Mesa and DXVK and builds
 gltest/d3dtest/d2dtest/dwtest:
 
@@ -410,7 +419,8 @@ TESTS = [
 
 `python3 tools/selftest.py --list` prints the suite.  The nightly app
 corpus works the same way: one file per program in `tests/appcorpus/`
-defining `APP = App(...)` and `DOC` (Notepad++ stays last at 900).
+defining `APP = App(...)` and `DOC` (the windowed programs, `gui=True`,
+stay last, from 850).
 
 ### Self-test programs
 
@@ -501,7 +511,14 @@ would do).
 | Node.js 24.9.0 | `-v`, `-e` |
 | .NET 10.0.12 (runtime from NuGet, with the 8.0 host) | `--list-runtimes`; `tests/dotnet/culturetest.dll` formats German and Japanese through ICU |
 | NovaOS's own screens | `dir C:\` and `dir D:\` (an empty NTFS disk made with `mkntfs`) name their drive and give its own free space (`dir.png`); `start explorer` shows This PC with both drives, matching `tests/reference/this-pc.png` |
-| Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
+| SumatraPDF 3.4.6 (the official 32-bit build, from the npm package `pdf-to-printer`) | opens a PDF the script generates; the screenshot must match `tests/reference/sumatrapdf.png` (at most 3% of pixels differ, for every screenshot) |
+| WinMerge 2.16.50 | compares `hello.txt` with `hello2.txt`; the screenshot must match `tests/reference/winmerge.png` |
+| Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` |
+| PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
+
+The windowed programs run last, one at a time (each takes the keyboard and
+is closed with Alt+F4 before the next).  Building PuTTY needs `cmake` and
+`gcc-mingw-w64-x86-64`.
 
 It needs 7-Zip's installer, Pillow, and `mkntfs` (for drive D:).  The exit
 status is the number of programs that failed; `--update-reference` rewrites
@@ -511,11 +528,11 @@ the reference screenshots after an intended change:
 sudo apt install p7zip-full python3-pil ntfs-3g
 python3 tools/appcorpus.py
 python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
-python3 tools/appcorpus.py --only NovaOS,Notepad++ --update-reference
+python3 tools/appcorpus.py --only NovaOS,SumatraPDF,WinMerge,Notepad++,PuTTY --update-reference
 ```
 
 A command passes as a self-test does (exit code 0, the output expected).
-To add a program, add an `App` to `APPS`.  Other third-party programs (the
+To add a program, add a file to `tests/appcorpus/`.  Other third-party programs (the
 installers, Java, Roslyn) and test scripts such as `cmdtest.bat` for
 `cmd.exe` are tried by hand with `tools/novarun.py`: copy a program onto
 the data disk with `--put` and type its commands.

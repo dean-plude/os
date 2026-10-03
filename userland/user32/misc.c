@@ -128,8 +128,9 @@ USERAPI UINT MapVirtualKeyExW(UINT code, UINT type, HANDLE hkl) { (void)hkl; ret
 
 USERAPI int ToUnicodeEx(UINT vk, UINT sc, const BYTE *keys, LPWSTR out, int n, UINT flags, HANDLE hkl)
 {
-    (void)sc; (void)flags; (void)hkl;
+    (void)flags; (void)hkl;
     if (n < 1) return 0;
+    if (sc & 0x8000) return 0;                              /* KF_UP in the scan code: a release types nothing */
     BOOL shift = keys && (keys[0x10] & 0x80), caps = keys && (keys[0x14] & 1), ctrl = keys && (keys[0x11] & 0x80);
     WCHAR c = vk_char(vk, shift, caps);
     if (ctrl && vk >= 'A' && vk <= 'Z') c = (WCHAR)(vk - 'A' + 1);
@@ -145,6 +146,11 @@ USERAPI int ToAscii(UINT vk, UINT sc, const BYTE *keys, LPWORD out, UINT flags)
     int r = ToUnicodeEx(vk, sc, keys, w, 2, flags, 0);
     if (r) *out = w[0];
     return r;
+}
+USERAPI int ToAsciiEx(UINT vk, UINT sc, const BYTE *keys, LPWORD out, UINT flags, HANDLE hkl)
+{
+    (void)hkl;
+    return ToAscii(vk, sc, keys, out, flags);
 }
 USERAPI SHORT VkKeyScanW(WCHAR c)
 {
@@ -262,6 +268,7 @@ USERAPI BOOL CharToOemA(LPCSTR s, LPSTR d) { if (s != d) while ((*d++ = *s++)) ;
 USERAPI BOOL OemToCharA(LPCSTR s, LPSTR d) { if (s != d) while ((*d++ = *s++)) ; return TRUE; }
 USERAPI BOOL CharToOemBuffA(LPCSTR s, LPSTR d, DWORD n) { if (s != d) for (DWORD i = 0; i < n; i++) d[i] = s[i]; return TRUE; }
 USERAPI BOOL OemToCharBuffA(LPCSTR s, LPSTR d, DWORD n) { if (s != d) for (DWORD i = 0; i < n; i++) d[i] = s[i]; return TRUE; }
+USERAPI BOOL CharToOemBuffW(LPCWSTR s, LPSTR d, DWORD n) { if (!s || !d) return FALSE; WideCharToMultiByte(CP_UTF8, 0, s, (int)n, d, (int)n, 0, 0); return TRUE; }
 USERAPI BOOL CharToOemW(LPCWSTR s, LPSTR d) { WideCharToMultiByte(CP_UTF8, 0, s, -1, d, 0x7FFFFFFF, 0, 0); return TRUE; }
 USERAPI BOOL OemToCharW(LPCSTR s, LPWSTR d) { MultiByteToWideChar(CP_UTF8, 0, s, -1, d, 0x7FFFFFFF); return TRUE; }
 
@@ -354,6 +361,8 @@ USERAPI BOOL SystemParametersInfoW(UINT action, UINT uparam, PVOID p, UINT winin
 {
     (void)uparam; (void)winini;
     switch (action) {
+    case 0x0057:                                            /* SPI_SETCURSORS: NovaOS's own back */
+        return NtNovaGuiCtl(0, CTL_SET_SYSCURSOR, 0, NULL) ? TRUE : FALSE;
     case 0x0030: {                                          /* SPI_GETWORKAREA */
         RECT *r = p;
         r->left = r->top = 0; r->right = GetSystemMetrics(0); r->bottom = GetSystemMetrics(1);
@@ -789,7 +798,6 @@ USERAPI BOOL GetCursorInfo(PCURSORINFO ci)
     GetCursorPos(&ci->ptScreenPos);
     return TRUE;
 }
-USERAPI BOOL SetSystemCursor(HCURSOR c, DWORD id) { (void)c; (void)id; return TRUE; }
 USERAPI BOOL GetUserObjectInformationA(HANDLE h, int index, PVOID p, DWORD n, LPDWORD need)
 {
     if (index != 2) return GetUserObjectInformationW(h, index, p, n, need);

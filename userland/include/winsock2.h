@@ -260,6 +260,9 @@ WSAAPI_DECL WSAEVENT WSACreateEvent(void);
 #endif
 typedef struct { long lNetworkEvents; int iErrorCode[FD_MAX_EVENTS]; } WSANETWORKEVENTS, *LPWSANETWORKEVENTS;
 WSAAPI_DECL int WSAEventSelect(SOCKET s, WSAEVENT ev, long events);
+WSAAPI_DECL int WSAAsyncSelect(SOCKET s, HWND hwnd, unsigned int msg, long events);
+#define WSAGETSELECTEVENT(l) LOWORD(l)
+#define WSAGETSELECTERROR(l) HIWORD(l)
 WSAAPI_DECL int WSAEnumNetworkEvents(SOCKET s, WSAEVENT ev, LPWSANETWORKEVENTS out);
 WSAAPI_DECL int WSAAddressToStringA(struct sockaddr *sa, DWORD len, void *info, char *out, DWORD *outlen);
 WSAAPI_DECL int WSAAddressToStringW(struct sockaddr *sa, DWORD len, void *info, WCHAR *out, DWORD *outlen);

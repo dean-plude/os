@@ -16,5 +16,5 @@ void register_builtin_classes(void)
     register_system_class(L"#32770", DefDlgProcW, CS_DBLCLKS | CS_SAVEBITS, DLGWINDOWEXTRA, (HBRUSH)(COLOR_3DFACE + 1), arrow);
     register_system_class(L"#32768", MenuWndProc, CS_DBLCLKS | CS_SAVEBITS | CS_DROPSHADOW, 16, 0, arrow);
     register_system_class(L"Message", DefWindowProcW, 0, 0, 0, arrow);
-    register_system_class(L"MDIClient", DefWindowProcW, 0, 16, (HBRUSH)(COLOR_APPWORKSPACE + 1), arrow);
+    register_system_class(L"MDIClient", MDIClientProc, 0, 16, (HBRUSH)(COLOR_APPWORKSPACE + 1), arrow);
 }

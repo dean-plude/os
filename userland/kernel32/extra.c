@@ -1776,11 +1776,57 @@ WINBASEAPI BOOL WINAPI GetModuleHandleExW(DWORD flags, LPCWSTR name, HMODULE *ou
     return TRUE;
 }
 
-WINBASEAPI BOOL WINAPI SetDllDirectoryW(LPCWSTR dir) { (void)dir; return TRUE; }
-WINBASEAPI BOOL WINAPI SetDllDirectoryA(LPCSTR dir)  { (void)dir; return TRUE; }
+/* The DLL search path's extra folders live in the kernel's loader, which
+ * resolves every import: NtNovaLoadDll with NOVA_LDR_DIR_OP | operation
+ * (0 add, 1 remove, 2 SetDllDirectory) */
+#define NOVA_LDR_DIR_OP 0x80000000u
+static NTSTATUS dll_dir_op(ULONG op, const char *path, PVOID *cookie)
+{
+    return NtNovaLoadDll(path, path ? (ULONG)strlen(path) : 0, cookie, NOVA_LDR_DIR_OP | op);
+}
+
+WINBASEAPI BOOL WINAPI SetDllDirectoryA(LPCSTR dir)
+{
+    char full[MAX_PATH * 3];
+    if (dir && *dir && !GetFullPathNameA(dir, sizeof(full), full, NULL)) return FALSE;
+    NTSTATUS s = dll_dir_op(2, dir && *dir ? full : "", NULL);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    return TRUE;
+}
+
+WINBASEAPI BOOL WINAPI SetDllDirectoryW(LPCWSTR dir)
+{
+    char n[MAX_PATH * 3];
+    if (!dir) return SetDllDirectoryA(NULL);
+    if (!WideCharToMultiByte(CP_UTF8, 0, dir, -1, n, sizeof(n), 0, 0)) { SetLastError(ERROR_FILENAME_EXCED_RANGE); return FALSE; }
+    return SetDllDirectoryA(n);
+}
+
 WINBASEAPI BOOL WINAPI SetDefaultDllDirectories(DWORD f) { (void)f; return TRUE; }
-WINBASEAPI PVOID WINAPI AddDllDirectory(LPCWSTR dir) { (void)dir; return (PVOID)1; }
-WINBASEAPI BOOL WINAPI RemoveDllDirectory(PVOID cookie) { (void)cookie; return TRUE; }
+
+/* AddDllDirectory: @dir (a full path) is searched for every later load,
+ * imports included, until RemoveDllDirectory */
+WINBASEAPI PVOID WINAPI AddDllDirectory(LPCWSTR dir)
+{
+    char n[MAX_PATH * 3];
+    if (!dir || !dir[0] || dir[1] != ':' || (dir[2] != '\\' && dir[2] != '/')) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
+    if (!WideCharToMultiByte(CP_UTF8, 0, dir, -1, n, sizeof(n), 0, 0)) { SetLastError(ERROR_FILENAME_EXCED_RANGE); return NULL; }
+    DWORD a = GetFileAttributesA(n);
+    if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) { SetLastError(ERROR_FILE_NOT_FOUND); return NULL; }
+    PVOID cookie = NULL;
+    NTSTATUS s = dll_dir_op(0, n, &cookie);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return NULL; }
+    return cookie;
+}
+
+WINBASEAPI BOOL WINAPI RemoveDllDirectory(PVOID cookie)
+{
+    NTSTATUS s = dll_dir_op(1, NULL, &cookie);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    return TRUE;
+}
+/* the search for SearchPath already skips the current directory's place in line */
+WINBASEAPI BOOL WINAPI SetSearchPathMode(DWORD flags) { (void)flags; return TRUE; }
 WINBASEAPI BOOL WINAPI DisableThreadLibraryCalls(HMODULE m) { (void)m; return TRUE; }
 
 WINBASEAPI SIZE_T WINAPI VirtualQuery(LPCVOID p, PMEMORY_BASIC_INFORMATION mbi, SIZE_T n)
@@ -2964,3 +3010,71 @@ WINBASEAPI VOID    WINAPI GlobalMemoryStatus(LPVOID p)
     s[0] = (SIZE_T)ms.ullTotalPhys; s[1] = (SIZE_T)ms.ullAvailPhys; s[2] = (SIZE_T)ms.ullTotalPageFile;
     s[3] = (SIZE_T)ms.ullAvailPageFile; s[4] = (SIZE_T)ms.ullTotalVirtual; s[5] = (SIZE_T)ms.ullAvailVirtual;
 }
+
+/* -----------------------------------------------------------------------
+ * Activation contexts.  NovaOS has one version of each system DLL (common
+ * controls 6 included), so a manifest has nothing to redirect: contexts are
+ * counted handles that activate and deactivate cleanly, and section lookups
+ * find nothing, as for a manifest without the entry.
+ * ----------------------------------------------------------------------- */
+typedef struct { LONG refs; DWORD flags; } ActCtx;
+static volatile LONG g_actctx_cookie;
+
+static HANDLE new_actctx(DWORD flags)
+{
+    ActCtx *a = HeapAlloc(GetProcessHeap(), 0, sizeof *a);
+    if (!a) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return INVALID_HANDLE_VALUE; }
+    a->refs = 1;
+    a->flags = flags;
+    return a;
+}
+WINBASEAPI HANDLE WINAPI CreateActCtxW(const void *ctx)
+{
+    if (!ctx) { SetLastError(ERROR_INVALID_PARAMETER); return INVALID_HANDLE_VALUE; }
+    return new_actctx(((const DWORD *)ctx)[1]);         /* ACTCTX: cbSize, dwFlags, ... */
+}
+WINBASEAPI HANDLE WINAPI CreateActCtxA(const void *ctx) { return CreateActCtxW(ctx); }
+WINBASEAPI void WINAPI AddRefActCtx(HANDLE h) { if (h && h != INVALID_HANDLE_VALUE) InterlockedIncrement(&((ActCtx *)h)->refs); }
+WINBASEAPI void WINAPI ReleaseActCtx(HANDLE h)
+{
+    if (h && h != INVALID_HANDLE_VALUE && !InterlockedDecrement(&((ActCtx *)h)->refs)) HeapFree(GetProcessHeap(), 0, h);
+}
+WINBASEAPI BOOL WINAPI ZombifyActCtx(HANDLE h) { (void)h; return TRUE; }
+WINBASEAPI BOOL WINAPI ActivateActCtx(HANDLE h, ULONG_PTR *cookie)
+{
+    (void)h;
+    if (cookie) *cookie = (ULONG_PTR)InterlockedIncrement(&g_actctx_cookie);
+    return TRUE;
+}
+WINBASEAPI BOOL WINAPI DeactivateActCtx(DWORD flags, ULONG_PTR cookie) { (void)flags; (void)cookie; return TRUE; }
+WINBASEAPI BOOL WINAPI GetCurrentActCtx(HANDLE *h) { if (!h) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; } *h = NULL; return TRUE; }
+WINBASEAPI BOOL WINAPI QueryActCtxW(DWORD flags, HANDLE h, PVOID sub, ULONG cls, PVOID buf, SIZE_T len, SIZE_T *ret)
+{
+    (void)flags; (void)sub;
+    if (cls == 1) {                                     /* ActivationContextBasicInformation */
+        struct { HANDLE ctx; DWORD flags; } info = { (flags & 4) ? NULL : h, 0 };   /* 4: the context is an HMODULE */
+        if (ret) *ret = sizeof info;
+        if (!buf || len < sizeof info) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+        memcpy(buf, &info, sizeof info);
+        return TRUE;
+    }
+    if (ret) *ret = 0;
+    SetLastError(ERROR_INVALID_PARAMETER);
+    return FALSE;
+}
+WINBASEAPI BOOL WINAPI FindActCtxSectionStringW(DWORD flags, const GUID *ext, ULONG section, LPCWSTR name, void *data)
+{
+    (void)flags; (void)ext; (void)section; (void)name; (void)data;
+    SetLastError(14007);                                /* ERROR_SXS_KEY_NOT_FOUND */
+    return FALSE;
+}
+WINBASEAPI BOOL WINAPI FindActCtxSectionStringA(DWORD flags, const GUID *ext, ULONG section, LPCSTR name, void *data)
+{ (void)name; return FindActCtxSectionStringW(flags, ext, section, NULL, data); }
+WINBASEAPI BOOL WINAPI FindActCtxSectionGuid(DWORD flags, const GUID *ext, ULONG section, const GUID *g, void *data)
+{ (void)g; return FindActCtxSectionStringW(flags, ext, section, NULL, data); }
+
+/* a thread's UI language: the user's (0 asks which it is) */
+WINBASEAPI LANGID WINAPI SetThreadUILanguage(LANGID lang) { return lang ? lang : GetUserDefaultUILanguage(); }
+
+/* no sleep timer to hold off: report the state as continuous */
+WINBASEAPI DWORD WINAPI SetThreadExecutionState(DWORD flags) { (void)flags; return 0x80000000u; }   /* ES_CONTINUOUS */

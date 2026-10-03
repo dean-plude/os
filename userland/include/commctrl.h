@@ -871,6 +871,18 @@ typedef struct tagNMTVGETINFOTIPW { NMHDR hdr; LPWSTR pszText; int cchTextMax; H
 #define TB_GETEXTENDEDSTYLE (WM_USER + 85)
 #define TB_GETPADDING (WM_USER + 86)
 #define TB_SETPADDING (WM_USER + 87)
+#define TB_GETMETRICS (WM_USER + 101)
+#define TB_SETMETRICS (WM_USER + 102)
+#define TBMF_PAD           0x00000001
+#define TBMF_BARPAD        0x00000002
+#define TBMF_BUTTONSPACING 0x00000004
+typedef struct {
+    UINT cbSize;
+    DWORD dwMask;
+    int cxPad, cyPad;
+    int cxBarPad, cyBarPad;
+    int cxButtonSpacing, cyButtonSpacing;
+} TBMETRICS, *LPTBMETRICS;
 #define TB_HITTEST (WM_USER + 69)
 #define TB_GETBUTTONINFOW (WM_USER + 63)
 #define TB_SETBUTTONINFOW (WM_USER + 64)
@@ -900,7 +912,17 @@ typedef struct tagNMTVGETINFOTIPW { NMHDR hdr; LPWSTR pszText; int cchTextMax; H
 #define IDB_STD_LARGE_COLOR 1
 #define IDB_VIEW_SMALL_COLOR 4
 #define IDB_VIEW_LARGE_COLOR 5
-typedef struct _TBBUTTON { int iBitmap, idCommand; BYTE fsState, fsStyle; BYTE bReserved[6]; DWORD_PTR dwData; INT_PTR iString; } TBBUTTON, *PTBBUTTON, *LPTBBUTTON;
+typedef struct _TBBUTTON {
+    int iBitmap, idCommand;
+    BYTE fsState, fsStyle;
+#ifdef _WIN64
+    BYTE bReserved[6];
+#else
+    BYTE bReserved[2];              /* 32-bit programs: 20 bytes in all */
+#endif
+    DWORD_PTR dwData;
+    INT_PTR iString;
+} TBBUTTON, *PTBBUTTON, *LPTBBUTTON;
 typedef const TBBUTTON *LPCTBBUTTON;
 typedef struct tagTBADDBITMAP { HINSTANCE hInst; UINT_PTR nID; } TBADDBITMAP, *LPTBADDBITMAP;
 typedef struct { UINT cbSize, dwMask; int idCommand, iImage; BYTE fsState, fsStyle; WORD cx; DWORD_PTR lParam; LPWSTR pszText; int cchText; } TBBUTTONINFOW, *LPTBBUTTONINFOW;

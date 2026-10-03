@@ -127,6 +127,14 @@ def make_data(path, puts, size_mb):
             subprocess.run(['mcopy', '-o', '-i', path, host, target], check=True, env=env)
 
 
+def accel_args():
+    """KVM when /dev/kvm is usable, TCG otherwise.  NOVARUN_ACCEL=tcg|kvm forces one."""
+    want = os.environ.get('NOVARUN_ACCEL', 'auto')
+    if want == 'auto':
+        want = 'kvm' if os.access('/dev/kvm', os.R_OK | os.W_OK) else 'tcg'
+    return ['-accel', want]
+
+
 class Nova:
     """One NovaOS boot in QEMU with its Terminal open and mirrored to serial"""
 
@@ -154,7 +162,7 @@ class Nova:
                      '-device', 'intel-hda', '-device', 'hda-output,audiodev=snd0']
         else:
             audio = []
-        self.q = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35', '-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
+        self.q = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35'] + accel_args() + ['-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
                                    '-m', str(mem), '-smp', str(smp),
                                    '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
                                    '-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on',

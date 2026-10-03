@@ -21,6 +21,7 @@
 #include "../mm/vmm.h"
 #include "../ke/printf.h"
 #include "../hal/display.h"
+#include "syscursor.h"
 
 #define FX            256     /* fixed-point one: 1/256 device pixel */
 #define LINE_BASELINE  12     /* baseline within the 16px logical line box */
@@ -1211,12 +1212,6 @@ void GdiTextShadow(int x, int y, const char *s, GdiColor fg, int shadow)
  * Mouse pointer overlay
  * ----------------------------------------------------------------------- */
 
-/* Arrow outline, 1/16 logical px, tip at (0,0) */
-static const GdiPoint g_arrow[] = {
-    GDI_PT(0, 0),   GDI_PT(0, 17),   GDI_PT(4, 13.2), GDI_PT(6.9, 19.6),
-    GDI_PT(9.6, 18.4), GDI_PT(6.8, 12.2), GDI_PT(12.2, 12.2),
-};
-#define ARROW_N      ((int)(sizeof(g_arrow) / sizeof(g_arrow[0])))
 #define CUR_MAX_W    (GDI_CURSOR_MAX * GDI_MAX_SCALE)
 #define CUR_MAX_H    (GDI_CURSOR_MAX * GDI_MAX_SCALE)
 
@@ -1246,71 +1241,21 @@ static bool cursor_target(int *dx, int *dy, CurTarget *t)
     return true;
 }
 
-void GdiCursorDraw(int dx, int dy)
+/* Blends @w x @h pixels (0xAARRGGBB), each @s screen px a side, with the
+ * hot spot (hx, hy) of the image at screen px (dx, dy) of @t, saving what
+ * is under */
+static void cursor_blit(const CurTarget *t, int dx, int dy, const UINT32 *px, int w, int h, int hx, int hy, int s)
 {
-    if (!g.ready) return;
-    CurTarget t;
-    g_under_w = g_under_h = 0;
-    if (!cursor_target(&dx, &dy, &t)) return;
-    int s = t.s;
-    GdiPoint d[POLY_MAX], sh[POLY_MAX];
-    int x0, y0, x1, y1, t0, t1, t2, t3;
-    int n = poly_to_dev_s(g_arrow, ARROW_N, s, dx, dy, d, &x0, &y0, &x1, &y1);
-    poly_to_dev_s(g_arrow, ARROW_N, s, dx + s, dy + 2 * s, sh, &t0, &t1, &t2, &t3);
-
-    int soft = 2 * s * FX;                          /* shadow softness */
-    x0 -= 1; y0 -= 1; x1 += 3 * s + 1; y1 += 4 * s + 1;
-    x0 = imax(x0, 0); y0 = imax(y0, 0);
-    x1 = imin(x1, t.w - 1); y1 = imin(y1, t.h - 1);
-    g_under_x = x0; g_under_y = y0;
-    g_under_w = imax(imin(x1 - x0 + 1, CUR_MAX_W), 0);
-    g_under_h = imax(imin(y1 - y0 + 1, CUR_MAX_H), 0);
-
-    UINT32 black = pixof(GDI_BLACK), white = pixof(GDI_WHITE);
-    int    bw    = s * FX;                          /* outline width */
-
-    for (int j = 0; j < g_under_h; j++) {
-        int y = y0 + j;
-        UINT32 *row = t.vram + (size_t)y * t.stride;
-        for (int i = 0; i < g_under_w; i++) {
-            int x = x0 + i;
-            UINT32 px = row[x];
-            g_under[j * CUR_MAX_W + i] = px;
-            int fx = x * FX + FX / 2, fy = y * FX + FX / 2;
-
-            int ss = poly_sd(sh, n, fx, fy);        /* soft shadow */
-            if (ss < soft) {
-                int f = ss <= 0 ? 255 : ((soft - ss) * 255) / soft;
-                px = blend(px, black, (UINT32)(70 * f / 255));
-            }
-            int sd = poly_sd(d, n, fx, fy);
-            px = blend(px, black, (UINT32)cov_of(sd));          /* outline */
-            px = blend(px, white, (UINT32)cov_of(sd + bw));     /* fill    */
-            row[x] = px;
-        }
-    }
-}
-
-void GdiCursorDrawShape(int dx, int dy, const GdiCursorShape *c, int frame)
-{
-    if (!g.ready) return;
-    g_under_w = g_under_h = 0;
-    if (!c || c->hidden || c->nframes <= 0) return;
-    CurTarget t;
-    if (!cursor_target(&dx, &dy, &t)) return;
-    if (frame < 0 || frame >= c->nframes) frame = 0;
-    int s = t.s;
-    int x0 = dx - c->hot_x * s, y0 = dy - c->hot_y * s;
-    int x1 = imin(x0 + c->w * s, t.w), y1 = imin(y0 + c->h * s, t.h);
+    int x0 = dx - hx * s, y0 = dy - hy * s;
+    int x1 = imin(x0 + w * s, t->w), y1 = imin(y0 + h * s, t->h);
     int cx0 = imax(x0, 0), cy0 = imax(y0, 0);
     g_under_x = cx0; g_under_y = cy0;
     g_under_w = imax(imin(x1 - cx0, CUR_MAX_W), 0);
     g_under_h = imax(imin(y1 - cy0, CUR_MAX_H), 0);
-    const UINT32 *px = c->argb + (size_t)frame * c->w * c->h;
     for (int j = 0; j < g_under_h; j++) {
         int y = cy0 + j;
-        UINT32 *row = t.vram + (size_t)y * t.stride;
-        const UINT32 *src = px + (size_t)((y - y0) / s) * c->w;
+        UINT32 *row = t->vram + (size_t)y * t->stride;
+        const UINT32 *src = px + (size_t)((y - y0) / s) * w;
         for (int i = 0; i < g_under_w; i++) {
             int x = cx0 + i;
             UINT32 d = row[x];
@@ -1321,6 +1266,41 @@ void GdiCursorDrawShape(int dx, int dy, const GdiCursorShape *c, int frame)
             row[x] = a == 255 ? pixof(col) : blend(d, pixof(col), a);
         }
     }
+}
+
+/* The system pointers are rendered once per shape, scale and phase */
+static UINT32 g_sys_px[SYSCUR_BOX * GDI_MAX_SCALE * SYSCUR_BOX * GDI_MAX_SCALE];
+static int    g_sys_id, g_sys_scale, g_sys_phase, g_sys_hx, g_sys_hy;
+static UINT64 g_sys_scratch[SYSCUR_SCRATCH / 8];      /* the desktop's (it draws the pointer) */
+
+void GdiCursorDrawSys(int dx, int dy, int id, int phase)
+{
+    if (!g.ready) return;
+    g_under_w = g_under_h = 0;
+    CurTarget t;
+    if (!cursor_target(&dx, &dy, &t)) return;
+    int s = t.s < 1 ? 1 : t.s > GDI_MAX_SCALE ? GDI_MAX_SCALE : t.s;
+    if (!SysCursorAnimated(id)) phase = 0;
+    if (id != g_sys_id || s != g_sys_scale || phase != g_sys_phase) {
+        SysCursorRender(id, s, phase, true, g_sys_px, &g_sys_hx, &g_sys_hy, g_sys_scratch);
+        g_sys_id = id; g_sys_scale = s; g_sys_phase = phase;
+    }
+    cursor_blit(&t, dx, dy, g_sys_px, SYSCUR_BOX * s, SYSCUR_BOX * s, g_sys_hx, g_sys_hy, 1);
+}
+
+/* The arrow */
+void GdiCursorDraw(int dx, int dy) { GdiCursorDrawSys(dx, dy, OCR_NORMAL, 0); }
+
+void GdiCursorDrawShape(int dx, int dy, const GdiCursorShape *c, int frame)
+{
+    if (!g.ready) return;
+    g_under_w = g_under_h = 0;
+    if (!c || c->hidden || c->nframes <= 0) return;
+    CurTarget t;
+    if (!cursor_target(&dx, &dy, &t)) return;
+    if (frame < 0 || frame >= c->nframes) frame = 0;
+    const UINT32 *px = c->argb + (size_t)frame * c->w * c->h;
+    cursor_blit(&t, dx, dy, px, c->w, c->h, c->hot_x, c->hot_y, c->dev ? 1 : t.s);
 }
 
 void GdiCursorErase(int dx, int dy)

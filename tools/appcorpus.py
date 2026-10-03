@@ -13,16 +13,21 @@ does (tools/selftest.py): it exits with code 0 and prints what is expected.
 Before it, NovaOS's own screens are checked (Phase 17.6): `dir` on drives
 C: and D: (an empty NTFS disk made with mkntfs, from the ntfs-3g package)
 must name each drive and give its own free space, and File Explorer's This
-PC must list both drives.  Notepad++ runs last (it takes the keyboard): it
-opens a file.  The This PC and Notepad++ screenshots must match
-tests/reference/this-pc.png and notepad++.png (--update-reference writes
-those files from this run instead); the screenshots are kept in --out.
+PC must list both drives.  The windowed programs (App(gui=True)) run last,
+one at a time (each takes the keyboard): SumatraPDF opens a PDF, WinMerge
+compares two files, KeePassXC unlocks a password database, Notepad++
+opens a file and PuTTY makes a raw connection
+to an echo server this script runs on the host (10.0.2.2 on QEMU's user
+network) and types a line, which the server must receive.  Each one's
+screenshot (and This PC's) must match tests/reference/NAME.png
+(--update-reference writes those files from this run instead); the
+screenshots are kept in --out.
 
 The exit status is the number of programs that failed.  --summary appends
 a Markdown pass/fail table, one row per program (the nightly workflow,
 .github/workflows/nightly.yml, posts it).
 """
-import argparse, os, re, shutil, struct, subprocess, sys, tempfile, time, zipfile
+import argparse, os, re, shutil, socket, struct, subprocess, sys, tempfile, threading, time, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from novarun import Nova, ROOT
@@ -32,15 +37,23 @@ REFERENCES = os.path.join(ROOT, 'tests', 'reference')
 DRIVE_LABEL = 'NOVACORPUS'
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
 SAMPLE = 'NovaOS app corpus\na needle in a haystack\nthe end\n'
+ECHO_PORT = 2323                    # the echo server PuTTY connects to (on the host)
 
 
 class App:
     """@url's download (and @extra's), unpacked by @unpack into
     C:\\Apps\\@dir; @tests run in order.  @unpack may be a function
-    (app, [downloaded files], dest) for a program its file stages itself."""
-    def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=()):
+    (app, [downloaded files], dest) for a program its file stages itself.
+    A windowed program (@gui) is started with each test's command, has its
+    test's timeout to bring its window up, and its screenshot is compared
+    with tests/reference/NAME.png; @interact(nova, echo) runs before the
+    screenshot (typing into it) and returns why it failed, or None.  @net
+    gives NovaOS QEMU's user network and starts the echo server."""
+    def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=(),
+                 gui=False, net=False, interact=None):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
         self.unpack, self.strip, self.extra = unpack, strip, list(extra)
+        self.gui, self.net, self.interact = gui, net, interact
 
 
 A = r'C:\Apps'
@@ -55,7 +68,8 @@ def load_apps():
     import glob
     apps = []
     for f in sorted(glob.glob(os.path.join(ROOT, 'tests', 'appcorpus', '*.py'))):
-        ns = {'App': App, 'Test': Test, 'A': A, 'DRIVE_LABEL': DRIVE_LABEL, 'ROOT': ROOT, '__file__': f}
+        ns = {'App': App, 'Test': Test, 'A': A, 'DRIVE_LABEL': DRIVE_LABEL, 'ROOT': ROOT, 'ECHO_PORT': ECHO_PORT,
+              '__file__': f}
         exec(compile(open(f).read(), f, 'exec'), ns)
         if not isinstance(ns.get('APP'), App):
             sys.exit(f'{f}: APP must be an App')
@@ -105,11 +119,76 @@ def stage(app, archive, dest):
                 shutil.copyfileobj(src, out)
 
 
+def make_pdf(path, lines):
+    """A one-page PDF with @lines in Helvetica (for SumatraPDF to show)"""
+    text = 'BT /F1 24 Tf 72 720 Td 32 TL ' + ' '.join('(' + l.replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)') + ') Tj T*'
+                                                      for l in lines) + ' ET'
+    objs = ['<< /Type /Catalog /Pages 2 0 R >>',
+            '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+            '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+            f'<< /Length {len(text)} >>\nstream\n{text}\nendstream',
+            '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']
+    out, offs = '%PDF-1.4\n', []
+    for i, o in enumerate(objs):
+        offs.append(len(out))
+        out += f'{i + 1} 0 obj\n{o}\nendobj\n'
+    xref = len(out)
+    out += f'xref\n0 {len(objs) + 1}\n0000000000 65535 f \n' + ''.join(f'{o:010d} 00000 n \n' for o in offs)
+    out += f'trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n'
+    with open(path, 'w', newline='\n') as f:
+        f.write(out)
+
+
+class EchoServer:
+    """What PuTTY talks to: greets each connection and echoes its lines;
+    .lines collects what was received"""
+    def __init__(self, port=ECHO_PORT):
+        self.lines = []
+        self.sock = socket.socket()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(('0.0.0.0', port))
+        self.sock.listen(5)
+        threading.Thread(target=self.accept, daemon=True).start()
+
+    def accept(self):
+        while True:
+            try:
+                c, _ = self.sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.serve, args=(c,), daemon=True).start()
+
+    def serve(self, c):
+        try:
+            c.sendall(b'Welcome to the NovaOS echo server\r\nType a line and it comes back.\r\n')
+            buf = b''
+            while True:
+                d = c.recv(256)
+                if not d:
+                    break
+                buf += d
+                while b'\r' in buf or b'\n' in buf:
+                    i = min(x for x in (buf.find(b'\r'), buf.find(b'\n')) if x >= 0)
+                    line, buf = buf[:i], buf[i + 1:].lstrip(b'\r\n')
+                    self.lines.append(line.decode('latin-1'))
+                    c.sendall(b'echo: ' + line + b'\r\n')
+        except OSError:
+            pass
+        c.close()
+
+    def close(self):
+        self.sock.close()
+
+
 def make_data(d):
-    """C:\\Apps\\data: text to search and a git repository to clone"""
+    """C:\\Apps\\data: text to search, a PDF, two files to compare and a git
+    repository to clone"""
     os.makedirs(d)
     with open(os.path.join(d, 'hello.txt'), 'w', newline='\n') as f:
         f.write(SAMPLE)
+    with open(os.path.join(d, 'hello2.txt'), 'w', newline='\n') as f:
+        f.write(SAMPLE.replace('a needle', 'no needle') + 'one more line\n')
+    make_pdf(os.path.join(d, 'corpus.pdf'), SAMPLE.splitlines())
     with open(os.path.join(d, 'notes.txt'), 'w', newline='\n') as f:
         f.write('more text\n')
     with open(os.path.join(d, 'ab.json'), 'w') as f:
@@ -194,10 +273,11 @@ def main():
     make_data(os.path.join(apps_dir, 'data'))
 
     ntfs = make_ntfs(os.path.join(work, 'ntfs.img')) if any(x.name == 'NovaOS' for x in staged) else None
+    echo = EchoServer() if any(x.net for x in staged) else None
     t_boot = time.time()
     try:
         nova = Nova(a.img, os.path.join(work, 'boot'), [(apps_dir, A)], mem=4096, data_mb=2048,
-                    extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [])
+                    extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [], net=echo is not None)
     except RuntimeError as e:
         print(e)
         for app in staged:
@@ -215,8 +295,8 @@ def main():
             t0, steps, why = time.time(), [], None
             for t in app.tests:
                 ts = time.time()
-                if app.name == 'Notepad++':
-                    out, w = notepad(nova, t, a)
+                if app.gui:
+                    out, w = gui(nova, t, a, app, echo, close=app is not staged[-1])
                 elif app.name == 'NovaOS':
                     out, w = screen(nova, t, a, ntfs)
                 else:
@@ -239,6 +319,8 @@ def main():
                 stopped = 'not run (NovaOS stopped)'
     finally:
         nova.close()
+        if echo:
+            echo.close()
         with open(os.path.join(a.out, 'serial.log'), 'w') as f:
             f.write(log + nova.sr.read_new())
         shutil.rmtree(work, ignore_errors=True)
@@ -246,21 +328,30 @@ def main():
     return sum(1 for r in results.values() if r[0])
 
 
-def notepad(nova, t, a):
-    """Start Notepad++ on a file; its screenshot must match the reference"""
+def gui(nova, t, a, app, echo, close):
+    """Start a windowed program (t.timeout seconds for its window to come
+    up, or it dies), run its interaction (PuTTY types a line the echo
+    server must receive).  The screenshot must match the reference; @close
+    closes the window after it (Alt+F4) so the next program gets the
+    keyboard"""
     out, ok = nova.run(t.cmd, 30)
-    shot = os.path.join(a.out, 'notepad++.png')
+    exe = re.escape(re.split(r'[\\/]', t.cmd.split()[1])[-1])
     m = None
-    for _ in range(60):                           # its window comes up (or it dies)
+    for _ in range(t.timeout):
         time.sleep(1)
         out += nova.sr.read_new()
-        m = re.search(r'\[UM\] notepad\+\+\.exe \(PID \d+\) (exited|crashed|terminated)[^\n]*', out)
+        m = re.search(rf'\[UM\] {exe} \(PID \d+\) (exited|crashed|terminated)[^\n]*', out, re.I)
         if m:
             break
     if m:
         return out, m.group(0).split(') ', 1)[1]
-    time.sleep(5)
-    return out, check_shot(nova, a, 'notepad++.png')
+    w = app.interact(nova, echo) if app.interact else None
+    time.sleep(3)
+    w = check_shot(nova, a, app.name.lower() + '.png') or w
+    if close:
+        nova.keys('alt-f4')
+        time.sleep(3)
+    return out, w
 
 
 def check_shot(nova, a, name):

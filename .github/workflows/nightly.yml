@@ -1,10 +1,11 @@
 # Nightly app corpus: boots NovaOS built from main and runs unmodified
 # Windows programs (ripgrep, fd, jq, 7-Zip, MinGit, Python, Node.js,
-# Notepad++; one file each in tests/appcorpus/) with tools/appcorpus.py,
-# then smpstress on 4 CPUs (locking under load: no deadlocks, and how file
-# and registry throughput scale).  The pass/fail table goes to the run's
+# SumatraPDF, WinMerge, KeePassXC, Notepad++, PuTTY; one file each in
+# tests/appcorpus/) with
+# tools/appcorpus.py, then smpstress on 4 CPUs (locking under load: no deadlocks,
+# and how file and registry throughput scale).  The pass/fail table goes to the run's
 # summary and, as a comment, to the "Nightly app corpus" issue (opened on
-# the first run).  Pull requests that change the corpus run it as well.
+# the first run).  Pull requests that change the corpus or this file run it too.
 name: Nightly app corpus
 
 on:
@@ -33,6 +34,10 @@ jobs:
     name: App corpus
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      # KVM crashes the core boot (a #GP in uACPI's GPE code) and times out
+      # the network suite; see docs/history/2026-10-03-ci-kvm.md
+      NOVARUN_ACCEL: tcg
     steps:
       - uses: actions/checkout@v4
 
