@@ -75,9 +75,20 @@ class Qmp:
         self.cmd('send-key', keys=[{'type': 'qcode', 'data': n} for n in names], **{'hold-time': hold})
 
     def type(self, text):
-        for ch in text:
-            self.key(*keys_for(ch))
-            time.sleep(0.03)
+        # Each key is held 30 ms and the next follows 50 ms after it: QEMU
+        # queues a key's hold as a delay in its input queue, so keys held
+        # longer than they are spaced pile up there and, past its limit
+        # (about 1,000 events: some 600 characters at the old 60 ms hold
+        # and 30 ms spacing), are dropped, Enter and key releases too (a
+        # dropped release leaves the key held down, repeating).  A long
+        # line also gets a breather every 40 keys: under emulation the
+        # desktop redraws slower than keys come, and the keyboard's own
+        # queue (16 events on QEMU's USB keyboard) overflows
+        for i, ch in enumerate(text):
+            self.key(*keys_for(ch), hold=30)
+            time.sleep(0.05)
+            if i % 40 == 39:
+                time.sleep(1)
 
 
 class Serial:

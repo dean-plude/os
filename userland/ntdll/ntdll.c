@@ -439,6 +439,7 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
     case 0xC00000BA: return ERROR_ACCESS_DENIED;          /* file is a directory */
     case 0xC0000101: return ERROR_DIR_NOT_EMPTY;
     case 0xC0000103: return ERROR_INVALID_NAME;           /* not a directory */
+    case 0xC0000106: return 206;                          /* ERROR_FILENAME_EXCED_RANGE: STATUS_NAME_TOO_LONG */
     case 0xC000011F: return ERROR_TOO_MANY_OPEN_FILES;
     case 0xC0000121: return ERROR_ACCESS_DENIED;
     case 0xC0000024: return 6;                            /* OBJECT_TYPE_MISMATCH: ERROR_INVALID_HANDLE */
