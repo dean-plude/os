@@ -217,7 +217,8 @@ Contents:
   fed by RDRAND (when present), TSC jitter and packet timing.
 - **Terminal**: `curl`/`wget` take several URLs (`curl URL URL ...`) and show
   the protocol, cipher suite, reused connections and resumed sessions.
-- Not yet: IPv6 and HTTP/2.  (The web browser arrived in Phase 9.5.)
+- Not yet: IPv6 and HTTP/2.  (The web browser arrived in Phase 9.5; IPv6
+  and HTTP/2 came with "IPv6, HTTP/2 and virtio-net (Phase 18.8)".)
 
 ## Phase 9 — Windows programs (ring 3)
 - **Real PE32+ `.exe` files run in ring 3** (`kernel/um/`): each program has
@@ -320,7 +321,8 @@ Contents:
   default; `enable_javascript:0` in `C:\Programs\NetSurf\res\Choices`
   turns it off.  Like NetSurf 3.11 on every platform, changes a script makes
   to the page *after* it has been laid out are not redrawn yet.
-- Not yet: SVG and IPv6.
+- Not yet: SVG and IPv6.  *(IPv6 came with "IPv6, HTTP/2 and virtio-net
+  (Phase 18.8)".)*
 
 ## Desktop UX refresh
 - **Start menu** (`wm/desktop.c`): live search as you type (Win key, then
@@ -751,7 +753,9 @@ the 64-bit kernel, and they get a 32-bit copy of the whole userland in
   exists (`SHGetFolderPath`, which NSIS takes from it); msvcrt exports
   `_controlfp`, `_control87`, `__p___initenv` and friends.  The
   Terminal's `trace` now shows the file name of file system calls.
-- Not yet: pending renames are not carried out at the next start.
+- Not yet: pending renames are not carried out at the next start.  *(Since
+  done: Session Manager's `PendingFileRenameOperations` run at boot, see
+  "Phase 17: kernel and API correctness".)*
 
 ## Shortcuts (.lnk) and overlapping controls
 
@@ -861,6 +865,8 @@ the 64-bit kernel, and they get a 32-bit copy of the whole userland in
 - Not yet: `CREATE_SUSPENDED` is ignored and `CREATE_NEW_CONSOLE` shares
   the console; a file handed to a child has its own position (cmd.exe
   opens redirection targets for appending so output lands in order).
+  *(Since done: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` windows and shared
+  file positions came with "Phase 17: kernel and API correctness".)*
 
 ## The clipboard
 
@@ -985,7 +991,8 @@ C: work.  What the runtime needed from NovaOS:
   and input calls...).
 - Not yet: hard links (drive C: behaves like FAT, so git renames), and
   interactive `sh` sessions have not been tried; `sh -c` and scripts
-  are what is tested.
+  are what is tested.  *(Since done: `sh --login -i` runs interactively since
+  Phase 17.2; hard links are still to come.)*
 
 ## Language runtimes: Java, .NET, Node.js, Python
 
@@ -1158,8 +1165,8 @@ finds them.
 - **`tools/novarun.py`** boots the image in QEMU with programs copied onto
   a data disk, types Terminal commands and takes screenshots:
   `python3 tools/novarun.py --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' 'x.exe' '!shot x.png'`.
-- Not yet: Notepad++'s status bar draws black and its toolbar is cut
-  short; ~~Neovim hangs on exit (console input handles cannot be waited
+- Not yet: ~~Notepad++'s status bar draws black and its toolbar is cut
+  short~~ (fixed in Phase 17.6); ~~Neovim hangs on exit (console input handles cannot be waited
   on)~~ fixed in Phase 17.2;
   ffmpeg needs `avrt`, `ncrypt`, `d2d1`, `dwrite` and more (see
   [More compatibility](#more-compatibility-schannel-uniscribe-idn-crt-gaps)).
@@ -1336,7 +1343,8 @@ build machine, and DXVK is the faster, more complete path anyway.
   and with a USB keyboard and mouse and HD Audio attached.
 - Not yet: wake devices such as USB keyboards.  (Display modes on other
   adapters came later: see "Display adapters: QXL, virtio, VMware, Cirrus,
-  and their modes after sleep".)
+  and their modes after sleep"; USB wake came with "ACPI: SCI interrupt, lid,
+  thermal zones, wake devices, _PRT (Phase 18.6)".)
 
 ## ACPI namespace (uACPI): batteries and AC power
 
@@ -1435,7 +1443,8 @@ build machine, and DXVK is the faster, more complete path anyway.
   the run's summary and as a comment on the "Nightly app corpus" issue.
 - Not yet: Notepad++'s tab bar and status bar still draw black; the
   reference shows them so, and an improvement means updating it
-  (`--update-reference`).
+  (`--update-reference`).  *(Since done: the bars draw since Phase 17.6, see
+  "Phase 17: kernel and API correctness", and the reference was updated.)*
 
 ## More compatibility: Schannel, Uniscribe, IDN, CRT gaps
 
@@ -2296,7 +2305,8 @@ keyboards, mice, hubs and sticks too.
   and none after drivetest and Terminal tests (MFT growth, a 90-file
   folder split across INDX blocks and shrunk back, a USB stick written to
   and pulled out without a sync) wrote to them.
-  Windows `chkdsk` has not been run on them: there is no Windows here.
+  Windows `chkdsk`, run on a disk NovaOS had written to (3 October),
+  reported no errors either.
 
 ## NTFS as drive C: and file ACLs (Phase 18.5)
 
@@ -2401,9 +2411,10 @@ and the kernel enforces those DACLs.
 - **Not done**: in QEMU a USB key can't wake the machine itself.  QEMU
   8.2 delivers the key to the suspended port (`xhci_wakeup`) but has no
   path from there to the platform, so the test wakes it with
-  `system_wakeup` (which QEMU reports as the power button).  USB wake
-  needs checking on real hardware, as do GPE block devices other than
-  `\_GPE` and routing behind PCI bridges.
+  `system_wakeup` (which QEMU reports as the power button).  On a real
+  PC a USB key press does wake it from S3 (checked 3 October).  Still
+  unchecked: GPE block devices other than `\_GPE` and routing behind PCI
+  bridges.
 
 ## HPET and one-shot/TSC-deadline timers (Phase 18.7)
 
@@ -2423,6 +2434,16 @@ and the kernel enforces those DACLs.
   wait timeout end, idle and with a busy thread on every CPU; it is in the
   core self-tests.  In QEMU (TCG, 2 CPUs) the 95th percentile under load
   was 0.26 ms late (it was 10 to 20 ms with the 100 Hz tick).
+- **Fix (2026-10-03):** `sleeptest timer` failed in CI at 1.4 to 1.6 ms
+  (95th percentile under load).  Two causes.  The keyboard and mouse
+  polls (PS/2 and USB) ran in the timer interrupt, and their port and MMIO
+  reads block for up to a few milliseconds under QEMU (it serializes
+  device access), with interrupts off, so every sleep due on that CPU
+  meanwhile ended late; they now run in a kernel thread (`devpoll`) woken
+  by its TSC deadline at each tick, interrupts enabled.  And a timer
+  interrupt taken while a CPU halted waiting for the kernel lock re-armed
+  the timer for the 10 ms grid only, forgetting that CPU's TSC-deadline
+  sleepers; it now re-arms for the soonest sleeper too.
 - QEMU emulates the TSC-deadline timer only with KVM, so the self-tests
   exercise the one-shot mode; TSC-deadline mode is untested.
 - Not yet: waitable timers (`SetWaitableTimer`) still fire on the 10 ms
@@ -2653,5 +2674,32 @@ or MIT) for the dialogs' pictures.
   (WinRM remoting), which NovaOS lacks.
 - Not yet: rollback, script custom actions, nested installs, patches
   (`.msp`) and transforms (`.mst`), advertised features, services at boot.
+
+## Firefox loads pages: wsock32.dll (Phase 16.4)
+
+Floorp showed a blank page for every URL and no request ever left the
+machine, while the same page from a `file:` URL rendered.  The parent's
+socket thread opened a TCP socket and closed it again at once, never
+calling `connect`.  The caller was NSPR's `_PR_MD_SOCKET` in `nss3.dll`,
+which imports Winsock 1.1 (`wsock32.dll`) by ordinal and calls
+`ioctlsocket` (`FIONBIO`) right after `socket`.  NovaOS answered
+`wsock32.dll` with `ws2_32.dll` on the assumption that the two share
+their ordinals; they do not: in `wsock32` `inet_addr` is 10, `inet_ntoa`
+11 and `ioctlsocket` 12, where `ws2_32` has `ioctlsocket` at 10.  So
+NSPR's `ioctlsocket` landed in `inet_ntoa`, whose non-zero return read as
+failure, and every socket was closed before use.
+
+- **wsock32.dll** (`userland/wsock32`) is now its own DLL, with Winsock
+  1.1's ordinals, calling `ws2_32`'s functions, plus the old blocking-hook
+  calls (`WSAIsBlocking` and friends, which never block).  The alias in
+  the kernel loader, `ntdll` and `tools/pe_imports.py` is gone.
+- A socket `accept` gives is non-blocking when its listener is, as on
+  Windows.  NSPR's socket pair (the socket thread's wake-up) counts on
+  that: with a blocking accepted end, the socket thread stalled in `recv`
+  holding a lock the main thread then waited for.
+- `looptest` (network suite) checks `wsock32`'s ordinals, takes a socket
+  non-blocking the way NSPR does, and checks the inherited mode.
+- With it, Floorp fetches and renders `http://` pages served to QEMU's
+  guest network.
 
 <!-- END generated:history -->
