@@ -43,8 +43,9 @@ typedef struct {
 bool        AudioInit(void);
 /* Play on @o (kept until detached) from now on, the way Windows switches
  * to a headset when it is plugged in; detaching the playing output goes
- * back to the one attached before it.  After AudioOutputDetach returns
- * the mixer no longer touches @o's ring. */
+ * back to the one attached before it.  An attached output that is not
+ * playing gets silence (its ring keeps streaming).  After
+ * AudioOutputDetach returns the mixer no longer touches @o's ring. */
 bool        AudioOutputAttach(const AudioOutput *o);
 void        AudioOutputDetach(const AudioOutput *o);
 /* Whether there is an output, and the playing one's name */
