@@ -1345,6 +1345,13 @@ USERAPI HWND GetActiveWindow(void) { return W_quiet(g_active) ? g_active : 0; }
 USERAPI HWND GetForegroundWindow(void) { return W_quiet(g_active) ? g_active : 0; }
 
 /* The desktop activated or deactivated a top-level window */
+/* The window that stopped being active in the last second, when none of
+ * ours is now (the desktop's WM_ACTIVATE for the deactivation can come
+ * before the press that caused it: WM_POINTERACTIVATE's PA_NOACTIVATE) */
+static HWND  g_lost;
+static DWORD g_lost_time;
+HWND recently_active(void) { return W_quiet(g_lost) && GetTickCount() - g_lost_time < 1000 ? g_lost : 0; }
+
 void top_activated(Wnd *w, int active)
 {
     HWND h = w->h;
@@ -1363,7 +1370,7 @@ void top_activated(Wnd *w, int active)
         if (f && (f == w || is_child_of(w, f))) w->focus_save = g_focus;
         send_msg(w, WM_NCACTIVATE, FALSE, 0);
         send_msg(w, WM_ACTIVATE, WA_INACTIVE, 0);
-        if (g_active == h) g_active = 0;
+        if (g_active == h) { g_active = 0; g_lost = h; g_lost_time = GetTickCount(); }
         if (W_quiet(h) && f && (f == w || is_child_of(w, f))) {
             g_focus = 0;
             send_msg(f, WM_KILLFOCUS, 0, 0);

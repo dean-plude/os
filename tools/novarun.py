@@ -322,9 +322,9 @@ class Nova:
     def status(self):
         return self.qmp.cmd('query-status').get('return', {}).get('status')
 
-    def click(self, x, y, button=1):
-        """Click at logical screen point (x, y): HMP relative moves from the top-left corner
-        (QMP input-send-event moves do nothing on this mouse)"""
+    def move_to(self, x, y):
+        """Move the mouse to logical screen point (x, y): HMP relative moves from the top-left
+        corner, 40 pixels at a time (QMP input-send-event moves do nothing on this mouse)"""
         hmp = lambda c: self.qmp.cmd('human-monitor-command', **{'command-line': c})
         for _ in range(40):
             hmp('mouse_move -100 -100')
@@ -336,6 +336,11 @@ class Nova:
             x -= dx
             y -= dy
         time.sleep(0.3)
+
+    def click(self, x, y, button=1):
+        """Click at logical screen point (x, y)"""
+        hmp = lambda c: self.qmp.cmd('human-monitor-command', **{'command-line': c})
+        self.move_to(x, y)
         hmp(f'mouse_button {button}')
         time.sleep(0.1)
         hmp('mouse_button 0')

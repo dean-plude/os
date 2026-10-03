@@ -183,13 +183,16 @@ void u32_unlock(void);
 void  touch_from_kernel(Wnd *top, const MSG *km);
 Wnd  *input_hit(Wnd *top, POINT pt, int *hit);                 /* the window (and part) at @pt */
 void  input_queue(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, DWORD time);
-void  input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt);   /* a mouse message at screen @pt, routed */
+void  input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt, ULONG_PTR extra); /* a mouse message at screen @pt, routed */
+#define MI_PEN_SIGNATURE   0xFF515700u                       /* GetMessageExtraInfo of a pen's mouse messages */
+#define MI_TOUCH_SIGNATURE 0xFF515780u                       /* ... and of a touch's */
 LRESULT touch_default(Wnd *w, UINT msg, WPARAM wp, LPARAM lp);  /* DefWindowProc: mouse promotion */
-/* Pens and the mouse as pointers (pointer.c): a mouse message for @target's
- * client area at screen @pt, from the pen packet @pen (0: the mouse); 1 if
- * it became WM_POINTER* */
-int   pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, UINT32 pen);
-void  pointer_left(Wnd *top);          /* the desktop's WM_MOUSELEAVE for @top: the pen left it */
+/* Pens and the mouse as pointers (pointer.c): a mouse message for @target
+ * at screen @pt over part @hit (WM_NCHITTEST's; HTCLIENT when captured),
+ * from the pen packet @pen (0: the mouse); 1 if it became WM_POINTER* */
+int   pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, UINT32 pen, int hit);
+void  pointer_left(Wnd *top);          /* the desktop's WM_MOUSELEAVE for @top: the pen (or mouse) left it */
+HWND  recently_active(void);         /* win.c: the window that was active a moment ago (none is now) */
 void  pointer_taken(const MSG *m);     /* GetMessage took @m (GetPointerInfo answers for it) */
 
 int   hwnd_foreign(HWND h);           /* another process's handle */
