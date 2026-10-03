@@ -7,6 +7,7 @@
 #include "../mm/vmm.h"
 #include "../ke/printf.h"
 #include "../ke/smp.h"
+#include "../ke/spinlock.h"
 
 static RamNode g_root;
 
@@ -102,6 +103,7 @@ static void sync_links(RamNode *n)
         m->data = n->data; m->size = n->size; m->cap = n->cap;
         m->attrs = n->attrs; m->ctime = n->ctime; m->mtime = n->mtime;
         m->sd = n->sd; m->sdlen = n->sdlen;
+        m->lent = n->lent;
         m->xflags = (UINT8)((m->xflags & ~SHARED_X) | (n->xflags & SHARED_X));
         if (!ext(n) && (n->pflags & RAMFS_F_DIRTY)) mark(m, RAMFS_F_DIRTY);   /* (saved under each name) */
     }
@@ -270,6 +272,11 @@ void RamfsSetChangeHook(void (*fn)(RamNode *dir)) { g_change_hook = fn; }
 static void mark(RamNode *n, UINT8 flags)
 {
     if (n && g_change_hook && g_mode != RAMFS_LOADING) g_change_hook((flags & RAMFS_F_DIRTYDIR) ? n : n->parent ? n->parent : n);
+    RamfsMarkUnsaved(n, flags);
+}
+
+void RamfsMarkUnsaved(RamNode *n, UINT8 flags)
+{
     if (g_mode != RAMFS_TRACK || !n || ext(n)) return;          /* (other drives are not saved with C:) */
     __atomic_or_fetch(&n->pflags, flags, __ATOMIC_RELAXED);
     for (RamNode *a = n->parent; a && !(a->pflags & RAMFS_F_SUB); a = a->parent)
@@ -517,6 +524,91 @@ RamNode *RamfsCreate(RamNode *dir, const char *name, bool is_dir)
     return n;
 }
 
+/* ---------------------------------------------------------------------------
+ * Contents lent to a save (RamfsLend): one save at a time lends; a lent
+ * buffer is freed by RamfsGiveBackAll if the file let go of it meanwhile
+ * ("orphan").  RamNode.lent says a node's buffer may be in the list.
+ * ------------------------------------------------------------------------- */
+typedef struct { const char *buf; bool orphan; } Lent;
+static KSpinLock g_lent_lock = KSPINLOCK_INIT;
+static Lent *g_lent;
+static UINT32 g_nlent, g_lent_cap;
+
+static int lent_find(const char *buf)          /* (g_lent_lock held) */
+{
+    for (UINT32 i = 0; i < g_nlent; i++) if (g_lent[i].buf == buf && !g_lent[i].orphan) return (int)i;
+    return -1;
+}
+
+const char *RamfsLend(RamNode *f)
+{
+    if (!f || f->dir || !f->data) return NULL;   /* (an empty file has none) */
+    if (g_nlent == g_lent_cap) {                /* (only the lender changes the list's size) */
+        UINT32 cap = g_lent_cap ? 2 * g_lent_cap : 64;
+        Lent *nl = kmalloc(sizeof(Lent) * cap);
+        if (!nl) return NULL;
+        IrqState s = spin_lock_irqsave(&g_lent_lock);
+        if (g_nlent) memcpy(nl, g_lent, sizeof(Lent) * g_nlent);
+        Lent *old = g_lent;
+        g_lent = nl;
+        g_lent_cap = cap;
+        spin_unlock_irqrestore(&g_lent_lock, s);
+        kfree(old);
+    }
+    IrqState s = spin_lock_irqsave(&g_lent_lock);
+    if (!f->lent || lent_find(f->data) < 0) g_lent[g_nlent++] = (Lent){ f->data, false };
+    spin_unlock_irqrestore(&g_lent_lock, s);
+    f->lent = 1;
+    for (RamNode *m = f->link; m && m != f; m = m->link) m->lent = 1;
+    return f->data;
+}
+
+void RamfsGiveBackAll(void)
+{
+    IrqState s = spin_lock_irqsave(&g_lent_lock);
+    Lent *list = g_lent;
+    UINT32 n = g_nlent;
+    g_lent = NULL;
+    g_nlent = g_lent_cap = 0;
+    spin_unlock_irqrestore(&g_lent_lock, s);
+    for (UINT32 i = 0; i < n; i++) if (list[i].orphan) kfree((void *)list[i].buf);
+    kfree(list);
+}
+
+/* @f lets go of its contents @old (replaced or deleted): freed now, or by
+ * RamfsGiveBackAll if a save has them */
+static void release_data(RamNode *f, char *old)
+{
+    if (f->lent && old) {
+        IrqState s = spin_lock_irqsave(&g_lent_lock);
+        int i = lent_find(old);
+        if (i >= 0) g_lent[i].orphan = true;
+        spin_unlock_irqrestore(&g_lent_lock, s);
+        if (i >= 0) return;
+    }
+    kfree(old);
+}
+
+/* Before @f's contents change where they are: if a save has them, @f gets
+ * a copy (its other names too, through sync_links).  False when out of memory. */
+static bool unshare(RamNode *f)
+{
+    if (!f->lent) return true;
+    IrqState s = spin_lock_irqsave(&g_lent_lock);
+    bool lent = f->data && lent_find(f->data) >= 0;
+    spin_unlock_irqrestore(&g_lent_lock, s);
+    if (lent) {
+        char *nb = kmalloc(f->cap ? f->cap : 1);  /* (the save keeps the old ones until it gives them back) */
+        if (!nb) return false;
+        if (f->size) memcpy(nb, f->data, f->size);
+        release_data(f, f->data);
+        f->data = nb;
+    }
+    f->lent = 0;
+    for (RamNode *m = f->link; m && m != f; m = m->link) { m->lent = 0; m->data = f->data; }
+    return true;
+}
+
 bool RamfsWrite(RamNode *f, const char *data, UINT32 len)
 {
     if (!f || f->dir || ring_pins(f) || len > RAMFS_FILE_MAX || RamfsReadOnly(f)) return false;
@@ -526,7 +618,7 @@ bool RamfsWrite(RamNode *f, const char *data, UINT32 len)
         if (!buf) return false;
         memcpy(buf, data, len);
     }
-    kfree(f->data);
+    release_data(f, f->data);
     f->data = buf;
     f->size = len;
     f->cap = len;
@@ -540,7 +632,7 @@ bool RamfsWrite(RamNode *f, const char *data, UINT32 len)
 bool RamfsWriteOwned(RamNode *f, char *buf, UINT32 len)
 {
     if (!f || f->dir || ring_pins(f) || len > RAMFS_FILE_MAX || RamfsReadOnly(f)) return false;
-    kfree(f->data);
+    release_data(f, f->data);
     f->data = buf;
     f->size = len;
     f->cap = len;
@@ -560,7 +652,7 @@ static bool reserve(RamNode *f, UINT32 need)
     char *nb = kmalloc(cap);
     if (!nb) return false;
     if (f->size) memcpy(nb, f->data, f->size);
-    kfree(f->data);
+    release_data(f, f->data);
     f->data = nb;
     f->cap = cap;
     return true;
@@ -569,7 +661,7 @@ static bool reserve(RamNode *f, UINT32 need)
 bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
 {
     if (!f || f->dir || ring_pins(f) || off > RAMFS_FILE_MAX || len > RAMFS_FILE_MAX - off || RamfsReadOnly(f)) return false;
-    if (!RamfsLoad(f) || !reserve(f, off + len)) return false;
+    if (!RamfsLoad(f) || !unshare(f) || !reserve(f, off + len)) return false;
     if (ext(f)) set_dirty(f);
     if (off > f->size) memset(f->data + f->size, 0, off - f->size);
     memcpy(f->data + off, data, len);
@@ -582,7 +674,7 @@ bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
 
 bool RamfsResize(RamNode *f, UINT32 len)
 {
-    if (!f || f->dir || ring_pins(f) || RamfsReadOnly(f) || !RamfsLoad(f) || !reserve(f, len)) return false;
+    if (!f || f->dir || ring_pins(f) || RamfsReadOnly(f) || !RamfsLoad(f) || !unshare(f) || !reserve(f, len)) return false;
     if (ext(f)) set_dirty(f);
     if (len > f->size) memset(f->data + f->size, 0, len - f->size);
     f->size = len;
@@ -628,7 +720,7 @@ bool RamfsDelete(RamNode *n)
     mark(n->parent, RAMFS_F_DIRTYDIR);
     *pp = n->next;
     if (n->link) leave_ring(n);                     /* its other names keep the contents */
-    else { kfree(n->data); kfree(n->sd); }
+    else { release_data(n, n->data); kfree(n->sd); }
     kfree(n);
     return true;
 }

@@ -217,7 +217,8 @@ A CPU halted waiting for the kernel lock wakes none of its sleepers.  The
 timer interrupt it takes meanwhile (`sched_timer_rearm`) hands a due
 TSC-deadline sleeper that doesn't hold the lock to another CPU, as a
 timer wake: the device poll thread then keeps draining the keyboard while
-another CPU holds the lock for seconds (saving drive C:).
+another CPU holds the lock for long.  (Saving drive C: used to hold it for
+seconds; it now runs on its own thread without it, see `fs/persist.c`.)
 
 ### Scheduler Design
 

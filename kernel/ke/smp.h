@@ -22,8 +22,11 @@
  * read and write open files), then a file's own lock, then a process's
  * (exclusive; looking up, opening and closing a handle take it shared
  * plus the handle's slot lock); the registry's g_reg, then a key's lock,
- * then its watch lock.  Spinlocks (spinlock.h) come last: nothing that
- * sleeps or takes the BKL while one is held.
+ * then its watch lock.  Saving drive C: (fs/persist.c) takes the file
+ * system, then its save lock, and writes the disk holding only the latter;
+ * the disk drivers (AHCI, NVMe, USB storage) take a lock per disk, so
+ * their callers need no BKL.  Spinlocks (spinlock.h) come last: nothing
+ * that sleeps or takes the BKL while one is held.
  *
  * The terminal's "profile" command samples where the CPUs spend their time
  * (prof.c): kernel functions and their callers, waits for the BKL by who

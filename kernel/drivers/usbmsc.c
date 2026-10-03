@@ -17,6 +17,7 @@
 #include "../lib/string.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
+#include "../ke/smp.h"
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/apic.h"
 
@@ -140,16 +141,18 @@ static bool msc_xfer(BlockDev *bd, bool write, UINT64 lba, UINT32 count, void *b
 {
     Msc *m = bd->ctx;
     if (m->dead || bd->gone) return false;
-    take(&m->busy);
     bool ok = true;
     UINT8 *p = buf;
     UINT32 per = XFER_BYTES / m->block;
     while (count && ok) {
         UINT32 n = count < per ? count : per;
+        bkl_acquire();                      /* (the USB stack wants the big lock: a command at a time, */
+        take(&m->busy);                     /*  so a long write never keeps it from the others) */
         ok = rw(m, write, lba, n, p);
+        drop(&m->busy);
+        bkl_release();
         lba += n; count -= n; p += (size_t)n * m->block;
     }
-    drop(&m->busy);
     return ok;
 }
 
@@ -167,11 +170,13 @@ static bool msc_flush(BlockDev *bd)
 {
     Msc *m = bd->ctx;
     if (m->dead || bd->gone) return false;
+    bkl_acquire();
     take(&m->busy);
     UINT8 cdb[10] = { 0x35 };                          /* SYNCHRONIZE CACHE(10) */
     int st = scsi(m, cdb, 10, false, NULL, 0);
     if (st == 1) request_sense(m, NULL, NULL);          /* (many sticks have no cache: fine) */
     drop(&m->busy);
+    bkl_release();
     return st >= 0;
 }
 

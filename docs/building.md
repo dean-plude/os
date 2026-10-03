@@ -258,6 +258,16 @@ of what they create.  On FAT, C: is the folder `\NOVA\C`, and ACLs last
 only until restart.  Files from the OS image keep no descriptor across a
 restart either way.
 
+Saving runs on its own kernel thread and keeps no lock while the disk is
+written: it notes what changed under the file-system lock (well under a
+millisecond; a changed file's contents are lent to the save, and a program
+writing to the file meanwhile gets its own copy), then writes it out while
+programs, the desktop and the keyboard carry on.  On FAT, a crash or power
+cut during a save leaves each file either as it was or as it was saved,
+never half of each: a file's data and its cluster chain reach the disk
+before its directory entry, and the clusters of a replaced or deleted file
+are freed only after the entries that no longer use them are on the disk.
+
 `scripts/run-qemu.sh` attaches `build/nova-data.img` (256 MiB, created on
 first run), so your files survive rebuilds of `nova.img`.  In the Terminal,
 `vol` shows where C: is saved and `sync` saves it now.  Programs can be put
