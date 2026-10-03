@@ -242,7 +242,9 @@ USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
 plain `usb-ehci`).  The newest sound output plays, and the newest input
 records.  QEMU has no USB microphone and no high-speed audio device:
 `tools/usbredirpeer.py` is one (a USB Audio Class 1 headset or microphone
-behind a `usb-redir` device), e.g. a high-speed headset on EHCI whose
+behind a `usb-redir` device, or with `--uac2` a USB Audio Class 2.0 one:
+a programmable clock behind a clock selector, 24-bit samples and, at
+high speed, a packet every microframe), e.g. a high-speed headset on EHCI whose
 microphone hears 523 Hz:
 
 ```bash
@@ -402,7 +404,12 @@ alone, and `soundtest record` and `capture` must record the microphone's
 tone.  The test then plugs full-speed USB microphones (more
 `usbredirpeer.py`s, each hearing its own tone) into an xHCI, an OHCI and
 a UHCI controller, records after each (the newest microphone must be
-heard), unplugs the UHCI one and records the OHCI one again.  Last, one
+heard), unplugs the UHCI one and records the OHCI one again.  Then it
+plugs a high-speed USB Audio 2.0 headset (`usbredirpeer.py --uac2`,
+writing `uac2.wav`, its microphone hearing 988 Hz) into the xHCI
+controller: `soundtest tone` must sound in `uac2.wav` alone, `soundtest
+record` and `capture` must hear 988 Hz, and once it is unplugged
+recording must go back to the OHCI microphone.  Last, one
 `virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
 connects a monitor to the second and third outputs and disconnects them
 again while NovaOS runs, through a VNC server QEMU has on each (an RFB
