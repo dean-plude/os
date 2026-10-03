@@ -1029,11 +1029,11 @@ static UINT64 syscursor_image(UINT64 arg, UINT64 ptr)
     if (!id || s < 1 || s > GDI_MAX_SCALE) return 0;
     int side = SYSCUR_BOX * s;
     UINT32 *px = kmalloc((size_t)side * side * 4 + 16);
-    if (!px) return 0;
+    void *scratch = kmalloc(SYSCUR_SCRATCH);
+    if (!px || !scratch) { kfree(px); kfree(scratch); return 0; }
     INT32 hx, hy;
-    DesktopLock();                              /* SysCursorRender's scratch is shared */
-    SysCursorRender(id, s, 0, false, px + 4, &hx, &hy);
-    DesktopUnlock();
+    SysCursorRender(id, s, 0, false, px + 4, &hx, &hy, scratch);   /* no desktop lock: see syscursor.h */
+    kfree(scratch);
     px[0] = (UINT32)side; px[1] = (UINT32)side; px[2] = (UINT32)hx; px[3] = (UINT32)hy;
     bool ok = NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, px, (size_t)side * side * 4 + 16));
     kfree(px);

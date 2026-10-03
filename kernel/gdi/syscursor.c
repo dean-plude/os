@@ -309,8 +309,9 @@ static inline void over(Acc *d, UINT32 c, int cov)
 
 #define MAX_PRIMS 12
 #define MAX_PARTS 3
+_Static_assert(sizeof(DevPrim) * MAX_PARTS * MAX_PRIMS <= SYSCUR_SCRATCH, "SYSCUR_SCRATCH is too small");
 
-void SysCursorRender(int id, int scale, int phase, bool shadow, UINT32 *argb, int *hx, int *hy)
+void SysCursorRender(int id, int scale, int phase, bool shadow, UINT32 *argb, int *hx, int *hy, void *scratch)
 {
     const Shape *sh = shape_of(id);
     int s = scale < 1 ? 1 : scale;
@@ -320,7 +321,7 @@ void SysCursorRender(int id, int scale, int phase, bool shadow, UINT32 *argb, in
     if (hx) *hx = sh->hx * s;
     if (hy) *hy = sh->hy * s;
 
-    static DevPrim dev[MAX_PARTS][MAX_PRIMS];
+    DevPrim (*dev)[MAX_PRIMS] = scratch;
     int np[MAX_PARTS];
     int nparts = imin(sh->nparts, MAX_PARTS);
     for (int k = 0; k < nparts; k++) {

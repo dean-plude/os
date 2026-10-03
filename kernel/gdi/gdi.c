@@ -1271,6 +1271,7 @@ static void cursor_blit(const CurTarget *t, int dx, int dy, const UINT32 *px, in
 /* The system pointers are rendered once per shape, scale and phase */
 static UINT32 g_sys_px[SYSCUR_BOX * GDI_MAX_SCALE * SYSCUR_BOX * GDI_MAX_SCALE];
 static int    g_sys_id, g_sys_scale, g_sys_phase, g_sys_hx, g_sys_hy;
+static UINT64 g_sys_scratch[SYSCUR_SCRATCH / 8];      /* the desktop's (it draws the pointer) */
 
 void GdiCursorDrawSys(int dx, int dy, int id, int phase)
 {
@@ -1281,7 +1282,7 @@ void GdiCursorDrawSys(int dx, int dy, int id, int phase)
     int s = t.s < 1 ? 1 : t.s > GDI_MAX_SCALE ? GDI_MAX_SCALE : t.s;
     if (!SysCursorAnimated(id)) phase = 0;
     if (id != g_sys_id || s != g_sys_scale || phase != g_sys_phase) {
-        SysCursorRender(id, s, phase, true, g_sys_px, &g_sys_hx, &g_sys_hy);
+        SysCursorRender(id, s, phase, true, g_sys_px, &g_sys_hx, &g_sys_hy, g_sys_scratch);
         g_sys_id = id; g_sys_scale = s; g_sys_phase = phase;
     }
     cursor_blit(&t, dx, dy, g_sys_px, SYSCUR_BOX * s, SYSCUR_BOX * s, g_sys_hx, g_sys_hy, 1);

@@ -39,5 +39,9 @@ bool SysCursorAnimated(int id);
 /* Renders pointer @id into @argb: SYSCUR_BOX * @scale pixels a side,
  * 0xAARRGGBB, not premultiplied.  @phase (0..SYSCUR_PHASES-1) turns the
  * busy ring; @shadow adds the soft drop shadow the desktop draws under
- * the pointer.  The hot spot, in pixels of @argb, goes to *hx, *hy. */
-void SysCursorRender(int id, int scale, int phase, bool shadow, UINT32 *argb, int *hx, int *hy);
+ * the pointer.  The hot spot, in pixels of @argb, goes to *hx, *hy.
+ * @scratch: SYSCUR_SCRATCH bytes of the caller's (so no lock is needed:
+ * a program's user32 asks for images while it starts, and the desktop
+ * may be waiting on that start with its lock held). */
+#define SYSCUR_SCRATCH  12288
+void SysCursorRender(int id, int scale, int phase, bool shadow, UINT32 *argb, int *hx, int *hy, void *scratch);
