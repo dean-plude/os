@@ -523,6 +523,10 @@ static HRESULT inproc_class_object(REFCLSID clsid, REFIID riid, void **ppv)
     LSTATUS e = RegGetValueW(HKEY_CLASSES_ROOT, key, 0, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, 0, path, &size);
     if (e) {
         clsid_key(clsid, 0, key);
+        { char m[140]; int n = 0; const char *pre = "ole32: class not registered: ";
+          while (*pre) m[n++] = *pre++;
+          for (const WCHAR *q = key; *q && n < 136; q++) m[n++] = (char)*q;
+          m[n++] = '\n'; m[n] = 0; OutputDebugStringA(m); }
         HKEY k;
         if (RegOpenKeyExW(HKEY_CLASSES_ROOT, key, 0, KEY_READ, &k)) return REGDB_E_CLASSNOTREG;
         RegCloseKey(k);
