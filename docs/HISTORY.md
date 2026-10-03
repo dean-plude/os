@@ -1062,7 +1062,7 @@ menu and `start setup` in the Terminal opens it, to copy NovaOS to
 another disk.
 
 - **Welcome, choose a disk, confirm, install, finish.**  Setup lists the
-  SATA disks with their size and what is on them, marks the one NovaOS
+  SATA, NVMe and USB disks with their size and what is on them, marks the one NovaOS
   started from and the one drive C: is kept on, and asks before erasing
   anything.  Disks under 256 MB are shown but cannot be picked.
 - **What it writes**: a GPT (protective MBR, primary and backup headers
@@ -2109,6 +2109,330 @@ the invariant culture.  NovaOS now ships ICU the way Windows 10 does.
 - Not yet: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat`
   still format the English way for every locale, and the user's locale is
   always `en-US`.
+
+## USB hubs and report-protocol HID (Phase 18.1)
+
+- **USB core** (`kernel/drivers/xhci.c`, `usb.h`): devices are enumerated
+  on root ports and behind hubs (the slot context carries the route
+  string, the root port and, for low and full speed devices behind a high
+  speed hub, the transaction translator).  Every endpoint of the
+  configuration gets a ring in one Configure Endpoint, then
+  SET_CONFIGURATION, and each interface is offered to the class drivers,
+  which open pipes: interrupt IN with a completion callback, and bulk
+  transfers that wait.  A device that leaves takes everything behind it
+  with it; its drivers' `gone` callbacks run on the `usb` thread.
+- **Hubs** (`usbhub.c`): USB 2 and USB 3 hubs.  Ports are powered, the
+  status-change endpoint says which port changed, and the `usb` thread
+  reads its status, debounces, resets it and enumerates the device.
+- **HID** (`usbhid.c`): report protocol.  The report descriptor is parsed
+  into fields (report IDs, usage pages, arrays and bitmaps, push/pop);
+  keyboards report keys held (array or bitmap), mice relative X/Y, wheel
+  and buttons, tablets and touch screens absolute X/Y (scaled to the
+  screen) with a button or the first contact's tip switch.  Boot-class
+  devices whose report descriptor can't be used fall back to boot
+  protocol.  Absolute pointers move the cursor to a position
+  (`InputEvent.absolute`, `WmCursorMoveAbs`).
+- Tested in QEMU (`-machine q35,i8042=off -device qemu-xhci`) with a
+  `usb-hub` on port 1 holding a `usb-kbd` and a `usb-mouse`, and a
+  `usb-tablet` on port 2: typing in Terminal, relative motion and absolute
+  positions all work; the keyboard was unplugged and a new one added on
+  another hub port, and the tablet unplugged and added on a third root
+  port, with `device_del` / `device_add`.
+- Not yet: keyboard LEDs, multi-touch, more than one xHCI controller, and
+  the older UHCI/OHCI/EHCI controllers.
+
+## USB mass storage (Phase 18.2)
+
+- **Bulk-Only Transport + SCSI** (`kernel/drivers/usbmsc.c`): INQUIRY,
+  TEST UNIT READY, REQUEST SENSE, READ CAPACITY (10 and 16), READ/WRITE
+  (10 and 16) and SYNCHRONIZE CACHE, with stall handling and reset
+  recovery.  Each stick becomes a removable block device (`usb0`, `usb1`,
+  ...); `BlockUnregister` takes it off the list when it is pulled.
+- **Drives** (`kernel/fs/drives.c`): a removable disk's FAT12/16/32 and
+  NTFS volumes (whole disk, MBR or GPT) are mounted as the next free drive
+  letter when it arrives, and unmounted when it goes
+  (`RamfsUnmountDrive`: nodes still held stay valid but read nothing).
+  Fixed disks still only mount NTFS, since their FAT volumes are NovaOS's
+  own.  Mounts are read-only for now.
+- **File Explorer** lists the other drives (D: to Z:) under the places in
+  its sidebar, names them by label in the title and breadcrumb, and goes
+  back to This PC when the drive it shows is unplugged.
+- Tested in QEMU with a FAT32 (MBR) `usb-storage` stick present at boot
+  (`dir`, `type`, Explorer, Notepad), unplugged and plugged back in with
+  `device_del` / `device_add`, and an NTFS stick added while running.
+
+## NVMe disks (Phase 18.3)
+
+- **Driver** (`kernel/drivers/nvme.c`): resets each NVMe controller, sets
+  up an admin queue and one I/O queue pair (64 entries, polled through the
+  completion phase bit), identifies the controller and its active
+  namespaces, and registers each namespace with 512-byte blocks as a
+  block device (`nvme0n1`, ...).  Reads and writes go through a 128 KiB
+  bounce buffer described by PRP entries or a PRP list; Flush backs
+  `BlockDev.flush`.  After S3 the controllers are reset and their queues
+  created again.
+- **Install**: NVMe disks are found with the SATA disks (`PersistInit`),
+  so Setup lists them, a blank one holds drive C: in a live session, and
+  NovaOS installs to them.
+- Tested in QEMU/OVMF with a blank 1 GB `-device nvme` and the ISO:
+  Setup installed onto `nvme0n1`, then the NVMe disk alone booted
+  (OVMF's `UEFI QEMU NVMe Ctrl` entry), and a file written in Terminal was
+  saved to its NOVADATA partition.
+
+## NTFS write (Phase 18.4)
+
+- **Writer** (`kernel/fs/ntfs.c`, NovaOS's own code: ntfs-3g and the
+  Linux ntfs3 driver are GPL): rewrites a file's data (resident when it
+  fits in its MFT record, else in newly allocated clusters, the old ones
+  freed once the record points at the new ones), creates files and
+  directories (a `$STANDARD_INFORMATION` carrying the parent's security
+  id, a Win32 `$FILE_NAME`, an empty `$DATA` or `$I30` index), renames
+  and moves them, and deletes files and empty directories (a file with
+  other hard links only loses the name).  Directory indexes are rebuilt
+  whole on each change, as a B+ tree of INDX blocks packed bottom up
+  (`$UpCase` collation), in the index root alone while it fits; the
+  `$INDEX_ALLOCATION` grows, and is given back when the index fits in the
+  root again.  The MFT grows 64 records at a time.  The cluster and MFT
+  bitmaps are kept in memory and written through; records 0-3 are
+  mirrored to `$MFTMirr`.  There is no journal: `$LogFile` is emptied when
+  writing starts (as `ntfsfix` does) and each call leaves the volume
+  consistent.  Files in an attribute list, and compressed, sparse or
+  encrypted files, are not rewritten: the first time something asks
+  whether such a file is writable its record is read, and it shows as
+  read-only from then on (the directory's copy of its attributes can't be
+  trusted for this; ntfs-3g leaves it stale).
+- **When it is writable**: a volume Windows left hibernated (a
+  `hiberfil.sys` starting `hibr`, which Fast Startup leaves too), marked
+  dirty, or with unfinished transactions in `$LogFile` stays read-only.
+- **Drives** (`kernel/fs/drives.c`, `ramfs.c`): `RamfsSource` gained
+  create, remove, rename, write and free-space calls.  Creating, deleting
+  and renaming on a writable drive go to the disk at once; a file's new
+  contents are written when nothing holds it any more, after a quiet
+  second (`DrivesPoll`), and at shutdown (`DrivesSync` from `UmSaveAll`).
+  Volume information reports the real free space and drops
+  `FILE_READ_ONLY_VOLUME`.  Renames within drives D:, E:, ... are real
+  renames now (they were refused as "another device", so `MoveFile`
+  copied and deleted).
+- **Checks**: `drivetest` now writes (small, appended and 700 KB files,
+  overwrites, renames, moves, a case change, a folder of 300 files, then
+  deletes) and leaves two files for the host; `scripts/check-ntfs-disk.sh`
+  runs `ntfsfix -n` and `scripts/ntfs-check.py`, a chkdsk-style check of
+  the cluster and MFT bitmaps against what the records own, the records'
+  headers, attributes and link counts, every `$I30` index (order, leaf
+  depth, VCNs, index bitmap, entries against the `$FILE_NAME`s) and
+  `$LogFile`.  It reports no errors on volumes mkntfs and ntfs-3g made,
+  and none after drivetest and Terminal tests (MFT growth, a 90-file
+  folder split across INDX blocks and shrunk back, a USB stick written to
+  and pulled out without a sync) wrote to them.
+  Windows `chkdsk` has not been run on them: there is no Windows here.
+
+## NTFS as drive C: and file ACLs (Phase 18.5)
+
+Drive C: can now be kept on NTFS, with each file's security descriptor,
+and the kernel enforces those DACLs.
+
+- **`$Secure` writing** (`kernel/fs/ntfs.c`): `NtfsAddSecurity` stores a
+  descriptor once (found again by hash and bytes), appending it to `$SDS`
+  and its mirror 256 KiB on, never across a 256 KiB block, and adds it to
+  the `$SII` and `$SDH` view indexes; `NtfsSetSecurityId` points a file's
+  standard information at it.  The index code takes any named index now,
+  view-index roots are kept small so record 9 doesn't fill, `$SDS` grows
+  64 KiB at a time, allocations extend a stream's last run when they can,
+  and attributes of one type are kept in name order (ntfs-3g looks them up
+  that way).  `NtfsSetInfo` saves times and attribute bits and
+  `NtfsLookup` finds a name in a folder.  New volumes give the root
+  `CREATOR OWNER` full control, inherited, as Windows' C:\ has.
+- **File security** (`kernel/fs/fsec.c`): a RamNode may carry a
+  self-relative descriptor; one without inherits from the nearest folder
+  above that has one (object- and container-inherit ACEs, no-propagate,
+  `CREATOR OWNER`).  `FsecAccess` checks a request against the user's
+  token SIDs with the file generic mapping; the owner can always read and
+  change the DACL.  With no descriptor anywhere above, as on FAT, anyone
+  may do anything.
+- **Syscalls** (`kernel/um/um_syscall.c`): opening, creating, overwriting,
+  deleting, renaming and setting basic information check the DACL (delete
+  falls back to the parent's `FILE_DELETE_CHILD`; `MAXIMUM_ALLOWED` gets
+  what is granted).  A descriptor given in `OBJECT_ATTRIBUTES` (from
+  `CreateFile`'s or `CreateDirectory`'s `SECURITY_ATTRIBUTES`) is applied
+  to the new file.  `NtQuerySecurityObject` (0x155) and
+  `NtSetSecurityObject` (0x1A1, their Windows 10 1903 numbers) moved
+  from ntdll into the kernel; other
+  handles still get the default descriptor.  advapi32's
+  `Get/SetNamedSecurityInfo`, `Get/SetSecurityInfo` and
+  `Get/SetFileSecurity` are real now.
+- **Persistence** (`kernel/fs/persist.c`): an NTFS volume labelled
+  `NOVADATA` can hold C:.  C: is its root (on FAT it stays `\NOVA\C`),
+  NovaOS's own bookkeeping goes in a hidden `$NovaOS` folder, and each
+  file is saved with its times, attributes and security id (one that
+  inherits gets the root's id, read back as "inherit").
+- **Installer**: the confirm page asks how to keep drive C:, NTFS
+  (recommended) or FAT32; NTFS data partitions have no 1 TiB cap.
+- **Checks**: `acltest` gained file tests on C:\AclTest (inheritance,
+  deny write and delete, rename, `MAXIMUM_ALLOWED`, the owner restoring
+  access, a DACL from `SECURITY_ATTRIBUTES`) and leaves `kept.txt`, whose
+  DACL a second run after a restart checks.  `scripts/ntfs-check.py`
+  checks `$SII`, `$SDH` and `$SDS` against each other and attribute order;
+  `check-ntfs-disk.sh` also runs `ntfssecaudit -a`.  In QEMU, NovaOS was
+  installed with C: on NTFS to a blank NVMe disk and booted from it;
+  `acltest` passed 33 of 33 on both boots and `kept.txt` kept its DACL.
+  ntfs-check, `ntfsfix -n` and `ntfssecaudit` found no errors on the
+  partition, nor on a host test volume with 5,100 descriptors.
+- **Not done**: hard links (`CreateHardLink`) are still to come.
+
+## ACPI: SCI interrupt, lid, thermal zones, wake devices, _PRT (Phase 18.6)
+
+- **The SCI is an interrupt** (`kernel/hal/ioapic.c`): the I/O APICs come
+  from the MADT, every input is masked at boot, and the SCI (FADT
+  `SCI_INT`, with the MADT's interrupt source override) is routed to vector
+  0x32 on the boot CPU.  Its handler runs uACPI's, which queues GPE methods
+  and `Notify` handlers and wakes the `acpi` thread to run them.  The
+  thread still calls the handler once a second in case an edge was missed,
+  and polls every 100 ms as before when there is no I/O APIC.  The routes
+  are put back after S3.  It is the only device interrupt; the drivers
+  still poll.
+- **PCI interrupt routing**: with an I/O APIC, `\_PIC(1)` selects APIC
+  mode and the root bridge's `_PRT` is read, link devices (`PNP0C0F`)
+  resolved through their `_CRS`; `AmlPciIrq` answers which GSI a pin is
+  wired to, and each function on bus 0 gets it in its Interrupt Line
+  register.  (QEMU's q35: 128 entries, all through links.)
+- **The lid** (`PNP0C0D`): `_LID` is read at load, on `Notify 0x80` and
+  after waking.  Closing it puts the machine to sleep, as Windows does by
+  default.
+- **Thermal zones**: `_TMP`, `_PSV`, `_HOT`, `_CRT` and `_TZP`, read every
+  `_TZP` (at least every 10 s) and on `Notify 0x80`/`0x81`.  Crossing the
+  passive trip point is logged (NovaOS can't throttle the CPUs yet);
+  `_HOT` puts the machine to sleep and `_CRT` shuts it down, drive C: saved
+  first.
+- **Wake devices** (`_PRW`): the lid, power buttons and USB host
+  controllers have their wake GPEs set up, and before S3 `_DSW` (or
+  `_PSW`) tells them to arm.  USB keyboards that can are set for remote
+  wakeup (`SET_FEATURE(DEVICE_REMOTE_WAKEUP)`), and before S3 the xHCI root
+  ports enable wake on connect, disconnect and over-current, suspend
+  (U3) the ports with a device and turn on PME#.  After waking the kernel
+  logs which wake GPE (or the power button, or the RTC alarm) woke it.
+- **For programs**: `NtPowerInformation` answers `SystemPowerCapabilities`
+  (`LidPresent`, `SystemS3`, `ThermalControl`, batteries),
+  `ThermalInformation` (the first zone; converted to the 32-bit layout in
+  ntdll) and `LastSleepTime`/`LastWakeTime`; powrprof's
+  `GetPwrCapabilities` and `CallNtPowerInformation` use them.
+- **Self-test**: `tests/acpi/lid-thermal.asl` describes a lid, a thermal
+  zone (40 C; passive 60, hot 90, critical 95 C) and the xHCI controller as
+  a wake device, with QEMU's `pc-testdev` (ports 0xE8 and 0xE9, written
+  from the QEMU monitor) as the embedded controller.  `powertest` checks
+  the capabilities and readings, then asks the test to close the lid:
+  NovaOS sleeps, the test opens the lid, presses a key on the USB keyboard
+  and wakes the machine, and `powertest` sees `LastSleepTime` and
+  `LastWakeTime` move on; then the zone is heated to 70 C (passive cooling
+  on) and cooled to 45 C.  It runs in the CI boot, which now also has a
+  USB keyboard on an xHCI controller (the self-tests are typed through
+  it).  Also tested by hand: 91 C sleeps and 96 C shuts down.
+- **Not done**: in QEMU a USB key can't wake the machine itself.  QEMU
+  8.2 delivers the key to the suspended port (`xhci_wakeup`) but has no
+  path from there to the platform, so the test wakes it with
+  `system_wakeup` (which QEMU reports as the power button).  USB wake
+  needs checking on real hardware, as do GPE block devices other than
+  `\_GPE` and routing behind PCI bridges.
+
+## HPET and one-shot/TSC-deadline timers (Phase 18.7)
+
+- **HPET** (`kernel/hal/hpet.c`): found through the ACPI `HPET` table
+  (read straight from the RSDP, before the rest of ACPI starts), its main
+  counter started; it replaces the PIT as the reference that calibrates
+  the TSC and the local APIC timer (the PIT stays the fallback).
+- **The APIC timer is one-shot**, in TSC-deadline mode where the CPU has
+  it.  Each timer interrupt re-arms it for the CPU's next 10 ms tick or
+  the earliest TSC-deadline sleeper on that CPU, whichever is sooner, so
+  the tick work stays at 100 Hz while sleeps end when they are due.
+- **Sleeps and timed waits** (`NtDelayExecution`, `NtWaitFor*Object(s)`
+  timeouts) sleep until a TSC deadline (`sched_sleep_until_tsc`) instead
+  of whole 10 ms ticks.  A thread woken by its deadline goes to the front
+  of its run queue and preempts a running thread of no higher priority.
+- `sleeptest timer` measures how late `Sleep(1)`, `Sleep(5)` and a 1 ms
+  wait timeout end, idle and with a busy thread on every CPU; it is in the
+  core self-tests.  In QEMU (TCG, 2 CPUs) the 95th percentile under load
+  was 0.26 ms late (it was 10 to 20 ms with the 100 Hz tick).
+- QEMU emulates the TSC-deadline timer only with KVM, so the self-tests
+  exercise the one-shot mode; TSC-deadline mode is untested.
+- Not yet: waitable timers (`SetWaitableTimer`) still fire on the 10 ms
+  tick.
+
+## IPv6, HTTP/2 and virtio-net (Phase 18.8)
+
+- **virtio-net** (`kernel/drivers/virtio_net.c`): virtio 1.0 network
+  adapters (QEMU `virtio-net-pci`), through the modern PCI capabilities;
+  one receive and one transmit queue of 64 buffers, polled like the e1000
+  driver.  The network stack tries the e1000 first, then virtio-net, and
+  sets either up again after sleep.
+- **IPv6** in lwIP: a link-local address, SLAAC addresses from router
+  advertisements, DNS servers from RDNSS (added beside DHCP's, not in their
+  place: a small change to `nd6.c`), MLD, and AAAA lookups (IPv6 first
+  when there is a global IPv6 address).  `ipconfig` shows the addresses,
+  `ping -6`, `curl -6` and `wget -6` force IPv6 (`-4` forces IPv4), and
+  `curl http://[addr]/` takes literals.
+- **Winsock over IPv6**: `AF_INET6` sockets (dual-stack: IPv4 peers show
+  as v4-mapped), `sockaddr_in6` in `connect`, `bind`, `accept`,
+  `sendto`/`recvfrom` and the name calls; `getaddrinfo` returns IPv6 and
+  IPv4 addresses (with `AI_V4MAPPED`, `AI_CANONNAME`, numeric hosts with
+  `%zone`, service names), and `inet_pton`/`inet_ntop`,
+  `WSAStringToAddress`/`WSAAddressToString` and `getnameinfo` handle IPv6.
+  `netcat` resolves with `getaddrinfo` and takes `-4`/`-6`/`-p`.
+- **Loopback** (for Firefox, whose processes talk over a socket pair):
+  lwIP's loopback interface is on, so 127.0.0.1, ::1 and the machine's own
+  addresses reach its own sockets (the net thread delivers them).  A
+  connection is given its socket as soon as it arrives, so bytes the client
+  sends before `accept` wait for it instead of being dropped, and closing a
+  listener no longer trips an lwIP assertion that stopped the network.
+  `getaddrinfo("localhost")` gives ::1 and 127.0.0.1 and `gethostbyname`
+  127.0.0.1, without DNS.  `looptest` checks all of it in the network suite.
+- **winhttp.dll** (`userland/winhttp`) became a real HTTP client: sessions,
+  connections and requests, request headers, request bodies
+  (`WinHttpWriteData`), `WinHttpQueryHeaders` (by index, name, number or
+  date), `WinHttpQueryDataAvailable`/`WinHttpReadData`, redirects, Basic
+  credentials, `WinHttpCrackUrl`/`WinHttpCreateUrl`, options and time-outs,
+  and asynchronous sessions that report through the status callback.
+  HTTPS goes through Schannel (secur32); with
+  `WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL` it offers `h2` by ALPN and speaks
+  HTTP/2 through [nghttp2](https://nghttp2.org/) 1.64.0 (MIT, vendored in
+  `third_party/nghttp2`) when the server picks it
+  (`WINHTTP_OPTION_HTTP_PROTOCOL_USED` says which).  Each request opens its
+  own connection; there is no proxy support.
+- **Tests**: `tools/selftest.py --suite network` boots twice with a
+  virtio-net card.  On QEMU's user network it checks `ipconfig`, `ping`,
+  Winsock over IPv4 and `httptest suite` (`userland/programs/httptest.c`:
+  HTTP/2 negotiated, a 300 KB body, POST, redirects, a refused untrusted
+  certificate, chunked HTTP/1.1, the asynchronous API) against
+  `tools/h2server.js` (Node).  On an IPv6-only network, `tools/v6peer.py`
+  (a router, DNS and HTTP server reached through a QEMU datagram netdev,
+  so the host needs no IPv6) checks SLAAC and RDNSS, `ping -6`, `curl -6`
+  and Winsock over IPv6.
+- Also fixed: the USB hot-plug thread could be enumerating when the
+  machine went to sleep, so after the wake its command timed out and the
+  USB keyboard did not come back (an intermittent `powertest` failure).
+  Sleep now waits for it, and it stays idle until the controller is
+  running again.
+
+## Display persistence (Phase 18.9)
+
+- **The chosen resolution survives a restart.**  Choosing a mode in
+  Settings > Display, or `ChangeDisplaySettings` with
+  `CDS_UPDATEREGISTRY`, saves it where Windows keeps it,
+  `HKLM\SYSTEM\CurrentControlSet\Control\Video\{NovaOS-Display}\0000`
+  (`DefaultSettings.XResolution`, `YResolution`, `BitsPerPel`), which
+  reaches the disk with the rest of drive C:.  At boot, once drive C: and
+  the registry are loaded and before the desktop starts, the kernel
+  switches to that mode if the adapter has it (`[DISPLAY] Restored the
+  saved mode WxH`); on another adapter without it, NovaOS stays in the
+  boot mode.
+- **Windows grow back.**  A window a smaller mode shrank or pushed aside
+  remembers the frame it had and gets it back when a later mode has room
+  for it, unless it was moved or resized in between.  Maximized windows
+  already followed the work area.
+- `disptest` checks both (46 checks): a 1000x640 window shrinks to fit
+  800x600 and comes back to its size and place, and `CDS_UPDATEREGISTRY`
+  writes the registry values.  The core self-tests save 1024x768 with
+  `disptest 1024 768`, and after the suite's restart (`shutdown /r`)
+  `disptest saved 1024 768` passes only if NovaOS came up in that mode.
+- Not yet: a per-monitor layout (NovaOS drives one display).
 
 ## Recording: waveIn, WASAPI capture and endpoint volume
 
