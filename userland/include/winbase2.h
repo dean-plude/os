@@ -290,6 +290,82 @@ WINBASEAPI WORD   WINAPI GetUserDefaultUILanguage(void);
 WINBASEAPI int    WINAPI GetUserDefaultLocaleName(LPWSTR name, int n);
 WINBASEAPI int    WINAPI GetLocaleInfoW(DWORD lcid, DWORD type, LPWSTR buf, int n);
 WINBASEAPI int    WINAPI GetLocaleInfoEx(LPCWSTR loc, DWORD type, LPWSTR buf, int n);
+WINBASEAPI DWORD  WINAPI GetSystemDefaultLCID(void);
+WINBASEAPI DWORD  WINAPI LocaleNameToLCID(LPCWSTR name, DWORD flags);
+WINBASEAPI int    WINAPI ResolveLocaleName(LPCWSTR name, LPWSTR out, int cap);
+typedef struct { UINT NumDigits, LeadingZero, Grouping; LPSTR lpDecimalSep, lpThousandSep; UINT NegativeOrder; } NUMBERFMTA;
+typedef struct { UINT NumDigits, LeadingZero, Grouping; LPWSTR lpDecimalSep, lpThousandSep; UINT NegativeOrder; } NUMBERFMTW;
+typedef struct { UINT NumDigits, LeadingZero, Grouping; LPSTR lpDecimalSep, lpThousandSep; UINT NegativeOrder, PositiveOrder;
+                 LPSTR lpCurrencySymbol; } CURRENCYFMTA;
+typedef struct { UINT NumDigits, LeadingZero, Grouping; LPWSTR lpDecimalSep, lpThousandSep; UINT NegativeOrder, PositiveOrder;
+                 LPWSTR lpCurrencySymbol; } CURRENCYFMTW;
+WINBASEAPI int    WINAPI GetDateFormatA(DWORD lcid, DWORD flags, const SYSTEMTIME *st, LPCSTR fmt, LPSTR out, int n);
+WINBASEAPI int    WINAPI GetDateFormatW(DWORD lcid, DWORD flags, const SYSTEMTIME *st, LPCWSTR fmt, LPWSTR out, int n);
+WINBASEAPI int    WINAPI GetDateFormatEx(LPCWSTR loc, DWORD flags, const SYSTEMTIME *st, LPCWSTR fmt, LPWSTR out, int n, LPCWSTR cal);
+WINBASEAPI int    WINAPI GetTimeFormatA(DWORD lcid, DWORD flags, const SYSTEMTIME *st, LPCSTR fmt, LPSTR out, int n);
+WINBASEAPI int    WINAPI GetTimeFormatW(DWORD lcid, DWORD flags, const SYSTEMTIME *st, LPCWSTR fmt, LPWSTR out, int n);
+WINBASEAPI int    WINAPI GetTimeFormatEx(LPCWSTR loc, DWORD flags, const SYSTEMTIME *st, LPCWSTR fmt, LPWSTR out, int n);
+WINBASEAPI int    WINAPI GetNumberFormatA(DWORD lcid, DWORD flags, LPCSTR v, const NUMBERFMTA *f, LPSTR out, int n);
+WINBASEAPI int    WINAPI GetNumberFormatW(DWORD lcid, DWORD flags, LPCWSTR v, const NUMBERFMTW *f, LPWSTR out, int n);
+WINBASEAPI int    WINAPI GetNumberFormatEx(LPCWSTR loc, DWORD flags, LPCWSTR v, const NUMBERFMTW *f, LPWSTR out, int n);
+WINBASEAPI int    WINAPI GetCurrencyFormatA(DWORD lcid, DWORD flags, LPCSTR v, const CURRENCYFMTA *f, LPSTR out, int n);
+WINBASEAPI int    WINAPI GetCurrencyFormatW(DWORD lcid, DWORD flags, LPCWSTR v, const CURRENCYFMTW *f, LPWSTR out, int n);
+WINBASEAPI int    WINAPI GetCurrencyFormatEx(LPCWSTR loc, DWORD flags, LPCWSTR v, const CURRENCYFMTW *f, LPWSTR out, int n);
+#define DATE_SHORTDATE      0x01
+#define DATE_LONGDATE       0x02
+#define DATE_USE_ALT_CALENDAR 0x04
+#define DATE_YEARMONTH      0x08
+#define DATE_MONTHDAY       0x80
+#define TIME_NOMINUTESORSECONDS 0x1
+#define TIME_NOSECONDS      0x2
+#define TIME_NOTIMEMARKER   0x4
+#define TIME_FORCE24HOURFORMAT 0x8
+#ifndef LOCALE_NAME_MAX_LENGTH
+#define LOCALE_NAME_MAX_LENGTH 85
+#endif
+#define LOCALE_NOUSEROVERRIDE 0x80000000
+#define LOCALE_ILANGUAGE    0x01
+#define LOCALE_SABBREVLANGNAME 0x03
+#define LOCALE_ICOUNTRY     0x05
+#define LOCALE_SLIST        0x0C
+#define LOCALE_IMEASURE     0x0D
+#define LOCALE_SDECIMAL     0x0E
+#define LOCALE_STHOUSAND    0x0F
+#define LOCALE_SGROUPING    0x10
+#define LOCALE_IDIGITS      0x11
+#define LOCALE_ILZERO       0x12
+#define LOCALE_SNATIVEDIGITS 0x13
+#define LOCALE_SCURRENCY    0x14
+#define LOCALE_SMONDECIMALSEP 0x16
+#define LOCALE_SMONTHOUSANDSEP 0x17
+#define LOCALE_SMONGROUPING 0x18
+#define LOCALE_ICURRDIGITS  0x19
+#define LOCALE_ICURRENCY    0x1B
+#define LOCALE_INEGCURR     0x1C
+#define LOCALE_SDATE        0x1D
+#define LOCALE_STIME        0x1E
+#define LOCALE_SSHORTDATE   0x1F
+#define LOCALE_SLONGDATE    0x20
+#define LOCALE_IDATE        0x21
+#define LOCALE_ITIME        0x23
+#define LOCALE_ITLZERO      0x25
+#define LOCALE_S1159        0x28
+#define LOCALE_S2359        0x29
+#define LOCALE_SPOSITIVESIGN 0x50
+#define LOCALE_SNEGATIVESIGN 0x51
+#define LOCALE_SNAME        0x5C
+#define LOCALE_SENGLISHDISPLAYNAME 0x72
+#define LOCALE_SSHORTTIME   0x79
+#define LOCALE_STIMEFORMAT  0x1003
+#define LOCALE_IDIGITSUBSTITUTION 0x1014
+#define LOCALE_SENGCOUNTRY  0x1002
+#define LOCALE_SYEARMONTH   0x1006
+#define LOCALE_ICALENDARTYPE 0x1009
+#define LOCALE_IPAPERSIZE   0x100A
+#define LOCALE_IFIRSTDAYOFWEEK 0x100C
+#define LOCALE_IFIRSTWEEKOFYEAR 0x100D
+#define LOCALE_INEGNUMBER   0x1010
+#define ERROR_INVALID_FLAGS 1004
 #define CSTR_LESS_THAN    1
 #define CSTR_EQUAL        2
 #define CSTR_GREATER_THAN 3

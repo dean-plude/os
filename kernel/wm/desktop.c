@@ -641,6 +641,7 @@ static const struct { const char *name; const char *keys; int page; } g_setting_
     { "Personalization", "personalization wallpaper background theme colors", SETTINGS_PERSONALIZE },
     { "Storage",         "storage disk drive space memory ram",               SETTINGS_STORAGE },
     { "Network",         "network ethernet internet ip dns wifi certificates", SETTINGS_NETWORK },
+    { "Time & language", "time language region regional format locale date number currency", SETTINGS_TIME_LANGUAGE },
     { "About",           "about version fonts licence",                       SETTINGS_ABOUT },
 };
 #define N_SETTING_ITEMS ((int)(sizeof(g_setting_items) / sizeof(g_setting_items[0])))
