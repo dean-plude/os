@@ -13,4 +13,5 @@
   the run's summary and as a comment on the "Nightly app corpus" issue.
 - Not yet: Notepad++'s tab bar and status bar still draw black; the
   reference shows them so, and an improvement means updating it
-  (`--update-reference`).
+  (`--update-reference`).  *(Since done: the bars draw since Phase 17.6, see
+  "Phase 17: kernel and API correctness", and the reference was updated.)*

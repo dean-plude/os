@@ -28,19 +28,37 @@
 
 /* -----------------------------------------------------------------------
  * Surface state
+ *
+ * The back buffer covers the whole virtual desktop: every monitor's
+ * rectangle, laid out around the primary one at (0, 0) (so coordinates
+ * left of or above it are negative).  g.buf points at the primary's top
+ * left corner inside it; [bx0, bx1) x [by0, by1) are its device bounds.
  * ----------------------------------------------------------------------- */
 static struct {
-    UINT32 *vram;  int vstride;   /* hardware framebuffer */
-    UINT32 *buf;   int bstride;   /* back buffer (== vram if none) */
-    int     dw, dh;               /* device size */
+    UINT32 *vram;  int vstride;   /* the primary's framebuffer (page being drawn) */
+    UINT32 *base;                 /* back buffer allocation */
+    UINT32 *buf;   int bstride;   /* back buffer at device (0, 0) (== vram if none) */
+    int     bx0, by0, bx1, by1;   /* back buffer bounds, device px */
+    int     dw, dh;               /* the primary's device size */
     int     s;                    /* scale: device px per logical px */
-    int     lw, lh;               /* logical size */
+    int     lw, lh;               /* the primary's logical size */
     int     cx0, cy0, cx1, cy1;   /* clip rectangle, device px, [x0,x1) */
     UINT32 *cache;                /* saved copy of the back buffer */
     bool    cache_valid;
     bool    direct;               /* no back buffer: drawing goes to vram */
     bool    bgr, ready;
 } g;
+
+/* The monitors: one per display head (hal/display.h), monitor 0 the primary */
+typedef struct {
+    GdiRect r;                    /* logical, on the virtual desktop */
+    int     s;                    /* its own scale (device px per logical px) */
+    int     k;                    /* g.s / s: back buffer px per screen px */
+    int     dw, dh;               /* screen px shown (r.w * s, r.h * s) */
+} Monitor;
+static Monitor g_mon[GDI_MAX_MONITORS];
+static int     g_nmon;
+static struct { int x, y; bool set; } g_origin[GDI_MAX_MONITORS];
 
 static inline int imin(int a, int b) { return a < b ? a : b; }
 static inline int imax(int a, int b) { return a > b ? a : b; }
@@ -71,7 +89,7 @@ static inline void plot(int x, int y, UINT32 n, int a)
 {
     if (a <= 0 || x < g.cx0 || x >= g.cx1 || y < g.cy0 || y >= g.cy1)
         return;
-    UINT32 *p = &g.buf[(size_t)y * g.bstride + x];
+    UINT32 *p = &g.buf[(INT64)y * g.bstride + x];
     *p = (a >= 255) ? n : blend(*p, n, (UINT32)a);
 }
 
@@ -81,7 +99,7 @@ static void span(int y, int x0, int x1, UINT32 n, int a)
     if (a <= 0 || y < g.cy0 || y >= g.cy1) return;
     x0 = imax(x0, g.cx0);
     x1 = imin(x1, g.cx1);
-    UINT32 *p = &g.buf[(size_t)y * g.bstride];
+    UINT32 *p = &g.buf[(INT64)y * g.bstride];
     if (a >= 255) for (int x = x0; x < x1; x++) p[x] = n;
     else          for (int x = x0; x < x1; x++) p[x] = blend(p[x], n, (UINT32)a);
 }
@@ -110,7 +128,61 @@ static UINT32 isqrt64(UINT64 v)
 /* -----------------------------------------------------------------------
  * Lifecycle
  * ----------------------------------------------------------------------- */
-/* (Re)read the screen surface: at boot, and after a display mode change */
+/* The scale that makes a w x h screen at least 1280x800 logical pixels */
+static int natural_scale(int w, int h)
+{
+    int s = imin(w / 1280, h / 800);
+    return s < 1 ? 1 : s > GDI_MAX_SCALE ? GDI_MAX_SCALE : s;
+}
+
+static bool overlaps(GdiRect a, GdiRect b)
+{
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+/* Touching along an edge (or overlapping) */
+static bool touches(GdiRect a, GdiRect b)
+{
+    bool xs = a.x <= b.x + b.w && b.x <= a.x + a.w, ys = a.y <= b.y + b.h && b.y <= a.y + a.h;
+    bool side = (a.x + a.w == b.x || b.x + b.w == a.x) && a.y < b.y + b.h && b.y < a.y + a.h;
+    bool tb   = (a.y + a.h == b.y || b.y + b.h == a.y) && a.x < b.x + b.w && b.x < a.x + a.w;
+    return xs && ys && (side || tb || overlaps(a, b));
+}
+
+/* Lay the monitors out: the primary at (0, 0), each other one where it was
+ * placed (GdiSetMonitorOrigin) if that neither overlaps a monitor before
+ * it nor leaves it apart from them, else to the right of the others */
+static void layout_monitors(int n, const int *w, const int *h, const int *ms)
+{
+    g_nmon = n;
+    for (int i = 0; i < n; i++) {
+        Monitor *m = &g_mon[i];
+        m->s = ms[i];
+        m->r = RECT(0, 0, w[i] / ms[i], h[i] / ms[i]);
+        m->dw = m->r.w * m->s;
+        m->dh = m->r.h * m->s;
+        if (i == 0) continue;
+        bool ok = g_origin[i].set;
+        if (ok) {
+            m->r.x = g_origin[i].x;
+            m->r.y = g_origin[i].y;
+            bool near = false;
+            for (int j = 0; j < i && ok; j++) {
+                if (overlaps(m->r, g_mon[j].r)) ok = false;
+                if (touches(m->r, g_mon[j].r)) near = true;
+            }
+            ok = ok && near;
+        }
+        if (!ok) {
+            int right = 0;
+            for (int j = 0; j < i; j++) right = imax(right, g_mon[j].r.x + g_mon[j].r.w);
+            m->r.x = right;
+            m->r.y = 0;
+        }
+    }
+}
+
+/* (Re)read the screen surfaces: at boot, and after a display mode change */
 static bool gdi_setup(void)
 {
     FbRawSurface s;
@@ -119,42 +191,68 @@ static bool gdi_setup(void)
         g.ready = false;
         return false;
     }
-    bool resized = s.width != g.dw || s.height != g.dh;
     g.vram    = s.vram;
     g.vstride = s.stride;
     g.dw      = s.width;
     g.dh      = s.height;
     g.bgr     = s.bgr;
 
-    /* Integer scale so the logical desktop is at least 1280x800 */
-    g.s = imin(g.dw / 1280, g.dh / 800);
-    if (g.s < 1) g.s = 1;
-    if (g.s > GDI_MAX_SCALE) g.s = GDI_MAX_SCALE;
-    g.lw = g.dw / g.s;
-    g.lh = g.dh / g.s;
+    /* Each monitor at its own scale; the desktop is drawn at the largest,
+     * and monitors at half of it get every 2x2 block averaged */
+    int n = imax(1, imin(DisplayHeadCount(), GDI_MAX_MONITORS));
+    int w[GDI_MAX_MONITORS], h[GDI_MAX_MONITORS], ms[GDI_MAX_MONITORS];
+    w[0] = g.dw; h[0] = g.dh;
+    for (int i = 1; i < n; i++) {
+        DisplayMode m = DisplayHeadMode(i);
+        w[i] = m.w; h[i] = m.h;
+    }
+    g.s = 1;
+    for (int i = 0; i < n; i++) {
+        ms[i] = natural_scale(w[i], h[i]);
+        g.s = imax(g.s, ms[i]);
+    }
+    layout_monitors(n, w, h, ms);
+    for (int i = 0; i < n; i++) g_mon[i].k = g.s / g_mon[i].s;
+    g.lw = g_mon[0].r.w;
+    g.lh = g_mon[0].r.h;
 
-    /* Back buffer; fall back to drawing on the framebuffer directly */
-    if (resized || g.direct) {
-        if (g.buf && !g.direct) kfree(g.buf);
+    GdiRect v = GdiVirtualRect();
+    int bx0 = v.x * g.s, by0 = v.y * g.s, bx1 = (v.x + v.w) * g.s, by1 = (v.y + v.h) * g.s;
+    bool resized = g.direct || bx0 != g.bx0 || by0 != g.by0 || bx1 != g.bx1 || by1 != g.by1;
+
+    /* Back buffer; fall back to drawing on the framebuffer directly (the
+     * primary monitor only) */
+    if (resized) {
+        if (g.base) kfree(g.base);
         kfree(g.cache);
         g.cache = NULL;
-        g.buf = kzalloc((size_t)g.dw * g.dh * sizeof(UINT32));
-        g.direct = g.buf == NULL;
+        g.base = kzalloc((size_t)(bx1 - bx0) * (by1 - by0) * sizeof(UINT32));
+        g.direct = g.base == NULL;
     }
     if (g.direct) {
+        g.base = NULL;
         g.buf     = g.vram;
         g.bstride = g.vstride;
+        g_nmon = 1;
+        g_mon[0].k = 1;
+        g.s = g_mon[0].s;
+        bx0 = by0 = 0; bx1 = g.dw; by1 = g.dh;
     } else {
-        g.bstride = g.dw;
+        g.bstride = bx1 - bx0;
+        g.buf = g.base - (INT64)by0 * g.bstride - bx0;
     }
+    g.bx0 = bx0; g.by0 = by0; g.bx1 = bx1; g.by1 = by1;
     g.cache_valid = false;
 
-    g.cx0 = 0; g.cy0 = 0; g.cx1 = g.dw; g.cy1 = g.dh;
+    g.cx0 = g.bx0; g.cy0 = g.by0; g.cx1 = g.bx1; g.cy1 = g.by1;
     g.ready = true;
     kprintf("[GDI] %dx%d device, scale %dx -> %dx%d logical, %s\n",
             g.dw, g.dh, g.s, g.lw, g.lh,
             g.direct ? "direct (no back buffer)" :
             DisplayCanFlip() ? "double-buffered, page flipping" : "double-buffered");
+    for (int i = 1; i < g_nmon; i++)
+        kprintf("[GDI] Monitor %d: %dx%d at (%d, %d), scale %dx\n", i + 1,
+                g_mon[i].r.w, g_mon[i].r.h, g_mon[i].r.x, g_mon[i].r.y, g_mon[i].s);
     return true;
 }
 
@@ -162,30 +260,117 @@ bool GdiInitialize(void) { return gdi_setup(); }
 bool GdiDisplayChanged(void) { return gdi_setup(); }
 
 /* -----------------------------------------------------------------------
+ * Monitors
+ * ----------------------------------------------------------------------- */
+int GdiMonitorCount(void) { return g.ready ? g_nmon : 0; }
+
+GdiRect GdiMonitorRect(int i)
+{
+    if (!g.ready || i < 0 || i >= g_nmon) return RECT(0, 0, 0, 0);
+    return g_mon[i].r;
+}
+
+int GdiMonitorScale(int i) { return g.ready && i >= 0 && i < g_nmon ? g_mon[i].s : 1; }
+
+GdiRect GdiVirtualRect(void)
+{
+    if (!g_nmon) return RECT(0, 0, g.lw, g.lh);
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    for (int i = 0; i < g_nmon; i++) {
+        GdiRect r = g_mon[i].r;
+        if (i == 0 || r.x < x0) x0 = r.x;
+        if (i == 0 || r.y < y0) y0 = r.y;
+        if (i == 0 || r.x + r.w > x1) x1 = r.x + r.w;
+        if (i == 0 || r.y + r.h > y1) y1 = r.y + r.h;
+    }
+    return RECT(x0, y0, x1 - x0, y1 - y0);
+}
+
+int GdiMonitorAt(int x, int y)
+{
+    for (int i = 0; g.ready && i < g_nmon; i++) {
+        GdiRect r = g_mon[i].r;
+        if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return i;
+    }
+    return -1;
+}
+
+/* Squared distance from a point to a rectangle (0 inside) */
+static INT64 dist2(GdiRect r, int x, int y)
+{
+    INT64 dx = x < r.x ? r.x - x : x >= r.x + r.w ? x - (r.x + r.w - 1) : 0;
+    INT64 dy = y < r.y ? r.y - y : y >= r.y + r.h ? y - (r.y + r.h - 1) : 0;
+    return dx * dx + dy * dy;
+}
+
+int GdiMonitorNearest(GdiRect r)
+{
+    if (!g.ready || g_nmon <= 1) return 0;
+    int best = 0;
+    INT64 area = -1, d = -1;
+    for (int i = 0; i < g_nmon; i++) {
+        GdiRect m = g_mon[i].r;
+        INT64 w = imin(r.x + r.w, m.x + m.w) - imax(r.x, m.x), h = imin(r.y + r.h, m.y + m.h) - imax(r.y, m.y);
+        INT64 a = w > 0 && h > 0 ? w * h : 0;
+        if (a > area) { area = a; best = i; }
+    }
+    if (area > 0) return best;
+    for (int i = 0; i < g_nmon; i++) {             /* none overlaps: the closest to its centre */
+        INT64 e = dist2(g_mon[i].r, r.x + r.w / 2, r.y + r.h / 2);
+        if (d < 0 || e < d) { d = e; best = i; }
+    }
+    return best;
+}
+
+void GdiClampToMonitors(int *x, int *y)
+{
+    if (!g.ready || GdiMonitorAt(*x, *y) >= 0) return;
+    int best = 0;
+    INT64 d = -1;
+    for (int i = 0; i < g_nmon; i++) {
+        INT64 e = dist2(g_mon[i].r, *x, *y);
+        if (d < 0 || e < d) { d = e; best = i; }
+    }
+    GdiRect r = g_mon[best].r;
+    *x = imin(imax(*x, r.x), r.x + r.w - 1);
+    *y = imin(imax(*y, r.y), r.y + r.h - 1);
+}
+
+void GdiSetMonitorOrigin(int i, int x, int y)
+{
+    if (i <= 0 || i >= GDI_MAX_MONITORS) return;
+    g_origin[i].x = x;
+    g_origin[i].y = y;
+    g_origin[i].set = true;
+}
+
+/* -----------------------------------------------------------------------
  * Clipping and the frame cache
  * ----------------------------------------------------------------------- */
 void GdiSetClip(GdiRect r)
 {
     int s = g.s;
-    g.cx0 = imax(r.x * s, 0);            g.cy0 = imax(r.y * s, 0);
-    g.cx1 = imin((r.x + r.w) * s, g.dw); g.cy1 = imin((r.y + r.h) * s, g.dh);
+    g.cx0 = imax(r.x * s, g.bx0);            g.cy0 = imax(r.y * s, g.by0);
+    g.cx1 = imin((r.x + r.w) * s, g.bx1);    g.cy1 = imin((r.y + r.h) * s, g.by1);
     if (g.cx1 < g.cx0) g.cx1 = g.cx0;
     if (g.cy1 < g.cy0) g.cy1 = g.cy0;
 }
 
 void GdiResetClip(void)
 {
-    g.cx0 = 0; g.cy0 = 0; g.cx1 = g.dw; g.cy1 = g.dh;
+    g.cx0 = g.bx0; g.cy0 = g.by0; g.cx1 = g.bx1; g.cy1 = g.by1;
 }
+
+static size_t buf_bytes(void) { return (size_t)(g.bx1 - g.bx0) * (g.by1 - g.by0) * sizeof(UINT32); }
 
 bool GdiCacheSave(void)
 {
     if (!g.ready || g.direct) return false;
     if (!g.cache) {
-        g.cache = kmalloc((size_t)g.dw * g.dh * sizeof(UINT32));
+        g.cache = kmalloc(buf_bytes());
         if (!g.cache) return false;
     }
-    memcpy(g.cache, g.buf, (size_t)g.dw * g.dh * sizeof(UINT32));
+    memcpy(g.cache, g.base, buf_bytes());
     g.cache_valid = true;
     return true;
 }
@@ -193,7 +378,7 @@ bool GdiCacheSave(void)
 bool GdiCacheRestore(void)
 {
     if (!g.cache_valid) return false;
-    memcpy(g.buf, g.cache, (size_t)g.dw * g.dh * sizeof(UINT32));
+    memcpy(g.base, g.cache, buf_bytes());
     return true;
 }
 
@@ -203,17 +388,40 @@ int GdiScreenW(void) { return g.ready ? g.lw : 0; }
 int GdiScreenH(void) { return g.ready ? g.lh : 0; }
 int GdiScale(void)   { return g.ready ? g.s  : 1; }
 
+/* Monitor @m's part of the back buffer to @dst (its screen) */
+static void present_monitor(const Monitor *m, UINT32 *dst, int dstride)
+{
+    const UINT32 *src = g.buf + (INT64)m->r.y * g.s * g.bstride + (INT64)m->r.x * g.s;
+    if (m->k == 1) {
+        for (int y = 0; y < m->dh; y++)
+            memcpy(dst + (size_t)y * dstride, src + (INT64)y * g.bstride, (size_t)m->dw * sizeof(UINT32));
+        return;
+    }
+    /* Half the scale: the average of each 2x2 block */
+    for (int y = 0; y < m->dh; y++) {
+        const UINT32 *a = src + (INT64)(2 * y) * g.bstride, *b = a + g.bstride;
+        UINT32 *o = dst + (size_t)y * dstride;
+        for (int x = 0; x < m->dw; x++, a += 2, b += 2) {
+            UINT32 rb = (a[0] & 0xFF00FF) + (a[1] & 0xFF00FF) + (b[0] & 0xFF00FF) + (b[1] & 0xFF00FF);
+            UINT32 gg = (a[0] & 0x00FF00) + (a[1] & 0x00FF00) + (b[0] & 0x00FF00) + (b[1] & 0x00FF00);
+            o[x] = (((rb + 0x020002) >> 2) & 0xFF00FF) | (((gg + 0x000200) >> 2) & 0x00FF00);
+        }
+    }
+}
+
 void GdiPresent(void)
 {
     if (!g.ready || g.direct) return;
     /* With page flipping the frame goes to the page off screen, which is
-     * also where the pointer is drawn next; GdiFlip() shows both at once */
+     * also where the pointer is drawn next; GdiFlip() shows it there */
     UINT32 *back = DisplayBackPage();
     if (back) g.vram = back;
-    for (int y = 0; y < g.dh; y++)
-        memcpy(g.vram + (size_t)y * g.vstride,
-               g.buf  + (size_t)y * g.bstride,
-               (size_t)g.dw * sizeof(UINT32));
+    present_monitor(&g_mon[0], g.vram, g.vstride);
+    for (int i = 1; i < g_nmon; i++) {
+        int stride;
+        UINT32 *v = DisplayHeadSurface(i, &stride);
+        if (v) present_monitor(&g_mon[i], v, stride);
+    }
 }
 
 void GdiFlip(void)
@@ -242,8 +450,8 @@ GdiColor GdiLerp(GdiColor a, GdiColor b, int t)
  * ----------------------------------------------------------------------- */
 static void dev_fill(int x0, int y0, int x1, int y1, UINT32 n, int a)
 {
-    y0 = imax(y0, 0);
-    y1 = imin(y1, g.dh);
+    y0 = imax(y0, g.by0);
+    y1 = imin(y1, g.by1);
     for (int y = y0; y < y1; y++) span(y, x0, x1, n, a);
 }
 
@@ -266,7 +474,7 @@ void GdiGradientV(GdiRect r, GdiColor top, GdiColor bottom)
 {
     if (!g.ready || r.h <= 0) return;
     int s = g.s, y0 = r.y * s, h = r.h * s;
-    int ya = imax(y0, 0), yb = imin(y0 + h, g.dh);
+    int ya = imax(y0, g.by0), yb = imin(y0 + h, g.by1);
     for (int y = ya; y < yb; y++) {
         int t = ((y - y0) * 255) / (h > 1 ? h - 1 : 1);
         span(y, r.x * s, (r.x + r.w) * s, pixof(GdiLerp(top, bottom, t)), 255);
@@ -282,7 +490,7 @@ void GdiGradientH(GdiRect r, GdiColor left, GdiColor right)
     for (int x = xa; x < xb; x++) {
         int t = ((x - x0) * 255) / (w > 1 ? w - 1 : 1);
         UINT32 n = pixof(GdiLerp(left, right, t));
-        for (int y = ya; y < yb; y++) g.buf[(size_t)y * g.bstride + x] = n;
+        for (int y = ya; y < yb; y++) g.buf[(INT64)y * g.bstride + x] = n;
     }
 }
 
@@ -317,7 +525,7 @@ void GdiBlitBGRA(GdiRect dst, const UINT32 *src, int src_stride)
         int sy = (y / sc) - dst.y;
         if (sy < 0 || sy >= dst.h) continue;
         const UINT32 *row = src + (size_t)sy * src_stride;
-        UINT32 *out = g.buf + (size_t)y * g.bstride;
+        UINT32 *out = g.buf + (INT64)y * g.bstride;
         for (int x = x0; x < x1; x++) {
             int sx = (x / sc) - dst.x;
             if (sx < 0 || sx >= dst.w) continue;
@@ -330,7 +538,7 @@ void GdiBlitBGRA(GdiRect dst, const UINT32 *src, int src_stride)
 static inline void put_argb(int x, int y, UINT32 a, UINT32 r, UINT32 gg, UINT32 b)
 {
     if (!a) return;
-    UINT32 *p = &g.buf[(size_t)y * g.bstride + x];
+    UINT32 *p = &g.buf[(INT64)y * g.bstride + x];
     UINT32 n = pixof(r | gg << 8 | b << 16);
     *p = a >= 255 ? n : blend(*p, n, a);
 }
@@ -455,7 +663,7 @@ static void rbox_fill(const RBox *b, GdiColor top, GdiColor bottom, int alpha)
     bool   grad = (top != bottom);
     UINT32 n    = pixof(top);
     int    h    = b->y1 - b->y0;
-    int    ya   = imax(b->y0, 0), yb = imin(b->y1, g.dh);
+    int    ya   = imax(b->y0, g.by0), yb = imin(b->y1, g.by1);
 
     for (int y = ya; y < yb; y++) {
         if (grad)
@@ -481,7 +689,7 @@ static void rbox_stroke(const RBox *b, GdiColor c)
     bool   hasin = in.x1 > in.x0 && in.y1 > in.y0;
     UINT32 n     = pixof(c);
     int    band  = b->r + t;
-    int    ya    = imax(b->y0, 0), yb = imin(b->y1, g.dh);
+    int    ya    = imax(b->y0, g.by0), yb = imin(b->y1, g.by1);
 
     for (int y = ya; y < yb; y++) {
         if (y >= b->y0 + band && y < b->y1 - band) {       /* straight sides */
@@ -489,7 +697,7 @@ static void rbox_stroke(const RBox *b, GdiColor c)
             span(y, b->x1 - t, b->x1, n, 255);
             continue;
         }
-        for (int x = imax(b->x0, 0); x < imin(b->x1, g.dw); x++) {
+        for (int x = imax(b->x0, g.bx0); x < imin(b->x1, g.bx1); x++) {
             int co = cov_of(rbox_sd(b, x, y));
             int ci = hasin ? cov_of(rbox_sd(&in, x, y)) : 0;
             plot(x, y, n, co - ci);
@@ -546,8 +754,8 @@ void GdiDropShadowAround(GdiRect r, int rad, int blur, int alpha, GdiRect cover,
     int    bl  = blur * g.s * FX;           /* fade distance, fixed point */
     int    m   = blur * g.s;
     UINT32 blk = pixof(GDI_BLACK);
-    int ya = imax(b.y0 - m, 0), yb = imin(b.y1 + m, g.dh);
-    int xa = imax(b.x0 - m, 0), xb = imin(b.x1 + m, g.dw);
+    int ya = imax(b.y0 - m, g.by0), yb = imin(b.y1 + m, g.by1);
+    int xa = imax(b.x0 - m, g.bx0), xb = imin(b.x1 + m, g.bx1);
     /* The part of @cover certain to be covered (its rounded corners cut
      * off), in device pixels: nothing there needs a shadow */
     int s = g.s;
@@ -585,8 +793,8 @@ void GdiFillCircle(int cx, int cy, int rad, GdiColor c)
     UINT32 n = pixof(c);
     int x0 = ccx / FX - ext, x1 = ccx / FX + ext;
     int y0 = ccy / FX - ext, y1 = ccy / FX + ext;
-    for (int y = imax(y0, 0); y <= imin(y1, g.dh - 1); y++) {
-        for (int x = imax(x0, 0); x <= imin(x1, g.dw - 1); x++) {
+    for (int y = imax(y0, g.by0); y <= imin(y1, g.by1 - 1); y++) {
+        for (int x = imax(x0, g.bx0); x <= imin(x1, g.bx1 - 1); x++) {
             INT64 dx = (INT64)x * FX + FX / 2 - ccx;
             INT64 dy = (INT64)y * FX + FX / 2 - ccy;
             int d = (int)isqrt64((UINT64)(dx * dx + dy * dy));
@@ -629,11 +837,11 @@ static int poly_sd(const GdiPoint *p, int n, int px, int py)
 
 /* Convert 1/16 logical vertices to 1/256 device units, offset by (ox, oy)
  * device px; returns the device bounding box. */
-static int poly_to_dev(const GdiPoint *src, int n, int ox, int oy, GdiPoint *dst,
-                       int *bx0, int *by0, int *bx1, int *by1)
+static int poly_to_dev_s(const GdiPoint *src, int n, int sc, int ox, int oy, GdiPoint *dst,
+                         int *bx0, int *by0, int *bx1, int *by1)
 {
     if (n > POLY_MAX) n = POLY_MAX;
-    int f = g.s * (FX / 16);
+    int f = sc * (FX / 16);
     *bx0 = *by0 = 0x7FFFFFFF; *bx1 = *by1 = -0x7FFFFFFF;
     for (int i = 0; i < n; i++) {
         dst[i].x = src[i].x * f + ox * FX;
@@ -644,6 +852,12 @@ static int poly_to_dev(const GdiPoint *src, int n, int ox, int oy, GdiPoint *dst
     return n;
 }
 
+static int poly_to_dev(const GdiPoint *src, int n, int ox, int oy, GdiPoint *dst,
+                       int *bx0, int *by0, int *bx1, int *by1)
+{
+    return poly_to_dev_s(src, n, g.s, ox, oy, dst, bx0, by0, bx1, by1);
+}
+
 void GdiFillPolygon(const GdiPoint *pts, int n, GdiColor c)
 {
     if (!g.ready || n < 3) return;
@@ -651,8 +865,8 @@ void GdiFillPolygon(const GdiPoint *pts, int n, GdiColor c)
     int x0, y0, x1, y1;
     n = poly_to_dev(pts, n, 0, 0, d, &x0, &y0, &x1, &y1);
     UINT32 col = pixof(c);
-    for (int y = imax(y0 - 1, 0); y <= imin(y1 + 1, g.dh - 1); y++)
-        for (int x = imax(x0 - 1, 0); x <= imin(x1 + 1, g.dw - 1); x++)
+    for (int y = imax(y0 - 1, g.by0); y <= imin(y1 + 1, g.by1 - 1); y++)
+        for (int x = imax(x0 - 1, g.bx0); x <= imin(x1 + 1, g.bx1 - 1); x++)
             plot(x, y, col, cov_of(poly_sd(d, n, x * FX + FX / 2, y * FX + FX / 2)));
 }
 
@@ -685,7 +899,7 @@ void GdiFillUnderCurve(GdiRect r, GdiCurveFn fn, void *ctx, GdiColor c)
         if (yi >= bot) continue;
         /* partial pixel where the curve crosses, then solid below */
         plot(x, yi, n, ((FX - (yd % FX)) * 255) / FX);
-        UINT32 *p = &g.buf[(size_t)(yi + 1) * g.bstride + x];
+        UINT32 *p = &g.buf[(INT64)(yi + 1) * g.bstride + x];
         for (int y = yi + 1; y < bot; y++, p += g.bstride) *p = n;
     }
 }
@@ -760,7 +974,7 @@ static UINT64 region_sum(int x0, int y0, int w, int h)
 {
     UINT64 s = 1469598103934665603ull;
     for (int y = 0; y < h; y++) {
-        const UINT32 *row = g.buf + (size_t)(y0 + y) * g.bstride + x0;
+        const UINT32 *row = g.buf + (INT64)(y0 + y) * g.bstride + x0;
         for (int x = 0; x < w; x++) s = (s ^ row[x]) * 1099511628211ull;
     }
     return s;
@@ -788,7 +1002,7 @@ refill:;
     UINT32 *img = g_bd[slot].img, *tmp = kmalloc((size_t)imax(w, h) * 4);
     if (!tmp) { g_bd[slot].sum = 0; return NULL; }
     for (int y = 0; y < h; y++)
-        memcpy(img + (size_t)y * w, g.buf + (size_t)(y0 + y) * g.bstride + x0, (size_t)w * 4);
+        memcpy(img + (size_t)y * w, g.buf + (INT64)(y0 + y) * g.bstride + x0, (size_t)w * 4);
     blur32(img, w, h, br, tmp);
     kfree(tmp);
     g_bd[slot].sum = sum;
@@ -801,8 +1015,8 @@ void GdiBackdrop(GdiRect r, int rad, int blur, GdiColor tint, int tint_alpha)
     RBox b = rbox_of(r, rad);
     int br = imax(1, blur * g.s / 3);             /* box radius per pass, device px */
     /* the region read (a margin so edges blur against what is outside) */
-    int x0 = imax(b.x0 - 3 * br, 0), y0 = imax(b.y0 - 3 * br, 0);
-    int x1 = imin(b.x1 + 3 * br, g.dw), y1 = imin(b.y1 + 3 * br, g.dh);
+    int x0 = imax(b.x0 - 3 * br, g.bx0), y0 = imax(b.y0 - 3 * br, g.by0);
+    int x1 = imin(b.x1 + 3 * br, g.bx1), y1 = imin(b.y1 + 3 * br, g.by1);
     int w = x1 - x0, h = y1 - y0;
     if (w <= 0 || h <= 0) return;
     UINT32 *img = blurred(x0, y0, w, h, br), *tmp = img;
@@ -810,7 +1024,7 @@ void GdiBackdrop(GdiRect r, int rad, int blur, GdiColor tint, int tint_alpha)
     int cx0 = imax(b.x0, g.cx0), cx1 = imin(b.x1, g.cx1);
     int cy0 = imax(b.y0, g.cy0), cy1 = imin(b.y1, g.cy1);
     for (int y = cy0; y < cy1; y++) {
-        UINT32 *row = g.buf + (size_t)y * g.bstride;
+        UINT32 *row = g.buf + (INT64)y * g.bstride;
         for (int x = cx0; x < cx1; x++) {
             int c = cov_of(rbox_sd(&b, x, y));
             if (!c) continue;
@@ -1008,20 +1222,46 @@ static const GdiPoint g_arrow[] = {
 
 static UINT32 g_under[CUR_MAX_W * CUR_MAX_H];
 static int    g_under_x, g_under_y, g_under_w, g_under_h;
+static UINT32 *g_under_vram;              /* the screen the save-under came from */
+static int    g_under_stride;
+
+/* The pointer goes on the screen of the monitor it is on: @dx, @dy (back
+ * buffer device px) become that screen's px, *s its scale */
+typedef struct { UINT32 *vram; int stride, w, h, s; } CurTarget;
+
+static int floordiv(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
+
+static bool cursor_target(int *dx, int *dy, CurTarget *t)
+{
+    int i = GdiMonitorAt(floordiv(*dx, g.s), floordiv(*dy, g.s));
+    if (i < 0) i = 0;
+    const Monitor *m = &g_mon[i];
+    if (i == 0) { t->vram = g.vram; t->stride = g.vstride; }
+    else if (!(t->vram = DisplayHeadSurface(i, &t->stride))) return false;
+    t->w = m->dw; t->h = m->dh; t->s = m->s;
+    *dx = floordiv(*dx - m->r.x * g.s, m->k);
+    *dy = floordiv(*dy - m->r.y * g.s, m->k);
+    g_under_vram = t->vram;
+    g_under_stride = t->stride;
+    return true;
+}
 
 void GdiCursorDraw(int dx, int dy)
 {
     if (!g.ready) return;
-    int s = g.s;
+    CurTarget t;
+    g_under_w = g_under_h = 0;
+    if (!cursor_target(&dx, &dy, &t)) return;
+    int s = t.s;
     GdiPoint d[POLY_MAX], sh[POLY_MAX];
     int x0, y0, x1, y1, t0, t1, t2, t3;
-    int n = poly_to_dev(g_arrow, ARROW_N, dx, dy, d, &x0, &y0, &x1, &y1);
-    poly_to_dev(g_arrow, ARROW_N, dx + s, dy + 2 * s, sh, &t0, &t1, &t2, &t3);
+    int n = poly_to_dev_s(g_arrow, ARROW_N, s, dx, dy, d, &x0, &y0, &x1, &y1);
+    poly_to_dev_s(g_arrow, ARROW_N, s, dx + s, dy + 2 * s, sh, &t0, &t1, &t2, &t3);
 
     int soft = 2 * s * FX;                          /* shadow softness */
     x0 -= 1; y0 -= 1; x1 += 3 * s + 1; y1 += 4 * s + 1;
     x0 = imax(x0, 0); y0 = imax(y0, 0);
-    x1 = imin(x1, g.dw - 1); y1 = imin(y1, g.dh - 1);
+    x1 = imin(x1, t.w - 1); y1 = imin(y1, t.h - 1);
     g_under_x = x0; g_under_y = y0;
     g_under_w = imax(imin(x1 - x0 + 1, CUR_MAX_W), 0);
     g_under_h = imax(imin(y1 - y0 + 1, CUR_MAX_H), 0);
@@ -1031,7 +1271,7 @@ void GdiCursorDraw(int dx, int dy)
 
     for (int j = 0; j < g_under_h; j++) {
         int y = y0 + j;
-        UINT32 *row = g.vram + (size_t)y * g.vstride;
+        UINT32 *row = t.vram + (size_t)y * t.stride;
         for (int i = 0; i < g_under_w; i++) {
             int x = x0 + i;
             UINT32 px = row[x];
@@ -1056,10 +1296,12 @@ void GdiCursorDrawShape(int dx, int dy, const GdiCursorShape *c, int frame)
     if (!g.ready) return;
     g_under_w = g_under_h = 0;
     if (!c || c->hidden || c->nframes <= 0) return;
+    CurTarget t;
+    if (!cursor_target(&dx, &dy, &t)) return;
     if (frame < 0 || frame >= c->nframes) frame = 0;
-    int s = g.s;
+    int s = t.s;
     int x0 = dx - c->hot_x * s, y0 = dy - c->hot_y * s;
-    int x1 = imin(x0 + c->w * s, g.dw), y1 = imin(y0 + c->h * s, g.dh);
+    int x1 = imin(x0 + c->w * s, t.w), y1 = imin(y0 + c->h * s, t.h);
     int cx0 = imax(x0, 0), cy0 = imax(y0, 0);
     g_under_x = cx0; g_under_y = cy0;
     g_under_w = imax(imin(x1 - cx0, CUR_MAX_W), 0);
@@ -1067,7 +1309,7 @@ void GdiCursorDrawShape(int dx, int dy, const GdiCursorShape *c, int frame)
     const UINT32 *px = c->argb + (size_t)frame * c->w * c->h;
     for (int j = 0; j < g_under_h; j++) {
         int y = cy0 + j;
-        UINT32 *row = g.vram + (size_t)y * g.vstride;
+        UINT32 *row = t.vram + (size_t)y * t.stride;
         const UINT32 *src = px + (size_t)((y - y0) / s) * c->w;
         for (int i = 0; i < g_under_w; i++) {
             int x = cx0 + i;
@@ -1084,9 +1326,9 @@ void GdiCursorDrawShape(int dx, int dy, const GdiCursorShape *c, int frame)
 void GdiCursorErase(int dx, int dy)
 {
     (void)dx; (void)dy;
-    if (!g.ready) return;
+    if (!g.ready || !g_under_vram) return;
     for (int j = 0; j < g_under_h; j++) {
-        UINT32 *row = g.vram + (size_t)(g_under_y + j) * g.vstride + g_under_x;
+        UINT32 *row = g_under_vram + (size_t)(g_under_y + j) * g_under_stride + g_under_x;
         for (int i = 0; i < g_under_w; i++)
             row[i] = g_under[j * CUR_MAX_W + i];
     }

@@ -1677,17 +1677,6 @@ static bool ents_has(NtfsVol *v, const Ent *ents, UINT32 n, const UINT16 *name, 
     return false;
 }
 
-/* Drop every entry of @ents that refers to record @mft */
-static void ents_drop(Ent *ents, UINT32 *n, UINT64 mft)
-{
-    UINT32 o = 0;
-    for (UINT32 i = 0; i < *n; i++) {
-        if ((rd64(ents[i].e) & REF_MASK) == mft) { kfree(ents[i].e); continue; }
-        ents[o++] = ents[i];
-    }
-    *n = o;
-}
-
 static void touch_si(UINT8 *rec, UINT32 size, UINT64 t, bool data)
 {
     UINT8 *si = find_attr(rec, size, AT_STANDARD_INFO, NULL, 0);
@@ -1895,15 +1884,42 @@ out:
     return ok;
 }
 
-/* Remove the names @mft has in @dir from @dir's index */
-static bool unlink_from(NtfsVol *v, UINT64 dir, UINT64 mft)
+/* Does the $FILE_NAME value @val spell @name (case-insensitively)? */
+static bool fn_is(NtfsVol *v, const UINT8 *val, const UINT16 *name, UINT32 nlen)
+{
+    if (val[0x40] != nlen) return false;
+    for (UINT32 j = 0; j < nlen; j++) if (up(v, rd16(val + 0x42 + 2 * j)) != up(v, name[j])) return false;
+    return true;
+}
+
+/* Is the $FILE_NAME @val one of @mft's names in @dir that @name
+ * (NULL: any name) takes with it?  A DOS alias goes with its long name. */
+static bool fn_of(NtfsVol *v, const UINT8 *val, UINT64 dir, const UINT16 *name, UINT32 nlen)
+{
+    if ((rd64(val) & REF_MASK) != dir) return false;
+    return !name || val[0x41] == 2 || fn_is(v, val, name, nlen);
+}
+
+/* Drop the entries of @ents that refer to record @mft by @name (NULL: every one) */
+static void ents_drop_name(NtfsVol *v, Ent *ents, UINT32 *n, UINT64 mft, UINT64 dir, const UINT16 *name, UINT32 nlen)
+{
+    UINT32 o = 0;
+    for (UINT32 i = 0; i < *n; i++) {
+        if ((rd64(ents[i].e) & REF_MASK) == mft && fn_of(v, ents[i].e + 0x10, dir, name, nlen)) { kfree(ents[i].e); continue; }
+        ents[o++] = ents[i];
+    }
+    *n = o;
+}
+
+/* Remove the names @mft has in @dir (@name only, if given) from @dir's index */
+static bool unlink_from(NtfsVol *v, UINT64 dir, UINT64 mft, const UINT16 *name, UINT32 nlen)
 {
     UINT8 *drec = kmalloc(v->rec_size);
     Ent *ents = NULL;
     UINT32 n = 0;
     bool ok = drec && read_record(v, dir, drec) && load_index(v, dir, drec, &ents, &n);
     if (ok) {
-        ents_drop(ents, &n, mft);
+        ents_drop_name(v, ents, &n, mft, dir, name, nlen);
         touch_si(drec, v->rec_size, now_ft(), true);
         ok = write_index(v, dir, drec, ents, n);
     }
@@ -1920,9 +1936,12 @@ static void count_links(NtfsVol *v, UINT8 *rec)
     wr16(rec + 0x12, k);
 }
 
-bool NtfsDelete(NtfsVol *v, UINT64 dir, UINT64 mft)
+bool NtfsDelete(NtfsVol *v, UINT64 dir, UINT64 mft, const char *name)
 {
     if (!v->rw || mft < MFT_FIRST_USER) return false;
+    UINT16 wname[255];
+    int nlen = 0;
+    if (name && (nlen = utf8_to_utf16(name, wname, 255)) <= 0) return false;
     UINT8 *rec = kmalloc(v->rec_size);
     bool ok = false;
     if (!rec || !read_record(v, mft, rec) || next_attr(rec, v->rec_size, NULL, AT_ATTRIBUTE_LIST)) goto out;
@@ -1940,15 +1959,16 @@ bool NtfsDelete(NtfsVol *v, UINT64 dir, UINT64 mft)
         const UINT8 *val = fa + rd16(fa + 0x14);
         if (val[0x41] == 2) continue;                            /* a DOS alias */
         names++;
-        if ((rd64(val) & REF_MASK) == dir) here++;
+        if (fn_of(v, val, dir, name ? wname : NULL, (UINT32)nlen)) here++;
     }
-    if (!unlink_from(v, dir, mft)) goto out;
-    if (names > here) {                                          /* drop the names in @dir only */
+    if (!here) goto out;
+    if (!unlink_from(v, dir, mft, name ? wname : NULL, (UINT32)nlen)) goto out;
+    if (names > here) {                                          /* drop those names only: the others keep the file */
         UINT8 *fa;
         while ((fa = (UINT8 *)next_attr(rec, v->rec_size, NULL, AT_FILE_NAME))) {
             UINT8 *k = NULL;
             for (const UINT8 *x = NULL; (x = next_attr(rec, v->rec_size, x, AT_FILE_NAME)); )
-                if ((rd64(x + rd16(x + 0x14)) & REF_MASK) == dir) { k = (UINT8 *)x; break; }
+                if (fn_of(v, x + rd16(x + 0x14), dir, name ? wname : NULL, (UINT32)nlen)) { k = (UINT8 *)x; break; }
             if (!k) break;
             remove_attr(rec, k);
         }
@@ -1974,12 +1994,14 @@ out:
     return ok;
 }
 
-bool NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, UINT64 new_dir, const char *name)
+bool NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, const char *old_name, UINT64 new_dir, const char *name)
 {
     if (!v->rw || mft < MFT_FIRST_USER) return false;
-    UINT16 wname[255];
-    int nlen = utf8_to_utf16(name, wname, 255);
+    UINT16 wname[255], wold[255];
+    int nlen = utf8_to_utf16(name, wname, 255), olen = 0;
     if (nlen <= 0) return false;
+    if (old_name && (olen = utf8_to_utf16(old_name, wold, 255)) <= 0) return false;
+    const UINT16 *oname = old_name ? wold : NULL;
     UINT8 *rec = kmalloc(v->rec_size), *drec = kmalloc(v->rec_size), *attr = kmalloc(v->rec_size);
     UINT8 fn[0x42 + 2 * 255];
     Ent *ents = NULL;
@@ -1988,12 +2010,12 @@ bool NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, UINT64 new_dir, const ch
     if (!rec || !drec || !attr || !read_record(v, mft, rec) || !read_record(v, new_dir, drec)) goto out;
     if (!(rd16(drec + 0x16) & REC_IS_DIR)) goto out;
     bool is_dir = rd16(rec + 0x16) & REC_IS_DIR;
-    /* the names it has in @old_dir go */
+    /* the names it has in @old_dir (@old_name and its alias, if given) go */
     UINT64 alloc = 0, size = 0;
     for (;;) {
         UINT8 *k = NULL;
         for (const UINT8 *x = NULL; (x = next_attr(rec, v->rec_size, x, AT_FILE_NAME)); )
-            if ((rd64(x + rd16(x + 0x14)) & REF_MASK) == old_dir) { k = (UINT8 *)x; break; }
+            if (fn_of(v, x + rd16(x + 0x14), old_dir, oname, (UINT32)olen)) { k = (UINT8 *)x; break; }
         if (!k) break;
         const UINT8 *val = k + rd16(k + 0x14);
         alloc = rd64(val + 0x28);
@@ -2011,11 +2033,11 @@ bool NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, UINT64 new_dir, const ch
 
     /* the new name must be free in @new_dir (the file itself may hold it: a case change) */
     if (!load_index(v, new_dir, drec, &ents, &n)) goto out;
-    if (new_dir == old_dir) ents_drop(ents, &n, mft);
+    if (new_dir == old_dir) ents_drop_name(v, ents, &n, mft, old_dir, oname, (UINT32)olen);
     if (ents_has(v, ents, n, wname, (UINT32)nlen)) goto out;
     touch_si(rec, v->rec_size, t, false);
     if (!write_record(v, mft, rec)) goto out;
-    if (new_dir != old_dir && !unlink_from(v, old_dir, mft)) goto out;
+    if (new_dir != old_dir && !unlink_from(v, old_dir, mft, oname, (UINT32)olen)) goto out;
     if (new_dir != old_dir) {                                    /* (the record of @new_dir is unchanged so far) */
         ents_free(ents, n);
         ents = NULL; n = 0;
@@ -2029,6 +2051,57 @@ out:
     if (ents) ents_free(ents, n);
     kfree(rec); kfree(drec); kfree(attr);
     return ok;
+}
+
+/* Another name for file @mft: a $FILE_NAME in its record and an entry in
+ * @dir's index (a hard link; directories have one name) */
+bool NtfsLink(NtfsVol *v, UINT64 mft, UINT64 dir, const char *name)
+{
+    if (!v->rw || mft < MFT_FIRST_USER) return false;
+    UINT16 wname[255];
+    int nlen = utf8_to_utf16(name, wname, 255);
+    if (nlen <= 0) return false;
+    for (int i = 0; i < nlen; i++)
+        if (wname[i] < 0x20 || wname[i] == '/' || wname[i] == '\\' || wname[i] == ':') return false;
+    UINT8 *rec = kmalloc(v->rec_size), *drec = kmalloc(v->rec_size), *attr = kmalloc(v->rec_size);
+    UINT8 fn[0x42 + 2 * 255];
+    Ent *ents = NULL;
+    UINT32 n = 0;
+    bool ok = false;
+    if (!rec || !drec || !attr || !read_record(v, mft, rec) || !read_record(v, dir, drec)) goto out;
+    if (!(rd16(drec + 0x16) & REC_IS_DIR) || (rd16(rec + 0x16) & REC_IS_DIR)) goto out;
+    if (next_attr(rec, v->rec_size, NULL, AT_ATTRIBUTE_LIST)) goto out;
+    if (!load_index(v, dir, drec, &ents, &n) || ents_has(v, ents, n, wname, (UINT32)nlen)) goto out;
+    UINT64 alloc = 0, size = 0;
+    const UINT8 *da = next_attr(rec, v->rec_size, NULL, AT_DATA);
+    if (da && da[8]) { alloc = rd64(da + 0x28); size = rd64(da + 0x30); }
+    else if (da) size = rd32(da + 0x10);
+    UINT64 t = now_ft();
+    UINT32 fnlen = make_fn(fn, seq_ref(drec, dir), wname, (UINT32)nlen, false, t, alloc, size);
+    UINT32 len = make_resident(attr, AT_FILE_NAME, NULL, 0, fn, fnlen, 1);
+    if (!insert_attr(v, rec, attr, len)) goto out;
+    count_links(v, rec);
+    touch_si(rec, v->rec_size, t, false);
+    if (!write_record(v, mft, rec)) goto out;
+    Ent e = make_entry(seq_ref(rec, mft), fn, fnlen);
+    if (!e.e || !ents_insert(v, &ents, &n, e)) { kfree(e.e); goto out; }
+    touch_si(drec, v->rec_size, t, true);
+    ok = write_index(v, dir, drec, ents, n);
+out:
+    if (ents) ents_free(ents, n);
+    kfree(rec); kfree(drec); kfree(attr);
+    return ok;
+}
+
+UINT32 NtfsLinks(NtfsVol *v, UINT64 mft)
+{
+    UINT8 *rec = kmalloc(v->rec_size);
+    UINT32 k = 0;
+    if (rec && read_record(v, mft, rec))
+        for (const UINT8 *x = NULL; (x = next_attr(rec, v->rec_size, x, AT_FILE_NAME)); )
+            if (x[rd16(x + 0x14) + 0x41] != 2) k++;              /* (not a DOS alias) */
+    kfree(rec);
+    return k;
 }
 
 /* ---------------------------------------------------------------------------

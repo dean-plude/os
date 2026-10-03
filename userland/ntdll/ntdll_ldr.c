@@ -132,7 +132,6 @@ static const char *api_set_host(const char *name)
         { "ext-ms-win-",            "kernel32.dll" },
         { "kernelbase",             "kernel32.dll" },
         { "api-ms-win-",            "kernel32.dll" },
-        { "wsock32",                "ws2_32.dll" },
     };
     for (unsigned i = 0; i < sizeof(sets) / sizeof(sets[0]); i++) {
         const char *p = sets[i].prefix, *n = name;

@@ -16,6 +16,12 @@
 # merge, the DLL and program manifests and the self-test files load, and
 # (on a pull request) the generated doc regions were not edited by hand
 # (CONTRIBUTING.md).  The boot tests wait for it.
+#
+# Speed: the build compiles through ccache, whose cache the boot-test job
+# saves after each build (main's cache is shared with every pull request), so
+# only changed files recompile.  A pull request that changes only Markdown,
+# docs/ or LICENSE skips the build and boot jobs: they report "skipped",
+# which GitHub counts as passing for required checks.
 name: CI
 
 on:
@@ -23,6 +29,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+
+env:                            # ccache (the build's clang calls go through /usr/lib/ccache)
+  CCACHE_BASEDIR: ${{ github.workspace }}
+  CCACHE_NOHASHDIR: 'true'
+  CCACHE_COMPILERCHECK: content
+  CCACHE_MAXSIZE: 500M
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -33,6 +45,8 @@ jobs:
     name: Checks (conflict markers, manifests, generated docs)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,6 +54,17 @@ jobs:
 
       - name: No merge conflict markers
         run: python3 tools/ci/check-conflict-markers.py
+
+      - name: Does the change touch anything but docs?
+        id: changes
+        run: |
+          code=true
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] &&
+             ! git diff --name-only HEAD^1 HEAD | grep -qvE '^docs/|\.md$|^LICENSE$'; then
+            code=false
+            echo "Docs-only change: the build and boot jobs are skipped."
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
 
       - name: DLL and program manifests load
         run: python3 tools/build_userland.py --check
@@ -58,6 +83,7 @@ jobs:
   boot-test:
     name: Build and boot-test
     needs: checks
+    if: needs.checks.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -69,7 +95,16 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
             qemu-system-x86 qemu-system-gui ovmf mtools dosfstools acpica-tools xorriso \
-            pulseaudio pulseaudio-utils
+            pulseaudio pulseaudio-utils ccache
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.run_id }}
+          restore-keys: ccache-
 
       - name: Build the kernel, bootloader, userland and disk image
         run: |
@@ -79,6 +114,13 @@ jobs:
             exit 1
           }
           test -f build/nova.img
+          ccache -s
+
+      - name: Save the compiler cache
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Build the bootable ISO
         run: scripts/create-iso.sh build/nova.iso build/bootx64.efi build/kernel.elf
@@ -112,6 +154,7 @@ jobs:
   graphics-test:
     name: Graphics tests (OpenGL, Direct3D)
     needs: checks
+    if: needs.checks.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -122,7 +165,16 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
-            qemu-system-x86 ovmf mtools dosfstools acpica-tools p7zip-full curl
+            qemu-system-x86 ovmf mtools dosfstools acpica-tools p7zip-full curl ccache
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.run_id }}
+          restore-keys: ccache-
 
       - name: Cache the Mesa, DXVK and 7-Zip downloads
         uses: actions/cache@v4
@@ -137,6 +189,7 @@ jobs:
             cat build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-err.log 2>/dev/null | tail -100
             exit 1
           }
+          ccache -s
 
       - name: Stage 7-Zip, the downloads and the test programs
         run: tools/ci/stage-graphics.sh gfx gfx-cache

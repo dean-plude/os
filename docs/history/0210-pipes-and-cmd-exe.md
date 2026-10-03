@@ -72,3 +72,5 @@
 - Not yet: `CREATE_SUSPENDED` is ignored and `CREATE_NEW_CONSOLE` shares
   the console; a file handed to a child has its own position (cmd.exe
   opens redirection targets for appending so output lands in order).
+  *(Since done: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` windows and shared
+  file positions came with "Phase 17: kernel and API correctness".)*

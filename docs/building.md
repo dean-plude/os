@@ -288,8 +288,8 @@ scripts/make-ntfs-disk.sh build/nova-ntfs.img build
 qemu-system-x86_64 ... -drive format=raw,file=build/nova-ntfs.img
 ```
 
-then run `drivetest` in the Terminal, shut down, and check the disk on the
-host:
+then run `drivetest` (and `linktest D:\LinkTest`, which leaves two names
+of one file) in the Terminal, shut down, and check the disk on the host:
 
 ```bash
 scripts/check-ntfs-disk.sh build/nova-ntfs.img
@@ -354,7 +354,11 @@ then types `store
 install Mesa 3D` and `store install DXVK` (the archives are already in
 `C:\Downloads`, so the App Store installs without a network) and then runs
 `gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
-of each while it draws.  The network suite (`tests/selftest/network4` and
+of each while it draws.  The graphics boot has a second monitor (a QEMU
+`secondary-vga`): between the installs and `gltest` it runs `montest 2`,
+which checks the monitor calls and layout changes; when it asks, the test
+pushes the pointer across onto the second monitor, and the screenshot is
+one PNG per monitor (`montest.png`, `montest-2.png`).  The network suite (`tests/selftest/network4` and
 `network6`) boots twice with a virtio-net
 card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 (Winsock over IPv4) and `httptest suite` (winhttp: HTTP/2 by ALPN, large
@@ -412,6 +416,7 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 |---|---|
 | `crttest` | The C runtime |
 | `filetest` | Files and directories; `RegNotifyChangeKeyValue` (values, subkeys, subtrees, deleted keys, synchronous); `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`.  `filetest install`, a restart and `filetest installed` check that a running program replaced at boot |
+| `linktest` | Hard links: `CreateHardLink`, the link count and file id by every name, a write or attribute change by one name seen by the others (open handles too), a link in another folder renamed there, deleting names down to the last, a file replaced under a linked name, `FILE_SUPPORTS_HARD_LINKS`.  `linktest restarted` after the restart checks a linked pair is still one file |
 | `sectest` (x64) | Hostile system calls refused (kernel pointers, bogus handles, bad descriptors); tokens and object security through the native API: a restricted or deny-only impersonation token is refused a protected named event |
 | `threads` | Threads, synchronization, SEH |
 | `dlltest` | DLL loading, TLS, `DllMain` |
@@ -427,6 +432,7 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 | `proctest` | `CreateProcess` flags: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` (`GetConsoleProcessList`), file positions shared with children and duplicates |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
 | `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE`, a window that 800x600 shrinks growing back to its size and place, `CDS_UPDATEREGISTRY` saving the mode in the registry.  `disptest W H` switches and saves; `disptest saved W H` checks the mode after a restart |
+| `montest` | More than one monitor: `EnumDisplayMonitors`, `GetMonitorInfo`, `MonitorFromPoint`/`Rect`/`Window`, `EnumDisplayDevices`, `EnumDisplaySettings` and `ChangeDisplaySettingsEx` for `\\.\DISPLAY2` (moving it with `DM_POSITION`, saved in the registry), `SM_*VIRTUALSCREEN`, a window maximized on the second monitor, and the pointer crossing onto it.  `montest list` prints the monitors |
 | `icutest` | The system ICU (`icu.dll`) as .NET loads it: German and Japanese names, numbers, currencies, dates, the Japanese calendar, collation, case, time-zone ids, IDNA, normalization, 8 threads at once; then kernel32's `GetLocaleInfoEx`, LCIDs and locale enumeration for those locales |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
 | `sleeptest timer` | How late `Sleep(1)`, `Sleep(5)` and a 1 ms wait timeout end, idle and with a busy thread on every CPU; passes when the 95th percentile under load is 1 ms or less and none ends early.  Plain `sleeptest` sleeps (S3) instead |
@@ -440,7 +446,7 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
 | `httptest suite HTTPS-BASE HTTP-BASE` | winhttp against `tools/h2server.js`: HTTP/2 by ALPN, a 300 KB body, POST, a redirect, an untrusted certificate refused, chunked HTTP/1.1, the asynchronous API.  `httptest [-2] [-k] [-a] URL` fetches one URL |
 | `netcat [-4\|-6] [-p PORT] HOST [PATH]` | Winsock: `getaddrinfo`, IPv4 or IPv6 sockets, an HTTP/1.0 GET |
-| `looptest` | Winsock over the loopback interface: a socket pair over 127.0.0.1 and ::1 (port 0, `getsockname`, a non-blocking connect, data sent before `accept`), closing a listener with a queued connection, `localhost` |
+| `looptest` | Winsock over the loopback interface: a socket pair over 127.0.0.1 and ::1 (port 0, `getsockname`, a non-blocking connect, data sent before `accept`, the accepted socket inheriting non-blocking mode), closing a listener with a queued connection, `localhost`, and `wsock32.dll`'s Winsock 1.1 ordinals |
 
 <!-- END generated:selftest-table -->
 
