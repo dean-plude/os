@@ -24,7 +24,9 @@ order; --list prints them):
             (tests/selftest/devices/NAME/): "touch", a virtio multi-touch
             screen (touchtest); "usbaudio", USB speakers on xHCI, OHCI and
             UHCI and no HD Audio card (soundtest; each speaker's WAV must
-            hold its tones)
+            hold its tones); "monitors", one virtio-vga card with three
+            outputs, whose monitors the test plugs in and unplugs while
+            NovaOS runs (montest hotplug)
 
 Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
@@ -191,6 +193,7 @@ NET6 = load_suite('network6')
 # core boot's mouse)
 TOUCH = load_suite('devices/touch')
 USBAUDIO = load_suite('devices/usbaudio')
+MONITORS = load_suite('devices/monitors')
 
 
 def net4_boot(work):
@@ -229,10 +232,20 @@ def usbaudio_boot(work):
                    '-device', 'pci-ohci,id=ohci', '-device', 'piix3-usb-uhci,id=uhci'], []
 
 
+def monitors_boot(work):
+    """One card with three outputs: a virtio-vga (the boot display, on its
+    first output) and a VNC server on each other output (work/vnc1.sock,
+    vnc2.sock), through which the test connects and disconnects a monitor
+    there (tests/selftest/devices/monitors)"""
+    return ['-vga', 'none', '-device', 'virtio-vga,max_outputs=3,id=gpu'] + \
+        [x for n in (1, 2) for x in ('-vnc', f'unix:{os.path.join(work, f"vnc{n}.sock")},id=vnc{n},display=gpu,head={n}')], []
+
+
 # The suites that boot once per entry: (label, tests, setup(work) -> (QEMU arguments, processes))
 BOOTS = {
     'network': [('ipv4', NET4, net4_boot), ('ipv6', NET6, net6_boot)],
-    'devices': [('touch', TOUCH, touch_boot), ('usbaudio', USBAUDIO, usbaudio_boot)],
+    'devices': [('touch', TOUCH, touch_boot), ('usbaudio', USBAUDIO, usbaudio_boot),
+                ('monitors', MONITORS, monitors_boot)],
 }
 
 

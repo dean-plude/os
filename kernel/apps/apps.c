@@ -916,7 +916,10 @@ FolderKind AppFolderKind(const RamNode *d)
 /* A window with a coloured title strip and the program's initial */
 void AppDrawProgramIcon(const char *name, int x, int y, int s)
 {
-    if (IconDraw(AppProgramIcon(name), x, y, s)) return;
+    FsLock();                                   /* (finds the program's file; the desktop draws without it) */
+    bool drawn = IconDraw(AppProgramIcon(name), x, y, s);
+    FsUnlock();
+    if (drawn) return;
     /* A program without an icon: a tile in a colour picked from its name,
      * with its initial (or, when tiny, a window glyph) */
     static const GdiColor tint[] = {

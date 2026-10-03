@@ -1,0 +1,1 @@
+| `soundtest dsound [HZ] [MS]`, `dscapture FILE [MS]` | DirectSound: a streaming buffer refilled at position notifications, a static one at twice its frequency, and DirectSoundCapture (made with `CoCreateInstance`) recording into a WAV |

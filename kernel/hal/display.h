@@ -16,9 +16,14 @@
  *
  * More monitors: each further Bochs/QEMU DISPI adapter that is not the boot
  * display (QEMU -device secondary-vga or bochs-display) is another head,
- * with its own modes, set through the same registers (BAR2 MMIO).  Head 0
- * is the boot display (the functions without "Head" in the name); the GDI
- * composes one desktop across all of them (gdi.h, GdiMonitor*).
+ * with its own modes, set through the same registers (BAR2 MMIO).  So is
+ * each output of a virtio GPU with a monitor on it (drivers/virtio_gpu.c:
+ * several monitors on one card); when the boot display is a virtio-vga
+ * with more than one output, head 0 moves onto its output 1 too (a fourth
+ * back end, a picture in memory the card shows).  Head 0 is the boot
+ * display (the functions without "Head" in the name); the GDI composes one
+ * desktop across all of them (gdi.h, GdiMonitor*).  Monitors on a virtio
+ * GPU's outputs come and go while NovaOS runs (DisplayPoll).
  */
 
 #pragma once
@@ -92,3 +97,11 @@ bool DisplayHeadSetMode(int head, int w, int h);
 /* Heads 1..: the visible video memory and its pixels per scanline (the
  * pixels are little-endian XRGB, as on head 0) */
 UINT32 *DisplayHeadSurface(int head, int *stride);
+/* A rectangle of head @head's screen (its pixels) was drawn: a virtio GPU
+ * output copies it to the monitor; nothing on the others */
+void DisplayHeadDamage(int head, int x, int y, int w, int h);
+/* Desktop loop: whether monitors were plugged in or unplugged since the
+ * last call.  A new one is the last head; *removed has bit N set for each
+ * head N (by its number before the call) that went, the later heads
+ * moving up a place each. */
+bool DisplayPoll(UINT32 *removed);
