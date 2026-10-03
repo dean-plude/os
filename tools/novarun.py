@@ -141,9 +141,14 @@ class Nova:
     def __init__(self, img=None, work=None, puts=(), mem=2048, smp=2, data_mb=1024, wav=None,
                  extra_args=(), boot_timeout=300, net=False, keep_data=False, vga=('-vga', 'std'), rec=None):
         self.work = work or tempfile.mkdtemp(prefix='novarun')
-        # more monitors: QEMU display devices with an id (-device secondary-vga,id=head2)
-        self.heads = [m.group(1) for a in extra_args
+        # more monitors: QEMU display devices with an id (-device secondary-vga,id=head2), and
+        # each further output of a virtio GPU with an id (-device virtio-vga,max_outputs=3,id=gpu)
+        self.heads = [(m.group(1), 0) for a in extra_args
                       for m in [re.match(r'(?:secondary-vga|bochs-display),(?:.*,)?id=([\w-]+)', a)] if m]
+        for a in extra_args:
+            m, n = re.match(r'virtio-(?:vga|gpu-pci),(?:.*,)?id=([\w-]+)', a), re.search(r'max_outputs=(\d+)', a)
+            if m and n:
+                self.heads += [(m.group(1), h) for h in range(1, int(n.group(1)))]
         os.makedirs(self.work, exist_ok=True)
         data, self.serial_path, sock = (os.path.join(self.work, n) for n in ('data.img', 'serial.log', 'qmp.sock'))
         for p in (self.serial_path, sock):
@@ -217,21 +222,18 @@ class Nova:
         self.qmp.type(cmd + '\n')
         got, ok, end = '', False, time.time() + timeout
         pending = list(acts)
-        while pending and time.time() < end and '[TERM-DONE]' not in got:
+        pat = re.compile(shot[0]) if shot else None
+        while (pending or pat) and time.time() < end and '[TERM-DONE]' not in got:
             time.sleep(0.25)
             got += self.sr.read_new()
+            if pat and pat.search(got) and '[TERM-DONE]' not in got:
+                time.sleep(2)
+                self.shot(shot[1])
+                pat = None
             for a in [a for a in pending if re.search(a[0], got)]:
                 pending.remove(a)
                 a[1](self)
-        if shot:
-            pat = re.compile(shot[0])
-            while time.time() < end and '[TERM-DONE]' not in got and not pat.search(got):
-                time.sleep(0.25)
-                got += self.sr.read_new()
-            if pat.search(got) and '[TERM-DONE]' not in got:
-                time.sleep(2)
-                self.shot(shot[1])
-            ok = '[TERM-DONE]' in got
+        ok = '[TERM-DONE]' in got
         if not ok:
             more, ok = self.sr.wait('[TERM-DONE]', max(1, end - time.time()))
             got += more
@@ -290,11 +292,12 @@ class Nova:
 
     def shot(self, path):
         """A screenshot of the primary display at @path; with more monitors,
-        each further one's at PATH-2.png, PATH-3.png, ..."""
+        each further one's at PATH-2.png, PATH-3.png, ... (an output with no
+        monitor on it has none)"""
         self.qmp.cmd('screendump', filename=os.path.abspath(path), format='png')
-        for i, head in enumerate(self.heads):
+        for i, (dev, head) in enumerate(self.heads):
             self.qmp.cmd('screendump', filename=os.path.abspath(re.sub(r'(\.png)?$', f'-{i + 2}.png', path, count=1)),
-                         format='png', device=head)
+                         format='png', device=dev, **({'head': head} if head else {}))
 
     def hmp(self, line):
         """A QEMU monitor command (e.g. "o /b 0xe8 1": write an I/O port)"""

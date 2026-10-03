@@ -4,4 +4,8 @@
   (Phase 18.9).  ~~More than one
   monitor~~ Done: one desktop across several display adapters, arranged in
   Settings and kept across restarts, with the Win32 monitor calls
-  reporting it.
+  reporting it.  ~~Several monitors on one card, plugged in and out while
+  running~~ Done: each output of a virtio GPU is a monitor, and the
+  desktop and programs (`WM_DISPLAYCHANGE`) follow monitors connected or
+  disconnected.  Still to do: per-monitor DPI that programs see
+  (`GetDpiForMonitor`, per-monitor-aware contexts, `WM_DPICHANGED`).

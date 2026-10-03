@@ -48,6 +48,8 @@
 #define NTFS_DELETED  "Deleted.txt"
 #define DATA_LABEL    "NOVADATA"
 
+static UINT64 tsc_us(UINT64 tsc) { return g_tsc_per_tick ? tsc * 10000 / g_tsc_per_tick : 0; }
+
 /* The volume: FAT or NTFS (changed and used under the save lock, see
  * save_lock; have_vol and g_dev may be looked at without it) */
 static FatVol  *g_vol;
@@ -248,6 +250,24 @@ static bool use_ntfs(NtfsVol *v, BlockDev *d)
     return true;
 }
 
+/* A power cut in the middle of a save can leave clusters marked as used
+ * that no file reaches (fat.c): free them before drive C: is loaded */
+static void reclaim(void)
+{
+    UINT64 t0 = rdtsc();
+    FatReclaimInfo ri;
+    bool ok = FatReclaim(g_vol, false, &ri);
+    UINT64 us = tsc_us(rdtsc() - t0);
+    if (!ok) {
+        kprintf("[PERSIST] Drive C: was not closed cleanly, and the space no file uses could not be reclaimed\n");
+    } else if (ri.scanned) {
+        kprintf("[PERSIST] Drive C: was not closed cleanly: reclaimed %u cluster(s), %llu KiB no file used, "
+                "in %llu.%02llu ms; %u shared or looping chain(s) left alone; %u clusters free\n",
+                ri.reclaimed, (unsigned long long)ri.reclaimed * FatClusterBytes(g_vol) >> 10,
+                (unsigned long long)(us / 1000), (unsigned long long)(us % 1000 / 10), ri.crossed, ri.free);
+    }
+}
+
 void PersistInit(void)
 {
     AhciInit();
@@ -275,6 +295,7 @@ void PersistInit(void)
     for (int i = 0; i < n; i++)
         if (i != pick) cand_free(&c[i]);
     RamfsSetRemovedHook(removed_hook);
+    if (g_vol) reclaim();
     if (have_vol()) {
         char d[96];
         PersistDescribe(d, sizeof(d));
@@ -1268,7 +1289,6 @@ static void write_snapshot(Snapshot *s)
     }
 }
 
-static UINT64 tsc_us(UINT64 tsc) { return g_tsc_per_tick ? tsc * 10000 / g_tsc_per_tick : 0; }
 
 /* Save C:.  The caller holds the file-system lock (one level of it) and
  * the save lock; both are let go of. */

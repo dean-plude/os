@@ -86,6 +86,13 @@ and `lld-link`, twice: once for x64 into `C:\Windows\System32` and
 NetSurf browser, are embedded in `kernel.elf` and placed on drive C: at
 boot.
 
+Independent DLLs, programs and objects build concurrently, with at most
+`--jobs N` (or `-j N`) compiler and linker processes running at once; the
+default is the number of CPUs and `--jobs 1` builds one step at a time.  A
+DLL still links after the DLLs it depends on, and the files and their order
+in the image are the same whatever `N` is.  CMake runs the script without
+the flag, so the kernel build uses every core.
+
 Environment variables:
 
 | Variable | Effect |
@@ -97,7 +104,7 @@ To rebuild only the userland, for a quick check of a DLL (the second
 command only loads the manifests, as CI does):
 
 ```bash
-NOVA_NO_NETSURF=1 python3 tools/build_userland.py /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
+NOVA_NO_NETSURF=1 python3 tools/build_userland.py --jobs 4 /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
 python3 tools/build_userland.py --check
 ```
 
@@ -234,6 +241,13 @@ USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
 `piix3-usb-uhci`; QEMU's EHCI and NovaOS's EHCI driver have no
 isochronous transfers).  The newest sound output plays.
 
+More monitors: each further display adapter is one (`-device
+secondary-vga`), and so is each output of a virtio GPU with a monitor on
+it, e.g. `-vga none -device virtio-vga,max_outputs=2,id=gpu`.  QEMU
+connects an output when its display window or a VNC client on it
+(`-vnc :1,display=gpu,head=1`) asks for a size, and a VNC client asking
+for 0 x 0 disconnects it, while NovaOS runs.
+
 ### Where your files are kept
 
 Drive C: lives in memory, and NovaOS saves every change to an NTFS or FAT
@@ -335,9 +349,10 @@ python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 `tools/novarun.py` (and so `tools/selftest.py`) starts QEMU with `-accel kvm`
 when `/dev/kvm` is readable and writable, and with TCG otherwise.  Set
 `NOVARUN_ACCEL=tcg` or `NOVARUN_ACCEL=kvm` to force one.  The CPU model stays
-`qemu64` with the same feature flags under both.  CI runs the test VMs under KVM: each job's `tools/ci/enable-kvm.sh` step opens
-`/dev/kvm` to the runner user and sets `NOVARUN_ACCEL=kvm`, or sets `tcg` with
-a warning when the runner has no usable `/dev/kvm`.
+`qemu64` with the same feature flags under both.  CI runs the test VMs under
+KVM: each job's `tools/ci/enable-kvm.sh` step opens `/dev/kvm` to the runner
+user and sets `NOVARUN_ACCEL=kvm`, or sets `tcg` with a warning when the runner
+has no usable `/dev/kvm` (history entry "Kernel under KVM" has the timings).
 
 The graphics suite downloads 7-Zip, Mesa and DXVK and builds
 gltest/d3dtest/d2dtest/dwtest:
@@ -366,7 +381,12 @@ from boot; the test plugs the second into an OHCI and the third into a
 UHCI controller while NovaOS runs, plays `soundtest tone` after each, then
 unplugs the third and plays again, which the second must hear.  Each
 speaker's WAV must hold its tones and nothing else: a speaker another one
-took over from has to go quiet.
+took over from has to go quiet.  Last, one `virtio-vga` card with three
+outputs and a monitor only on the first, for `montest hotplug`: the test
+connects a monitor to the second and third outputs and disconnects them
+again while NovaOS runs, through a VNC server QEMU has on each (an RFB
+`SetDesktopSize` asks for a monitor of that size there; 0 x 0 takes it
+away):
 
 ```bash
 python3 tools/selftest.py --suite devices
