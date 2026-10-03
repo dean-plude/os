@@ -148,3 +148,32 @@ struct lconv *localeconv(void)
                                L".", L"", L"", L"", L"", L"", L"", L"" };
     return &lc;
 }
+
+/* Called by MinGW programs' startup code: msvcrt fills the "C" locale's
+ * lconv here; localeconv's is static, so there is nothing to do */
+__declspec(dllexport) int __lconv_init(void) { return 0; }
+
+/* _splitpath/_wsplitpath: drive, directory (with its trailing slash),
+ * base name and extension of @path; any output may be NULL */
+#define SPLITPATH(NAME, T)                                                            \
+__declspec(dllexport) void NAME(const T *path, T *drive, T *dir, T *fname, T *ext)  \
+{                                                                                     \
+    const T *p = path, *slash = NULL, *dot = NULL;                                     \
+    if (drive) drive[0] = 0;                                                          \
+    if (p[0] && p[1] == ':') {                                                        \
+        if (drive) { drive[0] = p[0]; drive[1] = ':'; drive[2] = 0; }                \
+        p += 2;                                                                       \
+    }                                                                                 \
+    for (const T *q = p; *q; q++) {                                                   \
+        if (*q == '/' || *q == '\\') slash = q + 1;                                 \
+        else if (*q == '.') dot = q;                                                  \
+    }                                                                                 \
+    const T *name = slash ? slash : p, *end = name;                                   \
+    while (*end) end++;                                                               \
+    if (!dot || dot < name) dot = end;                                                \
+    if (dir) { int n = 0; for (const T *q = p; q < name; q++) dir[n++] = *q; dir[n] = 0; }       \
+    if (fname) { int n = 0; for (const T *q = name; q < dot; q++) fname[n++] = *q; fname[n] = 0; } \
+    if (ext) { int n = 0; for (const T *q = dot; q < end; q++) ext[n++] = *q; ext[n] = 0; }      \
+}
+SPLITPATH(_splitpath, char)
+SPLITPATH(_wsplitpath, wchar_t)

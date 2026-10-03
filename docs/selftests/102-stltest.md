@@ -1,0 +1,1 @@
+| `stltest` | The C++ standard library (`msvcp140.dll`, `msvcp140_1`, `msvcp140_atomic_wait`) built as Visual Studio builds a program: strings, containers, streams and locales, exceptions and `exception_ptr`, threads, mutexes, condition variables, `std::async`, atomic waits, `pmr`, `std::filesystem` and `fstream`, `to_chars`, `std::format`, `std::regex` |

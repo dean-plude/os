@@ -11,20 +11,21 @@
 #define UM_MAX_PROCS     32
 #define UM_MAX_HANDLES   4096
 #define UM_MAX_REGIONS   8192     /* (runtimes such as CoreCLR reserve thousands of ranges) */
-#define UM_MAX_MODULES   64
+#define UM_MAX_MODULES   128      /* (a GTK program brings 70 DLLs of its own) */
+#define UM_MAX_DLL_DIRS  16       /* AddDllDirectory's folders */
 #define UM_MAX_THREADS   256      /* (a browser's main process runs well over 64) */
 #define UM32_MAX_THREADS 96       /* WoW: the TEB area must stay below KUSER_SHARED_DATA */
 
 /* Fixed user addresses for the per-process system areas:
- *   PEB (1 page) | loader info (3 pages) | process parameters (4 pages) |
+ *   PEB (1 page) | loader info (6 pages) | process parameters (4 pages) |
  *   stubs for unimplemented imports (1 page) | ... |
  *   TEBs (2 pages each, one slot per thread) */
 #define UM_PEB_VA        UINT64_C(0x00007FFDF0000000)
 #define UM_LDR_INFO_VA   (UM_PEB_VA + 0x1000)
-#define UM_LDR_INFO_SIZE 0x3000
-#define UM_PARAMS_VA     (UM_PEB_VA + 0x4000)
+#define UM_LDR_INFO_SIZE 0x6000
+#define UM_PARAMS_VA     (UM_PEB_VA + 0x7000)
 #define UM_PARAMS_PAGES  4
-#define UM_STUBS_VA      (UM_PEB_VA + 0x8000)
+#define UM_STUBS_VA      (UM_PEB_VA + 0xB000)
 #define UM_STUB_SIZE     16
 #define UM_MAX_STUBS     (0x1000 / UM_STUB_SIZE)
 #define UM_TEB_AREA      (UM_PEB_VA + 0x10000)
@@ -201,6 +202,8 @@ struct UmProcess {
     UINT64      pml4;           /* physical address of the page table */
     RamNode    *cwd;
     RamNode    *exe_dir;        /* searched for DLLs before System32 */
+    char        dll_dirs[UM_MAX_DLL_DIRS][RAMFS_PATH_MAX];  /* AddDllDirectory's ("": a free slot) */
+    char        dll_dir[RAMFS_PATH_MAX];                    /* SetDllDirectory's ("": none) */
     UmConsole  *con;
     UmRwLock    lock;           /* handles, regions, modules, threads */
     UmLock      ldr_lock;       /* one runtime DLL load at a time (taken before the desktop lock) */
@@ -290,6 +293,7 @@ UmThread  *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack
 /* Load a DLL (and what it imports) into the running process: *base gets
  * its address; new modules are appended to the loader info page. */
 UINT32     um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags);
+UINT32     um_dll_directory(UmProcess *p, UINT32 op, const char *path, UINT64 *cookie);
 const UmModule *um_module_at(UmProcess *p, UINT64 va);
 
 /* um_console.c */

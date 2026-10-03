@@ -1129,7 +1129,7 @@ static UINT64 sys_query_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
     switch (cls) {
     case 6: {                                                   /* FileInternalInformation */
         need = 8;
-        UINT64 id = (UINT64)(uintptr_t)RamfsFileId(h->node);    /* (the same by every name of the file) */
+        UINT64 id = (UINT64)(uintptr_t)(file ? RamfsFileId(h->node) : h->node);  /* (the same by every name of the file) */
         memcpy(b, &id, 8);
         break;
     }

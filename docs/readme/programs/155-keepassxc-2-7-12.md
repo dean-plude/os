@@ -1,0 +1,1 @@
+| **KeePassXC 2.7.12** | Portable zip (Qt 5, x64) | Opens and unlocks a KDBX 4 password database (Argon2d) and shows its groups, entries and an entry's details, Qt's widget text drawn through `GetGlyphOutline`; in the nightly corpus.  Windows Hello quick unlock reports "not supported". |

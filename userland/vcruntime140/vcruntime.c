@@ -250,19 +250,26 @@ VCRT BOOL __vcrt_InitializeCriticalSectionEx(LPCRITICAL_SECTION cs, DWORD spin, 
     return InitializeCriticalSectionAndSpinCount(cs, spin);
 }
 
-/* The C runtime's share of vcruntime140's exports */
+/* The C runtime's share of vcruntime140's exports.  (On x86 the linker
+ * takes an /EXPORT name as a C-decorated symbol and drops one leading
+ * underscore, so the names that start with one get another: XU.) */
+#ifdef _WIN64
+#define XU ""
+#else
+#define XU "_"
+#endif
 __asm__(".section .drectve,\"yn\"\n\t"
         ".ascii \" /EXPORT:memcpy=ucrtbase.memcpy /EXPORT:memmove=ucrtbase.memmove /EXPORT:memset=ucrtbase.memset\"\n\t"
         ".ascii \" /EXPORT:memcmp=ucrtbase.memcmp /EXPORT:memchr=ucrtbase.memchr\"\n\t"
         ".ascii \" /EXPORT:strchr=ucrtbase.strchr /EXPORT:strrchr=ucrtbase.strrchr /EXPORT:strstr=ucrtbase.strstr\"\n\t"
         ".ascii \" /EXPORT:wcschr=ucrtbase.wcschr /EXPORT:wcsrchr=ucrtbase.wcsrchr /EXPORT:wcsstr=ucrtbase.wcsstr\"\n\t"
-        ".ascii \" /EXPORT:_setjmp=ucrtbase._setjmp /EXPORT:_setjmpex=ucrtbase._setjmpex\"\n\t"
-        ".ascii \" /EXPORT:__intrinsic_setjmp=ucrtbase.__intrinsic_setjmp /EXPORT:__intrinsic_setjmpex=ucrtbase.__intrinsic_setjmpex\"\n\t"
-        ".ascii \" /EXPORT:longjmp=ucrtbase.longjmp /EXPORT:__std_terminate=ucrtbase.terminate\"\n\t"
-        ".ascii \" /EXPORT:__C_specific_handler=ntdll.__C_specific_handler\"\n\t"
-        ".ascii \" /EXPORT:__vcrt_GetModuleFileNameW=kernel32.GetModuleFileNameW\"\n\t"
-        ".ascii \" /EXPORT:__vcrt_GetModuleHandleW=kernel32.GetModuleHandleW\"\n\t"
-        ".ascii \" /EXPORT:__vcrt_LoadLibraryExW=kernel32.LoadLibraryExW\"\n\t"
+        ".ascii \" /EXPORT:" XU "_setjmp=ucrtbase._setjmp /EXPORT:" XU "_setjmpex=ucrtbase._setjmpex\"\n\t"
+        ".ascii \" /EXPORT:" XU "__intrinsic_setjmp=ucrtbase.__intrinsic_setjmp /EXPORT:" XU "__intrinsic_setjmpex=ucrtbase.__intrinsic_setjmpex\"\n\t"
+        ".ascii \" /EXPORT:longjmp=ucrtbase.longjmp /EXPORT:" XU "__std_terminate=ucrtbase.terminate\"\n\t"
+        ".ascii \" /EXPORT:" XU "__C_specific_handler=ntdll.__C_specific_handler\"\n\t"
+        ".ascii \" /EXPORT:" XU "__vcrt_GetModuleFileNameW=kernel32.GetModuleFileNameW\"\n\t"
+        ".ascii \" /EXPORT:" XU "__vcrt_GetModuleHandleW=kernel32.GetModuleHandleW\"\n\t"
+        ".ascii \" /EXPORT:" XU "__vcrt_LoadLibraryExW=kernel32.LoadLibraryExW\"\n\t"
         ".text\n");
 
 /* std::type_info's vtable: every RTTI/EH type descriptor points at it */

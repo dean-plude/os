@@ -12,7 +12,7 @@ and merge cleanly in either order.
 | You are adding... | Add this file | Not this |
 |---|---|---|
 | a system DLL | `userland/NAME/dll.json` (+ `userland/NAME/build.py` if it needs a library or flags) | the old `DLLS` list in `tools/build_userland.py` |
-| a program, or making one 32-bit or a System32 one | `userland/programs/NAME.json` (`x86`, `system`, `libs`, `selftest`) | `PROGRAMS_X86` / `SYSTEM_PROGRAMS` |
+| a program, or making one 32-bit or a System32 one | `userland/programs/NAME.json` (`x86`, `system`, `libs`, `msstl`, `selftest`) | `PROGRAMS_X86` / `SYSTEM_PROGRAMS` |
 | export ordinals for a DLL | `"ordinals"` in its `dll.json` | `ORDINALS` |
 | a CI self-test | `tests/selftest/core/NNN-name.py` (or `graphics/`) | `CORE` / `GRAPHICS` in `tools/selftest.py` |
 | a nightly app-corpus program | `tests/appcorpus/NNN-name.py` | `APPS` in `tools/appcorpus.py` |
@@ -43,15 +43,20 @@ fragment files above (and from the self-test and app-corpus files' `DOC`
 strings, and the programs' `"selftest": true`).  In a pull request:
 
 - add or edit fragments, and **do not edit or regenerate the regions**:
-  CI's "Checks" job fails if a region differs from main's
+  CI's "Checks" job fails if a region differs from main's and is not
+  byte-identical to a fresh `tools/docgen.py` run on the PR's tree
   (`tools/docgen.py --check-pr`);
 - edit text outside the regions as usual (that is ordinary prose and
   conflicts only when two changes rewrite the same sentence);
 - to preview the result, run `python3 tools/docgen.py`, look, and then
   `git checkout README.md docs/` before committing.
 
-After a merge, the **Docs** workflow (`.github/workflows/docs.yml`) runs
-`tools/docgen.py` on main and commits the rebuilt files.
+Main only takes pull requests, so nothing pushes the rebuilt regions to
+it.  The daily "Docs sync YYYY-MM-DD" pull request (or any pull request
+whose only generated-region change is an exact `python3 tools/docgen.py`
+run) regenerates them, and the check accepts exact regenerations.  The
+**Docs** workflow (`.github/workflows/docs.yml`) is a read-only report: it
+runs `tools/docgen.py --check` on main and lists the files that are behind.
 
 The standing rule still holds: every change updates the docs.  It now does
 so by adding or editing fragments.
@@ -91,7 +96,7 @@ when it merges main.  Resolve it like this:
    `docs/roadmap/` file, table rows and list items in `docs/readme/` or
    `docs/selftests/`.  Changes outside the generated regions are re-applied
    to main's text directly.
-5. Run the checks below; the generated regions must be exactly main's.
+5. Run the checks below; the generated regions must be exactly main's, or an exact regeneration.
 
 ## Before pushing
 

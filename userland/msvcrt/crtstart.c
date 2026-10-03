@@ -290,6 +290,17 @@ CRTEXP int _query_new_mode(void) { return g_new_mode; }
 CRTEXP new_handler_t _set_new_handler(new_handler_t h) { new_handler_t o = g_new_handler; g_new_handler = h; return o; }
 CRTEXP new_handler_t _query_new_handler(void) { return g_new_handler; }
 CRTEXP int _callnewh(size_t n) { return g_new_handler ? g_new_handler(n) : 0; }
+/* ...and under their C++ names, as the UCRT exports them too (the C++
+ * library's std::set_new_handler calls these) */
+#ifdef _WIN64
+__asm__(".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:?_set_new_handler@@YAP6AH_K@ZP6AH0@Z@Z=_set_new_handler"
+        " /EXPORT:?_query_new_handler@@YAP6AH_K@ZXZ=_query_new_handler"
+        " /EXPORT:?_set_new_mode@@YAHH@Z=_set_new_mode /EXPORT:?_query_new_mode@@YAHXZ=_query_new_mode\"\n\t.text\n");
+#else
+__asm__(".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:?_set_new_handler@@YAP6AHI@ZP6AHI@Z@Z=__set_new_handler"
+        " /EXPORT:?_query_new_handler@@YAP6AHI@ZXZ=__query_new_handler"
+        " /EXPORT:?_set_new_mode@@YAHH@Z=__set_new_mode /EXPORT:?_query_new_mode@@YAHXZ=__query_new_mode\"\n\t.text\n");
+#endif
 
 typedef void (__cdecl *invalid_parameter_t)(const wchar_t *, const wchar_t *, const wchar_t *, unsigned, uintptr_t);
 static invalid_parameter_t g_invalid;
@@ -392,6 +403,57 @@ CRTEXP int __stdio_common_vfprintf_s(unsigned long long opt, FILE *f, const char
 { return __stdio_common_vfprintf(opt, f, fmt, loc, ap); }
 CRTEXP int __stdio_common_vfprintf_p(unsigned long long opt, FILE *f, const char *fmt, void *loc, va_list ap)
 { return __stdio_common_vfprintf(opt, f, fmt, loc, ap); }
+
+/* <conio.h>'s printf: formatted, then written to the console (or to
+ * standard output when that is not a console) */
+static int con_write(const void *p, int n, int wide)
+{
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD w = 0;
+    BOOL ok = wide ? WriteConsoleW(out, p, (DWORD)n, &w, 0) : WriteConsoleA(out, p, (DWORD)n, &w, 0);
+    if (!ok) ok = WriteFile(out, p, (DWORD)n * (wide ? 2 : 1), &w, 0);
+    return ok ? n : -1;
+}
+CRTEXP int __conio_common_vcprintf(unsigned long long opt, const char *fmt, void *loc, va_list ap)
+{
+    (void)opt; (void)loc;
+    va_list again;
+    va_copy(again, ap);
+    int n = __nova_vsnprintf(NULL, 0, fmt, ap, 0);
+    char small[512], *buf = n >= 0 && (size_t)n < sizeof(small) ? small : malloc((size_t)n + 1);
+    if (n < 0 || !buf) { va_end(again); return -1; }
+    __nova_vsnprintf(buf, (size_t)n + 1, fmt, again, 0);
+    va_end(again);
+    int r = con_write(buf, n, 0);
+    if (buf != small) free(buf);
+    return r;
+}
+CRTEXP int __conio_common_vcprintf_s(unsigned long long opt, const char *fmt, void *loc, va_list ap)
+{ return __conio_common_vcprintf(opt, fmt, loc, ap); }
+CRTEXP int __conio_common_vcprintf_p(unsigned long long opt, const char *fmt, void *loc, va_list ap)
+{ return __conio_common_vcprintf(opt, fmt, loc, ap); }
+CRTEXP int __conio_common_vcwprintf(unsigned long long opt, const wchar_t *fmt, void *loc, va_list ap)
+{
+    (void)loc;
+    va_list again;
+    va_copy(again, ap);
+    int n = __nova_vsnwprintf(NULL, 0, fmt, ap, pf_flags(opt, 1));
+    wchar_t small[256], *buf = n >= 0 && (size_t)n < 256 ? small : malloc(((size_t)n + 1) * sizeof(wchar_t));
+    if (n < 0 || !buf) { va_end(again); return -1; }
+    __nova_vsnwprintf(buf, (size_t)n + 1, fmt, again, pf_flags(opt, 1));
+    va_end(again);
+    int r = con_write(buf, n, 1);
+    if (buf != small) free(buf);
+    return r;
+}
+CRTEXP int __conio_common_vcwprintf_s(unsigned long long opt, const wchar_t *fmt, void *loc, va_list ap)
+{ return __conio_common_vcwprintf(opt, fmt, loc, ap); }
+CRTEXP int __conio_common_vcwprintf_p(unsigned long long opt, const wchar_t *fmt, void *loc, va_list ap)
+{ return __conio_common_vcwprintf(opt, fmt, loc, ap); }
+CRTEXP int _cputs(const char *s)     { return con_write(s, (int)strlen(s), 0) < 0 ? -1 : 0; }
+CRTEXP int _cputws(const wchar_t *s) { return con_write(s, (int)wcslen(s), 1) < 0 ? -1 : 0; }
+CRTEXP int _cprintf(const char *fmt, ...)
+{ va_list a; va_start(a, fmt); int r = __conio_common_vcprintf(0, fmt, NULL, a); va_end(a); return r; }
 
 CRTEXP int __stdio_common_vsprintf(unsigned long long opt, char *buf, size_t count, const char *fmt, void *loc, va_list ap)
 {
@@ -502,8 +564,8 @@ CRTEXP int __stdio_common_vswscanf(unsigned long long opt, const wchar_t *buf, s
     free(b); free(f);
     return r;
 }
-int vswscanf(const wchar_t *buf, const wchar_t *fmt, va_list ap) { return __stdio_common_vswscanf(0, buf, (size_t)-1, fmt, NULL, ap); }
-int swscanf(const wchar_t *buf, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = vswscanf(buf, fmt, a); va_end(a); return r; }
+CRTEXP int vswscanf(const wchar_t *buf, const wchar_t *fmt, va_list ap) { return __stdio_common_vswscanf(0, buf, (size_t)-1, fmt, NULL, ap); }
+CRTEXP int swscanf(const wchar_t *buf, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = vswscanf(buf, fmt, a); va_end(a); return r; }
 int sscanf_s(const char *buf, const char *fmt, ...) { va_list a; va_start(a, fmt); int r = vsscanf(buf, fmt, a); va_end(a); return r; }
 
 /* -----------------------------------------------------------------------

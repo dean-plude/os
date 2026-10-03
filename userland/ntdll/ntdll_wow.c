@@ -878,7 +878,7 @@ NTSTATUS NTAPI NtAlertThreadByThreadId(HANDLE tid) { return SC(NtAlertThreadByTh
  * ----------------------------------------------------------------------- */
 NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base, ULONG flags)
 {
-    U64 b = 0;
+    U64 b = (flags & 0x80000000u) && base ? (U64)(ULONG_PTR)*base : 0;   /* (a search-path cookie, in) */
     NTSTATUS s = SC(NtNovaLoadDll, P(name), U(len), P(&b), U(flags));
     if (base && NT_SUCCESS(s)) *base = (PVOID)(ULONG_PTR)b;
     return s;

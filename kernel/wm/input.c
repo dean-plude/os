@@ -70,6 +70,16 @@ UINT32 InputModifiers(void)
     return (g_lshift || g_rshift ? 1u : 0u) | (g_ctrl ? 2u : 0u) | (g_alt ? 4u : 0u) | (g_caps ? 8u : 0u);
 }
 
+static int g_touch_contacts;
+
+void InputTouchScreen(int contacts)
+{
+    if (contacts > TOUCH_MAX) contacts = TOUCH_MAX;
+    if (contacts > g_touch_contacts) g_touch_contacts = contacts;
+}
+
+int InputTouchContacts(void) { return g_touch_contacts; }
+
 UINT32 InputLockState(void)
 {
     return (g_num ? 1u : 0u) | (g_caps ? 2u : 0u) | (g_scroll ? 4u : 0u);

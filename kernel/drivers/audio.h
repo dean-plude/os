@@ -4,7 +4,8 @@
  *
  * Every stream carries 48 kHz, 16-bit stereo frames (winmm and mmdevapi
  * convert to that).  A kernel thread mixes the running streams into the
- * HD Audio DMA ring a little ahead of the hardware.
+ * playing output's ring a little ahead of the hardware: the HD Audio
+ * card's DMA ring, or a USB audio device's (usbaudio.c).
  */
 
 #pragma once
@@ -26,8 +27,27 @@ typedef struct {
     UINT32 latency;     /* frames the device plays ahead of the mixer */
 } AudioStatus;
 
-/* Probe the sound card and start the mixer; false when there is none */
+/* A playback device: a ring of @bytes of interleaved 48 kHz s16 stereo
+ * frames that the mixer keeps filled ahead of where the device reads.
+ * @position: the device's read offset in the ring (bytes, a whole frame) */
+typedef struct {
+    const char *name;
+    INT16      *ring;
+    UINT32      bytes;
+    UINT32    (*position)(void *ctx);
+    void       *ctx;
+} AudioOutput;
+
+/* Start the mixer and probe the sound card; false when there is no card
+ * (an output can still be attached later) */
 bool        AudioInit(void);
+/* Play on @o (kept until detached) from now on, the way Windows switches
+ * to a headset when it is plugged in; detaching the playing output goes
+ * back to the one attached before it.  After AudioOutputDetach returns
+ * the mixer no longer touches @o's ring. */
+bool        AudioOutputAttach(const AudioOutput *o);
+void        AudioOutputDetach(const AudioOutput *o);
+/* Whether there is an output, and the playing one's name */
 bool        AudioPresent(void);
 const char *AudioDeviceName(void);
 

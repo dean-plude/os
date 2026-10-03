@@ -12,7 +12,15 @@
  * its own way: Enable Slot and Address Device instead of SET_ADDRESS (with
  * a slot context carrying the route string through any hubs), Evaluate
  * Context when endpoint 0's packet size is learnt, one Configure Endpoint
- * for every endpoint of the configuration, and a hub's slot context.
+ * for every endpoint of the configuration (and another, dropping and
+ * adding endpoints, when a driver switches an interface's alternate
+ * setting), and a hub's slot context.
+ *
+ * Isochronous endpoints get one Isoch TRB per packet, each its own TD
+ * scheduled "as soon as possible" after the one before (SIA) and each
+ * with an event (IOC), which says how much an IN packet brought; a
+ * transfer of the core's ring (usb_hc.h) is done when all its packets
+ * are.
  *
  * Commands are issued by the boot-time enumeration (interrupts off), the
  * "usb" thread that handles hot-plug and, to recover a halted endpoint, by
@@ -72,6 +80,7 @@
 
 /* TRB types and control-field bits */
 #define TRB_NORMAL      1
+#define TRB_ISOCH       5
 #define TRB_SETUP       2
 #define TRB_DATA        3
 #define TRB_STATUS      4
@@ -82,6 +91,7 @@
 #define TRB_CONFIG_EP   12
 #define TRB_EVAL_CTX    13
 #define TRB_RESET_EP    14
+#define TRB_STOP_EP     15
 #define TRB_SET_DEQ     16
 #define TRB_EV_TRANSFER 32
 #define TRB_EV_CMD      33
@@ -94,6 +104,7 @@
 #define TRB_IOC         (1u << 5)
 #define TRB_IDT         (1u << 6)
 #define TRB_DIR_IN      (1u << 16)
+#define TRB_SIA         (1u << 31)       /* isoch: start as soon as possible */
 #define TRB_TYPE(t)     ((UINT32)(t) << 10)
 #define TRB_SLOT(s)     ((UINT32)(s) << 24)
 #define TRB_EP(e)       ((UINT32)(e) << 16)
@@ -140,6 +151,10 @@ typedef struct {
     volatile bool     done;
     volatile UINT8    code;
     volatile UINT32   moved;
+    /* isochronous: which packet (k x packets + i) each ring TRB carries,
+     * or -1; packets of each transfer still out */
+    INT16             iso_map[RING_TRBS];
+    UINT8             iso_left[128];
 } XPipe;
 
 /* Per device */
@@ -229,6 +244,44 @@ static void queue_listen(Xhci *x, UsbPipe *p)
     doorbell(x, XD(p->dev)->slot, p->idx);
 }
 
+/* Queue isochronous transfer @k: a TD of one Isoch TRB per packet */
+static void queue_iso(Xhci *x, UsbPipe *p, int k)
+{
+    XPipe *xp = XP(p);
+    int n = p->iso_packets;
+    UINT32 burst = p->mult;                            /* (high speed: transactions per microframe - 1) */
+    for (int i = 0; i < n; i++) {
+        int pk = k * n + i;
+        UINT32 len = p->iso_len[pk];
+        UINT32 pkts = len ? (len + p->mps - 1) / p->mps : 1;
+        UINT32 tbc = (pkts + burst) / (burst + 1) - 1;
+        UINT32 tlbpc = pkts % (burst + 1) ? pkts % (burst + 1) - 1 : burst;
+        UINT64 at = ring_push(&xp->ring, phys(p->dma + (UINT32)pk * p->iso_psize), len,
+                              TRB_TYPE(TRB_ISOCH) | TRB_IOC | TRB_SIA | (tbc << 7) | (tlbpc << 16));
+        xp->iso_map[(at - phys(xp->ring.trbs)) / sizeof(Trb)] = (INT16)pk;
+    }
+    xp->iso_left[k] = (UINT8)n;
+    doorbell(x, XD(p->dev)->slot, p->idx);
+}
+
+/* An isochronous packet finished (a missed or failed one counts, empty) */
+static void on_iso(Xhci *x, UsbPipe *p, XPipe *xp, UINT64 trb, UINT8 code, UINT32 residual)
+{
+    UINT64 base = phys(xp->ring.trbs);
+    if (trb < base || trb >= base + PAGE_SIZE) return;     /* (no TRB: ring under/overrun) */
+    int slot = (int)((trb - base) / sizeof(Trb));
+    int pk = xp->iso_map[slot];
+    if (pk < 0) return;
+    xp->iso_map[slot] = -1;
+    if (p->in) {
+        UINT32 want = p->iso_len[pk];
+        p->iso_len[pk] = (UINT16)(code == CC_SUCCESS || code == CC_SHORT_PACKET ?
+                                  (want > residual ? want - residual : 0) : 0);
+    }
+    int k = pk / p->iso_packets;
+    if (xp->iso_left[k] && --xp->iso_left[k] == 0 && UsbIsoDone(p, k)) queue_iso(x, p, k);
+}
+
 static void on_transfer(Xhci *x, const volatile Trb *e)
 {
     UINT8  code = (UINT8)(e->status >> 24);
@@ -244,6 +297,10 @@ static void on_transfer(Xhci *x, const volatile Trb *e)
     UsbPipe *p = d->pipes[ep];
     if (!p || p->dead || !p->hcd) return;
     XPipe *xp = XP(p);
+    if (p->xfer == 1) {
+        if (p->iso_cb) on_iso(x, p, xp, e->param, code, residual);
+        return;
+    }
     if (p->cb) {                                       /* interrupt IN listener */
         if (code != CC_SUCCESS && code != CC_SHORT_PACKET) {
             UsbPipeListenFailed(p, code);
@@ -396,9 +453,47 @@ static bool xhci_pipe_add(UsbHc *hc, UsbPipe *p)
     XPipe *xp = kzalloc(sizeof(XPipe));
     if (!xp) return false;
     if (!ring_init(&xp->ring)) { kfree(xp); return false; }
-    xp->type = p->xfer == 2 ? (p->in ? EP_BULK_IN : EP_BULK_OUT) : (p->in ? EP_INTR_IN : EP_INTR_OUT);
+    xp->type = p->xfer == 1 ? (p->in ? EP_ISOCH_IN : EP_ISOCH_OUT) :
+               p->xfer == 2 ? (p->in ? EP_BULK_IN : EP_BULK_OUT) : (p->in ? EP_INTR_IN : EP_INTR_OUT);
+    for (int i = 0; i < RING_TRBS; i++) xp->iso_map[i] = -1;
     p->hcd = xp;
     return true;
+}
+
+/* A pipe of an alternate setting left behind (already dropped from the
+ * device's endpoints) */
+static void xhci_pipe_drop(UsbHc *hc, UsbPipe *p)
+{
+    (void)hc;
+    XPipe *xp = XP(p);
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    p->hcd = NULL;
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    UsbDmaFree((void *)xp->ring.trbs, 1);
+    kfree(xp);
+}
+
+static bool xhci_iso_start(UsbHc *hc, UsbPipe *p)
+{
+    if (!p->hcd || !XD(p->dev)->slot || p->iso_xfers * p->iso_packets > RING_TRBS - 8) return false;
+    for (int k = 0; k < p->iso_xfers; k++) queue_iso(X(hc), p, k);
+    return true;
+}
+
+/* Stop Endpoint, and skip what is still on the ring */
+static void xhci_iso_stop(UsbHc *hc, UsbPipe *p)
+{
+    Xhci *x = X(hc);
+    XDev *xd = XD(p->dev);
+    XPipe *xp = XP(p);
+    if (!xp || !xd || !xd->slot) return;
+    command(x, 0, TRB_TYPE(TRB_STOP_EP) | TRB_SLOT(xd->slot) | TRB_EP(p->idx), NULL);
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    for (int i = 0; i < RING_TRBS; i++) xp->iso_map[i] = -1;
+    memset(xp->iso_left, 0, sizeof(xp->iso_left));
+    UINT64 deq = phys(&xp->ring.trbs[xp->ring.enq]) | xp->ring.cycle;
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    command(x, deq, TRB_TYPE(TRB_SET_DEQ) | TRB_SLOT(xd->slot) | TRB_EP(p->idx), NULL);
 }
 
 static bool xhci_listen(UsbHc *hc, UsbPipe *p)
@@ -556,17 +651,17 @@ static bool xhci_dev_ep0(UsbHc *hc, UsbDev *d)
     return command(x, phys(xd->in_ctx), TRB_TYPE(TRB_EVAL_CTX) | TRB_SLOT(xd->slot), NULL) == CC_SUCCESS;
 }
 
-/* One Configure Endpoint for every pipe of the configuration */
-static bool xhci_dev_config(UsbHc *hc, UsbDev *d)
+/* Configure Endpoint: @drop and @add endpoints (pipe idx = DCI) */
+static bool xhci_iface_config(UsbHc *hc, UsbDev *d, UINT32 drop, UINT32 add)
 {
     Xhci *x = X(hc);
     XDev *xd = XD(d);
-    UINT32 add = 0;
     int max_dci = 1;
     for (int dci = 2; dci < 32; dci++)
-        if (d->pipes[dci] && d->pipes[dci]->hcd) { add |= 1u << dci; max_dci = dci; }
-    if (!add) return true;
+        if (d->pipes[dci] && d->pipes[dci]->hcd) max_dci = dci;
+    if (!xd || !xd->slot) return false;
     memset(xd->in_ctx, 0, PAGE_SIZE);
+    ((UINT32 *)xd->in_ctx)[0] = drop & ~3u;
     ((UINT32 *)xd->in_ctx)[1] = 1u | add;
     memcpy(in_slot(x, xd), xd->out_ctx, (size_t)x->ctx);
     in_slot(x, xd)[0] = (in_slot(x, xd)[0] & ~(0x1Fu << 27)) | ((UINT32)max_dci << 27);
@@ -576,13 +671,26 @@ static bool xhci_dev_config(UsbHc *hc, UsbDev *d)
         UsbPipe *p = d->pipes[dci];
         XPipe *xp = XP(p);
         UINT32 *ep = in_ep(x, xd, dci);
-        bool intr = p->xfer == 3;
-        ep[0] = intr ? ep_interval(d->speed, p->interval) << 16 : 0;
-        ep[1] = (3u << 1) | ((UINT32)xp->type << 3) | ((UINT32)p->mps << 16);
+        bool intr = p->xfer == 3, iso = p->xfer == 1;
+        UINT32 esit = (UINT32)p->mps * (1u + p->mult);    /* bytes per service interval */
+        UINT32 ivl = iso ? (d->speed == USB_SPEED_HIGH || d->speed == USB_SPEED_SUPER ? 0u : 3u) +
+                           (UINT32)((p->interval ? (p->interval > 16 ? 16 : p->interval) : 1) - 1)
+                         : ep_interval(d->speed, p->interval);
+        ep[0] = intr || iso ? ivl << 16 : 0;
+        ep[1] = (iso ? 0u : 3u << 1) | ((UINT32)xp->type << 3) | ((UINT32)p->mult << 8) | ((UINT32)p->mps << 16);
         *(UINT64 *)&ep[2] = phys(xp->ring.trbs) | 1;
-        ep[4] = intr ? ((UINT32)p->mps | ((UINT32)p->mps << 16)) : 3072;
+        ep[4] = intr || iso ? (esit | (esit << 16)) : 3072;
     }
     return command(x, phys(xd->in_ctx), TRB_TYPE(TRB_CONFIG_EP) | TRB_SLOT(xd->slot), NULL) == CC_SUCCESS;
+}
+
+/* One Configure Endpoint for every pipe of the configuration */
+static bool xhci_dev_config(UsbHc *hc, UsbDev *d)
+{
+    UINT32 add = 0;
+    for (int dci = 2; dci < 32; dci++)
+        if (d->pipes[dci] && d->pipes[dci]->hcd) add |= 1u << dci;
+    return !add || xhci_iface_config(hc, d, 0, add);
 }
 
 static bool xhci_dev_hub(UsbHc *hc, UsbDev *d, UINT8 ports, bool mtt, UINT8 think_time)
@@ -773,12 +881,16 @@ static const UsbHcOps g_xhci_ops = {
     .dev_address = xhci_dev_address,
     .dev_ep0     = xhci_dev_ep0,
     .pipe_add    = xhci_pipe_add,
+    .pipe_drop   = xhci_pipe_drop,
+    .iface_config = xhci_iface_config,
     .dev_config  = xhci_dev_config,
     .dev_hub     = xhci_dev_hub,
     .dev_remove  = xhci_dev_remove,
     .control     = xhci_control,
     .bulk        = xhci_bulk,
     .listen      = xhci_listen,
+    .iso_start   = xhci_iso_start,
+    .iso_stop    = xhci_iso_stop,
     .pipe_reset  = xhci_pipe_reset,
     .poll        = xhci_poll,
     .prepare_sleep = xhci_prepare_sleep,

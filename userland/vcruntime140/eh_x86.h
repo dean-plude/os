@@ -367,10 +367,11 @@ VCRT int _is_exception_typeof(const TypeDescriptor *type, EXCEPTION_POINTERS *ep
     return 0;
 }
 
-/* SEH helpers vcruntime140 carries on x86 (ntdll has them) */
+/* SEH helpers vcruntime140 carries on x86 (ntdll has them).  The linker
+ * drops one leading underscore from each /EXPORT name, hence two. */
 __asm__(".section .drectve,\"yn\"\n\t"
-        ".ascii \" /EXPORT:_except_handler4_common=ntdll._except_handler4_common\"\n\t"
-        ".ascii \" /EXPORT:_except_handler2=ntdll._except_handler2 /EXPORT:_except_handler3=ntdll._except_handler3\"\n\t"
-        ".ascii \" /EXPORT:_global_unwind2=ntdll._global_unwind2 /EXPORT:_local_unwind2=ntdll._local_unwind2\"\n\t"
-        ".ascii \" /EXPORT:_local_unwind4=ntdll._local_unwind4 /EXPORT:_setjmp3=ucrtbase._setjmp3\"\n\t"
+        ".ascii \" /EXPORT:__except_handler4_common=ntdll._except_handler4_common\"\n\t"
+        ".ascii \" /EXPORT:__except_handler2=ntdll._except_handler2 /EXPORT:__except_handler3=ntdll._except_handler3\"\n\t"
+        ".ascii \" /EXPORT:__global_unwind2=ntdll._global_unwind2 /EXPORT:__local_unwind2=ntdll._local_unwind2\"\n\t"
+        ".ascii \" /EXPORT:__local_unwind4=ntdll._local_unwind4 /EXPORT:__setjmp3=ucrtbase._setjmp3\"\n\t"
         ".text\n");

@@ -359,10 +359,11 @@ static void draw_glyph(NOVA_DC *d, Glyph *g, int pen_x, int base_y, COLORREF c, 
  * (logical), honouring the DC's alignment, background mode and current
  * position; @dx: per-character advances (ExtTextOut), @clip: device rect */
 static BOOL text_out(NOVA_DC *d, int x, int y, const WCHAR *t, int n, const INT *dx, const RECT *clip, int glyph_idx,
-                     const RECT *opaque_rc)
+                     const RECT *opaque_rc, int height)
 {
     GObj *font;
     Size *s = dc_size(d, &font);
+    if (height) s = size_for(face_index(font), height);    /* scaled by the world transform */
     if (!s) return FALSE;
     int w = 0;
     if (dx) for (int i = 0; i < n; i++) w += dx[i];
@@ -413,13 +414,34 @@ static BOOL text_out(NOVA_DC *d, int x, int y, const WCHAR *t, int n, const INT 
     return TRUE;
 }
 
+/* The DC's world transform (identity when none is set) */
+static void xform_get_(NOVA_DC *d, XFORM *x)
+{
+    if (!d->xform[0] && !d->xform[1] && !d->xform[2] && !d->xform[3]) {
+        x->eM11 = 1; x->eM12 = 0; x->eM21 = 0; x->eM22 = 1; x->eDx = 0; x->eDy = 0;
+    } else memcpy(x, d->xform, sizeof(*x));
+}
+
+/* The LOGFONT height @font draws at on @d's device: scaled by a GM_ADVANCED
+ * world transform that only scales and offsets; 0 when there is none */
+static int scaled_height(NOVA_DC *d, GObj *font)
+{
+    XFORM xf;
+    if (!d || d->gmode != GM_ADVANCED) return 0;
+    xform_get_(d, &xf);
+    if (xf.eM12 || xf.eM21 || xf.eM11 <= 0 || xf.eM22 <= 0 || (xf.eM11 == 1 && xf.eM22 == 1)) return 0;
+    int fh = font->height ? font->height : -16;
+    int h = (int)(fh * xf.eM22 + (fh < 0 ? -0.5f : 0.5f));
+    return h ? h : fh < 0 ? -1 : 1;
+}
+
 static int is_complex(LPCWSTR s, int n);
 GDIAPI BOOL TextOutW(HDC h, int x, int y, LPCWSTR s, int len)
 {
     NOVA_DC *d = dc_of(h);
     if (!d || !s) return FALSE;
     if (len > 0 && is_complex(s, len)) return ExtTextOutW(h, x, y, 0, 0, s, (UINT)len, 0);
-    return text_out(d, x, y, s, len, 0, 0, 0, 0);
+    return text_out(d, x, y, s, len, 0, 0, 0, 0, 0);
 }
 
 /* ANSI text: the code page is UTF-8 here */
@@ -538,8 +560,43 @@ GDIAPI BOOL ExtTextOutW(HDC h, int x, int y, UINT opts, const RECT *rc, LPCWSTR 
 {
     NOVA_DC *d = dc_of(h);
     if (!d) return FALSE;
+    /* GM_ADVANCED with a world transform (cairo draws text with a font 32
+     * times its size, scaled back by the transform): scales and offsets are
+     * applied here, to the origin, rectangle, advances and font size */
+    XFORM xf;
+    int height = 0;
+    RECT trc;
+    INT *tdx = 0;
+    xform_get_(d, &xf);
+    if (d->gmode == GM_ADVANCED && !xf.eM12 && !xf.eM21 && xf.eM11 > 0 && xf.eM22 > 0 &&
+        (xf.eM11 != 1 || xf.eM22 != 1 || xf.eDx || xf.eDy)) {
+        GObj *font;
+        dc_size(d, &font);
+        height = scaled_height(d, font);
+        if (rc) {
+            trc.left = (int)(rc->left * xf.eM11 + xf.eDx + 0.5f); trc.right = (int)(rc->right * xf.eM11 + xf.eDx + 0.5f);
+            trc.top = (int)(rc->top * xf.eM22 + xf.eDy + 0.5f); trc.bottom = (int)(rc->bottom * xf.eM22 + xf.eDy + 0.5f);
+            rc = &trc;
+        }
+        if (dx && s && len) {
+            int step = opts & 0x2000 /* ETO_PDY */ ? 2 : 1;
+            tdx = t_alloc(sizeof(INT) * len);
+            if (tdx) {
+                float pos = 0;
+                for (UINT i = 0; i < len; i++) {
+                    float next = pos + dx[step * i] * xf.eM11;
+                    tdx[i] = (int)(next + 0.5f) - (int)(pos + 0.5f);
+                    pos = next;
+                }
+                opts &= ~0x2000u;
+            }
+            dx = tdx;
+        }
+        x = (int)(x * xf.eM11 + xf.eDx + 0.5f);
+        y = (int)(y * xf.eM22 + xf.eDy + 0.5f);
+    }
     if (rc && (opts & 2 /* ETO_OPAQUE */)) fill(d, rc->left, rc->top, rc->right, rc->bottom, d->bk_color);
-    if (!s || !len) return TRUE;
+    if (!s || !len) { t_free(tdx); return TRUE; }
     RECT clip, *cp = 0;
     if (rc && (opts & 4 /* ETO_CLIPPED */)) {
         clip.left = rc->left + d->org_x; clip.top = rc->top + d->org_y;
@@ -548,7 +605,7 @@ GDIAPI BOOL ExtTextOutW(HDC h, int x, int y, UINT opts, const RECT *rc, LPCWSTR 
     }
     if (!(opts & (0x10 /* ETO_GLYPH_INDEX */ | 0x1000 /* ETO_IGNORELANGUAGE */)) && is_complex(s, (int)len)) {
         BOOL ok;
-        if (complex_text_out(h, d, x, y, opts, rc, s, (int)len, &ok)) return ok;
+        if (!height && complex_text_out(h, d, x, y, opts, rc, s, (int)len, &ok)) return ok;
     }
     INT *pdx = 0;
     if (dx && (opts & 0x2000 /* ETO_PDY */)) {              /* x,y pairs: keep the x advances */
@@ -556,8 +613,9 @@ GDIAPI BOOL ExtTextOutW(HDC h, int x, int y, UINT opts, const RECT *rc, LPCWSTR 
         if (pdx) for (UINT i = 0; i < len; i++) pdx[i] = dx[2 * i];
     }
     BOOL r = text_out(d, x, y, s, (int)len, pdx ? pdx : dx, cp, (opts & 0x10 /* ETO_GLYPH_INDEX */) != 0,
-                      rc && (opts & 2) ? rc : 0);
+                      rc && (opts & 2) ? rc : 0, height);
     t_free(pdx);
+    t_free(tdx);
     return r;
 }
 
@@ -741,18 +799,26 @@ GDIAPI BOOL GetCharWidthI(HDC h, UINT first, UINT n, LPWORD gi, LPINT out)
     return TRUE;
 }
 
+static void abc_of(Glyph *g, ABC *a)
+{
+    if (!g) { a->abcA = 0; a->abcB = 0; a->abcC = 0; return; }
+    a->abcA = g->w ? g->x0 : 0;
+    a->abcB = (UINT)(g->w ? g->w : g->adv);
+    a->abcC = g->adv - a->abcA - (int)a->abcB;
+}
 GDIAPI BOOL GetCharABCWidthsW(HDC h, UINT first, UINT last, ABC *out)
 {
     Size *z = dc_size(dc_of(h), 0);
     if (!z) return FALSE;
-    for (UINT c = first; c <= last; c++) {
-        Glyph *g = glyph(z, c);
-        ABC *a = &out[c - first];
-        if (!g) { a->abcA = 0; a->abcB = 0; a->abcC = 0; continue; }
-        a->abcA = g->w ? g->x0 : 0;
-        a->abcB = (UINT)(g->w ? g->w : g->adv);
-        a->abcC = g->adv - a->abcA - (int)a->abcB;
-    }
+    for (UINT c = first; c <= last; c++) abc_of(glyph(z, c), &out[c - first]);
+    return TRUE;
+}
+/* by glyph index: @gi's, or @n from @first */
+GDIAPI BOOL GetCharABCWidthsI(HDC h, UINT first, UINT n, LPWORD gi, ABC *out)
+{
+    Size *z = dc_size(dc_of(h), 0);
+    if (!z || !out) return FALSE;
+    for (UINT i = 0; i < n; i++) abc_of(glyph(z, (gi ? gi[i] : first + i) | 0x80000000u), &out[i]);
     return TRUE;
 }
 GDIAPI BOOL GetCharABCWidthsA(HDC h, UINT first, UINT last, ABC *out) { return GetCharABCWidthsW(h, first, last, out); }
@@ -1154,4 +1220,128 @@ GDIAPI DWORD GetFontUnicodeRanges(HDC h, LPGLYPHSET gs)
         gs->cRanges = ranges < cap ? ranges : cap;
     }
     return need;
+}
+
+/* -----------------------------------------------------------------------
+ * GetGlyphOutline: a glyph's metrics, its coverage bitmap (GGO_BITMAP,
+ * GGO_GRAY2/4/8_BITMAP) or its outline (GGO_NATIVE, quadratic splines in
+ * 16.16 pixels).  Qt's GDI font engine measures and draws through it;
+ * wglUseFontOutlines builds display lists from the outline.  The
+ * transform (@mat) is taken as the identity.
+ * ----------------------------------------------------------------------- */
+typedef struct { UINT bbx, bby; LONG ox, oy; short incx, incy; } GGO_METRICS_;
+typedef struct { WORD fract; short value; } FIXED_;
+
+static void put_fx(BYTE *p, float v)
+{
+    LONG f = (LONG)(v * 65536.0f + (v < 0 ? -0.5f : 0.5f));
+    memcpy(p, &f, 4);                           /* FIXED: fract, then value */
+}
+
+/* GGO_NATIVE: TTPOLYGONHEADER per contour, then one TTPOLYCURVE per segment */
+static DWORD glyph_native(Size *z, int gi, DWORD size, BYTE *buf)
+{
+    stbtt_vertex *v = 0;
+    int nv = stbtt_GetGlyphShape(&z->f->info, gi, &v);
+    float sc = z->scale;
+    DWORD need = 0, hdr = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        DWORD at = 0;
+        for (int i = 0; i < nv; i++) {
+            if (v[i].type == STBTT_vmove) {
+                if (pass && hdr != (DWORD)-1) { DWORD cb = at - hdr; memcpy(buf + hdr, &cb, 4); }
+                hdr = at;
+                if (pass) {
+                    DWORD type = 24;                    /* TT_POLYGON_TYPE */
+                    memcpy(buf + at + 4, &type, 4);
+                    put_fx(buf + at + 8, v[i].x * sc);
+                    put_fx(buf + at + 12, v[i].y * sc);
+                }
+                at += 16;
+                continue;
+            }
+            int q = v[i].type == STBTT_vline ? 1 : v[i].type == STBTT_vcurve ? 2 : 3;
+            WORD npt = (WORD)(q == 1 ? 1 : q == 2 ? 2 : 3);
+            if (pass) {
+                WORD t = (WORD)q;
+                memcpy(buf + at, &t, 2);
+                memcpy(buf + at + 2, &npt, 2);
+                BYTE *pt = buf + at + 4;
+                if (q == 2) { put_fx(pt, v[i].cx * sc); put_fx(pt + 4, v[i].cy * sc); pt += 8; }
+                if (q == 3) {
+                    put_fx(pt, v[i].cx * sc);  put_fx(pt + 4, v[i].cy * sc);
+                    put_fx(pt + 8, v[i].cx1 * sc); put_fx(pt + 12, v[i].cy1 * sc);
+                    pt += 16;
+                }
+                put_fx(pt, v[i].x * sc); put_fx(pt + 4, v[i].y * sc);
+            }
+            at += 4 + 8u * npt;
+        }
+        if (!pass) {
+            need = at;
+            if (!buf || !size) break;
+            if (size < need) { need = (DWORD)-1; break; }
+        } else if (nv) {
+            DWORD cb = at - hdr;
+            memcpy(buf + hdr, &cb, 4);
+        }
+    }
+    if (v) stbtt_FreeShape(&z->f->info, v);
+    return need;
+}
+
+GDIAPI DWORD GetGlyphOutlineW(HDC h, UINT c, UINT fmt, void *gm_out, DWORD size, void *buf, const void *mat)
+{
+    (void)mat;
+    NOVA_DC *d = dc_of(h);
+    GObj *font;
+    Size *z = dc_size(d, &font);
+    if (!z || !gm_out) return GDI_ERROR;
+    int th = scaled_height(d, font);                    /* in device space, as Windows measures */
+    if (th) z = size_for(face_index(font), th);
+    if (!z) return GDI_ERROR;
+    UINT kind = fmt & 0x7F;                          /* without GGO_GLYPH_INDEX, GGO_UNHINTED */
+    UINT32 key = fmt & 0x80 ? (c | 0x80000000u) : c;
+    Glyph *g = glyph(z, key);
+    if (!g) return GDI_ERROR;
+    GGO_METRICS_ gm;
+    gm.bbx = g->w ? (UINT)g->w : 1;
+    gm.bby = g->h ? (UINT)g->h : 1;
+    gm.ox = g->w ? g->x0 : 0;
+    gm.oy = g->h ? -g->y0 : 0;
+    gm.incx = g->adv;
+    gm.incy = 0;
+    memcpy(gm_out, &gm, sizeof(gm));
+    if (kind == 0) return 1;                         /* GGO_METRICS: non-zero on success */
+    if (kind == 2) {                                 /* GGO_NATIVE */
+        int gi = key & 0x80000000u ? (int)c : stbtt_FindGlyphIndex(&z->f->info, (int)c);
+        return glyph_native(z, gi, size, buf);
+    }
+    if (kind != 1 && (kind < 4 || kind > 6)) return GDI_ERROR;
+    if (!g->w || !g->h) return 0;                    /* blank glyph: no bitmap */
+    DWORD pitch = kind == 1 ? (((DWORD)g->w + 31) / 32) * 4 : (((DWORD)g->w + 3) & ~3u);
+    DWORD need = pitch * (DWORD)g->h;
+    if (!buf || !size) return need;
+    if (size < need) return GDI_ERROR;
+    BYTE *o = buf;
+    memset(o, 0, need);
+    int levels = kind == 4 ? 4 : kind == 5 ? 16 : 64;
+    for (int y = 0; y < g->h; y++)
+        for (int x = 0; x < g->w; x++) {
+            unsigned cov = g->bmp ? g->bmp[y * g->w + x] : 0;
+            if (kind == 1) { if (cov >= 128) o[y * pitch + x / 8] |= (BYTE)(0x80 >> (x & 7)); }
+            else o[y * pitch + x] = (BYTE)((cov * levels + 127) / 255);
+        }
+    return need;
+}
+
+GDIAPI DWORD GetGlyphOutlineA(HDC h, UINT c, UINT fmt, void *gm, DWORD size, void *buf, const void *mat)
+{
+    if (!(fmt & 0x80) && c < 0x100) {
+        char ch = (char)c;
+        WCHAR w = 0;
+        MultiByteToWideChar(CP_ACP, 0, &ch, 1, &w, 1);
+        c = w;
+    }
+    return GetGlyphOutlineW(h, c, fmt, gm, size, buf, mat);
 }

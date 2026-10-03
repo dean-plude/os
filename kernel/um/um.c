@@ -838,10 +838,12 @@ static bool known_dll(const char *name)
  * path without an extension gets ".dll", as LoadLibrary adds it) */
 static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
 {
-    if (strchr(name, '\\') || strchr(name, ':')) {
+    if (strchr(name, '\\') || strchr(name, '/') || strchr(name, ':')) {
         char path[RAMFS_PATH_MAX];
         strncpy(path, name, sizeof(path) - 5);
         path[sizeof(path) - 5] = '\0';
+        for (char *c = path; *c; c++)       /* GTK's module caches use forward slashes */
+            if (*c == '/') *c = '\\';
         um_wow_path(p, path);
         const char *leaf = strrchr(path, '\\');
         if (!strchr(leaf ? leaf : path, '.')) strcat(path, ".dll");
@@ -867,7 +869,43 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
         RamNode *a = RamfsFind(dep_dir, name);
         if (a && !a->dir && RamfsLoad(a) && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
     }
+    /* SetDllDirectory's folder, then AddDllDirectory's, in the order they
+     * were added (Windows leaves that order unspecified) */
+    for (int i = -1; i < UM_MAX_DLL_DIRS; i++) {
+        const char *d = i < 0 ? p->dll_dir : p->dll_dirs[i];
+        RamNode *dir = d[0] ? RamfsResolve(NULL, d) : NULL;
+        RamNode *a = dir && dir->dir ? RamfsFind(dir, name) : NULL;
+        if (a && !a->dir && RamfsLoad(a) && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
+    }
     return n && !n->dir ? n : NULL;
+}
+
+/* AddDllDirectory (@op 0: *@cookie gets the slot), RemoveDllDirectory (1:
+ * *@cookie names it) and SetDllDirectory (2: @path, or "" for none) */
+UINT32 um_dll_directory(UmProcess *p, UINT32 op, const char *path, UINT64 *cookie)
+{
+    UINT32 st = 0;
+    um_lock_excl(&p->lock);
+    if (op == 1) {
+        if (*cookie >= 1 && *cookie <= UM_MAX_DLL_DIRS && p->dll_dirs[*cookie - 1][0])
+            p->dll_dirs[*cookie - 1][0] = '\0';
+        else st = 0xC000000Du;                          /* STATUS_INVALID_PARAMETER */
+    } else if (op == 2) {
+        strncpy(p->dll_dir, path, sizeof(p->dll_dir) - 1);
+        p->dll_dir[sizeof(p->dll_dir) - 1] = '\0';
+    } else {
+        int slot = -1;
+        for (int i = 0; i < UM_MAX_DLL_DIRS && slot < 0; i++)
+            if (!p->dll_dirs[i][0]) slot = i;
+        if (slot < 0) st = 0xC0000017u;                 /* STATUS_NO_MEMORY */
+        else {
+            strncpy(p->dll_dirs[slot], path, sizeof(p->dll_dirs[0]) - 1);
+            p->dll_dirs[slot][sizeof(p->dll_dirs[0]) - 1] = '\0';
+            *cookie = (UINT64)slot + 1;
+        }
+    }
+    um_unlock_excl(&p->lock);
+    return st;
 }
 
 /* The address of a stub for the missing import @what ("f in dll"): calls
@@ -1200,9 +1238,10 @@ const UmModule *um_module_at(UmProcess *p, UINT64 va)
  * The loader-info page read by ntdll (see NOVA_LDR_INFO in winternl.h):
  *   UINT32 count, UINT32 reserved, then per module in initialization
  *   order: UINT64 base, size; UINT32 entry_rva, flags (1 = DLL);
- *   char name[64], path[96]  (64 entries fit the 12 KiB area)
+ *   char name[64], path[96]  (UM_MAX_MODULES entries fit the 24 KiB area)
  * ----------------------------------------------------------------------- */
 #define LDR_ENTRY_SIZE 184
+_Static_assert(8 + UM_MAX_MODULES * LDR_ENTRY_SIZE <= UM_LDR_INFO_SIZE, "loader info area too small");
 
 static bool write_ldr_info(UmProcess *p, int from)
 {
@@ -1749,8 +1788,8 @@ void um_set_layout(UmProcess *p, bool wow)
     UINT64 peb = wow ? UM32_PEB_VA : UM_PEB_VA;
     p->lay.peb = peb;
     p->lay.ldr_info = peb + 0x1000;
-    p->lay.params = peb + 0x4000;
-    p->lay.stubs = peb + 0x8000;
+    p->lay.params = peb + 0x1000 + UM_LDR_INFO_SIZE;
+    p->lay.stubs = p->lay.params + UM_PARAMS_PAGES * PAGE_SIZE;
     p->lay.teb_area = peb + 0x10000;
     p->lay.stack_top = wow ? UM32_STACK_TOP : UM_STACK_TOP;
     p->lay.alloc_min = wow ? UM32_ALLOC_MIN : UM_ALLOC_MIN;

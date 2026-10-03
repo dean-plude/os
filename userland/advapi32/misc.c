@@ -113,6 +113,7 @@ WINADVAPI BOOL WINAPI IsTextUnicode(const void *buf, int n, LPINT result)
 }
 
 WINADVAPI BOOL WINAPI GetCurrentHwProfileW(PVOID info) { (void)info; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return FALSE; }
+WINADVAPI BOOL WINAPI GetCurrentHwProfileA(PVOID info) { (void)info; SetLastError(ERROR_CALL_NOT_IMPLEMENTED); return FALSE; }
 /* InitiateSystemShutdown: this machine only, at once (no countdown to
  * abort), saving drive C: first */
 WINADVAPI BOOL WINAPI InitiateSystemShutdownExW(LPWSTR m, LPWSTR msg, DWORD t, BOOL f, BOOL r, DWORD reason)

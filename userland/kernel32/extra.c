@@ -1776,11 +1776,55 @@ WINBASEAPI BOOL WINAPI GetModuleHandleExW(DWORD flags, LPCWSTR name, HMODULE *ou
     return TRUE;
 }
 
-WINBASEAPI BOOL WINAPI SetDllDirectoryW(LPCWSTR dir) { (void)dir; return TRUE; }
-WINBASEAPI BOOL WINAPI SetDllDirectoryA(LPCSTR dir)  { (void)dir; return TRUE; }
+/* The DLL search path's extra folders live in the kernel's loader, which
+ * resolves every import: NtNovaLoadDll with NOVA_LDR_DIR_OP | operation
+ * (0 add, 1 remove, 2 SetDllDirectory) */
+#define NOVA_LDR_DIR_OP 0x80000000u
+static NTSTATUS dll_dir_op(ULONG op, const char *path, PVOID *cookie)
+{
+    return NtNovaLoadDll(path, path ? (ULONG)strlen(path) : 0, cookie, NOVA_LDR_DIR_OP | op);
+}
+
+WINBASEAPI BOOL WINAPI SetDllDirectoryA(LPCSTR dir)
+{
+    char full[MAX_PATH * 3];
+    if (dir && *dir && !GetFullPathNameA(dir, sizeof(full), full, NULL)) return FALSE;
+    NTSTATUS s = dll_dir_op(2, dir && *dir ? full : "", NULL);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    return TRUE;
+}
+
+WINBASEAPI BOOL WINAPI SetDllDirectoryW(LPCWSTR dir)
+{
+    char n[MAX_PATH * 3];
+    if (!dir) return SetDllDirectoryA(NULL);
+    if (!WideCharToMultiByte(CP_UTF8, 0, dir, -1, n, sizeof(n), 0, 0)) { SetLastError(ERROR_FILENAME_EXCED_RANGE); return FALSE; }
+    return SetDllDirectoryA(n);
+}
+
 WINBASEAPI BOOL WINAPI SetDefaultDllDirectories(DWORD f) { (void)f; return TRUE; }
-WINBASEAPI PVOID WINAPI AddDllDirectory(LPCWSTR dir) { (void)dir; return (PVOID)1; }
-WINBASEAPI BOOL WINAPI RemoveDllDirectory(PVOID cookie) { (void)cookie; return TRUE; }
+
+/* AddDllDirectory: @dir (a full path) is searched for every later load,
+ * imports included, until RemoveDllDirectory */
+WINBASEAPI PVOID WINAPI AddDllDirectory(LPCWSTR dir)
+{
+    char n[MAX_PATH * 3];
+    if (!dir || !dir[0] || dir[1] != ':' || (dir[2] != '\\' && dir[2] != '/')) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
+    if (!WideCharToMultiByte(CP_UTF8, 0, dir, -1, n, sizeof(n), 0, 0)) { SetLastError(ERROR_FILENAME_EXCED_RANGE); return NULL; }
+    DWORD a = GetFileAttributesA(n);
+    if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) { SetLastError(ERROR_FILE_NOT_FOUND); return NULL; }
+    PVOID cookie = NULL;
+    NTSTATUS s = dll_dir_op(0, n, &cookie);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return NULL; }
+    return cookie;
+}
+
+WINBASEAPI BOOL WINAPI RemoveDllDirectory(PVOID cookie)
+{
+    NTSTATUS s = dll_dir_op(1, NULL, &cookie);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    return TRUE;
+}
 /* the search for SearchPath already skips the current directory's place in line */
 WINBASEAPI BOOL WINAPI SetSearchPathMode(DWORD flags) { (void)flags; return TRUE; }
 WINBASEAPI BOOL WINAPI DisableThreadLibraryCalls(HMODULE m) { (void)m; return TRUE; }
@@ -2403,6 +2447,21 @@ WINBASEAPI BOOL WINAPI GetCPInfoExW(UINT cp, DWORD flags, LPVOID out)
     e->UnicodeDefaultChar = '?';
     e->CodePage = cp == CP_ACP || cp == CP_OEMCP ? CP_UTF8 : cp;
     u2w(e->CodePage == CP_UTF8 ? "65001 (UTF-8)" : "Code page", -1, e->CodePageName, 259);
+    return TRUE;
+}
+
+typedef struct { UINT MaxCharSize; BYTE DefaultChar[2]; BYTE LeadByte[12]; WCHAR UnicodeDefaultChar; UINT CodePage; CHAR CodePageName[260]; } CPINFOEXA_;
+WINBASEAPI BOOL WINAPI GetCPInfoExA(UINT cp, DWORD flags, LPVOID out)
+{
+    CPINFOEXW_ w;
+    CPINFOEXA_ *a = out;
+    if (!GetCPInfoExW(cp, flags, &w)) return FALSE;
+    memset(a, 0, sizeof(*a));
+    a->MaxCharSize = w.MaxCharSize;
+    memcpy(a->DefaultChar, w.DefaultChar, sizeof(a->DefaultChar));
+    a->UnicodeDefaultChar = w.UnicodeDefaultChar;
+    a->CodePage = w.CodePage;
+    for (int i = 0; i < 259 && w.CodePageName[i]; i++) a->CodePageName[i] = (CHAR)w.CodePageName[i];
     return TRUE;
 }
 
