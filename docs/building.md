@@ -504,6 +504,8 @@ would do).
 | NovaOS's own screens | `dir C:\` and `dir D:\` (an empty NTFS disk made with `mkntfs`) name their drive and give its own free space (`dir.png`); `start explorer` shows This PC with both drives, matching `tests/reference/this-pc.png` |
 | SumatraPDF 3.4.6 (the official 32-bit build, from the npm package `pdf-to-printer`) | opens a PDF the script generates; the screenshot must match `tests/reference/sumatrapdf.png` (at most 3% of pixels differ, for every screenshot) |
 | WinMerge 2.16.50 | compares `hello.txt` with `hello2.txt`; the screenshot must match `tests/reference/winmerge.png` |
+| VLC 3.0.21 (the 32-bit PortableApps package, unpacked with 7-Zip) | loops the MP4 the ffmpeg test made (30 s of SMPTE colour bars with a 440 Hz tone) with its Qt interface, screenshot once its log shows software decoding settled; the screenshot must match `tests/reference/vlc.png`, and the sound NovaOS played (`sound.wav` in `--out`) must hold the tone |
+| Audacity 3.7.4 (the official 64-bit zip) | through its first-run dialogs, records 10 s of the microphone's 523 Hz tone, stops and saves the project; the screenshot must match `tests/reference/audacity.png` and `C:\Apps\rec10.aup3` must exist |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` |
 | PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
 
@@ -511,15 +513,18 @@ The windowed programs run last, one at a time (each takes the keyboard and
 is closed with Alt+F4 before the next).  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
-It needs 7-Zip's installer, Pillow, and `mkntfs` (for drive D:).  The exit
+It needs 7-Zip's installer, Pillow, `mkntfs` (for drive D:) and, for the
+two programs that need sound, PulseAudio (NovaOS then boots with a
+microphone that hears a tone and its output recorded, as the core
+self-tests do; without it those two are skipped, not failed).  The exit
 status is the number of programs that failed; `--update-reference` rewrites
 the reference screenshots after an intended change:
 
 ```bash
-sudo apt install p7zip-full python3-pil ntfs-3g
+sudo apt install p7zip-full python3-pil ntfs-3g pulseaudio pulseaudio-utils
 python3 tools/appcorpus.py
 python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
-python3 tools/appcorpus.py --only NovaOS,SumatraPDF,WinMerge,Notepad++,PuTTY --update-reference
+python3 tools/appcorpus.py --only NovaOS,SumatraPDF,WinMerge,VLC,Audacity,Notepad++,PuTTY --update-reference
 ```
 
 A command passes as a self-test does (exit code 0, the output expected).

@@ -3,5 +3,6 @@
   ~~Recording (`waveIn`, capture endpoints) and endpoint volume
   (`IAudioEndpointVolume`)~~ Done (19.4); see
   [Recording](HISTORY.md#recording-wavein-wasapi-capture-and-endpoint-volume).
-  Still open: `dsound.dll` (DirectSound), XAudio2, MIDI, and testing VLC
-  and Audacity on it.
+  ~~Testing VLC and Audacity on it~~ Done (19.6); see [VLC and
+  Audacity](HISTORY.md#vlc-and-audacity-196).  Still open: `dsound.dll`
+  (DirectSound), XAudio2, MIDI (19.5).

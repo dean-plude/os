@@ -7,14 +7,7 @@ void *memcpy(void *d, const void *s, size_t n);
 int memcmp(const void *a, const void *b, size_t n);
 
 void dib24_sync(void *bitmap);
-/* a memory DC drawing on a 24-bit DIB section first takes in what the
- * program wrote to the section's bits (see dib24_sync) */
-static inline NOVA_DC *dc_of(HDC h)
-{
-    NOVA_DC *d = (NOVA_DC *)h;
-    if (d && d->mem && d->bitmap) dib24_sync(d->bitmap);
-    return d;
-}
+static inline NOVA_DC *dc_of(HDC h) { return (NOVA_DC *)h; }
 
 /* -----------------------------------------------------------------------
  * GDI objects
@@ -50,6 +43,15 @@ extern int  g_stock_ready;
 void  stock_init(void);
 GObj *new_obj(int kind);
 GObj *obj_of(HGDIOBJ h);
+GObj *bitmap_of(HGDIOBJ h);             /* a bitmap whose bits are about to be used (24-bit sections synced) */
+
+/* Before a blit or a read of a DC's pixels, and after a drawing call that
+ * ends a batch: a 24-bit DIB section is brought in step with its program's
+ * bits (see dib24_sync).  Cheap when the DC draws on anything else. */
+static inline void dc_sync(NOVA_DC *d)
+{
+    if (d && d->mem && d->bitmap && ((GObj *)d->bitmap)->view24) dib24_sync(d->bitmap);
+}
 
 /* -----------------------------------------------------------------------
  * Pixels.  Device coordinates are the logical ones plus the DC origin.

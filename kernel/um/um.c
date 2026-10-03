@@ -1839,6 +1839,7 @@ static void release_images(UmProcess *p)
 
 static void destroy(UmProcess *p)
 {
+    um_console_flush_log(p);
     release_images(p);
     um_close_all_handles(p);
     if (p->pml4) free_address_space(p->pml4);
@@ -2189,10 +2190,18 @@ static void dump_threads(UmProcess *p)
     for (int i = 0; i < UM_MAX_THREADS; i++) {
         UmThread *t = p->threads[i];
         if (!t || t->exited) continue;
-        UINT64 rip = t->park == 2 && t->uframe ? ((InterruptFrame *)t->uframe)->rip : 0;
-        kprintf("[UM]   thread %u: %s, last system call %03x(%llx), user rip %llx\n", t->tid,
+        const InterruptFrame *uf = t->park == 2 && t->uframe ? (const InterruptFrame *)t->uframe : NULL;
+        /* a thread preempted in user mode: the interrupt frame sits at the top of its kernel stack */
+        if (!uf && t->park == 0 && t->kt && !t->kt->on_cpu && t->kt->kernel_stack) {
+            const InterruptFrame *f = (const InterruptFrame *)((char *)t->kt->kernel_stack + t->kt->stack_size - sizeof(InterruptFrame));
+            if ((f->cs & 3) == 3 && (f->ss & 3) == 3) uf = f;
+        }
+        UINT64 rip = uf ? uf->rip : 0;
+        const UmModule *rm = rip ? um_module_at(p, rip) : NULL;
+        kprintf("[UM]   thread %u: %s, last system call %03x(%llx), user rip %llx%s%s+0x%llx\n", t->tid,
                 t->park == 1 ? "in a system call" : t->park == 2 ? "interrupted" : "running",
-                t->last_sys, (unsigned long long)t->last_a1, (unsigned long long)rip);
+                t->last_sys, (unsigned long long)t->last_a1, (unsigned long long)rip,
+                rm ? " " : "", rm ? rm->name : "", (unsigned long long)(rm ? rip - rm->base : 0));
         UINT64 word = 0;
         if (t->park == 1 && t->last_sys == SYSCALL_NtWaitForAlertByThreadId && um_read(p, t->last_a1, &word, 8))
             kprintf("[UM]     the address holds %llx\n", (unsigned long long)word);
@@ -2206,8 +2215,9 @@ static void dump_threads(UmProcess *p)
             um_object_name(wo, nm, sizeof(nm));
             kprintf("[UM]     waits on object type %d%s%s%s\n", wo->type, nm[0] ? " \"" : "", nm, nm[0] ? "\"" : "");
         }
-        /* where it came from: return addresses on its user stack */
-        UINT64 sp = t->park == 1 && t->kt ? t->kt->user_rsp : 0;
+        /* where it came from: return addresses on its user stack (a thread
+         * interrupted in user mode: from the interrupted frame's stack) */
+        UINT64 sp = t->park == 1 && t->kt ? t->kt->user_rsp : uf ? uf->rsp : 0;
         for (unsigned i = 0, shown = 0; sp && i < 512 && shown < 12; i++) {
             UINT64 v = 0;
             if (!um_read(p, sp + 8 * (UINT64)i, &v, p->wow ? 4 : 8)) break;

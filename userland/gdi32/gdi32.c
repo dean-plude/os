@@ -18,9 +18,13 @@ void *memcpy(void *d, const void *s, size_t n);
 
 #include "gdi_int.h"
 
-#define POOL 512
+/* A process may hold 10,000 GDI objects, as on Windows (Audacity's theme
+ * alone is well over 512 bitmaps, pens and brushes); the pool is mapped on
+ * first use and searched up to its high-water mark */
+#define POOL 10000
 GObj g_stock[20];
-static GObj g_pool[POOL];
+static GObj *g_pool;
+static int   g_high, g_hint;
 int  g_stock_ready;
 static SRWLOCK g_lock;
 
@@ -63,41 +67,68 @@ GDIAPI HGDIOBJ GetStockObject(int obj)
     return (HGDIOBJ)&g_stock[obj];
 }
 
+
 GObj *new_obj(int kind)
 {
     AcquireSRWLockExclusive(&g_lock);
+    if (!g_pool) g_pool = VirtualAlloc(0, sizeof(GObj) * POOL, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     GObj *o = 0;
-    for (int i = 0; i < POOL; i++) if (!g_pool[i].used) {
-        o = &g_pool[i];
-        memset(o, 0, sizeof(*o));
-        o->kind = kind;
-        o->used = 1;
-        break;
+    if (g_pool) {
+        for (int n = 0, i = g_hint; n < POOL; n++, i = i + 1 < POOL ? i + 1 : 0) if (!g_pool[i].used) {
+            o = &g_pool[i];
+            memset(o, 0, sizeof(*o));
+            o->kind = kind;
+            o->used = 1;
+            g_hint = i + 1 < POOL ? i + 1 : 0;
+            if (i >= g_high) g_high = i + 1;
+            break;
+        }
     }
     ReleaseSRWLockExclusive(&g_lock);
-    if (!o) SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+    if (!o) {
+        static int said;
+        if (!said++) OutputDebugStringA("gdi32: the process holds 10,000 GDI objects; no more can be created");
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+    }
     return o;
 }
+
+/* the 1x1 monochrome bitmap every memory DC starts with: SelectObject hands
+ * it back as the previous bitmap, and selecting it again restores the DC */
+static DWORD g_one_pixel;
+GObj g_default_bitmap = { .kind = K_BITMAP, .used = 1, .bw = 1, .bh = 1, .bpp = 32, .bits = &g_one_pixel };
 
 GObj *obj_of(HGDIOBJ h)
 {
     GObj *o = h;
     if (!o) return 0;
     if (!g_stock_ready) stock_init();
-    if ((o >= g_pool && o < g_pool + POOL && o->used) || (o >= g_stock && o < g_stock + 20 && o->kind)) {
-        if (o->view24) dib24_sync(o);
-        return o;
-    }
+    if (o == &g_default_bitmap) return o;
+    if ((g_pool && o >= g_pool && o < g_pool + POOL && o->used) || (o >= g_stock && o < g_stock + 20 && o->kind)) return o;
     return 0;
 }
 
+/* a bitmap object about to be read or written through its bits */
+GObj *bitmap_of(HGDIOBJ h)
+{
+    GObj *o = obj_of(h);
+    if (o && o->view24) dib24_sync(o);
+    return o;
+}
+
 /* A 24-bit DIB section: what the program wrote to its bits since the last
- * sync goes to the 32-bit pixels, then the 32-bit pixels (with what gdi32
- * drew) go back to the program's bits.  Rows are in the same order in both. */
+ * sync goes to the 32-bit pixels, then what gdi32 drew since goes back to
+ * the program's bits.  Rows are in the same order in both.  A copy of the
+ * bits as of the last sync tells the two apart; only pixels that changed
+ * are written, so a sync of an unchanged bitmap costs one read of each.
+ * Syncs happen when the bitmap goes into or out of a DC, around blits and
+ * bit reads, and at GdiFlush (the call a program makes before it reads a
+ * section's bits, as on Windows), not at every GDI call: Audacity draws
+ * its waveforms with thousands of lines into one. */
 void dib24_sync(void *bitmap)
 {
     GObj *o = bitmap;
-    if (!(o >= g_pool && o < g_pool + POOL && o->used) || o->kind != K_BITMAP || !o->view24) return;
+    if (!(g_pool && o >= g_pool && o < g_pool + POOL && o->used) || o->kind != K_BITMAP || !o->view24) return;
     int w = o->bw, h = o->bh, st = o->stride24;
     for (int y = 0; y < h; y++) {
         BYTE *v = o->view24 + (size_t)y * st, *l = o->last24 + (size_t)y * st;
@@ -110,9 +141,11 @@ void dib24_sync(void *bitmap)
         }
         for (int x = 0; x < w; x++) {
             DWORD c = p[x];
-            v[3 * x] = l[3 * x] = (BYTE)c;
-            v[3 * x + 1] = l[3 * x + 1] = (BYTE)(c >> 8);
-            v[3 * x + 2] = l[3 * x + 2] = (BYTE)(c >> 16);
+            BYTE b = (BYTE)c, g = (BYTE)(c >> 8), r = (BYTE)(c >> 16);
+            if (l[3 * x] == b && l[3 * x + 1] == g && l[3 * x + 2] == r) continue;
+            v[3 * x] = l[3 * x] = b;
+            v[3 * x + 1] = l[3 * x + 1] = g;
+            v[3 * x + 2] = l[3 * x + 2] = r;
         }
     }
 }
@@ -155,6 +188,7 @@ GDIAPI COLORREF GetPixel(HDC h, int x, int y)
 {
     NOVA_DC *d = dc_of(h);
     if (!d) return 0xFFFFFFFF;
+    dc_sync(d);
     x += d->org_x; y += d->org_y;
     if (!d->bits || !dev_visible(d, x, y)) return 0xFFFFFFFF;
     return from_native(d, *pixel_at(d, x, y));
@@ -443,7 +477,6 @@ static GObj *make_bitmap(int w, int h, int fmt, int flip, DWORD *bits)
 
 GDIAPI HBITMAP CreateCompatibleBitmap(HDC h, int w, int hh)
 {
-    (void)h;
     return (HBITMAP)make_bitmap(w ? w : 1, hh ? hh : 1, 0, 0, 0);
 }
 
@@ -521,9 +554,8 @@ GDIAPI HDC CreateCompatibleDC(HDC h)
     (void)h;
     NOVA_DC *d = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*d));
     if (!d) return 0;
-    static DWORD one_pixel;                                 /* the default 1x1 bitmap */
-    d->mem = 1;
-    d->bits = &one_pixel; d->w = d->h = 1; d->stride = 1;
+    d->mem = 1;                                             /* starts on the default 1x1 bitmap */
+    d->bits = &g_one_pixel; d->w = d->h = 1; d->stride = 1;
     d->text_color = 0; d->bk_color = 0xFFFFFF; d->bk_mode = OPAQUE;
     d->has_pen = 1; d->pen_width = 1;
     d->has_brush = 1; d->brush_color = 0xFFFFFF;
@@ -538,6 +570,7 @@ GDIAPI BOOL DeleteDC(HDC h)
 {
     NOVA_DC *d = dc_of(h);
     if (!d || !d->mem) return FALSE;
+    dc_sync(d);
     while (d->saved) { NOVA_DC *s = d->saved; d->saved = s->saved; HeapFree(GetProcessHeap(), 0, s); }
     HeapFree(GetProcessHeap(), 0, d);
     return TRUE;
@@ -594,17 +627,22 @@ GDIAPI BOOL BitBlt(HDC dst, int x, int y, int w, int hh, HDC src, int sx, int sy
 {
     NOVA_DC *dd = dc_of(dst);
     if (!dd) return FALSE;
+    dc_sync(dd);
     if (rop == BLACKNESS || rop == WHITENESS || rop == PATCOPY || !src) {
         fill(dd, x, y, x + w, y + hh, rop == WHITENESS ? 0xFFFFFF : rop == PATCOPY ? dd->brush_color : 0);
+        dc_sync(dd);
         return TRUE;
     }
     NOVA_DC *sd = dc_of(src);
+    dc_sync(sd);
     if (can_fast(dd, w, hh, sd, w, hh, rop)) {
         blit_fast(dd, x, y, w, hh, sd, sx, sy);
         flush_window(dd, x, y, w, hh);
+        dc_sync(dd);
         return TRUE;
     }
     blit(dd, x, y, w, hh, sd, sx, sy, w, hh);
+    dc_sync(dd);
     return TRUE;
 }
 
@@ -614,9 +652,12 @@ GDIAPI BOOL StretchBlt(HDC dst, int x, int y, int w, int h, HDC src, int sx, int
     if (!dd) return FALSE;
     if (!src) return PatBlt(dst, x, y, w, h, rop);
     NOVA_DC *sd = dc_of(src);
+    dc_sync(dd);
+    dc_sync(sd);
     if (can_fast(dd, w, h, sd, sw, sh, rop)) blit_fast(dd, x, y, w, h, sd, sx, sy);
     else blit(dd, x, y, w, h, sd, sx, sy, sw, sh);
     flush_window(dd, x, y, w, h);
+    dc_sync(dd);
     return TRUE;
 }
 
@@ -624,6 +665,8 @@ GDIAPI BOOL TransparentBlt(HDC dst, int x, int y, int w, int h, HDC src, int sx,
 {
     NOVA_DC *dd = dc_of(dst), *sd = dc_of(src);
     if (!dd || !sd) return FALSE;
+    dc_sync(dd);
+    dc_sync(sd);
     for (int j = 0; j < h; j++)
         for (int i = 0; i < w; i++) {
             int sxx = sx + i * sw / w + sd->org_x, syy = sy + j * sh / h + sd->org_y;
@@ -631,6 +674,7 @@ GDIAPI BOOL TransparentBlt(HDC dst, int x, int y, int w, int h, HDC src, int sx,
             COLORREF c = from_native(sd, *pixel_at(sd, sxx, syy));
             if (c != (key & 0xFFFFFF)) put(dd, x + i, y + j, c);
         }
+    dc_sync(dd);
     return TRUE;
 }
 
@@ -638,6 +682,8 @@ GDIAPI BOOL AlphaBlend(HDC dst, int x, int y, int w, int h, HDC src, int sx, int
 {
     NOVA_DC *dd = dc_of(dst), *sd = dc_of(src);
     if (!dd || !sd) return FALSE;
+    dc_sync(dd);
+    dc_sync(sd);
     for (int j = 0; j < h; j++)
         for (int i = 0; i < w; i++) {
             int sxx = sx + i * sw / w + sd->org_x, syy = sy + j * sh / h + sd->org_y;
@@ -653,6 +699,7 @@ GDIAPI BOOL AlphaBlend(HDC dst, int x, int y, int w, int h, HDC src, int sx, int
             int b = pre ? GetBValue(s) * a / 255 + GetBValue(t) * (255 - sa) / 255 : (GetBValue(s) * sa + GetBValue(t) * (255 - sa)) / 255;
             *pixel_at(dd, tx, ty) = to_native(dd, RGB(r > 255 ? 255 : r, g > 255 ? 255 : g, b > 255 ? 255 : b));
         }
+    dc_sync(dd);
     return TRUE;
 }
 
@@ -719,17 +766,16 @@ static int blit_dib32(NOVA_DC *d, int x, int y, int w, int h, int sx, int sy, co
     return 1;
 }
 
-GDIAPI int StretchDIBits(HDC h, int x, int y, int w, int hh, int sx, int sy, int sw, int sh, const void *bits,
-                         const BITMAPINFO *bi, UINT usage, DWORD rop)
+/* @sy is the source rectangle's top row counted from the DIB's top */
+static int stretch_dib(NOVA_DC *d, int x, int y, int w, int hh, int sx, int sy, int sw, int sh, const void *bits,
+                       const BITMAPINFO *bi, DWORD rop)
 {
-    (void)usage;
-    NOVA_DC *d = dc_of(h);
-    if (!d || !bits || !w || !hh || !sw || !sh) return 0;
     const BITMAPINFOHEADER *bih = &bi->bmiHeader;
     if (w > 0 && hh > 0 && w == sw && hh == sh && bih->biBitCount == 32 && rop == SRCCOPY && !d->rop2 &&
         (bih->biCompression == BI_RGB || bih->biCompression == 3 /* BI_BITFIELDS, the usual masks */) && d->bits) {
         blit_dib32(d, x, y, w, hh, sx, sy, bits, bi);
         flush_window(d, x, y, w, hh);
+        dc_sync(d);
         return hh;
     }
     int bh = bi->bmiHeader.biHeight < 0 ? -bi->bmiHeader.biHeight : bi->bmiHeader.biHeight;
@@ -742,23 +788,40 @@ GDIAPI int StretchDIBits(HDC h, int x, int y, int w, int hh, int sx, int sy, int
             put(d, w < 0 ? x - i : x + i, hh < 0 ? y - j : y + j, dib_pixel(bi, bits, sxx, syy));
         }
     }
+    dc_sync(d);
     return hh < 0 ? -hh : hh;
+}
+
+/* The source rectangle's y is measured from the bottom of a bottom-up DIB
+ * (its origin is the lower-left corner) and from the top of a top-down one.
+ * wxWidgets blits a window's part of a larger shared buffer this way: a
+ * top-down reading drew the buffer's empty bottom rows instead. */
+GDIAPI int StretchDIBits(HDC h, int x, int y, int w, int hh, int sx, int sy, int sw, int sh, const void *bits,
+                         const BITMAPINFO *bi, UINT usage, DWORD rop)
+{
+    (void)usage;
+    NOVA_DC *d = dc_of(h);
+    if (!d || !bits || !w || !hh || !sw || !sh) return 0;
+    int bh = bi->bmiHeader.biHeight < 0 ? -bi->bmiHeader.biHeight : bi->bmiHeader.biHeight;
+    int top = bi->bmiHeader.biHeight > 0 ? bh - sy - (sh < 0 ? -sh : sh) : sy;
+    return stretch_dib(d, x, y, w, hh, sx, top, sw, sh, bits, bi, rop);
 }
 
 GDIAPI int SetDIBitsToDevice(HDC h, int x, int y, DWORD w, DWORD hh, int sx, int sy, UINT start, UINT lines,
                              const void *bits, const BITMAPINFO *bi, UINT usage)
 {
-    (void)start; (void)lines;
+    (void)start; (void)lines; (void)usage;
+    NOVA_DC *d = dc_of(h);
+    if (!d || !bits || !w || !hh) return 0;
     int bh = bi->bmiHeader.biHeight < 0 ? -bi->bmiHeader.biHeight : bi->bmiHeader.biHeight;
-    /* sy counts from the bottom for bottom-up DIBs */
     int top = bi->bmiHeader.biHeight > 0 ? bh - sy - (int)hh : sy;
-    return StretchDIBits(h, x, y, (int)w, (int)hh, sx, top, (int)w, (int)hh, bits, bi, usage, SRCCOPY) ? (int)hh : 0;
+    return stretch_dib(d, x, y, (int)w, (int)hh, sx, top, (int)w, (int)hh, bits, bi, SRCCOPY) ? (int)hh : 0;
 }
 
 GDIAPI int GetDIBits(HDC h, HBITMAP bmp, UINT start, UINT lines, void *bits, BITMAPINFO *bi, UINT usage)
 {
     (void)h; (void)usage;
-    GObj *o = obj_of(bmp);
+    GObj *o = bitmap_of(bmp);
     if (!o || o->kind != K_BITMAP) return 0;
     BITMAPINFOHEADER *bh = &bi->bmiHeader;
     if (!bits) {                                            /* just describe the bitmap */
@@ -787,7 +850,7 @@ GDIAPI int GetDIBits(HDC h, HBITMAP bmp, UINT start, UINT lines, void *bits, BIT
 GDIAPI int SetDIBits(HDC h, HBITMAP bmp, UINT start, UINT lines, const void *bits, const BITMAPINFO *bi, UINT usage)
 {
     (void)h; (void)usage;
-    GObj *o = obj_of(bmp);
+    GObj *o = bitmap_of(bmp);
     if (!o || o->kind != K_BITMAP) return 0;
     int bh = bi->bmiHeader.biHeight < 0 ? -bi->bmiHeader.biHeight : bi->bmiHeader.biHeight;
     UINT n = 0;
@@ -801,6 +864,7 @@ GDIAPI int SetDIBits(HDC h, HBITMAP bmp, UINT start, UINT lines, const void *bit
         }
         n++;
     }
+    if (o->view24) dib24_sync(o);
     return (int)n;
 }
 
@@ -818,7 +882,7 @@ GDIAPI HGDIOBJ SelectObject(HDC h, HGDIOBJ obj)
 {
     NOVA_DC *d = dc_of(h);
     GObj *o = obj_of(obj);
-    if (!d || !o) return 0;
+    if (!d || !o) { return 0; }
     HGDIOBJ old = 0;
     switch (o->kind) {
     case K_BRUSH:     old = d->brush ? d->brush : GetStockObject(WHITE_BRUSH); d->brush = o; d->brush_color = o->color; d->has_brush = 1; break;
@@ -830,9 +894,11 @@ GDIAPI HGDIOBJ SelectObject(HDC h, HGDIOBJ obj)
     case K_BITMAP:
         if (!d->mem) return 0;
         old = d->bitmap;
+        dc_sync(d);                                         /* what was drawn on the old one */
+        if (o->view24) dib24_sync(o);                       /* what the program wrote to the new one */
         d->bitmap = o;
         d->bits = o->bits; d->w = o->bw; d->h = o->bh; d->stride = o->bw; d->fmt = o->fmt; d->flip = o->flip;
-        if (!old) { static GObj one = { K_BITMAP }; old = &one; }
+        if (!old) old = &g_default_bitmap;
         break;
     }
     return old;
@@ -962,7 +1028,7 @@ GDIAPI BOOL DeleteObject(HGDIOBJ obj)
 GDIAPI BOOL GetBitmapDimensionEx(HBITMAP h, LPSIZE sz) { GObj *o = obj_of(h); if (!o) return FALSE; sz->cx = o->bw; sz->cy = o->bh; return TRUE; }
 GDIAPI LONG GetBitmapBits(HBITMAP h, LONG n, LPVOID out)
 {
-    GObj *o = obj_of(h);
+    GObj *o = bitmap_of(h);
     if (!o || o->kind != K_BITMAP) return 0;
     LONG k = n < o->bw * o->bh * 4 ? n : o->bw * o->bh * 4;
     memcpy(out, o->bits, (size_t)k);
@@ -1039,7 +1105,7 @@ GDIAPI int GetDeviceCaps(HDC h, int index)
 /* drawing is done at once; GdiFlush brings it to the 24-bit DIB sections' bits */
 GDIAPI BOOL GdiFlush(void)
 {
-    for (int i = 0; i < POOL; i++) if (g_pool[i].used && g_pool[i].view24) dib24_sync(&g_pool[i]);
+    for (int i = 0; i < g_high; i++) if (g_pool[i].used && g_pool[i].view24) dib24_sync(&g_pool[i]);
     return TRUE;
 }
 GDIAPI DWORD GdiSetBatchLimit(DWORD n) { (void)n; return 1; }

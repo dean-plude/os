@@ -209,6 +209,8 @@ struct UmProcess {
     char        dll_dirs[UM_MAX_DLL_DIRS][RAMFS_PATH_MAX];  /* AddDllDirectory's ("": a free slot) */
     char        dll_dir[RAMFS_PATH_MAX];                    /* SetDllDirectory's ("": none) */
     UmConsole  *con;
+    char        log_line[256];  /* a detached process's unfinished console line (um_console_write) */
+    int         log_n;
     UmRwLock    lock;           /* handles, regions, modules, threads */
     UmLock      ldr_lock;       /* one runtime DLL load at a time (taken before the desktop lock) */
     UINT64      image_base, image_entry;   /* the program's, between um_spawn_image and _finish */
@@ -303,6 +305,7 @@ const UmModule *um_module_at(UmProcess *p, UINT64 va);
 /* um_console.c */
 UmConsole *um_console_ref(UmConsole *c);
 int        um_console_write(UmConsole *c, const char *data, int len);   /* program output */
+void       um_console_flush_log(UmProcess *p);                          /* a detached process's unfinished line */
 /* Program reads keyboard input: bytes, 0 at EOF, -1 if killed while waiting */
 int        um_console_read(UmConsole *c, char *buf, int cap, UmProcess *p);
 /* The console's waitable object (referenced), for input handles */

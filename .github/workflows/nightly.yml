@@ -1,6 +1,7 @@
 # Nightly app corpus: boots NovaOS built from main and runs unmodified
 # Windows programs (ripgrep, fd, jq, 7-Zip, MinGit, Python, Node.js,
-# SumatraPDF, WinMerge, Notepad++, PuTTY; one file each in tests/appcorpus/) with
+# SumatraPDF, WinMerge, VLC, Audacity, Notepad++, PuTTY; one file each in
+# tests/appcorpus/) with
 # tools/appcorpus.py, then smpstress on 4 CPUs (locking under load: no deadlocks,
 # and how file and registry throughput scale).  The pass/fail table goes to the run's
 # summary and, as a comment, to the "Nightly app corpus" issue (opened on
@@ -45,7 +46,8 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
-            qemu-system-x86 ovmf mtools dosfstools p7zip-full curl python3-pil ntfs-3g ccache
+            qemu-system-x86 ovmf mtools dosfstools p7zip-full curl python3-pil ntfs-3g ccache \
+            pulseaudio pulseaudio-utils
           echo /usr/lib/ccache >> "$GITHUB_PATH"
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 

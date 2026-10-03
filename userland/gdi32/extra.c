@@ -50,7 +50,7 @@ GDIAPI BOOL GetViewportExtEx(HDC h, LPSIZE s) { (void)h; if (!s) return FALSE; s
  * solid): a hatch or dither pattern comes out as its overall tone */
 GDIAPI HBRUSH CreatePatternBrush(HBITMAP bmp)
 {
-    GObj *b = obj_of(bmp);
+    GObj *b = bitmap_of(bmp);
     if (!b || b->kind != K_BITMAP || !b->bits || b->bw <= 0 || b->bh <= 0) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
     unsigned long long r = 0, g = 0, bl = 0, n = (unsigned long long)b->bw * (unsigned long long)b->bh;
     for (unsigned long long i = 0; i < n; i++) {

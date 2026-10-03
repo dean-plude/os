@@ -175,12 +175,6 @@ void UmUserException(void *frame, UINT64 cr2)
     put32(rec + 24, (UINT32)nparams);
     for (UINT64 i = 0; i < nparams; i++) put64(rec + 32 + 8 * i, info[i]);
 
-    if (code == UM_STATUS_ACCESS_VIOLATION) {                   /* DEBUGTRACE */
-        const UmModule *m = um_module_at(p, addr);
-        kprintf("[UM] %s: first-chance access violation at %s+0x%llx (address 0x%llx)\n", p->name,
-                m ? m->name : "?", (unsigned long long)(m ? addr - m->base : addr), (unsigned long long)(nparams == 2 ? info[1] : 0));
-        um_log_stack(p, f->rsp);
-    }
     if (!push_exception(p, &r, ctx, rec))
         UmFaultAt(code, addr, nparams == 2 ? info[1] : 0, r.rsp);
     f->rip = r.rip; f->rsp = r.rsp; f->rcx = r.rcx; f->rdx = r.rdx; f->rflags = r.rflags;

@@ -238,15 +238,24 @@ GDIAPI BOOL MaskBlt(HDC dst, int x, int y, int w, int hh, HDC src, int sx, int s
 {
     GObj *m = obj_of(mask);
     if (!m || m->kind != K_BITMAP || !m->bits) return BitBlt(dst, x, y, w, hh, src, sx, sy, rop & 0x00FFFFFF);   /* the foreground ROP3 */
-    NOVA_DC *dd = dc_of(dst); if (!dd) return FALSE;
+    NOVA_DC *dd = dc_of(dst), *sd = dc_of(src);
+    if (!dd) return FALSE;
+    dc_sync(dd);
+    dc_sync(sd);
     for (int j = 0; j < hh; j++) for (int i = 0; i < w; i++) {
         int bx = mx + i, by = my + j;
         if (bx < 0 || by < 0 || bx >= m->bw || by >= m->bh) continue;
         int row = m->flip ? m->bh - 1 - by : by;
         if (!(m->bits[(size_t)row * m->bw + bx] & 0xFFFFFF)) continue;
-        COLORREF c = src ? GetPixel(src, sx + i, sy + j) : dd->brush_color;
-        if (c != CLR_INVALID) put(dd, x + i, y + j, c);
+        COLORREF c = dd->brush_color;
+        if (sd) {
+            int px = sx + i + sd->org_x, py = sy + j + sd->org_y;
+            if (!sd->bits || !dev_visible(sd, px, py)) continue;
+            c = from_native(sd, *pixel_at(sd, px, py));
+        }
+        put(dd, x + i, y + j, c);
     }
+    dc_sync(dd);
     return TRUE;
 }
 

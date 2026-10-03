@@ -468,12 +468,6 @@ GpStatus gdip_region_copy(GpRegion *dst, const GpRegion *src)
 
 /* ---- path iterators -------------------------------------------------------- */
 
-typedef struct {
-    GpPath *p;              /* a copy, as GDI+ takes */
-    int sub;                /* the next subpath's first point */
-    int marker;             /* the next marker section's first point */
-} GpPathIterator;
-
 GDIPAPI GpStatus GDIPCALL GdipCreatePathIter(GpPathIterator **out, GpPath *p)
 {
     if (!out) return InvalidParameter;
