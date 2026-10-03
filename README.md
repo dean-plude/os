@@ -88,15 +88,18 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 - **Desktop**: a Windows 11-style shell with a Start menu (live search over
   apps, settings and files), dock, tray, snapping and resizing windows,
   Alt+Tab, right-click menus, three wallpapers.
-- **Apps**: Terminal, File Explorer, Notepad, Settings, Calendar, Photos,
-  the **App Store** and **Install NovaOS** (Setup).
+- **Apps**: Terminal, File Explorer, Notepad, Settings (its Sound page
+  chooses the output and input and sets each device's volume, kept across
+  restarts), Calendar, Photos, the **App Store** and **Install NovaOS**
+  (Setup).
 - **Web browser**: NetSurf 3.11, built from source as a Windows program,
   with HTTPS (TLS 1.3/1.2), JavaScript (pages a script changes are laid
   out again) and SVG (image files and `<svg>` written inline in a page),
   in a window you can resize, maximize or snap (the page is laid out
   again to fit).
 - **Command line**: the Terminal's own commands (`dir`, `copy`, `ping`,
-  `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`…)
+  `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`,
+  `devices`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
   `more`, `less` (git's pager), `timeout`, `taskkill`, `reg`, `regsvr32`, `msiexec` and
   `intl` (the user's regional format).
@@ -292,6 +295,24 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -cdrom nova.iso -serial stdio
 ```
 
+The same ISO starts a real PC from a USB stick (UEFI, Secure Boot off;
+the display is the firmware's framebuffer).  Writing it erases the stick:
+on Linux, find the stick with `lsblk` (here `/dev/sdX`) and run the
+commands below; on Windows use Rufus in "DD image" mode or balenaEtcher,
+and on a Mac see [docs/macos.md](docs/macos.md).  Started from the stick,
+NovaOS runs live as from the disc and writes its log into
+`EFI\NOVA\bootlog.txt` on the stick's EFI partition (partition 2,
+labelled `NOVA_EFI`), so a PC without a serial port still leaves a log to
+read on another computer.  Linux mounts that partition as it is; macOS
+with `diskutil mount` (`disk4s2` for a stick at `disk4`); Windows gives
+an EFI partition no drive letter by itself, so assign one in `diskpart`
+(`list volume`, `select volume N`, `assign letter=Z`).
+
+```bash
+sudo dd if=nova.iso of=/dev/sdX bs=4M conv=fsync status=progress
+sync
+```
+
 To make the ISO yourself from a fresh build, run
 `scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf`
 (needs `xorriso`).  `*.iso` is in `.gitignore`: the ISO is never committed.
@@ -418,8 +439,9 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
   Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `bmpcurtest`, `boosttest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `crtthreads`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `dpitest`, `errnotest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `msitest`, `nlstest`, `nstest`, `pipetest`, `posixtest`, `powertest`, `prioritytest`, `proctest`, `qttest`, `rttest`, `savetest`, `sectest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `threads`, `touchtest`, `usptest`, `wintabtest`<!-- END generated:selftest-programs -->.  `soundtest`
-  plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
-  through `waveIn` and WASAPI capture;
+  plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, records
+  through `waveIn` and WASAPI capture, and lists the sound devices,
+  chooses the default and sets each device's own volume;
   `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`
   feeds a WAV to its microphone, and
   `tools/wavcheck.py out.wav` lists each tone's length and pitch.  `disktest
@@ -561,6 +583,9 @@ os/
   Silicon and Intel).
 - [docs/ROADMAP.md](docs/ROADMAP.md): the compatibility strategy and what
   comes next.
+- [docs/hardware.md](docs/hardware.md): the reference PC for real
+  hardware, which of its devices NovaOS drives, and every driver NovaOS
+  has.
 - [docs/HISTORY.md](docs/HISTORY.md): what every phase added, in detail.
 - [docs/phase1-architecture.md](docs/phase1-architecture.md): the boot flow,
   address-space layout and early kernel design.

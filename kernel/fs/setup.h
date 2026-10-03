@@ -24,8 +24,12 @@
 
 /* Record the installation media the bootloader passed (early boot) */
 void SetupBootInfo(const BootInfo *info);
-/* NovaOS is running from its installation disc */
+/* NovaOS is running from its installation media (the ISO on a disc, or
+ * written to a USB stick) */
 bool SetupIsLive(void);
+/* ... and which: "disc" or "USB stick" */
+const char *SetupMediaName(void);
+bool SetupLiveFromUsb(void);
 
 #define SETUP_MIN_BYTES  (256ull << 20)   /* smallest disk to install on */
 #define SETUP_ESP_SECTORS 262144ull       /* 128 MiB */

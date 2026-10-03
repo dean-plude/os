@@ -22,6 +22,8 @@
 #include "F3DAudio.h"
 #include "xapo.h"
 
+int nova_device_index(const WCHAR *endpoint);      /* faudio_nova.c: a WASAPI endpoint ID's device index; -1: none */
+
 #ifndef XAUDIO2_VER
 #define XAUDIO2_VER 9
 #endif
@@ -523,13 +525,9 @@ static HRESULT CALLBACK_ xa_create_master(XA2 *xa, Voice **out, UINT32 channels,
                                           LPCWSTR device, const EffectChain *chain, int category)
 {
     (void)category;
-    UINT32 index = 0;
-    if (device && device[0]) {                     /* our one device, by the ID GetDefaultAudioEndpoint gives */
-        UINT32 n = 0;
-        FAudio_GetDeviceCount(xa->fa, &n);
-        if (!n) return XAUDIO2_E_INVALID_CALL;
-    }
-    return create_master(xa, out, channels, rate, flags, index, chain);
+    int index = nova_device_index(device);         /* (a WASAPI endpoint ID; NULL: the default) */
+    if (index < 0) return XAUDIO2_E_INVALID_CALL;
+    return create_master(xa, out, channels, rate, flags, (UINT32)index, chain);
 }
 static void CALLBACK_ xa_perf(XA2 *xa, FAudioPerformanceData *d) { FAudio_GetPerformanceData(xa->fa, d); }
 static const struct { void *m[13]; } xa_vtbl = { {

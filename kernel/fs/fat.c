@@ -1022,6 +1022,16 @@ const char *FatLabel(const FatVol *v) { return v->label; }
 int FatType(const FatVol *v) { return v->type; }
 BlockDev *FatDevice(const FatVol *v) { return v->dev; }
 UINT32 FatClusterBytes(const FatVol *v) { return v->cluster_bytes; }
+
+bool FatContiguous(FatVol *v, const FatEntry *e, UINT64 *lba)
+{
+    if (e->dir || !e->cluster || !e->size) return false;
+    UINT32 n = (e->size + v->cluster_bytes - 1) / v->cluster_bytes, c = e->cluster;
+    for (UINT32 i = 1; i < n; i++, c++)
+        if (fat_get(v, c) != c + 1) return false;
+    *lba = v->base + clus_lba(v, e->cluster);
+    return true;
+}
 UINT64 FatTotalBytes(const FatVol *v) { return (UINT64)v->clusters * v->cluster_bytes; }
 UINT64 FatFreeBytes(FatVol *v) { count_free(v); return (UINT64)v->free_count * v->cluster_bytes; }
 
