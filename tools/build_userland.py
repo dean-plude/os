@@ -60,6 +60,8 @@ def cflags():
 #   system    true: installed in C:\Windows\System32 (SysWOW64)
 #   libs      DLLs it links against beyond PROGRAM_LIBS
 #   selftest  true: a self-test program README lists
+#   msstl     true: a C++ program on the C++ standard library (msvcp140.dll,
+#             Microsoft's STL headers; see userland/msvcp140/build.py)
 import json
 SLOT = 0x01000000
 AUTO_X64 = (0x7FFD00000000, 0x7FFE00000000)
@@ -173,10 +175,10 @@ def llvm_tool(t):
     raise SystemExit(f'{t} not found (install llvm)')
 
 def musl_math_objs(odir):
-    """musl's libm (third_party/musl/src/math), compiled once for the C
-    runtime DLLs; returns (objects, exported names)"""
+    """musl's libm (third_party/musl/src/math and the C99 complex functions
+    in src/complex), compiled once for the C runtime DLLs; returns
+    (objects, exported names)"""
     objs, names = [], set()
-    srcdir = os.path.join(MUSL, 'src', 'math')
     flags = ['--target=' + TARGETS[ARCH], '-O2', '-ffreestanding', '-nostdlibinc', '-fno-builtin',
              '-D_GNU_SOURCE', '-w', '-I', os.path.join(MUSL, 'include'), '-I', os.path.join(MUSL, 'src', 'internal'),
              '-I', os.path.join(HERE, 'include')]
@@ -184,11 +186,13 @@ def musl_math_objs(odir):
         flags.append('-msse2')
     mdir = os.path.join(odir, 'musl')
     os.makedirs(mdir, exist_ok=True)
-    for src in sorted(os.listdir(srcdir)):
-        if src.endswith('.c'):
-            obj = os.path.join(mdir, src[:-2] + '.obj')
-            run(['clang'] + flags + ['-c', os.path.join(srcdir, src), '-o', obj])
-            objs.append(obj)
+    for sub in ('math', 'complex'):
+        srcdir = os.path.join(MUSL, 'src', sub)
+        for src in sorted(os.listdir(srcdir)):
+            if src.endswith('.c'):
+                obj = os.path.join(mdir, src[:-2] + '.obj')
+                run(['clang'] + flags + ['-c', os.path.join(srcdir, src), '-o', obj])
+                objs.append(obj)
     # every public function (musl's internal helpers start with "__")
     r = subprocess.run([llvm_tool('llvm-nm'), '--defined-only', '--extern-only'] + objs,
                        capture_output=True, text=True)
@@ -358,7 +362,13 @@ def build_pass(arch):
         if arch == 'x86' and not prog.get('x86'):
             continue
         obj = os.path.join(odir, f'prog_{name}.obj')
-        if src.endswith('.cpp'):                  # C++ (exceptions, RTTI): vcruntime140
+        stl = []
+        if src.endswith('.cpp') and prog.get('msstl'):  # C++ on the standard library (msvcp140)
+            m = HOOKS['msvcp140']
+            run(['clang++'] + m.program_flags(me) + ['-c', os.path.join(progdir, src), '-o', obj])
+            stl = m.program_objs(me, odir) + [os.path.join(odir, l + '.lib') for l in
+                                                ('msvcp140', 'msvcp140_1', 'msvcp140_atomic_wait')]
+        elif src.endswith('.cpp'):                # C++ (exceptions, RTTI): vcruntime140
             run(['clang++'] + cflags() + ['-fcxx-exceptions', '-fexceptions', '-std=c++17',
                  '-c', os.path.join(progdir, src), '-o', obj])
         else:
@@ -372,7 +382,7 @@ def build_pass(arch):
         libs = PROGRAM_LIBS + [l for l in prog.get('libs', []) if l not in PROGRAM_LIBS]
         run(['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib'] +
             (['/safeseh:no', '/machine:x86'] if arch == 'x86' else []) +
-            [f'/out:{exe}'] + crt0_objs + [tlssup, obj] + res + [os.path.join(odir, l + '.lib') for l in libs])
+            [f'/out:{exe}'] + crt0_objs + [tlssup, obj] + stl + res + [os.path.join(odir, l + '.lib') for l in libs])
         if arch == 'x86':
             folder = '\\Windows\\SysWOW64' if prog.get('system') else '\\Programs\\x86'
         else:

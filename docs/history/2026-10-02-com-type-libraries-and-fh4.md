@@ -49,4 +49,5 @@ permissive covers either, so both are written here from the file formats
 - Not yet: NumPy still stops at the C99 complex functions (`cabs`,
   `cexp`...) the UCRT exports, and `AddDllDirectory` is a stub, so
   `os.add_dll_directory` paths are not searched.  `msvcp140.dll` (the C++
-  standard library) is not provided.
+  standard library) is not provided.  (All three since closed: see "The
+  C++ standard library, C99 complex math and DLL directories".)

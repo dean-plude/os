@@ -750,6 +750,7 @@ SHSTDAPI_(BOOL) DragQueryPoint(HANDLE drop, POINT *pt)
 SHSTDAPI_(void) DragFinish(HANDLE drop) { if (drop) GlobalFree(drop); }
 SHSTDAPI_(BOOL) Shell_NotifyIconW(DWORD msg, void *data) { (void)msg; (void)data; return FALSE; }   /* no tray icons */
 SHSTDAPI_(BOOL) Shell_NotifyIconA(DWORD msg, void *data) { (void)msg; (void)data; return FALSE; }
+SHSTDAPI_(HRESULT) Shell_NotifyIconGetRect(const void *id, RECT *r) { (void)id; if (r) SetRectEmpty(r); return E_FAIL; }
 SHSTDAPI_(void) SHChangeNotify(LONG ev, UINT flags, LPCVOID a, LPCVOID b) { (void)ev; (void)flags; (void)a; (void)b; }
 SHSTDAPI_(void) SHAddToRecentDocs(UINT flags, LPCVOID pv) { (void)flags; (void)pv; }
 SHSTDAPI_(BOOL) IsUserAnAdmin(void) { return FALSE; }   /* not elevated (see advapi32) */

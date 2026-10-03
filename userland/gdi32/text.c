@@ -741,18 +741,26 @@ GDIAPI BOOL GetCharWidthI(HDC h, UINT first, UINT n, LPWORD gi, LPINT out)
     return TRUE;
 }
 
+static void abc_of(Glyph *g, ABC *a)
+{
+    if (!g) { a->abcA = 0; a->abcB = 0; a->abcC = 0; return; }
+    a->abcA = g->w ? g->x0 : 0;
+    a->abcB = (UINT)(g->w ? g->w : g->adv);
+    a->abcC = g->adv - a->abcA - (int)a->abcB;
+}
 GDIAPI BOOL GetCharABCWidthsW(HDC h, UINT first, UINT last, ABC *out)
 {
     Size *z = dc_size(dc_of(h), 0);
     if (!z) return FALSE;
-    for (UINT c = first; c <= last; c++) {
-        Glyph *g = glyph(z, c);
-        ABC *a = &out[c - first];
-        if (!g) { a->abcA = 0; a->abcB = 0; a->abcC = 0; continue; }
-        a->abcA = g->w ? g->x0 : 0;
-        a->abcB = (UINT)(g->w ? g->w : g->adv);
-        a->abcC = g->adv - a->abcA - (int)a->abcB;
-    }
+    for (UINT c = first; c <= last; c++) abc_of(glyph(z, c), &out[c - first]);
+    return TRUE;
+}
+/* by glyph index: @gi's, or @n from @first */
+GDIAPI BOOL GetCharABCWidthsI(HDC h, UINT first, UINT n, LPWORD gi, ABC *out)
+{
+    Size *z = dc_size(dc_of(h), 0);
+    if (!z || !out) return FALSE;
+    for (UINT i = 0; i < n; i++) abc_of(glyph(z, (gi ? gi[i] : first + i) | 0x80000000u), &out[i]);
     return TRUE;
 }
 GDIAPI BOOL GetCharABCWidthsA(HDC h, UINT first, UINT last, ABC *out) { return GetCharABCWidthsW(h, first, last, out); }

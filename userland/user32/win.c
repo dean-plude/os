@@ -1987,6 +1987,7 @@ USERAPI BOOL GetLayeredWindowAttributes(HWND h, COLORREF *key, BYTE *alpha, DWOR
 { if (key) *key = 0; if (alpha) *alpha = 255; if (f) *f = 2; return W_quiet(h) != NULL; }
 USERAPI BOOL UpdateLayeredWindow(HWND h, HDC d, POINT *p, SIZE *s, HDC src, POINT *sp, COLORREF k, void *bf, DWORD f)
 { (void)d; (void)p; (void)s; (void)src; (void)sp; (void)k; (void)bf; (void)f; return W_quiet(h) != NULL; }
+USERAPI BOOL UpdateLayeredWindowIndirect(HWND h, const void *info) { (void)info; return W_quiet(h) != NULL; }
 USERAPI BOOL SetWindowDisplayAffinity(HWND h, DWORD a) { (void)a; return W_quiet(h) != NULL; }
 USERAPI BOOL GetWindowDisplayAffinity(HWND h, DWORD *a) { if (a) *a = 0; return W_quiet(h) != NULL; }
 USERAPI HWND GetProgmanWindow(void) { return 0; }

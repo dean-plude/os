@@ -424,3 +424,6 @@ __declspec(dllexport) HRESULT __stdcall GetScaleFactorForMonitor(HANDLE mon, int
 }
 __declspec(dllexport) HRESULT __stdcall SetProcessDpiAwareness(int v) { (void)v; return S_OK_; }
 __declspec(dllexport) HRESULT __stdcall GetProcessDpiAwareness(HANDLE p, int *v) { (void)p; if (!v) return E_INVALIDARG_; *v = 2; return S_OK_; }
+
+/* shcore.dll (whose API set the loader maps here) forwards this to shell32 */
+__asm__(".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:CommandLineToArgvW=shell32.CommandLineToArgvW\"\n\t.text\n");
