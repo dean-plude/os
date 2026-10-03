@@ -564,8 +564,8 @@ CRTEXP int __stdio_common_vswscanf(unsigned long long opt, const wchar_t *buf, s
     free(b); free(f);
     return r;
 }
-int vswscanf(const wchar_t *buf, const wchar_t *fmt, va_list ap) { return __stdio_common_vswscanf(0, buf, (size_t)-1, fmt, NULL, ap); }
-int swscanf(const wchar_t *buf, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = vswscanf(buf, fmt, a); va_end(a); return r; }
+CRTEXP int vswscanf(const wchar_t *buf, const wchar_t *fmt, va_list ap) { return __stdio_common_vswscanf(0, buf, (size_t)-1, fmt, NULL, ap); }
+CRTEXP int swscanf(const wchar_t *buf, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = vswscanf(buf, fmt, a); va_end(a); return r; }
 int sscanf_s(const char *buf, const char *fmt, ...) { va_list a; va_start(a, fmt); int r = vsscanf(buf, fmt, a); va_end(a); return r; }
 
 /* -----------------------------------------------------------------------

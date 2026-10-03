@@ -111,7 +111,7 @@ typedef struct _NOVA_LDR_MODULE {
 } NOVA_LDR_MODULE;
 typedef struct _NOVA_LDR_INFO {
     ULONG Count, Reserved;
-    NOVA_LDR_MODULE Modules[64];
+    NOVA_LDR_MODULE Modules[128];        /* the kernel's UM_MAX_MODULES */
 } NOVA_LDR_INFO;
 #ifdef __x86_64__
 #define NOVA_LDR_INFO_ADDRESS ((NOVA_LDR_INFO *)0x00007FFDF0001000ULL)

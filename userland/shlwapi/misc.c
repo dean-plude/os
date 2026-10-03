@@ -261,6 +261,13 @@ LWSTDAPI_(HRESULT) AssocQueryStringA(DWORD flags, DWORD str, LPCSTR assoc, LPCST
     return HR_WIN32(1155);
 }
 
+LWSTDAPI_(HRESULT) AssocQueryKeyW(DWORD flags, DWORD key, LPCWSTR assoc, LPCWSTR extra, HKEY *out)
+{
+    (void)flags; (void)key; (void)assoc; (void)extra;
+    if (out) *out = NULL;
+    return HR_WIN32(1155);
+}
+
 LWSTDAPI_(HRESULT) GetAcceptLanguagesW(LPWSTR buf, DWORD *n)
 {
     static const WCHAR en[] = { 'e', 'n', '-', 'U', 'S', 0 };

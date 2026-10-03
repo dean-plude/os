@@ -188,6 +188,69 @@ GDIAPI int GetStretchBltMode(HDC h) { (void)h; return 1; }            /* BLACKON
 GDIAPI int Escape(HDC h, int code, int n, LPCSTR in, LPVOID out) { (void)h; (void)code; (void)n; (void)in; (void)out; return 0; }
 GDIAPI HMETAFILE CopyMetaFileW(HMETAFILE mf, LPCWSTR file) { (void)mf; (void)file; SetLastError(ERROR_INVALID_HANDLE); return 0; }
 
+/* Metafiles: NovaOS neither records nor plays them (Inkscape's EMF and
+ * WMF import and export, GTK's printing); none can be made or opened */
+static HANDLE no_metafile(void) { SetLastError(ERROR_NOT_SUPPORTED); return 0; }
+GDIAPI HDC CreateEnhMetaFileW(HDC ref, LPCWSTR file, const RECT *r, LPCWSTR desc)
+{ (void)ref; (void)file; (void)r; (void)desc; return (HDC)no_metafile(); }
+GDIAPI HDC CreateEnhMetaFileA(HDC ref, LPCSTR file, const RECT *r, LPCSTR desc)
+{ (void)ref; (void)file; (void)r; (void)desc; return (HDC)no_metafile(); }
+GDIAPI HENHMETAFILE CloseEnhMetaFile(HDC h) { (void)h; return (HENHMETAFILE)no_metafile(); }
+GDIAPI HENHMETAFILE GetEnhMetaFileW(LPCWSTR file) { (void)file; return (HENHMETAFILE)no_metafile(); }
+GDIAPI HENHMETAFILE GetEnhMetaFileA(LPCSTR file) { (void)file; return (HENHMETAFILE)no_metafile(); }
+GDIAPI HENHMETAFILE CopyEnhMetaFileA(HENHMETAFILE mf, LPCSTR file) { (void)mf; (void)file; return (HENHMETAFILE)no_metafile(); }
+GDIAPI HENHMETAFILE CopyEnhMetaFileW(HENHMETAFILE mf, LPCWSTR file) { (void)mf; (void)file; return (HENHMETAFILE)no_metafile(); }
+GDIAPI HENHMETAFILE SetWinMetaFileBits(UINT n, const BYTE *bits, HDC ref, const void *mfp)
+{ (void)n; (void)bits; (void)ref; (void)mfp; return (HENHMETAFILE)no_metafile(); }
+GDIAPI HENHMETAFILE SetEnhMetaFileBits(UINT n, const BYTE *bits) { (void)n; (void)bits; return (HENHMETAFILE)no_metafile(); }
+GDIAPI UINT GetEnhMetaFileHeader(HENHMETAFILE mf, UINT n, void *hdr) { (void)mf; (void)n; (void)hdr; SetLastError(ERROR_INVALID_HANDLE); return 0; }
+GDIAPI UINT GetEnhMetaFileBits(HENHMETAFILE mf, UINT n, BYTE *bits) { (void)mf; (void)n; (void)bits; SetLastError(ERROR_INVALID_HANDLE); return 0; }
+GDIAPI BOOL PlayEnhMetaFile(HDC h, HENHMETAFILE mf, const RECT *r) { (void)h; (void)mf; (void)r; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+GDIAPI BOOL DeleteEnhMetaFile(HENHMETAFILE mf) { (void)mf; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+GDIAPI HMETAFILE GetMetaFileW(LPCWSTR file) { (void)file; return (HMETAFILE)no_metafile(); }
+GDIAPI HMETAFILE GetMetaFileA(LPCSTR file) { (void)file; return (HMETAFILE)no_metafile(); }
+GDIAPI UINT GetMetaFileBitsEx(HMETAFILE mf, UINT n, void *bits) { (void)mf; (void)n; (void)bits; SetLastError(ERROR_INVALID_HANDLE); return 0; }
+GDIAPI BOOL DeleteMetaFile(HMETAFILE mf) { (void)mf; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+
+/* MaskBlt: where the monochrome @mask is 1 the foreground ROP (the low 24
+ * bits of @rop4), where 0 the background one (the high byte); a
+ * background that leaves the destination alone (0xAA) is the usual case.
+ * Drawn a row run at a time through BitBlt. */
+GDIAPI BOOL MaskBlt(HDC dst, int x, int y, int w, int h, HDC src, int sx, int sy, HBITMAP mask, int mx, int my, DWORD rop4)
+{
+    DWORD fore = rop4 & 0xFFFFFF, back = ((rop4 >> 8) & 0xFF0000) | (rop4 & 0xFFFF);
+    GObj *m = obj_of(mask);
+    if (!m || m->kind != K_BITMAP || !m->bits) return BitBlt(dst, x, y, w, h, src, sx, sy, fore);
+    for (int j = 0; j < h; j++) {
+        int i = 0;
+        while (i < w) {
+            int set = 0, mxx = mx + i, myy = my + j;
+            if (mxx >= 0 && myy >= 0 && mxx < m->bw && myy < m->bh) {
+                int row = m->flip ? m->bh - 1 - myy : myy;
+                set = (m->bits[(size_t)row * m->bw + mxx] & 0xFFFFFF) != 0;
+            }
+            int s = i;
+            for (i++; i < w; i++) {
+                int b = 0; mxx = mx + i;
+                if (mxx >= 0 && myy >= 0 && mxx < m->bw && myy < m->bh) {
+                    int row = m->flip ? m->bh - 1 - myy : myy;
+                    b = (m->bits[(size_t)row * m->bw + mxx] & 0xFFFFFF) != 0;
+                }
+                if (b != set) break;
+            }
+            DWORD r = set ? fore : back;
+            if ((r >> 16) != 0xAA) BitBlt(dst, x + s, y + j, i - s, 1, src, sx + s, sy + j, r);
+        }
+    }
+    return TRUE;
+}
+
+GDIAPI UINT GetNearestPaletteIndex(HPALETTE pal, COLORREF c) { (void)c; return obj_of(pal) ? 0 : 0xFFFFFFFFu; }   /* CLR_INVALID */
+
+/* A printer DC's new page settings: there are no printers */
+GDIAPI HDC ResetDCW(HDC h, const void *mode) { (void)mode; return h; }
+GDIAPI HDC ResetDCA(HDC h, const void *mode) { (void)mode; return h; }
+
 /* -----------------------------------------------------------------------
  * Palettes: the screen is true colour, so a logical palette changes
  * nothing on it; the objects exist so programs can make and select them
@@ -273,26 +336,6 @@ GDIAPI BOOL SetMiterLimit(HDC h, float limit, float * old) { (void)h; (void)limi
 GDIAPI BOOL GetMiterLimit(HDC h, float * limit) { (void)h; if (limit) *limit = 10.0f; return TRUE; }
 
 
-/* RGNDATA: regions are their bounding rectangle (ExtCreateRegion is in
- * gdi32.c, the world transform calls too, and the outline metrics and
- * Unicode ranges in text.c) */
-typedef struct { DWORD dwSize, iType, nCount, nRgnSize; RECT rcBound; } RGNDATAHEADER_;
-GDIAPI DWORD GetRegionData(HRGN rgn, DWORD n, RGNDATAHEADER_ *out)
-{
-    RECT r;
-    if (!GetRgnBox(rgn, &r)) return 0;
-    int empty = r.right <= r.left || r.bottom <= r.top;
-    DWORD need = (DWORD)sizeof(RGNDATAHEADER_) + (empty ? 0 : (DWORD)sizeof(RECT));
-    if (!out) return need;
-    if (n < need) return 0;
-    out->dwSize = sizeof(RGNDATAHEADER_);
-    out->iType = 1;                                 /* RDH_RECTANGLES */
-    out->nCount = empty ? 0 : 1;
-    out->nRgnSize = empty ? 0 : sizeof(RECT);
-    out->rcBound = r;
-    if (!empty) memcpy(out + 1, &r, sizeof(RECT));
-    return need;
-}
 /* The system (visible) region: not tracked, so none (0) */
 GDIAPI int GetRandomRgn(HDC h, HRGN rgn, INT which) { (void)h; (void)rgn; (void)which; return 0; }
 
