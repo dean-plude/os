@@ -89,6 +89,10 @@ jobs:
     if: needs.checks.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      # KVM crashes the core boot (a #GP in uACPI's GPE code) and times out
+      # the network suite; see docs/history/2026-10-03-ci-kvm.md
+      NOVARUN_ACCEL: tcg
     steps:
       - uses: actions/checkout@v4
 
@@ -101,13 +105,6 @@ jobs:
             pulseaudio pulseaudio-utils ccache
           echo /usr/lib/ccache >> "$GITHUB_PATH"
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-
-      - name: Let QEMU use KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm || echo "no /dev/kvm: the tests run under TCG"
 
       - name: Restore the compiler cache
         uses: actions/cache/restore@v4
