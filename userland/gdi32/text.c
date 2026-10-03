@@ -359,10 +359,11 @@ static void draw_glyph(NOVA_DC *d, Glyph *g, int pen_x, int base_y, COLORREF c, 
  * (logical), honouring the DC's alignment, background mode and current
  * position; @dx: per-character advances (ExtTextOut), @clip: device rect */
 static BOOL text_out(NOVA_DC *d, int x, int y, const WCHAR *t, int n, const INT *dx, const RECT *clip, int glyph_idx,
-                     const RECT *opaque_rc)
+                     const RECT *opaque_rc, int height)
 {
     GObj *font;
     Size *s = dc_size(d, &font);
+    if (height) s = size_for(face_index(font), height);    /* scaled by the world transform */
     if (!s) return FALSE;
     int w = 0;
     if (dx) for (int i = 0; i < n; i++) w += dx[i];
@@ -413,13 +414,34 @@ static BOOL text_out(NOVA_DC *d, int x, int y, const WCHAR *t, int n, const INT 
     return TRUE;
 }
 
+/* The DC's world transform (identity when none is set) */
+static void xform_get_(NOVA_DC *d, XFORM *x)
+{
+    if (!d->xform[0] && !d->xform[1] && !d->xform[2] && !d->xform[3]) {
+        x->eM11 = 1; x->eM12 = 0; x->eM21 = 0; x->eM22 = 1; x->eDx = 0; x->eDy = 0;
+    } else memcpy(x, d->xform, sizeof(*x));
+}
+
+/* The LOGFONT height @font draws at on @d's device: scaled by a GM_ADVANCED
+ * world transform that only scales and offsets; 0 when there is none */
+static int scaled_height(NOVA_DC *d, GObj *font)
+{
+    XFORM xf;
+    if (!d || d->gmode != GM_ADVANCED) return 0;
+    xform_get_(d, &xf);
+    if (xf.eM12 || xf.eM21 || xf.eM11 <= 0 || xf.eM22 <= 0 || (xf.eM11 == 1 && xf.eM22 == 1)) return 0;
+    int fh = font->height ? font->height : -16;
+    int h = (int)(fh * xf.eM22 + (fh < 0 ? -0.5f : 0.5f));
+    return h ? h : fh < 0 ? -1 : 1;
+}
+
 static int is_complex(LPCWSTR s, int n);
 GDIAPI BOOL TextOutW(HDC h, int x, int y, LPCWSTR s, int len)
 {
     NOVA_DC *d = dc_of(h);
     if (!d || !s) return FALSE;
     if (len > 0 && is_complex(s, len)) return ExtTextOutW(h, x, y, 0, 0, s, (UINT)len, 0);
-    return text_out(d, x, y, s, len, 0, 0, 0, 0);
+    return text_out(d, x, y, s, len, 0, 0, 0, 0, 0);
 }
 
 /* ANSI text: the code page is UTF-8 here */
@@ -538,8 +560,43 @@ GDIAPI BOOL ExtTextOutW(HDC h, int x, int y, UINT opts, const RECT *rc, LPCWSTR 
 {
     NOVA_DC *d = dc_of(h);
     if (!d) return FALSE;
+    /* GM_ADVANCED with a world transform (cairo draws text with a font 32
+     * times its size, scaled back by the transform): scales and offsets are
+     * applied here, to the origin, rectangle, advances and font size */
+    XFORM xf;
+    int height = 0;
+    RECT trc;
+    INT *tdx = 0;
+    xform_get_(d, &xf);
+    if (d->gmode == GM_ADVANCED && !xf.eM12 && !xf.eM21 && xf.eM11 > 0 && xf.eM22 > 0 &&
+        (xf.eM11 != 1 || xf.eM22 != 1 || xf.eDx || xf.eDy)) {
+        GObj *font;
+        dc_size(d, &font);
+        height = scaled_height(d, font);
+        if (rc) {
+            trc.left = (int)(rc->left * xf.eM11 + xf.eDx + 0.5f); trc.right = (int)(rc->right * xf.eM11 + xf.eDx + 0.5f);
+            trc.top = (int)(rc->top * xf.eM22 + xf.eDy + 0.5f); trc.bottom = (int)(rc->bottom * xf.eM22 + xf.eDy + 0.5f);
+            rc = &trc;
+        }
+        if (dx && s && len) {
+            int step = opts & 0x2000 /* ETO_PDY */ ? 2 : 1;
+            tdx = t_alloc(sizeof(INT) * len);
+            if (tdx) {
+                float pos = 0;
+                for (UINT i = 0; i < len; i++) {
+                    float next = pos + dx[step * i] * xf.eM11;
+                    tdx[i] = (int)(next + 0.5f) - (int)(pos + 0.5f);
+                    pos = next;
+                }
+                opts &= ~0x2000u;
+            }
+            dx = tdx;
+        }
+        x = (int)(x * xf.eM11 + xf.eDx + 0.5f);
+        y = (int)(y * xf.eM22 + xf.eDy + 0.5f);
+    }
     if (rc && (opts & 2 /* ETO_OPAQUE */)) fill(d, rc->left, rc->top, rc->right, rc->bottom, d->bk_color);
-    if (!s || !len) return TRUE;
+    if (!s || !len) { t_free(tdx); return TRUE; }
     RECT clip, *cp = 0;
     if (rc && (opts & 4 /* ETO_CLIPPED */)) {
         clip.left = rc->left + d->org_x; clip.top = rc->top + d->org_y;
@@ -548,7 +605,7 @@ GDIAPI BOOL ExtTextOutW(HDC h, int x, int y, UINT opts, const RECT *rc, LPCWSTR 
     }
     if (!(opts & (0x10 /* ETO_GLYPH_INDEX */ | 0x1000 /* ETO_IGNORELANGUAGE */)) && is_complex(s, (int)len)) {
         BOOL ok;
-        if (complex_text_out(h, d, x, y, opts, rc, s, (int)len, &ok)) return ok;
+        if (!height && complex_text_out(h, d, x, y, opts, rc, s, (int)len, &ok)) return ok;
     }
     INT *pdx = 0;
     if (dx && (opts & 0x2000 /* ETO_PDY */)) {              /* x,y pairs: keep the x advances */
@@ -556,8 +613,9 @@ GDIAPI BOOL ExtTextOutW(HDC h, int x, int y, UINT opts, const RECT *rc, LPCWSTR 
         if (pdx) for (UINT i = 0; i < len; i++) pdx[i] = dx[2 * i];
     }
     BOOL r = text_out(d, x, y, s, (int)len, pdx ? pdx : dx, cp, (opts & 0x10 /* ETO_GLYPH_INDEX */) != 0,
-                      rc && (opts & 2) ? rc : 0);
+                      rc && (opts & 2) ? rc : 0, height);
     t_free(pdx);
+    t_free(tdx);
     return r;
 }
 
@@ -1235,8 +1293,13 @@ static DWORD glyph_native(Size *z, int gi, DWORD size, BYTE *buf)
 GDIAPI DWORD GetGlyphOutlineW(HDC h, UINT c, UINT fmt, void *gm_out, DWORD size, void *buf, const void *mat)
 {
     (void)mat;
-    Size *z = dc_size(dc_of(h), 0);
+    NOVA_DC *d = dc_of(h);
+    GObj *font;
+    Size *z = dc_size(d, &font);
     if (!z || !gm_out) return GDI_ERROR;
+    int th = scaled_height(d, font);                    /* in device space, as Windows measures */
+    if (th) z = size_for(face_index(font), th);
+    if (!z) return GDI_ERROR;
     UINT kind = fmt & 0x7F;                          /* without GGO_GLYPH_INDEX, GGO_UNHINTED */
     UINT32 key = fmt & 0x80 ? (c | 0x80000000u) : c;
     Glyph *g = glyph(z, key);

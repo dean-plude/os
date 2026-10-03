@@ -11,6 +11,7 @@ _NOVA_BEGIN
 
 /* The device context a program draws through — shared with user32, which
  * fills it from a window's client bitmap.  gdi32 rasterizes into `bits`. */
+#define NOVA_DC_CLIP_RECTS 128  /* a clip region with more is kept as its bounding box */
 typedef struct NOVA_DC {
     DWORD  *bits;          /* COLORREF pixels, top-down */
     int     stride;        /* pixels per row */
@@ -32,7 +33,8 @@ typedef struct NOVA_DC {
     struct NOVA_DC *saved; /* SaveDC stack */
     /* Clipping, in device pixels (the origin already applied).  user32
      * sets `vis` for a window's DC (the part of the window that shows);
-     * the program's clip region is `clip` (its bounding box). */
+     * the program's clip region is `clip` (its bounding box, and with
+     * more than one rectangle, those in `clip_rects`). */
     RECT     vis;
     int      has_vis;
     RECT     clip;
@@ -42,6 +44,8 @@ typedef struct NOVA_DC {
     int      base_x, base_y; /* where the window's origin is in `bits` (the viewport origin is relative to it) */
     int      gmode;        /* GM_ADVANCED, or 0 for GM_COMPATIBLE */
     float    xform[6];     /* the world transform (eM11 eM12 eM21 eM22 eDx eDy); all zero means identity */
+    int      nclip_rects;  /* > 1: the clip region is these rectangles (device pixels, not overlapping) */
+    RECT     clip_rects[NOVA_DC_CLIP_RECTS];
 } NOVA_DC;
 
 #define TRANSPARENT 1
@@ -265,6 +269,10 @@ typedef struct tagLOGPALETTE { WORD palVersion, palNumEntries; PALETTEENTRY palP
 typedef float FLOAT;
 typedef XFORM *PXFORM;
 typedef void *HMETAFILE;
+#ifndef _NOVA_HENHMETAFILE
+#define _NOVA_HENHMETAFILE
+typedef HANDLE HENHMETAFILE;
+#endif
 typedef struct tagFONTSIGNATURE { DWORD fsUsb[4]; DWORD fsCsb[2]; } FONTSIGNATURE, *PFONTSIGNATURE, *LPFONTSIGNATURE;
 typedef struct tagCHARSETINFO { UINT ciCharset; UINT ciACP; FONTSIGNATURE fs; } CHARSETINFO, *PCHARSETINFO, *LPCHARSETINFO;
 

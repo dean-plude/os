@@ -555,6 +555,8 @@ K32 BOOL WINAPI Thread32First(HANDLE h, LPVOID te) { (void)h; (void)te; SetLastE
 K32 BOOL WINAPI Thread32Next(HANDLE h, LPVOID te) { (void)h; (void)te; SetLastError(ERROR_NO_MORE_FILES); return FALSE; }
 K32 BOOL WINAPI Module32FirstW(HANDLE h, LPVOID me) { (void)h; (void)me; SetLastError(ERROR_NO_MORE_FILES); return FALSE; }
 K32 BOOL WINAPI Module32NextW(HANDLE h, LPVOID me) { (void)h; (void)me; SetLastError(ERROR_NO_MORE_FILES); return FALSE; }
+K32 BOOL WINAPI Module32First(HANDLE h, LPVOID me) { (void)h; (void)me; SetLastError(ERROR_NO_MORE_FILES); return FALSE; }
+K32 BOOL WINAPI Module32Next(HANDLE h, LPVOID me) { (void)h; (void)me; SetLastError(ERROR_NO_MORE_FILES); return FALSE; }
 
 /* -----------------------------------------------------------------------
  * Once-initialization and critical sections

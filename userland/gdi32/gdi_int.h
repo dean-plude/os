@@ -38,8 +38,11 @@ typedef struct GObj {
      * sync), kept in step with the 32-bit `bits` gdi32 draws on */
     BYTE *view24, *last24;
     int stride24, view_owned;
-    /* regions (a rectangle) */
+    /* regions: the bounding box, and with more than one rectangle, the
+     * rectangles (not overlapping, heap-allocated) */
     RECT rc;
+    RECT *rects;
+    int nrects;
     /* brushes: hatch style / pattern bitmap */
     int style;
     struct GObj *pattern;
@@ -50,6 +53,7 @@ extern int  g_stock_ready;
 void  stock_init(void);
 GObj *new_obj(int kind);
 GObj *obj_of(HGDIOBJ h);
+void  rgn_free(GObj *o);              /* region.c: a region's rectangles */
 
 /* -----------------------------------------------------------------------
  * Pixels.  Device coordinates are the logical ones plus the DC origin.
@@ -77,8 +81,19 @@ static inline int dev_visible(NOVA_DC *d, int x, int y)
     if (x < 0 || y < 0 || x >= d->w || y >= d->h) return 0;
     if (d->has_vis && (x < d->vis.left || x >= d->vis.right || y < d->vis.top || y >= d->vis.bottom)) return 0;
     if (d->has_clip && (x < d->clip.left || x >= d->clip.right || y < d->clip.top || y >= d->clip.bottom)) return 0;
+    if (d->has_clip && d->nclip_rects > 1) {
+        for (int i = 0; i < d->nclip_rects; i++) {
+            const RECT *c = &d->clip_rects[i];
+            if (x >= c->left && x < c->right && y >= c->top && y < c->bottom) return 1;
+        }
+        return 0;
+    }
     return 1;
 }
+
+/* A complex clip region's rectangles, for drawing that clips to one
+ * rectangle at a time: 0 when the clip is one rectangle (or none) */
+static inline int clip_pieces(NOVA_DC *d) { return d->has_clip && d->nclip_rects > 1 ? d->nclip_rects : 0; }
 
 /* Clip a device rectangle to where the DC may draw; false if nothing is left */
 static inline int dev_clip(NOVA_DC *d, RECT *r)
