@@ -108,6 +108,13 @@ static NetOp *fetch(const char *url, const char **body, UINT32 *blen, bool progr
     UINT16 port;
     bool https;
     if (!NetParseUrl(url, host, sizeof(host), &port, path, sizeof(path), &https)) { fail("Bad address: %s", url); return NULL; }
+    /* Just after a start the network may not have an address yet (DHCP):
+     * give it up to 30 seconds */
+    for (UINT64 until = sched_ticks() + 3000; sched_ticks() < until; sched_sleep_tick()) {
+        NetStatus ns;
+        NetGetStatus(&ns);
+        if (ns.configured || ns.ip || NetHasIp6()) break;
+    }
     for (int redirects = 0; redirects < 8; redirects++) {
         NetOp *op = NetResolve(host);
         if (!op) { fail("The network is busy."); return NULL; }
