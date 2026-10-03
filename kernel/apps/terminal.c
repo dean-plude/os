@@ -23,6 +23,7 @@
 #include "../um/um.h"
 #include "../fs/persist.h"
 #include "../hal/serial.h"
+#include "../hal/pci.h"
 #include "vterm.h"
 
 #define T_COLS   160
@@ -232,6 +233,7 @@ static void cmd_help(Term *t)
         "  store open          open the App Store window\n"
         "  store close         close the App Store window\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
+        "  devices             the PCI devices and the driver each one has (also: lspci)\n"
         "  vol  sync           where drive C: is saved; save it now\n"
         "  ipconfig            show the network configuration\n"
         "  ping [-4|-6] <host> [-n N]  test a connection (ICMP echo)\n"
@@ -524,6 +526,61 @@ static void cmd_start(Term *t, int argc, char **argv)
  * Network commands
  * ----------------------------------------------------------------------- */
 static void ip_str(UINT32 ip, char *buf) { NetFormatIp(ip, buf, 16); }
+
+/* devices: every PCI function found at boot and the driver that took it,
+ * so a new machine shows at once what NovaOS runs on it and what it lacks
+ * (docs/hardware.md) */
+static const char *vendor_name(UINT16 v)
+{
+    switch (v) {
+    case 0x8086: return "Intel";
+    case 0x10EC: return "Realtek";
+    case 0x1022: return "AMD";
+    case 0x1002: return "AMD/ATI";
+    case 0x10DE: return "NVIDIA";
+    case 0x14E4: return "Broadcom";
+    case 0x168C: case 0x17CB: return "Qualcomm";
+    case 0x144D: return "Samsung";
+    case 0x15B7: return "SanDisk/WD";
+    case 0x1987: return "Phison";
+    case 0x1C5C: return "SK hynix";
+    case 0x1E0F: return "KIOXIA";
+    case 0x1234: return "QEMU";
+    case 0x1B36: return "QEMU";
+    case 0x1AF4: return "virtio";
+    case 0x1013: return "Cirrus";
+    case 0x15AD: return "VMware";
+    default:     return "";
+    }
+}
+
+static void cmd_devices(Term *t)
+{
+    PciDevice d;
+    const char *drv;
+    int n = 0, with = 0, bridges = 0, without = 0;
+    tprint_ex(t, K_DIM, 0, "Slot     ID         Vendor      Class                Driver");
+    for (int i = 0; PciAt(i, &d, &drv); i++) {
+        bool bridge = d.class_code == 0x06;
+        const char *what = drv ? drv : bridge ? "(bridge)" : "no driver";
+        n++;
+        if (drv) with++;
+        else if (bridge) bridges++;
+        else without++;
+        char line[T_COLS];
+        int k = ksnprintf(line, sizeof(line), "%02x:%02x.%x  %04x:%04x  %s", d.bus, d.dev, d.func,
+                          d.vendor, d.device, vendor_name(d.vendor));
+        pad_to(line, k - (int)strlen(vendor_name(d.vendor)) + 12);    /* (ksnprintf has no %-12s) */
+        k = (int)strlen(line);
+        ksnprintf(line + k, sizeof(line) - k, "%s", PciClassName(&d));
+        pad_to(line, k + 21);
+        k = (int)strlen(line);
+        ksnprintf(line + k, sizeof(line) - k, "%s", what);
+        tprint_ex(t, drv || bridge ? K_NORMAL : K_ERROR, 0, line);
+    }
+    tprintf(t, "devices: %d PCI functions, %d with a driver, %d bridges, %d without a driver",
+            n, with, bridges, without);
+}
 
 /* usbcheck: the USB HID report parser on devices QEMU doesn't have
  * (media keys, five-button mice with a horizontal wheel, pens with tilt),
@@ -1478,6 +1535,7 @@ static void run_cmd(Term *t, char *cmdline)
     else if (is(c, "cls") || is(c, "clear"))    t->count = 0;
     else if (is(c, "tasklist"))                 cmd_tasklist(t);
     else if (is(c, "usbcheck"))                 cmd_usbcheck(t);
+    else if (is(c, "devices") || is(c, "lspci")) cmd_devices(t);
     else if (is(c, "taskkill"))                 cmd_taskkill(t, argc, argv);
     else if (is(c, "exit"))                     WmDestroyWindow(t->w);
     else {
