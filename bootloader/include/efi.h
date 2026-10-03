@@ -186,6 +186,10 @@ typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_FILE_OPEN)(
 typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_FILE_CLOSE)(
     EFI_FILE_PROTOCOL *This);
 
+/* Closes the file and deletes it (EFI_WARN_DELETE_FAILURE: closed, not deleted) */
+typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_FILE_DELETE)(
+    EFI_FILE_PROTOCOL *This);
+
 typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_FILE_READ)(
     EFI_FILE_PROTOCOL *This,
     UINTN             *BufferSize,
@@ -233,7 +237,7 @@ struct _EFI_FILE_PROTOCOL {
     UINT64                Revision;
     EFI_FILE_OPEN         Open;
     EFI_FILE_CLOSE        Close;
-    void                 *Delete;
+    EFI_FILE_DELETE       Delete;
     EFI_FILE_READ         Read;
     EFI_FILE_WRITE        Write;
     EFI_FILE_GET_POSITION GetPosition;

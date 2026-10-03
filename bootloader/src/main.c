@@ -68,6 +68,22 @@ static CHAR16 LOADER_PATH[] = { '\\','E','F','I','\\','B','O','O','T',
 static CHAR16 BOOTLOG_PATH[] = { '\\','E','F','I','\\','N','O','V','A',
                                  '\\','b','o','o','t','l','o','g','.','t','x','t', 0 };
 
+/* Updates (kernel/fs/update.c): NovaOS writes the new kernel as
+ * kernel.new, then the "pending" mark; this loader starts kernel.new once
+ * ("trying" in place of "pending"), and the new kernel, once it has
+ * reached the desktop, renames it to kernel.elf (the previous one becomes
+ * kernel.old) and deletes the mark.  A "trying" mark still there at the
+ * next start means the new kernel never got that far: the previous one
+ * starts and throws the update away. */
+static CHAR16 KERNEL_NEW_PATH[] = { '\\','E','F','I','\\','N','O','V','A',
+                                    '\\','k','e','r','n','e','l','.','n','e','w', 0 };
+static CHAR16 KERNEL_OLD_PATH[] = { '\\','E','F','I','\\','N','O','V','A',
+                                    '\\','k','e','r','n','e','l','.','o','l','d', 0 };
+static CHAR16 UPDATE_PENDING_PATH[] = { '\\','E','F','I','\\','N','O','V','A',
+                                        '\\','u','p','d','a','t','e','.','p','n','d', 0 };
+static CHAR16 UPDATE_TRYING_PATH[] = { '\\','E','F','I','\\','N','O','V','A',
+                                       '\\','u','p','d','a','t','e','.','t','r','y', 0 };
+
 /* The device we booted from, kept for detecting installation media */
 static EFI_HANDLE g_boot_device;
 
@@ -280,10 +296,94 @@ static EFI_STATUS read_boot_file(CHAR16 *path, UINT64 *phys_out, UINT64 *size_ou
     return EFI_SUCCESS;
 }
 
+/* Open @path on the boot volume with @mode (the root is closed again) */
+static EFI_STATUS open_boot_file(CHAR16 *path, UINT64 mode, EFI_FILE_PROTOCOL **file)
+{
+    EFI_GUID fs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs;
+    EFI_FILE_PROTOCOL *root;
+    EFI_STATUS status = g_bs->OpenProtocol(g_boot_device, &fs_guid, (VOID **)&fs,
+                                           g_image_handle, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
+    if (EFI_ERROR(status)) return status;
+    status = fs->OpenVolume(fs, &root);
+    if (EFI_ERROR(status)) return status;
+    status = root->Open(root, file, path, mode, 0);
+    root->Close(root);
+    return status;
+}
+
+/* An empty file at @path on the boot volume (a mark) */
+static BOOLEAN boot_file_create(CHAR16 *path)
+{
+    EFI_FILE_PROTOCOL *f;
+    if (EFI_ERROR(open_boot_file(path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, &f)))
+        return FALSE;
+    f->Close(f);
+    return TRUE;
+}
+
+static void boot_file_delete(CHAR16 *path)
+{
+    EFI_FILE_PROTOCOL *f;
+    if (!EFI_ERROR(open_boot_file(path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, &f)))
+        f->Delete(f);
+}
+
+/* Whether @path starts as an x86-64 ELF executable would (the updater
+ * checked the whole file's SHA-256 before staging it; this catches a file
+ * that is not a kernel at all, before the old one is given up on) */
+static BOOLEAN kernel_file_plausible(CHAR16 *path)
+{
+    EFI_FILE_PROTOCOL *f;
+    UINT8 h[64];
+    UINTN n = sizeof(h);
+    if (EFI_ERROR(open_boot_file(path, EFI_FILE_MODE_READ, &f))) return FALSE;
+    EFI_STATUS status = f->Read(f, &n, h);
+    f->Close(f);
+    return !EFI_ERROR(status) && n == sizeof(h) && h[0] == 0x7F && h[1] == 'E' && h[2] == 'L' && h[3] == 'F' &&
+           h[4] == 2 /* 64-bit */ && h[5] == 1 /* little-endian */ && h[16] == 2 /* ET_EXEC */ &&
+           h[18] == 0x3E && h[19] == 0 /* x86-64 */;
+}
+
+/* Which kernel to start on an installed disk, and the update flags for
+ * the kernel (see KERNEL_NEW_PATH) */
+static UINT64 choose_kernel(CHAR16 **path)
+{
+    UINT64 flags = 0;
+    *path = KERNEL_PATH;
+    if (boot_file_exists(UPDATE_PENDING_PATH)) {
+        /* "trying" first, then no "pending": a power cut between the two
+         * only means trying again */
+        if (kernel_file_plausible(KERNEL_NEW_PATH) && boot_file_create(UPDATE_TRYING_PATH)) {
+            boot_file_delete(UPDATE_PENDING_PATH);
+            console_printf("Starting the updated NovaOS (kernel.new) for the first time\r\n");
+            *path = KERNEL_NEW_PATH;
+            return BOOT_FLAG_UPDATE_TRIAL;
+        }
+        boot_file_delete(UPDATE_PENDING_PATH);
+        console_printf("The update's kernel is not usable: starting this NovaOS\r\n");
+        flags = BOOT_FLAG_UPDATE_FAILED;
+    } else if (boot_file_exists(UPDATE_TRYING_PATH)) {
+        boot_file_delete(UPDATE_TRYING_PATH);
+        if (boot_file_exists(KERNEL_NEW_PATH)) {
+            console_printf("The updated NovaOS did not finish starting last time: starting the previous one\r\n");
+            flags = BOOT_FLAG_UPDATE_FAILED;
+        }
+        /* (else it had started and was renaming the files when the power went) */
+    }
+    /* No kernel.elf: the power went between the update's two renames */
+    if (!boot_file_exists(KERNEL_PATH)) {
+        if (!flags && boot_file_exists(KERNEL_NEW_PATH)) *path = KERNEL_NEW_PATH;
+        else if (boot_file_exists(KERNEL_OLD_PATH)) *path = KERNEL_OLD_PATH;
+    }
+    return flags;
+}
+
 /* -----------------------------------------------------------------------
  * Open the kernel file from the ESP
  * ----------------------------------------------------------------------- */
-static EFI_STATUS open_kernel_file(EFI_FILE_PROTOCOL **file_out,
+static EFI_STATUS open_kernel_file(CHAR16             *path,
+                                    EFI_FILE_PROTOCOL **file_out,
                                     UINTN              *size_out)
 {
     EFI_STATUS                       status;
@@ -316,10 +416,9 @@ static EFI_STATUS open_kernel_file(EFI_FILE_PROTOCOL **file_out,
     CHECK(status, "OpenVolume");
 
     /* Open kernel file. */
-    status = root->Open(root, &file, KERNEL_PATH, EFI_FILE_MODE_READ, 0);
+    status = root->Open(root, &file, path, EFI_FILE_MODE_READ, 0);
     if (EFI_ERROR(status)) {
-        console_printf("Cannot open kernel at \\EFI\\NOVA\\kernel.elf: %x\r\n",
-                       (UINT64)status);
+        console_printf("Cannot open kernel at %S: %x\r\n", path, (UINT64)status);
         return status;
     }
 
@@ -560,11 +659,12 @@ jump_to_kernel(UINT64 cr3, UINT64 stack_top, UINT64 entry, UINT64 boot_info)
         /* Switch to kernel stack */
         "mov %1, %%rsp\n\t"
         "xor %%rbp, %%rbp\n\t"
-        /* Call kernel entry(boot_info) */
-        "mov %3, %%rdi\n\t"
+        /* Call kernel entry(boot_info): boot_info is already in rdi */
         "jmpq *%2\n\t"
         :
-        : "r"(cr3), "r"(stack_top), "r"(entry), "r"(boot_info)
+        /* (fixed registers: with "r" for all four the compiler could pick
+         * rdi for another operand, which loading boot_info overwrote) */
+        : "a"(cr3), "c"(stack_top), "d"(entry), "D"(boot_info)
         : "memory"
     );
     __builtin_unreachable();
@@ -588,10 +688,19 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(
                    (UINT64)(SystemTable->FirmwareRevision >> 16),
                    (UINT64)(SystemTable->FirmwareRevision & 0xFFFF));
 
-    /* 1. Load the kernel ELF ----------------------------------------- */
+    /* 1. Load the kernel ELF: on an installed disk, maybe an update's
+     *    (choose_kernel) ------------------------------------------------- */
+    EFI_GUID li_guid0 = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL *self;
+    if (!EFI_ERROR(g_bs->OpenProtocol(ImageHandle, &li_guid0, (VOID **)&self, ImageHandle, NULL,
+                                      EFI_OPEN_PROTOCOL_GET_PROTOCOL)))
+        g_boot_device = self->DeviceHandle;
+    BOOLEAN live = booted_from_cd() || boot_file_exists(BOOTLOG_PATH);
+    CHAR16 *kernel_path = KERNEL_PATH;
+    UINT64 update_flags = live ? 0 : choose_kernel(&kernel_path);
     EFI_FILE_PROTOCOL *kernel_file;
     UINTN              kernel_file_size;
-    EFI_STATUS status = open_kernel_file(&kernel_file, &kernel_file_size);
+    EFI_STATUS status = open_kernel_file(kernel_path, &kernel_file, &kernel_file_size);
     CHECK(status, "open_kernel_file");
 
     UINT64 kernel_entry, kernel_phys, kernel_virt, kernel_size;
@@ -616,8 +725,8 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(
     /* 2b. Installation media (the ISO, on a CD or written to a USB
      *     stick): hand the boot files to the kernel so its installer can
      *     copy them to a disk ------------------------------------------- */
-    UINT64 boot_flags = 0, media_kernel = 0, media_kernel_size = 0, media_loader = 0, media_loader_size = 0;
-    if (booted_from_cd() || boot_file_exists(BOOTLOG_PATH)) {
+    UINT64 boot_flags = update_flags, media_kernel = 0, media_kernel_size = 0, media_loader = 0, media_loader_size = 0;
+    if (live) {
         boot_flags |= BOOT_FLAG_LIVE_MEDIA;
         if (booted_from_usb()) {
             boot_flags |= BOOT_FLAG_LIVE_USB;

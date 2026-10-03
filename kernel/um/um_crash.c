@@ -129,7 +129,7 @@ void um_crash_report(UmProcess *p, const char *what, UINT32 status, UINT64 rip, 
         threads, threads == 1 ? "" : "s");
     if (exe) add(&r, "Path:       %s\n", exe->path);
     add_time(&r, &t);
-    add(&r, "NovaOS:     %s\n\n", NOVA_VERSION);
+    add(&r, "NovaOS:     %s\n\n", NovaVersion());
     add(&r, "Exception:  %s (0x%08X)\n", what, status);
     if (at) add(&r, "At:         %s+0x%llx (0x%llx)\n", at->name, (unsigned long long)(rip - at->base),
                 (unsigned long long)rip);
@@ -197,7 +197,7 @@ void UmCrashKernel(void)
     add(&r, KERNEL_TITLE "\n");
     add(&r, "==========================\n\n");
     add_time(&r, &t);
-    add(&r, "NovaOS:     %s\n\n", NOVA_VERSION);
+    add(&r, "NovaOS:     %s\n\n", NovaVersion());
     add(&r, "The kernel's log up to the crash (the backtrace is at the end):\n\n");
     add_log(&r, KERNEL_CAP - 1024);
     if (PersistPanicWrite(text, r.n))
