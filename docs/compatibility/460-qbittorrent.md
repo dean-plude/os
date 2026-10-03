@@ -1,0 +1,1 @@
+| **qBittorrent** (App Store) | Untested | | — |

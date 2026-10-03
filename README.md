@@ -8,13 +8,18 @@ ABI, the Win32 API, the loader, a GUI, and the drivers underneath.  64-bit
 (x64, PE32+) programs run natively, and 32-bit (x86, PE32) ones run through
 NovaOS's own WoW64 layer, as on 64-bit Windows.
 
-**Status:** Phases 1–15 are done.  NovaOS boots on UEFI machines (tested in
-QEMU with OVMF), uses every CPU core, keeps its files on a SATA disk, and
-runs unmodified Windows programs: 7-Zip, Git, NSIS installers, `.msi`
-packages (with their own dialogs, custom actions, shortcuts and
-services), the Java, .NET, Node.js and Python runtimes, and OpenGL, Vulkan
-and Direct3D 8–11 programs through Mesa and DXVK.  It can install
-itself on a disk from its live ISO.
+**Status:** working towards the first release, 0.1 (Phase 22 of the
+roadmap).  NovaOS boots on UEFI machines (tested in QEMU with OVMF; no
+real PC has been checked yet, see [docs/hardware.md](docs/hardware.md)),
+uses every CPU core, keeps its files on a SATA or NVMe disk, and runs
+unmodified Windows programs: 7-Zip, Git, Notepad++, Firefox, VLC,
+Audacity, KeePassXC, Inkscape, NSIS installers, `.msi` packages (with
+their own dialogs, custom actions, shortcuts and services), the Java,
+.NET, Node.js and Python runtimes, and OpenGL, Vulkan and Direct3D 8–11
+programs through Mesa and DXVK.  It can install itself on a disk from its
+live ISO.  New to NovaOS?  Start with the
+[user guide](docs/user-guide.md); [docs/compatibility.md](docs/compatibility.md)
+lists the programs that run.
 
 - [Screenshots](#screenshots)
 - [What runs today](#what-runs-today)
@@ -250,8 +255,8 @@ Install the prerequisites, build the bootloader, the kernel with the whole
 userland inside, and `nova.img`, then run it in QEMU:
 
 ```bash
-sudo apt install cmake nasm clang lld llvm python3 \
-                 qemu-system-x86 ovmf mtools dosfstools xorriso
+sudo apt install cmake nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
+                 python3 qemu-system-x86 ovmf mtools dosfstools xorriso
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
@@ -578,6 +583,11 @@ os/
 
 ## Documentation
 
+- [docs/user-guide.md](docs/user-guide.md): using NovaOS: trying it in a
+  virtual machine, installing it, the desktop and its apps, installing
+  programs.
+- [docs/compatibility.md](docs/compatibility.md): which Windows programs
+  run, how well, and how each was checked.
 - [CONTRIBUTING.md](CONTRIBUTING.md): where a change goes (one file per
   DLL, test and doc item, so parallel pull requests do not conflict) and
   how to merge main into a branch.

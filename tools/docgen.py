@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build the generated parts of README.md, docs/ROADMAP.md,
-docs/HISTORY.md and docs/building.md from one-file-per-item fragments.
+docs/HISTORY.md, docs/building.md and docs/compatibility.md from
+one-file-per-item fragments.
 
     tools/docgen.py                 rewrite the generated regions in place
     tools/docgen.py --check         exit 1 if a region is out of date
@@ -19,6 +20,7 @@ Parallel pull requests used to collide on the same lines of these files
   docs/readme/inside/*.md      README's "What is inside" items
   docs/readme/licenses/*.md    README's list of bundled licences
   docs/selftests/*.md          docs/building.md's self-test program table
+  docs/compatibility/*.md      docs/compatibility.md's program table
   tests/selftest/core/*.py     README's core self-test list (their DOC)
   tests/appcorpus/*.py         README's nightly app list (their DOC)
   userland/programs/*.json     README's self-test programs ("selftest")
@@ -116,6 +118,10 @@ REGIONS = {
     },
     'docs/building.md': {
         'selftest-table': (lambda: table(['Program', 'Covers'], 'docs/selftests'), 'docs/selftests/*.md'),
+    },
+    'docs/compatibility.md': {
+        'compat-table': (lambda: table(['Program', 'Status', 'What works', 'Checked by'], 'docs/compatibility'),
+                         'docs/compatibility/*.md'),
     },
     'docs/HISTORY.md': {
         'history': (lambda: blocks('docs/history'), 'docs/history/*.md'),
