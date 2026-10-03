@@ -15,6 +15,16 @@ deadline already did.
   interrupts) with a reschedule flag, and that CPU switches in the
   interrupt.  A CPU halted waiting for the kernel lock doesn't switch in
   the middle of that wait; its next timer tick does.
+- **A CPU waiting for the kernel lock** wakes none of its sleepers, so a
+  thread due on it waited as long as the lock's holder kept the lock.
+  Saving drive C: after a big install keeps it for seconds under
+  emulation, and the device poll thread due on the waiting CPU waited
+  with it: the PS/2 controller's buffer filled and keystrokes were lost
+  (graphics CI typed `store install DXK`).  Now the timer interrupt taken
+  during that wait hands a due deadline sleeper that doesn't hold the
+  lock to another CPU, as a timer wake.  Two graphics runs side by side
+  on one machine lost a keystroke this way 4 times in 4 (the old
+  scheduler too); with the hand-off, 6 in 6 passed.
 - **The preempted thread** goes back after the woken threads but ahead of
   the rest (as on NT), not last, so a waker its wakee preempts doesn't
   wait out every other thread's slice; and it keeps what it has used of

@@ -213,6 +213,12 @@ set, a lock released, no priority difference) queue the thread last and
 wait for the running thread's slice: preempting a lock's releaser makes
 lock convoys.
 
+A CPU halted waiting for the kernel lock wakes none of its sleepers.  The
+timer interrupt it takes meanwhile (`sched_timer_rearm`) hands a due
+TSC-deadline sleeper that doesn't hold the lock to another CPU, as a
+timer wake: the device poll thread then keeps draining the keyboard while
+another CPU holds the lock for seconds (saving drive C:).
+
 ### Scheduler Design
 
 **Algorithm**: Round-robin with fixed 20ms time quantum
