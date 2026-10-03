@@ -25,10 +25,19 @@
  * Wnd.dpi_k: its bitmap holds k x k pixels per logical pixel (the kernel's
  * CTL_SET_SCALE), its frame insets are k times the desktop's, and the
  * mouse positions the desktop sends are multiplied by k.  Child windows
- * use their top-level's scale.  One process has one awareness (a thread's
- * SetThreadDpiAwarenessContext is remembered and reported, and a
- * window keeps the context it was created under, but coordinates follow
- * the process's).
+ * use their top-level's scale.
+ *
+ * The awareness belongs to a thread (SetThreadDpiAwarenessContext; the
+ * process's, from the manifest, the compatibility layer or
+ * SetProcessDpiAwareness*, by default) and then to the windows it makes:
+ * a top-level window keeps the context it was created under, its
+ * coordinates are that awareness's, and while its window procedure (or a
+ * child's) runs the thread has that context, as on Windows.  So an
+ * unaware thread of an aware process makes windows the desktop scales up,
+ * and an aware thread of an unaware one makes windows with 192 DPI pixels.
+ * user32's own controls, fonts and non-client parts are sized by their
+ * top-level window's DPI (dpi_k); GetSystemMetrics and the stock fonts by
+ * the system DPI the thread sees.
  */
 #include "u32.h"
 
@@ -47,7 +56,8 @@
 static int   g_mode = -1;           /* DPI_* (PROCESS_DPI_AWARENESS); -1: not decided yet */
 static int   g_v2;                  /* per-monitor aware v2 */
 static int   g_fixed;               /* set by the manifest, the compatibility layer or a call */
-static int   g_sys_k = 1;           /* the system DPI's scale, taken when the mode is decided */
+static int   g_sys_k = 1;           /* the system DPI's scale, taken when the mode is decided ... */
+static int   g_sys_set;             /* ... (or when an aware thread first needs it) */
 static DWORD g_tls = TLS_OUT_OF_INDEXES;   /* a thread's own context (SetThreadDpiAwarenessContext) */
 
 /* -----------------------------------------------------------------------
@@ -114,25 +124,27 @@ static LONGLONG dist2(const RECT *r, POINT p)
     return dx * dx + dy * dy;
 }
 
-/* Monitor i in this process's coordinates */
-static void proc_rect(int i, RECT *o)
+static int sys_k(void);
+
+/* Monitor i in the coordinates of awareness @m (not DPI_UNAWARE) */
+static void proc_rect(int m, int i, RECT *o)
 {
     const RECT *r = &g_mon[i].r;
-    int d = g_mode == DPI_SYSTEM_AWARE ? g_sys_k : g_mon[i].d;
-    int D = g_mode == DPI_SYSTEM_AWARE ? g_sys_k : g_dmax;
+    int d = m == DPI_SYSTEM_AWARE ? sys_k() : g_mon[i].d;
+    int D = m == DPI_SYSTEM_AWARE ? sys_k() : g_dmax;
     o->left = r->left * D; o->top = r->top * D;
     o->right = o->left + (r->right - r->left) * d;
     o->bottom = o->top + (r->bottom - r->top) * d;
 }
 
-/* The monitor holding a point (logical, or this process's), else the nearest */
-static int mon_at(POINT p, int proc)
+/* The monitor holding a point (logical, or awareness @m's), else the nearest */
+static int mon_at(int m, POINT p, int proc)
 {
     int best = 0;
     LONGLONG bd = -1;
     for (int i = 0; i < g_nmon; i++) {
         RECT r;
-        if (proc) proc_rect(i, &r); else r = g_mon[i].r;
+        if (proc) proc_rect(m, i, &r); else r = g_mon[i].r;
         LONGLONG d = dist2(&r, p);
         if (bd < 0 || d < bd) { bd = d; best = i; }
     }
@@ -152,7 +164,7 @@ static int mon_of_rect(const RECT *lr)
     }
     if (best >= 0) return best;
     POINT c = { (lr->left + lr->right) / 2, (lr->top + lr->bottom) / 2 };
-    return mon_at(c, 0);
+    return mon_at(DPI_UNAWARE, c, 0);
 }
 
 static int floordiv(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
@@ -249,9 +261,21 @@ static void decide(int mode, int v2)
     g_mode = mode;
     g_v2 = mode == DPI_PER_MONITOR_AWARE && v2;
     g_sys_k = 1;
+    g_sys_set = 0;
     if (mode == DPI_UNAWARE) return;                        /* (nothing to convert: no monitors needed) */
-    dpi_refresh();
-    g_sys_k = g_mon[0].d;                                   /* the primary's, from now on */
+    sys_k();
+}
+
+/* The system DPI's scale: the primary's when the process (or its first
+ * aware thread, in an unaware process) started using it, from then on */
+static int sys_k(void)
+{
+    if (!g_sys_set) {
+        dpi_refresh();
+        g_sys_k = g_mon[0].d;
+        g_sys_set = 1;
+    }
+    return g_sys_k;
 }
 
 int dpi_mode(void)
@@ -264,7 +288,6 @@ int dpi_mode(void)
     return g_mode;
 }
 
-static int aware(void) { return dpi_mode() != DPI_UNAWARE; }
 
 /* Any window made yet (the awareness can't change after that) */
 static int has_windows(void)
@@ -318,81 +341,148 @@ HANDLE dpi_thread_context(void)
     return t ? t : ctx_of(g_mode, g_v2);
 }
 
+/* The calling thread's awareness (*v2: per-monitor v2) */
+static int thread_mode(int *v2)
+{
+    int x;
+    int m = ctx_mode(dpi_thread_context(), v2 ? v2 : &x);
+    return m < 0 ? DPI_UNAWARE : m;
+}
+
+static int aware(void) { return thread_mode(NULL) != DPI_UNAWARE; }
+
+/* A window's context: its top-level window's, which it was made under */
+static HANDLE wnd_ctx(Wnd *w)
+{
+    Wnd *t = w ? top_of(w) : NULL;
+    if (t && t->dpi_ctx) return t->dpi_ctx;
+    if (w && w->dpi_ctx) return w->dpi_ctx;
+    dpi_mode();
+    return ctx_of(g_mode, g_v2);
+}
+
+static int wnd_mode(Wnd *w, int *v2)
+{
+    int x;
+    int m = ctx_mode(wnd_ctx(w), v2 ? v2 : &x);
+    return m < 0 ? DPI_UNAWARE : m;
+}
+
+static void tls_ready(void)
+{
+    if (g_tls != TLS_OUT_OF_INDEXES) return;
+    LOCK();
+    if (g_tls == TLS_OUT_OF_INDEXES) g_tls = TlsAlloc();
+    UNLOCK();
+}
+
+/* While a window procedure runs, its thread has the window's context (as
+ * on Windows): 1 if it was switched, and *saved is what to put back */
+int dpi_enter(Wnd *w, HANDLE *saved)
+{
+    if (!w) return 0;
+    Wnd *t = top_of(w);
+    HANDLE c = t ? t->dpi_ctx : NULL;
+    if (!c) return 0;
+    if (g_tls == TLS_OUT_OF_INDEXES) {
+        dpi_mode();
+        if (c == ctx_of(g_mode, g_v2)) return 0;            /* (the usual case: one awareness) */
+        tls_ready();
+        if (g_tls == TLS_OUT_OF_INDEXES) return 0;
+    }
+    HANDLE cur = TlsGetValue(g_tls);
+    if (cur == c || (!cur && c == ctx_of(g_mode, g_v2))) return 0;
+    *saved = cur;
+    TlsSetValue(g_tls, c);
+    return 1;
+}
+
+void dpi_leave(HANDLE saved) { if (g_tls != TLS_OUT_OF_INDEXES) TlsSetValue(g_tls, saved); }
+
 /* -----------------------------------------------------------------------
  * Coordinates
  * ----------------------------------------------------------------------- */
 int dpi_aware(void) { return aware(); }
+int dpi_wnd_aware(Wnd *w) { return wnd_mode(w, NULL) != DPI_UNAWARE; }
 
 int dpi_k(Wnd *w)
 {
-    if (!w || !aware()) return 1;
+    if (!w) return 1;
     Wnd *t = top_of(w);
-    return t && t->dpi_k > 1 ? t->dpi_k : 1;
+    if (!t || t->dpi_k <= 1 || wnd_mode(t, NULL) == DPI_UNAWARE) return 1;
+    return t->dpi_k;
 }
 
-int dpi_sys_k(void) { return aware() ? g_sys_k : 1; }
+int dpi_sys_k(void) { return aware() ? sys_k() : 1; }
 
-/* The scale a top-level window at logical frame @lr gets */
-static int k_for_logical(const RECT *lr)
+/* The scale a top-level window of awareness @m at logical frame @lr gets */
+static int k_for_logical(int m, const RECT *lr)
 {
-    if (g_mode == DPI_SYSTEM_AWARE) return g_sys_k;
-    if (g_mode != DPI_PER_MONITOR_AWARE) return 1;
+    if (m == DPI_SYSTEM_AWARE) return sys_k();
+    if (m != DPI_PER_MONITOR_AWARE) return 1;
     have();
     return g_mon[mon_of_rect(lr)].d;
 }
 
-/* The scale a new top-level window at @r (this process's coordinates) gets */
-int dpi_k_for_proc_rect(const RECT *r)
+/* A logical screen point in awareness @m's coordinates, and back */
+static void to_proc(int m, POINT *p)
 {
-    if (!aware()) return 1;
-    POINT a = { r->left, r->top }, b = { r->right, r->bottom };
-    dpi_to_logical(&a);
-    dpi_to_logical(&b);
-    RECT lr = { a.x, a.y, b.x > a.x ? b.x : a.x + 1, b.y > a.y ? b.y : a.y + 1 };
-    return k_for_logical(&lr);
-}
-
-void dpi_to_proc(POINT *p)
-{
-    if (!aware()) return;
-    if (g_mode == DPI_SYSTEM_AWARE) { p->x *= g_sys_k; p->y *= g_sys_k; return; }
+    if (m == DPI_UNAWARE) return;
+    if (m == DPI_SYSTEM_AWARE) { int k = sys_k(); p->x *= k; p->y *= k; return; }
     have();
-    int i = mon_at(*p, 0), d = g_mon[i].d;
+    int i = mon_at(m, *p, 0), d = g_mon[i].d;
     p->x = g_mon[i].r.left * g_dmax + (p->x - g_mon[i].r.left) * d;
     p->y = g_mon[i].r.top * g_dmax + (p->y - g_mon[i].r.top) * d;
 }
 
-void dpi_to_logical(POINT *p)
+static void to_logical(int m, POINT *p)
 {
-    if (!aware()) return;
-    if (g_mode == DPI_SYSTEM_AWARE) { p->x = floordiv(p->x, g_sys_k); p->y = floordiv(p->y, g_sys_k); return; }
+    if (m == DPI_UNAWARE) return;
+    if (m == DPI_SYSTEM_AWARE) { int k = sys_k(); p->x = floordiv(p->x, k); p->y = floordiv(p->y, k); return; }
     have();
-    int i = mon_at(*p, 1), d = g_mon[i].d;
+    int i = mon_at(m, *p, 1), d = g_mon[i].d;
     p->x = g_mon[i].r.left + floordiv(p->x - g_mon[i].r.left * g_dmax, d);
     p->y = g_mon[i].r.top + floordiv(p->y - g_mon[i].r.top * g_dmax, d);
+}
+
+void dpi_to_proc(POINT *p) { to_proc(thread_mode(NULL), p); }
+void dpi_to_logical(POINT *p) { to_logical(thread_mode(NULL), p); }
+
+/* The scale a new top-level window made by this thread for @owner (or
+ * on the primary monitor) gets: dialog fonts are made at it */
+int dpi_new_k(Wnd *owner)
+{
+    int m = thread_mode(NULL);
+    if (m == DPI_UNAWARE) return 1;
+    if (m == DPI_SYSTEM_AWARE) return sys_k();
+    if (owner && wnd_mode(owner, NULL) == DPI_PER_MONITOR_AWARE) return dpi_k(owner);
+    have();
+    return g_mon[0].d;
 }
 
 /* A rectangle on one monitor (its top left decides which), corner by corner */
 void dpi_rect_to_proc(RECT *r)
 {
-    if (!aware()) return;
+    int m = thread_mode(NULL);
+    if (m == DPI_UNAWARE) return;
     POINT a = { r->left, r->top };
     int w = r->right - r->left, h = r->bottom - r->top, k;
-    if (g_mode == DPI_SYSTEM_AWARE) k = g_sys_k;
-    else { have(); k = g_mon[mon_at(a, 0)].d; }
-    dpi_to_proc(&a);
+    if (m == DPI_SYSTEM_AWARE) k = sys_k();
+    else { have(); k = g_mon[mon_at(m, a, 0)].d; }
+    to_proc(m, &a);
     SetRect(r, a.x, a.y, a.x + w * k, a.y + h * k);
 }
 
-/* Monitor @i's rectangle and work area for this process (display.c) */
+/* Monitor @i's rectangle and work area for this thread (display.c) */
 void dpi_monitor_to_proc(int i, RECT *r, RECT *work)
 {
-    if (!aware()) return;
+    int mode = thread_mode(NULL);
+    if (mode == DPI_UNAWARE) return;
     have();
     if (i < 0 || i >= g_nmon) return;
-    int d = g_mode == DPI_SYSTEM_AWARE ? g_sys_k : g_mon[i].d;
+    int d = mode == DPI_SYSTEM_AWARE ? sys_k() : g_mon[i].d;
     RECT m = g_mon[i].r, pr;
-    proc_rect(i, &pr);
+    proc_rect(mode, i, &pr);
     if (work) {
         work->left = pr.left + (work->left - m.left) * d;
         work->top = pr.top + (work->top - m.top) * d;
@@ -404,10 +494,11 @@ void dpi_monitor_to_proc(int i, RECT *r, RECT *work)
 
 int dpi_monitor_dpi(int i)
 {
-    if (!aware()) return 96;
+    int m = thread_mode(NULL);
+    if (m == DPI_UNAWARE) return 96;
     have();
     if (i < 0 || i >= g_nmon) return 96;
-    if (g_mode == DPI_SYSTEM_AWARE) return 96 * g_sys_k;
+    if (m == DPI_SYSTEM_AWARE) return 96 * sys_k();
     return 96 * g_mon[i].d;
 }
 
@@ -421,13 +512,14 @@ static int near_(LONG a, LONG b, int k) { return a - b < k && b - a < k; }
 
 void dpi_from_kernel(Wnd *w, const INT32 r[9], int k, RECT *rect, POINT *bmp, int *bw, int *bh)
 {
-    if (!aware()) {
+    int m = wnd_mode(w, NULL);
+    if (m == DPI_UNAWARE) {
         SetRect(rect, r[4], r[5], r[4] + r[6], r[5] + r[7]);
         bmp->x = r[0]; bmp->y = r[1]; *bw = r[2]; *bh = r[3];
         return;
     }
     POINT o = { r[4], r[5] };
-    dpi_to_proc(&o);
+    to_proc(m, &o);
     if (near_(o.x, w->rect.left, k)) o.x = w->rect.left;
     if (near_(o.y, w->rect.top, k)) o.y = w->rect.top;
     int fw = r[6] * k, fh = r[7] * k;
@@ -445,7 +537,7 @@ void dpi_to_kernel(Wnd *w, const RECT *b, INT32 out[4])
 {
     POINT o = { b->left, b->top };
     int k = dpi_k(w);
-    dpi_to_logical(&o);
+    to_logical(wnd_mode(w, NULL), &o);
     out[0] = o.x; out[1] = o.y;
     out[2] = (b->right - b->left + k - 1) / k;
     out[3] = (b->bottom - b->top + k - 1) / k;
@@ -454,9 +546,10 @@ void dpi_to_kernel(Wnd *w, const RECT *b, INT32 out[4])
 /* The desktop window's rectangle: the primary monitor */
 void dpi_desktop_rect(RECT *r)
 {
-    if (!aware()) return;
+    int m = thread_mode(NULL);
+    if (m == DPI_UNAWARE) return;
     have();
-    proc_rect(0, r);
+    proc_rect(m, 0, r);
 }
 
 /* The pointer's position (logical) in this process's coordinates */
@@ -505,11 +598,12 @@ static void children_notify(Wnd *w, UINT msg)
 static void dpi_changed(Wnd *w, int nk, const INT32 r[9])
 {
     HWND h = w->h;
+    int v2, m = wnd_mode(w, &v2);
     POINT o = { r[4], r[5] };
-    dpi_to_proc(&o);
+    to_proc(m, &o);
     RECT sug = { o.x, o.y, o.x + r[6] * nk, o.y + r[7] * nk };
     g_in_change++;
-    if (g_v2) {                                             /* the program may pick the size */
+    if (v2) {                                             /* the program may pick the size */
         SIZE sz = { sug.right - sug.left, sug.bottom - sug.top };
         if (send_msg(w, WM_GETDPISCALEDSIZE_, 96 * nk, (LPARAM)&sz) && W_quiet(h) && sz.cx > 0 && sz.cy > 0) {
             sug.right = sug.left + sz.cx;
@@ -532,7 +626,7 @@ static void dpi_changed(Wnd *w, int nk, const INT32 r[9])
         wnd_set_pos(w, 0, sug.left, sug.top, sug.right - sug.left, sug.bottom - sug.top, SWP_NOZORDER | SWP_NOACTIVATE);
     if (W_quiet(h)) {
         top_resized(w);                                     /* every pixel is drawn anew */
-        if (g_v2) children_notify(w, WM_DPICHANGED_AFTERPARENT_);
+        if (v2) children_notify(w, WM_DPICHANGED_AFTERPARENT_);
     }
     g_in_change--;
 }
@@ -541,7 +635,7 @@ static void dpi_changed(Wnd *w, int nk, const INT32 r[9])
  * at another DPI now?  1 if it got WM_DPICHANGED (and is in place). */
 int dpi_check(Wnd *w, const INT32 *kr)
 {
-    if (g_in_change || !w || w->parent || !w->kid || dpi_mode() != DPI_PER_MONITOR_AWARE) return 0;
+    if (g_in_change || !w || w->parent || !w->kid || wnd_mode(w, NULL) != DPI_PER_MONITOR_AWARE) return 0;
     INT32 r[9];
     if (!kr) {
         if (!NtNovaGuiCtl(w->kid, CTL_GET_RECT, 0, r)) return 0;
@@ -549,7 +643,7 @@ int dpi_check(Wnd *w, const INT32 *kr)
     }
     if (kr[8] & 4) return 0;                                /* minimized: not on a monitor */
     RECT lr = { kr[4], kr[5], kr[4] + kr[6], kr[5] + kr[7] };
-    int nk = k_for_logical(&lr), ok = w->dpi_k > 1 ? w->dpi_k : 1;
+    int nk = k_for_logical(DPI_PER_MONITOR_AWARE, &lr), ok = w->dpi_k > 1 ? w->dpi_k : 1;
     if (nk == ok) return 0;
     dpi_changed(w, nk, kr);
     return 1;
@@ -558,15 +652,20 @@ int dpi_check(Wnd *w, const INT32 *kr)
 /* WM_NOVA_DPI / WM_DISPLAYCHANGE from the desktop: the monitors changed */
 void dpi_monitors_changed(Wnd *top)
 {
-    dpi_refresh();
+    g_have = 0;                                             /* (read again when next needed) */
     if (top) dpi_check(top, NULL);
 }
 
-/* A new desktop window: its scale and GuiCreate's flag */
+/* A new desktop window at @b (its awareness's coordinates): its scale */
 int dpi_new_window(Wnd *w, const RECT *b)
 {
-    if (!aware()) return 0;
-    w->dpi_k = dpi_k_for_proc_rect(b);
+    int m = wnd_mode(w, NULL);
+    if (m == DPI_UNAWARE) return 0;
+    POINT a = { b->left, b->top }, c = { b->right, b->bottom };
+    to_logical(m, &a);
+    to_logical(m, &c);
+    RECT lr = { a.x, a.y, c.x > a.x ? c.x : a.x + 1, c.y > a.y ? c.y : a.y + 1 };
+    w->dpi_k = k_for_logical(m, &lr);
     return 1;
 }
 
@@ -605,11 +704,7 @@ USERAPI HANDLE SetThreadDpiAwarenessContext(HANDLE ctx)
     int v2, m = ctx_mode(ctx, &v2);
     if (m < 0) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
     HANDLE old = dpi_thread_context();
-    if (g_tls == TLS_OUT_OF_INDEXES) {
-        LOCK();
-        if (g_tls == TLS_OUT_OF_INDEXES) g_tls = TlsAlloc();
-        UNLOCK();
-    }
+    tls_ready();
     if (g_tls != TLS_OUT_OF_INDEXES) TlsSetValue(g_tls, ctx_of(m, v2));
     return old;
 }
@@ -618,15 +713,37 @@ USERAPI HANDLE GetWindowDpiAwarenessContext(HWND h)
 {
     Wnd *w = W(h);
     if (!w) return NULL;
-    return w->dpi_ctx ? w->dpi_ctx : ctx_of(dpi_mode(), g_v2);
+    return w->dpi_ctx ? w->dpi_ctx : wnd_ctx(w);
 }
+
+/* The DPI_AWARENESS_CONTEXT a thread of another process would see is not
+ * known here; DPI_HOSTING_BEHAVIOR (mixed hosting) is accepted and kept */
+static DWORD g_hosting_tls = TLS_OUT_OF_INDEXES;
+USERAPI int SetThreadDpiHostingBehavior(int v)
+{
+    if (v < 0 || v > 1) return -1;
+    if (g_hosting_tls == TLS_OUT_OF_INDEXES) {
+        LOCK();
+        if (g_hosting_tls == TLS_OUT_OF_INDEXES) g_hosting_tls = TlsAlloc();
+        UNLOCK();
+    }
+    if (g_hosting_tls == TLS_OUT_OF_INDEXES) return -1;
+    int old = (int)(INT_PTR)TlsGetValue(g_hosting_tls);
+    TlsSetValue(g_hosting_tls, (void *)(INT_PTR)v);
+    return old;
+}
+USERAPI int GetThreadDpiHostingBehavior(void)
+{
+    return g_hosting_tls == TLS_OUT_OF_INDEXES ? 0 : (int)(INT_PTR)TlsGetValue(g_hosting_tls);
+}
+USERAPI int GetWindowDpiHostingBehavior(HWND h) { (void)h; return 0; }
 
 USERAPI int GetAwarenessFromDpiAwarenessContext(HANDLE ctx) { int v2; return ctx_mode(ctx, &v2); }
 USERAPI UINT GetDpiFromDpiAwarenessContext(HANDLE ctx)
 {
     int v2, m = ctx_mode(ctx, &v2);
     dpi_mode();
-    return m == DPI_SYSTEM_AWARE ? 96 * (unsigned)g_sys_k : m == DPI_UNAWARE ? 96 : 0;
+    return m == DPI_SYSTEM_AWARE ? 96 * (unsigned)sys_k() : m == DPI_UNAWARE ? 96 : 0;
 }
 USERAPI BOOL AreDpiAwarenessContextsEqual(HANDLE a, HANDLE b)
 {

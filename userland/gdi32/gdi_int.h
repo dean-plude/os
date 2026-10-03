@@ -45,7 +45,9 @@ typedef struct GObj {
     struct GObj *pattern;
 } GObj;
 
-extern GObj g_stock[20];
+#define STOCK_HIDPI 20               /* g_stock[20...]: the stock fonts at 192 DPI */
+#define STOCK_SLOTS (STOCK_HIDPI + DEFAULT_GUI_FONT - OEM_FIXED_FONT + 1)
+extern GObj g_stock[STOCK_SLOTS];
 extern int  g_stock_ready;
 void  stock_init(void);
 GObj *new_obj(int kind);

@@ -16,6 +16,15 @@
  * window gets WM_DPICHANGED and twice the pixels while an unaware child
  * keeps seeing 96 DPI and logical pixels and a system-aware one sees 192
  * everywhere, then sets 96 again.
+ *
+ * At 192 DPI it also checks user32's own parts in windows of both DPIs:
+ * a window made by a thread whose context is DPI-unaware (and one made by
+ * this per-monitor-aware thread) gets list box items, a combo box field,
+ * a vertical scroll bar, a menu bar and a dialog's DLUs and font at 96
+ * (twice that at 192 DPI); the metrics and stock fonts follow the system
+ * DPI the thread sees; a window procedure runs with its window's context.
+ * The children do the same the other way round: an aware thread in the
+ * unaware process, an unaware one in the system-aware process.
  */
 #include <windows.h>
 #include <winternl.h>
@@ -177,6 +186,214 @@ static void check_window(HWND hw, int k, int x, int y, int w, int h, const char 
 }
 
 /* -----------------------------------------------------------------------
+ * user32's own controls, menus, scroll bars and dialogs at a window's DPI
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    int dpi;                            /* GetDpiForWindow */
+    int aware;                          /* the window's context's awareness */
+    int lb_item, cb_field;              /* LB_GETITEMHEIGHT, CB_GETITEMHEIGHT -1 */
+    int sb_w, menu_h;                   /* the vertical scroll bar's width, the menu bar's height */
+    int dlu_x, dlu_y;                   /* MapDialogRect of 100 x 100 DLUs */
+    int dlg_cw, dlg_ch;                 /* a 200 x 100 DLU dialog's client area */
+    int proc_aware;                     /* the awareness its window procedure ran with */
+    RECT wr;                            /* GetWindowRect */
+} Meas;
+
+static int g_proc_aware = -2;
+
+static LRESULT CALLBACK ctlproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
+{
+    if (m == WM_APP) {
+        g_proc_aware = GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());
+        return 1;
+    }
+    return DefWindowProcW(h, m, wp, lp);
+}
+
+static INT_PTR CALLBACK dlgproc(HWND h, UINT m, WPARAM wp, LPARAM lp) { (void)h; (void)m; (void)wp; (void)lp; return FALSE; }
+
+/* A 200 x 100 DLU dialog in 8-point MS Shell Dlg, as resource scripts make them */
+static HWND make_dialog(HWND owner)
+{
+    static DWORD buf[32];
+    memset(buf, 0, sizeof(buf));
+    DLGTEMPLATE *t = (DLGTEMPLATE *)buf;
+    t->style = WS_POPUP | WS_CAPTION | DS_SETFONT;
+    t->x = 10; t->y = 10; t->cx = 200; t->cy = 100;
+    WORD *p = (WORD *)((BYTE *)buf + 18);
+    *p++ = 0; *p++ = 0; *p++ = 0;                           /* no menu, the dialog class, no title */
+    *p++ = 8;
+    const WCHAR *f = L"MS Shell Dlg";
+    while (*f) *p++ = *f++;
+    *p = 0;
+    return CreateDialogIndirectParamW(GetModuleHandleW(NULL), t, owner, dlgproc, 0);
+}
+
+/* Measure a window made at (x, y) w x h by this thread, in its context */
+static void measure(Meas *o, int x, int y, int w, int h)
+{
+    WNDCLASSW wc;
+    memset(&wc, 0, sizeof(wc));
+    wc.lpfnWndProc = ctlproc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.lpszClassName = L"dpictl";
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    RegisterClassW(&wc);
+    HMENU menu = CreateMenu();
+    AppendMenuW(menu, MF_STRING, 1, L"&File");
+    AppendMenuW(menu, MF_STRING, 2, L"&Help");
+    HWND hw = CreateWindowExW(0, L"dpictl", L"dpitest controls", WS_OVERLAPPEDWINDOW | WS_VSCROLL, x, y, w, h,
+                              NULL, menu, wc.hInstance, NULL);
+    memset(o, 0, sizeof(*o));
+    if (!hw) return;
+    HWND lb = CreateWindowExW(0, L"ListBox", NULL, WS_CHILD | WS_VISIBLE | WS_BORDER, 10, 10, 100, 100, hw, (HMENU)10, NULL, NULL);
+    HWND cb = CreateWindowExW(0, L"ComboBox", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 120, 10, 100, 200, hw, (HMENU)11, NULL, NULL);
+    SendMessageW(lb, LB_ADDSTRING, 0, (LPARAM)L"one");
+    SendMessageW(cb, CB_ADDSTRING, 0, (LPARAM)L"one");
+    ShowWindow(hw, SW_SHOWNOACTIVATE);
+    UpdateWindow(hw);
+    pump(200);
+    o->dpi = (int)GetDpiForWindow(hw);
+    o->aware = GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(hw));
+    o->lb_item = (int)SendMessageW(lb, LB_GETITEMHEIGHT, 0, 0);
+    o->cb_field = (int)SendMessageW(cb, CB_GETITEMHEIGHT, (WPARAM)-1, 0);
+    RECT wr, cr;
+    GetWindowRect(hw, &wr);
+    GetClientRect(hw, &cr);
+    o->wr = wr;
+    int k = o->dpi / 96;
+    o->sb_w = (wr.right - wr.left - 2 * k) - cr.right;           /* the frame: a k-pixel border */
+    o->menu_h = (wr.bottom - wr.top - 33 * k) - cr.bottom;        /* ... and a 32k-pixel title bar */
+    HWND dlg = make_dialog(hw);
+    if (dlg) {
+        RECT d = { 0, 0, 100, 100 };
+        MapDialogRect(dlg, &d);
+        o->dlu_x = d.right; o->dlu_y = d.bottom;
+        GetClientRect(dlg, &d);
+        o->dlg_cw = d.right; o->dlg_ch = d.bottom;
+        DestroyWindow(dlg);
+    }
+    g_proc_aware = -2;
+    SendMessageW(hw, WM_APP, 0, 0);
+    o->proc_aware = g_proc_aware;
+    DestroyWindow(hw);
+    DestroyMenu(menu);
+    pump(50);
+}
+
+static void check_near(long got, long want, long tol, const char *what)
+{
+    char b[160];
+    snprintf(b, sizeof(b), "%s: %ld, expected %ld (+-%ld)", what, got, want, tol);
+    check(got >= want - tol && got <= want + tol, b);
+}
+
+/* @hi (192 DPI) against @lo (96 DPI): user32's parts twice the size */
+static void check_scaled(const Meas *lo, const Meas *hi, const char *who)
+{
+    char what[120];
+#define W_(s) (snprintf(what, sizeof(what), "%s: %s", who, s), what)
+    printf("%s: 96 DPI: item %d, field %d, scroll bar %d, menu bar %d, DLUs %d x %d, dialog %d x %d\n", who,
+           lo->lb_item, lo->cb_field, lo->sb_w, lo->menu_h, lo->dlu_x, lo->dlu_y, lo->dlg_cw, lo->dlg_ch);
+    printf("%s: 192 DPI: item %d, field %d, scroll bar %d, menu bar %d, DLUs %d x %d, dialog %d x %d\n", who,
+           hi->lb_item, hi->cb_field, hi->sb_w, hi->menu_h, hi->dlu_x, hi->dlu_y, hi->dlg_cw, hi->dlg_ch);
+    checkv(lo->dpi, 96, W_("GetDpiForWindow of the 96 DPI window"));
+    checkv(hi->dpi, 192, W_("GetDpiForWindow of the 192 DPI window"));
+    checkv(lo->sb_w, GetSystemMetricsForDpi(SM_CXVSCROLL, 96), W_("scroll bar width at 96"));
+    checkv(hi->sb_w, GetSystemMetricsForDpi(SM_CXVSCROLL, 192), W_("scroll bar width at 192"));
+    /* text: the font is twice the size, which rounds its own way */
+    check_near(hi->lb_item, 2 * lo->lb_item, 2, W_("list box item height at 192"));
+    check_near(hi->cb_field, 2 * lo->cb_field, 2, W_("combo box field height at 192"));
+    check_near(hi->menu_h, 2 * lo->menu_h, 2, W_("menu bar height at 192"));
+    check(lo->lb_item >= 14 && lo->menu_h >= 18, W_("96 DPI sizes are plausible"));
+    /* dialogs: 8 points is 10.67 px at 96 DPI and 21.33 at 192 */
+    check_near(hi->dlu_x, 2 * lo->dlu_x, lo->dlu_x / 5, W_("MapDialogRect x at 192"));
+    check_near(hi->dlu_y, 2 * lo->dlu_y, lo->dlu_y / 5, W_("MapDialogRect y at 192"));
+    check_near(hi->dlg_cw, 2 * lo->dlg_cw, lo->dlg_cw / 5, W_("dialog client width at 192"));
+    check_near(hi->dlg_ch, 2 * lo->dlg_ch, lo->dlg_ch / 5, W_("dialog client height at 192"));
+    check(lo->dlu_x > 100 && lo->dlu_y > 100, W_("DLUs at 96 are plausible"));
+#undef W_
+}
+
+/* The metrics and stock fonts at the system DPI the thread sees */
+static void check_system_parts(int k, const char *who)
+{
+    char what[120];
+#define W_(s) (snprintf(what, sizeof(what), "%s: %s", who, s), what)
+    checkv((long)GetDpiForSystem(), 96 * k, W_("GetDpiForSystem"));
+    checkv(GetSystemMetrics(SM_CXVSCROLL), 17 * k, W_("SM_CXVSCROLL"));
+    checkv(GetSystemMetrics(SM_CYMENU), 20 * k, W_("SM_CYMENU"));
+    checkv(GetSystemMetrics(SM_CYCAPTION), 31 * k, W_("SM_CYCAPTION"));
+    LOGFONTW lf;
+    memset(&lf, 0, sizeof(lf));
+    GetObjectW(GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf);
+    checkv(lf.lfHeight, -12 * k, W_("DEFAULT_GUI_FONT height"));
+    NONCLIENTMETRICSW nm;
+    memset(&nm, 0, sizeof(nm));
+    nm.cbSize = sizeof(nm);
+    check(SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0), W_("SPI_GETNONCLIENTMETRICS"));
+    checkv(nm.lfMessageFont.lfHeight, -12 * k, W_("NONCLIENTMETRICS message font height"));
+    checkv(nm.lfCaptionFont.lfHeight, -12 * k, W_("NONCLIENTMETRICS caption font height"));
+    checkv(nm.iScrollWidth, 17 * k, W_("NONCLIENTMETRICS scroll width"));
+    NONCLIENTMETRICSA na;
+    memset(&na, 0, sizeof(na));
+    na.cbSize = sizeof(na);
+    check(SystemParametersInfoA(SPI_GETNONCLIENTMETRICS, sizeof(na), &na, 0), W_("SPI_GETNONCLIENTMETRICS (A)"));
+    checkv(na.lfMessageFont.lfHeight, -12 * k, W_("NONCLIENTMETRICSA message font height"));
+    check(!strcmp(na.lfMessageFont.lfFaceName, "Segoe UI"), W_("NONCLIENTMETRICSA message font face"));
+    /* any DPI, whatever the thread's */
+    memset(&nm, 0, sizeof(nm));
+    nm.cbSize = sizeof(nm);
+    check(SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0, 192), W_("SystemParametersInfoForDpi"));
+    checkv(nm.lfMenuFont.lfHeight, -24, W_("SystemParametersInfoForDpi menu font at 192"));
+    checkv(nm.iMenuHeight, 38, W_("SystemParametersInfoForDpi menu height at 192"));
+    checkv(GetSystemMetricsForDpi(SM_CXVSCROLL, 96), 17, W_("GetSystemMetricsForDpi at 96"));
+    checkv(GetSystemMetricsForDpi(SM_CXVSCROLL, 192), 34, W_("GetSystemMetricsForDpi at 192"));
+#undef W_
+}
+
+/* The DPI_AWARENESS_CONTEXT pseudo-handles */
+static void check_contexts(void)
+{
+    checkv(GetAwarenessFromDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE), DPI_AWARENESS_UNAWARE, "UNAWARE's awareness");
+    checkv(GetAwarenessFromDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE), DPI_AWARENESS_SYSTEM_AWARE, "SYSTEM_AWARE's awareness");
+    checkv(GetAwarenessFromDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE), DPI_AWARENESS_PER_MONITOR_AWARE, "PER_MONITOR_AWARE's awareness");
+    checkv(GetAwarenessFromDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2), DPI_AWARENESS_PER_MONITOR_AWARE, "PER_MONITOR_AWARE_V2's awareness");
+    checkv(GetAwarenessFromDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED), DPI_AWARENESS_UNAWARE, "UNAWARE_GDISCALED's awareness");
+    checkv(GetAwarenessFromDpiAwarenessContext((DPI_AWARENESS_CONTEXT)(LONG_PTR)-77), DPI_AWARENESS_INVALID, "an invalid context");
+    check(!AreDpiAwarenessContextsEqual(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2),
+          "per-monitor v1 and v2 differ");
+    check(AreDpiAwarenessContextsEqual(DPI_AWARENESS_CONTEXT_UNAWARE, DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED),
+          "UNAWARE and UNAWARE_GDISCALED are both unaware");
+    check(!IsValidDpiAwarenessContext((DPI_AWARENESS_CONTEXT)(LONG_PTR)-77), "IsValidDpiAwarenessContext");
+    check(!SetThreadDpiAwarenessContext((DPI_AWARENESS_CONTEXT)(LONG_PTR)-77) && GetLastError() == ERROR_INVALID_PARAMETER,
+          "SetThreadDpiAwarenessContext refuses an invalid context");
+}
+
+/* A thread whose context is @ctx measures a window at (x, y) w x h */
+typedef struct { DPI_AWARENESS_CONTEXT ctx; int x, y, w, h; Meas m; int sys_dpi, cx_screen, aware; } ThreadJob;
+
+static DWORD WINAPI thread_measure(void *p)
+{
+    ThreadJob *j = p;
+    SetThreadDpiAwarenessContext(j->ctx);
+    j->aware = GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());
+    j->sys_dpi = (int)GetDpiForSystem();
+    j->cx_screen = GetSystemMetrics(SM_CXSCREEN);
+    measure(&j->m, j->x, j->y, j->w, j->h);
+    return 0;
+}
+
+static void in_thread(ThreadJob *j)
+{
+    HANDLE t = CreateThread(NULL, 0, thread_measure, j, 0, NULL);
+    check(t != NULL, "CreateThread");
+    if (!t) return;
+    check(WaitForSingleObject(t, 60000) == WAIT_OBJECT_0, "the measuring thread finished");
+    CloseHandle(t);
+}
+
+/* -----------------------------------------------------------------------
  * The children: an unaware and a system-aware process, by __COMPAT_LAYER
  * ----------------------------------------------------------------------- */
 static int child(const char *mode, int mw, int mh)
@@ -202,6 +419,35 @@ static int child(const char *mode, int mw, int mh)
     snprintf(what, sizeof(what), "%s child", mode);
     check_window(hw, k, 100 * k, 100 * k, 400 * k, 300 * k, what);
     DestroyWindow(hw);
+
+    /* user32's parts at the system DPI, and a thread of the other kind:
+     * an aware one in the unaware process, an unaware one in the
+     * system-aware process */
+    snprintf(what, sizeof(what), "%s child", mode);
+    check_system_parts(k, what);
+    Meas mine, other;
+    measure(&mine, 100 * k, 100 * k, 400 * k, 300 * k);
+    snprintf(what, sizeof(what), "%s child: its window's awareness", mode);
+    checkv(mine.aware, k == 2 ? DPI_AWARENESS_SYSTEM_AWARE : DPI_AWARENESS_UNAWARE, what);
+    ThreadJob j;
+    memset(&j, 0, sizeof(j));
+    j.ctx = k == 2 ? DPI_AWARENESS_CONTEXT_UNAWARE : DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2;
+    int ok = k == 2 ? 1 : 2;                                /* the other thread's scale */
+    j.x = 100 * ok; j.y = 100 * ok; j.w = 400 * ok; j.h = 300 * ok;
+    in_thread(&j);
+    other = j.m;
+    snprintf(what, sizeof(what), "%s child: the other thread's context", mode);
+    checkv(j.aware, k == 2 ? DPI_AWARENESS_UNAWARE : DPI_AWARENESS_PER_MONITOR_AWARE, what);
+    snprintf(what, sizeof(what), "%s child: the other thread's window's context", mode);
+    checkv(other.aware, j.aware, what);
+    snprintf(what, sizeof(what), "%s child: the other thread's SM_CXSCREEN", mode);
+    checkv(j.cx_screen, mw * ok, what);
+    snprintf(what, sizeof(what), "%s child: the other thread's window rectangle", mode);
+    check_rect(other.wr, (RECT){ 100 * ok, 100 * ok, 500 * ok, 400 * ok }, what);
+    snprintf(what, sizeof(what), "%s child: its window procedure's context", mode);
+    checkv(other.proc_aware, j.aware, what);
+    snprintf(what, sizeof(what), "%s child", mode);
+    if (k == 2) check_scaled(&other, &mine, what); else check_scaled(&mine, &other, what);
     printf("dpitest %s child: %d passed, %d failed\n", mode, g_pass, g_fail);
     return g_fail;
 }
@@ -286,6 +532,47 @@ int main(int argc, char **argv)
     AdjustWindowRectExForDpi(&a, WS_OVERLAPPEDWINDOW, FALSE, 0, 192);
     check_rect(a, (RECT){ -2, -64, 402, 302 }, "AdjustWindowRectExForDpi at 192");
     checkv(GetSystemMetricsForDpi(SM_CXVSCROLL, 192), 2 * GetSystemMetrics(SM_CXVSCROLL), "GetSystemMetricsForDpi");
+
+    /* user32's own parts: a window of this (per-monitor aware) thread is
+     * at 192 DPI, one an unaware thread makes at 96; the metrics and stock
+     * fonts follow the system DPI, 96 here (the process started at 96) */
+    check_contexts();
+    check_system_parts(1, "per-monitor process");
+    Meas hi, lo;
+    measure(&hi, 200, 200, 800, 600);
+    check_rect(hi.wr, (RECT){ 200, 200, 1000, 800 }, "the 192 DPI window's rectangle");
+    checkv(hi.aware, DPI_AWARENESS_PER_MONITOR_AWARE, "the 192 DPI window's context");
+    checkv(hi.proc_aware, DPI_AWARENESS_PER_MONITOR_AWARE, "the 192 DPI window procedure's context");
+    ThreadJob j;
+    memset(&j, 0, sizeof(j));
+    j.ctx = DPI_AWARENESS_CONTEXT_UNAWARE;
+    j.x = 100; j.y = 100; j.w = 400; j.h = 300;
+    in_thread(&j);
+    lo = j.m;
+    checkv(j.aware, DPI_AWARENESS_UNAWARE, "the unaware thread's context");
+    checkv(j.sys_dpi, 96, "the unaware thread's GetDpiForSystem");
+    checkv(j.cx_screen, mw, "the unaware thread's SM_CXSCREEN (logical pixels)");
+    checkv(lo.aware, DPI_AWARENESS_UNAWARE, "the unaware thread's window's context");
+    checkv(lo.proc_aware, DPI_AWARENESS_UNAWARE, "the unaware window procedure's context");
+    check_rect(lo.wr, (RECT){ 100, 100, 500, 400 }, "the unaware thread's window rectangle (logical pixels)");
+    check_scaled(&lo, &hi, "per-monitor process");
+    check(AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(), DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2),
+          "this thread's context is still its own");
+    /* a window made under another context keeps it, and its window
+     * procedure runs with it whichever thread context sends to it */
+    HANDLE prev = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE);
+    HWND uw = CreateWindowExW(0, L"dpictl", L"unaware", WS_OVERLAPPEDWINDOW, 100, 100, 300, 200, NULL, NULL, GetModuleHandleW(NULL), NULL);
+    SetThreadDpiAwarenessContext(prev);
+    check(uw != NULL, "a window made under the unaware context");
+    checkv(GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(uw)), DPI_AWARENESS_UNAWARE,
+           "GetWindowDpiAwarenessContext of it");
+    checkv((long)GetDpiForWindow(uw), 96, "GetDpiForWindow of it");
+    g_proc_aware = -2;
+    SendMessageW(uw, WM_APP, 0, 0);
+    checkv(g_proc_aware, DPI_AWARENESS_UNAWARE, "its window procedure runs unaware");
+    check(AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(), DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2),
+          "the thread's context afterwards");
+    DestroyWindow(uw);
 
     /* other processes: unaware keeps 96 DPI and logical pixels; system
      * aware (started now) sees the primary's 192 everywhere */

@@ -33,17 +33,23 @@ USERAPI BOOL SetSysColors(int n, const INT *idx, const COLORREF *c)
     return TRUE;
 }
 
-static HFONT g_gui_font, g_gui_bold;
-HFONT gui_font(void)
+/* Segoe UI 9 points at k times 96 DPI (k = 1, 2: the DPIs NovaOS has) */
+static HFONT g_gui_font[3], g_gui_bold[3];
+HFONT gui_font_k(int k)
 {
-    if (!g_gui_font) g_gui_font = CreateFontW(-12, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
-    return g_gui_font;
+    if (k < 1 || k > 2) k = 1;
+    if (!g_gui_font[k]) g_gui_font[k] = CreateFontW(-12 * k, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    return g_gui_font[k];
 }
-HFONT gui_font_bold(void)
+HFONT gui_font_bold_k(int k)
 {
-    if (!g_gui_bold) g_gui_bold = CreateFontW(-12, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
-    return g_gui_bold;
+    if (k < 1 || k > 2) k = 1;
+    if (!g_gui_bold[k]) g_gui_bold[k] = CreateFontW(-12 * k, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    return g_gui_bold[k];
 }
+HFONT gui_font(void) { return gui_font_k(1); }
+int is_gui_font(HFONT f) { return f && (f == g_gui_font[1] || f == g_gui_font[2]); }
+HFONT ctl_font(Wnd *w) { return w->font ? w->font : gui_font_k(dpi_k(w)); }
 
 /* -----------------------------------------------------------------------
  * Pixels (for the few things GDI has no call for: XOR, alpha icons)

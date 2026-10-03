@@ -8,12 +8,16 @@
 /* -----------------------------------------------------------------------
  * Shared drawing
  * ----------------------------------------------------------------------- */
-static HFONT g_font;
-HFONT cc_font(void)
+static HFONT g_font[3];
+static HFONT font_k(int k)
 {
-    if (!g_font) g_font = CreateFontW(-12, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
-    return g_font;
+    if (!g_font[k]) g_font[k] = CreateFontW(-12 * k, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    return g_font[k];
 }
+HFONT cc_font(void) { return font_k(1); }
+
+/* The UI font at the window's DPI (twice the size in a 192 DPI window) */
+HFONT cc_font_for(HWND h) { return font_k(h && GetDpiForWindow(h) >= 192 ? 2 : 1); }
 
 void cc_fill(HDC dc, const RECT *r, COLORREF c)
 {

@@ -17,7 +17,7 @@ static int is_check(DWORD t) { return t == BS_CHECKBOX || t == BS_AUTOCHECKBOX |
 static int is_radio(DWORD t) { return t == BS_RADIOBUTTON || t == BS_AUTORADIOBUTTON; }
 static int is_push(DWORD t) { return t == BS_PUSHBUTTON || t == BS_DEFPUSHBUTTON || t == BS_SPLITBUTTON || t == BS_DEFSPLITBUTTON || t == BS_COMMANDLINK || t == BS_DEFCOMMANDLINK; }
 
-static HFONT wfont(Wnd *w) { return w->font ? w->font : gui_font(); }
+static HFONT wfont(Wnd *w) { return ctl_font(w); }
 
 static void redraw(Wnd *w) { invalidate(w, NULL, FALSE, 0); }
 
@@ -29,13 +29,10 @@ static void draw_push_frame(HDC dc, RECT *r, Btn *b, Wnd *w, int is_default)
     else if (b->pushed || (b->check && (w->style & BS_PUSHLIKE))) { fill = 0xF7E4CC; border = 0x995400; }
     else if (b->hot) { fill = 0xFBF1E5; border = 0xD77800; }
     else if (is_default || b->focus) border = 0xD77800;
+    int k = dpi_k(w), lines = (is_default || b->focus) && !disabled && !b->pushed ? 2 * k : k;
     fill_rect(dc, r, fill);
-    frame_rect(dc, r, border);
-    if ((is_default || b->focus) && !disabled && !b->pushed) {
-        RECT i = *r;
-        InflateRect(&i, -1, -1);
-        frame_rect(dc, &i, border);
-    }
+    RECT i = *r;
+    for (int n = 0; n < lines; n++) { frame_rect(dc, &i, border); InflateRect(&i, -1, -1); }
 }
 
 static UINT text_align(Wnd *w, UINT def)
@@ -88,6 +85,7 @@ static void paint(Wnd *w, HDC dc)
     Btn *b = w->ctl;
     RECT r = { 0, 0, w->client.right - w->client.left, w->client.bottom - w->client.top };
     DWORD t = BTYPE(w);
+    int k = dpi_k(w);                                       /* (sizes at the window's DPI) */
     int disabled = (w->style & WS_DISABLED) != 0;
     HGDIOBJ of = SelectObject(dc, wfont(w));
     SetBkMode(dc, TRANSPARENT);
@@ -108,7 +106,7 @@ static void paint(Wnd *w, HDC dc)
         draw_push_frame(dc, &r, b, w, t == BS_DEFPUSHBUTTON || t == BS_DEFSPLITBUTTON || t == BS_DEFCOMMANDLINK);
         SetTextColor(dc, disabled ? 0x838383 : sys_color(COLOR_BTNTEXT));
         RECT tr = r;
-        InflateRect(&tr, -4, -2);
+        InflateRect(&tr, -4 * k, -2 * k);
         if (w->style & (BS_ICON | BS_BITMAP)) draw_image(dc, w, b, &r);
         else draw_label(dc, w, &tr, text_align(w, DT_CENTER), 0);
         if (b->focus && !disabled && 0) { RECT f = r; InflateRect(&f, -3, -3); draw_focus(dc, &f); }
@@ -122,27 +120,27 @@ static void paint(Wnd *w, HDC dc)
         int fh = font_height(dc);
         RECT fr = r;
         fr.top += fh / 2;
-        frame_rect(dc, &fr, 0xDCDCDC);
+        for (int n = 0; n < k; n++) { frame_rect(dc, &fr, 0xDCDCDC); InflateRect(&fr, -1, -1); }
         const WCHAR *txt = w->text ? w->text : L"";
         if (*txt) {
-            RECT m = { 0, 0, r.right - 16, fh };
+            RECT m = { 0, 0, r.right - 16 * k, fh };
             DrawTextW(dc, txt, -1, &m, DT_CALCRECT | DT_SINGLELINE | DT_HIDEPREFIX);
-            RECT tb = { 6, 0, 6 + (m.right - m.left) + 4, fh };
-            if (tb.right > r.right - 6) tb.right = r.right - 6;
+            RECT tb = { 6 * k, 0, 6 * k + (m.right - m.left) + 4 * k, fh };
+            if (tb.right > r.right - 6 * k) tb.right = r.right - 6 * k;
             FillRect(dc, &tb, bg);
             SetTextColor(dc, disabled ? sys_color(COLOR_GRAYTEXT) : tc);
-            RECT tt = { tb.left + 2, 0, tb.right, fh };
+            RECT tt = { tb.left + 2 * k, 0, tb.right, fh };
             DrawTextW(dc, txt, -1, &tt, DT_SINGLELINE | DT_HIDEPREFIX | DT_END_ELLIPSIS);
         }
         SelectObject(dc, of);
         return;
     }
     FillRect(dc, &r, bg);
-    int box = 13;
+    int box = 13 * k;
     int right = (w->style & BS_LEFTTEXT) != 0;
     int by;
-    if ((w->style & BS_VCENTER) == BS_TOP) by = r.top + 1;
-    else if ((w->style & BS_VCENTER) == BS_BOTTOM) by = r.bottom - box - 1;
+    if ((w->style & BS_VCENTER) == BS_TOP) by = r.top + k;
+    else if ((w->style & BS_VCENTER) == BS_BOTTOM) by = r.bottom - box - k;
     else by = r.top + (r.bottom - r.top - box) / 2;
     RECT br = { right ? r.right - box : r.left, by, right ? r.right : r.left + box, by + box };
     COLORREF fill = 0xFFFFFF, border = 0x333333, mark = 0x333333;
@@ -151,14 +149,14 @@ static void paint(Wnd *w, HDC dc)
     else if (b->hot) { border = 0xD77800; mark = 0xD77800; }
     if (is_radio(t)) {
         HBRUSH fb = CreateSolidBrush(fill);
-        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HPEN pen = CreatePen(PS_SOLID, k, border);
         HGDIOBJ ob = SelectObject(dc, fb), op = SelectObject(dc, pen);
         Ellipse(dc, br.left, br.top, br.right, br.bottom);
         if (b->check) {
             HBRUSH mb = CreateSolidBrush(mark);
             SelectObject(dc, mb);
             SelectObject(dc, GetStockObject(NULL_PEN));
-            Ellipse(dc, br.left + 3, br.top + 3, br.right - 2, br.bottom - 2);
+            Ellipse(dc, br.left + 3 * k, br.top + 3 * k, br.right - 2 * k, br.bottom - 2 * k);
             SelectObject(dc, fb);
             DeleteObject(mb);
         }
@@ -166,12 +164,13 @@ static void paint(Wnd *w, HDC dc)
         DeleteObject(fb); DeleteObject(pen);
     } else {
         fill_rect(dc, &br, fill);
-        frame_rect(dc, &br, border);
+        RECT fr = br;
+        for (int n = 0; n < k; n++) { frame_rect(dc, &fr, border); InflateRect(&fr, -1, -1); }
         if (b->check == BST_CHECKED) draw_check_mark(dc, br.left, br.top, box, mark);
-        else if (b->check == BST_INDETERMINATE) { RECT i = br; InflateRect(&i, -3, -3); fill_rect(dc, &i, mark); }
+        else if (b->check == BST_INDETERMINATE) { RECT i = br; InflateRect(&i, -3 * k, -3 * k); fill_rect(dc, &i, mark); }
     }
     RECT tr = r;
-    if (right) tr.right -= box + 5; else tr.left += box + 5;
+    if (right) tr.right -= box + 5 * k; else tr.left += box + 5 * k;
     SetTextColor(dc, disabled ? sys_color(COLOR_GRAYTEXT) : tc);
     if (w->style & (BS_ICON | BS_BITMAP)) draw_image(dc, w, b, &tr);
     else draw_label(dc, w, &tr, text_align(w, DT_LEFT), 0);

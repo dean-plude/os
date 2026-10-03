@@ -30,8 +30,8 @@ int cb_is_string_msg(Wnd *w, UINT msg)
     return !(w->style & (CBS_OWNERDRAWFIXED | CBS_OWNERDRAWVARIABLE)) || (w->style & CBS_HASSTRINGS);
 }
 
-static HFONT cfont(Wnd *w) { return w->font ? w->font : gui_font(); }
-static int btn_w(void) { return GetSystemMetrics(SM_CXVSCROLL); }
+static HFONT cfont(Wnd *w) { return ctl_font(w); }
+static int btn_w(Wnd *w) { return sb_width_k(dpi_k(w)); }   /* (at the window's DPI) */
 
 static void cnotify(Wnd *w, UINT code) { if (w->parent) notify_parent(w, code); }
 
@@ -45,7 +45,7 @@ static void field_rect(Wnd *w, Cb *c, RECT *r)
 static void button_rect(Wnd *w, Cb *c, RECT *r)
 {
     field_rect(w, c, r);
-    r->left = r->right - btn_w();
+    r->left = r->right - btn_w(w);
 }
 
 /* The current item's text into the edit box */
@@ -185,7 +185,7 @@ static void paint(Wnd *w, Cb *c, HDC dc)
 {
     RECT f;
     field_rect(w, c, &f);
-    int disabled = (w->style & WS_DISABLED) != 0;
+    int disabled = (w->style & WS_DISABLED) != 0, k = dpi_k(w);
     HGDIOBJ of = SelectObject(dc, cfont(w));
     SetBkMode(dc, TRANSPARENT);
     if (CBTYPE(w) == CBS_DROPDOWNLIST) {
@@ -195,9 +195,10 @@ static void paint(Wnd *w, Cb *c, HDC dc)
         else if (c->hot) { fill = 0xFBF1E5; border = 0xD77800; }
         else if (c->focus) border = 0xD77800;
         fill_rect(dc, &f, fill);
-        frame_rect(dc, &f, border);
+        RECT fr = f;
+        for (int n = 0; n < k; n++) { frame_rect(dc, &fr, border); InflateRect(&fr, -1, -1); }
         RECT tr = f;
-        tr.left += 3; tr.top += 2; tr.bottom -= 2; tr.right -= btn_w();
+        tr.left += 3 * k; tr.top += 2 * k; tr.bottom -= 2 * k; tr.right -= btn_w(w);
         int i = (int)lb(c, LB_GETCURSEL, 0, 0);
         if (w->style & (CBS_OWNERDRAWFIXED | CBS_OWNERDRAWVARIABLE)) {
             DRAWITEMSTRUCT di;
@@ -218,7 +219,7 @@ static void paint(Wnd *w, Cb *c, HDC dc)
                 buf[0] = 0;
                 if (lb(c, LB_GETTEXTLEN, (WPARAM)i, 0) < 512) lb(c, LB_GETTEXT, (WPARAM)i, (LPARAM)buf);
                 RECT t2 = tr;
-                t2.left += 2;
+                t2.left += 2 * k;
                 DrawTextW(dc, buf, -1, &t2, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
             }
         }
@@ -228,28 +229,30 @@ static void paint(Wnd *w, Cb *c, HDC dc)
     } else if (CBTYPE(w) == CBS_DROPDOWN) {
         HBRUSH bg = ctl_color(w, WM_CTLCOLOREDIT, dc);
         FillRect(dc, &f, bg);
-        frame_rect(dc, &f, disabled ? 0xBFBFBF : (c->hot || c->focus) ? 0xD77800 : 0x7A7A7A);
+        RECT fr = f;
+        for (int n = 0; n < k; n++) { frame_rect(dc, &fr, disabled ? 0xBFBFBF : (c->hot || c->focus) ? 0xD77800 : 0x7A7A7A); InflateRect(&fr, -1, -1); }
         RECT b;
         button_rect(w, c, &b);
-        InflateRect(&b, 0, -1);
-        b.right -= 1;
+        InflateRect(&b, 0, -k);
+        b.right -= k;
         COLORREF bf = c->pressed || c->dropped ? 0xF7E4CC : c->hot ? 0xFBF1E5 : 0;
         if (bf && !disabled) fill_rect(dc, &b, bf);
         draw_arrow(dc, &b, 1, disabled ? sys_color(COLOR_GRAYTEXT) : 0x606060);
     } else {
         HBRUSH bg = ctl_color(w, WM_CTLCOLOREDIT, dc);
         FillRect(dc, &f, bg);
-        frame_rect(dc, &f, 0x7A7A7A);
+        RECT fr = f;
+        for (int n = 0; n < k; n++) { frame_rect(dc, &fr, 0x7A7A7A); InflateRect(&fr, -1, -1); }
     }
     SelectObject(dc, of);
 }
 
 static void layout(Wnd *w, Cb *c)
 {
-    int cw = w->client.right - w->client.left;
+    int cw = w->client.right - w->client.left, k = dpi_k(w);
     if (c->edit) {
-        if (CBTYPE(w) == CBS_SIMPLE) MoveWindow(c->edit, 1, 1, cw - 2, c->field_h - 2, TRUE);
-        else MoveWindow(c->edit, 3, 2, cw - btn_w() - 4, c->field_h - 4, TRUE);
+        if (CBTYPE(w) == CBS_SIMPLE) MoveWindow(c->edit, k, k, cw - 2 * k, c->field_h - 2 * k, TRUE);
+        else MoveWindow(c->edit, 3 * k, 2 * k, cw - btn_w(w) - 4 * k, c->field_h - 4 * k, TRUE);
     }
     if (CBTYPE(w) == CBS_SIMPLE && c->list) {
         int ch = w->client.bottom - w->client.top;
@@ -263,11 +266,12 @@ static void measure_field(Wnd *w, Cb *c)
     HGDIOBJ of = SelectObject(dc, cfont(w));
     int fh = font_height(dc);
     SelectObject(dc, of);
-    c->field_h = fh + 8;
+    int k = dpi_k(w);
+    c->field_h = fh + 8 * k;
     if (w->style & (CBS_OWNERDRAWFIXED | CBS_OWNERDRAWVARIABLE)) {
         MEASUREITEMSTRUCT mi = { ODT_COMBOBOX, (UINT)w->id, (UINT)-1, 0, (UINT)fh, 0 };
         if (w->parent) send_msg(w->parent, WM_MEASUREITEM, (WPARAM)w->id, (LPARAM)&mi);
-        if ((int)mi.itemHeight + 6 > c->field_h) c->field_h = (int)mi.itemHeight + 6;
+        if ((int)mi.itemHeight + 6 * k > c->field_h) c->field_h = (int)mi.itemHeight + 6 * k;
     }
 }
 
@@ -499,13 +503,13 @@ LRESULT CALLBACK ComboProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case CB_SETEDITSEL: return c->edit ? (SendMessageW(c->edit, EM_SETSEL, (WPARAM)(SHORT)LOWORD(lp), (LPARAM)(SHORT)HIWORD(lp)), TRUE) : CB_ERR;
     case CB_SETITEMHEIGHT:
         if ((int)wp == -1) {
-            c->field_h = (int)lp + 6;
+            c->field_h = (int)lp + 6 * dpi_k(w);
             if (CBTYPE(w) != CBS_SIMPLE) wnd_set_pos(w, 0, 0, 0, w->rect.right - w->rect.left, c->field_h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
             layout(w, c);
             return 0;
         }
         return lb(c, LB_SETITEMHEIGHT, wp, lp);
-    case CB_GETITEMHEIGHT: return (int)wp == -1 ? c->field_h - 6 : lb(c, LB_GETITEMHEIGHT, wp, 0);
+    case CB_GETITEMHEIGHT: return (int)wp == -1 ? c->field_h - 6 * dpi_k(w) : lb(c, LB_GETITEMHEIGHT, wp, 0);
     case CB_SETDROPPEDWIDTH: c->drop_w = (int)wp; return c->drop_w;
     case CB_GETDROPPEDWIDTH: return MAX(c->drop_w, w->rect.right - w->rect.left);
     case CB_GETDROPPEDCONTROLRECT: {
@@ -522,7 +526,7 @@ LRESULT CALLBACK ComboProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         COMBOBOXINFO *ci = (COMBOBOXINFO *)lp;
         if (!ci) return FALSE;
         field_rect(w, c, &ci->rcItem);
-        ci->rcItem.right -= btn_w();
+        ci->rcItem.right -= btn_w(w);
         button_rect(w, c, &ci->rcButton);
         ci->stateButton = c->dropped ? STATE_SYSTEM_PRESSED : 0;
         ci->hwndCombo = h; ci->hwndItem = c->edit; ci->hwndList = c->list;

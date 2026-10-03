@@ -53,7 +53,7 @@ static int header_w(HWND h, RB *s, Band *b)
     if (!(b->style & RBBS_NOGRIPPER) && (!(style_of(h) & RBS_FIXEDORDER) || (b->style & RBBS_GRIPPERALWAYS))) w += GRIPPER;
     if (b->text && b->text[0]) {
         HDC dc = GetDC(h);
-        HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font());
+        HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
         w += cc_text_w(dc, b->text, -1) + 8;
         SelectObject(dc, of);
         ReleaseDC(h, dc);
@@ -210,7 +210,7 @@ static void paint(HWND h, RB *s, HDC dc)
     GetClientRect(h, &c);
     COLORREF bk = s->bk == CLR_DEFAULT ? GetSysColor(COLOR_BTNFACE) : s->bk;
     cc_fill(dc, &c, bk);
-    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font());
+    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
     SetBkMode(dc, TRANSPARENT);
     int borders = (style_of(h) & RBS_BANDBORDERS) != 0;
     for (int k = 0; k < s->n; k++) {

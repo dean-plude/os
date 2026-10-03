@@ -236,7 +236,7 @@ LRESULT CALLBACK ComboExProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (!(cst & 3)) cst |= CBS_DROPDOWN;
         s->combo = CreateWindowExW(0, L"ComboBox", NULL, cst, 0, 0, cs->cx, cs->cy, h, (HMENU)(INT_PTR)GetDlgCtrlID(h), NULL, NULL);
         if (!s->combo) return -1;
-        SendMessageW(s->combo, WM_SETFONT, (WPARAM)cc_font(), 0);
+        SendMessageW(s->combo, WM_SETFONT, (WPARAM)cc_font_for(h), 0);
         s->edit = GetWindow(s->combo, GW_CHILD);
         if (s->edit) SetWindowSubclass(s->edit, edit_sub, 1, (DWORD_PTR)h);
         /* like a combo box, the window is the selection field; the height asked for is the list's */

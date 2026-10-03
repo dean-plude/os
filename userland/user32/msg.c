@@ -149,9 +149,21 @@ static int conv_kind(Wnd *w, UINT msg)
     return CV_NONE;
 }
 
+static LRESULT call_conv(Wnd *w, WNDPROC proc, int wide, HWND h, UINT msg, WPARAM wp, LPARAM lp, int from_wide);
+
+/* The window procedure runs with the window's DPI awareness context */
 LRESULT call_proc(Wnd *w, WNDPROC proc, int wide, HWND h, UINT msg, WPARAM wp, LPARAM lp, int from_wide)
 {
     if (!proc) return 0;
+    HANDLE saved = NULL;
+    if (!dpi_enter(w, &saved)) return call_conv(w, proc, wide, h, msg, wp, lp, from_wide);
+    LRESULT r = call_conv(w, proc, wide, h, msg, wp, lp, from_wide);
+    dpi_leave(saved);
+    return r;
+}
+
+static LRESULT call_conv(Wnd *w, WNDPROC proc, int wide, HWND h, UINT msg, WPARAM wp, LPARAM lp, int from_wide)
+{
     if (wide == from_wide) return proc(h, msg, wp, lp);
     int k = conv_kind(w, msg);
     if (k == CV_NONE) {
@@ -738,14 +750,23 @@ static void route_key(Wnd *top, const MSG *km)
 }
 
 /* One message from the desktop: most become queued messages */
+static void from_kernel_(Wnd *top, const MSG *kmsg);
 static void from_kernel(const MSG *kmsg)
 {
     Wnd *top = top_by_kid((UINT32)(ULONG_PTR)kmsg->hwnd);
     if (!top) return;
+    HANDLE saved = NULL;
+    int sw = dpi_enter(top, &saved);                        /* (the window's coordinates) */
+    from_kernel_(top, kmsg);
+    if (sw) dpi_leave(saved);
+}
+
+static void from_kernel_(Wnd *top, const MSG *kmsg)
+{
     MSG conv = *kmsg;
     const MSG *km = &conv;
-    if (dpi_aware()) {
-        /* positions in this process's pixels: the desktop's are logical,
+    if (dpi_wnd_aware(top)) {
+        /* positions in the window's pixels: the desktop's are logical,
          * relative to the client area (km->pt) or on the screen */
         int k = dpi_k(top), m = (int)km->message;
         if (m == WM_MOUSEWHEEL || m == WM_MOUSEHWHEEL || m == WM_NOVA_TOUCH)
@@ -765,10 +786,10 @@ static void from_kernel(const MSG *kmsg)
     case WM_NOVA_DROP: drop_from_kernel(top, km); break;
     case WM_NOVA_TOUCH: touch_from_kernel(top, km); break;
     case WM_DISPLAYCHANGE:
-        if (dpi_aware()) dpi_monitors_changed(top);
+        dpi_monitors_changed(top);
         if (W_quiet(top->h)) send_msg(top, WM_DISPLAYCHANGE, km->wParam, km->lParam);
         break;
-    case WM_NOVA_DPI: if (dpi_aware()) dpi_monitors_changed(top); break;
+    case WM_NOVA_DPI: dpi_monitors_changed(top); break;
     case WM_CHAR: case WM_SYSCHAR: break;                  /* TranslateMessage makes these, as on Windows */
     case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
         route_key(top, km);

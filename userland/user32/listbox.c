@@ -33,7 +33,7 @@ int lb_is_string_msg(Wnd *w, UINT msg)
     return has_strings(w);
 }
 
-static HFONT lfont(Wnd *w) { return w->font ? w->font : gui_font(); }
+static HFONT lfont(Wnd *w) { return ctl_font(w); }
 
 static int client_h(Wnd *w) { return w->client.bottom - w->client.top; }
 static int client_w(Wnd *w) { return w->client.right - w->client.left; }
@@ -264,7 +264,7 @@ static void draw_item(Wnd *w, LB *l, HDC dc, int i, RECT *r)
     }
     if (w->style & WS_DISABLED) SetTextColor(dc, sys_color(COLOR_GRAYTEXT));
     RECT tr = *r;
-    tr.left += 2 - l->xoff;
+    tr.left += 2 * dpi_k(w) - l->xoff;
     const WCHAR *s = l->it[i].s ? l->it[i].s : L"";
     if ((w->style & LBS_USETABSTOPS) && l->ntabs) TabbedTextOutW(dc, tr.left, tr.top + 1, s, -1, l->ntabs, l->tabs, tr.left);
     else DrawTextW(dc, s, -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | ((w->style & LBS_USETABSTOPS) ? DT_EXPANDTABS : 0));
@@ -298,7 +298,7 @@ static void setup_height(Wnd *w, LB *l)
     HGDIOBJ of = SelectObject(dc, lfont(l->combo ? l->combo : w));
     int fh = font_height(dc);
     SelectObject(dc, of);
-    l->ih = fh + 2;
+    l->ih = fh + 2 * dpi_k(w);                              /* (at the window's DPI, as the font) */
     if (w->style & (LBS_OWNERDRAWFIXED | LBS_OWNERDRAWVARIABLE)) {
         MEASUREITEMSTRUCT mi = { l->combo ? ODT_COMBOBOX : ODT_LISTBOX, (UINT)(l->combo ? l->combo->id : w->id), 0, 0, (UINT)l->ih, 0 };
         Wnd *dest = l->combo ? l->combo->parent : notify_target(w, l);

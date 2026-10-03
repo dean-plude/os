@@ -22,7 +22,7 @@ void *memcpy(void *d, const void *s, size_t n);
  * alone is well over 512 bitmaps, pens and brushes); the pool is mapped on
  * first use and searched up to its high-water mark */
 #define POOL 10000
-GObj g_stock[20];
+GObj g_stock[STOCK_SLOTS];
 static GObj *g_pool;
 static int   g_high, g_hint;
 int  g_stock_ready;
@@ -56,14 +56,22 @@ void stock_init(void)
             f = "System"; g_stock[i].height = 16; g_stock[i].weight = 700; break;
         }
         for (int k = 0; f[k]; k++) g_stock[i].face[k] = (WCHAR)f[k];
+        g_stock[STOCK_HIDPI + i - OEM_FIXED_FONT] = g_stock[i];   /* the same at 192 DPI */
+        g_stock[STOCK_HIDPI + i - OEM_FIXED_FONT].height *= 2;
     }
     g_stock_ready = 1;
 }
 
+static int sys_dpi_k(void);
+
+/* The stock fonts are made at the system DPI the calling thread sees (a
+ * DPI-aware one of a process started at 192 DPI gets ones twice the size) */
 GDIAPI HGDIOBJ GetStockObject(int obj)
 {
     if (!g_stock_ready) stock_init();
     if (obj < 0 || obj >= 20 || !g_stock[obj].kind) return 0;
+    if (obj >= OEM_FIXED_FONT && obj <= DEFAULT_GUI_FONT && g_stock[obj].kind == K_FONT && sys_dpi_k() > 1)
+        return (HGDIOBJ)&g_stock[STOCK_HIDPI + obj - OEM_FIXED_FONT];
     return (HGDIOBJ)&g_stock[obj];
 }
 
@@ -104,7 +112,7 @@ GObj *obj_of(HGDIOBJ h)
     if (!o) return 0;
     if (!g_stock_ready) stock_init();
     if (o == &g_default_bitmap) return o;
-    if ((g_pool && o >= g_pool && o < g_pool + POOL && o->used) || (o >= g_stock && o < g_stock + 20 && o->kind)) return o;
+    if ((g_pool && o >= g_pool && o < g_pool + POOL && o->used) || (o >= g_stock && o < g_stock + STOCK_SLOTS && o->kind)) return o;
     return 0;
 }
 

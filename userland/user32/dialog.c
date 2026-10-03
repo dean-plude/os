@@ -58,11 +58,13 @@ static void font_base_units(HFONT f, int *xb, int *yb)
     if (*yb < 1) *yb = 13;
 }
 
+/* The system font's, at the system DPI the thread sees */
 USERAPI LONG GetDialogBaseUnits(void)
 {
-    static int xb, yb;
-    if (!xb) font_base_units(NULL, &xb, &yb);
-    return MAKELONG(xb, yb);
+    static int xb[3], yb[3];
+    int k = dpi_sys_k() > 1 ? 2 : 1;
+    if (!xb[k]) font_base_units(NULL, &xb[k], &yb[k]);
+    return MAKELONG(xb[k], yb[k]);
 }
 
 USERAPI BOOL MapDialogRect(HWND h, LPRECT r)
@@ -192,11 +194,12 @@ static LPCWSTR builtin_class(LPCWSTR c)
     return c;
 }
 
-static HFONT make_font(const DlgHdr *h)
+/* The template's font at k times 96 DPI (the dialog's DPI) */
+static HFONT make_font(const DlgHdr *h, int k)
 {
     if (!h->has_font) return NULL;
-    if (h->pt == 0x7FFF) return gui_font();
-    int height = -MulDiv(h->pt, 96 * dpi_sys_k(), 72);        /* the system DPI a DPI-aware program sees */
+    if (h->pt == 0x7FFF) return gui_font_k(k);
+    int height = -MulDiv(h->pt, 96 * k, 72);
     const WCHAR *face = h->face;
     if (!face || !*face || !wcsicmp_(face, L"MS Shell Dlg") || !wcsicmp_(face, L"MS Shell Dlg 2") || !wcsicmp_(face, L"MS Sans Serif"))
         face = L"Segoe UI";
@@ -219,18 +222,25 @@ static HWND create_dialog(HINSTANCE inst, const void *tmpl, HWND hparent, DLGPRO
     if (style & DS_CONTROL) { style &= ~(WS_CAPTION | WS_SYSMENU); ex |= WS_EX_CONTROLPARENT; }
     if (style & DS_MODALFRAME) ex |= WS_EX_DLGMODALFRAME;
     if (modal) style &= ~WS_CHILD;
-    HFONT font = make_font(&hd);
+    Wnd *parent = hparent ? W_quiet(hparent) : NULL;
+    /* its DPI: a child dialog's parent's, else where this thread's new
+     * windows go (DLUs and its font scale with it) */
+    int dk = (style & WS_CHILD) && parent ? dpi_k(parent) : dpi_new_k(parent);
+    HFONT font = make_font(&hd, dk);
     int xb, yb;
     if (font) font_base_units(font, &xb, &yb);
-    else { LONG b = GetDialogBaseUnits(); xb = LOWORD(b); yb = HIWORD(b); }
+    else {
+        LONG b = GetDialogBaseUnits();
+        int sk = dpi_sys_k() > 1 ? 2 : 1;
+        xb = LOWORD(b) * dk / sk; yb = HIWORD(b) * dk / sk;
+    }
 
-    Wnd *parent = hparent ? W_quiet(hparent) : NULL;
     HWND owner = hparent;
     if (!(style & WS_CHILD) && parent) owner = top_of(parent)->h;
     HMENU menu = hd.menu ? LoadMenuW(inst, hd.menu) : NULL;
 
     RECT r = { 0, 0, MulDiv(hd.cx, xb, 4), MulDiv(hd.cy, yb, 8) };
-    AdjustWindowRectEx(&r, style, menu != NULL, ex);
+    adjust_window_rect(&r, style, menu != NULL, ex, dk);
     int w = r.right - r.left, h = r.bottom - r.top;
     int x = MulDiv(hd.x, xb, 4), y = MulDiv(hd.y, yb, 8);
     if (!(style & WS_CHILD)) {
@@ -258,14 +268,14 @@ static HWND create_dialog(HINSTANCE inst, const void *tmpl, HWND hparent, DLGPRO
     HWND dh = CreateWindowExW(ex, cls, hd.title, style & ~WS_VISIBLE, x, y, w, h,
                               (style & WS_CHILD) ? hparent : owner, menu ? menu : 0, inst, (LPVOID)param);
     Wnd *dw = W_quiet(dh);
-    if (!dw) { if (font && font != gui_font()) DeleteObject(font); return 0; }
+    if (!dw) { if (font && !is_gui_font(font)) DeleteObject(font); return 0; }
     Dlg *d = calloc(1, sizeof(Dlg));
     if (!d) { DestroyWindow(dh); return 0; }
     if (dw->ctl && (dw->flags & WF_DIALOG)) free(dw->ctl);
     dw->ctl = d;
     dw->flags |= WF_DIALOG;
     d->font = font ? font : NULL;
-    d->own_font = font && font != gui_font();
+    d->own_font = font && !is_gui_font(font);
     d->xb = xb; d->yb = yb;
     d->proc_wide = wide;
     if (!dw->extra || dw->cls->extra < DLGWINDOWEXTRA) {
@@ -936,12 +946,14 @@ static int message_box(HWND owner, LPCWSTR text, LPCWSTR caption, UINT type, WOR
     case MB_ICONEXCLAMATION: icon = LoadIconW(NULL, IDI_WARNING); break;
     case MB_ICONASTERISK: icon = LoadIconW(NULL, IDI_INFORMATION); break;
     }
-    /* measure */
-    HFONT font = gui_font();
+    /* measure, at the DPI of where it opens */
+    HWND ow = modal_owner(owner);
+    int k = dpi_new_k(ow ? W_quiet(ow) : NULL);
+    HFONT font = gui_font_k(k);
     HDC dc = GetDC(NULL);
     HGDIOBJ of = SelectObject(dc, font);
     int maxw = GetSystemMetrics(SM_CXSCREEN) * 2 / 5;
-    if (maxw < 280) maxw = 280;
+    if (maxw < 280 * k) maxw = 280 * k;
     RECT tr = { 0, 0, maxw, 0 };
     DrawTextW(dc, text, -1, &tr, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_EXPANDTABS);
     RECT cr = { 0, 0, 0, 0 };
@@ -949,21 +961,20 @@ static int message_box(HWND owner, LPCWSTR text, LPCWSTR caption, UINT type, WOR
     int bw = 0;
     for (int i = 0; i < nb; i++) { RECT b = { 0, 0, 0, 0 }; DrawTextW(dc, btn[i].text, -1, &b, DT_CALCRECT | DT_SINGLELINE); if (b.right > bw) bw = b.right; }
     SelectObject(dc, of);
-    bw = MAX(bw + 24, 88);
-    int bh = 26, gap = 10;
-    int icon_w = icon ? 32 + 12 : 0;
+    bw = MAX(bw + 24 * k, 88 * k);
+    int bh = 26 * k, gap = 10 * k;
+    int isz = 32 * k, icon_w = icon ? isz + 12 * k : 0;
     int tw = tr.right, th = tr.bottom;
     int content_w = MAX(icon_w + tw, nb * bw + (nb - 1) * gap);
-    content_w = MAX(content_w, cr.right + 60);
-    int margin = 24;
-    int footer = bh + 2 * 12;
-    int body_h = MAX(th, icon ? 32 : 0);
+    content_w = MAX(content_w, cr.right + 60 * k);
+    int margin = 24 * k;
+    int footer = bh + 2 * 12 * k;
+    int body_h = MAX(th, icon ? isz : 0);
     int cw = content_w + 2 * margin, ch = margin + body_h + margin + footer;
     RECT wr = { 0, 0, cw, ch };
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME;
-    AdjustWindowRectEx(&wr, style, FALSE, WS_EX_DLGMODALFRAME);
+    adjust_window_rect(&wr, style, FALSE, WS_EX_DLGMODALFRAME, k);
     int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
-    HWND ow = modal_owner(owner);
     RECT center = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
     Wnd *o = ow ? W_quiet(ow) : NULL;
     if (o && (o->style & WS_VISIBLE) && !o->minimized) GetWindowRect(ow, &center);
@@ -988,14 +999,14 @@ static int message_box(HWND owner, LPCWSTR text, LPCWSTR caption, UINT type, WOR
     memcpy(dw->extra + DWLP_DLGPROC, &p, sizeof(p));
     SetPropW(dh, L"NovaMbFooter", (HANDLE)(INT_PTR)footer);
     if (icon) {
-        HWND ic = CreateWindowExW(0, L"Static", NULL, WS_CHILD | WS_VISIBLE | SS_ICON, margin, margin, 32, 32, dh, (HMENU)20, 0, NULL);
+        HWND ic = CreateWindowExW(0, L"Static", NULL, WS_CHILD | WS_VISIBLE | SS_ICON, margin, margin, isz, isz, dh, (HMENU)20, 0, NULL);
         SendMessageW(ic, STM_SETICON, (WPARAM)icon, 0);
     }
     int ty = margin + (body_h - th) / 2;
     HWND st = CreateWindowExW(0, L"Static", text, WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX | SS_EDITCONTROL,
-                              margin + icon_w, ty, tw + 4, th, dh, (HMENU)0xFFFF, 0, NULL);
+                              margin + icon_w, ty, tw + 4 * k, th, dh, (HMENU)0xFFFF, 0, NULL);
     SendMessageW(st, WM_SETFONT, (WPARAM)font, 0);
-    int bx = cw - margin - nb * bw - (nb - 1) * gap, by = ch - footer + 12;
+    int bx = cw - margin - nb * bw - (nb - 1) * gap, by = ch - footer + 12 * k;
     HWND focus = 0;
     for (int i = 0; i < nb; i++) {
         HWND b = CreateWindowExW(0, L"Button", btn[i].text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | (i == defbtn ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON) | (i == 0 ? WS_GROUP : 0),
