@@ -107,7 +107,7 @@ The dock's App Store downloads the official 64-bit packages of 21 open-source
 programs (Firefox, VLC, LibreOffice, GIMP, Notepad++, PuTTY…) and six
 runtimes, and installs them with 7-Zip, NovaOS's Windows Installer or the
 program's own setup.  `store install NAME` in the Terminal does what the
-row's button does (CI installs Mesa 3D, DXVK and Venus that way).  Most of those programs still need more of Windows than
+row's button does (CI installs Mesa 3D, DXVK and Venus that way), and `store open` opens it.  Its list scrolls with the same scroll bar as File Explorer's.  Most of those programs still need more of Windows than
 NovaOS has (more of the GUI); the ones in the table
 above are the ones verified.  See [the App Store](docs/HISTORY.md#the-app-store).
 
