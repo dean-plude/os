@@ -120,6 +120,11 @@ static const char *exception_names[32] = {
 /* Dump the exception frame for debugging */
 static void dump_frame(InterruptFrame *f)
 {
+    PKPCR k = KiGetCurrentKpcr();
+    Thread *t = (Thread *)k->CurrentThread;
+    if (t)
+        kprintf("  CPU %u, thread '%s' (TID %lu), kernel stack %p-%p\n", k->CpuNumber, t->name,
+                t->tid, t->kernel_stack, (void *)((uintptr_t)t->kernel_stack + t->stack_size));
     kprintf("  RIP=%016lx  CS=%04lx  RFLAGS=%016lx\n",
             f->rip, f->cs, f->rflags);
     kprintf("  RSP=%016lx  SS=%04lx\n", f->rsp, f->ss);
@@ -335,6 +340,32 @@ static void dispatch(InterruptFrame *frame)
 /* -----------------------------------------------------------------------
  * interrupt_dispatch — called from isr_common in isr_stubs.asm
  * ----------------------------------------------------------------------- */
+/* isr_stubs.asm: the kernel ran with a program's GS (where 0: an
+ * interrupt from ring 0 found it; 1: an interrupt was about to return to
+ * ring 3 without the KPCR in GS).  The
+ * SWAPGS pairing is broken: report it and stop, rather than run on with
+ * some other structure as this CPU's KPCR. */
+void __attribute__((noreturn)) gs_mismatch(InterruptFrame *f, int where)
+{
+    static const char *const what[] = {
+        "interrupt from ring 0 with a program's GS",
+        "return to ring 3 with GS not the KPCR",
+    };
+    kprintf("\n=== GS MISMATCH: %s ===\n", what[where]);
+    if (f) {
+        kprintf("  vector %lu, error code 0x%lx\n", f->vector, f->error_code);
+        dump_frame(f);
+        if (!(f->cs & 3)) KsymBacktrace(f->rip, f->rbp, f->rsp);
+        /* the stack where it happened: an IRETQ's frame, for one */
+        const uint64_t *sp = (const uint64_t *)(where ? (uint64_t)&f->rip : f->rsp);
+        for (int i = 0; i < 8; i++) kprintf("  [%p] %016lx\n", (const void *)&sp[i], sp[i]);
+    }
+    PKPCR k = KiGetCurrentKpcr();
+    Thread *prev = (Thread *)k->PrevThread;
+    kprintf("  KernelRsp %lx, previous thread %s\n", (uint64_t)k->KernelRsp, prev ? prev->name : "-");
+    cpu_halt_forever();
+}
+
 void interrupt_dispatch(InterruptFrame *frame)
 {
     uint64_t vector = frame->vector;
@@ -386,4 +417,5 @@ void interrupt_dispatch(InterruptFrame *frame)
         kprintf("[SMP] Bug: returning to user mode holding the kernel lock (vector %lu)\n", vector);
         bkl_leave_kernel();
     }
+    if (frame->cs & 3) sched_resched_pending();
 }

@@ -8,4 +8,8 @@
   calibrated against the HPET, so `Sleep(1)`, wait timeouts and waitable
   timers end within a fraction of a millisecond even with every CPU busy;
   a thread woken by a timer preempts the running one instead of waiting
-  for its time slice to end.
+  for its time slice to end.  NT's priority boosts: a thread woken by an
+  event, a lock, I/O, a window message or input runs above its base
+  priority (+1 to +6) and preempts busy threads of that priority, then
+  decays back one level per quantum; a balance set lifts threads that
+  have starved for 3 s.

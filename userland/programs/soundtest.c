@@ -638,7 +638,7 @@ static int dscapture(const char *path, DWORD ms)
     DSBPOSITIONNOTIFY pn[2] = { { half - 2, ev[0] }, { d.dwBufferBytes - 2, ev[1] } };
     CALL(nt, DSNotifyVtbl, SetNotificationPositions, 2, pn);
     DWORD total = f.nSamplesPerSec * ms / 1000, got = 0, notes = 0;
-    short *all = calloc(total + half, 1);
+    short *all = calloc(total, sizeof(short));       /* (samples, not bytes: the loop stops at total) */
     DWORD t0 = GetTickCount();
     CALL(cb, DSCBufVtbl, Start, 1 /* DSCBSTART_LOOPING */);
     while (got < total && GetTickCount() - t0 < ms + 5000) {

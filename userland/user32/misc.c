@@ -312,8 +312,9 @@ USERAPI int GetSystemMetrics(int index)
     case 36: case 37: return 4;                             /* double-click rectangle */
     case 43: return 5;                                      /* CMOUSEBUTTONS */
     case 94: {                                              /* SM_DIGITIZER */
-        int n = (int)NtNovaGuiCtl(0, CTL_TOUCH, 0, NULL);
-        return n ? 0x01 | (n > 1 ? 0x40 : 0) | 0x80 : 0;    /* NID_INTEGRATED_TOUCH, MULTI_INPUT, READY */
+        int n = (int)NtNovaGuiCtl(0, CTL_TOUCH, 0, NULL), pens = (int)NtNovaGuiCtl(0, CTL_TABLET, 0, NULL);
+        /* NID_INTEGRATED_TOUCH, NID_EXTERNAL_PEN, NID_MULTI_INPUT, NID_READY */
+        return n || pens ? (n ? 0x01 : 0) | (pens ? 0x08 : 0) | (n > 1 ? 0x40 : 0) | 0x80 : 0;
     }
     case 95: return (int)NtNovaGuiCtl(0, CTL_TOUCH, 0, NULL);   /* SM_MAXIMUMTOUCHES */
     case 45: case 46: return 2;                             /* CXEDGE, CYEDGE */

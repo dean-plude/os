@@ -266,19 +266,53 @@ void _assert(const char *expr, const char *file, unsigned line)
     abort();
 }
 
+/* getenv and _wgetenv return the CRT's own copy of a value, which stays
+ * valid while other threads read variables too: one copy per name, kept
+ * until the value changes, and a replaced copy is never freed (another
+ * thread may still hold it), so memory grows only with changed values */
+typedef struct EnvCopy {
+    struct EnvCopy *next;
+    size_t nlen, vlen;                  /* bytes, terminators included */
+    void *value;
+    char name[];
+} EnvCopy;
+static EnvCopy *g_env[2];               /* narrow, wide */
+static SRWLOCK g_env_lock = SRWLOCK_INIT;
+
+/* Takes val (malloc'd); returns the copy to hand out */
+void *__nova_env_copy(int wide, const void *name, size_t nlen, void *val, size_t vlen)
+{
+    AcquireSRWLockExclusive(&g_env_lock);
+    EnvCopy *e = g_env[wide];
+    while (e && (e->nlen != nlen || memcmp(e->name, name, nlen))) e = e->next;
+    if (e && e->vlen == vlen && !memcmp(e->value, val, vlen)) free(val);
+    else if (e) { e->value = val; e->vlen = vlen; }
+    else if ((e = malloc(sizeof(*e) + nlen))) {
+        memcpy(e->name, name, nlen);
+        e->nlen = nlen;
+        e->value = val;
+        e->vlen = vlen;
+        e->next = g_env[wide];
+        g_env[wide] = e;
+    } else { free(val); val = 0; }
+    void *r = e ? e->value : 0;
+    ReleaseSRWLockExclusive(&g_env_lock);
+    return r;
+}
+
 char *getenv(const char *name)
 {
-    static struct { char name[64]; char value[512]; } cache[16];
-    static int next;
-    char buf[512];
-    DWORD n = GetEnvironmentVariableA(name, buf, sizeof(buf));
-    if (!n || n >= sizeof(buf)) return 0;
-    for (int i = 0; i < 16; i++)
-        if (!strcmp(cache[i].name, name)) { strcpy(cache[i].value, buf); return cache[i].value; }
-    int i = next++ % 16;
-    strncpy(cache[i].name, name, sizeof(cache[i].name) - 1);
-    strcpy(cache[i].value, buf);
-    return cache[i].value;
+    if (!name) return 0;
+    for (;;) {
+        DWORD n = GetEnvironmentVariableA(name, 0, 0);
+        if (!n) return 0;
+        char *v = malloc(n);
+        if (!v) return 0;
+        DWORD got = GetEnvironmentVariableA(name, v, n);
+        if (!got) { free(v); return 0; }
+        if (got < n) return __nova_env_copy(0, name, strlen(name) + 1, v, (size_t)got + 1);
+        free(v);                        /* it grew in between: again */
+    }
 }
 
 /* system(): "cmd.exe /c @cmd", waiting for it; NULL asks whether there

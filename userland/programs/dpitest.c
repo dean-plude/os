@@ -24,7 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CTL_SET_DPI 30
+#define CTL_SET_DPI 31
 
 static int g_pass, g_fail;
 

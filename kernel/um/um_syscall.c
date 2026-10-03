@@ -944,7 +944,7 @@ static void set_io_event(UINT64 ev)
     if (!o) return;
     IrqState s = ob_lock();
     o->signaled = true;
-    um_ob_wake(o);
+    um_ob_wake_boost(o, BOOST_DISK);                        /* (IO_DISK) */
     ob_unlock(s);
     um_ob_unref(o);
 }

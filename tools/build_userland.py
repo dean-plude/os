@@ -453,7 +453,7 @@ def build_pass(arch):
         if arch == 'x86' and not prog.get('x86'):
             continue
         progs.append((src, name, prog))
-    stl_libs = ('msvcp140', 'msvcp140_1', 'msvcp140_atomic_wait')
+    stl_libs = ('msvcp140', 'msvcp140_1', 'msvcp140_2', 'msvcp140_atomic_wait')
     compiled, stlobjs = {}, []     # each program's object and resources; what msstl programs link
     if any(src.endswith('.cpp') and prog.get('msstl') for src, name, prog in progs):
         task('stlprog', [], lambda: stlobjs.extend(HOOKS['msvcp140'].program_objs(me, odir)))

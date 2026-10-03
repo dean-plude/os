@@ -7,7 +7,7 @@
   scale 2 can be set to 192 DPI for DPI-aware programs: in Settings >
   Display ("DPI for DPI-aware apps"), kept in the registry as `LogPixels`
   under `...\Video\{NovaOS-Display}\000N`, or with `NtNovaGuiCtl`
-  `CTL_SET_DPI` (op 30).  96, the default, changes nothing for anyone.
+  `CTL_SET_DPI` (op 31).  96, the default, changes nothing for anyone.
 - **Programs get the awareness they ask for.**  user32 reads the
   manifest's `dpiAwareness` (`PerMonitorV2`, `PerMonitor`, `System`,
   `Unaware`, first known value wins) and `dpiAware` (`true`, `true/pm`,

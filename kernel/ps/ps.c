@@ -309,6 +309,7 @@ NTSTATUS PsCreateSystemThread(
     et->Kthread       = sched_t;
     sched_t->tid      = et->UniqueThread;
     sched_t->priority = 8;
+    sched_t->base_priority = 8;
     sched_t->state    = THREAD_READY;
     strncpy(sched_t->name, proc->ImageFileName, THREAD_NAME_MAX - 1);
 
