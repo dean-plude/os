@@ -97,8 +97,8 @@ every part, phase by phase.
   are opened.  SMP with per-core scheduling and fine-grained
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.  Timers are the local APIC's, one-shot or TSC-deadline and
-  calibrated against the HPET, so `Sleep(1)` and wait timeouts end within
-  a fraction of a millisecond even with every CPU busy.
+  calibrated against the HPET, so `Sleep(1)`, wait timeouts and waitable
+  timers end within a fraction of a millisecond even with every CPU busy.
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
   either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
   file ACLs and hard links, and other drives); Intel e1000/e1000e and virtio-net network
@@ -243,8 +243,9 @@ To make the ISO yourself from a fresh build, run
   `soundtest` (the recorded WAV must hold the tones played), `soundtest
   record`, `capture` and `volume` (`waveIn` and WASAPI capture must
   record the tone the microphone hears, and a quarter of the endpoint
-  volume must sound 12 dB quieter), `sleeptest timer` (`Sleep(1)` and 1
-  ms wait timeouts end within a millisecond with every CPU busy),
+  volume must sound 12 dB quieter), `sleeptest timer` (`Sleep(1)`, 1 ms
+  wait timeouts and waitable timers (periodic ones and their completion
+  routines too) end within a millisecond with every CPU busy),
   `powertest` (closing the lid in `tests/acpi/lid-thermal.asl` sleeps, a
   USB key and the lid wake it, the thermal zone's readings), `disptest
   1024 768` (saves the mode the restart must keep), an installer that
