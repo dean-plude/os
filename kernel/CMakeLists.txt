@@ -178,6 +178,7 @@ set(KERNEL_C_SOURCES
     um/um_pipe.c
     um/um_gui.c
     um/um_registry.c
+    um/um_crash.c
     um/um_security.c
     ke/main.c
     ke/printf.c

@@ -2406,6 +2406,7 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
                         code[10], code[11], (unsigned long long)sp);
         }
         um_log_stack(p, sp);                        /* where it came from (serial log only) */
+        um_crash_report(p, what, status, rip, addr, sp);    /* and C:\NovaOS\Crashes */
     }
     um_exit_process(status);
 }
@@ -2673,6 +2674,7 @@ void UmSaveAll(void)
 void UmPoll(void)
 {
     um_registry_poll();
+    UmCrashPoll();
     PersistPoll();
     DrivesPoll();
     BootLogPoll();

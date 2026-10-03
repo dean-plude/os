@@ -8,7 +8,9 @@ Suites (one file per test in tests/selftest/SUITE/, run in file-name
 order; --list prints them):
   core      (default) the self-test programs (apitest, abitest, filetest...),
             an install finished by a restart, and last "crash kernel" (a
-            deliberate kernel fault must print a symbolized backtrace)
+            deliberate kernel fault must print a symbolized backtrace;
+            the machine is then reset and the next start must turn the
+            fault into a report in C:\\NovaOS\\Crashes)
   graphics  on two monitors (a 3D virtio-gpu with Venus is the first, a
             QEMU secondary-vga the second; montest), installs "Mesa 3D",
             "DXVK" and "Venus" with the App Store, then runs tools/gltest
@@ -76,7 +78,9 @@ class Test:
     wait for the App Store's "[STORE] @store: Installed" line.  @shot: take
     the screenshot 2 s after the output matches this regex (while the
     program draws).  @crash: the command halts the kernel on purpose; the
-    test passes when the serial log then shows @expect (it runs last).
+    test passes when the serial log then shows @expect (it runs last,
+    unless @restart: then the machine is reset and later tests run in the
+    new boot, as after a crash on a real PC).
     @reboot: restart NovaOS ("shutdown /r", drive C: kept) and pass when
     the new boot's log shows @expect; later tests run in that boot.
     @acts: (regex, function(nova)) pairs run when the output matches (the
@@ -85,13 +89,16 @@ class Test:
     @builtin: a Terminal command, not a program (no exit code; the output
     decides).  @settle: seconds to wait afterwards (NovaOS saves drive C:
     once it has been quiet for a second).  @before: function(nova) run
-    before the command is typed (e.g. plug a device in)."""
+    before the command is typed (e.g. plug a device in).  @quotes_panic: the
+    output may quote a kernel panic's log (a crash report shown), which is
+    then not taken for a panic of this boot."""
     def __init__(self, name, cmd, expect=(), timeout=180, check=None, store=None, shot=None, crash=False, reboot=False,
-                 acts=(), boot_expect=(), builtin=False, settle=0, before=None):
+                 acts=(), boot_expect=(), builtin=False, settle=0, before=None, restart=False,
+                 quotes_panic=False):
         self.name, self.cmd, self.expect, self.timeout, self.check = name, cmd, expect, timeout, check
         self.store, self.shot, self.crash, self.reboot = store, shot, crash, reboot
         self.acts, self.boot_expect, self.builtin, self.settle = acts, boot_expect, builtin, settle
-        self.before = before
+        self.before, self.restart, self.quotes_panic = before, restart, quotes_panic
 
 
 def tones(*hz, wav=None, only=False):
@@ -622,7 +629,7 @@ def run_boot(a, tests, work, label, **nova_args):
                     if not why and not re.search(e, whole):
                         why = f'missing "{e}" in the serial log'
             full_log += out
-            if PANIC.search(out) and not t.crash:
+            if PANIC.search(out) and not t.crash and not t.quotes_panic:
                 why = 'kernel panic'
             if nova.q.poll() is None and not (t.shot and os.path.exists(png)):
                 nova.shot(png)
@@ -634,6 +641,14 @@ def run_boot(a, tests, work, label, **nova_args):
                 print('    ' + '\n    '.join(l for l in out.splitlines() if not l.startswith('[SCHED]'))[-4000:])
             if t.settle and not why:
                 time.sleep(t.settle)
+            if t.crash and t.restart and not why and nova.q.poll() is None:
+                try:                                        # reset the halted machine, as a person would
+                    nova.qmp.cmd('system_reset')
+                    nova.start()
+                    full_log += nova.boot_log
+                    continue
+                except RuntimeError as e:
+                    print(f'    did not start again after the crash: {str(e).splitlines()[0]}', flush=True)
             if why == 'kernel panic' or t.crash or nova.q.poll() is not None:
                 break
     finally:

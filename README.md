@@ -106,7 +106,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
   characters, wrapped at the window's width; programs get up to 32,766
   through `CreateProcess`, as on Windows), its own commands (`dir`, `copy`, `ping`,
   `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`,
-  `devices`…)
+  `devices`, `crashes`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
   `more`, `less` (git's pager), `timeout`, `taskkill`, `reg`, `regsvr32`, `msiexec` and
   `intl` (the user's regional format).
@@ -474,7 +474,10 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
   Terminal's `dmesg` shows it, and `trace NAME` logs a program's failing
   system calls.  A kernel fault, panic or failed assertion prints a
   backtrace with function names and offsets (the kernel carries its own
-  symbol table); `crash kernel` shows one on purpose.
+  symbol table); `crash kernel` shows one on purpose.  A crashed program
+  or kernel leaves a text report in `C:\NovaOS\Crashes` to attach to an
+  issue (a kernel fault's at the next start); the Terminal's `crashes`
+  lists them and `crashes last` shows the newest.
 
 See [docs/building.md#tests](docs/building.md#tests) for how to run them.
 
