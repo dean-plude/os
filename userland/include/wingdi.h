@@ -134,6 +134,22 @@ typedef struct tagBITMAPINFOHEADER {
     LONG biXPelsPerMeter, biYPelsPerMeter; DWORD biClrUsed, biClrImportant;
 } BITMAPINFOHEADER, *LPBITMAPINFOHEADER;
 typedef struct tagBITMAPINFO { BITMAPINFOHEADER bmiHeader; RGBQUAD bmiColors[1]; } BITMAPINFO, *LPBITMAPINFO;
+typedef LONG FXPT2DOT30;
+typedef struct tagCIEXYZ { FXPT2DOT30 ciexyzX, ciexyzY, ciexyzZ; } CIEXYZ;
+typedef struct tagCIEXYZTRIPLE { CIEXYZ ciexyzRed, ciexyzGreen, ciexyzBlue; } CIEXYZTRIPLE;
+/* Later headers (GDK's cursors use them): the masks sit at offset 40 in both */
+typedef struct {
+    DWORD bV4Size; LONG bV4Width, bV4Height; WORD bV4Planes, bV4BitCount; DWORD bV4V4Compression, bV4SizeImage;
+    LONG bV4XPelsPerMeter, bV4YPelsPerMeter; DWORD bV4ClrUsed, bV4ClrImportant;
+    DWORD bV4RedMask, bV4GreenMask, bV4BlueMask, bV4AlphaMask, bV4CSType; CIEXYZTRIPLE bV4Endpoints;
+    DWORD bV4GammaRed, bV4GammaGreen, bV4GammaBlue;
+} BITMAPV4HEADER, *PBITMAPV4HEADER;
+typedef struct {
+    DWORD bV5Size; LONG bV5Width, bV5Height; WORD bV5Planes, bV5BitCount; DWORD bV5Compression, bV5SizeImage;
+    LONG bV5XPelsPerMeter, bV5YPelsPerMeter; DWORD bV5ClrUsed, bV5ClrImportant;
+    DWORD bV5RedMask, bV5GreenMask, bV5BlueMask, bV5AlphaMask, bV5CSType; CIEXYZTRIPLE bV5Endpoints;
+    DWORD bV5GammaRed, bV5GammaGreen, bV5GammaBlue, bV5Intent, bV5ProfileData, bV5ProfileSize, bV5Reserved;
+} BITMAPV5HEADER, *PBITMAPV5HEADER;
 #pragma pack(push, 2)
 typedef struct tagBITMAPFILEHEADER { WORD bfType; DWORD bfSize; WORD bfReserved1, bfReserved2; DWORD bfOffBits; } BITMAPFILEHEADER, *LPBITMAPFILEHEADER;
 #pragma pack(pop)
@@ -175,6 +191,8 @@ GDIAPI int      StretchDIBits(HDC dc, int x, int y, int w, int h, int sx, int sy
 GDIAPI int      SetDIBitsToDevice(HDC dc, int x, int y, DWORD w, DWORD h, int sx, int sy, UINT start, UINT lines,
                                   const void *bits, const BITMAPINFO *bi, UINT usage);
 GDIAPI int      GetDIBits(HDC dc, HBITMAP bmp, UINT start, UINT lines, void *bits, BITMAPINFO *bi, UINT usage);
+GDIAPI UINT     GetDIBColorTable(HDC dc, UINT start, UINT n, RGBQUAD *colors);
+GDIAPI UINT     SetDIBColorTable(HDC dc, UINT start, UINT n, const RGBQUAD *colors);
 GDIAPI HBITMAP CreateDIBitmap(HDC h, const BITMAPINFOHEADER *bh, DWORD init, const void *bits, const BITMAPINFO *bi, UINT usage);
 #ifndef CBM_INIT
 #define CBM_INIT 4

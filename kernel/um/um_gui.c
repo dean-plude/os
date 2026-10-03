@@ -27,6 +27,7 @@
 #include "../apps/apps.h"
 #include "../ke/waitq.h"
 #include "../wm/desktop.h"
+#include "../wm/tablet.h"
 #include "../hal/display.h"
 
 /* Win32 window messages we deliver */
@@ -817,6 +818,18 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_SET_HEAD     26
 /*  29 TOUCH      returns the contacts the touch screens have (0: none) */
 #define CTL_TOUCH        29
+/*  30 TABLET     pen tablets (wm/tablet.h; wintab32.dll and user32's
+ *                synthetic pens), by arg:
+ *                0 returns the pen devices present (0: none);
+ *                1 ptr -> { after, max, wait ms, _ } <- { ..., newest packet's
+ *                  number }, then <- up to max TabletPackets numbered after
+ *                  `after` (waits up to wait ms for one); returns how many;
+ *                2 / 3 this process makes / drops a synthetic pen;
+ *                4 ptr -> { x, y (0-65535 across the desktop), pressure
+ *                  (0-1023), buttons (bit 0 tip, 1-2 barrel), flags (1 in
+ *                  range, 2 eraser) }: a synthetic pen's input (the pointer
+ *                  follows it while in range); 0 if the process has no pen */
+#define CTL_TABLET       30
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
 #define GUI_TAG_SHIFT    14
@@ -934,6 +947,53 @@ static UINT32 g_drop_done[DROP_RESULTS][2];
 /* the process holding each handle tag; under g_gui_lock */
 static UmProcess *g_tag_proc[GUI_TAGS];
 static UINT32 g_tag_next = GUI_TAG_MIN;
+
+/* Pen tablets (CTL_TABLET) */
+static UINT64 tablet_ctl(UmProcess *p, UINT64 op, UINT64 ptr)
+{
+    switch (op) {
+    case 0: return (UINT64)TabletDevices();
+    case 1: {
+        UINT32 in[4];
+        if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return 0;
+        int max = in[1] > 64 ? 64 : (int)in[1];
+        TabletPacket *buf = kmalloc(sizeof(TabletPacket) * (max ? max : 1));
+        if (!buf) return 0;
+        UINT64 wait = in[2] / 10 > 50 ? 50 : in[2] / 10;   /* ticks, at most half a second */
+        UINT32 newest = 0;
+        int n = TabletRead(in[0], buf, max, wait, &newest);
+        UINT64 r = n && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)(ptr + 16), buf, sizeof(TabletPacket) * (UINT64)n)) ? 0 : (UINT64)n;
+        CopyToUser((void *)(uintptr_t)(ptr + 12), &newest, sizeof(newest));
+        kfree(buf);
+        return r;
+    }
+    case 2: TabletDevice(p, 1); return 1;
+    case 3: TabletDevice(p, -1); return 1;
+    case 4: {
+        INT32 in[5];
+        if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return 0;
+        if (!TabletOwns(p)) return 0;
+        InputEvent ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.absolute = 1;
+        ev.dx = in[0] < 0 ? 0 : in[0] > 65535 ? 65535 : in[0];
+        ev.dy = in[1] < 0 ? 0 : in[1] > 65535 ? 65535 : in[1];
+        if (in[4] & 1) {                       /* in range: the pointer follows, the tip clicks */
+            ev.type = INPUT_MOUSE;
+            ev.buttons = (in[3] & 1 ? MOUSE_LEFT : 0) | (in[3] & 2 ? MOUSE_RIGHT : 0);
+            InputPost(&ev);
+        }
+        ev.type = INPUT_PEN;
+        ev.buttons = (UINT8)(in[3] & 7);
+        ev.pressure = (UINT16)(in[2] < 0 ? 0 : in[2] > TABLET_PRESSURE ? TABLET_PRESSURE : in[2]);
+        ev.pressed = (in[4] & 1) != 0;
+        ev.extended = (in[4] & 2) != 0;
+        InputPost(&ev);
+        return 1;
+    }
+    }
+    return 0;
+}
 
 static UINT64 hwnd_tag(UmProcess *p)
 {
@@ -1216,6 +1276,7 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     if (a2 == CTL_HWND_TAG) return hwnd_tag(p);
     if (a2 == CTL_TOUCH) return (UINT64)InputTouchContacts();
+    if (a2 == CTL_TABLET) return tablet_ctl(p, a3, a4);
     if (a2 == CTL_FOREIGN) return hwnd_foreign((UINT32)a3, a4);
     if (a2 == CTL_SET_HWND) {
         INT32 uc[4] = { 0 };
@@ -1351,6 +1412,7 @@ void um_gui_process_gone(UmProcess *p)
     for (int i = GUI_TAG_MIN; i < GUI_TAGS; i++) if (g_tag_proc[i] == p) g_tag_proc[i] = NULL;
     spin_unlock_irqrestore(&g_gui_lock, ts);
     WmInvalidate();
+    TabletOwnerGone(p);                       /* its synthetic pens */
     if (p->cursor) {                          /* no window shows its pointer now */
         WmCursorShapeChanged();
         kfree(p->cursor);

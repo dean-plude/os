@@ -14,6 +14,7 @@
   playback and capture, endpoint volume), `msi` (with `msiscript` running
   JScript and VBScript custom actions on the ISC-licensed mujs),
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
-  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`), and
+  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`),
+  `wintab32` (Wintab pen tablets: pressure for GTK, Qt and Krita), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
   `dhcpcsvc`, `d3dcompiler_47`), and more.

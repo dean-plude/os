@@ -856,13 +856,27 @@ USERAPI HANDLE LoadImageA(HINSTANCE inst, LPCSTR name, UINT type, int cx, int cy
 /* -----------------------------------------------------------------------
  * Making and taking apart icons
  * ----------------------------------------------------------------------- */
+/* A monochrome image's pixel from its AND (transparent) and XOR bits:
+ * black, white, transparent, or "invert the screen", which the desktop
+ * cannot draw and gets black (it is mostly the edge of an I-beam) */
+static DWORD mono_pixel(int and, int xor)
+{
+    if (!and) return xor ? 0xFFFFFFFFu : 0xFF000000u;
+    return xor ? 0xFF000000u : 0;
+}
+
+/* GDK makes its cursors here: a 32-bit image with alpha and a 1-bit mask
+ * from a pixbuf, or (cursors drawn in two colours) a monochrome mask
+ * twice the cursor's height, the AND half over the XOR half */
 USERAPI HICON CreateIconIndirect(PICONINFO ii)
 {
     if (!ii) return 0;
     BITMAP bm;
     HBITMAP src = ii->hbmColor ? ii->hbmColor : ii->hbmMask;
     if (!src || !GetObjectW(src, sizeof(bm), &bm)) return 0;
-    int w = bm.bmWidth, h = ii->hbmColor ? bm.bmHeight : bm.bmHeight / 2;
+    int mono = !ii->hbmColor;
+    int w = bm.bmWidth, h = mono ? bm.bmHeight / 2 : bm.bmHeight;
+    if (w <= 0 || h <= 0) return 0;
     Icon *ic = new_icon(w, h);
     if (!ic) return 0;
     ic->cursor = !ii->fIcon;
@@ -878,14 +892,19 @@ USERAPI HICON CreateIconIndirect(PICONINFO ii)
         for (int i = 0; i < w * h; i++) if (ic->argb[i] >> 24) { any_alpha = 1; break; }
     }
     if (!any_alpha) {
-        DWORD *mask = malloc((size_t)w * h * 4);
+        DWORD *mask = malloc((size_t)w * h * 4 * (mono ? 2 : 1));
         if (mask && ii->hbmMask) {
-            GetDIBits(dc, ii->hbmMask, 0, (UINT)h, mask, &bi, DIB_RGB_COLORS);
-            for (int i = 0; i < w * h; i++) ic->argb[i] = (mask[i] & 0xFFFFFF) ? 0 : (ic->argb[i] | 0xFF000000u);
+            bi.bmiHeader.biHeight = -h * (mono ? 2 : 1);
+            GetDIBits(dc, ii->hbmMask, 0, (UINT)(h * (mono ? 2 : 1)), mask, &bi, DIB_RGB_COLORS);
+            for (int i = 0; i < w * h; i++) {
+                int and = (mask[i] & 0xFFFFFF) != 0;
+                if (mono) ic->argb[i] = mono_pixel(and, (mask[(size_t)w * h + i] & 0xFFFFFF) != 0);
+                else ic->argb[i] = and ? 0 : (ic->argb[i] | 0xFF000000u);
+            }
         } else for (int i = 0; i < w * h; i++) ic->argb[i] |= 0xFF000000u;
         free(mask);
     } else {
-        /* stored premultiplied by some programs' DIB sections: leave as is */
+        /* the alpha channel decides; the mask is only for old displays */
     }
     ReleaseDC(NULL, dc);
     return (HICON)ic;
@@ -901,8 +920,9 @@ USERAPI HICON CreateIcon(HINSTANCE inst, int w, int h, BYTE planes, BYTE bpp, co
         for (int x = 0; x < w; x++) {
             int transparent = (and[y * astride + x / 8] >> (7 - (x & 7))) & 1;
             DWORD c = 0;
+            if (bpp == 1) { ic->argb[(size_t)y * w + x] = mono_pixel(transparent, (xor[y * xstride + x / 8] >> (7 - (x & 7))) & 1); continue; }
             if (bpp == 32) c = *(const DWORD *)(xor + y * xstride + x * 4);
-            else if (bpp == 1) c = (xor[y * xstride + x / 8] >> (7 - (x & 7))) & 1 ? 0xFFFFFF : 0;
+            else if (bpp == 24) { const BYTE *q = xor + y * xstride + x * 3; c = (DWORD)q[2] << 16 | (DWORD)q[1] << 8 | q[0]; }
             ic->argb[(size_t)y * w + x] = transparent ? 0 : (c & 0xFFFFFF) | 0xFF000000u;
         }
     return (HICON)ic;

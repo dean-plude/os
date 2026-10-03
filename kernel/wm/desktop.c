@@ -25,6 +25,7 @@
 #include "../fs/setup.h"
 #include "wm.h"
 #include "input.h"
+#include "tablet.h"
 #include "../gdi/gdi.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
@@ -1914,6 +1915,8 @@ void DesktopRun(void *arg)
                 prev_right = right;
             } else if (ev.type == INPUT_TOUCH) {
                 touch_event(&ev);
+            } else if (ev.type == INPUT_PEN) {
+                TabletPacketIn(&ev);
             } else if (ev.type == INPUT_KEY) {
                 KeyEvent k;
                 if (InputTranslateKey(&ev, &k)) desktop_key(&k);
