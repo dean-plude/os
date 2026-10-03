@@ -42,10 +42,11 @@ enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CT
        CTL_WORKAREA, CTL_WAKE, CTL_WINDOW_AT, CTL_ACCEPT_DROPS, CTL_DROP, CTL_DROP_FETCH,
        CTL_DISPLAY_MODE, CTL_SET_DISPLAY, CTL_DROP_DONE, CTL_DROP_STATUS, CTL_SET_CURSOR, CTL_CURSOR_SHAPE,
        CTL_HWND_TAG, CTL_SET_HWND, CTL_FOREIGN, CTL_MONITOR, CTL_HEAD_MODE, CTL_SET_HEAD,
-       CTL_SET_SYSCURSOR, CTL_SYSCURSOR_IMAGE };
+       CTL_SET_SYSCURSOR, CTL_SYSCURSOR_IMAGE, CTL_TOUCH };
 /* display.c: the monitors (GetSystemMetrics' virtual screen) */
 int  u32_monitor_count(void);
 void u32_virtual_screen(RECT *r);
+#define WM_NOVA_TOUCH 0x03FD                    /* from the desktop: a touch contact (pointer.c) */
 #define WM_NOVA_DROP 0x03FE                     /* from the desktop: a drop from another program (drop.c) */
 #define FRAME_TITLE 32                          /* the desktop's title bar */
 #define FRAME_BORDER 1
@@ -130,12 +131,20 @@ enum {
     WF_DESTROYING = 1, WF_DESTROYED = 2, WF_CREATED = 4, WF_DIALOG = 8, WF_MENU_TRACK = 16,
     WF_NOTIFYSENT = 32, WF_ERASEBK_DONE = 64, WF_HIDDEN_BY_OWNER = 128, WF_MAPPED = 256,
     WF_NEED_SIZE = 512,             /* WM_SIZE and WM_MOVE still owed, at the first ShowWindow */
+    WF_TOUCH = 1024,                /* RegisterTouchWindow: WM_TOUCH instead of WM_POINTER* */
 };
 
 void u32_lock(void);                /* a recursive lock over the window table and the queues */
 void u32_unlock(void);
 #define LOCK()   u32_lock()
 #define UNLOCK() u32_unlock()
+
+/* Touch (pointer.c, with msg.c's routing) */
+void  touch_from_kernel(Wnd *top, const MSG *km);
+Wnd  *input_hit(Wnd *top, POINT pt, int *hit);                 /* the window (and part) at @pt */
+void  input_queue(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, DWORD time);
+void  input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt);   /* a mouse message at screen @pt, routed */
+LRESULT touch_default(Wnd *w, UINT msg, WPARAM wp, LPARAM lp);  /* DefWindowProc: mouse promotion */
 
 int   hwnd_foreign(HWND h);           /* another process's handle */
 int   foreign_info(HWND h, INT32 f[11]); /* CTL_FOREIGN: 2 desktop window, 1 other window, 0 none */

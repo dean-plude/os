@@ -108,6 +108,7 @@ typedef struct {
     UINT8  size, count;        /* array: @count elements of @size bits */
     bool   array, relative;
     INT32  lmin, lmax;
+    UINT8  coll;               /* the innermost collection it is in (numbered from 1 in order) */
 } HidField;
 
 typedef struct {
@@ -152,6 +153,7 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
     memset(obits, 0, sizeof(obits));
     L->led_bit[0] = L->led_bit[1] = L->led_bit[2] = -1;
     int depth = 0;
+    UINT8 colls = 0, cstack[16] = { 0 };   /* collections so far; the open ones */
 
     for (int i = 0; i < len;) {
         UINT8 b = d[i];
@@ -182,6 +184,7 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
                         else continue;
                         HidField *f = &L->f[L->n++];
                         f->id = g.id;
+                        f->coll = depth ? cstack[depth < 16 ? depth - 1 : 15] : 0;
                         f->page = (u >> 16) ? (UINT16)(u >> 16) : g.page;
                         f->usage = (UINT16)u;
                         f->bit = (UINT16)(*pos + k * g.size);
@@ -194,6 +197,7 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
                     HidField *f = &L->f[L->n++];
                     UINT32 first = have_range ? umin : nusage ? usages[0] : 0;
                     f->id = g.id;
+                    f->coll = depth ? cstack[depth < 16 ? depth - 1 : 15] : 0;
                     f->page = (first >> 16) ? (UINT16)(first >> 16) : g.page;
                     f->usage = (UINT16)first;
                     f->usage_max = have_range ? (UINT16)umax : (UINT16)first;
@@ -235,6 +239,7 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
         case 0xA0:                                       /* Collection */
             if (depth == 0 && item_u(v, n) == 1 && !L->app && nusage)
                 L->app = (UINT16)((((usages[0] >> 16) ? (usages[0] >> 16) : g.page) << 8) | (usages[0] & 0xFF));
+            if (depth < 16) cstack[depth] = ++colls;
             depth++;
             nusage = 0; have_range = false;
             break;
@@ -289,7 +294,7 @@ typedef struct {
     UsbDev    *dev;
     UsbPipe   *pipe;
     HidLayout  L;
-    bool       keyboard, pointer, absolute, boot, wake, media;
+    bool       keyboard, pointer, absolute, boot, wake, media, touch;
     UINT8      kbd_id;               /* the report the keys come in */
     UINT8      keys[32];             /* keyboard usages held down (bitmap) */
     UINT16     cc[MAX_CC];           /* media and system keys held down (set-1 codes) */
@@ -300,6 +305,12 @@ typedef struct {
     UINT8      buttons;
     UINT8      iface;
     UINT8      leds;                 /* lock state the LEDs show (0xFF: not set yet) */
+    /* Multi-touch: the device's Contact Identifier in each slot (and
+     * whether that slot is touching, and was in this frame), and the
+     * contacts the frame still has to come (hybrid mode) */
+    INT32      t_cid[TOUCH_MAX];
+    bool       t_down[TOUCH_MAX], t_seen[TOUCH_MAX];
+    int        t_left;
     bool       dead;
 } Hid;
 
@@ -527,6 +538,100 @@ static void pointer_report(Hid *h, UINT8 id, const UINT8 *r, int len)
     hid_post(h, &ev);
 }
 
+/* ---- multi-touch (HID digitizers: Windows' touch-screen descriptors) ----
+ *
+ * Each contact has a logical collection (a "finger") with its Tip Switch,
+ * Contact Identifier and X/Y; the report also carries the Contact Count.
+ * In "hybrid" mode a frame with more contacts than a report has fingers
+ * comes in several reports, the first with the count and the rest with 0.
+ * Every contact becomes an INPUT_TOUCH event in a slot of its own; a
+ * contact that a finished frame left out has lifted. */
+
+static void post_touch(Hid *h, int slot, bool down, INT32 x, INT32 y)
+{
+    InputEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type     = INPUT_TOUCH;
+    ev.contact  = (UINT8)slot;
+    ev.pressed  = down ? 1 : 0;
+    ev.absolute = 1;
+    ev.dx = x; ev.dy = y;
+    hid_post(h, &ev);
+}
+
+static void touch_frame_end(Hid *h)
+{
+    for (int s = 0; s < TOUCH_MAX; s++) {
+        if (h->t_down[s] && !h->t_seen[s]) { post_touch(h, s, false, 0, 0); h->t_down[s] = false; }
+        if (!h->t_down[s]) h->t_cid[s] = -1;
+        h->t_seen[s] = false;
+    }
+    InputEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = INPUT_TOUCH;
+    ev.contact = TOUCH_FRAME;
+    hid_post(h, &ev);
+}
+
+/* The field of @usage (@page) in finger collection @coll of report @id */
+static const HidField *finger_field(const Hid *h, UINT8 id, UINT8 coll, UINT16 page, UINT16 usage)
+{
+    for (int i = 0; i < h->L.n; i++) {
+        const HidField *f = &h->L.f[i];
+        if (f->id == id && f->coll == coll && f->page == page && f->usage == usage && !f->array) return f;
+    }
+    return NULL;
+}
+
+static void touch_report(Hid *h, UINT8 id, const UINT8 *r, int len)
+{
+    /* The fingers of this report: the collections that have a tip switch */
+    UINT8 fingers[TOUCH_MAX];
+    int nf = 0;
+    const HidField *count = NULL;
+    for (int i = 0; i < h->L.n; i++) {
+        const HidField *f = &h->L.f[i];
+        if (f->id != id || f->page != PAGE_DIGITIZER || f->array) continue;
+        if (f->usage == 0x54) count = f;                                        /* Contact Count */
+        if (f->usage == 0x42 && nf < TOUCH_MAX) fingers[nf++] = f->coll;          /* Tip Switch */
+    }
+    if (!nf) return;
+    int valid = nf;
+    if (count) {
+        INT32 c = get_bits(r, len, count->bit, count->size, 0);
+        if (c > 0) h->t_left = c;                                 /* a new frame */
+        else if (h->t_left <= 0) h->t_left = nf;                  /* (no count: a whole frame) */
+        valid = h->t_left < nf ? h->t_left : nf;
+    } else {
+        h->t_left = nf;
+    }
+    for (int k = 0; k < valid; k++) {
+        const HidField *tip = finger_field(h, id, fingers[k], PAGE_DIGITIZER, 0x42);
+        const HidField *cid = finger_field(h, id, fingers[k], PAGE_DIGITIZER, 0x51);
+        const HidField *fx = finger_field(h, id, fingers[k], PAGE_DESKTOP, 0x30);
+        const HidField *fy = finger_field(h, id, fingers[k], PAGE_DESKTOP, 0x31);
+        if (!tip || !fx || !fy) continue;
+        bool down = get_bits(r, len, tip->bit, tip->size, 0) != 0;
+        INT32 c = cid ? get_bits(r, len, cid->bit, cid->size, 0) : k;
+        int slot = -1;
+        for (int s = 0; s < TOUCH_MAX && slot < 0; s++) if (h->t_cid[s] == c) slot = s;
+        if (slot < 0) {
+            if (!down) continue;                                  /* (an unused finger) */
+            for (int s = 0; s < TOUCH_MAX && slot < 0; s++) if (h->t_cid[s] < 0) slot = s;
+            if (slot < 0) continue;
+            h->t_cid[slot] = c;
+        }
+        h->t_seen[slot] = true;
+        if (!down && !h->t_down[slot]) continue;
+        INT32 x = scale_abs(get_bits(r, len, fx->bit, fx->size, fx->lmin), fx->lmin, fx->lmax);
+        INT32 y = scale_abs(get_bits(r, len, fy->bit, fy->size, fy->lmin), fy->lmin, fy->lmax);
+        post_touch(h, slot, down, x, y);
+        h->t_down[slot] = down;
+    }
+    h->t_left -= valid;
+    if (h->t_left <= 0) touch_frame_end(h);
+}
+
 static bool on_report(UsbPipe *p, const UINT8 *data, int len, void *ctx)
 {
     Hid *h = ctx;
@@ -539,7 +644,8 @@ static bool on_report(UsbPipe *p, const UINT8 *data, int len, void *ctx)
     }
     if (h->keyboard && id == h->kbd_id) keyboard_report(h, data, len, sched_ticks());
     if (h->media) media_report(h, id, data, len, sched_ticks());
-    if (h->pointer) pointer_report(h, id, data, len);
+    if (h->touch) touch_report(h, id, data, len);
+    else if (h->pointer) pointer_report(h, id, data, len);
     return true;
 }
 
@@ -589,6 +695,10 @@ static void hid_gone(void *inst)
     }
     for (int i = 0; i < h->ncc; i++) post_key(h, h->cc[i], false);
     h->ncc = 0;
+    if (h->touch) {                                  /* lift every contact */
+        for (int s = 0; s < TOUCH_MAX; s++) h->t_seen[s] = false;
+        touch_frame_end(h);
+    }
     h->repeat = 0;
     h->dead = true;
     for (int i = 0; i < MAX_HID; i++)
@@ -603,11 +713,13 @@ static void classify(Hid *h)
         const HidField *f = &h->L.f[i];
         if (f->page == PAGE_KEYBOARD && !h->keyboard) { h->keyboard = true; h->kbd_id = f->id; }
         if (cc_field(f)) h->media = true;
+        if (f->page == PAGE_DIGITIZER && f->usage == 0x51) h->touch = true;    /* Contact Identifier */
         if (f->page == PAGE_DESKTOP && (f->usage == 0x30 || f->usage == 0x31)) {
             h->pointer = true;
             if (!f->relative) h->absolute = true;
         }
     }
+    if (h->touch) for (int s = 0; s < TOUCH_MAX; s++) h->t_cid[s] = -1;
 }
 
 void *UsbHidProbe(UsbDev *d, const UsbIface *f)
@@ -665,7 +777,18 @@ void *UsbHidProbe(UsbDev *d, const UsbIface *f)
     if (!h->pipe) { kfree(h); return NULL; }
     g_hids[slot] = h;
     UsbBind(d, h, hid_gone);
-    const char *kind = h->keyboard && h->pointer ? "keyboard + pointer" : h->keyboard ? "keyboard" :
+    if (h->touch) {                       /* contacts: the Contact Count's maximum, or the fingers a report has */
+        int fingers = 0, most = 0;
+        for (int i = 0; i < h->L.n; i++) {
+            const HidField *t = &h->L.f[i];
+            if (t->page != PAGE_DIGITIZER || t->array) continue;
+            if (t->usage == 0x42 && t->id == h->L.f[0].id) fingers++;
+            if (t->usage == 0x54 && t->lmax > most) most = t->lmax;
+        }
+        InputTouchScreen(most > fingers ? most : fingers);
+    }
+    const char *kind = h->touch ? "multi-touch screen" :
+                       h->keyboard && h->pointer ? "keyboard + pointer" : h->keyboard ? "keyboard" :
                        !h->pointer ? "media keys" :
                        h->absolute ? (h->L.app == 0x0D04 ? "touch screen" : "absolute pointer") : "mouse";
     kprintf("[USB] %s: %s (%s protocol, %d fields%s%s)\n", UsbDevName(d), kind,
@@ -708,7 +831,16 @@ static const UINT8 g_chk_kbd[] = {          /* a keyboard whose keys go up to us
     0x15, 0x00, 0x25, 0xFF, 0x05, 0x07, 0x19, 0x00, 0x29, 0xFF, 0x81, 0x00, 0xC0,
 };
 
-typedef struct { const char *what; const UINT8 *desc; int dlen; const char *kind; UINT8 rep[4][8]; int rlen; int nrep;
+#define FINGER 0x09, 0x22, 0xA1, 0x02, 0x09, 0x42, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x01, 0x81, 0x02, \
+               0x75, 0x07, 0x81, 0x03, 0x09, 0x51, 0x25, 0x7F, 0x75, 0x08, 0x81, 0x02, 0x05, 0x01, 0x26, 0xFF, \
+               0x7F, 0x75, 0x10, 0x09, 0x30, 0x09, 0x31, 0x95, 0x02, 0x81, 0x02, 0x05, 0x0D, 0x95, 0x01, 0xC0
+static const UINT8 g_chk_touch[] = {        /* a touch screen, two fingers a report (hybrid mode) */
+    0x05, 0x0D, 0x09, 0x04, 0xA1, 0x01, 0x85, 0x01, FINGER, FINGER,
+    0x09, 0x54, 0x25, 0x0A, 0x75, 0x08, 0x95, 0x01, 0x81, 0x02, 0xC0,
+};
+#undef FINGER
+
+typedef struct { const char *what; const UINT8 *desc; int dlen; const char *kind; UINT8 rep[4][16]; int rlen; int nrep;
                  const char *want; } HidCheck;
 
 /* What a check's events were, as text: "+E0 30 -E0 30" for keys, "m18,0,-1" for buttons, wheel, h-wheel */
@@ -718,7 +850,13 @@ static void describe(char *out, int cap)
     out[0] = '\0';
     for (int i = 0; i < g_check_n && n < cap - 1; i++) {
         const InputEvent *e = &g_check_ev[i];
-        if (e->type == INPUT_KEY)
+        if (e->type == INPUT_TOUCH && e->contact == TOUCH_FRAME)
+            n += ksnprintf(out + n, cap - n, "%s|", i ? " " : "");
+        else if (e->type == INPUT_TOUCH && e->pressed)
+            n += ksnprintf(out + n, cap - n, "%st%d+%d", i ? " " : "", e->contact, e->dx * 100 / 65536);
+        else if (e->type == INPUT_TOUCH)
+            n += ksnprintf(out + n, cap - n, "%st%d-", i ? " " : "", e->contact);
+        else if (e->type == INPUT_KEY)
             n += ksnprintf(out + n, cap - n, "%s%c%s%02X", i ? " " : "", e->pressed ? '+' : '-', e->extended ? "E0 " : "", e->scancode);
         else
             n += ksnprintf(out + n, cap - n, "%sm%X,%d,%d", i ? " " : "", e->buttons, e->dz, e->dw);
@@ -743,6 +881,13 @@ int UsbHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
         { "keyboard volume usages", g_chk_kbd, sizeof(g_chk_kbd), "keyboard",
           { { 0, 0, 0x80 }, { 0, 0, 0x81, 0x80 }, { 0, 0, 0x7F }, { 0 } }, 8, 4,
           "+E0 30 +E0 2E +E0 20 -E0 30 -E0 2E -E0 20" },
+        /* three contacts over two reports, then one lifts, one moves and
+         * one is left out (lifted) */
+        { "multi-touch (hybrid reports)", g_chk_touch, sizeof(g_chk_touch), "touch",
+          { { 1, 1, 5, 0x00, 0x40, 0x00, 0x20, 1, 7, 0x00, 0x20, 0x00, 0x10, 3 },
+            { 1, 1, 9, 0x00, 0x60, 0x00, 0x30, 0, 0, 0, 0, 0, 0, 0 },
+            { 1, 0, 5, 0x00, 0x40, 0x00, 0x20, 1, 7, 0x00, 0x30, 0x00, 0x10, 2 } }, 14, 3,
+          "t0+50 t1+25 t2+75 | t0- t1+37 t2- |" },
     };
     int failed = 0;
     for (unsigned c = 0; c < sizeof(checks) / sizeof(checks[0]); c++) {
@@ -752,7 +897,7 @@ int UsbHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
         h->leds = 0xFF;
         bool ok = parse_report_desc(k->desc, k->dlen, &h->L);
         if (ok) classify(h);
-        const char *kind = h->keyboard ? "keyboard" : h->pointer ? "pointer" : h->media ? "media" : "nothing";
+        const char *kind = h->touch ? "touch" : h->keyboard ? "keyboard" : h->pointer ? "pointer" : h->media ? "media" : "nothing";
         char got[160], line[256];
         if (!ok || strcmp(kind, k->kind) != 0) {
             ksnprintf(line, sizeof(line), "FAIL %s: read as %s, not %s", k->what, kind, k->kind);

@@ -46,11 +46,23 @@ typedef enum {
     WM_MOUSE_HWHEEL,       /* the horizontal wheel: WmWheelDelta() notches (+ = to the right) */
 } WmMouseMsg;
 
+/* A touch contact, as a window gets it: a frame's changed contacts at once */
+typedef struct {
+    UINT8 id;              /* the contact's slot, 0..TOUCH_MAX-1 */
+    UINT8 flags;           /* WM_TOUCH_* */
+    int   x, y;            /* screen position */
+} WmTouch;
+#define WM_TOUCH_DOWN     1    /* it touched down (in this window's client area) */
+#define WM_TOUCH_MOVE     2
+#define WM_TOUCH_UP       4    /* it lifted */
+#define WM_TOUCH_PRIMARY  8    /* the first contact while none was down */
+
 struct WND;
 typedef void (*WndPaintFn)(struct WND *w);
 typedef void (*WndKeyFn)(struct WND *w, const KeyEvent *k);
 typedef void (*WndMouseFn)(struct WND *w, WmMouseMsg msg, int x, int y);
 typedef void (*WndCloseFn)(struct WND *w);
+typedef void (*WndTouchFn)(struct WND *w, const WmTouch *t, int n);
 /* Called every pass of the desktop loop; return true to request a redraw
  * (used for work that completes asynchronously, e.g. network requests). */
 typedef bool (*WndTickFn)(struct WND *w);
@@ -95,6 +107,8 @@ typedef struct WND {
     WndKeyFn   on_key;       /* key pressed while focused */
     bool       key_releases; /* on_key also gets releases (pressed = false) */
     WndMouseFn on_mouse;     /* mouse in / captured by the client area */
+    WndTouchFn on_touch;     /* touch contacts that went down in the client area (else
+                              * the first contact works the mouse there) */
     WndCloseFn on_close;     /* window is being destroyed: free `user` */
     WndCloseFn on_close_request; /* if set, the close button and Alt+F4 call this
                               * instead of closing (the owner decides) */

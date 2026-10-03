@@ -305,7 +305,12 @@ USERAPI int GetSystemMetrics(int index)
     case 28: case 29: return 136;                           /* CXMIN, CYMIN */
     case 30: case 31: return 22;                            /* CXSIZE, CYSIZE */
     case 36: case 37: return 4;                             /* double-click rectangle */
-    case 43: return 3;                                      /* CMOUSEBUTTONS */
+    case 43: return 5;                                      /* CMOUSEBUTTONS */
+    case 94: {                                              /* SM_DIGITIZER */
+        int n = (int)NtNovaGuiCtl(0, CTL_TOUCH, 0, NULL);
+        return n ? 0x01 | (n > 1 ? 0x40 : 0) | 0x80 : 0;    /* NID_INTEGRATED_TOUCH, MULTI_INPUT, READY */
+    }
+    case 95: return (int)NtNovaGuiCtl(0, CTL_TOUCH, 0, NULL);   /* SM_MAXIMUMTOUCHES */
     case 45: case 46: return 2;                             /* CXEDGE, CYEDGE */
     case 49: case 50: return 16;                            /* small icons */
     case 67: return 0;                                      /* CLEANBOOT */
@@ -752,7 +757,6 @@ USERAPI BOOL LockWorkStation(void) { SetLastError(ERROR_ACCESS_DENIED); return F
 
 USERAPI BOOL ChangeWindowMessageFilterEx(HWND h, UINT msg, DWORD action, void *cf) { (void)h; (void)msg; (void)action; (void)cf; return TRUE; }
 USERAPI BOOL ChangeWindowMessageFilter(UINT msg, DWORD f) { (void)msg; (void)f; return TRUE; }
-USERAPI BOOL RegisterTouchWindow(HWND h, ULONG f) { (void)h; (void)f; return FALSE; }
 USERAPI HANDLE RegisterDeviceNotificationW(HANDLE r, LPVOID filter, DWORD f) { (void)r; (void)filter; (void)f; return (HANDLE)(ULONG_PTR)0xDE01; }
 USERAPI BOOL UnregisterDeviceNotification(HANDLE h) { (void)h; return TRUE; }
 USERAPI BOOL RegisterRawInputDevices(const void *d, UINT n, UINT cb) { (void)d; (void)n; (void)cb; return TRUE; }

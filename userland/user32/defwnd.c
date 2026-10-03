@@ -99,6 +99,8 @@ static LRESULT def_common(Wnd *w, HWND h, UINT msg, WPARAM wp, LPARAM lp, int wi
         return TRUE;
     case WM_XBUTTONDOWN: case WM_XBUTTONDBLCLK: case WM_NCXBUTTONDOWN: case WM_NCXBUTTONDBLCLK:
         return TRUE;
+    case 0x0240: case 0x0245: case 0x0246: case 0x0247:    /* WM_TOUCH, WM_POINTERUPDATE, DOWN, UP */
+        return touch_default(w, msg, wp, lp);
     case WM_CONTEXTMENU: case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL: case WM_APPCOMMAND: case WM_HELP:
         if ((w->style & WS_CHILD) && w->parent) return send_msg(w->parent, msg, wp, lp);
         return 0;
