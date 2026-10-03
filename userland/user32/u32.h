@@ -177,6 +177,12 @@ Wnd  *input_hit(Wnd *top, POINT pt, int *hit);                 /* the window (an
 void  input_queue(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, DWORD time);
 void  input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt);   /* a mouse message at screen @pt, routed */
 LRESULT touch_default(Wnd *w, UINT msg, WPARAM wp, LPARAM lp);  /* DefWindowProc: mouse promotion */
+/* Pens and the mouse as pointers (pointer.c): a mouse message for @target's
+ * client area at screen @pt, from the pen packet @pen (0: the mouse); 1 if
+ * it became WM_POINTER* */
+int   pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, UINT32 pen);
+void  pointer_left(Wnd *top);          /* the desktop's WM_MOUSELEAVE for @top: the pen left it */
+void  pointer_taken(const MSG *m);     /* GetMessage took @m (GetPointerInfo answers for it) */
 
 int   hwnd_foreign(HWND h);           /* another process's handle */
 int   foreign_info(HWND h, INT32 f[11]); /* CTL_FOREIGN: 2 desktop window, 1 other window, 0 none */

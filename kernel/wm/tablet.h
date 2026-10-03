@@ -52,8 +52,8 @@ bool TabletOwns(void *owner);
 int  TabletDevices(void);
 /* What the pens present can report: TABLET_CAP_* (any of them) */
 int  TabletCaps(void);
-/* An INPUT_PEN event (desktop loop) */
-void TabletPacketIn(const InputEvent *ev);
+/* An INPUT_PEN event (desktop loop); returns its packet's number */
+UINT32 TabletPacketIn(const InputEvent *ev);
 /* Packets numbered after @after (the oldest still kept first), up to @max;
  * waits up to @wait_ticks for one if there are none (and max isn't 0).
  * Returns how many; *newest (may be NULL) gets the newest packet's number. */

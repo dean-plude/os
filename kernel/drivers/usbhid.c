@@ -587,8 +587,8 @@ static void pointer_report(Hid *h, UINT8 id, const UINT8 *r, int len)
     ev.dw       = hwheel;
     ev.absolute = abs && have_x && have_y;
     if (abs && !ev.absolute) { ev.dx = ev.dy = 0; }  /* (half an absolute position: buttons only) */
-    hid_post(h, &ev);
-    if (pen_seen && ev.absolute) {
+    if (!(pen_seen && ev.absolute)) { hid_post(h, &ev); return; }
+    {                                               /* a pen: its packet, then the pointer */
         InputEvent pe;
         memset(&pe, 0, sizeof(pe));
         pe.type     = INPUT_PEN;
@@ -604,6 +604,8 @@ static void pointer_report(Hid *h, UINT8 id, const UINT8 *r, int len)
         pe.twist    = (UINT16)twist;
         hid_post(h, &pe);
     }
+    ev.from_pen = 1;
+    hid_post(h, &ev);
 }
 
 /* ---- multi-touch (HID digitizers: Windows' touch-screen descriptors) ----
@@ -993,7 +995,7 @@ int UsbHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
         { "pen pressure, barrel and eraser", g_chk_pen, sizeof(g_chk_pen), "pen",
           { { 2, 0x10, 0x00, 0x40, 0x00, 0x20, 0x00, 0x00 }, { 2, 0x13, 0x00, 0x40, 0x00, 0x20, 0x00, 0x08 },
             { 2, 0x1C, 0x00, 0x40, 0x00, 0x20, 0xFF, 0x0F }, { 2, 0x00, 0x00, 0x40, 0x00, 0x20, 0x00, 0x00 } }, 8, 4,
-          "m0,0,0 p0,0r m3,0,0 p511,3r m1,0,0 p1023,1re m0,0,0 p0,0" },
+          "p0,0r m0,0,0 p511,3r m3,0,0 p1023,1re m1,0,0 p0,0 m0,0,0" },
         /* upright, hovering; leaning 30 degrees right and 45.5 toward the
          * user, twisted 90 degrees; leaning 90 degrees left and away,
          * twisted 359 */
@@ -1001,7 +1003,7 @@ int UsbHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
           { { 3, 0x10, 0x00, 0x40, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
             { 3, 0x11, 0x00, 0x40, 0x00, 0x20, 0x00, 0x08, 0xB8, 0x0B, 0xC6, 0x11, 0x5A, 0x00 },
             { 3, 0x11, 0x00, 0x40, 0x00, 0x20, 0xFF, 0x0F, 0xD8, 0xDC, 0xD8, 0xDC, 0x67, 0x01 } }, 14, 3,
-          "m0,0,0 p0,0r/0,0,0 m1,0,0 p511,1r/300,455,900 m1,0,0 p1023,1r/-900,-900,3590" },
+          "p0,0r/0,0,0 m0,0,0 p511,1r/300,455,900 m1,0,0 p1023,1r/-900,-900,3590 m1,0,0" },
     };
     int failed = 0;
     for (unsigned c = 0; c < sizeof(checks) / sizeof(checks[0]); c++) {
