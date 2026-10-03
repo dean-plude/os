@@ -169,6 +169,23 @@ The assembly stubs in `isr_stubs.asm` use a macro-generated approach:
 the vector number, then jumping to the common handler which saves all GPRs
 and calls `interrupt_dispatch()`.
 
+A Windows program's own faults go to its SEH handlers instead
+(`UmUserException` in `kernel/um/um_exception.c`): the kernel builds a
+`CONTEXT` (registers plus the `fxsave` image) and an `EXCEPTION_RECORD`
+on the user stack and points the thread at ntdll's
+`KiUserExceptionDispatcher`.  A floating-point fault is named from the
+flags that are both raised and unmasked: x87 errors (#MF) from the x87
+status and control words, SSE errors (#XM) from MXCSR, so a divide by
+zero is `STATUS_FLOAT_DIVIDE_BY_ZERO`, an inexact result
+`STATUS_FLOAT_INEXACT_RESULT`, and so on.  The `CONTEXT` keeps those
+flags; the handlers run with them cleared, as on Windows, so their own
+floating-point code does not fault again.  Every program thread starts
+with Windows' floating-point state, every exception masked: x87 control
+word `0x27F` (round to nearest, 53-bit precision) and MXCSR `0x1F80`.
+The scheduler saves and restores each thread's state (`fxsave`/`fxrstor`)
+when it switches threads.  QEMU's TCG never raises SSE exceptions, so a
+wrong MXCSR shows only under KVM or on real hardware.
+
 ---
 
 ## APIC Timer and Scheduler
