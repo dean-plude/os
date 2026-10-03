@@ -427,6 +427,11 @@ run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'msitest', 'mk
      os.path.join(out, 'msitest.exe')])
 for n in sorted(os.listdir(msipkg)):
     built.append((f'\\Tests\\Msi\\{n}', os.path.join(msipkg, n)))
+# 3a3. the General MIDI soundfont winmm's synthesizer plays (generated)
+sf2 = os.path.join(out, 'gm.sf2')
+run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'make_gm_soundfont.py'), sf2])
+built.append(('\\Windows\\System32\\drivers\\gm.sf2', sf2))
+built.append(('\\Windows\\SysWOW64\\drivers\\gm.sf2', sf2))     # (where WOW64 redirects 32-bit programs)
 
 # 3a. sample files for the user's folders (tools/make_icons.py draws the icons)
 samples = os.path.join(HERE, 'samples')
