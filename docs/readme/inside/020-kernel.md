@@ -18,5 +18,6 @@ same bytes, as Windows shares image sections), I/O,
   (`SetPriorityClass`, `SetThreadPriority`) set NT's base priorities;
   every kernel thread (input, audio, the network, USB, the desktop,
   saving drive C:) stays above anything a program can ask for, and the
-  process whose window is active gets NT's foreground boost (+2 after
-  every wait).
+  process whose window is active (or the console program running in the
+  active Terminal) gets NT's foreground boost (+2 after every wait) and
+  three times the time slice (60 ms against 20 ms).

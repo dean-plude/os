@@ -79,6 +79,10 @@ static uint64_t tsc_at_boot;
 
 /* Ticks per time slice before preemption */
 #define TICKS_PER_SLICE  2   /* 2 ticks @ 100Hz = 20ms quantum */
+/* The foreground process's threads get three times that (NT's quantum
+ * stretching, "Programs" in System Properties on client Windows: 2 clock
+ * intervals in the background, 6 in the foreground; here 20 and 60 ms) */
+#define TICKS_PER_SLICE_FOREGROUND  (3 * TICKS_PER_SLICE)
 
 /* -----------------------------------------------------------------------
  * Run queues (the queue's lock held)
@@ -244,6 +248,13 @@ static void *volatile g_foreground;
 
 void sched_set_foreground(void *um) { __atomic_store_n(&g_foreground, um, __ATOMIC_RELAXED); }
 void *sched_foreground(void)        { return __atomic_load_n(&g_foreground, __ATOMIC_RELAXED); }
+
+/* @t's time slice in ticks: longer for a thread of the foreground process
+ * (quantum stretching).  The boost decay stays one level per 20 ms. */
+static inline uint64_t slice_ticks(const Thread *t)
+{
+    return t->um_proc && t->um_proc == sched_foreground() ? TICKS_PER_SLICE_FOREGROUND : TICKS_PER_SLICE;
+}
 
 /* (@t waiting, its queue locked).  A thread of the foreground process gets
  * NT's foreground boost on top (PsPrioritySeparation; Windows Internals,
@@ -904,7 +915,7 @@ void sched_tick(void)
      * for either keeps its place ahead of those waiting their turn
      * (rq_enqueue_preempted): sent to the back, it waited out their
      * slices, in the middle of starting a 1 ms wait of its own. */
-    bool slice_over = cur->ticks_slice >= TICKS_PER_SLICE;
+    bool slice_over = cur->ticks_slice >= slice_ticks(cur);
     /* Its boost decayed below a queued thread's priority: that one runs */
     if (decayed && !slice_over) {
         spin_lock(&rq->lock);
@@ -1152,7 +1163,7 @@ void sched_resched_ipi(void)
 {
     uint32_t cpu = this_cpu();
     if (!g_resched[cpu] || !current_thread) return;
-    g_preempting[cpu] = current_thread->ticks_slice < TICKS_PER_SLICE;
+    g_preempting[cpu] = current_thread->ticks_slice < slice_ticks(current_thread);
     perform_switch();
 }
 
