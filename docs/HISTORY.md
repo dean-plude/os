@@ -2305,7 +2305,8 @@ keyboards, mice, hubs and sticks too.
   and none after drivetest and Terminal tests (MFT growth, a 90-file
   folder split across INDX blocks and shrunk back, a USB stick written to
   and pulled out without a sync) wrote to them.
-  Windows `chkdsk` has not been run on them: there is no Windows here.
+  Windows `chkdsk`, run on a disk NovaOS had written to (3 October),
+  reported no errors either.
 
 ## NTFS as drive C: and file ACLs (Phase 18.5)
 
@@ -2410,9 +2411,10 @@ and the kernel enforces those DACLs.
 - **Not done**: in QEMU a USB key can't wake the machine itself.  QEMU
   8.2 delivers the key to the suspended port (`xhci_wakeup`) but has no
   path from there to the platform, so the test wakes it with
-  `system_wakeup` (which QEMU reports as the power button).  USB wake
-  needs checking on real hardware, as do GPE block devices other than
-  `\_GPE` and routing behind PCI bridges.
+  `system_wakeup` (which QEMU reports as the power button).  On a real
+  PC a USB key press does wake it from S3 (checked 3 October).  Still
+  unchecked: GPE block devices other than `\_GPE` and routing behind PCI
+  bridges.
 
 ## HPET and one-shot/TSC-deadline timers (Phase 18.7)
 
@@ -2432,6 +2434,16 @@ and the kernel enforces those DACLs.
   wait timeout end, idle and with a busy thread on every CPU; it is in the
   core self-tests.  In QEMU (TCG, 2 CPUs) the 95th percentile under load
   was 0.26 ms late (it was 10 to 20 ms with the 100 Hz tick).
+- **Fix (2026-10-03):** `sleeptest timer` failed in CI at 1.4 to 1.6 ms
+  (95th percentile under load).  Two causes.  The keyboard and mouse
+  polls (PS/2 and USB) ran in the timer interrupt, and their port and MMIO
+  reads block for up to a few milliseconds under QEMU (it serializes
+  device access), with interrupts off, so every sleep due on that CPU
+  meanwhile ended late; they now run in a kernel thread (`devpoll`) woken
+  by its TSC deadline at each tick, interrupts enabled.  And a timer
+  interrupt taken while a CPU halted waiting for the kernel lock re-armed
+  the timer for the 10 ms grid only, forgetting that CPU's TSC-deadline
+  sleepers; it now re-arms for the soonest sleeper too.
 - QEMU emulates the TSC-deadline timer only with KVM, so the self-tests
   exercise the one-shot mode; TSC-deadline mode is untested.
 - Not yet: waitable timers (`SetWaitableTimer`) still fire on the 10 ms
