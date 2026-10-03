@@ -171,7 +171,10 @@ Terminal, shows it.  Wi-Fi is not supported.
 
 Sound plays through the newest output device; Settings > Sound picks
 another and sets each device's volume, and the choices are kept across
-restarts.
+restarts.  On a laptop whose built-in microphones sit behind Intel's
+audio DSP (the ThinkPad T14 Gen 4), they are the recording device
+"Microphone Array (DSP)" once the DSP's firmware is built in
+([hardware.md](hardware.md#the-digital-microphones-behind-the-audio-dsp)).
 
 ## Updating NovaOS
 

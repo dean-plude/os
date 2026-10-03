@@ -6,6 +6,9 @@
   controllers, move the pointer and click in their mouse mode.  Checked
   in QEMU against modelled devices (`hwcheck` in the core suite, with an
   ACPI table describing a touchpad); on the T14 the check is by hand
-  ([hardware.md](hardware.md)).  Not yet: the digital microphones (they
-  sit behind the DSP), the touchpad's interrupt line (polled for now),
-  tap-to-click and two-finger scrolling.
+  ([hardware.md](hardware.md)).  ~~The digital microphones, behind the
+  DSP~~ Done (Phase 21.4): Sound Open Firmware boots on the DSP, records
+  them through an IPC4 capture pipeline and they are the "Microphone
+  Array (DSP)" recording device, booted again after sleep (checked on a
+  modelled DSP, `hwcheck mic`).  Not yet: the touchpad's interrupt line
+  (polled for now), tap-to-click and two-finger scrolling.

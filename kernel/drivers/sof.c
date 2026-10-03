@@ -33,8 +33,22 @@
  *    kernel owns (decoupled from the link, so the DSP's DMA fills it).
  *    SofCaptureRing() and SofCapturePosition() give that ring to audio.c.
  *
- * Not yet: the recording device audio.c would offer over that ring, and a
- * DSP boot again after sleep; docs/hardware.md lists those steps.
+ *  - the recording device: "Microphone Array (DSP)", an input of audio.c
+ *    over that ring (the microphones' rate and channel count; audio.c
+ *    makes 48 kHz stereo of them), the default input from then on, as on
+ *    Windows.  The pipeline runs only while a program records: a thread
+ *    pauses it (SET_PIPELINE_STATE PAUSED, the host DMA stopped) when the
+ *    last recorder stops and runs it again when one starts;
+ *  - sleep: S3 takes the DSP's power, its memory and with them the
+ *    firmware and the pipeline.  SofResume() (after HdaResume) has that
+ *    thread boot the DSP again from the same firmware file and build the
+ *    pipeline again; the recording device stays, its ring re-read from
+ *    where the DSP starts writing.
+ *
+ * `hwcheck mic` gives QEMU, which has no such DSP, a live modelled one
+ * whose DMA writes a 1 kHz tone: the same boot, pipeline, device, pause
+ * and run, and a boot again after a modelled sleep, under the programs
+ * that record (soundtest record, capture, dscapture; Audacity).
  *
  * Register and message layouts follow Intel's public documents (the HD
  * Audio specification with its processing-pipe and software-position-in-
@@ -49,6 +63,7 @@
 
 #include "sof.h"
 #include "hda.h"
+#include "audio.h"
 #include "../hal/pci.h"
 #include "../hal/acpi.h"
 #include "../mm/vmm.h"
@@ -197,6 +212,8 @@ static struct {
     int          requests, refuse;      /* pipeline requests; refuse the n-th (0: none) */
     const char  *wrong;                 /* the first thing the model refused */
     UINT32       frames;                /* frames its DMA wrote into the host ring */
+    int          boots;                 /* images it received (a boot again after sleep: 2) */
+    bool         live;                  /* hwcheck mic: the recording device's feed is its DMA */
 } g_m;
 
 static void model_tick(void);
@@ -605,7 +622,8 @@ out:
 static struct {
     DspStream s;                        /* the host input stream the DSP fills */
     bool      created;                  /* pipeline 0 exists */
-    bool      running;
+    bool      running;                  /* (false while paused: no program records) */
+    bool      broken;                   /* a pause or run the firmware refused: left as it is */
     UINT32    rate, channels;
 } g_cap;
 
@@ -809,17 +827,160 @@ static bool start(const HdaHost *h, const UINT8 *nhlt, UINT32 nhlt_len, const UI
         ksnprintf(d.status, sizeof(d.status), "firmware %u.%u.%u.%u running, %d digital microphones; capture pipeline failed: %s",
                   ver[0], ver[1], ver[2], ver[3], dm.mics, why);
     else
-        ksnprintf(d.status, sizeof(d.status), "firmware %u.%u.%u.%u running, %d digital microphones recording (%u Hz, %u channel%s)",
+        ksnprintf(d.status, sizeof(d.status), "firmware %u.%u.%u.%u running, %d digital microphones (%u Hz, %u channel%s)",
                   ver[0], ver[1], ver[2], ver[3], dm.mics, g_cap.rate, g_cap.channels, g_cap.channels == 1 ? "" : "s");
     return true;
 }
 
-static HdaHost g_host;
-static int     g_busy;                  /* the boot or the self-check owns d and g_m */
+/* What the DSP was started from, to start it again after sleep */
+typedef struct {
+    const HdaHost *h;
+    const UINT8   *nhlt, *fw;
+    UINT32         nhlt_len, fw_len;
+    const char    *path;
+} SofSource;
+
+static HdaHost   g_host;
+static SofSource g_src;
+static int       g_busy;                /* the boot, the thread or the self-check owns d, g_cap and g_m */
 
 static void lock(void)   { while (__atomic_exchange_n(&g_busy, 1, __ATOMIC_ACQUIRE)) sched_sleep_until(NULL, sched_ticks() + 1); }
 static bool trylock(void) { return !__atomic_exchange_n(&g_busy, 1, __ATOMIC_ACQUIRE); }
 static void unlock(void) { __atomic_store_n(&g_busy, 0, __ATOMIC_RELEASE); }
+
+static void model_lose_power(void);
+static void model_feed(void);
+
+/* -----------------------------------------------------------------------
+ * The recording device over the capture ring.  audio.c reads it through
+ * these copies, not through d and g_cap, which the self-check borrows.
+ * ----------------------------------------------------------------------- */
+static struct {
+    AudioInput      in;
+    char            name[48];
+    bool            attached;
+    bool            model;              /* the live model of hwcheck mic feeds it */
+    volatile UINT8 *hb;                 /* the controller's registers (or the model's) */
+    UINT32          sd, size, fb;       /* the stream's registers, ring bytes, frame bytes */
+    volatile bool   want;               /* a program records from it (audio.c's run) */
+    volatile bool   restarting;         /* the DSP is being started again: no new frames */
+    volatile bool   feeding;            /* the model's DMA runs (the pipeline is RUNNING) */
+    volatile int    resume;             /* SofResume(): start the DSP again */
+    UINT32          last;               /* the position last given */
+    UINT64          fed_tick;           /* the model's DMA: written up to this tick */
+    UINT32          phase;              /*   and where in its tone */
+    int             pauses, runs, restarts;
+} g_mic;
+
+static UINT32 mic_position(void *ctx)
+{
+    (void)ctx;
+    if (g_mic.restarting) return g_mic.last;
+    if (g_mic.model) model_feed();
+    UINT32 p = *(volatile UINT32 *)(g_mic.hb + g_mic.sd + SD_LPIB) % g_mic.size;
+    g_mic.last = p - p % g_mic.fb;
+    return g_mic.last;
+}
+
+/* (audio.c's lock is held: the thread does the pausing) */
+static void mic_run(void *ctx, bool on) { (void)ctx; g_mic.want = on; }
+
+/* The capture ring as an input of audio.c (lock held) */
+static bool mic_attach(bool model)
+{
+    UINT32 fb = g_cap.channels * 2, size = CAP_PAGES * PAGE_SIZE;
+    if (size % fb) {
+        kprintf("[DSP] %u channels do not fit the ring: no recording device\n", g_cap.channels);
+        return false;
+    }
+    ksnprintf(g_mic.name, sizeof(g_mic.name), model ? "Microphone Array (DSP model)" : "Microphone Array (DSP)");
+    g_mic.model = model;
+    g_mic.hb = d.hb;
+    g_mic.sd = g_cap.s.sd;
+    g_mic.size = size;
+    g_mic.fb = fb;
+    g_mic.in = (AudioInput){ .name = g_mic.name, .key = model ? "DSP model" : "DSP", .ring = (INT16 *)g_cap.s.buf,
+                             .bytes = size, .rate = g_cap.rate, .channels = g_cap.channels,
+                             .position = mic_position, .run = mic_run };
+    return true;
+}
+
+/* Pause the pipeline when no program records, run it again when one does */
+static void capture_pause(bool pause)
+{
+    char why[96];
+    if (pause) {
+        g_mic.feeding = false;
+        bool ok = set_state(PPL_PAUSED, "SET_PIPELINE_STATE PAUSED", why, sizeof(why));
+        stream_run(&g_cap.s, false);
+        g_cap.running = false;
+        g_cap.broken = !ok;
+    } else {
+        stream_run(&g_cap.s, true);
+        bool ok = set_state(PPL_RUNNING, "SET_PIPELINE_STATE RUNNING", why, sizeof(why));
+        if (!ok) stream_run(&g_cap.s, false);
+        g_cap.running = ok;
+        g_cap.broken = !ok;
+        g_mic.feeding = ok;
+    }
+    if (g_cap.broken) kprintf("[DSP] %s: the microphones stay as they are\n", why);
+}
+
+/* After sleep: the DSP lost the firmware and the pipeline with its
+ * memory.  Forget them without asking it, and start it again from the
+ * same firmware file (lock held).  True when the pipeline is back. */
+static bool reboot(const SofSource *src)
+{
+    if (g_m.on) model_lose_power();
+    g_cap.created = g_cap.running = false;
+    capture_stop();                                 /* (the stream given back; no requests) */
+    return start(src->h, src->nhlt, src->nhlt_len, src->fw, src->fw_len, src->path) && g_cap.created;
+}
+
+/* The recording device's thread: pause and run the pipeline as programs
+ * record, and start the DSP again after sleep */
+static void mic_service(void)
+{
+    for (;;) {
+        sched_sleep_until(NULL, sched_ticks() + 1);
+        if (__atomic_exchange_n(&g_mic.resume, 0, __ATOMIC_ACQUIRE)) {
+            /* (the mixer reads nothing more from the old ring after this) */
+            AudioInputRestart(&g_mic.in, g_mic.in.ring, g_mic.in.bytes);
+            lock();
+            g_mic.feeding = false;
+            bool ok = reboot(&g_src);
+            INT16 *ring = (INT16 *)g_cap.s.buf;
+            if (ok) {
+                g_mic.hb = d.hb;
+                g_mic.sd = g_cap.s.sd;
+                g_mic.last = 0;                     /* (the new stream writes from its start) */
+                g_mic.restarts++;
+            }
+            char st[128];
+            strncpy(st, d.status, sizeof(st) - 1);
+            st[sizeof(st) - 1] = '\0';
+            if (g_mic.model) ksnprintf(d.status, sizeof(d.status), "%s (the modelled DSP of hwcheck mic)", st);
+            unlock();
+            kprintf("[DSP] After sleep: %s\n", st);
+            if (!ok) {
+                kprintf("[DSP] %s records nothing until the next start\n", g_mic.name);
+                continue;
+            }
+            AudioInputRestart(&g_mic.in, ring, CAP_PAGES * PAGE_SIZE);
+            g_mic.restarting = false;
+            g_mic.feeding = true;                   /* (start() left the pipeline RUNNING) */
+            continue;
+        }
+        if (g_mic.restarting || g_mic.want == g_cap.running) continue;
+        lock();
+        if (g_cap.created && !g_cap.broken && g_mic.want != g_cap.running) {
+            capture_pause(!g_mic.want);
+            if (g_mic.want) g_mic.runs++;
+            else g_mic.pauses++;
+        }
+        unlock();
+    }
+}
 
 static void sof_thread(void *arg)
 {
@@ -827,18 +988,33 @@ static void sof_thread(void *arg)
     bkl_release();
     const char *plat = platform(g_host.dev.device);
     const UINT8 *nhlt = AcpiFindTable("NHLT");
-    char path[96] = "";
+    static char path[96] = "";
     UINT32 fw_len = 0;
     const UINT8 *fw = plat ? firmware_file(plat, &fw_len, path, sizeof(path)) : NULL;
+    bool mic = false;
     if (!plat) {
         ksnprintf(d.status, sizeof(d.status), "this DSP generation (%04x) is not supported yet", g_host.dev.device);
     } else {
+        g_src = (SofSource){ &g_host, nhlt, fw, nhlt ? get32(nhlt + 4) : 0, fw_len, path };
         lock();
-        start(&g_host, nhlt, nhlt ? get32(nhlt + 4) : 0, fw, fw_len, path);
+        mic = start(g_src.h, g_src.nhlt, g_src.nhlt_len, g_src.fw, g_src.fw_len, g_src.path) && g_cap.created &&
+              mic_attach(false);
         unlock();
     }
     kprintf("[DSP] %s\n", d.status);
+    if (mic && AudioInputAttach(&g_mic.in)) {
+        g_mic.attached = true;
+        mic_service();
+    }
     sched_exit_current();
+}
+
+/* hwcheck mic's: the same service for the live model */
+static void sof_thread_model(void *arg)
+{
+    (void)arg;
+    bkl_release();
+    mic_service();
 }
 
 void SofStart(void)
@@ -853,17 +1029,24 @@ void SofStart(void)
         ksnprintf(d.status, sizeof(d.status), "could not start its thread");
 }
 
+void SofResume(void)
+{
+    if (!g_mic.attached) return;
+    g_mic.restarting = true;
+    __atomic_store_n(&g_mic.resume, 1, __ATOMIC_RELEASE);
+}
+
 const char *SofStatus(void)
 {
-    static char line[160];
+    static char line[192];
     if (!d.status[0]) return "no HD Audio controller";
-    int level = -1;
-    if (trylock()) {                                /* (not while the boot or the self-check runs) */
-        level = capture_level();
-        unlock();
-    }
-    if (level < 0) return d.status;
-    ksnprintf(line, sizeof(line), "%s, level %d%%", d.status, level);
+    if (!trylock()) return d.status;                /* (not while the boot, a restart or the self-check runs) */
+    int level = capture_level();
+    bool paused = g_cap.created && !g_cap.running;
+    unlock();
+    if (level >= 0) ksnprintf(line, sizeof(line), "%s, recording, level %d%%", d.status, level);
+    else if (paused) ksnprintf(line, sizeof(line), "%s, paused while no program records", d.status);
+    else return d.status;
     return line;
 }
 
@@ -942,6 +1125,7 @@ static void model_dma(void)
         g_m.got_image = same && got == want;
         g_m.bad_image = !g_m.got_image;
         if (g_m.got_image) {
+            g_m.boots++;
             *(volatile UINT32 *)(d.db + FW_STATUS) = ST_FW_ENTERED;
             model_send(IPC4_TYPE(GLB_NOTIFICATION) | ((UINT32)NOTIFY_FW_READY << 16), 0);
             g_m.phase = 2;
@@ -990,7 +1174,7 @@ static void model_tick(void)
         }
         model_send(reply, size);
     }
-    if (g_m.phase == 3) model_capture();
+    if (g_m.phase == 3 && !g_m.live) model_capture();
 }
 
 /* The capture pipeline's requests (SOF's IPC4 layouts): the reply's
@@ -1099,6 +1283,169 @@ static void model_capture(void)
             pos = (pos + 2) % cbl;
         }
     w0(sd + SD_LPIB, pos);
+}
+
+/* S3 as the DSP sees it: its memory and state gone, the processing pipe
+ * and the link's power saving as at power-on */
+static void model_lose_power(void)
+{
+    memset((void *)d.db, 0, BAR4_SPAN);
+    g_m.phase = 0;
+    g_m.tag = 0;
+    g_m.purge_pending = g_m.got_image = g_m.bad_image = false;
+    g_m.pipe = 0;
+    g_m.dmic_ok = g_m.host_ok = g_m.bound = false;
+    if (d.pp) w0(d.pp + PPCTL, 0);
+    w0(EM2, EM2_L1SEN);
+}
+
+/* hwcheck mic: the live model's host DMA, run from the mixer's look at
+ * the position (audio.c's lock held): a 1 kHz sine at a quarter of full
+ * scale on every channel, as much as the ticks since the last look hold */
+static const INT16 g_sine[48] = {
+    0, 1069, 2120, 3135, 4096, 4987, 5793, 6499, 7094, 7568, 7913, 8122, 8192, 8122, 7913, 7568,
+    7094, 6499, 5793, 4987, 4096, 3135, 2120, 1069, 0, -1069, -2120, -3135, -4096, -4987, -5793, -6499,
+    -7094, -7568, -7913, -8122, -8192, -8122, -7913, -7568, -7094, -6499, -5793, -4987, -4096, -3135, -2120, -1069,
+};
+
+static void model_feed(void)
+{
+    UINT64 now = sched_ticks();
+    UINT64 ticks = now - g_mic.fed_tick;
+    g_mic.fed_tick = now;
+    if (!g_mic.feeding || !ticks) return;
+    if (ticks > 10) ticks = 10;                     /* (100 ms at most: a ring's worth is 680) */
+    volatile UINT32 *lpib = (volatile UINT32 *)(g_mic.hb + g_mic.sd + SD_LPIB);
+    UINT32 pos = *lpib % g_mic.size, ch = g_mic.fb / 2;
+    UINT8 *ring = (UINT8 *)g_mic.in.ring;
+    for (UINT32 f = 0; f < (UINT32)ticks * 480; f++) {
+        for (UINT32 c = 0; c < ch; c++) {
+            *(INT16 *)(ring + pos) = g_sine[g_mic.phase];
+            pos = (pos + 2) % g_mic.size;
+        }
+        if (++g_mic.phase == 48) g_mic.phase = 0;
+    }
+    *lpib = pos;
+}
+
+/* A table like a two-microphone laptop's (model_nhlt), a small firmware
+ * file (model_firmware) and the controller's registers, kept for the
+ * live model */
+static UINT8   g_live_table[512];
+static UINT8  *g_live_fw, *g_live_bar0, *g_live_bar4;
+static HdaHost g_live_host;
+
+static UINT32 model_nhlt(UINT8 *t);
+static UINT32 model_firmware(UINT8 *f);
+
+int SofModelMicrophones(void (*say)(void *ctx, const char *line), void *ctx)
+{
+    char line[224];
+    if (g_mic.attached) {
+        ksnprintf(line, sizeof(line), "ok   DSP model: %s is attached already: %s", g_mic.name, SofStatus());
+        say(ctx, line);
+        return 0;
+    }
+    if (g_host.dsp_on) {
+        say(ctx, "FAIL DSP model: this machine has an audio DSP of its own (see hwcheck)");
+        return 1;
+    }
+    UINT32 fpages = (0x40 + 3 * PAGE_SIZE + 100 + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (!g_live_fw) {
+        g_live_fw = kernel_alloc_pages(fpages);
+        g_live_bar0 = kernel_alloc_pages(2);
+        g_live_bar4 = kernel_alloc_pages(BAR4_SPAN / PAGE_SIZE);
+        if (!g_live_fw || !g_live_bar0 || !g_live_bar4) {
+            say(ctx, "FAIL DSP model: out of memory for the model");
+            return 1;
+        }
+    }
+    UINT32 tlen = model_nhlt(g_live_table), flen = model_firmware(g_live_fw);
+    NhltDmic dm;
+    SofImage img;
+    char why[112];
+    if (!nhlt_parse(g_live_table, tlen, &dm) || !fw_parse(g_live_fw, flen, &img, why, sizeof(why))) {
+        say(ctx, "FAIL DSP model: the modelled table or firmware does not parse");
+        return 1;
+    }
+    memset(g_live_bar0, 0, 2 * PAGE_SIZE);
+    *(UINT16 *)(g_live_bar0 + 0x00) = (UINT16)(9 << 12 | 7 << 8);   /* GCAP: 7 in, 9 out (as Raptor Lake) */
+    *(UINT32 *)(g_live_bar0 + LLCH) = 0x800;
+    *(UINT32 *)(g_live_bar0 + 0x800) = CAP_PP << 16 | 0x700;
+    *(UINT32 *)(g_live_bar0 + 0x700) = CAP_SPB << 16;
+    *(UINT32 *)(g_live_bar0 + EM2) = EM2_L1SEN;
+    memset(&g_live_host, 0, sizeof(g_live_host));
+    g_live_host.mmio = g_live_bar0;
+    g_live_host.gcap = *(UINT16 *)g_live_bar0;
+    g_live_host.dsp_on = true;
+
+    lock();
+    memset(g_live_bar4, 0, BAR4_SPAN);
+    memset(&g_m, 0, sizeof(g_m));
+    g_m.on = g_m.live = true;
+    g_m.expect = img.image;
+    g_m.expect_size = img.size;
+    g_m.copier = img.copier;
+    g_m.blob = dm.blob;
+    g_m.blob_size = dm.blob_size;
+    d.db = g_live_bar4;
+    g_src = (SofSource){ &g_live_host, g_live_table, g_live_fw, tlen, flen, "(model)" };
+    bool ok = start(g_src.h, g_src.nhlt, g_src.nhlt_len, g_src.fw, g_src.fw_len, g_src.path) && g_cap.created &&
+              mic_attach(true);
+    char status[128];
+    strncpy(status, d.status, sizeof(status) - 1);
+    status[sizeof(status) - 1] = '\0';
+    if (ok) {
+        ksnprintf(d.status, sizeof(d.status), "%s (the modelled DSP of hwcheck mic)", status);
+        g_mic.fed_tick = sched_ticks();
+        g_mic.feeding = true;
+    }
+    unlock();
+    if (!ok) {
+        ksnprintf(line, sizeof(line), "FAIL DSP model: %s%s%s", status, g_m.wrong ? ": " : "", g_m.wrong ? g_m.wrong : "");
+        say(ctx, line);
+        return 1;
+    }
+    if (!AudioInputAttach(&g_mic.in)) {
+        say(ctx, "FAIL DSP model: audio.c has no room for another input");
+        return 1;
+    }
+    g_mic.attached = true;
+    if (!sched_create_thread("dsp", sof_thread_model, NULL, PRIO_DEVICE_IO)) {
+        say(ctx, "FAIL DSP model: could not start its thread");
+        return 1;
+    }
+    ksnprintf(line, sizeof(line), "ok   DSP model: %s attached (%u Hz, %u channels): %s", g_mic.name, g_cap.rate,
+              g_cap.channels, status);
+    say(ctx, line);
+    return 0;
+}
+
+/* hwcheck mic sleep: the live model loses its power as in S3, and the
+ * resume path boots it again */
+int SofModelSleep(void (*say)(void *ctx, const char *line), void *ctx)
+{
+    char line[256];
+    if (!g_mic.attached || !g_mic.model) {
+        say(ctx, "FAIL DSP model: no modelled microphones (hwcheck mic first)");
+        return 1;
+    }
+    int boots = g_m.boots, restarts = g_mic.restarts;
+    SofResume();                                    /* (the thread takes its power first, as S3 does) */
+    for (int i = 0; i < 300 && (g_mic.restarting || g_mic.restarts == restarts); i++)
+        sched_sleep_until(NULL, sched_ticks() + 1);
+    for (int i = 0; i < 50 && !g_mic.want && g_cap.running; i++)      /* (paused again: nothing records) */
+        sched_sleep_until(NULL, sched_ticks() + 1);
+    bool ok = !g_mic.restarting && g_mic.restarts == restarts + 1 && g_m.boots == boots + 1 && g_cap.created &&
+              !g_m.wrong;
+    ksnprintf(line, sizeof(line), "%s DSP model: after sleep the firmware booted again (boot %d) and the pipeline "
+              "came back: %s%s%s", ok ? "ok  " : "FAIL", g_m.boots, SofStatus(), g_m.wrong ? ": " : "",
+              g_m.wrong ? g_m.wrong : "");
+    say(ctx, line);
+    ksnprintf(line, sizeof(line), "     DSP model: paused %d times, run %d times as programs recorded", g_mic.pauses,
+              g_mic.runs);
+    say(ctx, line);
+    return ok ? 0 : 1;
 }
 
 /* A table like a two-microphone laptop's: an SSP endpoint (a Bluetooth
@@ -1214,9 +1561,10 @@ int SofSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
 
     /* The boot against the modelled DSP, then the capture pipeline */
     lock();
-    static UINT8 saved[sizeof(d)], saved_cap[sizeof(g_cap)];
+    static UINT8 saved[sizeof(d)], saved_cap[sizeof(g_cap)], saved_m[sizeof(g_m)];
     memcpy(saved, &d, sizeof(d));
     memcpy(saved_cap, &g_cap, sizeof(g_cap));
+    memcpy(saved_m, &g_m, sizeof(g_m));                 /* (hwcheck mic's live model) */
     memset(&g_cap, 0, sizeof(g_cap));
     memset(bar0, 0, 2 * PAGE_SIZE);
     *(UINT16 *)(bar0 + 0x00) = (UINT16)(9 << 12 | 7 << 8);   /* GCAP: 7 in, 9 out (as Raptor Lake) */
@@ -1265,7 +1613,7 @@ int SofSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
     CHECK(g_m.host_ok && g_m.host_index == 6 && (pp & (1u << 6)) && g_cap.s.pages == CAP_PAGES,
           "DSP: capture: copier on host input gateway %d, its stream decoupled, a %u KiB ring with no SPIB",
           g_m.host_index, CAP_PAGES * PAGE_SIZE / 1024);
-    CHECK(g_m.bound && g_m.pipe == PPL_RUNNING && g_cap.running && strstr(status, "recording (48000 Hz, 2 channels)"),
+    CHECK(g_m.bound && g_m.pipe == PPL_RUNNING && g_cap.running && strstr(status, "microphones (48000 Hz, 2 channels)"),
           "DSP: capture: CREATE_PIPELINE, two INIT_INSTANCE, BIND, PAUSED, host DMA on, RUNNING");
     for (int k = 0; k < 20; k++) model_tick();                  /* (200 ms of the modelled DMA) */
     UINT32 pos = 0, rsize = 0, rrate = 0, rch = 0;
@@ -1276,6 +1624,24 @@ int SofSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
     CHECK(have && rsize == CAP_PAGES * PAGE_SIZE && rrate == 48000 && rch == 2 && pos == g_m.frames * 4 % rsize &&
           level == 25 && ring[0] == -8192,
           "DSP: capture: samples in the host ring, position %u, level %d%% (a quarter-scale square wave)", pos, level);
+    /* No program records: paused with the host DMA off; one starts: RUNNING again */
+    capture_pause(true);
+    UINT32 frames = g_m.frames;
+    for (int k = 0; k < 5; k++) model_tick();
+    bool paused = g_m.pipe == PPL_PAUSED && !model_host_stream(true) && g_m.frames == frames && !g_cap.running;
+    capture_pause(false);
+    for (int k = 0; k < 5; k++) model_tick();
+    CHECK(paused && g_m.pipe == PPL_RUNNING && g_cap.running && g_m.frames > frames && !g_m.wrong,
+          "DSP: capture: PAUSED with the host DMA off while no program records, RUNNING again when one does%s%s",
+          g_m.wrong ? ": " : "", g_m.wrong ? g_m.wrong : "");
+    /* Sleep: the DSP's memory gone; the same firmware booted again and the
+     * pipeline built again (what SofResume has the thread do) */
+    SofSource src = { &h, table, fw, tlen, flen, "(model)" };
+    bool back = reboot(&src);
+    for (int k = 0; k < 5; k++) model_tick();
+    CHECK(back && g_m.boots == 2 && g_m.pipe == PPL_RUNNING && g_cap.running && model_host_stream(true) && !g_m.wrong,
+          "DSP: after sleep: the firmware booted again (boot %d), the capture pipeline RUNNING again%s%s", g_m.boots,
+          g_m.wrong ? ": " : "", g_m.wrong ? g_m.wrong : "");
     capture_stop();
     pp = r0(d.pp + PPCTL);
     CHECK(g_m.deleted == 1 && !g_m.pipe && !g_m.wrong && !(pp & (1u << 6)) && !g_cap.running,
@@ -1306,6 +1672,7 @@ int SofSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
           "DSP: a refused copier: the pipeline deleted, the stream recoupled, the firmware left running");
 #undef MODEL
     memcpy(&g_cap, saved_cap, sizeof(g_cap));
+    memcpy(&g_m, saved_m, sizeof(g_m));
 
     unlock();
     kernel_free_pages(fw, fpages);

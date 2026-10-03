@@ -13,9 +13,15 @@
  * SOF firmware built into the system (a thread: boot does not wait) */
 void        SofStart(void);
 
+/* After sleep (from the resume path, after HdaResume; does not wait): the
+ * DSP lost its firmware and pipeline with its power, so its thread boots
+ * it again from the same file and builds the pipeline again */
+void        SofResume(void);
+
 /* One line on what happened: "firmware 2.12.0.1 running, 2 digital
- * microphones recording (48000 Hz, 2 channels), level 3%", or why the DSP
- * or its capture pipeline was left off */
+ * microphones (48000 Hz, 2 channels), recording, level 3%" (or "paused
+ * while no program records"), or why the DSP or its capture pipeline was
+ * left off */
 const char *SofStatus(void);
 
 /* The microphones' samples: a ring of @size bytes the DSP's host DMA
@@ -30,3 +36,11 @@ UINT32      SofCapturePosition(void);
  * capture pipeline (copiers, BIND, states, the host ring) on a modelled
  * DSP; one line per check through @say, returns the failures */
 int         SofSelfCheck(void (*say)(void *ctx, const char *line), void *ctx);
+
+/* hwcheck mic: a live modelled DSP on a machine without one (QEMU) whose
+ * DMA writes a 1 kHz tone, booted as the real one is and attached as the
+ * recording device "Microphone Array (DSP model)"; hwcheck mic sleep: it
+ * loses its power as in S3 and SofResume() boots it again.  One line
+ * each through @say; return the failures. */
+int         SofModelMicrophones(void (*say)(void *ctx, const char *line), void *ctx);
+int         SofModelSleep(void (*say)(void *ctx, const char *line), void *ctx);
