@@ -13,8 +13,10 @@
  * virtio GPU with virgl's capability set and virgl is installed, and
  * llvmpipe otherwise, and every export (OpenGL 1.1 and wgl*) jumps to the
  * one picked.  GALLIUM_DRIVER chooses as in Mesa: "virgl" only virgl,
- * "llvmpipe" or "softpipe" only Mesa 3D.  With neither installed every call
- * fails (returns 0), as on a Windows machine without an OpenGL driver.
+ * "llvmpipe" or "softpipe" only Mesa 3D.  With neither installed, NovaOS's
+ * own minimal OpenGL 1.1 answers (generic.c), as Windows' "GDI Generic"
+ * does on a machine without an OpenGL driver: programs get a context, see
+ * OpenGL 1.1 and fall back to drawing without it.
  */
 #include <windows.h>
 
@@ -80,7 +82,13 @@ static void load_driver(void)
         m = LoadLibraryW(L"opengl32_virgl.dll");
     if (!m && !streq(want, "virgl"))
         m = LoadLibraryW(L"opengl32_mesa.dll");
-    if (!m) return;
+    if (!m) {                                    /* no driver: NovaOS's own OpenGL 1.1 (generic.c) */
+        extern const struct { const char *name; void *fn; } gl_generic[];
+        for (size_t k = 0; gl_generic[k].name; k++)
+            for (size_t i = 0; i < sizeof(g_slots) / sizeof(g_slots[0]); i++)
+                if (streq(g_slots[i].name, gl_generic[k].name)) *g_slots[i].slot = gl_generic[k].fn;
+        return;
+    }
     for (size_t i = 0; i < sizeof(g_slots) / sizeof(g_slots[0]); i++) {
         void *f = (void *)GetProcAddress(m, g_slots[i].name);
         if (f) *g_slots[i].slot = f;
