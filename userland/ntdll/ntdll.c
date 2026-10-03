@@ -26,6 +26,7 @@
 #define STUB(name, num)                                                     \
     __asm__(".globl " #name "\n"                                            \
             ".section .text$" #name ",\"xr\"\n"                             \
+            ".p2align 4\n"                                                  \
             #name ":\n\t"                                                   \
             ".byte 0x4C, 0x8B, 0xD1\n\t"          /* mov r10, rcx */         \
             ".byte 0xB8\n\t.long " #num "\n\t"    /* mov eax, num */         \
@@ -80,6 +81,8 @@ XSTUB(NtQuerySystemTime,            SYS_NtQuerySystemTime)
 XSTUB(NtQueryPerformanceCounter,    SYS_NtQueryPerformanceCounter)
 XSTUB(NtDelayExecution,             SYS_NtDelayExecution)
 XSTUB(NtYieldExecution,             SYS_NtYieldExecution)
+XSTUB(NtWaitForAlertByThreadId,     SYS_NtWaitForAlertByThreadId)
+XSTUB(NtAlertThreadByThreadId,      SYS_NtAlertThreadByThreadId)
 XSTUB(NtCreateThreadEx,             SYS_NtCreateThreadEx)
 XSTUB(NtTerminateThread,            SYS_NtTerminateThread)
 XSTUB(NtResumeThread,               SYS_NtResumeThread)
@@ -87,6 +90,7 @@ XSTUB(NtSuspendThread,              SYS_NtSuspendThread)
 XSTUB(NtQueryInformationThread,     SYS_NtQueryInformationThread)
 XSTUB(NtSetInformationThread,       SYS_NtSetInformationThread)
 XSTUB(NtQueryInformationProcess,    SYS_NtQueryInformationProcess)
+XSTUB(NtSetInformationProcess,      SYS_NtSetInformationProcess)
 XSTUB(NtCreateEvent,                SYS_NtCreateEvent)
 XSTUB(NtOpenEvent,                  SYS_NtOpenEvent)
 XSTUB(NtCreateSection,              SYS_NtCreateSection)
@@ -125,6 +129,8 @@ XSTUB(NtCancelTimer,                SYS_NtCancelTimer)
 XSTUB(NtQueryTimer,                 SYS_NtQueryTimer)
 XSTUB(NtQueryEvent,                 SYS_NtQueryEvent)
 XSTUB(NtQuerySemaphore,             SYS_NtQuerySemaphore)
+XSTUB(NtQuerySection,               SYS_NtQuerySection)
+XSTUB(NtQueryFullAttributesFile,    SYS_NtQueryFullAttributesFile)
 XSTUB(NtOpenThread,                 SYS_NtOpenThread)
 XSTUB(NtMapViewOfSectionEx,         SYS_NtMapViewOfSectionEx)
 XSTUB(NtCompareObjects,             SYS_NtCompareObjects)
@@ -223,6 +229,113 @@ __declspec(dllexport) size_t strlen(const char *s)
     const char *p = s;
     while (*p) p++;
     return (size_t)(p - s);
+}
+
+static int lc(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+__declspec(dllexport) int _strnicmp(const char *a, const char *b, size_t n)
+{
+    for (; n; n--, a++, b++) {
+        int x = lc((unsigned char)*a), y = lc((unsigned char)*b);
+        if (x != y || !x) return x - y;
+    }
+    return 0;
+}
+
+__declspec(dllexport) int _stricmp(const char *a, const char *b) { return _strnicmp(a, b, (size_t)-1); }
+
+__declspec(dllexport) void *memchr(const void *s, int c, size_t n)
+{
+    const unsigned char *p = s;
+    for (; n; n--, p++) if (*p == (unsigned char)c) return (void *)p;
+    return 0;
+}
+
+__declspec(dllexport) char *strcpy(char *d, const char *s)
+{
+    char *r = d;
+    while ((*d++ = *s++)) {}
+    return r;
+}
+
+__declspec(dllexport) char *strrchr(const char *s, int c)
+{
+    const char *r = 0;
+    do { if (*s == (char)c) r = s; } while (*s++);
+    return (char *)r;
+}
+
+__declspec(dllexport) size_t wcslen(const WCHAR *s)
+{
+    const WCHAR *p = s;
+    while (*p) p++;
+    return (size_t)(p - s);
+}
+
+__declspec(dllexport) WCHAR *wcschr(const WCHAR *s, WCHAR c)
+{
+    do { if (*s == c) return (WCHAR *)s; } while (*s++);
+    return 0;
+}
+
+__declspec(dllexport) WCHAR *wcscpy(WCHAR *d, const WCHAR *s)
+{
+    WCHAR *r = d;
+    while ((*d++ = *s++)) {}
+    return r;
+}
+
+__declspec(dllexport) int wcscpy_s(WCHAR *d, size_t n, const WCHAR *s)
+{
+    if (!d || !n) return 22;                       /* EINVAL */
+    if (!s) { d[0] = 0; return 22; }
+    size_t len = wcslen(s);
+    if (len >= n) { d[0] = 0; return 34; }         /* ERANGE */
+    for (size_t i = 0; i <= len; i++) d[i] = s[i];
+    return 0;
+}
+
+__declspec(dllexport) int wcsncmp(const WCHAR *a, const WCHAR *b, size_t n)
+{
+    for (; n; n--, a++, b++) if (*a != *b || !*a) return (int)*a - (int)*b;
+    return 0;
+}
+
+__declspec(dllexport) WCHAR *wcspbrk(const WCHAR *s, const WCHAR *set)
+{
+    for (; *s; s++) for (const WCHAR *t = set; *t; t++) if (*s == *t) return (WCHAR *)s;
+    return 0;
+}
+
+__declspec(dllexport) WCHAR *wcstok_s(WCHAR *s, const WCHAR *delim, WCHAR **ctx)
+{
+    if (!s) s = *ctx;
+    while (*s && wcschr(delim, *s)) s++;
+    if (!*s) { *ctx = s; return 0; }
+    WCHAR *tok = s;
+    while (*s && !wcschr(delim, *s)) s++;
+    if (*s) *s++ = 0;
+    *ctx = s;
+    return tok;
+}
+
+__declspec(dllexport) unsigned long wcstoul(const WCHAR *s, WCHAR **end, int base)
+{
+    const WCHAR *p = s;
+    unsigned long v = 0;
+    int neg = 0;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p == '-' || *p == '+') neg = *p++ == '-';
+    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) { p += 2; base = 16; }
+    else if (base == 0) base = p[0] == '0' ? 8 : 10;
+    const WCHAR *start = p;
+    for (;; p++) {
+        int d = *p >= '0' && *p <= '9' ? *p - '0' : lc(*p) >= 'a' && lc(*p) <= 'z' ? lc(*p) - 'a' + 10 : 99;
+        if (d >= base) break;
+        v = v * (unsigned long)base + (unsigned long)d;
+    }
+    if (end) *end = (WCHAR *)(p == start ? s : p);
+    return neg ? (unsigned long)-(long)v : v;
 }
 
 /* -----------------------------------------------------------------------
@@ -364,14 +477,14 @@ __declspec(dllexport) int strcmp(const char *a, const char *b)
  * ----------------------------------------------------------------------- */
 typedef struct Block {
     SIZE_T        size;        /* usable bytes (class size, or the large size) */
-    SIZE_T        tag;         /* HEAP_MAGIC | class, or HEAP_LARGE */
+    SIZE_T        tag;         /* HEAP_MAGIC with the arena and class in its low bytes, or HEAP_LARGE */
 #ifndef _WIN64
     SIZE_T        pad[2];      /* (32-bit: SSE code and JIT compilers such as
                                 * Mesa's expect 16-byte-aligned blocks too) */
 #endif
 } Block;                       /* 16 bytes: user data stays 16-byte aligned */
 
-#define HEAP_MAGIC   ((SIZE_T)0x4E4F564148454150ULL)   /* "NOVAHEAP" (its low half in 32-bit programs) */
+#define HEAP_MAGIC   ((SIZE_T)0x4E4F564148454150ULL)   /* "NOVAHEAP" (its low half in 32-bit programs; low 2 bytes: arena, class) */
 #define HEAP_LARGE   ((SIZE_T)0x4E4F56414C415247ULL)   /* "NOVALARG" */
 #define NCLASSES     48
 #define LARGE_MIN    (256 * 1024)
@@ -382,14 +495,42 @@ typedef struct Block {
 #endif
 #define ARENA_SIZE   (1024 * 1024)
 
+/* Small blocks come from a few arenas, each with its own lock and free
+ * lists; a thread uses the one its ID picks (threads side by side mostly
+ * get different ones) and a block goes back to the arena it came from
+ * (its number is in the tag).  Fresh memory is carved under a lock of its
+ * own. */
+#define NARENAS      8
+typedef struct {
+    volatile long lock;
+    void         *free_list[NCLASSES];
+    char          pad[64];                  /* (no line shared with the next arena's lock) */
+} Arena;
+
 static SIZE_T  class_size[NCLASSES];
-static void   *free_list[NCLASSES];
+static Arena   arenas[NARENAS];
 static char   *arena_base, *arena_cur, *arena_end, *arena_reserved_end;
 static int     heap_ready;
-static volatile long heap_lock;
+static volatile long carve_lock;
 
-static void hlock(void) { while (__atomic_exchange_n(&heap_lock, 1, __ATOMIC_ACQUIRE)) __builtin_ia32_pause(); }
-static void hunlock(void) { __atomic_store_n(&heap_lock, 0, __ATOMIC_RELEASE); }
+static void spin_lock(volatile long *l)
+{
+    for (int spins = 0; __atomic_exchange_n(l, 1, __ATOMIC_ACQUIRE); )
+        while (__atomic_load_n(l, __ATOMIC_RELAXED))
+            if (++spins < 1000) __builtin_ia32_pause();
+            else { NtYieldExecution(); spins = 0; }     /* (its holder was switched out) */
+}
+static void spin_unlock(volatile long *l) { __atomic_store_n(l, 0, __ATOMIC_RELEASE); }
+
+static int my_arena(void)
+{
+#ifdef _WIN64
+    SIZE_T tid = *(SIZE_T *)(NtCurrentTebBytes() + 0x48);  /* ClientId.UniqueThread */
+#else
+    SIZE_T tid = *(SIZE_T *)(NtCurrentTebBytes() + 0x24);
+#endif
+    return (int)(tid / 4 % NARENAS);
+}
 
 static void heap_init(void)
 {
@@ -463,18 +604,22 @@ NTSYSAPI PVOID NTAPI RtlAllocateHeap(PVOID heap, ULONG flags, SIZE_T n)
         b->tag = HEAP_LARGE;
         return b + 1;                               /* fresh pages are zeroed */
     }
-    int c = class_of(n);
-    hlock();
-    if (free_list[c]) {
-        b = (Block *)free_list[c] - 1;
-        free_list[c] = *(void **)free_list[c];
+    int c = class_of(n), a = my_arena();
+    Arena *ar = &arenas[a];
+    spin_lock(&ar->lock);
+    if (ar->free_list[c]) {
+        b = (Block *)ar->free_list[c] - 1;
+        ar->free_list[c] = *(void **)ar->free_list[c];
+        spin_unlock(&ar->lock);
     } else {
+        spin_unlock(&ar->lock);
+        spin_lock(&carve_lock);
         b = carve(class_size[c] + sizeof(Block));
+        spin_unlock(&carve_lock);
     }
-    hunlock();
     if (!b) return 0;
     b->size = class_size[c];
-    b->tag = HEAP_MAGIC | (SIZE_T)c;
+    b->tag = (HEAP_MAGIC & ~(SIZE_T)0xFFFF) | (SIZE_T)a << 8 | (SIZE_T)c;  /* (the magic's own low bytes would hide them) */
     if (flags & HEAP_ZERO_MEMORY) memset(b + 1, 0, class_size[c]);
     return b + 1;
 }
@@ -489,14 +634,15 @@ NTSYSAPI BOOLEAN NTAPI RtlFreeHeap(PVOID heap, ULONG flags, PVOID p)
         SIZE_T size = 0;
         return NT_SUCCESS(NtFreeVirtualMemory(NtCurrentProcess(), &base, &size, MEM_RELEASE));
     }
-    if ((b->tag & ~(SIZE_T)0xFF) != (HEAP_MAGIC & ~(SIZE_T)0xFF)) return FALSE;   /* not ours */
-    int c = (int)(b->tag & 0xFF);
-    if (c >= NCLASSES) return FALSE;
-    hlock();
-    *(void **)p = free_list[c];
-    free_list[c] = p;
+    if ((b->tag & ~(SIZE_T)0xFFFF) != (HEAP_MAGIC & ~(SIZE_T)0xFFFF)) return FALSE;   /* not ours */
+    int c = (int)(b->tag & 0xFF), a = (int)(b->tag >> 8 & 0xFF);
+    if (c >= NCLASSES || a >= NARENAS) return FALSE;
+    Arena *ar = &arenas[a];
+    spin_lock(&ar->lock);
+    *(void **)p = ar->free_list[c];
+    ar->free_list[c] = p;
     b->tag = 0;                                     /* catches double frees */
-    hunlock();
+    spin_unlock(&ar->lock);
     return TRUE;
 }
 
@@ -504,6 +650,50 @@ NTSYSAPI SIZE_T NTAPI RtlSizeHeap(PVOID heap, ULONG flags, const VOID *p)
 {
     (void)heap; (void)flags;
     return p ? ((const Block *)p - 1)->size : (SIZE_T)-1;
+}
+
+/* Private heaps share the process heap (HeapCreate does the same) */
+NTSYSAPI PVOID NTAPI RtlCreateHeap(ULONG flags, PVOID base, SIZE_T reserve, SIZE_T commit, PVOID lock, PVOID params)
+{
+    (void)flags; (void)base; (void)reserve; (void)commit; (void)lock; (void)params;
+    return RtlGetProcessHeap();
+}
+
+NTSYSAPI PVOID NTAPI RtlDestroyHeap(PVOID heap) { (void)heap; return 0; }
+
+/* The heap Windows shares with csrss.exe. Nothing allocates from it, but
+ * Chromium's sandbox finds it by its header (the segment and heap
+ * signatures, and heap class 8 in Flags) and destroys it before cutting a
+ * content process off from csrss, and gives up if it isn't there. */
+static __attribute__((aligned(16))) UCHAR csr_port_heap[0x100];
+
+static int csr_ready;
+
+static PVOID csr_heap(void)
+{
+    UCHAR *h = csr_port_heap;
+    if (!csr_ready) {
+        csr_ready = 1;
+#ifdef _WIN64
+        *(ULONG *)(h + 0x10) = 0xFFEEFFEE;          /* SegmentSignature */
+        *(PVOID *)(h + 0x28) = h;                   /* Heap */
+        *(ULONG *)(h + 0x70) = 0x8000 | 0x2;        /* Flags: HEAP_CLASS_8 | HEAP_GROWABLE */
+        *(ULONG *)(h + 0x98) = 0xEEFFEEFF;          /* Signature */
+#else
+        *(ULONG *)(h + 0x08) = 0xFFEEFFEE;
+        *(PVOID *)(h + 0x18) = h;
+        *(ULONG *)(h + 0x40) = 0x8000 | 0x2;
+        *(ULONG *)(h + 0x60) = 0xEEFFEEFF;
+#endif
+    }
+    return h;
+}
+
+NTSYSAPI ULONG NTAPI RtlGetProcessHeaps(ULONG n, PVOID *heaps)
+{
+    if (heaps && n >= 1) heaps[0] = RtlGetProcessHeap();
+    if (heaps && n >= 2) heaps[1] = csr_heap();
+    return 2;
 }
 
 NTSYSAPI PVOID NTAPI RtlReAllocateHeap(PVOID heap, ULONG flags, PVOID p, SIZE_T n)
@@ -516,4 +706,24 @@ NTSYSAPI PVOID NTAPI RtlReAllocateHeap(PVOID heap, ULONG flags, PVOID p, SIZE_T 
     memcpy(q, p, old < n ? old : n);
     RtlFreeHeap(heap, 0, p);
     return q;
+}
+
+/* Signal one object, then wait on another (the sandbox IPC client uses it) */
+NTSTATUS NTAPI NtSetEvent(HANDLE, PLONG);
+NTSTATUS NTAPI NtReleaseMutant(HANDLE, PLONG);
+NTSTATUS NTAPI NtReleaseSemaphore(HANDLE, LONG, PLONG);
+NTSYSAPI NTSTATUS NTAPI NtSignalAndWaitForSingleObject(HANDLE sig, HANDLE wait, BOOLEAN alertable, PLARGE_INTEGER timeout)
+{
+    if (!NT_SUCCESS(NtSetEvent(sig, 0)) && !NT_SUCCESS(NtReleaseMutant(sig, 0))) {
+        NTSTATUS s = NtReleaseSemaphore(sig, 1, 0);
+        if (!NT_SUCCESS(s)) return s;
+    }
+    return NtWaitForSingleObject(wait, alertable, timeout);
+}
+
+/* AppContainer capability SIDs: NovaOS has no AppContainers */
+NTSYSAPI NTSTATUS NTAPI RtlDeriveCapabilitySidsFromName(PVOID name, PVOID group_sid, PVOID sid)
+{
+    (void)name; (void)group_sid; (void)sid;
+    return 0xC00000BB;                             /* STATUS_NOT_SUPPORTED */
 }

@@ -906,22 +906,6 @@ WINOLEAPI_(HRESULT) OleDestroyMenuDescriptor(HANDLE h) { (void)h; return S_OK; }
 WINOLEAPI_(HRESULT) OleSetMenuDescriptor(HANDLE h, HWND frame, HWND active, void *ipframe, void *ipobj)
 { (void)h; (void)frame; (void)active; (void)ipframe; (void)ipobj; return S_OK; }
 
-/* a copy of clipboard-format data: global memory is copied, the rest (bitmaps,
- * metafiles) has no copy routine here */
-WINOLEAPI_(HANDLE) OleDuplicateData(HANDLE src, CLIPFORMAT fmt, UINT flags)
-{
-    (void)fmt;
-    if (!src) return NULL;
-    SIZE_T n = GlobalSize(src);
-    if (!n) return NULL;
-    HGLOBAL dst = GlobalAlloc(flags ? flags : GMEM_MOVEABLE, n);
-    void *s = GlobalLock(src), *d = dst ? GlobalLock(dst) : NULL;
-    if (s && d) for (SIZE_T i = 0; i < n; i++) ((BYTE *)d)[i] = ((const BYTE *)s)[i];
-    if (d) GlobalUnlock(dst);
-    if (s) GlobalUnlock(src);
-    return dst;
-}
-
 /* running objects: an object is running once it exists */
 WINOLEAPI_(HRESULT) OleRun(IUnknown *obj) { return obj ? S_OK : E_INVALIDARG; }
 WINOLEAPI_(BOOL) OleIsRunning(IUnknown *obj) { return obj != NULL; }

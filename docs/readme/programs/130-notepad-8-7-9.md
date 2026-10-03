@@ -1,0 +1,1 @@
+| **Notepad++ 8.8.3** (x64 portable) | Scintilla editor, static MSVC C++ runtime | Opens with its menus, toolbar, tab bar, editor and status bar, takes typing, and opens and saves files through the common file dialogs. |

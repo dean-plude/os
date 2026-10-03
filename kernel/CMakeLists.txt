@@ -118,6 +118,7 @@ set(KERNEL_ASM_SOURCES
 set(KERNEL_C_SOURCES
     arch/x86_64/gdt.c
     ke/ksym.c
+    ke/prof.c
     arch/x86_64/idt.c
     arch/x86_64/apic.c
     arch/x86_64/paging.c
@@ -130,13 +131,23 @@ set(KERNEL_C_SOURCES
     hal/pci.c
     hal/acpi.c
     hal/aml.c
+    hal/ioapic.c
+    hal/hpet.c
     hal/display.c
     drivers/e1000.c
+    drivers/virtio_net.c
     drivers/ahci.c
     drivers/hda.c
     drivers/audio.c
+    drivers/usb.c
     drivers/xhci.c
+    drivers/ehci.c
+    drivers/ohci.c
+    drivers/uhci.c
     drivers/usbhid.c
+    drivers/usbhub.c
+    drivers/usbmsc.c
+    drivers/nvme.c
     fs/block.c
     fs/fat.c
     fs/ntfs.c
@@ -184,6 +195,7 @@ set(KERNEL_C_SOURCES
     fs/vfs.c
     fs/initrd.c
     fs/ramfs.c
+    fs/fsec.c
     gdi/gdi.c
     gdi/png.c
     gdi/icon.c
@@ -208,10 +220,11 @@ set(KERNEL_C_SOURCES
 # Build
 # -------------------------------------------------------------------------
 
-# lwIP 2.2.0 (third_party/lwip, BSD licence): IPv4 core + Ethernet
+# lwIP 2.2.0 (third_party/lwip, BSD licence): IPv4 and IPv6 core + Ethernet
 file(GLOB LWIP_SOURCES
     "${LWIP_DIR}/core/*.c"
     "${LWIP_DIR}/core/ipv4/*.c"
+    "${LWIP_DIR}/core/ipv6/*.c"
     "${LWIP_DIR}/netif/ethernet.c"
 )
 set_source_files_properties(${LWIP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
@@ -247,6 +260,8 @@ file(GLOB_RECURSE USERLAND_DEPS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.rc"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.ico"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.png"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*/build.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/netsurf/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/netsurf/*.h")
 set(USERLAND_C "${CMAKE_CURRENT_BINARY_DIR}/userland_files.c")

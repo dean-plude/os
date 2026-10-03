@@ -34,6 +34,12 @@ void *memset(void *d, int c, size_t n)
 int memcmp(const void *x, const void *y, size_t n)
 {
     const unsigned char *a = x, *b = y;
+    for (; n >= 8; n -= 8, a += 8, b += 8) {          /* 8 bytes at a time up to a difference */
+        unsigned long long p, q;
+        __builtin_memcpy(&p, a, 8);
+        __builtin_memcpy(&q, b, 8);
+        if (p != q) break;
+    }
     for (; n; n--, a++, b++) if (*a != *b) return *a - *b;
     return 0;
 }

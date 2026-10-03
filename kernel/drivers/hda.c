@@ -1,5 +1,5 @@
 /*
- * hda.c — Intel High Definition Audio controller and codec setup (output)
+ * hda.c — Intel High Definition Audio controller and codec setup
  *
  * Register layout and verbs follow Intel's "High Definition Audio
  * Specification" rev. 1.0a.  The driver polls (no interrupts): commands go
@@ -12,6 +12,11 @@
  * DACs listen to the one output stream, which plays a ring of 48 kHz
  * 16-bit stereo frames.  That covers QEMU's hda-output/hda-duplex/
  * hda-micro codecs and simple onboard codecs.
+ *
+ * Recording is the mirror image: one audio input converter (ADC) with a
+ * path to an input pin that has something attached (a microphone first,
+ * then line in) records into a second ring, 48 kHz 16-bit stereo too, on
+ * the first input stream.
  */
 
 #include "hda.h"
@@ -79,6 +84,7 @@
 #define PAR_OUT_AMP     0x12
 
 #define WT_OUTPUT   0x0
+#define WT_INPUT    0x1
 #define WT_MIXER    0x2
 #define WT_SELECTOR 0x3
 #define WT_PIN      0x4
@@ -89,10 +95,12 @@
 #define WCAP_POWER      (1u << 10)
 
 #define PINCAP_OUT      (1u << 4)
+#define PINCAP_IN       (1u << 5)
 #define PINCAP_HP       (1u << 3)
 #define PINCAP_EAPD     (1u << 16)
 
 #define STREAM_TAG  1
+#define IN_STREAM_TAG 2
 #define FMT_48K_16_STEREO 0x0011        /* base 48 kHz, x1 /1, 16 bits, 2 channels */
 
 #define RING_ENTRIES 16                 /* BDL entries, a page each: 64 KiB = 341 ms */
@@ -126,6 +134,13 @@ static struct {
     UINT32          sd;                 /* the output stream descriptor's offset */
     Widget          w[MAX_NODES];
     int             outputs;            /* pins routed */
+    /* recording */
+    int             inputs;             /* ADCs routed to an input pin */
+    UINT32          isd;                /* the input stream descriptor's offset */
+    BdlEntry       *ibdl;
+    INT16          *iring;
+    bool            irunning;
+    char            iname[48];          /* what is recorded: "Microphone", "Line in" */
 } g;
 
 static inline UINT8  rd8(UINT32 r)            { return *(volatile UINT8 *)(g.mmio + r); }
@@ -259,6 +274,52 @@ static bool route(int cad, int nid, int depth)
     return false;
 }
 
+/* Find an input pin below @nid (an ADC, or a mixer or selector on its
+ * way) of device type @dev; select and unmute the path back up */
+static bool route_in(int cad, int nid, UINT32 dev, int depth)
+{
+    if (nid <= 0 || nid >= MAX_NODES || depth > 5) return false;
+    Widget *w = &g.w[nid];
+    if (w->type == WT_PIN) {
+        if (!(w->pincaps & PINCAP_IN) || (w->config >> 30) == 1) return false;
+        if (((w->config >> 20) & 0xF) != dev) return false;
+        if (w->caps & WCAP_POWER) verb12(cad, nid, VERB_SET_POWER, 0);
+        verb12(cad, nid, VERB_SET_PIN_CTL, 0x20);                   /* input enabled */
+        unmute_in(cad, nid, 0);
+        return true;
+    }
+    if (depth > 0 && w->type != WT_MIXER && w->type != WT_SELECTOR) return false;
+    for (int i = 0; i < w->nconn; i++) {
+        if (!route_in(cad, w->conn[i], dev, depth + 1)) continue;
+        if (w->caps & WCAP_POWER) verb12(cad, nid, VERB_SET_POWER, 0);
+        if (w->type == WT_MIXER) unmute_in(cad, nid, i);
+        else {
+            if (w->nconn > 1) verb12(cad, nid, VERB_SET_CONN_SEL, (UINT32)i);
+            unmute_in(cad, nid, w->type == WT_INPUT ? i : 0);
+        }
+        if (w->type != WT_INPUT) unmute_out(cad, nid);
+        return true;
+    }
+    return false;
+}
+
+/* One ADC recording from a microphone, else line in, else any input jack */
+static void setup_input(int cad, int ws, int wn)
+{
+    static const struct { UINT32 dev; const char *name; } prefs[] = {
+        { 0xA, "Microphone" }, { 0x8, "Line in" }, { 0x9, "Auxiliary input" }, { 0x3, "CD" } };
+    for (unsigned k = 0; k < sizeof(prefs) / sizeof(prefs[0]) && !g.inputs; k++)
+        for (int nid = ws; nid < ws + wn && nid < MAX_NODES && !g.inputs; nid++) {
+            Widget *w = &g.w[nid];
+            if (w->type != WT_INPUT || !route_in(cad, nid, prefs[k].dev, 0)) continue;
+            if (w->caps & WCAP_POWER) verb12(cad, nid, VERB_SET_POWER, 0);
+            verb12(cad, nid, VERB_SET_STREAM, IN_STREAM_TAG << 4);
+            verb4(cad, nid, VERB4_SET_FORMAT, FMT_48K_16_STEREO);
+            strncpy(g.iname, prefs[k].name, sizeof(g.iname) - 1);
+            g.inputs++;
+        }
+}
+
 static void setup_codec(int cad)
 {
     UINT32 vendor = param(cad, 0, PAR_VENDOR);
@@ -294,8 +355,11 @@ static void setup_codec(int cad)
             unmute_out(cad, nid);
             routed++;
         }
-        kprintf("[HDA] Codec %d (%04x:%04x): %d output%s\n", cad, vendor >> 16, vendor & 0xFFFF,
-                routed, routed == 1 ? "" : "s");
+        int had = g.inputs;
+        setup_input(cad, ws, wn);
+        kprintf("[HDA] Codec %d (%04x:%04x): %d output%s%s%s\n", cad, vendor >> 16, vendor & 0xFFFF,
+                routed, routed == 1 ? "" : "s", g.inputs > had ? ", recording from " : "",
+                g.inputs > had ? g.iname : "");
         g.outputs += routed;
     }
 }
@@ -345,24 +409,45 @@ static void setup_rings(void)
     wr8(RIRBCTL, 0x03);                             /* DMA on; response status (polled, INTCTL is off) */
 }
 
-/* Reset the output stream and run it over the ring */
+/* Reset stream descriptor @sd and run it over the ring @bdl describes */
+static void program_sd(UINT32 sd, BdlEntry *bdl, UINT32 tag, bool run)
+{
+    wr32(sd + SD_CTL, 0);
+    for (int i = 0; i < 1000 && (rd32(sd + SD_CTL) & SD_CTL_RUN); i++) pause_cpu();
+    wr32(sd + SD_CTL, SD_CTL_SRST);
+    for (int i = 0; i < 1000 && !(rd32(sd + SD_CTL) & SD_CTL_SRST); i++) pause_cpu();
+    wr32(sd + SD_CTL, 0);
+    for (int i = 0; i < 1000 && (rd32(sd + SD_CTL) & SD_CTL_SRST); i++) pause_cpu();
+    wr8(sd + SD_STS, 0x1C);                         /* clear status */
+
+    wr32(sd + SD_BDPL, (UINT32)phys(bdl));
+    wr32(sd + SD_BDPU, (UINT32)(phys(bdl) >> 32));
+    wr32(sd + SD_CBL, RING_BYTES);
+    wr16(sd + SD_LVI, RING_ENTRIES - 1);
+    wr16(sd + SD_FMT, FMT_48K_16_STEREO);
+    wr32(sd + SD_CTL, (tag << 20));
+    if (run) wr32(sd + SD_CTL, (tag << 20) | SD_CTL_RUN);
+}
+
 static void program_stream(void)
 {
-    wr32(g.sd + SD_CTL, 0);
-    for (int i = 0; i < 1000 && (rd32(g.sd + SD_CTL) & SD_CTL_RUN); i++) pause_cpu();
-    wr32(g.sd + SD_CTL, SD_CTL_SRST);
-    for (int i = 0; i < 1000 && !(rd32(g.sd + SD_CTL) & SD_CTL_SRST); i++) pause_cpu();
-    wr32(g.sd + SD_CTL, 0);
-    for (int i = 0; i < 1000 && (rd32(g.sd + SD_CTL) & SD_CTL_SRST); i++) pause_cpu();
-    wr8(g.sd + SD_STS, 0x1C);                       /* clear status */
+    program_sd(g.sd, g.bdl, STREAM_TAG, true);
+    if (g.ibdl) program_sd(g.isd, g.ibdl, IN_STREAM_TAG, g.irunning);
+}
 
-    wr32(g.sd + SD_BDPL, (UINT32)phys(g.bdl));
-    wr32(g.sd + SD_BDPU, (UINT32)(phys(g.bdl) >> 32));
-    wr32(g.sd + SD_CBL, RING_BYTES);
-    wr16(g.sd + SD_LVI, RING_ENTRIES - 1);
-    wr16(g.sd + SD_FMT, FMT_48K_16_STEREO);
-    wr32(g.sd + SD_CTL, ((UINT32)STREAM_TAG << 20));
-    wr32(g.sd + SD_CTL, ((UINT32)STREAM_TAG << 20) | SD_CTL_RUN);
+static BdlEntry *make_ring(INT16 **ring)
+{
+    BdlEntry *bdl = kernel_alloc_pages(1);
+    *ring = kernel_alloc_pages(RING_ENTRIES);
+    if (!bdl || !*ring) return NULL;
+    memset(bdl, 0, PAGE_SIZE);
+    memset(*ring, 0, RING_BYTES);
+    for (int i = 0; i < RING_ENTRIES; i++) {
+        bdl[i].addr = phys((UINT8 *)*ring + i * PAGE_SIZE);
+        bdl[i].len = PAGE_SIZE;
+        bdl[i].flags = 0;
+    }
+    return bdl;
 }
 
 static bool start_stream(UINT16 gcap)
@@ -370,16 +455,12 @@ static bool start_stream(UINT16 gcap)
     int iss = (gcap >> 8) & 0xF, oss = (gcap >> 12) & 0xF;
     if (!oss) return false;
     g.sd = 0x80 + (UINT32)iss * 0x20;               /* the first output stream */
-
-    g.bdl  = kernel_alloc_pages(1);
-    g.ring = kernel_alloc_pages(RING_ENTRIES);
-    if (!g.bdl || !g.ring) return false;
-    memset(g.bdl, 0, PAGE_SIZE);
-    memset(g.ring, 0, RING_BYTES);
-    for (int i = 0; i < RING_ENTRIES; i++) {
-        g.bdl[i].addr = phys((UINT8 *)g.ring + i * PAGE_SIZE);
-        g.bdl[i].len = PAGE_SIZE;
-        g.bdl[i].flags = 0;
+    g.bdl = make_ring(&g.ring);
+    if (!g.bdl) return false;
+    if (iss && g.inputs) {                          /* recording: the first input stream, started on demand */
+        g.isd = 0x80;
+        g.ibdl = make_ring(&g.iring);
+        if (!g.ibdl) g.inputs = 0;
     }
     program_stream();
     return true;
@@ -434,6 +515,7 @@ void HdaResume(void)
     UINT16 codecs = rd16(STATESTS);
     wr16(STATESTS, codecs);
     g.outputs = 0;
+    g.inputs = 0;
     for (int cad = 0; cad < 15; cad++)
         if (codecs & (1u << cad)) setup_codec(cad);
     program_stream();
@@ -450,5 +532,30 @@ INT16 *HdaRing(UINT32 *size)
 UINT32 HdaPosition(void)
 {
     UINT32 p = rd32(g.sd + SD_LPIB);
+    return p < RING_BYTES ? p & ~3u : 0;
+}
+
+bool HdaCanRecord(void) { return g.present && g.ibdl && g.inputs; }
+const char *HdaInputName(void) { return HdaCanRecord() ? g.iname : ""; }
+
+INT16 *HdaCaptureRing(UINT32 *size)
+{
+    if (size) *size = RING_BYTES;
+    return g.iring;
+}
+
+/* Start or stop the input stream (its ring restarts at 0) */
+void HdaCapture(bool run)
+{
+    if (!HdaCanRecord() || g.irunning == run) return;
+    g.irunning = run;
+    program_sd(g.isd, g.ibdl, IN_STREAM_TAG, run);
+}
+
+/* How far the hardware has written into the capture ring (bytes) */
+UINT32 HdaCapturePosition(void)
+{
+    if (!HdaCanRecord()) return 0;
+    UINT32 p = rd32(g.isd + SD_LPIB);
     return p < RING_BYTES ? p & ~3u : 0;
 }

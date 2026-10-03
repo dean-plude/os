@@ -9,10 +9,19 @@
  *   4. memory: threads allocate, fill, check and free their own blocks;
  *   5. handles: threads create and close events as fast as they can;
  *   6. a system call writing into memory that another thread frees at the
- *      same time: the kernel must fail the call, not crash.
+ *      same time: the kernel must fail the call, not crash;
+ *   7. processes and the console: threads start copies of this program
+ *      side by side ("smpstress child N" prints a line and exits with N)
+ *      and check each one's exit code;
+ *   8. throughput: files (open, write, read back, close) and the registry
+ *      (open a key, set and read a value, close), each thread on its own
+ *      file or key, by one thread and then by one per CPU.  With
+ *      "smpstress scaling X" it fails unless both scale by X or more.
  */
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define ITER 3000
 
@@ -135,6 +144,142 @@ static DWORD WINAPI race_writer(LPVOID arg)
     return 0;
 }
 
+/* 7: throughput.  Each worker repeats its operation on a file or key of
+ * its own until g_tp_stop, counting in g_tp_ops; any failure counts in
+ * g_bad. */
+#define TP_MS     2000
+#define TP_CHUNK  4096
+#define TP_CHUNKS 4
+static volatile long g_tp_stop, g_tp_ops;
+
+static DWORD WINAPI file_worker(LPVOID arg)
+{
+    char path[MAX_PATH], buf[TP_CHUNK], back[TP_CHUNK];
+    int id = (int)(ULONG_PTR)arg;
+    wsprintfA(path, "C:\\Temp\\smpstress\\f%d.dat", id);
+    for (int i = 0; i < TP_CHUNK; i++) buf[i] = (char)(i * 7 + id);
+    while (!g_tp_stop) {
+        HANDLE f = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, 0, NULL);
+        if (f == INVALID_HANDLE_VALUE) { InterlockedIncrement(&g_bad); return 1; }
+        DWORD n;
+        int ok = 1;
+        for (int k = 0; k < TP_CHUNKS; k++) ok &= WriteFile(f, buf, TP_CHUNK, &n, NULL) && n == TP_CHUNK;
+        SetFilePointer(f, 0, NULL, FILE_BEGIN);
+        for (int k = 0; k < TP_CHUNKS; k++) ok &= ReadFile(f, back, TP_CHUNK, &n, NULL) && n == TP_CHUNK && !memcmp(buf, back, TP_CHUNK);
+        CloseHandle(f);
+        if (!ok) { InterlockedIncrement(&g_bad); return 1; }
+        InterlockedIncrement(&g_tp_ops);
+    }
+    return 0;
+}
+
+static DWORD WINAPI reg_worker(LPVOID arg)
+{
+    char path[80];
+    int id = (int)(ULONG_PTR)arg;
+    wsprintfA(path, "Software\\NovaOS\\smpstress\\k%d", id);
+    HKEY k;
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, path, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &k, NULL)) { InterlockedIncrement(&g_bad); return 1; }
+    RegCloseKey(k);
+    for (DWORD v = 0; !g_tp_stop; v++) {
+        DWORD got = 0, size = sizeof(got), type = 0;
+        if (RegOpenKeyExA(HKEY_CURRENT_USER, path, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &k)) { InterlockedIncrement(&g_bad); return 1; }
+        int ok = !RegSetValueExA(k, "n", 0, REG_DWORD, (const BYTE *)&v, sizeof(v)) &&
+                 !RegQueryValueExA(k, "n", NULL, &type, (BYTE *)&got, &size) && type == REG_DWORD && got == v;
+        RegCloseKey(k);
+        if (!ok) { InterlockedIncrement(&g_bad); return 1; }
+        InterlockedIncrement(&g_tp_ops);
+    }
+    return 0;
+}
+
+/* Operations a second by @n threads of @fn */
+static double throughput(LPTHREAD_START_ROUTINE fn, int n)
+{
+    HANDLE h[64];
+    g_tp_stop = 0;
+    g_tp_ops = 0;
+    for (int i = 0; i < n; i++) h[i] = CreateThread(NULL, 0, fn, (void *)(ULONG_PTR)i, 0, NULL);
+    Sleep(200);                                     /* (all started and warm) */
+    long ops0 = g_tp_ops;
+    DWORD t0 = GetTickCount();
+    Sleep(TP_MS);
+    long ops = g_tp_ops - ops0;
+    DWORD ms = GetTickCount() - t0;
+    g_tp_stop = 1;
+    WaitForMultipleObjects((DWORD)n, h, TRUE, INFINITE);
+    for (int i = 0; i < n; i++) CloseHandle(h[i]);
+    return ms ? ops * 1000.0 / ms : 0;
+}
+
+/* @fn's throughput by one thread and by one per CPU; false if it failed
+ * or scaled by less than @want (0: no target) */
+/* Yardsticks for the two above: plain computation, and a system call that
+ * touches nothing shared (NtQuerySystemTime: kernel32 reads the time from
+ * shared memory instead) */
+static DWORD WINAPI cpu_worker(LPVOID arg)
+{
+    (void)arg;
+    volatile unsigned x = 1;
+    while (!g_tp_stop) {
+        for (int i = 0; i < 20000; i++) x = x * 1103515245u + 12345u;
+        InterlockedIncrement(&g_tp_ops);
+    }
+    return 0;
+}
+
+typedef LONG (WINAPI *QST)(LARGE_INTEGER *);
+static QST g_qst;
+static DWORD WINAPI call_worker(LPVOID arg)
+{
+    (void)arg;
+    LARGE_INTEGER c;
+    while (!g_tp_stop) {
+        for (int i = 0; i < 16; i++) g_qst(&c);
+        InterlockedIncrement(&g_tp_ops);
+    }
+    return 0;
+}
+
+static int g_only_many;                             /* "smpstress throughput X NAME many|N": that many threads only */
+static int cpus_of(const SYSTEM_INFO *si) { return si->dwNumberOfProcessors > 16 ? 16 : (int)si->dwNumberOfProcessors; }
+
+static int scaling(const char *name, LPTHREAD_START_ROUTINE fn, int cpus, double want)
+{
+    long bad0 = g_bad;
+    if (g_only_many) { printf("  %-16s %2d threads %8.0f/s\n", name, g_only_many, throughput(fn, g_only_many)); return 1; }
+    double one = throughput(fn, 1), all = throughput(fn, cpus);
+    double x = one > 0 ? all / one : 0;
+    printf("  %-16s 1 thread %8.0f/s, %2d threads %8.0f/s: %.2fx\n", name, one, cpus, all, x);
+    if (g_bad != bad0) { printf("  %s: %ld failed\n", name, g_bad - bad0); return 0; }
+    return !(want > 0 && x < want);
+}
+
+/* 7: start children, each printing to the shared console */
+#define CHILDREN 6
+static char g_self[MAX_PATH];
+
+static DWORD WINAPI spawn_worker(LPVOID arg)
+{
+    int id = (int)(ULONG_PTR)arg;
+    for (int i = 0; i < CHILDREN; i++) {
+        char cmd[MAX_PATH + 32];
+        int code = id * 100 + i + 1;
+        wsprintfA(cmd, "\"%s\" child %d", g_self, code);
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        memset(&si, 0, sizeof(si));
+        si.cb = sizeof(si);
+        if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) { InterlockedIncrement(&g_bad); continue; }
+        DWORD got = 0;
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        if (!GetExitCodeProcess(pi.hProcess, &got) || got != (DWORD)code) InterlockedIncrement(&g_bad);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    return 0;
+}
+
 static void run(const char *name, LPTHREAD_START_ROUTINE fn, int n, void **args)
 {
     HANDLE h[64];
@@ -145,8 +290,17 @@ static void run(const char *name, LPTHREAD_START_ROUTINE fn, int n, void **args)
     printf("  %-16s %2d threads, %5lu ms\n", name, n, GetTickCount() - t0);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    /* "smpstress scaling X": also require X times one thread's file and
+     * registry throughput; "smpstress throughput [X]": only measure that */
+    if (argc > 2 && !strcmp(argv[1], "child")) {               /* test 7's children */
+        int code = atoi(argv[2]);
+        printf("    child %d (process %lu) here\n", code, GetCurrentProcessId());
+        return code;
+    }
+    BOOL only_tp = argc > 1 && !strcmp(argv[1], "throughput");
+    double want = argc > 2 && (only_tp || !strcmp(argv[1], "scaling")) ? atof(argv[2]) : 0;
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     g_threads = (int)si.dwNumberOfProcessors * 2;
@@ -155,6 +309,7 @@ int main(void)
     printf("smpstress: %lu CPUs\n", si.dwNumberOfProcessors);
     int pass = 0, fail = 0;
 
+    if (only_tp) goto throughput;
     InitializeCriticalSection(&g_cs);
     run("critical section", cs_worker, g_threads, NULL);
     if (g_plain == (long)g_threads * ITER) pass++; else { fail++; printf("  counter %ld, expected %ld\n", g_plain, (long)g_threads * ITER); }
@@ -207,6 +362,28 @@ int main(void)
     CloseHandle(fr);
     printf("  (%ld copies landed, %ld refused: the page was gone)\n", g_race_ok, g_race_fault);
     if (g_race_ok + g_race_fault == 3L * ITER) pass++; else fail++;
+
+    GetModuleFileNameA(NULL, g_self, sizeof(g_self));
+    bad0 = g_bad;
+    int spawners = g_threads / 2;
+    run("processes", spawn_worker, spawners, NULL);
+    if (g_bad == bad0) pass++; else { fail++; printf("  processes: %ld of %d failed\n", g_bad - bad0, spawners * CHILDREN); }
+
+throughput:
+    CreateDirectoryA("C:\\Temp", NULL);
+    CreateDirectoryA("C:\\Temp\\smpstress", NULL);
+    int cpus = (int)si.dwNumberOfProcessors;
+    if (cpus > 16) cpus = 16;
+    const char *only = only_tp && argc > 3 ? argv[3] : NULL;    /* "smpstress throughput X files" */
+    g_only_many = only && argc > 4 ? (!strcmp(argv[4], "many") ? cpus_of(&si) : atoi(argv[4])) : 0;
+    g_qst = (QST)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemTime");
+    if (!only) {
+        scaling("(computing)", cpu_worker, cpus, 0);
+        if (g_qst) scaling("(system calls)", call_worker, cpus, 0);
+    }
+    if (!only || !strcmp(only, "files")) { if (scaling("files", file_worker, cpus, want)) pass++; else fail++; }
+    if (!only || !strcmp(only, "registry")) { if (scaling("registry", reg_worker, cpus, want)) pass++; else fail++; }
+    if (want > 0) printf("  (target: %.1fx on %d CPUs)\n", want, cpus);
 
     printf("smpstress: %d passed, %d failed\n", pass, fail);
     return fail != 0;

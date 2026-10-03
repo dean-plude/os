@@ -152,17 +152,31 @@ void UmUserException(void *frame, UINT64 cr2);
 int  UmGuardFault(UINT64 va);           /* a guard page touched: 1 handled, -1/-2 raise, 0 not one */
 void um_registry_add_cpus(UINT32 n);         /* the processor keys, for the CPUs started */
 void um_registry_set_dword(const char *path, const char *name, UINT32 val);   /* an installer's registration */
+bool um_registry_get_dword(const char *path, const char *name, UINT32 *out);
 void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
 void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp) __attribute__((noreturn));
 /* A 32-bit program's system call (int 0x2E) keeps its registers in @frame */
 void UmNoteSyscallFrame(void *frame);
 
 /* -----------------------------------------------------------------------
- * The desktop lock: ramfs and the window system are used by the desktop
- * thread; program threads take this lock around file-system access.
+ * The desktop lock: the window system, used by the desktop thread and
+ * programs' window services.  It includes the file-system lock (ramfs),
+ * which the file services take alone.  Order: desktop, then files.
  * ----------------------------------------------------------------------- */
 void DesktopLock(void);
 void DesktopUnlock(void);
+/* The desktop lock without the file-system one: the desktop thread's loop,
+ * which takes FsLock only around the work that may touch files (input,
+ * drawing, built-in windows' timers), so programs' file I/O goes on
+ * meanwhile */
+void DesktopLockAlone(void);
+void DesktopUnlockAlone(void);
+void FsLock(void);
+void FsUnlock(void);
+/* Shared: reading and writing open files' contents, each under its own
+ * lock as well (um_syscall.c); never taken twice by one thread */
+void FsLockShared(void);
+void FsUnlockShared(void);
 struct Thread *DesktopLockOwner(void);     /* diagnostics */
 
 /* Save the registry and drive C: to disk now (before a restart or shutdown). */

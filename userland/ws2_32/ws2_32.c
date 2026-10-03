@@ -19,6 +19,7 @@ WINBASEAPI LPVOID WINAPI HeapAlloc(HANDLE, DWORD, SIZE_T);
 WINBASEAPI HANDLE WINAPI GetProcessHeap(void);
 WINBASEAPI BOOL WINAPI HeapFree(HANDLE, DWORD, LPVOID);
 
+#define WSATYPE_NOT_FOUND_ 10109
 static void set_err(int e) { *(DWORD *)(NtCurrentTebBytes() + TEB_LAST_ERROR) = (DWORD)e; }
 
 int WINAPI WSAGetLastError(void) { return (int)*(DWORD *)(NtCurrentTebBytes() + TEB_LAST_ERROR); }
@@ -30,7 +31,7 @@ static int sock_err(long r)
     static const int map[] = {
         0, WSAEWOULDBLOCK, WSAECONNRESET, WSAECONNREFUSED, WSAENOTCONN, WSAETIMEDOUT,
         WSAEHOSTUNREACH, WSAEINVAL, WSAENOBUFS, WSAEADDRINUSE, WSAEISCONN, WSAEFAULT,
-        WSAENETDOWN, WSAEMFILE, WSAENOTSOCK,
+        WSAENETDOWN, WSAEMFILE, WSAENOTSOCK, WSAEAFNOSUPPORT,
     };
     int e = (int)(-r);
     set_err(e >= 0 && e < (int)(sizeof(map) / sizeof(map[0])) ? map[e] : WSAEINVAL);
@@ -89,36 +90,45 @@ char *inet_ntoa(struct in_addr in)
 
 SOCKET socket(int af, int type, int protocol)
 {
-    (void)af; (void)protocol;
-    INT_PTR h = NtNovaSocket(type == SOCK_DGRAM ? 1 : 0);
+    (void)protocol;
+    if (af != AF_INET && af != AF_INET6 && af != AF_UNSPEC) { set_err(WSAEAFNOSUPPORT); return INVALID_SOCKET; }
+    INT_PTR h = NtNovaSocket(type == SOCK_DGRAM ? 1 : 0, af == AF_INET6 ? AF_INET6 : AF_INET);
     if (!h) { set_err(WSAENOBUFS); return INVALID_SOCKET; }
     return (SOCKET)h;
 }
 
 int closesocket(SOCKET s) { NtClose((HANDLE)s); return 0; }
 
-static int addr_of(const struct sockaddr *sa, int len, ULONG *ip, USHORT *port)
+/* The kernel takes and gives Winsock's own SOCKADDR_IN / SOCKADDR_IN6 */
+static int addr_ok(const struct sockaddr *sa, int len)
 {
-    if (!sa || len < (int)sizeof(struct sockaddr_in)) { set_err(WSAEFAULT); return -1; }
-    const struct sockaddr_in *in = (const struct sockaddr_in *)sa;
-    *ip = in->sin_addr.s_addr;
-    *port = in->sin_port;
-    return 0;
+    if (!sa || len < (int)sizeof(struct sockaddr_in)) { set_err(WSAEFAULT); return 0; }
+    if (sa->sa_family == AF_INET6 && len < (int)sizeof(struct sockaddr_in6)) { set_err(WSAEFAULT); return 0; }
+    if (sa->sa_family != AF_INET && sa->sa_family != AF_INET6) { set_err(WSAEAFNOSUPPORT); return 0; }
+    return 1;
+}
+
+/* Copy a kernel address (28 bytes) out as the caller's sockaddr */
+static void addr_out(const BYTE sa[28], struct sockaddr *to, int *tolen)
+{
+    if (!to || !tolen) return;
+    int need = *(const USHORT *)sa == AF_INET6 ? (int)sizeof(struct sockaddr_in6) : (int)sizeof(struct sockaddr_in);
+    if (*tolen < need) { *tolen = need; return; }
+    memcpy(to, sa, need);
+    *tolen = need;
 }
 
 int connect(SOCKET s, const struct sockaddr *name, int namelen)
 {
-    ULONG ip; USHORT port;
-    if (addr_of(name, namelen, &ip, &port)) return SOCKET_ERROR;
-    long r = NtNovaSockConnect((INT_PTR)s, ip, port);
+    if (!addr_ok(name, namelen)) return SOCKET_ERROR;
+    long r = NtNovaSockConnect((INT_PTR)s, name, (ULONG)namelen);
     return r < 0 ? sock_err(r) : 0;
 }
 
 int bind(SOCKET s, const struct sockaddr *name, int namelen)
 {
-    ULONG ip; USHORT port;
-    if (addr_of(name, namelen, &ip, &port)) return SOCKET_ERROR;
-    long r = NtNovaSockBind((INT_PTR)s, ip, port);
+    if (!addr_ok(name, namelen)) return SOCKET_ERROR;
+    long r = NtNovaSockBind((INT_PTR)s, name, (ULONG)namelen);
     return r < 0 ? sock_err(r) : 0;
 }
 
@@ -128,18 +138,11 @@ void evsel_rearm(SOCKET s, long bits);          /* wsa.c: WSAAsyncSelect re-enab
 
 SOCKET accept(SOCKET s, struct sockaddr *addr, int *addrlen)
 {
-    BYTE sa[8];
+    BYTE sa[28];
     evsel_rearm(s, FD_ACCEPT);
     INT_PTR h = NtNovaSockAccept((INT_PTR)s, sa);
     if (!h) { set_err(WSAEWOULDBLOCK); return INVALID_SOCKET; }
-    if (addr && addrlen && *addrlen >= (int)sizeof(struct sockaddr_in)) {
-        struct sockaddr_in *in = (struct sockaddr_in *)addr;
-        memset(in, 0, sizeof(*in));
-        in->sin_family = AF_INET;
-        memcpy(&in->sin_addr.s_addr, sa, 4);
-        memcpy(&in->sin_port, sa + 4, 2);
-        *addrlen = sizeof(*in);
-    }
+    addr_out(sa, addr, addrlen);
     return (SOCKET)h;
 }
 
@@ -165,9 +168,9 @@ int recv(SOCKET s, char *buf, int len, int flags)
 int sendto(SOCKET s, const char *buf, int len, int flags, const struct sockaddr *to, int tolen)
 {
     (void)flags;
-    ULONG ip; USHORT port;
-    if (addr_of(to, tolen, &ip, &port)) return SOCKET_ERROR;
-    BYTE sa[8]; memcpy(sa, &ip, 4); memcpy(sa + 4, &port, 2);
+    if (!addr_ok(to, tolen)) return SOCKET_ERROR;
+    BYTE sa[28] = { 0 };
+    memcpy(sa, to, to->sa_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in));
     long r = NtNovaSockSendTo((INT_PTR)s, buf, len, sa);
     return r < 0 ? sock_err(r) : (int)r;
 }
@@ -175,18 +178,11 @@ int sendto(SOCKET s, const char *buf, int len, int flags, const struct sockaddr 
 int recvfrom(SOCKET s, char *buf, int len, int flags, struct sockaddr *from, int *fromlen)
 {
     (void)flags;
-    BYTE sa[8];
+    BYTE sa[28];
     evsel_rearm(s, FD_READ);
     long r = NtNovaSockRecvFrom((INT_PTR)s, buf, len, sa);
     if (r < 0) return sock_err(r);
-    if (from && fromlen && *fromlen >= (int)sizeof(struct sockaddr_in)) {
-        struct sockaddr_in *in = (struct sockaddr_in *)from;
-        memset(in, 0, sizeof(*in));
-        in->sin_family = AF_INET;
-        memcpy(&in->sin_addr.s_addr, sa, 4);
-        memcpy(&in->sin_port, sa + 4, 2);
-        *fromlen = sizeof(*in);
-    }
+    addr_out(sa, from, fromlen);
     return (int)r;
 }
 
@@ -218,16 +214,13 @@ int getsockopt(SOCKET s, int level, int opt, char *val, int *len)
 
 static int getname(SOCKET s, struct sockaddr *name, int *namelen, int which)
 {
-    BYTE sa[8];
+    BYTE sa[28];
     long r = NtNovaSockCtl((INT_PTR)s, which, 0, sa);
     if (r < 0) return sock_err(r);
-    if (name && namelen && *namelen >= (int)sizeof(struct sockaddr_in)) {
-        struct sockaddr_in *in = (struct sockaddr_in *)name;
-        memset(in, 0, sizeof(*in));
-        in->sin_family = AF_INET;
-        memcpy(&in->sin_addr.s_addr, sa, 4);
-        memcpy(&in->sin_port, sa + 4, 2);
-        *namelen = sizeof(*in);
+    if (name && namelen) {
+        int need = *namelen;
+        addr_out(sa, name, namelen);
+        if (need < *namelen) { set_err(WSAEFAULT); return SOCKET_ERROR; }
     }
     return 0;
 }
@@ -275,6 +268,20 @@ int select(int nfds, fd_set *rd, fd_set *wr, fd_set *ex, const struct timeval *t
     }
 }
 
+/* "localhost" (and "x.localhost", RFC 6761) is the loopback address,
+ * without asking DNS, as on Windows */
+static int is_localhost(const char *n)
+{
+    static const char lh[] = "localhost";
+    size_t len = strlen(n);
+    if (len && n[len - 1] == '.') len--;
+    if (len < 9) return 0;
+    const char *t = n + len - 9;
+    if (t != n && t[-1] != '.') return 0;
+    for (int i = 0; i < 9; i++) if ((t[i] | 0x20) != lh[i]) return 0;
+    return 1;
+}
+
 struct hostent *gethostbyname(const char *name)
 {
     static __declspec(thread) struct hostent he;
@@ -282,8 +289,11 @@ struct hostent *gethostbyname(const char *name)
     static __declspec(thread) char *alist[2];
     static __declspec(thread) char namebuf[256];
     ULONG ip = inet_addr(name);
+    if (ip == INADDR_NONE && is_localhost(name)) ip = htonl(INADDR_LOOPBACK);
     if (ip == INADDR_NONE) {
-        if (NtNovaResolve(name, &ip) < 0) { set_err(WSAHOST_NOT_FOUND); return 0; }
+        BYTE sa[28];
+        if (NtNovaResolve(name, sa, 1, AF_INET) < 1) { set_err(WSAHOST_NOT_FOUND); return 0; }
+        memcpy(&ip, sa + 4, 4);
     }
     addr = ip;
     alist[0] = (char *)&addr; alist[1] = 0;
@@ -296,38 +306,117 @@ struct hostent *gethostbyname(const char *name)
     return &he;
 }
 
+/* getaddrinfo: numeric hosts (IPv4 or IPv6) without a lookup, names
+ * through the kernel's resolver (IPv6 first when the machine has a global
+ * IPv6 address); AI_V4MAPPED maps IPv4 results into AF_INET6 answers. */
+static int parse_port(const char *service, USHORT *port)
+{
+    *port = 0;
+    if (!service || !*service) return 0;
+    int v = 0;
+    const char *p = service;
+    for (; *p >= '0' && *p <= '9'; p++) v = v * 10 + (*p - '0');
+    if (*p || v > 65535) {                      /* a service name */
+        struct servent *se = getservbyname(service, 0);
+        if (!se) return WSATYPE_NOT_FOUND_;
+        *port = (USHORT)se->s_port;
+        return 0;
+    }
+    *port = htons((u_short)v);
+    return 0;
+}
+
+static struct addrinfo *new_ai(const BYTE *sa, const struct addrinfo *hints, USHORT port)
+{
+    HANDLE h = GetProcessHeap();
+    int v6 = *(const USHORT *)sa == AF_INET6;
+    int len = v6 ? (int)sizeof(struct sockaddr_in6) : (int)sizeof(struct sockaddr_in);
+    struct addrinfo *ai = HeapAlloc(h, 8, sizeof(struct addrinfo));
+    BYTE *a = HeapAlloc(h, 8, sizeof(struct sockaddr_in6));
+    if (!ai || !a) { if (ai) HeapFree(h, 0, ai); if (a) HeapFree(h, 0, a); return 0; }
+    memset(ai, 0, sizeof(*ai));
+    memset(a, 0, sizeof(struct sockaddr_in6));
+    memcpy(a, sa, len);
+    memcpy(a + 2, &port, 2);
+    ai->ai_family = v6 ? AF_INET6 : AF_INET;
+    ai->ai_socktype = hints && hints->ai_socktype ? hints->ai_socktype : SOCK_STREAM;
+    ai->ai_protocol = hints && hints->ai_protocol ? hints->ai_protocol
+                    : ai->ai_socktype == SOCK_DGRAM ? IPPROTO_UDP : IPPROTO_TCP;
+    ai->ai_addrlen = (size_t)len;
+    ai->ai_addr = (struct sockaddr *)a;
+    return ai;
+}
+
+/* "1.2.3.4" or "fd00::1" (with an optional %zone) → a 28-byte address */
+static int numeric(const char *node, BYTE sa[28])
+{
+    memset(sa, 0, 28);
+    if (inet_pton(AF_INET, node, sa + 4) == 1) { *(USHORT *)sa = AF_INET; return 1; }
+    char tmp[64];
+    int i = 0;
+    for (; node[i] && node[i] != '%' && i < 63; i++) tmp[i] = node[i];
+    tmp[i] = 0;
+    if (inet_pton(AF_INET6, tmp, sa + 8) != 1) return 0;
+    *(USHORT *)sa = AF_INET6;
+    if (node[i] == '%') { ULONG z = 0; for (const char *p = node + i + 1; *p >= '0' && *p <= '9'; p++) z = z * 10 + (ULONG)(*p - '0'); memcpy(sa + 24, &z, 4); }
+    return 1;
+}
+
 int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res)
 {
-    ULONG ip = INADDR_ANY;
-    if (node) {
-        ip = inet_addr(node);
-        if (ip == INADDR_NONE && NtNovaResolve(node, &ip) < 0) return WSAHOST_NOT_FOUND;
-    } else if (hints && (hints->ai_flags & AI_PASSIVE)) {
-        ip = INADDR_ANY;
+    int fam = hints ? hints->ai_family : AF_UNSPEC, flags = hints ? hints->ai_flags : 0;
+    if (fam != AF_UNSPEC && fam != AF_INET && fam != AF_INET6) return WSAEAFNOSUPPORT;
+    USHORT port;
+    int e = parse_port(service, &port);
+    if (e) return e;
+    BYTE list[8][28];
+    int n = 0;
+    if (!node || is_localhost(node)) {          /* a wildcard or loopback address */
+        int both = fam == AF_UNSPEC, any = !node && (flags & AI_PASSIVE);
+        if (fam == AF_INET6 || both) {
+            memset(list[n], 0, 28); *(USHORT *)list[n] = AF_INET6;
+            if (!any) list[n][23] = 1;                              /* ::1 */
+            n++;
+        }
+        if (fam == AF_INET || both) {
+            memset(list[n], 0, 28); *(USHORT *)list[n] = AF_INET;
+            if (!any) { ULONG lo = htonl(INADDR_LOOPBACK); memcpy(list[n] + 4, &lo, 4); }
+            n++;
+        }
+    } else if (numeric(node, list[0])) {
+        USHORT f = *(USHORT *)list[0];
+        if (fam != AF_UNSPEC && f != fam && !(fam == AF_INET6 && f == AF_INET && (flags & AI_V4MAPPED)))
+            return WSAHOST_NOT_FOUND;
+        n = 1;
+    } else if (flags & AI_NUMERICHOST) {
+        return WSAHOST_NOT_FOUND;
     } else {
-        ip = htonl(INADDR_LOOPBACK);
+        int want = fam == AF_INET6 && (flags & AI_V4MAPPED) ? AF_UNSPEC : fam;
+        long r = NtNovaResolve(node, list, 8, (ULONG)want);
+        if (r < 1) return WSAHOST_NOT_FOUND;
+        n = (int)r;
     }
-    USHORT port = 0;
-    if (service) {
-        int v = 0;
-        for (const char *p = service; *p >= '0' && *p <= '9'; p++) v = v * 10 + (*p - '0');
-        port = htons((u_short)v);
+    struct addrinfo *head = 0, **tail = &head;
+    for (int i = 0; i < n; i++) {
+        BYTE *sa = list[i];
+        if (fam == AF_INET6 && *(USHORT *)sa == AF_INET) {          /* AI_V4MAPPED */
+            BYTE m[28] = { 0 };
+            *(USHORT *)m = AF_INET6;
+            m[18] = m[19] = 0xFF;
+            memcpy(m + 20, sa + 4, 4);
+            memcpy(sa, m, 28);
+        }
+        struct addrinfo *ai = new_ai(sa, hints, port);
+        if (!ai) { freeaddrinfo(head); return WSAENOBUFS; }
+        if (i == 0 && (flags & AI_CANONNAME) && node) {
+            size_t len = strlen(node) + 1;
+            ai->ai_canonname = HeapAlloc(GetProcessHeap(), 0, len);
+            if (ai->ai_canonname) memcpy(ai->ai_canonname, node, len);
+        }
+        *tail = ai;
+        tail = &ai->ai_next;
     }
-    HANDLE h = GetProcessHeap();
-    struct addrinfo *ai = HeapAlloc(h, 8, sizeof(struct addrinfo));
-    struct sockaddr_in *sa = HeapAlloc(h, 8, sizeof(struct sockaddr_in));
-    if (!ai || !sa) { if (ai) HeapFree(h, 0, ai); if (sa) HeapFree(h, 0, sa); return WSAENOBUFS; }
-    memset(ai, 0, sizeof(*ai));
-    memset(sa, 0, sizeof(*sa));
-    sa->sin_family = AF_INET;
-    sa->sin_port = port;
-    sa->sin_addr.s_addr = ip;
-    ai->ai_family = AF_INET;
-    ai->ai_socktype = hints && hints->ai_socktype ? hints->ai_socktype : SOCK_STREAM;
-    ai->ai_protocol = hints && hints->ai_protocol ? hints->ai_protocol : IPPROTO_TCP;
-    ai->ai_addrlen = sizeof(struct sockaddr_in);
-    ai->ai_addr = (struct sockaddr *)sa;
-    *res = ai;
+    *res = head;
     return 0;
 }
 
@@ -337,6 +426,7 @@ void freeaddrinfo(struct addrinfo *ai)
     while (ai) {
         struct addrinfo *next = ai->ai_next;
         if (ai->ai_addr) HeapFree(h, 0, ai->ai_addr);
+        if (ai->ai_canonname) HeapFree(h, 0, ai->ai_canonname);
         HeapFree(h, 0, ai);
         ai = next;
     }

@@ -2,7 +2,9 @@
  * disptest.exe — display modes (EnumDisplaySettings / ChangeDisplaySettings)
  *
  *   disptest            run the tests (returns to the starting mode)
- *   disptest W H        switch to W x H and stay there (CDS_UPDATEREGISTRY)
+ *   disptest W H        switch to W x H and stay there (CDS_UPDATEREGISTRY:
+ *                       also after a restart)
+ *   disptest saved W H  check the mode is W x H, as saved (after a restart)
  *   disptest list       print the modes
  *   disptest fs W H     (child) full-screen W x H, then exit: the mode
  *                       must come back by itself
@@ -40,6 +42,21 @@ static LONG set_mode(DWORD w, DWORD h, DWORD flags)
     return ChangeDisplaySettingsW(&dm, flags);
 }
 
+/* The mode saved for the next boot, where Windows keeps it */
+static DWORD saved(const char *what)
+{
+    HKEY k;
+    DWORD v = 0, n = sizeof(v), type = 0;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Video\\{NovaOS-Display}\\0000",
+                      0, KEY_READ, &k))
+        return 0;
+    char name[64];
+    snprintf(name, sizeof(name), "DefaultSettings.%s", what);
+    if (RegQueryValueExA(k, name, NULL, &type, (BYTE *)&v, &n) || type != REG_DWORD) v = 0;
+    RegCloseKey(k);
+    return v;
+}
+
 static int list(void)
 {
     BOOL ok;
@@ -59,6 +76,12 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 {
     if (m == WM_DISPLAYCHANGE) g_change = lp ? lp : 1;
     return DefWindowProcW(h, m, wp, lp);
+}
+
+static void pump(void)
+{
+    MSG msg;
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
 }
 
 /* Pump messages until WM_DISPLAYCHANGE (or a timeout) */
@@ -91,6 +114,18 @@ int main(int argc, char **argv)
         LONG r = set_mode(atoi(argv[1]), atoi(argv[2]), CDS_UPDATEREGISTRY);
         printf("ChangeDisplaySettings: %ld\n", r);
         return list() + (r != DISP_CHANGE_SUCCESSFUL);
+    }
+    if (argc == 4 && !strcmp(argv[1], "saved")) {
+        BOOL ok;
+        DEVMODEW cur = mode_of(ENUM_CURRENT_SETTINGS, &ok), reg = mode_of(ENUM_REGISTRY_SETTINGS, &ok);
+        DWORD w = atoi(argv[2]), h = atoi(argv[3]);
+        printf("current %lu x %lu, registry mode %lu x %lu, saved %lu x %lu\n", cur.dmPelsWidth, cur.dmPelsHeight,
+               reg.dmPelsWidth, reg.dmPelsHeight, saved("XResolution"), saved("YResolution"));
+        check(cur.dmPelsWidth == w && cur.dmPelsHeight == h, "booted in the saved mode");
+        check(reg.dmPelsWidth == w && reg.dmPelsHeight == h, "ENUM_REGISTRY_SETTINGS is the saved mode");
+        check(saved("XResolution") == w && saved("YResolution") == h, "DefaultSettings in the registry");
+        printf("%d passed, %d failed\n", g_pass, g_fail);
+        return g_fail != 0;
     }
     if (argc == 4 && !strcmp(argv[1], "fs")) {
         LONG r = set_mode(atoi(argv[2]), atoi(argv[3]), CDS_FULLSCREEN);
@@ -159,6 +194,20 @@ int main(int argc, char **argv)
                               NULL, NULL, wc.hInstance, NULL);
     check(hw != NULL, "CreateWindow");
     ShowWindow(hw, SW_SHOW);
+    /* A window wider and taller than 800x600 leaves room for: the small
+     * mode shrinks it, the start mode gives it back its size */
+    int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+    int bw = sw - 100 < 1000 ? sw - 100 : 1000, bh = sh - 160 < 680 ? sh - 160 : 680;
+    HWND big = NULL;
+    RECT big0 = { 0 };
+    if (bw > 820 && bh > 620) {
+        big = CreateWindowExW(0, L"disptest", L"disptest big", WS_OVERLAPPEDWINDOW, 60, 30, bw, bh,
+                              NULL, NULL, wc.hInstance, NULL);
+        ShowWindow(big, SW_SHOW);
+        GetWindowRect(big, &big0);
+    } else {
+        printf("(the start mode is too small for the window-size checks)\n");
+    }
 
     int lh, lw = logical(1024, 768, &lh);
     check(set_mode(1024, 768, 0) == DISP_CHANGE_SUCCESSFUL, "ChangeDisplaySettings 1024x768");
@@ -182,12 +231,43 @@ int main(int argc, char **argv)
     lp = wait_change();
     check(LOWORD(lp) == 800 && HIWORD(lp) == 600, "WM_DISPLAYCHANGE 800x600");
     check(GetSystemMetrics(SM_CXSCREEN) == 800 && GetSystemMetrics(SM_CYSCREEN) == 600, "desktop 800x600");
+    if (big) {
+        RECT r;
+        DWORD until = GetTickCount() + 5000;
+        do { Sleep(50); pump(); GetWindowRect(big, &r); }
+        while ((r.right - r.left > 800 || r.right > 800) && GetTickCount() < until);
+        check(r.right - r.left <= 800 && r.bottom - r.top <= 600 && r.left >= 0 && r.right <= 800,
+              "800x600 shrinks a larger window to fit");
+        printf("800x600: window %ld x %ld at %ld,%ld (was %ld x %ld)\n", r.right - r.left, r.bottom - r.top,
+               r.left, r.top, big0.right - big0.left, big0.bottom - big0.top);
+    }
 
     /* NULL: back to the registry mode */
     check(ChangeDisplaySettingsW(NULL, 0) == DISP_CHANGE_SUCCESSFUL, "ChangeDisplaySettings(NULL)");
     wait_change();
     cur = mode_of(ENUM_CURRENT_SETTINGS, &ok);
     check(cur.dmPelsWidth == start.dmPelsWidth && cur.dmPelsHeight == start.dmPelsHeight, "back to the start mode");
+    if (big) {
+        RECT r;
+        DWORD until = GetTickCount() + 5000;
+        do { Sleep(50); pump(); GetWindowRect(big, &r); } while (memcmp(&r, &big0, sizeof(r)) && GetTickCount() < until);
+        check(!memcmp(&r, &big0, sizeof(r)), "the window grows back to its size and place");
+        printf("back: window %ld x %ld at %ld,%ld\n", r.right - r.left, r.bottom - r.top, r.left, r.top);
+        DestroyWindow(big);
+    }
+
+    /* CDS_UPDATEREGISTRY: the mode to return to, and to boot in */
+    check(set_mode(1024, 768, CDS_UPDATEREGISTRY) == DISP_CHANGE_SUCCESSFUL, "CDS_UPDATEREGISTRY 1024x768");
+    wait_change();
+    reg = mode_of(ENUM_REGISTRY_SETTINGS, &ok);
+    check(reg.dmPelsWidth == 1024 && reg.dmPelsHeight == 768, "ENUM_REGISTRY_SETTINGS follows CDS_UPDATEREGISTRY");
+    check(saved("XResolution") == 1024 && saved("YResolution") == 768 && saved("BitsPerPel") == 32,
+          "the mode is saved in the registry (DefaultSettings)");
+    check(set_mode(start.dmPelsWidth, start.dmPelsHeight, CDS_UPDATEREGISTRY) == DISP_CHANGE_SUCCESSFUL,
+          "CDS_UPDATEREGISTRY back to the start mode");
+    wait_change();
+    check(saved("XResolution") == start.dmPelsWidth && saved("YResolution") == start.dmPelsHeight,
+          "the registry follows");
 
     /* CDS_FULLSCREEN lasts as long as the program that asked */
     char self[MAX_PATH], cl[MAX_PATH + 32];

@@ -45,7 +45,8 @@ DisplayMode DisplayBootMode(void);
 
 /* The mode the user chose (Settings, or ChangeDisplaySettings with
  * CDS_UPDATEREGISTRY): what a temporary mode change returns to.  Starts
- * as the boot mode; kept until restart. */
+ * as the boot mode; DesktopSaveDisplayMode also keeps it in the registry
+ * for the next boot. */
 DisplayMode DisplayDefaultMode(void);
 void DisplaySetDefaultMode(int w, int h);
 

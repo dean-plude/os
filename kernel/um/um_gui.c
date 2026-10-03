@@ -88,6 +88,8 @@ typedef struct {
     UINT32      tid;                /* the thread whose queue gets its messages */
     WND        *wnd;
     UINT32      id;                 /* handle value the program sees */
+    UINT32      hwnd;               /* user32's HWND for it (CTL_SET_HWND), seen by other processes */
+    INT32       uc[4];              /* user32's client area: offset in the frame, size (uc[2] 0: unknown) */
     UINT32      flags;              /* GUI_* */
     UINT64      bitmap;             /* user VA of the client bitmap */
     int         stride;             /* pixels per bitmap row (the largest width) */
@@ -415,11 +417,11 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
      * screen so resizing never moves it (pages are backed when touched) */
     UINT64 va = GUI_BITMAP_VA + (UINT64)slot * GUI_BITMAP_STRIDE;
     UINT64 size = ((UINT64)maxw * maxh * 4 + 0xFFF) & ~0xFFFULL;
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     if (p->wow) va = um_find_free(p, size, p->lay.alloc_min, p->lay.alloc_max);   /* below 2 GiB */
     bool ok = va && um_is_free(p, va, size) && um_region_add(p, va, size, 0x04, false) &&
               um_commit(p, va, size, 0x04);
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     if (!ok) { s = spin_lock_irqsave(&g_gui_lock); g->used = false; spin_unlock_irqrestore(&g_gui_lock, s); return 0; }
 
     char title[128];
@@ -464,6 +466,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         w->on_close = gui_close;
         w->on_close_request = gui_close_request;
         w->on_tick = gui_tick;
+        w->tick_lock_free = true;           /* (messages only, no files) */
         if (gc.flags & GUI_HIDDEN) WmShowWindow(w, false);
         w->cursor = p->cursor;
         g->wnd = w;
@@ -473,7 +476,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     DesktopUnlock();
     if (!w) {
-        um_lock(&p->lock); um_decommit(p, va, size); um_region_remove(p, um_region_find(p, va)); um_unlock(&p->lock);
+        um_lock_excl(&p->lock); um_decommit(p, va, size); um_region_remove(p, um_region_find(p, va)); um_unlock_excl(&p->lock);
         s = spin_lock_irqsave(&g_gui_lock); g->used = false; spin_unlock_irqrestore(&g_gui_lock, s);
         return 0;
     }
@@ -587,10 +590,10 @@ static void destroy_window(GuiWin *g)
         g->wnd = NULL;
     }
     if (p && !p->exited) {
-        um_lock(&p->lock);
+        um_lock_excl(&p->lock);
         UmRegion *r = um_region_find(p, va);
         if (r) { um_decommit(p, r->base, r->size); um_region_remove(p, r); }
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
     }
     IrqState s = spin_lock_irqsave(&g_gui_lock);
     void *drop = g->drop;
@@ -705,6 +708,25 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_DROP_STATUS  18
 #define CTL_SET_CURSOR   19
 #define CTL_CURSOR_SHAPE 20
+/* Window handles other processes can use.  On Windows an HWND names the
+ * same window in every process; a GPU or plugin process sizes and draws
+ * into its parent's window.  user32 builds its handles from a tag that is
+ * unique among running processes, so they never collide, and tells the
+ * kernel which handle each desktop window has:
+ *  21 HWND_TAG   returns this process's tag (GUI_TAG_MIN..GUI_TAGS-1)
+ *  22 SET_HWND   arg: the user32 handle of window id hwnd; ptr (may be 0)
+ *                <- { client x, y in the frame, client w, h } as user32 has it
+ *  23 FOREIGN    arg: a handle of another process; ptr -> { pid, thread,
+ *                state (CTL_GET_RECT's), client x, y, w, h, frame x, y, w, h }.
+ *                Returns 2 for a desktop (top-level) window, 1 for another
+ *                window of a running process (only pid is filled), 0 if the
+ *                handle's process is gone */
+#define CTL_HWND_TAG     21
+#define CTL_SET_HWND     22
+#define CTL_FOREIGN      23
+#define GUI_TAGS         2048
+#define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
+#define GUI_TAG_SHIFT    14
 #define WM_NOVA_DROP     0x03FE
 #define WM_DISPLAYCHANGE 0x007E
 #define CDS_UPDATEREGISTRY 0x01
@@ -739,7 +761,7 @@ static UINT64 display_set(UmProcess *p, UINT64 ptr)
     if (!DisplayModeSupported(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_BADMODE;
     if (flags & CDS_TEST) return DISP_CHANGE_SUCCESSFUL;
     if (!DesktopSetDisplayMode(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_FAILED;
-    if (flags & CDS_UPDATEREGISTRY) DisplaySetDefaultMode(m.w, m.h);
+    if (flags & CDS_UPDATEREGISTRY) DesktopSaveDisplayMode(m.w, m.h);
     g_fullscreen_proc = !reset && (flags & CDS_FULLSCREEN) && !(flags & CDS_UPDATEREGISTRY) ? p : NULL;
     return DISP_CHANGE_SUCCESSFUL;
 }
@@ -759,6 +781,56 @@ void UmGuiDisplayChanged(int w, int h)
 /* drops their targets have finished: { number, effect }; under g_gui_lock */
 static UINT32 g_drop_seq;
 static UINT32 g_drop_done[DROP_RESULTS][2];
+
+/* the process holding each handle tag; under g_gui_lock */
+static UmProcess *g_tag_proc[GUI_TAGS];
+static UINT32 g_tag_next = GUI_TAG_MIN;
+
+static UINT64 hwnd_tag(UmProcess *p)
+{
+    UINT64 r = 0;
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
+    for (int i = GUI_TAG_MIN; i < GUI_TAGS && !r; i++) if (g_tag_proc[i] == p) r = (UINT64)i;
+    /* a new one: the next free tag, so a dead process's tag is reused last */
+    for (int n = 0; n < GUI_TAGS && !r; n++) {
+        UINT32 i = g_tag_next++;
+        if (g_tag_next >= GUI_TAGS) g_tag_next = GUI_TAG_MIN;
+        if (i >= GUI_TAG_MIN && !g_tag_proc[i]) { g_tag_proc[i] = p; r = i; }
+    }
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    return r;
+}
+
+static UINT64 hwnd_foreign(UINT32 h, UINT64 ptr)
+{
+    INT32 out[11] = { 0 };
+    UINT64 r = 0;
+    DesktopLock();
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
+    UmProcess *owner = g_tag_proc[(h >> GUI_TAG_SHIFT) % GUI_TAGS];
+    GuiWin *g = NULL;
+    for (int i = 0; h && i < GUI_MAX_WINDOWS && !g; i++)
+        if (g_win[i].used && g_win[i].hwnd == h && g_win[i].proc && !g_win[i].proc->exited) g = &g_win[i];
+    if (g) {
+        out[0] = (INT32)g->proc->pid; out[1] = (INT32)g->tid;
+        WND *w = g->wnd;
+        if (w) {
+            GdiRect c = WmClientRect(w), f = w->frame;
+            out[2] = (w->visible ? 1 : 0) | (w->active ? 2 : 0) | (w->minimized ? 4 : 0) | (w->maximized ? 8 : 0);
+            out[3] = c.x; out[4] = c.y; out[5] = g->cw; out[6] = g->ch;
+            out[7] = f.x; out[8] = f.y; out[9] = f.w; out[10] = f.h;
+            if (g->uc[2] > 0) { out[3] = f.x + g->uc[0]; out[4] = f.y + g->uc[1]; out[5] = g->uc[2]; out[6] = g->uc[3]; }
+        }
+        r = 2;
+    } else if (owner && !owner->exited) {
+        out[0] = (INT32)owner->pid;
+        r = 1;
+    }
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    DesktopUnlock();
+    if (r && ptr && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, out, sizeof(out)))) return 0;
+    return r;
+}
 
 static GuiWin *win_by_id(UINT32 id)             /* any process's; under g_gui_lock */
 {
@@ -923,6 +995,17 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         kfree(buf);
         return r;
     }
+    if (a2 == CTL_HWND_TAG) return hwnd_tag(p);
+    if (a2 == CTL_FOREIGN) return hwnd_foreign((UINT32)a3, a4);
+    if (a2 == CTL_SET_HWND) {
+        INT32 uc[4] = { 0 };
+        if (a4 && !NT_SUCCESS(CopyFromUser(uc, (const void *)(uintptr_t)a4, sizeof(uc)))) return 0;
+        IrqState s = spin_lock_irqsave(&g_gui_lock);
+        GuiWin *g = win_of_handle(p, a1);
+        if (g) { g->hwnd = (UINT32)a3; if (a4) memcpy(g->uc, uc, sizeof(uc)); }
+        spin_unlock_irqrestore(&g_gui_lock, s);
+        return g ? 1 : 0;
+    }
     if (a2 == CTL_WAKE) {
         IrqState ws = spin_lock_irqsave(&g_gui_lock);
         bool set = false;
@@ -1044,6 +1127,9 @@ void um_gui_process_gone(UmProcess *p)
             kfree(drop);
         }
     }
+    IrqState ts = spin_lock_irqsave(&g_gui_lock);
+    for (int i = GUI_TAG_MIN; i < GUI_TAGS; i++) if (g_tag_proc[i] == p) g_tag_proc[i] = NULL;
+    spin_unlock_irqrestore(&g_gui_lock, ts);
     WmInvalidate();
     if (p->cursor) {                          /* no window shows its pointer now */
         WmCursorShapeChanged();

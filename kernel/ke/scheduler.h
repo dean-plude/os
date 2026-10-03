@@ -103,10 +103,12 @@ typedef struct Thread {
     volatile bool   off_cpu;        /* DEAD and switched away: safe to free */
     struct Thread  *sleep_next;     /* sched_sleep_tick list */
     uint64_t        wake_tick;
+    uint64_t        wake_tsc;       /* sched_sleep_until_tsc: the TSC deadline (0 none) */
     uint32_t        wait_rounds;    /* sched_wait calls since the thread last made progress */
     bool            idle;           /* a CPU's idle thread: never queued, runs only there */
     uint32_t        bkl_depth;      /* nested bkl_acquire calls (smp.h) */
     bool            in_sleepers;    /* on its CPU's timed-sleep list (run queue lock) */
+    uint32_t        sleep_cpu;      /* whose timed-sleep list that is */
     volatile uint32_t cpu;          /* the CPU whose run queue it belongs to */
     volatile bool   on_cpu;         /* running, or not yet fully switched out */
 } Thread;
@@ -171,13 +173,26 @@ void sched_sleep_tick(void);
 /* Sleep until *flag is set (by a waker that then calls sched_unblock) or
  * the tick count reaches @deadline, whichever comes first. */
 void sched_sleep_until(volatile uint32_t *flag, uint64_t deadline);
+/* The same with a TSC deadline: the timer fires when it is due, not at
+ * the next tick, and the woken thread preempts one of no higher priority
+ * (Sleep, timed waits: sub-millisecond resolution under load) */
+void sched_sleep_until_tsc(volatile uint32_t *flag, uint64_t tsc);
+/* The TSC @t100ns (100 ns units) from now (UINT64_MAX if beyond days),
+ * and the TSC at which the tick count reaches @tick */
+uint64_t sched_tsc_after(uint64_t t100ns);
+uint64_t sched_tick_tsc(uint64_t tick);
+/* A timer interrupt this CPU can't act on (halted waiting for the kernel
+ * lock): arm the next one */
+void sched_timer_rearm(void);
 /* For wait loops: yield the first few rounds, then sleep a tick per round
  * (the count restarts when the thread returns to user mode). */
 void sched_wait(void);
 
 /*
- * Called from the APIC timer interrupt (IRQ_TIMER).
- * Increments tick counter; performs preemptive switch if time slice expired.
+ * Called from the APIC timer interrupt (IRQ_TIMER), which fires at each
+ * 10 ms tick and when a timed sleeper is due.  Advances the tick counter,
+ * wakes due sleepers, re-arms the timer and preempts the current thread
+ * if its time slice expired or a woken sleeper should run now.
  * Must be called with interrupts DISABLED (we're in an IRQ handler).
  */
 void sched_tick(void);

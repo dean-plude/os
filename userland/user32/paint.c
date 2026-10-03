@@ -347,10 +347,10 @@ USERAPI int ReleaseDC(HWND h, HDC dc)
     NOVA_DC *d = (NOVA_DC *)dc;
     Wnd *w = d ? W_quiet(d->hwnd) : NULL;
     release_dc(dc);
-    if (w) {
-        Wnd *t = top_of(w);
-        if (!top_needs_paint(t)) present(t);
-    }
+    /* what was drawn shows now, as on Windows, even while part of the
+     * window waits for WM_PAINT: a program that draws from another thread
+     * (Firefox's compositor) may never stop invalidating it */
+    if (w) present(top_of(w));
     return 1;
 }
 

@@ -1,6 +1,7 @@
 # Boot CI: every pull request builds NovaOS, boots it in QEMU and runs the
-# self-tests (tools/selftest.py): the core suite, and the graphics suite
-# (Mesa and DXVK from the App Store, then tools/gltest and tools/d3dtest).
+# self-tests (tools/selftest.py): the core suite, the network suite (IPv4,
+# IPv6 and winhttp's HTTP/2 over virtio-net) and the graphics suite (Mesa
+# and DXVK from the App Store, then tools/gltest and tools/d3dtest).
 # A failing test fails its check; make both required status checks on main
 # to block the merge.
 #
@@ -10,6 +11,11 @@
 # puts that ISO on the rolling "latest" release:
 #   https://github.com/dean-plude/os/releases/latest/download/nova.iso
 # nova.iso is not committed to the repository.
+#
+# The checks job runs first, in seconds: no conflict markers left by a
+# merge, the DLL and program manifests and the self-test files load, and
+# (on a pull request) the generated doc regions were not edited by hand
+# (CONTRIBUTING.md).  The boot tests wait for it.
 name: CI
 
 on:
@@ -23,8 +29,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  checks:
+    name: Checks (conflict markers, manifests, generated docs)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2          # a pull request's merge commit and its base (HEAD^1)
+
+      - name: No merge conflict markers
+        run: python3 tools/ci/check-conflict-markers.py
+
+      - name: DLL and program manifests load
+        run: python3 tools/build_userland.py --check
+
+      - name: Self-test and app-corpus files load
+        run: |
+          python3 tools/selftest.py --list
+          python3 tools/selftest.py --suite graphics --list
+          python3 tools/selftest.py --suite network --list
+          python3 -c "import sys; sys.path.insert(0, 'tools'); import appcorpus; print(len(appcorpus.APPS), 'corpus programs')"
+
+      - name: Generated doc regions untouched, fragments build
+        if: github.event_name == 'pull_request' && github.head_ref != 'docs/regenerate'
+        run: python3 tools/docgen.py --check-pr HEAD^1
+
   boot-test:
     name: Build and boot-test
+    needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -34,8 +67,9 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            cmake make nasm clang lld llvm gcc-mingw-w64-x86-64 \
-            qemu-system-x86 ovmf mtools dosfstools acpica-tools xorriso
+            cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
+            qemu-system-x86 qemu-system-gui ovmf mtools dosfstools acpica-tools xorriso \
+            pulseaudio pulseaudio-utils
 
       - name: Build the kernel, bootloader, userland and disk image
         run: |
@@ -61,6 +95,12 @@ jobs:
           python3 tools/selftest.py --img build/nova.img --out selftest-out \
             --junit selftest-out/junit.xml --summary "$GITHUB_STEP_SUMMARY"
 
+      - name: Run the network self-tests (IPv4, IPv6, HTTP/2)
+        if: success() || failure()
+        run: |
+          python3 tools/selftest.py --suite network --img build/nova.img --out selftest-out/network \
+            --junit selftest-out/network/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Keep the serial log and screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -71,6 +111,7 @@ jobs:
 
   graphics-test:
     name: Graphics tests (OpenGL, Direct3D)
+    needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -80,7 +121,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            cmake make nasm clang lld llvm gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
+            cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
             qemu-system-x86 ovmf mtools dosfstools acpica-tools p7zip-full curl
 
       - name: Cache the Mesa, DXVK and 7-Zip downloads
@@ -100,7 +141,7 @@ jobs:
       - name: Stage 7-Zip, the downloads and the test programs
         run: tools/ci/stage-graphics.sh gfx gfx-cache
 
-      - name: Install Mesa and DXVK from the App Store, run gltest and d3dtest
+      - name: Run d2dtest, install Mesa and DXVK from the App Store, run gltest and d3dtest
         run: |
           python3 tools/selftest.py --suite graphics --gfx gfx --img build/nova.img --out graphics-out \
             --junit graphics-out/junit.xml --summary "$GITHUB_STEP_SUMMARY"

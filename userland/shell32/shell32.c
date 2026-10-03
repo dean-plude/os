@@ -813,3 +813,31 @@ SHSTDAPI_(HRESULT) SHGetStockIconInfo(int id, UINT flags, void *info) { (void)id
 SHSTDAPI_(HRESULT) SetCurrentProcessExplicitAppUserModelID(LPCWSTR id) { (void)id; return S_OK_; }
 SHSTDAPI_(HRESULT) GetCurrentProcessExplicitAppUserModelID(LPWSTR *id) { *id = 0; return E_FAIL_; }
 /* Shell items: shellitem.c */
+
+/* A window's property store (its AppUserModelID, relaunch command...):
+ * kept in memory by propsys; the taskbar does not read it */
+typedef HRESULT (WINAPI *PSCreateMemoryPropertyStore_t)(REFIID, void **);
+SHSTDAPI_(HRESULT) SHGetPropertyStoreForWindow(HWND h, REFIID iid, void **out)
+{
+    (void)h;
+    if (!out) return E_POINTER;
+    *out = 0;
+    HMODULE ps = LoadLibraryA("propsys.dll");
+    PSCreateMemoryPropertyStore_t create = ps ? (PSCreateMemoryPropertyStore_t)GetProcAddress(ps, "PSCreateMemoryPropertyStore") : 0;
+    return create ? create(iid, out) : E_NOTIMPL;
+}
+
+/* Notifications are always welcome (QUNS_ACCEPTS_NOTIFICATIONS) */
+SHSTDAPI_(HRESULT) SHQueryUserNotificationState(int *state)
+{
+    if (!state) return E_POINTER;
+    *state = 5;
+    return S_OK;
+}
+
+/* Explorer selecting files in a folder window: no Explorer to ask */
+SHSTDAPI_(HRESULT) SHOpenFolderAndSelectItems(const void *folder, UINT n, const void **items, DWORD flags)
+{
+    (void)folder; (void)n; (void)items; (void)flags;
+    return E_NOTIMPL;
+}

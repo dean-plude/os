@@ -31,7 +31,8 @@ typedef struct GObj {
     WCHAR face[32];
     int strike, pitch, charset, escapement, avg_width;
     /* bitmaps */
-    int bw, bh, bpp, fmt, flip, owns;
+    int bw, bh, bpp, fmt, flip, owns;              /* owns: 1 VirtualAlloc'd bits, 2 a mapped view */
+    void *view;
     DWORD *bits;
     /* 24-bit DIB sections: the program's pixels (and a copy as of the last
      * sync), kept in step with the 32-bit `bits` gdi32 draws on */

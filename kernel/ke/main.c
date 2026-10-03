@@ -72,9 +72,11 @@
 #include "../fs/setup.h"
 #include "../fs/ramfs.h"
 #include "../hal/pci.h"
-#include "../drivers/xhci.h"
+#include "../drivers/usb.h"
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
+#include "../hal/ioapic.h"
+#include "../hal/hpet.h"
 #include "../net/net.h"
 #include "../um/um.h"
 #include "kpcr.h"
@@ -109,6 +111,25 @@ static void print_banner(void)
 /* -----------------------------------------------------------------------
  * Demo threads — smoke tests
  * ----------------------------------------------------------------------- */
+/* The keyboard and mouse polls (PS/2 and USB HID), once per 10 ms tick.
+ * They used to run in the timer interrupt, but their port and MMIO reads
+ * can block for milliseconds under emulation (QEMU serializes device
+ * access), which with interrupts off delayed every Sleep and wait timeout
+ * due on that CPU meanwhile (sleeptest timer: 1 to 3 ms late at the 95th
+ * percentile under load, instead of 0.3 ms).  A thread woken by its TSC
+ * deadline goes to the front of its run queue, so the polls still run as
+ * soon as the tick comes, just with interrupts enabled. */
+static void device_poll_thread(void *arg)
+{
+    (void)arg;
+    bkl_release();                        /* (they never needed the kernel lock) */
+    for (;;) {
+        sched_sleep_until_tsc(NULL, sched_tick_tsc(sched_ticks() + 1));
+        ps2_poll();
+        UsbPoll();
+    }
+}
+
 static void thread_a(void *arg)
 {
     (void)arg;
@@ -234,11 +255,13 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     g_kpcr[0].Gdt    = gdt_boot();
     g_kpcr[0].Tss    = &gdt_boot()->tss;
     g_kpcr[0].Online = 1;
+    vmm_percpu_ready();
 
     kprintf("=== Phase 1: IDT ===\n");
     idt_init();
 
     kprintf("=== Phase 1: APIC ===\n");
+    HpetInit(rsdp);                       /* the reference clock for calibrating the timers */
     apic_init();
 
     /* ------------------------------------------------------------------
@@ -373,6 +396,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     /* Devices and networking: PCI scan, e1000 NIC, lwIP + DHCP */
     PciInitialize();
     AcpiInitialize(rsdp);                 /* power-off, reset, the power button; MADT for SMP */
+    IoApicInit();                         /* (masked; the SCI is routed when the interpreter loads) */
     AmlInitialize();                      /* the AML interpreter (a thread): batteries, buttons */
     DisplayInit(&boot_fb);               /* display adapter: modes, page flipping */
     PersistInit();                        /* SATA disks; the volume that keeps drive C: */
@@ -390,13 +414,15 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     kprintf("=== SMP ===\n");
     um_registry_add_cpus(smp_start());
 
+    DesktopRestoreDisplayMode();          /* the resolution chosen before the restart */
     if (GdiInitialize()) {
         WmInitialize();
         DesktopInitialize();
         /* Phase 8: input plumbing + interactive desktop event loop. */
         InputInit();
         ps2_init();
-        XhciInit();                       /* USB keyboards and mice */
+        UsbInit();                        /* USB keyboards, mice, hubs and sticks */
+        sched_create_thread("devpoll", device_poll_thread, NULL, 12);
         sched_create_thread("desktop", DesktopRun, NULL, 8);
         kprintf_set_fb_enabled(false);    /* WM owns the screen; logs → serial */
         kprintf("[NovaOS] Desktop event loop started (%dx%d)\n",

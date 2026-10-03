@@ -31,6 +31,7 @@
  * Must be called after pmm_init() and paging_init().
  */
 void vmm_init(void);
+void vmm_percpu_ready(void);   /* per-CPU object caches on (CPU 0's KPCR is set) */
 
 /*
  * Allocate `size` bytes from the kernel heap.

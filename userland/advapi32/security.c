@@ -6,8 +6,9 @@
  * with Administrators only for denying since nothing is elevated), a
  * thread can impersonate another token, restricted tokens can be made,
  * and named kernel objects keep the security descriptor they were created
- * with and check it when they are opened.  Files' descriptors are not
- * kept yet: they read as owned by the user with no DACL (full access).
+ * with and check it when they are opened.  Files and directories on drive
+ * C: keep descriptors too (inherited from their folders), checked the same
+ * way when they are opened, deleted or renamed.
  */
 
 #define NOVA_BUILD_ADVAPI32
@@ -191,28 +192,116 @@ static BOOL string_to_sid(const char *s, PSID *out)
     return TRUE;
 }
 
-WINADVAPI BOOL WINAPI ConvertStringSidToSidA(LPCSTR s, PSID *out) { return string_to_sid(s, out); }
+WINADVAPI BOOL WINAPI ConvertStringSidToSidA(LPCSTR s, PSID *out)
+{
+    if (!s || !out) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!string_to_sid(s, out)) return FALSE;
+    SetLastError(ERROR_SUCCESS);            /* Windows clears it; some callers test GetLastError alone */
+    return TRUE;
+}
 
 WINADVAPI BOOL WINAPI ConvertStringSidToSidW(LPCWSTR s, PSID *out)
 {
     char a[200];
     int i = 0;
+    if (!s || !out) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     for (; s[i] && i < 199; i++) a[i] = (char)s[i];
     a[i] = 0;
-    return string_to_sid(a, out);
+    return ConvertStringSidToSidA(a, out);
 }
 
+/* The accounts well-known SIDs name (LookupAccountSid) */
+static const struct { const char *sid, *domain, *name; SID_NAME_USE use; } g_accounts[] = {
+    { "S-1-0-0",      "",             "NULL SID",            SidTypeWellKnownGroup },
+    { "S-1-1-0",      "",             "Everyone",            SidTypeWellKnownGroup },
+    { "S-1-2-0",      "",             "LOCAL",               SidTypeWellKnownGroup },
+    { "S-1-3-0",      "",             "CREATOR OWNER",       SidTypeWellKnownGroup },
+    { "S-1-3-1",      "",             "CREATOR GROUP",       SidTypeWellKnownGroup },
+    { "S-1-5-1",      "NT AUTHORITY", "DIALUP",              SidTypeWellKnownGroup },
+    { "S-1-5-2",      "NT AUTHORITY", "NETWORK",             SidTypeWellKnownGroup },
+    { "S-1-5-3",      "NT AUTHORITY", "BATCH",               SidTypeWellKnownGroup },
+    { "S-1-5-4",      "NT AUTHORITY", "INTERACTIVE",         SidTypeWellKnownGroup },
+    { "S-1-5-6",      "NT AUTHORITY", "SERVICE",             SidTypeWellKnownGroup },
+    { "S-1-5-7",      "NT AUTHORITY", "ANONYMOUS LOGON",     SidTypeWellKnownGroup },
+    { "S-1-5-10",     "NT AUTHORITY", "SELF",                SidTypeWellKnownGroup },
+    { "S-1-5-11",     "NT AUTHORITY", "Authenticated Users", SidTypeWellKnownGroup },
+    { "S-1-5-13",     "NT AUTHORITY", "TERMINAL SERVER USER", SidTypeWellKnownGroup },
+    { "S-1-5-18",     "NT AUTHORITY", "SYSTEM",              SidTypeWellKnownGroup },
+    { "S-1-5-19",     "NT AUTHORITY", "LOCAL SERVICE",       SidTypeWellKnownGroup },
+    { "S-1-5-20",     "NT AUTHORITY", "NETWORK SERVICE",     SidTypeWellKnownGroup },
+    { "S-1-5-32",     "BUILTIN",      "BUILTIN",             SidTypeDomain },
+    { "S-1-5-32-544", "BUILTIN",      "Administrators",      SidTypeAlias },
+    { "S-1-5-32-545", "BUILTIN",      "Users",               SidTypeAlias },
+    { "S-1-5-32-546", "BUILTIN",      "Guests",              SidTypeAlias },
+    { "S-1-5-32-547", "BUILTIN",      "Power Users",         SidTypeAlias },
+    { "S-1-5-32-551", "BUILTIN",      "Backup Operators",    SidTypeAlias },
+    { "S-1-5-32-555", "BUILTIN",      "Remote Desktop Users", SidTypeAlias },
+    { "S-1-5-32-556", "BUILTIN",      "Network Configuration Operators", SidTypeAlias },
+    { "S-1-5-32-558", "BUILTIN",      "Performance Monitor Users", SidTypeAlias },
+    { "S-1-5-32-559", "BUILTIN",      "Performance Log Users", SidTypeAlias },
+    { "S-1-16-8192",  "Mandatory Label", "Medium Mandatory Level", SidTypeLabel },
+    { "S-1-16-12288", "Mandatory Label", "High Mandatory Level", SidTypeLabel },
+    { "S-1-16-16384", "Mandatory Label", "System Mandatory Level", SidTypeLabel },
+};
+
 /* well-known SID types (WELL_KNOWN_SID_TYPE) */
+/* WELL_KNOWN_SID_TYPE: identifier authority and sub-authorities; dom marks
+ * the ones relative to a domain SID (the machine's when none is given) */
+static const struct { BYTE type, auth, dom, n; DWORD sub[2]; } g_known[] = {
+    {  0,  0, 0, 1, { 0 } },      {  1,  1, 0, 1, { 0 } },      {  2,  2, 0, 1, { 0 } },
+    {  3,  3, 0, 1, { 0 } },      {  4,  3, 0, 1, { 1 } },      {  5,  3, 0, 1, { 2 } },
+    {  6,  3, 0, 1, { 3 } },      {  7,  5, 0, 0, { 0 } },      {  8,  5, 0, 1, { 1 } },
+    {  9,  5, 0, 1, { 2 } },      { 10,  5, 0, 1, { 3 } },      { 11,  5, 0, 1, { 4 } },
+    { 12,  5, 0, 1, { 6 } },      { 13,  5, 0, 1, { 7 } },      { 14,  5, 0, 1, { 8 } },
+    { 15,  5, 0, 1, { 9 } },      { 16,  5, 0, 1, { 10 } },     { 17,  5, 0, 1, { 11 } },
+    { 18,  5, 0, 1, { 12 } },     { 19,  5, 0, 1, { 13 } },     { 20,  5, 0, 1, { 14 } },
+    { 21,  5, 0, 1, { 5 } },      { 22,  5, 0, 1, { 18 } },     { 23,  5, 0, 1, { 19 } },
+    { 24,  5, 0, 1, { 20 } },     { 25,  5, 0, 1, { 32 } },
+    { 26,  5, 0, 2, { 32, 544 } }, { 27, 5, 0, 2, { 32, 545 } }, { 28, 5, 0, 2, { 32, 546 } },
+    { 29,  5, 0, 2, { 32, 547 } }, { 30, 5, 0, 2, { 32, 548 } }, { 31, 5, 0, 2, { 32, 549 } },
+    { 32,  5, 0, 2, { 32, 550 } }, { 33, 5, 0, 2, { 32, 551 } }, { 34, 5, 0, 2, { 32, 552 } },
+    { 35,  5, 0, 2, { 32, 554 } }, { 36, 5, 0, 2, { 32, 555 } }, { 37, 5, 0, 2, { 32, 556 } },
+    { 38,  5, 1, 1, { 500 } },    { 39,  5, 1, 1, { 501 } },    { 40,  5, 1, 1, { 502 } },
+    { 41,  5, 1, 1, { 512 } },    { 42,  5, 1, 1, { 513 } },    { 43,  5, 1, 1, { 514 } },
+    { 44,  5, 1, 1, { 515 } },    { 45,  5, 1, 1, { 516 } },    { 46,  5, 1, 1, { 517 } },
+    { 47,  5, 1, 1, { 518 } },    { 48,  5, 1, 1, { 519 } },    { 49,  5, 1, 1, { 520 } },
+    { 50,  5, 1, 1, { 553 } },    { 51,  5, 0, 2, { 64, 10 } }, { 52,  5, 0, 2, { 64, 21 } },
+    { 53,  5, 0, 2, { 64, 14 } }, { 54,  5, 0, 1, { 15 } },     { 55,  5, 0, 1, { 1000 } },
+    { 56,  5, 0, 2, { 32, 557 } }, { 57, 5, 0, 2, { 32, 558 } }, { 58, 5, 0, 2, { 32, 559 } },
+    { 59,  5, 0, 2, { 32, 560 } }, { 60, 5, 0, 2, { 32, 561 } }, { 61, 5, 0, 2, { 32, 562 } },
+    { 62,  5, 0, 2, { 32, 568 } }, { 63, 5, 0, 1, { 17 } },     { 64,  5, 0, 2, { 32, 569 } },
+    { 65, 16, 0, 1, { 0 } },      { 66, 16, 0, 1, { 4096 } },   { 67, 16, 0, 1, { 8192 } },
+    { 68, 16, 0, 1, { 12288 } },  { 69, 16, 0, 1, { 16384 } },  { 70,  5, 0, 1, { 33 } },
+    { 71,  3, 0, 1, { 4 } },      { 72,  5, 1, 1, { 571 } },    { 73,  5, 1, 1, { 572 } },
+    { 74,  5, 1, 1, { 498 } },    { 75,  5, 1, 1, { 521 } },    { 76,  5, 0, 2, { 32, 573 } },
+    { 77,  5, 1, 1, { 498 } },    { 78,  5, 0, 2, { 32, 574 } }, { 79, 16, 0, 1, { 8448 } },
+    { 80,  2, 0, 1, { 0 } },      { 81,  2, 0, 1, { 1 } },      { 82,  5, 0, 2, { 65, 1 } },
+    { 83, 15, 0, 1, { 2 } },      { 84, 15, 0, 2, { 2, 1 } },   { 85, 15, 0, 2, { 3, 1 } },
+    { 86, 15, 0, 2, { 3, 2 } },   { 87, 15, 0, 2, { 3, 3 } },   { 88, 15, 0, 2, { 3, 4 } },
+    { 89, 15, 0, 2, { 3, 5 } },   { 90, 15, 0, 2, { 3, 6 } },   { 91, 15, 0, 2, { 3, 7 } },
+    { 92, 15, 0, 2, { 3, 9 } },   { 93, 15, 0, 2, { 3, 8 } },   { 94, 15, 0, 2, { 3, 10 } },
+};
+
 WINADVAPI BOOL WINAPI CreateWellKnownSid(int type, PSID domain, PSID out, DWORD *n)
 {
-    (void)domain;
-    const BYTE *s = type == 1 ? g_everyone_sid : type == 17 ? g_auth_users_sid : type == 22 ? g_system_sid :
-                    type == 26 ? g_admins_sid : type == 27 ? g_users_sid : type == 9 ? g_interactive_sid :
-                    type == 66 ? g_medium_il_sid : 0;
-    if (!s) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    DWORD len = GetLengthSid((PSID)s);
+    static const BYTE machine[] = { 1, 4, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 0xE8, 3, 0, 0, 0xD0, 7, 0, 0, 0xB8, 0x0B, 0, 0 };
+    int k = -1;
+    for (int i = 0; i < (int)(sizeof(g_known) / sizeof(g_known[0])); i++) if (g_known[i].type == type) k = i;
+    if (k < 0 || !n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    BYTE sid[SECURITY_MAX_SID_SIZE];
+    memset(sid, 0, sizeof(sid));
+    sid[0] = 1;
+    if (g_known[k].dom) {                               /* the domain's SID, then the RID */
+        const BYTE *d = domain ? (const BYTE *)domain : machine;
+        if (!IsValidSid((PSID)d) || d[1] > 14) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+        memcpy(sid, d, GetLengthSid((PSID)d));
+    } else {
+        sid[7] = g_known[k].auth;
+    }
+    for (int i = 0; i < g_known[k].n; i++) memcpy(sid + 8 + 4 * sid[1]++, &g_known[k].sub[i], 4);
+    DWORD len = 8 + 4u * sid[1];
     if (!out || *n < len) { *n = len; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
-    memcpy(out, s, len);
+    memcpy(out, sid, len);
     *n = len;
     return TRUE;
 }
@@ -226,20 +315,20 @@ WINADVAPI BOOL WINAPI IsWellKnownSid(PSID sid, int type)
 
 static const char *account_of(PSID sid, const char **domain, SID_NAME_USE *use)
 {
-    *domain = "BUILTIN";
-    *use = SidTypeAlias;
+    if (!sid || !IsValidSid(sid)) return 0;
     if (EqualSid(sid, (PSID)g_user_sid)) { *domain = "NOVAOS"; *use = SidTypeUser; return user_name(); }
     static const BYTE domain_sid[] = { 1, 4, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 0xE8, 3, 0, 0, 0xD0, 7, 0, 0, 0xB8, 0x0B, 0, 0 };
     if (EqualSid(sid, (PSID)domain_sid)) { *domain = "NOVAOS"; *use = SidTypeDomain; return "NOVAOS"; }
-    if (EqualSid(sid, (PSID)g_admins_sid)) return "Administrators";
-    if (EqualSid(sid, (PSID)g_users_sid)) return "Users";
-    *domain = "";
-    *use = SidTypeWellKnownGroup;
-    if (EqualSid(sid, (PSID)g_everyone_sid)) return "Everyone";
-    *domain = "NT AUTHORITY";
-    if (EqualSid(sid, (PSID)g_auth_users_sid)) return "Authenticated Users";
-    if (EqualSid(sid, (PSID)g_interactive_sid)) return "INTERACTIVE";
-    if (EqualSid(sid, (PSID)g_system_sid)) return "SYSTEM";
+    char str[200];
+    if (!sid_to_string(sid, str, sizeof(str))) return 0;
+    for (unsigned i = 0; i < sizeof(g_accounts) / sizeof(g_accounts[0]); i++) {
+        const char *a = g_accounts[i].sid, *b = str;
+        while (*a && *a == *b) { a++; b++; }
+        if (*a || *b) continue;
+        *domain = g_accounts[i].domain;
+        *use = g_accounts[i].use;
+        return g_accounts[i].name;
+    }
     return 0;
 }
 
@@ -256,6 +345,7 @@ WINADVAPI BOOL WINAPI LookupAccountSidA(LPCSTR sys, PSID sid, LPSTR name, LPDWOR
     memcpy(dom, d, ld + 1);
     *nn = ln; *nd = ld;
     if (use) *use = u;
+    SetLastError(ERROR_SUCCESS);
     return TRUE;
 }
 
@@ -272,6 +362,7 @@ WINADVAPI BOOL WINAPI LookupAccountSidW(LPCWSTR sys, PSID sid, LPWSTR name, LPDW
     for (DWORD i = 0; i <= ld; i++) dom[i] = (WCHAR)(BYTE)d[i];
     *nn = ln; *nd = ld;
     if (use) *use = u;
+    SetLastError(ERROR_SUCCESS);
     return TRUE;
 }
 
@@ -778,9 +869,48 @@ static PSECURITY_DESCRIPTOR default_sd(void)
     return sd;
 }
 
-static DWORD security_info(SECURITY_INFORMATION si, PSID *owner, PSID *group, PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
+/* A file or directory, opened to read or change its descriptor */
+static HANDLE open_named(LPCWSTR name, SECURITY_INFORMATION si, BOOL write)
 {
-    (void)si;
+    DWORD access = !write ? 0x00020000 /* READ_CONTROL */
+                 : ((si & DACL_SECURITY_INFORMATION) ? 0x00040000 /* WRITE_DAC */ : 0) |
+                   ((si & (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION)) ? 0x00080000 /* WRITE_OWNER */ : 0);
+    return CreateFileW(name, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING,
+                       0x02000000 /* FILE_FLAG_BACKUP_SEMANTICS: directories too */, 0);
+}
+
+/* The descriptor of the object @h (LocalAlloc'd) */
+static DWORD query_sd(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR *out)
+{
+    ULONG need = 0;
+    NTSTATUS s = NtQuerySecurityObject(h, si & 7, 0, 0, &need);
+    if (s != (NTSTATUS)0xC0000023 /* STATUS_BUFFER_TOO_SMALL */ && !NT_SUCCESS(s)) return RtlNtStatusToDosError(s);
+    BYTE *sd = LocalAlloc(LMEM_ZEROINIT, need ? need : 20);
+    if (!sd) return ERROR_NOT_ENOUGH_MEMORY;
+    s = NtQuerySecurityObject(h, si & 7, sd, need, &need);
+    if (!NT_SUCCESS(s)) { LocalFree(sd); return RtlNtStatusToDosError(s); }
+    *out = sd;
+    return ERROR_SUCCESS;
+}
+
+static DWORD security_info(HANDLE h, SECURITY_INFORMATION si, PSID *owner, PSID *group, PACL *dacl, PACL *sacl,
+                           PSECURITY_DESCRIPTOR *sd)
+{
+    PSECURITY_DESCRIPTOR d;
+    DWORD e = query_sd(h, si, &d);
+    if (e) return e;
+    if (owner) *owner = sd_part(d, 0);
+    if (group) *group = sd_part(d, 1);
+    if (dacl) *dacl = sd_part(d, 3);
+    if (sacl) *sacl = 0;
+    if (sd) *sd = d;
+    else LocalFree(d);                      /* only the pointers were wanted: MSDN requires @sd with them */
+    return ERROR_SUCCESS;
+}
+
+/* The descriptor of what keeps none (owned by the user, no DACL) */
+static DWORD default_info(PSID *owner, PSID *group, PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
+{
     PSECURITY_DESCRIPTOR d = default_sd();
     if (!d) return ERROR_NOT_ENOUGH_MEMORY;
     if (owner) *owner = sd_part(d, 0);
@@ -792,49 +922,38 @@ static DWORD security_info(SECURITY_INFORMATION si, PSID *owner, PSID *group, PA
     return ERROR_SUCCESS;
 }
 
+static DWORD named_info(LPCWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
+                        PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
+{
+    if (t != SE_FILE_OBJECT) return default_info(owner, group, dacl, sacl, sd);
+    HANDLE h = open_named(name, si, FALSE);
+    if (h == INVALID_HANDLE_VALUE) return GetLastError();
+    DWORD e = security_info(h, si, owner, group, dacl, sacl, sd);
+    CloseHandle(h);
+    return e;
+}
+
 WINADVAPI DWORD WINAPI GetNamedSecurityInfoW(LPCWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
                                              PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
 {
-    if (t == SE_FILE_OBJECT && GetFileAttributesW(name) == INVALID_FILE_ATTRIBUTES) return GetLastError();
-    return security_info(si, owner, group, dacl, sacl, sd);
+    return named_info(name, t, si, owner, group, dacl, sacl, sd);
 }
 
 WINADVAPI DWORD WINAPI GetNamedSecurityInfoA(LPCSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
                                              PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
 {
-    if (t == SE_FILE_OBJECT && GetFileAttributesA(name) == INVALID_FILE_ATTRIBUTES) return GetLastError();
-    return security_info(si, owner, group, dacl, sacl, sd);
-}
-
-/* A kernel object's descriptor (self-relative, LocalAlloc'd) */
-static DWORD object_sd(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR *out)
-{
-    ULONG need = 0;
-    NTSTATUS st = NtQuerySecurityObject(h, si, 0, 0, &need);
-    for (int tries = 0; tries < 4 && st == (NTSTATUS)0xC0000023L; tries++) {   /* BUFFER_TOO_SMALL */
-        BYTE *b = LocalAlloc(LMEM_ZEROINIT, need);
-        if (!b) return ERROR_NOT_ENOUGH_MEMORY;
-        st = NtQuerySecurityObject(h, si, b, need, &need);
-        if (NT_SUCCESS(st)) { *out = b; return ERROR_SUCCESS; }
-        LocalFree(b);
-    }
-    return NT_SUCCESS(st) ? 1338 /* ERROR_INVALID_SECURITY_DESCR */ : RtlNtStatusToDosError(st);
+    WCHAR w[MAX_PATH];
+    if (!MultiByteToWideChar(CP_ACP, 0, name, -1, w, MAX_PATH)) return ERROR_INVALID_NAME;
+    return named_info(w, t, si, owner, group, dacl, sacl, sd);
 }
 
 WINADVAPI DWORD WINAPI GetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
                                        PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd)
 {
-    (void)t;
-    PSECURITY_DESCRIPTOR d;
-    DWORD e = object_sd(h, si, &d);
-    if (e) return e;
-    if (owner) *owner = sd_part(d, 0);
-    if (group) *group = sd_part(d, 1);
-    if (dacl) *dacl = sd_part(d, 3);
-    if (sacl) *sacl = 0;
-    if (sd) *sd = d;
-    else LocalFree(d);                      /* only the pointers were wanted: MSDN requires @sd with them */
-    return ERROR_SUCCESS;
+    /* NovaOS's one window station and desktop are user32 pseudo handles,
+     * not kernel objects: they carry the default descriptor */
+    if (t == SE_WINDOW_OBJECT) return default_info(owner, group, dacl, sacl, sd);
+    return security_info(h, si, owner, group, dacl, sacl, sd);
 }
 
 WINADVAPI BOOL WINAPI GetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd, DWORD n, LPDWORD need)
@@ -847,43 +966,58 @@ WINADVAPI BOOL WINAPI GetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si,
     return TRUE;
 }
 
+/* Give @h the parts @si names (a SACL is not kept) */
+static DWORD set_parts(HANDLE h, SECURITY_INFORMATION si, PSID o, PSID g, PACL d)
+{
+    SECURITY_DESCRIPTOR abs;
+    InitializeSecurityDescriptor(&abs, SECURITY_DESCRIPTOR_REVISION);
+    if (si & OWNER_SECURITY_INFORMATION) abs.Owner = o;
+    if (si & GROUP_SECURITY_INFORMATION) abs.Group = g;
+    if (si & DACL_SECURITY_INFORMATION) SetSecurityDescriptorDacl(&abs, TRUE, d, FALSE);
+    NTSTATUS s = NtSetSecurityObject(h, si & 7, &abs);
+    return NT_SUCCESS(s) ? ERROR_SUCCESS : RtlNtStatusToDosError(s);
+}
+
 WINADVAPI DWORD WINAPI SetNamedSecurityInfoW(LPWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
 {
-    (void)t; (void)si; (void)o; (void)g; (void)d; (void)s;
-    return GetFileAttributesW(name) == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
+    (void)s;
+    if (t != SE_FILE_OBJECT) return ERROR_SUCCESS;          /* (nowhere to keep one) */
+    if (!(si & 7)) return ERROR_SUCCESS;
+    HANDLE h = open_named(name, si, TRUE);
+    if (h == INVALID_HANDLE_VALUE) return GetLastError();
+    DWORD e = set_parts(h, si, o, g, d);
+    CloseHandle(h);
+    return e;
 }
 
 WINADVAPI DWORD WINAPI SetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
 {
-    (void)t; (void)s;                       /* (SACLs are not kept) */
-    SECURITY_DESCRIPTOR sd;
-    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
-    if (si & OWNER_SECURITY_INFORMATION) sd.Owner = o;
-    if (si & GROUP_SECURITY_INFORMATION) sd.Group = g;
-    if (si & DACL_SECURITY_INFORMATION) SetSecurityDescriptorDacl(&sd, TRUE, d, FALSE);
-    NTSTATUS st = NtSetSecurityObject(h, si & 7, &sd);
-    return NT_SUCCESS(st) ? ERROR_SUCCESS : RtlNtStatusToDosError(st);
+    (void)s;                                /* (SACLs are not kept) */
+    if (t == SE_WINDOW_OBJECT) return ERROR_SUCCESS;    /* (see GetSecurityInfo) */
+    return (si & 7) ? set_parts(h, si, o, g, d) : ERROR_SUCCESS;
 }
 
 WINADVAPI BOOL WINAPI GetFileSecurityW(LPCWSTR name, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd, DWORD n, LPDWORD need)
 {
-    (void)si;
-    if (GetFileAttributesW(name) == INVALID_FILE_ATTRIBUTES) return FALSE;
-    PSECURITY_DESCRIPTOR d = default_sd();
-    if (!d) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
-    DWORD len = GetSecurityDescriptorLength(d);
+    HANDLE h = open_named(name, si, FALSE);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    ULONG len = 0;
+    NTSTATUS s = NtQuerySecurityObject(h, si & 7, sd, n, &len);
+    CloseHandle(h);
     *need = len;
-    BOOL ok = sd && n >= len;
-    if (ok) memcpy(sd, d, len);
-    else SetLastError(ERROR_INSUFFICIENT_BUFFER);
-    LocalFree(d);
-    return ok;
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    return TRUE;
 }
 
 WINADVAPI BOOL WINAPI SetFileSecurityW(LPCWSTR name, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd)
 {
-    (void)si; (void)sd;
-    return GetFileAttributesW(name) != INVALID_FILE_ATTRIBUTES;
+    if (!(si & 7)) return GetFileAttributesW(name) != INVALID_FILE_ATTRIBUTES;
+    HANDLE h = open_named(name, si, TRUE);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    NTSTATUS s = NtSetSecurityObject(h, si & 7, sd);
+    CloseHandle(h);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    return TRUE;
 }
 
 WINADVAPI BOOL WINAPI ConvertStringSecurityDescriptorToSecurityDescriptorW(LPCWSTR s, DWORD rev, PSECURITY_DESCRIPTOR *sd, PULONG n)
@@ -1117,3 +1251,69 @@ WINADVAPI BOOL WINAPI SetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si,
     if (!NT_SUCCESS(st)) { SetLastError(RtlNtStatusToDosError(st)); return FALSE; }
     return TRUE;
 }
+
+WINADVAPI BOOL WINAPI GetSecurityDescriptorSacl(PSECURITY_DESCRIPTOR sd, LPBOOL present, PACL *acl, LPBOOL defaulted)
+{
+    SECURITY_DESCRIPTOR *s = sd;
+    *present = (s->Control & 0x0010 /* SE_SACL_PRESENT */) != 0;
+    *acl = *present ? sd_part(sd, 2) : 0;
+    if (defaulted) *defaulted = (s->Control & 0x0020) != 0;
+    return TRUE;
+}
+
+/* TRUSTEE_W naming a SID */
+typedef struct _TRUSTEE_W_ {
+    struct _TRUSTEE_W_ *pMultipleTrustee;
+    int MultipleTrusteeOperation, TrusteeForm, TrusteeType;
+    LPWSTR ptstrName;
+} TRUSTEE_W_;
+WINADVAPI VOID WINAPI BuildTrusteeWithSidW(TRUSTEE_W_ *t, PSID sid)
+{
+    if (!t) return;
+    t->pMultipleTrustee = 0;
+    t->MultipleTrusteeOperation = 0;                /* NO_MULTIPLE_TRUSTEE */
+    t->TrusteeForm = 0;                             /* TRUSTEE_IS_SID */
+    t->TrusteeType = 0;                             /* TRUSTEE_IS_UNKNOWN */
+    t->ptstrName = (LPWSTR)sid;
+}
+WINADVAPI VOID WINAPI BuildTrusteeWithSidA(TRUSTEE_W_ *t, PSID sid) { BuildTrusteeWithSidW(t, sid); }
+
+/* Private object security: the new object's descriptor is a self-relative
+ * copy of the creator's (no inheritance from the parent: NovaOS's own
+ * objects carry no ACLs to inherit) */
+WINADVAPI BOOL WINAPI CreatePrivateObjectSecurityEx(PSECURITY_DESCRIPTOR parent, PSECURITY_DESCRIPTOR creator,
+                                                    PSECURITY_DESCRIPTOR *out, GUID *type, BOOL container,
+                                                    ULONG flags, HANDLE token, PGENERIC_MAPPING map)
+{
+    (void)parent; (void)type; (void)container; (void)flags; (void)token; (void)map;
+    if (!out) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    SECURITY_DESCRIPTOR empty;
+    if (!creator) {
+        InitializeSecurityDescriptor(&empty, 1);
+        creator = &empty;
+    }
+    DWORD n = 0;
+    if (((SECURITY_DESCRIPTOR *)creator)->Control & SE_SELF_RELATIVE) n = GetSecurityDescriptorLength(creator);
+    else MakeSelfRelativeSD(creator, 0, &n);
+    PSECURITY_DESCRIPTOR sd = n ? HeapAlloc(GetProcessHeap(), 0, n) : 0;
+    if (!sd) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    if (((SECURITY_DESCRIPTOR *)creator)->Control & SE_SELF_RELATIVE) memcpy(sd, creator, n);
+    else if (!MakeSelfRelativeSD(creator, sd, &n)) { HeapFree(GetProcessHeap(), 0, sd); return FALSE; }
+    *out = sd;
+    return TRUE;
+}
+WINADVAPI BOOL WINAPI CreatePrivateObjectSecurity(PSECURITY_DESCRIPTOR parent, PSECURITY_DESCRIPTOR creator,
+                                                  PSECURITY_DESCRIPTOR *out, BOOL container, HANDLE token, PGENERIC_MAPPING map)
+{
+    return CreatePrivateObjectSecurityEx(parent, creator, out, 0, container, 0, token, map);
+}
+WINADVAPI BOOL WINAPI DestroyPrivateObjectSecurity(PSECURITY_DESCRIPTOR *sd)
+{
+    if (sd && *sd) { HeapFree(GetProcessHeap(), 0, *sd); *sd = 0; }
+    return TRUE;
+}
+
+/* Credentials, ANSI forms: none stored either */
+WINADVAPI BOOL WINAPI CredReadA(LPCSTR target, DWORD type, DWORD flags, PVOID *cred) { (void)target; return CredReadW(0, type, flags, cred); }
+WINADVAPI BOOL WINAPI CredWriteA(PVOID cred, DWORD flags) { return CredWriteW(cred, flags); }
+WINADVAPI BOOL WINAPI CredDeleteA(LPCSTR target, DWORD type, DWORD flags) { (void)target; return CredDeleteW(0, type, flags); }

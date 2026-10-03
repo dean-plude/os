@@ -4,7 +4,8 @@
     tools/appcorpus.py [--img build/nova.img] [--cache DIR] [--out DIR]
                        [--only NAME,...] [--summary FILE] [--update-reference]
 
-Downloads each program's official Windows x64 release into --cache (kept
+The programs are tests/appcorpus/*.py, one file each, run in file-name
+order.  Downloads each program's official Windows x64 release into --cache (kept
 between runs), unpacks it onto drive C: (C:\\Apps\\NAME) with a few sample
 files, boots NovaOS once and types each program's commands into the
 Terminal (tools/novarun.py's Nova class).  A command passes as a self-test
@@ -12,21 +13,20 @@ does (tools/selftest.py): it exits with code 0 and prints what is expected.
 Before it, NovaOS's own screens are checked (Phase 17.6): `dir` on drives
 C: and D: (an empty NTFS disk made with mkntfs, from the ntfs-3g package)
 must name each drive and give its own free space, and File Explorer's This
-PC must list both drives.  The windowed programs run last, one at a time
-(each takes the keyboard): SumatraPDF opens a PDF, WinMerge compares two
-files, Notepad++ opens a file and PuTTY makes a raw connection to an echo
-server this script runs on the host (10.0.2.2 on QEMU's user network) and
-types a line, which the server must receive.  Each one's screenshot must
-match tests/reference/NAME.png (--update-reference writes those files from
-this run instead); the screenshots are kept in --out.  PuTTY is built from
-its source release with MinGW (the official binaries' site is not reachable
-from every network); the build is kept in --cache.
+PC must list both drives.  The windowed programs (App(gui=True)) run last,
+one at a time (each takes the keyboard): SumatraPDF opens a PDF, WinMerge
+compares two files, Notepad++ opens a file and PuTTY makes a raw connection
+to an echo server this script runs on the host (10.0.2.2 on QEMU's user
+network) and types a line, which the server must receive.  Each one's
+screenshot (and This PC's) must match tests/reference/NAME.png
+(--update-reference writes those files from this run instead); the
+screenshots are kept in --out.
 
 The exit status is the number of programs that failed.  --summary appends
 a Markdown pass/fail table, one row per program (the nightly workflow,
 .github/workflows/nightly.yml, posts it).
 """
-import argparse, os, re, shutil, socket, struct, subprocess, sys, tarfile, tempfile, threading, time, zipfile
+import argparse, os, re, shutil, socket, struct, subprocess, sys, tempfile, threading, time, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from novarun import Nova, ROOT
@@ -37,75 +37,46 @@ DRIVE_LABEL = 'NOVACORPUS'
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
 SAMPLE = 'NovaOS app corpus\na needle in a haystack\nthe end\n'
 ECHO_PORT = 2323                    # the echo server PuTTY connects to (on the host)
-GUI = ('SumatraPDF', 'WinMerge', 'Notepad++', 'PuTTY')    # windowed: one at a time, screenshots checked
 
 
 class App:
-    """@url's download, unpacked by @unpack into C:\\Apps\\@dir; @tests run in order"""
-    def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0):
+    """@url's download (and @extra's), unpacked by @unpack into
+    C:\\Apps\\@dir; @tests run in order.  @unpack may be a function
+    (app, [downloaded files], dest) for a program its file stages itself.
+    A windowed program (@gui) is started with each test's command, has its
+    test's timeout to bring its window up, and its screenshot is compared
+    with tests/reference/NAME.png; @interact(nova, echo) runs before the
+    screenshot (typing into it) and returns why it failed, or None.  @net
+    gives NovaOS QEMU's user network and starts the echo server."""
+    def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=(),
+                 gui=False, net=False, interact=None):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
-        self.unpack, self.strip = unpack, strip
+        self.unpack, self.strip, self.extra = unpack, strip, list(extra)
+        self.gui, self.net, self.interact = gui, net, interact
 
 
 A = r'C:\Apps'
-APPS = [
-    App('ripgrep', '14.1.1',
-        'https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip',
-        'rg', [Test('rg --version', rf'{A}\rg\rg.exe --version', [r'ripgrep 14\.1\.1']),
-               Test('rg search', rf'{A}\rg\rg.exe -n needle {A}\data', [r'hello\.txt\r?\n2:a needle in a haystack'])],
-        strip=1),
-    App('fd', '10.2.0',
-        'https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-pc-windows-msvc.zip',
-        'fd', [Test('fd --version', rf'{A}\fd\fd.exe --version', [r'fd 10\.2\.0']),
-               Test('fd find', rf'{A}\fd\fd.exe -e txt . {A}\data', [r'hello\.txt', r'notes\.txt'])],
-        strip=1),
-    App('jq', '1.7.1', 'https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-windows-amd64.exe',
-        'jq', [Test('jq --version', rf'{A}\jq\jq.exe --version', [r'jq-1\.7\.1']),
-               Test('jq filter', rf'{A}\jq\jq.exe -c ".a+.b, [.[]]" {A}\data\ab.json', [r'(?m)^42\r?$', r'\[40,2\]'])],
-        unpack='exe'),
-    App('7-Zip', '26.03', 'https://github.com/ip7z/7zip/releases/download/26.03/7z2603-x64.exe',
-        '7-Zip', [Test('7z a', rf'{A}\7-Zip\7z.exe a {A}\data.7z {A}\data', [r'Everything is Ok']),
-                  Test('7z t', rf'{A}\7-Zip\7z.exe t {A}\data.7z', [r'Type = 7z', r'Everything is Ok'])],
-        unpack='7z'),
-    App('MinGit', '2.51.0',
-        'https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/MinGit-2.51.0-64-bit.zip',
-        'MinGit', [Test('git clone', rf'{A}\MinGit\cmd\git.exe clone {A}\data\src.git {A}\clone',
-                        [r'Cloning into'], timeout=300),
-                   Test('git log', rf'{A}\MinGit\cmd\git.exe -C {A}\clone log --format=%s',
-                        [r'Add the corpus notes', r'First commit']),
-                   Test('git status', rf'{A}\MinGit\cmd\git.exe -C {A}\clone status --short --branch',
-                        [r'## main\.\.\.origin/main'])]),
-    App('Python', '3.14.0', 'https://api.nuget.org/v3-flatcontainer/python/3.14.0/python.3.14.0.nupkg',
-        'Python', [Test('python -c', rf'{A}\Python\python.exe -c "import sys, json; '
-                        r'print(json.dumps([sum(range(10)), sys.version_info[:2]]))"', [r'\[45, \[3, 14\]\]'],
-                        timeout=300)],
-        strip='tools'),
-    App('Node.js', '24.9.0', 'https://nodejs.org/dist/v24.9.0/node-v24.9.0-win-x64.zip',
-        'node', [Test('node -v', rf'{A}\node\node.exe -v', [r'v24\.9\.0'], timeout=300),
-                 Test('node -e', rf'{A}\node\node.exe -e "console.log(6*7, process.platform)"',
-                      [r'42 win32'], timeout=300)],
-        strip=1),
-    App('NovaOS', 'screens', None, '',
-        [Test('dir C:', 'dir C:\\', [r'Volume in drive C is', r'Dir\(s\)\s+[\d,]+ bytes free']),
-         Test('dir D:', 'dir D:\\', [rf'Volume in drive D is {DRIVE_LABEL}', r'Dir\(s\)\s+[\d,]+ bytes free']),
-         Test('This PC', 'start explorer', [])],
-        unpack=None),
-    App('SumatraPDF', '3.4.6',          # the official 32-bit build, as the npm package pdf-to-printer ships it
-        'https://registry.npmjs.org/pdf-to-printer/-/pdf-to-printer-5.8.1.tgz',
-        'SumatraPDF', [Test('open a PDF', rf'start {A}\SumatraPDF\SumatraPDF.exe {A}\data\corpus.pdf', timeout=12)],
-        unpack='tgz:package/dist/SumatraPDF-3.4.6-32.exe:SumatraPDF.exe'),
-    App('WinMerge', '2.16.50',
-        'https://github.com/WinMerge/winmerge/releases/download/v2.16.50/winmerge-2.16.50-x64-exe.zip',
-        'WinMerge', [Test('compare two files', rf'start {A}\WinMerge\WinMergeU.exe {A}\data\hello.txt {A}\data\hello2.txt',
-                          timeout=25)],
-        strip=1),
-    App('Notepad++', '8.8.3',
-        'https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.8.3/npp.8.8.3.portable.x64.zip',
-        'npp', [Test('open a file', rf'start {A}\npp\notepad++.exe {A}\data\hello.txt', timeout=60)]),
-    App('PuTTY', '0.81', 'http://archive.ubuntu.com/ubuntu/pool/universe/p/putty/putty_0.81.orig.tar.gz',
-        'PuTTY', [Test('raw connection', rf'start {A}\PuTTY\putty.exe -raw 10.0.2.2 -P {ECHO_PORT}', timeout=15)],
-        unpack='putty'),
-]
+
+
+def load_apps():
+    """The programs in tests/appcorpus/*.py, in file-name order.  Each file
+    defines APP (an App; App, Test, A and DRIVE_LABEL are given to it) and
+    DOC, its name in README's list (tools/docgen.py).  One file per
+    program, so changes adding programs add files instead of editing a
+    shared list."""
+    import glob
+    apps = []
+    for f in sorted(glob.glob(os.path.join(ROOT, 'tests', 'appcorpus', '*.py'))):
+        ns = {'App': App, 'Test': Test, 'A': A, 'DRIVE_LABEL': DRIVE_LABEL, 'ROOT': ROOT, 'ECHO_PORT': ECHO_PORT,
+              '__file__': f}
+        exec(compile(open(f).read(), f, 'exec'), ns)
+        if not isinstance(ns.get('APP'), App):
+            sys.exit(f'{f}: APP must be an App')
+        apps.append(ns['APP'])
+    return apps
+
+
+APPS = load_apps()
 
 
 def fetch(url, cache):
@@ -130,16 +101,6 @@ def stage(app, archive, dest):
     if app.unpack == '7z':
         subprocess.run(['7z', 'x', '-y', f'-o{dest}', archive], check=True, stdout=subprocess.DEVNULL)
         return
-    if app.unpack.startswith('tgz:'):             # one member of a .tar.gz, under a new name
-        _, member, name = app.unpack.split(':')
-        os.makedirs(dest)
-        with tarfile.open(archive) as t, t.extractfile(member) as src, open(os.path.join(dest, name), 'wb') as out:
-            shutil.copyfileobj(src, out)
-        return
-    if app.unpack == 'putty':
-        os.makedirs(dest)
-        shutil.copy(build_putty(archive), os.path.join(dest, 'putty.exe'))
-        return
     with zipfile.ZipFile(archive) as z:
         for m in z.infolist():
             parts = m.filename.split('/')
@@ -155,27 +116,6 @@ def stage(app, archive, dest):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with z.open(m) as src, open(path, 'wb') as out:
                 shutil.copyfileobj(src, out)
-
-
-def build_putty(archive):
-    """PuTTY's putty.exe from its source release, built with MinGW next to
-    @archive (kept there: the cache is restored between runs)"""
-    cache = os.path.dirname(archive)
-    exe = os.path.join(cache, 'putty-build', 'putty.exe')
-    if os.path.exists(exe):
-        return exe
-    src = os.path.join(cache, 'putty-src')
-    shutil.rmtree(src, ignore_errors=True)
-    with tarfile.open(archive) as t:
-        t.extractall(src)
-    src = os.path.join(src, os.listdir(src)[0])
-    bdir = os.path.join(cache, 'putty-build')
-    shutil.rmtree(bdir, ignore_errors=True)
-    subprocess.run(['cmake', '-S', src, '-B', bdir, '-DCMAKE_SYSTEM_NAME=Windows', '-DCMAKE_BUILD_TYPE=Release',
-                    '-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc', '-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres'],
-                   check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(['make', '-C', bdir, '-j', str(os.cpu_count() or 2), 'putty'], check=True, stdout=subprocess.DEVNULL)
-    return exe
 
 
 def make_pdf(path, lines):
@@ -320,7 +260,11 @@ def main():
     staged = []
     for app in apps:
         try:
-            stage(app, fetch(app.url, a.cache), os.path.join(apps_dir, app.dir))
+            if callable(app.unpack):
+                app.unpack(app, [fetch(u, a.cache) for u in [app.url] + app.extra],
+                           os.path.join(apps_dir, app.dir))
+            else:
+                stage(app, fetch(app.url, a.cache), os.path.join(apps_dir, app.dir))
             staged.append(app)
         except Exception as e:
             results[app.name] = (f'download or unpack failed: {e}', 0, [])
@@ -328,7 +272,7 @@ def main():
     make_data(os.path.join(apps_dir, 'data'))
 
     ntfs = make_ntfs(os.path.join(work, 'ntfs.img')) if any(x.name == 'NovaOS' for x in staged) else None
-    echo = EchoServer() if any(x.name == 'PuTTY' for x in staged) else None
+    echo = EchoServer() if any(x.net for x in staged) else None
     t_boot = time.time()
     try:
         nova = Nova(a.img, os.path.join(work, 'boot'), [(apps_dir, A)], mem=4096, data_mb=2048,
@@ -350,7 +294,7 @@ def main():
             t0, steps, why = time.time(), [], None
             for t in app.tests:
                 ts = time.time()
-                if app.name in GUI:
+                if app.gui:
                     out, w = gui(nova, t, a, app, echo, close=app is not staged[-1])
                 elif app.name == 'NovaOS':
                     out, w = screen(nova, t, a, ntfs)
@@ -385,9 +329,10 @@ def main():
 
 def gui(nova, t, a, app, echo, close):
     """Start a windowed program (t.timeout seconds for its window to come
-    up, or it dies); PuTTY then types a line the echo server must receive.
-    The screenshot must match the reference; @close closes the window after
-    it (Alt+F4) so the next program gets the keyboard"""
+    up, or it dies), run its interaction (PuTTY types a line the echo
+    server must receive).  The screenshot must match the reference; @close
+    closes the window after it (Alt+F4) so the next program gets the
+    keyboard"""
     out, ok = nova.run(t.cmd, 30)
     exe = re.escape(re.split(r'[\\/]', t.cmd.split()[1])[-1])
     m = None
@@ -399,13 +344,7 @@ def gui(nova, t, a, app, echo, close):
             break
     if m:
         return out, m.group(0).split(') ', 1)[1]
-    w = None
-    if app.name == 'PuTTY':
-        line = 'hello from NovaOS'
-        nova.qmp.type(line + '\n')
-        time.sleep(4)
-        if line not in echo.lines:
-            w = f'the echo server did not receive the typed line (got {echo.lines!r})'
+    w = app.interact(nova, echo) if app.interact else None
     time.sleep(3)
     w = check_shot(nova, a, app.name.lower() + '.png') or w
     if close:

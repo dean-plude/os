@@ -9,13 +9,18 @@ typedef struct _iobuf {
     void  *_handle;        /* Win32 HANDLE */
     char  *_buf;           /* buffer (NULL: unbuffered) */
     long long _offset;     /* file offset of _buf[0] */
-    int    _bufsize;
-    int    _pos, _len;     /* read: next/valid bytes; write: pending bytes */
 #ifdef __x86_64__
+    /* _flags sits where Microsoft's _flag does (offset 24): MinGW's static
+     * _lock_file sets and clears 0x8000 (_IOLOCKED) there on stdin/out/err */
     int    _flags;
+    int    _pos, _len;     /* read: next/valid bytes; write: pending bytes */
+    int    _bufsize;
     int    _ungot;         /* ungetc character, or -1 */
     int    _fd;            /* POSIX descriptor, once one is made */
-#else                      /* 32 bytes in 32-bit programs */
+#else                      /* 32 bytes in 32-bit programs; Microsoft's _flag
+                            * (offset 12) is the high half of _offset, unused */
+    int    _bufsize;
+    int    _pos, _len;
     int    _flags : 14;
     int    _ungot : 10;
     int    _fd : 8;

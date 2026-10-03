@@ -304,11 +304,24 @@ static DWORD WINAPI watcher(LPVOID arg)
         HANDLE hs[MAXIMUM_WAIT_OBJECTS];
         Watch *ws[MAXIMUM_WAIT_OBJECTS];
         DWORD n = 0;
+        BOOL more = FALSE;
+        Watch *done = 0;
         hs[n++] = g_watch_wake;
         lock();
-        for (Watch *w = g_watch; w && n < MAXIMUM_WAIT_OBJECTS; w = w->next) { ws[n] = w; hs[n++] = w->ev; }
+        for (Watch *w = g_watch; w; w = w->next) {
+            if (n < MAXIMUM_WAIT_OBJECTS) { ws[n] = w; hs[n++] = w->ev; continue; }
+            more = TRUE;                                    /* past what one wait can hold: poll */
+            if (WaitForSingleObject(w->ev, 0) == WAIT_OBJECT_0) { done = w; break; }
+        }
         unlock();
-        DWORD r = WaitForMultipleObjects(n, hs, FALSE, n == 1 ? INFINITE : 100);
+        if (done) {
+            lock();
+            for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next) if (*pp == done) { *pp = done->next; break; }
+            unlock();
+            watch_done(done);
+            continue;
+        }
+        DWORD r = WaitForMultipleObjects(n, hs, FALSE, more ? 5 : n == 1 ? INFINITE : 100);
         if (r == WAIT_OBJECT_0 || r == WAIT_TIMEOUT || r >= WAIT_OBJECT_0 + n) continue;
         Watch *w = ws[r - WAIT_OBJECT_0];
         lock();
@@ -356,10 +369,14 @@ static void watch_start(Watch *w)
     SetEvent(g_watch_wake);
 }
 
-/* Finish a request that did not stay pending */
+/* Finish a request that did not stay pending.  One that failed at once
+ * (an error status, such as a broken pipe) completes nothing: no event, no
+ * completion packet, no completion routine, as on Windows.  Programs free
+ * the OVERLAPPED after such a failure. */
 static void finished_now(HANDLE h, OVERLAPPED *o, Watch *w, void *fn, NTSTATUS s)
 {
     if (w) { CloseHandle(w->ev); zfree(w); }
+    if ((ULONG)s >= 0xC0000000u) return;
     if (fn) queue_apc(GetCurrentThreadId(), 0, fn, apc_error(s), (DWORD)o->InternalHigh, (ULONG_PTR)o);
     else k32_io_done(h, o, s, (DWORD)o->InternalHigh);
 }
@@ -384,7 +401,7 @@ BOOL k32_overlapped(HANDLE h, OVERLAPPED *o, int op, PVOID buf, DWORD n, LPDWORD
     o->Internal = (ULONG_PTR)s;
     if (!NT_SUCCESS(s) && s != STATUS_END_OF_FILE && s != STATUS_BUFFER_OVERFLOW) o->InternalHigh = 0;
     finished_now(h, o, w, fn, s);
-    if (fn) { SetLastError(0); return NT_SUCCESS(s) || s == STATUS_END_OF_FILE || s == STATUS_BUFFER_OVERFLOW; }
+    if (fn && (ULONG)s < 0xC0000000u) { SetLastError(0); return TRUE; }   /* ReadFileEx: the routine is queued */
     if (done) *done = (DWORD)o->InternalHigh;
     if (s == STATUS_END_OF_FILE) { SetLastError(ERROR_HANDLE_EOF); return FALSE; }
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
@@ -399,9 +416,7 @@ NTSTATUS k32_overlapped_fsctl(HANDLE h, OVERLAPPED *o, ULONG code, PVOID in, DWO
     NTSTATUS s = NtFsControlFile(h, ev, 0, 0, (PIO_STATUS_BLOCK)o, code, in, in_len, out, out_len);
     if (s == STATUS_PENDING) { if (w) watch_start(w); return s; }
     o->Internal = (ULONG_PTR)s;
-    /* ConnectNamedPipe finding its client already there completes nothing */
-    if (s == (NTSTATUS)0xC00000B2) { if (w) { CloseHandle(w->ev); zfree(w); } return s; }
-    finished_now(h, o, w, 0, s);
+    finished_now(h, o, w, 0, s);         /* (ConnectNamedPipe finding its client there fails, completing nothing) */
     return s;
 }
 
@@ -735,46 +750,20 @@ void k32_forget_handle(HANDLE h)
 }
 
 /* -----------------------------------------------------------------------
- * WaitOnAddress: hashed wait queues (a lock and a condition variable)
+ * WaitOnAddress: ntdll's (RtlWaitOnAddress), as on Windows
  * ----------------------------------------------------------------------- */
-typedef struct { SRWLOCK l; CONDITION_VARIABLE cv; } AddrQueue;
-static AddrQueue g_addr[64];
-
-static AddrQueue *addr_queue(const volatile void *a) { return &g_addr[((ULONG_PTR)a >> 3) % 64]; }
-
-static BOOL same(const volatile void *a, const void *b, SIZE_T n)
-{
-    switch (n) {
-    case 1: return *(const volatile BYTE *)a == *(const BYTE *)b;
-    case 2: return *(const volatile WORD *)a == *(const WORD *)b;
-    case 4: return *(const volatile DWORD *)a == *(const DWORD *)b;
-    case 8: return *(const volatile ULONGLONG *)a == *(const ULONGLONG *)b;
-    }
-    return FALSE;
-}
-
 WINBASEAPI BOOL WINAPI WaitOnAddress(volatile VOID *addr, PVOID cmp, SIZE_T size, DWORD ms)
 {
-    if (size != 1 && size != 2 && size != 4 && size != 8) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    AddrQueue *q = addr_queue(addr);
-    AcquireSRWLockExclusive(&q->l);
-    BOOL ok = TRUE;
-    if (same(addr, cmp, size)) ok = SleepConditionVariableSRW(&q->cv, &q->l, ms, 0);
-    ReleaseSRWLockExclusive(&q->l);
-    if (!ok) SetLastError(1460 /* ERROR_TIMEOUT */);
-    return ok;
+    LARGE_INTEGER t;
+    t.QuadPart = -(LONGLONG)ms * 10000;
+    NTSTATUS s = RtlWaitOnAddress(addr, cmp, size, ms == INFINITE ? NULL : &t);
+    if (s == (NTSTATUS)STATUS_TIMEOUT) { SetLastError(1460 /* ERROR_TIMEOUT */); return FALSE; }
+    if (!NT_SUCCESS(s)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return TRUE;
 }
 
-WINBASEAPI VOID WINAPI WakeByAddressAll(PVOID addr)
-{
-    AddrQueue *q = addr_queue(addr);
-    AcquireSRWLockExclusive(&q->l);
-    WakeAllConditionVariable(&q->cv);
-    ReleaseSRWLockExclusive(&q->l);
-}
-
-/* waiters on the same bucket re-check their own value, so waking all is safe */
-WINBASEAPI VOID WINAPI WakeByAddressSingle(PVOID addr) { WakeByAddressAll(addr); }
+WINBASEAPI VOID WINAPI WakeByAddressAll(PVOID addr)    { RtlWakeAddressAll(addr); }
+WINBASEAPI VOID WINAPI WakeByAddressSingle(PVOID addr) { RtlWakeAddressSingle(addr); }
 
 /* -----------------------------------------------------------------------
  * Interlocked singly linked lists (a spin lock keeps them simple)
@@ -1758,13 +1747,6 @@ WINBASEAPI PVOID WINAPI AddDllDirectory(LPCWSTR dir) { (void)dir; return (PVOID)
 WINBASEAPI BOOL WINAPI RemoveDllDirectory(PVOID cookie) { (void)cookie; return TRUE; }
 /* the search for SearchPath already skips the current directory's place in line */
 WINBASEAPI BOOL WINAPI SetSearchPathMode(DWORD flags) { (void)flags; return TRUE; }
-/* DEP and the mitigation policies: always on (NX pages), nothing to switch */
-WINBASEAPI BOOL WINAPI SetProcessDEPPolicy(DWORD flags) { (void)flags; return TRUE; }
-WINBASEAPI BOOL WINAPI GetProcessDEPPolicy(HANDLE h, LPDWORD flags, PBOOL permanent)
-{ (void)h; if (flags) *flags = 1; if (permanent) *permanent = TRUE; return TRUE; }   /* PROCESS_DEP_ENABLE */
-WINBASEAPI BOOL WINAPI SetProcessMitigationPolicy(int policy, PVOID buf, SIZE_T len) { (void)policy; (void)buf; (void)len; return TRUE; }
-WINBASEAPI BOOL WINAPI GetProcessMitigationPolicy(HANDLE h, int policy, PVOID buf, SIZE_T len)
-{ (void)h; (void)policy; if (buf) memset(buf, 0, len); return TRUE; }
 WINBASEAPI BOOL WINAPI DisableThreadLibraryCalls(HMODULE m) { (void)m; return TRUE; }
 
 WINBASEAPI SIZE_T WINAPI VirtualQuery(LPCVOID p, PMEMORY_BASIC_INFORMATION mbi, SIZE_T n)
@@ -2392,215 +2374,7 @@ WINBASEAPI UINT WINAPI GetOEMCP(void)                  { return CP_UTF8; }
 WINBASEAPI BOOL WINAPI IsDBCSLeadByte(BYTE c)          { (void)c; return FALSE; }
 WINBASEAPI BOOL WINAPI IsDBCSLeadByteEx(UINT cp, BYTE c) { (void)cp; (void)c; return FALSE; }
 
-WINBASEAPI DWORD WINAPI GetUserDefaultLCID(void)       { return 0x409; }
-WINBASEAPI DWORD WINAPI GetSystemDefaultLCID(void)     { return 0x409; }
-WINBASEAPI DWORD WINAPI GetThreadLocale(void)          { return 0x409; }
-WINBASEAPI BOOL  WINAPI SetThreadLocale(DWORD lcid)    { (void)lcid; return TRUE; }
-WINBASEAPI WORD  WINAPI GetUserDefaultLangID(void)     { return 0x409; }
-WINBASEAPI WORD  WINAPI GetSystemDefaultLangID(void)   { return 0x409; }
-WINBASEAPI WORD  WINAPI GetUserDefaultUILanguage(void) { return 0x409; }
-WINBASEAPI WORD  WINAPI GetSystemDefaultUILanguage(void) { return 0x409; }
-WINBASEAPI BOOL  WINAPI IsValidLocale(DWORD lcid, DWORD f) { (void)f; return lcid == 0x409 || lcid == 0x400 || lcid == 0x800 || lcid == 0x7F; }
-#define LOC_UNKNOWN_ 3
-static int locale_of(LPCWSTR loc);
-WINBASEAPI BOOL  WINAPI IsValidLocaleName(LPCWSTR n)   { return locale_of(n) != LOC_UNKNOWN_; }
-WINBASEAPI DWORD WINAPI LocaleNameToLCID(LPCWSTR n, DWORD f)
-{
-    (void)f;
-    switch (locale_of(n)) {
-    case 0: return 0x409;
-    case 1: return 0x09;
-    case 2: return 0x7F;
-    default: SetLastError(ERROR_INVALID_PARAMETER); return 0;
-    }
-}
-WINBASEAPI int   WINAPI LCIDToLocaleName(DWORD lcid, LPWSTR n, int cap, DWORD f) { (void)lcid; (void)f; return cap ? (int)put_utf8_as_w("en-US", n, (DWORD)cap) + 1 : 6; }
-WINBASEAPI int   WINAPI GetUserDefaultLocaleName(LPWSTR n, int cap)   { return (int)put_utf8_as_w("en-US", n, (DWORD)cap) + 1; }
-WINBASEAPI int   WINAPI GetSystemDefaultLocaleName(LPWSTR n, int cap) { return (int)put_utf8_as_w("en-US", n, (DWORD)cap) + 1; }
-
-/* Locales: English (United States), its neutral parent "en", and the
- * invariant locale "" (what .NET's CultureInfo.InvariantCulture asks for);
- * any other name is unknown (ERROR_INVALID_PARAMETER) */
-enum { LOC_EN_US, LOC_EN, LOC_INVARIANT, LOC_UNKNOWN };
-static int locale_of(LPCWSTR loc)
-{
-    static const WCHAR sysdef[] = L"!x-sys-default-locale";
-    if (!loc) return LOC_EN_US;                                  /* LOCALE_NAME_USER_DEFAULT */
-    if (!loc[0]) return LOC_INVARIANT;
-    if (compare(loc, -1, sysdef, -1, TRUE) == CSTR_EQUAL) return LOC_EN_US;
-    if (compare(loc, -1, (const WCHAR *)L"en-US", -1, TRUE) == CSTR_EQUAL) return LOC_EN_US;
-    if (compare(loc, -1, (const WCHAR *)L"en_US", -1, TRUE) == CSTR_EQUAL) return LOC_EN_US;
-    if (compare(loc, -1, (const WCHAR *)L"en", -1, TRUE) == CSTR_EQUAL) return LOC_EN;
-    return LOC_UNKNOWN;
-}
-
-static const char *locale_value(int loc, DWORD type)
-{
-    DWORD t = type & 0xFFFF;
-    BOOL inv = loc == LOC_INVARIANT, neutral = loc == LOC_EN;
-    switch (t) {                                                 /* what differs by locale */
-    case 0x01: return inv ? "007F" : neutral ? "0009" : "0409";  /* LOCALE_ILANGUAGE */
-    case 0x02: case 0x72: return inv ? "Invariant Language (Invariant Country)" : neutral ? "English" : "English (United States)";
-    case 0x73: return inv ? "Invariant Language (Invariant Country)" : neutral ? "English" : "English (United States)";
-    case 0x5C: return inv ? "" : neutral ? "en" : "en-US";       /* LOCALE_SNAME */
-    case 0x6D: return neutral || inv ? "" : "en";                /* LOCALE_SPARENT */
-    case 0x71: return neutral ? "1" : "0";                       /* LOCALE_INEUTRAL */
-    case 0x5A: return inv ? "IV" : neutral ? "" : "US";          /* LOCALE_SISO3166CTRYNAME */
-    case 0x68: return inv ? "IVC" : neutral ? "" : "USA";        /* LOCALE_SISO3166CTRYNAME2 */
-    case 0x59: return inv ? "iv" : "en";                         /* LOCALE_SISO639LANGNAME */
-    case 0x67: return inv ? "ivl" : "eng";                       /* LOCALE_SISO639LANGNAME2 */
-    case 0x06: case 0x08: case 0x1002: return inv ? "Invariant Country" : neutral ? "" : "United States";
-    case 0x5B: return inv ? "39070" : "244";                     /* LOCALE_IGEOID */
-    case 0x14: return inv ? "\xC2\xA4" : "$";                    /* LOCALE_SCURRENCY */
-    case 0x15: return inv ? "XDR" : "USD";                       /* LOCALE_SINTLSYMBOL */
-    case 0x1007: return inv ? "International Monetary Fund" : "US Dollar";   /* LOCALE_SENGCURRNAME */
-    case 0x1008: return inv ? "International Monetary Fund" : "US Dollar";   /* LOCALE_SNATIVECURRNAME */
-    case 0x1F: return inv ? "MM/dd/yyyy" : "M/d/yyyy";           /* LOCALE_SSHORTDATE */
-    case 0x20: return inv ? "dddd, dd MMMM yyyy" : "dddd, MMMM d, yyyy";      /* LOCALE_SLONGDATE */
-    case 0x1003: return inv ? "HH:mm:ss" : "h:mm:ss tt";         /* LOCALE_STIMEFORMAT */
-    case 0x79: return inv ? "HH:mm" : "h:mm tt";                 /* LOCALE_SSHORTTIME */
-    case 0x23: return inv ? "1" : "0";                           /* LOCALE_ITIME (24-hour) */
-    case 0x100C: return inv ? "0" : "6";                         /* LOCALE_IFIRSTDAYOFWEEK: Monday 0 ... Sunday 6 */
-    case 0x0D: return inv ? "0" : "1";                           /* LOCALE_IMEASURE: metric 0, US 1 */
-    case 0x100A: return inv ? "9" : "1";                         /* LOCALE_IPAPERSIZE: A4 9, letter 1 */
-    }
-    switch (t) {                                                 /* the same for all three */
-    case 0x03: return "ENU";                                     /* LOCALE_SABBREVLANGNAME */
-    case 0x04: case 0x1001: case 0x6F: return "English";         /* native / English / localized language name */
-    case 0x05: return "1";                                       /* LOCALE_ICOUNTRY */
-    case 0x07: return "USA";                                     /* LOCALE_SABBREVCTRYNAME */
-    case 0x0B: return "437";                                     /* LOCALE_IDEFAULTCODEPAGE (OEM) */
-    case 0x1004: return "1252";                                  /* LOCALE_IDEFAULTANSICODEPAGE */
-    case 0x1011: return "10000";                                 /* LOCALE_IDEFAULTMACCODEPAGE */
-    case 0x1012: return "037";                                   /* LOCALE_IDEFAULTEBCDICCODEPAGE */
-    case 0x0C: return ",";                                       /* LOCALE_SLIST */
-    case 0x0E: return ".";                                       /* LOCALE_SDECIMAL */
-    case 0x0F: return ",";                                       /* LOCALE_STHOUSAND */
-    case 0x10: return "3;0";                                     /* LOCALE_SGROUPING */
-    case 0x11: return "2";                                       /* LOCALE_IDIGITS */
-    case 0x12: return "1";                                       /* LOCALE_ILZERO */
-    case 0x13: return "0123456789";                              /* LOCALE_SNATIVEDIGITS */
-    case 0x16: return ".";                                       /* LOCALE_SMONDECIMALSEP */
-    case 0x17: return ",";                                       /* LOCALE_SMONTHOUSANDSEP */
-    case 0x18: return "3;0";                                     /* LOCALE_SMONGROUPING */
-    case 0x19: return "2";                                       /* LOCALE_ICURRDIGITS */
-    case 0x1A: return "2";                                       /* LOCALE_IINTLCURRDIGITS */
-    case 0x1B: return "0";                                       /* LOCALE_ICURRENCY: $1.1 */
-    case 0x1C: return "1";                                       /* LOCALE_INEGCURR: -$1.1 */
-    case 0x1D: return "/";                                       /* LOCALE_SDATE */
-    case 0x1E: return ":";                                       /* LOCALE_STIME */
-    case 0x21: return "0";                                       /* LOCALE_IDATE: M-D-Y */
-    case 0x22: return "0";                                       /* LOCALE_ILDATE */
-    case 0x24: return "1";                                       /* LOCALE_ICENTURY */
-    case 0x25: return "0";                                       /* LOCALE_ITLZERO */
-    case 0x26: return "0";                                       /* LOCALE_IDAYLZERO */
-    case 0x27: return "0";                                       /* LOCALE_IMONLZERO */
-    case 0x28: return "AM";                                      /* LOCALE_S1159 */
-    case 0x29: return "PM";                                      /* LOCALE_S2359 */
-    case 0x50: return "";                                        /* LOCALE_SPOSITIVESIGN */
-    case 0x51: return "-";                                       /* LOCALE_SNEGATIVESIGN */
-    case 0x52: return "3";                                       /* LOCALE_IPOSSIGNPOSN */
-    case 0x53: return "0";                                       /* LOCALE_INEGSIGNPOSN */
-    case 0x5D: return "h:mm:ss";                                 /* LOCALE_SDURATION */
-    case 0x69: return "NaN";                                     /* LOCALE_SNAN */
-    case 0x6A: return "Infinity";                                /* LOCALE_SPOSINFINITY */
-    case 0x6B: return "-Infinity";                               /* LOCALE_SNEGINFINITY */
-    case 0x6C: return "Latn;";                                   /* LOCALE_SSCRIPTS */
-    case 0x6E: return "en-US";                                   /* LOCALE_SCONSOLEFALLBACKNAME */
-    case 0x70: return "0";                                       /* LOCALE_IREADINGLAYOUT: left to right */
-    case 0x74: return "1";                                       /* LOCALE_INEGATIVEPERCENT: -n % */
-    case 0x75: return "1";                                       /* LOCALE_IPOSITIVEPERCENT: n % */
-    case 0x76: return "%";                                       /* LOCALE_SPERCENT */
-    case 0x77: return "\xE2\x80\xB0";                            /* LOCALE_SPERMILLE */
-    case 0x78: return "MMMM d";                                  /* LOCALE_SMONTHDAY */
-    case 0x7A: return "ENU";                                     /* LOCALE_SOPENTYPELANGUAGETAG */
-    case 0x7B: return "";                                        /* LOCALE_SSORTLOCALE */
-    case 0x1006: return "MMMM yyyy";                             /* LOCALE_SYEARMONTH */
-    case 0x1009: return "1";                                     /* LOCALE_ICALENDARTYPE: Gregorian */
-    case 0x100B: return "0";                                     /* LOCALE_IOPTIONALCALENDAR */
-    case 0x100D: return "0";                                     /* LOCALE_IFIRSTWEEKOFYEAR */
-    case 0x100E: case 0x100F: return "";                         /* LOCALE_SMONTHNAME13, ABBREV13 */
-    case 0x1010: return "1";                                     /* LOCALE_INEGNUMBER: -1.1 */
-    case 0x1014: return "1";                                     /* LOCALE_IDIGITSUBSTITUTION: none */
-    case 0x1016: return "en-US";                                 /* LOCALE_SNATIVELANGUAGE... (unused) */
-    }
-    if (t >= 0x2A && t <= 0x30) {                                /* LOCALE_SDAYNAME1..7 (Monday first) */
-        static const char *d[] = { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
-        return d[t - 0x2A];
-    }
-    if (t >= 0x31 && t <= 0x37) {
-        static const char *d[] = { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
-        return d[t - 0x31];
-    }
-    if (t >= 0x60 && t <= 0x66) {                                /* LOCALE_SSHORTESTDAYNAME1..7 */
-        static const char *d[] = { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
-        return d[t - 0x60];
-    }
-    if (t >= 0x38 && t <= 0x43) {
-        static const char *m[] = { "January", "February", "March", "April", "May", "June", "July", "August",
-                                   "September", "October", "November", "December" };
-        return m[t - 0x38];
-    }
-    if (t >= 0x44 && t <= 0x4F) {
-        static const char *m[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-        return m[t - 0x44];
-    }
-    return 0;
-}
-
-WINBASEAPI int WINAPI GetLocaleInfoEx(LPCWSTR name, DWORD type, LPWSTR buf, int n)
-{
-    int loc = locale_of(name);
-    if (loc == LOC_UNKNOWN) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
-    const char *v = locale_value(loc, type);
-    if (!v) { SetLastError(1004 /* ERROR_INVALID_FLAGS */); return 0; }
-    if (type & 0x20000000) {                                 /* LOCALE_RETURN_NUMBER */
-        DWORD num = 0;
-        DWORD t = type & 0xFFFF;
-        if (t == 0x01) num = loc == LOC_INVARIANT ? 0x7F : loc == LOC_EN ? 0x09 : 0x409;   /* (hex) */
-        else for (const char *c = v; *c >= '0' && *c <= '9'; c++) num = num * 10 + (DWORD)(*c - '0');
-        if (!n) return 2;
-        if (n < 2) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
-        memcpy(buf, &num, 4);
-        return 2;
-    }
-    WCHAR w[64];
-    int k = u2w(v, -1, w, 63);
-    if (!n) return k + 1;
-    if (n <= k) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
-    memcpy(buf, w, 2 * (SIZE_T)k);
-    buf[k] = 0;
-    return k + 1;
-}
-
-static LPCWSTR lcid_name(DWORD lcid)
-{
-    if (lcid == 0x7F) return (const WCHAR *)L"";
-    if (lcid == 0x09) return (const WCHAR *)L"en";
-    return 0;                                                    /* 0x409, the defaults: en-US */
-}
-WINBASEAPI int WINAPI GetLocaleInfoW(DWORD lcid, DWORD type, LPWSTR buf, int n) { return GetLocaleInfoEx(lcid_name(lcid), type, buf, n); }
-
-WINBASEAPI int WINAPI GetLocaleInfoA(DWORD lcid, DWORD type, LPSTR buf, int n)
-{
-    LPCWSTR nm = lcid_name(lcid);
-    const char *v = locale_value(locale_of(nm), type);
-    if (!v) { SetLastError(1004); return 0; }
-    int k = (int)strlen(v);
-    if (!n) return k + 1;
-    if (n <= k) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
-    memcpy(buf, v, (SIZE_T)k + 1);
-    return k + 1;
-}
-
-WINBASEAPI BOOL WINAPI EnumSystemLocalesW(BOOL (WINAPI *fn)(LPWSTR), DWORD f) { (void)f; WCHAR s[] = { '0','0','0','0','0','4','0','9',0 }; fn(s); return TRUE; }
-WINBASEAPI BOOL WINAPI EnumSystemLocalesEx(BOOL (WINAPI *fn)(LPWSTR, DWORD, LPARAM), DWORD f, LPARAM p, LPVOID r)
-{
-    (void)f; (void)r;
-    WCHAR s[] = { 'e','n','-','U','S',0 };
-    fn(s, 1, p);
-    return TRUE;
-}
+/* Locales (GetLocaleInfo, LCIDs, enumeration): locale.c */
 
 /* -----------------------------------------------------------------------
  * Console

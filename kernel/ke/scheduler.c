@@ -542,45 +542,113 @@ void sched_yield(void)
  * sched_tick — called from timer interrupt handler (interrupts disabled)
  * ----------------------------------------------------------------------- */
 static KSpinLock tick_lock = KSPINLOCK_INIT;
-static void wake_sleepers(RunQueue *rq);
+static bool wake_sleepers(RunQueue *rq, uint64_t *soonest);
 void DesktopWatchdog(uint64_t now);
 void UmTimerTick(uint64_t ticks);
 
-void ps2_poll(void);
-void XhciPoll(void);
+
+/* Each CPU's timer is one-shot (apic.c): armed for its next tick on the
+ * global 10 ms grid, or for its earliest TSC-deadline sleeper if that
+ * comes sooner.  g_armed is what it was last armed for. */
+static uint64_t g_next_tick[MAX_CPUS], g_armed[MAX_CPUS];
+
+static void timer_arm(uint32_t cpu, uint64_t tsc)
+{
+    g_armed[cpu] = tsc;
+    apic_timer_arm(tsc);
+}
+
+uint64_t sched_tick_tsc(uint64_t tick)
+{
+    return tsc_at_boot + tick * g_tsc_per_tick;
+}
+
+uint64_t sched_tsc_after(uint64_t t100ns)
+{
+    if (t100ns > UINT64_C(100000000000)) return UINT64_MAX;      /* (beyond about 3 hours) */
+    return rdtsc() + t100ns * g_tsc_per_tick / 100000;
+}
+
+/* The next tick on the grid after @tsc */
+static uint64_t next_grid_tick(uint64_t tsc)
+{
+    if (!g_tsc_per_tick || tsc < tsc_at_boot) return tsc + g_tsc_per_tick;
+    return sched_tick_tsc((tsc - tsc_at_boot) / g_tsc_per_tick + 1);
+}
+
+/* A timer interrupt taken while this CPU halts waiting for the kernel
+ * lock (KPCR.LockWait): the waiting thread cannot be switched out, so no
+ * sleeper is woken, but the one-shot timer is re-armed for the soonest
+ * thing due, a TSC-deadline sleeper of this CPU included.  One already
+ * due gets a short retry, so that the first interrupt after the wait ends
+ * wakes it, not the next 10 ms grid tick. */
+void sched_timer_rearm(void)
+{
+    uint32_t cpu = this_cpu();
+    uint64_t tsc = rdtsc();
+    if (g_next_tick[cpu] <= tsc) g_next_tick[cpu] = next_grid_tick(tsc);
+    uint64_t at = g_next_tick[cpu];
+    RunQueue *rq = my_rq();
+    if (rq->sleepers) {
+        uint64_t soonest = UINT64_MAX;
+        if (spin_trylock(&rq->lock)) {
+            for (Thread *t = rq->sleepers; t; t = t->sleep_next)
+                if (t->wake_tsc && t->state == THREAD_WAITING && t->wake_tsc < soonest)
+                    soonest = t->wake_tsc;
+            spin_unlock(&rq->lock);
+        } else {
+            soonest = tsc;                          /* (the list is changing: look again soon) */
+        }
+        uint64_t retry = tsc + (g_tsc_per_tick ? g_tsc_per_tick / 200 : 1);   /* ~50 us */
+        if (soonest <= tsc) soonest = retry;
+        if (soonest < at) at = soonest;
+    }
+    timer_arm(cpu, at);
+}
 
 void sched_tick(void)
 {
-    /* Each CPU's timer runs at 100 Hz; the global tick follows the TSC, so
-     * it neither runs N times too fast nor loses time while CPU 0 waits for
-     * the kernel lock with interrupts off. */
-    uint64_t now = g_tsc_per_tick ? (rdtsc() - tsc_at_boot) / g_tsc_per_tick : tick_count + 1;
+    /* The global tick follows the TSC, so it neither runs N times too fast
+     * with N CPUs nor loses time while CPU 0 waits for the kernel lock
+     * with interrupts off. */
+    uint32_t cpu = this_cpu();
+    uint64_t tsc = rdtsc();
+    /* This CPU's own tick: due, or the TSC moved back under it */
+    bool tick = tsc >= g_next_tick[cpu] || g_next_tick[cpu] > tsc + 2 * g_tsc_per_tick;
+    if (tick) g_next_tick[cpu] = next_grid_tick(tsc);
+    uint64_t now = g_tsc_per_tick ? (tsc - tsc_at_boot) / g_tsc_per_tick : tick_count + 1;
     if (now > tick_count && spin_trylock(&tick_lock)) {   /* one CPU does the tick's work */
         if (now > tick_count) {
             tick_count = now;
-            ps2_poll();                     /* keyboard/mouse, collected at 100 Hz */
-            XhciPoll();                     /* (USB ones too) */
+            /* (The keyboard and mouse polls, ps2_poll and UsbPoll, run in
+             * the device poll thread, kernel/ke/main.c: their port and
+             * MMIO reads take QEMU's device lock and ran up to a few ms
+             * here with interrupts off, which held up every Sleep and
+             * wait timeout due on this CPU meanwhile.) */
             DesktopWatchdog(tick_count);
             UmTimerTick(tick_count);
         }
         spin_unlock(&tick_lock);
     }
     RunQueue *rq = my_rq();                 /* each CPU wakes its own sleepers */
-    if (rq->sleepers) wake_sleepers(rq);
+    uint64_t soonest = UINT64_MAX;
+    bool preempt = rq->sleepers ? wake_sleepers(rq, &soonest) : false;
+    timer_arm(cpu, soonest < g_next_tick[cpu] ? soonest : g_next_tick[cpu]);
     if (!current_thread) return;
 
-    current_thread->ticks_total++;
-    current_thread->ticks_slice++;
+    if (tick) {
+        current_thread->ticks_total++;
+        current_thread->ticks_slice++;
+    }
 
     /* An idle CPU looks for work waiting on the others at every tick */
     bool steal_now = false;
-    if (current_thread->idle)
+    if (tick && current_thread->idle)
         for (uint32_t c = 0; c < g_cpu_count && !steal_now; c++)
             steal_now = __atomic_load_n(&g_rq[c].head, __ATOMIC_RELAXED) != NULL;
-    if (steal_now || current_thread->ticks_slice >= TICKS_PER_SLICE) {
-        /* Time slice expired — preempt */
+    /* A sleeper that is due runs now; or the time slice expired */
+    if (preempt || steal_now || current_thread->ticks_slice >= TICKS_PER_SLICE)
         perform_switch();
-    }
 }
 
 /* Timer ticks since boot (100 Hz) */
@@ -600,24 +668,71 @@ Thread *sched_current(void)
 /* -----------------------------------------------------------------------
  * sched_block / sched_unblock
  * ----------------------------------------------------------------------- */
+/* Take @t (the current thread, interrupts off, no run queue lock held)
+ * off the timed-sleep list it is still on after an early wake-up */
+static void leave_sleepers(Thread *t)
+{
+    if (!__atomic_load_n(&t->in_sleepers, __ATOMIC_ACQUIRE)) return;   /* (only t itself sets it) */
+    RunQueue *o = &g_rq[t->sleep_cpu];
+    spin_lock(&o->lock);
+    if (t->in_sleepers) rq_drop_sleeper(o, t);
+    spin_unlock(&o->lock);
+}
+
 void sched_sleep_until(volatile uint32_t *flag, uint64_t deadline)
 {
     IrqState irq = irq_save();
+    Thread *t = current_thread;
+    /* Still on another CPU's sleep list (woken early there, then moved
+     * here): leave it.  Left there, that CPU's next tick would drop it
+     * while this one thought it already queued, and the sleep would never
+     * end. */
+    if (t->sleep_cpu != this_cpu()) leave_sleepers(t);
     RunQueue *rq = my_rq();
     spin_lock(&rq->lock);
     if ((flag && *flag) || tick_count >= deadline) {  /* woken already, or due */
         spin_unlock_irqrestore(&rq->lock, irq);
         return;
     }
-    Thread *t = current_thread;
     t->state = THREAD_WAITING;
     t->wake_tick = deadline;
+    t->wake_tsc = 0;
     if (!t->in_sleepers) {                          /* (still there from a wake-up by sched_unblock) */
         t->sleep_next = rq->sleepers;
         rq->sleepers = t;
         t->in_sleepers = true;
+        t->sleep_cpu = this_cpu();
     }
     switch_locked(rq);                              /* woken by sched_unblock or sched_tick */
+    irq_restore(irq);
+}
+
+void sched_sleep_until_tsc(volatile uint32_t *flag, uint64_t tsc)
+{
+    IrqState irq = irq_save();
+    if (current_thread->sleep_cpu != this_cpu()) leave_sleepers(current_thread);   /* (see sched_sleep_until) */
+    RunQueue *rq = my_rq();
+    spin_lock(&rq->lock);
+    uint64_t now = rdtsc();
+    if ((flag && *flag) || now >= tsc) {            /* woken already, or due */
+        spin_unlock_irqrestore(&rq->lock, irq);
+        return;
+    }
+    Thread *t = current_thread;
+    t->state = THREAD_WAITING;
+    t->wake_tick = UINT64_MAX;
+    t->wake_tsc = tsc;
+    if (!t->in_sleepers) {
+        t->sleep_next = rq->sleepers;
+        rq->sleepers = t;
+        t->in_sleepers = true;
+        t->sleep_cpu = this_cpu();
+    }
+    /* Sooner than this CPU's timer is armed for (or that was armed before
+     * a restart and has gone by): arm it for this */
+    uint32_t cpu = this_cpu();
+    if (tsc < g_armed[cpu] || g_armed[cpu] <= now) timer_arm(cpu, tsc);
+    switch_locked(rq);
     irq_restore(irq);
 }
 
@@ -632,21 +747,43 @@ void sched_wait(void)
     else sched_sleep_tick();
 }
 
-/* Timer tick (interrupts off): sleepers whose tick has come are ready again */
-static void wake_sleepers(RunQueue *rq)
+/* Timer interrupt (interrupts off): sleepers whose deadline has come are
+ * ready again.  One woken by its TSC deadline goes to the front of the
+ * queue, and the result says to switch to it now, when it has at least the
+ * current thread's priority.  *soonest: the earliest TSC deadline left. */
+static void rq_enqueue_front(RunQueue *rq, Thread *t)
 {
+    rq_enqueue(rq, t);
+    rq->head = t;                                   /* (the circle's tail, now its head) */
+}
+
+static bool wake_sleepers(RunQueue *rq, uint64_t *soonest)
+{
+    bool preempt = false;
+    Thread *cur = current_thread;
+    uint64_t tsc = rdtsc();
     spin_lock(&rq->lock);
     for (Thread **pp = &rq->sleepers; *pp;) {
         Thread *t = *pp;
-        bool due = t->wake_tick <= tick_count;
+        bool due = t->wake_tick <= tick_count || (t->wake_tsc && t->wake_tsc <= tsc);
         if (due || t->state != THREAD_WAITING) {    /* due, or woken some other way */
             *pp = t->sleep_next;
             t->sleep_next = NULL;
             t->in_sleepers = false;
-            if (due && t->state == THREAD_WAITING) ready_wake(rq, t);
-        } else pp = &t->sleep_next;
+            if (!due || t->state != THREAD_WAITING) continue;
+            if (t->wake_tsc && cur && t->priority >= cur->priority) {
+                rq_enqueue_front(rq, t);
+                preempt = true;
+            } else {
+                ready_wake(rq, t);
+            }
+        } else {
+            if (t->wake_tsc && t->wake_tsc < *soonest) *soonest = t->wake_tsc;
+            pp = &t->sleep_next;
+        }
     }
     spin_unlock(&rq->lock);
+    return preempt;
 }
 
 void sched_block(void)
@@ -673,6 +810,10 @@ void sched_unblock(Thread *t)
 void sched_exit_current(void)
 {
     cli();
+    /* A thread woken early is still on a sleep list: it must not be once
+     * freed (the list would run through freed memory and lose the
+     * sleepers after it) */
+    leave_sleepers(current_thread);
     RunQueue *rq = my_rq();
     spin_lock(&rq->lock);
     current_thread->state = THREAD_DEAD;

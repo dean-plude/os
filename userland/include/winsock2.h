@@ -79,6 +79,26 @@ typedef struct in_addr { union { struct { UCHAR s_b1,s_b2,s_b3,s_b4; } S_un_b; U
 } IN_ADDR, *PIN_ADDR;
 struct sockaddr { USHORT sa_family; CHAR sa_data[14]; };
 struct sockaddr_in { SHORT sin_family; USHORT sin_port; struct in_addr sin_addr; CHAR sin_zero[8]; };
+typedef struct in6_addr { union { UCHAR Byte[16]; USHORT Word[8]; } u; } IN6_ADDR, *PIN6_ADDR;
+#define s6_addr   u.Byte
+#define s6_words  u.Word
+struct sockaddr_in6 {
+    SHORT sin6_family; USHORT sin6_port; ULONG sin6_flowinfo;
+    struct in6_addr sin6_addr; ULONG sin6_scope_id;
+};
+typedef struct sockaddr_in6 SOCKADDR_IN6, *PSOCKADDR_IN6;
+struct sockaddr_storage { SHORT ss_family; CHAR __ss_pad1[6]; __int64 __ss_align; CHAR __ss_pad2[112]; };
+typedef struct sockaddr_storage SOCKADDR_STORAGE, *PSOCKADDR_STORAGE;
+#define IN6ADDR_ANY_INIT        { { { 0 } } }
+#define IN6ADDR_LOOPBACK_INIT   { { { 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1 } } }
+static const struct in6_addr in6addr_any = IN6ADDR_ANY_INIT;
+static const struct in6_addr in6addr_loopback = IN6ADDR_LOOPBACK_INIT;
+#define IN6_IS_ADDR_V4MAPPED(a) (!(a)->s6_words[0] && !(a)->s6_words[1] && !(a)->s6_words[2] && \
+                                 !(a)->s6_words[3] && !(a)->s6_words[4] && (a)->s6_words[5] == 0xFFFF)
+#define IN6_IS_ADDR_LINKLOCAL(a) ((a)->s6_addr[0] == 0xFE && ((a)->s6_addr[1] & 0xC0) == 0x80)
+#define IPPROTO_IPV6     41
+#define IPV6_V6ONLY      27
+#define INET6_ADDRSTRLEN 65
 typedef struct sockaddr SOCKADDR, *PSOCKADDR, *LPSOCKADDR;
 typedef struct sockaddr_in SOCKADDR_IN, *PSOCKADDR_IN;
 typedef int socklen_t;
@@ -91,6 +111,19 @@ typedef struct WSAData {
     char *lpVendorInfo;
 } WSADATA, *LPWSADATA;
 #define MAKEWORD(a, b) ((WORD)(((BYTE)(a)) | ((WORD)((BYTE)(b))) << 8))
+
+/* struct servent: s_proto and s_port swap places on 64-bit Windows */
+typedef struct servent {
+    char *s_name;
+    char **s_aliases;
+#if defined(__x86_64__) || defined(_M_X64)
+    char *s_proto;
+    short s_port;
+#else
+    short s_port;
+    char *s_proto;
+#endif
+} SERVENT, *PSERVENT;
 
 typedef struct hostent {
     char *h_name; char **h_aliases;
@@ -107,7 +140,15 @@ struct addrinfo {
     struct addrinfo *ai_next;
 };
 typedef struct addrinfo ADDRINFOA, *PADDRINFOA;
-#define AI_PASSIVE 0x01
+#define AI_PASSIVE      0x01
+#define AI_CANONNAME    0x02
+#define AI_NUMERICHOST  0x04
+#define AI_NUMERICSERV  0x08
+#define AI_ALL          0x0100
+#define AI_ADDRCONFIG   0x0400
+#define AI_V4MAPPED     0x0800
+#define EAI_NONAME      WSAHOST_NOT_FOUND
+#define EAI_FAMILY      WSAEAFNOSUPPORT
 
 #define FD_SETSIZE 64
 typedef struct fd_set { UINT fd_count; SOCKET fd_array[FD_SETSIZE]; } fd_set;
@@ -157,6 +198,9 @@ WSAAPI_DECL int __WSAFDIsSet(SOCKET fd, fd_set *set);
 
 /* ---- Winsock 2 extensions (overlapped operations complete at once) ---- */
 typedef struct _WSABUF { ULONG len; CHAR *buf; } WSABUF, *LPWSABUF;
+typedef struct _WSAMSG {
+    struct sockaddr *name; INT namelen; LPWSABUF lpBuffers; ULONG dwBufferCount; WSABUF Control; ULONG dwFlags;
+} WSAMSG, *PWSAMSG, *LPWSAMSG;
 typedef OVERLAPPED WSAOVERLAPPED, *LPWSAOVERLAPPED;
 typedef void (WINAPI *LPWSAOVERLAPPED_COMPLETION_ROUTINE)(DWORD err, DWORD bytes, LPWSAOVERLAPPED ov, DWORD flags);
 typedef HANDLE WSAEVENT;
@@ -192,6 +236,8 @@ WSAAPI_DECL int WSASend(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD sent, DWORD fl
                         LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
 WSAAPI_DECL int WSARecv(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD got, LPDWORD flags, LPWSAOVERLAPPED ov,
                         LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+WSAAPI_DECL int WSASendMsg(SOCKET s, LPWSAMSG msg, DWORD flags, LPDWORD sent, LPWSAOVERLAPPED ov,
+                           LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
 WSAAPI_DECL int WSASendTo(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD sent, DWORD flags, const struct sockaddr *to, int tolen,
                           LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
 WSAAPI_DECL int WSARecvFrom(SOCKET s, LPWSABUF bufs, DWORD n, LPDWORD got, LPDWORD flags, struct sockaddr *from, int *fromlen,

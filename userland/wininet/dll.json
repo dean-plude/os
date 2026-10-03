@@ -1,0 +1,5 @@
+{
+  "deps": ["kernel32", "ntdll"],
+  "base": "0x7FFC90000000",
+  "base_x86": "0x89000000"
+}

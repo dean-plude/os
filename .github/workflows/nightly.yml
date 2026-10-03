@@ -1,6 +1,8 @@
 # Nightly app corpus: boots NovaOS built from main and runs unmodified
 # Windows programs (ripgrep, fd, jq, 7-Zip, MinGit, Python, Node.js,
-# SumatraPDF, WinMerge, Notepad++, PuTTY) with tools/appcorpus.py.  The pass/fail table goes to the run's
+# SumatraPDF, WinMerge, Notepad++, PuTTY; one file each in tests/appcorpus/) with
+# tools/appcorpus.py, then smpstress on 4 CPUs (locking under load: no deadlocks,
+# and how file and registry throughput scale).  The pass/fail table goes to the run's
 # summary and, as a comment, to the "Nightly app corpus" issue (opened on
 # the first run).  Pull requests that change the corpus run it as well.
 name: Nightly app corpus
@@ -10,7 +12,7 @@ on:
     - cron: '17 3 * * *'
   workflow_dispatch:
   pull_request:                 # a change to the corpus itself runs it too (no issue comment)
-    paths: [tools/appcorpus.py, .github/workflows/nightly.yml, tests/reference/**]
+    paths: [tools/appcorpus.py, tests/appcorpus/**, .github/workflows/nightly.yml, tests/reference/**]
 
 permissions:
   contents: read
@@ -32,14 +34,14 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            cmake make nasm clang lld llvm gcc-mingw-w64-x86-64 \
+            cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
             qemu-system-x86 ovmf mtools dosfstools p7zip-full curl python3-pil ntfs-3g
 
       - name: Cache the program downloads
         uses: actions/cache@v4
         with:
           path: appcorpus-cache
-          key: appcorpus-${{ hashFiles('tools/appcorpus.py') }}
+          key: appcorpus-${{ hashFiles('tools/appcorpus.py', 'tests/appcorpus/*.py') }}
 
       - name: Build NovaOS
         run: |
@@ -56,6 +58,25 @@ jobs:
             --summary appcorpus-out/table.md
         continue-on-error: true
 
+      # The target is 3x one CPU's file and registry throughput (Phase 17.7),
+      # but a shared runner may not run the 4 emulated CPUs side by side at
+      # all (bare system calls: 0.6-1x there).  So the run measures
+      # (scaling 0: no fixed target) and fails on a hang or a failed test;
+      # where bare system calls do scale (2x or more), also on files or the
+      # registry scaling less than half as well (work under one big lock
+      # would).  The table records the figures.
+      - name: SMP stress on 4 CPUs
+        id: smp
+        run: |
+          mkdir -p appcorpus-out
+          python3 tools/novarun.py --img build/nova.img --smp 4 --timeout 900 'smpstress scaling 0' \
+            | tee appcorpus-out/smpstress.log
+          { echo; echo '### smpstress on 4 CPUs'; echo; echo '```'
+            grep -E '^  [a-z(].*(x|ms)$|smpstress: [0-9]+ passed|TIMEOUT' appcorpus-out/smpstress.log
+            echo '```'; } > appcorpus-out/smp.md
+          python3 tools/ci/check-smpstress.py appcorpus-out/smpstress.log
+        continue-on-error: true
+
       - name: Post the table
         if: always()
         env:
@@ -64,6 +85,7 @@ jobs:
         run: |
           mkdir -p appcorpus-out
           [ -f appcorpus-out/table.md ] || echo '### NovaOS app corpus: did not run' > appcorpus-out/table.md
+          [ -f appcorpus-out/smp.md ] && cat appcorpus-out/smp.md >> appcorpus-out/table.md
           cat appcorpus-out/table.md >> "$GITHUB_STEP_SUMMARY"
           [ "$GITHUB_EVENT_NAME" != pull_request ] || exit 0
           { cat appcorpus-out/table.md
@@ -87,5 +109,5 @@ jobs:
           if-no-files-found: ignore
 
       - name: Fail when a program failed
-        if: steps.corpus.outcome == 'failure'
+        if: steps.corpus.outcome == 'failure' || steps.smp.outcome == 'failure'
         run: exit 1

@@ -278,6 +278,7 @@ NTSYSAPI NTSTATUS NTAPI NtSuspendThread(HANDLE h, PULONG prev);
 NTSYSAPI NTSTATUS NTAPI NtQueryInformationThread(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret);
 NTSYSAPI NTSTATUS NTAPI NtSetInformationThread(HANDLE h, ULONG cls, PVOID info, ULONG len);
 NTSYSAPI NTSTATUS NTAPI NtQueryInformationProcess(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret);
+NTSYSAPI NTSTATUS NTAPI NtQuerySection(HANDLE h, ULONG cls, PVOID info, SIZE_T len, PSIZE_T ret);
 NTSYSAPI NTSTATUS NTAPI NtCreateEvent(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, EVENT_TYPE type, BOOLEAN state);
 NTSYSAPI NTSTATUS NTAPI NtSetEvent(HANDLE h, PLONG prev);
 NTSYSAPI NTSTATUS NTAPI NtResetEvent(HANDLE h, PLONG prev);
@@ -294,6 +295,8 @@ NTSYSAPI NTSTATUS NTAPI NtOpenSemaphore(PHANDLE h, ULONG access, POBJECT_ATTRIBU
 NTSYSAPI NTSTATUS NTAPI NtCreateSemaphore(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, LONG init, LONG max);
 NTSYSAPI NTSTATUS NTAPI NtReleaseSemaphore(HANDLE h, LONG count, PLONG prev);
 NTSYSAPI NTSTATUS NTAPI NtWaitForSingleObject(HANDLE h, BOOLEAN alertable, PLARGE_INTEGER timeout);
+NTSYSAPI NTSTATUS NTAPI NtWaitForAlertByThreadId(PVOID address, PLARGE_INTEGER timeout);
+NTSYSAPI NTSTATUS NTAPI NtAlertThreadByThreadId(HANDLE tid);
 NTSYSAPI NTSTATUS NTAPI NtWaitForMultipleObjects(ULONG n, const HANDLE *h, WAIT_TYPE type, BOOLEAN alertable,
                                                  PLARGE_INTEGER timeout);
 NTSYSAPI NTSTATUS NTAPI NtCompareObjects(HANDLE first, HANDLE second);
@@ -312,17 +315,17 @@ NTSYSAPI NTSTATUS NTAPI NtNovaFlushView(PVOID base);
 NTSYSAPI NTSTATUS NTAPI NtNovaConsole(HANDLE h, ULONG op, PVOID buf, ULONG len, PULONG res);
 /* Fill buf with len (<= 4096) cryptographically random bytes from the kernel entropy pool */
 NTSYSAPI NTSTATUS NTAPI NtNovaGetRandom(void *buf, ULONG len);
-NTSYSAPI INT_PTR  NTAPI NtNovaSocket(ULONG type);
-NTSYSAPI LONG_PTR NTAPI NtNovaSockConnect(INT_PTR h, ULONG ip, USHORT port);
+NTSYSAPI INT_PTR  NTAPI NtNovaSocket(ULONG type, ULONG family);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockConnect(INT_PTR h, const void *sockaddr, ULONG len);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockSend(INT_PTR h, const void *buf, ULONG len);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockRecv(INT_PTR h, void *buf, ULONG len);
-NTSYSAPI LONG_PTR NTAPI NtNovaSockBind(INT_PTR h, ULONG ip, USHORT port);
+NTSYSAPI LONG_PTR NTAPI NtNovaSockBind(INT_PTR h, const void *sockaddr, ULONG len);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockListen(INT_PTR h, ULONG backlog);
 NTSYSAPI INT_PTR  NTAPI NtNovaSockAccept(INT_PTR h, void *addr);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockSendTo(INT_PTR h, const void *buf, ULONG len, const void *addr);
 NTSYSAPI LONG_PTR NTAPI NtNovaSockRecvFrom(INT_PTR h, void *buf, ULONG len, void *addr);
-NTSYSAPI LONG_PTR NTAPI NtNovaResolve(const char *name, ULONG *ip);
+NTSYSAPI LONG_PTR NTAPI NtNovaResolve(const char *name, void *sockaddrs, ULONG max, ULONG family);
 /* Sound: streams of 48 kHz s16 stereo frames (kernel/um/um_audio.c) */
 NTSYSAPI INT_PTR  NTAPI NtNovaAudioOpen(ULONG frames);
 NTSYSAPI LONG_PTR NTAPI NtNovaAudioWrite(INT_PTR h, const void *frames, ULONG n);
@@ -375,9 +378,14 @@ NTSYSAPI NTSTATUS NTAPI RtlSleepConditionVariableCS(PRTL_CONDITION_VARIABLE cv, 
                                                     PLARGE_INTEGER timeout);
 NTSYSAPI NTSTATUS NTAPI RtlSleepConditionVariableSRW(PRTL_CONDITION_VARIABLE cv, PRTL_SRWLOCK l,
                                                      PLARGE_INTEGER timeout, ULONG flags);
+NTSYSAPI NTSTATUS NTAPI RtlWaitOnAddress(const volatile void *addr, const void *cmp, SIZE_T size, PLARGE_INTEGER timeout);
+NTSYSAPI VOID     NTAPI RtlWakeAddressAll(PVOID addr);
+NTSYSAPI VOID     NTAPI RtlWakeAddressSingle(PVOID addr);
 NTSYSAPI VOID     NTAPI RtlRunOnceInitialize(PRTL_RUN_ONCE once);
 NTSYSAPI NTSTATUS NTAPI RtlRunOnceBeginInitialize(PRTL_RUN_ONCE once, ULONG flags, PVOID *ctx);
 NTSYSAPI NTSTATUS NTAPI RtlRunOnceComplete(PRTL_RUN_ONCE once, ULONG flags, PVOID ctx);
+typedef ULONG (NTAPI *PRTL_RUN_ONCE_INIT_FN)(PRTL_RUN_ONCE, PVOID, PVOID *);
+NTSYSAPI NTSTATUS NTAPI RtlRunOnceExecuteOnce(PRTL_RUN_ONCE once, PRTL_RUN_ONCE_INIT_FN fn, PVOID param, PVOID *ctx);
 
 /* Exceptions */
 NTSYSAPI VOID     NTAPI RtlCaptureContext(PCONTEXT ctx);

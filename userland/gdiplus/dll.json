@@ -1,0 +1,3 @@
+{
+  "deps": ["user32", "gdi32", "msvcrt", "kernel32", "ntdll"]
+}

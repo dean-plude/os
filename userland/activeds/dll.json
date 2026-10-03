@@ -1,0 +1,20 @@
+{
+  "deps": [
+    "kernel32",
+    "ntdll"
+  ],
+  "ordinals": {
+    "ADsGetObject": 3,
+    "ADsBuildEnumerator": 4,
+    "ADsFreeEnumerator": 5,
+    "ADsEnumerateNext": 6,
+    "ADsOpenObject": 9,
+    "ADsSetLastError": 12,
+    "ADsGetLastError": 13,
+    "AllocADsMem": 14,
+    "FreeADsMem": 15,
+    "ReallocADsMem": 16,
+    "AllocADsStr": 17,
+    "FreeADsStr": 18
+  }
+}

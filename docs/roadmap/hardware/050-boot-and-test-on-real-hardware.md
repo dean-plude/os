@@ -1,0 +1,1 @@
+- Boot and test on real hardware, not only QEMU.

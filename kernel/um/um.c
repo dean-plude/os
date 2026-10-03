@@ -25,8 +25,10 @@
  */
 
 #include "../fs/persist.h"
+#include "../fs/drives.h"
 #include "../arch/x86_64/idt.h"
 #include "um_internal.h"
+#include "../ke/syscall.h"
 #include "../ke/scheduler.h"
 #include "../ke/probe.h"
 #include "../ke/printf.h"
@@ -39,6 +41,7 @@
 #include "../arch/x86_64/gdt.h"
 #include "../arch/x86_64/paging.h"
 #include "userland_files.h"
+#include "../gdi/png.h"
 
 static UmProcess     *g_procs[UM_MAX_PROCS];
 static UINT32         g_next_id = 100;
@@ -60,7 +63,16 @@ void um_lock(UmLock *l)
 {
     Thread *me = sched_current();
     if (l->owner == me) { l->depth++; return; }
-    while (__atomic_exchange_n(&l->v, 1, __ATOMIC_ACQUIRE)) sched_yield();
+    /* Held briefly as a rule: spin a while (the holder is likely running
+     * on another CPU) before giving the CPU away — but not holding the big
+     * kernel lock, which the holder may be waiting for (yielding lets it go) */
+    int most = bkl_held() ? 0 : 2000;
+    for (int spins = 0; __atomic_exchange_n(&l->v, 1, __ATOMIC_ACQUIRE); ) {
+        while (__atomic_load_n(&l->v, __ATOMIC_RELAXED)) {
+            if (++spins < most) pause_cpu();
+            else { sched_yield(); spins = 0; }
+        }
+    }
     l->owner = me;
     l->depth = 1;
 }
@@ -72,10 +84,70 @@ void um_unlock(UmLock *l)
     __atomic_store_n(&l->v, 0, __ATOMIC_RELEASE);
 }
 
-/* The desktop lock (recursive for its owner) */
+/* Wait (spin a while, then yield) until @cond holds.  Spinning holding the
+ * big kernel lock too: what is waited for (readers leaving) takes moments,
+ * and a thread that yields here may not run again for a whole time slice,
+ * holding up everyone its taken write lock keeps out. */
+#define UM_WAIT_UNTIL(cond) do { \
+        int most_ = 2000; \
+        for (int spins_ = 0; !(cond); ) { \
+            if (++spins_ < most_) pause_cpu(); \
+            else { sched_yield(); spins_ = 0; } \
+        } \
+    } while (0)
+
+/* Readers count on their CPU's counter (and a thread that moved count down
+ * on another's): the writer waits for the sum to reach 0 */
+static volatile int *my_readers(UmRwLock *l) { return &l->readers[KiGetCurrentKpcr()->CpuNumber % MAX_CPUS].n; }
+
+static int readers_of(UmRwLock *l)
+{
+    int sum = 0;
+    for (int i = 0; i < MAX_CPUS; i++) sum += __atomic_load_n(&l->readers[i].n, __ATOMIC_SEQ_CST);
+    return sum;
+}
+
+void um_lock_excl(UmRwLock *l)
+{
+    um_lock(&l->w);                             /* new readers stay out */
+    if (l->w.depth > 1) return;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    UM_WAIT_UNTIL(readers_of(l) == 0);
+}
+
+void um_unlock_excl(UmRwLock *l) { um_unlock(&l->w); }
+
+void um_lock_shared(UmRwLock *l)
+{
+    if (l->w.owner == sched_current()) { l->w.depth++; return; }   /* the writer */
+    for (;;) {
+        volatile int *r = my_readers(l);
+        __atomic_add_fetch(r, 1, __ATOMIC_SEQ_CST);
+        if (!__atomic_load_n(&l->w.v, __ATOMIC_SEQ_CST)) return;
+        __atomic_sub_fetch(r, 1, __ATOMIC_SEQ_CST);                /* a writer: let it go first */
+        UM_WAIT_UNTIL(!__atomic_load_n(&l->w.v, __ATOMIC_RELAXED));
+    }
+}
+
+void um_unlock_shared(UmRwLock *l)
+{
+    if (l->w.owner == sched_current()) { um_unlock(&l->w); return; }
+    __atomic_sub_fetch(my_readers(l), 1, __ATOMIC_RELEASE);
+}
+
+/* The desktop lock (recursive for its owner), and the file-system lock it
+ * includes: file services take only the latter.  Order: desktop, files,
+ * then a process's lock. */
 static UmLock g_desktop;
-void DesktopLock(void)   { um_lock(&g_desktop); }
-void DesktopUnlock(void) { um_unlock(&g_desktop); }
+static UmRwLock g_fs;
+void DesktopLock(void)   { um_lock(&g_desktop); um_lock_excl(&g_fs); }
+void DesktopUnlock(void) { um_unlock_excl(&g_fs); um_unlock(&g_desktop); }
+void DesktopLockAlone(void)   { um_lock(&g_desktop); }
+void DesktopUnlockAlone(void) { um_unlock(&g_desktop); }
+void FsLock(void)        { um_lock_excl(&g_fs); }
+void FsUnlock(void)      { um_unlock_excl(&g_fs); }
+void FsLockShared(void)  { um_lock_shared(&g_fs); }
+void FsUnlockShared(void) { um_unlock_shared(&g_fs); }
 Thread *DesktopLockOwner(void) { return g_desktop.owner; }
 
 /* KUSER_SHARED_DATA (see below) */
@@ -99,6 +171,14 @@ void UmInit(void)
     /* Install the system DLLs and programs on drive C: */
     int installed = 0;
     RamfsCreate(RamfsRoot(), "Temp", true);
+    /* the profile folders every Windows program can assume exist (%APPDATA%, %LOCALAPPDATA%, ...) */
+    RamfsCreate(RamfsRoot(), "ProgramData", true);
+    RamNode *appdata = RamfsCreate(RamfsRoot(), "AppData", true);
+    if (appdata) {
+        RamfsCreate(appdata, "Roaming", true);
+        RamfsCreate(appdata, "Local", true);
+        RamfsCreate(appdata, "LocalLow", true);
+    }
     RamfsSetMode(RAMFS_INSTALLING);                 /* system files: never saved to disk */
     for (int i = 0; i < g_userland_file_count; i++) {
         const UserlandFile *uf = &g_userland_files[i];
@@ -115,7 +195,16 @@ void UmInit(void)
             d = d ? RamfsCreate(d, part, true) : NULL;
         }
         RamNode *f = d ? RamfsCreate(d, slash + 1, false) : NULL;
-        if (f && RamfsWrite(f, (const char *)uf->data, uf->size)) installed++;
+        if (f && uf->zsize) {                       /* stored compressed (the big ones: ICU, NetSurf) */
+            char *buf = kmalloc(uf->size ? uf->size : 1);
+            if (buf && ZlibInflate(uf->data, uf->zsize, buf, uf->size) == (long)uf->size &&
+                RamfsWriteOwned(f, buf, uf->size))
+                installed++;
+            else {
+                kfree(buf);
+                kprintf("[UM] %s: could not unpack\n", uf->path);
+            }
+        } else if (f && RamfsWrite(f, (const char *)uf->data, uf->size)) installed++;
     }
     kprintf("[UM] User-mode subsystem ready: %d system files installed (C:\\Windows\\System32, C:\\Programs)\n",
             installed);
@@ -345,6 +434,19 @@ bool um_is_committed(UmProcess *p, UINT64 va)
 {
     pte_t *e = walk(p->pml4, va, false);
     return e && (*e & (PTE_PRESENT | PTE_LAZY));
+}
+
+/* The PAGE_* protection a committed page has now (from its entry: a
+ * module's pages each carry their own section's, and VirtualProtect may
+ * have changed single pages); 0 if not committed */
+UINT32 um_page_protect(UmProcess *p, UINT64 va)
+{
+    pte_t *e = walk(p->pml4, va, false);
+    if (!e || !(*e & (PTE_PRESENT | PTE_LAZY))) return 0;
+    pte_t v = *e;
+    bool w = v & PTE_WRITE, x = !(v & PTE_NX);
+    UINT32 prot = x ? (w ? 0x40 : 0x20) : (w ? 0x04 : 0x02);
+    return prot | ((v & PTE_GUARD) ? 0x100 : 0);
 }
 
 bool um_is_guard(UmProcess *p, UINT64 va)
@@ -820,6 +922,7 @@ static void map_api_set(char *lname, int cap)
         { "api-ms-win-crt-",              "ucrtbase.dll" },
         { "api-ms-win-core-synch-",       "kernel32.dll" },
         { "api-ms-win-core-com-",         "ole32.dll" },
+        { "api-ms-win-core-winrt-",       "ole32.dll" },      /* combase: HSTRINGs, activation */
         { "combase.dll",                  "ole32.dll" },
         { "api-ms-win-core-",             "kernel32.dll" },
         { "api-ms-win-security-",         "advapi32.dll" },
@@ -862,7 +965,7 @@ static bool il_only(const UINT8 *f, UINT32 fsz, const UINT8 *sec, int nsec, UINT
 static RamNode *loader_file(Loader *L, RamNode *file, const char *name, char *path, int cap, RamNode **dir)
 {
     UmProcess *p = L->p;
-    if (L->plock) um_unlock(&p->lock);
+    if (L->plock) um_unlock_excl(&p->lock);
     bkl_restore(L->bkl);                    /* the file system still wants it */
     DesktopLock();
     if (!file) file = find_dll(p, name, L->dep_dir);
@@ -875,7 +978,7 @@ static RamNode *loader_file(Loader *L, RamNode *file, const char *name, char *pa
     } else file = NULL;
     DesktopUnlock();
     if (L->bkl) bkl_drop();
-    if (L->plock) um_lock(&p->lock);
+    if (L->plock) um_lock_excl(&p->lock);
     return file;
 }
 
@@ -1141,7 +1244,7 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags)
     L->data = (flags & 0x62) != 0;          /* LOAD_LIBRARY_AS_DATAFILE(_EXCLUSIVE), AS_IMAGE_RESOURCE */
     L->plock = true;                        /* (not the desktop lock: see loader_file) */
     um_lock(&p->ldr_lock);
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     int nmod = p->nmodules, ninit = p->ninit;
     L->bkl = bkl_drop();                    /* copying a large image needs no big lock */
     int m = load_module(L, NULL, name, 1);
@@ -1157,7 +1260,7 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags)
         *base = p->modules[m].base;
         if (!write_ldr_info(p, ninit) || !write_stubs(p)) st = 0xC0000017u;
     }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     L->keep = !st;
     loader_free(L);
     um_unlock(&p->ldr_lock);
@@ -1415,7 +1518,7 @@ static bool setup_environment(UmProcess *p, UINT64 image_base, const char *image
         put_u32(peb + L->peb_platform, 2);                  /* OSPlatformId: NT */
 
         UINT64 pv = p->lay.peb;
-        ok = ok && map_kusd(p) && um_region_add(p, pv, UM_SYS_SIZE, 0x04, false) &&
+        ok = ok && map_kusd(p) && um_region_add(p, pv, UM_SYS_SIZE(p->lay.max_threads), 0x04, false) &&
              um_commit(p, pv, (pva - pv) + UM_PARAMS_PAGES * PAGE_SIZE, 0x04) &&
              um_write(p, pv, peb, PAGE_SIZE) &&
              um_write(p, pva, pp, sz) &&
@@ -1493,11 +1596,11 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
     t->suspend = suspended ? 1 : 0;
     t->stack_size = stack_size;
 
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     int slot = -1;
-    for (int i = 0; i < UM_MAX_THREADS; i++) if (!p->threads[i]) { slot = i; break; }
+    for (int i = 0; i < p->lay.max_threads; i++) if (!p->threads[i]) { slot = i; break; }
     if (slot < 0 || p->kill_pending) {
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         kfree(t); kernel_free_pages(fpu, 1);
         *status = slot < 0 ? 0xC0000059u /* TOO_MANY_THREADS */ : 0xC000010Au /* PROCESS_IS_TERMINATING */;
         return NULL;
@@ -1547,7 +1650,7 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
         }
     }
     if (!ok) {
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         kfree(t); kernel_free_pages(fpu, 1);
         return NULL;
     }
@@ -1572,11 +1675,11 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
         um_decommit(p, t->teb, UM_TEB_SIZE);
         um_decommit(p, t->stack_lo, stack_size);
         um_region_remove(p, um_region_find(p, t->stack_lo));
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         kfree(t); kernel_free_pages(fpu, 1);
         return NULL;
     }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     *status = 0;
     return t;
 }
@@ -1654,6 +1757,7 @@ void um_set_layout(UmProcess *p, bool wow)
     p->lay.alloc_max = wow ? UM32_ALLOC_MAX : UM_ALLOC_MAX;
     p->lay.dll_min = wow ? UM32_DLL_MIN : UM_DLL_MIN;
     p->lay.dll_max = wow ? UM32_DLL_MAX : UM_DLL_MAX;
+    p->lay.max_threads = wow ? UM32_MAX_THREADS : UM_MAX_THREADS;
 }
 
 UmProcess *UmSpawn(RamNode *exe, const char *cmdline, RamNode *cwd, UmConsole *con,
@@ -1780,6 +1884,7 @@ UmProcess *um_spawn_finish(UmProcess *p, RamNode *exe, const char *cmdline, cons
     }
     kprintf("[UM] Started %s (PID %u): %d module(s), entry 0x%llx, %u KB\n", p->name, p->pid,
             p->nmodules, (unsigned long long)entry, p->pages * 4);
+    kprintf("[UM]   command line: %s\n", cmdline ? cmdline : "");
     return p;
 }
 
@@ -1794,7 +1899,7 @@ void um_exit_thread(UINT32 status)
     um_abandon_mutants(p, t);
 
     /* The user stack and TEB go now; the kernel side once off the CPU */
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     UmRegion *r = um_region_find(p, t->stack_lo);
     if (r && r->base == t->stack_lo) {
         um_decommit(p, r->base, r->size);
@@ -1814,7 +1919,7 @@ void um_exit_thread(UINT32 status)
     bool last = p->exited && t->exit_code == status && p->live_threads == 0;
     UINT32 code = p->exit_status;
     ob_unlock(s);
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     um_thread_drop_token(t);
     if (last) kprintf("[UM] %s (PID %u) exited with code %u (0x%x)\n", p->name, p->pid, code, code);
     sched_exit_current();
@@ -1848,6 +1953,11 @@ void UmReturnToUser(void)
         kprintf("[UM] Bug: system call %03x returned holding the desktop lock\n", t->last_sys);
         g_desktop.depth = 1;
         um_unlock(&g_desktop);
+    }
+    if (g_fs.w.owner == sched_current()) {
+        kprintf("[UM] Bug: system call %03x returned holding the file-system lock\n", t->last_sys);
+        g_fs.w.depth = 1;
+        um_unlock(&g_fs.w);
     }
     while (t->suspend > 0 && !um_stopping()) sched_yield();         /* NtSuspendThread */
     if (p->kill_pending) um_exit_thread(p->kill_status);
@@ -1946,9 +2056,16 @@ static void dump_threads(UmProcess *p)
         UmThread *t = p->threads[i];
         if (!t || t->exited) continue;
         UINT64 rip = t->park == 2 && t->uframe ? ((InterruptFrame *)t->uframe)->rip : 0;
-        kprintf("[UM]   thread %u: %s, last system call %03x, user rip %llx\n", t->tid,
+        kprintf("[UM]   thread %u: %s, last system call %03x(%llx), user rip %llx\n", t->tid,
                 t->park == 1 ? "in a system call" : t->park == 2 ? "interrupted" : "running",
-                t->last_sys, (unsigned long long)rip);
+                t->last_sys, (unsigned long long)t->last_a1, (unsigned long long)rip);
+        UINT64 word = 0;
+        if (t->park == 1 && t->last_sys == SYSCALL_NtWaitForAlertByThreadId && um_read(p, t->last_a1, &word, 8))
+            kprintf("[UM]     the address holds %llx\n", (unsigned long long)word);
+        if (t->kt)
+            kprintf("[UM]     kernel: state %d cpu %u on_cpu %d sleeping %d (cpu %u) wake tick %llu, now %llu\n",
+                    (int)t->kt->state, t->kt->cpu, (int)t->kt->on_cpu, (int)t->kt->in_sleepers, t->kt->sleep_cpu,
+                    (unsigned long long)t->kt->wake_tick, (unsigned long long)sched_ticks());
         for (int k = 0; k < t->wait_n && k < 4 && t->wait_objs; k++) {
             UmObject *wo = t->wait_objs[k];
             char nm[96];
@@ -2164,24 +2281,39 @@ static int reap_threads(UmProcess *p)
     return left;
 }
 
+/* Whether a thread of @p has ended (reap_threads has work); a look without
+ * the process lock: threads are added under it, and only taken out here */
+static bool reap_due(UmProcess *p)
+{
+    for (int i = 0; i < UM_MAX_THREADS; i++) {
+        UmThread *t = __atomic_load_n(&p->threads[i], __ATOMIC_ACQUIRE);
+        if (t && t->exited && t->kt && sched_thread_gone(t->kt)) return true;
+    }
+    return false;
+}
+
 void UmSaveAll(void)
 {
     um_registry_flush();
     if (!PersistSync()) kprintf("[PERSIST] Saving drive C: failed\n");
+    if (!DrivesSync()) kprintf("[DRIVES] Writing changed files to the drives failed\n");
 }
 
 void UmPoll(void)
 {
     um_registry_poll();
     PersistPoll();
+    DrivesPoll();
     for (int i = 0; i < UM_MAX_PROCS; i++) {
         UmProcess *p = g_procs[i];
         if (!p) continue;
-        um_lock(&p->lock);
+        if (!p->exited && !reap_due(p)) continue;  /* (most ticks: nothing to do) */
+        um_lock_excl(&p->lock);
         int left = reap_threads(p);
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         if (!p->exited || left) continue;
         if (!p->reclaimed) {
+            FsLock();                           /* (its images and files) */
             um_gui_process_gone(p);
             um_registry_process_gone(p);
             release_images(p);
@@ -2193,6 +2325,7 @@ void UmPoll(void)
             p->pages = 0;
             p->commit = 0;
             p->reclaimed = true;
+            FsUnlock();
         }
         if (p->released) {
             plock(); g_procs[i] = NULL; punlock();

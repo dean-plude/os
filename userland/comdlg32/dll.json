@@ -1,0 +1,5 @@
+{
+  "deps": ["shell32", "comctl32", "user32", "gdi32", "msvcrt", "kernel32", "ntdll"],
+  "base": "0x7FFB10000000",
+  "base_x86": "0x74000000"
+}

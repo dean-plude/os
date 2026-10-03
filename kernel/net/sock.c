@@ -19,11 +19,13 @@
 #include "lwip/priv/tcp_priv.h"      /* tcp_process_refused_data */
 #include "lwip/udp.h"
 #include "lwip/ip_addr.h"
+#include "lwip/ip6_addr.h"
 #include "lwip/pbuf.h"
 
 #define NSOCK        64
 #define RXBUF        (32 * 1024)
 #define ACCEPT_MAX   8
+#define DGRAM_HDR    (2 + (int)sizeof(NetSockAddr))
 
 typedef struct {
     bool          used;
@@ -43,15 +45,13 @@ typedef struct {
     UINT16        unacked;        /* bytes received but not yet tcp_recved */
 
     /* UDP datagram source of the last recvfrom chunk boundary */
-    /* listener accept queue: pending accepted PCBs */
-    struct tcp_pcb *acc[ACCEPT_MAX];
-    UINT32        acc_ip[ACCEPT_MAX];
-    UINT16        acc_port[ACCEPT_MAX];
+    /* listener accept queue: sockets for connections not yet accepted
+     * (they already receive, so a client may send before accept) */
+    int           acc[ACCEPT_MAX];
     volatile int  acc_head, acc_tail;
 
-    UINT32        peer_ip;        /* connected peer / last datagram */
-    UINT16        peer_port;
-    UINT32        local_port;
+    int           family;         /* NET_AF_INET or NET_AF_INET6 */
+    NetSockAddr   peer;           /* connected peer */
 } Sock;
 
 static Sock g_sock[NSOCK];
@@ -84,6 +84,52 @@ static int rx_get(Sock *s, UINT8 *d, int cap)
 static Sock *slot(int s) { return (s >= 0 && s < NSOCK && g_sock[s].used) ? &g_sock[s] : NULL; }
 
 static bool wait_cancel(SockCancelFn c, void *a) { return c && c(a); }
+
+/* -----------------------------------------------------------------------
+ * Addresses.  An IPv6 socket's lwIP PCB takes either family (dual-stack):
+ * an IPv4-mapped address (::ffff:a.b.c.d) is plain IPv4 to lwIP, and IPv4
+ * peers are reported to it mapped.
+ * ----------------------------------------------------------------------- */
+static const UINT8 g_mapped[12] = { 0,0,0,0, 0,0,0,0, 0,0,0xFF,0xFF };
+
+static void to_lwip(const NetSockAddr *a, ip_addr_t *o)
+{
+    NetIp ip = { 0 };
+    if (a->family == NET_AF_INET6 && !memcmp(a->addr, g_mapped, 12)) {
+        memcpy(ip.a, a->addr + 12, 4);
+    } else if (a->family == NET_AF_INET6) {
+        ip.v6 = true;
+        memcpy(ip.a, a->addr, 16);
+    } else {
+        memcpy(ip.a, a->addr, 4);
+    }
+    net_addr_to_lwip(&ip, o);
+}
+
+static void from_lwip(const Sock *s, const ip_addr_t *ip, u16_t port, NetSockAddr *o)
+{
+    NetIp x;
+    net_addr_from_lwip(ip, &x);
+    memset(o, 0, sizeof(*o));
+    o->port_be = lwip_htons(port);
+    if (x.v6) {
+        o->family = NET_AF_INET6;
+        memcpy(o->addr, x.a, 16);
+        if (ip6_addr_islinklocal(ip_2_ip6(ip))) o->scope = 1;     /* (the one interface) */
+    } else if (s && s->family == NET_AF_INET6) {
+        o->family = NET_AF_INET6;
+        memcpy(o->addr, g_mapped, 12);
+        memcpy(o->addr + 12, x.a, 4);
+    } else {
+        o->family = NET_AF_INET;
+        memcpy(o->addr, x.a, 4);
+    }
+}
+
+static bool family_ok(const Sock *s, const NetSockAddr *a)
+{
+    return a->family == s->family || (s->family == NET_AF_INET6 && a->family == NET_AF_INET);
+}
 
 /* -----------------------------------------------------------------------
  * lwIP callbacks (net thread, lock held)
@@ -133,17 +179,36 @@ static err_t tcp_connected_cb(void *arg, struct tcp_pcb *pcb, err_t err)
     return ERR_OK;
 }
 
+static int alloc_slot(void);
+
+static void tcp_callbacks(struct tcp_pcb *pcb, Sock *s)
+{
+    tcp_arg(pcb, s);
+    tcp_err(pcb, tcp_err_cb);
+    tcp_recv(pcb, tcp_recv_cb);
+    tcp_sent(pcb, tcp_sent_cb);
+}
+
+/* A new connection on a listener: its socket is made now, so data the
+ * client sends before accept() waits in its ring instead of being lost */
 static err_t tcp_accept_cb(void *arg, struct tcp_pcb *newpcb, err_t err)
 {
     Sock *s = arg;
     if (!s || err != ERR_OK || !newpcb) return ERR_VAL;
     int next = (s->acc_head + 1) % ACCEPT_MAX;
     if (next == s->acc_tail) return ERR_MEM;                 /* queue full */
+    int ni = alloc_slot();
+    if (ni < 0) return ERR_MEM;
+    Sock *ns = &g_sock[ni];
+    ns->tcp = newpcb;
+    ns->connected = true;
+    ns->family = s->family;
+    from_lwip(s, &newpcb->remote_ip, newpcb->remote_port, &ns->peer);
     tcp_backlog_delayed(newpcb);
-    s->acc[s->acc_head] = newpcb;
-    s->acc_ip[s->acc_head] = ip4_addr_get_u32(ip_2_ip4(&newpcb->remote_ip));
-    s->acc_port[s->acc_head] = lwip_htons(newpcb->remote_port);
+    tcp_callbacks(newpcb, ns);
+    s->acc[s->acc_head] = ni;
     s->acc_head = next;
+    net_wake();
     return ERR_OK;
 }
 
@@ -153,16 +218,15 @@ static void udp_recv_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     Sock *s = arg;
     (void)pcb;
     if (!s || !p) { if (p) pbuf_free(p); return; }
-    /* Datagram framing: 2-byte length, 4-byte ip, 2-byte port, then data */
+    /* Datagram framing: 2-byte length, the source NetSockAddr, then data */
     UINT16 len = p->tot_len;
-    if (rx_used(s) + len + 8 <= RXBUF) {
-        UINT8 hdr[8];
+    if (rx_used(s) + len + DGRAM_HDR <= RXBUF) {
+        UINT8 hdr[DGRAM_HDR];
         hdr[0] = len & 0xFF; hdr[1] = len >> 8;
-        UINT32 ip = ip4_addr_get_u32(ip_2_ip4(addr));
-        memcpy(hdr + 2, &ip, 4);
-        UINT16 pn = lwip_htons(port);
-        memcpy(hdr + 6, &pn, 2);
-        rx_put(s, hdr, 8);
+        NetSockAddr from;
+        from_lwip(s, addr, port, &from);
+        memcpy(hdr + 2, &from, sizeof(from));
+        rx_put(s, hdr, DGRAM_HDR);
         for (struct pbuf *q = p; q; q = q->next) rx_put(s, q->payload, q->len);
     }
     pbuf_free(p);
@@ -184,32 +248,33 @@ static int alloc_slot(void)
     return -SOCK_EMFILE;
 }
 
-int NetSockTcp(void)
+int NetSockTcp(int family)
 {
+    if (family != NET_AF_INET && family != NET_AF_INET6) return -SOCK_EAFNOSUPPORT;
     if (!net_up()) return -SOCK_ENETDOWN;
     net_lock();
     int i = alloc_slot();
     if (i < 0) { net_unlock(); return i; }
     Sock *s = &g_sock[i];
-    s->tcp = tcp_new();
+    s->family = family;
+    s->tcp = tcp_new_ip_type(family == NET_AF_INET6 ? IPADDR_TYPE_ANY : IPADDR_TYPE_V4);
     if (!s->tcp) { s->used = false; net_unlock(); return -SOCK_ENOBUFS; }
-    tcp_arg(s->tcp, s);
-    tcp_err(s->tcp, tcp_err_cb);
-    tcp_recv(s->tcp, tcp_recv_cb);
-    tcp_sent(s->tcp, tcp_sent_cb);
+    tcp_callbacks(s->tcp, s);
     net_unlock();
     return i;
 }
 
-int NetSockUdp(void)
+int NetSockUdp(int family)
 {
+    if (family != NET_AF_INET && family != NET_AF_INET6) return -SOCK_EAFNOSUPPORT;
     if (!net_up()) return -SOCK_ENETDOWN;
     net_lock();
     int i = alloc_slot();
     if (i < 0) { net_unlock(); return i; }
     Sock *s = &g_sock[i];
+    s->family = family;
     s->udp = true;
-    s->udp_pcb = udp_new();
+    s->udp_pcb = udp_new_ip_type(family == NET_AF_INET6 ? IPADDR_TYPE_ANY : IPADDR_TYPE_V4);
     if (!s->udp_pcb) { s->used = false; net_unlock(); return -SOCK_ENOBUFS; }
     udp_recv(s->udp_pcb, udp_recv_cb, s);
     net_unlock();
@@ -219,16 +284,17 @@ int NetSockUdp(void)
 /* -----------------------------------------------------------------------
  * Connect / send / recv
  * ----------------------------------------------------------------------- */
-int NetSockConnect(int sd, UINT32 ip_be, UINT16 port_be, SockCancelFn c, void *ca)
+int NetSockConnect(int sd, const NetSockAddr *to, SockCancelFn c, void *ca)
 {
     net_lock();
     Sock *s = slot(sd);
     if (!s || s->udp) { net_unlock(); return -SOCK_ENOTSOCK; }
     if (s->connected) { net_unlock(); return -SOCK_EISCONN; }
     if (!s->tcp) { net_unlock(); return -SOCK_ENOTCONN; }
-    ip_addr_t ip; ip_addr_set_ip4_u32(&ip, ip_be);
+    if (!family_ok(s, to)) { net_unlock(); return -SOCK_EAFNOSUPPORT; }
+    ip_addr_t ip; to_lwip(to, &ip);
     s->connecting = true;
-    err_t e = tcp_connect(s->tcp, &ip, lwip_htons(port_be), tcp_connected_cb);
+    err_t e = tcp_connect(s->tcp, &ip, lwip_htons(to->port_be), tcp_connected_cb);
     net_unlock();
     if (e != ERR_OK) { s->connecting = false; return -SOCK_ENOBUFS; }
     if (s->nonblock) return -SOCK_EWOULDBLOCK;
@@ -240,7 +306,7 @@ int NetSockConnect(int sd, UINT32 ip_be, UINT16 port_be, SockCancelFn c, void *c
         net_wait(ng);
     }
     if (s->reset || !s->connected) return -SOCK_ECONNREFUSED;
-    s->peer_ip = ip_be; s->peer_port = port_be;
+    from_lwip(s, &ip, lwip_ntohs(to->port_be), &s->peer);
     return 0;
 }
 
@@ -314,35 +380,34 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
 /* -----------------------------------------------------------------------
  * UDP
  * ----------------------------------------------------------------------- */
-int NetSockSendTo(int sd, const void *buf, int len, UINT32 ip_be, UINT16 port_be)
+int NetSockSendTo(int sd, const void *buf, int len, const NetSockAddr *to)
 {
     net_lock();
     Sock *s = slot(sd);
     if (!s || !s->udp || !s->udp_pcb) { net_unlock(); return -SOCK_ENOTSOCK; }
+    if (!family_ok(s, to)) { net_unlock(); return -SOCK_EAFNOSUPPORT; }
     struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, (UINT16)len, PBUF_RAM);
     if (!p) { net_unlock(); return -SOCK_ENOBUFS; }
     pbuf_take(p, buf, (UINT16)len);
-    ip_addr_t ip; ip_addr_set_ip4_u32(&ip, ip_be);
-    err_t e = udp_sendto(s->udp_pcb, p, &ip, lwip_htons(port_be));
+    ip_addr_t ip; to_lwip(to, &ip);
+    err_t e = udp_sendto(s->udp_pcb, p, &ip, lwip_htons(to->port_be));
     pbuf_free(p);
     net_unlock();
     return e == ERR_OK ? len : -SOCK_EHOSTUNREACH;
 }
 
-int NetSockRecvFrom(int sd, void *buf, int len, UINT32 *ip_be, UINT16 *port_be,
-                    SockCancelFn c, void *ca)
+int NetSockRecvFrom(int sd, void *buf, int len, NetSockAddr *from, SockCancelFn c, void *ca)
 {
     Sock *s = slot(sd);
     if (!s || !s->udp) return -SOCK_ENOTSOCK;
     for (;;) {
         UINT32 ng = net_gen();
         net_lock();
-        if (rx_used(s) >= 8) {
-            UINT8 hdr[8];
-            rx_get(s, hdr, 8);
+        if (rx_used(s) >= (UINT32)DGRAM_HDR) {
+            UINT8 hdr[DGRAM_HDR];
+            rx_get(s, hdr, DGRAM_HDR);
             UINT16 dlen = hdr[0] | (hdr[1] << 8);
-            if (ip_be) memcpy(ip_be, hdr + 2, 4);
-            if (port_be) memcpy(port_be, hdr + 6, 2);
+            if (from) memcpy(from, hdr + 2, sizeof(*from));
             int take = dlen < len ? dlen : len;
             int got = rx_get(s, buf, take);
             for (int drop = got; drop < dlen; drop++) { UINT8 t; rx_get(s, &t, 1); }  /* truncate */
@@ -359,16 +424,19 @@ int NetSockRecvFrom(int sd, void *buf, int len, UINT32 *ip_be, UINT16 *port_be,
 /* -----------------------------------------------------------------------
  * Server side
  * ----------------------------------------------------------------------- */
-int NetSockBind(int sd, UINT32 ip_be, UINT16 port_be)
+int NetSockBind(int sd, const NetSockAddr *a)
 {
     net_lock();
     Sock *s = slot(sd);
     if (!s) { net_unlock(); return -SOCK_ENOTSOCK; }
-    ip_addr_t ip; ip_addr_set_ip4_u32(&ip, ip_be);
+    if (!family_ok(s, a)) { net_unlock(); return -SOCK_EAFNOSUPPORT; }
+    static const UINT8 zero[16];
+    ip_addr_t ip;
+    if (s->family == NET_AF_INET6 && !memcmp(a->addr, zero, 16)) ip_addr_copy(ip, *IP_ANY_TYPE);   /* :: takes both families */
+    else to_lwip(a, &ip);
     err_t e;
-    if (s->udp) e = udp_bind(s->udp_pcb, &ip, lwip_htons(port_be));
-    else        e = tcp_bind(s->tcp, &ip, lwip_htons(port_be));
-    s->local_port = port_be;
+    if (s->udp) e = udp_bind(s->udp_pcb, &ip, lwip_htons(a->port_be));
+    else        e = tcp_bind(s->tcp, &ip, lwip_htons(a->port_be));
     net_unlock();
     return e == ERR_OK ? 0 : -SOCK_EADDRINUSE;
 }
@@ -388,7 +456,7 @@ int NetSockListen(int sd, int backlog)
     return 0;
 }
 
-int NetSockAccept(int sd, UINT32 *ip_be, UINT16 *port_be, SockCancelFn c, void *ca)
+int NetSockAccept(int sd, NetSockAddr *peer, SockCancelFn c, void *ca)
 {
     Sock *s = slot(sd);
     if (!s || !s->listening) return -SOCK_ENOTSOCK;
@@ -396,24 +464,12 @@ int NetSockAccept(int sd, UINT32 *ip_be, UINT16 *port_be, SockCancelFn c, void *
         UINT32 ng = net_gen();
         net_lock();
         if (s->acc_tail != s->acc_head) {
-            struct tcp_pcb *pcb = s->acc[s->acc_tail];
-            UINT32 rip = s->acc_ip[s->acc_tail];
-            UINT16 rport = s->acc_port[s->acc_tail];
+            int ni = s->acc[s->acc_tail];
             s->acc_tail = (s->acc_tail + 1) % ACCEPT_MAX;
-            int ni = alloc_slot();
-            if (ni < 0) { tcp_abort(pcb); net_unlock(); return ni; }
             Sock *ns = &g_sock[ni];
-            ns->tcp = pcb;
-            ns->connected = true;
-            ns->peer_ip = rip;
-            ns->peer_port = rport;
-            tcp_backlog_accepted(pcb);
-            tcp_arg(pcb, ns);
-            tcp_err(pcb, tcp_err_cb);
-            tcp_recv(pcb, tcp_recv_cb);
-            tcp_sent(pcb, tcp_sent_cb);
-            if (ip_be) *ip_be = rip;
-            if (port_be) *port_be = rport;
+            if (ns->tcp) tcp_backlog_accepted(ns->tcp);
+            ns->nonblock = s->nonblock;               /* as on Windows: the listener's mode is inherited */
+            if (peer) *peer = ns->peer;
             net_unlock();
             return ni;
         }
@@ -435,46 +491,57 @@ int NetSockShutdown(int sd, int how)
     return 0;
 }
 
-void NetSockClose(int sd)
+static void close_locked(Sock *s)
 {
-    net_lock();
-    Sock *s = slot(sd);
-    if (!s) { net_unlock(); return; }
     if (s->udp && s->udp_pcb) udp_remove(s->udp_pcb);
     if (!s->udp && s->tcp) {
         tcp_arg(s->tcp, NULL);
-        tcp_recv(s->tcp, NULL);
-        tcp_sent(s->tcp, NULL);
-        tcp_err(s->tcp, NULL);
+        if (s->listening) tcp_accept(s->tcp, NULL);         /* (a listener has no recv/sent/err) */
+        else { tcp_recv(s->tcp, NULL); tcp_sent(s->tcp, NULL); tcp_err(s->tcp, NULL); }
         if (tcp_close(s->tcp) != ERR_OK) tcp_abort(s->tcp);
     }
     /* Drop any queued, not-yet-accepted connections */
     while (s->acc_tail != s->acc_head) {
-        tcp_abort(s->acc[s->acc_tail]);
+        Sock *ps = &g_sock[s->acc[s->acc_tail]];
         s->acc_tail = (s->acc_tail + 1) % ACCEPT_MAX;
+        if (ps->tcp) { tcp_arg(ps->tcp, NULL); tcp_err(ps->tcp, NULL); tcp_abort(ps->tcp); ps->tcp = NULL; }
+        close_locked(ps);
     }
     if (s->rx) { kfree(s->rx); s->rx = NULL; }
     s->used = false;
+}
+
+void NetSockClose(int sd)
+{
+    net_lock();
+    Sock *s = slot(sd);
+    if (s) close_locked(s);
     net_unlock();
 }
 
 void NetSockSetNonblock(int sd, bool nb) { Sock *s = slot(sd); if (s) s->nonblock = nb; }
 
-int NetSockLocalName(int sd, UINT32 *ip_be, UINT16 *port_be)
+int NetSockLocalName(int sd, NetSockAddr *out)
 {
+    net_lock();
     Sock *s = slot(sd);
-    if (!s) return -SOCK_ENOTSOCK;
-    if (ip_be) *ip_be = 0;
-    if (port_be) *port_be = s->local_port;
+    if (!s) { net_unlock(); return -SOCK_ENOTSOCK; }
+    if (s->udp && s->udp_pcb)  from_lwip(s, &s->udp_pcb->local_ip, s->udp_pcb->local_port, out);
+    else if (s->tcp)           from_lwip(s, &s->tcp->local_ip, s->tcp->local_port, out);
+    else { memset(out, 0, sizeof(*out)); out->family = (UINT16)s->family; }
+    if (out->family == NET_AF_INET6 && s->family == NET_AF_INET) out->family = NET_AF_INET;
+    if (s->family == NET_AF_INET6 && out->family == NET_AF_INET6 && !memcmp(out->addr, g_mapped, 12) &&
+        !out->addr[12] && !out->addr[13] && !out->addr[14] && !out->addr[15])
+        memset(out->addr, 0, 16);                         /* unbound: ::, not ::ffff:0.0.0.0 */
+    net_unlock();
     return 0;
 }
 
-int NetSockPeerName(int sd, UINT32 *ip_be, UINT16 *port_be)
+int NetSockPeerName(int sd, NetSockAddr *out)
 {
     Sock *s = slot(sd);
     if (!s || !s->connected) return -SOCK_ENOTCONN;
-    if (ip_be) *ip_be = s->peer_ip;
-    if (port_be) *port_be = s->peer_port;
+    *out = s->peer;
     return 0;
 }
 

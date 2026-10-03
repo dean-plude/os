@@ -183,22 +183,6 @@ GDIAPI BOOL ScaleWindowExtEx(HDC h, int xn, int xd, int yn, int yd, LPSIZE old)
 GDIAPI DWORD GetLayout(HDC h) { (void)h; return 0; }                  /* left to right */
 GDIAPI int GetPolyFillMode(HDC h) { (void)h; return 1; }              /* ALTERNATE */
 GDIAPI int GetStretchBltMode(HDC h) { (void)h; return 1; }            /* BLACKONWHITE */
-GDIAPI int GetGraphicsMode(HDC h) { (void)h; return 1; }              /* GM_COMPATIBLE */
-/* world transforms: only the identity is drawn as asked */
-GDIAPI BOOL SetWorldTransform(HDC h, const XFORM *x)
-{
-    (void)h;
-    return x && x->eM11 == 1 && x->eM12 == 0 && x->eM21 == 0 && x->eM22 == 1 && x->eDx == 0 && x->eDy == 0;
-}
-GDIAPI BOOL GetWorldTransform(HDC h, XFORM *x)
-{
-    (void)h;
-    if (!x) return FALSE;
-    x->eM11 = x->eM22 = 1;
-    x->eM12 = x->eM21 = x->eDx = x->eDy = 0;
-    return TRUE;
-}
-GDIAPI BOOL ModifyWorldTransform(HDC h, const XFORM *x, DWORD mode) { (void)h; (void)x; return mode == 1; }   /* MWT_IDENTITY */
 
 /* printer escapes: none are supported (QUERYESCSUPPORT says so) */
 GDIAPI int Escape(HDC h, int code, int n, LPCSTR in, LPVOID out) { (void)h; (void)code; (void)n; (void)in; (void)out; return 0; }
@@ -235,9 +219,6 @@ GDIAPI BOOL UnrealizeObject(HGDIOBJ h) { return obj_of(h) != NULL; }
 GDIAPI BOOL UpdateColors(HDC h) { return dc_of(h) != NULL; }
 GDIAPI BOOL ResizePalette(HPALETTE pal, UINT n) { (void)n; return obj_of(pal) != NULL; }
 
-/* outline (TrueType) metrics aren't kept per font: callers fall back to GetTextMetrics */
-GDIAPI UINT GetOutlineTextMetricsA(HDC h, UINT n, void *otm) { (void)h; (void)n; (void)otm; return 0; }
-GDIAPI UINT GetOutlineTextMetricsW(HDC h, UINT n, void *otm) { (void)h; (void)n; (void)otm; return 0; }
 GDIAPI BOOL GetCharABCWidthsFloatA(HDC h, UINT first, UINT last, void *out)
 {
     BOOL WINAPI GetCharABCWidthsFloatW(HDC, UINT, UINT, void *);
@@ -266,3 +247,60 @@ GDIAPI BOOL TranslateCharsetInfo(DWORD *src, LPCHARSETINFO cs, DWORD flags)
     }
     return FALSE;
 }
+
+/* -----------------------------------------------------------------------
+ * Paths, world transforms and region data: what Firefox reaches for
+ * (native theme drawing and printing).  Paths are not drawn (there is no
+ * path rasterizer), so a path bracket succeeds and filling or stroking
+ * it draws nothing; the transform is always the identity (MM_TEXT).
+ * ----------------------------------------------------------------------- */
+GDIAPI BOOL BeginPath(HDC h) { return h != 0; }
+GDIAPI BOOL EndPath(HDC h) { return h != 0; }
+GDIAPI BOOL AbortPath(HDC h) { return h != 0; }
+GDIAPI BOOL CloseFigure(HDC h) { return h != 0; }
+GDIAPI BOOL FillPath(HDC h) { return h != 0; }
+GDIAPI BOOL StrokePath(HDC h) { return h != 0; }
+GDIAPI BOOL StrokeAndFillPath(HDC h) { return h != 0; }
+GDIAPI BOOL WidenPath(HDC h) { return h != 0; }
+GDIAPI BOOL FlattenPath(HDC h) { return h != 0; }
+GDIAPI BOOL SelectClipPath(HDC h, int mode) { (void)mode; return h != 0; }
+GDIAPI BOOL PolyBezierTo(HDC h, const POINT *p, DWORD n)
+{
+    for (DWORD i = 2; i < n; i += 3) LineTo(h, p[i].x, p[i].y);    /* through the end points */
+    return TRUE;
+}
+GDIAPI BOOL SetMiterLimit(HDC h, float limit, float * old) { (void)h; (void)limit; if (old) *old = 10.0f; return TRUE; }
+GDIAPI BOOL GetMiterLimit(HDC h, float * limit) { (void)h; if (limit) *limit = 10.0f; return TRUE; }
+
+
+/* RGNDATA: regions are their bounding rectangle (ExtCreateRegion is in
+ * gdi32.c, the world transform calls too, and the outline metrics and
+ * Unicode ranges in text.c) */
+typedef struct { DWORD dwSize, iType, nCount, nRgnSize; RECT rcBound; } RGNDATAHEADER_;
+GDIAPI DWORD GetRegionData(HRGN rgn, DWORD n, RGNDATAHEADER_ *out)
+{
+    RECT r;
+    if (!GetRgnBox(rgn, &r)) return 0;
+    int empty = r.right <= r.left || r.bottom <= r.top;
+    DWORD need = (DWORD)sizeof(RGNDATAHEADER_) + (empty ? 0 : (DWORD)sizeof(RECT));
+    if (!out) return need;
+    if (n < need) return 0;
+    out->dwSize = sizeof(RGNDATAHEADER_);
+    out->iType = 1;                                 /* RDH_RECTANGLES */
+    out->nCount = empty ? 0 : 1;
+    out->nRgnSize = empty ? 0 : sizeof(RECT);
+    out->rcBound = r;
+    if (!empty) memcpy(out + 1, &r, sizeof(RECT));
+    return need;
+}
+/* The system (visible) region: not tracked, so none (0) */
+GDIAPI int GetRandomRgn(HDC h, HRGN rgn, INT which) { (void)h; (void)rgn; (void)which; return 0; }
+
+/* Driver escapes: none are supported (0) */
+GDIAPI int ExtEscape(HDC h, int esc, int nin, LPCSTR in, int nout, LPSTR out) { (void)h; (void)esc; (void)nin; (void)in; (void)nout; (void)out; return 0; }
+
+/* Color management: no ICC profiles installed */
+GDIAPI BOOL GetICMProfileW(HDC h, LPDWORD n, LPWSTR name) { (void)h; (void)n; (void)name; return FALSE; }
+GDIAPI BOOL GetICMProfileA(HDC h, LPDWORD n, LPSTR name) { (void)h; (void)n; (void)name; return FALSE; }
+
+

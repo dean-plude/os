@@ -22,6 +22,45 @@
 
 static bool sock_cancel(void *arg) { (void)arg; return um_stopping(); }
 
+/* Programs' socket addresses are Winsock's: SOCKADDR_IN (16 bytes) or
+ * SOCKADDR_IN6 (28: family, port, flow info, address, scope id) */
+#define SA_MAX 28
+
+static int sa_from_user(UINT64 uptr, UINT64 len, NetSockAddr *out)
+{
+    UINT8 b[SA_MAX] = { 0 };
+    if (!uptr || len < 16) return -SOCK_EFAULT;
+    if (!NT_SUCCESS(CopyFromUser(b, (const void *)(uintptr_t)uptr, len < SA_MAX ? (UINT32)len : SA_MAX)))
+        return -SOCK_EFAULT;
+    memset(out, 0, sizeof(*out));
+    memcpy(&out->family, b, 2);
+    memcpy(&out->port_be, b + 2, 2);
+    if (out->family == NET_AF_INET) { memcpy(out->addr, b + 4, 4); return 0; }
+    if (out->family == NET_AF_INET6) {
+        if (len < SA_MAX) return -SOCK_EFAULT;
+        memcpy(out->addr, b + 8, 16);
+        memcpy(&out->scope, b + 24, 4);
+        return 0;
+    }
+    return -SOCK_EAFNOSUPPORT;
+}
+
+static void sa_to_bytes(const NetSockAddr *a, UINT8 b[SA_MAX])
+{
+    memset(b, 0, SA_MAX);
+    memcpy(b, &a->family, 2);
+    memcpy(b + 2, &a->port_be, 2);
+    if (a->family == NET_AF_INET6) { memcpy(b + 8, a->addr, 16); memcpy(b + 24, &a->scope, 4); }
+    else memcpy(b + 4, a->addr, 4);
+}
+
+static bool sa_to_user(UINT64 uptr, const NetSockAddr *a)
+{
+    UINT8 b[SA_MAX];
+    sa_to_bytes(a, b);
+    return uptr && NT_SUCCESS(CopyToUser((void *)(uintptr_t)uptr, b, SA_MAX));
+}
+
 static void sock_destroy(UmObject *o) { NetSockClose(o->sock); }
 
 static int handle_sock(UmProcess *p, UINT64 h)
@@ -33,12 +72,14 @@ static int handle_sock(UmProcess *p, UINT64 h)
     return s;
 }
 
-/* NtNovaSocket(type): 0 = TCP, 1 = UDP.  Returns a handle, or 0 on error. */
+/* NtNovaSocket(type, family): type 0 = TCP, 1 = UDP; family AF_INET (2,
+ * also for 0) or AF_INET6 (23).  Returns a handle, or 0 on error. */
 static UINT64 sys_socket(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a2; (void)a3; (void)a4;
+    (void)a3; (void)a4;
     UmProcess *p = UmCurrent();
-    int s = a1 == 1 ? NetSockUdp() : NetSockTcp();
+    int fam = a2 ? (int)a2 : NET_AF_INET;
+    int s = a1 == 1 ? NetSockUdp(fam) : NetSockTcp(fam);
     if (s < 0) return 0;
     UmObject *o = kzalloc(sizeof(*o));
     if (!o) { NetSockClose(s); return 0; }
@@ -51,12 +92,16 @@ static UINT64 sys_socket(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return hv;                                   /* 0 if the table was full */
 }
 
+/* NtNovaSockConnect(h, sockaddr, length) */
 static UINT64 sys_connect(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a4;
     int s = handle_sock(UmCurrent(), a1);
     if (s < 0) return (UINT64)(INT64)-SOCK_ENOTSOCK;
-    return (UINT64)(INT64)NetSockConnect(s, (UINT32)a2, (UINT16)a3, sock_cancel, NULL);
+    NetSockAddr to;
+    int r = sa_from_user(a2, a3, &to);
+    if (r < 0) return (UINT64)(INT64)r;
+    return (UINT64)(INT64)NetSockConnect(s, &to, sock_cancel, NULL);
 }
 
 static UINT64 sys_send(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -102,7 +147,10 @@ static UINT64 sys_bind(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     (void)a4;
     int s = handle_sock(UmCurrent(), a1);
     if (s < 0) return (UINT64)(INT64)-SOCK_ENOTSOCK;
-    return (UINT64)(INT64)NetSockBind(s, (UINT32)a2, (UINT16)a3);
+    NetSockAddr a;
+    int r = sa_from_user(a2, a3, &a);
+    if (r < 0) return (UINT64)(INT64)r;
+    return (UINT64)(INT64)NetSockBind(s, &a);
 }
 
 static UINT64 sys_listen(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -113,22 +161,22 @@ static UINT64 sys_listen(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return (UINT64)(INT64)NetSockListen(s, (int)a2);
 }
 
-/* NtNovaSockAccept(h, PVOID addr_out[ip;port]).  Returns a new handle, or 0. */
+/* NtNovaSockAccept(h, PVOID addr_out[28]).  Returns a new handle, or 0. */
 static UINT64 sys_accept(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
     UmProcess *p = UmCurrent();
     int s = handle_sock(p, a1);
     if (s < 0) return 0;
-    UINT32 ip = 0; UINT16 port = 0;
-    int ns = NetSockAccept(s, &ip, &port, sock_cancel, NULL);
+    NetSockAddr peer;
+    int ns = NetSockAccept(s, &peer, sock_cancel, NULL);
     if (ns < 0) return 0;
     UmObject *o = kzalloc(sizeof(*o));
     if (!o) { NetSockClose(ns); return 0; }
     o->type = UO_SOCKET; o->refs = 1; o->sock = ns; o->destroy = sock_destroy;
     UINT64 hv = um_handle_new_object(p, o);
     um_ob_unref(o);
-    if (hv && a2) { UINT8 sa[8]; memcpy(sa, &ip, 4); memcpy(sa + 4, &port, 2); CopyToUser((void *)(uintptr_t)a2, sa, 8); }
+    if (hv && a2) sa_to_user(a2, &peer);
     return hv;
 }
 
@@ -148,16 +196,15 @@ static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     int s = handle_sock(UmCurrent(), a1);
     if (s < 0) return (UINT64)(INT64)-SOCK_ENOTSOCK;
-    UINT32 ip; UINT16 port;
+    NetSockAddr na;
     switch (a2) {
     case 0: NetSockSetNonblock(s, a3 != 0); return 0;
     case 1: return (UINT64)(INT64)NetSockShutdown(s, (int)a3);
     case 2:
     case 3: {
-        int r = a2 == 2 ? NetSockPeerName(s, &ip, &port) : NetSockLocalName(s, &ip, &port);
+        int r = a2 == 2 ? NetSockPeerName(s, &na) : NetSockLocalName(s, &na);
         if (r < 0) return (UINT64)(INT64)r;
-        UINT8 sa[8]; memcpy(sa, &ip, 4); memcpy(sa + 4, &port, 2);
-        return a4 && NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, sa, 8)) ? 0 : (UINT64)(INT64)-SOCK_EFAULT;
+        return sa_to_user(a4, &na) ? 0 : (UINT64)(INT64)-SOCK_EFAULT;
     }
     case 7: {                                               /* bytes waiting (bit 31: the peer closed; bit 30: listening) */
         if (NetSockListening(s)) return 0x40000000u;
@@ -193,13 +240,13 @@ static UINT64 sys_sendto(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (s < 0) return (UINT64)(INT64)-SOCK_ENOTSOCK;
     int len = (int)a3;
     if (len > BOUNCE) len = BOUNCE;
-    UINT8 sa[8];
-    if (!a4 || !NT_SUCCESS(CopyFromUser(sa, (const void *)(uintptr_t)a4, 8))) return (UINT64)(INT64)-SOCK_EFAULT;
-    UINT32 ip; UINT16 port; memcpy(&ip, sa, 4); memcpy(&port, sa + 4, 2);
+    NetSockAddr to;
+    int e = sa_from_user(a4, SA_MAX, &to);                  /* (ws2_32 passes a full 28 bytes) */
+    if (e < 0) return (UINT64)(INT64)e;
     UINT8 *tmp = kmalloc(BOUNCE);
     if (!tmp) return (UINT64)(INT64)-SOCK_ENOBUFS;
     int r = NT_SUCCESS(CopyFromUser(tmp, (const void *)(uintptr_t)a2, len))
-            ? NetSockSendTo(s, tmp, len, ip, port) : -SOCK_EFAULT;
+            ? NetSockSendTo(s, tmp, len, &to) : -SOCK_EFAULT;
     kfree(tmp);
     return (UINT64)(INT64)r;
 }
@@ -212,41 +259,64 @@ static UINT64 sys_recvfrom(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (len > BOUNCE) len = BOUNCE;
     UINT8 *tmp = kmalloc(BOUNCE);
     if (!tmp) return (UINT64)(INT64)-SOCK_ENOBUFS;
-    UINT32 ip = 0; UINT16 port = 0;
-    int n = NetSockRecvFrom(s, tmp, len, &ip, &port, sock_cancel, NULL);
+    NetSockAddr from;
+    int n = NetSockRecvFrom(s, tmp, len, &from, sock_cancel, NULL);
     if (n >= 0) {
         if (n && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, tmp, n))) n = -SOCK_EFAULT;
-        else if (a4) { UINT8 sa[8]; memcpy(sa, &ip, 4); memcpy(sa + 4, &port, 2); CopyToUser((void *)(uintptr_t)a4, sa, 8); }
+        else if (a4) sa_to_user(a4, &from);
     }
     kfree(tmp);
     return (UINT64)(INT64)n;
 }
 
-/* NtNovaResolve(name, ip_out): host name → IPv4 (network order).  0 or -err. */
-static UINT64 sys_resolve(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+/* One lookup; true with *out set, false with *err */
+static bool resolve_one(const char *name, int family, NetIp *out, int *err)
 {
-    (void)a3; (void)a4;
-    char name[256];
-    if (!NT_SUCCESS(CopyStringFromUser(name, sizeof(name), (const char *)(uintptr_t)a1)))
-        return (UINT64)(INT64)-SOCK_EFAULT;
-    NetOp *op = NetResolve(name);
-    if (!op) return (UINT64)(INT64)-SOCK_ENOBUFS;
+    NetOp *op = NetResolveEx(name, family);
+    if (!op) { *err = -SOCK_ENOBUFS; return false; }
     UINT64 deadline = sched_ticks() + 1000;
     for (;;) {
         UINT32 ng = net_gen();
         if (op->state != NET_PENDING) break;
-        if (um_stopping() || sched_ticks() > deadline) { NetRelease(op); return (UINT64)(INT64)-SOCK_ETIMEDOUT; }
+        if (um_stopping() || sched_ticks() > deadline) { NetRelease(op); *err = -SOCK_ETIMEDOUT; return false; }
         net_wait(ng);
     }
-    int r;
-    if (op->state == NET_DONE) {
-        UINT32 ip = op->ip;
-        r = a2 && NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, &ip, 4)) ? 0 : -SOCK_EFAULT;
-    } else {
-        r = -SOCK_EHOSTUNREACH;
-    }
+    bool ok = op->state == NET_DONE;
+    if (ok) *out = op->addr;
+    else *err = -SOCK_EHOSTUNREACH;
     NetRelease(op);
-    return (UINT64)(INT64)r;
+    return ok;
+}
+
+/* NtNovaResolve(name, sockaddrs_out, max, family): host name → up to @max
+ * 28-byte socket addresses (port 0): family 2 or 23 for only that one; 0
+ * for IPv6 then IPv4 when the interface has a global IPv6 address, else
+ * IPv4 only.  Returns the count, or -err. */
+static UINT64 sys_resolve(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    char name[256];
+    if (!NT_SUCCESS(CopyStringFromUser(name, sizeof(name), (const char *)(uintptr_t)a1)))
+        return (UINT64)(INT64)-SOCK_EFAULT;
+    int max = (int)a3, fam = (int)a4, n = 0, err = -SOCK_EHOSTUNREACH;
+    if (max < 1) max = 1;
+    int order[2] = { 4, 0 };                     /* (AAAA only with IPv6 to use, as Windows) */
+    if (fam == NET_AF_INET) order[1] = 0;
+    else if (fam == NET_AF_INET6) { order[0] = 6; order[1] = 0; }
+    else if (NetHasIp6()) { order[0] = 6; order[1] = 4; }
+    for (int i = 0; i < 2 && order[i] && n < max; i++) {
+        NetIp ip;
+        if (!resolve_one(name, order[i], &ip, &err)) {
+            if (err == -SOCK_ETIMEDOUT && um_stopping()) break;
+            continue;
+        }
+        NetSockAddr sa = { 0 };
+        sa.family = ip.v6 ? NET_AF_INET6 : NET_AF_INET;
+        memcpy(sa.addr, ip.a, ip.v6 ? 16 : 4);
+        if (ip.v6 && ip.a[0] == 0xFE && (ip.a[1] & 0xC0) == 0x80) sa.scope = 1;
+        if (!sa_to_user(a2 + (UINT64)n * SA_MAX, &sa)) return (UINT64)(INT64)-SOCK_EFAULT;
+        n++;
+    }
+    return n ? (UINT64)n : (UINT64)(INT64)err;
 }
 
 void um_socket_syscalls_init(void)

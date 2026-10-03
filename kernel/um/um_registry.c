@@ -68,7 +68,16 @@ typedef struct RegKey {
 } RegKey;
 
 static RegKey *g_root;
-static UmLock g_reg;
+/* g_reg: the tree (keys, their names and children), exclusive to change
+ * it.  A key's values are changed and read under its own lock as well, so
+ * setting and reading values, opening keys and enumerating take g_reg
+ * shared.  Watches have a lock of their own.  Order: g_reg, a key's lock,
+ * g_wlock. */
+static UmRwLock g_reg;
+static UmLock g_wlock;
+#define KEY_LOCKS 64
+static UmLock g_key_lock[KEY_LOCKS];
+static UmLock *key_lock(const RegKey *k) { return &g_key_lock[((uintptr_t)k / 64) % KEY_LOCKS]; }
 static volatile bool g_dirty;
 static UINT64 g_dirty_ticks;
 
@@ -147,7 +156,7 @@ static void free_value(RegValue *v) { kfree(v->name); kfree(v->data); kfree(v); 
 
 static void key_unref(RegKey *k)
 {
-    if (!k || --k->refs > 0) return;
+    if (!k || __atomic_sub_fetch(&k->refs, 1, __ATOMIC_ACQ_REL) > 0) return;
     for (RegValue *v = k->values, *n; v; v = n) { n = v->next; free_value(v); }
     kfree(k->name);
     kfree(k);
@@ -180,6 +189,14 @@ static RegValue *find_value(RegKey *k, const UINT16 *name, UINT32 n)
 
 static bool set_value(RegKey *k, const UINT16 *name, UINT32 n, UINT32 type, const void *data, UINT32 len)
 {
+    RegValue *same = find_value(k, name, n);
+    if (same && same->len == len && len) {                  /* the same size: in place */
+        memcpy(same->data, data, len);
+        same->type = type;
+        touch(k);
+        notify(k, CHANGE_LAST_SET);
+        return true;
+    }
     UINT8 *copy = len ? kmalloc(len) : NULL;
     if (len && !copy) return false;
     if (len) memcpy(copy, data, len);
@@ -307,18 +324,37 @@ static void add_cpus(UINT32 n)
 /* Once the other processors are running */
 void um_registry_add_cpus(UINT32 n)
 {
-    um_lock(&g_reg);
+    um_lock_excl(&g_reg);
     add_cpus(n);
-    um_unlock(&g_reg);
+    um_unlock_excl(&g_reg);
 }
 
 /* Set a REG_DWORD from the kernel (an installer's registration): @path
  * from the root, e.g. "Machine\\SOFTWARE\\...", the key created if need be */
 void um_registry_set_dword(const char *path, const char *name, UINT32 val)
 {
-    um_lock(&g_reg);
+    um_lock_excl(&g_reg);
     kset_dword(kpath(path, false), name, val);
-    um_unlock(&g_reg);
+    um_unlock_excl(&g_reg);
+}
+
+/* Read a REG_DWORD from the kernel: false when the key or value is
+ * missing or not a DWORD */
+bool um_registry_get_dword(const char *path, const char *name, UINT32 *out)
+{
+    UINT16 w[256], nm[128];
+    UINT32 n = 0, m = 0;
+    for (; path[n] && n < 255; n++) w[n] = (UINT8)path[n];
+    for (; name[m] && m < 127; m++) nm[m] = (UINT8)name[m];
+    bool ok = false;
+    um_lock_shared(&g_reg);
+    RegKey *k = NULL;
+    if (walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) {
+        RegValue *v = find_value(k, nm, m);
+        if (v && v->type == 4 /* REG_DWORD */ && v->len == 4) { memcpy(out, v->data, 4); ok = true; }
+    }
+    um_unlock_shared(&g_reg);
+    return ok;
 }
 
 static void defaults(void)
@@ -372,6 +408,12 @@ static void defaults(void)
         RegKey *ip = kpath(k, false);
         if (!has_value(ip, "")) { kset_sz(ip, "", "comdlg32.dll", 1); kset_sz(ip, "ThreadingModel", "Apartment", 1); }
     }
+
+    /* internet shortcuts (.url files): shell32's InternetShortcut class */
+    RegKey *is = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{FBF23B40-E3F0-101B-8488-00AA003E56F8}\\InprocServer32", false);
+    if (!has_value(is, "")) { kset_sz(is, "", "shell32.dll", 1); kset_sz(is, "ThreadingModel", "Apartment", 1); }
+    RegKey *isc = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{FBF23B40-E3F0-101B-8488-00AA003E56F8}", false);
+    if (!has_value(isc, "")) kset_sz(isc, "", "Internet Shortcut", 1);
     /* the audio endpoints (mmdevapi's MMDeviceEnumerator) */
     RegKey *mmd = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{BCDE0395-E52F-467C-8E3D-C4579291692E}\\InprocServer32", false);
     if (!has_value(mmd, "")) { kset_sz(mmd, "", "mmdevapi.dll", 1); kset_sz(mmd, "ThreadingModel", "Both", 1); }
@@ -546,17 +588,20 @@ void um_registry_poll(void)
     release_spent();
     if (!g_dirty || sched_ticks() - g_dirty_ticks < 100) return;
     Buf b = { 0 };
-    um_lock(&g_reg);
+    um_lock_excl(&g_reg);
     g_dirty = false;
     put(&b, "NOVAREG1", 8);
     save_key(&b, g_root, 0);
     put(&b, "E", 1);
-    um_unlock(&g_reg);
+    um_unlock_excl(&g_reg);
     if (b.bad) { kprintf("[REG] The registry is too large to save\n"); kfree(b.p); return; }
+    FsLock();
     RamNode *dir = RamfsResolve(NULL, "\\Windows\\System32");
     RamNode *cfg = dir ? RamfsCreate(dir, "config", true) : NULL;
     RamNode *f = cfg ? RamfsCreate(cfg, "REGISTRY.DAT", false) : NULL;
-    if (!f || !RamfsWrite(f, (const char *)b.p, b.n)) kprintf("[REG] Saving the registry failed\n");
+    bool ok = f && RamfsWrite(f, (const char *)b.p, b.n);
+    FsUnlock();
+    if (!ok) kprintf("[REG] Saving the registry failed\n");
     kfree(b.p);
 }
 
@@ -589,9 +634,9 @@ void um_registry_init(void)
  * ----------------------------------------------------------------------- */
 static void key_ob_destroy(UmObject *o)
 {
-    um_lock(&g_reg);
+    um_lock_shared(&g_reg);                                 /* (the last reference: a deleted key's) */
     key_unref((RegKey *)o->ptr);
-    um_unlock(&g_reg);
+    um_unlock_shared(&g_reg);
 }
 
 /* Lock order: a process's handle lock, then g_reg (closing a key handle
@@ -599,12 +644,13 @@ static void key_ob_destroy(UmObject *o)
 static UINT64 new_key_handle(UmProcess *p, RegKey *k)
 {
     UmObject *o = kzalloc(sizeof(*o));
-    if (!o) { um_lock(&g_reg); key_unref(k); um_unlock(&g_reg); return 0; }
+    if (!o) { um_lock_shared(&g_reg); key_unref(k); um_unlock_shared(&g_reg); return 0; }
     o->type = UO_KEY;
     o->refs = 1;
     o->signaled = true;
     o->ptr = k;
     o->destroy = key_ob_destroy;                            /* the caller referenced @k for us */
+    o->free_unlocked = true;                                /* (g_reg) */
     UINT64 h = um_handle_new_object(p, o);
     um_ob_unref(o);                                         /* the handle holds it (or it goes now) */
     return h;
@@ -659,6 +705,28 @@ static UINT32 get_oa(UINT64 oa_ptr, RegKey **start, UmObject **root_ob, UINT16 *
     return ST_SUCCESS;
 }
 
+/* The length (characters) of OBJECT_ATTRIBUTES' name; 0 if unreadable */
+static UINT32 oa_name_chars(UINT64 oa_ptr)
+{
+    UINT64 oa[3], us[1];
+    if (!oa_ptr || !NT_SUCCESS(CopyFromUser(oa, (const void *)(uintptr_t)oa_ptr, sizeof(oa))) || !oa[2] ||
+        !NT_SUCCESS(CopyFromUser(us, (const void *)(uintptr_t)oa[2], sizeof(us)))) return 0;
+    return (UINT32)(us[0] & 0xFFFF) / 2;
+}
+
+/* A value name's buffer: @small (SMALL_NAME characters and the NUL) when
+ * the name fits, else from the heap; release with name_done, and read the
+ * name with name_cap characters at most (it may change meanwhile) */
+#define SMALL_NAME 255
+static UINT16 *name_buf(UINT64 us_ptr, UINT16 *small)
+{
+    UINT64 us;
+    UINT32 len = us_ptr && NT_SUCCESS(CopyFromUser(&us, (const void *)(uintptr_t)us_ptr, 8)) ? (UINT32)(us & 0xFFFF) / 2 : 0;
+    return len <= SMALL_NAME ? small : kmalloc(2 * (VALUE_NAME_MAX + 1));
+}
+static UINT32 name_cap(const UINT16 *name, const UINT16 *small) { return name == small ? SMALL_NAME : VALUE_NAME_MAX; }
+static void name_done(UINT16 *name, UINT16 *small) { if (name != small) kfree(name); }
+
 static bool put_ret(UINT64 ptr, UINT32 v) { return !ptr || NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, &v, 4)); }
 
 /* Copy an info block: whole, partial (BUFFER_OVERFLOW) or nothing (TOO_SMALL) */
@@ -681,17 +749,23 @@ static UINT32 open_or_create(UINT64 handle_ptr, UINT64 oa_ptr, bool create, UINT
     RegKey *start, *k = NULL;
     UmObject *rob;
     UINT32 n;
-    static UINT16 path[4096];
-    static UmLock plk;                                      /* guards @path */
-    um_lock(&plk);
-    UINT32 st = get_oa(oa_ptr, &start, &rob, path, 4095, &n);
+    UINT16 small[256], *path = small;                       /* (longer: from the heap) */
+    if (oa_name_chars(oa_ptr) > 255 && !(path = kmalloc(2 * 4096))) return ST_NO_MEMORY;
+    UINT32 st = get_oa(oa_ptr, &start, &rob, path, path == small ? 255 : 4095, &n);
     bool created = false;
-    um_lock(&g_reg);
+    /* A key that is there: found side by side with other readers */
+    um_lock_shared(&g_reg);
     if (!st && start->deleted) st = ST_KEY_DELETED;
-    if (!st) st = walk(start, path, n, create, (options & 1) != 0 /* REG_OPTION_VOLATILE */, &k, &created);
-    if (!st) k->refs++;                                     /* for the new handle */
-    um_unlock(&g_reg);
-    um_unlock(&plk);
+    UINT32 found = st ? st : walk(start, path, n, false, false, &k, NULL);
+    if (!found) __atomic_add_fetch(&k->refs, 1, __ATOMIC_RELAXED);   /* for the new handle */
+    um_unlock_shared(&g_reg);
+    if (!st && found && create) {                           /* to be made: alone */
+        um_lock_excl(&g_reg);
+        st = start->deleted ? ST_KEY_DELETED : walk(start, path, n, true, (options & 1) != 0 /* REG_OPTION_VOLATILE */, &k, &created);
+        if (!st) __atomic_add_fetch(&k->refs, 1, __ATOMIC_RELAXED);
+        um_unlock_excl(&g_reg);
+    } else if (!st) st = found;
+    if (path != small) kfree(path);
     if (rob) um_ob_unref(rob);
     UINT64 h = 0;
     if (!st) { h = new_key_handle(p, k); if (!h) st = ST_TOO_MANY_HANDLES; }
@@ -720,10 +794,10 @@ static UINT64 sys_delete_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     (void)a2; (void)a3; (void)a4;
     UmObject *o;
     RegKey *k = key_of(a1, &o);
-    um_lock(&g_reg);
+    um_lock_excl(&g_reg);
     UINT32 st = !k ? ST_INVALID_HANDLE : k->deleted ? ST_KEY_DELETED : (k->child || k == g_root || k->parent == g_root) ? ST_CANNOT_DELETE : ST_SUCCESS;
     if (!st) detach(k);
-    um_unlock(&g_reg);
+    um_unlock_excl(&g_reg);
     if (k) um_ob_unref(o);
     return st;
 }
@@ -735,20 +809,22 @@ static UINT64 sys_set_value_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UINT64 data_ptr = um_stack_arg(5);
     UINT32 size = (UINT32)um_stack_arg(6);
     if (size > DATA_MAX) return ST_INVALID_PARAMETER;
-    UINT16 *name = kmalloc(2 * (VALUE_NAME_MAX + 1));
+    UINT16 small[SMALL_NAME + 1], *name = name_buf(a2, small);
     if (!name) return ST_NO_MEMORY;
-    UINT8 *data = size ? kmalloc(size) : NULL;
-    if (size && !data) { kfree(name); return ST_NO_MEMORY; }
-    if (size && !NT_SUCCESS(CopyFromUser(data, (const void *)(uintptr_t)data_ptr, size))) { kfree(data); kfree(name); return UM_STATUS_ACCESS_VIOLATION; }
+    UINT8 sdata[64], *data = size <= sizeof(sdata) ? sdata : kmalloc(size);   /* (small: on the stack) */
+    if (!data) { name_done(name, small); return ST_NO_MEMORY; }
+    if (size && !NT_SUCCESS(CopyFromUser(data, (const void *)(uintptr_t)data_ptr, size))) { if (data != sdata) kfree(data); name_done(name, small); return UM_STATUS_ACCESS_VIOLATION; }
     UmObject *o;
-    UINT32 n, st = get_ustr(a2, name, VALUE_NAME_MAX, &n);
+    UINT32 n, st = get_ustr(a2, name, name_cap(name, small), &n);
     RegKey *k = st ? NULL : key_of(a1, &o);
-    um_lock(&g_reg);
+    um_lock_shared(&g_reg);
+    if (k) um_lock(key_lock(k));
     if (!st) st = !k ? ST_INVALID_HANDLE : k->deleted ? ST_KEY_DELETED : set_value(k, name, n, (UINT32)a4, data, size) ? ST_SUCCESS : ST_NO_MEMORY;
-    um_unlock(&g_reg);
+    if (k) um_unlock(key_lock(k));
+    um_unlock_shared(&g_reg);
     if (k) um_ob_unref(o);
-    kfree(data);
-    kfree(name);
+    if (data != sdata) kfree(data);
+    name_done(name, small);
     return st;
 }
 
@@ -756,11 +832,12 @@ static UINT64 sys_set_value_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 static UINT32 value_info(RegValue *v, UINT32 cls, UINT64 out, UINT32 cap, UINT64 ret_ptr)
 {
     UINT32 need, fixed;
-    UINT8 *b;
+    UINT8 small[256], *b;                   /* (larger: from the heap) */
+#define INFO_BUF(n) ((n) <= sizeof(small) ? small : kmalloc(n))
     switch (cls) {
     case 0:
         fixed = 12; need = fixed + 2 * v->nlen;
-        b = kmalloc(need);
+        b = INFO_BUF(need);
         if (!b) return ST_NO_MEMORY;
         memset(b, 0, 4); memcpy(b + 4, &v->type, 4);
         { UINT32 nl = 2 * v->nlen; memcpy(b + 8, &nl, 4); }
@@ -770,8 +847,9 @@ static UINT32 value_info(RegValue *v, UINT32 cls, UINT64 out, UINT32 cap, UINT64
         fixed = 20;
         UINT32 doff = (fixed + 2 * v->nlen + 7) & ~7u;
         need = doff + v->len;
-        b = kzalloc(need);
+        b = INFO_BUF(need);
         if (!b) return ST_NO_MEMORY;
+        memset(b, 0, need);
         UINT32 nl = 2 * v->nlen;
         memcpy(b + 4, &v->type, 4); memcpy(b + 8, &doff, 4); memcpy(b + 12, &v->len, 4); memcpy(b + 16, &nl, 4);
         memcpy(b + 20, v->name, nl);
@@ -780,7 +858,7 @@ static UINT32 value_info(RegValue *v, UINT32 cls, UINT64 out, UINT32 cap, UINT64
     }
     case 2:
         fixed = 12; need = fixed + v->len;
-        b = kmalloc(need);
+        b = INFO_BUF(need);
         if (!b) return ST_NO_MEMORY;
         memset(b, 0, 4); memcpy(b + 4, &v->type, 4); memcpy(b + 8, &v->len, 4);
         if (v->len) memcpy(b + 12, v->data, v->len);
@@ -788,28 +866,31 @@ static UINT32 value_info(RegValue *v, UINT32 cls, UINT64 out, UINT32 cap, UINT64
     default:
         return ST_INVALID_INFO_CLASS;
     }
+#undef INFO_BUF
     UINT32 st = give(out, cap, b, need, fixed, ret_ptr);
-    kfree(b);
+    if (b != small) kfree(b);
     return st;
 }
 
 /* NtQueryValueKey(HANDLE, PUNICODE_STRING, CLASS, PVOID, ULONG Length, PULONG ResultLength) */
 static UINT64 sys_query_value_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    UINT16 *name = kmalloc(2 * (VALUE_NAME_MAX + 1));
+    UINT16 small[SMALL_NAME + 1], *name = name_buf(a2, small);
     if (!name) return ST_NO_MEMORY;
     UmObject *o;
-    UINT32 n, st = get_ustr(a2, name, VALUE_NAME_MAX, &n);
+    UINT32 n, st = get_ustr(a2, name, name_cap(name, small), &n);
     RegKey *k = st ? NULL : key_of(a1, &o);
-    um_lock(&g_reg);
+    um_lock_shared(&g_reg);
+    if (k) um_lock(key_lock(k));
     if (!st) {
         RegValue *v = !k ? NULL : k->deleted ? NULL : find_value(k, name, n);
         st = !k ? ST_INVALID_HANDLE : k->deleted ? ST_KEY_DELETED : !v ? ST_OBJECT_NAME_NOT_FOUND
              : value_info(v, (UINT32)a3, a4, (UINT32)um_stack_arg(5), um_stack_arg(6));
     }
-    um_unlock(&g_reg);
+    if (k) um_unlock(key_lock(k));
+    um_unlock_shared(&g_reg);
     if (k) um_ob_unref(o);
-    kfree(name);
+    name_done(name, small);
     return st;
 }
 
@@ -818,16 +899,18 @@ static UINT64 sys_enum_value_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmObject *o;
     RegKey *k = key_of(a1, &o);
-    um_lock(&g_reg);
+    um_lock_shared(&g_reg);
     UINT32 st;
     if (!k) st = ST_INVALID_HANDLE;
     else if (k->deleted) st = ST_KEY_DELETED;
     else {
+        um_lock(key_lock(k));
         RegValue *v = k->values;
         for (UINT64 i = 0; v && i < a2; i++) v = v->next;
         st = v ? value_info(v, (UINT32)a3, a4, (UINT32)um_stack_arg(5), um_stack_arg(6)) : ST_NO_MORE_ENTRIES;
+        um_unlock(key_lock(k));
     }
-    um_unlock(&g_reg);
+    um_unlock_shared(&g_reg);
     if (k) um_ob_unref(o);
     return st;
 }
@@ -836,25 +919,27 @@ static UINT64 sys_enum_value_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 static UINT64 sys_delete_value_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
-    UINT16 *name = kmalloc(2 * (VALUE_NAME_MAX + 1));
+    UINT16 small[SMALL_NAME + 1], *name = name_buf(a2, small);
     if (!name) return ST_NO_MEMORY;
     UmObject *o;
-    UINT32 n, st = get_ustr(a2, name, VALUE_NAME_MAX, &n);
+    UINT32 n, st = get_ustr(a2, name, name_cap(name, small), &n);
     RegKey *k = st ? NULL : key_of(a1, &o);
-    um_lock(&g_reg);
+    um_lock_shared(&g_reg);
     if (!st) {
         if (!k) st = ST_INVALID_HANDLE;
         else if (k->deleted) st = ST_KEY_DELETED;
         else {
+            um_lock(key_lock(k));
             RegValue **pp = &k->values;
             while (*pp && !name_eq((*pp)->name, (*pp)->nlen, name, n)) pp = &(*pp)->next;
             if (!*pp) st = ST_OBJECT_NAME_NOT_FOUND;
             else { RegValue *v = *pp; *pp = v->next; free_value(v); touch(k); notify(k, CHANGE_LAST_SET); }
+            um_unlock(key_lock(k));
         }
     }
-    um_unlock(&g_reg);
+    um_unlock_shared(&g_reg);
     if (k) um_ob_unref(o);
-    kfree(name);
+    name_done(name, small);
     return st;
 }
 
@@ -934,16 +1019,18 @@ static UINT64 sys_enum_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmObject *o;
     RegKey *k = key_of(a1, &o);
-    um_lock(&g_reg);
+    um_lock_shared(&g_reg);
     UINT32 st;
     if (!k) st = ST_INVALID_HANDLE;
     else if (k->deleted) st = ST_KEY_DELETED;
     else {
         RegKey *c = k->child;
         for (UINT64 i = 0; c && i < a2; i++) c = c->next;
+        if (c) um_lock(key_lock(c));
         st = c ? key_info(c, (UINT32)a3, a4, (UINT32)um_stack_arg(5), um_stack_arg(6)) : ST_NO_MORE_ENTRIES;
+        if (c) um_unlock(key_lock(c));
     }
-    um_unlock(&g_reg);
+    um_unlock_shared(&g_reg);
     if (k) um_ob_unref(o);
     return st;
 }
@@ -953,9 +1040,11 @@ static UINT64 sys_query_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmObject *o;
     RegKey *k = key_of(a1, &o);
-    um_lock(&g_reg);
+    um_lock_shared(&g_reg);
+    if (k) um_lock(key_lock(k));
     UINT32 st = !k ? ST_INVALID_HANDLE : k->deleted ? ST_KEY_DELETED : key_info(k, (UINT32)a2, a3, (UINT32)a4, um_stack_arg(5));
-    um_unlock(&g_reg);
+    if (k) um_unlock(key_lock(k));
+    um_unlock_shared(&g_reg);
     if (k) um_ob_unref(o);
     return st;
 }
@@ -980,7 +1069,7 @@ static UINT64 sys_rename_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UmObject *o;
     UINT32 n, st = get_ustr(a2, name, NAME_MAX_CHARS, &n);
     RegKey *k = st ? NULL : key_of(a1, &o);
-    um_lock(&g_reg);
+    um_lock_excl(&g_reg);
     if (!st) {
         if (!k) st = ST_INVALID_HANDLE;
         else if (k->deleted || !k->parent) st = ST_KEY_DELETED;
@@ -995,7 +1084,7 @@ static UINT64 sys_rename_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             }
         }
     }
-    um_unlock(&g_reg);
+    um_unlock_excl(&g_reg);
     if (k) um_ob_unref(o);
     return st;
 }
@@ -1015,7 +1104,7 @@ typedef struct Watch {
     UmProcess *proc;
 } Watch;
 
-static Watch *g_watch;                      /* under g_reg */
+static Watch *g_watch;                      /* under g_wlock (and g_reg, shared or not) */
 static Watch *g_spent;                      /* fired: their events are released outside g_reg */
 
 static bool below(RegKey *k, RegKey *top)
@@ -1034,6 +1123,8 @@ static void spend(Watch *w)
 
 static void notify(RegKey *k, UINT32 what)
 {
+    if (!__atomic_load_n(&g_watch, __ATOMIC_ACQUIRE)) return;
+    um_lock(&g_wlock);
     for (Watch **pp = &g_watch; *pp;) {
         Watch *w = *pp;
         if (!(w->filter & what) || !(w->key == k || (w->tree && below(k, w->key)))) { pp = &w->next; continue; }
@@ -1044,17 +1135,18 @@ static void notify(RegKey *k, UINT32 what)
         ob_unlock(s);
         spend(w);
     }
+    um_unlock(&g_wlock);
 }
 
 /* Release fired watches (not under g_reg: an event's last reference may
  * take the big kernel lock) */
 static void release_spent(void)
 {
-    if (!g_spent) return;
-    um_lock(&g_reg);
+    if (!__atomic_load_n(&g_spent, __ATOMIC_ACQUIRE)) return;
+    um_lock(&g_wlock);
     Watch *w = g_spent;
     g_spent = NULL;
-    um_unlock(&g_reg);
+    um_unlock(&g_wlock);
     while (w) {
         Watch *n = w->next;
         um_ob_unref(w->ev);
@@ -1066,14 +1158,14 @@ static void release_spent(void)
 /* A process ended: its watches go (their events are not signalled) */
 void um_registry_process_gone(UmProcess *p)
 {
-    um_lock(&g_reg);
+    um_lock(&g_wlock);
     for (Watch **pp = &g_watch; *pp;) {
         Watch *w = *pp;
         if (w->proc != p) { pp = &w->next; continue; }
         *pp = w->next;
         spend(w);
     }
-    um_unlock(&g_reg);
+    um_unlock(&g_wlock);
     release_spent();
 }
 
@@ -1107,29 +1199,31 @@ static UINT64 sys_notify_change_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     RegKey *k = w ? key_of(a1, &o) : NULL;
     UINT32 st = !w ? ST_NO_MEMORY : !k ? ST_INVALID_HANDLE : ST_SUCCESS;
     if (!st) {
-        um_lock(&g_reg);
+        um_lock_shared(&g_reg);                             /* (deleting a key is exclusive) */
+        um_lock(&g_wlock);
         if (k->deleted) st = ST_KEY_DELETED;
         else {
-            k->refs++;
+            __atomic_add_fetch(&k->refs, 1, __ATOMIC_RELAXED);
             w->key = k;
             w->filter = filter;
             w->tree = tree;
             w->ev = async ? ev : um_ob_ref(ev);             /* sync: the watch's reference and ours */
             w->proc = UmCurrent();
             w->next = g_watch;
-            g_watch = w;
+            __atomic_store_n(&g_watch, w, __ATOMIC_RELEASE);
         }
-        um_unlock(&g_reg);
+        um_unlock(&g_wlock);
+        um_unlock_shared(&g_reg);
     }
     if (o) um_ob_unref(o);
     if (st) { kfree(w); um_ob_unref(ev); return st; }
     if (async) return 0x00000103u;                          /* STATUS_PENDING */
 
     st = um_wait_one(ev, -1);
-    um_lock(&g_reg);                                        /* not fired (the process is ending): drop it */
+    um_lock(&g_wlock);                                      /* not fired (the process is ending): drop it */
     for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next)
         if (*pp == w) { *pp = w->next; spend(w); break; }
-    um_unlock(&g_reg);
+    um_unlock(&g_wlock);
     release_spent();
     um_ob_unref(ev);
     if (st) return st;
@@ -1197,7 +1291,7 @@ void um_registry_pending_renames(void)
     UINT16 w[96];
     UINT32 n = 0;
     for (; sm[n]; n++) w[n] = (UINT8)sm[n];
-    um_lock(&g_reg);
+    um_lock_excl(&g_reg);
     RegKey *k = NULL;
     RegValue *v = NULL;
     if (walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) v = find_value(k, val, 27);
@@ -1213,7 +1307,7 @@ void um_registry_pending_renames(void)
         while (*pp && *pp != v) pp = &(*pp)->next;
         if (*pp) { *pp = v->next; free_value(v); touch(k); }
     }
-    um_unlock(&g_reg);
+    um_unlock_excl(&g_reg);
     if (!list) return;
     char *from = kmalloc(1024), *to = kmalloc(1024);
     int done = 0, failed = 0;
@@ -1285,8 +1379,8 @@ static void env_key(const char *path, bool user, void (*cb)(void *, const char *
 
 void um_registry_environment(void (*cb)(void *, const char *, const char *, bool, bool), void *ctx)
 {
-    um_lock(&g_reg);
+    um_lock_excl(&g_reg);
     env_key("Machine\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", false, cb, ctx);
     env_key("User\\" USER_SID "\\Environment", true, cb, ctx);
-    um_unlock(&g_reg);
+    um_unlock_excl(&g_reg);
 }
