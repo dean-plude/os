@@ -43,6 +43,7 @@
 #define ST_BUFFER_TOO_SMALL        0xC0000023u
 #define ST_END_OF_FILE             0xC0000011u
 #define ST_NO_MEMORY               0xC0000017u
+#define ST_NAME_TOO_LONG           0xC0000106u
 #define ST_CONFLICTING_ADDRESSES   0xC0000018u
 #define ST_ACCESS_DENIED           0xC0000022u
 #define ST_MEDIA_WRITE_PROTECTED   0xC00000A2u
@@ -2029,6 +2030,33 @@ static bool get_str(UINT64 ptr, char *out, int cap)
     return false;
 }
 
+/* A new process's command line (UTF-8, from user memory, a page at a time):
+ * up to UM_CMDLINE_MAX UTF-16 units, as CreateProcess takes; NULL with
+ * *st set when it is longer or unreadable (heap) */
+static char *get_cmdline(UINT64 ptr, UINT32 *st)
+{
+    UINT32 cap = UM_CMDLINE_MAX * 3 + 1;
+    char *out = kmalloc(cap);
+    if (!out) { *st = ST_NO_MEMORY; return NULL; }
+    UINT32 n = 0, units = 0;
+    for (;;) {
+        UINT32 chunk = PAGE_SIZE - (UINT32)((ptr + n) & (PAGE_SIZE - 1));
+        if (chunk > cap - n) chunk = cap - n;
+        if (!chunk || !NT_SUCCESS(CopyFromUser(out + n, (const void *)(uintptr_t)(ptr + n), chunk))) {
+            kfree(out);
+            *st = chunk ? UM_STATUS_ACCESS_VIOLATION : ST_NAME_TOO_LONG;
+            return NULL;
+        }
+        for (UINT32 i = n; i < n + chunk; i++) {
+            UINT8 c = (UINT8)out[i];
+            if (!c) return out;
+            if ((c & 0xC0) != 0x80) units += c >= 0xF0 ? 2 : 1;     /* (a 4-byte character is a surrogate pair) */
+            if (units > UM_CMDLINE_MAX) { kfree(out); *st = ST_NAME_TOO_LONG; return NULL; }
+        }
+        n += chunk;
+    }
+}
+
 /* A process created by a program: the handle holds the creator's claim */
 static void process_ob_destroy(UmObject *o)
 {
@@ -2082,10 +2110,10 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
         if (!rt) { kfree(env); return ST_NO_MEMORY; }
         if (!NT_SUCCESS(CopyFromUser(rt, (const void *)(uintptr_t)io[10], rt_len))) { kfree(rt); kfree(env); return UM_STATUS_ACCESS_VIOLATION; }
     }
-    cmd = kmalloc(8192);
-    if (!cmd) { kfree(rt); kfree(env); return ST_NO_MEMORY; }
-    if (a2 && !get_str(a2, cmd, 8192)) { kfree(cmd); kfree(rt); kfree(env); return UM_STATUS_ACCESS_VIOLATION; }
-    if (!a2) strncpy(cmd, image, 8191);
+    UINT32 cmd_st = ST_SUCCESS;
+    cmd = a2 ? get_cmdline(a2, &cmd_st) : kmalloc(sizeof(image));
+    if (!cmd) { kfree(rt); kfree(env); return cmd_st ? cmd_st : ST_NO_MEMORY; }
+    if (!a2) strcpy(cmd, image);
     UmHandle *inh = (flags & NCP_INHERIT) ? kzalloc(sizeof(UmHandle) * UM_MAX_HANDLES) : NULL;
     if ((flags & NCP_INHERIT) && !inh) { kfree(cmd); kfree(rt); kfree(env); return ST_NO_MEMORY; }
 

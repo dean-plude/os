@@ -95,7 +95,9 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
   out again) and SVG (image files and `<svg>` written inline in a page),
   in a window you can resize, maximize or snap (the page is laid out
   again to fit).
-- **Command line**: the Terminal's own commands (`dir`, `copy`, `ping`,
+- **Command line**: the Terminal (command lines of up to 8,191
+  characters, wrapped at the window's width; programs get up to 32,766
+  through `CreateProcess`, as on Windows), its own commands (`dir`, `copy`, `ping`,
   `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
   `more`, `less` (git's pager), `timeout`, `taskkill`, `reg`, `regsvr32`, `msiexec` and

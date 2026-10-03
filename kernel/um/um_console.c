@@ -21,7 +21,7 @@
 #include "../lib/string.h"
 
 #define OUT_SIZE  (64 * 1024)
-#define IN_RECS   1024
+#define IN_RECS   16384                         /* two lines of 8,191 characters (the Terminal's longest) */
 
 struct UmConsole {
     volatile int    refs;

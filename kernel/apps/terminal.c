@@ -28,6 +28,7 @@
 #define T_COLS   160
 #define T_ROWS   400
 #define T_HIST   16
+#define T_INPUT_MAX 8191                 /* characters in a typed command line (cmd.exe's longest) */
 #define T_PAD    10
 #define T_LINE_H 18
 
@@ -94,10 +95,10 @@ typedef struct {
     UINT8    split[T_ROWS];     /* first `split` chars drawn in accent */
     int      count;
     int      scroll;            /* lines scrolled back from the bottom */
-    char     input[T_COLS];
+    char     input[T_INPUT_MAX + 1];  /* the line being typed: wraps onto as many rows as it needs */
     int      in_len;
     RamNode *cwd;
-    char     hist[T_HIST][T_COLS];
+    char    *hist[T_HIST];            /* (heap) */
     int      hist_n, hist_pos;
     Job      job;
     WND     *w;
@@ -177,6 +178,19 @@ static void prompt_text(Term *t, char *buf, int cap)
     RamfsPath(t->cwd, path, sizeof(path));
     FsUnlock();
     ksnprintf(buf, (size_t)cap, "%s> ", path);
+}
+
+/* A typed line into the scrollback after the prompt (wrapped as it was shown) */
+static void echo_line(Term *t, const char *text, const char *tail)
+{
+    char p[RAMFS_PATH_MAX + 4];
+    prompt_text(t, p, sizeof(p));
+    UINT32 pl = (UINT32)strlen(p), cap = pl + (UINT32)strlen(text) + (UINT32)strlen(tail) + 1;
+    char *b = kmalloc(cap);
+    if (!b) return;
+    ksnprintf(b, cap, "%s%s%s", p, text, tail);
+    tprint_ex(t, K_NORMAL, pl > 255 ? 255 : (int)pl, b);
+    kfree(b);
 }
 
 /* -----------------------------------------------------------------------
@@ -323,37 +337,51 @@ static void cmd_type(Term *t, const char *arg)
     kfree(buf);
 }
 
-static void cmd_echo(Term *t, int argc, char **argv)
+/* "echo TEXT [> FILE]": @raw is what follows "echo", printed as typed */
+static void cmd_echo(Term *t, const char *raw)
 {
-    char text[T_COLS];
-    int  n = 0, redirect = -1;
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], ">")) { redirect = i + 1; break; }
-        for (const char *s = argv[i]; *s && n < T_COLS - 2; s++) text[n++] = *s;
-        if (i + 1 < argc && strcmp(argv[i + 1], ">") && n < T_COLS - 2) text[n++] = ' ';
+    if (*raw == ' ') raw++;
+    const char *gt = NULL;
+    bool q = false;
+    for (const char *c = raw; *c && !gt; c++) {
+        if (*c == '"') q = !q;
+        else if (*c == '>' && !q) gt = c;
     }
+    int n = gt ? (int)(gt - raw) : (int)strlen(raw);
+    while (gt && n && raw[n - 1] == ' ') n--;
+    char *text = kmalloc((UINT32)n + 2);
+    if (!text) { terr(t, "Not enough memory."); return; }
+    memcpy(text, raw, (size_t)n);
     text[n] = '\0';
-    if (redirect < 0) { tprint(t, text); return; }
-    if (redirect >= argc) { terr(t, "The syntax of the command is incorrect."); return; }
-    RamNode *f = RamfsResolve(t->cwd, argv[redirect]);
+    if (!gt) { tprint(t, text); kfree(text); return; }
+    char name[RAMFS_PATH_MAX];
+    const char *a = gt + 1;
+    while (*a == ' ' || *a == '"') a++;
+    int k = 0;
+    while (*a && *a != '"' && k < (int)sizeof(name) - 1) name[k++] = *a++;
+    while (k && name[k - 1] == ' ') k--;
+    name[k] = '\0';
+    if (!k) { terr(t, "The syntax of the command is incorrect."); kfree(text); return; }
+    RamNode *f = RamfsResolve(t->cwd, name);
     if (!f) {                                   /* a new file, maybe in another folder */
         char dir[RAMFS_PATH_MAX];
-        strncpy(dir, argv[redirect], sizeof(dir) - 1);
+        strncpy(dir, name, sizeof(dir) - 1);
         dir[sizeof(dir) - 1] = '\0';
         char *slash = strrchr(dir, '\\');
         if (!slash) slash = strrchr(dir, '/');
         RamNode *d = t->cwd;
-        const char *leaf = argv[redirect];
+        const char *leaf = name;
         if (slash) {
             *slash = '\0';
             d = dir[0] ? RamfsResolve(t->cwd, dir) : RamfsRoot();
-            leaf = argv[redirect] + (slash - dir) + 1;
+            leaf = name + (slash - dir) + 1;
         }
         f = d ? RamfsCreate(d, leaf, false) : NULL;
     }
     text[n++] = '\n';
     if (!f || f->dir || !RamfsWrite(f, text, (UINT32)n))
         terr(t, "Could not write the file.");
+    kfree(text);
 }
 
 static void cmd_mkdir(Term *t, const char *arg)
@@ -491,17 +519,21 @@ static void cmd_start(Term *t, int argc, char **argv)
     }
     RamNode *exe = argc >= 2 && !AppByName(argv[1], &id) ? UmFindProgram(t->cwd, argv[1]) : NULL;
     if (exe) {                                   /* a Windows program, detached from the terminal */
-        char line[512];
+        UINT32 cap = 1;
+        for (int i = 1; i < argc; i++) cap += (UINT32)strlen(argv[i]) + 3;
+        char *line = kmalloc(cap);
+        if (!line) { terr(t, "Not enough memory."); return; }
         int n = 0;
-        for (int i = 1; i < argc && n < (int)sizeof(line) - 4; i++) {
+        for (int i = 1; i < argc; i++) {
             bool q = strchr(argv[i], ' ') != NULL;
             if (i > 1) line[n++] = ' ';
             if (q) line[n++] = '"';
-            for (const char *s = argv[i]; *s && n < (int)sizeof(line) - 3; s++) line[n++] = *s;
+            for (const char *s = argv[i]; *s; s++) line[n++] = *s;
             if (q) line[n++] = '"';
         }
         line[n] = '\0';
         if (!UmSpawnDetached(exe, line, t->cwd)) terr(t, "Not enough memory.");
+        kfree(line);
         return;
     }
     if (argc < 2 || !AppByName(argv[1], &id)) {
@@ -1398,17 +1430,28 @@ static bool run_in_cmd(Term *t, const char *line)
 {
     RamNode *cmd = RamfsResolve(NULL, "\\Windows\\System32\\cmd.exe");
     if (!cmd) return false;
-    char full[T_COLS + 64];
-    ksnprintf(full, sizeof(full), "cmd.exe /d /c %s", line);
+    UINT32 cap = (UINT32)strlen(line) + 16;
+    char *full = kmalloc(cap);
+    if (!full) { terr(t, "Not enough memory."); return true; }
+    ksnprintf(full, cap, "cmd.exe /d /c %s", line);
     start_program(t, cmd, full);
+    kfree(full);
     return true;
 }
 
+static void run_cmd_line(Term *t, char *cmdline, const char *original);
+
 static void run_cmd(Term *t, char *cmdline)
 {
-    char original[T_COLS];
-    strncpy(original, cmdline, sizeof(original) - 1);
-    original[sizeof(original) - 1] = '\0';
+    char *original = kmalloc((UINT32)strlen(cmdline) + 1);    /* (the line as typed, for programs) */
+    if (!original) { terr(t, "Not enough memory."); return; }
+    strcpy(original, cmdline);
+    run_cmd_line(t, cmdline, original);
+    kfree(original);
+}
+
+static void run_cmd_line(Term *t, char *cmdline, const char *original)
+{
     {
         const char *s = original;
         while (*s == ' ') s++;
@@ -1433,7 +1476,11 @@ static void run_cmd(Term *t, char *cmdline)
     else if (is(c, "cd") || is(c, "chdir"))     cmd_cd(t, a1);
     else if (is(c, "cd.."))                     cmd_cd(t, "..");
     else if (is(c, "type") || is(c, "cat"))     cmd_type(t, a1);
-    else if (is(c, "echo"))                     cmd_echo(t, argc, argv);
+    else if (is(c, "echo")) {                   /* (the text as typed, however many words) */
+        const char *r = original;
+        while (*r == ' ') r++;
+        cmd_echo(t, r + 4);
+    }
     else if (is(c, "mkdir") || is(c, "md"))     cmd_mkdir(t, a1);
     else if (is(c, "del") || is(c, "rm") || is(c, "rmdir")) cmd_del(t, a1);
     else if (is(c, "copy") || is(c, "cp"))      cmd_copy(t, a1, argc > 2 ? argv[2] : NULL);
@@ -1499,11 +1546,53 @@ static void run_cmd(Term *t, char *cmdline)
 /* -----------------------------------------------------------------------
  * Window callbacks
  * ----------------------------------------------------------------------- */
+/* The line being typed, wrapped at the window width onto rows of its own
+ * after the scrollback: what comes before the typed text on its first row
+ * (the prompt, or a program's unfinished line), the row it starts on and
+ * how many rows it takes (the cursor's included) */
+typedef struct {
+    char pre[RAMFS_PATH_MAX + T_COLS + 8];
+    int  pre_len, split;        /* the first `split` characters in accent */
+    GdiColor fg;                /* the rest of pre's */
+    int  base, rows, cols;
+} EditArea;
+
+static bool edit_area(Term *t, EditArea *e)
+{
+    Job *j = &t->job;
+    bool proc = j->kind == JOB_PROC;
+    if (j->kind != JOB_NONE && !proc) return false;     /* a command is running: no line */
+    e->cols = term_cols(t);
+    e->fg = T_FG;
+    e->base = t->count;
+    if (!proc) {
+        prompt_text(t, e->pre, sizeof(e->pre));
+        e->pre_len = e->split = (int)strlen(e->pre);
+    } else if (j->open_line && t->count) {              /* typing after a program's prompt */
+        int i = --e->base;
+        int n = (int)strlen(t->line[i]);
+        memcpy(e->pre, t->line[i], (size_t)n);
+        while (n < j->col && n < (int)sizeof(e->pre) - 1) e->pre[n++] = ' ';
+        e->pre_len = n;
+        e->split = t->split[i] < n ? t->split[i] : n;
+        e->fg = t->kind[i] == K_ERROR ? T_ERR : t->kind[i] == K_DIM ? T_DIM : T_FG;
+    } else e->pre_len = e->split = 0;
+    e->pre[e->pre_len] = '\0';
+    e->rows = (e->pre_len + t->in_len) / e->cols + 1;
+    return true;
+}
+
+/* Character @k of the edit area's text (pre, then what is typed) */
+static char edit_char(Term *t, const EditArea *e, int k)
+{
+    return k < e->pre_len ? e->pre[k] : t->input[k - e->pre_len];
+}
+
 /* The lines on screen: the first one's index and how many fit */
 static int term_total(Term *t)
 {
-    bool proc = t->job.kind == JOB_PROC;
-    return t->count + ((t->job.kind == JOB_NONE || (proc && !t->job.open_line)) ? 1 : 0);
+    EditArea e;
+    return edit_area(t, &e) ? e.base + e.rows : t->count;
 }
 
 static int term_first(Term *t, int *rows)
@@ -1516,25 +1605,18 @@ static int term_first(Term *t, int *rows)
     return first < 0 ? 0 : first;
 }
 
-static void prompt_text(Term *t, char *out, int cap);
-
-/* The text of buffer line @i as shown (the prompt line with what is typed) */
+/* The text of buffer line @i as shown (a row of the line being typed) */
 static void line_text(Term *t, int i, char *out, int cap)
 {
     out[0] = '\0';
-    if (i < t->count) {
-        ksnprintf(out, (UINT32)cap, "%s", t->line[i]);
-        if (t->job.kind == JOB_PROC && t->job.open_line && i == t->count - 1) {
-            int n = (int)strlen(out);
-            while (n < t->job.col && n < cap - 1) out[n++] = ' ';
-            ksnprintf(out + n, (UINT32)(cap - n), "%s", t->input);
-        }
-    } else if (t->job.kind == JOB_PROC) ksnprintf(out, (UINT32)cap, "%s", t->input);
-    else {
-        prompt_text(t, out, cap);
-        int n = (int)strlen(out);
-        ksnprintf(out + n, (UINT32)(cap - n), "%s", t->input);
+    EditArea e;
+    if (!edit_area(t, &e) || i < e.base) {
+        if (i < t->count) ksnprintf(out, (UINT32)cap, "%s", t->line[i]);
+        return;
     }
+    int a = (i - e.base) * e.cols, b = a + e.cols, end = e.pre_len + t->in_len, n = 0;
+    for (int k = a; k < b && k < end && n < cap - 1; k++) out[n++] = edit_char(t, &e, k);
+    out[n] = '\0';
 }
 
 /* The selection in order: (l0, c0) up to (l1, c1), the end excluded */
@@ -1689,12 +1771,38 @@ static void paint_screen(Term *t, GdiRect c)
             if (cl.width > 1) run[n++] = ' ';
         }
     }
-    if (t->in_len && (UmConsoleInputMode(j->con) & CON_ENABLE_LINE_INPUT)) {   /* a line being typed */
-        GdiTextMonoN(x0 + (cur.col * cell) / 256, c.y + T_PAD + cur.row * T_LINE_H, t->input, t->in_len, T_FG);
-        cur.col += t->in_len;
+    if (t->in_len && (UmConsoleInputMode(j->con) & CON_ENABLE_LINE_INPUT)) {   /* a line being typed, wrapped */
+        for (int k = 0; k < t->in_len && cur.row < j->vt_rows;) {
+            if (cur.col >= j->vt_cols) { cur.col = 0; cur.row++; continue; }
+            int n = j->vt_cols - cur.col;
+            if (n > t->in_len - k) n = t->in_len - k;
+            GdiTextMonoN(x0 + (cur.col * cell) / 256, c.y + T_PAD + cur.row * T_LINE_H, t->input + k, n, T_FG);
+            cur.col += n;
+            k += n;
+        }
+        if (cur.col >= j->vt_cols && cur.row + 1 < j->vt_rows) { cur.col = 0; cur.row++; }
     }
     if (j->vt_cursor && t->w->active && cur.row < j->vt_rows && cur.col < j->vt_cols)
         GdiAlphaFill(RECT(x0 + (cur.col * cell) / 256, c.y + T_PAD + cur.row * T_LINE_H + 1, cell / 256, 15), T_FG, 170);
+}
+
+/* Row @r of the edit area at (x, y): pre's part in its colours, then the
+ * typed text, and the cursor */
+static void paint_edit_row(Term *t, const EditArea *e, int r, int x, int y)
+{
+    int cell = GdiMonoCellW256();
+    int a = r * e->cols, b = a + e->cols, end = e->pre_len + t->in_len;
+    if (b > end) b = end;
+    for (int k = a; k < b;) {                       /* runs of one colour */
+        int stop = k < e->split ? e->split : k < e->pre_len ? e->pre_len : b;
+        if (stop > b) stop = b;
+        GdiColor fg = k < e->split ? T_PROMPT : k < e->pre_len ? e->fg : T_FG;
+        const char *src = k < e->pre_len ? e->pre + k : t->input + (k - e->pre_len);
+        GdiTextMonoN(x + ((k - a) * cell) / 256, y, src, stop - k, fg);
+        k = stop;
+    }
+    if (end / e->cols == r && t->w->active)
+        GdiAlphaFill(RECT(x + ((end % e->cols) * cell) / 256, y + 1, cell / 256, 15), T_FG, 170);
 }
 
 static void term_paint(WND *w)
@@ -1705,10 +1813,11 @@ static void term_paint(WND *w)
     int cell = GdiMonoCellW256();
     int rows = (c.h - 2 * T_PAD) / T_LINE_H;
     if (rows < 1) rows = 1;
-    /* + the prompt line (hidden while a command runs); a running program
-     * gets an input line of its own unless its last line is still open */
-    bool proc = t->job.kind == JOB_PROC;
-    int total = t->count + ((t->job.kind == JOB_NONE || (proc && !t->job.open_line)) ? 1 : 0);
+    /* + the line being typed (none while a command runs): the prompt's,
+     * or a running program's, on its own rows or after its open line */
+    EditArea e;
+    bool edit = edit_area(t, &e);
+    int total = edit ? e.base + e.rows : t->count;
     int first = total - rows - t->scroll;
     if (first < 0) first = 0;
     int x = c.x + T_PAD, y = c.y + T_PAD;
@@ -1724,33 +1833,17 @@ static void term_paint(WND *w)
             if (i != s1 || b > n) b = n + (i != s1 ? 1 : 0);
             if (b > a) GdiAlphaFill(RECT(x + (a * cell) / 256, y, ((b - a) * cell) / 256, T_LINE_H), T_PROMPT, 90);
         }
-        if (i < t->count) {
-            const char *l = t->line[i];
-            int sp = t->split[i];
-            int n = (int)strlen(l);
-            GdiColor fg = t->kind[i] == K_ERROR ? T_ERR : t->kind[i] == K_DIM ? T_DIM : T_FG;
-            if (sp > n) sp = n;
-            if (sp) GdiTextMonoN(x, y, l, sp, T_PROMPT);
-            GdiTextMonoN(x + (sp * cell) / 256, y, l + sp, n - sp, fg);
-            if (proc && t->job.open_line && i == t->count - 1) {   /* typing after a prompt */
-                int at = t->job.col;
-                GdiTextMonoN(x + (at * cell) / 256, y, t->input, t->in_len, T_FG);
-                int cx = x + ((at + t->in_len) * cell) / 256;
-                if (w->active) GdiAlphaFill(RECT(cx, y + 1, cell / 256, 15), T_FG, 170);
-            }
-        } else if (proc) {
-            GdiTextMonoN(x, y, t->input, t->in_len, T_FG);
-            int cx = x + (t->in_len * cell) / 256;
-            if (w->active) GdiAlphaFill(RECT(cx, y + 1, cell / 256, 15), T_FG, 170);
-        } else {
-            char p[RAMFS_PATH_MAX + 4];
-            prompt_text(t, p, sizeof(p));
-            int pl = (int)strlen(p);
-            GdiTextMono(x, y, p, T_PROMPT);
-            GdiTextMonoN(x + (pl * cell) / 256, y, t->input, t->in_len, T_FG);
-            int cx = x + ((pl + t->in_len) * cell) / 256;
-            if (w->active) GdiAlphaFill(RECT(cx, y + 1, cell / 256, 15), T_FG, 170);
+        if (edit && i >= e.base) {
+            paint_edit_row(t, &e, i - e.base, x, y);
+            continue;
         }
+        const char *l = t->line[i];
+        int sp = t->split[i];
+        int n = (int)strlen(l);
+        GdiColor fg = t->kind[i] == K_ERROR ? T_ERR : t->kind[i] == K_DIM ? T_DIM : T_FG;
+        if (sp > n) sp = n;
+        if (sp) GdiTextMonoN(x, y, l, sp, T_PROMPT);
+        GdiTextMonoN(x + (sp * cell) / 256, y, l + sp, n - sp, fg);
     }
     if (t->scroll)
         GdiTextT(c.x + c.w - 120, c.y + 6, "(scrolled back)", T_DIM);
@@ -1760,12 +1853,14 @@ static void remember(Term *t, const char *cmd)
 {
     if (!*cmd) return;
     if (t->hist_n == T_HIST) {
-        memmove(t->hist[0], t->hist[1], sizeof(t->hist[0]) * (T_HIST - 1));
+        kfree(t->hist[0]);
+        memmove(t->hist, t->hist + 1, sizeof(t->hist[0]) * (T_HIST - 1));
         t->hist_n--;
     }
-    strncpy(t->hist[t->hist_n], cmd, T_COLS - 1);
-    t->hist[t->hist_n][T_COLS - 1] = '\0';
-    t->hist_n++;
+    char *h = kmalloc((UINT32)strlen(cmd) + 1);
+    if (!h) return;
+    strcpy(h, cmd);
+    t->hist[t->hist_n++] = h;
 }
 
 /* Raw input: a key press as an input record (the character it types, as
@@ -1869,7 +1964,7 @@ static void term_key(WND *w, const KeyEvent *k)
             t->in_len = 0; t->input[0] = '\0';
             return;
         }
-        if (k->ch >= ' ' && k->ch <= '~' && t->in_len < T_COLS - 2) {
+        if (k->ch >= ' ' && k->ch <= '~' && t->in_len < T_INPUT_MAX) {
             t->input[t->in_len++] = k->ch;
             t->input[t->in_len] = '\0';
             t->scroll = 0;
@@ -1883,11 +1978,7 @@ static void term_key(WND *w, const KeyEvent *k)
     }
     if (k->ctrl && k->ch == 'l') { t->count = 0; return; }
     if (k->ctrl && k->ch == 'c') {
-        char p[RAMFS_PATH_MAX + T_COLS + 8];
-        prompt_text(t, p, RAMFS_PATH_MAX + 4);
-        int pl = (int)strlen(p);
-        ksnprintf(p + pl, T_COLS + 4, "%s^C", t->input);
-        tprint_ex(t, K_NORMAL, pl, p);
+        echo_line(t, t->input, "^C");
         t->in_len = 0; t->input[0] = '\0';
         return;
     }
@@ -1899,8 +1990,8 @@ static void term_key(WND *w, const KeyEvent *k)
             t->hist_pos += (k->scancode == KEY_UP) ? -1 : 1;
             if (t->hist_pos < 0) t->hist_pos = 0;
             if (t->hist_pos >= t->hist_n) { t->hist_pos = t->hist_n; t->in_len = 0; t->input[0] = '\0'; return; }
-            strncpy(t->input, t->hist[t->hist_pos], T_COLS - 1);
-            t->input[T_COLS - 1] = '\0';
+            strncpy(t->input, t->hist[t->hist_pos], T_INPUT_MAX);
+            t->input[T_INPUT_MAX] = '\0';
             t->in_len = (int)strlen(t->input);
         }
         return;
@@ -1908,20 +1999,18 @@ static void term_key(WND *w, const KeyEvent *k)
     if (k->scancode == KEY_ESC) { t->in_len = 0; t->input[0] = '\0'; return; }
     if (k->ch == '\b') { if (t->in_len) t->input[--t->in_len] = '\0'; return; }
     if (k->ch == '\n') {
-        char p[RAMFS_PATH_MAX + T_COLS + 8];
-        prompt_text(t, p, RAMFS_PATH_MAX + 4);
-        int pl = (int)strlen(p);
-        ksnprintf(p + pl, T_COLS + 4, "%s", t->input);
-        tprint_ex(t, K_NORMAL, pl, p);
-        char cmd[T_COLS];
+        echo_line(t, t->input, "");
+        char *cmd = kmalloc((UINT32)t->in_len + 1);
+        if (!cmd) { terr(t, "Not enough memory."); return; }
         memcpy(cmd, t->input, (size_t)t->in_len + 1);
         remember(t, cmd);
         t->hist_pos = t->hist_n;
         t->in_len = 0; t->input[0] = '\0';
-        run(t, cmd);               /* may destroy the window: nothing after */
+        run(t, cmd);               /* may destroy the window: nothing after but freeing the copy */
+        kfree(cmd);
         return;
     }
-    if (k->ch >= ' ' && k->ch <= '~' && t->in_len < T_COLS - 2) {
+    if (k->ch >= ' ' && k->ch <= '~' && t->in_len < T_INPUT_MAX) {
         t->input[t->in_len++] = k->ch;
         t->input[t->in_len] = '\0';
         t->scroll = 0;
@@ -1930,6 +2019,7 @@ static void term_key(WND *w, const KeyEvent *k)
 
 static void term_close(WND *w)
 {
+    for (int i = 0; i < ((Term *)w->user)->hist_n; i++) kfree(((Term *)w->user)->hist[i]);
     job_end((Term *)w->user);
     RamfsUnref(((Term *)w->user)->cwd);
     kfree(w->user);
@@ -2005,16 +2095,15 @@ void TerminalRun(const char *cmd, RamNode *cwd)
 {
     Term *t = term_new(cwd);
     if (!t || !cmd || !*cmd) return;
-    char line[T_COLS];
-    strncpy(line, cmd, sizeof(line) - 1);
-    line[sizeof(line) - 1] = '\0';
-    /* echo it after the prompt, as if typed */
-    char p[RAMFS_PATH_MAX + T_COLS + 8];
-    prompt_text(t, p, RAMFS_PATH_MAX + 4);
-    int pl = (int)strlen(p);
-    ksnprintf(p + pl, T_COLS + 4, "%s", line);
-    tprint_ex(t, K_NORMAL, pl, p);
+    UINT32 n = (UINT32)strlen(cmd);
+    if (n > T_INPUT_MAX) n = T_INPUT_MAX;
+    char *line = kmalloc(n + 1);
+    if (!line) return;
+    memcpy(line, cmd, n);
+    line[n] = '\0';
+    echo_line(t, line, "");                     /* after the prompt, as if typed */
     remember(t, line);
     t->hist_pos = t->hist_n;
     run(t, line);
+    kfree(line);
 }
