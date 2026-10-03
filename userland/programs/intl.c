@@ -9,10 +9,12 @@
  * The choice is HKCU\Control Panel\International: LocaleName and Locale
  * (the LCID, 8 hex digits), which kernel32 reads for
  * GetUserDefaultLocaleName/LCID, plus the classic values Windows keeps
- * beside them (sShortDate, sDecimal, iCurrency...) for programs that read
- * the registry themselves.  The registry is saved to drive C:, so the
- * choice lasts across restarts; programs started afterwards use it.  The
- * Settings app's "Time & language" page runs this.
+ * beside them (sShortDate, sDecimal, iCurrency...), which are also the
+ * user's overrides that GetLocaleInfo and the formatting functions answer
+ * (SetLocaleInfo changes one): choosing a locale resets them to its own.
+ * The registry is saved to drive C:, so the choice lasts across restarts;
+ * programs started afterwards use it.  The Settings app's "Time &
+ * language" page runs this.
  */
 #include <windows.h>
 #include <stdio.h>
@@ -74,6 +76,7 @@ static const struct { const WCHAR *value; DWORD type; } g_values[] = {
     { L"sYearMonth", LOCALE_SYEARMONTH },        { L"sDate", LOCALE_SDATE },
     { L"iDate", LOCALE_IDATE },                  { L"iFirstDayOfWeek", LOCALE_IFIRSTDAYOFWEEK },
     { L"iFirstWeekOfYear", LOCALE_IFIRSTWEEKOFYEAR }, { L"iCalendarType", LOCALE_ICALENDARTYPE },
+    { L"iTimePrefix", LOCALE_ITIMEMARKPOSN },
 };
 
 static int set(const char *arg)
@@ -98,6 +101,8 @@ static int set(const char *arg)
     for (size_t i = 0; !e && i < sizeof(g_values) / sizeof(g_values[0]); i++) {
         if (GetLocaleInfoEx(name, g_values[i].type | LOCALE_NOUSEROVERRIDE, v, 256))
             e = RegSetValueExW(k, g_values[i].value, 0, REG_SZ, (const BYTE *)v, (DWORD)(wcslen(v) + 1) * 2);
+        else
+            RegDeleteValueW(k, g_values[i].value);           /* (no override left from the last locale) */
     }
     RegCloseKey(k);
     if (e) { printf("intl: writing the registry failed (%ld)\n", (long)e); return 1; }
