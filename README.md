@@ -120,7 +120,8 @@ every part, phase by phase.
   either), an HTTP/1.1 client, and Mbed TLS with the Mozilla root store.
   The loopback interface carries 127.0.0.1 and ::1 (and traffic to the
   machine's own addresses), and `localhost` resolves to both without DNS.
-  Winsock (`ws2_32`) speaks IPv6 and dual-stack sockets with `getaddrinfo`;
+  Winsock (`ws2_32`, and `wsock32` with Winsock 1.1's ordinals) speaks IPv6
+  and dual-stack sockets with `getaddrinfo`;
   `winhttp` is a real HTTP client over Schannel TLS, with HTTP/2 by ALPN
   (nghttp2).
 - **Windows userland** (`userland/`): about 35 system DLLs written from
