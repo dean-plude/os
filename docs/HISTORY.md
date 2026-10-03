@@ -2823,6 +2823,37 @@ two of the three are existing open-source code shipped as OS components.
 - Not yet: Qt's widgets draw their shapes and icons in KeePassXC but not
   their text; `msvcp140_2.dll`.
 
+## The desktop's redraws no longer hold the file-system lock
+
+The [save without locks](#saving-drive-c-without-holding-the-locks) work
+left one long hold of the file-system lock: the desktop thread took it for
+the whole of every redraw, because a few things it draws come from files
+(program and file icons, the files on the desktop, the Start menu, most
+built-in apps' windows).  A redraw takes 50-180 ms in QEMU without KVM, so
+any file call (`GetFileAttributes`, `CreateFile`, a directory listing)
+could wait that long, and on a busy CI runner `savetest` saw 275 ms
+against its 250 ms limit.
+
+- **Lock only what reads files.**  `kernel/wm/desktop.c` no longer takes
+  the file-system lock around `WmComposite`.  What reads files takes it
+  itself, around just that: program icons (`AppDrawProgramIcon`), the
+  desktop's files (looking each one up and drawing its icon, not the
+  labels' blurred shadows), the Start menu while it is open, and built-in
+  apps' painters.  A built-in window whose painter reads no files sets the
+  new `WND.paint_fs_free` (the Terminal: its prompt's path takes the lock
+  for the moment it is read).  Program windows already drew without it.
+- **Cheaper window edges.**  `GdiRoundBorderAlpha`, the hairline edge of
+  every window and of the dock, worked out a distance for every pixel
+  inside the box only to skip it; it now skips the inside of each row
+  straight away (the same pixels are drawn).  A redraw of the desktop with
+  the Terminal open went from 76-107 ms to 53-68 ms in QEMU (TCG), which
+  is also how long calls behind the desktop lock can wait for one.
+- **Measured** with `savetest` in QEMU (TCG, 2 processors), the longest
+  wait for the file-system lock during the 32 MiB save fell from 177 ms to
+  1.3-12 ms; no hold of the file-system lock by the desktop went over
+  15 ms.  `savetest` now fails when the file-system call waits 100 ms or
+  more (the kernel and desktop calls keep the 250 ms limit).
+
 ## Generated docs are rebuilt by pull request
 
 Once main only took pull requests, the Docs workflow could neither push the
@@ -3032,6 +3063,61 @@ failure, and every socket was closed before use.
 - With it, Floorp fetches and renders `http://` pages served to QEMU's
   guest network.
 
+## GTK pointers and Wintab pen tablets
+
+Two gaps [GTK programs](#gtk-programs-inkscape) left open: GTK's own
+pointers did not show (Inkscape's tools all had the arrow), and there was
+no `wintab32.dll`, so GTK, Qt and Krita found no pen pressure.
+
+- **DIB sections of 1, 4, 8 and 16 bits per pixel.**  GDK makes a cursor
+  from a pixbuf as a 32-bit image with alpha (a `BITMAPV5HEADER` section)
+  and a 1-bit mask (a `BITMAPV4HEADER` section with two colours), then
+  `CreateIconIndirect`.  gdi32 took only 24- and 32-bit sections, so the
+  mask failed and GDK fell back to the default pointer.  A section of
+  fewer bits now keeps the program's own rows and colour table beside the
+  32-bit pixels gdi32 draws on, synced at each use the way 24-bit sections
+  already were: what the program writes is read as its colours, and what
+  gdi32 draws is written back as the nearest index (only where it
+  changed).  `GetObject` describes them, `GetDIBColorTable` and
+  `SetDIBColorTable` work on them (recolouring keeps the indices), 16-bit
+  ones are 5-5-5 or, with `BI_BITFIELDS`, 5-6-5, and a DIB's colour table
+  is found after its header whatever the header's size.
+- **Monochrome cursors.**  `CreateIconIndirect` with only a mask (twice the
+  cursor's height, the AND half over the XOR half) and `CreateCursor`'s
+  planes now give white, black and clear pixels (white was black before);
+  an "invert the screen" pixel, which the desktop cannot draw, is black.
+- **Pens** (`kernel/wm/tablet.c`).  USB digitizer pens (HID page 0x0D: tip
+  pressure, in range, barrel buttons, eraser) report packets beside the
+  pointer motion they make (the tip clicks, the barrel button
+  right-clicks); `usbcheck` runs a pen's report descriptor through the
+  parser.  A plain absolute pointer such as QEMU's `usb-tablet` stays a
+  mouse, as on Windows.  Programs can make a pen too:
+  `CreateSyntheticPointerDevice(PT_PEN)` and `InjectSyntheticPointerInput`
+  (Windows 10's pointer injection) move the pointer, click with the tip
+  and send the pen's pressure; `SM_DIGITIZER` reports `NID_EXTERNAL_PEN`
+  while a pen is there.  The desktop keeps every pen's last 256 packets,
+  numbered, for programs to read (`NtNovaGuiCtl` op 30).
+- **`wintab32.dll`**, written from the Wintab 1.4 specification (Wine's is
+  LGPL and was not used).  With no pen, `WTInfo(0, 0, NULL)` is 0, which
+  GTK and Qt take as "no Wintab", and `WTOpen` fails.  With one, there is
+  one device with a pen and an eraser cursor, X and Y 0-65535 and pressure
+  0-1023.  A context gets the packets that come while it is enabled and
+  one of its process's windows is in front: mapped to its output extents
+  (a negative extent turns the axis round, as GTK asks for Y), laid out
+  as its `lcPktData` asks, buttons and pressure absolute or relative
+  (`lcPktMode`), in a queue of the size `WTQueueSizeSet` gives, with
+  `WT_PACKET`, `WT_PROXIMITY` and `WT_CSRCHANGE` posted to its window.
+  `WTPacket`, `WTPacketsGet`/`Peek`, `WTDataGet`/`Peek`,
+  `WTQueuePacketsEx`, `WTEnable`, `WTOverlap`, `WTGet`/`WTSet` and the
+  rest of the interface are there, by name and by Wintab's ordinals.
+- **Tests**: `bmpcurtest` (the sections, GDK's two kinds of cursor, and the
+  desktop showing a program's pointer set as the class cursor) and
+  `wintabtest` (wintab32 loaded as GTK loads it, with no pen and with a
+  synthetic one) in the core self-tests.
+
+Not yet: tilt and rotation (no pen reports them yet), pens on virtio input
+(QEMU has none with pressure), and pen `WM_POINTER` messages.
+
 ## GTK programs: Inkscape
 
 Phase 20.4 starts with Inkscape 0.91, unmodified: the GTK 2 build in
@@ -3086,6 +3172,53 @@ palette and status bar.  What was missing:
 Still open: GDK's monochrome cursors (`CreateDIBSection` takes only 24-
 and 32-bit DIBs, so GTK falls back to the default pointer), the hicolor
 icon theme warning, and no Wintab tablets.
+
+## Kernel under KVM
+
+The kernel now runs correctly under KVM on AMD hosts such as GitHub's
+runners.  The failures the earlier trial found ("Test VMs under KVM in CI")
+had one cause: SYSRET's stack selector.
+
+- **SYSRET and RPL 3.**  STAR[63:48] held 0x10.  Intel CPUs, and QEMU's
+  emulation, force RPL 3 on the selectors SYSRET loads, but AMD CPUs load SS
+  as STAR[63:48] + 8 unchanged, so programs ran with SS = 0x18 (RPL 0).
+  That works in 64-bit mode until an interrupt taken in the program returns:
+  IRETQ checks the saved SS and raises #GP after the SWAPGS, and the kernel
+  went on with the program's TEB as its per-CPU block.  This was the boot
+  #GP in the ACPI thread (`uacpi_gas_read_mapped`), the network tests that
+  never finished, and the silent hangs at boot.  The STAR base is now
+  0x13, so SS = 0x1B and CS = 0x23 on every CPU.
+- **GS checks.**  An interrupt from the kernel that finds the user GS base
+  loaded, or a return to a program with a kernel GS base, now stops the
+  kernel with a report (vector, frame, backtrace, the IRETQ frame) instead
+  of running on with the wrong per-CPU block.
+- **Big kernel lock.**  `bkl_acquire`, `bkl_switch_in` and `bkl_relax`
+  raised the thread's lock depth before `raw_lock` had the lock, so an
+  interrupt taken while it halted (the ACPI SCI) ran its handler as though
+  it held the lock.  The depth now goes up once the lock is taken.
+- **Scheduler.**  A thread still on a timed-sleep list when it blocks
+  leaves the list first (it could otherwise be queued twice), and the run
+  queue stops the kernel with a backtrace if a thread is ever queued twice
+  or switched to when not ready.  An idle CPU looks at the run queues again
+  after marking itself idle, so a thread queued in that window is not left
+  until the next tick.  A switch asked for while a CPU waited for the
+  kernel lock now happens on the way back to the program.  The ACPI thread
+  records its own thread pointer at start, closing a race with
+  `AmlInitialize`.
+- **Serial output.**  The Terminal's copy of program output to the serial
+  port takes the kprintf lock, so a kernel message from another CPU no
+  longer lands in the middle of a program's line (stltest failed on that).
+
+Results under KVM on GitHub's runners (five CI runs and three-job soak
+runs): boot in 10-11 s; network suite 9 of 9 (about 55 s, against 63 s on
+TCG); devices suite 6 of 6; graphics job green (test step 111 s, against
+193 s on TCG); core suite 56 of 57.  The one left is `sleeptest timer`: a
+timed wait on an idle or busy CPU now and then ends at the next 10 ms tick
+instead of its deadline (traced: the CPU's timer did not fire for the
+sleeper's deadline), which puts the 1 ms timer queue timer's 95th
+percentile at about 9 ms under load.  So CI stays on TCG
+(`NOVARUN_ACCEL=tcg`); switching it to KVM is the udev step and dropping
+that line once `sleeptest timer` passes there.  No test was loosened.
 
 ## Locale formatting and the user locale
 
@@ -3236,6 +3369,54 @@ buttons and tilting (horizontal) wheels now work, on USB and on PS/2.
   through the same parser and report handling and compares the events
   they make.
 
+## Monitors on one card, plugged in and out
+
+- **A virtio GPU's outputs are monitors.**  A new driver,
+  `kernel/drivers/virtio_gpu.c`, drives QEMU's `virtio-vga` and
+  `virtio-gpu-pci` in 2D: each output with a monitor on it (up to 16 on
+  one card, `max_outputs=N`) shows a picture in memory that the GDI draws
+  on like on video memory, and the card copies what changed to the monitor
+  (`TRANSFER_TO_HOST_2D` and `RESOURCE_FLUSH`, after each frame and each
+  pointer move).  Each output gets the usual list of modes plus the size
+  its monitor asks for, which it starts in.  So one card is now enough
+  for several monitors, where before each needed its own adapter
+  (`[DISPLAY] Head 1: QEMU virtio-vga output 2, 1024x768, 18 mode(s)`).
+- **The boot display moves over.**  A `virtio-vga` shows its VGA
+  framebuffer on its first output only until a picture is set on any
+  output, so when the boot display is a `virtio-vga` with more than one
+  output, the primary monitor moves onto a picture in memory too, keeping
+  what the screen shows (`[DISPLAY] QEMU virtio-vga has 3 outputs: the
+  primary monitor is its output 1`); resolutions still change at run time
+  and after S3 every output gets its picture back.  With one output it
+  stays on the VBE driver, as before.
+- **Monitors come and go.**  When a monitor is connected to or
+  disconnected from an output the card says so, and the desktop lays
+  itself out again: a new monitor goes to the right of the others, the
+  windows (and the pointer) on one that went move to the nearest one left,
+  maximized ones fill their new monitor's work area, and programs get
+  `WM_DISPLAYCHANGE`; `EnumDisplayMonitors`, `GetMonitorInfo`,
+  `SM_CMONITORS` and the virtual screen follow (`[SHELL] Monitors: 3 (were
+  2)`).  In QEMU an output gets a monitor from a display window, or from a
+  VNC client on that output (`-vnc ...,display=gpu,head=N`) asking for a
+  desktop size; 0 x 0 takes it away.
+- **The bootloader skips a GOP it can't draw on.**  OVMF's GOP for a
+  `virtio-gpu-pci` has no framebuffer (Blt only); when that is the first
+  one the firmware lists, the bootloader takes the next adapter's.
+- `montest hotplug` (devices self-tests, a new "monitors" boot: one
+  `virtio-vga` with three outputs and a monitor on the first) has the test
+  plug monitors into the second and third outputs, put a window on the
+  third, then unplug both; it checks the monitors, `WM_DISPLAYCHANGE`, and
+  that the window and the pointer end up on a monitor that is left.  The
+  screenshot is one PNG per output.  `tools/novarun.py` takes screenshots
+  of every output of a `virtio-vga`/`virtio-gpu-pci` given an id and
+  `max_outputs`.
+- Not yet: per-monitor DPI that programs see (`GetDpiForMonitor`,
+  per-monitor-aware DPI contexts and `WM_DPICHANGED` when a window crosses
+  to a monitor with another scale): programs still get 96 DPI logical
+  pixels on every monitor.  Hot-plugging a whole display adapter (PCI
+  hot-plug) isn't handled either; monitors come and go on a virtio GPU's
+  outputs.
+
 ## Multi-touch
 
 Touch screens with more than one finger now work, and programs get them
@@ -3319,6 +3500,35 @@ the way Windows hands them out: `WM_TOUCH` or `WM_POINTER*`.
 - Not yet: more than one output of one adapter (QXL or virtio-gpu heads),
   a monitor plugged in or out while running, and per-monitor DPI that
   programs see: they all get 96 DPI logical pixels, as before.
+
+## A parallel userland build
+
+`tools/build_userland.py` compiled and linked the 80 DLLs and 56
+programs one after another (only a few third-party libraries inside a DLL's
+`build.py` used several cores).  It now schedules every step as a task that
+starts when the tasks it needs are done, on a pool of threads:
+
+- **`--jobs N` / `-j N`.**  At most `N` compiler, linker and resource
+  compiler processes run at once; the default is the CPU count and
+  `--jobs 1` builds one step at a time.  `--check` and the other options
+  behave as before, and CMake and CI keep calling the script without the
+  flag, so they use every core.
+- **Order that matters is kept.**  A DLL links after the DLLs in its
+  `deps`; a program links after the DLLs it imports and after its own
+  object.  Nothing else waits on anything, so the x64 and the x86 pass
+  each keep all cores busy.
+- **Same output.**  The files, their paths and their order in
+  `userland_files.c` do not depend on `N`: what each task adds to the
+  image is collected per task (`b.built` and `b.placed` in a DLL's
+  `build.py` still work) and put in link order afterwards.
+- **Readable failures.**  A failed command prints its command line and
+  output in one piece, the build stops starting new work, and the script
+  exits with status 1.
+- **`userland/msvcp140/build.py`** builds `msvcprt_static.lib` under a
+  lock, since several DLLs and programs link it.
+
+Cold build of the userland without NetSurf on a 4-core machine: 6 min 16 s
+before, 3 min 39 s after (CPU time unchanged, 9 min 41 s).
 
 ## errno per thread in the C runtime
 
@@ -3503,6 +3713,58 @@ opening a file or a connection and running in the nightly corpus.
   and plugins (`icu.dll`, `mlang.dll`) are untried; `IFileDialogCustomize`
   adds no controls.
 
+## Priority boosts on wake-up
+
+A thread woken by an event, a semaphore, a condition variable or a
+message, with a busy thread of the same priority on its processor, used
+to wait for that thread's 20 ms time slice to end: about 19 ms at the
+95th percentile.  Windows raises a woken thread's priority above its base
+for a while so it runs at once, which is what makes a program's window
+answer and an audio thread refill its buffer promptly while something
+else computes.  NovaOS now does the same.
+
+- **Two priorities per thread** (`kernel/ke/scheduler.c`): the base
+  priority and the current one.  A wake-up raises the current priority to
+  the base plus the waker's increment, NT's values: +1 for an event, a
+  semaphore, a mutex, an alert (what SRW locks, condition variables and
+  critical sections wake with) or a timed wait's deadline, +1 for finished
+  file I/O, +2 for a named pipe, the network or a window message, +6 for
+  keyboard and mouse input and console input.  Never above 15, never for
+  a real-time thread (16 and up), and a boost never lowers a priority that
+  is already higher.  A window message boosts only the thread it is for;
+  the others the message queue wakes get nothing.
+- **The boost wears off** one level for every quantum (two 10 ms ticks)
+  the thread runs while boosted, its waits in between included, back to
+  its base.  A woken thread that turns busy takes turns with the others
+  again within a few quanta.
+- **Run queues are ordered by priority**, threads of one priority taking
+  turns as before.  A boosted thread preempts a busy thread of its base
+  priority on its processor.  A thread whose slice ends goes on running
+  while every queued foreground thread has a lower priority (csrss, below
+  them, still gets its turn); a yield gives way to any thread.
+- **The balance set**: once a second, a thread that has been ready for 3 s
+  without running is raised to 15 for one quantum, then drops back to its
+  base, so higher-priority threads can't starve it for good.
+- **Kernel threads**: the device poll and audio mixer threads moved from
+  12 to 16, above any boost, so a boosted program can't hold up input or
+  sound.  The desktop moved from 8 to 9, so a +1 boost doesn't queue
+  programs ahead of it, while a timed wait's wake (also +1) still preempts
+  it.
+- **`NtQueryInformationThread`** reports a thread's current and base
+  priority instead of a fixed 8.
+- **Measured** in QEMU (TCG) on 2 CPUs with a busy thread on each, with
+  the new `boosttest` (64- and 32-bit): a woken thread ran after 19.0 ms
+  (95th percentile) before, for each of event, semaphore, condition
+  variable and thread message, and after 0.03 to 0.10 ms now.
+  `sleeptest timer` still passes at 0.32 ms (0.37 ms before) and its
+  "Event set" line fell from 19.0 ms to 0.07 ms.  `smpstress` on 4 CPUs
+  (6 runs each): the 8-thread critical section took 940 to 1380 ms before
+  and 800 to 1070 ms after, so waking a lock's waiter with a boost causes
+  no convoy; event ping-pong 40 to 100 ms before, 80 to 150 ms after.
+- **Not done**: `SetThreadPriority` and `SetPriorityClass` are still
+  accepted and ignored, so every program thread has base 8; NT's extra
+  foreground-process boost and quantum stretching are left out.
+
 ## Qt programs: KeePassXC
 
 Phase 20.3 starts with KeePassXC 2.7.12 (the portable Qt 5 zip from its
@@ -3551,6 +3813,37 @@ What was missing:
   screenshot must match `tests/reference/keepassxc.png`.
 
 Next in Phase 20.3: Krita.
+
+## Space a power cut left marked as used comes back at boot
+
+A power cut in the middle of saving drive C: never loses a file (the old
+copy or the new one comes back), but it could leave the clusters the save
+had already filled marked as used in the FAT with no file pointing at
+them, and nothing gave them back: a machine that lost power during saves
+slowly filled up.
+
+- **The FAT says when to look.**  `kernel/fs/fat.c` now keeps the
+  volume's clean-shutdown bit in FAT[1], as Windows does: it is cleared
+  on the disk (and flushed) before the first FAT or directory sector of a
+  change is written, and set again once a save has flushed everything.
+  A volume mounted with it clear was cut off mid-save; one mounted with
+  it set is not scanned, so an ordinary boot costs nothing.
+- **Reclaimed at mount.**  When drive C:'s volume was not closed
+  cleanly, `FatReclaim` reads the whole FAT once, walks every directory
+  from the root marking each file's and directory's chain, and frees
+  every cluster marked as used that nothing reached (bad clusters and
+  reserved values stay).  A chain that runs into a cluster already reached
+  (two files sharing clusters, or a loop) stops there and is left alone,
+  so a reachable cluster is never freed; a read error or a lack of memory
+  frees nothing.  The boot log says what happened:
+  `[PERSIST] Drive C: was not closed cleanly: reclaimed N cluster(s) ...`.
+  Other FAT volumes (USB sticks, the boot partition) are only mounted,
+  never repaired, and keep their bit as they found it.
+- **Tested** by the core self-test `power cut`: it stops QEMU, adds three
+  chains no file reaches (66 clusters) to the data disk with the bit
+  clear, as a cut-off save leaves them, and resets the machine; NovaOS
+  must free exactly those and end up with the free-cluster count
+  `fsck.fat` finds on a copy of the same disk.
 
 ## Saving drive C: without holding the locks
 
@@ -3711,6 +4004,58 @@ not look at.
   host threads, the old kernel failed it (40 repeated bursts on the xHCI
   speaker) and the fixed one passed every run, also with QEMU and three
   busy threads pinned to one host CPU.
+
+## USB microphones, and USB audio on EHCI
+
+USB microphones and the microphones of USB headsets now record: plug one
+in and `waveIn` and WASAPI capture record from it, as Windows does, and
+from the HD Audio card's microphone again when it is unplugged.
+High-speed USB audio devices now work on EHCI controllers too.
+
+- **EHCI** (`kernel/drivers/ehci.c`): isochronous transfers for
+  high-speed devices, in iTDs.  Like UHCI's isochronous TDs they go
+  straight into the frame list, in front of the interrupt list, and come
+  out once their frame has passed; an iTD carries a packet for each
+  microframe the endpoint is polled in (eight for one polled every
+  microframe), and a pipe polled every 2^n frames gets one every 2^n
+  frames.  Full-speed isochronous endpoints behind a high-speed hub would
+  need siTDs, which are not written (their pipes are refused; on a root
+  port such a device goes to the companion controller, which streams).
+- **The mixer** (`kernel/drivers/audio.c`): inputs are attached by their
+  drivers (`AudioInputAttach`/`Detach`: a ring, a position and a start
+  and stop) instead of being the HD Audio card; the newest records, and
+  unplugging it goes back to the one before.  The recording device's
+  name (`waveInGetDevCaps`, WASAPI) is the input's own, e.g. "USB
+  Microphone (port 1)".  Playback: behind what it has mixed, the mixer
+  now keeps the rest of the playing output's ring silent.  When the mixer
+  thread was held up for longer than its 80 ms lead (here while a USB
+  speaker was being set up on a busy host), the device played what the
+  ring held a lap earlier: 30-40 ms of the previous tone's end, which
+  failed `usbaudio unplug` about one run in two in this container, on
+  `main` too.  Now such a hold-up leaves a gap.
+- **USB audio** (`kernel/drivers/usbaudio.c`): besides the first
+  streaming interface it can play on, the driver takes the first it can
+  record from: a setting whose IN endpoint carries 48 kHz 16-bit PCM,
+  mono or stereo.  The IN stream runs from the moment the microphone is
+  plugged in; each packet is copied into a 64 KiB ring (a mono
+  microphone's samples twice, as stereo), which the mixer reads from
+  while something records.
+- **Tests**: QEMU has no USB microphone, no high-speed audio device and
+  nothing for EHCI's iTDs to talk to, so `tools/usbredirpeer.py` is one:
+  a USB Audio Class 1 headset or microphone behind QEMU's `usb-redir`
+  device, speaking the usbredir protocol (its speaker's packets go to a
+  WAV, its microphone sends a sine in real time).  The devices suite has
+  a third boot, `usbheadset`, with no HD Audio card and a high-speed
+  headset on an EHCI controller: `soundtest tone` must sound in the
+  headset's WAV alone (eight packets an iTD), and `soundtest record` and
+  `capture` must record its microphone's tone.  Then full-speed
+  microphones, each hearing its own tone, are plugged into xHCI, OHCI and
+  UHCI controllers, which must each record the newest one's tone (the
+  first isochronous IN on all four controllers), and unplugging the UHCI
+  one must hand recording back to the OHCI one.
+- Not yet: USB Audio 2.0, siTDs, sampling rates other than 48 kHz,
+  asynchronous endpoints' rate feedback, webcams, and choosing the
+  playback or recording device in Settings.
 
 ## USB isochronous transfers and USB speakers
 

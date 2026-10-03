@@ -337,6 +337,13 @@ void GdiClampToMonitors(int *x, int *y)
     *y = imin(imax(*y, r.y), r.y + r.h - 1);
 }
 
+void GdiForgetMonitor(int i)
+{
+    if (i <= 0 || i >= GDI_MAX_MONITORS) return;
+    for (int j = i; j < GDI_MAX_MONITORS - 1; j++) g_origin[j] = g_origin[j + 1];
+    g_origin[GDI_MAX_MONITORS - 1].set = false;
+}
+
 void GdiSetMonitorOrigin(int i, int x, int y)
 {
     if (i <= 0 || i >= GDI_MAX_MONITORS) return;
@@ -418,10 +425,13 @@ void GdiPresent(void)
     UINT32 *back = DisplayBackPage();
     if (back) g.vram = back;
     present_monitor(&g_mon[0], g.vram, g.vstride);
+    DisplayHeadDamage(0, 0, 0, g_mon[0].dw, g_mon[0].dh);
     for (int i = 1; i < g_nmon; i++) {
         int stride;
         UINT32 *v = DisplayHeadSurface(i, &stride);
-        if (v) present_monitor(&g_mon[i], v, stride);
+        if (!v) continue;
+        present_monitor(&g_mon[i], v, stride);
+        DisplayHeadDamage(i, 0, 0, g_mon[i].dw, g_mon[i].dh);
     }
 }
 
@@ -727,13 +737,20 @@ void GdiRoundBorderAlpha(GdiRect r, int rad, GdiColor c, int alpha)
     RBox b = rbox_of(r, rad);
     UINT32 n = pixof(c);
     int w = g.s * FX;                             /* one logical pixel wide */
-    for (int y = imax(b.y0, g.cy0); y < imin(b.y1, g.cy1); y++)
+    /* Pixels further than the radius and the stroke inside every edge
+     * are all "well inside" (below): their rows skip from ix0 to ix1 */
+    int m = b.r + g.s + 2;
+    int ix0 = b.x0 + m, ix1 = b.x1 - m, iy0 = b.y0 + m, iy1 = b.y1 - m;
+    for (int y = imax(b.y0, g.cy0); y < imin(b.y1, g.cy1); y++) {
+        bool hole = ix0 < ix1 && y >= iy0 && y < iy1;
         for (int x = imax(b.x0, g.cx0); x < imin(b.x1, g.cx1); x++) {
+            if (hole && x >= ix0 && x < ix1) { x = ix1 - 1; continue; }
             int sd = rbox_sd(&b, x, y);
             if (sd < -w - FX) continue;           /* well inside: nothing to draw */
             int cv = cov_of(sd) - cov_of(sd + w);
             if (cv > 0) plot(x, y, n, cv * alpha / 255);
         }
+    }
 }
 
 void GdiRoundGradV(GdiRect r, int rad, GdiColor top, GdiColor bottom)
@@ -1219,6 +1236,7 @@ static UINT32 g_under[CUR_MAX_W * CUR_MAX_H];
 static int    g_under_x, g_under_y, g_under_w, g_under_h;
 static UINT32 *g_under_vram;              /* the screen the save-under came from */
 static int    g_under_stride;
+static int    g_under_head;               /* ... and its display head */
 
 /* The pointer goes on the screen of the monitor it is on: @dx, @dy (back
  * buffer device px) become that screen's px, *s its scale */
@@ -1238,6 +1256,7 @@ static bool cursor_target(int *dx, int *dy, CurTarget *t)
     *dy = floordiv(*dy - m->r.y * g.s, m->k);
     g_under_vram = t->vram;
     g_under_stride = t->stride;
+    g_under_head = i;
     return true;
 }
 
@@ -1266,6 +1285,7 @@ static void cursor_blit(const CurTarget *t, int dx, int dy, const UINT32 *px, in
             row[x] = a == 255 ? pixof(col) : blend(d, pixof(col), a);
         }
     }
+    DisplayHeadDamage(g_under_head, g_under_x, g_under_y, g_under_w, g_under_h);
 }
 
 /* The system pointers are rendered once per shape, scale and phase */
@@ -1312,5 +1332,12 @@ void GdiCursorErase(int dx, int dy)
         for (int i = 0; i < g_under_w; i++)
             row[i] = g_under[j * CUR_MAX_W + i];
     }
+    DisplayHeadDamage(g_under_head, g_under_x, g_under_y, g_under_w, g_under_h);
+    g_under_w = g_under_h = 0;
+}
+
+void GdiCursorForget(void)
+{
+    g_under_vram = NULL;
     g_under_w = g_under_h = 0;
 }

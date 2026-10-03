@@ -86,6 +86,13 @@ and `lld-link`, twice: once for x64 into `C:\Windows\System32` and
 NetSurf browser, are embedded in `kernel.elf` and placed on drive C: at
 boot.
 
+Independent DLLs, programs and objects build concurrently, with at most
+`--jobs N` (or `-j N`) compiler and linker processes running at once; the
+default is the number of CPUs and `--jobs 1` builds one step at a time.  A
+DLL still links after the DLLs it depends on, and the files and their order
+in the image are the same whatever `N` is.  CMake runs the script without
+the flag, so the kernel build uses every core.
+
 Environment variables:
 
 | Variable | Effect |
@@ -97,7 +104,7 @@ To rebuild only the userland, for a quick check of a DLL (the second
 command only loads the manifests, as CI does):
 
 ```bash
-NOVA_NO_NETSURF=1 python3 tools/build_userland.py /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
+NOVA_NO_NETSURF=1 python3 tools/build_userland.py --jobs 4 /tmp/ul /tmp/ul/gen.c kernel/ke/syscall.h
 python3 tools/build_userland.py --check
 ```
 
@@ -231,8 +238,28 @@ PulseAudio or PipeWire when it finds one; set `NOVA_AUDIO` (`pa`,
 `pipewire`, `alsa`, `none`, `wav,path=out.wav`) to pick QEMU's backend.
 USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
 -device qemu-xhci -device usb-audio,audiodev=usbsnd` (or on `pci-ohci` or
-`piix3-usb-uhci`; QEMU's EHCI and NovaOS's EHCI driver have no
-isochronous transfers).  The newest sound output plays.
+`piix3-usb-uhci`; QEMU's `usb-audio` is full speed only, so not on a
+plain `usb-ehci`).  The newest sound output plays, and the newest input
+records.  QEMU has no USB microphone and no high-speed audio device:
+`tools/usbredirpeer.py` is one (a USB Audio Class 1 headset or microphone
+behind a `usb-redir` device), e.g. a high-speed headset on EHCI whose
+microphone hears 523 Hz:
+
+```bash
+python3 tools/usbredirpeer.py --port 10700 --speaker headset.wav --mic 523 &
+```
+
+then `-chardev socket,id=ur,host=127.0.0.1,port=10700 -device
+usb-ehci,id=ehci -device usb-redir,chardev=ur,bus=ehci.0` (`--speed full`
+for a full-speed one on the other controllers; the speaker's sound goes
+to `headset.wav`).
+
+More monitors: each further display adapter is one (`-device
+secondary-vga`), and so is each output of a virtio GPU with a monitor on
+it, e.g. `-vga none -device virtio-vga,max_outputs=2,id=gpu`.  QEMU
+connects an output when its display window or a VNC client on it
+(`-vnc :1,display=gpu,head=1`) asks for a size, and a VNC client asking
+for 0 x 0 disconnects it, while NovaOS runs.
 
 ### Where your files are kept
 
@@ -335,8 +362,11 @@ python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 `tools/novarun.py` (and so `tools/selftest.py`) starts QEMU with `-accel kvm`
 when `/dev/kvm` is readable and writable, and with TCG otherwise.  Set
 `NOVARUN_ACCEL=tcg` or `NOVARUN_ACCEL=kvm` to force one.  The CPU model stays
-`qemu64` with the same feature flags under both.  CI pins every job to TCG (`NOVARUN_ACCEL=tcg`) until the KVM failures in the
-history entry "Test VMs under KVM in CI" are fixed.
+`qemu64` with the same feature flags under both.  CI pins every job to TCG
+(`NOVARUN_ACCEL=tcg`).  Under KVM the kernel boots and the network, device and
+graphics suites pass, and the core suite passes except `sleeptest timer`,
+where a few timed waits end up to 10 ms late (history entry "Kernel under
+KVM").  Switching CI to KVM waits for that.
 
 The graphics suite downloads 7-Zip, Mesa and DXVK and builds
 gltest/d3dtest/d2dtest/dwtest:
@@ -365,7 +395,20 @@ from boot; the test plugs the second into an OHCI and the third into a
 UHCI controller while NovaOS runs, plays `soundtest tone` after each, then
 unplugs the third and plays again, which the second must hear.  Each
 speaker's WAV must hold its tones and nothing else: a speaker another one
-took over from has to go quiet.
+took over from has to go quiet.  A third boot has no HD Audio card and a
+high-speed USB headset on an EHCI controller (`tools/usbredirpeer.py`
+behind a `usb-redir` device; its speaker writes `headset.wav`, its
+microphone hears 523 Hz): `soundtest tone` must sound in `headset.wav`
+alone, and `soundtest record` and `capture` must record the microphone's
+tone.  The test then plugs full-speed USB microphones (more
+`usbredirpeer.py`s, each hearing its own tone) into an xHCI, an OHCI and
+a UHCI controller, records after each (the newest microphone must be
+heard), unplugs the UHCI one and records the OHCI one again.  Last, one
+`virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
+connects a monitor to the second and third outputs and disconnects them
+again while NovaOS runs, through a VNC server QEMU has on each (an RFB
+`SetDesktopSize` asks for a monitor of that size there; 0 x 0 takes it
+away):
 
 ```bash
 python3 tools/selftest.py --suite devices
@@ -480,17 +523,20 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
 | `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE`, a window that 800x600 shrinks growing back to its size and place, `CDS_UPDATEREGISTRY` saving the mode in the registry.  `disptest W H` switches and saves; `disptest saved W H` checks the mode after a restart |
 | `cursortest` | System pointers: every `IDC_*` cursor loads with its own image and hot spot, the desktop draws each one over a window (the busy ring turning), `SetSystemCursor` replaces the I-beam for every program and `SPI_SETCURSORS` puts it back, and a program's 32 x 32 cursor is sent at the display's scale.  `cursortest show N` keeps a window of cells, one pointer each, up for N seconds |
-| `montest` | More than one monitor: `EnumDisplayMonitors`, `GetMonitorInfo`, `MonitorFromPoint`/`Rect`/`Window`, `EnumDisplayDevices`, `EnumDisplaySettings` and `ChangeDisplaySettingsEx` for `\\.\DISPLAY2` (moving it with `DM_POSITION`, saved in the registry), `SM_*VIRTUALSCREEN`, a window maximized on the second monitor, and the pointer crossing onto it.  `montest list` prints the monitors |
+| `montest` | More than one monitor: `EnumDisplayMonitors`, `GetMonitorInfo`, `MonitorFromPoint`/`Rect`/`Window`, `EnumDisplayDevices`, `EnumDisplaySettings` and `ChangeDisplaySettingsEx` for `\\.\DISPLAY2` (moving it with `DM_POSITION`, saved in the registry), `SM_*VIRTUALSCREEN`, a window maximized on the second monitor, and the pointer crossing onto it.  `montest hotplug` (the devices suite's "monitors" boot) has the test plug monitors into a virtio-vga's second and third outputs and unplug them: the monitor calls follow, `WM_DISPLAYCHANGE` comes each time, and a window and the pointer on a monitor that goes move to one that is left.  `montest list` prints the monitors |
+| `bmpcurtest` | Pointers made from a program's bitmaps, as GTK makes them: DIB sections of 1, 4, 8 and 16 bits per pixel (`GetObject`, drawing on them, the program's bits, `Get`/`SetDIBColorTable`), a cursor from a 32-bit image with alpha and a 1-bit mask, `CreateCursor`'s AND and XOR planes and a monochrome mask, and the copy set as the class cursor that the desktop then shows.  `bmpcurtest show N` keeps a window with that pointer up for N seconds |
 | `icutest` | The system ICU (`icu.dll`) as .NET loads it: German and Japanese names, numbers, currencies, dates, the Japanese calendar, collation, case, time-zone ids, IDNA, normalization, 8 threads at once; then kernel32's `GetLocaleInfoEx`, LCIDs and locale enumeration for those locales |
 | `nlstest` | `GetDateFormat`, `GetTimeFormat`, `GetNumberFormat` and `GetCurrencyFormat` (A, W, Ex) in German, Japanese and English against what Windows prints: default formats, pictures, `NUMBERFMT`/`CURRENCYFMT`, flags, rounding and errors.  `nlstest user` sets the user locale with `intl.exe` and checks that new processes format that way; `nlstest set NAME` and `after-restart NAME` check it lasts across a restart |
 | `nlstest calendars` | The locales' calendars: `LOCALE_ICALENDARTYPE`, `GetCalendarInfo` (A, W, Ex), `EnumCalendarInfo`, Japanese eras, Buddhist, Taiwan, Tangun, Hebrew, Hijri, Um Al Qura and Persian dates, `DATE_USE_ALT_CALENDAR`, `EnumDateFormats` and `EnumTimeFormats`; then `GetDurationFormat`.  `nlstest override` sets the user's overrides with `SetLocaleInfo` and checks them here and in a new process |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
+| `boosttest` (x64 and x86) | NT's wake-up priority boosts: how soon a thread waiting on an event, a semaphore, a condition variable or a thread message runs once another thread wakes it, idle and with a busy thread of the same base priority on every CPU; passes when the 95th percentile under load is 2 ms or less, the woken thread's priority (`NtQueryInformationThread`) is its base plus the increment (+1, +2 for a message), it is back at its base after 200 ms of running, and the busy threads ran meanwhile |
 | `sleeptest timer` | How late `Sleep(1)`, `Sleep(5)`, a 1 ms wait timeout, a 1 ms waitable timer, a 5 ms periodic one, a 1 ms timer's completion routine and a 1 ms timer queue timer end, idle and with a busy thread on every CPU; passes when the 95th percentile under load is 1 ms or less and none ends early.  Also reports how soon a thread waiting on an event runs once another sets it.  Plain `sleeptest` sleeps (S3) instead |
-| `savetest` | Writes 32 MiB to `C:\Temp` (or `savetest MIB`), then for 12 seconds, while NovaOS saves drive C: to its disk, times `GetProcessHandleCount` (the big kernel lock), `GetMonitorInfo` (the desktop lock) and `GetFileAttributes` (the file-system lock) on three threads; passes when none waited 250 ms.  The self-test also checks the kernel's `[PERSIST] Saved` line: the save held the file-system lock under 20 ms |
+| `savetest` | Writes 32 MiB to `C:\Temp` (or `savetest MIB`), then for 12 seconds, while NovaOS saves drive C: to its disk, times `GetProcessHandleCount` (the big kernel lock), `GetMonitorInfo` (the desktop lock) and `GetFileAttributes` (the file-system lock) on three threads; passes when none waited 250 ms and `GetFileAttributes` under 100 ms (the desktop's redraws take the file-system lock only around what they read from files).  The self-test also checks the kernel's `[PERSIST] Saved` line: the save held the file-system lock under 20 ms |
 | `powertest` | The lid and a thermal zone (`GetPwrCapabilities`, `ThermalInformation`, `LastSleepTime`/`LastWakeTime`): closing the lid sleeps; needs `tests/acpi/lid-thermal.asl` and the self-test's help (see above) |
 | `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
 | `inputtest` | Mouse side buttons (`WM_XBUTTONDOWN`/`UP`, `WM_APPCOMMAND` back and forward), the horizontal wheel (`WM_MOUSEHWHEEL`) and the volume keys (`VK_VOLUME_*`, `WM_APPCOMMAND`): a USB mouse plugged in for the test, the PS/2 mouse and the USB keyboard, driven by the self-test (see above) |
 | `touchtest` | Multi-touch: `WM_TOUCH` with `GetTouchInputInfo` in a `RegisterTouchWindow` window, `WM_POINTERDOWN`/`UP`, `GetPointerInfo`, `GetPointerType`, `GetPointerFrameTouchInfo` and the mouse messages `DefWindowProc` makes of them in another, `SM_DIGITIZER`; needs the devices suite's virtio multi-touch screen and its help (see above) |
+| `wintabtest` | Pen tablets through `wintab32.dll`, loaded as GTK loads it: no tablet without a pen; with a synthetic pen (`CreateSyntheticPointerDevice`), one device with a pen and an eraser cursor, a context opened as GTK opens it getting `WT_PROXIMITY`, `WT_PACKET` (position, pressure, relative button changes) and `WT_CSRCHANGE`, the pen moving the pointer and clicking, and an absolute-mode context read with `WTQueuePacketsEx`, `WTDataPeek` and `WTPacketsGet` |
 | `smpstress` (x64) | Locks, events, semaphores, memory, handles and starting processes from many threads, then file and registry throughput on one CPU and on all (`smpstress scaling 3` fails below 3x; `smpstress throughput [X [files\|registry [many\|N]]]` measures only; run with `tools/novarun.py --smp 4`) |
 | `acltest` | Access checks against DACLs (`AccessCheck`) for our token and restricted, write-restricted and deny-only ones; `CheckTokenMembership`, impersonation; a named event with a DACL refused to a restricted token; file ACLs on drive C:: denied writes, deletes and renames (and reads for a restricted token), inheritance, `CreateFile` with a descriptor.  It leaves `C:\AclTest\kept.txt` and, run again after a restart, checks it kept its DACL (C: on NTFS) |
 | `drivetest` | Drive D: (NTFS: reading, then writing, renaming, deleting), with the disk from `scripts/make-ntfs-disk.sh`; then `scripts/check-ntfs-disk.sh` on the host |

@@ -137,6 +137,7 @@ set(KERNEL_C_SOURCES
     drivers/e1000.c
     drivers/virtio_net.c
     drivers/virtio_input.c
+    drivers/virtio_gpu.c
     drivers/ahci.c
     drivers/hda.c
     drivers/audio.c
@@ -207,6 +208,7 @@ set(KERNEL_C_SOURCES
     wm/desktop.c
     wm/clipboard.c
     wm/input.c
+    wm/tablet.c
     apps/apps.c
     apps/terminal.c
     apps/explorer.c

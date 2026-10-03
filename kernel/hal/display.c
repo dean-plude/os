@@ -32,6 +32,7 @@
 #include "display.h"
 #include "framebuffer.h"
 #include "pci.h"
+#include "../drivers/virtio_gpu.h"
 #include "../arch/x86_64/cpu.h"
 #include "../ke/printf.h"
 #include "../lib/string.h"
@@ -64,7 +65,7 @@ enum {
 #define VGA_CRTC          0x3D4
 #define VGA_STATUS        0x3DA           /* read: resets the attribute flip-flop */
 
-typedef enum { DRV_NONE, DRV_GOP, DRV_BOCHS, DRV_CIRRUS } DrvKind;
+typedef enum { DRV_NONE, DRV_GOP, DRV_BOCHS, DRV_CIRRUS, DRV_VIRTIO } DrvKind;
 
 static struct {
     DrvKind      kind;
@@ -85,6 +86,7 @@ static struct {
     int          stride;                  /* pixels per scanline */
     bool         flip;                    /* two pages fit */
     int          page;                    /* the page on screen: 0 or 1 */
+    int          vdev;                    /* DRV_VIRTIO: the virtio GPU (output 0) */
 } d;
 
 static UINT16 vbe_read(int reg)
@@ -407,10 +409,13 @@ static bool cirrus_set_mode(int w, int h)
  * Further heads: QEMU's secondary-vga and bochs-display (the standard VGA's
  * IDs without the legacy VGA ports), anything but the boot display.  Their
  * DISPI registers are at BAR2 + 0x500 and their video memory is BAR0.
+ * And each output of a virtio GPU that has a monitor (virtio_gpu.c): a
+ * picture in memory the card shows; those come and go (DisplayPoll).
  * ----------------------------------------------------------------------- */
 typedef struct {
     const char      *name;
-    volatile UINT16 *regs;
+    volatile UINT16 *regs;                /* DISPI; NULL on a virtio output */
+    int              vdev, vscan;         /* the virtio GPU and its output */
     UINT64           vram_phys, vram_size;
     UINT32          *vram;
     int              max_w, max_h, stride;
@@ -421,9 +426,19 @@ typedef struct {
 
 static Head g_head[DISPLAY_MAX_HEADS - 1];
 static int  g_nheads;                     /* further heads in g_head */
+static UINT64 g_boot_fb;
 
 static bool head_set_mode(Head *h, int w, int ht, bool clear)
 {
+    if (!h->regs) {
+        int st;
+        UINT32 *px;
+        if (!VgpuShow(h->vdev, h->vscan, w, ht, !clear, &px, &st)) return false;
+        h->vram = px;
+        h->stride = st;
+        h->cur = (DisplayMode){ w, ht };
+        return true;
+    }
     volatile UINT16 *r = h->regs;
     r[VBE_ENABLE] = 0;
     r[VBE_BANK] = 0;
@@ -454,6 +469,7 @@ static void heads_probe(const BootFramebuffer *boot)
         if (!bar2) continue;
         Head *h = &g_head[g_nheads];
         memset(h, 0, sizeof(*h));
+        h->vdev = -1;
         h->regs = (volatile UINT16 *)(bar2 + VBE_MMIO_OFFSET);
         UINT16 id = h->regs[VBE_ID];
         if (id < VBE_ID_MIN || id > VBE_ID_MAX) {
@@ -490,6 +506,100 @@ static void heads_probe(const BootFramebuffer *boot)
                 g_nheads, h->name, pci.bus, pci.dev, pci.func,
                 (unsigned long long)(h->vram_size >> 20), h->cur.w, h->cur.h, h->nmodes);
     }
+}
+
+/* Whether output @scan of virtio GPU @dev is a head (0 when it's head 0) */
+static int vhead_of(int dev, int scan)
+{
+    if (d.kind == DRV_VIRTIO && d.vdev == dev && scan == 0) return 0;
+    for (int i = 0; i < g_nheads; i++)
+        if (!g_head[i].regs && g_head[i].vdev == dev && g_head[i].vscan == scan) return i + 1;
+    return -1;
+}
+
+/* A virtio GPU whose outputs may be heads: not the boot display's card
+ * unless head 0 moved onto it (its other outputs would blank the VGA one) */
+static bool vgpu_usable(int dev)
+{
+    return !VgpuIsAt(dev, g_boot_fb) || (d.kind == DRV_VIRTIO && d.vdev == dev);
+}
+
+/* Output @scan of virtio GPU @dev has a monitor that prefers @pw x @ph:
+ * a new head, in that mode */
+static bool vhead_add(int dev, int scan, int pw, int ph)
+{
+    if (g_nheads >= DISPLAY_MAX_HEADS - 1) {
+        kprintf("[DISPLAY] %s output %d: no room for another monitor\n", VgpuName(dev), scan + 1);
+        return false;
+    }
+    Head *h = &g_head[g_nheads];
+    memset(h, 0, sizeof(*h));
+    h->name = VgpuName(dev);
+    h->vdev = dev;
+    h->vscan = scan;
+    h->max_w = 3840; h->max_h = 2160;
+    if (pw < 640 || ph < 480 || pw > 3840 || ph > 2160 || (pw & 7)) { pw = 1280; ph = 800; }
+    for (unsigned m = 0; m < sizeof(g_common) / sizeof(g_common[0]); m++)
+        add_mode_to(h->modes, &h->nmodes, g_common[m].w, g_common[m].h);
+    add_mode_to(h->modes, &h->nmodes, pw, ph);
+    if (!head_set_mode(h, pw, ph, true)) return false;
+    h->def = h->cur;
+    h->vram_phys = (UINT64)(uintptr_t)h->vram - PHYSMAP_BASE;
+    h->vram_size = (UINT64)h->cur.w * h->cur.h * 4;
+    g_nheads++;
+    kprintf("[DISPLAY] Head %d: %s output %d, %dx%d, %d mode(s)\n", g_nheads, h->name, scan + 1,
+            h->cur.w, h->cur.h, h->nmodes);
+    return true;
+}
+
+static void vheads_probe(void)
+{
+    for (int dev = 0; dev < VgpuCount(); dev++) {
+        if (!vgpu_usable(dev)) continue;
+        int w[VGPU_MAX_SCANOUTS], h[VGPU_MAX_SCANOUTS];
+        (void)VgpuChanged(dev);                         /* what follows is the news */
+        UINT32 con = VgpuConnected(dev, w, h);
+        for (int s = 0; s < VgpuScanouts(dev); s++)
+            if ((con & (1u << s)) && vhead_of(dev, s) < 0) vhead_add(dev, s, w[s], h[s]);
+    }
+}
+
+bool DisplayPoll(UINT32 *removed)
+{
+    bool changed = false;
+    *removed = 0;
+    for (int dev = 0; dev < VgpuCount(); dev++) {
+        if (!vgpu_usable(dev) || !VgpuChanged(dev)) continue;
+        int w[VGPU_MAX_SCANOUTS], h[VGPU_MAX_SCANOUTS];
+        UINT32 con = VgpuConnected(dev, w, h);
+        /* Monitors unplugged: their heads go (the later ones move up) */
+        for (int i = g_nheads - 1; i >= 0; i--) {
+            Head *hd = &g_head[i];
+            if (hd->regs || hd->vdev != dev || (con & (1u << hd->vscan))) continue;
+            kprintf("[DISPLAY] Head %d: %s output %d unplugged\n", i + 1, hd->name, hd->vscan + 1);
+            VgpuShow(dev, hd->vscan, 0, 0, false, NULL, NULL);
+            for (int j = i; j < g_nheads - 1; j++) g_head[j] = g_head[j + 1];
+            g_nheads--;
+            *removed |= 1u << (i + 1);
+            changed = true;
+        }
+        for (int s = 0; s < VgpuScanouts(dev); s++) {
+            if (!(con & (1u << s)) || vhead_of(dev, s) >= 0) continue;
+            kprintf("[DISPLAY] %s output %d: a monitor was plugged in (%dx%d)\n", VgpuName(dev), s + 1, w[s], h[s]);
+            if (vhead_add(dev, s, w[s], h[s])) changed = true;
+        }
+    }
+    return changed;
+}
+
+void DisplayHeadDamage(int head, int x, int y, int w, int ht)
+{
+    if (head == 0) {
+        if (d.kind == DRV_VIRTIO) VgpuFlush(d.vdev, 0, x, y, w, ht);
+        return;
+    }
+    if (head < 1 || head > g_nheads || g_head[head - 1].regs) return;
+    VgpuFlush(g_head[head - 1].vdev, g_head[head - 1].vscan, x, y, w, ht);
 }
 
 static Head *head_of(int head)
@@ -576,6 +686,34 @@ UINT32 *DisplayHeadSurface(int head, int *stride)
     return h->vram;
 }
 
+/* The boot display is a virtio-vga with more outputs: show it from a
+ * picture in memory instead (output 0), so the card's other outputs can
+ * be used, keeping what the screen shows */
+static void virtio_takeover(void)
+{
+    for (int dev = 0; dev < VgpuCount(); dev++) {
+        if (!VgpuIsAt(dev, d.vram_phys) || VgpuScanouts(dev) < 2) continue;
+        UINT32 *px;
+        int st;
+        if (!VgpuShow(dev, 0, d.cur.w, d.cur.h, false, &px, &st)) return;
+        const UINT32 *old = (const UINT32 *)(PHYSMAP_BASE + d.vram_phys + (UINT64)d.page * d.cur.h * d.stride * 4);
+        for (int y = 0; y < d.cur.h; y++)
+            memcpy(px + (size_t)y * st, old + (size_t)y * d.stride, (size_t)d.cur.w * 4);
+        VgpuFlush(dev, 0, 0, 0, d.cur.w, d.cur.h);
+        d.kind = DRV_VIRTIO;
+        d.vdev = dev;
+        d.vram_phys = (UINT64)(uintptr_t)px - PHYSMAP_BASE;
+        d.stride = st;
+        d.flip = false;
+        d.page = 0;
+        for (unsigned i = 0; i < sizeof(g_common) / sizeof(g_common[0]); i++)
+            add_mode(g_common[i].w, g_common[i].h);         /* no video memory to run out of */
+        publish_surface();
+        kprintf("[DISPLAY] %s has %d outputs: the primary monitor is its output 1\n", VgpuName(dev), VgpuScanouts(dev));
+        return;
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Public API
  * ----------------------------------------------------------------------- */
@@ -612,9 +750,13 @@ void DisplayInit(const BootFramebuffer *boot)
         d.nmodes = 0;
         add_mode(d.boot.w, d.boot.h);
     }
+    g_boot_fb = boot->base;
+    VgpuInit();
+    if (d.kind == DRV_BOCHS) virtio_takeover();
     kprintf("[DISPLAY] %s: %dx%d, %d mode(s), %s\n", DisplayDriverName(), d.cur.w, d.cur.h,
             d.nmodes, d.flip ? "page flipping" : "single page");
     heads_probe(boot);
+    vheads_probe();
 }
 
 const char *DisplayDriverName(void)
@@ -622,6 +764,7 @@ const char *DisplayDriverName(void)
     switch (d.kind) {
     case DRV_BOCHS:  return "Bochs VBE";
     case DRV_CIRRUS: return "Cirrus Logic";
+    case DRV_VIRTIO: return "virtio GPU";
     case DRV_GOP:    return "UEFI GOP framebuffer";
     default:        return "None";
     }
@@ -662,6 +805,20 @@ bool DisplaySetMode(int w, int h)
         kprintf("[DISPLAY] Mode %dx%d\n", w, h);
         return true;
     }
+    if (d.kind == DRV_VIRTIO) {
+        UINT32 *px;
+        int st;
+        if (!VgpuShow(d.vdev, 0, w, h, false, &px, &st)) {
+            kprintf("[DISPLAY] %dx%d failed; staying at %dx%d\n", w, h, d.cur.w, d.cur.h);
+            return false;
+        }
+        d.cur = (DisplayMode){ w, h };
+        d.vram_phys = (UINT64)(uintptr_t)px - PHYSMAP_BASE;
+        d.stride = st;
+        publish_surface();
+        kprintf("[DISPLAY] Mode %dx%d (virtio GPU output 1)\n", w, h);
+        return true;
+    }
     if (d.kind != DRV_BOCHS) return false;
     DisplayMode old = d.cur;
     if (!bochs_set_mode(w, h)) {
@@ -697,8 +854,10 @@ const char *DisplayAdapterName(void) { return d.kind == DRV_GOP ? NULL : d.name;
 
 void DisplayResume(void)
 {
+    VgpuResume();                             /* the virtio GPUs' outputs, head 0's too */
     for (int i = 0; i < g_nheads; i++) {
         Head *h = &g_head[i];
+        if (!h->regs) continue;
         head_set_mode(h, h->cur.w, h->cur.h, false);
         kprintf("[DISPLAY] Head %d: %dx%d set again after sleep\n", i + 1, h->cur.w, h->cur.h);
     }

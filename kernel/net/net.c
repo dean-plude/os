@@ -116,7 +116,7 @@ void net_unlock(void)
 static WaitQueue g_netq = WAITQ_INIT;
 
 UINT32 net_gen(void)                              { return waitq_gen(&g_netq); }
-void   net_wake(void)                             { waitq_wake(&g_netq); }
+void   net_wake(void)                             { waitq_wake_boost(&g_netq, BOOST_NETWORK, 0); }
 void   net_wait_ticks(UINT32 gen, UINT64 max_ticks) { waitq_wait(&g_netq, gen, max_ticks); }
 void   net_wait(UINT32 gen)                       { waitq_wait(&g_netq, gen, 10); }
 

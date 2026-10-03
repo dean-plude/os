@@ -207,6 +207,18 @@ static UINT64 find_rsdp(void)
 /* -----------------------------------------------------------------------
  * Find the best GOP mode (prefer native/largest resolution)
  * ----------------------------------------------------------------------- */
+static BOOLEAN gop_linear(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop)
+{
+    for (UINT32 m = 0; m < gop->Mode->MaxMode; m++) {
+        EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info;
+        UINTN info_size;
+        if (EFI_ERROR(gop->QueryMode(gop, m, &info_size, &info))) continue;
+        if (info->PixelFormat == PixelBlueGreenRedReserved8BitPerColor ||
+            info->PixelFormat == PixelRedGreenBlueReserved8BitPerColor) return 1;
+    }
+    return 0;
+}
+
 static void init_framebuffer(BootFramebuffer *fb)
 {
     EFI_STATUS                    status;
@@ -217,6 +229,23 @@ static void init_framebuffer(BootFramebuffer *fb)
     if (EFI_ERROR(status)) {
         console_printf("WARNING: No GOP found, framebuffer unavailable\r\n");
         return;
+    }
+    /* A GOP with no framebuffer to draw on (OVMF's virtio-gpu-pci one: Blt
+     * only) when another adapter has one: that other one */
+    if (!gop_linear(gop)) {
+        EFI_LOCATE_HANDLE_BUFFER locate = (EFI_LOCATE_HANDLE_BUFFER)g_bs->LocateHandleBuffer2;
+        EFI_HANDLE *handles = NULL;
+        UINTN n = 0;
+        if (!EFI_ERROR(locate(ByProtocol, &gop_guid, NULL, &n, &handles))) {
+            for (UINTN i = 0; i < n; i++) {
+                EFI_GRAPHICS_OUTPUT_PROTOCOL *g;
+                if (!EFI_ERROR(g_bs->HandleProtocol(handles[i], &gop_guid, (VOID **)&g)) && gop_linear(g)) {
+                    gop = g;
+                    break;
+                }
+            }
+            g_bs->FreePool(handles);
+        }
     }
 
     /* The largest mode with 32-bit pixels (the kernel draws nothing else:

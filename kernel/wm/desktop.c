@@ -25,6 +25,7 @@
 #include "../fs/setup.h"
 #include "wm.h"
 #include "input.h"
+#include "tablet.h"
 #include "../gdi/gdi.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
@@ -295,7 +296,9 @@ static void icon_cell(int i, int *x, int *y)
 static void draw_desktop_icons(void)
 {
     g_hot_bg_n = 0;
+    FsLock();                                           /* (C:\\Desktop's files; not the labels' shadows) */
     scan_desktop_files();
+    FsUnlock();
     for (int i = 0; i < N_ICONS + g_ndfiles; i++) {
         int x, y;
         icon_cell(i, &x, &y);
@@ -307,11 +310,13 @@ static void draw_desktop_icons(void)
             strncpy(label, g_icons[i].label, sizeof(label) - 1);
             label[sizeof(label) - 1] = '\0';
         } else {
+            FsLock();
             RamNode *n = RamfsResolve(NULL, g_dfile[i - N_ICONS]);
-            if (!n) continue;
-            AppDrawNodeIcon(n, x + 20, y, 48);
+            if (n) AppDrawNodeIcon(n, x + 20, y, 48);
             char name[RAMFS_NAME_MAX];
-            strncpy(name, n->name, sizeof(name) - 1);
+            if (n) strncpy(name, n->name, sizeof(name) - 1);
+            FsUnlock();
+            if (!n) continue;
             name[sizeof(name) - 1] = '\0';
             char *dot = strrchr(name, '.');
             if (dot && ends_with_ci(dot, ".lnk")) *dot = '\0';   /* shortcuts go by their name */
@@ -1232,7 +1237,10 @@ static void shell_background(void)
 static void shell_overlay(void)
 {
     g_hot_ov_n = 0;
+    bool files = g_start_open;                          /* (programs' icons, search results) */
+    if (files) FsLock();
     draw_start_menu();
+    if (files) FsUnlock();
     draw_dock();
     draw_menu();
     draw_switcher();
@@ -1343,6 +1351,26 @@ bool DesktopSetHeadMode(int head, int w, int h)
 }
 
 bool DesktopSetDisplayMode(int w, int h) { return DesktopSetHeadMode(0, w, h); }
+
+/* Desktop loop (under the desktop lock): monitors plugged in or unplugged
+ * (a virtio GPU's outputs).  The desktop is laid out again: a new monitor
+ * goes to the right of the others, the windows on one that went move to
+ * the nearest one left (WmDisplayChanged keeps every window on a
+ * monitor), and programs get WM_DISPLAYCHANGE. */
+static void monitors_poll(void)
+{
+    UINT32 gone;
+    int ow = GdiScreenW(), oh = GdiScreenH(), os = GdiScale(), before = GdiMonitorCount();
+    if (!DisplayPoll(&gone)) return;
+    GdiCursorForget();                        /* (the screen it was on may be gone) */
+    for (int i = GDI_MAX_MONITORS - 1; i > 0; i--)
+        if (gone & (1u << i)) GdiForgetMonitor(i);
+    WmCursorHide();
+    relayout(ow, oh, os);
+    DisplayMode m = DisplayCurrentMode();
+    UmGuiDisplayChanged(m.w, m.h);            /* WM_DISPLAYCHANGE to programs */
+    kprintf("[SHELL] Monitors: %d (were %d)\n", GdiMonitorCount(), before);
+}
 
 bool DesktopSetMonitorOrigin(int i, int x, int y, bool save)
 {
@@ -1858,6 +1886,7 @@ void DesktopRun(void *arg)
         DesktopLockAlone();
         ps2_poll();
         VirtioInputPoll();
+        monitors_poll();
         power_poll();
         /* C:\\Desktop changed (an installer made a shortcut)? redraw the icons */
         if (g_desktop_beat - last_desk_check >= 50) {
@@ -1914,6 +1943,8 @@ void DesktopRun(void *arg)
                 prev_right = right;
             } else if (ev.type == INPUT_TOUCH) {
                 touch_event(&ev);
+            } else if (ev.type == INPUT_PEN) {
+                TabletPacketIn(&ev);
             } else if (ev.type == INPUT_KEY) {
                 KeyEvent k;
                 if (InputTranslateKey(&ev, &k)) desktop_key(&k);
@@ -1934,12 +1965,14 @@ void DesktopRun(void *arg)
         if (WmNeedsRedraw()) {
             /* Drawing needs only the desktop lock (built-in apps' painters
              * take the big one back, see WND.paint_lock_free): the other
-             * CPUs keep entering the kernel meanwhile */
-            FsLock();                   /* (the shell draws files' icons) */
+             * CPUs keep entering the kernel meanwhile.  What draws from
+             * files (icons, the desktop's files, Start, most built-in
+             * apps' painters) takes the file-system lock itself, only for
+             * that: a whole redraw takes 50-100 ms in QEMU without KVM,
+             * which file services would otherwise wait out */
             bkl_release();
             WmComposite();              /* redraws the pointer too */
             bkl_acquire();
-            FsUnlock();
         }
         DesktopUnlockAlone();
         /* Sleep until the next tick (10 ms: input is collected at the

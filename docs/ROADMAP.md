@@ -99,7 +99,11 @@ named program or test demonstrates it.
   (Phase 18.9).  ~~More than one
   monitor~~ Done: one desktop across several display adapters, arranged in
   Settings and kept across restarts, with the Win32 monitor calls
-  reporting it.
+  reporting it.  ~~Several monitors on one card, plugged in and out while
+  running~~ Done: each output of a virtio GPU is a monitor, and the
+  desktop and programs (`WM_DISPLAYCHANGE`) follow monitors connected or
+  disconnected.  Still to do: per-monitor DPI that programs see
+  (`GetDpiForMonitor`, per-monitor-aware contexts, `WM_DPICHANGED`).
 - NetSurf: SVG; redrawing pages a script changes after layout.
 
 <!-- END generated:next-graphics -->
@@ -199,6 +203,14 @@ named program or test demonstrates it.
   behind a kernel thread went last, a thread preempted at a tick lost its
   place)~~ Done (`sleeptest timer`: the 1 ms timer queue timer within 1 ms
   under load again).
+- ~~The desktop's redraws hold the file-system lock for the whole redraw
+  (50-180 ms in QEMU without KVM), so file calls wait them out~~ Done
+  (`savetest`: the file-system call waits under 100 ms during a save).
+- ~~Scheduler: NT's priority boosts (a woken thread runs above its base
+  priority by the waker's increment and decays back one level per
+  quantum; the balance set lifts starving threads)~~ Done (`boosttest`:
+  an event-woken thread runs within 2 ms while same-priority threads
+  spin, where it waited out a 20 ms slice).
 
 <!-- END generated:next-kernel -->
 
@@ -224,10 +236,11 @@ named program or test demonstrates it.
   companions), any number of controllers, keyboard LEDs, media keys and
   mice's side buttons and horizontal wheel.
   ~~Isochronous transfers, USB audio~~ Done: isochronous streams on xHCI,
-  OHCI and UHCI (alternate settings, a ring of transfers per pipe), and
-  USB Audio Class 1 speakers and headsets as a sound output the mixer
-  switches to when they are plugged in.  Still to do: isochronous on EHCI
-  (iTDs, siTDs), recording from USB microphones, USB Audio 2.0, webcams.
+  EHCI (high-speed devices, iTDs), OHCI and UHCI (alternate settings, a
+  ring of transfers per pipe), and USB Audio Class 1 speakers, headsets
+  and microphones as the sound output and input the mixer switches to
+  when they are plugged in.  Still to do: USB Audio 2.0, siTDs (full-speed
+  isochronous behind a high-speed hub on EHCI), webcams.
 - ACPI beyond the MADT: ~~shutdown, reboot, sleep, batteries~~ Done:
   power-off (S5), sleep (S3), reset and the fixed power button from the
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,

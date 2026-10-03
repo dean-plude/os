@@ -41,8 +41,7 @@ enum { K_NORMAL, K_ERROR, K_DIM };
 static bool g_mirror;
 static void mirror(const char *s, int n)
 {
-    if (!g_mirror) return;
-    for (int i = 0; i < n && s[i]; i++) serial_putc(s[i]);
+    if (g_mirror && n > 0) kserial_write(s, (size_t)n);
 }
 
 /* A network command in progress (advanced by term_tick) */
@@ -171,7 +170,9 @@ static void tprintf(Term *t, const char *fmt, ...)
 static void prompt_text(Term *t, char *buf, int cap)
 {
     char path[RAMFS_PATH_MAX];
+    FsLock();                                   /* (term_paint draws without it) */
     RamfsPath(t->cwd, path, sizeof(path));
+    FsUnlock();
     ksnprintf(buf, (size_t)cap, "%s> ", path);
 }
 
@@ -571,7 +572,7 @@ static void cmd_ipconfig(Term *t)
 static bool g_marked;          /* this command's end was marked already */
 static void done_mark(void)
 {
-    if (g_mirror && !g_marked) serial_puts("\n[TERM-DONE]\n");
+    if (g_mirror && !g_marked) kserial_write("\n[TERM-DONE]\n", 13);
     g_marked = true;
 }
 
@@ -1938,6 +1939,7 @@ static Term *term_new_ex(RamNode *cwd, bool banner)
     RamfsRef(t->cwd);
     w->user     = t;
     w->on_paint = term_paint;
+    w->paint_fs_free = true;                    /* (the prompt's path: prompt_text) */
     w->on_key   = term_key;
     w->on_mouse = term_mouse;
     w->rbutton  = true;                        /* right click pastes, the wheel scrolls */

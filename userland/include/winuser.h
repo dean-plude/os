@@ -2023,6 +2023,7 @@ USERAPI HCURSOR CreateCursor(HINSTANCE inst, int hx, int hy, int w, int h, const
 USERAPI BOOL GetIconInfo(HICON h, PICONINFO ii);
 USERAPI BOOL GetIconInfoExW(HICON h, void *ix);
 USERAPI HICON CopyIcon(HICON h);
+#define CopyCursor(c) ((HCURSOR)CopyIcon((HICON)(c)))
 USERAPI HANDLE CopyImage(HANDLE h, UINT type, int cx, int cy, UINT flags);
 USERAPI BOOL DestroyCursor(HCURSOR h);
 USERAPI UINT PrivateExtractIconsW(LPCWSTR file, int idx, int cx, int cy, HICON *icons, UINT *ids, UINT n, UINT flags);

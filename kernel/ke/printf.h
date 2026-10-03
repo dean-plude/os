@@ -54,6 +54,9 @@ int kvsnprintf(char *buf, size_t n, const char *fmt, __builtin_va_list ap);
  * Early (serial-only) printf for use before the framebuffer is initialized.
  */
 void early_printf(const char *fmt, ...);
+/* Raw text to the serial port, whole: never interleaved with a kprintf
+ * message from another CPU (the Terminal's copy of a program's output) */
+void kserial_write(const char *s, size_t n);
 
 /*
  * Enable or disable framebuffer output for kprintf.  Serial output is

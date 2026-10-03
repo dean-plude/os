@@ -7,6 +7,7 @@ void *memcpy(void *d, const void *s, size_t n);
 int memcmp(const void *a, const void *b, size_t n);
 
 void dib24_sync(void *bitmap);
+void dib_recolor(void *bitmap);
 static inline NOVA_DC *dc_of(HDC h) { return (NOVA_DC *)h; }
 
 /* -----------------------------------------------------------------------
@@ -27,10 +28,13 @@ typedef struct GObj {
     int bw, bh, bpp, fmt, flip, owns;              /* owns: 1 VirtualAlloc'd bits, 2 a mapped view */
     void *view;
     DWORD *bits;
-    /* 24-bit DIB sections: the program's pixels (and a copy as of the last
-     * sync), kept in step with the 32-bit `bits` gdi32 draws on */
+    /* DIB sections of 1, 4, 8, 16 or 24 bits per pixel: the program's
+     * pixels (and a copy as of the last sync), kept in step with the 32-bit
+     * `bits` gdi32 draws on; vbpp is their depth, pal their colour table
+     * (1-8 bits), v565 a 16-bit section's 5-6-5 layout (else 5-5-5) */
     BYTE *view24, *last24;
-    int stride24, view_owned;
+    int stride24, view_owned, vbpp, npal, v565;
+    RGBQUAD *pal;
     /* regions: the bounding box, and with more than one rectangle, the
      * rectangles (not overlapping, heap-allocated) */
     RECT rc;

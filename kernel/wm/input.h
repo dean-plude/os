@@ -13,6 +13,8 @@ typedef enum {
     INPUT_MOUSE = 1,   /* relative motion + button state */
     INPUT_KEY   = 2,   /* keyboard make/break */
     INPUT_TOUCH = 3,   /* a touch contact: where it is, or that it lifted; or a frame's end */
+    INPUT_PEN   = 4,   /* a pen tablet's report (tablet.h): where, pressure, buttons; it does
+                        * not move the pointer (the device posts INPUT_MOUSE for that too) */
 } InputType;
 
 #define TOUCH_MAX     10   /* contacts tracked at once (slots 0-9) */
@@ -38,6 +40,8 @@ typedef struct {
     UINT8 contact;     /* INPUT_TOUCH: the contact's slot (0..TOUCH_MAX-1), or TOUCH_FRAME:
                         * every contact of the frame (one device report) has been posted.
                         * dx, dy: where (0-65535 across the screen); pressed: touching */
+    UINT16 pressure;   /* INPUT_PEN: 0..TABLET_PRESSURE; dx, dy absolute; buttons: bit 0 the
+                        * tip, 1-2 the barrel buttons; pressed: in range; extended: eraser */
 } InputEvent;
 
 /* -----------------------------------------------------------------------
