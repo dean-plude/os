@@ -7,7 +7,11 @@
 Independent DLLs, programs and objects build concurrently: at most N
 compiler/linker processes run at once (--jobs N or -j N; default the CPU
 count; --jobs 1 builds one step at a time).  A DLL links after the DLLs it
-depends on, and the output files are the same whatever N is.
+depends on, and the output files are the same whatever N is.  The 64-bit
+pass, the 32-bit pass and NetSurf's objects share that budget and build side
+by side (NetSurf links once the 64-bit import libraries it needs exist); a
+failed command's output is printed in one piece, headed by its pass
+([x64], [x86] or [netsurf]).
 
 Compiles, with clang --target=x86_64-pc-windows-msvc and lld-link:
   ntdll.dll, kernel32.dll, msvcrt.dll, ...  -> C:\\Windows\\System32
@@ -19,7 +23,7 @@ and writes GENERATED_C: every file pulled in with .incbin plus a table the
 kernel uses to install them on drive C: at boot.  Set NOVA_NO_NETSURF=1 to
 leave the browser out (it is most of the build time and image size).
 """
-import os, re, subprocess, sys, threading
+import os, re, subprocess, sys, threading, types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_netsurf
@@ -56,10 +60,19 @@ COMMON_FLAGS = ['-O2', '-ffreestanding', '-nostdlibinc',
                 '-fno-stack-protector', '-mno-stack-arg-probe', '-fms-extensions', '-fasync-exceptions',
                 '-Wall', '-Wno-unused-function', '-Werror=implicit-function-declaration',
                 '-isystem', os.path.join(HERE, 'include', 'posix'), '-I', os.path.join(HERE, 'include'), '-I', str(inc_gen)]
-ARCH = 'x64'          # the pass being built: x64 (System32), then x86 (SysWOW64, for 32-bit programs)
+# The pass a build step belongs to: x64 (System32) or x86 (SysWOW64, for
+# 32-bit programs).  The passes run side by side, so the architecture is the
+# running task's (this module's ARCH attribute, which build hooks read as
+# b.ARCH, is a property of the calling thread; arch() is the same in here).
+_task = threading.local()
+def arch():
+    return getattr(_task, 'arch', 'x64')
+class _Module(types.ModuleType):
+    ARCH = property(lambda self: arch())
+sys.modules[__name__].__class__ = _Module
 def cflags():
-    extra = ['-msse2'] if ARCH == 'x86' else []
-    return ['--target=' + TARGETS[ARCH]] + extra + COMMON_FLAGS
+    extra = ['-msse2'] if arch() == 'x86' else []
+    return ['--target=' + TARGETS[arch()]] + extra + COMMON_FLAGS
 
 # Each system DLL is registered by its own userland/NAME/dll.json (see
 # docs/building.md, "Adding a DLL or program"), so a new DLL is a new
@@ -175,7 +188,7 @@ LOG = threading.Lock()                        # a failed command's output is wri
 
 def fail(text):
     with LOG:
-        sys.stderr.write(text)
+        sys.stderr.write(f'[{arch()}] {text}')
         sys.stderr.flush()
     sys.exit(1)
 
@@ -211,10 +224,10 @@ def musl_math_objs(odir):
     in src/complex), compiled once for the C runtime DLLs; returns
     (objects, exported names)"""
     objs, names = [], set()
-    flags = ['--target=' + TARGETS[ARCH], '-O2', '-ffreestanding', '-nostdlibinc', '-fno-builtin',
+    flags = ['--target=' + TARGETS[arch()], '-O2', '-ffreestanding', '-nostdlibinc', '-fno-builtin',
              '-D_GNU_SOURCE', '-w', '-I', os.path.join(MUSL, 'include'), '-I', os.path.join(MUSL, 'src', 'internal'),
              '-I', os.path.join(HERE, 'include')]
-    if ARCH == 'x86':
+    if arch() == 'x86':
         flags.append('-msse2')
     mdir = os.path.join(odir, 'musl')
     os.makedirs(mdir, exist_ok=True)
@@ -238,7 +251,7 @@ def musl_math_objs(odir):
 
 def undecorate(sym):
     """a C symbol's name as exported (x86: _name, _name@N)"""
-    if ARCH == 'x86':
+    if arch() == 'x86':
         m = re.match(r'^_([A-Za-z_]\w*?)(@\d+)?$', sym)
         return m.group(1) if m else sym
     return sym
@@ -285,7 +298,7 @@ def defined_names(objs):
 def ordinal_exports(name, objs):
     """/export:NAME,@N for each ordinal-table name the DLL defines"""
     table = DLLS.get(name, {}).get('ordinals')
-    if not table or ARCH == 'x86':                # x86: in the .def (x86_def)
+    if not table or arch() == 'x86':                # x86: in the .def (x86_def)
         return []
     defined = defined_names(objs)
     return [f'/export:{n},@{o}' for n, o in sorted(table.items(), key=lambda x: x[1]) if n in defined]
@@ -318,7 +331,7 @@ def image_size(dll):
 
 def link_dll(odir, name, objs, deps, base, extra=(), entry=None):
     extra = list(extra) + ordinal_exports(name, objs)
-    if ARCH == 'x86':
+    if arch() == 'x86':
         extra += x86_def(odir, name, objs) + ['/safeseh:no', '/machine:x86']
     dll = os.path.join(odir, f'{name}.dll')
     entry = entry or DLLS.get(name, {}).get('entry')
@@ -327,20 +340,18 @@ def link_dll(odir, name, objs, deps, base, extra=(), entry=None):
         [f'/out:{dll}', f'/implib:{os.path.join(odir, name + ".lib")}', f'/map:{os.path.join(odir, name + ".map")}'] +
         objs + list(extra) +
         [os.path.join(odir, d + '.lib') for d in deps])
-    sysdir = 'System32' if ARCH == 'x64' else 'SysWOW64'
+    sysdir = 'System32' if arch() == 'x64' else 'SysWOW64'
     built.append((f'\\Windows\\{sysdir}\\{name}.dll', dll))
     placed.append((base, base + image_size(dll), name))
 
-def check_overlaps():
-    """no two DLLs of this pass loaded over each other (each needs its own
-    range: they are linked without relocation in mind)"""
-    spans = sorted(placed)
+def check_overlaps(pass_arch, spans):
+    """no two DLLs of a pass (@spans: (start, end, name)) loaded over each
+    other (each needs its own range: they are linked without relocation in mind)"""
+    spans = sorted(spans)
     for (b0, e0, n0), (b1, e1, n1) in zip(spans, spans[1:]):
         if b1 < e0:
-            raise SystemExit(f'{ARCH}: {n0}.dll ({b0:#x}-{e0:#x}) overlaps {n1}.dll at {b1:#x}; '
+            raise SystemExit(f'{pass_arch}: {n0}.dll ({b0:#x}-{e0:#x}) overlaps {n1}.dll at {b1:#x}; '
                              f'move one (its dll.json base) or leave its base out')
-
-_task = threading.local()
 
 class Collected:
     """the lists DLL build hooks append to (b.built, b.placed): while a build
@@ -362,15 +373,16 @@ class Collected:
 
 def run_tasks(tasks):
     """run @tasks, {key: (keys it waits for, function)}, on JOBS threads,
-    each once its dependencies are done; returns {key: result}.  The first
-    failure stops starting new tasks and is raised once running ones end"""
+    each once its dependencies are done (of the ready ones, the earliest in
+    @tasks first); returns {key: result}.  The first failure stops starting
+    new tasks and is raised once running ones end"""
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
     results, running, error = {}, {}, None
     todo = dict(tasks)
     with ThreadPoolExecutor(max_workers=JOBS) as ex:
         while todo or running:
-            if not error:
-                for key in [k for k, (deps, _) in todo.items() if all(d in results for d in deps)]:
+            if not error:       # (at most JOBS submitted: tasks that become ready later still go before the rest of todo)
+                for key in [k for k, (deps, _) in todo.items() if all(d in results for d in deps)][:JOBS - len(running)]:
                     running[ex.submit(todo.pop(key)[1])] = key
             if not running:
                 if todo and not error:
@@ -387,10 +399,10 @@ def run_tasks(tasks):
         raise error
     return results
 
-def build_pass(arch):
-    """the DLLs and programs for one architecture"""
-    global ARCH
-    ARCH = arch
+def build_pass(arch, all_tasks):
+    """add the DLLs and programs for one architecture to @all_tasks (keys
+    "ARCH:name"); returns the function that, given all the tasks' results,
+    records what the pass built"""
     odir = out if arch == 'x64' else os.path.join(out, 'x86')
     os.makedirs(odir, exist_ok=True)
     me = sys.modules[__name__]
@@ -398,7 +410,7 @@ def build_pass(arch):
     # (a task's appends to built/placed are its own: see Collected)
     def task(key, deps, fn):
         def go():
-            _task.built, _task.placed = [], []
+            _task.arch, _task.built, _task.placed = arch, [], []
             r = fn()
             return r, _task.built, _task.placed
         tasks[key] = (deps, go)
@@ -494,22 +506,51 @@ def build_pass(arch):
                (['stlprog'] if msstl else [])
         task('exe:' + name, deps, lambda a=(src, name, prog): link_prog(*a))
 
-    # run them, then record what they built in a fixed order: the DLLs in
-    # link order, the programs by name
-    results = run_tasks(tasks)
-    del placed.main[:]
-    for key in [f'dll:{n}' for n in dlls] + [f'exe:{n}' for _, n, _ in progs]:
-        _, b, p = results[key]
-        built.main.extend(b)
-        placed.main.extend(p)
-    check_overlaps()
+    for key, (deps, fn) in tasks.items():
+        all_tasks[f'{arch}:{key}'] = ([f'{arch}:{d}' for d in deps], fn)
 
-placed = Collected('placed')      # (start, end, name) of each DLL linked in this pass
+    def record(results):
+        """what the pass built, in a fixed order: the DLLs in link order,
+        the programs by name"""
+        spans = []
+        for key in [f'dll:{n}' for n in dlls] + [f'exe:{n}' for _, n, _ in progs]:
+            _, b, p = results[f'{arch}:{key}']
+            built.main.extend(b)
+            spans.extend(p)
+        check_overlaps(arch, spans)
+    return record
+
+placed = Collected('placed')      # (start, end, name) of each DLL linked by the running task
 built = Collected('built')
-build_pass('x64')
-if os.environ.get('NOVA_NO_WOW64') != '1':
-    build_pass('x86')             # 32-bit programs: the same userland built for x86
-ARCH = 'x64'
+passes = ['x64'] + (['x86'] if os.environ.get('NOVA_NO_WOW64') != '1' else [])   # x86: 32-bit programs, the same userland
+all_tasks = {}
+records = [build_pass(a, all_tasks) for a in passes]
+
+# The NetSurf browser (tools/build_netsurf.py) compiles beside the passes
+# (it needs only headers); its link waits for the x64 start-up objects and
+# the import libraries of the DLLs it links.
+if os.environ.get('NOVA_NO_NETSURF') != '1':
+    ns_out = os.path.join(out, 'netsurf')
+    ns_jobs, ns_objs = build_netsurf.plan(ns_out)
+    ns_errors = []
+    def ns_compile(job):
+        _task.arch = 'netsurf'
+        with SLOTS:
+            ns_errors.append(build_netsurf.compile_one(job))
+    for i, job in enumerate(ns_jobs):
+        all_tasks[f'netsurf:cc:{i}'] = ([], lambda job=job: ns_compile(job))
+    def ns_link():
+        _task.arch = 'netsurf'
+        build_netsurf.report(ns_errors)
+        with SLOTS:
+            return build_netsurf.link(ns_out, out, ns_objs)
+    all_tasks['netsurf:link'] = (
+        [f'netsurf:cc:{i}' for i in range(len(ns_jobs))] + ['x64:crt0', 'x64:tlssup'] +
+        [f'x64:dll:{n}' for n in ('msvcrt', 'kernel32', 'ntdll', 'ws2_32', 'user32', 'gdi32')], ns_link)
+
+results = run_tasks(all_tasks)    # (the x64 pass first: its tasks start first)
+for record in records:
+    record(results)
 
 # 3a0. fonts gdi32 draws text with (C:\Windows\Fonts)
 TP = os.path.join(os.path.dirname(HERE), 'third_party')
@@ -555,7 +596,7 @@ for n in sorted(os.listdir(samples)):
 
 # 3b. the NetSurf web browser
 if os.environ.get('NOVA_NO_NETSURF') != '1':
-    built += build_netsurf.build(os.path.join(out, 'netsurf'), out)
+    built += results['netsurf:link']
 
 # 4. embed (.incbin: the browser alone is megabytes, too much for C arrays).
 # Files of 1 MiB or more (ICU's data and DLLs, NetSurf) go in zlib-compressed

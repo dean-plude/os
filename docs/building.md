@@ -90,7 +90,11 @@ Independent DLLs, programs and objects build concurrently, with at most
 `--jobs N` (or `-j N`) compiler and linker processes running at once; the
 default is the number of CPUs and `--jobs 1` builds one step at a time.  A
 DLL still links after the DLLs it depends on, and the files and their order
-in the image are the same whatever `N` is.  CMake runs the script without
+in the image are the same whatever `N` is.  The 64-bit pass, the 32-bit
+pass and NetSurf's objects run side by side on that one budget (NetSurf links
+once the 64-bit import libraries it needs exist), so none of them waits for
+another to finish.  A failed command's output is printed in one piece, headed
+by its pass: `[x64]`, `[x86]` or `[netsurf]`.  CMake runs the script without
 the flag, so the kernel build uses every core.
 
 Environment variables:

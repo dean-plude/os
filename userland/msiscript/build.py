@@ -2,7 +2,7 @@
 # itself as b).  The engine is mujs (third_party/mujs, ISC), compiled into
 # the DLL; runtime.js, vbslib.js and vbscript.js become C strings in the
 # generated msiscript_js.h.
-import os
+import os, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -25,7 +25,9 @@ def cflags(b):
     for name in SCRIPTS:
         text += f'static const char js_{name}[] =\n' + c_string(open(os.path.join(HERE, name + '.js')).read()) + ';\n'
     if not os.path.exists(gen) or open(gen).read() != text:
-        open(gen, 'w').write(text)
+        tmp = f'{gen}.{os.getpid()}.{threading.get_ident()}.tmp'    # (the x64 and x86 passes can both write it)
+        open(tmp, 'w').write(text)
+        os.replace(tmp, gen)
     return ['-I', MUJS]
 
 
