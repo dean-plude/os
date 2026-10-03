@@ -288,7 +288,11 @@ named program or test demonstrates it.
   crash reports naming the module and offset, and the Terminal's `trace
   NAME` for a program's failing system calls, and symbolized kernel
   backtraces (the kernel embeds its symbol table; faults, panics and
-  failed assertions print function+offset frames).
+  failed assertions print function+offset frames).  Crashes leave a
+  report a user can attach to an issue in `C:\NovaOS\Crashes` (a
+  program's exception, place, stack and modules; a kernel fault's log
+  and backtrace, written into `\NOVA\PANIC.TXT` on the disk and moved
+  there at the next start).
 - **ABI conformance tests** (done): `abitest` asserts PEB/TEB/KUSER/CONTEXT
   offsets, ntdll's stub layout and every syscall number against Windows 10
   1903 x64, in CI.

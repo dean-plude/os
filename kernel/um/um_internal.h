@@ -254,6 +254,7 @@ struct UmProcess {
     UINT32          kill_status;
     UINT32          exit_status;
     char            why[96];    /* crash/kill description */
+    char            crash_report[UM_CRASH_PATH];   /* where its crash report goes (um_crash.c), or "" */
     bool            released;   /* spawner is done with it */
     UmObject       *exit_ob;    /* UO_PROCESS object of a program-created process (not referenced) */
     UmObject       *token;      /* its primary token (referenced) */
@@ -366,6 +367,7 @@ void       um_pipe_end_name(UmObject *o, char *buf, int cap); /* um_pipe.c: a pi
 void       um_object_name(UmObject *o, char *buf, int cap);   /* um_thread.c: a named object's name */
 UINT64     um_close_handle(UINT64 h);           /* NtClose for the current process */
 void       um_log_stack(UmProcess *p, UINT64 sp);   /* return addresses from @sp to the serial log */
+void       um_crash_report(UmProcess *p, const char *what, UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp);   /* um_crash.c */
 /* How a new process starts: standard handles (kind H_FREE = the console),
  * handles it inherits (at the same values; NULL: none) and its
  * environment (UTF-8 "NAME=value" strings, then an empty one; NULL: the

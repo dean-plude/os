@@ -43,6 +43,11 @@ void PersistWhere(char *buf, int cap);
 /* The volume's size and free space in bytes; false without one. */
 bool PersistSpace(UINT64 *free, UINT64 *total);
 
+/* The kernel crash slot (FAT volumes): whether there is one, and write a
+ * report into it (a kernel fault, no locks or allocations; best effort) */
+bool PersistPanicReady(void);
+bool PersistPanicWrite(const char *text, UINT32 len);
+
 /* A FAT (DOS) date and time as a FILETIME (100 ns since 1601) */
 UINT64 PersistDosToFiletime(UINT32 dos);
 

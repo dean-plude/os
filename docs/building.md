@@ -516,9 +516,11 @@ The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
 schedules it for the next boot), a restart that must report `Pending file
 operations at boot: 2 done, 0 failed` and come up in the saved mode
 (`disptest saved 1024 768`), `filetest installed`, and
-last `crash kernel`, which halts the kernel on purpose and passes when the
+`crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
-`KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite first runs
+`KeCrashTest`, `sys_nova_bugcheck`, ...); the machine is then reset, and
+last the next start must have moved the fault's report into
+`C:\NovaOS\Crashes` (`crashes last` shows the backtrace).  The graphics suite first runs
 `d2dtest`, x64 and x86: it checks geometry computations, draws a scene into
 a DC render target and compares it with `d2dref.bmp`, the image
 `tools/d2dtest/reference.py` draws with Skia (`pip install skia-python`;
@@ -602,7 +604,9 @@ appends a Markdown table and `--junit FILE` writes JUnit XML.
 
 To add a test, add a file to `tests/selftest/core/` (or `graphics/`):
 tests run in file-name order, so the number prefix places it (the restart
-is at 130 and `crash kernel`, which halts NovaOS, stays last at 900).
+is at 130; `crash kernel`, which halts NovaOS, is at 900 with `restart=True`,
+which resets the machine, and only tests that check what the crash left
+come after it, at 905).
 
 ```python
 # tests/selftest/core/140-mytest.py
@@ -688,8 +692,9 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 
 <!-- END generated:selftest-table -->
 
-`crash` writes through a NULL pointer (only it dies); `crash kernel`
-crashes the kernel on purpose (`NtNovaBugCheck`) to show the backtrace.
+`crash` writes through a NULL pointer (only it dies, and it leaves a
+report in `C:\NovaOS\Crashes`); `crash kernel` crashes the kernel on
+purpose (`NtNovaBugCheck`) to show the backtrace.
 
 Interactive ones: `winhello` and `guitest` (windows, menus, dialogs,
 property sheets; `guitest auto` drives them itself and reports, as CI runs it), `droptest` (drag and drop; its targets list each dropped file's size, or "missing"), `cpus` (SMP speed-up), and
@@ -853,6 +858,17 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
   thing to check ([hardware.md](hardware.md)).
 - **Program crashes** are logged with the faulting module and offset, the
   process's exit code, and `OutputDebugString` output.
+- **Crash reports**: a program that crashes leaves
+  `C:\NovaOS\Crashes\NAME-YYYYMMDD-HHMMSS-PID.txt` (the exception, the
+  module and offset, the address it touched, the return addresses on its
+  stack, its modules and the end of the kernel's log), and the Terminal
+  names the file under the crash line.  A kernel fault writes its log and
+  backtrace into `\NOVA\PANIC.TXT` on the disk that keeps drive C: (FAT;
+  64 KiB set aside at boot, written with the disk driver alone), and the
+  next start moves it to `C:\NovaOS\Crashes\kernel-YYYYMMDD-HHMMSS.txt`.
+  The Terminal's `crashes` lists the reports and `crashes last` shows the
+  newest; attach the file to an issue.  At most 100 are kept: delete old
+  ones to make room.
 - **`trace NAME`** in the Terminal logs the failing system calls (with file
   names) of the program called NAME, each with its process id; `trace
   +NAME` logs every call, not only the failing ones; `trace off` stops it.

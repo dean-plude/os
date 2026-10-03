@@ -262,6 +262,7 @@ static void cmd_help(Term *t)
         "  curl <url> [url...] fetch web pages and print them (-4/-6: IPv4/IPv6 only)\n"
         "  certutil            list trusted root certificates\n"
         "  tasklist            list running programs\n"
+        "  crashes [last]      list the crash reports; show the newest one\n"
         "  taskkill /PID <n>   stop a program\n"
         "  <program> [args]    run a Windows program (C:\\Programs: hello, mandel,\n"
         "                      primes, guess, wc, crttest, filetest, crash, spin)\n"
@@ -344,6 +345,30 @@ static void cmd_type(Term *t, const char *arg)
     RamfsUnref(f);
     tprint(t, buf);
     kfree(buf);
+}
+
+/* "crashes": the reports in C:\NovaOS\Crashes (um/um_crash.c), newest
+ * last; "crashes last": the newest one */
+static void cmd_crashes(Term *t, const char *arg)
+{
+    if (arg && is(arg, "last")) {
+        RamNode *f = UmCrashNewest();
+        if (!f) { tprint(t, "There are no crash reports."); return; }
+        char path[RAMFS_PATH_MAX];
+        RamfsPath(f, path, sizeof(path));
+        tprintf(t, "%s:", path);
+        cmd_type(t, path);
+        return;
+    }
+    RamNode *d = RamfsResolve(NULL, "\\NovaOS\\Crashes");
+    int n = 0;
+    for (RamNode *f = d && d->dir ? d->child : NULL; f; f = f->next)
+        if (!f->dir) n++;
+    if (!n) { tprint(t, "There are no crash reports."); return; }
+    tprintf(t, "%d crash report%s in C:\\NovaOS\\Crashes:", n, n == 1 ? "" : "s");
+    for (RamNode *f = d->child; f; f = f->next)
+        if (!f->dir) tprintf(t, "  %s  (%u bytes)", f->name, f->size);
+    tprint(t, "'crashes last' shows the newest; attach the file to an issue when reporting a bug.");
 }
 
 /* "echo TEXT [> FILE]": @raw is what follows "echo", printed as typed */
@@ -1445,6 +1470,10 @@ static void proc_finish(Term *t)
     if (why[0]) {
         ksnprintf(msg, sizeof(msg), "%s %s", UmName(j->proc), why);
         terr(t, msg);
+        if (UmCrashReport(j->proc)[0]) {
+            ksnprintf(msg, sizeof(msg), "Crash report: %s", UmCrashReport(j->proc));
+            tprint_ex(t, K_DIM, 0, msg);
+        }
     } else if (status) {
         ksnprintf(msg, sizeof(msg), "[exit code %d]", (int)status);
         tprint_ex(t, K_DIM, 0, msg);
@@ -1650,6 +1679,7 @@ static void run_cmd_line(Term *t, char *cmdline, const char *original)
     else if (is(c, "curl"))                     cmd_fetch(t, argc, argv, false);
     else if (is(c, "cls") || is(c, "clear"))    t->count = 0;
     else if (is(c, "tasklist"))                 cmd_tasklist(t);
+    else if (is(c, "crashes"))                  cmd_crashes(t, a1);
     else if (is(c, "usbcheck"))                 cmd_usbcheck(t);
     else if (is(c, "hwcheck"))                  cmd_hwcheck(t);
     else if (is(c, "devices") || is(c, "lspci")) cmd_devices(t);
