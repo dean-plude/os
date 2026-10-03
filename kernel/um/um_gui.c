@@ -402,15 +402,33 @@ typedef struct {
     UINT64 owner;                   /* handle of the owner window (0: none) */
 } GuiCreate;
 
+/* The desktop's fonts cover ASCII only: punctuation outside it gets its
+ * nearest ASCII form, as Windows' best-fit code pages do ("Page — Mozilla
+ * Firefox" shows as "Page - Mozilla Firefox"); anything else is '?' */
+static const char *ascii_fit(UINT16 c)
+{
+    if (c >= 0x2010 && c <= 0x2015) return "-";         /* hyphens, en and em dashes */
+    switch (c) {
+    case 0x00A0: case 0x2002: case 0x2003: case 0x2009: case 0x202F: return " ";
+    case 0x2018: case 0x2019: case 0x201A: case 0x2032: return "'";
+    case 0x201C: case 0x201D: case 0x201E: case 0x2033: return "\"";
+    case 0x2022: case 0x00B7: return "*";
+    case 0x2026: return "...";
+    case 0x2212: return "-";
+    }
+    return "?";
+}
+
 static void utf16_to_ascii(UmProcess *p, UINT64 va, char *out, int cap)
 {
     out[0] = '\0';
     if (!va) return;
-    UINT16 w[128];
+    UINT16 w;
     int n = 0;
-    for (; n < cap - 1 && n < 128; n++) {
-        if (!um_read(p, va + (UINT64)n * 2, &w[0], 2) || !w[0]) break;
-        out[n] = w[0] < 0x80 ? (char)w[0] : '?';
+    for (int i = 0; n < cap - 1 && i < 128; i++) {
+        if (!um_read(p, va + (UINT64)i * 2, &w, 2) || !w) break;
+        if (w < 0x80) { out[n++] = (char)w; continue; }
+        for (const char *f = ascii_fit(w); *f && n < cap - 1; f++) out[n++] = *f;
     }
     out[n] = '\0';
 }
