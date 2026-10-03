@@ -4,7 +4,8 @@
 # the kernel's "[PERSIST] Saved" line for that save must show the
 # file-system lock held under 20 ms (the regex takes 0.00 to 19.99 ms).
 DOC = ('`savetest` (while NovaOS saves 32 MiB of drive C: to its disk, calls behind the kernel, desktop and '
-       'file-system locks keep answering; the save holds the file-system lock under 20 ms)')
+       'file-system locks keep answering, the file-system one within 100 ms; the save holds the file-system lock '
+       'under 20 ms)')
 TESTS = [
     Test('savetest', 'savetest', [r'savetest: PASS',
                                   r'\[PERSIST\] Saved \d+ file\(s\), \d{5,} KiB in \d+ ms; '

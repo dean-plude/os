@@ -171,7 +171,9 @@ static void tprintf(Term *t, const char *fmt, ...)
 static void prompt_text(Term *t, char *buf, int cap)
 {
     char path[RAMFS_PATH_MAX];
+    FsLock();                                   /* (term_paint draws without it) */
     RamfsPath(t->cwd, path, sizeof(path));
+    FsUnlock();
     ksnprintf(buf, (size_t)cap, "%s> ", path);
 }
 
@@ -1938,6 +1940,7 @@ static Term *term_new_ex(RamNode *cwd, bool banner)
     RamfsRef(t->cwd);
     w->user     = t;
     w->on_paint = term_paint;
+    w->paint_fs_free = true;                    /* (the prompt's path: prompt_text) */
     w->on_key   = term_key;
     w->on_mouse = term_mouse;
     w->rbutton  = true;                        /* right click pastes, the wheel scrolls */
