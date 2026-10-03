@@ -451,6 +451,12 @@ struct box {
 	 */
 	struct browser_window *iframe;
 
+	/**
+	 * What layout recorded about this box to lay the page out again
+	 * from a changed box (layout.c), or NULL
+	 */
+	struct box_layout_state *lstate;
+
 };
 
 

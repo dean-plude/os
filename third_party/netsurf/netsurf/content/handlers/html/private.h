@@ -222,6 +222,25 @@ typedef struct html_content {
 	struct html_relayout_chunk *relayout_chunks;
 #endif
 
+	/** The box whose children html_relayout built again: the next
+	 * layout starts from it (layout_document), or NULL for a full one */
+	struct box *layout_target;
+	/** layout_document's record of earlier layouts of this box tree */
+	struct html_layout_record {
+		unsigned count;		/**< layouts done (numbers them) */
+		int width, height;	/**< size of the last one */
+		bool done;		/**< one was done since the tree was built */
+		bool abs;		/**< a positioned box was placed since the
+					 *   last full layout */
+		bool rel_moves;		/**< a relative offset moved a float or
+					 *   an inline's siblings since then */
+		/* what the last layout did, for NETSURF_LAYOUT_LOG */
+		bool incremental;	/**< it started from layout_target */
+		const char *full_why;	/**< why it laid out everything */
+		unsigned laid, kept;	/**< boxes laid out, boxes moved as a whole */
+		uint64_t us_minmax, us_flow, us_place; /**< times (us) */
+	} layout_rec;
+
 } html_content;
 
 /**

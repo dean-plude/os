@@ -501,7 +501,13 @@ script builds, an SVG without a size and an iframe holding a frameset
 page: the test checks the SVGs' colours and sizes (the unsized one at the
 default 300 x 150), the list items and both frames on the screen, clicks the page's box (a script changes it) and
 checks the page was redrawn with it changed and the rest still there (`nstest-before.png`,
-`nstest-after.png`), then closes NetSurf with Alt+F4.  Then `store scroll
+`nstest-after.png`), then closes NetSurf with Alt+F4.  `nstest` then
+opens four pages a script changes twelve times (a long page, iframes,
+positioned boxes, floats), each twice: laid out from the changed box, and
+with `NETSURF_LAYOUT_CHECK=1` comparing every third such layout box by box
+with a full one; the test compares the two runs' screenshots
+(`nstest-PAGE-incremental.png`, `nstest-PAGE-check.png`) above NetSurf's
+status bar.  Then `store scroll
 bar` runs `store open` and checks, from the `[STORE] view:` lines the App
 Store logs when its view changes, that All apps has a vertical scroll bar
 and that the wheel, Home, Page Down, End, a click on the bar's down arrow,
