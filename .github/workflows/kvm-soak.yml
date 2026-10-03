@@ -13,7 +13,7 @@ jobs:
   soak:
     name: KVM soak ${{ matrix.n }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -46,16 +46,15 @@ jobs:
           cmake -S . -B build -G "Unix Makefiles"
           make -C build -j"$(nproc)" > /dev/null
       - name: Core suite
-        run: python3 tools/selftest.py --img build/nova.img --out out
+        run: timeout -s KILL 480 python3 tools/selftest.py --img build/nova.img --out out
       - name: Network suite
         if: success() || failure()
-        run: python3 tools/selftest.py --suite network --img build/nova.img --out out/network
-      - name: Kernel trouble in the serial logs
+        run: timeout -s KILL 420 python3 tools/selftest.py --suite network --img build/nova.img --out out/network
+      - name: Hung VMs and kernel trouble
         if: always()
         run: |
+          python3 tools/ci/kvm-hang-dump.py build/kernel_build/kernel.elf || true
           for f in $(find out -name 'serial*.log'); do
             echo "== $f"
             grep -n -B5 -A40 -E 'EXCEPTION|GS MISMATCH|Bug:|BUG|panic|halting' "$f" | head -300 || true
-            echo "-- last lines"
-            tail -40 "$f"
           done
