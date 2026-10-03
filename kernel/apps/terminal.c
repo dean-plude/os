@@ -1996,6 +1996,16 @@ bool TerminalConsoleAdopt(int id, UmProcess *p)
     return true;
 }
 
+/* The console program a Terminal runs: the foreground process while the
+ * Terminal is active (UmUpdateForeground), as Windows makes a console's
+ * programs foreground while their console window is */
+struct UmProcess *TerminalProgram(WND *w)
+{
+    if (!w || w->on_tick != term_tick || !w->user) return NULL;
+    Job *j = &((Term *)w->user)->job;
+    return j->kind == JOB_PROC ? j->proc : NULL;
+}
+
 void TerminalOpen(void)
 {
     term_new(NULL);

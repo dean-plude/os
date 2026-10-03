@@ -1,9 +1,11 @@
 /* looptest.exe — Winsock over the loopback interface, as Firefox uses it:
  * a socket pair over 127.0.0.1 and ::1 (bind to port 0, listen,
  * getsockname, a non-blocking connect, getpeername, accept), data sent before accept,
- * closing a listener with a connection still queued, and "localhost"
- * resolving to ::1 and 127.0.0.1 without DNS. */
+ * closing a listener with a connection still queued, "localhost"
+ * resolving to ::1 and 127.0.0.1 without DNS, and socket options
+ * (setsockopt/getsockopt) that read back and change what a socket does. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -165,6 +167,209 @@ static void winsock11(void)
     FreeLibrary(m);
 }
 
+/* A connected TCP pair over 127.0.0.1 (blocking) */
+static int tcp_pair(SOCKET *c, SOCKET *s)
+{
+    struct sockaddr_in a;
+    int len = sizeof(a);
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    SOCKET l = socket(AF_INET, SOCK_STREAM, 0);
+    *c = socket(AF_INET, SOCK_STREAM, 0);
+    *s = INVALID_SOCKET;
+    if (l != INVALID_SOCKET && !bind(l, (struct sockaddr *)&a, len) && !listen(l, 1) &&
+        !getsockname(l, (struct sockaddr *)&a, &len) && !connect(*c, (struct sockaddr *)&a, len))
+        *s = accept(l, 0, 0);
+    closesocket(l);
+    return *s != INVALID_SOCKET;
+}
+
+static LONGLONG now_us(void)
+{
+    static LARGE_INTEGER f;
+    LARGE_INTEGER t;
+    if (!f.QuadPart) QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t);
+    return t.QuadPart * 1000000 / f.QuadPart;
+}
+
+static int cmp_ll(const void *a, const void *b)
+{
+    LONGLONG x = *(const LONGLONG *)a, y = *(const LONGLONG *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* Two one-byte sends in a row, and how long until the second arrives:
+ * with Nagle's algorithm on, it waits for the first one's ACK, which the
+ * receiver delays (up to 250 ms); TCP_NODELAY sends it at once.  The
+ * median of 8 rounds, in microseconds. */
+static LONGLONG write_write(SOCKET c, SOCKET s)
+{
+    LONGLONG took[8];
+    for (int i = 0; i < 8; i++) {
+        char b[2];
+        int got = 0;
+        LONGLONG t0 = now_us();
+        send(c, "a", 1, 0);
+        send(c, "b", 1, 0);
+        while (got < 2 && wait_for(s, 0, 2000) == 1) {
+            int n = recv(s, b + got, 2 - got, 0);
+            if (n <= 0) break;
+            got += n;
+        }
+        took[i] = got == 2 ? now_us() - t0 : 10000000;
+        Sleep(300);                                     /* (everything ACKed before the next round) */
+    }
+    qsort(took, 8, sizeof(took[0]), cmp_ll);
+    return took[4];
+}
+
+static int get_int(SOCKET s, int level, int opt)
+{
+    int v = -1, len = sizeof(v);
+    return getsockopt(s, level, opt, (char *)&v, &len) == 0 && len == 4 ? v : -1;
+}
+
+static int set_int(SOCKET s, int level, int opt, int v)
+{
+    return setsockopt(s, level, opt, (const char *)&v, sizeof(v)) == 0;
+}
+
+/* setsockopt/getsockopt: the common options reach the network stack and
+ * read back, and TCP_NODELAY, SO_RCVTIMEO, SO_SNDTIMEO, SO_LINGER and
+ * SO_REUSEADDR change what the socket does */
+static void sockopts(void)
+{
+    char what[160];
+    SOCKET t = socket(AF_INET, SOCK_STREAM, 0), u = socket(AF_INET, SOCK_DGRAM, 0);
+    check("SO_TYPE is SOCK_STREAM and SOCK_DGRAM, SO_ERROR 0 and SO_ACCEPTCONN 0 on new sockets",
+          get_int(t, SOL_SOCKET, SO_TYPE) == SOCK_STREAM && get_int(u, SOL_SOCKET, SO_TYPE) == SOCK_DGRAM &&
+          get_int(t, SOL_SOCKET, SO_ERROR) == 0 && get_int(t, SOL_SOCKET, SO_ACCEPTCONN) == 0);
+    int def_ttl = get_int(t, IPPROTO_IP, IP_TTL);
+    snprintf(what, sizeof(what), "defaults: TCP_NODELAY off, SO_KEEPALIVE off, IP_TTL %d, SO_RCVBUF %d, SO_SNDBUF %d",
+             def_ttl, get_int(t, SOL_SOCKET, SO_RCVBUF), get_int(t, SOL_SOCKET, SO_SNDBUF));
+    check(what, get_int(t, IPPROTO_TCP, TCP_NODELAY) == 0 && get_int(t, SOL_SOCKET, SO_KEEPALIVE) == 0 &&
+                def_ttl > 0 && get_int(t, SOL_SOCKET, SO_RCVBUF) > 0 && get_int(t, SOL_SOCKET, SO_SNDBUF) > 0);
+    static const struct { int level, opt, v; const char *name; } opts[] = {
+        { SOL_SOCKET, SO_RCVBUF, 8192, "SO_RCVBUF" },   { SOL_SOCKET, SO_SNDBUF, 16384, "SO_SNDBUF" },
+        { SOL_SOCKET, SO_REUSEADDR, 1, "SO_REUSEADDR" }, { SOL_SOCKET, SO_KEEPALIVE, 1, "SO_KEEPALIVE" },
+        { IPPROTO_TCP, TCP_NODELAY, 1, "TCP_NODELAY" }, { SOL_SOCKET, SO_RCVTIMEO, 250, "SO_RCVTIMEO" },
+        { SOL_SOCKET, SO_SNDTIMEO, 300, "SO_SNDTIMEO" }, { IPPROTO_IP, IP_TTL, 64, "IP_TTL" },
+    };
+    for (unsigned i = 0; i < sizeof(opts) / sizeof(opts[0]); i++) {
+        snprintf(what, sizeof(what), "%s set to %d reads back", opts[i].name, opts[i].v);
+        check(what, set_int(t, opts[i].level, opts[i].opt, opts[i].v) && get_int(t, opts[i].level, opts[i].opt) == opts[i].v);
+    }
+    check("TCP_NODELAY and SO_KEEPALIVE switch off again",
+          set_int(t, IPPROTO_TCP, TCP_NODELAY, 0) && set_int(t, SOL_SOCKET, SO_KEEPALIVE, 0) &&
+          get_int(t, IPPROTO_TCP, TCP_NODELAY) == 0 && get_int(t, SOL_SOCKET, SO_KEEPALIVE) == 0);
+    struct linger lg = { 1, 5 }, lr = { 0, 0 };
+    int ll = sizeof(lr);
+    check("SO_LINGER {1, 5} reads back, and SO_DONTLINGER says 0",
+          setsockopt(t, SOL_SOCKET, SO_LINGER, (const char *)&lg, sizeof(lg)) == 0 &&
+          getsockopt(t, SOL_SOCKET, SO_LINGER, (char *)&lr, &ll) == 0 && lr.l_onoff == 1 && lr.l_linger == 5 &&
+          get_int(t, SOL_SOCKET, SO_DONTLINGER) == 0);
+    check("SO_DONTLINGER turns it off and keeps the timeout",
+          set_int(t, SOL_SOCKET, SO_DONTLINGER, 1) && (ll = sizeof(lr), getsockopt(t, SOL_SOCKET, SO_LINGER, (char *)&lr, &ll)) == 0 &&
+          lr.l_onoff == 0 && lr.l_linger == 5);
+    check("SO_BROADCAST on a UDP socket reads back",
+          get_int(u, SOL_SOCKET, SO_BROADCAST) == 0 && set_int(u, SOL_SOCKET, SO_BROADCAST, 1) &&
+          get_int(u, SOL_SOCKET, SO_BROADCAST) == 1);
+    BOOL one = TRUE;
+    char b1 = 0;
+    int b1l = 1;
+    check("a BOOL option given as one byte (SO_KEEPALIVE)",
+          setsockopt(t, SOL_SOCKET, SO_KEEPALIVE, (const char *)&one, 1) == 0 &&
+          getsockopt(t, SOL_SOCKET, SO_KEEPALIVE, &b1, &b1l) == 0 && b1 == 1 && b1l == 1);
+    check("TCP_NODELAY on a UDP socket is WSAENOPROTOOPT",
+          !set_int(u, IPPROTO_TCP, TCP_NODELAY, 1) && WSAGetLastError() == WSAENOPROTOOPT);
+    closesocket(t);
+    closesocket(u);
+
+    /* TCP_NODELAY: the second of two small sends goes at once */
+    SOCKET c, s;
+    if (tcp_pair(&c, &s)) {
+        LONGLONG nagle = write_write(c, s);
+        set_int(c, IPPROTO_TCP, TCP_NODELAY, 1);
+        LONGLONG nodelay = write_write(c, s);
+        snprintf(what, sizeof(what), "TCP_NODELAY: a second small send arrives after %lld.%03lld ms (Nagle's algorithm: %lld.%03lld ms)",
+                 nodelay / 1000, nodelay % 1000, nagle / 1000, nagle % 1000);
+        check(what, nodelay <= 30000 && nagle >= 40000 && nagle >= 3 * nodelay);
+
+        /* SO_RCVTIMEO: a blocking recv with nothing coming gives up */
+        set_int(s, SOL_SOCKET, SO_RCVTIMEO, 300);
+        char b[16];
+        LONGLONG t0 = now_us();
+        int r = recv(s, b, sizeof(b), 0);
+        int e = WSAGetLastError();
+        LONGLONG took = now_us() - t0;
+        snprintf(what, sizeof(what), "SO_RCVTIMEO 300 ms: recv gives WSAETIMEDOUT after %lld ms", took / 1000);
+        check(what, r == SOCKET_ERROR && e == WSAETIMEDOUT && took >= 250000 && took <= 1500000);
+        check("data sent after the timeout still arrives", send(c, "x", 1, 0) == 1 && recv(s, b, sizeof(b), 0) == 1 && b[0] == 'x');
+
+        /* SO_SNDTIMEO: the peer reads nothing, the buffers fill, a send gives up */
+        set_int(c, SOL_SOCKET, SO_SNDTIMEO, 300);
+        static char big[4096];
+        int sent = 0;
+        r = 0;
+        LONGLONG start = now_us();
+        while (sent < 1600 * 1024 && now_us() - start < 10000000) {   /* (a short count: what fitted before the timeout) */
+            t0 = now_us();
+            r = send(c, big, sizeof(big), 0);
+            if (r == SOCKET_ERROR) break;
+            sent += r;
+        }
+        e = WSAGetLastError();
+        took = now_us() - t0;
+        snprintf(what, sizeof(what), "SO_SNDTIMEO 300 ms: with the peer not reading, send gives WSAETIMEDOUT after %d KB (%lld ms)",
+                 sent / 1024, took / 1000);
+        check(what, r == SOCKET_ERROR && e == WSAETIMEDOUT && took >= 250000 && took <= 1500000);
+        closesocket(c);
+        closesocket(s);
+    } else {
+        check("a loopback TCP pair for the option tests", 0);
+    }
+
+    /* SO_LINGER {1, 0}: closing resets the connection */
+    if (tcp_pair(&c, &s)) {
+        struct linger hard = { 1, 0 };
+        setsockopt(c, SOL_SOCKET, SO_LINGER, (const char *)&hard, sizeof(hard));
+        closesocket(c);
+        char b[4];
+        int r = wait_for(s, 0, 2000) == 1 ? recv(s, b, sizeof(b), 0) : 1;
+        int e = WSAGetLastError();
+        check("SO_LINGER {1, 0}: closesocket resets the connection (the peer's recv gives WSAECONNRESET)",
+              r == SOCKET_ERROR && e == WSAECONNRESET);
+        closesocket(s);
+    }
+    if (tcp_pair(&c, &s)) {
+        closesocket(c);
+        char b[4];
+        int r = wait_for(s, 0, 2000) == 1 ? recv(s, b, sizeof(b), 0) : 1;
+        check("without it, closesocket ends the connection in order (recv gives 0)", r == 0);
+        closesocket(s);
+    }
+
+    /* SO_REUSEADDR: two sockets on one port only when both ask */
+    struct sockaddr_in a;
+    int len = sizeof(a);
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    SOCKET x = socket(AF_INET, SOCK_STREAM, 0), y = socket(AF_INET, SOCK_STREAM, 0), z = socket(AF_INET, SOCK_STREAM, 0);
+    set_int(x, SOL_SOCKET, SO_REUSEADDR, 1);
+    bind(x, (struct sockaddr *)&a, len);
+    getsockname(x, (struct sockaddr *)&a, &len);
+    int busy = bind(y, (struct sockaddr *)&a, len) == SOCKET_ERROR && WSAGetLastError() == WSAEADDRINUSE;
+    set_int(z, SOL_SOCKET, SO_REUSEADDR, 1);
+    int shared = bind(z, (struct sockaddr *)&a, len) == 0;
+    snprintf(what, sizeof(what), "SO_REUSEADDR: port %u is in use for a plain socket, and shared with one that sets it",
+             ntohs(a.sin_port));
+    check(what, busy && shared);
+    closesocket(x); closesocket(y); closesocket(z);
+}
+
 int main(void)
 {
     WSADATA w;
@@ -174,6 +379,7 @@ int main(void)
     shutdown_both();
     localhost();
     winsock11();
+    sockopts();
     printf("looptest: %d passed, %d failed\n", passed, failed);
     return failed != 0;
 }
