@@ -18,9 +18,18 @@
  * controller (UHCI or OHCI) that shares the port: they are recognised at
  * reset and the port is passed over.  Behind a high-speed hub they are
  * reached with split transactions through the hub's transaction
- * translator.  Isochronous endpoints (iTDs, siTDs) are not supported:
- * their pipes are refused, so a high-speed audio device works only on
- * xHCI, and a full-speed one on the companion controller.
+ * translator.
+ *
+ * Isochronous endpoints of high-speed devices use iTDs, which go straight
+ * into the frame list as UHCI's isochronous TDs do: the iTD for frame f
+ * goes in front of whatever entry f holds (other iTDs, then the interrupt
+ * list) and comes out again once the frame has passed.  An iTD carries up
+ * to eight transactions, one per microframe, so a pipe polled every
+ * microframe puts eight packets in each, one polled every 2^n frames one.
+ * Each pipe has an iTD per frame of the core's transfer ring, at a fixed
+ * place.  Full-speed isochronous endpoints behind a high-speed hub would
+ * need siTDs, which are not written: their pipes are refused (on a root
+ * port such a device goes to the companion controller, which streams).
  *
  * Polled: the controller's interrupts stay off; poll() looks at the
  * interrupt qTDs every tick, and a waited-for transfer is spun on.
@@ -74,6 +83,7 @@
 /* Link pointers */
 #define LP_T            1u
 #define LP_QH           (1u << 1)
+#define LP_TYPE         (3u << 1)         /* 0: an iTD */
 
 /* qTD token */
 #define TOK_ACTIVE      (1u << 7)
@@ -98,9 +108,19 @@
 #define QH_CONTROL      (1u << 27)
 #define QH_MULT1        (1u << 30)
 
+/* iTD transaction status and control, buffer pointer fields */
+#define ITD_ACTIVE      (1u << 31)
+#define ITD_ERRORS      (7u << 28)        /* data buffer error, babble, transaction error */
+#define ITD_LEN(t)      (((t) >> 16) & 0xFFF)
+#define ITD_IN          (1u << 11)
+
 #define QTD_BYTES       0x5000u           /* 5 pages per qTD, page-aligned buffers */
 #define QTD_SLOTS       60                /* qTDs in a queue's page */
 #define MAX_LISTEN      64                /* interrupt IN pipes per controller */
+#define MAX_ISO         16                /* isochronous pipes streaming per controller */
+#define ITD_SLOT        128               /* bytes per iTD (64, then the 64-bit buffer pointers) */
+#define ISO_ITDS        128               /* iTDs per pipe: the core's 128 packets at most */
+#define ISO_PAGES       (ISO_ITDS * ITD_SLOT / 4096)
 
 typedef struct __attribute__((packed, aligned(32))) {
     UINT32 next, alt, token, buf[5], ext[5];
@@ -123,6 +143,23 @@ typedef struct {
     Qtd         td[QTD_SLOTS];
 } QPage;
 
+/* An isochronous transfer descriptor: one frame's transactions */
+typedef struct __attribute__((packed, aligned(32))) {
+    UINT32 next, status[8], buf[7], ext[7];
+} Itd;
+
+/* An isochronous pipe: an iTD per frame of the transfer ring (transfer k's
+ * at k * frames), and the transfers in flight, oldest first */
+typedef struct {
+    UINT8  *itd;                          /* ITD_SLOT bytes each, ISO_ITDS of them */
+    UINT16  at[ISO_ITDS];                 /* the frame (11 bits) each iTD was put in */
+    int     frames;                       /* iTDs per transfer */
+    int     per;                          /* packets per iTD (1, 2, 4 or 8) */
+    UINT16  step;                         /* frames from one iTD to the next */
+    UINT16  frame;                        /* where the next transfer's first iTD goes */
+    int     fifo[128], head, count;
+} EIso;
+
 typedef struct {
     QPage      *q;
     bool        periodic;
@@ -139,6 +176,7 @@ typedef struct {
     QPage            *async_head;         /* the asynchronous ring's dummy head */
     QPage            *intr_head;          /* the periodic list's dummy head */
     UsbPipe          *listening[MAX_LISTEN];
+    UsbPipe          *streaming[MAX_ISO];
     PciDevice         pci;
 } Ehci;
 
@@ -361,9 +399,11 @@ static int ehci_control(UsbHc *hc, UsbDev *d, const UsbSetup *s, bool *stalled)
     }
 }
 
+static bool iso_add(UsbPipe *p);
+
 static bool ehci_pipe_add(UsbHc *hc, UsbPipe *p)
 {
-    if (p->xfer == 1) return false;              /* isochronous (iTD/siTD): not supported */
+    if (p->xfer == 1) return iso_add(p);
     EQueue *eq = queue_new(E(hc), p->dev, p->addr, p->mps, false, p->xfer == 3);
     if (!eq) return false;
     p->hcd = eq;
@@ -425,10 +465,162 @@ static bool ehci_listen(UsbHc *hc, UsbPipe *p)
     return true;
 }
 
-/* Interrupt IN transfers that finished */
+/* ---- isochronous ---- */
+
+static inline Itd *itd_at(EIso *ei, int i) { return (Itd *)(ei->itd + (size_t)i * ITD_SLOT); }
+static inline UINT16 frame_now(Ehci *e) { return (UINT16)((rd32(e->op, OP_FRINDEX) >> 3) & 0x7FF); }
+/* Frame @f (11 bits) is over */
+static inline bool frame_past(UINT16 now, UINT16 f) { UINT16 d = (UINT16)((now - f) & 0x7FF); return d && d < 0x400; }
+
+/* An isochronous pipe's state: high speed only (siTDs are not written) */
+static bool iso_add(UsbPipe *p)
+{
+    if (p->dev->speed != USB_SPEED_HIGH) return false;
+    EIso *ei = kzalloc(sizeof(EIso));
+    if (!ei) return false;
+    ei->itd = UsbDmaAlloc(ISO_PAGES);
+    if (!ei->itd) { kfree(ei); return false; }
+    UINT32 period = UsbPipePeriod(p);
+    ei->per = period >= 8 ? 1 : (int)(8 / period);
+    ei->step = (UINT16)(period >= 8 ? period / 8 : 1);
+    p->hcd = ei;
+    return true;
+}
+
+/* Take an iTD out of its frame's list (lock held) */
+static void itd_unlink(Ehci *e, EIso *ei, int i)
+{
+    Itd *td = itd_at(ei, i);
+    UINT32 me = p32(td);
+    volatile UINT32 *at = &e->frames[ei->at[i] & 1023];
+    for (int guard = 0; guard < 256 && !(*at & (LP_T | LP_TYPE)); guard++) {
+        if ((*at & ~0x1Fu) == me) { *at = td->next; break; }
+        at = &((Itd *)UsbVirt(*at & ~0x1Fu))->next;
+    }
+    for (int u = 0; u < 8; u++) td->status[u] &= ~ITD_ACTIVE;
+}
+
+/* Put transfer @k's iTDs in the frames after the last one's (lock held) */
+static void iso_submit(Ehci *e, UsbPipe *p, int k)
+{
+    EIso *ei = p->hcd;
+    UsbDev *d = p->dev;
+    UINT16 now = frame_now(e);
+    UINT16 ahead = (UINT16)((ei->frame - now) & 0x7FF);
+    if (ahead < 2 || ahead >= 0x400) ei->frame = (UINT16)((now + 3) & 0x7FF);   /* (fell behind: catch up) */
+    UINT32 uf = 8 / (UINT32)ei->per;                       /* microframes between packets in an iTD */
+    for (int f = 0; f < ei->frames; f++) {
+        int i = k * ei->frames + f, pk = k * p->iso_packets + f * ei->per;
+        Itd *td = itd_at(ei, i);
+        UINT64 pa = UsbPhys(p->dma) + (UINT64)pk * p->iso_psize, page0 = pa & ~0xFFFull;
+        td->buf[0] = (UINT32)page0 | ((UINT32)(p->addr & 0xF) << 8) | d->addr;
+        td->buf[1] = (UINT32)(page0 + PAGE_SIZE) | (p->in ? ITD_IN : 0) | p->mps;
+        td->buf[2] = (UINT32)(page0 + 2 * PAGE_SIZE) | (1u + p->mult);
+        for (int j = 3; j < 7; j++) td->buf[j] = (UINT32)(page0 + (UINT64)j * PAGE_SIZE);
+        for (int j = 0; j < 7; j++) td->ext[j] = 0;
+        for (int u = 0; u < 8; u++) td->status[u] = 0;
+        for (int n = 0; n < ei->per; n++) {
+            UINT64 at = UsbPhys(p->dma) + (UINT64)(pk + n) * p->iso_psize;
+            td->status[n * uf] = ITD_ACTIVE | ((UINT32)p->iso_len[pk + n] << 16) |
+                                 ((UINT32)((at - page0) >> 12) << 12) | (UINT32)(at & 0xFFF);
+        }
+        ei->at[i] = ei->frame;
+        volatile UINT32 *slot = &e->frames[ei->frame & 1023];
+        td->next = *slot;
+        mfence();
+        *slot = p32(td);
+        ei->frame = (UINT16)((ei->frame + ei->step) & 0x7FF);
+    }
+    ei->fifo[(ei->head + ei->count++) % 128] = k;
+}
+
+static bool ehci_iso_start(UsbHc *hc, UsbPipe *p)
+{
+    Ehci *e = E(hc);
+    EIso *ei = p->hcd;
+    if (!ei || (p->iso_packets % ei->per)) return false;  /* (a transfer is whole iTDs) */
+    int frames = p->iso_packets / ei->per;
+    if (p->iso_xfers * frames > ISO_ITDS) return false;
+    int slot = -1;
+    for (int i = 0; i < MAX_ISO && slot < 0; i++) if (!e->streaming[i]) slot = i;
+    if (slot < 0) return false;
+    ei->frames = frames;
+    ei->head = ei->count = 0;
+    ei->frame = (UINT16)((frame_now(e) + 3) & 0x7FF);
+    for (int k = 0; k < p->iso_xfers; k++) iso_submit(e, p, k);
+    e->streaming[slot] = p;
+    return true;
+}
+
+/* Out of the frame list with everything in flight (lock held) */
+static void iso_unlink_all(Ehci *e, UsbPipe *p)
+{
+    EIso *ei = p->hcd;
+    for (int i = 0; i < MAX_ISO; i++) if (e->streaming[i] == p) e->streaming[i] = NULL;
+    for (; ei->count; ei->count--, ei->head = (ei->head + 1) % 128) {
+        int k = ei->fifo[ei->head];
+        for (int f = 0; f < ei->frames; f++) itd_unlink(e, ei, k * ei->frames + f);
+    }
+}
+
+static void ehci_iso_stop(UsbHc *hc, UsbPipe *p)
+{
+    if (!p->hcd) return;
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    iso_unlink_all(E(hc), p);
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    UsbDelay(2);                          /* (the controller is past any frame that had them) */
+}
+
+/* Transfers whose frames have all passed (lock held) */
+static void iso_poll(Ehci *e)
+{
+    UINT16 now = frame_now(e);
+    for (int s = 0; s < MAX_ISO; s++) {
+        UsbPipe *p = e->streaming[s];
+        if (!p || !p->iso_cb || !p->hcd) continue;
+        EIso *ei = p->hcd;
+        UINT32 uf = 8 / (UINT32)ei->per;
+        while (ei->count) {
+            int k = ei->fifo[ei->head];
+            if (!frame_past(now, ei->at[k * ei->frames + ei->frames - 1])) break;
+            for (int f = 0; f < ei->frames; f++) {
+                int i = k * ei->frames + f;
+                Itd *td = itd_at(ei, i);
+                UINT32 st[8];
+                for (int u = 0; u < 8; u++) st[u] = td->status[u];
+                itd_unlink(e, ei, i);
+                if (p->in)
+                    for (int n = 0; n < ei->per; n++) {
+                        UINT32 t = st[n * uf];
+                        p->iso_len[k * p->iso_packets + f * ei->per + n] =
+                            (UINT16)(t & (ITD_ACTIVE | ITD_ERRORS) ? 0 : ITD_LEN(t));
+                    }
+            }
+            ei->head = (ei->head + 1) % 128;
+            ei->count--;
+            if (UsbIsoDone(p, k)) iso_submit(e, p, k);
+        }
+    }
+}
+
+static void iso_free(Ehci *e, UsbPipe *p)
+{
+    EIso *ei = p->hcd;
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    iso_unlink_all(e, p);
+    p->hcd = NULL;
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    UsbDelay(2);
+    UsbDmaFree(ei->itd, ISO_PAGES);
+    kfree(ei);
+}
+
+/* Interrupt IN and isochronous transfers that finished */
 static void ehci_poll(UsbHc *hc)
 {
     Ehci *e = E(hc);
+    iso_poll(e);
     for (int i = 0; i < MAX_LISTEN; i++) {
         UsbPipe *p = e->listening[i];
         if (!p || !p->cb || !p->hcd) continue;
@@ -459,6 +651,7 @@ static void ehci_dev_remove(UsbHc *hc, UsbDev *d)
     for (int i = 0; i < 32; i++) {
         UsbPipe *p = d->pipes[i];
         if (!p || !p->hcd) continue;
+        if (p->xfer == 1) { iso_free(e, p); continue; }
         EQueue *eq = p->hcd;
         IrqState s = spin_lock_irqsave(&g_usb_lock);
         for (int k = 0; k < MAX_LISTEN; k++) if (e->listening[k] == p) e->listening[k] = NULL;
@@ -478,6 +671,7 @@ static void ehci_dev_remove(UsbHc *hc, UsbDev *d)
 static void ehci_pipe_drop(UsbHc *hc, UsbPipe *p)
 {
     Ehci *e = E(hc);
+    if (p->xfer == 1) { if (p->hcd) iso_free(e, p); return; }
     EQueue *eq = p->hcd;
     IrqState s = spin_lock_irqsave(&g_usb_lock);
     for (int k = 0; k < MAX_LISTEN; k++) if (e->listening[k] == p) e->listening[k] = NULL;
@@ -604,7 +798,10 @@ static bool controller_program(Ehci *e)
 
 static bool ehci_resume(UsbHc *hc)
 {
-    return controller_program(E(hc));
+    Ehci *e = E(hc);
+    for (int i = 0; i < MAX_LISTEN; i++) e->listening[i] = NULL;
+    for (int i = 0; i < MAX_ISO; i++) e->streaming[i] = NULL;
+    return controller_program(e);
 }
 
 static const UsbHcOps g_ehci_ops = {
@@ -617,6 +814,8 @@ static const UsbHcOps g_ehci_ops = {
     .control     = ehci_control,
     .bulk        = ehci_bulk,
     .listen      = ehci_listen,
+    .iso_start   = ehci_iso_start,
+    .iso_stop    = ehci_iso_stop,
     .pipe_reset  = ehci_pipe_reset,
     .poll        = ehci_poll,
     .resume      = ehci_resume,
