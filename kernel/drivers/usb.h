@@ -1,10 +1,11 @@
 /*
  * usb.h — the USB core as the class drivers see it
  *
- * The host controller driver (xhci.c) enumerates devices on its root ports
- * and on hubs, sets their configuration and offers each interface to the
- * class drivers: hubs (usbhub.c), HID keyboards, mice, tablets and touch
- * screens (usbhid.c) and mass storage (usbmsc.c).  A driver that takes an
+ * The core (usb.c) enumerates devices on the root ports of every host
+ * controller (xHCI, EHCI, OHCI and UHCI: usb_hc.h) and on hubs, sets their
+ * configuration and offers each interface to the class drivers: hubs
+ * (usbhub.c), HID keyboards, mice, tablets and touch screens (usbhid.c)
+ * and mass storage (usbmsc.c).  A driver that takes an
  * interface opens pipes to its endpoints and keeps an instance; when the
  * device goes away its gone() callback runs and the pipes stop.
  *
@@ -39,6 +40,17 @@ typedef struct {
 #define USB_DT_REPORT     0x22
 #define USB_DT_HUB        0x29
 #define USB_DT_SS_HUB     0x2A
+
+/* Start every USB controller and attach what is plugged in; returns the
+ * number of devices.  Needs InputInit() first. */
+int  UsbInit(void);
+/* Timer tick, any CPU: finish interrupt transfers, repeat held keys */
+void UsbPoll(void);
+/* Before S3: arm the controllers (xHCI) to wake the machine */
+void UsbPrepareSleep(void);
+/* After waking from S3 (or a sleep that didn't happen): restart the
+ * controllers and enumerate again */
+void UsbResume(void);
 
 /* Speeds (xHCI port speed IDs) */
 #define USB_SPEED_FULL    1
@@ -107,4 +119,5 @@ void  UsbHubService(void *inst);                       /* usb thread: handle por
 void  UsbHubServiceAll(void);                          /* ... of every hub that signalled */
 void *UsbHidProbe(UsbDev *d, const UsbIface *f);      /* usbhid.c */
 void  UsbHidTickAll(UINT64 now);                       /* key repeat, every tick */
+void  UsbHidSyncLeds(void);                            /* usb thread: lock-key LEDs */
 void *UsbMscProbe(UsbDev *d, const UsbIface *f);      /* usbmsc.c */

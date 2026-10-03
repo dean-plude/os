@@ -547,7 +547,7 @@ void DesktopWatchdog(uint64_t now);
 void UmTimerTick(uint64_t ticks);
 
 void ps2_poll(void);
-void XhciPoll(void);
+void UsbPoll(void);
 
 /* Each CPU's timer is one-shot (apic.c): armed for its next tick on the
  * global 10 ms grid, or for its earliest TSC-deadline sleeper if that
@@ -601,7 +601,7 @@ void sched_tick(void)
         if (now > tick_count) {
             tick_count = now;
             ps2_poll();                     /* keyboard/mouse, collected at 100 Hz */
-            XhciPoll();                     /* (USB ones too) */
+            UsbPoll();                      /* (USB ones too) */
             DesktopWatchdog(tick_count);
             UmTimerTick(tick_count);
         }

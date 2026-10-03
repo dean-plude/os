@@ -346,7 +346,7 @@ os/
 │   ├── um/               # Windows programs: processes, threads, loader, NT services,
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
-│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, virtio-net, xHCI USB core, hubs, HID, mass storage
+│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, virtio-net, USB core, xHCI/EHCI/OHCI/UHCI, hubs, HID, mass storage
 │   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, HPET, I/O APIC, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
