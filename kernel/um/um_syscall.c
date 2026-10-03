@@ -25,6 +25,7 @@
 #include "../wm/clipboard.h"
 #include "../wm/desktop.h"
 #include "../apps/apps.h"
+#include "../hal/acpi.h"
 #include "../hal/aml.h"
 #include "../fs/fsec.h"
 #include "../ke/sleep.h"
@@ -2350,7 +2351,8 @@ static UINT64 sys_power_information(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         AmlGetBatteryState(&b);
         c[0] = 1;                                   /* PowerButtonPresent */
         c[2] = AmlLidPresent();                     /* LidPresent */
-        c[5] = SleepSupported();                    /* SystemS3 */
+        c[5] = SleepSupported() && AcpiSleepSupported();     /* SystemS3 */
+        c[20] = SleepSupported() && !AcpiSleepSupported();   /* AoAc: low-power S0 idle instead */
         c[7] = 1;                                   /* SystemS5 */
         c[13] = AmlThermalZones(&z, 1) > 0;         /* ThermalControl */
         c[30] = b.battery_present;                  /* SystemBatteriesPresent */

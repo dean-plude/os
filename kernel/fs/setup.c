@@ -35,6 +35,10 @@ void SetupBootInfo(const BootInfo *info)
     if (g_live)
         kprintf("[SETUP] Running from the installation %s (kernel %u KB, loader %u KB in memory)\n",
                 SetupMediaName(), (unsigned)(g_media_kernel_size >> 10), (unsigned)(g_media_loader_size >> 10));
+    else if (info->boot_flags & BOOT_FLAG_ENTRY_ADDED)
+        kprintf("[SETUP] Added the firmware boot entry \"NovaOS\" for this disk\n");
+    else if (info->boot_flags & BOOT_FLAG_BOOT_ENTRY)
+        kprintf("[SETUP] The firmware has a \"NovaOS\" boot entry for this disk\n");
 }
 
 bool SetupIsLive(void) { return g_live; }

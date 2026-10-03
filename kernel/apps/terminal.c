@@ -26,6 +26,8 @@
 #include "../fs/persist.h"
 #include "../hal/serial.h"
 #include "../hal/pci.h"
+#include "../fs/setup.h"
+#include "../drivers/nvme.h"
 #include "vterm.h"
 
 #define T_COLS   160
@@ -52,7 +54,7 @@ static void mirror(const char *s, int n)
 }
 
 /* A network command in progress (advanced by term_tick) */
-typedef enum { JOB_NONE, JOB_PING, JOB_LOOKUP, JOB_FETCH, JOB_PROC } JobKind;
+typedef enum { JOB_NONE, JOB_PING, JOB_LOOKUP, JOB_FETCH, JOB_PROC, JOB_SETUP } JobKind;
 enum { PH_RESOLVE, PH_SEND, PH_WAIT, PH_SLEEP, PH_FETCH };
 
 typedef struct {
@@ -252,6 +254,7 @@ static void cmd_help(Term *t)
         "  devices             the PCI devices and the driver each one has (also: lspci)\n"
         "  hwcheck             test the laptop drivers on modelled devices (codec, touchpad)\n"
         "  vol  sync           where drive C: is saved; save it now\n"
+        "  install [disk] [/fat]  install NovaOS on a disk (no disk: list them)\n"
         "  ipconfig            show the network configuration\n"
         "  ping [-4|-6] <host> [-n N]  test a connection (ICMP echo)\n"
         "  nslookup <host>     look up a host name (DNS)\n"
@@ -711,6 +714,41 @@ static bool job_resolve(Term *t, const char *host)
     return true;
 }
 
+/* install [disk [/fat]]: what the Setup app does, from the keyboard (and
+ * the self-tests): NovaOS onto @disk with drive C: on NTFS, or FAT32 */
+static void cmd_install(Term *t, int argc, char **argv)
+{
+    SetupDisk d[8];
+    int n = SetupListDisks(d, 8);
+    if (argc < 2) {
+        for (int i = 0; i < n; i++)
+            tprintf(t, "  %s  %u MiB  %s  %s%s%s", d[i].dev->name, (unsigned)(d[i].bytes >> 20), d[i].dev->model,
+                    d[i].contents, d[i].boot ? "  (NovaOS is running from it)" : "",
+                    d[i].too_small ? "  (too small)" : "");
+        if (!n) tprint(t, "There are no disks to install on.");
+        if (NvmeBehindVmd())
+            tprint(t, "Intel VMD (RST) hides the NVMe disks: turn it off in the firmware setup.");
+        tprint(t, "Usage: install <disk> [/fat]   (drive C: on NTFS, or on FAT32 with /fat)");
+        return;
+    }
+    SetupDisk *pick = NULL;
+    for (int i = 0; i < n && !pick; i++) if (is(argv[1], d[i].dev->name)) pick = &d[i];
+    if (!pick) { tprintf(t, "There is no disk named %s. Type 'install' to list them.", argv[1]); return; }
+    if (pick->boot) { terr(t, "NovaOS is running from that disk."); return; }
+    if (pick->too_small) { terr(t, "That disk is too small for NovaOS."); return; }
+    bool fat = argc > 2 && (is(argv[2], "/fat") || is(argv[2], "fat"));
+    if (!SetupStart(pick->dev, !fat)) {
+        SetupStatus st;
+        SetupGetStatus(&st);
+        terr(t, st.error[0] ? st.error : "The installer is already running.");
+        return;
+    }
+    Job *j = &t->job;
+    memset(j, 0, sizeof(*j));
+    j->kind = JOB_SETUP;
+    tprintf(t, "Installing NovaOS on %s (everything on it is erased)...", pick->dev->name);
+}
+
 static void cmd_ping(Term *t, int argc, char **argv)
 {
     Job *j = &t->job;
@@ -989,6 +1027,22 @@ static bool term_tick_files(WND *w)
             return true;
         }
         return changed;
+    }
+    if (j->kind == JOB_SETUP) {
+        SetupStatus st;
+        SetupGetStatus(&st);
+        if (st.state == SETUP_RUNNING) {
+            if (!st.step[0] || !strcmp(st.step, j->path)) return false;
+            strncpy(j->path, st.step, sizeof(j->path) - 1);
+            tprintf(t, "%d%%  %s", st.percent, st.step);
+            return true;
+        }
+        if (st.state == SETUP_DONE)
+            tprint(t, "NovaOS is installed. Restart without the USB stick or disc to start it from the disk.");
+        else
+            terr(t, st.error[0] ? st.error : "The installation failed.");
+        job_end(t);
+        return true;
     }
     NetOp *op = j->op;
     char a[48];
@@ -1599,6 +1653,7 @@ static void run_cmd_line(Term *t, char *cmdline, const char *original)
     else if (is(c, "usbcheck"))                 cmd_usbcheck(t);
     else if (is(c, "hwcheck"))                  cmd_hwcheck(t);
     else if (is(c, "devices") || is(c, "lspci")) cmd_devices(t);
+    else if (is(c, "install"))                  cmd_install(t, argc, argv);
     else if (is(c, "taskkill"))                 cmd_taskkill(t, argc, argv);
     else if (is(c, "exit"))                     WmDestroyWindow(t->w);
     else {

@@ -592,6 +592,9 @@ os/
   has.
 - [docs/ethernet.md](docs/ethernet.md): the Intel Ethernet driver, the
   I219 IDs it takes and how it brings one up.
+- [docs/install-and-power.md](docs/install-and-power.md): installing on a
+  laptop's NVMe disk, its embedded controller, sleep without S3, and the
+  checks to run on the reference ThinkPad.
 - [docs/HISTORY.md](docs/HISTORY.md): what every phase added, in detail.
 - [docs/phase1-architecture.md](docs/phase1-architecture.md): the boot flow,
   address-space layout and early kernel design.

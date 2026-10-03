@@ -20,6 +20,7 @@
 
 #include "aml.h"
 #include "acpi.h"
+#include "ec.h"
 #include "pci.h"
 #include "ioapic.h"
 #include "../arch/x86_64/idt.h"
@@ -900,6 +901,88 @@ static void report_wake(void)
 }
 
 /* -----------------------------------------------------------------------
+ * Low-power S0 idle (Modern Standby), the sleep of firmware without S3:
+ * the LPS0 device's _DSM tells the platform that the screen is off and
+ * that the OS is idling, so it can drop to its lowest idle power.  Intel's
+ * functions (3 screen off, 4 on, 5 entry, 6 exit) and Microsoft's (3, 4,
+ * 7 entry, 8 exit), in the order Linux's drivers/acpi/x86/s2idle.c calls
+ * them.
+ * ----------------------------------------------------------------------- */
+static const UINT8 LPS0_INTEL[16] = { 0xa0, 0x40, 0xeb, 0xc4, 0xd2, 0x6c, 0xe2, 0x11,   /* c4eb40a0-6cd2-11e2- */
+                                      0xbc, 0xfd, 0x08, 0x00, 0x20, 0x0c, 0x9a, 0x66 }; /* bcfd-0800200c9a66 */
+static const UINT8 LPS0_MS[16]    = { 0x56, 0x0d, 0xe0, 0x11, 0x64, 0xce, 0xce, 0x47,   /* 11e00d56-ce64-47ce- */
+                                      0x83, 0x7b, 0x1f, 0x89, 0x8f, 0x9a, 0xa4, 0x61 }; /* 837b-1f898f9aa461 */
+
+static uacpi_namespace_node *g_lps0;
+static UINT64                g_lps0_intel, g_lps0_ms;     /* the functions each set has (bit n: function n) */
+
+static UINT64 lps0_dsm(const UINT8 *uuid, int fn)
+{
+    uacpi_data_view v = { .const_bytes = uuid, .length = 16 };
+    uacpi_object *args[4] = { uacpi_object_create_buffer(v), uacpi_object_create_integer(0),
+                              uacpi_object_create_integer((uacpi_u64)fn),
+                              uacpi_object_create_package((uacpi_object_array){ NULL, 0 }) };
+    uacpi_object_array a = { args, 4 };
+    uacpi_object *ret = NULL;
+    UINT64 mask = 0;
+    if (uacpi_eval(g_lps0, "_DSM", &a, &ret) == UACPI_STATUS_OK && ret && fn == 0) {
+        uacpi_data_view b;
+        uacpi_u64 i;
+        if (uacpi_object_get_buffer(ret, &b) == UACPI_STATUS_OK)
+            for (uacpi_size k = 0; k < b.length && k < 8; k++) mask |= (UINT64)b.const_bytes[k] << (8 * k);
+        else if (uacpi_object_get_integer(ret, &i) == UACPI_STATUS_OK)
+            mask = i;
+    }
+    uacpi_object_unref(ret);
+    for (int i = 0; i < 4; i++) uacpi_object_unref(args[i]);
+    return mask;
+}
+
+static uacpi_iteration_decision found_lps0(void *user, uacpi_namespace_node *node, uacpi_u32 depth)
+{
+    (void)user; (void)depth;
+    g_lps0 = node;
+    g_lps0_intel = lps0_dsm(LPS0_INTEL, 0);
+    g_lps0_ms = lps0_dsm(LPS0_MS, 0);
+    if (!(g_lps0_intel & 1)) g_lps0_intel = 0;           /* (bit 0: the set is there at all) */
+    if (!(g_lps0_ms & 1)) g_lps0_ms = 0;
+    const uacpi_char *path = uacpi_namespace_node_generate_absolute_path(node);
+    kprintf("[ACPI] Low-power S0 idle device %s: Intel functions 0x%llx, Microsoft functions 0x%llx\n",
+            path ? path : "?", (unsigned long long)g_lps0_intel, (unsigned long long)g_lps0_ms);
+    uacpi_free_absolute_path(path);
+    return UACPI_ITERATION_DECISION_BREAK;
+}
+
+static void lps0_call(const UINT8 *uuid, UINT64 mask, int fn)
+{
+    if (g_lps0 && (mask & (1ull << fn))) lps0_dsm(uuid, fn);
+}
+
+bool AmlLps0Present(void) { return g_lps0 && (g_lps0_intel || g_lps0_ms); }
+
+void AmlS0IdleEnter(void)
+{
+    if (!g_ready || !AmlLps0Present()) return;
+    lps0_call(LPS0_INTEL, g_lps0_intel, 3);
+    lps0_call(LPS0_MS, g_lps0_ms, 3);
+    lps0_call(LPS0_MS, g_lps0_ms, 7);
+    lps0_call(LPS0_INTEL, g_lps0_intel, 5);
+    kprintf("[ACPI] LPS0: told the platform the screen is off and the OS idles\n");
+}
+
+void AmlS0IdleExit(void)
+{
+    if (!g_ready || !AmlLps0Present()) return;
+    lps0_call(LPS0_INTEL, g_lps0_intel, 6);
+    lps0_call(LPS0_MS, g_lps0_ms, 8);
+    lps0_call(LPS0_MS, g_lps0_ms, 4);
+    lps0_call(LPS0_INTEL, g_lps0_intel, 4);
+    kprintf("[ACPI] LPS0: left S0 idle, screen on\n");
+    __atomic_store_n(&g_refresh, 1, __ATOMIC_RELEASE);
+    kick();
+}
+
+/* -----------------------------------------------------------------------
  * I2C-HID devices (PNP0C50): the I2C address and controller from _CRS
  * (I2cSerialBus), the HID descriptor register from _DSM function 1 of
  * 3cdff6f7-4267-4555-ad05-b30a3d8938de (Microsoft's "HID over I2C
@@ -1063,6 +1146,7 @@ static bool load(void)
 {
     uacpi_status st = uacpi_initialize(0);
     if (st == UACPI_STATUS_OK) st = uacpi_namespace_load();
+    if (st == UACPI_STATUS_OK) EcProbe();          /* (its _REG before the _INI methods) */
     if (st == UACPI_STATUS_OK && IoApicPresent()) st = uacpi_set_interrupt_model(UACPI_INTERRUPT_MODEL_IOAPIC);
     if (st == UACPI_STATUS_OK) st = uacpi_namespace_initialize();
     if (st != UACPI_STATUS_OK) {
@@ -1076,6 +1160,10 @@ static bool load(void)
     uacpi_find_devices("PNP0C0A", found_battery, NULL);
     uacpi_find_devices("ACPI0003", found_adapter, NULL);
     uacpi_find_devices("PNP0C0D", found_lid, NULL);
+    {
+        static const uacpi_char *lps0[] = { "INT33A1", "PNP0D80", NULL };
+        uacpi_find_devices_at(uacpi_namespace_root(), lps0, found_lps0, NULL);
+    }
     uacpi_find_devices("PNP0C50", found_i2c_hid, NULL);
     uacpi_find_devices("ACPI0C50", found_i2c_hid, NULL);
     uacpi_namespace_for_each_child(uacpi_namespace_root(), found_zone, NULL,
@@ -1111,6 +1199,8 @@ static void acpi_thread(void *arg)
             g_sci(g_sci_ctx);
             next_sci = sched_ticks() + (g_sci_irq ? 100 : 10);
         }
+        run_work();
+        EcPoll();                                     /* (an event whose GPE edge went missing) */
         run_work();
         if (__atomic_exchange_n(&g_lid_read, 0, __ATOMIC_ACQ_REL)) read_lid();
         poll_zones(__atomic_exchange_n(&g_zone_read, 0, __ATOMIC_ACQ_REL) != 0);

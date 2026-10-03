@@ -54,7 +54,7 @@ bool HpetInit(UINT64 rsdp)
 {
     const UINT8 *t = early_table(rsdp, "HPET");
     if (!t || *(const UINT32 *)(t + 4) < 56) {
-        kprintf("[HPET] None (the PIT calibrates the timers)\n");
+        kprintf("[HPET] None (the timers come from CPUID 0x15 or the PIT)\n");
         return false;
     }
     UINT8 space = t[40];                                /* base address: a GAS at offset 40 */

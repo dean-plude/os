@@ -491,7 +491,17 @@ still at a quarter.  Last, one
 connects a monitor to the second and third outputs and disconnects them
 again while NovaOS runs, through a VNC server QEMU has on each (an RFB
 `SetDesktopSize` asks for a monitor of that size there; 0 x 0 takes it
-away):
+away).  The "laptop" boot stands in for the reference ThinkPad: QEMU
+without `\_S3` (`ICH9-LPC.disable_s3=1`), `tests/acpi/laptop.asl` (an
+embedded controller holding the lid, a battery and the AC adapter, which
+NovaOS serves with its model of one because QEMU emulates none, and an
+LPS0 device), the ISO on a USB stick, an empty NVMe disk and only the
+firmware's GOP.  `battery` must read the battery through the controller;
+the test closes the lid (pc-testdev port `0xE8`), NovaOS must sleep in
+low-power S0 idle, and opening it must wake it; then `install nvme0n1`
+installs NovaOS on the NVMe disk, and after `shutdown /r` it must start
+from that disk and add its firmware boot entry
+([install-and-power.md](install-and-power.md)):
 
 ```bash
 python3 tools/selftest.py --suite devices

@@ -29,6 +29,10 @@ void AcpiPowerOff(void);
 /* Is S3 (suspend to RAM) possible: an \_S3 package and a FACS? */
 bool AcpiSleepSupported(void);
 
+/* The FADT says the platform idles at low power in S0 (Modern Standby):
+ * firmware that often has no \_S3 at all */
+bool AcpiLowPowerS0(void);
+
 /* Enter S3 with the firmware waking vectors: @real_vector (real mode,
  * below 1 MiB) and @pm32_vector (32-bit protected mode, which ACPI 2.0+
  * firmware prefers).  Returns false if the machine didn't go to sleep; on
