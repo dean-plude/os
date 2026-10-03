@@ -16,6 +16,7 @@ services), the Java, .NET, Node.js and Python runtimes, and OpenGL, Vulkan
 and Direct3D 8–11 programs through Mesa and DXVK.  It can install
 itself on a disk from its live ISO.
 
+- [Screenshots](#screenshots)
 - [What runs today](#what-runs-today)
 - [What is inside](#what-is-inside)
 - [Quick start](#quick-start)
@@ -25,6 +26,23 @@ itself on a disk from its live ISO.
 - [Key design decisions](#key-design-decisions)
 - [Documentation](#documentation)
 - [License](#license)
+
+## Screenshots
+
+Captured from NovaOS running in QEMU at 2560×1600 (200% scale) and stored at
+1280×800; [docs/screenshots/README.md](docs/screenshots/README.md) says how
+each one was taken.
+
+| | |
+|---|---|
+| ![Terminal and File Explorer snapped side by side](docs/screenshots/desktop.png) | ![Notepad++ editing NovaOS's own scheduler source](docs/screenshots/notepad++.png) |
+| The desktop: Terminal and File Explorer snapped side by side | Notepad++ 8.8 editing NovaOS's own kernel scheduler |
+| ![The App Store](docs/screenshots/app-store.png) | ![Firefox showing a page fetched over HTTPS](docs/screenshots/firefox.png) |
+| The App Store, which installs real Windows programs | Firefox loading a page over HTTPS |
+| ![VLC playing a video](docs/screenshots/vlc.png) | ![KeePassXC with an open database](docs/screenshots/keepassxc.png) |
+| VLC playing an H.264 video with sound | KeePassXC (Qt) with an open password database |
+| ![Inkscape with a new document](docs/screenshots/inkscape.png) | |
+| Inkscape (GTK) with a new document | |
 
 ## What runs today
 
