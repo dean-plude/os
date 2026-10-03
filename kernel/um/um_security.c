@@ -18,7 +18,8 @@
  * without a descriptor, or with a NULL DACL, is open to everyone.
  * Descriptors are kept self-relative in kernel memory, with the owner,
  * group and DACL (no SACL).  Files' descriptors are the file system's
- * (um_file_sd_slot); it checks opens with um_access_check_sd.
+ * (kernel/fs/fsec.c, through um_file_query/set_security in um_syscall.c);
+ * it checks opens with um_access_check_sd.
  */
 #include "um_internal.h"
 #include "../ke/probe.h"
@@ -437,14 +438,6 @@ UINT32 um_access_check_sd(const UINT8 *sd, UINT32 len, UINT32 want, const UINT32
     UINT32 st = check(sd, len, to->ptr, want, map, granted);
     um_ob_unref(to);
     return st == ST_INVALID_SECURITY_DESCR ? ST_ACCESS_DENIED : st;
-}
-
-/* Files' descriptors belong to the file system; until it keeps them a
- * file has none */
-__attribute__((weak)) void **um_file_sd_slot(UmProcess *p, UINT64 h)
-{
-    (void)p; (void)h;
-    return NULL;
 }
 
 /* OBJECT_ATTRIBUTES.SecurityDescriptor of @oa (user pointer, may be 0) for
@@ -904,7 +897,6 @@ static void **sd_slot(UINT64 h, UmObject **ob, const UINT32 **map, bool *valid)
     *map = g_file_map;
     int kind = um_handle_kind(p, h);
     *valid = kind > 0;
-    if (kind == H_FILE || kind == H_DIR) return um_file_sd_slot(p, h);
     UmObject *o = um_handle_object(p, h, 0);
     if (!o) return NULL;
     *valid = true;
@@ -914,11 +906,20 @@ static void **sd_slot(UINT64 h, UmObject **ob, const UINT32 **map, bool *valid)
     return &o->sd;
 }
 
+/* Files and directories: their descriptors (inherited ones too) are the
+ * file system's, kept by kernel/fs/fsec.c */
+static bool is_file(UINT64 h)
+{
+    int kind = um_handle_kind(UmCurrent(), h);
+    return kind == H_FILE || kind == H_DIR;
+}
+
 /* NtQuerySecurityObject(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
  * ULONG Length, PULONG LengthNeeded): an object without a descriptor
  * reports the user as owner, Users as group and a NULL DACL */
 static UINT64 sys_query_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
+    if (is_file(a1)) return um_file_query_security(a1, a2, a3, a4);
     UINT64 need_p = um_stack_arg(5);
     UmObject *ob;
     const UINT32 *map;
@@ -958,6 +959,7 @@ static UINT64 sys_query_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  * WRITE_DAC, the owner WRITE_OWNER, under the descriptor it has now. */
 static UINT64 sys_set_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
+    if (is_file(a1)) return um_file_set_security(a1, a2, a3, a4);
     (void)a4;
     UINT32 info = (UINT32)a2 & 7, st;
     if (!a3) return ST_INVALID_PARAMETER;

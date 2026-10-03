@@ -30,6 +30,7 @@ typedef struct {
     const RamfsSource *src;
     void              *vol;
     char               label[64];
+    char               fs[8];
     UINT64             total;
 } Drive;
 
@@ -68,20 +69,47 @@ char RamfsDriveLetter(const RamNode *n)
     return t && t->drive ? t->drive : 'C';
 }
 
-bool RamfsReadOnly(const RamNode *n) { return n && (n->xflags & RAMFS_X_EXTERN); }
+static bool ext(const RamNode *n) { return n && (n->xflags & RAMFS_X_EXTERN); }
+
+bool RamfsReadOnly(const RamNode *n)
+{
+    if (!ext(n)) return false;
+    if (n->xflags & RAMFS_X_NOWRITE) return true;
+    Drive *d = drive_of(n);
+    if (!d || !d->src || !d->src->write) return true;
+    if (!n->dir && !(n->xflags & RAMFS_X_CHECKED) && d->src->can_write) {   /* asked once per file */
+        RamNode *m = (RamNode *)n;
+        m->xflags |= RAMFS_X_CHECKED;
+        bkl_acquire();                                  /* (the volume and disk drivers rely on it) */
+        bool w = d->src->can_write(d->vol, n->xref);
+        bkl_release();
+        if (!w) { m->xflags |= RAMFS_X_NOWRITE; m->attrs |= 0x1u; return true; }
+    }
+    return false;
+}
 
 bool RamfsDriveInfo(const RamNode *n, const char **label, const char **fs, UINT64 *total)
 {
     Drive *d = drive_of(n);
     if (!d) return false;
     if (label) *label = d->label;
-    if (fs) *fs = "NTFS";
+    if (fs) *fs = d->fs;
     if (total) *total = d->total;
     return true;
 }
 
+UINT64 RamfsDriveFree(const RamNode *n)
+{
+    Drive *d = drive_of(n);
+    if (!d || !d->src || !d->src->write || !d->src->free_bytes) return 0;
+    bkl_acquire();
+    UINT64 free = d->src->free_bytes(d->vol);
+    bkl_release();
+    return free;
+}
+
 RamNode *RamfsMountDrive(char letter, const RamfsSource *src, void *vol, UINT64 root_ref, const char *label,
-                         UINT64 total_bytes)
+                         const char *fs, UINT64 total_bytes)
 {
     letter = (char)(letter & ~0x20);
     if (letter < 'D' || letter > 'Z' || g_drives[letter - 'A'].root) return NULL;
@@ -94,10 +122,45 @@ RamNode *RamfsMountDrive(char letter, const RamfsSource *src, void *vol, UINT64 
     Drive *d = &g_drives[letter - 'A'];
     d->src = src;
     d->vol = vol;
+    memset(d->label, 0, sizeof(d->label));
     strncpy(d->label, label ? label : "", sizeof(d->label) - 1);
+    memset(d->fs, 0, sizeof(d->fs));
+    strncpy(d->fs, fs ? fs : "", sizeof(d->fs) - 1);
     d->total = total_bytes;
     d->root = r;
     return r;
+}
+
+static UINT32 g_xdirty, g_xchanges;
+
+static void forget_dirty(RamNode *n)
+{
+    for (RamNode *c = n->child; c; c = c->next) {
+        if (c->dir) forget_dirty(c);
+        else if (c->xflags & RAMFS_X_DIRTY) { c->xflags &= (UINT8)~RAMFS_X_DIRTY; __atomic_sub_fetch(&g_xdirty, 1, __ATOMIC_RELAXED); }
+    }
+}
+
+void *RamfsUnmountDrive(char letter)
+{
+    letter = (char)(letter & ~0x20);
+    if (letter < 'D' || letter > 'Z') return NULL;
+    Drive *d = &g_drives[letter - 'A'];
+    if (!d->root) return NULL;
+    void *vol = d->vol;
+    /* The old tree is cut loose: its root no longer names a drive, so
+     * nothing below it reads from the volume again (RamfsLoad fails).
+     * Its nodes stay allocated for whoever still holds one. */
+    d->root->drive = '?';
+    forget_dirty(d->root);                          /* (what was not written is lost with the disk) */
+    memset(d, 0, sizeof(*d));
+    return vol;
+}
+
+bool RamfsDetached(const RamNode *n)
+{
+    const RamNode *t = top_of(n);
+    return t && (t->xflags & RAMFS_X_EXTERN) && t->drive == '?';
 }
 
 /* -----------------------------------------------------------------------
@@ -106,6 +169,7 @@ RamNode *RamfsMountDrive(char letter, const RamfsSource *src, void *vol, UINT64 
 static RamfsMode g_mode = RAMFS_SEEDING;
 static UINT64 (*g_clock)(void);
 void RamfsSetClock(UINT64 (*now)(void)) { g_clock = now; }
+UINT64 RamfsNow(void) { return g_clock ? g_clock() : 0; }
 static void touch(RamNode *n) { if (g_clock) n->mtime = g_clock(); }
 static UINT32 g_changes;
 static void (*g_removed_hook)(const char *path);
@@ -120,7 +184,7 @@ void RamfsSetChangeHook(void (*fn)(RamNode *dir)) { g_change_hook = fn; }
 static void mark(RamNode *n, UINT8 flags)
 {
     if (n && g_change_hook && g_mode != RAMFS_LOADING) g_change_hook((flags & RAMFS_F_DIRTYDIR) ? n : n->parent ? n->parent : n);
-    if (g_mode != RAMFS_TRACK || !n) return;
+    if (g_mode != RAMFS_TRACK || !n || ext(n)) return;          /* (other drives are not saved with C:) */
     __atomic_or_fetch(&n->pflags, flags, __ATOMIC_RELAXED);
     for (RamNode *a = n->parent; a && !(a->pflags & RAMFS_F_SUB); a = a->parent)
         __atomic_or_fetch(&a->pflags, RAMFS_F_SUB, __ATOMIC_RELAXED);
@@ -149,7 +213,7 @@ static void mark_moved(RamNode *n)
     for (RamNode *c = n->child; c; c = c->next) mark_moved(c);
 }
 
-void RamfsMarkChanged(RamNode *n) { if (n && !n->dir) mark(n, RAMFS_F_DIRTY); }
+void RamfsMarkChanged(RamNode *n) { if (n) mark(n, RAMFS_F_DIRTY); }
 
 /* Directories first, then case-insensitive by name */
 static bool sorts_before(const RamNode *a, const RamNode *b)
@@ -167,7 +231,7 @@ static RamNode *find_in(RamNode *dir, const char *name)
 
 /* Reading a directory of a mounted volume: entries arrive about in order,
  * so each goes after the last one put in when it can (no list walk) */
-typedef struct { RamNode *dir, *last_dir, *last_file; } Fill;
+typedef struct { RamNode *dir, *last_dir, *last_file; bool ro; } Fill;
 
 static bool fill_add(const RamfsExtEntry *e, void *ctx)
 {
@@ -184,7 +248,8 @@ static bool fill_add(const RamfsExtEntry *e, void *ctx)
     n->size = e->dir ? 0 : e->size > 0xFFFFFFFFull ? 0xFFFFFFFFu : (UINT32)e->size;
     n->ctime = e->ctime;
     n->mtime = e->mtime;
-    n->attrs = (e->attrs & 0x27u) | 0x1u;                       /* FILE_ATTRIBUTE_READONLY: it is */
+    if (!e->dir && (e->attrs & 0x4A00u)) n->xflags |= RAMFS_X_NOWRITE;   /* SPARSE_FILE, COMPRESSED, ENCRYPTED */
+    n->attrs = (e->attrs & 0x27u) | (f->ro || (n->xflags & RAMFS_X_NOWRITE) ? 0x1u : 0);   /* FILE_ATTRIBUTE_READONLY */
     RamNode **last = e->dir ? &f->last_dir : &f->last_file;
     RamNode **pp;
     if (*last && sorts_before(*last, n)) pp = &(*last)->next;
@@ -205,7 +270,7 @@ static bool load(RamNode *n, Drive *d)
     if (n->dir) {
         if (n->xflags & RAMFS_X_LISTED) return true;
         n->xflags |= RAMFS_X_LISTED;
-        Fill f = { n, NULL, NULL };
+        Fill f = { n, NULL, NULL, RamfsReadOnly(n) };
         if (d->src->list(d->vol, n->xref, fill_add, &f)) return true;
         kprintf("[RAMFS] %c: a directory could not be read\n", top_of(n)->drive);
         return false;                                            /* (what was read stays) */
@@ -225,7 +290,8 @@ static bool load(RamNode *n, Drive *d)
 bool RamfsLoad(RamNode *n)
 {
     Drive *d;
-    if (!n || !(n->xflags & RAMFS_X_EXTERN) || !(d = drive_of(n))) return true;
+    if (!n || !(n->xflags & RAMFS_X_EXTERN)) return true;
+    if (!(d = drive_of(n)) || !d->src) return false;               /* (its drive was unmounted) */
     if (n->xflags & (n->dir ? RAMFS_X_LISTED : RAMFS_X_LOADED)) return true;
     bkl_acquire();
     bool ok = load(n, d);
@@ -233,14 +299,65 @@ bool RamfsLoad(RamNode *n)
     return ok;
 }
 
+/* Files on mounted volumes whose new contents are not on the disk yet */
+UINT32 RamfsExtDirty(void)   { return g_xdirty; }
+UINT32 RamfsExtChanges(void) { return g_xchanges; }
+
+/* (Under the file's own lock, maybe with the file-system lock shared:
+ * the counts are atomic, see FsLockShared) */
+static void set_dirty(RamNode *f)
+{
+    if (!(f->xflags & RAMFS_X_DIRTY)) __atomic_add_fetch(&g_xdirty, 1, __ATOMIC_RELAXED);
+    f->xflags |= RAMFS_X_LOADED | RAMFS_X_DIRTY;
+    __atomic_add_fetch(&g_xchanges, 1, __ATOMIC_RELAXED);
+}
+
+/* Write @f's contents to its volume (it is clean afterwards either way:
+ * a file that can't be written is reported once, not tried forever) */
+static bool flush_file(RamNode *f)
+{
+    if (!(f->xflags & RAMFS_X_DIRTY)) return true;
+    f->xflags &= (UINT8)~RAMFS_X_DIRTY;
+    __atomic_sub_fetch(&g_xdirty, 1, __ATOMIC_RELAXED);
+    Drive *d = drive_of(f);
+    bkl_acquire();                                  /* (the volume and disk drivers rely on it) */
+    bool ok = d && d->src && d->src->write && d->src->write(d->vol, f->xref, f->data, f->size);
+    bkl_release();
+    if (!ok) {
+        char path[RAMFS_PATH_MAX];
+        RamfsPath(f, path, sizeof(path));
+        kprintf("[RAMFS] %s could not be written to its disk\n", path);
+    }
+    return ok;
+}
+
 /* The contents of a mounted volume's file go when nothing holds it */
 static void unload(RamNode *f)
 {
     if (!(f->xflags & RAMFS_X_LOADED) || f->refs > 0 || f->pins > 0) return;
+    flush_file(f);
     kfree(f->data);
     f->data = NULL;
     f->cap = 0;
     f->xflags &= (UINT8)~RAMFS_X_LOADED;
+}
+
+static bool flush_tree(RamNode *n)
+{
+    bool ok = true;
+    for (RamNode *c = n->child; c; c = c->next) {
+        if (c->dir) { if (c->xflags & RAMFS_X_LISTED) ok &= flush_tree(c); }
+        else if (c->xflags & RAMFS_X_DIRTY) { ok &= flush_file(c); unload(c); }
+    }
+    return ok;
+}
+
+bool RamfsFlush(void)
+{
+    bool ok = true;
+    for (int i = 0; i < 26 && g_xdirty; i++)
+        if (g_drives[i].root) ok &= flush_tree(g_drives[i].root);
+    return ok;
 }
 
 RamNode *RamfsFind(RamNode *dir, const char *name)
@@ -263,7 +380,7 @@ int RamfsCount(const RamNode *dir)
 RamNode *RamfsCreate(RamNode *dir, const char *name, bool is_dir)
 {
     if (!dir || !dir->dir || !name || !*name) return NULL;
-    if (RamfsReadOnly(dir)) {                                    /* only what is already there */
+    if (RamfsReadOnly(dir)) {                                   /* only what is already there */
         RamNode *e = RamfsFind(dir, name);
         return e && e->dir == is_dir ? e : NULL;
     }
@@ -281,7 +398,15 @@ RamNode *RamfsCreate(RamNode *dir, const char *name, bool is_dir)
     memcpy(n->name, name, len + 1);
     n->dir    = is_dir;
     n->parent = dir;
-    n->pflags = g_mode == RAMFS_SEEDING ? RAMFS_F_SEED : g_mode == RAMFS_INSTALLING ? RAMFS_F_SEALED : 0;
+    if (ext(dir)) {                                             /* on a mounted volume: on its disk first */
+        Drive *d = drive_of(dir);
+        bkl_acquire();
+        bool ok = d->src->create(d->vol, dir->xref, name, is_dir, &n->xref);
+        bkl_release();
+        if (!ok) { kfree(n); return NULL; }
+        n->xflags = RAMFS_X_EXTERN | (is_dir ? RAMFS_X_LISTED : RAMFS_X_LOADED);
+    } else
+        n->pflags = g_mode == RAMFS_SEEDING ? RAMFS_F_SEED : g_mode == RAMFS_INSTALLING ? RAMFS_F_SEALED : 0;
     touch(n);
     n->ctime = n->mtime;
 
@@ -303,6 +428,19 @@ bool RamfsWrite(RamNode *f, const char *data, UINT32 len)
         if (!buf) return false;
         memcpy(buf, data, len);
     }
+    kfree(f->data);
+    f->data = buf;
+    f->size = len;
+    f->cap = len;
+    if (ext(f)) set_dirty(f);
+    mark(f, RAMFS_F_DIRTY);
+    touch(f);
+    return true;
+}
+
+bool RamfsWriteOwned(RamNode *f, char *buf, UINT32 len)
+{
+    if (!f || f->dir || f->pins || len > RAMFS_FILE_MAX || RamfsReadOnly(f)) return false;
     kfree(f->data);
     f->data = buf;
     f->size = len;
@@ -331,7 +469,8 @@ static bool reserve(RamNode *f, UINT32 need)
 bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
 {
     if (!f || f->dir || f->pins || off > RAMFS_FILE_MAX || len > RAMFS_FILE_MAX - off || RamfsReadOnly(f)) return false;
-    if (!reserve(f, off + len)) return false;
+    if (!RamfsLoad(f) || !reserve(f, off + len)) return false;
+    if (ext(f)) set_dirty(f);
     if (off > f->size) memset(f->data + f->size, 0, off - f->size);
     memcpy(f->data + off, data, len);
     if (off + len > f->size) f->size = off + len;
@@ -342,7 +481,8 @@ bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
 
 bool RamfsResize(RamNode *f, UINT32 len)
 {
-    if (!f || f->dir || f->pins || RamfsReadOnly(f) || !reserve(f, len)) return false;
+    if (!f || f->dir || f->pins || RamfsReadOnly(f) || !RamfsLoad(f) || !reserve(f, len)) return false;
+    if (ext(f)) set_dirty(f);
     if (len > f->size) memset(f->data + f->size, 0, len - f->size);
     f->size = len;
     mark(f, RAMFS_F_DIRTY);
@@ -369,22 +509,33 @@ void RamfsUnpin(RamNode *f) { if (f && f->pins > 0) { f->pins--; RamfsUnref(f); 
 
 bool RamfsDelete(RamNode *n)
 {
-    if (!n || n == &g_root || n->refs > 0 || (n->dir && n->child) || RamfsReadOnly(n)) return false;
+    if (!n || !n->parent || n->refs > 0 || RamfsReadOnly(n)) return false;
+    if (n->dir && (!RamfsLoad(n) || n->child)) return false;
     RamNode **pp = &n->parent->child;
     while (*pp && *pp != n) pp = &(*pp)->next;
     if (!*pp) return false;
+    if (ext(n)) {
+        Drive *d = drive_of(n);
+        bkl_acquire();
+        bool ok = d->src->remove(d->vol, n->parent->xref, n->xref);
+        bkl_release();
+        if (!ok) return false;
+        if (n->xflags & RAMFS_X_DIRTY) { n->xflags &= (UINT8)~RAMFS_X_DIRTY; __atomic_sub_fetch(&g_xdirty, 1, __ATOMIC_RELAXED); }
+    }
     report_seeds(n);
     mark(n->parent, RAMFS_F_DIRTYDIR);
     *pp = n->next;
     kfree(n->data);
+    kfree(n->sd);
     kfree(n);
     return true;
 }
 
 bool RamfsRename(RamNode *n, RamNode *dir, const char *name, bool replace)
 {
-    if (!n || n == &g_root || !dir || !dir->dir || !name || !*name) return false;
+    if (!n || !n->parent || !dir || !dir->dir || !name || !*name) return false;
     if (RamfsReadOnly(n) || RamfsReadOnly(dir)) return false;
+    if (ext(n) != ext(dir) || (ext(n) && drive_of(n) != drive_of(dir))) return false;   /* (another volume) */
     size_t len = strlen(name);
     if (len >= RAMFS_NAME_MAX || !strcmp(name, ".") || !strcmp(name, "..")) return false;
     for (size_t i = 0; i < len; i++)
@@ -399,6 +550,13 @@ bool RamfsRename(RamNode *n, RamNode *dir, const char *name, bool replace)
     RamNode **pp = &n->parent->child;               /* unlink */
     while (*pp && *pp != n) pp = &(*pp)->next;
     if (!*pp) return false;
+    if (ext(n)) {
+        Drive *d = drive_of(n);
+        bkl_acquire();
+        bool ok = d->src->rename(d->vol, n->parent->xref, n->xref, dir->xref, name);
+        bkl_release();
+        if (!ok) return false;
+    }
     report_seeds(n);
     mark(n->parent, RAMFS_F_DIRTYDIR);
     *pp = n->next;

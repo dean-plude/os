@@ -18,6 +18,7 @@
 #include "../../ke/sleep.h"
 #include "../../ps/ps.h"
 #include "../../hal/ps2.h"
+#include "../../hal/ioapic.h"
 #include "../../ke/kpcr.h"
 #include "../../ke/smp.h"
 #include "../../ke/probe.h"
@@ -320,9 +321,11 @@ static void dispatch(InterruptFrame *frame)
 
     /* ---- All other IRQs ---- */
     if (vector >= IRQ_BASE) {
+        /* (the only device interrupt routed here is the ACPI SCI: PS/2 is
+         * read on the timer tick, and the other drivers mask theirs and
+         * poll).  The handler quiets a level-triggered source before the EOI. */
+        IrqDispatch((UINT8)vector);
         apic_eoi();
-        /* (no device interrupt is routed here: PS/2 is read on the timer
-         * tick, and the AHCI and e1000 drivers mask theirs and poll) */
         return;
     }
 
@@ -363,6 +366,7 @@ void interrupt_dispatch(InterruptFrame *frame)
                    KiGetCurrentKpcr()->Idle || sched_current() == KiGetCurrentKpcr()->IdleThread);
     if (vector == IRQ_TIMER && KiGetCurrentKpcr()->LockWait) {
         apic_eoi();
+        sched_timer_rearm();                            /* (the timer is one-shot) */
         return;
     }
     KiGetCurrentKpcr()->Idle = 0;

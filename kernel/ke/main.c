@@ -75,6 +75,8 @@
 #include "../drivers/xhci.h"
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
+#include "../hal/ioapic.h"
+#include "../hal/hpet.h"
 #include "../net/net.h"
 #include "../um/um.h"
 #include "kpcr.h"
@@ -240,6 +242,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     idt_init();
 
     kprintf("=== Phase 1: APIC ===\n");
+    HpetInit(rsdp);                       /* the reference clock for calibrating the timers */
     apic_init();
 
     /* ------------------------------------------------------------------
@@ -374,6 +377,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     /* Devices and networking: PCI scan, e1000 NIC, lwIP + DHCP */
     PciInitialize();
     AcpiInitialize(rsdp);                 /* power-off, reset, the power button; MADT for SMP */
+    IoApicInit();                         /* (masked; the SCI is routed when the interpreter loads) */
     AmlInitialize();                      /* the AML interpreter (a thread): batteries, buttons */
     DisplayInit(&boot_fb);               /* display adapter: modes, page flipping */
     PersistInit();                        /* SATA disks; the volume that keeps drive C: */
@@ -391,6 +395,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     kprintf("=== SMP ===\n");
     um_registry_add_cpus(smp_start());
 
+    DesktopRestoreDisplayMode();          /* the resolution chosen before the restart */
     if (GdiInitialize()) {
         WmInitialize();
         DesktopInitialize();

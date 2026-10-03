@@ -131,6 +131,7 @@ struct UmThread {
     void           *uframe;
     UINT16          last_sys;       /* the latest system call (diagnostics) */
     UINT32          oa_attrs;       /* OBJECT_ATTRIBUTES.Attributes of its latest path (um_syscall.c) */
+    UINT64          oa_sd;          /* and its SecurityDescriptor (a user pointer) */
     UINT64          last_a1;        /* and its first argument */
     /* Waiting (um_thread.c, under g_um_oblock): the objects, the waiter
      * list link, and the flag a signaler sets to wake it */
@@ -399,9 +400,9 @@ void       um_sd_free(void *sd);
 /* The file system's checks: @want (mapped by @map) against self-relative
  * descriptor @sd (NULL: none, open to all) as the calling thread */
 UINT32     um_access_check_sd(const UINT8 *sd, UINT32 len, UINT32 want, const UINT32 map[4], UINT32 *granted);
-/* Where an H_FILE/H_DIR handle's descriptor is kept (a UmSd: length,
- * then the descriptor), or NULL; the file system supplies it */
-void     **um_file_sd_slot(UmProcess *p, UINT64 h);
+/* NtQuery/SetSecurityObject for H_FILE/H_DIR handles (um_syscall.c, on kernel/fs/fsec.c) */
+UINT64     um_file_query_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4);   /* (um_syscall.c) */
+UINT64     um_file_set_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4);
 int        um_handle_kind(UmProcess *p, UINT64 h);        /* its UmHandleKind; -1: no such handle */
 void       um_handle_set_inherit(UmProcess *p, UINT64 h, bool inherit);
 

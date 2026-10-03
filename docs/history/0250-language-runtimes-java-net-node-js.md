@@ -59,6 +59,6 @@ finds `java` and `node`.  What it took:
   UCRT (`_create_locale`, conio, `_wspawnve`...).
 - **Windows Installer**: the string pool's encoding of strings of 64 KB
   or more (Node's licence text), which shifted every later string id.
-- Not yet: .NET has no ICU (globalization works through NLS for English
-  and invariant cultures).  (MSI custom actions run since "Windows
-  Installer depth".)
+- Not yet: nothing from this list.  (MSI custom actions run since
+  "Windows Installer depth", and .NET's globalization goes through ICU
+  since "ICU: .NET globalization and kernel32's locales".)

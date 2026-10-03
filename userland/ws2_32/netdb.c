@@ -20,18 +20,6 @@ static int ieq(const char *a, const char *b)
 
 static void set_err(int e) { *(DWORD *)(NtCurrentTebBytes() + TEB_LAST_ERROR) = (DWORD)e; }
 
-/* struct servent: s_proto and s_port swap places on 64-bit Windows */
-struct servent {
-    char *s_name;
-    char **s_aliases;
-#if defined(__x86_64__) || defined(_M_X64)
-    char *s_proto;
-    short s_port;
-#else
-    short s_port;
-    char *s_proto;
-#endif
-};
 
 static const struct { const char *name; unsigned short port; unsigned char tcp, udp; } g_services[] = {
     { "echo", 7, 1, 1 },        { "discard", 9, 1, 1 },     { "daytime", 13, 1, 1 },  { "ftp-data", 20, 1, 0 },

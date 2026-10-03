@@ -227,8 +227,97 @@ void FreeAddrInfoW(PADDRINFOW ai)
     }
 }
 
+/* IPv6 text (RFC 4291 2.2: groups, one "::", an IPv4 tail) */
+static int pton6(const char *src, unsigned char out[16])
+{
+    unsigned short w[8];
+    int n = 0, gap = -1;
+    const char *p = src;
+    if (p[0] == ':' && p[1] == ':') { gap = 0; p += 2; }
+    else if (*p == ':') return 0;
+    while (*p) {
+        const char *start = p;
+        unsigned v = 0;
+        int digits = 0;
+        while (digits < 5) {
+            char c = *p;
+            int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                  : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+            if (d < 0) break;
+            v = v * 16 + (unsigned)d;
+            digits++;
+            p++;
+        }
+        if (*p == '.') {                                   /* the IPv4 tail */
+            if (n > 6) return 0;
+            unsigned char b[4];
+            if (inet_pton(AF_INET, start, b) != 1) return 0;
+            w[n++] = (unsigned short)(b[0] << 8 | b[1]);
+            w[n++] = (unsigned short)(b[2] << 8 | b[3]);
+            break;
+        }
+        if (!digits || digits > 4 || n >= 8) return 0;
+        w[n++] = (unsigned short)v;
+        if (!*p) break;
+        if (*p != ':') return 0;
+        p++;
+        if (*p == ':') {
+            if (gap >= 0) return 0;
+            gap = n;
+            p++;
+            if (!*p) break;
+        } else if (!*p) return 0;
+    }
+    if (gap < 0 ? n != 8 : n > 7) return 0;
+    unsigned short full[8] = { 0 };
+    if (gap < 0) for (int i = 0; i < 8; i++) full[i] = w[i];
+    else {
+        for (int i = 0; i < gap; i++) full[i] = w[i];
+        for (int i = gap; i < n; i++) full[8 - (n - i)] = w[i];
+    }
+    for (int i = 0; i < 8; i++) { out[2 * i] = (unsigned char)(full[i] >> 8); out[2 * i + 1] = (unsigned char)full[i]; }
+    return 1;
+}
+
+/* RFC 5952: lowercase, no leading zeros, the longest run of two or more
+ * zero groups as "::", IPv4-mapped addresses with a dotted tail */
+static int ntop6(const unsigned char *a, char *out)
+{
+    unsigned short w[8];
+    for (int i = 0; i < 8; i++) w[i] = (unsigned short)(a[2 * i] << 8 | a[2 * i + 1]);
+    int best = -1, blen = 0;
+    for (int i = 0; i < 8;) {
+        if (w[i]) { i++; continue; }
+        int j = i;
+        while (j < 8 && !w[j]) j++;
+        if (j - i > blen && j - i >= 2) { best = i; blen = j - i; }
+        i = j;
+    }
+    int mapped = !w[0] && !w[1] && !w[2] && !w[3] && !w[4] && w[5] == 0xFFFF;
+    int n = 0;
+    for (int i = 0; i < 8; i++) {
+        if (i == best) { out[n++] = ':'; if (i == 0) out[n++] = ':'; i += blen - 1; continue; }
+        if (mapped && i == 6) {
+            char t[16];
+            inet_ntop(AF_INET, a + 12, t, sizeof(t));
+            for (int k = 0; t[k]; k++) out[n++] = t[k];
+            break;
+        }
+        static const char hex[] = "0123456789abcdef";
+        int started = 0;
+        for (int sh = 12; sh >= 0; sh -= 4) {
+            int d = (w[i] >> sh) & 0xF;
+            if (d || started || sh == 0) { out[n++] = hex[d]; started = 1; }
+        }
+        if (i < 7) out[n++] = ':';
+    }
+    out[n] = 0;
+    return n;
+}
+
 int inet_pton(int af, const char *src, void *dst)
 {
+    if (af == AF_INET6) return pton6(src, dst);
     if (af != AF_INET) { set_err(WSAEAFNOSUPPORT); return -1; }
     unsigned char b[4];
     int part = 0;
@@ -249,6 +338,13 @@ int inet_pton(int af, const char *src, void *dst)
 
 const char *inet_ntop(int af, const void *src, char *dst, size_t size)
 {
+    if (af == AF_INET6) {
+        char t[48];
+        int n = ntop6(src, t);
+        if ((size_t)n + 1 > size) { set_err(WSAEINVAL); return 0; }
+        memcpy(dst, t, (size_t)n + 1);
+        return dst;
+    }
     if (af != AF_INET) { set_err(WSAEAFNOSUPPORT); return 0; }
     const unsigned char *b = src;
     char tmp[16];
@@ -276,7 +372,7 @@ int InetPtonW(int af, PCWSTR src, void *dst)
 
 PCWSTR InetNtopW(int af, const void *src, PWSTR dst, size_t size)
 {
-    char tmp[16];
+    char tmp[48];
     if (!inet_ntop(af, src, tmp, sizeof(tmp))) return 0;
     size_t n = strlen(tmp);
     if (n + 1 > size) { set_err(WSAEINVAL); return 0; }
@@ -451,6 +547,7 @@ int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, DWORD ho
     (void)flags;
     if (!sa || (sa->sa_family != AF_INET && sa->sa_family != AF_INET6)) return WSAEAFNOSUPPORT;
     if (sa->sa_family == AF_INET && salen < (socklen_t)sizeof(struct sockaddr_in)) return WSAEFAULT;
+    if (sa->sa_family == AF_INET6 && salen < (socklen_t)sizeof(struct sockaddr_in6)) return WSAEFAULT;
     const void *addr;
     u_short port;
     if (sa->sa_family == AF_INET) { addr = &((const struct sockaddr_in *)sa)->sin_addr; port = ((const struct sockaddr_in *)sa)->sin_port; }
@@ -469,22 +566,37 @@ int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, DWORD ho
     return 0;
 }
 
-/* "a.b.c.d" or "a.b.c.d:port" (IPv4 only) */
+/* "a.b.c.d[:port]", or "fd00::1[%zone]" / "[fd00::1%zone]:port" */
+static void put_dec(char *t, size_t *n, unsigned v)
+{
+    char d[12]; int k = 0;
+    do { d[k++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (k) t[(*n)++] = d[--k];
+    t[*n] = 0;
+}
+
 int WSAAddressToStringA(struct sockaddr *sa, DWORD len, void *info, char *out, DWORD *outlen)
 {
     (void)info;
-    if (!sa || !outlen || len < sizeof(struct sockaddr_in) || sa->sa_family != AF_INET) { set_err(WSAEINVAL); return SOCKET_ERROR; }
-    struct sockaddr_in *in = (struct sockaddr_in *)sa;
-    char tmp[32];
-    if (!inet_ntop(AF_INET, &in->sin_addr, tmp, 16)) { set_err(WSAEINVAL); return SOCKET_ERROR; }
-    if (in->sin_port) {
-        size_t n = strlen(tmp);
-        unsigned port = ntohs(in->sin_port);
-        char d[8]; int k = 0;
-        do { d[k++] = (char)('0' + port % 10); port /= 10; } while (port);
-        tmp[n++] = ':';
-        while (k) tmp[n++] = d[--k];
+    char tmp[80];
+    size_t n;
+    if (!sa || !outlen) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    if (sa->sa_family == AF_INET && len >= sizeof(struct sockaddr_in)) {
+        struct sockaddr_in *in = (struct sockaddr_in *)sa;
+        inet_ntop(AF_INET, &in->sin_addr, tmp, 16);
+        n = strlen(tmp);
+        if (in->sin_port) { tmp[n++] = ':'; put_dec(tmp, &n, ntohs(in->sin_port)); }
+    } else if (sa->sa_family == AF_INET6 && len >= sizeof(struct sockaddr_in6)) {
+        struct sockaddr_in6 *in = (struct sockaddr_in6 *)sa;
+        n = 0;
+        if (in->sin6_port) tmp[n++] = '[';
+        n += (size_t)ntop6(in->sin6_addr.s6_addr, tmp + n);
+        if (in->sin6_scope_id) { tmp[n++] = '%'; put_dec(tmp, &n, in->sin6_scope_id); }
+        if (in->sin6_port) { tmp[n++] = ']'; tmp[n++] = ':'; put_dec(tmp, &n, ntohs(in->sin6_port)); }
         tmp[n] = 0;
+    } else {
+        set_err(WSAEINVAL);
+        return SOCKET_ERROR;
     }
     DWORD need = (DWORD)strlen(tmp) + 1;
     if (!out || *outlen < need) { *outlen = need; set_err(WSAEFAULT); return SOCKET_ERROR; }
@@ -494,7 +606,7 @@ int WSAAddressToStringA(struct sockaddr *sa, DWORD len, void *info, char *out, D
 }
 int WSAAddressToStringW(struct sockaddr *sa, DWORD len, void *info, WCHAR *out, DWORD *outlen)
 {
-    char tmp[32];
+    char tmp[80];
     DWORD n = sizeof(tmp);
     if (!outlen || WSAAddressToStringA(sa, len, info, tmp, &n)) return SOCKET_ERROR;
     if (!out || *outlen < n) { *outlen = n; set_err(WSAEFAULT); return SOCKET_ERROR; }
@@ -529,24 +641,45 @@ int WSAConnect(SOCKET s, const struct sockaddr *to, int len, void *caller, void 
     return connect(s, to, len);
 }
 
-/* "a.b.c.d[:port]" (IPv4) into a sockaddr_in */
+/* "a.b.c.d[:port]" into a sockaddr_in; "fd00::1[%zone]" or
+ * "[fd00::1[%zone]]:port" into a sockaddr_in6 */
 int WSAStringToAddressA(char *str, int family, void *info, struct sockaddr *sa, int *len)
 {
     (void)info;
-    if (!str || !sa || !len || family != AF_INET) { set_err(WSAEINVAL); return SOCKET_ERROR; }
-    if (*len < (int)sizeof(struct sockaddr_in)) { *len = sizeof(struct sockaddr_in); set_err(WSAEFAULT); return SOCKET_ERROR; }
-    char host[32];
-    int i = 0;
+    if (!str || !sa || !len || (family != AF_INET && family != AF_INET6)) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    int need = family == AF_INET6 ? (int)sizeof(struct sockaddr_in6) : (int)sizeof(struct sockaddr_in);
+    if (*len < need) { *len = need; set_err(WSAEFAULT); return SOCKET_ERROR; }
+    char host[64];
+    int i = 0, j = 0;
+    unsigned port = 0, zone = 0;
+    if (family == AF_INET6) {
+        int br = str[0] == '[';
+        for (i = br; str[i] && str[i] != ']' && str[i] != '%' && j < 63; i++) host[j++] = str[i];
+        host[j] = 0;
+        if (str[i] == '%') for (i++; str[i] >= '0' && str[i] <= '9'; i++) zone = zone * 10 + (unsigned)(str[i] - '0');
+        if (br) {
+            if (str[i] != ']') { set_err(WSAEINVAL); return SOCKET_ERROR; }
+            i++;
+            if (str[i] == ':') for (i++; str[i] >= '0' && str[i] <= '9'; i++) port = port * 10 + (unsigned)(str[i] - '0');
+        }
+        struct sockaddr_in6 *in = (struct sockaddr_in6 *)sa;
+        memset(in, 0, sizeof(*in));
+        in->sin6_family = AF_INET6;
+        in->sin6_port = htons((u_short)port);
+        in->sin6_scope_id = zone;
+        if (pton6(host, in->sin6_addr.s6_addr) != 1) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+        *len = need;
+        return 0;
+    }
     for (; str[i] && str[i] != ':' && i < 31; i++) host[i] = str[i];
     host[i] = 0;
-    unsigned port = 0;
     if (str[i] == ':') for (const char *p = str + i + 1; *p >= '0' && *p <= '9'; p++) port = port * 10 + (unsigned)(*p - '0');
     struct sockaddr_in *in = (struct sockaddr_in *)sa;
     memset(in, 0, sizeof(*in));
     in->sin_family = AF_INET;
     in->sin_port = htons((u_short)port);
     if (inet_pton(AF_INET, host, &in->sin_addr) != 1) { set_err(WSAEINVAL); return SOCKET_ERROR; }
-    *len = sizeof(struct sockaddr_in);
+    *len = need;
     return 0;
 }
 int WSAStringToAddressW(WCHAR *str, int family, void *info, struct sockaddr *sa, int *len)
