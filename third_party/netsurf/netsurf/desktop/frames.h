@@ -58,6 +58,23 @@ nserror browser_window_invalidate_iframe(struct browser_window *bw);
  */
 nserror browser_window_destroy_iframes(struct browser_window *bw);
 
+#ifdef _NOVAOS
+/**
+ * Unlink iframes from the boxes about to go when the boxes of @bw's page
+ * are built again (NovaOS: html_relayout): all of them, or those below
+ * @within.  browser_window_relink_iframes links them to the new boxes.
+ */
+void browser_window_unlink_iframes(struct browser_window *bw,
+		struct box *within);
+
+/**
+ * Link @bw's iframes to the new boxes of their elements after a rebuild;
+ * when the page's iframes changed (one added or removed, or a new src),
+ * they are all opened again.
+ */
+nserror browser_window_relink_iframes(struct browser_window *bw);
+#endif
+
 /**
  * Create and open a frameset for a browser window.
  *

@@ -36,6 +36,10 @@
 #include "html/html.h"
 #include "html/box.h"
 #include "html/box_inspect.h"
+#ifdef _NOVAOS
+#include "html/private.h"
+#include "html/box_construct.h"
+#endif
 
 #include "desktop/browser_private.h"
 #include "desktop/frames.h"
@@ -322,6 +326,99 @@ nserror browser_window_destroy_iframes(struct browser_window *bw)
 	}
 	return NSERROR_OK;
 }
+
+
+#ifdef _NOVAOS
+/** whether @b is @within or below it */
+static bool box_is_within(const struct box *b, const struct box *within)
+{
+	for (; b != NULL; b = b->parent)
+		if (b == within)
+			return true;
+	return false;
+}
+
+/* exported function documented in desktop/frames.h */
+void browser_window_unlink_iframes(struct browser_window *bw,
+		struct box *within)
+{
+	int i;
+
+	for (i = 0; i < bw->iframe_count; i++) {
+		struct browser_window *window = &bw->iframes[i];
+		struct content_html_iframe *cur;
+
+		if (window->box == NULL || (within != NULL &&
+				!box_is_within(window->box, within)))
+			continue;
+		for (cur = html_get_iframe(bw->current_content); cur != NULL;
+				cur = cur->next)
+			if (cur->box == window->box)
+				break;
+		window->relayout_url = (cur != NULL && cur->url != NULL) ?
+				nsurl_ref(cur->url) : NULL;
+		window->relayout_node = window->box->node != NULL ?
+				dom_node_ref(window->box->node) : NULL;
+		window->box->iframe = NULL;
+		window->box = NULL;
+	}
+}
+
+/* exported function documented in desktop/frames.h */
+nserror browser_window_relink_iframes(struct browser_window *bw)
+{
+	struct content_html_iframe *list = NULL, *cur;
+	bool same = true;
+	int i, n = 0;
+
+	if (bw->current_content != NULL &&
+			content_get_type(bw->current_content) == CONTENT_HTML)
+		list = html_get_iframe(bw->current_content);
+	for (cur = list; cur != NULL; cur = cur->next)
+		n++;
+	if (n != bw->iframe_count)
+		same = false;
+
+	for (i = 0; i < bw->iframe_count; i++) {
+		struct browser_window *window = &bw->iframes[i];
+		struct box *box;
+
+		if (window->relayout_node == NULL) {
+			if (window->box == NULL)
+				same = false;
+			continue;
+		}
+		box = box_for_node(window->relayout_node);
+		for (cur = list; cur != NULL && box != NULL; cur = cur->next)
+			if (cur->box == box)
+				break;
+		if (box == NULL || cur == NULL || box->iframe != NULL ||
+				(cur->url == NULL) != (window->relayout_url == NULL) ||
+				(cur->url != NULL && !nsurl_compare(cur->url,
+						window->relayout_url,
+						NSURL_COMPLETE))) {
+			same = false;
+		} else {
+			window->box = box;
+			box->iframe = window;
+		}
+		dom_node_unref(window->relayout_node);
+		window->relayout_node = NULL;
+		if (window->relayout_url != NULL)
+			nsurl_unref(window->relayout_url);
+		window->relayout_url = NULL;
+	}
+	for (cur = list; cur != NULL; cur = cur->next)
+		if (cur->box == NULL || cur->box->iframe == NULL)
+			same = false;
+	if (same)
+		return NSERROR_OK;
+
+	/* the page's iframes changed: open them all again */
+	browser_window_destroy_iframes(bw);
+	return browser_window_create_iframes(bw);
+}
+#endif
 
 
 /**

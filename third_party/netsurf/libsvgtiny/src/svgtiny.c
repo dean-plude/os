@@ -1105,7 +1105,42 @@ initialise_parse_state(struct svgtiny_parse_state *state,
 	/* get graphic dimensions */
 	state->viewport_width = viewport_width;
 	state->viewport_height = viewport_height;
+#ifdef _NOVAOS
+	/* NovaOS: with no viewport from the user (an <img> or inline <svg>
+	 * that gives no size) an svg without its own width or height gets
+	 * the default size of a replaced element, 300 x 150 CSS pixels, as
+	 * in other browsers; a missing side follows the viewBox's aspect
+	 * ratio when there is one */
+	if (viewport_width <= 0)
+		state->viewport_width = 300;
+	if (viewport_height <= 0)
+		state->viewport_height = 150;
+#endif
 	svgtiny_parse_position_attributes(svg, *state, &x, &y, &width, &height);
+#ifdef _NOVAOS
+	if (viewport_width <= 0 || viewport_height <= 0) {
+		struct svgtiny_transformation_matrix vb = { 1, 0, 0, 1, 0, 0 };
+		dom_string *view_box = NULL;
+		bool has_w = false, has_h = false, ratio = false;
+
+		dom_element_has_attribute(svg, state->interned_width, &has_w);
+		dom_element_has_attribute(svg, state->interned_height, &has_h);
+		if (dom_element_get_attribute(svg, state->interned_viewBox,
+				&view_box) == DOM_NO_ERR && view_box != NULL) {
+			/* (with a 1 x 1 viewport, a = 1 / viewBox width) */
+			ratio = svgtiny_parse_viewbox(
+					dom_string_data(view_box),
+					dom_string_byte_length(view_box),
+					1, 1, &vb) == svgtiny_OK &&
+				vb.a > 0 && vb.d > 0;
+			dom_string_unref(view_box);
+		}
+		if (ratio && !has_h && viewport_height <= 0)
+			height = width * vb.a / vb.d;
+		else if (ratio && has_h && !has_w && viewport_width <= 0)
+			width = height * vb.d / vb.a;
+	}
+#endif
 	diagram->width = width;
 	diagram->height = height;
 

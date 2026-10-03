@@ -725,6 +725,83 @@ static bool node_in_document(html_content *htmlc, dom_node *node)
 #endif
 
 
+#ifdef _NOVAOS
+/**
+ * callback for DOMAttrModified end type (NovaOS): a changed attribute can
+ * restyle the element and, through sibling selectors, its later siblings,
+ * so the element's parent's boxes are built again
+ */
+static void
+dom_default_action_DOMAttrModified_cb(struct dom_event *evt, void *pw)
+{
+	html_content *htmlc = pw;
+	dom_event_target *node = NULL;
+	dom_node *parent = NULL;
+	dom_html_element_type tag_type;
+	dom_node_type type;
+
+	if (dom_event_get_target(evt, &node) != DOM_NO_ERR || node == NULL)
+		return;
+	if (dom_node_get_node_type(node, &type) != DOM_NO_ERR ||
+			type != DOM_ELEMENT_NODE ||
+			dom_html_element_get_tag_type(node, &tag_type) !=
+				DOM_NO_ERR)
+		tag_type = DOM_HTML_ELEMENT_TYPE__UNKNOWN;
+
+	switch (tag_type) {
+	case DOM_HTML_ELEMENT_TYPE_TEXTAREA:
+	case DOM_HTML_ELEMENT_TYPE_INPUT: {
+		/* typing updates the value: only a new look counts */
+		dom_string *name = NULL;
+		bool look = false;
+
+		if (dom_mutation_event_get_attr_name(evt, &name) ==
+				DOM_NO_ERR && name != NULL) {
+			look = dom_string_caseless_isequal(name,
+						corestring_dom_style) ||
+				dom_string_caseless_isequal(name,
+						corestring_dom_class);
+			dom_string_unref(name);
+		}
+		if (!look)
+			break;
+	}
+		/* fall through */
+	default:
+		if (dom_node_get_parent_node(node, &parent) == DOM_NO_ERR &&
+				parent != NULL) {
+			if (node_in_document(htmlc, parent))
+				html_schedule_relayout_node(htmlc, parent);
+			dom_node_unref(parent);
+		}
+		break;
+	case DOM_HTML_ELEMENT_TYPE_SCRIPT:
+	case DOM_HTML_ELEMENT_TYPE_TITLE:
+		break;
+	}
+	dom_node_unref(node);
+}
+
+/**
+ * callback for DOMNodeRemoved end type (NovaOS): the node and the nodes
+ * below it leave the page, so they forget their boxes (a script may put
+ * them back somewhere else, where they get new ones)
+ */
+static void
+dom_default_action_DOMNodeRemoved_cb(struct dom_event *evt, void *pw)
+{
+	html_content *htmlc = pw;
+	dom_event_target *node = NULL;
+
+	if (dom_event_get_target(evt, &node) != DOM_NO_ERR || node == NULL)
+		return;
+	if (node_in_document(htmlc, (dom_node *)node))
+		html_relayout_node_removed(htmlc, (dom_node *)node);
+	dom_node_unref(node);
+}
+#endif
+
+
 /**
  * callback for DOMSubtreeModified end type
  */
@@ -780,7 +857,8 @@ dom_default_action_DOMSubtreeModified_cb(struct dom_event *evt, void *pw)
 				break;
 			default:
 				if (node_in_document(htmlc, (dom_node *)node))
-					html_schedule_relayout(htmlc);
+					html_schedule_relayout_node(htmlc,
+							(dom_node *)node);
 				break;
 			}
 #endif
@@ -819,6 +897,12 @@ html_dom_event_fetcher(dom_string *type,
 			return dom_default_action_DOMNodeInsertedIntoDocument_cb;
 		} else if (dom_string_isequal(type, corestring_dom_DOMSubtreeModified)) {
 			return dom_default_action_DOMSubtreeModified_cb;
+#ifdef _NOVAOS
+		} else if (dom_string_isequal(type, corestring_dom_DOMAttrModified)) {
+			return dom_default_action_DOMAttrModified_cb;
+		} else if (dom_string_isequal(type, corestring_dom_DOMNodeRemoved)) {
+			return dom_default_action_DOMNodeRemoved_cb;
+#endif
 		}
 	} else if (phase == DOM_DEFAULT_ACTION_FINISHED) {
 		return dom_default_action_finished_cb;
