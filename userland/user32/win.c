@@ -1164,6 +1164,8 @@ void destroy_children(Wnd *w)
 /* -----------------------------------------------------------------------
  * Showing, hiding, enabling
  * ----------------------------------------------------------------------- */
+static void app_activated(int on);
+
 USERAPI BOOL ShowWindow(HWND h, int cmd)
 {
     Wnd *w = W(h);
@@ -1216,6 +1218,7 @@ USERAPI BOOL ShowWindow(HWND h, int cmd)
                                 send_msg(o, WM_NCACTIVATE, FALSE, 0);
                                 send_msg(o, WM_ACTIVATE, WA_INACTIVE, (LPARAM)h);
                             }
+                            if (W_quiet(h)) app_activated(1);
                             if (W_quiet(h)) {
                                 send_msg(w, WM_NCACTIVATE, TRUE, 0);
                                 send_msg(w, WM_ACTIVATE, WA_ACTIVE, (LPARAM)old);
@@ -1304,6 +1307,26 @@ USERAPI BOOL EnableWindow(HWND h, BOOL on)
 /* -----------------------------------------------------------------------
  * Focus and activation
  * ----------------------------------------------------------------------- */
+/* WM_ACTIVATEAPP: when one of this program's windows becomes active and
+ * another program's was, or the last of its windows stops being active,
+ * each of its top-level windows hears so (before WM_NCACTIVATE), as on
+ * Windows.  Qt keeps its application state by it: without it a Qt
+ * program stays "inactive" and ignores its keyboard shortcuts (Ctrl+N
+ * in Krita) until a click gives a widget the focus. */
+static int g_app_active;
+static void app_activated(int on)
+{
+    if (g_app_active == on) return;
+    g_app_active = on;
+    HWND list[512];
+    int n = 0;
+    for (Wnd *c = desktop()->child; c && n < 512; c = c->next) list[n++] = c->h;
+    for (int i = 0; i < n; i++) {
+        Wnd *w = W_quiet(list[i]);
+        if (w) send_msg(w, WM_ACTIVATEAPP, (WPARAM)on, 0);
+    }
+}
+
 HWND set_focus(HWND h)
 {
     HWND old = g_focus;
@@ -1323,6 +1346,7 @@ HWND set_focus(HWND h)
             NtNovaGuiCtl(t->kid, CTL_ACTIVATE, 0, NULL);
             Wnd *pa = W_quiet(prev);
             if (pa) { send_msg(pa, WM_NCACTIVATE, FALSE, 0); send_msg(pa, WM_ACTIVATE, WA_INACTIVE, (LPARAM)t->h); }
+            app_activated(1);
             send_msg(t, WM_NCACTIVATE, TRUE, 0);
             send_msg(t, WM_ACTIVATE, WA_ACTIVE, (LPARAM)prev);
             if (g_focus != h) return old;
@@ -1362,6 +1386,8 @@ void top_activated(Wnd *w, int active)
         Wnd *p = W_quiet(prev);
         if (p && p != w) { send_msg(p, WM_NCACTIVATE, FALSE, 0); send_msg(p, WM_ACTIVATE, WA_INACTIVE, (LPARAM)h); }
         if (!W_quiet(h)) return;
+        app_activated(1);
+        if (!W_quiet(h)) return;
         send_msg(w, WM_NCACTIVATE, TRUE, 0);
         send_msg(w, WM_ACTIVATE, WA_CLICKACTIVE, (LPARAM)prev);
     } else {
@@ -1375,6 +1401,7 @@ void top_activated(Wnd *w, int active)
             g_focus = 0;
             send_msg(f, WM_KILLFOCUS, 0, 0);
         }
+        if (!g_active) app_activated(0);           /* another program's window is active now */
     }
 }
 
