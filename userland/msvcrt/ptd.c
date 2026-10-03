@@ -1,9 +1,10 @@
 /* msvcrt / ucrtbase: the C runtime's per-thread data
  *
  * On Windows errno, _doserrno, the floating-point error code, rand's seed,
- * strtok's position and the buffers gmtime, asctime, _wcserror and tmpnam
- * return live in a block per thread, so one thread's failing call never
- * changes what another thread reads.  The block comes from a TLS slot: made
+ * strtok's position, the buffers gmtime, asctime, _wcserror and tmpnam
+ * return, and a thread's own locale (_configthreadlocale) live in a block
+ * per thread, so one thread's failing call never changes what another
+ * thread reads.  The block comes from a TLS slot: made
  * on first use (every thread starts with errno 0 and rand seeded with 1),
  * freed by DllMain when the thread or the DLL goes away.
  */
@@ -48,6 +49,7 @@ static void ptd_free(void)
     NovaPtd *p = TlsGetValue((DWORD)g_slot);
     if (!p) return;
     TlsSetValue((DWORD)g_slot, 0);
+    if (p->loc) HeapFree(GetProcessHeap(), 0, p->loc);
     HeapFree(GetProcessHeap(), 0, p);
 }
 

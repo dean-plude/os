@@ -558,12 +558,20 @@ WINBASEAPI DWORD WINAPI GetEnvironmentVariableW(LPCWSTR name, LPWSTR buf, DWORD 
 {
     char n[256];
     if (!wide_to_temp(name, n, sizeof(n))) return 0;
-    DWORD need = GetEnvironmentVariableA(n, 0, 0);
-    if (!need) return 0;
-    char *v = RtlAllocateHeap(RtlGetProcessHeap(), 0, need + 1);
-    if (!v) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
-    DWORD r = GetEnvironmentVariableA(n, v, need + 1);
-    v[r < need + 1 ? r : need] = 0;
+    /* another thread may lengthen the value between the two calls: then
+     * the buffer was left unfilled, so ask again */
+    char *v;
+    DWORD r;
+    for (;;) {
+        DWORD need = GetEnvironmentVariableA(n, 0, 0);
+        if (!need) return 0;
+        v = RtlAllocateHeap(RtlGetProcessHeap(), 0, need);
+        if (!v) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+        r = GetEnvironmentVariableA(n, v, need);
+        if (r && r < need) break;
+        RtlFreeHeap(RtlGetProcessHeap(), 0, v);
+        if (!r) return 0;                                   /* removed meanwhile */
+    }
     int w = u2w(v, -1, 0, 0);
     if (!buf || (int)size <= w) r = (DWORD)w + 1;
     else { u2w(v, -1, buf, (int)size); buf[w] = 0; r = (DWORD)w; }

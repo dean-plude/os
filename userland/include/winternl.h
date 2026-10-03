@@ -391,6 +391,13 @@ NTSYSAPI NTSTATUS NTAPI RtlRunOnceComplete(PRTL_RUN_ONCE once, ULONG flags, PVOI
 typedef ULONG (NTAPI *PRTL_RUN_ONCE_INIT_FN)(PRTL_RUN_ONCE, PVOID, PVOID *);
 NTSYSAPI NTSTATUS NTAPI RtlRunOnceExecuteOnce(PRTL_RUN_ONCE once, PRTL_RUN_ONCE_INIT_FN fn, PVOID param, PVOID *ctx);
 
+/* Fiber-local storage (ntdll_fls.c) */
+NTSYSAPI NTSTATUS NTAPI RtlFlsAlloc(VOID (NTAPI *cb)(PVOID), ULONG *index);
+NTSYSAPI NTSTATUS NTAPI RtlFlsFree(ULONG index);
+NTSYSAPI NTSTATUS NTAPI RtlFlsGetValue(ULONG index, PVOID *value);
+NTSYSAPI NTSTATUS NTAPI RtlFlsSetValue(ULONG index, PVOID value);
+NTSYSAPI VOID     NTAPI RtlProcessFlsData(PVOID data, ULONG flags);
+
 /* Exceptions */
 NTSYSAPI VOID     NTAPI RtlCaptureContext(PCONTEXT ctx);
 NTSYSAPI VOID     NTAPI RtlRestoreContext(PCONTEXT ctx, PEXCEPTION_RECORD rec);

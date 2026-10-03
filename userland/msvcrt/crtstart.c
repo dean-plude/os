@@ -277,7 +277,6 @@ FILE *__iob_func(void);
 CRTEXP void __set_app_type(int t) { g_app_type = t; __iob_func(); }
 CRTEXP int  _query_app_type(void) { return g_app_type; }
 CRTEXP void __setusermatherr(void *fn) { (void)fn; }
-CRTEXP int  _configthreadlocale(int t) { (void)t; return 1; }       /* _DISABLE_PER_THREAD_LOCALE */
 CRTEXP int  _seh_filter_exe(unsigned long code, void *ep) { (void)code; (void)ep; return 0; }  /* CONTINUE_SEARCH */
 CRTEXP int  _seh_filter_dll(unsigned long code, void *ep) { (void)code; (void)ep; return 0; }
 CRTEXP unsigned int _set_abort_behavior(unsigned int flags, unsigned int mask) { (void)flags; (void)mask; return 0; }
