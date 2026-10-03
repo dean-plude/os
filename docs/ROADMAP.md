@@ -243,7 +243,8 @@ named program or test demonstrates it.
   permanent regression test, built for x64 and x86; `tools/pe_imports.py`
   shows what a new program needs before it is tried.
 - **Nightly app corpus** (done): `tools/appcorpus.py` runs ripgrep, fd, jq,
-  7-Zip, MinGit, Python, Node.js and Notepad++ every night, checks
+  7-Zip, MinGit, Python, Node.js, SumatraPDF, WinMerge, Notepad++ and
+  PuTTY every night, checks
   NovaOS's own `dir` and This PC screens, and posts a pass/fail table per
   program.
 

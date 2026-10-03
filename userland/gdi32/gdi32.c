@@ -80,8 +80,37 @@ GObj *obj_of(HGDIOBJ h)
     GObj *o = h;
     if (!o) return 0;
     if (!g_stock_ready) stock_init();
-    if ((o >= g_pool && o < g_pool + POOL && o->used) || (o >= g_stock && o < g_stock + 20 && o->kind)) return o;
+    if ((o >= g_pool && o < g_pool + POOL && o->used) || (o >= g_stock && o < g_stock + 20 && o->kind)) {
+        if (o->view24) dib24_sync(o);
+        return o;
+    }
     return 0;
+}
+
+/* A 24-bit DIB section: what the program wrote to its bits since the last
+ * sync goes to the 32-bit pixels, then the 32-bit pixels (with what gdi32
+ * drew) go back to the program's bits.  Rows are in the same order in both. */
+void dib24_sync(void *bitmap)
+{
+    GObj *o = bitmap;
+    if (!(o >= g_pool && o < g_pool + POOL && o->used) || o->kind != K_BITMAP || !o->view24) return;
+    int w = o->bw, h = o->bh, st = o->stride24;
+    for (int y = 0; y < h; y++) {
+        BYTE *v = o->view24 + (size_t)y * st, *l = o->last24 + (size_t)y * st;
+        DWORD *p = o->bits + (size_t)y * w;
+        if (memcmp(v, l, (size_t)w * 3)) {
+            for (int x = 0; x < w; x++) {
+                if (v[3 * x] == l[3 * x] && v[3 * x + 1] == l[3 * x + 1] && v[3 * x + 2] == l[3 * x + 2]) continue;
+                p[x] = 0xFF000000u | (DWORD)v[3 * x + 2] << 16 | (DWORD)v[3 * x + 1] << 8 | v[3 * x];
+            }
+        }
+        for (int x = 0; x < w; x++) {
+            DWORD c = p[x];
+            v[3 * x] = l[3 * x] = (BYTE)c;
+            v[3 * x + 1] = l[3 * x + 1] = (BYTE)(c >> 8);
+            v[3 * x + 2] = l[3 * x + 2] = (BYTE)(c >> 16);
+        }
+    }
 }
 
 GDIAPI HBRUSH CreateSolidBrush(COLORREF c) { GObj *o = new_obj(K_BRUSH); if (o) o->color = c; return (HBRUSH)o; }
@@ -439,9 +468,6 @@ GDIAPI HBITMAP CreateDIBSection(HDC h, const BITMAPINFO *bi, UINT usage, void **
     const BITMAPINFOHEADER *bh = &bi->bmiHeader;
     if (bh->biBitCount != 32 && bh->biBitCount != 24) { SetLastError(ERROR_INVALID_PARAMETER); if (bits) *bits = 0; return 0; }
     int w = bh->biWidth, hh = bh->biHeight < 0 ? -bh->biHeight : bh->biHeight;
-    if (bh->biBitCount == 24) {
-        /* 24-bit DIBs are kept as 32-bit here; the program's pointer sees 32-bit pixels */
-    }
     /* The pixels can live in a file mapping (Firefox's GPU process draws the
      * browser into one shared with the main process, which then blits it) */
     DWORD *view = 0;
@@ -452,6 +478,36 @@ GDIAPI HBITMAP CreateDIBSection(HDC h, const BITMAPINFO *bi, UINT usage, void **
     GObj *o = make_bitmap(w, hh, 1, bh->biHeight > 0, view ? (DWORD *)((BYTE *)view + offset) : 0);
     if (o && view) { o->owns = 2; o->view = view; }
     if (!o && view) UnmapViewOfFile(view);
+    if (o && bh->biBitCount == 24) {
+        /* gdi32 draws on 32-bit pixels; the program sees 24-bit rows of its
+         * own (in the section it passed, if any), synced at each use */
+        int stride = ((w * 3) + 3) & ~3;
+        SIZE_T size = (SIZE_T)stride * hh;
+        BYTE *v = NULL;
+        if (section) v = MapViewOfFile(section, FILE_MAP_WRITE, 0, offset, size);
+        else {
+            v = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            o->view_owned = 1;
+        }
+        BYTE *last = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!v || !last) {
+            if (v && o->view_owned) VirtualFree(v, 0, MEM_RELEASE);
+            else if (v) UnmapViewOfFile(v);
+            if (last) VirtualFree(last, 0, MEM_RELEASE);
+            DeleteObject((HGDIOBJ)o);
+            if (bits) *bits = 0;
+            return 0;
+        }
+        o->view24 = v;
+        o->last24 = last;
+        o->stride24 = stride;
+        o->bpp = 24;
+        memset(o->bits, 0, (size_t)w * hh * 4);
+        for (int i = 0; i < w * hh; i++) o->bits[i] = 0xFF000000u;
+        dib24_sync(o);
+        if (bits) *bits = v;
+        return (HBITMAP)o;
+    }
     if (bits) *bits = o ? o->bits : 0;
     return (HBITMAP)o;
 }
@@ -804,6 +860,7 @@ GDIAPI DWORD GetObjectType(HGDIOBJ h)
     case K_FONT: return 6;
     case K_BITMAP: return 7;
     case K_REGION: return 8;
+    case K_PALETTE: return 5;                           /* OBJ_PAL */
     }
     return 0;
 }
@@ -819,6 +876,7 @@ GDIAPI int GetObjectW(HGDIOBJ h, int n, LPVOID out)
         memset(&b, 0, sizeof(b));
         b.bmWidth = o->bw; b.bmHeight = o->bh; b.bmWidthBytes = o->bw * 4; b.bmPlanes = 1; b.bmBitsPixel = 32;
         b.bmBits = o->fmt ? o->bits : 0;                   /* DIB sections expose their bits */
+        if (o->view24) { b.bmWidthBytes = o->stride24; b.bmBitsPixel = 24; b.bmBits = o->view24; }
         int k = n < (int)sizeof(b) ? n : (int)sizeof(b);
         memcpy(out, &b, (size_t)k);
         if (n >= (int)sizeof(DIBSECTION) && o->fmt) {
@@ -826,7 +884,7 @@ GDIAPI int GetObjectW(HGDIOBJ h, int n, LPVOID out)
             memset(&ds->dsBmih, 0, sizeof(ds->dsBmih));
             ds->dsBmih.biSize = sizeof(BITMAPINFOHEADER);
             ds->dsBmih.biWidth = o->bw; ds->dsBmih.biHeight = o->flip ? o->bh : -o->bh;
-            ds->dsBmih.biPlanes = 1; ds->dsBmih.biBitCount = 32;
+            ds->dsBmih.biPlanes = 1; ds->dsBmih.biBitCount = o->view24 ? 24 : 32;
             return sizeof(DIBSECTION);
         }
         return k;
@@ -884,6 +942,13 @@ GDIAPI BOOL DeleteObject(HGDIOBJ obj)
     if (o >= g_pool && o < g_pool + POOL) {                 /* stock objects are not freed */
         if (o->kind == K_BITMAP && o->owns == 1 && o->bits) VirtualFree(o->bits, 0, MEM_RELEASE);
         if (o->kind == K_BITMAP && o->owns == 2) UnmapViewOfFile(o->view);
+        if (o->kind == K_BITMAP && o->view24) {
+            if (o->view_owned) VirtualFree(o->view24, 0, MEM_RELEASE);
+            else UnmapViewOfFile(o->view24);
+            VirtualFree(o->last24, 0, MEM_RELEASE);
+            o->view24 = o->last24 = NULL;
+            o->view_owned = 0;
+        }
         o->used = 0;
     }
     return TRUE;
@@ -966,7 +1031,12 @@ GDIAPI int GetDeviceCaps(HDC h, int index)
     return 0;
 }
 
-GDIAPI BOOL GdiFlush(void) { return TRUE; }
+/* drawing is done at once; GdiFlush brings it to the 24-bit DIB sections' bits */
+GDIAPI BOOL GdiFlush(void)
+{
+    for (int i = 0; i < POOL; i++) if (g_pool[i].used && g_pool[i].view24) dib24_sync(&g_pool[i]);
+    return TRUE;
+}
 GDIAPI DWORD GdiSetBatchLimit(DWORD n) { (void)n; return 1; }
 GDIAPI int SetLayout(HDC h, DWORD l) { (void)h; (void)l; return 0; }
 GDIAPI UINT GetNearestColor(HDC h, COLORREF c) { (void)h; return c & 0xFFFFFF; }

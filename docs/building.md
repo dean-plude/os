@@ -401,7 +401,8 @@ TESTS = [
 
 `python3 tools/selftest.py --list` prints the suite.  The nightly app
 corpus works the same way: one file per program in `tests/appcorpus/`
-defining `APP = App(...)` and `DOC` (Notepad++ stays last at 900).
+defining `APP = App(...)` and `DOC` (the windowed programs, `gui=True`,
+stay last, from 850).
 
 ### Self-test programs
 
@@ -492,7 +493,14 @@ would do).
 | Node.js 24.9.0 | `-v`, `-e` |
 | .NET 10.0.12 (runtime from NuGet, with the 8.0 host) | `--list-runtimes`; `tests/dotnet/culturetest.dll` formats German and Japanese through ICU |
 | NovaOS's own screens | `dir C:\` and `dir D:\` (an empty NTFS disk made with `mkntfs`) name their drive and give its own free space (`dir.png`); `start explorer` shows This PC with both drives, matching `tests/reference/this-pc.png` |
-| Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` (at most 3% of pixels differ) |
+| SumatraPDF 3.4.6 (the official 32-bit build, from the npm package `pdf-to-printer`) | opens a PDF the script generates; the screenshot must match `tests/reference/sumatrapdf.png` (at most 3% of pixels differ, for every screenshot) |
+| WinMerge 2.16.50 | compares `hello.txt` with `hello2.txt`; the screenshot must match `tests/reference/winmerge.png` |
+| Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` |
+| PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
+
+The windowed programs run last, one at a time (each takes the keyboard and
+is closed with Alt+F4 before the next).  Building PuTTY needs `cmake` and
+`gcc-mingw-w64-x86-64`.
 
 It needs 7-Zip's installer, Pillow, and `mkntfs` (for drive D:).  The exit
 status is the number of programs that failed; `--update-reference` rewrites
@@ -502,11 +510,11 @@ the reference screenshots after an intended change:
 sudo apt install p7zip-full python3-pil ntfs-3g
 python3 tools/appcorpus.py
 python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
-python3 tools/appcorpus.py --only NovaOS,Notepad++ --update-reference
+python3 tools/appcorpus.py --only NovaOS,SumatraPDF,WinMerge,Notepad++,PuTTY --update-reference
 ```
 
 A command passes as a self-test does (exit code 0, the output expected).
-To add a program, add an `App` to `APPS`.  Other third-party programs (the
+To add a program, add a file to `tests/appcorpus/`.  Other third-party programs (the
 installers, Java, Roslyn) and test scripts such as `cmdtest.bat` for
 `cmd.exe` are tried by hand with `tools/novarun.py`: copy a program onto
 the data disk with `--put` and type its commands.

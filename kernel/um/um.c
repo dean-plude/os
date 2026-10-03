@@ -843,14 +843,17 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
         strncpy(path, name, sizeof(path) - 5);
         path[sizeof(path) - 5] = '\0';
         um_wow_path(p, path);
-        RamNode *n = RamfsResolve(p->cwd, path);
-        if (!n) {
-            const char *leaf = strrchr(path, '\\');
-            if (!strchr(leaf ? leaf : path, '.')) {
-                strcat(path, ".dll");
-                n = RamfsResolve(p->cwd, path);
-            }
+        const char *leaf = strrchr(path, '\\');
+        if (!strchr(leaf ? leaf : path, '.')) strcat(path, ".dll");
+        /* a relative path ("Merge7z\\Merge7z.dll") goes by the search order
+         * too: the program's folder first, then the current one */
+        bool relative = path[0] != '\\' && path[0] != '/' && !strchr(path, ':');
+        RamNode *n = NULL;
+        if (relative && p->exe_dir) {
+            n = RamfsResolve(p->exe_dir, path);
+            if (n && n->dir) n = NULL;
         }
+        if (!n) n = RamfsResolve(p->cwd, path);
         return n && !n->dir ? n : NULL;
     }
     RamNode *sys = RamfsResolve(NULL, p->wow ? "\\Windows\\SysWOW64" : "\\Windows\\System32");

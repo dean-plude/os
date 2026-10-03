@@ -645,11 +645,24 @@ void cursor_to_kernel(HCURSOR c, int hidden)
  * ----------------------------------------------------------------------- */
 static HBITMAP dib_from_info(const BITMAPINFO *bi, const void *bits_in, UINT flags)
 {
-    (void)flags;
     const BITMAPINFOHEADER *h = &bi->bmiHeader;
     int w = h->biWidth, ht = h->biHeight < 0 ? -h->biHeight : h->biHeight;
     if (w <= 0 || ht <= 0) return 0;
     BITMAPINFO out;
+    if ((flags & LR_CREATEDIBSECTION) && h->biBitCount == 24 && h->biCompression == BI_RGB) {
+        /* the program wants the DIB as stored: a 24-bit section in the
+         * resource's row order, whose bits it reads back with GetObject */
+        memset(&out, 0, sizeof(out));
+        out.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        out.bmiHeader.biWidth = w; out.bmiHeader.biHeight = h->biHeight;
+        out.bmiHeader.biPlanes = 1; out.bmiHeader.biBitCount = 24;
+        void *v;
+        HBITMAP bm = CreateDIBSection(NULL, &out, DIB_RGB_COLORS, &v, NULL, 0);
+        if (!bm) return 0;
+        const BYTE *src = bits_in ? bits_in : (const BYTE *)bi + h->biSize + (h->biClrUsed ? h->biClrUsed * 4 : 0);
+        memcpy(v, src, (size_t)(((w * 3) + 3) & ~3) * ht);
+        return bm;
+    }
     memset(&out, 0, sizeof(out));
     out.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     out.bmiHeader.biWidth = w; out.bmiHeader.biHeight = -ht;
@@ -732,7 +745,7 @@ USERAPI HANDLE LoadImageW(HINSTANCE inst, LPCWSTR name, UINT type, int cx, int c
         return icon_from_file(name, cx ? cx : 32, cy ? cy : 32, type == IMAGE_CURSOR);
     }
     switch (type) {
-    case IMAGE_BITMAP: return LoadBitmapW(inst, name);
+    case IMAGE_BITMAP: { HBITMAP b = inst ? load_bitmap_res(inst, name, flags) : 0; if (!b) SetLastError(ERROR_RESOURCE_NAME_NOT_FOUND); return b; }
     case IMAGE_ICON: case IMAGE_CURSOR: {
         if (!inst && (ULONG_PTR)name < 0x10000) return type == IMAGE_ICON ? sys_icon((int)(ULONG_PTR)name) : sys_cursor((int)(ULONG_PTR)name);
         int w = cx ? cx : 32, h = cy ? cy : 32;

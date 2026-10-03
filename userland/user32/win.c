@@ -420,7 +420,12 @@ USERAPI BOOL GetClassInfoW(HINSTANCE inst, LPCWSTR name, WNDCLASSW *wc)
     WNDCLASSEXW x;
     x.cbSize = sizeof(x);
     BOOL r = GetClassInfoExW(inst, name, &x);
-    if (r) memcpy(wc, &x.style, sizeof(*wc));
+    if (r) {
+        /* field by field: in 64-bit code WNDCLASS has padding after style where WNDCLASSEX has none */
+        wc->style = x.style; wc->lpfnWndProc = x.lpfnWndProc; wc->cbClsExtra = x.cbClsExtra; wc->cbWndExtra = x.cbWndExtra;
+        wc->hInstance = x.hInstance; wc->hIcon = x.hIcon; wc->hCursor = x.hCursor; wc->hbrBackground = x.hbrBackground;
+        wc->lpszMenuName = x.lpszMenuName; wc->lpszClassName = x.lpszClassName;
+    }
     return r;
 }
 
@@ -442,7 +447,12 @@ USERAPI BOOL GetClassInfoA(HINSTANCE inst, LPCSTR name, WNDCLASSA *wc)
     WNDCLASSEXA x;
     x.cbSize = sizeof(x);
     BOOL r = GetClassInfoExA(inst, name, &x);
-    if (r) memcpy(wc, &x.style, sizeof(*wc));
+    if (r) {
+        /* field by field: in 64-bit code WNDCLASS has padding after style where WNDCLASSEX has none */
+        wc->style = x.style; wc->lpfnWndProc = x.lpfnWndProc; wc->cbClsExtra = x.cbClsExtra; wc->cbWndExtra = x.cbWndExtra;
+        wc->hInstance = x.hInstance; wc->hIcon = x.hIcon; wc->hCursor = x.hCursor; wc->hbrBackground = x.hbrBackground;
+        wc->lpszMenuName = x.lpszMenuName; wc->lpszClassName = x.lpszClassName;
+    }
     return r;
 }
 
@@ -576,6 +586,25 @@ void default_nc_calc(Wnd *w, RECT *r)
     if (r->bottom < r->top) r->bottom = r->top;
 }
 
+/* A program's client area never reaches over the frame the desktop draws
+ * (the title bar and borders of a framed top-level window).  Programs that
+ * draw their own title bar (SumatraPDF's tab bar) take the whole window as
+ * client area in WM_NCCALCSIZE, which Windows' DWM allows; here their title
+ * bar goes under the desktop's. */
+static void bitmap_rect(Wnd *w, RECT *b);
+static void clamp_client(Wnd *w)
+{
+    if (w->parent) return;
+    RECT b;
+    bitmap_rect(w, &b);
+    if (w->client.left < b.left) w->client.left = b.left;
+    if (w->client.top < b.top) w->client.top = b.top;
+    if (w->client.right > b.right) w->client.right = b.right;
+    if (w->client.bottom > b.bottom) w->client.bottom = b.bottom;
+    if (w->client.right < w->client.left) w->client.right = w->client.left;
+    if (w->client.bottom < w->client.top) w->client.bottom = w->client.top;
+}
+
 /* Tell the kernel a desktop window's client area, for other processes'
  * GetClientRect (CTL_FOREIGN) */
 static void publish_client(Wnd *w)
@@ -599,6 +628,7 @@ void wnd_calc_client(Wnd *w)
     if (w->proc && (w->flags & WF_CREATED)) send_msg(w, WM_NCCALCSIZE, TRUE, (LPARAM)&p);
     else default_nc_calc(w, &p.rgrc[0]);
     w->client = p.rgrc[0];
+    clamp_client(w);
     publish_client(w);
 }
 
@@ -703,6 +733,7 @@ void wnd_set_pos(Wnd *w, HWND after, int x, int y, int cx, int cy, UINT flags)
         np.rgrc[0] = nr; np.rgrc[1] = old; np.rgrc[2] = oldc; np.lppos = &p;
         send_msg(w, WM_NCCALCSIZE, TRUE, (LPARAM)&np);
         w->client = np.rgrc[0];
+        clamp_client(w);
     }
     if (!(flags & SWP_NOZORDER) && w->parent) {
         Wnd *a = NULL;
@@ -928,6 +959,15 @@ static HWND create_window(DWORD ex, WClass *cls, LPCWSTR title, DWORD style, int
     cs.cx = cx; cs.cy = cy; cs.x = x; cs.y = y; cs.style = (LONG)style; cs.dwExStyle = ex;
     cs.lpszName = (LPCWSTR)title_arg;
     cs.lpszClass = (LPCWSTR)cls_arg;
+    {
+        struct { CREATESTRUCTW *lpcs; HWND hwndInsertAfter; } cbt = { &cs, HWND_TOP };   /* CBT_CREATEWNDW */
+        if (cbt_hook(3 /* HCBT_CREATEWND */, (WPARAM)h, (LPARAM)&cbt)) {
+            create_failed(cls_arg, caller_wide, "refused by a WH_CBT hook");
+            if (W_quiet(h)) DestroyWindow(h);
+            return 0;
+        }
+        if (!W_quiet(h)) return 0;
+    }
     w->flags |= WF_CREATED;                                 /* messages flow from here */
     int ok = (int)call_proc(w, w->proc, w->wide, h, WM_NCCREATE, 0, (LPARAM)&cs, caller_wide);
     if (!W_quiet(h)) return 0;
@@ -947,11 +987,15 @@ static HWND create_window(DWORD ex, WClass *cls, LPCWSTR title, DWORD style, int
         }
         if (!W_quiet(h)) return 0;
     }
-    /* WM_SIZE and WM_MOVE, as the first SetWindowPos would */
-    send_msg(w, WM_SIZE, SIZE_RESTORED, MAKELPARAM(w->client.right - w->client.left, w->client.bottom - w->client.top));
-    if (!W_quiet(h)) return 0;
-    send_msg(w, WM_MOVE, 0, MAKELPARAM(w->client.left, w->client.top));
-    if (!W_quiet(h)) return 0;
+    /* WM_SIZE and WM_MOVE, as the first SetWindowPos would; an overlapped
+     * window gets them when it is first shown, as on Windows (programs
+     * create the window before the state its WM_SIZE handler needs) */
+    if (style & (WS_CHILD | WS_POPUP)) {
+        send_msg(w, WM_SIZE, SIZE_RESTORED, MAKELPARAM(w->client.right - w->client.left, w->client.bottom - w->client.top));
+        if (!W_quiet(h)) return 0;
+        send_msg(w, WM_MOVE, 0, MAKELPARAM(w->client.left, w->client.top));
+        if (!W_quiet(h)) return 0;
+    } else w->flags |= WF_NEED_SIZE;
     if (style & WS_VISIBLE) {
         int cmd = (style & WS_MAXIMIZE) ? SW_SHOWMAXIMIZED : (style & WS_MINIMIZE) ? SW_SHOWMINIMIZED : SW_SHOW;
         if (w->flags & WF_MENU_TRACK) cmd = SW_SHOWNA;
@@ -981,6 +1025,7 @@ USERAPI HWND CreateWindowExA(DWORD ex, LPCSTR cls, LPCSTR title, DWORD style, in
  * ----------------------------------------------------------------------- */
 static void free_wnd(Wnd *w)
 {
+    paint_drop_kept(w);
     if (w->kid) { NtNovaGuiDestroy(w->kid); w->kid = 0; }
     if (w->back) { VirtualFree(w->back, 0, MEM_RELEASE); w->back = NULL; }
     for (Prop *p = w->props, *n; p; p = n) { n = p->next; free(p->name); free(p); }
@@ -1021,6 +1066,7 @@ USERAPI BOOL DestroyWindow(HWND h)
 {
     Wnd *w = W(h);
     if (!w || w == desktop()) return FALSE;
+    if (cbt_hook(4 /* HCBT_DESTROYWND */, (WPARAM)h, 0)) return FALSE;
     if (w->flags & WF_DESTROYING) return TRUE;
     if (g_menu_owner == w) menu_cancel();
     /* windows it owns go first */
@@ -1084,6 +1130,15 @@ USERAPI BOOL ShowWindow(HWND h, int cmd)
             if (!W_quiet(h)) return was;
         } else if (!show && was) {
             send_msg(w, WM_SHOWWINDOW, FALSE, 0);
+            if (!W_quiet(h)) return was;
+        }
+        if (show && (w->flags & WF_NEED_SIZE)) {
+            w->flags &= ~WF_NEED_SIZE;
+            WPARAM how = (cmd == SW_SHOWMINIMIZED || cmd == SW_MINIMIZE || cmd == SW_SHOWMINNOACTIVE || cmd == SW_FORCEMINIMIZE) ? SIZE_MINIMIZED :
+                         cmd == SW_SHOWMAXIMIZED ? SIZE_MAXIMIZED : SIZE_RESTORED;
+            send_msg(w, WM_SIZE, how, MAKELPARAM(w->client.right - w->client.left, w->client.bottom - w->client.top));
+            if (!W_quiet(h)) return was;
+            send_msg(w, WM_MOVE, 0, MAKELPARAM(w->client.left, w->client.top));
             if (!W_quiet(h)) return was;
         }
         if (show) {

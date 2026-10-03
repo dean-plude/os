@@ -545,6 +545,32 @@ int NetSockPeerName(int sd, NetSockAddr *out)
     return 0;
 }
 
+/* The bytes waiting to be read, copied without consuming them (@buf may be
+ * NULL to count them); *closed says the peer has finished sending */
+int NetSockPeek(int sd, void *buf, int len, bool *closed)
+{
+    net_lock();
+    Sock *s = slot(sd);
+    if (!s) { net_unlock(); return -SOCK_ENOTSOCK; }
+    int n = (int)rx_used(s);
+    if (buf) {
+        if (n > len) n = len;
+        for (int i = 0; i < n; i++) ((UINT8 *)buf)[i] = s->rx[(s->rx_tail + (UINT32)i) % RXBUF];
+    }
+    if (closed) *closed = s->peer_closed || s->reset;
+    net_unlock();
+    return n;
+}
+
+bool NetSockListening(int sd)
+{
+    net_lock();
+    Sock *s = slot(sd);
+    bool l = s && s->listening;
+    net_unlock();
+    return l;
+}
+
 void NetSockPoll(int sd, bool *readable, bool *writable, bool *error)
 {
     net_lock();

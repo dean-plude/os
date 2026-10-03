@@ -297,7 +297,11 @@ after a build.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
-<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM) and Notepad++<!-- END generated:corpus -->, whose screenshot must match `tests/reference/notepad++.png`.
+<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM) and Notepad++<!-- END generated:corpus -->.  The
+windowed programs run last, one at a time: SumatraPDF opens a PDF,
+WinMerge compares two files, Notepad++ opens a file and PuTTY makes a raw
+connection to an echo server on the host and types a line; each one's
+screenshot must match its `tests/reference/NAME.png`.
 It also checks NovaOS's own screens: `dir` on C: and on an NTFS drive D:
 (each with its own free space) and File Explorer's This PC listing both.
 It posts a pass/fail table per program to the "Nightly app corpus" issue.

@@ -109,6 +109,7 @@ struct Wnd {
     RECT      upd;                  /* update rectangle, client coordinates (NC: whole window) */
     int       has_upd, erase, nc_paint, internal_paint;
     HDC       paint_dc;     /* BeginPaint's DC, until EndPaint (which presents) */
+    void     *kept;                 /* WS_CLIPCHILDREN: the children's pixels kept over the painting */
     /* top-level windows: the desktop window and its bitmap */
     UINT32    kid;
     DWORD     drop_accept;          /* CTL_ACCEPT_DROPS flags (drop.c) */
@@ -127,6 +128,7 @@ struct Wnd {
 enum {
     WF_DESTROYING = 1, WF_DESTROYED = 2, WF_CREATED = 4, WF_DIALOG = 8, WF_MENU_TRACK = 16,
     WF_NOTIFYSENT = 32, WF_ERASEBK_DONE = 64, WF_HIDDEN_BY_OWNER = 128, WF_MAPPED = 256,
+    WF_NEED_SIZE = 512,             /* WM_SIZE and WM_MOVE still owed, at the first ShowWindow */
 };
 
 void u32_lock(void);                /* a recursive lock over the window table and the queues */
@@ -176,6 +178,7 @@ BOOL  post_thread(DWORD tid, UINT msg, WPARAM wp, LPARAM lp);
 int   pump_one(MSG *m, HWND h, UINT mn, UINT mx, UINT flags, int wait, DWORD timeout);
 void  process_sent(void);
 extern BYTE g_keys[256];
+extern int g_alt_tap;              /* msg.c: Alt pressed alone so far */
 extern POINT g_cursor;
 void  kill_window_timers(HWND h);
 void  remove_window_messages(HWND h);
@@ -194,6 +197,8 @@ void  mark_dirty(Wnd *top, const RECT *r);                  /* bitmap coordinate
 HDC   wnd_dc(Wnd *w, int client, int clip_children);       /* a DC on the window */
 void  release_dc(HDC dc);
 void  nc_paint(Wnd *w);
+void  paint_drop_kept(Wnd *w);
+LRESULT cbt_hook(int code, WPARAM wp, LPARAM lp);   /* WH_CBT (msg.c) */
 void  scroll_bits(Wnd *w, int dx, int dy, const RECT *area);
 void  caret_hide_for(Wnd *w);
 void  caret_restore(void);
@@ -231,6 +236,7 @@ LRESULT CALLBACK ComboLBoxProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK ScrollBarProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK MenuWndProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK DesktopProc(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK MDIClientProc(HWND, UINT, WPARAM, LPARAM);   /* mdi.c */
 LRESULT CALLBACK DefDlgProcW(HWND, UINT, WPARAM, LPARAM);
 void   register_builtin_classes(void);
 int    combo_edit_key(Wnd *edit, UINT msg, WPARAM wp);

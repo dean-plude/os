@@ -179,7 +179,16 @@ EFI_STATUS paging_build(
         console_printf("PAGING: identity map failed: %x\r\n", (UINT64)s);
         return s;
     }
-    console_printf("PAGING: identity mapped first 4 GiB\r\n");
+    /* ... and the rest of what PHYSMAP covers with 1 GiB pages: with more
+     * than 4 GiB of RAM the firmware loads this bootloader (and its stack)
+     * near the top of memory, above 4 GiB, and it keeps running from there
+     * until jump_to_kernel */
+    s = map_1gb_range(bs, pml4, 4ULL << 30, 4ULL << 30, PHYSMAP_GIB - 4);
+    if (EFI_ERROR(s)) {
+        console_printf("PAGING: identity map above 4 GiB failed: %x\r\n", (UINT64)s);
+        return s;
+    }
+    console_printf("PAGING: identity mapped first %d GiB\r\n", (UINT64)PHYSMAP_GIB);
 
     /* 2. Physical map [0 .. PHYSMAP_GIB GiB) at PHYSMAP_BASE using 1 GiB pages. */
     s = map_1gb_range(bs, pml4, PHYSMAP_BASE, 0, PHYSMAP_GIB);
