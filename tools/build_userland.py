@@ -48,7 +48,7 @@ DLLS = [
     ('bcrypt',   ['kernel32', 'ntdll'],  0x7FFA90000000),
     ('bcryptprimitives', ['kernel32', 'ntdll'], 0x7FFAA0000000),
     ('userenv',  ['kernel32', 'ntdll'],  0x7FFAB0000000),
-    ('shlwapi',  ['msvcrt', 'kernel32', 'ntdll'], 0x7FFAD0000000),
+    ('shlwapi',  ['user32', 'gdi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFAD0000000),
     ('psapi',    ['kernel32'],           0x7FFB40000000),
     ('shfolder', [],                     0x7FFB70000000),
     ('version',  ['kernel32', 'ntdll'],  0x7FFB20000000),
@@ -90,6 +90,9 @@ DLLS = [
     ('avicap32', ['kernel32', 'ntdll'],           0x7FFE30000000),
     ('d2d1',     ['msvcrt', 'kernel32', 'ntdll'], 0x7FFE40000000),
     ('vcruntime140_1', ['vcruntime140'],  0x7FFE50000000),     # x64 only (FH4)
+    ('oleacc',   ['user32', 'kernel32', 'ntdll'], 0x7FFD60000000),
+    ('winspool', ['msvcrt', 'kernel32', 'ntdll'], 0x7FFE80000000),     # winspool.drv
+    ('gdiplus',  ['user32', 'gdi32', 'msvcrt', 'kernel32', 'ntdll'], 0x7FFE90000000),
 ]
 # 32-bit DLLs (C:\Windows\SysWOW64): 16 MiB apart from 0x60000000
 DLL_BASES_X86 = {name: 0x60000000 + i * 0x01000000 for i, (name, _, _) in enumerate(DLLS)}
@@ -190,7 +193,23 @@ MB_FLAGS = ['-I', os.path.join(MBEDTLS, 'include'), '-I', os.path.join(MBEDTLS, 
             '-DMBEDTLS_CONFIG_FILE="mbedtls_user_config.h"',
             # as NetSurf builds it: Mbed TLS's POSIX/GCC paths, not MSVC's
             '-std=gnu99', '-w', '-D_NOVAOS', '-DNOVA_POSIX', '-U_WIN32', '-U_WIN64', '-fgnuc-version=4.2.1']
-DLL_CFLAGS = {'secur32': MB_FLAGS}
+# plutovg (third_party/plutovg, MIT): the 2D rasteriser gdiplus.dll draws with
+PLUTOVG = os.path.join(os.path.dirname(HERE), 'third_party', 'plutovg')
+PV_FLAGS = ['-I', os.path.join(PLUTOVG, 'include'), '-DPLUTOVG_BUILD', '-DPLUTOVG_BUILD_STATIC',
+            '-DSTBI_NO_THREAD_LOCALS']        # stb_image's error string: no implicit TLS in the DLL
+DLL_CFLAGS = {'secur32': MB_FLAGS, 'gdiplus': PV_FLAGS}
+# DLLs whose file isn't NAME.dll
+DLL_FILES = {'winspool': 'winspool.drv'}
+
+def plutovg_objs(odir):
+    objs = []
+    src = os.path.join(PLUTOVG, 'source')
+    for f in sorted(os.listdir(src)):
+        if f.endswith('.c'):
+            obj = os.path.join(odir, 'plutovg_' + f[:-2] + '.obj')
+            cc(os.path.join(src, f), obj, PV_FLAGS + ['-w'])
+            objs.append(obj)
+    return objs
 
 def mbedtls_objs(odir):
     """Mbed TLS's library and the TLS glue for this architecture, compiled
@@ -271,11 +290,14 @@ ORDINALS = {
                  'DPA_SetPtr': 335, 'DPA_DeletePtr': 336, 'DPA_DeleteAllPtrs': 337, 'DPA_Sort': 338,
                  'DPA_Search': 339, 'DPA_CreateEx': 340, 'LoadIconMetric': 380, 'LoadIconWithScaleDown': 381,
                  'DPA_DestroyCallback': 385, 'DSA_DestroyCallback': 386, 'SetWindowSubclass': 410,
-                 'GetWindowSubclass': 411, 'RemoveWindowSubclass': 412, 'DefSubclassProc': 413},
+                 'GetWindowSubclass': 411, 'RemoveWindowSubclass': 412, 'DefSubclassProc': 413,
+                'TaskDialog': 344, 'TaskDialogIndirect': 345},
     'shell32': {'SHChangeNotifyRegister': 2, 'SHChangeNotifyDeregister': 4, 'ILFindLastID': 16,
                 'ILRemoveLastID': 17, 'ILClone': 18, 'ILCloneFirst': 19, 'ILIsEqual': 21, 'ILCombine': 25,
                 'ILGetSize': 152, 'ILGetNext': 153, 'ILFree': 155, 'ILCreateFromPathW': 190,
-                'SHCreateDirectory': 165, 'IsUserAnAdmin': 680, 'SHGetImageList': 727},
+                'SHCreateDirectory': 165, 'IsUserAnAdmin': 680, 'CDefFolderMenu_Create2': 701, 'SHGetImageList': 727},
+    'winspool': {'GetDefaultPrinterW': 203},
+    'shlwapi':  {'ParseURLA': 1, 'ParseURLW': 2, 'SHCreateMemStream': 12},
 }
 
 def defined_names(objs):
@@ -306,21 +328,21 @@ def x86_def(odir, name, objs):
     lines = [f'  {n} @{table[n]}' if n in table and n in defined else f'  {n}' for n in names]
     lines += [f'  {n} @{o}' for n, o in sorted(table.items(), key=lambda x: x[1]) if n in defined and n not in names]
     path = os.path.join(odir, name + '.def')
-    open(path, 'w').write(f'LIBRARY {name}.dll\nEXPORTS\n' + '\n'.join(lines) + '\n')
+    open(path, 'w').write(f'LIBRARY {DLL_FILES.get(name, name + ".dll")}\nEXPORTS\n' + '\n'.join(lines) + '\n')
     return ['/def:' + path]
 
 def link_dll(odir, name, objs, deps, base, extra=()):
     extra = list(extra) + ordinal_exports(name, objs)
     if ARCH == 'x86':
         extra += x86_def(odir, name, objs) + ['/safeseh:no', '/machine:x86']
-    dll = os.path.join(odir, f'{name}.dll')
+    dll = os.path.join(odir, DLL_FILES.get(name, f'{name}.dll'))
     entry = ['/entry:DllMain'] if name in ('testdll', 'comctl32') else ['/noentry']
     run(['lld-link', '/dll', '/nodefaultlib', f'/base:{base:#x}'] + entry +
         [f'/out:{dll}', f'/implib:{os.path.join(odir, name + ".lib")}', f'/map:{os.path.join(odir, name + ".map")}'] +
         objs + list(extra) +
         [os.path.join(odir, d + '.lib') for d in deps])
     sysdir = 'System32' if ARCH == 'x64' else 'SysWOW64'
-    built.append((f'\\Windows\\{sysdir}\\{name}.dll', dll))
+    built.append((f'\\Windows\\{sysdir}\\{os.path.basename(dll)}', dll))
 
 CXX_FROM_VCRUNTIME = ['_CxxThrowException', '__CxxFrameHandler', '__CxxFrameHandler2', '__CxxFrameHandler3',
                       '_purecall', '__RTDynamicCast', '__RTtypeid', '__RTCastToVoid', 'set_unexpected', 'unexpected',
@@ -361,6 +383,8 @@ def build_pass(arch):
         extra = []
         if name == 'secur32':
             objs += mbedtls_objs(odir)
+        if name == 'gdiplus':
+            objs += plutovg_objs(odir)
         if name in ('testdll', 'ws2_32', 'ole32', 'oleaut32'):
             objs.append(tlssup)
         if arch == 'x86':

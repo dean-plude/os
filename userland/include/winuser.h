@@ -373,7 +373,37 @@ USERAPI BOOL     UpdateWindow(HWND h);
 #define WM_SIZING          0x0214
 #define WM_CAPTURECHANGED  0x0215
 #define WM_MOVING          0x0216
+#define WM_MDICREATE       0x0220
+#define WM_MDIDESTROY      0x0221
 #define WM_MDIACTIVATE     0x0222
+#define WM_MDIRESTORE      0x0223
+#define WM_MDINEXT         0x0224
+#define WM_MDIMAXIMIZE     0x0225
+#define WM_MDITILE         0x0226
+#define WM_MDICASCADE      0x0227
+#define WM_MDIICONARRANGE  0x0228
+#define WM_MDIGETACTIVE    0x0229
+#define WM_MDISETMENU      0x0230
+#define WM_MDIREFRESHMENU  0x0234
+#define MDIS_ALLCHILDSTYLES 0x0001
+#define MDITILE_VERTICAL     0x0000
+#define MDITILE_HORIZONTAL   0x0001
+#define MDITILE_SKIPDISABLED 0x0002
+typedef struct tagMDICREATESTRUCTW {
+    LPCWSTR szClass, szTitle;
+    HANDLE hOwner;
+    int x, y, cx, cy;
+    DWORD style;
+    LPARAM lParam;
+} MDICREATESTRUCTW, *LPMDICREATESTRUCTW;
+typedef struct tagMDICREATESTRUCTA {
+    LPCSTR szClass, szTitle;
+    HANDLE hOwner;
+    int x, y, cx, cy;
+    DWORD style;
+    LPARAM lParam;
+} MDICREATESTRUCTA, *LPMDICREATESTRUCTA;
+typedef struct tagCLIENTCREATESTRUCT { HANDLE hWindowMenu; UINT idFirstChild; } CLIENTCREATESTRUCT, *LPCLIENTCREATESTRUCT;
 #define WM_ENTERSIZEMOVE   0x0231
 #define WM_EXITSIZEMOVE    0x0232
 #define WM_DROPFILES       0x0233
@@ -527,6 +557,7 @@ USERAPI BOOL     UpdateWindow(HWND h);
 #define SC_MINIMIZE 0xF020
 #define SC_MAXIMIZE 0xF030
 #define SC_NEXTWINDOW 0xF040
+#define SC_PREVWINDOW 0xF050
 #define SC_CLOSE    0xF060
 #define SC_VSCROLL  0xF070
 #define SC_HSCROLL  0xF080

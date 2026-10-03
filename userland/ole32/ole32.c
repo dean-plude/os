@@ -884,3 +884,45 @@ WINOLEAPI_(HRESULT) CoGetMarshalSizeMax(ULONG *size, REFIID riid, IUnknown *unk,
     return E_NOTIMPL;
 }
 WINOLEAPI_(HRESULT) CoReleaseMarshalData(IStream *stm) { (void)stm; return E_NOTIMPL; }
+
+/* -----------------------------------------------------------------------
+ * OLE in-place activation helpers (MFC's container code links them).
+ * No OLE object is ever activated in place in another program's window
+ * here, so there are no shared menus and no object's accelerators to try.
+ * ----------------------------------------------------------------------- */
+WINOLEAPI_(BOOL) IsAccelerator(HACCEL acc, int n, LPMSG msg, WORD *cmd)
+{
+    (void)acc; (void)n; (void)msg;
+    if (cmd) *cmd = 0;
+    return FALSE;
+}
+WINOLEAPI_(HRESULT) OleTranslateAccelerator(void *frame, void *info, LPMSG msg) { (void)frame; (void)info; (void)msg; return S_FALSE; }
+WINOLEAPI_(HANDLE) OleCreateMenuDescriptor(HMENU combined, void *widths) { (void)widths; return combined ? (HANDLE)combined : NULL; }
+WINOLEAPI_(HRESULT) OleDestroyMenuDescriptor(HANDLE h) { (void)h; return S_OK; }
+WINOLEAPI_(HRESULT) OleSetMenuDescriptor(HANDLE h, HWND frame, HWND active, void *ipframe, void *ipobj)
+{ (void)h; (void)frame; (void)active; (void)ipframe; (void)ipobj; return S_OK; }
+
+/* a copy of clipboard-format data: global memory is copied, the rest (bitmaps,
+ * metafiles) has no copy routine here */
+WINOLEAPI_(HANDLE) OleDuplicateData(HANDLE src, CLIPFORMAT fmt, UINT flags)
+{
+    (void)fmt;
+    if (!src) return NULL;
+    SIZE_T n = GlobalSize(src);
+    if (!n) return NULL;
+    HGLOBAL dst = GlobalAlloc(flags ? flags : GMEM_MOVEABLE, n);
+    void *s = GlobalLock(src), *d = dst ? GlobalLock(dst) : NULL;
+    if (s && d) for (SIZE_T i = 0; i < n; i++) ((BYTE *)d)[i] = ((const BYTE *)s)[i];
+    if (d) GlobalUnlock(dst);
+    if (s) GlobalUnlock(src);
+    return dst;
+}
+
+/* running objects: an object is running once it exists */
+WINOLEAPI_(HRESULT) OleRun(IUnknown *obj) { return obj ? S_OK : E_INVALIDARG; }
+WINOLEAPI_(BOOL) OleIsRunning(IUnknown *obj) { return obj != NULL; }
+WINOLEAPI_(HRESULT) OleLockRunning(IUnknown *obj, BOOL lock, BOOL last) { (void)lock; (void)last; return obj ? S_OK : E_INVALIDARG; }
+/* CoGetObject("Elevation:...", "WinNT://...", monikers by display name): no moniker
+ * namespaces are registered, so no name parses */
+WINOLEAPI_(HRESULT) CoGetObject(LPCWSTR name, void *opts, REFIID iid, void **out)
+{ (void)name; (void)opts; (void)iid; if (out) *out = NULL; return (HRESULT)0x800401E4L; }   /* MK_E_SYNTAX */

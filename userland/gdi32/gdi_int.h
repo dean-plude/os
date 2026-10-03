@@ -4,8 +4,17 @@
 
 void *memset(void *d, int c, size_t n);
 void *memcpy(void *d, const void *s, size_t n);
+int memcmp(const void *a, const void *b, size_t n);
 
-static inline NOVA_DC *dc_of(HDC h) { return (NOVA_DC *)h; }
+void dib24_sync(void *bitmap);
+/* a memory DC drawing on a 24-bit DIB section first takes in what the
+ * program wrote to the section's bits (see dib24_sync) */
+static inline NOVA_DC *dc_of(HDC h)
+{
+    NOVA_DC *d = (NOVA_DC *)h;
+    if (d && d->mem && d->bitmap) dib24_sync(d->bitmap);
+    return d;
+}
 
 /* -----------------------------------------------------------------------
  * GDI objects
@@ -24,6 +33,10 @@ typedef struct GObj {
     /* bitmaps */
     int bw, bh, bpp, fmt, flip, owns;
     DWORD *bits;
+    /* 24-bit DIB sections: the program's pixels (and a copy as of the last
+     * sync), kept in step with the 32-bit `bits` gdi32 draws on */
+    BYTE *view24, *last24;
+    int stride24, view_owned;
     /* regions (a rectangle) */
     RECT rc;
     /* brushes: hatch style / pattern bitmap */

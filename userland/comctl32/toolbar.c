@@ -15,8 +15,6 @@
 #define TB_SETBUTTONINFOA_ (WM_USER + 66)
 #define TB_GETSTRINGW_    (WM_USER + 91)
 #define TB_SETLISTGAP_    (WM_USER + 96)
-#define TB_GETMETRICS_    (WM_USER + 101)
-#define TB_SETMETRICS_    (WM_USER + 102)
 #define TB_SETUNICODEFORMAT_ 0x2005
 #define TB_GETUNICODEFORMAT_ 0x2006
 #define TBN_GETBUTTONINFOW_ (TBN_FIRST - 20)
@@ -48,6 +46,7 @@ typedef struct {
     HWND parent;                            /* where commands go */
     HWND tips;
     int pad_x, pad_y;
+    int spacing_x, spacing_y;               /* between buttons (TB_SETMETRICS) */
 } TB;
 
 static DWORD style_of(HWND h) { return (DWORD)GetWindowLongW(h, GWL_STYLE); }
@@ -118,7 +117,7 @@ static void base_size(HWND h, TB *s, int *bw, int *bh)
 
 static int btn_width(HWND h, TB *s, TBtn *b, int bw)
 {
-    if (b->style & BTNS_SEP) return b->image > 0 ? b->image : 8;
+    if (b->style & BTNS_SEP) return b->cx ? b->cx : b->image > 0 ? b->image : 8;   /* TBIF_SIZE sizes a separator too */
     if (b->cx) return b->cx;
     int w = bw;
     DWORD st = style_of(h);
@@ -153,7 +152,7 @@ static void layout_ex(HWND h, TB *s, int allow_wrap)
         int w = btn_width(h, s, b, bw);
         if (wrap && x > s->indent && x + w > c.right && !(b->style & BTNS_SEP)) { x = s->indent; y += bh + 2; }
         SetRect(&b->r, x, y, x + w, y + bh);
-        x += w;
+        x += w + s->spacing_x;
         if (b->state & TBSTATE_WRAP) { x = s->indent; y += bh + ((b->style & BTNS_SEP) ? 8 : 2); }
     }
 }
@@ -674,6 +673,23 @@ LRESULT CALLBACK ToolbarProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case TB_SETHOTITEM: { int o = s->hot; s->hot = (int)wp; redraw_btn(h, s, o); redraw_btn(h, s, s->hot); return o; }
     case TB_SETPADDING: { LRESULT o = MAKELONG(s->pad_x * 2, s->pad_y * 2); s->pad_x = LOWORD(lp) / 2; s->pad_y = HIWORD(lp) / 2; layout(h, s); return o; }
     case TB_GETPADDING: return MAKELONG(s->pad_x * 2, s->pad_y * 2);
+    case TB_GETMETRICS: {
+        TBMETRICS *m = (TBMETRICS *)lp;
+        if (!m) return 0;
+        if (m->dwMask & TBMF_PAD) { m->cxPad = s->pad_x * 2; m->cyPad = s->pad_y * 2; }
+        if (m->dwMask & TBMF_BARPAD) { m->cxBarPad = 0; m->cyBarPad = 0; }
+        if (m->dwMask & TBMF_BUTTONSPACING) { m->cxButtonSpacing = s->spacing_x; m->cyButtonSpacing = s->spacing_y; }
+        return 0;
+    }
+    case TB_SETMETRICS: {
+        const TBMETRICS *m = (const TBMETRICS *)lp;
+        if (!m) return 0;
+        if (m->dwMask & TBMF_PAD) { s->pad_x = m->cxPad / 2; s->pad_y = m->cyPad / 2; }
+        if (m->dwMask & TBMF_BUTTONSPACING) { s->spacing_x = m->cxButtonSpacing; s->spacing_y = m->cyButtonSpacing; }
+        layout(h, s);
+        InvalidateRect(h, NULL, TRUE);
+        return 0;
+    }
     case TB_SETDRAWTEXTFLAGS: return 0;
     case TB_SETCMDID: { int i = (int)wp; if (i < 0 || i >= s->n) return FALSE; s->b[i].cmd = (int)lp; return TRUE; }
     case TB_CHANGEBITMAP: { int i = index_of(s, (int)wp); if (i < 0) return FALSE; s->b[i].image = LOWORD(lp); redraw_btn(h, s, i); return TRUE; }
@@ -701,7 +717,6 @@ LRESULT CALLBACK ToolbarProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
     case TB_CUSTOMIZE: return 0;
     case TB_SETLISTGAP_: return 0;
-    case TB_GETMETRICS_: case TB_SETMETRICS_: return 0;
     case TB_SETUNICODEFORMAT_: case TB_GETUNICODEFORMAT_: return TRUE;
     }
     return DefWindowProcW(h, msg, wp, lp);

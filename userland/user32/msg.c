@@ -1025,6 +1025,21 @@ USERAPI BOOL UnhookWindowsHook(int id, HOOKPROC fn)
     for (int i = 0; i < 32; i++) if (g_hooks[i].used && g_hooks[i].id == id && g_hooks[i].fn == fn) g_hooks[i].used = 0;
     return TRUE;
 }
+/* WH_CBT: the hooks of this thread (and the global ones) see a window
+ * being created or destroyed; a non-zero answer stops it.  MFC's
+ * _AfxCbtFilterHook ties its CWnd object to the new window here.  Each
+ * hook is called in turn (CallNextHookEx leaves the chaining to us). */
+LRESULT cbt_hook(int code, WPARAM wp, LPARAM lp)
+{
+    DWORD tid = GetCurrentThreadId();
+    for (int i = 31; i >= 0; i--)
+        if (g_hooks[i].used && g_hooks[i].id == WH_CBT && (!g_hooks[i].tid || g_hooks[i].tid == tid)) {
+            HOOKPROC fn = g_hooks[i].fn;
+            if (fn(code, wp, lp)) return 1;
+        }
+    return 0;
+}
+
 USERAPI LRESULT CallNextHookEx(HHOOK h, int code, WPARAM wp, LPARAM lp) { (void)h; (void)code; (void)wp; (void)lp; return 0; }
 USERAPI BOOL CallMsgFilterW(LPMSG m, int code)
 {

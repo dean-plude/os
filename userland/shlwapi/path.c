@@ -140,6 +140,51 @@ LWSTDAPI_(BOOL) PathCompactPathExW(LPWSTR out, LPCWSTR p, UINT max, DWORD flags)
     return TRUE;
 }
 
+/* PathCompactPath: fit a path into `dx` pixels of the DC's font, "..." standing for the front */
+LWSTDAPI_(BOOL) PathCompactPathW(HDC hdc, LPWSTR p, UINT dx)
+{
+    if (!p) return FALSE;
+    HDC dc = hdc ? hdc : GetDC(0);
+    SIZE sz;
+    int n = lstrlenW(p);
+    BOOL ok = TRUE;
+    if (GetTextExtentPoint32W(dc, p, n, &sz) && (UINT)sz.cx > dx) {
+        /* keep the last component and as much of its parent as fits after "..." */
+        WCHAR buf[MAX_PATH + 4];
+        int cut = 1;
+        for (; cut < n; cut++) {
+            buf[0] = buf[1] = buf[2] = '.';
+            lstrcpyW_(buf + 3, p + cut);
+            if (GetTextExtentPoint32W(dc, buf, lstrlenW(buf), &sz) && (UINT)sz.cx <= dx) break;
+        }
+        if (cut >= n) { buf[0] = buf[1] = buf[2] = '.'; buf[3] = 0; ok = FALSE; }
+        lstrcpyW_(p, buf);
+    }
+    if (!hdc) ReleaseDC(0, dc);
+    return ok;
+}
+LWSTDAPI_(BOOL) PathCompactPathA(HDC hdc, LPSTR p, UINT dx)
+{
+    WCHAR w[MAX_PATH + 4];
+    if (!p || !MultiByteToWideChar(CP_ACP, 0, p, -1, w, MAX_PATH)) return FALSE;
+    BOOL r = PathCompactPathW(hdc, w, dx);
+    WideCharToMultiByte(CP_ACP, 0, w, -1, p, MAX_PATH, 0, 0);
+    return r;
+}
+
+/* what a character may be in a path (GCT_*) */
+LWSTDAPI_(UINT) PathGetCharTypeW(WCHAR c)
+{
+    if (c < ' ' || c == '"' || c == '<' || c == '>' || c == '|' || c == '/') return 0;   /* GCT_INVALID */
+    if (c == '*' || c == '?') return 4;                                                 /* GCT_WILD */
+    if (c == '\\' || c == ':') return 8;                                                /* GCT_SEPARATOR */
+    UINT t = 1;                                                                         /* GCT_LFNCHAR */
+    if (c >= 0x80 || !(c == ' ' || c == '+' || c == ',' || c == ';' || c == '=' || c == '[' || c == ']'))
+        t |= 2;                                                                         /* GCT_SHORTCHAR */
+    return t;
+}
+LWSTDAPI_(UINT) PathGetCharTypeA(UCHAR c) { return PathGetCharTypeW(c); }
+
 /* ---- byte sizes ---- */
 LWSTDAPI_(LPWSTR) StrFormatByteSizeW(LONGLONG v, LPWSTR buf, UINT n) { return format_size_W((ULONGLONG)v, buf, n); }
 LWSTDAPI_(LPSTR) StrFormatByteSize64A(LONGLONG v, LPSTR buf, UINT n)  { return format_size_A((ULONGLONG)v, buf, n); }

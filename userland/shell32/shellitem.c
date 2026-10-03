@@ -528,3 +528,20 @@ SHSTDAPI_(HRESULT) SHCreateShellItemArray(LPCITEMIDLIST parent, void *folder, UI
     (void)parent; (void)folder;
     return SHCreateShellItemArrayFromIDLists(n, children, out);
 }
+
+/* property stores (System.* properties of a file): not kept */
+SHSTDAPI_(HRESULT) SHGetPropertyStoreFromParsingName(LPCWSTR path, void *bc, int flags, REFIID iid, void **out)
+{
+    (void)path; (void)bc; (void)flags; (void)iid;
+    if (out) *out = NULL;
+    return E_NOTIMPL;
+}
+
+/* the shell's context menu for items of a folder: no handlers to fill one */
+SHSTDAPI_(HRESULT) CDefFolderMenu_Create2(const void *folder, HWND w, UINT n, const void **items, void *sf,
+                                          void *cb, UINT nkeys, const HKEY *keys, void **out)
+{
+    (void)folder; (void)w; (void)n; (void)items; (void)sf; (void)cb; (void)nkeys; (void)keys;
+    if (out) *out = NULL;
+    return E_NOTIMPL;
+}

@@ -296,11 +296,6 @@ USERAPI LRESULT DefWindowProcA(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     return def_common(w, h, msg, wp, lp, 0);
 }
 
-USERAPI LRESULT DefFrameProcW(HWND h, HWND client, UINT msg, WPARAM wp, LPARAM lp) { (void)client; return DefWindowProcW(h, msg, wp, lp); }
-USERAPI LRESULT DefFrameProcA(HWND h, HWND client, UINT msg, WPARAM wp, LPARAM lp) { (void)client; return DefWindowProcA(h, msg, wp, lp); }
-USERAPI LRESULT DefMDIChildProcW(HWND h, UINT msg, WPARAM wp, LPARAM lp) { return DefWindowProcW(h, msg, wp, lp); }
-USERAPI LRESULT DefMDIChildProcA(HWND h, UINT msg, WPARAM wp, LPARAM lp) { return DefWindowProcA(h, msg, wp, lp); }
-USERAPI BOOL TranslateMDISysAccel(HWND h, LPMSG m) { (void)h; (void)m; return FALSE; }
 
 void notify_parent(Wnd *w, UINT code)
 {

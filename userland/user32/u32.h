@@ -50,7 +50,7 @@ enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CT
  * ----------------------------------------------------------------------- */
 typedef struct WClass {
     int       used;
-    WCHAR     name[64];
+    WCHAR     name[256];
     ATOM      atom;
     WNDPROC   proc;                 /* as registered */
     int       wide;                 /* registered with the W functions */
@@ -105,6 +105,7 @@ struct Wnd {
     RECT      upd;                  /* update rectangle, client coordinates (NC: whole window) */
     int       has_upd, erase, nc_paint, internal_paint;
     HDC       paint_dc;     /* BeginPaint's DC, until EndPaint (which presents) */
+    void     *kept;                 /* WS_CLIPCHILDREN: the children's pixels kept over the painting */
     /* top-level windows: the desktop window and its bitmap */
     UINT32    kid;
     DWORD     drop_accept;          /* CTL_ACCEPT_DROPS flags (drop.c) */
@@ -189,6 +190,8 @@ void  mark_dirty(Wnd *top, const RECT *r);                  /* bitmap coordinate
 HDC   wnd_dc(Wnd *w, int client, int clip_children);       /* a DC on the window */
 void  release_dc(HDC dc);
 void  nc_paint(Wnd *w);
+void  paint_drop_kept(Wnd *w);
+LRESULT cbt_hook(int code, WPARAM wp, LPARAM lp);   /* WH_CBT (msg.c) */
 void  scroll_bits(Wnd *w, int dx, int dy, const RECT *area);
 void  caret_hide_for(Wnd *w);
 void  caret_restore(void);
@@ -226,6 +229,7 @@ LRESULT CALLBACK ComboLBoxProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK ScrollBarProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK MenuWndProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK DesktopProc(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK MDIClientProc(HWND, UINT, WPARAM, LPARAM);   /* mdi.c */
 LRESULT CALLBACK DefDlgProcW(HWND, UINT, WPARAM, LPARAM);
 void   register_builtin_classes(void);
 int    combo_edit_key(Wnd *edit, UINT msg, WPARAM wp);

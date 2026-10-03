@@ -146,6 +146,11 @@ USERAPI int ToAscii(UINT vk, UINT sc, const BYTE *keys, LPWORD out, UINT flags)
     if (r) *out = w[0];
     return r;
 }
+USERAPI int ToAsciiEx(UINT vk, UINT sc, const BYTE *keys, LPWORD out, UINT flags, HANDLE hkl)
+{
+    (void)hkl;
+    return ToAscii(vk, sc, keys, out, flags);
+}
 USERAPI SHORT VkKeyScanW(WCHAR c)
 {
     for (UINT vk = 1; vk < 256; vk++) {
@@ -262,6 +267,7 @@ USERAPI BOOL CharToOemA(LPCSTR s, LPSTR d) { if (s != d) while ((*d++ = *s++)) ;
 USERAPI BOOL OemToCharA(LPCSTR s, LPSTR d) { if (s != d) while ((*d++ = *s++)) ; return TRUE; }
 USERAPI BOOL CharToOemBuffA(LPCSTR s, LPSTR d, DWORD n) { if (s != d) for (DWORD i = 0; i < n; i++) d[i] = s[i]; return TRUE; }
 USERAPI BOOL OemToCharBuffA(LPCSTR s, LPSTR d, DWORD n) { if (s != d) for (DWORD i = 0; i < n; i++) d[i] = s[i]; return TRUE; }
+USERAPI BOOL CharToOemBuffW(LPCWSTR s, LPSTR d, DWORD n) { if (!s || !d) return FALSE; WideCharToMultiByte(CP_UTF8, 0, s, (int)n, d, (int)n, 0, 0); return TRUE; }
 USERAPI BOOL CharToOemW(LPCWSTR s, LPSTR d) { WideCharToMultiByte(CP_UTF8, 0, s, -1, d, 0x7FFFFFFF, 0, 0); return TRUE; }
 USERAPI BOOL OemToCharW(LPCSTR s, LPWSTR d) { MultiByteToWideChar(CP_UTF8, 0, s, -1, d, 0x7FFFFFFF); return TRUE; }
 
