@@ -33,6 +33,10 @@ jobs:
     name: App corpus
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      # KVM crashes the core boot (a #GP in uACPI's GPE code) and times out
+      # the network suite; see docs/history/2026-10-03-ci-kvm.md
+      NOVARUN_ACCEL: tcg
     steps:
       - uses: actions/checkout@v4
 
