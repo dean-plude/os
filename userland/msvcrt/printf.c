@@ -378,7 +378,27 @@ static void str_put(void *ctx, const char *s, size_t n)
     StrCtx *c = ctx;
     for (size_t i = 0; i < n; i++, c->pos++) if (c->pos + 1 < c->n) c->s[c->pos] = s[i];
 }
-static void file_put(void *ctx, const char *s, size_t n) { fwrite(s, 1, n, (FILE *)ctx); }
+/* A stream: the output gathers in a buffer on the stack and goes to the
+ * stream in one piece, as msvcrt's _stbuf does, so an unbuffered stream
+ * (stderr) gets one write per call, not one per fragment of the format.
+ * VLC logs to stderr this way: a fragment at a time, each a system call. */
+typedef struct { FILE *f; size_t n; char buf[512]; } FileCtx;
+static void file_flush(FileCtx *c)
+{
+    if (c->n) fwrite(c->buf, 1, c->n, c->f);
+    c->n = 0;
+}
+static void file_put(void *ctx, const char *s, size_t n)
+{
+    FileCtx *c = ctx;
+    while (n) {
+        if (c->n == sizeof(c->buf)) file_flush(c);
+        size_t m = sizeof(c->buf) - c->n;
+        if (m > n) m = n;
+        memcpy(c->buf + c->n, s, m);
+        c->n += m; s += m; n -= m;
+    }
+}
 
 int __nova_vsnprintf(char *s, size_t n, const char *fmt, va_list ap, int flags)
 {
@@ -391,8 +411,11 @@ int __nova_vsnprintf(char *s, size_t n, const char *fmt, va_list ap, int flags)
 
 int __nova_vfprintf(FILE *f, const char *fmt, va_list ap, int flags)
 {
-    PrintSink k = { file_put, f, 0 };
-    return __nova_printf_core(&k, fmt, ap, flags);
+    FileCtx c = { f, 0 };
+    PrintSink k = { file_put, &c, 0 };
+    int r = __nova_printf_core(&k, fmt, ap, flags);
+    file_flush(&c);
+    return r;
 }
 
 int vsnprintf(char *s, size_t n, const char *fmt, va_list ap) { return __nova_vsnprintf(s, n, fmt, ap, 0); }
@@ -478,19 +501,17 @@ int __nova_vsnwprintf(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap, int 
     return (int)c.pos;
 }
 
-static void wfile_put(void *ctx, const char *s, size_t n)
-{
-    /* wide streams on NovaOS carry UTF-8 text (files and the console) */
-    fwrite(s, 1, n, (FILE *)ctx);
-}
-
+/* (wide streams on NovaOS carry UTF-8 text, files and the console alike,
+ * so the output gathers and goes out as the narrow one does) */
 int __nova_vfwprintf(FILE *f, const wchar_t *fmt, va_list ap, int flags)
 {
     char small[256];
     char *f8 = narrow_format(fmt, small, sizeof(small));
     if (!f8) return -1;
-    PrintSink k = { wfile_put, f, 0 };
+    FileCtx c = { f, 0 };
+    PrintSink k = { file_put, &c, 0 };
     int r = __nova_printf_core(&k, f8, ap, flags | PF_WIDE);
+    file_flush(&c);
     if (f8 != small) free(f8);
     return r;
 }

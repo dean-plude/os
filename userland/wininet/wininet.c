@@ -194,3 +194,23 @@ INETAPI BOOL WINAPI InternetQueryOptionW(HANDLE h, DWORD opt, LPVOID buf, LPDWOR
     return FALSE;
 }
 INETAPI BOOL WINAPI InternetQueryOptionA(HANDLE h, DWORD opt, LPVOID buf, LPDWORD n) { return InternetQueryOptionW(h, opt, buf, n); }
+
+/* HTTP sessions: InternetOpen gives no handle, so none of these is reached
+ * with a valid one; each fails as a closed handle would */
+INETAPI HANDLE WINAPI InternetConnectW(HANDLE h, LPCWSTR server, WORD port, LPCWSTR user, LPCWSTR pw, DWORD service, DWORD flags, DWORD_PTR ctx)
+{ (void)h; (void)server; (void)port; (void)user; (void)pw; (void)service; (void)flags; (void)ctx; SetLastError(ERROR_INVALID_HANDLE); return 0; }
+INETAPI HANDLE WINAPI InternetConnectA(HANDLE h, LPCSTR server, WORD port, LPCSTR user, LPCSTR pw, DWORD service, DWORD flags, DWORD_PTR ctx)
+{ (void)h; (void)server; (void)port; (void)user; (void)pw; (void)service; (void)flags; (void)ctx; SetLastError(ERROR_INVALID_HANDLE); return 0; }
+INETAPI HANDLE WINAPI HttpOpenRequestW(HANDLE h, LPCWSTR verb, LPCWSTR obj, LPCWSTR ver, LPCWSTR referrer, LPCWSTR *accept, DWORD flags, DWORD_PTR ctx)
+{ (void)h; (void)verb; (void)obj; (void)ver; (void)referrer; (void)accept; (void)flags; (void)ctx; SetLastError(ERROR_INVALID_HANDLE); return 0; }
+INETAPI HANDLE WINAPI HttpOpenRequestA(HANDLE h, LPCSTR verb, LPCSTR obj, LPCSTR ver, LPCSTR referrer, LPCSTR *accept, DWORD flags, DWORD_PTR ctx)
+{ (void)h; (void)verb; (void)obj; (void)ver; (void)referrer; (void)accept; (void)flags; (void)ctx; SetLastError(ERROR_INVALID_HANDLE); return 0; }
+INETAPI BOOL WINAPI HttpAddRequestHeadersW(HANDLE h, LPCWSTR headers, DWORD n, DWORD flags) { (void)h; (void)headers; (void)n; (void)flags; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+INETAPI BOOL WINAPI HttpAddRequestHeadersA(HANDLE h, LPCSTR headers, DWORD n, DWORD flags) { (void)h; (void)headers; (void)n; (void)flags; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+INETAPI BOOL WINAPI HttpSendRequestW(HANDLE h, LPCWSTR headers, DWORD n, LPVOID opt, DWORD optn) { (void)h; (void)headers; (void)n; (void)opt; (void)optn; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+INETAPI BOOL WINAPI HttpSendRequestA(HANDLE h, LPCSTR headers, DWORD n, LPVOID opt, DWORD optn) { (void)h; (void)headers; (void)n; (void)opt; (void)optn; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+INETAPI BOOL WINAPI HttpQueryInfoW(HANDLE h, DWORD level, LPVOID buf, LPDWORD n, LPDWORD index) { (void)h; (void)level; (void)buf; (void)n; (void)index; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+INETAPI BOOL WINAPI HttpQueryInfoA(HANDLE h, DWORD level, LPVOID buf, LPDWORD n, LPDWORD index) { (void)h; (void)level; (void)buf; (void)n; (void)index; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+INETAPI BOOL WINAPI InternetQueryDataAvailable(HANDLE h, LPDWORD n, DWORD flags, DWORD_PTR ctx) { (void)h; (void)flags; (void)ctx; if (n) *n = 0; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+INETAPI BOOL WINAPI InternetReadFile(HANDLE h, LPVOID buf, DWORD n, LPDWORD read) { (void)h; (void)buf; (void)n; if (read) *read = 0; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+INETAPI BOOL WINAPI InternetWriteFile(HANDLE h, LPCVOID buf, DWORD n, LPDWORD written) { (void)h; (void)buf; (void)n; if (written) *written = 0; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }

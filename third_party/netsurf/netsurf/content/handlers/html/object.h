@@ -56,6 +56,17 @@ bool html_fetch_object(struct html_content *c, struct nsurl *url, struct box *bo
  */
 nserror html_object_free_objects(struct html_content *html);
 
+#ifdef _NOVAOS
+/**
+ * Before the box tree is rebuilt (NovaOS: html_relayout in html.c), set
+ * aside the objects that belong to boxes (images, plugins, backgrounds):
+ * html_fetch_object gives a new box the old object for the same URL, and
+ * html_object_drop_stash releases the ones no box asked for again.
+ */
+void html_object_stash_box_objects(struct html_content *html);
+void html_object_drop_stash(struct html_content *html);
+#endif
+
 /**
  * close content of content objects associated with a HTML content
  *

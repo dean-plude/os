@@ -683,6 +683,103 @@ nserror html_object_close_objects(html_content *html)
 }
 
 
+#ifdef _NOVAOS
+/** release an object: close it, uncount its fetch, free it */
+static void html_object_drop(html_content *html,
+		struct content_html_object *victim)
+{
+	if (victim->content != NULL) {
+		content_status status = content_get_status(victim->content);
+
+		if (content_get_type(victim->content) == CONTENT_HTML) {
+			guit->misc->schedule(-1, html_object_refresh, victim);
+		}
+		if ((status == CONTENT_STATUS_READY ||
+				status == CONTENT_STATUS_DONE) &&
+				html->bw != NULL &&
+				content_get_type(victim->content) != CONTENT_NONE) {
+			content_close(victim->content);
+		}
+		if (status != CONTENT_STATUS_DONE) {
+			/* still counted as an active fetch */
+			html->base.active--;
+		}
+		hlcache_handle_release(victim->content);
+	}
+	html->num_objects--;
+	free(victim);
+}
+
+/* exported interface documented in html/object.h */
+void html_object_stash_box_objects(html_content *html)
+{
+	struct content_html_object **link = &html->object_list;
+
+	while (*link != NULL) {
+		struct content_html_object *o = *link;
+
+		if (o->box == NULL) {
+			link = &o->next;
+			continue;
+		}
+		*link = o->next;
+		o->box = NULL;          /* (its box is about to go) */
+		if (o->content == NULL) {
+			/* failed: its fetch is no longer counted */
+			html->num_objects--;
+			free(o);
+			continue;
+		}
+		o->next = html->relayout_stash;
+		html->relayout_stash = o;
+	}
+}
+
+/**
+ * An object of the box tree before the rebuild for this URL, given to
+ * @box (NovaOS: html_relayout), or NULL if there is none
+ */
+static struct content_html_object *
+html_object_unstash(html_content *c, nsurl *url, struct box *box,
+		content_type permitted_types, bool background)
+{
+	struct content_html_object **link;
+
+	for (link = &c->relayout_stash; *link != NULL; link = &(*link)->next) {
+		struct content_html_object *o = *link;
+		content_status status;
+
+		if (o->background != background ||
+				o->permitted_types != permitted_types ||
+				!nsurl_compare(hlcache_handle_get_url(o->content),
+						url, NSURL_COMPLETE))
+			continue;
+		*link = o->next;
+		o->box = box;
+		o->next = c->object_list;
+		c->object_list = o;
+		status = content_get_status(o->content);
+		if (status == CONTENT_STATUS_READY ||
+				status == CONTENT_STATUS_DONE)
+			html_object_done(box, o->content, background);
+		return o;
+	}
+	return NULL;
+}
+
+/* exported interface documented in html/object.h */
+void html_object_drop_stash(html_content *html)
+{
+	while (html->relayout_stash != NULL) {
+		struct content_html_object *victim = html->relayout_stash;
+
+		html->relayout_stash = victim->next;
+		html_object_drop(html, victim);
+	}
+}
+#endif
+
+
 /* exported interface documented in html/object.h */
 nserror html_object_free_objects(html_content *html)
 {
@@ -721,6 +818,15 @@ html_fetch_object(html_content *c,
 	/* If we've already been aborted, don't bother attempting the fetch */
 	if (c->aborted)
 		return true;
+
+#ifdef _NOVAOS
+	/* the box tree is being rebuilt: the old tree's object for this
+	 * URL carries on in the new box (no fetch, no blank while it loads) */
+	if (box != NULL && c->relayout_stash != NULL &&
+			html_object_unstash(c, url, box, permitted_types,
+					background) != NULL)
+		return true;
+#endif
 
 	child.charset = c->encoding;
 	child.quirks = c->base.quirks;

@@ -8,15 +8,7 @@ int memcmp(const void *a, const void *b, size_t n);
 
 void dib24_sync(void *bitmap);
 void dib_recolor(void *bitmap);
-/* a memory DC drawing on a DIB section of other than 32 bits per pixel
- * first takes in what the program wrote to the section's bits (see
- * dib24_sync) */
-static inline NOVA_DC *dc_of(HDC h)
-{
-    NOVA_DC *d = (NOVA_DC *)h;
-    if (d && d->mem && d->bitmap) dib24_sync(d->bitmap);
-    return d;
-}
+static inline NOVA_DC *dc_of(HDC h) { return (NOVA_DC *)h; }
 
 /* -----------------------------------------------------------------------
  * GDI objects
@@ -58,6 +50,15 @@ extern int  g_stock_ready;
 void  stock_init(void);
 GObj *new_obj(int kind);
 GObj *obj_of(HGDIOBJ h);
+GObj *bitmap_of(HGDIOBJ h);             /* a bitmap whose bits are about to be used (24-bit sections synced) */
+
+/* Before a blit or a read of a DC's pixels, and after a drawing call that
+ * ends a batch: a 24-bit DIB section is brought in step with its program's
+ * bits (see dib24_sync).  Cheap when the DC draws on anything else. */
+static inline void dc_sync(NOVA_DC *d)
+{
+    if (d && d->mem && d->bitmap && ((GObj *)d->bitmap)->view24) dib24_sync(d->bitmap);
+}
 void  rgn_free(GObj *o);              /* region.c: a region's rectangles */
 
 /* -----------------------------------------------------------------------
@@ -143,6 +144,13 @@ static inline DWORD rop_apply(NOVA_DC *d, DWORD dst, DWORD src)
 /* Logical coordinates: clipped, through the ROP */
 void put(NOVA_DC *d, int x, int y, COLORREF c);
 void fill(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c);
+void line(NOVA_DC *d, int x0, int y0, int x1, int y1, COLORREF c, int width);
+void fill_polygon(NOVA_DC *d, const POINT *pt, int n, COLORREF c);      /* even-odd scanline fill */
+void ellipse(NOVA_DC *d, int l, int t, int r, int b, BOOL do_fill, BOOL do_edge);
+
+/* The 20 colours of the default palette (DEFAULT_PALETTE), as PALETTEENTRYs
+ * (peRed, peGreen, peBlue, peFlags packed little-endian) */
+extern const DWORD g_default_palette[20];
 
 /* Blend @c over device pixel (x, y) with coverage @a (0-255); clipped */
 static inline void blend(NOVA_DC *d, int x, int y, COLORREF c, int a)

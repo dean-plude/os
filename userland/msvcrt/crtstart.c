@@ -82,9 +82,12 @@ static CH **name(const CH *cl, int *argc)                                      \
 SPLIT(split_a, char)
 SPLIT(split_w, wchar_t)
 
+void __nova_init_errlist(void);
+
 static void init_args(void)
 {
     if (__argv) return;
+    __nova_init_errlist();
     _acmdln = GetCommandLineA();
     _wcmdln = GetCommandLineW();
     __argv = split_a(_acmdln, &__argc);

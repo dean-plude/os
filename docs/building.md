@@ -242,7 +242,9 @@ USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
 plain `usb-ehci`).  The newest sound output plays, and the newest input
 records.  QEMU has no USB microphone and no high-speed audio device:
 `tools/usbredirpeer.py` is one (a USB Audio Class 1 headset or microphone
-behind a `usb-redir` device), e.g. a high-speed headset on EHCI whose
+behind a `usb-redir` device, or with `--uac2` a USB Audio Class 2.0 one:
+a programmable clock behind a clock selector, 24-bit samples and, at
+high speed, a packet every microframe), e.g. a high-speed headset on EHCI whose
 microphone hears 523 Hz:
 
 ```bash
@@ -362,11 +364,10 @@ python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 `tools/novarun.py` (and so `tools/selftest.py`) starts QEMU with `-accel kvm`
 when `/dev/kvm` is readable and writable, and with TCG otherwise.  Set
 `NOVARUN_ACCEL=tcg` or `NOVARUN_ACCEL=kvm` to force one.  The CPU model stays
-`qemu64` with the same feature flags under both.  CI pins every job to TCG
-(`NOVARUN_ACCEL=tcg`).  Under KVM the kernel boots and the network, device and
-graphics suites pass, and the core suite passes except `sleeptest timer`,
-where a few timed waits end up to 10 ms late (history entry "Kernel under
-KVM").  Switching CI to KVM waits for that.
+`qemu64` with the same feature flags under both.  CI runs the test VMs under
+KVM: each job's `tools/ci/enable-kvm.sh` step opens `/dev/kvm` to the runner
+user and sets `NOVARUN_ACCEL=kvm`, or sets `tcg` with a warning when the runner
+has no usable `/dev/kvm` (history entry "Kernel under KVM" has the timings).
 
 The graphics suite downloads 7-Zip, Mesa and DXVK and builds
 gltest/d3dtest/d2dtest/dwtest:
@@ -403,7 +404,12 @@ alone, and `soundtest record` and `capture` must record the microphone's
 tone.  The test then plugs full-speed USB microphones (more
 `usbredirpeer.py`s, each hearing its own tone) into an xHCI, an OHCI and
 a UHCI controller, records after each (the newest microphone must be
-heard), unplugs the UHCI one and records the OHCI one again.  Last, one
+heard), unplugs the UHCI one and records the OHCI one again.  Then it
+plugs a high-speed USB Audio 2.0 headset (`usbredirpeer.py --uac2`,
+writing `uac2.wav`, its microphone hearing 988 Hz) into the xHCI
+controller: `soundtest tone` must sound in `uac2.wav` alone, `soundtest
+record` and `capture` must hear 988 Hz, and once it is unplugged
+recording must go back to the OHCI microphone.  Last, one
 `virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
 connects a monitor to the second and third outputs and disconnects them
 again while NovaOS runs, through a VNC server QEMU has on each (an RFB
@@ -441,7 +447,11 @@ of each while it draws.  The graphics boot has a second monitor (a QEMU
 `secondary-vga`): between the installs and `gltest` it runs `montest 2`,
 which checks the monitor calls and layout changes; when it asks, the test
 pushes the pointer across onto the second monitor, and the screenshot is
-one PNG per monitor (`montest.png`, `montest-2.png`).  The network suite (`tests/selftest/network4` and
+one PNG per monitor (`montest.png`, `montest-2.png`).  Then `nstest`
+starts NetSurf on a page with an SVG image: the test checks the image's
+colours on the screen, clicks the page's box (a script changes it) and
+checks the page was redrawn with it changed (`nstest-before.png`,
+`nstest-after.png`), then closes NetSurf with Alt+F4.  The network suite (`tests/selftest/network4` and
 `network6`) boots twice with a virtio-net
 card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 (Winsock over IPv4) and `httptest suite` (winhttp: HTTP/2 by ALPN, large
@@ -512,35 +522,49 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 | `cppeh` | C++ exceptions and RTTI |
 | `stltest` | The C++ standard library (`msvcp140.dll`, `msvcp140_1`, `msvcp140_atomic_wait`) built as Visual Studio builds a program: strings, containers, streams and locales, exceptions and `exception_ptr`, threads, mutexes, condition variables, `std::async`, atomic waits, `pmr`, `std::filesystem` and `fstream`, `to_chars`, `std::format`, `std::regex` |
 | `rttest` | The UCRT's C99 complex functions with MSVC's `_Dcomplex`/`_Fcomplex` (as NumPy calls them), `_cprintf`/`_cputs`, and the DLL search directories: `AddDllDirectory`, `RemoveDllDirectory`, `SetDllDirectory` |
+| `crtthreads` | The per-thread pieces beyond `errno`: `FlsAlloc` callbacks run once on each value when its thread ends (on that thread), on every live thread's value at `FlsFree`, and on a fiber's own values at `DeleteFiber`; a new fiber starts with no values; FLS slots leave the TLS slots alone; `_configthreadlocale` gives a thread its own `setlocale` names in `msvcrt.dll` and `ucrtbase.dll` while the process's change underneath; `getenv`/`_wgetenv` results stay whole while another thread rewrites the variable, and values past 512 bytes come back (64- and 32-bit) |
+| `errnotest` | The C runtime's per-thread data in `msvcrt.dll` and `ucrtbase.dll`: six threads fail in different ways (`fopen` of a missing file, an overflowing `strtol`, `_set_errno`) and each still reads its own `errno` and `_doserrno` afterwards, along with its own `strtok` position, `gmtime` buffer and `rand` seed; new threads start with `errno` 0; reading `errno` leaves `GetLastError` alone (64- and 32-bit) |
+| `smftest` | The C++17 special math functions of `<cmath>` (`msvcp140_2.dll`: the STL's `special_math.cpp` over Boost.Math), 64- and 32-bit: Bessel and Neumann functions, elliptic integrals, `beta`, `expint`, `riemann_zeta`, Legendre, Laguerre and Hermite polynomials, their `f` and `l` forms, against known values, and `EDOM` with NaN outside the domain |
 | `usptest` | Uniscribe on HarfBuzz: Arabic and Devanagari itemized, shaped (contextual forms, ligatures, reordering) and placed with the Noto fonts, and GDI `ExtTextOut` drawing complex text exactly as `ScriptStringOut` does; `usptest bmp FILE` saves sample lines as a bitmap |
 | `dlgtest` | The common file dialogs without showing them: `GetOpenFileName`/`GetSaveFileName` argument checks, the `IFileOpenDialog`/`IFileSaveDialog` objects' options, folders, file types, file name and events; `dlgtest open`, `multi`, `save`, `ifd`, `ifdsave` and `folder` show each dialog for a look |
 | `delaytest` | the DLLs Firefox delay-loads: urlmon (`CreateUri`, `CoInternetParseUrl`), winspool.drv, credui, dhcpcsvc, d3dcompiler_47, d3d11 |
 | `qttest` | What Qt programs (KeePassXC) need: `GetGlyphOutline` metrics, gray bitmaps and outlines; `HSTRING`s built in Windows' layout by the caller, as C++/WinRT does; `Windows.Security.Credentials.KeyCredentialManager` activating with Windows Hello not supported; `SetSecurityInfo` on `GetCurrentProcess()` |
-| `shmtest` | Named and file-backed shared memory between processes |
+| `shmtest` | Named and file-backed shared memory between processes; a reserved section committed through its own view and mapped into a suspended child near ntdll (`MapViewOfFile3`, `NtMapViewOfSection` with a process handle), as Firefox's launcher does |
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `proctest` | `CreateProcess` flags: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` (`GetConsoleProcessList`), file positions shared with children and duplicates |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
 | `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE`, a window that 800x600 shrinks growing back to its size and place, `CDS_UPDATEREGISTRY` saving the mode in the registry.  `disptest W H` switches and saves; `disptest saved W H` checks the mode after a restart |
 | `cursortest` | System pointers: every `IDC_*` cursor loads with its own image and hot spot, the desktop draws each one over a window (the busy ring turning), `SetSystemCursor` replaces the I-beam for every program and `SPI_SETCURSORS` puts it back, and a program's 32 x 32 cursor is sent at the display's scale.  `cursortest show N` keeps a window of cells, one pointer each, up for N seconds |
-| `montest` | More than one monitor: `EnumDisplayMonitors`, `GetMonitorInfo`, `MonitorFromPoint`/`Rect`/`Window`, `EnumDisplayDevices`, `EnumDisplaySettings` and `ChangeDisplaySettingsEx` for `\\.\DISPLAY2` (moving it with `DM_POSITION`, saved in the registry), `SM_*VIRTUALSCREEN`, a window maximized on the second monitor, and the pointer crossing onto it.  `montest list` prints the monitors |
+| `montest` | More than one monitor: `EnumDisplayMonitors`, `GetMonitorInfo`, `MonitorFromPoint`/`Rect`/`Window`, `EnumDisplayDevices`, `EnumDisplaySettings` and `ChangeDisplaySettingsEx` for `\\.\DISPLAY2` (moving it with `DM_POSITION`, saved in the registry), `SM_*VIRTUALSCREEN`, a window maximized on the second monitor, and the pointer crossing onto it.  `montest hotplug` (the devices suite's "monitors" boot) has the test plug monitors into a virtio-vga's second and third outputs and unplug them: the monitor calls follow, `WM_DISPLAYCHANGE` comes each time, and a window and the pointer on a monitor that goes move to one that is left.  `montest list` prints the monitors |
+| `bmpcurtest` | Pointers made from a program's bitmaps, as GTK makes them: DIB sections of 1, 4, 8 and 16 bits per pixel (`GetObject`, drawing on them, the program's bits, `Get`/`SetDIBColorTable`), a cursor from a 32-bit image with alpha and a 1-bit mask, `CreateCursor`'s AND and XOR planes and a monochrome mask, and the copy set as the class cursor that the desktop then shows.  `bmpcurtest show N` keeps a window with that pointer up for N seconds |
+| `dpitest` | Per-monitor DPI.  Per-monitor aware (v2) by its manifest, it sets the primary monitor to 192 DPI for DPI-aware programs (`NtNovaGuiCtl` `CTL_SET_DPI`, what Settings > Display does) and back to 96, and checks `WM_DPICHANGED` (`wParam` and the suggested rectangle), `GetDpiForMonitor`, `GetDpiForWindow`, `GetDpiForSystem`, `AdjustWindowRectExForDpi`, `GetSystemMetricsForDpi`, the awareness calls, and its window's and monitor's rectangles in physical pixels; two children started with `__COMPAT_LAYER` (`DpiUnaware`, `HighDpiAware`) check that an unaware process keeps 96 DPI and logical pixels and a system-aware one sees 192 DPI everywhere.  With a second monitor at 96 DPI it also moves its window there and back (`WM_DPICHANGED` each way) |
+| `nstest` | The NetSurf browser (graphics suite): it writes a page with an SVG image and a box a script changes, and starts NetSurf on it; the test sees the SVG's filled and outlined shapes on the screen, clicks the box (its script changes its style attribute and adds text after the page was laid out) and sees the page redrawn with the changed box and the image still there, then closes NetSurf, which must exit normally |
 | `icutest` | The system ICU (`icu.dll`) as .NET loads it: German and Japanese names, numbers, currencies, dates, the Japanese calendar, collation, case, time-zone ids, IDNA, normalization, 8 threads at once; then kernel32's `GetLocaleInfoEx`, LCIDs and locale enumeration for those locales |
 | `nlstest` | `GetDateFormat`, `GetTimeFormat`, `GetNumberFormat` and `GetCurrencyFormat` (A, W, Ex) in German, Japanese and English against what Windows prints: default formats, pictures, `NUMBERFMT`/`CURRENCYFMT`, flags, rounding and errors.  `nlstest user` sets the user locale with `intl.exe` and checks that new processes format that way; `nlstest set NAME` and `after-restart NAME` check it lasts across a restart |
+| `nlstest calendars` | The locales' calendars: `LOCALE_ICALENDARTYPE`, `GetCalendarInfo` (A, W, Ex), `EnumCalendarInfo`, Japanese eras, Buddhist, Taiwan, Tangun, Hebrew, Hijri, Um Al Qura and Persian dates, `DATE_USE_ALT_CALENDAR`, `EnumDateFormats` and `EnumTimeFormats`; then `GetDurationFormat`.  `nlstest override` sets the user's overrides with `SetLocaleInfo` and checks them here and in a new process |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
+| `boosttest` (x64 and x86) | NT's wake-up priority boosts: how soon a thread waiting on an event, a semaphore, a condition variable or a thread message runs once another thread wakes it, idle and with a busy thread of the same base priority on every CPU; passes when the 95th percentile under load is 2 ms or less, the woken thread's priority (`NtQueryInformationThread`) is its base plus the increment (+1, +2 for a message), it is back at its base after 200 ms of running, and the busy threads ran meanwhile |
+| `prioritytest` (x64 and x86) | `SetThreadPriority` and `SetPriorityClass`: for each class from IDLE to HIGH and each level from `THREAD_PRIORITY_IDLE` to `TIME_CRITICAL`, the class and level read back and the thread's actual priority (`NtQueryInformationThread`) is NT's (class base plus level, within 1-15); `REALTIME_PRIORITY_CLASS` without the privilege is HIGH; the boost switches read back.  Then, with wake-up boosts off and a busy NORMAL thread on every CPU, an event-woken `THREAD_PRIORITY_HIGHEST` thread must run within 2 ms, and sooner than a NORMAL one, which waits for a busy thread's time slice to end |
 | `sleeptest timer` | How late `Sleep(1)`, `Sleep(5)`, a 1 ms wait timeout, a 1 ms waitable timer, a 5 ms periodic one, a 1 ms timer's completion routine and a 1 ms timer queue timer end, idle and with a busy thread on every CPU; passes when the 95th percentile under load is 1 ms or less and none ends early.  Also reports how soon a thread waiting on an event runs once another sets it.  Plain `sleeptest` sleeps (S3) instead |
+| `savetest` | Writes 32 MiB to `C:\Temp` (or `savetest MIB`), then for 12 seconds, while NovaOS saves drive C: to its disk, times `GetProcessHandleCount` (the big kernel lock), `GetMonitorInfo` (the desktop lock) and `GetFileAttributes` (the file-system lock) on three threads; passes when none waited 250 ms and `GetFileAttributes` under 100 ms (the desktop's redraws take the file-system lock only around what they read from files).  The self-test also checks the kernel's `[PERSIST] Saved` line: the save held the file-system lock under 20 ms |
 | `powertest` | The lid and a thermal zone (`GetPwrCapabilities`, `ThermalInformation`, `LastSleepTime`/`LastWakeTime`): closing the lid sleeps; needs `tests/acpi/lid-thermal.asl` and the self-test's help (see above) |
 | `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
 | `inputtest` | Mouse side buttons (`WM_XBUTTONDOWN`/`UP`, `WM_APPCOMMAND` back and forward), the horizontal wheel (`WM_MOUSEHWHEEL`) and the volume keys (`VK_VOLUME_*`, `WM_APPCOMMAND`): a USB mouse plugged in for the test, the PS/2 mouse and the USB keyboard, driven by the self-test (see above) |
 | `touchtest` | Multi-touch: `WM_TOUCH` with `GetTouchInputInfo` in a `RegisterTouchWindow` window, `WM_POINTERDOWN`/`UP`, `GetPointerInfo`, `GetPointerType`, `GetPointerFrameTouchInfo` and the mouse messages `DefWindowProc` makes of them in another, `SM_DIGITIZER`; needs the devices suite's virtio multi-touch screen and its help (see above) |
+| `wintabtest` | Pen tablets through `wintab32.dll`, loaded as GTK loads it: no tablet without a pen; with a synthetic pen (`CreateSyntheticPointerDevice`), one device with a pen and an eraser cursor, a context opened as GTK opens it getting `WT_PROXIMITY`, `WT_PACKET` (position, pressure, relative button changes) and `WT_CSRCHANGE`, the pen moving the pointer and clicking, and an absolute-mode context read with `WTQueuePacketsEx`, `WTDataPeek` and `WTPacketsGet` |
 | `smpstress` (x64) | Locks, events, semaphores, memory, handles and starting processes from many threads, then file and registry throughput on one CPU and on all (`smpstress scaling 3` fails below 3x; `smpstress throughput [X [files\|registry [many\|N]]]` measures only; run with `tools/novarun.py --smp 4`) |
 | `acltest` | Access checks against DACLs (`AccessCheck`) for our token and restricted, write-restricted and deny-only ones; `CheckTokenMembership`, impersonation; a named event with a DACL refused to a restricted token; file ACLs on drive C:: denied writes, deletes and renames (and reads for a restricted token), inheritance, `CreateFile` with a descriptor.  It leaves `C:\AclTest\kept.txt` and, run again after a restart, checks it kept its DACL (C: on NTFS) |
 | `drivetest` | Drive D: (NTFS: reading, then writing, renaming, deleting), with the disk from `scripts/make-ntfs-disk.sh`; then `scripts/check-ntfs-disk.sh` on the host |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
 | `soundtest record FILE [MS]`, `capture FILE [MS]`, `volume` | Recording through `waveIn` and WASAPI capture into a WAV, and `IAudioEndpointVolume` (needs a card with an input) |
+| `soundtest dsound [HZ] [MS]`, `dscapture FILE [MS]` | DirectSound: a streaming buffer refilled at position notifications, a static one at twice its frequency, and DirectSoundCapture (made with `CoCreateInstance`) recording into a WAV |
+| `xa2test [HZ] [MS]` | XAudio2 2.9 (source and mastering voices, voice and engine callbacks, end of stream, a volume meter in an effect chain), XAudio2 2.7 made with `CoCreateInstance` (a looped buffer through a submix voice), and X3DAudio panning |
+| `miditest [DIR]` | MIDI: the `midiOut` device and a GM reset sent with `midiOutLongMsg`, then a flute note; a `midiStream` buffer with a tempo and time division, `MOM_POSITIONCB` and `MOM_DONE` callbacks and the stream position; and a MIDI file written to DIR and played through the MCI sequencer (`open`, `status length`, `play wait`, `status mode`) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
 | `httptest suite HTTPS-BASE HTTP-BASE` | winhttp against `tools/h2server.js`: HTTP/2 by ALPN, a 300 KB body, POST, a redirect, an untrusted certificate refused, chunked HTTP/1.1, the asynchronous API.  `httptest [-2] [-k] [-a] URL` fetches one URL |
 | `netcat [-4\|-6] [-p PORT] HOST [PATH]` | Winsock: `getaddrinfo`, IPv4 or IPv6 sockets, an HTTP/1.0 GET |
 | `looptest` | Winsock over the loopback interface: a socket pair over 127.0.0.1 and ::1 (port 0, `getsockname`, a non-blocking connect, `getpeername` after it, data sent before `accept`, the accepted socket inheriting non-blocking mode), `shutdown(SD_BOTH)` with unread data, closing a listener with a queued connection, `localhost`, and `wsock32.dll`'s Winsock 1.1 ordinals |
-| `msitest` | Windows Installer: `MsiDatabaseApplyTransform` and `TRANSFORMS=` (a transform for another product refused with 1624), `msiexec /p` and `/uninstall` of a patch (1642 when its product is missing), rollback of a package that fails half-way (files put back, new files, folders and keys removed, its rollback custom action run; `DISABLEROLLBACK` keeps what was done), and an automatic service that `services.exe` starts at the next boot.  The packages come from `tools/msitest/mkpkg.py` (`C:\Tests\Msi`) |
+| `msitest` | Windows Installer: `MsiDatabaseApplyTransform` and `TRANSFORMS=` (a transform for another product refused with 1624), `msiexec /p` and `/uninstall` of a patch (1642 when its product is missing), rollback of a package that fails half-way (files put back, new files, folders and keys removed, its rollback custom action run; `DISABLEROLLBACK` keeps what was done), an automatic service that `services.exe` starts at the next boot, and (`msitest script`) JScript and VBScript custom actions of every source type setting properties, reading them back and writing files, and a failing script failing its install.  The packages come from `tools/msitest/mkpkg.py` (`C:\Tests\Msi`) |
 
 <!-- END generated:selftest-table -->
 
@@ -585,6 +609,8 @@ would do).
 | NovaOS's own screens | `dir C:\` and `dir D:\` (an empty NTFS disk made with `mkntfs`) name their drive and give its own free space (`dir.png`); `start explorer` shows This PC with both drives, matching `tests/reference/this-pc.png` |
 | SumatraPDF 3.4.6 (the official 32-bit build, from the npm package `pdf-to-printer`) | opens a PDF the script generates; the screenshot must match `tests/reference/sumatrapdf.png` (at most 3% of pixels differ, for every screenshot) |
 | WinMerge 2.16.50 | compares `hello.txt` with `hello2.txt`; the screenshot must match `tests/reference/winmerge.png` |
+| VLC 3.0.21 (the 32-bit PortableApps package, unpacked with 7-Zip) | loops the MP4 the ffmpeg test made (30 s of SMPTE colour bars with a 440 Hz tone) with its Qt interface, screenshot once the colour bars show in its window; the screenshot must match `tests/reference/vlc.png`, and the sound NovaOS played (`sound.wav` in `--out`) must hold the tone |
+| Audacity 3.7.4 (the official 64-bit zip) | through its first-run dialogs, records 10 s of the microphone's 523 Hz tone, stops and saves the project; the screenshot must match `tests/reference/audacity.png` and `C:\Apps\rec10.aup3` must exist |
 | Firefox 157.0 (Mozilla's full installer, the App Store's download) | `store install Firefox`: the Store unpacks the installer from `C:\Downloads` with 7-Zip (staged in `C:\Programs\7-Zip`), as its Install button does; then Firefox loads a page from an HTTPS server the script runs on the host (https://10.0.2.2:8443/, a certificate from a CA made for the run with `openssl` and trusted through Firefox's `distribution\policies.json`); the screenshot must match `tests/reference/firefox.png` |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` |
 | PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
@@ -594,15 +620,19 @@ is closed with Alt+F4 before the next).  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
 It needs 7-Zip's installer, Pillow, `openssl` (for Firefox's test
-server) and `mkntfs` (for drive D:).  The exit
+server), `mkntfs` (for drive D:) and, for the two programs that need
+sound, PulseAudio and QEMU's PulseAudio backend, `qemu-system-gui` on
+Ubuntu (NovaOS then boots with a microphone that hears a tone and its
+output recorded, as the core self-tests do; without PulseAudio those two
+are skipped, not failed).  The exit
 status is the number of programs that failed; `--update-reference` rewrites
 the reference screenshots after an intended change:
 
 ```bash
-sudo apt install p7zip-full python3-pil ntfs-3g
+sudo apt install p7zip-full python3-pil ntfs-3g pulseaudio pulseaudio-utils qemu-system-gui
 python3 tools/appcorpus.py
 python3 tools/appcorpus.py --only ripgrep,jq --out /tmp/ac
-python3 tools/appcorpus.py --only NovaOS,SumatraPDF,WinMerge,Notepad++,PuTTY --update-reference
+python3 tools/appcorpus.py --only NovaOS,SumatraPDF,WinMerge,VLC,Audacity,Notepad++,PuTTY --update-reference
 ```
 
 A command passes as a self-test does (exit code 0, the output expected).

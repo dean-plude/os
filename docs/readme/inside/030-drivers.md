@@ -10,7 +10,7 @@
   Wintab) and
   multi-touch screens (report protocol), USB sticks (FAT and NTFS, as
   the next drive letter, hot-plugged) and USB speakers, headsets and
-  microphones (USB Audio Class 1 over isochronous transfers, played on and
+  microphones (USB Audio Class 1 and 2 over isochronous transfers, played on and
   recorded from as soon as they are plugged in); virtio multi-touch screens,
   pens (pressure, tilt, rotation) and tablets; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,

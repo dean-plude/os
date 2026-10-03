@@ -532,3 +532,9 @@ size_t wcsftime(wchar_t *s, size_t n, const wchar_t *fmt, const struct tm *t)
     s[w] = 0;
     return w;
 }
+
+/* The locale-taking forms: one locale, the "C" one */
+__declspec(dllexport) long _wcstol_l(const wchar_t *s, wchar_t **end, int base, void *loc) { (void)loc; return wcstol(s, end, base); }
+__declspec(dllexport) unsigned long _wcstoul_l(const wchar_t *s, wchar_t **end, int base, void *loc) { (void)loc; return wcstoul(s, end, base); }
+__declspec(dllexport) double _wcstod_l(const wchar_t *s, wchar_t **end, void *loc) { (void)loc; return wcstod(s, end); }
+__declspec(dllexport) float _wcstof_l(const wchar_t *s, wchar_t **end, void *loc) { (void)loc; return wcstof(s, end); }

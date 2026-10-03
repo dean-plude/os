@@ -100,7 +100,36 @@ typedef struct _PEB {
     PRTL_USER_PROCESS_PARAMETERS ProcessParameters;
     PVOID SubSystemData, ProcessHeap;
     PVOID FastPebLock;              /* the RTL_CRITICAL_SECTION guarding the current directory */
+    PVOID AtlThunkSListPtr, IFEOKey;
+    ULONG CrossProcessFlags;
+    PVOID KernelCallbackTable;
+    ULONG SystemReserved, AtlThunkSListPtr32;
+    PVOID ApiSetMap;
+    ULONG TlsExpansionCounter;
+    PVOID TlsBitmap;
+    ULONG TlsBitmapBits[2];
+    PVOID ReadOnlySharedMemoryBase, SharedData, ReadOnlyStaticServerData;
+    PVOID AnsiCodePageData, OemCodePageData, UnicodeCaseTableData;
+    ULONG NumberOfProcessors, NtGlobalFlag;
+    LARGE_INTEGER CriticalSectionTimeout;
+    SIZE_T HeapSegmentReserve, HeapSegmentCommit, HeapDeCommitTotalFreeThreshold, HeapDeCommitFreeBlockThreshold;
+    ULONG NumberOfHeaps, MaximumNumberOfHeaps;
+    PVOID ProcessHeaps, GdiSharedHandleTable, ProcessStarterHelper;
+    ULONG GdiDCAttributeList;
+    PVOID LoaderLock;               /* the RTL_CRITICAL_SECTION ntdll's loader holds (x64 0x110, x86 0xA0) */
+    ULONG OSMajorVersion, OSMinorVersion;
+    USHORT OSBuildNumber, OSCSDVersion;
+    ULONG OSPlatformId, ImageSubsystem, ImageSubsystemMajorVersion, ImageSubsystemMinorVersion;
 } PEB, *PPEB;
+#ifdef __x86_64__
+_Static_assert(__builtin_offsetof(PEB, NumberOfProcessors) == 0xB8, "PEB layout");
+_Static_assert(__builtin_offsetof(PEB, LoaderLock) == 0x110, "PEB layout");
+_Static_assert(__builtin_offsetof(PEB, OSMajorVersion) == 0x118, "PEB layout");
+#else
+_Static_assert(__builtin_offsetof(PEB, NumberOfProcessors) == 0x64, "PEB layout");
+_Static_assert(__builtin_offsetof(PEB, LoaderLock) == 0xA0, "PEB layout");
+_Static_assert(__builtin_offsetof(PEB, OSMajorVersion) == 0xA4, "PEB layout");
+#endif
 
 /* The modules the kernel mapped, in initialization order (dependencies
  * first); read by ntdll's loader.  NovaOS-specific, at a fixed address. */
@@ -111,12 +140,12 @@ typedef struct _NOVA_LDR_MODULE {
 } NOVA_LDR_MODULE;
 typedef struct _NOVA_LDR_INFO {
     ULONG Count, Reserved;
-    NOVA_LDR_MODULE Modules[128];        /* the kernel's UM_MAX_MODULES */
+    NOVA_LDR_MODULE Modules[1024];       /* the kernel's UM_MAX_MODULES */
 } NOVA_LDR_INFO;
 #ifdef __x86_64__
 #define NOVA_LDR_INFO_ADDRESS ((NOVA_LDR_INFO *)0x00007FFDF0001000ULL)
 #else
-#define NOVA_LDR_INFO_ADDRESS ((NOVA_LDR_INFO *)0x7FF01000UL)       /* 32-bit programs (see the kernel's UM32_PEB_VA) */
+#define NOVA_LDR_INFO_ADDRESS ((NOVA_LDR_INFO *)0x7FEE1000UL)       /* 32-bit programs (see the kernel's UM32_PEB_VA) */
 #endif
 
 typedef struct _CLIENT_ID { HANDLE UniqueProcess, UniqueThread; } CLIENT_ID;
@@ -277,6 +306,7 @@ NTSYSAPI NTSTATUS NTAPI NtResumeThread(HANDLE h, PULONG prev);
 NTSYSAPI NTSTATUS NTAPI NtSuspendThread(HANDLE h, PULONG prev);
 NTSYSAPI NTSTATUS NTAPI NtQueryInformationThread(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret);
 NTSYSAPI NTSTATUS NTAPI NtSetInformationThread(HANDLE h, ULONG cls, PVOID info, ULONG len);
+NTSYSAPI NTSTATUS NTAPI NtSetInformationProcess(HANDLE h, ULONG cls, PVOID info, ULONG len);
 NTSYSAPI NTSTATUS NTAPI NtQueryInformationProcess(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret);
 NTSYSAPI NTSTATUS NTAPI NtQuerySection(HANDLE h, ULONG cls, PVOID info, SIZE_T len, PSIZE_T ret);
 NTSYSAPI NTSTATUS NTAPI NtCreateEvent(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, EVENT_TYPE type, BOOLEAN state);

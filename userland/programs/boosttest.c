@@ -26,17 +26,29 @@ typedef struct {
     LONG ExitStatus; PVOID TebBaseAddress; HANDLE UniqueProcess; HANDLE UniqueThread;
     ULONG_PTR AffinityMask; LONG Priority; LONG BasePriority;
 } TBI;
+typedef struct {
+    LONG ExitStatus; PVOID PebBaseAddress; ULONG_PTR AffinityMask; LONG BasePriority;
+    ULONG_PTR UniqueProcessId, InheritedFromUniqueProcessId;
+} PBI;
 typedef LONG (WINAPI *NtQitFn)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-static NtQitFn g_qit;
+static NtQitFn g_qit, g_qip;
 
-/* The calling thread's current (dynamic) and base priority */
+/* The calling thread's current (dynamic) and base priority: the base is
+ * the process's (its class's) plus the thread's increment, which is what
+ * NT reports as THREAD_BASIC_INFORMATION.BasePriority */
 static void my_priority(LONG *prio, LONG *base)
 {
     TBI b;
+    PBI pb;
     memset(&b, 0, sizeof(b));
+    memset(&pb, 0, sizeof(pb));
     ULONG got = 0;
     *prio = *base = -1;
-    if (g_qit && g_qit(GetCurrentThread(), 0, &b, sizeof(b), &got) >= 0) { *prio = b.Priority; *base = b.BasePriority; }
+    if (g_qit && g_qip && g_qit(GetCurrentThread(), 0, &b, sizeof(b), &got) >= 0 &&
+        g_qip(GetCurrentProcess(), 0, &pb, sizeof(pb), &got) >= 0) {
+        *prio = b.Priority;
+        *base = pb.BasePriority + b.BasePriority;
+    }
 }
 
 #define MAX_SPIN 16
@@ -157,6 +169,7 @@ static LONGLONG measure(int kind, int incr, int load, int nspin, int *ok)
 int main(void)
 {
     g_qit = (NtQitFn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread");
+    g_qip = (NtQitFn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationProcess");
     QueryPerformanceFrequency(&g_freq);
     SYSTEM_INFO si;
     GetSystemInfo(&si);

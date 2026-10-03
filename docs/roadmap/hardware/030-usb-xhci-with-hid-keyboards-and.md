@@ -7,7 +7,7 @@
   mice's side buttons and horizontal wheel.
   ~~Isochronous transfers, USB audio~~ Done: isochronous streams on xHCI,
   EHCI (high-speed devices, iTDs), OHCI and UHCI (alternate settings, a
-  ring of transfers per pipe), and USB Audio Class 1 speakers, headsets
-  and microphones as the sound output and input the mixer switches to
-  when they are plugged in.  Still to do: USB Audio 2.0, siTDs (full-speed
+  ring of transfers per pipe), and USB Audio Class 1 and 2 speakers,
+  headsets and microphones as the sound output and input the mixer
+  switches to when they are plugged in.  Still to do: siTDs (full-speed
   isochronous behind a high-speed hub on EHCI), webcams.

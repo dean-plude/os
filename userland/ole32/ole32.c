@@ -914,3 +914,5 @@ WINOLEAPI_(HRESULT) OleLockRunning(IUnknown *obj, BOOL lock, BOOL last) { (void)
  * namespaces are registered, so no name parses */
 WINOLEAPI_(HRESULT) CoGetObject(LPCWSTR name, void *opts, REFIID iid, void **out)
 { (void)name; (void)opts; (void)iid; if (out) *out = NULL; return (HRESULT)0x800401E4L; }   /* MK_E_SYNTAX */
+WINOLEAPI_(HRESULT) OleSetContainedObject(IUnknown *obj, BOOL contained) { (void)contained; return obj ? S_OK : E_INVALIDARG; }
+WINOLEAPI_(HRESULT) OleNoteObjectVisible(IUnknown *obj, BOOL visible) { (void)visible; return obj ? S_OK : E_INVALIDARG; }

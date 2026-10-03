@@ -100,7 +100,15 @@ static LRESULT __stdcall wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
      * has to tell user32 they are up to date (it then shows them) */
     if (msg == WM_PAINT) { PAINTSTRUCT ps; BeginPaint(h, &ps); EndPaint(h, &ps); return 0; }
     if (msg == WM_ERASEBKGND) return 1;
-    if (msg == WM_CLOSE) return 0;                  /* handled as a quit event */
+    if (msg == WM_CLOSE) {                          /* a quit event (Alt+F4 and the close */
+        if (g_surface && g_surface->hwnd == h) {    /* button send it, through SC_CLOSE) */
+            nsfb_event_t *e = &g_surface->pending[g_surface->npending < 4 ? g_surface->npending++ : 3];
+            memset(e, 0, sizeof(*e));
+            e->type = NSFB_EVENT_CONTROL;
+            e->value.controlcode = NSFB_CONTROL_QUIT;
+        }
+        return 0;
+    }
     if (msg == WM_SIZE && g_surface && g_surface->hwnd == h && wp != SIZE_MINIMIZED) {
         int w = (short)LOWORD(lp), ht = (short)HIWORD(lp);
         if (w > 0 && ht > 0) {
@@ -275,8 +283,7 @@ static void translate(NovaSurface *s, const MSG *m)
             push(s, m->message == WM_KEYDOWN ? NSFB_EVENT_KEY_DOWN : NSFB_EVENT_KEY_UP, code);
         break;
     }
-    case WM_CLOSE:
-    case WM_QUIT: {
+    case WM_QUIT: {                                 /* (WM_CLOSE: in wndproc) */
         nsfb_event_t *e = &s->pending[s->npending < 4 ? s->npending++ : 3];
         memset(e, 0, sizeof(*e));
         e->type = NSFB_EVENT_CONTROL;

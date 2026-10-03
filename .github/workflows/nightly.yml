@@ -1,7 +1,7 @@
 # Nightly app corpus: boots NovaOS built from main and runs unmodified
 # Windows programs (ripgrep, fd, jq, 7-Zip, MinGit, Python, Node.js,
-# SumatraPDF, WinMerge, KeePassXC, Firefox (installed by the App Store), Notepad++,
-# PuTTY; one file each in
+# SumatraPDF, WinMerge, VLC, Audacity, KeePassXC, Firefox (installed by the
+# App Store), Notepad++, PuTTY; one file each in
 # tests/appcorpus/) with
 # tools/appcorpus.py, then smpstress on 4 CPUs (locking under load: no deadlocks,
 # and how file and registry throughput scale).  The pass/fail table goes to the run's
@@ -26,8 +26,8 @@ env:                            # ccache, as in ci.yml
   CCACHE_COMPILERCHECK: content
   CCACHE_MAXSIZE: 500M
 
-concurrency:
-  group: nightly-app-corpus
+concurrency:                    # a queued run is replaced by a newer queued run in the same group:
+  group: nightly-app-corpus-${{ github.event_name }}-${{ github.ref }}   # keep manual and scheduled runs apart from pull requests
   cancel-in-progress: false
 
 jobs:
@@ -35,19 +35,19 @@ jobs:
     name: App corpus
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    env:
-      # KVM crashes the core boot (a #GP in uACPI's GPE code) and times out
-      # the network suite; see docs/history/2026-10-03-ci-kvm.md
-      NOVARUN_ACCEL: tcg
     steps:
       - uses: actions/checkout@v4
+
+      - name: Enable KVM (TCG when the runner has no /dev/kvm)
+        run: tools/ci/enable-kvm.sh
 
       - name: Install the toolchain and QEMU
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
-            qemu-system-x86 ovmf mtools dosfstools p7zip-full curl python3-pil ntfs-3g ccache
+            qemu-system-x86 qemu-system-gui ovmf mtools dosfstools p7zip-full curl python3-pil ntfs-3g ccache \
+            pulseaudio pulseaudio-utils
           echo /usr/lib/ccache >> "$GITHUB_PATH"
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 

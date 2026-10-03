@@ -247,6 +247,7 @@ static pte_t *walk(UINT64 pml4, UINT64 va, bool create)
     return &t[(va >> 12) & 511];
 }
 
+
 static UINT64 pte_flags(UINT32 protect)
 {
     UINT64 f = PTE_PRESENT | PTE_USER;
@@ -670,6 +671,12 @@ typedef struct {
     UINT64   base;              /* chosen load address */
     UINT32   exp_rva, exp_size; /* export directory */
     bool     fetched;
+    RamNode *dir;               /* its folder (DLLs next to it are found there) */
+    bool     mapped;            /* mapped by this loader: its imports are to be bound */
+    bool     bound;             /* imports bound (or being bound) */
+    bool     top;               /* the program itself */
+    bool     data;              /* mapped as data: no imports, no entry point */
+    UINT64   deps[UM_MAX_MODULES / 64];     /* the modules it imports (a bitmap) */
 } Image;
 
 typedef struct {
@@ -700,7 +707,8 @@ static void lower_copy(char *dst, const char *src, int cap)
     dst[i] = '\0';
 }
 
-static int load_module(Loader *L, RamNode *file, const char *name, int depth);
+static int load_module(Loader *L, RamNode *file, const char *name, bool top);
+static int map_module(Loader *L, RamNode *file, const char *name, bool top);
 
 /* A module mapped by an earlier load: read its image back from user
  * memory for export lookups. */
@@ -764,8 +772,18 @@ static UINT64 find_export(Loader *L, int m, const char *name, UINT32 ordinal, in
         memcpy(dll + n, ".dll", 5);
         strncpy(fn, dot + 1, sizeof(fn) - 1);
         fn[sizeof(fn) - 1] = '\0';
-        int fm = load_module(L, NULL, dll, depth + 1);
-        return fm < 0 ? 0 : find_export(L, fm, fn, 0, depth + 1);
+        /* map the target (the loop in load_module binds it; re-entering
+         * load_module here would bind modules under a bind in progress and
+         * lose that one's error, leaving it mapped but never committed).
+         * The target is a dependency of the forwarding module: it goes on
+         * the initialization list before it, and ntdll learns of it even
+         * when no module imports it directly (msvcrt forwards the C++
+         * exception entry points to vcruntime140, whose unwind information
+         * every throw needs). */
+        int fm = map_module(L, NULL, dll, false);
+        if (fm < 0) return 0;
+        im->deps[fm / 64] |= UINT64_C(1) << (fm % 64);
+        return find_export(L, fm, fn, 0, depth + 1);
     }
     return im->base + rva;
 }
@@ -958,7 +976,7 @@ static void map_api_set(char *lname, int cap)
 {
     static const struct { const char *prefix, *dll; } sets[] = {
         { "api-ms-win-crt-",              "ucrtbase.dll" },
-        { "api-ms-win-core-synch-",       "kernel32.dll" },
+        { "api-ms-win-core-synch-",       "kernelbase.dll" },  /* WaitOnAddress: kernelbase's, as on Windows */
         { "api-ms-win-core-com-",         "ole32.dll" },
         { "api-ms-win-core-winrt-",       "ole32.dll" },      /* combase: HSTRINGs, activation */
         { "combase.dll",                  "ole32.dll" },
@@ -969,7 +987,6 @@ static void map_api_set(char *lname, int cap)
         { "api-ms-win-shcore-",           "shlwapi.dll" },
         { "shcore.dll",                   "shlwapi.dll" },    /* GetDpiForMonitor, SHCreateStreamOnFileEx, ... */
         { "ext-ms-win-",                  "kernel32.dll" },
-        { "kernelbase.dll",               "kernel32.dll" },
         { "api-ms-win-",                  "kernel32.dll" },   /* any other set: what exists is there */
         { "msvcrt40.dll",                 "msvcrt.dll" },
     };
@@ -1021,19 +1038,31 @@ static RamNode *loader_file(Loader *L, RamNode *file, const char *name, char *pa
     return file;
 }
 
-static int load_module(Loader *L, RamNode *file, const char *name, int depth)
+/* The module index @name (a DLL name, an API set or a path) stands for
+ * once loaded, or -1 */
+static int module_index(UmProcess *p, const char *name, char *lname, int cap, bool mapped_file)
 {
-    UmProcess *p = L->p;
     const char *leaf = strrchr(name, '\\');
     leaf = leaf ? leaf + 1 : name;
-    char lname[64];
-    lower_copy(lname, leaf, sizeof(lname));
-    if (!strchr(lname, '.') && strlen(lname) < sizeof(lname) - 4) strcat(lname, ".dll");
-    if (!file) map_api_set(lname, sizeof(lname));
-    if (strlen(lname) >= sizeof(p->modules[0].name)) return fail(L, "The DLL name %s is too long", lname);
+    lower_copy(lname, leaf, cap);
+    if (!strchr(lname, '.') && strlen(lname) < (size_t)cap - 4) strcat(lname, ".dll");
+    if (!mapped_file) map_api_set(lname, cap);
     for (int i = 0; i < p->nmodules; i++)
         if (!strcmp(p->modules[i].name, lname)) return i;
-    if (depth > 8) return fail(L, "Imports nested too deeply at %s", name);
+    return -1;
+}
+
+/* Map @file (or the DLL @name when file is NULL): copy its image, choose
+ * its address, relocate it and register the module.  Its imports are bound
+ * afterwards by bind_module; returns the module index (an already loaded
+ * module's when it is one). */
+static int map_module(Loader *L, RamNode *file, const char *name, bool top)
+{
+    UmProcess *p = L->p;
+    char lname[64];
+    int found = module_index(p, name, lname, sizeof(lname), file != NULL);
+    if (found >= 0) return found;
+    if (strlen(lname) >= sizeof(p->modules[0].name)) return fail(L, "The DLL name %s is too long", lname);
     if (p->nmodules >= UM_MAX_MODULES) return fail(L, "Too many DLLs (at %s)", name);
 
     char fpath[sizeof(p->modules[0].path)];
@@ -1064,7 +1093,7 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
     /* A module mapped as data (LoadLibraryEx's AS_DATAFILE / AS_IMAGE_RESOURCE,
      * or a .NET IL-only assembly of either architecture, as Windows maps
      * those): sections in place, no imports, no entry point */
-    bool data = depth == 0 && L->data;
+    bool data = top && L->data;
     if (pe32 != p->wow && dirv[14] && il_only(f, fsz, sec, nsec, dirv[14])) data = true;
     if (pe32 != p->wow && !data)
         return fail(L, pe32 ? "%s is a 32-bit (x86) module and cannot be loaded into a 64-bit program"
@@ -1133,25 +1162,59 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
     mod->size = im->size;
     mod->entry = data ? 0 : rd32(oh + 16);
     mod->dll = data || (chars & 0x2000);
-    if (!mod->dll && depth == 0) {
+    if (!mod->dll && top) {
         UINT64 reserve = pe32 ? rd32(oh + 72) : rd64(oh + 72);
         p->stack_reserve = (UINT32)(reserve > 0xFFFFFFFFu ? 0xFFFFFFFFu : reserve);
     }
+    im->dir = fdir;
+    im->mapped = true;
+    im->top = top;
+    im->data = data;                                /* (nothing to bind) */
     __atomic_store_n(&p->nmodules, p->nmodules + 1, __ATOMIC_RELEASE);
+    return m;
+}
 
-    /* Imports (found in this module's folder too) */
-    RamNode *outer_dir = L->dep_dir;
-    L->dep_dir = fdir;
-    for (UINT32 d = data ? 0 : dirv[1]; d && d + 20 <= im->size; d += 20) {
+/* Bind module @m's imports, mapping the DLLs it needs (found in its own
+ * folder too), then copy it into the process with each section's
+ * protection.  Nothing recurses: a DLL mapped here is bound by the loop in
+ * load_module, so a program may chain its DLLs as deep as it likes. */
+static int bind_module(Loader *L, int m)
+{
+    UmProcess *p = L->p;
+    Image *im = &L->img[m];
+    const char *name = p->modules[m].name;
+    im->bound = true;
+    const UINT8 *f = im->img;
+    UINT32 nt = rd32(f + 0x3C);
+    const UINT8 *fh = f + nt + 4, *oh = fh + 20;
+    bool pe32 = rd16(fh) == 0x014C;
+    UINT16 nsec = rd16(fh + 2), opt_size = rd16(fh + 16);
+    UINT32 hdr = rd32(oh + 60), ndirs = rd32(oh + (pe32 ? 92 : 108));
+    const UINT8 *sec = oh + opt_size, *dir = oh + (pe32 ? 96 : 112);
+    UINT32 imports = ndirs > 1 ? rd32(dir + 8) : 0;
+    UINT64 base = im->base;
+
+    if (im->data) imports = 0;                      /* mapped as data: no imports */
+    L->dep_dir = im->dir;
+    for (UINT32 d = imports; d && d + 20 <= im->size; d += 20) {
         UINT32 ilt = rd32(im->img + d), nm = rd32(im->img + d + 12), iat = rd32(im->img + d + 16);
         if (!nm && !iat) break;
         if (nm >= im->size) return fail(L, "%s has a corrupt import table", name);
         char dll[64];
         strncpy(dll, (const char *)im->img + nm, sizeof(dll) - 1);
         dll[sizeof(dll) - 1] = '\0';
-        int dm = load_module(L, NULL, dll, depth + 1);
+        int dm = map_module(L, NULL, dll, false);
         if (dm < 0) return -1;
-        im = &L->img[m];
+        im->deps[dm / 64] |= UINT64_C(1) << (dm % 64);
+        /* kernel32 and kernelbase share the API sets: a function one lacks
+         * may be the other's (WaitOnAddress is kernelbase's, as on Windows) */
+        const char *mapped = p->modules[dm].name;
+        int alt = -1;
+        if (!strcmp(mapped, "kernelbase.dll")) alt = map_module(L, NULL, "kernel32.dll", false);
+        else if (!strcmp(mapped, "kernel32.dll") && (!strncmp(dll, "api-ms-win-core-", 16) ||
+                                                      !strncmp(dll, "ext-ms-win-", 11)))
+            alt = map_module(L, NULL, "kernelbase.dll", false);
+        if (alt >= 0) im->deps[alt / 64] |= UINT64_C(1) << (alt % 64);
         UINT32 t = ilt ? ilt : iat, ts = pe32 ? 4 : 8;              /* thunk size */
         for (UINT32 k = 0; t + ts * (k + 1) <= im->size && iat + ts * (k + 1) <= im->size; k++) {
             UINT64 th = pe32 ? rd32(im->img + t + 4 * k) : rd64(im->img + t + 8 * k);
@@ -1166,6 +1229,7 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
                 if (hn + 2 >= im->size) return fail(L, "%s has a corrupt import entry", name);
                 const char *fn = (const char *)im->img + hn + 2;
                 addr = find_export(L, dm, fn, 0, 0);
+                if (!addr && alt >= 0) addr = find_export(L, alt, fn, 0, 0);
                 /* ucrtbase's "_o_" exports (api-ms-win-crt-private) are
                  * the plain functions under another name */
                 if (!addr && !strncmp(fn, "_o_", 3) &&
@@ -1182,8 +1246,8 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
             else      wr64(im->img + iat + 8 * k, addr);
         }
     }
+    L->dep_dir = NULL;
 
-    L->dep_dir = outer_dir;
     /* Commit and copy in; then per-section protection */
     if (!um_commit(p, base, im->size, 0x04) || !um_write(p, base, im->img, im->size))
         return fail(L, "Out of memory loading %s", name);
@@ -1196,7 +1260,49 @@ static int load_module(Loader *L, RamNode *file, const char *name, int depth)
         UINT32 prot = x ? (w ? 0x40 : 0x20) : (w ? 0x04 : 0x02);
         if (va < im->size) um_commit(p, base + va, vsz > im->size - va ? im->size - va : vsz, prot);
     }
-    p->init_order[p->ninit++] = (UINT8)m;                  /* after everything it imports */
+    return m;
+}
+
+/* Put the modules loaded for @root on the initialization list, each after
+ * everything it imports (DllMain order), with a stack of its own rather
+ * than recursion. */
+static void order_modules(Loader *L, int root)
+{
+    UmProcess *p = L->p;
+    UINT16 stack[UM_MAX_MODULES], next[UM_MAX_MODULES];
+    UINT64 seen[UM_MAX_MODULES / 64] = { 0 };
+    for (int i = 0; i < p->ninit; i++) seen[p->init_order[i] / 64] |= UINT64_C(1) << (p->init_order[i] % 64);
+    int sp = 0;
+    if (seen[root / 64] >> (root % 64) & 1) return;
+    seen[root / 64] |= UINT64_C(1) << (root % 64);
+    stack[sp] = (UINT16)root; next[sp++] = 0;
+    while (sp) {
+        int m = stack[sp - 1], d = next[sp - 1];
+        const Image *im = &L->img[m];
+        while (d < p->nmodules && (!im->mapped || !(im->deps[d / 64] >> (d % 64) & 1) || (seen[d / 64] >> (d % 64) & 1))) d++;
+        if (d < p->nmodules) {
+            next[sp - 1] = (UINT16)(d + 1);
+            seen[d / 64] |= UINT64_C(1) << (d % 64);
+            stack[sp] = (UINT16)d; next[sp++] = 0;
+        } else {
+            sp--;
+            if (p->ninit < UM_MAX_MODULES) p->init_order[p->ninit++] = (UINT16)m;
+        }
+    }
+}
+
+/* Load @file (or the DLL @name when file is NULL) and everything it
+ * imports; returns the module index. */
+static int load_module(Loader *L, RamNode *file, const char *name, bool top)
+{
+    UmProcess *p = L->p;
+    int m = map_module(L, file, name, top);
+    if (m < 0) return -1;
+    for (int i = 0; i < p->nmodules; i++)              /* (nmodules grows as DLLs are mapped) */
+        if (L->img[i].mapped && !L->img[i].bound && bind_module(L, i) < 0) return -1;
+    order_modules(L, m);
+    for (int i = 0; i < p->nmodules; i++)              /* a module nothing lists as a dependency (a */
+        if (L->img[i].mapped) order_modules(L, i);     /* forwarder's target) is still on the list */
     return m;
 }
 
@@ -1210,6 +1316,7 @@ static Loader *loader_new(UmProcess *p, char *err, int err_cap)
 static void loader_free(Loader *L)
 {
     for (int i = 0; i < UM_MAX_MODULES; i++) kfree(L->img[i].img);
+
     if (L->npins) {
         DesktopLock();
         UmProcess *p = L->p;
@@ -1239,7 +1346,7 @@ const UmModule *um_module_at(UmProcess *p, UINT64 va)
  * The loader-info page read by ntdll (see NOVA_LDR_INFO in winternl.h):
  *   UINT32 count, UINT32 reserved, then per module in initialization
  *   order: UINT64 base, size; UINT32 entry_rva, flags (1 = DLL);
- *   char name[64], path[96]  (UM_MAX_MODULES entries fit the 24 KiB area)
+ *   char name[64], path[96]  (UM_MAX_MODULES entries fit the 188 KiB area)
  * ----------------------------------------------------------------------- */
 #define LDR_ENTRY_SIZE 184
 _Static_assert(8 + UM_MAX_MODULES * LDR_ENTRY_SIZE <= UM_LDR_INFO_SIZE, "loader info area too small");
@@ -1287,7 +1394,7 @@ UINT32 um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags)
     um_lock_excl(&p->lock);
     int nmod = p->nmodules, ninit = p->ninit;
     L->bkl = bkl_drop();                    /* copying a large image needs no big lock */
-    int m = load_module(L, NULL, name, 1);
+    int m = load_module(L, NULL, name, false);
     bkl_restore(L->bkl);
     L->bkl = 0;
     UINT32 st = 0;
@@ -1699,8 +1806,9 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
      * filled in (another CPU may run it the moment it is). */
     char tname[THREAD_NAME_MAX];
     ksnprintf(tname, sizeof(tname), "%s:%u", p->name, t->tid);
-    Thread *kt = sched_new_thread(tname, um_thread_start, t, 8, 32 * 1024);
+    Thread *kt = sched_new_thread(tname, um_thread_start, t, um_thread_base(p, 0), 32 * 1024);
     if (kt) {
+        t->no_boost = kt->no_boost = p->no_boost;      /* (NT: a new thread takes its process's) */
         kt->um = t;
         kt->cr3 = p->pml4;
         kt->fpu = fpu;
@@ -1745,6 +1853,7 @@ static void release_images(UmProcess *p)
 
 static void destroy(UmProcess *p)
 {
+    um_console_flush_log(p);
     release_images(p);
     um_close_all_handles(p);
     if (p->pml4) free_address_space(p->pml4);
@@ -1789,9 +1898,9 @@ void um_set_layout(UmProcess *p, bool wow)
     UINT64 peb = wow ? UM32_PEB_VA : UM_PEB_VA;
     p->lay.peb = peb;
     p->lay.ldr_info = peb + 0x1000;
-    p->lay.params = peb + 0x1000 + UM_LDR_INFO_SIZE;
-    p->lay.stubs = p->lay.params + UM_PARAMS_PAGES * PAGE_SIZE;
-    p->lay.teb_area = peb + 0x10000;
+    p->lay.params = peb + UM_PARAMS_OFF;
+    p->lay.stubs = peb + UM_STUBS_OFF;
+    p->lay.teb_area = peb + UM_TEB_OFF;
     p->lay.stack_top = wow ? UM32_STACK_TOP : UM_STACK_TOP;
     p->lay.alloc_min = wow ? UM32_ALLOC_MIN : UM_ALLOC_MIN;
     p->lay.alloc_max = wow ? UM32_ALLOC_MAX : UM_ALLOC_MAX;
@@ -1833,6 +1942,10 @@ UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield
     p->exe_dir = exe->parent;
     p->con = um_console_ref(con);
     p->token = um_token_for_process(UmCurrent());        /* its creator's user (the desktop's: the default) */
+    /* NORMAL_PRIORITY_CLASS, or an IDLE or BELOW_NORMAL creator's class,
+     * as on Windows (CreateProcess's *_PRIORITY_CLASS flags set it after) */
+    p->prio_class = 2;
+    if (UmCurrent() && (UmCurrent()->prio_class == 1 || UmCurrent()->prio_class == 5)) p->prio_class = UmCurrent()->prio_class;
     um_set_layout(p, um_pe_machine(exe) == 0x014C);
 
     /* Map the program, ntdll (every process has it) and their imports */
@@ -1840,8 +1953,8 @@ UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield
     if (!L) { destroy(p); ksnprintf(err, err_cap, "Out of memory"); return NULL; }
     if (yield) DesktopUnlock();              /* (the loader takes it for file lookups) */
     L->bkl = bkl_drop();                     /* nor the big lock: the process is ours alone */
-    int nt = load_module(L, NULL, "ntdll.dll", 1);
-    int m = nt < 0 ? -1 : load_module(L, exe, exe->name, 0);
+    int nt = load_module(L, NULL, "ntdll.dll", false);
+    int m = nt < 0 ? -1 : load_module(L, exe, exe->name, true);
     UINT64 base = 0, entry = 0;
     if (m >= 0) {
         base = p->modules[m].base;
@@ -2095,10 +2208,18 @@ static void dump_threads(UmProcess *p)
     for (int i = 0; i < UM_MAX_THREADS; i++) {
         UmThread *t = p->threads[i];
         if (!t || t->exited) continue;
-        UINT64 rip = t->park == 2 && t->uframe ? ((InterruptFrame *)t->uframe)->rip : 0;
-        kprintf("[UM]   thread %u: %s, last system call %03x(%llx), user rip %llx\n", t->tid,
+        const InterruptFrame *uf = t->park == 2 && t->uframe ? (const InterruptFrame *)t->uframe : NULL;
+        /* a thread preempted in user mode: the interrupt frame sits at the top of its kernel stack */
+        if (!uf && t->park == 0 && t->kt && !t->kt->on_cpu && t->kt->kernel_stack) {
+            const InterruptFrame *f = (const InterruptFrame *)((char *)t->kt->kernel_stack + t->kt->stack_size - sizeof(InterruptFrame));
+            if ((f->cs & 3) == 3 && (f->ss & 3) == 3) uf = f;
+        }
+        UINT64 rip = uf ? uf->rip : 0;
+        const UmModule *rm = rip ? um_module_at(p, rip) : NULL;
+        kprintf("[UM]   thread %u: %s, last system call %03x(%llx), user rip %llx%s%s+0x%llx\n", t->tid,
                 t->park == 1 ? "in a system call" : t->park == 2 ? "interrupted" : "running",
-                t->last_sys, (unsigned long long)t->last_a1, (unsigned long long)rip);
+                t->last_sys, (unsigned long long)t->last_a1, (unsigned long long)rip,
+                rm ? " " : "", rm ? rm->name : "", (unsigned long long)(rm ? rip - rm->base : 0));
         UINT64 word = 0;
         if (t->park == 1 && t->last_sys == SYSCALL_NtWaitForAlertByThreadId && um_read(p, t->last_a1, &word, 8))
             kprintf("[UM]     the address holds %llx\n", (unsigned long long)word);
@@ -2112,8 +2233,9 @@ static void dump_threads(UmProcess *p)
             um_object_name(wo, nm, sizeof(nm));
             kprintf("[UM]     waits on object type %d%s%s%s\n", wo->type, nm[0] ? " \"" : "", nm, nm[0] ? "\"" : "");
         }
-        /* where it came from: return addresses on its user stack */
-        UINT64 sp = t->park == 1 && t->kt ? t->kt->user_rsp : 0;
+        /* where it came from: return addresses on its user stack (a thread
+         * interrupted in user mode: from the interrupted frame's stack) */
+        UINT64 sp = t->park == 1 && t->kt ? t->kt->user_rsp : uf ? uf->rsp : 0;
         for (unsigned i = 0, shown = 0; sp && i < 512 && shown < 12; i++) {
             UINT64 v = 0;
             if (!um_read(p, sp + 8 * (UINT64)i, &v, p->wow ? 4 : 8)) break;

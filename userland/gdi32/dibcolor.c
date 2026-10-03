@@ -12,7 +12,7 @@
 static GObj *palette_section(HDC h)
 {
     NOVA_DC *d = dc_of(h);
-    GObj *o = d && d->mem ? obj_of((HGDIOBJ)d->bitmap) : NULL;
+    GObj *o = d && d->mem ? bitmap_of((HGDIOBJ)d->bitmap) : NULL;   /* synced: the recolour sees the program's pixels */
     return o && o->kind == K_BITMAP && o->pal ? o : NULL;
 }
 

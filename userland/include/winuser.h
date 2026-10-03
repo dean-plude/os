@@ -1399,6 +1399,10 @@ typedef struct tagDRAWTEXTPARAMS { UINT cbSize; int iTabLength, iLeftMargin, iRi
 #define APPCOMMAND_BROWSER_FORWARD  2
 #define WH_MSGFILTER (-1)
 #define WH_GETMESSAGE 3
+#define HC_ACTION 0
+#define HC_GETNEXT 1
+#define HC_SKIP 2
+#define HC_NOREMOVE 3
 #define WH_CALLWNDPROC 4
 #define WH_CBT 5
 #define WH_KEYBOARD 2

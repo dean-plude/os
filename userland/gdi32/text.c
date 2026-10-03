@@ -822,6 +822,8 @@ GDIAPI BOOL GetCharABCWidthsI(HDC h, UINT first, UINT n, LPWORD gi, ABC *out)
     return TRUE;
 }
 GDIAPI BOOL GetCharABCWidthsA(HDC h, UINT first, UINT last, ABC *out) { return GetCharABCWidthsW(h, first, last, out); }
+
+
 GDIAPI BOOL GetCharABCWidthsFloatW(HDC h, UINT first, UINT last, void *out)
 {
     float *f = out;
