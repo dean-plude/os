@@ -546,8 +546,6 @@ static bool wake_sleepers(RunQueue *rq, uint64_t *soonest);
 void DesktopWatchdog(uint64_t now);
 void UmTimerTick(uint64_t ticks);
 
-void ps2_poll(void);
-void UsbPoll(void);
 
 /* Each CPU's timer is one-shot (apic.c): armed for its next tick on the
  * global 10 ms grid, or for its earliest TSC-deadline sleeper if that
@@ -578,12 +576,34 @@ static uint64_t next_grid_tick(uint64_t tsc)
     return sched_tick_tsc((tsc - tsc_at_boot) / g_tsc_per_tick + 1);
 }
 
+/* A timer interrupt taken while this CPU halts waiting for the kernel
+ * lock (KPCR.LockWait): the waiting thread cannot be switched out, so no
+ * sleeper is woken, but the one-shot timer is re-armed for the soonest
+ * thing due, a TSC-deadline sleeper of this CPU included.  One already
+ * due gets a short retry, so that the first interrupt after the wait ends
+ * wakes it, not the next 10 ms grid tick. */
 void sched_timer_rearm(void)
 {
     uint32_t cpu = this_cpu();
     uint64_t tsc = rdtsc();
     if (g_next_tick[cpu] <= tsc) g_next_tick[cpu] = next_grid_tick(tsc);
-    timer_arm(cpu, g_next_tick[cpu]);
+    uint64_t at = g_next_tick[cpu];
+    RunQueue *rq = my_rq();
+    if (rq->sleepers) {
+        uint64_t soonest = UINT64_MAX;
+        if (spin_trylock(&rq->lock)) {
+            for (Thread *t = rq->sleepers; t; t = t->sleep_next)
+                if (t->wake_tsc && t->state == THREAD_WAITING && t->wake_tsc < soonest)
+                    soonest = t->wake_tsc;
+            spin_unlock(&rq->lock);
+        } else {
+            soonest = tsc;                          /* (the list is changing: look again soon) */
+        }
+        uint64_t retry = tsc + (g_tsc_per_tick ? g_tsc_per_tick / 200 : 1);   /* ~50 us */
+        if (soonest <= tsc) soonest = retry;
+        if (soonest < at) at = soonest;
+    }
+    timer_arm(cpu, at);
 }
 
 void sched_tick(void)
@@ -600,8 +620,11 @@ void sched_tick(void)
     if (now > tick_count && spin_trylock(&tick_lock)) {   /* one CPU does the tick's work */
         if (now > tick_count) {
             tick_count = now;
-            ps2_poll();                     /* keyboard/mouse, collected at 100 Hz */
-            UsbPoll();                      /* (USB ones too) */
+            /* (The keyboard and mouse polls, ps2_poll and UsbPoll, run in
+             * the device poll thread, kernel/ke/main.c: their port and
+             * MMIO reads take QEMU's device lock and ran up to a few ms
+             * here with interrupts off, which held up every Sleep and
+             * wait timeout due on this CPU meanwhile.) */
             DesktopWatchdog(tick_count);
             UmTimerTick(tick_count);
         }
