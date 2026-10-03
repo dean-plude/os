@@ -5,8 +5,25 @@
  * the capture flag) and a thread that, while recording, reads the mixer's
  * 48 kHz s16 stereo frames, converts them into the queued WAVEHDR buffers
  * in the program's format, and returns each full buffer (WHDR_DONE,
- * WIM_DATA).  With no buffer queued, what is recorded is dropped, as on
- * Windows.
+ * WIM_DATA).
+ *
+ * A sound card's driver hands buffers back as the hardware fills them, in
+ * real time; here a thread does, and it or the program's own thread can be
+ * held up on a busy machine (Audacity redrawing under QEMU without KVM
+ * held both for 100-270 ms).  What was recorded meanwhile waits in the
+ * kernel's stream (1 s), so nothing is lost as long as there is a buffer
+ * to put it in.  Two rules keep it so:
+ *
+ * - The last buffer queued is not handed back full until the program
+ *   queues another (or HOLD_MS goes by), when the program ever queued more
+ *   than one.  Handing back every buffer is what a program reads as an
+ *   overflow: PortAudio's MME host, finding all its buffers done, throws
+ *   away all but the newest and reports paInputOverflow, which Audacity
+ *   marks as a dropout.  A program that cycles one buffer gets it as soon
+ *   as it is full.
+ * - With no buffer queued, what is recorded is kept for BACKLOG_MS and
+ *   only what is older is dropped (Windows drops it all), so a program
+ *   that turns its buffers around late finds the frames still there.
  */
 
 #include <windows.h>
@@ -17,6 +34,8 @@
 
 #define WI_MAGIC  0x4957564E        /* "NVWI" */
 #define CHUNK     960               /* mixer frames read at a time (20 ms) */
+#define HOLD_MS   500               /* the last buffer waits this long for the program to queue another */
+#define BACKLOG_MS 500              /* recorded frames kept while no buffer is queued */
 
 typedef struct WaveIn {
     DWORD       magic;
@@ -27,6 +46,8 @@ typedef struct WaveIn {
     DWORD_PTR   cb, inst;
     CRITICAL_SECTION lock;
     WAVEHDR    *head, *tail;        /* queued, oldest first; head is being filled */
+    UINT        most;               /* the most buffers the program has had queued at once */
+    DWORD       held;               /* when the last buffer filled up and was held back (0: it is not) */
     ULONGLONG   recorded;           /* program frames delivered since the last reset */
     BOOL        started, quit;
     HANDLE      thread, wake;
@@ -76,12 +97,27 @@ static WAVEHDR *wi_fill(WaveIn *w)
 {
     for (;;) {
         WAVEHDR *h = w->head;
-        if (!h) {                                   /* nowhere to put it: drop it */
-            while (NtNovaAudioCtl(w->stream, 6, CHUNK, w->tmp) == CHUNK) {}
+        if (!h) {                                   /* nowhere to put it: keep the newest */
+            StreamStatus st;
+            if (NtNovaAudioCtl(w->stream, 0, 0, &st) == 0)
+                for (UINT old = st.queued > AC_RATE * BACKLOG_MS / 1000 ? st.queued - AC_RATE * BACKLOG_MS / 1000 : 0;
+                     old; ) {
+                    LONG_PTR got = NtNovaAudioCtl(w->stream, 6, old < CHUNK ? old : CHUNK, w->tmp);
+                    if (got <= 0) break;
+                    old -= (UINT)got;
+                }
             return 0;
         }
         UINT room = (h->dwBufferLength - h->dwBytesRecorded) / w->conv.f.block;
-        if (!room) return wi_pop(w);
+        if (!room) {
+            if (!h->lpNext && w->most > 1) {        /* the last one queued: wait for another */
+                DWORD now = GetTickCount() | 1;
+                if (!w->held) w->held = now;
+                if (now - w->held < HOLD_MS) return 0;
+            }
+            w->held = 0;
+            return wi_pop(w);
+        }
         UINT m = acc_src_for(&w->conv, room);
         if (m > CHUNK) m = CHUNK;
         LONG_PTR got = NtNovaAudioCtl(w->stream, 6, m, w->tmp);
@@ -265,7 +301,12 @@ MMAPI MMRESULT WINAPI waveInAddBuffer(HANDLE h, WAVEHDR *hdr, UINT n)
     EnterCriticalSection(&w->lock);
     if (w->tail) w->tail->lpNext = hdr; else w->head = hdr;
     w->tail = hdr;
+    UINT queued = 0;
+    for (WAVEHDR *x = w->head; x; x = x->lpNext) queued++;
+    if (queued > w->most) w->most = queued;
+    BOOL held = w->held != 0;
     LeaveCriticalSection(&w->lock);
+    if (held) SetEvent(w->wake);                    /* the held buffer can go back now */
     return MMSYSERR_NOERROR;
 }
 
@@ -296,6 +337,7 @@ MMAPI MMRESULT WINAPI waveInStop(HANDLE h)
             EnterCriticalSection(&w->lock);
         }
         w->started = FALSE;
+        w->held = 0;
         if (w->head && w->head->dwBytesRecorded) done = wi_pop(w);
     }
     LeaveCriticalSection(&w->lock);
@@ -312,6 +354,7 @@ MMAPI MMRESULT WINAPI waveInReset(HANDLE h)
     NtNovaAudioCtl(w->stream, 1, 0, 0);
     NtNovaAudioCtl(w->stream, 2, 0, 0);
     w->started = FALSE;
+    w->held = 0;
     WAVEHDR *list = w->head;
     w->head = w->tail = 0;
     w->recorded = 0;

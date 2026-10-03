@@ -1,1 +1,1 @@
-| `soundtest record FILE [MS]`, `capture FILE [MS]`, `volume` | Recording through `waveIn` and WASAPI capture into a WAV, and `IAudioEndpointVolume` (needs a card with an input) |
+| `soundtest record FILE [MS]`, `mme FILE [MS] [STALL]`, `capture FILE [MS]`, `volume` | Recording through `waveIn` (`mme`: as PortAudio's MME host, which Audacity uses, records, its thread held up STALL ms a second; an input overflow fails) and WASAPI capture into a WAV, and `IAudioEndpointVolume` (needs a card with an input) |

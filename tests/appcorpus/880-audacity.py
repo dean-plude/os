@@ -75,5 +75,5 @@ def record(nova, echo):
 APP = App('Audacity', '3.7.4',
           'https://github.com/audacity/audacity/releases/download/Audacity-3.7.4/audacity-win-3.7.4-64bit.zip',
           'Audacity', [Test('record and save', rf'start {A}\Audacity\Audacity.exe', timeout=120),
-                       Test('project file', rf'dir {A}\rec10.aup3', [r'rec10\.aup3'])],
+                       Test('project file', rf'dir {A}\rec10.aup3', [r'rec10\.aup3'], builtin=True)],
           strip=1, gui=True, mic=True, interact=record)
