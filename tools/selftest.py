@@ -25,7 +25,10 @@ order; --list prints them):
             Winsock (netcat) and winhttp's HTTP/2 (httptest suite) against
             tools/h2server.js (needs node and openssl).  IPv6 on an IPv6-only
             network that is tools/v6peer.py: SLAAC and RDNSS (ipconfig),
-            ping -6, curl -6 and Winsock over IPv6 (netcat)
+            ping -6, curl -6 and Winsock over IPv6 (netcat).  Then a third
+            boot with an Intel e1000e (82574L) instead of virtio-net
+            (tests/selftest/network-e1000e): its PHY and link, the link
+            pulled and plugged back, and the IPv4 tests again
   devices   a boot per device QEMU has that the core boot hasn't
             (tests/selftest/devices/NAME/): "touch", a virtio multi-touch
             screen (touchtest); "usbaudio", USB speakers on xHCI, OHCI and
@@ -50,7 +53,7 @@ failed and the rest run).
 The exit status is the number of failed tests (0: all passed), so CI can
 gate on it.  --summary appends a Markdown table (GitHub's step summary).
 """
-import argparse, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, copy, os, re, shutil, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from novarun import Nova, ROOT, qemu_binary
@@ -218,6 +221,17 @@ def venus_gpu():
 # QEMU datagram netdev.
 NET4 = load_suite('network4')
 NET6 = load_suite('network6')
+
+
+def renamed(t, suffix):
+    t = copy.copy(t)
+    t.name += suffix
+    return t
+
+
+# The e1000e boot: its own tests, then the IPv4 ones (but ipconfig and ping)
+NET_E1000E = load_suite('network-e1000e') + [renamed(t, ' (e1000e)') for t in NET4
+                                             if t.name not in ('virtio-net', 'ping')]
 # The devices suite: a boot for each device the core boot doesn't have
 # (one that takes QEMU's input, like a touch screen, would take it from the
 # core boot's mouse)
@@ -244,6 +258,13 @@ def net6_boot(work):
     return ['-netdev', 'dgram,id=v6,local.type=inet,local.host=127.0.0.1,local.port=10601,'
                        'remote.type=inet,remote.host=127.0.0.1,remote.port=10600',
             '-device', 'virtio-net-pci,netdev=v6'], [peer]
+
+
+def e1000e_boot(work):
+    """tools/h2server.js as for the IPv4 boot, and an Intel e1000e (82574L)
+    on QEMU's user-mode network whose link the tests pull (nic0)"""
+    _, procs = net4_boot(work)
+    return ['-netdev', 'user,id=net0', '-device', 'e1000e,netdev=net0,id=nic0'], procs
 
 
 def touch_boot(work):
@@ -369,6 +390,8 @@ def verdict(t, out, ok, exe):
 
 KLOG = re.compile(r'\[(?:UM|SCHED)\] [^\n]*\n')
 PANIC = re.compile(r'KERNEL PANIC|KERNEL PAGE FAULT|DOUBLE FAULT|Unhandled kernel exception')
+# The network suite's third boot, on the NIC family of PCs' built-in Ethernet
+BOOTS['network'].append(('e1000e', NET_E1000E, e1000e_boot))
 
 
 def main():

@@ -380,7 +380,9 @@ To make the ISO yourself from a fresh build, run
   `httptest suite` (winhttp with HTTP/2 by ALPN) against
   `tools/h2server.js`, and `looptest` (Winsock over 127.0.0.1 and ::1);
   on an IPv6-only network that is `tools/v6peer.py`,
-  SLAAC and RDNSS, `ping -6`, `curl -6` and Winsock over IPv6.
+  SLAAC and RDNSS, `ping -6`, `curl -6` and Winsock over IPv6.  A third
+  boot has an Intel e1000e instead: its PHY and link, the link pulled
+  and plugged back, sleep and wake, and the IPv4 tests again.
 - **Graphics tests**: `tools/d2dtest` (Direct2D geometry answers, and a
   scene that must match the reference `tools/d2dtest/reference.py` draws
   with Skia), then installs Mesa 3D, DXVK and Venus with the App Store
@@ -485,7 +487,7 @@ os/
 │   ├── um/               # Windows programs: processes, threads, loader, NT services,
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
-│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, virtio-net, USB core, xHCI/EHCI/OHCI/UHCI, hubs, HID, mass storage
+│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e/I219, virtio-net, USB core, xHCI/EHCI/OHCI/UHCI, hubs, HID, mass storage
 │   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, HPET, I/O APIC, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding
@@ -565,6 +567,8 @@ os/
 - [docs/hardware.md](docs/hardware.md): the reference PC for real
   hardware, which of its devices NovaOS drives, and every driver NovaOS
   has.
+- [docs/ethernet.md](docs/ethernet.md): the Intel Ethernet driver, the
+  I219 IDs it takes and how it brings one up.
 - [docs/HISTORY.md](docs/HISTORY.md): what every phase added, in detail.
 - [docs/phase1-architecture.md](docs/phase1-architecture.md): the boot flow,
   address-space layout and early kernel design.
