@@ -113,9 +113,6 @@ static RamNode *row_at(const Explorer *e, int idx)
     return idx < pc_drives(roots) ? roots[idx] : NULL;
 }
 
-/* (PR #34's storage work: a drive that was unplugged) */
-extern bool RamfsDetached(const RamNode *n) __attribute__((weak));
-
 /* -----------------------------------------------------------------------
  * Navigation
  * ----------------------------------------------------------------------- */
@@ -360,7 +357,7 @@ static void exp_paint(WND *w)
 {
     Explorer *e = w->user;
     GdiRect c = WmClientRect(w);
-    if (e->dir && RamfsDetached && RamfsDetached(e->dir)) {   /* its drive was unplugged */
+    if (e->dir && RamfsDetached(e->dir)) {   /* its drive was unplugged */
         for (int i = 0; i < e->back_n; i++) RamfsUnref(e->back[i]);
         e->back_n = 0;
         set_dir(w, e, NULL);

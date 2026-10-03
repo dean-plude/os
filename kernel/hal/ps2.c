@@ -139,6 +139,7 @@ static void handle_key(UINT8 sc)
     ev.type     = INPUT_KEY;
     ev.buttons  = 0;
     ev.dx = ev.dy = ev.dz = 0;
+    ev.absolute = 0;
     ev.pressed  = (sc & 0x80) ? 0 : 1;   /* high bit set = break (release) */
     ev.scancode = (UINT8)(sc & 0x7F);
     ev.extended = e0 ? 1 : 0;
@@ -168,6 +169,7 @@ static void handle_mouse_byte(UINT8 b)
     ev.scancode = 0;
     ev.pressed  = 0;
     ev.extended = 0;
+    ev.absolute = 0;
     ev.buttons  = (UINT8)(flags & 0x07);   /* L|R|M */
     ev.dx       = dx;
     ev.dy       = -dy;                      /* PS/2 +y is up; screen +y down */

@@ -19,3 +19,8 @@ bool SleepEnter(void);
  * waits until the machine wakes. */
 bool SleepFreezing(void);
 void SleepFreezeCpu(void);
+
+/* Interrupt time (100 ns units since boot) when the machine last went to
+ * sleep and last woke up; 0 if it hasn't */
+UINT64 SleepLastSleepTime(void);
+UINT64 SleepLastWakeTime(void);

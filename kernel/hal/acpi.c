@@ -368,9 +368,13 @@ bool AcpiEnterS3(UINT32 real_vector, UINT32 pm32_vector)
     return false;
 }
 
+static UINT16 g_wake_sts;
+UINT16 AcpiWakeStatus(void) { return g_wake_sts; }
+
 void AcpiResume(void)
 {
     if (!g_fadt) return;
+    g_wake_sts = gas_valid(&g_pm1a_evt) ? (UINT16)gas_read(&g_pm1a_evt, 16) : 0;
     if (!(g_flags & FLAG_HW_REDUCED)) enable_acpi_mode(g_fadt_ptr);
     if (gas_valid(&g_pm1a_evt)) gas_write(&g_pm1a_evt, 16, PM1_STS_WAK);
     g_button = false;

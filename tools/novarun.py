@@ -24,7 +24,7 @@ networking; the host is 10.0.2.2).
 
 Other tools (tools/selftest.py) import the Nova class to drive a boot.
 """
-import argparse, json, os, re, shutil, signal, socket, subprocess, sys, tempfile, time
+import argparse, json, os, re, shlex, shutil, signal, socket, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OVMF = next((p for p in ('/usr/share/ovmf/OVMF.fd', '/usr/share/OVMF/OVMF_CODE.fd',
@@ -130,14 +130,15 @@ class Nova:
     """One NovaOS boot in QEMU with its Terminal open and mirrored to serial"""
 
     def __init__(self, img=None, work=None, puts=(), mem=2048, smp=2, data_mb=1024, wav=None,
-                 extra_args=(), boot_timeout=300, net=False, vga=('-vga', 'std'), rec=None):
+                 extra_args=(), boot_timeout=300, net=False, keep_data=False, vga=('-vga', 'std'), rec=None):
         self.work = work or tempfile.mkdtemp(prefix='novarun')
         os.makedirs(self.work, exist_ok=True)
         data, self.serial_path, sock = (os.path.join(self.work, n) for n in ('data.img', 'serial.log', 'qmp.sock'))
         for p in (self.serial_path, sock):
             if os.path.exists(p):
                 os.unlink(p)
-        make_data(data, puts, data_mb)
+        if not (keep_data and os.path.exists(data)):     # keep_data: the drive C: an earlier boot saved
+            make_data(data, puts, data_mb)
         self.wav = wav
         self.rec = rec
         self.qmp = None
@@ -193,13 +194,22 @@ class Nova:
         self.start(boot_timeout)
         return self.boot_log
 
-    def run(self, cmd, timeout=120, shot=None):
+    def run(self, cmd, timeout=120, shot=None, acts=()):
         """Type @cmd into the Terminal; returns (serial output, finished in time).
         @shot = (regex, path): a screenshot 2 s after the output matches
-        regex (while the program is still drawing)"""
+        regex (while the program is still drawing).  @acts: (regex, function)
+        pairs; each function is called with this Nova once the output
+        matches its regex (a program asking the test to do something)"""
         self.sr.read_new()
         self.qmp.type(cmd + '\n')
         got, ok, end = '', False, time.time() + timeout
+        pending = list(acts)
+        while pending and time.time() < end and '[TERM-DONE]' not in got:
+            time.sleep(0.25)
+            got += self.sr.read_new()
+            for a in [a for a in pending if re.search(a[0], got)]:
+                pending.remove(a)
+                a[1](self)
         if shot:
             pat = re.compile(shot[0])
             while time.time() < end and '[TERM-DONE]' not in got and not pat.search(got):
@@ -268,6 +278,13 @@ class Nova:
     def shot(self, path):
         self.qmp.cmd('screendump', filename=os.path.abspath(path), format='png')
 
+    def hmp(self, line):
+        """A QEMU monitor command (e.g. "o /b 0xe8 1": write an I/O port)"""
+        return self.qmp.cmd('human-monitor-command', **{'command-line': line}).get('return', '')
+
+    def status(self):
+        return self.qmp.cmd('query-status').get('return', {}).get('status')
+
     def click(self, x, y, button=1):
         """Click at logical screen point (x, y): HMP relative moves from the top-left corner
         (QMP input-send-event moves do nothing on this mouse)"""
@@ -327,12 +344,13 @@ def main():
     ap.add_argument('--net', action='store_true', help='a network card on QEMU user networking (the host is 10.0.2.2)')
     ap.add_argument('--display', default='std',
                     help='the display adapter: a -vga name (std, cirrus, vmware, qxl, virtio) or a -device name (bochs-display)')
+    ap.add_argument('--extra', action='append', default=[], help='more QEMU arguments (split like a shell)')
     ap.add_argument('commands', nargs='*')
     a = ap.parse_args()
 
     try:
         nova = Nova(a.img, a.keep, [p.split('=', 1) for p in a.put], a.mem, a.smp, a.data_mb, a.wav, net=a.net,
-                    vga=vga_args(a.display), rec=a.rec)
+                    vga=vga_args(a.display), rec=a.rec, extra_args=[x for e in a.extra for x in shlex.split(e)])
     except RuntimeError as e:
         sys.exit(str(e))
     try:

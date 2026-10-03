@@ -18,10 +18,14 @@ struct BlockDev {
     bool  (*write)(BlockDev *d, UINT64 lba, UINT32 count, const void *buf);
     bool  (*flush)(BlockDev *d);
     void   *ctx;
+    bool    removable;          /* USB: may go away at any time */
+    volatile bool gone;         /* it went away: every transfer fails */
 };
 
 #define BLOCK_SECTOR 512
 
 void      BlockRegister(BlockDev *d);
+/* The device went away: it leaves the list (the struct stays valid) */
+void      BlockUnregister(BlockDev *d);
 int       BlockCount(void);
 BlockDev *BlockGet(int i);
