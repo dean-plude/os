@@ -28,6 +28,9 @@
 #ifndef NETSURF_HTML_LAYOUT_H
 #define NETSURF_HTML_LAYOUT_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 struct box;
 struct html_content;
 struct gui_layout_table;
@@ -41,5 +44,10 @@ struct gui_layout_table;
  * \return true on success, false on memory exhaustion
  */
 bool layout_document(struct html_content *content, int width, int height);
+
+/**
+ * A microsecond clock, for the layout timings NETSURF_LAYOUT_LOG writes.
+ */
+uint64_t layout_clock_us(void);
 
 #endif

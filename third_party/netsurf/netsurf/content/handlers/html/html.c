@@ -24,6 +24,7 @@
 
 #include <assert.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
@@ -764,6 +765,9 @@ static bool html_relayout_subtree(html_content *htmlc, dom_node *root)
 	chunk->next = htmlc->relayout_chunks;
 	htmlc->relayout_chunks = chunk;
 
+	/* the layout starts from this box (layout_document) */
+	htmlc->layout_target = box;
+
 	/* the widths of the box and the boxes above it are measured again */
 	for (; box != NULL; box = box->parent)
 		box->max_width = UNKNOWN_MAX_WIDTH;
@@ -815,6 +819,135 @@ static bool html_relayout_all(html_content *htmlc, dom_node *html)
 	return err == NSERROR_OK && html_relayout_ok && htmlc->layout != NULL;
 }
 
+
+/*
+ * Layout timings and checks (environment variables, for the nstest
+ * self-test and for measuring):
+ *   NETSURF_LAYOUT_LOG=file   append a line per script-driven relayout
+ *   NETSURF_LAYOUT_CHECK=1    after every third layout from a changed box
+ *                             (so that the two before it start from what
+ *                             such layouts left), lay out the whole page
+ *                             too and compare every box
+ *   NETSURF_LAYOUT=full       always lay out the whole page
+ */
+static int html_layout_env = -1;
+static FILE *html_layout_log;
+static bool html_layout_check, html_layout_full;
+static unsigned html_layout_unchecked;	/* layouts since the last check */
+
+static void html_layout_env_read(void)
+{
+	const char *v;
+
+	html_layout_env = 1;
+	v = getenv("NETSURF_LAYOUT_LOG");
+	if (v != NULL && *v != '\0')
+		html_layout_log = fopen(v, "a");
+	v = getenv("NETSURF_LAYOUT_CHECK");
+	html_layout_check = v != NULL && *v == '1';
+	v = getenv("NETSURF_LAYOUT");
+	html_layout_full = v != NULL && strcmp(v, "full") == 0;
+}
+
+/** a box's geometry, for comparing two layouts */
+struct html_layout_shot {
+	struct box *box;
+	int type, x, y, width, height;
+	int d[4];
+	size_t length;
+};
+
+static void html_layout_shoot(struct box *b, struct html_layout_shot **shots,
+		size_t *n, size_t *alloc)
+{
+	for (; b != NULL; b = b->next) {
+		struct html_layout_shot *s;
+		if (*n == *alloc) {
+			size_t a = *alloc ? *alloc * 2 : 1024;
+			s = realloc(*shots, a * sizeof **shots);
+			if (s == NULL)
+				return;
+			*shots = s;
+			*alloc = a;
+		}
+		s = &(*shots)[(*n)++];
+		s->box = b;
+		s->type = b->type;
+		s->x = b->x;
+		s->y = b->y;
+		s->width = b->width;
+		s->height = b->height;
+		s->d[0] = b->descendant_x0;
+		s->d[1] = b->descendant_y0;
+		s->d[2] = b->descendant_x1;
+		s->d[3] = b->descendant_y1;
+		s->length = b->length;
+		if (b->list_marker != NULL)
+			html_layout_shoot(b->list_marker, shots, n, alloc);
+		html_layout_shoot(b->children, shots, n, alloc);
+		if (b->type == BOX_INLINE_END)
+			;	/* (siblings: visited by the loop) */
+	}
+}
+
+/** compare the layout from a changed box with a full one; the number of
+ * boxes that differ (the first described in @first) */
+static size_t html_layout_compare(html_content *htmlc, size_t *boxes,
+		char *first, size_t first_size, uint64_t *us_full)
+{
+	struct html_layout_shot *a = NULL, *b = NULL;
+	size_t na = 0, nb = 0, aa = 0, ab = 0, i, bad = 0;
+	int w0 = htmlc->base.width, h0 = htmlc->base.height;
+	uint64_t t0;
+
+	html_layout_shoot(htmlc->layout, &a, &na, &aa);
+	t0 = layout_clock_us();
+	content__reformat(&htmlc->base, false, htmlc->base.available_width,
+			htmlc->base.available_height);
+	*us_full = layout_clock_us() - t0;
+	html_layout_shoot(htmlc->layout, &b, &nb, &ab);
+	*boxes = nb;
+	first[0] = '\0';
+	if (w0 != htmlc->base.width || h0 != htmlc->base.height) {
+		bad++;
+		snprintf(first, first_size, "page %ix%i, full %ix%i",
+				w0, h0, htmlc->base.width, htmlc->base.height);
+	}
+	if (na != nb) {
+		bad++;
+		if (first[0] == '\0')
+			snprintf(first, first_size, "%u boxes, full %u",
+					(unsigned) na, (unsigned) nb);
+	}
+	for (i = 0; i < na && i < nb; i++) {
+		struct html_layout_shot *p = &a[i], *q = &b[i];
+		if (p->box == q->box && p->type == q->type &&
+				p->x == q->x && p->y == q->y &&
+				p->width == q->width && p->height == q->height &&
+				memcmp(p->d, q->d, sizeof p->d) == 0 &&
+				p->length == q->length)
+			continue;
+		if (bad++ == 0 || first[0] == '\0') {
+			dom_string *name = NULL;
+			if (q->box->node != NULL)
+				dom_node_get_node_name(q->box->node, &name);
+			snprintf(first, first_size, "box %u (type %i <%s>): "
+					"%i,%i %ix%i [%i %i %i %i], full %i,%i "
+					"%ix%i [%i %i %i %i]", (unsigned) i, q->type,
+					name ? dom_string_data(name) : "",
+					p->x, p->y, p->width, p->height,
+					p->d[0], p->d[1], p->d[2], p->d[3],
+					q->x, q->y, q->width, q->height,
+					q->d[0], q->d[1], q->d[2], q->d[3]);
+			if (name != NULL)
+				dom_string_unref(name);
+		}
+	}
+	free(a);
+	free(b);
+	return bad;
+}
+
 /** rebuild the changed part of the box tree, reformat and redraw */
 static void html_relayout(void *p)
 {
@@ -849,7 +982,9 @@ static void html_relayout(void *p)
 		return;
 	}
 
-	nsu_getmonotonic_ms(&t0);
+	if (html_layout_env < 0)
+		html_layout_env_read();
+	t0 = layout_clock_us();
 	if (full)
 		ok = html_relayout_all(htmlc, html);
 	else
@@ -858,21 +993,59 @@ static void html_relayout(void *p)
 		dom_node_unref(root);
 	dom_node_unref(html);
 	if (!ok || htmlc->layout == NULL) {
+		htmlc->layout_target = NULL;
 		NSLOG(netsurf, ERROR, "box tree rebuild failed");
 		content_broadcast_error(&htmlc->base, NSERROR_BOX_CONVERT, NULL);
 		content_set_error(&htmlc->base);
 		return;
 	}
-	nsu_getmonotonic_ms(&t1);
+	t1 = layout_clock_us();
 
-	/* lay out at the size the page had, and redraw it all */
+	/* lay out at the size the page had (from the rebuilt box when the
+	 * rest of the page kept its boxes) */
+	if (full || html_layout_full)
+		htmlc->layout_target = NULL;
 	content__reformat(&htmlc->base, false, htmlc->base.available_width,
 			htmlc->base.available_height);
+	htmlc->layout_target = NULL;
+	t2 = layout_clock_us();
+
+	if (html_layout_log != NULL) {
+		struct html_layout_record *r = &htmlc->layout_rec;
+		fprintf(html_layout_log, "relayout: %s rebuild %u us, layout "
+				"%u us (%s; widths %u us, flow %u us, "
+				"placing %u us; %u boxes laid out, %u moved "
+				"whole)%s%s\n",
+				full ? "full" : "subtree",
+				(unsigned)(t1 - t0), (unsigned)(t2 - t1),
+				r->incremental ? "from the changed box" :
+						"whole page",
+				(unsigned) r->us_minmax, (unsigned) r->us_flow,
+				(unsigned) r->us_place, r->laid, r->kept,
+				r->full_why && !full ? ": " : "",
+				r->full_why && !full ? r->full_why : "");
+		if (html_layout_check && htmlc->layout_rec.incremental &&
+				++html_layout_unchecked == 3) {
+			char first[256];
+			size_t boxes = 0, bad;
+			uint64_t us_full = 0;
+			html_layout_unchecked = 0;
+			bad = html_layout_compare(htmlc, &boxes, first,
+					sizeof first, &us_full);
+			fprintf(html_layout_log, "check: whole page %u us "
+					"(widths %u us, flow %u us, placing %u "
+					"us), %u boxes, %u differ%s%s\n",
+					(unsigned) us_full,
+					(unsigned) r->us_minmax,
+					(unsigned) r->us_flow,
+					(unsigned) r->us_place, (unsigned) boxes,
+					(unsigned) bad, bad ? ": " : "",
+					bad ? first : "");
+		}
+		fflush(html_layout_log);
+	}
+
 	html_proceed_to_done(htmlc);
-	nsu_getmonotonic_ms(&t2);
-	NSLOG(netsurf, INFO, "%s rebuild %u ms, layout %u ms",
-			full ? "full" : "subtree",
-			(unsigned)(t1 - t0), (unsigned)(t2 - t1));
 }
 
 /** stop a scheduled rebuild (the content goes away) */
