@@ -38,7 +38,6 @@ bits 64
 
 global KiSystemCall64
 extern KiSystemCallEntry
-extern gs_mismatch
 
 KiSystemCall64:
     ; -----------------------------------------------------------------------
@@ -89,17 +88,6 @@ KiSystemCall64:
     call    KiSystemCallEntry      ; takes the kernel lock around the dispatch
     ; RAX = return value (interrupts are disabled again here)
 
-    ; GS must still be the KPCR: the SWAPGS below gives the program its own
-    mov     r10, rax
-    mov     ecx, 0xC0000101         ; MSR_GS_BASE
-    rdmsr
-    test    edx, edx                ; a kernel address: bit 63 set
-    js      .gs_ok
-    xor     edi, edi
-    mov     esi, 2
-    call    gs_mismatch             ; does not return
-.gs_ok:
-    mov     rax, r10
 
     ; -----------------------------------------------------------------------
     ; Return path

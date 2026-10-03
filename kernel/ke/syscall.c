@@ -1174,13 +1174,18 @@ void SyscallInitCpu(void)
     /* STAR MSR:
      *   Bits 47:32 — SYSCALL: CS = STAR[47:32],      SS = STAR[47:32] + 8
      *   Bits 63:48 — SYSRETQ: CS = STAR[63:48] + 16, SS = STAR[63:48] + 8
-     *                (RPL 3 is forced on both)
      *
      * Kernel: CS = 0x08, SS = 0x10.
-     * User:   base = GDT_USER_DATA - 8 = 0x10 → SS = 0x18|3, CS = 0x20|3.
+     * User:   base = (GDT_USER_DATA - 8) | 3 = 0x13 → SS = 0x1B, CS = 0x23.
+     * The base carries RPL 3 itself: Intel CPUs force RPL 3 on both
+     * selectors, but AMD ones load SS as STAR[63:48] + 8 unchanged, and
+     * with 0x10 there programs ran with SS = 0x18 (RPL 0).  That works in
+     * 64-bit mode until an interrupt's IRETQ back to the program checks
+     * the SS it saved and raises #GP, after its SWAPGS (seen under KVM on
+     * AMD hosts; QEMU's emulation forces RPL 3 like Intel).
      * See the selector layout in gdt.h.
      */
-    UINT64 star = ((UINT64)(GDT_USER_DATA - 8) << 48) |
+    UINT64 star = ((UINT64)((GDT_USER_DATA - 8) | 3) << 48) |
                   ((UINT64)GDT_KERNEL_CODE << 32);
     wrmsr(MSR_STAR, star);
 
