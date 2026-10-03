@@ -17,6 +17,7 @@
     "SHCreateDirectory": 165,
     "ILCreateFromPathW": 190,
     "IsUserAnAdmin": 680,
+    "CDefFolderMenu_Create2": 701,
     "SHGetImageList": 727
   }
 }

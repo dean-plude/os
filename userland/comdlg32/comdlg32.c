@@ -1,19 +1,15 @@
 /*
- * comdlg32.dll — common dialogs.  NovaOS has no dialog windows for
- * programs yet, so the dialogs return as if the user cancelled them
- * (FALSE with CommDlgExtendedError() == 0), which programs handle.
- * GetFileTitle, which needs no window, works.
+ * comdlg32.dll — common dialogs.  The file dialogs are in filedlg.c
+ * (GetOpenFileName, GetSaveFileName) and ifiledlg.c (IFileOpenDialog,
+ * IFileSaveDialog).  The colour, font, print and find dialogs are not
+ * there yet: they return as if the user cancelled them (FALSE with
+ * CommDlgExtendedError() == 0), which programs handle.
  */
 
 #include <windows.h>
 
 #define CDAPI __declspec(dllexport)
 
-CDAPI DWORD WINAPI CommDlgExtendedError(void) { return 0; }
-CDAPI BOOL WINAPI GetOpenFileNameW(void *ofn) { (void)ofn; return FALSE; }
-CDAPI BOOL WINAPI GetOpenFileNameA(void *ofn) { (void)ofn; return FALSE; }
-CDAPI BOOL WINAPI GetSaveFileNameW(void *ofn) { (void)ofn; return FALSE; }
-CDAPI BOOL WINAPI GetSaveFileNameA(void *ofn) { (void)ofn; return FALSE; }
 CDAPI BOOL WINAPI ChooseColorW(void *cc) { (void)cc; return FALSE; }
 CDAPI BOOL WINAPI ChooseColorA(void *cc) { (void)cc; return FALSE; }
 CDAPI BOOL WINAPI ChooseFontW(void *cf) { (void)cf; return FALSE; }

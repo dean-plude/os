@@ -26,4 +26,7 @@ data = subprocess.run(['ntfscat', sys.argv[1], 'WriteTest/kept.bin'], capture_ou
 want = bytes(((i * 7 + (i >> 9)) & 0xFF) ^ 0x5A for i in range(700000))
 sys.exit(0 if data == want else 'kept.bin differs')
 PY
+if ntfsls "$WORK/vol.img" -p LinkTest >/dev/null 2>&1; then          # linktest D:\LinkTest ran: one file, two names
+    test "$(ntfsls -i "$WORK/vol.img" -p LinkTest | awk '/kept-[ab].txt/ {print $1}' | sort -u | wc -l)" = 1 || { echo "kept-a.txt and kept-b.txt are not one file"; exit 1; }
+fi
 echo "NTFS disk OK: no errors, and drivetest's files are there"

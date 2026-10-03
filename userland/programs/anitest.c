@@ -23,6 +23,7 @@
 #endif
 #define CTL_SET_CURSOR   19
 #define CTL_CURSOR_SHAPE 20
+#define CTL_DISPLAY_MODE 15
 
 static const DWORD COLORS[8] = { 0xE81123, 0xFF8C00, 0xFFB900, 0x10893E, 0x00B7C3, 0x0078D7, 0x8764B8, 0xE3008C };
 static const DWORD SEQ[8] = { 0, 7, 6, 5, 4, 3, 2, 1 };
@@ -162,7 +163,10 @@ static void check_pointer(void)
     pump(100);
     INT32 s[5];
     shape_now(s);
-    check(s[0] == 1 && s[1] == 32 && s[2] == 32 && s[3] == 8, "the desktop shows the spinner over the window");
+    INT32 mode[4] = { 0 };                          /* sent at the display's scale: 64 x 64 at 2x */
+    NtNovaGuiCtl(0, CTL_DISPLAY_MODE, (ULONG_PTR)(LONG_PTR)-1, mode);
+    int side = 32 * (mode[0] / GetSystemMetrics(SM_CXSCREEN) > 1 ? 2 : 1);
+    check(s[0] == 1 && s[1] == side && s[2] == side && s[3] == 8, "the desktop shows the spinner over the window");
     if (!s[0]) printf("  (shape %d, %d x %d, %d frames: is the pointer over the window?)\n", s[0], s[1], s[2], s[3]);
     int seen = 0;
     DWORD end = GetTickCount() + 1500;

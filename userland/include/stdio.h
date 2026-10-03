@@ -51,6 +51,8 @@ _CRTIMP FILE *__iob_func(void);
 #define stdout (&__iob_func()[1])
 #define stderr (&__iob_func()[2])
 _CRTIMP FILE  *fopen(const char *path, const char *mode);
+_CRTIMP int fopen_s(FILE **f, const char *path, const char *mode);   /* errno_t */
+_CRTIMP int _wfopen_s(FILE **f, const wchar_t *path, const wchar_t *mode);
 _CRTIMP FILE  *freopen(const char *path, const char *mode, FILE *f);
 _CRTIMP int    fclose(FILE *f);
 _CRTIMP size_t fread(void *p, size_t size, size_t n, FILE *f);

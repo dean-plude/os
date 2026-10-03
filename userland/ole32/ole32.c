@@ -523,6 +523,10 @@ static HRESULT inproc_class_object(REFCLSID clsid, REFIID riid, void **ppv)
     LSTATUS e = RegGetValueW(HKEY_CLASSES_ROOT, key, 0, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, 0, path, &size);
     if (e) {
         clsid_key(clsid, 0, key);
+        { char m[140]; int n = 0; const char *pre = "ole32: class not registered: ";
+          while (*pre) m[n++] = *pre++;
+          for (const WCHAR *q = key; *q && n < 136; q++) m[n++] = (char)*q;
+          m[n++] = '\n'; m[n] = 0; OutputDebugStringA(m); }
         HKEY k;
         if (RegOpenKeyExW(HKEY_CLASSES_ROOT, key, 0, KEY_READ, &k)) return REGDB_E_CLASSNOTREG;
         RegCloseKey(k);
@@ -885,10 +889,30 @@ WINOLEAPI_(HRESULT) CoGetMarshalSizeMax(ULONG *size, REFIID riid, IUnknown *unk,
 }
 WINOLEAPI_(HRESULT) CoReleaseMarshalData(IStream *stm) { (void)stm; return E_NOTIMPL; }
 
-/* Running objects: every object here runs the moment it exists, so these
- * have nothing to do (IRunnableObject is not asked for) */
+/* -----------------------------------------------------------------------
+ * OLE in-place activation helpers (MFC's container code links them).
+ * No OLE object is ever activated in place in another program's window
+ * here, so there are no shared menus and no object's accelerators to try.
+ * ----------------------------------------------------------------------- */
+WINOLEAPI_(BOOL) IsAccelerator(HACCEL acc, int n, LPMSG msg, WORD *cmd)
+{
+    (void)acc; (void)n; (void)msg;
+    if (cmd) *cmd = 0;
+    return FALSE;
+}
+WINOLEAPI_(HRESULT) OleTranslateAccelerator(void *frame, void *info, LPMSG msg) { (void)frame; (void)info; (void)msg; return S_FALSE; }
+WINOLEAPI_(HANDLE) OleCreateMenuDescriptor(HMENU combined, void *widths) { (void)widths; return combined ? (HANDLE)combined : NULL; }
+WINOLEAPI_(HRESULT) OleDestroyMenuDescriptor(HANDLE h) { (void)h; return S_OK; }
+WINOLEAPI_(HRESULT) OleSetMenuDescriptor(HANDLE h, HWND frame, HWND active, void *ipframe, void *ipobj)
+{ (void)h; (void)frame; (void)active; (void)ipframe; (void)ipobj; return S_OK; }
+
+/* running objects: an object is running once it exists */
 WINOLEAPI_(HRESULT) OleRun(IUnknown *obj) { return obj ? S_OK : E_INVALIDARG; }
 WINOLEAPI_(BOOL) OleIsRunning(IUnknown *obj) { return obj != NULL; }
-WINOLEAPI_(HRESULT) OleLockRunning(IUnknown *obj, BOOL lock, BOOL last_unlock_closes) { (void)lock; (void)last_unlock_closes; return obj ? S_OK : E_INVALIDARG; }
+WINOLEAPI_(HRESULT) OleLockRunning(IUnknown *obj, BOOL lock, BOOL last) { (void)lock; (void)last; return obj ? S_OK : E_INVALIDARG; }
+/* CoGetObject("Elevation:...", "WinNT://...", monikers by display name): no moniker
+ * namespaces are registered, so no name parses */
+WINOLEAPI_(HRESULT) CoGetObject(LPCWSTR name, void *opts, REFIID iid, void **out)
+{ (void)name; (void)opts; (void)iid; if (out) *out = NULL; return (HRESULT)0x800401E4L; }   /* MK_E_SYNTAX */
 WINOLEAPI_(HRESULT) OleSetContainedObject(IUnknown *obj, BOOL contained) { (void)contained; return obj ? S_OK : E_INVALIDARG; }
 WINOLEAPI_(HRESULT) OleNoteObjectVisible(IUnknown *obj, BOOL visible) { (void)visible; return obj ? S_OK : E_INVALIDARG; }

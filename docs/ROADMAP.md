@@ -33,9 +33,8 @@ The details of each phase are in [HISTORY.md](HISTORY.md).
 
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
 NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound has
-no MIDI, DirectSound or XAudio2 yet; there
-are no hard links, and file ACLs are kept only when drive C: is on NTFS
-(the installer's default); and most of the App Store's catalog (Qt, GTK and
+no MIDI, DirectSound or XAudio2 yet; file
+ACLs are kept only when drive C: is on NTFS (the installer's default); and most of the App Store's catalog (Qt, GTK and
 multimedia programs) does not run yet.
 
 ---
@@ -96,7 +95,10 @@ named program or test demonstrates it.
 - Display: GPU-backed or at least faster blits.  ~~Mode changes~~ Done:
   run-time resolutions (Phase 12 onwards); the chosen one is kept across
   restarts, and windows a smaller mode shrank grow back when it is undone
-  (Phase 18.9).
+  (Phase 18.9).  ~~More than one
+  monitor~~ Done: one desktop across several display adapters, arranged in
+  Settings and kept across restarts, with the Win32 monitor calls
+  reporting it.
 - NetSurf: SVG; redrawing pages a script changes after layout.
 
 <!-- END generated:next-graphics -->
@@ -123,8 +125,9 @@ named program or test demonstrates it.
   been verified.
 - Firefox (tested with Floorp): the browser window opens and draws
   through its GPU process, and its sandboxed child processes start; see
-  [Firefox](HISTORY.md#firefox-floorp).  Still open: showing a page's
-  content, fetching pages over the network, `nssckbi.dll`.
+  [Firefox](HISTORY.md#firefox-floorp), and it loads and shows web pages
+  over HTTP.  Still open: HTTPS, scrolling and typing into forms,
+  `nssckbi.dll`.
 
 <!-- END generated:next-apps -->
 
@@ -137,9 +140,9 @@ named program or test demonstrates it.
 - ~~Small visible bugs: This PC lists D:, E:, ...; `dir` reports each
   drive's own free space; Notepad++'s status bar draws~~ Done (Phase
   17.6, screenshots in the nightly app corpus).
-- Files: hard links.  ~~`MoveFileEx` pending renames carried out at boot,
-  `RegNotifyChangeKeyValue` change events~~ Done (Phase 17.5, `filetest`
-  and a restart in the core suite).
+- ~~Files: hard links.  `MoveFileEx` pending renames carried out at boot,
+  `RegNotifyChangeKeyValue` change events~~ Done (Phase 17.5, `filetest`,
+  `linktest` and a restart in the core suite).
 - ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
   is waitable and the Terminal runs full-screen programs (Phase 17.2).
 - The Win32 console screen-buffer calls (`SetConsoleCursorPosition`,
@@ -155,9 +158,12 @@ named program or test demonstrates it.
   objects: real tokens, restricted tokens, impersonation, and descriptors
   checked on open (Phase 17.4, `sectest`, `acltest`).  Files' descriptors
   come with Phase 18.5.
-- Locales: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat` in
-  the requested locale (ICU already answers `GetLocaleInfoEx` for all of
-  them), and a user locale other than `en-US`.
+- ~~Locales: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat` in
+  the requested locale, and a user locale other than `en-US`~~ Done:
+  `GetDateFormat`, `GetTimeFormat`, `GetNumberFormat` and
+  `GetCurrencyFormat` (A, W, Ex) format in any of the 864 locales from ICU's
+  data, and the user locale is set with `intl NAME` or Settings > Time &
+  language and kept in the registry across restarts (`nlstest`).
 - .NET: an unhandled managed exception prints "Stack overflow." instead of
   the exception and its stack trace (with NLS as well as ICU).
 
@@ -182,7 +188,8 @@ named program or test demonstrates it.
   hubs, with hot-plug; USB mass storage (FAT and NTFS sticks as the next
   drive letter; NTFS ones writable); the older EHCI, OHCI and UHCI
   controllers (EHCI passing full- and low-speed devices to its
-  companions), any number of controllers, and keyboard LEDs.
+  companions), any number of controllers, keyboard LEDs, media keys and
+  mice's side buttons and horizontal wheel.
 - ACPI beyond the MADT: ~~shutdown, reboot, sleep, batteries~~ Done:
   power-off (S5), sleep (S3), reset and the fixed power button from the
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,
@@ -192,8 +199,8 @@ named program or test demonstrates it.
   USB controllers, with USB keyboards set for remote wakeup), the SCI as
   a real interrupt through the I/O APIC and PCI interrupt routing from
   `_PRT` (Phase 18.6).  Still to do: CPU throttling for passive cooling;
-  GPE blocks other than `\_GPE`; routing behind PCI bridges; USB wake
-  tested only up to what QEMU emulates (it has no USB-to-platform wake).
+  GPE blocks other than `\_GPE`; routing behind PCI bridges.  (USB wake
+  from S3 is confirmed on a real PC; QEMU can't emulate it.)
   (Display modes after S3 are set again on every adapter NovaOS drives:
   the VBE ones, QXL, virtio-vga, VMware SVGA and Cirrus.  Real GPUs have
   no driver yet.)
@@ -201,7 +208,9 @@ named program or test demonstrates it.
   the TSC and the APIC timer, which is one-shot (TSC-deadline where the
   CPU has it), armed for the next tick or the earliest `Sleep` or wait
   timeout; `sleeptest timer` checks 1 ms resolution under load.
-  Waitable timers (`SetWaitableTimer`) still fire on the 10 ms tick.
+  Waitable timers, their completion routines, timer queues, threadpool
+  timers and `timeSetEvent` followed (2026-10-03): they end on the TSC
+  too.
 - Boot and test on real hardware, not only QEMU.
 
 <!-- END generated:next-hardware -->
@@ -234,7 +243,8 @@ named program or test demonstrates it.
   permanent regression test, built for x64 and x86; `tools/pe_imports.py`
   shows what a new program needs before it is tried.
 - **Nightly app corpus** (done): `tools/appcorpus.py` runs ripgrep, fd, jq,
-  7-Zip, MinGit, Python, Node.js and Notepad++ every night, checks
+  7-Zip, MinGit, Python, Node.js, SumatraPDF, WinMerge, Notepad++ and
+  PuTTY every night, checks
   NovaOS's own `dir` and This PC screens, and posts a pass/fail table per
   program.
 

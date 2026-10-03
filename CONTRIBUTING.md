@@ -12,7 +12,7 @@ and merge cleanly in either order.
 | You are adding... | Add this file | Not this |
 |---|---|---|
 | a system DLL | `userland/NAME/dll.json` (+ `userland/NAME/build.py` if it needs a library or flags) | the old `DLLS` list in `tools/build_userland.py` |
-| a program, or making one 32-bit or a System32 one | `userland/programs/NAME.json` (`x86`, `system`, `libs`, `selftest`) | `PROGRAMS_X86` / `SYSTEM_PROGRAMS` |
+| a program, or making one 32-bit or a System32 one | `userland/programs/NAME.json` (`x86`, `system`, `libs`, `msstl`, `selftest`) | `PROGRAMS_X86` / `SYSTEM_PROGRAMS` |
 | export ordinals for a DLL | `"ordinals"` in its `dll.json` | `ORDINALS` |
 | a CI self-test | `tests/selftest/core/NNN-name.py` (or `graphics/`) | `CORE` / `GRAPHICS` in `tools/selftest.py` |
 | a nightly app-corpus program | `tests/appcorpus/NNN-name.py` | `APPS` in `tools/appcorpus.py` |

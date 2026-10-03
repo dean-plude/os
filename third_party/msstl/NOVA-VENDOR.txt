@@ -1,0 +1,21 @@
+Microsoft's C++ standard library (STL), vendored for NovaOS
+============================================================
+
+Source: https://github.com/microsoft/STL, tag vs-2022-17.13
+(commit 5e0ddadefd38b9ab50f2b8772ad4cb001133fd9d), the last release
+that builds with clang 18.  Kept: stl/inc (the headers, without
+header-units.json) and the stl/src files msvcp140.dll, its satellite DLLs
+and the static part of the import library (msvcprt.lib) are built from;
+stl/src's stacktrace.cpp and vector_algorithms.cpp are left out (NovaOS
+builds with _USE_STD_VECTOR_ALGORITHMS=0 and has no DbgEng).
+
+userland/msvcp140/build.py compiles them with clang in MSVC mode against
+MinGW-w64's headers and the shim headers in userland/msvcp140/inc (the
+VC runtime's private headers the sources include).  At build time it
+patches two things in its copies of the sources (the files here are
+unchanged): one explicit specialization clang wants marked "template <>"
+(wlocale.cpp), and "#pragma init_seg(compiler)"/"(lib)" become named
+sections, so each source's static initializers keep their order under
+clang.  See userland/msvcp140/build.py.
+
+Licence: Apache-2.0 WITH LLVM-exception (LICENSE.txt).

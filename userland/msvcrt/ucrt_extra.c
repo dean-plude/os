@@ -318,11 +318,12 @@ CRTEXP errno_t _ltow_s(long v, wchar_t *buf, size_t n, int radix)
     return 0;
 }
 
-/* Defined elsewhere without the export */
+/* Defined elsewhere without the export (on x86 the linker drops one
+ * leading underscore from an /EXPORT name) */
 #ifdef _WIN64
 __asm__(".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:_wcstoui64 /EXPORT:_wcstoi64\"\n\t.text\n");
 #else
-__asm__(".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:_wcstoui64=__wcstoui64 /EXPORT:_wcstoi64=__wcstoi64\"\n\t.text\n");
+__asm__(".section .drectve,\"yn\"\n\t.ascii \" /EXPORT:__wcstoui64 /EXPORT:__wcstoi64\"\n\t.text\n");
 #endif
 
 /* -----------------------------------------------------------------------

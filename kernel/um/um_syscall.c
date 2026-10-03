@@ -371,7 +371,7 @@ static UINT64 *hpos(UmHandle *h)
  * file-system lock shared (FsLockShared): one of these locks, by file */
 #define NODE_LOCKS 64
 static UmLock g_node_lock[NODE_LOCKS];
-static UmLock *node_lock(const RamNode *n) { return &g_node_lock[((uintptr_t)n / 64) % NODE_LOCKS]; }
+static UmLock *node_lock(const RamNode *n) { return &g_node_lock[((uintptr_t)RamfsFileId(n) / 64) % NODE_LOCKS]; }   /* (one per file, whatever its name) */
 
 static void handle_close(UmHandle *h)
 {
@@ -1129,7 +1129,7 @@ static UINT64 sys_query_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
     switch (cls) {
     case 6: {                                                   /* FileInternalInformation */
         need = 8;
-        UINT64 id = (UINT64)(uintptr_t)h->node;
+        UINT64 id = (UINT64)(uintptr_t)(file ? RamfsFileId(h->node) : h->node);  /* (the same by every name of the file) */
         memcpy(b, &id, 8);
         break;
     }
@@ -1181,7 +1181,7 @@ static UINT64 sys_query_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         need = 24;
         UINT64 size = h->kind == H_FILE ? h->node->size : 0;
         memcpy(b, &size, 8); memcpy(b + 8, &size, 8);
-        UINT32 links = 1; memcpy(b + 16, &links, 4);
+        UINT32 links = file ? (UINT32)RamfsLinks(h->node) : 1; memcpy(b + 16, &links, 4);
         b[20] = h->delete_on_close;
         b[21] = h->kind == H_DIR;
         break;
@@ -1224,13 +1224,13 @@ static UINT64 sys_query_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         UINT8 bi[40];
         memset(bi, 0, sizeof(bi));
         if (file) basic_info(bi, h->node);
-        UINT64 id = (UINT64)(uintptr_t)h->node;
+        UINT64 id = (UINT64)(uintptr_t)(file ? RamfsFileId(h->node) : h->node);
         memcpy(b, &id, 8);                                      /* FileId */
         memcpy(b + 8, bi, 32);                                  /* times */
         UINT64 size = h->kind == H_FILE ? h->node->size : 0, alloc = (size + 4095) & ~4095ULL;
         memcpy(b + 40, &alloc, 8); memcpy(b + 48, &size, 8);
         memcpy(b + 56, bi + 32, 4);                             /* FileAttributes */
-        UINT32 links = 1, eff = 0x001F01FF;
+        UINT32 links = file ? (UINT32)RamfsLinks(h->node) : 1, eff = 0x001F01FF;
         memcpy(b + 64, &links, 4); memcpy(b + 68, &eff, 4);     /* NumberOfLinks, EffectiveAccess */
         if (!file) { UINT32 a = 0x80; memcpy(b + 56, &a, 4); }
         break;
@@ -1243,9 +1243,9 @@ static UINT64 sys_query_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         if (file) basic_info(all, h->node);
         UINT64 size = h->kind == H_FILE ? h->node->size : 0;
         memcpy(all + 40, &size, 8); memcpy(all + 48, &size, 8);
-        UINT32 links = 1; memcpy(all + 56, &links, 4);
+        UINT32 links = file ? (UINT32)RamfsLinks(h->node) : 1; memcpy(all + 56, &links, 4);
         all[60] = h->delete_on_close; all[61] = h->kind == H_DIR;
-        UINT64 id = (UINT64)(uintptr_t)h->node; memcpy(all + 64, &id, 8);
+        UINT64 id = (UINT64)(uintptr_t)(file ? RamfsFileId(h->node) : h->node); memcpy(all + 64, &id, 8);
         UINT32 acc = 0x001F01FF; memcpy(all + 76, &acc, 4);
         memcpy(all + 80, hpos(h), 8);
         UINT32 mode = h->async ? 0 : 0x20; memcpy(all + 88, &mode, 4);
@@ -1322,6 +1322,42 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
             return iosb(a2, ST_ACCESS_DENIED, 0);
         if (!RamfsRename(h->node, dir, leaf, hdr[0] & 0xFF))
             return iosb(a2, old ? ST_ACCESS_DENIED : ST_OBJECT_NAME_INVALID, 0);
+        return iosb(a2, ST_SUCCESS, 0);
+    }
+    case 11: {                                                  /* FileLinkInformation: another name (a hard link) */
+        /* { BOOLEAN ReplaceIfExists; HANDLE RootDirectory; ULONG FileNameLength; WCHAR FileName[] } */
+        UINT64 hdr[3];
+        if (h->kind == H_DIR) return iosb(a2, 0xC00000BAu, 0);  /* FILE_IS_A_DIRECTORY: no links to those */
+        if (h->kind != H_FILE) return iosb(a2, ST_INVALID_PARAMETER, 0);
+        if (a4 < 20 || !NT_SUCCESS(CopyFromUser(hdr, (const void *)(uintptr_t)a3, 24)))
+            return iosb(a2, ST_INVALID_PARAMETER, 0);
+        UINT32 nlen = (UINT32)hdr[2] / 2;
+        if (!nlen || nlen >= RAMFS_PATH_MAX) return iosb(a2, ST_OBJECT_NAME_INVALID, 0);
+        UINT16 w[RAMFS_PATH_MAX];
+        if (!NT_SUCCESS(CopyFromUser(w, (const void *)(uintptr_t)(a3 + 20), 2 * nlen)))
+            return iosb(a2, UM_STATUS_ACCESS_VIOLATION, 0);
+        char path[RAMFS_PATH_MAX];
+        w2u(w, nlen, path, sizeof(path));
+        char *s = path;
+        if (!strncmp(s, "\\??\\", 4)) s += 4;
+        if (((s[0] | 0x20) >= 'a' && (s[0] | 0x20) <= 'z') && s[1] == ':' &&
+            (s[0] & ~0x20) != RamfsDriveLetter(h->node))
+            return iosb(a2, 0xC00000D4u, 0);                    /* NOT_SAME_DEVICE: another drive */
+        RamNode *root = strchr(s, '\\') || strchr(s, '/') ? p->cwd : h->node->parent;
+        if (hdr[1]) {
+            UmHandle *rd = handle(p, hdr[1]);
+            if (!rd || rd->kind != H_DIR) return iosb(a2, ST_INVALID_HANDLE, 0);
+            root = rd->node;
+        }
+        const char *leaf;
+        RamNode *dir = parent_of(root, s, &leaf);
+        if (!dir || !dir->dir) return iosb(a2, ST_OBJECT_PATH_NOT_FOUND, 0);
+        if (RamfsDriveLetter(dir) != RamfsDriveLetter(h->node)) return iosb(a2, 0xC00000D4u, 0);
+        RamNode *old = RamfsFind(dir, leaf);
+        if (old && (!(hdr[0] & 0xFF) || old->dir)) return iosb(a2, 0xC0000035u, 0);   /* NAME_COLLISION */
+        if (!FsecAccess(dir, FSEC_ADD_FILE, NULL) || (old && !may_delete(old))) return iosb(a2, ST_ACCESS_DENIED, 0);
+        if (old && !RamfsDelete(old)) return iosb(a2, ST_ACCESS_DENIED, 0);   /* (in use) */
+        if (!RamfsLink(h->node, dir, leaf)) return iosb(a2, ST_OBJECT_NAME_INVALID, 0);
         return iosb(a2, ST_SUCCESS, 0);
     }
     case 4: {                                                   /* FileBasicInformation */
@@ -1597,7 +1633,7 @@ static UINT64 sys_query_volume_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     if (!h) return ST_INVALID_HANDLE;
     UINT32 cls = (UINT32)um_stack_arg(5);
     if (cls != 4) {
-        /* the volume of drive C: (a FAT32-like volume: no ACLs, no hard links) */
+        /* the volume of drive C: (reported as FAT32: no ACLs persist unless it is on NTFS; hard links yes) */
         if (h->kind != H_FILE && h->kind != H_DIR) return iosb(a2, 0xC0000010u /* INVALID_DEVICE_REQUEST */, 0);
         UINT8 b[64];
         UINT32 need;
@@ -1624,7 +1660,7 @@ static UINT64 sys_query_volume_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
             need = 24;
             break;
         case 5: {                                               /* FileFsAttributeInformation */
-            UINT32 attrs = 0x6, maxc = 255, nl = 2 * (UINT32)strlen(fsname);  /* CASE_PRESERVED_NAMES | UNICODE_ON_DISK */
+            UINT32 attrs = 0x400006, maxc = 255, nl = 2 * (UINT32)strlen(fsname);  /* CASE_PRESERVED_NAMES | UNICODE_ON_DISK | SUPPORTS_HARD_LINKS */
             if (ext && RamfsReadOnly(RamfsDriveRoot(RamfsDriveLetter(h->node)))) attrs |= 0x80000u;   /* FILE_READ_ONLY_VOLUME */
             memcpy(b, &attrs, 4); memcpy(b + 4, &maxc, 4); memcpy(b + 8, &nl, 4);
             u2w(fsname, b + 12, 8);

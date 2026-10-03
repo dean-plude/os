@@ -1215,7 +1215,8 @@ finds them.
   over USB alone, and a keyboard added and removed with `device_add` /
   `device_del` while running.
 - Not yet: a keyboard's media keys and a mouse's extra buttons.  (Done
-  since: hubs, absolute pointers and report protocol in Phase 18.1, USB
+  since: media keys and side buttons under "Media keys, side buttons and
+  the horizontal wheel"; hubs, absolute pointers and report protocol in Phase 18.1, USB
   mass storage in 18.2, and keyboard LEDs, several controllers and the
   older UHCI/OHCI/EHCI controllers under "Older USB controllers".)
 
@@ -1613,7 +1614,7 @@ where git finds it:
   replaced until it ends (renaming them still works).  The core suite
   runs an installer that has to replace a running program, restarts
   (`tools/novarun.py` and `tools/selftest.py` can restart NovaOS) and
-  checks the replacement happened.  Hard links are still to come.
+  checks the replacement happened.  Hard links followed (below, 2026-10-03).
 - **Small visible bugs** (17.6): File Explorer's This PC is now a list of
   the drives (C: and each mounted volume, D:, E:, ...) with their free
   space and size, and opening `C:\` or the desktop's This PC shows it; the
@@ -2117,7 +2118,8 @@ the invariant culture.  NovaOS now ships ICU the way Windows 10 does.
   sorts `ä` with `a`, Japanese compares kana and widths, all through ICU.
 - Not yet: `GetDateFormat`, `GetNumberFormat` and `GetCurrencyFormat`
   still format the English way for every locale, and the user's locale is
-  always `en-US`.
+  always `en-US`.  (Both came with "Locale formatting and the user
+  locale".)
 
 ## Older USB controllers: EHCI, OHCI and UHCI
 
@@ -2305,7 +2307,8 @@ keyboards, mice, hubs and sticks too.
   and none after drivetest and Terminal tests (MFT growth, a 90-file
   folder split across INDX blocks and shrunk back, a USB stick written to
   and pulled out without a sync) wrote to them.
-  Windows `chkdsk` has not been run on them: there is no Windows here.
+  Windows `chkdsk`, run on a disk NovaOS had written to (3 October),
+  reported no errors either.
 
 ## NTFS as drive C: and file ACLs (Phase 18.5)
 
@@ -2410,9 +2413,10 @@ and the kernel enforces those DACLs.
 - **Not done**: in QEMU a USB key can't wake the machine itself.  QEMU
   8.2 delivers the key to the suspended port (`xhci_wakeup`) but has no
   path from there to the platform, so the test wakes it with
-  `system_wakeup` (which QEMU reports as the power button).  USB wake
-  needs checking on real hardware, as do GPE block devices other than
-  `\_GPE` and routing behind PCI bridges.
+  `system_wakeup` (which QEMU reports as the power button).  On a real
+  PC a USB key press does wake it from S3 (checked 3 October).  Still
+  unchecked: GPE block devices other than `\_GPE` and routing behind PCI
+  bridges.
 
 ## HPET and one-shot/TSC-deadline timers (Phase 18.7)
 
@@ -2432,6 +2436,16 @@ and the kernel enforces those DACLs.
   wait timeout end, idle and with a busy thread on every CPU; it is in the
   core self-tests.  In QEMU (TCG, 2 CPUs) the 95th percentile under load
   was 0.26 ms late (it was 10 to 20 ms with the 100 Hz tick).
+- **Fix (2026-10-03):** `sleeptest timer` failed in CI at 1.4 to 1.6 ms
+  (95th percentile under load).  Two causes.  The keyboard and mouse
+  polls (PS/2 and USB) ran in the timer interrupt, and their port and MMIO
+  reads block for up to a few milliseconds under QEMU (it serializes
+  device access), with interrupts off, so every sleep due on that CPU
+  meanwhile ended late; they now run in a kernel thread (`devpoll`) woken
+  by its TSC deadline at each tick, interrupts enabled.  And a timer
+  interrupt taken while a CPU halted waiting for the kernel lock re-armed
+  the timer for the 10 ms grid only, forgetting that CPU's TSC-deadline
+  sleepers; it now re-arms for the soonest sleeper too.
 - QEMU emulates the TSC-deadline timer only with KVM, so the self-tests
   exercise the one-shot mode; TSC-deadline mode is untested.
 - Not yet: waitable timers (`SetWaitableTimer`) still fire on the 10 ms
@@ -2513,7 +2527,8 @@ and the kernel enforces those DACLs.
   writes the registry values.  The core self-tests save 1024x768 with
   `disptest 1024 768`, and after the suite's restart (`shutdown /r`)
   `disptest saved 1024 768` passes only if NovaOS came up in that mode.
-- Not yet: a per-monitor layout (NovaOS drives one display).
+- Not yet: a per-monitor layout (NovaOS drives one display).  (Done since:
+  "More than one monitor".)
 
 ## Recording: waveIn, WASAPI capture and endpoint volume
 
@@ -2662,5 +2677,347 @@ or MIT) for the dialogs' pictures.
   (WinRM remoting), which NovaOS lacks.
 - Not yet: rollback, script custom actions, nested installs, patches
   (`.msp`) and transforms (`.mst`), advertised features, services at boot.
+
+## Run CI on merge queue groups
+
+GitHub's merge queue builds each queued pull request on a temporary
+merge-group branch and only starts workflows that listen for the
+`merge_group` event.  `.github/workflows/ci.yml` now does, so the three
+required checks (Checks, Build and boot-test, Graphics tests) run for
+queued pull requests.  The job names are unchanged.  The generated-docs
+check stays pull-request only, since the pull request already passed it;
+the other jobs have no conditions that depend on a pull request, and the
+concurrency group falls back to the merge-group ref.
+
+## Faster CI: ccache and docs-only pull requests
+
+A pull request's CI took about 12 minutes, and half of that was building
+NovaOS from scratch, twice: the boot-test and graphics jobs each compiled
+about 2,400 files (most of them NetSurf, Mbed TLS, FreeType and musl's
+libm) one at a time through `tools/build_userland.py`.
+
+- **ccache.**  Every clang call in the build (kernel and userland) goes
+  through ccache.  The boot-test job saves the cache after each build;
+  pull requests start from main's latest cache, the graphics job and the
+  nightly app corpus restore it too.  A build whose sources mostly match
+  the cache takes about 2.5 minutes instead of 6.
+- **Docs-only pull requests.**  When a pull request changes only Markdown,
+  `docs/` or `LICENSE`, the Checks job says so and the build and boot jobs
+  are skipped, which GitHub counts as passing for required checks.  Those
+  pull requests finish in about a minute.
+
+Next candidates, each its own change: compiling in parallel inside
+`tools/build_userland.py` (the cached build is now mostly its serial
+work), and running the test VMs with KVM, which the runners offer.
+
+## Firefox's delay-loaded DLLs and DirectWrite fallback
+
+Two Phase 16 steps for Firefox (tested with Floorp 12.19): every DLL
+`xul.dll` delay-loads now exists (16.2), and DirectWrite's font fallback
+has a test (16.1).  No MIT, BSD or zlib implementation of these DLLs
+exists (Wine's are LGPL, and the only HLSL compilers are LGPL too), so
+they are NovaOS's own.
+
+- **`d3d11.dll`** (`userland/d3d11`): NovaOS's own front for Direct3D 11.
+  With DXVK installed from the App Store, which now installs DXVK's
+  `d3d11` as `d3d11_dxvk.dll`, every entry point hands the call to DXVK
+  (DXVK's `d3d10core` reaches it through `D3D11CoreCreateDevice`).
+  Without DXVK, device creation fails with `DXGI_ERROR_UNSUPPORTED`, as
+  on a PC with no Direct3D 11 driver, so programs use their software
+  path.
+- **`urlmon.dll`**: `CreateUri` (an `IUri` with every string and number
+  property, IPv4/IPv6/DNS host types and default ports) and
+  `CoInternetParseUrl` (scheme, domain, document, anchor, canonicalize,
+  and path and URL conversion through shlwapi).
+- **`winspool.drv`**: the print spooler's client, built and installed
+  under its `.drv` name (`userland/winspool/build.py`), with Windows'
+  ordinals for the default-printer calls (Firefox imports
+  `GetDefaultPrinterW` as ordinal 203).  There are no printers yet: the
+  lists are empty and opening a printer fails.
+- **`credui.dll`**: the credential prompts report that the user
+  cancelled, since NovaOS has no credential dialog yet.
+- **`dhcpcsvc.dll`**: `DhcpRequestParams` finds no extra DHCP options, so
+  a WPAD lookup moves on.
+- **`d3dcompiler_47.dll`**: blobs (`D3DCreateBlob`, `D3DStripShader`),
+  and a `D3DCompile` that fails with a message in its error blob.
+- **`tools/pe_imports.py`** now checks delay-loaded imports, marked
+  "(delay)", counts DLLs shipped beside a program, and reads `.drv`
+  files.  It reports `0 missing` for Floorp's `xul.dll`.
+- **Tests**: the new `delaytest` self-test exercises every one of these
+  DLLs (31 checks, 64- and 32-bit).  The new `tools/dwtest`, in the
+  graphics suite, lays out "Hello", an Arabic word and a Devanagari word
+  in one line from a Latin-only font.  It checks that each script falls
+  back to a font that has it, that the Arabic is joined and runs right to
+  left, that the Devanagari conjunct forms, and that every run draws, and
+  it shows the line in a window for the screenshot.
+- `profapi.dll`, also on the 16.2 list, is not added.  Only
+  `Microsoft.Internal.FrameworkUdk.dll` imports it, and that DLL also
+  needs `Bcp47Langs`, `CoreMessaging` and `dcomp`.  It is Windows App SDK
+  code Floorp runs without.
+
+## Firefox loads pages: wsock32.dll (Phase 16.4)
+
+Floorp showed a blank page for every URL and no request ever left the
+machine, while the same page from a `file:` URL rendered.  The parent's
+socket thread opened a TCP socket and closed it again at once, never
+calling `connect`.  The caller was NSPR's `_PR_MD_SOCKET` in `nss3.dll`,
+which imports Winsock 1.1 (`wsock32.dll`) by ordinal and calls
+`ioctlsocket` (`FIONBIO`) right after `socket`.  NovaOS answered
+`wsock32.dll` with `ws2_32.dll` on the assumption that the two share
+their ordinals; they do not: in `wsock32` `inet_addr` is 10, `inet_ntoa`
+11 and `ioctlsocket` 12, where `ws2_32` has `ioctlsocket` at 10.  So
+NSPR's `ioctlsocket` landed in `inet_ntoa`, whose non-zero return read as
+failure, and every socket was closed before use.
+
+- **wsock32.dll** (`userland/wsock32`) is now its own DLL, with Winsock
+  1.1's ordinals, calling `ws2_32`'s functions, plus the old blocking-hook
+  calls (`WSAIsBlocking` and friends, which never block).  The alias in
+  the kernel loader, `ntdll` and `tools/pe_imports.py` is gone.
+- A socket `accept` gives is non-blocking when its listener is, as on
+  Windows.  NSPR's socket pair (the socket thread's wake-up) counts on
+  that: with a blocking accepted end, the socket thread stalled in `recv`
+  holding a lock the main thread then waited for.
+- `looptest` (network suite) checks `wsock32`'s ordinals, takes a socket
+  non-blocking the way NSPR does, and checks the inherited mode.
+- With it, Floorp fetches and renders `http://` pages served to QEMU's
+  guest network.
+
+## Locale formatting and the user locale
+
+Until now `GetDateFormat`, `GetTimeFormat`, `GetNumberFormat` and
+`GetCurrencyFormat` formatted the English way whatever locale a program
+asked for, and the user's locale was always `en-US`.
+
+- **Formatting in the locale asked for** (`userland/kernel32/nlsformat.c`):
+  `GetDateFormat`, `GetTimeFormat`, `GetNumberFormat` and
+  `GetCurrencyFormat`, A, W and Ex (the A number functions are new), take
+  their pictures, names, separators, grouping and orders from
+  `GetLocaleInfo`, which answers every locale other than English from ICU
+  (PR #45).  `de-DE` gives `02.10.2026`, `Freitag, 2. Oktober 2026`,
+  `14:05:09`, `1.234.567,89` and `1.234.567,89 €`; `ja-JP` gives
+  `2026/10/02`, `2026年10月2日`, `9:05:09`, `1,234,567.89` and `¥1,234,568`,
+  as Windows does.  The picture rules are Windows': `d`…`dddd`, `M`…`MMMM`
+  (the genitive month when the picture has a day number), `y`, `yy`,
+  `yyyy`, `g`, `h`/`H`, `m`, `s`, `t`/`tt` and `'quoted'` text;
+  `DATE_LONGDATE`, `DATE_YEARMONTH`, `DATE_MONTHDAY`, `TIME_NOSECONDS`,
+  `TIME_NOMINUTESORSECONDS`, `TIME_NOTIMEMARKER` and
+  `TIME_FORCE24HOURFORMAT`; `NUMBERFMT` and `CURRENCYFMT` with all five
+  negative-number and sixteen negative-currency orders, Indian-style
+  grouping, rounding half away from zero, and Windows' errors (a value
+  that is not a number, flags beside a format, 30 February, a short
+  buffer).
+- **Closer to Windows' locale data**: Japanese and Chinese long dates have
+  no weekday (`yyyy年M月d日`, where ICU's full date ends in one), and the
+  yen sign is Windows' narrow `¥` rather than ICU's full-width one.
+- **The user locale** is `LocaleName` under
+  `HKCU\Control Panel\International`, read once per process by
+  `GetUserDefaultLocaleName`, `GetUserDefaultLCID`, `GetUserDefaultLangID`,
+  `GetThreadLocale`, `LOCALE_USER_DEFAULT` and a `NULL` locale name.  The
+  system locale and the UI language stay `en-US`.  The registry is saved
+  to drive C:, so the choice lasts across restarts.
+- **`intl.exe`** (System32) shows the user's format (`intl`), lists the
+  locales (`intl /list`) and sets one (`intl de-DE`; a neutral name such
+  as `ja` becomes `ja-JP`), writing `LocaleName`, `Locale` and the classic
+  values beside them (`sShortDate`, `sDecimal`, `iCurrency`…) for programs
+  that read the registry themselves.
+- **Settings > Time & language** shows the regional format and offers
+  fifteen common ones; a click runs `intl.exe`.
+- **Tests**: `nlstest` (core suite, 64- and 32-bit) checks the four
+  functions in German, Japanese and English against Windows' output;
+  `nlstest user` sets `de-DE`, `ja` and `en-US` with `intl.exe` and checks
+  that new processes follow; `nlstest set ja-JP` before the suite's
+  restart and `nlstest after-restart ja-JP` after it check the choice
+  lasts.
+- Not yet: user overrides (a changed `sShortDate` alone is not read back),
+  `GetDurationFormat`, alternative calendars (`DATE_USE_ALT_CALENDAR`,
+  the Japanese era calendar), and native digits in the output.
+
+## Media keys, side buttons and the horizontal wheel
+
+Keyboards' media, volume, browser and launch keys, mice's back and forward
+buttons and tilting (horizontal) wheels now work, on USB and on PS/2.
+
+- **Media keys** (`usbhid.c`): USB keyboards send them as Consumer Control
+  usages (page 0x0C), usually in a report or on an interface of their own,
+  either as an array of usages or as one bit per key; the Power, Sleep and
+  Wake keys come as System Control (Generic Desktop 0x81-0x83).  Both are
+  found in the report descriptor, a device that has only them is taken
+  too ("media keys" in the log), and each key becomes the E0-prefixed
+  scancode a PS/2 keyboard sends for it (Microsoft's keyboard scan code
+  specification), so everything above the drivers sees one kind of key.
+  Keys held are tracked per report, and held volume keys repeat.  The
+  keyboard page's own Mute, Volume Up and Volume Down usages (which QEMU's
+  USB keyboard sends) map to the same codes.
+- **Mouse buttons 4 and 5 and AC Pan**: report-protocol mice report up to
+  five buttons, and the horizontal wheel (Consumer "AC Pan", + to the
+  right) goes in a new `InputEvent.dw`.  PS/2 mice are switched to
+  IntelliMouse Explorer mode (sample rates 200, 200, 80 after the wheel
+  mouse's 200, 100, 80), which adds buttons 4 and 5 and a horizontal wheel
+  in the fourth byte.
+- **Programs** (`um_gui.c`, `user32`): side buttons arrive as
+  `WM_XBUTTONDOWN`/`UP`/`DBLCLK` (or the `WM_NCXBUTTON*` forms) with
+  `XBUTTON1`/`XBUTTON2` in the high word, `MK_XBUTTON1`/`2` and
+  `VK_XBUTTON1`/`2` for `GetKeyState`; the tilt wheel as `WM_MOUSEHWHEEL`.
+  `DefWindowProc` turns a side button's release into `WM_APPCOMMAND`
+  (`APPCOMMAND_BROWSER_BACKWARD`/`FORWARD`, `FAPPCOMMAND_MOUSE`) and a
+  browser, volume, media or launch key (`VK_BROWSER_BACK` to
+  `VK_LAUNCH_APP2`) into the matching `APPCOMMAND_*` with
+  `FAPPCOMMAND_KEY`; unhandled, it goes up to the parent window, as on
+  Windows.
+- **The shell**: Volume Up and Down change the playback volume by 2% a
+  press, Mute toggles it (the focused program still gets the key), Sleep
+  sleeps (S3) and Power shuts down like the power button.
+- **Tests**: `inputtest` (core self-tests) plugs a USB mouse in for the
+  test and presses its buttons 4 and 5, then unplugs it and tilts the PS/2
+  mouse's wheel both ways and presses its button 4, then presses the
+  volume keys on the USB keyboard, and checks the messages a full-screen
+  window gets.  QEMU has no USB device with Consumer Control or a
+  horizontal wheel, so the Terminal's `usbcheck` runs those report
+  descriptors (a consumer array, consumer bits, system control, a
+  five-button mouse with AC Pan, a keyboard sending the volume usages)
+  through the same parser and report handling and compares the events
+  they make.
+
+## More than one monitor
+
+- **Each further display adapter is another monitor.**  Besides the boot
+  display, the display driver drives every other Bochs/QEMU DISPI adapter
+  it finds (QEMU's `-device secondary-vga` or `bochs-display`; up to four
+  monitors), each with its own list of modes, set at run time through its
+  BAR2 registers (`[DISPLAY] Head 1: QEMU secondary-vga ...`).  After S3
+  each one gets its mode back.
+- **One desktop across them.**  The GDI's back buffer covers the virtual
+  desktop: the primary monitor at (0, 0), the others beside, above or
+  below it (negative coordinates included).  Each monitor has its own
+  scale: the desktop is drawn at the largest, and a 1280x800 monitor next
+  to a 2560x1600 one shows each 2x2 block averaged, so both show the same
+  logical size.  The other monitors show the wallpaper; the dock, Start
+  menu and desktop icons stay on the primary.
+- **Windows and the pointer.**  The pointer moves across the edges where
+  monitors touch and stops at the outer ones, and is drawn on the screen
+  it is on, at that screen's scale.  A dragged window goes with the
+  pointer onto the other monitor; maximizing and snapping (by dragging to
+  an edge, or Win+Left/Right) fill that monitor's work area, which is all
+  of it on monitors without the dock.  After a change of mode or layout
+  each window stays on its monitor.
+- **The Win32 calls report the real layout.**  `EnumDisplayMonitors`,
+  `GetMonitorInfo` (`\\.\DISPLAY1`, `\\.\DISPLAY2`, ..., the work area,
+  `MONITORINFOF_PRIMARY`), `MonitorFromWindow`/`Point`/`Rect` (with the
+  `MONITOR_DEFAULTTO*` fallbacks), `EnumDisplayDevices` (an adapter per
+  monitor, and the monitor on it), `EnumDisplaySettings` and
+  `ChangeDisplaySettingsEx` for a named display (its modes, and its place
+  in `dmPosition` / `DM_POSITION`), and `GetSystemMetrics`'
+  `SM_CMONITORS` and `SM_*VIRTUALSCREEN`.
+- **Settings > Display arranges them.**  With more than one monitor the
+  page shows them to scale: drag one to move it (it snaps against the
+  others' edges and lines up with them), click one to choose it, and the
+  resolution buttons below apply to the chosen one.  The layout and each
+  display's mode are kept where Windows keeps them,
+  `HKLM\SYSTEM\CurrentControlSet\Control\Video\{NovaOS-Display}\000N`
+  (`DefaultSettings.*`, and `Attach.RelativeX/Y` for the place), and come
+  back at the next boot (`[DISPLAY] Display 2 goes at (0, 800)`).
+- `montest` (graphics self-tests, which now boot with a QEMU secondary-vga
+  as the second monitor) checks all of that, moves the pointer across, and
+  leaves a window on the second monitor for the screenshot; the test saves
+  one PNG per monitor (`montest.png`, `montest-2.png`).
+  `tools/novarun.py --monitors 2` boots with two monitors the same way.
+- Not yet: more than one output of one adapter (QXL or virtio-gpu heads),
+  a monitor plugged in or out while running, and per-monitor DPI that
+  programs see: they all get 96 DPI logical pixels, as before.
+
+## Hard links (Phase 17.5)
+
+A file can have several names now, as `CreateHardLink` makes them on
+Windows; `ln` in the MSYS2 shell and Git's object store use it.
+
+- **Drive C:** (`kernel/fs/ramfs.c`): a file's names are a ring of nodes
+  that share its contents, size, attributes, times and security
+  descriptor, so a write, `SetFileAttributes` or `SetSecurityInfo` by one
+  name is seen by the others, open handles included.  Deleting a name
+  leaves the file to the others; the last name takes it.  Link counts
+  (`FileStandardInformation`, `GetFileInformationByHandle`'s
+  `nNumberOfLinks`) and the file id (`FileInternalInformation`,
+  `nFileIndex`) are the file's, the same by every name, and the volume
+  reports `FILE_SUPPORTS_HARD_LINKS`.
+- **Kept across restarts** (`kernel/fs/persist.c`): on an NTFS C: a
+  linked file is saved as one record with a `$FILE_NAME` in each
+  directory (`NtfsLink`), and loading joins the names of a record with
+  several again.  FAT has no links, so each name is saved as a copy and
+  `\NOVA\LINKS.TXT` lists the names of each linked file; at boot they are
+  joined into one file again.
+- **NTFS volumes** (`kernel/fs/ntfs.c`): `NtfsLink` adds a `$FILE_NAME`
+  and an `$I30` entry and bumps the link count; deleting and renaming
+  take the name concerned (a DOS alias goes with its long name), so the
+  other names of a file stay; the record and its clusters are freed with
+  the last name.  Mounted volumes (D:, ...) get the same through
+  `RamfsSource` link calls, and a file whose record has several names is
+  joined to its other loaded names when it is read.
+- **Syscalls and kernel32**: `NtSetInformationFile(FileLinkInformation)`
+  (refuses directories and other drives, replaces a file under the name
+  when asked to, checks `FILE_ADD_FILE` on the folder); `CreateHardLinkA/W`
+  call it.
+- **Checks**: `linktest` in the core suite, and `linktest restarted` after
+  the suite's restart checks a linked pair is still one file.  On a
+  disk made by `scripts/make-ntfs-disk.sh`, `linktest D:\LinkTest` then
+  `scripts/check-ntfs-disk.sh` (ntfsfix, ntfssecaudit and
+  `ntfs-check.py`, which checks link counts against names) pass.
+
+## Waitable timers on the TSC
+
+Phase 18.7 made `Sleep` and wait timeouts end when they are due; waitable
+timers still fired on the 10 ms tick.  They now end on the TSC too.
+
+- **Kernel timer objects keep TSC deadlines** (`kernel/um/um_thread.c`):
+  `NtSetTimer` turns the due time and period into TSC values, a wait on a
+  timer sleeps until exactly that deadline (`sched_sleep_until_tsc`), and
+  a periodic timer stays on its own grid, so it doesn't drift.  Setting a
+  timer wakes the threads already waiting on it, which then sleep until
+  its new due time (before, such a wait looked again only every 100 ms).
+  `NtQueryTimer` reports the time left in 100 ns units.
+- **`CreateWaitableTimer` makes a kernel timer** instead of an event that
+  a kernel32 thread set when `GetTickCount64` (a 10 ms clock) said it was
+  due.  Named timers are shared between processes, and
+  `OpenWaitableTimer` opens them.
+- **Completion routines run on time.**  `SetWaitableTimer`'s routine runs
+  on the thread that set the timer when it waits alertably, as on
+  Windows; an alertable wait (`SleepEx`, `WaitFor*ObjectEx`) now ends its
+  slice when one of its thread's timer routines is due, and measures time
+  on the performance counter instead of the 10 ms tick count.
+- **Timer queues** (`CreateTimerQueue`, `CreateTimerQueueTimer`,
+  `ChangeTimerQueueTimer`, `DeleteTimerQueueTimer`, `DeleteTimerQueueEx`)
+  are new; they, threadpool timers (`SetThreadpoolTimer`) and winmm's
+  `timeSetEvent` run their callbacks from worker threads that wait on a
+  kernel waitable timer.  A freed timer's worker is kept for the next one.
+- `sleeptest timer` measures a 1 ms waitable timer, a 5 ms periodic one
+  (each firing against its place on the grid), a 1 ms timer's completion
+  routine in `SleepEx` and a 1 ms timer queue timer, idle and under load.
+  In QEMU (TCG, 2 CPUs) the 95th percentile under load was 0.26 to
+  0.59 ms late over four runs (the 10 ms tick made it up to 10 ms).
+- Not yet: a timer queue timer (or any timer) set while another thread
+  already waits on it can be late by up to a 20 ms time slice when every
+  CPU is busy: a thread woken that way waits for the running thread's
+  slice (the scheduler gives woken threads no boost).  `sleeptest timer`
+  reports the timer queue case without judging it.  `NtSetTimer`'s own APC
+  routine (native callers) is still ignored, and `NtSetTimerEx` is not
+  implemented.
+
+## WASAPI: the engine keeps a 100 ms lead
+
+The core suite's `soundtest wasapi` recording check failed on some CI runs
+and passed on others: the 660 Hz tone came out with silent gaps (the
+zero-crossing pitch read 580 to 620 Hz).  A shared-mode client fills its
+own buffer, 30 ms at the least, and `mmdevapi` passed every released frame
+straight to the kernel mixer stream and reported the stream's queue as the
+padding, so the client never had more than its buffer's worth queued.  On a
+loaded host (GitHub's runners) the client's 10 ms wakeups came late by more
+than that and the mixer ran dry.
+
+`mmdevapi` now keeps an engine lead, as Windows' audio engine has a buffer
+of its own: the kernel stream holds the client buffer plus 100 ms, and the
+padding is what the stream holds beyond that lead.  The client therefore
+writes 100 ms ahead of the mixer and a late wakeup does not starve it.
+`GetStreamLatency` reports the lead with the mixer's 80 ms.  Under a CPU
+load that split the tone before, the recording now holds one unbroken
+1010 ms tone.
 
 <!-- END generated:history -->

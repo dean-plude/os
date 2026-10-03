@@ -283,6 +283,11 @@ USERAPI BOOL     UpdateWindow(HWND h);
 #define IDI_APPLICATION ((LPCSTR)32512)
 #define SM_CXSCREEN 0
 #define SM_CYSCREEN 1
+#define SM_XVIRTUALSCREEN 76
+#define SM_YVIRTUALSCREEN 77
+#define SM_CXVIRTUALSCREEN 78
+#define SM_CYVIRTUALSCREEN 79
+#define SM_CMONITORS 80
 
 /* -----------------------------------------------------------------------
  * The rest of USER's vocabulary (messages, styles, controls, structures)
@@ -364,7 +369,16 @@ USERAPI BOOL     UpdateWindow(HWND h);
 #define WM_MBUTTONDOWN     0x0207
 #define WM_MBUTTONUP       0x0208
 #define WM_MBUTTONDBLCLK   0x0209
+#define WM_XBUTTONDOWN     0x020B
+#define WM_XBUTTONUP       0x020C
+#define WM_XBUTTONDBLCLK   0x020D
 #define WM_MOUSEHWHEEL     0x020E
+#define WM_NCXBUTTONDOWN   0x00AB
+#define WM_NCXBUTTONUP     0x00AC
+#define WM_NCXBUTTONDBLCLK 0x00AD
+#define XBUTTON1           0x0001
+#define XBUTTON2           0x0002
+#define GET_XBUTTON_WPARAM(wp) (HIWORD(wp))
 #define WM_MOUSELAST       0x020E
 #define WM_PARENTNOTIFY    0x0210
 #define WM_ENTERMENULOOP   0x0211
@@ -373,7 +387,37 @@ USERAPI BOOL     UpdateWindow(HWND h);
 #define WM_SIZING          0x0214
 #define WM_CAPTURECHANGED  0x0215
 #define WM_MOVING          0x0216
+#define WM_MDICREATE       0x0220
+#define WM_MDIDESTROY      0x0221
 #define WM_MDIACTIVATE     0x0222
+#define WM_MDIRESTORE      0x0223
+#define WM_MDINEXT         0x0224
+#define WM_MDIMAXIMIZE     0x0225
+#define WM_MDITILE         0x0226
+#define WM_MDICASCADE      0x0227
+#define WM_MDIICONARRANGE  0x0228
+#define WM_MDIGETACTIVE    0x0229
+#define WM_MDISETMENU      0x0230
+#define WM_MDIREFRESHMENU  0x0234
+#define MDIS_ALLCHILDSTYLES 0x0001
+#define MDITILE_VERTICAL     0x0000
+#define MDITILE_HORIZONTAL   0x0001
+#define MDITILE_SKIPDISABLED 0x0002
+typedef struct tagMDICREATESTRUCTW {
+    LPCWSTR szClass, szTitle;
+    HANDLE hOwner;
+    int x, y, cx, cy;
+    DWORD style;
+    LPARAM lParam;
+} MDICREATESTRUCTW, *LPMDICREATESTRUCTW;
+typedef struct tagMDICREATESTRUCTA {
+    LPCSTR szClass, szTitle;
+    HANDLE hOwner;
+    int x, y, cx, cy;
+    DWORD style;
+    LPARAM lParam;
+} MDICREATESTRUCTA, *LPMDICREATESTRUCTA;
+typedef struct tagCLIENTCREATESTRUCT { HANDLE hWindowMenu; UINT idFirstChild; } CLIENTCREATESTRUCT, *LPCLIENTCREATESTRUCT;
 #define WM_ENTERSIZEMOVE   0x0231
 #define WM_EXITSIZEMOVE    0x0232
 #define WM_DROPFILES       0x0233
@@ -516,7 +560,10 @@ USERAPI BOOL     UpdateWindow(HWND h);
 #define HTLEFT        10
 #define HTRIGHT       11
 #define HTTOP         12
+#define HTTOPLEFT     13
+#define HTTOPRIGHT    14
 #define HTBOTTOM      15
+#define HTBOTTOMLEFT  16
 #define HTBOTTOMRIGHT 17
 #define HTBORDER      18
 #define HTCLOSE       20
@@ -527,6 +574,7 @@ USERAPI BOOL     UpdateWindow(HWND h);
 #define SC_MINIMIZE 0xF020
 #define SC_MAXIMIZE 0xF030
 #define SC_NEXTWINDOW 0xF040
+#define SC_PREVWINDOW 0xF050
 #define SC_CLOSE    0xF060
 #define SC_VSCROLL  0xF070
 #define SC_HSCROLL  0xF080
@@ -550,6 +598,29 @@ USERAPI BOOL     UpdateWindow(HWND h);
 #define MK_SHIFT   0x0004
 #define MK_CONTROL 0x0008
 #define MK_MBUTTON 0x0010
+#define MK_XBUTTON1 0x0020
+#define MK_XBUTTON2 0x0040
+#define VK_XBUTTON1 0x05
+#define VK_XBUTTON2 0x06
+#define VK_BROWSER_BACK        0xA6
+#define VK_BROWSER_FORWARD     0xA7
+#define VK_BROWSER_REFRESH     0xA8
+#define VK_BROWSER_STOP        0xA9
+#define VK_BROWSER_SEARCH      0xAA
+#define VK_BROWSER_FAVORITES   0xAB
+#define VK_BROWSER_HOME        0xAC
+#define VK_VOLUME_MUTE         0xAD
+#define VK_VOLUME_DOWN         0xAE
+#define VK_VOLUME_UP           0xAF
+#define VK_MEDIA_NEXT_TRACK    0xB0
+#define VK_MEDIA_PREV_TRACK    0xB1
+#define VK_MEDIA_STOP          0xB2
+#define VK_MEDIA_PLAY_PAUSE    0xB3
+#define VK_LAUNCH_MAIL         0xB4
+#define VK_LAUNCH_MEDIA_SELECT 0xB5
+#define VK_LAUNCH_APP1         0xB6
+#define VK_LAUNCH_APP2         0xB7
+#define VK_SLEEP               0x5F
 #define WHEEL_DELTA 120
 #define TME_HOVER  0x00000001
 #define TME_LEAVE  0x00000002
@@ -1319,6 +1390,10 @@ typedef struct tagDRAWTEXTPARAMS { UINT cbSize; int iTabLength, iLeftMargin, iRi
 #define WM_GETOBJECT 0x003D
 #define WM_DEVMODECHANGE 0x001B
 #define WM_APPCOMMAND 0x0319
+#define FAPPCOMMAND_MOUSE 0x8000
+#define FAPPCOMMAND_KEY   0
+#define APPCOMMAND_BROWSER_BACKWARD 1
+#define APPCOMMAND_BROWSER_FORWARD  2
 #define WH_MSGFILTER (-1)
 #define WH_GETMESSAGE 3
 #define WH_CALLWNDPROC 4
@@ -1738,6 +1813,25 @@ USERAPI int GetAwarenessFromDpiAwarenessContext(HANDLE ctx);
 USERAPI BOOL AreDpiAwarenessContextsEqual(HANDLE a, HANDLE b);
 USERAPI BOOL IsValidDpiAwarenessContext(HANDLE ctx);
 USERAPI BOOL EnableNonClientDpiScaling(HWND h);
+typedef HANDLE HMONITOR;
+typedef BOOL (CALLBACK *MONITORENUMPROC)(HMONITOR, HDC, LPRECT, LPARAM);
+typedef struct { DWORD cbSize; RECT rcMonitor, rcWork; DWORD dwFlags; } MONITORINFO, *LPMONITORINFO;
+typedef struct { DWORD cbSize; RECT rcMonitor, rcWork; DWORD dwFlags; CHAR szDevice[32]; } MONITORINFOEXA, *LPMONITORINFOEXA;
+typedef struct { DWORD cbSize; RECT rcMonitor, rcWork; DWORD dwFlags; WCHAR szDevice[32]; } MONITORINFOEXW, *LPMONITORINFOEXW;
+#define MONITORINFOF_PRIMARY      0x00000001
+#define MONITOR_DEFAULTTONULL     0x00000000
+#define MONITOR_DEFAULTTOPRIMARY  0x00000001
+#define MONITOR_DEFAULTTONEAREST  0x00000002
+typedef struct { DWORD cb; CHAR DeviceName[32]; CHAR DeviceString[128]; DWORD StateFlags;
+                 CHAR DeviceID[128]; CHAR DeviceKey[128]; } DISPLAY_DEVICEA, *PDISPLAY_DEVICEA;
+typedef struct { DWORD cb; WCHAR DeviceName[32]; WCHAR DeviceString[128]; DWORD StateFlags;
+                 WCHAR DeviceID[128]; WCHAR DeviceKey[128]; } DISPLAY_DEVICEW, *PDISPLAY_DEVICEW;
+#define DISPLAY_DEVICE_ATTACHED_TO_DESKTOP 0x00000001
+#define DISPLAY_DEVICE_PRIMARY_DEVICE      0x00000004
+#define DISPLAY_DEVICE_ACTIVE              0x00000001
+#define DISPLAY_DEVICE_ATTACHED            0x00000002
+USERAPI BOOL EnumDisplayMonitors(HDC dc, LPCRECT clip, MONITORENUMPROC fn, LPARAM lp);
+USERAPI BOOL EnumDisplayDevicesA(LPCSTR dev, DWORD i, void *dd, DWORD flags);
 USERAPI HANDLE MonitorFromWindow(HWND h, DWORD f);
 USERAPI HANDLE MonitorFromPoint(POINT p, DWORD f);
 USERAPI HANDLE MonitorFromRect(const RECT *r, DWORD f);
@@ -1783,6 +1877,7 @@ typedef struct {
 #define DM_PELSHEIGHT          0x00100000
 #define DM_DISPLAYFLAGS        0x00200000
 #define DM_DISPLAYFREQUENCY    0x00400000
+#define DM_POSITION            0x00000020
 #define ENUM_CURRENT_SETTINGS  ((DWORD)-1)
 #define ENUM_REGISTRY_SETTINGS ((DWORD)-2)
 #define CDS_UPDATEREGISTRY     0x00000001
@@ -1791,6 +1886,7 @@ typedef struct {
 #define DISP_CHANGE_SUCCESSFUL 0
 #define DISP_CHANGE_FAILED     (-1)
 #define DISP_CHANGE_BADMODE    (-2)
+#define DISP_CHANGE_BADPARAM   (-5)
 #ifndef WM_DISPLAYCHANGE
 #define WM_DISPLAYCHANGE       0x007E
 #endif
@@ -1839,6 +1935,21 @@ USERAPI HCURSOR GetCursor(void);
 USERAPI int ShowCursor(BOOL show);
 USERAPI BOOL GetCursorInfo(PCURSORINFO ci);
 USERAPI BOOL SetSystemCursor(HCURSOR c, DWORD id);
+#define OCR_NORMAL      32512
+#define OCR_IBEAM       32513
+#define OCR_WAIT        32514
+#define OCR_CROSS       32515
+#define OCR_UP          32516
+#define OCR_SIZENWSE    32642
+#define OCR_SIZENESW    32643
+#define OCR_SIZEWE      32644
+#define OCR_SIZENS      32645
+#define OCR_SIZEALL     32646
+#define OCR_NO          32648
+#define OCR_HAND        32649
+#define OCR_APPSTARTING 32650
+#define OCR_HELP        32651
+#define SPI_SETCURSORS  0x0057
 USERAPI LRESULT SendMessageTimeoutW(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT f, UINT ms, PDWORD_PTR r);
 USERAPI LRESULT SendMessageTimeoutA(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT f, UINT ms, PDWORD_PTR r);
 USERAPI BOOL SendNotifyMessageW(HWND h, UINT msg, WPARAM wp, LPARAM lp);

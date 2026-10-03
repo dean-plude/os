@@ -12,6 +12,7 @@
 #define UM_MAX_HANDLES   4096
 #define UM_MAX_REGIONS   8192     /* (runtimes such as CoreCLR reserve thousands of ranges) */
 #define UM_MAX_MODULES   1024     /* (Audacity loads about 150, VLC every plugin: about 410) */
+#define UM_MAX_DLL_DIRS  16       /* AddDllDirectory's folders */
 #define UM_MAX_THREADS   256      /* (a browser's main process runs well over 64) */
 #define UM32_MAX_THREADS 96       /* WoW: the TEB area must stay below KUSER_SHARED_DATA */
 
@@ -107,8 +108,8 @@ typedef struct UmObject {
     UmProcess      *proc;           /* UO_PROCESS: signaled when it has exited */
     void           *ptr;            /* UO_KEY: the registry key; UO_DIRECTORY: its name;
                                        UO_SYMLINK: its target (UmLinkTarget) */
-    UINT64          due;            /* UO_TIMER: the tick it fires at (0: not set) */
-    UINT32          period;         /* UO_TIMER: ticks between firings (0: once) */
+    UINT64          due;            /* UO_TIMER: the TSC it fires at (0: not set) */
+    UINT64          period;         /* UO_TIMER: TSC cycles between firings (0: once) */
     void          (*destroy)(struct UmObject *o);   /* extra cleanup (sockets, windows) */
     void           *sd;             /* its security descriptor (um_security.c), or NULL: open to all */
 } UmObject;
@@ -205,6 +206,8 @@ struct UmProcess {
     UINT64      pml4;           /* physical address of the page table */
     RamNode    *cwd;
     RamNode    *exe_dir;        /* searched for DLLs before System32 */
+    char        dll_dirs[UM_MAX_DLL_DIRS][RAMFS_PATH_MAX];  /* AddDllDirectory's ("": a free slot) */
+    char        dll_dir[RAMFS_PATH_MAX];                    /* SetDllDirectory's ("": none) */
     UmConsole  *con;
     UmRwLock    lock;           /* handles, regions, modules, threads */
     UmLock      ldr_lock;       /* one runtime DLL load at a time (taken before the desktop lock) */
@@ -294,6 +297,7 @@ UmThread  *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack
 /* Load a DLL (and what it imports) into the running process: *base gets
  * its address; new modules are appended to the loader info page. */
 UINT32     um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags);
+UINT32     um_dll_directory(UmProcess *p, UINT32 op, const char *path, UINT64 *cookie);
 const UmModule *um_module_at(UmProcess *p, UINT64 va);
 
 /* um_console.c */

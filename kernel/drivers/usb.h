@@ -120,4 +120,7 @@ void  UsbHubServiceAll(void);                          /* ... of every hub that 
 void *UsbHidProbe(UsbDev *d, const UsbIface *f);      /* usbhid.c */
 void  UsbHidTickAll(UINT64 now);                       /* key repeat, every tick */
 void  UsbHidSyncLeds(void);                            /* usb thread: lock-key LEDs */
+/* The Terminal's usbcheck: run the report parser on report descriptors
+ * QEMU has no device for; says a line per check, returns how many failed */
+int   UsbHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx);
 void *UsbMscProbe(UsbDev *d, const UsbIface *f);      /* usbmsc.c */

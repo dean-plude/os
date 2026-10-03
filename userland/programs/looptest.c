@@ -1,6 +1,6 @@
 /* looptest.exe — Winsock over the loopback interface, as Firefox uses it:
  * a socket pair over 127.0.0.1 and ::1 (bind to port 0, listen,
- * getsockname, a non-blocking connect, accept), data sent before accept,
+ * getsockname, a non-blocking connect, getpeername, accept), data sent before accept,
  * closing a listener with a connection still queued, and "localhost"
  * resolving to ::1 and 127.0.0.1 without DNS. */
 #include <stdio.h>
@@ -45,12 +45,18 @@ static void pair(int family, const char *name)
 
     SOCKET c = socket(family, SOCK_STREAM, 0);
     u_long nb = 1;
+    ioctlsocket(l, FIONBIO, &nb);
     ioctlsocket(c, FIONBIO, &nb);
     int r = connect(c, (struct sockaddr *)&a, len);
     snprintf(what, sizeof(what), "%s: a non-blocking connect is under way", name);
     check(what, r == 0 || WSAGetLastError() == WSAEWOULDBLOCK);
     snprintf(what, sizeof(what), "%s: it becomes writable (connected)", name);
     check(what, wait_for(c, 1, 2000) == 1);
+    struct sockaddr_storage pn; int pl = sizeof(pn);
+    memset(&pn, 0, sizeof(pn));
+    snprintf(what, sizeof(what), "%s: getpeername names the peer after a non-blocking connect (NSS's TLS start)", name);
+    check(what, getpeername(c, (struct sockaddr *)&pn, &pl) == 0 && pn.ss_family == family &&
+                ntohs(((struct sockaddr_in *)&pn)->sin_port) == port);
     snprintf(what, sizeof(what), "%s: the client sends before accept", name);
     check(what, send(c, "ping", 4, 0) == 4);
     snprintf(what, sizeof(what), "%s: the listener is readable", name);
@@ -61,6 +67,8 @@ static void pair(int family, const char *name)
     char b[8] = { 0 };
     snprintf(what, sizeof(what), "%s: the bytes sent before accept arrive", name);
     check(what, wait_for(s, 0, 2000) == 1 && recv(s, b, sizeof(b), 0) == 4 && !memcmp(b, "ping", 4));
+    snprintf(what, sizeof(what), "%s: the accepted socket is non-blocking like its listener (NSPR's socket pair)", name);
+    check(what, recv(s, b, sizeof(b), 0) == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK);
     snprintf(what, sizeof(what), "%s: and the other way", name);
     check(what, send(s, "pong", 4, 0) == 4 && wait_for(c, 0, 2000) == 1 && recv(c, b, sizeof(b), 0) == 4 &&
                 !memcmp(b, "pong", 4));
@@ -77,6 +85,40 @@ static void pair(int family, const char *name)
     snprintf(what, sizeof(what), "%s: closing a listener with a queued connection", name);
     check(what, 1);                                     /* (it used to stop the network) */
     closesocket(c2);
+}
+
+/* shutdown(SD_BOTH) with data unread, then the peer closes: the
+ * connection ends while its socket is still open (it once left the kernel
+ * holding a freed lwIP pcb, which corrupted the network on close) */
+static void shutdown_both(void)
+{
+    struct sockaddr_in a;
+    int len = sizeof(a);
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    SOCKET l = socket(AF_INET, SOCK_STREAM, 0);
+    bind(l, (struct sockaddr *)&a, len);
+    listen(l, 5);
+    getsockname(l, (struct sockaddr *)&a, &len);
+    for (int round = 0; round < 3; round++) {
+        SOCKET c = socket(AF_INET, SOCK_STREAM, 0);
+        int ok = connect(c, (struct sockaddr *)&a, len) == 0;
+        SOCKET s = accept(l, 0, 0);
+        char b[8];
+        ok = ok && s != INVALID_SOCKET && send(s, "unread", 6, 0) == 6;
+        Sleep(50);
+        ok = ok && shutdown(c, SD_BOTH) == 0;
+        ok = ok && wait_for(s, 0, 2000) == 1 && recv(s, b, sizeof(b), 0) == 0;   /* the client's FIN */
+        ok = ok && recv(c, b, sizeof(b), 0) == 0;                               /* nothing more to read */
+        closesocket(s);
+        Sleep(100);                                     /* the connection ends with c still open */
+        closesocket(c);
+        char what[96];
+        snprintf(what, sizeof(what), "shutdown(SD_BOTH) with unread data, then the peer closes (round %d)", round + 1);
+        check(what, ok);
+    }
+    closesocket(l);
 }
 
 static void localhost(void)
@@ -99,13 +141,39 @@ static void localhost(void)
           he && *(ULONG *)he->h_addr_list[0] == htonl(INADDR_LOOPBACK));
 }
 
+/* Winsock 1.1 (wsock32.dll): NSPR imports it by ordinal, and three of its
+ * ordinals differ from ws2_32's (inet_addr 10, inet_ntoa 11, ioctlsocket 12) */
+static void winsock11(void)
+{
+    HMODULE m = LoadLibraryA("wsock32.dll"), w2 = GetModuleHandleA("ws2_32.dll");
+    check("wsock32.dll loads", m != 0);
+    if (!m) return;
+    check("wsock32 ordinal 12 is ioctlsocket (ws2_32's is 10)",
+          GetProcAddress(m, (LPCSTR)12) == GetProcAddress(m, "ioctlsocket") &&
+          GetProcAddress(w2, (LPCSTR)10) == GetProcAddress(w2, "ioctlsocket"));
+    check("wsock32 ordinals 10, 11 and 23 are inet_addr, inet_ntoa and socket",
+          GetProcAddress(m, (LPCSTR)10) == GetProcAddress(m, "inet_addr") &&
+          GetProcAddress(m, (LPCSTR)11) == GetProcAddress(m, "inet_ntoa") &&
+          GetProcAddress(m, (LPCSTR)23) == GetProcAddress(m, "socket"));
+    SOCKET (WSAAPI *sock)(int, int, int) = (SOCKET (WSAAPI *)(int, int, int))GetProcAddress(m, (LPCSTR)23);
+    int (WSAAPI *ioctl)(SOCKET, long, u_long *) = (int (WSAAPI *)(SOCKET, long, u_long *))GetProcAddress(m, (LPCSTR)12);
+    int (WSAAPI *cls)(SOCKET) = (int (WSAAPI *)(SOCKET))GetProcAddress(m, (LPCSTR)3);
+    u_long one = 1;
+    SOCKET s = sock && ioctl && cls ? sock(AF_INET, SOCK_STREAM, 0) : INVALID_SOCKET;
+    check("a socket goes non-blocking through wsock32 ordinals 23, 12 and 3 (NSPR's way)",
+          s != INVALID_SOCKET && ioctl(s, FIONBIO, &one) == 0 && cls(s) == 0);
+    FreeLibrary(m);
+}
+
 int main(void)
 {
     WSADATA w;
     if (WSAStartup(MAKEWORD(2, 2), &w) != 0) { printf("WSAStartup failed\n"); return 1; }
     pair(AF_INET, "127.0.0.1");
     pair(AF_INET6, "::1");
+    shutdown_both();
     localhost();
+    winsock11();
     printf("looptest: %d passed, %d failed\n", passed, failed);
     return failed != 0;
 }

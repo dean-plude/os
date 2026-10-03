@@ -1,5 +1,9 @@
 {
-  "deps": ["kernel32", "ntdll"],
-  "base": "0x7FFD00000000",
-  "base_x86": "0x95000000"
+  "deps": ["msvcrt", "kernel32", "ntdll"],
+  "ordinals": {
+    "GetDefaultPrinterA": 201,
+    "SetDefaultPrinterA": 202,
+    "GetDefaultPrinterW": 203,
+    "SetDefaultPrinterW": 204
+  }
 }

@@ -56,6 +56,11 @@ u_short htons(u_short v) { return (u_short)((v << 8) | (v >> 8)); }
 u_short ntohs(u_short v) { return htons(v); }
 u_long  htonl(u_long v) { return ((v & 0xFF) << 24) | ((v & 0xFF00) << 8) | ((v >> 8) & 0xFF00) | ((v >> 24) & 0xFF); }
 u_long  ntohl(u_long v) { return htonl(v); }
+/* the WSA forms take the socket (whose byte order is always the network's) */
+__declspec(dllexport) int WSAAPI WSAHtonl(SOCKET s, u_long v, u_long *out) { (void)s; if (!out) return SOCKET_ERROR; *out = htonl(v); return 0; }
+__declspec(dllexport) int WSAAPI WSAHtons(SOCKET s, u_short v, u_short *out) { (void)s; if (!out) return SOCKET_ERROR; *out = htons(v); return 0; }
+__declspec(dllexport) int WSAAPI WSANtohl(SOCKET s, u_long v, u_long *out) { (void)s; if (!out) return SOCKET_ERROR; *out = ntohl(v); return 0; }
+__declspec(dllexport) int WSAAPI WSANtohs(SOCKET s, u_short v, u_short *out) { (void)s; if (!out) return SOCKET_ERROR; *out = ntohs(v); return 0; }
 
 unsigned long inet_addr(const char *cp)
 {
@@ -134,9 +139,12 @@ int bind(SOCKET s, const struct sockaddr *name, int namelen)
 
 int listen(SOCKET s, int backlog) { long r = NtNovaSockListen((INT_PTR)s, backlog); return r < 0 ? sock_err(r) : 0; }
 
+void evsel_rearm(SOCKET s, long bits);          /* wsa.c: WSAAsyncSelect re-enabling */
+
 SOCKET accept(SOCKET s, struct sockaddr *addr, int *addrlen)
 {
     BYTE sa[28];
+    evsel_rearm(s, FD_ACCEPT);
     INT_PTR h = NtNovaSockAccept((INT_PTR)s, sa);
     if (!h) { set_err(WSAEWOULDBLOCK); return INVALID_SOCKET; }
     addr_out(sa, addr, addrlen);
@@ -147,13 +155,18 @@ int send(SOCKET s, const char *buf, int len, int flags)
 {
     (void)flags;
     long r = NtNovaSockSend((INT_PTR)s, buf, len);
-    return r < 0 ? sock_err(r) : (int)r;
+    if (r < 0) {
+        int e = sock_err(r);
+        if (WSAGetLastError() == WSAEWOULDBLOCK) evsel_rearm(s, FD_WRITE);
+        return e;
+    }
+    return (int)r;
 }
 
 int recv(SOCKET s, char *buf, int len, int flags)
 {
-    (void)flags;
-    long r = NtNovaSockRecv((INT_PTR)s, buf, len);
+    evsel_rearm(s, FD_READ);
+    long r = (flags & MSG_PEEK) ? NtNovaSockCtl((INT_PTR)s, 8, len, buf) : NtNovaSockRecv((INT_PTR)s, buf, len);
     return r < 0 ? sock_err(r) : (int)r;
 }
 
@@ -171,6 +184,7 @@ int recvfrom(SOCKET s, char *buf, int len, int flags, struct sockaddr *from, int
 {
     (void)flags;
     BYTE sa[28];
+    evsel_rearm(s, FD_READ);
     long r = NtNovaSockRecvFrom((INT_PTR)s, buf, len, sa);
     if (r < 0) return sock_err(r);
     addr_out(sa, from, fromlen);
@@ -182,7 +196,12 @@ int shutdown(SOCKET s, int how) { long r = NtNovaSockCtl((INT_PTR)s, 1, how, 0);
 int ioctlsocket(SOCKET s, long cmd, u_long *argp)
 {
     if ((unsigned long)cmd == FIONBIO) { NtNovaSockCtl((INT_PTR)s, 0, argp && *argp ? 1 : 0, 0); return 0; }
-    if ((unsigned long)cmd == FIONREAD) { if (argp) *argp = 0; return 0; }
+    if ((unsigned long)cmd == FIONREAD) {
+        long n = NtNovaSockCtl((INT_PTR)s, 7, 0, 0);
+        if (n < 0) return sock_err(n);
+        if (argp) *argp = (u_long)(n & 0x3FFFFFFF);
+        return 0;
+    }
     set_err(WSAEINVAL);
     return SOCKET_ERROR;
 }

@@ -698,6 +698,7 @@ OPEN3(NtOpenEvent)
 OPEN3(NtOpenMutant)
 OPEN3(NtOpenSemaphore)
 OPEN3(NtOpenKey)
+OPEN3(NtOpenTimer)
 
 NTSTATUS NTAPI NtCreateEvent(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, EVENT_TYPE type, BOOLEAN state)
 {
@@ -722,6 +723,19 @@ NTSTATUS NTAPI NtCreateSemaphore(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa,
     box_out(&hb);
     return s;
 }
+
+NTSTATUS NTAPI NtCreateTimer(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, ULONG type)
+{
+    Box hb; OAC oc;
+    NTSTATUS s = SC(NtCreateTimer, HBOX(hb, h), U(access), oa_in(&oc, oa), U(type));
+    box_out(&hb);
+    return s;
+}
+NTSTATUS NTAPI NtSetTimer(HANDLE h, PLARGE_INTEGER due, PVOID apc, PVOID ctx, BOOLEAN resume, LONG period, BOOLEAN *prev)
+{
+    return SC(NtSetTimer, H(h), P(due), P(apc), P(ctx), U(resume), S(period), P(prev));
+}
+NTSTATUS NTAPI NtCancelTimer(HANDLE h, BOOLEAN *state) { return SC(NtCancelTimer, H(h), P(state)); }
 
 NTSTATUS NTAPI NtSetEvent(HANDLE h, PLONG prev)      { return SC(NtSetEvent, H(h), P(prev)); }
 NTSTATUS NTAPI NtResetEvent(HANDLE h, PLONG prev)    { return SC(NtResetEvent, H(h), P(prev)); }
@@ -864,7 +878,7 @@ NTSTATUS NTAPI NtAlertThreadByThreadId(HANDLE tid) { return SC(NtAlertThreadByTh
  * ----------------------------------------------------------------------- */
 NTSTATUS NTAPI NtNovaLoadDll(const char *name, ULONG len, PVOID *base, ULONG flags)
 {
-    U64 b = 0;
+    U64 b = (flags & 0x80000000u) && base ? (U64)(ULONG_PTR)*base : 0;   /* (a search-path cookie, in) */
     NTSTATUS s = SC(NtNovaLoadDll, P(name), U(len), P(&b), U(flags));
     if (base && NT_SUCCESS(s)) *base = (PVOID)(ULONG_PTR)b;
     return s;

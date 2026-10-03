@@ -20,7 +20,8 @@ Options: --mem MiB (2048), --smp N (2), --timeout S per command (120),
 output QEMU records to PATH), --rec PATH (an Intel HD Audio card whose
 microphone hears the WAV at PATH over and over, through a private
 PulseAudio server; with --wav its output is recorded too), --net (a network card on QEMU user
-networking; the host is 10.0.2.2).
+networking; the host is 10.0.2.2), --monitors N (N - 1 more monitors, QEMU
+secondary-vga devices; "!shot NAME.png" then also saves NAME-2.png, ...).
 
 Other tools (tools/selftest.py) import the Nova class to drive a boot.
 """
@@ -126,12 +127,23 @@ def make_data(path, puts, size_mb):
             subprocess.run(['mcopy', '-o', '-i', path, host, target], check=True, env=env)
 
 
+def accel_args():
+    """KVM when /dev/kvm is usable, TCG otherwise.  NOVARUN_ACCEL=tcg|kvm forces one."""
+    want = os.environ.get('NOVARUN_ACCEL', 'auto')
+    if want == 'auto':
+        want = 'kvm' if os.access('/dev/kvm', os.R_OK | os.W_OK) else 'tcg'
+    return ['-accel', want]
+
+
 class Nova:
     """One NovaOS boot in QEMU with its Terminal open and mirrored to serial"""
 
     def __init__(self, img=None, work=None, puts=(), mem=2048, smp=2, data_mb=1024, wav=None,
                  extra_args=(), boot_timeout=300, net=False, keep_data=False, vga=('-vga', 'std'), rec=None):
         self.work = work or tempfile.mkdtemp(prefix='novarun')
+        # more monitors: QEMU display devices with an id (-device secondary-vga,id=head2)
+        self.heads = [m.group(1) for a in extra_args
+                      for m in [re.match(r'(?:secondary-vga|bochs-display),(?:.*,)?id=([\w-]+)', a)] if m]
         os.makedirs(self.work, exist_ok=True)
         data, self.serial_path, sock = (os.path.join(self.work, n) for n in ('data.img', 'serial.log', 'qmp.sock'))
         for p in (self.serial_path, sock):
@@ -150,7 +162,7 @@ class Nova:
                      '-device', 'intel-hda', '-device', 'hda-output,audiodev=snd0']
         else:
             audio = []
-        self.q = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35', '-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
+        self.q = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35'] + accel_args() + ['-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
                                    '-m', str(mem), '-smp', str(smp),
                                    '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
                                    '-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on',
@@ -276,7 +288,12 @@ class Nova:
         self.pulse = []
 
     def shot(self, path):
+        """A screenshot of the primary display at @path; with more monitors,
+        each further one's at PATH-2.png, PATH-3.png, ..."""
         self.qmp.cmd('screendump', filename=os.path.abspath(path), format='png')
+        for i, head in enumerate(self.heads):
+            self.qmp.cmd('screendump', filename=os.path.abspath(re.sub(r'(\.png)?$', f'-{i + 2}.png', path, count=1)),
+                         format='png', device=head)
 
     def hmp(self, line):
         """A QEMU monitor command (e.g. "o /b 0xe8 1": write an I/O port)"""
@@ -345,12 +362,15 @@ def main():
     ap.add_argument('--display', default='std',
                     help='the display adapter: a -vga name (std, cirrus, vmware, qxl, virtio) or a -device name (bochs-display)')
     ap.add_argument('--extra', action='append', default=[], help='more QEMU arguments (split like a shell)')
+    ap.add_argument('--monitors', type=int, default=1,
+                    help='monitors: each one past the first is a QEMU secondary-vga (screenshots save one PNG per monitor)')
     ap.add_argument('commands', nargs='*')
     a = ap.parse_args()
 
     try:
         nova = Nova(a.img, a.keep, [p.split('=', 1) for p in a.put], a.mem, a.smp, a.data_mb, a.wav, net=a.net,
-                    vga=vga_args(a.display), rec=a.rec, extra_args=[x for e in a.extra for x in shlex.split(e)])
+                    vga=vga_args(a.display), rec=a.rec, extra_args=[x for e in a.extra for x in shlex.split(e)] +
+                    [x for i in range(2, a.monitors + 1) for x in ('-device', f'secondary-vga,id=head{i}')])
     except RuntimeError as e:
         sys.exit(str(e))
     try:

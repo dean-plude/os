@@ -534,10 +534,20 @@ static int is_timer_proc(HWND h, UINT_PTR id, LPARAM fn)
 /* Key state: g_keys is as of the last input message taken from the queue
  * (GetKeyState); g_async is what the keyboard is doing now */
 BYTE g_async[256];
+/* Alt (or F10) went down and no other key or button has since: only then
+ * does its release open the menu bar, so Ctrl+Alt+S leaves the menu alone */
+int g_alt_tap;
 
 static void key_state(BYTE *keys, UINT msg, WPARAM wp)
 {
     BYTE vk = (BYTE)wp;
+    if (keys == g_keys) {
+        if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
+            if (vk == VK_MENU || vk == VK_F10) { if (!(keys[vk] & 0x80)) g_alt_tap = !(keys[VK_CONTROL] & 0x80) && !(keys[VK_SHIFT] & 0x80); }
+            else g_alt_tap = 0;
+        } else if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN ||
+                   msg == WM_NCLBUTTONDOWN || msg == WM_NCRBUTTONDOWN) g_alt_tap = 0;
+    }
     switch (msg) {
     case WM_KEYDOWN: case WM_SYSKEYDOWN:
         if (!(keys[vk] & 0x80)) keys[vk] ^= 1;
@@ -554,6 +564,10 @@ static void key_state(BYTE *keys, UINT msg, WPARAM wp)
     case WM_RBUTTONUP: case WM_NCRBUTTONUP: keys[VK_RBUTTON] &= ~0x80; break;
     case WM_MBUTTONDOWN: case WM_MBUTTONDBLCLK: keys[VK_MBUTTON] |= 0x80; break;
     case WM_MBUTTONUP: keys[VK_MBUTTON] &= ~0x80; break;
+    case WM_XBUTTONDOWN: case WM_XBUTTONDBLCLK: case WM_NCXBUTTONDOWN: case WM_NCXBUTTONDBLCLK:
+        keys[HIWORD(wp) == XBUTTON2 ? VK_XBUTTON2 : VK_XBUTTON1] |= 0x80;
+        break;
+    case WM_XBUTTONUP: case WM_NCXBUTTONUP: keys[HIWORD(wp) == XBUTTON2 ? VK_XBUTTON2 : VK_XBUTTON1] &= ~0x80; break;
     }
 }
 
@@ -566,7 +580,7 @@ Wnd *top_by_kid(UINT32 kid)
 static HWND g_track_leave;           /* TrackMouseEvent(TME_LEAVE) */
 static int  g_track_nc;
 static HWND g_last_mouse;            /* the window the pointer was last over */
-static struct { HWND h; UINT msg; DWORD time; POINT pt; } g_last_click;
+static struct { HWND h; UINT msg; WORD xb; DWORD time; POINT pt; } g_last_click;
 
 void track_mouse_leave(HWND h, int nc) { g_track_leave = h; g_track_nc = nc; }
 void cancel_track_mouse(HWND h) { if (g_track_leave == h) g_track_leave = 0; }
@@ -625,6 +639,7 @@ static void route_mouse(Wnd *top, const MSG *km)
     g_cursor = pt;
     DWORD time = km->time ? km->time : GetTickCount();
     WPARAM mk = km->wParam & 0xFFFF;
+    WORD xb = (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP || msg == WM_XBUTTONDBLCLK) ? HIWORD(km->wParam) : 0;
     key_state(g_async, msg, km->wParam);
     if (msg == WM_LBUTTONDBLCLK) msg = WM_LBUTTONDOWN;      /* user32 decides what is a double click */
 
@@ -649,28 +664,30 @@ static void route_mouse(Wnd *top, const MSG *km)
         queue_input(dest, msg, km->wParam, MAKELPARAM(pt.x, pt.y), time);
         return;
     }
-    if (msg == WM_MOUSEMOVE || msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN) {
+    if (msg == WM_MOUSEMOVE || msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN) {
         if (!cap) send_msg(target, WM_SETCURSOR, (WPARAM)target->h, MAKELPARAM(hit, msg));
         if (!W_quiet(target->h)) return;
     }
     /* double clicks */
-    if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN) {
-        int dbl = g_last_click.h == target->h && g_last_click.msg == msg && time - g_last_click.time <= GetDoubleClickTime() &&
+    if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN) {
+        int dbl = g_last_click.h == target->h && g_last_click.msg == msg && g_last_click.xb == xb &&
+                  time - g_last_click.time <= GetDoubleClickTime() &&
                   abs(pt.x - g_last_click.pt.x) <= 4 && abs(pt.y - g_last_click.pt.y) <= 4;
         if (dbl && (hit != HTCLIENT || (target->cls && (target->cls->style & CS_DBLCLKS)))) {
             msg += WM_LBUTTONDBLCLK - WM_LBUTTONDOWN;
             g_last_click.h = 0;
         } else {
-            g_last_click.h = target->h; g_last_click.msg = msg; g_last_click.time = time; g_last_click.pt = pt;
+            g_last_click.h = target->h; g_last_click.msg = msg; g_last_click.xb = xb; g_last_click.time = time; g_last_click.pt = pt;
         }
     }
     g_last_mouse = target->h;
     if (hit == HTCLIENT || cap) {
         POINT o;
         wnd_screen_origin(target, 1, &o);
-        queue_input(target, msg, mk, MAKELPARAM(pt.x - o.x, pt.y - o.y), time);
+        queue_input(target, msg, mk | ((WPARAM)xb << 16), MAKELPARAM(pt.x - o.x, pt.y - o.y), time);
     } else {
-        queue_input(target, msg - WM_MOUSEMOVE + WM_NCMOUSEMOVE, (WPARAM)hit, MAKELPARAM(pt.x, pt.y), time);
+        /* (WM_XBUTTON* - WM_MOUSEMOVE + WM_NCMOUSEMOVE is WM_NCXBUTTON*, with the button in HIWORD) */
+        queue_input(target, msg - WM_MOUSEMOVE + WM_NCMOUSEMOVE, (WPARAM)hit | ((WPARAM)xb << 16), MAKELPARAM(pt.x, pt.y), time);
     }
 }
 
@@ -678,8 +695,16 @@ static void route_key(Wnd *top, const MSG *km)
 {
     UINT msg = km->message;
     key_state(g_async, msg, km->wParam);
-    if (top->style & WS_DISABLED) return;
     Wnd *f = W_quiet(g_focus);
+    if (top->style & WS_DISABLED) {
+        /* a modal dialog went up between the key going down and coming up (Ctrl+Alt+S
+         * opening Save As): the dialog gets the keys, so Ctrl and Alt don't stay held */
+        Wnd *a = W_quiet(g_active);
+        Wnd *alt = f && !(top_of(f)->style & WS_DISABLED) ? top_of(f) : a && !(a->style & WS_DISABLED) ? a : NULL;
+        if (alt && alt->tid == top->tid) top = alt;
+        else if (msg == WM_KEYUP || msg == WM_SYSKEYUP) { queue_input(top, msg, km->wParam, km->lParam, km->time ? km->time : GetTickCount()); return; }
+        else return;
+    }
     Wnd *target = f && top_of(f) == top ? f : NULL;
     if (!target) {
         /* the focus is elsewhere (a popup menu) or nowhere: the active window */
@@ -1007,6 +1032,21 @@ USERAPI BOOL UnhookWindowsHook(int id, HOOKPROC fn)
     for (int i = 0; i < 32; i++) if (g_hooks[i].used && g_hooks[i].id == id && g_hooks[i].fn == fn) g_hooks[i].used = 0;
     return TRUE;
 }
+/* WH_CBT: the hooks of this thread (and the global ones) see a window
+ * being created or destroyed; a non-zero answer stops it.  MFC's
+ * _AfxCbtFilterHook ties its CWnd object to the new window here.  Each
+ * hook is called in turn (CallNextHookEx leaves the chaining to us). */
+LRESULT cbt_hook(int code, WPARAM wp, LPARAM lp)
+{
+    DWORD tid = GetCurrentThreadId();
+    for (int i = 31; i >= 0; i--)
+        if (g_hooks[i].used && g_hooks[i].id == WH_CBT && (!g_hooks[i].tid || g_hooks[i].tid == tid)) {
+            HOOKPROC fn = g_hooks[i].fn;
+            if (fn(code, wp, lp)) return 1;
+        }
+    return 0;
+}
+
 USERAPI LRESULT CallNextHookEx(HHOOK h, int code, WPARAM wp, LPARAM lp) { (void)h; (void)code; (void)wp; (void)lp; return 0; }
 USERAPI BOOL CallMsgFilterW(LPMSG m, int code)
 {

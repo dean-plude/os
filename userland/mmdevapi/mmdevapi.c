@@ -7,7 +7,7 @@
  * format is 48 kHz float stereo, but any PCM or float format is accepted
  * and converted).  On the speakers each ReleaseBuffer converts the frames
  * onto a kernel mixer stream and the padding is what the stream still
- * holds; on the recording endpoint the client buffer fills from a kernel
+ * holds beyond the engine's 100 ms lead; on the recording endpoint the client buffer fills from a kernel
  * capture stream and IAudioCaptureClient hands it out a device period at a
  * time.  In event mode a helper thread sets the client's event every
  * device period while the stream runs.  IAudioEndpointVolume is each
@@ -69,6 +69,11 @@ static const GUID FMTID_EngineFormat = { 0xF19F064D, 0x082C, 0x4E27, { 0xBC, 0x7
 #define PERIOD   100000LL           /* 10 ms, in 100 ns units */
 #define MIN_BUF  300000LL           /* 30 ms */
 #define DEF_BUF  500000LL           /* 50 ms */
+/* The engine's own buffer: frames a client has released and the kernel
+ * stream still holds beyond this lead count as played, so the client
+ * writes LEAD ahead of the mixer and a late wakeup (a loaded host) does
+ * not starve the stream (a 30 ms client buffer alone would). */
+#define LEAD     (AC_RATE / 10)     /* 100 ms, mixer frames */
 
 typedef struct {
     WORD vt, r1, r2, r3;
@@ -235,7 +240,8 @@ static UINT32 padding(Client *c)
     if (c->flow) { cap_pull(c); return c->filled; }
     StreamStatus st;
     if (!c->stream || NtNovaAudioCtl(c->stream, 0, 0, &st)) return 0;
-    ULONGLONG p = (ULONGLONG)st.queued * c->conv.rate / AC_RATE;
+    if (st.queued <= LEAD) return 0;
+    ULONGLONG p = (ULONGLONG)(st.queued - LEAD) * c->conv.rate / AC_RATE;
     return p > c->frames ? c->frames : (UINT32)p;
 }
 
@@ -287,10 +293,10 @@ static HRESULT STDMETHODCALLTYPE ac_initialize(Client *c, int mode, DWORD flags,
     memcpy(&c->fmt, fmt, sizeof(AcWaveFormat) + (fmt->wFormatTag == 0xFFFE ? 22 : 0));
     if (dur <= 0) dur = DEF_BUF;
     if (dur < MIN_BUF) dur = MIN_BUF;
-    if (dur > 20000000) dur = 20000000;                         /* 2 s: the most a stream holds */
+    if (dur > 18000000) dur = 18000000;                         /* 1.8 s + the lead: the most a stream holds (2 s) */
     c->frames = (UINT32)((dur * c->conv.rate + 9999999) / 10000000);
     c->buf = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)c->frames * c->conv.block);
-    UINT32 dev = (UINT32)((ULONGLONG)c->frames * AC_RATE / c->conv.rate) + 1024;
+    UINT32 dev = (UINT32)((ULONGLONG)c->frames * AC_RATE / c->conv.rate) + LEAD + 1024;
     c->stream = c->buf ? NtNovaAudioOpen(dev | (c->flow ? 0x80000000u : 0)) : 0;   /* capture: a recording stream */
     if (!c->stream) { hr = E_OUTOFMEMORY; goto out; }
     c->event_mode = (flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0;
@@ -318,7 +324,7 @@ static HRESULT STDMETHODCALLTYPE ac_get_latency(Client *c, LONGLONG *t)
 {
     if (!t) return E_POINTER;
     if (!c->init) return AUDCLNT_E_NOT_INITIALIZED;
-    *t = 800000;                                                /* the mixer runs 80 ms ahead */
+    *t = 800000 + LEAD * 10000000LL / AC_RATE;                  /* the mixer runs 80 ms ahead, plus the lead */
     return S_OK;
 }
 

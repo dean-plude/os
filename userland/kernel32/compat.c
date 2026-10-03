@@ -150,15 +150,7 @@ K32 DWORD WINAPI GetCompressedFileSizeA(LPCSTR name, LPDWORD high)
     return GetCompressedFileSizeW(w, high);
 }
 
-/* No reparse points or links on drive C: (FAT-like semantics) */
-K32 BOOL WINAPI CreateHardLinkW(LPCWSTR link, LPCWSTR target, LPSECURITY_ATTRIBUTES sa)
-{
-    (void)link; (void)target; (void)sa;
-    SetLastError(ERROR_NOT_SUPPORTED);
-    return FALSE;
-}
-K32 BOOL WINAPI CreateHardLinkA(LPCSTR link, LPCSTR target, LPSECURITY_ATTRIBUTES sa)
-{ (void)link; (void)target; (void)sa; SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
+/* No reparse points on drive C: (hard links: CreateHardLink in extra.c) */
 K32 BOOLEAN WINAPI CreateSymbolicLinkW(LPCWSTR link, LPCWSTR target, DWORD flags)
 { (void)link; (void)target; (void)flags; SetLastError(ERROR_PRIVILEGE_NOT_HELD); return FALSE; }
 K32 BOOLEAN WINAPI CreateSymbolicLinkA(LPCSTR link, LPCSTR target, DWORD flags)
@@ -813,8 +805,91 @@ K32 VOID WINAPI CloseThreadpoolWait(PVOID p)
     zfree(w);
 }
 
+/* Threadpool timers and timer queue timers: a worker thread per timer
+ * waits on a kernel waitable timer (to the TSC, not the 10 ms tick;
+ * periodic ones on their own grid, so they don't drift) and calls the
+ * callback.  A freed timer's worker waits for the next one: a new thread
+ * would start late on a busy machine, and its first callback with it. */
+typedef struct Worker {
+    struct Worker *next;            /* (the idle list) */
+    HANDLE timer, thread;
+    SRWLOCK lock;                   /* the callback below */
+    void (*call)(void *a, void *b, void *c);   /* NULL: no timer uses it */
+    void *a, *b, *c;
+    volatile LONG busy;             /* in a callback */
+    DWORD tid;
+} Worker;
+static Worker *g_idle_workers;
+static SRWLOCK g_worker_lock;
+
+static DWORD WINAPI worker_thread(LPVOID p)
+{
+    Worker *w = p;
+    w->tid = GetCurrentThreadId();
+    for (;;) {
+        if (WaitForSingleObject(w->timer, INFINITE) != WAIT_OBJECT_0) { Sleep(10); continue; }
+        AcquireSRWLockExclusive(&w->lock);
+        void (*call)(void *, void *, void *) = w->call;
+        void *a = w->a, *b = w->b, *c = w->c;
+        if (call) w->busy = 1;
+        ReleaseSRWLockExclusive(&w->lock);
+        if (!call) continue;
+        call(a, b, c);
+        w->busy = 0;
+    }
+}
+
+static Worker *worker_get(void (*call)(void *, void *, void *), void *a, void *b, void *c)
+{
+    AcquireSRWLockExclusive(&g_worker_lock);
+    Worker *w = g_idle_workers;
+    if (w) g_idle_workers = w->next;
+    ReleaseSRWLockExclusive(&g_worker_lock);
+    if (!w) {
+        w = zalloc(sizeof(*w));
+        if (!w) return 0;
+        w->timer = CreateWaitableTimerW(0, FALSE, 0);
+        w->thread = w->timer ? CreateThread(0, 64 * 1024, worker_thread, w, 0, 0) : 0;
+        if (!w->thread) { if (w->timer) CloseHandle(w->timer); zfree(w); return 0; }
+    }
+    AcquireSRWLockExclusive(&w->lock);
+    w->call = call; w->a = a; w->b = b; w->c = c;
+    ReleaseSRWLockExclusive(&w->lock);
+    return w;
+}
+
+/* @due: 100 ns units, negative relative (as SetWaitableTimer); @period ms */
+static void worker_set(Worker *w, LONGLONG due, DWORD period)
+{
+    LARGE_INTEGER d;
+    d.QuadPart = due;
+    SetWaitableTimer(w->timer, &d, (LONG)period, 0, 0, FALSE);
+}
+
+/* No more callbacks; when @wait, a running one has finished too (unless
+ * it is the caller) */
+static void worker_quiet(Worker *w, BOOL wait)
+{
+    CancelWaitableTimer(w->timer);
+    AcquireSRWLockExclusive(&w->lock);
+    w->call = 0;
+    ReleaseSRWLockExclusive(&w->lock);
+    if (wait && w->tid != GetCurrentThreadId()) while (w->busy) Sleep(1);
+}
+
+static void worker_put(Worker *w, BOOL wait)
+{
+    worker_quiet(w, wait);
+    AcquireSRWLockExclusive(&g_worker_lock);
+    w->next = g_idle_workers;
+    g_idle_workers = w;
+    ReleaseSRWLockExclusive(&g_worker_lock);
+}
+
 typedef VOID (WINAPI *TpTimerFn)(PVOID instance, PVOID ctx, PVOID timer);
-typedef struct { DWORD magic; TpTimerFn fn; PVOID ctx; HANDLE thread, stop; LONGLONG due; DWORD period; volatile LONG armed; } TpTimer;
+typedef struct { DWORD magic; TpTimerFn fn; PVOID ctx; Worker *w; BOOL set; } TpTimer;
+
+static void tp_timer_call(void *fn, void *ctx, void *t) { ((TpTimerFn)fn)(0, ctx, t); }
 
 K32 PVOID WINAPI CreateThreadpoolTimer(TpTimerFn fn, PVOID ctx, PVOID env)
 {
@@ -822,45 +897,112 @@ K32 PVOID WINAPI CreateThreadpoolTimer(TpTimerFn fn, PVOID ctx, PVOID env)
     TpTimer *t = zalloc(sizeof(*t));
     if (!t) return 0;
     t->magic = 0x54505449; t->fn = fn; t->ctx = ctx;
-    t->stop = CreateEventW(0, FALSE, FALSE, 0);
+    t->w = worker_get(tp_timer_call, (void *)fn, ctx, t);
+    if (!t->w) { zfree(t); return 0; }
     return t;
-}
-
-static DWORD WINAPI tp_timer_thread(LPVOID p)
-{
-    TpTimer *t = p;
-    DWORD wait = (DWORD)t->due;
-    for (;;) {
-        if (WaitForSingleObject(t->stop, wait) != WAIT_TIMEOUT) break;
-        t->fn(0, t->ctx, t);
-        if (!t->period) break;
-        wait = t->period;
-    }
-    return 0;
 }
 
 K32 VOID WINAPI SetThreadpoolTimer(PVOID p, PFILETIME due, DWORD period, DWORD window)
 {
     (void)window;
     TpTimer *t = p;
-    if (t->thread) { SetEvent(t->stop); WaitForSingleObject(t->thread, INFINITE); CloseHandle(t->thread); t->thread = 0; ResetEvent(t->stop); }
-    if (!due) return;
+    if (!due) { CancelWaitableTimer(t->w->timer); t->set = FALSE; return; }
     LONGLONG d = ft(due);
-    if (d < 0) t->due = -d / 10000;
-    else { FILETIME now; GetSystemTimeAsFileTime(&now); LONGLONG x = d - ft(&now); t->due = x > 0 ? x / 10000 : 0; }
-    t->period = period;
-    t->thread = CreateThread(0, 0, tp_timer_thread, t, 0, 0);
+    worker_set(t->w, d ? d : -1, period);           /* (0 is "now"; as an absolute time it is long gone) */
+    t->set = TRUE;
 }
-K32 BOOL WINAPI IsThreadpoolTimerSet(PVOID p) { return ((TpTimer *)p)->thread != 0; }
-K32 VOID WINAPI WaitForThreadpoolTimerCallbacks(PVOID p, BOOL cancel) { (void)p; (void)cancel; }
+K32 BOOL WINAPI IsThreadpoolTimerSet(PVOID p) { return ((TpTimer *)p)->set; }
+K32 VOID WINAPI WaitForThreadpoolTimerCallbacks(PVOID p, BOOL cancel)
+{
+    TpTimer *t = p;
+    if (cancel) SetThreadpoolTimer(t, 0, 0, 0);
+    if (t->w->tid != GetCurrentThreadId()) while (t->w->busy) Sleep(1);
+}
 K32 VOID WINAPI CloseThreadpoolTimer(PVOID p)
 {
     TpTimer *t = p;
-    SetThreadpoolTimer(t, 0, 0, 0);
-    CloseHandle(t->stop);
+    worker_put(t->w, FALSE);
     t->magic = 0;
     zfree(t);
 }
+
+/* Timer queues (CreateTimerQueueTimer): the timers above, in a list per
+ * queue (NULL: the default queue) */
+typedef struct QueueTimer { struct QueueTimer *next; Worker *w; struct TimerQueue *q; } QueueTimer;
+typedef struct TimerQueue { DWORD magic; QueueTimer *timers; } TimerQueue;
+static TimerQueue g_default_queue;
+static SRWLOCK g_queue_lock;
+
+static void queue_timer_call(void *fn, void *param, void *unused) { (void)unused; ((WAITORTIMERCALLBACK)fn)(param, TRUE); }
+
+K32 HANDLE WINAPI CreateTimerQueue(void)
+{
+    TimerQueue *q = zalloc(sizeof(*q));
+    if (!q) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    q->magic = 0x51524D54;
+    return q;
+}
+
+K32 BOOL WINAPI CreateTimerQueueTimer(PHANDLE out, HANDLE queue, WAITORTIMERCALLBACK fn, PVOID param,
+                                      DWORD due, DWORD period, ULONG flags)
+{
+    TimerQueue *q = queue ? queue : &g_default_queue;
+    QueueTimer *t = zalloc(sizeof(*t));
+    if (t) t->w = worker_get(queue_timer_call, (void *)fn, param, 0);
+    if (!t || !t->w) { zfree(t); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    t->q = q;
+    AcquireSRWLockExclusive(&g_queue_lock);
+    t->next = q->timers;
+    q->timers = t;
+    ReleaseSRWLockExclusive(&g_queue_lock);
+    worker_set(t->w, -(LONGLONG)due * 10000, flags & WT_EXECUTEONLYONCE ? 0 : period);
+    *out = t;
+    return TRUE;
+}
+
+K32 BOOL WINAPI ChangeTimerQueueTimer(HANDLE queue, HANDLE timer, ULONG due, ULONG period)
+{
+    (void)queue;
+    if (!timer) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    worker_set(((QueueTimer *)timer)->w, -(LONGLONG)due * 10000, period);
+    return TRUE;
+}
+
+/* @completion: INVALID_HANDLE_VALUE waits for a running callback; an
+ * event is set once it has finished; NULL returns at once */
+static void queue_timer_free(QueueTimer *t, HANDLE completion)
+{
+    worker_put(t->w, completion != 0);
+    if (completion && completion != INVALID_HANDLE_VALUE) SetEvent(completion);
+    zfree(t);
+}
+
+K32 BOOL WINAPI DeleteTimerQueueTimer(HANDLE queue, HANDLE timer, HANDLE completion)
+{
+    QueueTimer *t = timer;
+    if (!t) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    (void)queue;
+    AcquireSRWLockExclusive(&g_queue_lock);
+    for (QueueTimer **pp = &t->q->timers; *pp; pp = &(*pp)->next)
+        if (*pp == t) { *pp = t->next; break; }
+    ReleaseSRWLockExclusive(&g_queue_lock);
+    queue_timer_free(t, completion);
+    return TRUE;
+}
+
+K32 BOOL WINAPI DeleteTimerQueueEx(HANDLE queue, HANDLE completion)
+{
+    TimerQueue *q = queue ? queue : &g_default_queue;
+    AcquireSRWLockExclusive(&g_queue_lock);
+    QueueTimer *list = q->timers;
+    q->timers = 0;
+    ReleaseSRWLockExclusive(&g_queue_lock);
+    for (QueueTimer *t = list, *n; t; t = n) { n = t->next; queue_timer_free(t, completion ? INVALID_HANDLE_VALUE : 0); }
+    if (completion && completion != INVALID_HANDLE_VALUE) SetEvent(completion);
+    if (q != &g_default_queue) { q->magic = 0; zfree(q); }
+    return TRUE;
+}
+K32 BOOL WINAPI DeleteTimerQueue(HANDLE queue) { return DeleteTimerQueueEx(queue, 0); }
 
 /* Pools and environments: one pool, the calls just succeed */
 K32 PVOID WINAPI CreateThreadpool(PVOID r) { (void)r; static int pool; return &pool; }
@@ -921,145 +1063,9 @@ K32 HRESULT WINAPI RegisterApplicationRecoveryCallback(PVOID fn, PVOID p, DWORD 
 { (void)fn; (void)p; (void)ping; (void)flags; return 0; }
 
 /* -----------------------------------------------------------------------
- * National language support: dates and times, locales
+ * National language support (GetDateFormat and the other formatting
+ * functions are in nlsformat.c)
  * ----------------------------------------------------------------------- */
-static const char *const g_months[12] = { "January", "February", "March", "April", "May", "June", "July",
-                                          "August", "September", "October", "November", "December" };
-static const char *const g_days[7] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
-
-static int put_num(WCHAR *o, int n, int v, int digits)
-{
-    char t[12];
-    int k = 0;
-    do { t[k++] = (char)('0' + v % 10); v /= 10; } while (v);
-    while (k < digits) t[k++] = '0';
-    for (int i = k - 1; i >= 0; i--) o[n++] = (WCHAR)t[i];
-    return n;
-}
-static int put_str(WCHAR *o, int n, const char *s, int max)
-{
-    for (int i = 0; s[i] && (max <= 0 || i < max); i++) o[n++] = (WCHAR)s[i];
-    return n;
-}
-
-/* Formats with the en-US pictures: "M/d/yyyy", "dddd, MMMM d, yyyy", "h:mm:ss tt" */
-static int format_dt(const SYSTEMTIME *st, const WCHAR *pic, WCHAR *o)
-{
-    int n = 0;
-    for (const WCHAR *p = pic; *p && n < 200; ) {
-        WCHAR c = *p;
-        int run = 0;
-        while (p[run] == c) run++;
-        if (c == '\'') {                                    /* quoted literal */
-            p++;
-            while (*p && *p != '\'') o[n++] = *p++;
-            if (*p) p++;
-            continue;
-        }
-        switch (c) {
-        case 'd':
-            if (run <= 2) n = put_num(o, n, st->wDay, run);
-            else n = put_str(o, n, g_days[st->wDayOfWeek % 7], run == 3 ? 3 : 0);
-            break;
-        case 'M':
-            if (run <= 2) n = put_num(o, n, st->wMonth, run);
-            else n = put_str(o, n, g_months[(st->wMonth + 11) % 12], run == 3 ? 3 : 0);
-            break;
-        case 'y':
-            if (run <= 2) n = put_num(o, n, st->wYear % 100, run);
-            else n = put_num(o, n, st->wYear, 4);
-            break;
-        case 'g': break;
-        case 'h': n = put_num(o, n, st->wHour % 12 ? st->wHour % 12 : 12, run > 1 ? 2 : 1); break;
-        case 'H': n = put_num(o, n, st->wHour, run > 1 ? 2 : 1); break;
-        case 'm': n = put_num(o, n, st->wMinute, run > 1 ? 2 : 1); break;
-        case 's': n = put_num(o, n, st->wSecond, run > 1 ? 2 : 1); break;
-        case 't': n = put_str(o, n, st->wHour < 12 ? "AM" : "PM", run == 1 ? 1 : 2); break;
-        default:
-            for (int i = 0; i < run; i++) o[n++] = c;
-        }
-        p += run;
-    }
-    o[n] = 0;
-    return n;
-}
-
-static int nls_out(const WCHAR *s, int n, LPWSTR out, int cap)
-{
-    if (!cap) return n + 1;
-    if (cap < n + 1) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
-    memcpy(out, s, 2 * ((size_t)n + 1));
-    return n + 1;
-}
-
-static void pic_a(const char *s, WCHAR *w) { int i = 0; for (; s[i]; i++) w[i] = (WCHAR)s[i]; w[i] = 0; }
-
-K32 int WINAPI GetDateFormatW(LCID lcid, DWORD flags, const SYSTEMTIME *st, LPCWSTR fmt, LPWSTR out, int cap)
-{
-    (void)lcid;
-    SYSTEMTIME now;
-    if (!st) { GetLocalTime(&now); st = &now; }
-    WCHAR pic[64], buf[256];
-    if (!fmt) { pic_a(flags & 2 /* DATE_LONGDATE */ ? "dddd, MMMM d, yyyy" : "M/d/yyyy", pic); fmt = pic; }
-    int n = format_dt(st, fmt, buf);
-    return nls_out(buf, n, out, cap);
-}
-
-K32 int WINAPI GetDateFormatEx(LPCWSTR loc, DWORD flags, const SYSTEMTIME *st, LPCWSTR fmt, LPWSTR out, int cap, LPCWSTR cal)
-{
-    (void)loc; (void)cal;
-    return GetDateFormatW(0, flags, st, fmt, out, cap);
-}
-
-K32 int WINAPI GetTimeFormatW(LCID lcid, DWORD flags, const SYSTEMTIME *st, LPCWSTR fmt, LPWSTR out, int cap)
-{
-    (void)lcid;
-    SYSTEMTIME now;
-    if (!st) { GetLocalTime(&now); st = &now; }
-    WCHAR pic[64], buf[256];
-    if (!fmt) {
-        const char *f = (flags & 2 /* TIME_NOSECONDS */) ? "h:mm tt" : "h:mm:ss tt";
-        if (flags & 8 /* TIME_FORCE24HOURFORMAT */) f = (flags & 2) ? "HH:mm" : "HH:mm:ss";
-        pic_a(f, pic);
-        fmt = pic;
-    }
-    int n = format_dt(st, fmt, buf);
-    return nls_out(buf, n, out, cap);
-}
-
-K32 int WINAPI GetTimeFormatEx(LPCWSTR loc, DWORD flags, const SYSTEMTIME *st, LPCWSTR fmt, LPWSTR out, int cap)
-{
-    (void)loc;
-    return GetTimeFormatW(0, flags, st, fmt, out, cap);
-}
-
-static int to_a(const WCHAR *w, int wn, LPSTR out, int cap)
-{
-    char tmp[512];
-    int k = w2u(w, wn, tmp, sizeof(tmp));
-    if (!cap) return k + 1;
-    if (cap < k + 1) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
-    memcpy(out, tmp, (size_t)k);
-    out[k] = 0;
-    return k + 1;
-}
-
-K32 int WINAPI GetDateFormatA(LCID lcid, DWORD flags, const SYSTEMTIME *st, LPCSTR fmt, LPSTR out, int cap)
-{
-    WCHAR wf[128], buf[256];
-    if (fmt) u2w(fmt, -1, wf, 128);
-    int n = GetDateFormatW(lcid, flags, st, fmt ? wf : 0, buf, 256);
-    return n ? to_a(buf, n - 1, out, cap) : 0;
-}
-
-K32 int WINAPI GetTimeFormatA(LCID lcid, DWORD flags, const SYSTEMTIME *st, LPCSTR fmt, LPSTR out, int cap)
-{
-    WCHAR wf[128], buf[256];
-    if (fmt) u2w(fmt, -1, wf, 128);
-    int n = GetTimeFormatW(lcid, flags, st, fmt ? wf : 0, buf, 256);
-    return n ? to_a(buf, n - 1, out, cap) : 0;
-}
-
 K32 int WINAPI LCMapStringA(LCID lcid, DWORD flags, LPCSTR src, int n, LPSTR dst, int cap)
 {
     WCHAR w[1024], o[1024];
@@ -2015,80 +2021,6 @@ K32 HRESULT WINAPI RoGetActivationFactory(PVOID cls, REFIID iid, void **f)
     return 0x80040154;                                    /* REGDB_E_CLASSNOTREG */
 }
 K32 HRESULT WINAPI RoActivateInstance(PVOID cls, void **inst) { (void)cls; if (inst) *inst = 0; return 0x80040154; }
-
-/* -----------------------------------------------------------------------
- * Number and currency formatting (en-US): "1,234.57", "$1,234.57"
- * ----------------------------------------------------------------------- */
-/* @value: "[-]digits[.digits]"; writes the grouped form with @decimals
- * places (rounded) to @out, returns its length (0: invalid) */
-static int fmt_number(LPCWSTR value, int decimals, WCHAR *out, int cap, BOOL *neg)
-{
-    WCHAR ip[64], fp[64];
-    int ni = 0, nf = 0, i = 0;
-    *neg = FALSE;
-    if (value[i] == '-') { *neg = TRUE; i++; }
-    for (; value[i] >= '0' && value[i] <= '9'; i++) if (ni < 63) ip[ni++] = value[i];
-    if (value[i] == '.') for (i++; value[i] >= '0' && value[i] <= '9'; i++) if (nf < 63) fp[nf++] = value[i];
-    if (value[i] || (!ni && !nf)) return 0;
-    if (!ni) ip[ni++] = '0';
-    while (nf < decimals) fp[nf++] = '0';
-    if (nf > decimals) {                                     /* round half up */
-        BOOL up = fp[decimals] >= '5';
-        nf = decimals;
-        for (int k = nf - 1; up && k >= 0; k--) { if (fp[k] == '9') fp[k] = '0'; else { fp[k]++; up = FALSE; } }
-        for (int k = ni - 1; up && k >= 0; k--) { if (ip[k] == '9') ip[k] = '0'; else { ip[k]++; up = FALSE; } }
-        if (up) { for (int k = ni; k > 0; k--) ip[k] = ip[k - 1]; ip[0] = '1'; ni++; }
-    }
-    int o = 0;
-    for (int k = 0; k < ni; k++) {
-        if (o >= cap - 1) return 0;
-        out[o++] = ip[k];
-        if ((ni - k - 1) % 3 == 0 && k != ni - 1) out[o++] = ',';
-    }
-    if (decimals) { out[o++] = '.'; for (int k = 0; k < decimals && o < cap - 1; k++) out[o++] = fp[k]; }
-    out[o] = 0;
-    return o;
-}
-static int put_result(const WCHAR *s, int n, LPWSTR out, int cap)
-{
-    if (!cap) return n + 1;
-    if (cap < n + 1) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
-    memcpy(out, s, (SIZE_T)(n + 1) * sizeof(WCHAR));
-    return n + 1;
-}
-K32 int WINAPI GetNumberFormatEx(LPCWSTR loc, DWORD flags, LPCWSTR value, const void *fmt, LPWSTR out, int cap)
-{
-    (void)loc; (void)flags; (void)fmt;
-    WCHAR buf[160];
-    BOOL neg;
-    int n = value ? fmt_number(value, 2, buf + 1, 158, &neg) : 0;
-    if (!n) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
-    WCHAR *s = buf + 1;
-    if (neg) { *--s = '-'; n++; }
-    return put_result(s, n, out, cap);
-}
-K32 int WINAPI GetNumberFormatW(LCID lcid, DWORD flags, LPCWSTR value, const void *fmt, LPWSTR out, int cap)
-{
-    (void)lcid;
-    return GetNumberFormatEx(0, flags, value, fmt, out, cap);
-}
-K32 int WINAPI GetCurrencyFormatEx(LPCWSTR loc, DWORD flags, LPCWSTR value, const void *fmt, LPWSTR out, int cap)
-{
-    (void)loc; (void)flags; (void)fmt;
-    WCHAR buf[160];
-    BOOL neg;
-    int n = value ? fmt_number(value, 2, buf + 2, 156, &neg) : 0;
-    if (!n) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
-    WCHAR *s = buf + 2;
-    *--s = '$'; n++;
-    if (neg) { *--s = '-'; n++; }
-    return put_result(s, n, out, cap);
-}
-K32 int WINAPI GetCurrencyFormatW(LCID lcid, DWORD flags, LPCWSTR value, const void *fmt, LPWSTR out, int cap)
-{
-    (void)lcid;
-    return GetCurrencyFormatEx(0, flags, value, fmt, out, cap);
-}
 
 /* Heaps: one process heap underneath */
 K32 SIZE_T WINAPI HeapCompact(HANDLE h, DWORD flags) { (void)h; (void)flags; return 1 << 20; }

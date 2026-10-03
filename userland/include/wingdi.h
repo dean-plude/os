@@ -259,4 +259,14 @@ GDIAPI int      GetRgnBox(HRGN h, LPRECT r);
 GDIAPI BOOL     GdiFlush(void);
 GDIAPI int      GetClipBox(HDC dc, LPRECT r);
 
+
+/* palettes, world transforms, metafiles, character sets */
+typedef struct tagPALETTEENTRY { BYTE peRed, peGreen, peBlue, peFlags; } PALETTEENTRY, *PPALETTEENTRY, *LPPALETTEENTRY;
+typedef struct tagLOGPALETTE { WORD palVersion, palNumEntries; PALETTEENTRY palPalEntry[1]; } LOGPALETTE, *PLOGPALETTE, *LPLOGPALETTE;
+typedef float FLOAT;
+typedef XFORM *PXFORM;
+typedef void *HMETAFILE;
+typedef struct tagFONTSIGNATURE { DWORD fsUsb[4]; DWORD fsCsb[2]; } FONTSIGNATURE, *PFONTSIGNATURE, *LPFONTSIGNATURE;
+typedef struct tagCHARSETINFO { UINT ciCharset; UINT ciACP; FONTSIGNATURE fs; } CHARSETINFO, *PCHARSETINFO, *LPCHARSETINFO;
+
 _NOVA_END

@@ -42,14 +42,16 @@ MMAPI MMRESULT WINAPI timeGetSystemTime(MMTIME *t, UINT n)
     return TIMERR_NOERROR;
 }
 
-/* timeSetEvent: a thread per timer calls @fn (TIME_ONESHOT 0 / TIME_PERIODIC 1) */
+/* timeSetEvent: a thread per timer calls @fn (TIME_ONESHOT 0 / TIME_PERIODIC 1),
+ * woken by a kernel waitable timer (to the TSC, not the 10 ms tick; a
+ * periodic one on its own grid, so it doesn't drift) */
 typedef void (CALLBACK *LPTIMECALLBACK)(UINT id, UINT msg, DWORD_PTR user, DWORD_PTR r1, DWORD_PTR r2);
 typedef struct Timer {
     struct Timer *next;
     UINT id, delay, flags;
     LPTIMECALLBACK fn;
     DWORD_PTR user;
-    HANDLE stop, thread;
+    HANDLE stop, thread, timer;
 } Timer;
 static Timer *g_timers;
 static SRWLOCK g_lock;
@@ -58,16 +60,13 @@ static UINT g_next_id = 1;
 static DWORD WINAPI timer_thread(LPVOID p)
 {
     Timer *t = p;
-    ULONGLONG next = GetTickCount64() + t->delay;
+    HANDLE h[2] = { t->stop, t->timer };
     for (;;) {
-        ULONGLONG now = GetTickCount64();
-        DWORD wait = next > now ? (DWORD)(next - now) : 0;
-        if (WaitForSingleObject(t->stop, wait) == WAIT_OBJECT_0) break;
+        if (WaitForMultipleObjects(2, h, FALSE, INFINITE) != WAIT_OBJECT_0 + 1) break;
         if (t->flags & 0x10 /* TIME_CALLBACK_EVENT_SET */) SetEvent((HANDLE)t->fn);
         else if (t->flags & 0x20 /* TIME_CALLBACK_EVENT_PULSE */) { SetEvent((HANDLE)t->fn); ResetEvent((HANDLE)t->fn); }
         else t->fn(t->id, 0, t->user, 0, 0);
         if (!(t->flags & 1)) break;                         /* one shot */
-        next += t->delay ? t->delay : 1;
     }
     return 0;
 }
@@ -79,6 +78,15 @@ MMAPI MMRESULT WINAPI timeSetEvent(UINT delay, UINT res, LPTIMECALLBACK fn, DWOR
     if (!t) return 0;
     t->delay = delay; t->fn = fn; t->user = user; t->flags = flags;
     t->stop = CreateEventW(0, TRUE, FALSE, 0);
+    t->timer = CreateWaitableTimerW(0, FALSE, 0);
+    LARGE_INTEGER due;
+    due.QuadPart = delay ? -(LONGLONG)delay * 10000 : -1;
+    if (!t->stop || !t->timer || !SetWaitableTimer(t->timer, &due, flags & 1 ? (LONG)(delay ? delay : 1) : 0, 0, 0, FALSE)) {
+        if (t->stop) CloseHandle(t->stop);
+        if (t->timer) CloseHandle(t->timer);
+        LocalFree(t);
+        return 0;
+    }
     AcquireSRWLockExclusive(&g_lock);
     t->id = g_next_id++;
     t->next = g_timers;
@@ -100,6 +108,7 @@ MMAPI MMRESULT WINAPI timeKillEvent(UINT id)
     if (GetCurrentThreadId() != GetThreadId(t->thread)) WaitForSingleObject(t->thread, INFINITE);
     CloseHandle(t->thread);
     CloseHandle(t->stop);
+    CloseHandle(t->timer);
     LocalFree(t);
     return TIMERR_NOERROR;
 }

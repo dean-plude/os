@@ -5,8 +5,13 @@
  * 1.11, section 6.2.2) says where each control sits in the input reports,
  * and the parser below turns it into a list of fields.  Keyboards report
  * the keys held down (an array of usages, or a bitmap), mice relative X/Y,
- * wheel and buttons, tablets and touch screens absolute X/Y with a button
- * or a tip switch.  A boot-class device whose report descriptor can't be
+ * the wheels (vertical, and horizontal as Consumer "AC Pan") and up to five
+ * buttons, tablets and touch screens absolute X/Y with a button or a tip
+ * switch.  Media, browser and launch keys come as Consumer Control usages
+ * (page 0x0C), and the Power, Sleep and Wake keys as System Control
+ * (Generic Desktop 0x81-0x83), usually in reports of their own or on an
+ * interface of their own; both become the E0-prefixed scancodes a PS/2
+ * keyboard sends for those keys.  A boot-class device whose report descriptor can't be
  * read or understood is put in boot protocol and parsed with the boot
  * descriptors from appendix B instead.
  *
@@ -88,6 +93,9 @@ static const UINT8 g_boot_mouse_desc[] = {
 #define PAGE_BUTTON    0x09
 #define PAGE_LED       0x08
 #define PAGE_DIGITIZER 0x0D
+#define PAGE_CONSUMER  0x0C
+
+#define USAGE_AC_PAN   0x238          /* Consumer: horizontal wheel */
 
 #define MAX_FIELDS     96
 
@@ -275,14 +283,19 @@ static INT32 get_bits(const UINT8 *r, int len, int bit, int size, INT32 lmin)
 
 #define MAX_HID 16
 
+#define MAX_CC 8                       /* consumer and system keys held at once */
+
 typedef struct {
     UsbDev    *dev;
     UsbPipe   *pipe;
     HidLayout  L;
-    bool       keyboard, pointer, absolute, boot, wake;
+    bool       keyboard, pointer, absolute, boot, wake, media;
     UINT8      kbd_id;               /* the report the keys come in */
     UINT8      keys[32];             /* keyboard usages held down (bitmap) */
-    UINT8      repeat;
+    UINT16     cc[MAX_CC];           /* media and system keys held down (set-1 codes) */
+    UINT8      cc_id[MAX_CC];        /*   and the report each came in */
+    int        ncc;
+    UINT16     repeat;               /* the set-1 code that repeats (0: none) */
     UINT64     repeat_at;
     UINT8      buttons;
     UINT8      iface;
@@ -292,7 +305,21 @@ typedef struct {
 
 static Hid *g_hids[MAX_HID];
 
-static void post_key(UINT16 code, bool pressed)
+/* usbcheck's device: its events are collected instead of posted */
+static const void *g_check_hid;
+static InputEvent  g_check_ev[16];
+static int         g_check_n;
+
+static void hid_post(const void *h, const InputEvent *ev)
+{
+    if (h && h == g_check_hid) {
+        if (g_check_n < 16) g_check_ev[g_check_n++] = *ev;
+        return;
+    }
+    InputPost(ev);
+}
+
+static void post_key(const void *h, UINT16 code, bool pressed)
 {
     if (!code) return;
     InputEvent ev;
@@ -301,12 +328,15 @@ static void post_key(UINT16 code, bool pressed)
     ev.scancode = (UINT8)(code & 0x7F);
     ev.extended = (code & EXT) ? 1 : 0;
     ev.pressed  = pressed ? 1 : 0;
-    InputPost(&ev);
+    hid_post(h, &ev);
 }
 
 static UINT16 usage_code(UINT8 u)
 {
     if (u >= 0xE0 && u <= 0xE7) return g_mod_to_set1[u - 0xE0];
+    if (u == 0x7F) return EXT | KEY_MUTE;                /* Keyboard Mute, Volume Up, Volume Down */
+    if (u == 0x80) return EXT | KEY_VOL_UP;
+    if (u == 0x81) return EXT | KEY_VOL_DOWN;
     return u < sizeof(g_usage_to_set1) / sizeof(g_usage_to_set1[0]) ? g_usage_to_set1[u] : 0;
 }
 
@@ -317,10 +347,11 @@ static void keyboard_state(Hid *h, const UINT8 *now, UINT64 tick)
     for (int u = 4; u < 256; u++) {
         bool was = key_held(h->keys, (UINT8)u), is = key_held(now, (UINT8)u);
         if (was == is) continue;
-        post_key(usage_code((UINT8)u), is);
-        if (!is && h->repeat == u) h->repeat = 0;
-        if (is && (u < 0xE0 || u > 0xE7)) {
-            h->repeat = (UINT8)u;                         /* the newest key repeats */
+        UINT16 code = usage_code((UINT8)u);
+        post_key(h, code, is);
+        if (!is && code && h->repeat == code) h->repeat = 0;
+        if (is && code && (u < 0xE0 || u > 0xE7)) {
+            h->repeat = code;                             /* the newest key repeats */
             h->repeat_at = tick + REPEAT_DELAY;
         }
     }
@@ -349,6 +380,102 @@ static void keyboard_report(Hid *h, const UINT8 *r, int len, UINT64 tick)
     keyboard_state(h, now, tick);
 }
 
+/* Consumer Control (page 0x0C) and System Control (Generic Desktop) usages
+ * → E0-prefixed set-1 codes, as Microsoft's keyboard scan code
+ * specification lists them for the same keys on PS/2 keyboards */
+static const struct { UINT16 page, usage; UINT8 sc; } g_cc_keys[] = {
+    { PAGE_CONSUMER, 0x0B5, KEY_NEXT_TRACK },   { PAGE_CONSUMER, 0x0B6, KEY_PREV_TRACK },
+    { PAGE_CONSUMER, 0x0B7, KEY_MEDIA_STOP },   { PAGE_CONSUMER, 0x0CD, KEY_PLAY_PAUSE },
+    { PAGE_CONSUMER, 0x0E2, KEY_MUTE },         { PAGE_CONSUMER, 0x0E9, KEY_VOL_UP },
+    { PAGE_CONSUMER, 0x0EA, KEY_VOL_DOWN },     { PAGE_CONSUMER, 0x183, KEY_MEDIA_SELECT },
+    { PAGE_CONSUMER, 0x18A, KEY_MAIL },         { PAGE_CONSUMER, 0x192, KEY_CALCULATOR },
+    { PAGE_CONSUMER, 0x194, KEY_MY_COMPUTER },  { PAGE_CONSUMER, 0x221, KEY_WWW_SEARCH },
+    { PAGE_CONSUMER, 0x223, KEY_WWW_HOME },     { PAGE_CONSUMER, 0x224, KEY_WWW_BACK },
+    { PAGE_CONSUMER, 0x225, KEY_WWW_FORWARD },  { PAGE_CONSUMER, 0x226, KEY_WWW_STOP },
+    { PAGE_CONSUMER, 0x227, KEY_WWW_REFRESH },  { PAGE_CONSUMER, 0x22A, KEY_WWW_FAVORITES },
+    { PAGE_DESKTOP,  0x081, KEY_POWER },        { PAGE_DESKTOP,  0x082, KEY_SLEEP },
+    { PAGE_DESKTOP,  0x083, KEY_WAKE },
+};
+
+static UINT16 cc_code(UINT16 page, UINT32 usage)
+{
+    for (unsigned i = 0; i < sizeof(g_cc_keys) / sizeof(g_cc_keys[0]); i++)
+        if (g_cc_keys[i].page == page && g_cc_keys[i].usage == usage) return EXT | g_cc_keys[i].sc;
+    return 0;
+}
+
+/* A field that carries media or system keys: an array of consumer or
+ * system-control usages, or one such usage as an on/off bit */
+static bool cc_field(const HidField *f)
+{
+    if (f->page == PAGE_CONSUMER) return f->array || (!f->relative && f->usage != USAGE_AC_PAN);
+    if (f->page == PAGE_DESKTOP) return f->array ? f->usage_max >= 0x81 && f->usage <= 0x83 : f->usage >= 0x81 && f->usage <= 0x83;
+    return false;
+}
+
+static void cc_add(UINT16 *set, int *n, UINT16 code)
+{
+    if (!code || *n >= MAX_CC) return;
+    for (int i = 0; i < *n; i++) if (set[i] == code) return;
+    set[(*n)++] = code;
+}
+
+static bool cc_has(const UINT16 *set, int n, UINT16 code)
+{
+    for (int i = 0; i < n; i++) if (set[i] == code) return true;
+    return false;
+}
+
+/* Media and system keys: the report lists the ones held now */
+static void media_report(Hid *h, UINT8 id, const UINT8 *r, int len, UINT64 tick)
+{
+    UINT16 now[MAX_CC];
+    int nnow = 0;
+    bool mine = false;
+    for (int i = 0; i < h->L.n; i++) {
+        const HidField *f = &h->L.f[i];
+        if (f->id != id || !cc_field(f)) continue;
+        mine = true;
+        if (!f->array) {
+            if (get_bits(r, len, f->bit, f->size, 0)) cc_add(now, &nnow, cc_code(f->page, f->usage));
+            continue;
+        }
+        for (int k = 0; k < f->count; k++) {
+            INT32 v = get_bits(r, len, f->bit + k * f->size, f->size, f->lmin);
+            if (v < f->lmin || v > f->lmax) continue;
+            UINT32 u = f->usage + (UINT32)(v - f->lmin);
+            if (u && u <= f->usage_max) cc_add(now, &nnow, cc_code(f->page, u));
+        }
+    }
+    if (!mine) return;                               /* (a report about something else) */
+    /* Keys this report no longer lists go up; those held through other
+     * reports stay */
+    UINT16 keep[MAX_CC];
+    UINT8 keep_id[MAX_CC];
+    int nkeep = 0;
+    for (int i = 0; i < h->ncc; i++) {
+        if (h->cc_id[i] != id) { keep[nkeep] = h->cc[i]; keep_id[nkeep++] = h->cc_id[i]; continue; }
+        if (!cc_has(now, nnow, h->cc[i])) {
+            post_key(h, h->cc[i], false);
+            if (h->repeat == h->cc[i]) h->repeat = 0;
+        }
+    }
+    for (int i = 0; i < nnow; i++)
+        if (!cc_has(h->cc, h->ncc, now[i])) {
+            post_key(h, now[i], true);
+            UINT8 sc = (UINT8)now[i];
+            if (sc == KEY_VOL_UP || sc == KEY_VOL_DOWN) {   /* held volume keys repeat, as on Windows */
+                h->repeat = now[i];
+                h->repeat_at = tick + REPEAT_DELAY;
+            }
+        }
+    for (int i = 0; i < nnow && nkeep < MAX_CC; i++)
+        if (!cc_has(keep, nkeep, now[i])) { keep[nkeep] = now[i]; keep_id[nkeep++] = id; }
+    memcpy(h->cc, keep, sizeof(keep));
+    memcpy(h->cc_id, keep_id, sizeof(keep_id));
+    h->ncc = nkeep;
+}
+
 static INT32 scale_abs(INT32 v, INT32 lmin, INT32 lmax)
 {
     if (lmax <= lmin) return 0;
@@ -359,7 +486,7 @@ static INT32 scale_abs(INT32 v, INT32 lmin, INT32 lmax)
 
 static void pointer_report(Hid *h, UINT8 id, const UINT8 *r, int len)
 {
-    INT32 x = 0, y = 0, wheel = 0;
+    INT32 x = 0, y = 0, wheel = 0, hwheel = 0;
     bool have_x = false, have_y = false, any = false, abs = false;
     UINT8 buttons = 0;
     bool tip_seen = false;
@@ -367,8 +494,8 @@ static void pointer_report(Hid *h, UINT8 id, const UINT8 *r, int len)
         const HidField *f = &h->L.f[i];
         if (f->id != id || f->array) continue;
         INT32 v = get_bits(r, len, f->bit, f->size, f->lmin);
-        if (f->page == PAGE_BUTTON && f->usage >= 1 && f->usage <= 3) {
-            if (v) buttons |= (UINT8)(1u << (f->usage - 1));         /* 1 left, 2 right, 3 middle */
+        if (f->page == PAGE_BUTTON && f->usage >= 1 && f->usage <= 5) {
+            if (v) buttons |= (UINT8)(1u << (f->usage - 1));         /* 1 left, 2 right, 3 middle, 4 back, 5 forward */
             any = true;
         } else if (f->page == PAGE_DIGITIZER && f->usage == 0x42 && !tip_seen) {   /* tip switch: the first contact */
             tip_seen = true;
@@ -382,6 +509,8 @@ static void pointer_report(Hid *h, UINT8 id, const UINT8 *r, int len)
             if (f->relative) y = v; else { y = scale_abs(v, f->lmin, f->lmax); abs = true; }
         } else if (f->page == PAGE_DESKTOP && f->usage == 0x38) {
             wheel = v; any = true;
+        } else if (f->page == PAGE_CONSUMER && f->usage == USAGE_AC_PAN) {
+            hwheel = v; any = true;                                   /* + is to the right */
         }
     }
     if (!any) return;
@@ -392,9 +521,10 @@ static void pointer_report(Hid *h, UINT8 id, const UINT8 *r, int len)
     ev.dx       = x;
     ev.dy       = y;                         /* USB +y is already down */
     ev.dz       = wheel;                     /* +1 per notch away from the user */
+    ev.dw       = hwheel;
     ev.absolute = abs && have_x && have_y;
     if (abs && !ev.absolute) { ev.dx = ev.dy = 0; }  /* (half an absolute position: buttons only) */
-    InputPost(&ev);
+    hid_post(h, &ev);
 }
 
 static bool on_report(UsbPipe *p, const UINT8 *data, int len, void *ctx)
@@ -408,6 +538,7 @@ static bool on_report(UsbPipe *p, const UINT8 *data, int len, void *ctx)
         data++; len--;
     }
     if (h->keyboard && id == h->kbd_id) keyboard_report(h, data, len, sched_ticks());
+    if (h->media) media_report(h, id, data, len, sched_ticks());
     if (h->pointer) pointer_report(h, id, data, len);
     return true;
 }
@@ -417,7 +548,7 @@ void UsbHidTickAll(UINT64 now)
     for (int i = 0; i < MAX_HID; i++) {
         Hid *h = g_hids[i];
         if (!h || h->dead || !h->repeat || now < h->repeat_at) continue;
-        post_key(usage_code(h->repeat), true);       /* a make without a break, as PS/2 sends */
+        post_key(h, h->repeat, true);                   /* a make without a break, as PS/2 sends */
         h->repeat_at = now + REPEAT_RATE;
     }
 }
@@ -456,11 +587,13 @@ static void hid_gone(void *inst)
         memset(none, 0, sizeof(none));
         keyboard_state(h, none, 0);
     }
+    for (int i = 0; i < h->ncc; i++) post_key(h, h->cc[i], false);
+    h->ncc = 0;
     h->repeat = 0;
     h->dead = true;
     for (int i = 0; i < MAX_HID; i++)
         if (g_hids[i] == h) g_hids[i] = NULL;
-    kprintf("[USB] %s: %s removed\n", UsbDevName(h->dev), h->keyboard ? "keyboard" : "pointer");
+    kprintf("[USB] %s: %s removed\n", UsbDevName(h->dev), h->keyboard ? "keyboard" : h->pointer ? "pointer" : "media keys");
     /* (the Hid stays allocated: a report may still be on its way) */
 }
 
@@ -469,6 +602,7 @@ static void classify(Hid *h)
     for (int i = 0; i < h->L.n; i++) {
         const HidField *f = &h->L.f[i];
         if (f->page == PAGE_KEYBOARD && !h->keyboard) { h->keyboard = true; h->kbd_id = f->id; }
+        if (cc_field(f)) h->media = true;
         if (f->page == PAGE_DESKTOP && (f->usage == 0x30 || f->usage == 0x31)) {
             h->pointer = true;
             if (!f->relative) h->absolute = true;
@@ -504,7 +638,7 @@ void *UsbHidProbe(UsbDev *d, const UsbIface *f)
         if (desc && UsbControl(d, 0x81, 6, USB_DT_REPORT << 8, f->number, rlen, desc) > 0) {
             ok = parse_report_desc(desc, rlen, &h->L);
             if (ok) classify(h);
-            ok = ok && (h->keyboard || h->pointer);
+            ok = ok && (h->keyboard || h->pointer || h->media);
             if (ok && f->sub == 1) UsbControl(d, 0x21, 0x0B, 1, f->number, 0, NULL);   /* SET_PROTOCOL(report) */
         }
         kfree(desc);
@@ -532,9 +666,112 @@ void *UsbHidProbe(UsbDev *d, const UsbIface *f)
     g_hids[slot] = h;
     UsbBind(d, h, hid_gone);
     const char *kind = h->keyboard && h->pointer ? "keyboard + pointer" : h->keyboard ? "keyboard" :
+                       !h->pointer ? "media keys" :
                        h->absolute ? (h->L.app == 0x0D04 ? "touch screen" : "absolute pointer") : "mouse";
-    kprintf("[USB] %s: %s (%s protocol, %d fields%s)\n", UsbDevName(d), kind,
-            h->boot ? "boot" : "report", h->L.n, h->wake ? ", wakes the machine" : "");
+    kprintf("[USB] %s: %s (%s protocol, %d fields%s%s)\n", UsbDevName(d), kind,
+            h->boot ? "boot" : "report", h->L.n, h->media && (h->keyboard || h->pointer) ? ", media keys" : "",
+            h->wake ? ", wakes the machine" : "");
     UsbPipeListen(h->pipe, mps, on_report, h);
     return h;
+}
+
+/* ---------------------------------------------------------------------------
+ * usbcheck: the report parser against devices QEMU doesn't have
+ *
+ * Report descriptors of the kinds real keyboards and mice send (media keys
+ * as a consumer-control array and as bits, system-control keys, a mouse
+ * with five buttons, a wheel and AC Pan), with reports fed through the
+ * same code a device's reports go through; the events they make are
+ * compared with what they should be.
+ * ------------------------------------------------------------------------- */
+
+static const UINT8 g_chk_cc_array[] = {     /* consumer array (ID 2), system control (ID 3) */
+    0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x85, 0x02, 0x19, 0x00, 0x2A, 0x3C, 0x02, 0x15, 0x00, 0x26,
+    0x3C, 0x02, 0x95, 0x01, 0x75, 0x10, 0x81, 0x00, 0xC0,
+    0x05, 0x01, 0x09, 0x80, 0xA1, 0x01, 0x85, 0x03, 0x19, 0x81, 0x29, 0x83, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x03, 0x81, 0x02, 0x95, 0x05, 0x81, 0x01, 0xC0,
+};
+static const UINT8 g_chk_cc_bits[] = {      /* eight media keys as bits (ID 1) */
+    0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x85, 0x01, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08,
+    0x09, 0xB5, 0x09, 0xB6, 0x09, 0xB7, 0x09, 0xCD, 0x09, 0xE2, 0x09, 0xE9, 0x09, 0xEA, 0x0A, 0x23,
+    0x02, 0x81, 0x02, 0xC0,
+};
+static const UINT8 g_chk_mouse[] = {        /* five buttons, X, Y, wheel, AC Pan */
+    0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09, 0x19, 0x01, 0x29, 0x05,
+    0x15, 0x00, 0x25, 0x01, 0x95, 0x05, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01, 0x75, 0x03, 0x81, 0x01,
+    0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x03,
+    0x81, 0x06, 0x05, 0x0C, 0x0A, 0x38, 0x02, 0x95, 0x01, 0x81, 0x06, 0xC0, 0xC0,
+};
+static const UINT8 g_chk_kbd[] = {          /* a keyboard whose keys go up to usage 0xFF (QEMU's) */
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x95, 0x06, 0x75, 0x08,
+    0x15, 0x00, 0x25, 0xFF, 0x05, 0x07, 0x19, 0x00, 0x29, 0xFF, 0x81, 0x00, 0xC0,
+};
+
+typedef struct { const char *what; const UINT8 *desc; int dlen; const char *kind; UINT8 rep[4][8]; int rlen; int nrep;
+                 const char *want; } HidCheck;
+
+/* What a check's events were, as text: "+E0 30 -E0 30" for keys, "m18,0,-1" for buttons, wheel, h-wheel */
+static void describe(char *out, int cap)
+{
+    int n = 0;
+    out[0] = '\0';
+    for (int i = 0; i < g_check_n && n < cap - 1; i++) {
+        const InputEvent *e = &g_check_ev[i];
+        if (e->type == INPUT_KEY)
+            n += ksnprintf(out + n, cap - n, "%s%c%s%02X", i ? " " : "", e->pressed ? '+' : '-', e->extended ? "E0 " : "", e->scancode);
+        else
+            n += ksnprintf(out + n, cap - n, "%sm%X,%d,%d", i ? " " : "", e->buttons, e->dz, e->dw);
+    }
+}
+
+int UsbHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
+{
+    static const HidCheck checks[] = {
+        { "consumer-control array", g_chk_cc_array, sizeof(g_chk_cc_array), "media",
+          { { 2, 0xE9, 0 }, { 2, 0, 0 }, { 2, 0xCD, 0 }, { 2, 0x24, 0x02 }, }, 3, 4,
+          "+E0 30 -E0 30 +E0 22 -E0 22 +E0 6A" },
+        { "system-control keys", g_chk_cc_array, sizeof(g_chk_cc_array), "media",
+          { { 3, 0x02 }, { 3, 0x00 }, { 3, 0x01 }, { 2, 0, 0 } }, 2, 4,
+          "+E0 5F -E0 5F +E0 5E" },
+        { "consumer-control bits", g_chk_cc_bits, sizeof(g_chk_cc_bits), "media",
+          { { 1, 0x20 }, { 1, 0x30 }, { 1, 0x00 }, { 1, 0x80 } }, 2, 4,
+          "+E0 30 +E0 20 -E0 20 -E0 30 +E0 32" },
+        { "mouse buttons 4, 5 and AC Pan", g_chk_mouse, sizeof(g_chk_mouse), "pointer",
+          { { 0x08, 0, 0, 0, 0xFF }, { 0x18, 0, 0, 1, 1 }, { 0x00 } }, 5, 3,
+          "m8,0,-1 m18,1,1 m0,0,0" },
+        { "keyboard volume usages", g_chk_kbd, sizeof(g_chk_kbd), "keyboard",
+          { { 0, 0, 0x80 }, { 0, 0, 0x81, 0x80 }, { 0, 0, 0x7F }, { 0 } }, 8, 4,
+          "+E0 30 +E0 2E +E0 20 -E0 30 -E0 2E -E0 20" },
+    };
+    int failed = 0;
+    for (unsigned c = 0; c < sizeof(checks) / sizeof(checks[0]); c++) {
+        const HidCheck *k = &checks[c];
+        Hid *h = kzalloc(sizeof(Hid));
+        if (!h) return -1;
+        h->leds = 0xFF;
+        bool ok = parse_report_desc(k->desc, k->dlen, &h->L);
+        if (ok) classify(h);
+        const char *kind = h->keyboard ? "keyboard" : h->pointer ? "pointer" : h->media ? "media" : "nothing";
+        char got[160], line[256];
+        if (!ok || strcmp(kind, k->kind) != 0) {
+            ksnprintf(line, sizeof(line), "FAIL %s: read as %s, not %s", k->what, kind, k->kind);
+            say(ctx, line);
+            failed++;
+            kfree(h);
+            continue;
+        }
+        g_check_n = 0;
+        __atomic_store_n(&g_check_hid, h, __ATOMIC_RELEASE);
+        for (int r = 0; r < k->nrep; r++) on_report(NULL, k->rep[r], k->rlen, h);
+        __atomic_store_n(&g_check_hid, NULL, __ATOMIC_RELEASE);
+        describe(got, sizeof(got));
+        bool pass = strcmp(got, k->want) == 0;
+        if (pass) ksnprintf(line, sizeof(line), "ok   %s: %s", k->what, got);
+        else      ksnprintf(line, sizeof(line), "FAIL %s: %s (want %s)", k->what, got, k->want);
+        say(ctx, line);
+        if (!pass) failed++;
+        kfree(h);
+    }
+    return failed;
 }

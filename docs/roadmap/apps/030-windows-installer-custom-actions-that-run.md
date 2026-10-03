@@ -2,5 +2,6 @@
   dialogs (`InstallUISequence`), the `Shortcut` table, services, merge
   modules; LZX cabinets tested against real packages~~ Done; see
   [Windows Installer depth](HISTORY.md#windows-installer-depth-custom-actions-dialogs-shortcuts-services).
-  Still to come: rollback, script custom actions, patches and transforms,
-  services that start at boot.
+  Rollback, transforms, patches and services at boot followed in
+  [Windows Installer rollback, transforms, patches](HISTORY.md#windows-installer-rollback-transforms-patches-services-at-boot).
+  Still to come: script custom actions (VBScript, JScript).

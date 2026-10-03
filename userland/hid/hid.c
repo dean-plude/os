@@ -18,3 +18,5 @@ HIDAPI BOOLEAN WINAPI HidD_GetAttributes(HANDLE dev, PVOID attrs) { (void)dev; (
 HIDAPI BOOLEAN WINAPI HidD_GetProductString(HANDLE dev, PVOID buf, ULONG n) { (void)dev; (void)buf; (void)n; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
 HIDAPI BOOLEAN WINAPI HidD_GetManufacturerString(HANDLE dev, PVOID buf, ULONG n) { (void)dev; (void)buf; (void)n; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
 HIDAPI LONG WINAPI HidP_GetCaps(PVOID data, PVOID caps) { (void)data; (void)caps; return HIDP_STATUS_INVALID_PREPARSED_DATA; }
+HIDAPI BOOLEAN WINAPI HidD_GetFeature(HANDLE dev, PVOID buf, ULONG n) { (void)dev; (void)buf; (void)n; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+HIDAPI BOOLEAN WINAPI HidD_SetFeature(HANDLE dev, PVOID buf, ULONG n) { (void)dev; (void)buf; (void)n; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
