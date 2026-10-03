@@ -36,7 +36,7 @@
 #include "../../include/boot_protocol.h"
 
 /* IPI vectors */
-#define IPI_WAKE  0xF0   /* leave a halt: a thread became ready, or the kernel lock is free */
+#define IPI_WAKE  0xF0   /* leave a halt: a thread became ready, or the kernel lock is free; or switch to a woken thread */
 #define IPI_TLB   0xF1   /* flush the TLB (see smp_tlb_flush) */
 
 struct Thread;
@@ -77,8 +77,9 @@ uint32_t smp_trampoline_wake32(void);
 bool smp_start_cpu(uint8_t apic, volatile uint32_t *started);
 
 /* A thread became ready in CPU @prefer's queue: wake that CPU if it is
- * halted, else any halted CPU (it will take the thread from the queue). */
-void smp_kick(uint32_t prefer);
+ * halted, else any halted CPU (it will take the thread from the queue).
+ * False when no CPU was halted. */
+bool smp_kick(uint32_t prefer);
 /* Page table entries changed: other CPUs running with page table @cr3 flush
  * their TLB before this returns.  cr3 = 0: every CPU, global pages too. */
 void smp_tlb_flush(uint64_t cr3);

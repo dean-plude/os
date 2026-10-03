@@ -200,6 +200,25 @@ preempts the running thread when its priority is at least as high, so
 busy (`sleeptest timer`).  Tick work (the tick count, input polling, time
 slices) still happens once per 10 ms.
 
+A thread woken from a wait by another thread (`sched_unblock`) preempts
+the running thread when its priority is higher, or the same and a timer
+woke it (`sched_unblock_timer`: the waitable timer it waits on was set).
+It goes first in its CPU's run queue; a halted CPU takes it if one is
+free, otherwise the waker sends the thread's CPU `IPI_WAKE` with a
+reschedule flag set, and that CPU switches in the interrupt (unless it is
+halted waiting for the kernel lock: then its next timer tick switches).
+The preempted thread goes back after the woken threads but ahead of the
+rest, and keeps what it has used of its slice.  Other wakes (an event
+set, a lock released, no priority difference) queue the thread last and
+wait for the running thread's slice: preempting a lock's releaser makes
+lock convoys.
+
+A CPU halted waiting for the kernel lock wakes none of its sleepers.  The
+timer interrupt it takes meanwhile (`sched_timer_rearm`) hands a due
+TSC-deadline sleeper that doesn't hold the lock to another CPU, as a
+timer wake: the device poll thread then keeps draining the keyboard while
+another CPU holds the lock for seconds (saving drive C:).
+
 ### Scheduler Design
 
 **Algorithm**: Round-robin with fixed 20ms time quantum

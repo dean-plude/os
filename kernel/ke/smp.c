@@ -221,25 +221,30 @@ void smp_ipi(uint64_t vector)
     k->Idle = 0;
     if (vector == IPI_TLB) tlb_flush_local(k);
     apic_eoi();
+    /* A thread woken for this CPU should run now (sched_unblock) — unless
+     * this CPU halts waiting for the kernel lock (see interrupt_dispatch:
+     * its next timer tick switches then) */
+    if (vector == IPI_WAKE && !k->LockWait) sched_resched_ipi();
 }
 
-void smp_kick(uint32_t prefer)
+bool smp_kick(uint32_t prefer)
 {
-    if (g_cpu_count < 2) return;
+    if (g_cpu_count < 2) return false;
     PKPCR self = KiGetCurrentKpcr();
     PKPCR p = prefer < MAX_CPUS ? &g_kpcr[prefer] : NULL;
     if (p && p != self && p->Online && p->Idle) {    /* the thread's own CPU, if it is idle */
         p->Idle = 0;
         apic_send_ipi(p->ApicId, APIC_IPI_FIXED | IPI_WAKE);
-        return;
+        return true;
     }
     for (uint32_t i = 0; i < MAX_CPUS; i++) {    /* a CPU halted in its idle thread: it will steal it */
         PKPCR k = &g_kpcr[i];
         if (k == self || !k->Online || !k->Idle || k->CurrentThread != k->IdleThread) continue;
         k->Idle = 0;                          /* one IPI per halt is enough */
         apic_send_ipi(k->ApicId, APIC_IPI_FIXED | IPI_WAKE);
-        return;
+        return true;
     }
+    return false;
 }
 
 void smp_tlb_flush(uint64_t cr3)
