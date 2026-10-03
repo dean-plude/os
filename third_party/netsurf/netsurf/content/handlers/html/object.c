@@ -711,14 +711,18 @@ static void html_object_drop(html_content *html,
 }
 
 /* exported interface documented in html/object.h */
-void html_object_stash_box_objects(html_content *html)
+void html_object_stash_box_objects(html_content *html, struct box *within)
 {
 	struct content_html_object **link = &html->object_list;
 
 	while (*link != NULL) {
 		struct content_html_object *o = *link;
+		struct box *b = o->box;
 
-		if (o->box == NULL) {
+		/* (an object of a box below within, if given) */
+		while (within != NULL && b != NULL && b != within)
+			b = b->parent;
+		if (o->box == NULL || b == NULL || o->box == within) {
 			link = &o->next;
 			continue;
 		}
