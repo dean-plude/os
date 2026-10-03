@@ -351,7 +351,11 @@ then types `store
 install Mesa 3D` and `store install DXVK` (the archives are already in
 `C:\Downloads`, so the App Store installs without a network) and then runs
 `gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
-of each while it draws.  The network suite (`tests/selftest/network4` and
+of each while it draws.  The graphics boot has a second monitor (a QEMU
+`secondary-vga`): between the installs and `gltest` it runs `montest 2`,
+which checks the monitor calls and layout changes; when it asks, the test
+pushes the pointer across onto the second monitor, and the screenshot is
+one PNG per monitor (`montest.png`, `montest-2.png`).  The network suite (`tests/selftest/network4` and
 `network6`) boots twice with a virtio-net
 card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 (Winsock over IPv4) and `httptest suite` (winhttp: HTTP/2 by ALPN, large
