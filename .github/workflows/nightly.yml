@@ -26,8 +26,8 @@ env:                            # ccache, as in ci.yml
   CCACHE_COMPILERCHECK: content
   CCACHE_MAXSIZE: 500M
 
-concurrency:
-  group: nightly-app-corpus
+concurrency:                    # a queued run is replaced by a newer queued run in the same group:
+  group: nightly-app-corpus-${{ github.event_name }}-${{ github.ref }}   # keep manual and scheduled runs apart from pull requests
   cancel-in-progress: false
 
 jobs:
