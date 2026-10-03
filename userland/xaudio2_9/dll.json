@@ -1,0 +1,4 @@
+{
+  "deps": ["ole32", "msvcrt", "kernel32", "ntdll"],
+  "sources": ["xaudio2"]
+}
