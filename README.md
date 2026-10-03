@@ -319,7 +319,8 @@ after a build.
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
 <!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM), SumatraPDF, WinMerge, KeePassXC, Inkscape, Notepad++ and PuTTY<!-- END generated:corpus -->.  The
 windowed programs run last, one at a time: SumatraPDF opens a PDF,
-WinMerge compares two files, Notepad++ opens a file and PuTTY makes a raw
+WinMerge compares two files, Firefox installs from the App Store and
+loads a page from an HTTPS server on the host, Notepad++ opens a file and PuTTY makes a raw
 connection to an echo server on the host and types a line; each one's
 screenshot must match its `tests/reference/NAME.png`.
 It also checks NovaOS's own screens: `dir` on C: and on an NTFS drive D:
