@@ -22,7 +22,9 @@ order; --list prints them):
             ping -6, curl -6 and Winsock over IPv6 (netcat)
   devices   a boot per device QEMU has that the core boot hasn't
             (tests/selftest/devices/NAME/): "touch", a virtio multi-touch
-            screen (touchtest)
+            screen (touchtest); "usbaudio", USB speakers on xHCI, OHCI and
+            UHCI and no HD Audio card (soundtest; each speaker's WAV must
+            hold its tones)
 
 Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
@@ -56,18 +58,28 @@ class Test:
     the whole serial log so far must match (what the kernel logged at boot).
     @builtin: a Terminal command, not a program (no exit code; the output
     decides).  @settle: seconds to wait afterwards (NovaOS saves drive C:
-    once it has been quiet for a second)."""
+    once it has been quiet for a second).  @before: function(nova) run
+    before the command is typed (e.g. plug a device in)."""
     def __init__(self, name, cmd, expect=(), timeout=180, check=None, store=None, shot=None, crash=False, reboot=False,
-                 acts=(), boot_expect=(), builtin=False, settle=0):
+                 acts=(), boot_expect=(), builtin=False, settle=0, before=None):
         self.name, self.cmd, self.expect, self.timeout, self.check = name, cmd, expect, timeout, check
         self.store, self.shot, self.crash, self.reboot = store, shot, crash, reboot
         self.acts, self.boot_expect, self.builtin, self.settle = acts, boot_expect, builtin, settle
+        self.before = before
 
 
-def tones(*hz):
-    """A check on the sound recording: a tone near each of @hz, in order"""
+def tones(*hz, wav=None):
+    """A check on the sound recording: a tone near each of @hz, in order.
+    @wav: instead of the sound card's recording, a WAV file a QEMU audiodev
+    of the boot wrote in its work directory (copied to --out)"""
     def check(nova):                       # (run after QEMU quit: the WAV is complete)
-        segs = wavcheck.segments(nova.wav)
+        path = nova.wav
+        if wav:
+            path = os.path.join(nova.work, wav)
+            if not os.path.exists(path):
+                return f'QEMU wrote no {wav}'
+            shutil.copy(path, OUT)
+        segs = wavcheck.segments(path)
         heard = [s[3] for s in segs if s[1] >= 300]
         want = list(hz)
         for h in heard:
@@ -170,6 +182,7 @@ NET6 = load_suite('network6')
 # (one that takes QEMU's input, like a touch screen, would take it from the
 # core boot's mouse)
 TOUCH = load_suite('devices/touch')
+USBAUDIO = load_suite('devices/usbaudio')
 
 
 def net4_boot(work):
@@ -196,10 +209,22 @@ def touch_boot(work):
     return ['-device', 'virtio-multitouch-pci'], []
 
 
+def usbaudio_boot(work):
+    """No HD Audio card: QEMU usb-audio speakers, each recorded to its own
+    WAV (usbN.wav in the work directory).  Speaker 1 is on an xHCI
+    controller at boot; the tests plug 2 and 3 into an OHCI and a UHCI
+    controller (tests/selftest/devices/usbaudio)"""
+    args = []
+    for n in (1, 2, 3):
+        args += ['-audiodev', f'wav,id=usbsnd{n},path={os.path.join(work, f"usb{n}.wav")},out.frequency=48000']
+    return args + ['-device', 'qemu-xhci,id=xhci', '-device', 'usb-audio,id=spk1,bus=xhci.0,audiodev=usbsnd1',
+                   '-device', 'pci-ohci,id=ohci', '-device', 'piix3-usb-uhci,id=uhci'], []
+
+
 # The suites that boot once per entry: (label, tests, setup(work) -> (QEMU arguments, processes))
 BOOTS = {
     'network': [('ipv4', NET4, net4_boot), ('ipv6', NET6, net6_boot)],
-    'devices': [('touch', TOUCH, touch_boot)],
+    'devices': [('touch', TOUCH, touch_boot), ('usbaudio', USBAUDIO, usbaudio_boot)],
 }
 
 
@@ -379,6 +404,9 @@ def run_boot(a, tests, work, label, **nova_args):
                 except RuntimeError as e:
                     out, ok = str(e), False
             else:
+                if t.before:
+                    t.before(nova)
+                    full_log += nova.sr.read_new()          # (what the kernel said meanwhile)
                 out, ok = nova.run(t.cmd, t.timeout, shot=(t.shot, png) if t.shot else None, acts=t.acts)
             if t.crash:
                 miss = [e for e in t.expect if not re.search(e, out)]

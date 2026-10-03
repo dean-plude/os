@@ -14,6 +14,12 @@
  * (data underrun): that ends the transfer, and the ED is restarted at its
  * tail.
  *
+ * Isochronous endpoints have an ED of their own (format bit set) at the
+ * end of the interrupt list, which the controller walks every frame; each
+ * transfer of the core's ring is one or more isochronous TDs of up to
+ * eight packets, one packet a frame, starting at the frame after the
+ * previous TD's last.
+ *
  * Polled: the controller's interrupts stay off; poll() looks at the
  * interrupt TDs every tick, and a waited-for transfer is spun on.  TDs
  * are tracked by their place in the queue's page, since the controller
@@ -48,6 +54,7 @@
 
 #define CTL_CBSR_4          3u
 #define CTL_PLE             (1u << 2)
+#define CTL_IE              (1u << 3)
 #define CTL_CLE             (1u << 4)
 #define CTL_BLE             (1u << 5)
 #define CTL_HCFS_MASK       (3u << 6)
@@ -75,6 +82,9 @@
 /* ED dword 0 */
 #define ED_LOWSPEED         (1u << 13)
 #define ED_SKIP             (1u << 14)
+#define ED_ISO              (1u << 15)
+#define ED_DIR_OUT          (1u << 11)
+#define ED_DIR_IN           (2u << 11)
 #define ED_HALTED           1u
 #define ED_CARRY            2u
 
@@ -97,6 +107,9 @@
 #define TD_BYTES            0x2000u       /* 8 KiB per TD: one page crossing at most */
 #define TD_SLOTS            126
 #define MAX_LISTEN          64
+#define ITD_SLOTS           120
+#define MAX_ISO             16
+#define HCCA_FRAME          0x80          /* HccaFrameNumber */
 
 typedef struct __attribute__((packed, aligned(16))) {
     UINT32 ctl, tail, head, next;
@@ -135,10 +148,36 @@ typedef struct {
     UINT8            *hcca;
     QPage            *intr_head;          /* the interrupt list's (skipped) head ED */
     UsbPipe          *listening[MAX_LISTEN];
+    UsbPipe          *streaming[MAX_ISO];
     PciDevice         pci;
 } Ohci;
 
+/* Isochronous TD: up to 8 packets in two pages from bp0 */
+typedef struct __attribute__((packed, aligned(32))) {
+    UINT32 ctl;                           /* SF 0-15, DI 21-23, FC 24-26, CC 28-31 */
+    UINT32 bp0, next, be;
+    UINT16 psw[8];                        /* offset (bit 12: be's page), then CC and size */
+} ITd;
+
+typedef struct {
+    Ed      ed;
+    UINT8   pad[16];
+    ITd     td[ITD_SLOTS + 1];
+} IPage;
+
+/* An isochronous pipe's controller state: its ED's TD ring and the
+ * transfers in flight, oldest first */
+typedef struct {
+    IPage  *q;
+    int     tail;                         /* the dummy TD's slot */
+    UINT16  frame;                        /* where the next TD starts */
+    bool    linked;
+    int     fifo[128], head, count;       /* transfers in flight */
+    int     first[128], ntd[128];         /* each one's TDs */
+} OIso;
+
 _Static_assert(sizeof(QPage) <= 4096, "OHCI queue page");
+_Static_assert(sizeof(IPage) <= 4096, "OHCI isochronous page");
 
 static inline UINT32 rd32(volatile UINT8 *b, UINT32 r)          { return *(volatile UINT32 *)(b + r); }
 static inline void   wr32(volatile UINT8 *b, UINT32 r, UINT32 v) { *(volatile UINT32 *)(b + r) = v; }
@@ -308,6 +347,150 @@ static QState queue_wait(Ohci *o, OQueue *oq, UsbDev *d, UINT32 timeout_ms, int 
     }
 }
 
+/* ---- isochronous ---- */
+
+static inline UINT16 frame_now(Ohci *o) { return *(volatile UINT16 *)(o->hcca + HCCA_FRAME); }
+
+/* Link an isochronous ED at the end of the interrupt list (lock held) */
+static void iso_link(Ohci *o, OIso *oi)
+{
+    Ed *prev = &o->intr_head->ed;
+    for (int guard = 0; prev->next && guard < 1024; guard++) prev = UsbVirt(prev->next);
+    oi->q->ed.next = 0;
+    mfence();
+    prev->next = p32(&oi->q->ed);
+    oi->linked = true;
+}
+
+static void iso_unlink(Ohci *o, OIso *oi)
+{
+    if (!oi->linked) return;
+    UINT32 me = p32(&oi->q->ed);
+    oi->q->ed.ctl |= ED_SKIP;
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    for (Ed *prev = &o->intr_head->ed; prev->next; prev = UsbVirt(prev->next))
+        if (prev->next == me) { prev->next = oi->q->ed.next; break; }
+    oi->linked = false;
+    for (int i = 0; i < MAX_ISO; i++)
+        if (o->streaming[i] && o->streaming[i]->hcd == oi) o->streaming[i] = NULL;
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    UsbDelay(2);                          /* (the controller is past any frame that had it) */
+}
+
+/* Queue transfer @k: TDs of up to 8 packets within two pages (lock held) */
+static bool iso_submit(Ohci *o, UsbPipe *p, int k)
+{
+    OIso *oi = p->hcd;
+    IPage *q = oi->q;
+    int n = p->iso_packets, i = 0, ntd = 0;
+    INT16 ahead = (INT16)(oi->frame - frame_now(o));
+    if (ahead < 2 || ahead > 512) oi->frame = (UINT16)(frame_now(o) + 3);   /* (fell behind: catch up) */
+    oi->first[k] = oi->tail;
+    while (i < n) {
+        UINT64 pa = UsbPhys(p->dma) + (UINT64)(k * n + i) * p->iso_psize;
+        UINT32 bp0 = (UINT32)pa & ~0xFFFu;
+        int c = 0;
+        UINT32 end = (UINT32)pa;
+        while (i + c < n && c < 8) {
+            UINT32 at = (UINT32)(UsbPhys(p->dma) + (UINT64)(k * n + i + c) * p->iso_psize);
+            UINT32 len = p->iso_len[k * n + i + c];
+            if (at + len - bp0 > 0x2000) break;
+            q->td[oi->tail].psw[c] = (UINT16)((at - bp0) | 0xE000);   /* CC: not accessed */
+            end = at + len;
+            c++;
+        }
+        if (!c) return false;                       /* (a packet bigger than a page) */
+        ITd *td = &q->td[oi->tail];
+        int nx = oi->tail == ITD_SLOTS ? 0 : oi->tail + 1;
+        ITd *nt = &q->td[nx];
+        memset(nt, 0, sizeof(*nt));
+        td->bp0 = bp0;
+        td->be = end - 1;
+        td->next = p32(nt);
+        td->ctl = oi->frame | TD_NO_INT | ((UINT32)(c - 1) << 24) | TD_CC_FRESH;
+        oi->frame = (UINT16)(oi->frame + c);
+        oi->tail = nx;
+        i += c;
+        ntd++;
+    }
+    oi->ntd[k] = ntd;
+    oi->fifo[(oi->head + oi->count++) % 128] = k;
+    mfence();
+    q->ed.tail = p32(&q->td[oi->tail]);
+    return true;
+}
+
+static bool ohci_iso_start(UsbHc *hc, UsbPipe *p)
+{
+    Ohci *o = O(hc);
+    OIso *oi = p->hcd;
+    if (!oi || p->iso_xfers * ((p->iso_packets + 7) / 8 + 1) >= ITD_SLOTS) return false;
+    int at = -1;
+    for (int i = 0; i < MAX_ISO && at < 0; i++) if (!o->streaming[i]) at = i;
+    if (at < 0) return false;
+    oi->count = oi->head = 0;
+    oi->q->ed.head = oi->q->ed.tail = p32(&oi->q->td[oi->tail]);
+    oi->frame = (UINT16)(frame_now(o) + 3);
+    for (int k = 0; k < p->iso_xfers; k++)
+        if (!iso_submit(o, p, k)) return false;
+    oi->q->ed.ctl &= ~ED_SKIP;
+    if (!oi->linked) iso_link(o, oi);
+    o->streaming[at] = p;
+    return true;
+}
+
+static void ohci_iso_stop(UsbHc *hc, UsbPipe *p)
+{
+    OIso *oi = p->hcd;
+    if (!oi) return;
+    iso_unlink(O(hc), oi);
+    oi->q->ed.head = oi->q->ed.tail;
+    oi->count = 0;
+}
+
+/* Finished isochronous transfers, in order (lock held) */
+static void iso_poll(Ohci *o)
+{
+    for (int s = 0; s < MAX_ISO; s++) {
+        UsbPipe *p = o->streaming[s];
+        if (!p || !p->iso_cb || !p->hcd) continue;
+        OIso *oi = p->hcd;
+        while (oi->count) {
+            int k = oi->fifo[oi->head], at = oi->first[k];
+            bool done = true;
+            for (int t = 0; t < oi->ntd[k] && done; t++, at = at == ITD_SLOTS ? 0 : at + 1)
+                if (TD_CC(oi->q->td[at].ctl) >= CC_NOT_ACCESSED) done = false;
+            if (!done) break;
+            if (p->in) {
+                int pk = k * p->iso_packets;
+                at = oi->first[k];
+                for (int t = 0; t < oi->ntd[k]; t++, at = at == ITD_SLOTS ? 0 : at + 1) {
+                    ITd *td = &oi->q->td[at];
+                    for (UINT32 c = 0; c <= ((td->ctl >> 24) & 7); c++, pk++) {
+                        UINT16 w = td->psw[c];
+                        UINT32 cc = w >> 12;
+                        p->iso_len[pk] = (UINT16)(cc == CC_NOERROR || cc == CC_DATAUNDERRUN ? w & 0x7FF : 0);
+                    }
+                }
+            }
+            oi->head = (oi->head + 1) % 128;
+            oi->count--;
+            if (UsbIsoDone(p, k)) iso_submit(o, p, k);
+        }
+    }
+}
+
+static void iso_free(Ohci *o, UsbPipe *p)
+{
+    OIso *oi = p->hcd;
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    p->hcd = NULL;
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    iso_unlink(o, oi);
+    UsbDmaFree(oi->q, 1);
+    kfree(oi);
+}
+
 /* ---- devices and transfers ---- */
 
 static int ohci_control(UsbHc *hc, UsbDev *d, const UsbSetup *s, bool *stalled)
@@ -342,6 +525,16 @@ static int ohci_control(UsbHc *hc, UsbDev *d, const UsbSetup *s, bool *stalled)
 
 static bool ohci_pipe_add(UsbHc *hc, UsbPipe *p)
 {
+    if (p->xfer == 1) {
+        OIso *oi = kzalloc(sizeof(OIso));
+        if (!oi) return false;
+        oi->q = UsbDmaAlloc(1);
+        if (!oi->q) { kfree(oi); return false; }
+        oi->q->ed.ctl = ed_ctl(p->dev, p->addr, p->mps) | ED_ISO | ED_SKIP | (p->in ? ED_DIR_IN : ED_DIR_OUT);
+        oi->q->ed.head = oi->q->ed.tail = p32(&oi->q->td[0]);
+        p->hcd = oi;
+        return true;
+    }
     OQueue *oq = queue_new(O(hc), p->dev, p->addr, p->mps, p->xfer == 3 ? 2 : 1);
     if (!oq) return false;
     p->hcd = oq;
@@ -389,11 +582,24 @@ static bool ohci_listen(UsbHc *hc, UsbPipe *p)
     return true;
 }
 
-/* Interrupt IN transfers that finished */
+static void ohci_pipe_drop(UsbHc *hc, UsbPipe *p)
+{
+    Ohci *o = O(hc);
+    if (p->xfer == 1) { iso_free(o, p); return; }
+    OQueue *oq = p->hcd;
+    IrqState s = spin_lock_irqsave(&g_usb_lock);
+    for (int k = 0; k < MAX_LISTEN; k++) if (o->listening[k] == p) o->listening[k] = NULL;
+    p->hcd = NULL;
+    spin_unlock_irqrestore(&g_usb_lock, s);
+    queue_free(o, oq);
+}
+
+/* Interrupt IN and isochronous transfers that finished */
 static void ohci_poll(UsbHc *hc)
 {
     Ohci *o = O(hc);
     wr32(o->r, HC_INT_STATUS, INT_WDH);
+    iso_poll(o);
     for (int i = 0; i < MAX_LISTEN; i++) {
         UsbPipe *p = o->listening[i];
         if (!p || !p->cb || !p->hcd) continue;
@@ -425,13 +631,7 @@ static void ohci_dev_remove(UsbHc *hc, UsbDev *d)
     Ohci *o = O(hc);
     for (int i = 0; i < 32; i++) {
         UsbPipe *p = d->pipes[i];
-        if (!p || !p->hcd) continue;
-        OQueue *oq = p->hcd;
-        IrqState s = spin_lock_irqsave(&g_usb_lock);
-        for (int k = 0; k < MAX_LISTEN; k++) if (o->listening[k] == p) o->listening[k] = NULL;
-        p->hcd = NULL;
-        spin_unlock_irqrestore(&g_usb_lock, s);
-        queue_free(o, oq);
+        if (p && p->hcd) ohci_pipe_drop(hc, p);
     }
     ODev *od = d->hcd;
     if (od) {
@@ -504,7 +704,7 @@ static bool controller_program(Ohci *o)
     wr32(o->r, HC_FM_INTERVAL, fit | (fsmps << 16) | fi);
     wr32(o->r, HC_PERIODIC_START, fi * 9 / 10);
     wr32(o->r, HC_LS_THRESHOLD, 0x628);
-    wr32(o->r, HC_CONTROL, CTL_CBSR_4 | CTL_PLE | CTL_CLE | CTL_BLE | CTL_HCFS_OPER);
+    wr32(o->r, HC_CONTROL, CTL_CBSR_4 | CTL_PLE | CTL_IE | CTL_CLE | CTL_BLE | CTL_HCFS_OPER);
 
     /* Power the ports (all at once, or each one) */
     UINT32 a = rd32(o->r, HC_RH_DESC_A);
@@ -518,6 +718,7 @@ static bool ohci_resume(UsbHc *hc)
 {
     Ohci *o = O(hc);
     for (int i = 0; i < MAX_LISTEN; i++) o->listening[i] = NULL;
+    for (int i = 0; i < MAX_ISO; i++) o->streaming[i] = NULL;
     /* (the old devices' EDs are forgotten with the lists: they are freed,
      * unlinked from nothing, when the core takes the devices away) */
     return controller_program(o);
@@ -528,10 +729,13 @@ static const UsbHcOps g_ohci_ops = {
     .port_status = ohci_port_status,
     .port_reset  = ohci_port_reset,
     .pipe_add    = ohci_pipe_add,
+    .pipe_drop   = ohci_pipe_drop,
     .dev_remove  = ohci_dev_remove,
     .control     = ohci_control,
     .bulk        = ohci_bulk,
     .listen      = ohci_listen,
+    .iso_start   = ohci_iso_start,
+    .iso_stop    = ohci_iso_stop,
     .pipe_reset  = ohci_pipe_reset,
     .poll        = ohci_poll,
     .resume      = ohci_resume,

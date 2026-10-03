@@ -153,6 +153,7 @@ class Nova:
             make_data(data, puts, data_mb)
         self.wav = wav
         self.rec = rec
+        self.extra = list(extra_args)
         self.qmp = None
         env = None
         if rec:
@@ -327,7 +328,8 @@ class Nova:
             time.sleep(0.1)
 
     def close(self, keep=True):
-        if (self.wav or self.rec) and self.qmp and self.q.poll() is None:   # quit cleanly: QEMU finishes the WAV header
+        if (self.wav or self.rec or '-audiodev' in self.extra) and self.qmp and self.q.poll() is None:
+            # quit cleanly: QEMU finishes the WAV header
             try:
                 self.qmp.cmd('quit')
                 self.q.wait(timeout=10)
