@@ -238,8 +238,21 @@ PulseAudio or PipeWire when it finds one; set `NOVA_AUDIO` (`pa`,
 `pipewire`, `alsa`, `none`, `wav,path=out.wav`) to pick QEMU's backend.
 USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
 -device qemu-xhci -device usb-audio,audiodev=usbsnd` (or on `pci-ohci` or
-`piix3-usb-uhci`; QEMU's EHCI and NovaOS's EHCI driver have no
-isochronous transfers).  The newest sound output plays.
+`piix3-usb-uhci`; QEMU's `usb-audio` is full speed only, so not on a
+plain `usb-ehci`).  The newest sound output plays, and the newest input
+records.  QEMU has no USB microphone and no high-speed audio device:
+`tools/usbredirpeer.py` is one (a USB Audio Class 1 headset or microphone
+behind a `usb-redir` device), e.g. a high-speed headset on EHCI whose
+microphone hears 523 Hz:
+
+```bash
+python3 tools/usbredirpeer.py --port 10700 --speaker headset.wav --mic 523 &
+```
+
+then `-chardev socket,id=ur,host=127.0.0.1,port=10700 -device
+usb-ehci,id=ehci -device usb-redir,chardev=ur,bus=ehci.0` (`--speed full`
+for a full-speed one on the other controllers; the speaker's sound goes
+to `headset.wav`).
 
 More monitors: each further display adapter is one (`-device
 secondary-vga`), and so is each output of a virtio GPU with a monitor on
@@ -381,8 +394,16 @@ from boot; the test plugs the second into an OHCI and the third into a
 UHCI controller while NovaOS runs, plays `soundtest tone` after each, then
 unplugs the third and plays again, which the second must hear.  Each
 speaker's WAV must hold its tones and nothing else: a speaker another one
-took over from has to go quiet.  Last, one `virtio-vga` card with three
-outputs and a monitor only on the first, for `montest hotplug`: the test
+took over from has to go quiet.  A third boot has no HD Audio card and a
+high-speed USB headset on an EHCI controller (`tools/usbredirpeer.py`
+behind a `usb-redir` device; its speaker writes `headset.wav`, its
+microphone hears 523 Hz): `soundtest tone` must sound in `headset.wav`
+alone, and `soundtest record` and `capture` must record the microphone's
+tone.  The test then plugs full-speed USB microphones (more
+`usbredirpeer.py`s, each hearing its own tone) into an xHCI, an OHCI and
+a UHCI controller, records after each (the newest microphone must be
+heard), unplugs the UHCI one and records the OHCI one again.  Last, one
+`virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
 connects a monitor to the second and third outputs and disconnects them
 again while NovaOS runs, through a VNC server QEMU has on each (an RFB
 `SetDesktopSize` asks for a monitor of that size there; 0 x 0 takes it

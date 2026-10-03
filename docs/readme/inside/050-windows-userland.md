@@ -4,7 +4,8 @@
   the `api-ms-win-crt-*` API sets (`errno` and the rest of the C
   runtime's per-thread state kept per thread, as on Windows), `vcruntime140`/`vcruntime140_1` (C++
   exceptions, FH3 and FH4 tables), `msvcp140` and its satellites (the C++
-  standard library: Microsoft's own STL, compiled with clang),
+  standard library: Microsoft's own STL, compiled with clang, with
+  Boost.Math under `msvcp140_2`'s special math functions),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs, MDI,
   hooks), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
@@ -16,6 +17,7 @@
   (with `msiscript` running JScript and VBScript custom actions on the
   ISC-licensed mujs),
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
-  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`), and
+  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`),
+  `wintab32` (Wintab pen tablets: pressure for GTK, Qt and Krita), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
   `dhcpcsvc`, `d3dcompiler_47`), and more.

@@ -16,9 +16,8 @@
  * (its worker thread is already waiting when the timer is set: woken by
  * a timer, it preempts the running thread, as a thread woken by its own
  * deadline does).  Last, how soon a thread already waiting on an event
- * runs once another thread sets it: reported, not judged, since a woken
- * thread of the same priority preempts only for a timer (scheduler.h), so
- * under load it waits for the running thread's time slice.
+ * runs once another thread sets it: reported, not judged here (boosttest
+ * judges it, with NT's wake-up boost that lets it preempt a busy thread).
  */
 #include <windows.h>
 #include <stdio.h>

@@ -288,7 +288,7 @@ static void ev_signal(UmObject *ev)
     if (!ev) return;
     IrqState s = ob_lock();
     ev->signaled = true;
-    um_ob_wake(ev);
+    um_ob_wake_boost(ev, BOOST_NAMED_PIPE);
     ob_unlock(s);
 }
 

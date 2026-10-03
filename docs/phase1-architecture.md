@@ -215,10 +215,29 @@ A thread a timer woke (its deadline or its timer) goes first in the queue
 even when a thread of higher priority runs just then, so it runs as soon
 as that one is done.  The thread preempted for a woken one, at a timer
 tick or an `IPI_WAKE`, goes back after the woken threads but ahead of the
-rest, and keeps what it has used of its slice.  Other wakes (an event
-set, a lock released, no priority difference) queue the thread last and
-wait for the running thread's slice: preempting a lock's releaser makes
-lock convoys.
+rest, and keeps what it has used of its slice.  A wake with no priority
+difference and no timer (a kernel wait queue's, which carries no boost)
+queues the thread after the others of its priority.
+
+Priorities are NT's: a thread has a base priority and a current (dynamic)
+one, 1-15 dynamic and 16-31 real-time.  Each run queue runs from the
+highest current priority down, threads of one priority taking turns.  A
+thread woken from a wait gets NT's boost: its current priority rises to
+its base plus the waker's increment (`sched_unblock_boost`, `BOOST_*` in
+`scheduler.h`): +1 for an event, a semaphore, a mutex, an alert (SRW
+locks, condition variables, critical sections, APCs) or a timed wait's
+deadline, +1 for file I/O, +2 for a named pipe, the network or a window
+message, +6 for keyboard and mouse input (console input too), up to 15
+and never for a real-time thread.  So it preempts a busy thread of its
+base priority instead of waiting out that thread's 20 ms slice
+(`boosttest`: about 19 ms before, see HISTORY).  The boost decays one
+level per quantum the thread runs (two ticks, counted across its waits),
+back to its base; a thread whose slice ends goes on running while every
+queued foreground thread has a lower priority.  Once a second the balance
+set raises a thread that has been ready for 3 s without running to 15 for
+one quantum.  The device poll and audio mixer threads run at 16, above
+any boost; the desktop at 9, so a +1 boost doesn't put programs ahead of
+it.
 
 A CPU halted waiting for the kernel lock wakes none of its sleepers.  The
 timer interrupt it takes meanwhile (`sched_timer_rearm`) hands a due
@@ -229,7 +248,8 @@ seconds; it now runs on its own thread without it, see `fs/persist.c`.)
 
 ### Scheduler Design
 
-**Algorithm**: Round-robin with fixed 20ms time quantum
+**Algorithm**: Priority round-robin with a 20ms time quantum and NT's
+wake-up boosts (see above)
 
 ```
 Ready queue: Circular doubly-linked list
@@ -260,7 +280,8 @@ typedef struct Thread {
     ThreadState     state;
     ThreadContext   context;      // Saved registers (for context switch)
     void           *kernel_stack; // Stack base
-    uint8_t         priority;     // 0-31 (NT-compatible)
+    uint8_t         priority;     // 0-31 (NT-compatible): current, boosted
+    uint8_t         base_priority;// what the boost decays back to
     void           *process;      // Owner process (Phase 2)
 } Thread;
 ```
