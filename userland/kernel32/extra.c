@@ -248,10 +248,12 @@ void k32_queue_user_apc(DWORD tid, PAPCFUNC fn, ULONG_PTR arg) { queue_apc(tid, 
 
 BOOL k32_run_apcs(void) { return run_apcs(); }
 
+static void timers_due(void);
 static BOOL run_apcs(void)
 {
     DWORD me = GetCurrentThreadId();
     BOOL ran = FALSE;
+    timers_due();
     for (;;) {
         lock();
         Apc **pp = &g_apcs, *x = 0;
@@ -467,17 +469,11 @@ WINBASEAPI BOOL WINAPI ReadFileEx(HANDLE h, LPVOID buf, DWORD n, LPOVERLAPPED ov
 WINBASEAPI BOOL WINAPI WriteFileEx(HANDLE h, LPCVOID buf, DWORD n, LPOVERLAPPED ov, LPOVERLAPPED_COMPLETION_ROUTINE fn)
 { return k32_overlapped(h, ov, 1, (PVOID)buf, n, 0, (PVOID)fn); }
 
+DWORD k32_alertable_wait(DWORD n, const HANDLE *h, BOOL all, DWORD ms);
 WINBASEAPI DWORD WINAPI SleepEx(DWORD ms, BOOL alertable)
 {
     if (!alertable) { Sleep(ms); return 0; }
-    ULONGLONG until = ms == INFINITE ? ~0ULL : GetTickCount64() + ms;
-    for (;;) {
-        if (run_apcs()) return WAIT_IO_COMPLETION;
-        ULONGLONG now = GetTickCount64();
-        if (now >= until) return 0;
-        ULONGLONG left = until - now;
-        Sleep(left > 10 ? 10 : (DWORD)left);
-    }
+    return k32_alertable_wait(0, 0, FALSE, ms) == WAIT_IO_COMPLETION ? WAIT_IO_COMPLETION : 0;
 }
 
 /* -----------------------------------------------------------------------
@@ -615,111 +611,118 @@ WINBASEAPI BOOL WINAPI UnmapViewOfFile(LPCVOID p)
 }
 
 /* -----------------------------------------------------------------------
- * Waitable timers
+ * Waitable timers' completion routines
+ *
+ * The timers are kernel objects (threads.c), which end the waits on them
+ * when they are due.  SetWaitableTimer's routine runs on the thread that
+ * set it, when that thread waits alertably (as on Windows): the timer's
+ * due time is kept here as well, on the performance counter, and an
+ * alertable wait ends when the earliest of its thread's timers is due
+ * (k32_timer_apc_slice), so the routine runs on time too.
  * ----------------------------------------------------------------------- */
 typedef struct Timer {
     struct Timer *next;
-    HANDLE h;                       /* the event the waiters see */
-    BOOL armed;
-    ULONGLONG due;                  /* GetTickCount64 time */
-    LONG period;
-    void *fn; LPVOID arg; DWORD tid;
+    HANDLE h;
+    ULONGLONG due, period;          /* k32_now_100ns time; 100 ns units (0: once) */
+    void *fn; LPVOID arg; DWORD tid; /* fn 0: no routine (or not set) */
 } Timer;
 static Timer *g_timers;
-static HANDLE g_timer_wake, g_timer_thread;
 
-static DWORD WINAPI timer_thread(LPVOID unused)
+/* 100 ns units since boot, from the performance counter */
+ULONGLONG k32_now_100ns(void)
 {
-    (void)unused;
-    for (;;) {
-        ULONGLONG now = GetTickCount64(), next = ~0ULL;
-        lock();
-        for (Timer *t = g_timers; t; t = t->next) {
-            if (!t->armed) continue;
-            if (t->due <= now) {
-                SetEvent(t->h);
-                if (t->fn) {
-                    FILETIME ft;
-                    GetSystemTimeAsFileTime(&ft);
-                    queue_apc(t->tid, 1, t->fn, (ULONG_PTR)t->arg, ft.dwLowDateTime, ft.dwHighDateTime);
-                }
-                if (t->period > 0) {
-                    t->due += (ULONGLONG)t->period;
-                    if (t->due <= now) t->due = now + (ULONGLONG)t->period;
-                } else {
-                    t->armed = FALSE;
-                    continue;
-                }
-            }
-            if (t->due < next) next = t->due;
-        }
-        unlock();
-        DWORD wait = next == ~0ULL ? INFINITE : (DWORD)(next - now > 0x7FFFFFFF ? 0x7FFFFFFF : next - now);
-        WaitForSingleObject(g_timer_wake, wait);
-    }
+    static LONGLONG freq;
+    LARGE_INTEGER c, f;
+    if (!freq) { QueryPerformanceFrequency(&f); freq = f.QuadPart > 0 ? f.QuadPart : -1; }
+    if (freq < 0) return GetTickCount64() * 10000;
+    QueryPerformanceCounter(&c);
+    ULONGLONG q = (ULONGLONG)c.QuadPart, hz = (ULONGLONG)freq;
+    return q / hz * 10000000ULL + q % hz * 10000000ULL / hz;
 }
 
-WINBASEAPI HANDLE WINAPI CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access)
+/* Under lock(): the entry for timer @h (a new one when @make) */
+static Timer *timer_entry(HANDLE h, BOOL make)
 {
-    (void)access; (void)name;
+    for (Timer *t = g_timers; t; t = t->next) if (t->h == h) return t;
+    if (!make) return 0;
     Timer *t = zalloc(sizeof(*t));
-    HANDLE h = t ? CreateEventW(sa, flags & 1 /* MANUAL_RESET */, FALSE, 0) : 0;
-    if (!h) { zfree(t); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    if (!t) return 0;
     t->h = h;
-    lock();
     t->next = g_timers;
     g_timers = t;
+    return t;
+}
+
+/* Queue the routines of this thread's timers that are due (one for each
+ * timer, however many periods went by: Windows queues its APC once) */
+static void timers_due(void)
+{
+    DWORD me = GetCurrentThreadId();
+    struct { void *fn; LPVOID arg; } due[16];
+    int n = 0;
+    ULONGLONG now = k32_now_100ns();
+    lock();
+    for (Timer *t = g_timers; t && n < 16; t = t->next) {
+        if (!t->fn || t->tid != me || t->due > now) continue;
+        due[n].fn = t->fn; due[n].arg = t->arg; n++;
+        if (t->period) t->due += ((now - t->due) / t->period + 1) * t->period;
+        else t->fn = 0;
+    }
     unlock();
-    return h;
+    if (!n) return;
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    for (int i = 0; i < n; i++) queue_apc(me, 1, due[i].fn, (ULONG_PTR)due[i].arg, ft.dwLowDateTime, ft.dwHighDateTime);
 }
 
-WINBASEAPI HANDLE WINAPI CreateWaitableTimerW(LPSECURITY_ATTRIBUTES sa, BOOL manual, LPCWSTR name)
+/* @slice (100 ns units), cut short where one of this thread's timer
+ * routines is due */
+ULONGLONG k32_timer_apc_slice(ULONGLONG slice)
 {
-    return CreateWaitableTimerExW(sa, name, manual ? 1 : 0, 0);
-}
-
-WINBASEAPI HANDLE WINAPI CreateWaitableTimerA(LPSECURITY_ATTRIBUTES sa, BOOL manual, LPCSTR name)
-{
-    (void)name;
-    return CreateWaitableTimerExW(sa, 0, manual ? 1 : 0, 0);
+    DWORD me = GetCurrentThreadId();
+    ULONGLONG now = k32_now_100ns();
+    lock();
+    for (Timer *t = g_timers; t; t = t->next) {
+        if (!t->fn || t->tid != me) continue;
+        ULONGLONG left = t->due > now ? t->due - now : 0;
+        if (left < slice) slice = left;
+    }
+    unlock();
+    return slice;
 }
 
 WINBASEAPI BOOL WINAPI SetWaitableTimer(HANDLE h, const LARGE_INTEGER *due, LONG period, LPVOID fn, LPVOID arg, BOOL resume)
 {
-    (void)resume;
-    ULONGLONG now = GetTickCount64(), at;
-    if (due->QuadPart < 0) {
-        at = now + (ULONGLONG)(-due->QuadPart + 9999) / 10000;
-    } else {
+    LARGE_INTEGER d = *due;
+    NTSTATUS s = NtSetTimer(h, &d, 0, 0, (BOOLEAN)(resume != 0), period, 0);
+    if (!NT_SUCCESS(s)) return fail_status(s);
+    ULONGLONG now = k32_now_100ns(), rel;
+    if (d.QuadPart < 0) rel = (ULONGLONG)-d.QuadPart;
+    else {
         FILETIME ft;
         GetSystemTimeAsFileTime(&ft);
         ULONGLONG t = (ULONGLONG)ft.dwHighDateTime << 32 | ft.dwLowDateTime;
-        at = now + ((ULONGLONG)due->QuadPart > t ? ((ULONGLONG)due->QuadPart - t + 9999) / 10000 : 0);
+        rel = (ULONGLONG)d.QuadPart > t ? (ULONGLONG)d.QuadPart - t : 0;
     }
     lock();
-    Timer *t = g_timers;
-    while (t && t->h != h) t = t->next;
+    Timer *t = timer_entry(h, fn != 0);
     if (t) {
-        ResetEvent(h);
-        t->due = at; t->period = period; t->armed = TRUE;
+        t->due = now + rel;
+        t->period = period > 0 ? (ULONGLONG)period * 10000 : 0;
         t->fn = fn; t->arg = arg; t->tid = GetCurrentThreadId();
-        if (!g_timer_wake) g_timer_wake = CreateEventW(0, FALSE, FALSE, 0);
-        if (g_timer_wake && !g_timer_thread) g_timer_thread = CreateThread(0, 64 * 1024, timer_thread, 0, 0, 0);
     }
     unlock();
-    if (!t) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-    if (g_timer_wake) SetEvent(g_timer_wake);
     return TRUE;
 }
 
 WINBASEAPI BOOL WINAPI CancelWaitableTimer(HANDLE h)
 {
+    NTSTATUS s = NtCancelTimer(h, 0);
+    if (!NT_SUCCESS(s)) return fail_status(s);
     lock();
-    Timer *t = g_timers;
-    while (t && t->h != h) t = t->next;
-    if (t) t->armed = FALSE;
+    Timer *t = timer_entry(h, FALSE);
+    if (t) t->fn = 0;
     unlock();
-    if (!t) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
     return TRUE;
 }
 

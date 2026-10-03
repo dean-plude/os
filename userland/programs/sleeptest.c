@@ -9,7 +9,13 @@
  * instead: Sleep(1), Sleep(5) and a 1 ms WaitForSingleObject timeout,
  * first on an idle machine, then with a busy thread on every processor.
  * The resolution is how late the 95th percentile of them is; it passes
- * at 1 ms or less, and when none returns early.
+ * at 1 ms or less, and when none returns early.  The same goes for
+ * waitable timers: a 1 ms SetWaitableTimer waited for, a 5 ms periodic
+ * one (each firing against its place on the timer's grid) and a 1 ms
+ * timer's completion routine in SleepEx.  A 1 ms timer queue timer is
+ * measured but not judged: its worker thread is already waiting when the
+ * timer is set, and under load a thread woken that way waits for the
+ * running thread's time slice (up to 20 ms).
  */
 #include <windows.h>
 #include <stdio.h>
@@ -47,13 +53,76 @@ static LONGLONG measure(const char *label, DWORD ms, HANDLE ev, int *early)
     return p95;
 }
 
+/* Waitable timers: the same, one case per @kind */
+enum { WT_WAIT, WT_PERIODIC, WT_APC, WT_QUEUE };
+static LARGE_INTEGER g_fired;
+static volatile LONG g_calls;
+static VOID CALLBACK on_apc(LPVOID arg, DWORD lo, DWORD hi) { (void)arg; (void)lo; (void)hi; QueryPerformanceCounter(&g_fired); g_calls++; }
+static VOID CALLBACK on_queue(PVOID arg, BOOLEAN fired) { (void)fired; QueryPerformanceCounter(&g_fired); SetEvent((HANDLE)arg); }
+
+static LONGLONG measure_timer(const char *label, int kind, int *early)
+{
+    static LONGLONG late[ROUNDS];
+    LARGE_INTEGER f, a, b, due;
+    QueryPerformanceFrequency(&f);
+    HANDLE t = CreateWaitableTimerA(NULL, FALSE, NULL);
+    HANDLE done = CreateEventA(NULL, FALSE, FALSE, NULL);
+    const LONGLONG period_us = 5000;
+    LONGLONG next = 1;                                  /* WT_PERIODIC: the firing due next */
+    due.QuadPart = -10000;                              /* 1 ms */
+    if (kind == WT_PERIODIC) {
+        due.QuadPart = -period_us * 10;
+        QueryPerformanceCounter(&a);
+        SetWaitableTimer(t, &due, (LONG)(period_us / 1000), NULL, NULL, FALSE);
+    }
+    for (int i = 0; i < ROUNDS; i++) {
+        LONGLONG want = 1000;
+        if (kind == WT_PERIODIC) {
+            WaitForSingleObject(t, 1000);
+            QueryPerformanceCounter(&b);
+            LONGLONG at = (b.QuadPart - a.QuadPart) * 1000000 / f.QuadPart;
+            late[i] = at - next * period_us;            /* (a missed firing counts a whole period late) */
+            next = at / period_us + 1;
+            if (late[i] < 0) (*early)++;
+            continue;
+        }
+        QueryPerformanceCounter(&a);
+        if (kind == WT_QUEUE) {
+            HANDLE q;
+            CreateTimerQueueTimer(&q, NULL, on_queue, done, 1, 0, WT_EXECUTEONLYONCE);
+            WaitForSingleObject(done, 1000);
+            DeleteTimerQueueTimer(NULL, q, INVALID_HANDLE_VALUE);
+            b = g_fired;
+        } else if (kind == WT_APC) {
+            LONG calls = g_calls;
+            SetWaitableTimer(t, &due, 0, (LPVOID)on_apc, NULL, FALSE);
+            while (g_calls == calls && SleepEx(1000, TRUE) == WAIT_IO_COMPLETION) {}
+            b = g_fired;
+        } else {
+            SetWaitableTimer(t, &due, 0, NULL, NULL, FALSE);
+            WaitForSingleObject(t, 1000);
+            QueryPerformanceCounter(&b);
+        }
+        late[i] = (b.QuadPart - a.QuadPart) * 1000000 / f.QuadPart - want;
+        if (late[i] < 0) (*early)++;
+    }
+    CancelWaitableTimer(t);
+    CloseHandle(t);
+    CloseHandle(done);
+    qsort(late, ROUNDS, sizeof(late[0]), cmp_ll);
+    LONGLONG p95 = late[ROUNDS * 95 / 100];
+    printf("  %-22s late by: min %lld us, median %lld us, 95%% %lld us, max %lld us\n", label,
+           late[0], late[ROUNDS / 2], p95, late[ROUNDS - 1]);
+    return p95;
+}
+
 static int timer_test(void)
 {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     HANDLE ev = CreateEventA(NULL, TRUE, FALSE, NULL);
-    int early = 0;
-    LONGLONG worst = 0, p;
+    int early = 0, wt_early = 0;
+    LONGLONG worst = 0, wt_worst = 0, p;
     for (int load = 0; load < 2; load++) {
         HANDLE th[64];
         DWORD n = load ? si.dwNumberOfProcessors : 0;
@@ -65,6 +134,10 @@ static int timer_test(void)
         p = measure("Sleep(1)", 1, NULL, &early); if (load && p > worst) worst = p;
         p = measure("Sleep(5)", 5, NULL, &early); if (load && p > worst) worst = p;
         p = measure("1 ms wait timeout", 1, ev, &early); if (load && p > worst) worst = p;
+        p = measure_timer("1 ms waitable timer", WT_WAIT, &wt_early); if (load && p > wt_worst) wt_worst = p;
+        p = measure_timer("5 ms periodic timer", WT_PERIODIC, &wt_early); if (load && p > wt_worst) wt_worst = p;
+        p = measure_timer("1 ms timer APC", WT_APC, &wt_early); if (load && p > wt_worst) wt_worst = p;
+        measure_timer("1 ms timer queue timer", WT_QUEUE, &wt_early);   /* (not judged: see above) */
         g_stop = 1;
         WaitForMultipleObjects(n, th, TRUE, 5000);
         for (DWORD i = 0; i < n; i++) CloseHandle(th[i]);
@@ -72,7 +145,8 @@ static int timer_test(void)
     CloseHandle(ev);
     printf("sleeptest: resolution %lld.%03lld ms under load on %lu processors, %d early\n",
            worst / 1000, worst % 1000, si.dwNumberOfProcessors, early);
-    printf("sleeptest: %s\n", worst <= 1000 && !early ? "PASS" : "FAIL");
+    printf("sleeptest: waitable timers %lld.%03lld ms under load, %d early\n", wt_worst / 1000, wt_worst % 1000, wt_early);
+    printf("sleeptest: %s\n", worst <= 1000 && !early && wt_worst <= 1000 && !wt_early ? "PASS" : "FAIL");
     return 0;
 }
 

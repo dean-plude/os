@@ -331,6 +331,19 @@ WINBASEAPI HANDLE WINAPI CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES sa, LPCWST
 WINBASEAPI HANDLE WINAPI CreateWaitableTimerW(LPSECURITY_ATTRIBUTES sa, BOOL manual, LPCWSTR name);
 WINBASEAPI BOOL   WINAPI SetWaitableTimer(HANDLE t, const LARGE_INTEGER *due, LONG period, LPVOID fn, LPVOID arg, BOOL resume);
 WINBASEAPI BOOL   WINAPI CancelWaitableTimer(HANDLE t);
+WINBASEAPI HANDLE WINAPI CreateWaitableTimerA(LPSECURITY_ATTRIBUTES sa, BOOL manual, LPCSTR name);
+WINBASEAPI HANDLE WINAPI OpenWaitableTimerW(DWORD access, BOOL inherit, LPCWSTR name);
+WINBASEAPI HANDLE WINAPI OpenWaitableTimerA(DWORD access, BOOL inherit, LPCSTR name);
+/* timer queues */
+typedef VOID (CALLBACK *WAITORTIMERCALLBACK)(PVOID param, BOOLEAN timer_fired);
+#define WT_EXECUTEONLYONCE 0x00000008
+WINBASEAPI HANDLE WINAPI CreateTimerQueue(void);
+WINBASEAPI BOOL   WINAPI CreateTimerQueueTimer(PHANDLE timer, HANDLE queue, WAITORTIMERCALLBACK fn, PVOID param,
+                                               DWORD due, DWORD period, ULONG flags);
+WINBASEAPI BOOL   WINAPI ChangeTimerQueueTimer(HANDLE queue, HANDLE timer, ULONG due, ULONG period);
+WINBASEAPI BOOL   WINAPI DeleteTimerQueueTimer(HANDLE queue, HANDLE timer, HANDLE completion);
+WINBASEAPI BOOL   WINAPI DeleteTimerQueueEx(HANDLE queue, HANDLE completion);
+WINBASEAPI BOOL   WINAPI DeleteTimerQueue(HANDLE queue);
 /* wait on address */
 WINBASEAPI BOOL   WINAPI WaitOnAddress(volatile VOID *addr, PVOID cmp, SIZE_T size, DWORD ms);
 WINBASEAPI BOOL   WINAPI CompareObjectHandles(HANDLE first, HANDLE second);
