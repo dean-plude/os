@@ -7,16 +7,21 @@
  * bytes ahead of that.  Outputs are attached by their drivers: the HD
  * Audio card at boot, a USB audio device when it is plugged in.  The one
  * attached last plays; when it leaves, the one before it takes over.
+ * Behind what it mixed, the mixer keeps the rest of the ring silent, so a
+ * mixer held up for longer than LEAD (a busy machine) leaves a gap rather
+ * than replaying the ring's last lap.
  * The others keep streaming their rings, so the mixer keeps silence ahead
  * of them the same way: what was mixed for an output before another took
  * over still plays, and then it is quiet (not its ring's last 341 ms
  * over and over).  Everything a stream has is guarded by one spinlock;
  * the mixing itself runs under it too (a few thousand frames per tick).
  *
- * Capture streams run the other way: while any is running the sound card
- * records into its capture ring, and every tick the new frames are copied
- * into each running capture stream (the oldest dropped when a stream is
- * full).  Each direction has a master volume and mute (the endpoint
+ * Capture streams run the other way: inputs are attached like outputs
+ * (the HD Audio card's microphone or line in at boot, a USB microphone
+ * when it is plugged in), and the newest records.  While any capture
+ * stream is running the input is recording into its ring, and every tick
+ * the new frames are copied into each running capture stream (the oldest
+ * dropped when a stream is full).  Each direction has a master volume and mute (the endpoint
  * volume programs set through IAudioEndpointVolume).
  */
 
@@ -59,7 +64,6 @@ typedef struct {
 } Track;
 
 static struct {
-    bool       hda;                                   /* the HD Audio card (it also records) */
     KSpinLock  lock;
     Stream     s[MAX_STREAMS];
     const AudioOutput *outs[MAX_OUTPUTS];             /* attached, oldest first */
@@ -71,12 +75,14 @@ static struct {
     UINT32     last_pos;
     UINT64     hw_base;                               /* absolute byte count at the ring's start */
     UINT64     write_abs;                             /* mixed up to here */
+    UINT64     clear_abs;                             /* and the ring silenced up to here */
     INT32      acc[CHUNK_FRAMES * 2];
     Master     master[2];                             /* render, capture */
     /* recording */
-    INT16     *cring;
-    UINT32     cring_bytes;
-    UINT32     cpos;                                  /* read up to here in the capture ring */
+    const AudioInput *ins[MAX_OUTPUTS];               /* attached, oldest first */
+    int        nins;
+    const AudioInput *in;                             /* recording: the last of ins */
+    UINT32     cpos;                                  /* read up to here in its ring */
     bool       crun;
 } g = { .lock = KSPINLOCK_INIT, .master = { { 65536, 65536, false }, { 65536, 65536, false } } };
 
@@ -158,7 +164,28 @@ static void mix_ahead(void)
         mix_chunk(g.write_abs, (UINT32)n);
         g.write_abs += n * FRAME;
     }
+    /* The rest of the ring, up to where the device is, holds the last
+     * lap: silence it, so that if the mixer is held up for longer than
+     * LEAD the device plays a gap, not what it played a lap ago */
+    if (g.clear_abs < g.write_abs) g.clear_abs = g.write_abs;
+    UINT64 lap = hw + g.ring_bytes;
+    while (g.clear_abs < lap) {
+        UINT32 off = (UINT32)(g.clear_abs % g.ring_bytes);
+        UINT64 n = lap - g.clear_abs;
+        if (n > g.ring_bytes - off) n = g.ring_bytes - off;
+        memset((UINT8 *)g.ring + off, 0, (size_t)n);
+        g.clear_abs += n;
+    }
     spin_unlock_irqrestore(&g.lock, st);
+}
+
+/* Start or stop the recording input (lock held) */
+static void input_run(bool on)
+{
+    const AudioInput *in = g.in;
+    if (!in) return;
+    if (in->run) in->run(in->ctx, on);
+    if (on) g.cpos = in->position(in->ctx);
 }
 
 /* Start or stop recording to match the running capture streams (lock held) */
@@ -169,8 +196,7 @@ static void capture_sync(void)
         want = g.s[i].used && g.s[i].capture && g.s[i].running;
     if (want == g.crun) return;
     g.crun = want;
-    g.cpos = 0;                                       /* the ring restarts */
-    HdaCapture(want);
+    input_run(want);
 }
 
 /* Copy what the card recorded since the last tick into the running
@@ -178,13 +204,14 @@ static void capture_sync(void)
 static void pull_capture(void)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
-    if (g.crun) {
-        UINT32 pos = HdaCapturePosition();
+    const AudioInput *in = g.in;
+    if (g.crun && in) {
+        UINT32 pos = in->position(in->ctx);
         Master *mc = &g.master[1];
         while (g.cpos != pos) {
-            UINT32 end = pos > g.cpos ? pos : g.cring_bytes;      /* up to the wrap first */
+            UINT32 end = pos > g.cpos ? pos : in->bytes;          /* up to the wrap first */
             UINT32 n = (end - g.cpos) / FRAME;
-            const INT16 *src = (const INT16 *)((UINT8 *)g.cring + g.cpos);
+            const INT16 *src = (const INT16 *)((UINT8 *)in->ring + g.cpos);
             for (int i = 0; i < MAX_STREAMS; i++) {
                 Stream *s = &g.s[i];
                 if (!s->used || !s->capture || !s->running) continue;
@@ -203,7 +230,7 @@ static void pull_capture(void)
                 }
                 s->written += n;
             }
-            g.cpos = end == g.cring_bytes ? 0 : end;
+            g.cpos = end == in->bytes ? 0 : end;
         }
     }
     spin_unlock_irqrestore(&g.lock, st);
@@ -245,6 +272,7 @@ static void switch_output(const AudioOutput *o)
     g.last_pos = o->position(o->ctx);
     g.hw_base = 0;
     g.write_abs = g.last_pos;                         /* mix_ahead starts at the device */
+    g.clear_abs = g.write_abs;
     for (int i = 0; i < MAX_STREAMS; i++) g.s[i].last_end = 0;
 }
 
@@ -279,8 +307,54 @@ void AudioOutputDetach(const AudioOutput *o)
     else if (found) kprintf("[AUDIO] No sound output left\n");
 }
 
+/* Record from @i from now on (lock held; NULL: nothing records) */
+static void switch_input(const AudioInput *i)
+{
+    if (g.crun && g.in && g.in->run) g.in->run(g.in->ctx, false);
+    g.in = i;
+    if (g.crun) input_run(true);
+}
+
+bool AudioInputAttach(const AudioInput *i)
+{
+    IrqState st = spin_lock_irqsave(&g.lock);
+    bool ok = g.nins < MAX_OUTPUTS;
+    if (ok) {
+        g.ins[g.nins++] = i;
+        switch_input(i);
+    }
+    spin_unlock_irqrestore(&g.lock, st);
+    if (ok) kprintf("[AUDIO] Recording from %s\n", i->name);
+    return ok;
+}
+
+void AudioInputDetach(const AudioInput *i)
+{
+    IrqState st = spin_lock_irqsave(&g.lock);
+    bool found = false;
+    for (int k = 0; k < g.nins; k++) {
+        if (g.ins[k] != i) continue;
+        for (int j = k + 1; j < g.nins; j++) g.ins[j - 1] = g.ins[j];
+        g.nins--;
+        found = true;
+        break;
+    }
+    const AudioInput *now = g.nins ? g.ins[g.nins - 1] : NULL;
+    if (found && g.in != now) {
+        if (g.in == i) g.in = NULL;                   /* (gone: not stopped through it) */
+        switch_input(now);
+    }
+    spin_unlock_irqrestore(&g.lock, st);
+    if (found && now) kprintf("[AUDIO] Recording from %s\n", now->name);
+    else if (found) kprintf("[AUDIO] No sound input left\n");
+}
+
 static UINT32 hda_position(void *ctx) { (void)ctx; return HdaPosition(); }
 static AudioOutput g_hda_out = { .position = hda_position };
+static UINT32 hda_cposition(void *ctx) { (void)ctx; return HdaCapturePosition(); }
+static void hda_crun(void *ctx, bool on) { (void)ctx; HdaCapture(on); }
+static AudioInput g_hda_in = { .position = hda_cposition, .run = hda_crun };
+static char g_hda_in_name[96];
 
 bool AudioInit(void)
 {
@@ -289,17 +363,26 @@ bool AudioInit(void)
         return false;
     }
     if (!HdaInit()) return false;
-    g.cring = HdaCaptureRing(&g.cring_bytes);
-    g.hda = true;
     g_hda_out.name = HdaName();
     g_hda_out.ring = HdaRing(&g_hda_out.bytes);
     AudioOutputAttach(&g_hda_out);
+    if (HdaCanRecord()) {
+        ksnprintf(g_hda_in_name, sizeof(g_hda_in_name), "%s (%s)", HdaInputName(), HdaName());
+        g_hda_in.name = g_hda_in_name;
+        g_hda_in.ring = HdaCaptureRing(&g_hda_in.bytes);
+        AudioInputAttach(&g_hda_in);
+    }
     return true;
 }
 
 bool        AudioPresent(void)    { return g.out != NULL; }
-bool        AudioCanRecord(void)  { return g.hda && HdaCanRecord(); }
-const char *AudioInputName(void)  { return HdaInputName(); }
+bool        AudioCanRecord(void)  { return g.in != NULL; }
+
+const char *AudioInputName(void)
+{
+    const AudioInput *i = g.in;
+    return i ? i->name : "";
+}
 
 const char *AudioDeviceName(void)
 {

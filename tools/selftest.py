@@ -24,9 +24,12 @@ order; --list prints them):
             (tests/selftest/devices/NAME/): "touch", a virtio multi-touch
             screen (touchtest); "usbaudio", USB speakers on xHCI, OHCI and
             UHCI and no HD Audio card (soundtest; each speaker's WAV must
-            hold its tones); "monitors", one virtio-vga card with three
-            outputs, whose monitors the test plugs in and unplugs while
-            NovaOS runs (montest hotplug)
+            hold its tones); "usbheadset", a high-speed USB headset on EHCI
+            and USB microphones plugged into xHCI, OHCI and UHCI, each
+            tools/usbredirpeer.py behind a QEMU usb-redir device (soundtest
+            tone, record and capture); "monitors", one virtio-vga card with
+            three outputs, whose monitors the test plugs in and unplugs
+            while NovaOS runs (montest hotplug)
 
 Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
@@ -193,6 +196,7 @@ NET6 = load_suite('network6')
 # core boot's mouse)
 TOUCH = load_suite('devices/touch')
 USBAUDIO = load_suite('devices/usbaudio')
+USBHEADSET = load_suite('devices/usbheadset')
 MONITORS = load_suite('devices/monitors')
 
 
@@ -232,6 +236,32 @@ def usbaudio_boot(work):
                    '-device', 'pci-ohci,id=ohci', '-device', 'piix3-usb-uhci,id=uhci'], []
 
 
+def peer(work, port, *args):
+    """Start tools/usbredirpeer.py on @port and wait until it listens"""
+    log = os.path.join(work, f'usbredirpeer-{port}.log')
+    p = subprocess.Popen([sys.executable, os.path.join(ROOT, 'tools', 'usbredirpeer.py'), '--port', str(port), *args],
+                         stdout=open(log, 'w'), stderr=subprocess.STDOUT)
+    for _ in range(100):
+        if 'listening' in open(log).read() or p.poll() is not None:
+            break
+        time.sleep(0.05)
+    return p
+
+
+def usbheadset_boot(work):
+    """No HD Audio card: a high-speed USB headset (tools/usbredirpeer.py:
+    its speaker writes headset.wav in the work directory, its microphone
+    hears REC_HZ) on an EHCI controller, and an xHCI, an OHCI and a UHCI
+    controller for the full-speed microphones the tests plug in (ports
+    10701-10703; tests/selftest/devices/usbheadset)"""
+    procs = [peer(work, 10700, '--speaker', os.path.join(work, 'headset.wav'), '--mic', str(REC_HZ))]
+    for n, hz in ((1, 784), (2, 659), (3, 880)):
+        procs.append(peer(work, 10700 + n, '--speed', 'full', '--mic', str(hz)))
+    return ['-chardev', 'socket,id=headset,host=127.0.0.1,port=10700', '-device', 'usb-ehci,id=ehci',
+            '-device', 'usb-redir,id=headset,chardev=headset,bus=ehci.0', '-device', 'qemu-xhci,id=xhci',
+            '-device', 'pci-ohci,id=ohci', '-device', 'piix3-usb-uhci,id=uhci'], procs
+
+
 def monitors_boot(work):
     """One card with three outputs: a virtio-vga (the boot display, on its
     first output) and a VNC server on each other output (work/vnc1.sock,
@@ -245,6 +275,7 @@ def monitors_boot(work):
 BOOTS = {
     'network': [('ipv4', NET4, net4_boot), ('ipv6', NET6, net6_boot)],
     'devices': [('touch', TOUCH, touch_boot), ('usbaudio', USBAUDIO, usbaudio_boot),
+                ('usbheadset', USBHEADSET, usbheadset_boot),
                 ('monitors', MONITORS, monitors_boot)],
 }
 
@@ -340,7 +371,7 @@ def main():
             finally:
                 for p in procs:
                     p.kill()
-                for log in ('h2server.log', 'v6peer.log'):
+                for log in ['h2server.log', 'v6peer.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10704)]:
                     if os.path.exists(os.path.join(work, log)):
                         shutil.copy(os.path.join(work, log), a.out)
                 shutil.rmtree(work, ignore_errors=True)

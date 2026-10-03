@@ -31,7 +31,7 @@ def plug(n, bus, kind):
 def unplug(n):
     def act(nova):
         nova.qmp.cmd('device_del', id=f'spk{n}')
-        _wait_log(nova, r'audio output unplugged')
+        _wait_log(nova, r'audio device unplugged')
     return act
 
 
