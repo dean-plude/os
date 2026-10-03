@@ -62,6 +62,11 @@ static CHAR16 KERNEL_PATH[] = { '\\','E','F','I','\\','N','O','V','A',
                                  '\\','k','e','r','n','e','l','.','e','l','f', 0 };
 static CHAR16 LOADER_PATH[] = { '\\','E','F','I','\\','B','O','O','T',
                                  '\\','B','O','O','T','X','6','4','.','E','F','I', 0 };
+/* The boot log file: only the ISO's EFI System Partition has it (the
+ * installer copies the kernel and the loader, not this), so it also marks
+ * the installation media when the ISO was written to a USB stick */
+static CHAR16 BOOTLOG_PATH[] = { '\\','E','F','I','\\','N','O','V','A',
+                                 '\\','b','o','o','t','l','o','g','.','t','x','t', 0 };
 
 /* The device we booted from, kept for detecting installation media */
 static EFI_HANDLE g_boot_device;
@@ -69,13 +74,17 @@ static EFI_HANDLE g_boot_device;
 /* Device path nodes: Type, SubType, Length (LE16), then node data */
 #define EFI_DEVICE_PATH_PROTOCOL_GUID \
     { 0x09576e91, 0x6d3f, 0x11d2, { 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } }
+#define DP_TYPE_MESSAGING 0x03
+#define DP_SUB_USB        0x05
+#define DP_SUB_USB_CLASS  0x0F
+#define DP_SUB_USB_WWID   0x10
 #define DP_TYPE_MEDIA    0x04
 #define DP_SUB_CDROM     0x02
 #define DP_TYPE_END      0x7F
 
-/* True when the boot device's path has a CD-ROM media node (an El Torito
- * boot image on a CD/DVD): NovaOS is running from its installation disc */
-static BOOLEAN booted_from_cd(void)
+/* Whether the boot device's path has a node of @type with one of the
+ * subtypes @sub[0..n-1] */
+static BOOLEAN boot_path_has(UINT8 type, const UINT8 *sub, int n)
 {
     EFI_GUID dp_guid = EFI_DEVICE_PATH_PROTOCOL_GUID;
     UINT8 *dp = NULL;
@@ -83,14 +92,159 @@ static BOOLEAN booted_from_cd(void)
         EFI_ERROR(g_bs->OpenProtocol(g_boot_device, &dp_guid, (VOID **)&dp, g_image_handle, NULL,
                                      EFI_OPEN_PROTOCOL_GET_PROTOCOL)) || !dp)
         return FALSE;
-    for (int n = 0; n < 64; n++) {
-        UINT8 type = dp[0], sub = dp[1];
+    for (int k = 0; k < 64; k++) {
         UINT16 len = (UINT16)(dp[2] | dp[3] << 8);
-        if (type == DP_TYPE_END || len < 4) break;
-        if (type == DP_TYPE_MEDIA && sub == DP_SUB_CDROM) return TRUE;
+        if (dp[0] == DP_TYPE_END || len < 4) break;
+        for (int i = 0; i < n; i++)
+            if (dp[0] == type && dp[1] == sub[i]) return TRUE;
         dp += len;
     }
     return FALSE;
+}
+
+/* A CD-ROM media node: an El Torito boot image on a CD/DVD */
+static BOOLEAN booted_from_cd(void)
+{
+    static const UINT8 cd[] = { DP_SUB_CDROM };
+    return boot_path_has(DP_TYPE_MEDIA, cd, 1);
+}
+
+/* A USB node: a USB stick (or a USB CD drive) */
+static BOOLEAN booted_from_usb(void)
+{
+    static const UINT8 usb[] = { DP_SUB_USB, DP_SUB_USB_CLASS, DP_SUB_USB_WWID };
+    return boot_path_has(DP_TYPE_MESSAGING, usb, 3);
+}
+
+/* -----------------------------------------------------------------------
+ * The firmware's boot entry for an installed disk.  The installer only
+ * writes the removable-media path \EFI\BOOT\BOOTX64.EFI, which firmware
+ * starts from a disk it has no entry for (or from its boot menu); the
+ * first boot from the disk then adds a "NovaOS" Boot#### variable for
+ * itself and puts it first in BootOrder, so the machine keeps starting
+ * NovaOS after the USB stick comes out (UEFI 2.10, 3.1 Boot Manager).
+ * ----------------------------------------------------------------------- */
+typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_GET_VARIABLE)(CHAR16 *name, EFI_GUID *vendor, UINT32 *attrs,
+                                                              UINTN *size, VOID *data);
+typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_SET_VARIABLE)(CHAR16 *name, EFI_GUID *vendor, UINT32 attrs,
+                                                              UINTN size, VOID *data);
+typedef struct {
+    UINT64 Signature;
+    UINT32 Revision, HeaderSize, CRC32, Reserved;
+    VOID  *GetTime, *SetTime, *GetWakeupTime, *SetWakeupTime, *SetVirtualAddressMap, *ConvertPointer;
+    EFI_GET_VARIABLE GetVariable;
+    VOID  *GetNextVariableName;
+    EFI_SET_VARIABLE SetVariable;
+} EFI_RUNTIME_SERVICES_VARS;
+
+#define EFI_GLOBAL_VARIABLE_GUID \
+    { 0x8be4df61, 0x93ca, 0x11d2, { 0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c } }
+#define VAR_NV_BS_RT 7u                    /* non-volatile, boot service and runtime access */
+#define LOAD_OPTION_ACTIVE 1u
+
+static const CHAR16 NOVA_DESC[] = { 'N','o','v','a','O','S', 0 };
+
+static UINTN dp_size(const UINT8 *dp)       /* up to and including the end node */
+{
+    UINTN n = 0;
+    for (int k = 0; k < 64; k++) {
+        UINT16 len = (UINT16)(dp[n + 2] | dp[n + 3] << 8);
+        if (len < 4) return 0;
+        n += len;
+        if (dp[n - len] == DP_TYPE_END && dp[n - len + 1] == 0xFF) return n;
+    }
+    return 0;
+}
+
+static void boot_var_name(CHAR16 *out, UINT16 num)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    const char *b = "Boot";
+    for (int i = 0; i < 4; i++) out[i] = (CHAR16)b[i];
+    for (int i = 0; i < 4; i++) out[4 + i] = (CHAR16)hex[(num >> (12 - 4 * i)) & 15];
+    out[8] = 0;
+}
+
+static BOOLEAN bytes_equal(const UINT8 *a, const UINT8 *b, UINTN n)
+{
+    for (UINTN i = 0; i < n; i++) if (a[i] != b[i]) return FALSE;
+    return TRUE;
+}
+
+/* BOOT_FLAG_BOOT_ENTRY (| BOOT_FLAG_ENTRY_ADDED), or 0 if there is none */
+static UINT64 ensure_boot_entry(void)
+{
+    EFI_RUNTIME_SERVICES_VARS *rt = (EFI_RUNTIME_SERVICES_VARS *)g_st->RuntimeServices;
+    EFI_GUID li_guid = EFI_LOADED_IMAGE_PROTOCOL_GUID, dp_guid = EFI_DEVICE_PATH_PROTOCOL_GUID;
+    EFI_GUID gv = EFI_GLOBAL_VARIABLE_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL *li;
+    UINT8 *dev = NULL;
+    if (!rt || EFI_ERROR(g_bs->OpenProtocol(g_image_handle, &li_guid, (VOID **)&li, g_image_handle, NULL,
+                                            EFI_OPEN_PROTOCOL_GET_PROTOCOL)) || !li->FilePath ||
+        EFI_ERROR(g_bs->OpenProtocol(li->DeviceHandle, &dp_guid, (VOID **)&dev, g_image_handle, NULL,
+                                     EFI_OPEN_PROTOCOL_GET_PROTOCOL)) || !dev)
+        return 0;
+    UINTN dsz = dp_size(dev), fsz = dp_size((const UINT8 *)li->FilePath);
+    if (dsz < 4 || fsz < 4) return 0;
+
+    /* The load option: attributes, the path's length, the description,
+     * then the device's path (without its end node) and the file's */
+    static UINT8 opt[1024], cur[1024];
+    UINTN path_len = dsz - 4 + fsz, desc_len = sizeof(NOVA_DESC);
+    UINTN opt_len = 6 + desc_len + path_len;
+    if (opt_len > sizeof(opt)) return 0;
+    UINT32 attrs = LOAD_OPTION_ACTIVE;
+    mem_copy(opt, &attrs, 4);
+    opt[4] = (UINT8)path_len;
+    opt[5] = (UINT8)(path_len >> 8);
+    mem_copy(opt + 6, NOVA_DESC, desc_len);
+    mem_copy(opt + 6 + desc_len, dev, dsz - 4);
+    mem_copy(opt + 6 + desc_len + dsz - 4, li->FilePath, fsz);
+
+    /* An entry that already starts this file on this disk? */
+    CHAR16 name[9];
+    UINT32 va;
+    int free_num = -1;
+    for (int num = 0; num < 0x100; num++) {
+        boot_var_name(name, (UINT16)num);
+        UINTN sz = sizeof(cur);
+        EFI_STATUS st = rt->GetVariable(name, &gv, &va, &sz, cur);
+        if (st == EFI_NOT_FOUND) { if (free_num < 0) free_num = num; continue; }
+        if (!EFI_ERROR(st) && sz == opt_len && bytes_equal(cur + 4, opt + 4, opt_len - 4)) return BOOT_FLAG_BOOT_ENTRY;
+    }
+    if (free_num < 0) return 0;
+
+    boot_var_name(name, (UINT16)free_num);
+    if (EFI_ERROR(rt->SetVariable(name, &gv, VAR_NV_BS_RT, opt_len, opt))) {
+        console_printf("Could not add a firmware boot entry for NovaOS\r\n");
+        return 0;
+    }
+    /* First in BootOrder */
+    static UINT16 order[256];
+    UINTN osz = sizeof(order) - sizeof(UINT16);
+    CHAR16 bo[] = { 'B','o','o','t','O','r','d','e','r', 0 };
+    if (EFI_ERROR(rt->GetVariable(bo, &gv, &va, &osz, order + 1))) osz = 0;
+    order[0] = (UINT16)free_num;
+    rt->SetVariable(bo, &gv, VAR_NV_BS_RT, osz + sizeof(UINT16), order);
+    console_printf("Added the firmware boot entry Boot%x \"NovaOS\" for this disk\r\n", (UINT64)free_num);
+    return BOOT_FLAG_BOOT_ENTRY | BOOT_FLAG_ENTRY_ADDED;
+}
+
+/* Whether @path exists on the boot volume */
+static BOOLEAN boot_file_exists(CHAR16 *path)
+{
+    EFI_GUID fs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs;
+    EFI_FILE_PROTOCOL *root, *file;
+    if (EFI_ERROR(g_bs->OpenProtocol(g_boot_device, &fs_guid, (VOID **)&fs, g_image_handle, NULL,
+                                     EFI_OPEN_PROTOCOL_GET_PROTOCOL)) ||
+        EFI_ERROR(fs->OpenVolume(fs, &root)))
+        return FALSE;
+    EFI_STATUS status = root->Open(root, &file, path, EFI_FILE_MODE_READ, 0);
+    root->Close(root);
+    if (EFI_ERROR(status)) return FALSE;
+    file->Close(file);
+    return TRUE;
 }
 
 /* Read a whole file from the boot volume into EfiLoaderData pages (the
@@ -459,19 +613,27 @@ EFI_STATUS __attribute__((ms_abi)) efi_main(
     mem_zero(&fb, sizeof(fb));
     init_framebuffer(&fb);
 
-    /* 2b. Installation media: from a CD, hand the boot files to the
-     *     kernel so its installer can copy them to a disk ---------------- */
+    /* 2b. Installation media (the ISO, on a CD or written to a USB
+     *     stick): hand the boot files to the kernel so its installer can
+     *     copy them to a disk ------------------------------------------- */
     UINT64 boot_flags = 0, media_kernel = 0, media_kernel_size = 0, media_loader = 0, media_loader_size = 0;
-    if (booted_from_cd()) {
+    if (booted_from_cd() || boot_file_exists(BOOTLOG_PATH)) {
         boot_flags |= BOOT_FLAG_LIVE_MEDIA;
+        if (booted_from_usb()) {
+            boot_flags |= BOOT_FLAG_LIVE_USB;
+            console_printf("Booted from a USB stick\r\n");
+        }
         if (EFI_ERROR(read_boot_file(KERNEL_PATH, &media_kernel, &media_kernel_size)) ||
             EFI_ERROR(read_boot_file(LOADER_PATH, &media_loader, &media_loader_size))) {
             console_printf("WARNING: could not read the installation files\r\n");
             media_kernel = media_kernel_size = media_loader = media_loader_size = 0;
         } else {
-            console_printf("Installation disc: kernel %u bytes, loader %u bytes\r\n",
+            console_printf("Installation media: kernel %u bytes, loader %u bytes\r\n",
                            media_kernel_size, media_loader_size);
         }
+    }
+    else {
+        boot_flags |= ensure_boot_entry();   /* an installed disk */
     }
 
     /* 3. Find ACPI RSDP ----------------------------------------------- */

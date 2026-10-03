@@ -23,6 +23,7 @@
 #include "../../ke/smp.h"
 #include "../../ke/probe.h"
 #include "../../ke/ksym.h"
+#include "../../fs/bootlog.h"
 
 /* Assembly stub address table (defined in isr_stubs.asm) */
 extern uintptr_t isr_stub_table[IDT_ENTRIES];
@@ -215,6 +216,7 @@ static void handle_page_fault(InterruptFrame *f)
     if (!user) {
         KsymBacktrace(f->rip, f->rbp, f->rsp);
         kprintf("KERNEL PAGE FAULT — halting\n");
+        BootLogPanic();
         cpu_halt_forever();
     }
 
@@ -269,6 +271,7 @@ static void dispatch(InterruptFrame *frame)
         /* For unhandled kernel exceptions, panic */
         if (!(frame->cs & 3)) {  /* ring 0 */
             kprintf("Unhandled kernel exception — halting\n");
+            BootLogPanic();                 /* (a PC without a serial port: the USB stick NovaOS started from) */
             cpu_halt_forever();
         }
         /* (a program's exceptions went to its SEH handlers above,

@@ -49,6 +49,7 @@ int  u32_monitor_count(void);
 void u32_virtual_screen(RECT *r);
 #define WM_NOVA_TOUCH 0x03FD                    /* from the desktop: a touch contact (pointer.c) */
 #define WM_NOVA_DPI   0x03FC                    /* from the desktop: a monitor's DPI changed (dpi.c) */
+#define WM_NOVA_RESCALE 0x03FB                  /* to a built-in control: its window's DPI changed (dpi.c) */
 
 /* dpi.c: DPI awareness and the coordinates a DPI-aware process sees */
 enum { DPI_UNAWARE = 0, DPI_SYSTEM_AWARE = 1, DPI_PER_MONITOR_AWARE = 2 };
@@ -76,6 +77,13 @@ void dpi_monitors_changed(Wnd *top);
 int  dpi_new_window(Wnd *w, const RECT *b);
 int  dpi_apply_scale(Wnd *w, int k);  /* CTL_SET_SCALE and the bitmap it gives: the scale set */
 HANDLE dpi_thread_context(void);
+/* Window @w's coordinates (its awareness's) and the calling thread's: a
+ * screen point either way, and a length (client coordinates, sizes) */
+void dpi_wnd_to_thread(Wnd *w, POINT *p);
+void dpi_thread_to_wnd(Wnd *w, POINT *p);
+int  dpi_len_to_thread(Wnd *w, int v);
+int  dpi_len_to_wnd(Wnd *w, int v);
+void dlg_dpi_changed(Wnd *w, int ok, int nk);   /* dialog.c: a per-monitor v2 dialog's controls and font */
 BOOL adjust_window_rect(LPRECT r, DWORD style, BOOL menu, DWORD ex, int k);   /* win.c */
 #define WM_NOVA_DROP 0x03FE                     /* from the desktop: a drop from another program (drop.c) */
 #define FRAME_TITLE 32                          /* the desktop's title bar */
@@ -175,8 +183,17 @@ void u32_unlock(void);
 void  touch_from_kernel(Wnd *top, const MSG *km);
 Wnd  *input_hit(Wnd *top, POINT pt, int *hit);                 /* the window (and part) at @pt */
 void  input_queue(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, DWORD time);
-void  input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt);   /* a mouse message at screen @pt, routed */
+void  input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt, ULONG_PTR extra); /* a mouse message at screen @pt, routed */
+#define MI_PEN_SIGNATURE   0xFF515700u                       /* GetMessageExtraInfo of a pen's mouse messages */
+#define MI_TOUCH_SIGNATURE 0xFF515780u                       /* ... and of a touch's */
 LRESULT touch_default(Wnd *w, UINT msg, WPARAM wp, LPARAM lp);  /* DefWindowProc: mouse promotion */
+/* Pens and the mouse as pointers (pointer.c): a mouse message for @target
+ * at screen @pt over part @hit (WM_NCHITTEST's; HTCLIENT when captured),
+ * from the pen packet @pen (0: the mouse); 1 if it became WM_POINTER* */
+int   pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, UINT32 pen, int hit);
+void  pointer_left(Wnd *top);          /* the desktop's WM_MOUSELEAVE for @top: the pen (or mouse) left it */
+HWND  recently_active(void);         /* win.c: the window that was active a moment ago (none is now) */
+void  pointer_taken(const MSG *m);     /* GetMessage took @m (GetPointerInfo answers for it) */
 
 int   hwnd_foreign(HWND h);           /* another process's handle */
 int   foreign_info(HWND h, INT32 f[11]); /* CTL_FOREIGN: 2 desktop window, 1 other window, 0 none */

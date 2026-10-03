@@ -69,6 +69,9 @@ UINT16 UsbDevProduct(const UsbDev *d);
 bool   UsbDevGone(const UsbDev *d);
 /* A short name for logs, e.g. "port 3.2" */
 const char *UsbDevName(const UsbDev *d);
+/* The device's product name (its iProduct string, in ASCII) into @out;
+ * false when it has none */
+bool UsbDevProductName(UsbDev *d, char *out, int cap);
 
 /* The active configuration descriptor, every interface and alternate
  * setting of it; *@len its bytes */

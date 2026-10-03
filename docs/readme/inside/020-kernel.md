@@ -7,7 +7,8 @@ same bytes, as Windows shares image sections), I/O,
   are opened.  SMP with per-core scheduling and fine-grained
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.  Timers are the local APIC's, one-shot or TSC-deadline and
-  calibrated against the HPET, so `Sleep(1)`, wait timeouts and waitable
+  calibrated against the HPET (from CPUID leaf 0x15 where the firmware
+  hides it), so `Sleep(1)`, wait timeouts and waitable
   timers end within a fraction of a millisecond even with every CPU busy;
   a thread woken by a timer preempts the running one instead of waiting
   for its time slice to end.  NT's priority boosts: a thread woken by an
@@ -18,5 +19,6 @@ same bytes, as Windows shares image sections), I/O,
   (`SetPriorityClass`, `SetThreadPriority`) set NT's base priorities;
   every kernel thread (input, audio, the network, USB, the desktop,
   saving drive C:) stays above anything a program can ask for, and the
-  process whose window is active gets NT's foreground boost (+2 after
-  every wait).
+  process whose window is active (or the console program running in the
+  active Terminal) gets NT's foreground boost (+2 after every wait) and
+  three times the time slice (60 ms against 20 ms).

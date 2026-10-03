@@ -14,10 +14,14 @@
  * and checks the messages a full-screen window gets: WM_XBUTTONDOWN/UP,
  * WM_APPCOMMAND from DefWindowProc (back and forward from the mouse, the
  * volume commands from the keys), WM_MOUSEHWHEEL and WM_KEYDOWN with the
- * VK_VOLUME_* keys.
+ * VK_VOLUME_* keys.  Coming up over the Terminal (another program's
+ * window), the window must first hear WM_ACTIVATEAPP (before
+ * WM_NCACTIVATE), as Qt programs need to take keyboard shortcuts, and
+ * GetKeyState must read 0xFF80 for a key that is down (Qt tests 0x80).
  */
 #include <windows.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifndef WM_XBUTTONDOWN
 #define WM_XBUTTONDOWN 0x020B
@@ -46,10 +50,18 @@ static int app_mouse[3];               /* WM_APPCOMMAND back / forward from the 
 static int app_key[32];                /* WM_APPCOMMAND from keys, by command */
 static int hwheel_right, hwheel_left;
 static int vk_down[256];
+static int activateapp_first;          /* WM_ACTIVATEAPP (TRUE) came, before WM_NCACTIVATE (TRUE) */
+static int ncactivated;
 
 static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 {
     switch (m) {
+    case WM_ACTIVATEAPP:
+        if (wp && !ncactivated) activateapp_first = 1;
+        break;
+    case WM_NCACTIVATE:
+        if (wp) ncactivated = 1;
+        break;
     case WM_XBUTTONDOWN:
         if (HIWORD(wp) == 1 || HIWORD(wp) == 2) xdown[HIWORD(wp)]++;
         if (HIWORD(wp) == 1 && GetKeyState(0x05) < 0 && (LOWORD(wp) & 0x20)) x1_held_seen = 1;
@@ -110,6 +122,20 @@ int main(void)
         while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
         Sleep(20);
     }
+
+    check("WM_ACTIVATEAPP before WM_NCACTIVATE when the program's window comes up over another's",
+          activateapp_first && ncactivated);
+
+    /* A key that is down reads 0xFF80 from GetKeyState, as on Windows: Qt
+     * tests the modifiers with "& 0x80" (and so missed every Ctrl+key) */
+    BYTE ks[256], saved[256];
+    GetKeyboardState(saved);
+    memcpy(ks, saved, sizeof(ks));
+    ks[VK_CONTROL] = ks[VK_LCONTROL] = 0x80;
+    SetKeyboardState(ks);
+    SHORT down = GetKeyState(VK_LCONTROL);
+    SetKeyboardState(saved);
+    check("GetKeyState of a key that is down: 0xFF80 (negative, with 0x80 set)", (USHORT)down == 0xFF80);
 
     printf("inputtest: plug in a USB mouse, press back and forward\n");
     fflush(stdout);

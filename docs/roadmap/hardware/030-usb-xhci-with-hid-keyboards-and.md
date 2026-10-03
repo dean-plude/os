@@ -8,6 +8,9 @@
   ~~Isochronous transfers, USB audio~~ Done: isochronous streams on xHCI,
   EHCI (high-speed devices, iTDs), OHCI and UHCI (alternate settings, a
   ring of transfers per pipe), and USB Audio Class 1 and 2 speakers,
-  headsets and microphones as the sound output and input the mixer
-  switches to when they are plugged in.  Still to do: siTDs (full-speed
-  isochronous behind a high-speed hub on EHCI), webcams.
+  headsets and microphones at the rates their clocks offer and with up
+  to eight channels, as the sound output and input the mixer switches to
+  when they are plugged in, or that Settings' Sound page or a program
+  chooses.  Still to do: siTDs (full-speed isochronous behind a
+  high-speed hub on EHCI), asynchronous endpoints' rate feedback,
+  webcams.

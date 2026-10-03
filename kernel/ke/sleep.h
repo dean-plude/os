@@ -1,12 +1,13 @@
 /*
- * sleep.h — S3 (suspend to RAM) for every CPU
+ * sleep.h — S3 (suspend to RAM) for every CPU, or low-power S0 idle
  */
 
 #pragma once
 
 #include "../include/types.h"
 
-/* Can this machine sleep (ACPI \_S3, a FACS, the start-up page free)? */
+/* Can this machine sleep (ACPI \_S3, a FACS, the start-up page free; or,
+ * without \_S3, low-power S0 idle: the FADT's flag or an LPS0 device)? */
 bool SleepSupported(void);
 
 /* Put the machine to sleep; returns true once it has woken up and the

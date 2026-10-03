@@ -64,6 +64,7 @@ typedef struct __attribute__((packed)) {
 #define FLAG_PWR_BUTTON    (1u << 4)     /* the power button is a control-method device */
 #define FLAG_RESET_REG_SUP (1u << 10)
 #define FLAG_HW_REDUCED    (1u << 20)
+#define FLAG_LOW_POWER_S0  (1u << 21)     /* low-power S0 idle (Modern Standby) is better than S3 */
 
 /* PM1 registers */
 #define PM1_STS_PWRBTN     (1u << 8)
@@ -299,6 +300,7 @@ void AcpiInitialize(UINT64 rsdp_physical)
     if (s5) kprintf("%d/%d", g_s5a, g_s5b);
     kprintf(", S3 %s", AcpiSleepSupported() ? "" : "not supported");
     if (AcpiSleepSupported()) kprintf("%d/%d", g_s3a, g_s3b);
+    if (g_flags & FLAG_LOW_POWER_S0) kprintf(", low-power S0 idle");
     kprintf(", reset %s, power button %s\n",
             (g_flags & FLAG_RESET_REG_SUP) && gas_valid(&g_reset) ? "register" : "fallback",
             g_button ? "fixed" : "none");
@@ -353,6 +355,8 @@ bool AcpiSleepSupported(void)
     return g_fadt && g_s3a >= 0 && g_facs
         && (gas_valid(&g_pm1a_cnt) || ((g_flags & FLAG_HW_REDUCED) && gas_valid(&g_sleep_ctl)));
 }
+
+bool AcpiLowPowerS0(void) { return g_fadt && (g_flags & FLAG_LOW_POWER_S0); }
 
 bool AcpiEnterS3(UINT32 real_vector, UINT32 pm32_vector)
 {

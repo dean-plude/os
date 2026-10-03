@@ -131,6 +131,7 @@ set(KERNEL_C_SOURCES
     hal/pci.c
     hal/acpi.c
     hal/aml.c
+    hal/ec.c
     hal/ioapic.c
     hal/hpet.c
     hal/display.c
@@ -140,6 +141,8 @@ set(KERNEL_C_SOURCES
     drivers/virtio_gpu.c
     drivers/ahci.c
     drivers/hda.c
+    drivers/i2c_dw.c
+    drivers/i2chid.c
     drivers/audio.c
     drivers/usb.c
     drivers/xhci.c
@@ -157,6 +160,7 @@ set(KERNEL_C_SOURCES
     fs/drives.c
     fs/persist.c
     fs/setup.c
+    fs/bootlog.c
     net/net.c
     net/tls.c
     net/tls_roots.c

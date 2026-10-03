@@ -13,17 +13,15 @@
 #include "audioconv.h"
 
 #include "mmwave.h"
+#include "audiodev.h"
 
 int _fltused = 1;                  /* floats are used (the converter) */
 
+/* (asked each time: a USB speaker can be plugged in or out) */
 static BOOL device_present(void)
 {
-    static LONG known = -1;
-    if (known < 0) {
-        struct { UINT32 present, rate; char name[96]; } info = { 0 };
-        known = NtNovaAudioCtl(0, 5, 0, &info) == 0 && info.present;
-    }
-    return known;
+    struct { UINT32 present, rate; char name[96]; } info = { 0 };
+    return NtNovaAudioCtl(0, 5, 0, &info) == 0 && info.present;
 }
 
 static ULONGLONG played_frames(INT_PTR s)
@@ -55,6 +53,7 @@ BOOL mm_post(BOOL thread, DWORD_PTR target, UINT msg, WPARAM wp, LPARAM lp)
 typedef struct WaveOut {
     DWORD       magic;
     INT_PTR     stream;
+    UINT32      device;             /* the device chosen (0: the default) */
     AudioConv   conv;
     AcWaveFormat fmt;
     DWORD       cbtype;
@@ -75,7 +74,17 @@ typedef struct WaveOut {
 
 static WaveOut *g_waveouts;
 static SRWLOCK  g_wo_lock;
-static DWORD    g_default_volume = 0xFFFFFFFF;
+/* waveOutSetVolume on a device ID: this program's volume on that device
+ * (by the kernel's device id; under g_wo_lock) */
+static struct { UINT32 id; DWORD volume; } g_dev_volume[AUDIO_MAX_DEVICES];
+
+/* This program's volume on device @id (under g_wo_lock); 0xFFFFFFFF (full) if it set none */
+static DWORD device_volume(UINT32 id)
+{
+    for (int i = 0; id && i < AUDIO_MAX_DEVICES; i++)
+        if (g_dev_volume[i].id == id) return g_dev_volume[i].volume;
+    return 0xFFFFFFFF;
+}
 
 static void notify(WaveOut *w, UINT msg, DWORD_PTR p1)
 {
@@ -158,7 +167,13 @@ static DWORD WINAPI wo_thread(LPVOID p)
     return 0;
 }
 
-MMAPI UINT WINAPI waveOutGetNumDevs(void) { return device_present() ? 1 : 0; }
+/* One device ID for each output NovaOS has, oldest first (Settings lists
+ * them in the same order); WAVE_MAPPER plays on the default one */
+MMAPI UINT WINAPI waveOutGetNumDevs(void)
+{
+    AudioDeviceList l;
+    return audio_devices(0, &l);
+}
 
 typedef struct {
     WORD wMid, wPid;
@@ -179,21 +194,38 @@ typedef struct {
     GUID ManufacturerGuid, ProductGuid, NameGuid;
 } WAVEOUTCAPSA;
 
+/* Whether device @id (the kernel's) is attached */
+static BOOL check_id(UINT32 id)
+{
+    AudioDeviceList l;
+    for (UINT i = 0, n = audio_devices(0, &l); i < n; i++)
+        if (l.dev[i].id == id) return TRUE;
+    return FALSE;
+}
+
 static MMRESULT check_device(UINT_PTR dev)
 {
-    if (!device_present()) return MMSYSERR_NODRIVER;
-    if (dev == 0 || dev == WAVE_MAPPER || dev == (UINT_PTR)-1 || wo_get((HANDLE)dev)) return MMSYSERR_NOERROR;
+    AudioDeviceList l;
+    UINT n = audio_devices(0, &l);
+    if (!n) return MMSYSERR_NODRIVER;
+    if (dev < n || dev == WAVE_MAPPER || dev == (UINT_PTR)-1 || wo_get((HANDLE)dev)) return MMSYSERR_NOERROR;
     return MMSYSERR_BADDEVICEID;
 }
 
 static void fill_caps(WAVEOUTCAPSW *c, UINT_PTR dev)
 {
     memset(c, 0, sizeof(*c));
+    BOOL mapper = dev == WAVE_MAPPER || dev == (UINT_PTR)-1;
+    WaveOut *w = mapper ? NULL : wo_get((HANDLE)dev);
     c->wMid = 1;                                    /* MM_MICROSOFT */
-    c->wPid = dev == WAVE_MAPPER || dev == (UINT_PTR)-1 ? 2 : 100;   /* MM_WAVE_MAPPER / generic */
+    c->wPid = mapper ? 2 : 100;                     /* MM_WAVE_MAPPER / generic */
     c->vDriverVersion = 0x0600;
-    const char *name = dev == WAVE_MAPPER || dev == (UINT_PTR)-1 ? "Microsoft Sound Mapper" : "Speakers (High Definition Audio)";
-    for (int i = 0; name[i] && i < 31; i++) c->szPname[i] = (WCHAR)name[i];
+    AudioDeviceList l;
+    UINT n = audio_devices(0, &l), k = w ? n : (UINT)dev;
+    for (UINT i = 0; w && i < n; i++)               /* (a handle: its device) */
+        if (l.dev[i].id == w->device || (!w->device && l.dev[i].is_default)) k = i;
+    const char *name = mapper ? "Microsoft Sound Mapper" : k < n ? l.dev[k].name : "Speakers";
+    for (int i = 0; name[i] && i < 31; i++) c->szPname[i] = (WCHAR)(BYTE)name[i];
     c->dwFormats = 0x000FFFFF;                      /* every WAVE_FORMAT_* rate/width/channel combination */
     c->wChannels = 2;
     c->dwSupport = 0x0004 | 0x0008 | 0x0020;        /* WAVECAPS_VOLUME | LRVOLUME | SAMPLEACCURATE */
@@ -229,8 +261,10 @@ MMAPI MMRESULT WINAPI waveOutGetDevCapsA(UINT_PTR dev, WAVEOUTCAPSA *caps, UINT 
 MMAPI MMRESULT WINAPI waveOutOpen(HANDLE *out, UINT dev, const AcWaveFormat *fmt, DWORD_PTR cb, DWORD_PTR inst, DWORD flags)
 {
     if (out) *out = 0;
-    if (!device_present()) return MMSYSERR_NODRIVER;
-    if (dev != 0 && dev != WAVE_MAPPER) return MMSYSERR_BADDEVICEID;
+    AudioDeviceList l;
+    UINT n = audio_devices(0, &l);
+    if (!n) return MMSYSERR_NODRIVER;
+    if (dev >= n && dev != WAVE_MAPPER) return MMSYSERR_BADDEVICEID;
     if (!fmt) return MMSYSERR_INVALPARAM;
     AudioConv conv;
     if (!ac_init(&conv, fmt)) return WAVERR_BADFORMAT;
@@ -244,13 +278,24 @@ MMAPI MMRESULT WINAPI waveOutOpen(HANDLE *out, UINT dev, const AcWaveFormat *fmt
     if (!w) return MMSYSERR_NOMEM;
     w->stream = NtNovaAudioOpen(AC_RATE / 4);                  /* 250 ms queued at most */
     if (!w->stream) { HeapFree(GetProcessHeap(), 0, w); return MMSYSERR_ALLOCATED; }
+    w->device = dev == WAVE_MAPPER ? 0 : l.dev[dev].id;        /* (the mapper: the default, wherever it moves) */
+    if (w->device && !audio_route(w->stream, w->device)) {     /* (unplugged meanwhile) */
+        CloseHandle((HANDLE)w->stream);
+        HeapFree(GetProcessHeap(), 0, w);
+        return MMSYSERR_BADDEVICEID;
+    }
     w->magic = WO_MAGIC;
     w->conv = conv;
     w->fmt = *fmt;
     w->cbtype = cbtype;
     w->cb = cb;
     w->inst = inst;
-    w->volume = g_default_volume;
+    UINT32 def = 0;
+    for (UINT i = 0; i < n; i++)
+        if (l.dev[i].is_default) def = l.dev[i].id;
+    AcquireSRWLockShared(&g_wo_lock);
+    w->volume = device_volume(w->device ? w->device : def);
+    ReleaseSRWLockShared(&g_wo_lock);
     InitializeCriticalSection(&w->lock);
     if (w->volume != 0xFFFFFFFF) NtNovaAudioCtl(w->stream, 3, w->volume, 0);
     NtNovaAudioCtl(w->stream, 1, 1, 0);                         /* runs; waits for data */
@@ -400,17 +445,42 @@ MMAPI MMRESULT WINAPI waveOutGetPosition(HANDLE h, MMTIME *t, UINT n)
     return MMSYSERR_NOERROR;
 }
 
-/* Volume: low word left, high word right.  On a device ID it is the
- * volume for this program's waveOut handles. */
+/* The kernel's id of device ID @dev (WAVE_MAPPER: the default device's),
+ * and in @def the default device's; 0 if there is none */
+static UINT32 device_of(UINT_PTR dev, UINT32 *def)
+{
+    AudioDeviceList l;
+    UINT n = audio_devices(0, &l);
+    *def = 0;
+    for (UINT i = 0; i < n; i++)
+        if (l.dev[i].is_default) *def = l.dev[i].id;
+    if (dev == WAVE_MAPPER || dev == (UINT_PTR)-1) return *def;
+    return dev < n ? l.dev[dev].id : 0;
+}
+
+/* Volume: low word left, high word right.  On a handle, that stream's; on
+ * a device ID (WAVE_MAPPER: the default device), this program's volume on
+ * that device, as Windows keeps a program's volume per endpoint: its
+ * handles playing there (the mapper's included while that device is the
+ * default) and the ones it opens there later.  (The device's own level,
+ * every program's, is its endpoint volume: IAudioEndpointVolume,
+ * Settings.) */
 MMAPI MMRESULT WINAPI waveOutSetVolume(HANDLE h, DWORD v)
 {
     WaveOut *w = wo_get(h);
     if (w) { w->volume = v; NtNovaAudioCtl(w->stream, 3, v, 0); return MMSYSERR_NOERROR; }
     if (check_device((UINT_PTR)h)) return check_device((UINT_PTR)h);
-    g_default_volume = v;
-    AcquireSRWLockShared(&g_wo_lock);
-    for (WaveOut *x = g_waveouts; x; x = x->next) { x->volume = v; NtNovaAudioCtl(x->stream, 3, v, 0); }
-    ReleaseSRWLockShared(&g_wo_lock);
+    UINT32 def, id = device_of((UINT_PTR)h, &def);
+    AcquireSRWLockExclusive(&g_wo_lock);
+    int k = -1;
+    for (int i = 0; i < AUDIO_MAX_DEVICES && k < 0; i++)
+        if (g_dev_volume[i].id == id) k = i;
+    for (int i = 0; i < AUDIO_MAX_DEVICES && k < 0; i++)
+        if (!g_dev_volume[i].id || !check_id(g_dev_volume[i].id)) k = i;   /* (free, or its device left) */
+    if (k >= 0 && id) { g_dev_volume[k].id = id; g_dev_volume[k].volume = v; }
+    for (WaveOut *x = g_waveouts; x; x = x->next)
+        if (x->device == id || (!x->device && id == def)) { x->volume = v; NtNovaAudioCtl(x->stream, 3, v, 0); }
+    ReleaseSRWLockExclusive(&g_wo_lock);
     return MMSYSERR_NOERROR;
 }
 
@@ -421,7 +491,10 @@ MMAPI MMRESULT WINAPI waveOutGetVolume(HANDLE h, LPDWORD v)
     if (w) { *v = w->volume; return MMSYSERR_NOERROR; }
     MMRESULT r = check_device((UINT_PTR)h);
     if (r) { *v = 0; return r; }
-    *v = g_default_volume;
+    UINT32 def, id = device_of((UINT_PTR)h, &def);
+    AcquireSRWLockShared(&g_wo_lock);
+    *v = device_volume(id);
+    ReleaseSRWLockShared(&g_wo_lock);
     return MMSYSERR_NOERROR;
 }
 

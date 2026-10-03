@@ -1,0 +1,1 @@
+| `overlaptest` | Overlapped sockets on an I/O completion port over 127.0.0.1, as Python's asyncio uses them: `AcceptEx`, `ConnectEx` and the other extension functions from `WSAIoctl`, an `AcceptEx` and a `WSARecv` pending until a connection or data comes, `CancelIoEx`, and closing a socket with a receive pending |

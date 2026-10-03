@@ -26,6 +26,7 @@
 #define UM_PARAMS_OFF    0x30000
 #define UM_PARAMS_VA     (UM_PEB_VA + UM_PARAMS_OFF)
 #define UM_PARAMS_PAGES  4
+#define UM_CMDLINE_MAX   32766    /* UTF-16 units in a command line (32,767 with its NUL, as Windows) */
 #define UM_STUBS_OFF     0x34000
 #define UM_STUBS_VA      (UM_PEB_VA + UM_STUBS_OFF)
 #define UM_STUBS_PAGES   4

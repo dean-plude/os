@@ -64,6 +64,7 @@
 #define TCP_SND_BUF                 (8 * TCP_MSS)
 #define TCP_SND_QUEUELEN            (4 * TCP_SND_BUF / TCP_MSS)
 #define LWIP_TCP_KEEPALIVE          0
+#define SO_REUSE                    1       /* SO_REUSEADDR (Winsock setsockopt): two sockets that both ask share a port */
 
 /* Interface */
 #define LWIP_NETIF_STATUS_CALLBACK  1

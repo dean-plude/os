@@ -153,7 +153,7 @@ jobs:
           python3 tools/selftest.py --suite network --img build/nova.img --out selftest-out/network \
             --junit selftest-out/network/junit.xml --summary "$GITHUB_STEP_SUMMARY"
 
-      - name: Run the device self-tests (touch screen, USB audio)
+      - name: Run the device self-tests (touch screen, USB audio, starting from the ISO)
         if: success() || failure()
         run: |
           python3 tools/selftest.py --suite devices --img build/nova.img --out selftest-out/devices \

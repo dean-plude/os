@@ -338,6 +338,14 @@ void um_registry_set_dword(const char *path, const char *name, UINT32 val)
     um_unlock_excl(&g_reg);
 }
 
+/* Set a REG_SZ from the kernel (ASCII), the key created if need be */
+void um_registry_set_sz(const char *path, const char *name, const char *val)
+{
+    um_lock_excl(&g_reg);
+    kset_sz(kpath(path, false), name, val, 1);
+    um_unlock_excl(&g_reg);
+}
+
 /* Read a REG_DWORD from the kernel: false when the key or value is
  * missing or not a DWORD */
 bool um_registry_get_dword(const char *path, const char *name, UINT32 *out)

@@ -3,11 +3,13 @@
  * and capture streams fed from its recording
  *
  * Every stream carries 48 kHz, 16-bit stereo frames (winmm and mmdevapi
- * convert to that).  A kernel thread mixes the running streams into the
- * playing output's ring a little ahead of the hardware: the HD Audio
- * card's DMA ring, or a USB audio device's (usbaudio.c).  Capture streams
- * are fed from the recording input's ring the same way: the HD Audio
- * card's, or a USB microphone's.
+ * convert to that; a USB device running at another rate or with other
+ * channels converts in usbaudio.c).  A kernel thread mixes the running
+ * streams into their output's ring a little ahead of the hardware: the HD
+ * Audio card's DMA ring, or a USB audio device's (usbaudio.c).  Capture
+ * streams are fed from their input's ring the same way: the HD Audio
+ * card's, or a USB microphone's.  Each stream uses the default device of
+ * its direction, or the one its program chose.
  */
 
 #pragma once
@@ -31,9 +33,13 @@ typedef struct {
 
 /* A playback device: a ring of @bytes of interleaved 48 kHz s16 stereo
  * frames that the mixer keeps filled ahead of where the device reads.
- * @position: the device's read offset in the ring (bytes, a whole frame) */
+ * @position: the device's read offset in the ring (bytes, a whole frame).
+ * @key (may be NULL: the name): what the device's saved volume and the
+ * choice of default are kept under, the same each time it is attached
+ * (a USB device's vendor, product and port) */
 typedef struct {
     const char *name;
+    const char *key;
     INT16      *ring;
     UINT32      bytes;
     UINT32    (*position)(void *ctx);
@@ -46,6 +52,7 @@ typedef struct {
  * the mixer reads on from the position it finds after starting it. */
 typedef struct {
     const char *name;
+    const char *key;                    /* (as an output's) */
     INT16      *ring;
     UINT32      bytes;
     UINT32    (*position)(void *ctx);
@@ -53,42 +60,69 @@ typedef struct {
     void       *ctx;
 } AudioInput;
 
+/* An attached device, for the pickers (Settings, waveOut/waveIn device
+ * IDs, WASAPI endpoints): @id stays the same while it is attached */
+typedef struct {
+    UINT32 id;
+    bool   is_default;
+    bool   mute;
+    UINT32 volume;                      /* its endpoint volume (the louder channel), 0..65536 */
+    char   name[96];
+} AudioDevice;
+
 /* Start the mixer and probe the sound card; false when there is no card
  * (an output can still be attached later) */
 bool        AudioInit(void);
-/* Play on @o (kept until detached) from now on, the way Windows switches
- * to a headset when it is plugged in; detaching the playing output goes
- * back to the one attached before it.  An attached output that is not
- * playing gets silence (its ring keeps streaming).  After
- * AudioOutputDetach returns the mixer no longer touches @o's ring. */
+/* Make @o (kept until detached) the default output from now on, the way
+ * Windows switches to a headset when it is plugged in; detaching the
+ * default output goes back to the one that was the default before it.
+ * An attached output nothing plays on gets silence (its ring keeps
+ * streaming).  After AudioOutputDetach returns the mixer no longer
+ * touches @o's ring. */
 bool        AudioOutputAttach(const AudioOutput *o);
 void        AudioOutputDetach(const AudioOutput *o);
-/* Whether there is an output, and the playing one's name */
+/* Whether there is an output, and the default one's name */
 bool        AudioPresent(void);
 const char *AudioDeviceName(void);
 
-/* Record from @i (kept until detached) from now on, as Windows switches
- * to a USB microphone when it is plugged in; detaching it goes back to
- * the one attached before.  After AudioInputDetach returns the mixer no
- * longer reads @i's ring. */
+/* Make @i (kept until detached) the default input from now on, as
+ * Windows switches to a USB microphone when it is plugged in; detaching
+ * it goes back to the one before.  After AudioInputDetach returns the
+ * mixer no longer reads @i's ring. */
 bool        AudioInputAttach(const AudioInput *i);
 void        AudioInputDetach(const AudioInput *i);
-/* Whether there is an input, and the recording one's name */
+/* Whether there is an input, and the default one's name */
 bool        AudioCanRecord(void);
 const char *AudioInputName(void);
+
+/* The attached outputs (or @capture: inputs), oldest first, up to @max;
+ * returns how many */
+int         AudioDevices(bool capture, AudioDevice *out, int max);
+/* Make device @id the default of its direction (Settings' choice; kept
+ * in the registry, so it is the default again after a restart) */
+bool        AudioSetDefault(bool capture, UINT32 id);
+/* Once the registry is loaded: the saved choice of default and the saved
+ * volumes (devices attached later get theirs as they attach) */
+void        AudioLoadSettings(void);
 
 /* A stream that can queue @frames (0: the default), playing or (@capture)
  * recording; -1 if none is free */
 int    AudioOpen(UINT32 frames, bool capture);
 /* Capture streams: take up to @n recorded frames; returns how many */
 UINT32 AudioRead(int s, INT16 *frames, UINT32 n);
-/* The endpoint volume of playback (0) or recording (1): 0..65536 a channel */
-void   AudioSetMaster(int capture, UINT32 left, UINT32 right, bool mute);
-void   AudioGetMaster(int capture, UINT32 *left, UINT32 *right, bool *mute);
+/* The endpoint volume of output (or @capture: input) device @id (0: the
+ * default): 0..65536 a channel; each device has its own, kept in the
+ * registry.  False if there is no such device (Get then gives full
+ * volume, unmuted). */
+bool   AudioSetMaster(int capture, UINT32 id, UINT32 left, UINT32 right, bool mute);
+bool   AudioGetMaster(int capture, UINT32 id, UINT32 *left, UINT32 *right, bool *mute);
 void   AudioClose(int s);
 /* Queue up to @n frames (paused streams keep them); returns how many fit */
 UINT32 AudioWrite(int s, const INT16 *frames, UINT32 n);
 void   AudioRun(int s, bool run);
+/* Play stream @s on (or record it from) device @id from now on; 0: the
+ * default.  False if no such device of the stream's direction is attached */
+bool   AudioRoute(int s, UINT32 id);
 void   AudioFlush(int s);
 /* Per-stream volume, 0..65536 for each channel */
 void   AudioSetVolume(int s, UINT32 left, UINT32 right);

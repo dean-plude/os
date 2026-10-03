@@ -77,15 +77,18 @@ class App:
     @processes: a windowed program of many processes of one executable
     (Firefox: a launcher that exits once the browser is up, child
     processes the browser ends itself), so only a crash fails it before
-    the screenshot."""
+    the screenshot.  @runtimes: names of App Store runtimes (such as
+    "Mesa 3D") whose downloads are put in C:\\Downloads the same way, for
+    the program's tests to install first with Test(store=NAME)."""
     def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=(),
                  gui=False, net=False, interact=None, https=False, store=None, processes=False,
-                 mic=False, sound=None):
+                 mic=False, sound=None, runtimes=()):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
         self.unpack, self.strip, self.extra = unpack, strip, list(extra)
         self.gui, self.net, self.interact = gui, net, interact
         self.https, self.store, self.ca, self.processes = https, store, None, processes
         self.mic, self.sound = mic, sound
+        self.runtimes = list(runtimes)
 
 
 A = r'C:\Apps'
@@ -151,14 +154,30 @@ def stage(app, archive, dest):
                 shutil.copyfileobj(src, out)
 
 
+def catalog_entry(name):
+    """(download URL, file name) of @name in the App Store's catalog"""
+    m = re.search(r'\{ "' + re.escape(name) + r'", "[^"]*", "[^"]*",\s*CAT_\w+, (GH )?"([^"]+)", "([^"]+)"',
+                  open(STORE_C).read())
+    if not m:
+        raise RuntimeError(f'the App Store has no "{name}"')
+    return ('https://github.com/' if m.group(1) else '') + m.group(2), m.group(3)
+
+
 def catalog_file(app):
     """The file name the App Store saves @app.store's download as; its
     catalog entry must have @app.url as the download"""
-    m = re.search(r'\{ "' + re.escape(app.store) + r'", "[^"]*", "[^"]*",\s*CAT_\w+, (GH )?"([^"]+)", "([^"]+)"',
-                  open(STORE_C).read())
-    if not m or ('https://github.com/' if m.group(1) else '') + m.group(2) != app.url:
+    url, file = catalog_entry(app.store)
+    if url != app.url:
         raise RuntimeError(f'the App Store has no "{app.store}" downloading {app.url}')
-    return m.group(3)
+    return file
+
+
+def stage_7zip(work, sevenzip):
+    """7-Zip in Programs\\7-Zip, which the Store unpacks archives with"""
+    programs = os.path.join(work, 'Programs')
+    if not os.path.exists(os.path.join(programs, '7-Zip')):
+        subprocess.run(['7z', 'x', '-y', '-o' + os.path.join(programs, '7-Zip'), sevenzip],
+                       check=True, stdout=subprocess.DEVNULL)
 
 
 def stage_store(app, files, work):
@@ -167,11 +186,20 @@ def stage_store(app, files, work):
     downloads, programs = os.path.join(work, 'Downloads'), os.path.join(work, 'Programs')
     os.makedirs(downloads, exist_ok=True)
     shutil.copy(files[0], os.path.join(downloads, catalog_file(app)))
-    if not os.path.exists(os.path.join(programs, '7-Zip')):
-        subprocess.run(['7z', 'x', '-y', '-o' + os.path.join(programs, '7-Zip'), files[-1]],
-                       check=True, stdout=subprocess.DEVNULL)
+    stage_7zip(work, files[-1])
     if callable(app.unpack):
         app.unpack(app, files[:-1], programs)
+
+
+def stage_runtimes(app, cache, work):
+    """The downloads of @app.runtimes in Downloads and 7-Zip, so the Store
+    can install them without a network"""
+    downloads = os.path.join(work, 'Downloads')
+    os.makedirs(downloads, exist_ok=True)
+    for name in app.runtimes:
+        url, file = catalog_entry(name)
+        shutil.copy(fetch(url, cache), os.path.join(downloads, file))
+    stage_7zip(work, fetch(SEVENZIP, cache))
 
 
 class HttpsServer:
@@ -370,6 +398,8 @@ def main():
     for app in apps:
         app.ca = https and https.ca
         try:
+            if app.runtimes:
+                stage_runtimes(app, a.cache, work)
             if app.store:
                 stage_store(app, [fetch(u, a.cache) for u in [app.url] + app.extra + [SEVENZIP]], work)
             elif callable(app.unpack):
@@ -399,7 +429,7 @@ def main():
                               if os.path.isdir(os.path.join(work, d))]
     t_boot = time.time()
     try:
-        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=4096, data_mb=2048,
+        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=4096, data_mb=3072,
                     extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [],
                     net=echo is not None or https is not None, rec=rec, wav=wav)
     except RuntimeError as e:
@@ -520,21 +550,66 @@ def settle(nova, out, wait=120):
     keyboard again.  Keys typed while a closing program still has the
     focus (Firefox takes a while to shut down its processes) never reach
     the Terminal, and the next program's Alt+F4 would close the Terminal
-    instead.  Returns (the log, why the Terminal is not usable or None)."""
+    instead.  A program that keeps the focus (VLC failing to open its file
+    raises an error box that Alt+F4 closes and its --loop opens again; VLC
+    hanging as it exits) would take every later program's keys too, so
+    when the Terminal does not answer a second one is opened from Start
+    (reopen_terminal) to stop it, then closed (`exit`) so the first one
+    has the keyboard again and later screenshots show the usual desktop.
+    A program that keeps opening windows (VLC's error box, again on every
+    pass of --loop) can still take the new Terminal's keys: three tries.
+    Returns (the log, why the Terminal was not usable or None)."""
     started = set(re.findall(r'\[UM\] Started [^\n]*? \(PID (\d+)\)', out))
     end = time.time() + wait
     while True:
-        ended = set(re.findall(r'\[UM\] [^\n]*? \(PID (\d+)\) exited', out))
+        ended = set(re.findall(r'\[UM\] [^\n]*? \(PID (\d+)\) (?:exited|crashed|terminated)', out))
         if started <= ended or time.time() > end:
             break
         time.sleep(1)
         out += nova.sr.read_new()
+    why, second = None, False
+    if started - ended:
+        o, ok = nova.run('echo ready', 15)
+        out += o
+        if not ok:
+            why = 'the Terminal did not get the keyboard back after the program ended'
+            for _ in range(3):                      # (a window the program opens meanwhile takes the keys)
+                out += reopen_terminal(nova)
+                o, ok = nova.run('echo ready', 10)
+                out += o
+                if ok:
+                    break
+            second = ok                             # (only that one is closed again)
     for pid in sorted(started - ended, key=int):
         o, _ = nova.run(f'taskkill /PID {pid}', 15)
         out += o
+    if second:
+        time.sleep(3)                               # (the stopped program's windows go)
+        nova.qmp.type('exit\n')
+        time.sleep(2)
     o, ok = nova.run('echo ready', 15)
     out += o
-    return out, None if ok else 'the Terminal did not get the keyboard back after the program ended'
+    if not ok:
+        why = 'the Terminal did not get the keyboard back after the program ended'
+        out += reopen_terminal(nova)
+        out += nova.run('echo ready', 15)[0]
+    return out, why
+
+
+def reopen_terminal(nova):
+    """A new Terminal window from Start (the Windows key, then "terminal");
+    the Windows key reaches Start whichever window has the focus.  Copying
+    to the serial port is one switch for every Terminal (Nova.start turned
+    it on), said again here so the new one reports [TERM-DONE]"""
+    nova.keys('esc')
+    nova.qmp.key('meta_l')
+    time.sleep(1)
+    nova.qmp.type('terminal\n')
+    time.sleep(3)
+    out = nova.sr.read_new()
+    nova.qmp.type('serial on\n')
+    more, _ = nova.sr.wait('[TERM-DONE]', 30)
+    return out + more.replace('\n[TERM-DONE]\n', '')
 
 
 

@@ -87,7 +87,7 @@
 typedef struct {
     UINT64 hwnd;
     UINT32 message;
-    UINT32 _pad;
+    UINT32 _pad;                    /* mouse messages: the pen packet behind it (UmSetInputPen) */
     UINT64 wParam;
     UINT64 lParam;
     UINT32 time;
@@ -155,18 +155,24 @@ static GuiWin *win_lookup(UmProcess *p, UINT64 h)
 /* -----------------------------------------------------------------------
  * Message queue (g_gui_lock)
  * ----------------------------------------------------------------------- */
+/* A pen's packet number for the mouse messages going out now (UmSetInputPen) */
+static UINT32 g_input_pen;
+
+void UmSetInputPen(UINT32 serial) { g_input_pen = serial; }
+
 static void enqueue_locked(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, int y)
 {
     if (g->head - g->tail >= GUI_QUEUE) return;             /* full: drop */
+    UINT32 pen = msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST ? g_input_pen : 0;
     /* Coalesce consecutive paints, sizes and mouse moves */
     if ((msg == WM_PAINT || msg == WM_MOUSEMOVE || msg == WM_SIZE || msg == WM_MOVE) && g->head != g->tail) {
         GuiMsg *last = &g->q[(g->head - 1) % GUI_QUEUE];
-        if (last->message == msg) { last->wParam = wp; last->lParam = lp; last->pt_x = x; last->pt_y = y; return; }
+        if (last->message == msg) { last->wParam = wp; last->lParam = lp; last->pt_x = x; last->pt_y = y; last->_pad = pen; return; }
     }
     GuiMsg *m = &g->q[g->head % GUI_QUEUE];
     m->hwnd = g->id;
     m->message = msg;
-    m->_pad = 0;
+    m->_pad = pen;                                          /* (the pen's packet: user32 reads it) */
     m->wParam = wp;
     m->lParam = lp;
     m->time = (UINT32)(sched_ticks() * 10);
@@ -223,8 +229,10 @@ static void gui_paint(WND *w)
 /* The foreground process: the one whose window is active (an owned
  * dialog's, a modal one's), which the scheduler gives NT's foreground
  * boost (scheduler.h, BOOST_FOREGROUND).  Not a process of the IDLE class,
- * as on Windows; none while a built-in app (the Terminal, Settings) or the
- * desktop itself is active.  Desktop thread, DesktopLock held: called
+ * as on Windows.  While a Terminal is active, the console program running
+ * in it (a console's programs are foreground while their console window
+ * is, on Windows); none while another built-in app (Settings, File
+ * Explorer) or the desktop itself is active.  Desktop thread, DesktopLock held: called
  * every pass of its loop (each tick), so it follows every way the active
  * window changes (a click, Alt+Tab, a window closed or minimized). */
 void UmUpdateForeground(void)
@@ -233,8 +241,11 @@ void UmUpdateForeground(void)
     UmProcess *p = NULL;
     if (w && w->on_paint == gui_paint && w->user) {
         GuiWin *g = w->user;
-        if (g->proc && !g->proc->exited && g->proc->prio_class != 1 /* PROCESS_PRIORITY_CLASS_IDLE */) p = g->proc;
+        p = g->proc;
+    } else {
+        p = TerminalProgram(w);                 /* a console program while its Terminal is active */
     }
+    if (p && (p->exited || p->prio_class == 1 /* PROCESS_PRIORITY_CLASS_IDLE */)) p = NULL;
     if (sched_foreground() != p) sched_set_foreground(p);
 }
 
@@ -1108,11 +1119,6 @@ static UINT64 tablet_ctl(UmProcess *p, UINT64 op, UINT64 ptr)
         ev.absolute = 1;
         ev.dx = in[0] < 0 ? 0 : in[0] > 65535 ? 65535 : in[0];
         ev.dy = in[1] < 0 ? 0 : in[1] > 65535 ? 65535 : in[1];
-        if (in[4] & 1) {                       /* in range: the pointer follows, the tip clicks */
-            ev.type = INPUT_MOUSE;
-            ev.buttons = (in[3] & 1 ? MOUSE_LEFT : 0) | (in[3] & 2 ? MOUSE_RIGHT : 0);
-            InputPost(&ev);
-        }
         ev.type = INPUT_PEN;
         ev.buttons = (UINT8)(in[3] & 7);
         ev.pressure = (UINT16)(in[2] < 0 ? 0 : in[2] > TABLET_PRESSURE ? TABLET_PRESSURE : in[2]);
@@ -1125,6 +1131,16 @@ static UINT64 tablet_ctl(UmProcess *p, UINT64 op, UINT64 ptr)
         }
         if (in[4] & 8) ev.twist = (UINT16)(((in[7] % 3600) + 3600) % 3600);
         InputPost(&ev);
+        if (in[4] & 1) {                       /* in range: the pointer follows, the tip clicks */
+            InputEvent m;
+            memset(&m, 0, sizeof(m));
+            m.type = INPUT_MOUSE;
+            m.absolute = 1;
+            m.dx = ev.dx; m.dy = ev.dy;
+            m.buttons = (in[3] & 1 ? MOUSE_LEFT : 0) | (in[3] & 2 ? MOUSE_RIGHT : 0);
+            m.from_pen = 1;
+            InputPost(&m);
+        }
         return 1;
     }
     }

@@ -9,7 +9,10 @@
  * (WM_TOUCH and GetTouchInputInfo); the right half one that didn't
  * (WM_POINTERDOWN / UPDATE / UP, GetPointerInfo, GetPointerType,
  * GetPointerFrameTouchInfo), and that passes them to DefWindowProc, which
- * should turn the primary contact into WM_LBUTTONDOWN / WM_LBUTTONUP.
+ * should turn the primary contact into WM_LBUTTONDOWN / WM_LBUTTONUP
+ * (GetMessageExtraInfo: the touch signature, 0xFF515780).
+ * GetPointerDevices lists the screen as a POINTER_DEVICE_TYPE_TOUCH
+ * device, the source of the contacts' pointer messages.
  */
 #include <windows.h>
 #include <stdio.h>
@@ -42,6 +45,11 @@ typedef BOOL (WINAPI *CloseTouchInputHandleFn)(HANDLE);
 typedef BOOL (WINAPI *GetPointerInfoFn)(UINT32, PtrInfo *);
 typedef BOOL (WINAPI *GetPointerTypeFn)(UINT32, DWORD *);
 typedef BOOL (WINAPI *GetPointerFrameTouchInfoFn)(UINT32, UINT32 *, PtrTouchInfo *);
+typedef struct {
+    DWORD displayOrientation; HANDLE device; int pointerDeviceType; HMONITOR monitor; ULONG startingCursorId;
+    USHORT maxActiveContacts; WCHAR productString[520];
+} PtrDevice;
+typedef BOOL (WINAPI *GetPointerDevicesFn)(UINT32 *, PtrDevice *);
 
 static RegisterTouchWindowFn pRegisterTouchWindow;
 static GetTouchInputInfoFn pGetTouchInputInfo;
@@ -64,6 +72,8 @@ static int touch_msgs, two_down, moves, ups, primaries, ids_ok = 1, left_half = 
 static DWORD first_ids[2];
 /* Right window (pointers) */
 static int pdown, pup, pupdate, ptype_ok, pinfo_ok, pframe_ok, lbdown, lbup, lb_where_ok;
+static HANDLE psource;                          /* GetPointerInfo's sourceDevice */
+static LPARAM lb_extra;                         /* GetMessageExtraInfo at WM_LBUTTONDOWN */
 
 static LRESULT CALLBACK left_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 {
@@ -100,6 +110,7 @@ static LRESULT CALLBACK right_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         if (pGetPointerInfo(id, &pi) && (pi.pointerFlags & POINTER_FLAG_DOWN_) && (pi.pointerFlags & POINTER_FLAG_PRIMARY_) &&
             pi.hwndTarget == h && pi.ptPixelLocation.x == (short)LOWORD(lp) && pi.ptPixelLocation.x >= sw / 2)
             pinfo_ok = 1;
+        psource = pi.sourceDevice;
         UINT32 n = 10;
         PtrTouchInfo ti[10];
         if (pGetPointerFrameTouchInfo(id, &n, ti) && n == 1 && ti[0].pointerInfo.pointerId == id) pframe_ok = 1;
@@ -109,6 +120,7 @@ static LRESULT CALLBACK right_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
     case WM_POINTERUP_: pup++; break;
     case WM_LBUTTONDOWN:
         lbdown++;
+        lb_extra = GetMessageExtraInfo();
         if ((short)LOWORD(lp) >= 0 && (short)LOWORD(lp) < sw / 2) lb_where_ok = 1;   /* (client coordinates) */
         return 0;
     case WM_LBUTTONUP: lbup++; return 0;
@@ -195,6 +207,19 @@ int main(void)
     check("DefWindowProc promotes the primary contact to WM_LBUTTONDOWN/UP (client coordinates)",
           lbdown == 1 && lbup == 1 && lb_where_ok);
     check("WM_TOUCH stayed with the left window", touch_msgs > 0 && ups == 2);
+    printf("GetMessageExtraInfo at WM_LBUTTONDOWN: %08lx\n", (unsigned long)lb_extra);
+    check("GetMessageExtraInfo: the promoted WM_LBUTTONDOWN carries the touch signature (0xFF515780)",
+          ((DWORD)lb_extra & 0xFFFFFF80) == 0xFF515780);
+
+    GetPointerDevicesFn pDevices = (GetPointerDevicesFn)GetProcAddress(u, "GetPointerDevices");
+    PtrDevice dev[4];
+    UINT32 nd = 4;
+    int t = -1;
+    if (pDevices && pDevices(&nd, dev))
+        for (UINT32 i = 0; i < nd && i < 4; i++) if (dev[i].pointerDeviceType == 3 /* POINTER_DEVICE_TYPE_TOUCH */) t = (int)i;
+    if (t >= 0) printf("GetPointerDevices: %u devices; the touch screen has %u contacts\n", nd, dev[t].maxActiveContacts);
+    check("GetPointerDevices: the touch screen (POINTER_DEVICE_TYPE_TOUCH, SM_MAXIMUMTOUCHES contacts), the contacts' source",
+          t >= 0 && dev[t].maxActiveContacts == most && dev[t].device == psource);
 
     DestroyWindow(left);
     DestroyWindow(right);

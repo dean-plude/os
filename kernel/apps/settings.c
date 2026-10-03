@@ -1,6 +1,6 @@
 /*
- * settings.c — Settings: live system, display, personalization, storage,
- *               network, time & language and about pages
+ * settings.c — Settings: live system, display, sound, personalization,
+ *               storage, network, time & language and about pages
  */
 
 #include "apps.h"
@@ -14,6 +14,7 @@
 #include "../fs/persist.h"
 #include "../hal/display.h"
 #include "../um/um.h"
+#include "../drivers/audio.h"
 
 #define SIDE_W 200
 #define ITEM_H 36
@@ -25,10 +26,11 @@ typedef struct {
     int drag_dx, drag_dy;            /* the press inside it (diagram px) */
     int drag_x, drag_y;              /* its top left now (diagram px) */
     char locale[32];                 /* Time & language: the user locale shown */
+    UINT32 sound_sig;                /* Sound: the devices shown (repainted when they change) */
 } Settings;
 
-static const char *g_pages[] = { "System", "Display", "Personalization", "Storage", "Network", "Time & language", "About" };
-static const Glyph g_page_glyphs[] = { GL_PC, GL_WINDOWS, GL_PICTURES, GL_FOLDER, GL_NETWORK, GL_GEAR, GL_NOVA };
+static const char *g_pages[] = { "System", "Display", "Sound", "Personalization", "Storage", "Network", "Time & language", "About" };
+static const Glyph g_page_glyphs[] = { GL_PC, GL_WINDOWS, GL_SPEAKER, GL_PICTURES, GL_FOLDER, GL_NETWORK, GL_GEAR, GL_NOVA };
 #define N_PAGES ((int)(sizeof(g_pages) / sizeof(g_pages[0])))
 
 /* A labelled row inside a card: "Label ........ value" */
@@ -236,6 +238,110 @@ static void snap_place(int mon, int *px, int *py)
     *px = bx; *py = by;
 }
 
+/* Sound: the outputs, then the inputs, one row each (the default one's
+ * circle filled); clicking a row makes that device the default, as
+ * Windows' "Choose where to play sound" does.  Programs that chose a
+ * device keep it.  Each row has the device's own volume slider at its
+ * right (clicking the slider sets that device's level, as each device's
+ * slider in Windows' Sound settings does).  The choice and the levels are
+ * kept across restarts (drivers/audio.c).  Rows are SOUND_ROW apart;
+ * sound_rows() places them for set_paint and set_mouse alike. */
+#define SOUND_ROW    50
+#define SOUND_HEAD   26
+#define SOUND_GAP    16
+#define SOUND_SLIDER 160                 /* the slider's track, ending 72 px from the row's right */
+
+static int slider_x(int x, int w) { return x + w - 72 - SOUND_SLIDER; }
+
+typedef struct { AudioDevice out[8], in[8]; int nout, nin; } SoundDevs;
+
+static void sound_devs(SoundDevs *d)
+{
+    d->nout = AudioDevices(false, d->out, 8);
+    d->nin = AudioDevices(true, d->in, 8);
+}
+
+/* The top of the input heading, below the outputs (page coordinates) */
+static int sound_in_dy(const SoundDevs *d)
+{
+    return SOUND_HEAD + (d->nout ? d->nout : 1) * SOUND_ROW + SOUND_GAP;
+}
+
+static UINT32 sound_sig(const SoundDevs *d)
+{
+    UINT32 sig = (UINT32)(d->nout * 31 + d->nin);
+    for (int i = 0; i < d->nout; i++)
+        sig = sig * 131 + d->out[i].id * 2 + d->out[i].is_default + d->out[i].volume * 7 + d->out[i].mute;
+    for (int i = 0; i < d->nin; i++)
+        sig = sig * 137 + d->in[i].id * 2 + d->in[i].is_default + d->in[i].volume * 7 + d->in[i].mute;
+    return sig;
+}
+
+static void sound_row(int x, int y, int w, const AudioDevice *a)
+{
+    GdiRoundRect(RECT(x, y, w, 44), 6, UI_CARD, GDI_TRANSPARENT);
+    GdiRoundRect(RECT(x + 16, y + 14, 16, 16), 8, a->is_default ? UI_ACCENT : UI_LINE, GDI_TRANSPARENT);
+    GdiRoundRect(RECT(x + 18, y + 16, 12, 12), 6, UI_CARD, GDI_TRANSPARENT);
+    if (a->is_default) GdiRoundRect(RECT(x + 20, y + 18, 8, 8), 4, UI_ACCENT, GDI_TRANSPARENT);
+    GdiTextT(x + 44, y + 14, a->name, UI_TEXT);
+    int sx = slider_x(x, w), fill = (int)((UINT64)SOUND_SLIDER * a->volume / 65536);
+    int lx = sx - 20 - GdiTextW("Default");                   /* (left out where a long name reaches it) */
+    if (a->is_default && lx >= x + 44 + GdiTextW(a->name) + 16) GdiTextT(lx, y + 14, "Default", UI_TEXT2);
+    GdiRoundRect(RECT(sx, y + 20, SOUND_SLIDER, 4), 2, UI_LINE, GDI_TRANSPARENT);
+    if (fill > 0) GdiRoundRect(RECT(sx, y + 20, fill, 4), 2, a->mute ? UI_TEXT2 : UI_ACCENT, GDI_TRANSPARENT);
+    GdiRoundRect(RECT(sx + fill - 7, y + 15, 14, 14), 7, a->mute ? UI_TEXT2 : UI_ACCENT, GDI_TRANSPARENT);
+    char pct[16];
+    if (a->mute) strcpy(pct, "Muted");
+    else ksnprintf(pct, sizeof(pct), "%u%%", (unsigned)((a->volume * 100ull + 32768) / 65536));
+    GdiTextT(x + w - 16 - GdiTextW(pct), y + 14, pct, UI_TEXT2);
+}
+
+/* A click at @dx on a row of device @a: on its slider, set its volume
+ * there; elsewhere, make it the default */
+static void sound_row_click(bool capture, const AudioDevice *a, int dx, int w)
+{
+    int sx = slider_x(0, w);
+    if (dx >= sx - 8 && dx <= sx + SOUND_SLIDER + 8) {
+        int v = dx - sx;
+        v = v < 0 ? 0 : v > SOUND_SLIDER ? SOUND_SLIDER : v;
+        UINT32 vol = (UINT32)((UINT64)v * 65536 / SOUND_SLIDER);
+        AudioSetMaster(capture, a->id, vol, vol, false);
+        kprintf("[SETTINGS] %s volume %u%%\n", a->name, (unsigned)((vol * 100ull + 32768) / 65536));
+        return;
+    }
+    AudioSetDefault(capture, a->id);
+}
+
+static void page_sound(Settings *st, int x, int y, int w)
+{
+    SoundDevs d;
+    sound_devs(&d);
+    st->sound_sig = sound_sig(&d);
+    GdiTextBold(x, y, "Output: choose where to play sound", UI_TEXT);
+    for (int i = 0; i < d.nout; i++) sound_row(x, y + SOUND_HEAD + i * SOUND_ROW, w, &d.out[i]);
+    if (!d.nout) row(x, y + SOUND_HEAD, w, "No output devices found", "");
+    int iy = y + sound_in_dy(&d);
+    GdiTextBold(x, iy, "Input: choose a device for speaking or recording", UI_TEXT);
+    for (int i = 0; i < d.nin; i++) sound_row(x, iy + SOUND_HEAD + i * SOUND_ROW, w, &d.in[i]);
+    if (!d.nin) row(x, iy + SOUND_HEAD, w, "No input devices found", "");
+}
+
+/* A click on the Sound page at page coordinates (@dx, @dy) below its top */
+static void sound_click(int dx, int dy, int w)
+{
+    SoundDevs d;
+    sound_devs(&d);
+    if (dx < 0 || dx >= w) return;
+    int r = (dy - SOUND_HEAD) / SOUND_ROW;
+    if (dy >= SOUND_HEAD && (dy - SOUND_HEAD) % SOUND_ROW < 44 && r < d.nout) {
+        sound_row_click(false, &d.out[r], dx, w);
+        return;
+    }
+    int iy = dy - sound_in_dy(&d) - SOUND_HEAD;
+    r = iy / SOUND_ROW;
+    if (iy >= 0 && iy % SOUND_ROW < 44 && r < d.nin) sound_row_click(true, &d.in[r], dx, w);
+}
+
 static void page_storage(int x, int y, int w)
 {
     uint64_t total, free_p, used;
@@ -324,6 +430,11 @@ static bool set_tick(WND *w)
         if (!strcmp(cur, st->locale)) return false;
         strcpy(st->locale, cur);
         return true;
+    }
+    if (st && st->page == SETTINGS_SOUND) {                   /* a device plugged in or out */
+        SoundDevs d;
+        sound_devs(&d);
+        return sound_sig(&d) != st->sound_sig;
     }
     if (!st || st->page != SETTINGS_NETWORK) return false;
     NetStatus ns;
@@ -463,6 +574,7 @@ static void set_paint(WND *w)
     switch (st->page) {
     case SETTINGS_SYSTEM:      page_system(x, y, w2);     break;
     case SETTINGS_DISPLAY:     page_display(st, x, y, w2); break;
+    case SETTINGS_SOUND:       page_sound(st, x, y, w2);   break;
     case SETTINGS_PERSONALIZE: page_personalize(x, y, w2); break;
     case SETTINGS_STORAGE:     page_storage(x, y, w2);    break;
     case SETTINGS_NETWORK:     page_network(x, y, w2);    break;
@@ -524,6 +636,11 @@ static void set_mouse(WND *w, WmMouseMsg msg, int x, int y)
             int mon = chosen(st);
             if (!DisplayHeadModeAt(mon, r * cols + col, &m)) return;
             if (DesktopSetHeadMode(mon, m.w, m.h)) DesktopSaveHeadMode(mon, m.w, m.h);
+            return;
+        }
+        if (st->page == SETTINGS_SOUND) {
+            /* device rows (layout matches set_paint + page_sound) */
+            sound_click(x - (SIDE_W + 28), y - (20 + 52), c.w - SIDE_W - 56);
             return;
         }
         if (st->page == SETTINGS_TIME_LANGUAGE) {

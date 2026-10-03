@@ -7,6 +7,7 @@
 #include "ntfs.h"
 #include "persist.h"
 #include "drives.h"
+#include "bootlog.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
@@ -16,7 +17,7 @@
 
 #define PHYSMAP(p) ((const void *)(uintptr_t)(PHYSMAP_BASE + (p)))
 
-static bool          g_live;
+static bool          g_live, g_live_usb;
 static const UINT8  *g_media_kernel, *g_media_loader;     /* from the bootloader */
 static UINT64        g_media_kernel_size, g_media_loader_size;
 
@@ -24,6 +25,7 @@ void SetupBootInfo(const BootInfo *info)
 {
     if (!info || info->version < 3) return;
     g_live = (info->boot_flags & BOOT_FLAG_LIVE_MEDIA) != 0;
+    g_live_usb = g_live && (info->boot_flags & BOOT_FLAG_LIVE_USB);
     if (info->media_kernel_base && info->media_kernel_size && info->media_loader_base && info->media_loader_size) {
         g_media_kernel = PHYSMAP(info->media_kernel_base);
         g_media_kernel_size = info->media_kernel_size;
@@ -31,11 +33,17 @@ void SetupBootInfo(const BootInfo *info)
         g_media_loader_size = info->media_loader_size;
     }
     if (g_live)
-        kprintf("[SETUP] Running from the installation disc (kernel %u KB, loader %u KB in memory)\n",
-                (unsigned)(g_media_kernel_size >> 10), (unsigned)(g_media_loader_size >> 10));
+        kprintf("[SETUP] Running from the installation %s (kernel %u KB, loader %u KB in memory)\n",
+                SetupMediaName(), (unsigned)(g_media_kernel_size >> 10), (unsigned)(g_media_loader_size >> 10));
+    else if (info->boot_flags & BOOT_FLAG_ENTRY_ADDED)
+        kprintf("[SETUP] Added the firmware boot entry \"NovaOS\" for this disk\n");
+    else if (info->boot_flags & BOOT_FLAG_BOOT_ENTRY)
+        kprintf("[SETUP] The firmware has a \"NovaOS\" boot entry for this disk\n");
 }
 
 bool SetupIsLive(void) { return g_live; }
+const char *SetupMediaName(void) { return g_live_usb ? "USB stick" : "disc"; }
+bool SetupLiveFromUsb(void) { return g_live_usb; }
 
 /* ---------------------------------------------------------------------------
  * Disks
@@ -52,6 +60,7 @@ int SetupListDisks(SetupDisk *out, int max)
         s->bytes = d->sectors * BLOCK_SECTOR;
         s->too_small = s->bytes < SETUP_MIN_BYTES;
         s->holds_c = d == cdev;
+        s->boot = d == BootLogDevice();              /* the USB stick NovaOS is running from */
         FatVol *v[8];
         bool blank = false;
         int nf = PersistFindVolumes(d, v, 8, &blank);

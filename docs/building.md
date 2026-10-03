@@ -185,8 +185,31 @@ push to `main` that passes CI replaces `nova.iso` on the `latest` release:
 <https://github.com/dean-plude/os/releases/latest/download/nova.iso>.
 
 The ISO is El Torito UEFI, no emulation: its EFI System Partition holds
-`\EFI\BOOT\BOOTX64.EFI` and `\EFI\NOVA\kernel.elf`.  Booted from it, NovaOS
-runs live and opens Install NovaOS (see the README).
+`\EFI\BOOT\BOOTX64.EFI`, `\EFI\NOVA\kernel.elf` and `\EFI\NOVA\bootlog.txt`
+(1 MiB set aside for the boot log).  The same ESP is partition 2 of a GPT
+behind a protective MBR, so the ISO written to a USB stick starts too.
+Booted from either, NovaOS runs live and opens Install NovaOS (see the
+README); the bootloader tells the installation media from an installed
+disk by `bootlog.txt`, which the installer does not copy.  Started from a
+stick, the kernel writes its log into `bootlog.txt` in place
+(`kernel/fs/bootlog.c`): what was logged since boot when the stick
+appears, then the rest at most once a second, before a restart and after
+a kernel fault.  To try the stick in QEMU, with only the firmware's
+framebuffer for a display as on a laptop:
+
+```bash
+cp nova.iso stick.img
+truncate -s 2G stick.img
+qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/OVMF.fd \
+  -vga none -device ramfb -device qemu-xhci,id=xhci \
+  -drive if=none,id=stick,format=raw,file=stick.img \
+  -device usb-storage,bus=xhci.0,drive=stick -serial stdio
+```
+
+The devices suite's `usbboot` boot does this and reads the log back
+from the stick image with mtools; `cdboot` starts from the ISO as a
+disc.
 
 ---
 
@@ -221,7 +244,7 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -serial stdio
 ```
 
-QEMU's default user-mode network (an e1000e on q35) works out of the box;
+QEMU's default user-mode network (an e1000e on q35, the 82574L) works out of the box;
 add `-nic user,model=e1000` to test the older card or
 `-nic user,model=virtio-net-pci` for virtio-net.  `-smp N` sets the core
 count (up to 16).
@@ -243,12 +266,16 @@ PulseAudio or PipeWire when it finds one; set `NOVA_AUDIO` (`pa`,
 USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
 -device qemu-xhci -device usb-audio,audiodev=usbsnd` (or on `pci-ohci` or
 `piix3-usb-uhci`; QEMU's `usb-audio` is full speed only, so not on a
-plain `usb-ehci`).  The newest sound output plays, and the newest input
-records.  QEMU has no USB microphone and no high-speed audio device:
+plain `usb-ehci`).  The newest sound output and input are the defaults
+(Settings' Sound page chooses others and sets each device's volume, and
+programs can pick a device); the chosen default and the volumes are kept
+in the registry on drive C:, so they hold after a restart.  QEMU has no USB microphone and no high-speed audio device:
 `tools/usbredirpeer.py` is one (a USB Audio Class 1 headset or microphone
 behind a `usb-redir` device, or with `--uac2` a USB Audio Class 2.0 one:
 a programmable clock behind a clock selector, 24-bit samples and, at
-high speed, a packet every microframe), e.g. a high-speed headset on EHCI whose
+high speed, a packet every microframe; `--rates`, `--channels`,
+`--mic-channels` and `--product` give it other sampling rates, channel
+counts and a name), e.g. a high-speed headset on EHCI whose
 microphone hears 523 Hz:
 
 ```bash
@@ -413,8 +440,8 @@ NOVARUN_QEMU=/opt/qv/bin/qemu-system-x86_64 LD_LIBRARY_PATH=/opt/qv/lib/x86_64-l
 (`NOVARUN_GL_DISPLAY` to change it) when a `virtio-vga-gl` or
 `virtio-gpu-gl-pci` is among its devices, and no window otherwise.
 
-The network suite tests IPv4, IPv6 and winhttp's HTTP/2, and needs `node`
-and `openssl`:
+The network suite tests IPv4, IPv6 and winhttp's HTTP/2 on virtio-net,
+then IPv4 again on an Intel e1000e, and needs `node` and `openssl`:
 
 ```bash
 python3 tools/selftest.py --suite network
@@ -431,7 +458,10 @@ from boot; the test plugs the second into an OHCI and the third into a
 UHCI controller while NovaOS runs, plays `soundtest tone` after each, then
 unplugs the third and plays again, which the second must hear.  Each
 speaker's WAV must hold its tones and nothing else: a speaker another one
-took over from has to go quiet.  A third boot has no HD Audio card and a
+took over from has to go quiet.  Then the first speaker is made the
+default and set to half volume (the second stays at full), and after
+`shutdown /r` it must be the default again, although both attach at
+boot, and still play at half volume.  A third boot has no HD Audio card and a
 high-speed USB headset on an EHCI controller (`tools/usbredirpeer.py`
 behind a `usb-redir` device; its speaker writes `headset.wav`, its
 microphone hears 523 Hz): `soundtest tone` must sound in `headset.wav`
@@ -444,12 +474,39 @@ plugs a high-speed USB Audio 2.0 headset (`usbredirpeer.py --uac2`,
 writing `uac2.wav`, its microphone hearing 988 Hz) into the xHCI
 controller: `soundtest tone` must sound in `uac2.wav` alone, `soundtest
 record` and `capture` must hear 988 Hz, and once it is unplugged
-recording must go back to the OHCI microphone.  Last, one
+recording must go back to the OHCI microphone.  Then a USB Audio 2.0
+surround headset whose clock offers only 44.1 kHz (`usbredirpeer.py
+--rates 44100 --channels 6 --mic-channels 4`, writing `surround.wav`):
+the tone must sound at its pitch in its front two channels with the
+other four silent, and its microphone's 1175 Hz must be recorded at its
+pitch.  Last for sound, a full-speed USB speaker (`spk.wav`) for the
+device picker: with it the default, `soundtest ... dev=NAME` must play
+on (or record from) the named device through `waveOut`, `waveIn` and
+WASAPI, and `soundtest default out|in NAME` (what Settings' Sound page
+does) must move the default.  Then each device's own volume (`soundtest
+level`: a quarter on the surround headset leaves the others at full, and
+its tone must sound a quarter as loud; `soundtest wovolume`: a program's
+`waveOutSetVolume` on one device ID), DirectSound's device list
+(`soundtest dsenum`) and playing and recording on a device named by its
+GUID, XAudio2's device list and a mastering voice on a named device
+(`xa2test devices`), and, after `shutdown /r`, the surround headset
+still the default output (although the speaker attaches again too) and
+still at a quarter.  Last, one
 `virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
 connects a monitor to the second and third outputs and disconnects them
 again while NovaOS runs, through a VNC server QEMU has on each (an RFB
 `SetDesktopSize` asks for a monitor of that size there; 0 x 0 takes it
-away):
+away).  The "laptop" boot stands in for the reference ThinkPad: QEMU
+without `\_S3` (`ICH9-LPC.disable_s3=1`), `tests/acpi/laptop.asl` (an
+embedded controller holding the lid, a battery and the AC adapter, which
+NovaOS serves with its model of one because QEMU emulates none, and an
+LPS0 device), the ISO on a USB stick, an empty NVMe disk and only the
+firmware's GOP.  `battery` must read the battery through the controller;
+the test closes the lid (pc-testdev port `0xE8`), NovaOS must sleep in
+low-power S0 idle, and opening it must wake it; then `install nvme0n1`
+installs NovaOS on the NVMe disk, and after `shutdown /r` it must start
+from that disk and add its firmware boot entry
+([install-and-power.md](install-and-power.md)):
 
 ```bash
 python3 tools/selftest.py --suite devices
@@ -495,11 +552,23 @@ graphics boot has a second monitor (a QEMU
 which checks the monitor calls and layout changes; when it asks, the test
 pushes the pointer across onto the second monitor, and the screenshot is
 one PNG per monitor (`montest.png`, `montest-2.png`).  Then `nstest`
-starts NetSurf on a page with an SVG image, an inline `<svg>` and a list a
-script builds: the test checks the SVGs' colours and sizes and the list
-items on the screen, clicks the page's box (a script changes it) and
-checks the page was redrawn with it changed (`nstest-before.png`,
-`nstest-after.png`), then closes NetSurf with Alt+F4.  Last, `explorer
+starts NetSurf on a page with an SVG image, an inline `<svg>`, a list a
+script builds, an SVG without a size and an iframe holding a frameset
+page: the test checks the SVGs' colours and sizes (the unsized one at the
+default 300 x 150), the list items and both frames on the screen, clicks the page's box (a script changes it) and
+checks the page was redrawn with it changed and the rest still there (`nstest-before.png`,
+`nstest-after.png`), then closes NetSurf with Alt+F4.  `nstest` then
+opens four pages a script changes twelve times (a long page, iframes,
+positioned boxes, floats), each twice: laid out from the changed box, and
+with `NETSURF_LAYOUT_CHECK=1` comparing every third such layout box by box
+with a full one; the test compares the two runs' screenshots
+(`nstest-PAGE-incremental.png`, `nstest-PAGE-check.png`) above NetSurf's
+status bar.  Then `store scroll
+bar` runs `store open` and checks, from the `[STORE] view:` lines the App
+Store logs when its view changes, that All apps has a vertical scroll bar
+and that the wheel, Home, Page Down, End, a click on the bar's down arrow,
+one in its trough and a drag of its thumb each scroll the list, then
+closes the Store with Esc.  Last, `explorer
 scroll bars` opens File Explorer on `C:\Windows\System32` (more files than
 fit) and checks, from the `[EXPLORER]` lines it logs when its view
 changes, that the list has a vertical scroll bar and that the wheel, Page
@@ -513,6 +582,14 @@ asynchronous API) against `tools/h2server.js` with a throwaway self-signed
 certificate, then `looptest` (socket pairs over 127.0.0.1 and ::1,
 `localhost`); on an IPv6-only network made by `tools/v6peer.py` it checks
 SLAAC and RDNSS (`ipconfig`), `ping -6`, `curl -6` and `netcat` over IPv6.
+A third boot (`tests/selftest/network-e1000e`) has QEMU's e1000e (the
+82574L) instead of virtio-net: the boot log must show the PHY's ID, its
+auto-negotiation and the link up at 1000 Mb/s; the test pulls the link
+and plugs it back with QEMU's `set_link` (`ipconfig` shows the media
+disconnected, then the address again), runs `ping`, sleeps and wakes the
+machine with `sleeptest` and `ping`s again, then runs the IPv4 tests
+above on it.  [ethernet.md](ethernet.md) says what this covers of the
+I219 that real PCs have.
 
 It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
 whose microphone hears a 523 Hz tone (through a private PulseAudio server,
@@ -671,8 +748,11 @@ would do).
 The windowed programs run last, one at a time (each takes the keyboard and
 is closed with Alt+F4 before the next).  The next one starts only once
 every process the last one started has ended (any still running after
-two minutes is stopped with `taskkill`) and the Terminal answers again;
-after Firefox, `store close` closes the App Store window its install
+two minutes is stopped with `taskkill`) and the Terminal answers again.
+When it does not (a program that failed keeps the keyboard, as VLC does
+with its error box when its file is missing), the script opens a new
+Terminal from Start, stops the program from there and carries on, so one
+failure does not fail every program after it.  After Firefox, `store close` closes the App Store window its install
 opened.  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
@@ -778,6 +858,9 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
 
 - **Serial log**: every kernel message goes to COM1 (your terminal under
   `run`).  In NovaOS, the Terminal's `dmesg` shows it.
+- **`devices`** in the Terminal lists the PCI devices and the driver
+  each one has (missing drivers in red); on a real PC this is the first
+  thing to check ([hardware.md](hardware.md)).
 - **Program crashes** are logged with the faulting module and offset, the
   process's exit code, and `OutputDebugString` output.
 - **`trace NAME`** in the Terminal logs the failing system calls (with file

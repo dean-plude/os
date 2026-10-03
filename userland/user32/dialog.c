@@ -10,6 +10,7 @@ typedef struct {
     INT_PTR result;
     HFONT   font;
     int     own_font;
+    int     font_pt;                /* the template's point size (0: none, or the UI font) */
     int     xb, yb;                 /* base units */
     WORD    defid;
     HWND    focus;                  /* focus to restore on activation */
@@ -276,6 +277,7 @@ static HWND create_dialog(HINSTANCE inst, const void *tmpl, HWND hparent, DLGPRO
     dw->flags |= WF_DIALOG;
     d->font = font ? font : NULL;
     d->own_font = font && !is_gui_font(font);
+    d->font_pt = hd.has_font && hd.pt != 0x7FFF ? hd.pt : 0;
     d->xb = xb; d->yb = yb;
     d->proc_wide = wide;
     if (!dw->extra || dw->cls->extra < DLGWINDOWEXTRA) {
@@ -530,6 +532,46 @@ static int is_button(Wnd *c) { return c && c->cls && !wcsicmp_(c->cls->name, L"B
 
 /* Focus a control from the keyboard: edit boxes get their text selected;
  * a push button with the focus is the default one */
+/* A per-monitor v2 dialog went from @ok to @nk times 96 DPI (dpi.c, after
+ * WM_DPICHANGED put it in place): as Windows' dialog manager does, its
+ * controls' places and sizes scale with it, and the template's font is made
+ * again at the new DPI for the dialog and the controls that use it */
+void dlg_dpi_changed(Wnd *w, int ok, int nk)
+{
+    Dlg *d = dlg_of(w);
+    if (!d || ok == nk || ok < 1 || nk < 1) return;
+    HFONT of = d->font, nf = NULL;
+    if (of) {
+        LOGFONTW lf;
+        if (is_gui_font(of)) nf = gui_font_k(nk);
+        else if (GetObjectW(of, sizeof(lf), &lf)) {
+            lf.lfHeight = d->font_pt ? -MulDiv(d->font_pt, 96 * nk, 72) : MulDiv(lf.lfHeight, nk, ok);
+            nf = CreateFontIndirectW(&lf);
+        }
+    }
+    HWND kids[256];
+    int n = 0;
+    for (Wnd *c = w->child; c && n < 256; c = c->next) kids[n++] = c->h;
+    for (int i = 0; i < n; i++) {
+        Wnd *c = W_quiet(kids[i]);
+        if (!c || c->parent != w) continue;
+        RECT r = c->rect;
+        wnd_set_pos(c, 0, MulDiv(r.left, nk, ok), MulDiv(r.top, nk, ok), MulDiv(r.right - r.left, nk, ok),
+                    MulDiv(r.bottom - r.top, nk, ok), SWP_NOZORDER | SWP_NOACTIVATE);
+        if (nf && W_quiet(kids[i]) && (HFONT)send_msg(c, WM_GETFONT, 0, 0) == of) send_msg(c, WM_SETFONT, (WPARAM)nf, FALSE);
+    }
+    if (!W_quiet(w->h) || dlg_of(w) != d) return;
+    if (nf) {
+        d->font = nf;                                       /* (the old one stays: a control may still hold it) */
+        d->own_font = !is_gui_font(nf);
+        font_base_units(nf, &d->xb, &d->yb);
+    } else {
+        d->xb = MulDiv(d->xb, nk, ok);
+        d->yb = MulDiv(d->yb, nk, ok);
+    }
+    invalidate(w, NULL, TRUE, 1);
+}
+
 static void dlg_focus(Wnd *dw, HWND c)
 {
     if (!c) return;

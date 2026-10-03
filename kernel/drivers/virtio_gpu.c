@@ -535,6 +535,7 @@ static void probe(const PciDevice *pci)
         if (!v->shm_used) v->has3d = false;
     }
     g_dev[g_ndev++] = v;
+    PciClaim(pci, v->has3d ? "virtio-gpu (3D)" : "virtio-gpu");
     kprintf("[VGPU] %s at %02x:%02x.%x: %d output(s)\n", v->name, pci->bus, pci->dev, pci->func, v->nscan);
     if (v->has3d)
         kprintf("[VGPU] %s: 3D, %d capability set(s), %llu MiB of host-visible memory at %llx\n", v->name,

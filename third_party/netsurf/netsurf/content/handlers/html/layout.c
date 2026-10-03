@@ -42,6 +42,7 @@
 #include <string.h>
 #include <math.h>
 #include <dom/dom.h>
+#include <nsutils/time.h>
 
 #include "utils/log.h"
 #include "utils/talloc.h"
@@ -109,6 +110,146 @@ const css_border_color_func border_color_funcs[4] = {
 	[BOTTOM] = css_computed_border_bottom_color,
 	[LEFT]   = css_computed_border_left_color,
 };
+
+/*
+ * Laying a page out again from a changed box (NovaOS)
+ *
+ * When a script changes part of a page, html_relayout builds the boxes
+ * below one box again (html->layout_target) and the page is laid out
+ * again.  Laying out everything costs the line layout of every paragraph;
+ * instead, layout_document starts each block formatting context's loop
+ * (layout_block_context) at the changed box, in the state the loop was in
+ * when it reached that box last time, and moves every later box whose
+ * subtree is unchanged as a whole: when the loop reaches such a box in
+ * the same state as last time (the same margins collapsing, no floats),
+ * laying it out again would give the same result shifted by the
+ * difference in position, so the box is moved and the loop carries on
+ * from the state it left the box in last time.  Boxes before the changed
+ * one keep their positions.  The passes after the flow (list markers,
+ * positioned boxes, relative offsets, overflow extents) then visit only
+ * the boxes laid out again and the boxes above them.  Whatever this
+ * cannot do exactly falls back to a full layout (layout_document).
+ */
+
+/** a block formatting context loop's state when it reaches or leaves a box */
+struct layout_loop_state {
+	int cx, cy;		/**< cx and cy relative to the parent's origin */
+	int y;			/**< reaching: box->y; leaving: y */
+	int pos, neg;		/**< max_pos_margin and max_neg_margin */
+	struct box *mc;		/**< margin_collapse */
+	bool in_margin;
+	bool no_floats;		/**< the context had no floats */
+};
+
+/** what layout recorded about a box (box->lstate) */
+struct box_layout_state {
+	struct box *bfc;	/**< the box of the context it was laid out in */
+	struct layout_loop_state reach, leave;
+	bool reached, left, descended;
+	int parent_width;	/**< its parent's width when it was reached */
+	int height;		/**< its height before its children's layout */
+	unsigned visited;	/**< layout that laid it out */
+	unsigned path;		/**< layout that started below it */
+	unsigned below;		/**< layout that placed a positioned box below */
+	int static_x, static_y;	/**< static position (positioned boxes) */
+	unsigned static_set;	/**< layout that set x and y to it */
+	unsigned static_saved;	/**< layout that saved it */
+};
+
+#define LAYOUT_MAX_LEVELS 32
+
+/** the layout in progress (a page's iframes are laid out inside it) */
+struct layout_run {
+	html_content *content;
+	unsigned n;		/**< its number (content->layout_rec.count) */
+	bool partial;		/**< it lays out part of the page */
+	bool all_positioned;	/**< place every positioned box again */
+	bool moved;		/**< it moved a box it did not lay out */
+	bool oom;		/**< a record could not be allocated */
+	unsigned laid, kept;
+	/** where each block formatting context's loop starts */
+	struct {
+		struct box *block, *start;
+	} level[LAYOUT_MAX_LEVELS];
+	int levels, next_level;
+};
+
+static struct layout_run *layout_run;
+
+/** box->lstate, allocated if need be */
+static struct box_layout_state *layout_state(struct box *box)
+{
+	if (box->lstate == NULL) {
+		box->lstate = talloc_zero(box, struct box_layout_state);
+		if (box->lstate == NULL && layout_run != NULL)
+			layout_run->oom = true;
+	}
+	return box->lstate;
+}
+
+/** a box's status for the passes after the flow */
+enum layout_walk {
+	LW_SKIP,	/**< not laid out: it and its subtree stay */
+	LW_BELOW,	/**< stays, but a box below it was placed again */
+	LW_PATH,	/**< above the changed box: its position was undone */
+	LW_FRESH	/**< laid out */
+};
+
+static enum layout_walk layout_walk_status(const struct box *box,
+		enum layout_walk parent)
+{
+	const struct box_layout_state *ls = box->lstate;
+	struct layout_run *lr = layout_run;
+
+	if (lr == NULL || !lr->partial)
+		return LW_FRESH;
+	if (ls == NULL)
+		return parent == LW_FRESH ? LW_FRESH : LW_SKIP;
+	if (ls->visited == lr->n)
+		return LW_FRESH;
+	if (ls->path == lr->n)
+		return LW_PATH;
+	if (ls->below == lr->n)
+		return LW_BELOW;
+	if (!ls->reached)	/* (not a member of a context's loop) */
+		return parent == LW_FRESH ? LW_FRESH : LW_SKIP;
+	return LW_SKIP;
+}
+
+/** mark a box laid out by this layout */
+static void layout_mark_visited(struct box *box)
+{
+	struct box_layout_state *ls;
+
+	if (layout_run == NULL)
+		return;
+	ls = layout_state(box);
+	if (ls != NULL)
+		ls->visited = layout_run->n;
+	layout_run->laid++;
+}
+
+/** a microsecond clock for the timings in NETSURF_LAYOUT_LOG */
+#ifdef _NOVAOS
+__declspec(dllimport) int __stdcall QueryPerformanceCounter(long long *count);
+__declspec(dllimport) int __stdcall QueryPerformanceFrequency(long long *hz);
+#endif
+
+uint64_t layout_clock_us(void)
+{
+#ifdef _NOVAOS
+	long long count = 0, hz = 0;
+
+	if (QueryPerformanceFrequency(&hz) && hz > 0 &&
+			QueryPerformanceCounter(&count))
+		return (uint64_t)((double)count * 1000000.0 / (double)hz);
+#endif
+	{
+		uint64_t ms = 0;
+		nsu_getmonotonic_ms(&ms);
+		return ms * 1000;
+	}
+}
 
 /* forward declaration to break cycles */
 static void layout_minmax_block(
@@ -3374,6 +3515,13 @@ layout_line(struct box *first,
 			 * is handled later */
 			d->x += x0;
 			d->y = *y;
+			if (layout_run != NULL) {
+				struct box_layout_state *dls = layout_state(d);
+				if (dls != NULL) {
+					dls->static_set = layout_run->n;
+					dls->visited = layout_run->n;
+				}
+			}
 			continue;
 		} else if ((d->type == BOX_INLINE &&
 				lh__box_is_replace(d) == false) ||
@@ -3527,6 +3675,52 @@ static bool layout_inline_container(struct box *inline_container, int width,
 }
 
 
+/** record the state the block formatting context's loop leaves a box in */
+static void layout_record_leave(struct box *box, struct box *block,
+		int cx, int cy, int y, int pos, int neg, struct box *mc,
+		bool in_margin)
+{
+	struct box_layout_state *ls = box->lstate;
+
+	if (ls == NULL || ls->bfc != block)
+		return;
+	ls->leave.cx = cx;
+	ls->leave.cy = cy;
+	ls->leave.y = y;
+	ls->leave.pos = pos;
+	ls->leave.neg = neg;
+	ls->leave.mc = mc;
+	ls->leave.in_margin = in_margin;
+	ls->leave.no_floats = block->float_children == NULL;
+	ls->left = true;
+}
+
+/** whether a box the loop reaches in the same state as last time can be
+ * moved as a whole instead of being laid out again */
+static bool layout_box_moves_whole(struct box *box)
+{
+	css_fixed len = 0;
+	css_unit unit = CSS_UNIT_PX;
+
+	if (box->style == NULL)
+		return box->type == BOX_INLINE_CONTAINER;
+	switch (css_computed_position(box->style)) {
+	case CSS_POSITION_STATIC:
+		return true;
+	case CSS_POSITION_RELATIVE:
+		/* a percentage offset follows the parent's height */
+		if (css_computed_top(box->style, &len, &unit) ==
+				CSS_TOP_SET && unit == CSS_UNIT_PCT)
+			return false;
+		if (css_computed_bottom(box->style, &len, &unit) ==
+				CSS_BOTTOM_SET && unit == CSS_UNIT_PCT)
+			return false;
+		return true;
+	default:
+		return false;
+	}
+}
+
 /* Documented in layout_intertnal.h */
 bool layout_block_context(
 		struct box *block,
@@ -3543,6 +3737,11 @@ bool layout_block_context(
 	bool in_margin = false;
 	css_fixed gadget_size;
 	css_unit gadget_unit; /* Checkbox / radio buttons */
+	struct layout_run *lr = layout_run;
+	struct box *start = NULL;	/* box the loop starts at, or NULL */
+	struct box_layout_state *ls;
+	int px = 0, py = 0;	/* the current box's parent's origin */
+	int prev_y = 0;		/* the box's y before the loop reached it */
 
 	assert(block->type == BOX_BLOCK ||
 			block->type == BOX_INLINE_BLOCK ||
@@ -3583,12 +3782,38 @@ bool layout_block_context(
 					gadget_size, gadget_unit));
 	}
 
+	/* starting at a changed box (layout_document) */
+	if (lr != NULL && lr->next_level < lr->levels &&
+			lr->level[lr->next_level].block == block)
+		start = lr->level[lr->next_level++].start;
+
 	box = block->children;
 	/* set current coordinates to top-left of the block */
 	cx = 0;
 	y = cy = block->padding[TOP];
-	if (box)
+	if (start != NULL) {
+		/* carry on from the state the loop reached it in last time,
+		 * with the boxes above it as they were before their
+		 * children were laid out */
+		struct box *a;
+		ls = start->lstate;
+		for (a = start->parent; a != block; a = a->parent) {
+			px += a->x;
+			py += a->y;
+			a->height = a->lstate->height;
+		}
+		box = start;
+		cx = px + ls->reach.cx;
+		cy = py + ls->reach.cy;
+		box->y = ls->reach.y;
+		max_pos_margin = ls->reach.pos;
+		max_neg_margin = ls->reach.neg;
+		margin_collapse = ls->reach.mc;
+		in_margin = ls->reach.in_margin;
+	} else if (box) {
+		prev_y = box->y;
 		box->y = block->padding[TOP];
+	}
 
 	/* Step through the descendants of the block in depth-first order, but
 	 * not into the children of boxes which aren't blocks. For example, if
@@ -3622,6 +3847,61 @@ bool layout_block_context(
 				box->type == BOX_TABLE ||
 				box->type == BOX_INLINE_CONTAINER);
 
+		ls = box->lstate;
+		if (lr != NULL && lr->partial && box != start && ls != NULL &&
+				ls->bfc == block && ls->reached && ls->left &&
+				ls->reach.no_floats && ls->leave.no_floats &&
+				block->float_children == NULL &&
+				ls->reach.mc == margin_collapse &&
+				ls->reach.in_margin == in_margin &&
+				ls->reach.pos == max_pos_margin &&
+				ls->reach.neg == max_neg_margin &&
+				ls->reach.cx == cx - px &&
+				ls->parent_width == box->parent->width &&
+				layout_box_moves_whole(box)) {
+			/* reached in the same state as last time: laying it
+			 * out again would only move it */
+			int dy = box->y - ls->reach.y;
+			int dcy = cy - py - ls->reach.cy;
+
+			box->y = prev_y + dy;
+			if (dy != 0)
+				lr->moved = true;
+			ls->reach.y += dy;
+			ls->reach.cy += dcy;
+			ls->leave.y += dy;
+			ls->leave.cy += dcy;
+			cx = px + ls->leave.cx;
+			cy = py + ls->leave.cy;
+			y = ls->leave.y;
+			max_pos_margin = ls->leave.pos;
+			max_neg_margin = ls->leave.neg;
+			margin_collapse = ls->leave.mc;
+			in_margin = ls->leave.in_margin;
+			lr->kept++;
+			goto advance_to_next_box;
+		}
+		if (lr != NULL) {
+			ls = layout_state(box);
+			if (ls != NULL) {
+				ls->bfc = block;
+				ls->reach.cx = cx - px;
+				ls->reach.cy = cy - py;
+				ls->reach.y = box->y;
+				ls->reach.pos = max_pos_margin;
+				ls->reach.neg = max_neg_margin;
+				ls->reach.mc = margin_collapse;
+				ls->reach.in_margin = in_margin;
+				ls->reach.no_floats =
+						block->float_children == NULL;
+				ls->reached = true;
+				ls->left = false;
+				ls->descended = false;
+				ls->parent_width = box->parent->width;
+			}
+			layout_mark_visited(box);
+		}
+
 		/* Tables are laid out before being positioned, because the
 		 * position depends on the width which is calculated in
 		 * table layout. Blocks and inline containers are positioned
@@ -3636,6 +3916,8 @@ bool layout_block_context(
 				 css_computed_position(box->style) ==
 					CSS_POSITION_FIXED)) {
 			box->x = box->parent->padding[LEFT];
+			if (box->lstate != NULL && lr != NULL)
+				box->lstate->static_set = lr->n;
 			/* absolute positioned; this element will establish
 			 * its own block context when it gets laid out later,
 			 * so no need to look at its children now. */
@@ -3881,8 +4163,15 @@ bool layout_block_context(
 				margin_collapse = NULL;
 			}
 
+			if (box->lstate != NULL) {
+				box->lstate->height = box->height;
+				box->lstate->descended = true;
+			}
+			px += box->x;
+			py += box->y;
 			y = box->padding[TOP];
 			box = box->children;
+			prev_y = box->y;
 			box->y = y;
 			cy += y;
 			continue;
@@ -3903,6 +4192,10 @@ bool layout_block_context(
 				box->border[BOTTOM].width;
 
 	advance_to_next_box:
+		if (lr != NULL)
+			layout_record_leave(box, block, cx - px, cy - py, y,
+					max_pos_margin, max_neg_margin,
+					margin_collapse, in_margin);
 		if (!box->next) {
 			/* No more siblings:
 			 * up to first ancestor with a sibling. */
@@ -3923,6 +4216,8 @@ bool layout_block_context(
 				box = box->parent;
 				if (box == block)
 					break;
+				px -= box->x;
+				py -= box->y;
 
 				/* Margin is invalidated if this is a box
 				 * margins can't collapse through. */
@@ -3963,6 +4258,13 @@ bool layout_block_context(
 				y = box->y + box->padding[TOP] + box->height +
 						box->padding[BOTTOM] +
 						box->border[BOTTOM].width;
+				if (lr != NULL)
+					layout_record_leave(box, block,
+							cx - px, cy - py, y,
+							max_pos_margin,
+							max_neg_margin,
+							margin_collapse,
+							in_margin);
 
 			} while (box->next == NULL);
 			if (box == block)
@@ -3983,6 +4285,7 @@ bool layout_block_context(
 			max_neg_margin = -box->margin[BOTTOM];
 
 		box = box->next;
+		prev_y = box->y;
 		box->y = y;
 	}
 
@@ -4416,13 +4719,17 @@ layout__list_item_is_numerical(
  * Layout list markers.
  */
 static void
-layout_lists(const html_content *content, struct box *box)
+layout_lists(const html_content *content, struct box *box,
+		enum layout_walk walk)
 {
 	struct box *child;
 
 	layout__ordered_list_count(box);
 
 	for (child = box->children; child; child = child->next) {
+		enum layout_walk cw = layout_walk_status(child, walk);
+		if (cw == LW_SKIP)
+			continue;
 		if (child->list_marker) {
 			struct box *marker = child->list_marker;
 
@@ -4469,7 +4776,7 @@ layout_lists(const html_content *content, struct box *box)
 			/* Gap between marker and content */
 			marker->x -= 4;
 		}
-		layout_lists(content, child);
+		layout_lists(content, child, cw);
 	}
 }
 
@@ -4591,11 +4898,43 @@ layout_absolute(struct box *box,
 	struct box_border *border = box->border;
 	int available_width = containing_block->width;
 	int space;
+	struct layout_run *lr = layout_run;
 
 	assert(box->type == BOX_BLOCK || box->type == BOX_TABLE ||
 			box->type == BOX_INLINE_BLOCK ||
 			box->type == BOX_FLEX ||
 			box->type == BOX_INLINE_FLEX);
+
+	if (lr != NULL) {
+		/* keep the static position the flow gave, or go back to
+		 * it when the flow did not visit the box this time */
+		struct box_layout_state *ls = layout_state(box);
+		if (ls != NULL) {
+			if (ls->static_set == lr->n &&
+					ls->static_saved != lr->n) {
+				ls->static_x = box->x;
+				ls->static_y = box->y;
+				ls->static_saved = lr->n;
+			} else if (ls->static_saved != 0) {
+				box->x = ls->static_x;
+				box->y = ls->static_y;
+			}
+			ls->visited = lr->n;
+		}
+		if (lr->partial) {
+			/* the passes after this one visit the boxes above */
+			struct box *a;
+			for (a = box->parent; a != NULL; a = a->parent) {
+				struct box_layout_state *as = layout_state(a);
+				if (as == NULL || as->visited == lr->n ||
+						as->path == lr->n ||
+						as->below == lr->n)
+					break;
+				as->below = lr->n;
+			}
+		}
+		lr->content->layout_rec.abs = true;
+	}
 
 	/* The static position is where the box would be if it was not
 	 * absolutely positioned. The x and y are filled in by
@@ -4967,11 +5306,18 @@ static bool
 layout_position_absolute(struct box *box,
 			 struct box *containing_block,
 			 int cx, int cy,
-			 html_content *content)
+			 html_content *content,
+			 enum layout_walk walk)
 {
 	struct box *c;
 
 	for (c = box->children; c; c = c->next) {
+		enum layout_walk cw = LW_FRESH;
+		if (layout_run == NULL || !layout_run->all_positioned) {
+			cw = layout_walk_status(c, walk);
+			if (cw == LW_SKIP)
+				continue;
+		}
 		if ((c->type == BOX_BLOCK || c->type == BOX_TABLE ||
 				c->type == BOX_INLINE_BLOCK ||
 				c->type == BOX_FLEX ||
@@ -4983,11 +5329,11 @@ layout_position_absolute(struct box *box,
 			if (!layout_absolute(c, containing_block,
 					cx, cy, content))
 				return false;
-			if (!layout_position_absolute(c, c, 0, 0, content))
+			if (!layout_position_absolute(c, c, 0, 0, content, cw))
 				return false;
 		} else if (c->style && css_computed_position(c->style) ==
 				CSS_POSITION_RELATIVE) {
-			if (!layout_position_absolute(c, c, 0, 0, content))
+			if (!layout_position_absolute(c, c, 0, 0, content, cw))
 				return false;
 		} else {
 			int px, py;
@@ -5014,7 +5360,7 @@ layout_position_absolute(struct box *box,
 				py = c->y;
 			}
 			if (!layout_position_absolute(c, containing_block,
-					cx + px, cy + py, content))
+					cx + px, cy + py, content, cw))
 				return false;
 		}
 	}
@@ -5117,7 +5463,8 @@ layout_position_relative(
 		struct box *root,
 		struct box *fp,
 		int fx,
-		int fy)
+		int fy,
+		enum layout_walk walk)
 {
 	struct box *box; /* for children of "root" */
 	struct box *fn;  /* for block formatting context box for children of
@@ -5134,8 +5481,14 @@ layout_position_relative(
 
 	/* Normal children */
 	for (box = root->children; box; box = box->next) {
+		enum layout_walk cw;
 
 		if (box->type == BOX_TEXT)
+			continue;
+
+		/* boxes not laid out again keep their offsets */
+		cw = layout_walk_status(box, walk);
+		if (cw == LW_SKIP)
 			continue;
 
 		/* If relatively positioned, get offsets */
@@ -5164,6 +5517,9 @@ layout_position_relative(
 					box->x += fx;
 					box->y += fy;
 					fx = fy = 0;
+					if (layout_run != NULL)
+						layout_run->content->
+						layout_rec.rel_moves = true;
 				}
 			}
 		}
@@ -5178,13 +5534,15 @@ layout_position_relative(
 		}
 
 		/* recurse first */
-		layout_position_relative(unit_len_ctx, box, fn, fnx, fny);
+		layout_position_relative(unit_len_ctx, box, fn, fnx, fny, cw);
 
 		/* Ignore things we're not interested in. */
 		if (!box->style || (box->style &&
 				css_computed_position(box->style) !=
 				CSS_POSITION_RELATIVE))
 			continue;
+		if (cw == LW_BELOW)
+			continue;	/* (its offset is applied already) */
 
 		box->x += x;
 		box->y += y;
@@ -5194,6 +5552,9 @@ layout_position_relative(
 		 * INLINE_END boxes */
 		if (box->type == BOX_INLINE && box->inline_end) {
 			struct box *b;
+			if ((x != 0 || y != 0) && layout_run != NULL)
+				layout_run->content->layout_rec.rel_moves =
+						true;
 			for (b = box->next; b && b != box->inline_end;
 					b = b->next) {
 				b->x += x;
@@ -5325,7 +5686,8 @@ layout_update_descendant_bbox(
  */
 static void layout_calculate_descendant_bboxes(
 		const css_unit_ctx *unit_len_ctx,
-		struct box *box)
+		struct box *box,
+		enum layout_walk walk)
 {
 	struct box *child;
 
@@ -5382,11 +5744,17 @@ static void layout_calculate_descendant_bboxes(
 		return;
 
 	for (child = box->children; child; child = child->next) {
+		enum layout_walk cw;
+
 		if (child->type == BOX_FLOAT_LEFT ||
 				child->type == BOX_FLOAT_RIGHT)
 			continue;
 
-		layout_calculate_descendant_bboxes(unit_len_ctx, child);
+		/* a box not laid out again keeps its extent */
+		cw = layout_walk_status(child, walk);
+		if (cw != LW_SKIP)
+			layout_calculate_descendant_bboxes(unit_len_ctx,
+					child, cw);
 
 		if (box->style && css_computed_overflow_x(box->style) ==
 				CSS_OVERFLOW_HIDDEN &&
@@ -5401,14 +5769,17 @@ static void layout_calculate_descendant_bboxes(
 		assert(child->type == BOX_FLOAT_LEFT ||
 				child->type == BOX_FLOAT_RIGHT);
 
-		layout_calculate_descendant_bboxes(unit_len_ctx, child);
+		if (layout_walk_status(child, walk) != LW_SKIP)
+			layout_calculate_descendant_bboxes(unit_len_ctx,
+					child, layout_walk_status(child, walk));
 
 		layout_update_descendant_bbox(unit_len_ctx, box, child, 0, 0);
 	}
 
 	if (box->list_marker) {
 		child = box->list_marker;
-		layout_calculate_descendant_bboxes(unit_len_ctx, child);
+		layout_calculate_descendant_bboxes(unit_len_ctx, child,
+				LW_FRESH);
 
 		layout_update_descendant_bbox(unit_len_ctx, box, child, 0, 0);
 	}
@@ -5416,17 +5787,160 @@ static void layout_calculate_descendant_bboxes(
 
 
 /* exported function documented in html/layout.h */
-bool layout_document(html_content *content, int width, int height)
+#define LAYOUT_MAX_PATH 256
+
+/**
+ * Plan a layout starting from the changed box: the boxes from it up to the
+ * root (path, innermost first) and where each block formatting context's
+ * loop starts.
+ *
+ * \return  NULL, or why the whole page must be laid out
+ */
+static const char *layout_plan(html_content *content, struct layout_run *lr,
+		int width, int height, struct box **path, int *n_path)
+{
+	struct box *doc = content->layout;
+	struct box *target = content->layout_target;
+	struct box *a, *start, *block;
+	struct box *roots[LAYOUT_MAX_LEVELS], *starts[LAYOUT_MAX_LEVELS];
+	int n = 0, levels = 0, i;
+
+	if (target == NULL)
+		return "no changed box";
+	if (!content->layout_rec.done || content->layout_rec.width != width ||
+			content->layout_rec.height != height)
+		return "new size";
+	if (target == doc)
+		return "the root changed";
+
+	/* the path, and the context each loop works in */
+	start = target;
+	for (a = target; a != doc; a = a->parent) {
+		struct box_layout_state *ls = a->lstate;
+		if (a == NULL)
+			return "the box left the tree";
+		if (n == LAYOUT_MAX_PATH)
+			return "too deep";
+		path[n++] = a;
+		if (a->type != BOX_BLOCK || a->style == NULL ||
+				a->object != NULL || a->iframe != NULL ||
+				a->gadget != NULL || (a->flags & REPLACE_DIM))
+			return "a box above the change is not a block";
+		if (css_computed_float(a->style) != CSS_FLOAT_NONE)
+			return "a float above the change";
+		if (css_computed_position(a->style) != CSS_POSITION_STATIC &&
+				css_computed_position(a->style) !=
+				CSS_POSITION_RELATIVE)
+			return "a positioned box above the change";
+		if (ls == NULL || !ls->reached || !ls->left)
+			return "no record of a box above the change";
+		if (a != start && !ls->descended)
+			return "no record of a box above the change";
+		block = a->parent;
+		if (block == doc || (block->type == BOX_BLOCK &&
+				block->style != NULL &&
+				(css_computed_overflow_x(block->style) !=
+						CSS_OVERFLOW_VISIBLE ||
+				 css_computed_overflow_y(block->style) !=
+						CSS_OVERFLOW_VISIBLE))) {
+			/* a's parent is a context's box: a loop starts at
+			 * start, which a is the topmost box above of */
+			if (levels == LAYOUT_MAX_LEVELS)
+				return "too many nested contexts";
+			if (start->lstate->bfc != block)
+				return "a box moved to another context";
+			if (start->lstate->reach.mc != NULL &&
+					start->lstate->reach.mc != start)
+				return "a margin collapses into the changed box";
+			if (block->float_children != NULL)
+				return "floats";
+			roots[levels] = block;
+			starts[levels] = start;
+			levels++;
+			start = block;
+		}
+	}
+	if (start != doc)
+		return "the change is not in the page's tree";
+
+	/* outermost context first */
+	for (i = 0; i < levels; i++) {
+		lr->level[i].block = roots[levels - 1 - i];
+		lr->level[i].start = starts[levels - 1 - i];
+	}
+	lr->levels = levels;
+	lr->next_level = 0;
+	*n_path = n;
+	return NULL;
+}
+
+/** whether a box is where one of the run's loops starts */
+static bool layout_run_starts_at(struct layout_run *lr, struct box *box)
+{
+	int i;
+	for (i = 0; i < lr->levels; i++)
+		if (lr->level[i].start == box)
+			return true;
+	return false;
+}
+
+/**
+ * Lay out the whole page, or (lr->partial) from the changed box.
+ *
+ * \return  false when a layout from the changed box turns out not to give
+ *	     what a full one would (the caller lays out everything), else
+ *	     true, with *ok whether the layout succeeded
+ */
+static bool layout_document_run(html_content *content, int width, int height,
+		struct layout_run *lr, struct box **path, int n_path, bool *ok)
 {
 	bool ret;
 	struct box *doc = content->layout;
 	const struct gui_layout_table *font_func = content->font_func;
+	unsigned flags[LAYOUT_MAX_PATH];
+	int heights[LAYOUT_MAX_PATH + 1];
+	bool resized = false;
+	uint64_t t0, t1, t2, t3;
+	int i;
 
-	NSLOG(layout, DEBUG, "Doing layout to %ix%i of %s",
-			width, height, nsurl_access(content_get_url(
-					&content->base)));
+	t0 = layout_clock_us();
+	for (i = 0; i < n_path; i++)
+		flags[i] = path[i]->flags;
 
 	layout_minmax_block(doc, font_func, content);
+
+	if (lr->partial) {
+		/* a box above the change that now has a height (or makes
+		 * one) would have collapsed margins differently */
+		for (i = 0; i < n_path; i++)
+			if (!layout_run_starts_at(lr, path[i]) &&
+					((path[i]->flags ^ flags[i]) &
+					(HAS_HEIGHT | MAKE_HEIGHT))) {
+				content->layout_rec.full_why =
+						"a box above the change got a height";
+				return false;
+			}
+		/* the boxes above the change keep their positions: undo
+		 * their relative offsets, applied again afterwards */
+		for (i = 0; i < n_path; i++) {
+			struct box *a = path[i];
+			heights[i] = a->height;
+			if (layout_run_starts_at(lr, a))
+				continue;
+			a->lstate->path = lr->n;
+			if (css_computed_position(a->style) ==
+					CSS_POSITION_RELATIVE) {
+				int x, y;
+				layout_compute_relative_offset(
+						&content->unit_len_ctx,
+						a, &x, &y);
+				a->x -= x;
+				a->y -= y;
+			}
+		}
+		heights[n_path] = doc->height;
+	}
+	t1 = layout_clock_us();
 
 	layout_block_find_dimensions(&content->unit_len_ctx,
 			width, height, 0, 0, doc);
@@ -5459,12 +5973,101 @@ bool layout_document(html_content *content, int width, int height)
 					 doc->children->border[BOTTOM].width +
 					 doc->children->margin[BOTTOM]);
 	}
+	t2 = layout_clock_us();
 
-	layout_lists(content, doc);
-	layout_position_absolute(doc, doc, 0, 0, content);
-	layout_position_relative(&content->unit_len_ctx, doc, doc, 0, 0);
+	if (lr->partial) {
+		for (i = 0; i < n_path; i++)
+			if (path[i]->height != heights[i])
+				resized = true;
+		if (doc->height != heights[n_path])
+			resized = true;
+		if ((lr->moved || resized) && content->layout_rec.abs) {
+			/* positioned boxes can depend on what moved: place
+			 * them all again (from their static positions) */
+			if (content->layout_rec.rel_moves) {
+				content->layout_rec.full_why = "positioned "
+					"boxes and relatively moved floats";
+				return false;
+			}
+			lr->all_positioned = true;
+		}
+		if (lr->oom) {
+			content->layout_rec.full_why = "no memory for records";
+			return false;
+		}
+	}
 
-	layout_calculate_descendant_bboxes(&content->unit_len_ctx, doc);
+	layout_lists(content, doc, LW_PATH);
+	layout_position_absolute(doc, doc, 0, 0, content, LW_PATH);
+	layout_position_relative(&content->unit_len_ctx, doc, doc, 0, 0,
+			LW_PATH);
 
+	layout_calculate_descendant_bboxes(&content->unit_len_ctx, doc,
+			LW_PATH);
+
+	if (lr->partial && (lr->moved || resized)) {
+		/* iframes in boxes moved as a whole */
+		struct content_html_iframe *f;
+		for (f = content->iframe; f != NULL; f = f->next) {
+			int x, y;
+			if (f->box == NULL || f->box->iframe == NULL)
+				continue;
+			box_coords(f->box, &x, &y);
+			browser_window_set_position(f->box->iframe, x, y);
+		}
+	}
+	t3 = layout_clock_us();
+
+	content->layout_rec.us_minmax = t1 - t0;
+	content->layout_rec.us_flow = t2 - t1;
+	content->layout_rec.us_place = t3 - t2;
+	content->layout_rec.laid = lr->laid;
+	content->layout_rec.kept = lr->kept;
+	*ok = ret;
+	return true;
+}
+
+bool layout_document(html_content *content, int width, int height)
+{
+	bool ret = false;
+	struct layout_run run, *outer = layout_run;
+	struct box *path[LAYOUT_MAX_PATH];
+	int n_path = 0;
+	const char *why;
+	bool done = false;
+
+	NSLOG(layout, DEBUG, "Doing layout to %ix%i of %s",
+			width, height, nsurl_access(content_get_url(
+					&content->base)));
+
+	memset(&run, 0, sizeof run);
+	run.content = content;
+	run.n = ++content->layout_rec.count;
+	layout_run = &run;
+
+	why = layout_plan(content, &run, width, height, path, &n_path);
+	content->layout_rec.full_why = why;
+	content->layout_rec.incremental = why == NULL;
+	if (why == NULL) {
+		run.partial = true;
+		done = layout_document_run(content, width, height, &run,
+				path, n_path, &ret);
+	}
+	if (!done) {
+		/* the whole page */
+		content->layout_rec.incremental = false;
+		content->layout_rec.abs = false;
+		content->layout_rec.rel_moves = false;
+		memset(&run, 0, sizeof run);
+		run.content = content;
+		run.n = ++content->layout_rec.count;
+		layout_document_run(content, width, height, &run, path, 0,
+				&ret);
+	}
+
+	content->layout_rec.done = true;
+	content->layout_rec.width = width;
+	content->layout_rec.height = height;
+	layout_run = outer;
 	return ret;
 }

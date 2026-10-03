@@ -75,6 +75,9 @@ typedef struct {
  * could not finish (a read error, out of memory); nothing is freed then. */
 bool FatReclaim(FatVol *v, bool force, FatReclaimInfo *info);
 UINT32 FatClusterBytes(const FatVol *v);
+/* Whether file @e's clusters follow one another on the disk; if so its
+ * first sector (on the device, not the volume) in *lba */
+bool FatContiguous(FatVol *v, const FatEntry *e, UINT64 *lba);
 
 /* Write cached metadata to the disk and flush the disk's write cache. */
 bool FatSync(FatVol *v);

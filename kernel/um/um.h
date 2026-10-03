@@ -31,6 +31,10 @@ void UmInit(void);
 void UmPoll(void);
 /* The active window's process gets the foreground boost (desktop loop). */
 void UmUpdateForeground(void);
+/* The mouse messages programs get next come from a pen: its packet's
+ * number (tablet.h; 0: the mouse).  Each goes out with it in MSG's padding
+ * (after message), and user32 makes WM_POINTER* of them (desktop loop). */
+void UmSetInputPen(UINT32 serial);
 /* The display mode changed: WM_DISPLAYCHANGE to every program window */
 void UmGuiDisplayChanged(int w, int h);
 void UmGuiDpiChanged(void);            /* a monitor's DPI changed: WM_NOVA_DPI to every window */
@@ -156,6 +160,7 @@ int  UmGuardFault(UINT64 va);           /* a guard page touched: 1 handled, -1/-
 void um_registry_add_cpus(UINT32 n);         /* the processor keys, for the CPUs started */
 void um_registry_set_dword(const char *path, const char *name, UINT32 val);   /* an installer's registration */
 bool um_registry_get_dword(const char *path, const char *name, UINT32 *out);
+void um_registry_set_sz(const char *path, const char *name, const char *val);
 bool um_registry_get_sz(const char *path, const char *name, char *out, int cap);
 void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
 void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp) __attribute__((noreturn));

@@ -64,6 +64,8 @@ struct box_construct_ctx {
 
 #ifdef _NOVAOS
 	bool sync;			/**< convert in one go (dom_to_box_sync) */
+	dom_node *stop;			/**< converting only this node's
+					 * children (dom_to_box_subtree) */
 #endif
 };
 
@@ -147,6 +149,28 @@ static inline bool box_is_root(dom_node *n)
 
 	return true;
 }
+
+#ifdef _NOVAOS
+/**
+ * whether the traversal goes no higher than @n: the document element, or
+ * a child of the node whose children are being converted (@stop)
+ */
+static bool box_at_top(dom_node *n, dom_node *stop)
+{
+	dom_node *parent = NULL;
+
+	if (stop == NULL)
+		return box_is_root(n);
+	if (dom_node_get_parent_node(n, &parent) != DOM_NO_ERR)
+		return true;
+	if (parent != NULL)
+		dom_node_unref(parent);
+	return parent == stop || parent == NULL;
+}
+#define BOX_AT_TOP(n) box_at_top((n), stop)
+#else
+#define BOX_AT_TOP(n) box_is_root(n)
+#endif
 
 /**
  * Extract transient construction properties
@@ -485,6 +509,17 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 	const css_computed_style *root_style = NULL;
 
 	assert(ctx->n != NULL);
+
+#ifdef _NOVAOS
+	/* a node a script took out and put back may still name a box and
+	 * styles of an old tree */
+	err = dom_node_set_user_data(ctx->n,
+			corestring_dom___ns_key_box_node_data, NULL, NULL,
+			(void *) &old_box);
+	if (err != DOM_NO_ERR)
+		return false;
+	nscss_forget_node_data(ctx->n);
+#endif
 
 	box_extract_properties(ctx->n, &props);
 
@@ -843,7 +878,11 @@ static void box_construct_element_after(dom_node *n, html_content *content)
  * \note \a n will be unreferenced
  */
 static dom_node *
-next_node(dom_node *n, html_content *content, bool convert_children)
+next_node(dom_node *n, html_content *content, bool convert_children
+#ifdef _NOVAOS
+		, dom_node *stop
+#endif
+		)
 {
 	dom_node *next = NULL;
 	bool has_children;
@@ -877,7 +916,7 @@ next_node(dom_node *n, html_content *content, bool convert_children)
 			if (box_for_node(n) != NULL)
 				box_construct_element_after(n, content);
 
-			while (box_is_root(n) == false) {
+			while (BOX_AT_TOP(n) == false) {
 				dom_node *parent = NULL;
 				dom_node *parent_next = NULL;
 
@@ -913,7 +952,7 @@ next_node(dom_node *n, html_content *content, bool convert_children)
 				}
 			}
 
-			if (box_is_root(n) == false) {
+			if (BOX_AT_TOP(n) == false) {
 				dom_node *parent = NULL;
 
 				err = dom_node_get_parent_node(n, &parent);
@@ -1252,7 +1291,12 @@ static void convert_xml_to_box(struct box_construct_ctx *ctx)
 		}
 
 		/* Find next element to process, converting text nodes as we go */
+#ifdef _NOVAOS
+		next = next_node(ctx->n, ctx->content, convert_children,
+				ctx->stop);
+#else
 		next = next_node(ctx->n, ctx->content, convert_children);
+#endif
 		while (next != NULL) {
 			dom_node_type type;
 			dom_exception err;
@@ -1278,7 +1322,11 @@ static void convert_xml_to_box(struct box_construct_ctx *ctx)
 				}
 			}
 
+#ifdef _NOVAOS
+			next = next_node(next, ctx->content, true, ctx->stop);
+#else
 			next = next_node(next, ctx->content, true);
+#endif
 		}
 
 		ctx->n = next;
@@ -1351,6 +1399,7 @@ dom_to_box(dom_node *n,
 	ctx->bctx = c->bctx;
 #ifdef _NOVAOS
 	ctx->sync = false;
+	ctx->stop = NULL;
 #endif
 
 	*box_conversion_context = ctx;
@@ -1384,10 +1433,85 @@ dom_to_box_sync(dom_node *n, html_content *c, box_construct_complete_cb cb)
 	ctx->cb = cb;
 	ctx->bctx = c->bctx;
 	ctx->sync = true;
+	ctx->stop = NULL;
 
 	/* converts the whole tree, calls cb and frees ctx before returning */
 	convert_xml_to_box(ctx);
 
+	return NSERROR_OK;
+}
+
+
+/* exported function documented in html/box_construct.h */
+nserror
+dom_to_box_subtree(dom_node *n, html_content *c, struct box **old_children)
+{
+	struct box_construct_ctx ctx;
+	struct box *box = box_for_node(n);
+	dom_html_element_type tag_type;
+	dom_node *html = NULL, *next = NULL;
+	struct box *root;
+
+	*old_children = NULL;
+	if (box == NULL || box->styles == NULL)
+		return NSERROR_BAD_PARAMETER;
+	if (dom_document_get_document_element(c->document,
+			(void *) &html) != DOM_NO_ERR || html == NULL)
+		return NSERROR_BAD_PARAMETER;
+	root = box_for_node(html);
+	dom_node_unref(html);
+	if (root == NULL)
+		return NSERROR_BAD_PARAMETER;
+
+	/* the box stays (its style is unchanged); its children go */
+	*old_children = box->children;
+	box->children = box->last = NULL;
+	if (dom_html_element_get_tag_type(n, &tag_type) == DOM_NO_ERR &&
+			tag_type == DOM_HTML_ELEMENT_TYPE_PRE)
+		box->flags |= PRE_STRIP;
+
+	ctx.content = c;
+	ctx.n = NULL;
+	ctx.root_box = root;
+	ctx.cb = NULL;
+	ctx.bctx = c->bctx;
+	ctx.sync = true;
+	ctx.stop = n;
+
+	box_construct_generate(n, c, box,
+			box->styles->styles[CSS_PSEUDO_ELEMENT_BEFORE]);
+
+	/* the children in document order, as convert_xml_to_box does,
+	 * going no higher than n */
+	if (dom_node_get_first_child(n, &next) != DOM_NO_ERR)
+		return NSERROR_DOM;
+	while (next != NULL) {
+		dom_node_type type;
+		bool convert_children = true;
+
+		if (dom_node_get_node_type(next, &type) != DOM_NO_ERR) {
+			dom_node_unref(next);
+			return NSERROR_DOM;
+		}
+		ctx.n = next;
+		if (type == DOM_ELEMENT_NODE) {
+			if (!box_construct_element(&ctx, &convert_children)) {
+				dom_node_unref(next);
+				return NSERROR_NOMEM;
+			}
+		} else if (type == DOM_TEXT_NODE) {
+			if (!box_construct_text(&ctx)) {
+				dom_node_unref(next);
+				return NSERROR_NOMEM;
+			}
+		}
+		next = next_node(next, c, convert_children, n);
+	}
+
+	/* :after, then the anonymous boxes the new children need */
+	box_construct_element_after(n, c);
+	if (!box_normalise_block(box, root, c))
+		return NSERROR_NOMEM;
 	return NSERROR_OK;
 }
 #endif

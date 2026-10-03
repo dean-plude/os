@@ -272,6 +272,14 @@ LRESULT CALLBACK ComboExProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_SETFOCUS: SetFocus(s->edit ? s->edit : s->combo); return 0;
     case WM_ENABLE: EnableWindow(s->combo, (BOOL)wp); return 0;
     case WM_SETFONT: s->font = (HFONT)wp; SendMessageW(s->combo, WM_SETFONT, wp, lp); return 0;
+    case WM_DPICHANGED_AFTERPARENT: {                        /* the window's DPI changed: the field's height */
+        if (!s->font) SendMessageW(s->combo, WM_SETFONT, (WPARAM)cc_font_for(h), 0);
+        RECT c, r;
+        GetClientRect(h, &c);
+        GetWindowRect(s->combo, &r);
+        SetWindowPos(h, NULL, 0, 0, c.right, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+    }
     case WM_GETFONT: return (LRESULT)s->font;
     case WM_SETTEXT: case WM_GETTEXT: case WM_GETTEXTLENGTH:
         return SendMessageW(s->combo, msg, wp, lp);

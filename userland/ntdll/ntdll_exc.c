@@ -495,6 +495,32 @@ static void set_handler_ctx(DISPATCHER_CONTEXT *dc, DWORD64 control_pc, DWORD64 
     dc->ScopeIndex = 0;
 }
 
+/* What a handler that calls RtlUnwindEx is in the middle of, per thread:
+ * the exception being dispatched (its CONTEXT, where an unwind starts) or
+ * the unwind whose frame handler is running (that frame's CONTEXT, where a
+ * collided unwind starts again), or the catch block a consolidating unwind
+ * is running (@target: the frame it belongs to).  A chain of entries on the stacks of
+ * RtlDispatchException and RtlUnwindEx, its head in the TEB past the end
+ * of Windows' own fields; an entry goes when its handler returns or when
+ * an unwind resumes in a frame above it. */
+#define TEB_NOVA_EXC_STATE 0x1F00
+typedef struct ExcState { struct ExcState *prev; CONTEXT *dispatch, *frame_ctx, *target; } ExcState;
+static ExcState **exc_head(void) { return (ExcState **)(NtCurrentTebBytes() + TEB_NOVA_EXC_STATE); }
+static void exc_push(ExcState *e, CONTEXT *dispatch, CONTEXT *frame_ctx)
+{
+    ExcState **h = exc_head();
+    e->prev = *h; e->dispatch = dispatch; e->frame_ctx = frame_ctx; e->target = 0;
+    *h = e;
+}
+static void exc_pop(ExcState *e) { *exc_head() = e->prev; }
+/* Resuming at @c: what was running below its stack pointer is gone */
+static void resume_at(CONTEXT *c)
+{
+    ExcState **h = exc_head();
+    while (*h && (DWORD64)*h < c->Rsp) *h = (*h)->prev;
+    NtContinue(c, FALSE);
+}
+
 BOOLEAN NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx)
 {
     EXCEPTION_POINTERS ep = { rec, ctx };
@@ -519,7 +545,10 @@ BOOLEAN NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx)
             DISPATCHER_CONTEXT dc;
             memset(&dc, 0, sizeof(dc));
             set_handler_ctx(&dc, before.Rip, base, f, handler, hdata, frame, ctx);
+            ExcState es;
+            exc_push(&es, ctx, 0);
             EXCEPTION_DISPOSITION disp = handler(rec, (PVOID)frame, ctx, &dc);
+            exc_pop(&es);
             if (disp == ExceptionContinueExecution) {
                 if (rec->ExceptionFlags & EXCEPTION_NONCONTINUABLE) return FALSE;
                 return TRUE;
@@ -537,19 +566,55 @@ BOOLEAN NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx)
 }
 
 /* RtlUnwindEx: run termination handlers from the current frame down to
- * @target_frame, then continue at @target_ip. */
+ * @target_frame, then continue at @target_ip.  As on Windows, @ctx is only
+ * storage (LLVM's libunwind passes an uninitialised one): the unwind
+ * starts where the caller is.  Called by a handler RtlDispatchException
+ * runs, that is the frame the exception happened in (the dispatch's
+ * CONTEXT); by a frame handler an unwind runs, a collided unwind, it
+ * starts again at that handler's frame (whose handler sees the new
+ * record); otherwise at the caller of RtlUnwindEx. */
 VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD rec, PVOID retval,
                        PCONTEXT ctx, PUNWIND_HISTORY_TABLE hist)
 {
     (void)hist;
     static EXCEPTION_RECORD local;
     if (!rec) { memset(&local, 0, sizeof(local)); local.ExceptionCode = STATUS_UNWIND_CONSOLIDATE; rec = &local; }
-    rec->ExceptionFlags |= EXCEPTION_UNWINDING;
+    rec->ExceptionFlags = (rec->ExceptionFlags & ~EXCEPTION_TARGET_UNWIND) | EXCEPTION_UNWINDING;
     if (!target_frame) rec->ExceptionFlags |= EXCEPTION_EXIT_UNWIND;
 
-    CONTEXT cur = *ctx;
+    CONTEXT cur;
+    ExcState **h = exc_head();
+    while (*h && (DWORD64)*h < (DWORD64)&cur) *h = (*h)->prev;    /* left by a longjmp */
+    ExcState *in = *h;
+    if (in && !in->dispatch && !in->frame_ctx) in = 0;              /* (in a catch block) */
+    if (in && in->frame_ctx) {
+        cur = *in->frame_ctx;
+    } else if (in) {
+        cur = *in->dispatch;
+    } else {
+        RtlCaptureContext(&cur);
+        DWORD64 base, est;
+        PVOID hd;
+        PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cur.Rip, &base, 0);
+        if (f) RtlVirtualUnwind(0, base, cur.Rip, f, &cur, &hd, &est, 0);
+    }
+    ExcState *outer = in ? in->prev : *h;
     for (;;) {
         DWORD64 base = 0, frame = 0;
+        /* Past the frames dispatching an outer exception (a handler raised
+         * this one: MSVC's _set_se_translator turns an access violation
+         * into a C++ exception from inside its frame handler): carry on
+         * where that exception happened, as KiUserExceptionDispatcher's
+         * unwind data leads on Windows, instead of up the dispatcher's own
+         * stack, which never reaches the target frame */
+        while (outer && cur.Rsp > (DWORD64)outer) {
+            ExcState *e = outer;
+            CONTEXT *to = e->dispatch ? e->dispatch : e->target;
+            outer = e->prev;
+            if (!to) continue;
+            cur = *to;
+            while (outer && (DWORD64)outer < cur.Rsp) outer = outer->prev;
+        }
         PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cur.Rip, &base, 0);
         if (!f) {
             if (cur.Rsp == 0 || (cur.Rsp & 7)) break;
@@ -568,7 +633,10 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
             set_handler_ctx(&dc, before.Rip, base, f, handler, hdata, frame, &before);
             DWORD saved = rec->ExceptionFlags;
             if (is_target) rec->ExceptionFlags |= EXCEPTION_TARGET_UNWIND;
+            ExcState es;
+            exc_push(&es, 0, &before);
             handler(rec, (PVOID)frame, &before, &dc);    /* runs __finally / __except cleanup */
+            exc_pop(&es);
             rec->ExceptionFlags = saved;
         }
         if (is_target) {
@@ -577,14 +645,22 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
              * stack below the target frame (the thrown object lives there),
              * and returns where the target frame continues. */
             if (rec->ExceptionCode == STATUS_UNWIND_CONSOLIDATE && rec->NumberParameters >= 1 &&
-                rec->ExceptionInformation[0])
+                rec->ExceptionInformation[0]) {
+                /* (an unwind from inside the catch block goes from it
+                 * straight to the target frame, the frames below it gone,
+                 * as Windows' consolidation frame leads) */
+                ExcState es;
+                exc_push(&es, 0, 0);
+                es.target = &before;
                 target_ip = ((PVOID (*)(PEXCEPTION_RECORD))rec->ExceptionInformation[0])(rec);
+                exc_pop(&es);
+            }
             /* Resume in the target frame with its own register state (the
              * nonvolatile registers restored while unwinding the frames
              * below it), at the handler's continuation address. */
             before.Rip = (DWORD64)target_ip;
             before.Rax = (DWORD64)retval;         /* Rsp: the frame's own (not the establisher frame) */
-            NtContinue(&before, FALSE);
+            resume_at(&before);
         }
         if (target_frame && frame > (DWORD64)target_frame) break;   /* passed it */
         if (cur.Rip == before.Rip && cur.Rsp == before.Rsp) break;
@@ -594,7 +670,7 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
     ctx->Rip = (DWORD64)target_ip;
     ctx->Rsp = (DWORD64)target_frame;
     ctx->Rax = (DWORD64)retval;
-    NtContinue(ctx, FALSE);
+    resume_at(ctx);
 }
 
 VOID NTAPI RtlUnwind(PVOID frame, PVOID target_ip, PEXCEPTION_RECORD rec, PVOID retval)

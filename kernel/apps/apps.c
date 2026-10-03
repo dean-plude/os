@@ -908,6 +908,11 @@ void AppDrawGlyph(Glyph g, int x, int y, int s, GdiColor c)
         static const P st[] = { {50,10}, {50,48} };
         poly(st, 2, false, x, y, s, c);
         break; }
+    case GL_SPEAKER: {                          /* a speaker and two sound waves */
+        static const P body[] = { {12,38}, {28,38}, {48,20}, {48,80}, {28,62}, {12,62} };
+        static const P w1[] = { {60,38}, {66,50}, {60,62} }, w2[] = { {70,26}, {80,50}, {70,74} };
+        poly(body, 6, true, x, y, s, c); poly(w1, 3, false, x, y, s, c); poly(w2, 3, false, x, y, s, c);
+        break; }
     case GL_NOVA: {                             /* NovaOS: a four-pointed star */
         GdiPoint st[8] = { pt(x, y, s, 50, 4), pt(x, y, s, 60, 40), pt(x, y, s, 96, 50), pt(x, y, s, 60, 60),
                            pt(x, y, s, 50, 96), pt(x, y, s, 40, 60), pt(x, y, s, 4, 50), pt(x, y, s, 40, 40) };

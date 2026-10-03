@@ -75,9 +75,20 @@ class Qmp:
         self.cmd('send-key', keys=[{'type': 'qcode', 'data': n} for n in names], **{'hold-time': hold})
 
     def type(self, text):
-        for ch in text:
-            self.key(*keys_for(ch))
-            time.sleep(0.03)
+        # Each key is held 30 ms and the next follows 50 ms after it: QEMU
+        # queues a key's hold as a delay in its input queue, so keys held
+        # longer than they are spaced pile up there and, past its limit
+        # (about 1,000 events: some 600 characters at the old 60 ms hold
+        # and 30 ms spacing), are dropped, Enter and key releases too (a
+        # dropped release leaves the key held down, repeating).  A long
+        # line also gets a breather every 40 keys: under emulation the
+        # desktop redraws slower than keys come, and the keyboard's own
+        # queue (16 events on QEMU's USB keyboard) overflows
+        for i, ch in enumerate(text):
+            self.key(*keys_for(ch), hold=30)
+            time.sleep(0.05)
+            if i % 40 == 39:
+                time.sleep(1)
 
 
 class Serial:
@@ -185,7 +196,8 @@ class Nova:
         self.q = subprocess.Popen([qemu_binary(), '-machine', 'q35'] + accel_args() + ['-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
                                    '-m', str(mem), '-smp', str(smp),
                                    '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
-                                   '-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on',
+                                   *([] if img is False else      # img=False: no boot disk (the boot device is in extra_args)
+                                     ['-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on']),
                                    '-drive', f'format=raw,file={data}',
                                    '-serial', f'file:{self.serial_path}'] + list(vga) + display_args(list(vga) + list(extra_args)) + [
                                    '-nic', 'user,model=e1000e' if net else 'none',
@@ -322,9 +334,9 @@ class Nova:
     def status(self):
         return self.qmp.cmd('query-status').get('return', {}).get('status')
 
-    def click(self, x, y, button=1):
-        """Click at logical screen point (x, y): HMP relative moves from the top-left corner
-        (QMP input-send-event moves do nothing on this mouse)"""
+    def move_to(self, x, y):
+        """Move the mouse to logical screen point (x, y): HMP relative moves from the top-left
+        corner, 40 pixels at a time (QMP input-send-event moves do nothing on this mouse)"""
         hmp = lambda c: self.qmp.cmd('human-monitor-command', **{'command-line': c})
         for _ in range(40):
             hmp('mouse_move -100 -100')
@@ -336,9 +348,28 @@ class Nova:
             x -= dx
             y -= dy
         time.sleep(0.3)
+
+    def click(self, x, y, button=1):
+        """Click at logical screen point (x, y)"""
+        hmp = lambda c: self.qmp.cmd('human-monitor-command', **{'command-line': c})
+        self.move_to(x, y)
         hmp(f'mouse_button {button}')
         time.sleep(0.1)
         hmp('mouse_button 0')
+        time.sleep(0.3)
+
+    def drag(self, x0, y0, x1, y1, steps=24, button=1):
+        """Press @button at (x0, y0), move to (x1, y1) in @steps, release (a stroke)"""
+        self.move_to(x0, y0)
+        self.hmp(f'mouse_button {button}')
+        time.sleep(0.3)
+        for i in range(1, steps + 1):
+            dx = round((x1 - x0) * i / steps) - round((x1 - x0) * (i - 1) / steps)
+            dy = round((y1 - y0) * i / steps) - round((y1 - y0) * (i - 1) / steps)
+            self.hmp(f'mouse_move {dx} {dy}')
+            time.sleep(0.15)
+        time.sleep(0.3)
+        self.hmp('mouse_button 0')
         time.sleep(0.3)
 
     def keys(self, names):

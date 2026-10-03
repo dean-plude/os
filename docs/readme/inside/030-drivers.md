@@ -1,17 +1,22 @@
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
   either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
-  file ACLs and hard links, and other drives); Intel e1000/e1000e and virtio-net network
-  cards; Intel High Definition Audio (playback and recording) with a kernel
-  mixer;
-  PS/2 keyboards and mice; USB (xHCI, EHCI, OHCI and UHCI controllers, any
+  file ACLs and hard links, and other drives); Intel e1000/e1000e network cards (82540EM, 82574L
+  and the I219 that Intel PCs have built in) and virtio-net; Intel High Definition Audio (playback
+  and recording, laptop controllers with the audio DSP on included, the
+  speakers turned off while headphones are plugged in) with a kernel mixer;
+  PS/2 keyboards and mice; I2C-HID touchpads on Intel's LPSS I2C
+  controllers (found through ACPI, in their mouse mode); USB (xHCI, EHCI, OHCI and UHCI controllers, any
   number of each) with hubs and HID keyboards (lock-key LEDs and media
   keys included), mice (five buttons and both wheels), tablets, pens
   (pressure, X/Y tilt, barrel rotation, barrel buttons and eraser, for
-  Wintab) and
+  Wintab and as `WM_POINTER` pen messages) and
   multi-touch screens (report protocol), USB sticks (FAT and NTFS, as
   the next drive letter, hot-plugged) and USB speakers, headsets and
-  microphones (USB Audio Class 1 and 2 over isochronous transfers, played on and
-  recorded from as soon as they are plugged in); virtio multi-touch screens,
+  microphones (USB Audio Class 1 and 2 over isochronous transfers, at the
+  device's own sampling rate and channel count, played on and recorded
+  from as soon as they are plugged in, or chosen in Settings' Sound page,
+  each with its own volume; the choice and the levels are kept across
+  restarts); virtio multi-touch screens,
   pens (pressure, tilt, rotation) and tablets; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
@@ -25,6 +30,8 @@
   which on a 3D one (`virtio-vga-gl`) gives Mesa's Venus and virgl (App
   Store) their contexts, host-visible blobs, 3D resources, transfers and
   fences, so Vulkan, DXVK and OpenGL run on the host's GPU; ACPI power-off, reset, power buttons,
-  sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
-  devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
-  a real interrupt through the I/O APIC).
+  sleep (S3, or low-power S0 idle on firmware without it), batteries and
+  AC adapters, the lid, thermal zones, wake devices and PCI interrupt
+  routing (AML interpreted by uACPI, with the SCI a real interrupt
+  through the I/O APIC), and the embedded controller laptops keep their
+  lid and battery behind.
