@@ -101,6 +101,10 @@ All marked with _NOVAOS / WITH_NOVA_HTTP / FB_USE_NOVA_FONT or a comment:
   changes after layout are laid out again: a DOM change or a late
   stylesheet rebuilds the box tree from the DOM (html_relayout), keeping
   the objects (images) of the old tree.
+- netsurf/content/handlers/html/box_special.c and css/hints.c: an <svg>
+  element inline in HTML is drawn as an image: its subtree is serialised
+  and fetched as a data:image/svg+xml URL (box_inline_svg); its width and
+  height attributes are presentational hints, as an <img>'s.
 
 Not built: RISC OS sprites, PDF export, curl/OpenSSL (replaced by the NovaOS
 fetcher and Mbed TLS), libnslog (NetSurf's plain logging is used), and the
