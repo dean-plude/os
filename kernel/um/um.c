@@ -930,7 +930,6 @@ static void map_api_set(char *lname, int cap)
         { "kernelbase.dll",               "kernel32.dll" },
         { "api-ms-win-",                  "kernel32.dll" },   /* any other set: what exists is there */
         { "msvcrt40.dll",                 "msvcrt.dll" },
-        { "wsock32.dll",                  "ws2_32.dll" },     /* Winsock 1.1: the same functions and ordinals */
     };
     for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++)
         if (!strncmp(lname, sets[i].prefix, strlen(sets[i].prefix))) {

@@ -27,6 +27,9 @@ void PciInitialize(void);
 /* Find the first device with this vendor and one of `ids` (count n). */
 bool PciFind(UINT16 vendor, const UINT16 *ids, int n, PciDevice *out);
 
+/* The same, the @index'th such device (0 = first) */
+bool PciFindNth(UINT16 vendor, const UINT16 *ids, int n, int index, PciDevice *out);
+
 /* The @index'th device (0 = first) of a class, e.g. 01/06/01 for AHCI. */
 bool PciFindClass(UINT8 class_code, UINT8 subclass, UINT8 prog_if, int index, PciDevice *out);
 

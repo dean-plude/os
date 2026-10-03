@@ -13,6 +13,11 @@
  * whole volume and also keeps creation times and security descriptors: a
  * node with its own descriptor gets it in $Secure, one that inherits gets
  * the root directory's (and reads back as inheriting).
+ *
+ * A file with several names (hard links) is one NTFS record with a name in
+ * each directory.  FAT has no links: each name is saved as a copy, and
+ * \NOVA\LINKS.TXT lists the names of each such file so they are joined
+ * again at the next boot.
  */
 
 #include "persist.h"
@@ -30,6 +35,7 @@
 
 #define DATA_ROOT     "\\NOVA\\C"
 #define DELETED_FILE  "DELETED.TXT"          /* in \NOVA */
+#define LINKS_FILE    "LINKS.TXT"            /* in \NOVA (FAT): the names of each hard-linked file */
 #define NTFS_META     "$NovaOS"              /* NTFS: the root folder that holds it */
 #define NTFS_DELETED  "Deleted.txt"
 #define DATA_LABEL    "NOVADATA"
@@ -49,6 +55,7 @@ static UINT64  g_seen_tick, g_retry_tick;
 static bool    g_failed;
 
 static bool have_vol(void) { return g_vol || g_ntfs; }
+static void load_links(void);
 
 /* ---------------------------------------------------------------------------
  * Deleted starter files
@@ -467,6 +474,71 @@ static bool vol_write(UINT64 dir, const RamNode *n)
     return NtfsWriteFile(g_ntfs, ref, n->data, n->size) && ntfs_info(ref, n);
 }
 
+/* NTFS: the record @n's file has on the disk under @n's own name (walking its path) */
+static bool ntfs_ref_of(const RamNode *n, UINT64 *ref)
+{
+    const RamNode *chain[32];
+    int depth = 0;
+    for (const RamNode *m = n; m && m->parent && depth < 32; m = m->parent) chain[depth++] = m;
+    if (!depth) return false;
+    UINT64 at = NTFS_ROOT;
+    bool is_dir = true;
+    for (int i = depth - 1; i >= 0; i--)
+        if (!is_dir || !NtfsLookup(g_ntfs, at, chain[i]->name, &at, &is_dir)) return false;
+    if (is_dir) return false;
+    *ref = at;
+    return true;
+}
+
+/* The hard-linked files written so far in this save: their records */
+typedef struct { const RamNode *id; UINT64 ref; } SavedLink;
+static SavedLink *g_slinks;
+static int g_nslinks, g_slinks_cap;
+
+static bool slinks_find(const RamNode *id, UINT64 *ref)
+{
+    for (int i = 0; i < g_nslinks; i++) if (g_slinks[i].id == id) { *ref = g_slinks[i].ref; return true; }
+    return false;
+}
+
+static void slinks_add(const RamNode *id, UINT64 ref)
+{
+    if (g_nslinks == g_slinks_cap) {
+        int cap = g_slinks_cap ? 2 * g_slinks_cap : 16;
+        SavedLink *n = kmalloc(sizeof(SavedLink) * (size_t)cap);
+        if (!n) return;
+        if (g_nslinks) memcpy(n, g_slinks, sizeof(SavedLink) * (size_t)g_nslinks);
+        kfree(g_slinks);
+        g_slinks = n;
+        g_slinks_cap = cap;
+    }
+    g_slinks[g_nslinks].id = id;
+    g_slinks[g_nslinks++].ref = ref;
+}
+
+/* NTFS: save @n, a name of a file with several, into @dir: its names
+ * share one record, so the first name written makes it and the others
+ * link to it */
+static bool save_link(UINT64 dir, RamNode *n)
+{
+    const RamNode *id = RamfsFileId(n);
+    UINT64 ref = 0, here = 0;
+    bool written = slinks_find(id, &ref), known = written, is_dir = false;
+    for (RamNode *m = RamfsNextLink(n); m != n && !known; m = RamfsNextLink(m)) known = ntfs_ref_of(m, &ref);
+    bool have = NtfsLookup(g_ntfs, dir, n->name, &here, &is_dir);
+    if (have && is_dir) return false;
+    if (!known) {                                                /* its first name on the disk: a file as usual */
+        if (!vol_write(dir, n) || !NtfsLookup(g_ntfs, dir, n->name, &ref, &is_dir)) return false;
+        slinks_add(id, ref);
+        return true;
+    }
+    if (have && here != ref && !NtfsDelete(g_ntfs, dir, here, n->name)) return false;   /* another file had the name */
+    if ((!have || here != ref) && !NtfsLink(g_ntfs, ref, dir, n->name)) return false;
+    bool ok = written || (NtfsWriteFile(g_ntfs, ref, n->data, n->size) && ntfs_info(ref, n));
+    if (!written) slinks_add(id, ref);
+    return ok;
+}
+
 /* Delete @e from @dir: a directory with everything in it */
 static bool vol_delete(UINT64 dir, const PEnt *e, int depth)
 {
@@ -480,7 +552,7 @@ static bool vol_delete(UINT64 dir, const PEnt *e, int depth)
         kfree(l.e);
         if (!ok) return false;
     }
-    return NtfsDelete(g_ntfs, dir, e->ref);
+    return NtfsDelete(g_ntfs, dir, e->ref, e->name);
 }
 
 static bool vol_write_meta(UINT64 dir, const char *name, const void *data, UINT32 len)
@@ -557,6 +629,32 @@ static void load_sd(RamNode *n, UINT64 ref)
     kfree(sd);
 }
 
+/* NTFS: the hard-linked files loaded so far, by record (the first name makes the node) */
+typedef struct { UINT64 ref; RamNode *n; } LoadedLink;
+static LoadedLink *g_llinks;
+static int g_nllinks, g_llinks_cap;
+
+static RamNode *llinks_find(UINT64 ref)
+{
+    for (int i = 0; i < g_nllinks; i++) if (g_llinks[i].ref == ref) return g_llinks[i].n;
+    return NULL;
+}
+
+static void llinks_add(UINT64 ref, RamNode *n)
+{
+    if (g_nllinks == g_llinks_cap) {
+        int cap = g_llinks_cap ? 2 * g_llinks_cap : 16;
+        LoadedLink *nl = kmalloc(sizeof(LoadedLink) * (size_t)cap);
+        if (!nl) return;
+        if (g_nllinks) memcpy(nl, g_llinks, sizeof(LoadedLink) * (size_t)g_nllinks);
+        kfree(g_llinks);
+        g_llinks = nl;
+        g_llinks_cap = cap;
+    }
+    g_llinks[g_nllinks].ref = ref;
+    g_llinks[g_nllinks++].n = n;
+}
+
 static void load_dir(UINT64 vdir, RamNode *rdir, int depth)
 {
     if (depth > 24) return;
@@ -581,6 +679,11 @@ static void load_dir(UINT64 vdir, RamNode *rdir, int depth)
         UINT64 size = e->size;
         if (g_ntfs && !NtfsSize(g_ntfs, e->ref, &size)) continue;   /* (the index may lag behind) */
         if (size > RAMFS_FILE_MAX) continue;
+        bool linked = g_ntfs && NtfsLinks(g_ntfs, e->ref) > 1;    /* a hard link: one of its names may be in */
+        if (linked && llinks_find(e->ref)) {
+            if (!have) RamfsLink(llinks_find(e->ref), rdir, e->name);
+            continue;
+        }
         PEnt real = *e;
         real.size = size;
         char *buf = size ? kmalloc(size) : NULL;
@@ -592,6 +695,7 @@ static void load_dir(UINT64 vdir, RamNode *rdir, int depth)
             f->ctime = e->ctime ? e->ctime : f->mtime;
             f->attrs = e->attrs;
             if (g_ntfs) load_sd(f, e->ref);
+            if (linked) llinks_add(e->ref, f);
         }
         kfree(buf);
     }
@@ -647,6 +751,7 @@ void PersistLoad(void)
                 load_dir(g_root_dir, RamfsRoot(), 0);
             }
             load_removed();
+            load_links();
         }
         kprintf("[PERSIST] Restored %d file(s) to drive C:\n", g_restored);
     } else if (g_ntfs) {
@@ -665,6 +770,9 @@ void PersistLoad(void)
         UINT64 meta;
         if (vol_lookup(NTFS_ROOT, NTFS_META, &meta, &is_dir) && is_dir) { g_nova_dir = meta; g_root_known = true; }
         load_dir(NTFS_ROOT, root, 0);
+        kfree(g_llinks);
+        g_llinks = NULL;
+        g_nllinks = g_llinks_cap = 0;
         if (g_root_known) load_removed();
         kprintf("[PERSIST] Restored %d file(s) to drive C: (NTFS)\n", g_restored);
     }
@@ -712,7 +820,7 @@ static void save_dir(RamNode *r, UINT64 vdir, bool fresh, int depth)
             if (g_ntfs && (!existed || (c->pflags & RAMFS_F_DIRTY)) && !ntfs_info(sub, c)) save_error("its details", c);
             save_dir(c, sub, !existed, depth + 1);
         } else if (c->pflags & RAMFS_F_DIRTY) {
-            if (!(c->pflags & RAMFS_F_SEALED) && !vol_write(vdir, c)) {
+            if (!(c->pflags & RAMFS_F_SEALED) && !(g_ntfs && c->link ? save_link(vdir, c) : vol_write(vdir, c))) {
                 save_error("disk full?", c);
                 continue;
             }
@@ -741,6 +849,100 @@ static void save_removed(void)
     for (Removed *r = g_removed; r; r = r->next) p += ksnprintf(p, (size_t)(len + 1 - (UINT32)(p - text)), "%s\r\n", r->path);
     if (vol_write_meta(g_nova_dir, g_vol ? DELETED_FILE : NTFS_DELETED, text, (UINT32)(p - text))) g_removed_dirty = false;
     kfree(text);
+}
+
+/* FAT: \NOVA\LINKS.TXT, a line per hard-linked file with its names ("C:\a\x.txt|C:\b\y.txt") */
+static char *g_links_text;                    /* what the file holds, as last written or read */
+
+static void links_collect(const RamNode *dir, char **text, UINT32 *len, UINT32 *cap)
+{
+    for (const RamNode *c = dir->child; c; c = c->next) {
+        if (c->dir) { links_collect(c, text, len, cap); continue; }
+        if (!c->link || RamfsFileId(c) != c) continue;           /* (once per file: by its first node) */
+        for (const RamNode *m = c;; ) {
+            char path[RAMFS_PATH_MAX];
+            RamfsPath(m, path, sizeof(path));
+            UINT32 need = *len + (UINT32)strlen(path) + 3;
+            if (need > *cap) {
+                UINT32 ncap = *cap ? 2 * *cap : 1024;
+                while (ncap < need) ncap *= 2;
+                char *nt = kmalloc(ncap);
+                if (!nt) return;
+                if (*len) memcpy(nt, *text, *len);
+                kfree(*text);
+                *text = nt;
+                *cap = ncap;
+            }
+            memcpy(*text + *len, path, strlen(path));
+            *len += (UINT32)strlen(path);
+            m = m->link ? m->link : m;
+            if (m == c) break;
+            (*text)[(*len)++] = '|';
+        }
+        (*text)[(*len)++] = '\r';
+        (*text)[(*len)++] = '\n';
+    }
+}
+
+static void save_links(void)
+{
+    char *text = NULL;
+    UINT32 len = 0, cap = 0;
+    links_collect(RamfsRoot(), &text, &len, &cap);
+    if (len == cap) {                                            /* (room for the NUL) */
+        char *nt = kmalloc(len + 1);
+        if (!nt) { kfree(text); return; }
+        if (len) memcpy(nt, text, len);
+        kfree(text);
+        text = nt;
+    }
+    if (!text) { text = kmalloc(1); if (!text) return; }
+    text[len] = '\0';
+    if (g_links_text && !strcmp(g_links_text, text)) { kfree(text); return; }
+    if (vol_write_meta(g_nova_dir, LINKS_FILE, text, len)) { kfree(g_links_text); g_links_text = text; }
+    else kfree(text);
+}
+
+/* FAT: join the names LINKS.TXT lists (each loaded as a copy) into one file again */
+static void load_links(void)
+{
+    UINT64 ref;
+    bool is_dir;
+    if (!vol_lookup(g_nova_dir, LINKS_FILE, &ref, &is_dir) || is_dir) return;
+    EntList l = { 0 };
+    vol_list(g_nova_dir, &l);
+    const PEnt *e = NULL;
+    for (int i = 0; i < l.n && !e; i++) if (path_eq(l.e[i].name, LINKS_FILE)) e = &l.e[i];
+    char *text = e && e->size <= 1024 * 1024 ? kmalloc(e->size + 1) : NULL;
+    if (text && vol_read(e, text)) {
+        text[e->size] = '\0';
+        for (char *line = text, *next; line && *line; line = next) {
+            next = strchr(line, '\n');
+            if (next) *next++ = '\0';
+            size_t n = strlen(line);
+            if (n && line[n - 1] == '\r') line[--n] = '\0';
+            RamNode *f = NULL;
+            for (char *name = line, *bar; name && *name; name = bar) {
+                bar = strchr(name, '|');
+                if (bar) *bar++ = '\0';
+                RamNode *o = RamfsResolve(NULL, name);
+                if (o && o->dir) continue;
+                if (!f) { f = o; continue; }
+                if (o == f || (o && o->link && RamfsFileId(o) == RamfsFileId(f))) continue;
+                char *slash = NULL;
+                for (char *c = name; *c; c++) if (*c == '\\' || *c == '/') slash = c;
+                if (!slash) continue;
+                *slash = '\0';
+                RamNode *dir = slash == name + 2 ? RamfsRoot() : RamfsResolve(NULL, name);
+                if (dir && dir->dir && (!o || RamfsDelete(o))) RamfsLink(f, dir, slash + 1);
+            }
+        }
+        kfree(g_links_text);
+        g_links_text = text;
+        text = NULL;
+    }
+    kfree(text);
+    kfree(l.e);
 }
 
 /* Where the files go: \NOVA\C on FAT, the root on NTFS (with \$NovaOS for the list) */
@@ -780,8 +982,10 @@ bool PersistSync(void)
             UINT32 id = NtfsAddSecurity(g_ntfs, root->sd, root->sdlen);
             if (!id || !NtfsSetSecurityId(g_ntfs, NTFS_ROOT, id)) save_error("its descriptor", root);
         }
+        g_nslinks = 0;
         if (root->pflags & CLEAR) save_dir(root, g_root_dir, false, 0);
         save_removed();
+        if (g_vol) save_links();
     }
     bool ok = vol_sync() && !g_error;
     g_saved_changes = changes;

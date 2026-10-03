@@ -98,7 +98,6 @@ API_SETS = [
     ('kernelbase.dll', 'kernel32.dll'),
     ('api-ms-win-', 'kernel32.dll'),
     ('msvcrt40.dll', 'msvcrt.dll'),
-    ('wsock32.dll', 'ws2_32.dll'),
 ]
 
 

@@ -48,6 +48,7 @@
 - **Not done**: in QEMU a USB key can't wake the machine itself.  QEMU
   8.2 delivers the key to the suspended port (`xhci_wakeup`) but has no
   path from there to the platform, so the test wakes it with
-  `system_wakeup` (which QEMU reports as the power button).  USB wake
-  needs checking on real hardware, as do GPE block devices other than
-  `\_GPE` and routing behind PCI bridges.
+  `system_wakeup` (which QEMU reports as the power button).  On a real
+  PC a USB key press does wake it from S3 (checked 3 October).  Still
+  unchecked: GPE block devices other than `\_GPE` and routing behind PCI
+  bridges.
