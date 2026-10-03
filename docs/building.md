@@ -241,6 +241,13 @@ USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
 `piix3-usb-uhci`; QEMU's EHCI and NovaOS's EHCI driver have no
 isochronous transfers).  The newest sound output plays.
 
+More monitors: each further display adapter is one (`-device
+secondary-vga`), and so is each output of a virtio GPU with a monitor on
+it, e.g. `-vga none -device virtio-vga,max_outputs=2,id=gpu`.  QEMU
+connects an output when its display window or a VNC client on it
+(`-vnc :1,display=gpu,head=1`) asks for a size, and a VNC client asking
+for 0 x 0 disconnects it, while NovaOS runs.
+
 ### Where your files are kept
 
 Drive C: lives in memory, and NovaOS saves every change to an NTFS or FAT
@@ -372,7 +379,12 @@ from boot; the test plugs the second into an OHCI and the third into a
 UHCI controller while NovaOS runs, plays `soundtest tone` after each, then
 unplugs the third and plays again, which the second must hear.  Each
 speaker's WAV must hold its tones and nothing else: a speaker another one
-took over from has to go quiet.
+took over from has to go quiet.  Last, one `virtio-vga` card with three
+outputs and a monitor only on the first, for `montest hotplug`: the test
+connects a monitor to the second and third outputs and disconnects them
+again while NovaOS runs, through a VNC server QEMU has on each (an RFB
+`SetDesktopSize` asks for a monitor of that size there; 0 x 0 takes it
+away):
 
 ```bash
 python3 tools/selftest.py --suite devices
