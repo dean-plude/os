@@ -1,6 +1,6 @@
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
   either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
-  file ACLs, and other drives); Intel e1000/e1000e and virtio-net network
+  file ACLs and hard links, and other drives); Intel e1000/e1000e and virtio-net network
   cards; Intel High Definition Audio (playback and recording) with a kernel
   mixer;
   PS/2 keyboards and mice; USB (xHCI, EHCI, OHCI and UHCI controllers, any

@@ -8,7 +8,7 @@
  * encrypted ones are not.  Callers serialize access to a volume.
  *
  * A volume is read-only until NtfsEnableWrite.  Then files can be
- * rewritten, created, renamed and deleted.  There is no journal: the
+ * rewritten, created, renamed, linked and deleted.  There is no journal: the
  * $LogFile is marked clean when writing is enabled, and every change is
  * written through before its call returns, so the volume is consistent
  * between calls.  Files kept in an attribute list, and compressed, sparse
@@ -67,10 +67,16 @@ bool   NtfsCanWrite(NtfsVol *v, UINT64 mft);
 bool   NtfsWriteFile(NtfsVol *v, UINT64 mft, const void *data, UINT64 len);
 /* Create file or directory @name (UTF-8) in @dir; its record in @out. */
 bool   NtfsCreate(NtfsVol *v, UINT64 dir, const char *name, bool is_dir, UINT64 *out);
-/* Remove @mft's name in @dir (directories only when empty). */
-bool   NtfsDelete(NtfsVol *v, UINT64 dir, UINT64 mft);
-/* Move @mft from @old_dir to @new_dir under @name. */
-bool   NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, UINT64 new_dir, const char *name);
+/* Remove @mft's name @name in @dir (NULL: every name it has there;
+ * directories only when empty).  The file goes when its last name does. */
+bool   NtfsDelete(NtfsVol *v, UINT64 dir, UINT64 mft, const char *name);
+/* Move @mft's name @old_name in @old_dir (NULL: every name it has there)
+ * to @new_dir under @name. */
+bool   NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, const char *old_name, UINT64 new_dir, const char *name);
+/* Give file @mft another name, @name in @dir (a hard link). */
+bool   NtfsLink(NtfsVol *v, UINT64 mft, UINT64 dir, const char *name);
+/* How many names @mft has (DOS aliases aside); 0 if it can't be read. */
+UINT32 NtfsLinks(NtfsVol *v, UINT64 mft);
 
 /* Find @name (UTF-8, any case) in directory @dir */
 bool   NtfsLookup(NtfsVol *v, UINT64 dir, const char *name, UINT64 *mft, bool *is_dir);

@@ -94,7 +94,7 @@
   replaced until it ends (renaming them still works).  The core suite
   runs an installer that has to replace a running program, restarts
   (`tools/novarun.py` and `tools/selftest.py` can restart NovaOS) and
-  checks the replacement happened.  Hard links are still to come.
+  checks the replacement happened.  Hard links followed (below, 2026-10-03).
 - **Small visible bugs** (17.6): File Explorer's This PC is now a list of
   the drives (C: and each mounted volume, D:, E:, ...) with their free
   space and size, and opening `C:\` or the desktop's This PC shows it; the

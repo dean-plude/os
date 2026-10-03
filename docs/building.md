@@ -288,8 +288,8 @@ scripts/make-ntfs-disk.sh build/nova-ntfs.img build
 qemu-system-x86_64 ... -drive format=raw,file=build/nova-ntfs.img
 ```
 
-then run `drivetest` in the Terminal, shut down, and check the disk on the
-host:
+then run `drivetest` (and `linktest D:\LinkTest`, which leaves two names
+of one file) in the Terminal, shut down, and check the disk on the host:
 
 ```bash
 scripts/check-ntfs-disk.sh build/nova-ntfs.img
