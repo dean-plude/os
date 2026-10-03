@@ -27,6 +27,10 @@
 #include <libnsfb_plot.h>
 #include <libnsfb_event.h>
 #include <libnsfb_cursor.h>
+#ifdef _NOVAOS
+#include <math.h>
+#include <plutovg.h>
+#endif
 
 #include "utils/utils.h"
 #include "utils/log.h"
@@ -271,8 +275,149 @@ framebuffer_plot_path(const struct redraw_context *ctx,
 		unsigned int n,
 		const float transform[6])
 {
+#ifdef _NOVAOS
+	/* NovaOS: paths (SVG's shapes) are rasterized with plutovg, anti-
+	 * aliased, into a scratch surface the size of the path's box within
+	 * the clip rectangle, which is then blended onto the framebuffer
+	 * (plutovg's premultiplied ARGB onto the surface's XBGR). */
+	bool fill = pstyle->fill_colour != NS_TRANSPARENT;
+	bool stroke = pstyle->stroke_colour != NS_TRANSPARENT &&
+		pstyle->stroke_width > 0;
+	float scale, pad;
+	plutovg_path_t *path;
+	plutovg_rect_t ext;
+	nsfb_bbox_t clip;
+	unsigned int i;
+	int x0, y0, x1, y1, w, h, linelen;
+	uint8_t *fb;
+
+	if ((!fill && !stroke) || n == 0)
+		return NSERROR_OK;
+
+	path = plutovg_path_create();
+	if (path == NULL)
+		return NSERROR_NOMEM;
+#define TX(x, y) (transform[0] * (x) + transform[2] * (y) + transform[4])
+#define TY(x, y) (transform[1] * (x) + transform[3] * (y) + transform[5])
+	for (i = 0; i < n; ) {
+		switch ((int)p[i]) {
+		case PLOTTER_PATH_MOVE:
+			if (i + 2 >= n) goto done;
+			plutovg_path_move_to(path, TX(p[i + 1], p[i + 2]),
+					TY(p[i + 1], p[i + 2]));
+			i += 3;
+			break;
+		case PLOTTER_PATH_LINE:
+			if (i + 2 >= n) goto done;
+			plutovg_path_line_to(path, TX(p[i + 1], p[i + 2]),
+					TY(p[i + 1], p[i + 2]));
+			i += 3;
+			break;
+		case PLOTTER_PATH_BEZIER:
+			if (i + 6 >= n) goto done;
+			plutovg_path_cubic_to(path,
+					TX(p[i + 1], p[i + 2]), TY(p[i + 1], p[i + 2]),
+					TX(p[i + 3], p[i + 4]), TY(p[i + 3], p[i + 4]),
+					TX(p[i + 5], p[i + 6]), TY(p[i + 5], p[i + 6]));
+			i += 7;
+			break;
+		case PLOTTER_PATH_CLOSE:
+			plutovg_path_close(path);
+			i += 1;
+			break;
+		default:
+			NSLOG(netsurf, INFO, "bad path command %f", p[i]);
+			goto done;
+		}
+	}
+done:
+#undef TX
+#undef TY
+
+	/* the stroke's width scales with the transform (its mean scale) */
+	scale = (sqrtf(transform[0] * transform[0] + transform[1] * transform[1]) +
+		 sqrtf(transform[2] * transform[2] + transform[3] * transform[3])) / 2;
+	pad = stroke ? plot_style_fixed_to_float(pstyle->stroke_width) * scale / 2 + 2 : 2;
+
+	plutovg_path_extents(path, &ext, false);
+	nsfb_plot_get_clip(nsfb, &clip);
+	x0 = (int)floorf(ext.x - pad);
+	y0 = (int)floorf(ext.y - pad);
+	x1 = (int)ceilf(ext.x + ext.w + pad);
+	y1 = (int)ceilf(ext.y + ext.h + pad);
+	if (x0 < clip.x0) x0 = clip.x0;
+	if (y0 < clip.y0) y0 = clip.y0;
+	if (x1 > clip.x1) x1 = clip.x1;
+	if (y1 > clip.y1) y1 = clip.y1;
+	w = x1 - x0;
+	h = y1 - y0;
+	if (w > 0 && h > 0 && nsfb_get_buffer(nsfb, &fb, &linelen) == 0 &&
+			fb != NULL) {
+		plutovg_surface_t *surface = plutovg_surface_create(w, h);
+		plutovg_canvas_t *canvas = surface ?
+			plutovg_canvas_create(surface) : NULL;
+		if (canvas != NULL) {
+			int x, y;
+			const uint8_t *src = plutovg_surface_get_data(surface);
+			int sstride = plutovg_surface_get_stride(surface);
+
+			plutovg_canvas_translate(canvas, -x0, -y0);
+			plutovg_canvas_add_path(canvas, path);
+			if (fill) {
+				colour c = pstyle->fill_colour;
+				plutovg_canvas_set_rgba(canvas, (c & 0xff) / 255.0f,
+						((c >> 8) & 0xff) / 255.0f,
+						((c >> 16) & 0xff) / 255.0f, 1.0f);
+				plutovg_canvas_fill_preserve(canvas);
+			}
+			if (stroke) {
+				colour c = pstyle->stroke_colour;
+				plutovg_canvas_set_rgba(canvas, (c & 0xff) / 255.0f,
+						((c >> 8) & 0xff) / 255.0f,
+						((c >> 16) & 0xff) / 255.0f, 1.0f);
+				plutovg_canvas_set_line_width(canvas,
+						plot_style_fixed_to_float(pstyle->stroke_width) * scale);
+				plutovg_canvas_stroke(canvas);
+			}
+
+			for (y = 0; y < h; y++) {
+				const uint32_t *s = (const uint32_t *)(src + y * sstride);
+				uint32_t *d = (uint32_t *)(fb + (y0 + y) * linelen) + x0;
+				for (x = 0; x < w; x++) {
+					uint32_t a = s[x] >> 24, ia, dp;
+					uint32_t r, g, b;
+					if (a == 0)
+						continue;
+					/* source: premultiplied 0xAARRGGBB; the
+					 * framebuffer: 0x00BBGGRR */
+					r = (s[x] >> 16) & 0xff;
+					g = (s[x] >> 8) & 0xff;
+					b = s[x] & 0xff;
+					if (a != 255) {
+						ia = 255 - a;
+						dp = d[x];
+						r += ((dp & 0xff) * ia + 127) / 255;
+						g += (((dp >> 8) & 0xff) * ia + 127) / 255;
+						b += (((dp >> 16) & 0xff) * ia + 127) / 255;
+						if (r > 255) r = 255;
+						if (g > 255) g = 255;
+						if (b > 255) b = 255;
+					}
+					d[x] = r | (g << 8) | (b << 16);
+				}
+			}
+		}
+		if (canvas != NULL)
+			plutovg_canvas_destroy(canvas);
+		if (surface != NULL)
+			plutovg_surface_destroy(surface);
+	}
+	plutovg_path_destroy(path);
+	return NSERROR_OK;
+#else
 	NSLOG(netsurf, INFO, "path unimplemented");
 	return NSERROR_OK;
+#endif
 }
 
 
