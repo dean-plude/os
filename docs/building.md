@@ -90,7 +90,11 @@ Independent DLLs, programs and objects build concurrently, with at most
 `--jobs N` (or `-j N`) compiler and linker processes running at once; the
 default is the number of CPUs and `--jobs 1` builds one step at a time.  A
 DLL still links after the DLLs it depends on, and the files and their order
-in the image are the same whatever `N` is.  CMake runs the script without
+in the image are the same whatever `N` is.  The 64-bit pass, the 32-bit
+pass and NetSurf's objects run side by side on that one budget (NetSurf links
+once the 64-bit import libraries it needs exist), so none of them waits for
+another to finish.  A failed command's output is printed in one piece, headed
+by its pass: `[x64]`, `[x86]` or `[netsurf]`.  CMake runs the script without
 the flag, so the kernel build uses every core.
 
 Environment variables:
@@ -239,12 +243,14 @@ PulseAudio or PipeWire when it finds one; set `NOVA_AUDIO` (`pa`,
 USB speakers work too: `-audiodev wav,id=usbsnd,path=usb.wav
 -device qemu-xhci -device usb-audio,audiodev=usbsnd` (or on `pci-ohci` or
 `piix3-usb-uhci`; QEMU's `usb-audio` is full speed only, so not on a
-plain `usb-ehci`).  The newest sound output plays, and the newest input
-records.  QEMU has no USB microphone and no high-speed audio device:
+plain `usb-ehci`).  The newest sound output and input are the defaults
+(Settings' Sound page chooses others, and programs can pick a device).  QEMU has no USB microphone and no high-speed audio device:
 `tools/usbredirpeer.py` is one (a USB Audio Class 1 headset or microphone
 behind a `usb-redir` device, or with `--uac2` a USB Audio Class 2.0 one:
 a programmable clock behind a clock selector, 24-bit samples and, at
-high speed, a packet every microframe), e.g. a high-speed headset on EHCI whose
+high speed, a packet every microframe; `--rates`, `--channels`,
+`--mic-channels` and `--product` give it other sampling rates, channel
+counts and a name), e.g. a high-speed headset on EHCI whose
 microphone hears 523 Hz:
 
 ```bash
@@ -262,6 +268,18 @@ it, e.g. `-vga none -device virtio-vga,max_outputs=2,id=gpu`.  QEMU
 connects an output when its display window or a VNC client on it
 (`-vnc :1,display=gpu,head=1`) asks for a size, and a VNC client asking
 for 0 x 0 disconnects it, while NovaOS runs.
+
+A 3D GPU: with QEMU 9.2 or newer and a virglrenderer built with Venus,
+`-vga none -device virtio-vga-gl,venus=on,blob=on,hostmem=1G` and an
+OpenGL display (`-display sdl,gl=on` or `gtk,gl=on`) give NovaOS a
+virtio-gpu whose Vulkan runs on the host's GPU.  Install **Venus** from
+the App Store (Runtimes), next to Mesa 3D and DXVK: Vulkan programs, and
+Direct3D ones through DXVK, then run there (`d3dtest` prints `D3D9
+adapter  Virtio-GPU Venus (...)`), and without such a GPU they keep using
+lavapipe.  OpenGL stays on llvmpipe.  `tools/ci/build-qemu-venus.sh
+PREFIX` builds such a QEMU (Ubuntu 24.04's has no Venus), and
+`tools/build_venus.py OUT` builds the App Store's `venus.7z` (Mesa's
+Venus with NovaOS's back end, `third_party/mesa-venus`) with MinGW-w64.
 
 ### Where your files are kept
 
@@ -369,14 +387,28 @@ KVM: each job's `tools/ci/enable-kvm.sh` step opens `/dev/kvm` to the runner
 user and sets `NOVARUN_ACCEL=kvm`, or sets `tcg` with a warning when the runner
 has no usable `/dev/kvm` (history entry "Kernel under KVM" has the timings).
 
-The graphics suite downloads 7-Zip, Mesa and DXVK and builds
-gltest/d3dtest/d2dtest/dwtest:
+The graphics suite downloads 7-Zip, Mesa and DXVK, builds Venus
+(`tools/build_venus.py`) and gltest/d3dtest/d2dtest/dwtest, and runs on a
+QEMU with Venus (`tools/ci/build-qemu-venus.sh`; without one the first
+monitor is a standard VGA and the Venus tests fail) with an OpenGL display,
+so on a machine without a screen it runs under `xvfb-run`:
 
 ```bash
-sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
+sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 g++-mingw-w64-x86-64 g++-mingw-w64-i686 \
+  ninja-build pkg-config libglib2.0-dev libpixman-1-dev libsdl2-dev libepoxy-dev libgbm-dev libdrm-dev \
+  libvulkan-dev libpng-dev glslang-tools bison flex python3-mako python3-yaml mesa-vulkan-drivers seabios ipxe-qemu xvfb
+pip install --user 'meson>=1.5' pycotap
+sudo install -d -o "$USER" /opt/qv
+tools/ci/build-qemu-venus.sh /opt/qv
 tools/ci/stage-graphics.sh /tmp/gfx
-python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
+NOVARUN_QEMU=/opt/qv/bin/qemu-system-x86_64 LD_LIBRARY_PATH=/opt/qv/lib/x86_64-linux-gnu \
+  xvfb-run -a -s '-screen 0 1280x1024x24' python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
+
+`NOVARUN_QEMU` names the QEMU that `tools/novarun.py` runs (default
+`qemu-system-x86_64` from `PATH`); it opens an SDL window with OpenGL
+(`NOVARUN_GL_DISPLAY` to change it) when a `virtio-vga-gl` or
+`virtio-gpu-gl-pci` is among its devices, and no window otherwise.
 
 The network suite tests IPv4, IPv6 and winhttp's HTTP/2, and needs `node`
 and `openssl`:
@@ -409,7 +441,16 @@ plugs a high-speed USB Audio 2.0 headset (`usbredirpeer.py --uac2`,
 writing `uac2.wav`, its microphone hearing 988 Hz) into the xHCI
 controller: `soundtest tone` must sound in `uac2.wav` alone, `soundtest
 record` and `capture` must hear 988 Hz, and once it is unplugged
-recording must go back to the OHCI microphone.  Last, one
+recording must go back to the OHCI microphone.  Then a USB Audio 2.0
+surround headset whose clock offers only 44.1 kHz (`usbredirpeer.py
+--rates 44100 --channels 6 --mic-channels 4`, writing `surround.wav`):
+the tone must sound at its pitch in its front two channels with the
+other four silent, and its microphone's 1175 Hz must be recorded at its
+pitch.  Last for sound, a full-speed USB speaker (`spk.wav`) for the
+device picker: with it the default, `soundtest ... dev=NAME` must play
+on (or record from) the named device through `waveOut`, `waveIn` and
+WASAPI, and `soundtest default out|in NAME` (what Settings' Sound page
+does) must move the default.  Last, one
 `virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
 connects a monitor to the second and third outputs and disconnects them
 again while NovaOS runs, through a VNC server QEMU has on each (an RFB
@@ -440,19 +481,37 @@ re-run it when the scene changes), then shows the scene in a window.  Next
 with DirectWrite from a Latin-only font and checks the fallback fonts, the
 shaping, the direction and the drawing, and shows the line in a window.  It
 then types `store
-install Mesa 3D` and `store install DXVK` (the archives are already in
-`C:\Downloads`, so the App Store installs without a network) and then runs
-`gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
-of each while it draws.  The graphics boot has a second monitor (a QEMU
+install Mesa 3D`, `store install DXVK` and `store install Venus` (the
+archives are already in `C:\Downloads`, so the App Store installs without
+a network) and then runs `gltest` (on llvmpipe) and `d3dtest` (on Venus:
+the first monitor is a 3D virtio-gpu, `virtio-vga-gl,venus=on`, and the
+test expects the Venus adapter), x64 and x86, from `C:\Tests`, taking a
+screenshot of each while it draws.  Last, `d3dtest fps 10` draws a
+Direct3D 9 scene that keeps the rasterizer busy (64 blended quads over a
+640x480 window) for 10 s on Venus and 10 s on lavapipe, each in a child
+process whose `VK_DRIVER_FILES` names the driver, and passes when Venus
+draws more frames per second (under TCG: 14 to 17 against about 0.13).  The
+graphics boot has a second monitor (a QEMU
 `secondary-vga`): between the installs and `gltest` it runs `montest 2`,
 which checks the monitor calls and layout changes; when it asks, the test
 pushes the pointer across onto the second monitor, and the screenshot is
 one PNG per monitor (`montest.png`, `montest-2.png`).  Then `nstest`
-starts NetSurf on a page with an SVG image, an inline `<svg>` and a list a
-script builds: the test checks the SVGs' colours and sizes and the list
-items on the screen, clicks the page's box (a script changes it) and
-checks the page was redrawn with it changed (`nstest-before.png`,
-`nstest-after.png`), then closes NetSurf with Alt+F4.  The network suite (`tests/selftest/network4` and
+starts NetSurf on a page with an SVG image, an inline `<svg>`, a list a
+script builds, an SVG without a size and an iframe holding a frameset
+page: the test checks the SVGs' colours and sizes (the unsized one at the
+default 300 x 150), the list items and both frames on the screen, clicks the page's box (a script changes it) and
+checks the page was redrawn with it changed and the rest still there (`nstest-before.png`,
+`nstest-after.png`), then closes NetSurf with Alt+F4.  Then `store scroll
+bar` runs `store open` and checks, from the `[STORE] view:` lines the App
+Store logs when its view changes, that All apps has a vertical scroll bar
+and that the wheel, Home, Page Down, End, a click on the bar's down arrow,
+one in its trough and a drag of its thumb each scroll the list, then
+closes the Store with Esc.  Last, `explorer
+scroll bars` opens File Explorer on `C:\Windows\System32` (more files than
+fit) and checks, from the `[EXPLORER]` lines it logs when its view
+changes, that the list has a vertical scroll bar and that the wheel, Page
+Down, End, Home, a click on the bar's down arrow and one in its trough
+each scroll the list.  The network suite (`tests/selftest/network4` and
 `network6`) boots twice with a virtio-net
 card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 (Winsock over IPv4) and `httptest suite` (winhttp: HTTP/2 by ALPN, large
@@ -617,7 +676,11 @@ would do).
 | PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
 
 The windowed programs run last, one at a time (each takes the keyboard and
-is closed with Alt+F4 before the next).  Building PuTTY needs `cmake` and
+is closed with Alt+F4 before the next).  The next one starts only once
+every process the last one started has ended (any still running after
+two minutes is stopped with `taskkill`) and the Terminal answers again;
+after Firefox, `store close` closes the App Store window its install
+opened.  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
 It needs 7-Zip's installer, Pillow, `openssl` (for Firefox's test

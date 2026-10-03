@@ -79,7 +79,7 @@
 #include "../hal/hpet.h"
 #include "../net/net.h"
 #include "../um/um.h"
-#include "kpcr.h"
+#include "version.h"
 #include "../ps/csrss.h"
 #include "../gdi/gdi.h"
 #include "../wm/wm.h"
@@ -103,7 +103,7 @@ static void print_banner(void)
     kprintf("  ╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝\n");
     kprintf("\n");
     fb_set_colors(FB_BOOT_FG, FB_BOOT_BG);
-    kprintf("  Windows-compatible OS kernel  [Phase 7 — GUI & Desktop Shell]\n");
+    kprintf("  Windows-compatible OS kernel  [version " NOVA_VERSION "]\n");
     kprintf("  Built: " __DATE__ " " __TIME__ "\n");
     kprintf("\n");
 }

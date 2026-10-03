@@ -62,8 +62,12 @@ nserror html_object_free_objects(struct html_content *html);
  * aside the objects that belong to boxes (images, plugins, backgrounds):
  * html_fetch_object gives a new box the old object for the same URL, and
  * html_object_drop_stash releases the ones no box asked for again.
+ * With @within, only the objects of the boxes below it (a subtree being
+ * built again).
  */
-void html_object_stash_box_objects(struct html_content *html);
+struct box;
+void html_object_stash_box_objects(struct html_content *html,
+		struct box *within);
 void html_object_drop_stash(struct html_content *html);
 #endif
 

@@ -38,7 +38,7 @@ static Ed *ed_of(Wnd *w) { return w ? (Ed *)w->ctl : NULL; }
 static HDC ed_dc(Wnd *w)
 {
     HDC dc = GetDC(NULL);
-    SelectObject(dc, w->font ? w->font : gui_font());
+    SelectObject(dc, ctl_font(w));
     return dc;
 }
 
@@ -455,7 +455,7 @@ static void paint(Wnd *w, Ed *e, HDC dc)
     COLORREF tc = (w->style & WS_DISABLED) ? sys_color(COLOR_GRAYTEXT) : GetTextColor(dc);
     COLORREF bkc = GetBkColor(dc);
     FillRect(dc, &c, bg);
-    HGDIOBJ of = SelectObject(dc, w->font ? w->font : gui_font());
+    HGDIOBJ of = SelectObject(dc, ctl_font(w));
     IntersectClipRect(dc, e->fmt.left, MULTI(w) ? e->fmt.top : 0, e->fmt.right, MULTI(w) ? e->fmt.bottom : c.bottom);
     int lo = sel_lo(e), hi = sel_hi(e);
     int show_sel = lo != hi && (e->focus || (w->style & ES_NOHIDESEL));

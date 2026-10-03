@@ -31,6 +31,7 @@ typedef struct Menu {
     int sel;                        /* highlighted item (-1 none) */
     HWND wnd;                       /* its popup window while open */
     int sysmenu;
+    int k;                          /* laid out at k times 96 DPI */
 } Menu;
 
 Wnd *g_menu_owner;
@@ -522,7 +523,7 @@ USERAPI HMENU GetSystemMenu(HWND h, BOOL revert)
 
 #define BAR_ITEM_PAD 8
 
-static HFONT menu_font(void) { return gui_font(); }
+static HFONT menu_font(int k) { return gui_font_k(k); }
 
 static int item_text_w(HDC dc, const WCHAR *t, int *accel_w)
 {
@@ -540,27 +541,29 @@ static int item_text_w(HDC dc, const WCHAR *t, int *accel_w)
     return r.right;
 }
 
-static int bar_row_h(void)
+static int bar_row_h(int k)
 {
     HDC dc = GetDC(NULL);
-    HGDIOBJ of = SelectObject(dc, menu_font());
-    int h = font_height(dc) + 6;
+    HGDIOBJ of = SelectObject(dc, menu_font(k));
+    int h = font_height(dc) + 6 * k;
     SelectObject(dc, of);
-    return h < GetSystemMetrics(SM_CYMENU) ? GetSystemMetrics(SM_CYMENU) : h;
+    return h < GetSystemMetricsForDpi(SM_CYMENU, 96 * k) ? GetSystemMetricsForDpi(SM_CYMENU, 96 * k) : h;
 }
 
-/* Lay the bar out in a band @width wide; its items' rectangles are relative to the band */
-static int bar_layout(Menu *m, int width)
+/* Lay the bar out in a band @width wide at k times 96 DPI; its items'
+ * rectangles are relative to the band */
+static int bar_layout(Menu *m, int width, int k)
 {
     if (!m) return 0;
     HDC dc = GetDC(NULL);
-    HGDIOBJ of = SelectObject(dc, menu_font());
-    int rh = bar_row_h();
+    HGDIOBJ of = SelectObject(dc, menu_font(k));
+    int rh = bar_row_h(k);
     int x = 0, y = 0;
+    m->k = k;
     for (int i = 0; i < m->n; i++) {
         MItem *it = &m->it[i];
-        int iw = (it->type & MFT_SEPARATOR) ? 6 : item_text_w(dc, it->text, NULL) + 2 * BAR_ITEM_PAD;
-        if (it->type & MFT_OWNERDRAW) iw = 40;
+        int iw = (it->type & MFT_SEPARATOR) ? 6 * k : item_text_w(dc, it->text, NULL) + 2 * BAR_ITEM_PAD * k;
+        if (it->type & MFT_OWNERDRAW) iw = 40 * k;
         if (x > 0 && (x + iw > width || (it->type & (MFT_MENUBREAK | MFT_MENUBARBREAK)))) { x = 0; y += rh; }
         SetRect(&it->rc, x, y, x + iw, y + rh);
         x += iw;
@@ -573,7 +576,8 @@ int menu_bar_height(Wnd *w, int width)
 {
     Menu *m = M(w->menu);
     if (!m) return 0;
-    return bar_layout(m, width) + 1;
+    int k = dpi_k(w);
+    return bar_layout(m, width, k) + k;                     /* (and the line under it) */
 }
 
 /* Where the bar is (window coordinates) */
@@ -584,7 +588,7 @@ static void bar_band(Wnd *w, RECT *r)
     int h = menu_bar_height(w, c.right - c.left);
     int top = c.top - h;
     if (w->style & WS_VSCROLL) {}
-    SetRect(r, c.left, top, c.right + ((w->style & WS_VSCROLL) ? sb_width() : 0), c.top);
+    SetRect(r, c.left, top, c.right + ((w->style & WS_VSCROLL) ? sb_width_k(dpi_k(w)) : 0), c.top);
 }
 
 static struct {
@@ -600,8 +604,9 @@ void menu_bar_draw(Wnd *w, HDC dc, const RECT *r)
     Menu *m = M(w->menu);
     fill_rect(dc, r, 0xFFFFFF);
     if (!m) return;
-    bar_layout(m, r->right - r->left);
-    HGDIOBJ of = SelectObject(dc, menu_font());
+    int k = dpi_k(w);
+    bar_layout(m, r->right - r->left, k);
+    HGDIOBJ of = SelectObject(dc, menu_font(k));
     SetBkMode(dc, TRANSPARENT);
     int active = T.active && T.owner == w;
     for (int i = 0; i < m->n; i++) {
@@ -613,7 +618,7 @@ void menu_bar_draw(Wnd *w, HDC dc, const RECT *r)
         SetTextColor(dc, (it->state & (MFS_GRAYED | MF_DISABLED)) ? sys_color(COLOR_GRAYTEXT) : sys_color(COLOR_MENUTEXT));
         DrawTextW(dc, it->text ? it->text : L"", -1, &ir, DT_SINGLELINE | DT_CENTER | DT_VCENTER | (active ? 0 : DT_HIDEPREFIX));
     }
-    RECT line = { r->left, r->bottom - 1, r->right, r->bottom };
+    RECT line = { r->left, r->bottom - k, r->right, r->bottom };
     fill_rect(dc, &line, 0xF0F0F0);
     SelectObject(dc, of);
 }
@@ -704,11 +709,14 @@ USERAPI BOOL GetMenuBarInfo(HWND h, LONG obj, LONG item, PMENUBARINFO mbi)
 #define CHECK_COL 28
 #define ARROW_COL 24
 
+/* At the owner's DPI (a popup opens where its owner is) */
 static void popup_layout(Menu *m, Wnd *owner)
 {
+    int k = owner ? dpi_k(owner) : dpi_new_k(NULL);
+    m->k = k;
     HDC dc = GetDC(NULL);
-    HGDIOBJ of = SelectObject(dc, menu_font());
-    int ih = font_height(dc) + 8;
+    HGDIOBJ of = SelectObject(dc, menu_font(k));
+    int ih = font_height(dc) + 8 * k;
     int textw = 0, accw = 0;
     for (int i = 0; i < m->n; i++) {
         MItem *it = &m->it[i];
@@ -724,22 +732,22 @@ static void popup_layout(Menu *m, Wnd *owner)
         if (tw > textw) textw = tw;
         if (aw > accw) accw = aw;
     }
-    int width = CHECK_COL + textw + (accw ? accw + 24 : 0) + ARROW_COL;
-    if (width < 120) width = 120;
-    int y = POPUP_PAD;
+    int width = (CHECK_COL + ARROW_COL) * k + textw + (accw ? accw + 24 * k : 0);
+    if (width < 120 * k) width = 120 * k;
+    int y = POPUP_PAD * k;
     for (int i = 0; i < m->n; i++) {
         MItem *it = &m->it[i];
-        int h = (it->type & MFT_SEPARATOR) ? 9 : ih;
+        int h = (it->type & MFT_SEPARATOR) ? 9 * k : ih;
         if (it->type & MFT_OWNERDRAW) {
             MEASUREITEMSTRUCT mi = { ODT_MENU, 0, it->id, 0, (UINT)ih, it->data };
             if (owner) send_msg(owner, WM_MEASUREITEM, 0, (LPARAM)&mi);
             h = (int)mi.itemHeight;
         }
-        SetRect(&it->rc, POPUP_BORDER, y, POPUP_BORDER + width, y + h);
+        SetRect(&it->rc, POPUP_BORDER * k, y, POPUP_BORDER * k + width, y + h);
         y += h;
     }
-    m->w = width + 2 * POPUP_BORDER;
-    m->h = y + POPUP_PAD + POPUP_BORDER;
+    m->w = width + 2 * POPUP_BORDER * k;
+    m->h = y + (POPUP_PAD + POPUP_BORDER) * k;
     if (m->maxh && (UINT)m->h > m->maxh) m->h = (int)m->maxh;
     SelectObject(dc, of);
 }
@@ -747,16 +755,17 @@ static void popup_layout(Menu *m, Wnd *owner)
 static void popup_paint(Menu *m, HDC dc, Wnd *owner)
 {
     RECT all = { 0, 0, m->w, m->h };
+    int k = m->k > 1 ? m->k : 1;
     fill_rect(dc, &all, 0xF2F2F2);
-    frame_rect(dc, &all, 0xCCCCCC);
-    HGDIOBJ of = SelectObject(dc, menu_font());
+    for (int i = 0; i < k; i++) { frame_rect(dc, &all, 0xCCCCCC); InflateRect(&all, -1, -1); }
+    HGDIOBJ of = SelectObject(dc, menu_font(k));
     SetBkMode(dc, TRANSPARENT);
     for (int i = 0; i < m->n; i++) {
         MItem *it = &m->it[i];
         RECT r = it->rc;
         int dis = (it->state & (MFS_GRAYED | MF_DISABLED)) != 0;
         if (it->type & MFT_SEPARATOR) {
-            RECT l = { r.left + CHECK_COL, r.top + 4, r.right - 2, r.top + 5 };
+            RECT l = { r.left + CHECK_COL * k, r.top + 4 * k, r.right - 2 * k, r.top + 5 * k };
             fill_rect(dc, &l, 0xD7D7D7);
             continue;
         }
@@ -771,22 +780,22 @@ static void popup_paint(Menu *m, HDC dc, Wnd *owner)
         }
         if (i == m->sel) {
             RECT hr = r;
-            InflateRect(&hr, -2, 0);
+            InflateRect(&hr, -2 * k, 0);
             fill_rect(dc, &hr, dis ? 0xE6E6E6 : 0xF7E4CC);
         }
         COLORREF tc = dis ? 0x6D6D6D : 0x000000;
         SetTextColor(dc, tc);
         if (it->state & MFS_CHECKED) {
-            RECT cr = { r.left + 6, r.top + (r.bottom - r.top - 14) / 2, r.left + 20, 0 };
-            cr.bottom = cr.top + 14;
+            RECT cr = { r.left + 6 * k, r.top + (r.bottom - r.top - 14 * k) / 2, r.left + 20 * k, 0 };
+            cr.bottom = cr.top + 14 * k;
             if (it->type & MFT_RADIOCHECK) {
-                RECT d = { cr.left + 4, cr.top + 4, cr.left + 10, cr.top + 10 };
+                RECT d = { cr.left + 4 * k, cr.top + 4 * k, cr.left + 10 * k, cr.top + 10 * k };
                 HBRUSH b = CreateSolidBrush(tc);
                 HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, GetStockObject(NULL_PEN));
                 Ellipse(dc, d.left, d.top, d.right + 1, d.bottom + 1);
                 SelectObject(dc, ob); SelectObject(dc, op);
                 DeleteObject(b);
-            } else draw_check_mark(dc, cr.left, cr.top, 14, tc);
+            } else draw_check_mark(dc, cr.left, cr.top, 14 * k, tc);
         } else if (it->bmp && (ULONG_PTR)it->bmp > 11) {
             BITMAP bm;
             if (GetObjectW(it->bmp, sizeof(bm), &bm)) {
@@ -795,8 +804,8 @@ static void popup_paint(Menu *m, HDC dc, Wnd *owner)
                 int by = r.top + (r.bottom - r.top - bm.bmHeight) / 2;
                 if (bm.bmBitsPixel == 32) {
                     BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-                    AlphaBlend(dc, r.left + 6, by, bm.bmWidth, bm.bmHeight, md, 0, 0, bm.bmWidth, bm.bmHeight, bf);
-                } else BitBlt(dc, r.left + 6, by, bm.bmWidth, bm.bmHeight, md, 0, 0, SRCCOPY);
+                    AlphaBlend(dc, r.left + 6 * k, by, bm.bmWidth, bm.bmHeight, md, 0, 0, bm.bmWidth, bm.bmHeight, bf);
+                } else BitBlt(dc, r.left + 6 * k, by, bm.bmWidth, bm.bmHeight, md, 0, 0, SRCCOPY);
                 SelectObject(md, o);
                 DeleteDC(md);
             }
@@ -804,14 +813,14 @@ static void popup_paint(Menu *m, HDC dc, Wnd *owner)
         const WCHAR *t = it->text ? it->text : L"";
         const WCHAR *tab = t;
         while (*tab && *tab != '\t') tab++;
-        RECT tr = { r.left + CHECK_COL, r.top, r.right - ARROW_COL, r.bottom };
+        RECT tr = { r.left + CHECK_COL * k, r.top, r.right - ARROW_COL * k, r.bottom };
         HGDIOBJ bf = NULL;
-        if (it->state & MFS_DEFAULT) bf = SelectObject(dc, gui_font_bold());
+        if (it->state & MFS_DEFAULT) bf = SelectObject(dc, gui_font_bold_k(k));
         DrawTextW(dc, t, (int)(tab - t), &tr, DT_SINGLELINE | DT_VCENTER | DT_HIDEPREFIX);
         if (*tab) DrawTextW(dc, tab + 1, -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_RIGHT | DT_NOPREFIX);
         if (bf) SelectObject(dc, bf);
         if (it->sub) {
-            RECT ar = { r.right - ARROW_COL, r.top, r.right - 6, r.bottom };
+            RECT ar = { r.right - ARROW_COL * k, r.top, r.right - 6 * k, r.bottom };
             draw_arrow(dc, &ar, 3, tc);
         }
     }
@@ -945,7 +954,7 @@ static void open_sub(int level, int i)
     ClientToScreen(L[level].wnd, &o);
     OffsetRect(&r, o.x, o.y);
     RECT ex = { o.x, r.top, o.x + m->w, r.bottom };
-    open_popup(m->it[i].sub, o.x + m->w - 3, r.top - POPUP_PAD - 1, 0, &ex, i);
+    open_popup(m->it[i].sub, o.x + m->w - 3 * m->k, r.top - (POPUP_PAD + 1) * m->k, 0, &ex, i);
 }
 
 static void bar_open(int i, int select_first)

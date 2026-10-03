@@ -1,8 +1,11 @@
 /*
  * mmdevapi.dll — the Core Audio API (WASAPI)
  *
- * CLSID_MMDeviceEnumerator lists up to two endpoints: the sound card's
- * speakers and, when the card can record, its microphone or line in.  An
+ * CLSID_MMDeviceEnumerator lists an endpoint for each sound device NovaOS
+ * has (audiodev.h): the sound card's speakers and microphone or line in,
+ * and each USB speaker and microphone, the default of each flow being the
+ * newest or the one chosen in Settings.  An IAudioClient a program
+ * activates on an endpoint plays on (records from) that device.  An
  * IAudioClient runs in shared mode in the client's own format (the mix
  * format is 48 kHz float stereo, but any PCM or float format is accepted
  * and converted).  On the speakers each ReleaseBuffer converts the frames
@@ -20,6 +23,7 @@
 #include <winternl.h>
 #include <objbase.h>
 #include "../winmm/audioconv.h"
+#include "../winmm/audiodev.h"
 
 int _fltused = 1;                  /* floats are used (the converter) */
 
@@ -87,20 +91,42 @@ typedef struct { GUID fmtid; DWORD pid; } PROPERTYKEY;
 #define VT_BLOB   65
 
 
-/* eRender (0) or eCapture (1): whether NovaOS has that endpoint; its name
- * from the kernel ("Microphone (Intel ...)") */
-static struct { LONG known; char name[96]; } g_dev[2] = { { -1 }, { -1 } };
+/* The endpoints: a slot for each device of each flow (eRender 0, eCapture
+ * 1) a program has seen, by the kernel's device id; a slot whose device
+ * has gone is reused */
+#define MAX_EP AUDIO_MAX_DEVICES
+static struct { UINT32 id; char name[96]; } g_ep[2][MAX_EP];
+static SRWLOCK g_ep_lock;
 
-static BOOL device_present_flow(int flow)
+/* The slot of device @id of @flow (its name refreshed); -1 if every slot
+ * holds a device still attached (more than MAX_EP: cannot happen) */
+static int ep_slot(int flow, UINT32 id, const char *name, const AudioDeviceList *now)
 {
-    if (flow < 0 || flow > 1) return FALSE;
-    if (g_dev[flow].known < 0) {
-        struct { UINT32 present, rate; char name[96]; } info = { 0 };
-        BOOL ok = NtNovaAudioCtl(0, flow ? 7 : 5, 0, &info) == 0 && info.present;
-        memcpy(g_dev[flow].name, info.name, sizeof(info.name));
-        g_dev[flow].known = ok;
+    AcquireSRWLockExclusive(&g_ep_lock);
+    int k = -1;
+    for (int i = 0; i < MAX_EP && k < 0; i++)
+        if (g_ep[flow][i].id == id) k = i;
+    for (int i = 0; i < MAX_EP && k < 0; i++) {               /* a free slot, or one whose device left */
+        BOOL here = FALSE;
+        for (UINT j = 0; g_ep[flow][i].id && j < now->count && !here; j++) here = now->dev[j].id == g_ep[flow][i].id;
+        if (!here) k = i;
     }
-    return g_dev[flow].known;
+    if (k >= 0) {
+        g_ep[flow][k].id = id;
+        lstrcpynA(g_ep[flow][k].name, name, sizeof(g_ep[flow][k].name));
+    }
+    ReleaseSRWLockExclusive(&g_ep_lock);
+    return k;
+}
+
+/* Whether the device in slot @k of @flow is attached */
+static BOOL ep_present(int flow, int k)
+{
+    AudioDeviceList l;
+    UINT n = audio_devices(flow, &l);
+    for (UINT j = 0; j < n; j++)
+        if (l.dev[j].id == g_ep[flow][k].id) return TRUE;
+    return FALSE;
 }
 
 static void mix_format(AcWaveFormatExt *f)
@@ -126,25 +152,61 @@ static LPWSTR co_str(LPCWSTR s)
     return p;
 }
 
-static const WCHAR *const DEVICE_ID[2] = {
-    L"{0.0.0.00000000}.{6e6f7661-6864-6100-0000-000000000001}",
-    L"{0.0.1.00000000}.{6e6f7661-6864-6100-0000-000000000002}",
-};
-
-/* "Speakers", or what the card records from ("Microphone", "Line in") */
-static void device_desc(int flow, WCHAR *out, int n)
+/* An endpoint's ID: "{0.0.0.00000000}.{6e6f7661-6864-6100-0000-0000000000NN}"
+ * (0.0.1: capture), NN its device id: 1 is the sound card's speakers and 2
+ * its microphone, the IDs NovaOS had before there were more devices */
+static void device_id(int flow, UINT32 id, WCHAR *out)
 {
-    const char *src = flow ? g_dev[1].name : "Speakers";
+    lstrcpyW(out, flow ? L"{0.0.1.00000000}.{6e6f7661-6864-6100-0000-000000000000}"
+                       : L"{0.0.0.00000000}.{6e6f7661-6864-6100-0000-000000000000}");
+    WCHAR *d = out + lstrlenW(out) - 2;                         /* the last hex digit */
+    for (; id; id >>= 4, d--) *d = L"0123456789abcdef"[id & 15];
+}
+
+/* Where " (" starts in @s; NULL if nowhere */
+static const char *paren(const char *s)
+{
+    for (; *s; s++)
+        if (s[0] == ' ' && s[1] == '(') return s;
+    return NULL;
+}
+
+/* What the kernel calls the device: "Speakers (Product)" for a USB one,
+ * "Microphone (Card)" for the card's input, the card's name for its
+ * output.  The description is the part before " (": "Speakers",
+ * "Microphone", "Line in"; the friendly name the whole, or "Speakers (High
+ * Definition Audio)" for a card name; the adapter the part inside. */
+static void device_desc(int flow, int k, WCHAR *out, int n)
+{
+    const char *src = g_ep[flow][k].name;
+    BOOL has = paren(src) != NULL;
     int i = 0;
-    while (src[i] && i < n - 1 && !(src[i] == ' ' && src[i + 1] == '(')) { out[i] = (WCHAR)(BYTE)src[i]; i++; }
+    while (has && src[i] && i < n - 1 && !(src[i] == ' ' && src[i + 1] == '(')) { out[i] = (WCHAR)(BYTE)src[i]; i++; }
     out[i] = 0;
     if (!i && n > 10) lstrcpyW(out, flow ? L"Microphone" : L"Speakers");
 }
 
-static void device_name(int flow, WCHAR *out, int n)
+static void device_name(int flow, int k, WCHAR *out, int n)
 {
-    device_desc(flow, out, n - 26);
+    const char *src = g_ep[flow][k].name;
+    if (paren(src)) {
+        int i = 0;
+        for (; src[i] && i < n - 1; i++) out[i] = (WCHAR)(BYTE)src[i];
+        out[i] = 0;
+        return;
+    }
+    device_desc(flow, k, out, n - 26);
     lstrcatW(out, L" (High Definition Audio)");
+}
+
+static void device_adapter(int flow, int k, WCHAR *out, int n)
+{
+    const char *src = paren(g_ep[flow][k].name);
+    int i = 0;
+    if (src)
+        for (src += 2; src[i] && src[i] != ')' && i < n - 1; i++) out[i] = (WCHAR)(BYTE)src[i];
+    out[i] = 0;
+    if (!src) lstrcpynW(out, L"High Definition Audio Device", n);
 }
 
 /* -----------------------------------------------------------------------
@@ -187,6 +249,7 @@ struct Client {
     LONG        refs;
     CRITICAL_SECTION lock;
     int         flow;               /* 0 render, 1 capture */
+    UINT32      device;             /* the device it plays on (records from) */
     BOOL        init, started, event_mode, in_buffer;
     AudioConv   conv;
     AudioCapConv cconv;             /* capture: the mixer's frames to the client's */
@@ -299,6 +362,7 @@ static HRESULT STDMETHODCALLTYPE ac_initialize(Client *c, int mode, DWORD flags,
     UINT32 dev = (UINT32)((ULONGLONG)c->frames * AC_RATE / c->conv.rate) + LEAD + 1024;
     c->stream = c->buf ? NtNovaAudioOpen(dev | (c->flow ? 0x80000000u : 0)) : 0;   /* capture: a recording stream */
     if (!c->stream) { hr = E_OUTOFMEMORY; goto out; }
+    audio_route(c->stream, c->device);                          /* (gone meanwhile: the default) */
     c->event_mode = (flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0;
     if (c->event_mode) {
         c->quit = CreateEventW(0, TRUE, FALSE, 0);
@@ -735,12 +799,13 @@ g_session_vtbl = {
     se_get_group, se_set_group, se_notify, se_notify,
 };
 
-static HRESULT new_client(int flow, void **ppv)
+static HRESULT new_client(int flow, UINT32 device, void **ppv)
 {
     Client *c = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*c));
     if (!c) return E_OUTOFMEMORY;
     c->vtbl = &g_client_vtbl;
     c->flow = flow;
+    c->device = device;
     c->refs = 1;
     c->vol = c->chan[0] = c->chan[1] = 1.0f;
     InitializeCriticalSection(&c->lock);
@@ -755,12 +820,14 @@ static HRESULT new_client(int flow, void **ppv)
 }
 
 /* -----------------------------------------------------------------------
- * The endpoints: for each flow an IMMDevice + IMMEndpoint, its property
- * store, its IAudioEndpointVolume, and the collections (static objects:
- * their reference counts do not matter)
+ * The endpoints: for each slot of each flow an IMMDevice + IMMEndpoint, its
+ * property store, its IAudioEndpointVolume (the flow's master volume: the
+ * kernel keeps one a flow), and the collections (static objects: their
+ * reference counts do not matter)
  * ----------------------------------------------------------------------- */
-typedef struct { const void *vtbl; int flow; } Static;
-static Static g_device[2], g_endpoint[2], g_props[2], g_epvol[2], g_collection[3], g_empty;
+typedef struct { const void *vtbl; int flow, slot; } Static;
+static Static g_device[2][MAX_EP], g_endpoint[2][MAX_EP], g_props[2][MAX_EP], g_epvol[2][MAX_EP];
+static Static g_collection[3], g_empty;
 
 static ULONG STDMETHODCALLTYPE static_addref(Static *s)  { (void)s; return 2; }
 static ULONG STDMETHODCALLTYPE static_release(Static *s) { (void)s; return 1; }
@@ -768,8 +835,8 @@ static ULONG STDMETHODCALLTYPE static_release(Static *s) { (void)s; return 1; }
 static HRESULT STDMETHODCALLTYPE dev_qi(Static *s, REFIID riid, void **ppv)
 {
     if (!ppv) return E_POINTER;
-    *ppv = IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMMDevice) ? (void *)&g_device[s->flow] :
-           IsEqualIID(riid, &IID_IMMEndpoint) ? (void *)&g_endpoint[s->flow] : 0;
+    *ppv = IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMMDevice) ? (void *)&g_device[s->flow][s->slot] :
+           IsEqualIID(riid, &IID_IMMEndpoint) ? (void *)&g_endpoint[s->flow][s->slot] : 0;
     return *ppv ? S_OK : E_NOINTERFACE;
 }
 static HRESULT STDMETHODCALLTYPE dev_activate(Static *s, REFIID riid, DWORD ctx, void *params, void **ppv)
@@ -779,9 +846,9 @@ static HRESULT STDMETHODCALLTYPE dev_activate(Static *s, REFIID riid, DWORD ctx,
     *ppv = 0;
     if (IsEqualIID(riid, &IID_IAudioClient) || IsEqualIID(riid, &IID_IAudioClient2) ||
         IsEqualIID(riid, &IID_IAudioClient3) || IsEqualIID(riid, &IID_IUnknown))
-        return new_client(s->flow, ppv);
+        return new_client(s->flow, g_ep[s->flow][s->slot].id, ppv);
     if (IsEqualIID(riid, &IID_IAudioEndpointVolume) || IsEqualIID(riid, &IID_IAudioEndpointVolumeEx)) {
-        *ppv = &g_epvol[s->flow];
+        *ppv = &g_epvol[s->flow][s->slot];
         return S_OK;
     }
     return E_NOINTERFACE;
@@ -790,16 +857,23 @@ static HRESULT STDMETHODCALLTYPE dev_open_props(Static *s, DWORD access, void **
 {
     (void)access;
     if (!ppv) return E_POINTER;
-    *ppv = &g_props[s->flow];
+    *ppv = &g_props[s->flow][s->slot];
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE dev_get_id(Static *s, LPWSTR *id)
 {
     if (!id) return E_POINTER;
-    *id = co_str(DEVICE_ID[s->flow]);
+    WCHAR buf[64];
+    device_id(s->flow, g_ep[s->flow][s->slot].id, buf);
+    *id = co_str(buf);
     return *id ? S_OK : E_OUTOFMEMORY;
 }
-static HRESULT STDMETHODCALLTYPE dev_get_state(Static *s, DWORD *st) { (void)s; if (!st) return E_POINTER; *st = 1; return S_OK; }
+static HRESULT STDMETHODCALLTYPE dev_get_state(Static *s, DWORD *st)
+{
+    if (!st) return E_POINTER;
+    *st = ep_present(s->flow, s->slot) ? 1 : 4;                /* DEVICE_STATE_ACTIVE / NOTPRESENT (unplugged) */
+    return S_OK;
+}
 static const struct { void *qi, *addref, *release, *activate, *open_props, *get_id, *get_state; } g_device_vtbl = {
     dev_qi, static_addref, static_release, dev_activate, dev_open_props, dev_get_id, dev_get_state,
 };
@@ -833,24 +907,25 @@ static HRESULT STDMETHODCALLTYPE ps_get(Static *s, const PROPERTYKEY *k, PROPVAR
     if (!k || !v) return E_POINTER;
     memset(v, 0, sizeof(*v));
     WCHAR name[96];
-    device_present_flow(s->flow);
     if (IsEqualGUID(&k->fmtid, &FMTID_Device) && (k->pid == 14 || k->pid == 2)) {   /* FriendlyName, DeviceDesc */
-        if (k->pid == 14) device_name(s->flow, name, 96); else device_desc(s->flow, name, 96);
+        if (k->pid == 14) device_name(s->flow, s->slot, name, 96); else device_desc(s->flow, s->slot, name, 96);
         v->vt = VT_LPWSTR;
         v->pwszVal = co_str(name);
     } else if (IsEqualGUID(&k->fmtid, &FMTID_Interface) && k->pid == 2) {            /* the adapter */
         v->vt = VT_LPWSTR;
-        v->pwszVal = co_str(L"High Definition Audio Device");
+        device_adapter(s->flow, s->slot, name, 96);
+        v->pwszVal = co_str(name);
     } else if (IsEqualGUID(&k->fmtid, &FMTID_Endpoint) && k->pid == 0) {              /* FormFactor */
         v->vt = VT_UI4;
-        device_desc(s->flow, name, 96);
+        device_desc(s->flow, s->slot, name, 96);
         v->ulVal = !s->flow ? 1 /* Speakers */ : lstrcmpW(name, L"Microphone") ? 2 /* LineLevel */ : 4 /* Microphone */;
     } else if (IsEqualGUID(&k->fmtid, &FMTID_Endpoint) && k->pid == 3 && !s->flow) {  /* PhysicalSpeakers */
         v->vt = VT_UI4;
         v->ulVal = 3;                                           /* front left and right */
     } else if (IsEqualGUID(&k->fmtid, &FMTID_Endpoint) && k->pid == 4) {             /* AudioEndpoint_GUID */
         v->vt = VT_LPWSTR;
-        v->pwszVal = co_str(DEVICE_ID[s->flow] + 17);
+        device_id(s->flow, g_ep[s->flow][s->slot].id, name);
+        v->pwszVal = co_str(name + 17);
     } else if (IsEqualGUID(&k->fmtid, &FMTID_EngineFormat) && k->pid == 0) {         /* the device format */
         AcWaveFormatExt *f = CoTaskMemAlloc(sizeof(*f));
         if (!f) return E_OUTOFMEMORY;
@@ -982,17 +1057,30 @@ static HRESULT STDMETHODCALLTYPE col_qi(Static *s, REFIID riid, void **ppv)
     *ppv = IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMMDeviceCollection) ? s : 0;
     return *ppv ? S_OK : E_NOINTERFACE;
 }
+/* The endpoints of @flow attached now, oldest first (as waveOut device
+ * IDs); with @def, only the default one */
+static UINT flow_list(int flow, BOOL def, Static **out)
+{
+    AudioDeviceList l;
+    UINT n = 0, count = audio_devices(flow, &l);
+    for (UINT j = 0; j < count; j++) {
+        if (def && !l.dev[j].is_default) continue;
+        int k = ep_slot(flow, l.dev[j].id, l.dev[j].name, &l);
+        if (k >= 0) out[n++] = &g_device[flow][k];
+    }
+    return n;
+}
 static UINT col_list(Static *s, Static **out)
 {
     UINT n = 0;
     for (int f = 0; f < 2; f++)
-        if ((s->flow == f || s->flow == 2) && device_present_flow(f)) out[n++] = &g_device[f];
+        if (s->flow == f || s->flow == 2) n += flow_list(f, FALSE, out + n);
     return n;
 }
-static HRESULT STDMETHODCALLTYPE col_count(Static *s, UINT *n) { Static *l[2]; if (!n) return E_POINTER; *n = col_list(s, l); return S_OK; }
+static HRESULT STDMETHODCALLTYPE col_count(Static *s, UINT *n) { Static *l[2 * MAX_EP]; if (!n) return E_POINTER; *n = col_list(s, l); return S_OK; }
 static HRESULT STDMETHODCALLTYPE col_item(Static *s, UINT i, void **dev)
 {
-    Static *l[2];
+    Static *l[2 * MAX_EP];
     if (!dev) return E_POINTER;
     *dev = 0;
     if (i >= col_list(s, l)) return E_INVALIDARG;
@@ -1003,12 +1091,23 @@ static const struct { void *qi, *addref, *release, *count, *item; } g_collection
     col_qi, static_addref, static_release, col_count, col_item,
 };
 
-static Static g_empty         = { &g_collection_vtbl, -1 };
-static Static g_device[2]     = { { &g_device_vtbl, 0 }, { &g_device_vtbl, 1 } };
-static Static g_endpoint[2]   = { { &g_endpoint_vtbl, 0 }, { &g_endpoint_vtbl, 1 } };
-static Static g_props[2]      = { { &g_props_vtbl, 0 }, { &g_props_vtbl, 1 } };
-static Static g_epvol[2]      = { { &g_epvol_vtbl, 0 }, { &g_epvol_vtbl, 1 } };
-static Static g_collection[3] = { { &g_collection_vtbl, 0 }, { &g_collection_vtbl, 1 }, { &g_collection_vtbl, 2 } };
+static Static g_empty         = { &g_collection_vtbl, -1, 0 };
+static Static g_collection[3] = { { &g_collection_vtbl, 0, 0 }, { &g_collection_vtbl, 1, 0 }, { &g_collection_vtbl, 2, 0 } };
+
+/* (the endpoint objects get their tables and slots here, once) */
+static void statics_init(void)
+{
+    static LONG done;
+    if (done) return;
+    for (int f = 0; f < 2; f++)
+        for (int k = 0; k < MAX_EP; k++) {
+            g_device[f][k]   = (Static){ &g_device_vtbl, f, k };
+            g_endpoint[f][k] = (Static){ &g_endpoint_vtbl, f, k };
+            g_props[f][k]    = (Static){ &g_props_vtbl, f, k };
+            g_epvol[f][k]    = (Static){ &g_epvol_vtbl, f, k };
+        }
+    done = 1;
+}
 
 /* -----------------------------------------------------------------------
  * IMMDeviceEnumerator (a static object too)
@@ -1033,8 +1132,9 @@ static HRESULT STDMETHODCALLTYPE en_default(Static *s, int flow, int role, void 
     if (!out) return E_POINTER;
     *out = 0;
     if (flow < 0 || flow > 2 || role < 0 || role > 2) return E_INVALIDARG;
-    if (flow == 2 || !device_present_flow(flow)) return E_NOTFOUND;
-    *out = &g_device[flow];
+    Static *l[1];
+    if (flow == 2 || !flow_list(flow, TRUE, l)) return E_NOTFOUND;
+    *out = l[0];
     return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE en_get(Static *s, LPCWSTR id, void **out)
@@ -1042,8 +1142,13 @@ static HRESULT STDMETHODCALLTYPE en_get(Static *s, LPCWSTR id, void **out)
     (void)s;
     if (!id || !out) return E_POINTER;
     *out = 0;
+    Static *l[MAX_EP];
+    WCHAR buf[64];
     for (int f = 0; f < 2; f++)
-        if (device_present_flow(f) && !lstrcmpiW(id, DEVICE_ID[f])) { *out = &g_device[f]; return S_OK; }
+        for (UINT i = 0, n = flow_list(f, FALSE, l); i < n; i++) {
+            device_id(f, g_ep[f][l[i]->slot].id, buf);
+            if (!lstrcmpiW(id, buf)) { *out = l[i]; return S_OK; }
+        }
     return E_NOTFOUND;
 }
 static HRESULT STDMETHODCALLTYPE en_notify(Static *s, void *cb) { (void)s; return cb ? S_OK : E_POINTER; }
@@ -1080,6 +1185,7 @@ EXPORT HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID riid, void **ppv)
     if (!ppv) return E_POINTER;
     *ppv = 0;
     if (!IsEqualCLSID(clsid, &CLSID_MMDeviceEnumerator)) return CLASS_E_CLASSNOTAVAILABLE;
+    statics_init();
     return cf_qi(&g_factory, riid, ppv);
 }
 

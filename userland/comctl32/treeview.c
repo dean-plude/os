@@ -234,7 +234,7 @@ static int text_w(HWND h, TV *s, TItem *it)
     WCHAR b[520];
     const WCHAR *t = item_text(h, s, it, b, 520);
     HDC dc = GetDC(h);
-    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font());
+    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
     int w = cc_text_w(dc, t, -1);
     SelectObject(dc, of);
     ReleaseDC(h, dc);
@@ -775,7 +775,7 @@ static void paint_item(HWND h, TV *s, HDC dc, TItem *it, BOOL want_item, BOOL fo
     if (!(s->edit && s->edit_item == it)) {
         WCHAR b[520];
         const WCHAR *t = item_text(h, s, it, b, 520);
-        HFONT f = s->font ? s->font : cc_font();
+        HFONT f = s->font ? s->font : cc_font_for(h);
         HFONT bold = NULL;
         if (it->state & TVIS_BOLD) {
             LOGFONTW lf;
@@ -805,7 +805,7 @@ static void paint(HWND h, TV *s, HDC dc, const RECT *upd)
     rows(s);
     RECT c;
     GetClientRect(h, &c);
-    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font());
+    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
     SetBkMode(dc, TRANSPARENT);
     NMTVCUSTOMDRAW cd;
     memset(&cd, 0, sizeof(cd));
@@ -822,7 +822,7 @@ static void paint(HWND h, TV *s, HDC dc, const RECT *upd)
         int first = s->top + MAX(0, upd->top) / rh, last = s->top + upd->bottom / rh;
         if (last > s->nvis - 1) last = s->nvis - 1;
         for (int i = first; i <= last; i++) {
-            SelectObject(dc, s->font ? s->font : cc_font());
+            SelectObject(dc, s->font ? s->font : cc_font_for(h));
             paint_item(h, s, dc, s->vis[i], want_item, focus);
         }
         if (pre & CDRF_NOTIFYPOSTPAINT) { cd.nmcd.dwDrawStage = CDDS_POSTPAINT; cc_notify(h, NM_CUSTOMDRAW, &cd.nmcd.hdr); }
@@ -889,7 +889,7 @@ static HWND edit_label(HWND h, TV *s, TItem *it)
     s->edit = CreateWindowExW(0, L"Edit", t, WS_CHILD | WS_BORDER | ES_AUTOHSCROLL, p.label.left, p.label.top, w, p.label.bottom - p.label.top, h, (HMENU)1, NULL, NULL);
     if (!s->edit) return NULL;
     s->edit_item = it;
-    SendMessageW(s->edit, WM_SETFONT, (WPARAM)(s->font ? s->font : cc_font()), 0);
+    SendMessageW(s->edit, WM_SETFONT, (WPARAM)(s->font ? s->font : cc_font_for(h)), 0);
     SetWindowSubclass(s->edit, edit_sub, 1, (DWORD_PTR)h);
     SendMessageW(s->edit, EM_SETSEL, 0, -1);
     ShowWindow(s->edit, SW_SHOW);
@@ -1132,7 +1132,7 @@ LRESULT CALLBACK TreeViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         s->root.state = TVIS_EXPANDED;
         s->indent = 19;
         s->bk = s->text = s->line = s->insmark = CLR_DEFAULT;
-        s->fh = cc_font_h(NULL);
+        s->fh = cc_font_h(cc_font_for(h));
         s->item_h = 0;
         ctl_set(h, s);
         return DefWindowProcW(h, msg, wp, lp);
@@ -1157,7 +1157,7 @@ LRESULT CALLBACK TreeViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_SIZE: update_scroll(h, s); InvalidateRect(h, NULL, TRUE); return 0;
     case WM_SETFONT:
         s->font = (HFONT)wp;
-        s->fh = cc_font_h(s->font ? s->font : cc_font());
+        s->fh = cc_font_h(s->font ? s->font : cc_font_for(h));
         s->item_h = default_item_h(h, s);
         refresh(h, s);
         return 0;

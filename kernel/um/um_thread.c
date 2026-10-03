@@ -697,8 +697,8 @@ static UINT64 sys_suspend_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (
  * classes, 16 and 31 for REALTIME; a base is never outside that range.
  * REALTIME needs SeIncreaseBasePriorityPrivilege, which only an
  * administrator's token holds (kernel32 falls back to HIGH without it, as
- * on Windows), so a program never gets above 15 — or ahead of the
- * desktop, the device poll thread or the mixer (scheduler.h).  Wake-up
+ * on Windows), so a program never gets above 15 — or ahead of any of
+ * the kernel's own threads (16-19, scheduler.h).  Wake-up
  * boosts start from and decay back to the thread's own base (scheduler.c).
  * ----------------------------------------------------------------------- */
 #define PRIO_INCR_SATURATE 16                  /* (HIGH_PRIORITY + 1) / 2 */
@@ -942,7 +942,7 @@ static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a2 == 18 || a2 == 33) {                                /* ProcessPriorityClass, ProcessPriorityBoost */
         UINT32 need = a2 == 18 ? 2 : 4;
         if (a4 < need) return ST_INFO_LENGTH_MISMATCH;
-        UINT8 v[4] = { 0, (UINT8)(p->prio_class ? p->prio_class : 2), 0, 0 };   /* { Foreground, PriorityClass } */
+        UINT8 v[4] = { sched_foreground() == p, (UINT8)(p->prio_class ? p->prio_class : 2), 0, 0 };   /* { Foreground, PriorityClass } */
         if (a2 == 33) v[0] = p->no_boost, v[1] = 0;
         if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, v, need))) return ST_ACCESS_VIOLATION;
         UINT64 ret = um_stack_arg(5);
@@ -1159,6 +1159,8 @@ typedef struct {
     PADDR *frames;
     RamNode *file;                  /* file-backed: written back on unmap, flush and destruction */
     bool writable;
+    void (*release)(void *);        /* foreign frames (device memory): not ours to free; */
+    void *release_ctx;              /* release(release_ctx) when the section goes */
 } UmSection;
 
 /* File-backed sections hold a copy of the file: it is filled at creation
@@ -1200,9 +1202,38 @@ static void section_destroy(UmObject *o)
     if (!sec) return;
     section_writeback(sec);
     if (sec->file) { DesktopLock(); RamfsUnref(sec->file); DesktopUnlock(); }
-    um_free_frames(sec->frames, sec->npages);
+    if (sec->release) {
+        kfree(sec->frames);
+        sec->release(sec->release_ctx);
+    } else
+        um_free_frames(sec->frames, sec->npages);
     kfree(sec);
     o->ptr = NULL;
+}
+
+/* A section over @size bytes of device memory at @pa (a GPU's blob, see
+ * um_gpu.c), with a handle in process @p; release(ctx) when it goes (its
+ * last view unmapped and handle closed).  The handle, or 0. */
+UINT64 um_section_foreign(UmProcess *p, UINT64 pa, UINT64 size, void (*release)(void *), void *ctx)
+{
+    UINT64 n = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    UmSection *sec = kzalloc(sizeof(*sec));
+    PADDR *f = sec ? kmalloc(sizeof(PADDR) * n) : NULL;
+    UmObject *o = f ? ob_new(UO_SECTION) : NULL;
+    if (!o) { kfree(f); kfree(sec); return 0; }
+    for (UINT64 i = 0; i < n; i++) f[i] = pa + i * PAGE_SIZE;
+    sec->size = size;
+    sec->npages = n;
+    sec->frames = f;
+    sec->writable = true;
+    sec->release = release;
+    sec->release_ctx = ctx;
+    o->ptr = sec;
+    o->destroy = section_destroy;
+    o->free_unlocked = true;
+    UINT64 h = um_handle_new_object(p, o);
+    um_ob_unref(o);                                         /* (the handle's reference, or gone) */
+    return h;
 }
 
 void um_flush_view_at(UmProcess *p, UINT64 va)

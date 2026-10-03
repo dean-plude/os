@@ -118,6 +118,24 @@ UINT16 UsbDevVendor(const UsbDev *d)  { return d->vid; }
 UINT16 UsbDevProduct(const UsbDev *d) { return d->pid; }
 bool   UsbDevGone(const UsbDev *d)    { return d->gone; }
 const char *UsbDevName(const UsbDev *d) { return d->name; }
+
+bool UsbDevProductName(UsbDev *d, char *out, int cap)
+{
+    UINT8 s[128];
+    if (cap < 1) return false;
+    out[0] = 0;
+    int n = d->iproduct ? UsbControl(d, 0x80, 6, (UINT16)(0x0300 | d->iproduct), 0x0409, sizeof(s), s) : -1;
+    if (n < 4 || s[1] != 3) return false;
+    if (n > s[0]) n = s[0];
+    int k = 0;
+    for (int i = 2; i + 1 < n && k < cap - 1; i += 2) {
+        UINT16 c = (UINT16)(s[i] | s[i + 1] << 8);
+        out[k++] = c >= 0x20 && c < 0x7F ? (char)c : '?';       /* (logs and names are ASCII) */
+    }
+    while (k && out[k - 1] == ' ') k--;
+    out[k] = 0;
+    return k > 0;
+}
 UINT16 UsbPipeMaxPacket(const UsbPipe *p) { return p->mps; }
 
 const UINT8 *UsbDevConfig(const UsbDev *d, int *len)
@@ -570,6 +588,7 @@ static UsbDev *enumerate(UsbHc *hc, UsbDev *parent, UINT8 hub_port, UINT8 root, 
     if (control_locked(d, 0x80, 6, 0x0100, 0, 18) < 0) goto fail;
     d->vid = (UINT16)(d->buf[8] | d->buf[9] << 8);
     d->pid = (UINT16)(d->buf[10] | d->buf[11] << 8);
+    d->iproduct = d->buf[15];
     UINT8 dev_class = d->buf[4];
 
     /* Configuration descriptor: header first, then the whole thing */
@@ -741,7 +760,7 @@ int UsbInit(void)
     if (ehcis) UsbDelay(20);               /* (devices EHCI passed on show up on the companions) */
     for (int i = first_companion_hc; i < g_nhc; i++) scan_ports(g_hcs[i], true);
     service_hubs();                        /* devices behind hubs */
-    sched_create_thread("usb", usb_thread, NULL, 8);
+    sched_create_thread("usb", usb_thread, NULL, PRIO_DEVICE_IO);   /* (above programs: scheduler.h) */
 
     int n = 0;
     for (int i = 0; i < MAX_DEVS; i++) if (g_devs[i]) n++;

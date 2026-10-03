@@ -203,8 +203,9 @@ static bool g_slice_end[MAX_CPUS];
  * often would never reach the end of one, and the threads queued behind
  * it would starve.  A thread that waited starts a new slice.) */
 
-/* Threads above this priority are "foreground" (the desktop, programs, the
- * network); the idle threads and csrss run only when none of those is ready. */
+/* Threads above this priority are "foreground" (programs, the kernel's
+ * service threads); the idle threads and csrss run only when none of those
+ * is ready.  (Not the foreground process: sched_set_foreground.) */
 #define BACKGROUND_PRIO 4
 
 /* The next thread to run: the first in the queue (the highest priority) */
@@ -238,10 +239,19 @@ static Thread *rq_dequeue(RunQueue *rq)
 #define STARVE_TICKS  300   /* 3 s */
 #define BALANCE_MAX   16
 
-/* (@t waiting, its queue locked) */
+/* The foreground process (sched_set_foreground) */
+static void *volatile g_foreground;
+
+void sched_set_foreground(void *um) { __atomic_store_n(&g_foreground, um, __ATOMIC_RELAXED); }
+void *sched_foreground(void)        { return __atomic_load_n(&g_foreground, __ATOMIC_RELAXED); }
+
+/* (@t waiting, its queue locked).  A thread of the foreground process gets
+ * NT's foreground boost on top (PsPrioritySeparation; Windows Internals,
+ * "Priority boosts for foreground threads after waits"). */
 static void boost(Thread *t, int incr)
 {
     if (incr <= 0 || t->idle || t->no_boost || t->base_priority >= PRIO_LOW_REALTIME) return;
+    if (t->um_proc && t->um_proc == sched_foreground()) incr += BOOST_FOREGROUND;
     int p = t->base_priority + incr;
     if (p > PRIO_MAX_DYNAMIC) p = PRIO_MAX_DYNAMIC;
     if (p <= t->priority) return;
@@ -708,6 +718,19 @@ void sched_yield(void)
     IrqState irq = irq_save();
     perform_switch();
     irq_restore(irq);
+}
+
+/* Whether a yield now would hand this CPU to a thread of lower priority
+ * (only such threads are queued here): a kernel thread above programs that
+ * wants to come back soon sleeps briefly instead, as a timed wake-up then
+ * preempts that thread, where a yield leaves it its whole time slice */
+bool sched_yield_goes_lower(void)
+{
+    IrqState irq = irq_save();
+    Thread *h = __atomic_load_n(&my_rq()->head, __ATOMIC_RELAXED);
+    bool lower = h && h->priority < current_thread->priority;
+    irq_restore(irq);
+    return lower;
 }
 
 /* -----------------------------------------------------------------------

@@ -7,11 +7,12 @@
   number of each) with hubs and HID keyboards (lock-key LEDs and media
   keys included), mice (five buttons and both wheels), tablets, pens
   (pressure, X/Y tilt, barrel rotation, barrel buttons and eraser, for
-  Wintab) and
+  Wintab and as `WM_POINTER` pen messages) and
   multi-touch screens (report protocol), USB sticks (FAT and NTFS, as
   the next drive letter, hot-plugged) and USB speakers, headsets and
-  microphones (USB Audio Class 1 and 2 over isochronous transfers, played on and
-  recorded from as soon as they are plugged in); virtio multi-touch screens,
+  microphones (USB Audio Class 1 and 2 over isochronous transfers, at the
+  device's own sampling rate and channel count, played on and recorded
+  from as soon as they are plugged in, or chosen in Settings' Sound page); virtio multi-touch screens,
   pens (pressure, tilt, rotation) and tablets; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
@@ -19,9 +20,12 @@
   adapters, such as QEMU's secondary-vga, are more monitors of one
   desktop, arranged in Settings, each able to show DPI-aware programs
   its own DPI) and a Cirrus GD5446 one, with
-  the UEFI framebuffer as the fallback; a 2D virtio GPU driver for
+  the UEFI framebuffer as the fallback; a virtio GPU driver for
   QEMU's virtio-vga and virtio-gpu-pci, whose outputs are several
-  monitors on one card, plugged in and unplugged while NovaOS runs; ACPI power-off, reset, power buttons,
+  monitors on one card, plugged in and unplugged while NovaOS runs, and
+  which on a 3D one (`virtio-vga-gl`) gives Mesa's Venus (App Store) its
+  contexts, host-visible blobs and fences, so Vulkan and DXVK run on the
+  host's GPU; ACPI power-off, reset, power buttons,
   sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
   devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
   a real interrupt through the I/O APIC).

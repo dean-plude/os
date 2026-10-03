@@ -72,6 +72,9 @@
 #include "html/imagemap.h"
 #include "html/layout.h"
 #include "html/textselection.h"
+#ifdef _NOVAOS
+#include "desktop/frames.h"
+#endif
 
 #define CHUNK 4096
 
@@ -343,18 +346,35 @@ static void html_get_dimensions(html_content *htmlc)
  * NovaOS: pages a script changes after layout.  Upstream NetSurf builds
  * the box tree once ("NS layout is static"), so a DOM change made by a
  * script after the page was laid out (a new element, new text, a changed
- * style or class attribute, a new stylesheet) never showed.  Here any such
- * change schedules html_relayout, which throws the box tree away and
- * builds it again from the DOM in one go, then reformats and redraws the
- * page.  Changes made in one go by a script coalesce into one rebuild.
- * Form controls keep their state (it lives in the DOM and the form
- * structures, not in the boxes) and images carry on in the new boxes; the
- * text selection, a drag or the caret in a text field are dropped.  Pages with frames or iframes keep upstream's
- * static layout (their child browser windows hang off the boxes).
+ * style or class attribute, a new stylesheet) never showed.  Here such a
+ * change schedules html_relayout, which builds the boxes again from the
+ * DOM, then reformats and redraws the page.  Changes made in one go by a
+ * script coalesce into one rebuild.
+ *
+ * Only the part of the page a script changed is built again: the boxes
+ * below the lowest block-level box above every change since the last
+ * rebuild (html_schedule_relayout_node; a changed attribute counts as a
+ * change to the element's parent, since sibling selectors can restyle
+ * the element's later siblings).  A new stylesheet, or a change that
+ * reaches the root element, builds the whole tree again; a change in the
+ * head builds nothing.  Form controls keep their state (it lives in the
+ * DOM and the form structures, not in the boxes), images carry on in the
+ * new boxes, and iframes keep their browser windows (relinked to the new
+ * boxes; opened again only when the page's iframes changed); the text
+ * selection, a drag or the caret in a text field are dropped.  Frameset
+ * pages keep upstream's static layout (they have no boxes to change).
  */
 
 /** delay before a rebuild, so a burst of changes coalesces (ms) */
 #define HTML_RELAYOUT_DELAY 20
+
+/** A talloc context holding a subtree's boxes built again: freed with
+ * the boxes when that part of the page is built again */
+struct html_relayout_chunk {
+	dom_node *root;		/**< node whose children the boxes are */
+	void *ctx;		/**< child of the content's bctx */
+	struct html_relayout_chunk *next;
+};
 
 static void html_relayout(void *p);
 
@@ -368,7 +388,6 @@ static bool html_can_relayout(html_content *htmlc)
 		htmlc->had_initial_layout &&
 		htmlc->aborted == false &&
 		htmlc->frameset == NULL &&
-		htmlc->iframe == NULL &&
 		(status == CONTENT_STATUS_READY || status == CONTENT_STATUS_DONE);
 }
 
@@ -377,6 +396,81 @@ void html_schedule_relayout(html_content *htmlc)
 {
 	if (!html_can_relayout(htmlc))
 		return;
+	htmlc->relayout_full = true;
+	guit->misc->schedule(HTML_RELAYOUT_DELAY, html_relayout, htmlc);
+}
+
+/** whether @a is @n or one of its ancestors */
+static bool html_node_is_above(dom_node *a, dom_node *n)
+{
+	dom_node *cur = dom_node_ref(n);
+
+	while (cur != NULL) {
+		dom_node *parent = NULL;
+
+		if (cur == a) {
+			dom_node_unref(cur);
+			return true;
+		}
+		dom_node_get_parent_node(cur, &parent);
+		dom_node_unref(cur);
+		cur = parent;
+	}
+	return false;
+}
+
+/** whether @n is the head element or inside it */
+static bool html_node_in_head(dom_node *n)
+{
+	dom_node *cur = dom_node_ref(n);
+
+	while (cur != NULL) {
+		dom_node *parent = NULL;
+		dom_node_type type;
+		dom_html_element_type tag;
+
+		if (dom_node_get_node_type(cur, &type) == DOM_NO_ERR &&
+				type == DOM_ELEMENT_NODE &&
+				dom_html_element_get_tag_type(cur, &tag) ==
+					DOM_NO_ERR &&
+				tag == DOM_HTML_ELEMENT_TYPE_HEAD) {
+			dom_node_unref(cur);
+			return true;
+		}
+		dom_node_get_parent_node(cur, &parent);
+		dom_node_unref(cur);
+		cur = parent;
+	}
+	return false;
+}
+
+/* exported function documented in html/private.h */
+void html_schedule_relayout_node(html_content *htmlc, dom_node *node)
+{
+	dom_node *a;
+
+	if (!html_can_relayout(htmlc) || node == NULL)
+		return;
+	if (html_node_in_head(node))
+		return;		/* (a new stylesheet comes through
+				 * html_finish_conversion) */
+
+	if (htmlc->relayout_node == NULL) {
+		htmlc->relayout_node = dom_node_ref(node);
+	} else {
+		/* the lowest node above both changes */
+		a = dom_node_ref(htmlc->relayout_node);
+		while (a != NULL && !html_node_is_above(a, node)) {
+			dom_node *parent = NULL;
+			dom_node_get_parent_node(a, &parent);
+			dom_node_unref(a);
+			a = parent;
+		}
+		dom_node_unref(htmlc->relayout_node);
+		htmlc->relayout_node = a;
+		if (a == NULL)
+			htmlc->relayout_full = true;
+	}
 	guit->misc->schedule(HTML_RELAYOUT_DELAY, html_relayout, htmlc);
 }
 
@@ -421,14 +515,29 @@ static void html_relayout_forget_boxes(dom_node *root)
 	}
 }
 
-/** detach the form controls from the old boxes */
-static void html_relayout_forget_controls(html_content *htmlc)
+/** whether box @b is @within or below it */
+static bool html_box_is_within(const struct box *b, const struct box *within)
+{
+	for (; b != NULL; b = b->parent)
+		if (b == within)
+			return true;
+	return false;
+}
+
+/** detach the form controls from the old boxes (all, or those below
+ * @within) */
+static void html_relayout_forget_controls(html_content *htmlc,
+		struct box *within)
 {
 	struct form *f;
 	struct form_control *ctl;
 
 	for (f = htmlc->forms; f != NULL; f = f->prev) {
 		for (ctl = f->controls; ctl != NULL; ctl = ctl->next) {
+			if (within != NULL && (ctl->box == NULL ||
+					ctl->box == within ||
+					!html_box_is_within(ctl->box, within)))
+				continue;
 			ctl->box = NULL;
 			switch (ctl->type) {
 			case GADGET_TEXTAREA:
@@ -466,6 +575,13 @@ static void html_relayout_forget_controls(html_content *htmlc)
 	}
 }
 
+/* exported function documented in html/private.h */
+void html_relayout_node_removed(html_content *htmlc, dom_node *node)
+{
+	if (html_can_relayout(htmlc))
+		html_relayout_forget_boxes(node);
+}
+
 static bool html_relayout_ok;
 
 static void html_relayout_done(html_content *htmlc, bool success)
@@ -474,17 +590,238 @@ static void html_relayout_done(html_content *htmlc, bool success)
 	html_relayout_ok = success;
 }
 
-/** rebuild the box tree from the DOM, reformat and redraw */
-static void html_relayout(void *p)
+/** drop everything that points into the boxes about to go (all of them,
+ * or those below @within) */
+static void html_relayout_detach(html_content *htmlc, struct box *within)
 {
-	html_content *htmlc = p;
 	union html_drag_owner no_drag = { .no_owner = true };
 	union html_focus_owner self_focus = { .self = true };
 	union html_selection_owner no_sel = { .none = true };
+
+	if (htmlc->drag_type != HTML_DRAG_NONE)
+		html_set_drag_type(htmlc, HTML_DRAG_NONE, no_drag, NULL);
+	if (htmlc->focus_type != HTML_FOCUS_SELF)
+		html_set_focus(htmlc, HTML_FOCUS_SELF, self_focus, true,
+				0, 0, 0, NULL);
+	if (htmlc->selection_type != HTML_SELECTION_NONE)
+		html_set_selection(htmlc, HTML_SELECTION_NONE, no_sel, true);
+	selection_clear(htmlc->sel, false);
+	html_relayout_forget_controls(htmlc, within);
+	html_object_stash_box_objects(htmlc, within);
+	imagemap_destroy(htmlc);
+	if (htmlc->bw != NULL)
+		browser_window_unlink_iframes(htmlc->bw, within);
+}
+
+/** after the rebuild: images not asked for again go, iframes find their
+ * new boxes, image maps are read again */
+static void html_relayout_attach(html_content *htmlc)
+{
+	html_object_drop_stash(htmlc);
+	imagemap_extract(htmlc);
+	if (htmlc->bw != NULL)
+		browser_window_relink_iframes(htmlc->bw);
+}
+
+/** free a box and the boxes below it (they were allocated one by one in
+ * the content's talloc context) */
+static void html_relayout_free_boxes(struct box *b)
+{
+	while (b != NULL) {
+		struct box *next = b->next;
+
+		html_relayout_free_boxes(b->children);
+		if (b->list_marker != NULL)
+			html_relayout_free_boxes(b->list_marker);
+		talloc_free(b);
+		b = next;
+	}
+}
+
+/** the node whose box's children a rebuild for a change at or below
+ * @node replaces, or NULL when only a full rebuild will do */
+static dom_node *html_relayout_root(html_content *htmlc, dom_node *node)
+{
+	dom_node *n = dom_node_ref(node);
+
+	while (n != NULL) {
+		dom_node *parent = NULL;
+		dom_node_type type;
+
+		if (dom_node_get_node_type(n, &type) != DOM_NO_ERR ||
+				type == DOM_DOCUMENT_NODE)
+			break;
+		if (type == DOM_ELEMENT_NODE) {
+			struct box *box = box_for_node(n);
+
+			dom_node_get_parent_node(n, &parent);
+			if (parent != NULL) {
+				dom_node_type ptype = DOM_ELEMENT_NODE;
+				dom_node_get_node_type(parent, &ptype);
+				if (ptype == DOM_DOCUMENT_NODE) {
+					/* the root element: everything */
+					dom_node_unref(parent);
+					break;
+				}
+			}
+			if (box != NULL &&
+					(box->type == BOX_BLOCK ||
+					 box->type == BOX_INLINE_BLOCK ||
+					 box->type == BOX_TABLE_CELL) &&
+					(box->flags & CONVERT_CHILDREN) &&
+					!(box->flags & IS_REPLACED) &&
+					box->gadget == NULL &&
+					box->object == NULL &&
+					box->iframe == NULL &&
+					box->styles != NULL &&
+					box != htmlc->layout) {
+				if (parent != NULL)
+					dom_node_unref(parent);
+				return n;
+			}
+		} else {
+			dom_node_get_parent_node(n, &parent);
+		}
+		dom_node_unref(n);
+		n = parent;
+	}
+	if (n != NULL)
+		dom_node_unref(n);
+	return NULL;
+}
+
+/** build the boxes below @root again (its own box stays) */
+static bool html_relayout_subtree(html_content *htmlc, dom_node *root)
+{
+	struct html_relayout_chunk *chunk, **link, *dead = NULL;
+	struct box *box = box_for_node(root);
+	struct box *old = NULL;
+	int *bctx = htmlc->bctx;
+	nserror err;
+
+	chunk = calloc(1, sizeof(*chunk));
+	if (chunk == NULL)
+		return false;
+	chunk->ctx = talloc_zero(bctx, int);
+	if (chunk->ctx == NULL) {
+		free(chunk);
+		return false;
+	}
+	chunk->root = dom_node_ref(root);
+
+	html_relayout_detach(htmlc, box);
+	{
+		/* iframes of the old boxes leave the content's list */
+		struct content_html_iframe **ifl = &htmlc->iframe;
+		while (*ifl != NULL) {
+			struct content_html_iframe *f = *ifl;
+			if (f->box != box &&
+					html_box_is_within(f->box, box)) {
+				*ifl = f->next;
+				talloc_free(f);
+			} else {
+				ifl = &f->next;
+			}
+		}
+	}
+	/* the descendants' boxes and styles go (the root keeps its own) */
+	{
+		dom_node *child = NULL, *next;
+		dom_node_get_first_child(root, &child);
+		while (child != NULL) {
+			html_relayout_forget_boxes(child);
+			dom_node_get_next_sibling(child, &next);
+			dom_node_unref(child);
+			child = next;
+		}
+	}
+
+	/* new boxes go in the chunk */
+	htmlc->bctx = chunk->ctx;
+	err = dom_to_box_subtree(root, htmlc, &old);
+	htmlc->bctx = bctx;
+	html_relayout_attach(htmlc);
+
+	/* the old boxes go, then the chunks they were built in */
+	html_relayout_free_boxes(old);
+	for (link = &htmlc->relayout_chunks; *link != NULL; ) {
+		struct html_relayout_chunk *c = *link;
+		if (html_node_is_above(root, c->root)) {
+			*link = c->next;
+			c->next = dead;
+			dead = c;
+		} else {
+			link = &c->next;
+		}
+	}
+	while (dead != NULL) {
+		struct html_relayout_chunk *c = dead;
+		dead = c->next;
+		talloc_free(c->ctx);
+		dom_node_unref(c->root);
+		free(c);
+	}
+	chunk->next = htmlc->relayout_chunks;
+	htmlc->relayout_chunks = chunk;
+
+	/* the widths of the box and the boxes above it are measured again */
+	for (; box != NULL; box = box->parent)
+		box->max_width = UNKNOWN_MAX_WIDTH;
+
+	return err == NSERROR_OK;
+}
+
+/** forget the subtree chunks (the content's bctx owns their memory) */
+static void html_relayout_drop_chunks(html_content *htmlc)
+{
+	while (htmlc->relayout_chunks != NULL) {
+		struct html_relayout_chunk *c = htmlc->relayout_chunks;
+		htmlc->relayout_chunks = c->next;
+		dom_node_unref(c->root);
+		free(c);
+	}
+}
+
+/** rebuild the whole box tree from the DOM */
+static bool html_relayout_all(html_content *htmlc, dom_node *html)
+{
 	css_select_ctx *select_ctx = NULL;
-	dom_node *html = NULL;
 	int *old_bctx;
 	nserror err;
+
+	/* a new selection context: stylesheets a script added count now */
+	err = html_css_new_selection_context(htmlc, &select_ctx);
+	if (err != NSERROR_OK)
+		return true;	/* (keep the old tree) */
+
+	html_relayout_detach(htmlc, NULL);
+	html_relayout_forget_boxes(html);
+
+	if (htmlc->select_ctx != NULL)
+		css_select_ctx_destroy(htmlc->select_ctx);
+	htmlc->select_ctx = select_ctx;
+
+	/* build the new tree in a talloc context of its own; the old
+	 * tree's iframe list goes with the old context */
+	old_bctx = htmlc->bctx;
+	htmlc->bctx = NULL;
+	htmlc->layout = NULL;
+	htmlc->iframe = NULL;
+	html_relayout_drop_chunks(htmlc);
+	html_relayout_ok = false;
+	err = dom_to_box_sync(html, htmlc, html_relayout_done);
+	html_relayout_attach(htmlc);
+	talloc_free(old_bctx);
+	return err == NSERROR_OK && html_relayout_ok && htmlc->layout != NULL;
+}
+
+/** rebuild the changed part of the box tree, reformat and redraw */
+static void html_relayout(void *p)
+{
+	html_content *htmlc = p;
+	dom_node *html = NULL, *root = NULL;
+	bool full, ok;
+	uint64_t t0 = 0, t1 = 0, t2 = 0;
 
 	if (!html_can_relayout(htmlc) || htmlc->base.locked)
 		return;
@@ -497,61 +834,56 @@ static void html_relayout(void *p)
 			(void *) &html) != DOM_NO_ERR || html == NULL)
 		return;
 
-	/* a new selection context: stylesheets a script added count now */
-	err = html_css_new_selection_context(htmlc, &select_ctx);
-	if (err != NSERROR_OK) {
+	full = htmlc->relayout_full;
+	if (!full && htmlc->relayout_node != NULL) {
+		root = html_relayout_root(htmlc, htmlc->relayout_node);
+		full = (root == NULL);
+	}
+	htmlc->relayout_full = false;
+	if (htmlc->relayout_node != NULL) {
+		dom_node_unref(htmlc->relayout_node);
+		htmlc->relayout_node = NULL;
+	}
+	if (!full && root == NULL) {
 		dom_node_unref(html);
 		return;
 	}
 
-	NSLOG(netsurf, INFO, "rebuilding the box tree after a DOM change (%p)",
-			htmlc);
-
-	/* drop everything that points into the old tree */
-	if (htmlc->drag_type != HTML_DRAG_NONE)
-		html_set_drag_type(htmlc, HTML_DRAG_NONE, no_drag, NULL);
-	if (htmlc->focus_type != HTML_FOCUS_SELF)
-		html_set_focus(htmlc, HTML_FOCUS_SELF, self_focus, true,
-				0, 0, 0, NULL);
-	if (htmlc->selection_type != HTML_SELECTION_NONE)
-		html_set_selection(htmlc, HTML_SELECTION_NONE, no_sel, true);
-	selection_clear(htmlc->sel, false);
-	html_relayout_forget_controls(htmlc);
-	html_object_stash_box_objects(htmlc);
-	imagemap_destroy(htmlc);
-	html_relayout_forget_boxes(html);
-
-	if (htmlc->select_ctx != NULL)
-		css_select_ctx_destroy(htmlc->select_ctx);
-	htmlc->select_ctx = select_ctx;
-
-	/* build the new tree in a talloc context of its own */
-	old_bctx = htmlc->bctx;
-	htmlc->bctx = NULL;
-	htmlc->layout = NULL;
-	html_relayout_ok = false;
-	err = dom_to_box_sync(html, htmlc, html_relayout_done);
+	nsu_getmonotonic_ms(&t0);
+	if (full)
+		ok = html_relayout_all(htmlc, html);
+	else
+		ok = html_relayout_subtree(htmlc, root);
+	if (root != NULL)
+		dom_node_unref(root);
 	dom_node_unref(html);
-	html_object_drop_stash(htmlc);
-	talloc_free(old_bctx);
-	if (err != NSERROR_OK || !html_relayout_ok || htmlc->layout == NULL) {
+	if (!ok || htmlc->layout == NULL) {
 		NSLOG(netsurf, ERROR, "box tree rebuild failed");
 		content_broadcast_error(&htmlc->base, NSERROR_BOX_CONVERT, NULL);
 		content_set_error(&htmlc->base);
 		return;
 	}
-	imagemap_extract(htmlc);
+	nsu_getmonotonic_ms(&t1);
 
 	/* lay out at the size the page had, and redraw it all */
 	content__reformat(&htmlc->base, false, htmlc->base.available_width,
 			htmlc->base.available_height);
 	html_proceed_to_done(htmlc);
+	nsu_getmonotonic_ms(&t2);
+	NSLOG(netsurf, INFO, "%s rebuild %u ms, layout %u ms",
+			full ? "full" : "subtree",
+			(unsigned)(t1 - t0), (unsigned)(t2 - t1));
 }
 
 /** stop a scheduled rebuild (the content goes away) */
 static void html_cancel_relayout(html_content *htmlc)
 {
 	guit->misc->schedule(-1, html_relayout, htmlc);
+	if (htmlc->relayout_node != NULL) {
+		dom_node_unref(htmlc->relayout_node);
+		htmlc->relayout_node = NULL;
+	}
+	html_relayout_drop_chunks(htmlc);
 }
 #endif
 

@@ -7,6 +7,7 @@
 #define SBW 17
 
 int sb_width(void) { return SBW; }
+int sb_width_k(int k) { return SBW * (k > 1 ? k : 1); }
 
 static int is_ctl(Wnd *w) { return w->cls && !wcsicmp_(w->cls->name, L"ScrollBar"); }
 
@@ -23,10 +24,11 @@ void sb_nc_rects(Wnd *w, RECT *h, RECT *v, RECT *corner)
 {
     RECT c = w->client;
     OffsetRect(&c, -w->rect.left, -w->rect.top);
+    int sbw = sb_width_k(dpi_k(w));                         /* (at the window's DPI) */
     SetRectEmpty(h); SetRectEmpty(v); SetRectEmpty(corner);
-    if (w->style & WS_VSCROLL) SetRect(v, c.right, c.top, c.right + SBW, c.bottom);
-    if (w->style & WS_HSCROLL) SetRect(h, c.left, c.bottom, c.right, c.bottom + SBW);
-    if ((w->style & WS_VSCROLL) && (w->style & WS_HSCROLL)) SetRect(corner, c.right, c.bottom, c.right + SBW, c.bottom + SBW);
+    if (w->style & WS_VSCROLL) SetRect(v, c.right, c.top, c.right + sbw, c.bottom);
+    if (w->style & WS_HSCROLL) SetRect(h, c.left, c.bottom, c.right, c.bottom + sbw);
+    if ((w->style & WS_VSCROLL) && (w->style & WS_HSCROLL)) SetRect(corner, c.right, c.bottom, c.right + sbw, c.bottom + sbw);
 }
 
 static int max_pos(ScrollBar *s) { int p = s->page ? s->page - 1 : 0; return s->max - p; }
@@ -45,11 +47,11 @@ static Geo geometry(ScrollBar *s, int len, int th)
     g.a1 = g.a2 = arrow;
     g.t0 = arrow; g.t1 = len - arrow;
     g.th0 = g.th1 = 0;
-    int track = g.t1 - g.t0;
-    if (!usable(s) || track < 8) return g;
+    int track = g.t1 - g.t0, mn = th >= 2 * SBW ? 16 : 8;  /* (a thicker bar: 192 DPI) */
+    if (!usable(s) || track < mn) return g;
     int range = s->max - s->min + 1;
     int tl = s->page ? (int)((long long)track * s->page / (range > 0 ? range : 1)) : th;
-    if (tl < 8) tl = 8;
+    if (tl < mn) tl = mn;
     if (tl > track) tl = track;
     int mp = max_pos(s);
     int pos = s->tracking ? s->track : s->pos;

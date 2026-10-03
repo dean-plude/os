@@ -220,7 +220,15 @@ static Wnd *desktop(void)
         d->wide = 1;
         d->proc = DesktopProc;
     }
-    if (dpi_aware()) { dpi_desktop_rect(&d->rect); d->client = d->rect; }   /* the primary, as we see it */
+    static int aware_rect;                                  /* d->rect is in a DPI-aware thread's pixels */
+    if (dpi_aware()) { dpi_desktop_rect(&d->rect); d->client = d->rect; aware_rect = 1; }   /* the primary, as we see it */
+    else if (aware_rect) {                                  /* (an unaware thread after an aware one) */
+        ULONG sw = 0, sh = 0;
+        NtNovaGuiScreenSize(&sw, &sh);
+        SetRect(&d->rect, 0, 0, (int)sw, (int)sh);
+        d->client = d->rect;
+        aware_rect = 0;
+    }
     return d;
 }
 
@@ -564,7 +572,7 @@ static int border_width(Wnd *w)
     }
     if (w->exstyle & WS_EX_CLIENTEDGE) b += 2;
     if (w->exstyle & WS_EX_STATICEDGE) b += 1;
-    return b;
+    return b * dpi_k(w);                                    /* (at the window's DPI) */
 }
 
 static int has_menu_bar(Wnd *w)
@@ -581,8 +589,9 @@ void default_nc_calc(Wnd *w, RECT *r)
     int b = border_width(w);
     r->left += b; r->top += b; r->right -= b; r->bottom -= b;
     if (has_menu_bar(w)) r->top += menu_bar_height(w, r->right - r->left);
-    if ((w->style & WS_VSCROLL) && r->right - r->left > sb_width()) r->right -= sb_width();
-    if ((w->style & WS_HSCROLL) && r->bottom - r->top > sb_width()) r->bottom -= sb_width();
+    int sbw = sb_width_k(dpi_k(w));
+    if ((w->style & WS_VSCROLL) && r->right - r->left > sbw) r->right -= sbw;
+    if ((w->style & WS_HSCROLL) && r->bottom - r->top > sbw) r->bottom -= sbw;
     if (r->right < r->left) r->right = r->left;
     if (r->bottom < r->top) r->bottom = r->top;
 }
@@ -676,7 +685,7 @@ void update_kernel_rect(Wnd *w)
     int resized = nw != w->bw || nh != w->bh;
     w->bmp.x = b.left; w->bmp.y = b.top;
     w->bw = nw; w->bh = nh;
-    if (w->kid && dpi_aware()) {
+    if (w->kid && dpi_wnd_aware(w)) {
         /* in logical pixels; what the desktop already has is not sent again
          * (that would end a maximized or snapped state it chose) */
         RECT nb = { b.left, b.top, b.left + nw, b.top + nh };
@@ -802,7 +811,7 @@ static int kernel_window(Wnd *w)
     gc.x = b.left; gc.y = b.top; gc.w = b.right - b.left; gc.h = b.bottom - b.top;
     gc.title = (UINT64)(ULONG_PTR)(w->text ? w->text : L"");
     gc.flags = GUI_HIDDEN | GUI_HOVER;
-    if (dpi_aware()) {                                      /* logical pixels for the desktop */
+    if (dpi_wnd_aware(w)) {                                 /* logical pixels for the desktop */
         INT32 l[4];
         dpi_to_kernel(w, &b, l);
         gc.x = l[0]; gc.y = l[1]; gc.w = l[2]; gc.h = l[3];
@@ -1701,8 +1710,9 @@ BOOL adjust_window_rect(LPRECT r, DWORD style, BOOL menu, DWORD ex, int k)
     }
     if (ex & WS_EX_CLIENTEDGE) b += 2;
     if (ex & WS_EX_STATICEDGE) b += 1;
+    b *= k;
     r->left -= f.left + b; r->top -= f.top + b; r->right += f.right + b; r->bottom += f.bottom + b;
-    if (menu) r->top -= GetSystemMetrics(SM_CYMENU);
+    if (menu) r->top -= GetSystemMetricsForDpi(SM_CYMENU, 96 * (UINT)k);
     return TRUE;
 }
 

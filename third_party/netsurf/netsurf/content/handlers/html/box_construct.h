@@ -92,6 +92,16 @@ nserror dom_to_box(struct dom_node *n, struct html_content *c, box_construct_com
  */
 nserror dom_to_box_sync(struct dom_node *n, struct html_content *c,
 		box_construct_complete_cb cb);
+
+/**
+ * Build the boxes of @n's children again, keeping @n's own box (NovaOS:
+ * a script changed only part of the page; html_relayout in html.c).  The
+ * nodes below @n must have no boxes or libcss data; the old child boxes,
+ * now detached, are returned in @old_children for the caller to free.
+ * New boxes are allocated in c->bctx.
+ */
+nserror dom_to_box_subtree(struct dom_node *n, struct html_content *c,
+		struct box **old_children);
 #endif
 
 

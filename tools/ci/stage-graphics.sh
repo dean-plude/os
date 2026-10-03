@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Stage what tools/selftest.py --suite graphics puts on drive C::
 #   DIR/7zip       7-Zip (C:\Programs\7-Zip), which the App Store unpacks with
-#   DIR/downloads  the Mesa 3D and DXVK archives the App Store lists
-#                  (C:\Downloads: the Store installs them without a network)
+#   DIR/downloads  the Mesa 3D and DXVK archives the App Store lists, and
+#                  Venus's venus.7z (tools/build_venus.py; VENUS_7Z names one
+#                  already built) (C:\Downloads: the Store installs them
+#                  without a network)
 #   DIR/tests      tools/gltest, tools/d3dtest, tools/d2dtest and tools/dwtest, 64- and 32-bit,
 #                  and d2dtest's reference image (C:\Tests)
-# Needs curl, 7z (p7zip-full) and MinGW-w64 (x86-64 and i686).
+# Needs curl, 7z (p7zip-full) and MinGW-w64 (x86-64 and i686), and what
+# tools/build_venus.py needs unless VENUS_7Z is set.
 #     tools/ci/stage-graphics.sh DIR [CACHE]
 # CACHE (default DIR/cache) keeps the downloads between runs.
 set -euo pipefail
@@ -27,6 +30,11 @@ for u in "${URLS[@]}"; do
 done
 7z x -y -o"$OUT/7zip" "$CACHE/$(basename "${URLS[0]}")" >/dev/null
 cp "$CACHE/$(basename "${URLS[1]}")" "$CACHE/$(basename "${URLS[2]}")" "$OUT/downloads/"
+if [ -z "${VENUS_7Z:-}" ]; then
+  python3 "$ROOT/tools/build_venus.py" "$CACHE/venus"
+  VENUS_7Z="$CACHE/venus/venus.7z"
+fi
+cp "$VENUS_7Z" "$OUT/downloads/venus.7z"
 
 for arch in x86_64 i686; do
   sfx=$([ $arch = i686 ] && echo 32 || true)

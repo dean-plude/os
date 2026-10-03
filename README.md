@@ -16,6 +16,7 @@ services), the Java, .NET, Node.js and Python runtimes, and OpenGL, Vulkan
 and Direct3D 8–11 programs through Mesa and DXVK.  It can install
 itself on a disk from its live ISO.
 
+- [Screenshots](#screenshots)
 - [What runs today](#what-runs-today)
 - [What is inside](#what-is-inside)
 - [Quick start](#quick-start)
@@ -25,6 +26,23 @@ itself on a disk from its live ISO.
 - [Key design decisions](#key-design-decisions)
 - [Documentation](#documentation)
 - [License](#license)
+
+## Screenshots
+
+Captured from NovaOS running in QEMU at 2560×1600 (200% scale) and stored at
+1280×800; [docs/screenshots/README.md](docs/screenshots/README.md) says how
+each one was taken.
+
+| | |
+|---|---|
+| ![Terminal and File Explorer snapped side by side](docs/screenshots/desktop.png) | ![Notepad++ editing NovaOS's own scheduler source](docs/screenshots/notepad++.png) |
+| The desktop: Terminal and File Explorer snapped side by side | Notepad++ 8.8 editing NovaOS's own kernel scheduler |
+| ![The App Store](docs/screenshots/app-store.png) | ![Firefox showing a page fetched over HTTPS](docs/screenshots/firefox.png) |
+| The App Store, which installs real Windows programs | Firefox loading a page over HTTPS |
+| ![VLC playing a video](docs/screenshots/vlc.png) | ![KeePassXC with an open database](docs/screenshots/keepassxc.png) |
+| VLC playing an H.264 video with sound | KeePassXC (Qt) with an open password database |
+| ![Inkscape with a new document](docs/screenshots/inkscape.png) | |
+| Inkscape (GTK) with a new document | |
 
 ## What runs today
 
@@ -86,10 +104,10 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 ### The App Store
 
 The dock's App Store downloads the official 64-bit packages of 21 open-source
-programs (Firefox, VLC, LibreOffice, GIMP, Notepad++, PuTTY…) and five
+programs (Firefox, VLC, LibreOffice, GIMP, Notepad++, PuTTY…) and six
 runtimes, and installs them with 7-Zip, NovaOS's Windows Installer or the
 program's own setup.  `store install NAME` in the Terminal does what the
-row's button does (CI installs Mesa 3D and DXVK that way).  Most of those programs still need more of Windows than
+row's button does (CI installs Mesa 3D, DXVK and Venus that way), and `store open` opens it.  Its list scrolls with the same scroll bar as File Explorer's.  Most of those programs still need more of Windows than
 NovaOS has (more of the GUI); the ones in the table
 above are the ones verified.  See [the App Store](docs/HISTORY.md#the-app-store).
 
@@ -364,11 +382,14 @@ To make the ISO yourself from a fresh build, run
   SLAAC and RDNSS, `ping -6`, `curl -6` and Winsock over IPv6.
 - **Graphics tests**: `tools/d2dtest` (Direct2D geometry answers, and a
   scene that must match the reference `tools/d2dtest/reference.py` draws
-  with Skia), then installs Mesa 3D and DXVK with the App Store
+  with Skia), then installs Mesa 3D, DXVK and Venus with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
   stages the downloads) and runs `tools/gltest` (14 tests) and
-  `tools/d3dtest` (17 tests); each 64- and 32-bit, with a screenshot of
-  each while it draws.
+  `tools/d3dtest` (17 tests, on Venus: the first monitor is a QEMU 3D
+  virtio-gpu, `virtio-vga-gl,venus=on`, whose Vulkan is the runner's
+  lavapipe); each 64- and 32-bit, with a screenshot of each while it
+  draws; then `d3dtest fps`, which draws the same Direct3D 9 scene on
+  Venus and on lavapipe inside NovaOS and needs Venus to be faster.
 
 The build compiles through ccache, and the boot-test job saves the cache
 after each build, so a pull request recompiles only what it changed.  A pull

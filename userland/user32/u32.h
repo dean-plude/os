@@ -54,10 +54,14 @@ void u32_virtual_screen(RECT *r);
 enum { DPI_UNAWARE = 0, DPI_SYSTEM_AWARE = 1, DPI_PER_MONITOR_AWARE = 2 };
 typedef struct Wnd Wnd;
 int  dpi_mode(void);                /* the process's awareness (decided at the first call) */
-int  dpi_aware(void);               /* not DPI_UNAWARE: coordinates may differ from the desktop's */
+int  dpi_aware(void);               /* the calling thread's isn't DPI_UNAWARE: coordinates may differ from the desktop's */
+int  dpi_wnd_aware(Wnd *w);         /* ...the window's (its top-level's context) isn't */
 int  dpi_k(Wnd *w);                 /* w's top-level window's pixels per logical pixel */
-int  dpi_sys_k(void);               /* the system DPI / 96 this process sees */
-void dpi_to_proc(POINT *p);         /* a logical screen point -> this process's */
+int  dpi_sys_k(void);               /* the system DPI / 96 the calling thread sees */
+int  dpi_new_k(Wnd *owner);         /* the scale a top-level window this thread makes gets */
+int  dpi_enter(Wnd *w, HANDLE *saved);  /* the thread takes the window's context (1: put *saved back) */
+void dpi_leave(HANDLE saved);
+void dpi_to_proc(POINT *p);         /* a logical screen point -> the calling thread's */
 void dpi_to_logical(POINT *p);
 void dpi_rect_to_proc(RECT *r);
 void dpi_monitor_to_proc(int i, RECT *r, RECT *work);
@@ -173,6 +177,12 @@ Wnd  *input_hit(Wnd *top, POINT pt, int *hit);                 /* the window (an
 void  input_queue(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, DWORD time);
 void  input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt);   /* a mouse message at screen @pt, routed */
 LRESULT touch_default(Wnd *w, UINT msg, WPARAM wp, LPARAM lp);  /* DefWindowProc: mouse promotion */
+/* Pens and the mouse as pointers (pointer.c): a mouse message for @target's
+ * client area at screen @pt, from the pen packet @pen (0: the mouse); 1 if
+ * it became WM_POINTER* */
+int   pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, UINT32 pen);
+void  pointer_left(Wnd *top);          /* the desktop's WM_MOUSELEAVE for @top: the pen left it */
+void  pointer_taken(const MSG *m);     /* GetMessage took @m (GetPointerInfo answers for it) */
 
 int   hwnd_foreign(HWND h);           /* another process's handle */
 int   foreign_info(HWND h, INT32 f[11]); /* CTL_FOREIGN: 2 desktop window, 1 other window, 0 none */
@@ -248,8 +258,11 @@ void  top_resized(Wnd *top);
  * ----------------------------------------------------------------------- */
 COLORREF sys_color(int i);
 HBRUSH sys_brush(int i);
-HFONT  gui_font(void);              /* the dialog/control font */
-HFONT  gui_font_bold(void);
+HFONT  gui_font(void);              /* the dialog/control font at 96 DPI */
+HFONT  gui_font_k(int k);           /* ...at k times 96 DPI */
+HFONT  gui_font_bold_k(int k);
+int    is_gui_font(HFONT f);
+HFONT  ctl_font(Wnd *w);            /* a control's font: WM_SETFONT's, else gui_font at its DPI */
 void   fill_rect(HDC dc, const RECT *r, COLORREF c);
 void   frame_rect(HDC dc, const RECT *r, COLORREF c);
 void   draw_text_w(HDC dc, const WCHAR *s, int n, RECT *r, UINT fmt);
@@ -287,6 +300,7 @@ void   sb_draw(Wnd *w, HDC dc, int bar, const RECT *r, int vert);
 void   sb_nc_rects(Wnd *w, RECT *h, RECT *v, RECT *corner);  /* window coordinates */
 void   sb_track(Wnd *w, int bar, POINT pt);                    /* pt: screen */
 int    sb_width(void);
+int    sb_width_k(int k);           /* at k times 96 DPI */
 
 /* menus (menu.c) */
 int    menu_bar_height(Wnd *w, int width);

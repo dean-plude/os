@@ -77,15 +77,18 @@ class App:
     @processes: a windowed program of many processes of one executable
     (Firefox: a launcher that exits once the browser is up, child
     processes the browser ends itself), so only a crash fails it before
-    the screenshot."""
+    the screenshot.  @runtimes: names of App Store runtimes (such as
+    "Mesa 3D") whose downloads are put in C:\\Downloads the same way, for
+    the program's tests to install first with Test(store=NAME)."""
     def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=(),
                  gui=False, net=False, interact=None, https=False, store=None, processes=False,
-                 mic=False, sound=None):
+                 mic=False, sound=None, runtimes=()):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
         self.unpack, self.strip, self.extra = unpack, strip, list(extra)
         self.gui, self.net, self.interact = gui, net, interact
         self.https, self.store, self.ca, self.processes = https, store, None, processes
         self.mic, self.sound = mic, sound
+        self.runtimes = list(runtimes)
 
 
 A = r'C:\Apps'
@@ -151,14 +154,30 @@ def stage(app, archive, dest):
                 shutil.copyfileobj(src, out)
 
 
+def catalog_entry(name):
+    """(download URL, file name) of @name in the App Store's catalog"""
+    m = re.search(r'\{ "' + re.escape(name) + r'", "[^"]*", "[^"]*",\s*CAT_\w+, (GH )?"([^"]+)", "([^"]+)"',
+                  open(STORE_C).read())
+    if not m:
+        raise RuntimeError(f'the App Store has no "{name}"')
+    return ('https://github.com/' if m.group(1) else '') + m.group(2), m.group(3)
+
+
 def catalog_file(app):
     """The file name the App Store saves @app.store's download as; its
     catalog entry must have @app.url as the download"""
-    m = re.search(r'\{ "' + re.escape(app.store) + r'", "[^"]*", "[^"]*",\s*CAT_\w+, (GH )?"([^"]+)", "([^"]+)"',
-                  open(STORE_C).read())
-    if not m or ('https://github.com/' if m.group(1) else '') + m.group(2) != app.url:
+    url, file = catalog_entry(app.store)
+    if url != app.url:
         raise RuntimeError(f'the App Store has no "{app.store}" downloading {app.url}')
-    return m.group(3)
+    return file
+
+
+def stage_7zip(work, sevenzip):
+    """7-Zip in Programs\\7-Zip, which the Store unpacks archives with"""
+    programs = os.path.join(work, 'Programs')
+    if not os.path.exists(os.path.join(programs, '7-Zip')):
+        subprocess.run(['7z', 'x', '-y', '-o' + os.path.join(programs, '7-Zip'), sevenzip],
+                       check=True, stdout=subprocess.DEVNULL)
 
 
 def stage_store(app, files, work):
@@ -167,11 +186,20 @@ def stage_store(app, files, work):
     downloads, programs = os.path.join(work, 'Downloads'), os.path.join(work, 'Programs')
     os.makedirs(downloads, exist_ok=True)
     shutil.copy(files[0], os.path.join(downloads, catalog_file(app)))
-    if not os.path.exists(os.path.join(programs, '7-Zip')):
-        subprocess.run(['7z', 'x', '-y', '-o' + os.path.join(programs, '7-Zip'), files[-1]],
-                       check=True, stdout=subprocess.DEVNULL)
+    stage_7zip(work, files[-1])
     if callable(app.unpack):
         app.unpack(app, files[:-1], programs)
+
+
+def stage_runtimes(app, cache, work):
+    """The downloads of @app.runtimes in Downloads and 7-Zip, so the Store
+    can install them without a network"""
+    downloads = os.path.join(work, 'Downloads')
+    os.makedirs(downloads, exist_ok=True)
+    for name in app.runtimes:
+        url, file = catalog_entry(name)
+        shutil.copy(fetch(url, cache), os.path.join(downloads, file))
+    stage_7zip(work, fetch(SEVENZIP, cache))
 
 
 class HttpsServer:
@@ -370,6 +398,8 @@ def main():
     for app in apps:
         app.ca = https and https.ca
         try:
+            if app.runtimes:
+                stage_runtimes(app, a.cache, work)
             if app.store:
                 stage_store(app, [fetch(u, a.cache) for u in [app.url] + app.extra + [SEVENZIP]], work)
             elif callable(app.unpack):
@@ -399,7 +429,7 @@ def main():
                               if os.path.isdir(os.path.join(work, d))]
     t_boot = time.time()
     try:
-        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=4096, data_mb=2048,
+        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=4096, data_mb=3072,
                     extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [],
                     net=echo is not None or https is not None, rec=rec, wav=wav)
     except RuntimeError as e:
@@ -440,6 +470,8 @@ def main():
                     print('    ' + '\n    '.join(l for l in out.splitlines() if not l.startswith('[SCHED]'))[-3000:])
                     why = why or f'{t.name}: {w}'
                     break
+            if app.store:                    # the App Store window stays out of the next screenshots
+                log += nova.run('store close', 15)[0]
             results[app.name] = (why, time.time() - t0, steps)
             print(f'{"PASS" if not why else "FAIL"}  {app.name:10s} {time.time() - t0:6.1f} s', flush=True)
             if nova.q.poll() is not None:
@@ -487,7 +519,8 @@ def gui(nova, t, a, app, echo, close):
     up, or it dies), run its interaction (PuTTY types a line the echo
     server must receive).  The screenshot must match the reference; @close
     closes the window after it (Alt+F4) so the next program gets the
-    keyboard"""
+    keyboard.  Either way the next program starts only once every process
+    this one started has ended (settle)."""
     out, ok = nova.run(t.cmd, 30)
     exe = re.escape(re.search(r'([^\\/" ]+\.exe)', t.cmd, re.I).group(1))   # paths may be quoted
     m = None
@@ -499,14 +532,40 @@ def gui(nova, t, a, app, echo, close):
         if m:
             break
     if m:
+        out, _ = settle(nova, out)
         return out, m.group(0).split(') ', 1)[1]
     w = app.interact(nova, echo) if app.interact else None
     time.sleep(3)
     w = check_shot(nova, a, app.name.lower() + '.png') or w
     if close:
         nova.keys('alt-f4')
-        time.sleep(3)
+        out, why = settle(nova, out)
+        w = w or why
     return out, w
+
+
+def settle(nova, out, wait=120):
+    """Wait (up to @wait seconds) for every process started in @out to end,
+    stop any still running (taskkill) and check the Terminal has the
+    keyboard again.  Keys typed while a closing program still has the
+    focus (Firefox takes a while to shut down its processes) never reach
+    the Terminal, and the next program's Alt+F4 would close the Terminal
+    instead.  Returns (the log, why the Terminal is not usable or None)."""
+    started = set(re.findall(r'\[UM\] Started [^\n]*? \(PID (\d+)\)', out))
+    end = time.time() + wait
+    while True:
+        ended = set(re.findall(r'\[UM\] [^\n]*? \(PID (\d+)\) exited', out))
+        if started <= ended or time.time() > end:
+            break
+        time.sleep(1)
+        out += nova.sr.read_new()
+    for pid in sorted(started - ended, key=int):
+        o, _ = nova.run(f'taskkill /PID {pid}', 15)
+        out += o
+    o, ok = nova.run('echo ready', 15)
+    out += o
+    return out, None if ok else 'the Terminal did not get the keyboard back after the program ended'
+
 
 
 def check_shot(nova, a, name):

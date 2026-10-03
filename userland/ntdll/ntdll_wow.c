@@ -914,12 +914,18 @@ LONG_PTR NTAPI NtNovaAudioCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out)
 {
     return SCP(NtNovaAudioCtl, S(h), U(op), U(arg), P(out));
 }
+/* (its structures keep pointers as 64-bit fields already) */
+LONG_PTR NTAPI NtNovaGpuCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *ptr)
+{
+    return SCP(NtNovaGpuCtl, S(h), U(op), U(arg), P(ptr));
+}
 
 /* windows: the creation block is laid out with 64-bit fields already */
 LONG_PTR NTAPI NtNovaGuiCreate(void *info)                       { return SCP(NtNovaGuiCreate, P(info)); }
 LONG_PTR NTAPI NtNovaGuiGetMessage(ULONG_PTR hwnd, void *msg, ULONG wait)
 {
-    /* the kernel fills a 64-bit MSG */
+    /* the kernel fills a 64-bit MSG; its padding (a mouse message's pen
+     * packet, user32's pointer.c) goes in the ULONG after the 32-bit one */
     struct { U64 hwnd; ULONG message, pad; U64 wParam, lParam; ULONG time; LONG x, y; } k;
     memset(&k, 0, sizeof(k));
     LONG_PTR r = SCP(NtNovaGuiGetMessage, P(hwnd), P(msg ? &k : 0), U(wait));
@@ -931,6 +937,7 @@ LONG_PTR NTAPI NtNovaGuiGetMessage(ULONG_PTR hwnd, void *msg, ULONG wait)
         m->lParam = (LPARAM)k.lParam;
         m->time = k.time;
         m->pt.x = k.x; m->pt.y = k.y;
+        *(ULONG *)(m + 1) = k.pad;
     }
     return r;
 }

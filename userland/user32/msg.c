@@ -149,9 +149,21 @@ static int conv_kind(Wnd *w, UINT msg)
     return CV_NONE;
 }
 
+static LRESULT call_conv(Wnd *w, WNDPROC proc, int wide, HWND h, UINT msg, WPARAM wp, LPARAM lp, int from_wide);
+
+/* The window procedure runs with the window's DPI awareness context */
 LRESULT call_proc(Wnd *w, WNDPROC proc, int wide, HWND h, UINT msg, WPARAM wp, LPARAM lp, int from_wide)
 {
     if (!proc) return 0;
+    HANDLE saved = NULL;
+    if (!dpi_enter(w, &saved)) return call_conv(w, proc, wide, h, msg, wp, lp, from_wide);
+    LRESULT r = call_conv(w, proc, wide, h, msg, wp, lp, from_wide);
+    dpi_leave(saved);
+    return r;
+}
+
+static LRESULT call_conv(Wnd *w, WNDPROC proc, int wide, HWND h, UINT msg, WPARAM wp, LPARAM lp, int from_wide)
+{
     if (wide == from_wide) return proc(h, msg, wp, lp);
     int k = conv_kind(w, msg);
     if (k == CV_NONE) {
@@ -630,7 +642,10 @@ static Wnd *hit_window(Wnd *top, POINT pt, int *hit)
     }
 }
 
-static void route_mouse(Wnd *top, const MSG *km)
+/* @pen: the pen packet behind it (0: the mouse; PEN_PROMOTED: DefWindowProc
+ * made it of a pointer message, so it stays a mouse message) */
+#define PEN_PROMOTED 0xFFFFFFFFu
+static void route_mouse(Wnd *top, const MSG *km, UINT32 pen)
 {
     UINT msg = km->message;
     POINT pt;
@@ -656,6 +671,9 @@ static void route_mouse(Wnd *top, const MSG *km)
     }
     leave_check(target, time);
     if (!W_quiet(target->h)) return;
+    /* a pen's (or, with EnableMouseInPointer, the mouse's) in the client
+     * area: WM_POINTER* instead, which DefWindowProc turns back into this */
+    if ((hit == HTCLIENT || cap) && pen != PEN_PROMOTED && pointer_from_mouse(target, msg, mk, pt, time, pen)) return;
 
     if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) {
         Wnd *f = W_quiet(g_focus);
@@ -694,8 +712,8 @@ static void route_mouse(Wnd *top, const MSG *km)
 Wnd *input_hit(Wnd *top, POINT pt, int *hit) { return hit_window(top, pt, hit); }
 void input_queue(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, DWORD time) { queue_input(w, msg, wp, lp, time); }
 
-/* A mouse message made from a touch (DefWindowProc's promotion): routed as
- * if the desktop had sent it */
+/* A mouse message made from a touch, a pen or the mouse as a pointer
+ * (DefWindowProc's promotion): routed as if the desktop had sent it */
 void input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt)
 {
     MSG km;
@@ -704,7 +722,7 @@ void input_mouse(Wnd *top, UINT msg, WPARAM mk, POINT pt)
     km.wParam = mk;
     km.lParam = MAKELPARAM(pt.x - top->bmp.x, pt.y - top->bmp.y);
     km.time = GetTickCount();
-    route_mouse(top, &km);
+    route_mouse(top, &km, PEN_PROMOTED);
 }
 
 static void route_key(Wnd *top, const MSG *km)
@@ -738,14 +756,23 @@ static void route_key(Wnd *top, const MSG *km)
 }
 
 /* One message from the desktop: most become queued messages */
-static void from_kernel(const MSG *kmsg)
+static void from_kernel_(Wnd *top, const MSG *kmsg, UINT32 pen);
+static void from_kernel(const MSG *kmsg, UINT32 pen)
 {
     Wnd *top = top_by_kid((UINT32)(ULONG_PTR)kmsg->hwnd);
     if (!top) return;
+    HANDLE saved = NULL;
+    int sw = dpi_enter(top, &saved);                        /* (the window's coordinates) */
+    from_kernel_(top, kmsg, pen);
+    if (sw) dpi_leave(saved);
+}
+
+static void from_kernel_(Wnd *top, const MSG *kmsg, UINT32 pen)
+{
     MSG conv = *kmsg;
     const MSG *km = &conv;
-    if (dpi_aware()) {
-        /* positions in this process's pixels: the desktop's are logical,
+    if (dpi_wnd_aware(top)) {
+        /* positions in the window's pixels: the desktop's are logical,
          * relative to the client area (km->pt) or on the screen */
         int k = dpi_k(top), m = (int)km->message;
         if (m == WM_MOUSEWHEEL || m == WM_MOUSEHWHEEL || m == WM_NOVA_TOUCH)
@@ -761,22 +788,37 @@ static void from_kernel(const MSG *kmsg)
         if (!(top->style & WS_DISABLED)) queue_input(top, WM_SYSCOMMAND, SC_CLOSE, 0, GetTickCount());
         break;
     case WM_PAINT: case WM_TIMER: break;
-    case WM_MOUSELEAVE: leave_check(NULL, GetTickCount()); break;
+    case WM_MOUSELEAVE: leave_check(NULL, GetTickCount()); pointer_left(top); break;
     case WM_NOVA_DROP: drop_from_kernel(top, km); break;
     case WM_NOVA_TOUCH: touch_from_kernel(top, km); break;
     case WM_DISPLAYCHANGE:
-        if (dpi_aware()) dpi_monitors_changed(top);
+        dpi_monitors_changed(top);
         if (W_quiet(top->h)) send_msg(top, WM_DISPLAYCHANGE, km->wParam, km->lParam);
         break;
-    case WM_NOVA_DPI: if (dpi_aware()) dpi_monitors_changed(top); break;
+    case WM_NOVA_DPI: dpi_monitors_changed(top); break;
     case WM_CHAR: case WM_SYSCHAR: break;                  /* TranslateMessage makes these, as on Windows */
     case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
         route_key(top, km);
         break;
     default:
-        if ((km->message >= WM_MOUSEFIRST && km->message <= WM_MOUSELAST) || km->message == WM_MOUSEWHEEL) route_mouse(top, km);
+        if ((km->message >= WM_MOUSEFIRST && km->message <= WM_MOUSELAST) || km->message == WM_MOUSEWHEEL) route_mouse(top, km, pen);
         break;
     }
+}
+
+/* The desktop's next message for this thread (NtNovaGuiGetMessage), and
+ * the pen packet behind a mouse message (0: the mouse) */
+static long kernel_msg(MSG *m, UINT32 *pen, DWORD wait)
+{
+    struct { MSG m; ULONG pen; } k;
+    memset(&k, 0, sizeof(k));
+    long r = NtNovaGuiGetMessage(0, &k, wait);
+#ifdef _WIN64
+    k.pen = ((const ULONG *)&k.m)[3];                       /* (MSG's padding after message) */
+#endif
+    *m = k.m;
+    *pen = r == 1 ? (UINT32)k.pen : 0;
+    return r;
 }
 
 /* Take everything the desktop has for this thread (don't wait) */
@@ -784,7 +826,8 @@ static int drain_kernel(void)
 {
     int any = 0;
     MSG km;
-    while (NtNovaGuiGetMessage(0, &km, 0) == 1) { from_kernel(&km); any = 1; }
+    UINT32 pen;
+    while (kernel_msg(&km, &pen, 0) == 1) { from_kernel(&km, pen); any = 1; }
     return any;
 }
 
@@ -796,6 +839,7 @@ static void track(const MSG *m)
     g_msg_time = m->time ? m->time : GetTickCount();
     g_msg_pt = m->pt;
     key_state(g_keys, m->message, m->wParam);
+    pointer_taken(m);                                       /* (GetPointerInfo's "current" message) */
 }
 
 static void getmessage_hook(MSG *m, int remove);
@@ -853,8 +897,9 @@ static int pump_take(MSG *m, HWND h, UINT mn, UINT mx, UINT flags, int wait, DWO
         if (due > until) due = until;
         DWORD ms = due <= now ? 0 : (DWORD)(due - now);
         MSG km;
-        long r = NtNovaGuiGetMessage(0, &km, ms + 2);
-        if (r == 1) from_kernel(&km);
+        UINT32 pen;
+        long r = kernel_msg(&km, &pen, ms + 2);
+        if (r == 1) from_kernel(&km, pen);
         else if (r == 0) {                                  /* the process is ending */
             q->quit = 1;
         }
@@ -954,8 +999,9 @@ USERAPI DWORD MsgWaitForMultipleObjectsEx(DWORD n, const HANDLE *hs, DWORD ms, D
             if (r != WAIT_TIMEOUT) return r;
         } else if (wake_mask) {
             MSG km;
-            long r = NtNovaGuiGetMessage(0, &km, slice + 2);
-            if (r == 1) from_kernel(&km);
+            UINT32 pen;
+            long r = kernel_msg(&km, &pen, slice + 2);
+            if (r == 1) from_kernel(&km, pen);
         } else Sleep(slice);
     }
 }

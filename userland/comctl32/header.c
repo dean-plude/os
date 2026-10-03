@@ -182,9 +182,9 @@ static void get_item(Hdr *s, int i, HDITEMW *out, int wide)
     }
 }
 
-static int height(Hdr *s)
+static int height(HWND h, Hdr *s)
 {
-    int fh = cc_font_h(s->font);
+    int fh = cc_font_h(s->font ? s->font : cc_font_for(h));
     return fh + 10 < 24 ? 24 : fh + 10;
 }
 
@@ -192,7 +192,7 @@ static void paint(HWND h, Hdr *s, HDC dc)
 {
     RECT c;
     GetClientRect(h, &c);
-    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font());
+    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
     SetBkMode(dc, TRANSPARENT);
     COLORREF face = RGB(255, 255, 255), line = RGB(229, 229, 229), text = RGB(76, 96, 122);
     DWORD style = GetWindowLongW(h, GWL_STYLE);
@@ -384,7 +384,7 @@ LRESULT CALLBACK HeaderProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case HDM_LAYOUT: {
         HDLAYOUT *l = (HDLAYOUT *)lp;
         if (!l || !l->prc || !l->pwpos) return FALSE;
-        int hh = (GetWindowLongW(h, GWL_STYLE) & HDS_HIDDEN) ? 0 : height(s);
+        int hh = (GetWindowLongW(h, GWL_STYLE) & HDS_HIDDEN) ? 0 : height(h, s);
         l->pwpos->hwnd = h; l->pwpos->hwndInsertAfter = NULL;
         l->pwpos->x = l->prc->left; l->pwpos->y = l->prc->top;
         l->pwpos->cx = l->prc->right - l->prc->left; l->pwpos->cy = hh;

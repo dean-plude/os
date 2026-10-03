@@ -255,10 +255,29 @@ switch wake-up boosts off.  A new process is NORMAL, or IDLE or
 BELOW_NORMAL when its creator is, unless `CreateProcess` names a class.
 `THREAD_BASIC_INFORMATION.BasePriority` is the increment, as on NT.
 
-The system threads programs must never hold up run in the real-time
-range, above anything a program can ask for: the desktop (input, window
-management, drawing) at 16, the device poll and audio mixer threads at 17,
-so a long redraw doesn't delay a key press or a sound buffer either.
+The kernel's own threads all run in the real-time range, above anything
+a program can ask for, as Windows runs its system threads, so a busy
+`HIGH_PRIORITY_CLASS` program can't hold up what programs wait on.  The
+shorter and more urgent the work, the higher (`ke/scheduler.h`): the
+device poll and audio mixer threads at 19 (a key press or a sound buffer
+never waits), the network stack and the USB thread at 18, the desktop
+(input, window management, drawing; a redraw can take 50-100 ms without
+KVM) and the threads that start programs at 17, and bulk work at 16:
+saving drive C:, ACPI, Setup.  None of them spins: each blocks or sleeps
+when it has nothing to do, and gives way to any thread while it waits for
+a device.  (The network thread, polling the adapter while a program waits
+for data, wakes every millisecond rather than yielding round and round:
+above programs, a yield hands the CPU to a busy one for its whole slice.
+While data is moving and programs wait for its CPU, it lets them run for
+0.2 ms at a time, `sched_yield_goes_lower`.)
+
+The process whose window is active is the foreground process
+(`UmUpdateForeground`, from the desktop loop each tick): its threads get
+NT's foreground boost, PsPrioritySeparation (2 on client Windows), on top
+of every wake-up boost, still never above 15, so they run ahead of the
+background processes' threads of the same class.  `ProcessPriorityClass`
+reports it in `Foreground`.  Windows' other foreground mechanism, longer
+time slices (quantum stretching), is not done.
 
 A CPU halted waiting for the kernel lock wakes none of its sleepers.  The
 timer interrupt it takes meanwhile (`sched_timer_rearm`) hands a due

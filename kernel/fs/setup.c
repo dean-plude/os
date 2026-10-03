@@ -376,7 +376,7 @@ bool SetupStart(BlockDev *dev, bool ntfs)
     g_ntfs = ntfs;
     kprintf("[SETUP] Installing NovaOS on %s (%s, %u MiB), drive C: on %s\n", dev->name, dev->model,
             (unsigned)(dev->sectors >> 11), ntfs ? "NTFS" : "FAT32");
-    if (!sched_create_thread("setup", setup_thread, NULL, 8)) {
+    if (!sched_create_thread("setup", setup_thread, NULL, PRIO_SERVICE)) {
         g_status.state = SETUP_FAILED;
         strncpy((char *)g_status.error, "Could not start the installer.", sizeof(g_status.error) - 1);
         return false;

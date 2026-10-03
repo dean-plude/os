@@ -11,12 +11,14 @@
   standard library: Microsoft's own STL, compiled with clang, with
   Boost.Math under `msvcp140_2`'s special math functions),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs, MDI,
-  hooks, per-monitor DPI awareness with `WM_DPICHANGED`), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
+  hooks, per-monitor and per-thread DPI awareness with `WM_DPICHANGED`, controls and fonts at each window's DPI,
+  touch and pens as `WM_POINTER` messages with `GetPointerPenInfo`), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
   `comctl32`, `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
   type libraries), `advapi32`, `ws2_32`, `oleacc`,
   `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
-  WASAPI playback and capture, endpoint volume), `dsound` (DirectSound),
+  WASAPI playback and capture, endpoint volume, a device ID or endpoint
+  for each sound device), `dsound` (DirectSound),
   `xaudio2_7`/`xaudio2_8`/`xaudio2_9` and `x3daudio1_7` (on FAudio), `msi`
   (with `msiscript` running JScript and VBScript custom actions on the
   ISC-licensed mujs),

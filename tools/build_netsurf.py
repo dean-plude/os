@@ -195,9 +195,9 @@ def llvm_rc():
             return 'llvm-rc' + v
     raise SystemExit('llvm-rc not found (install llvm: sudo apt install llvm)')
 
-def build(out, ul):
-    """Build netsurf.exe into @out, linking the system DLLs' import libraries
-    in @ul; returns what to install on drive C: as (path, local file)."""
+def plan(out):
+    """Everything to compile into @out: ([(source, object, flags)], [object]);
+    each goes to compile_one()."""
     global EPOCH
     EPOCH = header_epoch()
     objdir = os.path.join(out, 'nsobj')
@@ -209,17 +209,28 @@ def build(out, ul):
             obj = os.path.join(objdir, rel + '.obj')
             jobs.append((f, obj, flags))
             objs.append(obj)
-    errors = []
-    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
-        for e in ex.map(compile_one, jobs):
-            if e:
-                errors.append(e)
+    return jobs, objs
+
+def report(errors):
+    """exit with the compile errors (compile_one()'s results), if any"""
+    errors = sorted(e for e in errors if e)
     if errors:
         limit = int(os.environ.get('NS_ERR_LIMIT', '8'))
         for e in errors[:limit]:
             sys.stderr.write(e + '\n')
         sys.stderr.write(f'netsurf: {len(errors)} file(s) failed to compile\n')
         raise SystemExit(1)
+
+def build(out, ul):
+    """Build netsurf.exe into @out, linking the system DLLs' import libraries
+    in @ul; returns what to install on drive C: as (path, local file)."""
+    jobs, objs = plan(out)
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+        report(list(ex.map(compile_one, jobs)))
+    return link(out, ul, objs)
+
+def link(out, ul, objs):
+    """Link the compiled @objs into netsurf.exe (build()'s second half)."""
     exe = os.path.join(out, 'netsurf.exe')
     libs = [os.path.join(ul, n + '.lib') for n in ('msvcrt', 'kernel32', 'ntdll', 'ws2_32', 'user32', 'gdi32')]
     # the program icon (NetSurf's own, from its Windows frontend)

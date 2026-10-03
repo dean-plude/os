@@ -3,7 +3,13 @@
  * fixed-function Direct3D 9 triangle, render-target read-back, and a few
  * seconds of presented frames from each.
  * Build: x86_64-w64-mingw32-gcc -O2 -o d3dtest.exe d3dtest.c -ld3d9 -ld3d11 -ldxgi -luser32 -lgdi32 -lole32
- *        (i686-w64-mingw32-gcc for the 32-bit one).  Usage: d3dtest [seconds] */
+ *        (i686-w64-mingw32-gcc for the 32-bit one).  Usage: d3dtest [seconds [9|11]]
+ *
+ * d3dtest fps [seconds]: the frame-rate test.  A Direct3D 9 scene that
+ * keeps the rasterizer busy (64 blended full-window quads at 640x480) runs
+ * once on Mesa's Venus (Vulkan on the host's GPU through a virtio-gpu) and
+ * once on lavapipe (Vulkan on NovaOS's CPU), each in a child process whose
+ * VK_DRIVER_FILES names the driver; Venus must draw more frames per second. */
 #define COBJMACROS
 #define INITGUID
 #include <windows.h>
@@ -212,8 +218,139 @@ static void test_d3d11(int secs)
     DestroyWindow(w);
 }
 
+/* ---- the frame-rate test ------------------------------------------------ */
+#define FPS_W 640
+#define FPS_H 480
+#define FPS_QUADS 64
+
+/* The child: draw the scene for @secs seconds; prints "fps-result ADAPTER|FRAMES|MS" */
+static int fps_child(int secs)
+{
+    IDirect3D9 *d3d = Direct3DCreate9(D3D_SDK_VERSION);
+    if (!d3d) { printf("FAIL Direct3DCreate9\n"); return 1; }
+    D3DADAPTER_IDENTIFIER9 id = { 0 };
+    IDirect3D9_GetAdapterIdentifier(d3d, 0, 0, &id);
+    RECT r = { 0, 0, FPS_W, FPS_H };
+    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+    HWND w = CreateWindowA("d3dtest", "Direct3D 9 frame rate", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 60, 60,
+                           r.right - r.left, r.bottom - r.top, 0, 0, GetModuleHandleA(NULL), 0);
+    D3DPRESENT_PARAMETERS pp = { 0 };
+    pp.Windowed = TRUE;
+    pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    pp.BackBufferFormat = D3DFMT_X8R8G8B8;
+    pp.BackBufferWidth = FPS_W;
+    pp.BackBufferHeight = FPS_H;
+    pp.hDeviceWindow = w;
+    pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+    IDirect3DDevice9 *dev = NULL;
+    if (FAILED(IDirect3D9_CreateDevice(d3d, 0, D3DDEVTYPE_HAL, w, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &dev))) {
+        printf("FAIL CreateDevice\n");
+        return 1;
+    }
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_LIGHTING, FALSE);
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_CULLMODE, D3DCULL_NONE);
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, TRUE);
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    IDirect3DDevice9_SetFVF(dev, D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    static struct vtx q[FPS_QUADS * 6];
+    for (int i = 0; i < FPS_QUADS; i++) {
+        float x0 = (float)(i % 8), y0 = (float)(i / 8 % 8);
+        DWORD c = D3DCOLOR_ARGB(0x20, 40 + i * 3, 255 - i * 3, 128 + (i & 7) * 16);
+        struct vtx a = { x0, y0, 0.5f, 1, c }, b = { FPS_W - 8 + x0, y0, 0.5f, 1, c },
+                   d = { x0, FPS_H - 8 + y0, 0.5f, 1, c }, e = { FPS_W - 8 + x0, FPS_H - 8 + y0, 0.5f, 1, c };
+        q[i * 6] = a; q[i * 6 + 1] = b; q[i * 6 + 2] = d;
+        q[i * 6 + 3] = b; q[i * 6 + 4] = e; q[i * 6 + 5] = d;
+    }
+    DWORD t0 = GetTickCount(), frames = 0;
+    while (GetTickCount() - t0 < (DWORD)secs * 1000) {
+        pump();
+        IDirect3DDevice9_Clear(dev, 0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0x10, 0x10, (frames * 4) & 0xFF), 1.0f, 0);
+        IDirect3DDevice9_BeginScene(dev);
+        IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, FPS_QUADS * 2, q, sizeof(q[0]));
+        IDirect3DDevice9_EndScene(dev);
+        if (FAILED(IDirect3DDevice9_Present(dev, NULL, NULL, NULL, NULL))) { printf("FAIL Present\n"); return 1; }
+        frames++;
+    }
+    DWORD ms = GetTickCount() - t0;
+    printf("fps-result %s|%lu|%lu\n", id.Description, (unsigned long)frames, (unsigned long)ms);
+    IDirect3DDevice9_Release(dev);
+    IDirect3D9_Release(d3d);
+    DestroyWindow(w);
+    return 0;
+}
+
+/* Run the child on the driver whose manifest is @manifest; its frames per
+ * second (or -1), the adapter it reported in @adapter */
+static double fps_run(const char *manifest, int secs, char *adapter, int cap)
+{
+    char exe[MAX_PATH], cmd[2 * MAX_PATH], out[MAX_PATH];
+    GetModuleFileNameA(NULL, exe, sizeof(exe));
+    GetTempPathA(sizeof(out), out);
+    lstrcatA(out, "d3dtest-fps.txt");
+    DeleteFileA(out);
+    snprintf(cmd, sizeof(cmd), "\"%s\" fpsrun %d \"%s\"", exe, secs, out);
+    SetEnvironmentVariableA("VK_DRIVER_FILES", manifest);
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) return -1;
+    WaitForSingleObject(pi.hProcess, (DWORD)(secs + 600) * 1000);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    SetEnvironmentVariableA("VK_DRIVER_FILES", NULL);
+    char line[512] = "";
+    FILE *f = fopen(out, "r");
+    if (!f) return -1;
+    if (!fgets(line, sizeof(line), f)) line[0] = 0;
+    fclose(f);
+    char *bar = strchr(line, '|');
+    if (strncmp(line, "fps-result ", 11) || !bar) return -1;
+    *bar = 0;
+    snprintf(adapter, cap, "%s", line + 11);
+    unsigned long frames = 0, ms = 0;
+    if (sscanf(bar + 1, "%lu|%lu", &frames, &ms) != 2 || !ms) return -1;
+    return frames * 1000.0 / ms;
+}
+
+static int fps_test(int secs)
+{
+    char sys[MAX_PATH], venus[MAX_PATH], lvp[MAX_PATH], a_venus[256] = "", a_lvp[256] = "";
+    GetSystemDirectoryA(sys, sizeof(sys));      /* (SysWOW64 for the 32-bit one) */
+    const char *bits = sizeof(void *) == 8 ? "x86_64" : "x86";
+    snprintf(venus, sizeof(venus), "%s\\virtio_icd.%s.json", sys, bits);
+    snprintf(lvp, sizeof(lvp), "%s\\lvp_icd.%s.json", sys, bits);
+    printf("fps: Venus for %d s\n", secs);
+    double v = fps_run(venus, secs, a_venus, sizeof(a_venus));
+    printf("Venus     %.2f frames/s  (%s)\n", v, a_venus);
+    printf("fps: lavapipe for %d s\n", secs);
+    double l = fps_run(lvp, secs, a_lvp, sizeof(a_lvp));
+    printf("lavapipe  %.2f frames/s  (%s)\n", l, a_lvp);
+    check("Venus ran", v > 0);
+    check("Venus is the adapter", strstr(a_venus, "Venus") != NULL);
+    check("lavapipe ran", l > 0);
+    check("lavapipe is the adapter", strstr(a_lvp, "llvmpipe") != NULL && !strstr(a_lvp, "Venus"));
+    check("Venus beats lavapipe", v > 0 && l > 0 && v > l);
+    if (v > 0 && l > 0) printf("Venus is %.1fx lavapipe\n", v / l);
+    printf("d3dtest fps: %d passed, %d failed\n", pass, fail);
+    return fail != 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "fpsrun")) {      /* the frame-rate test's child: fpsrun SECS FILE */
+        setvbuf(stdout, NULL, _IONBF, 0);
+        WNDCLASSA wc = { 0 };
+        wc.lpfnWndProc = proc;
+        wc.hInstance = GetModuleHandleA(NULL);
+        wc.lpszClassName = "d3dtest";
+        RegisterClassA(&wc);
+        if (argc > 3) freopen(argv[3], "w", stdout);
+        return fps_child(argc > 2 ? atoi(argv[2]) : 5);
+    }
+    if (argc > 1 && !strcmp(argv[1], "fps")) {
+        setvbuf(stdout, NULL, _IONBF, 0);
+        return fps_test(argc > 2 ? atoi(argv[2]) : 10);
+    }
     int secs = argc > 1 ? atoi(argv[1]) : 3;
     const char *only = argc > 2 ? argv[2] : "";
     setvbuf(stdout, NULL, _IONBF, 0);

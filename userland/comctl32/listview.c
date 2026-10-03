@@ -220,7 +220,7 @@ typedef struct { int cw, ch, per; } Grid;     /* a cell's size, cells per row (i
 static int max_label_w(HWND h, LV *s)
 {
     HDC dc = GetDC(h);
-    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font());
+    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
     int w = 40;
     WCHAR b[260];
     int n = s->n > 2000 ? 2000 : s->n;          /* long lists: estimate from the first ones */
@@ -869,7 +869,7 @@ static BOOL set_column(HWND h, LV *s, int i, const LVCOLUMNW *in, int wide)
 static int text_px(HWND h, LV *s, const WCHAR *t)
 {
     HDC dc = GetDC(h);
-    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font());
+    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
     int w = cc_text_w(dc, t, -1);
     SelectObject(dc, of);
     ReleaseDC(h, dc);
@@ -886,7 +886,7 @@ static BOOL set_column_width(HWND h, LV *s, int i, int cx)
         WCHAR b[520];
         int n = s->n > 5000 ? 5000 : s->n;
         HDC dc = GetDC(h);
-        HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font());
+        HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
         for (int k = 0; k < n; k++) { int t = cc_text_w(dc, item_text(h, s, k, s->col[i].sub, b, 520), -1); if (t > w) w = t; }
         SelectObject(dc, of);
         ReleaseDC(h, dc);
@@ -1195,7 +1195,7 @@ static void paint(HWND h, LV *s, HDC dc, const RECT *upd)
 {
     RECT c;
     client(h, &c);
-    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font());
+    HGDIOBJ of = SelectObject(dc, s->font ? s->font : cc_font_for(h));
     SetBkMode(dc, TRANSPARENT);
     NMLVCUSTOMDRAW cd;
     LRESULT pre = custom_draw(h, CDDS_PREPAINT, dc, &c, -1, 0, 0, &cd);
@@ -1224,7 +1224,7 @@ static void paint(HWND h, LV *s, HDC dc, const RECT *upd)
         HRGN clip = CreateRectRgn(top.left, top.top, top.right, top.bottom);
         SelectClipRgn(dc, clip);
         for (int i = first; i <= last; i++) {
-            HGDIOBJ f = SelectObject(dc, s->font ? s->font : cc_font());
+            HGDIOBJ f = SelectObject(dc, s->font ? s->font : cc_font_for(h));
             paint_item(h, s, dc, i, want_item, focus);
             SelectObject(dc, f);
         }
@@ -1270,7 +1270,7 @@ static HWND edit_label(HWND h, LV *s, int i)
                               r.left, r.top, r.right - r.left, r.bottom - r.top, h, (HMENU)1, NULL, NULL);
     if (!s->edit) return NULL;
     s->edit_item = i;
-    SendMessageW(s->edit, WM_SETFONT, (WPARAM)(s->font ? s->font : cc_font()), 0);
+    SendMessageW(s->edit, WM_SETFONT, (WPARAM)(s->font ? s->font : cc_font_for(h)), 0);
     SetWindowSubclass(s->edit, edit_subclass, 1, (DWORD_PTR)h);
     SendMessageW(s->edit, EM_SETSEL, 0, -1);
     ShowWindow(s->edit, SW_SHOW);
@@ -1502,7 +1502,7 @@ static void set_view(HWND h, LV *s, int v)
 static void set_font(HWND h, LV *s, HFONT f)
 {
     s->font = f;
-    s->fh = cc_font_h(f ? f : cc_font());
+    s->fh = cc_font_h(f ? f : cc_font_for(h));
     if (s->hdr) SendMessageW(s->hdr, WM_SETFONT, (WPARAM)f, 0);
     refresh(h, s);
 }
@@ -1585,7 +1585,7 @@ LRESULT CALLBACK ListViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (!s) return FALSE;
         s->focus = s->mark = s->hot = s->edit_item = -1;
         s->bk = CLR_DEFAULT; s->text = CLR_DEFAULT; s->textbk = CLR_DEFAULT;
-        s->fh = cc_font_h(NULL);
+        s->fh = cc_font_h(cc_font_for(h));
         ctl_set(h, s);
         return DefWindowProcW(h, msg, wp, lp);
     case WM_CREATE: {
@@ -1593,7 +1593,7 @@ LRESULT CALLBACK ListViewProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         s->ansi = p && SendMessageW(p, WM_NOTIFYFORMAT, (WPARAM)h, NF_QUERY_) == NFR_ANSI;
         s->hdr = CreateWindowExW(0, WC_HEADERW, NULL, WS_CHILD | HDS_HORZ | HDS_BUTTONS | HDS_FULLDRAG | ((style_of(h) & LVS_NOSORTHEADER) ? 0 : 0),
                                  0, 0, 0, 0, h, (HMENU)0, NULL, NULL);
-        if (s->hdr) SendMessageW(s->hdr, WM_SETFONT, (WPARAM)cc_font(), 0);
+        if (s->hdr) SendMessageW(s->hdr, WM_SETFONT, (WPARAM)cc_font_for(h), 0);
         refresh(h, s);
         return 0;
     }

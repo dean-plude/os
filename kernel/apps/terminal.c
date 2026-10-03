@@ -12,6 +12,8 @@
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "../mm/pmm.h"
+#include "../ke/version.h"
+#include "../ke/kpcr.h"
 #include "../ke/printf.h"
 #include "../hal/rtc.h"
 #include "../ke/scheduler.h"
@@ -227,6 +229,8 @@ static void cmd_help(Term *t)
         "  copy <src> <dst>    copy a file (also: cp)\n"
         "  start <app> [file]  open notepad, explorer, settings, calendar, browser\n"
         "  store install <name>  get a program from the App Store\n"
+        "  store open          open the App Store window\n"
+        "  store close         close the App Store window\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  vol  sync           where drive C: is saved; save it now\n"
         "  ipconfig            show the network configuration\n"
@@ -433,8 +437,9 @@ static void cmd_sysinfo(Term *t)
     char b[8][96];
     ksnprintf(b[0], 96, "dean@nova-pc");
     ksnprintf(b[1], 96, "------------");
-    ksnprintf(b[2], 96, "OS:      NovaOS 0.9 x86_64");
-    ksnprintf(b[3], 96, "Kernel:  Nova (NT-compatible), SMP off");
+    ksnprintf(b[2], 96, "OS:      NovaOS " NOVA_VERSION " x86_64");
+    ksnprintf(b[3], 96, "Kernel:  Nova (NT-compatible), SMP %s, %u CPU%s",
+              g_cpu_count > 1 ? "on" : "off", (unsigned)g_cpu_count, g_cpu_count == 1 ? "" : "s");
     ksnprintf(b[4], 96, "Uptime:  %s", up);
     ksnprintf(b[5], 96, "Display: %dx%d @ %d%%", GdiScreenW() * s, GdiScreenH() * s, s * 100);
     ksnprintf(b[6], 96, "CPU:     %s", cpu);
@@ -1446,13 +1451,15 @@ static void run_cmd(Term *t, char *cmdline)
         UmSaveAll();
         tprint(t, PersistActive() ? "Drive C: and the registry are saved." : "There is no disk to save to.");
     }
-    else if (is(c, "ver"))                      tprint(t, "NovaOS [Version 0.9.8] - Phase 8 desktop");
+    else if (is(c, "ver"))                      tprint(t, "NovaOS [Version " NOVA_VERSION "]");
     else if (is(c, "whoami"))                   tprint(t, "nova-pc\\dean");
     else if (is(c, "sysinfo") || is(c, "neofetch")) cmd_sysinfo(t);
     else if (is(c, "dmesg"))                    cmd_dmesg(t);
     else if (is(c, "start") || is(c, "open"))   cmd_start(t, argc, argv);
     else if (is(c, "store")) {
-        if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name>");
+        if (argc == 2 && is(argv[1], "close")) tprint(t, StoreClose());
+        else if (argc == 2 && is(argv[1], "open")) { StoreOpen(); tprint(t, "Opened the App Store."); }
+        else if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name> | store open | store close");
         else {
             char name[64];
             int n = 0;
@@ -1951,7 +1958,7 @@ static Term *term_new_ex(RamNode *cwd, bool banner)
     w->on_tick  = term_tick;
     w->tick_lock_free = true;
     if (!banner) return t;
-    tprint_ex(t, K_DIM, 0, "NovaOS Terminal [Version 0.9.8]");
+    tprint_ex(t, K_DIM, 0, "NovaOS Terminal [Version " NOVA_VERSION "]");
     tprint_ex(t, K_DIM, 0, "Type 'help' to see what you can do.");
     tprint(t, "");
     return t;

@@ -213,7 +213,7 @@ hubbub_error hubbub_treebuilder_token_handler(const hubbub_token *token,
 	assert((signed) treebuilder->context.current_node >= 0);
 
 /* A slightly nasty debugging hook, but very useful */
-#ifdef NDEBUG
+#if defined(NDEBUG) || defined(_NOVAOS)	/* (NovaOS: not on the console) */
 # define mode(x) \
 		case x:
 #else

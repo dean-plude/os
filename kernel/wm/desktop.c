@@ -645,6 +645,7 @@ static int g_nres;
 static const struct { const char *name; const char *keys; int page; } g_setting_items[] = {
     { "System",          "system about pc processor memory uptime",           SETTINGS_SYSTEM },
     { "Display",         "display screen resolution scale monitor",           SETTINGS_DISPLAY },
+    { "Sound",           "sound audio speakers headphones headset microphone output input device usb", SETTINGS_SOUND },
     { "Personalization", "personalization wallpaper background theme colors", SETTINGS_PERSONALIZE },
     { "Storage",         "storage disk drive space memory ram",               SETTINGS_STORAGE },
     { "Network",         "network ethernet internet ip dns wifi certificates", SETTINGS_NETWORK },
@@ -1896,6 +1897,8 @@ void DesktopRun(void *arg)
     UINT8  prev_side = 0;
     UINT64 last_press = 0;
     int    last_px = -100, last_py = -100;
+    UINT32 pen_serial = 0;                      /* the pen's last packet */
+    bool   pen_near = false;                    /* ... said it was in range */
 
     UINT64 last_desk_check = 0;
     UINT64 desk_sig = 0;
@@ -1922,6 +1925,7 @@ void DesktopRun(void *arg)
         if (files) FsLock();                    /* (a click may open a file) */
         for (; input; input = InputPoll(&ev)) {
             if (ev.type == INPUT_MOUSE) {
+                UmSetInputPen(ev.from_pen ? pen_serial : 0);    /* (programs get WM_POINTER* for a pen's) */
                 if (ev.absolute) {
                     WmCursorMoveAbs(ev.dx, ev.dy);
                     WmMouseMove(WmCursorX(), WmCursorY());
@@ -1961,10 +1965,19 @@ void DesktopRun(void *arg)
                 if (!right && prev_right) WmMouseOther(x, y, WM_MOUSE_RUP, 0);
                 prev_left = left;
                 prev_right = right;
+                UmSetInputPen(0);
             } else if (ev.type == INPUT_TOUCH) {
                 touch_event(&ev);
             } else if (ev.type == INPUT_PEN) {
-                TabletPacketIn(&ev);
+                pen_serial = TabletPacketIn(&ev);
+                if (!ev.pressed && pen_near) {
+                    /* out of range: no pointer motion comes, so the window it
+                     * was over gets one more move, tagged, for WM_POINTERLEAVE */
+                    UmSetInputPen(pen_serial);
+                    WmMouseMove(WmCursorX(), WmCursorY());
+                    UmSetInputPen(0);
+                }
+                pen_near = ev.pressed != 0;
             } else if (ev.type == INPUT_KEY) {
                 KeyEvent k;
                 if (InputTranslateKey(&ev, &k)) desktop_key(&k);
@@ -1974,6 +1987,7 @@ void DesktopRun(void *arg)
 
         WmTick();                               /* (takes the file-system lock as needed) */
         UmPoll();                               /* reclaim exited programs */
+        UmUpdateForeground();                   /* (the active window's process) */
 
         rtc_read(&t);
         if (t.minute != last_min) {

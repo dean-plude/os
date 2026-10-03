@@ -281,7 +281,35 @@ __declspec(dllexport) int __cdecl wsprintfA(LPSTR buf, LPCSTR fmt, ...) { va_lis
 __declspec(dllexport) int __cdecl wsprintfW(LPWSTR buf, LPCWSTR fmt, ...) { va_list a; va_start(a, fmt); int r = wvsprintfW(buf, fmt, a); va_end(a); return r; }
 
 
+/* The sizes among the metrics (not counts, flags or the screen's size):
+ * they grow with the DPI */
+static int metric_is_size(int index)
+{
+    static const BYTE sizes[] = { 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 28, 29, 30, 31, 32, 33,
+                                  34, 35, 36, 37, 38, 39, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 57, 58,
+                                  68, 69, 71, 72, 83, 84, 92 };
+    for (unsigned i = 0; i < sizeof(sizes); i++) if (sizes[i] == index) return 1;
+    return 0;
+}
+
+static int metric96(int index);
+
+/* GetSystemMetrics at the system DPI the thread sees (96 for DPI-unaware
+ * ones), as on Windows; GetSystemMetricsForDpi at any */
 USERAPI int GetSystemMetrics(int index)
+{
+    int v = metric96(index), k = dpi_sys_k();
+    return k > 1 && metric_is_size(index) ? v * k : v;
+}
+
+USERAPI int GetSystemMetricsForDpi(int index, UINT dpi)
+{
+    if (!dpi) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    int v = metric96(index);
+    return metric_is_size(index) ? MulDiv(v, (int)dpi, 96) : v;
+}
+
+static int metric96(int index)
 {
     ULONG w = 0, h = 0;
     NtNovaGuiScreenSize(&w, &h);
@@ -349,34 +377,70 @@ USERAPI int GetSystemMetrics(int index)
     }
     return 0;
 }
-/* Sizes (not counts or flags) grow with the DPI */
-USERAPI int GetSystemMetricsForDpi(int index, UINT dpi)
-{
-    static const BYTE sizes[] = { 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 28, 29, 30, 31, 32, 33,
-                                  34, 35, 36, 37, 38, 39, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 57, 58,
-                                  71, 72, 83, 84, 92 };
-    int v = GetSystemMetrics(index);
-    if (!dpi) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
-    for (unsigned i = 0; i < sizeof(sizes); i++)
-        if (sizes[i] == index) return MulDiv(v, (int)dpi, 96);
-    return v;
-}
 
 typedef struct { UINT cbSize; int iBorderWidth, iScrollWidth, iScrollHeight, iCaptionWidth, iCaptionHeight; LOGFONTW lfCaptionFont;
                  int iSmCaptionWidth, iSmCaptionHeight; LOGFONTW lfSmCaptionFont; int iMenuWidth, iMenuHeight;
                  LOGFONTW lfMenuFont, lfStatusFont, lfMessageFont; int iPaddedBorderWidth; } NONCLIENTMETRICSW_;
 
-static void ui_font(LOGFONTW *lf)
+typedef struct { UINT cbSize; int iBorderWidth, iScrollWidth, iScrollHeight, iCaptionWidth, iCaptionHeight; LOGFONTA lfCaptionFont;
+                 int iSmCaptionWidth, iSmCaptionHeight; LOGFONTA lfSmCaptionFont; int iMenuWidth, iMenuHeight;
+                 LOGFONTA lfMenuFont, lfStatusFont, lfMessageFont; int iPaddedBorderWidth; } NONCLIENTMETRICSA_;
+typedef struct { UINT cbSize; int iHorzSpacing, iVertSpacing, iTitleWrap; LOGFONTW lfFont; } ICONMETRICSW_;
+typedef struct { UINT cbSize; int iHorzSpacing, iVertSpacing, iTitleWrap; LOGFONTA lfFont; } ICONMETRICSA_;
+
+/* Segoe UI 9 points (user32's own font, draw.c) at @dpi */
+static void ui_font(LOGFONTW *lf, int dpi)
 {
     memset(lf, 0, sizeof(*lf));
-    lf->lfHeight = -12;
+    lf->lfHeight = -MulDiv(12, dpi, 96);
     lf->lfWeight = 400;
+    lf->lfCharSet = DEFAULT_CHARSET;
+    lf->lfQuality = CLEARTYPE_QUALITY;
     u8_to_w("Segoe UI", lf->lfFaceName, 32);
+}
+
+static void lf_w2a(const LOGFONTW *w, LOGFONTA *a)
+{
+    memcpy(a, w, __builtin_offsetof(LOGFONTA, lfFaceName));
+    WideCharToMultiByte(CP_ACP, 0, w->lfFaceName, -1, a->lfFaceName, 32, NULL, NULL);
+    a->lfFaceName[31] = 0;
+}
+
+/* The DPI-dependent parameters (the non-client metrics, the icon title
+ * font and spacing) at @dpi; 0: not one of those */
+static int spi_dpi(UINT action, PVOID p, int dpi)
+{
+    switch (action) {
+    case 0x0029: {                                          /* SPI_GETNONCLIENTMETRICS */
+        NONCLIENTMETRICSW_ *m = p;
+        UINT size = m->cbSize;
+        memset(m, 0, size < sizeof(*m) ? size : sizeof(*m));
+        m->cbSize = size;
+        m->iBorderWidth = MulDiv(1, dpi, 96);
+        m->iScrollWidth = m->iScrollHeight = MulDiv(17, dpi, 96);
+        m->iCaptionWidth = m->iCaptionHeight = MulDiv(22, dpi, 96);
+        m->iSmCaptionWidth = m->iSmCaptionHeight = MulDiv(22, dpi, 96);
+        m->iMenuWidth = m->iMenuHeight = MulDiv(19, dpi, 96);
+        ui_font(&m->lfCaptionFont, dpi); ui_font(&m->lfSmCaptionFont, dpi); ui_font(&m->lfMenuFont, dpi);
+        ui_font(&m->lfStatusFont, dpi); ui_font(&m->lfMessageFont, dpi);
+        return 1;
+    }
+    case 0x001F: ui_font(p, dpi); return 1;                 /* SPI_GETICONTITLELOGFONT */
+    case 0x002D: {                                          /* SPI_GETICONMETRICS */
+        ICONMETRICSW_ *m = p;
+        m->iHorzSpacing = m->iVertSpacing = MulDiv(75, dpi, 96);
+        m->iTitleWrap = 1;
+        ui_font(&m->lfFont, dpi);
+        return 1;
+    }
+    }
+    return 0;
 }
 
 USERAPI BOOL SystemParametersInfoW(UINT action, UINT uparam, PVOID p, UINT winini)
 {
     (void)uparam; (void)winini;
+    if (p && spi_dpi(action, p, 96 * dpi_sys_k())) return TRUE;   /* at the system DPI the thread sees */
     switch (action) {
     case 0x0057:                                            /* SPI_SETCURSORS: NovaOS's own back */
         return NtNovaGuiCtl(0, CTL_SET_SYSCURSOR, 0, NULL) ? TRUE : FALSE;
@@ -385,18 +449,6 @@ USERAPI BOOL SystemParametersInfoW(UINT action, UINT uparam, PVOID p, UINT winin
         r->left = r->top = 0; r->right = GetSystemMetrics(0); r->bottom = GetSystemMetrics(1);
         return TRUE;
     }
-    case 0x0029: {                                          /* SPI_GETNONCLIENTMETRICS */
-        NONCLIENTMETRICSW_ *m = p;
-        UINT size = m->cbSize;
-        memset(m, 0, size < sizeof(*m) ? size : sizeof(*m));
-        m->cbSize = size;
-        m->iBorderWidth = 1; m->iScrollWidth = m->iScrollHeight = 17; m->iCaptionWidth = m->iCaptionHeight = 22;
-        m->iSmCaptionWidth = m->iSmCaptionHeight = 22; m->iMenuWidth = m->iMenuHeight = 19;
-        ui_font(&m->lfCaptionFont); ui_font(&m->lfSmCaptionFont); ui_font(&m->lfMenuFont);
-        ui_font(&m->lfStatusFont); ui_font(&m->lfMessageFont);
-        return TRUE;
-    }
-    case 0x001F: ui_font(p); return TRUE;                   /* SPI_GETICONTITLELOGFONT */
     case 0x004A: case 0x000A: case 0x0044: case 0x0046: case 0x0048: case 0x001B: case 0x005F:
         *(BOOL *)p = FALSE; return TRUE;                    /* screen reader, beep, key prefs, ... */
     case 0x004A + 0x1000: *(BOOL *)p = TRUE; return TRUE;
@@ -420,28 +472,45 @@ USERAPI BOOL SystemParametersInfoW(UINT action, UINT uparam, PVOID p, UINT winin
 
 USERAPI BOOL SystemParametersInfoA(UINT action, UINT uparam, PVOID p, UINT winini)
 {
-    if (action == 0x0029) {                                 /* the A metrics hold LOGFONTA */
-        BYTE *m = p;
-        UINT size = *(UINT *)m;
-        memset(m, 0, size);
-        *(UINT *)m = size;
+    if (p && action == 0x0029) {                            /* the A forms hold LOGFONTA */
+        NONCLIENTMETRICSA_ *a = p;
+        NONCLIENTMETRICSW_ w;
+        UINT size = a->cbSize;
+        w.cbSize = sizeof(w);
+        SystemParametersInfoW(action, 0, &w, 0);
+        NONCLIENTMETRICSA_ t;
+        memset(&t, 0, sizeof(t));
+        t.iBorderWidth = w.iBorderWidth; t.iScrollWidth = w.iScrollWidth; t.iScrollHeight = w.iScrollHeight;
+        t.iCaptionWidth = w.iCaptionWidth; t.iCaptionHeight = w.iCaptionHeight;
+        t.iSmCaptionWidth = w.iSmCaptionWidth; t.iSmCaptionHeight = w.iSmCaptionHeight;
+        t.iMenuWidth = w.iMenuWidth; t.iMenuHeight = w.iMenuHeight; t.iPaddedBorderWidth = w.iPaddedBorderWidth;
+        lf_w2a(&w.lfCaptionFont, &t.lfCaptionFont); lf_w2a(&w.lfSmCaptionFont, &t.lfSmCaptionFont);
+        lf_w2a(&w.lfMenuFont, &t.lfMenuFont); lf_w2a(&w.lfStatusFont, &t.lfStatusFont);
+        lf_w2a(&w.lfMessageFont, &t.lfMessageFont);
+        memcpy(a, &t, size < sizeof(t) ? size : sizeof(t));
+        a->cbSize = size;
+        return TRUE;
+    }
+    if (p && (action == 0x001F || action == 0x002D)) {
+        LOGFONTW lf;
+        SystemParametersInfoW(0x001F, 0, &lf, 0);
+        if (action == 0x001F) { lf_w2a(&lf, p); return TRUE; }
+        ICONMETRICSA_ *m = p;
+        ICONMETRICSW_ w;
+        w.cbSize = sizeof(w);
+        SystemParametersInfoW(action, 0, &w, 0);
+        m->iHorzSpacing = w.iHorzSpacing; m->iVertSpacing = w.iVertSpacing; m->iTitleWrap = w.iTitleWrap;
+        lf_w2a(&w.lfFont, &m->lfFont);
         return TRUE;
     }
     return SystemParametersInfoW(action, uparam, p, winini);
 }
-/* The fonts and sizes of SPI_GETNONCLIENTMETRICS / SPI_GETICONTITLELOGFONT at @dpi */
+/* SPI_GETNONCLIENTMETRICS, SPI_GETICONTITLELOGFONT and SPI_GETICONMETRICS at @dpi */
 USERAPI BOOL SystemParametersInfoForDpi(UINT action, UINT uparam, PVOID p, UINT winini, UINT dpi)
 {
-    if (action != 0x0029 && action != 0x001F) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    if (!p || !dpi || !SystemParametersInfoW(action, uparam, p, winini)) return FALSE;
-    if (action == 0x001F) { ((LOGFONTW *)p)->lfHeight = MulDiv(((LOGFONTW *)p)->lfHeight, (int)dpi, 96); return TRUE; }
-    NONCLIENTMETRICSW_ *m = p;
-    int *sz[] = { &m->iBorderWidth, &m->iScrollWidth, &m->iScrollHeight, &m->iCaptionWidth, &m->iCaptionHeight,
-                  &m->iSmCaptionWidth, &m->iSmCaptionHeight, &m->iMenuWidth, &m->iMenuHeight };
-    for (unsigned i = 0; i < sizeof(sz) / sizeof(sz[0]); i++) *sz[i] = MulDiv(*sz[i], (int)dpi, 96);
-    LOGFONTW *f[] = { &m->lfCaptionFont, &m->lfSmCaptionFont, &m->lfMenuFont, &m->lfStatusFont, &m->lfMessageFont };
-    for (unsigned i = 0; i < 5; i++) f[i]->lfHeight = MulDiv(f[i]->lfHeight, (int)dpi, 96);
-    return TRUE;
+    (void)uparam; (void)winini;
+    if (!p || !dpi || (action != 0x0029 && action != 0x001F && action != 0x002D)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return spi_dpi(action, p, (int)dpi) ? TRUE : FALSE;
 }
 
 /* DPI awareness and GetDpiFor*: dpi.c */

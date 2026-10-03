@@ -24,7 +24,7 @@ def plug(n, bus, kind):
         r = nova.qmp.cmd('device_add', driver='usb-audio', id=f'spk{n}', bus=bus, audiodev=f'usbsnd{n}')
         if 'error' in r:
             print('device_add:', r['error'], flush=True)
-        _wait_log(nova, r'full speed, ' + kind + r'[^\n]*\n(?:[^\n]*\n)*?\[AUDIO\] Playing on USB Audio Device')
+        _wait_log(nova, r'full speed, ' + kind + r'[^\n]*\n(?:[^\n]*\n)*?\[AUDIO\] Playing on Speakers \(')
     return act
 
 
@@ -37,7 +37,7 @@ def unplug(n):
 
 TESTS = [
     Test('usbaudio xhci', 'soundtest tone 440 1000', [r'played \d+ samples'], check=tones(440, wav='usb1.wav', only=True),
-         boot_expect=[r'\[USB\] [^\n]*: audio output, 48 kHz 16-bit stereo', r'\[AUDIO\] Playing on USB Audio Device']),
+         boot_expect=[r'\[USB\] [^\n]*: audio output, 48 kHz 16-bit stereo', r'\[AUDIO\] Playing on Speakers \(']),
     Test('usbaudio ohci', 'soundtest tone 550 1000', [r'played \d+ samples'], before=plug(2, 'ohci.0', 'OHCI'),
          check=tones(550, wav='usb2.wav')),
     Test('usbaudio uhci', 'soundtest tone 660 1000', [r'played \d+ samples'], before=plug(3, 'uhci.0', 'UHCI'),

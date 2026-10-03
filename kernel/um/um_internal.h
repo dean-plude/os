@@ -88,7 +88,7 @@ void um_unlock_excl(UmRwLock *l);
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
 typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION, UO_PIPE,
-               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO, UO_CONSOLE, UO_TOKEN } UmObType;
+               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO, UO_CONSOLE, UO_TOKEN, UO_GPU } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -290,6 +290,7 @@ UmRegion  *um_region_add(UmProcess *p, UINT64 base, UINT64 size, UINT32 protect,
 UmRegion  *um_region_find(UmProcess *p, UINT64 va);
 void       um_region_remove(UmProcess *p, UmRegion *r);
 bool       um_commit(UmProcess *p, UINT64 va, UINT64 size, UINT32 protect);
+bool       um_map_image_page(UmProcess *p, UINT64 va, const void *content, UINT32 protect);
 bool       um_is_guard(UmProcess *p, UINT64 va);            /* a PAGE_GUARD page */
 void       um_decommit(UmProcess *p, UINT64 va, UINT64 size);
 bool       um_is_committed(UmProcess *p, UINT64 va);
@@ -411,6 +412,8 @@ void       um_pipe_process_gone(UmProcess *p);
 void       um_thread_syscalls_init(void);
 void       um_socket_syscalls_init(void);
 void       um_audio_syscalls_init(void);
+void       um_gpu_syscalls_init(void);
+UINT64     um_section_foreign(UmProcess *p, UINT64 pa, UINT64 size, void (*release)(void *), void *ctx);
 void       um_gui_syscalls_init(void);
 void       um_gui_process_gone(UmProcess *p);   /* destroy the process's windows */
 /* Wait until @o is signaled (acquiring it), @timeout_100ns passes (-1:

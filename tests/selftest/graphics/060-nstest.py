@@ -1,17 +1,20 @@
 # nstest: NetSurf (Phase 19.8) shows an SVG image, an svg element written
-# inline in the HTML and a list a script builds, and redraws a page a script
-# changes after layout.  nstest writes the page and starts NetSurf; this
+# inline in the HTML, a list a script builds, an SVG without a size (at the
+# default 300 x 150) and an iframe holding a frameset page, and redraws a
+# page a script changes after layout.  nstest writes the page and starts NetSurf; this
 # test looks at the screen: the SVG's red circle, blue rectangle and green
 # outline, the inline SVG's magenta square and cyan circle (at the size its
 # width, height and viewBox give), the three list items (orange, purple,
-# teal) and the page's yellow box, then clicks the box (its script
-# turns it green and bigger) and waits for the green box with the yellow
-# one gone, then closes NetSurf with Alt+F4 (nstest passes when NetSurf
+# teal), the default-size SVG's olive rectangle, the iframe's two frames
+# (brown and pink) and the page's yellow box, then clicks the box (its
+# script turns it green and bigger) and waits for the green box with the
+# yellow one gone and everything else still there, then closes NetSurf with Alt+F4 (nstest passes when NetSurf
 # exits normally).  A screenshot of each state is kept in --out.
-import os, struct, sys, time, zlib
+import os, re, struct, sys, time, zlib
 
 SEEN = {'why': 'nstest never started NetSurf'}     # why the screen check failed, for check()
-LOGICAL_W = 1280            # the desktop's logical width (novarun clicks in it)
+LOGICAL_W = 1280            # the desktop's logical width (novarun clicks in it); the boot log's
+                            # "[GDI] WxH device, scale Nx -> LWxLH logical" line overrides it
 
 
 def png_rgb(path):
@@ -59,14 +62,19 @@ COLOURS = {                 # name: test on (r, g, b)
     'orange': lambda r, g, b: r > 235 and 110 < g < 145 and b < 20,
     'purple': lambda r, g, b: 110 < r < 145 and g < 20 and b > 235,
     'teal': lambda r, g, b: r < 20 and 110 < g < 145 and 110 < b < 145,
+    'olive': lambda r, g, b: 110 < r < 145 and 110 < g < 145 and b < 20,
+    'brown': lambda r, g, b: 110 < r < 145 and 50 < g < 80 and b < 20,
+    'pink': lambda r, g, b: r > 235 and g < 20 and 110 < b < 145,
 }
 INLINE = ('magenta', 'cyan')
 LIST = ('orange', 'purple', 'teal')
+FRAMES = ('brown', 'pink')
 
 
 def census(path):
     """{colour: (pixel count, centre x, centre y)} on the screenshot (every
-    second pixel), the centre in logical desktop coordinates"""
+    second pixel), the count in logical pixels and the centre in logical
+    desktop coordinates"""
     w, h, rows = png_rgb(path)
     found = {k: [0, 0, 0] for k in COLOURS}
     for y in range(0, h, 2):
@@ -80,7 +88,8 @@ def census(path):
                     s[1] += x
                     s[2] += y
     scale = LOGICAL_W / w
-    return {k: (n, int(sx / n * scale) if n else 0, int(sy / n * scale) if n else 0)
+    per = (w / LOGICAL_W / 2) ** 2      # samples per logical pixel (1 at a 2x scale)
+    return {k: (int(n / per), int(sx / n * scale) if n else 0, int(sy / n * scale) if n else 0)
             for k, (n, sx, sy) in found.items()}
 
 
@@ -96,10 +105,14 @@ def wait_for(nova, path, ok, timeout):
 
 
 def look_and_click(nova):
+    global LOGICAL_W
     SEEN['why'] = None
+    m = re.search(r'\[GDI\] \d+x\d+ device, scale \S+ -> (\d+)x\d+ logical', nova.boot_log)
+    if m:
+        LOGICAL_W = int(m.group(1))
     out = os.path.join(getattr(sys.modules['__main__'], 'OUT', '.'), 'nstest')   # selftest.py's --out
     before = wait_for(nova, out + '-before.png',
-                      lambda c: all(c[k][0] > 200 for k in ('red', 'blue', 'yellow') + INLINE + LIST)
+                      lambda c: all(c[k][0] > 200 for k in ('red', 'blue', 'yellow', 'olive') + INLINE + LIST + FRAMES)
                       and c['outline'][0] > 50, 240)
     miss = [k for k in ('red', 'blue', 'outline', 'yellow') if before[k][0] < (50 if k == 'outline' else 200)]
     # (one census sample is one logical pixel: the inline SVG's square is
@@ -115,6 +128,12 @@ def look_and_click(nova):
     elif [k for k in LIST if not 1500 < before[k][0] < 2500]:
         SEEN['why'] = 'the script-built list is wrong (%s of 2000 pixels each)' % \
             ', '.join('%s %d' % (k, before[k][0]) for k in LIST)
+    elif not 38000 < before['olive'][0] < 52000:
+        SEEN['why'] = 'the SVG without a size is not at the default 300 x 150 (olive %d of 45000 pixels)' % \
+            before['olive'][0]
+    elif [k for k in FRAMES if before[k][0] < 5000]:
+        SEEN['why'] = 'the frames in the iframe did not show (%s pixels)' % \
+            ', '.join('%s %d' % (k, before[k][0]) for k in FRAMES)
     elif before['green'][0] > 50:
         SEEN['why'] = 'the box was green before the click'
     else:
@@ -129,6 +148,8 @@ def look_and_click(nova):
             SEEN['why'] = 'the SVG image went missing when the page was laid out again'
         elif [k for k in INLINE + LIST if after[k][0] < 1000]:
             SEEN['why'] = 'the inline SVG or the list went missing when the page was laid out again'
+        elif after['olive'][0] < 38000 or [k for k in FRAMES if after[k][0] < 5000]:
+            SEEN['why'] = 'the default-size SVG or the frames went missing when the page was laid out again'
     time.sleep(1)
     nova.qmp.key('alt', 'f4')
 

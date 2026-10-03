@@ -1,5 +1,7 @@
 - **Kernel** (`kernel/`): NT-style executive: object manager and handles,
-  processes and threads, virtual memory with sections and guard pages, I/O,
+  processes and threads, virtual memory with sections and guard pages
+(the read-only pages of loaded DLLs are shared by every process with the
+same bytes, as Windows shares image sections), I/O,
   registry, security tokens (restricted tokens, impersonation) and
   security descriptors checked when named objects and files on drive C:
   are opened.  SMP with per-core scheduling and fine-grained
@@ -14,5 +16,7 @@
   decays back one level per quantum; a balance set lifts threads that
   have starved for 3 s.  Priority classes and thread priorities
   (`SetPriorityClass`, `SetThreadPriority`) set NT's base priorities;
-  the desktop, input and audio threads stay above anything a program
-  can ask for.
+  every kernel thread (input, audio, the network, USB, the desktop,
+  saving drive C:) stays above anything a program can ask for, and the
+  process whose window is active gets NT's foreground boost (+2 after
+  every wait).

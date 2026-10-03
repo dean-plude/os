@@ -25,7 +25,7 @@ static LRESULT nc_hit_test(Wnd *w, POINT pt)
         if (PtInRect(&corner, wp)) return (w->style & WS_THICKFRAME) ? HTBOTTOMRIGHT : HTSIZE;
     }
     if (!w->parent && w->menu && y < cr.top && y >= cr.top - menu_bar_height(w, cr.right - cr.left)) return HTMENU;
-    if (!w->parent && y < FRAME_TITLE) return HTCAPTION;
+    if (!w->parent && y < FRAME_TITLE * dpi_k(w)) return HTCAPTION;
     return HTBORDER;
 }
 
