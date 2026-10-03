@@ -257,6 +257,13 @@ void kvprintf(const char *fmt, __builtin_va_list ap)
     spin_unlock_irqrestore(&g_print_lock, irq);
 }
 
+void kserial_write(const char *s, size_t n)
+{
+    IrqState irq = spin_lock_irqsave(&g_print_lock);
+    for (size_t i = 0; i < n && s[i]; i++) serial_putc(s[i]);
+    spin_unlock_irqrestore(&g_print_lock, irq);
+}
+
 void kprintf(const char *fmt, ...)
 {
     __builtin_va_list ap;

@@ -417,4 +417,5 @@ void interrupt_dispatch(InterruptFrame *frame)
         kprintf("[SMP] Bug: returning to user mode holding the kernel lock (vector %lu)\n", vector);
         bkl_leave_kernel();
     }
+    if (frame->cs & 3) sched_resched_pending();
 }

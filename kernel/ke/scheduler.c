@@ -951,6 +951,22 @@ void sched_resched_ipi(void)
     perform_switch();
 }
 
+void sched_resched_pending(void)
+{
+    if (!g_resched[this_cpu()]) return;             /* (a hint: looked at again below) */
+    IrqState irq = irq_save();
+    sched_resched_ipi();
+    irq_restore(irq);
+}
+
+bool sched_work_waiting(void)
+{
+    if (g_resched[this_cpu()]) return true;
+    for (uint32_t c = 0; c < g_cpu_count; c++)      /* (an idle CPU steals: switch_locked) */
+        if (__atomic_load_n(&g_rq[c].head, __ATOMIC_RELAXED)) return true;
+    return false;
+}
+
 /* -----------------------------------------------------------------------
  * Thread exit and reclamation
  * ----------------------------------------------------------------------- */

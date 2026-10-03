@@ -1153,6 +1153,7 @@ UINT64 KiSystemCallEntry(UINT64 num, UINT64 arg1, UINT64 arg2,
                 (unsigned long long)num);
         bkl_leave_kernel();
     }
+    sched_resched_pending();
     return r;
 }
 

@@ -41,8 +41,7 @@ enum { K_NORMAL, K_ERROR, K_DIM };
 static bool g_mirror;
 static void mirror(const char *s, int n)
 {
-    if (!g_mirror) return;
-    for (int i = 0; i < n && s[i]; i++) serial_putc(s[i]);
+    if (g_mirror && n > 0) kserial_write(s, (size_t)n);
 }
 
 /* A network command in progress (advanced by term_tick) */
@@ -571,7 +570,7 @@ static void cmd_ipconfig(Term *t)
 static bool g_marked;          /* this command's end was marked already */
 static void done_mark(void)
 {
-    if (g_mirror && !g_marked) serial_puts("\n[TERM-DONE]\n");
+    if (g_mirror && !g_marked) kserial_write("\n[TERM-DONE]\n", 13);
     g_marked = true;
 }
 
