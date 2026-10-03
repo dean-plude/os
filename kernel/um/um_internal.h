@@ -141,6 +141,11 @@ struct UmThread {
     UmThread       *wait_next;
     volatile UINT32 wake;
     volatile UINT32 alerted;        /* NtAlertThreadByThreadId, taken by NtWaitForAlertByThreadId */
+    /* Its base priority relative to its process's class (SetThreadPriority:
+     * -2..2, -7..6 in a real-time process, or +-16: saturated at the top
+     * or bottom of the class's range, TIME_CRITICAL and IDLE) */
+    INT8            prio_incr;
+    bool            no_boost;       /* SetThreadPriorityBoost(TRUE) */
 };
 
 UmObject *um_ob_ref(UmObject *o);
@@ -246,6 +251,11 @@ struct UmProcess {
     UmObject       *exit_ob;    /* UO_PROCESS object of a program-created process (not referenced) */
     UmObject       *token;      /* its primary token (referenced) */
     bool            reclaimed;  /* memory and handles freed */
+    /* Priority (um_thread.c): PROCESS_PRIORITY_CLASS_* (1 IDLE, 2 NORMAL,
+     * 3 HIGH, 4 REALTIME, 5 BELOW_NORMAL, 6 ABOVE_NORMAL; 0 is NORMAL),
+     * and SetProcessPriorityBoost's flag, which new threads inherit */
+    UINT8           prio_class;
+    bool            no_boost;
 };
 
 /* um.c */
@@ -291,6 +301,10 @@ void       um_flush_view_at(UmProcess *p, UINT64 va);  /* a file-backed view: wr
 /* Copy into/out of user memory through the page tables (any process). */
 bool       um_write(UmProcess *p, UINT64 va, const void *src, UINT64 n);
 bool       um_read(UmProcess *p, UINT64 va, void *dst, UINT64 n);
+/* Priorities (um_thread.c): @p's class base priority (4, 6, 8, 10, 13 or
+ * 24), and a thread's base for an increment (UmThread.prio_incr) in it */
+UINT8      um_class_base(const UmProcess *p);
+UINT8      um_thread_base(const UmProcess *p, int incr);
 /* Create a thread in @p starting at @start(@arg) via ntdll.  NULL on failure. */
 UmThread  *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_size,
                             bool suspended, UINT32 *status);
@@ -402,6 +416,7 @@ void       um_security_syscalls_init(void);
 UmObject  *um_token_for_process(UmProcess *creator);   /* a new process's primary token (referenced) */
 void       um_thread_drop_token(UmThread *t);          /* stop impersonating (the thread ended) */
 UINT32     um_set_thread_token(UmThread *t, UINT64 buf, UINT32 len);   /* ThreadImpersonationToken */
+bool       um_privilege_held(UINT32 luid);    /* the caller's token holds privilege @luid */
 UINT32     um_check_object(UmObject *o, UINT32 want);  /* opening @o for @want: STATUS_SUCCESS or ACCESS_DENIED */
 UINT32     um_oa_security(UINT64 oa, void **sd);       /* OBJECT_ATTRIBUTES' descriptor, captured (NULL: none) */
 void       um_sd_free(void *sd);

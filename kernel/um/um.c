@@ -1698,8 +1698,9 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
      * filled in (another CPU may run it the moment it is). */
     char tname[THREAD_NAME_MAX];
     ksnprintf(tname, sizeof(tname), "%s:%u", p->name, t->tid);
-    Thread *kt = sched_new_thread(tname, um_thread_start, t, 8, 32 * 1024);
+    Thread *kt = sched_new_thread(tname, um_thread_start, t, um_thread_base(p, 0), 32 * 1024);
     if (kt) {
+        t->no_boost = kt->no_boost = p->no_boost;      /* (NT: a new thread takes its process's) */
         kt->um = t;
         kt->cr3 = p->pml4;
         kt->fpu = fpu;
@@ -1832,6 +1833,10 @@ UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield
     p->exe_dir = exe->parent;
     p->con = um_console_ref(con);
     p->token = um_token_for_process(UmCurrent());        /* its creator's user (the desktop's: the default) */
+    /* NORMAL_PRIORITY_CLASS, or an IDLE or BELOW_NORMAL creator's class,
+     * as on Windows (CreateProcess's *_PRIORITY_CLASS flags set it after) */
+    p->prio_class = 2;
+    if (UmCurrent() && (UmCurrent()->prio_class == 1 || UmCurrent()->prio_class == 5)) p->prio_class = UmCurrent()->prio_class;
     um_set_layout(p, um_pe_machine(exe) == 0x014C);
 
     /* Map the program, ntdll (every process has it) and their imports */

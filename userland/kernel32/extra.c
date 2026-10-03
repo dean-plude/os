@@ -961,6 +961,11 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
     zfree(envb);
     zfree(batch);
     if (!NT_SUCCESS(s)) return fail_status(s);
+    /* The *_PRIORITY_CLASS flag (the highest given wins, as on Windows) */
+    static const DWORD order[] = { REALTIME_PRIORITY_CLASS, HIGH_PRIORITY_CLASS, ABOVE_NORMAL_PRIORITY_CLASS,
+                                   NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, IDLE_PRIORITY_CLASS };
+    for (int i = 0; i < 6; i++)
+        if (flags & order[i]) { SetPriorityClass(io.Process, order[i]); break; }
     pi->hProcess = io.Process;
     pi->hThread = io.Thread;
     pi->dwProcessId = (DWORD)io.ProcessId;
@@ -1082,12 +1087,99 @@ WINBASEAPI BOOL WINAPI GetProcessAffinityMask(HANDLE p, PDWORD_PTR proc, PDWORD_
 }
 
 WINBASEAPI BOOL WINAPI SetProcessAffinityMask(HANDLE p, DWORD_PTR mask) { (void)p; return mask != 0; }
-WINBASEAPI BOOL WINAPI SetProcessPriorityBoost(HANDLE p, BOOL off)      { (void)p; (void)off; return TRUE; }
-WINBASEAPI int  WINAPI GetThreadPriority(HANDLE t)                     { (void)t; return 0; }
-WINBASEAPI BOOL WINAPI SetThreadPriority(HANDLE t, int prio)           { (void)t; (void)prio; return TRUE; }
 WINBASEAPI BOOL WINAPI SetThreadStackGuarantee(PULONG size)            { if (size) *size = 0; return TRUE; }
-WINBASEAPI DWORD WINAPI GetPriorityClass(HANDLE p)                     { (void)p; return 0x20; /* NORMAL */ }
-WINBASEAPI BOOL WINAPI SetPriorityClass(HANDLE p, DWORD c)             { (void)p; (void)c; return TRUE; }
+
+/* Priorities (the kernel's NtSetInformationThread/Process, kernel/um/
+ * um_thread.c).  A thread's base is its process's class base plus its
+ * increment, which saturates at TIME_CRITICAL and IDLE (+-16 to the
+ * kernel, as on Windows). */
+#define PRIO_SATURATE 16
+
+static BOOL prio_fail(NTSTATUS s)
+{
+    SetLastError(RtlNtStatusToDosError(s));
+    return FALSE;
+}
+
+WINBASEAPI int WINAPI GetThreadPriority(HANDLE t)
+{
+    THREAD_BASIC_INFORMATION tbi;
+    NTSTATUS s = NtQueryInformationThread(t, 0 /* ThreadBasicInformation */, &tbi, sizeof(tbi), 0);
+    if (!NT_SUCCESS(s)) { prio_fail(s); return THREAD_PRIORITY_ERROR_RETURN; }
+    if (tbi.BasePriority >= PRIO_SATURATE) return THREAD_PRIORITY_TIME_CRITICAL;
+    if (tbi.BasePriority <= -PRIO_SATURATE) return THREAD_PRIORITY_IDLE;
+    return (int)tbi.BasePriority;
+}
+
+WINBASEAPI BOOL WINAPI SetThreadPriority(HANDLE t, int prio)
+{
+    LONG v = prio == THREAD_PRIORITY_TIME_CRITICAL ? PRIO_SATURATE : prio == THREAD_PRIORITY_IDLE ? -PRIO_SATURATE : prio;
+    NTSTATUS s = NtSetInformationThread(t, 3 /* ThreadBasePriority */, &v, sizeof(v));
+    return NT_SUCCESS(s) ? TRUE : prio_fail(s);
+}
+
+WINBASEAPI BOOL WINAPI SetThreadPriorityBoost(HANDLE t, BOOL disable)
+{
+    ULONG v = disable ? 1 : 0;
+    NTSTATUS s = NtSetInformationThread(t, 14 /* ThreadPriorityBoost */, &v, sizeof(v));
+    return NT_SUCCESS(s) ? TRUE : prio_fail(s);
+}
+
+WINBASEAPI BOOL WINAPI GetThreadPriorityBoost(HANDLE t, BOOL *disabled)
+{
+    ULONG v = 0;
+    NTSTATUS s = NtQueryInformationThread(t, 14, &v, sizeof(v), 0);
+    if (!NT_SUCCESS(s)) return prio_fail(s);
+    *disabled = v != 0;
+    return TRUE;
+}
+
+WINBASEAPI BOOL WINAPI SetProcessPriorityBoost(HANDLE p, BOOL disable)
+{
+    ULONG v = disable ? 1 : 0;
+    NTSTATUS s = NtSetInformationProcess(p, 33 /* ProcessPriorityBoost */, &v, sizeof(v));
+    return NT_SUCCESS(s) ? TRUE : prio_fail(s);
+}
+
+WINBASEAPI BOOL WINAPI GetProcessPriorityBoost(HANDLE p, BOOL *disabled)
+{
+    ULONG v = 0;
+    NTSTATUS s = NtQueryInformationProcess(p, 33, &v, sizeof(v), 0);
+    if (!NT_SUCCESS(s)) return prio_fail(s);
+    *disabled = v != 0;
+    return TRUE;
+}
+
+/* PROCESS_PRIORITY_CLASS_* (1-6) <-> *_PRIORITY_CLASS */
+static const DWORD g_prio_classes[7] = {
+    0, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS, REALTIME_PRIORITY_CLASS,
+    BELOW_NORMAL_PRIORITY_CLASS, ABOVE_NORMAL_PRIORITY_CLASS,
+};
+
+WINBASEAPI DWORD WINAPI GetPriorityClass(HANDLE p)
+{
+    UCHAR pc[2] = { 0, 0 };                     /* { Foreground, PriorityClass } */
+    NTSTATUS s = NtQueryInformationProcess(p, 18 /* ProcessPriorityClass */, pc, sizeof(pc), 0);
+    if (!NT_SUCCESS(s)) { prio_fail(s); return 0; }
+    return pc[1] >= 1 && pc[1] <= 6 ? g_prio_classes[pc[1]] : NORMAL_PRIORITY_CLASS;
+}
+
+/* REALTIME needs SeIncreaseBasePriorityPrivilege (an administrator's):
+ * without it the process gets HIGH, as on Windows.  Background mode
+ * (PROCESS_MODE_BACKGROUND_*: I/O and memory priority) is accepted. */
+WINBASEAPI BOOL WINAPI SetPriorityClass(HANDLE p, DWORD c)
+{
+    if (c == PROCESS_MODE_BACKGROUND_BEGIN || c == PROCESS_MODE_BACKGROUND_END) return TRUE;
+    UCHAR pc[2] = { 0, 0 };
+    for (UCHAR i = 1; i <= 6; i++) if (c == g_prio_classes[i]) pc[1] = i;
+    if (!pc[1]) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    NTSTATUS s = NtSetInformationProcess(p, 18 /* ProcessPriorityClass */, pc, sizeof(pc));
+    if (s == (NTSTATUS)0xC0000061 && pc[1] == 4) {  /* STATUS_PRIVILEGE_NOT_HELD */
+        pc[1] = 3;
+        s = NtSetInformationProcess(p, 18, pc, sizeof(pc));
+    }
+    return NT_SUCCESS(s) ? TRUE : prio_fail(s);
+}
 
 static UINT g_error_mode;
 WINBASEAPI UINT WINAPI SetErrorMode(UINT mode) { UINT old = g_error_mode; g_error_mode = mode; return old; }

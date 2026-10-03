@@ -12,4 +12,7 @@
   event, a lock, I/O, a window message or input runs above its base
   priority (+1 to +6) and preempts busy threads of that priority, then
   decays back one level per quantum; a balance set lifts threads that
-  have starved for 3 s.
+  have starved for 3 s.  Priority classes and thread priorities
+  (`SetPriorityClass`, `SetThreadPriority`) set NT's base priorities;
+  the desktop, input and audio threads stay above anything a program
+  can ask for.

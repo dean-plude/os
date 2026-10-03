@@ -241,7 +241,7 @@ static Thread *rq_dequeue(RunQueue *rq)
 /* (@t waiting, its queue locked) */
 static void boost(Thread *t, int incr)
 {
-    if (incr <= 0 || t->idle || t->base_priority >= PRIO_LOW_REALTIME) return;
+    if (incr <= 0 || t->idle || t->no_boost || t->base_priority >= PRIO_LOW_REALTIME) return;
     int p = t->base_priority + incr;
     if (p > PRIO_MAX_DYNAMIC) p = PRIO_MAX_DYNAMIC;
     if (p <= t->priority) return;
@@ -1087,6 +1087,43 @@ static void unblock(Thread *t, bool timer, int incr)
 void sched_unblock(Thread *t)                 { unblock(t, false, BOOST_NONE); }
 void sched_unblock_timer(Thread *t)           { unblock(t, true, BOOST_TIMER); }
 void sched_unblock_boost(Thread *t, int boost) { unblock(t, false, boost); }
+
+/* A new base priority for @t (SetThreadPriority, SetPriorityClass): it runs
+ * at the new base from now on, as on NT, where a priority change ends a
+ * boost.  Queued, it moves to its new place; running, it gives way at once
+ * to a queued thread that now outranks it, and a queued thread raised above
+ * the one running on its CPU preempts it. */
+void sched_set_base_priority(Thread *t, uint8_t base)
+{
+    if (base < 1) base = 1;
+    if (base > 31) base = 31;
+    IrqState irq;
+    RunQueue *rq = lock_thread_rq(t, &irq);
+    if (t->base_priority != base && t->state != THREAD_DEAD && !t->idle) {
+        bool queued = t->next != NULL;
+        uint64_t since = t->ready_tick;
+        if (queued) rq_unlink(rq, t);
+        t->base_priority = base;
+        t->priority = base;
+        t->boost_ticks = 0;
+        t->balance_boost = false;
+        PKPCR k = &g_kpcr[t->cpu];
+        Thread *cur = (Thread *)__atomic_load_n(&k->CurrentThread, __ATOMIC_RELAXED);
+        bool resched = false;
+        if (queued) {
+            rq_link(rq, t, rq_place(rq, t, AT_TAIL));
+            t->ready_tick = since;                  /* (the balance set's clock goes on) */
+            resched = k->Online && cur && cur != t && !cur->idle && t->priority > cur->priority;
+        } else if (cur == t && t->state == THREAD_RUNNING) {
+            resched = rq_outranks(rq, t);
+        }
+        if (resched) {
+            g_resched[t->cpu] = true;
+            apic_send_ipi(k->ApicId, APIC_IPI_FIXED | IPI_WAKE);
+        }
+    }
+    spin_unlock_irqrestore(&rq->lock, irq);
+}
 
 void sched_resched_ipi(void)
 {
