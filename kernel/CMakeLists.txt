@@ -190,6 +190,7 @@ set(KERNEL_C_SOURCES
     ke/kpcr.c
     ke/smp.c
     ke/sleep.c
+    ke/timezone.c
     ke/waitq.c
     ke/probe.c
     ke/probe_test.c

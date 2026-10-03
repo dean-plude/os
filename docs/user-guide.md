@@ -63,6 +63,25 @@ do is kept.  **Install NovaOS** opens by itself:
 The Terminal's `install` command does the same without the window
 (`install` alone lists the disks).
 
+## First start
+
+The first time NovaOS starts from the disk it was installed on,
+**Welcome to NovaOS** opens before the desktop and asks, page by page:
+
+1. **Your name**, shown on the Start menu and given to programs as the
+   user name.
+2. **Your time zone.**  Type a city (Berlin, Tokyo, New York...) to find
+   its zone, or pick one from the list with the arrow keys or the mouse;
+   the page shows the time there now.  The clock, the Terminal's `date`
+   and `time`, Calendar and Windows programs show local time from then on,
+   with daylight saving time where the zone has it.
+3. **The display resolution.**  Picking one switches to it at once.
+
+Settings changes the time zone (Time & language) and the resolution
+later, `tzutil /s "NAME"` in the Terminal sets a zone by its Windows name
+(`tzutil /l` lists them), and `start welcome` goes through all the pages
+again.
+
 ## The desktop
 
 ![The desktop with the Terminal and File Explorer side by side](screenshots/desktop.png)
@@ -109,7 +128,7 @@ Keyboard shortcuts:
 - **Settings** has the System, Display (resolution, scale, several
   monitors), Sound (which speakers and microphone, and their volumes),
   Personalization (wallpaper), Storage, Network, Time & language (the
-  regional format for dates and numbers) and About pages.
+  regional format for dates and numbers, and the time zone) and About pages.
 - **App Store** downloads and installs open-source Windows programs (see
   below).
 - **Notepad**, **Photos** (pictures and icons), **Calendar**, and

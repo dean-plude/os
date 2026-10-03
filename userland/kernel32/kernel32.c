@@ -1234,7 +1234,8 @@ WINBASEAPI VOID WINAPI GetSystemTime(LPSYSTEMTIME st)
     FileTimeToSystemTime(&ft, st);
 }
 
-WINBASEAPI VOID WINAPI GetLocalTime(LPSYSTEMTIME st) { GetSystemTime(st); }
+void k32_local_time(LPSYSTEMTIME st);                  /* (extra.c: the time zone) */
+WINBASEAPI VOID WINAPI GetLocalTime(LPSYSTEMTIME st) { k32_local_time(st); }
 
 /* -----------------------------------------------------------------------
  * Strings and code pages (the ANSI code page is UTF-8)

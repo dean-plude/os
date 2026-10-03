@@ -22,6 +22,7 @@
 #include "../ke/probe.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
+#include "../ke/timezone.h"
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "../fs/ramfs.h"
@@ -390,6 +391,61 @@ bool um_registry_get_sz(const char *path, const char *name, char *out, int cap)
     return ok;
 }
 
+/* Set a REG_BINARY from the kernel, the key created if need be */
+void um_registry_set_bin(const char *path, const char *name, const void *data, UINT32 len)
+{
+    UINT16 nm[128];
+    UINT32 n = 0;
+    for (; name[n] && n < 127; n++) nm[n] = (UINT8)name[n];
+    um_lock_excl(&g_reg);
+    RegKey *k = kpath(path, false);
+    if (k) set_value(k, nm, n, 3 /* REG_BINARY */, data, len);
+    um_unlock_excl(&g_reg);
+}
+
+/* Read a REG_BINARY from the kernel: its length (at most @cap bytes
+ * copied), or -1 when the key or value is missing or not binary */
+int um_registry_get_bin(const char *path, const char *name, void *out, int cap)
+{
+    UINT16 w[256], nm[128];
+    UINT32 n = 0, m = 0;
+    for (; path[n] && n < 255; n++) w[n] = (UINT8)path[n];
+    for (; name[m] && m < 127; m++) nm[m] = (UINT8)name[m];
+    int len = -1;
+    um_lock_shared(&g_reg);
+    RegKey *k = NULL;
+    if (walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) {
+        RegValue *v = find_value(k, nm, m);
+        if (v && v->type == 3 /* REG_BINARY */) {
+            len = (int)v->len;
+            memcpy(out, v->data, (size_t)(len < cap ? len : cap));
+        }
+    }
+    um_unlock_shared(&g_reg);
+    return len;
+}
+
+/* HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Time Zones: one key
+ * per zone NovaOS knows (ke/timezone.c), as Windows has them; rebuilt
+ * every boot (volatile), so the hive on drive C: does not carry them */
+static void time_zones(void)
+{
+    for (int i = 0; i < TzCount(); i++) {
+        const TzZone *z = TzAt(i);
+        char path[160];
+        ksnprintf(path, sizeof(path), "Machine\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\%s", z->key);
+        RegKey *k = kpath(path, true);
+        if (!k) continue;
+        kset_sz(k, "Display", z->display, 1);
+        kset_sz(k, "Std", z->std, 1);
+        kset_sz(k, "Dlt", z->dlt, 1);
+        TzTzi tzi;
+        TzToTzi(z, &tzi);
+        UINT16 nm[3] = { 'T', 'Z', 'I' };
+        set_value(k, nm, 3, 3 /* REG_BINARY */, &tzi, sizeof(tzi));
+    }
+}
+
 static void defaults(void)
 {
     /* HKLM\SOFTWARE */
@@ -492,7 +548,23 @@ static void defaults(void)
     RegKey *cn = kpath("Machine\\SYSTEM\\CurrentControlSet\\Control\\ComputerName\\ComputerName", false);
     if (!has_value(cn, "ComputerName")) kset_sz(cn, "ComputerName", "NOVA-PC", 1);
     RegKey *tz = kpath("Machine\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation", false);
-    if (!has_value(tz, "TimeZoneKeyName")) { kset_sz(tz, "TimeZoneKeyName", "UTC", 1); kset_dword(tz, "Bias", 0); }
+    if (!has_value(tz, "StandardStart")) {                /* (older hives held only the first two) */
+        const TzZone *utc = TzAt(TzFind("UTC"));
+        TzTzi tzi;
+        TzToTzi(utc, &tzi);
+        kset_sz(tz, "TimeZoneKeyName", utc->key, 1);
+        kset_dword(tz, "Bias", (UINT32)tzi.bias);
+        kset_sz(tz, "StandardName", utc->std, 1);
+        kset_dword(tz, "StandardBias", 0);
+        kset_sz(tz, "DaylightName", utc->dlt, 1);
+        kset_dword(tz, "DaylightBias", 0);
+        UINT16 ss[13] = { 'S','t','a','n','d','a','r','d','S','t','a','r','t' };
+        UINT16 ds[13] = { 'D','a','y','l','i','g','h','t','S','t','a','r','t' };
+        set_value(tz, ss, 13, 3 /* REG_BINARY */, &tzi.std_date, sizeof(tzi.std_date));
+        set_value(tz, ds, 13, 3 /* REG_BINARY */, &tzi.dst_date, sizeof(tzi.dst_date));
+        kset_dword(tz, "DynamicDaylightTimeDisabled", 0);
+    }
+    time_zones();
     RegKey *nls = kpath("Machine\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage", false);
     if (!has_value(nls, "ACP")) { kset_sz(nls, "ACP", "65001", 1); kset_sz(nls, "OEMCP", "65001", 1); }
     kpath("Machine\\SYSTEM\\CurrentControlSet\\Services", false);

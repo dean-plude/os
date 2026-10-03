@@ -51,7 +51,7 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 
 NovaOS boots live from the CD and opens **Install NovaOS**.  Install onto
 `disk.img`, then drop `-cdrom nova.iso` to start from the disk; the first
-start from it asks for your name and a display resolution.  Files you
+start from it asks for your name, your time zone and a display resolution.  Files you
 create are kept on `disk.img` across restarts.
 
 Additions to the command line:

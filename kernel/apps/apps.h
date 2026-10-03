@@ -222,5 +222,6 @@ void SetupOpen(void);
 bool WelcomeNeeded(void);
 void WelcomeFirstBoot(void);
 void WelcomeOpen(void);
+void WelcomeTimeZone(void);       /* the time zone page alone (Settings) */
 /* The user's name given at first boot ("Dean Plude" until then) */
 void AppUserName(char *out, int cap);

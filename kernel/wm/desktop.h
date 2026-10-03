@@ -56,6 +56,7 @@ void DesktopRestoreDisplayMode(void);
 /* The same for display @head (hal/display.h; 0 is the primary) */
 bool DesktopSetHeadMode(int head, int w, int h);
 void DesktopSaveHeadMode(int head, int w, int h);
+void DesktopClockChanged(void);           /* the time zone changed (ke/timezone.c) */
 /* Arrange: put monitor @i (>= 1) with its top left at (x, y) on the
  * virtual desktop (logical px; gdi.h GdiSetMonitorOrigin) and lay
  * everything out again; @save keeps it in the registry

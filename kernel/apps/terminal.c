@@ -16,6 +16,7 @@
 #include "../ke/kpcr.h"
 #include "../ke/printf.h"
 #include "../hal/rtc.h"
+#include "../ke/timezone.h"
 #include "../ke/scheduler.h"
 #include "../net/net.h"
 #include "../drivers/usb.h"
@@ -484,7 +485,7 @@ static void cmd_mem(Term *t)
 static void cmd_date(Term *t, bool time)
 {
     RtcTime r;
-    rtc_read(&r);
+    TzLocalNow(&r);                             /* local time, as cmd.exe shows it */
     if (time) tprintf(t, "The current time is: %02u:%02u:%02u",
                       r.hour, r.minute, r.second);
     else      tprintf(t, "The current date is: %04u-%02u-%02u",
