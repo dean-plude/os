@@ -932,7 +932,11 @@ static void unblock(Thread *t, bool timer)
     RunQueue *rq = lock_thread_rq(t, &irq);
     if (t->state == THREAD_WAITING) {
         t->dbg_rdy = rdtsc(); t->dbg_from = this_cpu();   /* KVMDBG */
-        t->dbg_how = (timer ? 2 : 1) | (wake_preempts(t, timer) ? 0x10 : 0) | (t->cpu << 8);
+        {
+            Thread *c0 = (Thread *)g_kpcr[t->cpu].CurrentThread;
+            t->dbg_how = (timer ? 2 : 1) | (wake_preempts(t, timer) ? 0x10 : 0) | (t->cpu << 8) |
+                         ((c0 ? c0->priority : 0xFF) << 16) | ((uint32_t)t->priority << 24) | (c0 && c0->idle ? 0x20 : 0);
+        }
         if (wake_preempts(t, timer)) {
             /* First in its CPU's queue: a halted CPU takes it if there is
              * one, else its own CPU switches to it at the IPI */

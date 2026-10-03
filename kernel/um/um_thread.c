@@ -308,7 +308,7 @@ static UINT32 wait_objects(UmObject **o, int n, bool all, INT64 timeout_100ns)
             Thread *kt = sched_current();
             UINT64 now = rdtsc();
             UINT64 base = me->wake && kt->dbg_rdy > sl0 && kt->dbg_rdy < target ? kt->dbg_rdy : target;
-            if (tmr && g_tsc_per_tick && now > base + g_tsc_per_tick / 5) {
+            if (g_tsc_per_tick && now > base + g_tsc_per_tick / 5) {
                 #define US(x) ((unsigned long)((x) * 10000 / g_tsc_per_tick))
                 kprintf("[KVMDBG] tid %lu %s late %lu us (wake %u tmr %d): ready +%ld us how %x from cpu %u, ran +%ld us on cpu %u, sleep cpu %u, slept %lu us\n",
                         (unsigned long)kt->tid, kt->name, US(now - base), me->wake, tmr,
