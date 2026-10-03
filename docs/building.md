@@ -177,6 +177,12 @@ needs neither:
   `tools/gen_locales.py` generates it from .NET's `IcuLocaleData.cs` (MIT),
   .NET's record of the names, LCIDs, code pages and GEOIDs of the 864
   locales Windows knows.
+- **The time zone table** (`kernel/ke/tzdata.inc`):
+  `tools/gen_timezones.py` generates it from Unicode CLDR's
+  `windowsZones.xml` (the Windows zone names and their cities) and the
+  IANA tz database through Python's `zoneinfo` (`pip install tzdata` has
+  the old zone names CLDR uses).  Run it again when a country changes its
+  rules.
 
 ### The ISO
 

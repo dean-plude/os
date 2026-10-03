@@ -33,6 +33,7 @@
 #include "../lib/string.h"
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
+#include "../ke/timezone.h"
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
 #include "../ke/sleep.h"
@@ -910,7 +911,7 @@ static void draw_start_menu(void)
     int by = my + mh - 62;
     GdiFillRect(RECT(mx + 1, by, mw - 2, 1), SH_LINE);
     RtcTime t;
-    rtc_read(&t);
+    TzLocalNow(&t);
     const char *greet = t.hour < 12 ? "Good morning" : t.hour < 18 ? "Good afternoon" : "Good evening";
     char user[32], initials[3] = "";
     AppUserName(user, sizeof(user));              /* the name given at first boot */
@@ -1423,11 +1424,20 @@ void DesktopSetMonitorDpi(int head, int dpi, bool save)
 
 void DesktopToggleStart(void) { start_open(!g_start_open); }
 
-/* Refresh the dock clock strings from the RTC. */
+static void update_clock(void);
+
+/* The time zone changed: the dock clock shows the new local time now */
+void DesktopClockChanged(void)
+{
+    update_clock();
+    WmInvalidate();
+}
+
+/* Refresh the dock clock strings: local time (ke/timezone.c). */
 static void update_clock(void)
 {
     RtcTime t;
-    rtc_read(&t);
+    TzLocalNow(&t);
     static const char *const months[12] = {
         "January", "February", "March", "April", "May", "June", "July",
         "August", "September", "October", "November", "December",
