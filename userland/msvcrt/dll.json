@@ -1,5 +1,6 @@
 {
   "deps": ["kernel32", "ntdll"],
   "base": "0x7FFA20000000",
-  "base_x86": "0x62000000"
+  "base_x86": "0x62000000",
+  "entry": "DllMain"
 }

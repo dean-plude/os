@@ -140,6 +140,19 @@ static void ready_wake(RunQueue *rq, Thread *t)
     smp_kick(t->cpu);
 }
 
+/* The same for a thread woken by a timer (its deadline, or the timer it
+ * waits on) that does not preempt only because a thread of higher
+ * priority runs on its CPU just then (a kernel thread's few microseconds,
+ * usually): it still goes first in the queue, so it runs once that thread
+ * is done.  Queued last, it waited out the slice of each same-priority
+ * thread ahead of it (sleeptest's 1 ms timer queue timer: 9 ms late at
+ * the 95th percentile with a busy thread on every processor). */
+static void ready_wake_timer(RunQueue *rq, Thread *t)
+{
+    rq_enqueue_front(rq, t);
+    smp_kick(t->cpu);
+}
+
 /* A thread woken from a wait (sched_unblock) that should run before the
  * one running on its CPU: that CPU switches at its next interrupt, which
  * the waker sends it (IPI_WAKE, to itself too) — rather than at the end
@@ -665,7 +678,7 @@ static void hand_off_due(RunQueue *rq, uint32_t cpu, uint64_t tsc)
                 apic_send_ipi(g_kpcr[c].ApicId, APIC_IPI_FIXED | IPI_WAKE);
             }
         } else {
-            ready_wake(to, t);
+            ready_wake_timer(to, t);
         }
         spin_unlock(&to->lock);
     }
@@ -743,9 +756,12 @@ void sched_tick(void)
         for (uint32_t c = 0; c < g_cpu_count && !steal_now; c++)
             steal_now = __atomic_load_n(&g_rq[c].head, __ATOMIC_RELAXED) != NULL;
     /* A sleeper that is due runs now, or a thread woken for this CPU
-     * (sched_unblock); or the time slice expired */
+     * (sched_unblock); or the time slice expired.  The thread preempted
+     * for either keeps its place ahead of those waiting their turn
+     * (rq_enqueue_preempted): sent to the back, it waited out their
+     * slices, in the middle of starting a 1 ms wait of its own. */
     bool slice_over = current_thread->ticks_slice >= TICKS_PER_SLICE;
-    if (g_resched[cpu] && !slice_over) g_preempting[cpu] = true;
+    if ((g_resched[cpu] || preempt) && !slice_over) g_preempting[cpu] = true;
     if (preempt || steal_now || g_resched[cpu] || slice_over)
         perform_switch();
 }
@@ -827,10 +843,16 @@ void sched_sleep_until_tsc(volatile uint32_t *flag, uint64_t tsc)
         t->in_sleepers = true;
         t->sleep_cpu = this_cpu();
     }
-    /* Sooner than this CPU's timer is armed for (or that was armed before
-     * a restart and has gone by): arm it for this */
+    /* Sooner than this CPU's timer is armed for: arm it for this.  Never
+     * later: a deadline that has gone by may not have fired yet (the
+     * one-shot count runs a little off the TSC, and a virtual timer fires
+     * late), and arming over it would leave its sleeper until the next
+     * 10 ms tick.  Armed for it again, it fires at once (as it does when
+     * it was armed before a restart and the timer has stopped since), and
+     * sched_tick arms the timer for what is due next, this sleep too. */
     uint32_t cpu = this_cpu();
-    if (tsc < g_armed[cpu] || g_armed[cpu] <= now) timer_arm(cpu, tsc);
+    if (tsc < g_armed[cpu]) timer_arm(cpu, tsc);
+    else if (g_armed[cpu] <= now) timer_arm(cpu, g_armed[cpu]);
     switch_locked(rq);
     irq_restore(irq);
 }
@@ -867,6 +889,8 @@ static bool wake_sleepers(RunQueue *rq, uint64_t *soonest)
             if (t->wake_tsc && cur && t->priority >= cur->priority) {
                 rq_enqueue_front(rq, t);
                 preempt = true;
+            } else if (t->wake_tsc) {
+                ready_wake_timer(rq, t);
             } else {
                 ready_wake(rq, t);
             }
@@ -918,6 +942,8 @@ static void unblock(Thread *t, bool timer)
                 g_resched[t->cpu] = true;
                 apic_send_ipi(g_kpcr[t->cpu].ApicId, APIC_IPI_FIXED | IPI_WAKE);
             }
+        } else if (timer) {
+            ready_wake_timer(rq, t);
         } else {
             ready_wake(rq, t);
         }

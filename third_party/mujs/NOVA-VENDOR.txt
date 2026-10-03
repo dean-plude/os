@@ -1,0 +1,13 @@
+mujs 1.3.7+ (https://mujs.com/), used under the ISC licence (COPYING).
+Source: github.com/ccxvii/mujs at commit 05cd646 ("Bug 708625: Use more
+common "stack" property for error stack trace"), the last commit before the
+project moved to codeberg.org/ccxvii/mujs.  Kept: the library's sources and
+headers (main.c and pp.c, the shell and pretty-printer, left out).
+msiscript.dll (userland/msiscript) is built on it: Windows Installer's
+JScript and VBScript custom actions.
+
+One change, in jscompile.c (cassign, marked "NovaOS"): an assignment to a
+method call, obj.Name(args) = value, compiles to __put(obj, "Name", value,
+args...) instead of failing, because Microsoft's JScript lets scripts set
+parametrized COM properties that way (Session.Property("X") = "1") and
+installers rely on it.

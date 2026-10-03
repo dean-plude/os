@@ -363,7 +363,9 @@ card, QEMU `usb-audio` speakers, each recorded to its own WAV (kept in
 `--out` as `usb1.wav` to `usb3.wav`).  The first is on an xHCI controller
 from boot; the test plugs the second into an OHCI and the third into a
 UHCI controller while NovaOS runs, plays `soundtest tone` after each, then
-unplugs the third and plays again, which the second must hear:
+unplugs the third and plays again, which the second must hear.  Each
+speaker's WAV must hold its tones and nothing else: a speaker another one
+took over from has to go quiet.
 
 ```bash
 python3 tools/selftest.py --suite devices

@@ -859,11 +859,15 @@ static void draw_window(WND *w)
 
     if (w->on_paint) {
         GdiSetClip(WmClientRect(w));
-        /* the desktop draws without the big kernel lock; the built-in apps'
-         * painters read state that other code changes under it */
+        /* the desktop draws without the big kernel lock or the file-system
+         * lock; the built-in apps' painters read state that other code
+         * changes under them (files too, unless WND.paint_fs_free) */
+        bool files = !w->paint_lock_free && !w->paint_fs_free;
+        if (files) FsLock();
         if (!w->paint_lock_free) bkl_acquire();
         w->on_paint(w);
         if (!w->paint_lock_free) bkl_release();
+        if (files) FsUnlock();
         GdiResetClip();
     }
 }

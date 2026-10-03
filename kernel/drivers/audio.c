@@ -6,8 +6,12 @@
  * output's ring, and mixes the running streams into the ring up to LEAD
  * bytes ahead of that.  Outputs are attached by their drivers: the HD
  * Audio card at boot, a USB audio device when it is plugged in.  The one
- * attached last plays; when it leaves, the one before it takes over.  Everything a stream has is guarded by one spinlock; the mixing
- * itself runs under it too (a few thousand frames per tick).
+ * attached last plays; when it leaves, the one before it takes over.
+ * The others keep streaming their rings, so the mixer keeps silence ahead
+ * of them the same way: what was mixed for an output before another took
+ * over still plays, and then it is quiet (not its ring's last 341 ms
+ * over and over).  Everything a stream has is guarded by one spinlock;
+ * the mixing itself runs under it too (a few thousand frames per tick).
  *
  * Capture streams run the other way: while any is running the sound card
  * records into its capture ring, and every tick the new frames are copied
@@ -46,11 +50,20 @@ typedef struct {
 
 typedef struct { UINT32 l, r; bool mute; } Master;
 
+/* Where an output is: its position as an absolute byte count, and how
+ * far ahead of it its ring has been written */
+typedef struct {
+    UINT32 last_pos;
+    UINT64 base;                                      /* absolute byte count at the ring's start */
+    UINT64 write;
+} Track;
+
 static struct {
     bool       hda;                                   /* the HD Audio card (it also records) */
     KSpinLock  lock;
     Stream     s[MAX_STREAMS];
     const AudioOutput *outs[MAX_OUTPUTS];             /* attached, oldest first */
+    Track      idle[MAX_OUTPUTS];                     /* each one not playing: silenced up to where */
     int        nouts;
     const AudioOutput *out;                           /* playing: the last of outs */
     INT16     *ring;
@@ -103,9 +116,34 @@ static void mix_chunk(UINT64 at, UINT32 n)
     }
 }
 
+/* Keep silence LEAD bytes ahead of each attached output that is not
+ * playing: it still streams its ring (lock held) */
+static void silence_idle(void)
+{
+    for (int i = 0; i < g.nouts; i++) {
+        const AudioOutput *o = g.outs[i];
+        if (o == g.out) continue;
+        Track *t = &g.idle[i];
+        UINT32 pos = o->position(o->ctx);
+        if (pos < t->last_pos) t->base += o->bytes;
+        t->last_pos = pos;
+        UINT64 hw = t->base + pos;
+        if (t->write < hw) t->write = hw;
+        UINT64 target = hw + LEAD;
+        while (t->write < target) {
+            UINT32 off = (UINT32)(t->write % o->bytes);
+            UINT64 n = target - t->write;
+            if (n > o->bytes - off) n = o->bytes - off;
+            memset((UINT8 *)o->ring + off, 0, (size_t)n);
+            t->write += n;
+        }
+    }
+}
+
 static void mix_ahead(void)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
+    silence_idle();
     if (!g.out) { spin_unlock_irqrestore(&g.lock, st); return; }
     UINT64 hw = hw_abs();
     if (g.write_abs < hw) g.write_abs = hw;           /* fell behind: skip what was missed */
@@ -185,6 +223,21 @@ static void mixer_thread(void *arg)
 /* Play on @o from its current position on (lock held; NULL: nothing plays) */
 static void switch_output(const AudioOutput *o)
 {
+    for (int i = 0; i < g.nouts && g.out && g.out != o; i++) {
+        if (g.outs[i] != g.out) continue;
+        /* Still attached: what was mixed for it plays, the rest of its
+         * ring (a lap old) is cleared now, not at the next tick, which a
+         * busy machine may run after the device has got there */
+        UINT64 hw = hw_abs(), at = g.write_abs > hw ? g.write_abs : hw, end = hw + g.ring_bytes;
+        while (at < end) {
+            UINT32 off = (UINT32)(at % g.ring_bytes);
+            UINT64 n = end - at;
+            if (n > g.ring_bytes - off) n = g.ring_bytes - off;
+            memset((UINT8 *)g.ring + off, 0, (size_t)n);
+            at += n;
+        }
+        g.idle[i] = (Track){ .last_pos = g.last_pos, .base = g.hw_base, .write = end };
+    }
     g.out = o;
     if (!o) return;
     g.ring = o->ring;
@@ -214,7 +267,7 @@ void AudioOutputDetach(const AudioOutput *o)
     bool found = false;
     for (int i = 0; i < g.nouts; i++) {
         if (g.outs[i] != o) continue;
-        for (int j = i + 1; j < g.nouts; j++) g.outs[j - 1] = g.outs[j];
+        for (int j = i + 1; j < g.nouts; j++) g.outs[j - 1] = g.outs[j], g.idle[j - 1] = g.idle[j];
         g.nouts--;
         found = true;
         break;
