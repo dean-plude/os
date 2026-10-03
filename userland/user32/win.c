@@ -937,11 +937,15 @@ static HWND create_window(DWORD ex, WClass *cls, LPCWSTR title, DWORD style, int
         }
         if (!W_quiet(h)) return 0;
     }
-    /* WM_SIZE and WM_MOVE, as the first SetWindowPos would */
-    send_msg(w, WM_SIZE, SIZE_RESTORED, MAKELPARAM(w->client.right - w->client.left, w->client.bottom - w->client.top));
-    if (!W_quiet(h)) return 0;
-    send_msg(w, WM_MOVE, 0, MAKELPARAM(w->client.left, w->client.top));
-    if (!W_quiet(h)) return 0;
+    /* WM_SIZE and WM_MOVE, as the first SetWindowPos would; an overlapped
+     * window gets them when it is first shown, as on Windows (programs
+     * create the window before the state its WM_SIZE handler needs) */
+    if (style & (WS_CHILD | WS_POPUP)) {
+        send_msg(w, WM_SIZE, SIZE_RESTORED, MAKELPARAM(w->client.right - w->client.left, w->client.bottom - w->client.top));
+        if (!W_quiet(h)) return 0;
+        send_msg(w, WM_MOVE, 0, MAKELPARAM(w->client.left, w->client.top));
+        if (!W_quiet(h)) return 0;
+    } else w->flags |= WF_NEED_SIZE;
     if (style & WS_VISIBLE) {
         int cmd = (style & WS_MAXIMIZE) ? SW_SHOWMAXIMIZED : (style & WS_MINIMIZE) ? SW_SHOWMINIMIZED : SW_SHOW;
         if (w->flags & WF_MENU_TRACK) cmd = SW_SHOWNA;
@@ -1076,6 +1080,15 @@ USERAPI BOOL ShowWindow(HWND h, int cmd)
             if (!W_quiet(h)) return was;
         } else if (!show && was) {
             send_msg(w, WM_SHOWWINDOW, FALSE, 0);
+            if (!W_quiet(h)) return was;
+        }
+        if (show && (w->flags & WF_NEED_SIZE)) {
+            w->flags &= ~WF_NEED_SIZE;
+            WPARAM how = (cmd == SW_SHOWMINIMIZED || cmd == SW_MINIMIZE || cmd == SW_SHOWMINNOACTIVE || cmd == SW_FORCEMINIMIZE) ? SIZE_MINIMIZED :
+                         cmd == SW_SHOWMAXIMIZED ? SIZE_MAXIMIZED : SIZE_RESTORED;
+            send_msg(w, WM_SIZE, how, MAKELPARAM(w->client.right - w->client.left, w->client.bottom - w->client.top));
+            if (!W_quiet(h)) return was;
+            send_msg(w, WM_MOVE, 0, MAKELPARAM(w->client.left, w->client.top));
             if (!W_quiet(h)) return was;
         }
         if (show) {

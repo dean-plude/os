@@ -128,8 +128,9 @@ USERAPI UINT MapVirtualKeyExW(UINT code, UINT type, HANDLE hkl) { (void)hkl; ret
 
 USERAPI int ToUnicodeEx(UINT vk, UINT sc, const BYTE *keys, LPWSTR out, int n, UINT flags, HANDLE hkl)
 {
-    (void)sc; (void)flags; (void)hkl;
+    (void)flags; (void)hkl;
     if (n < 1) return 0;
+    if (sc & 0x8000) return 0;                              /* KF_UP in the scan code: a release types nothing */
     BOOL shift = keys && (keys[0x10] & 0x80), caps = keys && (keys[0x14] & 1), ctrl = keys && (keys[0x11] & 0x80);
     WCHAR c = vk_char(vk, shift, caps);
     if (ctrl && vk >= 'A' && vk <= 'Z') c = (WCHAR)(vk - 'A' + 1);

@@ -355,7 +355,9 @@ int WSAEnumProtocolsA(int *protocols, LPWSAPROTOCOL_INFOA buf, LPDWORD len) { re
  * ----------------------------------------------------------------------- */
 WINBASEAPI VOID WINAPI Sleep(DWORD ms);
 
-typedef struct { SOCKET s; WSAEVENT ev; long mask, pending; int closed; } EvSel;
+typedef struct { SOCKET s; WSAEVENT ev; long mask, pending; int closed; HWND hwnd; UINT msg; } EvSel;
+typedef BOOL (WINAPI *POSTMSG)(HWND, UINT, WPARAM, LPARAM);
+static POSTMSG g_post;                              /* user32's PostMessageW, found when first needed */
 static EvSel g_evsel[64];
 static volatile long g_evsel_lock, g_evsel_thread;
 
@@ -377,22 +379,31 @@ static DWORD WINAPI evsel_thread(void *arg)
         es_unlock();
         if (!rd.fd_count && !wr.fd_count) { Sleep(20); continue; }
         struct timeval tv = { 0, 20000 };
-        if (select(0, &rd, &wr, 0, &tv) <= 0) { Sleep(5); continue; }
+        int sr = select(0, &rd, &wr, 0, &tv);
+        if (sr <= 0) { Sleep(5); continue; }
         es_lock();
         for (int i = 0; i < 64; i++) {
             EvSel *e = &g_evsel[i];
             if (!e->ev) continue;
             long got = 0;
             if (__WSAFDIsSet(e->s, &rd)) {
-                char c;
-                int n = recv(e->s, &c, 1, MSG_PEEK);
-                if (n == 0) { got |= FD_CLOSE; e->closed = 1; }
-                else got |= (e->mask & FD_ACCEPT) ? FD_ACCEPT : FD_READ;
+                long n = NtNovaSockCtl((INT_PTR)e->s, 7, 0, 0);    /* bytes waiting; bit 31: closed; bit 30: listening */
+                if (n > 0 && (n & 0x40000000)) got |= FD_ACCEPT;
+                else {
+                    if (n > 0 && (n & 0x3FFFFFFF)) got |= FD_READ;
+                    if (n < 0 || (n & 0x80000000)) { got |= FD_CLOSE; e->closed = 1; }
+                }
             }
-            if (__WSAFDIsSet(e->s, &wr)) got |= (e->mask & FD_CONNECT) ? FD_CONNECT : FD_WRITE;
+            if (__WSAFDIsSet(e->s, &wr)) got |= (e->mask & (FD_CONNECT | FD_WRITE));
             got &= e->mask & ~e->pending;
             if (e->closed) got &= ~FD_READ;
-            if (got) { e->pending |= got; SetEvent(e->ev); }
+            if (!got) continue;
+            e->pending |= got;
+            if (!e->hwnd) { SetEvent(e->ev); continue; }
+            /* WSAAsyncSelect: one message per event, in the order Windows posts them */
+            static const long order[] = { FD_CONNECT, FD_ACCEPT, FD_READ, FD_WRITE, FD_OOB, FD_CLOSE };
+            for (unsigned k = 0; k < sizeof order / sizeof order[0]; k++)
+                if (got & order[k]) { g_post(e->hwnd, e->msg, (WPARAM)e->s, MAKELPARAM(order[k], 0)); }
         }
         es_unlock();
         Sleep(5);
@@ -406,7 +417,7 @@ static int is_socket(SOCKET s)
     return NtNovaSockCtl((INT_PTR)s, 4, 0, st) == 0;
 }
 
-int WSAEventSelect(SOCKET s, WSAEVENT ev, long events)
+static int evsel_register(SOCKET s, WSAEVENT ev, HWND hwnd, UINT msg, long events)
 {
     if (!is_socket(s)) { set_err(WSAENOTSOCK); return SOCKET_ERROR; }
     es_lock();
@@ -418,7 +429,10 @@ int WSAEventSelect(SOCKET s, WSAEVENT ev, long events)
     if (at < 0) at = free;
     if (at < 0) { es_unlock(); set_err(WSAENOBUFS); return SOCKET_ERROR; }
     if (!ev || !events) memset(&g_evsel[at], 0, sizeof(EvSel));
-    else { g_evsel[at].s = s; g_evsel[at].ev = ev; g_evsel[at].mask = events; g_evsel[at].pending = 0; g_evsel[at].closed = 0; }
+    else {
+        g_evsel[at].s = s; g_evsel[at].ev = ev; g_evsel[at].mask = events; g_evsel[at].pending = 0; g_evsel[at].closed = 0;
+        g_evsel[at].hwnd = hwnd; g_evsel[at].msg = msg;
+    }
     es_unlock();
     u_long nb = 1;
     ioctlsocket(s, FIONBIO, &nb);                       /* as on Windows: the socket is non-blocking now */
@@ -427,6 +441,32 @@ int WSAEventSelect(SOCKET s, WSAEVENT ev, long events)
         if (t) CloseHandle(t);
     }
     return 0;
+}
+
+int WSAEventSelect(SOCKET s, WSAEVENT ev, long events) { return evsel_register(s, ev, 0, 0, events); }
+
+/* WSAAsyncSelect: the events arrive as window messages (wParam the socket,
+ * lParam the event in the low word, its error in the high word).  An event
+ * is reported once and re-enabled by the call that consumes it: FD_READ by
+ * recv, FD_WRITE by a send that would block, FD_ACCEPT by accept. */
+int WSAAsyncSelect(SOCKET s, HWND hwnd, UINT msg, long events)
+{
+    if (!g_post) {
+        HMODULE u = LoadLibraryW(L"user32.dll");
+        g_post = u ? (POSTMSG)(void *)GetProcAddress(u, "PostMessageW") : 0;
+        if (!g_post) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    }
+    return evsel_register(s, events ? (WSAEVENT)1 : 0, hwnd, msg, events);
+}
+
+/* @bits were consumed (recv, send, accept): report them again when they recur */
+void evsel_rearm(SOCKET s, long bits)
+{
+    if (!g_evsel_thread) return;
+    es_lock();
+    for (int i = 0; i < 64; i++)
+        if (g_evsel[i].ev && g_evsel[i].hwnd && g_evsel[i].s == s) { g_evsel[i].pending &= ~bits; break; }
+    es_unlock();
 }
 
 int WSAEnumNetworkEvents(SOCKET s, WSAEVENT ev, LPWSANETWORKEVENTS out)

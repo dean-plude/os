@@ -49,3 +49,5 @@ int  NetSockLocalName(int s, UINT32 *ip_be, UINT16 *port_be);
 int  NetSockPeerName(int s, UINT32 *ip_be, UINT16 *port_be);
 /* select-style readiness (no block); *rd/*wr set if ready.  ex unused. */
 void NetSockPoll(int s, bool *readable, bool *writable, bool *error);
+int NetSockPeek(int s, void *buf, int len, bool *closed);
+bool NetSockListening(int s);

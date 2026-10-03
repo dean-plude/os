@@ -159,6 +159,25 @@ static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         UINT8 sa[8]; memcpy(sa, &ip, 4); memcpy(sa + 4, &port, 2);
         return a4 && NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, sa, 8)) ? 0 : (UINT64)(INT64)-SOCK_EFAULT;
     }
+    case 7: {                                               /* bytes waiting (bit 31: the peer closed; bit 30: listening) */
+        if (NetSockListening(s)) return 0x40000000u;
+        bool closed; int n = NetSockPeek(s, NULL, 0, &closed);
+        if (n < 0) return (UINT64)(INT64)n;
+        return (UINT64)((UINT32)n | (closed ? 0x80000000u : 0));
+    }
+    case 8: {                                               /* MSG_PEEK: a copy of up to a3 bytes into a4 */
+        int len = (int)a3;
+        if (len <= 0 || !a4) return 0;
+        if (len > BOUNCE) len = BOUNCE;
+        UINT8 *tmp = kmalloc(BOUNCE);
+        if (!tmp) return (UINT64)(INT64)-SOCK_ENOBUFS;
+        bool closed; int n = NetSockPeek(s, tmp, len, &closed);
+        if (n > 0 && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, tmp, n))) n = -SOCK_EFAULT;
+        kfree(tmp);
+        if (n == 0 && closed) return 0;
+        if (n == 0) return (UINT64)(INT64)-SOCK_EWOULDBLOCK;
+        return (UINT64)(INT64)n;
+    }
     case 4: {
         bool rd, wr, er; NetSockPoll(s, &rd, &wr, &er);
         UINT8 st[3] = { rd, wr, er };

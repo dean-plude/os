@@ -124,9 +124,12 @@ int bind(SOCKET s, const struct sockaddr *name, int namelen)
 
 int listen(SOCKET s, int backlog) { long r = NtNovaSockListen((INT_PTR)s, backlog); return r < 0 ? sock_err(r) : 0; }
 
+void evsel_rearm(SOCKET s, long bits);          /* wsa.c: WSAAsyncSelect re-enabling */
+
 SOCKET accept(SOCKET s, struct sockaddr *addr, int *addrlen)
 {
     BYTE sa[8];
+    evsel_rearm(s, FD_ACCEPT);
     INT_PTR h = NtNovaSockAccept((INT_PTR)s, sa);
     if (!h) { set_err(WSAEWOULDBLOCK); return INVALID_SOCKET; }
     if (addr && addrlen && *addrlen >= (int)sizeof(struct sockaddr_in)) {
@@ -144,13 +147,18 @@ int send(SOCKET s, const char *buf, int len, int flags)
 {
     (void)flags;
     long r = NtNovaSockSend((INT_PTR)s, buf, len);
-    return r < 0 ? sock_err(r) : (int)r;
+    if (r < 0) {
+        int e = sock_err(r);
+        if (WSAGetLastError() == WSAEWOULDBLOCK) evsel_rearm(s, FD_WRITE);
+        return e;
+    }
+    return (int)r;
 }
 
 int recv(SOCKET s, char *buf, int len, int flags)
 {
-    (void)flags;
-    long r = NtNovaSockRecv((INT_PTR)s, buf, len);
+    evsel_rearm(s, FD_READ);
+    long r = (flags & MSG_PEEK) ? NtNovaSockCtl((INT_PTR)s, 8, len, buf) : NtNovaSockRecv((INT_PTR)s, buf, len);
     return r < 0 ? sock_err(r) : (int)r;
 }
 
@@ -168,6 +176,7 @@ int recvfrom(SOCKET s, char *buf, int len, int flags, struct sockaddr *from, int
 {
     (void)flags;
     BYTE sa[8];
+    evsel_rearm(s, FD_READ);
     long r = NtNovaSockRecvFrom((INT_PTR)s, buf, len, sa);
     if (r < 0) return sock_err(r);
     if (from && fromlen && *fromlen >= (int)sizeof(struct sockaddr_in)) {
@@ -186,7 +195,12 @@ int shutdown(SOCKET s, int how) { long r = NtNovaSockCtl((INT_PTR)s, 1, how, 0);
 int ioctlsocket(SOCKET s, long cmd, u_long *argp)
 {
     if ((unsigned long)cmd == FIONBIO) { NtNovaSockCtl((INT_PTR)s, 0, argp && *argp ? 1 : 0, 0); return 0; }
-    if ((unsigned long)cmd == FIONREAD) { if (argp) *argp = 0; return 0; }
+    if ((unsigned long)cmd == FIONREAD) {
+        long n = NtNovaSockCtl((INT_PTR)s, 7, 0, 0);
+        if (n < 0) return sock_err(n);
+        if (argp) *argp = (u_long)(n & 0x3FFFFFFF);
+        return 0;
+    }
     set_err(WSAEINVAL);
     return SOCKET_ERROR;
 }

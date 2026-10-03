@@ -124,6 +124,7 @@ struct Wnd {
 enum {
     WF_DESTROYING = 1, WF_DESTROYED = 2, WF_CREATED = 4, WF_DIALOG = 8, WF_MENU_TRACK = 16,
     WF_NOTIFYSENT = 32, WF_ERASEBK_DONE = 64, WF_HIDDEN_BY_OWNER = 128, WF_MAPPED = 256,
+    WF_NEED_SIZE = 512,             /* WM_SIZE and WM_MOVE still owed, at the first ShowWindow */
 };
 
 void u32_lock(void);                /* a recursive lock over the window table and the queues */
