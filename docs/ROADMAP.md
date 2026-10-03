@@ -140,9 +140,9 @@ named program or test demonstrates it.
 - ~~Small visible bugs: This PC lists D:, E:, ...; `dir` reports each
   drive's own free space; Notepad++'s status bar draws~~ Done (Phase
   17.6, screenshots in the nightly app corpus).
-- Files: hard links.  ~~`MoveFileEx` pending renames carried out at boot,
-  `RegNotifyChangeKeyValue` change events~~ Done (Phase 17.5, `filetest`
-  and a restart in the core suite).
+- ~~Files: hard links.  `MoveFileEx` pending renames carried out at boot,
+  `RegNotifyChangeKeyValue` change events~~ Done (Phase 17.5, `filetest`,
+  `linktest` and a restart in the core suite).
 - ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
   is waitable and the Terminal runs full-screen programs (Phase 17.2).
 - The Win32 console screen-buffer calls (`SetConsoleCursorPosition`,

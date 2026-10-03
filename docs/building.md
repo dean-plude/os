@@ -413,6 +413,7 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 |---|---|
 | `crttest` | The C runtime |
 | `filetest` | Files and directories; `RegNotifyChangeKeyValue` (values, subkeys, subtrees, deleted keys, synchronous); `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`.  `filetest install`, a restart and `filetest installed` check that a running program replaced at boot |
+| `linktest` | Hard links: `CreateHardLink`, the link count and file id by every name, a write or attribute change by one name seen by the others (open handles too), a link in another folder renamed there, deleting names down to the last, a file replaced under a linked name, `FILE_SUPPORTS_HARD_LINKS`.  `linktest restarted` after the restart checks a linked pair is still one file |
 | `sectest` (x64) | Hostile system calls refused (kernel pointers, bogus handles, bad descriptors); tokens and object security through the native API: a restricted or deny-only impersonation token is refused a protected named event |
 | `threads` | Threads, synchronization, SEH |
 | `dlltest` | DLL loading, TLS, `DllMain` |
