@@ -437,7 +437,7 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
 | `httptest suite HTTPS-BASE HTTP-BASE` | winhttp against `tools/h2server.js`: HTTP/2 by ALPN, a 300 KB body, POST, a redirect, an untrusted certificate refused, chunked HTTP/1.1, the asynchronous API.  `httptest [-2] [-k] [-a] URL` fetches one URL |
 | `netcat [-4\|-6] [-p PORT] HOST [PATH]` | Winsock: `getaddrinfo`, IPv4 or IPv6 sockets, an HTTP/1.0 GET |
-| `looptest` | Winsock over the loopback interface: a socket pair over 127.0.0.1 and ::1 (port 0, `getsockname`, a non-blocking connect, data sent before `accept`), closing a listener with a queued connection, `localhost` |
+| `looptest` | Winsock over the loopback interface: a socket pair over 127.0.0.1 and ::1 (port 0, `getsockname`, a non-blocking connect, data sent before `accept`, the accepted socket inheriting non-blocking mode), closing a listener with a queued connection, `localhost`, and `wsock32.dll`'s Winsock 1.1 ordinals |
 
 <!-- END generated:selftest-table -->
 

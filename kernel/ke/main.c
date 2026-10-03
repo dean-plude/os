@@ -111,6 +111,25 @@ static void print_banner(void)
 /* -----------------------------------------------------------------------
  * Demo threads — smoke tests
  * ----------------------------------------------------------------------- */
+/* The keyboard and mouse polls (PS/2 and USB HID), once per 10 ms tick.
+ * They used to run in the timer interrupt, but their port and MMIO reads
+ * can block for milliseconds under emulation (QEMU serializes device
+ * access), which with interrupts off delayed every Sleep and wait timeout
+ * due on that CPU meanwhile (sleeptest timer: 1 to 3 ms late at the 95th
+ * percentile under load, instead of 0.3 ms).  A thread woken by its TSC
+ * deadline goes to the front of its run queue, so the polls still run as
+ * soon as the tick comes, just with interrupts enabled. */
+static void device_poll_thread(void *arg)
+{
+    (void)arg;
+    bkl_release();                        /* (they never needed the kernel lock) */
+    for (;;) {
+        sched_sleep_until_tsc(NULL, sched_tick_tsc(sched_ticks() + 1));
+        ps2_poll();
+        UsbPoll();
+    }
+}
+
 static void thread_a(void *arg)
 {
     (void)arg;
@@ -403,6 +422,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
         InputInit();
         ps2_init();
         UsbInit();                        /* USB keyboards, mice, hubs and sticks */
+        sched_create_thread("devpoll", device_poll_thread, NULL, 12);
         sched_create_thread("desktop", DesktopRun, NULL, 8);
         kprintf_set_fb_enabled(false);    /* WM owns the screen; logs → serial */
         kprintf("[NovaOS] Desktop event loop started (%dx%d)\n",
