@@ -196,7 +196,10 @@ scripts/create-iso.sh nova.iso build/bootx64.efi build/kernel.elf
 
 The ISO is not committed (`*.iso` is in `.gitignore`).  CI builds it on
 every pull request and keeps it as the run's `nova-iso` artifact, and each
-push to `main` that passes CI replaces `nova.iso` on the `latest` release:
+push to `main` that passes CI replaces `nova.iso` on the `latest` build
+(<https://github.com/dean-plude/os/releases/download/latest/nova.iso>).
+A version tag makes a release with the tested ISO, its checksums and the
+update files ([releasing.md](releasing.md)); the newest one is always at
 <https://github.com/dean-plude/os/releases/latest/download/nova.iso>.
 
 The ISO is El Torito UEFI, no emulation: its EFI System Partition holds

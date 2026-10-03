@@ -29,6 +29,8 @@ with it:
 brew install qemu
 mkdir nova && cd nova
 curl -LO https://github.com/dean-plude/os/releases/latest/download/nova.iso
+curl -LO https://github.com/dean-plude/os/releases/latest/download/nova.iso.sha256
+shasum -a 256 -c nova.iso.sha256
 ```
 
 The firmware's variable store has to be writable, so copy it first.

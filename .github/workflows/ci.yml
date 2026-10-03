@@ -13,7 +13,17 @@
 # puts that ISO on the rolling "latest" release, with the graphics job's
 # venus.7z (tools/build_venus.py), which the App Store's "Venus" downloads:
 #   https://github.com/dean-plude/os/releases/latest/download/nova.iso
-# nova.iso is not committed to the repository.
+# nova.iso is not committed to the repository.  Once a tagged release
+# exists (.github/workflows/release.yml), "latest" is marked a pre-release
+# and the tagged release keeps GitHub's "Latest" mark: an installed
+# NovaOS's update channel and the README's download link follow releases,
+# not every push to main.
+#
+# release.yml runs this whole workflow on a version tag (workflow_call with
+# release: true): the boot-test job then fetches the audio DSP's firmware
+# (tools/fetch_sof_firmware.py) before the build and keeps the kernel and
+# boot loader too, so the ISO the release publishes is the one these
+# suites tested.
 #
 # The checks job runs first, in seconds: no conflict markers left by a
 # merge, the DLL and program manifests and the self-test files load, and
@@ -35,6 +45,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:                # .github/workflows/release.yml
+    inputs:
+      release:
+        description: build the release image (with the DSP firmware) and keep its kernel and boot loader
+        type: boolean
+        default: false
 
 env:                            # ccache (the build's clang calls go through /usr/lib/ccache)
   CCACHE_BASEDIR: ${{ github.workspace }}
@@ -116,6 +132,10 @@ jobs:
           key: ccache-${{ github.run_id }}
           restore-keys: ccache-
 
+      - name: Fetch the audio DSP firmware (release builds)
+        if: inputs.release
+        run: python3 tools/fetch_sof_firmware.py --all
+
       - name: Build the kernel, bootloader, userland and disk image
         run: |
           cmake -S . -B build -G "Unix Makefiles"
@@ -140,6 +160,16 @@ jobs:
         with:
           name: nova-iso
           path: build/nova.iso
+          if-no-files-found: error
+
+      - name: Keep the kernel and boot loader (release builds)
+        if: inputs.release
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-boot
+          path: |
+            build/kernel.elf
+            build/bootx64.efi
           if-no-files-found: error
 
       - name: Boot NovaOS and run the self-tests
@@ -286,6 +316,9 @@ jobs:
         with:
           name: venus
 
+      # Until the first tagged release (v0.1.0) this is the newest build
+      # anyone can download, so it carries GitHub's "Latest" mark; after it,
+      # it is a pre-release and the tagged release keeps the mark
       - name: Move the "latest" release to this commit and attach the ISO
         env:
           GH_TOKEN: ${{ github.token }}
@@ -295,10 +328,18 @@ jobs:
           git push -f origin refs/tags/latest
           notes="NovaOS built from main at ${GITHUB_SHA::7} by CI run ${GITHUB_RUN_ID}.
           Boot it with UEFI firmware; see the README for the QEMU command line."
+          mark=(--latest)
+          if gh release list --exclude-pre-releases --exclude-drafts --limit 100 \
+               --json tagName --jq '.[].tagName' | grep -q '^v[0-9]'; then
+            mark=(--prerelease --latest=false)
+            notes="$notes
+          This is a development build; the newest tested release is
+          https://github.com/dean-plude/os/releases/latest"
+          fi
           if gh release view latest >/dev/null 2>&1; then
             gh release upload latest nova.iso nova.iso.sha256 venus.7z --clobber
-            gh release edit latest --title "NovaOS (latest main)" --notes "$notes" --latest
+            gh release edit latest --title "NovaOS (latest main)" --notes "$notes" "${mark[@]}"
           else
             gh release create latest nova.iso nova.iso.sha256 venus.7z \
-              --title "NovaOS (latest main)" --notes "$notes" --latest
+              --title "NovaOS (latest main)" --notes "$notes" "${mark[@]}"
           fi

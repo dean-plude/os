@@ -15,8 +15,12 @@ on a Mac, see [macos.md](macos.md).
 ## Getting NovaOS
 
 NovaOS comes as one file, `nova.iso`, which is both a live system and
-its own installer.  Download the one built from the newest code from the
-[latest release](https://github.com/dean-plude/os/releases/latest/download/nova.iso).
+its own installer.  Download it from the
+[newest release](https://github.com/dean-plude/os/releases/latest), with
+`nova.iso.sha256` beside it to check the download (`sha256sum -c
+nova.iso.sha256`; on a Mac `shasum -a 256 -c nova.iso.sha256`).  The ISO
+built from the newest code on `main`, which has had less testing, is the
+[`latest` build](https://github.com/dean-plude/os/releases/download/latest/nova.iso).
 
 ## Trying it in a virtual machine
 

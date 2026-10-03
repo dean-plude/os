@@ -274,9 +274,11 @@ options, putting your own programs on the disk, and debugging.
 ### Bootable ISO and installing on a disk
 
 A ready-to-boot UEFI ISO, `nova.iso`, is built by CI rather than committed.
-Download the one built from `main` from the
-[latest release](https://github.com/dean-plude/os/releases/latest/download/nova.iso), or the `nova-iso` artifact of any pull request's
-CI run (the **Artifacts** list on the run's Summary page).  It is also the installation disc: booted from it, NovaOS runs live and
+Download it from the [newest release](https://github.com/dean-plude/os/releases/latest)
+with its checksum (`sha256sum -c nova.iso.sha256`), take the one built
+from `main` from the [`latest` build](https://github.com/dean-plude/os/releases/download/latest/nova.iso),
+or the `nova-iso` artifact of any pull request's CI run (the
+**Artifacts** list on the run's Summary page).  It is also the installation disc: booted from it, NovaOS runs live and
 opens **Install NovaOS**, which writes a GPT disk with an EFI System
 Partition and a data partition for drive C:.
 
@@ -434,7 +436,10 @@ boot jobs (GitHub counts a skipped job as passing a required check).
 A failing test fails its check; each run's summary has a table of results,
 and the serial logs and screenshots are kept as artifacts, along with the
 bootable ISO (`nova-iso`).  When a push to `main` passes both suites, the
-**Publish nova.iso** job puts that ISO on the `latest` release.  Run the same
+**Publish nova.iso** job puts that ISO on the `latest` build.  Pushing a
+version tag (`v0.1.0`) runs the same suites on the tagged commit and
+publishes a release with that ISO, its checksums, the update channel's
+files and notes from the history ([docs/releasing.md](docs/releasing.md)).  Run the same
 gates locally with `python3 tools/selftest.py` (and `--suite network`, `--suite graphics`)
 after a build.
 
@@ -541,12 +546,13 @@ os/
 │   └── include/          # The Windows SDK headers NovaOS provides
 ├── third_party/          # lwIP, Mbed TLS, nghttp2, uACPI, musl (libm), HarfBuzz, FreeType, NetSurf, stb, fonts, ICU (icu.dll + data), 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
-│                         #   make_icons.py, mkani.py, pe_imports.py, msitest/, docgen.py
+│                         #   make_icons.py, mkani.py, pe_imports.py, msitest/, docgen.py,
+│                         #   mkupdate.py and release_notes.py (releases)
 ├── tests/                # CI self-tests and app corpus (one file per test), ACPI
 │                         #   tables, reference screenshots
 ├── scripts/              # build.sh, run-qemu.sh, create-disk.sh, create-iso.sh
-└── docs/                 # Building, roadmap, feature history, Phase 1 architecture,
-                          #   and the fragments README and docs/*.md are built from
+└── docs/                 # Building, releasing, roadmap, feature history, Phase 1 architecture,
+                          #   release notes (releases/), and the fragments README and docs/*.md are built from
 ```
 
 ## Key design decisions
