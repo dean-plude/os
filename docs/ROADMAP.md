@@ -34,8 +34,8 @@ The details of each phase are in [HISTORY.md](HISTORY.md).
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
 NovaOS's own clean-room code); there is no GPU (3D runs on the CPU), and sound has
 no MIDI, DirectSound or XAudio2 yet; file
-ACLs are kept only when drive C: is on NTFS (the installer's default); and most of the App Store's catalog (Qt, GTK and
-multimedia programs) does not run yet.
+ACLs are kept only when drive C: is on NTFS (the installer's default); and most of the App Store's catalog (GTK and
+multimedia programs, and Qt ones beyond KeePassXC) does not run yet.
 
 ---
 
