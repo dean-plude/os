@@ -5,11 +5,12 @@
 # 32-bit PortableApps package (an NSIS installer 7z unpacks; only App/vlc,
 # the program itself, is kept).  VLC offers the decoder its hardware
 # formats first and the display rejects each (no Direct3D converter), which
-# takes seconds without KVM and repeats at every loop, so the screenshot
-# waits for VLC's log (-vv, through the kernel log) to show the software
-# path settled.  Windowed: runs after the console programs (870), takes the
+# takes seconds without KVM, so the screenshot waits for the colour bars to
+# show in the window.  Not run with -vv: VLC's verbose log (a line per
+# message through the kernel log) slows a TCG machine enough for its audio
+# to run late.  Windowed: runs after the console programs (870), takes the
 # keyboard.
-import os, re, shutil, subprocess, tempfile, time
+import os, shutil, subprocess, tempfile, time
 
 DOC = 'VLC (plays an H.264 and AAC MP4 with sound)'
 
@@ -24,19 +25,25 @@ def unpack(app, files, dest):
 
 
 def settled(nova, echo):
-    """Wait for the software decoder's pictures to reach the display (once
-    a loop, after the hardware formats were tried), then let a few draw"""
-    got, end = '', time.time() + 90
+    """Wait for the colour bars to reach VLC's window (the video area shows
+    the cone until the software decoder's pictures arrive), then let the
+    sound run"""
+    end = time.time() + 90
+    shot = os.path.join(tempfile.mkdtemp(prefix='vlc-shot'), 'shot.png')
     while time.time() < end:
-        got += nova.sr.read_new()
-        if re.search(r'adapt decoder I420 to display', got):
+        nova.shot(shot)
+        from PIL import Image
+        im = Image.open(shot).convert('RGB')
+        k = im.width // 1280                        # the screen's scale
+        r, g, b = im.getpixel((480 * k, 330 * k))   # inside the bars, left of the cone
+        if max(r, g, b) > 60:
             time.sleep(6)
             return None
-        time.sleep(1)
-    return 'VLC did not get to software decoding (no I420 display filter in its log)'
+        time.sleep(2)
+    return 'VLC did not show the video (the window stayed dark)'
 
 
 APP = App('VLC', '3.0.21', 'https://download2.portableapps.com/portableapps/VLCPortable/VLCPortable_3.0.21.paf.exe',
-          'VLC', [Test('play an MP4', rf'start {A}\VLC\vlc.exe -vv --no-qt-privacy-ask --no-qt-updates-notif '
+          'VLC', [Test('play an MP4', rf'start {A}\VLC\vlc.exe --no-qt-privacy-ask --no-qt-updates-notif '
                        rf'--avcodec-hw=none --loop --no-video-title-show {A}\in.mp4', timeout=45)],
           unpack=unpack, gui=True, sound=(440, 3000), interact=settled)

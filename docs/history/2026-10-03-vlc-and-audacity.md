@@ -12,8 +12,11 @@ checked after the run; without PulseAudio those two are skipped rather than
 failed.  The ffmpeg test's clip is now thirty seconds of SMPTE colour bars with
 the tone, which VLC loops; VLC offers the decoder its Direct3D formats
 first and the display rejects each for want of a converter, which takes
-seconds without KVM, so the screenshot waits for VLC's log to show the
-software path settled.
+seconds without KVM, so the screenshot waits for the colour bars to show
+in VLC's window.  The corpus does not run VLC with `-vv`: its verbose log
+goes through the kernel log a line at a time, and on a TCG machine that
+is enough for the audio to run late and drop (the same build plays the
+whole clip cleanly without it), which a later change should look into.
 
 Two message-loop gaps held VLC's video back.  Qt's Windows event
 dispatcher drives its posted events from a `WH_GETMESSAGE` hook: the hook
@@ -57,6 +60,10 @@ strips quoted anchors; `kernel32` gained timer queues (`CreateTimerQueue`,
 opens), `winspool` the printer enumeration (none), `advapi32` the
 trustee and explicit-access builders, `wininet` the HTTP session calls
 (unreachable, as `InternetOpen` gives no handle), and `msvcrt` about
-seventy more calls.  A process killed from the terminal, or Ctrl+Alt+F12,
-dumps every thread's user stack with module and offset, which is how the
-stalls above were found.
+seventy more calls.  `msvcrt`'s `fprintf` gathers a call's output and
+writes it to the stream in one piece, as msvcrt does, rather than a
+fragment of the format at a time: on an unbuffered stream (stderr) each
+fragment was a system call.  The Terminal's `start` passes a program up
+to 32 arguments, not 8 (VLC's command line has nine).  A process killed
+from the terminal, or Ctrl+Alt+F12, dumps every thread's user stack with
+module and offset, which is how the stalls above were found.

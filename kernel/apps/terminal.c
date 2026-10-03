@@ -178,7 +178,7 @@ static void prompt_text(Term *t, char *buf, int cap)
 /* -----------------------------------------------------------------------
  * Commands
  * ----------------------------------------------------------------------- */
-#define MAX_ARGS 8
+#define MAX_ARGS 32                      /* a Windows program can take a long argument list (VLC takes nine) */
 
 /* Split into arguments; "double quotes" group words with spaces */
 static int split_args(char *s, char **argv)

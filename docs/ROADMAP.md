@@ -79,8 +79,10 @@ named program or test demonstrates it.
   ~~Recording (`waveIn`, capture endpoints) and endpoint volume
   (`IAudioEndpointVolume`)~~ Done (19.4); see
   [Recording](HISTORY.md#recording-wavein-wasapi-capture-and-endpoint-volume).
-  Still open: `dsound.dll` (DirectSound), XAudio2, MIDI, and testing VLC
-  and Audacity on it.
+  ~~`dsound.dll` (DirectSound), XAudio2 and MIDI~~ Done (19.5); see
+  [DirectSound, XAudio2 and MIDI](HISTORY.md#directsound-xaudio2-and-midi).
+  ~~Testing VLC and Audacity on it~~ Done (19.6); see [VLC and
+  Audacity](HISTORY.md#vlc-and-audacity-196).
 - ~~**Complex scripts**: Uniscribe shaping Arabic and the Indic scripts~~
   Done (19.1): `usp10.dll` on HarfBuzz in `novatext.dll` (HarfBuzz +
   FreeType, shared with DirectWrite and Direct2D), and GDI's `ExtTextOut`
@@ -112,7 +114,11 @@ named program or test demonstrates it.
   [Qt programs](HISTORY.md#qt-programs-keepassxc)), Krita next; the
   GTK ones: ~~Inkscape~~ Done (Phase 20.4, Inkscape 0.91, the GTK 2 build
   from conda-forge, opens a new document in the nightly corpus; see
-  [GTK programs](HISTORY.md#gtk-programs-inkscape)); then Firefox.
+  [GTK programs](HISTORY.md#gtk-programs-inkscape)); ~~then Firefox~~
+  Done (Phase 20, stock Firefox 157 installs from the App Store and loads
+  an HTTPS page in the nightly corpus; see
+  [Firefox in the App Store](HISTORY.md#firefox-in-the-app-store)).
+  Krita is the only program left in this item.
 - ~~Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the
   `IFileDialog` interfaces~~ Done (Phase 20.1, `dlgtest`); see
   [Phase 20](HISTORY.md#phase-20-common-dialogs-and-portable-programs).
@@ -122,7 +128,8 @@ named program or test demonstrates it.
   [Windows Installer depth](HISTORY.md#windows-installer-depth-custom-actions-dialogs-shortcuts-services).
   Rollback, transforms, patches and services at boot followed in
   [Windows Installer rollback, transforms, patches](HISTORY.md#windows-installer-rollback-transforms-patches-services-at-boot).
-  Still to come: script custom actions (VBScript, JScript).
+  Script custom actions (JScript and VBScript) followed in
+  [Windows Installer script custom actions](HISTORY.md#windows-installer-script-custom-actions-jscript-and-vbscript).
 - ~~COM type libraries (`LoadTypeLib`), the MSVC FH4 C++ exception
   tables~~ Done; see [Type libraries and FH4](HISTORY.md#com-type-libraries-and-fh4-c-exceptions).
 - ~~.NET globalization through ICU, not only NLS for English and invariant
@@ -133,7 +140,9 @@ named program or test demonstrates it.
   through its GPU process, and its sandboxed child processes start; see
   [Firefox](HISTORY.md#firefox-floorp), and it loads and shows web pages
   over HTTP; it completes TLS handshakes for HTTPS, scrolls and takes
-  typing in forms.  Still open: a page from a publicly trusted HTTPS
+  typing in forms.  Stock Firefox 157 now installs from the App Store
+  and loads an HTTPS page (a test CA trusted through `policies.json`) in
+  the nightly corpus.  Still open: a page from a publicly trusted HTTPS
   site (the test network has no internet).
 
 <!-- END generated:next-apps -->
@@ -171,11 +180,25 @@ named program or test demonstrates it.
   `GetCurrencyFormat` (A, W, Ex) format in any of the 864 locales from ICU's
   data, and the user locale is set with `intl NAME` or Settings > Time &
   language and kept in the registry across restarts (`nlstest`).
+- ~~Locales: the user's overrides (`sShortDate` and the rest),
+  `GetDurationFormat`, and calendars other than Gregorian~~ Done:
+  `GetLocaleInfo` and the formatting functions answer the user's overrides
+  (`SetLocaleInfo`), `GetDurationFormat`/`Ex`, and twelve calendars with
+  `GetCalendarInfo`, `EnumCalendarInfo`, `EnumDateFormats` and
+  `DATE_USE_ALT_CALENDAR` (`nlstest calendars`, `nlstest override`).
 - .NET: an unhandled managed exception prints "Stack overflow." instead of
   the exception and its stack trace (with NLS as well as ICU).
 - ~~Scheduler: a thread woken by a timer preempts the running thread
   instead of waiting up to a 20 ms time slice~~ Done (`sleeptest timer`
   holds the timer queue case to 1 ms under load).
+- ~~Saving drive C: without holding the kernel, desktop and file-system
+  locks for the whole disk write~~ Done (`savetest`: the save holds the
+  file-system lock well under a millisecond).
+- ~~Scheduler: timer queue timers fire on time with every CPU busy (a
+  deadline the timer had not fired yet was re-armed over, a timer wake
+  behind a kernel thread went last, a thread preempted at a tick lost its
+  place)~~ Done (`sleeptest timer`: the 1 ms timer queue timer within 1 ms
+  under load again).
 
 <!-- END generated:next-kernel -->
 
@@ -200,6 +223,11 @@ named program or test demonstrates it.
   controllers (EHCI passing full- and low-speed devices to its
   companions), any number of controllers, keyboard LEDs, media keys and
   mice's side buttons and horizontal wheel.
+  ~~Isochronous transfers, USB audio~~ Done: isochronous streams on xHCI,
+  OHCI and UHCI (alternate settings, a ring of transfers per pipe), and
+  USB Audio Class 1 speakers and headsets as a sound output the mixer
+  switches to when they are plugged in.  Still to do: isochronous on EHCI
+  (iTDs, siTDs), recording from USB microphones, USB Audio 2.0, webcams.
 - ACPI beyond the MADT: ~~shutdown, reboot, sleep, batteries~~ Done:
   power-off (S5), sleep (S3), reset and the fixed power button from the
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,

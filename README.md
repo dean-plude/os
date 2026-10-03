@@ -46,7 +46,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **Eclipse Temurin 21** | Java JRE `.msi`, JDK `.zip` | `java -version`, a threads/exceptions/files stress test, `javac` compiling a program that then runs. |
 | **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes; globalization through ICU, so German and Japanese numbers, dates, names and sorting come out as on Windows (`tests/dotnet/culturetest.cs`). |
 | **Node.js 24** | `.msi`, `.zip` | `node -v`, `-e`, `npm -v`, a crypto/fs/JSON/timers test script; the `.msi` runs its 64-bit and 32-bit custom actions, makes its Start menu shortcuts and uninstalls. |
-| **Windows Installer packages** | 7-Zip, CMake, Node.js, Temurin, KeePassXC `.msi` | 7-Zip and CMake install through their own wizards (licence, options, feature tree, progress), CMake's dialogs running its DLL custom actions; custom-action DLLs run in 64-bit and 32-bit custom-action servers; shortcuts and a test service are created and removed again by `msiexec /x`; transforms (`TRANSFORMS=`), whole-file patches (`msiexec /p`, `/uninstall`) and rollback of a failed install; automatic services start at boot. |
+| **Windows Installer packages** | 7-Zip, CMake, Node.js, Temurin, KeePassXC `.msi` | 7-Zip and CMake install through their own wizards (licence, options, feature tree, progress), CMake's dialogs running its DLL custom actions; custom-action DLLs run in 64-bit and 32-bit custom-action servers; shortcuts and a test service are created and removed again by `msiexec /x`; transforms (`TRANSFORMS=`), whole-file patches (`msiexec /p`, `/uninstall`) and rollback of a failed install; automatic services start at boot; JScript and VBScript custom actions run on `msiscript.dll`. |
 | **Python 3.14** | NuGet package | `-c`, a hashlib/JSON/regex/threads/subprocess test script. |
 | **NumPy 2.5.3** | The Windows wheel (`cp314`) in Python 3.14, on NovaOS's own `vcruntime140`, `msvcp140` and UCRT | `import numpy`, complex `exp`/`sqrt`/`log`/`sin`/`tanh`/`power`, `linalg.inv`, `fft`, `eigvals`: the same output as NumPy on Linux. |
 | **Mesa 3D 24.2.4** (mesa-dist-win) | `opengl32.dll` (llvmpipe) and the Vulkan driver (lavapipe), x64 and x86, from the App Store | OpenGL 4.5: `tools/gltest` (pixel formats, immediate mode, GLSL, read-back, animated `SwapBuffers`) passes as a 64-bit and a 32-bit program. |
@@ -56,9 +56,12 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **WinMerge 2.16.50** (x64) | MFC application: MDI frame, docking bars, rebars, toolbars with 24-bit image strips | Compares two files side by side with the differences highlighted, location pane and status bars. |
 | **PuTTY 0.81** (x64, built from source with MinGW) | Terminal emulator on `WSAAsyncSelect` networking | A raw connection to a host: the server's greeting shows, typed lines go out and the echo comes back. |
 | **ripgrep, fd, bat, jq, fzf** | Rust (MSVC), C (MinGW), Go | Searching, walking folders, printing files, filtering, from the Terminal. |
-| **Floorp 12.19** (Firefox 157 engine, x64) | Gecko browser | Starts, creates its profile, and draws the full browser window (toolbar, address bar, sidebar) with DirectWrite text through its GPU process, and takes keyboard input.  Its sandboxed child processes (tab, extension, GPU, network, media) start and talk to the main process.  Page content does not show yet and pages are not fetched yet.  See [Firefox](docs/HISTORY.md#firefox-floorp). |
+| **Floorp 12.19** (Firefox 157 engine, x64) | Gecko browser | Starts, creates its profile, and draws the full browser window (toolbar, address bar, sidebar) with DirectWrite text through its GPU process, and takes keyboard input.  Its sandboxed child processes (tab, extension, GPU, network, media) start and talk to the main process.  It fetches and shows pages over HTTP and HTTPS, scrolls and takes typing in forms.  See [Firefox](docs/HISTORY.md#firefox-floorp). |
+| **Firefox 157.0** | Mozilla's full installer (x64), from the App Store | The App Store's Install button unpacks it with 7-Zip into `C:\Programs\Mozilla Firefox`; Firefox starts unmodified (its launcher process sets up the browser process with its DLL blocklist hooks), draws its whole window through its GPU process, and loads and shows a page over HTTPS (a test CA trusted through `distribution\policies.json`); in the nightly corpus.  Window titles show their dashes as `-`. |
 | **KeePassXC 2.7.12** | Portable zip (Qt 5, x64) | Opens and unlocks a KDBX 4 password database (Argon2d) and shows its groups, entries and an entry's details, Qt's widget text drawn through `GetGlyphOutline`; in the nightly corpus.  Windows Hello quick unlock reports "not supported". |
 | **Inkscape 0.91** | conda-forge's win-64 package (GTK 2, MinGW, x64) | Starts with a new document: menus, tool bars, toolbox, rulers, canvas, palette and status bar, drawn by GTK 2 through cairo and pango on gdi32; in the nightly corpus.  Inkscape 1.x (GTK 3) is not tested yet: its downloads are not reachable from CI. |
+| **VLC 3.0.21** (x86, the PortableApps package) | Qt 5 media player | Plays an H.264 and AAC MP4 with its Qt interface, the video in its window (GDI output) and the sound through WASAPI; part of the nightly app corpus. |
+| **Audacity 3.7.4** (x64 zip) | wxWidgets audio editor | Records from the microphone (WASAPI capture), draws the waveform, stops and saves the project as an `.aup3` (SQLite) through its save dialog; part of the nightly app corpus. |
 
 <!-- END generated:programs -->
 
@@ -116,8 +119,10 @@ every part, phase by phase.
   PS/2 keyboards and mice; USB (xHCI, EHCI, OHCI and UHCI controllers, any
   number of each) with hubs and HID keyboards (lock-key LEDs and media
   keys included), mice (five buttons and both wheels), tablets and
-  multi-touch screens (report protocol) and USB sticks (FAT and NTFS, as
-  the next drive letter, hot-plugged); virtio multi-touch screens; CMOS clock; a VBE display
+  multi-touch screens (report protocol), USB sticks (FAT and NTFS, as
+  the next drive letter, hot-plugged) and USB speakers and headsets (USB
+  Audio Class 1 over isochronous transfers, played on as soon as they are
+  plugged in); virtio multi-touch screens; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
   flipping, the mode set again after sleep and kept across restarts; more
@@ -138,7 +143,8 @@ every part, phase by phase.
 - **Windows userland** (`userland/`): about 35 system DLLs written from
   scratch and compiled with clang for `x86_64-pc-windows-msvc`, and again
   for `i686` in `SysWOW64`: `ntdll`, `kernel32`, `msvcrt`/`ucrtbase` with
-  the `api-ms-win-crt-*` API sets, `vcruntime140`/`vcruntime140_1` (C++
+  the `api-ms-win-crt-*` API sets (`errno` and the rest of the C
+  runtime's per-thread state kept per thread, as on Windows), `vcruntime140`/`vcruntime140_1` (C++
   exceptions, FH3 and FH4 tables), `msvcp140` and its satellites (the C++
   standard library: Microsoft's own STL, compiled with clang),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs, MDI,
@@ -146,8 +152,11 @@ every part, phase by phase.
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
   `comctl32`, `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
   type libraries), `advapi32`, `ws2_32`, `oleacc`,
-  `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, WASAPI
-  playback and capture, endpoint volume), `msi`,
+  `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
+  WASAPI playback and capture, endpoint volume), `dsound` (DirectSound),
+  `xaudio2_7`/`xaudio2_8`/`xaudio2_9` and `x3daudio1_7` (on FAudio), `msi`
+  (with `msiscript` running JScript and VBScript custom actions on the
+  ISC-licensed mujs),
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
   `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
@@ -169,14 +178,21 @@ every part, phase by phase.
   layouts.
 - **Media tools**: a current Windows build of ffmpeg runs unchanged and
   converts H.264 and AAC to VP9 and Opus with all its threads.
+- **Media players and editors**: VLC plays video with sound and Audacity
+  records and saves, on the same WASAPI, GDI and message-loop code paths
+  real Windows programs take (Qt's `WH_GETMESSAGE` hook, wxWidgets'
+  buffered painting).
 - **ICU** as Windows 10 ships it: `icu.dll` (ICU 77.1, x64 and x86,
   built by `tools/build_icu.py`) with its data in
   `C:\Windows\Globalization\ICU`.  .NET does its globalization through
   it, and kernel32 answers `GetLocaleInfoEx` from it for every one of the
   864 Windows locales and formats dates, times, numbers and money in them
   (`GetDateFormat`, `GetTimeFormat`, `GetNumberFormat`,
-  `GetCurrencyFormat`).  The user's regional format is set with
-  `intl NAME` or Settings > Time & language and kept in the registry.
+  `GetCurrencyFormat`, `GetDurationFormat`) in their calendars (Japanese
+  eras, Thai Buddhist, Hebrew, Hijri, Um Al Qura, Persian...).  The user's
+  regional format is set with `intl NAME` or Settings > Time & language and
+  kept in the registry, with the user's own changes to it
+  (`SetLocaleInfo`).
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions; registry saved to disk;
   COM in-process servers and type libraries; drag and drop; a shared clipboard; `.lnk`
@@ -260,35 +276,49 @@ To make the ISO yourself from a fresh build, run
   `cursortest` (system pointers, SetSystemCursor, cursors at the display
   scale), `disptest`, `icutest` (ICU and locales, 64- and 32-bit),
   `comtest`, `nlstest` (date, time, number and currency formats in
-  German and Japanese, 64- and 32-bit; `nlstest user`), `tlbtest` (type
-  libraries, 64- and 32-bit), `usptest` (Arabic and Devanagari shaped
-  through Uniscribe and drawn by `ExtTextOut`, 64- and 32-bit), `cppeh`,
-  `dlgtest` (the common file dialogs: `OPENFILENAME` settings,
-  `IFileDialog` objects), `stltest` (the C++ standard library, 64- and
-  32-bit), `delaytest` (the DLLs Firefox delay-loads), `rttest` (complex
-  math, conio, DLL directories, 64- and 32-bit), `qttest` (what Qt
-  programs need: `GetGlyphOutline`, C++/WinRT `HSTRING`s, Windows Hello,
-  the process DACL), `battery` (against the battery in
-  `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
-  tones played), `soundtest record`, `capture` and `volume` (`waveIn`
-  and WASAPI capture must record the tone the microphone hears, and a
-  quarter of the endpoint volume must sound 12 dB quieter), `sleeptest
-  timer` (`Sleep(1)`, 1 ms wait timeouts and waitable timers (periodic
-  ones, their completion routines and timer queue timers too) end within
-  a millisecond with every CPU busy), `powertest` (closing the lid in
+  German and Japanese, 64- and 32-bit; `nlstest user`), `nlstest
+  calendars` (Japanese eras, Buddhist, Taiwan, Tangun, Hebrew, Hijri, Um
+  Al Qura and Persian dates; `GetDurationFormat`) and `nlstest override`
+  (`SetLocaleInfo`), 64- and 32-bit, `tlbtest` (type libraries, 64- and
+  32-bit), `usptest` (Arabic and Devanagari shaped through Uniscribe and
+  drawn by `ExtTextOut`, 64- and 32-bit), `cppeh`, `dlgtest` (the common
+  file dialogs: `OPENFILENAME` settings, `IFileDialog` objects),
+  `stltest` (the C++ standard library, 64- and 32-bit), `delaytest` (the
+  DLLs Firefox delay-loads), `rttest` (complex math, conio, DLL
+  directories, 64- and 32-bit), `qttest` (what Qt programs need:
+  `GetGlyphOutline`, C++/WinRT `HSTRING`s, Windows Hello, the process
+  DACL), `battery` (against the battery in `tests/acpi/battery.asl`),
+  `soundtest` (the recorded WAV must hold the tones played), `soundtest
+  record`, `capture` and `volume` (`waveIn` and WASAPI capture must
+  record the tone the microphone hears, and a quarter of the endpoint
+  volume must sound 12 dB quieter), `soundtest dsound` and `dscapture`
+  (DirectSound playback with notifications, frequency and volume, and
+  DirectSoundCapture recording the microphone), `sleeptest timer`
+  (`Sleep(1)`, 1 ms wait timeouts and waitable timers (periodic ones,
+  their completion routines and timer queue timers too) end within a
+  millisecond with every CPU busy), `savetest` (while NovaOS saves 32
+  MiB of drive C: to its disk, calls behind the kernel, desktop and
+  file-system locks keep answering; the save holds the file-system lock
+  under 20 ms), `xa2test` (XAudio2 2.9 and 2.7 voices, callbacks and
+  effects, and X3DAudio panning), `powertest` (closing the lid in
   `tests/acpi/lid-thermal.asl` sleeps, a USB key and the lid wake it,
   the thermal zone's readings), `disptest 1024 768` (saves the mode the
-  restart must keep), `nlstest set ja-JP` (the user locale the restart
-  must keep), an installer that replaces a running program and finishes
-  after a restart (`filetest install`, `shutdown /r`, `filetest
+  restart must keep), `miditest` (MIDI through `midiOut`, `midiStream`
+  and the MCI sequencer), `nlstest set ja-JP` (the user locale the
+  restart must keep), an installer that replaces a running program and
+  finishes after a restart (`filetest install`, `shutdown /r`, `filetest
   installed`), `nlstest after-restart ja-JP` (the restart kept the user
   locale), `disptest saved 1024 768` (the restart kept the saved display
   mode), hard links kept across a restart (`linktest restarted`),
   Windows Installer transforms, patches and rollback, and an installed
   service started at the next boot (`msitest transform`, `patch`,
-  `rollback`, `service`, `shutdown /r`, `msitest service-boot`), and
-  last `crash kernel`, a deliberate kernel fault whose serial log must
-  show a backtrace with function names.<!-- END generated:core-tests -->
+  `rollback`, `service`, `shutdown /r`, `msitest service-boot`), Windows
+  Installer JScript and VBScript custom actions setting and reading
+  properties and writing files, and a failing script rolling its install
+  back (`msitest script`), `errnotest` (errno and the other C runtime
+  per-thread state belong to each thread, 64- and 32-bit), and last
+  `crash kernel`, a deliberate kernel fault whose serial log must show a
+  backtrace with function names.<!-- END generated:core-tests -->
 - **Network** (in the boot-test job): two boots with a virtio-net card.
   On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
   `httptest suite` (winhttp with HTTP/2 by ALPN) against
@@ -317,7 +347,7 @@ after a build.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
-<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM), SumatraPDF, WinMerge, KeePassXC, Inkscape, Notepad++ and PuTTY<!-- END generated:corpus -->.  The
+<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM), SumatraPDF, WinMerge, KeePassXC, VLC (plays an H.264 and AAC MP4 with sound), Audacity (records 10 s from the microphone and saves the project), Inkscape, Firefox, Notepad++ and PuTTY<!-- END generated:corpus -->.  The
 windowed programs run last, one at a time: SumatraPDF opens a PDF,
 WinMerge compares two files, Firefox installs from the App Store and
 loads a page from an HTTPS server on the host, Notepad++ opens a file and PuTTY makes a raw
@@ -329,7 +359,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `msitest`, `nlstest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `qttest`, `rttest`, `sectest`, `shmtest`, `smpstress`, `stltest`, `threads`, `touchtest`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `errnotest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `msitest`, `nlstest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `qttest`, `rttest`, `savetest`, `sectest`, `shmtest`, `smpstress`, `stltest`, `threads`, `touchtest`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
   through `waveIn` and WASAPI capture;
   `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`
@@ -481,7 +511,7 @@ os/
 
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
-code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; nghttp2: MIT; uACPI: MIT; musl's libm and complex functions: MIT; ICU: Unicode License v3 (`third_party/icu/LICENSE`); kernel32's locale table, from .NET: MIT; HarfBuzz: MIT; FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Microsoft's C++ standard library (STL): Apache-2.0 WITH LLVM-exception; plutovg: MIT (with FreeType-licensed rasteriser and stroker files); Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
+code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; nghttp2: MIT; mujs: ISC; uACPI: MIT; musl's libm and complex functions: MIT; ICU: Unicode License v3 (`third_party/icu/LICENSE`); kernel32's locale table, from .NET: MIT; HarfBuzz: MIT; FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Microsoft's C++ standard library (STL): Apache-2.0 WITH LLVM-exception; plutovg: MIT (with FreeType-licensed rasteriser and stroker files); Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT; FAudio: zlib; TinySoundFont: MIT<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,
 but independently written.
 
