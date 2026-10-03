@@ -122,11 +122,26 @@ static void raw_unlock(void)
 
 static Thread *me(void) { return KiGetCurrentKpcr()->CurrentThread; }
 
+/* Take the lock back for @t, which held it @t->bkl_depth deep (interrupts
+ * off).  While raw_lock halts, an interrupt may come in and want the lock
+ * itself: the depth reads 0 meanwhile, so it takes the lock (and lets go)
+ * rather than run as though this thread held it. */
+static void relock(Thread *t)
+{
+    uint32_t depth = t->bkl_depth;
+    t->bkl_depth = 0;
+    raw_lock(true);
+    t->bkl_depth = depth;
+}
+
 void bkl_acquire(void)
 {
     IrqState s = irq_save();
     Thread *t = me();
-    if (t->bkl_depth++ == 0) raw_lock(true);
+    /* (the depth goes up once the lock is ours: an interrupt taken while
+     * raw_lock halts must not think this thread holds it already) */
+    if (t->bkl_depth == 0) raw_lock(true);
+    t->bkl_depth++;
     irq_restore(s);
 }
 
@@ -180,7 +195,7 @@ bool bkl_held(void)
 
 /* The scheduler, with interrupts off: a holder leaving and coming back */
 void bkl_switch_out(Thread *t) { if (t->bkl_depth) raw_unlock(); }
-void bkl_switch_in(Thread *t)  { if (t->bkl_depth) raw_lock(true); }
+void bkl_switch_in(Thread *t)  { if (t->bkl_depth) relock(t); }
 
 void bkl_relax(void)
 {
@@ -192,7 +207,7 @@ void bkl_relax(void)
     for (int i = 0; i < 1000000 && !__atomic_load_n(&g_bkl.locked, __ATOMIC_ACQUIRE) &&
                     __atomic_load_n(&g_bkl.contenders, __ATOMIC_ACQUIRE); i++)
         pause_cpu();
-    raw_lock(true);
+    relock(t);
     irq_restore(s);
 }
 

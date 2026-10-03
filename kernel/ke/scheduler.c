@@ -27,6 +27,7 @@
 #include "kpcr.h"
 #include "smp.h"
 #include "spinlock.h"
+#include "ksym.h"
 #include "../mm/vmm.h"
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/gdt.h"
@@ -85,6 +86,12 @@ static uint64_t tsc_at_boot;
 
 static void rq_enqueue(RunQueue *rq, Thread *t)
 {
+    if (t->next || t->prev) {                       /* queued already: it would run twice */
+        kprintf("[SCHED] BUG: thread '%s' (TID %lu, state %d, CPU %u) queued twice, by CPU %u\n",
+                t->name, t->tid, t->state, t->cpu, this_cpu());
+        KsymBacktraceHere();
+        for (;;) { cli(); hlt(); }
+    }
     t->state = THREAD_READY;
     if (!rq->head) {
         t->next = t;
@@ -455,6 +462,11 @@ static void switch_locked(RunQueue *rq)
     }
     /* (a thread is queued only once switched out, under the lock of the
      * queue its CPU was switching from: this never waits in practice) */
+    if (next->state != THREAD_READY && !next->idle) {   /* (only a queued thread is switched to) */
+        kprintf("[SCHED] BUG: switching to thread '%s' (TID %lu) in state %d on CPU %u\n",
+                next->name, next->tid, next->state, this_cpu());
+        for (;;) { cli(); hlt(); }
+    }
     while (__atomic_load_n(&next->on_cpu, __ATOMIC_ACQUIRE)) pause_cpu();
     next->on_cpu        = true;
     next->cpu           = this_cpu();

@@ -36,7 +36,7 @@ def where(addrs):
     except OSError as e:
         return str(e)
 
-for d in sorted(glob.glob('/tmp/novarun*')):
+for d in sorted(glob.glob('/tmp/novarun*') + glob.glob('/tmp/selftest*')):
     print(f'===== {d}')
     sock = os.path.join(d, 'qmp.sock')
     if os.path.exists(sock):

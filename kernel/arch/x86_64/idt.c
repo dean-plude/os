@@ -357,7 +357,13 @@ void __attribute__((noreturn)) gs_mismatch(InterruptFrame *f, int where)
         kprintf("  vector %lu, error code 0x%lx\n", f->vector, f->error_code);
         dump_frame(f);
         if (!(f->cs & 3)) KsymBacktrace(f->rip, f->rbp, f->rsp);
+        /* the stack where it happened: an IRETQ's frame, for one */
+        const uint64_t *sp = (const uint64_t *)(where ? (uint64_t)&f->rip : f->rsp);
+        for (int i = 0; i < 8; i++) kprintf("  [%p] %016lx\n", (const void *)&sp[i], sp[i]);
     }
+    PKPCR k = KiGetCurrentKpcr();
+    Thread *prev = (Thread *)k->PrevThread;
+    kprintf("  KernelRsp %lx, previous thread %s\n", (uint64_t)k->KernelRsp, prev ? prev->name : "-");
     cpu_halt_forever();
 }
 
