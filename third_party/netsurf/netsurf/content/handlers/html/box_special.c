@@ -26,9 +26,14 @@
  * Implementation of special element handling conversion.
  */
 
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <dom/dom.h>
+#ifdef _NOVAOS
+#include <strings.h>
+#include <nsutils/base64.h>
+#endif
 
 #include "utils/nsoption.h"
 #include "utils/corestrings.h"
@@ -1850,6 +1855,293 @@ static bool box_textarea(dom_node *n,
  */
 
 
+#ifdef _NOVAOS
+/**
+ * Growable text buffer for svg_serialise (NovaOS)
+ */
+struct svg_text {
+	char *data;
+	size_t len, size;
+	bool failed;
+};
+
+static void svg_put(struct svg_text *t, const char *s, size_t n)
+{
+	if (t->failed)
+		return;
+	if (t->len + n + 1 > t->size) {
+		size_t size = t->size ? t->size : 1024;
+		char *grown;
+
+		while (t->len + n + 1 > size)
+			size *= 2;
+		grown = realloc(t->data, size);
+		if (grown == NULL) {
+			t->failed = true;
+			return;
+		}
+		t->data = grown;
+		t->size = size;
+	}
+	memcpy(t->data + t->len, s, n);
+	t->len += n;
+	t->data[t->len] = '\0';
+}
+
+/** @s with &, <, > and " as XML entities */
+static void svg_put_escaped(struct svg_text *t, dom_string *s)
+{
+	const char *p = dom_string_data(s), *start = p;
+	const char *end = p + dom_string_byte_length(s);
+
+	for (; p < end; p++) {
+		const char *ent = NULL;
+
+		switch (*p) {
+		case '&': ent = "&amp;"; break;
+		case '<': ent = "&lt;"; break;
+		case '>': ent = "&gt;"; break;
+		case '"': ent = "&quot;"; break;
+		}
+		if (ent != NULL) {
+			svg_put(t, start, p - start);
+			svg_put(t, ent, strlen(ent));
+			start = p + 1;
+		}
+	}
+	svg_put(t, start, p - start);
+}
+
+/**
+ * SVG's mixed-case element and attribute names (from hubbub's foreign
+ * content tables): libdom keeps an HTML document's attribute names in
+ * lower case, and libsvgtiny looks for viewBox, linearGradient and so on
+ */
+static const char *const svg_mixed_case[] = {
+	"altGlyph", "altGlyphDef", "altGlyphItem", "animateColor",
+	"animateMotion", "animateTransform", "attributeName",
+	"attributeType", "baseFrequency", "baseProfile", "calcMode",
+	"clipPath", "clipPathUnits", "contentScriptType", "contentStyleType",
+	"diffuseConstant", "edgeMode", "externalResourcesRequired",
+	"feBlend", "feColorMatrix", "feComponentTransfer", "feComposite",
+	"feConvolveMatrix", "feDiffuseLighting", "feDisplacementMap",
+	"feDistantLight", "feFlood", "feFuncA", "feFuncB", "feFuncG",
+	"feFuncR", "feGaussianBlur", "feImage", "feMerge", "feMergeNode",
+	"feMorphology", "feOffset", "fePointLight", "feSpecularLighting",
+	"feSpotLight", "feTile", "feTurbulence", "filterRes", "filterUnits",
+	"foreignObject", "glyphRef", "gradientTransform", "gradientUnits",
+	"kernelMatrix", "kernelUnitLength", "keyPoints", "keySplines",
+	"keyTimes", "lengthAdjust", "limitingConeAngle", "linearGradient",
+	"markerHeight", "markerUnits", "markerWidth", "maskContentUnits",
+	"maskUnits", "numOctaves", "pathLength", "patternContentUnits",
+	"patternTransform", "patternUnits", "pointsAtX", "pointsAtY",
+	"pointsAtZ", "preserveAlpha", "preserveAspectRatio",
+	"primitiveUnits", "radialGradient", "refX", "refY", "repeatCount",
+	"repeatDur", "requiredExtensions", "requiredFeatures",
+	"specularConstant", "specularExponent", "spreadMethod",
+	"startOffset", "stdDeviation", "stitchTiles", "surfaceScale",
+	"systemLanguage", "tableValues", "targetX", "targetY", "textLength",
+	"textPath", "viewBox", "viewTarget", "xChannelSelector",
+	"yChannelSelector", "zoomAndPan"
+};
+
+/** write @name, in SVG's case if it is one of svg_mixed_case */
+static void svg_put_name(struct svg_text *t, dom_string *name)
+{
+	const char *data = dom_string_data(name);
+	size_t len = dom_string_byte_length(name), i;
+
+	for (i = 0; i < sizeof(svg_mixed_case) / sizeof(svg_mixed_case[0]); i++) {
+		if (strlen(svg_mixed_case[i]) == len &&
+				strncasecmp(svg_mixed_case[i], data, len) == 0) {
+			data = svg_mixed_case[i];
+			break;
+		}
+	}
+	svg_put(t, data, len);
+}
+
+/**
+ * Write element @n and its subtree as XML; the root also gets the SVG and
+ * XLink namespace declarations (the HTML parser keeps the namespaces on
+ * the nodes, libsvgtiny's XML parser wants them written out)
+ */
+static void svg_serialise(struct svg_text *t, dom_node *n, bool root)
+{
+	dom_string *name = NULL;
+	dom_namednodemap *attrs = NULL;
+	dom_node *child = NULL;
+	uint32_t i, count = 0;
+
+	if (dom_node_get_node_name(n, &name) != DOM_NO_ERR || name == NULL) {
+		t->failed = true;
+		return;
+	}
+	svg_put(t, "<", 1);
+	svg_put_name(t, name);
+	if (root) {
+		static const char ns[] =
+			" xmlns=\"http://www.w3.org/2000/svg\""
+			" xmlns:xlink=\"http://www.w3.org/1999/xlink\"";
+		svg_put(t, ns, sizeof(ns) - 1);
+	}
+
+	if (dom_node_get_attributes(n, &attrs) == DOM_NO_ERR && attrs != NULL) {
+		dom_namednodemap_get_length(attrs, &count);
+		for (i = 0; i < count; i++) {
+			dom_node *attr = NULL;
+			dom_string *an = NULL, *av = NULL;
+
+			if (dom_namednodemap_item(attrs, i, &attr) != DOM_NO_ERR ||
+					attr == NULL)
+				continue;
+			if (dom_node_get_node_name(attr, &an) == DOM_NO_ERR &&
+					an != NULL &&
+					dom_node_get_node_value(attr, &av) ==
+							DOM_NO_ERR) {
+				const char *ad = dom_string_data(an);
+				/* (the root's declarations are written above) */
+				if (strcmp(ad, "xmlns") != 0 &&
+						strncmp(ad, "xmlns:", 6) != 0) {
+					svg_put(t, " ", 1);
+					svg_put_name(t, an);
+					svg_put(t, "=\"", 2);
+					if (av != NULL)
+						svg_put_escaped(t, av);
+					svg_put(t, "\"", 1);
+				}
+			}
+			if (an != NULL)
+				dom_string_unref(an);
+			if (av != NULL)
+				dom_string_unref(av);
+			dom_node_unref(attr);
+		}
+		dom_namednodemap_unref(attrs);
+	}
+	svg_put(t, ">", 1);
+
+	dom_node_get_first_child(n, &child);
+	while (child != NULL && !t->failed) {
+		dom_node_type type;
+		dom_node *next = NULL;
+
+		if (dom_node_get_node_type(child, &type) == DOM_NO_ERR) {
+			if (type == DOM_ELEMENT_NODE) {
+				svg_serialise(t, child, false);
+			} else if (type == DOM_TEXT_NODE ||
+					type == DOM_CDATA_SECTION_NODE) {
+				dom_string *text = NULL;
+
+				if (dom_node_get_node_value(child, &text) ==
+						DOM_NO_ERR && text != NULL) {
+					svg_put_escaped(t, text);
+					dom_string_unref(text);
+				}
+			}
+		}
+		dom_node_get_next_sibling(child, &next);
+		dom_node_unref(child);
+		child = next;
+	}
+	if (child != NULL)
+		dom_node_unref(child);
+
+	svg_put(t, "</", 2);
+	svg_put_name(t, name);
+	svg_put(t, ">", 1);
+	dom_string_unref(name);
+}
+
+/**
+ * Inline SVG (NovaOS): an svg element in an HTML page is drawn like an
+ * image.  Its subtree is written out as an SVG document and fetched as a
+ * data: URL, so the SVG image handler (libsvgtiny) draws it; the box is
+ * sized by the element's width and height (see css/hints.c) or CSS, and
+ * the viewBox scales the drawing into it.
+ */
+static bool
+box_inline_svg(dom_node *n,
+	       html_content *content,
+	       struct box *box,
+	       bool *convert_children)
+{
+	static const char prefix[] = "data:image/svg+xml;base64,";
+	struct svg_text text = { NULL, 0, 0, false };
+	dom_string *name = NULL;
+	enum css_width_e wtype;
+	enum css_height_e htype;
+	css_fixed value = 0;
+	css_unit wunit = CSS_UNIT_PX;
+	css_unit hunit = CSS_UNIT_PX;
+	char *url_text;
+	size_t b64_len;
+	nsurl *url;
+	bool is_svg, ok;
+
+	if (dom_node_get_node_name(n, &name) != DOM_NO_ERR || name == NULL)
+		return true;
+	is_svg = dom_string_byte_length(name) == 3 &&
+			ascii_to_lower(dom_string_data(name)[0]) == 's' &&
+			ascii_to_lower(dom_string_data(name)[1]) == 'v' &&
+			ascii_to_lower(dom_string_data(name)[2]) == 'g';
+	dom_string_unref(name);
+	if (!is_svg)
+		return true;
+
+	/* its shapes are not HTML: never boxes of their own */
+	*convert_children = false;
+
+	if (box->style && ns_computed_display(box->style,
+			box_is_root(n)) == CSS_DISPLAY_NONE)
+		return true;
+	if (nsoption_bool(foreground_images) == false)
+		return true;
+
+	svg_serialise(&text, n, true);
+	if (text.failed || text.data == NULL) {
+		free(text.data);
+		return !text.failed;
+	}
+
+	b64_len = (text.len + 2) / 3 * 4 + 1;
+	url_text = malloc(sizeof(prefix) + b64_len);
+	if (url_text == NULL) {
+		free(text.data);
+		return false;
+	}
+	memcpy(url_text, prefix, sizeof(prefix) - 1);
+	if (nsu_base64_encode((const uint8_t *)text.data, text.len,
+			(uint8_t *)url_text + sizeof(prefix) - 1,
+			&b64_len) != NSUERROR_OK) {
+		free(url_text);
+		free(text.data);
+		return false;
+	}
+	url_text[sizeof(prefix) - 1 + b64_len] = '\0';
+	free(text.data);
+
+	if (nsurl_create(url_text, &url) != NSERROR_OK) {
+		free(url_text);
+		return false;
+	}
+	free(url_text);
+
+	box->flags |= IS_REPLACED;
+	ok = html_fetch_object(content, url, box, image_types, false);
+	nsurl_unref(url);
+
+	wtype = css_computed_width(box->style, &value, &wunit);
+	htype = css_computed_height(box->style, &value, &hunit);
+	if (wtype == CSS_WIDTH_SET && wunit != CSS_UNIT_PCT &&
+			htype == CSS_HEIGHT_SET && hunit != CSS_UNIT_PCT)
+		box->flags |= REPLACE_DIM;
+
+	return ok;
+}
+#endif
+
+
 /* exported interface documented in html/box_special.h */
 bool
 convert_special_elements(dom_node *node,
@@ -1928,7 +2220,11 @@ convert_special_elements(dom_node *node,
 		break;
 
 	default:
+#ifdef _NOVAOS
+		res = box_inline_svg(node, content, box, convert_children);
+#else
 		res = true;
+#endif
 	}
 
 	return res;

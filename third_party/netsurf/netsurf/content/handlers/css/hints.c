@@ -1725,6 +1725,24 @@ css_error node_presentational_hint(void *pw, void *node,
 		css_hint_list(pw, node);
 		break;
 	default:
+#ifdef _NOVAOS
+		/* inline SVG (html/box_special.c): its width and height
+		 * attributes size it, as an img's do */
+		{
+			dom_string *name = NULL;
+
+			if (dom_node_get_node_name(node, &name) == DOM_NO_ERR &&
+					name != NULL) {
+				if (dom_string_byte_length(name) == 3 &&
+						strncasecmp(dom_string_data(name),
+							"svg", 3) == 0) {
+					css_hint_width(pw, node);
+					css_hint_height(pw, node);
+				}
+				dom_string_unref(name);
+			}
+		}
+#endif
 		break;
 	}
 
