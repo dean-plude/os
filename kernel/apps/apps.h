@@ -177,6 +177,9 @@ void TerminalRun(const char *cmd, RamNode *cwd);
 struct UmConsole; struct UmProcess;
 int  TerminalConsoleNew(const char *title, RamNode *cwd, struct UmConsole **con);
 bool TerminalConsoleAdopt(int id, struct UmProcess *p);
+/* The program running in Terminal window @w (NULL: @w is not a Terminal,
+ * or no program runs in it).  Desktop lock held. */
+struct UmProcess *TerminalProgram(WND *w);
 
 /* Shortcuts (.lnk files) */
 typedef struct {

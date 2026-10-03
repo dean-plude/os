@@ -49,6 +49,18 @@ volatile void *PciMapPhysical(UINT64 pa, UINT64 size);
 
 void PciEnableDevice(const PciDevice *d);
 
+/* A driver took this function (@driver names it, a string that lives
+ * forever); the Terminal's `devices` lists the functions with their
+ * drivers.  A later claim replaces an earlier one. */
+void PciClaim(const PciDevice *d, const char *driver);
+
+/* The @index'th function found at boot (0 = first) and the driver that
+ * claimed it (NULL: none); false past the last */
+bool PciAt(int index, PciDevice *out, const char **driver);
+
+/* A short name for a function's class ("SATA (AHCI)", "USB (xHCI)") */
+const char *PciClassName(const PciDevice *d);
+
 /* S3: save every function's configuration header, and put it back on wake */
 void PciSaveAll(void);
 void PciRestoreAll(void);

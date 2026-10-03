@@ -196,7 +196,8 @@ class Nova:
         self.q = subprocess.Popen([qemu_binary(), '-machine', 'q35'] + accel_args() + ['-cpu', 'qemu64,+rdtscp,+ssse3,+sse4.1,+sse4.2,+popcnt',
                                    '-m', str(mem), '-smp', str(smp),
                                    '-drive', f'if=pflash,format=raw,readonly=on,file={OVMF}',
-                                   '-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on',
+                                   *([] if img is False else      # img=False: no boot disk (the boot device is in extra_args)
+                                     ['-drive', f'format=raw,file={img or os.path.join(ROOT, "build", "nova.img")},snapshot=on']),
                                    '-drive', f'format=raw,file={data}',
                                    '-serial', f'file:{self.serial_path}'] + list(vga) + display_args(list(vga) + list(extra_args)) + [
                                    '-nic', 'user,model=e1000e' if net else 'none',
@@ -333,9 +334,9 @@ class Nova:
     def status(self):
         return self.qmp.cmd('query-status').get('return', {}).get('status')
 
-    def click(self, x, y, button=1):
-        """Click at logical screen point (x, y): HMP relative moves from the top-left corner
-        (QMP input-send-event moves do nothing on this mouse)"""
+    def move_to(self, x, y):
+        """Move the mouse to logical screen point (x, y): HMP relative moves from the top-left
+        corner, 40 pixels at a time (QMP input-send-event moves do nothing on this mouse)"""
         hmp = lambda c: self.qmp.cmd('human-monitor-command', **{'command-line': c})
         for _ in range(40):
             hmp('mouse_move -100 -100')
@@ -347,6 +348,11 @@ class Nova:
             x -= dx
             y -= dy
         time.sleep(0.3)
+
+    def click(self, x, y, button=1):
+        """Click at logical screen point (x, y)"""
+        hmp = lambda c: self.qmp.cmd('human-monitor-command', **{'command-line': c})
+        self.move_to(x, y)
         hmp(f'mouse_button {button}')
         time.sleep(0.1)
         hmp('mouse_button 0')

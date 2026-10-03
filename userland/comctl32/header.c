@@ -15,7 +15,7 @@
 #define HDM_GETUNICODEFORMAT_ 0x2006
 #define HDN_ITEMDBLCLICKW_ (HDN_FIRST - 23)
 #define HDN_ENDDRAG_       (HDN_FIRST - 11)
-#define DIVIDER 5                       /* the grab zone either side of a divider */
+#define DIVIDER 5                       /* the grab zone either side of a divider (at 96 DPI) */
 
 typedef struct { WCHAR *text; int cx, fmt, image, order; LPARAM lp; } HItem;
 
@@ -81,11 +81,11 @@ static int hit(HWND h, Hdr *s, POINT pt, UINT *flags)
     if (pt.y < 0 || pt.y >= c.bottom) return -1;
     int *o = order_list(s);
     if (!o) return -1;
-    int x = 0, found = -1;
+    int x = 0, found = -1, dz = DIVIDER * cc_k(h);
     for (int p = 0; p < s->n; p++) {
         int i = o[p], r = x + s->it[i].cx;
         /* the divider after an item: its right edge, or the left edge of the next one */
-        if (pt.x >= r - DIVIDER && pt.x < r + DIVIDER) {
+        if (pt.x >= r - dz && pt.x < r + dz) {
             int next_zero = p + 1 < s->n && s->it[o[p + 1]].cx == 0;
             if (pt.x < r || !next_zero) { *flags = HHT_ONDIVIDER; found = i; break; }
         }
@@ -184,8 +184,8 @@ static void get_item(Hdr *s, int i, HDITEMW *out, int wide)
 
 static int height(HWND h, Hdr *s)
 {
-    int fh = cc_font_h(s->font ? s->font : cc_font_for(h));
-    return fh + 10 < 24 ? 24 : fh + 10;
+    int fh = cc_font_h(s->font ? s->font : cc_font_for(h)), k = cc_k(h);
+    return fh + 10 * k < 24 * k ? 24 * k : fh + 10 * k;
 }
 
 static void paint(HWND h, Hdr *s, HDC dc)
@@ -197,7 +197,7 @@ static void paint(HWND h, Hdr *s, HDC dc)
     COLORREF face = RGB(255, 255, 255), line = RGB(229, 229, 229), text = RGB(76, 96, 122);
     DWORD style = GetWindowLongW(h, GWL_STYLE);
     int *o = order_list(s);
-    int x = 0;
+    int x = 0, k = cc_k(h);
     for (int p = 0; o && p < s->n; p++) {
         HItem *it = &s->it[o[p]];
         RECT r = { x, 0, x + it->cx, c.bottom };
@@ -207,20 +207,20 @@ static void paint(HWND h, Hdr *s, HDC dc)
         if ((style & HDS_BUTTONS) && s->pressed == o[p]) bg = RGB(188, 220, 244);
         else if ((style & HDS_BUTTONS) && s->hot == o[p]) bg = RGB(217, 235, 249);
         cc_fill(dc, &r, bg);
-        RECT d = { r.right - 1, r.top + 3, r.right, r.bottom - 3 };
+        RECT d = { r.right - k, r.top + 3 * k, r.right, r.bottom - 3 * k };
         cc_fill(dc, &d, line);
-        RECT t = { r.left + 6, r.top, r.right - 6, r.bottom };
-        if (s->pressed == o[p]) OffsetRect(&t, 1, 1);
+        RECT t = { r.left + 6 * k, r.top, r.right - 6 * k, r.bottom };
+        if (s->pressed == o[p]) OffsetRect(&t, k, k);
         if ((it->fmt & HDF_IMAGE) && s->himl && it->image >= 0) {
             int iw, ih;
             ImageList_GetIconSize(s->himl, &iw, &ih);
             if (t.right - t.left > iw) {
                 il_draw(s->himl, it->image, dc, t.left, (r.top + r.bottom - ih) / 2, ILD_TRANSPARENT);
-                t.left += iw + 4;
+                t.left += iw + 4 * k;
             }
         }
         if (it->fmt & (HDF_SORTUP | HDF_SORTDOWN)) {             /* the sort arrow, above the text as in Explorer */
-            RECT a = { (r.left + r.right) / 2 - 5, r.top, (r.left + r.right) / 2 + 5, r.top + 7 };
+            RECT a = { (r.left + r.right) / 2 - 5 * k, r.top, (r.left + r.right) / 2 + 5 * k, r.top + 7 * k };
             cc_arrow(dc, &a, (it->fmt & HDF_SORTUP) ? 0 : 1, RGB(150, 160, 175));
         }
         SetTextColor(dc, text);
@@ -233,7 +233,7 @@ static void paint(HWND h, Hdr *s, HDC dc)
     }
     free(o);
     if (x < c.right) { RECT r = { x, 0, c.right, c.bottom }; cc_fill(dc, &r, face); }
-    RECT b = { 0, c.bottom - 1, c.right, c.bottom };
+    RECT b = { 0, c.bottom - k, c.right, c.bottom };
     cc_fill(dc, &b, line);
     SelectObject(dc, of);
 }
@@ -419,7 +419,7 @@ LRESULT CALLBACK HeaderProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return TRUE;
     }
     case HDM_SETHOTDIVIDER_: return -1;
-    case HDM_GETBITMAPMARGIN_: return 6;
+    case HDM_GETBITMAPMARGIN_: return 6 * cc_k(h);
     case HDM_SETUNICODEFORMAT_: return TRUE;
     case HDM_GETUNICODEFORMAT_: return TRUE;
     }

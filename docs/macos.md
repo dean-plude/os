@@ -231,7 +231,8 @@ Mac's own devices are mostly ones NovaOS has no driver for.
 
 ### Making the USB stick
 
-`nova.iso` is a hybrid image, so it can be written straight to a stick.
+`nova.iso` is a hybrid image (its EFI partition is in a GPT as well as
+on the disc), so it can be written straight to a stick.
 **This erases the stick**; check the disk number carefully.  Find the
 stick in the `diskutil list` output (for example `/dev/disk4`) and use its
 number in the other three commands:
@@ -257,12 +258,13 @@ diskutil eject /dev/disk4
 | Display | Works at the resolution the firmware set (the UEFI framebuffer); no resolution changes, which need one of the adapters QEMU emulates. After sleep the screen may stay dark: there is no driver to set the mode again, only what the firmware does on wake |
 | External USB keyboard and mouse | Should work (xHCI, EHCI, OHCI and UHCI controllers and USB HID drivers; Macs from before 2012 have only EHCI with OHCI or UHCI companions) |
 | Built-in keyboard and trackpad | Only on older models that wire them over USB internally; 2016 and later MacBooks use SPI, which NovaOS cannot drive. Use an external USB keyboard and mouse. |
-| Internal SSD | Not seen on NVMe Macs (2016 and later): NovaOS has only an AHCI (SATA) driver. Older SATA Macs may see it, but **do not run Install NovaOS on a Mac whose disk you need**: it repartitions the disk. |
+| Internal SSD | Probably not seen on NVMe Macs (2016 and later): NovaOS has a standard NVMe driver, but Apple's NVMe controllers are not standard ones. Older SATA Macs may see it, but **do not run Install NovaOS on a Mac whose disk you need**: it repartitions the disk. |
 | Keeping files | With no usable disk, drive C: lives in memory and is lost at shutdown |
 | Network | None: Mac Ethernet and Wi-Fi are Broadcom or Aquantia, and NovaOS drives only Intel e1000/e1000e cards |
 | Sound | Unknown; Macs use Intel HD Audio controllers with Cirrus Logic codecs, which the HD Audio driver may or may not set up. T2 Macs route audio through the T2 and will be silent. |
 | Battery, power button | Read through ACPI; may work |
 | Multiple cores | Should work |
+| Boot log | Written into `EFI/NOVA/bootlog.txt` on the stick as NovaOS runs: after a hang, read it on the Mac: `diskutil mount disk4s2` (the stick's `NOVA_EFI` partition) |
 
 To go back to macOS, restart; NovaOS changes nothing on the Mac's disk
 unless you install it.

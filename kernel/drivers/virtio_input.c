@@ -311,6 +311,7 @@ static void probe(const PciDevice *pci)
         return;                                              /* (leaked: a failed device stays failed) */
     }
     g_dev[g_ndev++] = v;
+    PciClaim(pci, "virtio-input");
     if (v->kind == VIN_TOUCH) {
         if (slots > TOUCH_MAX) slots = TOUCH_MAX;
         InputTouchScreen(slots);

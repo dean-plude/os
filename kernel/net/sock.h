@@ -62,3 +62,16 @@ int  NetSockPeerName(int s, NetSockAddr *out);
 void NetSockPoll(int s, bool *readable, bool *writable, bool *error);
 int NetSockPeek(int s, void *buf, int len, bool *closed);
 bool NetSockListening(int s);
+
+/* Socket options (Winsock's setsockopt/getsockopt; ws2_32 maps the levels
+ * and names onto these).  Booleans are 0/1, buffers in bytes, timeouts in
+ * ms (0: none), SOCKOPT_LINGER is on | seconds << 16.  The read-only
+ * ones: SOCKOPT_TYPE (1 stream, 2 datagram), SOCKOPT_ERROR (a SOCK_E*
+ * code, 0: none), SOCKOPT_ACCEPTCONN. */
+enum {
+    SOCKOPT_RCVBUF = 1, SOCKOPT_SNDBUF, SOCKOPT_REUSEADDR, SOCKOPT_KEEPALIVE, SOCKOPT_BROADCAST,
+    SOCKOPT_NODELAY, SOCKOPT_RCVTIMEO, SOCKOPT_SNDTIMEO, SOCKOPT_LINGER, SOCKOPT_TTL,
+    SOCKOPT_TYPE, SOCKOPT_ERROR, SOCKOPT_ACCEPTCONN,
+};
+int NetSockSetOpt(int s, int opt, UINT32 value);       /* 0 or -err */
+int NetSockGetOpt(int s, int opt, UINT32 *value);      /* 0 or -err */

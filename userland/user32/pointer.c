@@ -29,8 +29,14 @@
  * rest.  DefWindowProc gives back the mouse message it was made of, so
  * programs that know only the mouse (or Wintab) work as before.  With
  * EnableMouseInPointer(TRUE) the mouse's own messages come the same way,
- * as PT_MOUSE.  Each message's data stays in a ring of records; the one
- * a thread took last (GetMessage) is what GetPointerInfo answers with.
+ * as PT_MOUSE, entering and leaving windows.  Outside the client area
+ * (a program's own title bar, scroll bars, the menu bar) the pen and that
+ * mouse give WM_NCPOINTER* with the hit-test code; a press on an inactive
+ * window sends WM_POINTERACTIVATE first.  The mouse messages DefWindowProc
+ * makes carry the pen (or touch) signature in GetMessageExtraInfo.  Each
+ * message's data stays in a ring of records; the one a thread took last
+ * (GetMessage) is what GetPointerInfo answers with.  GetPointerDevices
+ * lists the pen and the touch screen.
  */
 #include "u32.h"
 
@@ -126,6 +132,7 @@ typedef struct {
 } PointerPenInfo;
 
 #define PEN_ID 12                   /* the pen's pointer id */
+#define TOUCH_DEVICE ((HANDLE)(ULONG_PTR)0x544F5531)    /* "TOU1": sourceDevice of the touch screen's contacts */
 static int g_pen_seen;              /* a pen has been over one of our windows */
 static LRESULT pointer_default(Wnd *w, UINT msg, WPARAM wp, LPARAM lp);
 static BOOL rec_info(UINT32 id, void *info, int pen);
@@ -231,8 +238,8 @@ static void promote(Wnd *w, int down, int up, POINT pt)
 {
     Wnd *top = top_of(w);
     if (!top) return;
-    if (down) input_mouse(top, WM_MOUSEMOVE, 0, pt);
-    input_mouse(top, down ? WM_LBUTTONDOWN : up ? WM_LBUTTONUP : WM_MOUSEMOVE, up ? 0 : MK_LBUTTON, pt);
+    if (down) input_mouse(top, WM_MOUSEMOVE, 0, pt, MI_TOUCH_SIGNATURE);
+    input_mouse(top, down ? WM_LBUTTONDOWN : up ? WM_LBUTTONUP : WM_MOUSEMOVE, up ? 0 : MK_LBUTTON, pt, MI_TOUCH_SIGNATURE);
 }
 
 LRESULT touch_default(Wnd *w, UINT msg, WPARAM wp, LPARAM lp)
@@ -276,6 +283,7 @@ static void fill_info(UINT32 id, const Ptr *p, PointerInfo *pi)
     pi->pointerId = id;
     pi->frameId = p->frame;
     pi->pointerFlags = p->flags;
+    pi->sourceDevice = TOUCH_DEVICE;
     pi->hwndTarget = p->touch ? p->touch : p->target;
     pi->ptPixelLocation = pi->ptPixelLocationRaw = p->pt;
     pi->ptHimetricLocation.x = pi->ptHimetricLocationRaw.x = MulDiv(p->pt.x, 2540, 96);
@@ -472,9 +480,14 @@ USERAPI void DestroySyntheticPointerDevice(HANDLE dev)
 #define POINTER_FLAG_SECONDBUTTON 0x00020
 #define POINTER_FLAG_THIRDBUTTON  0x00040
 
+#define WM_NCPOINTERUPDATE       0x0241     /* (WM_POINTERUPDATE, DOWN, UP - 4) */
+#define WM_NCPOINTERDOWN         0x0242
+#define WM_NCPOINTERUP           0x0243
 #define WM_POINTERENTER          0x0249
 #define WM_POINTERLEAVE          0x024A
+#define WM_POINTERACTIVATE       0x024B
 #define WM_POINTERCAPTURECHANGED 0x024C
+#define PA_NOACTIVATE            3
 
 /* POINTER_BUTTON_CHANGE_TYPE */
 #define CHANGE_FIRST_DOWN  1
@@ -519,10 +532,13 @@ static PRec   g_rec[NREC];
 static UINT32 g_rec_seq, g_pframe;
 static struct { DWORD tid; UINT32 seq; } g_cur[16];  /* the record of each thread's last pointer message */
 static struct { HWND in; int contact; } g_pen;     /* the window the pen is over; touching it */
+static HWND   g_mouse_in;                           /* the window the mouse is over, as a pointer */
 static int    g_mip;                                /* EnableMouseInPointer */
 
+/* WM_POINTER* (@hit HTCLIENT) or WM_NCPOINTER* (@hit the part, in wParam's
+ * high word instead of the flags) */
 static void emit(Wnd *w, UINT msg, UINT32 id, DWORD flags, POINT pt, DWORD time, const PRec *data, UINT mouse, WPARAM mk,
-                 LPARAM lp)
+                 LPARAM lp, int hit)
 {
     PRec *r = &g_rec[++g_rec_seq % NREC];
     if (!g_rec_seq) r = &g_rec[++g_rec_seq % NREC];
@@ -538,7 +554,7 @@ static void emit(Wnd *w, UINT msg, UINT32 id, DWORD flags, POINT pt, DWORD time,
     r->flags = flags;
     r->time = time;
     r->frame = g_pframe;
-    input_queue(w, msg, MAKEWPARAM(id, flags & 0xFFFF), lp ? lp : MAKELPARAM(pt.x, pt.y), time);
+    input_queue(w, msg, MAKEWPARAM(id, hit == HTCLIENT ? flags & 0xFFFF : (WORD)hit), lp ? lp : MAKELPARAM(pt.x, pt.y), time);
 }
 
 /* The pen packet numbered @serial, if the desktop still has it */
@@ -551,12 +567,27 @@ static int pen_packet(UINT32 serial, KPen *k)
     return serial && NtNovaGuiCtl(0, CTL_TABLET, 1, &b) == 1 && b.pk[0].serial == serial ? (*k = b.pk[0], 1) : 0;
 }
 
-int pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, UINT32 pen)
+int pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, UINT32 pen, int hit)
 {
     if (msg != WM_MOUSEMOVE && msg != WM_LBUTTONDOWN && msg != WM_LBUTTONUP && msg != WM_RBUTTONDOWN &&
         msg != WM_RBUTTONUP && msg != WM_MBUTTONDOWN && msg != WM_MBUTTONUP)
         return 0;
     if (!pen && !g_mip) return 0;
+    if (hit != HTCLIENT && hit <= HTNOWHERE) return 0;   /* (nowhere, an error: it stays a mouse message) */
+    int nc = hit != HTCLIENT;
+    UINT32 id = pen ? PEN_ID : 1;
+    /* A press on a window that is not active: WM_POINTERACTIVATE first.
+     * The desktop has activated it already (as it does for the mouse; its
+     * WM_ACTIVATE comes after), so PA_NOACTIVATE gives the activation back
+     * to the window that had it. */
+    Wnd *top = top_of(target);
+    int down = msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN;
+    if ((pen ? msg == WM_LBUTTONDOWN : down) && top && top->h != g_active) {
+        HWND th = target->h, was_active = g_active ? g_active : recently_active();
+        LRESULT r = send_msg(target, WM_POINTERACTIVATE, MAKEWPARAM(id, (WORD)hit), (LPARAM)top->h);
+        if (r == PA_NOACTIVATE && W_quiet(was_active)) SetForegroundWindow(was_active);
+        if (!(target = W_quiet(th))) return 1;
+    }
     PRec d;
     memset(&d, 0, sizeof(d));
     LOCK();
@@ -566,18 +597,24 @@ int pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, U
         WPARAM bit = msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ? MK_LBUTTON :
                      msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP ? MK_RBUTTON : msg == WM_MOUSEMOVE ? 0 : MK_MBUTTON;
         WPARAM all = MK_LBUTTON | MK_RBUTTON | MK_MBUTTON, after = mk & all;
-        int down = msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN;
         if (down) after |= bit; else after &= ~bit;
         WPARAM before = down ? after & ~bit : msg == WM_MOUSEMOVE ? after : after | bit;
         UINT pm = !before && after ? WM_POINTERDOWN : before && !after ? WM_POINTERUP : WM_POINTERUPDATE;
         d.change = bit == MK_LBUTTON ? (down ? CHANGE_FIRST_DOWN : CHANGE_FIRST_UP) :
                    bit == MK_RBUTTON ? (down ? CHANGE_SECOND_DOWN : CHANGE_SECOND_UP) :
                    bit == MK_MBUTTON ? (down ? CHANGE_THIRD_DOWN : CHANGE_THIRD_UP) : 0;
-        DWORD f = POINTER_FLAG_INRANGE | POINTER_FLAG_PRIMARY | (after ? POINTER_FLAG_INCONTACT : 0) |
-                  (after & MK_LBUTTON ? POINTER_FLAG_FIRSTBUTTON : 0) | (after & MK_RBUTTON ? POINTER_FLAG_SECONDBUTTON : 0) |
-                  (after & MK_MBUTTON ? POINTER_FLAG_THIRDBUTTON : 0) |
-                  (pm == WM_POINTERDOWN ? POINTER_FLAG_DOWN : pm == WM_POINTERUP ? POINTER_FLAG_UP : POINTER_FLAG_UPDATE);
-        emit(target, pm, 1, f, pt, time, &d, msg, mk, 0);
+        DWORD state = POINTER_FLAG_INRANGE | POINTER_FLAG_PRIMARY | (after ? POINTER_FLAG_INCONTACT : 0) |
+                      (after & MK_LBUTTON ? POINTER_FLAG_FIRSTBUTTON : 0) | (after & MK_RBUTTON ? POINTER_FLAG_SECONDBUTTON : 0) |
+                      (after & MK_MBUTTON ? POINTER_FLAG_THIRDBUTTON : 0);
+        /* over another window: WM_POINTERLEAVE for the last, WM_POINTERENTER for this */
+        Wnd *was = W_quiet(g_mouse_in);
+        if (was != target) {
+            if (was) emit(was, WM_POINTERLEAVE, 1, state | POINTER_FLAG_UPDATE, pt, time, &d, 0, 0, 0, HTCLIENT);
+            emit(target, WM_POINTERENTER, 1, state | POINTER_FLAG_NEW | POINTER_FLAG_UPDATE, pt, time, &d, 0, 0, 0, HTCLIENT);
+            g_mouse_in = target->h;
+        }
+        DWORD f = state | (pm == WM_POINTERDOWN ? POINTER_FLAG_DOWN : pm == WM_POINTERUP ? POINTER_FLAG_UP : POINTER_FLAG_UPDATE);
+        emit(target, nc ? pm - 4 : pm, 1, f, pt, time, &d, msg, mk, 0, hit);
         UNLOCK();
         return 1;
     }
@@ -605,21 +642,24 @@ int pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, U
                   (barrel ? POINTER_FLAG_SECONDBUTTON : 0);
     Wnd *was = W_quiet(g_pen.in);
     if (!near) {                                    /* out of range */
-        if (was) emit(was, WM_POINTERLEAVE, PEN_ID, state | POINTER_FLAG_UPDATE, pt, time, &d, 0, 0, 0);
+        if (was) emit(was, WM_POINTERLEAVE, PEN_ID, state | POINTER_FLAG_UPDATE, pt, time, &d, 0, 0, 0, HTCLIENT);
         g_pen.in = 0;
         g_pen.contact = 0;
         UNLOCK();
         return 1;
     }
-    /* touching: it stays with the window it touched down on */
-    if (was && g_pen.contact && was != target && msg != WM_LBUTTONDOWN && top_of(was) == top_of(target)) target = was;
+    /* touching: it stays with the window it touched down on (as its client's) */
+    if (was && g_pen.contact && was != target && msg != WM_LBUTTONDOWN && top_of(was) == top_of(target)) {
+        target = was;
+        nc = 0;
+    }
     if (was && was != target) {
-        if (g_pen.contact) emit(was, WM_POINTERCAPTURECHANGED, PEN_ID, state, pt, time, &d, 0, 0, (LPARAM)target->h);
-        emit(was, WM_POINTERLEAVE, PEN_ID, state | POINTER_FLAG_UPDATE, pt, time, &d, 0, 0, 0);
+        if (g_pen.contact) emit(was, WM_POINTERCAPTURECHANGED, PEN_ID, state, pt, time, &d, 0, 0, (LPARAM)target->h, HTCLIENT);
+        emit(was, WM_POINTERLEAVE, PEN_ID, state | POINTER_FLAG_UPDATE, pt, time, &d, 0, 0, 0, HTCLIENT);
         was = NULL;
     }
     if (!was) {
-        emit(target, WM_POINTERENTER, PEN_ID, state | POINTER_FLAG_NEW | POINTER_FLAG_UPDATE, pt, time, &d, 0, 0, 0);
+        emit(target, WM_POINTERENTER, PEN_ID, state | POINTER_FLAG_NEW | POINTER_FLAG_UPDATE, pt, time, &d, 0, 0, 0, HTCLIENT);
         g_pen.in = target->h;
     }
     UINT pm = msg == WM_LBUTTONDOWN ? WM_POINTERDOWN : msg == WM_LBUTTONUP ? WM_POINTERUP : WM_POINTERUPDATE;
@@ -628,7 +668,7 @@ int pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, U
     if (pm == WM_POINTERDOWN) state |= POINTER_FLAG_INCONTACT | POINTER_FLAG_FIRSTBUTTON;
     if (pm == WM_POINTERUP) state &= ~(DWORD)(POINTER_FLAG_INCONTACT | POINTER_FLAG_FIRSTBUTTON);
     state |= pm == WM_POINTERDOWN ? POINTER_FLAG_DOWN : pm == WM_POINTERUP ? POINTER_FLAG_UP : POINTER_FLAG_UPDATE;
-    emit(target, pm, PEN_ID, state, pt, time, &d, msg, mk, 0);
+    emit(target, nc ? pm - 4 : pm, PEN_ID, state, pt, time, &d, msg, mk, 0, hit);
     g_pen.contact = (state & POINTER_FLAG_INCONTACT) != 0;
     UNLOCK();
     return 1;
@@ -640,14 +680,22 @@ void pointer_left(Wnd *top)
 {
     LOCK();
     Wnd *was = W_quiet(g_pen.in);
+    PRec d;
+    memset(&d, 0, sizeof(d));
     if (was && !g_pen.contact && top_of(was) == top) {
-        PRec d;
-        memset(&d, 0, sizeof(d));
         d.penMask = PEN_MASK_PRESSURE;
         g_pframe++;
         emit(was, WM_POINTERLEAVE, PEN_ID, POINTER_FLAG_PRIMARY | POINTER_FLAG_UPDATE, g_rec[g_rec_seq % NREC].pt,
-             GetTickCount(), &d, 0, 0, 0);
+             GetTickCount(), &d, 0, 0, 0, HTCLIENT);
         g_pen.in = 0;
+    }
+    /* the mouse, as a pointer */
+    if ((was = W_quiet(g_mouse_in)) && top_of(was) == top) {
+        d.penMask = 0;
+        g_pframe++;
+        emit(was, WM_POINTERLEAVE, 1, POINTER_FLAG_INRANGE | POINTER_FLAG_PRIMARY | POINTER_FLAG_UPDATE, g_cursor,
+             GetTickCount(), &d, 0, 0, 0, HTCLIENT);
+        g_mouse_in = 0;
     }
     UNLOCK();
 }
@@ -665,7 +713,7 @@ static UINT32 *cur_slot(int create)
 
 void pointer_taken(const MSG *m)
 {
-    if (m->message < 0x0245 || m->message > WM_POINTERCAPTURECHANGED) return;
+    if (m->message < WM_NCPOINTERUPDATE || m->message > WM_POINTERCAPTURECHANGED || m->message == WM_POINTERACTIVATE) return;
     UINT32 id = LOWORD(m->wParam);
     if (id != 1 && id != PEN_ID) return;
     LOCK();
@@ -756,7 +804,7 @@ static LRESULT pointer_default(Wnd *w, UINT msg, WPARAM wp, LPARAM lp)
     UNLOCK();
     if (!ok) return 0;
     Wnd *top = top_of(w);
-    if (top) input_mouse(top, c.mouse, c.mk, c.pt);
+    if (top) input_mouse(top, c.mouse, c.mk, c.pt, c.id == PEN_ID ? MI_PEN_SIGNATURE : 0);
     return 0;
 }
 
@@ -787,12 +835,19 @@ USERAPI BOOL GetPointerCursorId(UINT32 id, UINT32 *cursor)
 }
 USERAPI BOOL SkipPointerFrameMessages(UINT32 id) { (void)id; return TRUE; }
 
-USERAPI BOOL EnableMouseInPointer(BOOL on) { g_mip = on != 0; return TRUE; }
+USERAPI BOOL EnableMouseInPointer(BOOL on)
+{
+    g_mip = on != 0;
+    if (!g_mip) g_mouse_in = 0;
+    return TRUE;
+}
 USERAPI BOOL IsMouseInPointerEnabled(void) { return g_mip; }
 
-/* The pen as a pointer device (POINTER_DEVICE_INFO): an external pen over
- * the whole virtual screen, when the desktop has one */
+/* The pointer devices (POINTER_DEVICE_INFO): an external pen over the
+ * whole virtual screen when the desktop has one, and the touch screen
+ * (multi-touch, its contacts' cursor ids from 2) when it has one */
 #define POINTER_DEVICE_TYPE_EXTERNAL_PEN 2
+#define POINTER_DEVICE_TYPE_TOUCH        3
 typedef struct {
     DWORD    displayOrientation;
     HANDLE   device;
@@ -803,39 +858,54 @@ typedef struct {
     WCHAR    productString[520];
 } PointerDeviceInfo;
 
-static void pen_device(PointerDeviceInfo *d)
+static void device_info(HANDLE dev, PointerDeviceInfo *d)
 {
-    static const WCHAR name[] = L"NovaOS pen";
+    static const WCHAR pen[] = L"NovaOS pen", touch[] = L"NovaOS touch screen";
     POINT o = { 0, 0 };
     memset(d, 0, sizeof(*d));
-    d->device = PEN_DEVICE;
-    d->pointerDeviceType = POINTER_DEVICE_TYPE_EXTERNAL_PEN;
+    d->device = dev;
     d->monitor = MonitorFromPoint(o, MONITOR_DEFAULTTOPRIMARY);
-    d->maxActiveContacts = 1;
-    memcpy(d->productString, name, sizeof(name));
+    if (dev == TOUCH_DEVICE) {
+        d->pointerDeviceType = POINTER_DEVICE_TYPE_TOUCH;
+        d->startingCursorId = 2;
+        d->maxActiveContacts = (USHORT)NtNovaGuiCtl(0, CTL_TOUCH, 0, NULL);
+        memcpy(d->productString, touch, sizeof(touch));
+    } else {
+        d->pointerDeviceType = POINTER_DEVICE_TYPE_EXTERNAL_PEN;
+        d->maxActiveContacts = 1;
+        memcpy(d->productString, pen, sizeof(pen));
+    }
 }
 
 static int pen_present(void) { return (int)NtNovaGuiCtl(0, CTL_TABLET, 0, NULL) > 0; }
+static int touch_present(void) { return (int)NtNovaGuiCtl(0, CTL_TOUCH, 0, NULL) > 0; }
+static int device_present(HANDLE dev) { return dev == PEN_DEVICE ? pen_present() : dev == TOUCH_DEVICE && touch_present(); }
 
 USERAPI BOOL GetPointerDevices(UINT32 *n, void *devs)
 {
     if (!n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    UINT32 have = pen_present() ? 1 : 0;
-    if (devs && *n < have) { *n = have; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
-    if (devs && have) pen_device(devs);
-    *n = have;
+    HANDLE have[2];
+    UINT32 k = 0;
+    if (pen_present()) have[k++] = PEN_DEVICE;
+    if (touch_present()) have[k++] = TOUCH_DEVICE;
+    if (devs && *n < k) { *n = k; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    for (UINT32 i = 0; devs && i < k; i++) device_info(have[i], (PointerDeviceInfo *)devs + i);
+    *n = k;
     return TRUE;
 }
 USERAPI BOOL GetPointerDevice(HANDLE dev, void *info)
 {
-    if (dev != PEN_DEVICE || !info || !pen_present()) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    pen_device(info);
+    if (!info || !device_present(dev)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    device_info(dev, info);
     return TRUE;
 }
 /* The device's HIMETRIC rectangle and the screen's it maps onto */
 USERAPI BOOL GetPointerDeviceRects(HANDLE dev, RECT *pointer, RECT *display)
 {
-    if ((dev != PEN_DEVICE && dev != MOUSE_DEVICE) || !pointer || !display) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if ((dev != PEN_DEVICE && dev != MOUSE_DEVICE && dev != TOUCH_DEVICE) || !pointer || !display) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
     RECT v;
     u32_virtual_screen(&v);
     *display = v;

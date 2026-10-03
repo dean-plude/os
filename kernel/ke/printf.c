@@ -227,9 +227,25 @@ static size_t g_klog_total;          /* bytes ever written */
 /* One message at a time, from any CPU (and whole: not interleaved) */
 static KSpinLock g_print_lock = KSPINLOCK_INIT;
 
+/* The first KLOG_BOOT_SIZE bytes of kernel output, kept whole: the boot
+ * log written to the USB stick NovaOS started from (bootlog.c) */
+static char   g_boot_text[KLOG_BOOT_SIZE];
+static size_t g_boot_len;
+
 static void klog_append(const char *s)
 {
-    for (; *s; s++) g_klog[g_klog_total++ % KLOG_SIZE] = *s;
+    size_t b = g_boot_len;
+    for (; *s; s++) {
+        g_klog[g_klog_total++ % KLOG_SIZE] = *s;
+        if (b < KLOG_BOOT_SIZE) g_boot_text[b++] = *s;
+    }
+    __atomic_store_n(&g_boot_len, b, __ATOMIC_RELEASE);   /* (the text first: klog_boot_text reads without the lock) */
+}
+
+const char *klog_boot_text(size_t *len)
+{
+    *len = __atomic_load_n(&g_boot_len, __ATOMIC_ACQUIRE);
+    return g_boot_text;
 }
 
 size_t klog_read(char *out, size_t cap)

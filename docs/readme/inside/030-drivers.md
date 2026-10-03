@@ -1,7 +1,7 @@
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
   either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
-  file ACLs and hard links, and other drives); Intel e1000/e1000e and virtio-net network
-  cards; Intel High Definition Audio (playback and recording) with a kernel
+  file ACLs and hard links, and other drives); Intel e1000/e1000e network cards (82540EM, 82574L
+  and the I219 that Intel PCs have built in) and virtio-net; Intel High Definition Audio (playback and recording) with a kernel
   mixer;
   PS/2 keyboards and mice; USB (xHCI, EHCI, OHCI and UHCI controllers, any
   number of each) with hubs and HID keyboards (lock-key LEDs and media
@@ -12,7 +12,9 @@
   the next drive letter, hot-plugged) and USB speakers, headsets and
   microphones (USB Audio Class 1 and 2 over isochronous transfers, at the
   device's own sampling rate and channel count, played on and recorded
-  from as soon as they are plugged in, or chosen in Settings' Sound page); virtio multi-touch screens,
+  from as soon as they are plugged in, or chosen in Settings' Sound page,
+  each with its own volume; the choice and the levels are kept across
+  restarts); virtio multi-touch screens,
   pens (pressure, tilt, rotation) and tablets; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page

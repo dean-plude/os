@@ -7,14 +7,16 @@
 #include "../arch/x86_64/cpu.h"
 #include "../ke/printf.h"
 #include "../arch/x86_64/paging.h"
+#include "../lib/string.h"
 
 #define PCI_ADDR  0xCF8
 #define PCI_DATA  0xCFC
 
-#define PCI_MAX_DEVICES 64
+#define PCI_MAX_DEVICES 128             /* a laptop has 30 to 60 */
 static PciDevice g_devices[PCI_MAX_DEVICES];
 static int       g_count;
 static UINT32    g_saved[PCI_MAX_DEVICES][16];   /* configuration headers over S3 */
+static const char *g_driver[PCI_MAX_DEVICES];    /* who claimed each function (PciClaim) */
 
 static UINT32 cfg_addr(UINT8 bus, UINT8 dev, UINT8 func, UINT8 off)
 {
@@ -59,7 +61,12 @@ void PciWrite16(UINT8 bus, UINT8 dev, UINT8 func, UINT8 off, UINT16 val)
 static void probe(UINT8 bus, UINT8 dev, UINT8 func)
 {
     UINT32 id = PciRead32(bus, dev, func, 0x00);
-    if ((id & 0xFFFF) == 0xFFFF || g_count >= PCI_MAX_DEVICES) return;
+    if ((id & 0xFFFF) == 0xFFFF) return;
+    if (g_count >= PCI_MAX_DEVICES) {
+        kprintf("[PCI] %02x:%02x.%x %04x:%04x: more than %d functions, not listed\n", bus, dev, func,
+                id & 0xFFFF, id >> 16, PCI_MAX_DEVICES);
+        return;
+    }
     UINT32 cls = PciRead32(bus, dev, func, 0x08);
     PciDevice *d = &g_devices[g_count++];
     d->bus = bus; d->dev = dev; d->func = func;
@@ -76,6 +83,7 @@ static void probe(UINT8 bus, UINT8 dev, UINT8 func)
 void PciInitialize(void)
 {
     g_count = 0;
+    memset(g_driver, 0, sizeof(g_driver));
     for (int bus = 0; bus < 256; bus++) {
         for (int dev = 0; dev < 32; dev++) {
             if ((PciRead32((UINT8)bus, (UINT8)dev, 0, 0) & 0xFFFF) == 0xFFFF) continue;
@@ -225,5 +233,61 @@ void PciRestoreAll(void)
             outl(PCI_ADDR, cfg_addr(d->bus, d->dev, d->func, (UINT8)(r * 4)));
             outl(PCI_DATA, v);
         }
+    }
+}
+
+void PciClaim(const PciDevice *d, const char *driver)
+{
+    for (int i = 0; i < g_count; i++)
+        if (g_devices[i].bus == d->bus && g_devices[i].dev == d->dev && g_devices[i].func == d->func) {
+            g_driver[i] = driver;
+            return;
+        }
+}
+
+bool PciAt(int index, PciDevice *out, const char **driver)
+{
+    if (index < 0 || index >= g_count) return false;
+    if (out) *out = g_devices[index];
+    if (driver) *driver = g_driver[index];
+    return true;
+}
+
+const char *PciClassName(const PciDevice *d)
+{
+    UINT8 c = d->class_code, s = d->subclass, p = d->prog_if;
+    switch (c) {
+    case 0x01:
+        if (s == 0x01) return "IDE";
+        if (s == 0x06) return p == 0x01 ? "SATA (AHCI)" : "SATA";
+        if (s == 0x08) return p == 0x02 ? "NVMe" : "Non-volatile memory";
+        return "Storage";
+    case 0x02: return s == 0x80 ? "Network (other)" : s == 0x00 ? "Ethernet" : "Network";
+    case 0x03: return s == 0x00 ? "VGA display" : "Display";
+    case 0x04:
+        if (s == 0x03) return "HD Audio";
+        if (s == 0x01) return "Audio (DSP)";
+        return "Multimedia";
+    case 0x05: return "Memory";
+    case 0x06:
+        if (s == 0x00) return "Host bridge";
+        if (s == 0x01) return "ISA bridge";
+        if (s == 0x04) return "PCI bridge";
+        return "Bridge";
+    case 0x07: return s == 0x00 ? "Serial port" : s == 0x80 ? "Communication" : "Serial";
+    case 0x08: return s == 0x80 ? "System peripheral" : "System";
+    case 0x09: return "Input";
+    case 0x0C:
+        if (s == 0x03) return p == 0x30 ? "USB (xHCI)" : p == 0x20 ? "USB (EHCI)" : p == 0x10 ? "USB (OHCI)" :
+                              p == 0x00 ? "USB (UHCI)" : p == 0x40 ? "USB4" : "USB";
+        if (s == 0x05) return "SMBus";
+        if (s == 0x80) return "Serial bus (other)";
+        return "Serial bus";
+    case 0x0D: return "Wireless";
+    case 0x10: return "Encryption";
+    case 0x11: return "Signal processing";
+    case 0x12: return "Accelerator";
+    case 0x13: return "Instrumentation";
+    default:   return "Other";
     }
 }
