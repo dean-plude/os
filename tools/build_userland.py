@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Build NovaOS's Windows userland and embed it into the kernel.
 
-    tools/build_userland.py OUT_DIR GENERATED_C KERNEL_SYSCALL_H
+    tools/build_userland.py [--jobs N] OUT_DIR GENERATED_C KERNEL_SYSCALL_H
     tools/build_userland.py --check      (load the DLL and program manifests only)
+
+Independent DLLs, programs and objects build concurrently: at most N
+compiler/linker processes run at once (--jobs N or -j N; default the CPU
+count; --jobs 1 builds one step at a time).  A DLL links after the DLLs it
+depends on, and the output files are the same whatever N is.
 
 Compiles, with clang --target=x86_64-pc-windows-msvc and lld-link:
   ntdll.dll, kernel32.dll, msvcrt.dll, ...  -> C:\\Windows\\System32
@@ -14,17 +19,35 @@ and writes GENERATED_C: every file pulled in with .incbin plus a table the
 kernel uses to install them on drive C: at boot.  Set NOVA_NO_NETSURF=1 to
 leave the browser out (it is most of the build time and image size).
 """
-import os, re, subprocess, sys
+import os, re, subprocess, sys, threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_netsurf
 
 HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'userland')
-CHECK = '--check' in sys.argv
+def parse_args(argv):
+    """(positional arguments, --check, jobs)"""
+    pos, jobs, it = [], os.cpu_count() or 4, iter(argv)
+    for a in it:
+        if a in ('--jobs', '-j'):
+            a = '--jobs=' + next(it, '')
+        elif a.startswith('-j') and a[2:].isdigit():
+            a = '--jobs=' + a[2:]
+        if a.startswith('--jobs='):
+            if not a[7:].isdigit() or int(a[7:]) < 1:
+                raise SystemExit('--jobs takes a number of at least 1')
+            jobs = int(a[7:])
+        elif a != '--check':
+            pos.append(a)
+    return pos, '--check' in argv, jobs
+
+ARGS, CHECK, JOBS = parse_args(sys.argv[1:])
 if CHECK:
     out = gen_c = syscall_h = inc_gen = None
 else:
-    out, gen_c, syscall_h = sys.argv[1], sys.argv[2], sys.argv[3]
+    if len(ARGS) != 3:
+        raise SystemExit(__doc__)
+    out, gen_c, syscall_h = ARGS
     inc_gen = os.path.join(out, 'include')
     os.makedirs(inc_gen, exist_ok=True)
 
@@ -147,11 +170,20 @@ if CHECK:                                 # CI: the manifests load (bases, depen
     print(f'userland: {len(DLLS)} DLLs, {len(PROGRAMS)} program manifests: OK')
     sys.exit(0)
 
+SLOTS = threading.BoundedSemaphore(JOBS)      # compiler/linker processes running at once
+LOG = threading.Lock()                        # a failed command's output is written in one piece
+
+def fail(text):
+    with LOG:
+        sys.stderr.write(text)
+        sys.stderr.flush()
+    sys.exit(1)
+
 def run(cmd):
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    with SLOTS:
+        r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
-        sys.stderr.write(' '.join(cmd) + '\n' + r.stdout + r.stderr)
-        sys.exit(1)
+        fail(' '.join(cmd) + '\n' + r.stdout + r.stderr)
 
 def cc(src, obj, extra=()):
     run(['clang'] + cflags() + list(extra) + ['-c', src, '-o', obj])
@@ -237,13 +269,13 @@ def compile_many(srcs, odir, prefix, flags, headers=(), compiler='clang'):
     jobs = [(s, o) for s, o in zip(srcs, objs)
             if not (os.path.exists(o) and os.stat(o).st_mtime > max(os.stat(s).st_mtime, newest_h))]
     def one(job):
-        r = subprocess.run([compiler] + list(flags) + ['-c', job[0], '-o', job[1]], capture_output=True, text=True)
+        with SLOTS:
+            r = subprocess.run([compiler] + list(flags) + ['-c', job[0], '-o', job[1]], capture_output=True, text=True)
         return None if r.returncode == 0 else job[0] + ':\n' + r.stderr
-    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+    with ThreadPoolExecutor(max_workers=JOBS) as ex:
         errors = [e for e in ex.map(one, jobs) if e]
     if errors:
-        sys.stderr.write('\n'.join(errors[:4]))
-        sys.exit(1)
+        fail('\n'.join(errors[:4]))
     return objs
 
 def defined_names(objs):
@@ -308,6 +340,53 @@ def check_overlaps():
             raise SystemExit(f'{ARCH}: {n0}.dll ({b0:#x}-{e0:#x}) overlaps {n1}.dll at {b1:#x}; '
                              f'move one (its dll.json base) or leave its base out')
 
+_task = threading.local()
+
+class Collected:
+    """the lists DLL build hooks append to (b.built, b.placed): while a build
+    task runs, its appends go to the task's own lists (so concurrent DLLs
+    cannot interleave); build_pass puts them in a fixed order afterwards"""
+    def __init__(self, attr):
+        self.attr, self.main = attr, []
+    def cur(self):
+        return getattr(_task, self.attr, self.main)
+    def append(self, x): self.cur().append(x)
+    def extend(self, xs): self.cur().extend(xs)
+    def __iadd__(self, xs):
+        self.extend(xs)
+        return self
+    def __getitem__(self, i): return self.cur()[i]
+    def __setitem__(self, i, x): self.cur()[i] = x
+    def __iter__(self): return iter(self.cur())
+    def __len__(self): return len(self.cur())
+
+def run_tasks(tasks):
+    """run @tasks, {key: (keys it waits for, function)}, on JOBS threads,
+    each once its dependencies are done; returns {key: result}.  The first
+    failure stops starting new tasks and is raised once running ones end"""
+    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+    results, running, error = {}, {}, None
+    todo = dict(tasks)
+    with ThreadPoolExecutor(max_workers=JOBS) as ex:
+        while todo or running:
+            if not error:
+                for key in [k for k, (deps, _) in todo.items() if all(d in results for d in deps)]:
+                    running[ex.submit(todo.pop(key)[1])] = key
+            if not running:
+                if todo and not error:
+                    raise SystemExit('build tasks wait on each other: ' + ', '.join(sorted(todo)))
+                break
+            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            for f in done:
+                key = running.pop(f)
+                try:
+                    results[key] = f.result()
+                except BaseException as e:
+                    error = error or e
+    if error:
+        raise error
+    return results
+
 def build_pass(arch):
     """the DLLs and programs for one architecture"""
     global ARCH
@@ -315,24 +394,31 @@ def build_pass(arch):
     odir = out if arch == 'x64' else os.path.join(out, 'x86')
     os.makedirs(odir, exist_ok=True)
     me = sys.modules[__name__]
+    tasks = {}                      # key: (keys it waits for, function)
+    # (a task's appends to built/placed are its own: see Collected)
+    def task(key, deps, fn):
+        def go():
+            _task.built, _task.placed = [], []
+            r = fn()
+            return r, _task.built, _task.placed
+        tasks[key] = (deps, go)
 
     # startup code + implicit-TLS support (needed by DLLs and programs)
     crt0 = os.path.join(odir, 'crt0.obj')
-    cc(os.path.join(HERE, 'crt', 'crt0.c'), crt0)
     tlssup = os.path.join(odir, 'tlssup.obj')
-    cc(os.path.join(HERE, 'lib', 'tlssup.c'), tlssup)
+    rt = os.path.join(odir, 'x86rt.obj')
+    task('crt0', [], lambda: cc(os.path.join(HERE, 'crt', 'crt0.c'), crt0))
+    task('tlssup', [], lambda: cc(os.path.join(HERE, 'lib', 'tlssup.c'), tlssup))
+    prelude = ['crt0', 'tlssup']
     if arch == 'x86':                              # 64-bit division helpers the compiler calls
-        rt = os.path.join(odir, 'x86rt.obj')
-        cc(os.path.join(HERE, 'lib', 'x86rt.c'), rt)
+        task('x86rt', [], lambda: cc(os.path.join(HERE, 'lib', 'x86rt.c'), rt))
+        prelude.append('x86rt')
         crt0_objs = [crt0, rt]
     else:
         crt0_objs = [crt0]
 
     # system DLLs (userland/*/dll.json), each after its dependencies
-    del placed[:]
-    for name, m in DLLS.items():
-        if arch == 'x86' and m.get('x64_only'):
-            continue
+    def build_dll(name, m):
         base = m['base'] if arch == 'x64' else m['base_x86']
         deps = m.get('deps', [])
         objs = dll_objs(odir, name, m.get('sources', [name]))
@@ -351,10 +437,14 @@ def build_pass(arch):
             hook(name, 'link')(me, odir, objs, deps, base)
         else:
             link_dll(odir, name, objs, deps, base)
-    check_overlaps()
+    dlls = [n for n, m in DLLS.items() if not (arch == 'x86' and m.get('x64_only'))]
+    for name in dlls:
+        task('dll:' + name, prelude + ['dll:' + d for d in DLLS[name].get('deps', [])],
+             lambda name=name: build_dll(name, DLLS[name]))
 
     # programs (userland/programs/NAME.c or .cpp, settings in NAME.json)
     progdir = os.path.join(HERE, 'programs')
+    progs = []
     for src in sorted(os.listdir(progdir)):
         if not src.endswith(('.c', '.cpp')):
             continue
@@ -362,24 +452,31 @@ def build_pass(arch):
         prog = PROGRAMS.get(name, {})
         if arch == 'x86' and not prog.get('x86'):
             continue
+        progs.append((src, name, prog))
+    stl_libs = ('msvcp140', 'msvcp140_1', 'msvcp140_atomic_wait')
+    compiled, stlobjs = {}, []     # each program's object and resources; what msstl programs link
+    if any(src.endswith('.cpp') and prog.get('msstl') for src, name, prog in progs):
+        task('stlprog', [], lambda: stlobjs.extend(HOOKS['msvcp140'].program_objs(me, odir)))
+    def compile_prog(src, name, prog):
         obj = os.path.join(odir, f'prog_{name}.obj')
-        stl = []
         if src.endswith('.cpp') and prog.get('msstl'):  # C++ on the standard library (msvcp140)
-            m = HOOKS['msvcp140']
-            run(['clang++'] + m.program_flags(me) + ['-c', os.path.join(progdir, src), '-o', obj])
-            stl = m.program_objs(me, odir) + [os.path.join(odir, l + '.lib') for l in
-                                                ('msvcp140', 'msvcp140_1', 'msvcp140_atomic_wait')]
+            run(['clang++'] + HOOKS['msvcp140'].program_flags(me) + ['-c', os.path.join(progdir, src), '-o', obj])
         elif src.endswith('.cpp'):                # C++ (exceptions, RTTI): vcruntime140
             run(['clang++'] + cflags() + ['-fcxx-exceptions', '-fexceptions', '-std=c++17',
                  '-c', os.path.join(progdir, src), '-o', obj])
         else:
             cc(os.path.join(progdir, src), obj)
-        exe = os.path.join(odir, f'{name}.exe')
         res = []                                  # NAME.rc: resources (e.g. the icon)
         rc = os.path.join(progdir, name + '.rc')
         if os.path.exists(rc):
             res = [os.path.join(odir, f'prog_{name}.res')]
             run([build_netsurf.llvm_rc(), '/FO', res[0], rc])
+        compiled[name] = obj, res
+    def link_prog(src, name, prog):
+        exe = os.path.join(odir, f'{name}.exe')
+        obj, res = compiled[name]
+        stl = (stlobjs + [os.path.join(odir, l + '.lib') for l in stl_libs]) \
+            if src.endswith('.cpp') and prog.get('msstl') else []
         libs = PROGRAM_LIBS + [l for l in prog.get('libs', []) if l not in PROGRAM_LIBS]
         run(['lld-link', '/subsystem:console', '/entry:mainCRTStartup', '/nodefaultlib'] +
             (['/safeseh:no', '/machine:x86'] if arch == 'x86' else []) +
@@ -389,9 +486,26 @@ def build_pass(arch):
         else:
             folder = '\\Windows\\System32' if prog.get('system') else '\\Programs'
         built.append((f'{folder}\\{name}.exe', exe))
+    for src, name, prog in progs:
+        task('cc:' + name, [], lambda a=(src, name, prog): compile_prog(*a))
+        msstl = src.endswith('.cpp') and prog.get('msstl')
+        libs = PROGRAM_LIBS + [l for l in prog.get('libs', []) if l not in PROGRAM_LIBS] + (list(stl_libs) if msstl else [])
+        deps = ['cc:' + name] + prelude + ['dll:' + l for l in libs if 'dll:' + l in tasks] + \
+               (['stlprog'] if msstl else [])
+        task('exe:' + name, deps, lambda a=(src, name, prog): link_prog(*a))
 
-placed = []                       # (start, end, name) of each DLL linked in this pass
-built = []
+    # run them, then record what they built in a fixed order: the DLLs in
+    # link order, the programs by name
+    results = run_tasks(tasks)
+    del placed.main[:]
+    for key in [f'dll:{n}' for n in dlls] + [f'exe:{n}' for _, n, _ in progs]:
+        _, b, p = results[key]
+        built.main.extend(b)
+        placed.main.extend(p)
+    check_overlaps()
+
+placed = Collected('placed')      # (start, end, name) of each DLL linked in this pass
+built = Collected('built')
 build_pass('x64')
 if os.environ.get('NOVA_NO_WOW64') != '1':
     build_pass('x86')             # 32-bit programs: the same userland built for x86
