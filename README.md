@@ -115,7 +115,10 @@ every part, phase by phase.
   event, a lock, I/O, a window message or input runs above its base
   priority (+1 to +6) and preempts busy threads of that priority, then
   decays back one level per quantum; a balance set lifts threads that
-  have starved for 3 s.
+  have starved for 3 s.  Priority classes and thread priorities
+  (`SetPriorityClass`, `SetThreadPriority`) set NT's base priorities;
+  the desktop, input and audio threads stay above anything a program
+  can ask for.
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
   either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
   file ACLs and hard links, and other drives); Intel e1000/e1000e and virtio-net network
@@ -346,9 +349,12 @@ To make the ISO yourself from a fresh build, run
   and runs within 2 ms while threads of the same priority spin on every
   processor; the boost decays back to base, 64- and 32-bit),
   `crtthreads` (FLS callbacks, per-thread locale and thread-safe
-  `getenv`, 64- and 32-bit), and last `crash kernel`, a deliberate
-  kernel fault whose serial log must show a backtrace with function
-  names.<!-- END generated:core-tests -->
+  `getenv`, 64- and 32-bit), `prioritytest` (every priority class and
+  thread level gives NT's base priority and reads back; REALTIME without
+  the privilege is HIGH; with boosts off a HIGHEST thread woken by an
+  event runs within 2 ms while NORMAL threads spin on every processor,
+  64- and 32-bit), and last `crash kernel`, a deliberate kernel fault
+  whose serial log must show a backtrace with function names.<!-- END generated:core-tests -->
 - **Network** (in the boot-test job): two boots with a virtio-net card.
   On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
   `httptest suite` (winhttp with HTTP/2 by ALPN) against
@@ -389,7 +395,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `bmpcurtest`, `boosttest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `crtthreads`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `dpitest`, `errnotest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `msitest`, `nlstest`, `nstest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `qttest`, `rttest`, `savetest`, `sectest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `threads`, `touchtest`, `usptest`, `wintabtest`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `bmpcurtest`, `boosttest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `crtthreads`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `dpitest`, `errnotest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `msitest`, `nlstest`, `nstest`, `pipetest`, `posixtest`, `powertest`, `prioritytest`, `proctest`, `qttest`, `rttest`, `savetest`, `sectest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `threads`, `touchtest`, `usptest`, `wintabtest`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
   through `waveIn` and WASAPI capture;
   `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`

@@ -2743,6 +2743,19 @@ assumption (the ACPI thread runs without the big kernel lock).  The jobs set
 self-tests 228 s, network 63 s, graphics step 193 s.  Turn KVM on by deleting
 that line and adding the udev step once the boot is reliable.
 
+**CI now runs the test VMs under KVM.**  The kernel fixes since PR #75
+(SYSRET's stack selector on AMD CPUs, the kernel-lock and idle-CPU races) and
+the scheduler fixes that kept the 1 ms timer queue timer on time removed the
+failures above.  `tools/ci/enable-kvm.sh` runs first in the boot-test,
+graphics and nightly jobs: it opens `/dev/kvm` to the runner user with a udev
+rule and exports `NOVARUN_ACCEL=kvm`; when the runner has no usable
+`/dev/kvm` it exports `tcg` and prints a warning, so a runner without KVM
+still tests, only slower.  No test was loosened or skipped.
+
+Measured on GitHub's runners with KVM: the graphics job takes 4 to 6 minutes
+(9 to 10 under TCG), the build-and-boot job about 11 to 12 minutes including
+the build, and a boot takes 11 s.  The nightly app corpus runs under KVM too.
+
 ## Run CI on merge queue groups
 
 GitHub's merge queue builds each queued pull request on a temporary
@@ -4107,6 +4120,56 @@ program's pointer was scaled up by nearest neighbour at 200 %.  Now:
 - Not yet: `CopyIcon` of an animated cursor keeps only its first frame;
   `SetSystemCursor` replacements last until restart (they are not saved
   in the registry).
+
+## Thread priorities and priority classes
+
+`SetThreadPriority` and `SetPriorityClass` used to be accepted and
+ignored, so every program thread ran at base priority 8: an audio thread
+asking for `THREAD_PRIORITY_TIME_CRITICAL` waited behind a program's busy
+worker like any other thread, and a background job at `IDLE_PRIORITY_CLASS`
+competed with the foreground one.  They now set NT's base priorities.
+
+- **NT's mapping** (`kernel/um/um_thread.c`): a process's class sets the
+  base (IDLE 4, BELOW_NORMAL 6, NORMAL 8, ABOVE_NORMAL 10, HIGH 13,
+  REALTIME 24) and `SetThreadPriority` adds -2 to 2, kept within 1-15;
+  `THREAD_PRIORITY_IDLE` and `TIME_CRITICAL` saturate at 1 and 15 (16 and
+  31 in a real-time process).  Changing a class moves every thread of the
+  process.  `GetThreadPriority`, `GetPriorityClass`,
+  `Set/GetThreadPriorityBoost` and `Set/GetProcessPriorityBoost` work, through
+  `NtSetInformationThread` (`ThreadPriority`, `ThreadBasePriority`,
+  `ThreadPriorityBoost`) and `NtSetInformationProcess` /
+  `NtQueryInformationProcess` (`ProcessPriorityClass`,
+  `ProcessPriorityBoost`), which 32-bit programs can now call too.
+  `CreateProcess` honours the `*_PRIORITY_CLASS` flags, and a child of an
+  IDLE or BELOW_NORMAL process inherits its class, as on Windows.
+- **No real-time for programs**: REALTIME (and an absolute priority of 16
+  or more) needs SeIncreaseBasePriorityPrivilege, which only an
+  administrator's token holds; without it `SetPriorityClass` gives HIGH, as
+  Windows does.  So a program never gets above 15.
+- **The scheduler** (`sched_set_base_priority`): a new base takes effect
+  at once.  A queued thread moves to its new place and preempts the thread
+  running on its CPU if it now outranks it; a running thread lowered below
+  a queued one gives way.  A priority change ends any boost, and boosts
+  from then on start from and decay back to the thread's own base.
+- **System threads above programs**: the desktop moved from 9 to 16, the
+  device poll and audio mixer threads from 16 to 17, so no program thread,
+  at `TIME_CRITICAL` or boosted, can hold up input, window management or
+  sound, and a long redraw can't delay a sound buffer.
+- **`THREAD_BASIC_INFORMATION.BasePriority`** is now the thread's
+  increment over its class, as on NT (it was the absolute base);
+  `ProcessBasicInformation` reports the class's base priority.
+- **Measured** in QEMU (TCG) on 2 CPUs with the new `prioritytest` (64- and
+  32-bit): with wake-up boosts off and a busy NORMAL thread on each CPU, a
+  `THREAD_PRIORITY_HIGHEST` thread woken by an event ran after 0.05 ms at
+  the 95th percentile, a NORMAL one after 18.8 ms (the busy thread's time
+  slice).  `boosttest` 0.08 ms and `sleeptest timer` 0.25 ms still pass.
+  `smpstress` on 4 CPUs passes; its 8-thread critical section took
+  2060-2440 ms against 1790-2090 ms on main on the same host, the
+  desktop now preempting the threads it shares a CPU with.
+- **Not done**: NT's foreground-process boost and quantum stretching;
+  kernel threads other than these (network, USB, ACPI, saving drive C:)
+  stay at 8, so a busy HIGH-class program can delay them until the balance
+  set lifts them after 3 s; `ProcessBasePriority` is accepted and ignored.
 
 ## Timer queue timers on time under load
 
