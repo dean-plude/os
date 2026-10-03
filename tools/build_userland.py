@@ -284,12 +284,13 @@ def image_size(dll):
     pe = struct.unpack_from('<I', data, 0x3C)[0]
     return struct.unpack_from('<I', data, pe + 24 + 56)[0]
 
-def link_dll(odir, name, objs, deps, base, extra=()):
+def link_dll(odir, name, objs, deps, base, extra=(), entry=None):
     extra = list(extra) + ordinal_exports(name, objs)
     if ARCH == 'x86':
         extra += x86_def(odir, name, objs) + ['/safeseh:no', '/machine:x86']
     dll = os.path.join(odir, f'{name}.dll')
-    entry = [f'/entry:{DLLS[name]["entry"]}'] if DLLS.get(name, {}).get('entry') else ['/noentry']
+    entry = entry or DLLS.get(name, {}).get('entry')
+    entry = [f'/entry:{entry}'] if entry else ['/noentry']
     run(['lld-link', '/dll', '/nodefaultlib', f'/base:{base:#x}'] + entry +
         [f'/out:{dll}', f'/implib:{os.path.join(odir, name + ".lib")}', f'/map:{os.path.join(odir, name + ".map")}'] +
         objs + list(extra) +

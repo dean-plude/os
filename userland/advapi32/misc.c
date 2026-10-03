@@ -67,7 +67,7 @@ WINADVAPI BOOL WINAPI DeregisterEventSource(HANDLE h) { (void)h; return TRUE; }
 
 WINADVAPI BOOL WINAPI ReportEventW(HANDLE h, WORD type, WORD cat, DWORD id, PSID sid, WORD n, DWORD size, LPCWSTR *strings, LPVOID data)
 {
-    (void)h; (void)cat; (void)sid; (void)size; (void)data;
+    (void)h; (void)cat; (void)sid;
     char line[256];
     int o = 0;
     const char *kind = type == 1 ? "error" : type == 2 ? "warning" : "event";
@@ -79,6 +79,13 @@ WINADVAPI BOOL WINAPI ReportEventW(HANDLE h, WORD type, WORD cat, DWORD id, PSID
     for (WORD i = 0; i < n && strings && o < 250; i++) {
         line[o++] = ' ';
         for (const WCHAR *s = strings[i]; s && *s && o < 250; s++) line[o++] = *s < 0x80 ? (char)*s : '?';
+    }
+    if (data && size) {                    /* binary data (Firefox's launcher: HRESULT, line, source file) */
+        const BYTE *d = data;
+        line[o++] = ' ';
+        line[o++] = '[';
+        for (DWORD i = 0; i < size && o < 250; i++) line[o++] = d[i] >= 0x20 && d[i] < 0x7F ? (char)d[i] : '.';
+        line[o++] = ']';
     }
     NtNovaDebugPrint(line, (ULONG)o);
     return TRUE;

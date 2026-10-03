@@ -51,6 +51,7 @@ typedef struct RamNode {
     UINT8          *sd;           /* its security descriptor (self-relative), or NULL: */
     UINT32          sdlen;        /*   inherited from the nearest directory above with one (fs/fsec.c) */
     struct RamNode *link;         /* a file with several names (hard links): the next one, around a ring; else NULL. */
+    UINT8           lent;         /* @data may be lent to a save (RamfsLend) */
 } RamNode;                        /*   Names share data, size, cap, attrs, times, sd and the RAMFS_X_* state */
 
 #define RAMFS_X_EXTERN   0x01     /* on a mounted (read-only) volume */
@@ -226,3 +227,14 @@ void RamfsSetClock(UINT64 (*now)(void));
 UINT64 RamfsNow(void);                          /* 0 until it is set */
 /* Record that @n's times, attributes or security descriptor changed (it is saved again) */
 void RamfsMarkChanged(RamNode *n);
+/* Saving C: (fs/persist.c) writes files' contents to the disk after letting
+ * go of the file-system lock, without copying them.  RamfsLend (with the
+ * lock held exclusively) returns @f's contents and keeps those bytes where
+ * they are and unchanged until RamfsGiveBackAll: a write to @f meanwhile
+ * gives it a copy first, and contents replaced or deleted meanwhile are
+ * freed by RamfsGiveBackAll, not at once. */
+const char *RamfsLend(RamNode *f);
+void     RamfsGiveBackAll(void);
+/* Mark @n with @flags (RAMFS_F_DIRTY, _DIRTYDIR) again: a save could not
+ * write it (fs/persist.c).  No change notification: nothing changed. */
+void RamfsMarkUnsaved(RamNode *n, UINT8 flags);

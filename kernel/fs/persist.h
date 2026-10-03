@@ -25,9 +25,12 @@ void PersistInit(void);
 /* Restore the saved files onto C: (after the system files are installed),
  * then start recording changes. */
 void PersistLoad(void);
-/* Save changes once C: has been quiet for a second (desktop thread). */
+/* Once C: has been quiet for a second, have the "persist" thread save the
+ * changes (desktop thread; returns at once). */
 void PersistPoll(void);
-/* Save every change now (e.g. before a restart).  False on a disk error. */
+/* Save every change now, on this thread (e.g. before a restart).  False
+ * on a disk error.  Holds the file-system lock only while it copies what
+ * changed, not while the disk is written. */
 bool PersistSync(void);
 
 /* One line describing where C: is saved, e.g. "sata0 FAT32 NOVADATA, 12 MiB free" */

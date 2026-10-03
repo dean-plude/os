@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <windows.h>
 #include "msvcrt_internal.h"
+#include "ptd.h"
 
 #define CRTEXP __declspec(dllexport)
 
@@ -340,11 +341,11 @@ CRTEXP __declspec(noreturn) void terminate(void)
  * unhandled-exception filter (which ends the program) */
 CRTEXP int _XcptFilter(unsigned long code, void *pointers) { (void)code; (void)pointers; return 0; /* EXCEPTION_CONTINUE_SEARCH */ }
 
-CRTEXP int *__doserrno(void) { static int e; return &e; }
+CRTEXP unsigned long *__doserrno(void) { return &__nova_ptd()->doserr; }
 CRTEXP int _get_errno(int *v) { *v = errno; return 0; }
 CRTEXP int _set_errno(int v) { errno = v; return 0; }
-CRTEXP int _get_doserrno(unsigned long *v) { *v = (unsigned long)*__doserrno(); return 0; }
-CRTEXP int _set_doserrno(unsigned long v) { *__doserrno() = (int)v; return 0; }
+CRTEXP int _get_doserrno(unsigned long *v) { *v = *__doserrno(); return 0; }
+CRTEXP int _set_doserrno(unsigned long v) { *__doserrno() = v; return 0; }
 
 /* The C runtime's per-thread locks: one lock is enough here */
 static CRITICAL_SECTION g_crt_lock;
@@ -715,7 +716,7 @@ CRTEXP int _strerror_s(char *buf, size_t n, const char *msg)
 }
 CRTEXP wchar_t *_wcserror(int e)
 {
-    static wchar_t buf[128];
+    wchar_t *buf = __nova_ptd()->wcserr;
     mbstowcs(buf, strerror(e), 127);
     return buf;
 }

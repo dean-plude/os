@@ -1840,7 +1840,12 @@ static UINT64 alloc_vm(UmProcess *p, UINT64 a2, UINT64 a4, UINT32 type, UINT32 p
         base &= ~0xFFFULL;
         size = end - base;
         UmRegion *r = um_region_find(p, base);
-        if (!r || base + size > r->base + r->size || r->image || r->section) return ST_MEMORY_NOT_ALLOCATED;
+        if (!r || base + size > r->base + r->size || r->image) return ST_MEMORY_NOT_ALLOCATED;
+        if (r->section) {                       /* a view of a SEC_RESERVE section: its pages are always there */
+            put_u64(a2, base);
+            put_u64(a4, size);
+            return ST_SUCCESS;
+        }
     }
     if (type & MEM_COMMIT) {
         if (p->commit + size / PAGE_SIZE > PROC_MEM_LIMIT_PAGES) {

@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <errno.h>
+#include "ptd.h"
 
 void *memcpy(void *d, const void *s, size_t n)
 {
@@ -130,8 +131,7 @@ char *strtok_s(char *s, const char *delim, char **ctx)
 
 char *strtok(char *s, const char *delim)
 {
-    static char *ctx;
-    return strtok_s(s, delim, &ctx);
+    return strtok_s(s, delim, &__nova_ptd()->tok);
 }
 
 char *_strdup(const char *s)

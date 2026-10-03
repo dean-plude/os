@@ -18,6 +18,10 @@
  * each directory.  FAT has no links: each name is saved as a copy, and
  * \NOVA\LINKS.TXT lists the names of each such file so they are joined
  * again at the next boot.
+ *
+ * A save holds no lock while the disk works (see "Saving" below): it
+ * copies what changed under the file-system lock, then writes the copy on
+ * the "persist" thread without it, and without the big kernel lock.
  */
 
 #include "persist.h"
@@ -31,6 +35,10 @@
 #include "../lib/string.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
+#include "../ke/smp.h"
+#include "../ke/waitq.h"
+#include "../arch/x86_64/cpu.h"
+#include "../arch/x86_64/apic.h"
 #include "../um/um.h"
 
 #define DATA_ROOT     "\\NOVA\\C"
@@ -40,10 +48,12 @@
 #define NTFS_DELETED  "Deleted.txt"
 #define DATA_LABEL    "NOVADATA"
 
-/* The volume: FAT or NTFS */
+/* The volume: FAT or NTFS (changed and used under the save lock, see
+ * save_lock; have_vol and g_dev may be looked at without it) */
 static FatVol  *g_vol;
 static NtfsVol *g_ntfs;
 static BlockDev *g_ntfs_dev;
+static BlockDev *g_dev;                       /* the volume's disk */
 static UINT64  g_lba;                         /* where the volume starts */
 static UINT32  g_root_secid;                  /* NTFS: the root's descriptor (what inheriting nodes get) */
 static UINT64  g_root_dir;                    /* \NOVA\C's cluster (FAT), the root (NTFS) */
@@ -56,6 +66,31 @@ static bool    g_failed;
 
 static bool have_vol(void) { return g_vol || g_ntfs; }
 static void load_links(void);
+static char *g_links_text;
+
+/* The save lock: one save (or change of volume) at a time.  Taken after
+ * the desktop lock and the file-system lock, if at all (so a save that
+ * waits for it holds them meanwhile), and waited for asleep (the big
+ * kernel lock goes to others meanwhile). */
+static volatile UINT32 g_saving;
+static WaitQueue g_saving_q = WAITQ_INIT;
+
+static bool save_trylock(void) { return !__atomic_exchange_n(&g_saving, 1, __ATOMIC_ACQUIRE); }
+
+static void save_lock(void)
+{
+    for (;;) {
+        UINT32 gen = waitq_gen(&g_saving_q);
+        if (save_trylock()) return;
+        waitq_wait(&g_saving_q, gen, 100);
+    }
+}
+
+static void save_unlock(void)
+{
+    __atomic_store_n(&g_saving, 0, __ATOMIC_RELEASE);
+    waitq_wake(&g_saving_q);
+}
 
 /* ---------------------------------------------------------------------------
  * Deleted starter files
@@ -236,6 +271,7 @@ void PersistInit(void)
     if (pick >= 0 && c[pick].vol) g_vol = c[pick].vol;
     if (pick >= 0) g_lba = c[pick].lba;
     else if (g_vol) g_lba = 2048;                                 /* (format_blank's partition) */
+    g_dev = g_vol ? FatDevice(g_vol) : g_ntfs_dev;
     for (int i = 0; i < n; i++)
         if (i != pick) cand_free(&c[i]);
     RamfsSetRemovedHook(removed_hook);
@@ -252,7 +288,7 @@ bool PersistActive(void) { return have_vol(); }
 
 bool PersistOwns(BlockDev *d, UINT64 lba) { return have_vol() && PersistDevice() == d && g_lba == lba; }
 
-BlockDev *PersistDevice(void) { return g_vol ? FatDevice(g_vol) : g_ntfs ? g_ntfs_dev : NULL; }
+BlockDev *PersistDevice(void) { return g_dev; }
 
 static void drop_vol(void)
 {
@@ -261,15 +297,18 @@ static void drop_vol(void)
     g_vol = NULL;
     g_ntfs = NULL;
     g_ntfs_dev = NULL;
+    g_dev = NULL;
     g_root_known = false;
+    kfree(g_links_text);
+    g_links_text = NULL;
 }
 
 void PersistDetach(void)
 {
-    DesktopLock();
-    if (have_vol()) kprintf("[PERSIST] Stopped saving to %s\n", PersistDevice()->name);
+    save_lock();                                                  /* (after a save in progress) */
+    if (have_vol()) kprintf("[PERSIST] Stopped saving to %s\n", g_dev->name);
     drop_vol();
-    DesktopUnlock();
+    save_unlock();
 }
 
 /* Everything not from the OS image is to be saved */
@@ -283,15 +322,19 @@ static void mark_all(RamNode *n)
     }
 }
 
+static bool save_locked(void);
+
 bool PersistAdopt(BlockDev *d, UINT64 lba)
 {
     Cand c;
     if (!mount_at(d, lba, &c)) return false;
-    DesktopLock();
+    FsLock();
+    save_lock();
     drop_vol();
     g_lba = lba;
     if (c.vol) g_vol = c.vol;
-    else if (!use_ntfs(c.ntfs, d)) { NtfsUnmount(c.ntfs); DesktopUnlock(); return false; }
+    else if (!use_ntfs(c.ntfs, d)) { NtfsUnmount(c.ntfs); save_unlock(); FsUnlock(); return false; }
+    g_dev = d;
     if (g_ntfs) {                                                 /* the new volume's root descriptor goes with it */
         RamNode *root = RamfsRoot();
         g_root_secid = NtfsSecurityId(g_ntfs, NTFS_ROOT);
@@ -305,40 +348,77 @@ bool PersistAdopt(BlockDev *d, UINT64 lba)
     g_loaded = true;
     mark_all(RamfsRoot());
     g_removed_dirty = g_removed != NULL;
-    DesktopUnlock();
-    bool ok = PersistSync();
+    bool ok = save_locked();                                      /* (lets go of both locks) */
     char desc[96];
     PersistDescribe(desc, sizeof(desc));
     kprintf("[PERSIST] Drive C: is now saved to %s%s\n", desc, ok ? "" : " (the first save failed)");
     return ok;
 }
 
+/* What Settings and the Terminal show about the volume, as of the last
+ * look that did not have to wait for a save (they never wait for one) */
+static struct { bool have; UINT64 free, total; char where[64], desc[96]; } g_shown;
+
+static void refresh_shown(void)
+{
+    if (!save_trylock()) return;
+    g_shown.have = have_vol();
+    if (g_shown.have) {
+        if (g_vol) { g_shown.free = FatFreeBytes(g_vol); g_shown.total = FatTotalBytes(g_vol); }
+        else { g_shown.free = NtfsFreeBytes(g_ntfs); g_shown.total = NtfsTotalBytes(g_ntfs); }
+        const char *label = g_vol ? FatLabel(g_vol) : NtfsLabel(g_ntfs);
+        char fs[8];
+        if (g_vol) ksnprintf(fs, sizeof(fs), "FAT%d", FatType(g_vol));
+        else ksnprintf(fs, sizeof(fs), "NTFS");
+        ksnprintf(g_shown.where, sizeof(g_shown.where), "%s (%s)", g_dev->name, label);
+        ksnprintf(g_shown.desc, sizeof(g_shown.desc), "%s %s \"%s\", %u MiB free of %u MiB", g_dev->name, fs, label,
+                  (unsigned)(g_shown.free >> 20), (unsigned)(g_shown.total >> 20));
+    }
+    save_unlock();
+}
+
 bool PersistSpace(UINT64 *free, UINT64 *total)
 {
-    if (g_vol) { *free = FatFreeBytes(g_vol); *total = FatTotalBytes(g_vol); return true; }
-    if (g_ntfs) { *free = NtfsFreeBytes(g_ntfs); *total = NtfsTotalBytes(g_ntfs); return true; }
-    return false;
+    refresh_shown();
+    if (!g_shown.have) return false;
+    *free = g_shown.free;
+    *total = g_shown.total;
+    return true;
 }
 
 void PersistWhere(char *buf, int cap)
 {
-    if (!have_vol()) { ksnprintf(buf, (size_t)cap, "memory only"); return; }
-    ksnprintf(buf, (size_t)cap, "%s (%s)", PersistDevice()->name, g_vol ? FatLabel(g_vol) : NtfsLabel(g_ntfs));
+    refresh_shown();
+    ksnprintf(buf, (size_t)cap, "%s", g_shown.have ? g_shown.where : "memory only");
 }
 
 void PersistDescribe(char *buf, int cap)
 {
-    if (!have_vol()) { ksnprintf(buf, (size_t)cap, "memory only (no disk found)"); return; }
-    UINT64 free, total;
-    PersistSpace(&free, &total);
-    char fs[8];
-    if (g_vol) ksnprintf(fs, sizeof(fs), "FAT%d", FatType(g_vol));
-    else ksnprintf(fs, sizeof(fs), "NTFS");
-    ksnprintf(buf, (size_t)cap, "%s %s \"%s\", %u MiB free of %u MiB", PersistDevice()->name, fs,
-              g_vol ? FatLabel(g_vol) : NtfsLabel(g_ntfs), (unsigned)(free >> 20), (unsigned)(total >> 20));
+    refresh_shown();
+    ksnprintf(buf, (size_t)cap, "%s", g_shown.have ? g_shown.desc : "memory only (no disk found)");
 }
 
 static UINT32 filetime_to_dos(UINT64 ft);
+
+/* What a save writes: a copy of the changed part of C:, taken under the
+ * file-system lock (see "Saving") */
+typedef struct SNode {
+    struct SNode *parent, *child, *next;
+    char    name[RAMFS_NAME_MAX];
+    bool    dir;
+    UINT8   flags;                /* its RAMFS_F_DIRTY and RAMFS_F_DIRTYDIR, as they were */
+    UINT32  attrs;
+    UINT64  ctime, mtime;
+    UINT8  *sd;                   /* NTFS: its own security descriptor, or NULL (inherits) */
+    UINT32  sdlen;
+    const char *data;             /* a changed file's contents (lent: RamfsLend) */
+    UINT32  size;
+    char   *keep;                 /* a directory whose entries changed: those to keep on the disk, */
+    UINT32  keeplen;              /*   'D' (directory) or 'F' (file), the name and a NUL each */
+    const void *link_id;          /* NTFS: a file with several names: which file (compared only) */
+    char   *links;                /*   and its other names, paths from the root, a NUL after each */
+    UINT32  linkslen;
+} SNode;
 
 /* ---------------------------------------------------------------------------
  * The volume's files, FAT or NTFS
@@ -437,17 +517,17 @@ static bool vol_lookup(UINT64 dir, const char *name, UINT64 *ref, bool *is_dir)
 }
 
 /* NTFS: give record @ref @n's times, attributes and descriptor */
-static bool ntfs_info(UINT64 ref, const RamNode *n)
+static bool ntfs_info(UINT64 ref, const SNode *n)
 {
     UINT32 id = g_root_secid;
-    if (n->sd && n != RamfsRoot()) id = NtfsAddSecurity(g_ntfs, n->sd, n->sdlen);
-    bool ok = n == RamfsRoot() || NtfsSetInfo(g_ntfs, ref, n->ctime, n->mtime, n->attrs & 0x07);
+    if (n->sd && n->parent) id = NtfsAddSecurity(g_ntfs, n->sd, n->sdlen);
+    bool ok = !n->parent || NtfsSetInfo(g_ntfs, ref, n->ctime, n->mtime, n->attrs & 0x07);
     if (id) ok = NtfsSetSecurityId(g_ntfs, ref, id) && ok;
     else if (n->sd) ok = false;
     return ok;
 }
 
-static bool vol_mkdir(UINT64 dir, const RamNode *n, UINT64 *sub)
+static bool vol_mkdir(UINT64 dir, const SNode *n, UINT64 *sub)
 {
     if (g_vol) {
         UINT32 c;
@@ -458,12 +538,12 @@ static bool vol_mkdir(UINT64 dir, const RamNode *n, UINT64 *sub)
     return NtfsCreate(g_ntfs, dir, n->name, true, sub);
 }
 
-static bool vol_write(UINT64 dir, const RamNode *n)
+static bool vol_write(UINT64 dir, const SNode *n)
 {
     if (g_vol) {
-        FatSetStamp(filetime_to_dos(n->mtime));
+        FatSetStamp(g_vol, filetime_to_dos(n->mtime));
         bool ok = FatWriteFile(g_vol, (UINT32)dir, n->name, n->data, n->size);
-        FatSetStamp(0);
+        FatSetStamp(g_vol, 0);
         return ok;
     }
     UINT64 ref;
@@ -474,34 +554,37 @@ static bool vol_write(UINT64 dir, const RamNode *n)
     return NtfsWriteFile(g_ntfs, ref, n->data, n->size) && ntfs_info(ref, n);
 }
 
-/* NTFS: the record @n's file has on the disk under @n's own name (walking its path) */
-static bool ntfs_ref_of(const RamNode *n, UINT64 *ref)
+/* NTFS: the record of the file at @path (from the root, "\\a\\b.txt") on the disk */
+static bool ntfs_ref_of(const char *path, UINT64 *ref)
 {
-    const RamNode *chain[32];
-    int depth = 0;
-    for (const RamNode *m = n; m && m->parent && depth < 32; m = m->parent) chain[depth++] = m;
-    if (!depth) return false;
     UINT64 at = NTFS_ROOT;
     bool is_dir = true;
-    for (int i = depth - 1; i >= 0; i--)
-        if (!is_dir || !NtfsLookup(g_ntfs, at, chain[i]->name, &at, &is_dir)) return false;
+    char part[RAMFS_NAME_MAX];
+    for (const char *p = path; *p;) {
+        while (*p == '\\') p++;
+        int n = 0;
+        while (*p && *p != '\\' && n < RAMFS_NAME_MAX - 1) part[n++] = *p++;
+        part[n] = '\0';
+        if (!n) break;
+        if (!is_dir || !NtfsLookup(g_ntfs, at, part, &at, &is_dir)) return false;
+    }
     if (is_dir) return false;
     *ref = at;
     return true;
 }
 
 /* The hard-linked files written so far in this save: their records */
-typedef struct { const RamNode *id; UINT64 ref; } SavedLink;
+typedef struct { const void *id; UINT64 ref; } SavedLink;
 static SavedLink *g_slinks;
 static int g_nslinks, g_slinks_cap;
 
-static bool slinks_find(const RamNode *id, UINT64 *ref)
+static bool slinks_find(const void *id, UINT64 *ref)
 {
     for (int i = 0; i < g_nslinks; i++) if (g_slinks[i].id == id) { *ref = g_slinks[i].ref; return true; }
     return false;
 }
 
-static void slinks_add(const RamNode *id, UINT64 ref)
+static void slinks_add(const void *id, UINT64 ref)
 {
     if (g_nslinks == g_slinks_cap) {
         int cap = g_slinks_cap ? 2 * g_slinks_cap : 16;
@@ -519,12 +602,13 @@ static void slinks_add(const RamNode *id, UINT64 ref)
 /* NTFS: save @n, a name of a file with several, into @dir: its names
  * share one record, so the first name written makes it and the others
  * link to it */
-static bool save_link(UINT64 dir, RamNode *n)
+static bool save_link(UINT64 dir, SNode *n)
 {
-    const RamNode *id = RamfsFileId(n);
+    const void *id = n->link_id;
     UINT64 ref = 0, here = 0;
     bool written = slinks_find(id, &ref), known = written, is_dir = false;
-    for (RamNode *m = RamfsNextLink(n); m != n && !known; m = RamfsNextLink(m)) known = ntfs_ref_of(m, &ref);
+    for (UINT32 at = 0; at < n->linkslen && !known; at += (UINT32)strlen(n->links + at) + 1)
+        known = ntfs_ref_of(n->links + at, &ref);
     bool have = NtfsLookup(g_ntfs, dir, n->name, &here, &is_dir);
     if (have && is_dir) return false;
     if (!known) {                                                /* its first name on the disk: a file as usual */
@@ -781,78 +865,8 @@ void PersistLoad(void)
     g_saved_changes = g_seen_changes = RamfsChanges();
 }
 
-/* ---------------------------------------------------------------------------
- * Saving
- * ------------------------------------------------------------------------- */
-static bool g_error;
-
-static void save_error(const char *what, const RamNode *n)
-{
-    char path[RAMFS_PATH_MAX];
-    RamfsPath(n, path, sizeof(path));
-    if (!g_error) kprintf("[PERSIST] Could not save %s (%s)\n", path, what);
-    g_error = true;
-}
-
-static const UINT8 CLEAR = RAMFS_F_DIRTY | RAMFS_F_DIRTYDIR | RAMFS_F_SUB;
-
-/* Brings the disk directory @vdir in line with the RAM directory @r. */
-static void save_dir(RamNode *r, UINT64 vdir, bool fresh, int depth)
-{
-    if (depth > 24) return;
-    if ((r->pflags & RAMFS_F_DIRTYDIR) && !fresh) {
-        EntList l = { 0 };
-        vol_list(vdir, &l);
-        for (int i = 0; i < l.n; i++) {
-            RamNode *c = RamfsFind(r, l.e[i].name);
-            if (!c || c->dir != l.e[i].dir || (!c->dir && (c->pflags & RAMFS_F_SEALED)))
-                if (!vol_delete(vdir, &l.e[i], 0)) save_error("delete failed", r);
-        }
-        kfree(l.e);
-    }
-    for (RamNode *c = r->child; c; c = c->next) {
-        if (!(c->pflags & CLEAR)) continue;
-        if (c->dir) {
-            UINT64 sub;
-            bool is_dir = false;
-            bool existed = !fresh && vol_lookup(vdir, c->name, &sub, &is_dir) && is_dir;
-            if (!existed && !vol_mkdir(vdir, c, &sub)) { save_error("disk full?", c); continue; }
-            if (g_ntfs && (!existed || (c->pflags & RAMFS_F_DIRTY)) && !ntfs_info(sub, c)) save_error("its details", c);
-            save_dir(c, sub, !existed, depth + 1);
-        } else if (c->pflags & RAMFS_F_DIRTY) {
-            if (!(c->pflags & RAMFS_F_SEALED) && !(g_ntfs && c->link ? save_link(vdir, c) : vol_write(vdir, c))) {
-                save_error("disk full?", c);
-                continue;
-            }
-        }
-        c->pflags &= (UINT8)~CLEAR;
-    }
-    r->pflags &= (UINT8)~CLEAR;
-}
-
-static void save_removed(void)
-{
-    /* starter files the user has since recreated are no longer deleted */
-    for (Removed **pp = &g_removed; *pp;) {
-        if (RamfsResolve(NULL, (*pp)->path)) {
-            Removed *r = *pp;
-            *pp = r->next;
-            kfree(r);
-            g_removed_dirty = true;
-        } else pp = &(*pp)->next;
-    }
-    if (!g_removed_dirty) return;
-    UINT32 len = 0;
-    for (Removed *r = g_removed; r; r = r->next) len += (UINT32)strlen(r->path) + 2;
-    char *text = kmalloc(len + 1), *p = text;
-    if (!text) return;
-    for (Removed *r = g_removed; r; r = r->next) p += ksnprintf(p, (size_t)(len + 1 - (UINT32)(p - text)), "%s\r\n", r->path);
-    if (vol_write_meta(g_nova_dir, g_vol ? DELETED_FILE : NTFS_DELETED, text, (UINT32)(p - text))) g_removed_dirty = false;
-    kfree(text);
-}
-
 /* FAT: \NOVA\LINKS.TXT, a line per hard-linked file with its names ("C:\a\x.txt|C:\b\y.txt") */
-static char *g_links_text;                    /* what the file holds, as last written or read */
+static char *g_links_text;                    /* what the file holds, as last written or read (this volume's) */
 
 static void links_collect(const RamNode *dir, char **text, UINT32 *len, UINT32 *cap)
 {
@@ -882,25 +896,6 @@ static void links_collect(const RamNode *dir, char **text, UINT32 *len, UINT32 *
         (*text)[(*len)++] = '\r';
         (*text)[(*len)++] = '\n';
     }
-}
-
-static void save_links(void)
-{
-    char *text = NULL;
-    UINT32 len = 0, cap = 0;
-    links_collect(RamfsRoot(), &text, &len, &cap);
-    if (len == cap) {                                            /* (room for the NUL) */
-        char *nt = kmalloc(len + 1);
-        if (!nt) { kfree(text); return; }
-        if (len) memcpy(nt, text, len);
-        kfree(text);
-        text = nt;
-    }
-    if (!text) { text = kmalloc(1); if (!text) return; }
-    text[len] = '\0';
-    if (g_links_text && !strcmp(g_links_text, text)) { kfree(text); return; }
-    if (vol_write_meta(g_nova_dir, LINKS_FILE, text, len)) { kfree(g_links_text); g_links_text = text; }
-    else kfree(text);
 }
 
 /* FAT: join the names LINKS.TXT lists (each loaded as a copy) into one file again */
@@ -966,31 +961,372 @@ static bool find_root(void)
     return true;
 }
 
-bool PersistSync(void)
+/* ---------------------------------------------------------------------------
+ * Saving
+ *
+ * A save holds no lock while the disk works.  It runs in two steps:
+ *   1. the snapshot (take_snapshot), under the file-system lock and the
+ *      save lock: the changed part of C: is copied into a tree of SNodes
+ *      (a changed file's details and its contents, which are lent, not
+ *      copied: RamfsLend; the entries of a directory whose entries
+ *      changed) and its change marks are cleared;
+ *   2. the write (write_snapshot), holding only the save lock, which
+ *      nothing else waits for (Settings and the Terminal show what they saw
+ *      last), and without the big kernel lock: the disk drivers serialize
+ *      their transfers themselves.
+ * What changes during the write is marked again and goes in the next save.
+ * What could not be written is listed (g_unsaved) and marked again at the
+ * next snapshot, so the next save tries it again.
+ *
+ * PersistPoll asks the "persist" thread to save once C: has been quiet for
+ * a second; PersistSync saves on the calling thread (before a restart).
+ * ------------------------------------------------------------------------- */
+static bool g_error;
+static const UINT8 CLEAR = RAMFS_F_DIRTY | RAMFS_F_DIRTYDIR | RAMFS_F_SUB;
+
+/* What a save could not write: marked again at the next snapshot (@tree:
+ * a directory that is not on the disk, with everything in it) */
+typedef struct Unsaved { struct Unsaved *next; UINT8 flags; bool tree; char path[RAMFS_PATH_MAX]; } Unsaved;
+static Unsaved *g_unsaved;                    /* (under the save lock) */
+
+static void unsaved_add(const char *path, UINT8 flags, bool tree)
 {
-    if (!have_vol() || !g_loaded) return !have_vol();
-    DesktopLock();
-    UINT32 changes = RamfsChanges();
-    g_error = false;
+    Unsaved *u = kzalloc(sizeof(Unsaved));
+    if (!u) return;
+    u->flags = flags;
+    u->tree = tree;
+    strncpy(u->path, path, sizeof(u->path) - 1);
+    u->next = g_unsaved;
+    g_unsaved = u;
+}
+
+/* @n's path from the root of C:, "\a\b.txt" ("\" for the root) */
+static void snode_path(const SNode *n, char *buf, int cap)
+{
+    const SNode *chain[32];
+    int depth = 0, len = 0;
+    for (const SNode *m = n; m && m->parent && depth < 32; m = m->parent) chain[depth++] = m;
+    ksnprintf(buf, (size_t)cap, "\\");
+    for (int i = depth - 1; i >= 0 && len < cap - 1; i--)
+        len += ksnprintf(buf + len, (size_t)(cap - len), "\\%s", chain[i]->name);
+}
+
+/* @n could not be saved (@what is why); @again: its marks to set again */
+static void save_error(const char *what, const SNode *n, UINT8 again, bool tree)
+{
+    char path[RAMFS_PATH_MAX];
+    snode_path(n, path, sizeof(path));
+    if (!g_error) kprintf("[PERSIST] Could not save C:%s (%s)\n", path, what);
+    g_error = true;
+    if (again) unsaved_add(path, again, tree);
+}
+
+/* ---- the snapshot (under the file-system lock and the save lock) ---- */
+typedef struct {
+    SNode  *root;                 /* the changed part of C: (NULL: nothing) */
+    bool    partial;              /* something was left marked (out of memory): save again */
+    UINT8  *root_sd;              /* NTFS: the root's own descriptor, changed */
+    UINT32  root_sdlen;
+    char   *removed;              /* the deleted starter files' list, changed */
+    UINT32  removed_len;
+    char   *links;                /* FAT: what LINKS.TXT should hold */
+    UINT32  changes, files;
+    UINT64  bytes;
+} Snapshot;
+
+static void *dup_bytes(const void *p, UINT32 n)
+{
+    void *d = kmalloc(n ? n : 1);
+    if (d && n) memcpy(d, p, n);
+    return d;
+}
+
+/* Append @tag (if not 0), @s and a NUL to a growing buffer */
+static bool buf_add(char **buf, UINT32 *len, UINT32 *cap, char tag, const char *s)
+{
+    UINT32 need = *len + (UINT32)strlen(s) + 2;
+    if (need > *cap) {
+        UINT32 ncap = *cap ? 2 * *cap : 512;
+        while (ncap < need) ncap *= 2;
+        char *nb = kmalloc(ncap);
+        if (!nb) return false;
+        if (*len) memcpy(nb, *buf, *len);
+        kfree(*buf);
+        *buf = nb;
+        *cap = ncap;
+    }
+    if (tag) (*buf)[(*len)++] = tag;
+    strcpy(*buf + *len, s);
+    *len += (UINT32)strlen(s) + 1;
+    return true;
+}
+
+static void snode_free(SNode *n)
+{
+    while (n) {
+        SNode *next = n->next;
+        snode_free(n->child);
+        kfree(n->sd);
+        kfree(n->keep);
+        kfree(n->links);
+        kfree(n);
+        n = next;
+    }
+}
+
+/* Copy the changed part of @r (marked RAMFS_F_DIRTY, _DIRTYDIR or _SUB)
+ * and clear its marks; NULL, with the marks left, when out of memory */
+static SNode *snap(RamNode *r, SNode *parent, Snapshot *s, int depth)
+{
+    if (depth > 24) { r->pflags &= (UINT8)~CLEAR; return NULL; }   /* (too deep to save) */
+    SNode *n = kzalloc(sizeof(SNode));
+    if (!n) return NULL;
+    strcpy(n->name, r->name);
+    n->parent = parent;
+    n->dir = r->dir;
+    n->flags = r->pflags & (RAMFS_F_DIRTY | RAMFS_F_DIRTYDIR);
+    n->attrs = r->attrs;
+    n->ctime = r->ctime;
+    n->mtime = r->mtime;
+    bool ok = true;
+    if (g_ntfs && r->sd && (r->dir || (n->flags & RAMFS_F_DIRTY))) {
+        n->sd = dup_bytes(r->sd, r->sdlen);
+        n->sdlen = r->sdlen;
+        ok = n->sd != NULL;
+    }
+    if (!r->dir) {
+        if (ok) {                                                /* (only changed files get here) */
+            n->data = RamfsLend(r);                              /* (no copy: see ramfs.h) */
+            n->size = r->size;
+            ok = n->data || !r->size;
+            s->files++;
+            s->bytes += r->size;
+        }
+        if (ok && g_ntfs && r->link) {                           /* its other names, for save_link */
+            UINT32 cap = 0;
+            n->link_id = RamfsFileId(r);
+            for (RamNode *m = RamfsNextLink(r); m != r && ok; m = RamfsNextLink(m)) {
+                char path[RAMFS_PATH_MAX];
+                RamfsPath(m, path, sizeof(path));                /* ("C:\a\b.txt") */
+                ok = buf_add(&n->links, &n->linkslen, &cap, 0, path + 2);
+            }
+        }
+    } else {
+        UINT32 cap = 0;
+        if (n->flags & RAMFS_F_DIRTYDIR)                         /* the entries the disk may keep */
+            for (RamNode *c = r->child; c && ok; c = c->next)
+                if (c->dir || !(c->pflags & RAMFS_F_SEALED)) ok = buf_add(&n->keep, &n->keeplen, &cap, c->dir ? 'D' : 'F', c->name);
+        SNode **tail = &n->child;
+        for (RamNode *c = r->child; c && ok; c = c->next) {
+            if (!(c->pflags & CLEAR)) continue;
+            if (!c->dir && (!(c->pflags & RAMFS_F_DIRTY) || (c->pflags & RAMFS_F_SEALED))) {   /* nothing to write */
+                c->pflags &= (UINT8)~CLEAR;
+                continue;
+            }
+            SNode *sc = snap(c, n, s, depth + 1);
+            if (sc) { *tail = sc; tail = &sc->next; }
+        }
+    }
+    if (!ok) { snode_free(n); return NULL; }
+    r->pflags &= (UINT8)~CLEAR;
+    for (RamNode *c = r->child; c; c = c->next)
+        if (c->pflags & CLEAR) r->pflags |= RAMFS_F_SUB;         /* (left for the next save) */
+    return n;
+}
+
+/* The caller holds the file-system lock and the save lock */
+static void take_snapshot(Snapshot *s)
+{
+    memset(s, 0, sizeof(*s));
+    while (g_unsaved) {                                          /* what the last save could not write */
+        Unsaved *u = g_unsaved;
+        g_unsaved = u->next;
+        RamNode *n = RamfsResolve(NULL, u->path);
+        if (n) {
+            if (u->tree) mark_all(n);
+            RamfsMarkUnsaved(n, u->flags);
+        }
+        kfree(u);
+    }
+    s->changes = RamfsChanges();
+    RamNode *root = RamfsRoot();
+    if (g_ntfs && (root->pflags & RAMFS_F_DIRTY) && root->sd) {  /* the root's own descriptor changed */
+        s->root_sd = dup_bytes(root->sd, root->sdlen);
+        s->root_sdlen = root->sdlen;
+    }
+    if (root->pflags & CLEAR) s->root = snap(root, NULL, s, 0);
+    s->partial = (root->pflags & CLEAR) != 0;
+
+    /* starter files the user has since recreated are no longer deleted */
+    for (Removed **pp = &g_removed; *pp;) {
+        if (RamfsResolve(NULL, (*pp)->path)) {
+            Removed *r = *pp;
+            *pp = r->next;
+            kfree(r);
+            g_removed_dirty = true;
+        } else pp = &(*pp)->next;
+    }
+    if (g_removed_dirty) {
+        UINT32 len = 0;
+        for (Removed *r = g_removed; r; r = r->next) len += (UINT32)strlen(r->path) + 2;
+        char *text = kmalloc(len + 1), *p = text;
+        if (text) {
+            for (Removed *r = g_removed; r; r = r->next) p += ksnprintf(p, (size_t)(len + 1 - (UINT32)(p - text)), "%s\r\n", r->path);
+            s->removed = text;
+            s->removed_len = (UINT32)(p - text);
+            g_removed_dirty = false;
+        }
+    }
+
+    if (g_vol) {
+        char *text = NULL;
+        UINT32 len = 0, cap = 0;
+        links_collect(RamfsRoot(), &text, &len, &cap);
+        if (len == cap) {                                        /* (room for the NUL) */
+            char *nt = kmalloc(len + 1);
+            if (nt && len) memcpy(nt, text, len);
+            kfree(text);
+            text = nt;
+        }
+        if (text) text[len] = '\0';
+        s->links = text;
+    }
+}
+
+static void snapshot_free(Snapshot *s)
+{
+    snode_free(s->root);
+    kfree(s->root_sd);
+    kfree(s->removed);
+    kfree(s->links);
+}
+
+/* ---- the write (under the save lock only) ---- */
+
+/* Directory @d (whose entries changed) keeps the disk entry @name */
+static bool keeps(const SNode *d, const char *name, bool dir)
+{
+    for (UINT32 at = 0; at < d->keeplen; at += (UINT32)strlen(d->keep + at + 1) + 2)
+        if ((d->keep[at] == 'D') == dir && path_eq(d->keep + at + 1, name)) return true;
+    return false;
+}
+
+/* Brings the disk directory @vdir in line with the copy of directory @r. */
+static void save_dir(SNode *r, UINT64 vdir, bool fresh, int depth)
+{
+    if ((r->flags & RAMFS_F_DIRTYDIR) && !fresh) {
+        EntList l = { 0 };
+        vol_list(vdir, &l);
+        for (int i = 0; i < l.n; i++)
+            if (!keeps(r, l.e[i].name, l.e[i].dir) && !vol_delete(vdir, &l.e[i], 0))
+                save_error("delete failed", r, RAMFS_F_DIRTYDIR, false);
+        kfree(l.e);
+    }
+    for (SNode *c = r->child; c; c = c->next) {
+        if (c->dir) {
+            UINT64 sub;
+            bool is_dir = false;
+            bool existed = !fresh && vol_lookup(vdir, c->name, &sub, &is_dir) && is_dir;
+            if (!existed && !vol_mkdir(vdir, c, &sub)) { save_error("disk full?", c, RAMFS_F_DIRTY | RAMFS_F_DIRTYDIR, true); continue; }
+            if (g_ntfs && (!existed || (c->flags & RAMFS_F_DIRTY)) && !ntfs_info(sub, c)) save_error("its details", c, 0, false);
+            save_dir(c, sub, !existed, depth + 1);
+        } else if (!(c->link_id ? save_link(vdir, c) : vol_write(vdir, c))) {
+            save_error("disk full?", c, RAMFS_F_DIRTY, false);
+        }
+    }
+}
+
+static void write_snapshot(Snapshot *s)
+{
     if (!g_root_known) {
         if (find_root()) g_root_known = true;
-        else g_error = true;
-    }
-    if (g_root_known) {
-        RamNode *root = RamfsRoot();
-        if (g_ntfs && (root->pflags & RAMFS_F_DIRTY) && root->sd) {    /* the root's own descriptor changed */
-            UINT32 id = NtfsAddSecurity(g_ntfs, root->sd, root->sdlen);
-            if (!id || !NtfsSetSecurityId(g_ntfs, NTFS_ROOT, id)) save_error("its descriptor", root);
+        else {
+            kprintf("[PERSIST] Could not make the folder for drive C: on the disk\n");
+            g_error = true;
+            if (s->root) unsaved_add("\\", RAMFS_F_DIRTY | RAMFS_F_DIRTYDIR, true);
+            if (s->removed) g_removed_dirty = true;
+            return;
         }
-        g_nslinks = 0;
-        if (root->pflags & CLEAR) save_dir(root, g_root_dir, false, 0);
-        save_removed();
-        if (g_vol) save_links();
     }
+    if (s->root_sd) {
+        UINT32 id = NtfsAddSecurity(g_ntfs, s->root_sd, s->root_sdlen);
+        if (!id || !NtfsSetSecurityId(g_ntfs, NTFS_ROOT, id)) {
+            if (!g_error) kprintf("[PERSIST] Could not save C:\\ (its descriptor)\n");
+            g_error = true;
+            unsaved_add("\\", RAMFS_F_DIRTY, false);
+        }
+    }
+    g_nslinks = 0;
+    if (s->root) save_dir(s->root, g_root_dir, false, 0);
+    if (s->removed && !vol_write_meta(g_nova_dir, g_vol ? DELETED_FILE : NTFS_DELETED, s->removed, s->removed_len))
+        g_removed_dirty = true;
+    if (s->links && !(g_links_text && !strcmp(g_links_text, s->links)) &&
+        vol_write_meta(g_nova_dir, LINKS_FILE, s->links, (UINT32)strlen(s->links))) {
+        kfree(g_links_text);
+        g_links_text = s->links;
+        s->links = NULL;
+    }
+}
+
+static UINT64 tsc_us(UINT64 tsc) { return g_tsc_per_tick ? tsc * 10000 / g_tsc_per_tick : 0; }
+
+/* Save C:.  The caller holds the file-system lock (one level of it) and
+ * the save lock; both are let go of. */
+static bool save_locked(void)
+{
+    UINT64 t0 = rdtsc();
+    Snapshot s;
+    take_snapshot(&s);
+    UINT64 held = rdtsc() - t0;
+    FsUnlock();
+    UINT32 bkl = bkl_drop();                     /* (the disk drivers take what they need) */
+    g_error = false;
+    write_snapshot(&s);
     bool ok = vol_sync() && !g_error;
-    g_saved_changes = changes;
-    DesktopUnlock();
+    RamfsGiveBackAll();
+    if (!s.partial) g_saved_changes = s.changes;
+    if (s.root) {
+        UINT64 us = tsc_us(held);
+        kprintf("[PERSIST] %s %u file(s), %llu KiB in %llu ms; the file-system lock was held %llu.%02llu ms\n",
+                ok ? "Saved" : "Failed to save all of", s.files, (unsigned long long)(s.bytes >> 10), (unsigned long long)(tsc_us(rdtsc() - t0) / 1000),
+                (unsigned long long)(us / 1000), (unsigned long long)(us % 1000 / 10));
+    }
+    snapshot_free(&s);
+    save_unlock();
+    bkl_restore(bkl);
     return ok;
+}
+
+static bool save(void)
+{
+    if (!have_vol() || !g_loaded) return !have_vol();
+    FsLock();
+    save_lock();
+    if (!have_vol()) { save_unlock(); FsUnlock(); return true; }   /* (stopped saving meanwhile) */
+    return save_locked();
+}
+
+bool PersistSync(void) { return save(); }
+
+/* The "persist" thread: saves when PersistPoll asks */
+static Thread *g_saver;
+static WaitQueue g_saver_q = WAITQ_INIT;
+static volatile UINT32 g_save_asked;
+
+static void saver_thread(void *arg)
+{
+    (void)arg;
+    bkl_drop();                                  /* (kernel threads start with the big lock) */
+    for (;;) {
+        UINT32 gen = waitq_gen(&g_saver_q);
+        if (__atomic_exchange_n(&g_save_asked, 0, __ATOMIC_ACQ_REL)) {
+            bool ok = save();
+            if (!ok) g_retry_tick = sched_ticks() + 3000;        /* try again in 30 s */
+            g_failed = !ok;
+            continue;
+        }
+        waitq_wait(&g_saver_q, gen, 360000);                     /* (an hour: PersistPoll wakes it) */
+    }
 }
 
 void PersistPoll(void)
@@ -999,9 +1335,16 @@ void PersistPoll(void)
     UINT32 now = RamfsChanges();
     UINT64 t = sched_ticks();
     if (now != g_seen_changes) { g_seen_changes = now; g_seen_tick = t; }
-    if (now == g_saved_changes && !g_removed_dirty) return;
+    if (now == g_saved_changes && !g_removed_dirty && !g_unsaved) return;
     if (t - g_seen_tick < 100) return;                    /* wait for a quiet second */
     if (g_failed && t < g_retry_tick) return;
-    g_failed = !PersistSync();
-    if (g_failed) g_retry_tick = t + 3000;                /* try again in 30 s */
+    if (g_save_asked || g_saving) return;                 /* (asked already, or saving) */
+    if (!g_saver) g_saver = sched_create_thread("persist", saver_thread, NULL, 8);
+    if (!g_saver) {                                       /* (no thread: save here) */
+        g_failed = !save();
+        if (g_failed) g_retry_tick = t + 3000;
+        return;
+    }
+    __atomic_store_n(&g_save_asked, 1, __ATOMIC_RELEASE);
+    waitq_wake(&g_saver_q);
 }

@@ -7,12 +7,12 @@
 #include <stdio.h>
 #include <windows.h>
 #include <assert.h>
+#include "ptd.h"
 
 /* -----------------------------------------------------------------------
  * errno
  * ----------------------------------------------------------------------- */
-static int g_errno;
-int *_errno(void) { return &g_errno; }
+int *_errno(void) { return &__nova_ptd()->err; }        /* per thread (ptd.c) */
 
 /* -----------------------------------------------------------------------
  * Memory
@@ -229,9 +229,9 @@ void *bsearch(const void *key, const void *base, size_t n, size_t size, int (*cm
     return 0;
 }
 
-static unsigned long g_rand = 1;
-int  rand(void)          { g_rand = g_rand * 214013 + 2531011; return (int)((g_rand >> 16) & 0x7FFF); }
-void srand(unsigned s)   { g_rand = s; }
+/* the seed is per thread, as on Windows */
+int  rand(void)          { unsigned long *r = &__nova_ptd()->rand; *r = *r * 214013 + 2531011; return (int)((*r >> 16) & 0x7FFF); }
+void srand(unsigned s)   { __nova_ptd()->rand = s; }
 
 /* -----------------------------------------------------------------------
  * Exit, environment

@@ -319,7 +319,8 @@ after a build.
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
 <!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM), SumatraPDF, WinMerge, KeePassXC, Inkscape, Notepad++ and PuTTY<!-- END generated:corpus -->.  The
 windowed programs run last, one at a time: SumatraPDF opens a PDF,
-WinMerge compares two files, Notepad++ opens a file and PuTTY makes a raw
+WinMerge compares two files, Firefox installs from the App Store and
+loads a page from an HTTPS server on the host, Notepad++ opens a file and PuTTY makes a raw
 connection to an echo server on the host and types a line; each one's
 screenshot must match its `tests/reference/NAME.png`.
 It also checks NovaOS's own screens: `dir` on C: and on an NTFS drive D:
@@ -447,12 +448,15 @@ os/
   copied to the UEFI framebuffer in the boot mode.  There is no 3D GPU driver.
 - **Drive C: in memory, saved to FAT**: the RAM disk is saved to a FAT32
   volume a second after each change and restored at boot.  System files
-  come from the kernel image, so a new build always brings its own.
+  come from the kernel image, so a new build always brings its own.  The
+  save runs on its own thread and holds no lock while the disk is written
+  (`savetest`), and a crash during a FAT save leaves each file old or new.
 - **SMP with fine-grained locks**: the scheduler, memory,
   synchronization, sockets, the GUI, the program loader, files, the
   registry, the console and starting processes have their own locks, and
   file and registry throughput scale about 3x from one CPU to four
-  (`smpstress scaling 3`); the rest of the kernel keeps a big lock (rules
+  (`smpstress scaling 3`); the SATA, NVMe and USB disk drivers take a lock
+  per disk; the rest of the kernel keeps a big lock (rules
   and lock order in `kernel/ke/smp.h`; the Terminal's `profile` command
   shows where the CPUs spend their time).
 - **Kernel-helper syscalls (0x01F0–0x01FF)** are private to NovaOS's own
