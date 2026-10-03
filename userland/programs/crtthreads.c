@@ -3,7 +3,9 @@
  * when a fiber is deleted and on every thread's value when the slot is
  * freed; FLS slots are not TLS slots), _configthreadlocale's per-thread
  * locale in msvcrt.dll and ucrtbase.dll, and getenv/_wgetenv results that
- * stay intact while other threads read and change variables */
+ * stay intact while other threads read and change variables; and
+ * WaitOnAddress found through its API set by a program that does not
+ * import it, as Rust's standard library parks its threads */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -285,9 +287,33 @@ static void test_getenv(void)
     CHECK("a missing variable is NULL", !getenv("CRTTHREADS_NONE") && !_wgetenv(L"CRTTHREADS_NONE"));
 }
 
+/* ------------------------------------------------- WaitOnAddress */
+/* Rust's thread parker asks GetModuleHandle for the API set and falls
+ * back to keyed events when no module answers; kernelbase.dll, which hosts
+ * it, is in every process as on Windows, not only in programs importing
+ * from it (this one does not) */
+static volatile LONG g_word;
+static void test_wait_on_address(void)
+{
+    HMODULE m = GetModuleHandleA("api-ms-win-core-synch-l1-2-0");
+    CHECK("the synch API set's module is loaded", m != NULL);
+    BOOL (WINAPI *wait)(volatile VOID *, PVOID, SIZE_T, DWORD) =
+        m ? (void *)GetProcAddress(m, "WaitOnAddress") : NULL;
+    VOID (WINAPI *wake)(PVOID) = m ? (void *)GetProcAddress(m, "WakeByAddressSingle") : NULL;
+    CHECK("WaitOnAddress and WakeByAddressSingle are there", wait && wake);
+    if (!wait || !wake) return;
+    LONG cmp = 0;
+    CHECK("WaitOnAddress times out while the value stays", !wait(&g_word, &cmp, sizeof(cmp), 20) &&
+          GetLastError() == 1460 /* ERROR_TIMEOUT */);
+    g_word = 1;
+    CHECK("WaitOnAddress returns at once on another value", wait(&g_word, &cmp, sizeof(cmp), 1000));
+    wake((PVOID)&g_word);
+}
+
 int main(void)
 {
     test_fls();
+    test_wait_on_address();
     test_locale("msvcrt.dll");
     test_locale("ucrtbase.dll");
     test_getenv();
