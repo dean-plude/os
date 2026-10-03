@@ -60,7 +60,7 @@ driver that runs the same device there.
 | **Thunderbolt 4 / USB4** | Intel Thunderbolt 4 controller | `thunderbolt` | missing | USB devices on the USB-C ports work through the xHCI controller; Thunderbolt docks and PCIe tunnelling do not |
 | **Keyboard** | built-in keyboard on the i8042 controller | `atkbd` | supported | PS/2 keyboard driver |
 | **TrackPoint** | PS/2 pointing stick | `psmouse` | supported | PS/2 mouse driver; the three buttons above the touchpad are its buttons |
-| **Touchpad** | multi-touch, 61 x 115 mm, three buttons; in this generation an I2C-HID device on an Intel LPSS I2C controller (the boot log confirms it) | `i2c_hid_acpi` | partial | found through ACPI (PNP0C50) and read over I2C-HID in its mouse mode: the pointer moves and the pad clicks; polled every 10 ms (no GPIO interrupt driver yet); no tap-to-click or two-finger scrolling (they need the touchpad mode); checked on a modelled touchpad, not yet on the machine (step 21.4) |
+| **Touchpad** | multi-touch, 61 x 115 mm, three buttons; in this generation an I2C-HID device on an Intel LPSS I2C controller (the boot log confirms it) | `i2c_hid_acpi` | partial | found through ACPI (PNP0C50), read over I2C-HID and switched to its touchpad mode, as Windows does: the pointer follows one finger, a tap is a left click and a two-finger tap a right click, pressing the pad clicks (right with two fingers on it), two fingers scroll up, down and sideways as mouse-wheel notches; a touchpad that refuses touchpad mode stays in mouse mode (pointer and clicks only); polled every 10 ms (no GPIO interrupt driver yet); checked on a modelled touchpad, not yet on the machine (step 21.4) |
 | **ACPI** | ACPI tables, embedded controller | `acpi` | supported | uACPI interprets the AML (Phases 18.6, 18.4): power button, S3, battery |
 | **Battery and AC** | 39.3 or 52.5 Wh, USB-C power | `acpi battery` | supported | `_BIF`/`_BIX`/`_BST` through uACPI; untested on the real tables (step 21.5) |
 | **Lid** | ACPI lid switch | `acpi button` | supported | lid device `PNP0C0D`, tested with a custom table in QEMU (Phase 18.6); sleeping on lid close is step 21.5 |
@@ -103,9 +103,21 @@ from the stick (Secure Boot off):
    headphones in: within half a second the speakers go quiet and the
    tone plays in the headphones; unplug them and the speakers come back.
 3. Move a finger on the touchpad: the pointer follows; pressing the pad
-   down clicks.  The TrackPoint and its three buttons work as a PS/2 mouse
-   as before.
-4. Shut down and read `EFI\NOVA\bootlog.txt` on another computer: the
+   down clicks, and pressing it with two fingers on it right-clicks.  The
+   TrackPoint and its three buttons work as a PS/2 mouse as before.
+4. Gestures: tap the pad lightly with one finger (a short touch that
+   hardly moves): a left click, so tapping an icon on the desktop twice
+   opens it.  Tap with two fingers at once: a right click (a context
+   menu).  Open something long (the Terminal after `help`, or a web page
+   in NetSurf) and slide two fingers down the pad: the text follows the
+   fingers, a wheel notch for every 3 mm; slide them up to go back, and
+   sideways in a window with a horizontal scroll bar to scroll left and
+   right.  A palm resting on the pad while typing moves nothing.  If
+   none of this works but the pointer moves, the touchpad refused its
+   touchpad mode: the boot log's `[I2C]` line then ends in `touchpad
+   (mouse mode)` instead of `precision touchpad (tap to click,
+   two-finger scrolling)`.
+5. Shut down and read `EFI\NOVA\bootlog.txt` on another computer: the
    lines starting `[HDA]`, `[ACPI] I2C-HID device` and `[I2C]` say what
    was found (the codec's vendor and subsystem IDs, the touchpad's ACPI
    name, address and controller), which is what a fix needs if a step
@@ -152,5 +164,5 @@ For reference, every driver NovaOS has, by device:
 | Network | Intel 82540EM, 82544 and 82545EM (`e1000`), Intel 82574L and I219-LM/I219-V (`e1000e`), virtio-net |
 | Audio | Intel HD Audio (class 04.03, and Intel's class 04.01 controllers with the audio DSP on), with headphone-jack sensing; USB Audio 1.0 and 2.0 |
 | USB | xHCI, EHCI, OHCI, UHCI host controllers; hubs, HID keyboards, mice, tablets, touch screens and pens, mass storage, audio |
-| Input | PS/2 keyboard and mouse, I2C-HID touchpads (mouse mode) on Intel LPSS I2C controllers, virtio-input tablets, touch screens and pens |
+| Input | PS/2 keyboard and mouse, I2C-HID precision touchpads (tap to click, two-finger scrolling) on Intel LPSS I2C controllers, virtio-input tablets, touch screens and pens |
 | Platform | ACPI through uACPI (power button, S3 and S5, batteries, AC, lid, thermal zones), HPET, TSC-deadline APIC timer, COM1 |
