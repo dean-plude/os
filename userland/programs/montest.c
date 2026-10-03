@@ -7,6 +7,12 @@
  *                   self-tests boot with two: QEMU's std VGA and a
  *                   secondary-vga), leaving the layout as it found it
  *   montest list    print the monitors and display devices
+ *   montest hotplug monitors plugged in and unplugged while it runs, on
+ *                   the outputs of one card (the devices self-tests'
+ *                   "monitors" boot: a QEMU virtio-vga with three
+ *                   outputs, one monitor at boot): it prints "plug in
+ *                   display N" / "unplug display N" and the test connects
+ *                   or disconnects that output's monitor
  *
  * With two monitors it also moves the pointer across: it prints "move the
  * pointer right" and the test pushes the mouse to the right edge
@@ -114,8 +120,11 @@ static DWORD saved(const char *key, const char *what)
     return v;
 }
 
+static int    g_dispchanges;              /* WM_DISPLAYCHANGE messages seen */
+
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 {
+    if (m == WM_DISPLAYCHANGE) { g_dispchanges++; return 0; }
     if (m == WM_PAINT) {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(h, &ps);
@@ -311,9 +320,119 @@ static void test_two(void)
     DestroyWindow(h);
 }
 
+/* Ask the test to plug in or unplug a monitor, and wait (pumping
+ * messages) until NovaOS has @want monitors; whether it got there */
+static int wait_monitors(const char *ask, int want)
+{
+    printf("montest: %s\n", ask);
+    fflush(stdout);
+    DWORD end = GetTickCount() + 30000;
+    while ((LONG)(end - GetTickCount()) > 0 && GetSystemMetrics(SM_CMONITORS) != want) pump(100);
+    pump(500);                                              /* (the messages that came with it) */
+    return GetSystemMetrics(SM_CMONITORS) == want;
+}
+
+static int on_some_monitor(RECT r)
+{
+    enum_monitors();
+    for (int i = 0; i < g_n; i++) {
+        RECT x;
+        if (IntersectRect(&x, &r, &g_rect[i]) && EqualRect(&x, &r)) return 1;
+    }
+    return 0;
+}
+
+static void test_hotplug(void)
+{
+    char s[200];
+    check(enum_monitors() == 1, "one monitor at the start");
+    WNDCLASSA wc = { 0 };
+    wc.lpfnWndProc = wndproc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.lpszClassName = "montest";
+    wc.hCursor = LoadCursorA(NULL, (LPCSTR)IDC_ARROW);
+    RegisterClassA(&wc);
+    HWND h = CreateWindowA("montest", "Monitors come and go", WS_OVERLAPPEDWINDOW,
+                           100, 100, 480, 260, NULL, NULL, wc.hInstance, NULL);
+    ShowWindow(h, SW_SHOW);
+    pump(300);
+
+    /* A second monitor on the card's second output */
+    int before = g_dispchanges;
+    check(wait_monitors("plug in display 2", 2), "a second monitor appeared");
+    check(g_dispchanges > before, "WM_DISPLAYCHANGE came with it");
+    enum_monitors();
+    MONITORINFOEXA m1 = info_of(g_mon[0]), m2 = info_of(g_mon[1]);
+    print_rect("display 2", m2.rcMonitor);
+    snprintf(s, sizeof(s), "\\\\.\\DISPLAY2 is the monitor's 1024 x 768, right of the primary ((%ld, %ld)-(%ld, %ld))",
+             m2.rcMonitor.left, m2.rcMonitor.top, m2.rcMonitor.right, m2.rcMonitor.bottom);
+    check(!strcmp(m2.szDevice, "\\\\.\\DISPLAY2") && m2.rcMonitor.left == m1.rcMonitor.right && m2.rcMonitor.top == 0 &&
+          m2.rcMonitor.right - m2.rcMonitor.left == 1024 && m2.rcMonitor.bottom - m2.rcMonitor.top == 768, s);
+
+    /* A third, on the third output */
+    before = g_dispchanges;
+    check(wait_monitors("plug in display 3", 3), "a third monitor appeared");
+    check(g_dispchanges > before, "WM_DISPLAYCHANGE came with it");
+    enum_monitors();
+    MONITORINFOEXA m3 = info_of(g_mon[2]);
+    m2 = info_of(g_mon[1]);
+    print_rect("display 3", m3.rcMonitor);
+    check(m3.rcMonitor.left == m2.rcMonitor.right && m3.rcMonitor.right - m3.rcMonitor.left == 800,
+          "\\\\.\\DISPLAY3 is the monitor's 800 x 600, right of the second");
+    HMONITOR third = g_mon[2];
+    RECT r3 = m3.rcMonitor;
+
+    /* A window on it; the monitor goes: the window moves to one that's left */
+    SetWindowPos(h, NULL, r3.left + 40, 60, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    pump(300);
+    check(MonitorFromWindow(h, MONITOR_DEFAULTTONULL) == third, "a window moved onto the third monitor is on it");
+    InvalidateRect(h, NULL, TRUE);
+    printf("montest: move the pointer right\n");
+    fflush(stdout);
+    POINT c = { 0, 0 };
+    DWORD end = GetTickCount() + 30000;
+    while ((LONG)(end - GetTickCount()) > 0) {
+        GetCursorPos(&c);
+        if (c.x >= r3.right - 1) break;
+        pump(100);
+    }
+    snprintf(s, sizeof(s), "the pointer went across onto the third monitor (at %ld, %ld)", c.x, c.y);
+    check(MonitorFromPoint(c, MONITOR_DEFAULTTONULL) == third, s);
+    printf("montest: window on display 3\n");
+    fflush(stdout);
+    pump(4000);                                             /* (the test's screenshots of every output) */
+    before = g_dispchanges;
+    check(wait_monitors("unplug display 3", 2), "the third monitor went");
+    check(g_dispchanges > before, "WM_DISPLAYCHANGE came with that");
+    RECT wr;
+    GetWindowRect(h, &wr);
+    snprintf(s, sizeof(s), "the window moved onto a monitor that is left (%ld, %ld)-(%ld, %ld)", wr.left, wr.top, wr.right, wr.bottom);
+    check(on_some_monitor(wr), s);
+    check(MonitorFromWindow(h, MONITOR_DEFAULTTONULL) != NULL, "MonitorFromWindow finds it");
+    GetCursorPos(&c);
+    snprintf(s, sizeof(s), "the pointer is on a monitor (%ld, %ld)", c.x, c.y);
+    check(MonitorFromPoint(c, MONITOR_DEFAULTTONULL) != NULL, s);
+    check(GetSystemMetrics(SM_CXVIRTUALSCREEN) == r3.left, "the virtual screen ends where the third monitor was");
+
+    /* And the second: back to the one monitor */
+    before = g_dispchanges;
+    check(wait_monitors("unplug display 2", 1), "the second monitor went");
+    check(g_dispchanges > before, "WM_DISPLAYCHANGE came with that");
+    GetWindowRect(h, &wr);
+    check(MonitorFromWindow(h, MONITOR_DEFAULTTONULL) == MonitorFromPoint((POINT){ 0, 0 }, MONITOR_DEFAULTTOPRIMARY),
+          "the window is on the primary");
+    check(GetSystemMetrics(SM_CXVIRTUALSCREEN) == GetSystemMetrics(SM_CXSCREEN), "the virtual screen is the primary again");
+    DestroyWindow(h);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "list")) return list();
+    if (argc > 1 && !strcmp(argv[1], "hotplug")) {
+        test_hotplug();
+        printf("montest: %d passed, %d failed\n", g_pass, g_fail);
+        return g_fail ? 1 : 0;
+    }
     int want = argc > 1 ? atoi(argv[1]) : 0;
     if (!want) want = GetSystemMetrics(SM_CMONITORS);
     if (want == 1) test_one();

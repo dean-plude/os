@@ -1344,6 +1344,26 @@ bool DesktopSetHeadMode(int head, int w, int h)
 
 bool DesktopSetDisplayMode(int w, int h) { return DesktopSetHeadMode(0, w, h); }
 
+/* Desktop loop (under the desktop lock): monitors plugged in or unplugged
+ * (a virtio GPU's outputs).  The desktop is laid out again: a new monitor
+ * goes to the right of the others, the windows on one that went move to
+ * the nearest one left (WmDisplayChanged keeps every window on a
+ * monitor), and programs get WM_DISPLAYCHANGE. */
+static void monitors_poll(void)
+{
+    UINT32 gone;
+    int ow = GdiScreenW(), oh = GdiScreenH(), os = GdiScale(), before = GdiMonitorCount();
+    if (!DisplayPoll(&gone)) return;
+    GdiCursorForget();                        /* (the screen it was on may be gone) */
+    for (int i = GDI_MAX_MONITORS - 1; i > 0; i--)
+        if (gone & (1u << i)) GdiForgetMonitor(i);
+    WmCursorHide();
+    relayout(ow, oh, os);
+    DisplayMode m = DisplayCurrentMode();
+    UmGuiDisplayChanged(m.w, m.h);            /* WM_DISPLAYCHANGE to programs */
+    kprintf("[SHELL] Monitors: %d (were %d)\n", GdiMonitorCount(), before);
+}
+
 bool DesktopSetMonitorOrigin(int i, int x, int y, bool save)
 {
     if (!g_ready || i <= 0 || i >= GdiMonitorCount()) return false;
@@ -1858,6 +1878,7 @@ void DesktopRun(void *arg)
         DesktopLockAlone();
         ps2_poll();
         VirtioInputPoll();
+        monitors_poll();
         power_poll();
         /* C:\\Desktop changed (an installer made a shortcut)? redraw the icons */
         if (g_desktop_beat - last_desk_check >= 50) {
