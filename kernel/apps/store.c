@@ -148,6 +148,14 @@ static const StoreApp g_catalog[] = {
       "dxvk-2.5.3\\x64\\dxgi.dll>dxgi_dxvk.dll "
       "dxvk-2.5.3\\x32\\d3d8.dll dxvk-2.5.3\\x32\\d3d9.dll dxvk-2.5.3\\x32\\d3d10core.dll dxvk-2.5.3\\x32\\d3d11.dll>d3d11_dxvk.dll "
       "dxvk-2.5.3\\x32\\dxgi.dll>dxgi_dxvk.dll" },
+    /* Built by tools/build_venus.py; the CI publishes it beside nova.iso */
+    { "Venus", "Mesa / NovaOS", "Vulkan on the host's GPU when NovaOS runs in QEMU with a 3D virtio-gpu",
+      CAT_RUNTIMES, GH "dean-plude/os/releases/download/latest/venus.7z", "venus.7z", "Venus",
+      "\\Windows\\System32\\vulkan_virtio.dll", KIND_ARCHIVE, 3,
+      "Mesa's Venus for 64- and 32-bit programs: Vulkan, and Direct3D through DXVK, run on the host's GPU "
+      "(QEMU: -device virtio-vga-gl,venus=on,blob=on,hostmem=1G); without that GPU programs keep using Mesa 3D",
+      "VN", GDI_C(0xC0, 0x30, 0x40),
+      "x64\\vulkan_virtio.dll x64\\virtio_icd.x86_64.json x86\\vulkan_virtio.dll x86\\virtio_icd.x86.json" },
 };
 #undef GH
 #define N_APPS ((int)(sizeof(g_catalog) / sizeof(g_catalog[0])))

@@ -86,10 +86,10 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 ### The App Store
 
 The dock's App Store downloads the official 64-bit packages of 21 open-source
-programs (Firefox, VLC, LibreOffice, GIMP, Notepad++, PuTTY…) and five
+programs (Firefox, VLC, LibreOffice, GIMP, Notepad++, PuTTY…) and six
 runtimes, and installs them with 7-Zip, NovaOS's Windows Installer or the
 program's own setup.  `store install NAME` in the Terminal does what the
-row's button does (CI installs Mesa 3D and DXVK that way).  Most of those programs still need more of Windows than
+row's button does (CI installs Mesa 3D, DXVK and Venus that way).  Most of those programs still need more of Windows than
 NovaOS has (more of the GUI); the ones in the table
 above are the ones verified.  See [the App Store](docs/HISTORY.md#the-app-store).
 
@@ -364,11 +364,14 @@ To make the ISO yourself from a fresh build, run
   SLAAC and RDNSS, `ping -6`, `curl -6` and Winsock over IPv6.
 - **Graphics tests**: `tools/d2dtest` (Direct2D geometry answers, and a
   scene that must match the reference `tools/d2dtest/reference.py` draws
-  with Skia), then installs Mesa 3D and DXVK with the App Store
+  with Skia), then installs Mesa 3D, DXVK and Venus with the App Store
   (`store install NAME` in the Terminal; `tools/ci/stage-graphics.sh`
   stages the downloads) and runs `tools/gltest` (14 tests) and
-  `tools/d3dtest` (17 tests); each 64- and 32-bit, with a screenshot of
-  each while it draws.
+  `tools/d3dtest` (17 tests, on Venus: the first monitor is a QEMU 3D
+  virtio-gpu, `virtio-vga-gl,venus=on`, whose Vulkan is the runner's
+  lavapipe); each 64- and 32-bit, with a screenshot of each while it
+  draws; then `d3dtest fps`, which draws the same Direct3D 9 scene on
+  Venus and on lavapipe inside NovaOS and needs Venus to be faster.
 
 The build compiles through ccache, and the boot-test job saves the cache
 after each build, so a pull request recompiles only what it changed.  A pull

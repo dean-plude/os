@@ -8,10 +8,11 @@
 # turns it green and bigger) and waits for the green box with the yellow
 # one gone, then closes NetSurf with Alt+F4 (nstest passes when NetSurf
 # exits normally).  A screenshot of each state is kept in --out.
-import os, struct, sys, time, zlib
+import os, re, struct, sys, time, zlib
 
 SEEN = {'why': 'nstest never started NetSurf'}     # why the screen check failed, for check()
-LOGICAL_W = 1280            # the desktop's logical width (novarun clicks in it)
+LOGICAL_W = 1280            # the desktop's logical width (novarun clicks in it); the boot log's
+                            # "[GDI] WxH device, scale Nx -> LWxLH logical" line overrides it
 
 
 def png_rgb(path):
@@ -66,7 +67,8 @@ LIST = ('orange', 'purple', 'teal')
 
 def census(path):
     """{colour: (pixel count, centre x, centre y)} on the screenshot (every
-    second pixel), the centre in logical desktop coordinates"""
+    second pixel), the count in logical pixels and the centre in logical
+    desktop coordinates"""
     w, h, rows = png_rgb(path)
     found = {k: [0, 0, 0] for k in COLOURS}
     for y in range(0, h, 2):
@@ -80,7 +82,8 @@ def census(path):
                     s[1] += x
                     s[2] += y
     scale = LOGICAL_W / w
-    return {k: (n, int(sx / n * scale) if n else 0, int(sy / n * scale) if n else 0)
+    per = (w / LOGICAL_W / 2) ** 2      # samples per logical pixel (1 at a 2x scale)
+    return {k: (int(n / per), int(sx / n * scale) if n else 0, int(sy / n * scale) if n else 0)
             for k, (n, sx, sy) in found.items()}
 
 
@@ -96,7 +99,11 @@ def wait_for(nova, path, ok, timeout):
 
 
 def look_and_click(nova):
+    global LOGICAL_W
     SEEN['why'] = None
+    m = re.search(r'\[GDI\] \d+x\d+ device, scale \S+ -> (\d+)x\d+ logical', nova.boot_log)
+    if m:
+        LOGICAL_W = int(m.group(1))
     out = os.path.join(getattr(sys.modules['__main__'], 'OUT', '.'), 'nstest')   # selftest.py's --out
     before = wait_for(nova, out + '-before.png',
                       lambda c: all(c[k][0] > 200 for k in ('red', 'blue', 'yellow') + INLINE + LIST)

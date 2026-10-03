@@ -1,0 +1,36 @@
+Venus, Mesa's Vulkan driver for virtio-gpu (src/virtio/vulkan), from Mesa
+26.2.4 (https://mesa3d.org/), used under the MIT licence.  Not vendored
+whole: tools/build_venus.py fetches the release tarball (checking its
+SHA-256), applies novaos.patch, adds vn_renderer_nova.c and builds
+vulkan_virtio.dll, 64- and 32-bit, with MinGW-w64.  The result, venus.7z,
+is the App Store's "Venus" (the CI publishes it beside nova.iso).
+
+vn_renderer_nova.c (MIT, NovaOS's own): Venus's renderer back end for
+NovaOS, in place of Linux's virtgpu (DRM) and vtest ones.  It asks the
+kernel's virtio-gpu driver (kernel/drivers/virtio_gpu.c, through
+kernel/um/um_gpu.c's NtNovaGpuCtl, found in ntdll) for a 3D context on the
+Venus capability set, submits Venus's command streams, creates and maps
+blobs (a mappable one comes back as a section that NtMapViewOfSection
+maps) and uses the kernel's timelines for Vulkan's timeline semaphores and
+fences.  It also stubs three SPIR-V specialization helpers the Windows
+link wants but Venus never calls.
+
+novaos.patch changes:
+- src/virtio/vulkan/meson.build: build vn_renderer_nova.c on Windows.
+- src/virtio/vulkan/vn_renderer.h: vn_renderer_create() makes the NovaOS
+  renderer on Windows.
+- src/virtio/vulkan/vn_instance.c: VK_KHR_win32_surface (Venus's
+  Windows build left it out; DXVK needs it).
+- src/virtio/vulkan/vn_common.h: no sync files on Windows (sync_wait and
+  sync_valid_fd say every fd is signaled; ETIME defined).
+- src/vulkan/runtime/vk_instance.c: with VK_ICD_PRESENT_HOOK defined,
+  vk_icdNegotiateLoaderICDInterfaceVersion asks that function whether the
+  device is there and declines otherwise, so the Vulkan loader moves on
+  to the next driver (lavapipe) on a machine without a 3D virtio-gpu.
+- src/vulkan/wsi/wsi_common_win32.cpp: MinGW-w64's d3d12.h instead of the
+  DirectX-Headers project's (the DXGI swap chain path is not used; images
+  are presented through GDI), and a present on a GPU's CPU image waits for
+  the copy into it to finish (Mesa waits only on a software device).
+
+The 32-bit build links with --kill-at, so the vk_icd* exports have no
+stdcall @N suffix (Mesa's own .def files do that for its other drivers).

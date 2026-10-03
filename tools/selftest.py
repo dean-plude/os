@@ -9,12 +9,17 @@ order; --list prints them):
   core      (default) the self-test programs (apitest, abitest, filetest...),
             an install finished by a restart, and last "crash kernel" (a
             deliberate kernel fault must print a symbolized backtrace)
-  graphics  on two monitors (a QEMU secondary-vga is the second; montest),
-            installs "Mesa 3D" and "DXVK" with the App Store, then runs
-            tools/gltest and tools/d3dtest, 64- and 32-bit, and NetSurf
-            on a page with an SVG and a script (nstest).  Needs --gfx DIR,
-            made by tools/ci/stage-graphics.sh: 7-Zip, the two downloads and
-            the four test programs
+  graphics  on two monitors (a 3D virtio-gpu with Venus is the first, a
+            QEMU secondary-vga the second; montest), installs "Mesa 3D",
+            "DXVK" and "Venus" with the App Store, then runs tools/gltest
+            (on Mesa's llvmpipe) and tools/d3dtest (DXVK on Venus, which runs
+            Vulkan on this machine's GPU), 64- and 32-bit, d3dtest's
+            frame-rate test (Venus against lavapipe), and NetSurf on a page
+            with an SVG and a script (nstest).  Needs --gfx DIR, made by
+            tools/ci/stage-graphics.sh: 7-Zip, the three downloads and the
+            test programs; and a QEMU with Venus with an OpenGL display
+            (tools/ci/build-qemu-venus.sh; on a machine without a screen, run
+            it under xvfb-run)
   network   two boots with a virtio-net adapter (tests/selftest/network4
             and network6).  IPv4 on QEMU's user-mode network: ipconfig, ping,
             Winsock (netcat) and winhttp's HTTP/2 (httptest suite) against
@@ -48,7 +53,7 @@ gate on it.  --summary appends a Markdown table (GitHub's step summary).
 import argparse, os, re, shutil, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from novarun import Nova, ROOT
+from novarun import Nova, ROOT, qemu_binary
 import wavcheck
 
 
@@ -183,8 +188,28 @@ def load_suite(name):
 # with pc-testdev as its embedded controller), a USB keyboard on an xHCI
 # controller at 00:05.0 and an Intel HD Audio card recorded to a WAV.
 CORE = load_suite('core')
-# The graphics boot: 7-Zip and the Mesa and DXVK downloads on drive C:
+# The graphics boot: 7-Zip and the Mesa, DXVK and Venus downloads on drive
+# C:, a 3D virtio-gpu with Venus as the first monitor (Vulkan on this
+# machine's GPU: QEMU 9.2 or newer with virglrenderer built with Venus, and
+# an OpenGL display; see venus_gpu) and a QEMU secondary-vga as the second
 GRAPHICS = load_suite('graphics')
+VENUS_GPU = 'virtio-vga-gl,venus=on,blob=on,hostmem=1G'
+
+
+def venus_gpu():
+    """The graphics boot's first monitor: the 3D virtio-gpu when this QEMU has
+    Venus (its virtio-vga-gl has a "venus" property), otherwise the standard
+    VGA, and the tests that need Venus fail"""
+    try:
+        props = subprocess.run([qemu_binary(), '-device', 'virtio-vga-gl,help'], capture_output=True,
+                               text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        props = ''
+    if re.search(r'^\s*venus=', props, re.M):
+        return ('-vga', 'none', '-device', VENUS_GPU)
+    print(f'{qemu_binary()} has no virtio-vga-gl with Venus: the first monitor is a standard VGA, '
+          'and the Venus tests will fail', flush=True)
+    return ('-vga', 'std')
 # The network suite's two boots, each with a virtio-net adapter.  IPv4 and
 # HTTP/2: QEMU's user-mode network, where 10.0.2.2 is this machine and
 # tools/h2server.js serves HTTPS (HTTP/2 by ALPN, self-signed) on 18443 and
@@ -419,6 +444,7 @@ def main():
         # the graphics boot has a second monitor (montest): a QEMU secondary-vga
         heads = ['-device', 'secondary-vga,id=head2'] if a.suite == 'graphics' else []
         boot_args = dict(puts=puts, mem=4096 if a.suite == 'graphics' else 2048, data_mb=data_mb, rec=rec,
+                         vga=venus_gpu() if a.suite == 'graphics' else ('-vga', 'std'),
                          extra_args=tables + ['-device', 'pc-testdev', '-device', 'qemu-xhci,id=xhci,addr=0x5',
                                               '-device', 'usb-kbd,id=usbkbd,bus=xhci.0'] + heads)
         results += run_boot(a, tests, work, None, wav=wav, **boot_args)

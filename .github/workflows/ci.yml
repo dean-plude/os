@@ -1,14 +1,17 @@
 # Boot CI: every pull request builds NovaOS, boots it in QEMU and runs the
 # self-tests (tools/selftest.py): the core suite, the network suite (IPv4,
-# IPv6 and winhttp's HTTP/2 over virtio-net) and the graphics suite (Mesa
-# and DXVK from the App Store, then tools/gltest and tools/d3dtest).
+# IPv6 and winhttp's HTTP/2 over virtio-net) and the graphics suite (Mesa,
+# DXVK and Venus from the App Store, then tools/gltest and tools/d3dtest on
+# a 3D virtio-gpu: a QEMU built with Venus, on Xvfb, whose Vulkan is the
+# runner's lavapipe).
 # A failing test fails its check; make both required status checks on main
 # to block the merge.
 #
 # The boot-test job also builds the bootable ISO (scripts/create-iso.sh) and
 # keeps it as the "nova-iso" run artifact, so every pull request has a
 # downloadable nova.iso.  After a push to main passes, the publish-iso job
-# puts that ISO on the rolling "latest" release:
+# puts that ISO on the rolling "latest" release, with the graphics job's
+# venus.7z (tools/build_venus.py), which the App Store's "Venus" downloads:
 #   https://github.com/dean-plude/os/releases/latest/download/nova.iso
 # nova.iso is not committed to the repository.
 #
@@ -181,7 +184,13 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
-            qemu-system-x86 ovmf mtools dosfstools acpica-tools p7zip-full curl ccache
+            g++-mingw-w64-x86-64 g++-mingw-w64-i686 \
+            qemu-system-x86 ovmf mtools dosfstools acpica-tools p7zip-full curl ccache \
+            xvfb xauth mesa-vulkan-drivers libgl1-mesa-dri libegl1 seabios ipxe-qemu \
+            ninja-build pkg-config libglib2.0-dev libpixman-1-dev libsdl2-dev libepoxy-dev libgbm-dev \
+            libdrm-dev libvulkan-dev libpng-dev glslang-tools bison flex python3-mako python3-yaml python3-venv
+          pip install --user --break-system-packages -q 'meson==1.9.0' pycotap
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo /usr/lib/ccache >> "$GITHUB_PATH"
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
@@ -207,12 +216,45 @@ jobs:
           }
           ccache -s
 
-      - name: Stage 7-Zip, the downloads and the test programs
-        run: tools/ci/stage-graphics.sh gfx gfx-cache
+      # Venus (tools/build_venus.py) and a QEMU with Venus
+      # (tools/ci/build-qemu-venus.sh) are built when their sources change
+      - name: Cache Venus
+        id: venus-cache
+        uses: actions/cache@v4
+        with:
+          path: venus-out/venus.7z
+          key: venus-${{ hashFiles('tools/build_venus.py', 'third_party/mesa-venus/**') }}
 
-      - name: Run d2dtest, install Mesa and DXVK from the App Store, run gltest and d3dtest
+      - name: Build Venus (Mesa's Vulkan driver for the virtio-gpu)
+        if: steps.venus-cache.outputs.cache-hit != 'true'
+        run: python3 tools/build_venus.py venus-out --work "$RUNNER_TEMP/venus-work"
+
+      - name: Keep Venus for the release
+        uses: actions/upload-artifact@v4
+        with:
+          name: venus
+          path: venus-out/venus.7z
+          if-no-files-found: error
+
+      - name: Cache the QEMU with Venus
+        id: qemu-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/qv
+          key: qemu-venus-${{ hashFiles('tools/ci/build-qemu-venus.sh') }}
+
+      - name: Build QEMU 10.2 and virglrenderer with Venus
+        if: steps.qemu-cache.outputs.cache-hit != 'true'
+        run: tools/ci/build-qemu-venus.sh ~/qv "$RUNNER_TEMP/qemu-src"
+
+      - name: Stage 7-Zip, the downloads and the test programs
+        run: VENUS_7Z=venus-out/venus.7z tools/ci/stage-graphics.sh gfx gfx-cache
+
+      - name: Run d2dtest, install Mesa, DXVK and Venus from the App Store, run gltest, d3dtest and the frame-rate test
         run: |
-          python3 tools/selftest.py --suite graphics --gfx gfx --img build/nova.img --out graphics-out \
+          export NOVARUN_QEMU="$HOME/qv/bin/qemu-system-x86_64" LD_LIBRARY_PATH="$HOME/qv/lib/x86_64-linux-gnu"
+          xvfb-run -a -s '-screen 0 1280x1024x24' \
+            python3 tools/selftest.py --suite graphics --gfx gfx --img build/nova.img --out graphics-out \
             --junit graphics-out/junit.xml --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the serial log and screenshots
@@ -240,6 +282,10 @@ jobs:
         with:
           name: nova-iso
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: venus
+
       - name: Move the "latest" release to this commit and attach the ISO
         env:
           GH_TOKEN: ${{ github.token }}
@@ -250,9 +296,9 @@ jobs:
           notes="NovaOS built from main at ${GITHUB_SHA::7} by CI run ${GITHUB_RUN_ID}.
           Boot it with UEFI firmware; see the README for the QEMU command line."
           if gh release view latest >/dev/null 2>&1; then
-            gh release upload latest nova.iso nova.iso.sha256 --clobber
+            gh release upload latest nova.iso nova.iso.sha256 venus.7z --clobber
             gh release edit latest --title "NovaOS (latest main)" --notes "$notes" --latest
           else
-            gh release create latest nova.iso nova.iso.sha256 \
+            gh release create latest nova.iso nova.iso.sha256 venus.7z \
               --title "NovaOS (latest main)" --notes "$notes" --latest
           fi
