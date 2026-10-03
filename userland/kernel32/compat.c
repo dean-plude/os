@@ -150,15 +150,7 @@ K32 DWORD WINAPI GetCompressedFileSizeA(LPCSTR name, LPDWORD high)
     return GetCompressedFileSizeW(w, high);
 }
 
-/* No reparse points or links on drive C: (FAT-like semantics) */
-K32 BOOL WINAPI CreateHardLinkW(LPCWSTR link, LPCWSTR target, LPSECURITY_ATTRIBUTES sa)
-{
-    (void)link; (void)target; (void)sa;
-    SetLastError(ERROR_NOT_SUPPORTED);
-    return FALSE;
-}
-K32 BOOL WINAPI CreateHardLinkA(LPCSTR link, LPCSTR target, LPSECURITY_ATTRIBUTES sa)
-{ (void)link; (void)target; (void)sa; SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
+/* No reparse points on drive C: (hard links: CreateHardLink in extra.c) */
 K32 BOOLEAN WINAPI CreateSymbolicLinkW(LPCWSTR link, LPCWSTR target, DWORD flags)
 { (void)link; (void)target; (void)flags; SetLastError(ERROR_PRIVILEGE_NOT_HELD); return FALSE; }
 K32 BOOLEAN WINAPI CreateSymbolicLinkA(LPCSTR link, LPCSTR target, DWORD flags)
