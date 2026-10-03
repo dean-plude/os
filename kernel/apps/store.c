@@ -127,6 +127,11 @@ static const StoreApp g_catalog[] = {
     { "ShareX", "ShareX Team", "Screen capture and file sharing",
       CAT_UTILITIES, GH "ShareX/ShareX/releases/download/v17.1.0/ShareX-17.1.0-portable.zip", "ShareX-17.1.0-portable.zip", "ShareX",
       "ShareX\\**\\ShareX.exe", KIND_ARCHIVE, 10, "Portable zip; needs the .NET runtime (see Runtimes)", "Sx", GDI_C(0x20, 0x90, 0x60) },
+    { "Roblox", "Roblox Corporation", "Play millions of games made by the Roblox community",
+      CAT_MEDIA, "https://www.roblox.com/download/client?os=win", "RobloxPlayerInstaller.exe", NULL,
+      "\\AppData\\Local\\Roblox\\Versions\\**\\RobloxPlayerBeta.exe", KIND_SETUP, 15,
+      "64-bit installer; installs on NovaOS, but the game client stops in its Hyperion anti-cheat (docs/compatibility.md)",
+      "Rb", GDI_C(0x33, 0x5F, 0xFF) },
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",

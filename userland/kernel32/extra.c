@@ -3162,6 +3162,46 @@ WINBASEAPI DWORD WINAPI K32GetProcessImageFileNameW(HANDLE p, LPWSTR buf, DWORD 
     return K32GetModuleFileNameExW(p, 0, buf, n);
 }
 
+WINBASEAPI DWORD WINAPI K32GetProcessImageFileNameA(HANDLE p, LPSTR buf, DWORD n)
+{
+    return K32GetModuleFileNameExA(p, 0, buf, n);
+}
+
+/* The firmware's tables: 'RSMB' (SMBIOS: the machine's maker, model, serial
+ * numbers) and 'ACPI', through SystemFirmwareTableInformation.  Returns the
+ * bytes copied, or the size needed when @buf is too small, or 0. */
+static UINT firmware_table(DWORD provider, DWORD action, DWORD id, PVOID buf, DWORD size)
+{
+    ULONG cap = size > 0x7FFFFFF0u ? 0x7FFFFFF0u : size;
+    ULONG *info = HeapAlloc(GetProcessHeap(), 0, 16 + cap);
+    if (!info) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    info[0] = provider; info[1] = action; info[2] = id; info[3] = cap;
+    ULONG ret = 0;
+    NTSTATUS s = NtNovaFirmwareTable(info, 16 + cap, &ret);    /* NtQuerySystemInformation class 76 */
+    UINT n = 0;
+    if (NT_SUCCESS(s)) {
+        n = info[3];
+        if (buf) memcpy(buf, info + 4, n);
+    } else if (s == (NTSTATUS)0xC0000023 /* STATUS_BUFFER_TOO_SMALL */) {
+        n = info[3];
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+    } else {
+        fail_status(s);
+    }
+    HeapFree(GetProcessHeap(), 0, info);
+    return n;
+}
+
+WINBASEAPI UINT WINAPI GetSystemFirmwareTable(DWORD provider, DWORD id, PVOID buf, DWORD size)
+{
+    return firmware_table(provider, 1, id, buf, size);
+}
+
+WINBASEAPI UINT WINAPI EnumSystemFirmwareTables(DWORD provider, PVOID buf, DWORD size)
+{
+    return firmware_table(provider, 0, 0, buf, size);
+}
+
 WINBASEAPI BOOL WINAPI QueryFullProcessImageNameW(HANDLE p, DWORD flags, LPWSTR buf, PDWORD n)
 {
     (void)flags;

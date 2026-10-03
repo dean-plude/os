@@ -66,6 +66,26 @@ results; until then they are kept by hand.
 
 <!-- END generated:compat-table -->
 
+## Roblox and anti-cheat
+
+Roblox's installer works on NovaOS (it needed the firmware tables
+`GetSystemFirmwareTable` reads and Windows' answer for a registry key
+below a missing one).  The client, `RobloxPlayerBeta.exe`, does not start:
+its first code is Hyperion, Roblox's anti-cheat (`RobloxPlayerBeta.dll`),
+which decrypts the game at run time and makes its own `syscall`
+instructions instead of calling ntdll.  On NovaOS the service numbers it
+works out for those calls all come out as 0, so its own file and
+information calls fail, it calls `NtTerminateProcess` through service 0
+too (which is not that service), and it then jumps to an address that was
+never mapped.  The likely reason is that NovaOS's ntdll is not yet the one
+Windows ships: it has about 175 of Windows' 470 system services, a few
+of them (`NtQuerySystemInformation` among them) are C code rather than
+system-call stubs, and its stubs are not laid out in service-number order
+as Windows' are.  The faithful fix is an ntdll with a stub for every
+Windows 10 service, in service-number order, and a kernel that implements
+every service a program may call directly.  NovaOS does not, and will not,
+work around anti-cheat checks or change Roblox itself.
+
 ## Programs that come with NovaOS
 
 Built in: the Terminal, File Explorer, Notepad, Settings, Calendar,

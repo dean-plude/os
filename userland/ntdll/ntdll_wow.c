@@ -555,6 +555,7 @@ NTSTATUS NTAPI NtNovaProcessList(NOVA_PROCESS_ENTRY *buf, ULONG max, PULONG coun
 {
     return SC(NtNovaProcessList, P(buf), U(max), P(count));
 }
+NTSTATUS NTAPI NtNovaFirmwareTable(PVOID info, ULONG len, PULONG ret) { return SC(NtNovaFirmwareTable, P(info), U(len), P(ret)); }
 NTSTATUS NTAPI NtTerminateProcess(HANDLE p, NTSTATUS status) { return SC(NtTerminateProcess, H(p), U(status)); }
 
 NTSTATUS NTAPI NtQuerySection(HANDLE h, ULONG cls, PVOID info, SIZE_T len, PSIZE_T ret)

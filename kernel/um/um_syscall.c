@@ -27,6 +27,7 @@
 #include "../apps/apps.h"
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
+#include "../hal/firmware.h"
 #include "../fs/fsec.h"
 #include "../ke/sleep.h"
 
@@ -2263,6 +2264,36 @@ static UINT64 sys_nova_process_list(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return st;
 }
 
+/* NtNovaFirmwareTable(SYSTEM_FIRMWARE_TABLE_INFORMATION *Info, ULONG Length,
+ * PULONG ReturnLength): NtQuerySystemInformation(SystemFirmwareTableInformation).
+ * Info is { ULONG ProviderSignature, Action, TableID, TableBufferLength;
+ * UCHAR TableBuffer[] }; a TableBufferLength too small for the table gets
+ * STATUS_BUFFER_TOO_SMALL with the size it needs, as on Windows. */
+static UINT64 sys_nova_firmware_table(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a4;
+    UINT32 hdr[4];
+    if (a2 < sizeof(hdr)) return ST_INFO_LENGTH_MISMATCH;
+    if (!NT_SUCCESS(CopyFromUser(hdr, (const void *)(uintptr_t)a1, sizeof(hdr)))) return UM_STATUS_ACCESS_VIOLATION;
+    UINT32 cap = hdr[3] < a2 - sizeof(hdr) ? hdr[3] : (UINT32)(a2 - sizeof(hdr));
+    UINT32 need = FirmwareTable(hdr[0], hdr[1], hdr[2], NULL, 0);
+    if (!need) return hdr[1] > 1 ? ST_INVALID_PARAMETER : 0xC0000225u;    /* STATUS_NOT_FOUND */
+    UINT32 st = ST_SUCCESS;
+    hdr[3] = need;
+    if (cap < need) st = ST_BUFFER_TOO_SMALL;
+    else {
+        UINT8 *buf = kmalloc(need);
+        if (!buf) return ST_NO_MEMORY;
+        FirmwareTable(hdr[0], hdr[1], hdr[2], buf, need);
+        if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)(a1 + sizeof(hdr)), buf, need))) st = UM_STATUS_ACCESS_VIOLATION;
+        kfree(buf);
+    }
+    UINT32 ret = (UINT32)sizeof(hdr) + need;
+    if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a1, hdr, sizeof(hdr)))) return UM_STATUS_ACCESS_VIOLATION;
+    if (a3 && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, &ret, 4))) return UM_STATUS_ACCESS_VIOLATION;
+    return st;
+}
+
 static UINT64 sys_terminate_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
@@ -2956,6 +2987,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtNovaCreateProcess,        sys_nova_create_process);
     um_install(SYSCALL_NtNovaProcessInfo,          sys_nova_process_info);
     um_install(SYSCALL_NtNovaProcessList,          sys_nova_process_list);
+    um_install(SYSCALL_NtNovaFirmwareTable,        sys_nova_firmware_table);
     um_install(SYSCALL_NtQuerySystemTime,          sys_query_system_time);
     um_install(SYSCALL_NtShutdownSystem,           sys_shutdown_system);
     um_install(SYSCALL_NtSetSystemPowerState,      sys_power_action);

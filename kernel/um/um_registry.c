@@ -234,11 +234,10 @@ static UINT32 walk(RegKey *k, const UINT16 *path, UINT32 n, bool create, bool vo
         if (len > NAME_MAX_CHARS) return ST_OBJECT_NAME_INVALID;
         RegKey *c = find_child(k, path + s, len);
         if (!c) {
-            if (!create) {
-                /* the last component missing: NAME_NOT_FOUND, else PATH_NOT_FOUND */
-                while (i < n && path[i] == '\\') i++;
-                return i >= n ? ST_OBJECT_NAME_NOT_FOUND : ST_OBJECT_PATH_NOT_FOUND;
-            }
+            /* Any component missing, the last or one on the way:
+             * NAME_NOT_FOUND, as Windows' registry answers (RegOpenKeyEx's
+             * ERROR_FILE_NOT_FOUND; Roblox's installer stops on anything else) */
+            if (!create) return ST_OBJECT_NAME_NOT_FOUND;
             c = add_child(k, path + s, len, vol);
             if (!c) return ST_NO_MEMORY;
             if (created) *created = true;

@@ -1078,6 +1078,8 @@ NTSYSAPI NTSTATUS NTAPI NtQuerySystemInformation(ULONG cls, PVOID buf, ULONG len
         }
         return ST_SUCCESS;
     }
+    case 76:                                                        /* SystemFirmwareTableInformation */
+        return NtNovaFirmwareTable(buf, len, ret);
     case 8: {                                                       /* SystemProcessorPerformanceInformation */
         ULONG n = cpu_count(), need = 48 * n;
         if (ret) *ret = need;

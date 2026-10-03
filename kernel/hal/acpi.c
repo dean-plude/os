@@ -119,6 +119,29 @@ static const AcpiHeader *find_nth(const char *sig, int index)
 
 const void *AcpiFindTable(const char *sig) { return find_nth(sig, 0); }
 
+/* The @i'th table the RSDT/XSDT lists; one past them, the DSDT (which
+ * only the FADT points to) */
+const void *AcpiTableAt(UINT32 i)
+{
+    if (!g_rsdp) return NULL;
+    const UINT8 *r = PHYS_TO_VIRT(g_rsdp);
+    if (memcmp(r, "RSD PTR ", 8)) return NULL;
+    UINT64 xsdt = r[15] >= 2 ? *(const UINT64 *)(r + 24) : 0;
+    UINT32 rsdt = *(const UINT32 *)(r + 16);
+    const AcpiHeader *root = table_at(xsdt ? xsdt : rsdt);
+    if (!root) return NULL;
+    UINT32 esize = xsdt ? 8 : 4;
+    UINT32 n = (root->len - sizeof(AcpiHeader)) / esize;
+    const UINT8 *ents = (const UINT8 *)(root + 1);
+    if (i < n) return table_at(esize == 8 ? *(const UINT64 *)(ents + 8 * i) : *(const UINT32 *)(ents + 4 * i));
+    if (i > n) return NULL;
+    const AcpiHeader *f = find_nth("FACP", 0);
+    if (!f) return NULL;
+    const UINT8 *fb = (const UINT8 *)f;
+    UINT64 dsdt = f->len >= 148 ? *(const UINT64 *)(fb + 140) : 0;
+    return table_at(dsdt ? dsdt : *(const UINT32 *)(fb + 40));
+}
+
 /* -----------------------------------------------------------------------
  * Register access through a Generic Address Structure
  * ----------------------------------------------------------------------- */
