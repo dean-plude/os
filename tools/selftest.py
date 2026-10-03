@@ -128,9 +128,12 @@ def close_lid(nova):
     nova.qmp.cmd('system_wakeup')
     # The tests after this one type on that keyboard: wait until NovaOS has
     # found it again after the wake (read from the file: run() owns the stream)
+    # (NovaOS logs the keyboard coming back before or after "Woke up": the
+    # xHCI port is re-enumerated while it resumes, so either order is fine)
     for _ in range(240):
         log = open(nova.serial_path, 'rb').read().decode('latin-1')
-        if 'Woke up' in log and re.search(r'Woke up[\s\S]*\[USB\] port \d+: keyboard', log):
+        log = log[log.rfind('Lid closed: sleeping'):]
+        if 'Woke up' in log and re.search(r'keyboard removed[\s\S]*\[USB\] port \d+: keyboard \(report protocol', log):
             break
         time.sleep(0.25)
 
