@@ -49,7 +49,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **Windows Installer packages** | 7-Zip, CMake, Node.js, Temurin, KeePassXC `.msi` | 7-Zip and CMake install through their own wizards (licence, options, feature tree, progress), CMake's dialogs running its DLL custom actions; custom-action DLLs run in 64-bit and 32-bit custom-action servers; shortcuts and a test service are created and removed again by `msiexec /x`. |
 | **Python 3.14** | NuGet package | `-c`, a hashlib/JSON/regex/threads/subprocess test script. |
 | **Mesa 3D 24.2.4** (mesa-dist-win) | `opengl32.dll` (llvmpipe) and the Vulkan driver (lavapipe), x64 and x86, from the App Store | OpenGL 4.5: `tools/gltest` (pixel formats, immediate mode, GLSL, read-back, animated `SwapBuffers`) passes as a 64-bit and a 32-bit program. |
-| **DXVK 2.5.3** | `d3d8`, `d3d9`, `d3d10core`, `d3d11`, `dxgi`, x64 and x86, from the App Store, on Mesa's Vulkan and NovaOS's own `vulkan-1.dll` | Direct3D 9 and 11: `tools/d3dtest` (device creation, a D3D9 triangle, D3D11 clear, read-back, animated `Present` in a window) passes as a 64-bit and a 32-bit program. |
+| **DXVK 2.5.3** | `d3d8`, `d3d9`, `d3d10core`, `d3d11` (as `d3d11_dxvk`, behind NovaOS's own `d3d11`), `dxgi`, x64 and x86, from the App Store, on Mesa's Vulkan and NovaOS's own `vulkan-1.dll` | Direct3D 9 and 11: `tools/d3dtest` (device creation, a D3D9 triangle, D3D11 clear, read-back, animated `Present` in a window) passes as a 64-bit and a 32-bit program. |
 | **Notepad++ 8.7.9** (x64 portable) | Scintilla editor, static MSVC C++ runtime | Opens with its menus, toolbar, tab bar, editor and status bar, and takes typing. |
 | **ripgrep, fd, bat, jq, fzf** | Rust (MSVC), C (MinGW), Go | Searching, walking folders, printing files, filtering, from the Terminal. |
 | **Floorp 12.19** (Firefox 157 engine, x64) | Gecko browser | Starts, creates its profile, and draws the full browser window (toolbar, address bar, sidebar) with DirectWrite text through its GPU process, and takes keyboard input.  Its sandboxed child processes (tab, extension, GPU, network, media) start and talk to the main process.  Page content does not show yet and pages are not fetched yet.  See [Firefox](docs/HISTORY.md#firefox-floorp). |
@@ -137,14 +137,18 @@ every part, phase by phase.
   `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, WASAPI
   playback and capture, endpoint volume), `msi`,
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
-  `usp10` (Uniscribe), `normaliz` (IDN), and more.
+  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`), and
+  the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
+  `dhcpcsvc`, `d3dcompiler_47`), and more.
 - **Text**: `novatext.dll`, the text core built once and shared, carries
   HarfBuzz (shaping) and FreeType (fonts).  Uniscribe (`usp10`) itemizes
   text by script and direction and shapes it with HarfBuzz, and GDI's
   `ExtTextOut` sends complex scripts through it, as Windows' LPK does, so
   Arabic, Hebrew and the Indic scripts join, reorder and run right to left.
   Arabic and Devanagari draw with Noto Sans; GDI falls back to them by
-  script.
+  script.  DirectWrite (`dwrite`) lays text out on the same core, with
+  font fallback: `tools/dwtest` draws Latin, Arabic and Devanagari in one
+  line from a Latin-only font.
 - **2D drawing**: Direct2D (`d2d1.dll`) draws in software: geometries
   (rectangles, ellipses, paths with Béziers and arcs, groups, transforms,
   combining, widening, tessellation), strokes with caps, joins and dashes,
@@ -241,22 +245,23 @@ To make the ISO yourself from a fresh build, run
   `disptest`, `icutest` (ICU and locales, 64- and 32-bit), `comtest`,
   `tlbtest` (type libraries, 64- and 32-bit), `usptest` (Arabic and
   Devanagari shaped through Uniscribe and drawn by `ExtTextOut`, 64- and
-  32-bit), `cppeh`, `battery` (against the battery in
-  `tests/acpi/battery.asl`), `soundtest` (the recorded WAV must hold the
-  tones played), `soundtest record`, `capture` and `volume` (`waveIn`
-  and WASAPI capture must record the tone the microphone hears, and a
-  quarter of the endpoint volume must sound 12 dB quieter), `sleeptest
-  timer` (`Sleep(1)`, 1 ms wait timeouts and waitable timers (periodic
-  ones and their completion routines too) end within a millisecond with
-  every CPU busy), `powertest` (closing the lid in
-  `tests/acpi/lid-thermal.asl` sleeps, a USB key and the lid wake it,
-  the thermal zone's readings), `disptest 1024 768` (saves the mode the
-  restart must keep), an installer that replaces a running program and
-  finishes after a restart (`filetest install`, `shutdown /r`, `filetest
-  installed`), `disptest saved 1024 768` (the restart kept the saved
-  display mode), hard links kept across a restart (`linktest
-  restarted`), and last `crash kernel`, a deliberate kernel fault whose
-  serial log must show a backtrace with function names.<!-- END generated:core-tests -->
+  32-bit), `cppeh`, `delaytest` (the DLLs Firefox delay-loads),
+  `battery` (against the battery in `tests/acpi/battery.asl`),
+  `soundtest` (the recorded WAV must hold the tones played), `soundtest
+  record`, `capture` and `volume` (`waveIn` and WASAPI capture must
+  record the tone the microphone hears, and a quarter of the endpoint
+  volume must sound 12 dB quieter), `sleeptest timer` (`Sleep(1)`, 1 ms
+  wait timeouts and waitable timers (periodic ones and their completion
+  routines too) end within a millisecond with every CPU busy),
+  `powertest` (closing the lid in `tests/acpi/lid-thermal.asl` sleeps, a
+  USB key and the lid wake it, the thermal zone's readings), `disptest
+  1024 768` (saves the mode the restart must keep), an installer that
+  replaces a running program and finishes after a restart (`filetest
+  install`, `shutdown /r`, `filetest installed`), `disptest saved 1024
+  768` (the restart kept the saved display mode), hard links kept across
+  a restart (`linktest restarted`), and last `crash kernel`, a
+  deliberate kernel fault whose serial log must show a backtrace with
+  function names.<!-- END generated:core-tests -->
 - **Network** (in the boot-test job): two boots with a virtio-net card.
   On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
   `httptest suite` (winhttp with HTTP/2 by ALPN) against
@@ -292,7 +297,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `disptest`, `dlltest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `delaytest`, `disptest`, `dlltest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `pipetest`, `posixtest`, `powertest`, `proctest`, `sectest`, `shmtest`, `smpstress`, `threads`, `usptest`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, and records
   through `waveIn` and WASAPI capture;
   `tools/novarun.py --wav out.wav` records what NovaOS plays, `--rec in.wav`
