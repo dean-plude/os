@@ -13,10 +13,18 @@ signalled it, when every CPU was busy.  It now runs at once.
   the thread's CPU an `IPI_WAKE` (itself too, taken once it re-enables
   interrupts) and that CPU switches in the interrupt.  This is the same
   rule a thread woken by its own deadline already had.
+- **Fair turns**: the preempted thread goes back first in the queue (as
+  on NT), not last, so a waker its wakee preempts doesn't wait out every
+  other thread's slice.  A time slice starts anew only when a thread is
+  queued last: one woken or preempted often keeps the ticks it has used,
+  and once its slice is used up a wake no longer puts it first, so the
+  threads queued behind it cannot starve.
 - **A CPU halted waiting for the kernel lock** does not switch in the
   middle of that wait (as with the timer); its next timer tick does.
 - **Measured** with `sleeptest timer` on two CPUs in QEMU, a busy thread
   on each: a thread waiting on an event ran 8.96 ms (95th percentile,
-  median 8.8 ms) after another thread set it; now 0.06 ms.  `sleeptest
-  timer` gains that case ("Event set (waiter)") and holds it to 1 ms like
-  the others.
+  median 8.8 ms) after another thread set it; now 0.05 to 0.06 ms.  The
+  1 ms timer queue timer (its worker already waiting when the timer is
+  set), which could be up to 20 ms late, is 0.22 to 0.31 ms.  `sleeptest
+  timer` gains the event case ("Event set (waiter)") and now judges the
+  timer queue case too, both held to 1 ms like the others.

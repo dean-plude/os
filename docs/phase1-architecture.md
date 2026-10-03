@@ -207,7 +207,11 @@ its priority is higher, or the same and it was waiting with a TSC
 deadline (every program's wait).  A halted CPU takes it if one is free;
 otherwise the waker sends the thread's CPU `IPI_WAKE` with a reschedule
 flag set, and that CPU switches in the interrupt (unless it is halted
-waiting for the kernel lock: then its next timer tick switches).
+waiting for the kernel lock: then its next timer tick switches).  The
+preempted thread goes back first in the queue, and a time slice starts
+anew only when a thread is queued last, so a thread woken often still
+reaches the end of its slice (then a wake no longer puts it first) and
+the threads behind it are not starved.
 
 ### Scheduler Design
 
