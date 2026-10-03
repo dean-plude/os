@@ -1941,7 +1941,7 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
     UINT8 *fpu = kernel_alloc_pages(1);
     if (!t || !fpu) { kfree(t); if (fpu) kernel_free_pages(fpu, 1); return NULL; }
     memset(fpu, 0, PAGE_SIZE);
-    fpu[0] = 0x7F; fpu[1] = 0x03;                          /* FCW = 0x037F */
+    fpu[0] = 0x7F; fpu[1] = 0x02;                          /* FCW = 0x027F (53-bit precision), as on Windows */
     put_u32(fpu + 24, 0x1F80);                             /* MXCSR default */
     t->ob.type = UO_THREAD;
     t->ob.refs = 1;                                        /* the process's thread table */
