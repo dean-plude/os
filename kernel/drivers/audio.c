@@ -358,7 +358,7 @@ static char g_hda_in_name[96];
 
 bool AudioInit(void)
 {
-    if (!sched_create_thread("audio", mixer_thread, NULL, 12)) {
+    if (!sched_create_thread("audio", mixer_thread, NULL, PRIO_LOW_REALTIME)) {   /* (above any boost) */
         kprintf("[AUDIO] Could not start the mixer\n");
         return false;
     }

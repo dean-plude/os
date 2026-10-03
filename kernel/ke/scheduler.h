@@ -76,8 +76,15 @@ typedef struct Thread {
     uint64_t        ticks_total;   /* Total ticks consumed */
     uint64_t        ticks_slice;   /* Ticks used in current time slice */
 
-    /* Scheduling priority (0 = lowest, 31 = highest in NT model) */
+    /* Scheduling priority (0 = lowest, 31 = highest in NT model): the
+     * current (dynamic) one, which a wake-up raises above the base by the
+     * waker's increment (sched_unblock_boost) and which decays back to the
+     * base one level per quantum the thread runs (see scheduler.c) */
     uint8_t         priority;
+    uint8_t         base_priority;
+    uint8_t         boost_ticks;    /* ticks run while boosted since the last decay step */
+    bool            balance_boost;  /* raised for starving (sched_tick): back to base after a quantum */
+    uint64_t        ready_tick;     /* when it was last queued (the balance-set boost) */
 
     /* Page table root (CR3 physical address) for this thread's process.
      * 0 = kernel thread (no CR3 switch needed).
@@ -114,6 +121,27 @@ typedef struct Thread {
     bool            preempted;      /* preempted for a woken thread: goes on with its slice */
     bool            woken;          /* queued first as woken from a wait (until it runs) */
 } Thread;
+
+/* Priorities: 1-15 are dynamic (boosted on wake, never above 15),
+ * 16-31 real-time (never boosted, as on NT) */
+#define PRIO_MAX_DYNAMIC   15
+#define PRIO_LOW_REALTIME  16
+
+/* Wake-up boosts: how far above its base a thread woken by each kind of
+ * waker runs (NT's increments from wdm.h and Windows Internals) */
+#define BOOST_NONE       0
+#define BOOST_EVENT      1      /* EVENT_INCREMENT: events, alerts (SRW locks, condition variables, APCs) */
+#define BOOST_TIMER      1      /* a timed wait's deadline (Sleep, a timeout) or a waitable timer: keeps
+                                   such a wake ahead of a thread an event just boosted */
+#define BOOST_SEMAPHORE  1      /* SEMAPHORE_INCREMENT */
+#define BOOST_MUTANT     1      /* a released mutex */
+#define BOOST_DISK       1      /* IO_DISK: file I/O completed */
+#define BOOST_GUI        2      /* a window or thread message (win32k's windowing boost) */
+#define BOOST_NAMED_PIPE 2      /* IO_NAMED_PIPE */
+#define BOOST_NETWORK    2      /* IO_NETWORK */
+#define BOOST_KEYBOARD   6      /* IO_KEYBOARD: keyboard input */
+#define BOOST_MOUSE      6      /* IO_MOUSE: mouse input */
+#define BOOST_SOUND      8      /* IO_SOUND */
 
 /* Default kernel stack size for new threads */
 #define THREAD_STACK_SIZE (16 * 1024)   /* 16 KiB */
@@ -217,10 +245,17 @@ void sched_block(void);
  * Unblock a thread (move from WAITING to READY state).  It preempts the
  * thread running on its CPU at once (through IPI_WAKE) if it has a higher
  * priority — or the same, when a timer woke it (sched_unblock_timer: the
- * timer it waits on was set or went off); otherwise it is queued last.
+ * timer it waits on was set or went off); otherwise it is queued after the
+ * threads of its priority.
  */
 void sched_unblock(Thread *t);
 void sched_unblock_timer(Thread *t);
+/* The same with NT's wake-up boost: @t's priority rises to its base plus
+ * @boost (BOOST_*; never above 15, never for a real-time thread, never
+ * lower than it is), so it runs ahead of busy threads of its base
+ * priority, preempting one if that is what runs on its CPU.  It decays
+ * one level per quantum (20 ms) the thread runs, back to its base. */
+void sched_unblock_boost(Thread *t, int boost);
 /* IPI_WAKE (interrupt context): switch if sched_unblock asked this CPU to */
 void sched_resched_ipi(void);
 /* On the way back to a program: a switch asked for while this CPU halted

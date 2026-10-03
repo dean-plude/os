@@ -57,6 +57,10 @@
 #define WM_XBUTTONUP      0x020C
 #define WM_MOUSEHWHEEL    0x020E
 #define WM_MOUSELEAVE     0x02A3
+#define WM_KEYFIRST       0x0100
+#define WM_KEYLAST        0x0109
+#define WM_MOUSEFIRST     0x0200
+#define WM_MOUSELAST      0x020E
 #define WM_NOVA_TOUCH     0x03FD   /* user32's u32.h: a touch contact (gui_touch) */
 
 #define GUI_MAX_WINDOWS   64
@@ -164,12 +168,24 @@ static void enqueue_locked(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, i
     __atomic_store_n(&g->head, g->head + 1, __ATOMIC_RELEASE);
 }
 
+/* Wake the threads waiting for messages; the one @tid (0: all of them)
+ * gets NT's boost for @msg: +6 for keyboard and mouse input (the thread
+ * with the focus or the pointer: the foreground), +2 for other window
+ * messages (win32k's windowing boost) */
+static void gui_wake(UINT32 tid, UINT32 msg)
+{
+    int boost = msg >= WM_KEYFIRST && msg <= WM_KEYLAST ? BOOST_KEYBOARD
+              : (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) || msg == WM_MOUSELEAVE || msg == WM_NOVA_TOUCH ? BOOST_MOUSE
+              : BOOST_GUI;
+    waitq_wake_boost(&g_guiq, boost, tid);
+}
+
 static void enqueue(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, int y)
 {
     IrqState s = spin_lock_irqsave(&g_gui_lock);
     if (g->used) enqueue_locked(g, msg, wp, lp, x, y);
     spin_unlock_irqrestore(&g_gui_lock, s);
-    waitq_wake(&g_guiq);
+    gui_wake(g->tid, msg);
 }
 
 static UINT64 packxy(int x, int y) { return ((UINT64)(UINT16)y << 16) | (UINT16)x; }
@@ -361,7 +377,7 @@ static bool gui_tick(WND *w)
             any = true;
         }
     spin_unlock_irqrestore(&g_gui_lock, s);
-    if (any) waitq_wake(&g_guiq);
+    if (any) gui_wake(g->tid, 0);
     return false;
 }
 
@@ -599,7 +615,7 @@ static UINT64 sys_gui_getmessage(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         UINT64 now = sched_ticks();
         if (a3 >= 2 && now >= until) return (UINT64)(INT64)-1;
         UINT64 nap = a3 >= 2 && until - now < 10 ? until - now : 10;
-        waitq_wait(&g_guiq, gen, (UINT32)nap);  /* until a message comes (or 100 ms) */
+        waitq_wait_tag(&g_guiq, gen, (UINT32)nap, tid);   /* until a message comes (or 100 ms) */
     }
 }
 
@@ -611,7 +627,7 @@ static UINT64 sys_gui_invalidate(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     GuiWin *g = win_of_handle(p, a1);
     if (g) enqueue_locked(g, WM_PAINT, 0, 0, 0, 0);
     spin_unlock_irqrestore(&g_gui_lock, s);
-    if (g) { WmInvalidate(); waitq_wake(&g_guiq); }
+    if (g) { WmInvalidate(); gui_wake(g->tid, WM_PAINT); }
     return 0;
 }
 
@@ -922,7 +938,7 @@ void UmGuiDisplayChanged(int w, int h)
         if (g_win[i].used && g_win[i].proc)
             enqueue_locked(&g_win[i], WM_DISPLAYCHANGE, 32, packxy(w, h), 0, 0);
     spin_unlock_irqrestore(&g_gui_lock, s);
-    waitq_wake(&g_guiq);
+    gui_wake(0, WM_DISPLAYCHANGE);
 }
 #define DROP_MAX         (64 * 1024)
 #define DROP_RESULTS     8
@@ -1175,7 +1191,7 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         spin_unlock_irqrestore(&g_gui_lock, s);
         kfree(old);
         if (!g) { kfree(buf); return 0; }
-        waitq_wake(&g_guiq);
+        gui_wake(g->tid, WM_NOVA_DROP);
         return seq;
     }
     if (a2 == CTL_DROP_DONE) {
@@ -1232,7 +1248,7 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         for (int i = 0; i < GUI_WAKES && !set; i++) if (g_wake_tid[i] == (UINT32)a3) set = true;
         for (int i = 0; i < GUI_WAKES && !set; i++) if (!g_wake_tid[i]) { g_wake_tid[i] = (UINT32)a3; set = true; }
         spin_unlock_irqrestore(&g_gui_lock, ws);
-        waitq_wake(&g_guiq);
+        gui_wake((UINT32)a3, 0);                        /* (user32 posted it a message) */
         return set;
     }
     UINT64 rv = 0;
@@ -1326,7 +1342,7 @@ static UINT64 sys_gui_postmessage(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         else enqueue_locked(g, (UINT32)a2, a3, a4, 0, 0);
     }
     spin_unlock_irqrestore(&g_gui_lock, s);
-    if (g) waitq_wake(&g_guiq);
+    if (g) gui_wake(g->tid, 0);                     /* (a posted message: no input boost) */
     return g ? 1 : 0;
 }
 

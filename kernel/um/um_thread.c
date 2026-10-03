@@ -237,6 +237,11 @@ static UmThread *g_waiters;
 
 void um_ob_wake(UmObject *o)
 {
+    um_ob_wake_boost(o, BOOST_EVENT);                       /* (EVENT_, SEMAPHORE_ and MUTANT_INCREMENT alike) */
+}
+
+void um_ob_wake_boost(UmObject *o, int boost)
+{
     for (UmThread *w = g_waiters; w; w = w->wait_next) {
         if (w->wake) continue;
         for (int i = 0; i < w->wait_n; i++) {
@@ -244,7 +249,7 @@ void um_ob_wake(UmObject *o)
             w->wake = 1;
             if (w->kt) {                                    /* (a timer's waiter runs at once: scheduler.h) */
                 if (o->type == UO_TIMER) sched_unblock_timer(w->kt);
-                else sched_unblock(w->kt);
+                else sched_unblock_boost(w->kt, boost);
             }
             break;
         }
@@ -559,7 +564,7 @@ static UINT64 sys_alert_by_tid(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (!t || t->tid != (UINT32)a1 || t->exited) continue;
         IrqState s = ob_lock();
         t->alerted = 1;
-        if (t->kt) sched_unblock(t->kt);
+        if (t->kt) sched_unblock_boost(t->kt, BOOST_EVENT);   /* (SRW locks, condition variables, critical sections, APCs) */
         ob_unlock(s);
         st = ST_SUCCESS;
         break;
@@ -694,7 +699,8 @@ static UINT64 sys_query_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     b[2] = p->pid;                                             /* ClientId */
     b[3] = t->tid;
     b[4] = 1;                                                  /* AffinityMask */
-    b[5] = 8 | (UINT64)8 << 32;                                /* Priority, BasePriority */
+    Thread *kt = t->exited ? NULL : t->kt;                    /* Priority (the current one, boosted), BasePriority */
+    b[5] = kt ? kt->priority | (UINT64)kt->base_priority << 32 : 8 | (UINT64)8 << 32;
     um_ob_unref(o);
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, sizeof(b)))) return ST_ACCESS_VIOLATION;
     return put_u32(um_stack_arg(5), 48) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
