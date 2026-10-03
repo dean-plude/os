@@ -244,7 +244,7 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -serial stdio
 ```
 
-QEMU's default user-mode network (an e1000e on q35) works out of the box;
+QEMU's default user-mode network (an e1000e on q35, the 82574L) works out of the box;
 add `-nic user,model=e1000` to test the older card or
 `-nic user,model=virtio-net-pci` for virtio-net.  `-smp N` sets the core
 count (up to 16).
@@ -435,8 +435,8 @@ NOVARUN_QEMU=/opt/qv/bin/qemu-system-x86_64 LD_LIBRARY_PATH=/opt/qv/lib/x86_64-l
 (`NOVARUN_GL_DISPLAY` to change it) when a `virtio-vga-gl` or
 `virtio-gpu-gl-pci` is among its devices, and no window otherwise.
 
-The network suite tests IPv4, IPv6 and winhttp's HTTP/2, and needs `node`
-and `openssl`:
+The network suite tests IPv4, IPv6 and winhttp's HTTP/2 on virtio-net,
+then IPv4 again on an Intel e1000e, and needs `node` and `openssl`:
 
 ```bash
 python3 tools/selftest.py --suite network
@@ -556,6 +556,14 @@ asynchronous API) against `tools/h2server.js` with a throwaway self-signed
 certificate, then `looptest` (socket pairs over 127.0.0.1 and ::1,
 `localhost`); on an IPv6-only network made by `tools/v6peer.py` it checks
 SLAAC and RDNSS (`ipconfig`), `ping -6`, `curl -6` and `netcat` over IPv6.
+A third boot (`tests/selftest/network-e1000e`) has QEMU's e1000e (the
+82574L) instead of virtio-net: the boot log must show the PHY's ID, its
+auto-negotiation and the link up at 1000 Mb/s; the test pulls the link
+and plugs it back with QEMU's `set_link` (`ipconfig` shows the media
+disconnected, then the address again), runs `ping`, sleeps and wakes the
+machine with `sleeptest` and `ping`s again, then runs the IPv4 tests
+above on it.  [ethernet.md](ethernet.md) says what this covers of the
+I219 that real PCs have.
 
 It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
 whose microphone hears a 523 Hz tone (through a private PulseAudio server,
