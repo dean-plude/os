@@ -416,7 +416,7 @@ GDIAPI BOOL DeleteEnhMetaFile(HANDLE h) { return h != NULL; }
 GDIAPI BOOL DeleteMetaFile(HANDLE h) { return h != NULL; }
 GDIAPI HANDLE CopyEnhMetaFileW(HANDLE h, LPCWSTR file) { (void)h; (void)file; SetLastError(ERROR_NOT_SUPPORTED); return NULL; }
 GDIAPI HANDLE CopyEnhMetaFileA(HANDLE h, LPCSTR file) { (void)h; (void)file; SetLastError(ERROR_NOT_SUPPORTED); return NULL; }
-GDIAPI HANDLE CopyMetaFileW(HANDLE h, LPCWSTR file) { (void)h; (void)file; SetLastError(ERROR_NOT_SUPPORTED); return NULL; }
+GDIAPI HANDLE CopyMetaFileW(HANDLE h, LPCWSTR file) { (void)h; (void)file; SetLastError(ERROR_INVALID_HANDLE); return NULL; }
 GDIAPI HANDLE GetEnhMetaFileW(LPCWSTR file) { (void)file; SetLastError(ERROR_NOT_SUPPORTED); return NULL; }
 GDIAPI HANDLE GetEnhMetaFileA(LPCSTR file) { (void)file; SetLastError(ERROR_NOT_SUPPORTED); return NULL; }
 GDIAPI HANDLE GetMetaFileW(LPCWSTR file) { (void)file; SetLastError(ERROR_NOT_SUPPORTED); return NULL; }

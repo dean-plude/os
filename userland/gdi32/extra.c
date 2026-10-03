@@ -170,54 +170,11 @@ GDIAPI int StartPage(HDC h) { (void)h; return SP_ERROR_; }
 GDIAPI int EndPage(HDC h) { (void)h; return SP_ERROR_; }
 GDIAPI int SetAbortProc(HDC h, PVOID proc) { (void)h; (void)proc; return SP_ERROR_; }
 
-/* -----------------------------------------------------------------------
- * Mapping modes: MM_TEXT only, so extents stay 1:1
- * ----------------------------------------------------------------------- */
-static BOOL unit_extent(LPSIZE old) { if (old) { old->cx = old->cy = 1; } return TRUE; }
-GDIAPI BOOL SetViewportExtEx(HDC h, int x, int y, LPSIZE old) { (void)h; (void)x; (void)y; return unit_extent(old); }
-GDIAPI BOOL SetWindowExtEx(HDC h, int x, int y, LPSIZE old) { (void)h; (void)x; (void)y; return unit_extent(old); }
-GDIAPI BOOL ScaleViewportExtEx(HDC h, int xn, int xd, int yn, int yd, LPSIZE old)
-{ (void)h; (void)xn; (void)xd; (void)yn; (void)yd; return unit_extent(old); }
-GDIAPI BOOL ScaleWindowExtEx(HDC h, int xn, int xd, int yn, int yd, LPSIZE old)
-{ (void)h; (void)xn; (void)xd; (void)yn; (void)yd; return unit_extent(old); }
-GDIAPI DWORD GetLayout(HDC h) { (void)h; return 0; }                  /* left to right */
 GDIAPI int GetPolyFillMode(HDC h) { (void)h; return 1; }              /* ALTERNATE */
 GDIAPI int GetStretchBltMode(HDC h) { (void)h; return 1; }            /* BLACKONWHITE */
 
 /* printer escapes: none are supported (QUERYESCSUPPORT says so) */
 GDIAPI int Escape(HDC h, int code, int n, LPCSTR in, LPVOID out) { (void)h; (void)code; (void)n; (void)in; (void)out; return 0; }
-GDIAPI HMETAFILE CopyMetaFileW(HMETAFILE mf, LPCWSTR file) { (void)mf; (void)file; SetLastError(ERROR_INVALID_HANDLE); return 0; }
-
-/* -----------------------------------------------------------------------
- * Palettes: the screen is true colour, so a logical palette changes
- * nothing on it; the objects exist so programs can make and select them
- * ----------------------------------------------------------------------- */
-GDIAPI HPALETTE CreatePalette(const LOGPALETTE *lp)
-{
-    if (!lp || !lp->palNumEntries) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
-    GObj *o = new_obj(K_PALETTE);
-    if (o) o->width = lp->palNumEntries;
-    return (HPALETTE)o;
-}
-GDIAPI HPALETTE SelectPalette(HDC h, HPALETTE pal, BOOL background)
-{
-    (void)background;
-    NOVA_DC *d = dc_of(h);
-    if (!d || !obj_of(pal)) return 0;
-    return pal;                                     /* the "previous" one: as good as any to select back */
-}
-GDIAPI UINT RealizePalette(HDC h) { (void)h; return 0; }
-GDIAPI UINT SetPaletteEntries(HPALETTE pal, UINT first, UINT n, const PALETTEENTRY *e) { (void)first; (void)e; return obj_of(pal) ? n : 0; }
-GDIAPI UINT GetPaletteEntries(HPALETTE pal, UINT first, UINT n, PALETTEENTRY *e)
-{
-    (void)first;
-    if (!obj_of(pal)) return 0;
-    if (e) memset(e, 0, n * sizeof *e);
-    return n;
-}
-GDIAPI BOOL UnrealizeObject(HGDIOBJ h) { return obj_of(h) != NULL; }
-GDIAPI BOOL UpdateColors(HDC h) { return dc_of(h) != NULL; }
-GDIAPI BOOL ResizePalette(HPALETTE pal, UINT n) { (void)n; return obj_of(pal) != NULL; }
 
 GDIAPI BOOL GetCharABCWidthsFloatA(HDC h, UINT first, UINT last, void *out)
 {

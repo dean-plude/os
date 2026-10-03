@@ -3005,13 +3005,6 @@ WINBASEAPI DWORD WINAPI SetThreadExecutionState(DWORD flags)
     return old;
 }
 WINBASEAPI BOOL WINAPI IsValidLanguageGroup(DWORD group, DWORD flags) { (void)flags; return group >= 1 && group <= 17; }
-WINBASEAPI BOOL WINAPI CheckRemoteDebuggerPresent(HANDLE process, PBOOL present)
-{
-    (void)process;
-    if (!present) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    *present = FALSE;
-    return TRUE;
-}
 BOOL WINAPI GetCurrentConsoleFontEx(HANDLE h, BOOL max, PVOID info);
 WINBASEAPI BOOL WINAPI GetCurrentConsoleFont(HANDLE h, BOOL max, PVOID info)
 {

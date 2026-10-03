@@ -765,20 +765,6 @@ GDIAPI BOOL GetCharABCWidthsI(HDC h, UINT first, UINT n, LPWORD gi, ABC *out)
 }
 GDIAPI BOOL GetCharABCWidthsA(HDC h, UINT first, UINT last, ABC *out) { return GetCharABCWidthsW(h, first, last, out); }
 
-GDIAPI BOOL GetCharABCWidthsI(HDC h, UINT first, UINT n, LPWORD gi, ABC *out)
-{
-    Size *z = dc_size(dc_of(h), 0);
-    if (!z || !out) return FALSE;
-    for (UINT i = 0; i < n; i++) {
-        Glyph *g = glyph(z, (gi ? gi[i] : first + i) | 0x80000000u);
-        ABC *a = &out[i];
-        if (!g) { a->abcA = 0; a->abcB = 0; a->abcC = 0; continue; }
-        a->abcA = g->w ? g->x0 : 0;
-        a->abcB = (UINT)(g->w ? g->w : g->adv);
-        a->abcC = g->adv - a->abcA - (int)a->abcB;
-    }
-    return TRUE;
-}
 
 /* GetGlyphOutline: a glyph's metrics and its bitmap (1-bit, or 2/4/8-bit
  * grey levels 0..4/16/64) from the glyph cache; no outlines (GGO_NATIVE,
