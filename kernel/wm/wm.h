@@ -162,9 +162,15 @@ WND *WmWindowById(int id);
 typedef bool (*WmIconFn)(const WND *w, int x, int y, int size);
 void WmSetIconPainter(WmIconFn fn);
 
-/* Area windows may occupy (the screen minus the dock). */
+/* Area windows may occupy on the primary monitor (the screen minus the
+ * dock). */
 void WmSetWorkArea(GdiRect r);
 GdiRect WmWorkArea(void);
+/* The work area of monitor @i (gdi.h; the others have no dock: the whole
+ * monitor), and of the monitor a rectangle is on (most of it, or nearest).
+ * Maximizing, snapping and keeping windows on screen use the window's. */
+GdiRect WmMonitorWork(int i);
+GdiRect WmWorkAreaFor(GdiRect r);
 
 /* -----------------------------------------------------------------------
  * Input routing (called by the desktop event loop)

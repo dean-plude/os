@@ -34,6 +34,7 @@
 #include "pci.h"
 #include "../arch/x86_64/cpu.h"
 #include "../ke/printf.h"
+#include "../lib/string.h"
 
 /* DISPI registers */
 #define VBE_INDEX_PORT   0x01CE
@@ -146,18 +147,20 @@ static bool fits(int w, int h)
            (UINT64)w * h * 4 <= d.vram_size;
 }
 
-static void add_mode(int w, int h)
+static void add_mode_to(DisplayMode *modes, int *n, int w, int h)
 {
-    if (d.nmodes >= DISPLAY_MAX_MODES) return;
-    for (int i = 0; i < d.nmodes; i++)
-        if (d.modes[i].w == w && d.modes[i].h == h) return;
-    int j = d.nmodes++;                   /* keep largest (by area) first */
-    while (j > 0 && (UINT64)d.modes[j - 1].w * d.modes[j - 1].h < (UINT64)w * h) {
-        d.modes[j] = d.modes[j - 1];
+    if (*n >= DISPLAY_MAX_MODES) return;
+    for (int i = 0; i < *n; i++)
+        if (modes[i].w == w && modes[i].h == h) return;
+    int j = (*n)++;                       /* keep largest (by area) first */
+    while (j > 0 && (UINT64)modes[j - 1].w * modes[j - 1].h < (UINT64)w * h) {
+        modes[j] = modes[j - 1];
         j--;
     }
-    d.modes[j] = (DisplayMode){ w, h };
+    modes[j] = (DisplayMode){ w, h };
 }
+
+static void add_mode(int w, int h) { add_mode_to(d.modes, &d.nmodes, w, h); }
 
 /* -----------------------------------------------------------------------
  * Bochs VBE
@@ -401,6 +404,179 @@ static bool cirrus_set_mode(int w, int h)
 }
 
 /* -----------------------------------------------------------------------
+ * Further heads: QEMU's secondary-vga and bochs-display (the standard VGA's
+ * IDs without the legacy VGA ports), anything but the boot display.  Their
+ * DISPI registers are at BAR2 + 0x500 and their video memory is BAR0.
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    const char      *name;
+    volatile UINT16 *regs;
+    UINT64           vram_phys, vram_size;
+    UINT32          *vram;
+    int              max_w, max_h, stride;
+    DisplayMode      modes[DISPLAY_MAX_MODES];
+    int              nmodes;
+    DisplayMode      cur, def;
+} Head;
+
+static Head g_head[DISPLAY_MAX_HEADS - 1];
+static int  g_nheads;                     /* further heads in g_head */
+
+static bool head_set_mode(Head *h, int w, int ht, bool clear)
+{
+    volatile UINT16 *r = h->regs;
+    r[VBE_ENABLE] = 0;
+    r[VBE_BANK] = 0;
+    r[VBE_BPP] = 32;
+    r[VBE_XRES] = (UINT16)w;
+    r[VBE_YRES] = (UINT16)ht;
+    r[VBE_ENABLE] = VBE_ENABLED | VBE_LFB_ENABLED | (clear ? 0 : VBE_NOCLEARMEM);
+    r[VBE_VIRT_WIDTH] = (UINT16)w;
+    r[VBE_VIRT_HEIGHT] = (UINT16)ht;
+    r[VBE_X_OFFSET] = 0;
+    r[VBE_Y_OFFSET] = 0;
+    int cw = r[VBE_XRES], ch = r[VBE_YRES], st = r[VBE_VIRT_WIDTH];
+    if (cw != w || ch != ht) return false;
+    h->cur = (DisplayMode){ w, ht };
+    h->stride = st < w ? w : st;
+    return true;
+}
+
+static void heads_probe(const BootFramebuffer *boot)
+{
+    static const UINT16 ids[] = { 0x1111 };
+    PciDevice pci;
+    for (int i = 0; g_nheads < DISPLAY_MAX_HEADS - 1 && PciFindNth(0x1234, ids, 1, i, &pci); i++) {
+        UINT64 fb = PciBarAddress(&pci, 0);
+        if (!fb || fb == boot->base) continue;          /* the boot display: head 0 */
+        PciEnableDevice(&pci);
+        volatile UINT8 *bar2 = (volatile UINT8 *)PciMapBar(&pci, 2);
+        if (!bar2) continue;
+        Head *h = &g_head[g_nheads];
+        memset(h, 0, sizeof(*h));
+        h->regs = (volatile UINT16 *)(bar2 + VBE_MMIO_OFFSET);
+        UINT16 id = h->regs[VBE_ID];
+        if (id < VBE_ID_MIN || id > VBE_ID_MAX) {
+            kprintf("[DISPLAY] Head at %02x:%02x.%x reports VBE ID %04x; not using it\n",
+                    pci.bus, pci.dev, pci.func, id);
+            continue;
+        }
+        h->name = pci.class_code == 0x03 && pci.subclass == 0x00 ? "QEMU standard VGA" : "QEMU secondary-vga";
+        h->vram_phys = fb;
+        h->vram_size = (UINT64)h->regs[VBE_VIDEO_MEMORY_64K] * 64 * 1024;
+        if (!h->vram_size) continue;
+        h->vram = (UINT32 *)PciMapPhysical(fb, h->vram_size);
+        if (!h->vram) continue;
+        UINT16 en = h->regs[VBE_ENABLE];
+        h->regs[VBE_ENABLE] = en | VBE_GETCAPS;
+        h->max_w = h->regs[VBE_XRES];
+        h->max_h = h->regs[VBE_YRES];
+        h->regs[VBE_ENABLE] = en;
+        if (h->max_w <= 0 || h->max_h <= 0) { h->max_w = 4096; h->max_h = 4096; }
+        for (unsigned m = 0; m < sizeof(g_common) / sizeof(g_common[0]); m++) {
+            int w = g_common[m].w, ht = g_common[m].h;
+            if (w <= h->max_w && ht <= h->max_h && (UINT64)w * ht * 4 <= h->vram_size)
+                add_mode_to(h->modes, &h->nmodes, w, ht);
+        }
+        if (!h->nmodes) continue;
+        /* Start in 1280x800 (a 100% desktop), or the largest mode below it */
+        DisplayMode start = h->modes[h->nmodes - 1];
+        for (int m = h->nmodes - 1; m >= 0; m--)
+            if ((UINT64)h->modes[m].w * h->modes[m].h <= 1280ULL * 800) start = h->modes[m];
+        if (!head_set_mode(h, start.w, start.h, true)) continue;
+        h->def = h->cur;
+        g_nheads++;
+        kprintf("[DISPLAY] Head %d: %s at %02x:%02x.%x, %llu MB video memory, %dx%d, %d mode(s)\n",
+                g_nheads, h->name, pci.bus, pci.dev, pci.func,
+                (unsigned long long)(h->vram_size >> 20), h->cur.w, h->cur.h, h->nmodes);
+    }
+}
+
+static Head *head_of(int head)
+{
+    return head >= 1 && head <= g_nheads ? &g_head[head - 1] : NULL;
+}
+
+int DisplayHeadCount(void) { return d.kind == DRV_NONE ? 0 : 1 + g_nheads; }
+
+const char *DisplayHeadName(int head)
+{
+    if (head == 0) return DisplayAdapterName() ? DisplayAdapterName() : DisplayDriverName();
+    Head *h = head_of(head);
+    return h ? h->name : NULL;
+}
+
+int DisplayHeadModeCount(int head)
+{
+    if (head == 0) return DisplayModeCount();
+    Head *h = head_of(head);
+    return h ? h->nmodes : 0;
+}
+
+bool DisplayHeadModeAt(int head, int i, DisplayMode *out)
+{
+    if (head == 0) return DisplayModeAt(i, out);
+    Head *h = head_of(head);
+    if (!h || i < 0 || i >= h->nmodes) return false;
+    if (out) *out = h->modes[i];
+    return true;
+}
+
+bool DisplayHeadModeSupported(int head, int w, int ht)
+{
+    if (head == 0) return DisplayModeSupported(w, ht);
+    Head *h = head_of(head);
+    for (int i = 0; h && i < h->nmodes; i++)
+        if (h->modes[i].w == w && h->modes[i].h == ht) return true;
+    return false;
+}
+
+DisplayMode DisplayHeadMode(int head)
+{
+    if (head == 0) return DisplayCurrentMode();
+    Head *h = head_of(head);
+    return h ? h->cur : (DisplayMode){ 0, 0 };
+}
+
+DisplayMode DisplayHeadDefaultMode(int head)
+{
+    if (head == 0) return DisplayDefaultMode();
+    Head *h = head_of(head);
+    return h ? h->def : (DisplayMode){ 0, 0 };
+}
+
+void DisplayHeadSetDefaultMode(int head, int w, int ht)
+{
+    if (head == 0) { DisplaySetDefaultMode(w, ht); return; }
+    Head *h = head_of(head);
+    if (h && DisplayHeadModeSupported(head, w, ht)) h->def = (DisplayMode){ w, ht };
+}
+
+bool DisplayHeadSetMode(int head, int w, int ht)
+{
+    if (head == 0) return DisplaySetMode(w, ht);
+    Head *h = head_of(head);
+    if (!h || !DisplayHeadModeSupported(head, w, ht)) return false;
+    if (w == h->cur.w && ht == h->cur.h) return true;
+    DisplayMode old = h->cur;
+    if (!head_set_mode(h, w, ht, true)) {
+        head_set_mode(h, old.w, old.h, true);
+        kprintf("[DISPLAY] Head %d: %dx%d failed; back to %dx%d\n", head, w, ht, old.w, old.h);
+        return false;
+    }
+    kprintf("[DISPLAY] Head %d: mode %dx%d\n", head, w, ht);
+    return true;
+}
+
+UINT32 *DisplayHeadSurface(int head, int *stride)
+{
+    Head *h = head_of(head);
+    if (!h) return NULL;
+    if (stride) *stride = h->stride;
+    return h->vram;
+}
+
+/* -----------------------------------------------------------------------
  * Public API
  * ----------------------------------------------------------------------- */
 void DisplayInit(const BootFramebuffer *boot)
@@ -438,6 +614,7 @@ void DisplayInit(const BootFramebuffer *boot)
     }
     kprintf("[DISPLAY] %s: %dx%d, %d mode(s), %s\n", DisplayDriverName(), d.cur.w, d.cur.h,
             d.nmodes, d.flip ? "page flipping" : "single page");
+    heads_probe(boot);
 }
 
 const char *DisplayDriverName(void)
@@ -520,6 +697,11 @@ const char *DisplayAdapterName(void) { return d.kind == DRV_GOP ? NULL : d.name;
 
 void DisplayResume(void)
 {
+    for (int i = 0; i < g_nheads; i++) {
+        Head *h = &g_head[i];
+        head_set_mode(h, h->cur.w, h->cur.h, false);
+        kprintf("[DISPLAY] Head %d: %dx%d set again after sleep\n", i + 1, h->cur.w, h->cur.h);
+    }
     switch (d.kind) {
     case DRV_BOCHS:  bochs_restore(); break;
     case DRV_CIRRUS: cirrus_set_mode(d.cur.w, d.cur.h); break;

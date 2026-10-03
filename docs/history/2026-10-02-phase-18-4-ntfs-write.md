@@ -43,4 +43,5 @@
   and none after drivetest and Terminal tests (MFT growth, a 90-file
   folder split across INDX blocks and shrunk back, a USB stick written to
   and pulled out without a sync) wrote to them.
-  Windows `chkdsk` has not been run on them: there is no Windows here.
+  Windows `chkdsk`, run on a disk NovaOS had written to (3 October),
+  reported no errors either.

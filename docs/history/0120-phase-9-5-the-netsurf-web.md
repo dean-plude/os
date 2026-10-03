@@ -43,4 +43,5 @@
   default; `enable_javascript:0` in `C:\Programs\NetSurf\res\Choices`
   turns it off.  Like NetSurf 3.11 on every platform, changes a script makes
   to the page *after* it has been laid out are not redrawn yet.
-- Not yet: SVG and IPv6.
+- Not yet: SVG and IPv6.  *(IPv6 came with "IPv6, HTTP/2 and virtio-net
+  (Phase 18.8)".)*

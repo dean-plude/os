@@ -394,6 +394,11 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     GuiCreate gc;
     if (!NT_SUCCESS(CopyFromUser(&gc, (const void *)(uintptr_t)a1, sizeof(gc)))) return 0;
     int maxw = GdiScreenW(), maxh = GdiScreenH();
+    for (int i = 1; i < GdiMonitorCount(); i++) {     /* as large as the largest monitor */
+        GdiRect m = GdiMonitorRect(i);
+        if (m.w > maxw) maxw = m.w;
+        if (m.h > maxh) maxh = m.h;
+    }
     if (maxw > GUI_MAX_W) maxw = GUI_MAX_W;
     if (maxh > GUI_MAX_H) maxh = GUI_MAX_H;
     int cw = gc.w, ch = gc.h;
@@ -705,11 +710,11 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *                   its w, h, frames, the step shown }, and with arg 1 also
  *                   { the system pointer shown: OCR_*, -OCR_* for a
  *                   SetSystemCursor replacement, 0 none } (for tests)
- *  24 SET_SYSCURSOR arg: an OCR_* number (0: every one), | 0x10000 if the
+ *  27 SET_SYSCURSOR arg: an OCR_* number (0: every one), | 0x10000 if the
  *                   pixels are device pixels; ptr <- a shape as 19's arg 2,
  *                   or 0 to put NovaOS's own pointer back (SetSystemCursor,
  *                   SPI_SETCURSORS).  For every process.
- *  25 SYSCURSOR_IMAGE arg: an OCR_* number | scale << 16; ptr -> { w, h,
+ *  28 SYSCURSOR_IMAGE arg: an OCR_* number | scale << 16; ptr -> { w, h,
  *                   hot x, hot y }, then w * h 0xAARRGGBB pixels: NovaOS's
  *                   drawing of it (w = h = 32 * scale) */
 #define CTL_WINDOW_AT    11
@@ -722,8 +727,8 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_DROP_STATUS  18
 #define CTL_SET_CURSOR   19
 #define CTL_CURSOR_SHAPE 20
-#define CTL_SET_SYSCURSOR 24
-#define CTL_SYSCURSOR_IMAGE 25
+#define CTL_SET_SYSCURSOR 27
+#define CTL_SYSCURSOR_IMAGE 28
 /* Window handles other processes can use.  On Windows an HWND names the
  * same window in every process; a GPU or plugin process sizes and draws
  * into its parent's window.  user32 builds its handles from a tag that is
@@ -740,6 +745,20 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_HWND_TAG     21
 #define CTL_SET_HWND     22
 #define CTL_FOREIGN      23
+/* More than one monitor (hwnd may be 0); display N is head N - 1
+ * (hal/display.h), monitor N - 1 of the GDI:
+ *  24 MONITOR     arg: monitor index; ptr -> { count, x, y, w, h, work x, y,
+ *                 w, h, scale (1 = 96 DPI) }, logical px on the virtual
+ *                 desktop.  0: no such monitor
+ *  25 HEAD_MODE   ptr <- { head, mode as DISPLAY_MODE's arg } -> { width,
+ *                 height, bits per pixel, frequency }.  0: no such mode
+ *  26 SET_HEAD    ptr <- { head, width, height, CDS_* flags, has position,
+ *                 x, y } (0 x 0: the default mode; a position moves monitor
+ *                 head, not the primary, on the virtual desktop); returns a
+ *                 DISP_CHANGE_* code */
+#define CTL_MONITOR      24
+#define CTL_HEAD_MODE    25
+#define CTL_SET_HEAD     26
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
 #define GUI_TAG_SHIFT    14
@@ -779,6 +798,62 @@ static UINT64 display_set(UmProcess *p, UINT64 ptr)
     if (!DesktopSetDisplayMode(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_FAILED;
     if (flags & CDS_UPDATEREGISTRY) DesktopSaveDisplayMode(m.w, m.h);
     g_fullscreen_proc = !reset && (flags & CDS_FULLSCREEN) && !(flags & CDS_UPDATEREGISTRY) ? p : NULL;
+    return DISP_CHANGE_SUCCESSFUL;
+}
+
+static UINT64 monitor_info(UINT64 which, UINT64 ptr)
+{
+    INT32 i = (INT32)which, out[10] = { 0 };
+    DesktopLock();
+    int n = GdiMonitorCount();
+    if (i >= 0 && i < n) {
+        GdiRect r = GdiMonitorRect(i), wa = WmMonitorWork(i);
+        INT32 v[10] = { n, r.x, r.y, r.w, r.h, wa.x, wa.y, wa.w, wa.h, GdiMonitorScale(i) };
+        memcpy(out, v, sizeof(out));
+    }
+    DesktopUnlock();
+    if (!out[0]) return 0;
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, out, sizeof(out))) ? 1 : 0;
+}
+
+static UINT64 head_mode_info(UINT64 ptr)
+{
+    INT32 in[2];
+    if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return 0;
+    DisplayMode m;
+    if (in[0] < 0 || in[0] >= DisplayHeadCount()) return 0;
+    if (in[1] == -1) m = DisplayHeadMode(in[0]);
+    else if (in[1] == -2) m = DisplayHeadDefaultMode(in[0]);
+    else if (!DisplayHeadModeAt(in[0], in[1], &m)) return 0;
+    UINT32 out[4] = { (UINT32)m.w, (UINT32)m.h, 32, 60 };
+    return NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, out, sizeof(out))) ? 1 : 0;
+}
+
+static UINT64 head_set(UmProcess *p, UINT64 ptr)
+{
+    INT32 in[7];
+    if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+    int head = in[0];
+    UINT32 flags = (UINT32)in[3];
+    if (head == 0 && !in[4]) {                        /* the primary's mode: SET_DISPLAY */
+        INT32 d[3] = { in[1], in[2], in[3] };
+        bool reset = d[0] == 0 && d[1] == 0;
+        DisplayMode m = reset ? DisplayDefaultMode() : (DisplayMode){ d[0], d[1] };
+        if (!DisplayModeSupported(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_BADMODE;
+        if (flags & CDS_TEST) return DISP_CHANGE_SUCCESSFUL;
+        if (!DesktopSetDisplayMode(m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+        if (flags & CDS_UPDATEREGISTRY) DesktopSaveDisplayMode(m.w, m.h);
+        g_fullscreen_proc = !reset && (flags & CDS_FULLSCREEN) && !(flags & CDS_UPDATEREGISTRY) ? p : NULL;
+        return DISP_CHANGE_SUCCESSFUL;
+    }
+    if (head < 0 || head >= DisplayHeadCount()) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+    if (in[4] && head == 0) return (UINT64)(INT64)DISP_CHANGE_BADMODE;  /* the primary stays at (0, 0) */
+    DisplayMode m = in[1] == 0 && in[2] == 0 ? DisplayHeadDefaultMode(head) : (DisplayMode){ in[1], in[2] };
+    if (!DisplayHeadModeSupported(head, m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_BADMODE;
+    if (flags & CDS_TEST) return DISP_CHANGE_SUCCESSFUL;
+    if (!DesktopSetHeadMode(head, m.w, m.h)) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+    if (flags & CDS_UPDATEREGISTRY) DesktopSaveHeadMode(head, m.w, m.h);
+    if (in[4]) DesktopSetMonitorOrigin(head, in[5], in[6], (flags & CDS_UPDATEREGISTRY) != 0);
     return DISP_CHANGE_SUCCESSFUL;
 }
 
@@ -996,6 +1071,9 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     if (a2 == CTL_DISPLAY_MODE) return display_mode_info(a3, a4);
     if (a2 == CTL_SET_DISPLAY) return display_set(p, a4);
+    if (a2 == CTL_MONITOR) return monitor_info(a3, a4);
+    if (a2 == CTL_HEAD_MODE) return head_mode_info(a4);
+    if (a2 == CTL_SET_HEAD) return head_set(p, a4);
     if (a2 == CTL_WINDOW_AT) {
         INT32 pt[2], out[4] = { 0, 0, 0, 0 };
         if (!NT_SUCCESS(CopyFromUser(pt, (const void *)(uintptr_t)a4, sizeof(pt)))) return 0;

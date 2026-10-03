@@ -22,8 +22,8 @@ program's pointer was scaled up by nearest neighbour at 200 %.  Now:
   `HTLEFT`, `HTTOPRIGHT` and the other edge codes, for programs that draw
   their own frame, and the arrow for other non-client parts.
 - **`SetSystemCursor`** replaces a system pointer for every program and
-  destroys the cursor it is given, as on Windows (op 24);
-  `SystemParametersInfo(SPI_SETCURSORS)` puts NovaOS's own back.  Op 25
+  destroys the cursor it is given, as on Windows (op 27);
+  `SystemParametersInfo(SPI_SETCURSORS)` puts NovaOS's own back.  Op 28
   hands user32 the kernel's drawing of a system pointer.
 - **Program cursors at 200 %**: a program's cursor is sent at the
   display's scale (op 19, arg 4: device pixels): the 64 x 64 image of a

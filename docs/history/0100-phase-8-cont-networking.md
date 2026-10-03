@@ -34,4 +34,5 @@
   fed by RDRAND (when present), TSC jitter and packet timing.
 - **Terminal**: `curl`/`wget` take several URLs (`curl URL URL ...`) and show
   the protocol, cipher suite, reused connections and resumed sessions.
-- Not yet: IPv6 and HTTP/2.  (The web browser arrived in Phase 9.5.)
+- Not yet: IPv6 and HTTP/2.  (The web browser arrived in Phase 9.5; IPv6
+  and HTTP/2 came with "IPv6, HTTP/2 and virtio-net (Phase 18.8)".)

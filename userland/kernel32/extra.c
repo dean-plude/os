@@ -1240,8 +1240,9 @@ WINBASEAPI BOOL WINAPI GetFileInformationByHandleEx(HANDLE h, FILE_INFO_BY_HANDL
     return FALSE;
 }
 
-/* FILE_RENAME_INFORMATION for the kernel: { BOOLEAN; HANDLE; ULONG; WCHAR[] } */
-static NTSTATUS rename_handle(HANDLE h, const char *to, BOOL replace)
+/* FILE_RENAME_INFORMATION (class 10) or FILE_LINK_INFORMATION (11) for the
+ * kernel: { BOOLEAN; HANDLE; ULONG; WCHAR[] } */
+static NTSTATUS name_handle(HANDLE h, const char *to, BOOL replace, ULONG cls)
 {
     NtPath p;
     if (!nt_path(to, &p)) return STATUS_OBJECT_NAME_INVALID;
@@ -1254,8 +1255,30 @@ static NTSTATUS rename_handle(HANDLE h, const char *to, BOOL replace)
     ri->FileNameLength = len;
     memcpy(ri->FileName, p.buf, len);
     IO_STATUS_BLOCK io;
-    return NtSetInformationFile(h, &io, buf, (ULONG)__builtin_offsetof(RenameInfo, FileName) + len,
-                                10 /* FileRenameInformation */);
+    return NtSetInformationFile(h, &io, buf, (ULONG)__builtin_offsetof(RenameInfo, FileName) + len, cls);
+}
+static NTSTATUS rename_handle(HANDLE h, const char *to, BOOL replace) { return name_handle(h, to, replace, 10); }
+
+/* A hard link: another name for an existing file (never a directory) */
+WINBASEAPI BOOL WINAPI CreateHardLinkA(LPCSTR link, LPCSTR target, LPSECURITY_ATTRIBUTES sa)
+{
+    (void)sa;
+    if (!link || !target) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    HANDLE h = CreateFileA(target, 0, 7, 0, OPEN_EXISTING, 0x02000000 /* BACKUP_SEMANTICS */, 0);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    NTSTATUS s = name_handle(h, link, FALSE, 11 /* FileLinkInformation */);
+    CloseHandle(h);
+    if (s == (NTSTATUS)0xC0000035) { SetLastError(ERROR_ALREADY_EXISTS); return FALSE; }
+    if (s == (NTSTATUS)0xC00000D4) { SetLastError(17 /* ERROR_NOT_SAME_DEVICE */); return FALSE; }
+    if (s == (NTSTATUS)0xC00000BA) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }   /* a directory, as Windows says */
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+
+WINBASEAPI BOOL WINAPI CreateHardLinkW(LPCWSTR link, LPCWSTR target, LPSECURITY_ATTRIBUTES sa)
+{
+    char a[MAX_PATH * 3], b[MAX_PATH * 3];
+    if (!wide_to_temp(link, a, sizeof(a)) || !wide_to_temp(target, b, sizeof(b))) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
+    return CreateHardLinkA(a, b, sa);
 }
 
 WINBASEAPI BOOL WINAPI SetFileInformationByHandle(HANDLE h, FILE_INFO_BY_HANDLE_CLASS c, LPVOID buf, DWORD n)
@@ -1383,16 +1406,26 @@ WINBASEAPI BOOL WINAPI GetFileAttributesExW(LPCWSTR name, GET_FILEEX_INFO_LEVELS
     return attr_data(a, info);
 }
 
+/* The read-only, hidden and system bits are kept (FileBasicInformation,
+ * times left alone); the others are not stored */
 WINBASEAPI BOOL WINAPI SetFileAttributesA(LPCSTR name, DWORD attr)
 {
-    (void)attr;                             /* attributes are not stored */
-    return GetFileAttributesA(name) != INVALID_FILE_ATTRIBUTES;
+    HANDLE h = CreateFileA(name, 0x100 /* FILE_WRITE_ATTRIBUTES */, 7, 0, OPEN_EXISTING, 0x02000000 /* BACKUP_SEMANTICS */, 0);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    FILE_BASIC_INFORMATION b;
+    memset(&b, 0, sizeof(b));
+    b.FileAttributes = (attr & 0x07) ? (attr & 0x07) : FILE_ATTRIBUTE_NORMAL;
+    IO_STATUS_BLOCK io;
+    NTSTATUS s = NtSetInformationFile(h, &io, &b, sizeof(b), FileBasicInformation);
+    CloseHandle(h);
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
 WINBASEAPI BOOL WINAPI SetFileAttributesW(LPCWSTR name, DWORD attr)
 {
-    (void)attr;
-    return GetFileAttributesW(name) != INVALID_FILE_ATTRIBUTES;
+    char n[MAX_PATH * 3];
+    if (!wide_to_temp(name, n, sizeof(n))) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
+    return SetFileAttributesA(n, attr);
 }
 
 WINBASEAPI HANDLE WINAPI FindFirstFileExW(LPCWSTR name, FINDEX_INFO_LEVELS l, LPVOID data, FINDEX_SEARCH_OPS op, LPVOID filter, DWORD flags)
@@ -1673,7 +1706,7 @@ WINBASEAPI BOOL WINAPI GetVolumeInformationW(LPCWSTR root, LPWSTR name, DWORD nn
     if (name && nn) put_utf8_as_w("NovaOS", name, nn);
     if (serial) *serial = VOLUME_SERIAL;
     if (maxlen) *maxlen = 47;
-    if (flags) *flags = 0x2 | 0x4;          /* CASE_PRESERVED_NAMES | UNICODE_ON_DISK */
+    if (flags) *flags = 0x2 | 0x4 | 0x400000;   /* CASE_PRESERVED_NAMES | UNICODE_ON_DISK | SUPPORTS_HARD_LINKS */
     if (fs && nfs) put_utf8_as_w("RAMFS", fs, nfs);
     return TRUE;
 }

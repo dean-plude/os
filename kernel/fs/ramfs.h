@@ -13,9 +13,14 @@
  * read from the volume the first time something looks in it, and a file's
  * contents when it is opened (RamfsLoad), then dropped again when nothing
  * holds the file any more.  A volume whose file system can write (its
- * RamfsSource has the write calls) can be changed: creating, deleting and
- * renaming go to the disk at once, a file's new contents when nothing
- * holds it any more or at the next RamfsFlush.
+ * RamfsSource has the write calls) can be changed: creating, deleting,
+ * renaming and linking go to the disk at once, a file's new contents when
+ * nothing holds it any more or at the next RamfsFlush.
+ *
+ * A file may have several names (hard links, CreateHardLink): one RamNode
+ * per name, in a ring, sharing the contents and details.  On drive C: they
+ * are kept across restarts (fs/persist.c: as NTFS hard links, or listed in
+ * \NOVA\LINKS.TXT on FAT).
  */
 
 #pragma once
@@ -45,7 +50,8 @@ typedef struct RamNode {
     UINT64          xref;         /* on a mounted volume: the node's number there */
     UINT8          *sd;           /* its security descriptor (self-relative), or NULL: */
     UINT32          sdlen;        /*   inherited from the nearest directory above with one (fs/fsec.c) */
-} RamNode;
+    struct RamNode *link;         /* a file with several names (hard links): the next one, around a ring; else NULL. */
+} RamNode;                        /*   Names share data, size, cap, attrs, times, sd and the RAMFS_X_* state */
 
 #define RAMFS_X_EXTERN   0x01     /* on a mounted (read-only) volume */
 #define RAMFS_X_LISTED   0x02     /* directory: its entries were read */
@@ -70,14 +76,18 @@ typedef struct {
     bool (*size)(void *vol, UINT64 ref, UINT64 *size);
     bool (*read)(void *vol, UINT64 ref, UINT64 off, void *buf, UINT64 len);
     /* Writing (all NULL on a read-only volume): create @name in directory
-     * @dir, remove @ref from @dir, move @ref from @dir to @to as @name,
-     * replace @ref's contents */
+     * @dir, remove @ref's name @name from @dir, move @ref's name @old in
+     * @dir to @to as @name, replace @ref's contents */
     bool (*create)(void *vol, UINT64 dir, const char *name, bool is_dir, UINT64 *ref);
-    bool (*remove)(void *vol, UINT64 dir, UINT64 ref);
-    bool (*rename)(void *vol, UINT64 dir, UINT64 ref, UINT64 to, const char *name);
+    bool (*remove)(void *vol, UINT64 dir, UINT64 ref, const char *name);
+    bool (*rename)(void *vol, UINT64 dir, UINT64 ref, const char *old, UINT64 to, const char *name);
     bool (*write)(void *vol, UINT64 ref, const void *data, UINT64 len);
     UINT64 (*free_bytes)(void *vol);
     bool (*can_write)(void *vol, UINT64 ref);                    /* (NULL: every file) */
+    /* Hard links (NULL on a file system without them): give file @ref the
+     * name @name in @dir too; how many names @ref has */
+    bool (*link)(void *vol, UINT64 ref, UINT64 dir, const char *name);
+    UINT32 (*links)(void *vol, UINT64 ref);
 } RamfsSource;
 
 /* Change tracking, for saving drive C: to disk (fs/persist.c).  Nodes
@@ -177,6 +187,18 @@ bool     RamfsDelete(RamNode *node);
  * replaced if @replace (and not in use); directories are never replaced.
  * False on a bad name, a clash, or moving a directory into itself. */
 bool     RamfsRename(RamNode *node, RamNode *dir, const char *name, bool replace);
+
+/* Give @file another name, @name in @dir (a hard link, on the same drive):
+ * the new node, which shares the file's contents and details.  NULL on a
+ * bad name, a clash, a directory, another drive or a read-only volume.
+ * Deleting one name leaves the file to the others. */
+RamNode *RamfsLink(RamNode *file, RamNode *dir, const char *name);
+/* How many names @n has (1 without hard links) */
+int      RamfsLinks(const RamNode *n);
+/* One node for the file whatever name it was reached by: the file's identity */
+const RamNode *RamfsFileId(const RamNode *n);
+/* The next name of @n's file (around the ring, back to @n), for walking its names */
+RamNode *RamfsNextLink(RamNode *n);
 
 /* Mark a node as held (e.g. shown in a window) so it cannot be deleted
  * underneath its holder.  NULL is ignored.  (Both are atomic: readers
