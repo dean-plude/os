@@ -123,6 +123,7 @@ STAT_FUNCS(32i64, ms_stat32i64)
 /* msvcrt's plain names use the 32-bit-time layout */
 CRTEXP int _stat(const char *p, struct ms_stat32 *st) { return _stat32(p, st); }
 CRTEXP int _wstat(const wchar_t *p, struct ms_stat32 *st) { return _wstat32(p, st); }
+CRTEXP int _wstati64(const wchar_t *p, struct ms_stat32i64 *st) { return _wstat32i64(p, st); }
 CRTEXP int _fstat(int fd, struct ms_stat32 *st) { return _fstat32(fd, st); }
 CRTEXP int _stati64(const char *p, struct ms_stat32i64 *st) { return _stat32i64(p, st); }
 CRTEXP int _fstati64(int fd, struct ms_stat32i64 *st) { return _fstat32i64(fd, st); }

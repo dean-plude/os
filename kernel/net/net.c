@@ -65,6 +65,16 @@ typedef struct {
 static const Nic g_e1000  = { E1000Present, E1000Name, E1000Mac, E1000LinkUp, E1000Transmit, E1000Receive, E1000Resume };
 static const Nic g_virtio = { VirtioNetPresent, VirtioNetName, VirtioNetMac, VirtioNetLinkUp,
                               VirtioNetTransmit, VirtioNetReceive, VirtioNetResume };
+/* No adapter: the stack still runs for 127.0.0.1 and ::1 (programs talk
+ * to themselves over loopback: Audacity's plugin scanner, local servers) */
+static bool        none_present(void) { return false; }
+static const char *none_name(void) { return "none"; }
+static void        none_mac(UINT8 mac[6]) { static const UINT8 m[6] = { 0x02, 0x4E, 0x4F, 0x56, 0x41, 0x00 }; memcpy(mac, m, 6); }
+static bool        none_link_up(void) { return false; }
+static bool        none_transmit(const void *frame, UINT16 len) { (void)frame; (void)len; return false; }
+static int         none_receive(void *buf, int cap) { (void)buf; (void)cap; return 0; }
+static void        none_resume(void) {}
+static const Nic g_none = { none_present, none_name, none_mac, none_link_up, none_transmit, none_receive, none_resume };
 static const Nic *g_nic = &g_e1000;
 
 /* -----------------------------------------------------------------------
@@ -585,7 +595,7 @@ bool NetInitialize(void)
     TlsInit();                          /* (root store works without a NIC) */
     if (E1000Init()) g_nic = &g_e1000;
     else if (VirtioNetInit()) g_nic = &g_virtio;
-    else return false;
+    else g_nic = &g_none;                /* loopback only */
 
     UINT8 mac[6];
     g_nic->mac(mac);
@@ -614,11 +624,12 @@ bool NetInitialize(void)
     netif_create_ip6_linklocal_address(&g_netif, 1);
     netif_set_ip6_autoconfig_enabled(&g_netif, 1);
 
-    if (dhcp_start(&g_netif) != ERR_OK) kprintf("[NET] DHCP could not start\n");
+    if (g_nic != &g_none && dhcp_start(&g_netif) != ERR_OK) kprintf("[NET] DHCP could not start\n");
     g_up = true;
 
     sched_create_thread_ex("net", net_thread, NULL, 8, NET_STACK);
-    kprintf("[NET] lwIP %s ready; requesting an address via DHCP\n", LWIP_VERSION_STRING);
+    if (g_nic == &g_none) kprintf("[NET] lwIP %s ready; no network adapter, loopback only\n", LWIP_VERSION_STRING);
+    else kprintf("[NET] lwIP %s ready; requesting an address via DHCP\n", LWIP_VERSION_STRING);
     return true;
 }
 

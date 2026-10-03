@@ -50,7 +50,7 @@ GDIAPI BOOL GetViewportExtEx(HDC h, LPSIZE s) { (void)h; if (!s) return FALSE; s
  * solid): a hatch or dither pattern comes out as its overall tone */
 GDIAPI HBRUSH CreatePatternBrush(HBITMAP bmp)
 {
-    GObj *b = obj_of(bmp);
+    GObj *b = bitmap_of(bmp);
     if (!b || b->kind != K_BITMAP || !b->bits || b->bw <= 0 || b->bh <= 0) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
     unsigned long long r = 0, g = 0, bl = 0, n = (unsigned long long)b->bw * (unsigned long long)b->bh;
     for (unsigned long long i = 0; i < n; i++) {
@@ -170,117 +170,18 @@ GDIAPI int StartPage(HDC h) { (void)h; return SP_ERROR_; }
 GDIAPI int EndPage(HDC h) { (void)h; return SP_ERROR_; }
 GDIAPI int SetAbortProc(HDC h, PVOID proc) { (void)h; (void)proc; return SP_ERROR_; }
 
-/* -----------------------------------------------------------------------
- * Mapping modes: MM_TEXT only, so extents stay 1:1
- * ----------------------------------------------------------------------- */
-static BOOL unit_extent(LPSIZE old) { if (old) { old->cx = old->cy = 1; } return TRUE; }
-GDIAPI BOOL SetViewportExtEx(HDC h, int x, int y, LPSIZE old) { (void)h; (void)x; (void)y; return unit_extent(old); }
-GDIAPI BOOL SetWindowExtEx(HDC h, int x, int y, LPSIZE old) { (void)h; (void)x; (void)y; return unit_extent(old); }
-GDIAPI BOOL ScaleViewportExtEx(HDC h, int xn, int xd, int yn, int yd, LPSIZE old)
-{ (void)h; (void)xn; (void)xd; (void)yn; (void)yd; return unit_extent(old); }
-GDIAPI BOOL ScaleWindowExtEx(HDC h, int xn, int xd, int yn, int yd, LPSIZE old)
-{ (void)h; (void)xn; (void)xd; (void)yn; (void)yd; return unit_extent(old); }
-GDIAPI DWORD GetLayout(HDC h) { (void)h; return 0; }                  /* left to right */
 GDIAPI int GetPolyFillMode(HDC h) { (void)h; return 1; }              /* ALTERNATE */
 GDIAPI int GetStretchBltMode(HDC h) { (void)h; return 1; }            /* BLACKONWHITE */
 
 /* printer escapes: none are supported (QUERYESCSUPPORT says so) */
 GDIAPI int Escape(HDC h, int code, int n, LPCSTR in, LPVOID out) { (void)h; (void)code; (void)n; (void)in; (void)out; return 0; }
-GDIAPI HMETAFILE CopyMetaFileW(HMETAFILE mf, LPCWSTR file) { (void)mf; (void)file; SetLastError(ERROR_INVALID_HANDLE); return 0; }
 
-/* Metafiles: NovaOS neither records nor plays them (Inkscape's EMF and
- * WMF import and export, GTK's printing); none can be made or opened */
-static HANDLE no_metafile(void) { SetLastError(ERROR_NOT_SUPPORTED); return 0; }
-GDIAPI HDC CreateEnhMetaFileW(HDC ref, LPCWSTR file, const RECT *r, LPCWSTR desc)
-{ (void)ref; (void)file; (void)r; (void)desc; return (HDC)no_metafile(); }
-GDIAPI HDC CreateEnhMetaFileA(HDC ref, LPCSTR file, const RECT *r, LPCSTR desc)
-{ (void)ref; (void)file; (void)r; (void)desc; return (HDC)no_metafile(); }
-GDIAPI HENHMETAFILE CloseEnhMetaFile(HDC h) { (void)h; return (HENHMETAFILE)no_metafile(); }
-GDIAPI HENHMETAFILE GetEnhMetaFileW(LPCWSTR file) { (void)file; return (HENHMETAFILE)no_metafile(); }
-GDIAPI HENHMETAFILE GetEnhMetaFileA(LPCSTR file) { (void)file; return (HENHMETAFILE)no_metafile(); }
-GDIAPI HENHMETAFILE CopyEnhMetaFileA(HENHMETAFILE mf, LPCSTR file) { (void)mf; (void)file; return (HENHMETAFILE)no_metafile(); }
-GDIAPI HENHMETAFILE CopyEnhMetaFileW(HENHMETAFILE mf, LPCWSTR file) { (void)mf; (void)file; return (HENHMETAFILE)no_metafile(); }
-GDIAPI HENHMETAFILE SetWinMetaFileBits(UINT n, const BYTE *bits, HDC ref, const void *mfp)
-{ (void)n; (void)bits; (void)ref; (void)mfp; return (HENHMETAFILE)no_metafile(); }
-GDIAPI HENHMETAFILE SetEnhMetaFileBits(UINT n, const BYTE *bits) { (void)n; (void)bits; return (HENHMETAFILE)no_metafile(); }
-GDIAPI UINT GetEnhMetaFileHeader(HENHMETAFILE mf, UINT n, void *hdr) { (void)mf; (void)n; (void)hdr; SetLastError(ERROR_INVALID_HANDLE); return 0; }
-GDIAPI UINT GetEnhMetaFileBits(HENHMETAFILE mf, UINT n, BYTE *bits) { (void)mf; (void)n; (void)bits; SetLastError(ERROR_INVALID_HANDLE); return 0; }
-GDIAPI BOOL PlayEnhMetaFile(HDC h, HENHMETAFILE mf, const RECT *r) { (void)h; (void)mf; (void)r; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-GDIAPI BOOL DeleteEnhMetaFile(HENHMETAFILE mf) { (void)mf; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-GDIAPI HMETAFILE GetMetaFileW(LPCWSTR file) { (void)file; return (HMETAFILE)no_metafile(); }
-GDIAPI HMETAFILE GetMetaFileA(LPCSTR file) { (void)file; return (HMETAFILE)no_metafile(); }
-GDIAPI UINT GetMetaFileBitsEx(HMETAFILE mf, UINT n, void *bits) { (void)mf; (void)n; (void)bits; SetLastError(ERROR_INVALID_HANDLE); return 0; }
-GDIAPI BOOL DeleteMetaFile(HMETAFILE mf) { (void)mf; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+/* Metafiles are not recorded (see shapes.c); the ANSI reader fails like the wide one */
+GDIAPI HMETAFILE GetMetaFileA(LPCSTR file) { (void)file; SetLastError(ERROR_NOT_SUPPORTED); return 0; }
 
-/* MaskBlt: where the monochrome @mask is 1 the foreground ROP (the low 24
- * bits of @rop4), where 0 the background one (the high byte); a
- * background that leaves the destination alone (0xAA) is the usual case.
- * Drawn a row run at a time through BitBlt. */
-GDIAPI BOOL MaskBlt(HDC dst, int x, int y, int w, int h, HDC src, int sx, int sy, HBITMAP mask, int mx, int my, DWORD rop4)
-{
-    DWORD fore = rop4 & 0xFFFFFF, back = ((rop4 >> 8) & 0xFF0000) | (rop4 & 0xFFFF);
-    GObj *m = obj_of(mask);
-    if (!m || m->kind != K_BITMAP || !m->bits) return BitBlt(dst, x, y, w, h, src, sx, sy, fore);
-    for (int j = 0; j < h; j++) {
-        int i = 0;
-        while (i < w) {
-            int set = 0, mxx = mx + i, myy = my + j;
-            if (mxx >= 0 && myy >= 0 && mxx < m->bw && myy < m->bh) {
-                int row = m->flip ? m->bh - 1 - myy : myy;
-                set = (m->bits[(size_t)row * m->bw + mxx] & 0xFFFFFF) != 0;
-            }
-            int s = i;
-            for (i++; i < w; i++) {
-                int b = 0; mxx = mx + i;
-                if (mxx >= 0 && myy >= 0 && mxx < m->bw && myy < m->bh) {
-                    int row = m->flip ? m->bh - 1 - myy : myy;
-                    b = (m->bits[(size_t)row * m->bw + mxx] & 0xFFFFFF) != 0;
-                }
-                if (b != set) break;
-            }
-            DWORD r = set ? fore : back;
-            if ((r >> 16) != 0xAA) BitBlt(dst, x + s, y + j, i - s, 1, src, sx + s, sy + j, r);
-        }
-    }
-    return TRUE;
-}
-
-GDIAPI UINT GetNearestPaletteIndex(HPALETTE pal, COLORREF c) { (void)c; return obj_of(pal) ? 0 : 0xFFFFFFFFu; }   /* CLR_INVALID */
-
-/* A printer DC's new page settings: there are no printers */
+/* ResetDC: a DC's device mode cannot change, the DC stays as it is */
 GDIAPI HDC ResetDCW(HDC h, const void *mode) { (void)mode; return h; }
 GDIAPI HDC ResetDCA(HDC h, const void *mode) { (void)mode; return h; }
-
-/* -----------------------------------------------------------------------
- * Palettes: the screen is true colour, so a logical palette changes
- * nothing on it; the objects exist so programs can make and select them
- * ----------------------------------------------------------------------- */
-GDIAPI HPALETTE CreatePalette(const LOGPALETTE *lp)
-{
-    if (!lp || !lp->palNumEntries) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
-    GObj *o = new_obj(K_PALETTE);
-    if (o) o->width = lp->palNumEntries;
-    return (HPALETTE)o;
-}
-GDIAPI HPALETTE SelectPalette(HDC h, HPALETTE pal, BOOL background)
-{
-    (void)background;
-    NOVA_DC *d = dc_of(h);
-    if (!d || !obj_of(pal)) return 0;
-    return pal;                                     /* the "previous" one: as good as any to select back */
-}
-GDIAPI UINT RealizePalette(HDC h) { (void)h; return 0; }
-GDIAPI UINT SetPaletteEntries(HPALETTE pal, UINT first, UINT n, const PALETTEENTRY *e) { (void)first; (void)e; return obj_of(pal) ? n : 0; }
-GDIAPI UINT GetPaletteEntries(HPALETTE pal, UINT first, UINT n, PALETTEENTRY *e)
-{
-    (void)first;
-    if (!obj_of(pal)) return 0;
-    if (e) memset(e, 0, n * sizeof *e);
-    return n;
-}
-GDIAPI BOOL UnrealizeObject(HGDIOBJ h) { return obj_of(h) != NULL; }
-GDIAPI BOOL UpdateColors(HDC h) { return dc_of(h) != NULL; }
-GDIAPI BOOL ResizePalette(HPALETTE pal, UINT n) { (void)n; return obj_of(pal) != NULL; }
 
 GDIAPI BOOL GetCharABCWidthsFloatA(HDC h, UINT first, UINT last, void *out)
 {
@@ -327,11 +228,6 @@ GDIAPI BOOL StrokeAndFillPath(HDC h) { return h != 0; }
 GDIAPI BOOL WidenPath(HDC h) { return h != 0; }
 GDIAPI BOOL FlattenPath(HDC h) { return h != 0; }
 GDIAPI BOOL SelectClipPath(HDC h, int mode) { (void)mode; return h != 0; }
-GDIAPI BOOL PolyBezierTo(HDC h, const POINT *p, DWORD n)
-{
-    for (DWORD i = 2; i < n; i += 3) LineTo(h, p[i].x, p[i].y);    /* through the end points */
-    return TRUE;
-}
 GDIAPI BOOL SetMiterLimit(HDC h, float limit, float * old) { (void)h; (void)limit; if (old) *old = 10.0f; return TRUE; }
 GDIAPI BOOL GetMiterLimit(HDC h, float * limit) { (void)h; if (limit) *limit = 10.0f; return TRUE; }
 

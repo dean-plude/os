@@ -23,17 +23,23 @@ to an echo server this script runs on the host (10.0.2.2 on QEMU's user
 network) and types a line, which the server must receive.  Each one's
 screenshot (and This PC's) must match tests/reference/NAME.png
 (--update-reference writes those files from this run instead); the
-screenshots are kept in --out.
+screenshots are kept in --out.  When a program needs sound (App(mic=True)
+hears a 523 Hz tone on the microphone, App(sound=(hz, ms)) must play that
+tone for that long), NovaOS boots with a sound card on a private
+PulseAudio server (as tools/selftest.py's core suite does) and what it
+played is kept in --out/sound.wav and checked after the run; without
+pulseaudio those programs are skipped, which is not a failure.
 
 The exit status is the number of programs that failed.  --summary appends
 a Markdown pass/fail table, one row per program (the nightly workflow,
 .github/workflows/nightly.yml, posts it).
 """
-import argparse, http.server, os, re, shutil, socket, ssl, struct, subprocess, sys, tempfile, threading, time, zipfile
+import argparse, http.server, math, os, re, shutil, socket, ssl, struct, subprocess, sys, tempfile, threading, time, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from novarun import Nova, ROOT
-from selftest import Test, verdict, store_verdict, PANIC
+from selftest import Test, verdict, store_verdict, PANIC, REC_HZ
+import wavcheck
 
 REFERENCES = os.path.join(ROOT, 'tests', 'reference')
 DRIVE_LABEL = 'NOVACORPUS'
@@ -52,10 +58,15 @@ class App:
     A windowed program (@gui) is started with each test's command, has its
     test's timeout to bring its window up, and its screenshot is compared
     with tests/reference/NAME.png; @interact(nova, echo) runs before the
-    screenshot (typing into it) and returns why it failed, or None.  @net
-    gives NovaOS QEMU's user network and starts the echo server; @https
-    also starts the HTTPS server (https://10.0.2.2:8443/ in NovaOS) and
-    sets app.ca to its CA certificate's file before @unpack runs.
+    screenshot (typing into it) and returns why it failed, or None.  A
+    windowed program's tests whose command does not start a program run in
+    the Terminal after its window closed.  @net gives NovaOS QEMU's user
+    network and starts the echo server; @https also starts the HTTPS
+    server (https://10.0.2.2:8443/ in NovaOS) and sets app.ca to its CA
+    certificate's file before @unpack runs.  @mic: the program hears a tone
+    of REC_HZ (523 Hz) on the microphone; @sound=(hz, ms): it must play a
+    tone of @hz for @ms, checked in the sound NovaOS played once the run
+    ends.
 
     @store: the program's name in the App Store's catalog
     (kernel/apps/store.c), whose download @url must be.  The download is
@@ -68,11 +79,13 @@ class App:
     processes the browser ends itself), so only a crash fails it before
     the screenshot."""
     def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=(),
-                 gui=False, net=False, interact=None, https=False, store=None, processes=False):
+                 gui=False, net=False, interact=None, https=False, store=None, processes=False,
+                 mic=False, sound=None):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
         self.unpack, self.strip, self.extra = unpack, strip, list(extra)
         self.gui, self.net, self.interact = gui, net, interact
         self.https, self.store, self.ca, self.processes = https, store, None, processes
+        self.mic, self.sound = mic, sound
 
 
 A = r'C:\Apps'
@@ -372,13 +385,23 @@ def main():
 
     ntfs = make_ntfs(os.path.join(work, 'ntfs.img')) if any(x.name == 'NovaOS' for x in staged) else None
     echo = EchoServer() if any(x.net for x in staged) else None
+    rec = wav = None
+    if any(x.mic or x.sound for x in staged):
+        if shutil.which('pulseaudio'):
+            rec = make_tone(os.path.join(work, 'mic.wav'))
+            wav = os.path.join(a.out, 'sound.wav')
+        else:
+            for app in [x for x in staged if x.mic or x.sound]:
+                results[app.name] = (SKIPPED + ': pulseaudio is not installed', 0, [])
+                print(f'SKIP  {app.name:10s} {results[app.name][0]}', flush=True)
+            staged = [x for x in staged if not (x.mic or x.sound)]
     puts = [(apps_dir, A)] + [(os.path.join(work, d), 'C:\\' + d) for d in ('Downloads', 'Programs')
                               if os.path.isdir(os.path.join(work, d))]
     t_boot = time.time()
     try:
         nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=4096, data_mb=2048,
                     extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [],
-                    net=echo is not None or https is not None)
+                    net=echo is not None or https is not None, rec=rec, wav=wav)
     except RuntimeError as e:
         print(e)
         for app in staged:
@@ -399,8 +422,8 @@ def main():
                 if t.store:
                     out, _ = nova.run(t.cmd, 30)
                     w, out = store_verdict(nova, t, out)
-                elif app.gui:
-                    out, w = gui(nova, t, a, app, echo, close=app is not staged[-1])
+                elif app.gui and t.cmd.startswith('start '):
+                    out, w = gui(nova, t, a, app, echo, close=app is not staged[-1] or len(app.tests) > 1)
                 elif app.name == 'NovaOS':
                     out, w = screen(nova, t, a, ntfs)
                 else:
@@ -430,8 +453,33 @@ def main():
         with open(os.path.join(a.out, 'serial.log'), 'w') as f:
             f.write(log + nova.sr.read_new())
         shutil.rmtree(work, ignore_errors=True)
+    for app in staged:                              # the sound NovaOS played, now that the file is complete
+        why, secs, steps = results[app.name]
+        if app.sound and not why:
+            hz, ms = app.sound
+            if not os.path.exists(wav) or not wavcheck.has_tone(wav, hz, ms):
+                results[app.name] = (f'no {hz} Hz tone of {ms} ms in the sound NovaOS played', secs,
+                                     steps + [('sound', 'no tone')])
+                print(f'FAIL  {app.name:10s} {results[app.name][0]}', flush=True)
+            else:
+                results[app.name] = (why, secs, steps + [('sound', None)])
     report(a, apps, results)
-    return sum(1 for r in results.values() if r[0])
+    return sum(1 for r in results.values() if r[0] and not r[0].startswith(SKIPPED))
+
+
+SKIPPED = 'skipped'
+
+
+def make_tone(path):
+    """A 10 s WAV of the microphone's tone (REC_HZ), as tools/selftest.py makes"""
+    import wave
+    with wave.open(path, 'wb') as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(b''.join(struct.pack('<hh', v, v) for v in
+                               (int(12000 * math.sin(2 * math.pi * REC_HZ * i / 48000)) for i in range(48000 * 10))))
+    return path
 
 
 def gui(nova, t, a, app, echo, close):
@@ -523,7 +571,8 @@ def report(a, apps, results):
                     continue
                 why, secs, steps = results[app.name]
                 checks = ', '.join(f'`{n}`' + ('' if not w else ' ❌') for n, w in steps)
-                f.write(f'| {app.name} | {app.version} | {"✅ pass" if not why else "❌ " + why.replace("|", "/")} '
+                mark = '✅ pass' if not why else ('⏭ ' if why.startswith(SKIPPED) else '❌ ') + why.replace('|', '/')
+                f.write(f'| {app.name} | {app.version} | {mark} '
                         f'| {checks} | {secs:.0f} s |\n')
             f.write('\n')
 

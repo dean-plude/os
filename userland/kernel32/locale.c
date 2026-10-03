@@ -230,6 +230,7 @@ K32 BOOL WINAPI SetThreadLocale(LCID lcid)     { return IsValidLocale(lcid, 0); 
 K32 WORD WINAPI GetUserDefaultLangID(void)     { return (WORD)GetUserDefaultLCID(); }
 K32 WORD WINAPI GetSystemDefaultLangID(void)   { return 0x409; }
 K32 WORD WINAPI GetUserDefaultUILanguage(void) { return 0x409; }
+K32 LANGID WINAPI GetThreadUILanguage(void)     { return 0x409; }
 K32 WORD WINAPI GetSystemDefaultUILanguage(void) { return 0x409; }
 K32 int  WINAPI GetUserDefaultLocaleName(LPWSTR n, int cap)
 {

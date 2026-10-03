@@ -77,7 +77,8 @@ static const GUID FMTID_EngineFormat = { 0xF19F064D, 0x082C, 0x4E27, { 0xBC, 0x7
 
 typedef struct {
     WORD vt, r1, r2, r3;
-    union { LPWSTR pwszVal; ULONG ulVal; struct { ULONG cbSize; BYTE *pBlobData; } blob; BYTE pad[16]; };
+    /* 24 bytes, 16 in 32-bit programs (VLC's x86 build keeps one on its stack) */
+    union { LPWSTR pwszVal; ULONG ulVal; struct { ULONG cbSize; BYTE *pBlobData; } blob; BYTE pad[2 * sizeof(void *)]; };
 } PROPVARIANT;
 typedef struct { GUID fmtid; DWORD pid; } PROPERTYKEY;
 #define VT_EMPTY  0
