@@ -511,6 +511,8 @@ GDIPAPI GpStatus GDIPCALL GdipGetClipBoundsI(GpGraphics *g, GpRect *out)
 GDIPAPI GpStatus GDIPCALL GdipIsClipEmpty(GpGraphics *g, BOOL *out) { if (!g || !out) return InvalidParameter; *out = g->clip.kind == RgnEmpty; return Ok; }
 
 /* what a graphics object can draw on, in device coordinates */
+GpRectF gdip_region_bounds(const GpRegion *r) { return region_bounds(r); }
+
 static GpRectF device_bounds(GpGraphics *g)
 {
     if (g->img) return (GpRectF){ 0, 0, (REAL)plutovg_surface_get_width(g->img->s), (REAL)plutovg_surface_get_height(g->img->s) };
@@ -709,35 +711,177 @@ GDIPAPI GpStatus GDIPCALL GdipCreateSolidFill(ARGB color, GpBrush **out)
     if (!out) return InvalidParameter;
     GpBrush *b = xalloc(sizeof *b);
     if (!b) return OutOfMemory;
+    b->type = BrushTypeSolidColor;
     b->color = color;
+    plutovg_matrix_init_identity(&b->xform);
     *out = b;
+    return Ok;
+}
+GpStatus gdip_brush_free(GpBrush *b)
+{
+    xfree(b->pts);
+    xfree(b->surround);
+    if (b->img) GdipDisposeImage(b->img);
+    b->pts = NULL; b->surround = NULL; b->img = NULL;
+    b->npts = b->nsurround = 0;
+    return Ok;
+}
+GpStatus gdip_brush_copy(GpBrush *dst, const GpBrush *src)
+{
+    *dst = *src;
+    dst->pts = NULL; dst->surround = NULL; dst->img = NULL;
+    if (src->npts) {
+        dst->pts = xalloc(src->npts * sizeof *dst->pts);
+        if (!dst->pts) return OutOfMemory;
+        memcpy(dst->pts, src->pts, src->npts * sizeof *dst->pts);
+    }
+    if (src->nsurround) {
+        dst->surround = xalloc(src->nsurround * sizeof *dst->surround);
+        if (!dst->surround) { gdip_brush_free(dst); return OutOfMemory; }
+        memcpy(dst->surround, src->surround, src->nsurround * sizeof *dst->surround);
+    }
+    if (src->img && GdipCloneImage(src->img, &dst->img) != Ok) { gdip_brush_free(dst); return OutOfMemory; }
     return Ok;
 }
 GDIPAPI GpStatus GDIPCALL GdipCloneBrush(GpBrush *b, GpBrush **out)
 {
     if (!b || !out) return InvalidParameter;
-    return GdipCreateSolidFill(b->color, out);
+    GpBrush *c = xalloc(sizeof *c);
+    if (!c) return OutOfMemory;
+    GpStatus st = gdip_brush_copy(c, b);
+    if (st != Ok) { xfree(c); return st; }
+    *out = c;
+    return Ok;
 }
-GDIPAPI GpStatus GDIPCALL GdipDeleteBrush(GpBrush *b) { if (!b) return InvalidParameter; xfree(b); return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipDeleteBrush(GpBrush *b) { if (!b) return InvalidParameter; gdip_brush_free(b); xfree(b); return Ok; }
 GDIPAPI GpStatus GDIPCALL GdipGetSolidFillColor(GpBrush *b, ARGB *c) { if (!b || !c) return InvalidParameter; *c = b->color; return Ok; }
 GDIPAPI GpStatus GDIPCALL GdipSetSolidFillColor(GpBrush *b, ARGB c) { if (!b) return InvalidParameter; b->color = c; return Ok; }
-GDIPAPI GpStatus GDIPCALL GdipGetBrushType(GpBrush *b, INT *t) { if (!b || !t) return InvalidParameter; *t = 0; return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipGetBrushType(GpBrush *b, INT *t) { if (!b || !t) return InvalidParameter; *t = b->type; return Ok; }
 
+static plutovg_color_t argb_color(ARGB a)
+{
+    plutovg_color_t c = { ((a >> 16) & 255) / 255.f, ((a >> 8) & 255) / 255.f, (a & 255) / 255.f, (a >> 24) / 255.f };
+    return c;
+}
+/* a colour between two at t, 0..1 */
+static ARGB mix(ARGB a, ARGB b, REAL t)
+{
+    ARGB r = 0;
+    for (int sh = 0; sh < 32; sh += 8) {
+        int ca = (a >> sh) & 255, cb = (b >> sh) & 255;
+        r |= (ARGB)(int)(ca + (cb - ca) * t + 0.5f) << sh;
+    }
+    return r;
+}
+/* the stops of a gradient from colour `c1` to `c2`, with the brush's blend
+ * factors or preset colours applied */
+static int gradient_stops(const GpBrush *b, ARGB c1, ARGB c2, plutovg_gradient_stop_t *st)
+{
+    int n = 0;
+    if (b->npreset >= 2) {
+        for (int i = 0; i < b->npreset; i++) { st[n].offset = b->preset_p[i]; st[n].color = argb_color(b->preset_c[i]); n++; }
+    } else if (b->nblend >= 2) {
+        for (int i = 0; i < b->nblend; i++) { st[n].offset = b->blend_p[i]; st[n].color = argb_color(mix(c1, c2, b->blend_f[i])); n++; }
+    } else {
+        st[0].offset = 0; st[0].color = argb_color(c1);
+        st[1].offset = 1; st[1].color = argb_color(c2);
+        n = 2;
+    }
+    return n;
+}
+static plutovg_spread_method_t spread_of(int wrap)
+{
+    switch (wrap) {
+    case 0: return PLUTOVG_SPREAD_METHOD_REPEAT;       /* WrapModeTile */
+    case 4: return PLUTOVG_SPREAD_METHOD_PAD;          /* WrapModeClamp */
+    default: return PLUTOVG_SPREAD_METHOD_REFLECT;     /* the flips */
+    }
+}
+void gdip_use_brush(plutovg_canvas_t *c, const GpBrush *b)
+{
+    plutovg_gradient_stop_t st[MAX_BLEND];
+    switch (b->type) {
+    case BrushTypeLinearGradient: {
+        /* the gradient runs along `angle` across the rectangle: its length
+         * is the rectangle's projection onto that direction */
+        REAL a = b->angle * 3.14159265f / 180.f, ca = cosf(a), sa = sinf(a);
+        REAL w = b->rect.Width, h = b->rect.Height;
+        REAL len = fabsf(w * ca) + fabsf(h * sa);
+        REAL cx = b->rect.X + w / 2, cy = b->rect.Y + h / 2;
+        if (b->angle_scalable && w > 0 && h > 0) { REAL s = sqrtf(ca * ca * w * w + sa * sa * h * h); if (s > 0) { ca = ca * w / s; sa = sa * h / s; } }
+        REAL x1 = cx - ca * len / 2, y1 = cy - sa * len / 2, x2 = cx + ca * len / 2, y2 = cy + sa * len / 2;
+        int n = gradient_stops(b, b->color, b->color2, st);
+        plutovg_canvas_set_linear_gradient(c, x1, y1, x2, y2, spread_of(b->wrap), st, n, &b->xform);
+        return;
+    }
+    case BrushTypePathGradient: {
+        /* a radial gradient from the centre colour out to the first surround colour */
+        GpRectF r = b->rect;
+        REAL rad = sqrtf(r.Width * r.Width + r.Height * r.Height) / 2;
+        if (rad <= 0) rad = 1;
+        ARGB edge = b->nsurround ? b->surround[0] : b->color2;
+        plutovg_gradient_stop_t rs[MAX_BLEND];
+        int n;
+        if (b->npreset >= 2) {
+            /* preset blend: position 0 is the boundary, 1 the centre */
+            for (n = 0; n < b->npreset; n++) { rs[n].offset = 1 - b->preset_p[b->npreset - 1 - n]; rs[n].color = argb_color(b->preset_c[b->npreset - 1 - n]); }
+        } else if (b->nblend >= 2) {
+            for (n = 0; n < b->nblend; n++) { rs[n].offset = 1 - b->blend_p[b->nblend - 1 - n]; rs[n].color = argb_color(mix(edge, b->color, b->blend_f[b->nblend - 1 - n])); }
+        } else {
+            rs[0].offset = 0; rs[0].color = argb_color(b->color);
+            rs[1].offset = 1; rs[1].color = argb_color(edge);
+            n = 2;
+        }
+        REAL fr = rad * (b->focus.X > b->focus.Y ? b->focus.X : b->focus.Y);
+        plutovg_canvas_set_radial_gradient(c, b->centre.X, b->centre.Y, rad, b->centre.X, b->centre.Y, fr < 0 ? 0 : fr,
+                                           PLUTOVG_SPREAD_METHOD_PAD, rs, n, &b->xform);
+        return;
+    }
+    case BrushTypeTextureFill:
+        if (b->img && b->img->s) {
+            plutovg_canvas_set_texture(c, b->img->s, b->wrap == 4 ? PLUTOVG_TEXTURE_TYPE_PLAIN : PLUTOVG_TEXTURE_TYPE_TILED, 1.f, &b->xform);
+            return;
+        }
+        break;
+    case BrushTypeHatchFill: {
+        /* hatches: the two colours mixed by the style's density */
+        static const BYTE density[] = { 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50,
+                                        5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90 };
+        int d = b->hatch >= 0 && b->hatch < (int)sizeof density ? density[b->hatch] : 50;
+        set_argb(c, mix(b->color2, b->color, d / 100.f));
+        return;
+    }
+    }
+    set_argb(c, b->color);
+}
+
+static void pen_init(GpPen *p, ARGB color, REAL width, INT unit)
+{
+    p->color = color;
+    p->width = width;
+    p->unit = unit;
+    p->miter = 10.f;
+    p->mode = 0;
+    plutovg_matrix_init_identity(&p->xform);
+}
 GDIPAPI GpStatus GDIPCALL GdipCreatePen1(ARGB color, REAL width, INT unit, GpPen **out)
 {
-    (void)unit;
     if (!out) return InvalidParameter;
     GpPen *p = xalloc(sizeof *p);
     if (!p) return OutOfMemory;
-    p->color = color;
-    p->width = width;
+    pen_init(p, color, width, unit);
     *out = p;
     return Ok;
 }
 GDIPAPI GpStatus GDIPCALL GdipCreatePen2(GpBrush *b, REAL width, INT unit, GpPen **out)
 {
-    if (!b) return InvalidParameter;
-    return GdipCreatePen1(b->color, width, unit, out);
+    if (!b || !out) return InvalidParameter;
+    GpPen *p = xalloc(sizeof *p);
+    if (!p) return OutOfMemory;
+    pen_init(p, b->color, width, unit);
+    if (b->type != BrushTypeSolidColor && GdipCloneBrush(b, &p->brush) != Ok) { xfree(p); return OutOfMemory; }
+    *out = p;
+    return Ok;
 }
 GDIPAPI GpStatus GDIPCALL GdipClonePen(GpPen *p, GpPen **out)
 {
@@ -745,11 +889,37 @@ GDIPAPI GpStatus GDIPCALL GdipClonePen(GpPen *p, GpPen **out)
     GpPen *c = xalloc(sizeof *c);
     if (!c) return OutOfMemory;
     *c = *p;
+    c->dashes = NULL; c->compound = NULL; c->brush = NULL;
+    if (p->ndashes) {
+        c->dashes = xalloc(p->ndashes * sizeof *c->dashes);
+        if (!c->dashes) { xfree(c); return OutOfMemory; }
+        memcpy(c->dashes, p->dashes, p->ndashes * sizeof *c->dashes);
+    }
+    if (p->ncompound) {
+        c->compound = xalloc(p->ncompound * sizeof *c->compound);
+        if (!c->compound) { xfree(c->dashes); xfree(c); return OutOfMemory; }
+        memcpy(c->compound, p->compound, p->ncompound * sizeof *c->compound);
+    }
+    if (p->brush && GdipCloneBrush(p->brush, &c->brush) != Ok) { xfree(c->dashes); xfree(c->compound); xfree(c); return OutOfMemory; }
     *out = c;
     return Ok;
 }
-GDIPAPI GpStatus GDIPCALL GdipDeletePen(GpPen *p) { if (!p) return InvalidParameter; xfree(p); return Ok; }
-GDIPAPI GpStatus GDIPCALL GdipSetPenColor(GpPen *p, ARGB c) { if (!p) return InvalidParameter; p->color = c; return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipDeletePen(GpPen *p)
+{
+    if (!p) return InvalidParameter;
+    xfree(p->dashes);
+    xfree(p->compound);
+    if (p->brush) GdipDeleteBrush(p->brush);
+    xfree(p);
+    return Ok;
+}
+GDIPAPI GpStatus GDIPCALL GdipSetPenColor(GpPen *p, ARGB c)
+{
+    if (!p) return InvalidParameter;
+    p->color = c;
+    if (p->brush) { GdipDeleteBrush(p->brush); p->brush = NULL; }
+    return Ok;
+}
 GDIPAPI GpStatus GDIPCALL GdipGetPenColor(GpPen *p, ARGB *c) { if (!p || !c) return InvalidParameter; *c = p->color; return Ok; }
 GDIPAPI GpStatus GDIPCALL GdipSetPenWidth(GpPen *p, REAL w) { if (!p) return InvalidParameter; p->width = w; return Ok; }
 GDIPAPI GpStatus GDIPCALL GdipGetPenWidth(GpPen *p, REAL *w) { if (!p || !w) return InvalidParameter; *w = p->width; return Ok; }
@@ -757,19 +927,30 @@ GDIPAPI GpStatus GDIPCALL GdipSetPenLineJoin(GpPen *p, INT j) { if (!p) return I
 GDIPAPI GpStatus GDIPCALL GdipSetPenStartCap(GpPen *p, INT c) { if (!p) return InvalidParameter; p->start_cap = c; return Ok; }
 GDIPAPI GpStatus GDIPCALL GdipSetPenEndCap(GpPen *p, INT c) { if (!p) return InvalidParameter; p->end_cap = c; return Ok; }
 GDIPAPI GpStatus GDIPCALL GdipSetPenLineCap197819(GpPen *p, INT s, INT e, INT dash)
-{ if (!p) return InvalidParameter; p->start_cap = s; p->end_cap = e; (void)dash; return Ok; }
-GDIPAPI GpStatus GDIPCALL GdipSetPenDashStyle(GpPen *p, INT d) { if (!p) return InvalidParameter; p->dash = d; return Ok; }
-
-static void use_pen(plutovg_canvas_t *c, const GpPen *p)
+{ if (!p) return InvalidParameter; p->start_cap = s; p->end_cap = e; p->dash_cap = dash; return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipSetPenDashStyle(GpPen *p, INT d)
 {
-    set_argb(c, p->color);
-    plutovg_canvas_set_line_width(c, p->width > 0 ? p->width : 1.f);   /* width 0: a one-pixel line */
+    if (!p) return InvalidParameter;
+    p->dash = d;
+    if (d != 5) { xfree(p->dashes); p->dashes = NULL; p->ndashes = 0; }   /* not DashStyleCustom: the pattern goes */
+    return Ok;
+}
+
+void gdip_use_pen(plutovg_canvas_t *c, const GpPen *p)
+{
+    if (p->brush) gdip_use_brush(c, p->brush);
+    else set_argb(c, p->color);
+    float w = p->width > 0 ? p->width : 1.f;                            /* width 0: a one-pixel line */
+    plutovg_canvas_set_line_width(c, w);
     plutovg_canvas_set_line_join(c, p->line_join == 1 ? PLUTOVG_LINE_JOIN_BEVEL :
                                     p->line_join == 2 ? PLUTOVG_LINE_JOIN_ROUND : PLUTOVG_LINE_JOIN_MITER);
-    plutovg_canvas_set_line_cap(c, p->start_cap == 1 ? PLUTOVG_LINE_CAP_SQUARE :
-                                   p->start_cap == 2 ? PLUTOVG_LINE_CAP_ROUND : PLUTOVG_LINE_CAP_BUTT);
+    plutovg_canvas_set_miter_limit(c, p->miter > 1 ? p->miter : 1.f);
+    int cap = p->start_cap;
+    if (p->dash && p->dash_cap) cap = p->dash_cap;
+    plutovg_canvas_set_line_cap(c, cap == 1 ? PLUTOVG_LINE_CAP_SQUARE :
+                                   cap == 2 ? PLUTOVG_LINE_CAP_ROUND : PLUTOVG_LINE_CAP_BUTT);
     static const float dot[] = { 1, 1 }, dash[] = { 3, 1 }, dashdot[] = { 3, 1, 1, 1 }, dashdotdot[] = { 3, 1, 1, 1, 1, 1 };
-    float w = p->width > 0 ? p->width : 1.f, d[6];
+    float d[64];
     const float *pat = NULL;
     int n = 0;
     switch (p->dash) {
@@ -777,9 +958,11 @@ static void use_pen(plutovg_canvas_t *c, const GpPen *p)
     case 2: pat = dot; n = 2; break;
     case 3: pat = dashdot; n = 4; break;
     case 4: pat = dashdotdot; n = 6; break;
+    case 5: pat = p->dashes; n = p->ndashes > 64 ? 64 : p->ndashes; break;     /* DashStyleCustom: in pen widths */
     }
     for (int i = 0; i < n; i++) d[i] = pat[i] * w;
     plutovg_canvas_set_dash_array(c, n ? d : NULL, n);
+    plutovg_canvas_set_dash_offset(c, n ? p->dash_offset * w : 0);
 }
 
 /* ---- shapes ----------------------------------------------------------- */
@@ -790,7 +973,7 @@ static GpStatus stroke_points(GpGraphics *g, GpPen *pen, const GpPointF *pts, in
     GpRectF a = rect_of_points(pts, n, pen->width + 2);
     GdipOp op;
     if (!gdip_op_begin(&op, g, &a, TRUE)) return Ok;
-    use_pen(op.c, pen);
+    gdip_use_pen(op.c, pen);
     plutovg_path_t *path = plutovg_path_create();
     plutovg_path_move_to(path, pts[0].X, pts[0].Y);
     if (bezier)
@@ -882,7 +1065,7 @@ GDIPAPI GpStatus GDIPCALL GdipFillRectangle(GpGraphics *g, GpBrush *b, REAL x, R
     GpRectF a = { x, y, w, h };
     GdipOp op;
     if (!gdip_op_begin(&op, g, &a, FALSE)) return Ok;
-    set_argb(op.c, b->color);
+    gdip_use_brush(op.c, b);
     plutovg_canvas_fill_rect(op.c, x, y, w, h);
     gdip_op_end(&op);
     return Ok;
@@ -1020,7 +1203,7 @@ GDIPAPI GpStatus GDIPCALL GdipFillPath(GpGraphics *g, GpBrush *b, GpPath *p)
     if (!pp) return OutOfMemory;
     GdipOp op;
     if (gdip_op_begin(&op, g, &a, FALSE)) {
-        set_argb(op.c, b->color);
+        gdip_use_brush(op.c, b);
         plutovg_canvas_set_fill_rule(op.c, p->fill_mode == FillModeWinding ? PLUTOVG_FILL_RULE_NON_ZERO : PLUTOVG_FILL_RULE_EVEN_ODD);
         plutovg_canvas_fill_path(op.c, pp);
         gdip_op_end(&op);
@@ -1038,7 +1221,7 @@ GDIPAPI GpStatus GDIPCALL GdipDrawPath(GpGraphics *g, GpPen *pen, GpPath *p)
     if (!pp) return OutOfMemory;
     GdipOp op;
     if (gdip_op_begin(&op, g, &a, TRUE)) {
-        use_pen(op.c, pen);
+        gdip_use_pen(op.c, pen);
         plutovg_canvas_stroke_path(op.c, pp);
         gdip_op_end(&op);
     }

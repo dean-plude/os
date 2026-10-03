@@ -80,24 +80,30 @@ UmObject *um_console_object(UmConsole *c)
     return c ? um_ob_ref(c->ob) : NULL;
 }
 
+/* The unfinished line of a detached process, to the kernel log */
+void um_console_flush_log(UmProcess *p)
+{
+    if (!p || !p->log_n) return;
+    p->log_line[p->log_n] = 0;
+    kprintf("[UM] %s (PID %u, detached): %s\n", p->name, p->pid, p->log_line);
+    p->log_n = 0;
+}
+
 /* Program → Terminal */
 int um_console_write(UmConsole *c, const char *data, int len)
 {
     if (!c) {
         /* No console (a detached process handed its creator's console
          * handles, as Firefox's sandbox does for its child processes):
-         * the kernel log, a line at a time */
+         * the kernel log, a line at a time.  An unfinished line waits in
+         * the process for the rest (VLC writes its log a character at a
+         * time) and goes out when it ends or the process does. */
         UmProcess *me = UmCurrent();
-        char line[256];
-        int n = 0;
+        if (!me) return len;
         for (int i = 0; i < len; i++) {
             char ch = data[i];
-            if (ch != '\n' && ch != '\r' && n < (int)sizeof(line) - 1) line[n++] = ch;
-            if ((ch == '\n' || i == len - 1 || n == (int)sizeof(line) - 1) && n) {
-                line[n] = 0;
-                kprintf("[UM] %s (PID %u, detached): %s\n", me ? me->name : "?", me ? me->pid : 0, line);
-                n = 0;
-            }
+            if (ch != '\n' && ch != '\r' && me->log_n < (int)sizeof(me->log_line) - 1) me->log_line[me->log_n++] = ch;
+            if ((ch == '\n' || me->log_n == (int)sizeof(me->log_line) - 1) && me->log_n) um_console_flush_log(me);
         }
         return len;
     }

@@ -414,6 +414,11 @@ CRTEXP char **__sys_errlist(void)
     return g_errlist;
 }
 CRTEXP int *__sys_nerr(void) { return &g_nerr; }
+/* msvcrt's own names are the table and the count themselves (MinGW's
+ * sys_errlist / sys_nerr); the table fills in when the DLL starts */
+CRTEXP char *_sys_errlist[NSYSERR];
+CRTEXP int _sys_nerr = NSYSERR;
+void __nova_init_errlist(void) { for (int i = 0; i < NSYSERR; i++) _sys_errlist[i] = strerror(i); }
 CRTEXP int __fpe_flt_rounds(void)
 {
     unsigned m;

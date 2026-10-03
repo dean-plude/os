@@ -35,6 +35,8 @@
 #define ST_TOO_MANY_HANDLES       0xC000011Fu
 #define ST_STILL_ACTIVE           0x00000103u
 #define ST_CANCELLED              0xC0000120u
+#define ST_PRIVILEGE_NOT_HELD     0xC0000061u
+#define SE_INC_BASE_PRIORITY      14          /* SeIncreaseBasePriorityPrivilege */
 
 #define MAXIMUM_WAIT_OBJECTS      64
 
@@ -684,10 +686,139 @@ static UINT64 suspend_op(UINT64 h, UINT64 prev_ptr, int delta)
 static UINT64 sys_resume_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)  { (void)a3; (void)a4; return suspend_op(a1, a2, -1); }
 static UINT64 sys_suspend_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a3; (void)a4; return suspend_op(a1, a2, +1); }
 
+/* -----------------------------------------------------------------------
+ * Priorities (NT's, Windows Internals ch. 4 "Thread scheduling")
+ *
+ * A process has a priority class, whose base priority its threads' bases
+ * are relative to: IDLE 4, BELOW_NORMAL 6, NORMAL 8, ABOVE_NORMAL 10,
+ * HIGH 13, REALTIME 24.  A thread's increment (SetThreadPriority) is
+ * -2..2 (LOWEST..HIGHEST), or saturates it at the bottom or top of its
+ * class's range (+-16: IDLE and TIME_CRITICAL), 1 and 15 for the dynamic
+ * classes, 16 and 31 for REALTIME; a base is never outside that range.
+ * REALTIME needs SeIncreaseBasePriorityPrivilege, which only an
+ * administrator's token holds (kernel32 falls back to HIGH without it, as
+ * on Windows), so a program never gets above 15 — or ahead of the
+ * desktop, the device poll thread or the mixer (scheduler.h).  Wake-up
+ * boosts start from and decay back to the thread's own base (scheduler.c).
+ * ----------------------------------------------------------------------- */
+#define PRIO_INCR_SATURATE 16                  /* (HIGH_PRIORITY + 1) / 2 */
+
+static const UINT8 g_class_base[7] = { 8, 4, 8, 13, 24, 6, 10 };   /* by PROCESS_PRIORITY_CLASS_* */
+
+UINT8 um_class_base(const UmProcess *p)
+{
+    return g_class_base[p->prio_class < 7 ? p->prio_class : 0];
+}
+
+UINT8 um_thread_base(const UmProcess *p, int incr)
+{
+    int b = um_class_base(p);
+    int lo = b >= PRIO_LOW_REALTIME ? PRIO_LOW_REALTIME : 1;
+    int hi = b >= PRIO_LOW_REALTIME ? 31 : PRIO_MAX_DYNAMIC;
+    if (incr >= PRIO_INCR_SATURATE) return (UINT8)hi;
+    if (incr <= -PRIO_INCR_SATURATE) return (UINT8)lo;
+    b += incr;
+    return (UINT8)(b < lo ? lo : b > hi ? hi : b);
+}
+
+/* Give @t's scheduler thread the base (and boost setting) it has now */
+static void thread_apply_priority(UmThread *t)
+{
+    UmProcess *p = t->proc;
+    um_lock_shared(&p->lock);                  /* (reap_threads frees t->kt under it) */
+    Thread *kt = t->exited ? NULL : t->kt;
+    if (kt) {
+        kt->no_boost = t->no_boost;
+        sched_set_base_priority(kt, um_thread_base(p, t->prio_incr));
+    }
+    um_unlock_shared(&p->lock);
+}
+
+/* Every thread of @p (its class or boost setting changed) */
+static void process_apply_priority(UmProcess *p)
+{
+    um_lock_shared(&p->lock);
+    for (int i = 0; i < UM_MAX_THREADS; i++) {
+        UmThread *t = p->threads[i];
+        if (!t || t->exited || !t->kt) continue;
+        t->kt->no_boost = t->no_boost;
+        sched_set_base_priority(t->kt, um_thread_base(p, t->prio_incr));
+    }
+    um_unlock_shared(&p->lock);
+}
+
+static bool get_u32(UINT64 ptr, UINT32 *v)
+{
+    return ptr && NT_SUCCESS(CopyFromUser(v, (const void *)(uintptr_t)ptr, 4));
+}
+
+/* NtSetInformationThread's priority classes: ThreadPriority (2, an
+ * absolute KPRIORITY), ThreadBasePriority (3, the increment that
+ * SetThreadPriority passes) and ThreadPriorityBoost (14, disable) */
+static UINT32 set_thread_priority(UmThread *t, UINT64 cls, UINT64 buf, UINT64 len)
+{
+    UINT32 v;
+    if (len != 4) return ST_INFO_LENGTH_MISMATCH;
+    if (!get_u32(buf, &v)) return ST_ACCESS_VIOLATION;
+    INT32 x = (INT32)v;
+    if (t->exited) return ST_SUCCESS;              /* (its process may be gone) */
+    if (cls == 14) {
+        t->no_boost = v != 0;
+    } else if (cls == 2) {
+        if (x < 1 || x > 31) return ST_INVALID_PARAMETER;
+        if (x >= PRIO_LOW_REALTIME && !um_privilege_held(SE_INC_BASE_PRIORITY)) return ST_PRIVILEGE_NOT_HELD;
+        INT32 incr = x - um_class_base(t->proc);
+        t->prio_incr = (INT8)(incr >= PRIO_INCR_SATURATE ? PRIO_INCR_SATURATE - 1 :
+                              incr <= -PRIO_INCR_SATURATE ? -PRIO_INCR_SATURATE + 1 : incr);
+    } else {
+        bool rt = um_class_base(t->proc) >= PRIO_LOW_REALTIME;
+        bool ok = (x >= -2 && x <= 2) || x == PRIO_INCR_SATURATE || x == -PRIO_INCR_SATURATE ||
+                  (rt && x >= -7 && x <= 6);       /* (a real-time process's threads: -7..6) */
+        if (!ok) return ST_INVALID_PARAMETER;
+        t->prio_incr = (INT8)x;
+    }
+    thread_apply_priority(t);
+    return ST_SUCCESS;
+}
+
+/* NtSetInformationProcess's: ProcessPriorityClass (18, PROCESS_PRIORITY_CLASS
+ * { BOOLEAN Foreground; UCHAR PriorityClass; }) and ProcessPriorityBoost (33) */
+static UINT32 set_process_priority(UmProcess *p, UINT64 cls, UINT64 buf, UINT64 len)
+{
+    if (cls == 33) {
+        UINT32 v;
+        if (len != 4) return ST_INFO_LENGTH_MISMATCH;
+        if (!get_u32(buf, &v)) return ST_ACCESS_VIOLATION;
+        p->no_boost = v != 0;
+        um_lock_shared(&p->lock);
+        for (int i = 0; i < UM_MAX_THREADS; i++) if (p->threads[i]) p->threads[i]->no_boost = v != 0;
+        um_unlock_shared(&p->lock);
+    } else {
+        UINT8 pc[2];
+        if (len != 2) return ST_INFO_LENGTH_MISMATCH;
+        if (!buf || !NT_SUCCESS(CopyFromUser(pc, (const void *)(uintptr_t)buf, 2))) return ST_ACCESS_VIOLATION;
+        if (pc[1] < 1 || pc[1] > 6) return ST_INVALID_PARAMETER;
+        if (pc[1] == 4 && !um_privilege_held(SE_INC_BASE_PRIORITY)) return ST_PRIVILEGE_NOT_HELD;
+        p->prio_class = pc[1];
+    }
+    process_apply_priority(p);
+    return ST_SUCCESS;
+}
+
 /* NtQueryInformationThread(HANDLE, THREADINFOCLASS, PVOID, ULONG, PULONG ReturnLength) */
 static UINT64 sys_query_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
+    if (a2 == 14) {                                            /* ThreadPriorityBoost: disabled? */
+        if (a4 < 4) return ST_INFO_LENGTH_MISMATCH;
+        UmObject *o = um_handle_object(p, a1, UO_THREAD);
+        if (!o) return ST_INVALID_HANDLE;
+        UINT32 v = ((UmThread *)o)->no_boost;
+        um_ob_unref(o);
+        if (!put_u32(a3, v)) return ST_ACCESS_VIOLATION;
+        UINT64 ret = um_stack_arg(5);
+        return !ret || put_u32(ret, 4) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
+    }
     if (a2 != 0) return ST_INVALID_INFO_CLASS;                 /* ThreadBasicInformation */
     if (a4 < 48) return ST_INFO_LENGTH_MISMATCH;
     UmObject *o = um_handle_object(p, a1, UO_THREAD);
@@ -699,35 +830,74 @@ static UINT64 sys_query_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     b[2] = p->pid;                                             /* ClientId */
     b[3] = t->tid;
     b[4] = 1;                                                  /* AffinityMask */
-    Thread *kt = t->exited ? NULL : t->kt;                    /* Priority (the current one, boosted), BasePriority */
-    b[5] = kt ? kt->priority | (UINT64)kt->base_priority << 32 : 8 | (UINT64)8 << 32;
+    /* Priority (the current one, boosted) and BasePriority, which is the
+     * increment over the process's class (+-16 saturated), as on NT */
+    if (!t->exited) {                                          /* (else its process may be gone) */
+        um_lock_shared(&t->proc->lock);
+        Thread *kt = t->exited ? NULL : t->kt;
+        b[5] = (kt ? kt->priority : um_thread_base(t->proc, t->prio_incr)) | (UINT64)(UINT32)(INT32)t->prio_incr << 32;
+        um_unlock_shared(&t->proc->lock);
+    }
     um_ob_unref(o);
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, sizeof(b)))) return ST_ACCESS_VIOLATION;
     return put_u32(um_stack_arg(5), 48) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }
 
-/* NtSetInformationThread: priorities, names, hiding from debuggers — accepted, ignored */
+/* ThreadZeroTlsCell: the TLS index TlsFree gave back reads zero again in
+ * every thread of the process, from the TEB's TlsSlots (0-63) or the
+ * thread's TlsExpansionSlots array (64-1087, when it has one).  ntdll
+ * holds its TLS lock around the call, so no array is freed under it. */
+static UINT32 zero_tls_cell(UmProcess *p, UINT64 buf, UINT64 len)
+{
+    UINT32 i;
+    if (len != 4) return ST_INFO_LENGTH_MISMATCH;
+    if (!NT_SUCCESS(CopyFromUser(&i, (const void *)(uintptr_t)buf, 4))) return ST_ACCESS_VIOLATION;
+    if (i >= 64 + 1024) return ST_INVALID_PARAMETER;
+    UINT32 w = p->wow ? 4 : 8;
+    UINT64 o_slots = p->wow ? 0xE10 : 0x1480, o_exp = p->wow ? 0xF94 : 0x1780, zero = 0;
+    um_lock_excl(&p->lock);                       /* (an ending thread's TEB goes under it) */
+    for (int k = 0; k < UM_MAX_THREADS; k++) {
+        UmThread *t = p->threads[k];
+        if (!t || t->exited) continue;
+        if (i < 64) {
+            um_write(p, t->teb + o_slots + (UINT64)i * w, &zero, w);
+            continue;
+        }
+        UINT64 arr = 0;
+        if (um_read(p, t->teb + o_exp, &arr, w) && arr)
+            um_write(p, arr + (UINT64)(i - 64) * w, &zero, w);
+    }
+    um_unlock_excl(&p->lock);
+    return ST_SUCCESS;
+}
+
+/* NtSetInformationThread: priorities, impersonation and ThreadZeroTlsCell;
+ * names, hiding from debuggers and the rest accepted, ignored */
 static UINT64 sys_set_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmObject *o = um_handle_object(UmCurrent(), a1, UO_THREAD);
     if (!o) return ST_INVALID_HANDLE;
     UINT32 st = ST_SUCCESS;
     if (a2 == 5) st = um_set_thread_token((UmThread *)o, a3, (UINT32)a4);   /* ThreadImpersonationToken */
+    if (a2 == 2 || a2 == 3 || a2 == 14) st = set_thread_priority((UmThread *)o, a2, a3, a4);
+    if (a2 == 10) st = zero_tls_cell(((UmThread *)o)->proc, a3, a4);         /* ThreadZeroTlsCell */
     um_ob_unref(o);
     return st;
 }
 
 /* NtQueryInformationProcess(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG) */
 static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4);
-/* Mitigation policies, priorities and the like: accepted, none of them change anything here */
+/* The priority class and boost setting; mitigation policies and the
+ * like are accepted, and change nothing here */
 static UINT64 sys_set_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a2; (void)a3; (void)a4;
     UmObject *ob;
     UmProcess *p = um_proc_of(UmCurrent(), a1, &ob);
     if (!p) return ST_INVALID_HANDLE;
+    UINT32 st = ST_SUCCESS;
+    if (a2 == 18 || a2 == 33) st = set_process_priority(p, a2, a3, a4);   /* ProcessPriorityClass, ProcessPriorityBoost */
     if (ob) um_ob_unref(ob);
-    return ST_SUCCESS;
+    return st;
 }
 
 static UINT64 sys_query_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -769,9 +939,18 @@ static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4)
         if (ret && !put_u32(ret, need)) return ST_ACCESS_VIOLATION;
         return st;
     }
+    if (a2 == 18 || a2 == 33) {                                /* ProcessPriorityClass, ProcessPriorityBoost */
+        UINT32 need = a2 == 18 ? 2 : 4;
+        if (a4 < need) return ST_INFO_LENGTH_MISMATCH;
+        UINT8 v[4] = { 0, (UINT8)(p->prio_class ? p->prio_class : 2), 0, 0 };   /* { Foreground, PriorityClass } */
+        if (a2 == 33) v[0] = p->no_boost, v[1] = 0;
+        if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, v, need))) return ST_ACCESS_VIOLATION;
+        UINT64 ret = um_stack_arg(5);
+        return !ret || put_u32(ret, need) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
+    }
     if (a2 != 0) return ST_INVALID_INFO_CLASS;                 /* ProcessBasicInformation */
     if (a4 < 48) return ST_INFO_LENGTH_MISMATCH;
-    UINT64 b[6] = { p->exited ? p->exit_status : ST_STILL_ACTIVE, p->lay.peb, 1, 8, p->pid, p->parent_pid };
+    UINT64 b[6] = { p->exited ? p->exit_status : ST_STILL_ACTIVE, p->lay.peb, 1, um_class_base(p), p->pid, p->parent_pid };
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, sizeof(b)))) return ST_ACCESS_VIOLATION;
     return put_u32(um_stack_arg(5), 48) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
 }

@@ -29,6 +29,7 @@ typedef struct {
     INT32 x, y, w, h; UINT32 style; UINT64 title;
     UINT64 hwnd, bitmap; UINT32 stride, cw, ch;
     UINT32 flags; UINT64 owner;
+    UINT32 rows, _pad;              /* out: the bitmap's height in pixels */
 } GuiCreate;
 #define GUI_POPUP     0x01
 #define GUI_RESIZABLE 0x02
@@ -42,11 +43,36 @@ enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CT
        CTL_WORKAREA, CTL_WAKE, CTL_WINDOW_AT, CTL_ACCEPT_DROPS, CTL_DROP, CTL_DROP_FETCH,
        CTL_DISPLAY_MODE, CTL_SET_DISPLAY, CTL_DROP_DONE, CTL_DROP_STATUS, CTL_SET_CURSOR, CTL_CURSOR_SHAPE,
        CTL_HWND_TAG, CTL_SET_HWND, CTL_FOREIGN, CTL_MONITOR, CTL_HEAD_MODE, CTL_SET_HEAD,
-       CTL_SET_SYSCURSOR, CTL_SYSCURSOR_IMAGE, CTL_TOUCH };
+       CTL_SET_SYSCURSOR, CTL_SYSCURSOR_IMAGE, CTL_TOUCH, CTL_TABLET, CTL_SET_DPI, CTL_SET_SCALE };
 /* display.c: the monitors (GetSystemMetrics' virtual screen) */
 int  u32_monitor_count(void);
 void u32_virtual_screen(RECT *r);
 #define WM_NOVA_TOUCH 0x03FD                    /* from the desktop: a touch contact (pointer.c) */
+#define WM_NOVA_DPI   0x03FC                    /* from the desktop: a monitor's DPI changed (dpi.c) */
+
+/* dpi.c: DPI awareness and the coordinates a DPI-aware process sees */
+enum { DPI_UNAWARE = 0, DPI_SYSTEM_AWARE = 1, DPI_PER_MONITOR_AWARE = 2 };
+typedef struct Wnd Wnd;
+int  dpi_mode(void);                /* the process's awareness (decided at the first call) */
+int  dpi_aware(void);               /* not DPI_UNAWARE: coordinates may differ from the desktop's */
+int  dpi_k(Wnd *w);                 /* w's top-level window's pixels per logical pixel */
+int  dpi_sys_k(void);               /* the system DPI / 96 this process sees */
+void dpi_to_proc(POINT *p);         /* a logical screen point -> this process's */
+void dpi_to_logical(POINT *p);
+void dpi_rect_to_proc(RECT *r);
+void dpi_monitor_to_proc(int i, RECT *r, RECT *work);
+int  dpi_monitor_dpi(int i);
+int  dpi_monitor_raw(int i, RECT *r, RECT *work, int *scale, int *dpi);   /* CTL_MONITOR: the count, 0 none */
+void dpi_refresh(void);
+void dpi_from_kernel(Wnd *w, const INT32 r[9], int k, RECT *rect, POINT *bmp, int *bw, int *bh);
+void dpi_to_kernel(Wnd *w, const RECT *b, INT32 out[4]);
+void dpi_desktop_rect(RECT *r);
+int  dpi_check(Wnd *w, const INT32 *kr);
+void dpi_monitors_changed(Wnd *top);
+int  dpi_new_window(Wnd *w, const RECT *b);
+int  dpi_apply_scale(Wnd *w, int k);  /* CTL_SET_SCALE and the bitmap it gives: the scale set */
+HANDLE dpi_thread_context(void);
+BOOL adjust_window_rect(LPRECT r, DWORD style, BOOL menu, DWORD ex, int k);   /* win.c */
 #define WM_NOVA_DROP 0x03FE                     /* from the desktop: a drop from another program (drop.c) */
 #define FRAME_TITLE 32                          /* the desktop's title bar */
 #define FRAME_BORDER 1
@@ -80,7 +106,6 @@ typedef struct ScrollBar {
     int tracking;                   /* the thumb is being dragged (to `track`) */
 } ScrollBar;
 
-typedef struct Wnd Wnd;
 struct Wnd {
     int       used;
     UINT      gen;
@@ -126,6 +151,9 @@ struct Wnd {
     RECT      normal;               /* restored window rectangle */
     HWND      focus_save;           /* the focus when it was deactivated */
     int       modal_depth;
+    int       dpi_k;                /* top-level: bitmap pixels per logical pixel (dpi.c; 0 = 1) */
+    HANDLE    dpi_ctx;              /* the thread's DPI awareness context when it was made */
+    INT32     klog[4];              /* DPI-aware: the bitmap rectangle last given the desktop */
 };
 enum {
     WF_DESTROYING = 1, WF_DESTROYED = 2, WF_CREATED = 4, WF_DIALOG = 8, WF_MENU_TRACK = 16,

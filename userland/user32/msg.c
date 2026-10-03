@@ -738,10 +738,21 @@ static void route_key(Wnd *top, const MSG *km)
 }
 
 /* One message from the desktop: most become queued messages */
-static void from_kernel(const MSG *km)
+static void from_kernel(const MSG *kmsg)
 {
-    Wnd *top = top_by_kid((UINT32)(ULONG_PTR)km->hwnd);
+    Wnd *top = top_by_kid((UINT32)(ULONG_PTR)kmsg->hwnd);
     if (!top) return;
+    MSG conv = *kmsg;
+    const MSG *km = &conv;
+    if (dpi_aware()) {
+        /* positions in this process's pixels: the desktop's are logical,
+         * relative to the client area (km->pt) or on the screen */
+        int k = dpi_k(top), m = (int)km->message;
+        if (m == WM_MOUSEWHEEL || m == WM_MOUSEHWHEEL || m == WM_NOVA_TOUCH)
+            conv.lParam = MAKELPARAM(top->bmp.x + km->pt.x * k, top->bmp.y + km->pt.y * k);
+        else if ((m >= WM_MOUSEFIRST && m <= WM_MOUSELAST) && m != WM_MOUSELEAVE)
+            conv.lParam = MAKELPARAM((short)LOWORD(km->lParam) * k, (short)HIWORD(km->lParam) * k);
+    }
     switch (km->message) {
     case WM_SIZE: top_sync_from_kernel(top, 1); break;
     case WM_MOVE: top_sync_from_kernel(top, 0); break;
@@ -753,7 +764,11 @@ static void from_kernel(const MSG *km)
     case WM_MOUSELEAVE: leave_check(NULL, GetTickCount()); break;
     case WM_NOVA_DROP: drop_from_kernel(top, km); break;
     case WM_NOVA_TOUCH: touch_from_kernel(top, km); break;
-    case WM_DISPLAYCHANGE: send_msg(top, WM_DISPLAYCHANGE, km->wParam, km->lParam); break;
+    case WM_DISPLAYCHANGE:
+        if (dpi_aware()) dpi_monitors_changed(top);
+        if (W_quiet(top->h)) send_msg(top, WM_DISPLAYCHANGE, km->wParam, km->lParam);
+        break;
+    case WM_NOVA_DPI: if (dpi_aware()) dpi_monitors_changed(top); break;
     case WM_CHAR: case WM_SYSCHAR: break;                  /* TranslateMessage makes these, as on Windows */
     case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
         route_key(top, km);
@@ -783,9 +798,20 @@ static void track(const MSG *m)
     key_state(g_keys, m->message, m->wParam);
 }
 
+static void getmessage_hook(MSG *m, int remove);
+
 /* The next message for GetMessage / PeekMessage: 1 got one, 0 none (no
- * wait) or the timeout passed.  Sent messages are handled on the way. */
+ * wait) or the timeout passed.  Sent messages are handled on the way, and
+ * the thread's WH_GETMESSAGE hooks see each message taken. */
+static int pump_take(MSG *m, HWND h, UINT mn, UINT mx, UINT flags, int wait, DWORD timeout);
 int pump_one(MSG *m, HWND h, UINT mn, UINT mx, UINT flags, int wait, DWORD timeout)
+{
+    int r = pump_take(m, h, mn, mx, flags, wait, timeout);
+    if (r) getmessage_hook(m, (flags & PM_REMOVE) != 0);
+    return r;
+}
+
+static int pump_take(MSG *m, HWND h, UINT mn, UINT mx, UINT flags, int wait, DWORD timeout)
 {
     TQ *q = my_tq();
     if (!q) return 0;
@@ -857,10 +883,45 @@ USERAPI BOOL WaitMessage(void)
     return TRUE;
 }
 
+/* What kind of message a queued one counts as for GetQueueStatus */
+static UINT qs_kind(UINT msg)
+{
+    if ((msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) || msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL ||
+        (msg >= WM_NCMOUSEMOVE && msg <= WM_NCXBUTTONDBLCLK)) return QS_MOUSE;
+    if (msg >= WM_KEYFIRST && msg <= WM_KEYLAST) return QS_KEY;
+    if (msg == 0x0312 /* WM_HOTKEY */) return QS_HOTKEY;
+    return QS_POSTMESSAGE;
+}
+
+/* The QS_* bits pending for this thread, as GetQueueStatus reports them.
+ * Qt resets its wake-up flag only once GetQueueStatus(QS_INPUT | QS_TIMER)
+ * is clear, so posted messages and paints must not count as input. */
+static UINT queue_status(void)
+{
+    TQ *q = my_tq();
+    if (!q) return 0;
+    process_sent();
+    drain_kernel();
+    UINT st = 0;
+    LOCK();
+    for (int i = 0; i < q->count; i++) st |= qs_kind(q->q[(q->head + i) % q->cap].message);
+    if (q->sent) st |= QS_SENDMESSAGE;
+    ULONGLONG now = GetTickCount64();
+    for (int i = 0; i < MAX_TIMERS; i++)
+        if (g_timers[i].used && g_timers[i].tid == q->tid && g_timers[i].due <= now) { st |= QS_TIMER; break; }
+    UNLOCK();
+    if (q->quit) st |= QS_POSTMESSAGE;
+    if (next_paint(q->tid, 0)) st |= QS_PAINT;
+    return st;
+}
+
 USERAPI DWORD GetQueueStatus(UINT flags)
 {
-    MSG m;
-    return pump_one(&m, 0, 0, 0, PM_NOREMOVE, 0, 0) ? ((flags & 0xFFFF) | ((flags & 0xFFFF) << 16)) : 0;
+    static UINT last;                                       /* the low word: new since the last call (shared, advisory) */
+    UINT st = queue_status() & flags & 0xFFFF;
+    UINT fresh = st & ~last;
+    last = st;
+    return (DWORD)st << 16 | fresh;
 }
 
 USERAPI BOOL GetInputState(void) { return GetQueueStatus(QS_INPUT) != 0; }
@@ -1062,6 +1123,19 @@ LRESULT cbt_hook(int code, WPARAM wp, LPARAM lp)
             if (fn(code, wp, lp)) return 1;
         }
     return 0;
+}
+
+/* WH_GETMESSAGE: this thread's hooks (and the global ones) see each message
+ * GetMessage or PeekMessage returns, and may change it.  Qt drives its
+ * posted events from here: its hook resets the flag that lets another
+ * thread post its wake-up message, so without the call a cross-thread
+ * signal never wakes a Qt thread that sleeps in MsgWaitForMultipleObjects. */
+static void getmessage_hook(MSG *m, int remove)
+{
+    DWORD tid = GetCurrentThreadId();
+    for (int i = 31; i >= 0; i--)
+        if (g_hooks[i].used && g_hooks[i].id == WH_GETMESSAGE && (!g_hooks[i].tid || g_hooks[i].tid == tid))
+            g_hooks[i].fn(HC_ACTION, remove ? PM_REMOVE : PM_NOREMOVE, (LPARAM)m);
 }
 
 USERAPI LRESULT CallNextHookEx(HHOOK h, int code, WPARAM wp, LPARAM lp) { (void)h; (void)code; (void)wp; (void)lp; return 0; }

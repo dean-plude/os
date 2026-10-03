@@ -4,7 +4,8 @@
  * running; SwitchToFiber saves the callee-saved registers of the running
  * one, switches stacks and restores the other's.  The TEB follows the
  * running fiber: its stack bounds, the fiber pointer (NtTib.FiberData,
- * which GetCurrentFiber and GetFiberData read) and, on x86, the SEH list.
+ * which GetCurrentFiber and GetFiberData read), its fiber-local storage
+ * (TEB FlsData, ntdll_fls.c) and, on x86, the SEH list.
  */
 #include <windows.h>
 #include <winternl.h>
@@ -21,6 +22,7 @@ typedef struct {
     FIBER_START start;
     BOOL converted;                 /* made from a thread (its stack is the thread's) */
     DWORD flags;
+    ULONG_PTR fls;                  /* its FLS block while not running */
 } Fiber;
 
 #undef TEB_EXCEPTION_LIST
@@ -171,9 +173,11 @@ K32 VOID WINAPI SwitchToFiber(LPVOID to)
     cur->stack_limit = *TEBP(TEB_STACK_LIMIT);
     cur->dealloc = *TEBP(TEB_DEALLOC);
     cur->seh = *TEBP(TEB_EXCEPTION_LIST);
+    cur->fls = *TEBP(TEB_FLS_DATA);
     *TEBP(TEB_STACK_BASE) = next->stack_base;
     *TEBP(TEB_STACK_LIMIT) = next->stack_limit;
     *TEBP(TEB_DEALLOC) = next->dealloc;
+    *TEBP(TEB_FLS_DATA) = next->fls;
 #ifndef _WIN64
     *TEBP(TEB_EXCEPTION_LIST) = next->seh;
 #endif
@@ -186,6 +190,7 @@ K32 VOID WINAPI DeleteFiber(LPVOID fiber)
     Fiber *f = fiber;
     if (!f) return;
     if (f == current()) ExitThread(0);              /* deleting the running fiber ends the thread */
+    RtlProcessFlsData((PVOID)f->fls, 3);            /* its FLS callbacks, then its block */
     if (!f->converted && f->dealloc) VirtualFree((LPVOID)f->dealloc, 0, MEM_RELEASE);
     HeapFree(GetProcessHeap(), 0, f);
 }

@@ -1,11 +1,11 @@
 # inputtest: mouse side buttons and the horizontal wheel (a USB mouse
 # plugged in for the test, then the PS/2 mouse) and the volume keys (the USB
 # keyboard), as a program's window gets them; usbcheck runs the HID report
-# parser on media-key and five-button-mouse report descriptors QEMU has no
-# device for
+# parser on media-key, five-button-mouse and pen report descriptors QEMU has
+# no device for, and the virtio-input pen and tablet decoding on canned events
 import re, time
 
-DOC = '`inputtest` (side buttons, horizontal wheel, volume keys), `usbcheck` (media keys, AC Pan)'
+DOC = '`inputtest` (side buttons, horizontal wheel, volume keys), `usbcheck` (media keys, AC Pan, pen pressure, tilt and twist, virtio pens and tablets)'
 
 
 def _log(nova):

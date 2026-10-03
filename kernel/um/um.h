@@ -31,6 +31,7 @@ void UmInit(void);
 void UmPoll(void);
 /* The display mode changed: WM_DISPLAYCHANGE to every program window */
 void UmGuiDisplayChanged(int w, int h);
+void UmGuiDpiChanged(void);            /* a monitor's DPI changed: WM_NOVA_DPI to every window */
 
 /* Find a program by name: a path, or a bare name searched in @cwd,
  * C:\Programs and C:\Windows\System32 (".exe" added if missing), then as

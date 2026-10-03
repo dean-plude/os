@@ -17,6 +17,7 @@
 #include "../ke/scheduler.h"
 #include "../net/net.h"
 #include "../drivers/usb.h"
+#include "../drivers/virtio_input.h"
 #include "../um/um.h"
 #include "../fs/persist.h"
 #include "../hal/serial.h"
@@ -179,7 +180,7 @@ static void prompt_text(Term *t, char *buf, int cap)
 /* -----------------------------------------------------------------------
  * Commands
  * ----------------------------------------------------------------------- */
-#define MAX_ARGS 8
+#define MAX_ARGS 32                      /* a Windows program can take a long argument list (VLC takes nine) */
 
 /* Split into arguments; "double quotes" group words with spaces */
 static int split_args(char *s, char **argv)
@@ -520,12 +521,15 @@ static void cmd_start(Term *t, int argc, char **argv)
 static void ip_str(UINT32 ip, char *buf) { NetFormatIp(ip, buf, 16); }
 
 /* usbcheck: the USB HID report parser on devices QEMU doesn't have
- * (media keys, five-button mice with a horizontal wheel) */
+ * (media keys, five-button mice with a horizontal wheel, pens with tilt),
+ * and the virtio-input pen and tablet decoding */
 static void usbcheck_say(void *ctx, const char *line) { tprint((Term *)ctx, line); }
 
 static void cmd_usbcheck(Term *t)
 {
     int failed = UsbHidSelfCheck(usbcheck_say, t);
+    int vfailed = VirtioInputSelfCheck(usbcheck_say, t);
+    failed = failed < 0 || vfailed < 0 ? -1 : failed + vfailed;
     tprintf(t, "usbcheck: %s, %d failed", failed ? "done" : "all passed", failed < 0 ? 1 : failed);
 }
 

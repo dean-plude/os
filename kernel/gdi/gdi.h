@@ -77,6 +77,12 @@ void    GdiSetMonitorOrigin(int i, int x, int y);
 /* Monitor @i (>= 1) was unplugged: the places set for the later ones move
  * up with them (call GdiDisplayChanged() after) */
 void    GdiForgetMonitor(int i);
+/* The DPI DPI-aware programs see on monitor @i: 96 (the default; programs
+ * draw in logical pixels and the GDI scales them up) or 192 (they draw in
+ * the screen's own pixels).  192 takes effect only on a monitor at scale 2;
+ * GdiMonitorDpi says what is in effect.  Kept by head, like the origins. */
+void    GdiSetMonitorDpi(int i, int dpi);
+int     GdiMonitorDpi(int i);
 
 /* Copy the back buffer to the screen (whole frame).  With page flipping
  * it lands on the page off screen: anything drawn straight to the screen
@@ -147,6 +153,9 @@ void GdiPutPixel(int x, int y, GdiColor c);
 
 /* Blit a user window bitmap (GdiColor/COLORREF pixels) into a logical rect. */
 void GdiBlitBGRA(GdiRect dst, const UINT32 *src, int src_stride);
+/* The same for a bitmap of @k pixels per logical pixel (a DPI-aware
+ * program's, k = 2 at 192 DPI): (dst.w * k) x (dst.h * k) source pixels */
+void GdiBlitBGRAScaled(GdiRect dst, const UINT32 *src, int src_stride, int k);
 
 /* Draw a w x h image of straight-alpha 0xAARRGGBB pixels scaled into the
  * logical rect @dst at device resolution (area-averaged when shrinking,

@@ -8,6 +8,8 @@ header-units.json) and the stl/src files msvcp140.dll, its satellite DLLs
 and the static part of the import library (msvcprt.lib) are built from;
 stl/src's stacktrace.cpp and vector_algorithms.cpp are left out (NovaOS
 builds with _USE_STD_VECTOR_ALGORITHMS=0 and has no DbgEng).
+stl/src/special_math.cpp (msvcp140_2.dll, the C++17 special math
+functions) builds on the Boost.Math headers in third_party/boost-math.
 
 userland/msvcp140/build.py compiles them with clang in MSVC mode against
 MinGW-w64's headers and the shim headers in userland/msvcp140/inc (the

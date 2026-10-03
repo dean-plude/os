@@ -62,6 +62,11 @@ void DesktopSaveHeadMode(int head, int w, int h);
  * (...\Video\{NovaOS-Display}\000N, Attach.RelativeX/Y).  False if it
  * had to go elsewhere (it would overlap, or touch no other monitor). */
 bool DesktopSetMonitorOrigin(int i, int x, int y, bool save);
+/* The DPI DPI-aware programs see on display @head: 96 or 192 (gdi.h
+ * GdiSetMonitorDpi); programs get WM_NOVA_DPI, and user32 sends
+ * WM_DPICHANGED to the windows whose DPI changed.  @save keeps it in the
+ * registry (...\Video\{NovaOS-Display}\000N, LogPixels) for the next boot. */
+void DesktopSetMonitorDpi(int head, int dpi, bool save);
 
 /* Toggle the Start menu open/closed. */
 void DesktopToggleStart(void);

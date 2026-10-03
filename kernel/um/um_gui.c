@@ -27,6 +27,7 @@
 #include "../apps/apps.h"
 #include "../ke/waitq.h"
 #include "../wm/desktop.h"
+#include "../wm/tablet.h"
 #include "../hal/display.h"
 
 /* Win32 window messages we deliver */
@@ -80,6 +81,7 @@
 #define GUI_NOCLOSE     0x20    /* no close button */
 #define GUI_HOVER       0x40    /* gets mouse moves with no button held */
 #define GUI_NOFRAME     0x80    /* no title bar or border (the program draws its own), but a normal window */
+#define WM_NOVA_DPI     0x03FC  /* user32's u32.h: a monitor's DPI changed (CTL_SET_DPI) */
 
 /* Matches the Win32 MSG structure byte-for-byte */
 typedef struct {
@@ -103,7 +105,11 @@ typedef struct {
     UINT32      flags;              /* GUI_* */
     UINT64      bitmap;             /* user VA of the client bitmap */
     int         stride;             /* pixels per bitmap row (the largest width) */
-    int         maxw, maxh;
+    int         maxw, maxh;         /* the largest client area, logical px (pmaxw / scale) */
+    int         pmaxw, pmaxh;       /* the bitmap's size in pixels */
+    int         lmaxw, lmaxh;       /* the largest monitor's size, logical px (maxw at scale 1) */
+    int         scale;              /* bitmap pixels per logical pixel: 1, or 2 for a DPI-aware
+                                       program's window on a 192 DPI monitor (CTL_SET_SCALE) */
     volatile int cw, ch;            /* client size (logical px) */
     /* what the program was last told (gui_tick reports changes) */
     bool        was_active, was_min, was_max;
@@ -199,13 +205,18 @@ static void gui_paint(WND *w)
     GuiWin *g = w->user;
     if (!g || !g->proc || g->proc->exited) return;
     GdiRect cr = WmClientRect(w);
+    int k = g->scale > 1 ? g->scale : 1;
     int w_px = cr.w < g->cw ? cr.w : g->cw;
     int h_px = cr.h < g->ch ? cr.h : g->ch;
-    if (w_px > GUI_MAX_W) w_px = GUI_MAX_W;
-    static UINT32 row[GUI_MAX_W];       /* desktop thread only */
+    if (w_px * k > g->pmaxw) w_px = g->pmaxw / k;
+    if (h_px * k > g->pmaxh) h_px = g->pmaxh / k;
+    static UINT32 row[GUI_MAX_W * GDI_MAX_SCALE];   /* desktop thread only: k bitmap rows */
     for (int y = 0; y < h_px; y++) {
-        if (!um_read(g->proc, g->bitmap + (UINT64)y * g->stride * 4, row, (UINT64)w_px * 4)) break;
-        GdiBlitBGRA(RECT(cr.x, cr.y + y, w_px, 1), row, w_px);
+        bool ok = true;
+        for (int j = 0; j < k && ok; j++)
+            ok = um_read(g->proc, g->bitmap + ((UINT64)y * k + j) * g->stride * 4, row + j * w_px * k, (UINT64)w_px * k * 4);
+        if (!ok) break;
+        GdiBlitBGRAScaled(RECT(cr.x, cr.y + y, w_px, 1), row, w_px * k, k);
     }
 }
 
@@ -416,6 +427,9 @@ typedef struct {
     /* in: */
     UINT32 flags;                   /* GUI_* */
     UINT64 owner;                   /* handle of the owner window (0: none) */
+    /* out: */
+    UINT32 rows;                    /* the bitmap's height in pixels (its width: stride / 4) */
+    UINT32 _pad;
 } GuiCreate;
 
 /* The desktop's fonts cover ASCII only: punctuation outside it gets its
@@ -457,6 +471,43 @@ static GdiRect frame_for(UINT32 style, GdiRect c)
     return RECT(c.x - b, c.y - top, c.w + 2 * b, c.h + top + b);
 }
 
+/* Room for two bitmap pixels per logical pixel (CTL_SET_SCALE 2): a new,
+ * larger bitmap (under DesktopLock: gui_paint reads it).  64-bit programs
+ * keep the address (each window's slot has GUI_BITMAP_STRIDE bytes). */
+static bool gui_grow_bitmap(GuiWin *g)
+{
+    int pw = g->lmaxw * GDI_MAX_SCALE > GUI_MAX_W ? GUI_MAX_W : g->lmaxw * GDI_MAX_SCALE;
+    int ph = g->lmaxh * GDI_MAX_SCALE > GUI_MAX_H ? GUI_MAX_H : g->lmaxh * GDI_MAX_SCALE;
+    if (g->pmaxw >= pw && g->pmaxh >= ph) return true;
+    UmProcess *p = g->proc;
+    if (!p || p->exited) return false;
+    UINT64 size = ((UINT64)pw * ph * 4 + 0xFFF) & ~0xFFFULL, va = g->bitmap;
+    bool ok;
+    um_lock_excl(&p->lock);
+    UmRegion *r = um_region_find(p, va);
+    if (p->wow) {                                     /* elsewhere below 2 GiB, then let the old one go */
+        va = um_find_free(p, size, p->lay.alloc_min, p->lay.alloc_max);
+        ok = va && um_is_free(p, va, size) && um_region_add(p, va, size, 0x04, false) && um_commit(p, va, size, 0x04);
+        if (ok && r) { um_decommit(p, r->base, r->size); um_region_remove(p, r); }
+    } else {
+        UINT64 old = r ? r->size : 0;
+        if (r) { um_decommit(p, r->base, r->size); um_region_remove(p, r); }
+        ok = size <= GUI_BITMAP_STRIDE && um_is_free(p, va, size) && um_region_add(p, va, size, 0x04, false) &&
+             um_commit(p, va, size, 0x04);
+        if (!ok && old) {                             /* (the old one back) */
+            UmRegion *n = um_region_find(p, va);
+            if (n) um_region_remove(p, n);
+            if (um_region_add(p, va, old, 0x04, false)) um_commit(p, va, old, 0x04);
+        }
+    }
+    um_unlock_excl(&p->lock);
+    if (!ok) return false;
+    g->bitmap = va;
+    g->stride = g->pmaxw = pw;
+    g->pmaxh = ph;
+    return true;
+}
+
 static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a2; (void)a3; (void)a4;
@@ -472,6 +523,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     if (maxw > GUI_MAX_W) maxw = GUI_MAX_W;
     if (maxh > GUI_MAX_H) maxh = GUI_MAX_H;
+    int pmaxw = maxw, pmaxh = maxh;           /* (CTL_SET_SCALE 2 makes it larger) */
     int cw = gc.w, ch = gc.h;
     if (cw < 1) cw = 1; if (ch < 1) ch = 1;
     if (cw > maxw) cw = maxw; if (ch > maxh) ch = maxh;
@@ -494,7 +546,7 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     /* The client bitmap in the program's address space, as large as the
      * screen so resizing never moves it (pages are backed when touched) */
     UINT64 va = GUI_BITMAP_VA + (UINT64)slot * GUI_BITMAP_STRIDE;
-    UINT64 size = ((UINT64)maxw * maxh * 4 + 0xFFF) & ~0xFFFULL;
+    UINT64 size = ((UINT64)pmaxw * pmaxh * 4 + 0xFFF) & ~0xFFFULL;
     um_lock_excl(&p->lock);
     if (p->wow) va = um_find_free(p, size, p->lay.alloc_min, p->lay.alloc_max);   /* below 2 GiB */
     bool ok = va && um_is_free(p, va, size) && um_region_add(p, va, size, 0x04, false) &&
@@ -507,8 +559,11 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 
     DesktopLock();
     g->bitmap = va;
-    g->stride = maxw;
+    g->stride = pmaxw;
     g->maxw = maxw; g->maxh = maxh;
+    g->pmaxw = pmaxw; g->pmaxh = pmaxh;
+    g->lmaxw = maxw; g->lmaxh = maxh;
+    g->scale = 1;
     g->cw = cw; g->ch = ch;
     GdiRect wa = WmWorkArea();
     bool popup = (gc.flags & GUI_POPUP) != 0;
@@ -562,7 +617,8 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 
     gc.hwnd = g->id;
     gc.bitmap = va;
-    gc.stride = (UINT32)maxw * 4;
+    gc.stride = (UINT32)pmaxw * 4;
+    gc.rows = (UINT32)pmaxh;
     gc.cw = (UINT32)cw; gc.ch = (UINT32)ch;
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a1, &gc, sizeof(gc)))) return 0;
     return g->id;
@@ -833,6 +889,37 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 #define CTL_SET_HEAD     26
 /*  29 TOUCH      returns the contacts the touch screens have (0: none) */
 #define CTL_TOUCH        29
+/*  30 TABLET     pen tablets (wm/tablet.h; wintab32.dll and user32's
+ *                synthetic pens), by arg:
+ *                0 returns the pen devices present (0: none);
+ *                1 ptr -> { after, max, wait ms, _ } <- { ..., newest packet's
+ *                  number }, then <- up to max TabletPackets numbered after
+ *                  `after` (waits up to wait ms for one); returns how many;
+ *                2 / 3 this process makes / drops a synthetic pen;
+ *                4 ptr -> { x, y (0-65535 across the desktop), pressure
+ *                  (0-1023), buttons (bit 0 tip, 1-2 barrel), flags (1 in
+ *                  range, 2 eraser, 4 tilt given, 8 twist given), tilt x,
+ *                  tilt y (tenths of a degree, -900..900), twist (tenths of
+ *                  a degree, 0..3599) }: a synthetic pen's input (the
+ *                  pointer follows it while in range); 0 if the process has
+ *                  no pen;
+ *                5 returns what the pens present report: 1 tilt, 2 barrel
+ *                  rotation (TABLET_CAP_*) */
+#define CTL_TABLET       30
+/* Per-monitor DPI (user32's DPI awareness):
+ *  31 SET_DPI     ptr <- { head, DPI (96 or 192; 0: 96), CDS_* flags }: the
+ *                 DPI DPI-aware programs see on that monitor (192 only takes
+ *                 effect at scale 2; CDS_UPDATEREGISTRY keeps it).  Every
+ *                 window gets WM_NOVA_DPI; returns a DISP_CHANGE_* code
+ *  32 SET_SCALE   arg: 1 or 2, the window's bitmap pixels per logical pixel;
+ *                 returns the scale set (1 if a larger bitmap can't be had).
+ *                 The bitmap grows (to 2x the largest monitor, at most
+ *                 GUI_MAX_W x GUI_MAX_H) and may move: ptr (may be 0) ->
+ *                 { bitmap VA (64 bits), stride in bytes, rows }; what it
+ *                 held is lost
+ * MONITOR's ptr gets an eleventh value: the monitor's DPI (GdiMonitorDpi). */
+#define CTL_SET_DPI      31
+#define CTL_SET_SCALE    32
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
 #define GUI_TAG_SHIFT    14
@@ -877,12 +964,12 @@ static UINT64 display_set(UmProcess *p, UINT64 ptr)
 
 static UINT64 monitor_info(UINT64 which, UINT64 ptr)
 {
-    INT32 i = (INT32)which, out[10] = { 0 };
+    INT32 i = (INT32)which, out[11] = { 0 };
     DesktopLock();
     int n = GdiMonitorCount();
     if (i >= 0 && i < n) {
         GdiRect r = GdiMonitorRect(i), wa = WmMonitorWork(i);
-        INT32 v[10] = { n, r.x, r.y, r.w, r.h, wa.x, wa.y, wa.w, wa.h, GdiMonitorScale(i) };
+        INT32 v[11] = { n, r.x, r.y, r.w, r.h, wa.x, wa.y, wa.w, wa.h, GdiMonitorScale(i), GdiMonitorDpi(i) };
         memcpy(out, v, sizeof(out));
     }
     DesktopUnlock();
@@ -931,6 +1018,27 @@ static UINT64 head_set(UmProcess *p, UINT64 ptr)
     return DISP_CHANGE_SUCCESSFUL;
 }
 
+static UINT64 dpi_set(UINT64 ptr)
+{
+    INT32 in[3];
+    if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+    if (in[0] < 0 || in[0] >= DisplayHeadCount()) return (UINT64)(INT64)DISP_CHANGE_FAILED;
+    if (in[1] && in[1] != 96 && in[1] != 192) return (UINT64)(INT64)DISP_CHANGE_BADMODE;
+    if ((UINT32)in[2] & CDS_TEST) return DISP_CHANGE_SUCCESSFUL;
+    DesktopSetMonitorDpi(in[0], in[1] ? in[1] : 96, ((UINT32)in[2] & CDS_UPDATEREGISTRY) != 0);
+    return DISP_CHANGE_SUCCESSFUL;
+}
+
+void UmGuiDpiChanged(void)
+{
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++)
+        if (g_win[i].used && g_win[i].proc)
+            enqueue_locked(&g_win[i], WM_NOVA_DPI, 0, 0, 0, 0);
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    waitq_wake(&g_guiq);
+}
+
 void UmGuiDisplayChanged(int w, int h)
 {
     IrqState s = spin_lock_irqsave(&g_gui_lock);
@@ -950,6 +1058,60 @@ static UINT32 g_drop_done[DROP_RESULTS][2];
 /* the process holding each handle tag; under g_gui_lock */
 static UmProcess *g_tag_proc[GUI_TAGS];
 static UINT32 g_tag_next = GUI_TAG_MIN;
+
+/* Pen tablets (CTL_TABLET) */
+static UINT64 tablet_ctl(UmProcess *p, UINT64 op, UINT64 ptr)
+{
+    switch (op) {
+    case 0: return (UINT64)TabletDevices();
+    case 1: {
+        UINT32 in[4];
+        if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return 0;
+        int max = in[1] > 64 ? 64 : (int)in[1];
+        TabletPacket *buf = kmalloc(sizeof(TabletPacket) * (max ? max : 1));
+        if (!buf) return 0;
+        UINT64 wait = in[2] / 10 > 50 ? 50 : in[2] / 10;   /* ticks, at most half a second */
+        UINT32 newest = 0;
+        int n = TabletRead(in[0], buf, max, wait, &newest);
+        UINT64 r = n && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)(ptr + 16), buf, sizeof(TabletPacket) * (UINT64)n)) ? 0 : (UINT64)n;
+        CopyToUser((void *)(uintptr_t)(ptr + 12), &newest, sizeof(newest));
+        kfree(buf);
+        return r;
+    }
+    case 2: TabletDevice(p, 1, TABLET_CAP_TILT | TABLET_CAP_TWIST); return 1;
+    case 3: TabletDevice(p, -1, TABLET_CAP_TILT | TABLET_CAP_TWIST); return 1;
+    case 5: return (UINT64)TabletCaps();
+    case 4: {
+        INT32 in[8];
+        if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return 0;
+        if (!TabletOwns(p)) return 0;
+        InputEvent ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.absolute = 1;
+        ev.dx = in[0] < 0 ? 0 : in[0] > 65535 ? 65535 : in[0];
+        ev.dy = in[1] < 0 ? 0 : in[1] > 65535 ? 65535 : in[1];
+        if (in[4] & 1) {                       /* in range: the pointer follows, the tip clicks */
+            ev.type = INPUT_MOUSE;
+            ev.buttons = (in[3] & 1 ? MOUSE_LEFT : 0) | (in[3] & 2 ? MOUSE_RIGHT : 0);
+            InputPost(&ev);
+        }
+        ev.type = INPUT_PEN;
+        ev.buttons = (UINT8)(in[3] & 7);
+        ev.pressure = (UINT16)(in[2] < 0 ? 0 : in[2] > TABLET_PRESSURE ? TABLET_PRESSURE : in[2]);
+        ev.pressed = (in[4] & 1) != 0;
+        ev.extended = (in[4] & 2) != 0;
+        ev.pen_has = (in[4] & 4 ? PEN_HAS_TILT : 0) | (in[4] & 8 ? PEN_HAS_TWIST : 0);
+        if (in[4] & 4) {
+            ev.tilt_x = (INT16)(in[5] < -900 ? -900 : in[5] > 900 ? 900 : in[5]);
+            ev.tilt_y = (INT16)(in[6] < -900 ? -900 : in[6] > 900 ? 900 : in[6]);
+        }
+        if (in[4] & 8) ev.twist = (UINT16)(((in[7] % 3600) + 3600) % 3600);
+        InputPost(&ev);
+        return 1;
+    }
+    }
+    return 0;
+}
 
 static UINT64 hwnd_tag(UmProcess *p)
 {
@@ -1146,6 +1308,7 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a2 == CTL_DISPLAY_MODE) return display_mode_info(a3, a4);
     if (a2 == CTL_SET_DISPLAY) return display_set(p, a4);
     if (a2 == CTL_MONITOR) return monitor_info(a3, a4);
+    if (a2 == CTL_SET_DPI) return dpi_set(a4);
     if (a2 == CTL_HEAD_MODE) return head_mode_info(a4);
     if (a2 == CTL_SET_HEAD) return head_set(p, a4);
     if (a2 == CTL_WINDOW_AT) {
@@ -1232,6 +1395,7 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
     if (a2 == CTL_HWND_TAG) return hwnd_tag(p);
     if (a2 == CTL_TOUCH) return (UINT64)InputTouchContacts();
+    if (a2 == CTL_TABLET) return tablet_ctl(p, a3, a4);
     if (a2 == CTL_FOREIGN) return hwnd_foreign((UINT32)a3, a4);
     if (a2 == CTL_SET_HWND) {
         INT32 uc[4] = { 0 };
@@ -1287,6 +1451,25 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             rv = 1;
             break;
         case CTL_ACTIVATE: WmSetActive(w); rv = 1; break;
+        case CTL_SET_SCALE: {
+            int k = a3 >= 2 ? 2 : 1;
+            if (k == 2 && !gui_grow_bitmap(g)) k = 1;
+            if (k != g->scale) {
+                g->scale = k;
+                g->maxw = g->pmaxw / k < g->lmaxw ? g->pmaxw / k : g->lmaxw;
+                g->maxh = g->pmaxh / k < g->lmaxh ? g->pmaxh / k : g->lmaxh;
+                if (g->cw > g->maxw) g->cw = g->maxw;
+                if (g->ch > g->maxh) g->ch = g->maxh;
+                WmInvalidate();
+            }
+            if (a4) {
+                UINT32 geo[4] = { (UINT32)g->bitmap, (UINT32)(g->bitmap >> 32), (UINT32)g->stride * 4, (UINT32)g->pmaxh };
+                DesktopUnlock();
+                return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, geo, sizeof(geo))) ? (UINT64)k : 0;
+            }
+            rv = (UINT64)k;
+            break;
+        }
         case CTL_ENABLE:   w->disabled = a3 == 0; rv = 1; break;
         case CTL_SHOW:
             switch (a3) {
@@ -1367,6 +1550,7 @@ void um_gui_process_gone(UmProcess *p)
     for (int i = GUI_TAG_MIN; i < GUI_TAGS; i++) if (g_tag_proc[i] == p) g_tag_proc[i] = NULL;
     spin_unlock_irqrestore(&g_gui_lock, ts);
     WmInvalidate();
+    TabletOwnerGone(p);                       /* its synthetic pens */
     if (p->cursor) {                          /* no window shows its pointer now */
         WmCursorShapeChanged();
         kfree(p->cursor);

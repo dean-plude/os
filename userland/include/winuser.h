@@ -426,6 +426,9 @@ typedef struct tagCLIENTCREATESTRUCT { HANDLE hWindowMenu; UINT idFirstChild; } 
 #define WM_MOUSEHOVER      0x02A1
 #define WM_MOUSELEAVE      0x02A3
 #define WM_DPICHANGED      0x02E0
+#define WM_DPICHANGED_BEFOREPARENT 0x02E2
+#define WM_DPICHANGED_AFTERPARENT  0x02E3
+#define WM_GETDPISCALEDSIZE 0x02E4
 #define WM_CUT             0x0300
 #define WM_COPY            0x0301
 #define WM_PASTE           0x0302
@@ -1396,6 +1399,10 @@ typedef struct tagDRAWTEXTPARAMS { UINT cbSize; int iTabLength, iLeftMargin, iRi
 #define APPCOMMAND_BROWSER_FORWARD  2
 #define WH_MSGFILTER (-1)
 #define WH_GETMESSAGE 3
+#define HC_ACTION 0
+#define HC_GETNEXT 1
+#define HC_SKIP 2
+#define HC_NOREMOVE 3
 #define WH_CALLWNDPROC 4
 #define WH_CBT 5
 #define WH_KEYBOARD 2
@@ -1813,6 +1820,16 @@ USERAPI int GetAwarenessFromDpiAwarenessContext(HANDLE ctx);
 USERAPI BOOL AreDpiAwarenessContextsEqual(HANDLE a, HANDLE b);
 USERAPI BOOL IsValidDpiAwarenessContext(HANDLE ctx);
 USERAPI BOOL EnableNonClientDpiScaling(HWND h);
+typedef HANDLE DPI_AWARENESS_CONTEXT;
+#define DPI_AWARENESS_CONTEXT_UNAWARE              ((DPI_AWARENESS_CONTEXT)(LONG_PTR)-1)
+#define DPI_AWARENESS_CONTEXT_SYSTEM_AWARE         ((DPI_AWARENESS_CONTEXT)(LONG_PTR)-2)
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE    ((DPI_AWARENESS_CONTEXT)(LONG_PTR)-3)
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)(LONG_PTR)-4)
+#define DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED    ((DPI_AWARENESS_CONTEXT)(LONG_PTR)-5)
+typedef enum { DPI_AWARENESS_INVALID = -1, DPI_AWARENESS_UNAWARE = 0, DPI_AWARENESS_SYSTEM_AWARE = 1,
+               DPI_AWARENESS_PER_MONITOR_AWARE = 2 } DPI_AWARENESS;
+USERAPI UINT GetDpiFromDpiAwarenessContext(HANDLE ctx);
+USERAPI UINT GetSystemDpiForProcess(HANDLE p);
 typedef HANDLE HMONITOR;
 typedef BOOL (CALLBACK *MONITORENUMPROC)(HMONITOR, HDC, LPRECT, LPARAM);
 typedef struct { DWORD cbSize; RECT rcMonitor, rcWork; DWORD dwFlags; } MONITORINFO, *LPMONITORINFO;
@@ -2019,6 +2036,7 @@ USERAPI HCURSOR CreateCursor(HINSTANCE inst, int hx, int hy, int w, int h, const
 USERAPI BOOL GetIconInfo(HICON h, PICONINFO ii);
 USERAPI BOOL GetIconInfoExW(HICON h, void *ix);
 USERAPI HICON CopyIcon(HICON h);
+#define CopyCursor(c) ((HCURSOR)CopyIcon((HICON)(c)))
 USERAPI HANDLE CopyImage(HANDLE h, UINT type, int cx, int cy, UINT flags);
 USERAPI BOOL DestroyCursor(HCURSOR h);
 USERAPI UINT PrivateExtractIconsW(LPCWSTR file, int idx, int cx, int cy, HICON *icons, UINT *ids, UINT n, UINT flags);

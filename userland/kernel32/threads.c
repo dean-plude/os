@@ -454,56 +454,62 @@ BOOL WINAPI InitOnceExecuteOnce(PINIT_ONCE once, PINIT_ONCE_FN fn, PVOID param, 
 }
 
 /* -----------------------------------------------------------------------
- * Thread-local storage (TEB slots) and fiber-local storage (mapped to TLS)
+ * Thread-local storage: 64 TEB slots and 1024 expansion slots (ntdll_tls.c)
  * ----------------------------------------------------------------------- */
-static volatile long g_tls_bitmap[2];               /* 64 slots */
-static PFLS_CALLBACK_FUNCTION g_fls_cb[64];
-
 DWORD WINAPI TlsAlloc(void)
 {
-    for (int i = 0; i < 64; i++) {
-        long word = g_tls_bitmap[i / 32];
-        if (!(word & (1L << (i % 32)))) {
-            if ((InterlockedOr(&g_tls_bitmap[i / 32], 1L << (i % 32)) & (1L << (i % 32))) == 0) {
-                *(void **)(teb() + TEB_TLS_SLOTS + (SIZE_T)i * 8) = 0;
-                return (DWORD)i;
-            }
-        }
-    }
-    set_error(STATUS_NO_MEMORY);
-    return TLS_OUT_OF_INDEXES;
+    ULONG i;
+    NTSTATUS s = RtlTlsAlloc(&i);
+    if (!NT_SUCCESS(s)) { set_error(s); return TLS_OUT_OF_INDEXES; }
+    return i;
 }
 
 BOOL WINAPI TlsFree(DWORD i)
 {
-    if (i >= 64) { set_error(STATUS_INVALID_PARAMETER); return FALSE; }
-    InterlockedAnd(&g_tls_bitmap[i / 32], ~(1L << (i % 32)));
-    return TRUE;
+    NTSTATUS s = RtlTlsFree(i);
+    return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE);
 }
 
 LPVOID WINAPI TlsGetValue(DWORD i)
 {
-    if (i >= 64) { set_error(STATUS_INVALID_PARAMETER); return 0; }
+    if (i >= TLS_MINIMUM_AVAILABLE + TLS_EXPANSION_SLOTS) { set_error(STATUS_INVALID_PARAMETER); return 0; }
     set_error(STATUS_SUCCESS);
-    return *(void **)(teb() + TEB_TLS_SLOTS + (SIZE_T)i * 8);
+    if (i < TLS_MINIMUM_AVAILABLE) return ((void **)(teb() + TEB_TLS_SLOTS))[i];
+    void **a = *(void ***)(teb() + TEB_TLS_EXPANSION);
+    return a ? a[i - TLS_MINIMUM_AVAILABLE] : 0;
 }
 
 BOOL WINAPI TlsSetValue(DWORD i, LPVOID v)
 {
-    if (i >= 64) { set_error(STATUS_INVALID_PARAMETER); return FALSE; }
-    *(void **)(teb() + TEB_TLS_SLOTS + (SIZE_T)i * 8) = v;
-    return TRUE;
+    NTSTATUS s = RtlTlsSetValue(i, v);
+    return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE);
 }
 
+/* Fiber-local storage: ntdll's own slots and callbacks (ntdll_fls.c) */
 DWORD WINAPI FlsAlloc(PFLS_CALLBACK_FUNCTION cb)
 {
-    DWORD i = TlsAlloc();
-    if (i != TLS_OUT_OF_INDEXES && i < 64) g_fls_cb[i] = cb;
+    ULONG i;
+    NTSTATUS s = RtlFlsAlloc(cb, &i);
+    if (!NT_SUCCESS(s)) { set_error(s); return FLS_OUT_OF_INDEXES; }
     return i;
 }
-BOOL  WINAPI FlsFree(DWORD i)          { if (i < 64) g_fls_cb[i] = 0; return TlsFree(i); }
-PVOID WINAPI FlsGetValue(DWORD i)      { return TlsGetValue(i); }
-BOOL  WINAPI FlsSetValue(DWORD i, PVOID v) { return TlsSetValue(i, v); }
+BOOL WINAPI FlsFree(DWORD i)
+{
+    NTSTATUS s = RtlFlsFree(i);
+    return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE);
+}
+PVOID WINAPI FlsGetValue(DWORD i)
+{
+    PVOID v = 0;
+    NTSTATUS s = RtlFlsGetValue(i, &v);
+    set_error(s);
+    return v;
+}
+BOOL WINAPI FlsSetValue(DWORD i, PVOID v)
+{
+    NTSTATUS s = RtlFlsSetValue(i, v);
+    return NT_SUCCESS(s) ? TRUE : (set_error(s), FALSE);
+}
 
 /* -----------------------------------------------------------------------
  * Dynamic loading

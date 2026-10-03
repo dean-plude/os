@@ -689,3 +689,211 @@ GDIPAPI GpStatus GDIPCALL GdipDrawDriverString(GpGraphics *g, const UINT16 *text
     GdipDeleteStringFormat(fmt);
     return st;
 }
+
+/* ---- string format getters ---------------------------------------------------- */
+
+GDIPAPI GpStatus GDIPCALL GdipGetStringFormatDigitSubstitution(const GpStringFormat *f, LANGID *lang, INT *s)
+{
+    if (!f) return InvalidParameter;
+    if (lang) *lang = (LANGID)f->lang;
+    if (s) *s = f->digit_subst;
+    return Ok;
+}
+GDIPAPI GpStatus GDIPCALL GdipGetStringFormatTabStopCount(const GpStringFormat *f, INT *n)
+{ if (!f || !n) return InvalidParameter; *n = f->ntabs; return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipGetStringFormatTabStops(const GpStringFormat *f, INT n, REAL *first, REAL *tabs)
+{
+    if (!f || !first || !tabs || n < 0) return InvalidParameter;
+    *first = f->first_tab;
+    for (int i = 0; i < n && i < f->ntabs; i++) tabs[i] = f->tabs[i];
+    return Ok;
+}
+
+/* ---- font collections ----------------------------------------------------------- */
+
+/* The installed collection has the two families NovaOS ships; private
+ * collections accept files and memory fonts, and list what was added by the
+ * names programs will ask for them under (their faces map as every name does). */
+#define MAX_PRIVATE 32
+typedef struct GpFontCollection {
+    BOOL installed;
+    int n;
+    WCHAR names[MAX_PRIVATE][LF_FACESIZE];
+} GpFontCollection;
+static GpFontCollection g_installed = { TRUE, 0, { { 0 } } };
+
+GDIPAPI GpStatus GDIPCALL GdipNewInstalledFontCollection(GpFontCollection **out)
+{
+    if (!out) return InvalidParameter;
+    *out = &g_installed;
+    return Ok;
+}
+GDIPAPI GpStatus GDIPCALL GdipNewPrivateFontCollection(GpFontCollection **out)
+{
+    if (!out) return InvalidParameter;
+    *out = xalloc(sizeof **out);
+    return *out ? Ok : OutOfMemory;
+}
+GDIPAPI GpStatus GDIPCALL GdipDeletePrivateFontCollection(GpFontCollection **c)
+{
+    if (!c || !*c || (*c)->installed) return InvalidParameter;
+    xfree(*c);
+    *c = NULL;
+    return Ok;
+}
+static void collection_add(GpFontCollection *c, const WCHAR *name)
+{
+    for (int i = 0; i < c->n; i++) if (name_is(c->names[i], "") || lstrcmpiW(c->names[i], name) == 0) return;
+    if (c->n < MAX_PRIVATE) lstrcpynW(c->names[c->n++], name, LF_FACESIZE);
+}
+GDIPAPI GpStatus GDIPCALL GdipPrivateAddFontFile(GpFontCollection *c, const WCHAR *file)
+{
+    if (!c || !file || c->installed) return InvalidParameter;
+    if (GetFileAttributesW(file) == INVALID_FILE_ATTRIBUTES) return FileNotFound;
+    /* the family is named after the file */
+    const WCHAR *base = file;
+    for (const WCHAR *s = file; *s; s++) if (*s == '\\' || *s == '/') base = s + 1;
+    WCHAR name[LF_FACESIZE];
+    lstrcpynW(name, base, LF_FACESIZE);
+    for (WCHAR *s = name; *s; s++) if (*s == '.') { *s = 0; break; }
+    collection_add(c, name);
+    return Ok;
+}
+GDIPAPI GpStatus GDIPCALL GdipPrivateAddMemoryFont(GpFontCollection *c, const void *mem, INT len)
+{
+    if (!c || !mem || len <= 0 || c->installed) return InvalidParameter;
+    /* the family name from the font's name table, if it is a TrueType file */
+    const BYTE *d = mem;
+    WCHAR name[LF_FACESIZE] = L"Private";
+    if (len > 12) {
+        int ntab = d[4] << 8 | d[5];
+        for (int t = 0; t < ntab && 12 + t * 16 + 16 <= len; t++) {
+            const BYTE *e = d + 12 + t * 16;
+            if (memcmp(e, "name", 4)) continue;
+            DWORD off = (DWORD)e[8] << 24 | e[9] << 16 | e[10] << 8 | e[11];
+            if (off + 6 > (DWORD)len) break;
+            const BYTE *nt = d + off;
+            int cnt = nt[2] << 8 | nt[3], str = nt[4] << 8 | nt[5];
+            for (int r = 0; r < cnt && off + 6 + r * 12 + 12 <= (DWORD)len; r++) {
+                const BYTE *rec = nt + 6 + r * 12;
+                int plat = rec[0] << 8 | rec[1], id = rec[6] << 8 | rec[7], sl = rec[8] << 8 | rec[9], so = rec[10] << 8 | rec[11];
+                if (id != 1 || plat != 3 || off + str + so + sl > (DWORD)len) continue;
+                int k = 0;
+                for (; k < sl / 2 && k < LF_FACESIZE - 1; k++) name[k] = (WCHAR)(nt[str + so + 2 * k] << 8 | nt[str + so + 2 * k + 1]);
+                name[k] = 0;
+                r = cnt;
+            }
+            break;
+        }
+    }
+    collection_add(c, name);
+    return Ok;
+}
+GDIPAPI GpStatus GDIPCALL GdipGetFontCollectionFamilyCount(GpFontCollection *c, INT *n)
+{
+    if (!c || !n) return InvalidParameter;
+    *n = c->installed ? 2 : c->n;
+    return Ok;
+}
+GDIPAPI GpStatus GDIPCALL GdipGetFontCollectionFamilyList(GpFontCollection *c, INT n, GpFontFamily **fams, INT *found)
+{
+    if (!c || !fams || !found) return InvalidParameter;
+    static const WCHAR *const installed[] = { L"Inter", L"DejaVu Sans Mono" };
+    int total = c->installed ? 2 : c->n, k = 0;
+    for (int i = 0; i < total && k < n; i++) {
+        if (family_new(c->installed ? installed[i] : c->names[i], &fams[k]) != Ok) break;
+        k++;
+    }
+    *found = k;
+    return Ok;
+}
+
+/* ---- text as a path ---------------------------------------------------------------- */
+
+typedef struct { GpPath *p; GpStatus st; } GlyphAdd;
+static void glyph_cmd(void *closure, plutovg_path_command_t cmd, const plutovg_point_t *pt, int n)
+{
+    GlyphAdd *a = closure;
+    (void)n;
+    if (a->st != Ok) return;
+    switch (cmd) {
+    case PLUTOVG_PATH_COMMAND_MOVE_TO:
+        GdipStartPathFigure(a->p);
+        a->st = GdipAddPathLine2(a->p, (const GpPointF *)pt, 1);
+        break;
+    case PLUTOVG_PATH_COMMAND_LINE_TO:
+        a->st = GdipAddPathLine2(a->p, (const GpPointF *)pt, 1);
+        break;
+    case PLUTOVG_PATH_COMMAND_CUBIC_TO: {
+        GpPointF last, b[4];
+        if (GdipGetPathLastPoint(a->p, &last) != Ok) return;
+        b[0] = last; b[1] = (GpPointF){ pt[0].x, pt[0].y }; b[2] = (GpPointF){ pt[1].x, pt[1].y }; b[3] = (GpPointF){ pt[2].x, pt[2].y };
+        a->st = GdipAddPathBeziers(a->p, b, 4);
+        break;
+    }
+    case PLUTOVG_PATH_COMMAND_CLOSE:
+        GdipClosePathFigure(a->p);
+        break;
+    }
+}
+GDIPAPI GpStatus GDIPCALL GdipAddPathString(GpPath *p, const WCHAR *s, INT n, const GpFontFamily *fam, INT style, REAL em,
+                                            const GpRectF *rect, const GpStringFormat *fmt)
+{
+    if (!p || !s || !fam || !rect) return InvalidParameter;
+    if (n < 0) n = (int)wcslen(s);
+    if (!n) return Ok;
+    GpFont font = { *fam, em, style, UnitWorld };
+    Layout l;
+    GpStatus st = layout(&l, s, n, &font, NULL, rect, fmt);
+    if (st != Ok) return st;
+    plutovg_font_face_t *face = l.face;
+    GlyphAdd a = { p, Ok };
+    for (int i = 0; i < n && a.st == Ok; i++) {
+        int ln = l.line[i];
+        if (ln < 0 || !face) continue;
+        WCHAR c = s[i];
+        if (c == '\r' || c == '\n' || c == '\t' || (c >= 0xDC00 && c <= 0xDFFF)) continue;
+        plutovg_codepoint_t cp = c;
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) cp = 0x10000 + ((c - 0xD800) << 10) + (s[i + 1] - 0xDC00);
+        REAL x = l.lines[ln].x + l.x[i], y = l.lines[ln].y + l.ascent;
+        plutovg_font_face_traverse_glyph_path(face, l.em, x, y, cp, glyph_cmd, &a);
+    }
+    layout_free(&l);
+    return a.st;
+}
+GDIPAPI GpStatus GDIPCALL GdipAddPathStringI(GpPath *p, const WCHAR *s, INT n, const GpFontFamily *fam, INT style, REAL em,
+                                             const GpRect *rect, const GpStringFormat *fmt)
+{
+    if (!rect) return InvalidParameter;
+    GpRectF r = { (REAL)rect->X, (REAL)rect->Y, (REAL)rect->Width, (REAL)rect->Height };
+    return GdipAddPathString(p, s, n, fam, style, em, &r, fmt);
+}
+
+GDIPAPI GpStatus GDIPCALL GdipMeasureDriverString(GpGraphics *g, const UINT16 *text, INT n, const GpFont *font,
+                                                  const GpPointF *pos, INT flags, const GpMatrix *m, GpRectF *bounds)
+{
+    if (!g || !text || !font || !pos || !bounds) return InvalidParameter;
+    if (n < 0) { n = 0; while (text[n]) n++; }
+    REAL em = em_world(font, g), a, d;
+    design_metrics(&font->fam, font->style, &a, &d, NULL);
+    plutovg_font_face_t *face = face_get(family_face(&font->fam, font->style));
+    /* DriverStringOptionsRealizedAdvance (1): one position, the glyphs follow it; else a position per glyph */
+    BOOL run = (flags & 1) != 0;
+    REAL x = pos[0].X, x0 = x, x1 = x, y0 = pos[0].Y, y1 = pos[0].Y;
+    for (int i = 0; i < n; i++) {
+        if (!run) { x = pos[i].X; if (pos[i].Y < y0) y0 = pos[i].Y; if (pos[i].Y > y1) y1 = pos[i].Y; }
+        float adv = em / 2;
+        if (face) plutovg_font_face_get_glyph_metrics(face, em, text[i], &adv, NULL, NULL);
+        if (x < x0) x0 = x;
+        if (x + adv > x1) x1 = x + adv;
+        if (run) x += adv;
+    }
+    y0 -= em * a / 2048.f;
+    y1 += em * d / 2048.f;
+    GpPointF c[4] = { { x0, y0 }, { x1, y0 }, { x1, y1 }, { x0, y1 } };
+    if (m) for (int i = 0; i < 4; i++) { plutovg_point_t s = { c[i].X, c[i].Y }, t; plutovg_matrix_map_point(m, &s, &t); c[i] = (GpPointF){ t.x, t.y }; }
+    x0 = x1 = c[0].X; y0 = y1 = c[0].Y;
+    for (int i = 1; i < 4; i++) { if (c[i].X < x0) x0 = c[i].X; if (c[i].X > x1) x1 = c[i].X; if (c[i].Y < y0) y0 = c[i].Y; if (c[i].Y > y1) y1 = c[i].Y; }
+    *bounds = (GpRectF){ x0, y0, x1 - x0, y1 - y0 };
+    return Ok;
+}

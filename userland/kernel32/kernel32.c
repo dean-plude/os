@@ -384,15 +384,13 @@ WINBASEAPI DWORD WINAPI GetModuleFileNameW(HMODULE m, LPWSTR buf, DWORD size)
     return k;
 }
 
-/* Exports of a module mapped in this process (the image or a system DLL) */
-WINBASEAPI FARPROC WINAPI GetProcAddress(HMODULE m, LPCSTR name)
+/* The RVA of @name's export in the module at @b (0: none) */
+static DWORD export_rva(BYTE *b, LPCSTR name)
 {
-    BYTE *b = (BYTE *)m;
-    if (!b || b[0] != 'M' || b[1] != 'Z') { SetLastError(ERROR_INVALID_HANDLE); return 0; }
     BYTE *nt = b + *(DWORD *)(b + 0x3C);
     DWORD dd = *(WORD *)(nt + 24) == 0x10B ? 96 : 112;       /* data directories: PE32 / PE32+ */
     DWORD exp = *(DWORD *)(nt + 24 + dd), exps = *(DWORD *)(nt + 24 + dd + 4);
-    if (!exp) { SetLastError(ERROR_PROC_NOT_FOUND); return 0; }
+    if (!exp) return 0;
     BYTE *ed = b + exp;
     DWORD nnames = *(DWORD *)(ed + 24);
     DWORD *funcs = (DWORD *)(b + *(DWORD *)(ed + 28)), *names = (DWORD *)(b + *(DWORD *)(ed + 32));
@@ -408,6 +406,31 @@ WINBASEAPI FARPROC WINAPI GetProcAddress(HMODULE m, LPCSTR name)
             if (!*n && !*s) { rva = funcs[ords[i]]; break; }
         }
     }
+    return rva;
+}
+
+/* Exports of a module mapped in this process (the image or a system DLL).
+ * kernelbase.dll holds only what kernel32 does not export, so a lookup in
+ * it that fails is retried in kernel32, where Windows keeps most of what
+ * kernelbase implements (not the other way round: kernel32 lacking
+ * WaitOnAddress, as on Windows, is what programs test for). */
+WINBASEAPI FARPROC WINAPI GetProcAddress(HMODULE m, LPCSTR name)
+{
+    BYTE *b = (BYTE *)m;
+    if (!b || b[0] != 'M' || b[1] != 'Z') { SetLastError(ERROR_INVALID_HANDLE); return 0; }
+    DWORD rva = export_rva(b, name);
+    if (!rva && m != GetModuleHandleW(L"kernel32.dll")) {
+        BYTE *nt0 = b + *(DWORD *)(b + 0x3C);
+        DWORD dd0 = *(WORD *)(nt0 + 24) == 0x10B ? 96 : 112, exp0 = *(DWORD *)(nt0 + 24 + dd0);
+        if (exp0 && ieq((const char *)b + *(DWORD *)(b + exp0 + 12), "kernelbase.dll")) {
+            HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+            if (k32 && (rva = export_rva((BYTE *)k32, name)) != 0) b = (BYTE *)k32;
+        }
+    }
+    BYTE *nt = b + *(DWORD *)(b + 0x3C);
+    DWORD dd = *(WORD *)(nt + 24) == 0x10B ? 96 : 112;       /* data directories: PE32 / PE32+ */
+    DWORD exp = *(DWORD *)(nt + 24 + dd), exps = *(DWORD *)(nt + 24 + dd + 4);
+    BYTE *ed = b + exp;
     if (!rva) {
         /* (the serial log shows what was missing, once per name: some
          * programs ask again and again) */
@@ -558,12 +581,20 @@ WINBASEAPI DWORD WINAPI GetEnvironmentVariableW(LPCWSTR name, LPWSTR buf, DWORD 
 {
     char n[256];
     if (!wide_to_temp(name, n, sizeof(n))) return 0;
-    DWORD need = GetEnvironmentVariableA(n, 0, 0);
-    if (!need) return 0;
-    char *v = RtlAllocateHeap(RtlGetProcessHeap(), 0, need + 1);
-    if (!v) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
-    DWORD r = GetEnvironmentVariableA(n, v, need + 1);
-    v[r < need + 1 ? r : need] = 0;
+    /* another thread may lengthen the value between the two calls: then
+     * the buffer was left unfilled, so ask again */
+    char *v;
+    DWORD r;
+    for (;;) {
+        DWORD need = GetEnvironmentVariableA(n, 0, 0);
+        if (!need) return 0;
+        v = RtlAllocateHeap(RtlGetProcessHeap(), 0, need);
+        if (!v) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+        r = GetEnvironmentVariableA(n, v, need);
+        if (r && r < need) break;
+        RtlFreeHeap(RtlGetProcessHeap(), 0, v);
+        if (!r) return 0;                                   /* removed meanwhile */
+    }
     int w = u2w(v, -1, 0, 0);
     if (!buf || (int)size <= w) r = (DWORD)w + 1;
     else { u2w(v, -1, buf, (int)size); buf[w] = 0; r = (DWORD)w; }

@@ -61,6 +61,10 @@ struct box_construct_ctx {
 	box_construct_complete_cb cb;	/**< Callback to invoke on completion */
 
 	int *bctx;			/**< talloc context */
+
+#ifdef _NOVAOS
+	bool sync;			/**< convert in one go (dom_to_box_sync) */
+#endif
 };
 
 /**
@@ -1305,7 +1309,11 @@ static void convert_xml_to_box(struct box_construct_ctx *ctx)
 			free(ctx);
 			return;
 		}
+#ifdef _NOVAOS
+	} while (ctx->sync || ++num_processed < max_processed_before_yield);
+#else
 	} while (++num_processed < max_processed_before_yield);
+#endif
 
 	/* More work to do: schedule a continuation */
 	guit->misc->schedule(0, (void *)convert_xml_to_box, ctx);
@@ -1341,11 +1349,48 @@ dom_to_box(dom_node *n,
 	ctx->root_box = NULL;
 	ctx->cb = cb;
 	ctx->bctx = c->bctx;
+#ifdef _NOVAOS
+	ctx->sync = false;
+#endif
 
 	*box_conversion_context = ctx;
 
 	return guit->misc->schedule(0, (void *)convert_xml_to_box, ctx);
 }
+
+
+#ifdef _NOVAOS
+/* exported function documented in html/box_construct.h */
+nserror
+dom_to_box_sync(dom_node *n, html_content *c, box_construct_complete_cb cb)
+{
+	struct box_construct_ctx *ctx;
+
+	if (c->bctx == NULL) {
+		c->bctx = talloc_zero(0, int);
+		if (c->bctx == NULL) {
+			return NSERROR_NOMEM;
+		}
+	}
+
+	ctx = malloc(sizeof(*ctx));
+	if (ctx == NULL) {
+		return NSERROR_NOMEM;
+	}
+
+	ctx->content = c;
+	ctx->n = dom_node_ref(n);
+	ctx->root_box = NULL;
+	ctx->cb = cb;
+	ctx->bctx = c->bctx;
+	ctx->sync = true;
+
+	/* converts the whole tree, calls cb and frees ctx before returning */
+	convert_xml_to_box(ctx);
+
+	return NSERROR_OK;
+}
+#endif
 
 
 /* exported function documented in html/box_construct.h */

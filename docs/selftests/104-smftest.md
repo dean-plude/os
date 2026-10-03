@@ -1,0 +1,1 @@
+| `smftest` | The C++17 special math functions of `<cmath>` (`msvcp140_2.dll`: the STL's `special_math.cpp` over Boost.Math), 64- and 32-bit: Bessel and Neumann functions, elliptic integrals, `beta`, `expint`, `riemann_zeta`, Legendre, Laguerre and Hermite polynomials, their `f` and `l` forms, against known values, and `EDOM` with NaN outside the domain |

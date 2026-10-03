@@ -209,6 +209,7 @@ set(KERNEL_C_SOURCES
     wm/desktop.c
     wm/clipboard.c
     wm/input.c
+    wm/tablet.c
     apps/apps.c
     apps/terminal.c
     apps/explorer.c
@@ -261,6 +262,7 @@ list(APPEND KERNEL_C_SOURCES ${VTERM_SOURCES})
 # installed on drive C: at boot.
 file(GLOB_RECURSE USERLAND_DEPS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.rc"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.ico"

@@ -11,26 +11,30 @@
 #define UM_MAX_PROCS     32
 #define UM_MAX_HANDLES   4096
 #define UM_MAX_REGIONS   8192     /* (runtimes such as CoreCLR reserve thousands of ranges) */
-#define UM_MAX_MODULES   128      /* (a GTK program brings 70 DLLs of its own) */
+#define UM_MAX_MODULES   1024     /* (Audacity loads about 150, VLC every plugin: about 410) */
 #define UM_MAX_DLL_DIRS  16       /* AddDllDirectory's folders */
 #define UM_MAX_THREADS   256      /* (a browser's main process runs well over 64) */
 #define UM32_MAX_THREADS 96       /* WoW: the TEB area must stay below KUSER_SHARED_DATA */
 
 /* Fixed user addresses for the per-process system areas:
- *   PEB (1 page) | loader info (6 pages) | process parameters (4 pages) |
- *   stubs for unimplemented imports (1 page) | ... |
- *   TEBs (2 pages each, one slot per thread) */
+ *   PEB (1 page) | loader info (47 pages) | process parameters (4 pages) |
+ *   stubs for unimplemented imports (4 pages) | TEBs (2 pages each, one
+ *   slot per thread) */
 #define UM_PEB_VA        UINT64_C(0x00007FFDF0000000)
 #define UM_LDR_INFO_VA   (UM_PEB_VA + 0x1000)
-#define UM_LDR_INFO_SIZE 0x6000
-#define UM_PARAMS_VA     (UM_PEB_VA + 0x7000)
+#define UM_LDR_INFO_SIZE 0x2F000                                /* 8 + 184 * UM_MAX_MODULES, rounded up */
+#define UM_PARAMS_OFF    0x30000
+#define UM_PARAMS_VA     (UM_PEB_VA + UM_PARAMS_OFF)
 #define UM_PARAMS_PAGES  4
-#define UM_STUBS_VA      (UM_PEB_VA + 0xB000)
+#define UM_STUBS_OFF     0x34000
+#define UM_STUBS_VA      (UM_PEB_VA + UM_STUBS_OFF)
+#define UM_STUBS_PAGES   4
 #define UM_STUB_SIZE     16
-#define UM_MAX_STUBS     (0x1000 / UM_STUB_SIZE)
-#define UM_TEB_AREA      (UM_PEB_VA + 0x10000)
+#define UM_MAX_STUBS     (UM_STUBS_PAGES * 0x1000 / UM_STUB_SIZE)
+#define UM_TEB_OFF       0x38000
+#define UM_TEB_AREA      (UM_PEB_VA + UM_TEB_OFF)
 #define UM_TEB_SIZE      0x2000
-#define UM_SYS_SIZE(n)   (0x10000 + (UINT64)(n) * UM_TEB_SIZE)
+#define UM_SYS_SIZE(n)   (UM_TEB_OFF + (UINT64)(n) * UM_TEB_SIZE)
 #define UM_STACK_TOP     UINT64_C(0x00007FFDE0000000)        /* first thread */
 #define UM_STACK_SIZE    (1024 * 1024)
 #define UM_THREAD_STACK  (256 * 1024)                         /* default for new threads */
@@ -41,7 +45,7 @@
 
 /* 32-bit programs (WoW): the same areas, all below 2 GiB (0x7FFE0000 is
  * KUSER_SHARED_DATA in both) */
-#define UM32_PEB_VA      UINT64_C(0x7FF00000)
+#define UM32_PEB_VA      UINT64_C(0x7FEE0000)     /* its system areas end below KUSER_SHARED_DATA (0x7FFE0000) */
 #define UM32_STACK_TOP   UINT64_C(0x7FE00000)
 #define UM32_ALLOC_MIN   UINT64_C(0x00110000)
 #define UM32_ALLOC_MAX   UINT64_C(0x7FD00000)
@@ -141,6 +145,11 @@ struct UmThread {
     UmThread       *wait_next;
     volatile UINT32 wake;
     volatile UINT32 alerted;        /* NtAlertThreadByThreadId, taken by NtWaitForAlertByThreadId */
+    /* Its base priority relative to its process's class (SetThreadPriority:
+     * -2..2, -7..6 in a real-time process, or +-16: saturated at the top
+     * or bottom of the class's range, TIME_CRITICAL and IDLE) */
+    INT8            prio_incr;
+    bool            no_boost;       /* SetThreadPriorityBoost(TRUE) */
 };
 
 UmObject *um_ob_ref(UmObject *o);
@@ -209,6 +218,8 @@ struct UmProcess {
     char        dll_dirs[UM_MAX_DLL_DIRS][RAMFS_PATH_MAX];  /* AddDllDirectory's ("": a free slot) */
     char        dll_dir[RAMFS_PATH_MAX];                    /* SetDllDirectory's ("": none) */
     UmConsole  *con;
+    char        log_line[256];  /* a detached process's unfinished console line (um_console_write) */
+    int         log_n;
     UmRwLock    lock;           /* handles, regions, modules, threads */
     UmLock      ldr_lock;       /* one runtime DLL load at a time (taken before the desktop lock) */
     UINT64      image_base, image_entry;   /* the program's, between um_spawn_image and _finish */
@@ -221,7 +232,7 @@ struct UmProcess {
     int         nmodules;
     RamNode    *images[UM_MAX_MODULES];   /* its program and DLL files, held (in use: not deleted or replaced) */
     int         nimages;
-    UINT8       init_order[UM_MAX_MODULES];   /* dependencies first */
+    UINT16      init_order[UM_MAX_MODULES];   /* dependencies first */
     int         ninit;
     volatile UINT32 pages;      /* resident user pages (backed by memory) */
     UINT32      commit;         /* committed user pages (resident or backed on first touch) */
@@ -246,6 +257,11 @@ struct UmProcess {
     UmObject       *exit_ob;    /* UO_PROCESS object of a program-created process (not referenced) */
     UmObject       *token;      /* its primary token (referenced) */
     bool            reclaimed;  /* memory and handles freed */
+    /* Priority (um_thread.c): PROCESS_PRIORITY_CLASS_* (1 IDLE, 2 NORMAL,
+     * 3 HIGH, 4 REALTIME, 5 BELOW_NORMAL, 6 ABOVE_NORMAL; 0 is NORMAL),
+     * and SetProcessPriorityBoost's flag, which new threads inherit */
+    UINT8           prio_class;
+    bool            no_boost;
 };
 
 /* um.c */
@@ -291,6 +307,10 @@ void       um_flush_view_at(UmProcess *p, UINT64 va);  /* a file-backed view: wr
 /* Copy into/out of user memory through the page tables (any process). */
 bool       um_write(UmProcess *p, UINT64 va, const void *src, UINT64 n);
 bool       um_read(UmProcess *p, UINT64 va, void *dst, UINT64 n);
+/* Priorities (um_thread.c): @p's class base priority (4, 6, 8, 10, 13 or
+ * 24), and a thread's base for an increment (UmThread.prio_incr) in it */
+UINT8      um_class_base(const UmProcess *p);
+UINT8      um_thread_base(const UmProcess *p, int incr);
 /* Create a thread in @p starting at @start(@arg) via ntdll.  NULL on failure. */
 UmThread  *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_size,
                             bool suspended, UINT32 *status);
@@ -303,6 +323,7 @@ const UmModule *um_module_at(UmProcess *p, UINT64 va);
 /* um_console.c */
 UmConsole *um_console_ref(UmConsole *c);
 int        um_console_write(UmConsole *c, const char *data, int len);   /* program output */
+void       um_console_flush_log(UmProcess *p);                          /* a detached process's unfinished line */
 /* Program reads keyboard input: bytes, 0 at EOF, -1 if killed while waiting */
 int        um_console_read(UmConsole *c, char *buf, int cap, UmProcess *p);
 /* The console's waitable object (referenced), for input handles */
@@ -404,6 +425,7 @@ void       um_security_syscalls_init(void);
 UmObject  *um_token_for_process(UmProcess *creator);   /* a new process's primary token (referenced) */
 void       um_thread_drop_token(UmThread *t);          /* stop impersonating (the thread ended) */
 UINT32     um_set_thread_token(UmThread *t, UINT64 buf, UINT32 len);   /* ThreadImpersonationToken */
+bool       um_privilege_held(UINT32 luid);    /* the caller's token holds privilege @luid */
 UINT32     um_check_object(UmObject *o, UINT32 want);  /* opening @o for @want: STATUS_SUCCESS or ACCESS_DENIED */
 UINT32     um_oa_security(UINT64 oa, void **sd);       /* OBJECT_ATTRIBUTES' descriptor, captured (NULL: none) */
 void       um_sd_free(void *sd);

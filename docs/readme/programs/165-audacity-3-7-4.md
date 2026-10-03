@@ -1,0 +1,1 @@
+| **Audacity 3.7.4** (x64 zip) | wxWidgets audio editor | Records from the microphone (WASAPI capture), draws the waveform, stops and saves the project as an `.aup3` (SQLite) through its save dialog; part of the nightly app corpus. |

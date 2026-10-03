@@ -1,6 +1,6 @@
 /*
- * pointer.c — touch: WM_POINTER* and WM_TOUCH; gestures, pens and raw
- * input are not there
+ * pointer.c — touch: WM_POINTER* and WM_TOUCH; synthetic pens; gestures,
+ * pen WM_POINTER messages and raw input are not there
  *
  * The desktop sends a top-level window each touch contact that went down
  * in its client area (WM_NOVA_TOUCH: the contact's slot, down/move/up,
@@ -351,14 +351,95 @@ USERAPI BOOL GetGestureInfo(HANDLE h, void *info) { (void)h; (void)info; SetLast
 USERAPI BOOL CloseGestureInfoHandle(HANDLE h) { (void)h; return TRUE; }
 USERAPI BOOL SetGestureConfig(HWND h, DWORD r, UINT n, void *cfg, UINT size) { (void)h; (void)r; (void)n; (void)cfg; (void)size; return TRUE; }
 USERAPI BOOL GetGestureConfig(HWND h, DWORD r, DWORD f, PUINT n, void *cfg, UINT size) { (void)h; (void)r; (void)f; (void)cfg; (void)size; if (n) *n = 0; return TRUE; }
+/* Synthetic pens (Windows 10 1809's pointer injection): a pen device the
+ * desktop counts as a tablet (wintab32 reports it, SM_DIGITIZER has
+ * NID_EXTERNAL_PEN); its input moves the pointer, the tip clicks, and the
+ * packets with their pressure, tilt and rotation (penMask) reach wintab32.
+ * Synthetic touch is not there. */
+#define PT_PEN               3
+#define PEN_FLAG_BARREL      1
+#define PEN_FLAG_INVERTED    2
+#define PEN_FLAG_ERASER      4
+#define PEN_MASK_ROTATION    2
+#define PEN_MASK_TILT_X      4
+#define PEN_MASK_TILT_Y      8
+
+typedef struct {
+    PointerInfo pointerInfo;
+    UINT32    penFlags, penMask, pressure, rotation;
+    INT32     tiltX, tiltY;
+} PointerPenInfo;
+
+typedef struct {
+    DWORD type;
+    union { PointerTouchInfo touchInfo; PointerPenInfo penInfo; };
+} PointerTypeInfo;
+
+typedef struct { DWORD magic, type; } SynthDev;
+#define SYNTH_MAGIC 0x6E797350                  /* "Psyn" */
+
 USERAPI HANDLE CreateSyntheticPointerDevice(DWORD type, ULONG max, DWORD mode)
 {
-    (void)type; (void)max; (void)mode;
-    SetLastError(ERROR_NOT_SUPPORTED);
-    return 0;
+    (void)max; (void)mode;
+    if (type != PT_PEN) { SetLastError(ERROR_NOT_SUPPORTED); return 0; }
+    SynthDev *d = calloc(1, sizeof(*d));
+    if (!d) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    if (!NtNovaGuiCtl(0, CTL_TABLET, 2, NULL)) { free(d); SetLastError(ERROR_NOT_SUPPORTED); return 0; }
+    d->magic = SYNTH_MAGIC; d->type = type;
+    return (HANDLE)d;
 }
-USERAPI BOOL InjectSyntheticPointerInput(HANDLE dev, const void *info, UINT32 n) { (void)dev; (void)info; (void)n; SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
-USERAPI void DestroySyntheticPointerDevice(HANDLE dev) { (void)dev; }
+
+/* A screen position as the desktop's 0-65535 across every monitor */
+static INT32 desk_coord(LONG v, LONG org, LONG ext)
+{
+    int s = display_scale();
+    LONG dev = (v - org) * s, n = ext * s - 1;
+    if (dev < 0) dev = 0;
+    if (n < 1) return 0;
+    if (dev > n) dev = n;
+    return (INT32)(((long long)dev * 65535 + n - 1) / n);
+}
+
+USERAPI BOOL InjectSyntheticPointerInput(HANDLE dev, const void *info, UINT32 n)
+{
+    SynthDev *d = dev;
+    if (!d || d->magic != SYNTH_MAGIC || !info || !n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    const PointerTypeInfo *in = info;
+    RECT v;
+    u32_virtual_screen(&v);
+    for (UINT32 i = 0; i < n; i++) {
+        if (in[i].type != PT_PEN) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+        const PointerPenInfo *p = &in[i].penInfo;
+        UINT32 f = p->pointerInfo.pointerFlags;
+        int contact = (f & POINTER_FLAG_INCONTACT) != 0 && !(f & POINTER_FLAG_UP);
+        int eraser = (p->penFlags & (PEN_FLAG_ERASER | PEN_FLAG_INVERTED)) != 0;
+        UINT32 pr = p->pressure > 1024 ? 1024 : p->pressure;
+        int tilt = (p->penMask & (PEN_MASK_TILT_X | PEN_MASK_TILT_Y)) != 0, rot = (p->penMask & PEN_MASK_ROTATION) != 0;
+        INT32 tx = p->penMask & PEN_MASK_TILT_X ? p->tiltX : 0, ty = p->penMask & PEN_MASK_TILT_Y ? p->tiltY : 0;
+        INT32 pkt[8] = {
+            desk_coord(p->pointerInfo.ptPixelLocation.x, v.left, v.right - v.left),
+            desk_coord(p->pointerInfo.ptPixelLocation.y, v.top, v.bottom - v.top),
+            contact ? (INT32)(pr * 1023 / 1024) : 0,
+            (contact ? 1 : 0) | (p->penFlags & PEN_FLAG_BARREL ? 2 : 0),
+            (f & (POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT) ? 1 : 0) | (eraser ? 2 : 0) |   /* (lifted, still hovering) */
+            (tilt ? 4 : 0) | (rot ? 8 : 0),
+            (tx < -90 ? -90 : tx > 90 ? 90 : tx) * 10,                 /* degrees to the desktop's tenths */
+            (ty < -90 ? -90 : ty > 90 ? 90 : ty) * 10,
+            rot ? (INT32)(p->rotation % 360) * 10 : 0,
+        };
+        if (!NtNovaGuiCtl(0, CTL_TABLET, 4, pkt)) { SetLastError(ERROR_NOT_SUPPORTED); return FALSE; }
+    }
+    return TRUE;
+}
+
+USERAPI void DestroySyntheticPointerDevice(HANDLE dev)
+{
+    SynthDev *d = dev;
+    if (!d || d->magic != SYNTH_MAGIC) return;
+    NtNovaGuiCtl(0, CTL_TABLET, 3, NULL);
+    d->magic = 0;
+    free(d);
+}
 
 #define AR_NOSENSOR 0x10
 USERAPI BOOL GetAutoRotationState(DWORD *state) { if (!state) return FALSE; *state = AR_NOSENSOR; return TRUE; }

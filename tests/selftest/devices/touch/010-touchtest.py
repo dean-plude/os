@@ -1,6 +1,7 @@
 # touchtest: a virtio multi-touch screen (QEMU's input-send-event "mtt"
 # events) touched where touchtest asks; usbcheck runs the USB HID parser on
-# a multi-touch report descriptor (QEMU has no USB touch screen)
+# a multi-touch report descriptor (QEMU has no USB touch screen); the boot
+# also has a virtio tablet, which must come up as an absolute pointer
 import time
 
 MAX = 0x7FFF                   # QEMU's absolute axis range
@@ -37,7 +38,8 @@ def tap(nova):
 
 TESTS = [
     Test('usbcheck', 'usbcheck', [r'ok   multi-touch \(hybrid reports\)', r'usbcheck: all passed, 0 failed'], builtin=True,
-         boot_expect=[r'\[VIRTIO\] Multi-touch screen [^\n]*: 10 contacts']),
+         boot_expect=[r'\[VIRTIO\] Multi-touch screen [^\n]*: 10 contacts',
+                      r'\[VIRTIO\] Tablet [^\n]*: absolute pointer, X 0-32767, Y 0-32767']),
     Test('touchtest', 'touchtest', [r'touchtest: \d+ passed, 0 failed'],
          acts=[(r'touchtest: two fingers on the left', two_fingers), (r'touchtest: tap on the right', tap)]),
 ]

@@ -753,6 +753,23 @@ LRESULT CALLBACK TabProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 /* =======================================================================
  * SysLink: text whose <a> parts are links
  * ======================================================================= */
+
+/* the control's text without its <a ...> tags (a quoted attribute may hold '>') */
+static void link_text(HWND h, WCHAR *out)
+{
+    WCHAR buf[1024];
+    GetWindowTextW(h, buf, 1024);
+    int o = 0, in_tag = 0, quote = 0;
+    for (int i = 0; buf[i] && o < 1023; i++) {
+        if (in_tag) {
+            if (quote) { if (buf[i] == quote) quote = 0; }
+            else if (buf[i] == '"' || buf[i] == '\'') quote = buf[i];
+            else if (buf[i] == '>') in_tag = 0;
+        } else if (buf[i] == '<') in_tag = 1;
+        else out[o++] = buf[i];
+    }
+    out[o] = 0;
+}
 LRESULT CALLBACK LinkProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -763,15 +780,8 @@ LRESULT CALLBACK LinkProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         RECT c; GetClientRect(h, &c);
         HBRUSH bg = (HBRUSH)SendMessageW(GetParent(h), WM_CTLCOLORSTATIC, (WPARAM)dc, (LPARAM)h);
         if (bg) FillRect(dc, &c, bg); else cc_fill(dc, &c, GetSysColor(COLOR_3DFACE));
-        WCHAR buf[1024], out[1024];
-        GetWindowTextW(h, buf, 1024);
-        int o = 0, in_tag = 0;
-        for (int i = 0; buf[i] && o < 1023; i++) {
-            if (buf[i] == '<') in_tag = 1;
-            else if (buf[i] == '>') in_tag = 0;
-            else if (!in_tag) out[o++] = buf[i];
-        }
-        out[o] = 0;
+        WCHAR out[1024];
+        link_text(h, out);
         HGDIOBJ of = SelectObject(dc, cc_font());
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, 0xCC6600);
@@ -781,6 +791,18 @@ LRESULT CALLBACK LinkProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_SETTEXT: { LRESULT r = DefWindowProcW(h, msg, wp, lp); InvalidateRect(h, NULL, TRUE); return r; }
+    case 0x0701: {                                          /* LM_GETIDEALHEIGHT / LM_GETIDEALSIZE: wp = width (0: one line), lp = SIZE out */
+        WCHAR out[1024];
+        link_text(h, out);
+        HDC dc = GetDC(h);
+        HGDIOBJ of = SelectObject(dc, cc_font());
+        RECT r = { 0, 0, wp ? (LONG)wp : 1 << 20, 0 };
+        DrawTextW(dc, out[0] ? out : L" ", -1, &r, DT_CALCRECT | DT_NOPREFIX | (wp ? DT_WORDBREAK : 0));
+        SelectObject(dc, of);
+        ReleaseDC(h, dc);
+        if (lp) { SIZE *sz = (SIZE *)lp; sz->cx = r.right - r.left; sz->cy = r.bottom - r.top; }
+        return r.bottom - r.top;
+    }
     case WM_LBUTTONUP: {
         struct { NMHDR hdr; UINT mask; int iLink; UINT state, stateMask; WCHAR szID[48], szUrl[2084]; } nm;
         memset(&nm, 0, sizeof(nm));

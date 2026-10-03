@@ -328,10 +328,20 @@ CC LRESULT WINAPI DefSubclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 /* -----------------------------------------------------------------------
  * Task dialogs: a message box with the same parts
  * ----------------------------------------------------------------------- */
+/* TASKDIALOGCONFIG is byte-packed in the Windows headers */
+#pragma pack(push, 1)
+typedef struct { int nButtonID; LPCWSTR pszButtonText; } TASKDIALOG_BUTTON_;
 typedef struct {
     UINT cbSize; HWND hwndParent; HINSTANCE hInstance; DWORD dwFlags, dwCommonButtons;
     LPCWSTR pszWindowTitle; LPCWSTR pszMainIcon; LPCWSTR pszMainInstruction, pszContent;
-} TASKDIALOGCONFIG_HEAD;
+    UINT cButtons; const TASKDIALOG_BUTTON_ *pButtons; int nDefaultButton;
+    UINT cRadioButtons; const TASKDIALOG_BUTTON_ *pRadioButtons; int nDefaultRadioButton;
+    LPCWSTR pszVerificationText, pszExpandedInformation, pszExpandedControlText, pszCollapsedControlText;
+    LPCWSTR pszFooterIcon, pszFooter;
+    void *pfCallback; LONG_PTR lpCallbackData;
+    UINT cxWidth;
+} TASKDIALOGCONFIG_;
+#pragma pack(pop)
 
 static LPCWSTR res_str(HINSTANCE inst, LPCWSTR s, WCHAR *buf, int n)
 {
@@ -375,13 +385,24 @@ CC HRESULT WINAPI TaskDialog(HWND owner, HINSTANCE inst, LPCWSTR title, LPCWSTR 
     return 0;
 }
 
-CC HRESULT WINAPI TaskDialogIndirect(const TASKDIALOGCONFIG_HEAD *c, int *button, int *radio, BOOL *verify)
+/* Custom buttons cannot be shown by a message box: the dialog's default
+ * button (else its first custom button) is taken as pressed, after the
+ * text has been shown with OK */
+CC HRESULT WINAPI TaskDialogIndirect(const TASKDIALOGCONFIG_ *c, int *button, int *radio, BOOL *verify)
 {
-    if (!c) return 0x80070057L;
-    int r = show(c->hwndParent, c->hInstance, c->pszWindowTitle, c->pszMainInstruction, c->pszContent, c->dwCommonButtons,
+    if (!c || c->cbSize < 36) return 0x80070057L;
+    DWORD common = c->dwCommonButtons;
+    int custom = 0;
+    if (c->cbSize >= sizeof(*c) && c->cButtons && c->pButtons) {
+        custom = c->pButtons[0].nButtonID;
+        for (UINT i = 0; i < c->cButtons; i++) if (c->pButtons[i].nButtonID == c->nDefaultButton) custom = c->nDefaultButton;
+        if (!common) common = 1;                                /* TDCBF_OK_BUTTON */
+    }
+    int r = show(c->hwndParent, c->hInstance, c->pszWindowTitle, c->pszMainInstruction, c->pszContent, common,
                  (c->dwFlags & 2) ? NULL : c->pszMainIcon);
+    if (custom && (r == IDOK || !c->dwCommonButtons)) r = custom;
     if (button) *button = r;
-    if (radio) *radio = 0;
+    if (radio) *radio = c->cbSize >= sizeof(*c) && c->cRadioButtons && c->pRadioButtons ? (c->nDefaultRadioButton ? c->nDefaultRadioButton : c->pRadioButtons[0].nButtonID) : 0;
     if (verify) *verify = FALSE;
     return 0;
 }

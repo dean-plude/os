@@ -302,6 +302,16 @@ static UmObject *effective_token(void)
     return o;
 }
 
+/* Whether the calling thread's token holds privilege LUID @luid (enabled
+ * or not: the Win32 callers that need one enable it first) */
+bool um_privilege_held(UINT32 luid)
+{
+    UmObject *o = effective_token();
+    bool held = o && luid < 64 && (((const UmToken *)o->ptr)->privs >> luid & 1);
+    if (o) um_ob_unref(o);
+    return held;
+}
+
 void um_thread_drop_token(UmThread *t)
 {
     IrqState s = ob_lock();

@@ -682,20 +682,164 @@ GDIPAPI GpStatus GDIPCALL GdipSaveImageToFile(GpImage *i, const WCHAR *name, con
     return st;
 }
 
-/* ---- image attributes (accepted; drawing ignores them) ---------------- */
+/* ---- image attributes (kept; drawing ignores them) --------------------- */
 
-typedef struct { int unused; } GpImageAttributes;
+/* ColorAdjustType: Default, Bitmap, Brush, Pen, Text, Count */
+#define ADJ_COUNT 5
+typedef struct {
+    BOOL matrix_on, gamma_on, keys_on, remap_on, threshold_on, noop, channel_on;
+    REAL matrix[25], gray[25];
+    int matrix_flags, channel;
+    REAL gamma, threshold;
+    ARGB key_lo, key_hi;
+    int nremap;
+} AdjustSet;
+typedef struct GpImageAttributes {
+    AdjustSet adj[ADJ_COUNT];
+    int wrap; ARGB wrap_color; BOOL wrap_clamp;
+    BOOL cached_bg;
+} GpImageAttributes;
+static AdjustSet *adj_of(GpImageAttributes *a, INT type) { return a && type >= 0 && type < ADJ_COUNT ? &a->adj[type] : NULL; }
+
 GDIPAPI GpStatus GDIPCALL GdipCreateImageAttributes(GpImageAttributes **out)
 {
     if (!out) return InvalidParameter;
     *out = xalloc(sizeof **out);
     return *out ? Ok : OutOfMemory;
 }
+GDIPAPI GpStatus GDIPCALL GdipCloneImageAttributes(const GpImageAttributes *a, GpImageAttributes **out)
+{
+    if (!a || !out) return InvalidParameter;
+    *out = xalloc(sizeof **out);
+    if (!*out) return OutOfMemory;
+    **out = *a;
+    return Ok;
+}
 GDIPAPI GpStatus GDIPCALL GdipDisposeImageAttributes(GpImageAttributes *a) { if (!a) return InvalidParameter; xfree(a); return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipSetImageAttributesToIdentity(GpImageAttributes *a, INT type)
+{ AdjustSet *s = adj_of(a, type); if (!s) return InvalidParameter; memset(s, 0, sizeof *s); return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipResetImageAttributes(GpImageAttributes *a, INT type)
+{ AdjustSet *s = adj_of(a, type); if (!s) return InvalidParameter; memset(s, 0, sizeof *s); return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipSetImageAttributesColorMatrix(GpImageAttributes *a, INT type, BOOL on, const REAL *m, const REAL *gray, INT flags)
+{
+    AdjustSet *s = adj_of(a, type);
+    if (!s || (on && !m)) return InvalidParameter;
+    s->matrix_on = on;
+    if (on) { memcpy(s->matrix, m, sizeof s->matrix); if (gray) memcpy(s->gray, gray, sizeof s->gray); s->matrix_flags = flags; }
+    return Ok;
+}
+GDIPAPI GpStatus GDIPCALL GdipSetImageAttributesThreshold(GpImageAttributes *a, INT type, BOOL on, REAL t)
+{ AdjustSet *s = adj_of(a, type); if (!s) return InvalidParameter; s->threshold_on = on; s->threshold = t; return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipSetImageAttributesGamma(GpImageAttributes *a, INT type, BOOL on, REAL gamma)
+{ AdjustSet *s = adj_of(a, type); if (!s || (on && gamma <= 0)) return InvalidParameter; s->gamma_on = on; s->gamma = gamma; return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipSetImageAttributesNoOp(GpImageAttributes *a, INT type, BOOL on)
+{ AdjustSet *s = adj_of(a, type); if (!s) return InvalidParameter; s->noop = on; return Ok; }
 GDIPAPI GpStatus GDIPCALL GdipSetImageAttributesColorKeys(GpImageAttributes *a, INT type, BOOL on, ARGB lo, ARGB hi)
-{ (void)type; (void)on; (void)lo; (void)hi; return a ? Ok : InvalidParameter; }
+{ AdjustSet *s = adj_of(a, type); if (!s) return InvalidParameter; s->keys_on = on; s->key_lo = lo; s->key_hi = hi; return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipSetImageAttributesOutputChannel(GpImageAttributes *a, INT type, BOOL on, INT channel)
+{ AdjustSet *s = adj_of(a, type); if (!s) return InvalidParameter; s->channel_on = on; s->channel = channel; return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipSetImageAttributesOutputChannelColorProfile(GpImageAttributes *a, INT type, BOOL on, const WCHAR *profile)
+{ (void)on; (void)profile; return adj_of(a, type) ? Ok : InvalidParameter; }
+GDIPAPI GpStatus GDIPCALL GdipSetImageAttributesRemapTable(GpImageAttributes *a, INT type, BOOL on, UINT n, const void *map)
+{ AdjustSet *s = adj_of(a, type); if (!s || (on && n && !map)) return InvalidParameter; s->remap_on = on; s->nremap = (int)n; return Ok; }
 GDIPAPI GpStatus GDIPCALL GdipSetImageAttributesWrapMode(GpImageAttributes *a, INT wrap, ARGB c, BOOL clamp)
-{ (void)wrap; (void)c; (void)clamp; return a ? Ok : InvalidParameter; }
+{ if (!a) return InvalidParameter; a->wrap = wrap; a->wrap_color = c; a->wrap_clamp = clamp; return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipSetImageAttributesCachedBackground(GpImageAttributes *a, BOOL on)
+{ if (!a) return InvalidParameter; a->cached_bg = on; return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipGetImageAttributesAdjustedPalette(GpImageAttributes *a, ColorPalette *pal, INT type)
+{ (void)type; return a && pal ? Ok : InvalidParameter; }
+
+/* ---- cached bitmaps: a copy of the bitmap, drawn at a point ------------- */
+
+typedef struct GpCachedBitmap { GpImage *img; } GpCachedBitmap;
+GDIPAPI GpStatus GDIPCALL GdipCreateCachedBitmap(GpBitmap *b, GpGraphics *g, GpCachedBitmap **out)
+{
+    if (!b || !g || !out) return InvalidParameter;
+    GpCachedBitmap *c = xalloc(sizeof *c);
+    if (!c) return OutOfMemory;
+    GpStatus st = GdipCloneImage(b, &c->img);
+    if (st != Ok) { xfree(c); return st; }
+    *out = c;
+    return Ok;
+}
+GDIPAPI GpStatus GDIPCALL GdipDeleteCachedBitmap(GpCachedBitmap *c)
+{
+    if (!c) return InvalidParameter;
+    GdipDisposeImage(c->img);
+    xfree(c);
+    return Ok;
+}
+GDIPAPI GpStatus GDIPCALL GdipDrawCachedBitmap(GpGraphics *g, GpCachedBitmap *c, INT x, INT y)
+{
+    if (!g || !c) return InvalidParameter;
+    return GdipDrawImage(g, c->img, (REAL)x, (REAL)y);
+}
+
+/* ---- rotating and flipping ------------------------------------------- */
+
+/* RotateFlipType: bits 0-1 the quarter turns, bit 2 (values 4..7) a flip of x */
+GDIPAPI GpStatus GDIPCALL GdipImageRotateFlip(GpImage *i, INT type)
+{
+    if (!i || type < 0 || type > 7) return InvalidParameter;
+    if (i->locked) return WrongState;
+    int turns = type & 3, flip = type & 4;
+    int w = plutovg_surface_get_width(i->s), h = plutovg_surface_get_height(i->s);
+    int nw = (turns & 1) ? h : w, nh = (turns & 1) ? w : h;
+    plutovg_surface_t *d = plutovg_surface_create(nw, nh);
+    if (!d) return OutOfMemory;
+    const BYTE *src = plutovg_surface_get_data(i->s);
+    BYTE *dst = plutovg_surface_get_data(d);
+    int ss = plutovg_surface_get_stride(i->s), ds = plutovg_surface_get_stride(d);
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int tx, ty;
+            switch (turns) {
+            case 0: tx = x; ty = y; break;
+            case 1: tx = h - 1 - y; ty = x; break;
+            case 2: tx = w - 1 - x; ty = h - 1 - y; break;
+            default: tx = y; ty = w - 1 - x; break;
+            }
+            if (flip) tx = nw - 1 - tx;
+            *(DWORD *)(dst + (ptrdiff_t)ty * ds + tx * 4) = *(const DWORD *)(src + (ptrdiff_t)y * ss + x * 4);
+        }
+    }
+    plutovg_surface_destroy(i->s);
+    i->s = d;
+    return Ok;
+}
+
+/* ---- odds and ends -------------------------------------------------- */
+
+GDIPAPI GpStatus GDIPCALL GdipGetEncoderParameterListSize(GpImage *i, const CLSID *enc, UINT *size)
+{ (void)enc; if (!i || !size) return InvalidParameter; *size = 0; return NotImplemented; }
+GDIPAPI GpStatus GDIPCALL GdipGetEncoderParameterList(GpImage *i, const CLSID *enc, UINT size, void *out)
+{ (void)enc; (void)size; (void)out; return i ? NotImplemented : InvalidParameter; }
+GDIPAPI GpStatus GDIPCALL GdipSaveAdd(GpImage *i, const void *params) { (void)params; return i ? NotImplemented : InvalidParameter; }
+GDIPAPI GpStatus GDIPCALL GdipSaveAddImage(GpImage *i, GpImage *add, const void *params)
+{ (void)params; return i && add ? NotImplemented : InvalidParameter; }
+GDIPAPI GpStatus GDIPCALL GdipCreateBitmapFromDirectDrawSurface(void *surface, GpBitmap **out)
+{ (void)surface; return out ? NotImplemented : InvalidParameter; }
+GDIPAPI GpStatus GDIPCALL GdipCreateBitmapFromResource(HINSTANCE inst, const WCHAR *name, GpBitmap **out)
+{
+    if (!out) return InvalidParameter;
+    HRSRC r = FindResourceW(inst, name, (LPCWSTR)RT_BITMAP);
+    if (!r) return InvalidParameter;
+    HGLOBAL g = LoadResource(inst, r);
+    const BITMAPINFO *bi = g ? LockResource(g) : NULL;
+    if (!bi) return InvalidParameter;
+    /* a BITMAP resource: the info header, its palette, then the bits */
+    int ncol = bi->bmiHeader.biClrUsed;
+    if (!ncol && bi->bmiHeader.biBitCount <= 8) ncol = 1 << bi->bmiHeader.biBitCount;
+    const BYTE *bits = (const BYTE *)bi + bi->bmiHeader.biSize + ncol * sizeof(RGBQUAD);
+    return GdipCreateBitmapFromGdiDib(bi, (void *)bits, out);
+}
+GDIPAPI GpStatus GDIPCALL GdipGetAllPropertyItems(GpImage *i, UINT size, UINT n, void *items)
+{ (void)size; (void)n; (void)items; return i ? PropertyNotFound : InvalidParameter; }
+GDIPAPI GpStatus GDIPCALL GdipImageForceValidation(GpImage *i) { return i ? Ok : InvalidParameter; }
+GDIPAPI GpStatus GDIPCALL GdipTestControl(INT control, void *param) { (void)control; (void)param; return Ok; }
+GDIPAPI GpStatus GDIPCALL GdipGetNearestColor(GpGraphics *g, ARGB *c) { return g && c ? Ok : InvalidParameter; }   /* 32-bit screens: the colour itself */
+GDIPAPI GpStatus GDIPCALL GdipCreateStreamOnFile(const WCHAR *name, UINT access, IStream **out)
+{ (void)name; (void)access; return out ? NotImplemented : InvalidParameter; }
 
 /* ---- frames and properties -------------------------------------------- */
 

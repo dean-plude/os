@@ -45,36 +45,22 @@ typedef struct {
     LDR_DATA_TABLE_ENTRY entry;
 } Module;
 
-#define MAX_MODULES 128
+#define MAX_MODULES 1024
 static Module g_mod[MAX_MODULES];
 static int    g_nmod;                  /* modules registered with ntdll */
 static int    g_ntls;                  /* static TLS slots assigned */
 static PEB_LDR_DATA g_ldr;
-static volatile long g_ldr_lock;
 static int    g_process_ready;
 
 static BYTE *teb(void)         { return NtCurrentTebBytes(); }
 
-/* The loader lock: recursive, as on Windows, since a DllMain or TLS
- * callback may itself load a library (LoadLibrary under the lock) */
-static void *volatile g_ldr_owner;
-static int g_ldr_depth;
-static void llock(void)
-{
-    void *me = teb();
-    if (g_ldr_owner == me) { g_ldr_depth++; return; }
-    for (int spins = 0; __atomic_exchange_n(&g_ldr_lock, 1, __ATOMIC_ACQUIRE); spins++) {
-        if (spins < 64) __builtin_ia32_pause(); else NtYieldExecution();
-    }
-    g_ldr_owner = me;
-    g_ldr_depth = 1;
-}
-static void lunlock(void)
-{
-    if (--g_ldr_depth) return;
-    g_ldr_owner = 0;
-    __atomic_store_n(&g_ldr_lock, 0, __ATOMIC_RELEASE);
-}
+/* The loader lock: a critical section (recursive, as on Windows, since a
+ * DllMain or TLS callback may itself load a library), published in the
+ * PEB's LoaderLock so a program can tell whether it holds it (Crashpad
+ * compares its OwningThread with its own thread id). */
+RTL_CRITICAL_SECTION RtlpLoaderLock = { 0, -1, 0, 0, 0, 0 };
+static void llock(void)   { RtlEnterCriticalSection(&RtlpLoaderLock); }
+static void lunlock(void) { RtlLeaveCriticalSection(&RtlpLoaderLock); }
 static void *tls_pointer(void) { return *(void **)(teb() + TEB_TLS_POINTER); }
 
 static void wcopy(WCHAR *d, const char *s, int cap)
@@ -115,12 +101,14 @@ static int path_eq(const WCHAR *a, const char *b)
 
 /* An API set name stands for the DLL that implements it (the kernel's
  * loader maps them the same way, see map_api_set in um.c), so
- * GetModuleHandle("api-ms-win-core-synch-l1-2-0") finds kernel32 as on
- * Windows.  Rust's standard library looks up WaitOnAddress that way. */
+ * GetModuleHandle("api-ms-win-core-synch-l1-2-0") finds kernelbase as on
+ * Windows.  Rust's standard library looks up WaitOnAddress that way; VLC
+ * asks kernel32 for it and must not find it there. */
 static const char *api_set_host(const char *name)
 {
     static const struct { const char *prefix, *dll; } sets[] = {
         { "api-ms-win-crt-",        "ucrtbase.dll" },
+        { "api-ms-win-core-synch-", "kernelbase.dll" },  /* WaitOnAddress lives there, not in kernel32 */
         { "api-ms-win-core-com-",   "ole32.dll" },
         { "api-ms-win-core-winrt-", "ole32.dll" },
         { "combase",                "ole32.dll" },
@@ -129,6 +117,7 @@ static const char *api_set_host(const char *name)
         { "api-ms-win-eventing-",   "advapi32.dll" },
         { "api-ms-win-shell-",      "shell32.dll" },
         { "api-ms-win-shcore-",     "shlwapi.dll" },
+        { "shcore",                 "shlwapi.dll" },
         { "ext-ms-win-",            "kernel32.dll" },
         { "kernelbase",             "kernel32.dll" },
         { "api-ms-win-",            "kernel32.dll" },
@@ -388,6 +377,7 @@ static void ldr_init_process(void)
     g_ldr.InMemoryOrderModuleList.Flink = g_ldr.InMemoryOrderModuleList.Blink = &g_ldr.InMemoryOrderModuleList;
     g_ldr.InInitializationOrderModuleList.Flink = g_ldr.InInitializationOrderModuleList.Blink = &g_ldr.InInitializationOrderModuleList;
     peb->Ldr = &g_ldr;
+    peb->LoaderLock = &RtlpLoaderLock;
     RtlNovaInitProcess();
     RtlNovaInitExceptions();
     int first = absorb_new_modules();
@@ -476,9 +466,14 @@ NTSTATUS NTAPI LdrGetProcedureAddress(PVOID base, const char *name, ULONG ordina
 /* -----------------------------------------------------------------------
  * Thread and process teardown callbacks (called from RtlExit*)
  * ----------------------------------------------------------------------- */
+extern void nova_fls_thread_exit(int stage);   /* ntdll_fls.c */
+extern void nova_tls_thread_exit(void);         /* ntdll_tls.c */
+BOOLEAN g_shutdown;                             /* RtlDllShutdownInProgress (ntdll_rtl.c) */
+
 void nova_run_thread_detach(void)
 {
     if (!g_process_ready) return;
+    nova_fls_thread_exit(0);
     for (int i = g_nmod - 1; i >= 0; i--) {
         Module *m = &g_mod[i];
         if (m->attached && !m->no_thread_calls) {
@@ -487,11 +482,18 @@ void nova_run_thread_detach(void)
         }
     }
     free_thread_tls();
+    nova_tls_thread_exit();
+    nova_fls_thread_exit(1);
 }
 
+/* Process exit: the exiting thread's FLS callbacks, then every module's
+ * DLL_PROCESS_DETACH (other threads' FLS values reach their callbacks
+ * when a DLL frees its index there, as on Windows) */
 void nova_run_process_detach(void)
 {
     if (!g_process_ready) return;
+    g_shutdown = TRUE;
+    nova_fls_thread_exit(0);
     for (int i = g_nmod - 1; i >= 0; i--) {
         Module *m = &g_mod[i];
         if (!m->attached) continue;

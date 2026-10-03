@@ -1,0 +1,2 @@
+/* dpitest: its manifest says per-monitor aware v2 (user32 reads it) */
+1 24 "dpitest.manifest"

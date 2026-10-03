@@ -1180,7 +1180,7 @@ NTSYSAPI NTSTATUS NTAPI NtTestAlert(void)
 }
 
 /* Whether the process is shutting down (DLL_PROCESS_DETACH at exit) */
-NTSYSAPI BOOLEAN NTAPI RtlDllShutdownInProgress(void) { return FALSE; }
+NTSYSAPI BOOLEAN NTAPI RtlDllShutdownInProgress(void) { extern BOOLEAN g_shutdown; return g_shutdown; }
 
 /* Device I/O controls: no driver here answers them (pipes and the file
  * system use NtFsControlFile) */
