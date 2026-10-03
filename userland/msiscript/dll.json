@@ -1,0 +1,10 @@
+{
+  "deps": [
+    "msi",
+    "version",
+    "advapi32",
+    "msvcrt",
+    "kernel32",
+    "ntdll"
+  ]
+}
