@@ -30,3 +30,8 @@ typedef struct {
 static inline UINT32 waitq_gen(WaitQueue *q) { return __atomic_load_n(&q->gen, __ATOMIC_ACQUIRE); }
 void waitq_wait(WaitQueue *q, UINT32 gen, UINT64 max_ticks);
 void waitq_wake(WaitQueue *q);
+/* The same, with NT's wake-up boost (BOOST_*, scheduler.h): waitq_wake
+ * gives none.  Every sleeper wakes; with @tag nonzero only those that
+ * slept with that tag (the thread a message is for) are boosted. */
+void waitq_wait_tag(WaitQueue *q, UINT32 gen, UINT64 max_ticks, UINT32 tag);
+void waitq_wake_boost(WaitQueue *q, int boost, UINT32 tag);

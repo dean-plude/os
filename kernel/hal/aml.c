@@ -972,6 +972,7 @@ static bool load(void)
 static void acpi_thread(void *arg)
 {
     (void)arg;
+    g_thread = sched_current();          /* (AmlInitialize's store may not have landed yet) */
     bkl_release();                       /* AML runs under uACPI's own locks */
     if (!load()) sched_exit_current();
     g_ready = true;

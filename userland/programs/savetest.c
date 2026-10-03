@@ -8,7 +8,10 @@
  * GetProcessHandleCount (the big kernel lock), GetMonitorInfo (the desktop
  * lock) and GetFileAttributes (the file-system lock).  It passes when none
  * of them waited 250 ms or more (before saves let go of the locks, a 64 MiB
- * save kept the desktop and file-system locks for 300-600 ms in QEMU).
+ * save kept the desktop and file-system locks for 300-600 ms in QEMU), and
+ * the file-system call less than 100 ms (the desktop's redraws hold the
+ * desktop lock for 50-100 ms in QEMU without KVM, but take the file-system
+ * lock only around what they read from files).
  * The kernel logs the save itself ("[PERSIST] Saved ..."), with the time
  * it held the file-system lock; the self-test checks that line too.
  */
@@ -20,6 +23,7 @@ WINBASEAPI BOOL WINAPI GetProcessHandleCount(HANDLE process, PDWORD count);   /*
 
 #define WINDOW_MS 12000
 #define LIMIT_MS  250
+#define FS_LIMIT_MS 100
 
 static LARGE_INTEGER g_freq;
 
@@ -88,8 +92,12 @@ int main(int argc, char **argv)
     DeleteFileA(path);
     printf("savetest: longest waits over %ld rounds: kernel lock %.1f ms, desktop lock %.1f ms, file system %.1f ms\n",
            rounds, worst_bkl, worst_desk, worst_fs);
-    if (worst_bkl >= LIMIT_MS || worst_desk >= LIMIT_MS || worst_fs >= LIMIT_MS) {
+    if (worst_bkl >= LIMIT_MS || worst_desk >= LIMIT_MS) {
         printf("savetest: FAIL (a call waited %d ms or more)\n", LIMIT_MS);
+        return 1;
+    }
+    if (worst_fs >= FS_LIMIT_MS) {
+        printf("savetest: FAIL (the file-system call waited %d ms or more)\n", FS_LIMIT_MS);
         return 1;
     }
     printf("savetest: PASS\n");

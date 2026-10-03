@@ -10,9 +10,11 @@
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
   `comctl32`, `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
   type libraries), `advapi32`, `ws2_32`, `oleacc`,
-  `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, WASAPI
-  playback and capture, endpoint volume), `msi` (with `msiscript` running
-  JScript and VBScript custom actions on the ISC-licensed mujs),
+  `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
+  WASAPI playback and capture, endpoint volume), `dsound` (DirectSound),
+  `xaudio2_7`/`xaudio2_8`/`xaudio2_9` and `x3daudio1_7` (on FAudio), `msi`
+  (with `msiscript` running JScript and VBScript custom actions on the
+  ISC-licensed mujs),
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
   `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`),
   `wintab32` (Wintab pen tablets: pressure for GTK, Qt and Krita), and

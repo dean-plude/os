@@ -90,7 +90,7 @@ static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         memset(&info, 0, sizeof(info));
         info.present = AudioCanRecord();
         info.rate = AUDIO_RATE;
-        if (info.present) ksnprintf(info.name, sizeof(info.name), "%s (%s)", AudioInputName(), AudioDeviceName());
+        if (info.present) ksnprintf(info.name, sizeof(info.name), "%s", AudioInputName());
         return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &info, sizeof(info))) ? 0 : (UINT64)(INT64)-1;
     }
     if (a2 == 8) {

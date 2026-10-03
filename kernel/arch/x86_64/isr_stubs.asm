@@ -26,6 +26,27 @@ SECTION .text
 
 ; External C dispatcher
 EXTERN interrupt_dispatch
+EXTERN gs_mismatch
+
+%define MSR_GS_BASE 0xC0000101
+
+%macro PUSH_GPRS 0
+    push    rax
+    push    rcx
+    push    rdx
+    push    rbx
+    push    rbp
+    push    rsi
+    push    rdi
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+%endmacro
 
 ; -----------------------------------------------------------------------
 ; Macros to generate stubs
@@ -120,28 +141,34 @@ ISR_NOERR i
 ; -----------------------------------------------------------------------
 isr_common:
     ; From ring 3 (saved CS has RPL 3): GS holds the TEB; switch it to the
-    ; KPCR (kpcr.h).  From ring 0 GS already is the KPCR.
+    ; KPCR (kpcr.h).  From ring 0 GS already is the KPCR -- unless the
+    ; interrupt landed between a SWAPGS and the IRETQ/SYSRET after it,
+    ; which must never happen (interrupts are off there): check, and report
+    ; where it happened instead of running on with a program's GS.
     test    qword [rsp+24], 3
     jz      .from_kernel
     swapgs
+    jmp     .gs_ready
 .from_kernel:
-
-    ; Save all GPRs (in order that builds InterruptFrame in reverse)
     push    rax
     push    rcx
     push    rdx
-    push    rbx
-    push    rbp
-    push    rsi
-    push    rdi
-    push    r8
-    push    r9
-    push    r10
-    push    r11
-    push    r12
-    push    r13
-    push    r14
-    push    r15
+    mov     ecx, MSR_GS_BASE
+    rdmsr
+    test    edx, edx                ; a kernel address: bit 63 set
+    pop     rdx
+    pop     rcx
+    pop     rax
+    js      .gs_ready
+    swapgs
+    PUSH_GPRS
+    mov     rdi, rsp
+    xor     esi, esi
+    call    gs_mismatch             ; does not return
+.gs_ready:
+
+    ; Save all GPRs (in order that builds InterruptFrame in reverse)
+    PUSH_GPRS
 
     ; RSP now points to the bottom of InterruptFrame (r15 field).
     ; Pass pointer to frame as first argument (RDI per System V ABI).
@@ -154,6 +181,19 @@ isr_common:
 
     ; Call C handler
     call    interrupt_dispatch
+
+    ; Back to ring 3: GS must still be the KPCR (the SWAPGS below gives the
+    ; program its own)
+    test    qword [rsp+15*8+24], 3
+    jz      .gs_checked
+    mov     ecx, MSR_GS_BASE
+    rdmsr
+    test    edx, edx
+    js      .gs_checked
+    mov     rdi, rsp
+    mov     esi, 1
+    call    gs_mismatch
+.gs_checked:
 
     ; Restore GPRs
     pop     r15

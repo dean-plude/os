@@ -141,7 +141,7 @@ static void in_changed(UmConsole *c)
 {
     bool sig = c->in_head != c->in_tail || c->in_eof;
     IrqState s = ob_lock();
-    if (sig && !c->ob->signaled) um_ob_wake(c->ob);
+    if (sig && !c->ob->signaled) um_ob_wake_boost(c->ob, BOOST_KEYBOARD);   /* (console input, as from the keyboard) */
     c->ob->signaled = sig;
     ob_unlock(s);
 }

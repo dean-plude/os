@@ -422,8 +422,8 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
         InputInit();
         ps2_init();
         UsbInit();                        /* USB keyboards, mice, hubs and sticks */
-        sched_create_thread("devpoll", device_poll_thread, NULL, 12);
-        sched_create_thread("desktop", DesktopRun, NULL, 8);
+        sched_create_thread("devpoll", device_poll_thread, NULL, PRIO_LOW_REALTIME);   /* (above any boost) */
+        sched_create_thread("desktop", DesktopRun, NULL, 9);   /* (a wake-up boost of +1 does not put programs ahead of it) */
         kprintf_set_fb_enabled(false);    /* WM owns the screen; logs → serial */
         kprintf("[NovaOS] Desktop event loop started (%dx%d)\n",
                 GdiScreenW(), GdiScreenH());
