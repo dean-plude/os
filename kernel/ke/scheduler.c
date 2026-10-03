@@ -27,6 +27,7 @@
 #include "kpcr.h"
 #include "smp.h"
 #include "spinlock.h"
+#include "ksym.h"
 #include "../mm/vmm.h"
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/gdt.h"
@@ -85,6 +86,12 @@ static uint64_t tsc_at_boot;
 
 static void rq_enqueue(RunQueue *rq, Thread *t)
 {
+    if (t->next || t->prev) {                       /* queued already: it would run twice */
+        kprintf("[SCHED] BUG: thread '%s' (TID %lu, state %d, CPU %u) queued twice, by CPU %u\n",
+                t->name, t->tid, t->state, t->cpu, this_cpu());
+        KsymBacktraceHere();
+        for (;;) { cli(); hlt(); }
+    }
     t->state = THREAD_READY;
     if (!rq->head) {
         t->next = t;
@@ -519,6 +526,11 @@ static void switch_locked(RunQueue *rq)
     }
     /* (a thread is queued only once switched out, under the lock of the
      * queue its CPU was switching from: this never waits in practice) */
+    if (next->state != THREAD_READY && !next->idle) {   /* (only a queued thread is switched to) */
+        kprintf("[SCHED] BUG: switching to thread '%s' (TID %lu) in state %d on CPU %u\n",
+                next->name, next->tid, next->state, this_cpu());
+        for (;;) { cli(); hlt(); }
+    }
     while (__atomic_load_n(&next->on_cpu, __ATOMIC_ACQUIRE)) pause_cpu();
     next->on_cpu        = true;
     next->cpu           = this_cpu();
@@ -906,6 +918,10 @@ static bool wake_sleepers(RunQueue *rq, uint64_t *soonest)
 void sched_block(void)
 {
     IrqState irq = irq_save();
+    /* Still on a sleep list from an earlier timed sleep (woken early):
+     * leave it, or that CPU's tick would find this thread waiting and
+     * queue it there while a sched_unblock queued it here as well */
+    leave_sleepers(current_thread);
     RunQueue *rq = my_rq();
     spin_lock(&rq->lock);
     current_thread->state = THREAD_WAITING;
@@ -960,6 +976,22 @@ void sched_resched_ipi(void)
     if (!g_resched[cpu] || !current_thread) return;
     g_preempting[cpu] = current_thread->ticks_slice < TICKS_PER_SLICE;
     perform_switch();
+}
+
+void sched_resched_pending(void)
+{
+    if (!g_resched[this_cpu()]) return;             /* (a hint: looked at again below) */
+    IrqState irq = irq_save();
+    sched_resched_ipi();
+    irq_restore(irq);
+}
+
+bool sched_work_waiting(void)
+{
+    if (g_resched[this_cpu()]) return true;
+    for (uint32_t c = 0; c < g_cpu_count; c++)      /* (an idle CPU steals: switch_locked) */
+        if (__atomic_load_n(&g_rq[c].head, __ATOMIC_RELAXED)) return true;
+    return false;
 }
 
 /* -----------------------------------------------------------------------

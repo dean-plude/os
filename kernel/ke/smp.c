@@ -122,11 +122,26 @@ static void raw_unlock(void)
 
 static Thread *me(void) { return KiGetCurrentKpcr()->CurrentThread; }
 
+/* Take the lock back for @t, which held it @t->bkl_depth deep (interrupts
+ * off).  While raw_lock halts, an interrupt may come in and want the lock
+ * itself: the depth reads 0 meanwhile, so it takes the lock (and lets go)
+ * rather than run as though this thread held it. */
+static void relock(Thread *t)
+{
+    uint32_t depth = t->bkl_depth;
+    t->bkl_depth = 0;
+    raw_lock(true);
+    t->bkl_depth = depth;
+}
+
 void bkl_acquire(void)
 {
     IrqState s = irq_save();
     Thread *t = me();
-    if (t->bkl_depth++ == 0) raw_lock(true);
+    /* (the depth goes up once the lock is ours: an interrupt taken while
+     * raw_lock halts must not think this thread holds it already) */
+    if (t->bkl_depth == 0) raw_lock(true);
+    t->bkl_depth++;
     irq_restore(s);
 }
 
@@ -180,7 +195,7 @@ bool bkl_held(void)
 
 /* The scheduler, with interrupts off: a holder leaving and coming back */
 void bkl_switch_out(Thread *t) { if (t->bkl_depth) raw_unlock(); }
-void bkl_switch_in(Thread *t)  { if (t->bkl_depth) raw_lock(true); }
+void bkl_switch_in(Thread *t)  { if (t->bkl_depth) relock(t); }
 
 void bkl_relax(void)
 {
@@ -192,7 +207,7 @@ void bkl_relax(void)
     for (int i = 0; i < 1000000 && !__atomic_load_n(&g_bkl.locked, __ATOMIC_ACQUIRE) &&
                     __atomic_load_n(&g_bkl.contenders, __ATOMIC_ACQUIRE); i++)
         pause_cpu();
-    raw_lock(true);
+    relock(t);
     irq_restore(s);
 }
 
@@ -204,7 +219,13 @@ void cpu_idle_wait(void)
     t->bkl_depth = 0;                         /* an interrupt in the window takes it anew */
     if (depth) raw_unlock();
     KiGetCurrentKpcr()->Idle = 1;
-    __asm__ volatile ("sti; hlt; cli" ::: "memory");
+    /* A thread queued between this CPU's last look and Idle going up was
+     * not kicked for (smp_kick saw it busy): halting now would leave it
+     * there until the next tick.  (The fences pair: either the waker sees
+     * Idle, or this sees its thread.) */
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (!sched_work_waiting())
+        __asm__ volatile ("sti; hlt; cli" ::: "memory");
     /* An interrupt ended the halt (and may have moved this thread to
      * another CPU) */
     KiGetCurrentKpcr()->Idle = 0;
@@ -230,6 +251,7 @@ void smp_ipi(uint64_t vector)
 bool smp_kick(uint32_t prefer)
 {
     if (g_cpu_count < 2) return false;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);   /* (the thread queued before Idle is read: cpu_idle_wait) */
     PKPCR self = KiGetCurrentKpcr();
     PKPCR p = prefer < MAX_CPUS ? &g_kpcr[prefer] : NULL;
     if (p && p != self && p->Online && p->Idle) {    /* the thread's own CPU, if it is idle */
