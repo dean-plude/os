@@ -41,7 +41,7 @@
 #include "../drivers/nvme.h"
 #include "../net/net.h"
 #include "../drivers/hda.h"
-#include "../drivers/xhci.h"
+#include "../drivers/usb.h"
 #include "../wm/wm.h"
 #include "../lib/string.h"
 
@@ -277,7 +277,7 @@ bool SleepEnter(void)
 
     AmlPrepareSleep();                   /* \_PTS; only wake GPEs stay on */
     /* Devices: what only the driver knows */
-    XhciPrepareSleep();                  /* USB keyboards may wake it */
+    UsbPrepareSleep();                   /* USB keyboards may wake it */
     PciSaveAll();
     save_mtrrs();
     UINT64 rtc_before = rtc_seconds(), tsc_before = rdtsc();
@@ -316,7 +316,7 @@ bool SleepEnter(void)
         bkl_restore(bkl);
         if (frozen < others) kprintf("[SLEEP] %u of %u CPUs stopped: not sleeping\n", frozen, others);
         else kprintf("[SLEEP] The machine didn't enter S3\n");
-        XhciResume();                    /* (its ports were suspended) */
+        UsbResume();                     /* (its ports were suspended) */
         AmlWake();
         return false;
     }
@@ -328,7 +328,7 @@ bool SleepEnter(void)
     AhciResume();
     NvmeResume();
     NetResume();                         /* the network adapter */
-    XhciResume();
+    UsbResume();
     HdaResume();
     ps2_resume();
     DisplayResume();

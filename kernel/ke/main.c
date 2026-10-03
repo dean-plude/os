@@ -72,7 +72,7 @@
 #include "../fs/setup.h"
 #include "../fs/ramfs.h"
 #include "../hal/pci.h"
-#include "../drivers/xhci.h"
+#include "../drivers/usb.h"
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
 #include "../hal/ioapic.h"
@@ -126,7 +126,7 @@ static void device_poll_thread(void *arg)
     for (;;) {
         sched_sleep_until_tsc(NULL, sched_tick_tsc(sched_ticks() + 1));
         ps2_poll();
-        XhciPoll();
+        UsbPoll();
     }
 }
 
@@ -421,7 +421,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
         /* Phase 8: input plumbing + interactive desktop event loop. */
         InputInit();
         ps2_init();
-        XhciInit();                       /* USB keyboards and mice */
+        UsbInit();                        /* USB keyboards, mice, hubs and sticks */
         sched_create_thread("devpoll", device_poll_thread, NULL, 12);
         sched_create_thread("desktop", DesktopRun, NULL, 8);
         kprintf_set_fb_enabled(false);    /* WM owns the screen; logs → serial */

@@ -95,12 +95,19 @@ when it merges main.  Resolve it like this:
 
 ## Before pushing
 
+These check for conflict markers, that the DLL and program manifests and
+the self-test files load, and that the generated doc regions match:
+
 ```bash
 python3 tools/ci/check-conflict-markers.py
-python3 tools/build_userland.py --check      # DLL and program manifests
-python3 tools/selftest.py --list             # the self-test files load
+python3 tools/build_userland.py --check
+python3 tools/selftest.py --list
 python3 tools/docgen.py --check-pr origin/main
 ```
+
+Shell blocks in the docs carry no `#` comments, trailing or on their own
+line: zsh, the macOS default shell, does not treat `#` as a comment when
+commands are pasted in, so explanations go in the text around the block.
 
 and build and run the self-tests as [docs/building.md](docs/building.md)
 describes.  System calls keep Windows 10 1903 x64 numbers.

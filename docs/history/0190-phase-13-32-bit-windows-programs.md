@@ -57,4 +57,6 @@ the 64-bit kernel, and they get a 32-bit copy of the whole userland in
   exists (`SHGetFolderPath`, which NSIS takes from it); msvcrt exports
   `_controlfp`, `_control87`, `__p___initenv` and friends.  The
   Terminal's `trace` now shows the file name of file system calls.
-- Not yet: pending renames are not carried out at the next start.
+- Not yet: pending renames are not carried out at the next start.  *(Since
+  done: Session Manager's `PendingFileRenameOperations` run at boot, see
+  "Phase 17: kernel and API correctness".)*

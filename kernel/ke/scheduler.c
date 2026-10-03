@@ -620,7 +620,7 @@ void sched_tick(void)
     if (now > tick_count && spin_trylock(&tick_lock)) {   /* one CPU does the tick's work */
         if (now > tick_count) {
             tick_count = now;
-            /* (The keyboard and mouse polls, ps2_poll and XhciPoll, run in
+            /* (The keyboard and mouse polls, ps2_poll and UsbPoll, run in
              * the device poll thread, kernel/ke/main.c: their port and
              * MMIO reads take QEMU's device lock and ran up to a few ms
              * here with interrupts off, which held up every Sleep and
