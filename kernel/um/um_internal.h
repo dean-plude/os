@@ -148,6 +148,10 @@ void      um_ob_unref(UmObject *o);
 /* @o became signaled (or acquirable): wake the threads waiting on it.
  * Called with g_um_oblock held. */
 void      um_ob_wake(UmObject *o);
+/* The same with the wake-up boost @boost (BOOST_*, scheduler.h) for the
+ * threads woken; um_ob_wake gives an event's, a semaphore's or a mutex's
+ * (+1) */
+void      um_ob_wake_boost(UmObject *o, int boost);
 
 typedef enum { H_FREE = 0, H_FILE, H_CON_IN, H_CON_OUT, H_DIR, H_OBJECT, H_NULL } UmHandleKind;
 

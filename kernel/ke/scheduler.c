@@ -81,55 +81,81 @@ static uint64_t tsc_at_boot;
 
 /* -----------------------------------------------------------------------
  * Run queues (the queue's lock held)
+ *
+ * A queue runs from the highest (current, dynamic) priority down, and the
+ * threads of one priority take turns: a thread queued to wait its turn
+ * goes after the others of its priority, ahead of those of lower priority.
+ * A thread's priority changes only while it runs or waits (a wake-up boost,
+ * its decay) or by a relink (the balance-set boost), so the order holds.
  * ----------------------------------------------------------------------- */
 
-static void rq_enqueue(RunQueue *rq, Thread *t)
+/* Link @t in before @c (NULL: at the tail) */
+static void rq_link(RunQueue *rq, Thread *t, Thread *c)
 {
     t->state = THREAD_READY;
+    t->ready_tick = tick_count;
     if (!rq->head) {
         t->next = t;
         t->prev = t;
         rq->head = t;
     } else {
-        /* Insert before head (at the tail of the circular list) */
-        Thread *tail = rq->head->prev;
-        tail->next     = t;
-        t->prev        = tail;
-        t->next        = rq->head;
-        rq->head->prev = t;
+        Thread *at = c ? c : rq->head;              /* (before the head: at the tail) */
+        t->next = at;
+        t->prev = at->prev;
+        at->prev->next = t;
+        at->prev = t;
+        if (c == rq->head) rq->head = t;
     }
     rq->count++;
 }
 
-/* A woken thread that should run now: first in the queue */
+static void rq_unlink(RunQueue *rq, Thread *t)
+{
+    if (t->next == t) {
+        rq->head = NULL;                            /* only one element */
+    } else {
+        t->prev->next = t->next;
+        t->next->prev = t->prev;
+        if (rq->head == t) rq->head = t->next;
+    }
+    t->next = t->prev = NULL;
+    rq->count--;
+}
+
+/* Where @t goes in the queue: the first thread it goes before (NULL: the
+ * tail).  AT_TAIL: after the threads of its priority; AT_FRONT: ahead of
+ * them; AFTER_WOKEN: after those of them queued first as woken. */
+enum { AT_TAIL, AT_FRONT, AFTER_WOKEN };
+static Thread *rq_place(RunQueue *rq, const Thread *t, int where)
+{
+    Thread *c = rq->head;
+    for (size_t n = 0; n < rq->count; n++, c = c->next) {
+        if (c->priority < t->priority) return c;
+        if (c->priority == t->priority && (where == AT_FRONT || (where == AFTER_WOKEN && !c->woken))) return c;
+    }
+    return NULL;
+}
+
+static void rq_enqueue(RunQueue *rq, Thread *t)
+{
+    rq_link(rq, t, rq_place(rq, t, AT_TAIL));
+}
+
+/* A woken thread that should run now: first among its priority */
 static void rq_enqueue_front(RunQueue *rq, Thread *t)
 {
-    rq_enqueue(rq, t);
-    rq->head = t;                                   /* (the circle's tail, now its head) */
+    rq_link(rq, t, rq_place(rq, t, AT_FRONT));
     t->woken = true;
 }
 
-/* A thread preempted for one woken by a timer (sched_unblock_timer): after
- * the woken threads queued first, but ahead of the threads waiting their
- * turn, as on NT, not last (else a waker its wakee preempts would wait out
- * every other thread's slice) */
+/* A thread preempted for one woken by a timer (sched_unblock_timer) or of
+ * higher priority: after the woken threads queued first, but ahead of the
+ * threads of its priority waiting their turn, as on NT, not last (else a
+ * waker its wakee preempts would wait out every other thread's slice) */
 static void rq_enqueue_preempted(RunQueue *rq, Thread *t)
 {
-    Thread *c = rq->head;
-    size_t n = 0;
-    while (n < rq->count && c->woken) { c = c->next; n++; }
     t->preempted = true;
-    if (!c || n == rq->count) {                     /* (none waiting their turn: last) */
-        rq_enqueue(rq, t);
-        return;
-    }
-    t->state = THREAD_READY;
-    t->next = c;                                    /* before c */
-    t->prev = c->prev;
-    c->prev->next = t;
-    c->prev = t;
-    if (c == rq->head) rq->head = t;
-    rq->count++;
+    rq_link(rq, t, rq_place(rq, t, AFTER_WOKEN));
 }
 
 /* A thread became runnable (not merely preempted or yielding): let a
@@ -162,6 +188,9 @@ static volatile bool g_resched[MAX_CPUS];
 /* The switch about to happen on a CPU is the one g_resched asked for, before
  * the running thread's slice ends (rq_enqueue_preempted) */
 static bool g_preempting[MAX_CPUS];
+/* The switch about to happen on a CPU ends the running thread's time slice
+ * (sched_tick), not a yield or a wait */
+static bool g_slice_end[MAX_CPUS];
 /* (The preempted thread also keeps the ticks of its slice it has used,
  * Thread.preempted: given a new slice at each preemption, one preempted
  * often would never reach the end of one, and the threads queued behind
@@ -171,25 +200,80 @@ static bool g_preempting[MAX_CPUS];
  * network); the idle threads and csrss run only when none of those is ready. */
 #define BACKGROUND_PRIO 4
 
+/* The next thread to run: the first in the queue (the highest priority) */
 static Thread *rq_dequeue(RunQueue *rq)
 {
-    if (!rq->head) return NULL;
     Thread *t = rq->head;
-    for (Thread *c = rq->head;;) {                  /* first foreground thread in turn */
-        if (c->priority > BACKGROUND_PRIO) { t = c; break; }
-        c = c->next;
-        if (c == rq->head) break;
-    }
-    if (t->next == t) {
-        rq->head = NULL;                            /* only one element */
-    } else {
-        t->prev->next = t->next;                    /* unlink t */
-        t->next->prev = t->prev;
-        if (rq->head == t) rq->head = t->next;
-    }
-    t->next = t->prev = NULL;
-    rq->count--;
+    if (t) rq_unlink(rq, t);
     return t;
+}
+
+/* -----------------------------------------------------------------------
+ * Priority boosts (NT's, Windows Internals ch. 4 "Priority boosts")
+ *
+ * A thread woken from a wait runs at its base priority plus the waker's
+ * increment (scheduler.h: +1 for an event, a semaphore, a mutex or an
+ * alert, +2 for a window message, +6 for keyboard and mouse input...), up
+ * to 15 and never for a real-time thread (16 and up); a boost never lowers
+ * a priority already higher.  So a woken thread runs ahead of the busy
+ * threads of its base priority, preempting the one on its CPU (wake_preempts),
+ * where before it waited behind each of them for up to a 20 ms slice.  The
+ * boost decays one level for each quantum (TICKS_PER_SLICE ticks) the
+ * thread runs while boosted, waits in between included (sched_tick), back
+ * to its base: a woken thread that turns busy soon takes turns with the
+ * others again.
+ *
+ * The balance set (NT's balance set manager): once a second, a thread that
+ * has been ready for STARVE_TICKS without running (higher-priority threads
+ * kept the processor) is raised to 15 for one quantum, then drops back to
+ * its base.  At most BALANCE_MAX threads a pass, as on NT.
+ * ----------------------------------------------------------------------- */
+#define STARVE_TICKS  300   /* 3 s */
+#define BALANCE_MAX   16
+
+/* (@t waiting, its queue locked) */
+static void boost(Thread *t, int incr)
+{
+    if (incr <= 0 || t->idle || t->base_priority >= PRIO_LOW_REALTIME) return;
+    int p = t->base_priority + incr;
+    if (p > PRIO_MAX_DYNAMIC) p = PRIO_MAX_DYNAMIC;
+    if (p <= t->priority) return;
+    t->priority = (uint8_t)p;
+    t->boost_ticks = 0;
+    t->balance_boost = false;
+}
+
+/* The tick's work (one CPU, interrupts off, no queue locked): boost the
+ * threads that have waited too long in a queue */
+static void balance_set(void)
+{
+    uint32_t done = 0;
+    for (uint32_t c = 0; c < g_cpu_count && done < BALANCE_MAX; c++) {
+        RunQueue *rq = &g_rq[c];
+        if (!__atomic_load_n(&rq->head, __ATOMIC_RELAXED) || !spin_trylock(&rq->lock)) continue;
+        Thread *starved[BALANCE_MAX];
+        uint32_t n = 0;
+        Thread *t = rq->head;
+        for (size_t i = 0; i < rq->count && done + n < BALANCE_MAX; i++, t = t->next)
+            if (t->priority < PRIO_MAX_DYNAMIC && tick_count - t->ready_tick >= STARVE_TICKS)
+                starved[n++] = t;
+        for (uint32_t i = 0; i < n; i++) {
+            t = starved[i];
+            rq_unlink(rq, t);
+            t->priority = PRIO_MAX_DYNAMIC;
+            t->boost_ticks = 0;
+            t->balance_boost = true;
+            rq_enqueue(rq, t);
+        }
+        done += n;
+        spin_unlock(&rq->lock);
+    }
+}
+
+/* A queued thread outranks @t (running here; the queue locked) */
+static bool rq_outranks(RunQueue *rq, const Thread *t)
+{
+    return rq->head && rq->head->priority > t->priority;
 }
 
 static void rq_drop_sleeper(RunQueue *rq, Thread *t)
@@ -465,6 +549,7 @@ Thread *sched_new_thread(const char *name, ThreadEntry entry,
     /* Fill in metadata */
     t->tid       = __atomic_fetch_add(&next_tid, 1, __ATOMIC_RELAXED);
     t->priority  = priority;
+    t->base_priority = priority;
     t->state     = THREAD_READY;
     t->bkl_depth = 1;            /* kernel threads hold the big kernel lock unless they let go */
 
@@ -490,7 +575,16 @@ static void switch_locked(RunQueue *rq)
     g_resched[kpcr->CpuNumber] = false;             /* (this switch is the one asked for) */
     bool preempted = g_preempting[kpcr->CpuNumber];
     g_preempting[kpcr->CpuNumber] = false;
-    Thread *next = rq_dequeue(rq);
+    bool slice_end = g_slice_end[kpcr->CpuNumber];
+    g_slice_end[kpcr->CpuNumber] = false;
+    /* A thread whose slice is over gives way to the next thread of its
+     * priority or a higher one, not to one of lower priority (boosted, it
+     * runs on, as on NT) — but still to a background one (csrss gets its
+     * turn, as it always did).  A yield gives way to any. */
+    Thread *top = rq->head;
+    bool keep = slice_end && prev->state == THREAD_RUNNING && !prev->idle && top &&
+                top->priority > BACKGROUND_PRIO && top->priority < prev->priority;
+    Thread *next = keep ? NULL : rq_dequeue(rq);
     /* Nothing queued here, and this CPU would go idle: take work waiting
      * on another CPU (a busy CPU doesn't: threads would bounce between
      * CPUs) */
@@ -671,6 +765,7 @@ static void hand_off_due(RunQueue *rq, uint32_t cpu, uint64_t tsc)
         t->sleep_next = NULL;
         t->in_sleepers = false;
         __atomic_store_n(&t->cpu, c, __ATOMIC_RELEASE);
+        boost(t, BOOST_TIMER);
         if (wake_preempts(t, true)) {
             rq_enqueue_front(to, t);
             if (!smp_kick(c)) {
@@ -736,6 +831,11 @@ void sched_tick(void)
              * wait timeout due on this CPU meanwhile.) */
             DesktopWatchdog(tick_count);
             UmTimerTick(tick_count);
+            static uint64_t last_balance;
+            if (tick_count - last_balance >= 100) {     /* once a second */
+                last_balance = tick_count;
+                balance_set();
+            }
         }
         spin_unlock(&tick_lock);
     }
@@ -745,9 +845,18 @@ void sched_tick(void)
     timer_arm(cpu, soonest < g_next_tick[cpu] ? soonest : g_next_tick[cpu]);
     if (!current_thread) return;
 
+    Thread *cur = current_thread;
+    bool decayed = false;
     if (tick) {
-        current_thread->ticks_total++;
-        current_thread->ticks_slice++;
+        cur->ticks_total++;
+        cur->ticks_slice++;
+        /* A boost decays a level per quantum run (see boost) */
+        if (cur->priority > cur->base_priority && !cur->idle && ++cur->boost_ticks >= TICKS_PER_SLICE) {
+            cur->boost_ticks = 0;
+            cur->priority = cur->balance_boost ? cur->base_priority : cur->priority - 1;
+            cur->balance_boost = false;
+            decayed = true;
+        }
     }
 
     /* An idle CPU looks for work waiting on the others at every tick */
@@ -760,8 +869,15 @@ void sched_tick(void)
      * for either keeps its place ahead of those waiting their turn
      * (rq_enqueue_preempted): sent to the back, it waited out their
      * slices, in the middle of starting a 1 ms wait of its own. */
-    bool slice_over = current_thread->ticks_slice >= TICKS_PER_SLICE;
+    bool slice_over = cur->ticks_slice >= TICKS_PER_SLICE;
+    /* Its boost decayed below a queued thread's priority: that one runs */
+    if (decayed && !slice_over) {
+        spin_lock(&rq->lock);
+        preempt |= rq_outranks(rq, cur);
+        spin_unlock(&rq->lock);
+    }
     if ((g_resched[cpu] || preempt) && !slice_over) g_preempting[cpu] = true;
+    g_slice_end[cpu] = slice_over;
     if (preempt || steal_now || g_resched[cpu] || slice_over)
         perform_switch();
 }
@@ -886,6 +1002,7 @@ static bool wake_sleepers(RunQueue *rq, uint64_t *soonest)
             t->sleep_next = NULL;
             t->in_sleepers = false;
             if (!due || t->state != THREAD_WAITING) continue;
+            if (t->wake_tsc) boost(t, BOOST_TIMER);
             if (t->wake_tsc && cur && t->priority >= cur->priority) {
                 rq_enqueue_front(rq, t);
                 preempt = true;
@@ -914,13 +1031,12 @@ void sched_block(void)
 }
 
 /* Whether @t, woken in its CPU's queue (locked), should preempt the thread
- * running there: one of higher priority does, and so does one of the same
- * priority woken by a timer (@timer: the timer it waits on was set or went
- * off), as when its own deadline wakes it (wake_sleepers).  Other wakes of
- * the same priority (an event set, a lock released) don't, and are queued
- * last as before: preempting there makes lock convoys (smpstress's
- * critical section shared by 8 threads took about 3 times as long).  An
- * idle CPU needs no preempting (smp_kick). */
+ * running there: one of higher priority does (a boosted one, usually: an
+ * event set, a message posted), and so does one of the same priority woken
+ * by a timer (@timer: the timer it waits on was set or went off), as when
+ * its own deadline wakes it (wake_sleepers).  Other wakes of the same
+ * priority (no boost: a kernel wait queue) don't, and are queued after the
+ * threads of their priority.  An idle CPU needs no preempting (smp_kick). */
 static bool wake_preempts(const Thread *t, bool timer)
 {
     PKPCR k = &g_kpcr[t->cpu];
@@ -929,11 +1045,12 @@ static bool wake_preempts(const Thread *t, bool timer)
     return t->priority > cur->priority || (timer && t->priority >= cur->priority);
 }
 
-static void unblock(Thread *t, bool timer)
+static void unblock(Thread *t, bool timer, int incr)
 {
     IrqState irq;
     RunQueue *rq = lock_thread_rq(t, &irq);
     if (t->state == THREAD_WAITING) {
+        boost(t, incr);
         if (wake_preempts(t, timer)) {
             /* First in its CPU's queue: a halted CPU takes it if there is
              * one, else its own CPU switches to it at the IPI */
@@ -951,8 +1068,9 @@ static void unblock(Thread *t, bool timer)
     spin_unlock_irqrestore(&rq->lock, irq);
 }
 
-void sched_unblock(Thread *t)       { unblock(t, false); }
-void sched_unblock_timer(Thread *t) { unblock(t, true); }
+void sched_unblock(Thread *t)                 { unblock(t, false, BOOST_NONE); }
+void sched_unblock_timer(Thread *t)           { unblock(t, true, BOOST_TIMER); }
+void sched_unblock_boost(Thread *t, int boost) { unblock(t, false, boost); }
 
 void sched_resched_ipi(void)
 {
@@ -1016,8 +1134,8 @@ void sched_dump(void)
         if (t) {
             kprintf("[SCHED] CPU %u ready queue (%zu):\n", c, rq->count);
             do {
-                kprintf("  TID=%lu '%s' state=%d prio=%u\n",
-                        t->tid, t->name, t->state, t->priority);
+                kprintf("  TID=%lu '%s' state=%d prio=%u base=%u\n",
+                        t->tid, t->name, t->state, t->priority, t->base_priority);
                 t = t->next;
             } while (t != rq->head);
         }

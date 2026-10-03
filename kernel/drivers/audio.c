@@ -284,7 +284,7 @@ static AudioOutput g_hda_out = { .position = hda_position };
 
 bool AudioInit(void)
 {
-    if (!sched_create_thread("audio", mixer_thread, NULL, 12)) {
+    if (!sched_create_thread("audio", mixer_thread, NULL, PRIO_LOW_REALTIME)) {   /* (above any boost) */
         kprintf("[AUDIO] Could not start the mixer\n");
         return false;
     }
