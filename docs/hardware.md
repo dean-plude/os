@@ -64,8 +64,8 @@ driver that runs the same device there.
 |---|---|---|---|---|
 | **Firmware** | UEFI, Secure Boot | — | supported | NovaOS boots from UEFI with Secure Boot off (21.2) |
 | **Display** | Intel Iris Xe (Raptor Lake-P), 14" 1920x1200 panel | `i915` | partial | the UEFI GOP framebuffer in the firmware's mode: one mode, no mode changes, no second monitor, no 3D on the GPU (3D runs on the CPU through llvmpipe and lavapipe) |
-| **Storage** | M.2 2280 NVMe SSD, PCIe 4.0 x4 | `nvme` | supported | NVMe driver by class 01.08.02 (Phase 18.3); install to it is step 21.5 |
-| **Ethernet** | Intel I219-V or I219-LM (vPro) | `e1000e` | supported | the I219 is the chipset's built-in MAC with its PHY on a separate bus; NovaOS's `e1000e` drives it since step 21.3 (PR #136), not yet run on the machine |
+| **Storage** | M.2 2280 NVMe SSD, PCIe 4.0 x4 | `nvme` | supported | NVMe driver by class 01.08.02 (Phase 18.3); the Terminal's `install` copies NovaOS to it and adds a firmware boot entry (step 21.5, [install-and-power.md](install-and-power.md)); the BIOS's Intel VMD option must be off or the disk is hidden (NovaOS logs it); install checked in QEMU only |
+| **Ethernet** | Intel I219-V or I219-LM (vPro) | `e1000e` | supported, unverified on hardware | the I219 is the chipset's built-in MAC with its PHY on a separate bus; NovaOS's `e1000e` drives it since step 21.3 (PR #136), tested only on QEMU's 82574L, not yet run on the machine |
 | **Wi-Fi + Bluetooth** | Intel AX211 or Qualcomm NFA725A | `iwlwifi` / `ath11k` | missing | not needed for Phase 21: the gate goes online over Ethernet |
 | **Audio** | Intel HD Audio controller (Raptor Lake-P, with an audio DSP), Realtek ALC3287 codec, two speakers, a headset jack, digital microphones | `snd_hda_intel` / `sof-audio-pci-intel-tgl` | partial | the HD Audio driver takes this controller with the DSP on (class 04.01) as well as off, plays through the speakers and the headphone jack, turns the speakers off while headphones are plugged in, and records from a headset's microphone (step 21.4); the digital microphones are reached only through the DSP and stay silent; checked on a modelled codec, not yet on the machine |
 | **USB** | Raptor Lake-P xHCI (USB-A ports), Thunderbolt 4 xHCI (USB-C ports) | `xhci_hcd` | supported | xHCI driver by class 0C.03.30, with hubs, HID, mass storage and audio (Phases 18.1, 18.2) |
@@ -73,10 +73,10 @@ driver that runs the same device there.
 | **Keyboard** | built-in keyboard on the i8042 controller | `atkbd` | supported | PS/2 keyboard driver |
 | **TrackPoint** | PS/2 pointing stick | `psmouse` | supported | PS/2 mouse driver; the three buttons above the touchpad are its buttons |
 | **Touchpad** | multi-touch, 61 x 115 mm, three buttons; in this generation an I2C-HID device on an Intel LPSS I2C controller (the boot log confirms it) | `i2c_hid_acpi` | partial | found through ACPI (PNP0C50), read over I2C-HID and switched to its touchpad mode, as Windows does: the pointer follows one finger, a tap is a left click and a two-finger tap a right click, pressing the pad clicks (right with two fingers on it), two fingers scroll up, down and sideways as mouse-wheel notches; a touchpad that refuses touchpad mode stays in mouse mode (pointer and clicks only); polled every 10 ms (no GPIO interrupt driver yet); checked on a modelled touchpad, not yet on the machine (step 21.4) |
-| **ACPI** | ACPI tables, embedded controller | `acpi` | supported | uACPI interprets the AML (Phases 18.6, 18.4): power button, S3, battery |
-| **Battery and AC** | 39.3 or 52.5 Wh, USB-C power | `acpi battery` | supported | `_BIF`/`_BIX`/`_BST` through uACPI; untested on the real tables (step 21.5) |
-| **Lid** | ACPI lid switch | `acpi button` | supported | lid device `PNP0C0D`, tested with a custom table in QEMU (Phase 18.6); sleeping on lid close is step 21.5 |
-| **Timers** | TSC with TSC-deadline, HPET (may be off in the firmware) | — | supported | TSC-deadline APIC timer, calibrated by the HPET or the 8254 PIT (Phase 18.7); if the firmware hides the HPET and gates the PIT, calibration needs the CPU's TSC frequency (CPUID 0x15) |
+| **ACPI** | ACPI tables, embedded controller | `acpi` | supported | uACPI interprets the AML (Phases 18.6, 18.4): power button, S3 where the firmware has it, else low-power S0 idle (the T14 Gen 4 has no S3), battery; the embedded controller (`ec.c`, step 21.5) that holds the lid, battery and AC events; checked on modelled tables, not yet on the machine |
+| **Battery and AC** | 39.3 or 52.5 Wh, USB-C power | `acpi battery` | supported | `_BIF`/`_BIX`/`_BST` through uACPI and the embedded controller; checked on a modelled controller in QEMU, untested on the real tables |
+| **Lid** | ACPI lid switch | `acpi button` | supported | lid device `PNP0C0D`, tested with a custom table in QEMU (Phase 18.6); closing it sleeps (step 21.5), which on the T14 is low-power S0 idle with the LPS0 calls, not S3; unverified on the machine |
+| **Timers** | TSC with TSC-deadline, HPET (may be off in the firmware) | — | supported | TSC-deadline APIC timer, calibrated by the HPET or the 8254 PIT (Phase 18.7); if the firmware hides the HPET and gates the PIT, calibration uses the CPU's TSC frequency from CPUID leaf 0x15 (0x16 when the crystal is not reported), added in step 21.5; QEMU does not expose that leaf, so this path is unverified |
 | **Serial console** | none on the machine; Intel AMT serial-over-LAN on vPro models (a PCI 16550 UART) | `8250_pci` | missing | not needed: NovaOS logs to COM1 at I/O port 0x3F8 only, which the machine lacks; started from a USB stick it writes its log into `EFI\NOVA\bootlog.txt` on the stick instead (step 21.2) |
 | **Camera** | 720p or 1080p+IR, USB | `uvcvideo` | missing | not needed for Phase 21 |
 | **Fingerprint reader** | in the power button, USB | `libfprint` | missing | not needed for Phase 21 |
@@ -93,12 +93,12 @@ the **Ethernet** and **audio** rows above, and the touchpad for 21.4:
 2. 21.3 (done, PR #136): the I219 Ethernet controller.
 3. 21.4 (done in QEMU): HD Audio on the DSP-class controller with the
    ALC257's speakers and headphone jack; the touchpad over I2C-HID.
-4. 21.5: install to the NVMe disk, S3, battery and lid on the real ACPI
-   tables.
+4. 21.5 (done in QEMU): install to the NVMe disk, sleep (low-power S0 idle
+   on the T14), battery and lid through the ACPI embedded controller.
 
-Steps 21.2 to 21.4 have only been checked in QEMU (QEMU has no I219, so
+Steps 21.2 to 21.5 have only been checked in QEMU (QEMU has no I219, so
 21.3's driver was tested on its 82574L); each needs a hand check on the
-machine.
+machine ([install-and-power.md](install-and-power.md#checks-on-the-t14) for 21.2, 21.3 and 21.5).
 
 ## Checking audio and the touchpad on the T14 (step 21.4)
 
@@ -177,4 +177,4 @@ For reference, every driver NovaOS has, by device:
 | Audio | Intel HD Audio (class 04.03, and Intel's class 04.01 controllers with the audio DSP on), with headphone-jack sensing; USB Audio 1.0 and 2.0 |
 | USB | xHCI, EHCI, OHCI, UHCI host controllers; hubs, HID keyboards, mice, tablets, touch screens and pens, mass storage, audio |
 | Input | PS/2 keyboard and mouse, I2C-HID precision touchpads (tap to click, two-finger scrolling) on Intel LPSS I2C controllers, virtio-input tablets, touch screens and pens |
-| Platform | ACPI through uACPI (power button, S3 and S5, batteries, AC, lid, thermal zones), HPET, TSC-deadline APIC timer, COM1 |
+| Platform | ACPI through uACPI (power button, S3 and S5, low-power S0 idle, batteries, AC, lid, thermal zones, embedded controller), HPET or CPUID-calibrated TSC-deadline APIC timer, COM1 |
