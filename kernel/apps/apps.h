@@ -125,6 +125,38 @@ GdiIcon *AppProgramIcon(const char *name);
 bool UiHit(GdiRect r, int x, int y);
 void UiButton(GdiRect r, const char *label, bool primary);
 
+/* A scroll bar for the built-in apps, with user32's parts and behaviour
+ * (userland/user32/scroll.c): two arrows, the trough and a thumb sized to
+ * the page.  The range and page are in the app's units (rows, pixels), as
+ * SetScrollInfo's are; pos is the first unit in view.  The app sets the
+ * range and draws it in on_paint, passes presses, moves and releases to
+ * UiScrollMouse and calls UiScrollTick from on_tick (held arrows and the
+ * held trough repeat). */
+#define UI_SB_W 17                        /* thickness (user32's SM_CXVSCROLL) */
+typedef struct {
+    int     max, page, pos;               /* units 0..max-1; page of them shown */
+    int     line;                         /* units an arrow click moves */
+    bool    vert;
+    GdiRect r;                            /* client-relative, as last drawn (w 0: not shown) */
+    int     held;                         /* the part held down (UI_SB_*), or UI_SB_NONE (0) */
+    int     grab;                         /* thumb drag: the pointer's offset in the thumb */
+    int     px, py;                       /* the pointer while held */
+    UINT64  next;                         /* the next repeat (scheduler ticks) */
+} UiScroll;
+enum { UI_SB_NONE, UI_SB_UP, UI_SB_PAGEUP, UI_SB_THUMB, UI_SB_PAGEDOWN, UI_SB_DOWN };
+
+/* The range: @max units, @page of them in view; pos is kept inside it */
+void UiScrollSet(UiScroll *s, int max, int page);
+bool UiScrollNeeded(const UiScroll *s);    /* more units than fit in a page */
+void UiScrollTo(UiScroll *s, int pos);     /* clamped to 0..max-page */
+/* Draw it at @r (client-relative) in client @c; an unneeded bar is not
+ * drawn and takes no input */
+void UiScrollDraw(UiScroll *s, GdiRect r, GdiRect c);
+/* A mouse event at client (x, y): true if the bar took it (a press on it,
+ * or a move or release while it is held) */
+bool UiScrollMouse(UiScroll *s, WmMouseMsg msg, int x, int y);
+bool UiScrollTick(UiScroll *s);            /* a held arrow or trough repeats: true if pos moved */
+
 /* Create an app window at the next cascade position (client-size given). */
 WND *AppCreateWindow(AppId id, const char *title, int client_w, int client_h,
                      GdiColor client_bg);

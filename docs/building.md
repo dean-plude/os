@@ -452,7 +452,12 @@ starts NetSurf on a page with an SVG image, an inline `<svg>` and a list a
 script builds: the test checks the SVGs' colours and sizes and the list
 items on the screen, clicks the page's box (a script changes it) and
 checks the page was redrawn with it changed (`nstest-before.png`,
-`nstest-after.png`), then closes NetSurf with Alt+F4.  The network suite (`tests/selftest/network4` and
+`nstest-after.png`), then closes NetSurf with Alt+F4.  Last, `explorer
+scroll bars` opens File Explorer on `C:\Windows\System32` (more files than
+fit) and checks, from the `[EXPLORER]` lines it logs when its view
+changes, that the list has a vertical scroll bar and that the wheel, Page
+Down, End, Home, a click on the bar's down arrow and one in its trough
+each scroll the list.  The network suite (`tests/selftest/network4` and
 `network6`) boots twice with a virtio-net
 card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 (Winsock over IPv4) and `httptest suite` (winhttp: HTTP/2 by ALPN, large

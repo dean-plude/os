@@ -536,6 +536,151 @@ void UiButton(GdiRect r, const char *label, bool primary)
                   primary ? GDI_BLACK : UI_TEXT);
 }
 
+/* Scroll bars: the geometry is user32's (userland/user32/scroll.c), the
+ * colours the dark theme's */
+#define SB_DELAY  35                      /* ticks before a held part repeats (350 ms) */
+#define SB_REPEAT 5                       /* and between repeats (50 ms) */
+
+typedef struct { int len, a, t0, t1, th0, th1; } SbGeo;   /* along the bar */
+
+static int sb_maxpos(const UiScroll *s) { int m = s->max - s->page; return m > 0 ? m : 0; }
+
+static SbGeo sb_geo(const UiScroll *s)
+{
+    SbGeo g;
+    int th = s->vert ? s->r.w : s->r.h;
+    g.len = s->vert ? s->r.h : s->r.w;
+    g.a = g.len < 2 * th ? g.len / 2 : th;
+    g.t0 = g.a; g.t1 = g.len - g.a;
+    g.th0 = g.th1 = 0;
+    int track = g.t1 - g.t0;
+    if (track < 8 || s->max <= 0) return g;
+    int tl = (int)((INT64)track * s->page / s->max);
+    if (tl < 16) tl = 16;
+    if (tl > track) tl = track;
+    int mp = sb_maxpos(s);
+    g.th0 = g.t0 + (mp ? (int)((INT64)(track - tl) * s->pos / mp) : 0);
+    g.th1 = g.th0 + tl;
+    return g;
+}
+
+static int sb_part(const UiScroll *s, int x, int y)
+{
+    if (!UiHit(s->r, x, y)) return UI_SB_NONE;
+    SbGeo g = sb_geo(s);
+    int p = s->vert ? y - s->r.y : x - s->r.x;
+    if (p < g.t0) return UI_SB_UP;
+    if (p >= g.t1) return UI_SB_DOWN;
+    if (g.th1 == g.th0) return p < g.len / 2 ? UI_SB_PAGEUP : UI_SB_PAGEDOWN;
+    return p < g.th0 ? UI_SB_PAGEUP : p < g.th1 ? UI_SB_THUMB : UI_SB_PAGEDOWN;
+}
+
+void UiScrollTo(UiScroll *s, int pos)
+{
+    int mp = sb_maxpos(s);
+    s->pos = pos < 0 ? 0 : pos > mp ? mp : pos;
+}
+
+void UiScrollSet(UiScroll *s, int max, int page)
+{
+    s->max = max < 0 ? 0 : max;
+    s->page = page < 1 ? 1 : page;
+    UiScrollTo(s, s->pos);
+}
+
+bool UiScrollNeeded(const UiScroll *s) { return s->max > s->page; }
+
+static void sb_step(UiScroll *s, int part)
+{
+    int line = s->line > 0 ? s->line : 1;
+    switch (part) {
+    case UI_SB_UP:       UiScrollTo(s, s->pos - line); break;
+    case UI_SB_DOWN:     UiScrollTo(s, s->pos + line); break;
+    case UI_SB_PAGEUP:   UiScrollTo(s, s->pos - s->page); break;
+    case UI_SB_PAGEDOWN: UiScrollTo(s, s->pos + s->page); break;
+    }
+}
+
+static void sb_arrow(GdiRect a, int dir, GdiColor col)   /* dir: 0 up, 1 down, 2 left, 3 right */
+{
+    int cx = a.x + a.w / 2, cy = a.y + a.h / 2;
+    GdiPoint p[3];
+    if (dir == 0)      { p[0] = GDI_PT(cx - 4, cy + 2); p[1] = GDI_PT(cx + 4, cy + 2); p[2] = GDI_PT(cx, cy - 2); }
+    else if (dir == 1) { p[0] = GDI_PT(cx - 4, cy - 2); p[1] = GDI_PT(cx + 4, cy - 2); p[2] = GDI_PT(cx, cy + 2); }
+    else if (dir == 2) { p[0] = GDI_PT(cx + 2, cy - 4); p[1] = GDI_PT(cx + 2, cy + 4); p[2] = GDI_PT(cx - 2, cy); }
+    else               { p[0] = GDI_PT(cx - 2, cy - 4); p[1] = GDI_PT(cx - 2, cy + 4); p[2] = GDI_PT(cx + 2, cy); }
+    GdiFillPolygon(p, 3, col);
+}
+
+void UiScrollDraw(UiScroll *s, GdiRect r, GdiRect c)
+{
+    if (!UiScrollNeeded(s)) { s->r = RECT(0, 0, 0, 0); s->held = UI_SB_NONE; return; }
+    s->r = r;
+    SbGeo g = sb_geo(s);
+    GdiRect sr = RECT(r.x + c.x, r.y + c.y, r.w, r.h);
+    GdiFillRect(sr, GDI_C(0x2C, 0x2C, 0x2C));
+    GdiRect a1, a2, th;
+    if (s->vert) {
+        a1 = RECT(sr.x, sr.y, sr.w, g.a);
+        a2 = RECT(sr.x, sr.y + g.len - g.a, sr.w, g.a);
+        th = RECT(sr.x + 4, sr.y + g.th0 + 1, sr.w - 8, g.th1 - g.th0 - 2);
+    } else {
+        a1 = RECT(sr.x, sr.y, g.a, sr.h);
+        a2 = RECT(sr.x + g.len - g.a, sr.y, g.a, sr.h);
+        th = RECT(sr.x + g.th0 + 1, sr.y + 4, g.th1 - g.th0 - 2, sr.h - 8);
+    }
+    if (s->held == UI_SB_UP)   GdiFillRect(a1, UI_HOVER);
+    if (s->held == UI_SB_DOWN) GdiFillRect(a2, UI_HOVER);
+    sb_arrow(a1, s->vert ? 0 : 2, s->held == UI_SB_UP ? UI_TEXT : s->pos > 0 ? UI_TEXT2 : UI_TEXT3);
+    sb_arrow(a2, s->vert ? 1 : 3, s->held == UI_SB_DOWN ? UI_TEXT : s->pos < sb_maxpos(s) ? UI_TEXT2 : UI_TEXT3);
+    if (g.th1 > g.th0)
+        GdiRoundRect(th, 4, s->held == UI_SB_THUMB ? GDI_C(0xA0, 0xA0, 0xA0) : GDI_C(0x6E, 0x6E, 0x6E), GDI_TRANSPARENT);
+}
+
+bool UiScrollMouse(UiScroll *s, WmMouseMsg msg, int x, int y)
+{
+    if (msg == WM_MOUSE_DOWN || msg == WM_MOUSE_DBLCLK) {   /* (quick clicks on an arrow are double clicks) */
+        if (!UiScrollNeeded(s) || !s->r.w) return false;
+        int part = sb_part(s, x, y);
+        if (part == UI_SB_NONE) return false;
+        s->held = part;
+        s->px = x; s->py = y;
+        if (part == UI_SB_THUMB) {
+            s->grab = (s->vert ? y - s->r.y : x - s->r.x) - sb_geo(s).th0;
+        } else {
+            sb_step(s, part);
+            s->next = sched_ticks() + SB_DELAY;
+        }
+        return true;
+    }
+    if (s->held == UI_SB_NONE) return false;
+    if (msg == WM_MOUSE_MOVE) {
+        s->px = x; s->py = y;
+        if (s->held == UI_SB_THUMB) {
+            SbGeo g = sb_geo(s);
+            int track = g.t1 - g.t0, tl = g.th1 - g.th0;
+            int p = (s->vert ? y - s->r.y : x - s->r.x) - s->grab - g.t0;
+            if (track > tl) UiScrollTo(s, (int)(((INT64)p * sb_maxpos(s) + (track - tl) / 2) / (track - tl)));
+        }
+        return true;
+    }
+    if (msg == WM_MOUSE_UP) {
+        s->held = UI_SB_NONE;
+        return true;
+    }
+    return false;
+}
+
+bool UiScrollTick(UiScroll *s)
+{
+    if (s->held == UI_SB_NONE || s->held == UI_SB_THUMB || sched_ticks() < s->next) return false;
+    s->next = sched_ticks() + SB_REPEAT;
+    if (sb_part(s, s->px, s->py) != s->held) return false;   /* (the pointer left it, or the thumb reached it) */
+    int was = s->pos;
+    sb_step(s, s->held);
+    return s->pos != was;
+}
+
 void AppFormatSize(UINT64 bytes, char *buf, int cap)
 {
     if (bytes < 1024) {
