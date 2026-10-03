@@ -26,5 +26,5 @@
   positions all work; the keyboard was unplugged and a new one added on
   another hub port, and the tablet unplugged and added on a third root
   port, with `device_del` / `device_add`.
-- Not yet: keyboard LEDs, multi-touch, more than one xHCI controller, and
-  the older UHCI/OHCI/EHCI controllers.
+- Not yet: multi-touch.  (Keyboard LEDs, more than one controller and the
+  older UHCI/OHCI/EHCI controllers: see "Older USB controllers".)

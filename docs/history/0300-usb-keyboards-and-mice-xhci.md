@@ -23,7 +23,7 @@
   usb-kbd -device usb-mouse`: Terminal commands typed and the pointer moved
   over USB alone, and a keyboard added and removed with `device_add` /
   `device_del` while running.
-- Not yet: USB hubs (devices must sit on a root port), absolute pointers
-  (`usb-tablet`, touch screens), HID report protocol (a keyboard's media
-  keys, a mouse's extra buttons), keyboard LEDs, more than one xHCI
-  controller, USB mass storage, and the older UHCI/OHCI/EHCI controllers.
+- Not yet: a keyboard's media keys and a mouse's extra buttons.  (Done
+  since: hubs, absolute pointers and report protocol in Phase 18.1, USB
+  mass storage in 18.2, and keyboard LEDs, several controllers and the
+  older UHCI/OHCI/EHCI controllers under "Older USB controllers".)

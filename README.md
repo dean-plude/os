@@ -104,9 +104,10 @@ every part, phase by phase.
   file ACLs, and other drives); Intel e1000/e1000e and virtio-net network
   cards; Intel High Definition Audio (playback and recording) with a kernel
   mixer;
-  PS/2 keyboards and mice; USB (xHCI) with hubs and HID keyboards, mice,
-  tablets and touch screens (report protocol) and USB sticks (FAT and NTFS,
-  as the next drive letter, hot-plugged); CMOS clock; a VBE display
+  PS/2 keyboards and mice; USB (xHCI, EHCI, OHCI and UHCI controllers, any
+  number of each) with hubs and HID keyboards (lock-key LEDs included),
+  mice, tablets and touch screens (report protocol) and USB sticks (FAT and
+  NTFS, as the next drive letter, hot-plugged); CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
   flipping, the mode set again after sleep and kept across restarts) and a
@@ -166,17 +167,15 @@ every part, phase by phase.
 
 Linux (Ubuntu/Debian) is the build host; on Windows use WSL2.
 
+Install the prerequisites, build the bootloader, the kernel with the whole
+userland inside, and `nova.img`, then run it in QEMU:
+
 ```bash
-# Prerequisites
 sudo apt install cmake nasm clang lld llvm python3 \
                  qemu-system-x86 ovmf mtools dosfstools xorriso
-
-# Build (bootloader, kernel with the whole userland inside, nova.img)
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
-
-# Run in QEMU
 cmake --build . --target run
 ```
 
@@ -203,8 +202,10 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
   -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,unit=1,file=/tmp/OVMF_VARS.fd \
   -drive file=disk.img,format=raw -cdrom nova.iso
-# after installing: the same command without -cdrom starts from disk.img
 ```
+
+After installing, the same command without `-cdrom nova.iso` starts from
+`disk.img`.
 
 Give the machine 2 GB so downloaded installers fit in drive C: (which lives
 in memory and is saved to disk).  On macOS with Homebrew QEMU, the firmware
@@ -346,7 +347,7 @@ os/
 │   ├── um/               # Windows programs: processes, threads, loader, NT services,
 │   │                     #   WoW64, pipes, registry, sockets, windows, consoles
 │   ├── fs/               # VFS, RAM disk (drive C:), FAT16/32, saving C:, Setup engine
-│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, virtio-net, xHCI USB core, hubs, HID, mass storage
+│   ├── drivers/          # AHCI (SATA), NVMe, e1000/e1000e, virtio-net, USB core, xHCI/EHCI/OHCI/UHCI, hubs, HID, mass storage
 │   ├── hal/              # Serial, framebuffer, display (VBE), PCI, PS/2, CMOS clock, HPET, I/O APIC, ACPI (uACPI host)
 │   ├── net/              # lwIP port, HTTP client, TLS (Mbed TLS)
 │   ├── gdi/              # Software renderer, fonts, ICO and PNG decoding

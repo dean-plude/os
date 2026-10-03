@@ -63,11 +63,16 @@ static const char g_keymap_shift[0x3A] = {
     'B','N','M','<','>','?', 0, '*', 0, ' ',
 };
 
-static bool g_lshift, g_rshift, g_ctrl, g_alt, g_caps;
+static bool g_lshift, g_rshift, g_ctrl, g_alt, g_caps, g_num, g_scroll;
 
 UINT32 InputModifiers(void)
 {
     return (g_lshift || g_rshift ? 1u : 0u) | (g_ctrl ? 2u : 0u) | (g_alt ? 4u : 0u) | (g_caps ? 8u : 0u);
+}
+
+UINT32 InputLockState(void)
+{
+    return (g_num ? 1u : 0u) | (g_caps ? 2u : 0u) | (g_scroll ? 4u : 0u);
 }
 
 bool InputTranslateKey(const InputEvent *ev, KeyEvent *out)
@@ -81,6 +86,8 @@ bool InputTranslateKey(const InputEvent *ev, KeyEvent *out)
         if (sc == KEY_LSHIFT) g_lshift = down;
         if (sc == KEY_RSHIFT) g_rshift = down;
         if (sc == KEY_CAPSLOCK && down) g_caps = !g_caps;
+        if (sc == KEY_NUMLOCK && down) g_num = !g_num;
+        if (sc == KEY_SCROLLLOCK && down) g_scroll = !g_scroll;
     }
     if (sc == KEY_CTRL) g_ctrl = down;       /* left or right */
     if (sc == KEY_ALT)  g_alt  = down;
