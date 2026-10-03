@@ -395,7 +395,10 @@ static void synth_put(void)
 /* -----------------------------------------------------------------------
  * midiOut
  * ----------------------------------------------------------------------- */
-static MidiOut *get_out(HANDLE h)
+/* Kept out of line: with -fasync-exceptions, clang 18's instruction selector
+ * never finishes a function that inlines this __try together with the
+ * synthesizer (midiOutClose, which also inlines tsf_close) */
+static __declspec(noinline) MidiOut *get_out(HANDLE h)
 {
     MidiOut *m = (MidiOut *)h;
     if (!m) return 0;
