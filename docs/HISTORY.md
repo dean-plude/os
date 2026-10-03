@@ -1783,7 +1783,8 @@ permissive covers either, so both are written here from the file formats
 - Not yet: NumPy still stops at the C99 complex functions (`cabs`,
   `cexp`...) the UCRT exports, and `AddDllDirectory` is a stub, so
   `os.add_dll_directory` paths are not searched.  `msvcp140.dll` (the C++
-  standard library) is not provided.
+  standard library) is not provided.  (All three since closed: see "The
+  C++ standard library, C99 complex math and DLL directories".)
 
 ## Complex text: HarfBuzz, FreeType and Uniscribe
 
@@ -2221,8 +2222,8 @@ keyboards, mice, hubs and sticks too.
   positions all work; the keyboard was unplugged and a new one added on
   another hub port, and the tablet unplugged and added on a third root
   port, with `device_del` / `device_add`.
-- Not yet: multi-touch.  (Keyboard LEDs, more than one controller and the
-  older UHCI/OHCI/EHCI controllers: see "Older USB controllers".)
+- Not yet: multi-touch (done since: see "Multi-touch").  (Keyboard LEDs,
+  more than one controller and the older UHCI/OHCI/EHCI controllers: see "Older USB controllers".)
 
 ## USB mass storage (Phase 18.2)
 
@@ -2678,6 +2679,30 @@ or MIT) for the dialogs' pictures.
 - Not yet: rollback, script custom actions, nested installs, patches
   (`.msp`) and transforms (`.mst`), advertised features, services at boot.
 
+## Test VMs under KVM in CI
+
+`tools/novarun.py` (and so `tools/selftest.py`) now passes `-accel kvm` when
+`/dev/kvm` is readable and writable and `-accel tcg` otherwise;
+`NOVARUN_ACCEL=tcg|kvm` forces one.  The CPU model and the SMP counts are
+unchanged.  GitHub's Linux runners have `/dev/kvm` once a udev rule opens it
+to the runner user (`KERNEL=="kvm", GROUP="kvm", MODE="0666"`).
+
+**CI stays on TCG.**  A trial with KVM on every VM job (PR #75) failed:
+
+- Core boot-test: the boot died with a #GP in `uacpi_gas_read_mapped` (from
+  `uacpi_setup_gpe_for_wake` in the ACPI thread's `add_wake`, with a
+  non-canonical pointer in RDI) while the other kernel threads were starting.
+- Network suite: `winsock IPv4`, `winhttp HTTP/2`, `looptest` and `winsock
+  IPv6` did not finish in 180 s (virtio-net, ping and `curl -6` passed).
+- Graphics job: passed once (test step 111 s against 193 s on TCG), then the
+  next run died at boot with no kernel output after the NIC probe.
+
+All pass under TCG, so the faster guest exposes a kernel race or timing
+assumption (the ACPI thread runs without the big kernel lock).  The jobs set
+`NOVARUN_ACCEL=tcg`; the tests are not loosened.  TCG reference times: core
+self-tests 228 s, network 63 s, graphics step 193 s.  Turn KVM on by deleting
+that line and adding the udev step once the boot is reliable.
+
 ## Run CI on merge queue groups
 
 GitHub's merge queue builds each queued pull request on a temporary
@@ -2688,6 +2713,75 @@ queued pull requests.  The job names are unchanged.  The generated-docs
 check stays pull-request only, since the pull request already passed it;
 the other jobs have no conditions that depend on a pull request, and the
 concurrency group falls back to the merge-group ref.
+
+## The C++ standard library, C99 complex math and DLL directories
+
+Three gaps the Python and Qt programs ran into, all closed.  Before
+writing anything we looked for permissively licensed code to reuse, and
+two of the three are existing open-source code shipped as OS components.
+
+- **`msvcp140.dll`, the C++ standard library, is Microsoft's own STL.**
+  Microsoft publishes the STL that Visual Studio ships
+  ([microsoft/STL](https://github.com/microsoft/STL), Apache-2.0 WITH
+  LLVM-exception, the licence family of LLVM's libc++).  It is the only
+  source whose classes have the layouts, names and exports MSVC-built
+  programs import, so NovaOS builds it rather than an imitation (Wine's
+  `msvcp` is LGPL).  `third_party/msstl` holds the `vs-2022-17.13`
+  release's headers and sources; `userland/msvcp140/build.py` compiles
+  them with clang in MSVC mode against MinGW-w64's headers, plus a few
+  shim headers for the VC runtime's private ones (`userland/msvcp140/inc`).
+  The DLL exports all 1515 names of Microsoft's current `msvcp140.dll`.
+  The satellites come from the same sources: `msvcp140_1` (`std::pmr`),
+  `msvcp140_atomic_wait` (atomic waits, parallel algorithms, `<syncstream>`,
+  the time-zone database over `icu.dll`) and `msvcp140_codecvt_ids`;
+  `msvcp140_2` (the special math functions) is not built yet, as it needs
+  Boost.Math.  Each module also gets its own `operator new`/`delete` and
+  start-up code (`start.cpp`, `new.cpp`), and the import library's static
+  part (`msvcprt_static.lib`: `std::filesystem`, `to_chars`, `std::format`,
+  `shared_mutex`...).  One clang difference needed care: under
+  `#pragma init_seg(compiler)`, clang files the initializers of exported
+  objects (`std::cerr`) apart from the static ones that use them, so the
+  build renames those sections and each source's initializers keep their
+  order.
+- **C99 complex math in `ucrtbase`/`msvcrt`**: musl's `src/complex` (MIT,
+  next to the musl libm already there): `cabs`, `carg`, `cexp`, `clog`,
+  `csqrt`, `cpow`, the trigonometric and hyperbolic functions, their `f`
+  and `l` forms, `creal`/`cimag`, plus the UCRT's own `_Cbuild`,
+  `_Cmulcc`, `_Cmulcr`, `norm` and their float and long double forms.
+  clang's `_Complex` passes and returns exactly as MSVC's `_Dcomplex`
+  and `_Fcomplex` structures do, so the functions take what MSVC-built
+  callers hand them.  `_cprintf`, `_cputs` and the UCRT's
+  `__conio_common_vcprintf` family write to the console.
+- **`AddDllDirectory`, `RemoveDllDirectory` and `SetDllDirectory` are
+  real.**  The loader searches the `SetDllDirectory` folder and then every
+  added folder after the importing module's own folder, for
+  `LoadLibrary` and for imports alike, so Python's
+  `os.add_dll_directory` (NumPy's `numpy.libs`) works.  The folders live
+  in the process (`kernel/um/um.c`, through `NtNovaLoadDll`).
+- **For KeePassXC**: a `d3d11.dll` of NovaOS's own (Qt's GUI library
+  imports it): without DXVK it answers `DXGI_ERROR_UNSUPPORTED`, as
+  Windows does with no Direct3D 11 device, and with the App Store's DXVK,
+  which now installs its `d3d11.dll` as `d3d11_dxvk.dll` (like its
+  `dxgi`), it passes the calls on.  New: `winscard.dll` (no smart card
+  service: `SCARD_E_NO_SERVICE`), `HidD_GetFeature`/`SetFeature`,
+  `GetCharABCWidthsI`, `UpdateLayeredWindowIndirect`,
+  `Shell_NotifyIconGetRect`, `WTSQuerySessionInformationW`,
+  `CheckRemoteDebuggerPresent`, `SetSearchPathMode`, `WSAHtonl` and
+  friends, and `CommandLineToArgvW` through the `shcore` API set.  32-bit
+  `vcruntime140` and `ucrtbase` now export `__std_terminate`, `_setjmp`,
+  `_except_handler3`, `_wcstoui64` and the like under their real names
+  (the linker had dropped a leading underscore).
+- **Tests**: `stltest` (28 checks: strings, containers, streams, locales,
+  exceptions, threads, `std::async`, atomic waits, `pmr`,
+  `std::filesystem`, `std::format`, `std::regex`) and `rttest` (30:
+  complex math, conio, DLL directories) pass 64- and 32-bit and run in the
+  CI core suite.  Python 3.14 with the NumPy 2.5.3 wheel, on NovaOS's own
+  runtime DLLs, imports NumPy and prints the same complex `exp`, `sqrt`,
+  `log`, `sin`, `tanh`, `power`, `linalg.inv`, `fft` and `eigvals` results
+  as NumPy on Linux.  KeePassXC 2.7.11 starts and shows its main window
+  and first-run dialog.
+- Not yet: Qt's widgets draw their shapes and icons in KeePassXC but not
+  their text; `msvcp140_2.dll`.
 
 ## Faster CI: ccache and docs-only pull requests
 
@@ -2709,6 +2803,21 @@ libm) one at a time through `tools/build_userland.py`.
 Next candidates, each its own change: compiling in parallel inside
 `tools/build_userland.py` (the cached build is now mostly its serial
 work), and running the test VMs with KVM, which the runners offer.
+
+## FileInternalInformation on a non-file handle
+
+The "App corpus" check failed on pull requests (and would have failed
+nightly): the first real ripgrep search died with a kernel page fault in
+`RamfsFileId`, called from `UmSyscall` with a null node (CR2 0x170).
+ripgrep asks `NtQueryInformationFile` for `FileInternalInformation` on its
+standard handles, and for a console or pipe handle there is no `RamNode`, so
+the dereference of `h->node` faulted and halted the VM; every later program
+in the run then reported as not run (0 of 14).
+
+`FileInternalInformation` now returns the node pointer as the file ID only
+for file and directory handles and 0 for others, as `FileStatInformation`
+already did.  No corpus entry was changed or removed, and the three required
+check names are unchanged.
 
 ## Firefox's delay-loaded DLLs and DirectWrite fallback
 
@@ -2755,6 +2864,40 @@ they are NovaOS's own.
   needs `Bcp47Langs`, `CoreMessaging` and `dcomp`.  It is Windows App SDK
   code Floorp runs without.
 
+## Firefox over HTTPS: getpeername and shutdown (Phase 16.4)
+
+With `http://` pages loading, every `https://` page stayed blank.  The
+server saw a TCP connection close without a TLS ClientHello.  Firefox's
+network log showed the first write failing with
+`PR_ADDRESS_NOT_SUPPORTED_ERROR`: before it starts a handshake, NSS asks
+the socket for its peer (`getpeername`) and accepts only an IPv4 or IPv6
+address.  NovaOS filled in a socket's peer only when a *blocking*
+`connect` returned, so after Firefox's non-blocking connect the peer came
+back empty.
+
+Once handshakes ran, the kernel crashed in lwIP's pool allocator a few
+minutes in.  Firefox ends its TLS connections with
+`shutdown(SD_BOTH)`, which NovaOS passed to lwIP as "close": lwIP then
+frees the connection's control block on its own (at once when unread data
+forces a reset, or when the connection ends, with no callback once the
+receive side is shut), while the socket still pointed at it, and the
+later `closesocket` freed it a second time.
+
+- The kernel's TCP layer (`kernel/net/sock.c`) records the peer when the
+  connection is made, so `getpeername` answers after a blocking or a
+  non-blocking `connect` alike.
+- `shutdown` shuts the receive side in NovaOS's own socket (unread and
+  later data is dropped, `recv` returns 0) and only sends lwIP the FIN;
+  lwIP reports the connection's end through the error callback
+  (`ERR_CLSD`, now an orderly close rather than a reset), which clears the
+  socket's pointer.
+- `looptest` (network suite) checks `getpeername` after a non-blocking
+  connect over 127.0.0.1 and ::1, and three rounds of
+  `shutdown(SD_BOTH)` with unread data followed by the peer closing.
+- With these, Floorp completes TLS handshakes (a self-signed test server
+  gets its certificate warning page), and typing into a form field and
+  scrolling a long page work.
+
 ## Firefox loads pages: wsock32.dll (Phase 16.4)
 
 Floorp showed a blank page for every URL and no request ever left the
@@ -2781,6 +2924,61 @@ failure, and every socket was closed before use.
   non-blocking the way NSPR does, and checks the inherited mode.
 - With it, Floorp fetches and renders `http://` pages served to QEMU's
   guest network.
+
+## GTK programs: Inkscape
+
+Phase 20.4 starts with Inkscape 0.91, unmodified: the GTK 2 build in
+conda-forge's win-64 channel (a MinGW build carrying its own GTK 2,
+cairo, pango and about 70 DLLs).  Inkscape 1.x is a GTK 3 program whose
+downloads (inkscape.org, MSYS2's mirrors, GitLab's artifacts) are not
+reachable from CI, so it is not tested yet.  Inkscape now starts with a
+new document and shows its menus, tool bars, toolbox, rulers, canvas,
+palette and status bar.  What was missing:
+
+- **More DLLs per process.**  The loader stopped at 64 modules ("too many
+  DLLs"); a GTK program brings about 70.  The limit is 128 now, and the
+  loader information page ntdll reads (`NOVA_LDR_INFO`) grew to six
+  pages, moving the process parameters and stubs after it.  GTK loads its
+  pixbuf loaders and theme engine by relative paths with forward slashes
+  (`lib/gdk-pixbuf-2.0/2.10.0/loaders/...`), which the loader now takes as
+  paths.
+- **Regions with more than one rectangle.**  gdi32 kept every region as
+  its bounding box.  GDK 2 draws client-side child windows and clips
+  each toplevel paint to the window minus its children, so the bounding
+  box let the toplevel's background erase the canvas.  Regions
+  (`userland/gdi32/region.c`) now keep their rectangles: `CombineRgn`
+  with all five modes, `ExtCreateRegion`, `GetRegionData`, `PtInRegion`,
+  `RectInRegion`, `EqualRgn`, `OffsetRgn`, `FillRgn` and `PaintRgn`; a
+  DC's clip keeps up to 128 rectangles (beyond that, their bounding box),
+  and fills and blits draw piece by piece.
+- **Text under a world transform.**  cairo's win32 backend creates its
+  fonts 32 times too large and draws them through a `GM_ADVANCED` world
+  transform of 1/32, asking `GetGlyphOutline` for metrics in device
+  space.  `ExtTextOut` (positions, the clip rectangle and the `lpDx`
+  advances) and `GetGlyphOutline` now apply a scale-and-translate
+  transform, so the text is the right size and spacing instead of blank
+  or spread out.
+- **`StretchDIBits` with negative extents.**  cairo uploads image surfaces
+  with both heights negative and a source y counted from the bottom of
+  the image, top-down images included, as Windows does.  gdi32 took the
+  source y from the top and lost a row of each band; it now follows
+  Windows (an extent of -h from y covers y-h+1..y, and the image is
+  mirrored only when the destination and source signs differ).
+- **Smaller pieces**: `mscms.dll` (`GetColorDirectory` and an empty
+  `EnumColorProfiles`), `Arc`/`Pie`/`Chord`, `CreateBitmapIndirect`,
+  `MaskBlt`, `GetNearestPaletteIndex`, `ResetDC`, failing enhanced-metafile
+  calls, `SetCriticalSectionSpinCount` (Inkscape's GLib crashed on its
+  stub), `GetCPInfoExA`, `Module32First/Next`, `GetCurrentHwProfileA`,
+  `AssocQueryKeyW`, `ExtractIconExA`, `SHAppBarMessage`, and msvcrt's
+  `swscanf`/`vswscanf` exports, `_splitpath`, `_wsplitpath` and
+  `__lconv_init`.
+- **Tests**: Inkscape in the nightly corpus (`tests/appcorpus/880-inkscape.py`):
+  its new-document window's screenshot must match
+  `tests/reference/inkscape.png`.
+
+Still open: GDK's monochrome cursors (`CreateDIBSection` takes only 24-
+and 32-bit DIBs, so GTK falls back to the default pointer), the hicolor
+icon theme warning, and no Wintab tablets.
 
 ## Locale formatting and the user locale
 
@@ -2878,6 +3076,43 @@ buttons and tilting (horizontal) wheels now work, on USB and on PS/2.
   through the same parser and report handling and compares the events
   they make.
 
+## Multi-touch
+
+Touch screens with more than one finger now work, and programs get them
+the way Windows hands them out: `WM_TOUCH` or `WM_POINTER*`.
+
+- **USB digitizers** (`usbhid.c`): a report descriptor with Digitizer
+  page finger collections (Tip Switch, Contact Identifier, X and Y), and
+  usually a Contact Count, is a multi-touch screen ("multi-touch screen"
+  in the log).  Reports are read in hybrid mode too, where a frame's
+  contacts come spread over several reports and the first carries the
+  count.  Contacts that stop being reported are lifted, and unplugging the
+  screen lifts them all.  `usbcheck` runs canned descriptors through it.
+- **virtio multi-touch** (`virtio_input.c`, new): the virtio input device
+  (`virtio-multitouch-pci` in QEMU) speaks the Linux evdev multi-touch
+  protocol B (slots, tracking ids, `ABS_MT_POSITION_X`/`Y`); its axis
+  ranges come from the device's config space and it is set up again after
+  S3.
+- **The desktop** (`desktop.c`): a frame of contacts goes to the program
+  window under the first contact; anywhere else (the shell, the taskbar,
+  built-in apps) the primary contact acts as an absolute mouse.
+- **Programs** (`user32` `pointer.c`): a window that called
+  `RegisterTouchWindow` gets `WM_TOUCH` with `GetTouchInputInfo`
+  (hundredths of a pixel, `TOUCHEVENTF_DOWN`/`MOVE`/`UP`/`PRIMARY`);
+  others get `WM_POINTERDOWN`/`UPDATE`/`UP` with `GetPointerInfo`,
+  `GetPointerType` (`PT_TOUCH`), `GetPointerTouchInfo` and the frame
+  functions, and `DefWindowProc` promotes the primary contact to
+  `WM_LBUTTONDOWN`/`MOUSEMOVE`/`UP`, as on Windows.
+  `GetSystemMetrics(SM_DIGITIZER)` and `SM_MAXIMUMTOUCHES` report the
+  screen.
+- **Tests**: a new `devices` self-test suite boots with a virtio
+  multi-touch screen; `touchtest` puts two fingers down on a
+  `RegisterTouchWindow` window, moves and lifts them, then taps a window
+  that uses pointers, and checks what both get.
+- Not yet: gestures (`WM_GESTURE`), pens, the Input Mode feature report
+  some USB screens need before they leave mouse mode, and
+  `GetMessageExtraInfo`'s touch signature on promoted mouse messages.
+
 ## More than one monitor
 
 - **Each further display adapter is another monitor.**  Besides the boot
@@ -2962,6 +3197,212 @@ Windows; `ln` in the MSYS2 shell and Git's object store use it.
   `scripts/check-ntfs-disk.sh` (ntfsfix, ntfssecaudit and
   `ntfs-check.py`, which checks link counts against names) pass.
 
+## Phase 20: common dialogs and portable programs
+
+Phase 20.1 and 20.2 of the roadmap: the common file dialogs, and three of
+the App Store's "untested" portable programs (SumatraPDF, WinMerge, PuTTY)
+opening a file or a connection and running in the nightly corpus.
+
+- **Common file dialogs** (`userland/comdlg32/filedlg.c`, `ifiledlg.c`):
+  `GetOpenFileName` and `GetSaveFileName` show a real Open / Save As
+  dialog: the folder path with an Up button, the folder's contents in a
+  list view (folders first, then the files the chosen filter matches, with
+  the shell's icons, sizes, types and dates; the drives at the top), the
+  file name and the file types.  Double-click or Enter opens a folder or
+  picks a file, typing a path goes there, typing a wildcard filters the
+  list; Open checks that the file exists, Save As asks before replacing
+  one and adds the filter's or the default extension; multi-select and
+  folder picking work.  The Vista-style COM dialogs (`CLSID_FileOpenDialog`,
+  `CLSID_FileSaveDialog`: `IFileOpenDialog`, `IFileSaveDialog`,
+  `IFileDialogEvents`, `IFileDialogCustomize`) sit on the same dialog and
+  hand the choice back as shell items, so shell32 gained
+  `IShellItem`/`IShellItemArray` (`SHCreateItemFromParsingName`,
+  `SHCreateShellItemArray`...).  user32: a key released after a modal
+  dialog opened reaches the dialog, and Alt opens the menu bar only when
+  pressed alone.  `dlgtest` covers the objects' settings and has
+  interactive modes for each dialog; Notepad++ and 7-Zip open and save
+  through them.
+- **GDI+** (`userland/gdiplus/`, new): the flat `Gdip*` API that the C++
+  wrapper classes compile down to, drawn with
+  [plutovg](https://github.com/sammycage/plutovg) (`third_party/plutovg`,
+  MIT, with FreeType-licensed rasteriser and stroker files): graphics on a
+  bitmap, a window or any DC (reading the affected part of the DC into a
+  DIB and copying it back, so the DC's clipping holds), world transforms,
+  clipping, solid, hatch, texture and gradient brushes, pens with dashes
+  and caps, lines, Béziers, arcs, pies, polygons, paths kept as GDI+ keeps
+  them (points and types, so `GetPathData`, markers and iterators see what
+  programs expect), regions, matrices; bitmaps loaded from PNG, JPEG, BMP
+  and GIF files or streams and saved as PNG, JPEG or BMP, converted to and
+  from HBITMAPs and HICONs, `LockBits` in every common pixel format;
+  fonts, families and string formats mapped onto the faces NovaOS ships
+  the way gdi32 maps them, with `DrawString`/`MeasureString` laid out in
+  GDI+'s way (wrapping, hotkey prefixes, tabs, alignment, trimming, the
+  generic default's em/6 padding), `MeasureCharacterRanges` and driver
+  strings.
+- **New DLLs**: `winspool.drv` (the spooler's client calls on a machine
+  without printers: an empty printer list, no default printer, so print
+  menus load and printing reports no printer), `oleacc.dll` (Active
+  Accessibility with no client to serve: `LresultFromObject` answers 0),
+  and DDE in user32 (`DdeInitialize`, string handles, `DdeConnect` finds
+  no server, the `WM_DDE_*` lParam packing), which SumatraPDF uses to look
+  for a running copy before opening its own window.
+- **MDI** (`userland/user32/mdi.c`): the `MDIClient` class with
+  `WM_MDICREATE`, `DESTROY`, `ACTIVATE`, `NEXT`, `GETACTIVE`, `SETMENU`,
+  `REFRESHMENU`, `MAXIMIZE`, `RESTORE`, `TILE` and `CASCADE`,
+  `DefFrameProc`, `DefMDIChildProc`, `CreateMDIWindow` and
+  `TranslateMDISysAccel` (Ctrl+F4, Ctrl+F6, Ctrl+Tab).  Children fill the
+  client window, as a maximized child does.  WinMerge is an MFC MDI
+  application and needs all of it.
+- **user32 and gdi32 for MFC**: `WH_CBT` hooks called for window creation
+  and destruction (MFC subclasses every window it creates from
+  `HCBT_CREATEWND`; without the hook its frame window had no `CWnd` and was
+  deleted); class names up to 255 characters (MFC's generated names such
+  as `Afx:0000000140000000:b:...` were cut and not found);
+  `GetClassInfo` copies its fields one by one (a `memcpy` from the wrong
+  offset lost the window procedure on x64); `WM_SIZE` and `WM_MOVE` reach
+  an overlapped window when it is first shown, as on Windows, not during
+  `CreateWindow` (PuTTY's handler dereferences the terminal it creates
+  after the window); `ToUnicode` with `KF_UP` in the scan code types
+  nothing (PuTTY translates key-ups too and typed every character twice);
+  framed windows' client areas are clamped to their bitmap, so a program's
+  own caption (SumatraPDF) sits under the desktop's title bar instead of
+  starting a repaint loop; `WS_CLIPCHILDREN` windows keep their children's
+  pixels across a parent repaint.  gdi32: 24-bit `CreateDIBSection` gives
+  the program 24-bit rows of its own (in its section when it passed one)
+  synced with the 32-bit pixels gdi32 draws on, and `LoadImage` with
+  `LR_CREATEDIBSECTION` keeps a 24-bit resource as such a section, in the
+  resource's row order (WinMerge reads its toolbar strips back through
+  `GetObject` and converts them itself; it got 32-bit zeros and drew black
+  squares); mapping modes, world transforms (identity), palettes,
+  `TranslateCharsetInfo`, `GetCharABCWidthsFloat`.  comctl32: `TBBUTTON`'s
+  reserved bytes are 2 on x86 (the 64-bit layout broke every 32-bit
+  toolbar), separators take their width from `TBBUTTON.iBitmap`,
+  `TB_GETMETRICS`/`TB_SETMETRICS`.
+- **Bootloader**: the identity map covers the first 64 GiB (1 GiB pages
+  above 4 GiB), not only 4 GiB: with more than 4 GiB of RAM the firmware
+  loads the bootloader near the top of memory and it page-faulted on its
+  own code the moment it switched to its page tables (the nightly corpus
+  boots with 4 GiB).
+- **Loader**: a relative DLL path (`Merge7z\Merge7z.dll`) is searched from
+  the program's folder, then the current one, and gets `.dll` when it has
+  no extension; `ole32` logs a `CoCreateInstance` of an unregistered class.
+- **Winsock** (`userland/ws2_32/wsa.c`): `WSAAsyncSelect`, the window
+  message form of `WSAEventSelect` (one message per event, `FD_CONNECT`,
+  `FD_ACCEPT`, `FD_READ`, `FD_WRITE`, `FD_CLOSE`; an event is reported
+  once and re-enabled by the call that consumes it: `recv`, a `send` that
+  would block, `accept`), which PuTTY drives all its networking with;
+  `recv` with `MSG_PEEK` and `ioctlsocket(FIONREAD)` through a kernel
+  peek (`NetSockPeek`) instead of consuming a byte; `FD_CONNECT` and
+  `FD_WRITE` both reported on a socket that asked for both.
+- **Programs**: SumatraPDF 3.4.6 (32-bit) opens a PDF and renders it with
+  its toolbar, tabs and menus; WinMerge 2.16.50 compares two files side by
+  side with the differences highlighted; PuTTY 0.81 makes a raw connection
+  to a host, shows what the server sends and sends what is typed.  All
+  three are in the nightly corpus (`tools/appcorpus.py`), which now runs
+  the windowed programs one at a time (each takes the keyboard, Alt+F4
+  closes it) and compares each screenshot with `tests/reference/NAME.png`:
+  SumatraPDF on a PDF the script generates, WinMerge on two text files,
+  PuTTY on a connection to an echo server the script runs on the host
+  (10.0.2.2 on QEMU's user network; the typed line must reach it).
+  SumatraPDF's official 32-bit build is taken from the npm package
+  `pdf-to-printer` and PuTTY is built from its source release with MinGW,
+  because neither project's download site is reachable from every
+  network; the build is kept in the corpus cache.
+- Not yet: SumatraPDF draws its own caption under the desktop's title bar
+  (two title bars); printing (`winspool` has no printers); PuTTY's SSH is
+  untested (no SSH server in the test network); WinMerge's folder compare
+  and plugins (`icu.dll`, `mlang.dll`) are untried; `IFileDialogCustomize`
+  adds no controls.
+
+## Qt programs: KeePassXC
+
+Phase 20.3 starts with KeePassXC 2.7.12 (the portable Qt 5 zip from its
+GitHub releases), unmodified.  With `msvcp140.dll` in place it already
+opened its window, but every widget's text was blank, and opening a
+database ended the program.  It now opens and unlocks a password
+database and shows its groups, entries and the selected entry's details.
+What was missing:
+
+- **`GetGlyphOutline`** was a stub returning `GDI_ERROR`.  Qt's GDI font
+  engine measures each glyph with it (`GGO_METRICS | GGO_GLYPH_INDEX`) and
+  draws text from the coverage bitmaps it returns, so without it Qt drew
+  nothing.  It now gives the metrics of gdi32's cached glyphs, their
+  coverage as `GGO_BITMAP` and `GGO_GRAY2/4/8_BITMAP` (rows padded to
+  four bytes), and their outlines as `GGO_NATIVE` (one `TTPOLYGONHEADER`
+  per contour, quadratic `TT_PRIM_QSPLINE` segments in 16.16 pixels,
+  straight from stb_truetype's shapes), which `wglUseFontOutlines` can use
+  too.  The transform argument is taken as the identity.
+- **`SetSecurityInfo` on `GetCurrentProcess()`**: KeePassXC replaces its
+  own process's DACL so other programs cannot read its memory, and printed
+  "Unable to disable core dumps" because `NtSetSecurityObject` did not
+  know the pseudo-handles.  The current process and thread pseudo-handles
+  are valid there now (their descriptors are not kept yet, as for other
+  process handles).
+- **HSTRINGs in Windows' layout.**  C++/WinRT does not call
+  `WindowsCreateString`: it builds HSTRINGs itself, in the layout Windows
+  uses internally (flags, length, two padding words, the character
+  pointer; heap strings carry their reference count after that, from the
+  process heap), and passes them to combase.  NovaOS's HSTRING kept the
+  pointer at offset 8, so `RoGetActivationFactory` read a null class name
+  and crashed.  `userland/ole32/winrt.c` now uses that same layout.
+- **`Windows.Security.Credentials.KeyCredentialManager`** (Windows Hello)
+  activates (`userland/ole32/winrt_classes.c`, the first runtime class
+  NovaOS answers for).  KeePassXC asks `IsSupportedAsync` from a PPL task
+  when it starts; a failed activation there is an exception no one
+  observes, which ends the program.  The operation completes at once with
+  `false`, so quick unlock is simply not offered.  `RoOriginateLanguageException`
+  exists (C++/WinRT reports errors through it before throwing).
+- **Tests**: `qttest` (14 checks: glyph metrics by character and by glyph
+  index, gray bitmaps, outlines, C++/WinRT-style reference and heap
+  HSTRINGs, Windows Hello activation and its completed operation, the
+  process DACL), and KeePassXC in the nightly corpus
+  (`tests/appcorpus/870-keepassxc.py`): it starts on a small KDBX 4
+  database the corpus writes beside it (master password `novaos`), the
+  password is typed into its unlock screen, and the unlocked database's
+  screenshot must match `tests/reference/keepassxc.png`.
+
+Next in Phase 20.3: Krita.
+
+## System pointers (I-beam, busy, resize arrows, hand...) and SetSystemCursor
+
+The system cursors were all the arrow, `SetSystemCursor` did nothing and a
+program's pointer was scaled up by nearest neighbour at 200 %.  Now:
+
+- **Every `IDC_*` pointer has its own shape** (`kernel/gdi/syscursor.c`):
+  arrow, I-beam, busy (a turning ring), "working in background" (the arrow
+  and a small ring), cross, up arrow, the four resize arrows, move, "no",
+  hand and help.  No permissively licensed cursor set has the whole Windows
+  set (X.org's MIT "whiteglass" lacks the diagonal resize arrows and the
+  "no" sign; Breeze, Bibata, DMZ and Phinger are GPL or CC-BY-SA), so they
+  are outlines drawn the way the desktop's arrow already was: unions of
+  polygons, discs, rings and ring arcs with an anti-aliased outline and
+  fill, rendered at the display's device resolution, so they are sharp at
+  200 %.  The kernel renders a shape once per scale and busy-ring phase.
+- **The desktop shows resize arrows** over a window's resize edges and
+  corners and while one is being dragged.
+- **user32**: `LoadCursor(NULL, IDC_*)` gives real 32 x 32 cursors (with a
+  64 x 64 image) that `DrawIconEx` and `GetIconInfo` see; `SetCursor` of
+  one asks the kernel to draw that system shape (`NtNovaGuiCtl` op 19,
+  arg 3).  `DefWindowProc`'s `WM_SETCURSOR` sets the resize arrows for
+  `HTLEFT`, `HTTOPRIGHT` and the other edge codes, for programs that draw
+  their own frame, and the arrow for other non-client parts.
+- **`SetSystemCursor`** replaces a system pointer for every program and
+  destroys the cursor it is given, as on Windows (op 27);
+  `SystemParametersInfo(SPI_SETCURSORS)` puts NovaOS's own back.  Op 28
+  hands user32 the kernel's drawing of a system pointer.
+- **Program cursors at 200 %**: a program's cursor is sent at the
+  display's scale (op 19, arg 4: device pixels): the 64 x 64 image of a
+  cursor that has one, otherwise its 32 x 32 image smoothed up rather than
+  doubled pixel by pixel.
+- **`cursortest.exe`** (in the core self-tests) checks each `IDC_*` image
+  and hot spot, that the desktop draws each pointer over a window and turns
+  the busy ring, `SetSystemCursor` and `SPI_SETCURSORS`, and the size a
+  program's cursor reaches the desktop at.  `anitest` now expects its
+  spinner at the display's scale.
+- Not yet: `CopyIcon` of an animated cursor keeps only its first frame;
+  `SetSystemCursor` replacements last until restart (they are not saved
+  in the registry).
+
 ## Waitable timers on the TSC
 
 Phase 18.7 made `Sleep` and wait timeouts end when they are due; waitable
@@ -2997,9 +3438,61 @@ timers still fired on the 10 ms tick.  They now end on the TSC too.
   already waits on it can be late by up to a 20 ms time slice when every
   CPU is busy: a thread woken that way waits for the running thread's
   slice (the scheduler gives woken threads no boost).  `sleeptest timer`
-  reports the timer queue case without judging it.  `NtSetTimer`'s own APC
+  reports the timer queue case without judging it.  (Fixed the same day,
+  see "Timer wake-ups preempt the running thread": the timer queue case
+  is judged now.)  `NtSetTimer`'s own APC
   routine (native callers) is still ignored, and `NtSetTimerEx` is not
   implemented.
+
+## Timer wake-ups preempt the running thread
+
+A thread already waiting on a waitable timer when another thread set the
+timer (a timer queue's worker, say) used to wait for the running thread's
+20 ms time slice to end before it could look at the new due time, when
+every CPU was busy.  Now it runs at once, as a thread woken by its own
+deadline already did.
+
+- **The scheduler** (`kernel/ke/scheduler.c`): a thread woken from a wait
+  preempts the running thread when it has a higher priority, or the same
+  priority and a timer woke it (`sched_unblock_timer`, which `um_ob_wake`
+  uses for a timer object's waiters).  It goes first in its CPU's run
+  queue; a halted CPU takes it if there is one, otherwise the waker sends
+  the thread's CPU `IPI_WAKE` (itself too, taken once it re-enables
+  interrupts) with a reschedule flag, and that CPU switches in the
+  interrupt.  A CPU halted waiting for the kernel lock doesn't switch in
+  the middle of that wait; its next timer tick does.
+- **A CPU waiting for the kernel lock** wakes none of its sleepers, so a
+  thread due on it waited as long as the lock's holder kept the lock.
+  Saving drive C: after a big install keeps it for seconds under
+  emulation, and the device poll thread due on the waiting CPU waited
+  with it: the PS/2 controller's buffer filled and keystrokes were lost
+  (graphics CI typed `store install DXK`).  Now the timer interrupt taken
+  during that wait hands a due deadline sleeper that doesn't hold the
+  lock to another CPU, as a timer wake.  Two graphics runs side by side
+  on one machine lost a keystroke this way 4 times in 4 (the old
+  scheduler too); with the hand-off, 6 in 6 passed.
+- **The preempted thread** goes back after the woken threads but ahead of
+  the rest (as on NT), not last, so a waker its wakee preempts doesn't
+  wait out every other thread's slice; and it keeps what it has used of
+  its slice, so one preempted often still reaches the end of it and the
+  threads behind it are not starved.
+- **Other wakes are as they were.**  An event set or a lock released with
+  no priority difference doesn't preempt, and the thread is queued last:
+  preempting there made lock convoys (smpstress's critical section shared
+  by 8 threads took about 3 times as long).  Wider versions of this change
+  also starved the desktop thread for 3 s once, and let a waiter woken
+  while a higher-priority thread ran wait behind the thread it had
+  preempted, which CI's `sleeptest timer` caught.
+- **Measured** with `sleeptest timer` on two CPUs in QEMU, a busy thread
+  on each: the 1 ms timer queue timer was 9 to 19 ms late (95th
+  percentile) and is now 0.21 to 0.44 ms late over twenty runs.
+  `sleeptest timer` now judges the timer queue case, and reports (without
+  judging) how soon a thread waiting on an event runs once another thread
+  sets it (9 to 19 ms under load, as before).
+- **Not changed**: under load in QEMU the timer interrupt itself sometimes
+  fires 1 to 10 ms late (a debug count found as many late fires with the
+  old scheduler), so a rare `sleeptest timer` run can still slip past
+  1 ms on one case.
 
 ## WASAPI: the engine keeps a 100 ms lead
 
@@ -3019,5 +3512,80 @@ writes 100 ms ahead of the mixer and a late wakeup does not starve it.
 `GetStreamLatency` reports the lead with the mixer's 80 ms.  Under a CPU
 load that split the tone before, the recording now holds one unbroken
 1010 ms tone.
+
+## Windows Installer rollback, transforms, patches, services at boot
+
+The gaps [Windows Installer depth](#windows-installer-depth-custom-actions-dialogs-shortcuts-services)
+left open, except script custom actions (next).  There is still no
+permissive Windows Installer to borrow from (Wine's is LGPL), so this is
+NovaOS's own code; the test packages are written by our own pure-Python
+writer, so the build needs neither Windows nor msitools.
+
+- **Rollback.**  While `InstallExecuteSequence` runs, the engine keeps a
+  journal (`userland/msi/install.c`, "Rollback") of everything it
+  changes: files it overwrites or deletes are moved to
+  `C:\Config.Msi\*.rbf` first, new files, folders and registry keys are
+  noted, registry values keep their old data, services note whether they
+  were created, reconfigured, started or stopped, and the product's
+  registration and cached package are journalled like any other key and
+  file.  If an action fails the journal is played backwards: rollback
+  custom actions (type flag `0x500`) run in their place with the
+  `CustomActionData` they had, files come back from `Config.Msi`, new
+  ones and the folders made for them go, keys and values return to what
+  they were, services stop and are deleted or reconfigured back.  A
+  successful install deletes the backups at `InstallFinalize`, before
+  the commit actions.  `DISABLEROLLBACK=1` (or the `DisableRollback`
+  action) turns it off, as on Windows.  Not rolled back: the removal of
+  an older product by `RemoveExistingProducts`.
+- **Transforms (`.mst`).**  `TRANSFORMS=a.mst;:embedded` on the command
+  line, and `MsiDatabaseApplyTransform`, apply them to the database in
+  memory (`msidb.c`): rows inserted, deleted or updated column by column,
+  tables and columns added or dropped, the transform's own string pool
+  merged, its streams laid over the package's.  The summary information's
+  validation flags are checked (product code, upgrade code); a transform
+  for another product fails with 1624.  The transforms a product was
+  installed with are copied to `C:\Windows\Installer\{ProductCode}` and
+  applied again for repair and removal.
+- **Patches (`.msp`).**  `msiexec /p patch.msp` (or `/update`, or
+  `PATCH=` with `/i`) finds the installed product the patch targets
+  (1642 if there is none), applies the patch's transform pairs (`T` and
+  `#T`, the ones whose validation fits), adds its cabinet streams and
+  reinstalls; the patch is cached and recorded with the product, so a
+  repair keeps it.  `msiexec /uninstall patch.msp` reinstalls without it
+  (`MSIPATCHREMOVE`).  Patches that ship whole files work; binary delta
+  patches (rows in the `Patch` table) are refused with a clear message.
+- **Services at boot.**  `services.exe` (`userland/programs/services.c`)
+  starts at boot, once the desktop is up on an installed system: it marks
+  every service stopped (the registry's state is from the last boot),
+  then starts each automatic service (`Start` 2), the services it
+  depends on first and `DelayedAutoStart` ones last, and logs each result
+  (`[SVC] Name: started`).  `services` with no argument lists them.
+- **Test packages.**  `tools/msitest/mkmsi.py` writes compound files,
+  databases, transforms, patches and MSZIP cabinets;
+  `tools/msitest/mkpkg.py` uses it at build time for the packages the
+  `msitest` self-test installs (`C:\Tests\Msi`).  The new core self-test
+  (`tests/selftest/core/135-msitest.py`) runs `msitest transform`,
+  `patch`, `rollback` and `service`, restarts, and checks that
+  `services.exe` started the service.
+- **Tested in QEMU** with real packages: Node.js 22.11 with a transform
+  that adds a failing custom action just before `InstallFinalize`
+  returned 1603 and rolled back 3176 changes (2525 files, folders,
+  registry, shortcuts, its cached package and registration), leaving no
+  `C:\Programs\nodejs` and no product key; Node.js then installed,
+  took a whole-file patch (`msiexec /p`: the patched file, version
+  22.11.1 in Programs and Features), kept it through a repair, lost it
+  again with `msiexec /uninstall` (22.11.0, `node -e` runs) and was
+  removed.  CMake 3.30 refused a transform made for another product
+  (1624), installed with a validated transform adding a registry value,
+  ran `cmake --version`, and its removal applied the cached transform
+  and took the value away.  The test service package installed, and
+  after a restart `services.exe` started it (`[SVC] NovaTestSvc:
+  started`); `msiexec /x` stopped and deleted it.  A rollback custom
+  action that fails is logged and the rollback carries on, as on Windows.
+  Node.js's `WixRollbackInternetShortcuts` does fail that way (it finds
+  no shortcut attributes in its `CustomActionData`); why is still open.
+- Fixed on the way: a file is taken only from the cabinet its sequence
+  number puts it in, so a patch's new copy is not overwritten by the
+  product cabinet's entry with the same key.
 
 <!-- END generated:history -->
