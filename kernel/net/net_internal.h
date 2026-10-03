@@ -29,3 +29,8 @@ bool   net_op_append(NetOp *op, const void *data, UINT32 n);
 /* http.c */
 void   http_poll(void);                 /* net thread: timeouts, idle connections */
 void   http_release(NetOp *op);         /* NetRelease() of an HTTP operation */
+
+/* NetIp ↔ lwIP addresses (an IPv6 link-local address gets the interface's
+ * zone).  The lwIP type is ip_addr_t; void * keeps lwIP out of this header. */
+void   net_addr_to_lwip(const NetIp *a, void *ip_addr_out);
+void   net_addr_from_lwip(const void *ip_addr, NetIp *out);

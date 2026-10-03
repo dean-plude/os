@@ -15,6 +15,15 @@
 /* Bring up the NIC, lwIP and DHCP, and start the net thread. */
 bool NetInitialize(void);
 bool NetAvailable(void);
+void NetResume(void);                     /* after S3: the adapter */
+
+/* An IPv4 or IPv6 address: IPv4 in a[0..3], both in network byte order */
+typedef struct {
+    bool   v6;
+    UINT8  a[16];
+} NetIp;
+
+#define NET_IP6_MAX 3
 
 typedef struct {
     bool   present;          /* a supported NIC was found */
@@ -24,11 +33,21 @@ typedef struct {
     UINT32 ip, mask, gw;     /* network byte order (as lwIP stores them) */
     UINT32 dns[2];
     const char *adapter;
+    int    ip6_count;        /* valid IPv6 addresses (link-local first) */
+    UINT8  ip6[NET_IP6_MAX][16];
+    bool   ip6_preferred[NET_IP6_MAX];   /* else still tentative or deprecated */
+    UINT32 if_index;         /* the interface's number (IPv6 zone) */
+    NetIp  dns_all[3];       /* every DNS server, IPv4 and IPv6 (v6 false, zero: none) */
 } NetStatus;
 
 void NetGetStatus(NetStatus *st);
 void NetFormatIp(UINT32 ip_be, char *buf, int cap);        /* "10.0.2.15" */
 bool NetParseIp(const char *s, UINT32 *ip_be);
+/* Either family: "10.0.2.15", "fd00::15" (cap 46 holds any) */
+void NetFormatAddr(const NetIp *ip, char *buf, int cap);
+bool NetParseAddr(const char *s, NetIp *ip);
+/* Whether the interface has an IPv6 address other than its link-local one */
+bool NetHasIp6(void);
 
 /* -----------------------------------------------------------------------
  * Asynchronous operations
@@ -43,7 +62,8 @@ typedef struct NetOp {
     volatile int    state;          /* NetState */
     char            error[64];      /* set when NET_FAILED */
 
-    UINT32          ip;             /* DNS result / ping or HTTP target */
+    UINT32          ip;             /* DNS result / ping or HTTP target (IPv4) */
+    NetIp           addr;           /* the same, IPv4 or IPv6 */
 
     /* ping */
     UINT16          seq;
@@ -66,16 +86,22 @@ typedef struct NetOp {
     char            request[768];
 } NetOp;
 
-/* Resolve a host name (or dotted-quad literal) to an IPv4 address. */
-NetOp *NetResolve(const char *host);
-/* Send one ICMP echo request; completes on the reply or after 2 s. */
+/* Resolve a host name (or address literal) to an address in op->addr
+ * (op->ip too when it is IPv4): @family 4 or 6 for only that family, 0
+ * for either (IPv6 first when the interface has a global IPv6 address) */
+NetOp *NetResolveEx(const char *host, int family);
+NetOp *NetResolve(const char *host);                 /* (family 0) */
+/* Send one ICMP (or ICMPv6) echo request; completes on the reply or after 2 s. */
 NetOp *NetPing(UINT32 ip_be, UINT16 seq);
+NetOp *NetPingAddr(const NetIp *ip, UINT16 seq);
 /* HTTP/1.1 GET http[s]://host:port/path.  Connections are kept alive and
  * reused for later requests to the same server; with @https the
  * connection uses TLS 1.2/1.3, the server's certificate must chain to a
  * trusted root and match @host, and sessions are resumed when possible. */
 NetOp *NetHttpGet(UINT32 ip_be, UINT16 port, const char *host, const char *path,
                   bool https);
+NetOp *NetHttpGetAddr(const NetIp *ip, UINT16 port, const char *host, const char *path,
+                      bool https);
 /* Done with an operation (safe while it is still pending). */
 void   NetRelease(NetOp *op);
 

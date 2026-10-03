@@ -1,36 +1,65 @@
-/* netcat.exe — a tiny HTTP/1.0 client over Winsock (usage: netcat host [path]) */
+/* netcat.exe — a tiny HTTP/1.0 client over Winsock (usage: netcat [-4|-6] [-p port] host [path])
+ *
+ * Resolves with getaddrinfo and tries each address in turn, as Windows
+ * programs do, so it works over IPv4 and IPv6 alike. */
 #include <stdio.h>
 #include <string.h>
 #include <winsock2.h>
+#include <ws2tcpip.h>
 
 int main(int argc, char **argv)
 {
-    if (argc < 2) { printf("usage: netcat <host> [path]\n"); return 1; }
-    const char *host = argv[1];
-    const char *path = argc > 2 ? argv[2] : "/";
+    int family = AF_UNSPEC, i = 1;
+    const char *port = "http";
+    for (; i < argc && argv[i][0] == '-'; i++) {
+        if (!strcmp(argv[i], "-4")) family = AF_INET;
+        else if (!strcmp(argv[i], "-6")) family = AF_INET6;
+        else if (!strcmp(argv[i], "-p") && i + 1 < argc) port = argv[++i];
+        else break;
+    }
+    if (i >= argc) { printf("usage: netcat [-4|-6] [-p port] <host> [path]\n"); return 1; }
+    const char *host = argv[i];
+    const char *path = i + 1 < argc ? argv[i + 1] : "/";
 
     WSADATA w;
     if (WSAStartup(MAKEWORD(2, 2), &w) != 0) { printf("WSAStartup failed\n"); return 1; }
     printf("Winsock: %s\n", w.szDescription);
 
-    struct hostent *he = gethostbyname(host);
-    if (!he) { printf("cannot resolve %s (err %d)\n", host, WSAGetLastError()); return 1; }
-    struct in_addr a; a.s_addr = *(unsigned long *)he->h_addr;
-    printf("%s -> %s\n", host, inet_ntoa(a));
+    struct addrinfo hints, *res, *ai;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = family;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    int rc = getaddrinfo(host, port, &hints, &res);
+    if (rc != 0) { printf("cannot resolve %s (err %d)\n", host, rc); return 1; }
 
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s == INVALID_SOCKET) { printf("socket failed\n"); return 1; }
-
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(80);
-    sa.sin_addr.s_addr = a.s_addr;
-    if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+    SOCKET s = INVALID_SOCKET;
+    for (ai = res; ai; ai = ai->ai_next) {
+        char text[INET6_ADDRSTRLEN];
+        void *a = ai->ai_family == AF_INET6 ? (void *)&((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr
+                                            : (void *)&((struct sockaddr_in *)ai->ai_addr)->sin_addr;
+        inet_ntop(ai->ai_family, a, text, sizeof(text));
+        printf("%s -> %s (%s)\n", host, text, ai->ai_family == AF_INET6 ? "IPv6" : "IPv4");
+        s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (s == INVALID_SOCKET) { printf("socket failed (err %d)\n", WSAGetLastError()); continue; }
+        if (connect(s, ai->ai_addr, (int)ai->ai_addrlen) == 0) break;
         printf("connect failed (err %d)\n", WSAGetLastError());
-        closesocket(s); return 1;
+        closesocket(s);
+        s = INVALID_SOCKET;
     }
-    printf("connected\n");
+    freeaddrinfo(res);
+    if (s == INVALID_SOCKET) return 1;
+
+    struct sockaddr_storage me, peer;
+    int ml = sizeof(me), pl = sizeof(peer);
+    char ms[64], ps[64];
+    DWORD msl = sizeof(ms), psl = sizeof(ps);
+    if (getsockname(s, (struct sockaddr *)&me, &ml) == 0 && getpeername(s, (struct sockaddr *)&peer, &pl) == 0 &&
+        WSAAddressToStringA((struct sockaddr *)&me, ml, 0, ms, &msl) == 0 &&
+        WSAAddressToStringA((struct sockaddr *)&peer, pl, 0, ps, &psl) == 0)
+        printf("connected %s -> %s\n", ms, ps);
+    else
+        printf("connected\n");
 
     char req[512];
     int n = snprintf(req, sizeof(req),

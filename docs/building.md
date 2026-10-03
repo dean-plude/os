@@ -197,7 +197,8 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 ```
 
 QEMU's default user-mode network (an e1000e on q35) works out of the box;
-add `-nic user,model=e1000` to test the older card.  `-smp N` sets the core
+add `-nic user,model=e1000` to test the older card or
+`-nic user,model=virtio-net-pci` for virtio-net.  `-smp N` sets the core
 count (up to 16).
 
 For sound add `-device intel-hda -device hda-output` (or `hda-duplex` or
@@ -210,16 +211,27 @@ PulseAudio or PipeWire when it finds one; set `NOVA_AUDIO` (`pa`,
 
 ### Where your files are kept
 
-Drive C: lives in memory, and NovaOS saves every change to a FAT volume a
-second later (and before Restart / Shut down), restoring it at the next
-boot.  The files installed from the OS image (`C:\Windows\System32`,
+Drive C: lives in memory, and NovaOS saves every change to an NTFS or FAT
+volume a second later (and before Restart / Shut down), restoring it at
+the next boot.  The files installed from the OS image (`C:\Windows\System32`,
 `C:\Windows\SysWOW64`, `C:\Programs`) are never saved, so a newer image
 always brings its own.  It uses the first of:
 
-1. a FAT16/FAT32 volume labelled `NOVADATA` (on any SATA disk, including
-   the data partition Install NovaOS creates);
+1. an NTFS or FAT16/FAT32 volume labelled `NOVADATA` (on any SATA or NVMe
+   disk, including the data partition Install NovaOS creates);
 2. an empty disk (all zeros at the start), which it formats as FAT32 `NOVADATA`;
 3. the boot disk itself, under `\NOVA\C`.
+
+Install NovaOS asks which file system drive C: gets: NTFS (the default)
+or FAT32.  On NTFS, C: is the whole volume, and it keeps creation times
+and each file's security descriptor too, so ACLs set with
+`SetFileSecurity` or `SetNamedSecurityInfo` (or given to `CreateFile`) are
+enforced when files are opened, deleted and renamed, and survive a
+restart.  A file without a descriptor of its own inherits from its
+folders, as on Windows; the new volume's root gives the user full control
+of what they create.  On FAT, C: is the folder `\NOVA\C`, and ACLs last
+only until restart.  Files from the OS image keep no descriptor across a
+restart either way.
 
 `scripts/run-qemu.sh` attaches `build/nova-data.img` (256 MiB, created on
 first run), so your files survive rebuilds of `nova.img`.  In the Terminal,
@@ -238,18 +250,36 @@ boots from a CD, which is read-only: attach a disk to keep files.
 
 Every NTFS volume on an attached disk (a partition in an MBR or GPT, or a
 whole disk) becomes a drive of its own, D:, E:, ... in the order found.
-They are read-only: programs, the Terminal and File Explorer can list,
-open, copy from and run what is there, and writes fail with "the media is
-write protected".  Compressed and sparse files are read; encrypted files
-are not.  A file is read into memory when it is opened, so the largest one
-that opens is 256 MiB.  For a test disk (needs `ntfs-3g`):
+Programs, the Terminal and File Explorer list, open, run, write, create,
+rename and delete files there.  Creating, renaming and deleting reach the
+disk at once; a file's new contents when the program closes it, or after
+a quiet second.  Compressed and sparse files are read but not rewritten
+(they show as read-only); encrypted files are not read.  A file is read
+into memory when it is opened, so the largest one that opens is 256 MiB.
+
+There is no journal: `$LogFile` is emptied when a volume is mounted and
+each change is complete on disk when it returns, so Windows and
+`ntfsfix` find the volume clean.  A volume Windows left hibernated (Fast
+Startup included), with a chkdsk pending or with transactions in its
+`$LogFile` is mounted read-only, as ntfs-3g does.
+
+For a test disk (needs `ntfs-3g`):
 
 ```bash
 scripts/make-ntfs-disk.sh build/nova-ntfs.img build
 qemu-system-x86_64 ... -drive format=raw,file=build/nova-ntfs.img
 ```
 
-then run `drivetest` in the Terminal.
+then run `drivetest` in the Terminal, shut down, and check the disk on the
+host:
+
+```bash
+scripts/check-ntfs-disk.sh build/nova-ntfs.img
+```
+
+which runs `ntfsfix -n`, `ntfssecaudit -a` and `scripts/ntfs-check.py` (a
+chkdsk-style check of the bitmaps, MFT records, directory indexes, link
+counts and `$Secure`) and checks the files drivetest left behind.
 
 ---
 
@@ -260,7 +290,7 @@ Tests run inside NovaOS under QEMU.  `tools/selftest.py` boots
 pull request (`.github/workflows/ci.yml`):
 
 ```bash
-sudo apt install acpica-tools          # iasl, for tests/acpi/battery.asl
+sudo apt install acpica-tools          # iasl, for the tables in tests/acpi/
 python3 tools/selftest.py              # the core suite; exit status = failures
 python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 
@@ -268,15 +298,20 @@ python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
 tools/ci/stage-graphics.sh /tmp/gfx
 python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
+
+# the network suite: IPv4, IPv6 and winhttp's HTTP/2 (needs node and openssl)
+python3 tools/selftest.py --suite network
 ```
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
 `sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `icutest` (x64 and x86), `comtest`,
 `tlbtest` (x64 and x86), `usptest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`,
 `soundtest wasapi`, `soundtest record`, `soundtest capture`, `soundtest volume`,
+`sleeptest timer`, `powertest`, `disptest 1024 768` (saves the mode),
 `filetest install` (an installer that must replace a running program
 schedules it for the next boot), a restart that must report `Pending file
-operations at boot: 2 done, 0 failed`, `filetest installed`, and
+operations at boot: 2 done, 0 failed` and come up in the saved mode
+(`disptest saved 1024 768`), `filetest installed`, and
 last `crash kernel`, which halts the kernel on purpose and passes when the
 serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `KeCrashTest`, `sys_nova_bugcheck`, ...).  The graphics suite first runs
@@ -288,14 +323,29 @@ then types `store
 install Mesa 3D` and `store install DXVK` (the archives are already in
 `C:\Downloads`, so the App Store installs without a network) and then runs
 `gltest` and `d3dtest`, x64 and x86, from `C:\Tests`, taking a screenshot
-of each while it draws.
+of each while it draws.  The network suite (`tests/selftest/network4` and
+`network6`) boots twice with a virtio-net
+card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
+(Winsock over IPv4) and `httptest suite` (winhttp: HTTP/2 by ALPN, large
+bodies, POST, redirects, certificate checks, chunked HTTP/1.1, the
+asynchronous API) against `tools/h2server.js` with a throwaway self-signed
+certificate, then `looptest` (socket pairs over 127.0.0.1 and ::1,
+`localhost`); on an IPv6-only network made by `tools/v6peer.py` it checks
+SLAAC and RDNSS (`ipconfig`), `ping -6`, `curl -6` and `netcat` over IPv6.
 
 It boots once (about 20 s under TCG) with an HD Audio card recorded to a WAV
 whose microphone hears a 523 Hz tone (through a private PulseAudio server,
 so the host needs `pulseaudio`, `pulseaudio-utils` and QEMU's PulseAudio
 backend, `qemu-system-gui` on Ubuntu; without them the recording tests
-fail and the rest run), and the battery from `tests/acpi/battery.asl`, then types each test into the
-Terminal.  A test passes when the program exits with code 0, prints no
+fail and the rest run), the battery from `tests/acpi/battery.asl`, the
+lid and thermal zone from `tests/acpi/lid-thermal.asl` (QEMU's `pc-testdev`
+stands in for the embedded controller: the test writes the lid and
+temperature to ports 0xE8 and 0xE9 through the QEMU monitor) and a USB
+keyboard on an xHCI controller at 00:05.0, then types each test into the
+Terminal.  `powertest` asks the test to close the lid; once NovaOS has gone
+to sleep the test opens it, presses a key on the USB keyboard and wakes the
+machine (`system_wakeup`, as QEMU has no USB-to-platform wake), then heats
+and cools the thermal zone.  A test passes when the program exits with code 0, prints no
 `FAIL` line or non-zero "failed" count, and prints what the test expects;
 a kernel panic stops the run.  `--out` (default `selftest-out/`) keeps the
 serial log, a screenshot after each test, `sound.wav` and the two
@@ -345,16 +395,21 @@ program adds one; see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 | `pipetest` | Pipes, inherited handles, `cmd /c`, `_popen`, overlapped I/O |
 | `proctest` | `CreateProcess` flags: `CREATE_SUSPENDED`, `CREATE_NEW_CONSOLE` (`GetConsoleProcessList`), file positions shared with children and duplicates |
 | `cliptest` | The clipboard and the OLE clipboard, across two processes |
-| `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE` |
+| `disptest` | Display modes: `EnumDisplaySettings`, `ChangeDisplaySettings`, `WM_DISPLAYCHANGE`, a window that 800x600 shrinks growing back to its size and place, `CDS_UPDATEREGISTRY` saving the mode in the registry.  `disptest W H` switches and saves; `disptest saved W H` checks the mode after a restart |
 | `icutest` | The system ICU (`icu.dll`) as .NET loads it: German and Japanese names, numbers, currencies, dates, the Japanese calendar, collation, case, time-zone ids, IDNA, normalization, 8 threads at once; then kernel32's `GetLocaleInfoEx`, LCIDs and locale enumeration for those locales |
 | `battery` | AC power and batteries (`GetSystemPowerStatus`, `SystemBatteryState`); CI expects the battery in `tests/acpi/battery.asl` |
+| `sleeptest timer` | How late `Sleep(1)`, `Sleep(5)` and a 1 ms wait timeout end, idle and with a busy thread on every CPU; passes when the 95th percentile under load is 1 ms or less and none ends early.  Plain `sleeptest` sleeps (S3) instead |
+| `powertest` | The lid and a thermal zone (`GetPwrCapabilities`, `ThermalInformation`, `LastSleepTime`/`LastWakeTime`): closing the lid sleeps; needs `tests/acpi/lid-thermal.asl` and the self-test's help (see above) |
 | `guitest auto` | user32 and comctl32: menus, accelerators, edit and list boxes, a resource dialog, a message box, a property sheet |
 | `smpstress` (x64) | Locks, events, semaphores, memory, handles and starting processes from many threads, then file and registry throughput on one CPU and on all (`smpstress scaling 3` fails below 3x; `smpstress throughput [X [files\|registry [many\|N]]]` measures only; run with `tools/novarun.py --smp 4`) |
-| `acltest` | Access checks against DACLs (`AccessCheck`) for our token and restricted, write-restricted and deny-only ones; `CheckTokenMembership`, impersonation; a named event with a DACL refused to a restricted token |
-| `drivetest` | Drive D: (read-only NTFS), with the disk from `scripts/make-ntfs-disk.sh` |
+| `acltest` | Access checks against DACLs (`AccessCheck`) for our token and restricted, write-restricted and deny-only ones; `CheckTokenMembership`, impersonation; a named event with a DACL refused to a restricted token; file ACLs on drive C:: denied writes, deletes and renames (and reads for a restricted token), inheritance, `CreateFile` with a descriptor.  It leaves `C:\AclTest\kept.txt` and, run again after a restart, checks it kept its DACL (C: on NTFS) |
+| `drivetest` | Drive D: (NTFS: reading, then writing, renaming, deleting), with the disk from `scripts/make-ntfs-disk.sh`; then `scripts/check-ntfs-disk.sh` on the host |
 | `soundtest info`, `tone`, `float`, `wasapi`, `both`, `play FILE`, `ding`, `msgbeep`, `beep` | Sound output (needs an HD Audio card; see below) |
 | `soundtest record FILE [MS]`, `capture FILE [MS]`, `volume` | Recording through `waveIn` and WASAPI capture into a WAV, and `IAudioEndpointVolume` (needs a card with an input) |
 | `disktest write`, restart, `disktest verify` | Drive C: surviving a reboot |
+| `httptest suite HTTPS-BASE HTTP-BASE` | winhttp against `tools/h2server.js`: HTTP/2 by ALPN, a 300 KB body, POST, a redirect, an untrusted certificate refused, chunked HTTP/1.1, the asynchronous API.  `httptest [-2] [-k] [-a] URL` fetches one URL |
+| `netcat [-4\|-6] [-p PORT] HOST [PATH]` | Winsock: `getaddrinfo`, IPv4 or IPv6 sockets, an HTTP/1.0 GET |
+| `looptest` | Winsock over the loopback interface: a socket pair over 127.0.0.1 and ::1 (port 0, `getsockname`, a non-blocking connect, data sent before `accept`), closing a listener with a queued connection, `localhost` |
 
 <!-- END generated:selftest-table -->
 
@@ -461,6 +516,19 @@ python3 tools/wavcheck.py /tmp/rec.wav --tone 523 2500   # exit 0: the tone is t
 python3 tools/novarun.py --net --put 'DIR=C:\Apps\x' 'cd C:\Apps\x' \
     'ffmpeg.exe -tls_verify 0 -i https://10.0.2.2:8443/tone.wav -f null -'
 ```
+
+For IPv6, `tools/v6peer.py` is a whole IPv6-only network (a router with
+SLAAC and RDNSS, DNS for `nova6.test`, an HTTP server) that QEMU reaches
+through a datagram netdev, so the host needs no IPv6 of its own:
+
+```bash
+python3 tools/v6peer.py &
+python3 tools/novarun.py --extra '-netdev dgram,id=v6,local.type=inet,local.host=127.0.0.1,local.port=10601,remote.type=inet,remote.host=127.0.0.1,remote.port=10600 -device virtio-net-pci,netdev=v6' \
+    ipconfig 'ping -6 nova6.test' 'curl -6 http://nova6.test/'
+```
+
+`tools/h2server.js CERT KEY` (Node) serves HTTPS with HTTP/2 on port 8443
+and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hello`).
 
 ### On the host
 

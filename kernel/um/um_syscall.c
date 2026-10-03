@@ -26,6 +26,8 @@
 #include "../wm/desktop.h"
 #include "../apps/apps.h"
 #include "../hal/aml.h"
+#include "../fs/fsec.h"
+#include "../ke/sleep.h"
 
 #define ST_SUCCESS                 0x00000000u
 #define ST_PENDING                 0x00000103u
@@ -162,6 +164,13 @@ static UINT32 *oa_attrs(void)
 {
     UmThread *t = UmCurrentThread();
     return t ? &t->oa_attrs : &g_oa_attrs_k;
+}
+/* and its SecurityDescriptor (a user pointer) */
+static UINT64 g_oa_sd_k;
+static UINT64 *oa_sd(void)
+{
+    UmThread *t = UmCurrentThread();
+    return t ? &t->oa_sd : &g_oa_sd_k;
 }
 
 static int w2u(const UINT16 *w, UINT32 n, char *out, int cap);
@@ -502,6 +511,7 @@ static UINT32 get_path(UmProcess *p, UINT64 oa_ptr, char *out, int cap, RamNode 
         return UM_STATUS_ACCESS_VIOLATION;
     w2u(w, len, out, cap);
     *oa_attrs() = (UINT32)oa[3];
+    *oa_sd() = oa[4];
     if (oa[1]) {                                        /* relative to \Device\NamedPipe\ */
         UmHandle *h = handle(p, oa[1]);
         if (h && h->kind == H_NULL && h->npfs) {
@@ -585,6 +595,58 @@ static RamNode *parent_of(RamNode *root, char *path, const char **leaf)
 #define FILE_READ_DATA    0x0001u
 #define FILE_WRITE_DATA   0x0002u
 #define FILE_APPEND_DATA  0x0004u
+
+#define ST_BUFFER_TOO_SMALL 0xC0000023u
+
+/* A security descriptor from user memory (self-relative, or absolute in
+ * the x64 layout) as a self-relative copy (no SACL); NULL if not valid */
+static UINT8 *user_sd(UINT64 ptr, UINT32 *out_len)
+{
+    UINT8 hdr[20];
+    if (!ptr || !NT_SUCCESS(CopyFromUser(hdr, (const void *)(uintptr_t)ptr, 20)) || hdr[0] != 1) return NULL;
+    UINT16 ctl;
+    memcpy(&ctl, hdr + 2, 2);
+    UINT64 at[4];                                           /* owner, group, SACL, DACL: where they are */
+    if (ctl & 0x8000) {
+        for (int i = 0; i < 4; i++) { UINT32 o; memcpy(&o, hdr + 4 + 4 * i, 4); at[i] = o ? ptr + o : 0; }
+    } else {
+        UINT64 abs[5];
+        if (!NT_SUCCESS(CopyFromUser(abs, (const void *)(uintptr_t)ptr, 40))) return NULL;
+        memcpy(at, abs + 1, sizeof(at));
+    }
+    if (!(ctl & 0x0004)) at[3] = 0;                         /* no DACL present */
+    UINT32 len[4] = { 0, 0, 0, 0 }, total = 20;
+    for (int i = 0; i < 4; i++) {
+        UINT8 part[8];
+        if (i == 2 || !at[i]) continue;                     /* (the SACL is not kept) */
+        if (!NT_SUCCESS(CopyFromUser(part, (const void *)(uintptr_t)at[i], 8))) return NULL;
+        len[i] = i < 2 ? 8u + 4u * part[1] : (UINT32)(part[2] | part[3] << 8);
+        if (len[i] < 8 || len[i] > 0x10000) return NULL;
+        total += len[i];
+    }
+    UINT8 *sd = kzalloc(total);
+    if (!sd) return NULL;
+    sd[0] = 1;
+    UINT16 nctl = (UINT16)(0x8000 | (ctl & 0x0004) | (ctl & 0x1400));    /* self-relative; DACL present, protected, auto-inherited */
+    memcpy(sd + 2, &nctl, 2);
+    UINT32 o = 20;
+    static const int slot[4] = { 4, 8, 12, 16 };
+    for (int i = 0; i < 4; i++) {
+        if (!len[i]) continue;
+        if (!NT_SUCCESS(CopyFromUser(sd + o, (const void *)(uintptr_t)at[i], len[i]))) { kfree(sd); return NULL; }
+        memcpy(sd + slot[i], &o, 4);
+        o += len[i];
+    }
+    if (!FsecValid(sd, total, NULL)) { kfree(sd); return NULL; }
+    *out_len = total;
+    return sd;
+}
+
+/* The user may delete @n: DELETE on it, or DELETE_CHILD on its directory */
+static bool may_delete(RamNode *n)
+{
+    return FsecAccess(n, FSEC_DELETE, NULL) || (n->parent && FsecAccess(n->parent, FSEC_DELETE_CHILD, NULL));
+}
 
 /* open_file's names that are not files: the pipe file system's root, a
  * pipe's client end, the console's input or output */
@@ -690,6 +752,10 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
                     path[0] ? RamfsLookup(root, path, &unloaded) : root : NULL;
     if (node && (!(node->xflags & RAMFS_X_EXTERN) || (node->xflags & (node->dir ? RAMFS_X_LISTED : RAMFS_X_LOADED))) &&
         !(RamfsReadOnly(node) && wr0) && !((options & 0x40) && node->dir) && !((options & 0x1) && !node->dir)) {
+        UINT32 granted;                                         /* what its security descriptor allows */
+        if (!FsecAccess(node, access, &granted)) { FsUnlockShared(); return iosb(iosb_ptr, ST_ACCESS_DENIED, 0); }
+        if (access & FSEC_MAXIMUM_ALLOWED)
+            access |= granted & (FILE_READ_DATA | (RamfsReadOnly(node) ? 0 : FILE_WRITE_DATA | FILE_APPEND_DATA));
         UINT64 hv = file_handle(p, node, access, options, inherit, &h);
         FsUnlockShared();
         return opened(hv, h, handle_ptr, iosb_ptr, 1);          /* FILE_OPENED */
@@ -711,6 +777,19 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
         return iosb(iosb_ptr, disposition == 2 ? ST_OBJECT_NAME_COLLISION : ST_MEDIA_WRITE_PROTECTED, 0);
     }
     if (node && !RamfsLoad(node)) { FsUnlock(); return iosb(iosb_ptr, ST_DISK_CORRUPT, 0); }
+    if (node && disposition != 2) {                             /* what its security descriptor allows */
+        UINT32 want = access, granted;
+        if (!node->dir && (disposition == 0 || disposition == 4 || disposition == 5)) want |= FILE_WRITE_DATA;
+        if (options & 0x1000) want |= FSEC_DELETE;
+        bool ok = FsecAccess(node, want, &granted);
+        if (!ok && (want & FSEC_DELETE) && node->parent && FsecAccess(node->parent, FSEC_DELETE_CHILD, NULL))
+            ok = FsecAccess(node, want & ~FSEC_DELETE, &granted);
+        if (!ok) { FsUnlock(); return iosb(iosb_ptr, ST_ACCESS_DENIED, 0); }
+        if (access & FSEC_MAXIMUM_ALLOWED) {
+            access |= granted & (FILE_READ_DATA | (RamfsReadOnly(node) ? 0 : FILE_WRITE_DATA | FILE_APPEND_DATA));
+            wr = wr || (access & (FILE_WRITE_DATA | FILE_APPEND_DATA));
+        }
+    }
     if (node) {
         if (disposition == 2) { FsUnlock(); return iosb(iosb_ptr, ST_OBJECT_NAME_COLLISION, 4); }
         if (want_file && node->dir) { FsUnlock(); return iosb(iosb_ptr, ST_FILE_IS_A_DIRECTORY, 0); }
@@ -731,8 +810,16 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
         if (!dir || !dir->dir) { FsUnlock(); return iosb(iosb_ptr, ST_OBJECT_PATH_NOT_FOUND, 0); }
         if (!*leaf) { FsUnlock(); return iosb(iosb_ptr, ST_OBJECT_NAME_INVALID, 0); }
         if (RamfsReadOnly(dir)) { FsUnlock(); return iosb(iosb_ptr, ST_MEDIA_WRITE_PROTECTED, 0); }
+        if (!FsecAccess(dir, want_dir ? FSEC_ADD_SUBDIRECTORY : FSEC_ADD_FILE, NULL)) {
+            FsUnlock();
+            return iosb(iosb_ptr, ST_ACCESS_DENIED, 0);
+        }
+        UINT32 sdlen = 0;
+        UINT8 *sd = *oa_sd() ? user_sd(*oa_sd(), &sdlen) : NULL;  /* (one given: the new file's own) */
         node = RamfsCreate(dir, leaf, want_dir);
-        if (!node) { FsUnlock(); return iosb(iosb_ptr, ST_DISK_FULL, 0); }
+        if (!node) { kfree(sd); FsUnlock(); return iosb(iosb_ptr, ST_DISK_FULL, 0); }
+        if (sd && !RamfsReadOnly(node) && !node->sd) FsecSet(node, 7, sd, sdlen);
+        kfree(sd);
         info = 2;                                               /* FILE_CREATED */
     }
     UINT64 hv = file_handle(p, node, access, options, inherit, &h);
@@ -1001,6 +1088,7 @@ static void basic_info(UINT8 *b, const RamNode *n)
     memset(b, 0, 40);
     UINT64 c = n->ctime ? n->ctime : g_boot_time, m = n->mtime ? n->mtime : c;
     memcpy(b, &c, 8); memcpy(b + 8, &m, 8); memcpy(b + 16, &m, 8); memcpy(b + 24, &m, 8);
+    RamfsReadOnly(n);                                           /* (a file another drive can't rewrite gets READONLY) */
     UINT32 attr = (n->dir ? 0x10 : 0x20) | (n->attrs & 0x07);  /* DIRECTORY / ARCHIVE, R/H/S */
     memcpy(b + 32, &attr, 4);
 }
@@ -1213,10 +1301,9 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
         w2u(w, nlen, path, sizeof(path));
         char *s = path;
         if (!strncmp(s, "\\??\\", 4)) s += 4;
-        if (((s[0] | 0x20) >= 'a' && (s[0] | 0x20) <= 'z') && s[1] == ':') {
-            if ((s[0] | 0x20) != 'c') return iosb(a2, 0xC00000D4u, 0);   /* NOT_SAME_DEVICE */
-            s += 2;
-        }
+        if (((s[0] | 0x20) >= 'a' && (s[0] | 0x20) <= 'z') && s[1] == ':' &&
+            (s[0] & ~0x20) != RamfsDriveLetter(h->node))
+            return iosb(a2, 0xC00000D4u, 0);                    /* NOT_SAME_DEVICE: another drive */
         /* absolute, relative to RootDirectory, a bare name (same directory), or relative to the cwd */
         RamNode *root = strchr(s, '\\') || strchr(s, '/') ? p->cwd : h->node->parent;
         if (hdr[1]) {
@@ -1229,6 +1316,10 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
         if (!dir || !dir->dir) return iosb(a2, ST_OBJECT_PATH_NOT_FOUND, 0);
         RamNode *old = RamfsFind(dir, leaf);
         if (old && old != h->node && !(hdr[0] & 0xFF)) return iosb(a2, 0xC0000035u, 0);   /* NAME_COLLISION */
+        if (!may_delete(h->node) ||                             /* (renaming takes DELETE, as on Windows) */
+            !FsecAccess(dir, h->node->dir ? FSEC_ADD_SUBDIRECTORY : FSEC_ADD_FILE, NULL) ||
+            (old && old != h->node && !may_delete(old)))
+            return iosb(a2, ST_ACCESS_DENIED, 0);
         if (!RamfsRename(h->node, dir, leaf, hdr[0] & 0xFF))
             return iosb(a2, old ? ST_ACCESS_DENIED : ST_OBJECT_NAME_INVALID, 0);
         return iosb(a2, ST_SUCCESS, 0);
@@ -1241,6 +1332,8 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
         INT64 ct, wt;
         UINT32 attr;
         memcpy(&ct, bi, 8); memcpy(&wt, bi + 16, 8); memcpy(&attr, bi + 32, 4);
+        if ((ct > 0 || wt > 0 || attr) && !FsecAccess(h->node, 0x100, NULL))      /* FILE_WRITE_ATTRIBUTES */
+            return iosb(a2, ST_ACCESS_DENIED, 0);
         if (ct > 0) h->node->ctime = (UINT64)ct;            /* 0: unchanged, -1: stop updating */
         if (wt > 0) h->node->mtime = (UINT64)wt;
         if (attr) h->node->attrs = attr & 0x07;
@@ -1253,10 +1346,63 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
         if (h->kind == H_DIR && flag && RamfsCount(h->node))
             return iosb(a2, ST_DIRECTORY_NOT_EMPTY, 0);
         if (h->kind != H_FILE && h->kind != H_DIR) return iosb(a2, ST_CANNOT_DELETE, 0);
+        if (flag && !may_delete(h->node)) return iosb(a2, ST_ACCESS_DENIED, 0);
         h->delete_on_close = flag;
         return iosb(a2, ST_SUCCESS, 0);
     }
     return iosb(a2, ST_INVALID_INFO_CLASS, 0);
+}
+
+/* NtQuerySecurityObject(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+ * ULONG Length, PULONG LengthNeeded) for a file or directory: its own
+ * descriptor or the one it inherits (um_security.c hands file handles here) */
+UINT64 um_file_query_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    UmProcess *p = UmCurrent();
+    UINT64 need_ptr = um_stack_arg(5);
+    FsLock();
+    um_lock_excl(&p->lock);
+    UmHandle *h = handle(p, a1);
+    RamNode *n = h && (h->kind == H_FILE || h->kind == H_DIR) ? h->node : NULL;
+    um_unlock_excl(&p->lock);
+    static RamNode none;                                        /* (no descriptor, nothing above) */
+    if (!n) n = &none;
+    UINT32 len = FsecQuery(n, (UINT32)a2, NULL, 0);
+    UINT8 *buf = len ? kmalloc(len) : NULL;
+    if (buf) FsecQuery(n, (UINT32)a2, buf, len);
+    FsUnlock();
+    if (!buf) return ST_NO_MEMORY;
+    UINT32 st = ST_SUCCESS;
+    if (need_ptr && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)need_ptr, &len, 4))) st = UM_STATUS_ACCESS_VIOLATION;
+    else if (a4 < len) st = ST_BUFFER_TOO_SMALL;
+    else if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, buf, len))) st = UM_STATUS_ACCESS_VIOLATION;
+    kfree(buf);
+    return st;
+}
+
+/* NtSetSecurityObject(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR)
+ * for a file or directory: kept for those on drive C: */
+UINT64 um_file_set_security(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a4;
+    UmProcess *p = UmCurrent();
+    UINT32 len;
+    UINT8 *sd = user_sd(a3, &len);
+    if (!sd) return 0xC0000079u;                                /* STATUS_INVALID_SECURITY_DESCR */
+    FsLock();
+    um_lock_excl(&p->lock);
+    UmHandle *h = handle(p, a1);
+    RamNode *n = h && (h->kind == H_FILE || h->kind == H_DIR) ? h->node : NULL;
+    um_unlock_excl(&p->lock);
+    UINT32 st = ST_SUCCESS, info = (UINT32)a2 & 7;
+    if (n && !RamfsReadOnly(n) && RamfsDriveLetter(n) == 'C' && info) {
+        UINT32 want = ((info & 4) ? 0x00040000u : 0) | ((info & 3) ? 0x00080000u : 0);   /* WRITE_DAC, WRITE_OWNER */
+        if (!FsecAccess(n, want, NULL)) st = ST_ACCESS_DENIED;
+        else if (!FsecSet(n, info, sd, len)) st = 0xC0000079u;
+    }
+    FsUnlock();
+    kfree(sd);
+    return st;
 }
 
 /* NtQueryAttributesFile(POBJECT_ATTRIBUTES, PFILE_BASIC_INFORMATION) */
@@ -1458,11 +1604,11 @@ static UINT64 sys_query_volume_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
         memset(b, 0, sizeof(b));
         uint64_t total = 0, avail = 0, used = 0;          /* 4 KiB units: drive C: lives in RAM */
         pmm_stats(&total, &avail, &used);
-        /* or a mounted volume (drives D:, ...): read-only, full */
+        /* or a mounted volume (drives D:, ...): its size and free space */
         const char *label = "NovaOS", *fsname = "FAT32";
         UINT64 bytes;
         bool ext = RamfsDriveInfo(h->node, &label, &fsname, &bytes);
-        if (ext) { total = bytes >> 12; avail = 0; }
+        if (ext) { total = bytes >> 12; avail = RamfsDriveFree(h->node) >> 12; }
         switch (cls) {
         case 1: {                                               /* FileFsVolumeInformation */
             memcpy(b, &g_boot_time, 8);
@@ -1479,7 +1625,7 @@ static UINT64 sys_query_volume_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
             break;
         case 5: {                                               /* FileFsAttributeInformation */
             UINT32 attrs = 0x6, maxc = 255, nl = 2 * (UINT32)strlen(fsname);  /* CASE_PRESERVED_NAMES | UNICODE_ON_DISK */
-            if (ext) attrs |= 0x80000u;                         /* FILE_READ_ONLY_VOLUME */
+            if (ext && RamfsReadOnly(RamfsDriveRoot(RamfsDriveLetter(h->node)))) attrs |= 0x80000u;   /* FILE_READ_ONLY_VOLUME */
             memcpy(b, &attrs, 4); memcpy(b + 4, &maxc, 4); memcpy(b + 8, &nl, 4);
             u2w(fsname, b + 12, 8);
             need = 12 + nl;
@@ -2118,20 +2264,64 @@ static UINT64 sys_power_action(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 }
 
 /* NtPowerInformation(POWER_INFORMATION_LEVEL, PVOID In, ULONG InLength,
- * PVOID Out, ULONG OutLength): SystemBatteryState (5) from the ACPI
- * batteries and AC adapters.  powrprof answers the other levels itself. */
+ * PVOID Out, ULONG OutLength): SystemPowerCapabilities (4),
+ * SystemBatteryState (5) from the ACPI batteries and AC adapters,
+ * ThermalInformation (12) of the first thermal zone, LastWakeTime (14) and
+ * LastSleepTime (15).  powrprof answers the other levels itself. */
 static UINT64 sys_power_information(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a2; (void)a3;
-    if ((UINT32)a1 != 5) return ST_NOT_IMPLEMENTED;
+    UINT32 cap = (UINT32)um_stack_arg(5);
+    if (!a4) return ST_INVALID_PARAMETER;
+    switch ((UINT32)a1) {
+    case 4: {                                       /* SYSTEM_POWER_CAPABILITIES */
+        UINT8 c[76] = { 0 };
+        AmlBatteryState b;
+        AmlThermalZone z;
+        AmlGetBatteryState(&b);
+        c[0] = 1;                                   /* PowerButtonPresent */
+        c[2] = AmlLidPresent();                     /* LidPresent */
+        c[5] = SleepSupported();                    /* SystemS3 */
+        c[7] = 1;                                   /* SystemS5 */
+        c[13] = AmlThermalZones(&z, 1) > 0;         /* ThermalControl */
+        c[30] = b.battery_present;                  /* SystemBatteriesPresent */
+        if (cap < sizeof(c)) return ST_BUFFER_TOO_SMALL;
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, c, sizeof(c))) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
+    }
+    case 12: {                                      /* THERMAL_INFORMATION (64-bit layout) */
+        struct {
+            UINT32 stamp, c1, c2, pad;
+            UINT64 processors;
+            UINT32 period, temp, passive, critical;
+            UINT8  active_count, pad2[3];
+            UINT32 active[10];
+        } t = { 0 };
+        AmlThermalZone z;
+        if (AmlThermalZones(&z, 1) < 1) return ST_NOT_SUPPORTED;
+        t.stamp = z.stamp;
+        t.processors = 1;
+        t.period = z.period;
+        t.temp = z.temp;
+        t.passive = z.passive;
+        t.critical = z.critical;
+        if (cap < sizeof(t)) return ST_BUFFER_TOO_SMALL;
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, &t, sizeof(t))) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
+    }
+    case 14: case 15: {                             /* interrupt time (100 ns) of the last wake or sleep */
+        UINT64 t = (UINT32)a1 == 14 ? SleepLastWakeTime() : SleepLastSleepTime();
+        if (cap < sizeof(t)) return ST_BUFFER_TOO_SMALL;
+        return put_u64(a4, t) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
+    }
+    case 5: break;
+    default: return ST_NOT_IMPLEMENTED;
+    }
     struct __attribute__((packed)) {
         UINT8  ac_online, present, charging, discharging, spare[3], tag;
         UINT32 max, remaining;
         INT32  rate;
         UINT32 estimated, alert1, alert2;
     } out = { 0 };
-    if (!a4) return ST_INVALID_PARAMETER;
-    if ((UINT32)um_stack_arg(5) < sizeof(out)) return ST_BUFFER_TOO_SMALL;
+    if (cap < sizeof(out)) return ST_BUFFER_TOO_SMALL;
     AmlBatteryState b;
     AmlGetBatteryState(&b);
     out.ac_online = b.ac_online;
@@ -2183,11 +2373,16 @@ static UINT64 sys_delay(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     INT64 iv = (INT64)v;
     UINT64 wait_100ns = iv < 0 ? (UINT64)(-iv) : (v > um_now_100ns() ? v - um_now_100ns() : 0);
     if (!wait_100ns) { sched_yield(); return ST_SUCCESS; }          /* Sleep(0): just yield */
-    UINT64 until = sched_ticks() + (wait_100ns + 99999) / 100000;
-    do {
+    /* A TSC deadline: the timer fires when it is due (sub-millisecond),
+     * looking at least once a tick whether the thread is being stopped */
+    UINT64 until = sched_tsc_after(wait_100ns);
+    for (;;) {
         if (um_stopping()) break;
-        sched_sleep_tick();
-    } while (sched_ticks() < until);
+        UINT64 now = rdtsc();
+        if (now >= until) break;
+        UINT64 nap = now + g_tsc_per_tick;
+        sched_sleep_until_tsc(NULL, until < nap ? until : nap);
+    }
     return ST_SUCCESS;
 }
 

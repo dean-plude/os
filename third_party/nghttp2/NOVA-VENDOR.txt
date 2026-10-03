@@ -1,0 +1,6 @@
+nghttp2 1.64.0 (https://nghttp2.org/), used under the MIT licence (COPYING).
+Source: the upstream release tarball nghttp2-1.64.0.tar.xz from
+github.com/nghttp2/nghttp2/releases.  Only lib/ (the HTTP/2 library, its
+sources and public headers) is kept, unchanged.  winhttp.dll is built on it
+for HTTP/2 (tools/build_userland.py compiles it with -DWIN32
+-DHAVE_WINDOWS_H -DHAVE_GETTICKCOUNT64 -DNGHTTP2_STATICLIB).

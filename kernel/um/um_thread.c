@@ -223,10 +223,11 @@ static bool ob_acquire(UmObject *o, UmThread *me)
     return false;
 }
 
-static UINT64 deadline_ticks(INT64 timeout_100ns)
+/* The TSC at which a wait times out (UINT64_MAX: never) */
+static UINT64 deadline_tsc(INT64 timeout_100ns)
 {
     if (timeout_100ns < 0) return UINT64_MAX;
-    return sched_ticks() + ((UINT64)timeout_100ns + 99999) / 100000;
+    return sched_tsc_after((UINT64)timeout_100ns);
 }
 
 /* Threads waiting on objects (g_um_oblock) */
@@ -260,7 +261,7 @@ static void waiter_unlink(UmThread *me)
 static UINT32 wait_objects(UmObject **o, int n, bool all, INT64 timeout_100ns)
 {
     UmThread *me = UmCurrentThread();
-    UINT64 until = deadline_ticks(timeout_100ns);
+    UINT64 until = deadline_tsc(timeout_100ns);
     for (;;) {
         IrqState s = ob_lock();
         if (all) {
@@ -282,17 +283,17 @@ static UINT32 wait_objects(UmObject **o, int n, bool all, INT64 timeout_100ns)
             }
         }
         if (um_stopping()) { ob_unlock(s); return ST_THREAD_IS_TERMINATING; }
-        if (timeout_100ns == 0 || sched_ticks() >= until) { ob_unlock(s); return ST_TIMEOUT; }
+        if (timeout_100ns == 0 || rdtsc() >= until) { ob_unlock(s); return ST_TIMEOUT; }
         me->wait_objs = o;
         me->wait_n = n;
         me->wake = 0;
         me->wait_next = g_waiters;
         g_waiters = me;
         ob_unlock(s);
-        UINT64 nap = sched_ticks() + 10;
+        UINT64 nap = sched_tick_tsc(sched_ticks() + 10);
         for (int i = 0; i < n; i++)                         /* a timer wakes it when due */
-            if (o[i]->type == UO_TIMER && o[i]->due && o[i]->due < nap) nap = o[i]->due;
-        sched_sleep_until(&me->wake, until < nap ? until : nap);
+            if (o[i]->type == UO_TIMER && o[i]->due && sched_tick_tsc(o[i]->due) < nap) nap = sched_tick_tsc(o[i]->due);
+        sched_sleep_until_tsc(&me->wake, until < nap ? until : nap);
         s = ob_lock();
         waiter_unlink(me);
         ob_unlock(s);
@@ -547,7 +548,7 @@ static UINT64 sys_alert_by_tid(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     (void)a2; (void)a3; (void)a4;
     UmProcess *p = UmCurrent();
     UINT64 st = 0xC000000Bu;                                /* STATUS_INVALID_CID */
-    um_lock(&p->lock);
+    um_lock_excl(&p->lock);
     for (int i = 0; i < UM_MAX_THREADS; i++) {
         UmThread *t = p->threads[i];
         if (!t || t->tid != (UINT32)a1 || t->exited) continue;
@@ -558,7 +559,7 @@ static UINT64 sys_alert_by_tid(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         st = ST_SUCCESS;
         break;
     }
-    um_unlock(&p->lock);
+    um_unlock_excl(&p->lock);
     return st;
 }
 
@@ -570,13 +571,13 @@ static UINT64 sys_wait_alert(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     INT64 t;
     if (!get_timeout(a2, &t)) return ST_ACCESS_VIOLATION;
     UmThread *me = UmCurrentThread();
-    UINT64 until = deadline_ticks(t);
+    UINT64 until = deadline_tsc(t);
     for (;;) {
         if (__atomic_exchange_n(&me->alerted, 0, __ATOMIC_ACQ_REL)) return 0x101;   /* STATUS_ALERTED */
         if (um_stopping()) return ST_THREAD_IS_TERMINATING;
-        if (t == 0 || sched_ticks() >= until) return ST_TIMEOUT;
-        UINT64 nap = sched_ticks() + 10;
-        sched_sleep_until(&me->alerted, until < nap ? until : nap);
+        if (t == 0 || rdtsc() >= until) return ST_TIMEOUT;
+        UINT64 nap = sched_tick_tsc(sched_ticks() + 10);
+        sched_sleep_until_tsc(&me->alerted, until < nap ? until : nap);
     }
 }
 
@@ -746,9 +747,9 @@ static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4)
         static UmLock tlock;
         um_lock(&tlock);
         UINT32 n = 0;
-        um_lock(&p->lock);
+        um_lock_excl(&p->lock);
         for (UINT32 i = 0; i < UM_MAX_HANDLES; i++) if (p->handles[i].kind != H_FREE) vals[n++] = (i + 1) * 4;
-        um_unlock(&p->lock);
+        um_unlock_excl(&p->lock);
         UINT32 need = a2 == 20 ? 4 : n * 4;
         UINT64 st = ST_SUCCESS, ret = um_stack_arg(5);
         if (a4 < need) st = ST_INFO_LENGTH_MISMATCH;

@@ -1,5 +1,5 @@
 {
-  "deps": ["kernel32", "ntdll"],
+  "deps": ["secur32", "ws2_32", "msvcrt", "kernel32", "ntdll"],
   "base": "0x7FFBF0000000",
   "base_x86": "0x7F000000"
 }

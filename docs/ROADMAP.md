@@ -32,9 +32,9 @@ loader semantics, and the drivers they expect.
 The details of each phase are in [HISTORY.md](HISTORY.md).
 
 **Honest gaps:** the real Microsoft DLLs are not loaded (everything is
-NovaOS's own clean-room code); there is no GPU (3D runs on the CPU); drive
-C: is FAT, so there are no hard links or ACL enforcement on files (NTFS
-disks can be read, as drives D:, E:, ...); and most of the App Store's catalog (Qt, GTK and
+NovaOS's own clean-room code); there is no GPU (3D runs on the CPU); there
+are no hard links, and file ACLs are kept only when drive C: is on NTFS
+(the installer's default); and most of the App Store's catalog (Qt, GTK and
 multimedia programs) does not run yet.
 
 ---
@@ -92,7 +92,10 @@ named program or test demonstrates it.
 - ~~**ffmpeg's imports**~~ Done (19.3): see [ffmpeg](HISTORY.md#ffmpeg).
   `ffmpeg -i in.mp4 out.webm` (H.264 and AAC to VP9 and Opus) completes,
   and the nightly app corpus runs it.
-- Display: GPU-backed or at least faster blits; mode changes.
+- Display: GPU-backed or at least faster blits.  ~~Mode changes~~ Done:
+  run-time resolutions (Phase 12 onwards); the chosen one is kept across
+  restarts, and windows a smaller mode shrank grow back when it is undone
+  (Phase 18.9).
 - NetSurf: SVG; redrawing pages a script changes after layout.
 
 <!-- END generated:next-graphics -->
@@ -162,21 +165,40 @@ named program or test demonstrates it.
 ### Storage, network and hardware
 <!-- BEGIN generated:next-hardware -->
 
-- ~~NTFS read~~ Done: NTFS volumes mount read-only as drives D:, E:, ...;
-  NTFS write, NVMe.
-- IPv6, HTTP/2.
-- ~~USB (xHCI) with HID keyboards and mice~~ Done: boot-protocol keyboards
-  and mice on xHCI root ports, with hot-plug.  Still to do: USB hubs, absolute pointers
-  (tablets, touch screens), report-protocol HID, mass storage.
+- ~~NTFS read~~ ~~NTFS write~~ Done: NTFS volumes mount as drives D:, E:,
+  ...; files on them are written, created, renamed and deleted (volumes
+  Windows left hibernated or unclean stay read-only).  ~~NTFS as drive C:~~
+  Done: the installer formats C: as NTFS (or FAT32), and files there keep
+  security descriptors that opening, deleting and renaming obey.  Hard
+  links are still to do.  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
+- ~~IPv6, HTTP/2~~ Done (Phase 18.8): lwIP's IPv6 (SLAAC, RDNSS, MLD),
+  dual-stack Winsock with `getaddrinfo`, `ping -6` and `curl -6`; a
+  virtio-net driver; `winhttp` on Schannel with HTTP/2 by ALPN (nghttp2).
+  The `network` self-test suite checks both.  Still to do: DHCPv6,
+  connection reuse in `winhttp`, WinHTTP WebSockets, HTTP/3.
+- ~~USB (xHCI) with HID keyboards and mice~~ Done: keyboards, mice,
+  tablets and touch screens in report protocol, on root ports or behind
+  hubs, with hot-plug; USB mass storage (FAT and NTFS sticks as the next
+  drive letter; NTFS ones writable).
 - ACPI beyond the MADT: ~~shutdown, reboot, sleep, batteries~~ Done:
   power-off (S5), sleep (S3), reset and the fixed power button from the
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,
-  control-method power buttons and `_PTS`/`_WAK`.  Still to do: the lid
-  switch, thermal zones, wake devices (USB keyboards), a real SCI
-  interrupt and PCI interrupt routing from `_PRT`; HPET or TSC-deadline
-  timers.  (Display modes after S3 are set again on every adapter NovaOS
-  drives: the VBE ones, QXL, virtio-vga, VMware SVGA and Cirrus.  Real
-  GPUs have no driver yet.)
+  control-method power buttons and `_PTS`/`_WAK`; the lid (closing it
+  sleeps), thermal zones (passive cooling reported, sleep at `_HOT`,
+  shutdown at `_CRT`), wake devices from `_PRW` (the lid, power buttons,
+  USB controllers, with USB keyboards set for remote wakeup), the SCI as
+  a real interrupt through the I/O APIC and PCI interrupt routing from
+  `_PRT` (Phase 18.6).  Still to do: CPU throttling for passive cooling;
+  GPE blocks other than `\_GPE`; routing behind PCI bridges; USB wake
+  tested only up to what QEMU emulates (it has no USB-to-platform wake).
+  (Display modes after S3 are set again on every adapter NovaOS drives:
+  the VBE ones, QXL, virtio-vga, VMware SVGA and Cirrus.  Real GPUs have
+  no driver yet.)
+- ~~HPET or TSC-deadline timers~~ Done (Phase 18.7): the HPET calibrates
+  the TSC and the APIC timer, which is one-shot (TSC-deadline where the
+  CPU has it), armed for the next tick or the earliest `Sleep` or wait
+  timeout; `sleeptest timer` checks 1 ms resolution under load.
+  Waitable timers (`SetWaitableTimer`) still fire on the 10 ms tick.
 - Boot and test on real hardware, not only QEMU.
 
 <!-- END generated:next-hardware -->

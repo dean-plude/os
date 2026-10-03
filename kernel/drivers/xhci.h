@@ -1,12 +1,13 @@
 /*
  * xhci.h — USB 3 (xHCI) host controller driver
  *
- * Brings up every xHCI controller, enumerates the devices on its root
- * ports and binds HID boot-protocol keyboards and mice (usbhid.h), which
- * feed the same input queue as the PS/2 driver.  Like the other drivers
- * it is polled: device interrupts stay off and XhciPoll(), called from the
- * timer tick, drains the event rings.  Devices plugged in later are
- * enumerated by a small kernel thread.
+ * Brings up the xHCI controller, enumerates the devices on its root ports
+ * and behind hubs, and offers their interfaces to the class drivers
+ * (usb.h): hubs, HID keyboards, mice, tablets and touch screens (which
+ * feed the same input queue as the PS/2 driver) and mass storage.  Like
+ * the other drivers it is polled: device interrupts stay off and
+ * XhciPoll(), called from the timer tick, drains the event ring.  Devices
+ * plugged in later are enumerated by a small kernel thread.
  */
 
 #pragma once
@@ -18,5 +19,8 @@
 int  XhciInit(void);
 /* Drain the event rings (timer tick, any CPU). */
 void XhciPoll(void);
-/* After waking from S3: restart the controller and enumerate again */
+/* Before S3: arm the root ports and PME# to wake the machine */
+void XhciPrepareSleep(void);
+/* After waking from S3 (or a sleep that didn't happen): restart the
+ * controller and enumerate again */
 void XhciResume(void);
