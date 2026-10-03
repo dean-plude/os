@@ -427,6 +427,17 @@ static void cmd_date(Term *t, bool time)
                       r.year, r.month, r.day);
 }
 
+/* whoami: as Windows prints it, nova-pc\name in lower case (USERNAME: the
+ * name given at first boot, apps/welcome.c) */
+static void cmd_whoami(Term *t)
+{
+    char user[40] = "dean", line[64];
+    um_registry_get_sz(UM_SETUP_KEY, "UserName", user, sizeof(user));
+    ksnprintf(line, sizeof(line), "nova-pc\\%s", user[0] ? user : "dean");
+    for (char *p = line; *p; p++) if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
+    tprint(t, line);
+}
+
 static void cmd_sysinfo(Term *t)
 {
     char cpu[64], up[32];
@@ -1509,7 +1520,7 @@ static void run_cmd(Term *t, char *cmdline)
         tprint(t, PersistActive() ? "Drive C: and the registry are saved." : "There is no disk to save to.");
     }
     else if (is(c, "ver"))                      tprint(t, "NovaOS [Version " NOVA_VERSION "]");
-    else if (is(c, "whoami"))                   tprint(t, "nova-pc\\dean");
+    else if (is(c, "whoami"))                   cmd_whoami(t);
     else if (is(c, "sysinfo") || is(c, "neofetch")) cmd_sysinfo(t);
     else if (is(c, "dmesg"))                    cmd_dmesg(t);
     else if (is(c, "start") || is(c, "open"))   cmd_start(t, argc, argv);

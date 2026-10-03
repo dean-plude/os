@@ -90,8 +90,9 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
   Alt+Tab, right-click menus, three wallpapers.
 - **Apps**: Terminal, File Explorer, Notepad, Settings (its Sound page
   chooses the output and input and sets each device's volume, kept across
-  restarts), Calendar, Photos, the **App Store** and **Install NovaOS**
-  (Setup).
+  restarts), Calendar, Photos, the **App Store**, **Install NovaOS**
+  (Setup) and **Welcome to NovaOS**, the first-boot setup of an installed
+  system (your name and the display resolution).
 - **Web browser**: NetSurf 3.11, built from source as a Windows program,
   with HTTPS (TLS 1.3/1.2), JavaScript (pages a script changes are laid
   out again) and SVG (image files and `<svg>` written inline in a page),
@@ -101,7 +102,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
   `curl`, `wget`, `certutil`, `tasklist`, `trace NAME`, `vol`, `sync`,
   `devices`…)
   and NovaOS's `cmd.exe` with batch files, plus `find`, `findstr`, `sort`,
-  `more`, `less` (git's pager), `timeout`, `taskkill`, `reg`, `regsvr32`, `msiexec` and
+  `more`, `less` (git's pager), `timeout`, `taskkill`, `whoami`, `reg`, `regsvr32`, `msiexec` and
   `intl` (the user's regional format).
 
 ### The App Store
@@ -282,7 +283,9 @@ qemu-system-x86_64 -machine q35 -m 2G -smp 4 \
 ```
 
 After installing, the same command without `-cdrom nova.iso` starts from
-`disk.img`.
+`disk.img`.  The first start from it opens **Welcome to NovaOS**, which
+asks for your name and a display resolution before the desktop
+(`start welcome` in the Terminal goes through it again).
 
 Give the machine 2 GB so downloaded installers fit in drive C: (which lives
 in memory and is saved to disk).  On macOS with Homebrew QEMU, the firmware
