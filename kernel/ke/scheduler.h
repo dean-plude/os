@@ -223,6 +223,12 @@ void sched_unblock(Thread *t);
 void sched_unblock_timer(Thread *t);
 /* IPI_WAKE (interrupt context): switch if sched_unblock asked this CPU to */
 void sched_resched_ipi(void);
+/* On the way back to a program: a switch asked for while this CPU halted
+ * waiting for the kernel lock (when IPI_WAKE leaves it) happens now */
+void sched_resched_pending(void);
+/* For an idle CPU about to halt (interrupts off): a thread is queued on
+ * some CPU, or a switch was asked of this one */
+bool sched_work_waiting(void);
 
 /*
  * Print scheduler state to the debug console (for diagnostics).

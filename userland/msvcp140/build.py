@@ -6,7 +6,7 @@
 # headers (public domain) plus the small set in userland/msvcp140/inc
 # (vcruntime.h, eh.h, ppltasks.h...).  The satellite DLLs
 # (userland/msvcp140_1, _2, _atomic_wait, _codecvt_ids) use the helpers here.
-import os, re, shutil, subprocess
+import os, re, shutil, subprocess, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -118,12 +118,15 @@ def compile_stl(b, odir, names, prefix, defines=(), extra=()):
     return b.compile_many(srcs, odir, prefix, cxx_flags(b, defines) + list(extra), headers, compiler='clang++')
 
 
+STATIC_LIB = threading.Lock()     # the DLLs and programs that link it are built concurrently
+
 def static_lib(b, odir):
     """msvcprt_static.lib (IMPLIB above), built once per architecture"""
     lib = os.path.join(odir, 'msvcprt_static.lib')
-    objs = compile_stl(b, odir, IMPLIB, 'msvcprt_')
-    if not os.path.exists(lib) or any(os.path.getmtime(o) > os.path.getmtime(lib) for o in objs):
-        b.run(['lld-link', '/lib', f'/out:{lib}'] + objs)
+    with STATIC_LIB:
+        objs = compile_stl(b, odir, IMPLIB, 'msvcprt_')
+        if not os.path.exists(lib) or any(os.path.getmtime(o) > os.path.getmtime(lib) for o in objs):
+            b.run(['lld-link', '/lib', f'/out:{lib}'] + objs)
     return lib
 
 

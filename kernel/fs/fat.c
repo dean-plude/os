@@ -14,6 +14,14 @@
  * every dirty FAT sector); a replaced or deleted file's clusters are not
  * freed, so not reused, until FatSync has put the entries that no longer
  * use them on the disk.
+ *
+ * A crash in the middle of that can still leave clusters marked as used
+ * that no file reaches.  The volume's clean-shutdown bit (FAT[1], as
+ * Windows keeps it) says whether that can have happened: it is cleared on
+ * the disk before the first FAT or directory sector of a change is
+ * written, and set again once FatSync has flushed everything.  FatReclaim
+ * frees what no file or directory reaches on a volume mounted with it
+ * clear.
  */
 
 #include "fat.h"
@@ -52,6 +60,8 @@ struct FatVol {
     UINT8    *cbuf;             /* one cluster */
     /* the last position found in a directory's cluster chain */
     UINT32    memo_dir, memo_k, memo_cluster;
+    bool      clean_on_disk;    /* FAT[1]'s clean-shutdown bit is set on the disk */
+    bool      clean_ok;         /* FatSync may set it (it was set at mount, or FatReclaim ran) */
 };
 
 /* ---------------------------------------------------------------------------
@@ -63,6 +73,37 @@ static bool dev_write(FatVol *v, UINT32 lba, UINT32 n, const void *buf) { return
 static bool is_fat_sector(FatVol *v, UINT32 lba) { return lba >= v->reserved && lba < v->reserved + v->fat_sectors; }
 
 static bool cache_writeback(FatVol *v, CacheEnt *c);
+
+/* FAT[1]'s clean-shutdown bit (FAT32 bit 27, FAT16 bit 15) */
+static UINT32 clean_bit(FatVol *v) { return v->type == 32 ? 0x08000000u : 0x8000u; }
+
+/* Set or clear the clean-shutdown bit on the disk, in every FAT copy, and
+ * flush.  Goes around the cache (a cached copy of the sector is updated
+ * and written whole), so it never evicts a sector in the middle of a
+ * write-back. */
+static bool set_clean(FatVol *v, bool clean)
+{
+    UINT8 raw[BLOCK_SECTOR], *d = raw;
+    CacheEnt *c = NULL;
+    for (int i = 0; i < CACHE_N; i++)
+        if (v->cache[i].valid && v->cache[i].lba == v->reserved) c = &v->cache[i];
+    if (c) d = c->data;
+    else if (!dev_read(v, v->reserved, 1, raw)) return false;
+    UINT32 off = v->type == 32 ? 4 : 2, bit = clean_bit(v);
+    if (v->type == 32) {
+        UINT32 *p = (UINT32 *)(d + off);
+        *p = clean ? *p | bit : *p & ~bit;
+    } else {
+        UINT16 *p = (UINT16 *)(d + off);
+        *p = (UINT16)(clean ? *p | bit : *p & ~bit);
+    }
+    bool ok = true;
+    for (UINT32 k = 0; k < v->nfats; k++) ok = dev_write(v, v->reserved + k * v->fat_sectors, 1, d) && ok;
+    if (v->dev->flush) ok = v->dev->flush(v->dev) && ok;
+    if (ok && c) c->dirty = false;
+    if (ok) v->clean_on_disk = clean;
+    return ok;
+}
 
 /* Every dirty FAT sector to the disk (before any directory sector: the
  * chains an entry points at are on the disk before the entry) */
@@ -77,6 +118,9 @@ static bool fat_writeback(FatVol *v)
 static bool cache_writeback(FatVol *v, CacheEnt *c)
 {
     if (!c->valid || !c->dirty) return true;
+    /* the first metadata write of a change: the volume is not clean until FatSync says so */
+    if (v->clean_on_disk && c->lba != v->fsinfo && !set_clean(v, false)) return false;
+    if (!c->valid || !c->dirty) return true;              /* (set_clean wrote FAT[1]'s sector) */
     if (!is_fat_sector(v, c->lba) && !fat_writeback(v)) return false;
     bool ok = dev_write(v, c->lba, 1, c->data);
     if (is_fat_sector(v, c->lba))                                              /* mirror the FAT */
@@ -137,6 +181,8 @@ bool FatSync(FatVol *v)
         }
     }
     if (v->dev->flush) ok = v->dev->flush(v->dev) && ok;
+    /* everything is on the disk: mark the volume clean again */
+    if (ok && !v->clean_on_disk && v->clean_ok && !v->npending) ok = set_clean(v, true);
     return ok;
 }
 
@@ -833,11 +879,149 @@ bool FatDelete(FatVol *v, UINT32 dir, const char *name)
 }
 
 /* ---------------------------------------------------------------------------
+ * Reclaiming clusters no file reaches (after a crash in the middle of a change)
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    FatVol *v;
+    UINT8  *fat;                /* the whole FAT, as read from the disk */
+    UINT8  *seen;               /* a bit per cluster: reached from the root */
+    UINT32  n;                  /* clusters + 2 */
+    UINT32  crossed;
+} Reach;
+
+static UINT32 reach_get(Reach *r, UINT32 c)
+{
+    return r->v->type == 32 ? ((UINT32 *)r->fat)[c] & 0x0FFFFFFFu : ((UINT16 *)r->fat)[c];
+}
+static bool seen(Reach *r, UINT32 c) { return r->seen[c >> 3] & (1u << (c & 7)); }
+
+/* Mark the chain from @c as reached.  A chain that runs into a cluster
+ * already reached (two chains sharing clusters, or a loop) stops there:
+ * the shared clusters stay in use, and the crossing is counted. */
+static void reach_chain(Reach *r, UINT32 c)
+{
+    while (c >= 2 && c < r->n) {
+        if (seen(r, c)) { r->crossed++; return; }
+        r->seen[c >> 3] |= (UINT8)(1u << (c & 7));
+        c = reach_get(r, c);
+        if (is_end(r->v, c)) return;
+    }
+}
+
+/* The entries in @len bytes of a directory: files' chains are marked, new
+ * directories are marked and pushed.  1 at the end-of-directory entry, 0
+ * if the directory may go on, -1 if the stack could not grow. */
+static int reach_entries(Reach *r, const UINT8 *buf, UINT32 len, UINT32 **stack, UINT32 *depth, UINT32 *cap)
+{
+    for (UINT32 off = 0; off + 32 <= len; off += 32) {
+        const UINT8 *e = buf + off;
+        if (e[0] == 0x00) return 1;
+        if (e[0] == 0xE5 || e[0] == '.' || e[11] == 0x0F || (e[11] & 0x08)) continue;
+        UINT32 c = entry_cluster(r->v, e);
+        if (c < 2 || c >= r->n) continue;
+        if (!(e[11] & 0x10)) { reach_chain(r, c); continue; }
+        if (seen(r, c)) { r->crossed++; continue; }            /* (a directory reached twice: not walked again) */
+        reach_chain(r, c);
+        if (*depth == *cap) {
+            UINT32 ncap = *cap ? 2 * *cap : 256, *ns = kmalloc(sizeof(UINT32) * ncap);
+            if (!ns) return -1;
+            if (*depth) memcpy(ns, *stack, sizeof(UINT32) * *depth);
+            kfree(*stack);
+            *stack = ns;
+            *cap = ncap;
+        }
+        (*stack)[(*depth)++] = c;
+    }
+    return 0;
+}
+
+bool FatReclaim(FatVol *v, bool force, FatReclaimInfo *info)
+{
+    memset(info, 0, sizeof(*info));
+    if (v->clean_ok && !force) return true;
+    for (int i = 0; i < CACHE_N; i++)
+        if (!cache_writeback(v, &v->cache[i])) return false;
+    Reach r = { v, NULL, NULL, v->clusters + 2, 0 };
+    UINT32 esz = v->type == 32 ? 4 : 2, secs = (r.n * esz + BLOCK_SECTOR - 1) / BLOCK_SECTOR;
+    if (secs > v->fat_sectors) return false;
+    UINT32 blen = v->cluster_bytes > v->root_sectors * BLOCK_SECTOR ? v->cluster_bytes : v->root_sectors * BLOCK_SECTOR;
+    UINT32 *stack = NULL, depth = 0, cap = 0;
+    r.fat = kmalloc((UINT64)secs * BLOCK_SECTOR);
+    r.seen = kzalloc((r.n + 7) / 8);
+    UINT8 *buf = kmalloc(blen), *dirty = kzalloc((secs + 7) / 8);
+    bool ok = r.fat && r.seen && buf && dirty;
+    for (UINT32 s = 0; ok && s < secs; s += 128)
+        ok = dev_read(v, v->reserved + s, secs - s < 128 ? secs - s : 128, r.fat + (UINT64)s * BLOCK_SECTOR);
+    /* everything reachable from the root directory */
+    if (ok && v->type == 16) {
+        ok = dev_read(v, v->root_start, v->root_sectors, buf) &&
+             reach_entries(&r, buf, v->root_sectors * BLOCK_SECTOR, &stack, &depth, &cap) >= 0;
+    } else if (ok) {
+        reach_chain(&r, v->root_cluster);
+        stack = kmalloc(sizeof(UINT32) * 256);
+        cap = stack ? 256 : 0;
+        ok = stack != NULL;
+        if (ok) stack[depth++] = v->root_cluster;
+    }
+    while (ok && depth) {
+        UINT32 c = stack[--depth];
+        for (UINT32 guard = 0; guard < r.n && c >= 2 && c < r.n; guard++) {
+            if (!(ok = dev_read(v, clus_lba(v, c), v->spc, buf))) break;
+            int end = reach_entries(&r, buf, v->cluster_bytes, &stack, &depth, &cap);
+            if (end) { ok = end > 0; break; }
+            c = reach_get(&r, c);
+            if (is_end(v, c)) break;
+        }
+    }
+    /* free what was not reached (bad clusters and reserved values stay) */
+    UINT32 bad = v->type == 32 ? 0x0FFFFFF7u : 0xFFF7u, free = 0;
+    for (UINT32 c = 2; ok && c < r.n; c++) {
+        UINT32 x = reach_get(&r, c);
+        if (!x) { free++; continue; }
+        if (seen(&r, c) || x == bad || (x >= r.n && x < bad)) continue;
+        if (v->type == 32) ((UINT32 *)r.fat)[c] &= 0xF0000000u;
+        else ((UINT16 *)r.fat)[c] = 0;
+        dirty[c * esz / BLOCK_SECTOR / 8] |= (UINT8)(1u << (c * esz / BLOCK_SECTOR % 8));
+        info->reclaimed++;
+        free++;
+    }
+    if (ok && info->reclaimed) {
+        if (v->clean_on_disk && (ok = set_clean(v, false))) {     /* (a forced scan of a clean volume) */
+            if (v->type == 32) ((UINT32 *)r.fat)[1] &= ~clean_bit(v);
+            else ((UINT16 *)r.fat)[1] &= (UINT16)~clean_bit(v);
+        }
+        for (UINT32 s = 0; ok && s < secs; s++) {
+            if (!(dirty[s / 8] & (1u << (s % 8)))) continue;
+            for (UINT32 k = 0; ok && k < v->nfats; k++)
+                ok = dev_write(v, v->reserved + k * v->fat_sectors + s, 1, r.fat + (UINT64)s * BLOCK_SECTOR);
+        }
+        cache_invalidate(v, v->reserved, v->fat_sectors);
+        v->memo_dir = 0;
+        v->next_free = 2;
+    }
+    if (ok) {
+        v->free_count = free;
+        v->clean_ok = true;
+        ok = FatSync(v);                                   /* (sets the clean-shutdown bit) */
+    }
+    info->scanned = true;
+    info->crossed = r.crossed;
+    info->free = free;
+    kfree(stack);
+    kfree(dirty);
+    kfree(buf);
+    kfree(r.seen);
+    kfree(r.fat);
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
  * Volumes
  * ------------------------------------------------------------------------- */
 const char *FatLabel(const FatVol *v) { return v->label; }
 int FatType(const FatVol *v) { return v->type; }
 BlockDev *FatDevice(const FatVol *v) { return v->dev; }
+UINT32 FatClusterBytes(const FatVol *v) { return v->cluster_bytes; }
 UINT64 FatTotalBytes(const FatVol *v) { return (UINT64)v->clusters * v->cluster_bytes; }
 UINT64 FatFreeBytes(FatVol *v) { count_free(v); return (UINT64)v->free_count * v->cluster_bytes; }
 
@@ -909,8 +1093,9 @@ FatVol *FatMount(BlockDev *dev, UINT64 lba)
             if (hint >= 2 && hint < clusters + 2) v->next_free = hint;
         }
     }
-    kprintf("[FAT] %s at LBA %llu: FAT%d \"%s\", %u MiB\n", dev->name, (unsigned long long)lba, v->type, v->label,
-            (unsigned)(FatTotalBytes(v) >> 20));
+    v->clean_on_disk = v->clean_ok = (fat_get(v, 1) & clean_bit(v)) != 0;
+    kprintf("[FAT] %s at LBA %llu: FAT%d \"%s\", %u MiB%s\n", dev->name, (unsigned long long)lba, v->type, v->label,
+            (unsigned)(FatTotalBytes(v) >> 20), v->clean_ok ? "" : " (not closed cleanly)");
 out:
     kfree(bs);
     return v;

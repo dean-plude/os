@@ -5,7 +5,9 @@
  * Every stream carries 48 kHz, 16-bit stereo frames (winmm and mmdevapi
  * convert to that).  A kernel thread mixes the running streams into the
  * playing output's ring a little ahead of the hardware: the HD Audio
- * card's DMA ring, or a USB audio device's (usbaudio.c).
+ * card's DMA ring, or a USB audio device's (usbaudio.c).  Capture streams
+ * are fed from the recording input's ring the same way: the HD Audio
+ * card's, or a USB microphone's.
  */
 
 #pragma once
@@ -38,6 +40,19 @@ typedef struct {
     void       *ctx;
 } AudioOutput;
 
+/* A recording device: a ring of @bytes of interleaved 48 kHz s16 stereo
+ * frames that the device writes.  @position: how far it has written
+ * (bytes, a whole frame).  @run (may be NULL): start or stop recording;
+ * the mixer reads on from the position it finds after starting it. */
+typedef struct {
+    const char *name;
+    INT16      *ring;
+    UINT32      bytes;
+    UINT32    (*position)(void *ctx);
+    void      (*run)(void *ctx, bool on);
+    void       *ctx;
+} AudioInput;
+
 /* Start the mixer and probe the sound card; false when there is no card
  * (an output can still be attached later) */
 bool        AudioInit(void);
@@ -52,6 +67,13 @@ void        AudioOutputDetach(const AudioOutput *o);
 bool        AudioPresent(void);
 const char *AudioDeviceName(void);
 
+/* Record from @i (kept until detached) from now on, as Windows switches
+ * to a USB microphone when it is plugged in; detaching it goes back to
+ * the one attached before.  After AudioInputDetach returns the mixer no
+ * longer reads @i's ring. */
+bool        AudioInputAttach(const AudioInput *i);
+void        AudioInputDetach(const AudioInput *i);
+/* Whether there is an input, and the recording one's name */
 bool        AudioCanRecord(void);
 const char *AudioInputName(void);
 

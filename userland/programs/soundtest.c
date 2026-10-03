@@ -21,6 +21,14 @@
  *                               (IAudioEndpointVolume), which must sound
  *                               12 dB quieter
  *   soundtest volume            IAudioEndpointVolume on both endpoints
+ *   soundtest dsound [HZ] [MS]  DirectSound: a sine streamed through a 1 s
+ *                               looping 22.05 kHz mono buffer refilled at
+ *                               two position notifications, then a static
+ *                               buffer of the same sine at twice the
+ *                               frequency (SetFrequency) and half volume
+ *   soundtest dscapture FILE [MS]  DirectSoundCapture (made with
+ *                               CoCreateInstance) at 44.1 kHz mono 16-bit,
+ *                               a looping 1 s buffer read at notifications
  */
 
 #include <windows.h>
@@ -469,6 +477,192 @@ static int volume(void)
     return bad;
 }
 
+/* -----------------------------------------------------------------------
+ * DirectSound (declared here: the userland headers have no dsound.h)
+ * ----------------------------------------------------------------------- */
+typedef struct { DWORD dwSize, dwFlags, dwBufferBytes, dwReserved; WAVEFORMATEX *lpwfxFormat; GUID guid3DAlgorithm; } DSBUFFERDESC;
+typedef struct { DWORD dwSize, dwFlags, dwBufferBytes, dwReserved; WAVEFORMATEX *lpwfxFormat; DWORD dwFXCount; void *fx; } DSCBUFFERDESC;
+typedef struct { DWORD dwOffset; HANDLE hEventNotify; } DSBPOSITIONNOTIFY;
+typedef struct {
+    void *qi, *addref;
+    ULONG (STDMETHODCALLTYPE *Release)(void *);
+    HRESULT (STDMETHODCALLTYPE *CreateSoundBuffer)(void *, const DSBUFFERDESC *, void **, void *);
+    void *get_caps, *duplicate;
+    HRESULT (STDMETHODCALLTYPE *SetCooperativeLevel)(void *, HWND, DWORD);
+} DSVtbl;
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void *, const GUID *, void **);
+    void *addref;
+    ULONG (STDMETHODCALLTYPE *Release)(void *);
+    void *get_caps;
+    HRESULT (STDMETHODCALLTYPE *GetCurrentPosition)(void *, DWORD *, DWORD *);
+    void *get_format, *get_volume, *get_pan, *get_frequency;
+    HRESULT (STDMETHODCALLTYPE *GetStatus)(void *, DWORD *);
+    void *initialize;
+    HRESULT (STDMETHODCALLTYPE *Lock)(void *, DWORD, DWORD, void **, DWORD *, void **, DWORD *, DWORD);
+    HRESULT (STDMETHODCALLTYPE *Play)(void *, DWORD, DWORD, DWORD);
+    HRESULT (STDMETHODCALLTYPE *SetCurrentPosition)(void *, DWORD);
+    void *set_format;
+    HRESULT (STDMETHODCALLTYPE *SetVolume)(void *, LONG);
+    void *set_pan;
+    HRESULT (STDMETHODCALLTYPE *SetFrequency)(void *, DWORD);
+    HRESULT (STDMETHODCALLTYPE *Stop)(void *);
+    HRESULT (STDMETHODCALLTYPE *Unlock)(void *, void *, DWORD, void *, DWORD);
+} DSBufVtbl;
+typedef struct {
+    void *qi, *addref;
+    ULONG (STDMETHODCALLTYPE *Release)(void *);
+    HRESULT (STDMETHODCALLTYPE *SetNotificationPositions)(void *, DWORD, const DSBPOSITIONNOTIFY *);
+} DSNotifyVtbl;
+typedef struct {
+    void *qi, *addref;
+    ULONG (STDMETHODCALLTYPE *Release)(void *);
+    HRESULT (STDMETHODCALLTYPE *CreateCaptureBuffer)(void *, const DSCBUFFERDESC *, void **, void *);
+    void *get_caps;
+    HRESULT (STDMETHODCALLTYPE *Initialize)(void *, const GUID *);
+} DSCVtbl;
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void *, const GUID *, void **);
+    void *addref;
+    ULONG (STDMETHODCALLTYPE *Release)(void *);
+    void *get_caps;
+    HRESULT (STDMETHODCALLTYPE *GetCurrentPosition)(void *, DWORD *, DWORD *);
+    void *get_format, *get_status, *initialize;
+    HRESULT (STDMETHODCALLTYPE *Lock)(void *, DWORD, DWORD, void **, DWORD *, void **, DWORD *, DWORD);
+    HRESULT (STDMETHODCALLTYPE *Start)(void *, DWORD);
+    HRESULT (STDMETHODCALLTYPE *Stop)(void *);
+    HRESULT (STDMETHODCALLTYPE *Unlock)(void *, void *, DWORD, void *, DWORD);
+} DSCBufVtbl;
+static const GUID IID_IDirectSoundNotify = { 0xB0210783, 0x89CD, 0x11D0, { 0xAF, 0x08, 0x00, 0xA0, 0xC9, 0x25, 0xCD, 0x16 } };
+static const GUID CLSID_DirectSoundCapture8 = { 0xE4BCAC13, 0x7F99, 0x4908, { 0x9A, 0x8E, 0x74, 0xE3, 0xBF, 0x24, 0xB6, 0xE1 } };
+static const GUID IID_IDirectSoundCapture = { 0xB0210781, 0x89CD, 0x11D0, { 0xAF, 0x08, 0x00, 0xA0, 0xC9, 0x25, 0xCD, 0x16 } };
+__declspec(dllimport) HRESULT WINAPI DirectSoundCreate8(const GUID *, void **, void *);
+
+/* Write @bytes of the sine (16-bit mono, phase @*n samples) at @off of @buf */
+static void ds_fill(void *buf, DWORD off, DWORD bytes, double hz, DWORD rate, DWORD *n, DWORD total)
+{
+    void *p1, *p2;
+    DWORD n1, n2;
+    if (FAILED(CALL(buf, DSBufVtbl, Lock, off, bytes, &p1, &n1, &p2, &n2, 0))) return;
+    for (int part = 0; part < 2; part++) {
+        short *s = part ? p2 : p1;
+        DWORD c = (part ? n2 : n1) / 2;
+        for (DWORD k = 0; s && k < c; k++, (*n)++)
+            s[k] = *n < total ? (short)(16000 * sin(2 * PI * hz * *n / rate)) : 0;
+    }
+    CALL(buf, DSBufVtbl, Unlock, p1, n1, p2, n2);
+}
+
+static int dsound(double hz, DWORD ms)
+{
+    void *ds = 0, *buf = 0, *nt = 0, *st = 0;
+    HRESULT hr = DirectSoundCreate8(0, &ds, 0);
+    if (FAILED(hr)) { printf("FAIL DirectSoundCreate8: %08lx\n", hr); return 1; }
+    CALL(ds, DSVtbl, SetCooperativeLevel, GetDesktopWindow(), 2 /* DSSCL_PRIORITY */);
+    WAVEFORMATEX f = { 1, 1, 22050, 44100, 2, 16, 0 };
+    DSBUFFERDESC d = { sizeof(d), 0x00010000 | 0x100 | 0x80 | 0x20 | 0x8000, f.nAvgBytesPerSec, 0, &f };
+    hr = CALL(ds, DSVtbl, CreateSoundBuffer, &d, &buf, 0);
+    if (FAILED(hr)) { printf("FAIL CreateSoundBuffer: %08lx\n", hr); return 1; }
+    hr = ((DSBufVtbl *)*(void **)buf)->QueryInterface(buf, &IID_IDirectSoundNotify, &nt);
+    if (FAILED(hr)) { printf("FAIL IDirectSoundNotify: %08lx\n", hr); return 1; }
+    DWORD half = d.dwBufferBytes / 2;
+    HANDLE ev[2] = { CreateEventW(0, FALSE, FALSE, 0), CreateEventW(0, FALSE, FALSE, 0) };
+    /* the last sample of each half: it has played (an offset of 0 would
+     * also fire as Play starts, as on Windows) */
+    DSBPOSITIONNOTIFY pn[2] = { { half - 2, ev[0] }, { d.dwBufferBytes - 2, ev[1] } };
+    CALL(nt, DSNotifyVtbl, SetNotificationPositions, 2, pn);
+
+    /* streaming: each half is refilled once the play cursor leaves it */
+    DWORD total = f.nSamplesPerSec * ms / 1000, n = 0, notes = 0;
+    ds_fill(buf, 0, d.dwBufferBytes, hz, f.nSamplesPerSec, &n, total);
+    DWORD t0 = GetTickCount();
+    CALL(buf, DSBufVtbl, Play, 0, 0, 1 /* DSBPLAY_LOOPING */);
+    while (notes * (half / 2) < total && GetTickCount() - t0 < ms + 5000) {
+        DWORD w = WaitForMultipleObjects(2, ev, FALSE, 1000);
+        if (w > 1) continue;
+        notes++;
+        ds_fill(buf, w ? half : 0, half, hz, f.nSamplesPerSec, &n, total);
+    }
+    DWORD elapsed = GetTickCount() - t0, status = 0, play = 0, write = 0;
+    CALL(buf, DSBufVtbl, GetStatus, &status);
+    CALL(buf, DSBufVtbl, GetCurrentPosition, &play, &write);
+    CALL(buf, DSBufVtbl, Stop);
+    Sleep(300);                                     /* (a gap between the two tones) */
+    printf("streamed %lu samples, %lu notifications in %lu ms; status %lx; play %lu write %lu\n", total, notes,
+           elapsed, status, play, write);
+    int bad = 0;
+    if (status != 5 /* PLAYING | LOOPING */) { printf("FAIL status %lx\n", status); bad = 1; }
+    if (elapsed < ms * 9 / 10 || elapsed > ms * 3 / 2 + 1000) { printf("FAIL streaming took %lu ms\n", elapsed); bad = 1; }
+    if (notes < ms / 500) { printf("FAIL only %lu notifications\n", notes); bad = 1; }
+
+    /* static: half a second played at twice the rate (an octave up, 250 ms)
+     * looped for MS / 2 */
+    DSBUFFERDESC sd = { sizeof(sd), 0x2 | 0x20 | 0x80, f.nAvgBytesPerSec / 2, 0, &f };
+    hr = CALL(ds, DSVtbl, CreateSoundBuffer, &sd, &st, 0);
+    if (FAILED(hr)) { printf("FAIL CreateSoundBuffer(static): %08lx\n", hr); return 1; }
+    DWORD m = 0;
+    /* a whole number of periods so the loop is seamless */
+    double hz2 = floor(hz * 0.5 + 0.5) / 0.5;
+    ds_fill(st, 0, sd.dwBufferBytes, hz2, f.nSamplesPerSec, &m, ~0u);
+    CALL(st, DSBufVtbl, SetFrequency, f.nSamplesPerSec * 2);
+    CALL(st, DSBufVtbl, SetVolume, -600);
+    t0 = GetTickCount();
+    CALL(st, DSBufVtbl, Play, 0, 0, 1);
+    Sleep(ms / 2);
+    CALL(st, DSBufVtbl, Stop);
+    printf("static buffer at %.0f Hz for %lu ms\n", hz2 * 2, GetTickCount() - t0);
+    ((IUnk *)st)->v->Release(st);
+    ((IUnk *)nt)->v->Release(nt);
+    ((IUnk *)buf)->v->Release(buf);
+    ((IUnk *)ds)->v->Release(ds);
+    return bad;
+}
+
+static int dscapture(const char *path, DWORD ms)
+{
+    void *dc = 0, *cb = 0, *nt = 0;
+    CoInitialize(0);
+    HRESULT hr = CoCreateInstance(&CLSID_DirectSoundCapture8, 0, CLSCTX_INPROC_SERVER, &IID_IDirectSoundCapture, &dc);
+    if (FAILED(hr)) { printf("FAIL CoCreateInstance(DirectSoundCapture8): %08lx\n", hr); return 1; }
+    hr = CALL(dc, DSCVtbl, Initialize, 0);
+    if (FAILED(hr)) { printf("FAIL Initialize: %08lx\n", hr); return 1; }
+    WAVEFORMATEX f = { 1, 1, 44100, 88200, 2, 16, 0 };
+    DSCBUFFERDESC d = { sizeof(d), 0, f.nAvgBytesPerSec, 0, &f };
+    hr = CALL(dc, DSCVtbl, CreateCaptureBuffer, &d, &cb, 0);
+    if (FAILED(hr)) { printf("FAIL CreateCaptureBuffer: %08lx\n", hr); return 1; }
+    hr = ((DSCBufVtbl *)*(void **)cb)->QueryInterface(cb, &IID_IDirectSoundNotify, &nt);
+    if (FAILED(hr)) { printf("FAIL IDirectSoundNotify: %08lx\n", hr); return 1; }
+    DWORD half = d.dwBufferBytes / 2;
+    HANDLE ev[2] = { CreateEventW(0, FALSE, FALSE, 0), CreateEventW(0, FALSE, FALSE, 0) };
+    /* at the last byte of each half: that half is complete */
+    DSBPOSITIONNOTIFY pn[2] = { { half - 2, ev[0] }, { d.dwBufferBytes - 2, ev[1] } };
+    CALL(nt, DSNotifyVtbl, SetNotificationPositions, 2, pn);
+    DWORD total = f.nSamplesPerSec * ms / 1000, got = 0, notes = 0;
+    short *all = calloc(total + half, 1);
+    DWORD t0 = GetTickCount();
+    CALL(cb, DSCBufVtbl, Start, 1 /* DSCBSTART_LOOPING */);
+    while (got < total && GetTickCount() - t0 < ms + 5000) {
+        DWORD w = WaitForMultipleObjects(2, ev, FALSE, 1000);
+        if (w > 1) continue;
+        notes++;
+        void *p1, *p2;
+        DWORD n1, n2;
+        if (FAILED(CALL(cb, DSCBufVtbl, Lock, w ? half : 0, half, &p1, &n1, &p2, &n2, 0))) break;
+        DWORD n = n1 / 2 < total - got ? n1 / 2 : total - got;
+        memcpy(all + got, p1, n * 2);
+        got += n;
+        CALL(cb, DSCBufVtbl, Unlock, p1, n1, p2, n2);
+    }
+    CALL(cb, DSCBufVtbl, Stop);
+    printf("captured %lu samples, %lu notifications in %lu ms; level %.0f\n", got, notes, GetTickCount() - t0,
+           rms16(all, got, 1));
+    ((IUnk *)nt)->v->Release(nt);
+    ((IUnk *)cb)->v->Release(cb);
+    ((IUnk *)dc)->v->Release(dc);
+    if (got < total) { printf("FAIL captured %lu of %lu samples\n", got, total); return 1; }
+    return save_wav(path, all, got * 2, f.nSamplesPerSec, 1) ? 0 : 1;
+}
+
 static double g_hz;
 static DWORD g_ms;
 static DWORD WINAPI wasapi_thread(LPVOID p) { (void)p; return (DWORD)wasapi(g_hz, g_ms); }
@@ -485,6 +679,8 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "record") && argc > 2) return record(argv[2], argc > 3 ? (DWORD)atoi(argv[3]) : 2000);
     if (!strcmp(cmd, "capture") && argc > 2) return capture(argv[2], argc > 3 ? (DWORD)atoi(argv[3]) : 1000);
     if (!strcmp(cmd, "volume")) return volume();
+    if (!strcmp(cmd, "dsound")) return dsound(hz, ms);
+    if (!strcmp(cmd, "dscapture") && argc > 2) return dscapture(argv[2], argc > 3 ? (DWORD)atoi(argv[3]) : 2000);
     if (!strcmp(cmd, "both")) {
         g_hz = hz;
         g_ms = ms;
@@ -518,6 +714,6 @@ int main(int argc, char **argv)
         return !ok;
     }
     printf("usage: soundtest info | tone [HZ] [MS] | float [HZ] [MS] | play FILE | ding | wasapi [HZ] [MS] | beep [HZ] [MS]\n"
-           "       | record FILE [MS] | capture FILE [MS] | volume\n");
+           "       | record FILE [MS] | capture FILE [MS] | volume | dsound [HZ] [MS] | dscapture FILE [MS]\n");
     return 1;
 }
