@@ -6,7 +6,9 @@
 Lists every function each program imports that NovaOS cannot provide:
 DLLs it does not have, and functions missing from the DLLs it does have
 (api-ms-win-* API set names are mapped the way the kernel's loader maps
-them).  DIR defaults to the userland build directory.  With --exports,
+them).  Delay-loaded imports are checked too, marked "(delay)", and DLLs
+next to the program count as present (an app ships its own).  DIR
+defaults to the userland build directory.  With --exports,
 prints a DLL's export names instead.
 """
 import os, struct, sys
@@ -45,14 +47,19 @@ class PE:
         o = self.off(rva)
         return self.d[o:self.d.index(b'\0', o)].decode('latin-1')
 
-    def imports(self):
+    def imports(self, delay=False):
+        """{dll: [function or #ordinal]}: the import table, or with @delay
+        the delay-load table (IMAGE_DELAYLOAD_DESCRIPTOR)"""
         out = {}
-        rva = self.dirs[1][0]
+        rva = self.dirs[13 if delay else 1][0]
         if not rva:
             return out
         o = self.off(rva)
         while True:
-            ilt, _, _, name, iat = struct.unpack_from('<IIIII', self.d, o)
+            if delay:
+                _, name, _, iat, ilt = struct.unpack_from('<IIIII', self.d, o)
+            else:
+                ilt, _, _, name, iat = struct.unpack_from('<IIIII', self.d, o)
             if not name and not iat:
                 break
             dll = self.cstr(name)
@@ -68,7 +75,7 @@ class PE:
                 else:
                     fns.append(self.cstr((v & 0x7FFFFFFF) + 2))
                 t += width
-            o += 20
+            o += 32 if delay else 20
         return out
 
     def exports(self):
@@ -121,22 +128,32 @@ def main():
         return 0
     have = {}
     for f in os.listdir(dlldir):
-        if f.lower().endswith('.dll'):
+        if f.lower().endswith(('.dll', '.drv')):
             have[f.lower()] = PE(os.path.join(dlldir, f)).exports()
     missing_total = 0
     for prog in args:
         pe = PE(prog)
         print(f'== {prog}' + ('' if pe.machine == 0x8664 else '  (not x64: cannot run)'))
-        for dll, fns in pe.imports().items():
-            real = apiset(dll)
-            if real not in have:
-                print(f'  missing DLL {dll}: {len(fns)} functions')
-                missing_total += len(fns)
-                continue
-            gone = [f for f in fns if not f.startswith('#') and f not in have[real]]
-            for f in gone:
-                print(f'  {dll}!{f}')
-            missing_total += len(gone)
+        here = dict(have)                         # the app's own DLLs, beside it
+        appdir = os.path.dirname(os.path.abspath(prog))
+        for f in os.listdir(appdir):
+            if f.lower().endswith('.dll') and f.lower() not in here:
+                try:
+                    here[f.lower()] = PE(os.path.join(appdir, f)).exports()
+                except (ValueError, struct.error):
+                    pass
+        for delay in (False, True):
+            tag = ' (delay)' if delay else ''
+            for dll, fns in pe.imports(delay).items():
+                real = apiset(dll)
+                if real not in here:
+                    print(f'  missing DLL {dll}{tag}: {len(fns)} functions')
+                    missing_total += len(fns)
+                    continue
+                gone = [f for f in fns if not f.startswith('#') and f not in here[real]]
+                for f in gone:
+                    print(f'  {dll}!{f}{tag}')
+                missing_total += len(gone)
     print(f'{missing_total} missing')
     return 1 if missing_total else 0
 

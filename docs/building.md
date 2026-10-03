@@ -316,7 +316,7 @@ python3 tools/selftest.py --only apitest,guitest --out /tmp/st
 ```
 
 The graphics suite downloads 7-Zip, Mesa and DXVK and builds
-gltest/d3dtest/d2dtest:
+gltest/d3dtest/d2dtest/dwtest:
 
 ```bash
 sudo apt install p7zip-full gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
@@ -333,7 +333,7 @@ python3 tools/selftest.py --suite network
 
 The core suite is `apitest`, `abitest`, `filetest`, `pipetest`, `proctest`,
 `sectest`, `acltest` (x64 and x86), `guitest auto`, `disptest`, `icutest` (x64 and x86), `comtest`,
-`tlbtest` (x64 and x86), `usptest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`,
+`tlbtest` (x64 and x86), `usptest` (x64 and x86), `delaytest` (x64 and x86), `cppeh`, `battery`, `soundtest tone`,
 `soundtest wasapi`, `soundtest record`, `soundtest capture`, `soundtest volume`,
 `sleeptest timer`, `powertest`, `disptest 1024 768` (saves the mode),
 `filetest install` (an installer that must replace a running program
@@ -346,7 +346,10 @@ serial log shows a symbolized backtrace (`KeCrashTestFault`,
 `d2dtest`, x64 and x86: it checks geometry computations, draws a scene into
 a DC render target and compares it with `d2dref.bmp`, the image
 `tools/d2dtest/reference.py` draws with Skia (`pip install skia-python`;
-re-run it when the scene changes), then shows the scene in a window.  It
+re-run it when the scene changes), then shows the scene in a window.  Next
+`dwtest`, x64 and x86, lays out Latin, Arabic and Devanagari in one line
+with DirectWrite from a Latin-only font and checks the fallback fonts, the
+shaping, the direction and the drawing, and shows the line in a window.  It
 then types `store
 install Mesa 3D` and `store install DXVK` (the archives are already in
 `C:\Downloads`, so the App Store installs without a network) and then runs
