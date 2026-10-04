@@ -3,9 +3,13 @@
  * device's registry keys.  NovaOS has no Plug and Play device tree, so
  * device lists come back empty and device nodes are not found; programs
  * then fall back to their other means (the Vulkan loader, for one, reads
- * its drivers from HKLM\SOFTWARE\Khronos\Vulkan\Drivers).
+ * its drivers from HKLM\SOFTWARE\Khronos\Vulkan\Drivers).  The one
+ * interface list that is not empty is the HID devices' (the game
+ * controllers, novapad.h): their paths, which CreateFile opens for hid.dll.
  */
 #include <windows.h>
+#include <novapad.h>
+#include <string.h>
 
 #define CFGMGR32 __declspec(dllexport)
 typedef DWORD CONFIGRET;
@@ -73,10 +77,54 @@ CFGMGR32 CONFIGRET WINAPI CM_Get_DevNode_PropertyW(DEVINST dn, const void *key, 
 { (void)dn; (void)key; (void)type; (void)buf; (void)flags; if (len) *len = 0; return CR_NO_SUCH_DEVNODE; }
 CFGMGR32 CONFIGRET WINAPI CM_Open_DevNode_Key(DEVINST dn, DWORD sam, ULONG profile, DWORD disp, HKEY *key, ULONG flags)
 { (void)dn; (void)sam; (void)profile; (void)disp; (void)flags; if (key) *key = NULL; return CR_NO_SUCH_DEVNODE; }
+/* The interfaces of class @cls present: the HID devices' paths, each
+ * with its NUL, then a NUL; the characters that takes */
+static ULONG iface_list(const GUID *cls, LPCWSTR id, ULONG flags, WCHAR *out, ULONG cap)
+{
+    static const GUID hid = { 0x4d1e55b2, 0xf16f, 0x11cf, { 0x88, 0xcb, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 } };
+    (void)flags;
+    ULONG n = 0;
+    if (cls && !memcmp(cls, &hid, sizeof(GUID)) && (!id || !id[0])) {
+        for (int slot = 0; slot < NOVA_PAD_SLOTS; slot++) {
+            NovaPadInfo i;
+            WCHAR path[96];
+            if (!nova_pad_info(slot, &i)) continue;
+            int len = nova_pad_path(&i, path, TRUE) + 1;
+            for (int k = 0; k < len; k++, n++) if (out && n < cap) out[n] = path[k];
+        }
+    }
+    if (out && n < cap) out[n] = 0;
+    return n + 1;
+}
+
 CFGMGR32 CONFIGRET WINAPI CM_Get_Device_Interface_List_SizeW(PULONG len, LPGUID cls, LPCWSTR id, ULONG flags)
-{ (void)cls; (void)id; (void)flags; return list_size(len); }
+{
+    if (!len) return CR_INVALID_POINTER;
+    *len = iface_list(cls, id, flags, NULL, 0);
+    return CR_SUCCESS;
+}
 CFGMGR32 CONFIGRET WINAPI CM_Get_Device_Interface_ListW(LPGUID cls, LPCWSTR id, WCHAR *buf, ULONG len, ULONG flags)
-{ (void)cls; return CM_Get_Device_ID_ListW(id, buf, len, flags); }
+{
+    if (!buf) return CR_INVALID_POINTER;
+    if (iface_list(cls, id, flags, NULL, 0) > len) return CR_BUFFER_SMALL;
+    iface_list(cls, id, flags, buf, len);
+    return CR_SUCCESS;
+}
+CFGMGR32 CONFIGRET WINAPI CM_Get_Device_Interface_List_SizeA(PULONG len, LPGUID cls, LPCSTR id, ULONG flags)
+{
+    if (!len) return CR_INVALID_POINTER;
+    *len = id && id[0] ? 1 : iface_list(cls, NULL, flags, NULL, 0);
+    return CR_SUCCESS;
+}
+CFGMGR32 CONFIGRET WINAPI CM_Get_Device_Interface_ListA(LPGUID cls, LPCSTR id, char *buf, ULONG len, ULONG flags)
+{
+    if (!buf) return CR_INVALID_POINTER;
+    WCHAR w[NOVA_PAD_SLOTS * 96 + 1];
+    ULONG n = id && id[0] ? (w[0] = 0, 1) : iface_list(cls, NULL, flags, w, sizeof(w) / sizeof(w[0]));
+    if (n > len) return CR_BUFFER_SMALL;
+    for (ULONG k = 0; k < n; k++) buf[k] = (char)w[k];
+    return CR_SUCCESS;
+}
 CFGMGR32 DWORD WINAPI CM_MapCrToWin32Err(CONFIGRET cr, DWORD dflt)
 {
     switch (cr) {

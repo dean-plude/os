@@ -49,10 +49,10 @@ results; until then they are kept by hand.
 | **Inkscape 0.91** (GTK 2) | Works | Opens, edits and saves an SVG; Inkscape 1.x is untested | nightly corpus |
 | **Krita 5.3.4** (Qt 5) | Partly | Starts and opens a new image on Mesa 3D (install Mesa 3D from the App Store first); painting and saving are not checked yet | nightly corpus |
 | **Firefox 157** and **Floorp 12.19** | Works | Installs from the App Store, loads pages over HTTP and HTTPS, scrolls and takes typing in forms; a publicly trusted HTTPS site is untested (the test network is offline) | nightly corpus |
-| **Roblox** (App Store, the current client) | Partly | Its installer runs: it fetches Roblox's settings and packages over HTTPS and installs the client; its Hyperion anti-cheat now reaches the kernel through a full Windows-numbered system-call table but stops at a later integrity check with an "unexpected error" ([Roblox and anti-cheat](#roblox-and-anti-cheat)); the WebView2 runtime it sets up for logging in does not install yet ([WebView2](#webview2)) | nightly corpus (the installer) |
-| **Microsoft Edge WebView2 runtime** (the evergreen offline installer) | Partly | Its installer, Microsoft Edge Update, installs itself and registers its proxy/stub DLL; the install then needs COM calls between processes, which NovaOS does not have yet ([WebView2](#webview2)) | nightly corpus (the installer) |
+| **Roblox** (App Store, the current client) | Partly | Its installer runs: it fetches Roblox's settings and packages over HTTPS and installs the client; its Hyperion anti-cheat now passes the system-call, alignment-fixup, 32-bit-code and thread-context checks and then reports "Virtual Machine detected" under QEMU, as Roblox does in any virtual machine (untested on a real PC) ([Roblox and anti-cheat](#roblox-and-anti-cheat)); the WebView2 runtime it sets up for logging in does not install yet ([WebView2](#webview2)) | nightly corpus (the installer) |
+| **Microsoft Edge WebView2 runtime** (the evergreen offline installer) | Partly | Its installer, Microsoft Edge Update, installs itself and accepts Microsoft's signature on the runtime's package; the install then fails because Edge Update's background pass uninstalls Edge Update under it ([WebView2](#webview2)) | nightly corpus (the installer) |
 | **Mesa 3D 24.2.4** (App Store, Runtimes) | Works | OpenGL 4.5 on the CPU (llvmpipe) and Vulkan (lavapipe), 64- and 32-bit | CI graphics tests (`gltest`) |
-| **DXVK 2.5.3** (App Store, Runtimes) | Works | Direct3D 8 to 11 on Vulkan, 64- and 32-bit | CI graphics tests (`d3dtest`) |
+| **DXVK 2.5.3** (App Store, Runtimes) | Works | Direct3D 8 to 11 on Vulkan, 64- and 32-bit; ANGLE's Direct3D 11 back end (Chromium's GPU process: Steam's browser, WebView2, Qt WebEngine) starts on it | CI graphics tests (`d3dtest`, `d3dtest angle`) |
 | **Venus** (App Store, Runtimes) | Works in QEMU | Vulkan, and Direct3D through DXVK, on the host GPU when QEMU gives NovaOS a 3D virtio-gpu | CI graphics tests |
 | **.NET Desktop Runtime 8** (App Store) | Partly | Console programs run; WinForms and WPF programs are untested | by hand |
 | **Thunderbird** (App Store) | Untested | Uses the same engine as Firefox | — |
@@ -66,9 +66,11 @@ results; until then they are kept by hand.
 | **Visual C++ Redistributable** (App Store) | Works | NovaOS has its own `vcruntime140` and `msvcp140`, so most programs do not need it, but GOG GALAXY needs its MFC.  Its installer (WiX Burn) installs the Minimum and Additional Runtimes, the 32-bit one into `SysWOW64` and the 64-bit one into `System32` (14.44 x86 and 14.51 x64 checked), replacing NovaOS's own copies there | by hand |
 | **Microsoft Build of OpenJDK 21** (App Store) | Untested | Temurin 21 (above) works | — |
 | **OpenTTD 15.3** (App Store; free on GOG; the corpus installs OpenTTD's own Windows installer, as GOG's copy needs an account to download) | Works | Its setup program installs it silently (run as administrator, as its manifest asks); with the OpenGFX graphics it reaches its main menu, and its animated title game plays, drawn in software (no hardware acceleration yet) | nightly corpus |
-| **GOG GALAXY 2.1** (offline installer, Inno Setup 6) | Partly | Its setup program runs elevated, through its wizard or silently (`/VERYSILENT`), installs the Visual C++ runtimes it carries (x86 and x64), copies GOG GALAXY's files and makes its shortcuts; the client does not start yet: `GalaxyClient.exe` (64-bit, Qt 6 WebEngine) needs `d3d9.dll`, which NovaOS has only from DXVK in the App Store. Setup warns that drive C: is not NTFS (answer Yes) | by hand |
-| **Steam** (App Store, the current client) | Partly | Its installer runs and installs the bootstrapper; on first start Steam downloads its client over HTTPS, updates itself to the 64-bit client, verifies it and starts it with `SteamService` and its browser, `steamwebhelper.exe` (Chromium); the browser does not open the login window yet ([Steam](#steam)). Signing in and games are unchecked | nightly corpus (install and update) |
+| **GOG GALAXY 2.1** (offline installer, Inno Setup 6) | Partly | Its setup program runs elevated, through its wizard or silently (`/VERYSILENT`), installs the Visual C++ runtimes it carries (x86 and x64), copies GOG GALAXY's files and makes its shortcuts; the client starts (`GalaxyClient.exe`, 64-bit, Qt 6 WebEngine: every import resolves, 89 modules, and the Windows Runtime `UISettings` its Qt plugin reads the theme from), installs its service and opens its window, but stops after that: its service (`GalaxyClientService.exe`) ends at start-up with "abnormal program termination", so starting it fails with error 1053, and the client then faults. Setup warns that drive C: is not NTFS (answer Yes) | by hand |
+| **Steam** (App Store, the current client) | Partly | Its installer runs and installs the bootstrapper; on first start Steam downloads its client over HTTPS, updates itself to the 64-bit client, verifies it and starts it with `SteamService` (which runs as a real service) and its browser, `steamwebhelper.exe` (Chromium); the browser does not open the login window yet ([Steam](#steam)). Signing in and games are unchecked | nightly corpus (install and update) |
 | **Chocolate Doom 3.1.0** (32-bit, SDL2) with **Freedoom** | Works | Plays in a window on Mesa 3D's OpenGL (install "Mesa 3D" from the App Store first) in the right colours; an Xbox or HID game pad walks, turns and fires | by hand in QEMU; graphics self-test `gltest colors` |
+| **Beneath a Steel Sky** on **ScummVM 2026.3** (App Store; free on GOG, which ships it with ScummVM; the corpus takes the freeware floppy release Revolution and ScummVM publish, as GOG's copy needs an account to download) | Works | ScummVM's setup program (Inno Setup, 32-bit, installing the 64-bit ScummVM) installs it silently or through its wizard; the game starts, Esc skips the intro and a click walks Robert Foster along the first scene's gantry. ScummVM draws with OpenGL 1.1, NovaOS's own when no OpenGL driver is installed; sound not checked yet (the corpus runs without a sound card) | nightly corpus |
+| **Teeworlds 0.7.5** (App Store; free and open source, SDL2) | Partly | Installs from the App Store and starts in full screen on Mesa 3D's OpenGL (install "Mesa 3D" first: it needs OpenGL 1.2), plays its menu music through the sound card and goes through its first-start questions to its start menu with the keyboard. The mouse does not move in it yet (SDL's relative mouse mode reads Raw Input); joining a game on its own server times out without KVM, while Mesa compiles its shaders | nightly corpus |
 
 <!-- END generated:compat-table -->
 
@@ -151,14 +153,23 @@ others), reads its manifests with MSXML 6 and installs itself.  Its
 rpcrt4's NDR engine, and COM calls between processes work (ole32's
 standard marshaler over named pipes, `LocalServer32` servers started on
 demand, oleaut32's `IDispatch` proxy and `BSTR`/`VARIANT` marshaling).
-Its silent install now runs to the end: it unpacks the runtime's package
-and then stops at its own check that the package carries Microsoft's
-signature ("failed to verify Microsoft signature", `0xa0430233`), so
-nothing is installed yet.  What comes next, in order: that signature
-check, the 32-bit updater's registry keys need Windows' `WOW6432Node`
-view for the 64-bit programs that look for the runtime there, and then
-the runtime itself (a Chromium browser process with its sandbox) has to
-run.
+Its silent install unpacks the runtime's package and checks that
+Microsoft signed it: `WinVerifyTrust`, then crypt32's Microsoft root
+chain policy (`CERT_CHAIN_POLICY_MICROSOFT_ROOT`, with the application
+root flag for Microsoft's 2011 root), which NovaOS now answers as
+Windows does, so the package is accepted and cached.  The install still
+fails, with `0x80070003`: while it runs, Edge Update's own background
+update pass (`/ua`, started by its core process) decides no install is
+in progress and uninstalls Edge Update, deleting its folder under the
+running install.  On Windows that pass finds the install worker by
+listing Edge Update's processes and reading their command lines
+(`/handoff`, `/install`); on NovaOS it does not see it (inferred: reading
+another process's command line or owner, for a 32-bit caller, is the
+likely gap), so nothing is installed yet.  What comes next, in order:
+that check of running processes, the 32-bit updater's registry keys
+need Windows' `WOW6432Node` view for the 64-bit programs that look for
+the runtime there, and then the runtime itself (a Chromium browser
+process with its sandbox) has to run.
 
 ## Steam
 
@@ -171,13 +182,23 @@ packages, checks every file and starts the 64-bit client, which starts
 `bin\cef\cef.win64`).  Steam picks the proxy from the user's Internet
 Settings, as on Windows.
 
-The login window does not come up yet: the browser process starts, opens
-its threads, asks COM for a class NovaOS does not register
-(`{33C53A50-F456-4884-B049-85FD643ECFED}`) and stops at one of
-Chromium's own checks (a breakpoint in `libcef.dll`) before it starts its
-GPU and page processes, so no window appears.  What is known to be missing on the way, each a NovaOS gap and
-none a reason to change Steam:
+The login window does not come up yet.  The browser now starts its child
+processes as on Windows: the GPU process, the network and storage
+services and a page (renderer) process for Steam's first page.  The GPU
+process draws with ANGLE on Direct3D 11 when Mesa 3D and DXVK are
+installed; without them it gives up after three tries and Chromium draws
+in software, as it does on Windows without a usable GPU.  Under emulation (the
+nightly corpus) Steam then closes the browser a few minutes in and starts
+it again before the page has drawn, so no window appears in that run.
+What is known to be missing on the way, each a NovaOS gap and none a
+reason to change Steam:
 
+- Media Foundation (`mf.dll`, which Chromium only uses for video).
+- WMI (`WbemLocator`, `{4590F811-1D3A-11D0-891F-00AA004B2E24}`), which the
+  browser asks for just before Steam closes it, and the COM classes
+  `{33C53A50-F456-4884-B049-85FD643ECFED}`,
+  `{E77CC89B-7401-4C04-8CED-149DB35ADD04}` and
+  `{E2B3C97F-6AE1-41AC-817A-F6F92166D7DD}`, which it gets on without.
 - `SteamService.exe` checks Steam's files with `WinVerifyTrust` and
   accepts them: NovaOS checks Authenticode signatures (the digest, Valve's
   chain to DigiCert's root and the timestamp), offline, so a revocation
@@ -197,6 +218,8 @@ none a reason to change Steam:
 - `GetAdaptersAddresses` reports no adapters.  (The browser's sockets
   and Steam's downloads no longer fail with `WSAENOBUFS`: NovaOS's socket
   tables were sized for a small device; see `loadtest`.)
+  Chromium's network change and DNS watchers do not start
+  (`WSALookupServiceBegin` has no providers, error 10108).
 - DirectWrite's GDI interop (`CreateBitmapRenderTarget`), which Chromium
   draws text with.
 

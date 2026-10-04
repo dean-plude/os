@@ -62,6 +62,26 @@ UINT32 um_new_id(void)
 /* -----------------------------------------------------------------------
  * Locks
  * ----------------------------------------------------------------------- */
+/* Giving the CPU away while waiting for a lock: a yield, and after a few
+ * of them a short sleep.  Yielding alone can leave the holder off the CPU
+ * for good: a yield only hands the CPU to threads of the same or higher
+ * priority, so a waiter that a wake-up boost lifted above the holder (both
+ * queued on one CPU) takes the CPU back every time.  The Roblox installer
+ * stopped the whole machine like that part way through its download, in
+ * two runs of five under TCG: one of its threads spun for the desktop
+ * lock (NtCreateSection) while the desktop thread, holding it, waited for
+ * the network lock; in the other run the wait was for the file-system
+ * lock's readers to leave.  Off the run queue for 0.1 ms, the waiter lets
+ * the holder run and let go (net_lock in net/net.c does the same). */
+#define UM_LOCK_YIELDS      8
+#define UM_LOCK_NAP_100NS   1000
+static void um_give_way(int *yields)
+{
+    /* (a thread on its way to blocking only yields: a sleep would lose that) */
+    if (++*yields <= UM_LOCK_YIELDS || sched_current()->state != THREAD_RUNNING) sched_yield();
+    else sched_sleep_until_tsc(NULL, sched_tsc_after(UM_LOCK_NAP_100NS));
+}
+
 void um_lock(UmLock *l)
 {
     Thread *me = sched_current();
@@ -69,11 +89,11 @@ void um_lock(UmLock *l)
     /* Held briefly as a rule: spin a while (the holder is likely running
      * on another CPU) before giving the CPU away — but not holding the big
      * kernel lock, which the holder may be waiting for (yielding lets it go) */
-    int most = bkl_held() ? 0 : 2000;
+    int most = bkl_held() ? 0 : 2000, yields = 0;
     for (int spins = 0; __atomic_exchange_n(&l->v, 1, __ATOMIC_ACQUIRE); ) {
         while (__atomic_load_n(&l->v, __ATOMIC_RELAXED)) {
             if (++spins < most) pause_cpu();
-            else { sched_yield(); spins = 0; }
+            else { um_give_way(&yields); spins = 0; }
         }
     }
     l->owner = me;
@@ -87,15 +107,16 @@ void um_unlock(UmLock *l)
     __atomic_store_n(&l->v, 0, __ATOMIC_RELEASE);
 }
 
-/* Wait (spin a while, then yield) until @cond holds.  Spinning holding the
- * big kernel lock too: what is waited for (readers leaving) takes moments,
- * and a thread that yields here may not run again for a whole time slice,
- * holding up everyone its taken write lock keeps out. */
+/* Wait (spin a while, then give way) until @cond holds.  Spinning holding
+ * the big kernel lock too: what is waited for (readers leaving) takes
+ * moments, and a thread that yields here may not run again for a whole
+ * time slice, holding up everyone its taken write lock keeps out.  (A
+ * reader the waiter keeps off the CPU never leaves: see um_give_way.) */
 #define UM_WAIT_UNTIL(cond) do { \
-        int most_ = 2000; \
+        int most_ = 2000, yields_ = 0; \
         for (int spins_ = 0; !(cond); ) { \
             if (++spins_ < most_) pause_cpu(); \
-            else { sched_yield(); spins_ = 0; } \
+            else { um_give_way(&yields_); spins_ = 0; } \
         } \
     } while (0)
 
@@ -2456,7 +2477,12 @@ void UmReturnToUser(void)
         g_fs.w.depth = 1;
         um_unlock(&g_fs.w);
     }
-    while (t->suspend > 0 && !um_stopping()) sched_yield();         /* NtSuspendThread */
+    /* NtSuspendThread: parked until resumed, with interrupts on meanwhile
+     * (the caller turned them off to return): a CPU looping here with them
+     * off never answers another CPU's TLB shootdown for this process, and
+     * that CPU waits forever holding the process lock (seen with Chromium's
+     * stack sampler, which suspends threads while others free memory) */
+    while (t->suspend > 0 && !um_stopping()) { sti(); sched_yield(); cli(); }
     if (p->kill_pending) um_exit_thread(p->kill_status);
     if (t->terminate) um_exit_thread(t->term_status);
     t->park = 0;

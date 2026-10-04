@@ -7,7 +7,8 @@
   microphones through Sound Open Firmware on Intel's audio DSP) with a kernel mixer;
   PS/2 keyboards and mice; I2C-HID touchpads on Intel's LPSS I2C
   controllers (found through ACPI; tap to click, two-finger tap for the
-  right button and two-finger scrolling as mouse-wheel input); USB (xHCI, EHCI, OHCI and UHCI controllers, any
+  right button and two-finger scrolling as mouse-wheel input; read when
+  their interrupt pin on Intel's GPIO controller fires); USB (xHCI, EHCI, OHCI and UHCI controllers, any
   number of each) with hubs and HID keyboards (lock-key LEDs and media
   keys included), mice (five buttons and both wheels), tablets, pens
   (pressure, X/Y tilt, barrel rotation, barrel buttons and eraser, for
@@ -20,8 +21,8 @@
   from as soon as they are plugged in, or chosen in Settings' Sound page,
   each with its own volume; the choice and the levels are kept across
   restarts), and game controllers (wired Xbox 360 and Xbox One
-  controllers, with their motors, and HID game pads, for XInput and
-  DirectInput 8); virtio multi-touch screens,
+  controllers, with their motors, and HID game pads, for XInput,
+  DirectInput 8, Raw Input and `hid.dll`); virtio multi-touch screens,
   pens (pressure, tilt, rotation) and tablets; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page

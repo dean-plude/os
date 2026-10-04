@@ -6,9 +6,10 @@
 # itself does not get far yet: its Hyperion anti-cheat ends it at start
 # (docs/compatibility.md); the installer then exits on its own.  Without an
 # account nothing past the login screen could be tested anyway.
-# The download (about 600 MB in twenty packages, several at once) took
-# 100 s under TCG in one run and stalled part way in two others: NovaOS's
-# network under many parallel HTTPS downloads is the next thing to look at.
+# The download (about 220 MB over one HTTP/2 connection) takes 130-160 s
+# under TCG.  It once stopped part way in two runs of five: the whole
+# machine had frozen on kernel lock waiters that only yielded (fixed in
+# kernel/um/um.c; dltest -w in the network self-tests covers that load).
 # Where the host reaches the internet through a proxy on its loopback (as
 # in a sandbox), the installer is pointed at it by HTTPS_PROXY (it uses
 # libcurl, which reads it).

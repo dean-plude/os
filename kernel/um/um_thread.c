@@ -370,6 +370,31 @@ static UINT64 new_handle(UmProcess *p, UmObject *o, UINT64 handle_ptr)
     return ST_SUCCESS;
 }
 
+/* The same for a handle opened or created asking for @access: the handle
+ * remembers what it was granted, so a duplicate asking for more is
+ * checked against the object's descriptor (sys_duplicate_object), as on
+ * Windows (Chromium tells a read-only shared-memory handle from a
+ * writable one that way) */
+static UINT64 new_handle_access(UmProcess *p, UmObject *o, UINT64 handle_ptr, UINT32 access)
+{
+    UINT32 granted = 0;
+    bool known = um_map_access(o->type, access, &granted);
+    UINT64 h = um_handle_new_object(p, o);
+    um_ob_unref(o);                                  /* the handle holds it now */
+    if (!h) return ST_TOO_MANY_HANDLES;
+    if (known) {
+        um_lock_excl(&p->lock);
+        UmHandle *hd = &p->handles[h / 4 - 1];
+        if (hd->kind == H_OBJECT) { hd->access_known = true; hd->access = granted; }
+        um_unlock_excl(&p->lock);
+    }
+    if (!put_handle(handle_ptr, h)) {
+        um_close_handle(h);
+        return ST_ACCESS_VIOLATION;
+    }
+    return ST_SUCCESS;
+}
+
 /* -----------------------------------------------------------------------
  * Events, mutants, semaphores
  * ----------------------------------------------------------------------- */
@@ -389,16 +414,16 @@ static UINT64 open_existing(const char *name, UmObType type, UINT64 handle_ptr, 
     if (o->type != type) { um_ob_unref(o); return ST_OBJECT_TYPE_MISMATCH; }
     UINT32 st = um_check_object(o, access);                 /* its descriptor against our token */
     if (st) { um_ob_unref(o); return st; }
-    UINT64 r = new_handle(UmCurrent(), o, handle_ptr);
+    UINT64 r = new_handle_access(UmCurrent(), o, handle_ptr, access);
     return r ? r : ST_OBJECT_NAME_EXISTS;
 }
 
-static UINT64 finish_create(UmObject *o, const char *name, UINT64 handle_ptr, UINT64 oa)
+static UINT64 finish_create(UmObject *o, const char *name, UINT64 handle_ptr, UINT64 oa, UINT32 access)
 {
     UINT32 st = um_oa_security(oa, &o->sd);                 /* the descriptor it was created with */
     if (st) { um_ob_unref(o); return st; }
     if (name[0]) ns_add(name, o);
-    return new_handle(UmCurrent(), o, handle_ptr);
+    return new_handle_access(UmCurrent(), o, handle_ptr, access);
 }
 
 /* NtOpenEvent / NtOpenMutant / NtOpenSemaphore(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES) */
@@ -427,7 +452,7 @@ static UINT64 open_named(UmObType type, UINT64 handle_ptr, UINT64 oa, UINT32 acc
     if (o->type != type) { um_ob_unref(o); return ST_OBJECT_TYPE_MISMATCH; }
     UINT32 st = um_check_object(o, access);
     if (st) { um_ob_unref(o); return st; }
-    return new_handle(UmCurrent(), o, handle_ptr);
+    return new_handle_access(UmCurrent(), o, handle_ptr, access);
 }
 static UINT64 sys_open_event(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)     { (void)a4; return open_named(UO_EVENT, a1, a3, (UINT32)a2); }
 static UINT64 sys_open_mutant(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)    { (void)a4; return open_named(UO_MUTANT, a1, a3, (UINT32)a2); }
@@ -444,7 +469,7 @@ static UINT64 sys_create_event(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!o) return ST_NO_MEMORY;
     o->manual = a4 == 0;                             /* NotificationEvent */
     o->signaled = um_stack_arg(5) & 0xFF;
-    return finish_create(o, name, a1, a3);
+    return finish_create(o, name, a1, a3, (UINT32)a2);
 }
 
 static UINT64 event_op(UINT64 h, UINT64 prev_ptr, int op)
@@ -475,7 +500,7 @@ static UINT64 sys_create_mutant(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UmObject *o = ob_new(UO_MUTANT);
     if (!o) return ST_NO_MEMORY;
     if (a4 & 0xFF) { o->owner = UmCurrentThread(); o->recursion = 1; }
-    return finish_create(o, name, a1, a3);
+    return finish_create(o, name, a1, a3, (UINT32)a2);
 }
 
 /* NtReleaseMutant(HANDLE, PLONG PreviousCount) */
@@ -511,7 +536,7 @@ static UINT64 sys_create_semaphore(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!o) return ST_NO_MEMORY;
     o->count = init;
     o->max = max;
-    return finish_create(o, name, a1, a3);
+    return finish_create(o, name, a1, a3, (UINT32)a2);
 }
 
 /* NtReleaseSemaphore(HANDLE, LONG ReleaseCount, PLONG PreviousCount) */
@@ -1058,7 +1083,16 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         }
         um_unlock_excl(&sp->lock);
         if (!ok) st = ST_INVALID_HANDLE;
-        else if (tp) {
+        else if (tp && !(options & 2) && src.kind == H_OBJECT && src.access_known) {
+            /* Rights of its own (not DUPLICATE_SAME_ACCESS): within what the
+             * source handle was granted they are given; more is an open of
+             * the object, checked against its descriptor */
+            UINT32 want = 0;
+            um_map_access(src.obj->type, (UINT32)um_stack_arg(5), &want);
+            if (want & ~src.access) st = um_check_object(src.obj, want);
+            src.access = want;
+        }
+        if (ok && tp && !st) {
             if (!(options & 4)) src.inherit = attrs & 2;     /* DUPLICATE_SAME_ATTRIBUTES, OBJ_INHERIT */
             um_lock_excl(&tp->lock);
             int free = -1;
@@ -1351,7 +1385,7 @@ static UINT64 sys_create_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!o) { section_destroy(&(UmObject){ .ptr = sec }); return ST_NO_MEMORY; }
     o->ptr = sec;
     o->destroy = section_destroy;
-    return finish_create(o, name, a1, a3);
+    return finish_create(o, name, a1, a3, (UINT32)a2);
 }
 
 /* NtQuerySection(HANDLE, SECTION_INFORMATION_CLASS, PVOID, SIZE_T, PSIZE_T): SectionBasicInformation
@@ -1519,7 +1553,7 @@ static UINT64 sys_create_directory(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     o->ptr = copy;
     o->destroy = ptr_destroy;
     o->free_unlocked = true;
-    return finish_create(o, name, a1, a3);
+    return finish_create(o, name, a1, a3, (UINT32)a2);
 }
 static UINT64 sys_open_directory(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_named(UO_DIRECTORY, a1, a3, (UINT32)a2); }
 
@@ -1646,7 +1680,7 @@ static UINT64 sys_create_symlink(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     o->ptr = t;
     o->destroy = ptr_destroy;
     o->free_unlocked = true;
-    return finish_create(o, name, a1, a3);
+    return finish_create(o, name, a1, a3, (UINT32)a2);
 }
 static UINT64 sys_open_symlink(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_named(UO_SYMLINK, a1, a3, (UINT32)a2); }
 
@@ -1685,7 +1719,7 @@ static UINT64 sys_create_timer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UmObject *o = ob_new(UO_TIMER);
     if (!o) return ST_NO_MEMORY;
     o->manual = a4 == 0;                                    /* NotificationTimer */
-    return finish_create(o, name, a1, a3);
+    return finish_create(o, name, a1, a3, (UINT32)a2);
 }
 static UINT64 sys_open_timer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_named(UO_TIMER, a1, a3, (UINT32)a2); }
 

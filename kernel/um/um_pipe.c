@@ -550,6 +550,64 @@ bool um_pipe_anonymous(UmObject **rd_end, UmObject **wr_end)
     return true;
 }
 
+/* A device stream the kernel feeds (HID devices, um_hid.c): a message-type
+ * pipe named @path whose server end (*@srv) only the kernel writes, and
+ * its client end (*@client) for the caller, overlapped unless @options
+ * has FILE_SYNCHRONOUS_IO_*, reading one message per read and never
+ * writing */
+UINT32 um_pipe_device(const char *path, UINT32 options, UmObject **srv, UmObject **client)
+{
+    bool r, w;
+    UINT32 st = um_pipe_create(path, 0x40000000u, 2, 0x20, 1, 1, 0, 1, 0, 0, srv, &r, &w);
+    if (st) return st;
+    st = um_pipe_open(path, 0x80000000u, options, client, &r, &w);
+    if (st) { um_ob_unref(*srv); return st; }
+    ((PipeEnd *)*client)->msg_read = true;
+    return ST_SUCCESS;
+}
+
+/* One message from the kernel into @srv's pipe (from um_pipe_device),
+ * never blocking: with @max messages already waiting the oldest goes
+ * first, as a HID device's input buffer drops its oldest report.  false
+ * once the client end is closed */
+bool um_pipe_feed(UmObject *srv, const void *data, UINT32 len, UINT32 max)
+{
+    PipeEnd *e = (PipeEnd *)srv;
+    UmPipe *p = e->pipe;
+    Defer d = { .n = 0 };
+    um_lock(&g_pl);
+    Ring *r = &p->r[1];
+    while (ring_msgs(r) && (ring_msgs(r) >= max || ring_msgs(r) >= PIPE_MAX_MSGS)) {
+        UINT32 m = r->msg[r->mtail % PIPE_MAX_MSGS];
+        if (m) ring_take(r, NULL, m, true);
+        else r->mtail++;
+    }
+    UINT32 put;
+    UINT32 st = try_write(e, data, len, true, true, &put);
+    if (st == ST_SUCCESS) service(p, &d);
+    um_unlock(&g_pl);
+    defer_run(&d);
+    return st == ST_SUCCESS || st == ST_PENDING;
+}
+
+/* Whether @srv's client end (from um_pipe_device) is still open */
+bool um_pipe_device_open(UmObject *srv)
+{
+    um_lock(&g_pl);
+    bool open = ((PipeEnd *)srv)->pipe->cli_ends > 0;
+    um_unlock(&g_pl);
+    return open;
+}
+
+/* Drop the messages waiting for @client (HidD_FlushQueue) */
+void um_pipe_device_flush(UmObject *client)
+{
+    PipeEnd *e = (PipeEnd *)client;
+    um_lock(&g_pl);
+    ring_reset(&e->pipe->r[1]);
+    um_unlock(&g_pl);
+}
+
 /* -----------------------------------------------------------------------
  * Reading and writing (NtReadFile / NtWriteFile on a pipe handle)
  * ----------------------------------------------------------------------- */

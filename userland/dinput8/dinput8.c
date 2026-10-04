@@ -461,10 +461,11 @@ static HRESULT STDMETHODCALLTYPE dw_enumobjects(IDirectInputDevice8W *This, LPDI
     return DI_OK;
 }
 
+/* The controller's HID path (lower case, as DirectInput gives it), the one
+ * Raw Input and setupapi list and CreateFile opens */
 static void path_of(Dev *d, WCHAR *out)
 {
-    wsprintfW(out, L"\\\\?\\hid#vid_%04x&pid_%04x%s#8&%x&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}",
-              d->info.vid, d->info.pid, d->info.kind != NOVA_PAD_HID ? L"&ig_00" : L"", d->slot);
+    nova_pad_path(&d->info, out, TRUE);
 }
 
 static HRESULT STDMETHODCALLTYPE dw_getprop(IDirectInputDevice8W *This, REFGUID prop, LPDIPROPHEADER ph)

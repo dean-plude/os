@@ -9,6 +9,8 @@
  * IsSupportedAsync completes at once with false.  KeePassXC asks it from a
  * PPL task when it starts; a failed activation there is an exception no
  * one observes, which ends the program.
+ *
+ * UISettings and UIViewSettings (Windows.UI.ViewManagement): uisettings.c.
  */
 #define NOVA_BUILD_OLE32
 #include <objbase.h>
@@ -134,14 +136,25 @@ static const KcmVtbl g_kcm_vtbl = {
 };
 static Kcm g_kcm = { &g_kcm_vtbl };
 
+HRESULT ole32_uisettings_factory(const WCHAR *name, UINT32 len, REFIID iid, void **out);    /* uisettings.c */
+
 /* The activation factory for runtime class @name (@len characters), or
- * REGDB_E_CLASSNOTREG */
+ * REGDB_E_CLASSNOTREG, which is logged: the class a program needs next */
 HRESULT ole32_winrt_factory(const WCHAR *name, UINT32 len, REFIID iid, void **out)
 {
     static const WCHAR kcm[] = L"Windows.Security.Credentials.KeyCredentialManager";
     UINT32 n = (UINT32)(sizeof(kcm) / sizeof(WCHAR) - 1), i = 0;
+    if (!out) return E_POINTER;
     if (len == n) while (i < n && name[i] == kcm[i]) i++;
     if (len == n && i == n) return kcm_qi(&g_kcm, iid, out);
+    HRESULT hr = ole32_uisettings_factory(name, len, iid, out);
+    if (hr != REGDB_E_CLASSNOTREG) return hr;
+    char msg[160] = "ole32: no Windows Runtime class ";
+    UINT32 at = 32;
+    for (i = 0; i < len && at < sizeof(msg) - 2; i++) msg[at++] = name[i] < 0x80 ? (char)name[i] : '?';
+    msg[at++] = '\n';
+    msg[at] = 0;
+    OutputDebugStringA(msg);
     *out = 0;
     return REGDB_E_CLASSNOTREG;
 }

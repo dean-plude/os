@@ -16,11 +16,17 @@
  *   - input reports are read from the input register: two length bytes,
  *     then the report.
  *
- * The device raises an interrupt line (a GPIO pin) when it has a report.
- * NovaOS has no GPIO driver yet, so the "i2chid" thread polls instead,
- * as FreeBSD's iichid does without an interrupt: every 10 ms while
- * reports come, every 50 ms after half a second without one; a device
- * with nothing to say answers with a length of 0 or 2.
+ * The device holds an interrupt line low while it has a report: a GPIO
+ * pin (its GpioInt resource, handed to the chipset's GPIO controller
+ * driver, hal/gpio.c) or, on some firmware, an I/O APIC input of its own
+ * (an Interrupt resource).  The interrupt wakes the "i2chid" thread, which
+ * reads reports while the line stays asserted and then unmasks it, as
+ * Linux's level-triggered flow does; once a second it also looks without
+ * one, and a device whose reports keep turning up that way (an interrupt
+ * that never comes) is polled from then on.  A device without an interrupt
+ * NovaOS can take is polled, as FreeBSD's iichid does without one: every
+ * 10 ms while reports come, every 50 ms after half a second without one; a
+ * device with nothing to say answers with a length of 0 or 2.
  *
  * Touchpads (Windows precision touchpads) start in mouse mode: relative
  * motion and buttons from their mouse collection.  As Windows does,
@@ -32,13 +38,17 @@
  *
  * I2cHidSelfCheck() runs the protocol against a modelled touchpad on a
  * modelled bus: QEMU has neither an LPSS I2C controller nor an I2C-HID
- * device.
+ * device.  With the self-tests' ACPI table it also drives the modelled
+ * touchpad's interrupt line through the modelled GPIO controller there.
  */
 
 #include "i2chid.h"
 #include "i2c.h"
 #include "hid.h"
 #include "../hal/aml.h"
+#include "../hal/gpio.h"
+#include "../hal/ioapic.h"
+#include "../arch/x86_64/idt.h"
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "../ke/printf.h"
@@ -65,12 +75,24 @@ typedef struct {
     UINT16  vendor, product;
     void   *hid;
     char    name[64];
+    GpioIrq *gpio;                       /* its interrupt: a GPIO pin, */
+    bool    apic, irq_level;             /*   or an I/O APIC input of its own */
+    UINT32  gsi;
+    bool    polled;                      /* no interrupt (or it never came) */
+    volatile UINT32 pending;             /* the interrupt came, not serviced yet */
+    volatile UINT32 irqs;
+    volatile UINT32 *kick;               /* set and woken by the interrupt */
+    Thread *waiter;
+    UINT32  missed;                      /* reports the once-a-second look found */
+    UINT64  next_look;
+    UINT64 (*stamp)(void);               /* the self-check's clock for its reports */
     UINT8   buf[MAX_REPORT];
 } I2cHid;
 
 static I2cHid *g_devs[MAX_DEVS];
 static int     g_ndevs;
-static volatile UINT32 g_pause, g_in_poll, g_reinit;
+static Thread *g_thread;
+static volatile UINT32 g_pause, g_in_poll, g_reinit, g_kick;
 
 static UINT16 le16(const UINT8 *p) { return (UINT16)(p[0] | p[1] << 8); }
 
@@ -128,6 +150,90 @@ static int read_input(I2cHid *d)
     if (n < 2 || !d->bus->xfer(d->bus, d->addr, NULL, 0, d->buf, n)) return 0;
     int len = le16(d->buf);
     return len <= 2 || len > n ? 0 : len - 2;
+}
+
+static void deliver(I2cHid *d, int len)
+{
+    if (d->stamp) HidInputAt(d->hid, d->buf + 2, len, d->stamp());
+    else HidInput(d->hid, d->buf + 2, len);
+}
+
+/* The interrupt (kernel lock held): a level-triggered line stays masked
+ * until the thread has read the reports */
+static void irq_fired(void *ctx)
+{
+    I2cHid *d = ctx;
+    if (d->apic && d->irq_level) IoApicMask(d->gsi, true);
+    __atomic_fetch_add(&d->irqs, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&d->pending, 1, __ATOMIC_RELEASE);
+    if (d->kick) __atomic_store_n(d->kick, 1, __ATOMIC_RELEASE);
+    if (d->waiter) sched_unblock(d->waiter);
+}
+
+static void irq_unmask(I2cHid *d)
+{
+    if (d->gpio) GpioIrqUnmask(d->gpio);
+    else if (d->apic && d->irq_level) { bkl_acquire(); IoApicMask(d->gsi, false); bkl_release(); }
+}
+
+/* After an interrupt: the reports, while the line stays asserted (a GPIO
+ * pin says), else until the device has none; the line unmasked after */
+static int service(I2cHid *d)
+{
+    int n = 0;
+    for (int i = 0; i < 32; i++) {
+        int len = read_input(d);
+        if (!len) break;
+        deliver(d, len);
+        n++;
+        if (d->gpio && !GpioIrqAsserted(d->gpio)) break;
+    }
+    irq_unmask(d);
+    return n;
+}
+
+static void irq_disconnect(I2cHid *d)
+{
+    if (d->gpio) GpioIrqDisconnect(d->gpio);
+    else if (d->apic) { bkl_acquire(); IoApicMask(d->gsi, true); bkl_release(); }
+    d->gpio = NULL;
+    d->apic = false;
+    d->polled = true;
+}
+
+/* Take the device's interrupt from its ACPI resources; @how says what
+ * came of it */
+static void irq_connect(I2cHid *d, const AmlI2cHid *a, char *how, int cap)
+{
+    char why[96];
+    d->polled = true;
+    d->next_look = sched_ticks() + 100;
+    if (a->gpio_int) {
+        d->gpio = GpioIrqConnect(a->gpio_ctrl, a->gpio_pin, a->gpio_level, a->gpio_low, a->gpio_both,
+                                 irq_fired, d, why, sizeof(why));
+        if (d->gpio) {
+            d->polled = false;
+            ksnprintf(how, cap, "interrupt on GPIO pin %u (%s)", a->gpio_pin, GpioIrqName(d->gpio));
+        } else {
+            ksnprintf(how, cap, "polled (its GPIO pin %u: %s)", a->gpio_pin, why);
+        }
+        return;
+    }
+    if (a->irq) {
+        d->irq_level = a->irq_level;
+        if (IoApicPresent() && IrqInstall(IRQ_I2CHID, irq_fired, d)) {
+            if (IoApicRouteIrq(a->irq_num, a->irq_level, a->irq_low, IRQ_I2CHID, &d->gsi)) {
+                d->apic = true;
+                d->polled = false;
+                ksnprintf(how, cap, "interrupt on GSI %u", d->gsi);
+                return;
+            }
+            IrqInstall(IRQ_I2CHID, NULL, NULL);
+        }
+        ksnprintf(how, cap, "polled (its interrupt %u could not be routed)", a->irq_num);
+        return;
+    }
+    ksnprintf(how, cap, "polled (no interrupt resource)");
 }
 
 /* Power on and reset; true when the device acknowledged the reset (an
@@ -196,6 +302,7 @@ static void reinit_all(void)
 static void i2chid_thread(void *arg)
 {
     (void)arg;
+    g_thread = sched_current();
     bkl_release();                       /* (transfers busy-wait on the bus) */
     for (int i = 0; i < 3000 && !AmlReady(); i++) sched_sleep_until(NULL, sched_ticks() + 1);
     AmlI2cHid found[AML_MAX_I2C_HID];
@@ -226,15 +333,24 @@ static void i2chid_thread(void *arg)
             continue;
         }
         HidStart(d->hid);
+        d->kick = &g_kick;
+        d->waiter = g_thread;
         g_devs[g_ndevs++] = d;
-        kprintf("[I2C] %s %04x:%04x on %s: %s, polled (no GPIO interrupt driver)\n",
-                d->name, d->vendor, d->product, bus->name, kind);
+        char how[128];
+        irq_connect(d, a, how, sizeof(how));
+        kprintf("[I2C] %s %04x:%04x on %s: %s, %s\n", d->name, d->vendor, d->product, bus->name, kind, how);
     }
     if (!g_ndevs) sched_exit_current();
 
     int idle = 0;
     for (;;) {
-        sched_sleep_until(NULL, sched_ticks() + (idle >= 50 ? 5 : 1));
+        bool polled = false, pending = false;
+        __atomic_store_n(&g_kick, 0, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < g_ndevs; i++) {
+            polled |= g_devs[i]->polled;
+            pending |= __atomic_load_n(&g_devs[i]->pending, __ATOMIC_ACQUIRE) != 0;
+        }
+        if (!pending || __atomic_load_n(&g_pause, __ATOMIC_ACQUIRE)) sched_sleep_until(&g_kick, sched_ticks() + (!polled ? 100 : idle >= 50 ? 5 : 1));
         if (__atomic_load_n(&g_pause, __ATOMIC_ACQUIRE)) continue;
         __atomic_store_n(&g_in_poll, 1, __ATOMIC_SEQ_CST);
         if (__atomic_load_n(&g_pause, __ATOMIC_ACQUIRE)) { __atomic_store_n(&g_in_poll, 0, __ATOMIC_RELEASE); continue; }
@@ -242,10 +358,27 @@ static void i2chid_thread(void *arg)
         bool any = false;
         for (int i = 0; i < g_ndevs; i++) {
             I2cHid *d = g_devs[i];
-            int len = read_input(d);
-            if (!len) continue;
-            HidInput(d->hid, d->buf + 2, len);
-            any = true;
+            int len;
+            if (d->polled) {
+                if ((len = read_input(d))) { deliver(d, len); any = true; }
+            } else if (__atomic_exchange_n(&d->pending, 0, __ATOMIC_ACQ_REL)) {
+                any |= service(d) > 0;
+                d->missed = 0;
+                d->next_look = sched_ticks() + 100;
+            } else if (sched_ticks() >= d->next_look) {
+                /* a second without an interrupt: the device should have
+                 * nothing; a report here means the interrupt didn't come */
+                d->next_look = sched_ticks() + 100;
+                if ((len = read_input(d))) {
+                    deliver(d, len);
+                    any = true;
+                    if (!__atomic_load_n(&d->pending, __ATOMIC_ACQUIRE) && ++d->missed == 3) {
+                        kprintf("[I2C] %s: reports without its interrupt (%s, %u interrupts): polled from now on\n",
+                                d->name, d->gpio ? GpioIrqName(d->gpio) : "I/O APIC", d->irqs);
+                        irq_disconnect(d);
+                    }
+                }
+            }
         }
         idle = any ? 0 : idle + 1;
         __atomic_store_n(&g_in_poll, 0, __ATOMIC_RELEASE);
@@ -316,7 +449,11 @@ static struct {
     UINT8  rep[TP_QUEUE][12];
     int    len[TP_QUEUE];
     UINT64 at[TP_QUEUE];                 /* when each report comes (ticks) */
+    GpioIrq *irq;                        /* its interrupt line: asserted while it has reports */
 } g_tp;
+
+static void tp_line(void) { if (g_tp.irq) GpioModelSetLine(g_tp.irq, g_tp.next < g_tp.count); }
+static UINT64 tp_stamp(void) { return g_tp.at[g_tp.next ? g_tp.next - 1 : 0]; }
 
 static bool tp_xfer(I2cBus *bus, UINT16 addr, const UINT8 *w, int wn, UINT8 *r, int rn)
 {
@@ -353,6 +490,7 @@ static bool tp_xfer(I2cBus *bus, UINT16 addr, const UINT8 *w, int wn, UINT8 *r, 
         int k = g_tp.next++, n = g_tp.len[k] + 2;
         r[0] = (UINT8)n; r[1] = 0;
         memcpy(r + 2, g_tp.rep[k], (size_t)(n - 2 < rn - 2 ? n - 2 : rn - 2));
+        tp_line();                                                    /* (let go after the last) */
         return true;
     }
     return false;
@@ -363,7 +501,9 @@ static bool tp_xfer(I2cBus *bus, UINT16 addr, const UINT8 *w, int wn, UINT8 *r, 
 typedef struct { UINT16 tick; UINT8 tip, conf, cid; UINT16 x, y; UINT8 count, button; } TpStep;
 
 /* Feed @n steps to @d; what came out, as text: "m<buttons>,<dx>,<dy>",
- * with "/z<notches>" or "/w<notches>" for the wheels */
+ * with "/z<notches>" or "/w<notches>" for the wheels.  With an interrupt
+ * (d->gpio) the touchpad asserts its line and the reports are read as
+ * the "i2chid" thread reads them, when the interrupt has come */
 static void tp_feed(I2cHid *d, const TpStep *st, int n, char *got, int cap)
 {
     if (n > TP_QUEUE) n = TP_QUEUE;
@@ -383,9 +523,18 @@ static void tp_feed(I2cHid *d, const TpStep *st, int n, char *got, int cap)
     g_tp.count = n;
     InputEvent ev[16];
     HidCaptureBegin(d->hid);
-    for (int i = 0; i < n + 1; i++) {
-        int len = read_input(d);
-        if (len) HidInputAt(d->hid, d->buf + 2, len, g_tp.at[g_tp.next - 1]);
+    if (d->gpio) {
+        tp_line();
+        for (int t = 0; t < 100 && (g_tp.next < g_tp.count || d->pending); t++) {
+            *d->kick = 0;
+            if (!d->pending) sched_sleep_until(d->kick, sched_ticks() + 1);
+            if (__atomic_exchange_n(&d->pending, 0, __ATOMIC_ACQ_REL)) service(d);
+        }
+    } else {
+        for (int i = 0; i < n + 1; i++) {
+            int len = read_input(d);
+            if (len) HidInputAt(d->hid, d->buf + 2, len, g_tp.at[g_tp.next - 1]);
+        }
     }
     int k = HidCaptureEnd(ev, 16), at = 0;
     got[0] = 0;
@@ -516,6 +665,75 @@ int I2cHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx)
         char out[96];
         tp_feed(d, gestures[g].st, gestures[g].n, out, sizeof(out));
         CHECK(strcmp(out, gestures[g].want) == 0, "touchpad: %s: %s", gestures[g].what, out[0] ? out : "(no events)");
+    }
+
+    /* Its interrupt: the GpioInt of the touchpad in the ACPI tables, a
+     * pin of the self-tests' GPIO controller, with the modelled touchpad
+     * driving it.  (A real controller's pins are left alone.) */
+    AmlI2cHid found[AML_MAX_I2C_HID];
+    const AmlI2cHid *a = NULL;
+    int nfound = AmlI2cHidDevices(found, AML_MAX_I2C_HID);
+    for (int i = 0; i < nfound && !a; i++) if (found[i].gpio_int) a = &found[i];
+    if (!a) {
+        say(ctx, "     touchpad interrupt: no touchpad with a GpioInt in the ACPI tables: not checked");
+    } else if (!GpioControllerIsModel(a->gpio_ctrl)) {
+        ksnprintf(line, sizeof(line), "     touchpad interrupt: %s is the machine's own GPIO controller: not driven from here",
+                  a->gpio_ctrl);
+        say(ctx, line);
+    } else {
+        CHECK(a->gpio_pin == 277 && a->gpio_level && a->gpio_low && !a->gpio_both,
+              "touchpad interrupt: the ACPI touchpad's GpioInt: pin %u of %s, %s, active %s", a->gpio_pin, a->gpio_ctrl,
+              a->gpio_level ? "level" : "edge", a->gpio_low ? "low" : "high");
+        GpioIrq *bad = GpioIrqConnect(a->gpio_ctrl, 230, true, true, false, irq_fired, d, why, sizeof(why));
+        CHECK(!bad, "touchpad interrupt: a pin in no pad group is refused (%s)", bad ? "taken" : why);
+        if (bad) GpioIrqDisconnect(bad);
+        bad = GpioIrqConnect(a->gpio_ctrl, 256, true, true, false, irq_fired, d, why, sizeof(why));
+        CHECK(!bad && strstr(why, "native function"), "touchpad interrupt: a pad in its native function is refused (%s)",
+              bad ? "taken" : why);
+        if (bad) GpioIrqDisconnect(bad);
+        volatile UINT32 flag = 0;
+        d->kick = &flag;
+        d->waiter = sched_current();
+        d->stamp = tp_stamp;
+        d->gpio = GpioIrqConnect(a->gpio_ctrl, a->gpio_pin, a->gpio_level, a->gpio_low, a->gpio_both,
+                                 irq_fired, d, why, sizeof(why));
+        CHECK(d->gpio != NULL, "touchpad interrupt: pin %u connected: %s", a->gpio_pin, d->gpio ? GpioIrqName(d->gpio) : why);
+        if (d->gpio) {
+            UINT32 cfg;
+            bool en, st;
+            GpioIrqState(d->gpio, &cfg, &en, &st);
+            CHECK(!(cfg & 0x3C00) && !(cfg & 0x06000000) && (cfg & 0x00800000) && !(cfg & 0x001E0000) && en,
+                  "touchpad interrupt: pad set up as a GPIO input, level, inverted (active low), no other route, "
+                  "interrupt enabled (PADCFG0 %08x)", cfg);
+            g_tp.irq = d->gpio;
+            g_tp.next = g_tp.count = 0;
+            for (int t = 0; t < 10; t++) { flag = 0; sched_sleep_until(&flag, sched_ticks() + 1); }
+            CHECK(d->irqs == 0 && !d->pending, "touchpad interrupt: no report, no interrupt (100 ms quiet)");
+            static const struct { const char *what, *want; int n; TpStep st[8]; } byirq[] = {
+                { "one-finger tap", "m1,0,0 m0,0,0", 2,
+                  { { 2000, 1, 1, 0, 600, 300, 1, 0 }, { 2005, 0, 1, 0, 600, 300, 1, 0 } } },
+                { "two fingers 6 mm down", "m0,0,0/z1 m0,0,0/z1", 8,
+                  { { 2100, 1, 1, 0, 500, 200, 2, 0 }, { 2100, 1, 1, 1, 800, 200, 0, 0 },
+                    { 2101, 1, 1, 0, 500, 230, 2, 0 }, { 2101, 1, 1, 1, 800, 230, 0, 0 },
+                    { 2102, 1, 1, 0, 500, 260, 2, 0 }, { 2102, 1, 1, 1, 800, 260, 0, 0 },
+                    { 2103, 0, 1, 0, 500, 260, 2, 0 }, { 2103, 0, 1, 1, 800, 260, 0, 0 } } },
+            };
+            for (int g = 0; g < 2; g++) {
+                char out[96];
+                UINT32 before = d->irqs;
+                int empties = g_tp.empties;
+                tp_feed(d, byirq[g].st, byirq[g].n, out, sizeof(out));
+                GpioIrqState(d->gpio, &cfg, &en, &st);
+                CHECK(strcmp(out, byirq[g].want) == 0 && d->irqs > before && g_tp.empties == empties &&
+                      !GpioIrqAsserted(d->gpio) && en,
+                      "touchpad interrupt: %s read on its interrupt (%u interrupt(s), %d empty reads, line let go, "
+                      "unmasked again): %s", byirq[g].what, d->irqs - before, g_tp.empties - empties,
+                      out[0] ? out : "(no events)");
+            }
+            g_tp.irq = NULL;
+            GpioIrqDisconnect(d->gpio);
+            d->gpio = NULL;
+        }
     }
 #undef CHECK
     kfree(d);

@@ -26,8 +26,9 @@ order; --list prints them):
             it under xvfb-run)
   network   two boots with a virtio-net adapter (tests/selftest/network4
             and network6).  IPv4 on QEMU's user-mode network: ipconfig, ping,
-            Winsock (netcat) and winhttp's HTTP/2 (httptest suite) against
-            tools/h2server.js (needs node and openssl).  IPv6 on an IPv6-only
+            Winsock (netcat), winhttp's HTTP/2 (httptest suite) and eight
+            long downloads at once (dltest -w) against tools/h2server.js
+            (needs node and openssl).  IPv6 on an IPv6-only
             network that is tools/v6peer.py: SLAAC and RDNSS (ipconfig),
             ping -6, curl -6 and Winsock over IPv6 (netcat).  Then a third
             boot with an Intel e1000e (82574L) instead of virtio-net

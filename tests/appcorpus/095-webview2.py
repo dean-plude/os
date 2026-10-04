@@ -4,12 +4,15 @@
 # runtime's own setup.  Edge Update starts, reads its manifests with MSXML
 # 6, installs itself, registers its COM servers and proxy/stub DLLs and
 # runs its install step, which it logs to %TEMP%\MicrosoftEdgeUpdate.log;
-# the test passes when that log shows the install step ran.  The install
-# then unpacks the runtime's package and stops at Edge Update's check that
-# the package carries Microsoft's signature (0xa0430233), so nothing is
-# installed yet (docs/compatibility.md).  Once that passes, the next test
-# expects the runtime's files in C:\Programs\Microsoft\EdgeWebView.
-DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself and runs the install; the install stops at its check of Microsoft\'s signature on the runtime)'
+# the test passes when that log shows the install step ran (whether the
+# package is cached also depends on drive C:'s free space, which the
+# programs before it in a full corpus run use up).  The install
+# then unpacks the runtime's package and accepts Microsoft's signature on
+# it, but fails (0x80070003) because Edge Update's background pass does
+# not see the install running and uninstalls Edge Update under it, so
+# nothing is installed yet (docs/compatibility.md).  Once that passes, the
+# next test expects the runtime's files in C:\Programs\Microsoft\EdgeWebView.
+DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself, runs the install and accepts the runtime\'s signature; its background pass then uninstalls it mid-install)'
 import os, shutil
 
 INSTALLER = 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe'

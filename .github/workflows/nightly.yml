@@ -11,8 +11,10 @@
 name: Nightly app corpus
 
 on:
-  schedule:
-    - cron: '17 3 * * *'
+  schedule:                     # GitHub drops or delays scheduled runs under load (the only one so far
+    - cron: '17 3 * * *'        # came 6 h late, on 2026-10-03 at 09:15, and 2026-10-04's never came), so two
+    - cron: '47 6 * * *'        # fallbacks follow at odd minutes; the "Gate" job lets only the first of the
+    - cron: '23 10 * * *'       # three that fires each day run the corpus
   workflow_dispatch:
     inputs:
       allow_tcg:
@@ -25,6 +27,7 @@ on:
 permissions:
   contents: read
   issues: write
+  actions: read                 # the gate lists earlier scheduled runs
 
 env:                            # ccache, as in ci.yml
   CCACHE_BASEDIR: ${{ github.workspace }}
@@ -37,8 +40,32 @@ concurrency:                    # a queued run is replaced by a newer queued run
   cancel-in-progress: false
 
 jobs:
+  gate:
+    name: Gate (one scheduled run per day)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          run=true
+          if [ "$EVENT" = schedule ]; then
+            since=$(date -u -d '-20 hours' +%Y-%m-%dT%H:%M:%SZ)
+            others=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?event=schedule&created=%3E%3D$since" \
+              --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID)] | length")
+            echo "scheduled runs in the last 20 h besides this one: $others"
+            [ "$others" = 0 ] || run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
   app-corpus:
     name: App corpus
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:

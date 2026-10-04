@@ -264,7 +264,14 @@ class Nova:
             more, ok = self.sr.wait('[TERM-DONE]', max(1, end - time.time()))
             got += more
             ok = '[TERM-DONE]' in got
-        if not ok:                          # Ctrl+C: the kernel logs where its threads are
+        if not ok:
+            # Where is everything?  Ctrl+Alt+F12 makes the kernel log every
+            # program's threads (a program that ignores Ctrl+C, or answers
+            # it from a thread of its own, leaves no other trace of where
+            # its main thread sat), then Ctrl+C stops the program
+            self.qmp.key('ctrl', 'alt', 'f12')
+            time.sleep(5)
+            got += self.sr.read_new()
             self.qmp.key('ctrl', 'c')
             more, _ = self.sr.wait('[TERM-DONE]', 20)
             got += more

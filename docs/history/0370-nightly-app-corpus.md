@@ -8,7 +8,9 @@
   clone`, `log` and `status`, `python -c`, `node -e`.  Notepad++ opens a
   file and its screenshot is compared with `tests/reference/notepad++.png`
   (scaled down; at most 3% of pixels may differ).
-- **`.github/workflows/nightly.yml`** runs it every night on main (and on
+- **`.github/workflows/nightly.yml`** runs it every night on main (03:17 UTC, with fallback
+  entries at 06:47 and 10:23 because GitHub may drop a scheduled run; only
+  the first that fires runs the corpus; and on
   pull requests that change the corpus) and posts the pass/fail table to
   the run's summary and as a comment on the "Nightly app corpus" issue.
 - Not yet: Notepad++'s tab bar and status bar still draw black; the

@@ -4,6 +4,9 @@
  * NtNovaGuiCtl(0, CTL_GAMEPAD, op | n << 8, ptr) reads the controller
  * slots of kernel/drivers/gamepad.h (whose PadInfo and PadState these
  * mirror): xinput1_4.dll, dinput8.dll and the self-test padtest use it.
+ * Raw Input (user32), hid.dll, setupapi and cfgmgr32 also use its raw HID
+ * side: each controller's report descriptor and input reports, and the
+ * controller a HID device handle reads (kernel/um/um_hid.c).
  */
 #pragma once
 #include <windows.h>
@@ -38,6 +41,25 @@ typedef struct {
     char  name[64];
 } NovaPadInfo;
 
+#define NOVA_PAD_DESC_MAX   1024
+#define NOVA_PAD_REPORT_MAX 64
+
+/* An input report (gamepad.h's PadRaw): data[0] is its report ID (0 when
+ * the device uses none), len the device's input report length */
+typedef struct {
+    DWORD seq;
+    DWORD serial;
+    BYTE  slot, len;
+    WORD  reserved;
+    BYTE  data[NOVA_PAD_REPORT_MAX];
+} NovaPadRaw;
+
+typedef struct {
+    DWORD after, known_changes, wait_ms, max;     /* in */
+    DWORD newest, changes;                        /* out */
+    NovaPadRaw r[32];
+} NovaPadRead;
+
 static inline DWORD nova_pad_present(void)
 {
     return (DWORD)NtNovaGuiCtl(0, NOVA_CTL_GAMEPAD, 0, NULL);
@@ -64,3 +86,70 @@ static inline int nova_pad_xinput_slot(int user)
 {
     return (int)NtNovaGuiCtl(0, NOVA_CTL_GAMEPAD, 4 | (ULONG_PTR)user << 8, NULL);
 }
+
+/* The slot's HID report descriptor into @buf (NOVA_PAD_DESC_MAX bytes):
+ * its length (0: none), *@in_len its input report length */
+static inline int nova_pad_descriptor(int slot, BYTE *buf, WORD *in_len)
+{
+    ULONG_PTR r = (ULONG_PTR)NtNovaGuiCtl(0, NOVA_CTL_GAMEPAD, 5 | (ULONG_PTR)slot << 8, buf);
+    if (in_len) *in_len = (WORD)(r >> 16);
+    return (int)(r & 0xFFFF);
+}
+
+/* The reports after q->after (up to q->max), waiting up to q->wait_ms for
+ * one or for a controller to come or go (q->changes != q->known_changes) */
+static inline int nova_pad_read(NovaPadRead *q)
+{
+    return (int)NtNovaGuiCtl(0, NOVA_CTL_GAMEPAD, 6, q);
+}
+
+/* The slot's latest input report with ID @id */
+static inline BOOL nova_pad_last(int slot, BYTE id, NovaPadRaw *r)
+{
+    return NtNovaGuiCtl(0, NOVA_CTL_GAMEPAD, 7 | (ULONG_PTR)slot << 8 | (ULONG_PTR)id << 16, r) != 0;
+}
+
+/* The slot a HID device handle reads, or -1 */
+static inline int nova_pad_handle_slot(HANDLE h)
+{
+    return (int)NtNovaGuiCtl(0, NOVA_CTL_GAMEPAD, 8, h);
+}
+
+static inline BOOL nova_pad_flush(HANDLE h)
+{
+    return NtNovaGuiCtl(0, NOVA_CTL_GAMEPAD, 9, h) != 0;
+}
+
+/* The slot of the controller with this serial, or -1 (unplugged) */
+static inline int nova_pad_slot_of_serial(DWORD serial)
+{
+    return (int)NtNovaGuiCtl(0, NOVA_CTL_GAMEPAD, 10 | (ULONG_PTR)serial << 8, NULL);
+}
+
+/* A controller's HID path (kernel/um/um_hid.c), upper case as Raw Input
+ * and setupapi give it or lower case as DirectInput does: at most 96
+ * characters with the NUL */
+static inline int nova_pad_path(const NovaPadInfo *i, WCHAR *out, BOOL lower)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char a[96];
+    int n = 0;
+    const char *p1 = "\\\\?\\HID#VID_";
+    for (const char *c = p1; *c; c++) a[n++] = *c;
+    for (int k = 12; k >= 0; k -= 4) a[n++] = hex[(i->vid >> k) & 15];
+    for (const char *c = "&PID_"; *c; c++) a[n++] = *c;
+    for (int k = 12; k >= 0; k -= 4) a[n++] = hex[(i->pid >> k) & 15];
+    if (i->kind != NOVA_PAD_HID) for (const char *c = "&IG_00"; *c; c++) a[n++] = *c;
+    a[n++] = '#'; a[n++] = '8'; a[n++] = '&';
+    int k = 28;
+    while (k > 0 && !((i->serial >> k) & 15)) k -= 4;
+    for (; k >= 0; k -= 4) a[n++] = hex[(i->serial >> k) & 15];
+    for (const char *c = "&0&0000#{4D1E55B2-F16F-11CF-88CB-001111000030}"; *c; c++) a[n++] = *c;
+    a[n] = 0;
+    for (int j = 0; j <= n; j++) {
+        char c = a[j];
+        out[j] = (WCHAR)(lower && c >= 'A' && c <= 'Z' ? c + 32 : c);
+    }
+    return n;
+}
+

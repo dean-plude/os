@@ -16,7 +16,7 @@
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
   `comctl32`, `riched20`/`msftedit` (Rich Edit controls that take RTF,
   as setup programs' licence pages need), `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
-  type libraries, and calls between processes over named pipes with the standard marshaler and the `IDispatch` proxy), `rpcrt4` (the NDR engine COM proxy/stub DLLs run on:
+  type libraries, and calls between processes over named pipes with the standard marshaler and the `IDispatch` proxy; the Windows Runtime's strings and the few runtime classes Win32 programs ask for, such as `UISettings` for the user's colours), `rpcrt4` (the NDR engine COM proxy/stub DLLs run on:
   stubless proxies, `NdrStubCall2`, `CStdStubBuffer`, the `NdrDll*` entry points), `advapi32`, `ws2_32`, `oleacc`,
   `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
   WASAPI playback and capture, a device ID or endpoint for each sound
@@ -34,7 +34,8 @@
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
   `crypt32` and `wintrust` (certificate stores and chains, signed PKCS #7
   messages, and Authenticode: `WinVerifyTrust` checks a program's
-  signature, its timestamp and its chain to the trusted roots),
+  signature, its timestamp and its chain to the trusted roots, and the
+  Microsoft root policy tells Microsoft's own signatures apart),
   `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`, and the
   Internet security manager's zones),
   `wintab32` (Wintab pen tablets: pressure, tilt and barrel rotation for GTK,

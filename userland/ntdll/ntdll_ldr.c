@@ -116,6 +116,7 @@ static const char *api_set_host(const char *name)
         { "api-ms-win-core-",       "kernel32.dll" },
         { "api-ms-win-security-",   "advapi32.dll" },
         { "api-ms-win-eventing-",   "advapi32.dll" },
+        { "api-ms-win-power-",      "powrprof.dll" },    /* (Chromium delay-loads CallNtPowerInformation so) */
         { "api-ms-win-shell-",      "shell32.dll" },
         { "api-ms-win-shcore-",     "shlwapi.dll" },
         { "shcore",                 "shlwapi.dll" },

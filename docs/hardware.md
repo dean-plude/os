@@ -72,7 +72,7 @@ driver that runs the same device there.
 | **Thunderbolt 4 / USB4** | Intel Thunderbolt 4 controller | `thunderbolt` | missing | USB devices on the USB-C ports work through the xHCI controller; Thunderbolt docks and PCIe tunnelling do not |
 | **Keyboard** | built-in keyboard on the i8042 controller | `atkbd` | supported | PS/2 keyboard driver |
 | **TrackPoint** | PS/2 pointing stick | `psmouse` | supported | PS/2 mouse driver; the three buttons above the touchpad are its buttons |
-| **Touchpad** | multi-touch, 61 x 115 mm, three buttons; in this generation an I2C-HID device on an Intel LPSS I2C controller (the boot log confirms it) | `i2c_hid_acpi` | partial | found through ACPI (PNP0C50), read over I2C-HID and switched to its touchpad mode, as Windows does: the pointer follows one finger, a tap is a left click and a two-finger tap a right click, pressing the pad clicks (right with two fingers on it), two fingers scroll up, down and sideways as mouse-wheel notches; a touchpad that refuses touchpad mode stays in mouse mode (pointer and clicks only); polled every 10 ms (no GPIO interrupt driver yet); checked on a modelled touchpad, not yet on the machine (step 21.4) |
+| **Touchpad** | multi-touch, 61 x 115 mm, three buttons; in this generation an I2C-HID device on an Intel LPSS I2C controller (the boot log confirms it) | `i2c_hid_acpi` | partial | found through ACPI (PNP0C50), read over I2C-HID and switched to its touchpad mode, as Windows does: the pointer follows one finger, a tap is a left click and a two-finger tap a right click, pressing the pad clicks (right with two fingers on it), two fingers scroll up, down and sideways as mouse-wheel notches; a touchpad that refuses touchpad mode stays in mouse mode (pointer and clicks only); read when its interrupt pin fires (its ACPI GpioInt, on the chipset's GPIO controller, `INTC1055` on this generation as far as Linux and OpenBSD know; the boot log names it), polled every 10 ms only if no interrupt can be had; checked on a modelled touchpad and GPIO controller, not yet on the machine (step 21.4) |
 | **ACPI** | ACPI tables, embedded controller | `acpi` | supported | uACPI interprets the AML (Phases 18.6, 18.4): power button, S3 where the firmware has it, else low-power S0 idle (the T14 Gen 4 has no S3), battery; the embedded controller (`ec.c`, step 21.5) that holds the lid, battery and AC events; checked on modelled tables, not yet on the machine |
 | **Battery and AC** | 39.3 or 52.5 Wh, USB-C power | `acpi battery` | supported | `_BIF`/`_BIX`/`_BST` through uACPI and the embedded controller; checked on a modelled controller in QEMU, untested on the real tables |
 | **Lid** | ACPI lid switch | `acpi button` | supported | lid device `PNP0C0D`, tested with a custom table in QEMU (Phase 18.6); closing it sleeps (step 21.5), which on the T14 is low-power S0 idle with the LPS0 calls, not S3; unverified on the machine |
@@ -102,9 +102,9 @@ machine ([install-and-power.md](install-and-power.md#checks-on-the-t14) for 21.2
 
 ## Checking audio and the touchpad on the T14 (step 21.4)
 
-QEMU has no class 04.01 HD Audio controller, no Realtek codec and no I2C
-controller, so the Terminal's `hwcheck` runs those code paths against
-modelled devices (it is in the core self-tests).  On the machine, started
+QEMU has no class 04.01 HD Audio controller, no Realtek codec, no I2C
+controller and no Intel GPIO controller, so the Terminal's `hwcheck` runs
+those code paths against modelled devices (it is in the core self-tests).  On the machine, started
 from the stick (Secure Boot off):
 
 1. In the Terminal, `devices` lists the audio controller (`8086:51ca` or a
@@ -129,11 +129,22 @@ from the stick (Secure Boot off):
    touchpad mode: the boot log's `[I2C]` line then ends in `touchpad
    (mouse mode)` instead of `precision touchpad (tap to click,
    two-finger scrolling)`.
-5. Shut down and read `EFI\NOVA\bootlog.txt` on another computer: the
-   lines starting `[HDA]`, `[ACPI] I2C-HID device` and `[I2C]` say what
-   was found (the codec's vendor and subsystem IDs, the touchpad's ACPI
-   name, address and controller), which is what a fix needs if a step
-   fails.
+5. The touchpad's interrupt: in the Terminal, `hwcheck` prints
+   `touchpad interrupt: ... is the machine's own GPIO controller` (it
+   leaves real pins alone).  The boot log's `[GPIO]` lines name the GPIO
+   controller (`\_SB_.GPI0 (INTC1055)`, a layout and `IRQ 14`) and the
+   touchpad's pin (`pin N = pad GPP_xNN`), and its `[I2C]` line ends in
+   `interrupt on GPIO pin N`.  The pointer must move as smoothly as in
+   step 3 and stop at once when the finger lifts.  An `[I2C]` line ending
+   in `polled (...)`, or a later one saying `reports without its
+   interrupt ... polled from now on`, means the touchpad still works but
+   the interrupt didn't: the reason it gives and the `[GPIO]` lines are
+   what a fix needs.  Repeat after closing and opening the lid (sleep).
+6. Shut down and read `EFI\NOVA\bootlog.txt` on another computer: the
+   lines starting `[HDA]`, `[ACPI] I2C-HID device`, `[GPIO]` and `[I2C]`
+   say what was found (the codec's vendor and subsystem IDs, the
+   touchpad's ACPI name, address, controller and interrupt pin), which
+   is what a fix needs if a step fails.
 
 ## Listing a machine's devices
 
@@ -274,5 +285,5 @@ For reference, every driver NovaOS has, by device:
 | Network | Intel 82540EM, 82544 and 82545EM (`e1000`), Intel 82574L and I219-LM/I219-V (`e1000e`), virtio-net |
 | Audio | Intel HD Audio (class 04.03, and Intel's class 04.01 controllers with the audio DSP on), with headphone-jack sensing; the audio DSP of Tiger Lake to Raptor Lake (boots Sound Open Firmware and records the digital microphones through it, as the "Microphone Array (DSP)" recording device); USB Audio 1.0 and 2.0 |
 | USB | xHCI, EHCI, OHCI, UHCI host controllers; hubs, HID keyboards, mice, tablets, touch screens and pens, mass storage, audio |
-| Input | PS/2 keyboard and mouse, I2C-HID precision touchpads (tap to click, two-finger scrolling) on Intel LPSS I2C controllers, virtio-input tablets, touch screens and pens |
+| Input | PS/2 keyboard and mouse, I2C-HID precision touchpads (tap to click, two-finger scrolling) on Intel LPSS I2C controllers, interrupt-driven through Intel's GPIO controllers (Tiger Lake to Meteor Lake), virtio-input tablets, touch screens and pens |
 | Platform | ACPI through uACPI (power button, S3 and S5, low-power S0 idle, batteries, AC, lid, thermal zones, embedded controller), HPET or CPUID-calibrated TSC-deadline APIC timer, COM1 |

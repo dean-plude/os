@@ -1,8 +1,9 @@
 /*
  * ioapic.h — I/O APICs: routing a device interrupt to a CPU
  *
- * NovaOS polls its devices, so the I/O APICs only carry what has to be an
- * interrupt: the ACPI SCI.  The MADT says where each I/O APIC is and how
+ * NovaOS polls most of its devices, so the I/O APICs only carry the ACPI
+ * SCI, the GPIO controllers' interrupts (a touchpad's pin, gpio.c) and an
+ * I2C-HID device's own interrupt line.  The MADT says where each I/O APIC is and how
  * ISA interrupts map to its inputs (interrupt source overrides).  Every
  * input is masked at start-up; a routed one goes to the boot CPU.
  */
