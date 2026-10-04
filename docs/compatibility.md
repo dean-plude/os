@@ -187,15 +187,27 @@ processes as on Windows: the GPU process, the network and storage
 services and a page (renderer) process for Steam's first page.  The GPU
 process draws with ANGLE on Direct3D 11 when Mesa 3D and DXVK are
 installed; without them it gives up after three tries and Chromium draws
-in software, as it does on Windows without a usable GPU.  Under emulation (the
-nightly corpus) Steam then closes the browser a few minutes in and starts
-it again before the page has drawn, so no window appears in that run.
+in software, as it does on Windows without a usable GPU.  The browser
+used to close a few minutes in because `steam.exe` itself stopped: its UI
+imports `AcceptEx` from `wsock32.dll` (ordinal 1141), which NovaOS's
+Winsock 1.1 library did not export, so the first connection it accepted
+ended the client with `STATUS_ENTRYPOINT_NOT_FOUND` and the browser shut
+down with it.  `wsock32` now exports `TransmitFile`, `AcceptEx` and
+`GetAcceptExSockaddrs` (1140 to 1142) from `mswsock`, as Windows does,
+and Steam keeps running; the browser then starts its first page and
+stops in DirectWrite: Chromium asks the DirectWrite factory for
+`IDWriteFactory2` and `IDWriteFactory3` (Windows 10's) and NovaOS's
+factory has only the first two versions, so the browser crashes and Steam
+starts it again.
 What is known to be missing on the way, each a NovaOS gap and none a
 reason to change Steam:
 
 - Media Foundation (`mf.dll`, which Chromium only uses for video).
-- WMI (`WbemLocator`, `{4590F811-1D3A-11D0-891F-00AA004B2E24}`), which the
-  browser asks for just before Steam closes it, and the COM classes
+- DirectWrite's `IDWriteFactory2` and `IDWriteFactory3`, where the
+  browser stops now.
+- WMI (`WbemLocator`, `{4590F811-1D3A-11D0-891F-00AA004B2E24}`), which
+  Steam and its browser ask for and get on without (Chromium reads the
+  board and BIOS names through it), and the COM classes
   `{33C53A50-F456-4884-B049-85FD643ECFED}`,
   `{E77CC89B-7401-4C04-8CED-149DB35ADD04}` and
   `{E2B3C97F-6AE1-41AC-817A-F6F92166D7DD}`, which it gets on without.

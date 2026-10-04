@@ -6,8 +6,9 @@
 # to, and starts it with its browser, steamwebhelper.exe (Chromium).  The
 # test passes when the 64-bit client and its browser are installed and the
 # browser started.  The login window does not come up yet: the browser
-# starts its GPU, network, storage and page processes, but no page draws
-# before Steam closes and restarts it (docs/compatibility.md).  Signing
+# starts its GPU, network, storage and page processes, then stops in
+# DirectWrite (it asks for IDWriteFactory3) and Steam restarts it
+# (docs/compatibility.md).  Signing
 # in and installing a game need an account, a hand check in
 # docs/compatibility/497-steam.md.
 # Where the host reaches the internet through a proxy on its loopback (as

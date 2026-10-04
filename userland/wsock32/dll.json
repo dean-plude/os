@@ -38,6 +38,9 @@
     "WSAStartup": 115,
     "WSACleanup": 116,
     "__WSAFDIsSet": 151,
-    "WSARecvEx": 1107
+    "WSARecvEx": 1107,
+    "TransmitFile": 1140,
+    "AcceptEx": 1141,
+    "GetAcceptExSockaddrs": 1142
   }
 }

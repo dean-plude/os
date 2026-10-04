@@ -8,6 +8,12 @@
  * (nss3.dll) reaches ioctlsocket through wsock32 ordinal 12, so pointing
  * the name at ws2_32 made every socket it opened "fail" to go
  * non-blocking.  Each entry point here calls ws2_32's own.
+ *
+ * Microsoft's extensions that Winsock 1.1 exported (TransmitFile 1140,
+ * AcceptEx 1141 and GetAcceptExSockaddrs 1142) live in mswsock.dll, where
+ * Windows' wsock32 forwards them; Steam's SteamUI.dll imports AcceptEx
+ * and GetAcceptExSockaddrs from here, and steam.exe stopped (0xC0000139)
+ * the first time it accepted a connection, taking its browser with it.
  */
 #define WS2_EXPORT
 #include <winsock2.h>
@@ -80,3 +86,37 @@ __declspec(dllexport) FARPROC WSAAPI WSASetBlockingHook(FARPROC hook) { (void)ho
 __declspec(dllexport) int WSAAPI WSAUnhookBlockingHook(void) { return 0; }
 __declspec(dllexport) int WSAAPI WSACancelBlockingCall(void) { WSASetLastError(10037 /* WSAEINVAL */); return SOCKET_ERROR; }
 __declspec(dllexport) BOOL WSAAPI WSAIsBlocking(void) { return FALSE; }
+
+/* mswsock's extensions, found by name the first time one is called */
+static HMODULE mswsock;
+
+static FARPROC ms(const char *name)
+{
+    if (!mswsock) mswsock = LoadLibraryA("mswsock.dll");
+    return mswsock ? GetProcAddress(mswsock, name) : 0;
+}
+
+typedef struct { PVOID Head; DWORD HeadLength; PVOID Tail; DWORD TailLength; } TF_BUFFERS_;
+typedef BOOL (WINAPI *TransmitFile_t)(SOCKET, HANDLE, DWORD, DWORD, LPOVERLAPPED, TF_BUFFERS_ *, DWORD);
+typedef BOOL (WINAPI *AcceptEx_t)(SOCKET, SOCKET, PVOID, DWORD, DWORD, DWORD, LPDWORD, LPOVERLAPPED);
+typedef VOID (WINAPI *GetAcceptExSockaddrs_t)(PVOID, DWORD, DWORD, DWORD, struct sockaddr **, LPINT, struct sockaddr **, LPINT);
+
+__declspec(dllexport) BOOL WINAPI TransmitFile(SOCKET s, HANDLE f, DWORD total, DWORD per, LPOVERLAPPED ov, TF_BUFFERS_ *bufs, DWORD flags)
+{
+    static TransmitFile_t p;
+    if (!p) p = (TransmitFile_t)ms("TransmitFile");
+    return p(s, f, total, per, ov, bufs, flags);
+}
+__declspec(dllexport) BOOL WINAPI AcceptEx(SOCKET l, SOCKET a, PVOID buf, DWORD n, DWORD ll, DWORD rl, LPDWORD got, LPOVERLAPPED ov)
+{
+    static AcceptEx_t p;
+    if (!p) p = (AcceptEx_t)ms("AcceptEx");
+    return p(l, a, buf, n, ll, rl, got, ov);
+}
+__declspec(dllexport) VOID WINAPI GetAcceptExSockaddrs(PVOID buf, DWORD n, DWORD ll, DWORD rl, struct sockaddr **la, LPINT lal,
+                                                      struct sockaddr **ra, LPINT ral)
+{
+    static GetAcceptExSockaddrs_t p;
+    if (!p) p = (GetAcceptExSockaddrs_t)ms("GetAcceptExSockaddrs");
+    p(buf, n, ll, rl, la, lal, ra, ral);
+}
