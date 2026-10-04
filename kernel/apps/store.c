@@ -152,6 +152,11 @@ static const StoreApp g_catalog[] = {
       "Teeworlds\\**\\teeworlds.exe", KIND_ARCHIVE, 25,
       "64-bit zip; starts in full screen with its music on NovaOS (nightly corpus); needs Mesa 3D (see Runtimes)",
       "TW", GDI_C(0xC8, 0x6A, 0x3C) },
+    { "OpenTyrian", "OpenTyrian team", "Tyrian 2.1, the classic vertical shoot 'em up (freeware game, open-source engine)",
+      CAT_MEDIA, GH "opentyrian/opentyrian/releases/download/v2.1.20260913/opentyrian-v2.1.20260913-windows-x86_64.zip", "opentyrian-v2.1.20260913-windows-x86_64.zip", "OpenTyrian",
+      "OpenTyrian\\opentyrian\\opentyrian.exe", KIND_ARCHIVE, 7,
+      "64-bit zip with the freeware game data; draws with Direct3D 9 on NovaOS (nightly corpus); needs Mesa 3D and DXVK (see Runtimes)",
+      "Ty", GDI_C(0x2A, 0x4E, 0x9A) },
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",
@@ -459,8 +464,9 @@ static void failed_msg(Store *s, int i, const char *m)
 }
 
 /* The machine a PE file is built for (0x8664 x64, 0x14C x86), 0 if not a PE */
-static UINT16 pe_machine(const RamNode *f)
+static UINT16 pe_machine(RamNode *f)
 {
+    if (!RamfsLoad(f)) return 0;
     const UINT8 *d = (const UINT8 *)f->data;
     if (!d || f->size < 0x40 || d[0] != 'M' || d[1] != 'Z') return 0;
     UINT32 pe = (UINT32)(d[0x3C] | d[0x3D] << 8 | d[0x3E] << 16 | (UINT32)d[0x3F] << 24);

@@ -267,7 +267,7 @@ static const UINT8 *lnk_string(const UINT8 *p, const UINT8 *end, bool wide, char
 bool AppLinkRead(const RamNode *lnk, AppLink *out)
 {
     memset(out, 0, sizeof(*out));
-    if (!lnk || lnk->dir || !lnk->data || lnk->size < 0x4C) return false;
+    if (!lnk || lnk->dir || !RamfsLoad((RamNode *)lnk) || !lnk->data || lnk->size < 0x4C) return false;
     const UINT8 *p = (const UINT8 *)lnk->data, *end = p + lnk->size;
     static const UINT8 clsid[16] = { 0x01, 0x14, 0x02, 0, 0, 0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46 };
     if (rd32le(p) != 0x4C || memcmp(p + 4, clsid, 16)) return false;
@@ -365,7 +365,7 @@ void AppOpenFile(RamNode *file)
 #define ICON_CACHE 48
 static struct {
     const RamNode *node;          /* compared, never dereferenced */
-    const char    *data;          /* the file's contents when decoded */
+    UINT64         mtime;         /* the file's write time and size when decoded */
     UINT32         size;
     GdiIcon       *icon;          /* NULL: the file has no usable icon */
     UINT32         used;
@@ -381,20 +381,20 @@ GdiIcon *AppFileIcon(RamNode *f)
         if (g_icache[i].node == f) { slot = i; break; }
         if (g_icache[i].used < g_icache[lru].used) lru = i;
     }
-    if (slot >= 0 && g_icache[slot].data == f->data && g_icache[slot].size == f->size) {
+    if (slot >= 0 && g_icache[slot].mtime == f->mtime && g_icache[slot].size == f->size) {   /* (its contents may be on the data disk) */
         g_icache[slot].used = ++g_icache_clock;
         return g_icache[slot].icon;
     }
     if (slot < 0) slot = lru;                 /* evict the least recently used */
     IconFree(g_icache[slot].icon);
     GdiIcon *ic = NULL;
-    if (f->data && f->size) {
+    if (f->size && RamfsLoad(f) && f->data) {
         if (t == FT_PNG)                   ic = IconFromPng(f->data, f->size);
         else if (t == FT_EXE || t == FT_DLL) ic = IconFromPe(f->data, f->size);
         else                               ic = IconLoad(f->data, f->size);
     }
     g_icache[slot].node = f;
-    g_icache[slot].data = f->data;
+    g_icache[slot].mtime = f->mtime;
     g_icache[slot].size = f->size;
     g_icache[slot].icon = ic;
     g_icache[slot].used = ++g_icache_clock;
@@ -505,12 +505,29 @@ WND *AppCreateWindow(AppId id, const char *title, int client_w, int client_h,
     int w = client_w + 2, h = client_h + WM_TITLEBAR_H + 1;
     if (w > work.w - 40) w = work.w - 40;
     if (h > work.h - 40) h = work.h - 40;
-    int x = work.x + (work.w - w) / 2 - 120 + (cascade % 8) * 32;
-    int y = work.y + 30 + (cascade % 8) * 28;
-    if (x < work.x + 10) x = work.x + 10;
-    if (x + w > work.x + work.w) x = work.x + work.w - w;
-    if (y + h > work.y + work.h) y = work.y + work.h - h;
-    cascade++;
+    /* The first of the 8 cascade steps whose top edge no open window has
+     * (closed windows give their step back, so the same windows open in
+     * the same places however many came and went before); all 8 taken:
+     * the next step round */
+    WND *open[WM_MAX_WINDOWS];
+    int nopen = WmListWindows(open, WM_MAX_WINDOWS);
+    int x = 0, y = 0, step = -1;
+    for (int s = 0; s <= 8; s++) {
+        int k = s < 8 ? s : cascade % 8;
+        x = work.x + (work.w - w) / 2 - 120 + k * 32;
+        y = work.y + 30 + k * 28;
+        if (x < work.x + 10) x = work.x + 10;
+        if (x + w > work.x + work.w) x = work.x + work.w - w;
+        if (y + h > work.y + work.h) y = work.y + work.h - h;
+        if (s == 8) break;
+        bool taken = false;
+        for (int i = 0; i < nopen && !taken; i++) {
+            const GdiRect *f = open[i]->maximized || open[i]->snapped ? &open[i]->restore : &open[i]->frame;
+            taken = f->y == y;
+        }
+        if (!taken) { step = k; break; }
+    }
+    cascade = step >= 0 ? step + 1 : cascade + 1;
 
     const AppInfo *a = AppGetInfo(id);
     UINT32 style = (id == APP_CALENDAR || !a->builtin) ? WS_TOOLWINDOW : WS_OVERLAPPED;

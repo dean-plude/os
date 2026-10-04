@@ -56,7 +56,9 @@ order; --list prints them):
             it, then NovaOS installed from a USB stick onto an NVMe disk
             and started from there; "update", an installed NovaOS on a
             network serving update channels (tools/mkupdate.py): it
-            updates itself to a newer test build of this kernel, restarts
+            refuses channels that are unsigned, signed with another key
+            or changed after signing, then updates itself from a signed
+            one to a newer test build of this kernel, restarts
             into it twice, and goes back to it when the next update is
             reset while it first starts; "gamepad", a wired Xbox 360, an
             Xbox One and a HID game pad on xHCI (tools/padpeer.py behind
@@ -457,21 +459,37 @@ def laptop_boot(work):
 def update_boot(work):
     """build/nova.img as an installed NovaOS (its writes kept while QEMU runs,
     across restarts) on QEMU's user-mode network, where 10.0.2.2:18090
-    serves two update channels made with tools/mkupdate.py from this build:
-    v1/ stamped one version newer, v2/ two (tests/selftest/devices/update)"""
-    test = os.path.join(ROOT, 'tests', 'selftest', 'devices', 'update', '010-update.py')
+    serves update channels made with tools/mkupdate.py from this build:
+    v1/ stamped one version newer, v2/ two, both signed with the self-tests'
+    key, whose public half QEMU hands to NovaOS (fw_cfg); and v1's channel
+    unsigned/, signed with another key (otherkey/) and changed after it was
+    signed (changed/) (tests/selftest/devices/update)"""
+    sys.path.insert(0, os.path.join(ROOT, 'tools'))
+    import ed25519
+    upd = os.path.join(ROOT, 'tests', 'selftest', 'devices', 'update')
+    test, key = os.path.join(upd, '010-update.py'), os.path.join(upd, 'TEST-ONLY-signing-key.txt')
     ns = {'Test': Test, '__file__': test}
     exec(compile(open(test).read(), test, 'exec'), ns)          # (its V1 and V2)
     root = os.path.join(work, 'channels')
-    for sub, ver in (('v1', ns['V1']), ('v2', ns['V2'])):
+    other = os.path.join(work, 'other-signing-key.txt')
+    if not os.path.exists(other):
+        with open(other, 'w') as f:
+            f.write(ed25519.new_secret().hex() + '\n')
+    for sub, ver, sign in (('v1', ns['V1'], key), ('v2', ns['V2'], key), ('unsigned', ns['V1'], None),
+                           ('otherkey', ns['V1'], other), ('changed', ns['V1'], key)):
         subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'mkupdate.py'), os.path.join(root, sub),
-                        '--version', ver, '--notes', f'Self-test build {ver}'], check=True, stdout=subprocess.DEVNULL)
+                        '--version', ver, '--notes', f'Self-test build {ver}'] + (['--sign', sign] if sign else []),
+                       check=True, stdout=subprocess.DEVNULL)
+    changed = os.path.join(root, 'changed', 'novaos-update.txt')
+    data = open(changed, 'rb').read()
+    open(changed, 'wb').write(data.replace(b'notes Self-test build', b'notes Self-test build, changed'))
+    public = ed25519.public_key(ed25519.parse_secret(open(key).read())).hex()
     srv = subprocess.Popen([sys.executable, '-m', 'http.server', '18090', '--bind', '127.0.0.1', '--directory', root],
                            stdout=open(os.path.join(work, 'http.log'), 'w'), stderr=subprocess.STDOUT)
     time.sleep(1)
     if srv.poll() is not None:            # (another server on the port would serve other files)
         raise RuntimeError('the update channels\' web server did not start (is port 18090 in use?)')
-    return ['-nic', 'user,model=virtio-net-pci'], [srv]
+    return ['-nic', 'user,model=virtio-net-pci', '-fw_cfg', f'name=opt/novaos/update-key,string={public}'], [srv]
 
 
 # The suites that boot once per entry: (label, tests, setup(work) -> (QEMU arguments, processes[,
@@ -698,7 +716,11 @@ def run_boot(a, tests, work, label, **nova_args):
             results.append((t.name, why, time.time() - t0, out))
             print(f'{"PASS" if not why else "FAIL"}  {t.name:18s} {time.time() - t0:6.1f} s  {why or ""}', flush=True)
             if why:
-                print('    ' + '\n    '.join(l for l in out.splitlines() if not l.startswith('[SCHED]'))[-4000:])
+                print('    ' + '\n    '.join(l for l in out.splitlines() if not l.startswith('[SCHED]'))[-4000:], flush=True)
+                try:                                        # (a run cancelled by its job's limit never gets to the end)
+                    shutil.copy(nova.serial_path, os.path.join(a.out, log_name))
+                except OSError:
+                    pass
             if t.settle and not why:
                 time.sleep(t.settle)
             if t.crash and t.restart and not why and nova.q.poll() is None:
@@ -709,7 +731,7 @@ def run_boot(a, tests, work, label, **nova_args):
                     continue
                 except RuntimeError as e:
                     print(f'    did not start again after the crash: {str(e).splitlines()[0]}', flush=True)
-            if why == 'kernel panic' or t.crash or nova.q.poll() is not None:
+            if why == 'kernel panic' or t.crash or nova.q.poll() is not None or nova.wedged:
                 break
     finally:
         nova.close()
@@ -722,7 +744,9 @@ def run_boot(a, tests, work, label, **nova_args):
                 results[i] = (name, why, secs, out)
                 print(f'FAIL  {t.name:18s} {why}', flush=True)
     ran = {r[0] for r in results}
-    results += [(t.name, 'not run (an earlier test stopped NovaOS)', 0, '') for t in tests if t.name not in ran]
+    why_not = ('NovaOS stopped answering during an earlier test' if getattr(nova, 'wedged', False)
+               else 'an earlier test stopped NovaOS')
+    results += [(t.name, f'not run ({why_not})', 0, '') for t in tests if t.name not in ran]
     return results
 
 

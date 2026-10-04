@@ -431,11 +431,12 @@ def main():
                               if os.path.isdir(os.path.join(work, d))]
     t_boot = time.time()
     try:
-        # Drive C: is kept in memory and gets about 2.3 GB of programs before
-        # the first one starts, and Roblox, Steam and WebView2 install about
-        # 2.7 GB more: 10 GB leaves the later programs room, and the data
-        # disk room to save drive C:
-        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=10240, data_mb=12288,
+        # Drive C: gets about 2.3 GB of programs before the first one starts,
+        # and Roblox, Steam and WebView2 install about 2.7 GB more.  C: lives
+        # in memory, but the contents of its saved files are let go of when
+        # memory runs short and read back from the data disk when wanted, so
+        # 6 GB is room enough; the data disk needs room for all of C:
+        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=6144, data_mb=12288,
                     extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [],
                     net=echo is not None or https is not None, rec=rec, wav=wav)
     except RuntimeError as e:
@@ -481,10 +482,10 @@ def main():
             results[app.name] = (why, time.time() - t0, steps)
             app.window = (t0 - t_boot, time.time() - t_boot)    # (where its sound is in the recording)
             print(f'{"PASS" if not why else "FAIL"}  {app.name:10s} {time.time() - t0:6.1f} s', flush=True)
-            if nova.q.poll() is None:        # drive C: is RAM: what each program's files leave taken
+            if nova.q.poll() is None:        # drive C: lives in memory: what each program's files leave taken
                 out, _ = nova.run('mem', 15)
                 log += out
-                for m in re.finditer(r'(Physical memory: .*?MB free|Drive C: \(kept in memory\): .*?taking \d+ MB)', out):
+                for m in re.finditer(r'(Physical memory: .*?MB free|Drive C: \d+ files.*?taking \d+ MB|The rest is read .*?MB\))', out):
                     print(f'      {m.group(1)}', flush=True)
             if nova.q.poll() is not None:
                 stopped = 'not run (NovaOS stopped)'

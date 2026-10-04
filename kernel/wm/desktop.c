@@ -1932,6 +1932,7 @@ void DesktopWatchdog(UINT64 now)
     Thread *kt = g_desktop_kt;
     if (!kt || g_sleeping || now - g_desktop_beat < 300 || reported == g_desktop_beat) return;
     reported = g_desktop_beat;
+    bkl_stall_check();
     extern char __text_end[];
     Thread *who[2] = { kt, DesktopLockOwner() };
     for (int i = 0; i < 2; i++) {

@@ -484,8 +484,19 @@ and the CPU time and thread count of QEMU and of virglrenderer's render server
 processes), `virglrenderer-PID.log` (one per render process), and, once the
 guest's serial log has been silent for six minutes, `host-hang-N.txt`: every
 host thread's state, wait channel and CPU use over five seconds, and gdb's
-backtrace of QEMU and of each render process.  A QEMU whose threads all wait
-and whose CPU time stands still has lost a wake-up; one that spins is busy.
+backtrace of QEMU and of each render process, then what QEMU's monitor says
+about the guest itself: every CPU's registers (with the kernel function its RIP
+is in, named from `build/kernel.elf`), its local APIC timer, and the kernel's
+big lock (`g_bkl`); `serial-hang-N.log` is the whole serial log so far (a job
+cut off by its time limit never reaches the end of the suite, where it is
+normally kept).  A QEMU whose threads all wait and whose CPU time stands still
+has lost a wake-up; one that spins is busy.  Two CPUs that both sit in HLT with
+their timers ticking, the serial log silent and no answer to Ctrl+Alt+F12, are
+waiting for the kernel lock: the kernel then logs `[WATCHDOG] the kernel lock
+has been held for ...` itself after three seconds (who holds it, what each CPU
+runs) and lets go of a lock whose holder no CPU runs (`[SMP] Bug: ...`).  The
+self-tests stop at the first test after which the machine answers neither
+Ctrl+Alt+F12 nor Ctrl+C, instead of waiting out every later test's limit.
 
 `NOVARUN_QEMU` names the QEMU that `tools/novarun.py` runs (default
 `qemu-system-x86_64` from `PATH`); it opens an SDL window with OpenGL
@@ -861,6 +872,7 @@ would do).
 | Audacity 3.7.4 (the official 64-bit zip) | through its first-run dialogs, records 10 s of the microphone's 523 Hz tone, stops and saves the project; the screenshot must match `tests/reference/audacity.png` and `C:\Apps\rec10.aup3` must exist |
 | Firefox 157.0 (Mozilla's full installer, the App Store's download) | `store install Firefox`: the Store unpacks the installer from `C:\Downloads` with 7-Zip (staged in `C:\Programs\7-Zip`), as its Install button does; then Firefox loads a page from an HTTPS server the script runs on the host (https://10.0.2.2:8443/, a certificate from a CA made for the run with `openssl` and trusted through Firefox's `distribution\policies.json`); the screenshot must match `tests/reference/firefox.png` |
 | Teeworlds 0.7.5 (the official 64-bit zip, the App Store's download) | `store install Mesa 3D` and `store install Teeworlds`; the game starts in full screen, Enter answers its two first-start questions, and its start menu must match `tests/reference/teeworlds.png`; the sound NovaOS played while it ran must hold at least 5 s of sound (`App(sound=(None, 5000))`: any sound, here its menu music, counted between its first test starting and its last one ending) |
+| OpenTyrian 2.1.20260913 (the official 64-bit zip with the freeware Tyrian 2.1 data, the App Store's download) | `store install Mesa 3D`, `store install DXVK` and `store install OpenTyrian`; the game draws with Direct3D 9 (SDL2's renderer) through DXVK, its demo plays in a window, Alt+Enter switches it to full screen, and Enter goes through its menus (one-player game, episode 1, normal), pressed only once the screen stands still (the game fades between menus and takes no keys meanwhile), to its game menu, which must match `tests/reference/opentyrian.png`; the sound NovaOS played while it ran must hold at least 5 s of sound (its music) |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` |
 | PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
 
@@ -873,12 +885,14 @@ with its error box when its file is missing), the script opens a new
 Terminal from Start, stops the program from there and carries on, so one
 failure does not fail every program after it.  After Firefox, `store close` closes the App Store window its install
 opened.  After each program the script types `mem` and prints the
-machine's free memory and what drive C: takes: C: is kept in memory, so
-every program installed during the run takes RAM until it is deleted.  The
-machine has 10 GB of memory and a 12 GB data disk: the 2.3 GB of programs
-copied to `C:\Apps` before the first one starts are in memory too, Roblox,
-Steam and WebView2 install about 2.7 GB more, and the data disk saves
-drive C:.  Building PuTTY needs `cmake` and
+machine's free memory and what drive C: takes: how many files and bytes
+it holds, how much of that is in memory, and how much has been let go of
+so far.  C: lives in memory, but the contents of its saved files are let
+go of when memory runs short and read back from the data disk when
+wanted, and the 2.3 GB of programs copied to `C:\Apps` before the first
+one starts are restored without being read.  The machine has 6 GB of
+memory and a 12 GB data disk: Roblox, Steam and WebView2 install about
+2.7 GB more, and the data disk saves all of drive C:.  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
 It needs 7-Zip's installer, Pillow, `openssl` (for Firefox's test

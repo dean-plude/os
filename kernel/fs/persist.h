@@ -27,6 +27,13 @@ void PersistInit(void);
 void PersistLoad(void);
 /* Once C: has been quiet for a second, have the "persist" thread save the
  * changes (desktop thread; returns at once). */
+/* Saved files of drive C: whose contents were let go of when memory ran
+ * short (read back from the volume when wanted): how many times, the bytes */
+void PersistLetGoStats(UINT64 *files, UINT64 *bytes);
+/* Let go of the contents of every saved file of C: that nothing holds
+ * (NtSetSystemInformation's MemoryPurgeStandbyList); waits for a save
+ * that is writing.  Nothing when no volume is saved to. */
+void PersistLetGoAll(void);
 void PersistPoll(void);
 /* Save every change now, on this thread (e.g. before a restart).  False
  * on a disk error.  Holds the file-system lock only while it copies what

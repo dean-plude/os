@@ -15,6 +15,9 @@
 #        SHA256SUMS                        the SHA-256 of every file above
 #      and release notes from docs/releases/VERSION.md and the docs/history/
 #      sections added since the previous release (tools/release_notes.py).
+#      novaos-update.txt is signed with the Ed25519 key in the Actions
+#      secret NOVAOS_UPDATE_SIGNING_KEY (docs/releasing.md); without the
+#      secret it is published unsigned, with a warning.
 #      A version with a suffix (v0.1.1-rc1) is published as a pre-release,
 #      which never becomes "Latest" and so never reaches the update channel.
 #
@@ -89,8 +92,26 @@ jobs:
       - name: Make the update channel, checksums and notes
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          NOVAOS_UPDATE_SIGNING_KEY: ${{ secrets.NOVAOS_UPDATE_SIGNING_KEY }}
         run: |
-          python3 tools/mkupdate.py dist --kernel boot/kernel.elf --loader boot/bootx64.efi \
+          sign=()
+          builtin=$(sed -n 's/^#define UPDATE_SIGNING_KEY "\(.*\)"$/\1/p' kernel/fs/update_key.h)
+          if [ -n "$NOVAOS_UPDATE_SIGNING_KEY" ]; then
+            public=$(python3 tools/mkupdate.py --public-key <(printf '%s\n' "$NOVAOS_UPDATE_SIGNING_KEY"))
+            if [ -n "$builtin" ] && [ "$builtin" != "$public" ]; then
+              echo "::error::NOVAOS_UPDATE_SIGNING_KEY's public key is $public, but kernel/fs/update_key.h builds in $builtin, so systems with that key would refuse this channel (docs/releasing.md)"
+              exit 1
+            fi
+            [ -n "$builtin" ] || echo "::warning::kernel/fs/update_key.h builds in no key yet: put $public there (docs/releasing.md)"
+            sign=(--sign-env NOVAOS_UPDATE_SIGNING_KEY)
+          else
+            echo "::warning::no NOVAOS_UPDATE_SIGNING_KEY secret: novaos-update.txt is published unsigned (docs/releasing.md)"
+            if [ -n "$builtin" ]; then
+              echo "::error::kernel/fs/update_key.h builds in a key, so installed systems would refuse an unsigned channel: add the secret"
+              exit 1
+            fi
+          fi
+          python3 tools/mkupdate.py dist --kernel boot/kernel.elf --loader boot/bootx64.efi "${sign[@]}" \
             --notes "NovaOS $VERSION: https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME"
           grep -qx "version $VERSION" dist/novaos-update.txt || {
             echo "::error::the built kernel is not version $VERSION"; cat dist/novaos-update.txt; exit 1
@@ -111,7 +132,9 @@ jobs:
         run: |
           files=(dist/nova.iso dist/nova.iso.sha256 dist/kernel.elf dist/bootx64.efi
                  dist/novaos-update.txt dist/SHA256SUMS)
-          if [ "$PRERELEASE" = true ]; then mark=(--prerelease --latest=false); else mark=(--latest); fi
+          # a release made on the web page first may carry "pre-release", which
+          # can never be Latest: clear it explicitly for a plain version
+          if [ "$PRERELEASE" = true ]; then mark=(--prerelease --latest=false); else mark=(--prerelease=false --latest); fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
             gh release edit "$GITHUB_REF_NAME" --title "NovaOS $VERSION" --notes-file notes.md "${mark[@]}"

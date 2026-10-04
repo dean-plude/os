@@ -48,8 +48,8 @@ each one was taken.
 | VLC playing an H.264 video with sound | KeePassXC (Qt) with an open password database |
 | ![Inkscape with a new document](docs/screenshots/inkscape.png) | ![Beneath a Steel Sky on ScummVM, Robert Foster on the gantry](docs/screenshots/beneath-a-steel-sky.png) |
 | Inkscape (GTK) with a new document | Beneath a Steel Sky (free on GOG) on ScummVM, installed with its installer |
-| ![Teeworlds' start menu in full screen](docs/screenshots/teeworlds.png) | |
-| Teeworlds in full screen at its start menu, its music playing | |
+| ![Teeworlds' start menu in full screen](docs/screenshots/teeworlds.png) | ![Tyrian's first level in OpenTyrian, in full screen](docs/screenshots/opentyrian.png) |
+| Teeworlds in full screen at its start menu, its music playing | Tyrian 2.1 (freeware) on OpenTyrian in full screen, drawn with Direct3D 9 through DXVK |
 
 ## What runs today
 
@@ -750,7 +750,11 @@ os/
   volume a second after each change and restored at boot.  A file takes
   the memory its contents need (one written by appending gives back the
   rest of the buffer it grew into when it is closed; `mem` in the Terminal
-  shows what C: takes).  System files
+  shows what C: takes).  When memory runs short, the contents of saved
+  files nothing holds are let go of, those unused longest first, and read
+  back from the volume when wanted, as Windows drops cached file pages;
+  at boot the large files are restored without being read until then
+  (`cachetest`).  System files
   come from the kernel image, so a new build always brings its own.  The
   save runs on its own thread and holds no lock while the disk is written
   (`savetest`), and a crash during a FAT save leaves each file old or new.

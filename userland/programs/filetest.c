@@ -1,6 +1,6 @@
 /* filetest.exe — Win32 file API self-test on drive C:
  *
- *   filetest            the tests (files, registry change events, pending renames)
+ *   filetest            the tests (files, delete on close, registry change events, pending renames)
  *   filetest install    an "installer" that must replace a running program:
  *                       it schedules the replacement for the next boot
  *   filetest installed  after a restart: the replacement happened
@@ -8,6 +8,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
+
+#ifndef DELETE
+#define DELETE                       0x00010000
+#endif
+#ifndef FILE_FLAG_BACKUP_SEMANTICS
+#define FILE_FLAG_BACKUP_SEMANTICS   0x02000000
+#endif
+#ifndef FILE_FLAG_OPEN_REPARSE_POINT
+#define FILE_FLAG_OPEN_REPARSE_POINT 0x00200000
+#endif
 
 static int pass, fail;
 #define CHECK(cond) do { if (cond) pass++; else { fail++; printf("FAIL line %d: %s (error %lu)\n", __LINE__, #cond, GetLastError()); } } while (0)
@@ -155,6 +165,81 @@ static int installed(void)
     return fail ? 1 : 0;
 }
 
+/* Delete on close, as installers clean up their temporary files: a file
+ * marked for deletion (FILE_FLAG_DELETE_ON_CLOSE, or FileDispositionInfo)
+ * goes when its last handle closes, not before; meanwhile it cannot be
+ * opened again (ERROR_ACCESS_DENIED), and a running program's file cannot
+ * be deleted at all */
+static void delete_on_close(const char *self)
+{
+    DWORD n;
+    char buf[8];
+    HANDLE h = CreateFileA("doc1.tmp", GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_FLAG_DELETE_ON_CLOSE, 0);
+    CHECK(h != INVALID_HANDLE_VALUE && WriteFile(h, "x", 1, &n, 0));
+    CHECK(GetFileAttributesA("doc1.tmp") != INVALID_FILE_ATTRIBUTES);
+    CloseHandle(h);
+    CHECK(GetFileAttributesA("doc1.tmp") == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND);
+
+    h = CreateFileA("doc2.tmp", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    0, CREATE_ALWAYS, 0, 0);
+    CHECK(h != INVALID_HANDLE_VALUE && WriteFile(h, "data", 4, &n, 0));
+    HANDLE d = CreateFileA("doc2.tmp", DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, 0);
+    FILE_DISPOSITION_INFO di = { TRUE };
+    CHECK(d != INVALID_HANDLE_VALUE && SetFileInformationByHandle(d, FileDispositionInfo, &di, sizeof(di)));
+    CloseHandle(d);
+    FILE_STANDARD_INFO si;
+    CHECK(GetFileInformationByHandleEx(h, FileStandardInfo, &si, sizeof(si)) && si.DeletePending);
+    CHECK(CreateFileA("doc2.tmp", GENERIC_READ, 7, 0, OPEN_EXISTING, 0, 0) == INVALID_HANDLE_VALUE &&
+          GetLastError() == ERROR_ACCESS_DENIED);               /* (STATUS_DELETE_PENDING) */
+    CHECK(SetFilePointer(h, 0, 0, FILE_BEGIN) == 0 && ReadFile(h, buf, 4, &n, 0) && n == 4 && !memcmp(buf, "data", 4));
+    CloseHandle(h);                                             /* the last handle: now it goes */
+    CHECK(CreateFileA("doc2.tmp", DELETE, 7, 0, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0) == INVALID_HANDLE_VALUE &&
+          GetLastError() == ERROR_FILE_NOT_FOUND);
+
+    h = CreateFileA("doc3.tmp", GENERIC_WRITE, 7, 0, CREATE_ALWAYS, 0, 0);
+    CHECK(h != INVALID_HANDLE_VALUE);
+    CHECK(DeleteFileA("doc3.tmp"));                             /* pending while @h is open */
+    CHECK(GetFileAttributesA("doc3.tmp") == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_ACCESS_DENIED);
+    CloseHandle(h);
+    CHECK(GetFileAttributesA("doc3.tmp") == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND);
+
+    h = CreateFileA("doc4.tmp", GENERIC_WRITE, 7, 0, CREATE_ALWAYS, 0, 0);
+    d = CreateFileA("doc4.tmp", DELETE, 7, 0, OPEN_EXISTING, 0, 0);
+    CHECK(SetFileInformationByHandle(d, FileDispositionInfo, &di, sizeof(di)));
+    di = (FILE_DISPOSITION_INFO){ FALSE };                      /* changed its mind */
+    CHECK(SetFileInformationByHandle(d, FileDispositionInfo, &di, sizeof(di)));
+    CloseHandle(d);
+    CloseHandle(h);
+    CHECK(GetFileAttributesA("doc4.tmp") != INVALID_FILE_ATTRIBUTES && DeleteFileA("doc4.tmp"));
+
+    CHECK(CreateDirectoryA("docdir", 0));                      /* a directory, the same way */
+    d = CreateFileA("docdir", DELETE, 7, 0, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_DELETE_ON_CLOSE, 0);
+    CHECK(d != INVALID_HANDLE_VALUE);
+    CloseHandle(d);
+    CHECK(GetFileAttributesA("docdir") == INVALID_FILE_ATTRIBUTES);
+
+    /* A running program's file: refused while it runs, deleted after */
+    CHECK(CopyFileA(self, "docrun.exe", FALSE));
+    STARTUPINFOA st = { sizeof(st) };
+    PROCESS_INFORMATION pi;
+    char cmd[] = "docrun.exe wait";
+    CHECK(CreateProcessA("docrun.exe", cmd, 0, 0, FALSE, 0, 0, 0, &st, &pi));
+    Sleep(500);
+    CHECK(!DeleteFileA("docrun.exe") && GetLastError() == ERROR_ACCESS_DENIED);
+    CHECK(GetFileAttributesA("docrun.exe") != INVALID_FILE_ATTRIBUTES);
+    TerminateProcess(pi.hProcess, 0);
+    WaitForSingleObject(pi.hProcess, 10000);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    BOOL gone = FALSE;
+    for (int i = 0; i < 50 && !gone; i++) {                     /* (its files are let go just after it ends) */
+        gone = DeleteFileA("docrun.exe");
+        if (!gone) Sleep(100);
+    }
+    CHECK(gone && GetFileAttributesA("docrun.exe") == INVALID_FILE_ATTRIBUTES);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "wait")) { Sleep(60000); return 0; }
@@ -225,6 +310,9 @@ int main(int argc, char **argv)
     CHECK(p != 0);
     if (p) { memset(p, 0xAB, 1 << 20); CHECK(VirtualFree(p, 0, MEM_RELEASE)); }
 
+    char self[MAX_PATH];
+    GetModuleFileNameA(0, self, sizeof(self));
+    delete_on_close(self);
     notify();
     pending();
 

@@ -412,6 +412,7 @@ void interrupt_dispatch(InterruptFrame *frame)
     if (vector == IRQ_TIMER && KiGetCurrentKpcr()->LockWait) {
         apic_eoi();
         sched_timer_rearm();                            /* (the timer is one-shot) */
+        bkl_stall_check();                              /* (a lock nobody lets go of: say so) */
         return;
     }
     KiGetCurrentKpcr()->Idle = 0;

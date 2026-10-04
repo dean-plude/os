@@ -33,6 +33,7 @@
 #define ST_THREAD_IS_TERMINATING  0xC000004Bu
 #define ST_TOO_MANY_HANDLES       0xC000011Fu
 #define ST_STILL_ACTIVE           0x00000103u
+#define ST_PARTIAL_COPY           0x8000000Du
 #define ST_CANCELLED              0xC0000120u
 #define ST_PRIVILEGE_NOT_HELD     0xC0000061u
 #define SE_INC_BASE_PRIORITY      14          /* SeIncreaseBasePriorityPrivilege */
@@ -981,8 +982,93 @@ static UINT64 sys_query_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return r;
 }
 
+/* Bytes of process @p's memory at @va; false where nothing is mapped */
+static bool read_process(UmProcess *p, UINT64 va, void *dst, UINT64 n)
+{
+    UINT8 *d = dst;
+    for (UINT64 done = 0; done < n; ) {
+        UINT64 k = n - done, room = PAGE_SIZE - ((va + done) & 0xFFF);
+        if (k > room) k = room;
+        um_lock_excl(&p->lock);
+        bool ok = um_region_find(p, va + done) && um_read(p, va + done, d + done, k);
+        um_unlock_excl(&p->lock);
+        if (!ok) return false;
+        done += k;
+    }
+    return true;
+}
+
+/* A UNICODE_STRING result (x64 layout) followed by its @n UTF-16 units and
+ * a NUL, as ProcessImageFileName and ProcessCommandLineInformation return
+ * it; too small a buffer gets STATUS_INFO_LENGTH_MISMATCH and the size */
+static UINT64 put_unicode_info(UINT64 a3, UINT64 a4, const UINT8 *units, UINT32 n)
+{
+    UINT32 need = 16 + 2 * n + 2;
+    UINT64 ret = um_stack_arg(5);
+    if (ret && !put_u32(ret, need)) return ST_ACCESS_VIOLATION;
+    if (a4 < need) return ST_INFO_LENGTH_MISMATCH;
+    UINT8 *b = kzalloc(need);
+    if (!b) return ST_NO_MEMORY;
+    UINT16 lens[2] = { (UINT16)(2 * n), (UINT16)(2 * n + 2) };  /* Length, MaximumLength */
+    UINT64 at = a3 + 16;                                       /* Buffer: right after it */
+    memcpy(b, lens, 4);
+    memcpy(b + 8, &at, 8);
+    memcpy(b + 16, units, 2 * n);
+    UINT64 st = NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, b, need)) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
+    kfree(b);
+    return st;
+}
+
+/* ProcessImageFileName (27, "\Device\HarddiskVolume1\Apps\x.exe", the
+ * form QueryDosDevice's names map back to drive letters) and
+ * ProcessImageFileNameWin32 (43, "C:\Apps\x.exe"): the program @p started */
+static UINT64 query_image_name(UmProcess *p, bool nt, UINT64 a3, UINT64 a4)
+{
+    char path[RAMFS_PATH_MAX + 32];
+    const char *s = p->image_path;
+    if (nt && s[0] && s[1] == ':') ksnprintf(path, sizeof(path), "\\Device\\HarddiskVolume1%s", s + 2);
+    else ksnprintf(path, sizeof(path), "%s", s);
+    UINT32 n = um_utf16_from_utf8(path, NULL);
+    UINT8 *u = kmalloc(2 * n + 2);
+    if (!u) return ST_NO_MEMORY;
+    um_utf16_from_utf8(path, u);
+    UINT64 st = put_unicode_info(a3, a4, u, n);
+    kfree(u);
+    return st;
+}
+
+/* ProcessCommandLineInformation (60): the command line in @p's process
+ * parameters, read from its memory as Windows does (the program may have
+ * changed it there); a program that finds another by its command line,
+ * as Edge Update finds its running install, asks for this or reads the
+ * same place through ReadProcessMemory */
+static UINT64 query_command_line(UmProcess *p, UINT64 a3, UINT64 a4)
+{
+    UINT32 w = p->wow ? 4 : 8;
+    UINT64 params = 0, buf = 0;
+    UINT16 len = 0;
+    if (!read_process(p, p->lay.peb + (p->wow ? 0x10 : 0x20), &params, w) ||   /* PEB.ProcessParameters */
+        !read_process(p, params + (p->wow ? 0x40 : 0x70), &len, 2) ||          /* CommandLine.Length */
+        !read_process(p, params + (p->wow ? 0x44 : 0x78), &buf, w))            /* CommandLine.Buffer */
+        return ST_PARTIAL_COPY;
+    len &= ~1;
+    UINT8 *u = kmalloc((UINT64)len + 2);
+    if (!u) return ST_NO_MEMORY;
+    UINT64 st = read_process(p, buf, u, len) ? put_unicode_info(a3, a4, u, len / 2) : ST_PARTIAL_COPY;
+    kfree(u);
+    return st;
+}
+
 static UINT64 query_info_process(UmProcess *p, UINT64 a2, UINT64 a3, UINT64 a4)
 {
+    if (a2 == 27 || a2 == 43) return query_image_name(p, a2 == 27, a3, a4);
+    if (a2 == 60) return query_command_line(p, a3, a4);
+    if (a2 == 26) {                                            /* ProcessWow64Information: its 32-bit PEB, or 0 */
+        if (a4 < 8) return ST_INFO_LENGTH_MISMATCH;
+        UINT64 v = p->wow ? p->lay.peb : 0, ret = um_stack_arg(5);
+        if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, &v, 8))) return ST_ACCESS_VIOLATION;
+        return !ret || put_u32(ret, 8) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
+    }
     if (a2 == 23) {                                            /* ProcessDeviceMap: the drive letters */
         if (a4 < 36) return ST_INFO_LENGTH_MISMATCH;
         UINT8 b[36];
@@ -1361,8 +1447,11 @@ static UINT64 sys_create_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         file = um_handle_file(p, fileh);
         if (file) { RamfsRef(file); if (!size) size = file->size; }
         um_unlock_excl(&p->lock);
+        bool read = !file || RamfsLoad(file);                  /* (contents left on the data disk: read back) */
+        if (!read) RamfsUnref(file);
         DesktopUnlock();
         if (!file) return ST_INVALID_HANDLE;
+        if (!read) return 0xC0000032U;                          /* DISK_CORRUPT_ERROR */
     }
     if (!size) { if (file) { DesktopLock(); RamfsUnref(file); DesktopUnlock(); } return file ? 0xC000011EU /* MAPPED_FILE_SIZE_ZERO */ : ST_INVALID_PARAMETER; }
     UINT64 n = (size + PAGE_SIZE - 1) / PAGE_SIZE;

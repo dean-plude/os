@@ -238,6 +238,7 @@
 #define SYSCALL_NtCompareObjects                  0x0099
 #define SYSCALL_NtShutdownSystem                  0x01AE
 #define SYSCALL_NtSetSystemPowerState             0x01A5
+#define SYSCALL_NtSetSystemInformation            0x01A4
 #define SYSCALL_NtInitiatePowerAction             0x00FC
 #define SYSCALL_NtPowerInformation                0x005F
 #define SYSCALL_NtQuerySection                    0x0051
