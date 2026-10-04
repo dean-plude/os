@@ -959,6 +959,65 @@ UINT16 um_pe_subsystem(RamNode *f)
     return rd16(d + nt + 24 + 68);                      /* OptionalHeader.Subsystem (PE32 and PE32+) */
 }
 
+/* Whether PE file @f's manifest (resource type 24, its first one) asks
+ * to run as administrator: requestedExecutionLevel requireAdministrator or
+ * highestAvailable, which Windows elevates on start (installers mostly) */
+bool um_pe_wants_admin(RamNode *f)
+{
+    if (!RamfsLoad(f) || !um_pe_machine(f)) return false;
+    const UINT8 *d = (const UINT8 *)f->data;
+    UINT32 size = f->size, nt = rd32(d + 0x3C);
+    const UINT8 *fh = d + nt + 4, *oh = fh + 20;
+    if ((UINT64)nt + 24 + 136 > size) return false;
+    bool pe32 = rd16(oh) == 0x10B;
+    UINT32 ndirs = rd32(oh + (pe32 ? 92 : 108));
+    if (ndirs < 3) return false;
+    UINT32 rsrc = rd32(oh + (pe32 ? 96 : 112) + 16);           /* DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE] */
+    UINT16 nsec = rd16(fh + 2), opt = rd16(fh + 16);
+    const UINT8 *sec = oh + opt;
+    if (!rsrc || (UINT64)(sec - d) + 40ULL * nsec > size) return false;
+    /* file offset of an RVA (0: not in a section) */
+    #define RVA_OFF(rva, out) do { out = 0; \
+        for (UINT16 i_ = 0; i_ < nsec; i_++) { const UINT8 *s_ = sec + 40 * i_; \
+            UINT32 va_ = rd32(s_ + 12), raw_ = rd32(s_ + 16), ptr_ = rd32(s_ + 20); \
+            if ((rva) >= va_ && (rva) - va_ < raw_) { out = ptr_ + ((rva) - va_); break; } } } while (0)
+    UINT32 base;
+    RVA_OFF(rsrc, base);
+    if (!base || base + 16 > size) return false;
+    /* type 24 (RT_MANIFEST), then its first name, then its first language */
+    UINT32 dir = base, want = 24;
+    for (int level = 0; level < 3; level++) {
+        if (dir + 16 > size) return false;
+        UINT32 n = rd16(d + dir + 12) + rd16(d + dir + 14), found = 0;
+        for (UINT32 i = 0; i < n && dir + 16 + 8 * i + 8 <= size; i++) {
+            const UINT8 *e = d + dir + 16 + 8 * i;
+            if (level == 0 && rd32(e) != want) continue;
+            found = rd32(e + 4);
+            break;
+        }
+        if (!found) return false;
+        if (level < 2) {
+            if (!(found & 0x80000000u)) return false;
+            dir = base + (found & 0x7FFFFFFFu);
+        } else {
+            if (found & 0x80000000u) return false;
+            dir = base + found;                                /* IMAGE_RESOURCE_DATA_ENTRY */
+        }
+    }
+    if (dir + 8 > size) return false;
+    UINT32 len = rd32(d + dir + 4), off;
+    RVA_OFF(rd32(d + dir), off);
+    #undef RVA_OFF
+    if (!off || off >= size || len > size - off || len > 65536) return false;
+    static const char *const levels[] = { "requireAdministrator", "highestAvailable" };
+    for (int k = 0; k < 2; k++) {
+        UINT32 l = (UINT32)strlen(levels[k]);
+        for (UINT32 i = 0; i + l <= len; i++)
+            if (!memcmp(d + off + i, levels[k], l)) return true;
+    }
+    return false;
+}
+
 /* Find a DLL: a path as given, else the program's directory, then the
  * system folder (System32, or SysWOW64 for 32-bit programs) */
 /* A 32-bit program's C:\Windows\System32\... is C:\Windows\SysWOW64\...
@@ -1941,7 +2000,7 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
     UINT8 *fpu = kernel_alloc_pages(1);
     if (!t || !fpu) { kfree(t); if (fpu) kernel_free_pages(fpu, 1); return NULL; }
     memset(fpu, 0, PAGE_SIZE);
-    fpu[0] = 0x7F; fpu[1] = 0x03;                          /* FCW = 0x037F */
+    fpu[0] = 0x7F; fpu[1] = 0x02;                          /* FCW = 0x027F (53-bit precision), as on Windows */
     put_u32(fpu + 24, 0x1F80);                             /* MXCSR default */
     t->ob.type = UO_THREAD;
     t->ob.refs = 1;                                        /* the process's thread table */
@@ -2152,6 +2211,10 @@ UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield
     p->exe_dir = exe->parent;
     p->con = um_console_ref(con);
     p->token = um_token_for_process(UmCurrent());        /* its creator's user (the desktop's: the default) */
+    /* a program whose manifest asks for administrator runs elevated, as
+     * Windows starts it after its consent prompt (NovaOS asks nobody yet) */
+    if (p->token && !um_token_elevated(p->token) && um_pe_wants_admin(exe) && um_elevate_process(p))
+        kprintf("[UM] %s runs as administrator (its manifest asks to)\n", exe->name);
     /* NORMAL_PRIORITY_CLASS, or an IDLE or BELOW_NORMAL creator's class,
      * as on Windows (CreateProcess's *_PRIORITY_CLASS flags set it after) */
     p->prio_class = 2;

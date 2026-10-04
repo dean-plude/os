@@ -642,13 +642,18 @@ bool RamfsWriteOwned(RamNode *f, char *buf, UINT32 len)
     return true;
 }
 
-/* Grow capacity to at least @need (geometrically, so appends are cheap). */
+/* Grow capacity to at least @need (geometrically, so appends are cheap):
+ * doubling while small, then by a quarter, so a file of hundreds of MiB
+ * written in pieces (an installer's data) doesn't hold twice its size. */
 static bool reserve(RamNode *f, UINT32 need)
 {
     if (need <= f->cap) return true;
     if (need > RAMFS_FILE_MAX) return false;
     UINT32 cap = f->cap ? f->cap : 256;
-    while (cap < need) cap = cap > RAMFS_FILE_MAX / 2 ? RAMFS_FILE_MAX : cap * 2;
+    while (cap < need) {
+        UINT32 more = cap < (64u << 20) ? cap : cap / 4;
+        cap = cap > RAMFS_FILE_MAX - more ? RAMFS_FILE_MAX : cap + more;
+    }
     char *nb = kmalloc(cap);
     if (!nb) return false;
     if (f->size) memcpy(nb, f->data, f->size);

@@ -25,6 +25,7 @@
  */
 
 #include <windows.h>
+#include <avrt.h>
 #include <winternl.h>
 #include <objbase.h>
 #include "../winmm/audioconv.h"
@@ -333,6 +334,8 @@ static DWORD WINAPI mixer_thread(LPVOID p)
 {
     Device *d = p;
     SHORT out[AHEAD * 2];
+    DWORD mm = 0;
+    AvSetMmThreadCharacteristicsW(L"Playback", &mm);   /* (MMCSS: above any busy or boosted program thread) */
     do {
         StreamStatus st;
         if (NtNovaAudioCtl(d->stream, 0, 0, &st)) continue;
@@ -950,6 +953,8 @@ static DWORD WINAPI capture_thread(LPVOID p)
 {
     CBuffer *c = p;
     BYTE conv[CHUNK * 64];
+    DWORD mm = 0;
+    AvSetMmThreadCharacteristicsW(L"Capture", &mm);   /* (MMCSS: above any busy or boosted program thread) */
     do {
         EnterCriticalSection(&c->lock);
         while (c->running) {

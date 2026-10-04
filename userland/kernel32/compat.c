@@ -1955,6 +1955,8 @@ K32 HRESULT WINAPI WerSetFlags(DWORD f) { (void)f; return S_OK; }
 K32 HRESULT WINAPI WerGetFlags(HANDLE p, PDWORD f) { (void)p; if (f) *f = 0; return S_OK; }
 K32 HRESULT WINAPI WerRegisterMemoryBlock(PVOID p, DWORD n) { (void)p; (void)n; return S_OK; }
 K32 HRESULT WINAPI WerUnregisterMemoryBlock(PVOID p) { (void)p; return S_OK; }
+K32 HRESULT WINAPI WerRegisterCustomMetadata(PCWSTR key, PCWSTR value) { (void)key; (void)value; return S_OK; }
+K32 HRESULT WINAPI WerUnregisterCustomMetadata(PCWSTR key) { (void)key; return S_OK; }
 K32 HRESULT WINAPI WerRegisterFile(PCWSTR f, int t, DWORD flags) { (void)f; (void)t; (void)flags; return S_OK; }
 
 /* PROCESSOR_NUMBER { WORD Group; BYTE Number, Reserved } */
@@ -2242,6 +2244,103 @@ K32 LONG WINAPI GetCurrentApplicationUserModelId(UINT32 *len, PWSTR id) { (void)
 K32 LONG WINAPI GetApplicationUserModelId(HANDLE p, UINT32 *len, PWSTR id) { (void)p; (void)id; if (len) *len = 0; return APPMODEL_ERROR_NO_APPLICATION; }
 K32 LONG WINAPI GetPackageFullName(HANDLE p, UINT32 *len, PWSTR name) { (void)p; (void)name; if (len) *len = 0; return APPMODEL_ERROR_NO_PACKAGE; }
 K32 LONG WINAPI GetPackageFamilyName(HANDLE p, UINT32 *len, PWSTR name) { (void)p; (void)name; if (len) *len = 0; return APPMODEL_ERROR_NO_PACKAGE; }
+
+/* A package full name is Name_Version_Architecture_ResourceId_PublisherId
+ * (the resource id may be empty); its family name is Name_PublisherId */
+static int package_parts(PCWSTR full, PCWSTR part[5], int len[5])
+{
+    int n = 0;
+    PCWSTR s = full;
+    if (!full) return 0;
+    for (PCWSTR p = full;; p++) {
+        if (*p == '_' || !*p) {
+            if (n == 5) return 0;
+            part[n] = s; len[n] = (int)(p - s); n++;
+            if (!*p) break;
+            s = p + 1;
+        }
+    }
+    if (n != 5 || !len[0] || !len[1] || !len[2] || !len[4]) return 0;
+    return 1;
+}
+
+K32 LONG WINAPI PackageFamilyNameFromFullName(PCWSTR full, UINT32 *len, PWSTR out)
+{
+    PCWSTR part[5]; int l[5];
+    if (!len || !package_parts(full, part, l)) return ERROR_INVALID_PARAMETER;
+    UINT32 need = (UINT32)(l[0] + 1 + l[4] + 1);
+    if (!out || *len < need) { *len = need; return ERROR_INSUFFICIENT_BUFFER; }
+    memcpy(out, part[0], l[0] * sizeof(WCHAR));
+    out[l[0]] = '_';
+    memcpy(out + l[0] + 1, part[4], l[4] * sizeof(WCHAR));
+    out[need - 1] = 0;
+    *len = need;
+    return ERROR_SUCCESS;
+}
+
+/* PACKAGE_ID, then its strings; the publisher's full name is only known
+ * for an installed package (none is), so it is left out */
+typedef struct { UINT32 reserved, processorArchitecture; UINT64 version; PWSTR name, publisher, resourceId, publisherId; } PackageId;
+
+K32 LONG WINAPI PackageIdFromFullName(PCWSTR full, UINT32 flags, UINT32 *len, BYTE *buf)
+{
+    static const struct { const char *s; UINT32 arch; } archs[] = {
+        { "x86", 0 }, { "arm", 5 }, { "x64", 9 }, { "neutral", 11 }, { "arm64", 12 }, { "x86a64", 14 } };
+    PCWSTR part[5]; int l[5];
+    if (!len || !package_parts(full, part, l)) return ERROR_INVALID_PARAMETER;
+    if (flags & 0x100 /* PACKAGE_INFORMATION_FULL */) return APPMODEL_ERROR_NO_PACKAGE;
+    UINT64 ver = 0; int fields = 0; UINT32 v = 0;
+    for (int i = 0; i <= l[1]; i++) {
+        WCHAR c = i < l[1] ? part[1][i] : '.';
+        if (c == '.') { if (fields == 4 || v > 0xFFFF) return ERROR_INVALID_PARAMETER; ver = ver << 16 | v; v = 0; fields++; }
+        else if (c >= '0' && c <= '9') v = v * 10 + (c - '0');
+        else return ERROR_INVALID_PARAMETER;
+    }
+    if (fields != 4) return ERROR_INVALID_PARAMETER;
+    UINT32 arch = ~0u;
+    for (int i = 0; i < 6; i++) {
+        int k = 0;
+        while (k < l[2] && archs[i].s[k] && (part[2][k] | 32) == archs[i].s[k]) k++;
+        if (k == l[2] && !archs[i].s[k]) arch = archs[i].arch;
+    }
+    if (arch == ~0u) return ERROR_INVALID_PARAMETER;
+    UINT32 need = sizeof(PackageId) + (UINT32)(l[0] + 1 + l[3] + 1 + l[4] + 1) * sizeof(WCHAR);
+    if (!buf || *len < need) { *len = need; return ERROR_INSUFFICIENT_BUFFER; }
+    PackageId *id = (PackageId *)buf;
+    WCHAR *w = (WCHAR *)(id + 1);
+    memset(id, 0, sizeof *id);
+    id->processorArchitecture = arch;
+    id->version = ver;
+    PWSTR *dst[3] = { &id->name, &id->resourceId, &id->publisherId };
+    int which[3] = { 0, 3, 4 };
+    for (int i = 0; i < 3; i++) {
+        *dst[i] = w;
+        memcpy(w, part[which[i]], l[which[i]] * sizeof(WCHAR));
+        w[l[which[i]]] = 0;
+        w += l[which[i]] + 1;
+    }
+    *len = need;
+    return ERROR_SUCCESS;
+}
+
+/* no package is installed, so a family has no members */
+K32 LONG WINAPI GetPackagesByPackageFamily(PCWSTR family, UINT32 *count, PWSTR *names, UINT32 *len, WCHAR *buf)
+{
+    (void)names; (void)buf;
+    if (!family || !count || !len) return ERROR_INVALID_PARAMETER;
+    *count = 0;
+    *len = 0;
+    return ERROR_SUCCESS;
+}
+
+/* an unpackaged desktop process ends with ExitProcess */
+K32 LONG WINAPI AppPolicyGetProcessTerminationMethod(HANDLE token, int *policy)
+{
+    (void)token;
+    if (!policy) return ERROR_INVALID_PARAMETER;
+    *policy = 0;                                    /* AppPolicyProcessTerminationMethod_ExitProcess */
+    return ERROR_SUCCESS;
+}
 
 K32 BOOL WINAPI GetProcessHandleCount(HANDLE p, PDWORD n)
 {

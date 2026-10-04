@@ -1,7 +1,8 @@
 /*
  * crypt.c — advapi32's random numbers (RtlGenRandom = SystemFunction036,
  * from the kernel's entropy pool) and the CryptoAPI's providers and
- * hashes (MD5, SHA-1, SHA-2).  Keys and ciphers are not provided.
+ * hashes (MD5, SHA-1, SHA-2), and RtlEncryptMemory.  Keys and ciphers
+ * are not provided.
  */
 
 #define NOVA_BUILD_ADVAPI32
@@ -13,6 +14,46 @@ WINADVAPI BOOLEAN WINAPI SystemFunction036(PVOID buf, ULONG n)
 {
     return NT_SUCCESS(NtNovaGetRandom(buf, n));
 }
+
+/* RtlEncryptMemory (SystemFunction040) and RtlDecryptMemory
+ * (SystemFunction041): @n bytes (a multiple of 8) are XORed with an
+ * HMAC-SHA-256 key stream, so the same call undoes them.  The key is the
+ * process's own (RTL_ENCRYPT_OPTION_SAME_PROCESS, 0, random on first use)
+ * or one every process shares (CROSS_PROCESS 1, SAME_LOGON 2).
+ * crypt32's CryptProtectMemory calls these. */
+static BYTE g_mem_key[32];
+static LONG g_mem_key_made;
+
+static void mem_xor(BYTE *b, ULONG n, ULONG opt)
+{
+    static const char shared[] = "NovaOS RtlEncryptMemory shared key";
+    if (!opt && InterlockedCompareExchange(&g_mem_key_made, 1, 0) == 0) {
+        SystemFunction036(g_mem_key, sizeof(g_mem_key));
+        g_mem_key_made = 2;
+    }
+    while (!opt && g_mem_key_made != 2) Sleep(0);
+    BYTE ks[32];
+    for (ULONG i = 0; i < n; i++) {
+        if (!(i & 31)) {
+            NovaHmac m;
+            ULONG block = i / 32;
+            if (opt) nova_hmac_init(&m, NOVA_SHA256, shared, sizeof(shared) - 1);
+            else nova_hmac_init(&m, NOVA_SHA256, g_mem_key, sizeof(g_mem_key));
+            nova_hmac_update(&m, &block, sizeof(block));
+            nova_hmac_final(&m, ks);
+        }
+        b[i] ^= ks[i & 31];
+    }
+}
+
+WINADVAPI NTSTATUS WINAPI SystemFunction040(PVOID mem, ULONG n, ULONG opt)
+{
+    if (!mem || (n & 7) || opt > 2) return 0xC000000DL;       /* STATUS_INVALID_PARAMETER */
+    mem_xor(mem, n, opt);
+    return 0;
+}
+
+WINADVAPI NTSTATUS WINAPI SystemFunction041(PVOID mem, ULONG n, ULONG opt) { return SystemFunction040(mem, n, opt); }
 
 #define PROV_MAGIC 0x4E4F5641u
 typedef struct { DWORD magic; } Prov;

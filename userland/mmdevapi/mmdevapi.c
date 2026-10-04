@@ -22,6 +22,7 @@
  */
 
 #include <windows.h>
+#include <avrt.h>
 #include <winternl.h>
 #include <objbase.h>
 #include "../winmm/audioconv.h"
@@ -308,6 +309,8 @@ static UINT32 padding(Client *c)
 static DWORD WINAPI event_thread(LPVOID p)
 {
     Client *c = p;
+    DWORD mm = 0;
+    AvSetMmThreadCharacteristicsW(L"Audio", &mm);   /* (MMCSS: above any busy or boosted program thread) */
     while (WaitForSingleObject(c->quit, (DWORD)(PERIOD / 10000)) == WAIT_TIMEOUT)
         if (c->started && c->event) SetEvent(c->event);
     return 0;

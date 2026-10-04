@@ -77,6 +77,7 @@ typedef struct UmToken {
     UINT32  level;                      /* SECURITY_IMPERSONATION_LEVEL (impersonation tokens) */
     UINT32  id, modified;               /* LUIDs */
     bool    write_restricted, sandbox_inert;
+    UINT32  elevation;                  /* TokenElevationType: 1 default, 2 full (elevated), 3 limited */
 } UmToken;
 
 static const UINT8 g_user_sid[] = {                     /* S-1-5-21-1000-2000-3000-1001 */
@@ -88,6 +89,7 @@ static const UINT8 g_auth_users_sid[] = { 1, 1, 0, 0, 0, 0, 0, 5, 11, 0, 0, 0 };
 static const UINT8 g_interactive_sid[] = { 1, 1, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0 };                 /* S-1-5-4 */
 static const UINT8 g_logon_sid[] = { 1, 3, 0, 0, 0, 0, 0, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0x2A, 0, 0, 0 };  /* S-1-5-5-0-42 */
 static const UINT8 g_medium_il_sid[] = { 1, 1, 0, 0, 0, 0, 0, 16, 0, 0x20, 0, 0 };               /* S-1-16-8192 */
+static const UINT8 g_high_il_sid[] = { 1, 1, 0, 0, 0, 0, 0, 16, 0, 0x30, 0, 0 };                 /* S-1-16-12288 */
 static const UINT8 g_system_sid[] = { 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0 };                     /* S-1-5-18 */
 
 /* Descriptors change under this lock (they are read under it too) */
@@ -262,7 +264,8 @@ static void sid_set(SidAttr *s, const UINT8 *sid, UINT32 attrs)
 }
 
 /* The desktop user's token: a standard user, member of Users, with
- * Administrators only for denying (not elevated) */
+ * Administrators only for denying (not elevated: the "limited" half of
+ * an administrator's split token, as with UAC on Windows) */
 static UmObject *default_token(void)
 {
     static UmObject *g;
@@ -276,10 +279,82 @@ static UmObject *default_token(void)
     t.privs = t.privs_on = 1ull << SE_CHANGE_NOTIFY;
     t.privs |= 1ull << 19 | 1ull << 25 | 1ull << 33 | 1ull << 34;  /* Shutdown, Undock, IncreaseWorkingSet, TimeZone (off) */
     t.type = 1;
+    t.elevation = 3;
     UmObject *o = token_new(&t);
     if (o && __atomic_compare_exchange_n(&g, &(UmObject *){ NULL }, o, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return o;
     if (o) um_ob_unref(o);
     return g;
+}
+
+/* The same user elevated (the "full" half of the split token): what a
+ * program gets that asks to run as administrator (ShellExecute's "runas",
+ * or requireAdministrator / highestAvailable in its manifest).  NovaOS
+ * has one user and no consent prompt yet, so asking is enough, as with
+ * UAC's "never notify".  Administrators is enabled (and the owner of what
+ * it creates), integrity is high, and an administrator's privileges are
+ * held (most off until enabled, as on Windows). */
+static UmObject *elevated_token(void)
+{
+    static UmObject *g;
+    if (g) return g;
+    UmObject *d = default_token();
+    if (!d) return NULL;
+    UmToken t = *(const UmToken *)d->ptr;
+    for (int i = 0; i < t.ngroups; i++)
+        if (!memcmp(t.groups[i].sid, g_admins_sid, sizeof(g_admins_sid))) t.groups[i].attrs = GRP_ON | 0x08u;   /* SE_GROUP_OWNER */
+    /* IncreaseQuota 5, Security 8, TakeOwnership 9, LoadDriver 10, SystemProfile 11, Systemtime 12,
+     * ProfileSingleProcess 13, IncreaseBasePriority 14, CreatePagefile 15, Backup 17, Restore 18,
+     * Debug 20, SystemEnvironment 22, RemoteShutdown 24, ManageVolume 28, Impersonate 29,
+     * CreateGlobal 30, CreateSymbolicLink 35 */
+    static const UINT8 admin[] = { 5, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 20, 22, 24, 28, 29, 30, 35 };
+    for (unsigned i = 0; i < sizeof(admin); i++) t.privs |= 1ull << admin[i];
+    t.privs_on |= 1ull << 29 | 1ull << 30;                     /* Impersonate, CreateGlobal: on by default */
+    t.elevation = 2;
+    UmObject *o = token_new(&t);
+    if (o && __atomic_compare_exchange_n(&g, &(UmObject *){ NULL }, o, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return o;
+    if (o) um_ob_unref(o);
+    return g;
+}
+
+bool um_token_elevated(UmObject *t)
+{
+    return t && t->type == UO_TOKEN && ((const UmToken *)t->ptr)->elevation == 2;
+}
+
+/* Gives process @p (not yet running its program's code, or about to) the
+ * elevated token; false when out of memory */
+bool um_elevate_process(UmProcess *p)
+{
+    UmObject *e = elevated_token();
+    if (!e) return false;
+    um_ob_ref(e);
+    IrqState s = ob_lock();
+    UmObject *old = p->token;
+    p->token = e;
+    ob_unlock(s);
+    if (old) um_ob_unref(old);
+    return true;
+}
+
+/* NtSetInformationProcess(ProcessAccessToken): { HANDLE Token; HANDLE
+ * Thread; } gives @p a primary token (CreateProcessAsUser's way: set on
+ * the suspended process before it runs) */
+UINT32 um_set_process_token(UmProcess *p, UINT64 buf, UINT64 len)
+{
+    UmProcess *me = UmCurrent();
+    UINT32 ps = me && me->wow ? 4 : 8;
+    UINT64 h = 0;
+    if (len < 2 * ps) return ST_INFO_LENGTH_MISMATCH;
+    if (!buf || !NT_SUCCESS(CopyFromUser(&h, (const void *)(uintptr_t)buf, ps))) return ST_ACCESS_VIOLATION;
+    UmObject *t = um_handle_object(me, h, UO_TOKEN);
+    if (!t) return ST_INVALID_HANDLE;
+    if (((const UmToken *)t->ptr)->type != 1) { um_ob_unref(t); return ST_BAD_TOKEN_TYPE; }
+    IrqState s = ob_lock();
+    UmObject *old = p->token;
+    p->token = t;                                              /* (takes our reference) */
+    ob_unlock(s);
+    if (old) um_ob_unref(old);
+    return ST_SUCCESS;
 }
 
 UmObject *um_token_for_process(UmProcess *creator)
@@ -710,6 +785,14 @@ static UINT64 sys_query_token(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!to) return ST_INVALID_HANDLE;
     UmToken t = *(UmToken *)to->ptr;
     um_ob_unref(to);
+    if ((UINT32)a2 == 19) {                                    /* TokenLinkedToken: the other half of the split token */
+        UINT32 ps = UmCurrent() && UmCurrent()->wow ? 4 : 8;
+        if (t.elevation != 2 && t.elevation != 3) return ST_NO_TOKEN;
+        if (ret_ptr && !put_u32(ret_ptr, ps)) return ST_ACCESS_VIOLATION;
+        if ((UINT32)a4 < ps) return ST_BUFFER_TOO_SMALL;
+        UmObject *l = t.elevation == 3 ? elevated_token() : default_token();
+        return l ? give_handle(l, a3, 0) : ST_NO_MEMORY;
+    }
     UINT32 cap = (UINT32)a4 < 4096 ? (UINT32)a4 : 4096;
     Out o = { kzalloc(4096), 0, cap, a3, UmCurrent() && UmCurrent()->wow ? 4 : 8 };
     if (!o.b) return ST_NO_MEMORY;
@@ -778,9 +861,8 @@ static UINT64 sys_query_token(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     case 11: out_groups(&o, t.restricted, t.nrestricted, true); break;          /* TokenRestrictedSids */
     case 12: v = 1; out_put(&o, 0, &v, 4); break;                               /* TokenSessionId */
     case 15: v = t.sandbox_inert; out_put(&o, 0, &v, 4); break;                 /* TokenSandBoxInert */
-    case 18: v = 1; out_put(&o, 0, &v, 4); break;                               /* TokenElevationType: default */
-    case 19: st = ST_NO_TOKEN; break;                                           /* TokenLinkedToken: not a split token */
-    case 20: v = 0; out_put(&o, 0, &v, 4); break;                               /* TokenElevation */
+    case 18: v = t.elevation ? t.elevation : 1; out_put(&o, 0, &v, 4); break;   /* TokenElevationType */
+    case 20: v = t.elevation == 2; out_put(&o, 0, &v, 4); break;                /* TokenElevation */
     case 21: v = t.nrestricted ? 1 : 0; out_put(&o, 0, &v, 4); break;           /* TokenHasRestrictions */
     case 23: case 24: case 26: case 29:                                         /* virtualization, UIAccess, AppContainer */
     case 46: case 47:                                                           /* BnoIsolation, sandbox/isolation queries: none */
@@ -788,7 +870,7 @@ static UINT64 sys_query_token(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     case 40: v = t.nrestricted ? 1 : 0; out_put(&o, 0, &v, 4); break;           /* TokenIsRestricted */
     case 25: {                                                                  /* TokenIntegrityLevel */
         SidAttr il;
-        sid_set(&il, g_medium_il_sid, 0x20);                                    /* SE_GROUP_INTEGRITY */
+        sid_set(&il, t.elevation == 2 ? g_high_il_sid : g_medium_il_sid, 0x20);  /* SE_GROUP_INTEGRITY */
         out_groups(&o, &il, 1, false);
         break;
     }

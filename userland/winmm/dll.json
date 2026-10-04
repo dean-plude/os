@@ -1,6 +1,7 @@
 {
   "deps": [
     "msvcrt",
+    "avrt",
     "kernel32",
     "ntdll"
   ],

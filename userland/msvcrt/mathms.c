@@ -150,5 +150,6 @@ __declspec(dllexport) int __control87_2(unsigned int newv, unsigned int mask, un
     if (sse) *sse = _controlfp(newv, mask);
     return 1;
 }
-__declspec(dllexport) void _fpreset(void) { set_mxcsr(0x1F80); __asm__ volatile("fninit"); }
+/* _CW_DEFAULT: every exception masked, round to nearest, 53-bit x87 precision */
+__declspec(dllexport) void _fpreset(void) { unsigned short cw = 0x27F; set_mxcsr(0x1F80); __asm__ volatile("fninit\n\tfldcw %0" : : "m"(cw)); }
 __declspec(dllexport) int *__fpecode(void) { return &__nova_ptd()->fpecode; }

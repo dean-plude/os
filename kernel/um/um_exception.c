@@ -101,7 +101,17 @@ static UINT32 cpu_status(UINT64 vector, UINT64 *nparams, UINT64 *info, UINT64 er
     case 4:  return 0xC0000095u;                                 /* INTEGER_OVERFLOW */
     case 5:  return 0xC000008Cu;                                 /* ARRAY_BOUNDS_EXCEEDED */
     case 6:  return 0xC000001Du;                                 /* ILLEGAL_INSTRUCTION */
-    case 16: return 0xC0000090u;                                 /* FLOAT_INVALID_OPERATION */
+    case 16: {                                                   /* x87: which exception? */
+        UINT16 sw, cw;
+        __asm__ volatile ("fnstsw %0\n\tfnstcw %1" : "=m"(sw), "=m"(cw));
+        UINT32 hit = sw & ~cw & 0x3F;                            /* flagged and unmasked */
+        return hit & 1  ? ((sw & 0x40) ? 0xC0000092u : 0xC0000090u) :   /* stack check, invalid */
+               hit & 4  ? 0xC000008Eu :                          /* divide by zero */
+               hit & 8  ? 0xC0000091u :                          /* overflow */
+               hit & 16 ? 0xC0000093u :                          /* underflow */
+               hit & 2  ? 0xC000008Du :                          /* denormal */
+               hit & 32 ? 0xC000008Fu : 0xC0000090u;             /* inexact */
+    }
     case 17: return 0x80000002u;                                 /* DATATYPE_MISALIGNMENT */
     case 19: {                                                   /* SIMD: which exception? */
         UINT32 mx;
@@ -169,6 +179,15 @@ void UmUserException(void *frame, UINT64 cr2)
     }
     static UINT8 ctx[CONTEXT_SIZE], rec[RECORD_SIZE];            /* interrupts are off */
     build_context(ctx, &r);
+    /* a floating-point exception: the CONTEXT keeps the flags, the handlers
+     * run with them clear (else their first x87 instruction faults again) */
+    if (f->vector == 16) __asm__ volatile ("fnclex");
+    if (f->vector == 19) {
+        UINT32 mx;
+        __asm__ volatile ("stmxcsr %0" : "=m"(mx));
+        mx &= ~0x3Fu;
+        __asm__ volatile ("ldmxcsr %0" : : "m"(mx));
+    }
     memset(rec, 0, sizeof(rec));
     put32(rec, code);
     put64(rec + 16, addr);                                       /* ExceptionAddress */

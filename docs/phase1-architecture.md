@@ -169,6 +169,23 @@ The assembly stubs in `isr_stubs.asm` use a macro-generated approach:
 the vector number, then jumping to the common handler which saves all GPRs
 and calls `interrupt_dispatch()`.
 
+A Windows program's own faults go to its SEH handlers instead
+(`UmUserException` in `kernel/um/um_exception.c`): the kernel builds a
+`CONTEXT` (registers plus the `fxsave` image) and an `EXCEPTION_RECORD`
+on the user stack and points the thread at ntdll's
+`KiUserExceptionDispatcher`.  A floating-point fault is named from the
+flags that are both raised and unmasked: x87 errors (#MF) from the x87
+status and control words, SSE errors (#XM) from MXCSR, so a divide by
+zero is `STATUS_FLOAT_DIVIDE_BY_ZERO`, an inexact result
+`STATUS_FLOAT_INEXACT_RESULT`, and so on.  The `CONTEXT` keeps those
+flags; the handlers run with them cleared, as on Windows, so their own
+floating-point code does not fault again.  Every program thread starts
+with Windows' floating-point state, every exception masked: x87 control
+word `0x27F` (round to nearest, 53-bit precision) and MXCSR `0x1F80`.
+The scheduler saves and restores each thread's state (`fxsave`/`fxrstor`)
+when it switches threads.  QEMU's TCG never raises SSE exceptions, so a
+wrong MXCSR shows only under KVM or on real hardware.
+
 ---
 
 ## APIC Timer and Scheduler
@@ -227,8 +244,12 @@ its base plus the waker's increment (`sched_unblock_boost`, `BOOST_*` in
 `scheduler.h`): +1 for an event, a semaphore, a mutex, an alert (SRW
 locks, condition variables, critical sections, APCs) or a timed wait's
 deadline, +1 for file I/O, +2 for a named pipe, the network or a window
-message, +6 for keyboard and mouse input (console input too), up to 15
-and never for a real-time thread.  So it preempts a busy thread of its
+message (keyboard and mouse input to a window included: win32k's
+windowing boost), +6 for console input, up to 15 and never for a
+real-time thread.  (NT's +6 for keyboard and mouse is what a driver
+gives the thread reading the device, the device poll thread here; given
+to a window's thread with the foreground boost on top it lifted a
+NORMAL thread to 15, level with the sound threads.)  So it preempts a busy thread of its
 base priority instead of waiting out that thread's 20 ms slice
 (`boosttest`: about 19 ms before, see HISTORY).  The boost decays one
 level per quantum the thread runs (two ticks, counted across its waits),
@@ -283,6 +304,30 @@ Windows' other foreground mechanism, quantum stretching ("Programs" in
 System Properties): a time slice three times as long, 6 ticks (60 ms)
 against the background's 2 (20 ms), as client Windows gives 6 clock
 intervals against 2.  The boost decay stays one level per 20 ms.
+
+The Multimedia Class Scheduler (MMCSS) puts registered threads in the
+real-time range without SeIncreaseBasePriorityPrivilege, as MMCSS's
+service does on Windows (`userland/avrt/avrt.c`, NovaOS's
+`NtSetInformationThread` class `ThreadNovaMmcss`, `sched_set_mmcss`).
+`AvSetMmThreadCharacteristics` with an audio task ("Pro Audio", "Audio",
+"Capture", "Playback", "Low Latency") gives 18: above every program
+thread however boosted and above the desktop (17), with the network and
+USB threads, below device polling and the mixer (19), which feed it.
+Any other task ("Games", "Distribution", "Window Manager"...), and an
+audio task at `AVRT_PRIORITY_LOW` or `VERYLOW`, gives 16; a task Windows
+does not list fails with `ERROR_INVALID_TASK_NAME`.
+`AvRevertMmThreadCharacteristics` gives back the priority
+`SetThreadPriority` set.  As on Windows (SystemResponsiveness 20), such a
+thread gets at most 80% of a CPU: found running at 8 of the 10 ticks of a
+100 ms period, it runs at its own base priority until the period ends, so
+a program spinning in one cannot freeze the desktop (`mmcsstest`).  It
+gets its priority back at its first tick or wake-up in a new period; an
+exhausted thread that keeps spinning behind busier ones waits for the
+balance set like any other.  NovaOS's own sound threads register this
+way: winmm's `waveOut` ("Playback") and `waveIn` ("Capture") threads and
+its MIDI synthesizer, DirectSound's mixer and capture threads, and
+WASAPI's event thread ("Audio").  (Windows' MMCSS has wider bands, 16-22
+and 23-26; NovaOS's kernel threads fill 16-19, so it uses two levels.)
 
 A CPU halted waiting for the kernel lock wakes none of its sleepers.  The
 timer interrupt it takes meanwhile (`sched_timer_rearm`) hands a due

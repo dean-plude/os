@@ -238,6 +238,17 @@ NETAPI DWORD WINAPI DsGetDcNameA(LPCSTR comp, LPCSTR dom, GUID *guid, LPCSTR sit
 NETAPI DWORD WINAPI DsEnumerateDomainTrustsW(LPWSTR server, ULONG flags, PVOID *doms, PULONG n)
 { (void)server; (void)flags; *doms = 0; *n = 0; return ERROR_NO_SUCH_DOMAIN_; }
 NETAPI NET_API_STATUS WINAPI NetGetDCName(LPCWSTR server, LPCWSTR dom, LPBYTE *buf) { (void)server; (void)dom; *buf = 0; return 2453; /* NERR_DCNotFound */ }
+/* not joined to Azure AD (Entra ID): no information, S_OK, as on a
+ * workgroup PC */
+NETAPI HRESULT WINAPI NetGetAadJoinInformation(LPCWSTR tenant, PVOID *info)
+{
+    (void)tenant;
+    if (!info) return E_INVALIDARG;
+    *info = 0;
+    return S_OK;
+}
+NETAPI VOID WINAPI NetFreeAadJoinInformation(PVOID info) { (void)info; }
+
 NETAPI NET_API_STATUS WINAPI NetGetJoinInformation(LPCWSTR server, LPWSTR *name, PDWORD status)
 {
     (void)server;

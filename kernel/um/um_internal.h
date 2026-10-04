@@ -14,6 +14,7 @@
 #define UM_MAX_MODULES   1024     /* (Audacity loads about 150, VLC every plugin: about 410) */
 #define UM_MAX_DLL_DIRS  16       /* AddDllDirectory's folders */
 #define UM_MAX_THREADS   256      /* (a browser's main process runs well over 64) */
+#define UM_THREAD_MMCSS  0x4E4D   /* NtSetInformationThread class: avrt.dll's MMCSS (um_thread.c) */
 #define UM32_MAX_THREADS 96       /* WoW: the TEB area must stay below KUSER_SHARED_DATA */
 
 /* Fixed user addresses for the per-process system areas:
@@ -151,6 +152,7 @@ struct UmThread {
      * or bottom of the class's range, TIME_CRITICAL and IDLE) */
     INT8            prio_incr;
     bool            no_boost;       /* SetThreadPriorityBoost(TRUE) */
+    UINT8           mm_priority;    /* registered with MMCSS (avrt.dll): its real-time priority, else 0 */
 };
 
 UmObject *um_ob_ref(UmObject *o);
@@ -432,6 +434,10 @@ void       um_abandon_mutants(UmProcess *p, UmThread *t);
 void       um_security_syscalls_init(void);
 void       um_services_init(void);              /* um_services.c */
 UmObject  *um_token_for_process(UmProcess *creator);   /* a new process's primary token (referenced) */
+bool       um_token_elevated(UmObject *token);         /* the elevated (full administrator) token? */
+bool       um_elevate_process(UmProcess *p);           /* give @p the elevated token */
+UINT32     um_set_process_token(UmProcess *p, UINT64 buf, UINT64 len);   /* ProcessAccessToken */
+bool       um_pe_wants_admin(RamNode *f);              /* its manifest asks to run as administrator */
 void       um_thread_drop_token(UmThread *t);          /* stop impersonating (the thread ended) */
 UINT32     um_set_thread_token(UmThread *t, UINT64 buf, UINT32 len);   /* ThreadImpersonationToken */
 bool       um_privilege_held(UINT32 luid);    /* the caller's token holds privilege @luid */

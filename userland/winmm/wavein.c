@@ -27,6 +27,7 @@
  */
 
 #include <windows.h>
+#include <avrt.h>
 #include <winternl.h>
 #include "audioconv.h"
 #include "mmwave.h"
@@ -131,6 +132,8 @@ static WAVEHDR *wi_fill(WaveIn *w)
 static DWORD WINAPI wi_thread(LPVOID p)
 {
     WaveIn *w = p;
+    DWORD mm = 0;
+    AvSetMmThreadCharacteristicsW(L"Capture", &mm);   /* (MMCSS: above any busy or boosted program thread) */
     while (!w->quit) {
         for (;;) {
             EnterCriticalSection(&w->lock);
