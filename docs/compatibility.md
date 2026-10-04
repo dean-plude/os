@@ -192,8 +192,9 @@ none a reason to change Steam:
 - Steam's service pipe ("Failed to create Service pipe") and its
   security descriptors in SDDL form (`advapi32`'s SDDL functions are
   incomplete).
-- `GetAdaptersAddresses` reports no adapters, and the browser's UDP and
-  TCP sockets fail with `WSAENOBUFS` under load (NovaOS's network code).
+- `GetAdaptersAddresses` reports no adapters.  (The browser's sockets
+  and Steam's downloads no longer fail with `WSAENOBUFS`: NovaOS's socket
+  tables were sized for a small device; see `loadtest`.)
 - DirectWrite's GDI interop (`CreateBitmapRenderTarget`), which Chromium
   draws text with.
 
