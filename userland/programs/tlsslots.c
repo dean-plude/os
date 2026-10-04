@@ -196,8 +196,10 @@ int main(int argc, char **argv)
     char self[MAX_PATH];
     GetModuleFileNameA(NULL, self, sizeof(self));
     test_tls();
-    test_fls_exit(self, "ret");
-    test_fls_exit(self, "exit");
+    for (int i = 0; i < 3; i++) {       /* the next child re-creates the file this one's parent just deleted */
+        test_fls_exit(self, "ret");
+        test_fls_exit(self, "exit");
+    }
     printf("tlsslots: %d passed, %d failed\n", pass, fail);
     return fail != 0;
 }
