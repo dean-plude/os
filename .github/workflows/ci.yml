@@ -45,6 +45,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      allow_tcg:
+        description: run on a runner without /dev/kvm (the test VMs then run under TCG, much slower)
+        type: boolean
+        default: false
   workflow_call:                # .github/workflows/release.yml
     inputs:
       release:
@@ -112,7 +117,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Enable KVM (TCG when the runner has no /dev/kvm)
+      - name: Enable KVM (fails without /dev/kvm unless allow_tcg)
+        env:
+          NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg }}
         run: tools/ci/enable-kvm.sh
 
       - name: Install the toolchain and QEMU
@@ -207,7 +214,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Enable KVM (TCG when the runner has no /dev/kvm)
-        run: tools/ci/enable-kvm.sh
+        env:
+          NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg }}
+        run: tools/ci/enable-kvm.sh optional
 
       - name: Install the toolchain and QEMU
         run: |
