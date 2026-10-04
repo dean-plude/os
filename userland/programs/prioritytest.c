@@ -89,6 +89,9 @@ static int check_queries(void)
 {
     int ok = 1, n = 0;
     HANDLE me = GetCurrentThread(), proc = GetCurrentProcess();
+    /* A wake boost (+1, and the foreground's +2) decays as the thread runs, a few ticks at a time: spin, never
+     * wait (a wake brings it back), until the priority is the base */
+    for (ULONGLONG end = GetTickCount64() + 500; priority_of(me) != 8 && GetTickCount64() < end; ) { }
     if (GetPriorityClass(proc) != NORMAL_PRIORITY_CLASS || GetThreadPriority(me) != THREAD_PRIORITY_NORMAL ||
         priority_of(me) != 8) {
         printf("  at start: class 0x%lx, level %d, priority %ld (expected NORMAL, 0, 8)\n",
