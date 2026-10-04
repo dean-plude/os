@@ -1975,7 +1975,74 @@ USERAPI BOOL ChangeWindowMessageFilter(UINT msg, DWORD f);
 USERAPI BOOL RegisterTouchWindow(HWND h, ULONG f);
 USERAPI HANDLE RegisterDeviceNotificationW(HANDLE r, LPVOID filter, DWORD f);
 USERAPI BOOL UnregisterDeviceNotification(HANDLE h);
-USERAPI BOOL RegisterRawInputDevices(const void *d, UINT n, UINT cb);
+/* Raw input */
+#define WM_INPUT_DEVICE_CHANGE 0x00FE
+#define WM_INPUT               0x00FF
+#define RIM_INPUT              0
+#define RIM_INPUTSINK          1
+#define GET_RAWINPUT_CODE_WPARAM(w) ((w) & 0xff)
+#define GIDC_ARRIVAL           1
+#define GIDC_REMOVAL           2
+#define RIM_TYPEMOUSE          0
+#define RIM_TYPEKEYBOARD       1
+#define RIM_TYPEHID            2
+#define RID_INPUT              0x10000003
+#define RID_HEADER             0x10000005
+#define RIDI_PREPARSEDDATA     0x20000005
+#define RIDI_DEVICENAME        0x20000007
+#define RIDI_DEVICEINFO        0x2000000b
+#define RIDEV_REMOVE           0x00000001
+#define RIDEV_EXCLUDE          0x00000010
+#define RIDEV_PAGEONLY         0x00000020
+#define RIDEV_NOLEGACY         0x00000030
+#define RIDEV_INPUTSINK        0x00000100
+#define RIDEV_CAPTUREMOUSE     0x00000200
+#define RIDEV_NOHOTKEYS        0x00000200
+#define RIDEV_APPKEYS          0x00000400
+#define RIDEV_EXINPUTSINK      0x00001000
+#define RIDEV_DEVNOTIFY        0x00002000
+typedef struct HRAWINPUT__ *HRAWINPUT;
+typedef struct tagRAWINPUTHEADER { DWORD dwType; DWORD dwSize; HANDLE hDevice; WPARAM wParam; } RAWINPUTHEADER, *PRAWINPUTHEADER, *LPRAWINPUTHEADER;
+typedef struct tagRAWMOUSE {
+    USHORT usFlags;
+    union { ULONG ulButtons; struct { USHORT usButtonFlags; USHORT usButtonData; }; };
+    ULONG ulRawButtons;
+    LONG lLastX, lLastY;
+    ULONG ulExtraInformation;
+} RAWMOUSE, *PRAWMOUSE, *LPRAWMOUSE;
+typedef struct tagRAWKEYBOARD { USHORT MakeCode, Flags, Reserved, VKey; UINT Message; ULONG ExtraInformation; } RAWKEYBOARD, *PRAWKEYBOARD, *LPRAWKEYBOARD;
+typedef struct tagRAWHID { DWORD dwSizeHid; DWORD dwCount; BYTE bRawData[1]; } RAWHID, *PRAWHID, *LPRAWHID;
+typedef struct tagRAWINPUT {
+    RAWINPUTHEADER header;
+    union { RAWMOUSE mouse; RAWKEYBOARD keyboard; RAWHID hid; } data;
+} RAWINPUT, *PRAWINPUT, *LPRAWINPUT;
+#ifdef _WIN64
+#define RAWINPUT_ALIGN(x) (((ULONG_PTR)(x) + 7) & ~(ULONG_PTR)7)
+#else
+#define RAWINPUT_ALIGN(x) (((ULONG_PTR)(x) + 3) & ~(ULONG_PTR)3)
+#endif
+#define NEXTRAWINPUTBLOCK(ptr) ((PRAWINPUT)RAWINPUT_ALIGN((ULONG_PTR)((PBYTE)(ptr) + (ptr)->header.dwSize)))
+typedef struct tagRID_DEVICE_INFO_MOUSE { DWORD dwId, dwNumberOfButtons, dwSampleRate; BOOL fHasHorizontalWheel; } RID_DEVICE_INFO_MOUSE;
+typedef struct tagRID_DEVICE_INFO_KEYBOARD {
+    DWORD dwType, dwSubType, dwKeyboardMode, dwNumberOfFunctionKeys, dwNumberOfIndicators, dwNumberOfKeysTotal;
+} RID_DEVICE_INFO_KEYBOARD;
+typedef struct tagRID_DEVICE_INFO_HID { DWORD dwVendorId, dwProductId, dwVersionNumber; USHORT usUsagePage, usUsage; } RID_DEVICE_INFO_HID;
+typedef struct tagRID_DEVICE_INFO {
+    DWORD cbSize, dwType;
+    union { RID_DEVICE_INFO_MOUSE mouse; RID_DEVICE_INFO_KEYBOARD keyboard; RID_DEVICE_INFO_HID hid; };
+} RID_DEVICE_INFO, *PRID_DEVICE_INFO, *LPRID_DEVICE_INFO;
+typedef struct tagRAWINPUTDEVICE { USHORT usUsagePage, usUsage; DWORD dwFlags; HWND hwndTarget; } RAWINPUTDEVICE, *PRAWINPUTDEVICE, *LPRAWINPUTDEVICE;
+typedef const RAWINPUTDEVICE *PCRAWINPUTDEVICE;
+typedef struct tagRAWINPUTDEVICELIST { HANDLE hDevice; DWORD dwType; } RAWINPUTDEVICELIST, *PRAWINPUTDEVICELIST;
+USERAPI BOOL RegisterRawInputDevices(PCRAWINPUTDEVICE d, UINT n, UINT cb);
+USERAPI UINT GetRegisteredRawInputDevices(PRAWINPUTDEVICE d, PUINT n, UINT cb);
+USERAPI UINT GetRawInputDeviceList(PRAWINPUTDEVICELIST list, PUINT n, UINT cb);
+USERAPI UINT GetRawInputDeviceInfoW(HANDLE dev, UINT cmd, LPVOID data, PUINT size);
+USERAPI UINT GetRawInputDeviceInfoA(HANDLE dev, UINT cmd, LPVOID data, PUINT size);
+USERAPI UINT GetRawInputData(HRAWINPUT raw, UINT cmd, LPVOID data, PUINT size, UINT header);
+USERAPI UINT GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT header);
+USERAPI LRESULT DefRawInputProc(PRAWINPUT *raw, INT n, UINT header);
+#define GetRawInputDeviceInfo GetRawInputDeviceInfoA
 USERAPI HANDLE RegisterPowerSettingNotification(HANDLE r, const GUID *g, DWORD f);
 USERAPI BOOL UnregisterPowerSettingNotification(HANDLE h);
 USERAPI BOOL GetPhysicalCursorPos(LPPOINT p);

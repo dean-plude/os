@@ -412,6 +412,15 @@ UINT32     um_pipe_create(const char *path, UINT32 access, UINT32 disposition, U
                           UINT32 in_quota, UINT32 out_quota, UmObject **out, bool *rd, bool *wr);
 UINT32     um_pipe_open(const char *path, UINT32 access, UINT32 options, UmObject **out, bool *rd, bool *wr);
 bool       um_pipe_anonymous(UmObject **rd_end, UmObject **wr_end);
+UINT32     um_pipe_device(const char *path, UINT32 options, UmObject **srv, UmObject **client);   /* a stream the kernel feeds */
+bool       um_pipe_feed(UmObject *srv, const void *data, UINT32 len, UINT32 max);
+void       um_pipe_device_flush(UmObject *client);
+bool       um_pipe_device_open(UmObject *srv);
+/* um_hid.c: HID device handles (game controllers by their HID paths) */
+bool       um_hid_name(const char *path);
+UINT32     um_hid_open(const char *path, UINT32 options, UmObject **out);
+int        um_hid_slot(UmProcess *p, UINT64 h, UINT32 *serial);
+bool       um_hid_flush(UmProcess *p, UINT64 h);
 UINT32     um_pipe_read(UmObject *o, UINT64 event, UINT64 iosb, UINT64 buf, UINT32 len, UINT64 *info);
 UINT32     um_pipe_write(UmObject *o, UINT64 event, UINT64 iosb, UINT64 buf, UINT32 len, UINT64 *info);
 UINT32     um_pipe_fsctl(UmObject *o, UINT64 event, UINT64 iosb, UINT32 code,

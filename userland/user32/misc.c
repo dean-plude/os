@@ -730,16 +730,12 @@ USERAPI BOOL ChangeWindowMessageFilterEx(HWND h, UINT msg, DWORD action, void *c
 USERAPI BOOL ChangeWindowMessageFilter(UINT msg, DWORD f) { (void)msg; (void)f; return TRUE; }
 USERAPI HANDLE RegisterDeviceNotificationW(HANDLE r, LPVOID filter, DWORD f) { (void)r; (void)filter; (void)f; return (HANDLE)(ULONG_PTR)0xDE01; }
 USERAPI BOOL UnregisterDeviceNotification(HANDLE h) { (void)h; return TRUE; }
-USERAPI BOOL RegisterRawInputDevices(const void *d, UINT n, UINT cb) { (void)d; (void)n; (void)cb; return TRUE; }
 USERAPI HANDLE RegisterPowerSettingNotification(HANDLE r, const GUID *g, DWORD f) { (void)r; (void)g; (void)f; return (HANDLE)(ULONG_PTR)0xDE02; }
 USERAPI BOOL UnregisterPowerSettingNotification(HANDLE h) { (void)h; return TRUE; }
 /* Suspend and resume arrive as WM_POWERBROADCAST to every top-level window */
 USERAPI HANDLE RegisterSuspendResumeNotification(HANDLE r, DWORD f) { (void)r; (void)f; return (HANDLE)(ULONG_PTR)0xDE03; }
 USERAPI BOOL UnregisterSuspendResumeNotification(HANDLE h) { (void)h; return TRUE; }
 USERAPI BOOL RegisterPointerDeviceNotifications(HWND h, BOOL range) { (void)h; (void)range; return TRUE; }
-/* Raw input nobody handled: nothing more to do with it (header size checked as Windows does) */
-USERAPI LRESULT DefRawInputProc(void **raw, INT n, UINT header)
-{ (void)raw; (void)n; return header == 2 * sizeof(DWORD) + sizeof(HANDLE) + sizeof(WPARAM) ? 0 : -1; }
 /* GDI and USER object counts are not kept per process */
 USERAPI DWORD GetGuiResources(HANDLE p, DWORD flags) { (void)p; (void)flags; return 0; }
 

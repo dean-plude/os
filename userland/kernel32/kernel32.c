@@ -211,9 +211,18 @@ BOOL nt_path(const char *name, NtPath *p)
         nt_fill(p, n + k);
         return TRUE;
     }
+    const char *orig = name;
     name = skip_prefix(name);
-    /* devices pass through by name */
+    /* devices pass through by name; so do the HID device interface paths
+     * (\\?\HID#VID_...#{...}) setupapi and Raw Input hand out */
     const char *dev = 0;
+    if (name != orig && (name[0] | 0x20) == 'h' && (name[1] | 0x20) == 'i' && (name[2] | 0x20) == 'd' && name[3] == '#') {
+        int k = u2w(name, -1, p->buf + 4, MAX_PATH - 4);
+        if (k < 0) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
+        p->buf[0] = '\\'; p->buf[1] = '?'; p->buf[2] = '?'; p->buf[3] = '\\';
+        nt_fill(p, 4 + k);
+        return TRUE;
+    }
     if (ieq(name, "CONIN$") || ieq(name, "CONOUT$") || ieq(name, "CON")) dev = name;
     /* NUL, in any folder and with any extension, is the null device */
     const char *base = name;

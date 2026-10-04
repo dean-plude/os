@@ -68,3 +68,44 @@ bool   PadGetInfo(int slot, PadInfo *out);
 bool   PadGetState(int slot, PadState *out);
 int    PadXInputSlot(int user);                           /* the slot of XInput user @user, or -1 */
 bool   PadSetRumble(int slot, UINT16 left, UINT16 right);
+
+/* Raw HID reports, for Raw Input (WM_INPUT) and HID device handles
+ * (um_hid.c): every controller has a HID report descriptor (an Xbox
+ * controller the one Windows' Xbox driver gives its HID side: X/Y the
+ * left stick, Rx/Ry the right, Z both triggers, ten buttons and a hat)
+ * and its input reports go through a ring programs read.  A report starts
+ * with its report ID byte (0 when the device uses none), as Windows
+ * hands them out, and is the device's input report length long. */
+#define PAD_DESC_MAX    1024
+#define PAD_REPORT_MAX  64
+#define PAD_RAW_RING    128
+
+typedef struct {
+    UINT32 seq;                       /* 1, 2, ... */
+    UINT32 serial;                    /* the controller's PadInfo.serial */
+    UINT8  slot, len;
+    UINT16 reserved;
+    UINT8  data[PAD_REPORT_MAX];
+} PadRaw;
+
+/* For HID drivers, after PadAttach: the device's own descriptor and its
+ * input report length (with the ID byte); and each report as it comes
+ * (@r without an ID byte when the device uses none: @ids false) */
+void PadSetDescriptor(int slot, const UINT8 *desc, int len, int in_len);
+void PadRawReport(int slot, const UINT8 *r, int len, bool ids);
+
+/* For programs: a slot's descriptor (its length; *@in_len the input
+ * report length), the slot of a controller by serial (-1: gone), the
+ * reports after @after (waiting up to @wait_ticks for one, or for a
+ * controller to come or go: *@changes counts those) and a slot's latest
+ * report with ID @id */
+int  PadGetDescriptor(int slot, UINT8 *out, int cap, UINT16 *in_len);
+int  PadSlotOfSerial(UINT32 serial);
+int  PadReadRaw(UINT32 after, UINT32 known_changes, PadRaw *out, int max, UINT64 wait_ticks,
+                UINT32 *newest, UINT32 *changes);
+bool PadLastRaw(int slot, UINT8 id, PadRaw *out);
+
+/* Who else takes each report (HID device handles): called outside the
+ * slot lock in the device poll thread; @len -1 when the controller goes */
+typedef void (*PadRawSink)(int slot, UINT32 serial, const UINT8 *r, int len);
+void PadSetRawSink(PadRawSink fn);
