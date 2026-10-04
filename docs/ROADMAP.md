@@ -75,7 +75,9 @@ named program or test demonstrates it.
   [virgl](HISTORY.md#opengl-on-the-hosts-gpu-virgl)).
 - ~~**Direct3D**, DXGI~~ Done: DXVK from the App Store is the system
   Direct3D 8–11 on Mesa's lavapipe Vulkan, through NovaOS's own
-  `vulkan-1.dll`; see [Direct3D](HISTORY.md#direct3d-dxvk-on-mesas-vulkan).
+  `vulkan-1.dll` and behind NovaOS's own `d3d9.dll`, `d3d11.dll` and
+  `dxgi.dll` (which load without DXVK and report no Direct3D); see
+  [Direct3D](HISTORY.md#direct3d-dxvk-on-mesas-vulkan).
 - ~~**Audio**: `winmm` wave output and WASAPI over a real sound device
   (QEMU's Intel HDA)~~ Done; see [Sound](HISTORY.md#sound-intel-hd-audio-winmm-and-wasapi).
   ~~Recording (`waveIn`, capture endpoints) and endpoint volume
@@ -115,7 +117,9 @@ named program or test demonstrates it.
 - ~~**A GPU path in QEMU**~~ Done (Phase 19.7): the virtio GPU driver does
   3D, and Mesa's Venus (the App Store's "Venus") runs Vulkan, and Direct3D
   through DXVK, on the host's GPU through QEMU's `virtio-vga-gl,venus=on`;
-  `d3dtest` passes on it and draws faster than on lavapipe.
+  `d3dtest` passes on it and draws faster than on lavapipe, and ANGLE's
+  Direct3D 11 back end (Chromium's GPU process) starts on it
+  (`d3dtest angle`; [Chromium's GPU process](HISTORY.md#chromiums-gpu-process-on-direct3d-11)).
   ~~virgl (OpenGL on the host's GPU)~~ Done: the same App Store entry
   brings Mesa's virgl, which NovaOS's own `opengl32.dll` picks on that
   GPU; `gltest` passes on it and `gltest fps` draws faster than on
@@ -196,11 +200,21 @@ named program or test demonstrates it.
 - The WebView2 runtime (Roblox's login page and many other programs show
   web content with it): ~~Edge Update's Windows APIs~~ Done
   (`edgeupdtest`); ~~MSXML 6~~ Done (`msxmltest`); ~~rpcrt4's NDR engine
-  for COM proxy/stub DLLs~~ Done (`ndrtest`).  Still to do: COM calls
-  between processes (ole32 marshaling over a channel, `LocalServer32`
-  servers started on demand, oleaut32's `BSTR`/`VARIANT` marshaling and
-  the `IDispatch` proxy), Windows' `WOW6432Node` registry view, then the
-  runtime's setup and the Chromium runtime itself.
+  for COM proxy/stub DLLs~~ Done (`ndrtest`); ~~COM calls between
+  processes~~ Done (`comoop`); ~~Edge Update's check of Microsoft's
+  signature on the runtime's package~~ Done (`authtest`).  Still to do:
+  Edge Update seeing its own install running (its background pass
+  uninstalls it mid-install), Windows' `WOW6432Node` registry view, then
+  the runtime's setup and the Chromium runtime itself.
+- Games: ~~OpenTTD (free on GOG) to its main menu~~ Done; ~~Beneath a
+  Steel Sky (free on GOG) on ScummVM, installed with its installer and
+  played~~ Done; ~~Teeworlds in full screen to its start menu, its music
+  checked on a sound card~~ Done (all three in the nightly corpus).  Still
+  to do: joining a Teeworlds game on its own server (it times out under
+  TCG while Mesa compiles its shaders; mouse needs Raw Input), a Direct3D 9
+  game through DXVK, a game that switches the display mode for full
+  screen, GOG GALAXY's client, Steam's login window, Roblox's player (its
+  anti-cheat refuses virtual machines).
 
 <!-- END generated:next-apps -->
 
@@ -358,7 +372,8 @@ named program or test demonstrates it.
   04.01, as on the ThinkPad T14 Gen 4) as well as off, sets up Realtek's
   ALC256 family and turns the speakers off while headphones are plugged
   in; I2C-HID touchpads, found through ACPI on Intel's LPSS I2C
-  controllers, move the pointer and click in their mouse mode.  Checked
+  controllers, run in their touchpad mode with tap to click, two-finger
+  tap for the right button and two-finger scrolling (a follow-up PR).  Checked
   in QEMU against modelled devices (`hwcheck` in the core suite, with an
   ACPI table describing a touchpad); on the T14 the check is by hand
   ([hardware.md](hardware.md)).  ~~The digital microphones, behind the
@@ -366,7 +381,8 @@ named program or test demonstrates it.
   them through an IPC4 capture pipeline and they are the "Microphone
   Array (DSP)" recording device, booted again after sleep (checked on a
   modelled DSP, `hwcheck mic`).  Not yet: the touchpad's interrupt line
-  (polled for now), tap-to-click and two-finger scrolling.
+  (polled for now), tap-and-drag and scrolling that coasts on after the
+  fingers lift.
 - ~~Install to the internal NVMe disk, and S3, batteries and the lid on
   the reference machine's tables~~ Done (Phase 21.5): the ACPI embedded
   controller that laptops keep their lid, battery and AC adapter behind;
@@ -377,6 +393,15 @@ named program or test demonstrates it.
   VMD hides the NVMe disk ([install-and-power.md](install-and-power.md)).
   Tested in QEMU (`laptop` in the devices suite); on the T14 itself the
   checks are by hand.
+- ~~Game controllers for Windows games~~ Done: wired Xbox 360 and Xbox
+  One controllers (their motors and the Xbox 360 one's player light
+  included) and HID game pads on USB, hot-plugged, for XInput
+  (`xinput1_4`, `xinput1_3` and older, `xinput9_1_0`) and DirectInput 8
+  (game controllers, keyboards and mice, immediate and buffered).  Still
+  to do: Raw Input and `hid.dll` for game pads (`WM_INPUT` with HID
+  reports, `HidP_*` on their report descriptors), the Xbox 360 wireless
+  receiver, Bluetooth controllers, force feedback through DirectInput,
+  and virtio game pads (QEMU has none).
 
 <!-- END generated:next-hardware -->
 
