@@ -69,6 +69,13 @@ IPHLPAPI DWORD WINAPI GetExtendedUdpTable(PVOID t, PDWORD size, BOOL order, ULON
 { (void)order; (void)af; (void)cls; (void)r; return empty_table(t, size); }
 IPHLPAPI DWORD WINAPI GetBestInterface(DWORD addr, PDWORD index) { (void)addr; (void)index; return ERROR_NO_DATA_; }
 IPHLPAPI DWORD WINAPI NotifyAddrChange(PHANDLE h, LPOVERLAPPED o) { (void)h; (void)o; return ERROR_NOT_SUPPORTED; }
+/* NotifyAddrChange never queues a request, so there is none to cancel */
+IPHLPAPI BOOL WINAPI CancelIPChangeNotify(LPOVERLAPPED o) { (void)o; SetLastError(ERROR_NOT_FOUND); return FALSE; }
+/* The DHCP adapter list is as empty as the adapter tables: no adapter to
+ * name, release or renew */
+IPHLPAPI DWORD WINAPI GetInterfaceInfo(PVOID info, PULONG size) { (void)info; return size ? ERROR_NO_DATA_ : ERROR_INVALID_PARAMETER; }
+IPHLPAPI DWORD WINAPI IpReleaseAddress(PVOID adapter) { return adapter ? ERROR_NOT_FOUND : ERROR_INVALID_PARAMETER; }
+IPHLPAPI DWORD WINAPI IpRenewAddress(PVOID adapter)   { return adapter ? ERROR_NOT_FOUND : ERROR_INVALID_PARAMETER; }
 
 /* Interface names and indexes: the one interface is "eth0", index 1 */
 IPHLPAPI ULONG WINAPI if_nametoindex(const char *name) { return name && !lstrcmpA(name, "eth0") ? 1 : 0; }

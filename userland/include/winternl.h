@@ -257,11 +257,13 @@ NTSYSAPI NTSTATUS NTAPI NtGetContextThread(HANDLE t, PCONTEXT c);
 NTSYSAPI NTSTATUS NTAPI NtSetContextThread(HANDLE t, const CONTEXT *c);
 /* NovaOS: create a process sharing this one's console (UTF-8 full paths) */
 /* RuntimeData: STARTUPINFO.lpReserved2 bytes for the new process (NULL: none)
- * Flags: 1 = inherit handles, 2 = no console; Environment: UTF-8
- * "NAME=value" strings each ended by NUL, then an empty one (NULL: default) */
+ * Flags: 1 = inherit handles, 2 = no console, 16 = only the inheritable
+ * handles in HandleList (PROC_THREAD_ATTRIBUTE_HANDLE_LIST); Environment:
+ * UTF-8 "NAME=value" strings each ended by NUL, then an empty one (NULL: default) */
 typedef struct { HANDLE StdHandle[3]; HANDLE Process, Thread; ULONG64 ProcessId, ThreadId;
                  ULONG64 Flags; const char *Environment; ULONG64 EnvironmentSize;
-                 const void *RuntimeData; ULONG64 RuntimeDataSize; } NOVA_CREATE_PROCESS;
+                 const void *RuntimeData; ULONG64 RuntimeDataSize;
+                 const HANDLE *HandleList; ULONG64 HandleCount; } NOVA_CREATE_PROCESS;
 NTSYSAPI NTSTATUS NTAPI NtNovaCreateProcess(const char *image, const char *cmdline, const char *dir, NOVA_CREATE_PROCESS *io);
 /* NovaOS: Out = { process id, exit code (STILL_ACTIVE while running), exited } */
 NTSYSAPI NTSTATUS NTAPI NtNovaProcessInfo(HANDLE p, ULONG64 out[3]);

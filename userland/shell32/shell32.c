@@ -807,6 +807,29 @@ SHSTDAPI_(BOOL) Shell_NotifyIconW(DWORD msg, void *data) { (void)msg; (void)data
 SHSTDAPI_(BOOL) Shell_NotifyIconA(DWORD msg, void *data) { (void)msg; (void)data; return FALSE; }
 SHSTDAPI_(HRESULT) Shell_NotifyIconGetRect(const void *id, RECT *r) { (void)id; if (r) SetRectEmpty(r); return E_FAIL; }
 SHSTDAPI_(void) SHChangeNotify(LONG ev, UINT flags, LPCVOID a, LPCVOID b) { (void)ev; (void)flags; (void)a; (void)b; }
+
+/* Change-notification registrations (ordinals 2 and 4): each gets an ID
+ * that SHChangeNotifyDeregister ends.  Nothing reports shell changes to
+ * them yet (SHChangeNotify above delivers nothing), so a window that
+ * registers simply hears no news, as on a system where nothing changes. */
+static volatile LONG g_notify_next, g_notify_live[64];
+SHSTDAPI_(ULONG) SHChangeNotifyRegister(HWND w, int sources, LONG events, UINT msg, int n, const void *entries)
+{
+    (void)sources; (void)events; (void)msg; (void)entries;
+    if (!w || n < 1) return 0;
+    for (int i = 0; i < 64; i++)
+        if (!g_notify_live[i]) {
+            LONG id = InterlockedIncrement(&g_notify_next);
+            if (!InterlockedCompareExchange(&g_notify_live[i], id, 0)) return (ULONG)id;
+        }
+    return 0;
+}
+SHSTDAPI_(BOOL) SHChangeNotifyDeregister(ULONG id)
+{
+    for (int i = 0; id && i < 64; i++)
+        if (InterlockedCompareExchange(&g_notify_live[i], 0, (LONG)id) == (LONG)id) return TRUE;
+    return FALSE;
+}
 SHSTDAPI_(void) SHAddToRecentDocs(UINT flags, LPCVOID pv) { (void)flags; (void)pv; }
 SHSTDAPI_(BOOL) IsUserAnAdmin(void) { return token_dword(20 /* TokenElevation */, 0) != 0; }   /* elevated? */
 SHSTDAPI_(HRESULT) SHQueryRecycleBinW(LPCWSTR root, void *info)

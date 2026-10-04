@@ -194,6 +194,8 @@ typedef struct {
     bool         inherit;       /* passed to child processes (bInheritHandles) */
     bool         async;         /* H_FILE: opened for overlapped I/O */
     bool         npfs;          /* H_NULL: the \Device\NamedPipe\ directory (a RootDirectory for pipe names) */
+    bool         access_known;  /* H_OBJECT: @access is what the handle was granted (else: not tracked, all) */
+    UINT32       access;        /* (specific and standard rights, generic ones mapped) */
 } UmHandle;
 
 typedef struct {
@@ -450,6 +452,9 @@ void       um_thread_drop_token(UmThread *t);          /* stop impersonating (th
 UINT32     um_set_thread_token(UmThread *t, UINT64 buf, UINT32 len);   /* ThreadImpersonationToken */
 bool       um_privilege_held(UINT32 luid);    /* the caller's token holds privilege @luid */
 UINT32     um_check_object(UmObject *o, UINT32 want);  /* opening @o for @want: STATUS_SUCCESS or ACCESS_DENIED */
+/* @want with its generic rights mapped for an object of @type (MAXIMUM_ALLOWED:
+ * all of them); false when handles to that type do not track their rights */
+bool       um_map_access(int type, UINT32 want, UINT32 *out);
 UINT32     um_oa_security(UINT64 oa, void **sd);       /* OBJECT_ATTRIBUTES' descriptor, captured (NULL: none) */
 void       um_sd_free(void *sd);
 /* The file system's checks: @want (mapped by @map) against self-relative

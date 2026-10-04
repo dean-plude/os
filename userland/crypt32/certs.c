@@ -22,6 +22,7 @@
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/oid.h"
 #include "mbedtls/sha1.h"
+#include "mbedtls/md.h"
 #include "tls_glue.h"
 #include "crypt32_int.h"
 #include "x509_internal.h"
@@ -1112,4 +1113,52 @@ CRYPT32API DWORD WINAPI CertGetNameStringA(const void *c, DWORD type, DWORD flag
 {
     GetNameCtx g = { c, type, flags, para };
     return narrow(get_name_w, &g, s, n);
+}
+
+/* Store control: NovaOS stores have no outside writer to resynchronise with
+ * or to be notified of, so every documented control succeeds as a no-op
+ * (CERT_STORE_CTRL_RESYNC 1, NOTIFY_CHANGE 2, COMMIT 3, AUTO_RESYNC 4,
+ * CANCEL_NOTIFY 5); anything else is ERROR_CALL_NOT_IMPLEMENTED like Windows. */
+CRYPT32API BOOL WINAPI CertControlStore(HANDLE h, DWORD flags, DWORD ctrl, const void *para)
+{
+    (void)flags; (void)para;
+    if (!h) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+    if (ctrl >= 1 && ctrl <= 5) return TRUE;
+    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+    return FALSE;
+}
+
+/* Two encoded names are the same name when their encodings match */
+CRYPT32API BOOL WINAPI CertCompareCertificateName(DWORD enc, const BLOB_ *a, const BLOB_ *b)
+{
+    (void)enc;
+    return a && b && a->cbData == b->cbData && (!a->cbData || !memcmp(a->pbData, b->pbData, a->cbData));
+}
+
+/* CryptVerifyCertificateSignatureEx: the subject is an encoded certificate
+ * (CRYPT_VERIFY_CERT_SIGN_SUBJECT_BLOB 1) or a context (CERT 2); the issuer
+ * a context (CRYPT_VERIFY_CERT_SIGN_ISSUER_CERT 2). Other issuer kinds (a
+ * bare public key, a chain) are refused with ERROR_INVALID_PARAMETER. */
+CRYPT32API BOOL WINAPI CryptVerifyCertificateSignatureEx(ULONG_PTR prov, DWORD enc, DWORD stype, void *subject,
+                                                         DWORD itype, void *issuer, DWORD flags, void *extra)
+{
+    (void)prov; (void)enc; (void)flags; (void)extra;
+    const BYTE *sd = NULL; DWORD sn = 0;
+    if (stype == 1 && subject)      { sd = ((BLOB_ *)subject)->pbData; sn = ((BLOB_ *)subject)->cbData; }
+    else if (stype == 2 && subject) { sd = ((Cert *)subject)->der;      sn = ((Cert *)subject)->ctx.cbCertEncoded; }
+    if (!sd || !sn || !issuer || (itype != 2)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    Cert *ic = (Cert *)issuer;
+    mbedtls_x509_crt s, i;
+    mbedtls_x509_crt_init(&s); mbedtls_x509_crt_init(&i);
+    BOOL ok = FALSE;
+    if (!mbedtls_x509_crt_parse_der(&s, sd, sn) && !mbedtls_x509_crt_parse_der(&i, ic->der, ic->ctx.cbCertEncoded)) {
+        const mbedtls_md_info_t *mi = mbedtls_md_info_from_type(s.sig_md);
+        unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+        if (mi && !mbedtls_md(mi, s.tbs.p, s.tbs.len, hash))
+            ok = !mbedtls_pk_verify_ext(s.sig_pk, s.sig_opts, &i.pk, s.sig_md, hash, mbedtls_md_get_size(mi),
+                                        s.sig.p, s.sig.len);
+    }
+    mbedtls_x509_crt_free(&s); mbedtls_x509_crt_free(&i);
+    if (!ok) SetLastError(0x80090006 /* NTE_BAD_SIGNATURE */);
+    return ok;
 }

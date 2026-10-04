@@ -2454,7 +2454,12 @@ void UmReturnToUser(void)
         g_fs.w.depth = 1;
         um_unlock(&g_fs.w);
     }
-    while (t->suspend > 0 && !um_stopping()) sched_yield();         /* NtSuspendThread */
+    /* NtSuspendThread: parked until resumed, with interrupts on meanwhile
+     * (the caller turned them off to return): a CPU looping here with them
+     * off never answers another CPU's TLB shootdown for this process, and
+     * that CPU waits forever holding the process lock (seen with Chromium's
+     * stack sampler, which suspends threads while others free memory) */
+    while (t->suspend > 0 && !um_stopping()) { sti(); sched_yield(); cli(); }
     if (p->kill_pending) um_exit_thread(p->kill_status);
     if (t->terminate) um_exit_thread(t->term_status);
     t->park = 0;

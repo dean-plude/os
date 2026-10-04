@@ -86,6 +86,39 @@ UEAPI HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(LPCWSTR name, PSI
     return AllocateAndInitializeSid(&app, 8, 2, h[0], h[1], h[2], h[3], h[4], h[5], h[6], sid) ? S_OK : E_OUTOFMEMORY;
 }
 
+/* A container profile is its folder under %LOCALAPPDATA%\Packages; a second
+ * create of the same name is HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS), as on
+ * Windows, and hands back no SID */
+UEAPI HRESULT WINAPI CreateAppContainerProfile(LPCWSTR name, LPCWSTR display, LPCWSTR desc, void *caps, DWORD ncaps, PSID *sid)
+{
+    (void)display; (void)desc; (void)caps; (void)ncaps;
+    if (!name || !*name || !sid || lstrlenW(name) > 64) return E_INVALIDARG;
+    WCHAR dir[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH);
+    if (!n || n + 10 + lstrlenW(name) >= MAX_PATH) return E_FAIL;
+    lstrcatW(dir, L"\\Packages");
+    CreateDirectoryW(dir, 0);
+    lstrcatW(dir, L"\\");
+    lstrcatW(dir, name);
+    if (!CreateDirectoryW(dir, 0))
+        return HRESULT_FROM_WIN32(GetLastError() == ERROR_ALREADY_EXISTS ? ERROR_ALREADY_EXISTS : GetLastError());
+    return DeriveAppContainerSidFromAppContainerName(name, sid);
+}
+
+/* Group Policy change events: NovaOS applies no policy, so a registered
+ * event is never signalled; registering and unregistering only check it */
+UEAPI BOOL WINAPI RegisterGPNotification(HANDLE event, BOOL machine)
+{
+    (void)machine;
+    if (!event) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return TRUE;
+}
+UEAPI BOOL WINAPI UnregisterGPNotification(HANDLE event)
+{
+    if (!event) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return TRUE;
+}
+
 /* Group Policy: NovaOS applies none, so nothing ever holds the policy
  * section for writing; the "section" handed out is a handle that only has
  * to close */

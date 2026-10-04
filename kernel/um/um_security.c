@@ -506,6 +506,13 @@ static UINT32 check_open(void *const *slot, UINT32 want, const UINT32 *map)
     return st == ST_INVALID_SECURITY_DESCR ? ST_ACCESS_DENIED : st;
 }
 
+bool um_map_access(int type, UINT32 want, UINT32 *out)
+{
+    if (type < 0 || type >= (int)(sizeof(g_maps) / sizeof(g_maps[0])) || !g_maps[type][3]) return false;
+    *out = want & 0x02000000u ? g_maps[type][3] : map_generic(want & ~0x01000000u, g_maps[type]);
+    return true;
+}
+
 UINT32 um_check_object(UmObject *o, UINT32 want)
 {
     if (o->type >= (int)(sizeof(g_maps) / sizeof(g_maps[0])) || !g_maps[o->type][3]) return ST_SUCCESS;

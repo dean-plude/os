@@ -76,6 +76,9 @@
     "GetErrorInfo": 200,
     "SetErrorInfo": 201,
     "CreateErrorInfo": 202,
+    "VarUI4FromStr": 277,
+    "VarBstrCat": 313,
+    "VarBstrCmp": 314,
     "SafeArrayCreateVector": 411
   }
 }
