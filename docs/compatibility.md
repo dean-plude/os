@@ -201,11 +201,19 @@ DllMain deliberately crashes on a detach it does not expect), and its
 `__C_specific_handler` and `RtlUnwindEx` no longer run a `__finally`
 twice when an exception is caught by an `__except` inside it (the
 Microsoft C++ runtime re-raises a rethrow from such a block, and
-`oneauth.dll` aborted the browser on it).  What comes next: the
-controller (and so a page) is not made yet: the GPU process finds no
-Direct3D 11 adapter and exits, the first browser process ends and the
-loader starts another, and `CreateCoreWebView2Controller` fails with
-`RPC_E_DISCONNECTED`.  64-bit programs that look for a machine-wide
+`oneauth.dll` aborted the browser on it).  The browser then connects
+to the host's pipe and checks that the pipe's server is the host
+(`GetNamedPipeServerProcessId`); NovaOS's pipes now keep both ends'
+process ids, so it keeps the connection and makes the WebView's window
+(it also needed shlwapi's ordinal 14, `GetAcceptLanguagesA`).  What
+comes next: the host moves that window into its own with `SetParent`
+and `SetWindowPos`, but the window belongs to the browser process, and
+NovaOS's windows cannot yet go inside another process's window, so
+`CreateCoreWebView2Controller` fails with `0x80070578`
+(`ERROR_INVALID_WINDOW_HANDLE`) and there is no page yet.  The GPU
+process finds no Direct3D 11 adapter for ANGLE (none without DXVK, as on
+a PC with no Direct3D driver) and the browser goes on in software.
+64-bit programs that look for a machine-wide
 runtime under Windows' `WOW6432Node` registry view also need that view
 (the per-user install records itself under `HKEY_CURRENT_USER`, which
 has none).

@@ -414,6 +414,19 @@ LWSTDAPI_(HRESULT) GetAcceptLanguagesW(LPWSTR buf, DWORD *n)
     return S_OK_;
 }
 
+/* (ordinal 14) */
+LWSTDAPI_(HRESULT) GetAcceptLanguagesA(LPSTR buf, DWORD *n)
+{
+    WCHAR w[64];
+    DWORD wn = 64;
+    HRESULT hr = GetAcceptLanguagesW(w, &wn);
+    if (hr != S_OK_) return hr;
+    if (*n <= wn) { *n = wn + 1; return E_INVALIDARG_; }
+    for (DWORD i = 0; i <= wn; i++) buf[i] = (char)w[i];
+    *n = wn;
+    return S_OK_;
+}
+
 /* Only plain strings: "@dll,-id" resource references are not resolved */
 LWSTDAPI_(HRESULT) SHLoadIndirectString(LPCWSTR src, LPWSTR out, UINT n, void **reserved)
 {
@@ -547,6 +560,52 @@ LWSTDAPI_(HRESULT) QISearch(void *self, const QITAB *tab, REFIID riid, void **ou
         return S_OK_;
     }
     *out = 0;
+    return E_NOINTERFACE_;
+}
+
+/* ConnectToConnectionPoint (ordinal 168): Advise (or Unadvise) @sink on
+ * @obj's connection point for @riid; *@cp keeps that connection point */
+typedef struct Obj { void **v; } Obj;
+#define CALL(o, slot, T) ((T)((Obj *)(o))->v[slot])
+LWSTDAPI_(HRESULT) ConnectToConnectionPoint(void *sink, REFIID riid, BOOL connect, void *obj, DWORD *cookie, void **cp)
+{
+    static const GUID iid_cpc = { 0xB196B284, 0xBAB4, 0x101A, { 0xB6, 0x9C, 0x00, 0xAA, 0x00, 0x34, 0x1D, 0x07 } };
+    if (cp) *cp = 0;
+    if (!obj || (connect && !sink)) return (HRESULT)0x80004005L;          /* E_FAIL */
+    Unk *u = obj;
+    void *cpc = 0, *point = 0;
+    HRESULT hr = u->v->QueryInterface(u, &iid_cpc, &cpc);
+    if (hr < 0) return hr;
+    hr = CALL(cpc, 4, HRESULT (WINAPI *)(void *, REFIID, void **))(cpc, riid, &point);   /* FindConnectionPoint */
+    if (hr >= 0) {
+        if (connect) hr = CALL(point, 5, HRESULT (WINAPI *)(void *, void *, DWORD *))(point, sink, cookie);  /* Advise */
+        else hr = CALL(point, 6, HRESULT (WINAPI *)(void *, DWORD))(point, *cookie);                     /* Unadvise */
+        if (hr < 0 && cookie) *cookie = 0;
+        if (cp && hr >= 0) *cp = point;
+        else ((Unk *)point)->v->Release(point);
+    }
+    ((Unk *)cpc)->v->Release(cpc);
+    return hr;
+}
+
+/* IUnknown_GetWindow (ordinal 172): the window of an IOleWindow (or of an
+ * IShellView or IInternetSecurityMgrSite, whose first method is the same) */
+LWSTDAPI_(HRESULT) IUnknown_GetWindow(void *obj, HWND *wnd)
+{
+    static const GUID iids[] = {
+        { 0x00000114, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } },               /* IOleWindow */
+        { 0x000214E3, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } },               /* IShellView */
+        { 0x79EAC9ED, 0xBAF9, 0x11CE, { 0x8C, 0x82, 0x00, 0xAA, 0x00, 0x4B, 0xA9, 0x0B } },   /* IInternetSecurityMgrSite */
+    };
+    if (!obj) return (HRESULT)0x80004005L;
+    Unk *u = obj;
+    for (int i = 0; i < 3; i++) {
+        void *w = 0;
+        if (u->v->QueryInterface(u, &iids[i], &w) < 0 || !w) continue;
+        HRESULT hr = CALL(w, 3, HRESULT (WINAPI *)(void *, HWND *))(w, wnd);   /* GetWindow */
+        ((Unk *)w)->v->Release(w);
+        return hr;
+    }
     return E_NOINTERFACE_;
 }
 

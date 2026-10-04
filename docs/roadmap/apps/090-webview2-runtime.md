@@ -8,7 +8,10 @@
   close~~ Done (`filetest`); ~~the runtime's setup unpacking its archive,
   `wer.dll`~~ Done (`wvsetuptest`); ~~the setup's permissions on its
   install folder~~ Done (`acltest`); ~~starting the runtime's browser
-  process~~ Done (`wvstarttest`, `unwindtest`).  Still to do: the
-  controller and a page (the GPU process's Direct3D 11 adapter, the
-  browser's restart, `CreateCoreWebView2Controller`), and Windows'
-  `WOW6432Node` registry view for machine-wide installs.
+  process~~ Done (`wvstarttest`, `unwindtest`); ~~the browser keeping
+  its host's connection (pipe process ids)~~ Done (`pipetest`).  Still
+  to do: the controller and a page (windows of one process inside
+  another's: the host's `SetParent` and `SetWindowPos` on the browser's
+  window; then the browser's drawing, in software without a Direct3D 11
+  adapter), and Windows' `WOW6432Node` registry view for machine-wide
+  installs.
