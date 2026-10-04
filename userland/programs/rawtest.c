@@ -81,9 +81,11 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
             if (rm->usFlags & MOUSE_MOVE_ABSOLUTE) g_absolute++;
             if (rm->usButtonFlags && g_nflags < 32) g_flags[g_nflags++] = rm->usButtonFlags;
             if (rm->usButtonFlags & RI_MOUSE_WHEEL) g_wheel += (SHORT)rm->usButtonData;
-        } else {
-            g_bad++;                                /* (the keys are left in the queue for GetRawInputBuffer) */
-        }
+        } else if (u.ri.header.dwType != RIM_TYPEKEYBOARD || sz != sizeof(RAWINPUTHEADER) + sizeof(RAWKEYBOARD) ||
+                   u.ri.header.hDevice != g_kbd_dev) {
+            g_bad++;
+        }                                           /* (a key before the keyboard part: the release of the Enter that started the
+                                                     * test, on a fast machine; the test's keys are left for GetRawInputBuffer) */
         return DefWindowProcW(h, m, wp, lp);
     }
     if (m == WM_INPUT_DEVICE_CHANGE) {
