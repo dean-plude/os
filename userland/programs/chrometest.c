@@ -238,6 +238,32 @@ static void imports(void)
     check(a && b && ver && !ver(0, 1, 2, (void *)a, 2, (void *)b, 0, 0) && GetLastError() == 0x80090006,
           "CryptVerifyCertificateSignatureEx: another root did not");
 
+    /* base::win::OSInfo reads kernelbase.dll's version, by bare name */
+    HMODULE vd = LoadLibraryA("version.dll");
+    DWORD (WINAPI *vsize)(LPCWSTR, DWORD *) = (void *)GetProcAddress(vd, "GetFileVersionInfoSizeW");
+    BOOL (WINAPI *vinfo)(LPCWSTR, DWORD, DWORD, void *) = (void *)GetProcAddress(vd, "GetFileVersionInfoW");
+    BOOL (WINAPI *vq)(const void *, LPCWSTR, void **, UINT *) = (void *)GetProcAddress(vd, "VerQueryValueW");
+    static const WCHAR *const vnames[] = { L"kernelbase.dll", L"kernel32.dll" };
+    for (int i = 0; i < 2; i++) {
+        DWORD vn = vsize ? vsize(vnames[i], 0) : 0;
+        BYTE *vb = vn ? malloc(vn) : 0;
+        DWORD *ffi = 0; UINT fl = 0;
+        BOOL ok = vb && vinfo(vnames[i], 0, vn, vb) && vq(vb, L"\\", (void **)&ffi, &fl) && fl >= 52 &&
+                  ffi[0] == 0xFEEF04BD && ffi[2] >> 16 == 10 && (ffi[3] >> 16) == 18362;
+        check(ok, i ? "kernel32.dll has a version resource, found by bare name" : "kernelbase.dll has a version resource, found by bare name");
+        free(vb);
+    }
+
+    /* The event log: Chromium asks the System log how the last shutdown went */
+    HMODULE ev = LoadLibraryA("wevtapi.dll");
+    HANDLE (WINAPI *evq)(HANDLE, LPCWSTR, LPCWSTR, DWORD) = (void *)GetProcAddress(ev, "EvtQuery");
+    BOOL (WINAPI *evn)(HANDLE, DWORD, HANDLE *, DWORD, DWORD, DWORD *) = (void *)GetProcAddress(ev, "EvtNext");
+    BOOL (WINAPI *evc)(HANDLE) = (void *)GetProcAddress(ev, "EvtClose");
+    HANDLE q = evq ? evq(0, L"System", L"*[System[Provider[@Name='eventlog'] and (EventID=6008)]]", 1) : 0;
+    HANDLE got[4]; DWORD ng = 9;
+    check(q && !evn(q, 4, got, INFINITE, 0, &ng) && GetLastError() == 259 && ng == 0 && evc(q),
+          "wevtapi: the System log has no events to return");
+
     HMODULE w = LoadLibraryA("winhttp.dll");
     void *(WINAPI *wopen)(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD) = (void *)GetProcAddress(w, "WinHttpOpen");
     void *(WINAPI *setcb)(void *, void *, DWORD, DWORD_PTR) = (void *)GetProcAddress(w, "WinHttpSetStatusCallback");

@@ -144,13 +144,25 @@ packages, checks every file and starts the 64-bit client, which starts
 `bin\cef\cef.win64`).  Steam picks the proxy from the user's Internet
 Settings, as on Windows.
 
-The login window does not come up yet: the browser process starts, opens
-its threads, asks COM for a class NovaOS does not register
-(`{33C53A50-F456-4884-B049-85FD643ECFED}`) and stops at one of
-Chromium's own checks (a breakpoint in `libcef.dll`) before it starts its
-GPU and page processes, so no window appears.  What is known to be missing on the way, each a NovaOS gap and
-none a reason to change Steam:
+The login window does not come up yet.  The browser now starts its child
+processes as on Windows: the GPU process, the network and storage
+services and a page (renderer) process for Steam's first page.  The GPU
+process gives up because ANGLE, Chromium's OpenGL ES layer, finds no
+display it can use on NovaOS's Direct3D 11 ("Initialization of all EGL
+display types failed"); after three tries Chromium draws in software
+instead, as it does on Windows without a usable GPU.  Under emulation (the
+nightly corpus) Steam then closes the browser a few minutes in and starts
+it again before the page has drawn, so no window appears in that run.
+What is known to be missing on the way, each a NovaOS gap and none a
+reason to change Steam:
 
+- ANGLE on NovaOS's Direct3D 11 (the GPU process), and Media Foundation
+  (`mf.dll`, which Chromium only uses for video).
+- WMI (`WbemLocator`, `{4590F811-1D3A-11D0-891F-00AA004B2E24}`), which the
+  browser asks for just before Steam closes it, and the COM classes
+  `{33C53A50-F456-4884-B049-85FD643ECFED}`,
+  `{E77CC89B-7401-4C04-8CED-149DB35ADD04}` and
+  `{E2B3C97F-6AE1-41AC-817A-F6F92166D7DD}`, which it gets on without.
 - `SteamService.exe` checks Steam's files with `WinVerifyTrust` and
   accepts them: NovaOS checks Authenticode signatures (the digest, Valve's
   chain to DigiCert's root and the timestamp), offline, so a revocation
@@ -162,7 +174,10 @@ none a reason to change Steam:
   security descriptors in SDDL form (`advapi32`'s SDDL functions are
   incomplete).
 - `GetAdaptersAddresses` reports no adapters, and the browser's UDP and
-  TCP sockets fail with `WSAENOBUFS` under load (NovaOS's network code).
+  TCP sockets fail with `WSAENOBUFS` under load (NovaOS's network code);
+  Steam's own downloads then fail too ("Download failed: http error 0").
+  Chromium's network change and DNS watchers do not start
+  (`WSALookupServiceBegin` has no providers, error 10108).
 - DirectWrite's GDI interop (`CreateBitmapRenderTarget`), which Chromium
   draws text with.
 

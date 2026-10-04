@@ -42,6 +42,20 @@ needed, each a NovaOS gap:
   (`WinHttpCreateProxyResolver`, `WinHttpGetProxyForUrlEx`, which
   completes on another thread with "autodetection failed" as on a network
   without a proxy script).
+- **Windows' version, read from files.**  Chromium reads the version of
+  `kernelbase.dll` (or `kernel32.dll`) with `GetFileVersionInfo` and stops
+  when neither has one.  Both now carry a version resource (Windows 10
+  build 18362, as `ntdll.dll` does), and `GetFileVersionInfo` finds a bare
+  DLL name along the search path, as Windows does.
+- **The event log.**  New `wevtapi.dll`: `EvtQuery`, `EvtNext`,
+  `EvtCreateRenderContext`, `EvtRender` and `EvtClose`.  NovaOS keeps no
+  event channels, so a query finds no events, as for an empty log;
+  Chromium asks the System log how the last shutdown went.
+- **A machine-wide freeze.**  Chromium's stack sampler suspends threads.
+  A suspended thread waited for its resume with interrupts off, so its
+  CPU never answered another CPU's TLB shootdown for the same process,
+  and that CPU waited forever holding the process lock; the whole machine
+  stopped.  A suspended thread now waits with interrupts on.
 
 The new self-test `chrometest` checks each of these on 64- and 32-bit.
 How far Steam's browser gets now is in
