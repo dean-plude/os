@@ -147,6 +147,92 @@ WINADVAPI BOOL  WINAPI AccessCheck(PSECURITY_DESCRIPTOR sd, HANDLE token, DWORD 
                                    LPDWORD psn, LPDWORD granted, LPBOOL status);
 WINADVAPI DWORD WINAPI GetNamedSecurityInfoW(LPCWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID *owner, PSID *group,
                                              PACL *dacl, PACL *sacl, PSECURITY_DESCRIPTOR *sd);
+WINADVAPI DWORD WINAPI SetNamedSecurityInfoW(LPWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID owner, PSID group,
+                                             PACL dacl, PACL sacl);
+WINADVAPI BOOL  WINAPI ConvertStringSecurityDescriptorToSecurityDescriptorW(LPCWSTR s, DWORD rev, PSECURITY_DESCRIPTOR *sd, PULONG n);
+WINADVAPI BOOL  WINAPI ConvertStringSecurityDescriptorToSecurityDescriptorA(LPCSTR s, DWORD rev, PSECURITY_DESCRIPTOR *sd, PULONG n);
+WINADVAPI BOOL  WINAPI ConvertSecurityDescriptorToStringSecurityDescriptorW(PSECURITY_DESCRIPTOR sd, DWORD rev, SECURITY_INFORMATION si,
+                                                                          LPWSTR *out, PULONG n);
+WINADVAPI BOOL  WINAPI ConvertSecurityDescriptorToStringSecurityDescriptorA(PSECURITY_DESCRIPTOR sd, DWORD rev, SECURITY_INFORMATION si,
+                                                                          LPSTR *out, PULONG n);
+WINADVAPI BOOL  WINAPI LookupAccountNameW(LPCWSTR sys, LPCWSTR name, PSID sid, LPDWORD ns, LPWSTR dom, LPDWORD nd, PSID_NAME_USE use);
+WINADVAPI BOOL  WINAPI LookupAccountNameA(LPCSTR sys, LPCSTR name, PSID sid, LPDWORD ns, LPSTR dom, LPDWORD nd, PSID_NAME_USE use);
+WINADVAPI BOOL  WINAPI IsValidSecurityDescriptor(PSECURITY_DESCRIPTOR sd);
+WINADVAPI BOOL  WINAPI IsValidAcl(PACL acl);
+WINADVAPI BOOL  WINAPI GetSecurityDescriptorGroup(PSECURITY_DESCRIPTOR sd, PSID *g, LPBOOL def);
+WINADVAPI BOOL  WINAPI GetSecurityDescriptorSacl(PSECURITY_DESCRIPTOR sd, LPBOOL present, PACL *acl, LPBOOL defaulted);
+WINADVAPI BOOL  WINAPI SetSecurityDescriptorSacl(PSECURITY_DESCRIPTOR sd, BOOL present, PACL acl, BOOL defaulted);
+WINADVAPI BOOL  WINAPI GetSecurityDescriptorControl(PSECURITY_DESCRIPTOR sd, PSECURITY_DESCRIPTOR_CONTROL c, LPDWORD rev);
+WINADVAPI BOOL  WINAPI SetSecurityDescriptorControl(PSECURITY_DESCRIPTOR sd, SECURITY_DESCRIPTOR_CONTROL mask, SECURITY_DESCRIPTOR_CONTROL set);
+WINADVAPI DWORD WINAPI GetSecurityDescriptorLength(PSECURITY_DESCRIPTOR sd);
+WINADVAPI BOOL  WINAPI GetAce(PACL acl, DWORD i, LPVOID *ace);
+#define SACL_SECURITY_INFORMATION  0x00000008
+#define LABEL_SECURITY_INFORMATION 0x00000010
+#define SE_SACL_PRESENT          0x0010
+#define SE_DACL_AUTO_INHERIT_REQ 0x0100
+#define SE_SACL_AUTO_INHERIT_REQ 0x0200
+#define SE_DACL_AUTO_INHERITED   0x0400
+#define SE_SACL_AUTO_INHERITED   0x0800
+#define SE_DACL_PROTECTED        0x1000
+#define SE_SACL_PROTECTED        0x2000
+#define ERROR_INVALID_ACL            1336
+#define ERROR_INVALID_SECURITY_DESCR 1338
+#define ERROR_NONE_MAPPED            1332
+#define ERROR_UNKNOWN_REVISION       1305
+#define PROTECTED_DACL_SECURITY_INFORMATION   0x80000000
+#define UNPROTECTED_DACL_SECURITY_INFORMATION 0x20000000
+#define SDDL_REVISION_1          1
+
+/* aclapi: access lists from EXPLICIT_ACCESS entries */
+typedef enum { NOT_USED_ACCESS, GRANT_ACCESS, SET_ACCESS, DENY_ACCESS, REVOKE_ACCESS, SET_AUDIT_SUCCESS,
+               SET_AUDIT_FAILURE } ACCESS_MODE;
+typedef enum { NO_MULTIPLE_TRUSTEE, TRUSTEE_IS_IMPERSONATE } MULTIPLE_TRUSTEE_OPERATION;
+typedef enum { TRUSTEE_IS_SID, TRUSTEE_IS_NAME, TRUSTEE_BAD_FORM, TRUSTEE_IS_OBJECTS_AND_SID,
+               TRUSTEE_IS_OBJECTS_AND_NAME } TRUSTEE_FORM;
+typedef enum { TRUSTEE_IS_UNKNOWN, TRUSTEE_IS_USER, TRUSTEE_IS_GROUP, TRUSTEE_IS_DOMAIN, TRUSTEE_IS_ALIAS,
+               TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_IS_DELETED, TRUSTEE_IS_INVALID, TRUSTEE_IS_COMPUTER } TRUSTEE_TYPE;
+typedef struct _TRUSTEE_W {
+    struct _TRUSTEE_W *pMultipleTrustee;
+    MULTIPLE_TRUSTEE_OPERATION MultipleTrusteeOperation;
+    TRUSTEE_FORM TrusteeForm;
+    TRUSTEE_TYPE TrusteeType;
+    LPWSTR ptstrName;
+} TRUSTEE_W, *PTRUSTEE_W;
+typedef struct _TRUSTEE_A {
+    struct _TRUSTEE_A *pMultipleTrustee;
+    MULTIPLE_TRUSTEE_OPERATION MultipleTrusteeOperation;
+    TRUSTEE_FORM TrusteeForm;
+    TRUSTEE_TYPE TrusteeType;
+    LPSTR ptstrName;
+} TRUSTEE_A, *PTRUSTEE_A;
+typedef struct _EXPLICIT_ACCESS_W {
+    DWORD grfAccessPermissions;
+    ACCESS_MODE grfAccessMode;
+    DWORD grfInheritance;
+    TRUSTEE_W Trustee;
+} EXPLICIT_ACCESS_W, *PEXPLICIT_ACCESS_W;
+typedef struct _EXPLICIT_ACCESS_A {
+    DWORD grfAccessPermissions;
+    ACCESS_MODE grfAccessMode;
+    DWORD grfInheritance;
+    TRUSTEE_A Trustee;
+} EXPLICIT_ACCESS_A, *PEXPLICIT_ACCESS_A;
+#define NO_INHERITANCE                     0x0
+#define SUB_OBJECTS_ONLY_INHERIT           0x1
+#define SUB_CONTAINERS_ONLY_INHERIT        0x2
+#define SUB_CONTAINERS_AND_OBJECTS_INHERIT 0x3
+#define INHERIT_NO_PROPAGATE               0x4
+#define INHERIT_ONLY                       0x8
+WINADVAPI DWORD WINAPI SetEntriesInAclW(ULONG n, PEXPLICIT_ACCESS_W entries, PACL old, PACL *out);
+WINADVAPI DWORD WINAPI SetEntriesInAclA(ULONG n, PEXPLICIT_ACCESS_A entries, PACL old, PACL *out);
+WINADVAPI DWORD WINAPI GetExplicitEntriesFromAclW(PACL acl, PULONG n, PEXPLICIT_ACCESS_W *entries);
+WINADVAPI void  WINAPI BuildTrusteeWithSidW(PTRUSTEE_W t, PSID sid);
+WINADVAPI void  WINAPI BuildTrusteeWithNameW(PTRUSTEE_W t, LPWSTR name);
+WINADVAPI void  WINAPI BuildExplicitAccessWithNameW(PEXPLICIT_ACCESS_W ea, LPWSTR name, DWORD perms, ACCESS_MODE mode, DWORD inherit);
+WINADVAPI DWORD WINAPI BuildSecurityDescriptorW(PTRUSTEE_W owner, PTRUSTEE_W group, ULONG n, PEXPLICIT_ACCESS_W access,
+                                                ULONG naudit, PEXPLICIT_ACCESS_W audit, PSECURITY_DESCRIPTOR old, PULONG size,
+                                                PSECURITY_DESCRIPTOR *out);
+
 /* random numbers, hashes (CryptoAPI) */
 WINADVAPI BOOLEAN WINAPI SystemFunction036(PVOID buf, ULONG n);
 #define RtlGenRandom SystemFunction036
