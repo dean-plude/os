@@ -612,7 +612,7 @@ static __declspec(noreturn) void catch_it(EXCEPTION_RECORD *rec, DWORD64 target,
     RtlFreeHeap(RtlGetProcessHeap(), 0, c);
 
     tctx.Rip = cont;
-    NtContinue(&tctx, FALSE);
+    RtlRestoreContext(&tctx, 0);                         /* (ntdll forgets the dispatch below) */
     no_catch("vcruntime: resuming after catch failed\n");
 }
 
