@@ -539,7 +539,9 @@ void um_decommit(UmProcess *p, UINT64 va, UINT64 size)
  * ----------------------------------------------------------------------- */
 PADDR *um_alloc_frames(UINT64 n)
 {
-    if (!n || n > (UINT64_C(256) << 20) / PAGE_SIZE) return NULL;
+    /* As large as free memory allows, less a sixteenth of the machine's
+     * left for the kernel (a 728 MB archive's section: Chromium's setup) */
+    if (!n || n + pmm_ram_pages() / 16 > pmm_free_now()) return NULL;
     PADDR *f = kzalloc(sizeof(PADDR) * n);
     if (!f) return NULL;
     for (UINT64 i = 0; i < n; i++) {
