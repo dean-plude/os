@@ -25,6 +25,7 @@
 
 #define MAX_STREAM  (8u << 20)        /* largest command stream a program may send */
 #define MAX_WAIT    256               /* timelines one wait may name */
+#define WAIT_SLICE_NS 50000000ull     /* a wait checks that its program is not being stopped this often */
 
 typedef struct {
     VgpuCtx   *ctx;
@@ -187,7 +188,20 @@ static UINT64 do_wait(Gpu *g, UINT64 ptr)
     if (a.n > MAX_WAIT) return FAIL;
     UINT32 *ids = copy_in(a.ids, (UINT64)a.n * 4);
     UINT64 *vals = ids ? copy_in(a.values, (UINT64)a.n * 8) : NULL;
-    int r = vals ? VgpuWait(g->ctx, (int)a.n, ids, vals, a.any != 0, a.timeout_ns) : -1;
+    /* In slices, so that a program the host never answers can still be stopped (Ctrl+C, a kill): a wait
+     * that ignored them held the graphics self-tests' machine for an hour */
+    int r = vals ? 1 : -1;
+    UINT64 left = a.timeout_ns;
+    bool forever = left >= 1000000000000000ull;
+    while (r == 1) {
+        UINT64 slice = forever || left > WAIT_SLICE_NS ? WAIT_SLICE_NS : left;
+        r = VgpuWait(g->ctx, (int)a.n, ids, vals, a.any != 0, slice);
+        if (r != 1 || um_stopping()) break;
+        if (!forever) {
+            if (left <= slice) break;
+            left -= slice;
+        }
+    }
     kfree(ids); kfree(vals);
     return r < 0 ? FAIL : (UINT64)r;
 }

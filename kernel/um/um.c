@@ -45,6 +45,7 @@
 #include "../arch/x86_64/paging.h"
 #include "userland_files.h"
 #include "../gdi/png.h"
+#include "../drivers/virtio_gpu.h"
 
 static UmProcess     *g_procs[UM_MAX_PROCS];
 static UINT32         g_next_id = 100;
@@ -2647,6 +2648,7 @@ void UmDumpAll(void)
         kprintf("[UM] %s (PID %u):\n", p->name, p->pid);
         dump_threads(p);
     }
+    VgpuDump();
 }
 
 void UmKill(UmProcess *p, UINT32 status)

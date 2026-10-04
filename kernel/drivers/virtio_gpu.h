@@ -85,4 +85,5 @@ bool      VgpuTransfer3d(VgpuCtx *c, VgpuBlob *b, bool to_host, const UINT32 *bo
 UINT32    VgpuSyncCreate(VgpuCtx *c, UINT64 value);
 void      VgpuSyncDestroy(VgpuCtx *c, UINT32 id);
 bool      VgpuSyncAccess(VgpuCtx *c, UINT32 id, int op, UINT64 *value);
+void      VgpuDump(void);
 int       VgpuWait(VgpuCtx *c, int n, const UINT32 *ids, const UINT64 *vals, bool any, UINT64 timeout_ns);

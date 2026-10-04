@@ -17,7 +17,7 @@ and wait channel, its CPU time over five seconds, and gdb's backtrace of
 QEMU and of each render process (sudo gdb, when gdb is there).  It also
 copies the whole serial log to OUT_DIR/serial-hang-N.log (a job that its
 time limit cancels never reaches the end of the self-tests, where the log is
-kept) and asks QEMU's monitor what the guest's CPUs are doing: each one's
+kept), which render processes there are and what the host kernel says about crashed ones, and asks QEMU's monitor what the guest's CPUs are doing: each one's
 registers (with the kernel function their RIP is in, from build/kernel.elf
 when it is there), its local APIC, and the kernel's big lock.
 """
@@ -181,9 +181,41 @@ def guest_state(qemu, elf):
     if bkl:
         cmds += [f'x/12wx 0x{bkl[0]:x}']
     text = hmp(path, cmds)
+    # the host side of virtio-gpu's queues (QEMU 7.2 and later): has QEMU taken and answered every
+    # request?  (last_avail_idx behind the guest's avail idx: QEMU never looked; used_idx behind
+    # last_avail_idx: it took a request and has not answered)
+    paths = re.findall(r'(/\S+/virtio-backend)\s*\[?virtio-gpu', hmp(path, ['info virtio']))
+    for p in paths[:2]:
+        text += ''.join(hmp(path, [f'info virtio-status {p}', f'info virtio-queue-status {p} 0',
+                                  f'info virtio-queue-status {p} 1']))
     for m in sorted(set(re.findall(r'RIP=([0-9a-f]{16})', text))):
         text += f'RIP {m} = {where(syms, int(m, 16)) if syms else "(no build/kernel.elf)"}\n'
     return text
+
+
+def process_table():
+    """Every process under the render server, or named like it, with its parent, state and age: the Venus
+    context of a running test is a worker process of its own, and one that died leaves its guest
+    waiting for a host that will never answer"""
+    r = subprocess.run(['ps', '-eo', 'pid,ppid,stat,etimes,comm,args', '--sort=pid'], capture_output=True, text=True)
+    keep = {p for p in pids('virgl_render')}
+    rows = [l for l in r.stdout.splitlines()[1:] if l.split(None, 1)[0].isdigit()]
+    kids = {int(l.split()[0]) for l in rows if int(l.split()[1]) in keep}
+    return ''.join(l + '\n' for l in rows if int(l.split()[0]) in keep | kids)
+
+
+def kernel_messages():
+    """The host kernel's recent messages about killed or crashed processes (a render worker that
+    segfaulted or was killed for memory), when we may read them"""
+    for cmd in (['dmesg'], ['sudo', '-n', 'dmesg']):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0:
+            hits = [l for l in r.stdout.splitlines() if re.search(r'segfault|killed process|out of memory|oom|trap', l, re.I)]
+            return '\n'.join(hits[-30:]) + '\n' if hits else '(nothing about crashed or killed processes)\n'
+    return '(cannot read the kernel messages)\n'
 
 
 def dump(out, n, qemu, serial):
@@ -203,6 +235,10 @@ def dump(out, n, qemu, serial):
     for p in procs[:8]:
         lines.append(f'--- gdb, pid {p}\n')
         lines.append(gdb(p))
+    lines.append('--- the render server and its workers (pid ppid state seconds name):\n')
+    lines.append(process_table() or '(none)\n')
+    lines.append('--- host kernel messages about crashed or killed processes\n')
+    lines.append(kernel_messages())
     lines.append('--- the guest, from QEMU\'s monitor\n')
     lines.append(guest_state(qemu, os.environ.get('NOVA_KERNEL_ELF', 'build/kernel.elf')))
     if serial:
@@ -219,6 +255,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     log = open(os.path.join(out, 'host-watch.log'), 'a', buffering=1)
     last_size, last_change, dumps, last_dump = -1, time.time(), 0, 0.0
+    seen_render = []
     while True:
         time.sleep(EVERY)
         q = pids('qemu-system')
@@ -231,6 +268,9 @@ def main():
         if sz != last_size:
             last_size, last_change = sz, now
         r = pids('virgl_render')
+        if r != seen_render:        # a Venus context's worker comes and goes with the test using it
+            log.write(f'{time.strftime("%H:%M:%S")} render processes now {r} (were {seen_render})\n')
+            seen_render = r
         log.write(f'{time.strftime("%H:%M:%S")} serial {sz} qemu {q[0]} cpu {cpu(q[0])} threads {len(threads(q[0]))}'
                   f' render {len(r)} proc(s) cpu {sum(cpu(p) for p in r)}\n')
         if now - last_change >= hang and dumps < 3 and now - last_dump >= 300:

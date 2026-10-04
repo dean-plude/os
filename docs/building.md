@@ -497,6 +497,15 @@ has been held for ...` itself after three seconds (who holds it, what each CPU
 runs) and lets go of a lock whose holder no CPU runs (`[SMP] Bug: ...`).  The
 self-tests stop at the first test after which the machine answers neither
 Ctrl+Alt+F12 nor Ctrl+C, instead of waiting out every later test's limit.
+A program stuck in a GPU wait (the host never answered a fenced request) can be
+stopped like any other: the wait checks every 50 ms.  Ctrl+Alt+F12 also logs
+the virtio-gpu control queue (`[VGPU]` lines: requests taken and answered,
+fenced requests still out and the timeline value each sets), and
+`host-hang-N.txt` lists the render server's processes (the Venus worker of the
+running test is one; none means it died), the host kernel's messages about
+crashed or killed processes, and QEMU's own view of the queues
+(`info virtio-queue-status`): a request the guest sent that QEMU's used index
+has not caught up with was taken and never answered by virglrenderer.
 
 `NOVARUN_QEMU` names the QEMU that `tools/novarun.py` runs (default
 `qemu-system-x86_64` from `PATH`); it opens an SDL window with OpenGL
