@@ -9,7 +9,8 @@
  * SetServiceStatus.
  *
  * StartService runs the service's ImagePath with NOVA_SERVICE naming the
- * service. Its StartServiceCtrlDispatcher sees that, starts ServiceMain
+ * service in its environment, and writes down the process's id before it
+ * lets it run. Its StartServiceCtrlDispatcher sees both, starts ServiceMain
  * on a thread and serves controls on the pipe \\.\pipe\NovaService_<name>,
  * where ControlService sends them. A program started any other way gets
  * ERROR_FAILED_SERVICE_CONTROLLER_CONNECT, as on Windows.
@@ -746,6 +747,34 @@ static void pipe_name(const WCHAR *svc, WCHAR *out, size_t cap)
     wcat(out, cap, svc);
 }
 
+/* The caller's environment with NOVA_SERVICE=@name in place of any it had */
+static WCHAR *service_env(const WCHAR *name)
+{
+    static const WCHAR var[] = L"NOVA_SERVICE=";
+    const size_t vn = sizeof(var) / sizeof(WCHAR) - 1;
+    WCHAR *cur = GetEnvironmentStringsW();
+    size_t n = 0;
+    if (cur) while (cur[n]) n += wlen(cur + n) + 1;
+    WCHAR *env = halloc((n + vn + wlen(name) + 2) * sizeof(WCHAR));
+    if (env) {
+        size_t at = 0;
+        for (size_t i = 0; cur && cur[i]; i += wlen(cur + i) + 1) {
+            const WCHAR *e = cur + i;
+            size_t j = 0;
+            while (j < vn && e[j] && (e[j] == var[j] || (e[j] >= 'a' && e[j] <= 'z' && e[j] - 32 == var[j]))) j++;
+            if (j == vn) continue;                      /* (an inherited one) */
+            wcopy(env + at, wlen(e) + 1, e);
+            at += wlen(e) + 1;
+        }
+        wcopy(env + at, vn + 1, var);
+        wcopy(env + at + vn, wlen(name) + 1, name);
+        at += vn + wlen(name) + 1;
+        env[at] = 0;
+    }
+    if (cur) FreeEnvironmentStringsW(cur);
+    return env;
+}
+
 WINADVAPI BOOL WINAPI StartServiceW(SC_HANDLE h, DWORD argc, LPCWSTR *argv)
 {
     SvcH *s = handle(h, K_SVC);
@@ -779,14 +808,21 @@ WINADVAPI BOOL WINAPI StartServiceW(SC_HANDLE h, DWORD argc, LPCWSTR *argv)
     set_dword(k, L"NovaControls", 0);
     set_dword(k, L"NovaExitCode", 0);
 
-    SetEnvironmentVariableW(L"NOVA_SERVICE", s->name);
+    /* NOVA_SERVICE goes in the service process's own environment, not
+     * the caller's (whose other threads may be starting programs too),
+     * and the process starts suspended until its id is written down:
+     * only that process may connect as the service, not a program it
+     * starts first (Steam's service starts its updater before it
+     * connects) */
+    WCHAR *env = service_env(s->name);
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);
-    BOOL ok = CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
-    DWORD err = GetLastError();
-    SetEnvironmentVariableW(L"NOVA_SERVICE", NULL);
+    BOOL ok = env && CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                                    env, NULL, &si, &pi);
+    DWORD err = env ? GetLastError() : ERROR_NOT_ENOUGH_MEMORY;
+    hfree(env);
     if (!ok) {
         set_dword(k, L"NovaState", SERVICE_STOPPED);
         RegCloseKey(k);
@@ -794,6 +830,7 @@ WINADVAPI BOOL WINAPI StartServiceW(SC_HANDLE h, DWORD argc, LPCWSTR *argv)
         return FALSE;
     }
     set_dword(k, L"NovaPid", pi.dwProcessId);
+    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     /* until the service connects to the control manager (30 s, as Windows) */
     BOOL started = FALSE;
@@ -829,7 +866,11 @@ WINADVAPI BOOL WINAPI ControlService(SC_HANDLE h, DWORD control, SERVICE_STATUS 
     SERVICE_STATUS_PROCESS st;
     query_status(s->name, &st);
     if (st.dwCurrentState == SERVICE_STOPPED) { SetLastError(ERROR_SERVICE_NOT_ACTIVE); return FALSE; }
-    if (control == SERVICE_CONTROL_STOP && !(st.dwControlsAccepted & SERVICE_ACCEPT_STOP)) {
+    /* a control the service has not said it accepts never reaches it */
+    DWORD needs = control == SERVICE_CONTROL_STOP ? SERVICE_ACCEPT_STOP :
+                  control == 2 || control == 3 ? 2 /* PAUSE, CONTINUE: SERVICE_ACCEPT_PAUSE_CONTINUE */ :
+                  control == 6 ? 8 /* PARAMCHANGE: SERVICE_ACCEPT_PARAMCHANGE */ : 0;
+    if (needs && !(st.dwControlsAccepted & needs)) {
         if (out) memcpy(out, &st, sizeof(*out));
         SetLastError(ERROR_INVALID_SERVICE_CONTROL);
         return FALSE;
@@ -926,13 +967,24 @@ static BOOL dispatch(SERVICE_MAIN_W mw, SERVICE_MAIN_A ma)
         return FALSE;
     }
     SetEnvironmentVariableW(L"NOVA_SERVICE", NULL);      /* not for the service's own children */
+    HKEY k;
+    bool mine = false;                                   /* the process StartService started, waiting */
+    if (!open_key(g_name, false, &k)) {
+        mine = get_dword(k, L"NovaPid", 0) == GetCurrentProcessId() && !get_dword(k, L"NovaConnected", 0) &&
+               get_dword(k, L"NovaState", SERVICE_STOPPED) == SERVICE_START_PENDING;
+        RegCloseKey(k);
+    }
+    if (!mine) {
+        g_name[0] = 0;
+        SetLastError(ERROR_FAILED_SERVICE_CONTROLLER_CONNECT);
+        return FALSE;
+    }
     if (!mw && !ma) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     g_main_w = mw;
     g_main_a = ma;
     g_stopped = CreateEventW(NULL, TRUE, FALSE, NULL);
     HANDLE t = CreateThread(NULL, 0, control_loop, NULL, 0, NULL);
     if (t) CloseHandle(t);
-    HKEY k;
     if (!open_key(g_name, true, &k)) {
         set_dword(k, L"NovaPid", GetCurrentProcessId());
         set_dword(k, L"NovaConnected", 1);
