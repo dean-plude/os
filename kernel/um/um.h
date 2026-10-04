@@ -176,7 +176,7 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp) __attribute__(
 #define UM_CRASH_PATH 80
 const char *UmCrashReport(const UmProcess *p);   /* the crashed program's report ("" if none) */
 void UmCrashPoll(void);                 /* write the reports waiting (desktop thread, from UmPoll) */
-RamNode *UmCrashNewest(void);           /* the newest report, under the file-system lock (or NULL) */
+RamNode *UmCrashNewest(void);           /* the newest report; caller holds FsLock; writes the queued ones first */
 void UmCrashKernel(void);               /* a kernel fault is halting this CPU: save its report on the disk */
 void UmCrashKernelFound(const char *text, UINT32 len);   /* at boot: the last start's kernel crash report */
 /* A 32-bit program's system call (int 0x2E) keeps its registers in @frame */

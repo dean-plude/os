@@ -140,20 +140,34 @@ bool cab_reader_next(CabReader *r)
     r->next_data = (uint32_t)(pos + cb);
     r->blocks_left--;
     r->out_len = 0;
+    uint32_t in_len = cb;
+    if ((cbu == 0 && r->blocks_left == 0) || r->partial_len) {
+        /* a block split across cabinets: its first bytes end this cabinet
+         * (uncompressed size 0), the rest begin the next one */
+        uint8_t *p = realloc(r->partial, (size_t)r->partial_len + cb);
+        if (!p) { snprintf(r->error, sizeof(r->error), "out of memory"); return false; }
+        memcpy(p + r->partial_len, in, cb);
+        r->partial = p;
+        r->partial_len += cb;
+        if (cbu == 0) return false;               /* cab_reader_continue() next */
+        in = p;
+        in_len = r->partial_len;
+        r->partial_len = 0;
+    }
     switch (r->method) {
     case 0:
-        if (cb != cbu) { snprintf(r->error, sizeof(r->error), "bad stored block"); return false; }
-        memcpy(r->out, in, cb);
-        r->out_len = cb;
+        if (in_len != cbu) { snprintf(r->error, sizeof(r->error), "bad stored block"); return false; }
+        memcpy(r->out, in, in_len);
+        r->out_len = in_len;
         return true;
     case 1: {
-        int n = mszip_block(in, cb, r->window, r->window_size, &r->window_pos, r->out, cbu, r->error);
+        int n = mszip_block(in, in_len, r->window, r->window_size, &r->window_pos, r->out, cbu, r->error);
         if (n < 0) return false;
         if ((uint32_t)n != cbu) { snprintf(r->error, sizeof(r->error), "MSZIP block size mismatch"); return false; }
         r->out_len = (uint32_t)n;
         return true; }
     case 3: {
-        int n = lzx_block(r->lzx, in, cb, r->out, cbu, r->error);
+        int n = lzx_block(r->lzx, in, in_len, r->out, cbu, r->error);
         if (n < 0) return false;
         r->out_len = cbu;
         return true; }
@@ -163,6 +177,7 @@ bool cab_reader_next(CabReader *r)
 
 void cab_reader_end(CabReader *r)
 {
+    free(r->partial);
     free(r->window);
     free(r->out);
     if (r->lzx) lzx_free(r->lzx);

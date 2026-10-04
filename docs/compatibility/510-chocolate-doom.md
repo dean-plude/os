@@ -1,0 +1,1 @@
+| **Chocolate Doom 3.1.0** (32-bit, SDL2) with **Freedoom** | Works | Plays in a window on Mesa 3D's OpenGL (install "Mesa 3D" from the App Store first) in the right colours; an Xbox or HID game pad walks, turns and fires | by hand in QEMU; graphics self-test `gltest colors` |

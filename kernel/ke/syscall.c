@@ -1098,12 +1098,23 @@ SYSCALL_HANDLER SyscallSetHandler(UINT32 num, SYSCALL_HANDLER h)
     return old;
 }
 
+/* The service a system call names.  Windows reads only EAX: its low 12
+ * bits are the service number and bit 12 picks the table (0: the kernel's,
+ * 1: win32k's); every other bit is ignored, and programs that make
+ * system calls themselves may leave them set.  NovaOS has no win32k numbers: a call into that
+ * table gets SYSCALL_MAX, STATUS_INVALID_SYSTEM_SERVICE. */
+static inline UINT64 service_of(UINT64 eax)
+{
+    return eax & 0x1000 ? SYSCALL_MAX : eax & 0xFFF;
+}
+
 /* -----------------------------------------------------------------------
  * KiSystemCallDispatch — C entry point from ASM stub
  * ----------------------------------------------------------------------- */
 UINT64 KiSystemCallDispatch(UINT64 num, UINT64 arg1, UINT64 arg2,
                              UINT64 arg3, UINT64 arg4, UINT64 user_rsp)
 {
+    num = service_of(num);
     if (num >= SYSCALL_MAX)
         return (UINT64)(UINT32)STATUS_INVALID_SYSTEM_SERVICE;
 
@@ -1140,6 +1151,7 @@ UINT64 KiSystemCallEntry(UINT64 num, UINT64 arg1, UINT64 arg2,
                          UINT64 arg3, UINT64 arg4, UINT64 user_rsp)
 {
     /* Programs' services with locks of their own skip the big lock */
+    num = service_of(num);
     ProfSyscall(num);
     bool big = !(sched_current()->um && num < SYSCALL_MAX && UmSyscallLockFree(num));
     if (big) bkl_acquire();

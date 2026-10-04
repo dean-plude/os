@@ -241,14 +241,14 @@ static RamNode *crash_dir(void)
     return d ? RamfsCreate(d, "Crashes", true) : NULL;
 }
 
-void UmCrashPoll(void)
+/* Writes the queued reports; the caller holds FsLock */
+static void write_pending(void)
 {
     if (!__atomic_load_n(&g_pending, __ATOMIC_ACQUIRE)) return;
     IrqState s = spin_lock_irqsave(&g_pending_lock);
     Pending *list = g_pending;
     g_pending = NULL;
     spin_unlock_irqrestore(&g_pending_lock, s);
-    FsLock();
     RamNode *dir = crash_dir();
     for (Pending *q = list, *next; q; q = next) {
         next = q->next;
@@ -263,12 +263,23 @@ void UmCrashPoll(void)
         kfree(q->text);
         kfree(q);
     }
+}
+
+void UmCrashPoll(void)
+{
+    if (!__atomic_load_n(&g_pending, __ATOMIC_ACQUIRE)) return;
+    FsLock();
+    write_pending();
     FsUnlock();
 }
 
-/* The newest report (the Terminal's "crashes last"), under the file-system lock */
+/* The newest report (the Terminal's "crashes last"), under the file-system lock.
+ * The kernel's report found at boot is only queued; the desktop loop writes it
+ * after it has handled input, so a command typed in the first iteration would
+ * see the older files: write what waits first. */
 RamNode *UmCrashNewest(void)
 {
+    write_pending();
     RamNode *dir = RamfsResolve(NULL, CRASH_DIR), *best = NULL;
     for (RamNode *n = dir && dir->dir ? dir->child : NULL; n; n = n->next)
         if (!n->dir && (!best || n->mtime > best->mtime ||

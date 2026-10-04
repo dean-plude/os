@@ -387,6 +387,7 @@ NTSYSAPI NTSTATUS NTAPI RtlAbsoluteToSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PS
  * NtFilterToken, NtAccessCheck, NtQuery/SetSecurityObject are system calls);
  * these few still only pretend.
  * ----------------------------------------------------------------------- */
+#ifndef _WIN64                                      /* (NtQuerySystemInformation) */
 static NTSTATUS put_info(const void *data, ULONG n, PVOID buf, ULONG cap, PULONG ret)
 {
     if (ret) *ret = n;
@@ -394,7 +395,9 @@ static NTSTATUS put_info(const void *data, ULONG n, PVOID buf, ULONG cap, PULONG
     memcpy(buf, data, n);
     return ST_SUCCESS;
 }
+#endif
 
+#ifndef _WIN64
 NTSYSAPI NTSTATUS NTAPI NtSetInformationToken(HANDLE t, ULONG cls, PVOID buf, ULONG n) { (void)t; (void)cls; (void)buf; (void)n; return ST_SUCCESS; }
 
 /* Every privilege asked for is granted (nothing is checked) */
@@ -426,6 +429,7 @@ NTSYSAPI NTSTATUS NTAPI NtAllocateLocallyUniqueId(PLUID luid)
     luid->HighPart = 0;
     return ST_SUCCESS;
 }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* -----------------------------------------------------------------------
  * Counted strings
@@ -977,6 +981,7 @@ done:
 /* -----------------------------------------------------------------------
  * System information
  * ----------------------------------------------------------------------- */
+#ifndef _WIN64
 static ULONG cpu_count(void)
 {
     ULONG n = *(volatile ULONG *)(ULONG_PTR)0x7FFE03C0;             /* KUSER_SHARED_DATA.ActiveProcessorCount */
@@ -1110,6 +1115,7 @@ NTSYSAPI NTSTATUS NTAPI NtQueryTimerResolution(PULONG max, PULONG min, PULONG cu
 }
 
 NTSYSAPI NTSTATUS NTAPI NtSetTimerResolution(ULONG want, BOOLEAN set, PULONG cur) { (void)want; (void)set; *cur = 156250; return ST_SUCCESS; }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* -----------------------------------------------------------------------
  * What NovaOS answers without a kernel object
@@ -1117,6 +1123,7 @@ NTSYSAPI NTSTATUS NTAPI NtSetTimerResolution(ULONG want, BOOLEAN set, PULONG cur
 /* Transactions (TxF): none */
 NTSYSAPI HANDLE NTAPI RtlGetCurrentTransaction(void) { return 0; }
 NTSYSAPI BOOLEAN NTAPI RtlSetCurrentTransaction(HANDLE t) { return t == 0; }
+#ifndef _WIN64
 NTSYSAPI NTSTATUS NTAPI NtCreateTransaction(PHANDLE h, ACCESS_MASK a, POBJECT_ATTRIBUTES oa, LPGUID uow, HANDLE tm,
                                             ULONG opt, ULONG iso, ULONG isof, PLARGE_INTEGER timeout, PUNICODE_STRING d)
 {
@@ -1168,6 +1175,7 @@ NTSYSAPI NTSTATUS NTAPI NtSetVolumeInformationFile(HANDLE h, PIO_STATUS_BLOCK io
 /* Memory is never paged out, so locking it in is a no-op */
 NTSYSAPI NTSTATUS NTAPI NtLockVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG type) { (void)p; (void)base; (void)size; (void)type; return ST_SUCCESS; }
 NTSYSAPI NTSTATUS NTAPI NtUnlockVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG type) { (void)p; (void)base; (void)size; (void)type; return ST_SUCCESS; }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* Process debug information (module and heap lists for a debugger): none */
 NTSYSAPI PVOID NTAPI RtlCreateQueryDebugBuffer(ULONG size, BOOLEAN event) { (void)size; (void)event; return 0; }
@@ -1185,17 +1193,23 @@ NTSYSAPI CHAR NTAPI RtlQueryProcessPlaceholderCompatibilityMode(void) { return 2
  * ----------------------------------------------------------------------- */
 static BOOL (*g_apc_runner)(void);
 NTSYSAPI VOID NTAPI RtlNovaSetApcRunner(BOOL (*fn)(void)) { g_apc_runner = fn; }
+/* The loader's NtTestAlert: on x64 NtTestAlert is a system call, and the
+ * kernel holds no user APCs (kernel32 does) */
+BOOL ntdll_run_apcs(void) { return g_apc_runner && g_apc_runner(); }
+#ifndef _WIN64
 NTSYSAPI NTSTATUS NTAPI NtTestAlert(void)
 {
     if (g_apc_runner && g_apc_runner()) return 0x000000C0;       /* STATUS_USER_APC */
     return ST_SUCCESS;
 }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* Whether the process is shutting down (DLL_PROCESS_DETACH at exit) */
 NTSYSAPI BOOLEAN NTAPI RtlDllShutdownInProgress(void) { extern BOOLEAN g_shutdown; return g_shutdown; }
 
 /* Device I/O controls: no driver here answers them (pipes and the file
  * system use NtFsControlFile) */
+#ifndef _WIN64
 NTSYSAPI NTSTATUS NTAPI NtDeviceIoControlFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG code,
                                               PVOID in, ULONG in_len, PVOID out, ULONG out_len)
 {
@@ -1203,6 +1217,7 @@ NTSYSAPI NTSTATUS NTAPI NtDeviceIoControlFile(HANDLE h, HANDLE ev, PVOID apc, PV
     if (io) { io->Status = (NTSTATUS)0xC0000010; io->Information = 0; }
     return (NTSTATUS)0xC0000010;                         /* STATUS_INVALID_DEVICE_REQUEST */
 }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* The return addresses of the calling stack: @skip frames above this one,
  * at most @count; @hash (optional) gets their sum */

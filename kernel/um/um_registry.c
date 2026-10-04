@@ -468,6 +468,64 @@ static void keyboard_layouts(void)
     }
 }
 
+/* MSXML (msxml6.dll): DOMDocument, XMLHTTP and SAXXMLReader, version 6.0
+ * and the 3.0 / version-independent classes Windows' msxml3.dll answers
+ * (one DLL serves both on NovaOS), with their ProgIDs */
+static void msxml_classes(void)
+{
+    static const char *const cls[][4] = {       /* CLSID, name, ProgID, version-independent ProgID */
+        { "{2933BF90-7B36-11D2-B20E-00C04F983E60}", "XML DOM Document",                   "Microsoft.XMLDOM",                    0 },
+        { "{2933BF91-7B36-11D2-B20E-00C04F983E60}", "Free Threaded XML DOM Document",     "Microsoft.FreeThreadedXMLDOM",        0 },
+        { "{F6D90F11-9C73-11D3-B32E-00C04F990BB4}", "XML DOM Document",                   "Msxml2.DOMDocument",                  0 },
+        { "{F6D90F12-9C73-11D3-B32E-00C04F990BB4}", "Free Threaded XML DOM Document",     "Msxml2.FreeThreadedDOMDocument",      0 },
+        { "{F5078F1B-C551-11D3-89B9-0000F81FE221}", "XML DOM Document 2.6",               "Msxml2.DOMDocument.2.6",              "Msxml2.DOMDocument" },
+        { "{F5078F1C-C551-11D3-89B9-0000F81FE221}", "Free Threaded XML DOM Document 2.6", "Msxml2.FreeThreadedDOMDocument.2.6",  "Msxml2.FreeThreadedDOMDocument" },
+        { "{F5078F32-C551-11D3-89B9-0000F81FE221}", "XML DOM Document 3.0",               "Msxml2.DOMDocument.3.0",              "Msxml2.DOMDocument" },
+        { "{F5078F33-C551-11D3-89B9-0000F81FE221}", "Free Threaded XML DOM Document 3.0", "Msxml2.FreeThreadedDOMDocument.3.0",  "Msxml2.FreeThreadedDOMDocument" },
+        { "{88D96A05-F192-11D4-A65F-0040963251E5}", "XML DOM Document 6.0",               "Msxml2.DOMDocument.6.0",              0 },
+        { "{88D96A06-F192-11D4-A65F-0040963251E5}", "Free Threaded XML DOM Document 6.0", "Msxml2.FreeThreadedDOMDocument.6.0",  0 },
+        { "{ED8C108E-4349-11D2-91A4-00C04F7969E8}", "XML HTTP Request",                   "Microsoft.XMLHTTP",                   0 },
+        { "{F6D90F16-9C73-11D3-B32E-00C04F990BB4}", "XML HTTP",                           "Msxml2.XMLHTTP",                      0 },
+        { "{F5078F1E-C551-11D3-89B9-0000F81FE221}", "XML HTTP 2.6",                       "Msxml2.XMLHTTP.2.6",                  "Msxml2.XMLHTTP" },
+        { "{F5078F35-C551-11D3-89B9-0000F81FE221}", "XML HTTP 3.0",                       "Msxml2.XMLHTTP.3.0",                  "Msxml2.XMLHTTP" },
+        { "{88D96A0A-F192-11D4-A65F-0040963251E5}", "XML HTTP 6.0",                       "Msxml2.XMLHTTP.6.0",                  0 },
+        { "{88D96A09-F192-11D4-A65F-0040963251E5}", "Free Threaded XML HTTP 6.0",         0,                                     0 },
+        { "{AFBA6B42-5692-48EA-8141-DC517DCF0EF1}", "Server XML HTTP",                    "Msxml2.ServerXMLHTTP",                0 },
+        { "{AFB40FFD-B609-40A3-9828-F88BBE11E4E3}", "Server XML HTTP 3.0",                "Msxml2.ServerXMLHTTP.3.0",            "Msxml2.ServerXMLHTTP" },
+        { "{88D96A0B-F192-11D4-A65F-0040963251E5}", "Server XML HTTP 6.0",                "Msxml2.ServerXMLHTTP.6.0",            0 },
+        { "{079AA557-4A18-424A-8EEE-E39F0A8D41B9}", "SAX XML Reader",                     "Msxml2.SAXXMLReader",                 0 },
+        { "{3124C396-FB13-4836-A6AD-1317F1713688}", "SAX XML Reader 3.0",                 "Msxml2.SAXXMLReader.3.0",             "Msxml2.SAXXMLReader" },
+        { "{88D96A0C-F192-11D4-A65F-0040963251E5}", "SAX XML Reader 6.0",                 "Msxml2.SAXXMLReader.6.0",             0 },
+    };
+    for (unsigned i = 0; i < sizeof cls / sizeof cls[0]; i++) {
+        char path[160];
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\CLSID\\%s", cls[i][0]);
+        RegKey *c = kpath(path, false);
+        if (!has_value(c, "")) kset_sz(c, "", cls[i][1], 1);
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\CLSID\\%s\\InprocServer32", cls[i][0]);
+        RegKey *ip = kpath(path, false);
+        if (!has_value(ip, "")) { kset_sz(ip, "", "msxml6.dll", 1); kset_sz(ip, "ThreadingModel", "Both", 1); }
+        if (!cls[i][2]) continue;
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\CLSID\\%s\\ProgID", cls[i][0]);
+        RegKey *pk = kpath(path, false);
+        if (!has_value(pk, "")) kset_sz(pk, "", cls[i][2], 1);
+        if (cls[i][3]) {
+            ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\CLSID\\%s\\VersionIndependentProgID", cls[i][0]);
+            RegKey *vk = kpath(path, false);
+            if (!has_value(vk, "")) kset_sz(vk, "", cls[i][3], 1);
+            ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\%s\\CurVer", cls[i][3]);
+            RegKey *cv = kpath(path, false);
+            if (!has_value(cv, "")) kset_sz(cv, "", cls[i][2], 1);
+        }
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\%s", cls[i][2]);
+        RegKey *p = kpath(path, false);
+        if (!has_value(p, "")) kset_sz(p, "", cls[i][1], 1);
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\%s\\CLSID", cls[i][2]);
+        RegKey *pc = kpath(path, false);
+        if (!has_value(pc, "")) kset_sz(pc, "", cls[i][0], 1);
+    }
+}
+
 static void defaults(void)
 {
     /* HKLM\SOFTWARE */
@@ -555,6 +613,7 @@ static void defaults(void)
         RegKey *k = kpath(path, false);
         if (!has_value(k, "")) { kset_sz(k, "", "xaudio2_7.dll", 1); kset_sz(k, "ThreadingModel", "Both", 1); }
     }
+    msxml_classes();
     RegKey *lnk = kpath("Machine\\SOFTWARE\\Classes\\.lnk", false);
     if (!has_value(lnk, "")) kset_sz(lnk, "", "lnkfile", 1);
     RegKey *txt = kpath("Machine\\SOFTWARE\\Classes\\.txt", false);

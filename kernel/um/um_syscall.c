@@ -2322,6 +2322,11 @@ UINT64 um_now_100ns(void)
     return g_boot_time + (sched_ticks() - g_boot_ticks) * 100000ULL;
 }
 
+UINT64 um_boot_time_100ns(void)
+{
+    return g_boot_time;
+}
+
 /* After S3: the tick count stood still while the machine slept; the
  * wall clock moves on by the time the CMOS clock measured */
 void UmClockAdvance(UINT64 delta_100ns)
@@ -2871,6 +2876,11 @@ void um_install(UINT32 num, SYSCALL_HANDLER h)
     g_um[num] = h;
 }
 
+SYSCALL_HANDLER um_service(UINT32 num)
+{
+    return g_um[num];
+}
+
 /* -----------------------------------------------------------------------
  * Directory watches: FindFirstChangeNotification's event is signaled when
  * the watched directory (or, with subtree, anything below it) changes.
@@ -2998,6 +3008,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtYieldExecution,           sys_yield);
     um_thread_syscalls_init();
     um_security_syscalls_init();
+    um_services_init();
     um_exception_syscalls_init();
     um_registry_syscalls_init();
     um_socket_syscalls_init();

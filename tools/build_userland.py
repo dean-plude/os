@@ -101,7 +101,7 @@ def cflags():
 import json
 SLOT = 0x01000000
 AUTO_X64 = (0x7FFD00000000, 0x7FFE00000000)
-AUTO_X86 = (0x97000000, 0xC0000000)
+AUTO_X86 = (0x97000000, 0xF0000000)        # (cabinet.dll and msxml6.dll filled 0x97000000-0xC0000000)
 
 def load_manifests():
     """{name: manifest} for every userland/*/dll.json, in link order (each
