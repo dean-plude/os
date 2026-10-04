@@ -475,6 +475,18 @@ NOVARUN_QEMU=/opt/qv/bin/qemu-system-x86_64 LD_LIBRARY_PATH=/opt/qv/lib/x86_64-l
   xvfb-run -a -s '-screen 0 1280x1024x24' python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
 
+When a graphics test hangs, the guest can only say that it waits for the
+host, so CI's graphics job runs `tools/ci/host_watch.py graphics-out &` beside
+the suite (needs `gdb` and `sudo`) and sets `VIRGL_LOG_LEVEL=debug` and
+`VIRGL_LOG_FILE=graphics-out/virglrenderer-%PID%.log`.  The `graphics-out`
+artifact then holds `host-watch.log` (every 15 s: the guest's serial log size,
+and the CPU time and thread count of QEMU and of virglrenderer's render server
+processes), `virglrenderer-PID.log` (one per render process), and, once the
+guest's serial log has been silent for six minutes, `host-hang-N.txt`: every
+host thread's state, wait channel and CPU use over five seconds, and gdb's
+backtrace of QEMU and of each render process.  A QEMU whose threads all wait
+and whose CPU time stands still has lost a wake-up; one that spins is busy.
+
 `NOVARUN_QEMU` names the QEMU that `tools/novarun.py` runs (default
 `qemu-system-x86_64` from `PATH`); it opens an SDL window with OpenGL
 (`NOVARUN_GL_DISPLAY` to change it) when a `virtio-vga-gl` or
