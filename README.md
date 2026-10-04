@@ -580,7 +580,10 @@ os/
   when both fit; Cirrus gets 800x600 and 640x480; elsewhere frames are
   copied to the UEFI framebuffer in the boot mode.  There is no 3D GPU driver.
 - **Drive C: in memory, saved to FAT**: the RAM disk is saved to a FAT32
-  volume a second after each change and restored at boot.  System files
+  volume a second after each change and restored at boot.  A file takes
+  the memory its contents need (one written by appending gives back the
+  rest of the buffer it grew into when it is closed; `mem` in the Terminal
+  shows what C: takes).  System files
   come from the kernel image, so a new build always brings its own.  The
   save runs on its own thread and holds no lock while the disk is written
   (`savetest`), and a crash during a FAT save leaves each file old or new.

@@ -801,7 +801,9 @@ When it does not (a program that failed keeps the keyboard, as VLC does
 with its error box when its file is missing), the script opens a new
 Terminal from Start, stops the program from there and carries on, so one
 failure does not fail every program after it.  After Firefox, `store close` closes the App Store window its install
-opened.  Building PuTTY needs `cmake` and
+opened.  After each program the script types `mem` and prints the
+machine's free memory and what drive C: takes: C: is kept in memory, so
+every program installed during the run takes RAM until it is deleted.  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
 It needs 7-Zip's installer, Pillow, `openssl` (for Firefox's test
