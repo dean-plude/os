@@ -126,39 +126,17 @@ CRYPT32API BOOL WINAPI CryptStringToBinaryA(LPCSTR s, DWORD n, DWORD flags, BYTE
 CRYPT32API BOOL WINAPI CryptStringToBinaryW(LPCWSTR s, DWORD n, DWORD flags, BYTE *out, DWORD *len, DWORD *skip, DWORD *used)
 { return string_to_binary(s, n, 1, flags, out, len, skip, used); }
 
-/* Certificates are not parsed: there is nothing to read names or
- * extensions from, decode, sign or build chains with */
+/* What is not implemented: the structure encoders and decoders, names
+ * from text, signing, PFX files (names and signed messages are in certs.c
+ * and msg.c) */
 #define CRYPT_E_NO_MATCH_     0x80092009L
 #define CRYPT_E_ASN1_BADTAG_  0x8009310BL
 #define NTE_NOT_SUPPORTED_    0x80090029L
 
-static DWORD empty_name_w(LPWSTR s, DWORD n) { if (s && n) s[0] = 0; return 1; }
-static DWORD empty_name_a(LPSTR s, DWORD n) { if (s && n) s[0] = 0; return 1; }
-CRYPT32API DWORD WINAPI CertNameToStrW(DWORD enc, const void *name, DWORD type, LPWSTR s, DWORD n)
-{ (void)enc; (void)name; (void)type; return empty_name_w(s, n); }
-CRYPT32API DWORD WINAPI CertNameToStrA(DWORD enc, const void *name, DWORD type, LPSTR s, DWORD n)
-{ (void)enc; (void)name; (void)type; return empty_name_a(s, n); }
-CRYPT32API DWORD WINAPI CertGetNameStringW(const void *c, DWORD type, DWORD flags, void *para, LPWSTR s, DWORD n)
-{ (void)c; (void)type; (void)flags; (void)para; return empty_name_w(s, n); }
-CRYPT32API DWORD WINAPI CertGetNameStringA(const void *c, DWORD type, DWORD flags, void *para, LPSTR s, DWORD n)
-{ (void)c; (void)type; (void)flags; (void)para; return empty_name_a(s, n); }
 CRYPT32API BOOL WINAPI CertStrToNameA(DWORD enc, LPCSTR x, DWORD type, void *r, BYTE *out, DWORD *n, LPCSTR *err)
 { (void)enc; (void)x; (void)type; (void)r; (void)out; (void)n; if (err) *err = x; SetLastError(NTE_NOT_SUPPORTED_); return FALSE; }
 CRYPT32API BOOL WINAPI CertStrToNameW(DWORD enc, LPCWSTR x, DWORD type, void *r, BYTE *out, DWORD *n, LPCWSTR *err)
 { (void)enc; (void)x; (void)type; (void)r; (void)out; (void)n; if (err) *err = x; SetLastError(NTE_NOT_SUPPORTED_); return FALSE; }
-CRYPT32API BOOL WINAPI CryptQueryObject(DWORD type, const void *obj, DWORD ct, DWORD ft, DWORD flags, DWORD *enc,
-                                        DWORD *ctype, DWORD *ftype, HANDLE *store, HANDLE *msg, const void **ctx)
-{
-    (void)type; (void)obj; (void)ct; (void)ft; (void)flags; (void)enc; (void)ctype; (void)ftype;
-    if (store) *store = 0;
-    if (msg) *msg = 0;
-    if (ctx) *ctx = 0;
-    SetLastError(CRYPT_E_NO_MATCH_);
-    return FALSE;
-}
-CRYPT32API BOOL WINAPI CryptMsgGetParam(HANDLE msg, DWORD type, DWORD index, void *data, DWORD *n)
-{ (void)msg; (void)type; (void)index; (void)data; (void)n; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-CRYPT32API BOOL WINAPI CryptMsgClose(HANDLE msg) { (void)msg; return TRUE; }
 CRYPT32API BOOL WINAPI CryptDecodeObjectEx(DWORD enc, LPCSTR type, const BYTE *b, DWORD n, DWORD flags, void *para, void *out, DWORD *len)
 { (void)enc; (void)type; (void)b; (void)n; (void)flags; (void)para; (void)out; (void)len; SetLastError(CRYPT_E_ASN1_BADTAG_); return FALSE; }
 CRYPT32API BOOL WINAPI CryptDecodeObject(DWORD enc, LPCSTR type, const BYTE *b, DWORD n, DWORD flags, void *out, DWORD *len)
@@ -198,20 +176,7 @@ CRYPT32API BOOL WINAPI CryptBinaryToStringW(const BYTE *b, DWORD n, DWORD flags,
     return ok;
 }
 
-/* Signed messages (PKCS #7) and certificate chains to a private key:
- * no message decoder and no keys in the stores */
-CRYPT32API HANDLE WINAPI CryptMsgOpenToDecode(DWORD enc, DWORD flags, DWORD type, HANDLE prov, void *recip, const void *stream)
-{
-    (void)enc; (void)flags; (void)type; (void)prov; (void)recip; (void)stream;
-    SetLastError(ERROR_NOT_SUPPORTED);
-    return 0;
-}
-CRYPT32API BOOL WINAPI CryptMsgUpdate(HANDLE msg, const BYTE *data, DWORD n, BOOL final)
-{
-    (void)msg; (void)data; (void)n; (void)final;
-    SetLastError(ERROR_INVALID_HANDLE);
-    return FALSE;
-}
+/* Certificate chains to a private key: no keys in the stores */
 CRYPT32API const void *WINAPI CertFindChainInStore(HANDLE store, DWORD enc, DWORD flags, DWORD type, const void *para, const void *prev)
 {
     (void)store; (void)enc; (void)flags; (void)type; (void)para; (void)prev;

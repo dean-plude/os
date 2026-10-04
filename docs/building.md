@@ -905,6 +905,15 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
   the MSZIP, LZX and two-cabinet set `cabtest` extracts (it has a small LZX
   encoder of its own); `--write-cabs DIR` writes them as files, to check
   with `cabextract -t` or `7z t` after a change.
+- `tools/authenticode/mktests.py OUT PE64 PE32` makes `authtest`'s signed
+  files (`C:\Tests\Authenticode`; the build runs it on `hello.exe`): a test
+  certificate authority from fixed seeds, in plain Python
+  (`tools/authenticode/pki.py`), signs copies of the programs the ways
+  `WinVerifyTrust` must accept or refuse (`tools/authenticode/sign.py`
+  writes Authenticode signatures, PKCS #9 and RFC 3161 timestamps and
+  nested signatures).  `osslsigncode verify -CAfile root.pem -TSA-CAfile
+  root.pem -in OUT/signed.exe` checks them on the host, with the root from
+  `openssl x509 -inform der -in OUT/testroot.cer -out root.pem`.
 
 ---
 

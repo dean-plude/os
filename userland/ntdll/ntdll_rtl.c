@@ -413,6 +413,7 @@ NTSYSAPI NTSTATUS NTAPI NtAdjustPrivilegesToken(HANDLE t, BOOLEAN disable_all, P
     }
     return ST_SUCCESS;
 }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* RtlAcquirePrivilege: like NtAdjustPrivilegesToken, every privilege is
  * there; the state only has to round-trip to RtlReleasePrivilege */
@@ -459,6 +460,7 @@ NTSYSAPI NTSTATUS NTAPI RtlFormatCurrentUserKeyPath(PUNICODE_STRING out)
     return ST_SUCCESS;
 }
 
+#ifndef _WIN64
 NTSYSAPI NTSTATUS NTAPI NtPrivilegeCheck(HANDLE t, PPRIVILEGE_SET set, PBOOLEAN result)
 {
     (void)t;
