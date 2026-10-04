@@ -1556,10 +1556,15 @@ WINBASEAPI HANDLE WINAPI FindFirstFileExA(LPCSTR name, FINDEX_INFO_LEVELS l, LPV
     return FindFirstFileA(name, data);
 }
 
+/* As Windows' CopyFile, the copy keeps the source's attributes and its
+ * last-write time (programs compare them to tell whether a copy is
+ * current: Steam's service updates itself again and again otherwise) */
 WINBASEAPI BOOL WINAPI CopyFileA(LPCSTR from, LPCSTR to, BOOL fail_if_exists)
 {
     HANDLE in = CreateFileA(from, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
     if (in == INVALID_HANDLE_VALUE) return FALSE;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(in, &info)) { DWORD e = GetLastError(); CloseHandle(in); SetLastError(e); return FALSE; }
     HANDLE out = CreateFileA(to, GENERIC_WRITE, 0, 0, fail_if_exists ? CREATE_NEW : CREATE_ALWAYS, 0, 0);
     if (out == INVALID_HANDLE_VALUE) { DWORD e = GetLastError(); CloseHandle(in); SetLastError(e); return FALSE; }
     static BYTE buf[64 * 1024];             /* callers are rarely concurrent; keep stacks small */
@@ -1572,10 +1577,13 @@ WINBASEAPI BOOL WINAPI CopyFileA(LPCSTR from, LPCSTR to, BOOL fail_if_exists)
         if (!WriteFile(out, buf, got, &put, 0) || put != got) { ok = FALSE; break; }
     }
     unlock();
+    if (ok) SetFileTime(out, NULL, NULL, &info.ftLastWriteTime);
     DWORD e = GetLastError();
     CloseHandle(in);
     CloseHandle(out);
     if (!ok) { DeleteFileA(to); SetLastError(e); }
+    else if (info.dwFileAttributes & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
+        SetFileAttributesA(to, info.dwFileAttributes | FILE_ATTRIBUTE_ARCHIVE);
     return ok;
 }
 

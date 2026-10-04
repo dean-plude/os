@@ -155,9 +155,13 @@ none a reason to change Steam:
   accepts them: NovaOS checks Authenticode signatures (the digest, Valve's
   chain to DigiCert's root and the timestamp), offline, so a revocation
   check it is asked for fails rather than passes.  The service then
-  updates itself, but it runs as a plain process, not a service:
-  starting it as one fails with `ERROR_SERVICE_REQUEST_TIMEOUT` (1053),
-  and Steam starts it again and again.
+  updates itself once, then runs as a real service under the control
+  manager (`StartService` no longer fails with
+  `ERROR_SERVICE_REQUEST_TIMEOUT`, 1053, now that `CopyFile` keeps a
+  file's last-write time the way Windows does: the service compares it to
+  tell whether its copy is current), installs its helper files and stops
+  when `SteamService.dll` calls `StopTraceA`: NovaOS has no event-tracing
+  (ETW) controller functions yet.
 - Steam's service pipe ("Failed to create Service pipe") and its
   security descriptors in SDDL form (`advapi32`'s SDDL functions are
   incomplete).
