@@ -22,6 +22,7 @@
 #include "../mm/vmm.h"
 #include "../mm/pmm.h"
 #include "../lib/string.h"
+#include "../fs/persist.h"
 
 #define ST_SUCCESS                0x00000000u
 #define ST_USER_APC               0x000000C0u
@@ -33,6 +34,8 @@
 #define ST_OBJECT_NAME_NOT_FOUND  0xC0000034u
 #define ST_EAS_NOT_SUPPORTED      0xC000004Fu
 #define ST_NOT_SUPPORTED          0xC00000BBu
+#define ST_INVALID_PARAMETER      0xC000000Du
+#define ST_PRIVILEGE_NOT_HELD     0xC0000061u
 #define ST_SERVICE_NOTIFICATION   0x50000018u     /* (with HARDERROR_OVERRIDE_ERRORMODE) */
 
 static bool put(UINT64 va, const void *v, UINT64 n)
@@ -302,6 +305,28 @@ static UINT64 sys_not_supported(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return ST_NOT_SUPPORTED;
 }
 
+/* NtSetSystemInformation(Class, PVOID, ULONG): SystemMemoryListInformation
+ * (80) only, a SYSTEM_MEMORY_LIST_COMMAND, with SeProfileSingleProcess-
+ * Privilege, as RAMMap and EmptyStandbyList use it: MemoryFlushModifiedList
+ * (3) writes drive C:'s changed files to the data disk; MemoryPurgeStandbyList
+ * (4) and MemoryPurgeLowPriorityStandbyList (5) let go of the contents of
+ * every saved file nothing holds (fs/persist.c), as Windows drops the
+ * standby list's cached file pages; MemoryEmptyWorkingSets (2) has nothing
+ * to do (no page file: a working set is all of a process). */
+static UINT64 sys_set_system_information(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a4;
+    if ((UINT32)a1 != 80) return ST_INVALID_INFO_CLASS;
+    if ((UINT32)a3 != 4) return ST_INFO_LENGTH_MISMATCH;
+    UINT32 cmd;
+    if (!a2 || !NT_SUCCESS(CopyFromUser(&cmd, (const void *)(uintptr_t)a2, 4))) return ST_ACCESS_VIOLATION;
+    if (cmd < 2 || cmd > 5) return ST_INVALID_PARAMETER;
+    if (!um_privilege_held(13)) return ST_PRIVILEGE_NOT_HELD;   /* SeProfileSingleProcessPrivilege */
+    if (cmd == 3) PersistSync();
+    if (cmd == 4 || cmd == 5) PersistLetGoAll();
+    return ST_SUCCESS;
+}
+
 /* NtQueryInformationJobObject(HANDLE, Class, PVOID, ULONG, PULONG ReturnLength) */
 static UINT64 sys_query_job(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
@@ -455,6 +480,7 @@ void um_services_init(void)
 {
     static const struct { UINT32 num; SYSCALL_HANDLER h; bool lock_free; } svc[] = {
         { SYSCALL_NtQuerySystemInformation,      sys_query_system_information, false },
+        { SYSCALL_NtSetSystemInformation,        sys_set_system_information, false },
         { SYSCALL_NtQueryTimerResolution,        sys_query_timer_resolution, true },
         { SYSCALL_NtSetTimerResolution,          sys_set_timer_resolution, true },
         { SYSCALL_NtAllocateLocallyUniqueId,     sys_allocate_luid, true },

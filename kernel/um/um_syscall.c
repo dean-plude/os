@@ -67,13 +67,16 @@
 #define ST_CANNOT_DELETE           0xC0000121u
 
 /* A program may commit up to 7/8 of the machine's memory (pages are only
- * taken when first touched, so this bounds promises, not use) */
+ * taken when first touched, so this bounds promises, not use).  The
+ * machine's memory is its RAM: pmm_stats' total also counts the holes
+ * below the highest address (6144 pages on a 4 GB machine), and a promise
+ * past the RAM became an access violation when the page was first touched
+ * instead of a commit that fails, as on Windows. */
 static UINT64 proc_commit_limit(void)
 {
     static UINT64 limit;
     if (!limit) {
-        uint64_t total = 0, free = 0, used = 0;
-        pmm_stats(&total, &free, &used);
+        UINT64 total = pmm_ram_pages();
         limit = total - total / 8;
     }
     return limit;
@@ -635,6 +638,10 @@ static RamNode *parent_of(RamNode *root, char *path, const char **leaf)
 #define FILE_READ_DATA    0x0001u
 #define FILE_WRITE_DATA   0x0002u
 #define FILE_APPEND_DATA  0x0004u
+/* What reads or writes a file's contents (GENERIC_EXECUTE and FILE_EXECUTE
+ * too: a section for an image), else only its details are wanted */
+#define FILE_DATA_ACCESS  (GENERIC_READ | GENERIC_WRITE | 0x20000000u | GENERIC_ALL | 0x02000000u | \
+                           FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA | 0x0020u)
 
 #define ST_BUFFER_TOO_SMALL 0xC0000023u
 
@@ -790,7 +797,7 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
     bool unloaded, wr0 = access & (GENERIC_WRITE | GENERIC_ALL | FILE_WRITE_DATA | FILE_APPEND_DATA);
     RamNode *node = (disposition == 1 || disposition == 3) && !(options & 0x1000) ?
                     path[0] ? RamfsLookup(root, path, &unloaded) : root : NULL;
-    if (node && (!(node->xflags & RAMFS_X_EXTERN) || (node->xflags & (node->dir ? RAMFS_X_LISTED : RAMFS_X_LOADED))) &&
+    if (node && (RamfsLoaded(node) || (!(node->xflags & RAMFS_X_EXTERN) && !(access & FILE_DATA_ACCESS))) &&
         !(RamfsReadOnly(node) && wr0) && !((options & 0x40) && node->dir) && !((options & 0x1) && !node->dir)) {
         UINT32 granted;                                         /* what its security descriptor allows */
         if (!FsecAccess(node, access, &granted)) { FsUnlockShared(); return iosb(iosb_ptr, ST_ACCESS_DENIED, 0); }
@@ -816,7 +823,10 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
         FsUnlock();
         return iosb(iosb_ptr, disposition == 2 ? ST_OBJECT_NAME_COLLISION : ST_MEDIA_WRITE_PROTECTED, 0);
     }
-    if (node && !RamfsLoad(node)) { FsUnlock(); return iosb(iosb_ptr, ST_DISK_CORRUPT, 0); }
+    if (node && ((node->xflags & RAMFS_X_EXTERN) || (access & FILE_DATA_ACCESS)) && !RamfsLoad(node)) {
+        FsUnlock();
+        return iosb(iosb_ptr, ST_DISK_CORRUPT, 0);
+    }
     if (node && disposition != 2) {                             /* what its security descriptor allows */
         UINT32 want = access, granted;
         if (!node->dir && (disposition == 0 || disposition == 4 || disposition == 5)) want |= FILE_WRITE_DATA;

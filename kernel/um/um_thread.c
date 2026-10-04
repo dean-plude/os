@@ -1327,8 +1327,11 @@ static UINT64 sys_create_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         file = um_handle_file(p, fileh);
         if (file) { RamfsRef(file); if (!size) size = file->size; }
         um_unlock_excl(&p->lock);
+        bool read = !file || RamfsLoad(file);                  /* (contents left on the data disk: read back) */
+        if (!read) RamfsUnref(file);
         DesktopUnlock();
         if (!file) return ST_INVALID_HANDLE;
+        if (!read) return 0xC0000032U;                          /* DISK_CORRUPT_ERROR */
     }
     if (!size) { if (file) { DesktopLock(); RamfsUnref(file); DesktopUnlock(); } return file ? 0xC000011EU /* MAPPED_FILE_SIZE_ZERO */ : ST_INVALID_PARAMETER; }
     UINT64 n = (size + PAGE_SIZE - 1) / PAGE_SIZE;

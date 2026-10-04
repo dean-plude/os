@@ -483,12 +483,16 @@ static void cmd_mem(Term *t)
     tprintf(t, "Physical memory: %u MB total, %u MB used, %u MB free",
             (unsigned)(total * 4 / 1024), (unsigned)(used * 4 / 1024),
             (unsigned)(free_p * 4 / 1024));
-    UINT64 files, bytes, held;
+    UINT64 files, bytes, inmem, held, gone, gone_bytes;
     FsLock();
-    RamfsUsage(&files, &bytes, &held);
+    RamfsUsage(&files, &bytes, &inmem, &held);
     FsUnlock();
-    tprintf(t, "Drive C: (kept in memory): %u files, %u MB, taking %u MB",
-            (unsigned)files, (unsigned)(bytes >> 20), (unsigned)(held >> 20));
+    tprintf(t, "Drive C: %u files, %u MB; in memory %u MB of them, taking %u MB",
+            (unsigned)files, (unsigned)(bytes >> 20), (unsigned)(inmem >> 20), (unsigned)(held >> 20));
+    PersistLetGoStats(&gone, &gone_bytes);
+    if (PersistActive())
+        tprintf(t, "The rest is read from the data disk when wanted (let go of so far: %u files, %u MB)",
+                (unsigned)gone, (unsigned)(gone_bytes >> 20));
 }
 
 static void cmd_date(Term *t, bool time)
@@ -905,6 +909,7 @@ static void cmd_certutil(Term *t, int argc, char **argv)
         RamNode *f = RamfsResolve(t->cwd, argv[3]);
         if (!f || f->dir || RamfsReadOnly(f)) { terr(t, "The system cannot find the file specified."); return; }
         char err[80];
+        if (!RamfsLoad(f)) { terr(t, "The file could not be read."); return; }
         int n = NetImportRoots(f->data, f->size, err, sizeof(err));
         if (!n) { tprintf(t, "CertUtil: -addstore command FAILED: %s", err); return; }
         tprintf(t, "Added %d certificate%s to the Trusted Root Certification Authorities store.",

@@ -459,8 +459,9 @@ static void failed_msg(Store *s, int i, const char *m)
 }
 
 /* The machine a PE file is built for (0x8664 x64, 0x14C x86), 0 if not a PE */
-static UINT16 pe_machine(const RamNode *f)
+static UINT16 pe_machine(RamNode *f)
 {
+    if (!RamfsLoad(f)) return 0;
     const UINT8 *d = (const UINT8 *)f->data;
     if (!d || f->size < 0x40 || d[0] != 'M' || d[1] != 'Z') return 0;
     UINT32 pe = (UINT32)(d[0x3C] | d[0x3D] << 8 | d[0x3E] << 16 | (UINT32)d[0x3F] << 24);

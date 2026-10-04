@@ -52,6 +52,9 @@ typedef struct RamNode {
     UINT32          sdlen;        /*   inherited from the nearest directory above with one (fs/fsec.c) */
     struct RamNode *link;         /* a file with several names (hard links): the next one, around a ring; else NULL. */
     UINT8           lent;         /* @data may be lent to a save (RamfsLend) */
+    UINT8           out;          /* drive C:: the contents are only on the data disk, at @bref (RamfsLoad reads them) */
+    UINT32          used;         /* drive C:: when the contents were last let go of or read in (seconds since boot) */
+    UINT64          bref;         /*   where on the data disk (fs/persist.c: FAT first cluster, NTFS record) */
 } RamNode;                        /*   Names share data, size, cap, attrs, times, sd and the RAMFS_X_* state */
 
 #define RAMFS_X_EXTERN   0x01     /* on a mounted (read-only) volume */
@@ -138,9 +141,10 @@ UINT32   RamfsDriveMask(void);
 bool     RamfsDriveInfo(const RamNode *n, const char **label, const char **fs, UINT64 *total);
 /* The free bytes on the drive @n is on (0 for a read-only one) */
 UINT64   RamfsDriveFree(const RamNode *n);
-/* Drive C:'s files (kept in memory): how many, their bytes and the memory
- * they take.  Under the file-system lock. */
-void     RamfsUsage(UINT64 *files, UINT64 *bytes, UINT64 *held);
+/* Drive C:'s files: how many, their bytes, the bytes of those whose
+ * contents are in memory and the memory they take.  Under the
+ * file-system lock. */
+void     RamfsUsage(UINT64 *files, UINT64 *bytes, UINT64 *inmem, UINT64 *held);
 /* The letter of the drive @n is on ('C', 'D', ...) */
 char     RamfsDriveLetter(const RamNode *n);
 /* @n is on a mounted volume that can't be changed (or was unmounted) */
@@ -152,10 +156,38 @@ bool     RamfsFlush(void);
  * changes to them that only grows */
 UINT32   RamfsExtDirty(void);
 UINT32   RamfsExtChanges(void);
-/* Read what a node on a mounted volume needs from the disk: a directory's
- * entries, a file's contents.  True at once for other nodes.  False on a
- * read error, or a file too large to hold (RAMFS_FILE_MAX). */
+/* Read what a node needs from a disk: on a mounted volume a directory's
+ * entries or a file's contents; on drive C: a file's saved contents that
+ * were let go of (RamfsLetGo).  True at once for other nodes.  False on a
+ * read error, out of memory, or a file too large to hold (RAMFS_FILE_MAX). */
 bool     RamfsLoad(RamNode *n);
+/* Whether @n's contents are in memory (else RamfsLoad reads them) */
+bool     RamfsLoaded(const RamNode *n);
+
+/* Drive C: in memory, saved to a data disk (fs/persist.c): the contents of
+ * a file that is saved and that nothing holds can be let go of when memory
+ * runs short, and are read back from the disk when wanted again, as
+ * Windows drops a file's cached pages.  Files smaller than RAMFS_OUT_MIN
+ * always stay in memory. */
+#define RAMFS_OUT_MIN    (64u * 1024u)
+/* How persist.c reads file @f's saved contents (@f->size bytes, from
+ * @f->bref) into @buf */
+void     RamfsSetBacking(bool (*read)(RamNode *f, char *buf));
+/* Whether @f's contents may be let go of now: a file of C: of at least
+ * RAMFS_OUT_MIN bytes, saved (no unsaved change), from no OS image, with
+ * one name, held and pinned by nobody */
+bool     RamfsCanLetGo(const RamNode *f);
+/* Let go of @f's contents, which the data disk holds at @bref; the
+ * memory they took.  (The file-system lock held exclusively, no save
+ * running: see persist.c.) */
+UINT64   RamfsLetGo(RamNode *f, UINT64 bref);
+/* @f (just made, while restoring C:) has @size bytes of contents, on the
+ * data disk at @bref, not read yet */
+void     RamfsSetSaved(RamNode *f, UINT32 size, UINT64 bref);
+/* RamfsLoad with @read in place of the backing (persist.c, which holds the save lock) */
+bool     RamfsLoadWith(RamNode *f, bool (*read)(RamNode *f, char *buf));
+/* Seconds since boot, as RamNode.used counts them */
+UINT32   RamfsSeconds(void);
 
 /* Resolve a path relative to `cwd` (NULL = root).  NULL if not found. */
 RamNode *RamfsResolve(RamNode *cwd, const char *path);
