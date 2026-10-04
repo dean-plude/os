@@ -235,6 +235,37 @@ __declspec(noinline) static UINT64 outer_try(void)
     return r;
 }
 
+/* An __except inside a __try/__finally of the same frame: unwinding to
+ * the __except body leaves the __finally in force (it runs once, when the
+ * frame leaves its __try).  A raise from that __except body (MSVC's C++
+ * runtime re-raises a rethrow there) runs it once, on the way out. */
+static int finally_runs, except_runs;
+__declspec(noinline) static void raise_code(DWORD code) { RaiseException(code, 0, 0, 0); }
+__declspec(noinline) static int except_in_finally(int raise_again)
+{
+    __try {
+        __try {
+            raise_code(CODE_FIRST);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            except_runs++;
+            if (raise_again) raise_code(CODE_SECOND);
+        }
+    } __finally {
+        finally_runs++;
+    }
+    return 1;
+}
+
+__declspec(noinline) static int catch_raise_from_except(void)
+{
+    __try {
+        except_in_finally(1);
+    } __except (GetExceptionCode() == CODE_SECOND ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return 2;
+    }
+    return 0;
+}
+
 int main(void)
 {
     /* a throw caught by a frame two levels up */
@@ -275,6 +306,13 @@ int main(void)
     catch_runs = outer_caught = 0;
     r = outer_try();
     CHECK("a plain catch works after that", r == 0x55 && catch_runs == 1 && outer_caught == 0);
+
+    /* the target frame's own __finally around the __except */
+    int k = except_in_finally(0);
+    CHECK("an __except inside a __finally: the __finally runs once, after", k == 1 && except_runs == 1 && finally_runs == 1);
+    except_runs = finally_runs = 0;
+    k = catch_raise_from_except();
+    CHECK("a raise from that __except body runs the __finally once", k == 2 && except_runs == 1 && finally_runs == 1);
 
     printf("unwindtest: %d passed, %d failed\n", pass, fail);
     return fail != 0;

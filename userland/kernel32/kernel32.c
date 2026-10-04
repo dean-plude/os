@@ -316,7 +316,11 @@ WINBASEAPI DWORD WINAPI GetCurrentThreadId(void)             { return *(DWORD *)
 
 WINBASEAPI BOOL WINAPI TerminateProcess(HANDLE process, UINT code)
 {
-    if (process == NtCurrentProcess()) RtlExitUserProcess((NTSTATUS)code);
+    /* this process: ended at once, without DLL_PROCESS_DETACH or FLS
+     * callbacks (ExitProcess runs those); Chromium ends its child processes
+     * this way and crashes on purpose if one of its DLLs sees a detach */
+    if (process == NtCurrentProcess())
+        for (;;) NtTerminateProcess(NtCurrentProcess(), (NTSTATUS)code);
     NTSTATUS s = NtTerminateProcess(process, (NTSTATUS)code);  /* one this process started */
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }

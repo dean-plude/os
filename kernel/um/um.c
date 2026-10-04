@@ -1181,7 +1181,14 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
         RamNode *a = dir && dir->dir ? RamfsFind(dir, name) : NULL;
         if (a && !a->dir && RamfsLoad(a) && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
     }
-    return n && !n->dir ? n : NULL;
+    if (n && !n->dir) return n;
+    /* then the current folder, after the system's (SafeDllSearchMode),
+     * unless SetDllDirectory took its place */
+    if (!p->dll_dir[0] && p->cwd && p->cwd != p->exe_dir) {
+        RamNode *a = RamfsFind(p->cwd, name);
+        if (a && !a->dir && RamfsLoad(a) && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
+    }
+    return NULL;
 }
 
 /* AddDllDirectory (@op 0: *@cookie gets the slot), RemoveDllDirectory (1:

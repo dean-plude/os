@@ -1,0 +1,4 @@
+{
+  "libs": ["crypt32"],
+  "selftest": true
+}
