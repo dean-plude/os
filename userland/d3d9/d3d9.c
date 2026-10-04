@@ -6,15 +6,18 @@
  * no display adapter driver of its own: when DXVK is installed from the App
  * Store (as d3d9_dxvk.dll beside this one), every entry point hands the call
  * to DXVK, so Direct3D 9 runs on Mesa's lavapipe or Venus; without it,
- * Direct3DCreate9 returns NULL and Direct3DCreate9Ex D3DERR_NOTAVAILABLE, as
- * Windows does with no Direct3D 9 driver, and programs use their software
- * paths.  The rest of Windows' exports (the PIX markers, the debug and shim
- * switches) answer as they do there when no tool is attached.
+ * Direct3DCreate9 and Direct3DCreate9Ex give NovaOS's own object
+ * (adapter.c): the adapters, named by their display cards, with their
+ * display modes, as Windows' basic display adapter lists them, but no
+ * device (D3DERR_NOTAVAILABLE), so programs use their software paths.  The
+ * rest of Windows' exports (the PIX markers, the debug and shim switches)
+ * answer as they do there when no tool is attached.
  */
 #include <windows.h>
 
 #define D3D9API __declspec(dllexport)
 #define D3DERR_NOTAVAILABLE_ ((HRESULT)0x8876086AL)
+#define D3DERR_INVALIDCALL_  ((HRESULT)0x8876086CL)
 
 static HMODULE dxvk(void)
 {
@@ -40,18 +43,21 @@ typedef HRESULT (WINAPI *Create9Ex_t)(UINT, void **);
 typedef void *(WINAPI *Create9On12_t)(UINT, void *, UINT);
 typedef HRESULT (WINAPI *Create9On12Ex_t)(UINT, void *, UINT, void **);
 
+void *nova_d3d9(BOOL ex);                            /* adapter.c */
+
 D3D9API void *WINAPI Direct3DCreate9(UINT sdk)
 {
     Create9_t f = (Create9_t)dxvk_proc("Direct3DCreate9");
-    return f ? f(sdk) : NULL;
+    return f ? f(sdk) : nova_d3d9(FALSE);
 }
 
 D3D9API HRESULT WINAPI Direct3DCreate9Ex(UINT sdk, void **out)
 {
     Create9Ex_t f = (Create9Ex_t)dxvk_proc("Direct3DCreate9Ex");
     if (f) return f(sdk, out);
-    if (out) *out = NULL;
-    return D3DERR_NOTAVAILABLE_;
+    if (!out) return D3DERR_INVALIDCALL_;
+    *out = nova_d3d9(TRUE);
+    return *out ? S_OK : E_OUTOFMEMORY;
 }
 
 D3D9API void *WINAPI Direct3DCreate9On12(UINT sdk, void *args, UINT n)

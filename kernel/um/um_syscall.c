@@ -748,6 +748,18 @@ static UINT32 open_other(UmProcess *p, const char *path, UINT32 access, UINT32 o
     return iosb(iosb_ptr, ST_SUCCESS, 1);
 }
 
+/* The rights a file handle opened asking for @access holds: generic
+ * rights mapped as Windows maps them for files (FILE_GENERIC_READ...) */
+static UINT32 file_access(UINT32 access)
+{
+    UINT32 r = access & 0x001F01FFu;
+    if (access & (GENERIC_ALL | 0x02000000u /* MAXIMUM_ALLOWED */)) r |= 0x001F01FFu;
+    if (access & GENERIC_READ)    r |= 0x00120089u;
+    if (access & GENERIC_WRITE)   r |= 0x00120116u;
+    if (access & 0x20000000u)     r |= 0x001200A0u;          /* GENERIC_EXECUTE */
+    return r;
+}
+
 /* A handle for @node, opened with @access and @options (under the
  * file-system lock, shared or not); 0 if the process has none left */
 static UINT64 file_handle(UmProcess *p, RamNode *node, UINT32 access, UINT32 options, bool inherit, UmHandle **out)
@@ -767,6 +779,8 @@ static UINT64 file_handle(UmProcess *p, RamNode *node, UINT32 access, UINT32 opt
         h->delete_on_close = options & 0x1000;
         h->inherit = inherit;
         h->async = !(options & 0x30);                           /* no FILE_SYNCHRONOUS_IO_* */
+        h->access_known = true;                                 /* (NtQueryObject's GrantedAccess) */
+        h->access = file_access(access);
         h->fp = fp;
         RamfsRef(node);
         h->kind = node->dir ? H_DIR : H_FILE;
@@ -2742,8 +2756,6 @@ static UINT64 sys_set_info_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 }
 
 /* NtQueryObject(HANDLE, OBJECT_INFORMATION_CLASS, PVOID, ULONG, PULONG):
- * ObjectHandleFlagInformation (4) */
-/* NtQueryObject(HANDLE, OBJECT_INFORMATION_CLASS, PVOID, ULONG, PULONG):
  * 0 basic, 1 name ("\Device\HarddiskVolume1\dir\file", "\Device\NamedPipe\x",
  * "\BaseNamedObjects\x"...), 2 type ("File", "Event"...), 4 handle flags */
 static UINT64 sys_query_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -2754,6 +2766,7 @@ static UINT64 sys_query_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     char name[RAMFS_PATH_MAX + 64];
     const char *type = "File";
     bool inherit = false;
+    UINT32 access = 0x1F01FF;                                   /* (a handle whose rights were not recorded: all) */
     name[0] = 0;
     DesktopLock();
     um_lock_excl(&p->lock);
@@ -2761,6 +2774,7 @@ static UINT64 sys_query_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UmObject *o = NULL;
     if (h) {
         inherit = h->inherit;
+        if (h->access_known) access = h->access;
         if ((h->kind == H_FILE || h->kind == H_DIR) && h->node) {
             char path[RAMFS_PATH_MAX];
             RamfsPath(h->node, path, sizeof(path));
@@ -2808,7 +2822,8 @@ static UINT64 sys_query_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         UINT32 b[14];
         memset(b, 0, sizeof(b));
         b[0] = inherit ? 2 : 0;                                 /* Attributes: OBJ_INHERIT */
-        b[1] = 0x1F01FF;                                        /* GrantedAccess */
+        b[1] = access;                                          /* GrantedAccess: the handle's own (Chromium checks a
+                                                                 * read-only shared memory handle cannot write) */
         b[2] = 1; b[3] = 2;                                     /* HandleCount, PointerCount */
         if (ret) { UINT32 n = 56; CopyToUser((void *)(uintptr_t)ret, &n, 4); }
         if (a4 < 56) return ST_INFO_LENGTH_MISMATCH;

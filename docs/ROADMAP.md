@@ -190,7 +190,9 @@ named program or test demonstrates it.
   channel (a GitHub release by default, made with `tools/mkupdate.py`),
   check them, and stage them; the boot loader starts the new kernel once
   and goes back to the old one if it does not reach the desktop
-  ([updates.md](updates.md)).  Signed channel files are still to come.
+  ([updates.md](updates.md)).  The channel file is signed with Ed25519;
+  a NovaOS with the release key built in installs only from a channel
+  signed with it.
 - Release 0.1 (Phase 22.5): pushing a version tag builds, tests and
   publishes a release (`.github/workflows/release.yml`,
   [releasing.md](releasing.md)): every CI suite on the tagged commit, with
@@ -202,19 +204,30 @@ named program or test demonstrates it.
   (`edgeupdtest`); ~~MSXML 6~~ Done (`msxmltest`); ~~rpcrt4's NDR engine
   for COM proxy/stub DLLs~~ Done (`ndrtest`); ~~COM calls between
   processes~~ Done (`comoop`); ~~Edge Update's check of Microsoft's
-  signature on the runtime's package~~ Done (`authtest`).  Still to do:
-  Edge Update seeing its own install running (its background pass
-  uninstalls it mid-install), Windows' `WOW6432Node` registry view, then
-  the runtime's setup and the Chromium runtime itself.
+  signature on the runtime's package~~ Done (`authtest`); ~~Edge Update
+  seeing its own install running~~ Done (`proclisttest`); ~~delete on
+  close~~ Done (`filetest`); ~~the runtime's setup unpacking its archive,
+  `wer.dll`~~ Done (`wvsetuptest`); ~~the setup's permissions on its
+  install folder~~ Done (`acltest`); ~~starting the runtime's browser
+  process~~ Done (`wvstarttest`, `unwindtest`).  Still to do: the
+  controller and a page (the GPU process's Direct3D 11 adapter, the
+  browser's restart, `CreateCoreWebView2Controller`), and Windows'
+  `WOW6432Node` registry view for machine-wide installs.
 - Games: ~~OpenTTD (free on GOG) to its main menu~~ Done; ~~Beneath a
   Steel Sky (free on GOG) on ScummVM, installed with its installer and
   played~~ Done; ~~Teeworlds in full screen to its start menu, its music
-  checked on a sound card~~ Done (all three in the nightly corpus).  Still
-  to do: joining a Teeworlds game on its own server (it times out under
-  TCG while Mesa compiles its shaders; mouse needs Raw Input), a Direct3D 9
-  game through DXVK, a game that switches the display mode for full
-  screen, GOG GALAXY's client, Steam's login window, Roblox's player (its
-  anti-cheat refuses virtual machines).
+  checked on a sound card~~ Done; ~~a Direct3D 9 game through DXVK
+  (OpenTyrian: Tyrian 2.1 in full screen, into a new game with its
+  music)~~ Done; ~~a game that switches the display mode for full screen
+  (Blobby Volley 2: 800x600 in Direct3D 9 exclusive full screen, and back
+  when it ends)~~ Done; ~~an SDL 1.2 game (LBreakout2: GDI drawing, 640x480
+  full screen with the window's frame taken off, and back)~~ Done (all six
+  in the nightly corpus).  Still to do:
+  joining a Teeworlds game on its own server (it times out under TCG
+  while Mesa compiles its shaders; its menus follow the mouse with its
+  default settings, SDL recentring the pointer with `SetCursorPos`), GOG
+  GALAXY's client, Steam's login window, Roblox's player (its anti-cheat
+  refuses virtual machines).
 
 <!-- END generated:next-apps -->
 
@@ -380,9 +393,12 @@ named program or test demonstrates it.
   DSP~~ Done (Phase 21.4): Sound Open Firmware boots on the DSP, records
   them through an IPC4 capture pipeline and they are the "Microphone
   Array (DSP)" recording device, booted again after sleep (checked on a
-  modelled DSP, `hwcheck mic`).  Not yet: the touchpad's interrupt line
-  (polled for now), tap-and-drag and scrolling that coasts on after the
-  fingers lift.
+  modelled DSP, `hwcheck mic`).  ~~The touchpad's interrupt line~~ Done
+  (Phase 21.4): a driver for Intel's GPIO controllers (Tiger Lake to
+  Meteor Lake) takes the touchpad's GpioInt pin and the touchpad is read
+  when it fires, polled only when no interrupt can be had (checked on a
+  modelled controller, `hwcheck`).  Not yet: tap-and-drag and scrolling
+  that coasts on after the fingers lift.
 - ~~Install to the internal NVMe disk, and S3, batteries and the lid on
   the reference machine's tables~~ Done (Phase 21.5): the ACPI embedded
   controller that laptops keep their lid, battery and AC adapter behind;
@@ -396,12 +412,15 @@ named program or test demonstrates it.
 - ~~Game controllers for Windows games~~ Done: wired Xbox 360 and Xbox
   One controllers (their motors and the Xbox 360 one's player light
   included) and HID game pads on USB, hot-plugged, for XInput
-  (`xinput1_4`, `xinput1_3` and older, `xinput9_1_0`) and DirectInput 8
-  (game controllers, keyboards and mice, immediate and buffered).  Still
-  to do: Raw Input and `hid.dll` for game pads (`WM_INPUT` with HID
-  reports, `HidP_*` on their report descriptors), the Xbox 360 wireless
-  receiver, Bluetooth controllers, force feedback through DirectInput,
-  and virtio game pads (QEMU has none).
+  (`xinput1_4`, `xinput1_3` and older, `xinput9_1_0`), DirectInput 8
+  (game controllers, keyboards and mice, immediate and buffered), Raw
+  Input (`WM_INPUT` with each controller's HID reports) and `hid.dll`
+  (`HidD_*` on a controller's HID path, `HidP_*` on its report
+  descriptor; an Xbox controller has the one Windows' Xbox driver
+  gives).  Still to do: raw keyboard and mouse input, HID output and
+  feature reports, `IOCTL_HID_*` through `DeviceIoControl`, the Xbox
+  360 wireless receiver, Bluetooth controllers, force feedback through
+  DirectInput, and virtio game pads (QEMU has none).
 
 <!-- END generated:next-hardware -->
 

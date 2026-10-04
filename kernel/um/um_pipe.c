@@ -81,7 +81,7 @@ typedef struct UmPipe {
     int      srv_ends, cli_ends;            /* end objects alive */
     UINT32   gen;                           /* which client connection is current */
     UINT32   in_quota, out_quota;
-    UINT32   client_pid;
+    UINT32   client_pid, server_pid;        /* (FSCTL_PIPE_GET_PIPE_ATTRIBUTE) */
     Ring     r[2];                          /* [0] client -> server, [1] server -> client */
 } UmPipe;
 
@@ -488,6 +488,8 @@ UINT32 um_pipe_create(const char *path, UINT32 access, UINT32 disposition, UINT3
     p->max_inst = live ? limit : (max_inst ? max_inst : 1);
     p->msg_type = type & 1;
     p->state = P_LISTENING;
+    UmProcess *me = UmCurrent();
+    p->server_pid = me ? me->pid : 0;
     p->in_quota = in_quota;
     p->out_quota = out_quota;
     PipeEnd *e = end_new(p, 0);
@@ -697,6 +699,7 @@ UINT32 um_pipe_write(UmObject *o, UINT64 event, UINT64 iosb, UINT64 buf, UINT32 
 #define FSCTL_PIPE_PEEK        0x11400Cu
 #define FSCTL_PIPE_WAIT        0x110018u
 #define FSCTL_PIPE_TRANSCEIVE  0x11C017u
+#define FSCTL_PIPE_GET_PIPE_ATTRIBUTE 0x110020u
 
 static UINT32 listen(PipeEnd *e, UINT64 event, UINT64 iosb)
 {
@@ -822,6 +825,31 @@ static UINT32 wait_pipe(UINT64 in, UINT32 in_len)
     }
 }
 
+/* FSCTL_PIPE_GET_PIPE_ATTRIBUTE: a named attribute of the pipe, from
+ * either end (GetNamedPipeServerProcessId and friends).  A program that
+ * checks who is at the other end (Chromium's Mojo does: WebView2's
+ * browser process drops a host pipe whose server is not the host) needs
+ * the real process ids */
+static UINT32 attribute(PipeEnd *e, UINT64 in, UINT32 in_len, UINT64 out, UINT32 out_len, UINT64 *info)
+{
+    char name[32];
+    if (!in || !in_len || in_len > sizeof(name)) return ST_INVALID_PARAMETER;
+    if (!NT_SUCCESS(CopyFromUser(name, (const void *)(uintptr_t)in, in_len))) return ST_ACCESS_VIOLATION;
+    name[in_len < sizeof(name) ? in_len : sizeof(name) - 1] = 0;
+    lower(name, name, sizeof(name));
+    UINT32 v;
+    um_lock(&g_pl);
+    if (!strcmp(name, "clientprocessid")) v = e->pipe->client_pid;
+    else if (!strcmp(name, "serverprocessid")) v = e->pipe->server_pid;
+    else if (!strcmp(name, "clientsessionid") || !strcmp(name, "serversessionid")) v = 1;   /* (one session) */
+    else { um_unlock(&g_pl); return ST_INVALID_PARAMETER; }
+    um_unlock(&g_pl);
+    if (out_len < sizeof(v)) return ST_BUFFER_TOO_SMALL;
+    if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)out, &v, sizeof(v)))) return ST_ACCESS_VIOLATION;
+    *info = sizeof(v);
+    return ST_SUCCESS;
+}
+
 UINT32 um_pipe_fsctl(UmObject *o, UINT64 event, UINT64 iosb, UINT32 code,
                      UINT64 in, UINT32 in_len, UINT64 out, UINT32 out_len, UINT64 *info)
 {
@@ -844,6 +872,7 @@ UINT32 um_pipe_fsctl(UmObject *o, UINT64 event, UINT64 iosb, UINT32 code,
         if (event) { UmObject *ev = um_handle_object(UmCurrent(), event, UO_EVENT); ev_signal(ev); if (ev) um_ob_unref(ev); }
         return st;
     }
+    case FSCTL_PIPE_GET_PIPE_ATTRIBUTE: return attribute(e, in, in_len, out, out_len, info);
     }
     return ST_INVALID_DEVICE_REQ;
 }

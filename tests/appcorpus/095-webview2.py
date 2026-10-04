@@ -17,9 +17,11 @@
 # WebView2Loader.dll from Microsoft's WebView2 SDK (its NuGet package,
 # BSD-licensed, the DLL copied next to the installer): the loader finds
 # the installed runtime and the browser process (msedgewebview2.exe) and
-# its GPU, network and storage processes start; the test passes when the
-# WebView2 environment is made (the controller, and so a page, is not
-# yet: docs/compatibility.md), or when no runtime was installed (drive C:
+# its GPU, network and storage processes start, and the browser accepts
+# the host's connection; the test passes when the WebView2 environment is
+# made (the controller, and so a page, is not yet: the host cannot put
+# the browser's window inside its own, docs/compatibility.md), or when
+# no runtime was installed (drive C:
 # full in a full corpus run, as above) and so none could start.
 DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself, runs the install, accepts the runtime\'s signature and starts the runtime\'s setup, which installs the runtime; a host program starts the runtime\'s browser process)'
 import os, shutil, zipfile

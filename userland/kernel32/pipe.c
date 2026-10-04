@@ -21,6 +21,7 @@ size_t strlen(const char *s);
 #define FSCTL_PIPE_PEEK        0x11400C
 #define FSCTL_PIPE_WAIT        0x110018
 #define FSCTL_PIPE_TRANSCEIVE  0x11C017
+#define FSCTL_PIPE_GET_PIPE_ATTRIBUTE 0x110020
 
 
 static LONG g_seq;
@@ -266,20 +267,34 @@ WINBASEAPI BOOL WINAPI SetNamedPipeHandleState(HANDLE h, LPDWORD mode, LPDWORD c
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
+/* The pipe's attributes, as Windows keeps them: the process ids of its
+ * server and of the client that connected, and their sessions */
+static BOOL pipe_attribute(HANDLE h, const char *name, PULONG v)
+{
+    IO_STATUS_BLOCK io;
+    NTSTATUS s = NtFsControlFile(h, 0, 0, 0, &io, FSCTL_PIPE_GET_PIPE_ATTRIBUTE, (PVOID)name,
+                                 (ULONG)strlen(name) + 1, v, sizeof(*v));
+    return NT_SUCCESS(s) ? TRUE : fail_status(s);
+}
+
 WINBASEAPI BOOL WINAPI GetNamedPipeClientProcessId(HANDLE h, PULONG pid)
 {
-    ULONG v[10];
-    if (!local_info(h, v)) return FALSE;
-    *pid = 0;                                   /* (not kept) */
-    return TRUE;
+    return pipe_attribute(h, "ClientProcessId", pid);
 }
 
 WINBASEAPI BOOL WINAPI GetNamedPipeServerProcessId(HANDLE h, PULONG pid)
 {
-    ULONG v[10];
-    if (!local_info(h, v)) return FALSE;
-    *pid = 0;
-    return TRUE;
+    return pipe_attribute(h, "ServerProcessId", pid);
+}
+
+WINBASEAPI BOOL WINAPI GetNamedPipeClientSessionId(HANDLE h, PULONG id)
+{
+    return pipe_attribute(h, "ClientSessionId", id);
+}
+
+WINBASEAPI BOOL WINAPI GetNamedPipeServerSessionId(HANDLE h, PULONG id)
+{
+    return pipe_attribute(h, "ServerSessionId", id);
 }
 
 /* -----------------------------------------------------------------------

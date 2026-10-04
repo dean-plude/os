@@ -1265,6 +1265,12 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             um_map_access(src.obj->type, (UINT32)um_stack_arg(5), &want);
             if (want & ~src.access) st = um_check_object(src.obj, want);
             src.access = want;
+        } else if (tp && !(options & 2) && src.kind == H_OBJECT) {
+            /* a handle whose rights were not recorded holds them all: the
+             * duplicate gets what it asks for, and remembers it (a section
+             * handle duplicated with FILE_MAP_READ is read-only from then on) */
+            UINT32 want = 0;
+            if (um_map_access(src.obj->type, (UINT32)um_stack_arg(5), &want)) { src.access = want; src.access_known = true; }
         }
         if (ok && tp && !st) {
             if (!(options & 4)) src.inherit = attrs & 2;     /* DUPLICATE_SAME_ATTRIBUTES, OBJ_INHERIT */

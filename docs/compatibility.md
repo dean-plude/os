@@ -50,7 +50,7 @@ results; until then they are kept by hand.
 | **Krita 5.3.4** (Qt 5) | Partly | Starts and opens a new image on Mesa 3D (install Mesa 3D from the App Store first); painting and saving are not checked yet | nightly corpus |
 | **Firefox 157** and **Floorp 12.19** | Works | Installs from the App Store, loads pages over HTTP and HTTPS, scrolls and takes typing in forms; a publicly trusted HTTPS site is untested (the test network is offline) | nightly corpus |
 | **Roblox** (App Store, the current client) | Partly | Its installer runs: it fetches Roblox's settings and packages over HTTPS and installs the client; its Hyperion anti-cheat now passes the system-call, alignment-fixup, 32-bit-code and thread-context checks and then reports "Virtual Machine detected" under QEMU, as Roblox does in any virtual machine (untested on a real PC) ([Roblox and anti-cheat](#roblox-and-anti-cheat)); the WebView2 runtime it sets up for logging in does not install yet ([WebView2](#webview2)) | nightly corpus (the installer) |
-| **Microsoft Edge WebView2 runtime** (the evergreen offline installer) | Partly | Its installer, Microsoft Edge Update, installs itself and accepts Microsoft's signature on the runtime's package; the install then fails because Edge Update's background pass uninstalls Edge Update under it ([WebView2](#webview2)) | nightly corpus (the installer) |
+| **Microsoft Edge WebView2 runtime** (the evergreen offline installer) | Partly | Its installer, Microsoft Edge Update, installs itself, accepts Microsoft's signature on the runtime's package and starts the runtime's own setup, which installs the runtime; a WebView2 host starts the runtime's browser process (`msedgewebview2.exe`) and its GPU, network and storage processes and gets a WebView2 environment, but no page yet ([WebView2](#webview2)) | nightly corpus (the installer, `wv2host`) |
 | **Mesa 3D 24.2.4** (App Store, Runtimes) | Works | OpenGL 4.5 on the CPU (llvmpipe) and Vulkan (lavapipe), 64- and 32-bit | CI graphics tests (`gltest`) |
 | **DXVK 2.5.3** (App Store, Runtimes) | Works | Direct3D 8 to 11 on Vulkan, 64- and 32-bit; ANGLE's Direct3D 11 back end (Chromium's GPU process: Steam's browser, WebView2, Qt WebEngine) starts on it | CI graphics tests (`d3dtest`, `d3dtest angle`) |
 | **Venus** (App Store, Runtimes) | Works in QEMU | Vulkan, and Direct3D through DXVK, on the host GPU when QEMU gives NovaOS a 3D virtio-gpu | CI graphics tests |
@@ -66,11 +66,14 @@ results; until then they are kept by hand.
 | **Visual C++ Redistributable** (App Store) | Works | NovaOS has its own `vcruntime140` and `msvcp140`, so most programs do not need it, but GOG GALAXY needs its MFC.  Its installer (WiX Burn) installs the Minimum and Additional Runtimes, the 32-bit one into `SysWOW64` and the 64-bit one into `System32` (14.44 x86 and 14.51 x64 checked), replacing NovaOS's own copies there | by hand |
 | **Microsoft Build of OpenJDK 21** (App Store) | Untested | Temurin 21 (above) works | — |
 | **OpenTTD 15.3** (App Store; free on GOG; the corpus installs OpenTTD's own Windows installer, as GOG's copy needs an account to download) | Works | Its setup program installs it silently (run as administrator, as its manifest asks); with the OpenGFX graphics it reaches its main menu, and its animated title game plays, drawn in software (no hardware acceleration yet) | nightly corpus |
-| **GOG GALAXY 2.1** (offline installer, Inno Setup 6) | Partly | Its setup program runs elevated, through its wizard or silently (`/VERYSILENT`), installs the Visual C++ runtimes it carries (x86 and x64), copies GOG GALAXY's files and makes its shortcuts; the client starts (`GalaxyClient.exe`, 64-bit, Qt 6 WebEngine: every import resolves, 89 modules, and the Windows Runtime `UISettings` its Qt plugin reads the theme from), installs its service and opens its window, but stops after that: its service (`GalaxyClientService.exe`) ends at start-up with "abnormal program termination", so starting it fails with error 1053, and the client then faults. Setup warns that drive C: is not NTFS (answer Yes) | by hand |
-| **Steam** (App Store, the current client) | Partly | Its installer runs and installs the bootstrapper; on first start Steam downloads its client over HTTPS, updates itself to the 64-bit client, verifies it and starts it with `SteamService` (which runs as a real service) and its browser, `steamwebhelper.exe` (Chromium); the browser does not open the login window yet ([Steam](#steam)). Signing in and games are unchecked | nightly corpus (install and update) |
+| **GOG GALAXY 2.1** (offline installer, Inno Setup 6) | Partly | Its setup program runs elevated, through its wizard or silently (`/VERYSILENT`), installs the Visual C++ runtimes it carries (x86 and x64), copies GOG GALAXY's files and makes its shortcuts; the client starts (`GalaxyClient.exe`, 64-bit, Qt 6 WebEngine: every import resolves, 89 modules, and the Windows Runtime `UISettings` its Qt plugin reads the theme from), installs and starts its service (`GalaxyClientService.exe`, which trusts the client and answers its requests over 127.0.0.1:9978), opens its window and warns that drive C: is not NTFS; past that warning it finishes initialising, opens its sign-in window and starts its first Chromium renderer (`QtWebEngineProcess.exe`), which needs the App Store's Mesa 3D (Qt then draws with its OpenGL; without it Qt ends the client: "Could not get handle for shared context") and DXVK (Chromium's Direct3D 11, through ANGLE); with both, Chromium's compositor stops because DXVK on lavapipe cannot share Direct3D 11 textures between devices. Setup warns that drive C: is not NTFS (answer Yes) | by hand |
+| **Steam** (App Store, the current client) | Partly | Its installer runs and installs the bootstrapper; on first start Steam downloads its client over HTTPS, updates itself to the 64-bit client, verifies it and starts it with `SteamService` (which runs as a real service) and its browser, `steamwebhelper.exe` (Chromium); the browser starts its GPU, network, storage and page processes but does not open the login window yet ([Steam](#steam)). Signing in and games are unchecked | nightly corpus (install and update) |
 | **Chocolate Doom 3.1.0** (32-bit, SDL2) with **Freedoom** | Works | Plays in a window on Mesa 3D's OpenGL (install "Mesa 3D" from the App Store first) in the right colours; an Xbox or HID game pad walks, turns and fires | by hand in QEMU; graphics self-test `gltest colors` |
 | **Beneath a Steel Sky** on **ScummVM 2026.3** (App Store; free on GOG, which ships it with ScummVM; the corpus takes the freeware floppy release Revolution and ScummVM publish, as GOG's copy needs an account to download) | Works | ScummVM's setup program (Inno Setup, 32-bit, installing the 64-bit ScummVM) installs it silently or through its wizard; the game starts, Esc skips the intro and a click walks Robert Foster along the first scene's gantry. ScummVM draws with OpenGL 1.1, NovaOS's own when no OpenGL driver is installed; sound not checked yet (the corpus runs without a sound card) | nightly corpus |
-| **Teeworlds 0.7.5** (App Store; free and open source, SDL2) | Partly | Installs from the App Store and starts in full screen on Mesa 3D's OpenGL (install "Mesa 3D" first: it needs OpenGL 1.2), plays its menu music through the sound card and goes through its first-start questions to its start menu with the keyboard. The mouse does not move in it yet (SDL's relative mouse mode reads Raw Input); joining a game on its own server times out without KVM, while Mesa compiles its shaders | nightly corpus |
+| **Teeworlds 0.7.5** (App Store; free and open source, SDL2) | Partly | Installs from the App Store and starts in full screen on Mesa 3D's OpenGL (install "Mesa 3D" first: it needs OpenGL 1.2), plays its menu music through the sound card and goes through its first-start questions to its start menu with the keyboard, and its menus follow the mouse with its default settings (SDL reads the pointer's moves and recentres it with `SetCursorPos`; with `inp_grab 1` it reads Raw Input instead; the corpus opens Settings with a click). Joining a game on its own server times out without KVM, while Mesa compiles its shaders | nightly corpus |
+| **OpenTyrian 2.1.20260913** (App Store; Tyrian 2.1, freeware since 2004, on the free and open-source OpenTyrian engine; SDL2) | Works | Installs from the App Store (the official 64-bit zip, which carries the freeware game data) and draws with Direct3D 9, SDL's first choice on Windows, through DXVK on Mesa 3D's Vulkan (install "Mesa 3D" and "DXVK" first). Its demo plays in a window, Alt+Enter switches it to full screen (the Direct3D 9 device is reset at the display's size), its music plays through the sound card, and the keyboard takes it through its menus into a new game. Full screen is SDL's desktop full screen, so the display mode does not change | nightly corpus |
+| **Blobby Volley 2 1.1.1** (App Store; free and open source, GPL; 32-bit, SDL2) | Works | Installs from the App Store (the official zip) and plays in an 800x600 window. Its Fullscreen option is a real display-mode switch: SDL changes the display to 800x600 (`ChangeDisplaySettingsEx`) and draws with Direct3D 9 in exclusive full screen through DXVK on Mesa 3D's Vulkan (install "Mesa 3D" and "DXVK" first; without them it draws with SDL's software renderer); the display goes back to its own mode when the game ends | nightly corpus |
+| **LBreakout2 2.6.5** (App Store; free and open source, GPL; 64-bit, SDL 1.2) | Works | Installs from the App Store (the official zip) and plays in a 640x480 window, drawn with GDI (SDL 1.2's `windib` driver: a 16-bit DIB section blitted with `BitBlt`). Its full screen ('f' anywhere) switches the display to 640x480 with `ChangeDisplaySettings` and takes the frame off its window (`WS_POPUP`); 'f' again, or ending the game, puts the display and the frame back | nightly corpus |
 
 <!-- END generated:compat-table -->
 
@@ -201,11 +204,19 @@ DllMain deliberately crashes on a detach it does not expect), and its
 `__C_specific_handler` and `RtlUnwindEx` no longer run a `__finally`
 twice when an exception is caught by an `__except` inside it (the
 Microsoft C++ runtime re-raises a rethrow from such a block, and
-`oneauth.dll` aborted the browser on it).  What comes next: the
-controller (and so a page) is not made yet: the GPU process finds no
-Direct3D 11 adapter and exits, the first browser process ends and the
-loader starts another, and `CreateCoreWebView2Controller` fails with
-`RPC_E_DISCONNECTED`.  64-bit programs that look for a machine-wide
+`oneauth.dll` aborted the browser on it).  The browser then connects
+to the host's pipe and checks that the pipe's server is the host
+(`GetNamedPipeServerProcessId`); NovaOS's pipes now keep both ends'
+process ids, so it keeps the connection and makes the WebView's window
+(it also needed shlwapi's ordinal 14, `GetAcceptLanguagesA`).  What
+comes next: the host moves that window into its own with `SetParent`
+and `SetWindowPos`, but the window belongs to the browser process, and
+NovaOS's windows cannot yet go inside another process's window, so
+`CreateCoreWebView2Controller` fails with `0x80070578`
+(`ERROR_INVALID_WINDOW_HANDLE`) and there is no page yet.  The GPU
+process finds no Direct3D 11 adapter for ANGLE (none without DXVK, as on
+a PC with no Direct3D driver) and the browser goes on in software.
+64-bit programs that look for a machine-wide
 runtime under Windows' `WOW6432Node` registry view also need that view
 (the per-user install records itself under `HKEY_CURRENT_USER`, which
 has none).
@@ -241,7 +252,18 @@ them, and the browser keeps running: under emulation it starts its GPU,
 network and storage processes, creates Steam's first browser ("SP Shared
 JS Context") and launches its page process about eight minutes in, which
 is as far as the corpus test's fifteen minutes reach.  `steam.exe` also
-asks for `IDWriteFactory5` and goes on without it.
+asks for `IDWriteFactory5` and goes on without it.  Run longer, the
+browser restarted every few minutes: its network process got Winsock
+error 10038 from `connect` on a UDP socket (Chromium's DNS client), which
+NovaOS's kernel did not support, it hands sockets between processes with
+`WSADuplicateSocket`, which was missing, and the browser process stopped
+on a check that a file handle it passes to a child is read-only
+(`NtQueryObject` reported every handle as holding all rights).  All three
+are fixed; the browser no longer stops, and about half an hour in Steam
+opens its first window of its own, an "Unexpected Transport Error"
+dialog, drawn by the browser but with its text missing.  Its network
+process still ends and restarts every minute or two, which is the next
+thing to find.
 What is known to be missing on the way, each a NovaOS gap and none a
 reason to change Steam:
 
@@ -277,6 +299,9 @@ reason to change Steam:
   (`WSALookupServiceBegin` has no providers, error 10108).
 - DirectWrite's GDI interop (`CreateBitmapRenderTarget`), which Chromium
   draws text with.
+- The "Thread creation failed" messages `steam.exe` logged once under
+  load did not come back in about three hours of runs; NovaOS logs a
+  refused thread (`no new thread`) and never did.
 
 How to check the rest by hand, which needs a Steam account and so is not
 in the corpus: start Steam from the App Store, sign in (or pick "Go
