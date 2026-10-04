@@ -38,6 +38,10 @@
   `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`),
   `wintab32` (Wintab pen tablets: pressure, tilt and barrel rotation for GTK,
   Qt and Krita), `cabinet` (the FDI functions installers extract cabinets
-  with, MSZIP and LZX, on `msi`'s cabinet readers), and
+  with, MSZIP and LZX, on `msi`'s cabinet readers), `wldap32` (LDAP
+  sessions, for programs that link to it; no directory servers yet),
+  `opengl32` (Mesa from the App Store, or with no driver NovaOS's own
+  OpenGL 1.1, which draws 2D as ScummVM needs: textures, vertex arrays,
+  blending, scissor), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
   `dhcpcsvc`, `d3dcompiler_47`), and more.

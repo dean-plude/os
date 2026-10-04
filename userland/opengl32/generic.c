@@ -7,9 +7,13 @@
  * current, ask what it got (GL_VERSION "1.1.0", GL_RENDERER "GDI Generic",
  * no extensions, no wglGetProcAddress functions), clear, read pixels back
  * and swap buffers onto its window.  That is what programs that need more
- * look at before they fall back to drawing without OpenGL (Qt, Krita,
- * SDL); nothing else draws (every other gl* call does nothing).  The App
- * Store's Mesa 3D or Venus replace all of it with a real OpenGL.
+ * look at before they fall back to drawing without OpenGL (Qt, Krita).
+ * Programs that draw in 2D with OpenGL 1.1 itself (ScummVM, SDL's OpenGL
+ * renderer) get what they need for that (draw.c): textures, the matrix
+ * stacks, vertex arrays and glBegin/glEnd, and triangles filled with a
+ * colour or a texture, blended and scissored; no lighting, depth, fog,
+ * lines or points (those calls do nothing).  The App Store's Mesa 3D or
+ * Venus replace all of it with a real OpenGL.
  */
 #include <windows.h>
 
@@ -26,28 +30,8 @@ typedef struct {
     DWORD dwLayerMask, dwVisibleMask, dwDamageMask;
 } PFD;
 
-#define GL_VENDOR             0x1F00
-#define GL_RENDERER           0x1F01
-#define GL_VERSION            0x1F02
-#define GL_EXTENSIONS         0x1F03
-#define GL_VIEWPORT           0x0BA2
-#define GL_MAX_TEXTURE_SIZE   0x0D33
-#define GL_MAX_VIEWPORT_DIMS  0x0D3A
-#define GL_COLOR_BUFFER_BIT   0x4000
-#define GL_RGBA               0x1908
-#define GL_BGRA               0x80E1
-#define GL_UNSIGNED_BYTE      0x1401
-#define GL_INVALID_ENUM       0x0500
 
-typedef struct Ctx {
-    DWORD magic;
-    int vp[4];                    /* glViewport */
-    BYTE clear[4];                /* glClearColor, as B, G, R, A */
-    DWORD *back;                  /* the back buffer, bottom-up BGRA */
-    int w, h;
-    DWORD error;
-} Ctx;
-#define CTX_MAGIC 0x4C474E56      /* "VNGL" */
+#include "generic.h"
 
 static DWORD g_tls = TLS_OUT_OF_INDEXES;
 typedef struct { Ctx *ctx; HDC dc; } Cur;
@@ -67,7 +51,7 @@ static Cur *cur(int create)
     return c;
 }
 
-static Ctx *current(void)
+Ctx *current(void)
 {
     Cur *c = cur(0);
     return c ? c->ctx : 0;
@@ -83,7 +67,7 @@ static void size_of(HDC dc, int *w, int *h)
     *h = r.bottom - r.top > 0 ? r.bottom - r.top : 1;
 }
 
-static int fit(Ctx *x, HDC dc)
+int fit(Ctx *x, HDC dc)
 {
     int w, h;
     size_of(dc, &w, &h);
@@ -93,6 +77,14 @@ static int fit(Ctx *x, HDC dc)
     if (x->back) HeapFree(GetProcessHeap(), 0, x->back);
     x->back = b; x->w = w; x->h = h;
     return 1;
+}
+
+/* The current context with its back buffer the window's size (draw.c) */
+Ctx *current_drawing(void)
+{
+    Cur *c = cur(0);
+    Ctx *x = c ? c->ctx : 0;
+    return x && fit(x, c->dc) ? x : 0;
 }
 
 /* ---- wgl ---- */
@@ -127,6 +119,7 @@ static HGLRC WINAPI g_CreateContext(HDC dc)
     Ctx *x = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*x));
     if (!x) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
     x->magic = CTX_MAGIC;
+    gl_init_state(x);
     return (HGLRC)x;
 }
 
@@ -143,6 +136,7 @@ static BOOL WINAPI g_DeleteContext(HGLRC h)
     Cur *c = cur(0);
     if (c && c->ctx == x) { c->ctx = 0; c->dc = 0; }
     x->magic = 0;
+    gl_free_state(x);
     if (x->back) HeapFree(GetProcessHeap(), 0, x->back);
     HeapFree(GetProcessHeap(), 0, x);
     return TRUE;
@@ -214,7 +208,11 @@ static void WINAPI g_GetIntegerv(unsigned name, int *v)
     if (!x || !v) return;
     switch (name) {
     case GL_VIEWPORT: for (int i = 0; i < 4; i++) v[i] = x->vp[i]; return;
-    case GL_MAX_TEXTURE_SIZE: v[0] = 1024; return;
+    case GL_MAX_TEXTURE_SIZE: v[0] = GL_TEX_MAX; return;
+    case GL_SCISSOR_BOX: for (int i = 0; i < 4; i++) v[i] = x->scissor[i]; return;
+    case GL_MATRIX_MODE: v[0] = 0x1700 + x->mode; return;
+    case GL_TEXTURE_BINDING_2D: v[0] = (int)x->bound; return;
+    case GL_UNPACK_ALIGNMENT: v[0] = x->unpack_align; return;
     case GL_MAX_VIEWPORT_DIMS: v[0] = v[1] = 16384; return;
     }
     v[0] = 0;
@@ -242,7 +240,10 @@ static void WINAPI g_Clear(unsigned mask)
     Ctx *x = c ? c->ctx : 0;
     if (!x || !(mask & GL_COLOR_BUFFER_BIT) || !fit(x, c->dc)) return;
     DWORD v = (DWORD)x->clear[0] | (DWORD)x->clear[1] << 8 | (DWORD)x->clear[2] << 16 | (DWORD)x->clear[3] << 24;
-    for (int i = 0, n = x->w * x->h; i < n; i++) x->back[i] = v;
+    int x0 = 0, y0 = 0, x1 = x->w, y1 = x->h;
+    if (x->enabled & EN_SCISSOR) clip_scissor(x, &x0, &y0, &x1, &y1);
+    for (int r = y0; r < y1; r++)
+        for (int k = x0; k < x1; k++) x->back[r * x->w + k] = v;
 }
 
 static void WINAPI g_ReadPixels(int x0, int y0, int w, int h, unsigned format, unsigned type, void *data)

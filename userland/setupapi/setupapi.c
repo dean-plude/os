@@ -113,3 +113,20 @@ SETUPAPI DWORD WINAPI CM_Locate_DevNodeA(PDWORD dn, LPCSTR id, ULONG flags)
     cm_locate_fn f = (cm_locate_fn)cfgmgr("CM_Locate_DevNodeA");
     return f ? f(dn, id, flags) : 0x0D /* CR_NO_SUCH_DEVNODE */;
 }
+typedef DWORD (WINAPI *cm_parent_fn)(PDWORD, DWORD, ULONG);
+typedef DWORD (WINAPI *cm_id_fn)(DWORD, void *, ULONG, ULONG);
+SETUPAPI DWORD WINAPI CM_Get_Parent(PDWORD parent, DWORD dn, ULONG flags)
+{
+    cm_parent_fn f = (cm_parent_fn)cfgmgr("CM_Get_Parent");
+    return f ? f(parent, dn, flags) : 0x0D /* CR_NO_SUCH_DEVNODE */;
+}
+SETUPAPI DWORD WINAPI CM_Get_Device_IDA(DWORD dn, char *buf, ULONG len, ULONG flags)
+{
+    cm_id_fn f = (cm_id_fn)cfgmgr("CM_Get_Device_IDA");
+    return f ? f(dn, buf, len, flags) : 0x0D /* CR_NO_SUCH_DEVNODE */;
+}
+SETUPAPI DWORD WINAPI CM_Get_Device_IDW(DWORD dn, WCHAR *buf, ULONG len, ULONG flags)
+{
+    cm_id_fn f = (cm_id_fn)cfgmgr("CM_Get_Device_IDW");
+    return f ? f(dn, buf, len, flags) : 0x0D /* CR_NO_SUCH_DEVNODE */;
+}
