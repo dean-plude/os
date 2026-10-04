@@ -1,0 +1,9 @@
+import "ndrdisp.idl";
+[object, dual, uuid(6e0f3a10-4d2b-4c55-9a51-7c0de0a1b003)]
+interface INdrDual : IDispatch {
+    HRESULT Concat([in] BSTR a, [in] BSTR b, [out, retval] BSTR *r);
+    HRESULT Describe([in] VARIANT v, [out, retval] VARIANT *r);
+    HRESULT Twice([in, out] VARIANT *v);
+    HRESULT Pid([out, retval] LONG *pid);
+    HRESULT Call([in] INdrDual *cb, [in] BSTR text, [out, retval] BSTR *r);
+}

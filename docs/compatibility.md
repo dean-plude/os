@@ -148,13 +148,17 @@ functions it calls: Task Scheduler 2.0, the Data Protection API,
 `UrlCombine`, the package-name functions, the MDM enrolment check and
 others), reads its manifests with MSXML 6 and installs itself.  Its
 `/regserver` step registers its proxy/stub DLL (`psmachine.dll`) through
-rpcrt4's NDR engine.  What comes next, in order: Edge Update hands the
-install to its own COM server in another process (NovaOS's COM calls stay
-in one process so far: ole32 still has to marshal them over a channel and
-start `LocalServer32` servers), the 32-bit updater's registry keys need
-Windows' `WOW6432Node` view for the 64-bit programs that look for the
-runtime there, and then the runtime itself (a Chromium browser process
-with its sandbox) has to run.
+rpcrt4's NDR engine, and COM calls between processes work (ole32's
+standard marshaler over named pipes, `LocalServer32` servers started on
+demand, oleaut32's `IDispatch` proxy and `BSTR`/`VARIANT` marshaling).
+Its silent install now runs to the end: it unpacks the runtime's package
+and then stops at its own check that the package carries Microsoft's
+signature ("failed to verify Microsoft signature", `0xa0430233`), so
+nothing is installed yet.  What comes next, in order: that signature
+check, the 32-bit updater's registry keys need Windows' `WOW6432Node`
+view for the 64-bit programs that look for the runtime there, and then
+the runtime itself (a Chromium browser process with its sandbox) has to
+run.
 
 ## Steam
 

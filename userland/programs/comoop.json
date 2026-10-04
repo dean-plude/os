@@ -1,0 +1,5 @@
+{
+  "x86": true,
+  "selftest": true,
+  "libs": ["ole32", "oleaut32", "advapi32"]
+}
