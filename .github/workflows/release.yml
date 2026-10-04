@@ -111,7 +111,9 @@ jobs:
         run: |
           files=(dist/nova.iso dist/nova.iso.sha256 dist/kernel.elf dist/bootx64.efi
                  dist/novaos-update.txt dist/SHA256SUMS)
-          if [ "$PRERELEASE" = true ]; then mark=(--prerelease --latest=false); else mark=(--latest); fi
+          # a release made on the web page first may carry "pre-release", which
+          # can never be Latest: clear it explicitly for a plain version
+          if [ "$PRERELEASE" = true ]; then mark=(--prerelease --latest=false); else mark=(--prerelease=false --latest); fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
             gh release edit "$GITHUB_REF_NAME" --title "NovaOS $VERSION" --notes-file notes.md "${mark[@]}"
