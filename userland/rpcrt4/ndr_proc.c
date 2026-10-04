@@ -22,7 +22,11 @@ typedef struct {
     PFORMAT_STRING params;
 } Proc;
 
-typedef struct { unsigned short attr, offset; PFORMAT_STRING type; } Param;
+/* @indirect: widl describes a top-level [string] pointer parameter
+ * (WCHAR **) by its pointee's type (FC_OP or FC_UP to the string, with a
+ * server allocation size) instead of MIDL's ref pointer to it, so the
+ * stack slot holds where that pointer lives */
+typedef struct { unsigned short attr, offset; PFORMAT_STRING type; int indirect; } Param;
 
 static int parse_proc(PFORMAT_STRING p, Proc *pr)
 {
@@ -62,6 +66,8 @@ static void get_param(const Proc *pr, const MIDL_STUB_DESC *desc, unsigned i, Pa
     out->attr = rd16(q);
     out->offset = rd16(q + 2);
     out->type = out->attr & PA_BASETYPE ? q + 4 : desc->pFormatTypes + rd16(q + 4);
+    out->indirect = !(out->attr & (PA_BASETYPE | PA_SIMPLEREF | PA_BYVALUE)) && (out->attr >> 13)
+                    && (out->type[0] == FC_UP || out->type[0] == FC_OP || out->type[0] == FC_FP);
 }
 
 /* a parameter's value as the Ndr*Marshall routines take it */
@@ -75,7 +81,16 @@ static unsigned char *param_mem(PMIDL_STUB_MESSAGE sm, const Param *p, unsigned 
         (void)sm;
         return slot;
     }
+    if (p->indirect) {
+        unsigned char **at = *(unsigned char ***)slot;
+        return at ? *at : NULL;
+    }
     return *(unsigned char **)slot;
+}
+/* where an [out] parameter's value is unmarshaled to */
+static unsigned char **param_loc(const Param *p, unsigned char *slot)
+{
+    return p->indirect ? *(unsigned char ***)slot : (unsigned char **)slot;
 }
 
 static HRESULT status_hr(LONG_PTR e)
@@ -104,6 +119,7 @@ static void clear_out(PMIDL_STUB_MESSAGE sm, const Param *p, unsigned char *slot
     if (!target) return;
     unsigned long n;
     if (p->attr & PA_BASETYPE) n = ndr_base_memsize(p->type[0]);
+    else if (p->indirect) n = sizeof(void *);
     else if (p->attr & PA_SIMPLEREF) n = ndr_memsize(sm, p->type);
     else if (ndr_is_pointer(p->type[0])) {
         PFORMAT_STRING f = p->type;
@@ -121,7 +137,14 @@ static LONG_PTR client_call(const MIDL_STUBLESS_PROXY_INFO *info, unsigned metho
     PFORMAT_STRING fmt = info->ProcFormatString + info->FormatStringOffset[method];
     Proc pr;
     if (!parse_proc(fmt, &pr)) return RPC_X_BAD_STUB_DATA;
-    if (stack_size) *stack_size = pr.stack_size;
+    if (stack_size) {                              /* what the callee pops: the return value's slot is counted but not passed */
+        Param r;
+        *stack_size = pr.stack_size;
+        for (unsigned i = 0; i < pr.nparams; i++) {
+            get_param(&pr, desc, i, &r);
+            if (r.attr & PA_RETURN) *stack_size = r.offset;
+        }
+    }
     StdProxy *px = PROXY_FROM_IFACE(*(void **)args);
     IRpcChannelBuffer *chan = px->chan;
     if (!chan) return CO_E_OBJNOTCONNECTED;
@@ -193,8 +216,9 @@ static LONG_PTR client_call(const MIDL_STUBLESS_PROXY_INFO *info, unsigned metho
             if (p.attr & PA_BASETYPE) {
                 if (*(unsigned char **)slot) ndr_base_unmarshal(&sm, *(unsigned char **)slot, p.type[0]);
                 else ndr_fail(&sm, RPC_X_NULL_REF_POINTER);
-            } else
-                ndr_unmarshal_type(&sm, (unsigned char **)slot, p.type, 0);
+            } else if (param_loc(&p, slot))
+                ndr_unmarshal_type(&sm, param_loc(&p, slot), p.type, 0);
+            else ndr_fail(&sm, RPC_X_NULL_REF_POINTER);
         }
     }
     if (NDR_FAILED(&sm)) hr = status_hr(NDR_ERR(&sm));
@@ -204,7 +228,7 @@ done:
     if (FAILED(hr)) {
         for (unsigned i = 0; i < pr.nparams; i++) {               /* failed: [out] parameters come back empty */
             get_param(&pr, desc, i, &p);
-            if ((p.attr & (PA_OUT | PA_RETURN)) == PA_OUT) clear_out(&sm, &p, args + p.offset);
+            if ((p.attr & (PA_IN | PA_OUT | PA_RETURN)) == PA_OUT) clear_out(&sm, &p, args + p.offset);
         }
         return hr;
     }
@@ -273,14 +297,22 @@ __asm__(
     "  .set ndr_i, ndr_i + 1\n"
     ".endr\n"
     /* ndr_invoke(fn, args, bytes): the call with @args as its stack and
-     * the first four in rcx/rdx/r8/r9 and xmm0-3 */
+     * the first four in rcx/rdx/r8/r9 and xmm0-3.  It has unwind data so
+     * an exception in the server method reaches call_server's handler */
     ".p2align 4\n"
     ".globl ndr_invoke\n"
+    ".def ndr_invoke; .scl 2; .type 32; .endef\n"
     "ndr_invoke:\n"
+    ".seh_proc ndr_invoke\n"
     "  pushq %rbp\n"
-    "  movq %rsp, %rbp\n"
+    ".seh_pushreg %rbp\n"
     "  pushq %rsi\n"
+    ".seh_pushreg %rsi\n"
     "  pushq %rdi\n"
+    ".seh_pushreg %rdi\n"
+    "  movq %rsp, %rbp\n"
+    ".seh_setframe %rbp, 0\n"
+    ".seh_endprologue\n"
     "  movq %rcx, %rax\n"
     "  movq %rdx, %rsi\n"
     "  movq %r8, %rcx\n"
@@ -305,11 +337,12 @@ __asm__(
     "  movsd 16(%rsp), %xmm2\n"
     "  movsd 24(%rsp), %xmm3\n"
     "  callq *%r10\n"
-    "  leaq -16(%rbp), %rsp\n"
+    "  leaq 0(%rbp), %rsp\n"
     "  popq %rdi\n"
     "  popq %rsi\n"
     "  popq %rbp\n"
-    "  retq\n");
+    "  retq\n"
+    ".seh_endproc\n");
 #else
 __attribute__((used)) LONG_PTR __cdecl ndr_stubless_x86(void **args, unsigned method, unsigned *stack_size)
 {
@@ -428,6 +461,7 @@ static void alloc_out(PMIDL_STUB_MESSAGE sm, const Param *p, unsigned char *slot
     unsigned long n = 0;
     PFORMAT_STRING t = p->type;
     if (p->attr & PA_BASETYPE) n = ndr_base_memsize(t[0]);
+    else if (p->indirect) n = sizeof(void *);
     else if (!(p->attr & PA_SIMPLEREF) && ndr_is_pointer(t[0])) {
         if (t[1] & FC_POINTER_DEREF) n = sizeof(void *);
         else if (t[1] & FC_SIMPLE_POINTER) n = ndr_base_memsize(t[2]);
@@ -498,6 +532,10 @@ static long stub_call(IRpcStubBuffer *This, IRpcChannelBuffer *chan, PRPC_MESSAG
                 if (n != 1 && n != 2 && n != 4 && n != 8) at = *(unsigned char **)slot = ndr_alloc(&sm, n);
 #endif
                 if (at) ndr_unmarshal_type(&sm, &at, p.type, 0);
+            } else if (p.indirect) {
+                unsigned char **at = ndr_alloc(&sm, sizeof(void *));
+                *(unsigned char ***)slot = at;
+                if (at) ndr_unmarshal_type(&sm, at, p.type, 1);
             } else
                 ndr_unmarshal_type(&sm, (unsigned char **)slot, p.type, 1);
         } else if (p.attr & PA_OUT)
@@ -553,6 +591,10 @@ static long stub_call(IRpcStubBuffer *This, IRpcChannelBuffer *chan, PRPC_MESSAG
             unsigned char *m = param_mem(&sm, &p, slot);
             ndr_free_type(&sm, m, p.type);
             if (m != slot) ndr_free(&sm, m);
+        } else if (p.indirect) {
+            unsigned char **at = *(unsigned char ***)slot;
+            if (at) ndr_free_type(&sm, *at, p.type);
+            ndr_free(&sm, at);
         } else {
             unsigned char *m = *(unsigned char **)slot;
             ndr_free_type(&sm, m, p.type);

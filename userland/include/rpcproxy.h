@@ -106,6 +106,7 @@ RPCRTAPI HRESULT STDMETHODCALLTYPE IUnknown_QueryInterface_Proxy(IUnknown *This,
 RPCRTAPI ULONG STDMETHODCALLTYPE IUnknown_AddRef_Proxy(IUnknown *This);
 RPCRTAPI ULONG STDMETHODCALLTYPE IUnknown_Release_Proxy(IUnknown *This);
 RPCRTAPI void __RPC_STUB NdrStubForwardingFunction(IRpcStubBuffer *This, IRpcChannelBuffer *chan, PRPC_MESSAGE msg, DWORD *phase);
+#define STUB_FORWARDING_FUNCTION NdrStubForwardingFunction
 
 /* the older (/Os) proxies and stubs that marshal by code instead of by format string */
 RPCRTAPI void RPC_ENTRY NdrProxyInitialize(void *This, PRPC_MESSAGE msg, PMIDL_STUB_MESSAGE sm, PMIDL_STUB_DESC desc, unsigned int proc);

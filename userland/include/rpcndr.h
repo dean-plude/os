@@ -6,6 +6,14 @@
 #include <rpc.h>
 #include <string.h>
 
+/* what MIDL- and widl-generated headers and _i.c files expect */
+#ifndef CONST_VTBL
+#define CONST_VTBL const
+#endif
+#ifndef DECLSPEC_SELECTANY
+#define DECLSPEC_SELECTANY __declspec(selectany)
+#endif
+
 _NOVA_BEGIN
 
 struct IRpcStubBuffer;
@@ -208,7 +216,7 @@ struct _MIDL_SYNTAX_INFO {
     ULONG_PTR pReserved2;
 };
 typedef struct _MIDL_SERVER_INFO_ {
-    PMIDL_STUB_DESC pStubDesc;
+    const MIDL_STUB_DESC *pStubDesc;          /* (MIDL's tables are const) */
     const SERVER_ROUTINE *DispatchTable;
     PFORMAT_STRING ProcString;
     const unsigned short *FmtStringOffset;
@@ -218,7 +226,7 @@ typedef struct _MIDL_SERVER_INFO_ {
     PMIDL_SYNTAX_INFO pSyntaxInfo;
 } MIDL_SERVER_INFO, *PMIDL_SERVER_INFO;
 typedef struct _MIDL_STUBLESS_PROXY_INFO {
-    PMIDL_STUB_DESC pStubDesc;
+    const MIDL_STUB_DESC *pStubDesc;
     PFORMAT_STRING ProcFormatString;
     const unsigned short *FormatStringOffset;
     PRPC_SYNTAX_IDENTIFIER pTransferSyntax;

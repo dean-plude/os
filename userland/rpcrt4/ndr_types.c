@@ -223,7 +223,7 @@ static PFORMAT_STRING pointee_fmt(PFORMAT_STRING f)
 static void pointee_op(PMIDL_STUB_MESSAGE sm, int mode, unsigned char *ptr, unsigned char **loc, PFORMAT_STRING f, int alloc)
 {
     PFORMAT_STRING d = pointee_fmt(f);
-    if (f[1] & FC_SIMPLE_POINTER) {
+    if ((f[1] & FC_SIMPLE_POINTER) && ndr_base_size(d[0])) {       /* (simple pointers to strings take the general path) */
         switch (mode) {
         case M_SIZE: ndr_base_size_type(sm, d[0]); break;
         case M_MARSHAL: ndr_base_marshal(sm, ptr, d[0]); break;
