@@ -1975,6 +1975,13 @@ K32 BOOL WINAPI QueryMemoryResourceNotification(HANDLE h, PBOOL state)
 /* Windows Error Reporting: nothing is reported */
 K32 HRESULT WINAPI WerRegisterRuntimeExceptionModule(PCWSTR dll, PVOID ctx) { (void)dll; (void)ctx; return S_OK; }
 K32 HRESULT WINAPI WerUnregisterRuntimeExceptionModule(PCWSTR dll, PVOID ctx) { (void)dll; (void)ctx; return S_OK; }
+/* OOBEComplete: whether the out-of-box setup (Windows' first-start pages) is done */
+K32 BOOL WINAPI OOBEComplete(BOOL *done)
+{
+    if (!done) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    *done = TRUE;
+    return TRUE;
+}
 K32 HRESULT WINAPI WerSetFlags(DWORD f) { (void)f; return S_OK; }
 K32 HRESULT WINAPI WerGetFlags(HANDLE p, PDWORD f) { (void)p; if (f) *f = 0; return S_OK; }
 K32 HRESULT WINAPI WerRegisterMemoryBlock(PVOID p, DWORD n) { (void)p; (void)n; return S_OK; }

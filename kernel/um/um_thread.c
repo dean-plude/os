@@ -17,6 +17,7 @@
 #include "../lib/string.h"
 #include "../arch/x86_64/cpu.h"
 #include "../net/tls.h"
+#include "../fs/persist.h"
 
 #define ST_SUCCESS                0x00000000u
 #define ST_ABANDONED              0x00000080u
@@ -1330,34 +1331,40 @@ typedef struct {
 /* File-backed sections hold a copy of the file: it is filled at creation
  * and written back (whole) while the file is still there. Programs that
  * read the file through ReadFile meanwhile see the copy only once it is
- * written back, as on a flush. */
+ * written back, as on a flush.  Both go a megabyte at a time, letting go
+ * of the file-system lock in between: a large file's (Chromium's setup
+ * maps its 728 MB archive) would otherwise hold the desktop up for
+ * seconds. */
+#define SECTION_CHUNK_PAGES 256
+
 static void section_fill(UmSection *sec)
 {
-    DesktopLock();
-    RamNode *f = sec->file;
-    UINT64 left = f->size < sec->size ? f->size : sec->size;
-    for (UINT64 i = 0; i < sec->npages && left; i++) {
-        UINT64 n = left < PAGE_SIZE ? left : PAGE_SIZE;
-        memcpy(um_frame_ptr(sec->frames[i]), f->data + i * PAGE_SIZE, n);
-        left -= n;
+    for (UINT64 i = 0; i < sec->npages; ) {
+        DesktopLock();
+        RamNode *f = sec->file;                             /* (its data may move between chunks) */
+        for (UINT64 end = i + SECTION_CHUNK_PAGES; i < sec->npages && i < end; i++) {
+            UINT64 at = i * PAGE_SIZE, have = f->size < sec->size ? f->size : sec->size;
+            if (at >= have) { i = sec->npages; break; }
+            memcpy(um_frame_ptr(sec->frames[i]), f->data + at, have - at < PAGE_SIZE ? have - at : PAGE_SIZE);
+        }
+        DesktopUnlock();
     }
-    DesktopUnlock();
 }
 
 static void section_writeback(UmSection *sec)
 {
     if (!sec->file || !sec->writable) return;
-    DesktopLock();
-    RamNode *f = sec->file;
-    if (f->parent || f == RamfsRoot()) {                    /* not deleted meanwhile */
-        UINT64 left = sec->size;
-        for (UINT64 i = 0; i < sec->npages && left; i++) {
-            UINT64 n = left < PAGE_SIZE ? left : PAGE_SIZE;
-            if (!RamfsWriteAt(f, (UINT32)(i * PAGE_SIZE), um_frame_ptr(sec->frames[i]), (UINT32)n)) break;
-            left -= n;
+    for (UINT64 i = 0; i < sec->npages; ) {
+        DesktopLock();
+        RamNode *f = sec->file;
+        if (!f->parent && f != RamfsRoot()) { DesktopUnlock(); return; }   /* deleted meanwhile */
+        for (UINT64 end = i + SECTION_CHUNK_PAGES; i < sec->npages && i < end; i++) {
+            UINT64 at = i * PAGE_SIZE;
+            UINT64 n = sec->size - at < PAGE_SIZE ? sec->size - at : PAGE_SIZE;
+            if (!RamfsWriteAt(f, (UINT32)at, um_frame_ptr(sec->frames[i]), (UINT32)n)) { DesktopUnlock(); return; }
         }
+        DesktopUnlock();
     }
-    DesktopUnlock();
 }
 
 static void section_destroy(UmObject *o)
@@ -1453,19 +1460,26 @@ static UINT64 sys_create_section(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (!file) return ST_INVALID_HANDLE;
         if (!read) return 0xC0000032U;                          /* DISK_CORRUPT_ERROR */
     }
-    if (!size) { if (file) { DesktopLock(); RamfsUnref(file); DesktopUnlock(); } return file ? 0xC000011EU /* MAPPED_FILE_SIZE_ZERO */ : ST_INVALID_PARAMETER; }
+    bool writable = (prot & 0xFF) == 0x04 || (prot & 0xFF) == 0x40;   /* READWRITE, EXECUTE_READWRITE */
+    UINT64 r_ = !size ? (file ? 0xC000011EU /* MAPPED_FILE_SIZE_ZERO */ : ST_INVALID_PARAMETER)
+              : file && size > file->size && !writable ? ST_SECTION_TOO_BIG   /* (only a writable one extends its file) */
+              : ST_SUCCESS;
+    if (r_) { if (file) { DesktopLock(); RamfsUnref(file); DesktopUnlock(); } return r_; }
     UINT64 n = (size + PAGE_SIZE - 1) / PAGE_SIZE;
     UmSection *sec = kzalloc(sizeof(*sec));
-    if (sec) sec->frames = um_alloc_frames(n);
+    if (sec && !(sec->frames = um_alloc_frames(n))) {
+        PersistLetGoAll();                                  /* short: saved files of C: nothing holds go first */
+        sec->frames = um_alloc_frames(n);
+    }
     if (!sec || !sec->frames) {
         kfree(sec);
         if (file) { DesktopLock(); RamfsUnref(file); DesktopUnlock(); }
-        return n > (UINT64_C(256) << 20) / PAGE_SIZE ? ST_SECTION_TOO_BIG : ST_NO_MEMORY;
+        return file ? ST_NO_MEMORY : 0xC000012DU;           /* COMMITMENT_LIMIT: no memory to back it */
     }
     sec->size = size;
     sec->npages = n;
     sec->file = file;
-    sec->writable = (prot & 0xFF) == 0x04 || (prot & 0xFF) == 0x40;   /* READWRITE, EXECUTE_READWRITE */
+    sec->writable = writable;
     if (file) section_fill(sec);
     UmObject *o = ob_new(UO_SECTION);
     if (!o) { section_destroy(&(UmObject){ .ptr = sec }); return ST_NO_MEMORY; }
