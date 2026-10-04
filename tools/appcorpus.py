@@ -25,7 +25,8 @@ screenshot (and This PC's) must match tests/reference/NAME.png
 (--update-reference writes those files from this run instead); the
 screenshots are kept in --out.  When a program needs sound (App(mic=True)
 hears a 523 Hz tone on the microphone, App(sound=(hz, ms)) must play that
-tone for that long), NovaOS boots with a sound card on a private
+tone for that long, App(sound=(None, ms)) any sound, such as a game's
+music, for that long while it runs), NovaOS boots with a sound card on a private
 PulseAudio server (as tools/selftest.py's core suite does) and what it
 played is kept in --out/sound.wav and checked after the run; without
 pulseaudio those programs are skipped, which is not a failure.
@@ -66,7 +67,8 @@ class App:
     certificate's file before @unpack runs.  @mic: the program hears a tone
     of REC_HZ (523 Hz) on the microphone; @sound=(hz, ms): it must play a
     tone of @hz for @ms, checked in the sound NovaOS played once the run
-    ends.
+    ends; @sound=(None, ms): it must play some sound (music, effects) for
+    @ms in all, between its first test starting and its last one ending.
 
     @store: the program's name in the App Store's catalog
     (kernel/apps/store.c), whose download @url must be.  The download is
@@ -473,6 +475,7 @@ def main():
             if app.store:                    # the App Store window stays out of the next screenshots
                 log += nova.run('store close', 15)[0]
             results[app.name] = (why, time.time() - t0, steps)
+            app.window = (t0 - t_boot, time.time() - t_boot)    # (where its sound is in the recording)
             print(f'{"PASS" if not why else "FAIL"}  {app.name:10s} {time.time() - t0:6.1f} s', flush=True)
             if nova.q.poll() is None:        # drive C: is RAM: what each program's files leave taken
                 out, _ = nova.run('mem', 15)
@@ -494,7 +497,16 @@ def main():
         why, secs, steps = results[app.name]
         if app.sound and not why:
             hz, ms = app.sound
-            if not os.path.exists(wav) or not wavcheck.has_tone(wav, hz, ms):
+            if hz is None:
+                heard = wavcheck.sounding_ms(wav, *app.window) if os.path.exists(wav) else 0
+                print(f'  {app.name} played {heard:.0f} ms of sound', flush=True)
+                if heard < ms:
+                    results[app.name] = (f'it played {heard:.0f} ms of sound, not {ms} ms', secs,
+                                         steps + [('sound', 'too little')])
+                    print(f'FAIL  {app.name:10s} {results[app.name][0]}', flush=True)
+                else:
+                    results[app.name] = (why, secs, steps + [('sound', None)])
+            elif not os.path.exists(wav) or not wavcheck.has_tone(wav, hz, ms):
                 results[app.name] = (f'no {hz} Hz tone of {ms} ms in the sound NovaOS played', secs,
                                      steps + [('sound', 'no tone')])
                 print(f'FAIL  {app.name:10s} {results[app.name][0]}', flush=True)
