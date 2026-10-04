@@ -7,12 +7,14 @@
 # the test passes when that log shows the install step ran (whether the
 # package is cached also depends on drive C:'s free space, which the
 # programs before it in a full corpus run use up).  The install
-# then unpacks the runtime's package and accepts Microsoft's signature on
-# it, but fails (0x80070003) because Edge Update's background pass does
-# not see the install running and uninstalls Edge Update under it, so
-# nothing is installed yet (docs/compatibility.md).  Once that passes, the
-# next test expects the runtime's files in C:\Programs\Microsoft\EdgeWebView.
-DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself, runs the install and accepts the runtime\'s signature; its background pass then uninstalls it mid-install)'
+# then unpacks the runtime's package, accepts Microsoft's signature on it
+# and starts the runtime's own setup (Chromium's mini_installer and
+# setup.exe), which cannot map its archive into memory yet and stops on
+# the missing wer.dll, so nothing is installed yet; the installer then
+# deletes its temporary files on close, which must not loop
+# (docs/compatibility.md).  Once the setup passes, the next test expects
+# the runtime's files in C:\Programs\Microsoft\EdgeWebView.
+DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself, runs the install, accepts the runtime\'s signature and starts the runtime\'s setup, which cannot unpack its archive yet)'
 import os, shutil
 
 INSTALLER = 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe'

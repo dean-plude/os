@@ -157,19 +157,23 @@ Its silent install unpacks the runtime's package and checks that
 Microsoft signed it: `WinVerifyTrust`, then crypt32's Microsoft root
 chain policy (`CERT_CHAIN_POLICY_MICROSOFT_ROOT`, with the application
 root flag for Microsoft's 2011 root), which NovaOS now answers as
-Windows does, so the package is accepted and cached.  The install still
-fails, with `0x80070003`: while it runs, Edge Update's own background
-update pass (`/ua`, started by its core process) decides no install is
-in progress and uninstalls Edge Update, deleting its folder under the
-running install.  On Windows that pass finds the install worker by
-listing Edge Update's processes and reading their command lines
-(`/handoff`, `/install`); on NovaOS it does not see it (inferred: reading
-another process's command line or owner, for a 32-bit caller, is the
-likely gap), so nothing is installed yet.  What comes next, in order:
-that check of running processes, the 32-bit updater's registry keys
-need Windows' `WOW6432Node` view for the 64-bit programs that look for
-the runtime there, and then the runtime itself (a Chromium browser
-process with its sandbox) has to run.
+Windows does, so the package is accepted and cached.  Edge Update's own
+background update pass (`/ua`), which runs alongside the install, finds
+the install worker by listing Edge Update's processes and reading each
+one's image path (`GetProcessImageFileName`), owner and command line
+(from its PEB); NovaOS now answers those questions about another
+process, so the pass leaves the install alone, and the install starts
+the runtime's own setup (`MicrosoftEdgeWebview_X64_*.exe --msedgewebview
+--user-level`, Chromium's `mini_installer` with `setup.exe`).  That setup
+does not finish yet: `setup.exe` cannot map its archive (`MSEDGE.7z`)
+into memory ("Can't map file to memory: Incorrect function"), and then
+stops on the missing `wer.dll`.  Its installer then cleans up its
+temporary files, marking each for deletion on close; NovaOS deletes such
+a file when its last handle closes, as Windows does.  What comes next,
+in order: the runtime setup (mapping its archive, `wer.dll`), the 32-bit
+updater's registry keys need Windows' `WOW6432Node` view for the 64-bit
+programs that look for the runtime there, and then the runtime itself
+(a Chromium browser process with its sandbox) has to run.
 
 ## Steam
 

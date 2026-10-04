@@ -1757,6 +1757,8 @@ static UINT32 utf8_to_utf16(const char *s, UINT8 *d)
     return n;
 }
 
+UINT32 um_utf16_from_utf8(const char *s, UINT8 *d) { return utf8_to_utf16(s, d); }
+
 /* Fill the UNICODE_STRING at @us for @n units at user address @va */
 static void put_us(UINT8 *us, UINT32 n, UINT64 va, const EnvLayout *lay, bool wow)
 {
@@ -2194,6 +2196,17 @@ static void handle_copy(UmHandle *d, const UmHandle *s)
     if (d->kind == H_FILE) um_fpos_ref(d->fp);              /* the same position as the parent's */
 }
 
+bool um_image_in_use(const RamNode *n)
+{
+    for (int i = 0; i < UM_MAX_PROCS; i++) {
+        UmProcess *p = g_procs[i];
+        if (p && !p->reclaimed)
+            for (int k = 0; k < p->nimages; k++)
+                if (p->images[k] == n) return true;
+    }
+    return false;
+}
+
 /* Let go of the program's and DLLs' files (under the desktop lock) */
 static void release_images(UmProcess *p)
 {
@@ -2353,6 +2366,7 @@ UmProcess *um_spawn_finish(UmProcess *p, RamNode *exe, const char *cmdline, cons
 
     char image_path[RAMFS_PATH_MAX], cwd_path[RAMFS_PATH_MAX];
     RamfsPath(exe, image_path, sizeof(image_path));
+    memcpy(p->image_path, image_path, sizeof(p->image_path));
     RamfsPath(p->cwd, cwd_path, sizeof(cwd_path));
     int cl = (int)strlen(cwd_path);
     if (cl && cwd_path[cl - 1] != '\\' && cl < (int)sizeof(cwd_path) - 1) { cwd_path[cl] = '\\'; cwd_path[cl + 1] = 0; }

@@ -1,0 +1,5 @@
+{
+  "x86": true,
+  "selftest": true,
+  "libs": ["advapi32"]
+}
