@@ -430,9 +430,10 @@ def main():
     t_boot = time.time()
     try:
         # Drive C: is kept in memory and gets about 2.3 GB of programs before
-        # the first one starts: 6 GB leaves the programs room, and the data
+        # the first one starts, and Roblox, Steam and WebView2 install about
+        # 2.7 GB more: 10 GB leaves the later programs room, and the data
         # disk room to save drive C:
-        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=6144, data_mb=6144,
+        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=10240, data_mb=12288,
                     extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [],
                     net=echo is not None or https is not None, rec=rec, wav=wav)
     except RuntimeError as e:

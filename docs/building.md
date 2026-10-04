@@ -804,9 +804,10 @@ failure does not fail every program after it.  After Firefox, `store close` clos
 opened.  After each program the script types `mem` and prints the
 machine's free memory and what drive C: takes: C: is kept in memory, so
 every program installed during the run takes RAM until it is deleted.  The
-machine has 6 GB of memory and a 6 GB data disk: the 2.3 GB of programs
-copied to `C:\Apps` before the first one starts are in memory too, and the
-data disk saves drive C:.  Building PuTTY needs `cmake` and
+machine has 10 GB of memory and a 12 GB data disk: the 2.3 GB of programs
+copied to `C:\Apps` before the first one starts are in memory too, Roblox,
+Steam and WebView2 install about 2.7 GB more, and the data disk saves
+drive C:.  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
 It needs 7-Zip's installer, Pillow, `openssl` (for Firefox's test

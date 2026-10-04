@@ -47,11 +47,15 @@ What changed:
 - **The Terminal's `mem`** counts the machine's RAM as its total (it
   counted the holes below the highest address too: 6144 MB on a 4 GB
   machine).
-- **The corpus machine** has 6 GB of memory and a 6 GB data disk (was 4
-  GB and 3 GB): the corpus copies 2.3 GB of programs onto drive C: before
-  the first one starts, which left about 1 GB for the programs, and the
-  data disk could no longer hold drive C: ("Could not save ... (disk
-  full?)").
+- **The corpus machine** has 10 GB of memory and a 12 GB data disk (was
+  4 GB and 3 GB): the corpus copies 2.3 GB of programs onto drive C:
+  before the first one starts, which left about 1 GB for the programs,
+  and the data disk could no longer hold drive C: ("Could not save ...
+  (disk full?)").  With Steam in the corpus (#178) Roblox, Steam and
+  WebView2 install 2.7 GB more, and on a 6 GB machine Krita, Firefox and
+  the programs after them ran out of memory.  Drive C: still keeps every
+  file in memory; dropping saved files' contents under memory pressure is
+  the lasting fix.
 
 - **Test.**  Core self-test `ramdisktest` also checks what programs are
   told: `GlobalMemoryStatusEx`'s total is `SystemBasicInformation`'s
