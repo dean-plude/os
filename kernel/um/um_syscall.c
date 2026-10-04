@@ -1235,7 +1235,7 @@ static UINT64 sys_query_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         UINT64 size = h->kind == H_FILE ? h->node->size : 0;
         memcpy(b, &size, 8); memcpy(b + 8, &size, 8);
         UINT32 links = file ? (UINT32)RamfsLinks(h->node) : 1; memcpy(b + 16, &links, 4);
-        b[20] = h->delete_on_close || h->node->pending;
+        b[20] = h->delete_on_close || (file && h->node->pending);
         b[21] = h->kind == H_DIR;
         break;
     }
@@ -1297,7 +1297,7 @@ static UINT64 sys_query_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         UINT64 size = h->kind == H_FILE ? h->node->size : 0;
         memcpy(all + 40, &size, 8); memcpy(all + 48, &size, 8);
         UINT32 links = file ? (UINT32)RamfsLinks(h->node) : 1; memcpy(all + 56, &links, 4);
-        all[60] = h->delete_on_close || h->node->pending; all[61] = h->kind == H_DIR;
+        all[60] = h->delete_on_close || (file && h->node->pending); all[61] = h->kind == H_DIR;
         UINT64 id = (UINT64)(uintptr_t)(file ? RamfsFileId(h->node) : h->node); memcpy(all + 64, &id, 8);
         UINT32 acc = 0x001F01FF; memcpy(all + 76, &acc, 4);
         memcpy(all + 80, hpos(h), 8);
