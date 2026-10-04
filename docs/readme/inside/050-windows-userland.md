@@ -16,7 +16,7 @@
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
   `comctl32`, `riched20`/`msftedit` (Rich Edit controls that take RTF,
   as setup programs' licence pages need), `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
-  type libraries, and calls between processes over named pipes with the standard marshaler and the `IDispatch` proxy), `rpcrt4` (the NDR engine COM proxy/stub DLLs run on:
+  type libraries, and calls between processes over named pipes with the standard marshaler and the `IDispatch` proxy; the Windows Runtime's strings and the few runtime classes Win32 programs ask for, such as `UISettings` for the user's colours), `rpcrt4` (the NDR engine COM proxy/stub DLLs run on:
   stubless proxies, `NdrStubCall2`, `CStdStubBuffer`, the `NdrDll*` entry points), `advapi32`, `ws2_32`, `oleacc`,
   `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
   WASAPI playback and capture, a device ID or endpoint for each sound
