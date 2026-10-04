@@ -1311,6 +1311,10 @@ GDIAPI int SaveDC(HDC h)
 {
     NOVA_DC *d = dc_of(h);
     if (!d) return 0;
+    /* what the program wrote to the bits comes in before anything is drawn:
+     * cnc-ddraw's GetDC saves its surface DC's state, and a game clears a
+     * surface with DirectDraw before writing text on it with GDI */
+    dc_sync(d);
     NOVA_DC *s = HeapAlloc(GetProcessHeap(), 0, sizeof(*s));
     if (!s) return 0;
     *s = *d;
@@ -1326,8 +1330,8 @@ GDIAPI BOOL RestoreDC(HDC h, int which)
     NOVA_DC *d = dc_of(h);
     if (!d || !d->saved) return FALSE;
     /* what was drawn goes to the bits first, as Windows' batch is flushed
-     * here: cnc-ddraw's surface DCs restore their state at ReleaseDC, and
-     * the game's text drawn on them is then blitted from the bits */
+     * here: cnc-ddraw's ReleaseDC restores its surface DC's state, and the
+     * game's text drawn on it is then blitted from the bits */
     dc_sync(d);
     int depth = 0;
     for (NOVA_DC *p = d->saved; p; p = p->saved) depth++;

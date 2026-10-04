@@ -31,9 +31,12 @@ NovaOS gaps the game found:
   unless its procedure put it there or set it to NULL.
 - **No text**: the game writes its text with GDI on surface DCs, which
   gdi32 draws on 32-bit pixels and copies to a 16-bit section's own bits
-  only at its sync points, none of which cnc-ddraw reached.  `RestoreDC`
-  (which cnc-ddraw's `ReleaseDC` calls) now syncs, as a non-batched call
-  flushes Windows' GDI batch.
+  only at its sync points, none of which cnc-ddraw reached.  `SaveDC` and
+  `RestoreDC` (which cnc-ddraw's `GetDC` and `ReleaseDC` call) now sync,
+  as a non-batched call flushes Windows' GDI batch: the surface's pixels
+  come in before the text is drawn (the game clears its line with
+  DirectDraw first, which before cut off each line's first letter) and the
+  text goes out after.
 - **The pointer over the game**: with `hook=0`, cnc-ddraw's mouse lock
   still balanced `ShowCursor` against a count only its hooks keep, and
   showed the pointer the game had hidden; it now stays off when nothing
