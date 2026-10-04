@@ -698,7 +698,11 @@ def run_boot(a, tests, work, label, **nova_args):
             results.append((t.name, why, time.time() - t0, out))
             print(f'{"PASS" if not why else "FAIL"}  {t.name:18s} {time.time() - t0:6.1f} s  {why or ""}', flush=True)
             if why:
-                print('    ' + '\n    '.join(l for l in out.splitlines() if not l.startswith('[SCHED]'))[-4000:])
+                print('    ' + '\n    '.join(l for l in out.splitlines() if not l.startswith('[SCHED]'))[-4000:], flush=True)
+                try:                                        # (a run cancelled by its job's limit never gets to the end)
+                    shutil.copy(nova.serial_path, os.path.join(a.out, log_name))
+                except OSError:
+                    pass
             if t.settle and not why:
                 time.sleep(t.settle)
             if t.crash and t.restart and not why and nova.q.poll() is None:
@@ -709,7 +713,7 @@ def run_boot(a, tests, work, label, **nova_args):
                     continue
                 except RuntimeError as e:
                     print(f'    did not start again after the crash: {str(e).splitlines()[0]}', flush=True)
-            if why == 'kernel panic' or t.crash or nova.q.poll() is not None:
+            if why == 'kernel panic' or t.crash or nova.q.poll() is not None or nova.wedged:
                 break
     finally:
         nova.close()
@@ -722,7 +726,9 @@ def run_boot(a, tests, work, label, **nova_args):
                 results[i] = (name, why, secs, out)
                 print(f'FAIL  {t.name:18s} {why}', flush=True)
     ran = {r[0] for r in results}
-    results += [(t.name, 'not run (an earlier test stopped NovaOS)', 0, '') for t in tests if t.name not in ran]
+    why_not = ('NovaOS stopped answering during an earlier test' if getattr(nova, 'wedged', False)
+               else 'an earlier test stopped NovaOS')
+    results += [(t.name, f'not run ({why_not})', 0, '') for t in tests if t.name not in ran]
     return results
 
 

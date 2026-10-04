@@ -175,8 +175,9 @@ class Nova:
             if m and n:
                 self.heads += [(m.group(1), h) for h in range(1, int(n.group(1)))]
         os.makedirs(self.work, exist_ok=True)
-        data, self.serial_path, sock = (os.path.join(self.work, n) for n in ('data.img', 'serial.log', 'qmp.sock'))
-        for p in (self.serial_path, sock):
+        data, self.serial_path, sock, mon = (os.path.join(self.work, n)
+                                             for n in ('data.img', 'serial.log', 'qmp.sock', 'monitor.sock'))
+        for p in (self.serial_path, sock, mon):
             if os.path.exists(p):
                 os.unlink(p)
         if not (keep_data and os.path.exists(data)):     # keep_data: the drive C: an earlier boot saved
@@ -185,6 +186,7 @@ class Nova:
         self.rec = rec
         self.extra = list(extra_args)
         self.qmp = None
+        self.wedged = False                 # set by run(): a program hung and the machine did not answer the keys
         env = None
         if rec:
             audio, env = self.pulse_input(rec)
@@ -201,7 +203,8 @@ class Nova:
                                    '-drive', f'format=raw,file={data}',
                                    '-serial', f'file:{self.serial_path}'] + list(vga) + display_args(list(vga) + list(extra_args)) + [
                                    '-nic', 'user,model=e1000e' if net else 'none',
-                                   '-qmp', f'unix:{sock},server,nowait'] +
+                                   '-qmp', f'unix:{sock},server,nowait',
+                                   '-monitor', f'unix:{mon},server,nowait'] +      # (tools/ci/host_watch.py asks it about a hang)
                                   audio +
                                   (['-s'] if os.environ.get('NOVARUN_GDB') else []) +   # gdb server on :1234
                                   list(extra_args), env=env)
@@ -271,10 +274,15 @@ class Nova:
             # its main thread sat), then Ctrl+C stops the program
             self.qmp.key('ctrl', 'alt', 'f12')
             time.sleep(5)
-            got += self.sr.read_new()
+            dump = self.sr.read_new()
+            got += dump
             self.qmp.key('ctrl', 'c')
             more, _ = self.sr.wait('[TERM-DONE]', 20)
             got += more
+            # No dump (the desktop thread answers the key) and Ctrl+C did nothing either:
+            # the machine is stuck, not the program.  Every test after this one would only
+            # wait out its own limit (the graphics job burned its hour that way)
+            self.wedged = not dump.strip() and '[TERM-DONE]' not in more
         return got.replace('\n[TERM-DONE]\n', '').rstrip(), ok
 
     def pulse_input(self, rec):
