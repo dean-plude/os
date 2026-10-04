@@ -4,7 +4,9 @@
  * AcceptEx and a WSARecv that stay pending until a connection or data
  * comes, their completions on the port, CancelIoEx, and a request
  * pending on a socket that is closed (its completion still reaches the
- * port, even after the handle value is reused). */
+ * port, even after the handle value is reused).  The AcceptEx and
+ * GetAcceptExSockaddrs it uses are wsock32's, by ordinal (1141, 1142),
+ * the way Steam imports them. */
 #include <stdio.h>
 #include <string.h>
 #include <winsock2.h>
@@ -85,6 +87,19 @@ int main(void)
     check("WSAIoctl gives AcceptEx, ConnectEx and GetAcceptExSockaddrs", p_AcceptEx && p_ConnectEx && p_GetAcceptExSockaddrs);
     check("WSAIoctl gives DisconnectEx, TransmitFile and WSARecvMsg", ext(l, g_disc) && ext(l, g_tf) && ext(l, g_rmsg));
     if (!p_AcceptEx || !p_ConnectEx || !p_GetAcceptExSockaddrs) goto done;
+
+    /* Winsock 1.1's wsock32 exports Microsoft's extensions too, under
+     * names and ordinals of their own */
+    HMODULE ws1 = LoadLibraryA("wsock32.dll");
+    FARPROC ws1_accept = ws1 ? GetProcAddress(ws1, (LPCSTR)1141) : 0;
+    FARPROC ws1_addrs = ws1 ? GetProcAddress(ws1, (LPCSTR)1142) : 0;
+    FARPROC ws1_tf = ws1 ? GetProcAddress(ws1, (LPCSTR)1140) : 0;
+    check("wsock32 exports TransmitFile, AcceptEx and GetAcceptExSockaddrs (1140-1142)",
+          ws1_accept && ws1_addrs && ws1_tf && ws1_accept == GetProcAddress(ws1, "AcceptEx") &&
+          ws1_addrs == GetProcAddress(ws1, "GetAcceptExSockaddrs") && ws1_tf == GetProcAddress(ws1, "TransmitFile"));
+    if (!ws1_accept || !ws1_addrs) goto done;
+    p_AcceptEx = (LPFN_ACCEPTEX)ws1_accept;
+    p_GetAcceptExSockaddrs = (LPFN_GETACCEPTEXSOCKADDRS)ws1_addrs;
 
     /* a listener on the port; AcceptEx waits for a connection */
     struct sockaddr_in a = { 0 };
