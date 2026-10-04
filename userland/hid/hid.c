@@ -177,6 +177,9 @@ HIDAPI_ BOOLEAN WINAPI HidD_GetIndexedString(HANDLE dev, ULONG index, PVOID buf,
  * ------------------------------------------------------------------------- */
 
 #define PP(p) const NovaHidP *pp = nova_hidp_check(p); if (!pp) return HIDP_STATUS_INVALID_PREPARSED_DATA
+/* The caps calls also report no caps */
+#define PP_CAPS(p, n) const NovaHidP *pp = nova_hidp_check(p); \
+    if (!pp) { if (n) *(n) = 0; return HIDP_STATUS_INVALID_PREPARSED_DATA; }
 
 HIDAPI_ LONG WINAPI HidP_GetCaps(PHIDP_PREPARSED_DATA p, PHIDP_CAPS caps)
 {
@@ -257,7 +260,7 @@ static void cap_head(const NovaHidP *pp, const NovaHidCap *c, CapHead *h)
 HIDAPI_ LONG WINAPI HidP_GetSpecificButtonCaps(HIDP_REPORT_TYPE t, USAGE page, USHORT link, USAGE usage,
                                                PHIDP_BUTTON_CAPS caps, PUSHORT n, PHIDP_PREPARSED_DATA p)
 {
-    PP(p);
+    PP_CAPS(p, n);
     if (!type_ok(t)) return HIDP_STATUS_INVALID_REPORT_TYPE;
     if (!n) return HIDP_STATUS_NULL;
     USHORT room = caps ? *n : 0, got = 0;
@@ -292,7 +295,7 @@ HIDAPI_ LONG WINAPI HidP_GetButtonCaps(HIDP_REPORT_TYPE t, PHIDP_BUTTON_CAPS cap
 HIDAPI_ LONG WINAPI HidP_GetSpecificValueCaps(HIDP_REPORT_TYPE t, USAGE page, USHORT link, USAGE usage,
                                               PHIDP_VALUE_CAPS caps, PUSHORT n, PHIDP_PREPARSED_DATA p)
 {
-    PP(p);
+    PP_CAPS(p, n);
     if (!type_ok(t)) return HIDP_STATUS_INVALID_REPORT_TYPE;
     if (!n) return HIDP_STATUS_NULL;
     USHORT room = caps ? *n : 0, got = 0;
