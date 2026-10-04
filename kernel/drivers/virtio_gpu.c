@@ -1192,6 +1192,35 @@ bool VgpuSyncAccess(VgpuCtx *c, UINT32 id, int op, UINT64 *value)
     return y != NULL;
 }
 
+/* The control queue's state on the serial log (Ctrl+Alt+F12, with the programs' threads): the card has
+ * taken (avail) and answered (used) how many requests, and which fenced ones are still out, with the
+ * timeline value each one will set.  A request out and a card that has gone quiet means the host side
+ * never answered; no request out means the guest never sent the one a program waits for.  No lock: it
+ * runs when something is already stuck. */
+void VgpuDump(void)
+{
+    for (int d = 0; d < g_ndev; d++) {
+        Vgpu *v = g_dev[d];
+        if (!v || !v->has3d) continue;
+        int busy = 0;
+        for (int i = 0; i < v->nslot; i++) busy += v->slot[i].state == SLOT_BUSY;
+        kprintf("[VGPU] %s: avail %u, used %u, reaped %u, %d of %d requests out, fence seq %llu\n", v->name,
+                (unsigned)v->avail->idx, (unsigned)v->used->idx, (unsigned)v->last_used, busy, v->nslot,
+                (unsigned long long)v->fence_seq);
+        for (int i = 0; i < v->nslot; i++) {
+            Slot *sl = &v->slot[i];
+            if (sl->state != SLOT_BUSY || !sl->page) continue;
+            const Hdr *h = (const Hdr *)sl->page;
+            kprintf("[VGPU]   request %d: type 0x%x ctx %u fence %llu%s\n", i, (unsigned)h->type, (unsigned)h->ctx,
+                    (unsigned long long)h->fence, sl->autofree ? " (nobody waits)" : "");
+            const Fence *f = sl->fence;
+            for (int k = 0; f && k < f->n && k < 4; k++)
+                kprintf("[VGPU]     sets a timeline to %llu (now %llu)\n", (unsigned long long)f->value[k],
+                        (unsigned long long)f->sync[k]->value);
+        }
+    }
+}
+
 /* Wait until the timelines reach their values (all of them, or @any one);
  * 0 done, 1 timed out (@timeout_ns), -1 a bad timeline */
 int VgpuWait(VgpuCtx *c, int n, const UINT32 *ids, const UINT64 *vals, bool any, UINT64 timeout_ns)
