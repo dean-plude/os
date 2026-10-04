@@ -55,11 +55,12 @@ KiSystemCall64:
 
     ; -----------------------------------------------------------------------
     ; We are now on the kernel stack.
-    ; Push a minimal trap frame:
-    ;   [rsp+0]  = user RFLAGS (R11)
-    ;   [rsp+8]  = user RIP    (RCX)
-    ;   [rsp+16] = user RSP    (saved from KPCR)
-    ;   [rsp+24] = rbp         (saved for frame pointer chain)
+    ; Push a minimal trap frame, from KernelRsp down:
+    ;   -8  = user RFLAGS (R11)
+    ;   -16 = user RIP    (RCX)
+    ;   -24 = user RSP    (saved from KPCR)
+    ;   -32 = rbp         (saved for frame pointer chain)
+    ;   -40, -48 = rdi, rsi; -56 = rbx; -64 to -88 = r12 to r15
     ; -----------------------------------------------------------------------
     push    r11                         ; user RFLAGS
     push    rcx                         ; user RIP
@@ -70,8 +71,17 @@ KiSystemCall64:
     ; System V ABI our C code uses, so preserve them for the caller.
     push    rdi
     push    rsi
+    ; The rest of the program's nonvolatile registers, for NtGetContextThread
+    ; on the calling thread itself (um_exception.c reads them at fixed
+    ; places below KernelRsp; the C code keeps them anyway).
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
 
-    ; 6 qwords pushed onto a 16-byte-aligned KernelRsp: aligned for the call.
+    ; 12 qwords pushed onto a 16-byte-aligned KernelRsp: aligned for the call.
 
     ; -----------------------------------------------------------------------
     ; KiSystemCallDispatch(num, arg1, arg2, arg3, arg4, user_rsp)
@@ -91,6 +101,7 @@ KiSystemCall64:
     ; -----------------------------------------------------------------------
     ; Return path
     ; -----------------------------------------------------------------------
+    add     rsp, 48                     ; rbx, r12-r15: unchanged
     pop     rsi
     pop     rdi
     pop     rbp

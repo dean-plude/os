@@ -1241,24 +1241,30 @@ WINBASEAPI PVOID WINAPI DecodePointer(PVOID p)       { return p; }
 WINBASEAPI PVOID WINAPI EncodeSystemPointer(PVOID p) { return p; }
 WINBASEAPI PVOID WINAPI DecodeSystemPointer(PVOID p) { return p; }
 
+/* 64-bit: the kernel answers for the calling thread too (its system call's
+ * registers, as Windows' trap frame), so these go straight to it */
 WINBASEAPI BOOL WINAPI GetThreadContext(HANDLE t, LPCONTEXT c)
 {
+#ifndef _WIN64
     if (t == GetCurrentThread() || GetThreadId(t) == GetCurrentThreadId()) {
         DWORD flags = c->ContextFlags;
         RtlCaptureContext(c);
         c->ContextFlags = flags;
         return TRUE;
     }
+#endif
     NTSTATUS s = NtGetContextThread(t, c);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
 WINBASEAPI BOOL WINAPI SetThreadContext(HANDLE t, const CONTEXT *c)
 {
+#ifndef _WIN64
     if (t == GetCurrentThread() || GetThreadId(t) == GetCurrentThreadId()) {
         NtContinue((PCONTEXT)c, FALSE);
         return FALSE;
     }
+#endif
     NTSTATUS s = NtSetContextThread(t, c);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }

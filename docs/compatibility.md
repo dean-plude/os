@@ -106,12 +106,35 @@ and retries it; NovaOS now does the same
 path checks: `ThreadHideFromDebugger` validating its length and ntdll's
 extended-context (XSAVE) functions.  Past that, Hyperion runs further into
 its start-up — hundreds more system calls, reading registry keys and the
-system's time-zone information — before stopping at its next check with
-"Roblox encountered an unexpected error" and exiting on its own (exit code
-50).  That next step is the faithful next piece of work.  NovaOS does not,
-and will not, work around anti-cheat checks or change Roblox itself.
-`syscalltest` checks the table the way Hyperion reads it, and `aligntest`
-checks the alignment-fault fixup and the other behaviours above.
+system's time-zone information.
+
+Next it runs 32-bit code inside the 64-bit client: it maps memory just
+below 4 GiB, puts a `CPUID` in its last two bytes and far-jumps there
+through selector 0x23, Windows' 32-bit user code segment, so the
+instruction pointer wraps to 0 and faults, and its handler looks at what
+the fault says.  NovaOS used its own selector numbers, where 0x23 was the
+64-bit code segment, so the "32-bit" code ran as 64-bit code and the
+client crashed.  NovaOS now has Windows' x64 segment layout (0x23 32-bit
+code, 0x2B data, 0x33 64-bit code, 0x53 the 32-bit TEB;
+[the history note](history/2026-10-04-windows-segment-layout.md)), a fault
+in such code reaches the program's handlers with `SegCs` 0x23 and the
+handler resumes in 64-bit code.  Hyperion then reads its own registers
+with `NtGetContextThread` on itself, which NovaOS now answers as Windows
+does (`SetThreadContext` on the calling thread works too, and
+`__fastfail` ends a program the Windows way).
+
+Past those checks Hyperion reads the firmware's SMBIOS table and the
+display devices and stops with **"Virtual Machine detected. Roblox can't
+be used in a Virtual Machine or Virtual Desktop."**  That is the right
+answer under QEMU, where NovaOS's tests run: Roblox refuses virtual
+machines on Windows too, and NovaOS reports the machine it runs on
+truthfully.  The next Roblox steps need a real PC (the ThinkPad T14 of
+[Phase 21](hardware.md)); on one, this check should pass, but it is
+untested.  NovaOS does not, and will not, work around anti-cheat checks,
+hide the virtual machine or change Roblox itself.  `syscalltest` checks the
+table the way Hyperion reads it, `aligntest` the alignment-fault fixup and
+`gatetest` the segment layout, the 32-bit code, the calling thread's
+context and `__fastfail`.
 
 ## WebView2
 
