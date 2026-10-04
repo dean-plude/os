@@ -150,7 +150,7 @@ USERAPI BOOL EnumDisplayMonitors(HDC dc, LPCRECT clip, MONITORENUMPROC fn, LPARA
     POINT org = { 0, 0 };
     RECT area, *lim = NULL;
     HWND w = dc ? WindowFromDC(dc) : NULL;
-    if (w) {                                                /* the DC's window, on the screen */
+    if (w && w != GetDesktopWindow()) {                                                /* the DC's window, on the screen */
         ClientToScreen(w, &org);
         GetClientRect(w, &area);
         OffsetRect(&area, org.x, org.y);
