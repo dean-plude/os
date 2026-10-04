@@ -136,6 +136,8 @@ void um_crash_report(UmProcess *p, const char *what, UINT32 status, UINT64 rip, 
     else    add(&r, "At:         0x%llx (in no module: generated code or a bad jump)\n", (unsigned long long)rip);
     if (status == UM_STATUS_ACCESS_VIOLATION)
         add(&r, "Address:    0x%llx (the memory it touched)\n", (unsigned long long)addr);
+    if (status == 0xC0000409u)                                   /* __fastfail */
+        add(&r, "Code:       %llu (FAST_FAIL_*, winnt.h)\n", (unsigned long long)addr);
     if (sp) add(&r, "Stack:      0x%llx\n", (unsigned long long)sp);
 
     /* return addresses into a module on the stack, as the serial log shows them */

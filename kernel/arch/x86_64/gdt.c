@@ -94,6 +94,17 @@ static GdtEntry64 make_code32(uint8_t dpl)
     };
 }
 
+/* 32-bit data, 4 KiB long, for FS in 32-bit code (Windows' 0x53): its base
+ * follows the running thread's TEB (gdt_set_teb32) */
+static GdtEntry64 make_teb32(uint8_t dpl)
+{
+    return (GdtEntry64){
+        .limit_low   = 0x0FFF,
+        .access      = (uint8_t)(0x92 | (dpl << 5)),   /* P=1, S=1, Type=0x2 (data+write) */
+        .granularity = 0x40,   /* B=1, byte granular */
+    };
+}
+
 static GdtEntry64 make_null(void)
 {
     return (GdtEntry64){0};
@@ -130,17 +141,15 @@ void gdt_init_cpu(CpuGdt *g, uint8_t *double_fault_stack, uint8_t *nmi_stack,
                   uint8_t *machine_check_stack, uint8_t *debug_stack)
 {
 
-    /* Segment descriptors */
-    g->entries[0] = make_null();                /* 0x00 — Null */
-    g->entries[1] = make_code64(0);             /* 0x08 — Kernel code, DPL=0 */
-    g->entries[2] = make_data64(0);             /* 0x10 — Kernel data, DPL=0 */
-    g->entries[3] = make_data_flat(3);          /* 0x18 — User data,   DPL=3 */
-    g->entries[4] = make_code64(3);             /* 0x20 — User code,   DPL=3 */
-    /* Entries 5 and 6 (0x28 and 0x30) are occupied by the 16-byte TSS
-     * descriptor — written separately via g->tss_descriptor below. */
-    g->entries[5] = make_null();                /* placeholder — TSS low  */
-    g->entries[6] = make_null();                /* placeholder — TSS high */
-    g->entries[7] = make_code32(3);             /* 0x38 — User code (32-bit programs), DPL=3 */
+    /* Segment descriptors (Windows' layout, gdt.h) */
+    for (int i = 0; i < GDT_ENTRY_COUNT; i++) g->entries[i] = make_null();
+    g->entries[GDT_KERNEL_CODE / 8] = make_code64(0);    /* 0x10 — Kernel code, DPL=0 */
+    g->entries[GDT_KERNEL_DATA / 8] = make_data64(0);    /* 0x18 — Kernel data, DPL=0 */
+    g->entries[GDT_USER_CODE32 / 8] = make_code32(3);    /* 0x20 — User code, 32-bit, DPL=3 */
+    g->entries[GDT_USER_DATA / 8]   = make_data_flat(3); /* 0x28 — User data,   DPL=3 */
+    g->entries[GDT_USER_CODE / 8]   = make_code64(3);    /* 0x30 — User code, 64-bit, DPL=3 */
+    /* 0x40 and 0x48 hold the 16-byte TSS descriptor, written below */
+    g->entries[GDT_USER_TEB32 / 8]  = make_teb32(3);     /* 0x50 — the 32-bit TEB, DPL=3 */
 
     /* Initialize the TSS */
     Tss64 *tss = &g->tss;
@@ -161,14 +170,10 @@ void gdt_init_cpu(CpuGdt *g, uint8_t *double_fault_stack, uint8_t *nmi_stack,
      * from ring 3 causes a GPF (we'll add selective I/O permission later). */
     tss->iopb_offset = sizeof(Tss64);
 
-    /* Write the TSS descriptor into the GDT.
-     * The GDT layout has entries[5] at offset 0x28 and entries[6] at 0x30.
-     * The TssDescriptor is 16 bytes and overlaps both slots. */
+    /* Write the TSS descriptor into the GDT: 16 bytes, two slots. */
     g->tss_descriptor = make_tss_descriptor((uintptr_t)tss, sizeof(Tss64) - 1);
 
-    /* Copy the 16-byte TSS descriptor over entries[5..6].
-     * This is legal because both are the same size (2 × 8 bytes = 16 bytes). */
-    __builtin_memcpy(&g->entries[5], &g->tss_descriptor, sizeof(TssDescriptor));
+    __builtin_memcpy(&g->entries[GDT_TSS / 8], &g->tss_descriptor, sizeof(TssDescriptor));
 
     /* Load the GDTR */
     Gdtr gdtr = {
@@ -199,22 +204,23 @@ void gdt_reload_segments(void)
         "pushq %%rax\n\t"
         "lretq\n\t"
         "1:\n\t"
-        /* SS: kernel data.  DS, ES and FS hold the user data selector
-         * for good: 64-bit code ignores them, and 32-bit programs
-         * (compatibility mode) need them valid; IRET to ring 3 would
-         * clear a DPL 0 selector.  FS's base (the 32-bit TEB) is set per
-         * thread through MSR_IA32_FSBASE.  GS is zeroed: its base is the
-         * KPCR (kernel) or the TEB (64-bit programs), set by MSR. */
+        /* SS: kernel data.  DS, ES and GS hold the user data selector
+         * and FS the 32-bit TEB one for good, as on Windows (0x2B, 0x53):
+         * 64-bit code ignores them, and 32-bit programs (compatibility
+         * mode) need them valid; IRET to ring 3 would clear a DPL 0
+         * selector.  FS's base (the 32-bit TEB) is set per thread through
+         * MSR_IA32_FSBASE, GS's (the KPCR in the kernel, the TEB in 64-bit
+         * programs) by MSR as well, after this: loading GS clears it. */
         "mov %1, %%ax\n\t"
         "mov %%ax, %%ss\n\t"
         "mov %2, %%ax\n\t"
         "mov %%ax, %%ds\n\t"
         "mov %%ax, %%es\n\t"
-        "mov %%ax, %%fs\n\t"
-        "xor %%eax, %%eax\n\t"
         "mov %%ax, %%gs\n\t"
+        "mov %3, %%ax\n\t"
+        "mov %%ax, %%fs\n\t"
         :
-        : "i"(GDT_KERNEL_CODE), "i"(GDT_KERNEL_DATA), "i"(GDT_USER_DATA | 3)
+        : "i"(GDT_KERNEL_CODE), "i"(GDT_KERNEL_DATA), "i"(SEL_USER_DATA), "i"(SEL_USER_TEB32)
         : "rax", "memory"
     );
 }
@@ -230,4 +236,12 @@ void gdt_set_rsp0(uintptr_t rsp0)
 {
     CpuGdt *g = KiGetCurrentKpcr()->Gdt;
     g->tss.rsp[0] = rsp0;
+}
+
+void gdt_set_teb32(uint32_t base)
+{
+    GdtEntry64 *e = &((CpuGdt *)KiGetCurrentKpcr()->Gdt)->entries[GDT_USER_TEB32 / 8];
+    e->base_low  = (uint16_t)base;
+    e->base_mid  = (uint8_t)(base >> 16);
+    e->base_high = (uint8_t)(base >> 24);
 }

@@ -75,6 +75,10 @@ void idt_init(void)
      * invoke it; entered with interrupts off, like SYSCALL */
     idt_set_gate(VECTOR_SYSCALL,  isr_stub_table[VECTOR_SYSCALL],  0, 3);
 
+    /* __fastfail (int 0x29, code in RCX) — DPL=3 as on Windows: the program
+     * ends at once with STATUS_STACK_BUFFER_OVERRUN, no handler runs */
+    idt_set_gate(VECTOR_FASTFAIL, isr_stub_table[VECTOR_FASTFAIL], 0, 3);
+
     idt_load();
     kprintf("[IDT] Initialized: %d gates, IDTR base=0x%016lx\n",
             IDT_ENTRIES, (uint64_t)(uintptr_t)idt);
@@ -232,6 +236,10 @@ static void handle_page_fault(InterruptFrame *f)
 static void dispatch(InterruptFrame *frame)
 {
     uint64_t vector = frame->vector;
+
+    /* ---- __fastfail: the end of the program (Windows doesn't dispatch it) ---- */
+    if (vector == VECTOR_FASTFAIL && (frame->cs & 3) && sched_current()->um)
+        UmFaultAt(0xC0000409u, frame->rip - 2, frame->rcx, frame->rsp);
 
     /* ---- CPU Exceptions (0–31) ---- */
     if (vector < 32) {

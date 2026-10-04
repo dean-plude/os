@@ -2516,6 +2516,7 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
                        status == 0xC00000FDu ? "stack overflow" :
                        status == 0xC0000096u ? "privileged instruction" :
                        status == 0x80000003u ? "breakpoint" :
+                       status == 0xC0000409u ? "fail fast (a security check)" :
                        (status & 0xF0000000u) == 0xC0000000u ? "unhandled exception" : "unhandled software exception";
     const UmModule *mod = um_module_at(p, rip);
     char where[64];
@@ -2525,6 +2526,8 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
         if (status == UM_STATUS_ACCESS_VIOLATION)
             ksnprintf(p->why, sizeof(p->why), "crashed: %s at %s (address 0x%llx)", what, where,
                       (unsigned long long)addr);
+        else if (status == 0xC0000409u)                     /* __fastfail: addr is its code */
+            ksnprintf(p->why, sizeof(p->why), "crashed: %s, code %llu, at %s", what, (unsigned long long)addr, where);
         else if (!strcmp(what, "unhandled exception") || !strcmp(what, "unhandled software exception"))
             ksnprintf(p->why, sizeof(p->why), "crashed: %s 0x%08x at %s", what, status, where);
         else

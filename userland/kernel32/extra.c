@@ -1292,24 +1292,30 @@ WINBASEAPI PVOID WINAPI DecodePointer(PVOID p)       { return p; }
 WINBASEAPI PVOID WINAPI EncodeSystemPointer(PVOID p) { return p; }
 WINBASEAPI PVOID WINAPI DecodeSystemPointer(PVOID p) { return p; }
 
+/* 64-bit: the kernel answers for the calling thread too (its system call's
+ * registers, as Windows' trap frame), so these go straight to it */
 WINBASEAPI BOOL WINAPI GetThreadContext(HANDLE t, LPCONTEXT c)
 {
+#ifndef _WIN64
     if (t == GetCurrentThread() || GetThreadId(t) == GetCurrentThreadId()) {
         DWORD flags = c->ContextFlags;
         RtlCaptureContext(c);
         c->ContextFlags = flags;
         return TRUE;
     }
+#endif
     NTSTATUS s = NtGetContextThread(t, c);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
 WINBASEAPI BOOL WINAPI SetThreadContext(HANDLE t, const CONTEXT *c)
 {
+#ifndef _WIN64
     if (t == GetCurrentThread() || GetThreadId(t) == GetCurrentThreadId()) {
         NtContinue((PCONTEXT)c, FALSE);
         return FALSE;
     }
+#endif
     NTSTATUS s = NtSetContextThread(t, c);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
@@ -1641,10 +1647,15 @@ WINBASEAPI HANDLE WINAPI FindFirstFileExA(LPCSTR name, FINDEX_INFO_LEVELS l, LPV
     return FindFirstFileA(name, data);
 }
 
+/* As Windows' CopyFile, the copy keeps the source's attributes and its
+ * last-write time (programs compare them to tell whether a copy is
+ * current: Steam's service updates itself again and again otherwise) */
 WINBASEAPI BOOL WINAPI CopyFileA(LPCSTR from, LPCSTR to, BOOL fail_if_exists)
 {
     HANDLE in = CreateFileA(from, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
     if (in == INVALID_HANDLE_VALUE) return FALSE;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(in, &info)) { DWORD e = GetLastError(); CloseHandle(in); SetLastError(e); return FALSE; }
     HANDLE out = CreateFileA(to, GENERIC_WRITE, 0, 0, fail_if_exists ? CREATE_NEW : CREATE_ALWAYS, 0, 0);
     if (out == INVALID_HANDLE_VALUE) { DWORD e = GetLastError(); CloseHandle(in); SetLastError(e); return FALSE; }
     static BYTE buf[64 * 1024];             /* callers are rarely concurrent; keep stacks small */
@@ -1657,10 +1668,13 @@ WINBASEAPI BOOL WINAPI CopyFileA(LPCSTR from, LPCSTR to, BOOL fail_if_exists)
         if (!WriteFile(out, buf, got, &put, 0) || put != got) { ok = FALSE; break; }
     }
     unlock();
+    if (ok) SetFileTime(out, NULL, NULL, &info.ftLastWriteTime);
     DWORD e = GetLastError();
     CloseHandle(in);
     CloseHandle(out);
     if (!ok) { DeleteFileA(to); SetLastError(e); }
+    else if (info.dwFileAttributes & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
+        SetFileAttributesA(to, info.dwFileAttributes | FILE_ATTRIBUTE_ARCHIVE);
     return ok;
 }
 

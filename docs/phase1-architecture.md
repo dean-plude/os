@@ -132,18 +132,25 @@ from accidental overwrites. Phase 2 will add guard pages.
 
 ### GDT Layout
 
-| Selector | Description           | DPL |
-|----------|-----------------------|-----|
-| 0x00     | Null                  | —   |
-| 0x08     | Kernel Code (64-bit)  | 0   |
-| 0x10     | Kernel Data           | 0   |
-| 0x18     | User Code (64-bit)    | 3   |
-| 0x20     | User Data             | 3   |
-| 0x28     | TSS (16-byte entry)   | 0   |
+| Selector | Description                                   | DPL |
+|----------|-----------------------------------------------|-----|
+| 0x00     | Null                                          | —   |
+| 0x10     | Kernel Code (64-bit)                          | 0   |
+| 0x18     | Kernel Data                                   | 0   |
+| 0x20     | User Code (32-bit, compatibility mode): 0x23  | 3   |
+| 0x28     | User Data and stack: 0x2B                     | 3   |
+| 0x30     | User Code (64-bit): 0x33                      | 3   |
+| 0x40     | TSS (16-byte entry)                           | 0   |
+| 0x50     | The 32-bit TEB, FS in 32-bit code: 0x53       | 3   |
 
-The SYSCALL/SYSRET instruction reads STAR MSR to determine CS/SS selectors.
-Our layout (0x08/0x10 kernel, 0x18/0x20 user) matches Windows NT's layout
-exactly, which simplifies STAR MSR configuration for Phase 4.
+This is Windows' own x64 layout (`KGDT64_*`), and programs see it: a
+64-bit program's CS is 0x33, its stack and data 0x2B, FS 0x53, and a far
+jump to 0x23 runs 32-bit code in it (Roblox's Hyperion does).  The
+SYSCALL/SYSRET instructions read the STAR MSR for their selectors and need
+this order: kernel code with its data 8 above, and user 32-bit code with
+the data 8 above and 64-bit code 16 above (STAR = 0x0023_0010_0000_0000,
+as on Windows).  0x08 and 0x60-0x68 are empty, for Windows' GDT limit of
+0x6F.
 
 ### IDT Gate Assignments
 
@@ -153,6 +160,7 @@ exactly, which simplifies STAR MSR configuration for Phase 4.
 | 32–47     | APIC hardware IRQs (remapped PIC)    |
 | 0x30      | APIC timer (tick and sleep deadlines)|
 | 0x32      | ACPI SCI, routed through the I/O APIC (the only device interrupt; the other drivers poll) |
+| 0x29      | `__fastfail` (DPL 3): the program ends with STATUS_STACK_BUFFER_OVERRUN |
 | 0x2E      | NT syscall (int 0x2E)                |
 | 0xFF      | APIC spurious interrupt              |
 
