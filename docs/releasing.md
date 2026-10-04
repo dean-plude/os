@@ -22,8 +22,10 @@ GitHub release.  Nothing is uploaded by hand.
 
    On GitHub's web page the same is **Releases**, **Draft a new release**,
    **Choose a tag**, type `v0.1.0`, **Create new tag on publish** with
-   target `main`; but that publishes an empty release at once, which the
-   workflow then fills, so the command line is better.
+   target `main`, no description, **Set as the latest release** unticked,
+   **Publish release** (this works from a phone's browser).  That
+   publishes an empty release at once, which the workflow then fills and
+   marks Latest; a "pre-release" tick is cleared for a plain version.
 3. Watch the **Release** run on the Actions page.  It takes as long as a
    pull request's CI (the graphics suite is the longest part).
 
