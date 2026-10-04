@@ -165,14 +165,21 @@ one's image path (`GetProcessImageFileName`), owner and command line
 process, so the pass leaves the install alone, and the install starts
 the runtime's own setup (`MicrosoftEdgeWebview_X64_*.exe --msedgewebview
 --user-level`, Chromium's `mini_installer` with `setup.exe`).  That setup
-does not finish yet: `setup.exe` cannot map its archive (`MSEDGE.7z`)
-into memory ("Can't map file to memory: Incorrect function"), and then
-stops on the missing `wer.dll`.  Its installer then cleans up its
-temporary files, marking each for deletion on close; NovaOS deletes such
-a file when its last handle closes, as Windows does.  What comes next,
-in order: the runtime setup (mapping its archive, `wer.dll`), the 32-bit
-updater's registry keys need Windows' `WOW6432Node` view for the 64-bit
-programs that look for the runtime there, and then the runtime itself
+unpacks its 728 MB archive (`MSEDGE.7z`) through a file mapping, which
+NovaOS used to refuse over 256 MB, reports to Windows Error Reporting
+through `wer.dll` (NovaOS answers as a machine with reporting turned
+off) and checks that it runs on a desktop (`RtlGetDeviceFamilyInfoEnum`).
+It then copies the runtime into
+`C:\AppData\Local\Microsoft\EdgeWebView\Application` but is refused the
+`SetupMetrics` folder there ("Access is denied"; likely the permissions
+it adds to the folder for the runtime's sandboxed processes replace,
+rather than extend, what NovaOS reports for a folder without any) and
+rolls the install back.  Its installer then cleans up its temporary
+files, marking each for deletion on close; NovaOS deletes such a file
+when its last handle closes, as Windows does.  What comes next, in
+order: that folder refusal, the 32-bit updater's registry keys need
+Windows' `WOW6432Node` view for the 64-bit programs that look for the
+runtime there, and then the runtime itself
 (a Chromium browser process with its sandbox) has to run.
 
 ## Steam
