@@ -8,7 +8,9 @@
   `SO_LINGER`, `SO_REUSEADDR`, `SO_KEEPALIVE`, `SO_BROADCAST`, `IP_TTL`,
   `SO_RCVBUF`/`SO_SNDBUF`) and read back; a program keeps hundreds of
   sockets open at once, as a browser does, and `select`, `WSAPoll` and
-  `WSAEventSelect` wait on any number of them;
+  `WSAEventSelect` wait on any number of them; a UDP socket can be
+  connected to a peer, and `WSADuplicateSocket` hands a socket to another
+  process (Chromium's DNS client and its network process use both);
   overlapped requests that have to wait (an `AcceptEx`, a `ConnectEx`, a
   `WSARecv` with nothing to read yet) stay pending and complete on an I/O
   completion port, which proactor event loops such as Python's asyncio need;

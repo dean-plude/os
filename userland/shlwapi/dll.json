@@ -6,6 +6,10 @@
     "ParseURLA": 1,
     "ParseURLW": 2,
     "SHCreateMemStream": 12,
+    "GetAcceptLanguagesA": 14,
+    "GetAcceptLanguagesW": 15,
+    "ConnectToConnectionPoint": 168,
+    "IUnknown_GetWindow": 172,
     "QISearch": 219,
     "IsOS": 437
   }

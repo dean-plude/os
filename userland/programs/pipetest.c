@@ -21,6 +21,8 @@ static void check(int ok, const char *what)
     else { g_fail++; printf("FAIL: %s (error %lu)\n", what, GetLastError()); }
 }
 
+__declspec(dllimport) BOOL WINAPI ProcessIdToSessionId(DWORD pid, DWORD *session);
+
 static char g_self[MAX_PATH];
 
 /* Run @cmdline with stdin/stdout redirected; its exit code */
@@ -282,6 +284,38 @@ static void named(void)
     CloseHandle(th);
 }
 
+/* Who is at each end: a child connects, and each side asks the pipe for
+ * the other's process id (Chromium's Mojo checks the server's) */
+static int attrs_child(DWORD parent)
+{
+    HANDLE c = CreateFileA("\\\\.\\pipe\\nova-attrs", GENERIC_READ | GENERIC_WRITE, 0, 0, OPEN_EXISTING, 0, 0);
+    if (c == INVALID_HANDLE_VALUE) return 2;
+    ULONG srv = 0, cli = 0;
+    if (!GetNamedPipeServerProcessId(c, &srv) || srv != parent) return 3;
+    if (!GetNamedPipeClientProcessId(c, &cli) || cli != GetCurrentProcessId()) return 4;
+    DWORD me = GetCurrentProcessId(), n;
+    return WriteFile(c, &me, sizeof(me), &n, 0) ? 0 : 5;
+}
+
+static void attributes(void)
+{
+    HANDLE s = CreateNamedPipeA("\\\\.\\pipe\\nova-attrs", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE, 1, 4096, 4096, 0, 0);
+    check(s != INVALID_HANDLE_VALUE, "CreateNamedPipe (attributes)");
+    ULONG v = 0, session = 0;
+    check(GetNamedPipeServerProcessId(s, &v) && v == GetCurrentProcessId(), "GetNamedPipeServerProcessId: this process");
+    char cl[MAX_PATH + 32];
+    snprintf(cl, sizeof(cl), "\"%s\" attrs %lu", g_self, GetCurrentProcessId());
+    int code = run_child(cl, 0, 0, FALSE);
+    check(code == 0, "the client sees the server's process id and its own");
+    DWORD child = 0, n;
+    check(ReadFile(s, &child, sizeof(child), &n, 0) && n == sizeof(child) && child, "the client's process id came through");
+    check(GetNamedPipeClientProcessId(s, &v) && v == child, "GetNamedPipeClientProcessId: the client");
+    ProcessIdToSessionId(GetCurrentProcessId(), &session);
+    check(GetNamedPipeClientSessionId(s, &v) && v == session && GetNamedPipeServerSessionId(s, &v) && v == session,
+          "GetNamedPipeClient/ServerSessionId: this session");
+    CloseHandle(s);
+}
+
 static VOID WINAPI done_routine(DWORD err, DWORD bytes, LPOVERLAPPED ov) { ov->hEvent = (HANDLE)(ULONG_PTR)(0x1000 + bytes + err); }
 
 static void overlapped(void)
@@ -349,6 +383,7 @@ int main(int argc, char **argv)
         while ((ch = getchar()) != EOF) putchar(toupper(ch));
         return 0;
     }
+    if (argc > 2 && !strcmp(argv[1], "attrs")) return attrs_child((DWORD)strtoul(argv[2], 0, 10));
     if (argc > 2 && !strcmp(argv[1], "write")) {
         HANDLE h = (HANDLE)(ULONG_PTR)_strtoui64(argv[2], 0, 10);
         DWORD n;
@@ -359,6 +394,7 @@ int main(int argc, char **argv)
     children();
     crt();
     named();
+    attributes();
     overlapped();
     printf("pipetest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail != 0;
