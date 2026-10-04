@@ -71,7 +71,10 @@ class _Module(types.ModuleType):
     ARCH = property(lambda self: arch())
 sys.modules[__name__].__class__ = _Module
 def cflags():
-    extra = ['-msse2'] if arch() == 'x86' else []
+    # x64: unwind data for every function that saves registers or takes
+    # stack, as the Windows ABI requires (clang leaves it off a function
+    # that calls nothing, and an exception there could not be unwound)
+    extra = ['-msse2'] if arch() == 'x86' else ['-fasynchronous-unwind-tables']
     return ['--target=' + TARGETS[arch()]] + extra + COMMON_FLAGS
 
 # Each system DLL is registered by its own userland/NAME/dll.json (see
