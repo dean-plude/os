@@ -450,12 +450,11 @@ when `/dev/kvm` is readable and writable, and with TCG otherwise.  Set
 `qemu64` with the same feature flags under both.  CI runs the test VMs under
 KVM: each job's `tools/ci/enable-kvm.sh` step opens `/dev/kvm` to the runner
 user and sets `NOVARUN_ACCEL=kvm` (history entry "Kernel under KVM" has the
-timings).  The app corpus job (and boot-test outside pull requests) fails at that step,
-with a message, when the runner has no usable `/dev/kvm`; pull requests'
-boot-test falls back to TCG with a warning so a required check never goes red
-on the runner alone; start the workflow by hand with the
-`allow_tcg` input for a deliberate TCG run.  The graphics job falls back to TCG
-with a warning.  Every job's summary and the corpus table say which accelerator
+timings).  The app corpus job fails at that step, with a message, when the runner has no
+usable `/dev/kvm` (start the workflow by hand with the `allow_tcg` input for a
+deliberate TCG run); the boot-test and graphics jobs, which are required
+checks, fall back to TCG with a warning on every event so main and pull
+requests never go red on the runner alone.  Every job's summary and the corpus table say which accelerator
 the test VMs used.
 
 The graphics suite downloads 7-Zip, Mesa and DXVK, builds Venus

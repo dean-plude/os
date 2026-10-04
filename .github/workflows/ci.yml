@@ -117,10 +117,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Enable KVM (fails without /dev/kvm unless allow_tcg)
+      - name: Enable KVM (TCG when the runner has no /dev/kvm)
         env:
-          NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg || github.event_name == 'pull_request' }}   # a required check must not go red on a runner without KVM that nobody can re-run
-        run: tools/ci/enable-kvm.sh
+          NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg }}
+        run: tools/ci/enable-kvm.sh optional   # a required check must not go red on a runner without KVM that nobody can re-run
 
       - name: Install the toolchain and QEMU
         run: |
