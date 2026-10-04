@@ -78,7 +78,7 @@ bool   PadSetRumble(int slot, UINT16 left, UINT16 right);
  * hands them out, and is the device's input report length long. */
 #define PAD_DESC_MAX    1024
 #define PAD_REPORT_MAX  64
-#define PAD_RAW_RING    128
+#define PAD_RAW_RING    256
 
 typedef struct {
     UINT32 seq;                       /* 1, 2, ... */
@@ -93,6 +93,31 @@ typedef struct {
  * (@r without an ID byte when the device uses none: @ids false) */
 void PadSetDescriptor(int slot, const UINT8 *desc, int len, int in_len);
 void PadRawReport(int slot, const UINT8 *r, int len, bool ids);
+
+/* The mouse's and the keyboard's raw input (user32's RIM_TYPEMOUSE and
+ * RIM_TYPEKEYBOARD) go through the same ring, as reports of these two
+ * slots past the controllers' (serial 1, no PadInfo): one PadRawMouse or
+ * PadRawKey each, laid out like Windows' RAWMOUSE and RAWKEYBOARD.  The
+ * desktop posts them as it takes each event from the input queue, from
+ * every mouse and keyboard (PS/2, USB, virtio, I2C touchpads) */
+#define PAD_RAW_MOUSE    PAD_SLOTS
+#define PAD_RAW_KEYBOARD (PAD_SLOTS + 1)
+typedef struct {
+    UINT16 flags;                     /* MOUSE_MOVE_ABSOLUTE (1): x, y 0..65535 across the screen */
+    UINT16 button_flags;              /* RI_MOUSE_*: buttons that went down or up, the wheels */
+    INT16  button_data;               /* the wheel's turn, 120 a notch */
+    UINT16 reserved;
+    UINT32 raw_buttons;               /* the buttons held (MOUSE_LEFT...) */
+    INT32  x, y;                      /* relative motion (or where, with flags 1) */
+} PadRawMouse;
+typedef struct {
+    UINT16 make;                      /* set-1 scan code */
+    UINT16 flags;                     /* RI_KEY_BREAK (1), RI_KEY_E0 (2) */
+    UINT16 vkey;                      /* Windows virtual-key code */
+    UINT16 reserved;
+    UINT32 message;                   /* WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP */
+} PadRawKey;
+void PadRawInput(int slot, const void *data, int len);
 
 /* For programs: a slot's descriptor (its length; *@in_len the input
  * report length), the slot of a controller by serial (-1: gone), the

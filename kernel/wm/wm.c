@@ -935,6 +935,8 @@ void WmComposite(void)
  * so it is drawn at native resolution; WmCursorX/Y report logical ones.
  * ----------------------------------------------------------------------- */
 static int  g_cx, g_cy;            /* device pixels */
+static bool g_clip_on;             /* ClipCursor: confined to g_clip */
+static GdiRect g_clip;             /* (logical pixels) */
 static bool g_cursor_shown;
 static bool g_cursor_started;      /* shown once: every frame redraws it */
 
@@ -1061,6 +1063,12 @@ static void cursor_show_dev(int dx, int dy)
      * the desktop's outer edges */
     int s = GdiScale(), lx = to_logical(dx), ly = to_logical(dy), cx = lx, cy = ly;
     GdiClampToMonitors(&cx, &cy);
+    if (g_clip_on) {
+        if (cx < g_clip.x) cx = g_clip.x;
+        if (cx > g_clip.x + g_clip.w - 1) cx = g_clip.x + g_clip.w - 1;
+        if (cy < g_clip.y) cy = g_clip.y;
+        if (cy > g_clip.y + g_clip.h - 1) cy = g_clip.y + g_clip.h - 1;
+    }
     if (cx != lx) dx = cx * s + (cx < lx ? s - 1 : 0);
     if (cy != ly) dy = cy * s + (cy < ly ? s - 1 : 0);
     g_cx = dx;
@@ -1107,6 +1115,23 @@ void WmCursorMoveAbs(int nx, int ny)
     cursor_show_dev(v.x * s + (int)((INT64)nx * (w - 1) / 65535), v.y * s + (int)((INT64)ny * (h - 1) / 65535));
 }
 
+void WmCursorClip(const GdiRect *r)
+{
+    g_clip_on = r && r->w > 0 && r->h > 0;
+    if (g_clip_on) g_clip = *r;
+    if (!g_clip_on || !g_cursor_started) return;
+    bool shown = g_cursor_shown;
+    WmCursorHide();
+    cursor_show_dev(g_cx, g_cy);
+    if (!shown) WmCursorHide();
+}
+
+bool WmCursorClipRect(GdiRect *r)
+{
+    if (g_clip_on && r) *r = g_clip;
+    return g_clip_on;
+}
+
 void WmCursorReshow(void)
 {
     /* A new frame was presented: the pointer and its save-under are gone.
@@ -1140,8 +1165,9 @@ static void cursor_after_present(void)
 void WmDisplayChanged(int old_w, int old_h, int old_s)
 {
     /* The pointer keeps its place in proportion; its save-under belonged
-     * to the old surface */
+     * to the old surface; a ClipCursor rectangle ends, as on Windows */
     int nw = GdiScreenW(), nh = GdiScreenH(), s = GdiScale();
+    g_clip_on = false;
     int ox = g_cx >= 0 ? g_cx / old_s : -1, oy = g_cy >= 0 ? g_cy / old_s : -1;
     if (old_w > 0 && old_h > 0 && old_s > 0 && ox < old_w && oy < old_h && ox >= 0 && oy >= 0) {
         g_cx = (int)((INT64)ox * nw / old_w) * s;     /* on the primary monitor */

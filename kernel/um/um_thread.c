@@ -619,6 +619,93 @@ static UINT64 sys_wait_alert(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     }
 }
 
+/* -----------------------------------------------------------------------
+ * Keyed events: NtWaitForKeyedEvent and NtReleaseKeyedEvent meet on a key
+ * (an address, low bit clear) of one keyed event in one process; whichever
+ * comes first waits for the other, then both return.  A NULL handle is the
+ * one every process has (Windows' \KernelObjects\CritSecOutOfMemoryEvent).
+ * wepoll (Poco's PollSet, libevent) builds its reference locks on these.
+ * ----------------------------------------------------------------------- */
+typedef struct KeyedWait {
+    struct KeyedWait *next;
+    UmObject *ob;
+    UmProcess *proc;
+    UINT64 key;
+    bool release;                   /* a releaser waiting for a waiter */
+    UmThread *t;
+    volatile UINT32 done;           /* met */
+} KeyedWait;
+static KeyedWait *g_keyed;
+static KSpinLock g_keyed_lock = KSPINLOCK_INIT;
+static UmObject g_keyed_default = { .type = UO_KEYED_EVENT, .refs = 1 };
+
+static void keyed_unlink(KeyedWait *w)
+{
+    for (KeyedWait **pp = &g_keyed; *pp; pp = &(*pp)->next)
+        if (*pp == w) { *pp = w->next; return; }
+}
+
+/* NtWaitForKeyedEvent / NtReleaseKeyedEvent(HANDLE, PVOID Key, BOOLEAN Alertable, PLARGE_INTEGER Timeout) */
+static UINT64 keyed_op(UINT64 h, UINT64 key, UINT64 timeout_ptr, bool release)
+{
+    if (key & 1) return 0xC00000EFu;                        /* STATUS_INVALID_PARAMETER_1 */
+    INT64 t;
+    if (!get_timeout(timeout_ptr, &t)) return ST_ACCESS_VIOLATION;
+    UmProcess *p = UmCurrent();
+    UmObject *o = h ? um_handle_object(p, h, UO_KEYED_EVENT) : &g_keyed_default;
+    if (!o) return ST_INVALID_HANDLE;
+    KeyedWait me = { .ob = o, .proc = p, .key = key, .release = release, .t = UmCurrentThread() };
+    UINT64 st = ST_SUCCESS;
+    IrqState s = spin_lock_irqsave(&g_keyed_lock);
+    KeyedWait *other = g_keyed;
+    while (other && (other->ob != o || other->proc != p || other->key != key || other->release == release)) other = other->next;
+    if (other) {                                            /* someone is waiting for us: both go on */
+        keyed_unlink(other);
+        __atomic_store_n(&other->done, 1, __ATOMIC_RELEASE);
+        if (other->t && other->t->kt) sched_unblock_boost(other->t->kt, BOOST_EVENT);
+        spin_unlock_irqrestore(&g_keyed_lock, s);
+    } else {
+        me.next = g_keyed;
+        g_keyed = &me;
+        spin_unlock_irqrestore(&g_keyed_lock, s);
+        UINT64 until = deadline_tsc(t);
+        for (;;) {
+            if (__atomic_load_n(&me.done, __ATOMIC_ACQUIRE)) break;
+            bool stop = um_stopping();
+            if (stop || t == 0 || rdtsc() >= until) {
+                s = spin_lock_irqsave(&g_keyed_lock);
+                bool met = me.done;
+                if (!met) keyed_unlink(&me);
+                spin_unlock_irqrestore(&g_keyed_lock, s);
+                if (!met) st = stop ? ST_THREAD_IS_TERMINATING : ST_TIMEOUT;
+                break;
+            }
+            UINT64 nap = sched_tick_tsc(sched_ticks() + 10);
+            sched_sleep_until_tsc(&me.done, until < nap ? until : nap);
+        }
+    }
+    if (o != &g_keyed_default) um_ob_unref(o);
+    return st;
+}
+
+static UINT64 sys_wait_keyed(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)    { (void)a3; return keyed_op(a1, a2, a4, false); }
+static UINT64 sys_release_keyed(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a3; return keyed_op(a1, a2, a4, true); }
+
+/* NtCreateKeyedEvent(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG Flags) */
+static UINT64 sys_create_keyed(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a4;
+    char name[NS_NAME_MAX];
+    if (!ns_name(a3, name)) return ST_ACCESS_VIOLATION;
+    UINT64 r = open_existing(name, UO_KEYED_EVENT, a1, (UINT32)a2);
+    if (r) return r;
+    UmObject *o = ob_new(UO_KEYED_EVENT);
+    if (!o) return ST_NO_MEMORY;
+    return finish_create(o, name, a1, a3, (UINT32)a2);
+}
+
+static UINT64 sys_open_keyed(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_named(UO_KEYED_EVENT, a1, a3, (UINT32)a2); }
+
 /* NtWaitForMultipleObjects(ULONG Count, PHANDLE Handles, WAIT_TYPE (0 all, 1 any),
  *                          BOOLEAN Alertable, PLARGE_INTEGER Timeout) */
 static UINT64 sys_wait_multiple(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -1937,6 +2024,7 @@ INHERITABLE(sys_create_directory) INHERITABLE(sys_open_directory)
 INHERITABLE(sys_create_symlink)   INHERITABLE(sys_open_symlink)
 INHERITABLE(sys_create_timer)     INHERITABLE(sys_open_timer)
 INHERITABLE(sys_create_event)     INHERITABLE(sys_open_event)
+INHERITABLE(sys_create_keyed)     INHERITABLE(sys_open_keyed)
 INHERITABLE(sys_create_mutant)    INHERITABLE(sys_open_mutant)
 INHERITABLE(sys_create_semaphore) INHERITABLE(sys_open_semaphore)
 INHERITABLE(sys_create_section)   INHERITABLE(sys_open_section)
@@ -1977,6 +2065,10 @@ void um_thread_syscalls_init(void)
     um_install(SYSCALL_NtWaitForSingleObject,     sys_wait_single);
     um_install(SYSCALL_NtAlertThreadByThreadId,   sys_alert_by_tid);
     um_install(SYSCALL_NtWaitForAlertByThreadId,  sys_wait_alert);
+    um_install(SYSCALL_NtCreateKeyedEvent,        sys_create_keyed_oa);
+    um_install(SYSCALL_NtOpenKeyedEvent,          sys_open_keyed_oa);
+    um_install(SYSCALL_NtWaitForKeyedEvent,       sys_wait_keyed);
+    um_install(SYSCALL_NtReleaseKeyedEvent,       sys_release_keyed);
     um_install(SYSCALL_NtWaitForMultipleObjects,  sys_wait_multiple);
     um_install(SYSCALL_NtCreateThreadEx,          sys_create_thread_ex);
     um_install(SYSCALL_NtTerminateThread,         sys_terminate_thread);

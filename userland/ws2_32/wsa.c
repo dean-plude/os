@@ -166,6 +166,18 @@ int WSAIoctl(SOCKET s, DWORD code, LPVOID in, DWORD inlen, LPVOID out, DWORD out
     }
     case SIO_KEEPALIVE_VALS:
         return complete(s, ov, cr, 0, 0);
+    case 0x48000022:                              /* SIO_BASE_HANDLE */
+    case 0x4800001B:                              /* SIO_BSP_HANDLE */
+    case 0x4800001C:                              /* SIO_BSP_HANDLE_SELECT */
+    case 0x4800001D: {                            /* SIO_BSP_HANDLE_POLL */
+        /* no layered providers: a socket is its own base (AFD) handle */
+        BYTE st[3];
+        if (NtNovaSockCtl((INT_PTR)s, 4, 0, st)) { set_err(WSAENOTSOCK); return SOCKET_ERROR; }
+        if (!out || outlen < sizeof(SOCKET)) { set_err(WSAEFAULT); return SOCKET_ERROR; }
+        *(SOCKET *)out = s;
+        if (ret) *ret = sizeof(SOCKET);
+        return complete(s, ov, cr, 0, sizeof(SOCKET));
+    }
     default:                                      /* the rest: not available */
         set_err(WSAEOPNOTSUPP);
         return SOCKET_ERROR;

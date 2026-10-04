@@ -7,6 +7,7 @@
   (Blobby Volley 2: 800x600 in Direct3D 9 exclusive full screen, and back
   when it ends)~~ Done (all five in the nightly corpus).  Still to do:
   joining a Teeworlds game on its own server (it times out under TCG
-  while Mesa compiles its shaders; mouse needs Raw Input), GOG GALAXY's
-  client, Steam's login window, Roblox's player (its anti-cheat refuses
-  virtual machines).
+  while Mesa compiles its shaders; its menus follow the mouse with its
+  default settings, SDL recentring the pointer with `SetCursorPos`), GOG
+  GALAXY's client, Steam's login window, Roblox's player (its anti-cheat
+  refuses virtual machines).

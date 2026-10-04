@@ -6,4 +6,7 @@
   Arabic and Devanagari draw with Noto Sans; GDI falls back to them by
   script.  DirectWrite (`dwrite`) lays text out on the same core, with
   font fallback: `tools/dwtest` draws Latin, Arabic and Devanagari in one
-  line from a Latin-only font.
+  line from a Latin-only font.  Its factory is an `IDWriteFactory3`, with
+  Windows 10's font sets, font face references and `IDWriteFontFallback`,
+  which Chromium's browsers (Steam's, WebView2) ask for
+  (`tools/dw3test`).

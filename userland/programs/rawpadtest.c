@@ -99,18 +99,19 @@ static int list_devices(void)
 {
     UINT n = 0;
     if (GetRawInputDeviceList(NULL, &n, sizeof(RAWINPUTDEVICELIST)) != 0) return -1;
-    RAWINPUTDEVICELIST l[8];
+    RAWINPUTDEVICELIST l[10];
     UINT want = n, small = 0;
     UINT r0 = n ? GetRawInputDeviceList(l, &small, sizeof(l[0])) : 0;
     if (n && (r0 != (UINT)-1 || GetLastError() != ERROR_INSUFFICIENT_BUFFER || small != n)) return -2;
-    if (n > 8) return -3;
+    if (n > 10) return -3;
     UINT got = GetRawInputDeviceList(l, &want, sizeof(l[0]));
     if (got != n) return -4;
+    int hid = 0;
     for (UINT i = 0; i < got; i++) {
-        Dev *d = &g_dev[i];
+        if (l[i].dwType != RIM_TYPEHID) continue;          /* (the mouse and the keyboard: rawtest's) */
+        Dev *d = &g_dev[hid++];
         memset(d, 0, sizeof(*d));
         d->dev = l[i].hDevice;
-        if (l[i].dwType != RIM_TYPEHID) return -5;
         UINT sz = sizeof(d->info);
         d->info.cbSize = sizeof(d->info);
         if (GetRawInputDeviceInfoW(d->dev, RIDI_DEVICEINFO, &d->info, &sz) != sizeof(d->info)) return -6;
@@ -123,8 +124,8 @@ static int list_devices(void)
         if (!sz || GetRawInputDeviceInfoW(d->dev, RIDI_PREPARSEDDATA, d->pp, &sz) != d->pplen) return -8;
         if (HidP_GetCaps(d->pp, &d->caps) != HIDP_STATUS_SUCCESS) return -9;
     }
-    g_ndev = (int)got;
-    return (int)got;
+    g_ndev = hid;
+    return hid;
 }
 
 /* ---- the window and what it is sent ---- */
@@ -543,12 +544,15 @@ int main(int argc, char **argv)
     PUMP_UNTIL(g_nchange >= 1);
     check(g_nchange == 1 && g_change[0].what == GIDC_REMOVAL && g_change[0].dev == one->dev,
           "WM_INPUT_DEVICE_CHANGE: the Xbox One controller's removal");
-    UINT left = 0;
-    GetRawInputDeviceList(NULL, &left, sizeof(RAWINPUTDEVICELIST));
+    RAWINPUTDEVICELIST all[10];
+    UINT nall = 10;
+    int left = 0;
+    nall = GetRawInputDeviceList(all, &nall, sizeof(all[0]));
+    for (UINT i = 0; i < nall && nall != (UINT)-1; i++) left += all[i].dwType == RIM_TYPEHID;
     UINT sz = sizeof(RID_DEVICE_INFO);
     RID_DEVICE_INFO ri = { sizeof(ri) };
     check(left == 1 && GetRawInputDeviceInfoW(one->dev, RIDI_DEVICEINFO, &ri, &sz) == (UINT)-1,
-          "one device left; the unplugged one's handle names nothing (%u)", left);
+          "one device left; the unplugged one's handle names nothing (%d)", left);
     if (fone != INVALID_HANDLE_VALUE) {
         BYTE r[14];
         DWORD nr = 0;

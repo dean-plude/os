@@ -205,17 +205,21 @@ Winsock 1.1 library did not export, so the first connection it accepted
 ended the client with `STATUS_ENTRYPOINT_NOT_FOUND` and the browser shut
 down with it.  `wsock32` now exports `TransmitFile`, `AcceptEx` and
 `GetAcceptExSockaddrs` (1140 to 1142) from `mswsock`, as Windows does,
-and Steam keeps running; the browser then starts its first page and
-stops in DirectWrite: Chromium asks the DirectWrite factory for
-`IDWriteFactory2` and `IDWriteFactory3` (Windows 10's) and NovaOS's
-factory has only the first two versions, so the browser crashes and Steam
-starts it again.
+and Steam keeps running.  The browser then crashed in DirectWrite:
+Chromium asks the DirectWrite factory for `IDWriteFactory2` and
+`IDWriteFactory3` (Windows 10's font sets, face references and font
+fallback) without checking the answer.  NovaOS's DirectWrite now has
+them, and the browser keeps running: under emulation it starts its GPU,
+network and storage processes, creates Steam's first browser ("SP Shared
+JS Context") and launches its page process about eight minutes in, which
+is as far as the corpus test's fifteen minutes reach.  `steam.exe` also
+asks for `IDWriteFactory5` and goes on without it.
 What is known to be missing on the way, each a NovaOS gap and none a
 reason to change Steam:
 
 - Media Foundation (`mf.dll`, which Chromium only uses for video).
-- DirectWrite's `IDWriteFactory2` and `IDWriteFactory3`, where the
-  browser stops now.
+- DirectWrite's `IDWriteFactory4` and later (`steam.exe` asks for
+  `IDWriteFactory5` and goes on without it).
 - WMI (`WbemLocator`, `{4590F811-1D3A-11D0-891F-00AA004B2E24}`), which
   Steam and its browser ask for and get on without (Chromium reads the
   board and BIOS names through it), and the COM classes

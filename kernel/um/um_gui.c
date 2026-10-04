@@ -238,16 +238,26 @@ static void gui_paint(WND *w)
  * Explorer) or the desktop itself is active.  Desktop thread, DesktopLock held: called
  * every pass of its loop (each tick), so it follows every way the active
  * window changes (a click, Alt+Tab, a window closed or minimized). */
-void UmUpdateForeground(void)
+static UmProcess *active_process(void)
 {
     WND *w = WmActiveWindow();
-    UmProcess *p = NULL;
-    if (w && w->on_paint == gui_paint && w->user) {
-        GuiWin *g = w->user;
-        p = g->proc;
-    } else {
-        p = TerminalProgram(w);                 /* a console program while its Terminal is active */
-    }
+    if (w && w->on_paint == gui_paint && w->user) return ((GuiWin *)w->user)->proc;
+    return TerminalProgram(w);                  /* a console program while its Terminal is active */
+}
+
+static UINT32 g_clip_pid;                       /* the process whose ClipCursor holds (0: none) */
+
+/* A confined pointer is let go once its process leaves the foreground
+ * (@p: the active window's process).  Desktop lock. */
+static void clip_follow(UmProcess *p)
+{
+    if (g_clip_pid && (!p || p->exited || p->pid != g_clip_pid)) { g_clip_pid = 0; WmCursorClip(NULL); }
+}
+
+void UmUpdateForeground(void)
+{
+    UmProcess *p = active_process();
+    clip_follow(p);
     if (p && (p->exited || p->prio_class == 1 /* PROCESS_PRIORITY_CLASS_IDLE */)) p = NULL;
     if (sched_foreground() != p) sched_set_foreground(p);
 }
@@ -985,6 +995,22 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *                9 ptr = a HID device handle: drops its waiting reports;
  *                10 arg >> 8 = a serial: returns its slot, or -1 */
 #define CTL_GAMEPAD      33
+/* The pointer, moved and confined by the foreground process only (the one
+ * whose window is active, or a console program while its Terminal is):
+ *  34 SET_CURSOR_POS ptr <- { screen x, y } (logical): SetCursorPos; the
+ *                 pointer moves there (kept on the monitors and inside a
+ *                 ClipCursor rectangle) and the window under it gets the
+ *                 mouse move, as for the mouse; no Raw Input.  0: not the
+ *                 foreground process
+ *  35 CLIP_CURSOR arg 0: ClipCursor(NULL), the pointer goes anywhere
+ *                 (from the background: no change, and no error);
+ *                 1: ptr <- { left, top, right, bottom }: keep it inside;
+ *                 2: ptr -> the rectangle it is kept in; returns 0 when
+ *                 it is not confined.  The confinement ends when another
+ *                 process comes to the foreground and on a display change.
+ *                 Arg 1 returns 0 from a process not in the foreground */
+#define CTL_SET_CURSOR_POS 34
+#define CTL_CLIP_CURSOR    35
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
 #define GUI_TAG_SHIFT    14
@@ -1181,6 +1207,67 @@ static UINT64 tablet_ctl(UmProcess *p, UINT64 op, UINT64 ptr)
     }
     }
     return 0;
+}
+
+/* SetCursorPos (CTL_SET_CURSOR_POS): the pointer is the user's, so only
+ * the foreground process moves it; the window under it hears of the move
+ * as it would of the mouse's (WM_MOUSEMOVE), which programs that recentre
+ * the pointer every frame rely on (SDL's relative mouse mode by warping) */
+static UINT64 cursor_set_pos(UmProcess *p, UINT64 ptr)
+{
+    INT32 c[2];
+    if (!NT_SUCCESS(CopyFromUser(c, (const void *)(uintptr_t)ptr, sizeof(c)))) return 0;
+    DesktopLock();
+    UmProcess *a = active_process();
+    clip_follow(a);                             /* (the desktop's tick may not have seen a change yet) */
+    bool ok = a == p && !p->exited;
+    if (ok) {
+        WmCursorMove(c[0], c[1]);
+        WmMouseMove(WmCursorX(), WmCursorY());  /* even where it was: SDL takes it as the warp's end */
+    }
+    DesktopUnlock();
+    return ok ? 1 : 0;
+}
+
+/* ClipCursor (CTL_CLIP_CURSOR) */
+static UINT64 cursor_clip(UmProcess *p, UINT64 arg, UINT64 ptr)
+{
+    INT32 r[4] = { 0 };
+    if (arg == 1 && !NT_SUCCESS(CopyFromUser(r, (const void *)(uintptr_t)ptr, sizeof(r)))) return 0;
+    UINT64 ok = 1;
+    DesktopLock();
+    clip_follow(active_process());
+    if (arg == 2) {
+        GdiRect c;
+        ok = WmCursorClipRect(&c);
+        r[0] = c.x; r[1] = c.y; r[2] = c.x + c.w; r[3] = c.y + c.h;
+    } else if (arg == 0) {
+        /* Its own confinement, or the foreground's: let go (another
+         * process's, from the background: nothing to do) */
+        if (p->pid == g_clip_pid || active_process() == p) { g_clip_pid = 0; WmCursorClip(NULL); }
+    } else if (active_process() != p || p->exited) {
+        ok = 0;
+    } else {
+        /* Kept to the desktop (a rectangle off it confines to the nearest edge) */
+        GdiRect v = GdiVirtualRect();
+        int l = r[0], t = r[1], rt = r[2], b = r[3];
+        if (l < v.x) l = v.x;
+        if (t < v.y) t = v.y;
+        if (rt > v.x + v.w) rt = v.x + v.w;
+        if (b > v.y + v.h) b = v.y + v.h;
+        if (l >= v.x + v.w) l = v.x + v.w - 1;
+        if (t >= v.y + v.h) t = v.y + v.h - 1;
+        if (rt <= l) rt = l + 1;
+        if (b <= t) b = t + 1;
+        GdiRect c = { l, t, rt - l, b - t };
+        int ox = WmCursorX(), oy = WmCursorY();
+        g_clip_pid = p->pid;
+        WmCursorClip(&c);
+        if (WmCursorX() != ox || WmCursorY() != oy) WmMouseMove(WmCursorX(), WmCursorY());
+    }
+    DesktopUnlock();
+    if (arg == 2 && ok && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, r, sizeof(r)))) ok = 0;
+    return ok;
 }
 
 /* Game controllers (CTL_GAMEPAD) */
@@ -1524,6 +1611,8 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a2 == CTL_TOUCH) return (UINT64)InputTouchContacts();
     if (a2 == CTL_TABLET) return tablet_ctl(p, a3, a4);
     if (a2 == CTL_GAMEPAD) return gamepad_ctl(a3, a4);
+    if (a2 == CTL_SET_CURSOR_POS) return cursor_set_pos(p, a4);
+    if (a2 == CTL_CLIP_CURSOR) return cursor_clip(p, a3, a4);
     if (a2 == CTL_FOREIGN) return hwnd_foreign((UINT32)a3, a4);
     if (a2 == CTL_SET_HWND) {
         INT32 uc[4] = { 0 };

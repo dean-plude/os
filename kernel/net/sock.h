@@ -63,6 +63,16 @@ void NetSockPoll(int s, bool *readable, bool *writable, bool *error);
 int NetSockPeek(int s, void *buf, int len, bool *closed);
 bool NetSockListening(int s);
 
+/* The connection table (iphlpapi's GetExtendedTcpTable): the owner is the
+ * process that made or accepted the socket; state is a MIB_TCP_STATE */
+typedef struct {
+    NetSockAddr local, remote;
+    UINT32 state;
+    UINT32 owner;
+} NetTcpRow;
+void NetSockSetOwner(int s, UINT32 pid);
+int  NetSockTcpTable(NetTcpRow *rows, int max);
+
 /* Socket options (Winsock's setsockopt/getsockopt; ws2_32 maps the levels
  * and names onto these).  Booleans are 0/1, buffers in bytes, timeouts in
  * ms (0: none), SOCKOPT_LINGER is on | seconds << 16.  The read-only

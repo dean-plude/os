@@ -392,8 +392,19 @@ static UINT64 sys_ea_file(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  * PIO_STATUS_BLOCK, ULONG Code, PVOID In, ULONG InLength, PVOID Out, ULONG OutLength) */
 static UINT64 sys_device_io_control(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a1; (void)a2; (void)a3; (void)a4;
-    return io_done(um_stack_arg(5), ST_INVALID_DEVICE_REQUEST);
+    (void)a3;
+    UINT64 io = um_stack_arg(5);
+    UmObject *o = um_handle_object(UmCurrent(), a1, UO_AFD);   /* \Device\Afd helpers (um_afd.c) */
+    UINT32 st = o ? um_afd_ioctl(o, a2, a4, io, (UINT32)um_stack_arg(6), um_stack_arg(7), (UINT32)um_stack_arg(8),
+                                 um_stack_arg(9), (UINT32)um_stack_arg(10))
+                  : ST_INVALID_DEVICE_REQUEST;
+    if (o) um_ob_unref(o);
+    if (st == 0x103 || (o && st == 0)) return st;               /* (the status block is written) */
+    if (io >> 63) {                                             /* a 32-bit program's block */
+        UINT32 b[2] = { st, 0 };
+        return put(io & ~(UINT64_C(1) << 63), b, sizeof(b)) ? st : ST_ACCESS_VIOLATION;
+    }
+    return io_done(io, st);
 }
 
 /* NtLock/UnlockVirtualMemory(HANDLE, PVOID *, PSIZE_T, ULONG): memory is
