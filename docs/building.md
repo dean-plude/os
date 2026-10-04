@@ -893,6 +893,10 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
   and cabinets with the same readers `msi.dll` uses (build instructions in
   the file); `tools/msitest/make_package.sh` builds a test package with
   msitools.
+- `tools/make_cabtest_data.py` writes `userland/programs/cabtest_data.h`,
+  the MSZIP, LZX and two-cabinet set `cabtest` extracts (it has a small LZX
+  encoder of its own); `--write-cabs DIR` writes them as files, to check
+  with `cabextract -t` or `7z t` after a change.
 
 ---
 
