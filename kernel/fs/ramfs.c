@@ -733,6 +733,10 @@ void RamfsUnref(RamNode *n)
     if (!n) return;
     int left = __atomic_sub_fetch(&n->refs, 1, __ATOMIC_ACQ_REL);
     if (left < 0) { __atomic_add_fetch(&n->refs, 1, __ATOMIC_RELAXED); return; }
+    if (!left && n->pending) {                      /* (deleted when the last holder lets go) */
+        if (RamfsDelete(n)) return;
+        n->pending = false;
+    }
     if (!left && !n->dir) {
         if (ext(n)) unload(n);
         else trim(n);
@@ -769,6 +773,13 @@ bool RamfsDelete(RamNode *n)
     else { release_data(n, n->data); kfree(n->sd); }
     kfree(n);
     return true;
+}
+
+bool RamfsDeleteWhenFree(RamNode *n)
+{
+    if (!n || !n->parent || RamfsReadOnly(n)) return false;
+    if (n->refs > 0) { n->pending = true; return true; }
+    return RamfsDelete(n);
 }
 
 bool RamfsRename(RamNode *n, RamNode *dir, const char *name, bool replace)

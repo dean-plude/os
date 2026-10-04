@@ -220,6 +220,7 @@ struct UmProcess {
     bool        wow;            /* a 32-bit (x86) program: compatibility mode, SysWOW64 DLLs */
     UmLayout    lay;            /* where its system areas and allocations go */
     char        name[32];
+    char        image_path[RAMFS_PATH_MAX];   /* its program's path when it started ("C:\Apps\x.exe"; ProcessImageFileName) */
     UINT64      pml4;           /* physical address of the page table */
     RamNode    *cwd;
     RamNode    *exe_dir;        /* searched for DLLs before System32 */
@@ -318,6 +319,7 @@ void       um_flush_view_at(UmProcess *p, UINT64 va);  /* a file-backed view: wr
 /* Copy into/out of user memory through the page tables (any process). */
 bool       um_write(UmProcess *p, UINT64 va, const void *src, UINT64 n);
 bool       um_read(UmProcess *p, UINT64 va, void *dst, UINT64 n);
+UINT32     um_utf16_from_utf8(const char *s, UINT8 *d);   /* UTF-16 units of @s, written to @d if not NULL */
 /* Priorities (um_thread.c): @p's class base priority (4, 6, 8, 10, 13 or
  * 24), and a thread's base for an increment (UmThread.prio_incr) in it */
 UINT8      um_class_base(const UmProcess *p);
@@ -355,6 +357,9 @@ int        um_console_pids(UmConsole *c, UINT32 *out, int max);   /* running pro
 /* um_syscall.c */
 void       um_syscall_init(void);
 void       um_close_all_handles(UmProcess *p);
+/* Is @n a running program's or loaded DLL's file?  (Under the file-system
+ * lock.)  Windows refuses to delete one: STATUS_CANNOT_DELETE. */
+bool       um_image_in_use(const RamNode *n);
 void       um_install(UINT32 num, SYSCALL_HANDLER h);
 SYSCALL_HANDLER um_service(UINT32 num);          /* a program's service (installed: not NULL) */
 void       um_lock_free(UINT32 num);

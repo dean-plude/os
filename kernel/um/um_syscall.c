@@ -65,6 +65,7 @@
 #define ST_NOT_A_DIRECTORY         0xC0000103u
 #define ST_TOO_MANY_OPENED_FILES   0xC000011Fu
 #define ST_CANNOT_DELETE           0xC0000121u
+#define ST_DELETE_PENDING          0xC0000056u
 
 /* A program may commit up to 7/8 of the machine's memory (pages are only
  * taken when first touched, so this bounds promises, not use) */
@@ -422,8 +423,8 @@ static void handle_close(UmHandle *h)
         h->kind = H_FREE;
         um_fpos_unref(h->fp);
         h->fp = NULL;
+        if (del) RamfsDeleteWhenFree(n);            /* now, or when its other holders let go */
         RamfsUnref(n);
-        if (del) RamfsDelete(n);
         FsUnlock();
         return;
     }
@@ -790,7 +791,7 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
     bool unloaded, wr0 = access & (GENERIC_WRITE | GENERIC_ALL | FILE_WRITE_DATA | FILE_APPEND_DATA);
     RamNode *node = (disposition == 1 || disposition == 3) && !(options & 0x1000) ?
                     path[0] ? RamfsLookup(root, path, &unloaded) : root : NULL;
-    if (node && (!(node->xflags & RAMFS_X_EXTERN) || (node->xflags & (node->dir ? RAMFS_X_LISTED : RAMFS_X_LOADED))) &&
+    if (node && !node->pending && (!(node->xflags & RAMFS_X_EXTERN) || (node->xflags & (node->dir ? RAMFS_X_LISTED : RAMFS_X_LOADED))) &&
         !(RamfsReadOnly(node) && wr0) && !((options & 0x40) && node->dir) && !((options & 0x1) && !node->dir)) {
         UINT32 granted;                                         /* what its security descriptor allows */
         if (!FsecAccess(node, access, &granted)) { FsUnlockShared(); return iosb(iosb_ptr, ST_ACCESS_DENIED, 0); }
@@ -811,6 +812,7 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
 
     node = path[0] ? RamfsResolve(root, path) : root;
     UINT64 info = 1;                                            /* FILE_OPENED */
+    if (node && node->pending) { FsUnlock(); return iosb(iosb_ptr, ST_DELETE_PENDING, 0); }   /* (as Windows) */
     if (node && RamfsReadOnly(node) &&                          /* a read-only volume (drives D:, ...) */
         (wr || disposition == 0 || disposition == 4 || disposition == 5 || (options & 0x1000))) {
         FsUnlock();
@@ -834,6 +836,7 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
         if (disposition == 2) { FsUnlock(); return iosb(iosb_ptr, ST_OBJECT_NAME_COLLISION, 4); }
         if (want_file && node->dir) { FsUnlock(); return iosb(iosb_ptr, ST_FILE_IS_A_DIRECTORY, 0); }
         if (want_dir && !node->dir) { FsUnlock(); return iosb(iosb_ptr, ST_NOT_A_DIRECTORY, 0); }
+        if ((options & 0x1000) && um_image_in_use(node)) { FsUnlock(); return iosb(iosb_ptr, ST_CANNOT_DELETE, 0); }
         if (!node->dir && (disposition == 0 || disposition == 4 || disposition == 5)) {
             RamfsResize(node, 0);                               /* supersede / overwrite */
             info = disposition == 0 ? 0 : 3;
@@ -918,7 +921,7 @@ static bool close_shared(UmProcess *p, UINT64 hv)
     um_lock_shared(&p->lock);
     int i = slot_lock(p, hv);
     UmHandle *h = i < 0 ? NULL : handle(p, hv);
-    RamNode *n = h && (h->kind == H_FILE || h->kind == H_DIR) && !h->delete_on_close &&
+    RamNode *n = h && (h->kind == H_FILE || h->kind == H_DIR) && !h->delete_on_close && !h->node->pending &&
                  !(h->node->xflags & RAMFS_X_EXTERN) ? h->node : NULL;
     if (i >= 0) slot_unlock(p, i);
     um_unlock_shared(&p->lock);
@@ -928,7 +931,7 @@ static bool close_shared(UmProcess *p, UINT64 hv)
     um_lock_shared(&p->lock);
     slot_lock(p, hv);
     h = handle(p, hv);
-    bool ok = h && h->node == n && (h->kind == H_FILE || h->kind == H_DIR) && !h->delete_on_close;
+    bool ok = h && h->node == n && (h->kind == H_FILE || h->kind == H_DIR) && !h->delete_on_close && !n->pending;
     UmFilePos *fp = NULL;
     if (ok) { fp = h->fp; h->fp = NULL; h->kind = H_FREE; }
     slot_unlock(p, i);
@@ -1222,7 +1225,7 @@ static UINT64 sys_query_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         UINT64 size = h->kind == H_FILE ? h->node->size : 0;
         memcpy(b, &size, 8); memcpy(b + 8, &size, 8);
         UINT32 links = file ? (UINT32)RamfsLinks(h->node) : 1; memcpy(b + 16, &links, 4);
-        b[20] = h->delete_on_close;
+        b[20] = h->delete_on_close || h->node->pending;
         b[21] = h->kind == H_DIR;
         break;
     }
@@ -1284,7 +1287,7 @@ static UINT64 sys_query_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         UINT64 size = h->kind == H_FILE ? h->node->size : 0;
         memcpy(all + 40, &size, 8); memcpy(all + 48, &size, 8);
         UINT32 links = file ? (UINT32)RamfsLinks(h->node) : 1; memcpy(all + 56, &links, 4);
-        all[60] = h->delete_on_close; all[61] = h->kind == H_DIR;
+        all[60] = h->delete_on_close || h->node->pending; all[61] = h->kind == H_DIR;
         UINT64 id = (UINT64)(uintptr_t)(file ? RamfsFileId(h->node) : h->node); memcpy(all + 64, &id, 8);
         UINT32 acc = 0x001F01FF; memcpy(all + 76, &acc, 4);
         memcpy(all + 80, hpos(h), 8);
@@ -1423,7 +1426,10 @@ static UINT64 sys_set_info_file_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a
             return iosb(a2, ST_DIRECTORY_NOT_EMPTY, 0);
         if (h->kind != H_FILE && h->kind != H_DIR) return iosb(a2, ST_CANNOT_DELETE, 0);
         if (flag && !may_delete(h->node)) return iosb(a2, ST_ACCESS_DENIED, 0);
+        if (flag && um_image_in_use(h->node)) return iosb(a2, ST_CANNOT_DELETE, 0);
         h->delete_on_close = flag;
+        if (flag) RamfsDeleteWhenFree(h->node);                 /* delete pending: new opens fail; */
+        else h->node->pending = false;                          /*   gone when the last handle closes */
         return iosb(a2, ST_SUCCESS, 0);
     }
     return iosb(a2, ST_INVALID_INFO_CLASS, 0);
@@ -1491,10 +1497,12 @@ static UINT64 sys_query_attributes(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     FsLock();
     UINT32 st = get_path(p, a1, path, sizeof(path), &root);
     RamNode *n = st ? NULL : path[0] ? RamfsResolve(root, path) : root;
+    bool pend = n && n->pending;
     if (n) basic_info(b, n);
     FsUnlock();
     if (st) return st;
     if (!n) return ST_OBJECT_NAME_NOT_FOUND;
+    if (pend) return ST_DELETE_PENDING;                         /* (as Windows) */
     return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, b, 40)) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
 }
 
@@ -1519,8 +1527,10 @@ static UINT64 sys_query_full_attributes(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 
         memcpy(b + 40, &size, 8);
         memcpy(b + 48, basic + 32, 4);                          /* FileAttributes */
     }
+    bool pend = n && n->pending;
     DesktopUnlock();
     if (!n) return ST_OBJECT_NAME_NOT_FOUND;
+    if (pend) return ST_DELETE_PENDING;
     return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, b, 56)) ? ST_SUCCESS : UM_STATUS_ACCESS_VIOLATION;
 }
 

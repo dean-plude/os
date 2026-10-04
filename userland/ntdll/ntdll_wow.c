@@ -581,11 +581,29 @@ NTSTATUS NTAPI NtQuerySection(HANDLE h, ULONG cls, PVOID info, SIZE_T len, PSIZE
 
 NTSTATUS NTAPI NtQueryInformationProcess(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG ret)
 {
-    if (cls == 26) {                                 /* ProcessWow64Information: yes, a 32-bit process */
+    if (cls == 26) {                                 /* ProcessWow64Information: its 32-bit PEB, or 0 */
         if (len < 4) return 0xC0000004;
-        *(ULONG_PTR *)info = (ULONG_PTR)RtlGetCurrentPeb();
-        if (ret) *ret = 4;
-        return STATUS_SUCCESS;
+        U64 v = 0;
+        NTSTATUS s = SC(NtQueryInformationProcess, H(h), 26, P(&v), 8, 0);
+        if (NT_SUCCESS(s)) { *(ULONG_PTR *)info = (ULONG_PTR)v; if (ret) *ret = 4; }
+        return s;
+    }
+    if (cls == 27 || cls == 43 || cls == 60) {       /* image name, Win32 image name, command line: a UNICODE_STRING */
+        ULONG got = 0, cap = len + 8;                /* its x64 header is 8 bytes longer */
+        BYTE *b = RtlAllocateHeap(RtlGetProcessHeap(), 0, cap);
+        if (!b) return 0xC0000017;
+        NTSTATUS s = SC(NtQueryInformationProcess, H(h), U(cls), P(b), U(cap), P(&got));
+        if (ret) *ret = got > 8 ? got - 8 : got;
+        if (NT_SUCCESS(s)) {
+            US64 *u = (US64 *)b;
+            UNICODE_STRING *o = info;
+            o->Length = u->Length;
+            o->MaximumLength = u->MaximumLength;
+            o->Buffer = (PWSTR)(o + 1);
+            memcpy(o + 1, b + sizeof(US64), u->MaximumLength);
+        }
+        RtlFreeHeap(RtlGetProcessHeap(), 0, b);
+        return s;
     }
     if (cls != 0) return SC(NtQueryInformationProcess, H(h), U(cls), P(info), U(len), P(ret));
     if (len < sizeof(PROCESS_BASIC_INFORMATION)) return 0xC0000004;
