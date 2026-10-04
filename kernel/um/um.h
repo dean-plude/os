@@ -223,3 +223,5 @@ bool UmDemandFault(UINT64 va);
 
 /* Log the failing system calls of programs named @name ("" or NULL: off) */
 void UmSetTrace(const char *name);
+/* Is @p a program being traced ("trace +NAME" when @all: every call)? */
+bool UmTraced(const UmProcess *p, bool all);

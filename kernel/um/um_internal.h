@@ -153,6 +153,8 @@ struct UmThread {
     INT8            prio_incr;
     bool            no_boost;       /* SetThreadPriorityBoost(TRUE) */
     UINT8           mm_priority;    /* registered with MMCSS (avrt.dll): its real-time priority, else 0 */
+    bool            auto_align;     /* ThreadEnableAlignmentFaultFixup (um_gpfault.c) */
+    bool            hide_debug;     /* ThreadHideFromDebugger: set, and asked back (no debugger events either way) */
 };
 
 UmObject *um_ob_ref(UmObject *o);
@@ -267,6 +269,7 @@ struct UmProcess {
      * and SetProcessPriorityBoost's flag, which new threads inherit */
     UINT8           prio_class;
     bool            no_boost;
+    bool            auto_align; /* ProcessEnableAlignmentFaultFixup, SEM_NOALIGNMENTFAULTEXCEPT (um_gpfault.c) */
 };
 
 /* um.c */
@@ -325,6 +328,10 @@ UmThread  *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack
 UINT32     um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags);
 UINT32     um_dll_directory(UmProcess *p, UINT32 op, const char *path, UINT64 *cookie);
 const UmModule *um_module_at(UmProcess *p, UINT64 va);
+/* um_gpfault.c: a #GP at @rip in the current program, looked into as
+ * Windows does: 1 if it was fixed up (run the instruction again), else 0
+ * with *@code / *@nparams changed when the cause has a status of its own */
+int UmGpFault(UINT64 rip, UINT32 *code, UINT64 *nparams);
 
 /* um_console.c */
 UmConsole *um_console_ref(UmConsole *c);

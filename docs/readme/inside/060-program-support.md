@@ -1,5 +1,6 @@
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
-  API sets; x64 and x86 structured exceptions; registry saved to disk;
+  API sets; x64 and x86 structured exceptions, with Windows'
+  alignment-fault fixup for misaligned SSE moves; registry saved to disk;
   COM in-process servers and type libraries; drag and drop; a shared clipboard; `.lnk`
   shortcuts; Windows Installer packages; services (`advapi32`'s service
   control manager); scheduled tasks (Task Scheduler 2.0, kept in
