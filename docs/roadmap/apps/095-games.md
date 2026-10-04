@@ -6,8 +6,9 @@
   music)~~ Done; ~~a game that switches the display mode for full screen
   (Blobby Volley 2: 800x600 in Direct3D 9 exclusive full screen, and back
   when it ends)~~ Done; ~~an SDL 1.2 game (LBreakout2: GDI drawing, 640x480
-  full screen with the window's frame taken off, and back)~~ Done (all six
-  in the nightly corpus).  Still to do:
+  full screen with the window's frame taken off, and back)~~ Done; ~~a
+  DirectDraw game (Cave Story on cnc-ddraw: 640x480 full screen, its title
+  screen and a new game)~~ Done (all seven in the nightly corpus).  Still to do:
   joining a Teeworlds game on its own server (it times out under TCG
   while Mesa compiles its shaders; its menus follow the mouse with its
   default settings, SDL recentring the pointer with `SetCursorPos`), GOG

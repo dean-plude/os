@@ -44,7 +44,11 @@
   sessions, for programs that link to it; no directory servers yet),
   `opengl32` (Mesa from the App Store, or with no driver NovaOS's own
   OpenGL 1.1, which draws 2D as ScummVM needs: textures, vertex arrays,
-  blending, scissor), and
+  blending, scissor), `ddraw` (DirectDraw for 32-bit programs: the
+  MIT-licensed cnc-ddraw, every surface in memory and the screen drawn
+  with Direct3D 9, OpenGL or GDI, in a display mode switched for the
+  program), `dinput` (DirectInput 3 to 7, over the same devices as
+  `dinput8`), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
   `dhcpcsvc`, `d3dcompiler_47`), the ones Qt WebEngine imports
   (`bthprops.cpl`, `d3d12`, `winusb`: no Bluetooth radio, Direct3D 12

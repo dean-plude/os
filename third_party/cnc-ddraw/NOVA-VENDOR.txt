@@ -1,0 +1,19 @@
+cnc-ddraw 7.1.0.1 (https://github.com/FunkyFr3sh/cnc-ddraw), used under the
+MIT licence (LICENSE).  Source: github.com/FunkyFr3sh/cnc-ddraw at commit
+279a057 (2026-08-30).  Kept: src/ and inc/ (DirectDraw and its renderers,
+lodepng, zlib licence), exports.def, LICENSE and README.md.  Left out:
+src/detours (Microsoft Detours, used only for its "hook=2" mode, which
+NovaOS does not use; userland/ddraw/inc/detours.h stands in), the
+configuration program (config/, C++Builder) and the build files.
+
+ddraw.dll (userland/ddraw, x86) is built from it; userland/ddraw/build.py
+says how and writes its ddraw.ini.
+
+Two changes, marked "NovaOS":
+- src/blt.c (two lines): the AVX copy loops compile only with __AVX__
+  (clang builds AVX intrinsics only for an AVX target, where MSVC needs no
+  flag); the plain loops are used otherwise.
+- src/hook.c (hook_init): g_hook_active stays FALSE with hook=0, the
+  setting NovaOS ships.  Nothing is hooked then, and the mouse lock that
+  depends on it balanced ShowCursor against a count only the ShowCursor
+  hook keeps, showing the pointer a game had hidden (Cave Story).

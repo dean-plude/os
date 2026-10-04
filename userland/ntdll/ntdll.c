@@ -296,6 +296,68 @@ NTSYSAPI NTSTATUS NTAPI RtlGetVersion(PVOID info)
     return 0;
 }
 
+/* One field of RtlVerifyVersionInfo: @cur against @want under VER_EQUAL (1),
+ * VER_GREATER (2), VER_GREATER_EQUAL (3), VER_LESS (4) or VER_LESS_EQUAL (5) */
+static BOOLEAN ver_test(ULONG cur, ULONG want, ULONG op)
+{
+    switch (op) {
+    case 1: return cur == want;
+    case 2: return cur > want;
+    case 3: return cur >= want;
+    case 4: return cur < want;
+    case 5: return cur <= want;
+    }
+    return FALSE;
+}
+
+/* Does this system's version (RtlGetVersion's) meet @info's fields named in
+ * @mask (VER_MINORVERSION 1, VER_MAJORVERSION 2, VER_BUILDNUMBER 4,
+ * VER_PLATFORMID 8, VER_SERVICEPACKMINOR 0x10, VER_SERVICEPACKMAJOR 0x20,
+ * VER_SUITENAME 0x40, VER_PRODUCT_TYPE 0x80) under @cond's operators (three
+ * bits per field, VerSetConditionMask's)?  Major version, minor version and
+ * service pack compare as one number, under the operator of the first of
+ * them in @mask, as on Windows; the suite under VER_AND (6, all of its
+ * bits) or VER_OR (7, any).  STATUS_SUCCESS, or STATUS_REVISION_MISMATCH. */
+NTSYSAPI NTSTATUS NTAPI RtlVerifyVersionInfo(PVOID info, ULONG mask, ULONGLONG cond)
+{
+    const ULONG *want = info;                      /* RTL_OSVERSIONINFOEXW */
+    if (!info || !mask || !cond) return 0xC000000D;   /* STATUS_INVALID_PARAMETER */
+    ULONG me[71];                                  /* (284 bytes) */
+    me[0] = sizeof(me);
+    RtlGetVersion(me);
+    #define OP(bit) ((ULONG)(cond >> (3 * (bit))) & 7)
+    #define W16(v, off) (((const USHORT *)(v))[(off) / 2])
+    #define B8(v, off) (((const UCHAR *)(v))[off])
+    if ((mask & 0x80) && !ver_test(B8(me, 282), B8(want, 282), OP(7))) goto no;
+    if ((mask & 0x40)) {
+        USHORT have = W16(me, 280), need = W16(want, 280);
+        if (OP(6) == 6 ? (have & need) != need : OP(6) == 7 ? !(have & need) && need : FALSE) goto no;
+    }
+    if ((mask & 0x08) && !ver_test(me[4], want[4], OP(3))) goto no;
+    if ((mask & 0x04) && !ver_test(me[3], want[3], OP(2))) goto no;
+    /* major, minor, service pack major, minor: as one number */
+    static const struct { ULONG bit, shift; } part[4] = { { 0x02, 1 }, { 0x01, 0 }, { 0x20, 5 }, { 0x10, 4 } };
+    ULONG op = 0;
+    for (int i = 0; i < 4; i++) {
+        if (!(mask & part[i].bit)) continue;
+        if (!op) op = OP(part[i].shift);
+        ULONG c = i == 0 ? me[1] : i == 1 ? me[2] : i == 2 ? W16(me, 276) : W16(me, 278);
+        ULONG w = i == 0 ? want[1] : i == 1 ? want[2] : i == 2 ? W16(want, 276) : W16(want, 278);
+        if (c != w) {
+            if (!ver_test(c, w, op)) goto no;
+            op = 0xFF;                             /* decided */
+            break;
+        }
+    }
+    if (op && op != 0xFF && !ver_test(0, 0, op)) goto no;   /* all equal: only =, >= and <= hold */
+    return 0;
+no:
+    return 0xC0000059;                             /* STATUS_REVISION_MISMATCH */
+    #undef OP
+    #undef W16
+    #undef B8
+}
+
 NTSYSAPI VOID NTAPI RtlInitUnicodeString(PUNICODE_STRING us, const WCHAR *s)
 {
     USHORT n = 0;

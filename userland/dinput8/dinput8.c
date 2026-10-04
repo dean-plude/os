@@ -27,6 +27,10 @@
  * The keyboard is read from the program's key state (GetAsyncKeyState),
  * the mouse from the cursor's movement.  There is no force feedback and
  * no action mapping (DIERR_UNSUPPORTED).
+ *
+ * dinput.dll (userland/dinput) is this file built with NOVA_DINPUT_LEGACY:
+ * DirectInputCreateA/W/Ex for DirectInput 3 to 7, the same devices under
+ * the older interface IDs, device types (DIDEVTYPE_*) and versions.
  */
 #define DINPUTAPI __declspec(dllexport)
 #include <dinput.h>
@@ -43,6 +47,17 @@
 DEFINE_GUID(GUID_HIDClass, 0x745A17A0, 0x74D3, 0x11D0, 0xB6, 0xFE, 0x00, 0xA0, 0xC9, 0x0F, 0x57, 0xDA);
 
 enum { DEV_KBD, DEV_MOUSE, DEV_PAD };
+
+/* The DirectInput versions this DLL takes (DirectInput 8; userland/dinput
+ * builds this file again for DirectInput 3 to 7) */
+static HRESULT check_version(DWORD v)
+{
+#ifdef NOVA_DINPUT_LEGACY
+    return v < 0x0300 ? DIERR_OLDDIRECTINPUTVERSION : v > 0x07FF ? DIERR_BETADIRECTINPUTVERSION : DI_OK;
+#else
+    return v < 0x0800 ? DIERR_OLDDIRECTINPUTVERSION : v > 0x08FF ? DIERR_BETADIRECTINPUTVERSION : DI_OK;
+#endif
+}
 
 /* ---------------------------------------------------------------------------
  * Objects
@@ -325,6 +340,12 @@ static void product_guid(const NovaPadInfo *i, GUID *g)
 
 static DWORD dev_type(int kind, const NovaPadInfo *i)
 {
+#ifdef NOVA_DINPUT_LEGACY       /* DirectInput 1-7's numbering (userland/dinput) */
+    if (kind == DEV_KBD) return DIDEVTYPE_KEYBOARD | DIDEVTYPEKEYBOARD_PCENH << 8;
+    if (kind == DEV_MOUSE) return DIDEVTYPE_MOUSE | DIDEVTYPEMOUSE_TRADITIONAL << 8;
+    return DIDEVTYPE_JOYSTICK | ((i->usage & 0xFF) == 4 ? DIDEVTYPEJOYSTICK_TRADITIONAL : DIDEVTYPEJOYSTICK_GAMEPAD) << 8 |
+           DIDEVTYPE_HID;
+#endif
     if (kind == DEV_KBD) return DI8DEVTYPE_KEYBOARD | DI8DEVTYPEKEYBOARD_PCENH << 8;
     if (kind == DEV_MOUSE) return DI8DEVTYPE_MOUSE | DI8DEVTYPEMOUSE_TRADITIONAL << 8;
     return ((i->usage & 0xFF) == 4 ? DI8DEVTYPE_JOYSTICK | DI8DEVTYPEJOYSTICK_STANDARD << 8
@@ -402,8 +423,15 @@ static HRESULT STDMETHODCALLTYPE dw_qi(IDirectInputDevice8W *This, REFIID riid, 
 {
     Dev *d = DW(This);
     if (!ppv) return E_POINTER;
+#ifdef NOVA_DINPUT_LEGACY       /* IDirectInputDevice8's methods are IDirectInputDevice7's and more */
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDirectInputDeviceW) ||
+        IsEqualIID(riid, &IID_IDirectInputDevice2W) || IsEqualIID(riid, &IID_IDirectInputDevice7W)) *ppv = &d->iw;
+    else if (IsEqualIID(riid, &IID_IDirectInputDeviceA) || IsEqualIID(riid, &IID_IDirectInputDevice2A) ||
+             IsEqualIID(riid, &IID_IDirectInputDevice7A)) *ppv = &d->ia;
+#else
     if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDirectInputDevice8W)) *ppv = &d->iw;
     else if (IsEqualIID(riid, &IID_IDirectInputDevice8A)) *ppv = &d->ia;
+#endif
     else { *ppv = NULL; return E_NOINTERFACE; }
     InterlockedIncrement(&d->ref);
     return S_OK;
@@ -843,7 +871,7 @@ static HRESULT STDMETHODCALLTYPE dw_panel(IDirectInputDevice8W *This, HWND owner
 static HRESULT STDMETHODCALLTYPE dw_init(IDirectInputDevice8W *This, HINSTANCE inst, DWORD version, REFGUID guid)
 {
     (void)This; (void)inst; (void)guid;
-    return version < 0x0800 ? DIERR_OLDDIRECTINPUTVERSION : version > 0x08FF ? DIERR_BETADIRECTINPUTVERSION : DI_OK;
+    return check_version(version);
 }
 static HRESULT STDMETHODCALLTYPE dw_createeffect(IDirectInputDevice8W *This, REFGUID g, const void *e, void **out, IUnknown *outer)
 {
@@ -1073,17 +1101,19 @@ typedef struct {
 
 #define IW(p) CONTAINER(p, DInput, iw)
 
-static HRESULT check_version(DWORD v)
-{
-    return v < 0x0800 ? DIERR_OLDDIRECTINPUTVERSION : v > 0x08FF ? DIERR_BETADIRECTINPUTVERSION : DI_OK;
-}
-
 static HRESULT STDMETHODCALLTYPE iw_qi(IDirectInput8W *This, REFIID riid, void **ppv)
 {
     DInput *di = IW(This);
     if (!ppv) return E_POINTER;
+#ifdef NOVA_DINPUT_LEGACY
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDirectInputW) ||
+        IsEqualIID(riid, &IID_IDirectInput2W) || IsEqualIID(riid, &IID_IDirectInput7W)) *ppv = &di->iw;
+    else if (IsEqualIID(riid, &IID_IDirectInputA) || IsEqualIID(riid, &IID_IDirectInput2A) ||
+             IsEqualIID(riid, &IID_IDirectInput7A)) *ppv = &di->ia;
+#else
     if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDirectInput8W)) *ppv = &di->iw;
     else if (IsEqualIID(riid, &IID_IDirectInput8A)) *ppv = &di->ia;
+#endif
     else { *ppv = NULL; return E_NOINTERFACE; }
     InterlockedIncrement(&di->ref);
     return S_OK;
@@ -1152,7 +1182,11 @@ static BOOL type_wanted(DWORD type, int kind, const NovaPadInfo *i)
 static HRESULT enum_devices(DInput *di, DWORD type, DWORD flags, BOOL (*each)(const DIDEVICEINSTANCEW *, void *), void *ctx)
 {
     if (!di->init) return DIERR_NOTINITIALIZED;
+#ifdef NOVA_DINPUT_LEGACY       /* (DIDEVTYPE_* number as DI8DEVCLASS_* do) */
+    if (type > DIDEVTYPE_JOYSTICK) return DIERR_INVALIDPARAM;
+#else
     if (type > DI8DEVTYPE_1STPERSON || (type > DI8DEVCLASS_GAMECTRL && type < DI8DEVTYPE_DEVICE)) return DIERR_INVALIDPARAM;
+#endif
     if (flags & DIEDFL_FORCEFEEDBACK) return DI_OK;             /* (no force feedback) */
     NovaPadInfo none;
     ZeroMemory(&none, sizeof(none));
@@ -1230,8 +1264,27 @@ static HRESULT STDMETHODCALLTYPE iw_configure(IDirectInput8W *This, void *cb, vo
     return DIERR_UNSUPPORTED;
 }
 
+#ifdef NOVA_DINPUT_LEGACY
+/* IDirectInput7's last method, where IDirectInput8 has EnumDevicesBySemantics */
+static HRESULT STDMETHODCALLTYPE iw_createex(IDirectInput8W *This, REFGUID guid, REFIID riid, void **dev, IUnknown *outer)
+{
+    if (!dev) return E_POINTER;
+    *dev = NULL;
+    if (outer) return DIERR_NOAGGREGATION;
+    IUnknown *u;
+    HRESULT hr = create_device(IW(This), guid, (void **)&u, TRUE);
+    if (hr != DI_OK) return hr;
+    hr = u->lpVtbl->QueryInterface(u, riid, dev);
+    u->lpVtbl->Release(u);
+    return hr;
+}
+#define SLOT9_W (HRESULT (STDMETHODCALLTYPE *)(IDirectInput8W *, LPCWSTR, void *, void *, LPVOID, DWORD))iw_createex
+#else
+#define SLOT9_W iw_semantics
+#endif
+
 static const IDirectInput8WVtbl g_iw_vtbl = {
-    iw_qi, iw_addref, iw_release, iw_create, iw_enum, iw_status, iw_panel, iw_init, iw_find, iw_semantics, iw_configure,
+    iw_qi, iw_addref, iw_release, iw_create, iw_enum, iw_status, iw_panel, iw_init, iw_find, SLOT9_W, iw_configure,
 };
 
 #define IA(p) (&CONTAINER(p, DInput, ia)->iw)
@@ -1268,8 +1321,26 @@ static HRESULT STDMETHODCALLTYPE ia_configure(IDirectInput8A *This, void *cb, vo
     return iw_configure(IA(This), cb, params, flags, ref);
 }
 
+#ifdef NOVA_DINPUT_LEGACY
+static HRESULT STDMETHODCALLTYPE ia_createex(IDirectInput8A *This, REFGUID guid, REFIID riid, void **dev, IUnknown *outer)
+{
+    if (!dev) return E_POINTER;
+    *dev = NULL;
+    if (outer) return DIERR_NOAGGREGATION;
+    IUnknown *u;
+    HRESULT hr = create_device(CONTAINER(This, DInput, ia), guid, (void **)&u, FALSE);
+    if (hr != DI_OK) return hr;
+    hr = u->lpVtbl->QueryInterface(u, riid, dev);
+    u->lpVtbl->Release(u);
+    return hr;
+}
+#define SLOT9_A (HRESULT (STDMETHODCALLTYPE *)(IDirectInput8A *, LPCSTR, void *, void *, LPVOID, DWORD))ia_createex
+#else
+#define SLOT9_A ia_semantics
+#endif
+
 static const IDirectInput8AVtbl g_ia_vtbl = {
-    ia_qi, ia_addref, ia_release, ia_create, ia_enum, ia_status, ia_panel, ia_init, ia_find, ia_semantics, ia_configure,
+    ia_qi, ia_addref, ia_release, ia_create, ia_enum, ia_status, ia_panel, ia_init, ia_find, SLOT9_A, ia_configure,
 };
 
 static DInput *new_dinput(void)
@@ -1282,6 +1353,7 @@ static DInput *new_dinput(void)
     return di;
 }
 
+#ifndef NOVA_DINPUT_LEGACY
 DINPUTAPI HRESULT WINAPI DirectInput8Create(HINSTANCE inst, DWORD version, REFIID riid, LPVOID *out, LPUNKNOWN outer)
 {
     (void)inst;
@@ -1298,6 +1370,7 @@ DINPUTAPI HRESULT WINAPI DirectInput8Create(HINSTANCE inst, DWORD version, REFII
     iw_release(&di->iw);
     return hr;
 }
+#endif
 
 /* ---- the class factory (CoCreateInstance of CLSID_DirectInput8; the
  * program then calls Initialize) ---- */
@@ -1330,7 +1403,11 @@ DINPUTAPI HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID riid, void **p
 {
     if (!ppv) return E_POINTER;
     *ppv = NULL;
+#ifdef NOVA_DINPUT_LEGACY
+    if (IsEqualCLSID(clsid, &CLSID_DirectInput)) return cf_qi((IClassFactory *)&g_factory, riid, ppv);
+#else
     if (IsEqualCLSID(clsid, &CLSID_DirectInput8)) return cf_qi((IClassFactory *)&g_factory, riid, ppv);
+#endif
     return CLASS_E_CLASSNOTAVAILABLE;
 }
 

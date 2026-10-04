@@ -1184,6 +1184,7 @@ void destroy_children(Wnd *w)
  * Showing, hiding, enabling
  * ----------------------------------------------------------------------- */
 static void app_activated(int on);
+static void send_activate(Wnd *w, WPARAM wa, HWND prev);
 
 USERAPI BOOL ShowWindow(HWND h, int cmd)
 {
@@ -1240,7 +1241,7 @@ USERAPI BOOL ShowWindow(HWND h, int cmd)
                             if (W_quiet(h)) app_activated(1);
                             if (W_quiet(h)) {
                                 send_msg(w, WM_NCACTIVATE, TRUE, 0);
-                                send_msg(w, WM_ACTIVATE, WA_ACTIVE, (LPARAM)old);
+                                send_activate(w, WA_ACTIVE, old);
                             }
                         }
                     }
@@ -1346,6 +1347,25 @@ static void app_activated(int on)
     }
 }
 
+/* SetFocus(NULL) since the last activation: the window wants no focus */
+static int g_focus_null;
+
+/* WM_ACTIVATE to a top-level window that became active; then, as on
+ * Windows, the focus moves into it if its procedure left it elsewhere
+ * (one that answers WM_ACTIVATE without DefWindowProc, like Cave Story's,
+ * still gets the keys), unless it set the focus to NULL or is minimized */
+static void send_activate(Wnd *w, WPARAM wa, HWND prev)
+{
+    HWND h = w->h;
+    g_focus_null = 0;
+    send_msg(w, WM_ACTIVATE, wa, (LPARAM)prev);
+    if (!W_quiet(h) || g_active != h || g_focus_null || IsIconic(h)) return;
+    Wnd *f = W_quiet(g_focus);
+    if (f && (f == w || is_child_of(w, f))) return;
+    Wnd *s = W_quiet(w->focus_save);
+    set_focus(s && is_child_of(w, s) ? s->h : h);
+}
+
 HWND set_focus(HWND h)
 {
     HWND old = g_focus;
@@ -1378,6 +1398,7 @@ HWND set_focus(HWND h)
 USERAPI HWND SetFocus(HWND h)
 {
     if (h && !W(h)) return 0;
+    if (!h) g_focus_null = 1;
     HWND old = g_focus;
     set_focus(h);
     return W_quiet(old) ? old : 0;
@@ -1408,7 +1429,7 @@ void top_activated(Wnd *w, int active)
         app_activated(1);
         if (!W_quiet(h)) return;
         send_msg(w, WM_NCACTIVATE, TRUE, 0);
-        send_msg(w, WM_ACTIVATE, WA_CLICKACTIVE, (LPARAM)prev);
+        send_activate(w, WA_CLICKACTIVE, prev);
     } else {
         if (g_active != h) return;
         Wnd *f = W_quiet(g_focus);

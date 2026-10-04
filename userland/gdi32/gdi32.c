@@ -719,8 +719,15 @@ GDIAPI HBITMAP CreateDIBSection(HDC h, const BITMAPINFO *bi, UINT usage, void **
         int stride = ((w * bpp + 31) / 32) * 4;
         SIZE_T size = (SIZE_T)stride * hh;
         BYTE *v = NULL;
-        if (section) v = MapViewOfFile(section, FILE_MAP_WRITE, 0, offset, size);
-        else {
+        if (section) {
+            /* The offset need only be a multiple of 4 (cnc-ddraw puts guard
+             * rows before its surfaces' pixels), where a view's must be one of
+             * the allocation granularity: map from the start, and keep the
+             * view's base to unmap */
+            BYTE *base = MapViewOfFile(section, FILE_MAP_WRITE, 0, 0, (SIZE_T)offset + size);
+            v = base ? base + offset : NULL;
+            o->view = base;
+        } else {
             v = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
             o->view_owned = 1;
         }
@@ -729,7 +736,8 @@ GDIAPI HBITMAP CreateDIBSection(HDC h, const BITMAPINFO *bi, UINT usage, void **
         RGBQUAD *pal = npal ? HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 256 * sizeof(RGBQUAD)) : NULL;
         if (!v || !last || (npal && !pal)) {
             if (v && o->view_owned) VirtualFree(v, 0, MEM_RELEASE);
-            else if (v) UnmapViewOfFile(v);
+            else if (v) UnmapViewOfFile(o->view);
+            o->view = NULL;
             if (last) VirtualFree(last, 0, MEM_RELEASE);
             if (pal) HeapFree(GetProcessHeap(), 0, pal);
             o->view_owned = 0;
@@ -1272,7 +1280,8 @@ GDIAPI BOOL DeleteObject(HGDIOBJ obj)
         if (o->kind == K_PALETTE && o->bits) HeapFree(GetProcessHeap(), 0, o->bits);
         if (o->kind == K_BITMAP && o->view24) {
             if (o->view_owned) VirtualFree(o->view24, 0, MEM_RELEASE);
-            else UnmapViewOfFile(o->view24);
+            else UnmapViewOfFile(o->view);                  /* (the view's base: view24 is past the section's offset) */
+            o->view = NULL;
             VirtualFree(o->last24, 0, MEM_RELEASE);
             if (o->pal) HeapFree(GetProcessHeap(), 0, o->pal);
             o->view24 = o->last24 = NULL;
@@ -1316,6 +1325,10 @@ GDIAPI BOOL RestoreDC(HDC h, int which)
 {
     NOVA_DC *d = dc_of(h);
     if (!d || !d->saved) return FALSE;
+    /* what was drawn goes to the bits first, as Windows' batch is flushed
+     * here: cnc-ddraw's surface DCs restore their state at ReleaseDC, and
+     * the game's text drawn on them is then blitted from the bits */
+    dc_sync(d);
     int depth = 0;
     for (NOVA_DC *p = d->saved; p; p = p->saved) depth++;
     int pops = which < 0 ? -which : depth - which + 1;

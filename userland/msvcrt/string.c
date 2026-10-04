@@ -161,6 +161,7 @@ int _strnicmp(const char *a, const char *b, size_t n)
 }
 
 int _stricmp(const char *a, const char *b) { return _strnicmp(a, b, (size_t)-1); }
+int _strcmpi(const char *a, const char *b) { return _stricmp(a, b); }   /* the older name */
 char *_strlwr(char *s) { for (char *p = s; *p; p++) *p = (char)tolower((unsigned char)*p); return s; }
 char *_strupr(char *s) { for (char *p = s; *p; p++) *p = (char)toupper((unsigned char)*p); return s; }
 

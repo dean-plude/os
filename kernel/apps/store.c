@@ -167,6 +167,11 @@ static const StoreApp g_catalog[] = {
       "LBreakout2\\lbreakout2-2.6.5\\lbreakout2.exe", KIND_ARCHIVE, 4,
       "64-bit zip; an SDL 1.2 game (GDI drawing, its full screen switches the display to 640x480) that plays on NovaOS (nightly corpus)",
       "LB", GDI_C(0xB0, 0x30, 0x60) },
+    { "Cave Story", "Studio Pixel", "Pixel's 2004 freeware platformer, in Aeon Genesis' English translation",
+      CAT_MEDIA, "https://www.cavestory.org/downloads/cavestoryen.zip", "cavestoryen.zip", "Cave Story",
+      "Cave Story\\CaveStory\\Doukutsu.exe", KIND_ARCHIVE, 2,
+      "32-bit freeware; draws with DirectDraw (NovaOS's ddraw.dll, cnc-ddraw) and plays on NovaOS (nightly corpus)",
+      "CS", GDI_C(0xC0, 0x40, 0x30) },
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",
