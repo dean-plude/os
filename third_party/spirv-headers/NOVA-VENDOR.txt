@@ -1,0 +1,5 @@
+SPIR-V Headers (https://github.com/KhronosGroup/SPIRV-Headers), used under
+the MIT licence (LICENSE).  Source: include/spirv/unified1/spirv.h (SPIR-V
+1.6 revision 1) and GLSL.std.450.h (version 100 revision 3) from the main
+branch on 2026-10-04.  No file is changed.  vkd3d-shader's SPIR-V back end
+includes them (third_party/vkd3d-shader, built into d3dcompiler_47.dll).

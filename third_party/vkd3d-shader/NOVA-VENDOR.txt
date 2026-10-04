@@ -1,0 +1,39 @@
+vkd3d-shader 1.19 (https://gitlab.winehq.org/wine/vkd3d), the HLSL compiler
+Wine ships, used under the GNU Lesser General Public License 2.1 or later
+(LICENSE; COPYING and AUTHORS name the copyright holders).  Source: the
+release tarball vkd3d-1.19.tar.xz from dl.winehq.org/vkd3d/source/.
+
+It is compiled into d3dcompiler_47.dll only (userland/d3dcompiler_47,
+build.py), a separate DLL: NovaOS's own d3dcompiler_47 sources there are
+MIT and call vkd3d-shader only through its public API (vkd3d_shader.h).
+Anyone can change this copy and rebuild that one DLL (tools/build_userland.py
+builds it with the rest of the userland) and put it in C:\Windows\System32
+and SysWOW64 in place of the built one.
+
+Kept: LICENSE, COPYING, AUTHORS, README; libs/vkd3d-shader (all of it);
+libs/vkd3d-common debug.c, error.c, memory.c; the public headers
+vkd3d-shader includes (include/vkd3d_shader.h, vkd3d_types.h,
+vkd3d_windows.h, vkd3d_d3dcommon.h/.idl, vkd3d_d3dx9shader.h/.idl,
+vkd3d_d3d9types.h) and include/private's vkd3d_common.h, vkd3d_memory.h,
+list.h, rbtree.h, spirv_grammar.h and spirv.core.grammar.json.  Left out:
+libvkd3d (Direct3D 12 on Vulkan), libvkd3d-utils, the programs, demos and
+tests.
+
+No source file is changed.  Generated files, made from the tarball as its
+Makefile does, and committed so the build needs neither tool:
+  libs/vkd3d-shader/hlsl.tab.c, hlsl.tab.h      bison 3.8.2 -d hlsl.y
+  libs/vkd3d-shader/preproc.tab.c, preproc.tab.h  bison 3.8.2 -d preproc.y
+  libs/vkd3d-shader/hlsl.yy.c, preproc.yy.c     flex 2.6.4 hlsl.l, preproc.l
+  include/private/vkd3d_version.h               #define VKD3D_VCS_ID "" (a release, not a git checkout)
+(spirv_grammar.h comes in the tarball, made by libs/vkd3d-shader/make_spirv
+from spirv.core.grammar.json.)  To update: unpack a newer tarball over
+these files, run the three generators again and rebuild.
+
+Building it with NovaOS's toolchain (clang for x86_64/i686-pc-windows-msvc,
+NovaOS's own headers and C runtime) needs, in userland/d3dcompiler_47/vkd3d:
+config.h, what vkd3d's configure would find (the GCC builtins and atomics
+clang has, SPIR-V headers in spirv/unified1), and nova_vkd3d.h, included
+before each source: the DXGI_ERROR_* codes and CONTAINING_RECORD that
+NovaOS's Windows headers lack, and a guard so vkd3d_d3dcommon.h does not
+declare IUnknown again.  The SPIR-V back end's headers are
+third_party/spirv-headers (MIT).

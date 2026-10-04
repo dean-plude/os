@@ -5,7 +5,7 @@
 #                  Venus's venus.7z (tools/build_venus.py; VENUS_7Z names one
 #                  already built) (C:\Downloads: the Store installs them
 #                  without a network)
-#   DIR/tests      tools/gltest, tools/d3dtest, tools/d2dtest, tools/dwtest and tools/dw3test,
+#   DIR/tests      tools/gltest, tools/d3dtest, tools/hlsltest, tools/d2dtest, tools/dwtest and tools/dw3test,
 #                  64- and 32-bit,
 #                  and d2dtest's reference image (C:\Tests)
 # Needs curl, 7z (p7zip-full) and MinGW-w64 (x86-64 and i686), and what
@@ -43,6 +43,8 @@ for arch in x86_64 i686; do
     -lopengl32 -lgdi32 -luser32 -lm
   $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/d3dtest$sfx.exe" "$ROOT/tools/d3dtest/d3dtest.c" \
     -ld3d9 -ld3d11 -ldxgi -luser32 -lgdi32 -lole32
+  $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/hlsltest$sfx.exe" "$ROOT/tools/hlsltest/hlsltest.c" \
+    -ld3dcompiler_47 -ld3d11 -ldxguid
   $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/d2dtest$sfx.exe" "$ROOT/tools/d2dtest/d2dtest.c" \
     -ld2d1 -luser32 -lgdi32 -luuid
   $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/dwtest$sfx.exe" "$ROOT/tools/dwtest/dwtest.c" \
