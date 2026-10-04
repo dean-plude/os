@@ -164,9 +164,9 @@ static const StoreApp g_catalog[] = {
       "\\Windows\\System32\\d3d11_dxvk.dll", KIND_ARCHIVE, 10,
       "The system Direct3D 8-11 for 64- and 32-bit programs, drawn on the CPU through Mesa's Vulkan: get Mesa 3D first",
       "DX", GDI_C(0x10, 0x7C, 0x10),
-      "dxvk-2.5.3\\x64\\d3d8.dll dxvk-2.5.3\\x64\\d3d9.dll dxvk-2.5.3\\x64\\d3d10core.dll dxvk-2.5.3\\x64\\d3d11.dll>d3d11_dxvk.dll "
+      "dxvk-2.5.3\\x64\\d3d8.dll dxvk-2.5.3\\x64\\d3d9.dll>d3d9_dxvk.dll dxvk-2.5.3\\x64\\d3d10core.dll dxvk-2.5.3\\x64\\d3d11.dll>d3d11_dxvk.dll "
       "dxvk-2.5.3\\x64\\dxgi.dll>dxgi_dxvk.dll "
-      "dxvk-2.5.3\\x32\\d3d8.dll dxvk-2.5.3\\x32\\d3d9.dll dxvk-2.5.3\\x32\\d3d10core.dll dxvk-2.5.3\\x32\\d3d11.dll>d3d11_dxvk.dll "
+      "dxvk-2.5.3\\x32\\d3d8.dll dxvk-2.5.3\\x32\\d3d9.dll>d3d9_dxvk.dll dxvk-2.5.3\\x32\\d3d10core.dll dxvk-2.5.3\\x32\\d3d11.dll>d3d11_dxvk.dll "
       "dxvk-2.5.3\\x32\\dxgi.dll>dxgi_dxvk.dll" },
     /* Built by tools/build_venus.py; the CI publishes it beside nova.iso */
     { "Venus", "Mesa / NovaOS", "Vulkan and OpenGL on the host's GPU when NovaOS runs in QEMU with a 3D virtio-gpu",
