@@ -945,4 +945,7 @@ WTAPI BOOL WINAPI CryptCATAdminCalcHashFromFileHandle2(HANDLE h, HANDLE f, DWORD
 }
 WTAPI HANDLE WINAPI CryptCATAdminEnumCatalogFromHash(HANDLE h, BYTE *hash, DWORD n, DWORD flags, HANDLE *prev)
 { (void)h; (void)hash; (void)n; (void)flags; (void)prev; SetLastError(ERROR_NOT_FOUND); return 0; }
+/* No catalog context is ever handed out (above), so none can be described */
+WTAPI BOOL WINAPI CryptCATCatalogInfoFromContext(HANDLE c, void *info, DWORD flags)
+{ (void)c; (void)info; (void)flags; SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
 WTAPI BOOL WINAPI CryptCATAdminReleaseCatalogContext(HANDLE h, HANDLE c, DWORD flags) { (void)h; (void)c; (void)flags; return TRUE; }

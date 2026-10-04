@@ -6,7 +6,8 @@
 Lists every function each program imports that NovaOS cannot provide:
 DLLs it does not have, and functions missing from the DLLs it does have
 (api-ms-win-* API set names are mapped the way the kernel's loader maps
-them).  Delay-loaded imports are checked too, marked "(delay)", and DLLs
+them).  Delay-loaded imports are checked too, marked "(delay)", imports by
+ordinal (#N) against the ordinals the DLL exports, and DLLs
 next to the program count as present (an app ships its own).  DIR
 defaults to the userland build directory.  With --exports,
 prints a DLL's export names instead.
@@ -83,9 +84,10 @@ class PE:
         if not rva:
             return set()
         o = self.off(rva)
-        nnames = struct.unpack_from('<I', self.d, o + 24)[0]
-        names = struct.unpack_from('<I', self.d, o + 32)[0]
-        return {self.cstr(struct.unpack_from('<I', self.d, self.off(names) + 4 * i)[0]) for i in range(nnames)}
+        base, nfuncs, nnames, funcs, names = struct.unpack_from('<IIIII', self.d, o + 16)
+        out = {self.cstr(struct.unpack_from('<I', self.d, self.off(names) + 4 * i)[0]) for i in range(nnames)}
+        return out | {f'#{base + i}' for i in range(nfuncs)       # ordinals, as imports name them
+                      if struct.unpack_from('<I', self.d, self.off(funcs) + 4 * i)[0]}
 
 
 # API sets, mapped the way the kernel's loader maps them (map_api_set in
@@ -124,7 +126,7 @@ def main():
     if args[:1] == ['--dlls']:
         dlldir, args = args[1], args[2:]
     if args[:1] == ['--exports']:
-        for n in sorted(PE(args[1]).exports()):
+        for n in sorted(n for n in PE(args[1]).exports() if not n.startswith('#')):
             print(n)
         return 0
     have = {}
@@ -158,7 +160,7 @@ def main():
                 if real == 'kernel32.dll' and not dll.lower().startswith(('api-ms-win-core-', 'ext-ms-win-')):
                     alt = None
                 also = here.get(alt, set())
-                gone = [f for f in fns if not f.startswith('#') and f not in here[real] and f not in also and
+                gone = [f for f in fns if f not in here[real] and f not in also and
                         not (real == 'ucrtbase.dll' and f.startswith('_o_') and f[3:] in here[real])]
                 for f in gone:
                     print(f'  {dll}!{f}{tag}')

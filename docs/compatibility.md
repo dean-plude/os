@@ -182,13 +182,23 @@ packages, checks every file and starts the 64-bit client, which starts
 `bin\cef\cef.win64`).  Steam picks the proxy from the user's Internet
 Settings, as on Windows.
 
-The login window does not come up yet: the browser process starts, opens
-its threads, asks COM for a class NovaOS does not register
-(`{33C53A50-F456-4884-B049-85FD643ECFED}`) and stops at one of
-Chromium's own checks (a breakpoint in `libcef.dll`) before it starts its
-GPU and page processes, so no window appears.  What is known to be missing on the way, each a NovaOS gap and
-none a reason to change Steam:
+The login window does not come up yet.  The browser now starts its child
+processes as on Windows: the GPU process, the network and storage
+services and a page (renderer) process for Steam's first page.  The GPU
+process draws with ANGLE on Direct3D 11 when Mesa 3D and DXVK are
+installed; without them it gives up after three tries and Chromium draws
+in software, as it does on Windows without a usable GPU.  Under emulation (the
+nightly corpus) Steam then closes the browser a few minutes in and starts
+it again before the page has drawn, so no window appears in that run.
+What is known to be missing on the way, each a NovaOS gap and none a
+reason to change Steam:
 
+- Media Foundation (`mf.dll`, which Chromium only uses for video).
+- WMI (`WbemLocator`, `{4590F811-1D3A-11D0-891F-00AA004B2E24}`), which the
+  browser asks for just before Steam closes it, and the COM classes
+  `{33C53A50-F456-4884-B049-85FD643ECFED}`,
+  `{E77CC89B-7401-4C04-8CED-149DB35ADD04}` and
+  `{E2B3C97F-6AE1-41AC-817A-F6F92166D7DD}`, which it gets on without.
 - `SteamService.exe` checks Steam's files with `WinVerifyTrust` and
   accepts them: NovaOS checks Authenticode signatures (the digest, Valve's
   chain to DigiCert's root and the timestamp), offline, so a revocation
@@ -208,6 +218,8 @@ none a reason to change Steam:
 - `GetAdaptersAddresses` reports no adapters.  (The browser's sockets
   and Steam's downloads no longer fail with `WSAENOBUFS`: NovaOS's socket
   tables were sized for a small device; see `loadtest`.)
+  Chromium's network change and DNS watchers do not start
+  (`WSALookupServiceBegin` has no providers, error 10108).
 - DirectWrite's GDI interop (`CreateBitmapRenderTarget`), which Chromium
   draws text with.
 

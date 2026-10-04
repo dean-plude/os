@@ -453,13 +453,22 @@ WINBASEAPI FARPROC WINAPI GetProcAddress(HMODULE m, LPCSTR name)
          * programs ask again and again) */
         static ULONG seen[256];
         ULONG hsh = 5381;
-        if ((ULONG_PTR)name >= 0x10000) for (const char *c = name; *c; c++) hsh = hsh * 33 + (BYTE)*c;
-        BOOL first = (ULONG_PTR)name >= 0x10000 && seen[hsh & 255] != hsh;
+        char ordname[8];                                    /* an ordinal reads "#437", as dumpbin writes it */
+        if ((ULONG_PTR)name < 0x10000) {
+            int k = 0;
+            ordname[k++] = '#';
+            for (ULONG v = (ULONG)(ULONG_PTR)name, d = 10000; d; d /= 10)
+                if (v / d || k > 1 || d == 1) ordname[k++] = (char)('0' + v / d % 10);
+            ordname[k] = 0;
+            hsh = (ULONG)(ULONG_PTR)name;
+        } else for (const char *c = name; *c; c++) hsh = hsh * 33 + (BYTE)*c;
+        BOOL first = seen[hsh & 255] != hsh;
         if (first) seen[hsh & 255] = hsh;
         if (first) {
             char msg[160];
             int k = 0;
-            const char *parts[4] = { "GetProcAddress: no ", (const char *)b + *(DWORD *)(ed + 12), "!", name };
+            const char *parts[4] = { "GetProcAddress: no ", (const char *)b + *(DWORD *)(ed + 12), "!",
+                                     (ULONG_PTR)name < 0x10000 ? ordname : name };
             for (int i = 0; i < 4; i++) for (const char *c = parts[i]; *c && k < 150; c++) msg[k++] = *c;
             msg[k++] = '\n';
             NtNovaDebugPrint(msg, (ULONG)k);
