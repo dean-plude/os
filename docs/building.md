@@ -625,7 +625,8 @@ card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 bodies, POST, redirects, certificate checks, chunked HTTP/1.1, the
 asynchronous API) against `tools/h2server.js` with a throwaway self-signed
 certificate, then `looptest` (socket pairs over 127.0.0.1 and ::1,
-`localhost`); on an IPv6-only network made by `tools/v6peer.py` it checks
+`localhost`) and `loadtest` (hundreds of sockets open at once, parallel
+downloads); on an IPv6-only network made by `tools/v6peer.py` it checks
 SLAAC and RDNSS (`ipconfig`), `ping -6`, `curl -6` and `netcat` over IPv6.
 A third boot (`tests/selftest/network-e1000e`) has QEMU's e1000e (the
 82574L) instead of virtio-net: the boot log must show the PHY's ID, its
