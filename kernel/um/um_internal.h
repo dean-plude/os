@@ -344,6 +344,7 @@ int        um_console_pids(UmConsole *c, UINT32 *out, int max);   /* running pro
 void       um_syscall_init(void);
 void       um_close_all_handles(UmProcess *p);
 void       um_install(UINT32 num, SYSCALL_HANDLER h);
+SYSCALL_HANDLER um_service(UINT32 num);          /* a program's service (installed: not NULL) */
 void       um_lock_free(UINT32 num);
 
 /* Synchronization objects' state (signaled, owner, count...) and thread
@@ -355,6 +356,7 @@ static inline IrqState ob_lock(void)          { return spin_lock_irqsave(&g_um_o
 static inline void     ob_unlock(IrqState s)  { spin_unlock_irqrestore(&g_um_oblock, s); }     /* mark a service as running without the big kernel lock */
 UINT64     um_stack_arg(int n);                 /* syscall argument n >= 5 */
 UINT64     um_now_100ns(void);                  /* system time (100 ns since 1601) */
+UINT64     um_boot_time_100ns(void);            /* the system time NovaOS started at */
 UINT64     um_handle_new_object(UmProcess *p, UmObject *o);   /* takes a reference; 0 if full */
 UmObject  *um_handle_object(UmProcess *p, UINT64 h, UmObType type);   /* referenced; NULL if bad */
 /* The process a handle names (-1: @self); @ob holds a reference to drop
@@ -428,6 +430,7 @@ void       um_abandon_mutants(UmProcess *p, UmThread *t);
 
 /* um_security.c: tokens, security descriptors, access checks */
 void       um_security_syscalls_init(void);
+void       um_services_init(void);              /* um_services.c */
 UmObject  *um_token_for_process(UmProcess *creator);   /* a new process's primary token (referenced) */
 void       um_thread_drop_token(UmThread *t);          /* stop impersonating (the thread ended) */
 UINT32     um_set_thread_token(UmThread *t, UINT64 buf, UINT32 len);   /* ThreadImpersonationToken */
