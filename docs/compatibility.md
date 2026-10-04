@@ -117,11 +117,12 @@ its COM servers, and then runs the runtime's own setup.  On NovaOS, Edge
 Update now starts and reaches its install step (NovaOS gained the
 functions it calls: Task Scheduler 2.0, the Data Protection API,
 `UrlCombine`, the package-name functions, the MDM enrolment check and
-others).  It stops there: before installing anything it makes an MSXML 6
-`DOMDocument`, which NovaOS does not have yet, and then reports that
-Windows needs an update.  What comes after MSXML, in order: Edge Update
-hands the install to its own COM server in another process (NovaOS's COM
-is in-process only so far), the 32-bit updater's registry keys need
+others), reads its manifests with MSXML 6 and installs itself.  Its
+`/regserver` step registers its proxy/stub DLL (`psmachine.dll`) through
+rpcrt4's NDR engine.  What comes next, in order: Edge Update hands the
+install to its own COM server in another process (NovaOS's COM calls stay
+in one process so far: ole32 still has to marshal them over a channel and
+start `LocalServer32` servers), the 32-bit updater's registry keys need
 Windows' `WOW6432Node` view for the 64-bit programs that look for the
 runtime there, and then the runtime itself (a Chromium browser process
 with its sandbox) has to run.

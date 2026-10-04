@@ -1,0 +1,6 @@
+import "ndrunk.idl";
+[object, uuid(6e0f3a10-4d2b-4c55-9a51-7c0de0a1b001)]
+interface INdrBase : IUnknown {
+    HRESULT Add([in] LONG a, [in] LONG b, [out] LONG *sum);
+    HRESULT Negate([in, out] LONG *v);
+}
