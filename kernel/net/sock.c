@@ -353,7 +353,16 @@ int NetSockConnect(int sd, const NetSockAddr *to, SockCancelFn c, void *ca)
 {
     net_lock();
     Sock *s = slot(sd);
-    if (!s || s->udp) { net_unlock(); return -SOCK_ENOTSOCK; }
+    if (s && s->udp) {                                       /* a default peer: send and recv use it, */
+        if (!s->udp_pcb) { net_unlock(); return -SOCK_ENOTSOCK; }   /* only its datagrams arrive (Windows' too) */
+        if (!family_ok(s, to)) { net_unlock(); return -SOCK_EAFNOSUPPORT; }
+        ip_addr_t ip; to_lwip(to, &ip);
+        err_t e = udp_connect(s->udp_pcb, &ip, lwip_htons(to->port_be));
+        if (e == ERR_OK) { s->connected = true; s->peer = *to; }
+        net_unlock();
+        return e == ERR_OK ? 0 : connect_err(e);
+    }
+    if (!s) { net_unlock(); return -SOCK_ENOTSOCK; }
     if (s->connected) { net_unlock(); return -SOCK_EISCONN; }
     if (!s->tcp) { net_unlock(); return -SOCK_ENOTCONN; }
     if (!family_ok(s, to)) { net_unlock(); return -SOCK_EAFNOSUPPORT; }
@@ -378,6 +387,11 @@ int NetSockSend(int sd, const void *buf, int len, SockCancelFn c, void *ca)
 {
     Sock *s = slot(sd);
     if (!s) return -SOCK_ENOTSOCK;
+    if (s->udp) {                                            /* a connected UDP socket: to its peer */
+        if (!s->connected) return -SOCK_ENOTCONN;
+        NetSockAddr to = s->peer;
+        return NetSockSendTo(sd, buf, len, &to);
+    }
     if (s->reset) return -SOCK_ECONNRESET;
     if (!s->connected) return -SOCK_ENOTCONN;
     if (s->send_shut) return -SOCK_ENOTCONN;
@@ -418,6 +432,7 @@ int NetSockRecv(int sd, void *buf, int len, SockCancelFn c, void *ca)
 {
     Sock *s = slot(sd);
     if (!s) return -SOCK_ENOTSOCK;
+    if (s->udp) return NetSockRecvFrom(sd, buf, len, NULL, c, ca);   /* one datagram (recv on UDP) */
     if (len <= 0) return 0;
     UINT64 deadline = deadline_of(s->rcvtimeo);
     for (;;) {
@@ -617,7 +632,14 @@ int NetSockLocalName(int sd, NetSockAddr *out)
     net_lock();
     Sock *s = slot(sd);
     if (!s) { net_unlock(); return -SOCK_ENOTSOCK; }
-    if (s->udp && s->udp_pcb)  from_lwip(s, &s->udp_pcb->local_ip, s->udp_pcb->local_port, out);
+    if (s->udp && s->udp_pcb && s->connected && ip_addr_isany(&s->udp_pcb->local_ip)) {
+        /* connected: the address its datagrams leave from, as Windows names
+         * it (Chromium's IPv6 probe and address sorting read it) */
+        struct netif *nif = ip_route(&s->udp_pcb->local_ip, &s->udp_pcb->remote_ip);
+        const ip_addr_t *src = nif ? ip_netif_get_local_ip(nif, &s->udp_pcb->remote_ip) : NULL;
+        from_lwip(s, src ? src : &s->udp_pcb->local_ip, s->udp_pcb->local_port, out);
+    }
+    else if (s->udp && s->udp_pcb)  from_lwip(s, &s->udp_pcb->local_ip, s->udp_pcb->local_port, out);
     else if (s->tcp)           from_lwip(s, &s->tcp->local_ip, s->tcp->local_port, out);
     else { memset(out, 0, sizeof(*out)); out->family = (UINT16)s->family; }
     if (out->family == NET_AF_INET6 && s->family == NET_AF_INET) out->family = NET_AF_INET;

@@ -3,7 +3,9 @@
  * getsockname, a non-blocking connect, getpeername, accept), data sent before accept,
  * closing a listener with a connection still queued, "localhost"
  * resolving to ::1 and 127.0.0.1 without DNS, and socket options
- * (setsockopt/getsockopt) that read back and change what a socket does. */
+ * (setsockopt/getsockopt) that read back and change what a socket does,
+ * connect on a UDP socket, and a socket handed to another process
+ * (WSADuplicateSocket). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -370,16 +372,141 @@ static void sockopts(void)
     closesocket(x); closesocket(y); closesocket(z);
 }
 
-int main(void)
+/* WSADuplicateSocket into another process, as Chromium's browser hands
+ * its network process sockets: the child (looptest dupchild) reads the
+ * protocol info from its standard input, makes the socket with
+ * WSASocket(FROM_PROTOCOL_INFO) and sends on it after the parent closed
+ * its own copy */
+static int dup_child(void)
+{
+    WSAPROTOCOL_INFOW info;
+    BYTE *b = (BYTE *)&info;
+    char hex[2 * sizeof(info) + 4];
+    if (!fgets(hex, sizeof(hex), stdin) || strlen(hex) < 2 * sizeof(info)) return 2;
+    for (size_t i = 0; i < sizeof(info); i++) {
+        unsigned v;
+        if (sscanf(hex + 2 * i, "%2x", &v) != 1) return 2;
+        b[i] = (BYTE)v;
+    }
+    SOCKET s = WSASocketW(FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, &info, 0, WSA_FLAG_OVERLAPPED);
+    if (s == INVALID_SOCKET) return 3;
+    int type = 0, tl = sizeof(type);
+    if (getsockopt(s, SOL_SOCKET, SO_TYPE, (char *)&type, &tl) || type != SOCK_STREAM) return 4;
+    if (send(s, "from child", 10, 0) != 10) return 5;
+    closesocket(s);
+    return 0;
+}
+
+/* connect on a UDP socket (Chromium's DNS client and IPv6 probe): send
+ * and recv use the peer, getsockname names the address it sends from,
+ * and only the peer's datagrams arrive */
+static void udp_connected(void)
+{
+    struct sockaddr_in a, b, n;
+    int len = sizeof(a);
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    b = a;
+    SOCKET sa = socket(AF_INET, SOCK_DGRAM, 0), sb = socket(AF_INET, SOCK_DGRAM, 0), sc = socket(AF_INET, SOCK_DGRAM, 0);
+    bind(sb, (struct sockaddr *)&b, sizeof(b));
+    getsockname(sb, (struct sockaddr *)&b, &len);
+    check("connect on a UDP socket", connect(sa, (struct sockaddr *)&b, sizeof(b)) == 0);
+    len = sizeof(n);
+    memset(&n, 0, sizeof(n));
+    check("getsockname after it names 127.0.0.1 and a port",
+          getsockname(sa, (struct sockaddr *)&n, &len) == 0 && n.sin_addr.s_addr == htonl(INADDR_LOOPBACK) && n.sin_port);
+    struct sockaddr_in pn;
+    int pl = sizeof(pn);
+    check("getpeername names the peer", getpeername(sa, (struct sockaddr *)&pn, &pl) == 0 && pn.sin_port == b.sin_port);
+    char buf[32];
+    struct sockaddr_in from;
+    int fl = sizeof(from);
+    int r = send(sa, "dgram", 5, 0);
+    check("send goes to the peer", r == 5 && wait_for(sb, 0, 2000) == 1 &&
+          recvfrom(sb, buf, sizeof(buf), 0, (struct sockaddr *)&from, &fl) == 5 && !memcmp(buf, "dgram", 5) &&
+          from.sin_port == n.sin_port);
+    sendto(sc, "stranger", 8, 0, (struct sockaddr *)&n, sizeof(n));      /* not from the peer: dropped */
+    sendto(sb, "reply", 5, 0, (struct sockaddr *)&n, sizeof(n));
+    r = wait_for(sa, 0, 2000) == 1 ? recv(sa, buf, sizeof(buf), 0) : -1;
+    check("recv takes one datagram, only the peer's", r == 5 && !memcmp(buf, "reply", 5));
+    closesocket(sa);
+    closesocket(sb);
+    closesocket(sc);
+}
+
+static void duplicate(void)
+{
+    struct sockaddr_in a;
+    int len = sizeof(a);
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    SOCKET l = socket(AF_INET, SOCK_STREAM, 0);
+    bind(l, (struct sockaddr *)&a, len);
+    listen(l, 5);
+    getsockname(l, (struct sockaddr *)&a, &len);
+    SOCKET c = socket(AF_INET, SOCK_STREAM, 0);
+    int ok = connect(c, (struct sockaddr *)&a, len) == 0;
+    SOCKET s = accept(l, 0, 0);
+    ok = ok && s != INVALID_SOCKET;
+
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), 0, TRUE };
+    HANDLE rd = 0, wr = 0;
+    ok = ok && CreatePipe(&rd, &wr, &sa, 0);
+    if (wr) SetHandleInformation(wr, HANDLE_FLAG_INHERIT, 0);
+    char exe[MAX_PATH], cmd[MAX_PATH + 16];
+    GetModuleFileNameA(0, exe, sizeof(exe));
+    snprintf(cmd, sizeof(cmd), "\"%s\" dupchild", exe);
+    STARTUPINFOA si = { sizeof(si) };
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = rd;
+    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION pi;
+    BOOL started = ok && CreateProcessA(exe, cmd, 0, 0, TRUE, 0, 0, 0, &si, &pi);
+    WSAPROTOCOL_INFOW info;
+    memset(&info, 0, sizeof(info));
+    int r = started ? WSADuplicateSocketW(c, pi.dwProcessId, &info) : SOCKET_ERROR;
+    check("WSADuplicateSocket fills in the protocol info for another process",
+          r == 0 && info.iSocketType == SOCK_STREAM && info.iAddressFamily == AF_INET && info.iProtocol == IPPROTO_TCP);
+    closesocket(c);                                 /* (Chromium's browser closes its copy) */
+    char hex[2 * sizeof(info) + 2];
+    for (size_t i = 0; i < sizeof(info); i++) sprintf(hex + 2 * i, "%02x", ((BYTE *)&info)[i]);
+    strcat(hex, "\n");
+    DWORD put = 0, code = 1;
+    if (started) {
+        WriteFile(wr, hex, (DWORD)strlen(hex), &put, 0);
+        WaitForSingleObject(pi.hProcess, 20000);
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    char got[16] = { 0 };
+    int n = code == 0 && wait_for(s, 0, 2000) == 1 ? recv(s, got, sizeof(got) - 1, 0) : -1;
+    char what[128];
+    snprintf(what, sizeof(what), "the other process makes the socket from it (WSASocket FROM_PROTOCOL_INFO) and sends (exit %lu)",
+             (unsigned long)code);
+    check(what, n == 10 && !memcmp(got, "from child", 10));
+    if (rd) CloseHandle(rd);
+    if (wr) CloseHandle(wr);
+    closesocket(s);
+    closesocket(l);
+}
+
+int main(int argc, char **argv)
 {
     WSADATA w;
     if (WSAStartup(MAKEWORD(2, 2), &w) != 0) { printf("WSAStartup failed\n"); return 1; }
+    if (argc > 1 && !strcmp(argv[1], "dupchild")) return dup_child();
     pair(AF_INET, "127.0.0.1");
     pair(AF_INET6, "::1");
     shutdown_both();
     localhost();
     winsock11();
     sockopts();
+    udp_connected();
+    duplicate();
     printf("looptest: %d passed, %d failed\n", passed, failed);
     return failed != 0;
 }

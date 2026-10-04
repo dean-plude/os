@@ -194,7 +194,7 @@ typedef struct {
     bool         inherit;       /* passed to child processes (bInheritHandles) */
     bool         async;         /* H_FILE: opened for overlapped I/O */
     bool         npfs;          /* H_NULL: the \Device\NamedPipe\ directory (a RootDirectory for pipe names) */
-    bool         access_known;  /* H_OBJECT: @access is what the handle was granted (else: not tracked, all) */
+    bool         access_known;  /* H_OBJECT, H_FILE, H_DIR: @access is what the handle was granted (else: not tracked, all) */
     UINT32       access;        /* (specific and standard rights, generic ones mapped) */
 } UmHandle;
 

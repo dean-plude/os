@@ -217,8 +217,30 @@ typedef OVERLAPPED WSAOVERLAPPED, *LPWSAOVERLAPPED;
 typedef void (WINAPI *LPWSAOVERLAPPED_COMPLETION_ROUTINE)(DWORD err, DWORD bytes, LPWSAOVERLAPPED ov, DWORD flags);
 typedef HANDLE WSAEVENT;
 typedef unsigned int GROUP;
-typedef struct _WSAPROTOCOL_INFOW WSAPROTOCOL_INFOW, *LPWSAPROTOCOL_INFOW;
-typedef struct _WSAPROTOCOL_INFOA WSAPROTOCOL_INFOA, *LPWSAPROTOCOL_INFOA;
+#define MAX_PROTOCOL_CHAIN     7
+#define WSAPROTOCOL_LEN        255
+#define FROM_PROTOCOL_INFO     (-1)
+typedef struct _WSAPROTOCOLCHAIN { int ChainLen; DWORD ChainEntries[MAX_PROTOCOL_CHAIN]; } WSAPROTOCOLCHAIN, *LPWSAPROTOCOLCHAIN;
+typedef struct _WSAPROTOCOL_INFOW {         /* 628 bytes (the A form 372) */
+    DWORD dwServiceFlags1, dwServiceFlags2, dwServiceFlags3, dwServiceFlags4, dwProviderFlags;
+    GUID ProviderId;
+    DWORD dwCatalogEntryId;
+    WSAPROTOCOLCHAIN ProtocolChain;
+    int iVersion, iAddressFamily, iMaxSockAddr, iMinSockAddr, iSocketType, iProtocol, iProtocolMaxOffset;
+    int iNetworkByteOrder, iSecurityScheme;
+    DWORD dwMessageSize, dwProviderReserved;
+    WCHAR szProtocol[WSAPROTOCOL_LEN + 1];
+} WSAPROTOCOL_INFOW, *LPWSAPROTOCOL_INFOW;
+typedef struct _WSAPROTOCOL_INFOA {
+    DWORD dwServiceFlags1, dwServiceFlags2, dwServiceFlags3, dwServiceFlags4, dwProviderFlags;
+    GUID ProviderId;
+    DWORD dwCatalogEntryId;
+    WSAPROTOCOLCHAIN ProtocolChain;
+    int iVersion, iAddressFamily, iMaxSockAddr, iMinSockAddr, iSocketType, iProtocol, iProtocolMaxOffset;
+    int iNetworkByteOrder, iSecurityScheme;
+    DWORD dwMessageSize, dwProviderReserved;
+    CHAR szProtocol[WSAPROTOCOL_LEN + 1];
+} WSAPROTOCOL_INFOA, *LPWSAPROTOCOL_INFOA;
 typedef struct addrinfoW {
     int ai_flags, ai_family, ai_socktype, ai_protocol;
     size_t ai_addrlen;
@@ -287,8 +309,8 @@ WSAAPI_DECL int WSAAddressToStringW(struct sockaddr *sa, DWORD len, void *info, 
 #define NI_MAXSERV     32
 WSAAPI_DECL int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, DWORD hostlen, char *serv, DWORD servlen, int flags);
 WSAAPI_DECL int GetNameInfoW(const struct sockaddr *sa, socklen_t salen, WCHAR *host, DWORD hostlen, WCHAR *serv, DWORD servlen, int flags);
-WSAAPI_DECL int WSADuplicateSocketW(SOCKET s, DWORD pid, void *info);
-WSAAPI_DECL int WSADuplicateSocketA(SOCKET s, DWORD pid, void *info);
+WSAAPI_DECL int WSADuplicateSocketW(SOCKET s, DWORD pid, LPWSAPROTOCOL_INFOW info);
+WSAAPI_DECL int WSADuplicateSocketA(SOCKET s, DWORD pid, LPWSAPROTOCOL_INFOA info);
 WSAAPI_DECL int WSAConnect(SOCKET s, const struct sockaddr *to, int len, void *caller, void *callee, void *sqos, void *gqos);
 WSAAPI_DECL int WSAStringToAddressA(char *str, int family, void *info, struct sockaddr *sa, int *len);
 WSAAPI_DECL int WSAStringToAddressW(WCHAR *str, int family, void *info, struct sockaddr *sa, int *len);
