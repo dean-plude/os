@@ -570,11 +570,14 @@ if os.environ.get('NOVA_NO_WOW64') != '1':
     built.append(('\\Windows\\SysWOW64\\icu.dll', os.path.join(ICU, 'x86', 'icu.dll')))
 built.append(('\\Windows\\Globalization\\ICU\\icudt77l.dat', os.path.join(ICU, 'icudt77l.dat')))
 
-# 3a1. the trusted roots secur32's Schannel checks certificates against
-# (the kernel's Mozilla list, as DER certificates back to back)
+# 3a1. the trusted roots secur32's Schannel and crypt32's chains check
+# certificates against (the kernel's Mozilla list, as DER certificates back
+# to back); 32-bit programs read C:\Windows\System32 as SysWOW64
 roots = os.path.join(out, 'ca-bundle.der')
 build_netsurf.root_bundle(roots)
 built.append(('\\Windows\\System32\\ca-bundle.der', roots))
+if os.environ.get('NOVA_NO_WOW64') != '1':
+    built.append(('\\Windows\\SysWOW64\\ca-bundle.der', roots))
 
 # 3a2. the Windows Installer packages the msitest self-test installs
 # (tools/msitest/mkpkg.py writes them; their programs are copies of msitest)

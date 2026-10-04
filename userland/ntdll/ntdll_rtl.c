@@ -414,6 +414,51 @@ NTSYSAPI NTSTATUS NTAPI NtAdjustPrivilegesToken(HANDLE t, BOOLEAN disable_all, P
     return ST_SUCCESS;
 }
 
+/* RtlAcquirePrivilege: like NtAdjustPrivilegesToken, every privilege is
+ * there; the state only has to round-trip to RtlReleasePrivilege */
+NTSYSAPI NTSTATUS NTAPI RtlAcquirePrivilege(PULONG privs, ULONG n, ULONG flags, PVOID *state)
+{
+    (void)privs; (void)n; (void)flags;
+    if (!state) return ST_INVALID_PARAMETER;
+    *state = RtlAllocateHeap(heap(), 8 /* HEAP_ZERO_MEMORY */, 16);
+    return *state ? ST_SUCCESS : ST_NO_MEMORY;
+}
+NTSYSAPI VOID NTAPI RtlReleasePrivilege(PVOID state) { if (state) RtlFreeHeap(heap(), 0, state); }
+
+NTSYSAPI NTSTATUS NTAPI NtOpenThreadToken(HANDLE th, ACCESS_MASK access, BOOLEAN self, PHANDLE t);
+NTSYSAPI NTSTATUS NTAPI NtOpenProcessToken(HANDLE p, ACCESS_MASK access, PHANDLE t);
+NTSYSAPI NTSTATUS NTAPI NtQueryInformationToken(HANDLE t, ULONG cls, PVOID buf, ULONG n, PULONG ret);
+NTSYSAPI VOID NTAPI RtlFreeUnicodeString(PUNICODE_STRING s);
+
+/* "\REGISTRY\USER\S-1-5-21-..." for the thread's (else the process's) user;
+ * the caller frees it with RtlFreeUnicodeString */
+NTSYSAPI NTSTATUS NTAPI RtlFormatCurrentUserKeyPath(PUNICODE_STRING out)
+{
+    HANDLE t;
+    NTSTATUS st = NtOpenThreadToken((HANDLE)(LONG_PTR)-2, 8 /* TOKEN_QUERY */, TRUE, &t);
+    if (!NT_SUCCESS(st)) st = NtOpenProcessToken((HANDLE)(LONG_PTR)-1, 8, &t);
+    if (!NT_SUCCESS(st)) return st;
+    ULONG_PTR buf[32];
+    ULONG got;
+    st = NtQueryInformationToken(t, 1 /* TokenUser */, buf, sizeof(buf), &got);
+    NtClose(t);
+    if (!NT_SUCCESS(st)) return st;
+    UNICODE_STRING sid;
+    st = RtlConvertSidToUnicodeString(&sid, *(PSID *)buf, TRUE);
+    if (!NT_SUCCESS(st)) return st;
+    static const WCHAR prefix[] = L"\\REGISTRY\\USER\\";
+    USHORT pl = sizeof(prefix) - 2, n = (USHORT)(pl + sid.Length);
+    out->Buffer = RtlAllocateHeap(heap(), 0, n + 2u);
+    if (!out->Buffer) { RtlFreeUnicodeString(&sid); return ST_NO_MEMORY; }
+    memcpy(out->Buffer, prefix, pl);
+    memcpy((BYTE *)out->Buffer + pl, sid.Buffer, sid.Length);
+    out->Buffer[n / 2] = 0;
+    out->Length = n;
+    out->MaximumLength = (USHORT)(n + 2);
+    RtlFreeUnicodeString(&sid);
+    return ST_SUCCESS;
+}
+
 NTSYSAPI NTSTATUS NTAPI NtPrivilegeCheck(HANDLE t, PPRIVILEGE_SET set, PBOOLEAN result)
 {
     (void)t;

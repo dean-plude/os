@@ -1105,6 +1105,10 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
 {
     if (strchr(name, '\\') || strchr(name, '/') || strchr(name, ':')) {
         char path[RAMFS_PATH_MAX];
+        /* "\\?\C:\x.dll", "\\.\C:\x.dll" and "\??\C:\x.dll" name C:\x.dll */
+        if ((name[0] == '\\' || name[0] == '/') && (name[1] == '\\' || name[1] == '/' || name[1] == '?') &&
+            (name[2] == '?' || name[2] == '.') && (name[3] == '\\' || name[3] == '/'))
+            name += 4;
         strncpy(path, name, sizeof(path) - 5);
         path[sizeof(path) - 5] = '\0';
         for (char *c = path; *c; c++)       /* GTK's module caches use forward slashes */
@@ -1230,6 +1234,7 @@ static void map_api_set(char *lname, int cap)
         { "api-ms-win-core-",             "kernel32.dll" },
         { "api-ms-win-security-",         "advapi32.dll" },
         { "api-ms-win-eventing-",         "advapi32.dll" },
+        { "api-ms-win-power-",            "powrprof.dll" },   /* CallNtPowerInformation, PowerReadACValue, ... */
         { "api-ms-win-shell-",            "shell32.dll" },
         { "api-ms-win-shcore-",           "shlwapi.dll" },
         { "shcore.dll",                   "shlwapi.dll" },    /* GetDpiForMonitor, SHCreateStreamOnFileEx, ... */
