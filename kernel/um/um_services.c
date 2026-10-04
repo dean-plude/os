@@ -394,6 +394,19 @@ static UINT64 sys_device_io_control(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a3;
     UINT64 io = um_stack_arg(5);
+    UmObject *sec = um_handle_object(UmCurrent(), a1, UO_SECTION);   /* shared GPU resources (um_thread.c) */
+    if (sec) {
+        UINT32 info = 0;
+        UINT32 st = um_section_ioctl(sec, (UINT32)um_stack_arg(6), um_stack_arg(7), (UINT32)um_stack_arg(8),
+                                     um_stack_arg(9), (UINT32)um_stack_arg(10), &info);
+        um_ob_unref(sec);
+        if (io >> 63) {                                         /* a 32-bit program's block */
+            UINT32 b[2] = { st, info };
+            return put(io & ~(UINT64_C(1) << 63), b, sizeof(b)) ? st : ST_ACCESS_VIOLATION;
+        }
+        UINT64 b[2] = { st, info };
+        return put(io, b, sizeof(b)) ? st : ST_ACCESS_VIOLATION;
+    }
     UmObject *o = um_handle_object(UmCurrent(), a1, UO_AFD);   /* \Device\Afd helpers (um_afd.c) */
     UINT32 st = o ? um_afd_ioctl(o, a2, a4, io, (UINT32)um_stack_arg(6), um_stack_arg(7), (UINT32)um_stack_arg(8),
                                  um_stack_arg(9), (UINT32)um_stack_arg(10))

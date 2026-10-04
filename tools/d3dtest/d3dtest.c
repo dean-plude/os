@@ -3,7 +3,8 @@
  * fixed-function Direct3D 9 triangle, render-target read-back, and a few
  * seconds of presented frames from each.
  * Build: x86_64-w64-mingw32-gcc -O2 -o d3dtest.exe d3dtest.c -ld3d9 -ld3d11 -ldxgi -luser32 -lgdi32 -lole32
- *        (i686-w64-mingw32-gcc for the 32-bit one).  Usage: d3dtest [seconds [9|11]], d3dtest angle
+ *        (i686-w64-mingw32-gcc for the 32-bit one).  Usage: d3dtest [seconds [9|11]], d3dtest angle,
+ *        d3dtest fps [seconds], d3dtest shared
  *
  * d3dtest fps [seconds]: the frame-rate test.  A Direct3D 9 scene that
  * keeps the rasterizer busy (64 blended full-window quads at 640x480) runs
@@ -17,7 +18,16 @@
  * Microsoft's, a device on it from the feature levels ANGLE asks for, the
  * DXGI 1.2 device, the adapter's description, factory and driver version,
  * the feature and format queries, a DXGI 1.2 swap chain on a window, and a
- * WARP device whose adapter comes from the device. */
+ * WARP device whose adapter comes from the device.
+ *
+ * d3dtest shared: a Direct3D 11 texture shared by NT handle, as Chromium
+ * shares its frames with Qt WebEngine (Galaxy) or with its browser process:
+ * device A makes it (D3D11_RESOURCE_MISC_SHARED_NTHANDLE) and clears it,
+ * device B opens the handle (OpenSharedResource1) and reads A's colour,
+ * B's write is read back by A, a child process opens a copy of the
+ * handle and reads it too, and a shared fence (ID3D11Fence, which Chromium
+ * signals for Qt) signalled on one device completes on the other.  On Mesa's lavapipe (VK_DRIVER_FILES), where
+ * NovaOS's Vulkan loader provides the sharing. */
 #define COBJMACROS
 #define INITGUID
 #include <windows.h>
@@ -25,6 +35,7 @@
 #include <d3d11.h>
 #include <d3d11_1.h>
 #include <d3d11_3.h>
+#include <d3d11_4.h>
 #include <dxgi.h>
 #include <dxgi1_2.h>
 #include <stdio.h>
@@ -512,6 +523,215 @@ static int fps_test(int secs)
     return fail != 0;
 }
 
+/* ---- Direct3D 11 textures shared by handle -------------------------------- */
+static ID3D11Device *shared_device(ID3D11DeviceContext **ctx)
+{
+    ID3D11Device *dev = NULL;
+    D3D_FEATURE_LEVEL want = D3D_FEATURE_LEVEL_11_0, fl = 0;
+    *ctx = NULL;
+    if (FAILED(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, &want, 1, D3D11_SDK_VERSION, &dev, &fl, ctx)))
+        return NULL;
+    return dev;
+}
+
+/* The texel at (8, 8) of @tex on @dev (0xAARRGGBB; 0 if it could not be read) */
+static DWORD shared_texel(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *tex)
+{
+    D3D11_TEXTURE2D_DESC td;
+    ID3D11Texture2D_GetDesc(tex, &td);
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    td.MiscFlags = 0;
+    ID3D11Texture2D *stage = NULL;
+    if (FAILED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &stage))) return 0;
+    ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)stage, (ID3D11Resource *)tex);
+    D3D11_MAPPED_SUBRESOURCE m;
+    DWORD px = 0;
+    if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)stage, 0, D3D11_MAP_READ, 0, &m))) {
+        px = *(DWORD *)((BYTE *)m.pData + 8 * m.RowPitch + 8 * 4);        /* B, G, R, A */
+        ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)stage, 0);
+    }
+    ID3D11Texture2D_Release(stage);
+    return px;
+}
+
+static void shared_clear(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *tex, const float *c)
+{
+    ID3D11RenderTargetView *rtv = NULL;
+    if (FAILED(ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource *)tex, NULL, &rtv))) return;
+    ID3D11DeviceContext_ClearRenderTargetView(ctx, rtv, c);
+    ID3D11RenderTargetView_Release(rtv);
+    ID3D11DeviceContext_Flush(ctx);
+}
+
+/* Open @h on a device of its own; the texel, or 0 */
+static DWORD shared_open_texel(HANDLE h, D3D11_TEXTURE2D_DESC *desc)
+{
+    ID3D11DeviceContext *ctx;
+    ID3D11Device *dev = shared_device(&ctx);
+    ID3D11Device1 *dev1 = NULL;
+    ID3D11Texture2D *tex = NULL;
+    DWORD px = 0;
+    if (dev && SUCCEEDED(ID3D11Device_QueryInterface(dev, &IID_ID3D11Device1, (void **)&dev1)) &&
+        SUCCEEDED(ID3D11Device1_OpenSharedResource1(dev1, h, &IID_ID3D11Texture2D, (void **)&tex))) {
+        if (desc) ID3D11Texture2D_GetDesc(tex, desc);
+        px = shared_texel(dev, ctx, tex);
+        ID3D11Texture2D_Release(tex);
+    }
+    if (dev1) ID3D11Device1_Release(dev1);
+    if (ctx) ID3D11DeviceContext_Release(ctx);
+    if (dev) ID3D11Device_Release(dev);
+    return px;
+}
+
+/* The child: sharedrun HANDLE FILE; writes "shared-result AARRGGBB" */
+static int shared_child(HANDLE h)
+{
+    printf("shared-result %08lx\n", (unsigned long)shared_open_texel(h, NULL));
+    return 0;
+}
+
+static int shared_test(void)
+{
+    char sys[MAX_PATH], lvp[MAX_PATH];
+    GetSystemDirectoryA(sys, sizeof(sys));      /* (SysWOW64 for the 32-bit one) */
+    snprintf(lvp, sizeof(lvp), "%s\\lvp_icd.%s.json", sys, sizeof(void *) == 8 ? "x86_64" : "x86");
+    SetEnvironmentVariableA("VK_DRIVER_FILES", lvp);
+
+    ID3D11DeviceContext *ctx = NULL;
+    ID3D11Device *dev = shared_device(&ctx);
+    check("device A", dev != NULL);
+    if (!dev) { printf("d3dtest shared: %d passed, %d failed\n", pass, fail); return 1; }
+
+    D3D11_TEXTURE2D_DESC td = { 0 };
+    td.Width = 64; td.Height = 64; td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    td.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+    ID3D11Texture2D *tex = NULL;
+    HRESULT hr = ID3D11Device_CreateTexture2D(dev, &td, NULL, &tex);
+    check("shared texture made", SUCCEEDED(hr) && tex);
+    if (!tex) { printf("CreateTexture2D: 0x%08lx\n", (unsigned long)hr); printf("d3dtest shared: %d passed, %d failed\n", pass, fail); return 1; }
+
+    const float orange[4] = { 1.0f, 0.5f, 0.0f, 1.0f }, teal[4] = { 0.0f, 0.5f, 0.5f, 1.0f };
+    shared_clear(dev, ctx, tex, orange);
+    DWORD a = shared_texel(dev, ctx, tex);
+    printf("device A texel  %08lx\n", (unsigned long)a);
+    check("device A drew", px_near(a, 0xFF, 0x80, 0x00));
+
+    IDXGIResource1 *res = NULL;
+    HANDLE h = NULL;
+    hr = ID3D11Texture2D_QueryInterface(tex, &IID_IDXGIResource1, (void **)&res);
+    if (SUCCEEDED(hr)) hr = IDXGIResource1_CreateSharedHandle(res, NULL, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                                              NULL, &h);
+    printf("CreateSharedHandle  0x%08lx\n", (unsigned long)hr);
+    check("shared handle", SUCCEEDED(hr) && h);
+    HANDLE kmt = NULL;
+    check("no global handle for an NT-handle texture",
+          res && IDXGIResource1_GetSharedHandle(res, &kmt) == E_INVALIDARG);
+
+    D3D11_TEXTURE2D_DESC got = { 0 };
+    DWORD b = h ? shared_open_texel(h, &got) : 0;
+    printf("device B texel  %08lx (%ux%u, format %u)\n", (unsigned long)b, got.Width, got.Height, got.Format);
+    check("device B opened it as A made it", got.Width == 64 && got.Height == 64 && got.Format == DXGI_FORMAT_B8G8R8A8_UNORM);
+    check("device B reads A's colour", px_near(b, 0xFF, 0x80, 0x00));
+
+    /* B draws, A reads */
+    ID3D11DeviceContext *bctx = NULL;
+    ID3D11Device *bdev = shared_device(&bctx);
+    ID3D11Device1 *b1 = NULL;
+    ID3D11Texture2D *btex = NULL;
+    if (bdev && h && SUCCEEDED(ID3D11Device_QueryInterface(bdev, &IID_ID3D11Device1, (void **)&b1)))
+        ID3D11Device1_OpenSharedResource1(b1, h, &IID_ID3D11Texture2D, (void **)&btex);
+    if (btex) {
+        shared_clear(bdev, bctx, btex, teal);
+        shared_texel(bdev, bctx, btex);                     /* (waits for B's clear) */
+    }
+    DWORD a2 = shared_texel(dev, ctx, tex);
+    printf("device A texel after B  %08lx\n", (unsigned long)a2);
+    check("device A reads B's colour", btex && px_near(a2, 0x00, 0x80, 0x80));
+
+    /* A shared fence: A signals, B sees it; B signals, A sees it */
+    ID3D11Device5 *a5 = NULL, *b5 = NULL;
+    ID3D11DeviceContext4 *actx4 = NULL, *bctx4 = NULL;
+    ID3D11Fence *afence = NULL, *bfence = NULL;
+    HANDLE fh = NULL;
+    if (SUCCEEDED(ID3D11Device_QueryInterface(dev, &IID_ID3D11Device5, (void **)&a5)) &&
+        SUCCEEDED(ID3D11Device5_CreateFence(a5, 1, D3D11_FENCE_FLAG_SHARED, &IID_ID3D11Fence, (void **)&afence)))
+        hr = ID3D11Fence_CreateSharedHandle(afence, NULL, GENERIC_ALL, NULL, &fh);
+    printf("fence CreateSharedHandle  0x%08lx\n", (unsigned long)hr);
+    check("shared fence handle", afence && fh);
+    if (bdev && fh && SUCCEEDED(ID3D11Device_QueryInterface(bdev, &IID_ID3D11Device5, (void **)&b5)))
+        ID3D11Device5_OpenSharedFence(b5, fh, &IID_ID3D11Fence, (void **)&bfence);
+    check("device B opened the fence", bfence != NULL);
+    if (afence && bfence &&
+        SUCCEEDED(ID3D11DeviceContext_QueryInterface(ctx, &IID_ID3D11DeviceContext4, (void **)&actx4)) &&
+        SUCCEEDED(ID3D11DeviceContext_QueryInterface(bctx, &IID_ID3D11DeviceContext4, (void **)&bctx4))) {
+        HANDLE ev = CreateEventA(NULL, FALSE, FALSE, NULL);
+        ID3D11Fence_SetEventOnCompletion(bfence, 5, ev);
+        ID3D11DeviceContext4_Signal(actx4, afence, 5);
+        ID3D11DeviceContext_Flush(ctx);
+        DWORD w = WaitForSingleObject(ev, 20000);
+        printf("B's fence after A signalled 5: %llu\n", (unsigned long long)ID3D11Fence_GetCompletedValue(bfence));
+        check("device B sees A's signal", w == WAIT_OBJECT_0 && ID3D11Fence_GetCompletedValue(bfence) >= 5);
+        ID3D11Fence_SetEventOnCompletion(afence, 7, ev);
+        ID3D11DeviceContext4_Signal(bctx4, bfence, 7);
+        ID3D11DeviceContext_Flush(bctx);
+        w = WaitForSingleObject(ev, 20000);
+        printf("A's fence after B signalled 7: %llu\n", (unsigned long long)ID3D11Fence_GetCompletedValue(afence));
+        check("device A sees B's signal", w == WAIT_OBJECT_0 && ID3D11Fence_GetCompletedValue(afence) >= 7);
+        CloseHandle(ev);
+    } else {
+        check("device B sees A's signal", 0);
+        check("device A sees B's signal", 0);
+    }
+    if (actx4) ID3D11DeviceContext4_Release(actx4);
+    if (bctx4) ID3D11DeviceContext4_Release(bctx4);
+    if (bfence) ID3D11Fence_Release(bfence);
+    if (afence) ID3D11Fence_Release(afence);
+    if (fh) CloseHandle(fh);
+    if (b5) ID3D11Device5_Release(b5);
+    if (a5) ID3D11Device5_Release(a5);
+
+    /* Another process, through a copy of the handle it inherits */
+    char exe[MAX_PATH], cmd[2 * MAX_PATH], out[MAX_PATH], line[256] = "";
+    HANDLE dup = NULL;
+    GetModuleFileNameA(NULL, exe, sizeof(exe));
+    GetTempPathA(sizeof(out), out);
+    lstrcatA(out, "d3dtest-shared.txt");
+    DeleteFileA(out);
+    if (h) DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &dup, 0, TRUE, DUPLICATE_SAME_ACCESS);
+    snprintf(cmd, sizeof(cmd), "\"%s\" sharedrun %lu \"%s\"", exe, (unsigned long)(ULONG_PTR)dup, out);
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    if (dup && CreateProcessA(NULL, cmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 600000);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        FILE *f = fopen(out, "r");
+        if (f) { if (!fgets(line, sizeof(line), f)) line[0] = 0; fclose(f); }
+    }
+    unsigned long c = 0;
+    int read = sscanf(line, "shared-result %lx", &c) == 1;
+    printf("other process texel  %08lx\n", c);
+    check("another process reads it", read && px_near((DWORD)c, 0x00, 0x80, 0x80));
+
+    if (dup) CloseHandle(dup);
+    if (btex) ID3D11Texture2D_Release(btex);
+    if (b1) ID3D11Device1_Release(b1);
+    if (bctx) ID3D11DeviceContext_Release(bctx);
+    if (bdev) ID3D11Device_Release(bdev);
+    if (h) CloseHandle(h);
+    if (res) IDXGIResource1_Release(res);
+    ID3D11Texture2D_Release(tex);
+    ID3D11DeviceContext_Release(ctx);
+    ID3D11Device_Release(dev);
+    printf("d3dtest shared: %d passed, %d failed\n", pass, fail);
+    return fail != 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "fpsrun")) {      /* the frame-rate test's child: fpsrun SECS FILE */
@@ -523,6 +743,14 @@ int main(int argc, char **argv)
         RegisterClassA(&wc);
         if (argc > 3) freopen(argv[3], "w", stdout);
         return fps_child(argc > 2 ? atoi(argv[2]) : 5);
+    }
+    if (argc > 3 && !strcmp(argv[1], "sharedrun")) {   /* the sharing test's child: sharedrun HANDLE FILE */
+        freopen(argv[3], "w", stdout);
+        return shared_child((HANDLE)(ULONG_PTR)strtoul(argv[2], NULL, 10));
+    }
+    if (argc > 1 && !strcmp(argv[1], "shared")) {
+        setvbuf(stdout, NULL, _IONBF, 0);
+        return shared_test();
     }
     if (argc > 1 && !strcmp(argv[1], "fps")) {
         setvbuf(stdout, NULL, _IONBF, 0);

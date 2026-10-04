@@ -3296,7 +3296,7 @@ WINBASEAPI BOOL WINAPI K32EnumProcessModulesEx(HANDLE p, HMODULE *mods, DWORD cb
     HMODULE image = RtlGetCurrentPeb()->ImageBaseAddress;
     if (cb >= sizeof(HMODULE)) mods[0] = image;             /* the program first, as on Windows */
     n = 1;
-    for (ULONG i = 0; i < li->Count && i < 64; i++) {
+    for (ULONG i = 0; i < li->Count && i < sizeof(li->Modules) / sizeof(li->Modules[0]); i++) {
         HMODULE m = (HMODULE)(ULONG_PTR)li->Modules[i].Base;
         if (m == image) continue;
         if ((n + 1) * sizeof(HMODULE) <= cb) mods[n] = m;

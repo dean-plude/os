@@ -643,7 +643,13 @@ Direct3D 11 up the way ANGLE (Chromium's GPU process) does: the screen's DC
 as the EGL display (`WindowFromDC` must find the desktop window), the first
 adapter that is not Microsoft's, a device from feature levels 11.1 to 9.3,
 `IDXGIDevice2`, the adapter's description, factory and driver version, the
-feature and format queries, a DXGI 1.2 swap chain and a WARP device.  `gltest fps 10` draws an OpenGL
+feature and format queries, a DXGI 1.2 swap chain and a WARP device.  `d3dtest shared` (on lavapipe, which its `VK_DRIVER_FILES` picks)
+shares a Direct3D 11 texture by NT handle as Chromium shares its frames
+with Qt WebEngine: one device clears it, a second opens the handle
+(`OpenSharedResource1`) and reads the colour, the first reads the second's
+write, a child process opens an inherited copy of the handle and
+reads it too, and a shared fence (`ID3D11Fence`) signalled on either
+device completes on the other.  `gltest fps 10` draws an OpenGL
 scene that keeps the rasterizer busy (64 blended quads over a 640x480
 window) for 10 s on virgl and 10 s on llvmpipe, each in a child process
 whose `GALLIUM_DRIVER` names the driver, and passes when virgl draws more
