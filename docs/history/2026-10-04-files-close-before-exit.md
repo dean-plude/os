@@ -12,3 +12,7 @@ Windows closes a process's handle table before it signals the process, so
 the last thread to exit now closes the process's file and directory
 handles first (`um_close_file_handles`).  `tlsslots` repeats its two child
 runs three times so the race shows up on every run.
+
+`prioritytest` also read its thread's priority the instant it started, so
+a start-up wake boost that had not decayed yet (9, not 8) failed the
+whole run on one CI run; it now waits 200 ms for the boost to decay first.
