@@ -38,11 +38,13 @@
  * "prioritytest net" (the network suite: the core boot has no network
  * adapter) checks the kernel's network thread runs above programs: with a
  * HIGH_PRIORITY_CLASS busy thread on every processor, a byte sent over a
- * 127.0.0.1 TCP connection and back takes at most 250 ms every time (with
+ * 127.0.0.1 TCP connection and back takes at most 250 ms every time (500 ms
+ * under QEMU's TCG, where a hosted runner without KVM missed 250 by 0.08 ms; with
  * the network thread at 8, as before, it waited for the balance set: 3 s).
  */
 #include <winsock2.h>
 #include <windows.h>
+#include <cpuid.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -410,6 +412,13 @@ static int check_foreground(int own_window)
 /* With a HIGH_PRIORITY_CLASS busy thread on every processor, a byte sent
  * over a loopback TCP connection and back must arrive in bounded time: the
  * kernel's network thread runs above every program thread */
+static int under_tcg(void)
+{
+    unsigned a, b, c, d;
+    __cpuid(0x40000000, a, b, c, d);
+    return b == 0x47435443 && c == 0x43544347 && d == 0x47435443;     /* "TCGTCGTCGTCG" */
+}
+
 static int check_network(void)
 {
     WSADATA wd;
@@ -464,7 +473,10 @@ static int check_network(void)
     if (!n) return 0;
     qsort(took, n, sizeof(took[0]), cmp_ll);
     LONGLONG med = took[n / 2], worst = took[n - 1];
-    if (worst > 250000) ok = 0;
+    /* (QEMU's TCG reports itself through the hypervisor CPUID leaf; its
+     * allowance is twice KVM's, which a real starvation still overshoots) */
+    LONGLONG limit = under_tcg() ? 500000 : 250000;
+    if (worst > limit) ok = 0;
     printf("prioritytest: %d loopback round trips against %d busy HIGH threads: median %lld.%03lld ms, worst %lld.%03lld ms\n",
            n, nspin, med / 1000, med % 1000, worst / 1000, worst % 1000);
     return ok;
