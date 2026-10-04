@@ -874,12 +874,14 @@ with its error box when its file is missing), the script opens a new
 Terminal from Start, stops the program from there and carries on, so one
 failure does not fail every program after it.  After Firefox, `store close` closes the App Store window its install
 opened.  After each program the script types `mem` and prints the
-machine's free memory and what drive C: takes: C: is kept in memory, so
-every program installed during the run takes RAM until it is deleted.  The
-machine has 10 GB of memory and a 12 GB data disk: the 2.3 GB of programs
-copied to `C:\Apps` before the first one starts are in memory too, Roblox,
-Steam and WebView2 install about 2.7 GB more, and the data disk saves
-drive C:.  Building PuTTY needs `cmake` and
+machine's free memory and what drive C: takes: how many files and bytes
+it holds, how much of that is in memory, and how much has been let go of
+so far.  C: lives in memory, but the contents of its saved files are let
+go of when memory runs short and read back from the data disk when
+wanted, and the 2.3 GB of programs copied to `C:\Apps` before the first
+one starts are restored without being read.  The machine has 6 GB of
+memory and a 12 GB data disk: Roblox, Steam and WebView2 install about
+2.7 GB more, and the data disk saves all of drive C:.  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
 It needs 7-Zip's installer, Pillow, `openssl` (for Firefox's test

@@ -8,6 +8,7 @@
 #include "../ke/printf.h"
 #include "../ke/smp.h"
 #include "../ke/spinlock.h"
+#include "../ke/scheduler.h"
 
 static RamNode g_root;
 
@@ -95,6 +96,7 @@ const RamNode *RamfsFileId(const RamNode *n)
 }
 
 static void mark(RamNode *n, UINT8 flags);
+static void release_data(RamNode *f, char *old);
 
 /* After @n's contents or details changed: its other names show the same */
 static void sync_links(RamNode *n)
@@ -186,23 +188,24 @@ bool RamfsDriveInfo(const RamNode *n, const char **label, const char **fs, UINT6
     return true;
 }
 
-/* Drive C:'s files in memory: their number, their contents and the memory
- * those take (a file with several names counted once) */
-static void usage(const RamNode *d, UINT64 *files, UINT64 *bytes, UINT64 *held)
+/* Drive C:'s files: their number, their contents, those in memory and
+ * the memory those take (a file with several names counted once) */
+static void usage(const RamNode *d, UINT64 *files, UINT64 *bytes, UINT64 *inmem, UINT64 *held)
 {
     for (const RamNode *c = d->child; c; c = c->next) {
-        if (c->dir) { if (!ext(c)) usage(c, files, bytes, held); continue; }
+        if (c->dir) { if (!ext(c)) usage(c, files, bytes, inmem, held); continue; }
         if (c->link && RamfsFileId(c) != c) continue;
         (*files)++;
         *bytes += c->size;
+        if (!c->out) *inmem += c->size;
         *held += c->data ? ksize(c->data) : 0;
     }
 }
 
-void RamfsUsage(UINT64 *files, UINT64 *bytes, UINT64 *held)
+void RamfsUsage(UINT64 *files, UINT64 *bytes, UINT64 *inmem, UINT64 *held)
 {
-    *files = *bytes = *held = 0;
-    usage(&g_root, files, bytes, held);
+    *files = *bytes = *inmem = *held = 0;
+    usage(&g_root, files, bytes, inmem, held);
 }
 
 UINT64 RamfsDriveFree(const RamNode *n)
@@ -408,10 +411,90 @@ static bool load(RamNode *n, Drive *d)
     return true;
 }
 
+/* ---------------------------------------------------------------------------
+ * Drive C:'s saved contents let go of (see ramfs.h): read back from the
+ * data disk by persist.c's reader.  Under the big kernel lock, as the
+ * mounted volumes' loads: callers may share the file-system lock, and the
+ * reader may sleep (it waits for a save), so @f is looked at again after.
+ * ------------------------------------------------------------------------- */
+static bool (*g_backing)(RamNode *f, char *buf);
+
+void RamfsSetBacking(bool (*read)(RamNode *f, char *buf)) { g_backing = read; }
+UINT32 RamfsSeconds(void) { return (UINT32)(sched_ticks() / 100); }
+
+static bool load_saved(RamNode *f, bool (*read)(RamNode *f, char *buf))
+{
+    if (!f->out) return true;
+    char *buf = kmalloc(f->size ? f->size : 1);
+    if (!buf) return false;
+    bool ok = read && read(f, buf);
+    if (!f->out) { kfree(buf); return true; }                  /* (read in meanwhile) */
+    if (!ok) {
+        char path[RAMFS_PATH_MAX];
+        RamfsPath(f, path, sizeof(path));
+        kprintf("[RAMFS] %s could not be read back from the data disk\n", path);
+        kfree(buf);
+        return false;
+    }
+    f->data = buf;
+    f->cap = f->size;
+    f->out = 0;
+    f->used = RamfsSeconds();
+    return true;
+}
+
+bool RamfsLoadWith(RamNode *f, bool (*read)(RamNode *f, char *buf))
+{
+    if (!f || !f->out) return true;
+    bkl_acquire();
+    bool ok = load_saved(f, read);
+    bkl_release();
+    return ok;
+}
+
+bool RamfsLoaded(const RamNode *n)
+{
+    if (!n) return true;
+    if (ext(n)) return (n->xflags & (n->dir ? RAMFS_X_LISTED : RAMFS_X_LOADED)) != 0;
+    return !n->out;
+}
+
+bool RamfsCanLetGo(const RamNode *f)
+{
+    return f && !f->dir && !ext(f) && !f->out && f->data && !f->link && f->size >= RAMFS_OUT_MIN &&
+           !(f->pflags & (RAMFS_F_SEALED | RAMFS_F_SEED | RAMFS_F_DIRTY)) && f->refs <= 0 && f->pins <= 0;
+}
+
+UINT64 RamfsLetGo(RamNode *f, UINT64 bref)
+{
+    if (!RamfsCanLetGo(f)) return 0;
+    UINT64 took = ksize(f->data);
+    release_data(f, f->data);                                  /* (a save that has them lent keeps them) */
+    f->data = NULL;
+    f->cap = 0;
+    f->lent = 0;
+    f->out = 1;
+    f->bref = bref;
+    return took;
+}
+
+void RamfsSetSaved(RamNode *f, UINT32 size, UINT64 bref)
+{
+    if (!f || f->dir || ext(f) || f->link || f->refs > 0) return;
+    release_data(f, f->data);
+    f->data = NULL;
+    f->size = size;
+    f->cap = 0;
+    f->out = size ? 1 : 0;
+    f->bref = bref;
+    f->used = 0;                                                /* (never wanted yet) */
+}
+
 bool RamfsLoad(RamNode *n)
 {
     Drive *d;
-    if (!n || !(n->xflags & RAMFS_X_EXTERN)) return true;
+    if (!n) return true;
+    if (!(n->xflags & RAMFS_X_EXTERN)) return !n->out || RamfsLoadWith(n, g_backing);
     if (!(d = drive_of(n)) || !d->src) return false;               /* (its drive was unmounted) */
     if (n->xflags & (n->dir ? RAMFS_X_LISTED : RAMFS_X_LOADED)) return true;
     bkl_acquire();
@@ -641,6 +724,7 @@ bool RamfsWrite(RamNode *f, const char *data, UINT32 len)
     f->data = buf;
     f->size = len;
     f->cap = len;
+    f->out = 0;
     if (ext(f)) set_dirty(f);
     mark(f, RAMFS_F_DIRTY);
     touch(f);
@@ -655,6 +739,7 @@ bool RamfsWriteOwned(RamNode *f, char *buf, UINT32 len)
     f->data = buf;
     f->size = len;
     f->cap = len;
+    f->out = 0;
     mark(f, RAMFS_F_DIRTY);
     touch(f);
     sync_links(f);
@@ -705,6 +790,13 @@ bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
 
 bool RamfsResize(RamNode *f, UINT32 len)
 {
+    if (f && !f->dir && f->out && !len && !ring_pins(f) && !RamfsReadOnly(f)) {   /* (emptied: nothing to read back) */
+        f->out = 0;
+        f->size = f->cap = 0;
+        mark(f, RAMFS_F_DIRTY);
+        touch(f);
+        return true;
+    }
     if (!f || f->dir || ring_pins(f) || RamfsReadOnly(f) || !RamfsLoad(f) || !unshare(f) || !reserve(f, len, true)) return false;
     if (ext(f)) set_dirty(f);
     if (len > f->size) memset(f->data + f->size, 0, len - f->size);
@@ -735,7 +827,7 @@ void RamfsUnref(RamNode *n)
     if (left < 0) { __atomic_add_fetch(&n->refs, 1, __ATOMIC_RELAXED); return; }
     if (!left && !n->dir) {
         if (ext(n)) unload(n);
-        else trim(n);
+        else { trim(n); n->used = RamfsSeconds(); }
     }
 }
 void RamfsPin(RamNode *f)
@@ -821,6 +913,7 @@ RamNode *RamfsLink(RamNode *f, RamNode *dir, const char *name)
     for (size_t i = 0; i < len; i++)
         if (is_sep(name[i]) || name[i] == ':') return NULL;
     if (RamfsFind(dir, name)) return NULL;
+    if (!ext(f) && !RamfsLoad(f)) return NULL;      /* (names share contents in memory) */
     RamNode *n = kzalloc(sizeof(RamNode));
     if (!n) return NULL;
     memcpy(n->name, name, len + 1);
