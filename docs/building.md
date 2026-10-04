@@ -981,6 +981,9 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
   nested signatures).  `osslsigncode verify -CAfile root.pem -TSA-CAfile
   root.pem -in OUT/signed.exe` checks them on the host, with the root from
   `openssl x509 -inform der -in OUT/testroot.cer -out root.pem`.
+  It also copies Microsoft's code signing CA 2024
+  (`tools/authenticode/mspca2024.cer`, a public certificate) for
+  `authtest`'s check of the Microsoft root chain policy.
 
 ---
 
