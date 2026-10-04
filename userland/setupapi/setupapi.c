@@ -88,6 +88,27 @@ SETUPAPI BOOL WINAPI SetupDiClassGuidsFromNameA(LPCSTR name, GUID *list, DWORD n
     return TRUE;
 }
 
+SETUPAPI HKEY WINAPI SetupDiOpenDeviceInterfaceRegKey(HANDLE set, PVOID iface, DWORD reserved, REGSAM sam)
+{
+    (void)set; (void)iface; (void)reserved; (void)sam;
+    SetLastError(ERROR_INVALID_PARAMETER);
+    return INVALID_HANDLE_VALUE;
+}
+SETUPAPI BOOL WINAPI SetupDiGetDeviceInterfaceAlias(HANDLE set, PVOID iface, const GUID *cls, PVOID alias)
+{ (void)set; (void)iface; (void)cls; (void)alias; return no_device(); }
+
+/* setupapi.dll carries Configuration Manager calls too (as cfgmgr32.dll's):
+ * with no device tree, no device node is found */
+#define CR_NO_SUCH_DEVNODE_ 0x0D
+SETUPAPI DWORD WINAPI CM_Locate_DevNodeW(PDWORD dn, LPCWSTR id, ULONG flags)
+{ (void)id; (void)flags; if (dn) *dn = 0; return CR_NO_SUCH_DEVNODE_; }
+SETUPAPI DWORD WINAPI CM_Get_Parent(PDWORD parent, DWORD dn, ULONG flags)
+{ (void)dn; (void)flags; if (parent) *parent = 0; return CR_NO_SUCH_DEVNODE_; }
+SETUPAPI DWORD WINAPI CM_Get_Device_IDA(DWORD dn, char *buf, ULONG len, ULONG flags)
+{ (void)dn; (void)flags; if (buf && len) buf[0] = 0; return CR_NO_SUCH_DEVNODE_; }
+SETUPAPI DWORD WINAPI CM_Get_Device_IDW(DWORD dn, WCHAR *buf, ULONG len, ULONG flags)
+{ (void)dn; (void)flags; if (buf && len) buf[0] = 0; return CR_NO_SUCH_DEVNODE_; }
+
 SETUPAPI BOOL WINAPI SetupDiClassGuidsFromNameW(LPCWSTR name, GUID *list, DWORD n, PDWORD need)
 {
     char a[64];

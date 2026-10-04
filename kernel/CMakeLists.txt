@@ -139,6 +139,8 @@ set(KERNEL_C_SOURCES
     drivers/e1000.c
     drivers/virtio_net.c
     drivers/virtio_input.c
+    drivers/gamepad.c
+    drivers/xpad.c
     drivers/virtio_gpu.c
     drivers/ahci.c
     drivers/hda.c
