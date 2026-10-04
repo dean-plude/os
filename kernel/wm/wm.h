@@ -248,6 +248,11 @@ void WmCursorMoveBy(int dx, int dy);
 void WmCursorMoveAbs(int nx, int ny);
 /* Re-show the cursor after a new frame was presented. */
 void WmCursorReshow(void);
+/* ClipCursor: keep the pointer inside @r (logical pixels; NULL: anywhere
+ * on the desktop again), moving it inside now.  Desktop lock. */
+void WmCursorClip(const GdiRect *r);
+/* The rectangle the pointer is kept in; false if it is not confined */
+bool WmCursorClipRect(GdiRect *r);
 /* A window's cursor shape changed (or was freed): redraw the pointer at
  * the next tick.  Under the desktop lock. */
 void WmCursorShapeChanged(void);

@@ -9,16 +9,15 @@
 # zip from GitHub, unpacked into C:\Programs\Teeworlds).  Teeworlds
 # needs OpenGL 1.2 (3D textures), more than NovaOS's own OpenGL 1.1, so the
 # App Store's Mesa 3D is installed first, as a user without a GPU driver
-# would.  Then the mouse opens Settings: Teeworlds starts with "inp_grab 1"
-# (its own setting), so SDL's relative mouse mode reads Raw Input's
-# WM_INPUT; the test pushes the menu cursor into the top-left corner and
-# moves it over the Settings button (1:1 with the mouse) and clicks, and
-# the settings page must show.  Teeworlds' default (inp_grab 0) recentres
-# the pointer with SetCursorPos instead, which NovaOS does not do yet.
-# Takes the keyboard and the mouse.
+# would.  Then the mouse opens Settings, with Teeworlds' own default
+# (inp_grab 0): SDL's relative mouse mode reads WM_MOUSEMOVE and recentres
+# the pointer in the window with SetCursorPos every time it moves; the
+# test pushes the menu cursor into the top-left corner and moves it over
+# the Settings button (1:1 with the mouse) and clicks, and the settings
+# page must show.  Takes the keyboard and the mouse.
 import time
 
-DOC = 'Teeworlds (full screen, through its first-start questions to its start menu, with music; Settings opened with the mouse through Raw Input)'
+DOC = 'Teeworlds (full screen, through its first-start questions to its start menu, with music; Settings opened with the mouse, SDL recentring the pointer with SetCursorPos)'
 
 
 def first_start(nova, echo):
@@ -47,6 +46,6 @@ def first_start(nova, echo):
 APP = App('Teeworlds', '0.7.5', 'https://github.com/teeworlds/teeworlds/releases/download/0.7.5/teeworlds-0.7.5-win64.zip',
           'Teeworlds', [Test('install Mesa 3D', 'store install Mesa 3D', store='Mesa 3D', timeout=1200),
                         Test('install from the App Store', 'store install Teeworlds', store='Teeworlds', timeout=600),
-                        Test('settings with the mouse', r'start C:\Programs\Teeworlds\teeworlds-0.7.5-win64\teeworlds.exe "inp_grab 1"',
+                        Test('settings with the mouse', r'start C:\Programs\Teeworlds\teeworlds-0.7.5-win64\teeworlds.exe',
                              timeout=90)],
           store='Teeworlds', gui=True, runtimes=['Mesa 3D'], sound=(None, 5000), interact=first_start)

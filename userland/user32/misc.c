@@ -751,10 +751,43 @@ USERAPI BOOL GetCursorPos(LPPOINT p)
     return TRUE;
 }
 USERAPI BOOL GetPhysicalCursorPos(LPPOINT p) { return GetCursorPos(p); }
-USERAPI BOOL SetCursorPos(int x, int y) { (void)x; (void)y; return FALSE; }   /* the pointer is the user's */
-USERAPI BOOL SetPhysicalCursorPos(int x, int y) { (void)x; (void)y; return FALSE; }
-USERAPI BOOL ClipCursor(const RECT *r) { (void)r; return TRUE; }
-USERAPI BOOL GetClipCursor(LPRECT r) { if (r) SetRect(r, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)); return TRUE; }
+/* The pointer is the user's: only the foreground process (its window is
+ * active) moves or confines it; the window under it gets WM_MOUSEMOVE */
+USERAPI BOOL SetCursorPos(int x, int y)
+{
+    POINT p = { x, y };
+    dpi_to_logical(&p);
+    INT32 c[2] = { p.x, p.y };
+    if (!NtNovaGuiCtl(0, CTL_SET_CURSOR_POS, 0, c)) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    return TRUE;
+}
+USERAPI BOOL SetPhysicalCursorPos(int x, int y) { return SetCursorPos(x, y); }
+/* Until another process comes to the foreground or the display mode changes */
+USERAPI BOOL ClipCursor(const RECT *r)
+{
+    if (!r) { NtNovaGuiCtl(0, CTL_CLIP_CURSOR, 0, NULL); return TRUE; }
+    POINT a = { r->left, r->top }, b = { r->right, r->bottom };
+    dpi_to_logical(&a);
+    dpi_to_logical(&b);
+    INT32 c[4] = { a.x, a.y, b.x, b.y };
+    if (!NtNovaGuiCtl(0, CTL_CLIP_CURSOR, 1, c)) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    return TRUE;
+}
+USERAPI BOOL GetClipCursor(LPRECT r)
+{
+    if (!r) return FALSE;
+    INT32 c[4];
+    if (!NtNovaGuiCtl(0, CTL_CLIP_CURSOR, 2, c)) {         /* not confined: the whole desktop */
+        int x = GetSystemMetrics(SM_XVIRTUALSCREEN), y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        SetRect(r, x, y, x + GetSystemMetrics(SM_CXVIRTUALSCREEN), y + GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        return TRUE;
+    }
+    POINT a = { c[0], c[1] }, b = { c[2], c[3] };
+    dpi_to_proc(&a);
+    dpi_to_proc(&b);
+    SetRect(r, a.x, a.y, b.x, b.y);
+    return TRUE;
+}
 static HCURSOR g_cur;
 static int g_cursor_count;
 /* The kernel draws the pointer: this process's over its windows */
