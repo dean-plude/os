@@ -655,6 +655,15 @@ static void kusd_init(void)
     *(UINT32 *)(g_kusd + 0x270) = 0;                      /* NtMinorVersion */
     static const int features[] = { 2, 6, 8, 10, 12, 13, 14 };   /* cmpxchg8b/16b, SSE, SSE2, SSE3, RDTSC, NX */
     for (unsigned i = 0; i < sizeof(features) / sizeof(features[0]); i++) g_kusd[0x274 + features[i]] = 1;
+    /* XState (XSTATE_CONFIGURATION): the legacy x87 and SSE state only, kept
+     * in a CONTEXT's FltSave, as kernel32's GetEnabledXStateFeatures says */
+    *(UINT64 *)(g_kusd + 0x3D8) = 3;                      /* EnabledFeatures */
+    *(UINT32 *)(g_kusd + 0x3E8) = 512 + 64;               /* Size: legacy area + XSAVE header */
+    *(UINT32 *)(g_kusd + 0x3F0) = 0;   *(UINT32 *)(g_kusd + 0x3F4) = 160;   /* Features[0]: x87 */
+    *(UINT32 *)(g_kusd + 0x3F8) = 160; *(UINT32 *)(g_kusd + 0x3FC) = 256;   /* Features[1]: SSE */
+    *(UINT32 *)(g_kusd + 0x3D8 + 0x228) = 512 + 64;       /* AllFeatureSize */
+    *(UINT32 *)(g_kusd + 0x3D8 + 0x22C) = 160;            /* AllFeatures[0], [1] */
+    *(UINT32 *)(g_kusd + 0x3D8 + 0x230) = 256;
     UmCpuCountChanged();
     UmSharedKeyboard(g_kbd_hkl);
     UmTimerTick(sched_ticks());

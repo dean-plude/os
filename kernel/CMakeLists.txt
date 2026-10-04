@@ -175,6 +175,7 @@ set(KERNEL_C_SOURCES
     um/um_syscall.c
     um/um_thread.c
     um/um_exception.c
+    um/um_gpfault.c
     um/um_socket.c
     um/um_audio.c
     um/um_gpu.c

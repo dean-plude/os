@@ -87,14 +87,25 @@ With that, every raw system call Hyperion makes lands on the service it
 meant, and it gets past the point where it used to crash on service 0: it
 initialises, reads the kernel's loaded-module list
 (`NtQuerySystemInformation(SystemModuleInformation)`), its own token
-(`NtQueryInformationToken`) and ntdll's version resource, and then stops
-with "Roblox encountered an unexpected error" and exits on its own (exit
-code 50) rather than crashing.  What it checks next is a deeper
-Hyperion-specific integrity step, the faithful next piece of work.  NovaOS
-does not, and will not, work around anti-cheat checks or change Roblox
-itself.  `syscalltest` checks the table the way Hyperion reads it: it
-ranks ntdll's `Zw` exports, confirms the numbers against Windows 10 1903
-and that the kernel answers them.
+(`NtQueryInformationToken`) and ntdll's version resource.
+
+Hyperion then checks a run-time behaviour of the kernel: it turns on
+alignment-fault fixup and runs a deliberately misaligned `MOVDQA` in a
+page it has just allocated, expecting the move to go through rather than
+the process to die.  Windows' kernel, when fixup is on, rewrites a
+misaligned 16-byte SSE move to its unaligned form in the program's code
+and retries it; NovaOS now does the same
+([the history note](history/2026-10-04-alignment-fault-fixup.md),
+`kernel/um/um_gpfault.c`), along with the smaller things the same code
+path checks: `ThreadHideFromDebugger` validating its length and ntdll's
+extended-context (XSAVE) functions.  Past that, Hyperion runs further into
+its start-up — hundreds more system calls, reading registry keys and the
+system's time-zone information — before stopping at its next check with
+"Roblox encountered an unexpected error" and exiting on its own (exit code
+50).  That next step is the faithful next piece of work.  NovaOS does not,
+and will not, work around anti-cheat checks or change Roblox itself.
+`syscalltest` checks the table the way Hyperion reads it, and `aligntest`
+checks the alignment-fault fixup and the other behaviours above.
 
 ## WebView2
 
