@@ -474,6 +474,11 @@ def main():
                 log += nova.run('store close', 15)[0]
             results[app.name] = (why, time.time() - t0, steps)
             print(f'{"PASS" if not why else "FAIL"}  {app.name:10s} {time.time() - t0:6.1f} s', flush=True)
+            if nova.q.poll() is None:        # drive C: is RAM: what each program's files leave taken
+                out, _ = nova.run('mem', 15)
+                log += out
+                for m in re.finditer(r'(Physical memory: .*?MB free|Drive C: \(kept in memory\): .*?taking \d+ MB)', out):
+                    print(f'      {m.group(1)}', flush=True)
             if nova.q.poll() is not None:
                 stopped = 'not run (NovaOS stopped)'
     finally:
