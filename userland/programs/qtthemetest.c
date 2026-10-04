@@ -218,6 +218,9 @@ static void uisettings(void)
     CHECK("Accent comes from AccentPalette", get_color(ui3, 5, &c) == S_OK && is(c, 0x10, 0x89, 0x3E));
     CHECK("AccentDark2 too", get_color(ui3, 3, &c) == S_OK && is(c, 0x08, 0x4A, 0x08));
 
+    /* (the watcher holds its own reference while it calls the handler, and
+     * the handler sets its event before that call returns) */
+    for (int i = 0; i < 500 && h.refs != 2; i++) Sleep(10);
     hr = ((HRESULT (STDMETHODCALLTYPE *)(void *, EventToken))SLOT(ui3, 8))(ui3, tok);
     CHECK("remove_ColorValuesChanged lets the handler go", hr == S_OK && h.refs == 1);
     set_dword(K_PERSONALIZE, L"AppsUseLightTheme", 1);
