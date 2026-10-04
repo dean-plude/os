@@ -450,12 +450,11 @@ when `/dev/kvm` is readable and writable, and with TCG otherwise.  Set
 `qemu64` with the same feature flags under both.  CI runs the test VMs under
 KVM: each job's `tools/ci/enable-kvm.sh` step opens `/dev/kvm` to the runner
 user and sets `NOVARUN_ACCEL=kvm` (history entry "Kernel under KVM" has the
-timings).  The app corpus job (and boot-test outside pull requests) fails at that step,
-with a message, when the runner has no usable `/dev/kvm`; pull requests'
-boot-test falls back to TCG with a warning so a required check never goes red
-on the runner alone; start the workflow by hand with the
-`allow_tcg` input for a deliberate TCG run.  The graphics job falls back to TCG
-with a warning.  Every job's summary and the corpus table say which accelerator
+timings).  The app corpus job fails at that step, with a message, when the runner has no
+usable `/dev/kvm` (start the workflow by hand with the `allow_tcg` input for a
+deliberate TCG run); the boot-test and graphics jobs, which are required
+checks, fall back to TCG with a warning on every event so main and pull
+requests never go red on the runner alone.  Every job's summary and the corpus table say which accelerator
 the test VMs used.
 
 The graphics suite downloads 7-Zip, Mesa and DXVK, builds Venus
@@ -475,6 +474,18 @@ tools/ci/stage-graphics.sh /tmp/gfx
 NOVARUN_QEMU=/opt/qv/bin/qemu-system-x86_64 LD_LIBRARY_PATH=/opt/qv/lib/x86_64-linux-gnu \
   xvfb-run -a -s '-screen 0 1280x1024x24' python3 tools/selftest.py --suite graphics --gfx /tmp/gfx
 ```
+
+When a graphics test hangs, the guest can only say that it waits for the
+host, so CI's graphics job runs `tools/ci/host_watch.py graphics-out &` beside
+the suite (needs `gdb` and `sudo`) and sets `VIRGL_LOG_LEVEL=debug` and
+`VIRGL_LOG_FILE=graphics-out/virglrenderer-%PID%.log`.  The `graphics-out`
+artifact then holds `host-watch.log` (every 15 s: the guest's serial log size,
+and the CPU time and thread count of QEMU and of virglrenderer's render server
+processes), `virglrenderer-PID.log` (one per render process), and, once the
+guest's serial log has been silent for six minutes, `host-hang-N.txt`: every
+host thread's state, wait channel and CPU use over five seconds, and gdb's
+backtrace of QEMU and of each render process.  A QEMU whose threads all wait
+and whose CPU time stands still has lost a wake-up; one that spins is busy.
 
 `NOVARUN_QEMU` names the QEMU that `tools/novarun.py` runs (default
 `qemu-system-x86_64` from `PATH`); it opens an SDL window with OpenGL
@@ -648,8 +659,10 @@ card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 bodies, POST, redirects, certificate checks, chunked HTTP/1.1, the
 asynchronous API) against `tools/h2server.js` with a throwaway self-signed
 certificate, then `looptest` (socket pairs over 127.0.0.1 and ::1,
-`localhost`) and `loadtest` (hundreds of sockets open at once, parallel
-downloads); on an IPv6-only network made by `tools/v6peer.py` it checks
+`localhost`), `loadtest` (hundreds of sockets open at once, parallel
+downloads) and `dltest -w` (eight 32 MB downloads at once from
+`tools/h2server.js`'s `/stream` while the files are written and mapped,
+as an installer does; it fails if the transfer stops for 5 s); on an IPv6-only network made by `tools/v6peer.py` it checks
 SLAAC and RDNSS (`ipconfig`), `ping -6`, `curl -6` and `netcat` over IPv6.
 A third boot (`tests/selftest/network-e1000e`) has QEMU's e1000e (the
 82574L) instead of virtio-net: the boot log must show the PHY's ID, its
@@ -836,6 +849,7 @@ would do).
 | VLC 3.0.21 (the 32-bit PortableApps package, unpacked with 7-Zip) | loops the MP4 the ffmpeg test made (30 s of SMPTE colour bars with a 440 Hz tone) with its Qt interface, screenshot once the colour bars show in its window; the screenshot must match `tests/reference/vlc.png`, and the sound NovaOS played (`sound.wav` in `--out`) must hold the tone |
 | Audacity 3.7.4 (the official 64-bit zip) | through its first-run dialogs, records 10 s of the microphone's 523 Hz tone, stops and saves the project; the screenshot must match `tests/reference/audacity.png` and `C:\Apps\rec10.aup3` must exist |
 | Firefox 157.0 (Mozilla's full installer, the App Store's download) | `store install Firefox`: the Store unpacks the installer from `C:\Downloads` with 7-Zip (staged in `C:\Programs\7-Zip`), as its Install button does; then Firefox loads a page from an HTTPS server the script runs on the host (https://10.0.2.2:8443/, a certificate from a CA made for the run with `openssl` and trusted through Firefox's `distribution\policies.json`); the screenshot must match `tests/reference/firefox.png` |
+| Teeworlds 0.7.5 (the official 64-bit zip, the App Store's download) | `store install Mesa 3D` and `store install Teeworlds`; the game starts in full screen, Enter answers its two first-start questions, and its start menu must match `tests/reference/teeworlds.png`; the sound NovaOS played while it ran must hold at least 5 s of sound (`App(sound=(None, 5000))`: any sound, here its menu music, counted between its first test starting and its last one ending) |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` |
 | PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
 
@@ -849,15 +863,19 @@ Terminal from Start, stops the program from there and carries on, so one
 failure does not fail every program after it.  After Firefox, `store close` closes the App Store window its install
 opened.  After each program the script types `mem` and prints the
 machine's free memory and what drive C: takes: C: is kept in memory, so
-every program installed during the run takes RAM until it is deleted.  Building PuTTY needs `cmake` and
+every program installed during the run takes RAM until it is deleted.  The
+machine has 10 GB of memory and a 12 GB data disk: the 2.3 GB of programs
+copied to `C:\Apps` before the first one starts are in memory too, Roblox,
+Steam and WebView2 install about 2.7 GB more, and the data disk saves
+drive C:.  Building PuTTY needs `cmake` and
 `gcc-mingw-w64-x86-64`.
 
 It needs 7-Zip's installer, Pillow, `openssl` (for Firefox's test
 server), `mkntfs` (for drive D:) and, for the two programs that need
 sound, PulseAudio and QEMU's PulseAudio backend, `qemu-system-gui` on
 Ubuntu (NovaOS then boots with a microphone that hears a tone and its
-output recorded, as the core self-tests do; without PulseAudio those two
-are skipped, not failed).  The exit
+output recorded, as the core self-tests do; without PulseAudio the
+programs that need sound are skipped, not failed).  The exit
 status is the number of programs that failed; `--update-reference` rewrites
 the reference screenshots after an intended change:
 
@@ -907,7 +925,9 @@ To test recording, `--rec FILE.wav` gives the card a microphone that hears
 FILE over and over (a private PulseAudio server with two null sinks, so the
 guest records and plays in real time; with `--wav` too, the playback is
 saved from the second sink).  Copy the recording off the data disk and
-check it (`wavcheck.py` exits 0 when the tone is there):
+check it (`wavcheck.py` exits 0 when the tone is there; `--sound MS`
+instead exits 0 when the file holds MS milliseconds of any sound, such
+as a game's music):
 
 ```bash
 python3 tools/novarun.py --keep /tmp/rec --rec tone523.wav 'soundtest record C:\rec.wav 3000'
@@ -936,7 +956,9 @@ python3 tools/novarun.py --extra '-netdev dgram,id=v6,local.type=inet,local.host
 ```
 
 `tools/h2server.js CERT KEY` (Node) serves HTTPS with HTTP/2 on port 8443
-and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hello`).
+and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hello`)
+and `dltest` (`dltest -n 8 -w 10.0.2.2 8080 33554432`: eight 32 MB downloads
+at once from `/stream/BYTES/SEED`).
 
 ### On the host
 
@@ -963,6 +985,9 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
   nested signatures).  `osslsigncode verify -CAfile root.pem -TSA-CAfile
   root.pem -in OUT/signed.exe` checks them on the host, with the root from
   `openssl x509 -inform der -in OUT/testroot.cer -out root.pem`.
+  It also copies Microsoft's code signing CA 2024
+  (`tools/authenticode/mspca2024.cer`, a public certificate) for
+  `authtest`'s check of the Microsoft root chain policy.
 
 ---
 

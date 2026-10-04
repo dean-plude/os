@@ -48,6 +48,8 @@ each one was taken.
 | VLC playing an H.264 video with sound | KeePassXC (Qt) with an open password database |
 | ![Inkscape with a new document](docs/screenshots/inkscape.png) | ![Beneath a Steel Sky on ScummVM, Robert Foster on the gantry](docs/screenshots/beneath-a-steel-sky.png) |
 | Inkscape (GTK) with a new document | Beneath a Steel Sky (free on GOG) on ScummVM, installed with its installer |
+| ![Teeworlds' start menu in full screen](docs/screenshots/teeworlds.png) | |
+| Teeworlds in full screen at its start menu, its music playing | |
 
 ## What runs today
 

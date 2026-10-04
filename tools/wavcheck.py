@@ -2,14 +2,16 @@
 """Summarise what a WAV recording holds: the sounding stretches, each one's
 length, level and pitch (from zero crossings, so: sine-like tones).
 
-    tools/wavcheck.py FILE.wav [--tone HZ MS] [--gaps HZ]
+    tools/wavcheck.py FILE.wav [--tone HZ MS] [--gaps HZ] [--sound MS]
 
 Used with tools/novarun.py --wav to check NovaOS's sound output, and on
 what NovaOS records (soundtest record/capture under novarun --rec).  With
 --tone the exit status says whether the file holds a tone within 2% of HZ
 lasting at least MS milliseconds (0: it does).  With --gaps it lists the
 places where a steady tone of HZ jumps (frames went missing between two
-loud stretches) and the exit status says whether there were none.
+loud stretches) and the exit status says whether there were none.  With
+--sound the exit status says whether it holds MS milliseconds of sound
+of any kind (music, a game's effects) in all.
 """
 import math, struct, sys, wave
 
@@ -52,6 +54,12 @@ def segments(path, show=False):
 def has_tone(path, hz, ms, show=False):
     """Whether @path holds a tone within 2% of @hz lasting @ms or longer"""
     return any(abs(s[3] - hz) <= hz * 0.02 and s[1] >= ms for s in segments(path, show))
+
+
+def sounding_ms(path, start=0, end=None):
+    """How many milliseconds of sound (any, not only tones) @path holds
+    between @start and @end seconds"""
+    return sum(s[1] for s in segments(path) if s[0] >= start and (end is None or s[0] < end))
 
 
 def gaps(path, hz, show=False, settle=0.1):
@@ -98,6 +106,11 @@ def main(argv):
         ok = has_tone(argv[0], float(argv[2]), float(argv[3]), show=True)
         print(f'{"ok" if ok else "FAIL"}: {"a" if ok else "no"} {argv[2]} Hz tone of {argv[3]} ms or more')
         return 0 if ok else 1
+    if len(argv) == 3 and argv[1] == '--sound':
+        ms = sounding_ms(argv[0])
+        segments(argv[0], show=True)
+        print(f'{"ok" if ms >= float(argv[2]) else "FAIL"}: {ms:.0f} ms of sound')
+        return 0 if ms >= float(argv[2]) else 1
     segments(argv[0], show=True)
     return 0
 

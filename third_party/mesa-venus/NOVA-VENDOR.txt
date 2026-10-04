@@ -35,6 +35,11 @@ novaos.patch changes:
   Windows build left it out; DXVK needs it).
 - src/virtio/vulkan/vn_common.h: no sync files on Windows (sync_wait and
   sync_valid_fd say every fd is signaled; ETIME defined).
+- src/virtio/vulkan/vn_ring.c: a wait for the renderer (vn_ring_wait_seqno,
+  vn_ring_wait_space) wakes the ring again (vkNotifyRingMESA) every 32 polls
+  while it reports idle: Venus wakes an idle ring at most once per
+  millisecond of the guest's clock, and when that clock is slower than the
+  renderer's a wake-up can be held back just as the ring thread sleeps.
 - src/vulkan/runtime/vk_instance.c: with VK_ICD_PRESENT_HOOK defined,
   vk_icdNegotiateLoaderICDInterfaceVersion asks that function whether the
   device is there and declines otherwise, so the Vulkan loader moves on

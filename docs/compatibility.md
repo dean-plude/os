@@ -151,14 +151,23 @@ others), reads its manifests with MSXML 6 and installs itself.  Its
 rpcrt4's NDR engine, and COM calls between processes work (ole32's
 standard marshaler over named pipes, `LocalServer32` servers started on
 demand, oleaut32's `IDispatch` proxy and `BSTR`/`VARIANT` marshaling).
-Its silent install now runs to the end: it unpacks the runtime's package
-and then stops at its own check that the package carries Microsoft's
-signature ("failed to verify Microsoft signature", `0xa0430233`), so
-nothing is installed yet.  What comes next, in order: that signature
-check, the 32-bit updater's registry keys need Windows' `WOW6432Node`
-view for the 64-bit programs that look for the runtime there, and then
-the runtime itself (a Chromium browser process with its sandbox) has to
-run.
+Its silent install unpacks the runtime's package and checks that
+Microsoft signed it: `WinVerifyTrust`, then crypt32's Microsoft root
+chain policy (`CERT_CHAIN_POLICY_MICROSOFT_ROOT`, with the application
+root flag for Microsoft's 2011 root), which NovaOS now answers as
+Windows does, so the package is accepted and cached.  The install still
+fails, with `0x80070003`: while it runs, Edge Update's own background
+update pass (`/ua`, started by its core process) decides no install is
+in progress and uninstalls Edge Update, deleting its folder under the
+running install.  On Windows that pass finds the install worker by
+listing Edge Update's processes and reading their command lines
+(`/handoff`, `/install`); on NovaOS it does not see it (inferred: reading
+another process's command line or owner, for a 32-bit caller, is the
+likely gap), so nothing is installed yet.  What comes next, in order:
+that check of running processes, the 32-bit updater's registry keys
+need Windows' `WOW6432Node` view for the 64-bit programs that look for
+the runtime there, and then the runtime itself (a Chromium browser
+process with its sandbox) has to run.
 
 ## Steam
 

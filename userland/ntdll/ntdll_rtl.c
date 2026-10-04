@@ -1035,6 +1035,14 @@ static ULONG cpu_count(void)
     return n ? n : 1;
 }
 
+/* The machine's RAM in pages: KUSER_SHARED_DATA.NumberOfPhysicalPages (the
+ * kernel keeps its free pages at 0x7FFE0F08, a NovaOS field) */
+static ULONG phys_pages(void)
+{
+    ULONG n = *(volatile ULONG *)(ULONG_PTR)0x7FFE02E8;
+    return n ? n : 2u << 18;                                        /* (2 GiB: a kernel without it) */
+}
+
 NTSYSAPI NTSTATUS NTAPI NtQuerySystemInformation(ULONG cls, PVOID buf, ULONG len, PULONG ret)
 {
     switch (cls) {
@@ -1046,7 +1054,7 @@ NTSYSAPI NTSTATUS NTAPI NtQuerySystemInformation(ULONG cls, PVOID buf, ULONG len
         ULONG n = cpu_count();
         b.TimerResolution = 156250;
         b.PageSize = 4096;
-        b.NumberOfPhysicalPages = 2u << 18;                         /* 2 GiB */
+        b.NumberOfPhysicalPages = phys_pages();
         b.LowestPhysicalPageNumber = 1;
         b.HighestPhysicalPageNumber = b.NumberOfPhysicalPages;
         b.AllocationGranularity = 65536;
@@ -1063,9 +1071,11 @@ NTSYSAPI NTSTATUS NTAPI NtQuerySystemInformation(ULONG cls, PVOID buf, ULONG len
     case 2: {                                                       /* SystemPerformanceInformation */
         BYTE p[344];
         memset(p, 0, sizeof(p));
-        *(ULONG *)(p + 0x3C) = 1u << 18;                            /* AvailablePages */
-        *(ULONG *)(p + 0x40) = 1u << 17;                            /* CommittedPages */
-        *(ULONG *)(p + 0x44) = 1u << 19;                            /* CommitLimit */
+        ULONG total = phys_pages(), avail = *(volatile ULONG *)(ULONG_PTR)0x7FFE0F08;
+        if (avail > total) avail = total;
+        *(ULONG *)(p + 0x3C) = avail;                               /* AvailablePages */
+        *(ULONG *)(p + 0x40) = total - avail;                       /* CommittedPages */
+        *(ULONG *)(p + 0x44) = total;                               /* CommitLimit (no page file) */
         if (ret) *ret = sizeof(p);
         if (len < sizeof(p)) return ST_INFO_LENGTH_MISMATCH;
         memcpy(buf, p, sizeof(p));

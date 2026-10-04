@@ -147,6 +147,11 @@ static const StoreApp g_catalog[] = {
       "Steam\\Steam.exe", KIND_SETUP, 3,
       "32-bit installer (NSIS); installs and updates itself on NovaOS, but its browser does not open the login window yet (docs/compatibility.md)",
       "St", GDI_C(0x17, 0x1A, 0x21) },
+    { "Teeworlds", "Teeworlds team", "Fast 2D online shooter with cute round characters (free and open source)",
+      CAT_MEDIA, GH "teeworlds/teeworlds/releases/download/0.7.5/teeworlds-0.7.5-win64.zip", "teeworlds-0.7.5-win64.zip", "Teeworlds",
+      "Teeworlds\\**\\teeworlds.exe", KIND_ARCHIVE, 25,
+      "64-bit zip; starts in full screen with its music on NovaOS (nightly corpus); needs Mesa 3D (see Runtimes)",
+      "TW", GDI_C(0xC8, 0x6A, 0x3C) },
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",
@@ -599,7 +604,10 @@ static bool unpack_tick(Store *s)
     s->tar_layer = false;
     s->tar[0] = '\0';
     if (a->system && status == 0) move_system_files(a);
-    if (installed_exe(a) || (!a->exe && status == 0)) {
+    /* 7-Zip's exit codes: 0 done, 1 warnings, 2 and up a file it could not
+     * write (Firefox's xul.dll with memory short: the program is there but
+     * cut off) */
+    if (status <= 1 && (installed_exe(a) || (!a->exe && status == 0))) {
         char m[96];
         if (a->system) ksnprintf(m, sizeof(m), "Installed in C:\\Windows\\System32");
         else           ksnprintf(m, sizeof(m), "Installed in C:\\Programs\\%s", a->dest);

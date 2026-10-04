@@ -154,6 +154,14 @@ static inline void paging_load_cr3(uintptr_t pt_phys)
 NTSTATUS paging_map(uintptr_t va, uintptr_t pa, size_t size, MapFlags flags);
 
 /*
+ * Make the kernel's page tables for [va, va + size) down to the page
+ * directories (one per GiB), so that mapping pages there later only ever
+ * adds a page table under its own 2 MiB directory entry (vmm.c's mapped
+ * blocks, each in 2 MiB slots of their own, then need no lock between them).
+ */
+NTSTATUS paging_prepare(uintptr_t va, size_t size);
+
+/*
  * Unmap a virtual address range.
  * Does NOT free the physical pages — caller is responsible.
  *

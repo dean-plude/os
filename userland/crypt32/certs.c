@@ -22,6 +22,7 @@
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/oid.h"
 #include "mbedtls/sha1.h"
+#include "mbedtls/sha256.h"
 #include "mbedtls/x509_crl.h"
 #include "mbedtls/pk.h"
 #include "mbedtls/md.h"
@@ -1013,11 +1014,62 @@ typedef struct { DWORD cbSize, dwFlags; void *pvExtraPolicyPara; } POLICY_PARA_;
 typedef struct { DWORD cbSize, dwError; LONG lChainIndex, lElementIndex; void *pvExtraPolicyStatus; } POLICY_STATUS_;
 typedef struct { DWORD cbSize, dwAuthType, fdwChecks; WCHAR *pwszServerName; } SSL_POLICY_PARA_;
 
+/* The Microsoft root policy's keys: SHA-256 of each root's public key (the
+ * RSAPublicKey in its SubjectPublicKeyInfo), as Windows lists them.  The
+ * product roots always count; the application root ("Microsoft Root
+ * Certificate Authority 2011", which signs Microsoft's code signing PCAs
+ * 2011 and 2024) only with MICROSOFT_ROOT_CERT_CHAIN_POLICY_CHECK_APPLICATION_ROOT_FLAG.
+ * Microsoft's test and flight roots are not in NovaOS's ROOT store, so
+ * their flags change nothing. */
+static const BYTE g_ms_roots[][32] = {
+    /* Microsoft Root Authority (1997) */
+    { 0xee,0x09,0xb0,0x7a,0x85,0xe8,0xf2,0x4a,0x01,0xef,0x63,0x1a,0xe6,0x71,0xfe,0xf8,
+      0xde,0xa8,0x01,0x5a,0x09,0xa7,0x15,0xe6,0xa6,0x73,0x90,0x11,0x90,0x92,0xb8,0x16 },
+    /* Microsoft Root Certificate Authority (2001) */
+    { 0x60,0xbd,0xed,0x75,0xc5,0xfd,0x11,0x90,0x10,0xd6,0x83,0x2f,0x76,0xde,0xfc,0x39,
+      0x34,0x73,0xd7,0xa0,0xce,0x64,0xfb,0xd6,0x8d,0xab,0xa2,0x9b,0xfd,0x0b,0x2f,0x7c },
+    /* Microsoft Root Certificate Authority 2010 */
+    { 0x12,0xeb,0x31,0xfd,0xc8,0x92,0x49,0xa0,0xeb,0x67,0xeb,0x65,0xc2,0x97,0x7d,0xbe,
+      0x2a,0xd9,0x6a,0x90,0x9c,0xcb,0xd1,0x80,0xf7,0xe2,0xe1,0x6b,0x27,0x82,0xca,0xee },
+};
+static const BYTE g_ms_app_root[32] = {
+    /* Microsoft Root Certificate Authority 2011 */
+    0x4a,0xbb,0x05,0x94,0xd3,0x03,0xef,0x70,0x77,0x13,0x88,0x34,0xab,0x31,0x5e,0x94,
+    0x1e,0x96,0x30,0x93,0xe0,0x5b,0x4b,0x14,0xaf,0x5d,0xcb,0x52,0x77,0x12,0xc0,0x0a,
+};
+#define MS_ROOT_CHECK_APPLICATION_ROOT_ 0x00020000
+
+/* CERT_CHAIN_POLICY_MICROSOFT_ROOT: whether the last element of the first
+ * simple chain carries one of Microsoft's root keys; CERT_E_UNTRUSTEDROOT
+ * at that element if not.  As on Windows it judges the root's key only:
+ * the chain's own errors are the base and Authenticode policies' business. */
+static void ms_root_policy(const CHAIN_CONTEXT_ *ch, DWORD flags, POLICY_STATUS_ *ps)
+{
+    const SIMPLE_CHAIN_ *sc = ch->cChain ? ch->rgpChain[0] : NULL;
+    const CERT_CONTEXT_ *root = sc && sc->cElement ? sc->rgpElement[sc->cElement - 1]->pCertContext : NULL;
+    BOOL ok = FALSE;
+    if (root && root->pCertInfo) {
+        const BIT_BLOB_ *key = &root->pCertInfo->SubjectPublicKeyInfo.PublicKey;
+        BYTE h[32];
+        mbedtls_sha256(key->pbData, key->cbData, h, 0);
+        for (size_t i = 0; i < sizeof(g_ms_roots) / sizeof(g_ms_roots[0]) && !ok; i++)
+            ok = !memcmp(h, g_ms_roots[i], 32);
+        if (!ok && (flags & MS_ROOT_CHECK_APPLICATION_ROOT_)) ok = !memcmp(h, g_ms_app_root, 32);
+    }
+    ps->dwError = ok ? 0 : 0x800B0109;                              /* CERT_E_UNTRUSTEDROOT */
+    ps->lChainIndex = ok ? -1 : 0;
+    ps->lElementIndex = ok ? -1 : sc && sc->cElement ? (LONG)sc->cElement - 1 : 0;
+}
+
 CRYPT32API BOOL WINAPI CertVerifyCertificateChainPolicy(LPCSTR policy, const void *cv, POLICY_PARA_ *pp, POLICY_STATUS_ *ps)
 {
     const CHAIN_CONTEXT_ *ch = cv;
     if (!ch || !ps) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     ULONG_PTR kind = (ULONG_PTR)policy;
+    if (kind == 7 /* MICROSOFT_ROOT */) {
+        ms_root_policy(ch, pp && pp->cbSize >= 8 ? pp->dwFlags : 0, ps);
+        return TRUE;
+    }
     if (kind != 1 /* BASE */ && kind != 2 /* AUTHENTICODE */ && kind != 3 /* AUTHENTICODE_TS */ && kind != 4 /* SSL */) {
         SetLastError(CRYPT_E_NOT_FOUND_);
         return FALSE;

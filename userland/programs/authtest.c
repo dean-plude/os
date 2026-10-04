@@ -7,8 +7,9 @@
  * root, an expired signer without (or with a late) timestamp, the wrong
  * key usage, no signature and a file that is not a program each fail with
  * Windows' error.  Also the provider state (WTHelper*), CryptQueryObject
- * and the signer's name, revocation asked for while offline, and the
- * catalog hash. */
+ * and the signer's name, revocation asked for while offline, the
+ * catalog hash, and the Microsoft root chain policy Edge Update checks its
+ * packages with (on Microsoft's own code signing CA, mspca2024.cer). */
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
@@ -86,6 +87,12 @@ __declspec(dllimport) BOOL WINAPI CryptQueryObject(DWORD, const void *, DWORD, D
                                                    HANDLE *, const void **);
 __declspec(dllimport) BOOL WINAPI CryptMsgGetParam(HANDLE, DWORD, DWORD, void *, DWORD *);
 __declspec(dllimport) BOOL WINAPI CryptMsgClose(HANDLE);
+__declspec(dllimport) const CERT_CONTEXT *WINAPI CertCreateCertificateContext(DWORD, const BYTE *, DWORD);
+__declspec(dllimport) const CERT_CONTEXT *WINAPI CertEnumCertificatesInStore(HANDLE, const CERT_CONTEXT *);
+__declspec(dllimport) BOOL WINAPI CertGetCertificateChain(HANDLE, const CERT_CONTEXT *, FILETIME *, HANDLE, const void *, DWORD, void *,
+                                                          const void **);
+__declspec(dllimport) VOID WINAPI CertFreeCertificateChain(const void *);
+__declspec(dllimport) BOOL WINAPI CertVerifyCertificateChainPolicy(LPCSTR, const void *, void *, void *);
 
 static GUID V2 = { 0x00AAC56B, 0xCD44, 0x11D0, { 0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE } };
 #define DIR L"C:\\Tests\\Authenticode\\"
@@ -123,6 +130,30 @@ static void expect(const WCHAR *name, DWORD want)
     LONG got = verify(name);
     if ((DWORD)got == want) pass++;
     else { fail++; printf("FAIL: %ls: 0x%08lX, wanted 0x%08lX\n", name, (unsigned long)got, (unsigned long)want); }
+}
+
+/* CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_MICROSOFT_ROOT) on a
+ * chain, with @flags; the policy's error, its element in @element */
+typedef struct { DWORD cbSize, dwFlags; void *pvExtraPolicyPara; } POLICY_PARA;
+typedef struct { DWORD cbSize, dwError; LONG lChainIndex, lElementIndex; void *pvExtraPolicyStatus; } POLICY_STATUS;
+#define MS_ROOT_POLICY      ((LPCSTR)7)
+#define MS_APPLICATION_ROOT 0x20000                     /* MICROSOFT_ROOT_CERT_CHAIN_POLICY_CHECK_APPLICATION_ROOT_FLAG */
+static DWORD ms_root(const void *chain, DWORD flags, LONG *element)
+{
+    POLICY_PARA pp = { sizeof(pp), flags, NULL };
+    POLICY_STATUS ps = { sizeof(ps), 0xFFFFFFFF, 0, 0, NULL };
+    if (!chain || !CertVerifyCertificateChainPolicy(MS_ROOT_POLICY, chain, &pp, &ps)) return 0xFFFFFFFF;
+    if (element) *element = ps.lElementIndex;
+    return ps.dwError;
+}
+
+/* The chain of a certificate (the DER, or the context) to the ROOT store */
+static const void *chain_of(const CERT_CONTEXT *c)
+{
+    struct { DWORD cbSize; struct { DWORD dwType; DWORD n; LPSTR *ids; } usage; } para = { sizeof(para), { 0, 0, NULL } };
+    const void *chain = NULL;
+    if (c && !CertGetCertificateChain(NULL, c, NULL, NULL, &para, 0, NULL, &chain)) chain = NULL;
+    return chain;
 }
 
 static BYTE *load(const WCHAR *name, DWORD *n)
@@ -209,6 +240,10 @@ int main(void)
     SYSTEMTIME st = { 0 };
     if (ts) FileTimeToSystemTime(&ts->sftVerifyAsOf, &st);
     CHECK("timestamp time", ts && st.wYear == 2001 && st.wMonth == 6 && st.wDay == 1 && st.wHour == 12);
+    /* Edge Update's check of Microsoft's signature: the Microsoft root
+     * policy refuses the test root, whatever the flags */
+    CHECK("test root is not Microsoft's", sg && ms_root(sg->pChainContext, 0, NULL) == CERT_E_UNTRUSTEDROOT &&
+                                          ms_root(sg->pChainContext, MS_APPLICATION_ROOT, NULL) == CERT_E_UNTRUSTEDROOT);
     wd.dwStateAction = 2;                               /* WTD_STATEACTION_CLOSE */
     CHECK("close state", WinVerifyTrust(NULL, &V2, &wd) == 0);
 
@@ -251,6 +286,33 @@ int main(void)
     HANDLE admin = 0;
     CHECK("catalog admin", CryptCATAdminAcquireContext(&admin, NULL, 0) && !CryptCATAdminEnumCatalogFromHash(admin, hash, 20, 0, NULL));
     CryptCATAdminReleaseContext(admin, 0);
+
+    /* the Microsoft root policy on Microsoft's own chains: the code signing
+     * CA 2024 chains to the application root (Root Certificate Authority
+     * 2011), which counts only with its flag; the 2010 root always counts */
+    DWORD pn = 0;
+    BYTE *pca = load(L"mspca2024.cer", &pn);
+    const CERT_CONTEXT *pcac = pca ? CertCreateCertificateContext(1, pca, pn) : NULL;
+    const void *pch = chain_of(pcac);
+    LONG el = -1;
+    CHECK("Microsoft application root needs its flag", ms_root(pch, 0, &el) == CERT_E_UNTRUSTEDROOT && el == 1);
+    CHECK("Microsoft application root", ms_root(pch, MS_APPLICATION_ROOT, &el) == 0 && el == -1);
+    if (pch) CertFreeCertificateChain(pch);
+    if (pcac) CertFreeCertificateContext(pcac);
+    HeapFree(GetProcessHeap(), 0, pca);
+    HANDLE roots = CertOpenSystemStoreW(0, L"ROOT");
+    const CERT_CONTEXT *rc = NULL;
+    WCHAR rn[128];
+    while ((rc = CertEnumCertificatesInStore(roots, rc)) != NULL) {
+        rn[0] = 0;
+        CertGetNameStringW(rc, 4, 0, NULL, rn, 128);
+        if (!wcscmp(rn, L"Microsoft Root Certificate Authority 2010")) break;
+    }
+    const void *rch = chain_of(rc);
+    CHECK("Microsoft product root", rc && ms_root(rch, 0, NULL) == 0);
+    if (rch) CertFreeCertificateChain(rch);
+    if (rc) CertFreeCertificateContext(rc);
+    if (roots) CertCloseStore(roots, 0);
 
     /* trust taken back */
     CHECK("remove the test root", set_test_root(FALSE));

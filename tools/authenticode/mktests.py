@@ -25,6 +25,8 @@ ROOT store for its checks and removes it afterwards.
     unsigned.exe        no signature                               TRUST_E_NOSIGNATURE
     notpe.txt           not a program                              TRUST_E_SUBJECT_FORM_UNKNOWN
     signed.sha1         the SHA-1 catalog hash of signed.exe (hex)
+    mspca2024.cer       Microsoft Code Signing PCA 2024 (a copy of the one
+                        here), for the Microsoft root chain policy
 """
 import os
 import struct
@@ -85,6 +87,8 @@ def main(out, pe64_path, pe32_path):
     files['badsig.exe'] = bytes(b)
     files['signed.sha1'] = pe_digest(pad(pe64), 'sha1').hex().upper().encode()
     files['testroot.cer'] = root.der
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mspca2024.cer'), 'rb') as f:
+        files['mspca2024.cer'] = f.read()
     os.makedirs(out, exist_ok=True)
     for n, data in files.items():
         with open(os.path.join(out, n), 'wb') as f:

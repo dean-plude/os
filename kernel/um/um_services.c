@@ -20,6 +20,7 @@
 #include "../ke/kpcr.h"
 #include "../hal/firmware.h"
 #include "../mm/vmm.h"
+#include "../mm/pmm.h"
 #include "../lib/string.h"
 
 #define ST_SUCCESS                0x00000000u
@@ -63,7 +64,7 @@ static UINT64 sysinfo_basic(UINT64 buf, UINT32 len, UINT64 ret)
 {
     UINT8 b[64];                                  /* SYSTEM_BASIC_INFORMATION (x64) */
     memset(b, 0, sizeof(b));
-    UINT32 n = cpus(), pages = 2u << 18;          /* 2 GiB, as before */
+    UINT32 n = cpus(), pages = (UINT32)pmm_ram_pages();   /* the machine's RAM */
     UINT32 v32[] = { 0, 156250, 4096, pages, 1, pages, 65536 };
     memcpy(b, v32, sizeof(v32));                  /* Reserved .. AllocationGranularity */
     UINT64 lo = 0x10000, hi = UINT64_C(0x7FFFFFFEFFFF), mask = n >= 64 ? ~0ULL : (1ULL << n) - 1;
@@ -162,7 +163,9 @@ static UINT64 sys_query_system_information(UINT64 a1, UINT64 a2, UINT64 a3, UINT
     case 2: {                                                       /* SystemPerformanceInformation */
         UINT8 p[344];
         memset(p, 0, sizeof(p));
-        UINT32 avail = 1u << 18, committed = 1u << 17, limit = 1u << 19, size = sizeof(p);
+        UINT32 limit = (UINT32)pmm_ram_pages(), avail = (UINT32)pmm_free_now(), size = sizeof(p);
+        if (avail > limit) avail = limit;
+        UINT32 committed = limit - avail;                           /* (no page file) */
         memcpy(p + 0x3C, &avail, 4);
         memcpy(p + 0x40, &committed, 4);
         memcpy(p + 0x44, &limit, 4);
