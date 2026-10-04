@@ -344,10 +344,18 @@ jobs:
       # installed NovaOS orders after that release and the dev builds
       # before it, and before the next release
       - name: Make the update channel of this build
+        env:
+          NOVAOS_UPDATE_SIGNING_KEY: ${{ secrets.NOVAOS_UPDATE_SIGNING_KEY }}
         run: |
+          sign=()
+          if [ -n "$NOVAOS_UPDATE_SIGNING_KEY" ]; then
+            sign=(--sign-env NOVAOS_UPDATE_SIGNING_KEY)
+          else
+            echo "::warning::no NOVAOS_UPDATE_SIGNING_KEY secret: the latest build's novaos-update.txt is unsigned (docs/releasing.md)"
+          fi
           base=$(sed -n 's/^#define NOVA_VERSION "\(.*\)"$/\1/p' kernel/ke/version.h)
           dev="$base+dev.$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%d%H%M%S "$GITHUB_SHA")"
-          python3 tools/mkupdate.py channel --kernel boot/kernel.elf --loader boot/bootx64.efi --version "$dev" \
+          python3 tools/mkupdate.py channel --kernel boot/kernel.elf --loader boot/bootx64.efi --version "$dev" "${sign[@]}" \
             --notes "NovaOS $dev, a development build of main at ${GITHUB_SHA::7}: https://github.com/$GITHUB_REPOSITORY/releases/tag/latest"
           cat channel/novaos-update.txt
 

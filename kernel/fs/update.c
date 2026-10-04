@@ -8,6 +8,7 @@
  */
 
 #include "update.h"
+#include "update_key.h"
 #include "fat.h"
 #include "persist.h"
 #include "setup.h"
@@ -17,7 +18,12 @@
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
 #include "../um/um.h"
+#include "../arch/x86_64/cpu.h"
 #include "mbedtls/sha256.h"
+#include "monocypher-ed25519.h"
+
+_Static_assert(sizeof(UPDATE_SIGNING_KEY) == 1 || sizeof(UPDATE_SIGNING_KEY) == 65,
+               "UPDATE_SIGNING_KEY (update_key.h) is 64 hex digits or empty");
 
 #define NOVA_DIR     "\\EFI\\NOVA"
 #define BOOT_DIR     "\\EFI\\BOOT"
@@ -174,6 +180,120 @@ static void resolve(const char *channel, const char *name, char *out, int cap)
     out[cap - 1] = '\0';
 }
 
+/* @n bytes from 2*@n hex digits: false if they are not */
+static bool unhex(const char *hex, UINT8 *out, int n)
+{
+    for (int i = 0; i < n; i++) {
+        int hi = hexval(hex[2 * i]), lo = hi < 0 ? -1 : hexval(hex[2 * i + 1]);
+        if (lo < 0) return false;
+        out[i] = (UINT8)(hi << 4 | lo);
+    }
+    return true;
+}
+
+/* ---------------------------------------------------------------------------
+ * The channel's signature
+ * ------------------------------------------------------------------------- */
+/* QEMU's firmware configuration device (I/O ports 0x510 and 0x511): its
+ * file @name into @buf, at most @cap bytes; the count, or -1.  The
+ * self-tests hand NovaOS their test key this way; only the virtual
+ * machine's host can set it, and the ports are only touched when CPUID
+ * says this is QEMU (TCG or KVM). */
+static int fw_cfg_file(const char *name, char *buf, int cap)
+{
+    if (!(cpuid(1, 0).ecx & (1u << 31))) return -1;      /* (no hypervisor) */
+    CpuidResult hv = cpuid(0x40000000, 0);
+    UINT32 vendor[3] = { hv.ebx, hv.ecx, hv.edx };
+    if (memcmp(vendor, "TCGTCGTCGTCG", 12) && memcmp(vendor, "KVMKVMKVM\0\0\0", 12)) return -1;
+    UINT8 b[64];
+    outw(0x510, 0x0000);                                 /* the signature */
+    for (int i = 0; i < 4; i++) b[i] = inb(0x511);
+    if (memcmp(b, "QEMU", 4)) return -1;
+    outw(0x510, 0x0019);                                 /* the file directory */
+    for (int i = 0; i < 4; i++) b[i] = inb(0x511);
+    UINT32 count = (UINT32)b[0] << 24 | (UINT32)b[1] << 16 | (UINT32)b[2] << 8 | b[3];
+    for (UINT32 f = 0; f < count && f < 1024; f++) {
+        for (int i = 0; i < 64; i++) b[i] = inb(0x511);  /* size, selector, reserved (big-endian), name */
+        b[63] = '\0';
+        if (strcmp((const char *)b + 8, name)) continue;
+        UINT32 size = (UINT32)b[0] << 24 | (UINT32)b[1] << 16 | (UINT32)b[2] << 8 | b[3];
+        int n = size < (UINT32)cap ? (int)size : cap;
+        outw(0x510, (UINT16)(b[4] << 8 | b[5]));
+        for (int i = 0; i < n; i++) buf[i] = (char)inb(0x511);
+        return n;
+    }
+    return -1;
+}
+
+/* A key's first 16 hex digits, to name it in the log */
+static const char *key_name(const char *hex, char out[17])
+{
+    memcpy(out, hex, 16);
+    out[16] = '\0';
+    return out;
+}
+
+/* The keys a channel may be signed with: the one built in (update_key.h)
+ * and, in QEMU, the one its host gives as opt/novaos/update-key (the
+ * self-tests' key).  The count. */
+static int trusted_keys(UINT8 keys[2][32])
+{
+    int n = 0;
+    if (unhex(UPDATE_SIGNING_KEY, keys[n], 32)) n++;
+    char hex[64], name[17];
+    if (fw_cfg_file("opt/novaos/update-key", hex, sizeof(hex)) == 64 && unhex(hex, keys[n], 32)) {
+        kprintf("[UPDATE] Also trusting the update signing key QEMU's host gave (%s...)\n", key_name(hex, name));
+        n++;
+    }
+    return n;
+}
+
+/* The channel file's last line, "signature ed25519 PUBLIC-KEY SIGNATURE",
+ * signs every byte before it.  With a key to check it against, the
+ * channel is used only when it is signed with that key: false (with the
+ * error set) otherwise.  *signed_len is how much of @body to read (what
+ * comes after the signature is not). */
+static bool check_signature(const char *body, UINT32 len, UINT32 *signed_len)
+{
+    UINT32 at = len;
+    for (UINT32 i = 0; i < len; ) {
+        if (len - i >= 10 && !memcmp(body + i, "signature ", 10)) { at = i; break; }
+        while (i < len && body[i] != '\n') i++;
+        i++;
+    }
+    *signed_len = at;
+    UINT8 keys[2][32];
+    int nkeys = trusted_keys(keys);
+    if (!nkeys) {
+        kprintf("[UPDATE] No update signing key is built in: the channel's signature is not checked\n");
+        return true;
+    }
+    if (at == len) {
+        fail("The update channel is not signed, and this NovaOS installs only signed updates.");
+        return false;
+    }
+    const char *line = body + at;
+    UINT8 key[32], sig[64];
+    char name[17];
+    if (len - at < 18 + 64 + 1 + 128 || memcmp(line, "signature ed25519 ", 18) ||
+        !unhex(line + 18, key, 32) || line[18 + 64] != ' ' || !unhex(line + 18 + 65, sig, 64)) {
+        fail("The update channel's signature line is malformed.");
+        return false;
+    }
+    int k = 0;
+    while (k < nkeys && memcmp(keys[k], key, 32)) k++;
+    if (k == nkeys) {
+        fail("The update channel is signed with a key this NovaOS does not trust (%s...).", key_name(line + 18, name));
+        return false;
+    }
+    if (crypto_ed25519_check(sig, key, (const UINT8 *)body, at)) {
+        fail("The update channel's signature is not valid: the file was changed after it was signed.");
+        return false;
+    }
+    kprintf("[UPDATE] The channel's signature is good (key %s...)\n", key_name(line + 18, name));
+    return true;
+}
+
 /* "kernel NAME SIZE SHA256": false if malformed */
 static bool parse_file(const char *channel, char *rest, UpdFile *f)
 {
@@ -185,11 +305,7 @@ static bool parse_file(const char *channel, char *rest, UpdFile *f)
     if (*p < '0' || *p > '9') return false;
     while (*p >= '0' && *p <= '9') size = size * 10 + (UINT64)(*p++ - '0');
     while (*p == ' ') p++;
-    for (int i = 0; i < 32; i++) {
-        int hi = hexval(p[2 * i]), lo = hi < 0 ? -1 : hexval(p[2 * i + 1]);
-        if (lo < 0) return false;
-        f->sha[i] = (UINT8)(hi << 4 | lo);
-    }
+    if (!unhex(p, f->sha, 32)) return false;
     resolve(channel, name, f->url, sizeof(f->url));
     f->size = size;
     f->present = true;
@@ -248,7 +364,7 @@ static bool check(void)
     UINT32 blen;
     NetOp *op = fetch(channel, &body, &blen, false);
     if (!op) return false;
-    bool ok = parse_channel(channel, body, blen);
+    bool ok = check_signature(body, blen, &blen) && parse_channel(channel, body, blen);
     NetRelease(op);
     if (!ok) return false;
     if (NovaVersionCompare((const char *)g_st.version, NovaVersion()) <= 0) {

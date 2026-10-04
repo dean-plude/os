@@ -1,0 +1,8 @@
+# TEST KEY, FOR THE SELF-TESTS ONLY: never use it to sign a real update.
+# This is the secret half of an Ed25519 key pair for NovaOS's update
+# channel, and it is public (it is in the repository), so it proves
+# nothing: no NovaOS build trusts it.  tools/selftest.py signs the devices
+# suite's test channels with it and hands the public half to the virtual
+# machine through QEMU's fw_cfg (opt/novaos/update-key), which only the
+# machine's host can set (kernel/fs/update.c, docs/updates.md).
+03137bd7764db3a315566c0afcb5bcb2d9945168f062c13baa0f27b7debb3a5d

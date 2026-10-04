@@ -3220,12 +3220,36 @@ WINBASEAPI BOOL WINAPI K32EnumProcessModules(HANDLE p, HMODULE *mods, DWORD cb, 
     return K32EnumProcessModulesEx(p, mods, cb, needed, 3);
 }
 
+/* A process's program path from the kernel, as UTF-8: ProcessImageFileName
+ * (27, "\Device\HarddiskVolume1\Apps\x.exe") or ProcessImageFileNameWin32
+ * (43, "C:\Apps\x.exe"); the length, 0 on failure */
+static DWORD process_image(HANDLE p, ULONG cls, char *out)
+{
+    BYTE b[sizeof(UNICODE_STRING) + 2 * (MAX_PATH + 40)];
+    ULONG got = 0;
+    NTSTATUS s = NtQueryInformationProcess(p, cls, b, sizeof(b), &got);
+    if (!NT_SUCCESS(s)) { fail_status(s); return 0; }
+    UNICODE_STRING *u = (UNICODE_STRING *)b;
+    int n = u->Length ? w2u(u->Buffer, u->Length / 2, out, MAX_PATH - 1) : 0;
+    if (n <= 0) { SetLastError(ERROR_INVALID_HANDLE); return 0; }
+    out[n] = 0;
+    return (DWORD)n;
+}
+
+/* A module's path in this process, or another process's program (its
+ * other modules are not visible from here) */
 static DWORD module_name(HANDLE p, HMODULE m, char *out, BOOL base_only)
 {
-    if (p && !self_process(p)) { SetLastError(ERROR_ACCESS_DENIED); return 0; }
     char tmp[MAX_PATH];
-    const char *path = k32_module_path(m, tmp);
-    if (!path) { SetLastError(ERROR_MOD_NOT_FOUND); return 0; }
+    const char *path;
+    if (p && !self_process(p)) {
+        if (m) { SetLastError(ERROR_ACCESS_DENIED); return 0; }
+        if (!process_image(p, 43, tmp)) return 0;
+        path = tmp;
+    } else if (!(path = k32_module_path(m, tmp))) {
+        SetLastError(ERROR_MOD_NOT_FOUND);
+        return 0;
+    }
     const char *s = path;
     if (base_only) for (const char *c = path; *c; c++) if (*c == '\\') s = c + 1;
     DWORD n = (DWORD)strlen(s);
@@ -3275,14 +3299,32 @@ WINBASEAPI DWORD WINAPI K32GetModuleFileNameExW(HANDLE p, HMODULE m, LPWSTR buf,
     return (DWORD)k;
 }
 
+/* The program's path in the kernel's form ("\Device\HarddiskVolume1\..."),
+ * which QueryDosDevice's names turn back into a drive letter */
+static DWORD image_file_name(HANDLE p, char *t)
+{
+    return process_image(p, 27, t);
+}
+
 WINBASEAPI DWORD WINAPI K32GetProcessImageFileNameW(HANDLE p, LPWSTR buf, DWORD n)
 {
-    return K32GetModuleFileNameExW(p, 0, buf, n);
+    char t[MAX_PATH];
+    if (!image_file_name(p, t) || !n) return 0;
+    int k = u2w(t, -1, buf, (int)n - 1);
+    if (k < 0) k = (int)n - 1;
+    buf[k] = 0;
+    return (DWORD)k;
 }
 
 WINBASEAPI DWORD WINAPI K32GetProcessImageFileNameA(HANDLE p, LPSTR buf, DWORD n)
 {
-    return K32GetModuleFileNameExA(p, 0, buf, n);
+    char t[MAX_PATH];
+    DWORD k = image_file_name(p, t);
+    if (!k || !n) return 0;
+    if (k >= n) k = n - 1;
+    memcpy(buf, t, k);
+    buf[k] = 0;
+    return k;
 }
 
 /* The firmware's tables: 'RSMB' (SMBIOS: the machine's maker, model, serial
@@ -3320,20 +3362,32 @@ WINBASEAPI UINT WINAPI EnumSystemFirmwareTables(DWORD provider, PVOID buf, DWORD
     return firmware_table(provider, 0, 0, buf, size);
 }
 
+/* QueryFullProcessImageName: "C:\..." or, with PROCESS_NAME_NATIVE (1),
+ * "\Device\HarddiskVolume1\..."; *n is the buffer's size in, the length out */
+static DWORD full_image_name(HANDLE p, DWORD flags, char *t)
+{
+    return flags & 1 ? process_image(p, 27, t) : module_name(p, 0, t, FALSE);
+}
+
 WINBASEAPI BOOL WINAPI QueryFullProcessImageNameW(HANDLE p, DWORD flags, LPWSTR buf, PDWORD n)
 {
-    (void)flags;
-    DWORD k = K32GetModuleFileNameExW(p, 0, buf, *n);
-    if (!k) return FALSE;
-    *n = k;
+    char t[MAX_PATH];
+    if (!full_image_name(p, flags, t)) return FALSE;
+    int k = u2w(t, -1, 0, 0);
+    if (k <= 0 || (DWORD)k >= *n) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    u2w(t, -1, buf, (int)*n);
+    buf[k] = 0;
+    *n = (DWORD)k;
     return TRUE;
 }
 
 WINBASEAPI BOOL WINAPI QueryFullProcessImageNameA(HANDLE p, DWORD flags, LPSTR buf, PDWORD n)
 {
-    (void)flags;
-    DWORD k = K32GetModuleFileNameExA(p, 0, buf, *n);
+    char t[MAX_PATH];
+    DWORD k = full_image_name(p, flags, t);
     if (!k) return FALSE;
+    if (k >= *n) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    memcpy(buf, t, k + 1);
     *n = k;
     return TRUE;
 }

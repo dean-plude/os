@@ -157,19 +157,23 @@ Its silent install unpacks the runtime's package and checks that
 Microsoft signed it: `WinVerifyTrust`, then crypt32's Microsoft root
 chain policy (`CERT_CHAIN_POLICY_MICROSOFT_ROOT`, with the application
 root flag for Microsoft's 2011 root), which NovaOS now answers as
-Windows does, so the package is accepted and cached.  The install still
-fails, with `0x80070003`: while it runs, Edge Update's own background
-update pass (`/ua`, started by its core process) decides no install is
-in progress and uninstalls Edge Update, deleting its folder under the
-running install.  On Windows that pass finds the install worker by
-listing Edge Update's processes and reading their command lines
-(`/handoff`, `/install`); on NovaOS it does not see it (inferred: reading
-another process's command line or owner, for a 32-bit caller, is the
-likely gap), so nothing is installed yet.  What comes next, in order:
-that check of running processes, the 32-bit updater's registry keys
-need Windows' `WOW6432Node` view for the 64-bit programs that look for
-the runtime there, and then the runtime itself (a Chromium browser
-process with its sandbox) has to run.
+Windows does, so the package is accepted and cached.  Edge Update's own
+background update pass (`/ua`), which runs alongside the install, finds
+the install worker by listing Edge Update's processes and reading each
+one's image path (`GetProcessImageFileName`), owner and command line
+(from its PEB); NovaOS now answers those questions about another
+process, so the pass leaves the install alone, and the install starts
+the runtime's own setup (`MicrosoftEdgeWebview_X64_*.exe --msedgewebview
+--user-level`, Chromium's `mini_installer` with `setup.exe`).  That setup
+does not finish yet: `setup.exe` cannot map its archive (`MSEDGE.7z`)
+into memory ("Can't map file to memory: Incorrect function"), and then
+stops on the missing `wer.dll`.  Its installer then cleans up its
+temporary files, marking each for deletion on close; NovaOS deletes such
+a file when its last handle closes, as Windows does.  What comes next,
+in order: the runtime setup (mapping its archive, `wer.dll`), the 32-bit
+updater's registry keys need Windows' `WOW6432Node` view for the 64-bit
+programs that look for the runtime there, and then the runtime itself
+(a Chromium browser process with its sandbox) has to run.
 
 ## Steam
 
@@ -187,15 +191,27 @@ processes as on Windows: the GPU process, the network and storage
 services and a page (renderer) process for Steam's first page.  The GPU
 process draws with ANGLE on Direct3D 11 when Mesa 3D and DXVK are
 installed; without them it gives up after three tries and Chromium draws
-in software, as it does on Windows without a usable GPU.  Under emulation (the
-nightly corpus) Steam then closes the browser a few minutes in and starts
-it again before the page has drawn, so no window appears in that run.
+in software, as it does on Windows without a usable GPU.  The browser
+used to close a few minutes in because `steam.exe` itself stopped: its UI
+imports `AcceptEx` from `wsock32.dll` (ordinal 1141), which NovaOS's
+Winsock 1.1 library did not export, so the first connection it accepted
+ended the client with `STATUS_ENTRYPOINT_NOT_FOUND` and the browser shut
+down with it.  `wsock32` now exports `TransmitFile`, `AcceptEx` and
+`GetAcceptExSockaddrs` (1140 to 1142) from `mswsock`, as Windows does,
+and Steam keeps running; the browser then starts its first page and
+stops in DirectWrite: Chromium asks the DirectWrite factory for
+`IDWriteFactory2` and `IDWriteFactory3` (Windows 10's) and NovaOS's
+factory has only the first two versions, so the browser crashes and Steam
+starts it again.
 What is known to be missing on the way, each a NovaOS gap and none a
 reason to change Steam:
 
 - Media Foundation (`mf.dll`, which Chromium only uses for video).
-- WMI (`WbemLocator`, `{4590F811-1D3A-11D0-891F-00AA004B2E24}`), which the
-  browser asks for just before Steam closes it, and the COM classes
+- DirectWrite's `IDWriteFactory2` and `IDWriteFactory3`, where the
+  browser stops now.
+- WMI (`WbemLocator`, `{4590F811-1D3A-11D0-891F-00AA004B2E24}`), which
+  Steam and its browser ask for and get on without (Chromium reads the
+  board and BIOS names through it), and the COM classes
   `{33C53A50-F456-4884-B049-85FD643ECFED}`,
   `{E77CC89B-7401-4C04-8CED-149DB35ADD04}` and
   `{E2B3C97F-6AE1-41AC-817A-F6F92166D7DD}`, which it gets on without.

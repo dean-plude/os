@@ -7,7 +7,8 @@
 # kernel.new once and the new kernel makes it the installed one), and
 # restarts cleanly again.  Then v2's update is staged, and the machine is
 # reset while the new kernel is still starting: the next start goes back
-# to the v1 kernel and throws the update away.
+# to the v1 kernel and throws the update away.  Every channel is signed
+# with the self-tests' key (005-signature.py).
 #
 # Version order around the rolling build's channel (docs/updates.md): first
 # a channel of this very version (same/) is up to date and a development
@@ -68,7 +69,8 @@ TESTS = [
     Test('dev build newer', 'update', [rf'NovaOS {E(DEV)} is available \('], builtin=True, timeout=120),
     Test('update channel', f'update channel {CHANNEL.format("v1")}', [r'Update channel: http://10\.0\.2\.2:18090/v1/'],
          builtin=True),
-    Test('update check', 'update', [rf'NovaOS {E(V1)} is available \(', r"Type 'update install'"], builtin=True, timeout=120),
+    Test('update check', 'update', [rf'NovaOS {E(V1)} is available \(', r"Type 'update install'"], builtin=True, timeout=120,
+         boot_expect=[r"\[UPDATE\] The channel's signature is good \(key 8cafb488b4fdb69e"]),
     Test('update install', 'update install', [rf'NovaOS {E(V1)} is ready: restart'], builtin=True, timeout=900,
          boot_expect=[rf'\[UPDATE\] NovaOS {E(V1)} is staged']),
     Test('restart into it', 'shutdown /r', [rf"\[UPDATE\] This is the update's first start \(NovaOS {E(V1)}",

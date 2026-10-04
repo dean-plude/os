@@ -55,6 +55,7 @@ typedef struct RamNode {
     UINT8           out;          /* drive C:: the contents are only on the data disk, at @bref (RamfsLoad reads them) */
     UINT32          used;         /* drive C:: when the contents were last let go of or read in (seconds since boot) */
     UINT64          bref;         /*   where on the data disk (fs/persist.c: FAT first cluster, NTFS record) */
+    bool            pending;      /* delete pending: deleted when its last holder lets go (RamfsUnref) */
 } RamNode;                        /*   Names share data, size, cap, attrs, times, sd and the RAMFS_X_* state */
 
 #define RAMFS_X_EXTERN   0x01     /* on a mounted (read-only) volume */
@@ -242,6 +243,12 @@ RamNode *RamfsNextLink(RamNode *n);
  * for files of drive C:, whose contents never unload.) */
 void     RamfsRef(RamNode *node);
 void     RamfsUnref(RamNode *node);
+/* Delete @node now if nothing holds it, else mark it delete pending
+ * (@pending): the last RamfsUnref deletes it, as Windows deletes a file
+ * marked for deletion when its last handle closes.  That last unref must
+ * hold the lock alone; a pending node is never referenced under the
+ * shared lock.  False if it cannot be deleted at all. */
+bool     RamfsDeleteWhenFree(RamNode *node);
 
 /* Hold a file and its contents still (loading them, see RamfsLoad: @data
  * is NULL if that fails): while pinned, @data stays where it

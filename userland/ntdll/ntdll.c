@@ -360,6 +360,7 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
     case 0xC0000106: return 206;                          /* ERROR_FILENAME_EXCED_RANGE: STATUS_NAME_TOO_LONG */
     case 0xC000011F: return ERROR_TOO_MANY_OPEN_FILES;
     case 0xC0000121: return ERROR_ACCESS_DENIED;
+    case 0xC0000056: return ERROR_ACCESS_DENIED;          /* STATUS_DELETE_PENDING */
     case 0xC0000024: return 6;                            /* OBJECT_TYPE_MISMATCH: ERROR_INVALID_HANDLE */
     case 0xC000005C: return 1309;                         /* ERROR_NO_IMPERSONATION_TOKEN */
     case 0xC0000078: return 1337;                         /* ERROR_INVALID_SID */

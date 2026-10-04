@@ -51,6 +51,12 @@ GitHub release.  Nothing is uploaded by hand.
   | `kernel.elf`, `bootx64.efi`, `novaos-update.txt` | the update channel, made by `tools/mkupdate.py` from the same kernel and boot loader ([updates.md](updates.md)) |
   | `SHA256SUMS` | the SHA-256 of all of them |
 
+  `novaos-update.txt` is signed with the secret `NOVAOS_UPDATE_SIGNING_KEY`
+  ([below](#the-update-signing-key)).  Without the secret it is published
+  unsigned, with a warning on the run; with a secret whose public half is
+  not the one `kernel/fs/update_key.h` builds in, or with that key set and
+  no secret, the run stops before publishing.
+
   The notes are made by `tools/release_notes.py`: `docs/releases/VERSION.md`,
   a table of the files with their sizes and SHA-256, and a list of every
   `docs/history/` section added since the previous release tag (every
@@ -72,6 +78,40 @@ wrong commit is removed with `git push origin :refs/tags/v0.1.0` (and its
 release, if one was made, deleted on the release page) before tagging
 again.
 
+## The update signing key
+
+Installed NovaOS systems install only from a channel file signed with the
+key built into them ([updates.md](updates.md#signatures)).  The key pair
+is made once, by the owner of the repository, on a computer they trust;
+its secret half never goes into the repository.
+
+1. Make the key pair from a checkout of the repository.  It writes the
+   secret into the file and prints the public key (64 hex digits):
+
+   ```bash
+   python3 tools/mkupdate.py --new-key ~/novaos-update.key
+   ```
+
+2. Store the secret as the repository's Actions secret (or on GitHub:
+   **Settings**, **Secrets and variables**, **Actions**, **New repository
+   secret**, name `NOVAOS_UPDATE_SIGNING_KEY`, the file's one line as the
+   value):
+
+   ```bash
+   gh secret set NOVAOS_UPDATE_SIGNING_KEY --repo dean-plude/os < ~/novaos-update.key
+   ```
+
+3. Put the printed public key into `kernel/fs/update_key.h`
+   (`#define UPDATE_SIGNING_KEY "8cafb488..."`) through a pull request.
+   `python3 tools/mkupdate.py --public-key ~/novaos-update.key` prints it
+   again.
+4. Keep `~/novaos-update.key` somewhere safe and offline as well: systems
+   built with the key take updates only from channels it signs, so a lost
+   key means their next version must be installed from a new ISO.
+
+The next release then publishes a signed channel.  Releases made before
+step 3 merged keep working: their kernels have no key and check nothing.
+
 ## Trying it before tagging
 
 The same steps run locally after a build:
@@ -81,7 +121,7 @@ python3 tools/fetch_sof_firmware.py --all
 cmake -S . -B build -G "Unix Makefiles"
 make -C build -j"$(nproc)"
 scripts/create-iso.sh dist/nova.iso build/bootx64.efi build/kernel.elf
-python3 tools/mkupdate.py dist --notes "NovaOS 0.1.0"
+python3 tools/mkupdate.py dist --notes "NovaOS 0.1.0" --sign ~/novaos-update.key
 python3 tools/release_notes.py 0.1.0 > notes.md
 ```
 

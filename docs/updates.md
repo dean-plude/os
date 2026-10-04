@@ -50,7 +50,8 @@ done at the next start (the same idea as `MoveFileEx`'s
 loader and the new kernel carry it out, since the files are below
 drive C:).
 
-1. **Download and check** (`kernel/fs/update.c`).  The files are
+1. **Download and check** (`kernel/fs/update.c`).  The channel file's
+   signature must be good ([Signatures](#signatures)).  The files are
    downloaded over HTTPS; each one's size and SHA-256 must be the ones
    the channel names, the kernel must be an ELF file and its stamped
    version (below) the channel's version, and the boot loader an EFI
@@ -112,17 +113,20 @@ version 0.1.1
 kernel kernel.elf 40732656 6b1f...e09c
 loader bootx64.efi 82821 0d4a...71f2
 notes Fixes and new drivers.
+signature ed25519 8cafb488...61aded 0263...720d
 ```
 
 The first line names the format.  `kernel` and `loader` give a file's
 name (relative to the channel file's address, or a full URL), its size
 in bytes and its SHA-256; `loader` may be left out.  Lines NovaOS does
 not know are skipped, so later versions of the format can add some.
+`signature` comes last: the signing key's public half and the signature
+of every byte before that line, both in hex.
 
 `tools/mkupdate.py` writes the three files from a build:
 
 ```bash
-python3 tools/mkupdate.py update-out --notes "Fixes and new drivers."
+python3 tools/mkupdate.py update-out --notes "Fixes and new drivers." --sign novaos-update.key
 ```
 
 makes `update-out/kernel.elf`, `update-out/bootx64.efi` and
@@ -142,7 +146,8 @@ systems only see releases.
 Each green run of the CI on `main` moves the `latest` pre-release to that
 commit (`.github/workflows/ci.yml`, job `publish-iso`), and attaches an
 update channel of its own next to `nova.iso`: the kernel and boot loader
-that run tested, made with the same `tools/mkupdate.py` as a release.  Its
+that run tested, made with the same `tools/mkupdate.py` as a release and
+signed with the same key (when the secret is set, below).  Its
 kernel is stamped with a development version, the version it was built
 with followed by `+dev.` and the commit's time (UTC, `YYYYMMDDHHMMSS`):
 
@@ -173,6 +178,47 @@ second would carry the same version; the second reads as up to date.
 The ISO on `latest` keeps the plain version, so a system installed from
 it is offered the same build once more on this channel.
 
+## Signatures
+
+The channel file is signed with an Ed25519 key, so a changed release
+page or a server that is not GitHub's cannot offer an update: the SHA-256
+of each file is in the signed text.  The public half of the release key
+is built into NovaOS (`UPDATE_SIGNING_KEY` in `kernel/fs/update_key.h`),
+and before reading anything else of the channel file the updater checks
+its last line, `signature ed25519 KEY SIGNATURE`, with Monocypher's
+`crypto_ed25519_check` (`third_party/monocypher`).  The file is refused,
+with the reason in the log (`[UPDATE] Failed: ...`) and on the Updates
+page, when
+
+- it has no signature: "The update channel is not signed, and this
+  NovaOS installs only signed updates.";
+- it is signed with another key: "The update channel is signed with a
+  key this NovaOS does not trust (KEY...).";
+- it was changed after it was signed: "The update channel's signature is
+  not valid: the file was changed after it was signed.".
+
+A good one logs `[UPDATE] The channel's signature is good (key ...)`.
+While `UPDATE_SIGNING_KEY` is empty (a build from before the release key
+was made), NovaOS has nothing to check with: it uses the channel
+unchecked and logs `No update signing key is built in`.  NovaOS 0.1.0
+predates signatures and reads a signed channel like any other.
+
+The secret half is the GitHub Actions secret
+`NOVAOS_UPDATE_SIGNING_KEY`, with which the release workflow signs; how it
+is made and stored is in [releasing.md](releasing.md#the-update-signing-key).
+`tools/mkupdate.py --sign KEYFILE` signs a channel by hand (`--sign-env
+NAME` takes the key from an environment variable), `--new-key KEYFILE`
+makes a key pair and `--public-key KEYFILE` prints a key's public half.
+Signing uses `tools/ed25519.py`, a pure-Python Ed25519 after RFC 8032's
+reference code, so it needs nothing installed.
+
+In a QEMU virtual machine, NovaOS also trusts a key the host hands it as
+the firmware configuration file `opt/novaos/update-key` (64 hex digits;
+`-fw_cfg name=opt/novaos/update-key,string=KEY`), which is how the
+self-test's key gets in.  Only the virtual machine's host can set it, and
+NovaOS looks for it only when CPUID names QEMU's TCG or KVM; a PC has no
+such device.
+
 ## The self-test
 
 The devices suite's `update` boot (`tests/selftest/devices/update`)
@@ -180,7 +226,14 @@ starts `build/nova.img` as an installed NovaOS on QEMU's user-mode
 network, where `tools/selftest.py` serves channels made with
 `tools/mkupdate.py` from the same build: `v1/`, stamped one version
 newer than the build (`0.1.1-test` for 0.1.0), and `v2/`, two newer.
+Both are signed with a key pair kept only for the tests
+(`tests/selftest/devices/update/TEST-ONLY-signing-key.txt`, public and
+so trusted by no real NovaOS), whose public half QEMU hands over as
+`opt/novaos/update-key`.
 
+- `update` refuses three more channels for the v1 version: `unsigned/`,
+  with no signature, `otherkey/`, signed with a key made for the run, and
+  `changed/`, whose notes were changed after it was signed;
 - `update` finds the v1 version, `update install` stages it, and a
   restart starts it and finishes the update (`ver` says the new
   version);
@@ -199,15 +252,15 @@ up to date, and `dev/`, stamped as a development build of it
 installed, `dev/` is up to date (older).
 
 ```bash
-python3 tools/selftest.py --suite devices --only 'same channel,same version up to date,dev channel,dev build newer,update channel,update check,update install,restart into it,updated,restart again,up to date,dev channel again,dev build older,next update,stage it,reset while trying,offered again,store updates'
+python3 tools/selftest.py --suite devices --only 'unsigned channel,unsigned refused,other key channel,other key refused,changed channel,changed refused,same channel,same version up to date,dev channel,dev build newer,update channel,update check,update install,restart into it,updated,restart again,up to date,dev channel again,dev build older,next update,stage it,reset while trying,offered again,store updates'
 ```
 
 ## Not done yet
 
-- **Signatures.**  An update is trusted because it comes over HTTPS from
-  the channel's server and matches the SHA-256 the channel file names.
-  A signed channel file (a key pair whose public half is built into
-  NovaOS) would also cover a changed release page.
+- **Changing the release key.**  A NovaOS trusts only the key it was
+  built with, so a new key reaches installed systems only through an
+  update signed with the old one (a release that builds in the new key),
+  and a lost key only through a new ISO.
 - **Updates on the reference laptop** are checked like the rest of
   Phase 21, by hand ([install-and-power.md](install-and-power.md)): an
   installed T14 updating from a release.
