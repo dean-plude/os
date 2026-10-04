@@ -56,6 +56,7 @@ order; --list prints them):
             it, then NovaOS installed from a USB stick onto an NVMe disk
             and started from there; "update", an installed NovaOS on a
             network serving update channels (tools/mkupdate.py): it
+            orders a development build of its version after it, then
             updates itself to a newer test build of this kernel, restarts
             into it twice, and goes back to it when the next update is
             reset while it first starts; "gamepad", a wired Xbox 360, an
@@ -457,13 +458,14 @@ def laptop_boot(work):
 def update_boot(work):
     """build/nova.img as an installed NovaOS (its writes kept while QEMU runs,
     across restarts) on QEMU's user-mode network, where 10.0.2.2:18090
-    serves two update channels made with tools/mkupdate.py from this build:
-    v1/ stamped one version newer, v2/ two (tests/selftest/devices/update)"""
+    serves update channels made with tools/mkupdate.py from this build:
+    v1/ stamped one version newer, v2/ two, same/ this version and dev/ a
+    development build of it (tests/selftest/devices/update)"""
     test = os.path.join(ROOT, 'tests', 'selftest', 'devices', 'update', '010-update.py')
     ns = {'Test': Test, '__file__': test}
     exec(compile(open(test).read(), test, 'exec'), ns)          # (its V1 and V2)
     root = os.path.join(work, 'channels')
-    for sub, ver in (('v1', ns['V1']), ('v2', ns['V2'])):
+    for sub, ver in (('v1', ns['V1']), ('v2', ns['V2']), ('same', ns['VER']), ('dev', ns['DEV'])):
         subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'mkupdate.py'), os.path.join(root, sub),
                         '--version', ver, '--notes', f'Self-test build {ver}'], check=True, stdout=subprocess.DEVNULL)
     srv = subprocess.Popen([sys.executable, '-m', 'http.server', '18090', '--bind', '127.0.0.1', '--directory', root],

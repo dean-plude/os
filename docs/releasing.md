@@ -60,7 +60,10 @@ GitHub release.  Nothing is uploaded by hand.
   release to them as an update.  A version with a suffix (`v0.1.1-rc1`)
   becomes a pre-release instead and is offered to nobody.  The CI's
   rolling `latest` build of `main` stops claiming the mark once the first
-  release exists.
+  release exists.  It carries an update channel of its own, stamped
+  `0.1.0+dev.<commit time>`, which only systems pointed at
+  `releases/download/latest/novaos-update.txt` read
+  ([updates.md](updates.md#the-rolling-builds-channel)).
 
 A failed run publishes nothing, since publishing is its last step; fix
 the cause on `main` and tag again.  Re-running a run from the Actions page

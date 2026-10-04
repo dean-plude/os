@@ -16,7 +16,9 @@ the folder they are in.
 one it was built with (the kernel keeps it in a marked field, see
 kernel/ke/version.c), without building it again: the self-test's
 "0.1.1-test" update is the same build stamped so.  Without --version
-the kernel's own version is the channel's.
+the kernel's own version is the channel's.  The CI's rolling build of
+main stamps a development version, NOVA_VERSION+dev.YYYYMMDDHHMMSS
+(docs/updates.md, "The rolling build's channel").
 """
 import argparse, hashlib, os, re, sys
 
@@ -47,8 +49,8 @@ def main():
     kernel = bytearray(open(a.kernel, 'rb').read())
     off = stamp_offset(kernel)
     if a.version:
-        if not re.fullmatch(r'[0-9]+(\.[0-9]+)*(-[A-Za-z0-9.]+)?', a.version) or len(a.version) >= VER_MAX:
-            sys.exit(f'bad version {a.version!r} (like 0.1.1 or 0.1.1-test, at most {VER_MAX - 1} characters)')
+        if not re.fullmatch(r'[0-9]+(\.[0-9]+)*(-[A-Za-z0-9.]+)?(\+[A-Za-z0-9.]+)?', a.version) or len(a.version) >= VER_MAX:
+            sys.exit(f'bad version {a.version!r} (like 0.1.1, 0.1.1-test or 0.1.0+dev.20261004125600, at most {VER_MAX - 1} characters)')
         kernel[off:off + VER_MAX] = a.version.encode().ljust(VER_MAX, b'\0')
     version = bytes(kernel[off:off + VER_MAX]).split(b'\0')[0].decode()
 
