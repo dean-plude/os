@@ -1,6 +1,6 @@
 /*
  * protect.c — the Data Protection API (CryptProtectData and
- * CryptUnprotectData) and the two certificate helpers that need no store.
+ * CryptUnprotectData).
  *
  * Windows seals data with a key only the user (or, with
  * CRYPTPROTECT_LOCAL_MACHINE, anyone on the machine) can use, and the blob
@@ -166,35 +166,4 @@ CRYPT32API BOOL WINAPI CryptUnprotectData(Blob *in, LPWSTR *desc, Blob *entropy,
     out->cbData = cn;
     out->pbData = data;
     return TRUE;
-}
-
-/* CERT_INFO up to its Issuer: certificates are the same when their issuers
- * and serial numbers are */
-typedef struct {
-    DWORD dwVersion;
-    Blob SerialNumber;
-    struct { LPSTR pszObjId; Blob Parameters; } SignatureAlgorithm;
-    Blob Issuer;
-} CertInfoHead;
-
-static BOOL blob_eq(const Blob *a, const Blob *b)
-{
-    return a->cbData == b->cbData && (!a->cbData || !memcmp(a->pbData, b->pbData, a->cbData));
-}
-
-CRYPT32API BOOL WINAPI CertCompareCertificate(DWORD enc, const CertInfoHead *a, const CertInfoHead *b)
-{
-    (void)enc;
-    if (!a || !b) return FALSE;
-    return blob_eq(&a->SerialNumber, &b->SerialNumber) && blob_eq(&a->Issuer, &b->Issuer);
-}
-
-/* NovaOS builds no certificate chains (CertGetCertificateChain finds no
- * certificate), so there is never one to check */
-CRYPT32API BOOL WINAPI CertVerifyCertificateChainPolicy(LPCSTR policy, const void *chain, const void *para, void *status)
-{
-    (void)policy; (void)para; (void)status;
-    if (!chain) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    SetLastError(0x80092004L);               /* CRYPT_E_NOT_FOUND */
-    return FALSE;
 }

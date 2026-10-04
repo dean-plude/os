@@ -924,6 +924,113 @@ static void register_ns(xmlXPathContextPtr ctx, const xmlChar *s)
 
 static void quiet_errors(void *ctx, const xmlError *e) { (void)ctx; (void)e; }
 
+/* XSL Patterns (MSXML 3's default SelectionLanguage) name elements by their
+ * qualified name as written in the document: "UX" is any element whose
+ * nodeName is UX, whatever default namespace it sits in, and "x:UX" one
+ * written with the prefix x.  A prefix declared in SelectionNamespaces
+ * still means its namespace.  XPath 1.0 would only match UX in no
+ * namespace, so each such element name test becomes *[name()='...'].  The
+ * tokens follow XPath's lexical rules (section 3.7): a name after an
+ * operand is an operator (and, or, div, mod), a name before "(" is a
+ * function or node type, before "::" an axis; attribute names stay as
+ * they are (unprefixed attributes have no namespace either way). */
+static const xmlChar *skip_blank(const xmlChar *s) { while (IS_BLANK_CH(*s)) s++; return s; }
+
+static BOOL name_char(xmlChar c, BOOL first)
+{
+    if (c >= 0x80 || c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return TRUE;
+    return !first && (c == '-' || c == '.' || (c >= '0' && c <= '9'));
+}
+
+static xmlChar *xslpattern_to_xpath(xmlXPathContextPtr ctx, const xmlChar *q)
+{
+    xmlBufferPtr b = xmlBufferCreate();
+    if (!b) return 0;
+    BOOL operand = FALSE;            /* the previous token ends an operand */
+    int axis = 0;                    /* 1 after "@" or attribute::, 2 after "$" or namespace:: */
+    const xmlChar *s = q;
+    while (*s) {
+        const xmlChar *t = s;
+        if (IS_BLANK_CH(*s)) { s++; xmlBufferAdd(b, t, 1); continue; }
+        if (*s == '\'' || *s == '"') {
+            xmlChar e = *s++;
+            while (*s && *s != e) s++;
+            if (*s) s++;
+            xmlBufferAdd(b, t, (int)(s - t));
+            operand = TRUE;
+            axis = 0;
+            continue;
+        }
+        if ((*s >= '0' && *s <= '9') || (*s == '.' && s[1] >= '0' && s[1] <= '9')) {
+            while ((*s >= '0' && *s <= '9') || *s == '.') s++;
+            xmlBufferAdd(b, t, (int)(s - t));
+            operand = TRUE;
+            continue;
+        }
+        if (name_char(*s, TRUE) || (*s == '*' && !operand)) {
+            const xmlChar *colon = 0;
+            if (*s == '*') s++;
+            else {
+                while (name_char(*s, FALSE)) s++;
+                if (*s == ':' && s[1] != ':') {
+                    colon = s++;
+                    if (*s == '*') s++;
+                    else while (name_char(*s, FALSE)) s++;
+                }
+            }
+            int len = (int)(s - t);
+            const xmlChar *next = skip_blank(s);
+            if (operand && !colon) {                     /* and, or, div, mod */
+                xmlBufferAdd(b, t, len);
+                operand = FALSE;
+                continue;
+            }
+            if (*next == '(' || (next[0] == ':' && next[1] == ':')) {  /* a function, node type or axis */
+                if (*next == ':')
+                    axis = len == 9 && !xmlStrncmp(t, BAD_CAST "attribute", 9) ? 1 :
+                           len == 9 && !xmlStrncmp(t, BAD_CAST "namespace", 9) ? 2 : 0;
+                xmlBufferAdd(b, t, len);
+                operand = FALSE;
+                continue;
+            }
+            /* an unprefixed attribute is in no namespace either way; a
+             * prefixed one is matched as written too */
+            BOOL rewrite = axis == 0 ? !(len == 1 && *t == '*') : axis == 1 && colon;
+            if (rewrite && colon) {                      /* a SelectionNamespaces prefix keeps its meaning */
+                xmlChar *pre = xmlStrndup(t, (int)(colon - t));
+                if (pre && xmlXPathNsLookup(ctx, pre)) rewrite = FALSE;
+                xmlFree(pre);
+            }
+            if (!rewrite) xmlBufferAdd(b, t, len);
+            else if (colon && s[-1] == '*') {
+                xmlBufferCCat(b, "*[starts-with(name(),'");
+                xmlBufferAdd(b, t, (int)(colon - t) + 1);
+                xmlBufferCCat(b, "')]");
+            } else {
+                xmlBufferCCat(b, "*[name()='");
+                xmlBufferAdd(b, t, len);
+                xmlBufferCCat(b, "']");
+            }
+            operand = TRUE;
+            axis = 0;
+            continue;
+        }
+        /* punctuation and operators */
+        int len = 1;
+        if ((s[0] == '/' && s[1] == '/') || (s[0] == ':' && s[1] == ':') || (s[0] == '.' && s[1] == '.') ||
+            ((s[0] == '!' || s[0] == '<' || s[0] == '>') && s[1] == '='))
+            len = 2;
+        operand = *s == ')' || *s == ']' || *s == '.';   /* (a "*" here is the multiply operator) */
+        if (len == 1 && (*s == '@' || *s == '$')) axis = *s == '@' ? 1 : 2;
+        else if (!(len == 2 && *s == ':')) axis = 0;
+        xmlBufferAdd(b, s, len);
+        s += len;
+    }
+    xmlChar *out = xmlStrdup(xmlBufferContent(b));
+    xmlBufferFree(b);
+    return out;
+}
+
 static HRESULT select(Node *This, BSTR query, xmlNodePtr **items, int *count)
 {
     *items = 0;
@@ -936,6 +1043,11 @@ static HRESULT select(Node *This, BSTR query, xmlNodePtr **items, int *count)
     xmlXPathSetErrorHandler(ctx, quiet_errors, 0);
     ctx->node = x;
     register_ns(ctx, This->doc->sel_ns);
+    if (This->doc->xslpattern) {
+        xmlChar *x = xslpattern_to_xpath(ctx, q);
+        xmlFree(q);
+        if (!(q = x)) { xmlXPathFreeContext(ctx); return E_OUTOFMEMORY; }
+    }
     xmlXPathObjectPtr r = xmlXPathEvalExpression(q, ctx);
     xmlFree(q);
     HRESULT hr = S_OK;

@@ -656,6 +656,15 @@ static void kusd_init(void)
     static const int features[] = { 2, 6, 8, 10, 12, 13, 14 };   /* cmpxchg8b/16b, SSE, SSE2, SSE3, RDTSC, NX */
     for (unsigned i = 0; i < sizeof(features) / sizeof(features[0]); i++) g_kusd[0x274 + features[i]] = 1;
     *(UINT32 *)(g_kusd + 0x2E8) = (UINT32)pmm_ram_pages();   /* NumberOfPhysicalPages */
+    /* XState (XSTATE_CONFIGURATION): the legacy x87 and SSE state only, kept
+     * in a CONTEXT's FltSave, as kernel32's GetEnabledXStateFeatures says */
+    *(UINT64 *)(g_kusd + 0x3D8) = 3;                      /* EnabledFeatures */
+    *(UINT32 *)(g_kusd + 0x3E8) = 512 + 64;               /* Size: legacy area + XSAVE header */
+    *(UINT32 *)(g_kusd + 0x3F0) = 0;   *(UINT32 *)(g_kusd + 0x3F4) = 160;   /* Features[0]: x87 */
+    *(UINT32 *)(g_kusd + 0x3F8) = 160; *(UINT32 *)(g_kusd + 0x3FC) = 256;   /* Features[1]: SSE */
+    *(UINT32 *)(g_kusd + 0x3D8 + 0x228) = 512 + 64;       /* AllFeatureSize */
+    *(UINT32 *)(g_kusd + 0x3D8 + 0x22C) = 160;            /* AllFeatures[0], [1] */
+    *(UINT32 *)(g_kusd + 0x3D8 + 0x230) = 256;
     UmCpuCountChanged();
     UmSharedKeyboard(g_kbd_hkl);
     UmTimerTick(sched_ticks());
@@ -1107,6 +1116,10 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
 {
     if (strchr(name, '\\') || strchr(name, '/') || strchr(name, ':')) {
         char path[RAMFS_PATH_MAX];
+        /* "\\?\C:\x.dll", "\\.\C:\x.dll" and "\??\C:\x.dll" name C:\x.dll */
+        if ((name[0] == '\\' || name[0] == '/') && (name[1] == '\\' || name[1] == '/' || name[1] == '?') &&
+            (name[2] == '?' || name[2] == '.') && (name[3] == '\\' || name[3] == '/'))
+            name += 4;
         strncpy(path, name, sizeof(path) - 5);
         path[sizeof(path) - 5] = '\0';
         for (char *c = path; *c; c++)       /* GTK's module caches use forward slashes */
@@ -1232,6 +1245,7 @@ static void map_api_set(char *lname, int cap)
         { "api-ms-win-core-",             "kernel32.dll" },
         { "api-ms-win-security-",         "advapi32.dll" },
         { "api-ms-win-eventing-",         "advapi32.dll" },
+        { "api-ms-win-power-",            "powrprof.dll" },   /* CallNtPowerInformation, PowerReadACValue, ... */
         { "api-ms-win-shell-",            "shell32.dll" },
         { "api-ms-win-shcore-",           "shlwapi.dll" },
         { "shcore.dll",                   "shlwapi.dll" },    /* GetDpiForMonitor, SHCreateStreamOnFileEx, ... */

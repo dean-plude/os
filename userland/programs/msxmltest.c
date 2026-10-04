@@ -8,7 +8,9 @@
  * node (Omaha's request, createNode with a namespace) serializes as
  * MSXML writes it; parse errors are reported; save/load round-trip through
  * a file and a file:// URL; UTF-16 and windows-1252 bytes load; bin.base64
- * typed values decode; MSXML 3 and 6 defaults differ (SelectionLanguage,
+ * typed values decode; MSXML 3's XSL Patterns match unprefixed names in a
+ * default namespace (Burn's queries) where MSXML 6's XPath does not; MSXML
+ * 3 and 6 defaults differ (SelectionLanguage,
  * ProhibitDTD); whitespace is dropped unless preserved; SAX2 reports
  * elements, attributes, characters, prefix mappings and fatal errors; and
  * msxml6.dll carries version 6.30. */
@@ -326,6 +328,72 @@ static void test_xpath(void)
     root->lpVtbl->Release(root);
     ULONG left = d->lpVtbl->Release(d);
     CHECK("document released", left == 0);
+}
+
+/* ---- MSXML 3's XSL Patterns: names as written, default namespace included ---- */
+static void test_xslpattern(void)
+{
+    /* Burn (dutil) makes "Msxml2.DOMDocument", sets no selection property
+     * and asks for "UX", "Payload", "Chain/MsiPackage" under a root in a
+     * default namespace: XSL Patterns match those by nodeName. */
+    IXMLDOMDocument2 *d = new_doc(&CLSID_DOMDocument2);
+    if (!d) { CHECK("XSLPattern document", 0); return; }
+    CHECK("XSLPattern manifest", load_xml(d, manifest));
+    IXMLDOMElement *root = 0;
+    d->lpVtbl->get_documentElement(d, &root);
+    if (!root) { CHECK("XSLPattern documentElement", 0); d->lpVtbl->Release(d); return; }
+    CHECK("XSLPattern /BurnManifest", count_nodes(d, L"/BurnManifest") == 1);
+    CHECK("XSLPattern Payload in the default namespace = 2", count_nodes(root, L"Payload") == 2);
+    CHECK("XSLPattern Chain/MsiPackage = 2", count_nodes(root, L"Chain/MsiPackage") == 2);
+    CHECK("XSLPattern //PayloadRef/@Id = 2", count_nodes(d, L"//PayloadRef/@Id") == 2);
+    CHECK("XSLPattern or in a predicate", count_nodes(root, L"Payload[@Id = 'a' or @Id='b']") == 2);
+    CHECK("XSLPattern path in a predicate", count_nodes(root, L"Chain/MsiPackage[PayloadRef/@Id='b']") == 1);
+    CHECK("XSLPattern position", count_nodes(root, L"Payload[2]") == 1);
+    IXMLDOMNode *pkg = select1(root, L"Chain/MsiPackage[@Vital='yes']");
+    BSTR id = pkg ? attr_of(pkg, L"Id") : 0;
+    CHECK("XSLPattern selectSingleNode with a predicate", bstr_is(id, L"vcRuntimeMinimum_x86"));
+    SysFreeString(id);
+    if (pkg) pkg->lpVtbl->Release(pkg);
+    CHECK("XSLPattern miss", count_nodes(root, L"Nothing") == 0);
+    /* a SelectionNamespaces prefix still names its namespace */
+    set_prop(d, L"SelectionNamespaces", L"xmlns:burn='http://schemas.microsoft.com/wix/2008/Burn'");
+    CHECK("XSLPattern with SelectionNamespaces", count_nodes(root, L"burn:Payload") == 2);
+    /* the same document switched to XPath: unprefixed names are in no namespace */
+    set_prop(d, L"SelectionLanguage", L"XPath");
+    CHECK("XPath Payload in the default namespace = 0", count_nodes(root, L"Payload") == 0);
+    CHECK("XPath burn:Payload = 2", count_nodes(root, L"burn:Payload") == 2);
+    root->lpVtbl->Release(root);
+
+    /* prefixes as written; names that look like operators or functions */
+    set_prop(d, L"SelectionLanguage", L"XSLPattern");
+    set_prop(d, L"SelectionNamespaces", L"");
+    CHECK("XSLPattern prefixed document", load_xml(d,
+          L"<r xmlns:x='urn:x' xmlns='urn:d'><x:a x:n='1'/><a/><and/><div n='1'/><UX><text/></UX></r>"));
+    CHECK("XSLPattern x:a", count_nodes(d, L"/r/x:a") == 1);
+    CHECK("XSLPattern a (not x:a)", count_nodes(d, L"/r/a") == 1);
+    CHECK("XSLPattern @x:n", count_nodes(d, L"/r/x:a/@x:n") == 1);
+    CHECK("XSLPattern x:*", count_nodes(d, L"/r/x:*") == 1);
+    CHECK("XSLPattern *", count_nodes(d, L"/r/*") == 5);
+    CHECK("XSLPattern elements named and/div", count_nodes(d, L"/r/and | /r/div[@n = 2 div 2]") == 2);
+    CHECK("XSLPattern UX", count_nodes(d, L"r/UX") == 1);
+    CHECK("XSLPattern element named text", count_nodes(d, L"//UX/text") == 1);
+    CHECK("XSLPattern child:: axis", count_nodes(d, L"/child::r/child::UX") == 1);
+    d->lpVtbl->Release(d);
+
+    /* MSXML 6 has no XSL Patterns */
+    IXMLDOMDocument2 *d6 = new_doc(&CLSID_DOMDocument60);
+    if (d6) {
+        load_xml(d6, manifest);
+        CHECK("MSXML 6 Payload in the default namespace = 0", count_nodes(d6, L"/BurnManifest/Payload") == 0);
+        BSTR n = SysAllocString(L"SelectionLanguage");
+        VARIANT v;
+        v.vt = VT_BSTR;
+        v.bstrVal = SysAllocString(L"XSLPattern");
+        CHECK("MSXML 6 refuses XSLPattern", FAILED(d6->lpVtbl->setProperty(d6, n, v)));
+        SysFreeString(v.bstrVal);
+        SysFreeString(n);
+        d6->lpVtbl->Release(d6);
+    }
 }
 
 /* ---- building a document (Omaha's request) ---- */
@@ -767,6 +835,7 @@ int main(void)
     CoInitializeEx(0, COINIT_APARTMENTTHREADED);
     test_registry();
     test_xpath();
+    test_xslpattern();
     test_build();
     test_errors_and_files();
     test_versions();

@@ -458,6 +458,32 @@ WINOLEAPI_(HRESULT) CoGetTreatAsClass(REFCLSID clsid, LPCLSID out)
     return S_OK;
 }
 
+/* CoGetPSClsid: the proxy/stub class for an interface: this process's
+ * CoRegisterPSClsid first, then HKCR\Interface\{iid}\ProxyStubClsid32
+ * (what a proxy DLL's DllRegisterServer, rpcrt4's NdrDllRegisterProxy,
+ * writes) */
+WINOLEAPI_(HRESULT) CoGetPSClsid(REFIID riid, CLSID *clsid)
+{
+    if (!riid || !clsid) return E_INVALIDARG;
+    int found = 0;
+    AcquireSRWLockShared(&g_ps_lock);
+    for (PsClsid *p = g_ps_clsids; p; p = p->next)
+        if (IsEqualIID(&p->iid, riid)) { *clsid = p->clsid; found = 1; break; }
+    ReleaseSRWLockShared(&g_ps_lock);
+    if (found) return S_OK;
+    static const WCHAR pre[] = L"Interface\\", leaf[] = L"\\ProxyStubClsid32";
+    WCHAR key[80], val[64];
+    int n = 0;
+    for (int i = 0; pre[i]; i++) key[n++] = pre[i];
+    n += StringFromGUID2(riid, key + n, 39) - 1;
+    for (int i = 0; leaf[i]; i++) key[n++] = leaf[i];
+    key[n] = 0;
+    DWORD size = sizeof val;
+    if (RegGetValueW(HKEY_CLASSES_ROOT, key, 0, RRF_RT_REG_SZ, 0, val, &size) || !parse_guid(val, clsid))
+        return REGDB_E_IIDNOTREG;
+    return S_OK;
+}
+
 /* ---------------------------------------------------------------------------
  * Class objects: registered in-process, or in-process servers from the registry
  * ------------------------------------------------------------------------- */

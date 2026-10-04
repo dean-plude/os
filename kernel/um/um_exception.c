@@ -147,6 +147,10 @@ void UmUserException(void *frame, UINT64 cr2)
     UmProcess *p = UmCurrent();
     UINT64 info[15] = { 0 }, nparams;
     UINT32 code = cpu_status(f->vector, &nparams, info, f->error_code, cr2);
+    if (f->vector == 13 && UmGpFault(f->rip, &code, &nparams)) {   /* an alignment fixup: run it again */
+        if (UmTraced(p, true)) kprintf("[TRACE] %s: alignment fault fixed up at 0x%llx\n", p->name, (unsigned long long)f->rip);
+        return;
+    }
     if (f->vector == 14) {                                       /* a guard page (PAGE_GUARD) */
         int g = UmGuardFault(cr2);
         if (g == 1) return;                                      /* a stack grew */
@@ -163,6 +167,13 @@ void UmUserException(void *frame, UINT64 cr2)
         }
     }
     UINT64 addr = f->vector == 3 ? f->rip - 1 : f->rip;          /* int3: report the instruction */
+    if (UmTraced(p, true)) {                                     /* "trace +NAME": the exceptions too */
+        const UmModule *m = um_module_at(p, f->rip);
+        kprintf("[TRACE] %s %u/%u: exception %08x (vector %llu, error %llx, address %llx) at %s+0x%llx\n",
+                p->name, (unsigned)p->pid, (unsigned)UmCurrentThread()->tid, code, (unsigned long long)f->vector,
+                (unsigned long long)f->error_code, (unsigned long long)cr2, m ? m->name : "?",
+                (unsigned long long)(f->rip - (m ? m->base : 0)));
+    }
 
     /* Touching just below a thread's stack: a stack overflow */
     UmThread *t = UmCurrentThread();
