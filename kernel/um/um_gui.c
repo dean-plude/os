@@ -970,7 +970,20 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *                1 ptr <- the slot's PadInfo; returns 0 if it is empty;
  *                2 ptr <- the slot's PadState; returns 0 if it is empty;
  *                3 ptr -> { left, right (0-65535) }: sets its motors;
- *                4 XInput user's slot, or -1 */
+ *                4 XInput user's slot, or -1;
+ *                Raw Input and hid.dll (their raw HID side, gamepad.h):
+ *                5 ptr <- the slot's report descriptor (PAD_DESC_MAX bytes
+ *                  of room); returns its length | input report length << 16;
+ *                6 ptr <-> { after, known changes, wait ms, max (<= 32);
+ *                  out: newest seq, changes; PadRaw[max] }: the reports
+ *                  after seq "after", waiting up to "wait ms" (1 s at most) for one or
+ *                  for a controller to come or go; returns how many;
+ *                7 ptr <- the slot's latest report with ID arg >> 16
+ *                  (PadRaw); returns 0 if there is none;
+ *                8 ptr = a HID device handle: returns the slot it reads,
+ *                  or -1;
+ *                9 ptr = a HID device handle: drops its waiting reports;
+ *                10 arg >> 8 = a serial: returns its slot, or -1 */
 #define CTL_GAMEPAD      33
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
@@ -1173,6 +1186,7 @@ static UINT64 tablet_ctl(UmProcess *p, UINT64 op, UINT64 ptr)
 /* Game controllers (CTL_GAMEPAD) */
 static UINT64 gamepad_ctl(UINT64 arg, UINT64 ptr)
 {
+    UmProcess *p = UmCurrent();
     int at = (int)((arg >> 8) & 0xFF);
     switch (arg & 0xFF) {
     case 0: return PadPresent();
@@ -1192,6 +1206,36 @@ static UINT64 gamepad_ctl(UINT64 arg, UINT64 ptr)
         return PadSetRumble(at, m[0], m[1]) ? 1 : 0;
     }
     case 4: return (UINT64)(INT64)PadXInputSlot(at);
+    case 5: {
+        UINT8 *d = kmalloc(PAD_DESC_MAX);
+        if (!d) return 0;
+        UINT16 in_len = 0;
+        int n = PadGetDescriptor(at, d, PAD_DESC_MAX, &in_len);
+        bool ok = n && NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, d, (size_t)n));
+        kfree(d);
+        return ok ? (UINT64)n | (UINT64)in_len << 16 : 0;
+    }
+    case 6: {
+        UINT32 q[6];
+        if (!NT_SUCCESS(CopyFromUser(q, (const void *)(uintptr_t)ptr, 4 * sizeof(UINT32)))) return 0;
+        int max = q[3] > 32 ? 32 : (int)q[3];
+        PadRaw *r = max ? kmalloc(sizeof(PadRaw) * (size_t)max) : NULL;
+        if (max && !r) return 0;
+        UINT64 ticks = q[2] ? (q[2] + 9) / 10 : 0;
+        int n = PadReadRaw(q[0], q[1], r, max, ticks > 100 ? 100 : ticks, &q[4], &q[5]);
+        bool ok = NT_SUCCESS(CopyToUser((void *)(uintptr_t)(ptr + 4 * sizeof(UINT32)), &q[4], 2 * sizeof(UINT32))) &&
+                  (!n || NT_SUCCESS(CopyToUser((void *)(uintptr_t)(ptr + sizeof(q)), r, sizeof(PadRaw) * (size_t)n)));
+        kfree(r);
+        return ok ? (UINT64)n : 0;
+    }
+    case 7: {
+        PadRaw r;
+        if (!PadLastRaw(at, (UINT8)(arg >> 16), &r)) return 0;
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, &r, sizeof(r))) ? 1 : 0;
+    }
+    case 8: return (UINT64)(INT64)um_hid_slot(p, ptr, NULL);
+    case 9: return um_hid_flush(p, ptr) ? 1 : 0;
+    case 10: return (UINT64)(INT64)PadSlotOfSerial((UINT32)(arg >> 8));
     }
     return 0;
 }

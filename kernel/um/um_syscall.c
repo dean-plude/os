@@ -704,10 +704,10 @@ static UINT32 open_other(UmProcess *p, const char *path, UINT32 access, UINT32 o
         if (!put_u64(handle_ptr, hv)) { um_close_handle(hv); return UM_STATUS_ACCESS_VIOLATION; }
         return iosb(iosb_ptr, ST_SUCCESS, 1);
     }
-    if (um_pipe_name(path)) {                                   /* a pipe's client end */
+    if (um_pipe_name(path) || um_hid_name(path)) {              /* a pipe's client end, a HID device */
         UmObject *o;
-        bool rd, wr;
-        UINT32 pst = um_pipe_open(path, access, options, &o, &rd, &wr);
+        bool rd = true, wr = false;
+        UINT32 pst = um_hid_name(path) ? um_hid_open(path, options, &o) : um_pipe_open(path, access, options, &o, &rd, &wr);
         if (pst) return iosb(iosb_ptr, pst, 0);
         um_lock_excl(&p->lock);
         UINT64 hv = handle_alloc(p, &h);
@@ -778,7 +778,7 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
     bool inherit = *oa_attrs() & 0x2;                           /* OBJ_INHERIT */
     UmHandleKind ck;
     UmHandle *h;
-    if (um_pipe_name(path) || is_console_name(path, &ck)) {     /* not files: under the big lock */
+    if (um_pipe_name(path) || um_hid_name(path) || is_console_name(path, &ck)) {   /* not files: under the big lock */
         FsUnlockShared();
         bkl_acquire();
         st = open_other(p, path, access, options, inherit, handle_ptr, iosb_ptr);

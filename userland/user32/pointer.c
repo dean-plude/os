@@ -916,28 +916,6 @@ USERAPI BOOL GetPointerDeviceRects(HANDLE dev, RECT *pointer, RECT *display)
 #define AR_NOSENSOR 0x10
 USERAPI BOOL GetAutoRotationState(DWORD *state) { if (!state) return FALSE; *state = AR_NOSENSOR; return TRUE; }
 
-/* Raw input: no devices to list or read */
-USERAPI UINT GetRawInputDeviceList(void *list, PUINT n, UINT size)
-{
-    (void)list; (void)size;
-    if (!n) { SetLastError(ERROR_INVALID_PARAMETER); return (UINT)-1; }
-    *n = 0;
-    return 0;
-}
-USERAPI UINT GetRawInputDeviceInfoW(HANDLE dev, UINT cmd, LPVOID data, PUINT size)
-{
-    (void)dev; (void)cmd; (void)data; (void)size;
-    SetLastError(ERROR_INVALID_HANDLE);
-    return (UINT)-1;
-}
-USERAPI UINT GetRawInputDeviceInfoA(HANDLE dev, UINT cmd, LPVOID data, PUINT size) { return GetRawInputDeviceInfoW(dev, cmd, data, size); }
-USERAPI UINT GetRawInputData(HANDLE raw, UINT cmd, LPVOID data, PUINT size, UINT header)
-{
-    (void)raw; (void)cmd; (void)data; (void)size; (void)header;
-    SetLastError(ERROR_INVALID_HANDLE);
-    return (UINT)-1;
-}
-
 /* Every thread can own windows */
 USERAPI BOOL IsGUIThread(BOOL convert) { (void)convert; return TRUE; }
 

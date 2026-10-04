@@ -26,6 +26,8 @@
 #include "../lib/string.h"
 #include "../ke/printf.h"
 #include "../ke/spinlock.h"
+#include "../ke/waitq.h"
+#include "../ke/scheduler.h"
 
 /* ---------------------------------------------------------------------------
  * The slots
@@ -38,11 +40,71 @@ typedef struct {
     PadRumble rumble;
     void     *ctx;
     UINT16    rl, rr;                 /* the motors as last set */
+    UINT8    *desc;                   /* its HID report descriptor (kmalloc'd, or g_xbox_desc) */
+    UINT16    desc_len, in_len;
+    PadRaw    last;                   /* its latest report */
 } Pad;
 
-static Pad       g_pads[PAD_SLOTS];
-static KSpinLock g_pad_lock = KSPINLOCK_INIT;
-static UINT32    g_serial;
+static Pad        g_pads[PAD_SLOTS];
+static KSpinLock  g_pad_lock = KSPINLOCK_INIT;
+static UINT32     g_serial;
+static PadRaw     g_raw[PAD_RAW_RING];
+static UINT32     g_raw_seq;          /* the newest report's seq */
+static UINT32     g_changes;          /* controllers plugged in or out */
+static WaitQueue  g_rawq = WAITQ_INIT;
+static PadRawSink g_sink;
+
+/* The HID side Windows gives an Xbox controller (its Xbox driver's HID
+ * collection, "IG_" in the device path): a game pad of X, Y (left stick),
+ * Rx, Ry (right stick) and Z (left trigger up from 32768, right down),
+ * 16 bits each, buttons 1-10 (A B X Y LB RB Back Start, the sticks) and
+ * a hat (1-8 clockwise from up, 0 centred) */
+static const UINT8 g_xbox_desc[] = {
+    0x05, 0x01, 0x09, 0x05, 0xA1, 0x01,                   /* Generic Desktop, Game Pad, Application */
+    0xA1, 0x00, 0x09, 0x30, 0x09, 0x31,                   /*   Physical: X, Y */
+    0x15, 0x00, 0x27, 0xFF, 0xFF, 0x00, 0x00,             /*     0..65535 */
+    0x95, 0x02, 0x75, 0x10, 0x81, 0x02, 0xC0,             /*     2 x 16 bits, Input (Data, Var, Abs) */
+    0xA1, 0x00, 0x09, 0x33, 0x09, 0x34,                   /*   Physical: Rx, Ry */
+    0x95, 0x02, 0x75, 0x10, 0x81, 0x02, 0xC0,
+    0xA1, 0x00, 0x09, 0x32,                               /*   Physical: Z */
+    0x95, 0x01, 0x75, 0x10, 0x81, 0x02, 0xC0,
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x0A,                   /*   Buttons 1-10 */
+    0x15, 0x00, 0x25, 0x01, 0x95, 0x0A, 0x75, 0x01, 0x81, 0x02,
+    0x95, 0x06, 0x81, 0x03,                               /*   6 bits padding */
+    0x05, 0x01, 0x09, 0x39,                               /*   Hat switch: 1..8, 0..315 degrees, null state */
+    0x15, 0x01, 0x25, 0x08, 0x35, 0x00, 0x46, 0x3B, 0x01, 0x65, 0x14,
+    0x75, 0x04, 0x95, 0x01, 0x81, 0x42,
+    0x15, 0x00, 0x25, 0x00, 0x35, 0x00, 0x45, 0x00, 0x65, 0x00,
+    0x81, 0x03,                                           /*   4 bits padding */
+    0xC0,
+};
+#define XBOX_REPORT_LEN 14
+
+static bool is_xbox(const Pad *p) { return p->info.kind == PAD_XBOX360 || p->info.kind == PAD_XBOXONE; }
+
+/* An Xbox controller's state as its HID report */
+static void xbox_report(const PadState *st, UINT8 *r)
+{
+    const UINT16 ax[5] = { st->axis[PAD_X], st->axis[PAD_Y], st->axis[PAD_RX], st->axis[PAD_RY], st->axis[PAD_Z] };
+    r[0] = 0;
+    for (int i = 0; i < 5; i++) { r[1 + 2 * i] = (UINT8)ax[i]; r[2 + 2 * i] = (UINT8)(ax[i] >> 8); }
+    r[11] = (UINT8)st->buttons;
+    r[12] = (UINT8)((st->buttons >> 8) & 3);
+    r[13] = st->pov < 0 ? 0 : (UINT8)(((st->pov + 2250) / 4500) % 8 + 1);
+}
+
+/* Into the ring (under g_pad_lock): @p's report @r of @len bytes */
+static void raw_put(int slot, Pad *p, const UINT8 *r, int len)
+{
+    PadRaw *e = &p->last;
+    memset(e, 0, sizeof(*e));
+    e->seq = ++g_raw_seq;
+    e->serial = p->info.serial;
+    e->slot = (UINT8)slot;
+    e->len = (UINT8)(len > PAD_REPORT_MAX ? PAD_REPORT_MAX : len);
+    memcpy(e->data, r, e->len);
+    g_raw[e->seq % PAD_RAW_RING] = *e;
+}
 
 int PadAttach(const PadInfo *info, PadRumble rumble, void *ctx)
 {
@@ -69,8 +131,15 @@ int PadAttach(const PadInfo *info, PadRumble rumble, void *ctx)
         for (int a = 0; a < PAD_AXES; a++) p->st.axis[a] = 32768;
         p->rumble = info->rumble ? rumble : NULL;
         p->ctx = ctx;
+        if (is_xbox(p)) {
+            p->desc = (UINT8 *)g_xbox_desc;
+            p->desc_len = sizeof(g_xbox_desc);
+            p->in_len = XBOX_REPORT_LEN;
+        }
+        g_changes++;
     }
     spin_unlock_irqrestore(&g_pad_lock, s);
+    if (slot >= 0) waitq_wake(&g_rawq);
     return slot;
 }
 
@@ -79,21 +148,149 @@ void PadReport(int slot, const PadState *st)
     if (slot < 0 || slot >= PAD_SLOTS) return;
     IrqState s = spin_lock_irqsave(&g_pad_lock);
     Pad *p = &g_pads[slot];
+    UINT8 r[XBOX_REPORT_LEN];
+    bool raw = false;
+    UINT32 serial = 0;
     if (p->used) {
         UINT32 packet = p->st.packet;
         p->st = *st;
         p->st.packet = packet + 1;
+        if (is_xbox(p)) {                                     /* (HID drivers send their own) */
+            xbox_report(&p->st, r);
+            raw_put(slot, p, r, sizeof(r));
+            raw = true;
+            serial = p->info.serial;
+        }
     }
+    PadRawSink sink = g_sink;
     spin_unlock_irqrestore(&g_pad_lock, s);
+    if (raw) {
+        waitq_wake(&g_rawq);
+        if (sink) sink(slot, serial, r, sizeof(r));
+    }
 }
 
 void PadDetach(int slot)
 {
     if (slot < 0 || slot >= PAD_SLOTS) return;
     IrqState s = spin_lock_irqsave(&g_pad_lock);
-    memset(&g_pads[slot], 0, sizeof(g_pads[slot]));
+    Pad *p = &g_pads[slot];
+    UINT32 serial = p->used ? p->info.serial : 0;
+    UINT8 *desc = p->desc != g_xbox_desc ? p->desc : NULL;
+    memset(p, 0, sizeof(*p));
+    if (serial) g_changes++;
+    PadRawSink sink = g_sink;
     spin_unlock_irqrestore(&g_pad_lock, s);
+    kfree(desc);
+    if (serial) {
+        waitq_wake(&g_rawq);
+        if (sink) sink(slot, serial, NULL, -1);
+    }
 }
+
+void PadSetDescriptor(int slot, const UINT8 *desc, int len, int in_len)
+{
+    if (slot < 0 || slot >= PAD_SLOTS || len <= 0 || len > PAD_DESC_MAX) return;
+    UINT8 *copy = kmalloc((size_t)len);
+    if (!copy) return;
+    memcpy(copy, desc, (size_t)len);
+    IrqState s = spin_lock_irqsave(&g_pad_lock);
+    Pad *p = &g_pads[slot];
+    UINT8 *old = NULL;
+    if (p->used && !is_xbox(p)) {
+        old = p->desc;
+        p->desc = copy;
+        p->desc_len = (UINT16)len;
+        p->in_len = (UINT16)(in_len > PAD_REPORT_MAX ? PAD_REPORT_MAX : in_len);
+        copy = NULL;
+    }
+    spin_unlock_irqrestore(&g_pad_lock, s);
+    kfree(old);
+    kfree(copy);
+}
+
+void PadRawReport(int slot, const UINT8 *data, int len, bool ids)
+{
+    if (slot < 0 || slot >= PAD_SLOTS || len <= 0) return;
+    UINT8 r[PAD_REPORT_MAX];
+    memset(r, 0, sizeof(r));
+    int n = 0;
+    if (!ids) r[n++] = 0;
+    for (int i = 0; i < len && n < PAD_REPORT_MAX; i++) r[n++] = data[i];
+    IrqState s = spin_lock_irqsave(&g_pad_lock);
+    Pad *p = &g_pads[slot];
+    UINT32 serial = 0;
+    if (p->used && !is_xbox(p)) {
+        if (p->in_len > n) n = p->in_len;                   /* (a short report: the rest zero) */
+        raw_put(slot, p, r, n);
+        serial = p->info.serial;
+    }
+    PadRawSink sink = g_sink;
+    spin_unlock_irqrestore(&g_pad_lock, s);
+    if (serial) {
+        waitq_wake(&g_rawq);
+        if (sink) sink(slot, serial, r, n);
+    }
+}
+
+int PadGetDescriptor(int slot, UINT8 *out, int cap, UINT16 *in_len)
+{
+    if (slot < 0 || slot >= PAD_SLOTS) return 0;
+    IrqState s = spin_lock_irqsave(&g_pad_lock);
+    Pad *p = &g_pads[slot];
+    int n = p->used && p->desc ? p->desc_len : 0;
+    if (n > cap) n = cap;
+    if (n) memcpy(out, p->desc, (size_t)n);
+    if (in_len) *in_len = p->in_len;
+    spin_unlock_irqrestore(&g_pad_lock, s);
+    return n;
+}
+
+int PadSlotOfSerial(UINT32 serial)
+{
+    int slot = -1;
+    IrqState s = spin_lock_irqsave(&g_pad_lock);
+    for (int i = 0; i < PAD_SLOTS && slot < 0; i++)
+        if (serial && g_pads[i].used && g_pads[i].info.serial == serial) slot = i;
+    spin_unlock_irqrestore(&g_pad_lock, s);
+    return slot;
+}
+
+int PadReadRaw(UINT32 after, UINT32 known_changes, PadRaw *out, int max, UINT64 wait_ticks,
+               UINT32 *newest, UINT32 *changes)
+{
+    UINT64 until = sched_ticks() + wait_ticks;
+    for (;;) {
+        UINT32 gen = waitq_gen(&g_rawq);
+        int n = 0;
+        IrqState s = spin_lock_irqsave(&g_pad_lock);
+        if (after < g_raw_seq) {
+            UINT32 first = g_raw_seq >= PAD_RAW_RING ? g_raw_seq - PAD_RAW_RING + 1 : 1;
+            if (after + 1 > first) first = after + 1;
+            for (UINT32 k = first; k <= g_raw_seq && n < max; k++) out[n++] = g_raw[k % PAD_RAW_RING];
+        }
+        UINT32 ch = g_changes;
+        if (newest) *newest = g_raw_seq;
+        if (changes) *changes = ch;
+        spin_unlock_irqrestore(&g_pad_lock, s);
+        UINT64 now = sched_ticks();
+        if (n || !max || ch != known_changes || now >= until) return n;
+        waitq_wait(&g_rawq, gen, until - now);
+    }
+}
+
+bool PadLastRaw(int slot, UINT8 id, PadRaw *out)
+{
+    if (slot < 0 || slot >= PAD_SLOTS) return false;
+    IrqState s = spin_lock_irqsave(&g_pad_lock);
+    Pad *p = &g_pads[slot];
+    bool ok = p->used && p->last.seq && p->last.data[0] == id;
+    if (ok) *out = p->last;
+    spin_unlock_irqrestore(&g_pad_lock, s);
+    return ok;
+}
+
+void PadSetRawSink(PadRawSink fn) { g_sink = fn; }
 
 UINT32 PadPresent(void)
 {
@@ -195,8 +392,9 @@ static INT32 hp_s(const UINT8 *p, int n)
 }
 
 /* The fields a gamepad's reports carry that matter here, from its report
- * descriptor; *@app: the first application collection (page << 8 | usage) */
-static void hp_parse(HidPad *h, const UINT8 *d, int len, UINT16 *app)
+ * descriptor; *@app: the first application collection (page << 8 | usage),
+ * *@in_len: its longest input report in bytes with the ID byte */
+static void hp_parse(HidPad *h, const UINT8 *d, int len, UINT16 *app, int *in_len)
 {
     struct { UINT16 page; INT32 lmin, lmax; UINT8 size, count, id; } g = { 0 }, stack[4];
     int sp = 0, depth = 0, nusage = 0;
@@ -262,6 +460,9 @@ static void hp_parse(HidPad *h, const UINT8 *d, int len, UINT16 *app)
         default: break;
         }
     }
+    int most = 0;
+    for (int k = 0; k < 256; k++) if (bits[k] > most) most = bits[k];
+    *in_len = 1 + (most + 7) / 8;
 }
 
 static INT32 hp_bits(const UINT8 *r, int len, int bit, int size, bool sign)
@@ -326,6 +527,7 @@ static bool hp_report(UsbPipe *p, const UINT8 *data, int len, void *ctx)
     (void)p;
     HidPad *h = ctx;
     if (h->dead) return false;
+    PadRawReport(h->slot, data, len, h->ids);
     UINT8 id = 0;
     if (h->ids) {
         if (len < 1) return true;
@@ -364,10 +566,9 @@ void *UsbPadHidProbe(UsbDev *d, const UsbIface *f)
     if (!desc) return NULL;
     HidPad *h = kzalloc(sizeof(HidPad));
     UINT16 app = 0;
-    if (h && UsbControl(d, 0x81, 6, USB_DT_REPORT << 8, f->number, rlen, desc) > 0)
-        hp_parse(h, desc, rlen, &app);
-    kfree(desc);
-    if (!h || (app != 0x0104 && app != 0x0105)) { kfree(h); return NULL; }   /* not a joystick or game pad */
+    int in_len = 0, got = h ? UsbControl(d, 0x81, 6, USB_DT_REPORT << 8, f->number, rlen, desc) : 0;
+    if (got > 0) hp_parse(h, desc, got, &app, &in_len);
+    if (!h || (app != 0x0104 && app != 0x0105)) { kfree(desc); kfree(h); return NULL; }   /* not a joystick or game pad */
 
     PadInfo info;
     memset(&info, 0, sizeof(info));
@@ -389,10 +590,12 @@ void *UsbPadHidProbe(UsbDev *d, const UsbIface *f)
     h->last.pov = -1;
     for (int a = 0; a < PAD_AXES; a++) h->last.axis[a] = 32768;
     h->pipe = UsbOpenPipe(d, ep, mps);
-    if (!h->pipe) { kfree(h); return NULL; }
+    if (!h->pipe) { kfree(desc); kfree(h); return NULL; }
     if (f->sub == 0) UsbControl(d, 0x21, 0x0A, 0, f->number, 0, NULL);   /* SET_IDLE(0): reports on change only */
     h->slot = PadAttach(&info, NULL, NULL);
-    if (h->slot < 0) { kprintf("[USB] %s: no room for another game controller\n", UsbDevName(d)); kfree(h); return NULL; }
+    if (h->slot < 0) { kprintf("[USB] %s: no room for another game controller\n", UsbDevName(d)); kfree(desc); kfree(h); return NULL; }
+    PadSetDescriptor(h->slot, desc, got, in_len);
+    kfree(desc);
     UsbBind(d, h, hp_gone);
     kprintf("[USB] %s: %s \"%s\" (%d buttons, %d axes%s)\n", UsbDevName(d), app == 0x0104 ? "joystick" : "gamepad",
             info.name, info.buttons, __builtin_popcount(info.axes), info.povs ? ", a hat" : "");
