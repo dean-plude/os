@@ -659,8 +659,10 @@ card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 bodies, POST, redirects, certificate checks, chunked HTTP/1.1, the
 asynchronous API) against `tools/h2server.js` with a throwaway self-signed
 certificate, then `looptest` (socket pairs over 127.0.0.1 and ::1,
-`localhost`) and `loadtest` (hundreds of sockets open at once, parallel
-downloads); on an IPv6-only network made by `tools/v6peer.py` it checks
+`localhost`), `loadtest` (hundreds of sockets open at once, parallel
+downloads) and `dltest -w` (eight 32 MB downloads at once from
+`tools/h2server.js`'s `/stream` while the files are written and mapped,
+as an installer does; it fails if the transfer stops for 5 s); on an IPv6-only network made by `tools/v6peer.py` it checks
 SLAAC and RDNSS (`ipconfig`), `ping -6`, `curl -6` and `netcat` over IPv6.
 A third boot (`tests/selftest/network-e1000e`) has QEMU's e1000e (the
 82574L) instead of virtio-net: the boot log must show the PHY's ID, its
@@ -954,7 +956,9 @@ python3 tools/novarun.py --extra '-netdev dgram,id=v6,local.type=inet,local.host
 ```
 
 `tools/h2server.js CERT KEY` (Node) serves HTTPS with HTTP/2 on port 8443
-and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hello`).
+and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hello`)
+and `dltest` (`dltest -n 8 -w 10.0.2.2 8080 33554432`: eight 32 MB downloads
+at once from `/stream/BYTES/SEED`).
 
 ### On the host
 
