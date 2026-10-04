@@ -11,7 +11,14 @@
  * rasterizer busy (64 blended full-window quads at 640x480) runs once on
  * virgl (the host's GPU through the virtio-gpu) and once on llvmpipe
  * (NovaOS's CPU), each in a child process whose GALLIUM_DRIVER names the
- * driver; virgl must draw more frames per second. */
+ * driver; virgl must draw more frames per second.
+ *
+ * gltest colors [DRIVER]: frames in each colour depth Mesa offers a window (8:8:8,
+ * 5:6:5, 5:5:5:1, 4:4:4:4 and 10:10:10:2): four coloured bars presented
+ * with SwapBuffers and read back from the window with GetPixel.  Mesa
+ * presents the shallow ones as 16-bit DIBs with BI_BITFIELDS masks, which
+ * gdi32 must honour (SDL2 asks for 3:3:2 and gets 4:4:4:4: Chocolate
+ * Doom's colours came out wrong). */
 #include <windows.h>
 #include <GL/gl.h>
 #include <GL/glext.h>
@@ -166,12 +173,114 @@ static int fps_test(int secs)
     return fail != 0;
 }
 
+/* ---- the colour-depth test ---------------------------------------------- */
+static const struct { int r, g, b, a; int must; } depths[] = {
+    { 8, 8, 8, 0, 1 }, { 5, 6, 5, 0, 1 }, { 5, 5, 5, 1, 0 }, { 4, 4, 4, 4, 1 }, { 10, 10, 10, 2, 0 }};
+static const unsigned char bars[4][3] = { { 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 }, { 0x88, 0x88, 0x88 } };
+
+/* The window pixel format with exactly these bits, or 0 */
+static int format_with(HDC dc, int r, int g, int b, int a)
+{
+    PIXELFORMATDESCRIPTOR p;
+    int n = DescribePixelFormat(dc, 1, sizeof(p), &p);
+    for (int i = 1; i <= n; i++) {
+        if (!DescribePixelFormat(dc, i, sizeof(p), &p)) continue;
+        DWORD need = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+        if ((p.dwFlags & need) == need && p.iPixelType == PFD_TYPE_RGBA && p.cRedBits == r && p.cGreenBits == g &&
+            p.cBlueBits == b && p.cAlphaBits == a)
+            return i;
+    }
+    return 0;
+}
+
+static int colors_test(void)
+{
+    for (unsigned k = 0; k < sizeof(depths) / sizeof(depths[0]); k++) {
+        char title[64], what[96];
+        int R = depths[k].r, G = depths[k].g, B = depths[k].b, A = depths[k].a;
+        snprintf(title, sizeof(title), "OpenGL %d:%d:%d:%d", R, G, B, A);
+        RECT rr = { 0, 0, 256, 64 };
+        AdjustWindowRect(&rr, WS_OVERLAPPEDWINDOW, FALSE);
+        HWND w = CreateWindowA("gltest", title, WS_OVERLAPPEDWINDOW | WS_VISIBLE, 120, 120, rr.right - rr.left,
+                               rr.bottom - rr.top, 0, 0, GetModuleHandleA(NULL), 0);
+        HDC dc = GetDC(w);
+        int fmt = format_with(dc, R, G, B, A);
+        if (!fmt) {
+            printf("%s: not offered\n", title);
+            if (depths[k].must) check(title, 0);
+            ReleaseDC(w, dc); DestroyWindow(w);
+            continue;
+        }
+        PIXELFORMATDESCRIPTOR pfd;
+        DescribePixelFormat(dc, fmt, sizeof(pfd), &pfd);
+        HGLRC rc = NULL;
+        int ok = SetPixelFormat(dc, fmt, &pfd) && (rc = wglCreateContext(dc)) && wglMakeCurrent(dc, rc);
+        snprintf(what, sizeof(what), "%s context", title);
+        check(what, ok);
+        if (!ok) { ReleaseDC(w, dc); DestroyWindow(w); continue; }
+        RECT cr; GetClientRect(w, &cr);
+        glViewport(0, 0, cr.right, cr.bottom);
+        glMatrixMode(GL_PROJECTION); glLoadIdentity(); glOrtho(0, 4, 0, 1, -1, 1);
+        for (int f = 0; f < 3; f++) {                       /* a few frames: the window is surely shown */
+            pump();
+            glClearColor(0, 0, 0, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glBegin(GL_QUADS);
+            for (int i = 0; i < 4; i++) {
+                glColor3ub(bars[i][0], bars[i][1], bars[i][2]);
+                glVertex2f((float)i, 0); glVertex2f(i + 1.0f, 0); glVertex2f(i + 1.0f, 1); glVertex2f((float)i, 1);
+            }
+            glEnd();
+            SwapBuffers(dc);
+            Sleep(100);
+        }
+        glFinish();
+        int good = 1;
+        printf("%s:", title);
+        for (int i = 0; i < 4; i++) {
+            COLORREF c = GetPixel(dc, cr.right * (2 * i + 1) / 8, cr.bottom / 2);
+            unsigned char px[3] = { GetRValue(c), GetGValue(c), GetBValue(c) };
+            printf(" %02x%02x%02x", px[0], px[1], px[2]);
+            if (c == CLR_INVALID || abs(px[0] - bars[i][0]) > 20 || abs(px[1] - bars[i][1]) > 20 || abs(px[2] - bars[i][2]) > 20)
+                good = 0;
+        }
+        printf("\n");
+        snprintf(what, sizeof(what), "%s colours", title);
+        check(what, good);
+        wglMakeCurrent(NULL, NULL);
+        wglDeleteContext(rc);
+        ReleaseDC(w, dc);
+        DestroyWindow(w);
+    }
+    printf("gltest colors: %d passed, %d failed\n", pass, fail);
+    return fail != 0;
+}
+
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
-    if (argc > 1 && (!strcmp(argv[1], "fpsrun") || !strcmp(argv[1], "fps"))) {
+    if (argc > 1 && (!strcmp(argv[1], "fpsrun") || !strcmp(argv[1], "fps") || !strcmp(argv[1], "colors"))) {
         WNDCLASSA wc = { CS_OWNDC, proc, 0, 0, GetModuleHandleA(NULL), 0, LoadCursor(NULL, IDC_ARROW), 0, 0, "gltest" };
         RegisterClassA(&wc);
+        if (!strcmp(argv[1], "colors")) {
+            char drv[32];
+            if (argc > 2 && (!GetEnvironmentVariableA("GALLIUM_DRIVER", drv, sizeof(drv)) || strcmp(drv, argv[2]))) {
+                char exe[MAX_PATH], cmd[2 * MAX_PATH];  /* opengl32 picks its driver when it loads */
+                GetModuleFileNameA(NULL, exe, sizeof(exe));
+                snprintf(cmd, sizeof(cmd), "\"%s\" colors %s", exe, argv[2]);
+                SetEnvironmentVariableA("GALLIUM_DRIVER", argv[2]);
+                STARTUPINFOA si = { sizeof(si) };
+                PROCESS_INFORMATION pi;
+                DWORD code = 1;
+                if (!CreateProcessA(NULL, cmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) { printf("FAIL CreateProcess\n"); return 1; }
+                WaitForSingleObject(pi.hProcess, INFINITE);
+                GetExitCodeProcess(pi.hProcess, &code);
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+                return (int)code;
+            }
+            return colors_test();
+        }
         if (!strcmp(argv[1], "fps")) return fps_test(argc > 2 ? atoi(argv[2]) : 10);
         if (argc > 3) freopen(argv[3], "w", stdout);   /* the child: fpsrun SECS FILE */
         return fps_child(argc > 2 ? atoi(argv[2]) : 5);

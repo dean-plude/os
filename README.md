@@ -69,11 +69,12 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **Eclipse Temurin 21** | Java JRE `.msi`, JDK `.zip` | `java -version`, a threads/exceptions/files stress test, `javac` compiling a program that then runs. |
 | **.NET 10** | Runtime and host from NuGet, Roslyn | `dotnet --info`, `dotnet hello.dll`, `dotnet csc.dll` compiling a C# test that passes; globalization through ICU, so German and Japanese numbers, dates, names and sorting come out as on Windows (`tests/dotnet/culturetest.cs`). |
 | **Node.js 24** | `.msi`, `.zip` | `node -v`, `-e`, `npm -v`, a crypto/fs/JSON/timers test script; the `.msi` runs its 64-bit and 32-bit custom actions, makes its Start menu shortcuts and uninstalls. |
-| **Windows Installer packages** | 7-Zip, CMake, Node.js, Temurin, KeePassXC `.msi` | 7-Zip and CMake install through their own wizards (licence, options, feature tree, progress), CMake's dialogs running its DLL custom actions; custom-action DLLs run in 64-bit and 32-bit custom-action servers; shortcuts and a test service are created and removed again by `msiexec /x`; transforms (`TRANSFORMS=`), whole-file patches (`msiexec /p`, `/uninstall`) and rollback of a failed install; automatic services start at boot; JScript and VBScript custom actions run on `msiscript.dll`. |
+| **Windows Installer packages** | 7-Zip, CMake, Node.js, Temurin, KeePassXC `.msi` | 7-Zip and CMake install through their own wizards (licence, options, feature tree, progress), CMake's dialogs running its DLL custom actions; custom-action DLLs run in 64-bit and 32-bit custom-action servers; shortcuts and a test service are created and removed again by `msiexec /x`; transforms (`TRANSFORMS=`), whole-file patches (`msiexec /p`, `/uninstall`) and rollback of a failed install; automatic services start at boot; JScript and VBScript custom actions run on `msiscript.dll`. A 32-bit package's system files go to `SysWOW64`, a 64-bit one's to `System32`, whichever process installs it. |
 | **Python 3.14** | NuGet package | `-c`, a hashlib/JSON/regex/threads/subprocess test script. |
 | **NumPy 2.5.3** | The Windows wheel (`cp314`) in Python 3.14, on NovaOS's own `vcruntime140`, `msvcp140` and UCRT | `import numpy`, complex `exp`/`sqrt`/`log`/`sin`/`tanh`/`power`, `linalg.inv`, `fft`, `eigvals`: the same output as NumPy on Linux. |
-| **Mesa 3D 24.2.4** (mesa-dist-win) | `opengl32.dll` (llvmpipe) and the Vulkan driver (lavapipe), x64 and x86, from the App Store | OpenGL 4.5: `tools/gltest` (pixel formats, immediate mode, GLSL, read-back, animated `SwapBuffers`) passes as a 64-bit and a 32-bit program. |
+| **Mesa 3D 24.2.4** (mesa-dist-win) | `opengl32.dll` (llvmpipe; installed as `opengl32_mesa.dll`, which NovaOS's `opengl32.dll` loads) and the Vulkan driver (lavapipe), x64 and x86, from the App Store | OpenGL 4.5: `tools/gltest` (pixel formats, immediate mode, GLSL, read-back, animated `SwapBuffers`) passes as a 64-bit and a 32-bit program. |
 | **DXVK 2.5.3** | `d3d8`, `d3d9`, `d3d10core`, `d3d11` (as `d3d11_dxvk`, behind NovaOS's own `d3d11`), `dxgi`, x64 and x86, from the App Store, on Mesa's Vulkan and NovaOS's own `vulkan-1.dll` | Direct3D 9 and 11: `tools/d3dtest` (device creation, a D3D9 triangle, D3D11 clear, read-back, animated `Present` in a window) passes as a 64-bit and a 32-bit program. |
+| **Venus** (Mesa 26.2.4, built by `tools/build_venus.py`) | `vulkan_virtio.dll` and Mesa's virgl (`opengl32_virgl.dll`, `libgallium_virgl.dll`), x64 and x86, from the App Store: Vulkan and OpenGL on the host's GPU through a QEMU 3D virtio-gpu (`virtio-vga-gl,venus=on`); the Vulkan loader prefers Venus to lavapipe and NovaOS's `opengl32.dll` virgl to llvmpipe | `tools/d3dtest` (DXVK) and `tools/gltest` pass on it as 64-bit and 32-bit programs, and `d3dtest fps` and `gltest fps` draw faster on it than on lavapipe and llvmpipe. |
 | **Notepad++ 8.8.3** (x64 portable) | Scintilla editor, static MSVC C++ runtime | Opens with its menus, toolbar, tab bar, editor and status bar, takes typing, and opens and saves files through the common file dialogs. |
 | **SumatraPDF 3.4.6** (x86 portable) | PDF reader on MuPDF; GDI+ toolbar, tabs and caption | Opens a PDF and renders its pages; the toolbar, tabs and menus draw; printing reports no printer. |
 | **WinMerge 2.16.50** (x64) | MFC application: MDI frame, docking bars, rebars, toolbars with 24-bit image strips | Compares two files side by side with the differences highlighted, location pane and status bars. |
@@ -83,6 +84,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **Firefox 157.0** | Mozilla's full installer (x64), from the App Store | The App Store's Install button unpacks it with 7-Zip into `C:\Programs\Mozilla Firefox`; Firefox starts unmodified (its launcher process sets up the browser process with its DLL blocklist hooks), draws its whole window through its GPU process, and loads and shows a page over HTTPS (a test CA trusted through `distribution\policies.json`); in the nightly corpus.  Window titles show their dashes as `-`. |
 | **KeePassXC 2.7.12** | Portable zip (Qt 5, x64) | Opens and unlocks a KDBX 4 password database (Argon2d) and shows its groups, entries and an entry's details, Qt's widget text drawn through `GetGlyphOutline`; in the nightly corpus.  Windows Hello quick unlock reports "not supported". |
 | **Inkscape 0.91** | conda-forge's win-64 package (GTK 2, MinGW, x64) | Starts with a new document: menus, tool bars, toolbox, rulers, canvas, palette and status bar, drawn by GTK 2 through cairo and pango on gdi32, with its tools' own pointers; in the nightly corpus.  Inkscape 1.x (GTK 3) is not tested yet: its downloads are not reachable from CI. |
+| **Krita 5.3.4** | Portable zip (Qt 5, LLVM MinGW build, x64) | Starts, opens a new image with Ctrl+N on its OpenGL canvas (the App Store's Mesa 3D) with the toolbox, colour selector, layers and brush presets and paints a stroke, its C++ exceptions unwinding through libunwind on NovaOS's SEH; in the nightly corpus.  Needs Mesa 3D installed first.  Its Python scripter imports `asyncio`. |
 | **VLC 3.0.21** (x86, the PortableApps package) | Qt 5 media player | Plays an H.264 and AAC MP4 with its Qt interface, the video in its window (GDI output) and the sound through WASAPI; part of the nightly app corpus. |
 | **Audacity 3.7.4** (x64 zip) | wxWidgets audio editor | Records from the microphone (WASAPI capture), draws the waveform, stops and saves the project as an `.aup3` (SQLite) through its save dialog; part of the nightly app corpus. |
 
@@ -130,56 +132,90 @@ every part, phase by phase.
 <!-- BEGIN generated:inside -->
 
 - **Boot**: a UEFI bootloader (a PE32+ EFI application) loads the ELF kernel
-  from the EFI System Partition, or from a CD.
+  from the EFI System Partition, or from the ISO on a CD or written to a
+  USB stick (the installation media, run live; started from a stick,
+  NovaOS writes its log into `\EFI\NOVA\bootlog.txt` on it).
 - **Kernel** (`kernel/`): NT-style executive: object manager and handles,
-  processes and threads, virtual memory with sections and guard pages, I/O,
+  processes and threads, virtual memory with sections and guard pages
+(the read-only pages of loaded DLLs are shared by every process with the
+same bytes, as Windows shares image sections), I/O,
   registry, security tokens (restricted tokens, impersonation) and
   security descriptors checked when named objects and files on drive C:
   are opened.  SMP with per-core scheduling and fine-grained
   locks; wait queues; APCs; pipes; the NT system-call table at Windows 10
   1903 numbers.  Timers are the local APIC's, one-shot or TSC-deadline and
-  calibrated against the HPET, so `Sleep(1)`, wait timeouts and waitable
+  calibrated against the HPET (from CPUID leaf 0x15 where the firmware
+  hides it), so `Sleep(1)`, wait timeouts and waitable
   timers end within a fraction of a millisecond even with every CPU busy;
   a thread woken by a timer preempts the running one instead of waiting
   for its time slice to end.  NT's priority boosts: a thread woken by an
   event, a lock, I/O, a window message or input runs above its base
-  priority (+1 to +6) and preempts busy threads of that priority, then
+  priority (+1 to +6; +2 for window messages and the input they carry,
+  as win32k gives) and preempts busy threads of that priority, then
   decays back one level per quantum; a balance set lifts threads that
   have starved for 3 s.  Priority classes and thread priorities
   (`SetPriorityClass`, `SetThreadPriority`) set NT's base priorities;
-  the desktop, input and audio threads stay above anything a program
-  can ask for.
+  every kernel thread (input, audio, the network, USB, the desktop,
+  saving drive C:) stays above anything a program can ask for, and the
+  process whose window is active (or the console program running in the
+  active Terminal) gets NT's foreground boost (+2 after every wait) and
+  three times the time slice (60 ms against 20 ms).  The Multimedia
+  Class Scheduler (`AvSetMmThreadCharacteristics`) runs a program's audio
+  threads at real-time priority 18, above every program thread and the
+  desktop, with Windows' 80% budget so one cannot freeze the machine;
+  NovaOS's own sound threads (waveOut, waveIn, DirectSound, WASAPI) use
+  it too.
 - **Drivers**: AHCI SATA and NVMe disks (NovaOS installs to and boots from
   either), FAT16/FAT32, GPT, NTFS (read, write and format: drive C: with
-  file ACLs and hard links, and other drives); Intel e1000/e1000e and virtio-net network
-  cards; Intel High Definition Audio (playback and recording) with a kernel
-  mixer;
-  PS/2 keyboards and mice; USB (xHCI, EHCI, OHCI and UHCI controllers, any
+  file ACLs and hard links, and other drives); Intel e1000/e1000e network cards (82540EM, 82574L
+  and the I219 that Intel PCs have built in) and virtio-net; Intel High Definition Audio (playback
+  and recording, laptop controllers with the audio DSP on included, the
+  speakers turned off while headphones are plugged in; a laptop's digital
+  microphones through Sound Open Firmware on Intel's audio DSP) with a kernel mixer;
+  PS/2 keyboards and mice; I2C-HID touchpads on Intel's LPSS I2C
+  controllers (found through ACPI, in their mouse mode); USB (xHCI, EHCI, OHCI and UHCI controllers, any
   number of each) with hubs and HID keyboards (lock-key LEDs and media
   keys included), mice (five buttons and both wheels), tablets, pens
-  (pressure, barrel buttons and eraser, for Wintab) and
+  (pressure, X/Y tilt, barrel rotation, barrel buttons and eraser, for
+  Wintab and as `WM_POINTER` pen messages) and
   multi-touch screens (report protocol), USB sticks (FAT and NTFS, as
   the next drive letter, hot-plugged) and USB speakers, headsets and
-  microphones (USB Audio Class 1 over isochronous transfers, played on and
-  recorded from as soon as they are plugged in); virtio multi-touch screens; CMOS clock; a VBE display
+  microphones (USB Audio Class 1 and 2 over isochronous transfers, at the
+  device's own sampling rate and channel count, which the mixer runs at,
+  asynchronous devices' rate feedback followed, played on and recorded
+  from as soon as they are plugged in, or chosen in Settings' Sound page,
+  each with its own volume; the choice and the levels are kept across
+  restarts); virtio multi-touch screens,
+  pens (pressure, tilt, rotation) and tablets; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
   flipping, the mode set again after sleep and kept across restarts; more
   adapters, such as QEMU's secondary-vga, are more monitors of one
   desktop, arranged in Settings, each able to show DPI-aware programs
   its own DPI) and a Cirrus GD5446 one, with
-  the UEFI framebuffer as the fallback; a 2D virtio GPU driver for
+  the UEFI framebuffer as the fallback; a virtio GPU driver for
   QEMU's virtio-vga and virtio-gpu-pci, whose outputs are several
-  monitors on one card, plugged in and unplugged while NovaOS runs; ACPI power-off, reset, power buttons,
-  sleep (S3), batteries and AC adapters, the lid, thermal zones, wake
-  devices and PCI interrupt routing (AML interpreted by uACPI, with the SCI
-  a real interrupt through the I/O APIC).
+  monitors on one card, plugged in and unplugged while NovaOS runs, and
+  which on a 3D one (`virtio-vga-gl`) gives Mesa's Venus and virgl (App
+  Store) their contexts, host-visible blobs, 3D resources, transfers and
+  fences, so Vulkan, DXVK and OpenGL run on the host's GPU; ACPI power-off, reset, power buttons,
+  sleep (S3, or low-power S0 idle on firmware without it), batteries and
+  AC adapters, the lid, thermal zones, wake devices and PCI interrupt
+  routing (AML interpreted by uACPI, with the SCI a real interrupt
+  through the I/O APIC), and the embedded controller laptops keep their
+  lid and battery behind.
 - **Networking**: lwIP (TCP/IP over IPv4 and IPv6: DHCP, SLAAC, DNS over
   either), an HTTP/1.1 client, and Mbed TLS with the Mozilla root store.
   The loopback interface carries 127.0.0.1 and ::1 (and traffic to the
   machine's own addresses), and `localhost` resolves to both without DNS.
   Winsock (`ws2_32`, and `wsock32` with Winsock 1.1's ordinals) speaks IPv6
-  and dual-stack sockets with `getaddrinfo`;
+  and dual-stack sockets with `getaddrinfo`, and its socket options reach
+  the TCP/IP stack (`TCP_NODELAY`, `SO_RCVTIMEO`/`SO_SNDTIMEO`,
+  `SO_LINGER`, `SO_REUSEADDR`, `SO_KEEPALIVE`, `SO_BROADCAST`, `IP_TTL`,
+  `SO_RCVBUF`/`SO_SNDBUF`) and read back;
+  overlapped requests that have to wait (an `AcceptEx`, a `ConnectEx`, a
+  `WSARecv` with nothing to read yet) stay pending and complete on an I/O
+  completion port, which proactor event loops such as Python's asyncio need;
   `winhttp` is a real HTTP client over Schannel TLS, with HTTP/2 by ALPN
   (nghttp2).
 - **Windows userland** (`userland/`): about 35 system DLLs written from
@@ -189,23 +225,40 @@ every part, phase by phase.
   runtime's per-thread state kept per thread, as on Windows, with
   `_configthreadlocale` per-thread locales and `getenv` results other
   threads cannot overwrite; `ntdll` gives fiber-local storage its own
-  slots and runs `FlsAlloc` callbacks when a thread ends), `vcruntime140`/`vcruntime140_1` (C++
+  slots and runs `FlsAlloc` callbacks when a thread or the process ends;
+  `TlsAlloc` has the 1024 expansion slots past the TEB's 64), `vcruntime140`/`vcruntime140_1` (C++
   exceptions, FH3 and FH4 tables), `msvcp140` and its satellites (the C++
   standard library: Microsoft's own STL, compiled with clang, with
   Boost.Math under `msvcp140_2`'s special math functions),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs, MDI,
-  hooks, per-monitor DPI awareness with `WM_DPICHANGED`), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
+  hooks, per-monitor and per-thread DPI awareness with `WM_DPICHANGED`, controls and fonts at each window's DPI and rescaled when it changes, window coordinates converted between awareness contexts,
+  touch, pens and the mouse as `WM_POINTER` messages with `GetPointerPenInfo`, title bars included, and the pen signature in `GetMessageExtraInfo`), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
-  `comctl32`, `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
-  type libraries), `advapi32`, `ws2_32`, `oleacc`,
+  `comctl32`, `riched20`/`msftedit` (Rich Edit controls that take RTF,
+  as setup programs' licence pages need), `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
+  type libraries), `rpcrt4` (the NDR engine COM proxy/stub DLLs run on:
+  stubless proxies, `NdrStubCall2`, `CStdStubBuffer`, the `NdrDll*` entry points), `advapi32`, `ws2_32`, `oleacc`,
   `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
-  WASAPI playback and capture, endpoint volume), `dsound` (DirectSound),
-  `xaudio2_7`/`xaudio2_8`/`xaudio2_9` and `x3daudio1_7` (on FAudio), `msi`
+  WASAPI playback and capture, a device ID or endpoint for each sound
+  device, device 0 being the default as on Windows, each with its own
+  endpoint volume; sound plays at its own rate and is converted once, by
+  the mixer, to the device's), `dsound` (DirectSound, with
+  every device enumerated and openable by its GUID),
+  `xaudio2_7`/`xaudio2_8`/`xaudio2_9` and `x3daudio1_7` (on FAudio; every
+  output listed and openable by its device ID), `msi`
   (with `msiscript` running JScript and VBScript custom actions on the
-  ISC-licensed mujs),
+  ISC-licensed mujs; product, patch and source-list queries by
+  installation context, as bootstrappers such as WiX Burn make them), `msxml6` (MSXML: the XML DOM with XPath, SAX and
+  `XMLHTTP` on the MIT-licensed libxml2, answering the MSXML 3 classes
+  such as `Msxml2.DOMDocument` too),
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
+  `crypt32` and `wintrust` (certificate stores and chains, signed PKCS #7
+  messages, and Authenticode: `WinVerifyTrust` checks a program's
+  signature, its timestamp and its chain to the trusted roots),
   `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`),
-  `wintab32` (Wintab pen tablets: pressure for GTK, Qt and Krita), and
+  `wintab32` (Wintab pen tablets: pressure, tilt and barrel rotation for GTK,
+  Qt and Krita), `cabinet` (the FDI functions installers extract cabinets
+  with, MSZIP and LZX, on `msi`'s cabinet readers), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
   `dhcpcsvc`, `d3dcompiler_47`), and more.
 - **Text**: `novatext.dll`, the text core built once and shared, carries
@@ -241,10 +294,16 @@ every part, phase by phase.
   kept in the registry, with the user's own changes to it
   (`SetLocaleInfo`).
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
-  API sets; x64 and x86 structured exceptions; registry saved to disk;
-  COM in-process servers and type libraries; drag and drop; a shared clipboard; `.lnk`
+  API sets; x64 and x86 structured exceptions, with Windows'
+  alignment-fault fixup for misaligned SSE moves; registry saved to disk;
+  COM in-process servers, type libraries and proxy/stub DLLs
+  (rpcrt4's NDR engine; calls into other processes come next); drag and drop; a shared clipboard; `.lnk`
   shortcuts; Windows Installer packages; services (`advapi32`'s service
-  control manager).
+  control manager); scheduled tasks (Task Scheduler 2.0, kept in
+  `C:\Windows\System32\Tasks`); the Data Protection API.
+- **Updates**: the App Store's Updates page downloads a newer NovaOS from
+  an update channel, and the next restart starts it, going back to the
+  old one if it does not start ([docs/updates.md](docs/updates.md)).
 
 <!-- END generated:inside -->
 
@@ -338,27 +397,44 @@ To make the ISO yourself from a fresh build, run
 
 - **Build and boot-test** (core): <!-- BEGIN generated:core-tests -->`apitest`, `abitest` (the PEB, TEB, `KUSER_SHARED_DATA`, `CONTEXT` and
   loader layouts, ntdll's stubs and the system-call numbers, against
-  Windows 10 1903 x64), `filetest`, `linktest`, `pipetest`, `proctest`,
-  `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `inputtest`
-  (side buttons, horizontal wheel, volume keys), `usbcheck` (media keys,
-  AC Pan, pen pressure), `anitest` (animated cursors and program
-  pointers), `cursortest` (system pointers, SetSystemCursor, cursors at
-  the display scale), `bmpcurtest` (1-, 4-, 8- and 16-bit DIB sections,
-  cursors from bitmaps with alpha or monochrome masks), `wintabtest`
-  (wintab32 with no pen and with a synthetic one: contexts, packets,
-  pressure), `dpitest` (per-monitor DPI: the manifest's `dpiAwareness`,
+  Windows 10 1903 x64), `syscalltest` (the system-call table reached
+  without ntdll: ntdll's Zw exports ranked by address give each service
+  its Windows 10 1903 number, and the kernel answers that number, as
+  anti-cheat code expects), `aligntest` (a misaligned SSE access is
+  fixed up to the unaligned move when alignment-fault fixup is on, as
+  anti-cheat code expects; ThreadHideFromDebugger and the
+  extended-context functions), `filetest`, `linktest`, `pipetest`,
+  `proctest`, `sectest`, `acltest` (64- and 32-bit), `guitest auto`,
+  `inputtest` (side buttons, horizontal wheel, volume keys), `usbcheck`
+  (media keys, AC Pan, pen pressure, tilt and twist, virtio pens and
+  tablets), `anitest` (animated cursors and program pointers),
+  `cursortest` (system pointers, SetSystemCursor, cursors at the display
+  scale), `bmpcurtest` (1-, 4-, 8- and 16-bit DIB sections, cursors from
+  bitmaps with alpha or monochrome masks), `pentest` (a pen as
+  WM_POINTER* messages: enter, down, update, up, leave;
+  GetPointerPenInfo pressure, tilt, rotation, barrel and eraser;
+  DefWindowProc promotion to mouse with the pen signature in
+  GetMessageExtraInfo; WM_NCPOINTER* over a title bar and
+  WM_POINTERACTIVATE; the mouse as a pointer, entering and leaving
+  windows; 64- and 32-bit), `wintabtest` (wintab32 with no pen and with
+  a synthetic one: contexts, packets, pressure, tilt and rotation),
+  `dpitest` (per-monitor DPI: the manifest's `dpiAwareness`,
   `GetDpiForMonitor`, `GetDpiForWindow`, `WM_DPICHANGED` and its
   suggested rectangle when the monitor goes to 192 DPI and back, and the
   window and monitor coordinates an aware, an unaware and a system-aware
-  process see), `disptest`, `icutest` (ICU and locales, 64- and 32-bit),
-  `comtest`, `nlstest` (date, time, number and currency formats in
-  German and Japanese, 64- and 32-bit; `nlstest user`), `nlstest
-  calendars` (Japanese eras, Buddhist, Taiwan, Tangun, Hebrew, Hijri, Um
-  Al Qura and Persian dates; `GetDurationFormat`) and `nlstest override`
-  (`SetLocaleInfo`), 64- and 32-bit, `tlbtest` (type libraries, 64- and
-  32-bit), `usptest` (Arabic and Devanagari shaped through Uniscribe and
-  drawn by `ExtTextOut`, 64- and 32-bit), `cppeh`, `dlgtest` (the common
-  file dialogs: `OPENFILENAME` settings, `IFileDialog` objects),
+  process see; user32's controls, menus, scroll bars, dialogs, metrics
+  and fonts at 192 DPI; per-thread awareness contexts; controls and
+  dialogs rescaled when a window's DPI changes, comctl32 at 192 DPI, and
+  coordinates converted between awareness contexts), `disptest`,
+  `icutest` (ICU and locales, 64- and 32-bit), `comtest`, `nlstest`
+  (date, time, number and currency formats in German and Japanese, 64-
+  and 32-bit; `nlstest user`), `nlstest calendars` (Japanese eras,
+  Buddhist, Taiwan, Tangun, Hebrew, Hijri, Um Al Qura and Persian dates;
+  `GetDurationFormat`) and `nlstest override` (`SetLocaleInfo`), 64- and
+  32-bit, `tlbtest` (type libraries, 64- and 32-bit), `usptest` (Arabic
+  and Devanagari shaped through Uniscribe and drawn by `ExtTextOut`, 64-
+  and 32-bit), `cppeh`, `dlgtest` (the common file dialogs:
+  `OPENFILENAME` settings, `IFileDialog` objects), `unwindtest`,
   `stltest` (the C++ standard library, 64- and 32-bit), `delaytest` (the
   DLLs Firefox delay-loads), `rttest` (complex math, conio, DLL
   directories, 64- and 32-bit), `qttest` (what Qt programs need:
@@ -372,41 +448,94 @@ To make the ISO yourself from a fresh build, run
   DirectSoundCapture recording the microphone), `sleeptest timer`
   (`Sleep(1)`, 1 ms wait timeouts and waitable timers (periodic ones,
   their completion routines and timer queue timers too) end within a
-  millisecond with every CPU busy), `savetest` (while NovaOS saves 32
-  MiB of drive C: to its disk, calls behind the kernel, desktop and
-  file-system locks keep answering, the file-system one within 100 ms;
-  the save holds the file-system lock under 20 ms), `xa2test` (XAudio2
-  2.9 and 2.7 voices, callbacks and effects, and X3DAudio panning),
-  `powertest` (closing the lid in `tests/acpi/lid-thermal.asl` sleeps, a
-  USB key and the lid wake it, the thermal zone's readings), `disptest
-  1024 768` (saves the mode the restart must keep), `miditest` (MIDI
-  through `midiOut`, `midiStream` and the MCI sequencer), `nlstest set
-  ja-JP` (the user locale the restart must keep), an installer that
-  replaces a running program and finishes after a restart (`filetest
-  install`, `shutdown /r`, `filetest installed`), `nlstest after-restart
-  ja-JP` (the restart kept the user locale), `disptest saved 1024 768`
-  (the restart kept the saved display mode), hard links kept across a
-  restart (`linktest restarted`), Windows Installer transforms, patches
-  and rollback, and an installed service started at the next boot
-  (`msitest transform`, `patch`, `rollback`, `service`, `shutdown /r`,
-  `msitest service-boot`), Windows Installer JScript and VBScript custom
-  actions setting and reading properties and writing files, and a
-  failing script rolling its install back (`msitest script`), `smftest`
-  (the C++17 special math functions in `msvcp140_2.dll`, 64- and
-  32-bit), `errnotest` (errno and the other C runtime per-thread state
-  belong to each thread, 64- and 32-bit), a power cut in the middle of
-  saving drive C: (the FAT holds chains no file reaches; at the next
-  boot NovaOS frees them and has as much free space as `fsck.fat`
-  finds), `boosttest` (a woken thread is boosted above its base priority
-  and runs within 2 ms while threads of the same priority spin on every
-  processor; the boost decays back to base, 64- and 32-bit),
-  `crtthreads` (FLS callbacks, per-thread locale and thread-safe
-  `getenv`, 64- and 32-bit), `prioritytest` (every priority class and
-  thread level gives NT's base priority and reads back; REALTIME without
-  the privilege is HIGH; with boosts off a HIGHEST thread woken by an
-  event runs within 2 ms while NORMAL threads spin on every processor,
-  64- and 32-bit), and last `crash kernel`, a deliberate kernel fault
-  whose serial log must show a backtrace with function names.<!-- END generated:core-tests -->
+  millisecond with every CPU busy), `soundtest mme` (`waveIn` recorded
+  as PortAudio's MME host does, the program held up 250 ms a second: no
+  input overflow, and no frame missing from the recorded tone),
+  `savetest` (while NovaOS saves 32 MiB of drive C: to its disk, calls
+  behind the kernel, desktop and file-system locks keep answering, the
+  file-system one within 100 ms; the save holds the file-system lock
+  under 20 ms), `xa2test` (XAudio2 2.9 and 2.7 voices, callbacks and
+  effects, and X3DAudio panning), `powertest` (closing the lid in
+  `tests/acpi/lid-thermal.asl` sleeps, a USB key and the lid wake it,
+  the thermal zone's readings), `disptest 1024 768` (saves the mode the
+  restart must keep), `miditest` (MIDI through `midiOut`, `midiStream`
+  and the MCI sequencer), `nlstest set ja-JP` (the user locale the
+  restart must keep), an installer that replaces a running program and
+  finishes after a restart (`filetest install`, `shutdown /r`, `filetest
+  installed`), `nlstest after-restart ja-JP` (the restart kept the user
+  locale), `disptest saved 1024 768` (the restart kept the saved display
+  mode), hard links kept across a restart (`linktest restarted`),
+  Windows Installer transforms, patches and rollback, and an installed
+  service started at the next boot (`msitest transform`, `patch`,
+  `rollback`, `service`, `shutdown /r`, `msitest service-boot`), Windows
+  Installer JScript and VBScript custom actions setting and reading
+  properties and writing files, and a failing script rolling its install
+  back (`msitest script`), `smftest` (the C++17 special math functions
+  in `msvcp140_2.dll`, 64- and 32-bit), `errnotest` (errno and the other
+  C runtime per-thread state belong to each thread, 64- and 32-bit), a
+  power cut in the middle of saving drive C: (the FAT holds chains no
+  file reaches; at the next boot NovaOS frees them and has as much free
+  space as `fsck.fat` finds), `boosttest` (a woken thread is boosted
+  above its base priority and runs within 2 ms while threads of the same
+  priority spin on every processor; the boost decays back to base, 64-
+  and 32-bit), `crtthreads` (FLS callbacks, per-thread locale,
+  thread-safe `getenv`, `WaitOnAddress` by API set, 64- and 32-bit),
+  `mmcsstest` (MMCSS through avrt.dll: "Pro Audio" runs at 18 and
+  "Games" at 16 without the privilege and reverts to the thread's own
+  priority; a registered thread woken by an event runs within 2 ms while
+  TIME_CRITICAL threads spin on every processor; registered threads
+  spinning on every processor still leave a NORMAL thread room, 64- and
+  32-bit), `prioritytest` (every priority class and thread level gives
+  NT's base priority and reads back; REALTIME without the privilege is
+  HIGH; with boosts off a HIGHEST thread woken by an event runs within 2
+  ms while NORMAL threads spin on every processor; the Terminal's
+  console program is the foreground process, gets the foreground boost
+  and three times a background process's time slice, 64- and 32-bit),
+  `tlsslots` (1088 TLS indexes and FLS callbacks at process exit, 64-
+  and 32-bit), `cmdlinetest` (a 1,200-character command typed into the
+  Terminal and into cmd.exe, CreateProcess with up to 32,766 characters,
+  64- and 32-bit), `devices` (every PCI function and the driver that
+  claimed it: AHCI, the VGA card, HD Audio, xHCI; bridges marked),
+  `glgeneric` (OpenGL 1.1 with no OpenGL driver installed, 64- and
+  32-bit), `hwcheck` audio DSP: NHLT digital microphones, the SOF
+  firmware manifest, the DSP boot (ROM, code loader, FW_READY, IPC4),
+  the IPC4 capture pipeline into a host ring, paused and run again, and
+  the boot again after sleep, on a modelled DSP, `hwcheck` (HD Audio
+  controller matching, a modelled ALC257 codec with its headphone jack,
+  a modelled I2C-HID touchpad); the touchpad in the boot's ACPI table is
+  found and its missing controller reported, `crashtest` (crash.exe's
+  report in `C:\NovaOS\Crashes`: exception, module+offset, stack,
+  modules; 64- and 32-bit), and the Terminal's `Crash report:` line and
+  `crashes last`, `wndthreads` (child windows of other threads, sends to
+  an ended thread's window, 64- and 32-bit), `hwcheck mic`: a modelled
+  audio DSP as the "Microphone Array" recording device (`waveIn`, WASAPI
+  and DirectSound list it, `soundtest record` and `capture` hear its
+  tone, before and after a modelled sleep), `fpstate` (x87 control word
+  and MXCSR on new threads, across switches, `RtlRestoreContext` and SEH
+  unwinds, 64- and 32-bit), `ramdisktest` (files on drive C: take the
+  memory their contents need: appended files, SetEndOfFile, deleting),
+  the first-boot setup, `start welcome` (name, time zone, keyboard
+  layout and display pages from the keyboard; German typed in the
+  layout's test field), `kbdtest` with German in effect and US put back,
+  then `whoami` as the name it gave (the program and the Terminal
+  command), `tztest` in the zone it chose (Tokyo: UTC+9 in GetLocalTime
+  and localtime; Berlin, Sydney and Los Angeles rules) and `tzutil /s
+  UTC`, `edgeupdtest` (Task Scheduler 2.0, DPAPI, UrlCombine and the
+  other APIs Microsoft Edge Update needs, 64- and 32-bit), `setuptest`
+  (run as administrator, Rich Edit with RTF, variant arithmetic, a 300
+  MB file on C:, 64- and 32-bit), `msxmltest` (MSXML 6 DOM, XPath, XSL
+  Patterns, SAX2 and registration, 64- and 32-bit), `cabtest`
+  (cabinet.dll: MSZIP and LZX cabinets, an attached container, a cabinet
+  set; 64- and 32-bit), `authtest` (Authenticode: WinVerifyTrust, signer
+  chains and timestamps, CryptQueryObject; 64- and 32-bit), `ndrtest`
+  (rpcrt4's NDR engine: stubless proxies, NdrStubCall2, CStdStubBuffer
+  and the NdrDll* entry points, 64- and 32-bit), `msiqtest` (Windows
+  Installer: 32-bit packages into SysWOW64, product information by
+  context, source lists, patch applicability; 64- and 32-bit), `crash
+  kernel`, a deliberate kernel fault whose serial log must show a
+  backtrace with function names, and last the kernel crash report: after
+  `crash kernel` and a reset, `crashes last` shows the fault's
+  backtrace.<!-- END generated:core-tests -->
 - **Network** (in the boot-test job): two boots with a virtio-net card.
   On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
   `httptest suite` (winhttp with HTTP/2 by ALPN) against
@@ -445,7 +574,7 @@ after a build.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
-<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM), SumatraPDF, WinMerge, KeePassXC, VLC (plays an H.264 and AAC MP4 with sound), Audacity (records 10 s from the microphone and saves the project), Inkscape, Firefox, Notepad++ and PuTTY<!-- END generated:corpus -->.  The
+<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM), Roblox (installs; the client stops in its anti-cheat), Steam (installs and updates itself; its browser does not open the login window yet), Microsoft Edge WebView2 runtime (its updater runs; the install stops: no MSXML 6 yet), SumatraPDF, WinMerge, KeePassXC, VLC (plays an H.264 and AAC MP4 with sound), Audacity (records 10 s from the microphone and saves the project), Inkscape, Krita, Firefox, Notepad++, OpenTTD (free on GOG; installs with its installer and reaches its main menu) and PuTTY<!-- END generated:corpus -->.  The
 windowed programs run last, one at a time: SumatraPDF opens a PDF,
 WinMerge compares two files, Firefox installs from the App Store and
 loads a page from an HTTPS server on the host, Notepad++ opens a file and PuTTY makes a raw
@@ -457,7 +586,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `anitest`, `apitest`, `bmpcurtest`, `boosttest`, `cliptest`, `comtest`, `cppeh`, `crttest`, `crtthreads`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `dpitest`, `errnotest`, `filetest`, `httptest`, `icutest`, `inputtest`, `linktest`, `looptest`, `montest`, `msitest`, `nlstest`, `nstest`, `pipetest`, `posixtest`, `powertest`, `prioritytest`, `proctest`, `qttest`, `rttest`, `savetest`, `sectest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `threads`, `touchtest`, `usptest`, `wintabtest`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `aligntest`, `anitest`, `apitest`, `authtest`, `bmpcurtest`, `boosttest`, `cabtest`, `cliptest`, `cmdlinetest`, `comtest`, `cppeh`, `crashtest`, `crttest`, `crtthreads`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `dpitest`, `edgeupdtest`, `errnotest`, `filetest`, `fpstate`, `glgeneric`, `httptest`, `icutest`, `inputtest`, `kbdtest`, `linktest`, `looptest`, `mmcsstest`, `montest`, `msiqtest`, `msitest`, `msxmltest`, `ndrtest`, `nlstest`, `nstest`, `overlaptest`, `pentest`, `pipetest`, `posixtest`, `powertest`, `prioritytest`, `proctest`, `qttest`, `ramdisktest`, `rttest`, `savetest`, `sectest`, `setuptest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `syscalltest`, `threads`, `tlsslots`, `touchtest`, `tztest`, `unwindtest`, `usptest`, `wintabtest`, `wndthreads`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, records
   through `waveIn` and WASAPI capture, and lists the sound devices,
   chooses the default and sets each device's own volume;
@@ -544,7 +673,7 @@ os/
 │   ├── programs/         # cmd.exe, msiexec, reg, find..., samples and self-tests
 │   ├── netsurf/          # NetSurf port: fetcher, window surface, fonts
 │   └── include/          # The Windows SDK headers NovaOS provides
-├── third_party/          # lwIP, Mbed TLS, nghttp2, uACPI, musl (libm), HarfBuzz, FreeType, NetSurf, stb, fonts, ICU (icu.dll + data), 7-Zip installer
+├── third_party/          # lwIP, Mbed TLS, nghttp2, libxml2, uACPI, musl (libm), HarfBuzz, FreeType, NetSurf, stb, fonts, ICU (icu.dll + data), 7-Zip installer
 ├── tools/                # Host tools: build_userland.py, build_netsurf.py, mkfont,
 │                         #   make_icons.py, mkani.py, pe_imports.py, msitest/, docgen.py,
 │                         #   mkupdate.py and release_notes.py (releases)
@@ -580,7 +709,10 @@ os/
   when both fit; Cirrus gets 800x600 and 640x480; elsewhere frames are
   copied to the UEFI framebuffer in the boot mode.  There is no 3D GPU driver.
 - **Drive C: in memory, saved to FAT**: the RAM disk is saved to a FAT32
-  volume a second after each change and restored at boot.  System files
+  volume a second after each change and restored at boot.  A file takes
+  the memory its contents need (one written by appending gives back the
+  rest of the buffer it grew into when it is closed; `mem` in the Terminal
+  shows what C: takes).  System files
   come from the kernel image, so a new build always brings its own.  The
   save runs on its own thread and holds no lock while the disk is written
   (`savetest`), and a crash during a FAT save leaves each file old or new.
@@ -627,7 +759,7 @@ os/
 
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
-code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; nghttp2: MIT; mujs: ISC; uACPI: MIT; musl's libm and complex functions: MIT; ICU: Unicode License v3 (`third_party/icu/LICENSE`); kernel32's locale table, from .NET: MIT; HarfBuzz: MIT; FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Boost.Math (the C++17 special math functions in `msvcp140_2.dll`): Boost Software License 1.0; Microsoft's C++ standard library (STL): Apache-2.0 WITH LLVM-exception; plutovg: MIT (with FreeType-licensed rasteriser and stroker files); Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT; FAudio: zlib; TinySoundFont: MIT<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
+code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; nghttp2: MIT; libxml2: MIT; mujs: ISC; uACPI: MIT; Intel's e1000 shared code (FreeBSD's, for the I219 bring-up in `kernel/drivers/e1000.c`): BSD 3-clause; musl's libm and complex functions: MIT; ICU: Unicode License v3 (`third_party/icu/LICENSE`); kernel32's locale table, from .NET: MIT; the time zone table (`kernel/ke/tzdata.inc`): zone names from Unicode CLDR's windowsZones, Unicode License v3; rules from the IANA tz database, public domain; HarfBuzz: MIT; the keyboard layouts (`userland/include/kbdlayouts.h`): xkeyboard-config, MIT/X11 licence, compiled by libxkbcommon (MIT); FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Boost.Math (the C++17 special math functions in `msvcp140_2.dll`): Boost Software License 1.0; Microsoft's C++ standard library (STL): Apache-2.0 WITH LLVM-exception; plutovg: MIT (with FreeType-licensed rasteriser and stroker files); Mesa's Venus and virgl (`third_party/mesa-venus`, the App Store's Venus): MIT; Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT; FAudio: zlib; TinySoundFont: MIT; Sound Open Firmware (Intel's signed audio DSP firmware, built in only when tools/fetch_sof_firmware.py fetched it): BSD 3-clause with Intel's firmware licence<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,
 but independently written.
 

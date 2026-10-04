@@ -655,6 +655,15 @@ static void kusd_init(void)
     *(UINT32 *)(g_kusd + 0x270) = 0;                      /* NtMinorVersion */
     static const int features[] = { 2, 6, 8, 10, 12, 13, 14 };   /* cmpxchg8b/16b, SSE, SSE2, SSE3, RDTSC, NX */
     for (unsigned i = 0; i < sizeof(features) / sizeof(features[0]); i++) g_kusd[0x274 + features[i]] = 1;
+    /* XState (XSTATE_CONFIGURATION): the legacy x87 and SSE state only, kept
+     * in a CONTEXT's FltSave, as kernel32's GetEnabledXStateFeatures says */
+    *(UINT64 *)(g_kusd + 0x3D8) = 3;                      /* EnabledFeatures */
+    *(UINT32 *)(g_kusd + 0x3E8) = 512 + 64;               /* Size: legacy area + XSAVE header */
+    *(UINT32 *)(g_kusd + 0x3F0) = 0;   *(UINT32 *)(g_kusd + 0x3F4) = 160;   /* Features[0]: x87 */
+    *(UINT32 *)(g_kusd + 0x3F8) = 160; *(UINT32 *)(g_kusd + 0x3FC) = 256;   /* Features[1]: SSE */
+    *(UINT32 *)(g_kusd + 0x3D8 + 0x228) = 512 + 64;       /* AllFeatureSize */
+    *(UINT32 *)(g_kusd + 0x3D8 + 0x22C) = 160;            /* AllFeatures[0], [1] */
+    *(UINT32 *)(g_kusd + 0x3D8 + 0x230) = 256;
     UmCpuCountChanged();
     UmSharedKeyboard(g_kbd_hkl);
     UmTimerTick(sched_ticks());
@@ -815,7 +824,8 @@ typedef struct {
     UINT32   size;              /* SizeOfImage */
     UINT64   base;              /* chosen load address */
     UINT32   exp_rva, exp_size; /* export directory */
-    bool     fetched;
+    bool     fetched;           /* @img is a module already loaded: its export directory only, */
+    UINT32   win, win_size;     /*   the image's bytes from @win (or all of it: fetch_image) */
     RamNode *dir;               /* its folder (DLLs next to it are found there) */
     bool     mapped;            /* mapped by this loader: its imports are to be bound */
     bool     bound;             /* imports bound (or being bound) */
@@ -836,6 +846,7 @@ typedef struct {
     RamNode   *pins[UM_MAX_MODULES];/* the files being loaded, pinned until the loader is done */
     int        npins;
     bool       keep;                /* loaded: the process holds the files while it runs */
+    bool       nomem;               /* an export could not be looked up: out of memory */
 } Loader;
 
 static UINT16 rd16(const UINT8 *b) { return (UINT16)(b[0] | b[1] << 8); }
@@ -857,46 +868,86 @@ static int map_module(Loader *L, RamNode *file, const char *name, bool top);
 
 /* A module mapped by an earlier load: read its image back from user
  * memory for export lookups. */
-static bool fetch_image(Loader *L, int m)
+/* An already loaded module's exports, read from the process: only its
+ * export directory (names, addresses and forwarders), not the whole image,
+ * which would need one free piece of memory as big as the module (Qt5Core,
+ * xul.dll) for every DLL loaded later that imports from it.  @whole reads
+ * the whole image, for an export directory whose tables lie outside it. */
+static bool fetch_image(Loader *L, int m, bool whole)
 {
     Image *im = &L->img[m];
-    if (im->img) return true;
+    if (im->img && (!whole || !im->fetched || im->win_size == im->size)) return true;
     const UmModule *mod = &L->p->modules[m];
-    im->size = (UINT32)mod->size;
-    im->base = mod->base;
-    im->img = kzalloc(im->size + 16);
-    if (!im->img || !um_read(L->p, mod->base, im->img, im->size)) {
+    if (!im->img) {
+        UINT32 nt = 0;
+        UINT8 h[0x90];
+        im->size = (UINT32)mod->size;
+        im->base = mod->base;
+        im->exp_rva = im->exp_size = 0;
+        if (!um_read(L->p, mod->base + 0x3C, &nt, 4)) return false;
+        if (im->size >= 0x108 && nt < im->size - 0x108) {
+            if (!um_read(L->p, mod->base + nt, h, sizeof(h))) return false;
+            UINT32 dirs = rd16(h + 24) == 0x10B ? 96 : 112;             /* PE32 or PE32+ */
+            im->exp_rva = rd32(h + 24 + dirs);
+            im->exp_size = rd32(h + 24 + dirs + 4);
+            if (im->exp_rva >= im->size || im->exp_size > im->size - im->exp_rva) im->exp_rva = im->exp_size = 0;
+        }
+    } else
+        kfree(im->img);
+    im->win = whole ? 0 : im->exp_rva;
+    im->win_size = whole ? im->size : im->exp_size;
+    im->img = kzalloc(im->win_size + 16);                       /* zero tail: names always terminate */
+    if (!im->img || !um_read(L->p, mod->base + im->win, im->img, im->win_size)) {
         kfree(im->img);
         im->img = NULL;
         return false;
     }
     im->fetched = true;
-    UINT32 nt = rd32(im->img + 0x3C);
-    if (nt < im->size - 0x108) {
-        UINT32 dirs = rd16(im->img + nt + 24) == 0x10B ? 96 : 112;     /* PE32 or PE32+ */
-        im->exp_rva = rd32(im->img + nt + 24 + dirs);
-        im->exp_size = rd32(im->img + nt + 24 + dirs + 4);
-    }
     return true;
 }
 
-/* Address of an export (by name, or ordinal if name == NULL); 0 if none. */
+/* @n bytes of image @im at @rva, or NULL when they are not at hand */
+static const UINT8 *image_at(const Image *im, UINT32 rva, UINT64 n)
+{
+    UINT32 lo = im->fetched ? im->win : 0, len = im->fetched ? im->win_size : im->size;
+    if (rva < lo || rva - lo + n > len) return NULL;
+    return im->img + (rva - lo);
+}
+
+/* Address of an export (by name, or ordinal if name == NULL); 0 if none
+ * (L->nomem set when it could not be looked up). */
 static UINT64 find_export(Loader *L, int m, const char *name, UINT32 ordinal, int depth)
 {
-    if (!fetch_image(L, m)) return 0;
+    if (L->img[m].fetched || !L->img[m].img) {
+        if (!fetch_image(L, m, false)) { L->nomem = true; return 0; }
+    }
     Image *im = &L->img[m];
     if (!im->exp_rva || im->exp_rva + 40 > im->size) return 0;
-    const UINT8 *ed = im->img + im->exp_rva;
+    const UINT8 *ed = image_at(im, im->exp_rva, 40);
+    if (!ed) return 0;
     UINT32 base = rd32(ed + 16), nfunc = rd32(ed + 20), nnames = rd32(ed + 24);
     UINT32 funcs = rd32(ed + 28), names = rd32(ed + 32), ords = rd32(ed + 36);
     if (funcs + 4ULL * nfunc > im->size || names + 4ULL * nnames > im->size || ords + 2ULL * nnames > im->size)
         return 0;
+    if (!image_at(im, funcs, 4ULL * nfunc) || !image_at(im, names, 4ULL * nnames) || !image_at(im, ords, 2ULL * nnames)) {
+        if (!fetch_image(L, m, true)) { L->nomem = true; return 0; }   /* (tables outside the directory) */
+    }
+    const UINT8 *ft = image_at(im, funcs, 4ULL * nfunc), *nt = image_at(im, names, 4ULL * nnames),
+                *ot = image_at(im, ords, 2ULL * nnames);
     UINT32 idx = 0xFFFFFFFF;
     if (name) {
+        size_t len = strlen(name);
         for (UINT32 i = 0; i < nnames; i++) {
-            UINT32 nr = rd32(im->img + names + 4 * i);
-            if (nr < im->size && !strcmp((const char *)im->img + nr, name)) {
-                idx = rd16(im->img + ords + 2 * i);
+            UINT32 nr = rd32(nt + 4 * i);
+            if (nr >= im->size) continue;
+            const UINT8 *s = image_at(im, nr, len + 1);
+            char far[128];
+            if (!s && len < sizeof(far)) {                      /* a name outside the directory */
+                if (!um_read(L->p, im->base + nr, far, len + 1)) continue;
+                s = (const UINT8 *)far;
+            }
+            if (s && !memcmp(s, name, len + 1)) {
+                idx = rd16(ot + 2 * i);
                 break;
             }
         }
@@ -904,11 +955,12 @@ static UINT64 find_export(Loader *L, int m, const char *name, UINT32 ordinal, in
         idx = ordinal - base;
     }
     if (idx >= nfunc) return 0;
-    UINT32 rva = rd32(im->img + funcs + 4 * idx);
+    UINT32 rva = rd32(ft + 4 * idx);
     if (!rva || rva >= im->size) return 0;
     if (rva >= im->exp_rva && rva < im->exp_rva + im->exp_size) {
         /* forwarder "DLL.Function" */
-        const char *fw = (const char *)im->img + rva;
+        const char *fw = (const char *)image_at(im, rva, 1);
+        if (!fw) return 0;
         const char *dot = strchr(fw, '.');
         if (!dot || depth > 4 || dot - fw > 20) return 0;
         char dll[32], fn[64];
@@ -1062,6 +1114,10 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
 {
     if (strchr(name, '\\') || strchr(name, '/') || strchr(name, ':')) {
         char path[RAMFS_PATH_MAX];
+        /* "\\?\C:\x.dll", "\\.\C:\x.dll" and "\??\C:\x.dll" name C:\x.dll */
+        if ((name[0] == '\\' || name[0] == '/') && (name[1] == '\\' || name[1] == '/' || name[1] == '?') &&
+            (name[2] == '?' || name[2] == '.') && (name[3] == '\\' || name[3] == '/'))
+            name += 4;
         strncpy(path, name, sizeof(path) - 5);
         path[sizeof(path) - 5] = '\0';
         for (char *c = path; *c; c++)       /* GTK's module caches use forward slashes */
@@ -1187,6 +1243,7 @@ static void map_api_set(char *lname, int cap)
         { "api-ms-win-core-",             "kernel32.dll" },
         { "api-ms-win-security-",         "advapi32.dll" },
         { "api-ms-win-eventing-",         "advapi32.dll" },
+        { "api-ms-win-power-",            "powrprof.dll" },   /* CallNtPowerInformation, PowerReadACValue, ... */
         { "api-ms-win-shell-",            "shell32.dll" },
         { "api-ms-win-shcore-",           "shlwapi.dll" },
         { "shcore.dll",                   "shlwapi.dll" },    /* GetDpiForMonitor, SHCreateStreamOnFileEx, ... */
@@ -1444,6 +1501,7 @@ static int bind_module(Loader *L, int m)
             /* A function NovaOS lacks: bind a stub that reports it if the
              * program ever calls it (many programs import functions they
              * never use) */
+            if (!addr && L->nomem) return fail(L, "Out of memory loading %s", name);
             if (!addr) addr = stub_for(p, what);
             if (!addr) return fail(L, "The procedure entry point %s could not be located", what);
             if (pe32) put_u32(im->img + iat + 4 * k, (UINT32)addr);
@@ -2453,6 +2511,7 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
                        status == 0xC00000FDu ? "stack overflow" :
                        status == 0xC0000096u ? "privileged instruction" :
                        status == 0x80000003u ? "breakpoint" :
+                       status == 0xC0000409u ? "fail fast (a security check)" :
                        (status & 0xF0000000u) == 0xC0000000u ? "unhandled exception" : "unhandled software exception";
     const UmModule *mod = um_module_at(p, rip);
     char where[64];
@@ -2462,6 +2521,8 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
         if (status == UM_STATUS_ACCESS_VIOLATION)
             ksnprintf(p->why, sizeof(p->why), "crashed: %s at %s (address 0x%llx)", what, where,
                       (unsigned long long)addr);
+        else if (status == 0xC0000409u)                     /* __fastfail: addr is its code */
+            ksnprintf(p->why, sizeof(p->why), "crashed: %s, code %llu, at %s", what, (unsigned long long)addr, where);
         else if (!strcmp(what, "unhandled exception") || !strcmp(what, "unhandled software exception"))
             ksnprintf(p->why, sizeof(p->why), "crashed: %s 0x%08x at %s", what, status, where);
         else

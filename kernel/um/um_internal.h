@@ -153,6 +153,8 @@ struct UmThread {
     INT8            prio_incr;
     bool            no_boost;       /* SetThreadPriorityBoost(TRUE) */
     UINT8           mm_priority;    /* registered with MMCSS (avrt.dll): its real-time priority, else 0 */
+    bool            auto_align;     /* ThreadEnableAlignmentFaultFixup (um_gpfault.c) */
+    bool            hide_debug;     /* ThreadHideFromDebugger: set, and asked back (no debugger events either way) */
 };
 
 UmObject *um_ob_ref(UmObject *o);
@@ -186,6 +188,7 @@ typedef struct {
     RamNode     *node;          /* H_FILE, H_DIR */
     UmObject    *obj;           /* H_OBJECT */
     UINT64       pos;           /* H_DIR: next entry (H_FILE without fp: its byte offset) */
+    const RamNode *last;        /* H_DIR: the entry listed last (compared, never followed) */
     UmFilePos   *fp;            /* H_FILE: the shared byte offset (referenced) */
     bool         read, write, append, delete_on_close;
     bool         inherit;       /* passed to child processes (bInheritHandles) */
@@ -266,6 +269,7 @@ struct UmProcess {
      * and SetProcessPriorityBoost's flag, which new threads inherit */
     UINT8           prio_class;
     bool            no_boost;
+    bool            auto_align; /* ProcessEnableAlignmentFaultFixup, SEM_NOALIGNMENTFAULTEXCEPT (um_gpfault.c) */
 };
 
 /* um.c */
@@ -324,6 +328,10 @@ UmThread  *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack
 UINT32     um_load_dll(UmProcess *p, const char *name, UINT64 *base, UINT32 flags);
 UINT32     um_dll_directory(UmProcess *p, UINT32 op, const char *path, UINT64 *cookie);
 const UmModule *um_module_at(UmProcess *p, UINT64 va);
+/* um_gpfault.c: a #GP at @rip in the current program, looked into as
+ * Windows does: 1 if it was fixed up (run the instruction again), else 0
+ * with *@code / *@nparams changed when the cause has a status of its own */
+int UmGpFault(UINT64 rip, UINT32 *code, UINT64 *nparams);
 
 /* um_console.c */
 UmConsole *um_console_ref(UmConsole *c);
@@ -346,6 +354,7 @@ int        um_console_pids(UmConsole *c, UINT32 *out, int max);   /* running pro
 void       um_syscall_init(void);
 void       um_close_all_handles(UmProcess *p);
 void       um_install(UINT32 num, SYSCALL_HANDLER h);
+SYSCALL_HANDLER um_service(UINT32 num);          /* a program's service (installed: not NULL) */
 void       um_lock_free(UINT32 num);
 
 /* Synchronization objects' state (signaled, owner, count...) and thread
@@ -357,6 +366,7 @@ static inline IrqState ob_lock(void)          { return spin_lock_irqsave(&g_um_o
 static inline void     ob_unlock(IrqState s)  { spin_unlock_irqrestore(&g_um_oblock, s); }     /* mark a service as running without the big kernel lock */
 UINT64     um_stack_arg(int n);                 /* syscall argument n >= 5 */
 UINT64     um_now_100ns(void);                  /* system time (100 ns since 1601) */
+UINT64     um_boot_time_100ns(void);            /* the system time NovaOS started at */
 UINT64     um_handle_new_object(UmProcess *p, UmObject *o);   /* takes a reference; 0 if full */
 UmObject  *um_handle_object(UmProcess *p, UINT64 h, UmObType type);   /* referenced; NULL if bad */
 /* The process a handle names (-1: @self); @ob holds a reference to drop
@@ -430,6 +440,7 @@ void       um_abandon_mutants(UmProcess *p, UmThread *t);
 
 /* um_security.c: tokens, security descriptors, access checks */
 void       um_security_syscalls_init(void);
+void       um_services_init(void);              /* um_services.c */
 UmObject  *um_token_for_process(UmProcess *creator);   /* a new process's primary token (referenced) */
 bool       um_token_elevated(UmObject *token);         /* the elevated (full administrator) token? */
 bool       um_elevate_process(UmProcess *p);           /* give @p the elevated token */

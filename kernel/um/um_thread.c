@@ -830,6 +830,16 @@ static UINT64 sys_query_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         UINT64 ret = um_stack_arg(5);
         return !ret || put_u32(ret, 4) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
     }
+    if (a2 == 17) {                                            /* ThreadHideFromDebugger: a BOOLEAN */
+        if (a4 != 1) return ST_INFO_LENGTH_MISMATCH;
+        UmObject *o = um_handle_object(p, a1, UO_THREAD);
+        if (!o) return ST_INVALID_HANDLE;
+        UINT8 v = ((UmThread *)o)->hide_debug;
+        um_ob_unref(o);
+        if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, &v, 1))) return ST_ACCESS_VIOLATION;
+        UINT64 ret = um_stack_arg(5);
+        return !ret || put_u32(ret, 1) ? ST_SUCCESS : ST_ACCESS_VIOLATION;
+    }
     if (a2 != 0) return ST_INVALID_INFO_CLASS;                 /* ThreadBasicInformation */
     if (a4 < 48) return ST_INFO_LENGTH_MISMATCH;
     UmObject *o = um_handle_object(p, a1, UO_THREAD);
@@ -882,13 +892,30 @@ static UINT32 zero_tls_cell(UmProcess *p, UINT64 buf, UINT64 len)
     return ST_SUCCESS;
 }
 
-/* NtSetInformationThread: priorities, impersonation and ThreadZeroTlsCell;
- * names, hiding from debuggers and the rest accepted, ignored */
+/* ThreadEnableAlignmentFaultFixup / ProcessEnableAlignmentFaultFixup: a
+ * BOOLEAN (um_gpfault.c) */
+static UINT32 get_auto_align(UINT64 ptr, UINT64 len, bool *on)
+{
+    UINT8 v;
+    if (len != 1) return ST_INFO_LENGTH_MISMATCH;
+    if (!NT_SUCCESS(CopyFromUser(&v, (const void *)(uintptr_t)ptr, 1))) return ST_ACCESS_VIOLATION;
+    *on = v != 0;
+    return ST_SUCCESS;
+}
+
+/* NtSetInformationThread: priorities, impersonation, ThreadZeroTlsCell and
+ * alignment-fault fixup; names, hiding from debuggers and the rest
+ * accepted, ignored */
 static UINT64 sys_set_info_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmObject *o = um_handle_object(UmCurrent(), a1, UO_THREAD);
     if (!o) return ST_INVALID_HANDLE;
     UINT32 st = ST_SUCCESS;
+    if (a2 == 7) st = get_auto_align(a3, a4, &((UmThread *)o)->auto_align);   /* ThreadEnableAlignmentFaultFixup */
+    if (a2 == 17) {                                                            /* ThreadHideFromDebugger: no data */
+        if (a4) st = ST_INFO_LENGTH_MISMATCH;
+        else ((UmThread *)o)->hide_debug = true;
+    }
     if (a2 == 5) st = um_set_thread_token((UmThread *)o, a3, (UINT32)a4);   /* ThreadImpersonationToken */
     if (a2 == 2 || a2 == 3 || a2 == 14 || a2 == UM_THREAD_MMCSS) st = set_thread_priority((UmThread *)o, a2, a3, a4);
     if (a2 == 10) st = zero_tls_cell(((UmThread *)o)->proc, a3, a4);         /* ThreadZeroTlsCell */
@@ -908,6 +935,13 @@ static UINT64 sys_set_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UINT32 st = ST_SUCCESS;
     if (a2 == 18 || a2 == 33) st = set_process_priority(p, a2, a3, a4);   /* ProcessPriorityClass, ProcessPriorityBoost */
     else if (a2 == 9) st = um_set_process_token(p, a3, a4);                /* ProcessAccessToken */
+    else if (a2 == 17) st = get_auto_align(a3, a4, &p->auto_align);       /* ProcessEnableAlignmentFaultFixup */
+    else if (a2 == 12) {                                                   /* ProcessDefaultHardErrorMode */
+        UINT32 mode;
+        if (a4 != 4) st = ST_INFO_LENGTH_MISMATCH;
+        else if (!NT_SUCCESS(CopyFromUser(&mode, (const void *)(uintptr_t)a3, 4))) st = ST_ACCESS_VIOLATION;
+        else p->auto_align = (mode & 4) != 0;                               /* SEM_NOALIGNMENTFAULTEXCEPT */
+    }
     if (ob) um_ob_unref(ob);
     return st;
 }

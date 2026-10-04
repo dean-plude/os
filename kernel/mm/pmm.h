@@ -55,6 +55,12 @@ uintptr_t pmm_alloc_page(void);
 uintptr_t pmm_alloc_pages(size_t count);
 
 /*
+ * Take the `count` pages starting at @pa, when every one of them is free.
+ * False (and nothing taken) otherwise.
+ */
+bool pmm_claim_pages(uintptr_t pa, size_t count);
+
+/*
  * Free a single physical page previously returned by pmm_alloc_page().
  * @pa must be 4 KiB-aligned.
  */

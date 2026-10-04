@@ -20,6 +20,7 @@
 #include "../arch/x86_64/gdt.h"
 #include "../arch/x86_64/idt.h"
 #include "../ke/smp.h"
+#include "../ke/kpcr.h"
 
 #define CONTEXT_SIZE      0x4D0
 #define RECORD_SIZE       0x98
@@ -33,6 +34,7 @@ typedef struct {
     UINT64 rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi;
     UINT64 r8, r9, r10, r11, r12, r13, r14, r15;
     UINT64 rip, rflags;
+    UINT64 cs;                       /* 0x33 (64-bit) or 0x23 (32-bit code); 0: the process's own */
 } Regs;
 
 /* CONTEXT offsets */
@@ -47,6 +49,24 @@ static void put16(UINT8 *b, UINT16 v) { memcpy(b, &v, 2); }
 static void put32(UINT8 *b, UINT32 v) { memcpy(b, &v, 4); }
 static void put64(UINT8 *b, UINT64 v) { memcpy(b, &v, 8); }
 static UINT64 get64(const UINT8 *b)   { UINT64 v; memcpy(&v, b, 8); return v; }
+static UINT16 get16(const UINT8 *b)   { UINT16 v; memcpy(&v, b, 2); return v; }
+
+/* The code selector a thread of the current process runs with */
+static UINT64 user_cs(void)
+{
+    UmProcess *p = UmCurrent();
+    return p && p->wow ? SEL_USER_CODE32 : SEL_USER_CODE;
+}
+
+/* A program's code selector, as a CONTEXT gives it: the 64-bit (0x33) or
+ * the 32-bit one (0x23) both run in any process, as on Windows, where a
+ * 64-bit program may far-jump to 32-bit code; anything else, 0 (the
+ * process's own) */
+static UINT64 user_selector(UINT64 cs)
+{
+    cs &= 0xFFFF;
+    return cs == SEL_USER_CODE || cs == SEL_USER_CODE32 ? cs : 0;
+}
 
 /* CONTEXT from registers; the FPU/SSE state is the live one */
 static void build_context(UINT8 *c, const Regs *r)
@@ -54,10 +74,10 @@ static void build_context(UINT8 *c, const Regs *r)
     memset(c, 0, CONTEXT_SIZE);
     put32(c + C_FLAGS, CONTEXT_ALL);
     UmProcess *cp = UmCurrent();
-    put16(c + C_CS, cp && cp->wow ? SEL_USER_CODE32 : GDT_USER_CODE | 3);
+    put16(c + C_CS, r->cs ? r->cs : cp && cp->wow ? SEL_USER_CODE32 : SEL_USER_CODE);
     put16(c + C_DS, GDT_USER_DATA | 3);
     put16(c + C_ES, GDT_USER_DATA | 3);
-    put16(c + C_FS, GDT_USER_DATA | 3);
+    put16(c + C_FS, SEL_USER_TEB32);
     put16(c + C_GS, GDT_USER_DATA | 3);
     put16(c + C_SS, GDT_USER_DATA | 3);
     put32(c + C_EFLAGS, (UINT32)r->rflags);
@@ -147,6 +167,10 @@ void UmUserException(void *frame, UINT64 cr2)
     UmProcess *p = UmCurrent();
     UINT64 info[15] = { 0 }, nparams;
     UINT32 code = cpu_status(f->vector, &nparams, info, f->error_code, cr2);
+    if (f->vector == 13 && UmGpFault(f->rip, &code, &nparams)) {   /* an alignment fixup: run it again */
+        if (UmTraced(p, true)) kprintf("[TRACE] %s: alignment fault fixed up at 0x%llx\n", p->name, (unsigned long long)f->rip);
+        return;
+    }
     if (f->vector == 14) {                                       /* a guard page (PAGE_GUARD) */
         int g = UmGuardFault(cr2);
         if (g == 1) return;                                      /* a stack grew */
@@ -163,6 +187,13 @@ void UmUserException(void *frame, UINT64 cr2)
         }
     }
     UINT64 addr = f->vector == 3 ? f->rip - 1 : f->rip;          /* int3: report the instruction */
+    if (UmTraced(p, true)) {                                     /* "trace +NAME": the exceptions too */
+        const UmModule *m = um_module_at(p, f->rip);
+        kprintf("[TRACE] %s %u/%u: exception %08x (vector %llu, error %llx, address %llx) at %s+0x%llx\n",
+                p->name, (unsigned)p->pid, (unsigned)UmCurrentThread()->tid, code, (unsigned long long)f->vector,
+                (unsigned long long)f->error_code, (unsigned long long)cr2, m ? m->name : "?",
+                (unsigned long long)(f->rip - (m ? m->base : 0)));
+    }
 
     /* Touching just below a thread's stack: a stack overflow */
     UmThread *t = UmCurrentThread();
@@ -171,7 +202,8 @@ void UmUserException(void *frame, UINT64 cr2)
         UmFaultAt(0xC00000FDu, addr, cr2, f->rsp);
 
     Regs r = { f->rax, f->rcx, f->rdx, f->rbx, f->rsp, f->rbp, f->rsi, f->rdi,
-               f->r8, f->r9, f->r10, f->r11, f->r12, f->r13, f->r14, f->r15, addr, f->rflags };
+               f->r8, f->r9, f->r10, f->r11, f->r12, f->r13, f->r14, f->r15, addr, f->rflags,
+               user_selector(f->cs) };
     if (p->wow) {                                                /* 32-bit: the upper halves mean nothing */
         UINT64 *g = &r.rax;
         for (int i = 0; i < 8; i++) g[i] &= 0xFFFFFFFFu;
@@ -197,6 +229,9 @@ void UmUserException(void *frame, UINT64 cr2)
     if (!push_exception(p, &r, ctx, rec))
         UmFaultAt(code, addr, nparams == 2 ? info[1] : 0, r.rsp);
     f->rip = r.rip; f->rsp = r.rsp; f->rcx = r.rcx; f->rdx = r.rdx; f->rflags = r.rflags;
+    /* the dispatcher runs in the process's own mode, though the fault came
+     * from 32-bit code a 64-bit program far-jumped to (the CONTEXT says 0x23) */
+    f->cs = user_cs(); f->ss = SEL_USER_DATA;
 }
 
 /* -----------------------------------------------------------------------
@@ -234,13 +269,6 @@ static void __attribute__((naked, noreturn)) iret_to(const Regs *r __attribute__
         : : [ss] "i"(GDT_USER_DATA | 3));
 }
 
-/* The code selector a thread of the current process runs with */
-static UINT64 user_cs(void)
-{
-    UmProcess *p = UmCurrent();
-    return p && p->wow ? SEL_USER_CODE32 : GDT_USER_CODE | 3;
-}
-
 /* Registers (and FPU state) from a user CONTEXT, made safe to IRET to */
 static bool load_context(const UINT8 *c, Regs *r)
 {
@@ -250,6 +278,8 @@ static bool load_context(const UINT8 *c, Regs *r)
     UINT32 fl;
     memcpy(&fl, c + C_EFLAGS, 4);
     r->rflags = (fl & USER_FLAGS) | 0x202;
+    r->cs = user_selector(get16(c + C_CS));
+    if (!r->cs) r->cs = user_cs();
     if (r->rip > USER_TOP || r->rsp > USER_TOP) return false;    /* IRET would fault in the kernel */
     UmProcess *cp = UmCurrent();
     if (cp && cp->wow && (r->rip > 0xFFFFFFFFu || r->rsp > 0xFFFFFFFFu)) return false;   /* 32-bit */
@@ -285,7 +315,7 @@ static UINT64 sys_continue(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     cli();
     UmReturnToUser();                                            /* killed meanwhile? */
     bkl_leave_kernel();                                               /* back to user mode */
-    iret_to(&r, user_cs());
+    iret_to(&r, r.cs);
 }
 
 /* NtRaiseException(PEXCEPTION_RECORD, PCONTEXT, BOOLEAN FirstChance) */
@@ -308,7 +338,7 @@ static UINT64 sys_raise_exception(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     cli();
     UmReturnToUser();
     bkl_leave_kernel();
-    iret_to(&r, user_cs());
+    iret_to(&r, r.cs);
 }
 
 /* -----------------------------------------------------------------------
@@ -332,10 +362,59 @@ static UmThread *stopped_thread(UINT64 h, UmObject **ref)
     return t;
 }
 
+/* Is @h the calling thread (NtCurrentThread() or a handle to it)? */
+static bool is_self(UINT64 h)
+{
+    UmObject *o = um_handle_object(UmCurrent(), h, UO_THREAD);
+    if (!o) return false;
+    bool self = (UmThread *)o == UmCurrentThread();
+    um_ob_unref(o);
+    return self;
+}
+
+/* The calling thread's registers as its system call left user mode with
+ * them: what Windows' trap frame gives NtGetContextThread on the thread
+ * itself (anti-cheat code reads its own registers this way).  A
+ * 64-bit SYSCALL keeps them below the kernel stack's top
+ * (syscall_entry.asm); RCX and R11 hold the return address and flags, as
+ * the instruction leaves them.  A 32-bit program's int 0x2E has a frame. */
+static void own_registers(Regs *r)
+{
+    memset(r, 0, sizeof(*r));
+    UmThread *t = UmCurrentThread();
+    if (UmCurrent()->wow && t->uframe) {
+        const InterruptFrame *f = t->uframe;
+        r->rax = f->rax; r->rcx = f->rcx; r->rdx = f->rdx; r->rbx = f->rbx; r->rsp = f->rsp; r->rbp = f->rbp;
+        r->rsi = f->rsi; r->rdi = f->rdi; r->rip = f->rip; r->rflags = f->rflags;
+        return;
+    }
+    const UINT64 *top = (const UINT64 *)(uintptr_t)KiGetCurrentKpcr()->KernelRsp;
+    r->rflags = top[-1]; r->rip = top[-2]; r->rsp = top[-3]; r->rbp = top[-4];
+    r->rdi = top[-5]; r->rsi = top[-6]; r->rbx = top[-7];
+    r->r12 = top[-8]; r->r13 = top[-9]; r->r14 = top[-10]; r->r15 = top[-11];
+    r->rcx = r->rip; r->r11 = r->rflags;
+}
+
 /* NtGetContextThread(HANDLE Thread, PCONTEXT) */
 static UINT64 sys_get_context_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
+    if (is_self(a1)) {                                           /* the caller itself */
+        Regs r;
+        own_registers(&r);
+        UINT32 want;
+        if (!NT_SUCCESS(CopyFromUser(&want, (const void *)(uintptr_t)(a2 + C_FLAGS), 4)))
+            return UM_STATUS_ACCESS_VIOLATION;
+        static UINT8 c[CONTEXT_SIZE];                            /* build_context: interrupts off */
+        IrqState s = irq_save();
+        build_context(c, &r);                                    /* (its FPU state is the live one) */
+        put32(c + C_FLAGS, want);                                /* ContextFlags is the caller's */
+        UINT8 out[CONTEXT_SIZE];
+        memcpy(out, c, CONTEXT_SIZE);
+        irq_restore(s);
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)(a2 + 0x30), out + 0x30, CONTEXT_SIZE - 0x30))
+               ? 0 : UM_STATUS_ACCESS_VIOLATION;
+    }
     UmObject *o;
     UmThread *t = stopped_thread(a1, &o);
     if (!t) return 0xC0000001u;                                  /* STATUS_UNSUCCESSFUL */
@@ -348,6 +427,7 @@ static UINT64 sys_get_context_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         r.rax = f->rax; r.rcx = f->rcx; r.rdx = f->rdx; r.rbx = f->rbx; r.rsp = f->rsp; r.rbp = f->rbp;
         r.rsi = f->rsi; r.rdi = f->rdi; r.r8 = f->r8; r.r9 = f->r9; r.r10 = f->r10; r.r11 = f->r11;
         r.r12 = f->r12; r.r13 = f->r13; r.r14 = f->r14; r.r15 = f->r15; r.rip = f->rip; r.rflags = f->rflags;
+        r.cs = user_selector(f->cs);
     } else {
         /* in a system call: as if the ntdll stub had just returned to its caller */
         UINT64 sp = t->kt ? t->kt->user_rsp : 0, ret = 0;
@@ -376,6 +456,39 @@ static UINT64 sys_set_context_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     (void)a3; (void)a4;
     UINT8 c[CONTEXT_SIZE];
     if (!NT_SUCCESS(CopyFromUser(c, (const void *)(uintptr_t)a2, CONTEXT_SIZE))) return UM_STATUS_ACCESS_VIOLATION;
+    if (is_self(a1) && !UmCurrent()->wow) {                      /* the caller: resumes there, */
+        Regs r;                                                  /* as Windows' trap frame would */
+        own_registers(&r);
+        UINT32 cflags;
+        memcpy(&cflags, c + C_FLAGS, 4);
+        static UINT8 cur[CONTEXT_SIZE];                          /* build_context: interrupts off */
+        IrqState s = irq_save();
+        build_context(cur, &r);
+        if (cflags & 0x1) {                                      /* CONTEXT_CONTROL */
+            memcpy(cur + C_CS, c + C_CS, 2); memcpy(cur + C_SS, c + C_SS, 2);
+            memcpy(cur + C_EFLAGS, c + C_EFLAGS, 4);
+            memcpy(cur + C_RIP, c + C_RIP, 8);
+            memcpy(cur + C_RAX + 0x20, c + C_RAX + 0x20, 8);     /* Rsp */
+            memcpy(cur + C_RAX + 0x28, c + C_RAX + 0x28, 8);     /* Rbp */
+        }
+        if (cflags & 0x2)                                        /* CONTEXT_INTEGER, Rsp/Rbp aside */
+            for (int i = 0; i < 16; i++)
+                if (i != 4 && i != 5) memcpy(cur + C_RAX + 8 * i, c + C_RAX + 8 * i, 8);
+        put32(cur + C_FLAGS, cflags & 0x8 ? 0x0010000Fu : 0x00100007u);
+        if (cflags & 0x8) {                                      /* CONTEXT_FLOATING_POINT */
+            memcpy(cur + C_FLT, c + C_FLT, 512);
+            memcpy(cur + C_MXCSR, c + C_MXCSR, 4);
+        }
+        UINT8 in[CONTEXT_SIZE];
+        memcpy(in, cur, CONTEXT_SIZE);
+        irq_restore(s);
+        if (!load_context(in, &r)) return 0xC000000Du;
+        r.rax = 0;                                               /* STATUS_SUCCESS */
+        cli();
+        UmReturnToUser();
+        bkl_leave_kernel();
+        iret_to(&r, r.cs);
+    }
     UmObject *o;
     UmThread *t = stopped_thread(a1, &o);
     if (!t) return 0xC0000001u;
@@ -394,6 +507,8 @@ static UINT64 sys_set_context_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (cflags & 0x1) {                                          /* CONTEXT_CONTROL */
         f->rip = r.rip; f->rsp = r.rsp;
         f->rflags = (fl & USER_FLAGS) | 0x202;
+        UINT64 cs = user_selector(get16(c + C_CS));
+        if (cs) f->cs = cs;                                      /* 0x33 or 0x23 (32-bit code) */
     }
     if (cflags & 0x2) {                                          /* CONTEXT_INTEGER */
         f->rax = r.rax; f->rcx = r.rcx; f->rdx = r.rdx; f->rbx = r.rbx; f->rbp = r.rbp;

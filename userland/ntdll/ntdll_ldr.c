@@ -24,6 +24,7 @@ int strcmp(const char *a, const char *b);
 
 extern void RtlNovaInitExceptions(void);       /* ntdll_exc.c */
 extern void RtlNovaInitProcess(void);          /* ntdll_rtl.c */
+extern BOOL ntdll_run_apcs(void);              /* ntdll_rtl.c */
 
 /* -----------------------------------------------------------------------
  * Module registry (mirrors the kernel's list, plus per-module TLS state)
@@ -384,7 +385,7 @@ static void ldr_init_process(void)
     setup_thread_tls();                              /* first thread's TLS before any DllMain */
     attach_new_modules(first);
     g_process_ready = 1;
-    NtTestAlert();                                   /* APCs the DLLs queued to this thread (as Windows) */
+    ntdll_run_apcs();                                /* APCs the DLLs queued to this thread (as Windows) */
 }
 
 /* -----------------------------------------------------------------------
@@ -438,6 +439,128 @@ NTSTATUS NTAPI LdrDisableThreadCalloutsForDll(PVOID base)
 {
     for (int i = 0; i < g_nmod; i++) if (g_mod[i].base == base) { g_mod[i].no_thread_calls = TRUE; return STATUS_SUCCESS; }
     return STATUS_DLL_NOT_FOUND;
+}
+
+/* Modules stay mapped once loaded, so a reference (LDR_ADDREF_DLL_PIN or
+ * not) only has to name a loaded one, and unloading leaves it in place
+ * (as FreeLibrary) */
+NTSTATUS NTAPI LdrAddRefDll(ULONG flags, PVOID base)
+{
+    if (flags & ~1u) return STATUS_INVALID_PARAMETER;
+    for (int i = 0; i < g_nmod; i++) if (g_mod[i].base == base) return STATUS_SUCCESS;
+    return STATUS_DLL_NOT_FOUND;
+}
+
+NTSTATUS NTAPI LdrUnloadDll(PVOID base)
+{
+    for (int i = 0; i < g_nmod; i++) if (g_mod[i].base == base) return STATUS_SUCCESS;
+    return STATUS_DLL_NOT_FOUND;
+}
+
+/* -----------------------------------------------------------------------
+ * Resources: LDR_RESOURCE_INFO { Type, Name, Language } (each an integer
+ * id or a name), walked @level directories deep (1 = the type's
+ * directory, 2 = the name's, 3 = the language's data entry).  Language 0
+ * takes the first one listed.
+ * ----------------------------------------------------------------------- */
+#define ST_RES_DATA_NOT_FOUND ((NTSTATUS)0xC0000089)
+#define ST_RES_TYPE_NOT_FOUND ((NTSTATUS)0xC000008A)
+#define ST_RES_NAME_NOT_FOUND ((NTSTATUS)0xC000008B)
+#define ST_RES_LANG_NOT_FOUND ((NTSTATUS)0xC0000204)
+
+static int res_eq(const BYTE *root, DWORD off, const WCHAR *want)
+{
+    const WORD *s = (const WORD *)(root + (off & 0x7FFFFFFF));
+    for (WORD i = 0; i < s[0]; i++) {
+        WCHAR a = s[1 + i], b = want[i];
+        if (!b) return 0;
+        if (a >= 'a' && a <= 'z') a -= 32;
+        if (b >= 'a' && b <= 'z') b -= 32;
+        if (a != b) return 0;
+    }
+    return want[s[0]] == 0;
+}
+
+/* The entry for @id in the directory at @dir (the first if @id is 0), or 0xFFFFFFFF */
+static DWORD res_entry(const BYTE *root, DWORD dir, ULONG_PTR id)
+{
+    const BYTE *d = root + dir;
+    WORD named = *(const WORD *)(d + 12), ids = *(const WORD *)(d + 14);
+    const DWORD *e = (const DWORD *)(d + 16);
+    for (int i = 0; i < named + ids; i++, e += 2) {
+        if (!id) return e[1];
+        if (id < 0x10000 ? i >= named && e[0] == id : i < named && res_eq(root, e[0], (const WCHAR *)id)) return e[1];
+    }
+    return 0xFFFFFFFF;
+}
+
+static NTSTATUS res_walk(PVOID base, const ULONG_PTR *info, ULONG level, const BYTE **out)
+{
+    IMAGE_DATA_DIRECTORY *d = dir_of(base, IMAGE_DIRECTORY_ENTRY_RESOURCE);
+    if (!d || !d->VirtualAddress) return ST_RES_DATA_NOT_FOUND;
+    const BYTE *root = (const BYTE *)base + d->VirtualAddress;
+    static const NTSTATUS miss[3] = { ST_RES_TYPE_NOT_FOUND, ST_RES_NAME_NOT_FOUND, ST_RES_LANG_NOT_FOUND };
+    DWORD at = 0;
+    for (ULONG i = 0; i < level && i < 3; i++) {
+        DWORD e = res_entry(root, at, info[i]);
+        if (e == 0xFFFFFFFF && i == 2 && info[2]) e = res_entry(root, at, 0);
+        if (e == 0xFFFFFFFF || (i < 2) != !!(e & 0x80000000)) return miss[i];
+        at = e & 0x7FFFFFFF;
+    }
+    *out = root + at;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NTAPI LdrFindResource_U(PVOID base, const ULONG_PTR *info, ULONG level, PVOID *entry)
+{
+    const BYTE *p;
+    if (!info || level < 1 || level > 3) return STATUS_INVALID_PARAMETER;
+    NTSTATUS s = res_walk(base, info, level, &p);
+    if (s == STATUS_SUCCESS && level < 3) return ST_RES_DATA_NOT_FOUND;   /* a directory, not data */
+    if (entry) *entry = s == STATUS_SUCCESS ? (PVOID)p : 0;
+    return s;
+}
+
+NTSTATUS NTAPI LdrFindResourceDirectory_U(PVOID base, const ULONG_PTR *info, ULONG level, PVOID *dir)
+{
+    const BYTE *p;
+    if (!info || level > 2) return STATUS_INVALID_PARAMETER;
+    NTSTATUS s = res_walk(base, info, level, &p);
+    if (dir) *dir = s == STATUS_SUCCESS ? (PVOID)p : 0;
+    return s;
+}
+
+/* LdrResSearchResource(DllHandle, ResourceInfo, Level, Flags, Resource,
+ * Size, Reserved, Reserved): LdrFindResource_U and LdrAccessResource in
+ * one call (what kernel32's version API and programs reading a module's
+ * version use); the flags choose MUI fallbacks, and NovaOS has no MUI
+ * files, so the module's own resource is the answer */
+NTSTATUS NTAPI LdrResSearchResource(PVOID base, const ULONG_PTR *info, ULONG level, ULONG flags, PVOID *res, SIZE_T *size,
+                                    PVOID r1, PVOID r2)
+{
+    (void)flags; (void)r1; (void)r2;
+    const BYTE *p;
+    if (!info || level < 1 || level > 3) return STATUS_INVALID_PARAMETER;
+    NTSTATUS s = res_walk(base, info, level, &p);
+    if (s != STATUS_SUCCESS) return s;
+    if (level < 3) {                                      /* a directory */
+        if (res) *res = (PVOID)p;
+        if (size) *size = 0;
+        return STATUS_SUCCESS;
+    }
+    if (res) *res = (BYTE *)base + ((const DWORD *)p)[0];
+    if (size) *size = ((const DWORD *)p)[1];
+    return STATUS_SUCCESS;
+}
+
+/* The data of an IMAGE_RESOURCE_DATA_ENTRY { OffsetToData (an RVA), Size, ... } */
+NTSTATUS NTAPI LdrAccessResource(PVOID base, const VOID *entry, PVOID *addr, PULONG size)
+{
+    if (!base || !entry) return STATUS_INVALID_PARAMETER;
+    const DWORD *e = entry;
+    if (addr) *addr = (BYTE *)base + e[0];
+    if (size) *size = e[1];
+    return STATUS_SUCCESS;
 }
 
 /* Export lookup shared with kernel32's GetProcAddress */

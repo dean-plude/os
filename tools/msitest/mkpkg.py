@@ -27,6 +27,15 @@ tools/build_userland.py runs it and puts what it writes in C:\\Tests\\Msi:
   scriptfail.msi "Nova Script Failure": a JScript action that throws but
               may fail (0x40, ignored), then a VBScript one that raises an
               error: the installation fails and is rolled back
+  wow32.msi   "Nova WoW32 Test", a 32-bit package (Template "Intel;1033"):
+              app.txt in C:\\Programs\\NovaWow32 and novawow32.txt in its
+              SystemFolder, which is SysWOW64 on 64-bit Windows
+  wow64.msi   "Nova WoW64 Test", the same as a 64-bit package: its
+              novawow64.txt goes to System32 (msiqtest installs both)
+  wow32v2.msi "Nova WoW32 Test" 2.0.0, a new product code for the same
+              upgrade code: its Upgrade table finds 1.0.0 (below 2.0.0) and
+              removes it, and fails the install (a type 19 action) if it
+              finds a version above 2.0.0, as the Visual C++ runtimes do
 
 Each package is written by mkmsi.py; nothing here needs msitools.
 """
@@ -136,6 +145,50 @@ def script_fail():
     return db
 
 
+WOW32 = '{6E1D0C3A-5A1B-4C2D-8E3F-000000003201}'
+WOW32_UP = '{6E1D0C3A-5A1B-4C2D-8E3F-0000000032F1}'
+WOW64 = '{6E1D0C3A-5A1B-4C2D-8E3F-000000006401}'
+WOW64_UP = '{6E1D0C3A-5A1B-4C2D-8E3F-0000000064F1}'
+
+
+def wow(bits):
+    """A package with one file in its program folder and one in SystemFolder"""
+    code, up = (WOW32, WOW32_UP) if bits == 32 else (WOW64, WOW64_UP)
+    sysfile = 'novawow%d.txt' % bits
+    db = mkmsi.package('Nova WoW%d Test' % bits, '1.0.0', code, up, 'NovaWow%d' % bits,
+                       [('app.txt', 'app.txt', b'app\n'), ('sys', sysfile, b'%d-bit\n' % bits)])
+    db.summary[mkmsi.PID_TEMPLATE] = 'Intel;1033' if bits == 32 else 'x64;1033'
+    db.add('Directory', ('SystemFolder', 'TARGETDIR', '.'))
+    for row in db.tables['Component'].rows:
+        if bits == 32:
+            row[3] = 0                     # (no msidbComponentAttributes64bit)
+        if row[0] == 'C_sys':
+            row[2] = 'SystemFolder'
+    return db
+
+
+WOW32B = '{6E1D0C3A-5A1B-4C2D-8E3F-000000003202}'
+UPGRADE = [('UpgradeCode', 's38*'), ('VersionMin', 'S20*'), ('VersionMax', 'S20*'), ('Language', 'S255*'),
+           ('Attributes', 'i4*'), ('Remove', 'S255'), ('ActionProperty', 's72')]
+
+
+def wow32_v2():
+    db = wow(32)
+    for row in db.tables['Property'].rows:
+        if row[0] == 'ProductVersion':
+            row[1] = '2.0.0'
+        if row[0] == 'ProductCode':
+            row[1] = WOW32B
+    db.table('Upgrade', UPGRADE)
+    # 0x100 VersionMin inclusive, 0x2 OnlyDetect
+    db.add('Upgrade', (WOW32_UP, None, '2.0.0', None, 0, None, 'OLDERFOUND'),
+           (WOW32_UP, '2.0.0', None, None, 0x2, None, 'NEWERFOUND'))
+    db.add('CustomAction', ('BlockOlder', 19, None, 'A later version of Nova WoW32 Test is already installed'))
+    db.add('InstallExecuteSequence', ('FindRelatedProducts', None, 200), ('BlockOlder', 'NEWERFOUND', 210),
+           ('RemoveExistingProducts', None, 1450))
+    return db
+
+
 def main():
     out, exe = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -150,6 +203,9 @@ def main():
     service(tool).write(os.path.join(out, 'service.msi'))
     script().write(os.path.join(out, 'script.msi'))
     script_fail().write(os.path.join(out, 'scriptfail.msi'))
+    wow(32).write(os.path.join(out, 'wow32.msi'))
+    wow(64).write(os.path.join(out, 'wow64.msi'))
+    wow32_v2().write(os.path.join(out, 'wow32v2.msi'))
 
 
 if __name__ == '__main__':

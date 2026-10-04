@@ -79,7 +79,7 @@ def cflags():
 # directory, not an edit to a list here:
 #   deps      the DLLs it links against (built first)
 #   base      x64 load address; base_x86 the 32-bit one.  Leave both out
-#             and the DLL gets a free slot (AUTO_X64: 16 MiB, AUTO_X86: 4 MiB),
+#             and the DLL gets a free 16 MiB slot (AUTO_X64 / AUTO_X86),
 #             so two changes adding DLLs never pick the same address
 #   sources   directories its .c files come from (default: its own)
 #   entry     "DllMain" for DLLs with an entry point
@@ -101,10 +101,7 @@ def cflags():
 import json
 SLOT = 0x01000000
 AUTO_X64 = (0x7FFD00000000, 0x7FFE00000000)
-AUTO_X86 = (0x97000000, 0xC0000000)
-# 32-bit DLLs get 4 MiB slots (the largest is under 2 MiB; check_overlaps
-# catches one that outgrows its slot): 16 MiB ones filled AUTO_X86
-SLOTS_OF = {'base': SLOT, 'base_x86': 0x00400000}
+AUTO_X86 = (0x97000000, 0xF0000000)        # (cabinet.dll and msxml6.dll filled 0x97000000-0xC0000000)
 
 def load_manifests():
     """{name: manifest} for every userland/*/dll.json, in link order (each
@@ -131,18 +128,16 @@ def load_manifests():
                     raise SystemExit(f'userland/{n}/dll.json: {key} {m[key]:#x} is also '
                                      f'userland/{taken[m[key]]}\'s; leave it out to get a free one')
                 taken[m[key]] = n
-        slot, span = lo, {}                  # (a fixed base keeps a 16 MiB slot)
+        slot = lo
         for n in sorted(found):
             if key in found[n]:
                 continue
-            size = SLOTS_OF[key]
-            while any(b <= slot < b + span.get(b, SLOT) or slot <= b < slot + size for b in taken):
-                slot += size
+            while any(b <= slot < b + SLOT or slot <= b < slot + SLOT for b in taken):
+                slot += SLOT
             if slot >= hi:
                 raise SystemExit(f'no free {arch} DLL slot left for {n}')
             found[n][key] = slot
             taken[slot] = n
-            span[slot] = size
     order, state = [], {}
     def visit(n, chain):
         if state.get(n) == 'done':
@@ -575,11 +570,22 @@ if os.environ.get('NOVA_NO_WOW64') != '1':
     built.append(('\\Windows\\SysWOW64\\icu.dll', os.path.join(ICU, 'x86', 'icu.dll')))
 built.append(('\\Windows\\Globalization\\ICU\\icudt77l.dat', os.path.join(ICU, 'icudt77l.dat')))
 
-# 3a1. the trusted roots secur32's Schannel checks certificates against
-# (the kernel's Mozilla list, as DER certificates back to back)
+# 3a1. the trusted roots secur32's Schannel and crypt32's chains check
+# certificates against (32-bit programs read C:\Windows\System32 as
+# SysWOW64): the kernel's Mozilla list (DER certificates back to back),
+# then the code-signing roots Windows trusts that the list lacks
+# (userland/crypt32/roots, one certificate per file: Microsoft's, which the
+# Authenticode chains of Windows software end in)
 roots = os.path.join(out, 'ca-bundle.der')
 build_netsurf.root_bundle(roots)
+CS_ROOTS = os.path.join(HERE, 'crypt32', 'roots')
+with open(roots, 'ab') as f:
+    for n in sorted(os.listdir(CS_ROOTS)):
+        if n.endswith('.cer'):
+            f.write(open(os.path.join(CS_ROOTS, n), 'rb').read())
 built.append(('\\Windows\\System32\\ca-bundle.der', roots))
+if os.environ.get('NOVA_NO_WOW64') != '1':
+    built.append(('\\Windows\\SysWOW64\\ca-bundle.der', roots))
 
 # 3a2. the Windows Installer packages the msitest self-test installs
 # (tools/msitest/mkpkg.py writes them; their programs are copies of msitest)
@@ -588,6 +594,13 @@ run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'msitest', 'mk
      os.path.join(out, 'msitest.exe')])
 for n in sorted(os.listdir(msipkg)):
     built.append((f'\\Tests\\Msi\\{n}', os.path.join(msipkg, n)))
+# 3a2b. the Authenticode self-test's signed files (authtest.exe), made by
+# tools/authenticode/mktests.py from copies of hello.exe
+authdir = os.path.join(out, 'authenticode')
+run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'authenticode', 'mktests.py'), authdir,
+     os.path.join(out, 'hello.exe'), os.path.join(out, 'x86' if 'x86' in passes else '', 'hello.exe')])
+for n in sorted(os.listdir(authdir)):
+    built.append((f'\\Tests\\Authenticode\\{n}', os.path.join(authdir, n)))
 # 3a3. the General MIDI soundfont winmm's synthesizer plays (generated)
 sf2 = os.path.join(out, 'gm.sf2')
 run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'make_gm_soundfont.py'), sf2])

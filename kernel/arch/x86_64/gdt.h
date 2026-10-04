@@ -28,14 +28,22 @@
 
 #include "../../include/types.h"
 
-/* Selector values */
+/* Selector values: Windows' x64 layout (KGDT64_* in the WDK's ntddk.h),
+ * which programs see and depend on.  The user selectors are 0x23 (32-bit
+ * code), 0x2B (data and stack), 0x33 (64-bit code) and 0x53 (the 32-bit
+ * TEB that FS addresses); code that far-jumps to 0x23 to run 32-bit code
+ * in a 64-bit process ("heaven's gate" in reverse, as Roblox's Hyperion
+ * does) and back to 0x33 finds what it expects.  SYSCALL/SYSRET force the
+ * order: kernel CS, then kernel SS 8 above it; user 32-bit CS, then SS 8
+ * above it, then 64-bit CS 16 above it (syscall.c). */
 #define GDT_NULL          0x00
-#define GDT_KERNEL_CODE   0x08
-#define GDT_KERNEL_DATA   0x10
-#define GDT_USER_DATA     0x18   /* DPL=3: selector | 3 = 0x1B */
-#define GDT_USER_CODE     0x20   /* DPL=3: selector | 3 = 0x23 */
-#define GDT_TSS           0x28   /* 16 bytes — two consecutive slots */
-#define GDT_USER_CODE32   0x38   /* DPL=3, 32-bit (compatibility mode): 0x3B, for 32-bit programs */
+#define GDT_KERNEL_CODE   0x10   /* KGDT64_R0_CODE */
+#define GDT_KERNEL_DATA   0x18   /* KGDT64_R0_DATA */
+#define GDT_USER_CODE32   0x20   /* KGDT64_R3_CMCODE, DPL=3, 32-bit (compatibility mode): 0x23 */
+#define GDT_USER_DATA     0x28   /* KGDT64_R3_DATA,   DPL=3: selector | 3 = 0x2B */
+#define GDT_USER_CODE     0x30   /* KGDT64_R3_CODE,   DPL=3: selector | 3 = 0x33 */
+#define GDT_TSS           0x40   /* KGDT64_SYS_TSS: 16 bytes, two consecutive slots */
+#define GDT_USER_TEB32    0x50   /* KGDT64_R3_CMTEB,  DPL=3: 0x53, based at a 32-bit thread's TEB */
 
 /* RPL (Requested Privilege Level) ORed into selectors for ring-3 use */
 #define RPL_RING0  0
@@ -45,9 +53,17 @@
 #define SEL_USER_CODE   (GDT_USER_CODE | RPL_RING3)
 #define SEL_USER_DATA   (GDT_USER_DATA | RPL_RING3)
 #define SEL_USER_CODE32 (GDT_USER_CODE32 | RPL_RING3)
+#define SEL_USER_TEB32  (GDT_USER_TEB32 | RPL_RING3)
 
-/* Number of regular 8-byte entries */
-#define GDT_ENTRY_COUNT   8   /* null + kcode + kdata + udata + ucode + tss_lo + tss_hi + ucode32 */
+/* SYSCALL loads SS from kernel CS + 8; SYSRET loads SS from 32-bit CS + 8
+ * and 64-bit CS from 32-bit CS + 16 */
+_Static_assert(GDT_KERNEL_DATA == GDT_KERNEL_CODE + 8, "SYSCALL selector order");
+_Static_assert(GDT_USER_DATA == GDT_USER_CODE32 + 8 && GDT_USER_CODE == GDT_USER_CODE32 + 16,
+               "SYSRET selector order");
+
+/* Number of regular 8-byte entries: 0x00-0x68, Windows' limit of 0x6F
+ * (0x08 and 0x60-0x68 are left empty) */
+#define GDT_ENTRY_COUNT   14
 
 /* Raw 64-bit GDT entry */
 typedef struct __packed {
@@ -98,7 +114,7 @@ typedef struct __packed {
 /* Per-CPU GDT state */
 typedef struct {
     GdtEntry64    entries[GDT_ENTRY_COUNT];
-    TssDescriptor tss_descriptor;   /* Overlaps entries[5..6] — accessed as 16 bytes */
+    TssDescriptor tss_descriptor;   /* Copied over entries[8..9] (GDT_TSS) */
     Tss64         tss;
 } __aligned(16) CpuGdt;
 
@@ -127,3 +143,10 @@ void gdt_reload_segments(void);
  * Called on every context switch so each thread gets its own kernel stack.
  */
 void gdt_set_rsp0(uintptr_t rsp0);
+
+/*
+ * Point this CPU's 0x53 descriptor at a 32-bit thread's TEB (FS's base
+ * also comes from MSR_IA32_FSBASE; the descriptor serves a program that
+ * reloads FS).  Called on every switch to a user thread.
+ */
+void gdt_set_teb32(uint32_t base);

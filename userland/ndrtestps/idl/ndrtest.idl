@@ -1,0 +1,17 @@
+import "ndrbase.idl";
+typedef struct NdrPoint { short x; LONG y; double z; } NdrPoint;
+typedef struct NdrNamed { LONG id; [string] WCHAR *name; } NdrNamed;
+typedef struct NdrVec { ULONG n; [size_is(n)] LONG items[]; } NdrVec;
+[object, uuid(6e0f3a10-4d2b-4c55-9a51-7c0de0a1b002)]
+interface INdrTest : INdrBase {
+    HRESULT Echo([in, string] const WCHAR *in, [out, string] WCHAR **out);
+    HRESULT Sum([in] ULONG n, [in, size_is(n)] const LONG *v, [out] hyper *total);
+    HRESULT Fill([in] ULONG n, [in] BYTE seed, [out, size_is(n)] BYTE *buf);
+    HRESULT Scale([in] double d, [in] float f, [in] short s, [in] BYTE c, [in] hyper h, [in] double e, [out] double *r);
+    HRESULT Move([in] NdrPoint by, [in, out] NdrPoint *p);
+    HRESULT Maybe([in, unique] LONG *v, [out] LONG *got);
+    HRESULT List([in] ULONG n, [out] ULONG *count, [out, size_is(, *count)] LONG **items);
+    HRESULT Rename([in, out] NdrNamed *n);
+    HRESULT Total([in] NdrVec *v, [out] LONG *total);
+    HRESULT Fail([in] HRESULT hr);
+}

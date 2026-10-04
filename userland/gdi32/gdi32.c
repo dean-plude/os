@@ -657,6 +657,39 @@ static int dib_565(const BITMAPINFO *bi)
     return bi->bmiHeader.biCompression == BI_BITFIELDS && *(const DWORD *)((const BYTE *)bi + 40) == 0xF800;
 }
 
+/* A 16- or 32-bit DIB's red, green and blue masks: its own with
+ * BI_BITFIELDS (Mesa presents 5:6:5 and 4:4:4:4 frames with them),
+ * otherwise 5:5:5 or 8:8:8 */
+static void dib_masks(const BITMAPINFO *bi, DWORD m[3])
+{
+    const BITMAPINFOHEADER *h = &bi->bmiHeader;
+    if ((h->biCompression == BI_BITFIELDS || h->biCompression == 6 /* BI_ALPHABITFIELDS */) &&
+        (h->biBitCount == 16 || h->biBitCount == 32)) {
+        const DWORD *f = (const DWORD *)((const BYTE *)bi + 40);
+        m[0] = f[0]; m[1] = f[1]; m[2] = f[2];
+    } else if (h->biBitCount == 16) {
+        m[0] = 0x7C00; m[1] = 0x03E0; m[2] = 0x001F;
+    } else {
+        m[0] = 0xFF0000; m[1] = 0x00FF00; m[2] = 0x0000FF;
+    }
+}
+
+/* One channel of a pixel by its mask, scaled to 0..255 */
+static BYTE dib_channel(DWORD v, DWORD mask)
+{
+    if (!mask) return 0;
+    int shift = __builtin_ctz(mask);
+    return (BYTE)((unsigned long long)((v & mask) >> shift) * 255 / (mask >> shift));
+}
+
+/* Whether a 32-bit DIB's pixels are 0x00RRGGBB (copied as they are) */
+static int dib_xrgb(const BITMAPINFO *bi)
+{
+    DWORD m[3];
+    dib_masks(bi, m);
+    return m[0] == 0xFF0000 && m[1] == 0x00FF00 && m[2] == 0x0000FF;
+}
+
 GDIAPI HBITMAP CreateDIBSection(HDC h, const BITMAPINFO *bi, UINT usage, void **bits, HANDLE section, DWORD offset)
 {
     (void)h;
@@ -901,12 +934,11 @@ static COLORREF dib_pixel(const BITMAPINFO *bi, const BYTE *bits, int x, int y)
     int stride = ((h->biWidth * h->biBitCount + 31) / 32) * 4;
     const BYTE *p = bits + (size_t)row * stride;
     switch (h->biBitCount) {
-    case 32: p += 4 * x; return RGB(p[2], p[1], p[0]);
     case 24: p += 3 * x; return RGB(p[2], p[1], p[0]);
-    case 16: {
-        WORD v = ((const WORD *)p)[x];
-        if (dib_565(bi)) return RGB((v >> 11 & 31) * 255 / 31, (v >> 5 & 63) * 255 / 63, (v & 31) * 255 / 31);
-        return RGB((v >> 10 & 31) * 255 / 31, (v >> 5 & 31) * 255 / 31, (v & 31) * 255 / 31);
+    case 32: case 16: {
+        DWORD m[3], v = h->biBitCount == 32 ? ((const DWORD *)p)[x] : ((const WORD *)p)[x];
+        dib_masks(bi, m);
+        return RGB(dib_channel(v, m[0]), dib_channel(v, m[1]), dib_channel(v, m[2]));
     }
     case 8: case 4: case 1: {
         int idx = h->biBitCount == 8 ? p[x] : h->biBitCount == 4 ? (p[x / 2] >> (x & 1 ? 0 : 4)) & 15 : (p[x / 8] >> (7 - x % 8)) & 1;
@@ -982,7 +1014,7 @@ static int stretch_dib(NOVA_DC *d, int x, int y, int w, int hh, int sx, int sy, 
     if (sh < 0) { sy += sh + 1; sh = -sh; }
     const BITMAPINFOHEADER *bih = &bi->bmiHeader;
     if (!mx && !my && w == sw && hh == sh && bih->biBitCount == 32 && rop == SRCCOPY && !d->rop2 &&
-        (bih->biCompression == BI_RGB || bih->biCompression == 3 /* BI_BITFIELDS, the usual masks */) && d->bits) {
+        (bih->biCompression == BI_RGB || dib_xrgb(bi)) && d->bits) {
         blit_dib32(d, x, y, w, hh, sx, sy, bits, bi);
         flush_window(d, x, y, w, hh);
         dc_sync(d);

@@ -3,11 +3,16 @@
  * files on drive C: keep their own ACLs, which opening, deleting and
  * renaming obey (for restricted tokens too).
  *
+ * SetEntriesInAcl, SDDL and SetNamedSecurityInfo build the ACLs installers
+ * secure folders with (as WiX Burn does its Package Cache): checked as
+ * the elevated token (the linked one, impersonated) and as ourselves.
+ *
  * It leaves C:\AclTest\kept.txt behind with a DACL that denies writing;
  * run again after a restart, it checks that the file still has it (drive
  * C: on NTFS keeps it; on FAT it is gone, and the run says so). */
 #include <stdio.h>
 #include <string.h>
+#include <wchar.h>
 #include <windows.h>
 
 /* (not in our headers yet) */
@@ -42,6 +47,8 @@
 #define ACCESS_DENIED_ACE_TYPE  1
 #endif
 #define FSEC_DELETE_CHILD   0x40
+#define FILE_ALL_ACCESS_    0x1F01FF
+#define CONTAINER_INHERIT_ACE_ 0x02
 WINADVAPI BOOL WINAPI AddAccessAllowedAceEx(PACL acl, DWORD rev, DWORD flags, DWORD mask, PSID sid);
 WINADVAPI BOOL WINAPI GetFileSecurityA(LPCSTR name, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd, DWORD n, LPDWORD need);
 WINADVAPI BOOL WINAPI SetFileSecurityA(LPCSTR name, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd);
@@ -362,6 +369,261 @@ static void file_tests(PSID me, PSID everyone)
     }
 }
 
+/* -----------------------------------------------------------------------
+ * aclapi and SDDL
+ * ----------------------------------------------------------------------- */
+#define CACHE_PATH "C:\\AclTest\\Cache"
+#define SUB_PATH   CACHE_PATH "\\{0b5169e3}"
+#define CACHED     SUB_PATH "\\setup.exe"
+
+/* @acl's ACE @i: its type, flags, mask and SID */
+static BOOL ace_is(PACL acl, DWORD i, BYTE type, BYTE flags, DWORD mask, PSID sid)
+{
+    ACCESS_ALLOWED_ACE *a;
+    if (!acl || i >= acl->AceCount || !GetAce(acl, i, (LPVOID *)&a)) return FALSE;
+    return a->Header.AceType == type && a->Header.AceFlags == flags && a->Mask == mask && EqualSid((PSID)&a->SidStart, sid);
+}
+
+static void ea_sid(EXPLICIT_ACCESS_W *ea, DWORD perms, ACCESS_MODE mode, DWORD inherit, PSID sid)
+{
+    memset(ea, 0, sizeof(*ea));
+    ea->grfAccessPermissions = perms;
+    ea->grfAccessMode = mode;
+    ea->grfInheritance = inherit;
+    BuildTrusteeWithSidW(&ea->Trustee, sid);
+}
+
+/* The linked (elevated) half of our token, as an impersonation token */
+static HANDLE elevated_token(void)
+{
+    HANDLE pt = 0, linked = 0, it = 0;
+    DWORD n = 0;
+    OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &pt);
+    if (pt && GetTokenInformation(pt, TokenLinkedToken, &linked, sizeof(linked), &n) && linked)
+        if (!DuplicateToken(linked, SecurityImpersonation, &it)) it = 0;
+    if (linked) CloseHandle(linked);
+    if (pt) CloseHandle(pt);
+    return it;
+}
+
+/* The ACEs a folder holds: Burn's Package Cache root (SecurePath) */
+static PACL burn_root_acl(PSID admins, PSID system, PSID everyone, PSID users)
+{
+    EXPLICIT_ACCESS_W ea[4];
+    ea_sid(&ea[0], FILE_ALL_ACCESS_, SET_ACCESS, SUB_CONTAINERS_AND_OBJECTS_INHERIT, admins);
+    ea_sid(&ea[1], FILE_ALL_ACCESS_, SET_ACCESS, SUB_CONTAINERS_AND_OBJECTS_INHERIT, system);
+    ea_sid(&ea[2], GENERIC_READ | GENERIC_EXECUTE, SET_ACCESS, SUB_CONTAINERS_AND_OBJECTS_INHERIT, everyone);
+    ea_sid(&ea[3], GENERIC_READ | GENERIC_EXECUTE, SET_ACCESS, SUB_CONTAINERS_AND_OBJECTS_INHERIT, users);
+    PACL acl = 0;
+    return SetEntriesInAclW(4, ea, NULL, &acl) == ERROR_SUCCESS ? acl : NULL;
+}
+
+/* Remove the cache folders (as the elevated token, which they let in) */
+static void remove_cache(HANDLE elev)
+{
+    if (elev) SetThreadToken(0, elev);
+    DeleteFileA(CACHED);
+    RemoveDirectoryA(SUB_PATH);
+    RemoveDirectoryA(CACHE_PATH);
+    if (elev) RevertToSelf();
+}
+
+/* As C:\AclTest\Work's owner: give ourselves full control, then remove it */
+static BOOL let_in_and_remove(PSID me)
+{
+    BYTE buf[128];
+    PACL acl = (PACL)buf;
+    InitializeAcl(acl, sizeof(buf), ACL_REVISION);
+    AddAccessAllowedAce(acl, ACL_REVISION, GENERIC_ALL, me);
+    return SetNamedSecurityInfoW((LPWSTR)L"" DIR_PATH "\\Work", SE_FILE_OBJECT,
+                                 DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, 0, 0, acl, 0) == 0 &&
+           RemoveDirectoryA(DIR_PATH "\\Work");
+}
+
+static void aclapi_tests(PSID me, PSID everyone, PSID users, PSID admins, PSID system)
+{
+    BYTE buf[512];
+    PACL old = (PACL)buf, acl = 0;
+    EXPLICIT_ACCESS_W ea[4];
+    WCHAR name[64];
+
+    /* SetEntriesInAcl: Burn's four entries */
+    acl = burn_root_acl(admins, system, everyone, users);
+    CHECK("SetEntriesInAclW: four entries", acl && acl->AceCount == 4);
+    CHECK("SetEntriesInAclW: Administrators full control, inherited by all",
+          ace_is(acl, 0, ACCESS_ALLOWED_ACE_TYPE, 3, FILE_ALL_ACCESS_, admins));
+    CHECK("SetEntriesInAclW: Users read and execute",
+          ace_is(acl, 3, ACCESS_ALLOWED_ACE_TYPE, 3, GENERIC_READ | GENERIC_EXECUTE, users));
+    DWORD g;
+    CHECK("SetEntriesInAclW's ACL: we may read", check(acl, system, FILE_GENERIC_READ, &g));
+    CHECK("SetEntriesInAclW's ACL: not write (not elevated)", !check(acl, system, FILE_WRITE_DATA, &g));
+    ULONG n = 0;
+    EXPLICIT_ACCESS_W *got = 0;
+    CHECK("GetExplicitEntriesFromAclW", GetExplicitEntriesFromAclW(acl, &n, &got) == ERROR_SUCCESS && n == 4 && got &&
+          got[1].grfAccessMode == GRANT_ACCESS && got[1].grfInheritance == 3 &&
+          got[1].Trustee.TrusteeForm == TRUSTEE_IS_SID && EqualSid((PSID)got[1].Trustee.ptstrName, system));
+    LocalFree(got);
+    LocalFree(acl);
+
+    /* merging into an old ACL: GRANT adds to the allow entry, DENY goes
+     * first, inherited entries stay last, SET replaces, REVOKE removes */
+    InitializeAcl(old, sizeof(buf), ACL_REVISION);
+    AddAccessAllowedAceEx(old, ACL_REVISION, INHERITED_ACE, GENERIC_READ, users);
+    AddAccessAllowedAce(old, ACL_REVISION, FILE_READ_DATA, me);
+    ea_sid(&ea[0], FILE_WRITE_DATA, GRANT_ACCESS, NO_INHERITANCE, me);
+    ea_sid(&ea[1], DELETE, DENY_ACCESS, NO_INHERITANCE, everyone);
+    CHECK("SetEntriesInAclW(GRANT, DENY) into an old ACL", SetEntriesInAclW(2, ea, old, &acl) == ERROR_SUCCESS && acl &&
+          acl->AceCount == 3);
+    CHECK("... the deny first", ace_is(acl, 0, ACCESS_DENIED_ACE_TYPE, 0, DELETE, everyone));
+    CHECK("... GRANT added to our entry", ace_is(acl, 1, ACCESS_ALLOWED_ACE_TYPE, 0, FILE_READ_DATA | FILE_WRITE_DATA, me));
+    CHECK("... the inherited entry last", ace_is(acl, 2, ACCESS_ALLOWED_ACE_TYPE, INHERITED_ACE, GENERIC_READ, users));
+    PACL acl2 = 0;
+    ea_sid(&ea[0], GENERIC_READ, SET_ACCESS, SUB_OBJECTS_ONLY_INHERIT, me);
+    CHECK("SetEntriesInAclW(SET) replaces our entry", SetEntriesInAclW(1, ea, acl, &acl2) == ERROR_SUCCESS && acl2 &&
+          acl2->AceCount == 3 && ace_is(acl2, 1, ACCESS_ALLOWED_ACE_TYPE, OBJECT_INHERIT_ACE, GENERIC_READ, me));
+    LocalFree(acl2);
+    ea_sid(&ea[0], 0, REVOKE_ACCESS, NO_INHERITANCE, me);
+    CHECK("SetEntriesInAclW(REVOKE) removes it", SetEntriesInAclW(1, ea, acl, &acl2) == ERROR_SUCCESS && acl2 &&
+          acl2->AceCount == 2 && ace_is(acl2, 1, ACCESS_ALLOWED_ACE_TYPE, INHERITED_ACE, GENERIC_READ, users));
+    LocalFree(acl2);
+    LocalFree(acl);
+    acl = (PACL)1;
+    CHECK("SetEntriesInAclW(no entries, no ACL): no ACL", SetEntriesInAclW(0, NULL, NULL, &acl) == ERROR_SUCCESS && !acl);
+
+    /* trustees by name */
+    wcscpy(name, L"BUILTIN\\Administrators");
+    BuildExplicitAccessWithNameW(&ea[0], name, GENERIC_ALL, SET_ACCESS, NO_INHERITANCE);
+    BuildExplicitAccessWithNameW(&ea[1], (LPWSTR)L"SYSTEM", GENERIC_ALL, SET_ACCESS, NO_INHERITANCE);
+    BuildExplicitAccessWithNameW(&ea[2], (LPWSTR)L"Everyone", GENERIC_READ, SET_ACCESS, NO_INHERITANCE);
+    BuildExplicitAccessWithNameW(&ea[3], (LPWSTR)L"CURRENT_USER", GENERIC_ALL, SET_ACCESS, NO_INHERITANCE);
+    CHECK("SetEntriesInAclW: trustees by name", SetEntriesInAclW(4, ea, NULL, &acl) == ERROR_SUCCESS && acl &&
+          ace_is(acl, 0, ACCESS_ALLOWED_ACE_TYPE, 0, GENERIC_ALL, admins) &&
+          ace_is(acl, 1, ACCESS_ALLOWED_ACE_TYPE, 0, GENERIC_ALL, system) &&
+          ace_is(acl, 2, ACCESS_ALLOWED_ACE_TYPE, 0, GENERIC_READ, everyone) &&
+          ace_is(acl, 3, ACCESS_ALLOWED_ACE_TYPE, 0, GENERIC_ALL, me));
+    LocalFree(acl);
+    BuildExplicitAccessWithNameW(&ea[0], (LPWSTR)L"Nobody Here", GENERIC_ALL, SET_ACCESS, NO_INHERITANCE);
+    CHECK("SetEntriesInAclW: an unknown name is not mapped", SetEntriesInAclW(1, ea, NULL, &acl) == ERROR_NONE_MAPPED);
+
+    BYTE sid[SECURITY_MAX_SID_SIZE];
+    WCHAR dom[32];
+    DWORD ns = sizeof(sid), nd = 32;
+    SID_NAME_USE use;
+    CHECK("LookupAccountNameW(Users)", LookupAccountNameW(0, L"Users", sid, &ns, dom, &nd, &use) && EqualSid(sid, users) &&
+          use == SidTypeAlias && !wcscmp(dom, L"BUILTIN"));
+    char user[64];
+    DWORD un = sizeof(user);
+    GetUserNameA(user, &un);
+    ns = sizeof(sid);
+    char an[16];
+    DWORD dn = sizeof(an);
+    CHECK("LookupAccountNameA(our user name)", LookupAccountNameA(0, user, sid, &ns, an, &dn, &use) && EqualSid(sid, me) &&
+          use == SidTypeUser);
+    ns = sizeof(sid); nd = 32;
+    CHECK("LookupAccountNameW(unknown) fails", !LookupAccountNameW(0, L"Nobody Here", sid, &ns, dom, &nd, &use) &&
+          GetLastError() == ERROR_NONE_MAPPED);
+
+    /* SDDL both ways */
+    static const WCHAR text[] = L"O:BAG:SYD:PAI(D;;WD;;;WD)(A;;FA;;;BA)(A;OICIIO;GA;;;BA)(A;;0x1200a9;;;BU)";
+    PSECURITY_DESCRIPTOR sd = 0;
+    ULONG len = 0;
+    CHECK("ConvertStringSecurityDescriptorToSecurityDescriptorW",
+          ConvertStringSecurityDescriptorToSecurityDescriptorW(text, SDDL_REVISION_1, &sd, &len) && sd &&
+          len == GetSecurityDescriptorLength(sd));
+    BOOL present = FALSE, def;
+    PACL dacl = 0;
+    PSID owner = 0;
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD rev;
+    if (sd) {
+        GetSecurityDescriptorDacl(sd, &present, &dacl, &def);
+        GetSecurityDescriptorOwner(sd, &owner, &def);
+        GetSecurityDescriptorControl(sd, &control, &rev);
+    }
+    CHECK("SDDL: owner Administrators", owner && EqualSid(owner, admins));
+    CHECK("SDDL: protected, auto-inherited", (control & (SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED)) ==
+          (SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED));
+    CHECK("SDDL: four ACEs as written", present && dacl && dacl->AceCount == 4 &&
+          ace_is(dacl, 0, ACCESS_DENIED_ACE_TYPE, 0, WRITE_DAC, everyone) &&
+          ace_is(dacl, 1, ACCESS_ALLOWED_ACE_TYPE, 0, FILE_ALL_ACCESS_, admins) &&
+          ace_is(dacl, 2, ACCESS_ALLOWED_ACE_TYPE, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE_ | INHERIT_ONLY_ACE, GENERIC_ALL, admins) &&
+          ace_is(dacl, 3, ACCESS_ALLOWED_ACE_TYPE, 0, 0x1200a9, users));
+    CHECK("SDDL's DACL: Users may read", dacl && check(dacl, system, FILE_GENERIC_READ, &g));
+    CHECK("SDDL's DACL: but not write", dacl && !check(dacl, system, FILE_WRITE_DATA, &g));
+    LPWSTR back = 0;
+    CHECK("ConvertSecurityDescriptorToStringSecurityDescriptorW gives it back",
+          sd && ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, OWNER_SECURITY_INFORMATION |
+          GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &back, &len) && back && !wcscmp(back, text));
+    if (back && wcscmp(back, text)) wprintf(L"  got %ls\n", back);
+    LocalFree(back);
+    LocalFree(sd);
+    sd = 0;
+    CHECK("SDDL: D:NO_ACCESS_CONTROL is a NULL DACL",
+          ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:NO_ACCESS_CONTROL", SDDL_REVISION_1, &sd, NULL) &&
+          GetSecurityDescriptorDacl(sd, &present, &dacl, &def) && present && !dacl);
+    LocalFree(sd);
+    sd = 0;
+    CHECK("SDDL: a bad ACE is refused",
+          !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;FA;;;XX)", SDDL_REVISION_1, &sd, NULL));
+    CHECK("SDDL: revision 2 is refused",
+          !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:", 2, &sd, NULL) && GetLastError() == ERROR_UNKNOWN_REVISION);
+
+    /* Burn's Package Cache: the root secured with SetEntriesInAcl, a
+     * folder per bundle made by the elevated engine, then reset to inherit
+     * (an empty DACL with UNPROTECTED_DACL_SECURITY_INFORMATION) */
+    HANDLE elev = elevated_token();
+    CHECK("TokenLinkedToken: the elevated token", elev != 0);
+    remove_cache(elev);
+    CHECK("Cache: created", CreateDirectoryA(CACHE_PATH, NULL));
+    acl = burn_root_acl(admins, system, everyone, users);
+    DWORD e = acl ? SetNamedSecurityInfoW((LPWSTR)L"" CACHE_PATH, SE_FILE_OBJECT,
+                                          DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, 0, 0, acl, 0) : 1;
+    CHECK("Cache: SetNamedSecurityInfoW(protected DACL) by its owner", e == 0);
+    if (e) printf("  error %lu\n", e);
+    LocalFree(acl);
+    CHECK("Cache: not elevated, a folder in it is denied",
+          !CreateDirectoryA(SUB_PATH, NULL) && GetLastError() == ERROR_ACCESS_DENIED);
+    CHECK("Cache: elevated, the folder is made", elev && SetThreadToken(0, elev) && CreateDirectoryA(SUB_PATH, NULL));
+    InitializeAcl(old, sizeof(buf), ACL_REVISION);
+    CHECK("Cache: reset to inherit (empty unprotected DACL)",
+          SetNamedSecurityInfoW((LPWSTR)L"" SUB_PATH, SE_FILE_OBJECT,
+                                DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION, 0, 0, old, 0) == 0);
+    dacl = 0;
+    sd = 0;
+    CHECK("Cache: the folder inherited the root's four entries",
+          GetNamedSecurityInfoW(L"" SUB_PATH, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, 0, 0, &dacl, 0, &sd) == 0 &&
+          dacl && dacl->AceCount == 4 &&
+          ace_is(dacl, 0, ACCESS_ALLOWED_ACE_TYPE, INHERITED_ACE | 3, FILE_ALL_ACCESS_, admins));
+    LocalFree(sd);
+    CHECK("Cache: elevated, a file is copied in", write_file(CACHED, "bundle"));
+    RevertToSelf();
+    CHECK("Cache: not elevated, it can be read", read_is(CACHED, "bundle"));
+    CHECK("Cache: but not written", open_denied(CACHED, GENERIC_WRITE));
+    CHECK("Cache: elevated, protected empty DACL", SetThreadToken(0, elev) &&
+          SetNamedSecurityInfoW((LPWSTR)L"" SUB_PATH, SE_FILE_OBJECT,
+                                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, 0, 0, old, 0) == 0);
+    CHECK("Cache: ... then nobody may add to it", !write_file(SUB_PATH "\\other.txt", "x") && GetLastError() == ERROR_ACCESS_DENIED);
+    InitializeAcl(old, sizeof(buf), ACL_REVISION);
+    AddAccessAllowedAceEx(old, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE_, GENERIC_ALL, admins);
+    SetNamedSecurityInfoW((LPWSTR)L"" SUB_PATH, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                          0, 0, old, 0);
+    RevertToSelf();
+    remove_cache(elev);
+    CHECK("Cache: removed", GetFileAttributesA(CACHE_PATH) == INVALID_FILE_ATTRIBUTES);
+    if (elev) CloseHandle(elev);
+
+    /* a folder made with Burn's working-folder SDDL in SECURITY_ATTRIBUTES */
+    sd = 0;
+    ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:PAI(A;;FA;;;BA)(A;OICIIO;GA;;;BA)(A;;FA;;;SY)(A;OICIIO;GA;;;SY)",
+                                                         SDDL_REVISION_1, &sd, NULL);
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), sd, FALSE };
+    if (GetFileAttributesA(DIR_PATH "\\Work") != INVALID_FILE_ATTRIBUTES) let_in_and_remove(me);
+    CHECK("CreateDirectory with an SDDL descriptor", sd && CreateDirectoryA(DIR_PATH "\\Work", &sa));
+    CHECK("... not elevated, nothing may go in it", !write_file(DIR_PATH "\\Work\\x.txt", "x") && GetLastError() == ERROR_ACCESS_DENIED);
+    LocalFree(sd);
+    CHECK("... and its owner may still let itself in and remove it", let_in_and_remove(me));
+}
+
 int main(void)
 {
     SID_IDENTIFIER_AUTHORITY world = { { 0, 0, 0, 0, 0, 1 } }, nt = { { 0, 0, 0, 0, 0, 5 } };
@@ -428,6 +690,7 @@ int main(void)
     restricted(me, everyone, users, admins, system);
     protected_event(me, everyone);
     file_tests(me, everyone);
+    aclapi_tests(me, everyone, users, admins, system);
 
     printf("acltest: %d passed, %d failed\n", pass, fail);
     return fail ? 1 : 0;

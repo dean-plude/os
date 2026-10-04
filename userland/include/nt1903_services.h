@@ -1,6 +1,8 @@
-/* Windows 10 1903 (build 18362) x64 system-call numbers, every Nt service.
- * From j00ru's Windows syscall tables (github.com/j00ru/windows-syscalls,
- * x64/json/nt-per-system.json); abitest.c checks NovaOS against it. */
+/* Windows 10 1903 (build 18362) x64 system-call numbers, every Nt service,
+ * in number order.  From j00ru's Windows syscall tables
+ * (github.com/j00ru/windows-syscalls, x64/json/nt-per-system.json).
+ * ntdll.c lays out one stub per line, in this order; abitest.c and
+ * syscalltest.c check NovaOS against it. */
 NT1903(NtAccessCheck, 0x000)
 NT1903(NtWorkerFactoryWorkerReady, 0x001)
 NT1903(NtAcceptConnectPort, 0x002)

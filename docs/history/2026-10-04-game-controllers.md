@@ -33,10 +33,6 @@ driver for a controller.
   uses to leave them to XInput), `VIDPID`, `PRODUCTNAME` and the other
   properties games read, and `DIERR_INPUTLOST` once a device is
   unplugged.  Force feedback effects are not supported.
-- 32-bit DLLs that leave `base_x86` out now get 4 MiB slots instead of
-  16 MiB: the 0x97000000-0xC0000000 range had no slot left for
-  `xinput9_1_0`.
-
 - For Chocolate Doom's SDL2 (32-bit MinGW builds): `msvcrt`'s
   `__p__iob`, `_snwprintf_s`, `_vsnwprintf_s`, `swprintf_s`, `_wutime`
   and `_memccpy`; `setupapi`'s Configuration Manager calls and two more
@@ -58,5 +54,5 @@ controllers, and the Xbox 360 one is unplugged while it runs.  The
 Checked by hand with Chocolate Doom 3.1.0 (32-bit, SDL2) and Freedoom:
 SDL's game controller API finds the Xbox 360 controller through XInput
 ("I_InitGamepad: Xbox 360 Controller"), and its left stick walks and
-turns the player.  Still wrong there: the picture's colours (on Mesa's
-OpenGL from the App Store; NovaOS has no `d3d9.dll` of its own).
+turns the player (on Mesa's OpenGL from the App Store; NovaOS has no
+`d3d9.dll` of its own).

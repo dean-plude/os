@@ -35,6 +35,8 @@ static const UINT8 g_creator_group[] = { 1, 1, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0 };  
 
 #define SE_DACL_PRESENT       0x0004u
 #define SE_DACL_AUTO_INHERITED 0x0400u
+#define SE_DACL_PROTECTED     0x1000u
+#define DACL_CONTROL          (SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED)    /* kept with the DACL */
 #define SE_SELF_RELATIVE      0x8000u
 
 static UINT32 sid_len(const UINT8 *s) { return 8u + 4u * s[1]; }
@@ -138,14 +140,19 @@ static bool inherit(const RamNode *n, const UINT8 *from_sd, int depth, UINT8 *ou
         UINT8 fl = a[1];
         if (a[0] > 1) continue;                                  /* only allow and deny ACEs */
         if ((fl & ACE_NP) && depth > 1) continue;
-        if (!(fl & (n->dir ? ACE_CI : ACE_OI))) continue;
+        if (!(fl & (ACE_CI | ACE_OI))) continue;
+        if (!n->dir && !(fl & ACE_OI)) continue;
+        /* a directory keeps an ACE meant for files (OBJECT_INHERIT only)
+         * as inherit-only, for the files in it */
+        bool for_files = n->dir && !(fl & ACE_CI);
+        if (for_files && (fl & ACE_NP)) continue;
         const UINT8 *sid = a + 8;
         if (sid_eq(sid, g_creator_owner)) sid = g_user;
         else if (sid_eq(sid, g_creator_group)) sid = g_users;
         UINT32 nlen = 8 + sid_len(sid);
         if (o + nlen > cap) return false;
         out[o] = a[0];
-        out[o + 1] = (UINT8)(ACE_INH | (n->dir && !(fl & ACE_NP) ? fl & (ACE_OI | ACE_CI) : 0));
+        out[o + 1] = (UINT8)(ACE_INH | (n->dir && !(fl & ACE_NP) ? fl & (ACE_OI | ACE_CI) : 0) | (for_files ? ACE_IO : 0));
         wr16(out + o + 2, (UINT16)nlen);
         wr32(out + o + 4, rd32(a + 4));
         memcpy(out + o + 8, sid, sid_len(sid));
@@ -200,7 +207,7 @@ UINT32 FsecQuery(RamNode *n, UINT32 info, void *out, UINT32 cap)
     if (!buf || !view_of(n, &v, buf)) { kfree(buf); return 0; }
     UINT32 len = build(out, cap, (info & 1) ? v.owner : NULL, (info & 2) ? v.group : NULL,
                        (info & 4) && v.dacl_present, (info & 4) ? v.dacl : NULL,
-                       (UINT16)((info & 4) ? v.control & SE_DACL_AUTO_INHERITED : 0));
+                       (UINT16)((info & 4) ? v.control & DACL_CONTROL : 0));
     kfree(buf);
     return len;
 }
@@ -217,10 +224,11 @@ bool FsecSet(RamNode *n, UINT32 info, const void *sd, UINT32 len)
     const UINT8 *group = (info & 2) && in.group ? in.group : now.group;
     bool present = (info & 4) ? in.dacl_present : now.dacl_present;
     const UINT8 *dacl = (info & 4) ? in.dacl : now.dacl;
-    UINT32 need = build(NULL, 0, owner, group, present, dacl, 0);
+    UINT16 control = (UINT16)(((info & 4) ? in.control : now.control) & DACL_CONTROL);
+    UINT32 need = build(NULL, 0, owner, group, present, dacl, control);
     UINT8 *nsd = kmalloc(need);
     if (!nsd) { kfree(buf); return false; }
-    build(nsd, need, owner, group, present, dacl, 0);
+    build(nsd, need, owner, group, present, dacl, control);
     kfree(buf);
     kfree(n->sd);
     n->sd = nsd;
