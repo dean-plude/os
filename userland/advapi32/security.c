@@ -601,19 +601,40 @@ WINADVAPI BOOL WINAPI LogonUserW(LPCWSTR user, LPCWSTR domain, LPCWSTR pass, DWO
     return FALSE;
 }
 
+/* Starts the program suspended, gives it @token (NtSetInformationProcess
+ * ProcessAccessToken, as Windows' CreateProcessAsUser does) and lets it
+ * run unless the caller asked for it suspended.  No token: the caller's. */
+static BOOL create_with_token(HANDLE token, LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta,
+                              BOOL inherit, DWORD flags, LPVOID env, LPCWSTR dir, LPSTARTUPINFOW si,
+                              LPPROCESS_INFORMATION pi)
+{
+    if (!token) return CreateProcessW(app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
+    if (!CreateProcessW(app, cmd, pa, ta, inherit, flags | CREATE_SUSPENDED, env, dir, si, pi)) return FALSE;
+    struct { HANDLE token, thread; } at = { token, pi->hThread };
+    NTSTATUS st = NtSetInformationProcess(pi->hProcess, 9 /* ProcessAccessToken */, &at, sizeof(at));
+    if (!NT_SUCCESS(st)) {
+        TerminateProcess(pi->hProcess, 1);
+        CloseHandle(pi->hThread);
+        CloseHandle(pi->hProcess);
+        SetLastError(RtlNtStatusToDosError(st));
+        return FALSE;
+    }
+    if (!(flags & CREATE_SUSPENDED)) ResumeThread(pi->hThread);
+    return TRUE;
+}
+
 WINADVAPI BOOL WINAPI CreateProcessAsUserW(HANDLE token, LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta,
                                            BOOL inherit, DWORD flags, LPVOID env, LPCWSTR dir, LPSTARTUPINFOW si,
                                            LPPROCESS_INFORMATION pi)
 {
-    (void)token;
-    return CreateProcessW(app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
+    return create_with_token(token, app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
 }
 
 WINADVAPI BOOL WINAPI CreateProcessWithTokenW(HANDLE token, DWORD logon, LPCWSTR app, LPWSTR cmd, DWORD flags, LPVOID env,
                                               LPCWSTR dir, LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi)
 {
-    (void)token; (void)logon;
-    return CreateProcessW(app, cmd, 0, 0, FALSE, flags, env, dir, si, pi);
+    (void)logon;
+    return create_with_token(token, app, cmd, 0, 0, FALSE, flags, env, dir, si, pi);
 }
 
 /* -----------------------------------------------------------------------

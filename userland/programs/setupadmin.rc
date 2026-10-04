@@ -1,0 +1,2 @@
+/* setupadmin: its manifest asks to run as administrator (requireAdministrator) */
+1 24 "setupadmin.manifest"

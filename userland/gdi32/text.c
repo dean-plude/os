@@ -1000,10 +1000,32 @@ GDIAPI int EnumFontFamiliesA(HDC h, LPCSTR face_name, FONTENUMPROCA_ fn, LPARAM 
 }
 GDIAPI int EnumFontsA(HDC h, LPCSTR face_name, FONTENUMPROCA_ fn, LPARAM lp) { return EnumFontFamiliesA(h, face_name, fn, lp); }
 
-/* Private fonts are accepted (their text draws with the built-in faces) */
-GDIAPI int AddFontResourceExW(LPCWSTR f, DWORD fl, PVOID r) { (void)fl; (void)r; return GetFileAttributesW(f) != INVALID_FILE_ATTRIBUTES; }
+/* Private fonts are accepted (their text draws with the built-in faces).
+ * A bare file name is a font in the Windows Fonts folder, as on Windows
+ * (setup programs register the fonts they copy there by name). */
+GDIAPI int AddFontResourceExW(LPCWSTR f, DWORD fl, PVOID r)
+{
+    (void)fl; (void)r;
+    if (!f || !*f) return 0;
+    if (GetFileAttributesW(f) != INVALID_FILE_ATTRIBUTES) return 1;
+    for (LPCWSTR c = f; *c; c++)
+        if (*c == '\\' || *c == '/' || *c == ':') return 0;
+    WCHAR path[MAX_PATH];
+    UINT n = GetWindowsDirectoryW(path, MAX_PATH - 8);
+    if (!n || n >= MAX_PATH - 8) return 0;
+    memcpy(path + n, L"\\Fonts\\", 7 * sizeof(WCHAR));
+    n += 7;
+    for (; *f && n < MAX_PATH - 1; f++) path[n++] = *f;
+    path[n] = 0;
+    return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
 GDIAPI int AddFontResourceW(LPCWSTR f) { return AddFontResourceExW(f, 0, 0); }
-GDIAPI int AddFontResourceA(LPCSTR f) { return GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES; }
+GDIAPI int AddFontResourceA(LPCSTR f)
+{
+    WCHAR w[MAX_PATH];
+    if (!f || !MultiByteToWideChar(CP_ACP, 0, f, -1, w, MAX_PATH)) return 0;
+    return AddFontResourceExW(w, 0, 0);
+}
 GDIAPI BOOL RemoveFontResourceExW(LPCWSTR f, DWORD fl, PVOID r) { (void)f; (void)fl; (void)r; return TRUE; }
 GDIAPI BOOL RemoveFontResourceW(LPCWSTR f) { (void)f; return TRUE; }
 GDIAPI HANDLE AddFontMemResourceEx(PVOID p, DWORD n, PVOID r, DWORD *count) { (void)p; (void)n; (void)r; if (count) *count = 1; return (HANDLE)(ULONG_PTR)0xF0E1; }

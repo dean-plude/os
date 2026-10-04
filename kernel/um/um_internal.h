@@ -429,6 +429,10 @@ void       um_abandon_mutants(UmProcess *p, UmThread *t);
 /* um_security.c: tokens, security descriptors, access checks */
 void       um_security_syscalls_init(void);
 UmObject  *um_token_for_process(UmProcess *creator);   /* a new process's primary token (referenced) */
+bool       um_token_elevated(UmObject *token);         /* the elevated (full administrator) token? */
+bool       um_elevate_process(UmProcess *p);           /* give @p the elevated token */
+UINT32     um_set_process_token(UmProcess *p, UINT64 buf, UINT64 len);   /* ProcessAccessToken */
+bool       um_pe_wants_admin(RamNode *f);              /* its manifest asks to run as administrator */
 void       um_thread_drop_token(UmThread *t);          /* stop impersonating (the thread ended) */
 UINT32     um_set_thread_token(UmThread *t, UINT64 buf, UINT32 len);   /* ThreadImpersonationToken */
 bool       um_privilege_held(UINT32 luid);    /* the caller's token holds privilege @luid */

@@ -1108,3 +1108,353 @@ WINOLEAUTAPI_(HRESULT) RegisterActiveObject(IUnknown *p, REFCLSID clsid, DWORD f
     return E_NOTIMPL;
 }
 WINOLEAUTAPI_(HRESULT) RevokeActiveObject(DWORD reg, PVOID reserved) { (void)reg; (void)reserved; return E_NOTIMPL; }
+
+/* ---- variant arithmetic and comparison ---------------------------------
+ * VarAdd, VarSub, VarMul, VarDiv, VarIdiv, VarMod, VarAnd, VarOr, VarXor,
+ * VarNeg, VarNot, VarAbs, VarFix, VarInt, VarCat and VarCmp, as Visual
+ * Basic's and Delphi's variant operators use them (Delphi's runtime looks
+ * them up by name; Inno Setup's installers do).  Integers are worked in
+ * 64 bits; the result has the wider operand's type (Empty and Boolean count
+ * as Integer, I2), growing I2 -> I4 -> R8 when it does not fit, as Windows
+ * does; reals give R8 (R4 when both sides are R4 or narrow integers);
+ * Currency stays Currency; a Date plus or minus a number stays a Date.
+ * Null in gives Null out.  Decimal is worked as a double. */
+
+static int int_rank(VARTYPE vt)                      /* 0: not an integer type */
+{
+    switch (vt) {
+    case VT_EMPTY: case VT_BOOL: case VT_I1: case VT_I2: return 2;
+    case VT_UI1: return 1;
+    case VT_UI2: case VT_I4: case VT_INT: case VT_ERROR: return 4;
+    case VT_UI4: case VT_UINT: case VT_I8: case VT_UI8: case VT_INT_PTR: case VT_UINT_PTR: return 8;
+    default: return 0;
+    }
+}
+
+static VARTYPE rank_vt(int r) { return r == 1 ? VT_UI1 : r == 2 ? VT_I2 : r == 4 ? VT_I4 : VT_I8; }
+
+/* @v (deref'd) as a Num; Empty is 0, strings their number */
+static HRESULT arg_num(const VARIANT *v, Num *n) { return to_num(v, n); }
+
+static HRESULT put_int(VARIANT *out, long long v, int rank)
+{
+    VARIANT t;
+    VariantInit(&t);
+    t.vt = VT_I8;
+    t.llVal = v;
+    for (; rank <= 8; rank = rank == 1 ? 2 : rank * 2) {
+        VARIANT r;
+        VariantInit(&r);
+        if (SUCCEEDED(VariantChangeType(&r, &t, 0, rank_vt(rank)))) { *out = r; return S_OK; }
+        if (rank == 4) {                                 /* past I4: R8, as Windows widens */
+            out->vt = VT_R8;
+            out->dblVal = (double)v;
+            return S_OK;
+        }
+    }
+    return DISP_E_OVERFLOW;
+}
+
+static HRESULT put_real(VARIANT *out, double d, VARTYPE vt)
+{
+    VARIANT t;
+    VariantInit(&t);
+    t.vt = VT_R8;
+    t.dblVal = d;
+    if (vt == VT_R8 || vt == VT_DATE) { out->vt = vt; out->dblVal = d; return S_OK; }
+    VARIANT r;
+    VariantInit(&r);
+    HRESULT hr = VariantChangeType(&r, &t, 0, vt);
+    if (FAILED(hr)) return hr;
+    *out = r;
+    return S_OK;
+}
+
+/* The operands by value; S_FALSE when either is Null (@out set to Null) */
+static HRESULT prep2(const VARIANT *l, const VARIANT *r, VARIANT *a, VARIANT *b, VARIANT *out)
+{
+    if (!l || !r || !out) return E_INVALIDARG;
+    if (l->vt & VT_BYREF) deref(l, a); else *a = *l;
+    if (r->vt & VT_BYREF) deref(r, b); else *b = *r;
+    if ((a->vt & VT_ARRAY) || (b->vt & VT_ARRAY) || a->vt == VT_DISPATCH || b->vt == VT_DISPATCH ||
+        a->vt == VT_UNKNOWN || b->vt == VT_UNKNOWN)
+        return DISP_E_TYPEMISMATCH;
+    if (a->vt == VT_NULL || b->vt == VT_NULL) {
+        VariantInit(out);
+        out->vt = VT_NULL;
+        return S_FALSE;
+    }
+    return S_OK;
+}
+
+static int is_real(VARTYPE vt) { return vt == VT_R4 || vt == VT_R8 || vt == VT_DATE || vt == VT_CY || vt == VT_DECIMAL || vt == VT_BSTR; }
+
+/* The result type of + - * on @a, @b (0: integers, see int_rank) */
+static VARTYPE real_type(VARTYPE a, VARTYPE b)
+{
+    if (!is_real(a) && !is_real(b)) return 0;
+    if (a == VT_R8 || b == VT_R8 || a == VT_BSTR || b == VT_BSTR || a == VT_DECIMAL || b == VT_DECIMAL) return VT_R8;
+    if (a == VT_DATE || b == VT_DATE) return VT_DATE;
+    if (a == VT_CY || b == VT_CY) return VT_CY;
+    /* R4 with R4 or a narrow integer stays R4; with I4 or wider, R8 */
+    VARTYPE o = a == VT_R4 ? b : a;
+    return o == VT_R4 || (int_rank(o) && int_rank(o) <= 2) ? VT_R4 : VT_R8;
+}
+
+enum { OP_ADD, OP_SUB, OP_MUL };
+
+static HRESULT arith(const VARIANT *l, const VARIANT *r, VARIANT *out, int op)
+{
+    VARIANT a, b;
+    HRESULT hr = prep2(l, r, &a, &b, out);
+    if (hr != S_OK) return hr == S_FALSE ? S_OK : hr;
+    if (op == OP_ADD && a.vt == VT_BSTR && b.vt == VT_BSTR) {
+        BSTR s;
+        hr = VarBstrCat(a.bstrVal, b.bstrVal, &s);
+        if (FAILED(hr)) return hr;
+        VariantInit(out);
+        out->vt = VT_BSTR;
+        out->bstrVal = s;
+        return S_OK;
+    }
+    Num x, y;
+    if (FAILED(hr = arg_num(&a, &x)) || FAILED(hr = arg_num(&b, &y))) return hr;
+    VARTYPE rt = real_type(a.vt, b.vt);
+    if (rt == VT_DATE && op == OP_SUB && a.vt == VT_DATE && b.vt == VT_DATE) rt = VT_R8;   /* date - date: days */
+    if (rt == VT_DATE && op == OP_MUL) rt = VT_R8;
+    VariantInit(out);
+    if (rt) {
+        double p = num_to_double(&x), q = num_to_double(&y);
+        return put_real(out, op == OP_ADD ? p + q : op == OP_SUB ? p - q : p * q, rt);
+    }
+    if (x.kind == 1 || y.kind == 1) {                    /* a UI8 operand: as doubles, back to I8 */
+        double p = num_to_double(&x), q = num_to_double(&y), d = op == OP_ADD ? p + q : op == OP_SUB ? p - q : p * q;
+        if (d < -9.2233720368547758e18 || d >= 9.2233720368547758e18) return DISP_E_OVERFLOW;
+        out->vt = VT_I8;
+        out->llVal = (long long)d;
+        return S_OK;
+    }
+    long long v;
+    int ovf = op == OP_ADD ? __builtin_add_overflow(x.i, y.i, &v) : op == OP_SUB ? __builtin_sub_overflow(x.i, y.i, &v)
+                                                                               : __builtin_mul_overflow(x.i, y.i, &v);
+    int rank = int_rank(a.vt) > int_rank(b.vt) ? int_rank(a.vt) : int_rank(b.vt);
+    if (rank == 1 && (int_rank(a.vt) != 1 || int_rank(b.vt) != 1)) rank = 2;
+    if (ovf) {
+        if (rank == 8) return DISP_E_OVERFLOW;
+        double p = (double)x.i, q = (double)y.i;
+        out->vt = VT_R8;
+        out->dblVal = op == OP_ADD ? p + q : op == OP_SUB ? p - q : p * q;
+        return S_OK;
+    }
+    return put_int(out, v, rank);
+}
+
+WINOLEAUTAPI_(HRESULT) VarAdd(LPVARIANT l, LPVARIANT r, LPVARIANT out) { return arith(l, r, out, OP_ADD); }
+WINOLEAUTAPI_(HRESULT) VarSub(LPVARIANT l, LPVARIANT r, LPVARIANT out) { return arith(l, r, out, OP_SUB); }
+WINOLEAUTAPI_(HRESULT) VarMul(LPVARIANT l, LPVARIANT r, LPVARIANT out) { return arith(l, r, out, OP_MUL); }
+
+WINOLEAUTAPI_(HRESULT) VarDiv(LPVARIANT l, LPVARIANT r, LPVARIANT out)
+{
+    VARIANT a, b;
+    HRESULT hr = prep2(l, r, &a, &b, out);
+    if (hr != S_OK) return hr == S_FALSE ? S_OK : hr;
+    Num x, y;
+    if (FAILED(hr = arg_num(&a, &x)) || FAILED(hr = arg_num(&b, &y))) return hr;
+    double q = num_to_double(&y);
+    if (q == 0) return DISP_E_DIVBYZERO;
+    VARTYPE rt = a.vt == VT_CY && !is_real(b.vt) ? VT_CY : real_type(a.vt, b.vt) == VT_R4 ? VT_R4 : VT_R8;
+    VariantInit(out);
+    return put_real(out, num_to_double(&x) / q, rt);
+}
+
+/* Integer operands: reals rounded half to even, the result as wide as the
+ * wider operand (at least I2; I4 for reals and strings) */
+static HRESULT int_args(const VARIANT *a, const VARIANT *b, long long *x, long long *y, int *rank)
+{
+    Num n;
+    HRESULT hr;
+    int ra = int_rank(a->vt) ? int_rank(a->vt) : 4, rb = b ? (int_rank(b->vt) ? int_rank(b->vt) : 4) : ra;
+    *rank = ra > rb ? ra : rb;
+    if (*rank == 1 && (ra != 1 || rb != 1)) *rank = 2;
+    if (FAILED(hr = arg_num(a, &n)) || FAILED(hr = num_to_i64(&n, -0x7FFFFFFFFFFFFFFFLL - 1, 0x7FFFFFFFFFFFFFFFLL, x))) return hr;
+    if (b && (FAILED(hr = arg_num(b, &n)) || FAILED(hr = num_to_i64(&n, -0x7FFFFFFFFFFFFFFFLL - 1, 0x7FFFFFFFFFFFFFFFLL, y)))) return hr;
+    return S_OK;
+}
+
+static HRESULT idiv_mod(const VARIANT *l, const VARIANT *r, VARIANT *out, int mod)
+{
+    VARIANT a, b;
+    HRESULT hr = prep2(l, r, &a, &b, out);
+    if (hr != S_OK) return hr == S_FALSE ? S_OK : hr;
+    long long x, y;
+    int rank;
+    if (FAILED(hr = int_args(&a, &b, &x, &y, &rank))) return hr;
+    if (!y) return DISP_E_DIVBYZERO;
+    if (x == -0x7FFFFFFFFFFFFFFFLL - 1 && y == -1) return mod ? (VariantInit(out), put_int(out, 0, rank)) : DISP_E_OVERFLOW;
+    VariantInit(out);
+    return put_int(out, mod ? x % y : x / y, rank);
+}
+
+WINOLEAUTAPI_(HRESULT) VarIdiv(LPVARIANT l, LPVARIANT r, LPVARIANT out) { return idiv_mod(l, r, out, 0); }
+WINOLEAUTAPI_(HRESULT) VarMod(LPVARIANT l, LPVARIANT r, LPVARIANT out) { return idiv_mod(l, r, out, 1); }
+
+enum { OP_AND, OP_OR, OP_XOR };
+
+static HRESULT bitwise(const VARIANT *l, const VARIANT *r, VARIANT *out, int op)
+{
+    if (!l || !r || !out) return E_INVALIDARG;
+    VARIANT a, b;
+    if (l->vt & VT_BYREF) deref(l, &a); else a = *l;
+    if (r->vt & VT_BYREF) deref(r, &b); else b = *r;
+    /* Null with False is False (And), Null with True is True (Or); else Null */
+    if (a.vt == VT_NULL || b.vt == VT_NULL) {
+        const VARIANT *o = a.vt == VT_NULL ? &b : &a;
+        Num n;
+        long long v = 0;
+        int known = o->vt != VT_NULL && SUCCEEDED(arg_num(o, &n)) &&
+                    SUCCEEDED(num_to_i64(&n, -0x7FFFFFFFFFFFFFFFLL - 1, 0x7FFFFFFFFFFFFFFFLL, &v));
+        VariantInit(out);
+        if (known && ((op == OP_AND && v == 0) || (op == OP_OR && v == -1))) {
+            if (o->vt == VT_BOOL) { out->vt = VT_BOOL; out->boolVal = o->boolVal; }
+            else put_int(out, v, int_rank(o->vt) ? int_rank(o->vt) : 4);
+        } else out->vt = VT_NULL;
+        return S_OK;
+    }
+    long long x, y;
+    int rank;
+    HRESULT hr = int_args(&a, &b, &x, &y, &rank);
+    if (FAILED(hr)) return hr;
+    long long v = op == OP_AND ? x & y : op == OP_OR ? x | y : x ^ y;
+    VariantInit(out);
+    if (a.vt == VT_BOOL && b.vt == VT_BOOL) {
+        out->vt = VT_BOOL;
+        out->boolVal = v ? VARIANT_TRUE : VARIANT_FALSE;
+        return S_OK;
+    }
+    return put_int(out, v, rank);
+}
+
+WINOLEAUTAPI_(HRESULT) VarAnd(LPVARIANT l, LPVARIANT r, LPVARIANT out) { return bitwise(l, r, out, OP_AND); }
+WINOLEAUTAPI_(HRESULT) VarOr(LPVARIANT l, LPVARIANT r, LPVARIANT out) { return bitwise(l, r, out, OP_OR); }
+WINOLEAUTAPI_(HRESULT) VarXor(LPVARIANT l, LPVARIANT r, LPVARIANT out) { return bitwise(l, r, out, OP_XOR); }
+
+/* The operand by value; S_FALSE when it is Null (@out set to Null) */
+static HRESULT prep1(const VARIANT *in, VARIANT *a, VARIANT *out)
+{
+    if (!in || !out) return E_INVALIDARG;
+    if (in->vt & VT_BYREF) deref(in, a); else *a = *in;
+    if (a->vt & VT_ARRAY) return DISP_E_TYPEMISMATCH;
+    if (a->vt == VT_NULL) { VariantInit(out); out->vt = VT_NULL; return S_FALSE; }
+    return S_OK;
+}
+
+WINOLEAUTAPI_(HRESULT) VarNeg(LPVARIANT in, LPVARIANT out)
+{
+    VARIANT a;
+    HRESULT hr = prep1(in, &a, out);
+    if (hr != S_OK) return hr == S_FALSE ? S_OK : hr;
+    Num n;
+    if (FAILED(hr = arg_num(&a, &n))) return hr;
+    VariantInit(out);
+    if (is_real(a.vt)) return put_real(out, -num_to_double(&n), a.vt == VT_BSTR || a.vt == VT_DECIMAL ? VT_R8 : a.vt);
+    if (n.kind == 1) { if (n.u > 0x8000000000000000ull) return DISP_E_OVERFLOW; out->vt = VT_I8; out->llVal = -(long long)n.u; return S_OK; }
+    int rank = int_rank(a.vt) < 2 ? 2 : int_rank(a.vt);
+    if (n.i == -0x7FFFFFFFFFFFFFFFLL - 1) return DISP_E_OVERFLOW;
+    return put_int(out, -n.i, rank);
+}
+
+WINOLEAUTAPI_(HRESULT) VarNot(LPVARIANT in, LPVARIANT out)
+{
+    VARIANT a;
+    HRESULT hr = prep1(in, &a, out);
+    if (hr != S_OK) return hr == S_FALSE ? S_OK : hr;
+    long long x;
+    int rank;
+    if (FAILED(hr = int_args(&a, NULL, &x, NULL, &rank))) return hr;
+    VariantInit(out);
+    if (a.vt == VT_BOOL) { out->vt = VT_BOOL; out->boolVal = a.boolVal ? VARIANT_FALSE : VARIANT_TRUE; return S_OK; }
+    if (a.vt == VT_UI1) { out->vt = VT_UI1; out->bVal = (BYTE)~a.bVal; return S_OK; }
+    return put_int(out, ~x, rank < 2 ? 2 : rank);
+}
+
+/* Abs, Fix (toward zero) and Int (down) */
+static HRESULT unary_real(const VARIANT *in, VARIANT *out, int how)
+{
+    VARIANT a;
+    HRESULT hr = prep1(in, &a, out);
+    if (hr != S_OK) return hr == S_FALSE ? S_OK : hr;
+    Num n;
+    if (FAILED(hr = arg_num(&a, &n))) return hr;
+    VariantInit(out);
+    if (!is_real(a.vt)) {
+        if (a.vt == VT_BOOL && how) { *out = a; return S_OK; }
+        if (how) return VariantCopy(out, &a);
+        if (n.kind == 1) return VariantCopy(out, &a);
+        if (n.i == -0x7FFFFFFFFFFFFFFFLL - 1) return DISP_E_OVERFLOW;
+        return put_int(out, n.i < 0 ? -n.i : n.i, int_rank(a.vt) < 2 ? 2 : int_rank(a.vt));
+    }
+    double d = num_to_double(&n);
+    if (how == 0) d = d < 0 ? -d : d;
+    else {
+        double t = (double)(long long)d;              /* toward zero */
+        if (how == 2 && t > d) t -= 1;
+        d = (d > 9.2e18 || d < -9.2e18) ? d : t;
+    }
+    return put_real(out, d, a.vt == VT_BSTR || a.vt == VT_DECIMAL ? VT_R8 : a.vt);
+}
+
+WINOLEAUTAPI_(HRESULT) VarAbs(LPVARIANT in, LPVARIANT out) { return unary_real(in, out, 0); }
+WINOLEAUTAPI_(HRESULT) VarFix(LPVARIANT in, LPVARIANT out) { return unary_real(in, out, 1); }
+WINOLEAUTAPI_(HRESULT) VarInt(LPVARIANT in, LPVARIANT out) { return unary_real(in, out, 2); }
+
+/* Both as strings, joined (Null joins as an empty string; Null & Null is Null) */
+WINOLEAUTAPI_(HRESULT) VarCat(LPVARIANT l, LPVARIANT r, LPVARIANT out)
+{
+    if (!l || !r || !out) return E_INVALIDARG;
+    VARIANT a, b, sa, sb;
+    if (l->vt & VT_BYREF) deref(l, &a); else a = *l;
+    if (r->vt & VT_BYREF) deref(r, &b); else b = *r;
+    if (a.vt == VT_NULL && b.vt == VT_NULL) { VariantInit(out); out->vt = VT_NULL; return S_OK; }
+    VariantInit(&sa);
+    VariantInit(&sb);
+    HRESULT hr = S_OK;
+    if (a.vt != VT_NULL && a.vt != VT_EMPTY) hr = VariantChangeType(&sa, &a, 0, VT_BSTR);
+    if (SUCCEEDED(hr) && b.vt != VT_NULL && b.vt != VT_EMPTY) hr = VariantChangeType(&sb, &b, 0, VT_BSTR);
+    if (SUCCEEDED(hr)) {
+        BSTR s;
+        hr = VarBstrCat(sa.vt == VT_BSTR ? sa.bstrVal : NULL, sb.vt == VT_BSTR ? sb.bstrVal : NULL, &s);
+        if (SUCCEEDED(hr)) { VariantInit(out); out->vt = VT_BSTR; out->bstrVal = s; }
+    }
+    VariantClear(&sa);
+    VariantClear(&sb);
+    return hr;
+}
+
+/* VARCMP_LT, _EQ, _GT, or _NULL; strings with each other by
+ * CompareString (@flags: NORM_IGNORECASE ...), a string is greater than a
+ * number, Empty is "" against a string and 0 against a number */
+WINOLEAUTAPI_(HRESULT) VarCmp(LPVARIANT l, LPVARIANT r, LCID lcid, ULONG flags)
+{
+    if (!l || !r) return E_INVALIDARG;
+    VARIANT a, b;
+    if (l->vt & VT_BYREF) deref(l, &a); else a = *l;
+    if (r->vt & VT_BYREF) deref(r, &b); else b = *r;
+    if (a.vt == VT_NULL || b.vt == VT_NULL) return VARCMP_NULL;
+    if ((a.vt & VT_ARRAY) || (b.vt & VT_ARRAY)) return DISP_E_TYPEMISMATCH;
+    int sa = a.vt == VT_BSTR, sb = b.vt == VT_BSTR;
+    if (sa || sb) {
+        if (sa && sb) return VarBstrCmp(a.bstrVal, b.bstrVal, lcid, flags);
+        if (sa && b.vt == VT_EMPTY) return VarBstrCmp(a.bstrVal, NULL, lcid, flags);
+        if (sb && a.vt == VT_EMPTY) return VarBstrCmp(NULL, b.bstrVal, lcid, flags);
+        return sa ? VARCMP_GT : VARCMP_LT;
+    }
+    Num x, y;
+    HRESULT hr;
+    if (FAILED(hr = arg_num(&a, &x)) || FAILED(hr = arg_num(&b, &y))) return hr;
+    if (x.kind == 2 || y.kind == 2 || x.kind != y.kind) {
+        double p = num_to_double(&x), q = num_to_double(&y);
+        return p < q ? VARCMP_LT : p > q ? VARCMP_GT : VARCMP_EQ;
+    }
+    if (x.kind == 1) return x.u < y.u ? VARCMP_LT : x.u > y.u ? VARCMP_GT : VARCMP_EQ;
+    return x.i < y.i ? VARCMP_LT : x.i > y.i ? VARCMP_GT : VARCMP_EQ;
+}

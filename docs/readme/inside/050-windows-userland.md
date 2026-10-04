@@ -14,7 +14,8 @@
   hooks, per-monitor and per-thread DPI awareness with `WM_DPICHANGED`, controls and fonts at each window's DPI and rescaled when it changes, window coordinates converted between awareness contexts,
   touch, pens and the mouse as `WM_POINTER` messages with `GetPointerPenInfo`, title bars included, and the pen signature in `GetMessageExtraInfo`), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
-  `comctl32`, `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
+  `comctl32`, `riched20`/`msftedit` (Rich Edit controls that take RTF,
+  as setup programs' licence pages need), `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
   type libraries), `advapi32`, `ws2_32`, `oleacc`,
   `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
   WASAPI playback and capture, a device ID or endpoint for each sound

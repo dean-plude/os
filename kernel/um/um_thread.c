@@ -895,6 +895,7 @@ static UINT64 sys_set_info_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (!p) return ST_INVALID_HANDLE;
     UINT32 st = ST_SUCCESS;
     if (a2 == 18 || a2 == 33) st = set_process_priority(p, a2, a3, a4);   /* ProcessPriorityClass, ProcessPriorityBoost */
+    else if (a2 == 9) st = um_set_process_token(p, a3, a4);                /* ProcessAccessToken */
     if (ob) um_ob_unref(ob);
     return st;
 }
