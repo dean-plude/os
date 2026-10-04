@@ -52,4 +52,6 @@ __asm__(".section .drectve,\"yn\"\n\t"
         ".ascii \" /EXPORT:RegUnLoadKeyW=kernel32.RegUnLoadKeyW\"\n\t"
         ".ascii \" /EXPORT:RegSaveKeyW=kernel32.RegSaveKeyW\"\n\t"
         ".ascii \" /EXPORT:RegRestoreKeyW=kernel32.RegRestoreKeyW\"\n\t"
+        /* time zones: advapi32's on Windows, kernel32 holds them here */
+        ".ascii \" /EXPORT:EnumDynamicTimeZoneInformation=kernel32.EnumDynamicTimeZoneInformation\"\n\t"
         ".text");

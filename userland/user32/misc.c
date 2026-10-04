@@ -60,127 +60,7 @@ extern BYTE g_async[256];
 USERAPI SHORT GetAsyncKeyState(int vk) { return (SHORT)(g_async[vk & 0xFF] & 0x80 ? 0x8000 : 0); }
 USERAPI BOOL GetKeyboardState(PBYTE keys) { memcpy(keys, g_keys, 256); return TRUE; }
 USERAPI BOOL SetKeyboardState(PBYTE keys) { memcpy(g_keys, keys, 256); return TRUE; }
-USERAPI HANDLE GetKeyboardLayout(DWORD tid) { (void)tid; return (HANDLE)(ULONG_PTR)0x04090409; }
-USERAPI int GetKeyboardLayoutList(int n, HANDLE *list) { if (n >= 1 && list) list[0] = (HANDLE)(ULONG_PTR)0x04090409; return 1; }
-USERAPI HANDLE LoadKeyboardLayoutW(LPCWSTR id, UINT f) { (void)id; (void)f; return (HANDLE)(ULONG_PTR)0x04090409; }
-USERAPI HANDLE ActivateKeyboardLayout(HANDLE h, UINT f) { (void)f; return h; }
-USERAPI BOOL GetKeyboardLayoutNameW(LPWSTR name) { const char *s = "00000409"; for (int i = 0; i < 9; i++) name[i] = (WCHAR)s[i]; return TRUE; }
 USERAPI int GetKeyboardType(int what) { return what == 0 ? 4 : what == 2 ? 12 : 0; }
-
-/* US layout: VK <-> scan code, and the character a key makes */
-static const BYTE g_vk_to_sc[256] = {
-    [0x1B] = 0x01, ['1'] = 0x02, ['2'] = 0x03, ['3'] = 0x04, ['4'] = 0x05, ['5'] = 0x06, ['6'] = 0x07, ['7'] = 0x08,
-    ['8'] = 0x09, ['9'] = 0x0A, ['0'] = 0x0B, [0xBD] = 0x0C, [0xBB] = 0x0D, [0x08] = 0x0E, [0x09] = 0x0F,
-    ['Q'] = 0x10, ['W'] = 0x11, ['E'] = 0x12, ['R'] = 0x13, ['T'] = 0x14, ['Y'] = 0x15, ['U'] = 0x16, ['I'] = 0x17,
-    ['O'] = 0x18, ['P'] = 0x19, [0xDB] = 0x1A, [0xDD] = 0x1B, [0x0D] = 0x1C, [0x11] = 0x1D, ['A'] = 0x1E, ['S'] = 0x1F,
-    ['D'] = 0x20, ['F'] = 0x21, ['G'] = 0x22, ['H'] = 0x23, ['J'] = 0x24, ['K'] = 0x25, ['L'] = 0x26, [0xBA] = 0x27,
-    [0xDE] = 0x28, [0xC0] = 0x29, [0x10] = 0x2A, [0xDC] = 0x2B, ['Z'] = 0x2C, ['X'] = 0x2D, ['C'] = 0x2E, ['V'] = 0x2F,
-    ['B'] = 0x30, ['N'] = 0x31, ['M'] = 0x32, [0xBC] = 0x33, [0xBE] = 0x34, [0xBF] = 0x35, [0x6A] = 0x37, [0x12] = 0x38,
-    [0x20] = 0x39, [0x14] = 0x3A, [0x70] = 0x3B, [0x71] = 0x3C, [0x72] = 0x3D, [0x73] = 0x3E, [0x74] = 0x3F, [0x75] = 0x40,
-    [0x76] = 0x41, [0x77] = 0x42, [0x78] = 0x43, [0x79] = 0x44, [0x90] = 0x45, [0x91] = 0x46, [0x24] = 0x47, [0x26] = 0x48,
-    [0x21] = 0x49, [0x6D] = 0x4A, [0x25] = 0x4B, [0x0C] = 0x4C, [0x27] = 0x4D, [0x6B] = 0x4E, [0x23] = 0x4F, [0x28] = 0x50,
-    [0x22] = 0x51, [0x2D] = 0x52, [0x2E] = 0x53, [0x7A] = 0x57, [0x7B] = 0x58, [0xA0] = 0x2A, [0xA1] = 0x36, [0xA2] = 0x1D,
-    [0xA3] = 0x1D, [0xA4] = 0x38, [0xA5] = 0x38, [0x5B] = 0x5B, [0x5C] = 0x5C, [0x5D] = 0x5D,
-};
-
-static WCHAR vk_char(UINT vk, BOOL shift, BOOL caps)
-{
-    static const char plain[] = "0123456789", shifted[] = ")!@#$%^&*(";
-    if (vk >= 'A' && vk <= 'Z') return (WCHAR)((shift ^ caps) ? vk : vk + 32);
-    if (vk >= '0' && vk <= '9') return (WCHAR)(shift ? shifted[vk - '0'] : plain[vk - '0']);
-    switch (vk) {
-    case 0x20: return ' ';
-    case 0x0D: return '\r';
-    case 0x09: return '\t';
-    case 0x08: return '\b';
-    case 0x1B: return 0x1B;
-    case 0xBA: return shift ? ':' : ';';
-    case 0xBB: return shift ? '+' : '=';
-    case 0xBC: return shift ? '<' : ',';
-    case 0xBD: return shift ? '_' : '-';
-    case 0xBE: return shift ? '>' : '.';
-    case 0xBF: return shift ? '?' : '/';
-    case 0xC0: return shift ? '~' : '`';
-    case 0xDB: return shift ? '{' : '[';
-    case 0xDC: return shift ? '|' : '\\';
-    case 0xDD: return shift ? '}' : ']';
-    case 0xDE: return shift ? '"' : '\'';
-    case 0x6A: return '*';
-    case 0x6B: return '+';
-    case 0x6D: return '-';
-    case 0x6F: return '/';
-    }
-    if (vk >= 0x60 && vk <= 0x69) return (WCHAR)('0' + vk - 0x60);
-    return 0;
-}
-
-USERAPI UINT MapVirtualKeyW(UINT code, UINT type)
-{
-    switch (type) {
-    case 0: return g_vk_to_sc[code & 0xFF];                 /* MAPVK_VK_TO_VSC */
-    case 1: case 3:                                         /* MAPVK_VSC_TO_VK(_EX) */
-        for (UINT vk = 1; vk < 256; vk++) if (g_vk_to_sc[vk] == (code & 0xFF)) return vk;
-        return 0;
-    case 2: { WCHAR c = vk_char(code, FALSE, FALSE); return c >= 'a' && c <= 'z' ? (UINT)c - 32 : c; }   /* MAPVK_VK_TO_CHAR */
-    }
-    return 0;
-}
-USERAPI UINT MapVirtualKeyA(UINT code, UINT type) { return MapVirtualKeyW(code, type); }
-USERAPI UINT MapVirtualKeyExW(UINT code, UINT type, HANDLE hkl) { (void)hkl; return MapVirtualKeyW(code, type); }
-
-USERAPI int ToUnicodeEx(UINT vk, UINT sc, const BYTE *keys, LPWSTR out, int n, UINT flags, HANDLE hkl)
-{
-    (void)flags; (void)hkl;
-    if (n < 1) return 0;
-    if (sc & 0x8000) return 0;                              /* KF_UP in the scan code: a release types nothing */
-    BOOL shift = keys && (keys[0x10] & 0x80), caps = keys && (keys[0x14] & 1), ctrl = keys && (keys[0x11] & 0x80);
-    WCHAR c = vk_char(vk, shift, caps);
-    if (ctrl && vk >= 'A' && vk <= 'Z') c = (WCHAR)(vk - 'A' + 1);
-    if (!c) return 0;
-    out[0] = c;
-    if (n > 1) out[1] = 0;
-    return 1;
-}
-USERAPI int ToUnicode(UINT vk, UINT sc, const BYTE *keys, LPWSTR out, int n, UINT flags) { return ToUnicodeEx(vk, sc, keys, out, n, flags, 0); }
-USERAPI int ToAscii(UINT vk, UINT sc, const BYTE *keys, LPWORD out, UINT flags)
-{
-    WCHAR w[2];
-    int r = ToUnicodeEx(vk, sc, keys, w, 2, flags, 0);
-    if (r) *out = w[0];
-    return r;
-}
-USERAPI int ToAsciiEx(UINT vk, UINT sc, const BYTE *keys, LPWORD out, UINT flags, HANDLE hkl)
-{
-    (void)hkl;
-    return ToAscii(vk, sc, keys, out, flags);
-}
-USERAPI SHORT VkKeyScanW(WCHAR c)
-{
-    for (UINT vk = 1; vk < 256; vk++) {
-        if (vk_char(vk, FALSE, FALSE) == c) return (SHORT)vk;
-        if (vk_char(vk, TRUE, FALSE) == c) return (SHORT)(vk | 0x100);
-    }
-    return -1;
-}
-USERAPI SHORT VkKeyScanA(CHAR c) { return VkKeyScanW((WCHAR)(BYTE)c); }
-USERAPI SHORT VkKeyScanExW(WCHAR c, HANDLE hkl) { (void)hkl; return VkKeyScanW(c); }
-USERAPI int GetKeyNameTextW(LONG lp, LPWSTR buf, int n)
-{
-    UINT sc = (UINT)(lp >> 16) & 0xFF;
-    UINT vk = MapVirtualKeyW(sc, 1);
-    char name[16];
-    WCHAR c = vk_char(vk, TRUE, FALSE);
-    if (vk == 0x20) memcpy(name, "Space", 6);
-    else if (vk == 0x0D) memcpy(name, "Enter", 6);
-    else if (vk == 0x1B) memcpy(name, "Esc", 4);
-    else if (vk == 0x10) memcpy(name, "Shift", 6);
-    else if (vk == 0x11) memcpy(name, "Ctrl", 5);
-    else if (vk == 0x12) memcpy(name, "Alt", 4);
-    else if (vk >= 0x70 && vk <= 0x7B) { name[0] = 'F'; int f = (int)vk - 0x6F; if (f >= 10) { name[1] = '1'; name[2] = (char)('0' + f - 10); name[3] = 0; } else { name[1] = (char)('0' + f); name[2] = 0; } }
-    else if (c > ' ' && c < 0x7F) { name[0] = (char)(c >= 'a' && c <= 'z' ? c - 32 : c); name[1] = 0; }
-    else return 0;
-    return u8_to_w(name, buf, n);
-}
 
 USERAPI UINT SendInput(UINT n, void *inputs, int size) { (void)n; (void)inputs; (void)size; SetLastError(ERROR_ACCESS_DENIED); return 0; }
 USERAPI void keybd_event(BYTE vk, BYTE sc, DWORD flags, ULONG_PTR extra) { (void)vk; (void)sc; (void)flags; (void)extra; }
@@ -466,6 +346,8 @@ USERAPI BOOL SystemParametersInfoW(UINT action, UINT uparam, PVOID p, UINT winin
     case 0x2014: *(UINT *)p = 0; return TRUE;               /* SPI_GETCARETWIDTH-ish */
     case 0x1024: *(BOOL *)p = TRUE; return TRUE;            /* SPI_GETDROPSHADOW */
     case 0x1002: *(BOOL *)p = TRUE; return TRUE;            /* SPI_GETMENUANIMATION */
+    case 0x0059: *(HKL *)p = GetKeyboardLayout(0); return TRUE;   /* SPI_GETDEFAULTINPUTLANG */
+    case 0x005A: return kbd_set_default(p ? *(HKL *)p : NULL);    /* SPI_SETDEFAULTINPUTLANG */
     }
     if (p && action >= 0x1000 && action < 0x2000 && !(action & 1)) { *(BOOL *)p = FALSE; return TRUE; }   /* other SPI_GET* booleans */
     SetLastError(ERROR_INVALID_PARAMETER);
@@ -851,6 +733,15 @@ USERAPI BOOL UnregisterDeviceNotification(HANDLE h) { (void)h; return TRUE; }
 USERAPI BOOL RegisterRawInputDevices(const void *d, UINT n, UINT cb) { (void)d; (void)n; (void)cb; return TRUE; }
 USERAPI HANDLE RegisterPowerSettingNotification(HANDLE r, const GUID *g, DWORD f) { (void)r; (void)g; (void)f; return (HANDLE)(ULONG_PTR)0xDE02; }
 USERAPI BOOL UnregisterPowerSettingNotification(HANDLE h) { (void)h; return TRUE; }
+/* Suspend and resume arrive as WM_POWERBROADCAST to every top-level window */
+USERAPI HANDLE RegisterSuspendResumeNotification(HANDLE r, DWORD f) { (void)r; (void)f; return (HANDLE)(ULONG_PTR)0xDE03; }
+USERAPI BOOL UnregisterSuspendResumeNotification(HANDLE h) { (void)h; return TRUE; }
+USERAPI BOOL RegisterPointerDeviceNotifications(HWND h, BOOL range) { (void)h; (void)range; return TRUE; }
+/* Raw input nobody handled: nothing more to do with it (header size checked as Windows does) */
+USERAPI LRESULT DefRawInputProc(void **raw, INT n, UINT header)
+{ (void)raw; (void)n; return header == 2 * sizeof(DWORD) + sizeof(HANDLE) + sizeof(WPARAM) ? 0 : -1; }
+/* GDI and USER object counts are not kept per process */
+USERAPI DWORD GetGuiResources(HANDLE p, DWORD flags) { (void)p; (void)flags; return 0; }
 
 /* -----------------------------------------------------------------------
  * The pointer

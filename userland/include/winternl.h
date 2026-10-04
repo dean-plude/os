@@ -268,6 +268,8 @@ NTSYSAPI NTSTATUS NTAPI NtNovaProcessInfo(HANDLE p, ULONG64 out[3]);
 /* NovaOS: the running programs */
 typedef struct { ULONG Pid, MemoryKb, Threads, Exited; CHAR Name[32]; } NOVA_PROCESS_ENTRY;
 NTSYSAPI NTSTATUS NTAPI NtNovaProcessList(NOVA_PROCESS_ENTRY *buf, ULONG max, PULONG count);
+/* NovaOS: NtQuerySystemInformation(SystemFirmwareTableInformation)'s kernel half */
+NTSYSAPI NTSTATUS NTAPI NtNovaFirmwareTable(PVOID info, ULONG len, PULONG ret);
 /* the registry */
 NTSYSAPI NTSTATUS NTAPI NtCreateKey(PHANDLE key, ACCESS_MASK access, POBJECT_ATTRIBUTES oa, ULONG title, PUNICODE_STRING cls,
                                     ULONG options, PULONG disposition);
@@ -388,6 +390,14 @@ NTSYSAPI NTSTATUS NTAPI LdrGetDllHandle(const WCHAR *path, PULONG flags, PUNICOD
 NTSYSAPI PVOID    NTAPI LdrNovaGetModuleA(const char *name);
 NTSYSAPI NTSTATUS NTAPI LdrGetProcedureAddress(PVOID base, const char *name, ULONG ordinal, PVOID *addr);
 NTSYSAPI NTSTATUS NTAPI LdrDisableThreadCalloutsForDll(PVOID base);
+NTSYSAPI NTSTATUS NTAPI LdrAddRefDll(ULONG flags, PVOID base);
+NTSYSAPI NTSTATUS NTAPI LdrUnloadDll(PVOID base);
+/* Resources: Info = LDR_RESOURCE_INFO { Type, Name, Language }, Level 1-3 */
+NTSYSAPI NTSTATUS NTAPI LdrFindResource_U(PVOID base, const ULONG_PTR *info, ULONG level, PVOID *entry);
+NTSYSAPI NTSTATUS NTAPI LdrFindResourceDirectory_U(PVOID base, const ULONG_PTR *info, ULONG level, PVOID *dir);
+NTSYSAPI NTSTATUS NTAPI LdrAccessResource(PVOID base, const VOID *entry, PVOID *addr, PULONG size);
+NTSYSAPI NTSTATUS NTAPI LdrResSearchResource(PVOID base, const ULONG_PTR *info, ULONG level, ULONG flags, PVOID *res,
+                                             SIZE_T *size, PVOID r1, PVOID r2);
 NTSYSAPI PLDR_DATA_TABLE_ENTRY NTAPI LdrNovaFindEntry(PVOID address);
 NTSYSAPI VOID     NTAPI LdrNovaZeroTlsCell(ULONG index);
 NTSYSAPI __declspec(noreturn) VOID NTAPI RtlExitUserThread(NTSTATUS status);

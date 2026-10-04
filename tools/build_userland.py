@@ -101,7 +101,7 @@ def cflags():
 import json
 SLOT = 0x01000000
 AUTO_X64 = (0x7FFD00000000, 0x7FFE00000000)
-AUTO_X86 = (0x97000000, 0xC0000000)
+AUTO_X86 = (0x97000000, 0xF0000000)        # (cabinet.dll and msxml6.dll filled 0x97000000-0xC0000000)
 
 def load_manifests():
     """{name: manifest} for every userland/*/dll.json, in link order (each
@@ -570,11 +570,22 @@ if os.environ.get('NOVA_NO_WOW64') != '1':
     built.append(('\\Windows\\SysWOW64\\icu.dll', os.path.join(ICU, 'x86', 'icu.dll')))
 built.append(('\\Windows\\Globalization\\ICU\\icudt77l.dat', os.path.join(ICU, 'icudt77l.dat')))
 
-# 3a1. the trusted roots secur32's Schannel checks certificates against
-# (the kernel's Mozilla list, as DER certificates back to back)
+# 3a1. the trusted roots secur32's Schannel and crypt32's chains check
+# certificates against (32-bit programs read C:\Windows\System32 as
+# SysWOW64): the kernel's Mozilla list (DER certificates back to back),
+# then the code-signing roots Windows trusts that the list lacks
+# (userland/crypt32/roots, one certificate per file: Microsoft's, which the
+# Authenticode chains of Windows software end in)
 roots = os.path.join(out, 'ca-bundle.der')
 build_netsurf.root_bundle(roots)
+CS_ROOTS = os.path.join(HERE, 'crypt32', 'roots')
+with open(roots, 'ab') as f:
+    for n in sorted(os.listdir(CS_ROOTS)):
+        if n.endswith('.cer'):
+            f.write(open(os.path.join(CS_ROOTS, n), 'rb').read())
 built.append(('\\Windows\\System32\\ca-bundle.der', roots))
+if os.environ.get('NOVA_NO_WOW64') != '1':
+    built.append(('\\Windows\\SysWOW64\\ca-bundle.der', roots))
 
 # 3a2. the Windows Installer packages the msitest self-test installs
 # (tools/msitest/mkpkg.py writes them; their programs are copies of msitest)
@@ -583,11 +594,27 @@ run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'msitest', 'mk
      os.path.join(out, 'msitest.exe')])
 for n in sorted(os.listdir(msipkg)):
     built.append((f'\\Tests\\Msi\\{n}', os.path.join(msipkg, n)))
+# 3a2b. the Authenticode self-test's signed files (authtest.exe), made by
+# tools/authenticode/mktests.py from copies of hello.exe
+authdir = os.path.join(out, 'authenticode')
+run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'authenticode', 'mktests.py'), authdir,
+     os.path.join(out, 'hello.exe'), os.path.join(out, 'x86' if 'x86' in passes else '', 'hello.exe')])
+for n in sorted(os.listdir(authdir)):
+    built.append((f'\\Tests\\Authenticode\\{n}', os.path.join(authdir, n)))
 # 3a3. the General MIDI soundfont winmm's synthesizer plays (generated)
 sf2 = os.path.join(out, 'gm.sf2')
 run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'make_gm_soundfont.py'), sf2])
 built.append(('\\Windows\\System32\\drivers\\gm.sf2', sf2))
 built.append(('\\Windows\\SysWOW64\\drivers\\gm.sf2', sf2))     # (where WOW64 redirects 32-bit programs)
+
+# 3a4. the audio DSP's Sound Open Firmware, when tools/fetch_sof_firmware.py
+# fetched it (it is not in the repository; kernel/drivers/sof.c loads it)
+SOF = os.path.join(TP, 'sof-bin')
+if os.path.isdir(SOF):
+    built.append(('\\Windows\\Firmware\\Intel\\LICENCE.Intel', os.path.join(SOF, 'LICENCE.Intel')))
+    for plat in sorted(os.listdir(os.path.join(SOF, 'sof-ipc4'))):
+        built.append((f'\\Windows\\Firmware\\Intel\\sof-ipc4\\{plat}\\sof-{plat}.ri',
+                      os.path.join(SOF, 'sof-ipc4', plat, f'sof-{plat}.ri')))
 
 # 3a. sample files for the user's folders (tools/make_icons.py draws the icons)
 samples = os.path.join(HERE, 'samples')

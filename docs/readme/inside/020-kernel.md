@@ -13,7 +13,8 @@ same bytes, as Windows shares image sections), I/O,
   a thread woken by a timer preempts the running one instead of waiting
   for its time slice to end.  NT's priority boosts: a thread woken by an
   event, a lock, I/O, a window message or input runs above its base
-  priority (+1 to +6) and preempts busy threads of that priority, then
+  priority (+1 to +6; +2 for window messages and the input they carry,
+  as win32k gives) and preempts busy threads of that priority, then
   decays back one level per quantum; a balance set lifts threads that
   have starved for 3 s.  Priority classes and thread priorities
   (`SetPriorityClass`, `SetThreadPriority`) set NT's base priorities;
@@ -21,4 +22,9 @@ same bytes, as Windows shares image sections), I/O,
   saving drive C:) stays above anything a program can ask for, and the
   process whose window is active (or the console program running in the
   active Terminal) gets NT's foreground boost (+2 after every wait) and
-  three times the time slice (60 ms against 20 ms).
+  three times the time slice (60 ms against 20 ms).  The Multimedia
+  Class Scheduler (`AvSetMmThreadCharacteristics`) runs a program's audio
+  threads at real-time priority 18, above every program thread and the
+  desktop, with Windows' 80% budget so one cannot freeze the machine;
+  NovaOS's own sound threads (waveOut, waveIn, DirectSound, WASAPI) use
+  it too.

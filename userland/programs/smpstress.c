@@ -16,7 +16,11 @@
  *   8. throughput: files (open, write, read back, close) and the registry
  *      (open a key, set and read a value, close), each thread on its own
  *      file or key, by one thread and then by one per CPU.  With
- *      "smpstress scaling X" it fails unless both scale by X or more.
+ *      "smpstress scaling X" it fails unless both scale by X or more;
+ *   9. random bytes: three threads per CPU, at high, normal and low
+ *      priority, all asking the kernel's one entropy pool (a spinning
+ *      lock) at once, as Firefox's processes do as they start: every
+ *      thread must finish, the low-priority ones included.
  */
 #include <windows.h>
 #include <stdio.h>
@@ -280,6 +284,23 @@ static DWORD WINAPI spawn_worker(LPVOID arg)
     return 0;
 }
 
+/* 9: RtlGenRandom (NtNovaGetRandom, under the network lock) from threads
+ * of every priority */
+typedef BOOLEAN (WINAPI *GenRandom)(PVOID, ULONG);
+static GenRandom g_genrandom;
+static volatile long g_random_done;
+
+static DWORD WINAPI random_worker(LPVOID arg)
+{
+    static const int prio[3] = { THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_LOWEST };
+    SetThreadPriority(GetCurrentThread(), prio[(ULONG_PTR)arg % 3]);
+    BYTE buf[32];
+    for (int i = 0; i < ITER / 3; i++)
+        if (!g_genrandom(buf, sizeof(buf))) { InterlockedIncrement(&g_bad); return 1; }
+    InterlockedIncrement(&g_random_done);
+    return 0;
+}
+
 static void run(const char *name, LPTHREAD_START_ROUTINE fn, int n, void **args)
 {
     HANDLE h[64];
@@ -368,6 +389,15 @@ int main(int argc, char **argv)
     int spawners = g_threads / 2;
     run("processes", spawn_worker, spawners, NULL);
     if (g_bad == bad0) pass++; else { fail++; printf("  processes: %ld of %d failed\n", g_bad - bad0, spawners * CHILDREN); }
+
+    g_genrandom = (GenRandom)GetProcAddress(LoadLibraryA("advapi32.dll"), "SystemFunction036");
+    if (g_genrandom) {
+        int nr = (int)si.dwNumberOfProcessors * 3;
+        if (nr > 48) nr = 48;
+        bad0 = g_bad;
+        run("random bytes", random_worker, nr, NULL);
+        if (g_bad == bad0 && g_random_done == nr) pass++; else { fail++; printf("  random bytes: %ld of %d threads done\n", g_random_done, nr); }
+    } else { fail++; printf("  random bytes: no advapi32!SystemFunction036\n"); }
 
 throughput:
     CreateDirectoryA("C:\\Temp", NULL);

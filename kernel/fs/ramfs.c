@@ -186,6 +186,25 @@ bool RamfsDriveInfo(const RamNode *n, const char **label, const char **fs, UINT6
     return true;
 }
 
+/* Drive C:'s files in memory: their number, their contents and the memory
+ * those take (a file with several names counted once) */
+static void usage(const RamNode *d, UINT64 *files, UINT64 *bytes, UINT64 *held)
+{
+    for (const RamNode *c = d->child; c; c = c->next) {
+        if (c->dir) { if (!ext(c)) usage(c, files, bytes, held); continue; }
+        if (c->link && RamfsFileId(c) != c) continue;
+        (*files)++;
+        *bytes += c->size;
+        *held += c->data ? ksize(c->data) : 0;
+    }
+}
+
+void RamfsUsage(UINT64 *files, UINT64 *bytes, UINT64 *held)
+{
+    *files = *bytes = *held = 0;
+    usage(&g_root, files, bytes, held);
+}
+
 UINT64 RamfsDriveFree(const RamNode *n)
 {
     Drive *d = drive_of(n);
@@ -642,13 +661,25 @@ bool RamfsWriteOwned(RamNode *f, char *buf, UINT32 len)
     return true;
 }
 
-/* Grow capacity to at least @need (geometrically, so appends are cheap). */
-static bool reserve(RamNode *f, UINT32 need)
+/* Grow capacity to at least @need: where the contents are when the memory
+ * after them is free, else into a new buffer, bigger than asked when @exact
+ * is false (so appends are cheap): doubling while small, then by a quarter,
+ * so a file of hundreds of MiB written in pieces doesn't hold twice its
+ * size; trim() gives the rest back once the file is closed */
+static bool reserve(RamNode *f, UINT32 need, bool exact)
 {
     if (need <= f->cap) return true;
     if (need > RAMFS_FILE_MAX) return false;
+    if (f->data && kresize(f->data, need)) {
+        f->cap = (UINT32)ksize(f->data);
+        return true;
+    }
     UINT32 cap = f->cap ? f->cap : 256;
-    while (cap < need) cap = cap > RAMFS_FILE_MAX / 2 ? RAMFS_FILE_MAX : cap * 2;
+    while (cap < need) {
+        UINT32 more = cap < (64u << 20) ? cap : cap / 4;
+        cap = cap > RAMFS_FILE_MAX - more ? RAMFS_FILE_MAX : cap + more;
+    }
+    if (exact) cap = need;
     char *nb = kmalloc(cap);
     if (!nb) return false;
     if (f->size) memcpy(nb, f->data, f->size);
@@ -661,7 +692,7 @@ static bool reserve(RamNode *f, UINT32 need)
 bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
 {
     if (!f || f->dir || ring_pins(f) || off > RAMFS_FILE_MAX || len > RAMFS_FILE_MAX - off || RamfsReadOnly(f)) return false;
-    if (!RamfsLoad(f) || !unshare(f) || !reserve(f, off + len)) return false;
+    if (!RamfsLoad(f) || !unshare(f) || !reserve(f, off + len, false)) return false;
     if (ext(f)) set_dirty(f);
     if (off > f->size) memset(f->data + f->size, 0, off - f->size);
     memcpy(f->data + off, data, len);
@@ -674,7 +705,7 @@ bool RamfsWriteAt(RamNode *f, UINT32 off, const void *data, UINT32 len)
 
 bool RamfsResize(RamNode *f, UINT32 len)
 {
-    if (!f || f->dir || ring_pins(f) || RamfsReadOnly(f) || !RamfsLoad(f) || !unshare(f) || !reserve(f, len)) return false;
+    if (!f || f->dir || ring_pins(f) || RamfsReadOnly(f) || !RamfsLoad(f) || !unshare(f) || !reserve(f, len, true)) return false;
     if (ext(f)) set_dirty(f);
     if (len > f->size) memset(f->data + f->size, 0, len - f->size);
     f->size = len;
@@ -684,13 +715,28 @@ bool RamfsResize(RamNode *f, UINT32 len)
     return true;
 }
 
+/* The memory past @f's contents goes back once nothing holds the file (an
+ * appended file's buffer doubled as it grew): on drive C: it would stay
+ * taken for as long as the file is kept, which is RAM.  (A save that has
+ * the contents lent reads only @size bytes of them.) */
+static void trim(RamNode *f)
+{
+    if (!f->data || ring_refs(f) > 0 || f->cap - f->size < 4096) return;
+    if (!kresize(f->data, f->size ? f->size : 1)) return;      /* (a small buffer stays as it is) */
+    f->cap = (UINT32)ksize(f->data);
+    sync_links(f);
+}
+
 void RamfsRef(RamNode *n)   { if (n) __atomic_add_fetch(&n->refs, 1, __ATOMIC_RELAXED); }
 void RamfsUnref(RamNode *n)
 {
     if (!n) return;
     int left = __atomic_sub_fetch(&n->refs, 1, __ATOMIC_ACQ_REL);
     if (left < 0) { __atomic_add_fetch(&n->refs, 1, __ATOMIC_RELAXED); return; }
-    if (!left && !n->dir) unload(n);
+    if (!left && !n->dir) {
+        if (ext(n)) unload(n);
+        else trim(n);
+    }
 }
 void RamfsPin(RamNode *f)
 {

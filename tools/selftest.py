@@ -52,7 +52,11 @@ order; --list prints them):
             are behind an embedded controller (tests/acpi/laptop.asl): the
             battery, the lid sleeping it in low-power S0 idle and waking
             it, then NovaOS installed from a USB stick onto an NVMe disk
-            and started from there
+            and started from there; "update", an installed NovaOS on a
+            network serving update channels (tools/mkupdate.py): it
+            updates itself to a newer test build of this kernel, restarts
+            into it twice, and goes back to it when the next update is
+            reset while it first starts
 
 Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
@@ -168,15 +172,20 @@ REC_HZ = 523          # what the core boot's microphone hears
 OUT = 'selftest-out'  # --out
 
 
-def recording(guest, hz, ms):
+def recording(guest, hz, ms, gapless=False):
     """A check on a WAV a test recorded at @guest (C:\\...): a tone of @hz
-    for @ms or longer (tools/wavcheck.py).  The file is copied to --out."""
+    for @ms or longer (tools/wavcheck.py), and with @gapless one that never
+    skips (no frames lost; wavcheck.gaps).  The file is copied to --out."""
     def check(nova):
         local = os.path.join(OUT, guest.replace('\\', '/').split('/')[-1])
         src = '::/NOVA/C/' + guest[3:].replace('\\', '/')
         r = subprocess.run(['mcopy', '-o', '-i', os.path.join(nova.work, 'data.img'), src, local], capture_output=True)
         if r.returncode:
             return f'no {guest} on the data disk'
+        skips = wavcheck.gaps(local, hz) if gapless else []
+        if skips:
+            return f'{guest} skips {len(skips)} time(s): frames went missing at ' + \
+                ', '.join(f'{t:.3f} s' for t, _ in skips[:5])
         if wavcheck.has_tone(local, hz, ms):
             return None
         return f'no {hz} Hz tone of {ms} ms in {guest} (heard: ' + \
@@ -263,6 +272,7 @@ MONITORS = load_suite('devices/monitors')
 USBBOOT = load_suite('devices/usbboot')
 CDBOOT = load_suite('devices/cdboot')
 LAPTOP = load_suite('devices/laptop')
+UPDATE = load_suite('devices/update')
 
 
 def net4_boot(work):
@@ -416,6 +426,26 @@ def laptop_boot(work):
         {'img': False, 'vga': ('-vga', 'none', '-device', 'ramfb')}
 
 
+def update_boot(work):
+    """build/nova.img as an installed NovaOS (its writes kept while QEMU runs,
+    across restarts) on QEMU's user-mode network, where 10.0.2.2:18090
+    serves two update channels made with tools/mkupdate.py from this build:
+    v1/ stamped one version newer, v2/ two (tests/selftest/devices/update)"""
+    test = os.path.join(ROOT, 'tests', 'selftest', 'devices', 'update', '010-update.py')
+    ns = {'Test': Test, '__file__': test}
+    exec(compile(open(test).read(), test, 'exec'), ns)          # (its V1 and V2)
+    root = os.path.join(work, 'channels')
+    for sub, ver in (('v1', ns['V1']), ('v2', ns['V2'])):
+        subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'mkupdate.py'), os.path.join(root, sub),
+                        '--version', ver, '--notes', f'Self-test build {ver}'], check=True, stdout=subprocess.DEVNULL)
+    srv = subprocess.Popen([sys.executable, '-m', 'http.server', '18090', '--bind', '127.0.0.1', '--directory', root],
+                           stdout=open(os.path.join(work, 'http.log'), 'w'), stderr=subprocess.STDOUT)
+    time.sleep(1)
+    if srv.poll() is not None:            # (another server on the port would serve other files)
+        raise RuntimeError('the update channels\' web server did not start (is port 18090 in use?)')
+    return ['-nic', 'user,model=virtio-net-pci'], [srv]
+
+
 # The suites that boot once per entry: (label, tests, setup(work) -> (QEMU arguments, processes[,
 # more Nova arguments]))
 BOOTS = {
@@ -423,7 +453,7 @@ BOOTS = {
     'devices': [('touch', TOUCH, touch_boot), ('usbaudio', USBAUDIO, usbaudio_boot),
                 ('usbheadset', USBHEADSET, usbheadset_boot),
                 ('monitors', MONITORS, monitors_boot), ('usbboot', USBBOOT, usbboot_boot),
-                ('cdboot', CDBOOT, cdboot_boot), ('laptop', LAPTOP, laptop_boot)],
+                ('cdboot', CDBOOT, cdboot_boot), ('laptop', LAPTOP, laptop_boot), ('update', UPDATE, update_boot)],
 }
 
 
@@ -523,7 +553,7 @@ def main():
             finally:
                 for p in procs:
                     p.kill()
-                for log in ['h2server.log', 'v6peer.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10709)]:
+                for log in ['h2server.log', 'v6peer.log', 'http.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10709)]:
                     if os.path.exists(os.path.join(work, log)):
                         shutil.copy(os.path.join(work, log), a.out)
                 shutil.rmtree(work, ignore_errors=True)

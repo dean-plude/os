@@ -23,6 +23,9 @@ UINT64 AcpiRsdpAddress(void);
  * NULL.  The table starts with the standard 36-byte header. */
 const void *AcpiFindTable(const char *sig);
 
+/* The i'th table (RSDT/XSDT order, then the DSDT); NULL past the last */
+const void *AcpiTableAt(UINT32 i);
+
 /* Enter S5 (soft off).  Returns only if the hardware didn't power off. */
 void AcpiPowerOff(void);
 

@@ -225,7 +225,8 @@ static Thread *rq_dequeue(RunQueue *rq)
  *
  * A thread woken from a wait runs at its base priority plus the waker's
  * increment (scheduler.h: +1 for an event, a semaphore, a mutex or an
- * alert, +2 for a window message, +6 for keyboard and mouse input...), up
+ * alert, +2 for a window message, keyboard and mouse input to a window included,
+ * +6 for console input...), up
  * to 15 and never for a real-time thread (16 and up); a boost never lowers
  * a priority already higher.  So a woken thread runs ahead of the busy
  * threads of its base priority, preempting the one on its CPU (wake_preempts),
@@ -259,8 +260,12 @@ static inline uint64_t slice_ticks(const Thread *t)
 /* (@t waiting, its queue locked).  A thread of the foreground process gets
  * NT's foreground boost on top (PsPrioritySeparation; Windows Internals,
  * "Priority boosts for foreground threads after waits"). */
+static void mmcss_refresh(Thread *t, uint64_t now);
+static RunQueue *lock_thread_rq(Thread *t, IrqState *s);
+
 static void boost(Thread *t, int incr)
 {
+    if (t->mm_priority) mmcss_refresh(t, tick_count);
     if (incr <= 0 || t->idle || t->no_boost || t->base_priority >= PRIO_LOW_REALTIME) return;
     if (t->um_proc && t->um_proc == sched_foreground()) incr += BOOST_FOREGROUND;
     int p = t->base_priority + incr;
@@ -269,6 +274,55 @@ static void boost(Thread *t, int incr)
     t->priority = (uint8_t)p;
     t->boost_ticks = 0;
     t->balance_boost = false;
+}
+
+/* -----------------------------------------------------------------------
+ * The Multimedia Class Scheduler (scheduler.h, PRIO_MMCSS): a registered
+ * thread runs at its real-time priority for at most MMCSS_BUDGET_TICKS of
+ * every MMCSS_PERIOD_TICKS (counted at the ticks that find it running),
+ * then at its own base until the period ends.  It gets its priority back
+ * at the first tick it runs in a new period, or when it is woken in one
+ * (boost): an audio thread waits every few milliseconds.
+ * ----------------------------------------------------------------------- */
+
+/* (@t waiting with its queue locked, or running on this CPU) */
+static void mmcss_refresh(Thread *t, uint64_t now)
+{
+    if (now - t->mm_period < MMCSS_PERIOD_TICKS) return;
+    t->mm_period = now;
+    t->mm_ran = 0;
+    if (t->mm_exhausted) {
+        t->mm_exhausted = false;
+        t->base_priority = t->priority = t->mm_priority;
+        t->boost_ticks = 0;
+        t->balance_boost = false;
+    }
+}
+
+/* @cur ran this tick: true when it has just used up its share (and now
+ * runs at its own base) */
+static bool mmcss_tick(Thread *cur, uint64_t now)
+{
+    mmcss_refresh(cur, now);
+    if (cur->mm_exhausted || ++cur->mm_ran <= MMCSS_BUDGET_TICKS) return false;
+    cur->mm_exhausted = true;
+    cur->base_priority = cur->priority = cur->mm_base;
+    cur->boost_ticks = 0;
+    cur->balance_boost = false;
+    return true;
+}
+
+void sched_set_mmcss(Thread *t, uint8_t mm, uint8_t base)
+{
+    IrqState irq;
+    RunQueue *rq = lock_thread_rq(t, &irq);
+    t->mm_priority = mm;
+    t->mm_base = base;
+    t->mm_ran = 0;
+    t->mm_exhausted = false;
+    t->mm_period = tick_count;
+    spin_unlock_irqrestore(&rq->lock, irq);
+    sched_set_base_priority(t, mm ? mm : base);
 }
 
 /* The tick's work (one CPU, interrupts off, no queue locked): boost the
@@ -686,6 +740,7 @@ static void switch_locked(RunQueue *rq)
         __asm__ volatile ("fxrstor64 (%0)" : : "r"(next->fpu) : "memory");
         wrmsr(MSR_IA32_KERNEL_GSBASE, next->gs_base);
         wrmsr(MSR_IA32_FSBASE, next->fs_base);       /* 32-bit programs: fs:0 is the TEB */
+        gdt_set_teb32((uint32_t)next->fs_base);      /* and FS reloaded (0x53) finds it too */
     }
 
     bkl_switch_out(prev);               /* its big kernel lock waits for it */
@@ -903,6 +958,7 @@ void sched_tick(void)
             cur->balance_boost = false;
             decayed = true;
         }
+        if (cur->mm_priority && !cur->idle && mmcss_tick(cur, now)) decayed = true;
     }
 
     /* An idle CPU looks for work waiting on the others at every tick */

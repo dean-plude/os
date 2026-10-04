@@ -860,7 +860,8 @@ static void load_dir(UINT64 vdir, RamNode *rdir, int depth)
         char *buf = size ? kmalloc(size) : NULL;
         if (size && !buf) continue;
         RamNode *f = RamfsCreate(rdir, e->name, false);
-        if (f && vol_read(&real, buf) && RamfsWrite(f, buf, (UINT32)size)) {
+        if (f && vol_read(&real, buf) && RamfsWriteOwned(f, buf, (UINT32)size)) {
+            buf = NULL;                                        /* (the file holds it now: no second copy of a big file) */
             g_restored++;
             if (e->mtime) f->mtime = e->mtime;
             f->ctime = e->ctime ? e->ctime : f->mtime;

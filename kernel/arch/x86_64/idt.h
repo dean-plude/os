@@ -63,6 +63,7 @@
 #define IRQ_SPURIOUS   0xFF
 
 /* NT syscall vector */
+#define VECTOR_FASTFAIL 0x29    /* __fastfail(code): Windows' KiRaiseSecurityCheckFailure */
 #define VECTOR_SYSCALL  0x2E
 
 /* Total IDT entries */

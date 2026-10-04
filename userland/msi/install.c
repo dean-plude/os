@@ -344,8 +344,28 @@ static void file_path(Inst *in, const char *filekey, char *out, int cap)
     snprintf(out, (size_t)cap, "%s%s", dp, name);
 }
 
+/* Is the package for 64-bit Windows?  Its summary's Template names the
+ * platform: "x64;1033", "Intel64;...", "Arm64;..." are; "Intel;1033" (and
+ * an empty platform) are 32-bit packages */
+static bool package_is_64bit(Inst *in)
+{
+    char t[256] = "";
+    msi_suminfo_get(&in->db.cfb, 7 /* PID_TEMPLATE */, t, sizeof(t), NULL);
+    char *semi = strchr(t, ';');
+    if (semi) *semi = 0;
+    for (char *c = strtok(t, ","); c; c = strtok(NULL, ","))
+        if (!_stricmp(c, "x64") || !_stricmp(c, "Intel64") || !_stricmp(c, "Arm64") || !_stricmp(c, "AMD64")) return true;
+    return false;
+}
+
 static void standard_folders(Inst *in)
 {
+    /* On 64-bit Windows a 32-bit package's SystemFolder is SysWOW64, where
+     * 32-bit programs find their DLLs; System64Folder is System32 */
+    if (!prop_set(in, "SystemFolder") && !package_is_64bit(in)) {
+        set_prop(in, "SystemFolder", "C:\\Windows\\SysWOW64\\");
+        logf(in, "32-bit package: SystemFolder is C:\\Windows\\SysWOW64\\");
+    }
     static const struct { const char *name, *path; } f[] = {
         { "ProgramFilesFolder", "C:\\Programs\\" }, { "ProgramFiles64Folder", "C:\\Programs\\" },
         { "CommonFilesFolder", "C:\\Programs\\Common Files\\" }, { "CommonFiles64Folder", "C:\\Programs\\Common Files\\" },
@@ -1705,6 +1725,43 @@ static void install_location(Inst *in, char *out, int cap)
     snprintf(out, (size_t)cap, "%s", get_prop(in, "TARGETDIR"));
 }
 
+/* The product's source list (where its package can be found again), under
+ * its Installer key as Windows keeps it: SourceList with PackageName and
+ * LastUsedSource, and SourceList\\Net\\1 = the package's folder.  A list
+ * already there (a repair, or sources added since) stays. */
+static const WCHAR *const g_source_keys[] = { L"\\SourceList\\Net", L"\\SourceList\\URL", L"\\SourceList\\Media", L"\\SourceList" };
+
+static void register_source_list(Inst *in, const WCHAR *product_key)
+{
+    WCHAR key[400], net[400];
+    _snwprintf(key, 400, L"%s\\SourceList", product_key);
+    _snwprintf(net, 400, L"%s\\SourceList\\Net", product_key);
+    HKEY h;
+    if (!RegOpenKeyExW(HKEY_LOCAL_MACHINE, net, 0, KEY_READ, &h)) {
+        DWORD type, size = 0;
+        bool listed = !RegQueryValueExW(h, L"1", NULL, &type, NULL, &size);
+        RegCloseKey(h);
+        if (listed) return;
+    }
+    rb_key(in, HKEY_LOCAL_MACHINE, key);
+    if (!RegCreateKeyExW(HKEY_LOCAL_MACHINE, key, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &h, NULL)) {
+        const WCHAR *name = wcsrchr(in->pkg_path, L'\\');
+        name = name ? name + 1 : in->pkg_path;
+        RegSetValueExW(h, L"PackageName", 0, REG_SZ, (const BYTE *)name, (DWORD)(wcslen(name) + 1) * 2);
+        char last[MAX_PATH + 8];
+        snprintf(last, sizeof(last), "n;1;%s", in->source_dir);
+        set_sz(h, L"LastUsedSource", last);
+        RegCloseKey(h);
+    }
+    rb_key(in, HKEY_LOCAL_MACHINE, net);
+    if (!RegCreateKeyExW(HKEY_LOCAL_MACHINE, net, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &h, NULL)) {
+        WCHAR w[MAX_PATH];
+        to_w(in->source_dir, w, MAX_PATH);
+        RegSetValueExW(h, L"1", 0, REG_EXPAND_SZ, (const BYTE *)w, (DWORD)(wcslen(w) + 1) * 2);
+        RegCloseKey(h);
+    }
+}
+
 static void action_register_product(Inst *in)
 {
     const char *code = get_prop(in, "ProductCode");
@@ -1780,9 +1837,15 @@ static void action_register_product(Inst *in)
             snprintf(feats + n, sizeof(feats) - n, "%s,", msidb_str(&in->db, in->feature, i, 0, b));
         }
         set_sz(h, L"Features", feats);
+        char pc[64] = "";
+        msi_suminfo_get(&in->db.cfb, 9 /* PID_REVNUMBER */, pc, sizeof(pc), NULL);
+        pc[38] = 0;
+        set_sz(h, L"PackageCode", pc);
+        set_dw(h, L"AssignmentType", prop_set(in, "ALLUSERS") ? 1 : 0);   /* per-machine, or the user's */
         cache_changes(in, h);
         RegCloseKey(h);
     }
+    register_source_list(in, key);
     logf(in, "Registered product %s (%s)", get_prop(in, "ProductName"), code);
 }
 
@@ -1796,6 +1859,12 @@ static void action_unregister_product(Inst *in)
     rb_key(in, HKEY_LOCAL_MACHINE, key);
     RegDeleteKeyW(HKEY_LOCAL_MACHINE, key);
     _snwprintf(key, 300, L"%s\\%s", NOVA_INSTALLER_KEY, wc);
+    for (size_t i = 0; i < sizeof(g_source_keys) / sizeof(g_source_keys[0]); i++) {
+        WCHAR sub[400];
+        _snwprintf(sub, 400, L"%s%s", key, g_source_keys[i]);
+        rb_key(in, HKEY_LOCAL_MACHINE, sub);
+        RegDeleteKeyW(HKEY_LOCAL_MACHINE, sub);
+    }
     rb_key(in, HKEY_LOCAL_MACHINE, key);
     RegDeleteKeyW(HKEY_LOCAL_MACHINE, key);
     WCHAR cache[MAX_PATH];
@@ -2044,6 +2113,45 @@ static void action_app_search(Inst *in)
 
 static int run_product(const WCHAR *code, bool remove, int ui_level, MsiUi *ui, const WCHAR *props, char *err, int cap);
 
+/* Product versions compare on their first three fields, as Windows
+ * Installer compares them */
+static int cmp_product_version(const char *a, const char *b)
+{
+    unsigned x[3] = { 0, 0, 0 }, y[3] = { 0, 0, 0 };
+    sscanf(a, "%u.%u.%u", &x[0], &x[1], &x[2]);
+    sscanf(b, "%u.%u.%u", &y[0], &y[1], &y[2]);
+    for (int i = 0; i < 3; i++) if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
+    return 0;
+}
+
+/* Does a registered product (@version, @lang) fall in Upgrade row @r's
+ * range: VersionMin/VersionMax (inclusive with attributes 0x100/0x200; an
+ * empty bound is open) and its Language list (0x400: every language but
+ * those)? */
+static bool upgrade_row_matches(Inst *in, MsiTable *t, int r, const char *version, unsigned lang)
+{
+    char b[16], minv[64], maxv[64], langs[256];
+    snprintf(minv, sizeof(minv), "%s", msidb_str(&in->db, t, r, msidb_col(t, "VersionMin"), b));
+    snprintf(maxv, sizeof(maxv), "%s", msidb_str(&in->db, t, r, msidb_col(t, "VersionMax"), b));
+    snprintf(langs, sizeof(langs), "%s", msidb_str(&in->db, t, r, msidb_col(t, "Language"), b));
+    int attrs = msidb_int(&in->db, t, r, msidb_col(t, "Attributes"), NULL);
+    if (minv[0]) {
+        int c = cmp_product_version(version, minv);
+        if (c < 0 || (c == 0 && !(attrs & 0x100))) return false;
+    }
+    if (maxv[0]) {
+        int c = cmp_product_version(version, maxv);
+        if (c > 0 || (c == 0 && !(attrs & 0x200))) return false;
+    }
+    if (langs[0] && lang) {
+        bool listed = false;
+        for (char *l = strtok(langs, ","); l; l = strtok(NULL, ","))
+            if ((unsigned)atoi(l) == lang) listed = true;
+        if (listed == ((attrs & 0x400) != 0)) return false;
+    }
+    return true;
+}
+
 static void action_find_related(Inst *in)
 {
     /* Upgrade(UpgradeCode, VersionMin, VersionMax, Language, Attributes, Remove, ActionProperty):
@@ -2062,12 +2170,25 @@ static void action_find_related(Inst *in)
         WCHAR up[64];
         DWORD type, size = sizeof(up);
         if (!RegQueryValueExW(p, L"UpgradeCode", NULL, &type, (BYTE *)up, &size)) {
-            char upc[64], code[64];
+            char upc[64], code[64], version[64] = "";
             to_u8(up, upc, sizeof(upc));
             to_u8(sub, code, sizeof(code));
+            WCHAR wv[64];
+            size = sizeof(wv);
+            if (!RegQueryValueExW(p, L"ProductVersion", NULL, &type, (BYTE *)wv, &size)) to_u8(wv, version, sizeof(version));
+            DWORD lang = 0;
+            WCHAR ukey[300];
+            HKEY u;
+            _snwprintf(ukey, 300, L"%s\\%s", UNINSTALL_KEY, sub);
+            if (!RegOpenKeyExW(HKEY_LOCAL_MACHINE, ukey, 0, KEY_READ, &u)) {
+                size = sizeof(lang);
+                if (RegQueryValueExW(u, L"Language", NULL, &type, (BYTE *)&lang, &size)) lang = 0;
+                RegCloseKey(u);
+            }
             for (int r = 0; r < t->nrows; r++) {
                 if (_stricmp(msidb_str(&in->db, t, r, 0, b), upc)) continue;
                 if (!strcmp(code, get_prop(in, "ProductCode"))) continue;
+                if (!upgrade_row_matches(in, t, r, version, lang)) continue;
                 const char *ap = msidb_str(&in->db, t, r, msidb_col(t, "ActionProperty"), b);
                 if (!*ap) continue;
                 char list[1024];
@@ -2088,6 +2209,7 @@ static void action_remove_existing(Inst *in)
     for (int r = 0; t && r < t->nrows; r++) {
         const char *ap = msidb_str(&in->db, t, r, msidb_col(t, "ActionProperty"), b);
         if (!*ap || !prop_set(in, ap)) continue;
+        if (msidb_int(&in->db, t, r, msidb_col(t, "Attributes"), NULL) & 0x2) continue;   /* OnlyDetect */
         char list[1024];
         snprintf(list, sizeof(list), "%s", get_prop(in, ap));
         for (char *p = list; *p; ) {
@@ -3659,6 +3781,11 @@ static int run_patch(const MsiRequest *req, MsiUi *ui, char *err, int cap)
 int MsiRunInstall(const MsiRequest *req, char *err, int err_cap)
 {
     if (err && err_cap) err[0] = 0;
+    /* Windows installs from its 64-bit service, which sees System32 and
+     * SysWOW64 as they are; the engine in a 32-bit process (a bootstrapper
+     * calling MsiInstallProduct) does the same with redirection off */
+    PVOID redirect = NULL;
+    BOOL no_redirect = Wow64DisableWow64FsRedirection(&redirect);
     MsiUi *ui = req->ui_level > MSIUI_NONE ? msiui_create() : NULL;
     int r;
     bool dialogs = false;
@@ -3679,5 +3806,6 @@ int MsiRunInstall(const MsiRequest *req, char *err, int err_cap)
     }
     /* the package's own dialogs already told the user how it went */
     if (ui) msiui_end(ui, dialogs ? MSI_OK : r, req->ui_level >= MSIUI_FULL && !dialogs, err);
+    if (no_redirect) Wow64RevertWow64FsRedirection(redirect);
     return r;
 }

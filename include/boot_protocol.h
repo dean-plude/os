@@ -19,7 +19,7 @@
 
 /* Increment BOOT_PROTOCOL_VERSION when the struct layout changes. */
 #define BOOT_MAGIC            UINT64_C(0x4E4F564100424F4F)   /* "NOVA\0BOO" */
-#define BOOT_PROTOCOL_VERSION 3
+#define BOOT_PROTOCOL_VERSION 4
 
 /* -----------------------------------------------------------------------
  * Memory map — mirrors UEFI EFI_MEMORY_DESCRIPTOR, but uses our own
@@ -111,12 +111,29 @@ typedef struct {
     uint64_t         media_kernel_size;
     uint64_t         media_loader_base;    /* \EFI\BOOT\BOOTX64.EFI (physical) */
     uint64_t         media_loader_size;
+
+    /* Version 4: the firmware's SMBIOS tables, copied by the bootloader
+     * into EfiLoaderData pages (0/0 when the firmware has none).  The copy
+     * is laid out as Windows' RawSMBIOSData: Used20CallingMethod,
+     * SMBIOSMajorVersion, SMBIOSMinorVersion, DmiRevision (one byte each),
+     * Length (4 bytes), then Length bytes of structures; it is what
+     * GetSystemFirmwareTable('RSMB') returns. */
+    uint64_t         smbios_base;          /* physical */
+    uint64_t         smbios_size;
 } BootInfo;
 
 #define BOOT_FLAG_LIVE_MEDIA  (1u << 0)    /* booted from the installation media (the ISO, on a CD/DVD or a USB stick) */
 #define BOOT_FLAG_LIVE_USB    (1u << 1)    /* ... and that is a USB device (the ISO written to a stick) */
 #define BOOT_FLAG_BOOT_ENTRY  (1u << 2)    /* an installed disk: the firmware has a "NovaOS" boot entry for it */
 #define BOOT_FLAG_ENTRY_ADDED (1u << 3)    /* ... which this boot added */
+/* An installed disk with an update staged (kernel/fs/update.c): the
+ * bootloader started the new kernel, \EFI\NOVA\kernel.new, for the first
+ * time; the kernel finishes the update once it has reached the desktop */
+#define BOOT_FLAG_UPDATE_TRIAL  (1u << 4)
+/* ... or the new kernel was started last time and never finished the
+ * update (it stopped, or the PC was reset), or it is not a kernel: this
+ * is the previous kernel again, and the update is to be thrown away */
+#define BOOT_FLAG_UPDATE_FAILED (1u << 5)
 
 /* Sanity check: kernel entry function signature */
 typedef void (*KernelEntryFn)(const BootInfo *info);

@@ -209,6 +209,8 @@ typedef struct {
     void      *lzx;                   /* lzx.c state */
     uint8_t   *out;                   /* one block's output (<= 32768) */
     uint32_t   out_len;
+    uint8_t   *partial;               /* the start of a block split across cabinets */
+    uint32_t   partial_len;
     char       error[96];
 } CabReader;
 
@@ -216,7 +218,9 @@ bool     cab_reader_start(CabReader *r, const Cab *cab, int folder);
 /* Continue the same folder in the next cabinet (its first folder) */
 bool     cab_reader_continue(CabReader *r, const Cab *next);
 /* Decompress the next block into r->out (r->out_len bytes); false when the
- * folder's blocks in this cabinet are used up or on error (r->error) */
+ * folder's blocks in this cabinet are used up or on error (r->error).  A
+ * last block whose data goes on in the next cabinet (uncompressed size 0)
+ * is kept and joined to the next cabinet's first block. */
 bool     cab_reader_next(CabReader *r);
 void     cab_reader_end(CabReader *r);
 

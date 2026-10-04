@@ -313,6 +313,23 @@ uintptr_t pmm_alloc_pages(size_t count)
 }
 
 /* -----------------------------------------------------------------------
+ * pmm_claim_pages — the free pages at @pa, if all of them are free
+ * (a contiguous block grows where it is: kresize)
+ * ----------------------------------------------------------------------- */
+bool pmm_claim_pages(uintptr_t pa, size_t count)
+{
+    size_t idx = pa / PAGE_SIZE;
+    if (!IS_ALIGNED(pa, PAGE_SIZE) || idx + count > pmm.total_pages || idx + count < idx) return false;
+    lock_acquire(&pmm.lock);
+    for (size_t i = idx; i < idx + count; i++)
+        if (bitmap_test(i)) { lock_release(&pmm.lock); return false; }
+    for (size_t i = idx; i < idx + count; i++) bitmap_set(i);
+    pmm.free_pages -= count;
+    lock_release(&pmm.lock);
+    return true;
+}
+
+/* -----------------------------------------------------------------------
  * pmm_free_page
  * ----------------------------------------------------------------------- */
 void pmm_free_page(uintptr_t pa)

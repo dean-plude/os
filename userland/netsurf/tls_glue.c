@@ -217,6 +217,8 @@ int nova_tls_init(const char *roots_path)
 
 int nova_tls_root_count(void) { return g_nroots; }
 
+const mbedtls_x509_crt *nova_tls_roots(void) { return &g_roots; }
+
 const mbedtls_ssl_config *nova_tls_config(int tls12_only)
 {
     return tls12_only ? &g_conf12 : &g_conf;

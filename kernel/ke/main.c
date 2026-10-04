@@ -69,9 +69,11 @@
 #include "probe.h"
 #include "../fs/vfs.h"
 #include "../fs/initrd.h"
+#include "../fs/update.h"
 #include "../fs/setup.h"
 #include "../fs/ramfs.h"
 #include "../hal/pci.h"
+#include "../hal/firmware.h"
 #include "../drivers/usb.h"
 #include "../drivers/i2chid.h"
 #include "../hal/acpi.h"
@@ -104,7 +106,7 @@ static void print_banner(void)
     kprintf("  ╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝\n");
     kprintf("\n");
     fb_set_colors(FB_BOOT_FG, FB_BOOT_BG);
-    kprintf("  Windows-compatible OS kernel  [version " NOVA_VERSION "]\n");
+    kprintf("  Windows-compatible OS kernel  [version %s]\n", NovaVersion());
     kprintf("  Built: " __DATE__ " " __TIME__ "\n");
     kprintf("\n");
 }
@@ -234,9 +236,11 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
      * ------------------------------------------------------------------ */
     kprintf("=== Phase 1: Memory Manager ===\n");
     pmm_init(info);
+    FirmwareBootInfo(info);               /* the bootloader's SMBIOS copy */
     smp_early(info);                      /* before the memory map can be reused */
     UINT64 rsdp = info->rsdp_physical;    /* for AcpiInitialize, once paging is up */
     SetupBootInfo(info);                  /* installation media (booted from the disc) */
+    UpdateBootInfo(info);                 /* an update's first start, or one that failed */
 
     kprintf("=== Phase 1: Paging ===\n");
     paging_init();
@@ -436,6 +440,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
     kprintf("\n[NovaOS] Phase 7 initialized. Enabling interrupts...\n");
     sti();
 
+    UpdateBootDone();                     /* finish (or undo) the update this start tried */
     kprintf("[NovaOS] Entering kernel main loop\n");
 
     bkl_release();                        /* the idle loop needs no lock */

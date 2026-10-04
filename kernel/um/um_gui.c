@@ -28,6 +28,7 @@
 #include "../ke/waitq.h"
 #include "../wm/desktop.h"
 #include "../wm/tablet.h"
+#include "../wm/kbdlayout.h"
 #include "../hal/display.h"
 
 /* Win32 window messages we deliver */
@@ -181,15 +182,16 @@ static void enqueue_locked(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, i
 }
 
 /* Wake the threads waiting for messages; the one @tid (0: all of them)
- * gets NT's boost for @msg: +6 for keyboard and mouse input (the thread
- * with the focus or the pointer: the foreground), +2 for other window
- * messages (win32k's windowing boost) */
+ * gets win32k's windowing boost, +2, for every message, keyboard and
+ * mouse input included.  (NT's +6 for keyboard and mouse is the I/O
+ * increment a driver gives the thread reading the device: the device
+ * poll thread here.  Given to a window's thread, it lifted a foreground
+ * program's NORMAL thread to 15 with the foreground boost on top, level
+ * with the TIME_CRITICAL threads that record and play sound.) */
 static void gui_wake(UINT32 tid, UINT32 msg)
 {
-    int boost = msg >= WM_KEYFIRST && msg <= WM_KEYLAST ? BOOST_KEYBOARD
-              : (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) || msg == WM_MOUSELEAVE || msg == WM_NOVA_TOUCH ? BOOST_MOUSE
-              : BOOST_GUI;
-    waitq_wake_boost(&g_guiq, boost, tid);
+    (void)msg;
+    waitq_wake_boost(&g_guiq, BOOST_GUI, tid);
 }
 
 static void enqueue(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, int y)
@@ -253,6 +255,8 @@ void UmUpdateForeground(void)
  * Num Lock off; E0-prefixed ones in the second table) */
 UINT32 UmScancodeToVk(UINT8 sc, bool ext)
 {
+    UINT8 typing = ext ? 0 : KbdVk(sc);          /* the typing keys: the user's layout's codes */
+    if (typing) return typing;
     static const UINT8 base[0x59] = {
         0, 0x1B, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 0xBD, 0xBB, 0x08, 0x09,
         'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 0xDB, 0xDD, 0x0D, 0x11, 'A', 'S',
@@ -297,11 +301,20 @@ static void gui_key(WND *w, const KeyEvent *k)
      * already down (auto-repeat), 31 on release */
     UINT64 lp = 1 | ((UINT64)k->scancode << 16) | ((UINT64)(k->extended ? 1 : 0) << 24) |
                 ((UINT64)(k->alt ? 1 : 0) << 29) | ((UINT64)(repeat ? 1 : 0) << 30);
+    /* AltGr (right Alt in a layout with AltGr characters) comes with a left
+     * Ctrl, as on Windows: programs see Ctrl+Alt, and ToUnicode the AltGr
+     * characters */
+    bool altgr_key = k->scancode == KEY_ALT && k->extended && KbdHasAltGr();
+    if (altgr_key && k->pressed != g_keydown[0x11]) {
+        g_keydown[0x11] = k->pressed;
+        enqueue(g, k->pressed ? WM_KEYDOWN : WM_KEYUP, 0x11,
+                1 | ((UINT64)KEY_CTRL << 16) | (k->pressed ? 0 : 3ull << 30), 0, 0);
+    }
     /* Alt combinations and F10 are "system" keys (menus take them) */
-    bool sys = (k->alt && !k->ctrl) || vk == 0x12 || vk == 0x79;
+    bool sys = !k->altgr && ((k->alt && !k->ctrl) || vk == 0x12 || vk == 0x79);
     if (k->pressed) {
         enqueue(g, sys ? WM_SYSKEYDOWN : WM_KEYDOWN, vk, lp, 0, 0);
-        UINT32 ch = (UINT8)k->ch;
+        UINT32 ch = k->wch;
         if (ch == '\n') ch = '\r';                          /* Enter is CR, as on Windows */
         if (vk == 0x1B) ch = 0x1B;
         if (k->ctrl && !k->alt) {                           /* Ctrl+letter: control characters */

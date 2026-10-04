@@ -1,4 +1,4 @@
-/* msvcrt: <time.h> (UTC — NovaOS has no time zones yet) */
+/* msvcrt: <time.h> (local time from kernel32's time zone: GetTimeZoneInformation) */
 #define NOVA_BUILD_MSVCRT
 #include <time.h>
 #include <stdio.h>
@@ -56,9 +56,36 @@ struct tm *gmtime(const time_t *t)
     return r;
 }
 
-struct tm *localtime(const time_t *t) { return gmtime(t); }
+/* The bias (seconds: UTC = local + bias) in effect at UTC time @t, and
+ * whether that is daylight time */
+static long long bias_at(time_t t, int *dst)
+{
+    TIME_ZONE_INFORMATION tz;
+    SYSTEMTIME u, l;
+    struct tm g = *gmtime(&t);
+    u.wYear = (WORD)(g.tm_year + 1900); u.wMonth = (WORD)(g.tm_mon + 1); u.wDayOfWeek = (WORD)g.tm_wday;
+    u.wDay = (WORD)g.tm_mday; u.wHour = (WORD)g.tm_hour; u.wMinute = (WORD)g.tm_min;
+    u.wSecond = (WORD)g.tm_sec; u.wMilliseconds = 0;
+    GetTimeZoneInformation(&tz);
+    if (g.tm_year + 1900 < 1601 || !SystemTimeToTzSpecificLocalTime(&tz, &u, &l)) { if (dst) *dst = 0; return tz.Bias * 60LL; }
+    long long lt = days_from_civil(l.wYear, l.wMonth, l.wDay) * 86400 + l.wHour * 3600LL + l.wMinute * 60LL + l.wSecond;
+    long long ut = days_from_civil(u.wYear, u.wMonth, u.wDay) * 86400 + u.wHour * 3600LL + u.wMinute * 60LL + u.wSecond;
+    if (dst) *dst = ut - lt != (tz.Bias + tz.StandardBias) * 60LL;
+    return ut - lt;
+}
 
-time_t mktime(struct tm *tm)
+struct tm *localtime(const time_t *t)
+{
+    int dst;
+    long long b = bias_at(*t, &dst);
+    time_t lt = *t - (time_t)b;
+    struct tm *r = gmtime(&lt);
+    r->tm_isdst = dst;
+    return r;
+}
+
+/* struct tm read as UTC (normalising it) */
+time_t __nova_timegm(struct tm *tm)
 {
     long long y = tm->tm_year + 1900LL + tm->tm_mon / 12;
     int m = tm->tm_mon % 12;
@@ -68,6 +95,19 @@ time_t mktime(struct tm *tm)
     *tm = *gmtime(&t);
     return t;
 }
+
+time_t mktime(struct tm *tm)
+{
+    struct tm c = *tm;
+    time_t lt = __nova_timegm(&c);
+    time_t t = lt + (time_t)bias_at(lt + (time_t)bias_at(lt, NULL), NULL);   /* (the bias at about that instant) */
+    *tm = *localtime(&t);
+    return t;
+}
+
+char **__tzname(void);                           /* (files.c) */
+int _get_timezone(long *v);
+int _get_dstbias(long *v);
 
 static const char *wday[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
 static const char *mon[] = { "January", "February", "March", "April", "May", "June", "July",
@@ -102,8 +142,14 @@ size_t strftime(char *s, size_t n, const char *f, const struct tm *tm)
         case 'y': snprintf(tmp, sizeof(tmp), "%02d", tm->tm_year % 100); break;
         case 'Y': snprintf(tmp, sizeof(tmp), "%d", tm->tm_year + 1900); break;
         case 'w': snprintf(tmp, sizeof(tmp), "%d", tm->tm_wday); break;
-        case 'Z': add = "UTC"; break;
-        case 'z': add = "+0000"; break;
+        case 'Z': add = __tzname()[tm->tm_isdst > 0]; break;
+        case 'z': {
+            long tz = 0, db = 0;
+            _get_timezone(&tz);
+            if (tm->tm_isdst > 0) _get_dstbias(&db);
+            long m = -(tz + db) / 60;
+            snprintf(tmp, sizeof(tmp), "%c%02ld%02ld", m < 0 ? '-' : '+', (m < 0 ? -m : m) / 60, (m < 0 ? -m : m) % 60);
+            break; }
         case '%': add = "%"; break;
         default:  tmp[0] = 0; break;
         }
@@ -125,4 +171,4 @@ char *asctime(const struct tm *tm)
     return buf;
 }
 
-char *ctime(const time_t *t) { return asctime(gmtime(t)); }
+char *ctime(const time_t *t) { return asctime(localtime(t)); }

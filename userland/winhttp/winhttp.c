@@ -1766,12 +1766,35 @@ WINHTTPAPI BOOL WINAPI WinHttpTimeToSystemTime(LPCWSTR time, SYSTEMTIME *st)
 }
 
 /* -----------------------------------------------------------------------
- * Proxies: there are none
+ * Proxies: WinHTTP itself connects directly; the user's Internet Settings
+ * (ProxyEnable, ProxyServer, ProxyOverride, AutoConfigURL under HKCU, as
+ * Windows keeps them) are reported to programs that pick their own proxy
  * ----------------------------------------------------------------------- */
+static LPWSTR ie_setting(HKEY k, const WCHAR *name)
+{
+    DWORD type = 0, cb = 0;
+    if (RegQueryValueExW(k, name, 0, &type, 0, &cb) || type != REG_SZ || cb < 4) return 0;
+    LPWSTR v = GlobalAlloc(GMEM_ZEROINIT, cb + sizeof(WCHAR));   /* freed with GlobalFree, as on Windows */
+    if (v && RegQueryValueExW(k, name, 0, &type, (BYTE *)v, &cb)) { GlobalFree(v); return 0; }
+    if (v && !v[0]) { GlobalFree(v); return 0; }
+    return v;
+}
+
 WINHTTPAPI BOOL WINAPI WinHttpGetIEProxyConfigForCurrentUser(WINHTTP_CURRENT_USER_IE_PROXY_CONFIG *c)
 {
     if (!c) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     ZeroMemory(c, sizeof(*c));                         /* direct connections */
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+                      0, KEY_READ, &k))
+        return TRUE;
+    DWORD on = 0, cb = sizeof(on), type = 0;
+    if (!RegQueryValueExW(k, L"ProxyEnable", 0, &type, (BYTE *)&on, &cb) && type == REG_DWORD && on) {
+        c->lpszProxy = ie_setting(k, L"ProxyServer");
+        c->lpszProxyBypass = ie_setting(k, L"ProxyOverride");
+    }
+    c->lpszAutoConfigUrl = ie_setting(k, L"AutoConfigURL");
+    RegCloseKey(k);
     return TRUE;
 }
 WINHTTPAPI BOOL WINAPI WinHttpGetDefaultProxyConfiguration(WINHTTP_PROXY_INFO *p)

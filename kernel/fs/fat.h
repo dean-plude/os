@@ -35,6 +35,10 @@ FatVol *FatMount(BlockDev *dev, UINT64 lba);
 /* Create a FAT32 volume of @sectors sectors at @lba; then mount it. */
 FatVol *FatFormat(BlockDev *dev, UINT64 lba, UINT64 sectors, const char *label);
 void    FatUnmount(FatVol *v);
+/* Forget a volume that was only read, writing nothing (FatUnmount syncs:
+ * it updates FSInfo and the clean bit, which must not happen to a volume
+ * another FatVol is using, like drive C:'s) */
+void    FatForget(FatVol *v);
 
 const char *FatLabel(const FatVol *v);        /* "NOVADATA", trimmed */
 int         FatType(const FatVol *v);         /* 16 or 32 */
@@ -60,6 +64,10 @@ bool FatMkdir(FatVol *v, UINT32 dir, const char *name, UINT32 *out);
 bool FatMkdirPath(FatVol *v, const char *path, UINT32 *out);
 /* Delete @name from @dir; directories are deleted with their contents. */
 bool FatDelete(FatVol *v, UINT32 dir, const char *name);
+/* Rename the file @from in @dir to @to (which must not exist), keeping its
+ * contents where they are: the new entry is written before the old one is
+ * erased, so a crash in between leaves both names, never neither. */
+bool FatRename(FatVol *v, UINT32 dir, const char *from, const char *to);
 
 /* What FatReclaim did */
 typedef struct {

@@ -4,9 +4,10 @@
  * Each Nt* export is Windows 10's x64 stub, byte for byte: mov r10, rcx;
  * mov eax, N; test byte [7FFE0308h], 1; jne +3; syscall; ret; int 2Eh; ret
  * (programs and sandboxes that read or copy the stubs expect exactly this;
- * KUSER_SHARED_DATA.SystemCall is 0, so syscall is the path taken).  The
- * numbers, generated from the kernel's ke/syscall.h, are Windows 10
- * 1903's; abitest checks both.
+ * KUSER_SHARED_DATA.SystemCall is 0, so syscall is the path taken).  There
+ * is one for every Windows 10 1903 service, at 1903's number
+ * (nt1903_services.h), and one for each of NovaOS's own (ke/syscall.h);
+ * abitest and syscalltest check them.
  *
  * The heap (Rtl*Heap) serves one process-wide heap: small blocks come
  * from segregated free lists carved out of 1 MiB arenas committed from a
@@ -20,172 +21,81 @@
 #include "syscall_numbers.h"
 
 /* -----------------------------------------------------------------------
- * System-call stubs
+ * System-call stubs, laid out as Windows lays out its own: one 32-byte stub
+ * for every Windows 10 1903 service, in service-number order, each with an
+ * entry in the exception directory (.pdata), then NovaOS's own services.
+ * Programs that make system calls themselves (anti-cheat and sandbox code
+ * such as Roblox's Hyperion) find a service's number from this layout
+ * rather than by reading the stub: by ranking the Zw exports by address,
+ * or by counting them in .pdata order.  A service the kernel lacks still
+ * has its stub, so every later number ranks right; calling it returns
+ * STATUS_INVALID_SYSTEM_SERVICE.
  * ----------------------------------------------------------------------- */
 #ifdef _WIN64                 /* 32-bit programs: ntdll_wow.c */
 #define STUB(name, num)                                                     \
-    __asm__(".globl " #name "\n"                                            \
-            ".section .text$" #name ",\"xr\"\n"                             \
+    __asm__(".section .text$nt,\"xr\"\n"                                    \
+            ".globl " #name "\n"                                            \
             ".p2align 4\n"                                                  \
+            ".def " #name "; .scl 2; .type 32; .endef\n"                    \
             #name ":\n\t"                                                   \
+            ".seh_proc " #name "\n\t"                                       \
+            ".seh_endprologue\n\t"                                          \
             ".byte 0x4C, 0x8B, 0xD1\n\t"          /* mov r10, rcx */         \
             ".byte 0xB8\n\t.long " #num "\n\t"    /* mov eax, num */         \
-            "testb $1, 0x7FFE0308\n\t"                                      \
+            ".byte 0xF6, 0x04, 0x25, 0x08, 0x03, 0xFE, 0x7F, 0x01\n\t"       \
             ".byte 0x75, 0x03\n\t"                /* jne +3: int 2Eh */      \
-            "syscall\n\t"                                                   \
-            "retq\n\t"                                                      \
-            "int $0x2E\n\t"                                                 \
-            "retq\n\t"                                                      \
+            ".byte 0x0F, 0x05, 0xC3\n\t"          /* syscall; ret */         \
+            ".byte 0xCD, 0x2E, 0xC3\n\t"          /* int 2Eh; ret */         \
+            ".seh_endproc\n\t"                                              \
+            ".byte 0x0F, 0x1F, 0x84, 0, 0, 0, 0, 0\n\t"   /* nop: 32 bytes */ \
             ".section .drectve,\"yn\"\n\t"                                  \
             ".ascii \" /EXPORT:" #name "\"\n\t"                             \
             ".text\n");
 
 #define XSTUB(name, num) STUB(name, num)
-XSTUB(NtClose,                      SYS_NtClose)
-XSTUB(NtCreateFile,                 SYS_NtCreateFile)
-XSTUB(NtOpenFile,                   SYS_NtOpenFile)
-XSTUB(NtReadFile,                   SYS_NtReadFile)
-XSTUB(NtWriteFile,                  SYS_NtWriteFile)
-XSTUB(NtQueryInformationFile,       SYS_NtQueryInformationFile)
-XSTUB(NtSetInformationFile,         SYS_NtSetInformationFile)
-XSTUB(NtQueryAttributesFile,        SYS_NtQueryAttributesFile)
-XSTUB(NtQueryDirectoryFile,         SYS_NtQueryDirectoryFile)
-XSTUB(NtQueryVolumeInformationFile, SYS_NtQueryVolumeInformationFile)
-XSTUB(NtAllocateVirtualMemory,      SYS_NtAllocateVirtualMemory)
-XSTUB(NtFreeVirtualMemory,          SYS_NtFreeVirtualMemory)
-XSTUB(NtProtectVirtualMemory,       SYS_NtProtectVirtualMemory)
-XSTUB(NtQueryVirtualMemory,         SYS_NtQueryVirtualMemory)
-XSTUB(NtGetContextThread,           SYS_NtGetContextThread)
-XSTUB(NtSetContextThread,           SYS_NtSetContextThread)
-XSTUB(NtNovaCreateProcess,          SYS_NtNovaCreateProcess)
-XSTUB(NtNovaProcessInfo,            SYS_NtNovaProcessInfo)
-XSTUB(NtNovaProcessList,            SYS_NtNovaProcessList)
-XSTUB(NtCreateKey,                  SYS_NtCreateKey)
-XSTUB(NtOpenKey,                    SYS_NtOpenKey)
-XSTUB(NtOpenKeyEx,                  SYS_NtOpenKeyEx)
-XSTUB(NtDeleteKey,                  SYS_NtDeleteKey)
-XSTUB(NtSetValueKey,                SYS_NtSetValueKey)
-XSTUB(NtQueryValueKey,              SYS_NtQueryValueKey)
-XSTUB(NtEnumerateValueKey,          SYS_NtEnumerateValueKey)
-XSTUB(NtDeleteValueKey,             SYS_NtDeleteValueKey)
-XSTUB(NtEnumerateKey,               SYS_NtEnumerateKey)
-XSTUB(NtQueryKey,                   SYS_NtQueryKey)
-XSTUB(NtFlushKey,                   SYS_NtFlushKey)
-XSTUB(NtShutdownSystem,             SYS_NtShutdownSystem)
-XSTUB(NtSetSystemPowerState,        SYS_NtSetSystemPowerState)
-XSTUB(NtInitiatePowerAction,        SYS_NtInitiatePowerAction)
-XSTUB(NtPowerInformation,           SYS_NtPowerInformation)
-XSTUB(NtRenameKey,                  SYS_NtRenameKey)
-XSTUB(NtTerminateProcess,           SYS_NtTerminateProcess)
-XSTUB(NtQuerySystemTime,            SYS_NtQuerySystemTime)
-XSTUB(NtQueryPerformanceCounter,    SYS_NtQueryPerformanceCounter)
-XSTUB(NtDelayExecution,             SYS_NtDelayExecution)
-XSTUB(NtYieldExecution,             SYS_NtYieldExecution)
-XSTUB(NtWaitForAlertByThreadId,     SYS_NtWaitForAlertByThreadId)
-XSTUB(NtAlertThreadByThreadId,      SYS_NtAlertThreadByThreadId)
-XSTUB(NtCreateThreadEx,             SYS_NtCreateThreadEx)
-XSTUB(NtTerminateThread,            SYS_NtTerminateThread)
-XSTUB(NtResumeThread,               SYS_NtResumeThread)
-XSTUB(NtSuspendThread,              SYS_NtSuspendThread)
-XSTUB(NtQueryInformationThread,     SYS_NtQueryInformationThread)
-XSTUB(NtSetInformationThread,       SYS_NtSetInformationThread)
-XSTUB(NtQueryInformationProcess,    SYS_NtQueryInformationProcess)
-XSTUB(NtSetInformationProcess,      SYS_NtSetInformationProcess)
-XSTUB(NtCreateEvent,                SYS_NtCreateEvent)
-XSTUB(NtOpenEvent,                  SYS_NtOpenEvent)
-XSTUB(NtCreateSection,              SYS_NtCreateSection)
-XSTUB(NtOpenSection,                SYS_NtOpenSection)
-XSTUB(NtMapViewOfSection,           SYS_NtMapViewOfSection)
-XSTUB(NtUnmapViewOfSection,         SYS_NtUnmapViewOfSection)
-XSTUB(NtOpenMutant,                 SYS_NtOpenMutant)
-XSTUB(NtOpenSemaphore,              SYS_NtOpenSemaphore)
-XSTUB(NtSetEvent,                   SYS_NtSetEvent)
-XSTUB(NtResetEvent,                 SYS_NtResetEvent)
-XSTUB(NtClearEvent,                 SYS_NtClearEvent)
-XSTUB(NtCreateMutant,               SYS_NtCreateMutant)
-XSTUB(NtReleaseMutant,              SYS_NtReleaseMutant)
-XSTUB(NtCreateSemaphore,            SYS_NtCreateSemaphore)
-XSTUB(NtReleaseSemaphore,           SYS_NtReleaseSemaphore)
-XSTUB(NtWaitForSingleObject,        SYS_NtWaitForSingleObject)
-XSTUB(NtWaitForMultipleObjects,     SYS_NtWaitForMultipleObjects)
-XSTUB(NtDuplicateObject,            SYS_NtDuplicateObject)
-XSTUB(NtCreateNamedPipeFile,        SYS_NtCreateNamedPipeFile)
-XSTUB(NtFsControlFile,              SYS_NtFsControlFile)
-XSTUB(NtCancelIoFile,               SYS_NtCancelIoFile)
-XSTUB(NtCancelIoFileEx,             SYS_NtCancelIoFileEx)
-XSTUB(NtSetInformationObject,       SYS_NtSetInformationObject)
-XSTUB(NtQueryObject,                SYS_NtQueryObject)
-XSTUB(NtNovaClipboard,              SYS_NtNovaClipboard)
-XSTUB(NtCreateDirectoryObject,      SYS_NtCreateDirectoryObject)
-XSTUB(NtOpenDirectoryObject,        SYS_NtOpenDirectoryObject)
-XSTUB(NtQueryDirectoryObject,       SYS_NtQueryDirectoryObject)
-XSTUB(NtCreateSymbolicLinkObject,   SYS_NtCreateSymbolicLinkObject)
-XSTUB(NtOpenSymbolicLinkObject,     SYS_NtOpenSymbolicLinkObject)
-XSTUB(NtQuerySymbolicLinkObject,    SYS_NtQuerySymbolicLinkObject)
-XSTUB(NtCreateTimer,                SYS_NtCreateTimer)
-XSTUB(NtOpenTimer,                  SYS_NtOpenTimer)
-XSTUB(NtSetTimer,                   SYS_NtSetTimer)
-XSTUB(NtCancelTimer,                SYS_NtCancelTimer)
-XSTUB(NtQueryTimer,                 SYS_NtQueryTimer)
-XSTUB(NtQueryEvent,                 SYS_NtQueryEvent)
-XSTUB(NtQuerySemaphore,             SYS_NtQuerySemaphore)
-XSTUB(NtQuerySection,               SYS_NtQuerySection)
-XSTUB(NtQueryFullAttributesFile,    SYS_NtQueryFullAttributesFile)
-XSTUB(NtOpenThread,                 SYS_NtOpenThread)
-XSTUB(NtMapViewOfSectionEx,         SYS_NtMapViewOfSectionEx)
-XSTUB(NtCompareObjects,             SYS_NtCompareObjects)
-XSTUB(NtAllocateVirtualMemoryEx,    SYS_NtAllocateVirtualMemoryEx)
-XSTUB(NtReadVirtualMemory,          SYS_NtReadVirtualMemory)
-XSTUB(NtWriteVirtualMemory,         SYS_NtWriteVirtualMemory)
-XSTUB(NtOpenProcess,                SYS_NtOpenProcess)
-XSTUB(NtContinue,                   SYS_NtContinue)
-XSTUB(NtRaiseException,             SYS_NtRaiseException)
-XSTUB(NtNovaLoadDll,                SYS_NtNovaLoadDll)
-XSTUB(NtNovaDebugPrint,             SYS_NtNovaDebugPrint)
-XSTUB(NtNovaBugCheck,               SYS_NtNovaBugCheck)
-XSTUB(NtNovaWatchDirectory,         SYS_NtNovaWatchDirectory)
-XSTUB(NtNovaFlushView,              SYS_NtNovaFlushView)
-XSTUB(NtNovaConsole,                SYS_NtNovaConsole)
-XSTUB(NtNovaGetRandom,              SYS_NtNovaGetRandom)
-XSTUB(NtNovaSocket,                    SYS_NtNovaSocket)
-XSTUB(NtNovaSockConnect,               SYS_NtNovaSockConnect)
-XSTUB(NtNovaSockSend,                  SYS_NtNovaSockSend)
-XSTUB(NtNovaSockRecv,                  SYS_NtNovaSockRecv)
-XSTUB(NtNovaSockBind,                  SYS_NtNovaSockBind)
-XSTUB(NtNovaSockListen,                SYS_NtNovaSockListen)
-XSTUB(NtNovaSockAccept,                SYS_NtNovaSockAccept)
-XSTUB(NtNovaSockCtl,                   SYS_NtNovaSockCtl)
-XSTUB(NtNovaSockSendTo,                SYS_NtNovaSockSendTo)
-XSTUB(NtNovaSockRecvFrom,              SYS_NtNovaSockRecvFrom)
-XSTUB(NtNovaResolve,                   SYS_NtNovaResolve)
-XSTUB(NtNovaAudioOpen,                 SYS_NtNovaAudioOpen)
-XSTUB(NtNovaAudioWrite,                SYS_NtNovaAudioWrite)
-XSTUB(NtNovaAudioCtl,                  SYS_NtNovaAudioCtl)
-XSTUB(NtNovaGpuCtl,                    SYS_NtNovaGpuCtl)
-XSTUB(NtNovaGuiCreate,                 SYS_NtNovaGuiCreate)
-XSTUB(NtNovaGuiGetMessage,             SYS_NtNovaGuiGetMessage)
-XSTUB(NtNovaGuiInvalidate,             SYS_NtNovaGuiInvalidate)
-XSTUB(NtNovaGuiSetText,                SYS_NtNovaGuiSetText)
-XSTUB(NtNovaGuiShow,                   SYS_NtNovaGuiShow)
-XSTUB(NtNovaGuiDestroy,                SYS_NtNovaGuiDestroy)
-XSTUB(NtNovaGuiSetTimer,               SYS_NtNovaGuiSetTimer)
-XSTUB(NtNovaGuiKillTimer,              SYS_NtNovaGuiKillTimer)
-XSTUB(NtNovaGuiMessageBox,             SYS_NtNovaGuiMessageBox)
-XSTUB(NtNovaGuiScreenSize,             SYS_NtNovaGuiScreenSize)
-XSTUB(NtNovaGuiPostMessage,            SYS_NtNovaGuiPostMessage)
-XSTUB(NtNovaGuiCtl,                    SYS_NtNovaGuiCtl)
-XSTUB(NtAccessCheck,                    SYS_NtAccessCheck)
-XSTUB(NtOpenProcessToken,               SYS_NtOpenProcessToken)
-XSTUB(NtOpenProcessTokenEx,             SYS_NtOpenProcessTokenEx)
-XSTUB(NtOpenThreadToken,                SYS_NtOpenThreadToken)
-XSTUB(NtOpenThreadTokenEx,              SYS_NtOpenThreadTokenEx)
-XSTUB(NtDuplicateToken,                 SYS_NtDuplicateToken)
-XSTUB(NtFilterToken,                    SYS_NtFilterToken)
-XSTUB(NtQueryInformationToken,          SYS_NtQueryInformationToken)
-XSTUB(NtQuerySecurityObject,            SYS_NtQuerySecurityObject)
-XSTUB(NtSetSecurityObject,              SYS_NtSetSecurityObject)
-XSTUB(NtImpersonateAnonymousToken,      SYS_NtImpersonateAnonymousToken)
-XSTUB(NtNotifyChangeKey,                SYS_NtNotifyChangeKey)
+#define NT1903(name, num) STUB(name, num)
+#include "nt1903_services.h"
+#undef NT1903
+/* NovaOS's own services (0x200 on), in number order */
+XSTUB(NtNovaLoadDll,        SYS_NtNovaLoadDll)
+XSTUB(NtNovaDebugPrint,     SYS_NtNovaDebugPrint)
+XSTUB(NtNovaGetRandom,      SYS_NtNovaGetRandom)
+XSTUB(NtNovaCreateProcess,  SYS_NtNovaCreateProcess)
+XSTUB(NtNovaProcessInfo,    SYS_NtNovaProcessInfo)
+XSTUB(NtNovaProcessList,    SYS_NtNovaProcessList)
+XSTUB(NtNovaWatchDirectory, SYS_NtNovaWatchDirectory)
+XSTUB(NtNovaSocket,         SYS_NtNovaSocket)
+XSTUB(NtNovaSockConnect,    SYS_NtNovaSockConnect)
+XSTUB(NtNovaSockSend,       SYS_NtNovaSockSend)
+XSTUB(NtNovaSockRecv,       SYS_NtNovaSockRecv)
+XSTUB(NtNovaSockBind,       SYS_NtNovaSockBind)
+XSTUB(NtNovaSockListen,     SYS_NtNovaSockListen)
+XSTUB(NtNovaSockAccept,     SYS_NtNovaSockAccept)
+XSTUB(NtNovaSockCtl,        SYS_NtNovaSockCtl)
+XSTUB(NtNovaSockSendTo,     SYS_NtNovaSockSendTo)
+XSTUB(NtNovaSockRecvFrom,   SYS_NtNovaSockRecvFrom)
+XSTUB(NtNovaResolve,        SYS_NtNovaResolve)
+XSTUB(NtNovaFlushView,      SYS_NtNovaFlushView)
+XSTUB(NtNovaBugCheck,       SYS_NtNovaBugCheck)
+XSTUB(NtNovaConsole,        SYS_NtNovaConsole)
+XSTUB(NtNovaGuiCreate,      SYS_NtNovaGuiCreate)
+XSTUB(NtNovaGuiGetMessage,  SYS_NtNovaGuiGetMessage)
+XSTUB(NtNovaGuiInvalidate,  SYS_NtNovaGuiInvalidate)
+XSTUB(NtNovaGuiSetText,     SYS_NtNovaGuiSetText)
+XSTUB(NtNovaGuiShow,        SYS_NtNovaGuiShow)
+XSTUB(NtNovaGuiDestroy,     SYS_NtNovaGuiDestroy)
+XSTUB(NtNovaGuiSetTimer,    SYS_NtNovaGuiSetTimer)
+XSTUB(NtNovaGuiKillTimer,   SYS_NtNovaGuiKillTimer)
+XSTUB(NtNovaGuiMessageBox,  SYS_NtNovaGuiMessageBox)
+XSTUB(NtNovaGuiScreenSize,  SYS_NtNovaGuiScreenSize)
+XSTUB(NtNovaGuiPostMessage, SYS_NtNovaGuiPostMessage)
+XSTUB(NtNovaGuiCtl,         SYS_NtNovaGuiCtl)
+XSTUB(NtNovaClipboard,      SYS_NtNovaClipboard)
+XSTUB(NtNovaAudioOpen,      SYS_NtNovaAudioOpen)
+XSTUB(NtNovaAudioWrite,     SYS_NtNovaAudioWrite)
+XSTUB(NtNovaAudioCtl,       SYS_NtNovaAudioCtl)
+XSTUB(NtNovaGpuCtl,         SYS_NtNovaGpuCtl)
+XSTUB(NtNovaFirmwareTable,  SYS_NtNovaFirmwareTable)
 #endif
 
 /* -----------------------------------------------------------------------
@@ -384,6 +294,7 @@ NTSYSAPI VOID NTAPI RtlInitUnicodeString(PUNICODE_STRING us, const WCHAR *s)
     us->Buffer = (WCHAR *)s;
 }
 
+#ifndef _WIN64
 /* Extended attributes: the file system has none */
 NTSYSAPI NTSTATUS NTAPI NtSetEaFile(HANDLE h, PIO_STATUS_BLOCK io, PVOID buf, ULONG len)
 {
@@ -398,6 +309,7 @@ NTSYSAPI NTSTATUS NTAPI NtQueryEaFile(HANDLE h, PIO_STATUS_BLOCK io, PVOID buf, 
     if (io) { io->Status = (NTSTATUS)0xC000004F; io->Information = 0; }
     return (NTSTATUS)0xC000004F;
 }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
 {
@@ -720,6 +632,7 @@ NTSYSAPI PVOID NTAPI RtlReAllocateHeap(PVOID heap, ULONG flags, PVOID p, SIZE_T 
 NTSTATUS NTAPI NtSetEvent(HANDLE, PLONG);
 NTSTATUS NTAPI NtReleaseMutant(HANDLE, PLONG);
 NTSTATUS NTAPI NtReleaseSemaphore(HANDLE, LONG, PLONG);
+#ifndef _WIN64
 NTSYSAPI NTSTATUS NTAPI NtSignalAndWaitForSingleObject(HANDLE sig, HANDLE wait, BOOLEAN alertable, PLARGE_INTEGER timeout)
 {
     if (!NT_SUCCESS(NtSetEvent(sig, 0)) && !NT_SUCCESS(NtReleaseMutant(sig, 0))) {
@@ -728,6 +641,7 @@ NTSYSAPI NTSTATUS NTAPI NtSignalAndWaitForSingleObject(HANDLE sig, HANDLE wait, 
     }
     return NtWaitForSingleObject(wait, alertable, timeout);
 }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* AppContainer capability SIDs: NovaOS has no AppContainers */
 NTSYSAPI NTSTATUS NTAPI RtlDeriveCapabilitySidsFromName(PVOID name, PVOID group_sid, PVOID sid)

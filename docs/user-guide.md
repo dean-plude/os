@@ -15,8 +15,12 @@ on a Mac, see [macos.md](macos.md).
 ## Getting NovaOS
 
 NovaOS comes as one file, `nova.iso`, which is both a live system and
-its own installer.  Download the one built from the newest code from the
-[latest release](https://github.com/dean-plude/os/releases/latest/download/nova.iso).
+its own installer.  Download it from the
+[newest release](https://github.com/dean-plude/os/releases/latest), with
+`nova.iso.sha256` beside it to check the download (`sha256sum -c
+nova.iso.sha256`; on a Mac `shasum -a 256 -c nova.iso.sha256`).  The ISO
+built from the newest code on `main`, which has had less testing, is the
+[`latest` build](https://github.com/dean-plude/os/releases/download/latest/nova.iso).
 
 ## Trying it in a virtual machine
 
@@ -62,6 +66,31 @@ do is kept.  **Install NovaOS** opens by itself:
 
 The Terminal's `install` command does the same without the window
 (`install` alone lists the disks).
+
+## First start
+
+The first time NovaOS starts from the disk it was installed on,
+**Welcome to NovaOS** opens before the desktop and asks, page by page:
+
+1. **Your name**, shown on the Start menu and given to programs as the
+   user name.
+2. **Your time zone.**  Type a city (Berlin, Tokyo, New York...) to find
+   its zone, or pick one from the list with the arrow keys or the mouse;
+   the page shows the time there now.  The clock, the Terminal's `date`
+   and `time`, Calendar and Windows programs show local time from then on,
+   with daylight saving time where the zone has it.
+3. **Your keyboard layout**: US, UK, US Dvorak, German, Swiss German,
+   French, Swiss French, Canadian French, Spanish, Italian, Portuguese,
+   Brazilian, Swedish, Finnish, Norwegian or Danish.  Picking one switches
+   to it at once; try it in the box under the list.  AltGr (the right Alt
+   key) types the third character printed on a key, and accent keys (´ ^
+   ¨ on a German keyboard) put their accent on the next letter.
+4. **The display resolution.**  Picking one switches to it at once.
+
+Settings changes the time zone and the keyboard layout (Time & language)
+and the resolution later, `tzutil /s "NAME"` in the Terminal sets a zone by its Windows name
+(`tzutil /l` lists them), and `start welcome` goes through all the pages
+again.
 
 ## The desktop
 
@@ -109,7 +138,8 @@ Keyboard shortcuts:
 - **Settings** has the System, Display (resolution, scale, several
   monitors), Sound (which speakers and microphone, and their volumes),
   Personalization (wallpaper), Storage, Network, Time & language (the
-  regional format for dates and numbers) and About pages.
+  regional format for dates and numbers, the time zone and the keyboard
+  layout) and About pages.
 - **App Store** downloads and installs open-source Windows programs (see
   below).
 - **Notepad**, **Photos** (pictures and icons), **Calendar**, and
@@ -152,7 +182,20 @@ Terminal, shows it.  Wi-Fi is not supported.
 
 Sound plays through the newest output device; Settings > Sound picks
 another and sets each device's volume, and the choices are kept across
-restarts.
+restarts.  On a laptop whose built-in microphones sit behind Intel's
+audio DSP (the ThinkPad T14 Gen 4), they are the recording device
+"Microphone Array (DSP)" once the DSP's firmware is built in
+([hardware.md](hardware.md#the-digital-microphones-behind-the-audio-dsp)).
+
+## Updating NovaOS
+
+An installed NovaOS updates itself: the App Store's **Updates** page
+(or `update` in the Terminal) checks for a newer version, **Update**
+downloads and checks it, and **Restart** starts it.  If the new version
+does not start, the next start goes back to the one you had and the
+Updates page says so.  NovaOS running from the ISO or a USB stick is not
+updated; download the newer ISO instead.  [updates.md](updates.md) has
+the details.
 
 ## Sleep, restart and shut down
 
