@@ -643,6 +643,7 @@ int dpi_apply_scale(Wnd *w, int k)
             w->stride = w->maxw = stride;
             w->maxh = rows;
             w->has_dirty = 0;
+            dcs_follow(w);
         }
     }
     return got;

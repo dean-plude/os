@@ -157,6 +157,11 @@ static const StoreApp g_catalog[] = {
       "OpenTyrian\\opentyrian\\opentyrian.exe", KIND_ARCHIVE, 7,
       "64-bit zip with the freeware game data; draws with Direct3D 9 on NovaOS (nightly corpus); needs Mesa 3D and DXVK (see Runtimes)",
       "Ty", GDI_C(0x2A, 0x4E, 0x9A) },
+    { "Blobby Volley 2", "Blobby Volley team", "Head-to-head beach volleyball for two players or against the computer (GPL)",
+      CAT_MEDIA, "https://downloads.sourceforge.net/project/blobby/Blobby%20Volley%202%20%28Win32%29/1.1.1/blobby2-win32-1.1.1.zip", "blobby2-win32-1.1.1.zip", "Blobby Volley 2",
+      "Blobby Volley 2\\blobby-1.1.1\\blobby.exe", KIND_ARCHIVE, 3,
+      "32-bit zip; its full screen switches the display to 800x600 and back on NovaOS (nightly corpus); draws with Direct3D 9 once Mesa 3D and DXVK are installed (see Runtimes)",
+      "BV", GDI_C(0x1E, 0x8C, 0xC8) },
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",

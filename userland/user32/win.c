@@ -849,6 +849,7 @@ static int kernel_window(Wnd *w)
             for (int y = 0; y < ch; y++) memcpy(nb + (size_t)y * w->stride, w->back + (size_t)y * ostride, (size_t)cw * 4);
             VirtualFree(w->back, 0, MEM_RELEASE);
             w->back = nb;
+            dcs_follow(w);                                  /* (DCs the program took before showing it) */
         }
     }
     if (!w->back) {

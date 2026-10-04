@@ -256,6 +256,7 @@ void  present_thread(DWORD tid);
 void  mark_dirty(Wnd *top, const RECT *r);                  /* bitmap coordinates */
 HDC   wnd_dc(Wnd *w, int client, int clip_children);       /* a DC on the window */
 void  release_dc(HDC dc);
+void  dcs_follow(Wnd *top);                               /* kept DCs onto the window's bitmap as it is now */
 void  nc_paint(Wnd *w);
 void  paint_drop_kept(Wnd *w);
 LRESULT cbt_hook(int code, WPARAM wp, LPARAM lp);   /* WH_CBT (msg.c) */
