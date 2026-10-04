@@ -836,6 +836,7 @@ would do).
 | VLC 3.0.21 (the 32-bit PortableApps package, unpacked with 7-Zip) | loops the MP4 the ffmpeg test made (30 s of SMPTE colour bars with a 440 Hz tone) with its Qt interface, screenshot once the colour bars show in its window; the screenshot must match `tests/reference/vlc.png`, and the sound NovaOS played (`sound.wav` in `--out`) must hold the tone |
 | Audacity 3.7.4 (the official 64-bit zip) | through its first-run dialogs, records 10 s of the microphone's 523 Hz tone, stops and saves the project; the screenshot must match `tests/reference/audacity.png` and `C:\Apps\rec10.aup3` must exist |
 | Firefox 157.0 (Mozilla's full installer, the App Store's download) | `store install Firefox`: the Store unpacks the installer from `C:\Downloads` with 7-Zip (staged in `C:\Programs\7-Zip`), as its Install button does; then Firefox loads a page from an HTTPS server the script runs on the host (https://10.0.2.2:8443/, a certificate from a CA made for the run with `openssl` and trusted through Firefox's `distribution\policies.json`); the screenshot must match `tests/reference/firefox.png` |
+| Teeworlds 0.7.5 (the official 64-bit zip, the App Store's download) | `store install Mesa 3D` and `store install Teeworlds`; the game starts in full screen, Enter answers its two first-start questions, and its start menu must match `tests/reference/teeworlds.png`; the sound NovaOS played while it ran must hold at least 5 s of sound (`App(sound=(None, 5000))`: any sound, here its menu music, counted between its first test starting and its last one ending) |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` |
 | PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
 
@@ -856,8 +857,8 @@ It needs 7-Zip's installer, Pillow, `openssl` (for Firefox's test
 server), `mkntfs` (for drive D:) and, for the two programs that need
 sound, PulseAudio and QEMU's PulseAudio backend, `qemu-system-gui` on
 Ubuntu (NovaOS then boots with a microphone that hears a tone and its
-output recorded, as the core self-tests do; without PulseAudio those two
-are skipped, not failed).  The exit
+output recorded, as the core self-tests do; without PulseAudio the
+programs that need sound are skipped, not failed).  The exit
 status is the number of programs that failed; `--update-reference` rewrites
 the reference screenshots after an intended change:
 
@@ -907,7 +908,9 @@ To test recording, `--rec FILE.wav` gives the card a microphone that hears
 FILE over and over (a private PulseAudio server with two null sinks, so the
 guest records and plays in real time; with `--wav` too, the playback is
 saved from the second sink).  Copy the recording off the data disk and
-check it (`wavcheck.py` exits 0 when the tone is there):
+check it (`wavcheck.py` exits 0 when the tone is there; `--sound MS`
+instead exits 0 when the file holds MS milliseconds of any sound, such
+as a game's music):
 
 ```bash
 python3 tools/novarun.py --keep /tmp/rec --rec tone523.wav 'soundtest record C:\rec.wav 3000'

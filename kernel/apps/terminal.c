@@ -270,7 +270,7 @@ static void cmd_help(Term *t)
         "  certutil            list trusted root certificates\n"
         "  tasklist            list running programs\n"
         "  crashes [last]      list the crash reports; show the newest one\n"
-        "  taskkill /PID <n>   stop a program\n"
+        "  taskkill /PID <n>   stop a program (/IM name.exe: every one of that name)\n"
         "  <program> [args]    run a Windows program (C:\\Programs: hello, mandel,\n"
         "                      primes, guess, wc, crttest, filetest, crash, spin)\n"
         "  netsurf [url]       the NetSurf web browser (http, https)\n"
@@ -1601,10 +1601,25 @@ static void cmd_tasklist(Term *t)
 static void cmd_taskkill(Term *t, int argc, char **argv)
 {
     UINT32 pid = 0;
-    for (int i = 1; i + 1 < argc; i++)
+    const char *image = NULL;
+    for (int i = 1; i + 1 < argc; i++) {
         if (is(argv[i], "/pid") || is(argv[i], "-pid"))
             for (const char *d = argv[i + 1]; *d >= '0' && *d <= '9'; d++) pid = pid * 10 + (UINT32)(*d - '0');
-    if (!pid) { terr(t, "Usage: taskkill /PID <pid>"); return; }
+        if (is(argv[i], "/im") || is(argv[i], "-im")) image = argv[i + 1];
+    }
+    if (image && !pid) {                         /* every process of that image name, as Windows' taskkill /IM */
+        UmProcInfo list[32];
+        int n = UmList(list, 32), hit = 0;
+        for (int i = 0; i < n; i++) {
+            if (list[i].exited || !is(list[i].name, image)) continue;
+            hit++;
+            if (UmKillPid(list[i].pid))
+                tprintf(t, "SUCCESS: Sent termination signal to the process \"%s\" with PID %u.", list[i].name, list[i].pid);
+        }
+        if (!hit) tprintf(t, "ERROR: The process \"%s\" not found.", image);
+        return;
+    }
+    if (!pid) { terr(t, "Usage: taskkill /PID <pid> | /IM <image name>"); return; }
     if (UmKillPid(pid)) tprintf(t, "SUCCESS: Sent termination signal to the process with PID %u.", pid);
     else tprintf(t, "ERROR: The process \"%u\" not found.", pid);
 }

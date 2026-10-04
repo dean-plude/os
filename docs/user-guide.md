@@ -98,7 +98,10 @@ again.
 
 - **The dock** along the bottom holds Start, search, the pinned apps and
   a button for every open window; a dot under an app means it is
-  running.  The network status and the clock are at the right.
+  running.  The network status and the clock are at the right.  A
+  program in full screen (a game) covers it, as on Windows; the dock comes
+  back when the program goes to a window, you switch away, or you press
+  the Windows key.
 - **Start** (the Windows key, or the first dock button) lists your pinned
   and installed programs, recent apps and documents, and the power menu
   (Sleep, Restart, Shut down).  Start typing to search apps, programs,
@@ -206,7 +209,8 @@ shuts down.  NovaOS saves drive C: before it restarts or shuts down.
 
 - **A program fails**: check its row in
   [compatibility.md](compatibility.md).  `tasklist` and `taskkill /PID n`
-  in the Terminal list and stop running programs.
+  (or `taskkill /IM name.exe`, every copy of that program) in the
+  Terminal list and stop running programs.
 - **The log**: NovaOS writes what it does to the serial port (QEMU's
   `-serial stdio` shows it in your terminal) and, started from a USB
   stick, into `EFI\NOVA\bootlog.txt` on the stick.  `dmesg` in the

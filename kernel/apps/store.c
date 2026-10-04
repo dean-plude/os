@@ -147,6 +147,11 @@ static const StoreApp g_catalog[] = {
       "Steam\\Steam.exe", KIND_SETUP, 3,
       "32-bit installer (NSIS); installs and updates itself on NovaOS, but its browser does not open the login window yet (docs/compatibility.md)",
       "St", GDI_C(0x17, 0x1A, 0x21) },
+    { "Teeworlds", "Teeworlds team", "Fast 2D online shooter with cute round characters (free and open source)",
+      CAT_MEDIA, GH "teeworlds/teeworlds/releases/download/0.7.5/teeworlds-0.7.5-win64.zip", "teeworlds-0.7.5-win64.zip", "Teeworlds",
+      "Teeworlds\\**\\teeworlds.exe", KIND_ARCHIVE, 25,
+      "64-bit zip; starts in full screen with its music on NovaOS (nightly corpus); needs Mesa 3D (see Runtimes)",
+      "TW", GDI_C(0xC8, 0x6A, 0x3C) },
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",

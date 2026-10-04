@@ -1065,6 +1065,21 @@ static bool net_up(char *tip, int cap)
     return false;
 }
 
+/* Whether the dock (and the tray beside it) steps aside for a full-screen
+ * program: the active window covers the whole primary display, as a game
+ * in full-screen mode does (SDL's borderless full-screen window, or a
+ * captionless window the size of the screen).  Windows' taskbar does the
+ * same.  It comes back when the program goes to a window, loses the focus
+ * or Start opens (the Windows key). */
+static bool dock_hidden(void)
+{
+    if (g_start_open || g_menu.open) return false;
+    WND *w = WmActiveWindow();
+    if (!w || !w->visible || w->minimized) return false;
+    GdiRect f = w->frame;
+    return f.x <= 0 && f.y <= 0 && f.x + f.w >= GdiScreenW() && f.y + f.h >= GdiScreenH();
+}
+
 static void draw_dock(void)
 {
     dock_layout();
@@ -1249,7 +1264,7 @@ static void shell_overlay(void)
     if (files) FsLock();
     draw_start_menu();
     if (files) FsUnlock();
-    draw_dock();
+    if (!dock_hidden()) draw_dock();
     draw_menu();
     draw_switcher();
 }
@@ -1578,7 +1593,7 @@ static void desktop_press(int x, int y, bool dbl)
         WmInvalidate();
         return;
     }
-    if (pt_in(L_dock, x, y) || pt_in(L_tray, x, y)) {
+    if ((pt_in(L_dock, x, y) || pt_in(L_tray, x, y)) && !dock_hidden()) {
         if (h) {
             switch (h->kind) {
             case ACT_START:  start_open(!(g_start_open && !g_query_len)); break;
@@ -1615,7 +1630,7 @@ static void desktop_right_press(int x, int y)
     g_menu.open = false;
     if (g_start_open && pt_in(L_start, x, y)) { WmInvalidate(); return; }
     if (g_start_open) start_open(false);
-    if (pt_in(L_dock, x, y) || pt_in(L_tray, x, y)) {
+    if ((pt_in(L_dock, x, y) || pt_in(L_tray, x, y)) && !dock_hidden()) {
         if (h) menu_for_dock(h, x, L_dock.y - 6);
         if (g_menu.open) g_menu.y = L_dock.y - 6 - (8 + g_menu.n * MENU_ROW + 20);
         WmInvalidate();
@@ -1642,6 +1657,7 @@ static void desktop_right_press(int x, int y)
 static void desktop_hover(int x, int y)
 {
     int hover = -1;
+    if (dock_hidden()) x = y = -1;      /* (nothing of the dock to light up) */
     if (!WmMouseCaptured() && pt_in(L_dock, x, y)) {
         for (int i = 0; i < g_ndock; i++) {
             GdiRect r = g_dock[i].r;
