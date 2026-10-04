@@ -1,0 +1,1 @@
+| `libmtest` | The 32-bit C runtime's math entry points that MSVC-built x86 code calls instead of the C names: `_libm_sse2_*_precise` (arguments and result in SSE registers) and `_CI*` (on the x87 stack), against the C functions |
