@@ -238,6 +238,10 @@ GDIAPI int GetRandomRgn(HDC h, HRGN rgn, INT which) { (void)h; (void)rgn; (void)
 /* Driver escapes: none are supported (0) */
 GDIAPI int ExtEscape(HDC h, int esc, int nin, LPCSTR in, int nout, LPSTR out) { (void)h; (void)esc; (void)nin; (void)in; (void)nout; (void)out; return 0; }
 
+/* Gamma ramps: the display has none to read or set */
+GDIAPI BOOL GetDeviceGammaRamp(HDC h, LPVOID ramp) { (void)h; (void)ramp; return FALSE; }
+GDIAPI BOOL SetDeviceGammaRamp(HDC h, LPVOID ramp) { (void)h; (void)ramp; return FALSE; }
+
 /* Color management: no ICC profiles installed */
 GDIAPI BOOL GetICMProfileW(HDC h, LPDWORD n, LPWSTR name) { (void)h; (void)n; (void)name; return FALSE; }
 GDIAPI BOOL GetICMProfileA(HDC h, LPDWORD n, LPSTR name) { (void)h; (void)n; (void)name; return FALSE; }

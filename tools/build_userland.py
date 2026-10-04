@@ -79,7 +79,7 @@ def cflags():
 # directory, not an edit to a list here:
 #   deps      the DLLs it links against (built first)
 #   base      x64 load address; base_x86 the 32-bit one.  Leave both out
-#             and the DLL gets a free 16 MiB slot (AUTO_X64 / AUTO_X86),
+#             and the DLL gets a free slot (AUTO_X64: 16 MiB, AUTO_X86: 4 MiB),
 #             so two changes adding DLLs never pick the same address
 #   sources   directories its .c files come from (default: its own)
 #   entry     "DllMain" for DLLs with an entry point
@@ -102,6 +102,9 @@ import json
 SLOT = 0x01000000
 AUTO_X64 = (0x7FFD00000000, 0x7FFE00000000)
 AUTO_X86 = (0x97000000, 0xC0000000)
+# 32-bit DLLs get 4 MiB slots (the largest is under 2 MiB; check_overlaps
+# catches one that outgrows its slot): 16 MiB ones filled AUTO_X86
+SLOTS_OF = {'base': SLOT, 'base_x86': 0x00400000}
 
 def load_manifests():
     """{name: manifest} for every userland/*/dll.json, in link order (each
@@ -128,16 +131,18 @@ def load_manifests():
                     raise SystemExit(f'userland/{n}/dll.json: {key} {m[key]:#x} is also '
                                      f'userland/{taken[m[key]]}\'s; leave it out to get a free one')
                 taken[m[key]] = n
-        slot = lo
+        slot, span = lo, {}                  # (a fixed base keeps a 16 MiB slot)
         for n in sorted(found):
             if key in found[n]:
                 continue
-            while any(b <= slot < b + SLOT or slot <= b < slot + SLOT for b in taken):
-                slot += SLOT
+            size = SLOTS_OF[key]
+            while any(b <= slot < b + span.get(b, SLOT) or slot <= b < slot + size for b in taken):
+                slot += size
             if slot >= hi:
                 raise SystemExit(f'no free {arch} DLL slot left for {n}')
             found[n][key] = slot
             taken[slot] = n
+            span[slot] = size
     order, state = [], {}
     def visit(n, chain):
         if state.get(n) == 'done':

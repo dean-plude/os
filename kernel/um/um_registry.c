@@ -555,6 +555,9 @@ static void defaults(void)
         RegKey *k = kpath(path, false);
         if (!has_value(k, "")) { kset_sz(k, "", "xaudio2_7.dll", 1); kset_sz(k, "ThreadingModel", "Both", 1); }
     }
+    /* DirectInput 8 (dinput8.dll), which programs may make with CoCreateInstance */
+    RegKey *di8 = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{25E609E4-B259-11CF-BFC7-444553540000}\\InprocServer32", false);
+    if (!has_value(di8, "")) { kset_sz(di8, "", "dinput8.dll", 1); kset_sz(di8, "ThreadingModel", "Both", 1); }
     RegKey *lnk = kpath("Machine\\SOFTWARE\\Classes\\.lnk", false);
     if (!has_value(lnk, "")) kset_sz(lnk, "", "lnkfile", 1);
     RegKey *txt = kpath("Machine\\SOFTWARE\\Classes\\.txt", false);
