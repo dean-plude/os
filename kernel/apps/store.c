@@ -132,6 +132,11 @@ static const StoreApp g_catalog[] = {
       "\\AppData\\Local\\Roblox\\Versions\\**\\RobloxPlayerBeta.exe", KIND_SETUP, 15,
       "64-bit installer; installs on NovaOS, but the game client stops in its Hyperion anti-cheat (docs/compatibility.md)",
       "Rb", GDI_C(0x33, 0x5F, 0xFF) },
+    { "OpenTTD", "OpenTTD team", "Transport tycoon game: build railways, roads, ships and planes (free on GOG)",
+      CAT_MEDIA, "https://cdn.openttd.org/openttd-releases/15.3/openttd-15.3-windows-win64.exe", "openttd-15.3-windows-win64.exe", NULL,
+      "OpenTTD\\openttd.exe", KIND_SETUP, 15,
+      "64-bit installer (NSIS); installs and reaches its main menu on NovaOS with the free OpenGFX graphics (nightly corpus)",
+      "TT", GDI_C(0x2E, 0x6B, 0x3A) },
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",

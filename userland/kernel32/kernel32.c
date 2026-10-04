@@ -1242,10 +1242,43 @@ WINBASEAPI VOID WINAPI GetLocalTime(LPSYSTEMTIME st) { k32_local_time(st); }
  * ----------------------------------------------------------------------- */
 WINBASEAPI UINT WINAPI GetACP(void) { return CP_UTF8; }
 
+/* Single-byte code pages asked for by number: Windows-1252 (RTF's \ansicpg1252,
+ * old installers' text), ISO 8859-1 and US-ASCII.  0x80-0x9F of 1252: */
+static const WCHAR g_cp1252[32] = {
+    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+    0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+};
+
+static int single_byte_cp(UINT cp) { return cp == 1252 || cp == 28591 || cp == 20127; }
+
+static WCHAR sb_to_wide(UINT cp, unsigned char c)
+{
+    if (c < 0x80) return c;
+    if (cp == 20127) return '?';
+    if (cp == 1252 && c < 0xA0) return g_cp1252[c - 0x80];
+    return c;
+}
+
+static int sb_from_wide(UINT cp, WCHAR w)        /* -1: not in the code page */
+{
+    if (w < 0x80) return w;
+    if (cp == 20127) return -1;
+    if (cp == 1252) {
+        for (int i = 0; i < 32; i++) if (g_cp1252[i] == w) return 0x80 + i;
+        return w >= 0xA0 && w <= 0xFF ? w : -1;
+    }
+    return w <= 0xFF ? w : -1;
+}
+
 WINBASEAPI int WINAPI MultiByteToWideChar(UINT cp, DWORD flags, LPCSTR s, int n, LPWSTR out, int cap)
 {
-    (void)cp; (void)flags;
+    (void)flags;
     int len = n < 0 ? (int)strlen(s) + 1 : n;
+    if (single_byte_cp(cp)) {
+        if (cap && cap < len) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+        if (cap) for (int i = 0; i < len; i++) out[i] = sb_to_wide(cp, (unsigned char)s[i]);
+        return len;
+    }
     int r = u2w(s, len, cap ? out : 0, cap);
     if (r < 0) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
     return r;
@@ -1254,10 +1287,20 @@ WINBASEAPI int WINAPI MultiByteToWideChar(UINT cp, DWORD flags, LPCSTR s, int n,
 WINBASEAPI int WINAPI WideCharToMultiByte(UINT cp, DWORD flags, LPCWSTR s, int n, LPSTR out, int cap,
                                           LPCSTR defchar, LPBOOL used)
 {
-    (void)cp; (void)flags; (void)defchar;
+    (void)flags;
     if (used) *used = FALSE;
     int len = n;
     if (n < 0) { len = 0; while (s[len]) len++; len++; }
+    if (single_byte_cp(cp)) {
+        if (cap && cap < len) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+        for (int i = 0; cap && i < len; i++) {
+            int b = sb_from_wide(cp, s[i]);
+            if (b < 0) { b = defchar ? (unsigned char)*defchar : '?'; if (used) *used = TRUE; }
+            out[i] = (char)b;
+        }
+        return len;
+    }
+    (void)defchar;
     int r = w2u(s, len, cap ? out : 0, cap);
     if (r < 0) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
     return r;
