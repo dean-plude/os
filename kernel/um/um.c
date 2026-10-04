@@ -2429,6 +2429,8 @@ void um_exit_thread(UINT32 status)
     UmThread *t = UmCurrentThread();
     UmProcess *p = t->proc;
     um_abandon_mutants(p, t);
+    if (__atomic_load_n(&p->live_threads, __ATOMIC_ACQUIRE) == 1)
+        um_close_file_handles(p);           /* before the process is signaled: its files are free to delete */
 
     /* The user stack and TEB go now; the kernel side once off the CPU */
     um_lock_excl(&p->lock);
