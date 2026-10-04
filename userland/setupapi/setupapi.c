@@ -102,12 +102,7 @@ SETUPAPI BOOL WINAPI SetupDiGetDeviceInterfaceAlias(HANDLE set, PVOID iface, con
 #define CR_NO_SUCH_DEVNODE_ 0x0D
 SETUPAPI DWORD WINAPI CM_Locate_DevNodeW(PDWORD dn, LPCWSTR id, ULONG flags)
 { (void)id; (void)flags; if (dn) *dn = 0; return CR_NO_SUCH_DEVNODE_; }
-SETUPAPI DWORD WINAPI CM_Get_Parent(PDWORD parent, DWORD dn, ULONG flags)
-{ (void)dn; (void)flags; if (parent) *parent = 0; return CR_NO_SUCH_DEVNODE_; }
-SETUPAPI DWORD WINAPI CM_Get_Device_IDA(DWORD dn, char *buf, ULONG len, ULONG flags)
-{ (void)dn; (void)flags; if (buf && len) buf[0] = 0; return CR_NO_SUCH_DEVNODE_; }
-SETUPAPI DWORD WINAPI CM_Get_Device_IDW(DWORD dn, WCHAR *buf, ULONG len, ULONG flags)
-{ (void)dn; (void)flags; if (buf && len) buf[0] = 0; return CR_NO_SUCH_DEVNODE_; }
+/* (CM_Get_Parent and CM_Get_Device_ID go to cfgmgr32, below) */
 
 SETUPAPI BOOL WINAPI SetupDiClassGuidsFromNameW(LPCWSTR name, GUID *list, DWORD n, PDWORD need)
 {
