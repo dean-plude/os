@@ -419,6 +419,116 @@ WINOLEAPI_(HRESULT) OleGetClipboard(IDataObject **obj);
 WINOLEAPI_(HRESULT) OleFlushClipboard(void);
 WINOLEAPI_(HRESULT) OleIsCurrentClipboard(IDataObject *obj);
 
+/* ---- marshaling: interface pointers handed to another apartment or process ---- */
+typedef enum tagMSHCTX { MSHCTX_LOCAL = 0, MSHCTX_NOSHAREDMEM = 1, MSHCTX_DIFFERENTMACHINE = 2, MSHCTX_INPROC = 3, MSHCTX_CROSSCTX = 4 } MSHCTX;
+typedef enum tagMSHLFLAGS { MSHLFLAGS_NORMAL = 0, MSHLFLAGS_TABLESTRONG = 1, MSHLFLAGS_TABLEWEAK = 2, MSHLFLAGS_NOPING = 4 } MSHLFLAGS;
+typedef enum tagSTDMSHLFLAGS { SMEXF_SERVER = 0x01, SMEXF_HANDLER = 0x02 } STDMSHLFLAGS;
+typedef unsigned long RPCOLEDATAREP;
+typedef struct tagRPCOLEMESSAGE {
+    void *reserved1;
+    RPCOLEDATAREP dataRepresentation;
+    void *Buffer;
+    ULONG cbBuffer;
+    ULONG iMethod;
+    void *reserved2[5];
+    ULONG rpcFlags;
+} RPCOLEMESSAGE, *PRPCOLEMESSAGE;
+DEFINE_OLEGUID(IID_IRpcChannelBuffer,    0xD5F56B60, 0x593B, 0x101A);
+DEFINE_OLEGUID(IID_IRpcProxyBuffer,      0xD5F56A34, 0x593B, 0x101A);
+DEFINE_OLEGUID(IID_IRpcStubBuffer,       0xD5F56AFC, 0x593B, 0x101A);
+DEFINE_OLEGUID(IID_IPSFactoryBuffer,     0xD5F569D0, 0x593B, 0x101A);
+DEFINE_OLEGUID(IID_IStdMarshalInfo,      0x00000018, 0, 0);
+DEFINE_OLEGUID(CLSID_StdMarshal,         0x00000017, 0, 0);
+DEFINE_OLEGUID(CLSID_PSFactoryBuffer,    0x00000320, 0, 0);
+
+#undef INTERFACE
+#define INTERFACE IMarshal
+DECLARE_INTERFACE_(IMarshal, IUnknown)
+{
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **ppv) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD(GetUnmarshalClass)(THIS_ REFIID riid, void *pv, DWORD ctx, void *pvctx, DWORD flags, CLSID *clsid) PURE;
+    STDMETHOD(GetMarshalSizeMax)(THIS_ REFIID riid, void *pv, DWORD ctx, void *pvctx, DWORD flags, DWORD *size) PURE;
+    STDMETHOD(MarshalInterface)(THIS_ IStream *s, REFIID riid, void *pv, DWORD ctx, void *pvctx, DWORD flags) PURE;
+    STDMETHOD(UnmarshalInterface)(THIS_ IStream *s, REFIID riid, void **ppv) PURE;
+    STDMETHOD(ReleaseMarshalData)(THIS_ IStream *s) PURE;
+    STDMETHOD(DisconnectObject)(THIS_ DWORD reserved) PURE;
+};
+typedef IMarshal *LPMARSHAL;
+#undef INTERFACE
+#define INTERFACE IRpcChannelBuffer
+DECLARE_INTERFACE_(IRpcChannelBuffer, IUnknown)
+{
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **ppv) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD(GetBuffer)(THIS_ RPCOLEMESSAGE *msg, REFIID riid) PURE;
+    STDMETHOD(SendReceive)(THIS_ RPCOLEMESSAGE *msg, ULONG *status) PURE;
+    STDMETHOD(FreeBuffer)(THIS_ RPCOLEMESSAGE *msg) PURE;
+    STDMETHOD(GetDestCtx)(THIS_ DWORD *ctx, void **pvctx) PURE;
+    STDMETHOD(IsConnected)(THIS) PURE;
+};
+#undef INTERFACE
+#define INTERFACE IRpcProxyBuffer
+DECLARE_INTERFACE_(IRpcProxyBuffer, IUnknown)
+{
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **ppv) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD(Connect)(THIS_ IRpcChannelBuffer *chan) PURE;
+    STDMETHOD_(void, Disconnect)(THIS) PURE;
+};
+#undef INTERFACE
+#define INTERFACE IRpcStubBuffer
+DECLARE_INTERFACE_(IRpcStubBuffer, IUnknown)
+{
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **ppv) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD(Connect)(THIS_ IUnknown *server) PURE;
+    STDMETHOD_(void, Disconnect)(THIS) PURE;
+    STDMETHOD(Invoke)(THIS_ RPCOLEMESSAGE *msg, IRpcChannelBuffer *chan) PURE;
+    STDMETHOD_(struct IRpcStubBuffer *, IsIIDSupported)(THIS_ REFIID riid) PURE;
+    STDMETHOD_(ULONG, CountRefs)(THIS) PURE;
+    STDMETHOD(DebugServerQueryInterface)(THIS_ void **ppv) PURE;
+    STDMETHOD_(void, DebugServerRelease)(THIS_ void *pv) PURE;
+};
+#undef INTERFACE
+#define INTERFACE IPSFactoryBuffer
+DECLARE_INTERFACE_(IPSFactoryBuffer, IUnknown)
+{
+    STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **ppv) PURE;
+    STDMETHOD_(ULONG, AddRef)(THIS) PURE;
+    STDMETHOD_(ULONG, Release)(THIS) PURE;
+    STDMETHOD(CreateProxy)(THIS_ IUnknown *outer, REFIID riid, IRpcProxyBuffer **proxy, void **ppv) PURE;
+    STDMETHOD(CreateStub)(THIS_ REFIID riid, IUnknown *server, IRpcStubBuffer **stub) PURE;
+};
+#undef INTERFACE
+
+#define RPC_E_CALL_REJECTED       ((HRESULT)0x80010001L)
+#define RPC_E_SERVERFAULT         ((HRESULT)0x80010105L)
+#define RPC_E_DISCONNECTED        ((HRESULT)0x80010108L)
+#define RPC_E_INVALID_OBJREF      ((HRESULT)0x8001011DL)
+#define RPC_E_WRONG_THREAD        ((HRESULT)0x8001010EL)
+#define CO_E_OBJNOTCONNECTED      ((HRESULT)0x800401FDL)
+#define CO_E_SERVER_STOPPING      ((HRESULT)0x80080008L)
+#define STG_E_READFAULT           ((HRESULT)0x8003001EL)
+
+WINOLEAPI_(HRESULT) CoMarshalInterface(IStream *s, REFIID riid, IUnknown *p, DWORD ctx, void *pvctx, DWORD flags);
+WINOLEAPI_(HRESULT) CoUnmarshalInterface(IStream *s, REFIID riid, void **ppv);
+WINOLEAPI_(HRESULT) CoReleaseMarshalData(IStream *s);
+WINOLEAPI_(HRESULT) CoGetMarshalSizeMax(ULONG *size, REFIID riid, IUnknown *p, DWORD ctx, void *pvctx, DWORD flags);
+WINOLEAPI_(HRESULT) CoGetStandardMarshal(REFIID riid, IUnknown *p, DWORD ctx, void *pvctx, DWORD flags, IMarshal **out);
+WINOLEAPI_(HRESULT) CoGetPSClsid(REFIID riid, CLSID *clsid);
+WINOLEAPI_(HRESULT) CoDisconnectObject(IUnknown *p, DWORD reserved);
+WINOLEAPI_(HRESULT) CoMarshalInterThreadInterfaceInStream(REFIID riid, IUnknown *p, IStream **out);
+WINOLEAPI_(HRESULT) CoGetInterfaceAndReleaseStream(IStream *s, REFIID riid, void **ppv);
+WINOLEAPI_(HRESULT) CoResumeClassObjects(void);
+WINOLEAPI_(HRESULT) CoSuspendClassObjects(void);
+WINOLEAPI_(ULONG)   CoAddRefServerProcess(void);
+WINOLEAPI_(ULONG)   CoReleaseServerProcess(void);
+
 WINOLEAPI_(HRESULT) OleInitialize(LPVOID reserved);
 WINOLEAPI_(void)    OleUninitialize(void);
 
