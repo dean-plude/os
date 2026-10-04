@@ -1413,6 +1413,8 @@ typedef struct {
     bool writable;
     void (*release)(void *);        /* foreign frames (device memory): not ours to free; */
     void *release_ctx;              /* release(release_ctx) when the section goes */
+    UINT8 *meta;                    /* a shared GPU resource's description (um_section_ioctl), or NULL */
+    UINT32 meta_n;
 } UmSection;
 
 /* File-backed sections hold a copy of the file: it is filled at creation
@@ -1465,6 +1467,7 @@ static void section_destroy(UmObject *o)
         sec->release(sec->release_ctx);
     } else
         um_free_frames(sec->frames, sec->npages);
+    kfree(sec->meta);
     kfree(sec);
     o->ptr = NULL;
 }
@@ -1504,6 +1507,51 @@ UINT64 um_section_foreign(UmProcess *p, UINT64 pa, UINT64 size, void (*release)(
     UINT64 h = um_section_frames(p, f, n, size, release, ctx);
     kfree(f);
     return h;
+}
+
+/* NtDeviceIoControlFile on a section: a shared GPU resource.  NovaOS's
+ * Vulkan loader (userland/vulkan-1) backs the memory of a Direct3D texture
+ * shared by handle with a section, and hands that section out as the
+ * texture's shared handle; DXVK keeps the texture's description with it
+ * through the two control codes Proton's shared-resource driver answers
+ * (sharedgpures.sys), so a device opening the handle (in this process or
+ * another) learns what the texture is.  Writes *@info (bytes returned). */
+#define IOCTL_SHARED_GPU_RESOURCE_SET_METADATA 0x238010u   /* CTL_CODE(FILE_DEVICE_VIDEO, 4, METHOD_BUFFERED, FILE_WRITE_ACCESS) */
+#define IOCTL_SHARED_GPU_RESOURCE_GET_METADATA 0x234014u   /* CTL_CODE(FILE_DEVICE_VIDEO, 5, METHOD_BUFFERED, FILE_READ_ACCESS) */
+#define SECTION_META_MAX 512
+static UmLock g_meta_lock;
+
+UINT32 um_section_ioctl(UmObject *o, UINT32 code, UINT64 in, UINT32 in_len, UINT64 out, UINT32 out_len, UINT32 *info)
+{
+    UmSection *sec = o->ptr;
+    *info = 0;
+    if (code == IOCTL_SHARED_GPU_RESOURCE_SET_METADATA) {
+        if (in_len > SECTION_META_MAX) return ST_INVALID_PARAMETER;
+        UINT8 *m = in_len ? kmalloc(in_len) : NULL;
+        if (in_len && !m) return ST_NO_MEMORY;
+        if (in_len && !NT_SUCCESS(CopyFromUser(m, (const void *)(uintptr_t)in, in_len))) { kfree(m); return ST_ACCESS_VIOLATION; }
+        um_lock(&g_meta_lock);
+        UINT8 *old = sec->meta;
+        sec->meta = m;
+        sec->meta_n = in_len;
+        um_unlock(&g_meta_lock);
+        kfree(old);
+        return ST_SUCCESS;
+    }
+    if (code == IOCTL_SHARED_GPU_RESOURCE_GET_METADATA) {
+        UINT8 m[SECTION_META_MAX];
+        um_lock(&g_meta_lock);
+        UINT32 n = sec->meta ? sec->meta_n : 0;
+        bool have = sec->meta != NULL;
+        if (have) memcpy(m, sec->meta, n);
+        um_unlock(&g_meta_lock);
+        if (!have) return 0xC0000034u;                      /* OBJECT_NAME_NOT_FOUND: nothing was described */
+        if (out_len < n) return 0xC0000023u;                /* BUFFER_TOO_SMALL */
+        if (n && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)out, m, n))) return ST_ACCESS_VIOLATION;
+        *info = n;
+        return ST_SUCCESS;
+    }
+    return 0xC0000010u;                                     /* INVALID_DEVICE_REQUEST */
 }
 
 void um_flush_view_at(UmProcess *p, UINT64 va)

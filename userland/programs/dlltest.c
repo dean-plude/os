@@ -1,4 +1,5 @@
-/* dlltest.exe — DllMain, exported calls, static TLS, and LoadLibrary */
+/* dlltest.exe — DllMain, exported calls, static TLS, LoadLibrary, and
+ * GetModuleFileName with more than 64 modules loaded */
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
@@ -49,6 +50,53 @@ static void refused_start(void)
     CloseHandle(pi.hProcess);
 }
 
+/* GetModuleFileName and EnumProcessModules see every module, not just the
+ * first 64 (GOG Galaxy's client has 89 at start, and MFC's DllMain fails
+ * when GetModuleFileName does not know mfc140u.dll) */
+static void many_modules(void)
+{
+    static const char *const names[] = {
+        "activeds", "advapi32", "authz", "bcrypt", "bcryptprimitives", "cabinet", "cfgmgr32",
+        "comctl32", "comdlg32", "credui", "crypt32", "dbghelp", "dwmapi", "gdi32", "imagehlp",
+        "imm32", "kernelbase", "ktmw32", "mpr", "mscms", "msftedit", "msxml6", "ncrypt",
+        "netapi32", "normaliz", "ole32", "oleacc", "oleaut32", "pdh", "powrprof", "propsys",
+        "psapi", "riched20", "rpcrt4", "secur32", "sensapi", "setupapi", "shell32", "shfolder",
+        "shlwapi", "taskschd", "user32", "userenv", "usp10", "uxtheme", "version", "wevtapi",
+        "winspool", "wintab32", "wintrust", "winusb", "wldap32", "wsock32", "wtsapi32",
+        "x3daudio1_7", "xinput1_1", "xinput1_2", "xinput1_3", "xinput1_4", "xinput9_1_0",
+    };
+    char path[MAX_PATH];
+    HMODULE last = 0;
+    const char *last_name = "";
+    for (int i = 0; i < (int)(sizeof(names) / sizeof(names[0])); i++) {
+        HMODULE m = LoadLibraryA(names[i]);
+        if (m) { last = m; last_name = names[i]; }
+    }
+    typedef BOOL (WINAPI *enumfn)(HANDLE, HMODULE *, DWORD, LPDWORD);
+    enumfn en = (enumfn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "K32EnumProcessModules");
+    CHECK(en != NULL);
+    if (!en) return;
+    static HMODULE mods[1024];
+    DWORD need = 0;
+    CHECK(en(GetCurrentProcess(), mods, sizeof(mods), &need));
+    DWORD n = need / sizeof(HMODULE);
+    if (n <= 64) printf("many modules: only %lu loaded\n", (unsigned long)n);
+    CHECK(n > 64);
+    BOOL found = FALSE;
+    int unnamed = 0;
+    for (DWORD i = 0; i < n && i < 1024; i++) {
+        if (mods[i] == last) found = TRUE;
+        if (!GetModuleFileNameA(mods[i], path, sizeof(path))) {
+            if (!unnamed++) printf("many modules: no file name for module %lu\n", (unsigned long)i);
+        }
+    }
+    CHECK(found);
+    CHECK(unnamed == 0);
+    DWORD k = last ? GetModuleFileNameA(last, path, sizeof(path)) : 0;
+    const char *base = strrchr(path, '\\');
+    CHECK(k > 0 && base && !_strnicmp(base + 1, last_name, strlen(last_name)));
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "child")) {
@@ -88,6 +136,7 @@ int main(int argc, char **argv)
     CHECK(p != NULL);
     FreeLibrary(k);
 
+    many_modules();
     refused_start();
 
     printf("DLL/TLS self-test: %d passed, %d failed\n", pass, fail);

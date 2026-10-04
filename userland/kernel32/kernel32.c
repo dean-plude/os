@@ -370,7 +370,7 @@ const char *k32_module_path(HMODULE m, char *tmp)
         return tmp;
     }
     NOVA_LDR_INFO *li = NOVA_LDR_INFO_ADDRESS;
-    for (ULONG i = 0; i < li->Count && i < 64; i++)
+    for (ULONG i = 0; i < li->Count && i < sizeof(li->Modules) / sizeof(li->Modules[0]); i++)
         if ((HMODULE)(ULONG_PTR)li->Modules[i].Base == m) return li->Modules[i].Path;
     return 0;
 }
