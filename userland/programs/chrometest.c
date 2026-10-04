@@ -274,6 +274,23 @@ static void imports(void)
     HANDLE got[4]; DWORD ng = 9;
     check(q && !evn(q, 4, got, INFINITE, 0, &ng) && GetLastError() == 259 && ng == 0 && evc(q),
           "wevtapi: the System log has no events to return");
+    HANDLE (WINAPI *evbm)(LPCWSTR) = (void *)GetProcAddress(ev, "EvtCreateBookmark");
+    HANDLE (WINAPI *evsub)(HANDLE, HANDLE, LPCWSTR, LPCWSTR, HANDLE, void *, void *, DWORD) = (void *)GetProcAddress(ev, "EvtSubscribe");
+    HANDLE (WINAPI *evlog)(HANDLE, LPCWSTR, DWORD) = (void *)GetProcAddress(ev, "EvtOpenLog");
+    BOOL (WINAPI *evinfo)(HANDLE, int, DWORD, void *, DWORD *) = (void *)GetProcAddress(ev, "EvtGetLogInfo");
+    HANDLE (WINAPI *evpub)(HANDLE, LPCWSTR, LPCWSTR, DWORD, DWORD) = (void *)GetProcAddress(ev, "EvtOpenPublisherMetadata");
+    HANDLE bm = evbm ? evbm(NULL) : 0;
+    HANDLE sub = bm && evsub ? evsub(0, 0, L"System", L"*", bm, 0, 0, 3) : 0;   /* after the bookmark */
+    ng = 9;
+    check(bm && sub && !evn(sub, 4, got, 0, 0, &ng) && ng == 0 && evc(sub) && evc(bm),
+          "wevtapi: a bookmark and a subscription that never fires");
+    struct { ULONGLONG v; DWORD count, type; } var = { 7, 1, 99 };
+    DWORD need = 0;
+    HANDLE lg = evlog ? evlog(0, L"System", 1) : 0;
+    check(lg && evinfo(lg, 5, sizeof(var), &var, &need) && var.v == 0 && var.type == 10 && need == 16 && evc(lg),
+          "wevtapi: the System log has no records");
+    check(evpub && !evpub(0, L"Microsoft-Windows-Kernel-General", NULL, 0, 0) && GetLastError() == 15002,
+          "wevtapi: no publisher metadata");
 
     HMODULE w = LoadLibraryA("winhttp.dll");
     void *(WINAPI *wopen)(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD) = (void *)GetProcAddress(w, "WinHttpOpen");
