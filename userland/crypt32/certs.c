@@ -22,6 +22,9 @@
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/oid.h"
 #include "mbedtls/sha1.h"
+#include "mbedtls/x509_crl.h"
+#include "mbedtls/pk.h"
+#include "mbedtls/md.h"
 #include "tls_glue.h"
 #include "crypt32_int.h"
 #include "x509_internal.h"
@@ -618,6 +621,19 @@ CRYPT32API const void *WINAPI CertGetSubjectCertificateFromStore(HANDLE h, DWORD
     return CertFindCertificateInStore(h, enc, 0, 11 << 16 /* CERT_FIND_SUBJECT_CERT */, id, NULL);
 }
 
+/* CertControlStore: a store here always shows what is in it now (changes
+ * to the system ROOT store are written as they are made), so resyncing and
+ * committing have nothing to do; a change event is accepted, and since no
+ * other program's changes reach a store while it is open, it stays unset */
+CRYPT32API BOOL WINAPI CertControlStore(HANDLE h, DWORD flags, DWORD ctrl, const void *para)
+{
+    (void)flags; (void)para;
+    if (!store_of(h)) return FALSE;
+    if (ctrl >= 1 && ctrl <= 5) return TRUE;  /* RESYNC, NOTIFY_CHANGE, COMMIT, AUTO_RESYNC, CANCEL_NOTIFY */
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return FALSE;
+}
+
 /* -1 before the certificate's validity, 1 after it, 0 within */
 CRYPT32API LONG WINAPI CertVerifyTimeValidity(const FILETIME *t, const CERT_INFO_ *ci)
 {
@@ -660,6 +676,111 @@ typedef struct {
     DWORD dwCreateFlags;
     GUID ChainId;
 } CHAIN_CONTEXT_;
+
+/* Names compare as their encodings, as Windows compares them */
+CRYPT32API BOOL WINAPI CertCompareCertificateName(DWORD enc, const BLOB_ *a, const BLOB_ *b)
+{
+    (void)enc;
+    return a && b && a->cbData == b->cbData && !memcmp(a->pbData, b->pbData, a->cbData);
+}
+
+/* CryptVerifyCertificateSignatureEx: whether @subject (a certificate, or
+ * the encoding of a certificate or CRL) was signed with the key of
+ * @issuer (a certificate, the first certificate of a chain, or a
+ * CERT_PUBLIC_KEY_INFO); NTE_BAD_SIGNATURE if not */
+#define NTE_BAD_SIGNATURE_    0x80090006L
+#define NTE_BAD_ALGID_C       0x80090008L
+#define SIGN_SUBJECT_BLOB_    1
+#define SIGN_SUBJECT_CERT_    2
+#define SIGN_ISSUER_PUBKEY_   1
+#define SIGN_ISSUER_CERT_     2
+#define SIGN_ISSUER_CHAIN_    3
+
+/* SubjectPublicKeyInfo's DER from CERT_PUBLIC_KEY_INFO, for Mbed TLS */
+static int spki_key(const PUBKEY_INFO_ *k, mbedtls_pk_context *pk)
+{
+    BYTE oid[64], buf[4096 + 128];
+    mbedtls_asn1_buf o = { 0 };
+    if (!k || !k->Algorithm.pszObjId || mbedtls_oid_from_numeric_string(&o, k->Algorithm.pszObjId, strlen(k->Algorithm.pszObjId)))
+        return -1;
+    size_t on = o.len;
+    if (on > sizeof(oid)) { free(o.p); return -1; }
+    memcpy(oid, o.p, on);
+    free(o.p);
+    size_t pn = k->Algorithm.Parameters.cbData, kn = k->PublicKey.cbData;
+    if (pn + kn + 64 > sizeof(buf) - 16) return -1;
+    /* SEQUENCE { SEQUENCE { OID, params }, BIT STRING } with long-form lengths */
+    BYTE *p = buf;
+    size_t alg = 2 + on + pn, bits = 1 + kn, alg_hdr = 4, bits_hdr = 4, body = alg_hdr + alg + bits_hdr + bits;
+    *p++ = 0x30; *p++ = 0x82; *p++ = (BYTE)(body >> 8); *p++ = (BYTE)body;
+    *p++ = 0x30; *p++ = 0x82; *p++ = (BYTE)(alg >> 8); *p++ = (BYTE)alg;
+    *p++ = 0x06; *p++ = (BYTE)on; memcpy(p, oid, on); p += on;
+    if (pn) { memcpy(p, k->Algorithm.Parameters.pbData, pn); p += pn; }
+    *p++ = 0x03; *p++ = 0x82; *p++ = (BYTE)(bits >> 8); *p++ = (BYTE)bits;
+    *p++ = (BYTE)k->PublicKey.cUnusedBits; memcpy(p, k->PublicKey.pbData, kn); p += kn;
+    return mbedtls_pk_parse_public_key(pk, buf, (size_t)(p - buf));
+}
+
+CRYPT32API BOOL WINAPI CryptVerifyCertificateSignatureEx(ULONG_PTR prov, DWORD enc, DWORD stype, void *subject, DWORD itype,
+                                                         void *issuer, DWORD flags, void *reserved)
+{
+    (void)prov; (void)enc; (void)flags; (void)reserved;
+    const BYTE *der;
+    size_t n;
+    if (!subject) { SetLastError(E_INVALIDARG); return FALSE; }
+    if (stype == SIGN_SUBJECT_CERT_) { const Cert *c = subject; der = c->der; n = c->ctx.cbCertEncoded; }
+    else if (stype == SIGN_SUBJECT_BLOB_) { const BLOB_ *b = subject; der = b->pbData; n = b->cbData; }
+    else { SetLastError(E_INVALIDARG); return FALSE; }
+    crypt32_init();
+    /* what was signed, how, and the signature */
+    mbedtls_x509_crt crt;
+    mbedtls_x509_crl crl;
+    mbedtls_x509_crt_init(&crt);
+    mbedtls_x509_crl_init(&crl);
+    const mbedtls_x509_buf *tbs, *sig;
+    mbedtls_md_type_t md;
+    mbedtls_pk_type_t pkt;
+    const void *opts;
+    if (!mbedtls_x509_crt_parse_der(&crt, der, n)) {
+        tbs = &crt.tbs; sig = &crt.sig; md = crt.MBEDTLS_PRIVATE(sig_md); pkt = crt.MBEDTLS_PRIVATE(sig_pk); opts = crt.MBEDTLS_PRIVATE(sig_opts);
+    } else if (stype == SIGN_SUBJECT_BLOB_ && !mbedtls_x509_crl_parse_der(&crl, der, n)) {
+        tbs = &crl.tbs; sig = &crl.sig; md = crl.MBEDTLS_PRIVATE(sig_md); pkt = crl.MBEDTLS_PRIVATE(sig_pk); opts = crl.MBEDTLS_PRIVATE(sig_opts);
+    } else {
+        mbedtls_x509_crt_free(&crt);
+        SetLastError(CRYPT_E_ASN1_BADTAG_);
+        return FALSE;
+    }
+    /* the issuer's key */
+    mbedtls_pk_context key;
+    mbedtls_x509_crt icrt;
+    mbedtls_pk_init(&key);
+    mbedtls_x509_crt_init(&icrt);
+    mbedtls_pk_context *pk = NULL;
+    const Cert *ic = NULL;
+    if (itype == SIGN_ISSUER_CERT_) ic = issuer;
+    else if (itype == SIGN_ISSUER_CHAIN_ && issuer) {     /* the chain's own certificate */
+        const CHAIN_CONTEXT_ *ch = issuer;
+        if (ch->cChain && ch->rgpChain[0]->cElement) ic = (const Cert *)ch->rgpChain[0]->rgpElement[0]->pCertContext;
+    }
+    if (ic && !mbedtls_x509_crt_parse_der(&icrt, ic->der, ic->ctx.cbCertEncoded)) pk = &icrt.pk;
+    else if (itype == SIGN_ISSUER_PUBKEY_ && !spki_key(issuer, &key)) pk = &key;
+    DWORD err = 0;
+    if (!pk) err = itype == SIGN_ISSUER_CERT_ || itype == SIGN_ISSUER_PUBKEY_ ? (DWORD)CRYPT_E_ASN1_BADTAG_ : (DWORD)E_INVALIDARG;
+    else {
+        const mbedtls_md_info_t *mi = mbedtls_md_info_from_type(md);
+        BYTE hash[MBEDTLS_MD_MAX_SIZE];
+        if (!mi || mbedtls_md(mi, tbs->p, tbs->len, hash)) err = (DWORD)NTE_BAD_ALGID_C;
+        else if (mbedtls_pk_verify_ext(pkt, opts, pk, md, hash, mbedtls_md_get_size(mi), sig->p, sig->len))
+            err = (DWORD)NTE_BAD_SIGNATURE_;
+    }
+    mbedtls_x509_crt_free(&icrt);
+    mbedtls_pk_free(&key);
+    mbedtls_x509_crt_free(&crt);
+    mbedtls_x509_crl_free(&crl);
+    if (err) { SetLastError(err); return FALSE; }
+    return TRUE;
+}
+
 typedef struct { DWORD cUsageIdentifier; LPSTR *rgpszUsageIdentifier; } ENHKEY_USAGE_;
 typedef struct { DWORD dwType; ENHKEY_USAGE_ Usage; } USAGE_MATCH_;
 typedef struct { DWORD cbSize; USAGE_MATCH_ RequestedUsage; } CHAIN_PARA_;

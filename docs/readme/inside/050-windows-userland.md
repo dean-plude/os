@@ -35,9 +35,13 @@
   `crypt32` and `wintrust` (certificate stores and chains, signed PKCS #7
   messages, and Authenticode: `WinVerifyTrust` checks a program's
   signature, its timestamp and its chain to the trusted roots),
-  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`),
+  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`, and the
+  Internet security manager's zones),
   `wintab32` (Wintab pen tablets: pressure, tilt and barrel rotation for GTK,
   Qt and Krita), `cabinet` (the FDI functions installers extract cabinets
   with, MSZIP and LZX, on `msi`'s cabinet readers), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
-  `dhcpcsvc`, `d3dcompiler_47`), and more.
+  `dhcpcsvc`, `d3dcompiler_47`), the ones Qt WebEngine imports
+  (`bthprops.cpl`, `d3d12`, `winusb`: no Bluetooth radio, Direct3D 12
+  device or WinUSB device, as on a PC without them, with Bluetooth's SDP
+  record parsers working in full), and more.

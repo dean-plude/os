@@ -86,6 +86,103 @@ UEAPI HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(LPCWSTR name, PSI
     return AllocateAndInitializeSid(&app, 8, 2, h[0], h[1], h[2], h[3], h[4], h[5], h[6], sid) ? S_OK : E_OUTOFMEMORY;
 }
 
+/* AppContainer profiles, kept where Windows keeps them: the mapping from
+ * the container's SID to its name under HKCU\...\AppContainer\Mappings
+ * and its folder %LOCALAPPDATA%\Packages\NAME.  NovaOS runs no process
+ * inside a container, so a profile is only this record. */
+#define AC_MAPPINGS L"Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings\\"
+
+static int ac_key(PSID sid, WCHAR *key, int cap)
+{
+    LPWSTR s = 0;
+    if (!ConvertSidToStringSidW(sid, &s)) return 0;
+    int n = lstrlenW(AC_MAPPINGS), k = lstrlenW(s);
+    if (n + k >= cap) { LocalFree(s); return 0; }
+    lstrcpyW(key, AC_MAPPINGS);
+    lstrcpyW(key + n, s);
+    LocalFree(s);
+    return 1;
+}
+
+static int ac_folder(LPCWSTR name, WCHAR *dir, int cap, int create)
+{
+    WCHAR base[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+    if (!n || n >= MAX_PATH || n + 10 + lstrlenW(name) >= (DWORD)cap) return 0;
+    lstrcpyW(dir, base);
+    lstrcatW(dir, L"\\Packages");
+    if (create) CreateDirectoryW(dir, 0);
+    lstrcatW(dir, L"\\");
+    lstrcatW(dir, name);
+    return 1;
+}
+
+static int ac_name_ok(LPCWSTR name)
+{
+    int n = name ? lstrlenW(name) : 0;
+    if (n < 2 || n > 64) return 0;
+    for (int i = 0; i < n; i++)
+        if (!((name[i] >= 'a' && name[i] <= 'z') || (name[i] >= 'A' && name[i] <= 'Z') ||
+              (name[i] >= '0' && name[i] <= '9') || name[i] == '.' || name[i] == '-' || name[i] == '_'))
+            return 0;
+    return 1;
+}
+
+UEAPI HRESULT WINAPI CreateAppContainerProfile(LPCWSTR name, LPCWSTR display, LPCWSTR description, PVOID caps,
+                                               DWORD ncaps, PSID *sid)
+{
+    (void)caps; (void)ncaps;
+    if (!sid) return E_INVALIDARG;
+    *sid = 0;
+    if (!ac_name_ok(name) || !display || !description) return E_INVALIDARG;
+    PSID s;
+    HRESULT hr = DeriveAppContainerSidFromAppContainerName(name, &s);
+    if (FAILED(hr)) return hr;
+    WCHAR key[512], dir[MAX_PATH];
+    HKEY k;
+    DWORD how = 0;
+    if (!ac_key(s, key, 512) || RegCreateKeyExW(HKEY_CURRENT_USER, key, 0, 0, 0, KEY_ALL_ACCESS, 0, &k, &how)) {
+        FreeSid(s);
+        return E_FAIL;
+    }
+    if (how == REG_OPENED_EXISTING_KEY) {
+        RegCloseKey(k);
+        FreeSid(s);
+        return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
+    }
+    RegSetValueExW(k, L"Moniker", 0, REG_SZ, (const BYTE *)name, (DWORD)(lstrlenW(name) + 1) * 2);
+    RegSetValueExW(k, L"DisplayName", 0, REG_SZ, (const BYTE *)display, (DWORD)(lstrlenW(display) + 1) * 2);
+    RegSetValueExW(k, L"Description", 0, REG_SZ, (const BYTE *)description, (DWORD)(lstrlenW(description) + 1) * 2);
+    RegCloseKey(k);
+    if (ac_folder(name, dir, MAX_PATH, 1)) {
+        CreateDirectoryW(dir, 0);
+        lstrcatW(dir, L"\\AC");
+        CreateDirectoryW(dir, 0);
+    }
+    *sid = s;
+    return S_OK;
+}
+
+UEAPI HRESULT WINAPI DeleteAppContainerProfile(LPCWSTR name)
+{
+    if (!ac_name_ok(name)) return E_INVALIDARG;
+    PSID s;
+    HRESULT hr = DeriveAppContainerSidFromAppContainerName(name, &s);
+    if (FAILED(hr)) return hr;
+    WCHAR key[512], dir[MAX_PATH];
+    int ok = ac_key(s, key, 512);
+    FreeSid(s);
+    if (ok) RegDeleteKeyW(HKEY_CURRENT_USER, key);          /* (gone already is not an error) */
+    if (ac_folder(name, dir, MAX_PATH, 0)) {
+        int n = lstrlenW(dir);
+        lstrcatW(dir, L"\\AC");
+        RemoveDirectoryW(dir);
+        dir[n] = 0;
+        RemoveDirectoryW(dir);
+    }
+    return S_OK;
+}
+
 /* Group Policy: NovaOS applies none, so nothing ever holds the policy
  * section for writing; the "section" handed out is a handle that only has
  * to close */

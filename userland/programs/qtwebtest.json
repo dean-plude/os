@@ -1,0 +1,5 @@
+{
+  "x86": true,
+  "selftest": true,
+  "libs": ["bthprops", "d3d12", "winusb", "hid", "setupapi", "netapi32", "iphlpapi", "dnsapi", "userenv", "crypt32", "winhttp", "urlmon"]
+}
