@@ -1,14 +1,15 @@
 # The Microsoft Edge WebView2 runtime's offline installer (tools/appcorpus.py),
 # the runtime Roblox's login screen and many other programs embed.  It is
 # Microsoft Edge Update (MicrosoftEdgeUpdate.exe, 32-bit) carrying the
-# runtime's own setup.  Edge Update now starts, reads its policies and runs
-# its install step, which it logs to %TEMP%\MicrosoftEdgeUpdate.log; the
-# test passes when that log shows the install step ran.  The install itself
-# stops there: Edge Update first makes an MSXML 6 DOMDocument, which NovaOS
-# does not have yet, and reports that Windows needs an update
-# (docs/compatibility.md).  Once MSXML lands, the next test expects the
-# runtime's files in C:\Programs\Microsoft\EdgeWebView.
-DOC = 'Microsoft Edge WebView2 runtime (its updater runs; the install stops: no MSXML 6 yet)'
+# runtime's own setup.  Edge Update starts, reads its manifests with MSXML
+# 6, installs itself, registers its COM servers and proxy/stub DLLs and
+# runs its install step, which it logs to %TEMP%\MicrosoftEdgeUpdate.log;
+# the test passes when that log shows the install step ran.  The install
+# then unpacks the runtime's package and stops at Edge Update's check that
+# the package carries Microsoft's signature (0xa0430233), so nothing is
+# installed yet (docs/compatibility.md).  Once that passes, the next test
+# expects the runtime's files in C:\Programs\Microsoft\EdgeWebView.
+DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself and runs the install; the install stops at its check of Microsoft\'s signature on the runtime)'
 import os, shutil
 
 INSTALLER = 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
