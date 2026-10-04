@@ -4,4 +4,6 @@
   channel (a GitHub release by default, made with `tools/mkupdate.py`),
   check them, and stage them; the boot loader starts the new kernel once
   and goes back to the old one if it does not reach the desktop
-  ([updates.md](updates.md)).  Signed channel files are still to come.
+  ([updates.md](updates.md)).  The channel file is signed with Ed25519;
+  a NovaOS with the release key built in installs only from a channel
+  signed with it.

@@ -18,9 +18,11 @@
  *        kernel kernel.elf 41234567 <SHA-256 in hex>
  *        loader bootx64.efi 77455 <SHA-256 in hex>
  *        notes One line about the release
+ *        signature ed25519 <public key> <signature of the lines above>
  *
  *    (file names are relative to the channel's URL, or full URLs;
- *    tools/mkupdate.py writes it).
+ *    tools/mkupdate.py writes it).  With a key built in (update_key.h),
+ *    only a channel signed with it is used.
  * 2. Install: the files are downloaded, their sizes and SHA-256 checked,
  *    and the kernel's stamped version must be the one the channel names.
  *    They are written to the ESP as \EFI\NOVA\kernel.new and bootx64.new,
