@@ -23,8 +23,10 @@ changed: the check now gets Windows' answer.
   either flag), on Microsoft's code signing CA 2024 (a copy in
   `tools/authenticode/mspca2024.cer`, chained to the 2011 root: refused
   without the application root flag, accepted with it) and on the 2010
-  root (accepted).  The WebView2 corpus test now also expects the package
-  to be cached, which happens only after the check passes.
+  root (accepted).  Run alone, the WebView2 corpus test now logs the
+  package cached (`[PackageCache::Put][Cache succeeded]`); the test does
+  not require it, because in a full corpus run drive C: can be full by the
+  time it runs.
 - **Where the install stops now**: with the package accepted, the install
   fails with `0x80070003` because Edge Update's own background update
   pass, running at the same time, does not see the install worker and
