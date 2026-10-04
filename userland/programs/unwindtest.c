@@ -5,7 +5,13 @@
  * starts a second, "collided" unwind to the landing pad with a CONTEXT it
  * never filled in (only scratch space on Windows).  A landing pad that
  * ends in _Unwind_Resume calls RtlUnwindEx from no handler at all, again
- * with an empty CONTEXT. */
+ * with an empty CONTEXT.
+ *
+ * Also the consolidating unwind of Microsoft's own C++ runtime
+ * (vcruntime140, which programs built with MSVC may carry or install):
+ * its catch block runs from RtlUnwindEx's STATUS_UNWIND_CONSOLIDATE
+ * callback, and a throw from there (a rethrow, a new exception) must reach
+ * the frames above the catching one (GOG Galaxy's service and client). */
 #include <windows.h>
 #include <winternl.h>
 #include <stdio.h>
@@ -147,8 +153,87 @@ __asm__(
     "retq\n\t"
     ".seh_endproc\n");
 
+/* MSVC's C++ runtime: its frame handler finds a catch in the search phase
+ * and unwinds to the frame with a consolidation record, whose callback
+ * runs the catch block and returns where the frame continues */
+#define CODE_FIRST  0xE0000001
+#define CODE_SECOND 0xE0000002
+static int catch_runs, raise_in_catch, second_seen_by_msvc, outer_caught;
+
+static PVOID msvc_catch_block(EXCEPTION_RECORD *rec)
+{
+    catch_runs++;
+    if (raise_in_catch) RaiseException(CODE_SECOND, 0, 0, 0);    /* (does not return) */
+    return (PVOID)rec->ExceptionInformation[2];                  /* the continuation */
+}
+
+EXCEPTION_DISPOSITION msvc_handler(EXCEPTION_RECORD *rec, void *frame, CONTEXT *ctx, DISPATCHER_CONTEXT *dc)
+{
+    (void)ctx;
+    if (rec->ExceptionCode == CODE_SECOND && !(rec->ExceptionFlags & EXCEPTION_UNWINDING)) second_seen_by_msvc++;
+    if (rec->ExceptionCode != CODE_FIRST || (rec->ExceptionFlags & EXCEPTION_UNWINDING)) return ExceptionContinueSearch;
+    EXCEPTION_RECORD c;
+    memset(&c, 0, sizeof(c));
+    c.ExceptionCode = STATUS_UNWIND_CONSOLIDATE;
+    c.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
+    c.NumberParameters = 3;
+    c.ExceptionInformation[0] = (ULONG_PTR)msvc_catch_block;
+    c.ExceptionInformation[1] = (ULONG_PTR)frame;
+    c.ExceptionInformation[2] = *(ULONG_PTR *)dc->HandlerData;
+    RtlUnwindEx(frame, (void *)dc->ControlPc, &c, 0, dc->ContextRecord, dc->HistoryTable);
+    return ExceptionContinueSearch;                      /* (not reached) */
+}
+
+__declspec(noinline) void thrower_first(void)
+{
+    RaiseException(CODE_FIRST, 0, 0, 0);
+}
+
+/* msvc_catcher(): calls thrower_first(); its handler's data is where the
+ * frame continues after the catch block */
+__asm__(
+    ".text\n"
+    ".globl msvc_catcher\n"
+    ".def msvc_catcher; .scl 2; .type 32; .endef\n"
+    ".seh_proc msvc_catcher\n"
+    "msvc_catcher:\n\t"
+    "pushq %rbx\n\t" ".seh_pushreg %rbx\n\t"
+    "subq $32, %rsp\n\t" ".seh_stackalloc 32\n\t"
+    ".seh_endprologue\n\t"
+    "movq $0x55, %rbx\n\t"
+    "callq thrower_first\n\t"
+    "nop\n\t"
+    "xorl %eax, %eax\n\t"
+    "jmp 3f\n"
+    "msvc_continue:\n\t"
+    "movq %rbx, %rax\n"                          /* 0x55 when RBX was restored */
+    "3:\n\t"
+    "addq $32, %rsp\n\t"
+    "popq %rbx\n\t"
+    "retq\n\t"
+    ".seh_handler msvc_handler, @unwind, @except\n\t"
+    ".seh_handlerdata\n\t"
+    ".quad msvc_continue\n\t"
+    ".text\n\t"
+    ".seh_endproc\n");
+
 UINT64 catcher(void);
 UINT64 resumer(void);
+UINT64 msvc_catcher(void);
+
+/* A frame above the catching one, with an __except for what its catch
+ * block raises */
+__declspec(noinline) static UINT64 outer_try(void)
+{
+    UINT64 r = 0;
+    __try {
+        r = msvc_catcher();
+    } __except (GetExceptionCode() == CODE_SECOND ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        outer_caught++;
+        r = 0xEE;
+    }
+    return r;
+}
 
 int main(void)
 {
@@ -171,6 +256,25 @@ int main(void)
     CHECK("unwind from no handler resumes in the target frame", r == 0x99);
     CHECK("its RAX is RtlUnwindEx's return value", resumed_rax == 0x4321);
     CHECK("no trap flag there either", !(resumed_flags & 0x100));
+
+    /* MSVC-style catch block run by a consolidating unwind */
+    r = outer_try();
+    CHECK("consolidation callback's catch block ran once", catch_runs == 1);
+    CHECK("the frame continues where the callback said, its registers restored", r == 0x55 && outer_caught == 0);
+
+    /* ... and raising in that catch block: the frames above the catching
+     * one are searched, the catching frame's own handler first */
+    catch_runs = 0;
+    raise_in_catch = 1;
+    r = outer_try();
+    CHECK("an exception raised in the catch block reaches the caller's __except", r == 0xEE && outer_caught == 1);
+    CHECK("the catching frame's handler saw it on the way", second_seen_by_msvc == 1 && catch_runs == 1);
+
+    /* again: the per-thread state was left clean */
+    raise_in_catch = 0;
+    catch_runs = outer_caught = 0;
+    r = outer_try();
+    CHECK("a plain catch works after that", r == 0x55 && catch_runs == 1 && outer_caught == 0);
 
     printf("unwindtest: %d passed, %d failed\n", pass, fail);
     return fail != 0;

@@ -537,10 +537,11 @@ __asm__(
     ".ascii \" /EXPORT:RtlCaptureContext\"\n\t"
     ".text\n");
 
+static void resume_at(CONTEXT *c);
 VOID NTAPI RtlRestoreContext(PCONTEXT c, PEXCEPTION_RECORD rec)
 {
     (void)rec;
-    NtContinue(c, FALSE);                            /* the kernel reloads and IRETs */
+    resume_at(c);                                    /* the kernel reloads and IRETs */
 }
 
 /* -----------------------------------------------------------------------
@@ -568,21 +569,54 @@ static void set_handler_ctx(DISPATCHER_CONTEXT *dc, DWORD64 control_pc, DWORD64 
  * of Windows' own fields; an entry goes when its handler returns or when
  * an unwind resumes in a frame above it. */
 #define TEB_NOVA_EXC_STATE 0x1F00
-typedef struct ExcState { struct ExcState *prev; CONTEXT *dispatch, *frame_ctx, *target; } ExcState;
+typedef struct ExcState { struct ExcState *prev; CONTEXT *dispatch, *frame_ctx, *target; DWORD64 check; } ExcState;
+#define EXC_STATE_MAGIC 0x4E6F7661457843ull           /* check = address ^ this while the entry is live */
 static ExcState **exc_head(void) { return (ExcState **)(NtCurrentTebBytes() + TEB_NOVA_EXC_STATE); }
 static void exc_push(ExcState *e, CONTEXT *dispatch, CONTEXT *frame_ctx)
 {
     ExcState **h = exc_head();
     e->prev = *h; e->dispatch = dispatch; e->frame_ctx = frame_ctx; e->target = 0;
+    e->check = (DWORD64)e ^ EXC_STATE_MAGIC;
     *h = e;
 }
-static void exc_pop(ExcState *e) { *exc_head() = e->prev; }
+static void exc_pop(ExcState *e) { *exc_head() = e->prev; e->check = 0; }
+/* The live entries, for code running at @sp: those below it were left
+ * by a longjmp or by a handler that resumed with NtContinue (our own
+ * C++ runtime's), and so is an entry that no longer checks out (its
+ * frame reused since); the chain ends before one */
+static ExcState **exc_live(void *sp)
+{
+    ExcState **h = exc_head();
+    while (*h && (DWORD64)*h < (DWORD64)sp) *h = (*h)->prev;
+    for (ExcState **p = h; *p; p = &(*p)->prev)
+        if ((*p)->check != ((DWORD64)*p ^ EXC_STATE_MAGIC)) { *p = 0; break; }
+    return h;
+}
 /* Resuming at @c: what was running below its stack pointer is gone */
 static void resume_at(CONTEXT *c)
 {
-    ExcState **h = exc_head();
-    while (*h && (DWORD64)*h < c->Rsp) *h = (*h)->prev;
+    exc_live((void *)c->Rsp);
     NtContinue(c, FALSE);
+}
+
+/* Walking up from @cur, past the frames handling an outer exception
+ * (@outer and the entries after it): carry on where that exception
+ * happened (its dispatch's CONTEXT) or in the frame whose catch block is
+ * running (a consolidating unwind's target), as the unwind data of
+ * KiUserExceptionDispatcher and of the consolidation frame lead on
+ * Windows, instead of up the dispatcher's own stack, which ends in frames
+ * without unwind data.  Returns the entries still above @cur. */
+static ExcState *past_handling_frames(CONTEXT *cur, ExcState *outer)
+{
+    while (outer && cur->Rsp > (DWORD64)outer) {
+        ExcState *e = outer;
+        CONTEXT *to = e->dispatch ? e->dispatch : e->target;
+        outer = e->prev;
+        if (!to) continue;
+        *cur = *to;
+        while (outer && (DWORD64)outer < cur->Rsp) outer = outer->prev;
+    }
+    return outer;
 }
 
 /* Is @sp a frame on this thread's stack (TEB DeallocationStack, or
@@ -605,8 +639,13 @@ BOOLEAN NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx)
     if (run_vectored(g_veh, &ep) == EXCEPTION_CONTINUE_EXECUTION) return TRUE;
 
     CONTEXT cur = *ctx;                              /* walked; the original stays for resume */
+    /* Raised in a handler or in a catch block (MSVC's C++ runtime runs it
+     * from RtlUnwindEx's consolidation callback, a rethrow or a new
+     * throw): the frames above the one it is handling are searched too */
+    ExcState *outer = *exc_live(&cur);
     for (;;) {
         DWORD64 base = 0, frame = 0;
+        outer = past_handling_frames(&cur, outer);
         if (!on_stack(cur.Rsp)) { rec->ExceptionFlags |= EXCEPTION_STACK_INVALID; break; }
         PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cur.Rip, &base, 0);
         if (!f) {
@@ -663,8 +702,7 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
     if (!target_frame) rec->ExceptionFlags |= EXCEPTION_EXIT_UNWIND;
 
     CONTEXT cur;
-    ExcState **h = exc_head();
-    while (*h && (DWORD64)*h < (DWORD64)&cur) *h = (*h)->prev;    /* left by a longjmp */
+    ExcState **h = exc_live(&cur);
     ExcState *in = *h;
     if (in && !in->dispatch && !in->frame_ctx) in = 0;              /* (in a catch block) */
     if (in && in->frame_ctx) {
@@ -687,14 +725,7 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
          * where that exception happened, as KiUserExceptionDispatcher's
          * unwind data leads on Windows, instead of up the dispatcher's own
          * stack, which never reaches the target frame */
-        while (outer && cur.Rsp > (DWORD64)outer) {
-            ExcState *e = outer;
-            CONTEXT *to = e->dispatch ? e->dispatch : e->target;
-            outer = e->prev;
-            if (!to) continue;
-            cur = *to;
-            while (outer && (DWORD64)outer < cur.Rsp) outer = outer->prev;
-        }
+        outer = past_handling_frames(&cur, outer);
         if (!on_stack(cur.Rsp)) break;               /* (Windows raises STATUS_BAD_STACK) */
         PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cur.Rip, &base, 0);
         if (!f) {
