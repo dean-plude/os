@@ -467,6 +467,7 @@ USERAPI BOOL GetClassInfoA(HINSTANCE inst, LPCSTR name, WNDCLASSA *wc)
 
 USERAPI int GetClassNameW(HWND h, LPWSTR buf, int n)
 {
+    if (!W_quiet(h) && hwnd_foreign(h)) return x_class_name(h, buf, n);   /* another process's window */
     Wnd *w = W(h);
     if (!w || n <= 0) return 0;
     const WCHAR *s = w->cls ? w->cls->name : L"#32769";
@@ -549,7 +550,8 @@ USERAPI WORD GetClassWord(HWND h, int i) { return (WORD)GetClassLongPtrW(h, i); 
 /* Top-level windows the desktop frames (a title bar and a border) */
 static int framed(Wnd *w)
 {
-    if (w->parent) return 0;
+    if (w->parent || w->foreign_parent) return 0;           /* (embedded in another process's window: no frame) */
+    if (w->style & WS_CHILD) return 0;                      /* (a child window another process is to hold) */
     if (w->flags & WF_MENU_TRACK) return 0;
     return (w->style & WS_CAPTION) == WS_CAPTION || !(w->style & WS_POPUP);
 }
@@ -631,6 +633,11 @@ static void publish_client(Wnd *w)
     INT32 uc[4] = { w->client.left - w->rect.left, w->client.top - w->rect.top,
                     w->client.right - w->client.left, w->client.bottom - w->client.top };
     NtNovaGuiCtl(w->kid, CTL_SET_HWND, (ULONG_PTR)w->h, uc);
+    if (w->back != w->kback) {                              /* (another process's GetDC writes it with the bitmap) */
+        UINT64 bk[2] = { (UINT64)(ULONG_PTR)w->back, (UINT64)w->stride };
+        NtNovaGuiCtl(w->kid, CTL_SET_BACK, 0, bk);
+        w->kback = w->back;
+    }
 }
 
 void wnd_calc_client(Wnd *w)
@@ -741,6 +748,7 @@ void top_sync_from_kernel(Wnd *w, int sized)
             p.flags |= 0x1000;                                                                /* SWP_NOCLIENTSIZE */
         send_msg(w, WM_WINDOWPOSCHANGED, 0, (LPARAM)&p);
     }
+    embeds_follow();                                        /* (other processes' windows embedded in ours) */
 }
 
 /* The heart of SetWindowPos */
@@ -812,6 +820,7 @@ void wnd_set_pos(Wnd *w, HWND after, int x, int y, int cx, int cy, UINT flags)
             p.flags |= 0x1000;
         if (w->flags & WF_CREATED) send_msg(w, WM_WINDOWPOSCHANGED, 0, (LPARAM)&p);
     }
+    embeds_follow();
 }
 
 /* -----------------------------------------------------------------------
@@ -880,6 +889,8 @@ static int kernel_window(Wnd *w)
     mark_dirty(w, &all);
     return 1;
 }
+
+int ensure_kernel_window(Wnd *w) { return kernel_window(w); }
 
 /* A back buffer to draw into (before the window is shown too) */
 int ensure_back(Wnd *t)
@@ -1131,6 +1142,7 @@ static void destroy_tree(Wnd *w)
 
 USERAPI BOOL DestroyWindow(HWND h)
 {
+    if (!W_quiet(h) && hwnd_foreign(h)) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }   /* (as on Windows) */
     Wnd *w = W(h);
     if (!w || w == desktop()) return FALSE;
     if (cbt_hook(4 /* HCBT_DESTROYWND */, (WPARAM)h, 0)) return FALSE;
@@ -1168,6 +1180,7 @@ USERAPI BOOL DestroyWindow(HWND h)
         g_active = 0;
         NtNovaGuiCtl(owner->kid, CTL_ACTIVATE, 0, NULL);
     }
+    embeds_follow();                                        /* (windows of other processes it held go back to the desktop) */
     return TRUE;
 }
 
@@ -1185,7 +1198,17 @@ void destroy_children(Wnd *w)
  * ----------------------------------------------------------------------- */
 static void app_activated(int on);
 
+static BOOL show_window(HWND h, int cmd);
+
 USERAPI BOOL ShowWindow(HWND h, int cmd)
+{
+    if (!W_quiet(h) && hwnd_foreign(h)) return x_show(h, cmd);   /* another process's window: it shows it */
+    BOOL r = show_window(h, cmd);
+    embeds_follow();
+    return r;
+}
+
+static BOOL show_window(HWND h, int cmd)
 {
     Wnd *w = W(h);
     if (!w) return FALSE;
@@ -1287,7 +1310,12 @@ USERAPI BOOL IsWindowVisible(HWND h)
     return wnd_visible(w);
 }
 USERAPI BOOL IsWindow(HWND h) { INT32 f[11]; return W_quiet(h) != NULL || foreign_info(h, f) != 0; }
-USERAPI BOOL IsWindowEnabled(HWND h) { Wnd *w = W_quiet(h); return w && !(w->style & WS_DISABLED); }
+USERAPI BOOL IsWindowEnabled(HWND h)
+{
+    Wnd *w = W_quiet(h);
+    if (!w && hwnd_foreign(h)) { int failed; LONG_PTR st = x_get_long(h, GWL_STYLE, &failed); return !failed && !(st & WS_DISABLED); }
+    return w && !(w->style & WS_DISABLED);
+}
 USERAPI BOOL IsWindowUnicode(HWND h) { Wnd *w = W_quiet(h); return w && w->wide; }
 USERAPI BOOL IsIconic(HWND h)
 {
@@ -1304,6 +1332,7 @@ USERAPI BOOL IsZoomed(HWND h)
 
 USERAPI BOOL EnableWindow(HWND h, BOOL on)
 {
+    if (!W_quiet(h) && hwnd_foreign(h)) return x_enable(h, on);
     Wnd *w = W(h);
     if (!w) return FALSE;
     BOOL was_disabled = (w->style & WS_DISABLED) != 0;
@@ -1377,6 +1406,11 @@ HWND set_focus(HWND h)
 
 USERAPI HWND SetFocus(HWND h)
 {
+    if (h && !W_quiet(h) && hwnd_foreign(h)) {             /* another process's window (embedded in ours): it takes the keyboard */
+        HWND old = g_focus;
+        x_set_focus(h);
+        return W_quiet(old) ? old : 0;
+    }
     if (h && !W(h)) return 0;
     HWND old = g_focus;
     set_focus(h);
@@ -1461,19 +1495,32 @@ USERAPI HWND GetShellWindow(void) { return 0; }
 
 USERAPI HWND GetParent(HWND h)
 {
-    Wnd *w = W(h);
-    if (!w) return 0;
-    if (w->style & WS_CHILD) return w->parent ? w->parent->h : 0;
+    Wnd *w = W_quiet(h);
+    if (!w && hwnd_foreign(h)) {                            /* another process's window: one of ours may hold it */
+        HWND p = x_embed_parent(h);
+        if (!p) { INT32 f[11]; if (!foreign_info(h, f)) SetLastError(ERROR_INVALID_WINDOW_HANDLE); }
+        return p;
+    }
+    if (!w) { SetLastError(ERROR_INVALID_WINDOW_HANDLE); return 0; }
+    if (w->style & WS_CHILD) return w->parent ? w->parent->h : w->foreign_parent;
     if (w->style & WS_POPUP) return w->owner ? w->owner->h : 0;
     return 0;
 }
 
 USERAPI HWND GetAncestor(HWND h, UINT flags)
 {
-    Wnd *w = W(h);
-    if (!w || w == desktop()) return 0;
+    Wnd *w = W_quiet(h);
+    if (!w && hwnd_foreign(h)) {                            /* another process's window: one of ours may hold it */
+        INT32 f[11];
+        HWND p = x_embed_parent(h);
+        if (!p && !foreign_info(h, f)) { SetLastError(ERROR_INVALID_WINDOW_HANDLE); return 0; }
+        if (flags == GA_PARENT) return p ? p : desktop()->h;
+        return p ? GetAncestor(p, flags) : h;
+    }
+    if (!w) { SetLastError(ERROR_INVALID_WINDOW_HANDLE); return 0; }
+    if (w == desktop()) return 0;
     switch (flags) {
-    case GA_PARENT: return w->parent ? w->parent->h : desktop()->h;
+    case GA_PARENT: return w->parent ? w->parent->h : w->foreign_parent ? w->foreign_parent : desktop()->h;
     case GA_ROOT: return top_of(w)->h;
     case GA_ROOTOWNER: {
         Wnd *t = top_of(w);
@@ -1487,6 +1534,10 @@ USERAPI HWND GetAncestor(HWND h, UINT flags)
 USERAPI BOOL IsChild(HWND hp, HWND hc)
 {
     Wnd *p = W_quiet(hp), *c = W_quiet(hc);
+    if (p && !c && hwnd_foreign(hc)) {                      /* another process's window held by one of ours */
+        Wnd *e = W_quiet(x_embed_parent(hc));
+        return e && (e == p || is_child_of(p, e));
+    }
     if (!p || !c) return FALSE;
     for (Wnd *a = c; a && (a->style & WS_CHILD); a = a->parent) if (a->parent == p) return TRUE;
     return FALSE;
@@ -1520,6 +1571,12 @@ USERAPI HWND GetLastActivePopup(HWND h) { return h; }
 
 USERAPI HWND SetParent(HWND h, HWND hp)
 {
+    if (!W_quiet(h) && hwnd_foreign(h)) {                   /* another process's window into one of ours (WebView2) */
+        Wnd *np = hp ? W(hp) : NULL;
+        if (hp && !np) return 0;
+        if (np == desktop()) np = NULL;
+        return x_set_parent(h, np);
+    }
     Wnd *w = W(h);
     if (!w || w == desktop()) return 0;
     Wnd *np = hp ? W(hp) : NULL;
@@ -1549,6 +1606,7 @@ USERAPI HWND SetParent(HWND h, HWND hp)
     }
     wnd_calc_client(w);
     if (vis) ShowWindow(h, SW_SHOWNA);
+    embeds_follow();
     return old;
 }
 
@@ -1638,7 +1696,8 @@ USERAPI DWORD GetWindowThreadProcessId(HWND h, LPDWORD pid)
         int k = foreign_info(h, f);
         if (pid) *pid = k ? (DWORD)f[0] : 0;
         if (!k) SetLastError(ERROR_INVALID_WINDOW_HANDLE);
-        return k == 2 ? (DWORD)f[1] : 0;                 /* a child window's thread is not known */
+        if (k == 2 && f[1]) return (DWORD)f[1];
+        return k ? x_thread(h) : 0;                       /* hidden or child: its process says */
     }
     if (pid) *pid = GetCurrentProcessId();
     return w == desktop() ? g_main_tid : w->tid;
@@ -1725,8 +1784,11 @@ USERAPI int MapWindowPoints(HWND from, HWND to, LPPOINT p, UINT n)
 {
     POINT a = { 0, 0 }, b = { 0, 0 };
     Wnd *f = from ? W_quiet(from) : NULL, *t = to ? W_quiet(to) : NULL;
+    RECT fr;
     if (f && f != desktop()) seen_origin(f, 1, &a);
+    else if (from && !f && foreign_rect(from, 1, &fr)) { a.x = fr.left; a.y = fr.top; }    /* another process's window */
     if (t && t != desktop()) seen_origin(t, 1, &b);
+    else if (to && !t && foreign_rect(to, 1, &fr)) { b.x = fr.left; b.y = fr.top; }
     int dx = a.x - b.x, dy = a.y - b.y;
     for (UINT i = 0; i < n; i++) { p[i].x += dx; p[i].y += dy; }
     SetLastError(0);
@@ -1784,8 +1846,14 @@ USERAPI BOOL AdjustWindowRect(LPRECT r, DWORD style, BOOL menu) { return AdjustW
 
 USERAPI BOOL SetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy, UINT flags)
 {
+    if (!W_quiet(h) && hwnd_foreign(h)) return x_set_pos(h, after, x, y, cx, cy, flags);   /* another process's window */
     Wnd *w = W(h);
     if (!w) return FALSE;
+    if (!w->parent && w->foreign_parent && !(flags & SWP_NOMOVE)) {
+        /* embedded in another process's window: a place in its parent's client area */
+        POINT o;
+        if (embed_origin(w, &o, NULL)) { x += o.x; y += o.y; }
+    }
     /* the calling thread's coordinates: a window of another DPI awareness
      * gets them converted, as GetWindowRect gives them */
     if (!(flags & SWP_NOMOVE)) {
@@ -1950,6 +2018,7 @@ USERAPI BOOL SetWindowTextA(HWND h, LPCSTR s)
 
 USERAPI int GetWindowTextW(HWND h, LPWSTR s, int max)
 {
+    if (!W_quiet(h) && hwnd_foreign(h)) { int k = x_get_text(h, s, max); return k < 0 ? 0 : k; }   /* (its text, as on Windows: no message) */
     Wnd *w = W(h);
     if (!w || !s || max <= 0) return 0;
     s[0] = 0;
@@ -1964,13 +2033,26 @@ USERAPI int GetWindowTextW(HWND h, LPWSTR s, int max)
 
 USERAPI int GetWindowTextA(HWND h, LPSTR s, int max)
 {
+    if (!W_quiet(h) && hwnd_foreign(h)) {
+        if (!s || max <= 0) return 0;
+        WCHAR t[1024];
+        int k = x_get_text(h, t, 1024);
+        int r = k > 0 ? WideCharToMultiByte(CP_ACP, 0, t, k, s, max - 1, NULL, NULL) : 0;
+        s[r] = 0;
+        return r;
+    }
     Wnd *w = W(h);
     if (!w || !s || max <= 0) return 0;
     s[0] = 0;
     return (int)SendMessageA(h, WM_GETTEXT, (WPARAM)max, (LPARAM)s);
 }
 
-USERAPI int GetWindowTextLengthW(HWND h) { return W(h) ? (int)SendMessageW(h, WM_GETTEXTLENGTH, 0, 0) : 0; }
+static int foreign_text_len(HWND h) { WCHAR t[1024]; int k = x_get_text(h, t, 1024); return k < 0 ? 0 : k; }
+USERAPI int GetWindowTextLengthW(HWND h)
+{
+    if (!W_quiet(h) && hwnd_foreign(h)) return foreign_text_len(h);
+    return W(h) ? (int)SendMessageW(h, WM_GETTEXTLENGTH, 0, 0) : 0;
+}
 USERAPI int GetWindowTextLengthA(HWND h) { return W(h) ? (int)SendMessageA(h, WM_GETTEXTLENGTH, 0, 0) : 0; }
 USERAPI int InternalGetWindowText(HWND h, LPWSTR s, int max)
 {
@@ -1987,6 +2069,11 @@ USERAPI int InternalGetWindowText(HWND h, LPWSTR s, int max)
  * ----------------------------------------------------------------------- */
 static LONG_PTR get_long(HWND h, int i, int size, int wide)
 {
+    if (!W_quiet(h) && hwnd_foreign(h)) {                   /* another process's window: it answers */
+        if (i == GWLP_HWNDPARENT) return (LONG_PTR)x_embed_parent(h);
+        LONG_PTR v = x_get_long(h, i, NULL);
+        return size == 4 ? (LONG_PTR)(LONG)v : v;
+    }
     Wnd *w = W(h);
     if (!w) return 0;
     switch (i) {
@@ -2010,6 +2097,10 @@ static LONG_PTR get_long(HWND h, int i, int size, int wide)
 
 static LONG_PTR set_long(HWND h, int i, LONG_PTR v, int size, int wide)
 {
+    if (!W_quiet(h) && hwnd_foreign(h)) {                   /* another process's window: styles, ids and data only */
+        if (i == GWLP_WNDPROC || i == GWLP_HINSTANCE || i == GWLP_HWNDPARENT) { SetLastError(ERROR_ACCESS_DENIED); return 0; }
+        return x_set_long(h, i, size == 4 ? (LONG_PTR)(LONG)v : v, NULL);
+    }
     Wnd *w = W(h);
     if (!w) return 0;
     LONG_PTR old = get_long(h, i, size, wide);

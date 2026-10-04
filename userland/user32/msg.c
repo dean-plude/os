@@ -20,6 +20,8 @@ typedef struct Sent {
     volatile LONG done;
     HANDLE ev;
     int notify;                     /* SendNotifyMessage: nobody waits */
+    void (*fn)(void *);             /* x_send_queue: run this instead (another process's call) */
+    void *arg;
 } Sent;
 
 /* A queued message and its extra information (GetMessageExtraInfo) */
@@ -324,6 +326,13 @@ void process_sent(void)
         if (s) q->sent = s->next;
         UNLOCK();
         if (!s) return;
+        if (s->fn) {                                        /* another process's call on our window */
+            q->in_send++;
+            s->fn(s->arg);
+            q->in_send--;
+            free(s);
+            continue;
+        }
         Wnd *w = W_quiet(s->h);
         q->in_send++;
         LRESULT r = w ? call_proc(w, w->proc, w->wide, s->h, s->msg, s->wp, s->lp, s->wide) : 0;
@@ -333,6 +342,22 @@ void process_sent(void)
         InterlockedExchange(&s->done, 1);
         SetEvent(s->ev);
     }
+}
+
+/* Run @fn(@arg) in thread @tid's message loop, as a message sent to it
+ * would be (another process's call on one of its windows: xproc.c) */
+void x_send_queue(DWORD tid, void (*fn)(void *), void *arg)
+{
+    TQ *q = tq_for(tid, 1);
+    Sent *s = q ? calloc(1, sizeof(Sent)) : NULL;
+    if (!s) { fn(arg); return; }
+    s->fn = fn; s->arg = arg; s->notify = 1;
+    LOCK();
+    Sent **pp = &q->sent;
+    while (*pp) pp = &(*pp)->next;
+    *pp = s;
+    UNLOCK();
+    wake(tid);
 }
 
 LRESULT send_msg(Wnd *w, UINT msg, WPARAM wp, LPARAM lp)
@@ -352,8 +377,9 @@ static LRESULT send_any(HWND h, UINT msg, WPARAM wp, LPARAM lp, int wide)
         for (int i = 0; i < n; i++) { Wnd *w = W_quiet(list[i]); if (w) send_any(list[i], msg, wp, lp, wide); }
         return 1;
     }
-    Wnd *w = W(h);
-    if (!w) return 0;
+    Wnd *w = W_quiet(h);
+    if (!w && hwnd_foreign(h)) return x_send(h, msg, wp, lp, wide, INFINITE, NULL);   /* another process's window */
+    if (!w) { SetLastError(ERROR_INVALID_WINDOW_HANDLE); return 0; }
     if (w->tid && w->tid != GetCurrentThreadId()) return send_cross(w, msg, wp, lp, wide, INFINITE, NULL);
     return call_proc(w, w->proc, w->wide, h, msg, wp, lp, wide);
 }
@@ -365,8 +391,15 @@ static LRESULT send_timeout(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT flags, 
 {
     (void)flags;
     if (h == HWND_BROADCAST) { if (res) *res = 0; send_any(h, msg, wp, lp, wide); return TRUE; }
-    Wnd *w = W(h);
-    if (!w) return 0;
+    Wnd *w = W_quiet(h);
+    if (!w && hwnd_foreign(h)) {                            /* another process's window */
+        int failed = 0;
+        LRESULT r = x_send(h, msg, wp, lp, wide, ms ? ms : 1, &failed);
+        if (failed) { SetLastError(failed == 2 ? ERROR_TIMEOUT : ERROR_INVALID_WINDOW_HANDLE); return 0; }
+        if (res) *res = (DWORD_PTR)r;
+        return TRUE;
+    }
+    if (!w) { SetLastError(ERROR_INVALID_WINDOW_HANDLE); return 0; }
     int to = 0;
     LRESULT r = w->tid && w->tid != GetCurrentThreadId() ? send_cross(w, msg, wp, lp, wide, ms ? ms : 1, &to)
                                                          : call_proc(w, w->proc, w->wide, h, msg, wp, lp, wide);
@@ -381,6 +414,7 @@ USERAPI LRESULT SendMessageTimeoutA(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT
 static BOOL send_notify(HWND h, UINT msg, WPARAM wp, LPARAM lp, int wide)
 {
     if (h == HWND_BROADCAST) { send_any(h, msg, wp, lp, wide); return TRUE; }
+    if (!W_quiet(h) && hwnd_foreign(h)) return x_post(h, msg, wp, lp);    /* (nobody waits: as good as posted) */
     Wnd *w = W(h);
     if (!w) return FALSE;
     if (w->tid && w->tid != GetCurrentThreadId()) {
@@ -458,8 +492,9 @@ static BOOL post_any(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         for (Wnd *c = W_quiet(GetDesktopWindow())->child; c; c = c->next) post_msg(c, c->h, msg, wp, lp);
         return TRUE;
     }
-    Wnd *w = W(h);
-    if (!w) return FALSE;
+    Wnd *w = W_quiet(h);
+    if (!w && hwnd_foreign(h)) return x_post(h, msg, wp, lp);   /* another process's window */
+    if (!w) { SetLastError(ERROR_INVALID_WINDOW_HANDLE); return FALSE; }
     return post_msg(w, h, msg, wp, lp);
 }
 
@@ -832,6 +867,7 @@ static void from_kernel_(Wnd *top, const MSG *kmsg, UINT32 pen)
     case WM_PAINT: case WM_TIMER: break;
     case WM_MOUSELEAVE: leave_check(NULL, GetTickCount()); pointer_left(top); break;
     case WM_NOVA_DROP: drop_from_kernel(top, km); break;
+    case WM_NOVA_EMBED: embed_notified(top, (HWND)km->wParam); break;
     case WM_NOVA_TOUCH: touch_from_kernel(top, km); break;
     case WM_DISPLAYCHANGE:
         dpi_monitors_changed(top);
@@ -861,6 +897,7 @@ static long kernel_msg(MSG *m, UINT32 *pen, DWORD wait)
 #endif
     *m = k.m;
     *pen = r == 1 ? (UINT32)k.pen : 0;
+    if (r == -3) return x_claim() ? 2 : -1;                 /* other processes' calls on our windows: 2 */
     return r;
 }
 
@@ -870,7 +907,8 @@ static int drain_kernel(void)
     int any = 0;
     MSG km;
     UINT32 pen;
-    while (kernel_msg(&km, &pen, 0) == 1) { from_kernel(&km, pen); any = 1; }
+    long r;
+    while ((r = kernel_msg(&km, &pen, 0)) == 1 || r == 2) { if (r == 1) from_kernel(&km, pen); any = 1; }
     return any;
 }
 
