@@ -30,6 +30,9 @@
   `XMLHTTP` on the MIT-licensed libxml2, answering the MSXML 3 classes
   such as `Msxml2.DOMDocument` too),
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
+  `crypt32` and `wintrust` (certificate stores and chains, signed PKCS #7
+  messages, and Authenticode: `WinVerifyTrust` checks a program's
+  signature, its timestamp and its chain to the trusted roots),
   `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`),
   `wintab32` (Wintab pen tablets: pressure, tilt and barrel rotation for GTK,
   Qt and Krita), `cabinet` (the FDI functions installers extract cabinets
